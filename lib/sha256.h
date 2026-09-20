@@ -4,7 +4,7 @@
 // digest (the FNV mixers in state_fnv/octogen are seeds, not commitments).
 //
 // Freestanding: no allocation, no libc beyond memcpy/memset, so it compiles
-// unchanged into the wasm modules and libfoolish.a.
+// unchanged into every wasm module and static library that links it.
 #ifndef CNITRO_SHA256_H
 #define CNITRO_SHA256_H
 

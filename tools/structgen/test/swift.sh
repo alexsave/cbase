@@ -15,7 +15,7 @@
 # exactly as build/verify.wasm is linked for the run that reads it. The
 # PRODUCTION Swift (sdk/swift/gen) is not committed either: it is generated for
 # one fixed triple by tools/structgen/gen.sh and by `make ios-lib`, which bakes
-# the matching hash into the library FoolishKit links.
+# the matching hash into the library the Swift side links.
 #
 #   swift.sh         generate, compile and run
 set -euo pipefail

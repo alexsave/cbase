@@ -180,7 +180,16 @@ ok $? "a dimension can be labelled by one column of a table of structs"
 # Why it earns a place in this suite anyway: it is the one case that can tell
 # "generic" from "i18n with extra steps", and it is real, so it goes stale the
 # moment the tool stops being general.
-root="$(cd "$here/../.." && pwd)"
+# …and it is the one case in this suite that reads a file datagen does not own.
+# `shared/` is nobody's in particular, so this block is CONDITIONAL: it runs
+# wherever a product tree with that table is sitting beside it, and says so and
+# skips where there is none, rather than failing a shared tool's suite over a
+# product's file.
+root="$(cd "$here/../../.." && pwd)"
+if [ ! -f "$root/c/src/bot_roster.c" ]; then
+  echo "cli: no product table beside this tool (c/src/bot_roster.c) - skipping the real-table case"
+  [ $fails -eq 0 ] && { echo "cli: all pass"; exit 0; } || { echo "cli: $fails failed"; exit 1; }
+fi
 roster=(--cwd "$root/c/src" --header bot_roster.c --table ROSTER --name BotRoster
         --flags "-I. -isystem $root/c/wasm/include --target=wasm32 -D_Thread_local=")
 "$DG" "${roster[@]}" --json "$tmp/roster.json" --ts "$tmp/roster.ts" --swift "$tmp/roster.swift" \
