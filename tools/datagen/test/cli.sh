@@ -191,7 +191,7 @@ if [ ! -f "$root/c/src/bot_roster.c" ]; then
   [ $fails -eq 0 ] && { echo "cli: all pass"; exit 0; } || { echo "cli: $fails failed"; exit 1; }
 fi
 roster=(--cwd "$root/c/src" --header bot_roster.c --table ROSTER --name BotRoster
-        --flags "-I. -isystem $root/c/wasm/include --target=wasm32 -D_Thread_local=")
+        --flags "-I. -isystem $root/c/wasm/include -isystem $root/shared/c/wasm/include --target=wasm32 -D_Thread_local=")
 "$DG" "${roster[@]}" --json "$tmp/roster.json" --ts "$tmp/roster.ts" --swift "$tmp/roster.swift" \
   --kotlin "$tmp/roster.kt" --kotlin-package test.pkg
 grep -q '"key": "cordite"' "$tmp/roster.json" && grep -q '"strat": 7,' "$tmp/roster.json"
