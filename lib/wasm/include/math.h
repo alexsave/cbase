@@ -30,6 +30,7 @@ float  acosf(float x);
 float  powf(float x, float y);
 float  logf(float x);
 long   lroundf(float x);
+float  roundf(float x);
 float  fminf(float a, float b);
 float  fmaxf(float a, float b);
 
