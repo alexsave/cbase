@@ -51,13 +51,22 @@ int strncmp(const char *a, const char *b, size_t n)
 }
 
 /* A small snprintf: %s, %d and %%, nothing else - all its users write. Like
- * the real one it returns the length it wanted and always terminates. */
+ * the real one it returns the length it wanted and always terminates, and a
+ * conversion that does not fit is cut short, never looped on.
+ *
+ * Any other conversion (%u, %x, %c, %ld, a width) traps: skipping it would
+ * leave its argument unread and hand every later conversion the wrong one,
+ * which prints memory. Trapping makes the misuse fail on its first test run.
+ *
+ * libc_test.c beside this file runs it natively. */
 int snprintf(char *out, size_t cap, const char *fmt, ...)
 {
     va_list ap;
     va_start(ap, fmt);
     size_t n = 0;
-#define PUT(ch) do { if (n + 1 < cap) out[n] = (ch); n++; } while (0)
+    /* ch is evaluated exactly once, whether or not it fits: the callers pass
+     * *s++ and d[--k], which must advance even once the buffer is full. */
+#define PUT(ch) do { char c_ = (char)(ch); if (n + 1 < cap) out[n] = c_; n++; } while (0)
     for (const char *f = fmt; *f; f++) {
         if (*f != '%') { PUT(*f); continue; }
         f++;
@@ -76,6 +85,8 @@ int snprintf(char *out, size_t cap, const char *fmt, ...)
             PUT('%');
         } else if (!*f) {
             break;
+        } else {
+            __builtin_trap();
         }
     }
 #undef PUT
