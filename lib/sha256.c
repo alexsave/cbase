@@ -1,7 +1,7 @@
-// SHA-256 (FIPS 180-4) — see sha256.h for why this exists.
+// SHA-256 (FIPS 180-4) - see sha256.h for why this exists.
 //
 // Textbook implementation, deliberately: it is a spec-defined function with
-// KAT vectors (msg_wire_test.c pins the three standard ones), so there is
+// KAT vectors (sha256_test.c beside this file pins the NIST ones), so there is
 // nothing to invent and every byte is checkable against the standard.
 #include "sha256.h"
 #include <string.h>
