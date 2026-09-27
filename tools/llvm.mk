@@ -40,7 +40,7 @@ ifneq ($(SG_PRINT_ONLY),1)
 ifeq ($(strip $(LLVM_PREFIX)),)
   $(error this tool needs libclang and found no llvm-config on PATH. Install it \
     and/or pass LLVM_PREFIX=<prefix>. Ubuntu: `apt-get install libclang-18-dev` \
-    then LLVM_PREFIX=/usr/lib/llvm-18 (scripts/ci_llvm.sh does both). \
+    then LLVM_PREFIX=/usr/lib/llvm-18 (shared/scripts/ci_llvm.sh does both). \
     macOS: `brew install llvm`)
 endif
 endif
@@ -77,7 +77,7 @@ define LLVM_PROGRAM
 @[ -f "$(LLVM_PREFIX)/include/clang-c/Index.h" ] || { \
   echo "$(@F): no libclang headers under LLVM_PREFIX=$(LLVM_PREFIX)"; \
   echo "$(@F): (looked for $(LLVM_PREFIX)/include/clang-c/Index.h)"; \
-  echo "$(@F): Ubuntu: bash scripts/ci_llvm.sh   macOS: brew install llvm"; \
+  echo "$(@F): Ubuntu: bash shared/scripts/ci_llvm.sh   macOS: brew install llvm"; \
   exit 1; }
 $(CC) $(CFLAGS) -I$(LLVM_PREFIX)/include -I../sgcommon -DSG_RESOURCE_DIR='"$(shell $(LLVM_PREFIX)/bin/clang -print-resource-dir)"' -DSGC_TOOL='"$(@F)"' $(filter %.c,$^) -L$(LLVM_PREFIX)/lib -lclang -Wl,-rpath,$(LLVM_PREFIX)/lib -o $@
 endef
