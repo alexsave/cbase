@@ -186,12 +186,22 @@ ok $? "a dimension can be labelled by one column of a table of structs"
 # skips where there is none, rather than failing a shared tool's suite over a
 # product's file.
 root="$(cd "$here/../../.." && pwd)"
-if [ ! -f "$root/c/src/bot_roster.c" ]; then
-  echo "cli: no product table beside this tool (c/src/bot_roster.c) - skipping the real-table case"
+# A product tree sits BESIDE shared/, one folder down: <product>/c/src/bot_roster.c.
+# Found by glob so this file names no product.
+table=""
+for cand in "$root"/*/c/src/bot_roster.c; do
+  [ -f "$cand" ] && { table="$cand"; break; }
+done
+if [ -z "$table" ]; then
+  echo "cli: no product table beside this tool (<product>/c/src/bot_roster.c) - skipping the real-table case"
+  # A lane that must not skip says so: the table moved once, and the case quietly
+  # stopped running while the suite reported "all pass".
+  [ -n "${DG_REQUIRE_REAL_TABLE:-}" ] && { echo "cli: DG_REQUIRE_REAL_TABLE is set, so a skip is a failure"; exit 1; }
   [ $fails -eq 0 ] && { echo "cli: all pass"; exit 0; } || { echo "cli: $fails failed"; exit 1; }
 fi
-roster=(--cwd "$root/c/src" --header bot_roster.c --table ROSTER --name BotRoster
-        --flags "-I. -isystem $root/c/wasm/include -isystem $root/shared/c/wasm/include --target=wasm32 -D_Thread_local=")
+prod="$(cd "$(dirname "$table")/../.." && pwd)"
+roster=(--cwd "$prod/c/src" --header bot_roster.c --table ROSTER --name BotRoster
+        --flags "-I. -isystem $prod/c/wasm/include -isystem $root/shared/c/wasm/include --target=wasm32 -D_Thread_local=")
 "$DG" "${roster[@]}" --json "$tmp/roster.json" --ts "$tmp/roster.ts" --swift "$tmp/roster.swift" \
   --kotlin "$tmp/roster.kt" --kotlin-package test.pkg
 grep -q '"key": "cordite"' "$tmp/roster.json" && grep -q '"strat": 7,' "$tmp/roster.json"

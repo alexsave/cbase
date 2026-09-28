@@ -1,7 +1,8 @@
 /* Freestanding stdio.h for a wasm32 kernel: snprintf alone, for building
  * sentences. Defined in ../libc.c, and a SMALL one - %s, %d and %% only, which
- * is all its users write. Like the real one it returns the length it wanted
- * and always terminates.
+ * is all its users write; any other conversion traps. Like the real one it
+ * returns the length it wanted and always terminates, cutting a conversion
+ * that does not fit.
  *
  * A build that needs a different stdio (a research build that declares
  * fprintf, or a snprintf with other semantics of its own) keeps its own
