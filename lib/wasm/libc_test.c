@@ -19,6 +19,14 @@
 #include <unistd.h>
 #include "../test/check.h"
 
+/* The host snprintf is the reference and is called with buffers too small ON
+ * PURPOSE (truncation is what is being tested), which GCC's
+ * -Wformat-truncation reports as an error under -Werror (GCC 16 does; the
+ * Ubuntu lane's older GCC did not). Clang has no such check here. */
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic ignored "-Wformat-truncation"
+#endif
+
 #undef memcpy
 #undef memmove
 #undef memset
