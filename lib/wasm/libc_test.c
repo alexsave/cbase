@@ -19,7 +19,16 @@
 #include <unistd.h>
 #include "../test/check.h"
 
+/* The host snprintf is the reference and is called with buffers too small ON
+ * PURPOSE (truncation is what is being tested), which GCC's
+ * -Wformat-truncation reports as an error under -Werror (GCC 16 does; the
+ * Ubuntu lane's older GCC did not). Clang has no such check here. */
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic ignored "-Wformat-truncation"
+#endif
+
 #undef memcpy
+#undef memmove
 #undef memset
 #undef memcmp
 #undef strlen
@@ -27,6 +36,7 @@
 #undef strncmp
 #undef snprintf
 #define memcpy   wlibc_memcpy
+#define memmove  wlibc_memmove
 #define memset   wlibc_memset
 #define memcmp   wlibc_memcmp
 #define strlen   wlibc_strlen
@@ -34,6 +44,7 @@
 #define strncmp  wlibc_strncmp
 #define snprintf wlibc_snprintf
 void  *wlibc_memcpy(void *dst, const void *src, size_t n);
+void  *wlibc_memmove(void *dst, const void *src, size_t n);
 void  *wlibc_memset(void *dst, int c, size_t n);
 int    wlibc_memcmp(const void *a, const void *b, size_t n);
 size_t wlibc_strlen(const char *s);
@@ -42,6 +53,7 @@ int    wlibc_strncmp(const char *a, const char *b, size_t n);
 int    wlibc_snprintf(char *out, size_t cap, const char *fmt, ...);
 #include "libc.c"
 #undef memcpy
+#undef memmove
 #undef memset
 #undef memcmp
 #undef strlen
@@ -157,6 +169,17 @@ int main(void)
         CHECK(sign(wlibc_memcmp(x, y, n)) == sign(memcmp(x, y, n)), "memcmp %d", i);
         memset(z, 0, sizeof z);
         CHECK(wlibc_memcpy(z, x, n) == z && !memcmp(z, x, n) && (n == 64 || z[n] == 0), "memcpy %d", i);
+        /* memmove: both overlaps, against the host's, on a copy of x */
+        {
+            unsigned char a[64], b[64];
+            size_t from = next() % 64, to = next() % 64, len = next() % 65;
+            if (len > 64 - from) len = 64 - from;
+            if (len > 64 - to) len = 64 - to;
+            memcpy(a, x, sizeof a); memcpy(b, x, sizeof b);
+            CHECK(wlibc_memmove(a + to, a + from, len) == a + to, "memmove returns dst %d", i);
+            memmove(b + to, b + from, len);
+            CHECK(!memcmp(a, b, sizeof a), "memmove %d: from %d to %d, %d bytes", i, (int)from, (int)to, (int)len);
+        }
         int c = (int)next();
         CHECK(wlibc_memset(z, c, n) == z, "memset returns dst %d", i);
         for (size_t k = 0; k < n; k++) CHECK(z[k] == (unsigned char)c, "memset truncates c to a byte %d", i);
