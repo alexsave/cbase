@@ -20,6 +20,13 @@ void *memcpy(void *dst, const void *src, size_t n)
     return dst;
 }
 
+/* Overlap allowed, either direction (utb_adopt moves a board onto itself). */
+void *memmove(void *dst, const void *src, size_t n)
+{
+    __builtin_memmove(dst, src, n);
+    return dst;
+}
+
 void *memset(void *dst, int c, size_t n)
 {
     __builtin_memset(dst, c, n);
