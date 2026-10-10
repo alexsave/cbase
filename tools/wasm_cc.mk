@@ -47,3 +47,18 @@ wasm-cc-check:
 	  *"clang version $(WASM_LLVM_MAJOR)."*) ;; \
 	  *) echo "wasm: WASM_CC is $$v, not the pinned clang $(WASM_LLVM_MAJOR) - sizes will differ from CI" >&2;; \
 	esac
+
+# THE SAME FILES FOR wasm32, freestanding, as a `wasm` target: the proof that a
+# kernel reaches nothing past the few libc names shared/c/wasm supplies.
+# Objects only, in their own variant (c_rules.mk, included first), so the proof
+# recompiles what changed and not the kernel. $(WARN) is the product's one
+# list of warnings.
+#
+#   $(eval $(call WASM_OBJECT_PROOF,$(SRC)))
+WASM_OBJECT_FLAGS = --target=wasm32 -Oz -nostdlib -ffreestanding $(WARN) -isystem $(C_ROOT)/shared/c/wasm/include
+define WASM_OBJECT_PROOF
+$(call C_VARIANT,build/wasm,WASM_CC,WASM_OBJECT_FLAGS)
+.PHONY: wasm
+wasm: wasm-cc-check $$(call c_objs,build/wasm,$(1))
+	@echo "wasm32 objects in build/wasm/"
+endef
