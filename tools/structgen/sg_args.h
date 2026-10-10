@@ -11,6 +11,21 @@ extern const char *headers[], *roots[], *prefixes[], *snaps[], *writers[], *buil
 extern const char *kotlin_package;
 extern const char *target;
 extern int nheaders, nroots, nprefixes, nsnaps, nwriters, print_hash, snapshot_only;
+// --names PREFIX: a --const prefix whose constants are also emitted as one
+// value -> name table (prefix_names[i] is 1 for such a prefix).
+extern int prefix_names[];
+// ---- an exports run (sg_exports.h) ----------------------------------------------
+// --source FILE: a C file the module is linked from. Far more of them than
+// anything else is repeated, so they have their own cap.
+#define MAXSRC 512
+extern const char *sources[];
+extern int nsources;
+// --link FLAGS opens a link, and the --exports-name, --exports-ts and
+// --check-wasm that follow it are that link's.
+#define MAXLINK 16
+typedef struct { const char *flags, *name, *out_ts, *check_wasm; } Link;
+extern Link links[];
+extern int nlinks;
 extern const char *build_name_end;   // build .. build_name_end is NAME in --build NAME=FLAGS
 extern const char *build_flags;      // ...and this is FLAGS, the flags clang parses under
 

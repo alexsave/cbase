@@ -15,6 +15,18 @@
 //             [--ts OUT] [--swift OUT] [--kotlin OUT --kotlin-package PKG]
 //             [--hash-ts OUT] [--print-hash]
 //
+//   structgen --cwd DIR --header H... --build NAME=FLAGS
+//             (--const PREFIX | --names PREFIX)... --ts OUT
+//
+//   structgen --cwd DIR --source C... --build NAME=FLAGS
+//             (--link LDFLAGS --exports-name IDENT [--exports-ts OUT] [--check-wasm M])...
+//
+// The first form is the tool as it has always been. The second is the same run
+// with no --root: a module of constants and nothing else, for a host that
+// needs a header's numbers and none of its structs. The third asks a different
+// question - what a link of a wasm module exports - and is described at the end
+// of this comment.
+//
 // --ts OUT        the accessors (no hash: a host that only checks the hash must
 //                 not have to import the accessors, which read the raw struct)
 // --swift OUT     the same --snapshot readers (and --writer writers) as Swift
@@ -34,6 +46,14 @@
 //                 does not exist is an error. SIZE requests T_SIZE.
 // --const PREFIX  emit every enum constant and object-like integer #define whose
 //                 name starts with PREFIX; a prefix that matches nothing is an error.
+// --names PREFIX  --const PREFIX, and the same constants once more as ONE table
+//                 from value to name: `export const <PREFIX>NAMES`, each name
+//                 with the prefix taken off (LOG_ -> LOG_NAMES[1] === "ATTACK").
+//                 It is how a host prints a code without keeping a list of what
+//                 the codes are called. Two constants of one value under the
+//                 prefix are refused, since the table could name only one of
+//                 them: give a narrower prefix. TypeScript only, and not part
+//                 of the layout hash (the constants already are).
 //
 // --snapshot T    emit `interface T_Snap` and `readT(m, p): T_Snap`, which copies the
 //                 record out of wasm memory into a plain object that holds no
@@ -129,6 +149,45 @@
 //   with what JNI read out of the library, so the stale-library refusal is
 //   generated rather than hand-written.
 //
+// ---- an exports run (--link) ---------------------------------------------------
+//
+// `instance.exports` is untyped, so the interface a host casts it to is typed
+// by hand and a C signature can change underneath it. This run writes that
+// interface from the link line and the C definitions; sg_exports.c says where
+// each fact comes from and why it cannot be a second copy of one.
+//
+// --source C      a C file the module is linked from, parsed as its own
+//                 translation unit under the build's flags. Give every file of
+//                 the link: the ones that define no export are not read.
+// --link LDFLAGS  one link's linker flags, verbatim and as ONE argument - the
+//                 `-Wl,--export=NAME` tokens the build passes, plus whatever
+//                 else is on that line. The memory is read off it too: the
+//                 linker exports it as `memory` unless -Wl,--import-memory is
+//                 there. The rest is ignored. Every name must be a function some --source
+//                 defines with external linkage, or a symbol the linker makes
+//                 itself (__stack_pointer, __wasm_init_tls, ...). A definition
+//                 that carries export_name is exported without being listed.
+//                 --export-all and --export-dynamic are refused: they export
+//                 whatever is there, and there is no list to read.
+//                 Opens a group; the three flags below belong to the --link
+//                 they follow, and a run may hold several (links of the same
+//                 sources and flags share one parse).
+// --exports-name IDENT   what the interface is called. Required.
+// --exports-ts OUT       `export interface IDENT { ... }`, one member per
+//                 export in name order: the memory as WebAssembly.Memory, a
+//                 linker global as WebAssembly.Global, and each function with
+//                 its C parameter names in camelCase. Types are the wasm value
+//                 types C compiles to - `number` for an i32, f32 or f64, `bigint`
+//                 for an i64 - and a struct, a union, long double or a 128-bit
+//                 integer by value is refused, because none of them crosses as
+//                 one value. Unnamed parameters are arg0, arg1, ...
+// --check-wasm M  read the built module M and refuse any difference from the
+//                 interface: a missing export, an extra one, a different kind,
+//                 or a function whose wasm signature is not the one its C
+//                 definition gives. Every difference is listed before the
+//                 refusal. This is what holds the link line the run was GIVEN
+//                 to the link line the build USED.
+//
 // ---- the parts --------------------------------------------------------------
 //
 // One thing each, and structgen.h lists them. This file is the run itself: the
@@ -142,6 +201,7 @@
 #include "structgen.h"
 #include "sg_args.h"
 #include "sg_clang.h"
+#include "sg_exports.h"
 #include "sg_hash.h"
 #include "sg_kotlin.h"
 #include "sg_model.h"
@@ -181,6 +241,9 @@ void check_unique_names(const Buf *ts, const char *decl, const char *stop) {   /
 
 int main(int argc, char **argv) {
     sg_args(argc, argv);        // the request
+    // An exports run asks its own question of its own inputs (sg_exports.c),
+    // and has no layout to hash.
+    if (nlinks) { sg_exports_run(); return 0; }
     sg_load();                  // the headers, through libclang, into the model
     sg_check();                 // the model against the request
 

@@ -46,4 +46,37 @@ expect_fail "nothing to write at all"       "nothing to do"                  --c
   && [ "$(grep -c . "$tmp/hash.ts")" = 3 ] && grep -qx "export const LAYOUT_HASH = $(cat "$tmp/hash2");" "$tmp/hash.ts" \
   && ! grep -q LAYOUT_HASH "$tmp/out.ts" \
   && echo "ok   --hash-ts writes the hash alone, and --ts leaves it out" || { echo "FAIL --hash-ts"; fails=$((fails + 1)); }
+# ---- --names, and a run with no --root ------------------------------------------
+expect_fail "--names over two constants of one value" "KDUP_ONE and KDUP_UNO are both 1" "${base[@]}" --names KDUP_
+expect_fail "--names prefix matching nothing"  "matches no enum constant"       "${base[@]}" --names NOPE_
+expect_fail "no --root and no --const"         "nothing to read"                --cwd "$here/test" --header kinds.h --build wasm= --ts "$tmp/o.ts"
+# The table is the prefix's constants by VALUE, each under its name with the
+# prefix taken off, and a negative value is a computed key.
+cat > "$tmp/want.names" <<'TS'
+export const K_NEG = -1;
+export const K_POS = 7;
+export const KFLAG_LOW = 3;
+export const KFLAG_HIGH = 1073741824;
+export const KFLAG_NEG = -1073741829;
+export const K_NAMES: Readonly<Record<number, string>> = {
+    [-1]: "NEG",
+    7: "POS",
+};
+export const KFLAG_NAMES: Readonly<Record<number, string>> = {
+    [-1073741829]: "NEG",
+    3: "LOW",
+    1073741824: "HIGH",
+};
+TS
+names=(--cwd "$here/test" --header kinds.h --build wasm= --names K_ --names KFLAG_)
+"$SG" "${names[@]}" --ts "$tmp/names.ts" && sed -n '/^export const/,$p' "$tmp/names.ts" > "$tmp/got.names"
+if diff "$tmp/want.names" "$tmp/got.names"; then echo "ok   --names writes each prefix's value -> name table, with no --root"
+else echo "FAIL --names (above: < wanted, > written)"; fails=$((fails + 1)); fi
+# A module of constants reads no memory, so it carries no views of one.
+! grep -q 'memOf\|interface Mem' "$tmp/names.ts" && grep -qx '// build: wasm; roots: none (constants only)' "$tmp/names.ts" \
+  && echo "ok   a run with no --root is constants only, and says so" || { echo "FAIL a constants-only module: $(head -4 "$tmp/names.ts")"; fails=$((fails + 1)); }
+# The table is the same constants again, so it must not move the layout hash.
+h_const="$("$SG" "${base[@]}" --const K_ --const KFLAG_ --print-hash)"; h_names="$("$SG" "${base[@]}" --names K_ --names KFLAG_ --print-hash)"
+[ -n "$h_const" ] && [ "$h_const" = "$h_names" ] && echo "ok   --names hashes as the --const it implies ($h_const)" \
+  || { echo "FAIL --names moved the layout hash: $h_const -> $h_names"; fails=$((fails + 1)); }
 [ $fails -eq 0 ] && echo "cli: all pass" || { echo "cli: $fails failed"; exit 1; }

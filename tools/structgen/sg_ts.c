@@ -363,6 +363,35 @@ static void emit_writer(Buf *ts, Rec *r, int *strings) {
     bprintf(ts, "};\n");
 }
 
+// The constants under one --names prefix as a table from value to name, in
+// value order. The name is the constant's with the prefix taken off, exactly as
+// the header spells it: a host that wants another case changes it once, where
+// it reads the table.
+static int by_value(const void *a, const void *b) {
+    long long x = (*(const Const *const *)a)->value, y = (*(const Const *const *)b)->value;
+    return x < y ? -1 : x > y;
+}
+static void emit_names(Buf *ts, int p) {
+    const Const **row = malloc(sizeof *row * (size_t)(nconsts + 1));
+    if (!row) die("out of memory");
+    int n = 0;
+    for (int j = 0; j < nconsts; j++) if (consts[j].prefix == p) row[n++] = &consts[j];
+    qsort(row, (size_t)n, sizeof *row, by_value);
+    for (int i = 1; i < n; i++)
+        if (row[i - 1]->value == row[i]->value)
+            die("--names %s: %s and %s are both %lld, and a table from value to name can hold one of them (give a narrower prefix)",
+                prefixes[p], row[i - 1]->name, row[i]->name, row[i]->value);
+    const size_t pl = strlen(prefixes[p]);
+    bprintf(ts, "export const %s%sNAMES: Readonly<Record<number, string>> = {\n", prefixes[p], pl && prefixes[p][pl - 1] == '_' ? "" : "_");
+    for (int i = 0; i < n; i++) {
+        // A negative key is not a property name; a computed one is.
+        if (row[i]->value < 0) bprintf(ts, "    [%lld]: \"%s\",\n", row[i]->value, row[i]->name + pl);
+        else bprintf(ts, "    %lld: \"%s\",\n", row[i]->value, row[i]->name + pl);
+    }
+    bprintf(ts, "};\n");
+    free(row);
+}
+
 void sg_ts_module(Buf *ts, int *strings) {
     // The constants, hashed as they are written: the layout hash takes each one
     // in EMISSION ORDER (sg_hash.c), so the two are one loop.
@@ -374,6 +403,10 @@ void sg_ts_module(Buf *ts, int *strings) {
                     bprintf(ts, "export const %s = %lld;\n", consts[j].name, consts[j].value);
                     hput("const %s %lld", consts[j].name, consts[j].value);
                 }
+    // --names: the same constants once more, as one value -> name table per
+    // prefix. After every constant, so the layout hash - which takes them in the
+    // order just written - is the hash the same --const would have made.
+    for (int p = 0; p < nprefixes; p++) if (prefix_names[p]) emit_names(ts, p);
     if (!snapshot_only) for (int i = 0; i < nrecs; i++) if (recs[i].record) emit_record(ts, &recs[i], strings);
     for (int i = 0; i < nrecs; i++) if (recs[i].snap) emit_snapshot(ts, &recs[i], strings);
     for (int i = 0; i < nrecs; i++) if (recs[i].writer) emit_writer(ts, &recs[i], strings);
@@ -384,7 +417,8 @@ void sg_ts_write(const char *path, const Buf *ts, int strings) {
     FILE *fp = fopen(path, "w");
     if (!fp) die("cannot write %s", path);
     emit_banner(fp);
-    fputs("export interface Mem { u8: Uint8Array; i8: Int8Array; dv: DataView }\n"
+    // A module of constants reads no memory, so it does not carry the views.
+    if (nrecs) fputs("export interface Mem { u8: Uint8Array; i8: Int8Array; dv: DataView }\n"
           "export const memOf = (b: ArrayBuffer): Mem => ({ u8: new Uint8Array(b), i8: new Int8Array(b), dv: new DataView(b) });\n", fp);
     if (strings & (STR_ACCESSORS | STR_UTF8_SET))   // char[N] as UTF-8; ASCII stays off TextEncoder/TextDecoder
         fputs("const utf8Enc = /* @__PURE__ */ new TextEncoder(), utf8Dec = /* @__PURE__ */ new TextDecoder();\n", fp);

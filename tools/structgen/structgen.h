@@ -11,6 +11,8 @@
 //   sg_swift.c   the Swift emitter (value snapshots over the linked struct)
 //   sg_kotlin.c  the Kotlin emitter (value snapshots over a JNI ByteBuffer)
 //   sg_hash.c    the layout hash, and the module that carries it
+//   sg_exports.c a link's exports as a typed interface, checked against the
+//                module the linker wrote (a run of its own: --link)
 //   structgen.c  main: parse, traverse, emit, write
 //
 // die, Buf/bprintf, xstrdup, absolute and the probe translation unit are in

@@ -8,6 +8,8 @@ typedef enum { K_NEG = -1, K_POS = 7 } KEnum;
 #define KFLAG_NEG  (-KFLAG_HIGH - 5)
 enum KPos { KP_A, KP_B };
 typedef struct { int8_t s : 3; int8_t v : 5; } KCard;
+#define KDUP_ONE   1                            // two names for one value: --names KDUP_ must fail
+#define KDUP_UNO   1
 #define KBAD_CARD ((KCard){ .s = 1, .v = 2 })   // not an integer: --const KBAD_ must fail
 typedef struct { unsigned lo : 12; int mid : 11; bool on : 1; unsigned top : 8; } KPacked;   // all bitfields, 4 bytes
 struct KNamed { int16_t a; double d; };

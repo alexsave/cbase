@@ -12,8 +12,8 @@ include ../llvm.mk
 # ONE LINK OF EVERY PART. The parts are one program split by what each is about,
 # not a library anything else links, so there are no object files to keep in step
 # and a header edit rebuilds the lot.
-SG_SRC := structgen.c sg_args.c sg_clang.c sg_hash.c sg_kotlin.c sg_model.c sg_swift.c sg_ts.c
-SG_HDR := structgen.h sg_args.h sg_clang.h sg_hash.h sg_kotlin.h sg_model.h sg_swift.h sg_ts.h
+SG_SRC := structgen.c sg_args.c sg_clang.c sg_exports.c sg_hash.c sg_kotlin.c sg_model.c sg_swift.c sg_ts.c
+SG_HDR := structgen.h sg_args.h sg_clang.h sg_exports.h sg_hash.h sg_kotlin.h sg_model.h sg_swift.h sg_ts.h
 
 build/structgen: $(SG_SRC) $(SG_HDR) $(SGC_SRC) $(SGC_HDR)
 	$(LLVM_PROGRAM)

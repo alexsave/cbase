@@ -64,6 +64,26 @@ extern Const *consts;
 extern int nconsts, capconsts;
 void add_const(const char *name, int macro, long long value);
 
+// ---- exported functions (an exports run) ---------------------------------------
+// One per function DEFINITION the sources hold that a link names or that
+// carries export_name. Its types are wasm value types, which is all a host
+// across the module boundary can see of a C type: i = i32, I = i64, f = f32,
+// F = f64, and 0 for a void result.
+#define SG_MAXPARAM 24
+typedef struct {
+    char *name;                  // the C function
+    char *exported;              // what the module calls it: the same, unless export_name says otherwise
+    int attr;                    // carries export_name, so every link of its object exports it
+    const char *source;          // the --source that defines it
+    char ret;
+    int np;
+    char pt[SG_MAXPARAM];
+    char *pn[SG_MAXPARAM];       // the prototype's own parameter names; NULL for one it leaves unnamed
+} Fn;
+extern Fn *fns;
+extern int nfns, capfns;
+Fn *fn_exported(const char *exported);
+
 // The model against the request: every --fields, --count, --snapshot and
 // --writer must name something the roots reach, and every refusal a request
 // earns is made here rather than inside an emitter.

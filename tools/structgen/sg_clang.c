@@ -269,3 +269,155 @@ void sg_load(void) {
     clang_disposeTranslationUnit(tu);
     clang_disposeIndex(idx);
 }
+
+// ---- exported functions (an exports run) --------------------------------------
+//
+// A host across the module boundary sees a C type as the wasm value type it
+// compiles to, so that is what the model keeps: every integer of 32 bits or
+// fewer, a bool, an enum and a wasm32 pointer are one i32, a 64-bit integer is
+// an i64, and float and double are f32 and f64. An array parameter is the
+// pointer C adjusts it to. Returns '?' for a type that does not cross as ONE
+// value - a struct or union by value, long double, a 128-bit integer - which
+// the C ABI passes through memory or splits in two, and which a typed interface
+// would therefore get wrong while looking right.
+static char valtype(CXType t) {
+    t = clang_getCanonicalType(t);
+    switch (t.kind) {
+    case CXType_Float: return 'f';
+    case CXType_Double: return 'F';
+    case CXType_Enum: return valtype(clang_getEnumDeclIntegerType(clang_getTypeDeclaration(t)));
+    case CXType_ConstantArray: case CXType_IncompleteArray: case CXType_VariableArray:
+    case CXType_FunctionProto: case CXType_FunctionNoProto:
+        return 'i';   // what a parameter of this type is adjusted to: a pointer
+    case CXType_Pointer:
+    case CXType_Bool: case CXType_Char_U: case CXType_UChar: case CXType_Char16: case CXType_Char32:
+    case CXType_UShort: case CXType_UInt: case CXType_ULong: case CXType_ULongLong:
+    case CXType_Char_S: case CXType_SChar: case CXType_WChar: case CXType_Short: case CXType_Int:
+    case CXType_Long: case CXType_LongLong: {
+        long long sz = clang_Type_getSizeOf(t);
+        return sz == 8 ? 'I' : sz > 0 && sz <= 4 ? 'i' : '?';
+    }
+    default: return '?';
+    }
+}
+
+// The name in `__attribute__((export_name("...")))`, or NULL. libclang does not
+// expose this attribute as a kind of its own, so it is read off the tokens the
+// attribute spans: export_name ( "name" ).
+static enum CXChildVisitResult on_fn_attr(CXCursor c, CXCursor parent, CXClientData d) {
+    (void)parent;
+    char **out = d;
+    if (*out || !clang_isAttribute(clang_getCursorKind(c))) return CXChildVisit_Continue;
+    CXTranslationUnit tu = clang_Cursor_getTranslationUnit(c);
+    CXToken *tok = NULL; unsigned n = 0;
+    clang_tokenize(tu, clang_getCursorExtent(c), &tok, &n);
+    if (n >= 3) {
+        char *head = str(clang_getTokenSpelling(tu, tok[0])), *lit = str(clang_getTokenSpelling(tu, tok[2]));
+        size_t len = strlen(lit);
+        if ((!strcmp(head, "export_name") || !strcmp(head, "__export_name__")) && len >= 2 && lit[0] == '"' && lit[len - 1] == '"') {
+            lit[len - 1] = 0;
+            *out = xstrdup(lit + 1);
+        }
+        free(head); free(lit);
+    }
+    clang_disposeTokens(tu, tok, n);
+    return CXChildVisit_Continue;
+}
+
+typedef struct { const char *source; char **want; int nwant; } FnWalk;
+static enum CXChildVisitResult on_fn(CXCursor c, CXCursor parent, CXClientData d) {
+    (void)parent;
+    FnWalk *w = d;
+    // A DEFINITION WITH EXTERNAL LINKAGE, because that is what a linker can
+    // export. A prototype alone would type an export from a declaration its
+    // definition is free to disagree with in everything but the types - the
+    // parameter names, which are half of what this is for.
+    if (clang_getCursorKind(c) != CXCursor_FunctionDecl || !clang_isCursorDefinition(c)
+        || clang_getCursorLinkage(c) != CXLinkage_External) return CXChildVisit_Continue;
+    char *name = str(clang_getCursorSpelling(c)), *exported = NULL;
+    clang_visitChildren(c, on_fn_attr, &exported);
+    int listed = 0;
+    for (int i = 0; i < w->nwant && !listed; i++) listed = !strcmp(w->want[i], name);
+    if (!listed && !exported) { free(name); return CXChildVisit_Continue; }
+
+    Fn f = { .name = name, .exported = exported ? exported : xstrdup(name), .attr = exported != NULL, .source = w->source };
+    CXType ft = clang_getCursorType(c);
+    if (clang_isFunctionTypeVariadic(ft)) die("%s (%s) is variadic: there is no one signature to export", name, w->source);
+    CXType rt = clang_getCanonicalType(clang_getResultType(ft));
+    if (rt.kind != CXType_Void && (f.ret = valtype(rt)) == '?')
+        die("%s (%s) returns a type that does not cross the module boundary as one value (a struct, a union, long double or a 128-bit integer)", name, w->source);
+    int np = clang_Cursor_getNumArguments(c);
+    if (np > SG_MAXPARAM) die("%s (%s) takes %d parameters; the cap is %d", name, w->source, np, SG_MAXPARAM);
+    for (int i = 0; i < np; i++) {
+        CXCursor a = clang_Cursor_getArgument(c, (unsigned)i);
+        char *pn = str(clang_getCursorSpelling(a));
+        if ((f.pt[i] = valtype(clang_getCursorType(a))) == '?')
+            die("%s (%s): parameter %d%s%s does not cross the module boundary as one value (a struct, a union, long double or a 128-bit integer)",
+                name, w->source, i + 1, *pn ? " " : "", pn);
+        if (*pn) f.pn[i] = pn; else free(pn);
+    }
+    f.np = np;
+    // One name, one definition: two sources defining it would not link, and
+    // which of the two this run happened to read first is not a fact to emit.
+    Fn *seen = fn_exported(f.exported);
+    if (seen) die("%s is defined in both %s and %s", f.exported, seen->source, w->source);
+    GROW(fns, nfns, capfns);
+    fns[nfns++] = f;
+    return CXChildVisit_Continue;
+}
+
+// Whether this source's own text spells export_name or any wanted name.
+static int spells(const char *path, char **want, int nwant) {
+    FILE *fp = fopen(path, "rb");
+    if (!fp) die("cannot read --source %s", path);
+    Buf b = {0};
+    char chunk[65536];
+    for (size_t k; (k = fread(chunk, 1, sizeof chunk - 1, fp)) > 0; ) { chunk[k] = 0; bprintf(&b, "%s", chunk); }
+    fclose(fp);
+    int hit = b.s && strstr(b.s, "export_name") != NULL;
+    for (int i = 0; b.s && i < nwant && !hit; i++) hit = strstr(b.s, want[i]) != NULL;
+    free(b.s);
+    return hit;
+}
+
+// EVERY SOURCE IS ITS OWN TRANSLATION UNIT, as it is in the build: two files
+// may each keep a static of one name, and a probe that included them all would
+// refuse that. Parsing all of a module's sources costs more than everything
+// else this tool does put together, though, and nearly all of them define no
+// export. So the sources whose text spells a wanted name (or export_name) are
+// read first, and the rest ONLY WHILE A WANTED NAME IS STILL UNDEFINED. That is
+// an ordering, not a filter: a definition spelled by a macro in a file that
+// never names it is still found, it just costs the full walk. The one thing
+// the short walk can miss is an export_name hidden behind a macro in a file
+// that spells neither - an export no link line names - and --check-wasm, which
+// compares against the module the linker actually wrote, is what refuses that.
+void sg_load_exports(char **want, int nwant) {
+    build_args(build_flags);
+    CXIndex idx = clang_createIndex(0, 0);
+    char *read = calloc((size_t)nsources + 1, 1);
+    if (!read) die("out of memory");
+    for (int pass = 0; pass < 2; pass++) {
+        if (pass) {
+            int missing = 0;
+            for (int i = 0; i < nwant && !missing; i++) {
+                missing = 1;
+                for (int j = 0; j < nfns && missing; j++) missing = strcmp(fns[j].name, want[i]) != 0;
+            }
+            if (!missing) break;
+        }
+        for (int i = 0; i < nsources; i++) {
+            if (read[i] || (!pass && !spells(sources[i], want, nwant))) continue;
+            read[i] = 1;
+            Buf src = {0};
+            bprintf(&src, "#include \"%s\"\n", sources[i]);
+            // Bodies kept: with them skipped, a definition reads as a prototype.
+            CXTranslationUnit tu = sgc_parse_bodies(idx, "__structgen_probe.c", src.s, 0, "");
+            FnWalk w = { sources[i], want, nwant };
+            clang_visitChildren(clang_getTranslationUnitCursor(tu), on_fn, &w);
+            clang_disposeTranslationUnit(tu);
+            free(src.s);
+        }
+    }
+    free(read);
+    clang_disposeIndex(idx);
+}

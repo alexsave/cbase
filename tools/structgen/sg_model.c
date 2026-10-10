@@ -100,6 +100,14 @@ void add_const(const char *name, int macro, long long value) {
     consts[nconsts++] = (Const){ xstrdup(name), p, value, macro };
 }
 
+// ---- exported functions --------------------------------------------------------
+Fn *fns;
+int nfns, capfns;
+Fn *fn_exported(const char *exported) {
+    for (int i = 0; i < nfns; i++) if (!strcmp(fns[i].exported, exported)) return &fns[i];
+    return NULL;
+}
+
 void sg_check(void) {
     for (int i = 0; i < nspecs; i++) {
         Spec *s = &specs[i];
