@@ -1,13 +1,16 @@
 /* The freestanding C library for a wasm32 kernel built -nostdlib
  * -ffreestanding: the string functions, and what clang lowers struct copies
- * and zeroing to. Declared in include/string.h and include/stdio.h.
+ * and zeroing to. Declared in include/string.h, include/stdio.h and
+ * include/stdlib.h.
  *
  * A product links this file and keeps what it reaches; the linker drops the
- * rest. What is a product's own policy rather than a C library - an
- * allocator, getenv, a stdio with semantics of its own - stays with that
- * product. */
+ * rest. The allocator is beside it in bump_alloc.c, a file of its own because
+ * a free that does nothing is a choice a product makes by linking it. What is
+ * a product's own policy rather than a C library - getenv, a stdio with
+ * semantics of its own - stays with that product. */
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <stdarg.h>
 
 /* With -mbulk-memory these __builtin calls - and every struct copy clang
@@ -56,6 +59,21 @@ int strncmp(const char *a, const char *b, size_t n)
     }
     return 0;
 }
+
+/* The leading whitespace is C's isspace set, as the host's atoi skips it. The
+ * digits accumulate unsigned so a value past the type's range wraps instead
+ * of being undefined; the host promises nothing there either. */
+long atol(const char *s)
+{
+    unsigned long v = 0;
+    int neg = 0;
+    while (*s == ' ' || (*s >= '\t' && *s <= '\r')) s++;
+    if (*s == '-') { neg = 1; s++; } else if (*s == '+') s++;
+    while (*s >= '0' && *s <= '9') v = v * 10ul + (unsigned long)(*s++ - '0');
+    return (long)(neg ? 0ul - v : v);
+}
+
+int atoi(const char *s) { return (int)atol(s); }
 
 /* A small snprintf: %s, %d and %%, nothing else - all its users write. Like
  * the real one it returns the length it wanted and always terminates, and a

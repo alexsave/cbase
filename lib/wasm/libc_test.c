@@ -35,6 +35,8 @@
 #undef strcmp
 #undef strncmp
 #undef snprintf
+#undef atoi
+#undef atol
 #define memcpy   wlibc_memcpy
 #define memmove  wlibc_memmove
 #define memset   wlibc_memset
@@ -43,6 +45,8 @@
 #define strcmp   wlibc_strcmp
 #define strncmp  wlibc_strncmp
 #define snprintf wlibc_snprintf
+#define atoi     wlibc_atoi
+#define atol     wlibc_atol
 void  *wlibc_memcpy(void *dst, const void *src, size_t n);
 void  *wlibc_memmove(void *dst, const void *src, size_t n);
 void  *wlibc_memset(void *dst, int c, size_t n);
@@ -51,6 +55,8 @@ size_t wlibc_strlen(const char *s);
 int    wlibc_strcmp(const char *a, const char *b);
 int    wlibc_strncmp(const char *a, const char *b, size_t n);
 int    wlibc_snprintf(char *out, size_t cap, const char *fmt, ...);
+int    wlibc_atoi(const char *s);
+long   wlibc_atol(const char *s);
 #include "libc.c"
 #undef memcpy
 #undef memmove
@@ -60,6 +66,8 @@ int    wlibc_snprintf(char *out, size_t cap, const char *fmt, ...);
 #undef strcmp
 #undef strncmp
 #undef snprintf
+#undef atoi
+#undef atol
 
 static uint32_t rng = 0x9e3779b9u;
 static uint32_t next(void) { rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5; return rng; }
@@ -193,6 +201,27 @@ int main(void)
         CHECK(wlibc_strlen(s) == strlen(s), "strlen %d", i);
         CHECK(sign(wlibc_strcmp(s, t)) == sign(strcmp(s, t)), "strcmp %d", i);
         CHECK(sign(wlibc_strncmp(s, t, m)) == sign(strncmp(s, t, m)), "strncmp %d", i);
+    }
+
+    TEST("atoi and atol: the host's, on everything the host defines");
+    {
+        /* In range for int, so the host's answer is defined for both. */
+        static const char *const in[] = {
+            "", "0", "-0", "+0", "7", "+7", "-7", "42", "  42", "\t42", "\n42", "\v42", "\f42", "\r42",
+            " \t\n\v\f\r-13", "12abc", "abc", "-", "+", "+-3", "-+3", "- 3", "3 4", "0012", "-0012",
+            "2147483647", "-2147483648", "4000000", "1e3", "0x10", "\x1c" "5", "\x85" "5",
+        };
+        for (size_t i = 0; i < sizeof in / sizeof in[0]; i++) {
+            CHECK(wlibc_atoi(in[i]) == atoi(in[i]), "atoi(\"%s\") = %d, host %d", in[i], wlibc_atoi(in[i]), atoi(in[i]));
+            CHECK(wlibc_atol(in[i]) == atol(in[i]), "atol(\"%s\") = %ld, host %ld", in[i], wlibc_atol(in[i]), atol(in[i]));
+        }
+        for (int i = 0; i < 20000; i++) {
+            char s[16];
+            int v = (int)next();
+            snprintf(s, sizeof s, "%s%d", (next() & 1) ? " " : "", v);
+            CHECK(wlibc_atoi(s) == v, "atoi(\"%s\") = %d", s, wlibc_atoi(s));
+            CHECK(wlibc_atol(s) == (long)v, "atol(\"%s\") = %ld", s, wlibc_atol(s));
+        }
     }
     return report("libc_test");
 }
