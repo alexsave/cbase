@@ -82,6 +82,41 @@ expected='{
 "$DG" "${t[@]}" --table DG_ORDINAL --json "$tmp/ord.json"
 [ "$(tr -d ' \n' < "$tmp/ord.json")" = '["zero","one","two"]' ]; ok $? "an undesignated table keeps its source order"
 
+# ---- a slot named by number --------------------------------------------------
+#
+# `[2] = "two"` is keyed by the 2, exactly as `[DG_C2] =` is keyed by DG_C2.
+# Each cell says which slot it belongs in, so the expected output reads as a
+# count and anything else is a mis-keyed table.
+json() { "$DG" "${t[@]}" --json "$tmp/n.json" "$@" && tr -d ' \n' < "$tmp/n.json"; }
+[ "$(json --table DG_NUM_ORDERED)" = '["zero","one","two","three"]' ];  ok $? "number designators written in order"
+[ "$(json --table DG_NUM_SHUFFLED)" = '["zero","one","two","three"]' ]; ok $? "number designators written out of order come back in index order"
+[ "$(json --table DG_NUM_MIXED)" = '["zero","one","two","three"]' ]
+ok $? "a name, a number and a bare entry in one table each land in their own slot"
+[ "$(json --table DG_NUM_EXPR)" = '["zero","one","two"]' ]
+ok $? "the number may be a #define, arithmetic on one, or parenthesised"
+[ "$(json --table DG_NUM_INT)" = '[10,20,30]' ];                        ok $? "an integer cell under an integer designator: the index keys, the value is the value"
+[ "$(json --table DG_NUM_CAST)" = '[2,0,1]' ];                          ok $? "a bare integer inside an implicit cast is a value, not a designator"
+[ "$(json --table DG_NUM_GRID)" = '[["r0c0","r0c1","r0c2"],["r1c0","r1c1","r1c2"]]' ]
+ok $? "both dimensions keyed by number"
+[ "$(json --table DG_NUM_PAIR)" = '[{"name":"zero","flag":10},{"name":"one","flag":11}]' ]
+ok $? "struct rows keyed by number, their cells by field"
+
+# A hole is the same hole a named designator leaves: left out, and a build
+# failure naming the slot once the caller asks for every slot.
+[ "$(json --table DG_NUM_HOLE --labels DG_NUM_HOLE.0=DG_COL_NAME)" = '{"a":"zero","c":"two"}' ]
+ok $? "a slot no number designates is left out"
+expect_fail "…and is refused when every slot is required" "DG_NUM_HOLE is missing 1 value(s)" "${t[@]}" --table DG_NUM_HOLE --require-complete --json "$tmp/o.json"
+
+expect_fail "a slot numbered twice"            "index 1 is initialized twice" "${bad[@]}" --table BAD_NUM_TWICE --json "$tmp/o.json"
+expect_fail "a slot named and then numbered"   "index 2 is initialized twice" "${bad[@]}" --table BAD_NAME_AND_NUM --json "$tmp/o.json"
+expect_fail "a range designator"               "index 0 designates a range or a nested slot" "${bad[@]}" --table BAD_RANGE --json "$tmp/o.json"
+expect_fail "a designator two levels deep"     "index 1 designates a range or a nested slot" "${bad[@]}" --table BAD_NESTED --json "$tmp/o.json"
+# These two the compiler refuses before datagen reads a table at all - clang's
+# own sentence names the index - and each file holds nothing else, so the one
+# error counted is that designator.
+expect_fail "a number past the end of the array" "1 compile error(s)" --cwd "$here/test" --header bad_past_end.h --table BAD_PAST_END --json "$tmp/o.json"
+expect_fail "a negative number"                "1 compile error(s)" --cwd "$here/test" --header bad_negative.h --table BAD_NEGATIVE --json "$tmp/o.json"
+
 # Integers, and one of them a constant expression rather than a literal token:
 # the values come from clang's evaluator, so DG_BONUS * 2 is 14 here.
 "$DG" "${t[@]}" --table DG_SCORE --labels DG_SCORE.0=DG_COL_NAME --ts "$tmp/score.ts"
