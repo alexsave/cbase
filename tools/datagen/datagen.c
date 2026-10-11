@@ -51,8 +51,9 @@
 //
 // A row is written `[LANG_RU] = { [K_GOOD] = "Бито", ... }`, and a struct's cell
 // `.knobs = "..."`. Either way the designator is the NAME of the slot, and
-// datagen resolves it to an index - an enumerator's value, or a field's
-// position in its record - so a table is read by name in both dimensions. Positional entries are still
+// datagen resolves it to an index - the value of the constant expression in the
+// brackets (an enumerator, or a plain `[3]`), or a field's position in its
+// record - so a table is read by name in both dimensions. Positional entries are still
 // accepted with C's own rule (the next index after the last one written), which
 // is what makes the tool general - an ordered lookup table needs no designators
 // at all - but a table that designates is a table that cannot be silently
@@ -156,10 +157,16 @@ typedef struct {
     int *seen;        // one flag per slot of this list, to refuse a second write
 } ListCtx;
 
-// A designator names a slot two ways, and datagen reads both: `[ENUM] =` in an
+// A designator names a slot two ways, and datagen reads both: `[INDEX] =` in an
 // array, and `.field =` in a struct. Either one is the slot's NAME, which is the
 // whole point - a named slot cannot be silently mis-placed.
-typedef struct { long idx; CXCursor value; int found_designator, nkids; Table *t; int dim; } Split;
+//
+// clang hands a designated entry over as a wrapper with exactly TWO children,
+// the designator and then the value. The other wrapper an entry can arrive in
+// is an implicit cast, and that has one - so the count is what tells
+// `[3] = "x"` from a 3 that is somebody's value, and it is taken before either
+// child is looked at.
+typedef struct { CXCursor kid[2]; int nkids; } Split;
 
 static long field_index(Table *t, const char *name) {
     if (!t->is_struct) return -1;
@@ -167,34 +174,35 @@ static long field_index(Table *t, const char *name) {
     return -1;
 }
 
-static long designator_index(Split *s, CXCursor c) {
+// The slot `c` names, if it is a designator at all. An array index is whatever
+// integer constant expression C took there - an enumerator, a literal, a
+// #define, `LAST - 1` - and it is read with clang's own evaluator, as a cell's
+// value is, so datagen and the compiler cannot disagree about which slot `[N]`
+// is. A struct row's cells are named by field and by nothing else.
+static int designator_index(Table *t, int dim, CXCursor c, long *out) {
     enum CXCursorKind k = clang_getCursorKind(c);
+    int in_row = t->is_struct && dim == 1;
     if (k == CXCursor_MemberRef) {           // .field = value, inside a struct row
-        if (s->dim != 1 || !s->t->is_struct) return -1;
+        if (!in_row) return 0;
         char *n = str(clang_getCursorSpelling(c));
-        long i = field_index(s->t, n);
-        if (i < 0) die("%s has no field named %s", s->t->rec_name, n);
+        long i = field_index(t, n);
+        if (i < 0) die("%s has no field named %s", t->rec_name, n);
         free(n);
-        return i;
+        *out = i;
+        return 1;
     }
-    if (k != CXCursor_DeclRefExpr) return -1;
-    CXCursor d = clang_getCursorReferenced(c);
-    if (clang_getCursorKind(d) != CXCursor_EnumConstantDecl) return -1;
-    // An enum constant is also a legal VALUE for an int cell (STRAT_CORDITE in
-    // the bot roster). Only dimension-0/1 array slots take one as a designator,
-    // and clang puts a designator first among the entry's children - which is
-    // exactly the position tested here.
-    if (s->t->is_struct && s->dim == 1) return -1;
-    return (long)clang_getEnumConstantDeclValue(d);
+    if (in_row || !clang_isExpression(k)) return 0;
+    CXEvalResult r = clang_Cursor_Evaluate(c);
+    if (!r || clang_EvalResult_getKind(r) != CXEval_Int)
+        die("%s: an array designator clang's evaluator will not read as an integer constant", t->name);
+    *out = (long)clang_EvalResult_getAsLongLong(r);
+    clang_EvalResult_dispose(r);
+    return 1;
 }
 
 static enum CXChildVisitResult split_visit(CXCursor c, CXCursor p, CXClientData d) {
     (void)p; Split *s = d;
-    if (s->nkids == 0) {
-        long i = designator_index(s, c);
-        if (i >= 0) { s->idx = i; s->found_designator = 1; s->nkids++; return CXChildVisit_Continue; }
-    }
-    if (s->found_designator && s->nkids == 1) { s->value = c; s->nkids++; return CXChildVisit_Continue; }
+    if (s->nkids < 2) s->kid[s->nkids] = c;
     s->nkids++;
     return CXChildVisit_Continue;
 }
@@ -259,13 +267,21 @@ static enum CXChildVisitResult entry_visit(CXCursor c, CXCursor p, CXClientData 
     Table *t = ctx->t;
     long n = t->dim[ctx->dim];
 
-    Split s = { -1, clang_getNullCursor(), 0, 0, t, ctx->dim };
+    Split s = { { clang_getNullCursor(), clang_getNullCursor() }, 0 };
     CXCursor value = c;
+    long idx = ctx->next;
     if (clang_getCursorKind(c) == CXCursor_UnexposedExpr) {
         clang_visitChildren(c, split_visit, &s);
-        if (s.found_designator) value = s.value;
+        if (s.nkids >= 2 && designator_index(t, ctx->dim, s.kid[0], &idx)) {
+            // `[A ... B] =`, `[A][B] =`, `[A].field =`: more than one slot, or a
+            // slot a level down. Read as one designator, the second would be
+            // taken for the value.
+            if (s.nkids > 2)
+                die("%s: the entry for index %ld designates a range or a nested slot - "
+                    "datagen reads one designator per entry", t->name, idx);
+            value = s.kid[1];
+        }
     }
-    long idx = s.found_designator ? s.idx : ctx->next;
     ctx->next = idx + 1;
     if (idx < 0 || idx >= n)
         die("%s: initializer for index %ld is outside the array's %ld slot(s)", t->name, idx, n);

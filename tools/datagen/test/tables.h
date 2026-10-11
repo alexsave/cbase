@@ -23,6 +23,9 @@
 //               template in Kotlin and in no other target, so a price in a
 //               translated string is a compile error in twenty-five generated
 //               files at once unless the Kotlin emitter escapes it.
+//   DG_NUM_*    the same promises for a slot named by NUMBER, `[2] = "two"`:
+//               the number is the key, wherever the entry is written. They are
+//               at the bottom of this file, each with what it is there to catch.
 #ifndef DATAGEN_TEST_TABLES_H
 #define DATAGEN_TEST_TABLES_H
 
@@ -79,5 +82,44 @@ static const DgPair DG_PAIR[2] = { { "x", 1 }, { "y", 1 } };
 
 // Leaves a REQUIRED slot empty, which must fail.
 static const char *const DG_SHORT[DG_NCOL] = { [DG_C0] = "have a", [DG_C2] = "have c" };
+
+// ---- a slot named by number ---------------------------------------------------
+//
+// `[2] = "two"` is a designator like any other: clang evaluates what is in the
+// brackets and that value is the slot. Every cell below says where it belongs,
+// so a misplaced one reads wrong and not merely different.
+
+// In order, which a reader that ignored the brackets would also get right...
+static const char *const DG_NUM_ORDERED[4] = { [0] = "zero", [1] = "one", [2] = "two", [3] = "three" };
+// ...and out of order, which it would not.
+static const char *const DG_NUM_SHUFFLED[4] = { [2] = "two", [0] = "zero", [3] = "three", [1] = "one" };
+
+// Slot 1 is never written: a hole, left out like any other.
+static const char *const DG_NUM_HOLE[DG_NCOL] = { [2] = "two", [0] = "zero" };
+
+// A name, a number and a bare entry in one table. The bare one takes the slot
+// after the last one written, which is 1 here and not 3.
+static const char *const DG_NUM_MIXED[4] = { [DG_C2] = "two", [0] = "zero", "one", [3] = "three" };
+
+// What is in the brackets is any constant expression, not only a literal token:
+// a #define, arithmetic on one, a parenthesised number.
+#define DG_LAST 2
+static const char *const DG_NUM_EXPR[DG_NCOL] = { [DG_LAST] = "two", [(0)] = "zero", [DG_LAST - 1] = "one" };
+
+// INTEGER cells under integer designators, each value different from its own
+// index: the two numbers in `[1] = 20` must not change places.
+static const int DG_NUM_INT[3] = { [1] = 20, [2] = 30, [0] = 10 };
+
+// No designators at all, but every cell arrives inside an implicit cast (an int
+// written into a long), which is the same kind of wrapper a designated entry
+// arrives in. These are VALUES, in source order - not slots 2, 0 and 1.
+static const long DG_NUM_CAST[3] = { 2, 0, 1 };
+
+// Both dimensions by number, and rows of structs by number.
+static const char *const DG_NUM_GRID[2][3] = {
+    [1] = { [2] = "r1c2", [0] = "r1c0", [1] = "r1c1" },
+    [0] = { [1] = "r0c1", [2] = "r0c2", [0] = "r0c0" },
+};
+static const DgPair DG_NUM_PAIR[2] = { [1] = { "one", 11 }, [0] = { .flag = 10, .name = "zero" } };
 
 #endif

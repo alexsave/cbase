@@ -33,4 +33,14 @@ static const char *const BAD_OK[BAD_N] = { [BAD_A] = "a", [BAD_B] = "b", [BAD_C]
 // Two names for a three-slot table.
 static const char *const BAD_TWO_NAMES[2] = { "one", "two" };
 
+// The same slot twice by NUMBER, and once by name and once by number. C keeps
+// the last of each pair too.
+static const char *const BAD_NUM_TWICE[BAD_N] = { [1] = "first", [2] = "c", [1] = "second" };
+static const char *const BAD_NAME_AND_NUM[BAD_N] = { [BAD_C] = "by name", [2] = "by number" };
+
+// One entry for two slots, and one entry for a slot a level down. Read as a
+// single designator, the second bracket would be taken for the value.
+static const int BAD_RANGE[BAD_N] = { [0 ... 1] = 2 };
+static const int BAD_NESTED[2][2] = { [1][0] = 1 };
+
 #endif
