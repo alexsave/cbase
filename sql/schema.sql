@@ -1,12 +1,13 @@
 -- c_base schema (DESIGN.md "Store"). SQLite, WAL, foreign keys on.
 --
--- APPLIED AT EVERY START, inside one transaction, by src/store/db.c: every
--- statement here is idempotent (IF NOT EXISTS, INSERT OR IGNORE), and the
+-- APPLIED AT EVERY START, inside one transaction, by src/store/store_sqlite.c:
+-- every statement here is idempotent (IF NOT EXISTS, INSERT OR IGNORE), and the
 -- database's PRAGMA user_version is then set to CB_SCHEMA_VERSION
--- (src/store/db.h). A database whose user_version is NEWER than the binary's is
--- refused: an old binary must not write to a schema it does not know. A change
--- that is not idempotent (an ALTER, a backfill) is a numbered step in db.c that
--- runs once when user_version is below it, and bumps CB_SCHEMA_VERSION.
+-- (src/store/store.h). A database whose user_version is NEWER than the binary's
+-- is refused: an old binary must not write to a schema it does not know. A
+-- change that is not idempotent (an ALTER, a backfill) is a numbered step in
+-- store_sqlite.c that runs once when user_version is below it, and bumps
+-- CB_SCHEMA_VERSION.
 --
 -- TIMES are INTEGER milliseconds since the Unix epoch, the unit every kernel
 -- call takes (now_ms). The facade prints them as ISO-8601 text.
@@ -58,6 +59,11 @@ CREATE INDEX IF NOT EXISTS idx_bots_strategy ON bots(strategy_key);
 -- GAME_STATUS_* number; state, roster and logs_packed are the kernel's bytes,
 -- written whole by every commit; game_seed is the 32-byte deal seed (NULL in a
 -- lobby). version increments per commit and is what clients gate on.
+-- last_commit_at is the commit's time, written only when version moves (the
+-- heartbeat's abandon guard); updated_at also moves when a bot drive takes or
+-- renews the lease, so the scan does not dispatch a second drive on top of a
+-- live one. bot_lease_token / bot_lease_until are the bot lease (a NULL or
+-- past bot_lease_until is free), as try_acquire_bot_lease kept them.
 CREATE TABLE IF NOT EXISTS games (
     id             TEXT PRIMARY KEY,
     status         INTEGER NOT NULL,
@@ -70,7 +76,9 @@ CREATE TABLE IF NOT EXISTS games (
     round_epoch    INTEGER NOT NULL DEFAULT 0,
     created_at     INTEGER NOT NULL,
     updated_at     INTEGER NOT NULL,
-    last_commit_at INTEGER NOT NULL
+    last_commit_at INTEGER NOT NULL,
+    bot_lease_token TEXT,
+    bot_lease_until INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_games_updated_at ON games(updated_at);
 CREATE INDEX IF NOT EXISTS idx_games_bots_due ON games(last_commit_at) WHERE needs_bots = 1;
@@ -126,6 +134,25 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_chat_messages_game ON chat_messages(game_id, created_at);
+
+-- Realtime connections under API Gateway (store.h cb_conn_row): `cbase serve`
+-- keeps its sockets in memory and never writes these; they exist so the SQLite
+-- backend answers every store call the DynamoDB one does. expires_at is the
+-- TTL: a row past it reads as absent, and conn_put prunes expired rows.
+CREATE TABLE IF NOT EXISTS rt_conns (
+    conn_id    TEXT PRIMARY KEY,
+    user_id    TEXT NOT NULL DEFAULT '',
+    vsn        INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS rt_conn_topics (
+    conn_id  TEXT NOT NULL REFERENCES rt_conns(conn_id) ON DELETE CASCADE,
+    ord      INTEGER NOT NULL,
+    topic    TEXT NOT NULL,
+    join_ref TEXT NOT NULL,
+    PRIMARY KEY (conn_id, ord)
+);
+CREATE INDEX IF NOT EXISTS idx_rt_conn_topics_topic ON rt_conn_topics(topic);
 
 -- THE BOTS: seven of every family, in ladder order, exactly the nicknames and
 -- strategy keys of foolish/server/impls/supabase/seed.sql (which

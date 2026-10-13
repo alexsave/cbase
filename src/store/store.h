@@ -224,12 +224,18 @@ typedef struct cb_store_ops {
     // the id is taken (the caller draws another, up to 5 times).
     int (*game_create)(cb_store *s, const cb_game_row *g, const char *creator_id);
     // THE CAS. CB_OK when written, CB_E_CONFLICT when the stored version is not
-    // c->expected_version (nothing written).
+    // c->expected_version (nothing written), CB_E_NOT_FOUND when the game is
+    // gone. The store stamps last_commit_at with row->updated_at (every commit
+    // moves the version); row->last_commit_at is not read. A seated human with
+    // no account (deleted; the roster keeps the id) is skipped, not refused.
     int (*game_commit)(cb_store *s, const cb_game_commit *c);
     // Deletes the game (the last seat left: TABLE_EMPTY) if still at
-    // expected_version. CB_E_CONFLICT otherwise.
+    // expected_version: CB_E_CONFLICT when it moved, CB_E_NOT_FOUND when gone.
+    // Its seats and chat go with it; its replays stay with game_id "".
     int (*game_delete)(cb_store *s, const char *id, int64_t expected_version);
-    // The games a user sits at, most recently updated first (the dashboard).
+    // The games a user sits at, most recently updated first (the dashboard);
+    // limit 0: all. DynamoDB answers from an index, so a seat taken a moment
+    // ago may be missing for a moment.
     int (*games_of_user)(cb_store *s, const char *user_id, int limit, cb_member_fn fn, void *ud);
     // 1 a member, 0 not, or a CB_E_*.
     int (*is_member)(cb_store *s, const char *game_id, const char *user_id);
@@ -238,8 +244,12 @@ typedef struct cb_store_ops {
     int (*games_needing_bots)(cb_store *s, int64_t stale_before, int64_t active_after, int limit, cb_name_fn fn, void *ud);
     // The bot lease (today's try_acquire/renew/release_bot_lease): a random
     // token valid until now + ttl_ms. acquire: CB_OK and the token, or
-    // CB_E_CONFLICT while another holder's lease is live. renew: CB_OK, or
-    // CB_E_CONFLICT when the token no longer holds it. release: always CB_OK.
+    // CB_E_CONFLICT while another holder's lease is live (CB_E_NOT_FOUND: no
+    // such game). renew: CB_OK, or CB_E_CONFLICT when the token no longer
+    // holds it. release: CB_OK (a lease that is not the token's is left alone).
+    // acquire and renew move updated_at to `now` (never last_commit_at), as
+    // the update_games_updated_at trigger did, so the scan's staleness window
+    // sees a drive in flight.
     int (*lease_acquire)(cb_store *s, const char *game_id, int64_t now, int64_t ttl_ms, cb_uuid token_out);
     int (*lease_renew)(cb_store *s, const char *game_id, const char *token, int64_t now, int64_t ttl_ms);
     int (*lease_release)(cb_store *s, const char *game_id, const char *token);
@@ -266,15 +276,36 @@ typedef struct cb_store_ops {
     int (*conn_put)(cb_store *s, const cb_conn_row *c);       // insert or replace
     int (*conn_get)(cb_store *s, const char *conn_id, cb_conn_row *out);
     int (*conn_delete)(cb_store *s, const char *conn_id);
+    // Every live connection that joined `topic`, each as its whole row. A row
+    // past expires_at reads as absent (conn_get: CB_E_NOT_FOUND).
     int (*conns_by_topic)(cb_store *s, const char *topic, cb_conn_fn fn, void *ud);
 
-    // admin console: list the collections ("users", "games", ...), browse one
-    // by key prefix in pages, and run one read-only statement (SQL for SQLite,
-    // PartiQL for DynamoDB; writes only with allow_write).
+    // admin console: list the collections, browse one in pages, and run one
+    // read-only statement (SQL for SQLite, PartiQL for DynamoDB; writes only
+    // with allow_write: CB_E_FORBIDDEN otherwise). Collections are SQLite's
+    // tables, or DynamoDB's key families ("USER", "GAME", ...). browse's
+    // `prefix`: NULL or "" for every row; on SQLite "column=value" is an eq
+    // filter and any other text matches the start of the first column; on
+    // DynamoDB it matches the pk after "<FAMILY>#". `cursor` is "" for the
+    // first page and next_cursor comes back "" after the last. A value is
+    // text, a blob "\x" hex, SQL NULL a NULL pointer. fn may be NULL.
     int (*admin_collections)(cb_store *s, cb_name_fn fn, void *ud);
     int (*admin_browse)(cb_store *s, const char *collection, const char *prefix, const char *cursor, int limit,
                         cb_admin_row_fn fn, void *ud, char *next_cursor, size_t next_cap);
     int (*admin_query)(cb_store *s, const char *statement, bool allow_write, cb_admin_row_fn fn, void *ud);
+
+    // migration (migrate/import.c): rows written as they are, with no side
+    // effects. Nothing but the import calls these.
+    // The user as given, insert or replace; unlike user_create, no rating row.
+    int (*user_import)(cb_store *s, const cb_user_row *u);
+    // The rating row as given (username "" stores none), insert or replace.
+    int (*rating_import)(cb_store *s, const cb_rating_row *r);
+    // Every bot row replaced by these n (the seeded ones included), atomically.
+    int (*bots_replace)(cb_store *s, const cb_bot_row *rows, int n);
+    // The game at its own version, with exactly these members, insert or
+    // replace. The lease is left free.
+    int (*game_import)(cb_store *s, const cb_game_row *g, const cb_uuid *humans, int n_humans, const cb_uuid *bots,
+                       int n_bots);
 } cb_store_ops;
 
 struct cb_store {
