@@ -15,9 +15,23 @@
 //                                filter}]} echoing each binding with an id (or
 //                                realtime-js errors the channel), else reply
 //                                error {reason}
-//   access_token                 re-verify; a failure leaves the channels
-//   phx_leave                    drop the topic, reply ok
-//   anything else on a joined topic: ignored (clients do not broadcast here)
+//   access_token                 re-verify (per channel, as Realtime does); a
+//                                bad token, or one for another user, closes
+//                                that channel (phx_close); no reply
+//   phx_leave                    drop the topic, reply ok, then phx_close
+//   anything else: ignored (clients do not broadcast here)
+//
+// A join's access_token equal to CBASE_ANON_KEY is "no user" (supabase-js
+// hands Realtime the anon key when nobody is signed in), and every topic the
+// clients use needs a user, so such a join is refused by the topic policy.
+// Topics must carry the "realtime:" prefix both SDKs add: only the bare topic
+// is stored, and pushes go out as "realtime:<bare>".
+//
+// BINDING IDS. Realtime answers each postgres_changes binding with an id and
+// tags each change with the ids it matches. Here the id is a hash of the
+// binding's (event, schema, table, filter), so a publisher can compute it
+// without knowing who joined (cb_phx_binding_id): no per-connection state, and
+// the API Gateway transport's CONN row needs no extra field.
 #ifndef CB_PHOENIX_H
 #define CB_PHOENIX_H
 
@@ -27,6 +41,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 // One parsed client message. Spans point into the frame text.
 typedef struct {
@@ -54,7 +69,16 @@ typedef cb_conn_row cb_phx_conn;
 typedef void (*cb_phx_send_fn)(void *ud, const char *frame, size_t len);
 int cb_phx_on_frame(cb_ctx *ctx, cb_phx_conn *conn, const char *text, size_t len, cb_phx_send_fn send, void *ud);
 
-// The topic policy: may `user_id` join the bare `topic`? 1 yes, 0 no, CB_E_* on error.
+// The topic policy: may `user_id` (NULL or "" for nobody) join the bare
+// `topic`? 1 yes, 0 no, CB_E_* on error (CB_E_STATE without a store).
 int cb_phx_may_join(cb_ctx *ctx, const char *user_id, const char *topic);
+
+// The id of a postgres_changes binding: FNV-1a over the four strings (a
+// missing one is ""), as a positive 31-bit number, never 0.
+int32_t cb_phx_binding_id(const char *event, const char *schema, const char *table, const char *filter);
+
+// The vsn a connect URL's query asks for: 2 for "2.0.0", 1 for "1.0.0" or no
+// vsn (Phoenix's default), CB_E_INVALID for anything else.
+int cb_phx_vsn_of_query(const char *query);
 
 #endif
