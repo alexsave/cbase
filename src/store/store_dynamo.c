@@ -1,7 +1,7 @@
 // store_dynamo.c - the DynamoDB backend (store.h): production under Lambda.
 //
 // One table (dynamo_wire.h has the item layout), reached over HTTPS with
-// SigV4 (aws/https.h, aws/sigv4.h). This file decides which requests each
+// SigV4 (aws/aws_call.h). This file decides which requests each
 // operation sends and in what order; dynamo_wire.c spells every one of them,
 // so no DynamoDB string appears here.
 //
@@ -24,7 +24,7 @@
 #include "store.h"
 #include "store_priv.h"
 
-#include "aws/https.h"
+#include "aws/aws_call.h"
 #include "aws/sigv4.h"
 #include "dynamo_wire.h"
 #include "table.h"
@@ -43,7 +43,7 @@
 typedef struct {
     char              table[256];
     char              host[128];
-    cb_aws_creds      creds;
+    int               port;
     cb_dynamo_send_fn send;
     void             *ud;
 } dyn;
@@ -52,27 +52,16 @@ typedef struct {
 
 // ---- the transport -------------------------------------------------------------------
 
-// HTTPS + SigV4: the production `send`.
+// HTTPS + SigV4 through aws/aws_call.h, the one signed-request step every AWS
+// call in c_base takes: the production `send`.
 static int https_send(void *ud, const char *target, const uint8_t *body, size_t len, int *status, cb_buf *resp) {
     dyn *d = ud;
     char ct[96], tg[96];
-    snprintf(ct, sizeof ct, "content-type:%s", dw_content_type());
-    snprintf(tg, sizeof tg, "x-amz-target:%s", target);
-    const char *signed_headers[2] = { ct, tg };
-    cb_sigv4_req req = { .method = "POST", .host = d->host, .path = "/", .query = "", .service = dw_service(),
-                         .headers = signed_headers, .n_headers = 2, .payload = body, .payload_len = len,
-                         .now_ms = cb_now_ms() };
-    cb_buf h;
-    cb_buf_init(&h);
-    cb_buf_printf(&h, "Content-Type: %s\r\nX-Amz-Target: %s\r\n", dw_content_type(), target);
-    int rc = cb_sigv4_sign(&d->creds, &req, &h);
-    if (rc != CB_OK) {
-        cb_buf_free(&h);
-        return rc;
-    }
+    snprintf(ct, sizeof ct, "Content-Type: %s", dw_content_type());
+    snprintf(tg, sizeof tg, "X-Amz-Target: %s", target);
+    const char *const headers[2] = { ct, tg };
     cb_https_response r;
-    rc = cb_https_request(d->host, 443, "POST", "/", cb_buf_cstr(&h), body, len, 10000, &r);
-    cb_buf_free(&h);
+    int rc = cb_aws_call(dw_service(), "POST", d->host, d->port, "/", headers, 2, body, len, 10000, &r);
     if (rc != CB_OK) return rc;
     *status = r.status;
     cb_buf_append(resp, r.body.p, r.body.len);
@@ -1254,7 +1243,19 @@ int cb_store_open_dynamo(const char *table, cb_store **out) {
     }
     if ((rc = cb_store_open_dynamo_with(table, https_send, NULL, out)) != CB_OK) return rc;
     dyn *d = D(*out);
-    d->creds = creds;
-    dw_host(creds.region, d->host, sizeof d->host);
+    d->port = 443;
+    // The SDKs' own override (a local stand-in, or DynamoDB Local behind TLS).
+    const char *ep = getenv("AWS_ENDPOINT_URL_DYNAMODB");
+    char base[8];
+    if (ep && *ep) {
+        if (cb_aws_url_parse(ep, d->host, sizeof d->host, &d->port, base, sizeof base) != CB_OK || base[0]) {
+            CB_ERROR(MOD, "bad AWS_ENDPOINT_URL_DYNAMODB \"%s\" (https://host[:port], no path)", ep);
+            cb_store_close(*out);
+            *out = NULL;
+            return CB_E_INVALID;
+        }
+    } else {
+        dw_host(creds.region, d->host, sizeof d->host);
+    }
     return CB_OK;
 }

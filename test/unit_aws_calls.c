@@ -14,6 +14,7 @@
 #include "aws/lambda_invoke.h"
 #include "aws/sigv4.h"
 #include "lib_aws_tls.h"
+#include "store/store.h"
 #include "util/err.h"
 
 #include <stdlib.h>
@@ -166,6 +167,49 @@ static void lambda_self_invoke(void) {
     unsetenv("AWS_ENDPOINT_URL_LAMBDA");
 }
 
+// The DynamoDB backend's production transport is cb_aws_call too: a GetItem
+// reaches the endpoint signed for "dynamodb" with its target and content type
+// among the signed headers, and the answer comes back through the store.
+static tls_action answer_dynamo(const cb_buf *req, cb_buf *resp, void *ud) {
+    static const char B[] = "{\"Item\":{\"pk\":{\"S\":\"USER#u1\"},\"sk\":{\"S\":\"PROFILE\"},\"id\":{\"S\":\"u1\"},"
+                            "\"email\":{\"S\":\"a@x.io\"},\"password_hash\":{\"S\":\"h\"},\"created_at\":{\"N\":\"5\"}}}";
+    cb_buf_printf(resp, "HTTP/1.1 200 OK\r\nContent-Type: application/x-amz-json-1.0\r\nContent-Length: %zu\r\n\r\n%s",
+                  sizeof B - 1, B);
+    return TLS_KEEP;
+}
+
+static void dynamo_through_aws_call(void) {
+    set_env();
+    tls_srv s;
+    T_EQ_INT(tls_srv_start(&s, answer_dynamo, NULL), 0);
+    T_EQ_INT(cb_https_set_ca_file(s.ca_file), CB_OK);
+    char ep[128];
+    snprintf(ep, sizeof ep, "https://localhost:%d", s.port);
+    setenv("AWS_ENDPOINT_URL_DYNAMODB", ep, 1);
+    cb_store *st = NULL;
+    T_EQ_INT(cb_store_open_dynamo("cbase", &st), CB_OK);
+    cb_user_row u;
+    T_EQ_INT(CB_STORE_CALL(st, user_get, "u1", &u), CB_OK);
+    T_EQ_STR(u.email, "a@x.io");
+    T_EQ_INT(u.created_at, 5);
+    char *req = tls_srv_last(&s);
+    T_CHECK(cb_starts_with(req, "POST / HTTP/1.1\r\n"));
+    char v[512];
+    hdr(req, "X-Amz-Target", v, sizeof v);
+    T_EQ_STR(v, "DynamoDB_20120810.GetItem");
+    hdr(req, "Authorization", v, sizeof v);
+    T_CHECK(strstr(v, "/us-west-2/dynamodb/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-security-token;x-amz-target, ") != NULL);
+    static const char *const extra[] = { "Content-Type: application/x-amz-json-1.0", "X-Amz-Target: DynamoDB_20120810.GetItem" };
+    signature_matches(req, "dynamodb", extra, 2);
+    T_CHECK(strstr(req, "\"TableName\":\"cbase\"") != NULL);
+    free(req);
+    cb_store_close(st);
+    tls_srv_stop(&s);
+    setenv("AWS_ENDPOINT_URL_DYNAMODB", "https://h/p", 1);   // a path is not an endpoint
+    T_EQ_INT(cb_store_open_dynamo("cbase", &st), CB_E_INVALID);
+    unsetenv("AWS_ENDPOINT_URL_DYNAMODB");
+}
+
 static void url_parse(void) {
     char host[64], base[64];
     int port;
@@ -188,5 +232,6 @@ int main(void) {
     T_RUN(url_parse);
     T_RUN(apigw_post_and_delete);
     T_RUN(lambda_self_invoke);
+    T_RUN(dynamo_through_aws_call);
     return T_DONE();
 }
