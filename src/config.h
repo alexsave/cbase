@@ -1,7 +1,10 @@
 // config.h - everything cbase reads from its environment, read once at start.
 //
-// Production sets these in /etc/cbase/env (ops/). Every one has a development
-// default except the secrets, whose absence is logged loudly (see each field).
+// Production sets these as the Lambda function's environment, from the
+// CloudFormation parameters (ops/cbase.yaml); `cbase serve` reads the shell's.
+// Every one has a development default except the secrets, whose absence is
+// logged loudly (see each field). The AWS_* variables Lambda itself sets
+// (credentials, region) are read by src/aws, not here.
 #ifndef CB_CONFIG_H
 #define CB_CONFIG_H
 
@@ -13,8 +16,17 @@ typedef struct {
     // a free one (the smoke test reads the bound port from the log line).
     char listen_host[64];
     int  listen_port;
-    // CBASE_DB, default ./cbase.sqlite.
+    // CBASE_STORE: "sqlite" or "dynamo". Default: sqlite under serve, dynamo
+    // under Lambda (boot.c decides when this is empty).
+    char store[16];
+    // CBASE_DB, the SQLite file (store sqlite), default ./cbase.sqlite.
     char db_path[1024];
+    // CBASE_TABLE, the DynamoDB table (store dynamo), default "cbase".
+    char table[256];
+    // CBASE_WS_ENDPOINT, the API Gateway WebSocket stage's management endpoint
+    // (https://<api-id>.execute-api.<region>.amazonaws.com/<stage>). Lambda
+    // only; empty means pushes are dropped (logged once).
+    char ws_endpoint[512];
     // CBASE_JWT_SECRET: HS256 key for access tokens. Unset: a random one per
     // process (logged as a warning: every session dies at restart).
     char jwt_secret[512];
@@ -31,9 +43,8 @@ typedef struct {
     // logs and the admin console. Default http://<listen>.
     char public_url[512];
     // Tunables, each CBASE_<NAME> with these defaults:
-    int  req_workers;     // CBASE_REQ_WORKERS 4: the request pool
-    int  bot_workers;     // CBASE_BOT_WORKERS 1: see DESIGN.md "Kernel thread safety"
-    int  max_resident;    // CBASE_MAX_RESIDENT 1024: games kept in RAM (LRU)
+    int  req_workers;     // CBASE_REQ_WORKERS 4: serve's request pool
+    int  bot_workers;     // CBASE_BOT_WORKERS 1: serve's bot pool; see DESIGN.md "Kernel thread safety"
     long max_body;        // CBASE_MAX_BODY 1048576: request body bytes
     int  jwt_ttl_s;       // CBASE_JWT_TTL 3600: access token lifetime
     int  log_level;       // CBASE_LOG_LEVEL info: debug|info|warn|error

@@ -34,7 +34,7 @@
 
 #define CB_JW_DEPTH 32
 
-typedef struct {
+typedef struct cb_jw {
     cb_buf *b;
     int     depth;
     bool    err;

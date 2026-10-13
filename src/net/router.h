@@ -54,7 +54,7 @@ int cb_router_add(cb_router *r, const char *method, const char *pattern, unsigne
 // the path matched a route under another method (405 rather than 404).
 const cb_route *cb_router_match(const cb_router *r, const char *method, const char *path, bool *path_known);
 
-// The router's own answers, used by server.c around the handler. Exposed so a
+// The router's own answers, used by handler.c around the handler. Exposed so a
 // test can drive them without sockets.
 // Answers an OPTIONS preflight into res.
 void cb_router_preflight(const cb_ctx *ctx, const cb_http_req *req, cb_http_res *res);

@@ -56,7 +56,15 @@ int cb_config_from_env(cb_config *c, char *err, size_t cap) {
     }
     c->listen_port = (int)port;
 
+    const char *store = env("CBASE_STORE", "");
+    if (*store && strcmp(store, "sqlite") != 0 && strcmp(store, "dynamo") != 0) {
+        snprintf(err, cap, "CBASE_STORE=%s is not sqlite or dynamo", store);
+        return CB_E_INVALID;
+    }
+    cb_strlcpy(c->store, store, sizeof c->store);
     if (!copy(c->db_path, sizeof c->db_path, "CBASE_DB", env("CBASE_DB", "./cbase.sqlite"), err, cap)) return CB_E_INVALID;
+    if (!copy(c->table, sizeof c->table, "CBASE_TABLE", env("CBASE_TABLE", "cbase"), err, cap)) return CB_E_INVALID;
+    if (!copy(c->ws_endpoint, sizeof c->ws_endpoint, "CBASE_WS_ENDPOINT", env("CBASE_WS_ENDPOINT", ""), err, cap)) return CB_E_INVALID;
     const char *secret = env("CBASE_JWT_SECRET", NULL);
     if (secret) {
         if (strlen(secret) < 32) {
@@ -83,8 +91,6 @@ int cb_config_from_env(cb_config *c, char *err, size_t cap) {
     c->req_workers = (int)v;
     if (!num("CBASE_BOT_WORKERS", 1, 1, 64, &v, err, cap)) return CB_E_INVALID;
     c->bot_workers = (int)v;
-    if (!num("CBASE_MAX_RESIDENT", 1024, 1, 1000000, &v, err, cap)) return CB_E_INVALID;
-    c->max_resident = (int)v;
     if (!num("CBASE_MAX_BODY", 1L << 20, 1024, 64L << 20, &v, err, cap)) return CB_E_INVALID;
     c->max_body = v;
     if (!num("CBASE_JWT_TTL", 3600, 60, 86400 * 7, &v, err, cap)) return CB_E_INVALID;
@@ -102,7 +108,10 @@ void cb_config_each(const cb_config *c, cb_config_fn fn, void *ud) {
     char b[32];
     snprintf(b, sizeof b, "%s:%d", c->listen_host, c->listen_port);
     fn("CBASE_LISTEN", b, false, ud);
+    fn("CBASE_STORE", c->store[0] ? c->store : "(by mode)", false, ud);
     fn("CBASE_DB", c->db_path, false, ud);
+    fn("CBASE_TABLE", c->table, false, ud);
+    fn("CBASE_WS_ENDPOINT", c->ws_endpoint, false, ud);
     fn("CBASE_JWT_SECRET", c->jwt_secret_generated ? "(unset: random per process)" : "(set)", true, ud);
     fn("CBASE_ANON_KEY", c->anon_key[0] ? "(set)" : "(unset: apikey check off)", true, ud);
     fn("CBASE_ADMIN_TOKEN", c->admin_token[0] ? "(set)" : "(unset: console refused)", true, ud);
@@ -112,8 +121,6 @@ void cb_config_each(const cb_config *c, cb_config_fn fn, void *ud) {
     fn("CBASE_REQ_WORKERS", b, false, ud);
     snprintf(b, sizeof b, "%d", c->bot_workers);
     fn("CBASE_BOT_WORKERS", b, false, ud);
-    snprintf(b, sizeof b, "%d", c->max_resident);
-    fn("CBASE_MAX_RESIDENT", b, false, ud);
     snprintf(b, sizeof b, "%ld", c->max_body);
     fn("CBASE_MAX_BODY", b, false, ud);
     snprintf(b, sizeof b, "%d", c->jwt_ttl_s);

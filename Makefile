@@ -1,6 +1,8 @@
 # c_base: the foolish backend as one C process (DESIGN.md).
 #
-#   make            build/cbase and build/cbase-import
+#   make            build/cbase (`cbase serve`), build/bootstrap (the Lambda
+#                   runtime, native, for the fake-runtime smoke) and build/cbase-import
+#   make bootstrap  dist/bootstrap.zip: the static Linux arm64 Lambda binary
 #   make test       every unit test (test/unit_*.c), each its own program
 #   make smoke      the end-to-end smoke test against a real build/cbase
 #   make check      test + smoke
@@ -86,8 +88,7 @@ build/gen/schema_sql.c: sql/schema.sql build/embed
 	@mkdir -p $(@D)
 	build/embed $< cbase_schema_sql > $@.new && mv $@.new $@
 
-LIB_SRC  := $(sort $(filter-out src/main.c,$(wildcard src/*.c src/*/*.c))) build/gen/schema_sql.c
-MAIN_SRC := src/main.c
+LIB_SRC  := $(sort $(filter-out src/main_%.c,$(wildcard src/*.c src/*/*.c))) build/gen/schema_sql.c
 IMPORT_SRC := migrate/import.c
 TLIB_SRC := $(sort $(wildcard test/lib_*.c))
 UNIT_SRC := $(sort $(wildcard test/unit_*.c))
@@ -102,16 +103,18 @@ $(1)/$(4): $$(call c_objs,$(2),$(5) $$(LIB_SRC)) $$(call c_objs,$(3),$$(KERNEL_S
 endef
 prog = $(eval $(call PROG,$(1),$(2),$(3),$(4),$(5),$(6)))
 
-$(call prog,build,build/obj/cbase,build/obj/kernel,cbase,$(MAIN_SRC),CB_CFLAGS)
+$(call prog,build,build/obj/cbase,build/obj/kernel,cbase,src/main_serve.c,CB_CFLAGS)
+$(call prog,build,build/obj/cbase,build/obj/kernel,bootstrap,src/main_lambda.c,CB_CFLAGS)
 $(call prog,build,build/obj/cbase,build/obj/kernel,cbase-import,$(IMPORT_SRC),CB_CFLAGS)
-$(call prog,build/asan,build/obj/asan,build/obj/asan-kernel,cbase,$(MAIN_SRC),ASAN_CB_CFLAGS)
+$(call prog,build/asan,build/obj/asan,build/obj/asan-kernel,cbase,src/main_serve.c,ASAN_CB_CFLAGS)
+$(call prog,build/asan,build/obj/asan,build/obj/asan-kernel,bootstrap,src/main_lambda.c,ASAN_CB_CFLAGS)
 $(foreach u,$(UNITS),$(call prog,build/test,build/obj/cbase,build/obj/kernel,$(u),test/$(u).c $(TLIB_SRC),CB_CFLAGS))
 $(foreach u,$(UNITS),$(call prog,build/asan/test,build/obj/asan,build/obj/asan-kernel,$(u),test/$(u).c $(TLIB_SRC),ASAN_CB_CFLAGS))
-$(call prog,build/test,build/obj/cbase,build/obj/kernel,smoke,test/smoke.c $(TLIB_SRC),CB_CFLAGS)
-$(call prog,build/asan/test,build/obj/asan,build/obj/asan-kernel,smoke,test/smoke.c $(TLIB_SRC),ASAN_CB_CFLAGS)
+$(foreach s,smoke smoke_lambda,$(call prog,build/test,build/obj/cbase,build/obj/kernel,$(s),test/$(s).c $(TLIB_SRC),CB_CFLAGS))
+$(foreach s,smoke smoke_lambda,$(call prog,build/asan/test,build/obj/asan,build/obj/asan-kernel,$(s),test/$(s).c $(TLIB_SRC),ASAN_CB_CFLAGS))
 
 .PHONY: all test smoke check check-asan test-asan smoke-asan clean print-kernel-src
-all: build/cbase build/cbase-import
+all: build/cbase build/bootstrap build/cbase-import
 
 # Every unit program runs even when an earlier one fails; the target fails if any did.
 define RUN_UNITS
@@ -120,14 +123,18 @@ define RUN_UNITS
 endef
 test: $(addprefix build/test/,$(UNITS))
 	$(call RUN_UNITS,$^)
-smoke: build/cbase build/test/smoke
+# Two lanes: `cbase serve` over real HTTP, and the real bootstrap binary
+# driven through a fake Lambda Runtime API (no AWS needed).
+smoke: build/cbase build/bootstrap build/test/smoke build/test/smoke_lambda
 	build/test/smoke build/cbase
+	build/test/smoke_lambda build/bootstrap
 check: test smoke
 
 test-asan: $(addprefix build/asan/test/,$(UNITS))
 	$(call RUN_UNITS,$^)
-smoke-asan: build/asan/cbase build/asan/test/smoke
+smoke-asan: build/asan/cbase build/asan/bootstrap build/asan/test/smoke build/asan/test/smoke_lambda
 	build/asan/test/smoke build/asan/cbase
+	build/asan/test/smoke_lambda build/asan/bootstrap
 check-asan: test-asan smoke-asan
 
 print-kernel-src:

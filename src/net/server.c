@@ -3,6 +3,7 @@
 
 #include "loop.h"
 #include "router.h"
+#include "handler.h"
 #include "util/err.h"
 #include "util/log.h"
 #include "util/pool.h"
@@ -36,7 +37,6 @@ struct cb_ws {
     cb_http_req req;
     cb_http_res res;
     size_t req_len;      // bytes of `in` the current request occupies
-    const cb_route *route;
     int64_t last_active;
     int64_t started;     // first byte of the current request, 0 when none
     char peer[64];
@@ -148,7 +148,6 @@ static void respond_now(conn *c, int status, const char *text) {
 // The handler has filled c->res: write it, and get ready for the next request.
 static void finish(conn *c) {
     cb_ctx *ctx = c->srv->ctx;
-    cb_router_cors(ctx, &c->req, &c->res);
     bool keep = c->req.keep_alive && !c->res.close && !c->srv->draining;
     if (c->res.upgrade) keep = true;
     cb_res_serialize(&c->res, keep, &c->out);
@@ -166,7 +165,6 @@ static void finish(conn *c) {
     cb_res_init(&c->res);
     cb_buf_consume(&c->in, c->req_len);
     c->req_len = 0;
-    c->route = NULL;
     c->started = c->in.len ? cb_loop_now(loop_of(c)) : 0;
     c->state = C_HTTP;
     c->last_active = cb_loop_now(loop_of(c));
@@ -193,7 +191,7 @@ static void job_done(cb_loop *l, void *ud) {
 static void job_run(void *ud) {
     job *j = ud;
     conn *c = j->c;
-    c->route->fn(j->srv->ctx, &c->req, &c->res);
+    cb_handle(j->srv->ctx, &c->req, &c->res);
     // The loop frees the connection only after this post runs, so `c` is stable.
     if (cb_loop_post(j->srv->ctx->loop, job_done, j) != CB_OK) {
         // The loop has stopped (shutdown). cb_server_free reclaims the connection.
@@ -205,29 +203,8 @@ static void dispatch(conn *c) {
     cb_server *s = c->srv;
     cb_ctx *ctx = s->ctx;
     cb_res_init(&c->res);
-    if (strcmp(c->req.method, "OPTIONS") == 0) {
-        bool known = false;
-        cb_router_match(ctx->router, "*", c->req.path, &known);
-        if (known) cb_router_preflight(ctx, &c->req, &c->res);
-        else cb_router_error(&c->res, 404, "not found");
-        finish(c);
-        return;
-    }
-    bool known = false;
-    const cb_route *r = cb_router_match(ctx->router, c->req.method, c->req.path, &known);
-    if (!r) {
-        cb_router_error(&c->res, known ? 405 : 404, known ? "method not allowed" : "not found");
-        finish(c);
-        return;
-    }
-    if ((r->flags & CB_ROUTE_APIKEY) && !cb_router_apikey_ok(ctx, &c->req)) {
-        cb_router_error(&c->res, 401, "Invalid API key");
-        finish(c);
-        return;
-    }
-    c->route = r;
-    if (r->flags & CB_ROUTE_LOOP) {
-        r->fn(ctx, &c->req, &c->res);
+    if (cb_handle_on_loop(ctx, &c->req)) {
+        cb_handle(ctx, &c->req, &c->res);
         finish(c);
         return;
     }

@@ -1,13 +1,17 @@
 // ctx.h - the handles every request handler is given.
 //
-// One cb_ctx exists per process, built by main.c in this order and torn down
-// in reverse: config, log, loop, request pool, db, auth, realtime, app (the
-// resident tables), bot scheduler, router, server. A module that has not been
-// built yet (its constructor returns CB_E_NOTIMPL) leaves its handle NULL, and
-// every handler must answer 503 rather than dereference a NULL handle.
+// c_base runs two ways (DESIGN.md "Two mains, one handler"):
+//   * `bootstrap`, an AWS Lambda custom runtime: one request per invocation, no
+//     state between invocations but a warm container's cache;
+//   * `cbase serve`, a local HTTP + WebSocket server for development and tests.
+// Both build one cb_ctx (src/boot.c) and hand every request to the same
+// handler (src/handler.h). What differs is only behind three seams in here:
+// the store backend (SQLite or DynamoDB), the realtime transport (an
+// in-process WebSocket or API Gateway's management API), and how a bot drive
+// is started (a local worker pool or an async self-invoke).
 //
-// Handlers receive it as their first argument (router.h cb_handler); nothing
-// else is global.
+// A module whose constructor returns CB_E_NOTIMPL leaves its handle NULL, and
+// every handler answers 503 rather than dereference a NULL handle.
 #ifndef CB_CTX_H
 #define CB_CTX_H
 
@@ -16,40 +20,52 @@
 #include <stdatomic.h>
 #include <stdint.h>
 
-typedef struct cb_loop   cb_loop;     // net/loop.h
-typedef struct cb_pool   cb_pool;     // util/pool.h
-typedef struct cb_server cb_server;   // net/server.h
+typedef struct cb_loop   cb_loop;     // net/loop.h        (serve only)
+typedef struct cb_pool   cb_pool;     // util/pool.h       (serve only)
+typedef struct cb_server cb_server;   // net/server.h      (serve only)
 typedef struct cb_router cb_router;   // net/router.h
-typedef struct cb_db     cb_db;       // store/db.h
+typedef struct cb_store  cb_store;    // store/store.h
 typedef struct cb_auth   cb_auth;     // auth/auth.h
 typedef struct cb_rt     cb_rt;       // realtime/realtime.h
-typedef struct cb_app    cb_app;      // app/table_ops.h
-typedef struct cb_bots   cb_bots;     // app/bots_sched.h
+typedef struct cb_ctx    cb_ctx;
 
-// Counters the net layer keeps for the admin Overview panel. Relaxed atomics:
-// they are read for display, never to decide anything.
+// How a bot drive is started for a game (app/bots.h). serve: submit
+// cb_bots_drive to the local bot pool. lambda: an async self-invoke
+// (aws/lambda_invoke.h) carrying {"cbase":"bot_drive","game":id}. Fire and
+// forget: a lost kick is caught by the scan (cb_bots_scan).
+typedef void (*cb_kick_fn)(cb_ctx *ctx, const char *game_id);
+
+// Counters for the admin Overview panel. Relaxed atomics, read for display only.
+// Under Lambda they count this container's invocations, not the function's.
 typedef struct {
-    atomic_ullong requests;        // HTTP requests answered
+    atomic_ullong requests;        // requests answered
     atomic_ullong responses_5xx;
-    atomic_int    http_conns;      // open HTTP connections (not upgraded)
-    atomic_int    ws_conns;        // open WebSockets
+    atomic_int    http_conns;      // serve: open HTTP connections (not upgraded)
+    atomic_int    ws_conns;        // serve: open WebSockets
 } cb_stats;
 
-typedef struct cb_ctx {
+typedef enum { CB_MODE_SERVE = 1, CB_MODE_LAMBDA = 2 } cb_mode;
+
+struct cb_ctx {
     const cb_config *cfg;
+    cb_mode     mode;
     const char *version;      // CB_VERSION
-    int64_t     started_ms;   // cb_now_ms() at start
-    cb_loop    *loop;
-    cb_pool    *req_pool;
-    cb_server  *server;
-    cb_router  *router;
-    cb_db      *db;
+    int64_t     started_ms;   // cb_now_ms() at start (container start, under Lambda)
+    cb_router  *router;       // every route, both modes (handler.h)
+    cb_store   *store;
     cb_auth    *auth;
     cb_rt      *rt;
-    cb_app     *app;
-    cb_bots    *bots;
+    cb_kick_fn  kick_bots;
+    // serve only (NULL under Lambda)
+    cb_loop    *loop;
+    cb_pool    *req_pool;
+    cb_pool    *bot_pool;
+    cb_server  *server;
+    // lambda only: the current invocation's deadline (Lambda-Runtime-Deadline-Ms,
+    // epoch ms), 0 under serve. A bot drive budgets against it.
+    int64_t     deadline_ms;
     cb_stats    stats;
-} cb_ctx;
+};
 
 #define CB_VERSION "0.1.0"
 
