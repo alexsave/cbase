@@ -97,7 +97,8 @@ UNITS    := $(patsubst test/%.c,%,$(UNIT_SRC))
 define PROG
 $(1)/$(4): $$(call c_objs,$(2),$(5) $$(LIB_SRC)) $$(call c_objs,$(3),$$(KERNEL_SRC))
 	@mkdir -p $$(@D)
-	$$(CC) $$($(6)) $$^ -o $$@ $$(LDLIBS)
+	@echo "  LINK $$@"
+	@$$(CC) $$($(6)) $$^ -o $$@ $$(LDLIBS)
 endef
 prog = $(eval $(call PROG,$(1),$(2),$(3),$(4),$(5),$(6)))
 
