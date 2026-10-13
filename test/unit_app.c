@@ -262,6 +262,30 @@ static int seat_of(const char *gid, const char *uid) {
     return seat;
 }
 
+// Whether the kernel can encode the stored session as a replay, asked of the
+// kernel itself on the committed row. Two kernel limits make its round-trip
+// gate refuse one, and the end of the game then logs and swallows that, as
+// finalize.ts did: a log longer than MAX_LOGS records, and a pickup of more
+// than MAX_LOG_PAIRS (16) cards, whose record keeps 16 while the replay has
+// them all (a three-seat passing game reaches it).
+static bool log_encodable(const char *gid) {
+    cb_game_row row = stored(gid);
+    Game *g = calloc(1, sizeof *g);
+    TableSnaps *snaps = calloc(1, sizeof *snaps);
+    uint8_t *code = malloc(1 << 21), *scratch = malloc(1 << 20);
+    Table t;
+    table_init(&t, g, snaps);
+    int n = table_load(&t, row.state, (int)row.state_len, row.roster, (int)row.roster_len);
+    if (n == TABLE_OK)
+        n = table_replay_code(&t, row.seed, CB_SEED_LEN, row.logs, (int)row.logs_len, code, 1 << 21, scratch, 1 << 20);
+    free(g);
+    free(snaps);
+    free(code);
+    free(scratch);
+    cb_game_row_free(&row);
+    return n > 0;
+}
+
 // ---- tests ---------------------------------------------------------------------------------
 
 static void create_answers_the_seat_0_envelope(void) {
@@ -523,6 +547,49 @@ static bool count_snap(const cb_snapshot_row *row, void *ud) {
     return true;
 }
 
+// What `wire` by `uid` comes to on a stored board: table_act on a scratch table.
+static int act_on(const cb_game_row *row, const char *uid, const uint8_t *wire, int n) {
+    Game *g = calloc(1, sizeof *g);
+    TableSnaps *snaps = calloc(1, sizeof *snaps);
+    Table t;
+    table_init(&t, g, snaps);
+    int rc = table_load(&t, row->state, (int)row->state_len, row->roster, (int)row->roster_len);
+    if (rc == TABLE_OK) rc = table_act(&t, uid, (int)strlen(uid), wire, n, -1, row->round_epoch);
+    free(g);
+    free(snaps);
+    return rc;
+}
+
+static void a_refusal_from_a_stale_cache_is_rechecked_fresh(void) {
+    setup(0);
+    char gid[CB_GAME_ID_MAX + 1];
+    two_humans_dealt(gid);
+    static const char *const uids[2] = { UID_A, UID_B }, *const bearers[2] = { "A", "B" };
+    bool found = false;
+    for (int i = 0; i < 300 && !found && status_of(gid) == GAME_STATUS_PLAYING; i++) {
+        cb_game_row old = stored(gid);
+        reply r;
+        if (!any_human_move(gid, &r)) { cb_game_row_free(&old); break; }
+        for (int k = 0; k < 2 && !found && old.status == GAME_STATUS_PLAYING; k++) {
+            uint8_t wire[64];
+            int n = pick_move(gid, seat_of(gid, uids[k]), wire, sizeof wire);
+            if (n <= 0 || act_on(&old, uids[k], wire, n) != TABLE_REJECTED) continue;
+            // A move the current board allows and the older one refuses: put
+            // the older row in the cache, as a process that missed a commit has it.
+            found = true;
+            int64_t v = version_of(gid);
+            cb_row_cache_note(&old);
+            action(bearers[k], gid, wire, n, (uint32_t)v, &r);
+            TableResponse resp;
+            T_EQ_INT(table_response_decode(r.body, (int)r.len, &resp), 0);
+            T_EQ_INT(resp.status, TABLE_STATUS_APPLIED);
+            T_EQ_INT(resp.version, v + 1);
+        }
+        cb_game_row_free(&old);
+    }
+    T_CHECK(found);
+}
+
 static void a_finished_game_writes_a_snapshot_and_ratings(void) {
     setup(0);
     char gid[CB_GAME_ID_MAX + 1];
@@ -534,6 +601,7 @@ static void a_finished_game_writes_a_snapshot_and_ratings(void) {
         moves++;
     }
     T_EQ_INT(status_of(gid), GAME_STATUS_GAME_OVER);
+    T_CHECK(log_encodable(gid));
     T_EQ_INT(tm_hooks_of(g_store)->snapshots, 1);
     cb_rating_row ra, rb;
     T_EQ_INT(tm_rating(g_store, UID_A, &ra), CB_OK);
@@ -561,6 +629,21 @@ static void a_finished_game_writes_a_snapshot_and_ratings(void) {
     meta("A", ASK_UPDATE_NAME, gid, NULL, &r);
     T_EQ_INT(tm_rating(g_store, UID_A, &ra), CB_OK);
     T_EQ_INT(ra.games_played, 1);
+}
+
+static void add_bot_never_picks_a_seated_bot(void) {
+    setup(1);
+    char gid[CB_GAME_ID_MAX + 1];
+    reply r;
+    create_game(gid, &r);
+    meta("A", ASK_ADD_BOT, gid, NULL, &r);
+    T_EQ_INT(r.status, 200);
+    T_EQ_INT(seat_of(gid, tm_bot_id(g_store, 0)), 1);
+    // The only bot is seated: none is free.
+    meta("A", ASK_ADD_BOT, gid, NULL, &r);
+    T_EQ_INT(r.status, 400);
+    T_EQ_INT(refusal_why(&r, NULL), ASK_WHY_NO_BOT);
+    T_EQ_INT(version_of(gid), 1);
 }
 
 static void bump_is_moot_and_commits_nothing(void) {
@@ -662,10 +745,11 @@ static void delete_account_redacts(void) {
 // ---- bots --------------------------------------------------------------------------------------
 
 static void the_bot_loop_drives_until_a_human_owes_a_move(void) {
-    setup(1);
+    setup(2);
     char gid[CB_GAME_ID_MAX + 1];
     reply r;
     create_game(gid, &r);
+    meta("A", ASK_ADD_BOT, gid, NULL, &r);
     meta("A", ASK_ADD_BOT, gid, NULL, &r);
     meta("A", ASK_START, gid, NULL, &r);
     T_EQ_INT(status_of(gid), GAME_STATUS_PLAYING);
@@ -688,6 +772,9 @@ static void the_bot_loop_drives_until_a_human_owes_a_move(void) {
             int64_t until = 1;
             tm_lease(g_store, gid, token, &until);
             T_EQ_INT(until, 0);
+            // One drive runs cycle after cycle: it returns when a human owes
+            // the next move (or the game is over), not after one bot's move.
+            T_CHECK(status_of(gid) != GAME_STATUS_PLAYING || pick_move(gid, 0, wire, sizeof wire) > 0);
         }
         rounds++;
     }
@@ -699,7 +786,8 @@ static void the_bot_loop_drives_until_a_human_owes_a_move(void) {
     cb_rating_row rb;
     T_EQ_INT(tm_rating(g_store, tm_bot_id(g_store, 0), &rb), CB_OK);
     T_EQ_INT(rb.games_played, 1);
-    T_EQ_INT(tm_hooks_of(g_store)->snapshots, 1);
+    // The snapshot, whenever the kernel can encode this session (log_encodable).
+    T_EQ_INT(tm_hooks_of(g_store)->snapshots, log_encodable(gid) ? 1 : 0);
 }
 
 static void a_held_lease_skips_the_drive(void) {
@@ -754,7 +842,9 @@ int main(void) {
     T_RUN(an_illegal_action_is_rejected_and_commits_nothing);
     T_RUN(a_stale_intent_is_stale_round);
     T_RUN(a_lost_cas_reloads_and_wins);
+    T_RUN(a_refusal_from_a_stale_cache_is_rechecked_fresh);
     T_RUN(a_finished_game_writes_a_snapshot_and_ratings);
+    T_RUN(add_bot_never_picks_a_seated_bot);
     T_RUN(bump_is_moot_and_commits_nothing);
     T_RUN(the_wire_surface);
     T_RUN(the_last_seat_leaving_deletes_the_game);
