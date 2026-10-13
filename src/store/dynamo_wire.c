@@ -14,8 +14,8 @@
 #include <strings.h>
 
 #define TARGET "DynamoDB_20120810."
-#define GSI1 "gsi1"
-#define GSI2 "gsi2"
+#define GSI1 DW_GSI1
+#define GSI2 DW_GSI2
 
 void dw_req_init(dw_req *r) {
     r->target[0] = '\0';
@@ -1600,7 +1600,7 @@ static void conn_attrs(cb_jw *w, const cb_conn_row *c) {
     cb_jw_end(w);
     cb_jw_end(w);
     av_n(w, "expires_ms", c->expires_at);
-    av_n(w, "expires_at", c->expires_at / 1000);   // the TTL attribute is in seconds
+    av_n(w, DW_TTL_ATTR, c->expires_at / 1000);   // the TTL attribute is in seconds
 }
 
 static bool has_topic(const cb_conn_row *c, const char *t) {

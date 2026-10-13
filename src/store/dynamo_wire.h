@@ -10,7 +10,8 @@
 // argument), so a request is checked byte for byte against a recorded body.
 //
 // THE ITEM LAYOUT (one table, string pk and sk; GSI1 = gsi1pk/gsi1sk and
-// GSI2 = gsi2pk/gsi2sk, both projecting ALL; TTL attribute expires_at):
+// GSI2 = gsi2pk/gsi2sk, all four String keys, both projecting ALL; TTL
+// attribute expires_at, in seconds):
 //
 //   pk                 sk                 what (GSI keys)
 //   USER#<id>          PROFILE            the account (GSI2 USERS / <created>#<id>)
@@ -38,6 +39,13 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+
+// The index names and the TTL attribute the table must be created with.
+// ops/cbase.yaml spells them too; test/unit_dynamo.c reads the template and
+// fails when the two disagree.
+#define DW_GSI1     "gsi1"
+#define DW_GSI2     "gsi2"
+#define DW_TTL_ATTR "expires_at"
 
 // One request: the X-Amz-Target header value and the JSON body.
 typedef struct {

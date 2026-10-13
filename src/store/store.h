@@ -167,7 +167,9 @@ typedef struct {
     int     n_topics;
     char    topics[CB_CONN_TOPICS][CB_TOPIC_MAX];   // bare topics ("gu-ab12cd-<uid>")
     char    join_refs[CB_CONN_TOPICS][24];          // the join_ref each topic was joined on
-    int64_t expires_at;                // TTL: a connection not seen for 2 h is dropped
+    int64_t expires_at;                // TTL, ms like every time here: a connection not seen for 2 h
+                                       // is dropped. DynamoDB keeps it as expires_at in SECONDS (its
+                                       // TTL unit) and the exact ms as expires_ms.
 } cb_conn_row;
 
 // What a snapshot query asks (PostgREST's game_snapshots shapes).

@@ -31,7 +31,7 @@ typedef struct cb_ctx    cb_ctx;
 
 // How a bot drive is started for a game (app/bots.h). serve: submit
 // cb_bots_drive to the local bot pool. lambda: an async self-invoke
-// (aws/lambda_invoke.h) carrying {"cbase":"bot_drive","game":id}. Fire and
+// (aws/lambda_invoke.h) carrying the JSON string literal "bot_drive:<id>". Fire and
 // forget: a lost kick is caught by the scan (cb_bots_scan).
 typedef void (*cb_kick_fn)(cb_ctx *ctx, const char *game_id);
 

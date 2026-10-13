@@ -102,13 +102,16 @@ Conditions:
 
 Resources:
   # ---- the store ----------------------------------------------------------------
-  # Keys (DESIGN.md "Store"): pk/sk on the table; GSI1 is a user's games by
-  # update time (gsi1pk "USERGAMES#<user>", gsi1sk updated_at in ms, a
-  # Number); GSI2 is a player's snapshots (gsi2pk "PLAYER#<user>", gsi2sk
-  # "<created>#<id>", a String). A topic's connections are plain items under
-  # pk "TOPIC#<topic>" and need no index. TTL deletes items whose expires_at
-  # (epoch SECONDS: DynamoDB's TTL unit) has passed: the CONN rows and their
-  # TOPIC reverse-index rows.
+  # Keys (DESIGN.md "Store"; src/store/dynamo_wire.h is the owner and this
+  # must match it exactly): pk/sk on the table, and two indexes, both String
+  # keys, both projecting ALL. gsi1 carries USERGAMES#<user> (the dashboard,
+  # gsi1sk "<updated_at>#<game>" zero-padded so text order is time order),
+  # USERCHAT#, USERREFRESH# and GAMESNAPS#; gsi2 carries USERS, RATINGS, BOTS,
+  # SESSION#<session> and PLAYER#<user>. A topic's connections are plain items
+  # under pk "TOPIC#<topic>" and need no index (a base-table Query is strongly
+  # consistent, so a push right after a join is not missed). TTL deletes items
+  # whose expires_at (epoch SECONDS: DynamoDB's TTL unit) has passed: the CONN
+  # rows and their TOPIC reverse-index rows.
   Table:
     Type: AWS::DynamoDB::Table
     DeletionPolicy: Retain
@@ -120,19 +123,19 @@ Resources:
         - { AttributeName: pk, AttributeType: S }
         - { AttributeName: sk, AttributeType: S }
         - { AttributeName: gsi1pk, AttributeType: S }
-        - { AttributeName: gsi1sk, AttributeType: N }
+        - { AttributeName: gsi1sk, AttributeType: S }
         - { AttributeName: gsi2pk, AttributeType: S }
         - { AttributeName: gsi2sk, AttributeType: S }
       KeySchema:
         - { AttributeName: pk, KeyType: HASH }
         - { AttributeName: sk, KeyType: RANGE }
       GlobalSecondaryIndexes:
-        - IndexName: GSI1
+        - IndexName: gsi1
           KeySchema:
             - { AttributeName: gsi1pk, KeyType: HASH }
             - { AttributeName: gsi1sk, KeyType: RANGE }
           Projection: { ProjectionType: ALL }
-        - IndexName: GSI2
+        - IndexName: gsi2
           KeySchema:
             - { AttributeName: gsi2pk, KeyType: HASH }
             - { AttributeName: gsi2sk, KeyType: RANGE }

@@ -818,7 +818,40 @@ static void flow_admin_query_guard(void) {
     cb_store_close(s);
 }
 
+// ops/cbase.yaml creates the table this wire writes to: the same index names,
+// all four index keys String (gsi1sk is "<ms>#<id>" text, not a Number),
+// both projecting ALL, and the TTL on the attribute the wire writes seconds to.
+static void the_template_matches_the_wire(void) {
+    FILE *f = fopen("ops/cbase.yaml", "r");
+    T_CHECK(f != NULL);
+    if (!f) return;
+    static char y[64 * 1024];
+    size_t n = fread(y, 1, sizeof y - 1, f);
+    fclose(f);
+    y[n] = 0;
+    const char *want[] = {
+        "- IndexName: " DW_GSI1 "\n",
+        "- IndexName: " DW_GSI2 "\n",
+        "{ AttributeName: pk, AttributeType: S }",
+        "{ AttributeName: sk, AttributeType: S }",
+        "{ AttributeName: gsi1pk, AttributeType: S }",
+        "{ AttributeName: gsi1sk, AttributeType: S }",
+        "{ AttributeName: gsi2pk, AttributeType: S }",
+        "{ AttributeName: gsi2sk, AttributeType: S }",
+        "AttributeName: " DW_TTL_ATTR "\n        Enabled: true",
+        "Input: '\"scan\"'",
+    };
+    for (size_t i = 0; i < sizeof want / sizeof want[0]; i++) {
+        if (!strstr(y, want[i])) printf("  template lacks: %s\n", want[i]);
+        T_CHECK(strstr(y, want[i]) != NULL);
+    }
+    int all = 0;
+    for (const char *q = y; (q = strstr(q, "ProjectionType: ALL")) != NULL; q++) all++;
+    T_EQ_INT(all, 2);
+}
+
 int main(void) {
+    T_RUN(the_template_matches_the_wire);
     T_RUN(get_item_shape);
     T_RUN(lease_requests);
     T_RUN(commit_transaction);

@@ -41,7 +41,7 @@ int cb_bots_scan(cb_ctx *ctx, int64_t now_ms);
 
 // serve's cb_kick_fn: submits cb_bots_drive to ctx->bot_pool.
 void cb_bots_kick_local(cb_ctx *ctx, const char *game_id);
-// Lambda's cb_kick_fn: an async self-invoke with {"cbase":"bot_drive","game":id}
+// Lambda's cb_kick_fn: an async self-invoke with the literal "bot_drive:<id>"
 // (aws/lambda_invoke.h).
 void cb_bots_kick_lambda(cb_ctx *ctx, const char *game_id);
 
