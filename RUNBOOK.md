@@ -1,13 +1,19 @@
-# c_base runbook: first deploy to AWS, by hand, in the console
+# c_base runbook: the first deploy to AWS
 
-This is the click-path for putting c_base live at `https://api.foolish.cards` with no AWS CLI on your Mac.
-Do the steps in order; each one says what you should see before moving on.
-Everything is in the region **US East (N. Virginia) us-east-1**: check the region selector at the top right of the AWS console on every page.
+This puts c_base live at `https://api.foolish.cards`.
+There are two ways, and they build the same stack:
+
+- **The CLI path (do this one):** `aws configure` once, then one script, `c_base/ops/deploy.sh`, does the bucket, the build, the upload, the stack, and the import.
+- **The console path (the fallback):** the same steps by hand in the AWS console, kept below for when the CLI is not an option.
+
+Both share the account setup (step 1), the certificate's DNS record (step 3), the quota check (step 7), DNS (step 8), the health check (step 9), and everything after the import (steps 11 to 14).
+Everything is in the region **US East (N. Virginia) us-east-1**.
 
 ## What I set up for you already
 
 - `c_base/ops/cbase.yaml`: one CloudFormation template that creates the whole backend (DynamoDB table, Lambda function, Function URL, WebSocket API, the one-minute bot scan, CloudFront at your domain, and an optional deploy role for GitHub Actions).
   It passes `cfn-lint`; nothing in it has been run against AWS yet.
+- `c_base/ops/deploy.sh`: the CLI path, end to end (it has been checked with `bash -n` and shellcheck, never run against AWS: there were no credentials).
 - `c_base/ops/package.sh`: builds `c_base/build/cbase-lambda.zip`, the static arm64 Lambda binary, and prints its sha256.
   The same zip is built by CI on every change and kept as the `cbase-lambda` artifact of the `c_base` workflow run, so Docker on your Mac is optional.
 - `.github/workflows/c_base.yml`: builds and tests c_base on Linux and macOS, under ASan, lints the template, builds the zip, and on `main` deploys it to the function once the two deploy secrets exist (step 13).
@@ -20,10 +26,66 @@ Paste these back into the session so I can finish the verification:
 
 1. The stack status (it should say `CREATE_COMPLETE`).
 2. The stack's **Outputs** tab: `FunctionUrl`, `WebSocketUrl`, `DistributionDomain`, `TableName`, `FunctionName`, and `DeployRoleArn` if you made it.
-3. The anon key from step 2 (it is public: it ships inside the web bundle).
+3. The anon key (it is public: it ships inside the web bundle); on the CLI path it is `CBASE_ANON_KEY` in `c_base/ops/.env`.
 4. Whether `https://api.foolish.cards/health` answers `ok cbase ...` (step 9).
 
 Never paste the JWT secret or the admin token into a chat.
+
+## The CLI path
+
+1. Do step 1 below (the account, the plan, the zero-spend budget).
+2. Give the CLI credentials.
+   The simplest: **IAM > Users > Create user** `alex-cli`, attach `AdministratorAccess`, then **Security credentials > Create access key > Command Line Interface**, and run:
+
+   ```
+   aws configure          # paste the two keys; region us-east-1; output json
+   aws sts get-caller-identity
+   ```
+
+   The second command must print your account id.
+   (With IAM Identity Center instead: `aws configure sso`, `aws sso login`, and `export AWS_PROFILE=<the profile>`.)
+3. Request the certificate (CloudFront needs it in us-east-1):
+
+   ```
+   aws acm request-certificate --region us-east-1 --domain-name api.foolish.cards --validation-method DNS
+   aws acm describe-certificate --region us-east-1 --certificate-arn <the ARN it printed> \
+       --query 'Certificate.DomainValidationOptions[0].ResourceRecord'
+   ```
+
+   Add that CNAME in Google Cloud DNS exactly as step 3.6 to 3.8 below describe, and wait until `aws acm describe-certificate ... --query Certificate.Status` says `ISSUED`.
+4. Put the ARN where the script reads it, and if `IAM > Identity providers` already lists `token.actions.githubusercontent.com`, say so:
+
+   ```
+   echo 'CBASE_CERT_ARN=arn:aws:acm:us-east-1:...' >> c_base/ops/.env
+   echo 'CBASE_GITHUB_REPO=alexsave/foolish' >> c_base/ops/.env     # optional: the deploy role for step 13
+   echo 'CBASE_GITHUB_OIDC=no' >> c_base/ops/.env                   # only if the provider already exists
+   ```
+
+   `c_base/ops/.env` is gitignored and kept at mode 0600; the script creates it and generates the three secrets into it on its first run (`openssl rand -hex 32`), and reuses them on every later run.
+   Keep a copy in your password manager: losing the JWT secret signs everyone out, and the anon key is baked into the web and iOS builds.
+5. Start Docker Desktop (the build runs in an arm64 Alpine container), then deploy:
+
+   ```
+   c_base/ops/deploy.sh
+   ```
+
+   It prints the account and region, builds and uploads the zip, creates the stack (5 to 15 minutes; CloudFront is the slow part), and prints the outputs table and what to do next.
+   Running it again later deploys a new build: the zip's name carries its sha256, so CloudFormation sees new code.
+6. Do steps 7, 8 and 9 below (quota, DNS, health check), and send me what "What you must give me afterwards" lists.
+7. The import: export from Supabase (step 10.5 below), rehearse into SQLite (step 10.6), then:
+
+   ```
+   c_base/ops/deploy.sh --import c_base/migrate/out
+   rm -rf c_base/migrate/out /tmp/cbase-rehearsal.sqlite
+   ```
+
+   The script hands `cbase-import` temporary credentials exported from the CLI for that one command; no access key is created for it.
+   Do it back to back with step 11 at a quiet hour, as step 10 explains.
+8. Continue with steps 11 to 14.
+
+## The console path (the fallback)
+
+The steps below do the same by hand, with no CLI.
 
 ## 1. The AWS account
 
@@ -157,7 +219,8 @@ Players who sign up or move between the export and step 11 are lost, so do steps
    ```
 
 4. Open the user > **Security credentials** > **Create access key** > **Command Line Interface (CLI)** > tick the confirmation > **Create access key**. Keep the page open.
-5. Export from Supabase into `c_base/migrate/out/` with `c_base/migrate/export.sh` (it needs `SUPABASE_ACCESS_TOKEN` from https://supabase.com/dashboard/account/tokens; the script's header says the rest).
+5. Export from Supabase into `c_base/migrate/out/` with `c_base/migrate/export.sh`.
+   It reads the Supabase CLI's token from the macOS keychain, so run `supabase login` first if `supabase projects list` does not work; every statement it sends is a read-only `SELECT` (`c_base/migrate/README.md`).
 6. Rehearse into a throwaway SQLite file first, and read the counts it prints:
 
    ```
