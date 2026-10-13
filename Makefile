@@ -66,7 +66,7 @@ endif
 # kernel's to fix, not a reason this build fails on Linux.
 CB_CFLAGS := -std=gnu11 -D_GNU_SOURCE -O2 -g -Wall -Wextra -Werror -Wno-unused-parameter -Wshadow -Wvla \
              -Isrc -Itest -I$(KDIR)/src -I$(C_ROOT)/shared/c $(OPENSSL_CFLAGS) -pthread
-LDLIBS := $(OPENSSL_LDFLAGS) -lsqlite3 -lcrypto -lpthread -lm $(PLATFORM_LDLIBS) $(LTO_LDFLAGS)
+LDLIBS := $(OPENSSL_LDFLAGS) -lsqlite3 -lssl -lcrypto -lpthread -lm $(PLATFORM_LDLIBS) $(LTO_LDFLAGS)
 # STATIC=1: a fully static link (the Lambda bootstrap, built on musl by
 # tools/build_bootstrap.sh). Not meaningful on macOS.
 ifeq ($(STATIC),1)

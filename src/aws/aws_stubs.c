@@ -11,19 +11,6 @@
 
 #include <string.h>
 
-int cb_aws_creds_from_env(cb_aws_creds *out) { memset(out, 0, sizeof *out); return CB_E_NOTIMPL; }
-int cb_sigv4_sign(const cb_aws_creds *c, const cb_sigv4_req *r, cb_buf *out) { return CB_E_NOTIMPL; }
-
-void cb_https_response_free(cb_https_response *r) {
-    cb_buf_free(&r->headers);
-    cb_buf_free(&r->body);
-}
-int cb_https_request(const char *host, int port, const char *method, const char *path, const char *headers,
-                     const void *body, size_t body_len, int timeout_ms, cb_https_response *out) {
-    memset(out, 0, sizeof *out);
-    return CB_E_NOTIMPL;
-}
-
 int cb_apigw_post(const char *endpoint, const char *connection_id, const void *data, size_t len) { return CB_E_NOTIMPL; }
 int cb_apigw_delete(const char *endpoint, const char *connection_id) { return CB_E_NOTIMPL; }
 
