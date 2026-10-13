@@ -76,7 +76,10 @@ endif
 # The sanitized build: every object, the kernel's included, rebuilt with
 # ASan + UBSan into its own variant directories.
 SAN := -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer
-ASAN_KERNEL_CFLAGS := $(filter-out -O3 -ffast-math -flto,$(KERNEL_CFLAGS)) -O1 -g $(SAN)
+# The kernel's own sanitized build turns object-size off (foolish/c/Makefile):
+# replay.c's DealSlot is a Game cut deliberately short, and a finished game's
+# replay code walks through it.
+ASAN_KERNEL_CFLAGS := $(filter-out -O3 -ffast-math -flto,$(KERNEL_CFLAGS)) -O1 -g $(SAN) -fno-sanitize=object-size
 ASAN_CB_CFLAGS := $(filter-out -O2,$(CB_CFLAGS)) -O1 $(SAN)
 
 include $(C_ROOT)/shared/tools/c_rules.mk
