@@ -75,7 +75,7 @@ int tp_wait_line(tp_child *c, const char *needle, int timeout_ms, char *out, siz
 int tp_stop(tp_child *c, int sig, int timeout_ms) {
     int status = 0, rc = -1;
     if (c->pid > 0) {
-        kill(c->pid, sig);
+        if (sig) kill(c->pid, sig);
         int64_t end = cb_mono_ms() + timeout_ms;
         for (;;) {
             pid_t w = waitpid(c->pid, &status, WNOHANG);

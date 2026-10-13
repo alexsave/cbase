@@ -16,7 +16,7 @@ int tp_start(tp_child *c, char *const argv[], char *const env[]);
 // Reads the child's stderr (echoing it to ours) until a line containing
 // `needle` appears; copies that line into out. 0, or -1 on timeout or exit.
 int tp_wait_line(tp_child *c, const char *needle, int timeout_ms, char *out, size_t cap);
-// Sends `sig` and waits up to timeout_ms; returns the exit status, or -1
+// Sends `sig` (0: none, just wait for it to exit) and waits up to timeout_ms; returns the exit status, or -1
 // (the child is then killed).
 int tp_stop(tp_child *c, int sig, int timeout_ms);
 // A fresh temporary directory (removed by tp_stop with its contents).

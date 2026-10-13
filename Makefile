@@ -64,9 +64,14 @@ endif
 # -Werror on c_base's sources only: the kernel has warnings gcc reports and
 # clang does not (client_table.c maybe-uninitialized), and they are the
 # kernel's to fix, not a reason this build fails on Linux.
-CB_CFLAGS := -std=gnu11 -O2 -g -Wall -Wextra -Werror -Wno-unused-parameter -Wshadow -Wvla \
+CB_CFLAGS := -std=gnu11 -D_GNU_SOURCE -O2 -g -Wall -Wextra -Werror -Wno-unused-parameter -Wshadow -Wvla \
              -Isrc -Itest -I$(KDIR)/src -I$(C_ROOT)/shared/c $(OPENSSL_CFLAGS) -pthread
 LDLIBS := $(OPENSSL_LDFLAGS) -lsqlite3 -lcrypto -lpthread -lm $(PLATFORM_LDLIBS) $(LTO_LDFLAGS)
+# STATIC=1: a fully static link (the Lambda bootstrap, built on musl by
+# tools/build_bootstrap.sh). Not meaningful on macOS.
+ifeq ($(STATIC),1)
+  LDLIBS += -static
+endif
 
 # The sanitized build: every object, the kernel's included, rebuilt with
 # ASan + UBSan into its own variant directories.
@@ -113,7 +118,7 @@ $(foreach u,$(UNITS),$(call prog,build/asan/test,build/obj/asan,build/obj/asan-k
 $(foreach s,smoke smoke_lambda,$(call prog,build/test,build/obj/cbase,build/obj/kernel,$(s),test/$(s).c $(TLIB_SRC),CB_CFLAGS))
 $(foreach s,smoke smoke_lambda,$(call prog,build/asan/test,build/obj/asan,build/obj/asan-kernel,$(s),test/$(s).c $(TLIB_SRC),ASAN_CB_CFLAGS))
 
-.PHONY: all test smoke check check-asan test-asan smoke-asan clean print-kernel-src
+.PHONY: all test smoke check check-asan test-asan smoke-asan clean print-kernel-src bootstrap
 all: build/cbase build/bootstrap build/cbase-import
 
 # Every unit program runs even when an earlier one fails; the target fails if any did.
@@ -137,8 +142,13 @@ smoke-asan: build/asan/cbase build/asan/bootstrap build/asan/test/smoke build/as
 	build/asan/test/smoke_lambda build/asan/bootstrap
 check-asan: test-asan smoke-asan
 
+# The Lambda artifact: dist/bootstrap and dist/bootstrap.zip, static Linux
+# arm64, built in a pinned arm64 Alpine container (tools/build_bootstrap.sh).
+bootstrap:
+	tools/build_bootstrap.sh
+
 print-kernel-src:
 	@echo $(KERNEL_SRC)
 
 clean:
-	rm -rf build
+	rm -rf build dist

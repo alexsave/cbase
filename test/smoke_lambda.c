@@ -94,7 +94,7 @@ static void one_invocation(const char *bin) {
     T_EQ_INT(tp_start(&c, argv, env), 0);
     // bootstrap exits by itself once /next answers 500.
     T_EQ_INT(tp_wait_line(&c, "invocation/next answered 500", 20000, NULL, 0), 0);
-    T_EQ_INT(tp_stop(&c, SIGTERM, 5000), 0);
+    T_EQ_INT(tp_stop(&c, 0, 10000), 0);   // and it exits 0 by itself
 
     T_EQ_INT(atomic_load(&g_init_error), 0);
     T_EQ_INT(atomic_load(&g_nexts), 2);

@@ -105,7 +105,7 @@ int cb_config_from_env(cb_config *c, char *err, size_t cap) {
 }
 
 void cb_config_each(const cb_config *c, cb_config_fn fn, void *ud) {
-    char b[32];
+    char b[96];
     snprintf(b, sizeof b, "%s:%d", c->listen_host, c->listen_port);
     fn("CBASE_LISTEN", b, false, ud);
     fn("CBASE_STORE", c->store[0] ? c->store : "(by mode)", false, ud);
