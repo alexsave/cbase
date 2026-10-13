@@ -50,15 +50,15 @@ static cb_game_row mkgame(const char *id, int64_t at) {
 
 // ---- collectors ------------------------------------------------------------------------
 
-typedef struct { int n; char ids[16][64]; int64_t at[16]; } names_t;
+typedef struct { int n; char ids[16][CB_EMAIL_MAX + 1]; int64_t at[16]; } names_t;
 static bool collect_name(const char *name, void *ud) {
     names_t *n = ud;
-    if (n->n < 16) snprintf(n->ids[n->n++], 64, "%s", name);
+    if (n->n < 16) snprintf(n->ids[n->n++], sizeof n->ids[0], "%s", name);
     return true;
 }
 static bool collect_member(const cb_member_row *r, void *ud) {
     names_t *n = ud;
-    if (n->n < 16) { n->at[n->n] = r->updated_at; snprintf(n->ids[n->n++], 64, "%s", r->game_id); }
+    if (n->n < 16) { n->at[n->n] = r->updated_at; snprintf(n->ids[n->n++], sizeof n->ids[0], "%s", r->game_id); }
     return true;
 }
 static bool collect_user(const cb_user_row *r, void *ud) { return collect_name(r->email, ud); }
