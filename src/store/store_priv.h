@@ -4,6 +4,7 @@
 #define CB_STORE_PRIV_H
 
 #include "store.h"
+#include "util/str.h"
 
 // Ladder order (bots_list): the kernel's strength tier of the strategy key
 // (bot_roster.h, weakest first; an unknown key last), then the nickname.
@@ -14,5 +15,14 @@ void cb_store_ratings_sort(cb_rating_row *rows, int n);
 // users_list's search: `needle` ("" matches all) is in the email or the
 // username, ASCII case-insensitively.
 bool cb_store_user_matches(const cb_user_row *u, const char *needle);
+
+// The DynamoDB backend over a transport the caller supplies: what
+// cb_store_open_dynamo does with HTTPS and SigV4, and what test/unit_dynamo.c
+// does with recorded answers. `send` posts one request (its X-Amz-Target and
+// JSON body) and fills the HTTP status and the response body; it returns
+// CB_OK, or CB_E_IO when nothing came back.
+typedef int (*cb_dynamo_send_fn)(void *ud, const char *target, const uint8_t *body, size_t len, int *status,
+                                 cb_buf *resp);
+int cb_store_open_dynamo_with(const char *table, cb_dynamo_send_fn send, void *ud, cb_store **out);
 
 #endif

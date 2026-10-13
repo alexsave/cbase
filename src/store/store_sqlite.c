@@ -1396,7 +1396,8 @@ static int textrows_emit(textrows *t, int rc, cb_admin_row_fn fn, void *ud) {
     for (int i = 0; i < t->n; i++) {
         if (more) {
             n++;
-            more = fn(t->rows[i].n, (const char *const *)t->rows[i].names, (const char *const *)t->rows[i].values, ud);
+            more = !fn || fn(t->rows[i].n, (const char *const *)t->rows[i].names,
+                             (const char *const *)t->rows[i].values, ud);
         }
         textrow_free(&t->rows[i]);
     }
