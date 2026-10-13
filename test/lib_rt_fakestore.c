@@ -31,7 +31,7 @@ static int f_chat_put(cb_store *s, const cb_chat_row *r) {
         if (strcmp(rtf.chat[i].id, r->id) == 0) rc = CB_E_CONFLICT;
     if (rc == CB_OK && rtf.n_chat < RTF_MAX) {
         rtf.chat[rtf.n_chat] = *r;
-        rtf.chat[rtf.n_chat].message = strdup(r->message);
+        rtf.chat[rtf.n_chat].message = strdup(r->message ? r->message : "");
         rtf.n_chat++;
     }
     UNLOCK();

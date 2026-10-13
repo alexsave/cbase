@@ -234,6 +234,12 @@ static void player_views_dashboard_and_resync(void) {
     T_EQ_STR(a.body, "[]");
     a = get("player_views", "select=view", "anon-key");
     T_EQ_STR(a.body, "[]");
+    // With no anon key configured (development), a bearer equal to the apikey is still anon.
+    g_cfg.anon_key[0] = 0;
+    a = get("player_views", "select=view", "anon-key");
+    T_EQ_INT(a.status, 200);
+    T_EQ_STR(a.body, "[]");
+    strcpy(g_cfg.anon_key, "anon-key");
     // Filter by status, limit, offset.
     a = get("player_views", "select=game_id&status=eq.playing", "tok-" U1);
     T_EQ_STR(a.body, "[{\"game_id\":\"" G "\"}]");
@@ -364,6 +370,11 @@ static void leaderboard_and_lobby(void) {
     T_EQ_INT(a.status, 200);
     T_EQ_STR(a.body, "[{\"id\":\"b0000000-0000-4000-8000-000000000002\",\"nickname\":\"%Moscow 1\",\"elo_rating\":1400,\"games_played\":12},"
                      "{\"id\":\"b0000000-0000-4000-8000-000000000003\",\"nickname\":\"%Seoul 1\",\"elo_rating\":1100,\"games_played\":3}]");
+    // Text order (the ladder's names), both ways.
+    a = get("bots", "select=nickname&order=nickname.asc", NULL);
+    T_EQ_STR(a.body, "[{\"nickname\":\"%Miami 1\"},{\"nickname\":\"%Moscow 1\"},{\"nickname\":\"%Seoul 1\"}]");
+    a = get("bots", "select=nickname&order=nickname.desc&limit=1", NULL);
+    T_EQ_STR(a.body, "[{\"nickname\":\"%Seoul 1\"}]");
     // Lobby.tsx.
     a = get("bots", "select=id%2Cnickname%2Cstrategy_key", "tok-" U1);
     T_CHECK(strstr(a.body, "\"strategy_key\":\"random\"") != NULL);
@@ -401,6 +412,8 @@ static void snapshots_are_their_players_only(void) {
     a = get("game_snapshots", "select=id&game_id=eq." G2, "tok-" U1);   // U1 did not play it
     T_EQ_STR(a.body, "[]");
     a = get("game_snapshots", "select=id&game_id=eq." G2, NULL);
+    T_EQ_STR(a.body, "[]");
+    a = get("game_snapshots", "select=id&game_id=eq." G, NULL);   // anon sees none, even of a game with players
     T_EQ_STR(a.body, "[]");
     // The deleted game's snapshot keeps a null game_id.
     a = get("game_snapshots", "select=game_id&id=eq.55555555-5555-4555-8555-000000000003", "tok-" U1);

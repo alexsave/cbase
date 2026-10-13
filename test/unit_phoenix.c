@@ -152,6 +152,10 @@ static void may_join_matrix(void) {
     T_EQ_INT(cb_phx_may_join(&g_ctx, U1, "game-"), 0);
     T_EQ_INT(cb_phx_may_join(&g_ctx, U1, "user-" U1), 0);       // no such family
     T_EQ_INT(cb_phx_may_join(&g_ctx, U1, "room:lobby"), 0);
+    // A member may not hear another member's stream: the uid in the topic is compared whole.
+    rtf_member(G, U2);
+    T_EQ_INT(cb_phx_may_join(&g_ctx, U2, "gu-" G "-" U2), 1);
+    T_EQ_INT(cb_phx_may_join(&g_ctx, U2, "gu-" G "-" U1), 0);
     rtf.is_member_rc = CB_E_DB;
     T_EQ_INT(cb_phx_may_join(&g_ctx, U1, "chat:" G), CB_E_DB);
     g_ctx.store = NULL;
@@ -295,6 +299,13 @@ static void leave_and_access_token(void) {
     T_EQ_STR(s.f[0], "[\"5\",\"5\",\"realtime:game-" G "\",\"phx_close\",{}]");
     T_EQ_INT(c.n_topics, 1);
     T_EQ_STR(c.topics[0], "gu-" G "-" U1);
+    // A valid token for someone else ends the channel too.
+    T_EQ_INT(on(&c, &s, "[\"4\",\"7\",\"realtime:gu-" G "-" U1 "\",\"access_token\",{\"access_token\":\"tok-" U2 "\"}]"), CB_OK);
+    T_EQ_INT(s.n, 1);
+    T_EQ_STR(s.f[0], "[\"4\",\"4\",\"realtime:gu-" G "-" U1 "\",\"phx_close\",{}]");
+    T_EQ_INT(c.n_topics, 0);
+    on(&c, &s, "[\"4\",\"4\",\"realtime:gu-" G "-" U1 "\",\"phx_join\",{\"access_token\":\"tok-" U1 "\"}]");
+    T_EQ_INT(c.n_topics, 1);
     // phx_leave: ok on the leave's ref, then phx_close on the join_ref.
     T_EQ_INT(on(&c, &s, "[\"4\",\"8\",\"realtime:gu-" G "-" U1 "\",\"phx_leave\",{}]"), CB_OK);
     T_EQ_INT(s.n, 2);
