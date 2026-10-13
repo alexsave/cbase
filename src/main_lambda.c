@@ -7,10 +7,13 @@
 // (aws/event.h), dispatch it, POST the response:
 //   HTTP       cb_handle -> cb_event_encode_http
 //   WS         cb_rt_apigw_event -> cb_event_encode_ws
-//   SCHEDULE   cb_bots_scan
-//   BOT_DRIVE  cb_bots_drive (budgeted against the invocation deadline)
+//   SCHEDULE   cb_bots_scan                                      -> {}
+//   BOT_DRIVE  cb_bots_drive, budgeted against ctx->deadline_ms
+//              (Lambda-Runtime-Deadline-Ms)                     -> {}
 // An event that does not decode, or a handler that cannot answer, is POSTed
-// to the invocation's /error. The process holds nothing between invocations
+// to the invocation's /error. Lambda retries a failed ASYNC invocation (the
+// self-invoke, the schedule) twice, so a drive for a game that no longer
+// exists answers {} rather than an error: retrying it cannot help. The process holds nothing between invocations
 // but what a warm container may cache (app/table_ops.h).
 #include "app/bots.h"
 #include "aws/event.h"
@@ -54,6 +57,7 @@ static int dispatch(cb_ctx *ctx, const cb_invocation *inv, cb_buf *out, char *wh
         break;
     case CB_EVENT_BOT_DRIVE:
         rc = cb_bots_drive(ctx, ev.game_id);
+        if (rc == CB_E_NOT_FOUND) { CB_INFO("lambda", "bot_drive:%s: no such game", ev.game_id); rc = CB_OK; }
         if (rc >= 0) { cb_buf_puts(out, "{}"); rc = CB_OK; }
         break;
     default:
@@ -100,6 +104,7 @@ int main(void) {
             CB_WARN("lambda", "invocation %s: %s", inv.request_id, why);
             cb_runtime_error(host, port, inv.request_id, "Handler", why);
         }
+        ctx.deadline_ms = 0;
         cb_buf_free(&out);
         cb_invocation_free(&inv);
     }
