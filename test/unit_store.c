@@ -292,16 +292,29 @@ static void cas_second_writer_loses(void) {
     T_EQ_INT(CB_STORE_CALL(s, is_member, "cas001", b.id), 1);
     T_EQ_INT(rating_of(s, b.id), 1050);
 
-    // One transaction: a commit whose membership cannot be written (a seat
-    // with no account) writes nothing, the row included.
+    // One transaction: when the last write of a commit (a rating) fails,
+    // nothing of it stays, the row included. A trigger makes the rating fail.
+    T_EQ_INT(CB_STORE_CALL(s, admin_query,
+                           "CREATE TRIGGER no_ratings BEFORE UPDATE ON ratings BEGIN SELECT RAISE(ABORT, 'no'); END",
+                           true, NULL, NULL), 0);
     cb_game_row w3 = mkgame("cas001", 10);
     w3.version = 3;
-    cb_game_commit c3 = { .row = &w3, .expected_version = 2, .n_humans = 1 };
-    snprintf(c3.humans[0], sizeof c3.humans[0], "00000000-0000-4000-8000-0000000000ff");
-    T_EQ_INT(CB_STORE_CALL(s, game_commit, &c3), CB_E_NOT_FOUND);
+    cb_game_commit c3 = { .row = &w3, .expected_version = 2, .n_humans = 1, .n_rated = 1 };
+    memcpy(c3.humans[0], a.id, sizeof(cb_uuid));
+    memcpy(c3.rated_ids[0], a.id, sizeof(cb_uuid));
+    T_EQ_INT(CB_STORE_CALL(s, game_commit, &c3), CB_E_DB);
     T_EQ_INT(CB_STORE_CALL(s, game_get, "cas001", &got), CB_OK);
     T_EQ_INT(got.version, 2);
     cb_game_row_free(&got);
+    T_EQ_INT(CB_STORE_CALL(s, is_member, "cas001", b.id), 1);   // the seats were not rewritten either
+
+    // A seat with no account (deleted, its id still in the roster) is skipped,
+    // not a reason to refuse the commit.
+    CB_STORE_CALL(s, admin_query, "DROP TRIGGER no_ratings", true, NULL, NULL);
+    c3.n_rated = 0;
+    snprintf(c3.humans[0], sizeof c3.humans[0], "00000000-0000-4000-8000-0000000000ff");
+    T_EQ_INT(CB_STORE_CALL(s, game_commit, &c3), CB_OK);
+    T_EQ_INT(CB_STORE_CALL(s, is_member, "cas001", c3.humans[0]), 0);
 
     // A commit to a game that is gone is NOT_FOUND, not a conflict to retry.
     cb_game_row x = mkgame("nogame", 1);
@@ -789,7 +802,7 @@ static void admin_reads(void) {
     T_EQ_STR(r.col0, "n");
     T_EQ_INT(CB_STORE_CALL(s, admin_query, "DELETE FROM bots", false, collect_row, &r), CB_E_FORBIDDEN);
     T_EQ_INT(CB_STORE_CALL(s, admin_query, "  -- c\n DELETE FROM bots", false, collect_row, &r), CB_E_FORBIDDEN);
-    T_EQ_INT(CB_STORE_CALL(s, admin_query, "ATTACH DATABASE 'x.db' AS x", false, collect_row, &r), CB_E_FORBIDDEN);
+    T_EQ_INT(CB_STORE_CALL(s, admin_query, "ATTACH DATABASE ':memory:' AS x", false, collect_row, &r), CB_E_FORBIDDEN);
     T_EQ_INT(CB_STORE_CALL(s, admin_query, "SELECT 1; DELETE FROM bots", true, collect_row, &r), CB_E_INVALID);
     T_EQ_INT(CB_STORE_CALL(s, admin_query, "SELECT 1;", false, collect_row, &r), 1);
     T_EQ_INT(CB_STORE_CALL(s, admin_query, "SELEKT", false, collect_row, &r), CB_E_INVALID);

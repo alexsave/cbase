@@ -94,7 +94,11 @@ static const char *const SQL[ST__COUNT] = {
     [ST_GAME_EXISTS] = "SELECT 1 FROM games WHERE id = ?1",
     [ST_GAME_DELETE_CAS] = "DELETE FROM games WHERE id = ?1 AND version = ?2",
 
-    [ST_MEMBER_INSERT] = "INSERT INTO game_members (game_id, user_id, joined_at) VALUES (?1, ?2, ?3) "
+    // A seat whose account is gone (delete-account redacts the roster, the id
+    // stays) has no users row to hang a membership on: it is skipped, as the
+    // ratings skip it, rather than failing every later commit of the table.
+    [ST_MEMBER_INSERT] = "INSERT INTO game_members (game_id, user_id, joined_at) "
+                         "SELECT ?1, ?2, ?3 WHERE EXISTS (SELECT 1 FROM users WHERE id = ?2) "
                          "ON CONFLICT (game_id, user_id) DO NOTHING",
     [ST_MEMBERS_OF_GAME] = "SELECT user_id FROM game_members WHERE game_id = ?1",
     [ST_MEMBER_DELETE] = "DELETE FROM game_members WHERE game_id = ?1 AND user_id = ?2",
