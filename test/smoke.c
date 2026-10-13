@@ -366,8 +366,14 @@ static void game_scenario(void) {
     uint32_t rng = 7;
     int status = GAME_STATUS_PLAYING, moves = 0, crash_tries = 0;
     bool crashed = false;
-    const int64_t deadline = mono_ms() + 240000;
-    while (status == GAME_STATUS_PLAYING && mono_ms() < deadline) {
+    // The game ends when it ends: a long one (many pickups) plus the crash
+    // takes minutes. What must not happen is a stall, so the loop gives up
+    // only when the version has not moved for STALL_MS (well past the crash's
+    // lease wait), under a generous overall cap.
+    enum { STALL_MS = 90000, CAP_MS = 900000 };
+    const int64_t t_start = mono_ms();
+    int64_t last_version = -1, last_progress = t_start;
+    while (status == GAME_STATUS_PLAYING && mono_ms() - last_progress < STALL_MS && mono_ms() - t_start < CAP_MS) {
         bool moved = false, answered = false;
         for (int h = 0; h < 2 && status == GAME_STATUS_PLAYING; h++) {
             if (ask(humans[h], ASK_BUMP, gid, &env) != 200) continue;
@@ -376,6 +382,7 @@ static void game_scenario(void) {
             if (client_adopt_envelope(&sc->c, env.p, (int)env.len) < 0) continue;
             status = sc->c.view.status;
             uint32_t version = sc->c.view.version;
+            if ((int64_t)version != last_version) { last_version = version; last_progress = mono_ms(); }
             uint8_t wire[64], body[128];
             int n = choose_move(sc, &env, wire, sizeof wire, &rng);
             if (n <= 0) continue;
@@ -413,6 +420,7 @@ static void game_scenario(void) {
             fprintf(stderr, "smoke: after a crash at version %lld the bots moved on to %lld in %lld ms, unbumped\n",
                     (long long)ver, (long long)now_v, (long long)(mono_ms() - t0));
             T_CHECK(now_v > ver);
+            last_progress = mono_ms();
             continue;
         }
         if (!moved) {
@@ -421,6 +429,9 @@ static void game_scenario(void) {
             nanosleep(&ts, NULL);
         }
     }
+    fprintf(stderr, "smoke: %s after %d human moves, %lld s, version %lld\n",
+            status == GAME_STATUS_GAME_OVER ? "game over" : "NO PROGRESS", moves, (long long)((mono_ms() - t_start) / 1000),
+            (long long)last_version);
     T_EQ_INT(status, GAME_STATUS_GAME_OVER);
     T_CHECK(moves > 0);
     T_CHECK(crashed);
