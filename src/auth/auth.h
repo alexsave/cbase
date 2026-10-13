@@ -38,7 +38,11 @@ typedef struct {
 #define CB_AUTH_E_BAD_LOGIN     (-102)  // signin: wrong email or password ("invalid_credentials")
 #define CB_AUTH_E_WEAK_PASSWORD (-103)  // under 6 characters ("weak_password")
 #define CB_AUTH_E_BAD_USERNAME  (-104)  // empty, too long, or containing '%'
-#define CB_AUTH_E_BAD_REFRESH   (-105)  // unknown, revoked or reused refresh token
+#define CB_AUTH_E_BAD_REFRESH   (-105)  // unknown refresh token, or its user is gone ("refresh_token_not_found")
+#define CB_AUTH_E_REFRESH_USED  (-106)  // a consumed or revoked token: the session is now revoked ("refresh_token_already_used")
+#define CB_AUTH_E_SAME_PASSWORD (-107)  // change password: the new one is the old one ("same_password")
+#define CB_AUTH_E_BAD_EMAIL     (-108)  // signup: not an address ("email_address_invalid")
+#define CB_AUTH_E_LONG_PASSWORD (-109)  // over 72 bytes, which bcrypt would silently cut ("validation_failed")
 
 // Uses ctx->store and ctx->cfg (secret, TTL, public URL). CB_OK and *out.
 int  cb_auth_new(cb_ctx *ctx, cb_auth **out);
@@ -53,12 +57,17 @@ int cb_auth_verify_token(cb_auth *a, const char *jwt, cb_user *out);
 int cb_auth_signup(cb_auth *a, const char *email, const char *password, const char *username, cb_session *out);
 int cb_auth_signin(cb_auth *a, const char *email, const char *password, cb_session *out);
 int cb_auth_refresh(cb_auth *a, const char *refresh_token, cb_session *out);
-// Revokes the session's refresh tokens. The access token lives until it expires.
+// Revokes the session's refresh tokens (every scope GoTrue's logout takes is
+// served as "local": store.h has no per-user revoke). The access token lives
+// until it expires.
 int cb_auth_logout(cb_auth *a, const cb_user *u);
 int cb_auth_change_password(cb_auth *a, const cb_user *u, const char *new_password);
 // Deletes the account (store user_delete). delete-account calls this AFTER the
 // app layer has redacted the user from every game (functions_http.h).
 int cb_auth_delete_user(cb_auth *a, const char *user_id);
+// The stored account behind a verified user (GET /user answers from it, so a
+// deleted account stops answering while its token lives). CB_E_NOT_FOUND.
+int cb_auth_user_row(cb_auth *a, const char *user_id, cb_user_row *out);
 
 // The user object GoTrue answers with ({"id","aud","role","email",
 // "user_metadata":{"username"},"app_metadata",...,"created_at"}), written into

@@ -9,9 +9,12 @@
 //
 // All CB_ROUTE_APIKEY. Success bodies are GoTrue's session object
 // ({access_token, token_type:"bearer", expires_in, expires_at, refresh_token,
-// user}) or user object; errors are {"code":<status>,"error_code":"..","msg":".."}
-// with the 4xx status, which is what both SDKs surface. JSON here is the
-// compatibility tax (DESIGN.md "Where JSON is tolerated").
+// user}) or user object. Errors carry the 4xx status and GoTrue's body for the
+// API version the request names: {"code":"<error code>","msg":".."} plus the
+// X-Supabase-Api-Version header for 2024-01-01 (what both SDKs send), else
+// {"code":<status>,"error_code":"..","msg":".."} (auth_http.c says why it must
+// be both). JSON here is the compatibility tax (DESIGN.md "Where JSON is
+// tolerated").
 #ifndef CB_AUTH_HTTP_H
 #define CB_AUTH_HTTP_H
 
