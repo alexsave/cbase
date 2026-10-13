@@ -42,8 +42,13 @@ typedef struct {
     cb_uuid joined[CB_MAX_SEATS], left[CB_MAX_SEATS];
 } cb_fanout;
 
-// Publishes everything above through ctx->rt. Never fails the commit: a push
-// that cannot be delivered is logged; clients refetch on rejoin.
+// Publishes everything above through ctx->rt (nothing when it is NULL). Never
+// fails the commit: a push that cannot be delivered is logged; clients refetch
+// on rejoin.
 void cb_fanout_commit(cb_ctx *ctx, const cb_fanout *f);
+
+// TEST SEAM: when set, called with every fan-out before it is published, so the
+// app's unit tests can see who would hear what without a realtime transport.
+extern void (*cb_fanout_observer)(const cb_fanout *f);
 
 #endif

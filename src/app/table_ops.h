@@ -48,9 +48,10 @@
 
 // The operation: run on the loaded table, in the one kernel section. Returns
 // the kernel's result (TABLE_OK / TABLE_APPLIED, TABLE_REJECTED, TABLE_MOOT,
-// TABLE_STALE_ROUND, TABLE_EMPTY, or a refusal). `deal_seed` is 32 fresh
+// TABLE_STALE_ROUND, TABLE_EMPTY, or a refusal). `row` is the row the table
+// was loaded from (a move reads its round_epoch); `deal_seed` is 32 fresh
 // random bytes for an edit that can deal. Called once per attempt.
-typedef int (*cb_table_fn)(Table *t, const uint8_t deal_seed[32], void *ud);
+typedef int (*cb_table_fn)(Table *t, const cb_game_row *row, const uint8_t deal_seed[32], void *ud);
 
 typedef struct {
     const char *game_id;
