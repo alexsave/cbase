@@ -425,7 +425,7 @@ static void http_user_and_logout(void) {
     reply r = call("POST", "/auth/v1/signup", APIKEY V2024,
                    "{\"email\":\"c@foolish.cards\",\"password\":\"secret1\",\"data\":{\"username\":\"CAT\"}}");
     T_EQ_INT(r.status, 200);
-    char at[CB_JWT_MAX], rt[64], id[64], h[CB_JWT_MAX + 64];
+    char at[CB_JWT_MAX], rt[64], id[64], h[CB_JWT_MAX + 128];
     T_CHECK(jstr(&r, "access_token", at, sizeof at));
     T_CHECK(jstr(&r, "refresh_token", rt, sizeof rt));
     T_CHECK(jstr(&r, "user.id", id, sizeof id));
@@ -448,7 +448,7 @@ static void http_user_and_logout(void) {
     cb_uuid_v4(c.session_id);
     c.iat = cb_now_ms() / 1000 - 4000;
     c.exp = c.iat + 3600;
-    char old[CB_JWT_MAX], h2[CB_JWT_MAX + 64];
+    char old[CB_JWT_MAX], h2[CB_JWT_MAX + 128];
     T_CHECK(cb_jwt_mint(cfg.jwt_secret, &c, NULL, old, sizeof old) > 0);
     snprintf(h2, sizeof h2, APIKEY V2024 "Authorization: Bearer %s\r\n", old);
     r = call("GET", "/auth/v1/user", h2, NULL);

@@ -166,7 +166,7 @@ static void refusals(void) {
     // Malformed shapes around a good token.
     claims_body(body, sizeof body, "authenticated", "authenticated", UID, NOW + 100, "");
     forge(SECRET, HS256, body, tok, sizeof tok);
-    char t2[CB_JWT_MAX];
+    char t2[CB_JWT_MAX + 8];   // room for the suffixes below
     T_EQ_INT(cb_jwt_verify(SECRET, "", NOW, &got), CB_E_AUTH);
     T_EQ_INT(cb_jwt_verify(SECRET, "a.b", NOW, &got), CB_E_AUTH);
     T_EQ_INT(cb_jwt_verify(SECRET, NULL, NOW, &got), CB_E_AUTH);

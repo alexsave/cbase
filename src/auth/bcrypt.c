@@ -848,7 +848,7 @@ bool cb_bcrypt_parse(const char *hash) {
     if (cost < 4 || cost > 31) return false;
     for (int i = 7; i < CB_BCRYPT_HASH_LEN; i++) {
         unsigned char c = (unsigned char)hash[i];
-        if (c < 0x20 || c - 0x20 >= sizeof BF_atoi64 || BF_atoi64[c - 0x20] > 63) return false;
+        if (c < 0x20 || (size_t)(c - 0x20) >= sizeof BF_atoi64 || BF_atoi64[c - 0x20] > 63) return false;
     }
     return true;
 }
