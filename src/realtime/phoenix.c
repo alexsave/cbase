@@ -248,9 +248,11 @@ static void handle_join(cb_ctx *ctx, cb_phx_conn *c, const cb_phx_msg *m, cb_phx
     int may = cb_phx_may_join(ctx, who == 1 ? u.id : NULL, bare);
     if (may < 0) { CB_WARN("realtime", "join %s: policy check failed: %s", bare, cb_strerror(may)); refuse(c, m, "Internal error", send, ud); return; }
     if (may == 0) {
-        char why[CB_TOPIC_MAX + 96];
-        snprintf(why, sizeof why, "Unauthorized: You do not have permissions to read from this Channel topic: %s", bare);
-        refuse(c, m, why, send, ud);
+        cb_buf why;   // grown to fit: the whole topic is always in the reason
+        cb_buf_init(&why);
+        cb_buf_printf(&why, "Unauthorized: You do not have permissions to read from this Channel topic: %s", bare);
+        refuse(c, m, cb_buf_cstr(&why), send, ud);
+        cb_buf_free(&why);
         return;
     }
     cb_buf resp;

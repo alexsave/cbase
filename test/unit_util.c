@@ -137,6 +137,15 @@ static void strings(void) {
     T_EQ_INT(cb_strlcpy(out, "0123456789abcdefXYZ", 8), 19);
     T_EQ_STR(out, "0123456");
     T_CHECK(cb_span_eq_nocase(CB_SPAN_LIT("Content-Type"), "content-type"));
+    // An empty span may carry no pointer: an empty string, and no memcpy from
+    // NULL (undefined behaviour that UBSan reports under glibc).
+    out[0] = 'x';
+    T_CHECK(cb_strncpy0(out, sizeof out, NULL, 0));
+    T_EQ_STR(out, "");
+    T_CHECK(cb_strncpy0(out, sizeof out, "abc", 3));
+    T_EQ_STR(out, "abc");
+    T_CHECK(!cb_strncpy0(out, 4, "abcd", 4));
+    T_EQ_STR(out, "");
 }
 
 static void json_writer(void) {

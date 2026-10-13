@@ -52,6 +52,7 @@ const char *cb_buf_cstr(const cb_buf *b);
 // Returns strlen(src), so a result >= cap means it was cut.
 size_t cb_strlcpy(char *dst, const char *src, size_t cap);
 // Copies exactly n bytes of src and terminates; false (and "" in dst) when n >= cap.
+// src may be NULL when n is 0 (an empty span).
 bool   cb_strncpy0(char *dst, size_t cap, const char *src, size_t n);
 bool   cb_streq_nocase(const char *a, const char *b);
 bool   cb_starts_with(const char *s, const char *prefix);

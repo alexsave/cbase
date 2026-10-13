@@ -97,7 +97,7 @@ size_t cb_strlcpy(char *dst, const char *src, size_t cap) {
 bool cb_strncpy0(char *dst, size_t cap, const char *src, size_t n) {
     if (cap == 0) return false;
     if (n >= cap) { dst[0] = 0; return false; }
-    memcpy(dst, src, n);
+    if (n) memcpy(dst, src, n);   // an empty span may have no pointer, and memcpy's may never be NULL
     dst[n] = 0;
     return true;
 }

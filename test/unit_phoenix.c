@@ -517,7 +517,7 @@ static void joined_binding_receives_the_push(void) {
     cb_rt_pv_payload(&b, CB_RT_UPDATE, &r);
     bool found = false;
     for (int i = 0; i < 4; i++) {
-        char p[8];
+        char p[24];
         int64_t id;
         snprintf(p, sizeof p, "ids.%d", i);
         if (cb_json_get_i64((const char *)b.p, b.len, p, &id) && id == joined_id) found = true;

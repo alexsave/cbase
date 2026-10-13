@@ -13,6 +13,7 @@
 #include "util/err.h"
 #include "util/hex.h"
 #include "util/log.h"
+#include "util/str.h"
 #include "util/uuid.h"
 
 #include <pthread.h>
@@ -166,8 +167,12 @@ int cb_section_load(cb_section *s, const cb_game_row *row) {
     s->n_old = 0;
     for (int i = 0; i < s->t.r.n; i++) {
         const RosterSeat *seat = &s->t.r.seats[i];
-        if (seat->brain_len == 0 && s->n_old < CB_MAX_SEATS)
-            snprintf(s->old_humans[s->n_old++], sizeof(cb_uuid), "%.*s", (int)seat->id_len, seat->id);
+        // memcpy, not snprintf: the seat and the list live in the same struct,
+        // and gcc's -Wrestrict (fortified, under ASan) cannot prove they do not overlap.
+        if (seat->brain_len == 0 && s->n_old < CB_MAX_SEATS) {
+            size_t n = seat->id_len < CB_UUID_LEN ? (size_t)seat->id_len : CB_UUID_LEN;
+            cb_strncpy0(s->old_humans[s->n_old++], sizeof(cb_uuid), (const char *)seat->id, n);
+        }
     }
     return TABLE_OK;
 }
@@ -402,7 +407,7 @@ int cb_section_commit(cb_ctx *ctx, cb_section *s, const cb_game_row *row, const 
     }
     for (int i = 0; i < f.n_seats; i++) {
         if (!f.seats[i].user_id[0]) continue;
-        if (!in_list(s->old_humans, s->n_old, f.seats[i].user_id)) snprintf(f.joined[f.n_joined++], sizeof(cb_uuid), "%s", f.seats[i].user_id);
+        if (!in_list(s->old_humans, s->n_old, f.seats[i].user_id)) cb_strlcpy(f.joined[f.n_joined++], f.seats[i].user_id, sizeof(cb_uuid));
     }
     for (int i = 0; i < s->n_old; i++) {
         bool still = false;
