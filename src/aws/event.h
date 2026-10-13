@@ -61,5 +61,9 @@ void cb_event_free(cb_event *ev);
 int  cb_event_encode_http(const cb_http_res *res, cb_buf *out);
 // The response JSON for a WebSocket event.
 int  cb_event_encode_ws(int status, cb_buf *out);
+// The self-invoke payload "bot_drive:<game id>" (with its quotes) into out,
+// the writer of what cb_event_decode reads. Returns its length, or
+// CB_E_INVALID for an id outside [A-Za-z0-9_-]{1,31} or a short cap.
+int  cb_event_bot_drive_payload(const char *game_id, char *out, size_t cap);
 
 #endif

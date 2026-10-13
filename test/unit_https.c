@@ -142,6 +142,7 @@ static tls_action answer(const cb_buf *req, cb_buf *resp, void *ud) {
     const char *body = strstr(q, "\r\n\r\n") + 4;
     cb_buf_printf(resp, "HTTP/1.1 200 OK\r\nContent-Length: %zu\r\n\r\n%.*s|%s",
                   (size_t)(nl - q) + 1 + strlen(body), (int)(nl - q), q, body);
+    if (strcmp(mode, "close") == 0) return TLS_CLOSE;   // a clean TLS close the response never announced
     return strcmp(mode, "drop") == 0 ? TLS_DROP : TLS_KEEP;
 }
 
@@ -181,10 +182,11 @@ static void verified_and_kept_alive(void) {
     tls_srv_stop(&s);
 }
 
-// A pooled connection the server dropped while idle is replaced, once, unseen.
-static void dead_idle_connection_retried(void) {
+// A pooled connection the server dropped while idle is replaced, once, unseen:
+// whether the server reset it ("drop") or closed it cleanly ("close").
+static void dead_idle_connection_retried_as(const char *mode) {
     tls_srv s;
-    T_EQ_INT(tls_srv_start(&s, answer, "drop"), 0);
+    T_EQ_INT(tls_srv_start(&s, answer, (void *)mode), 0);
     T_EQ_INT(cb_https_set_ca_file(s.ca_file), CB_OK);
     cb_https_response r;
     T_EQ_INT(cb_https_request("localhost", s.port, "GET", "/a", NULL, NULL, 0, 3000, &r), CB_OK);
@@ -196,6 +198,11 @@ static void dead_idle_connection_retried(void) {
     cb_https_response_free(&r);
     T_EQ_INT(atomic_load(&s.accepts), 2);
     tls_srv_stop(&s);
+}
+
+static void dead_idle_connection_retried(void) {
+    dead_idle_connection_retried_as("drop");
+    dead_idle_connection_retried_as("close");
 }
 
 static void times_out(void) {

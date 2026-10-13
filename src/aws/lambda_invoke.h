@@ -9,7 +9,8 @@
 #ifndef CB_LAMBDA_INVOKE_H
 #define CB_LAMBDA_INVOKE_H
 
-// CB_OK when Lambda accepted the event, CB_E_IO, or CB_E_NOTIMPL.
+// CB_OK when Lambda accepted the event (202), CB_E_IO, or CB_E_INVALID for a
+// game id the payload cannot carry (aws/event.h cb_event_bot_drive_payload).
 int cb_lambda_invoke_bot_drive(const char *game_id);
 
 #endif

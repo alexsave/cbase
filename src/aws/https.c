@@ -408,10 +408,12 @@ static int exchange(conn *c, const cb_buf *req, bool head, int64_t deadline, cb_
                 break;
             }
         }
+        // A clean close before any byte: the peer had dropped the idle connection.
+        if (eof && in.len == 0) { rc = 1; break; }
         int k = cb_https_parse_response(in.p, in.len, head, eof, out, ka);
         if (k > 0) { rc = CB_OK; if ((size_t)k != in.len) *ka = false; break; }
         if (k < 0) { rc = k; break; }
-        if (eof) { rc = in.len == 0 ? 1 : CB_E_IO; break; }
+        if (eof) break;
     }
     cb_buf_free(&in);
     return rc;

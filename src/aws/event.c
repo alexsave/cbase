@@ -277,6 +277,13 @@ static int decode_literal(const char *s, size_t n, cb_event *ev) {
     return CB_E_INVALID;
 }
 
+int cb_event_bot_drive_payload(const char *game_id, char *out, size_t cap) {
+    size_t n = game_id ? strlen(game_id) : 0;
+    if (!game_id_ok(game_id, n, sizeof ((cb_event *)0)->game_id)) return CB_E_INVALID;
+    int k = snprintf(out, cap, "\"bot_drive:%s\"", game_id);
+    return k > 0 && (size_t)k < cap ? k : CB_E_INVALID;
+}
+
 int cb_event_decode(const char *json, size_t len, cb_event *out) {
     memset(out, 0, sizeof *out);
     cb_buf_init(&out->storage);
