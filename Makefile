@@ -85,15 +85,19 @@ $(eval $(call C_VARIANT,build/obj/cbase,CC,CB_CFLAGS))
 $(eval $(call C_VARIANT,build/obj/asan-kernel,CC,ASAN_KERNEL_CFLAGS))
 $(eval $(call C_VARIANT,build/obj/asan,CC,ASAN_CB_CFLAGS))
 
-# The schema, embedded so the binary needs no file beside it at run time.
+# The schema and the admin console, embedded so the binary needs no file beside
+# it at run time.
 build/embed: tools/embed.c
 	@mkdir -p $(@D)
 	$(CC) -O2 -Wall -Wextra -Werror $< -o $@
 build/gen/schema_sql.c: sql/schema.sql build/embed
 	@mkdir -p $(@D)
 	build/embed $< cbase_schema_sql > $@.new && mv $@.new $@
+build/gen/console_html.c: admin/console.html build/embed
+	@mkdir -p $(@D)
+	build/embed $< cbase_console_html > $@.new && mv $@.new $@
 
-LIB_SRC  := $(sort $(filter-out src/main_%.c,$(wildcard src/*.c src/*/*.c))) build/gen/schema_sql.c
+LIB_SRC  := $(sort $(filter-out src/main_%.c,$(wildcard src/*.c src/*/*.c))) build/gen/schema_sql.c build/gen/console_html.c
 IMPORT_SRC := migrate/import.c
 TLIB_SRC := $(sort $(wildcard test/lib_*.c))
 UNIT_SRC := $(sort $(wildcard test/unit_*.c))
