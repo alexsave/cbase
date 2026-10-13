@@ -233,7 +233,7 @@ int cb_auth_refresh(cb_auth *a, const char *refresh_token, cb_session *out) {
     if (rc != CB_OK) return rc;
     if (r.revoked) {
         // Reuse (or a token logout revoked): end the whole session.
-        CB_WARN("auth", "refresh token reuse in session %s: session revoked", r.session_id);
+        CB_WARN("auth", "session %s: a consumed or revoked refresh token was presented; session revoked", r.session_id);
         rc = CB_STORE_CALL(a->store, refresh_revoke_session, r.session_id);
         return rc == CB_OK ? CB_AUTH_E_REFRESH_USED : rc;
     }
