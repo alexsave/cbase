@@ -50,8 +50,7 @@ static void on_sigpipe_readable(cb_loop *l, int fd, int ev, void *ud) {
 
 static void scan_task(void *ud) {
     cb_ctx *ctx = ud;
-    int n = cb_bots_scan(ctx, cb_now_ms());
-    if (n > 0) CB_INFO("serve", "bot scan: %d game(s) kicked", n);
+    cb_bots_scan(ctx, cb_now_ms());   // it logs what it kicked
 }
 
 static void on_scan_timer(cb_loop *l, void *ud) {

@@ -189,7 +189,9 @@ int cb_bots_scan(cb_ctx *ctx, int64_t now_ms) {
         return rc;
     }
     for (int i = 0; i < l->n; i++) if (ctx->kick_bots) ctx->kick_bots(ctx, l->ids[i]);
-    CB_INFO("bots", "heartbeat dispatched=%d", l->n);
+    // An idle minute (or, under serve, an idle 10 s) is not news.
+    if (l->n > 0) CB_INFO("bots", "heartbeat dispatched=%d", l->n);
+    else CB_DEBUG("bots", "heartbeat dispatched=0");
     rc = l->n;
     free(l);
     return rc;

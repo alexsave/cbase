@@ -7,3 +7,5 @@
 /*.sqlite-wal
 /*.sqlite-shm
 /dist/
+# ops/deploy.sh's settings and generated secrets (mode 0600). Never commit it.
+/ops/.env
