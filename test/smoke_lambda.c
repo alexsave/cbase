@@ -45,8 +45,8 @@ static const char HEALTH[] =
     "\"requestContext\":{\"http\":{\"method\":\"GET\",\"path\":\"/health\",\"protocol\":\"HTTP/1.1\","
     "\"sourceIp\":\"127.0.0.1\"},\"requestId\":\"req-1\",\"stage\":\"$default\"},\"isBase64Encoded\":false}";
 
-#define N_EVENTS 3
-static const char *const EVENTS[N_EVENTS] = { HEALTH, "\"scan\"", "\"nonsense\"" };
+#define N_EVENTS 4
+static const char *const EVENTS[N_EVENTS] = { HEALTH, "\"scan\"", "\"nonsense\"", "\"bot_drive:abc123\"" };
 static char g_posted_path[N_EVENTS][256];
 static cb_buf g_posted_body[N_EVENTS];
 
@@ -135,21 +135,19 @@ static void one_invocation(const char *bin) {
 
     // req-2: the scan literal reached cb_bots_scan, which answered {}.
     body = cb_buf_cstr(&g_posted_body[1]);
-    if (strcmp(g_posted_path[1], "/2018-06-01/runtime/invocation/req-2/error") == 0 &&
-        strstr(body, "\"errorMessage\":\"dispatch: CB_E_NOTIMPL\"")) {
-        // app/bots.c (or the store under it) is still a stub on this branch:
-        // the event decoded and was dispatched, which is this lane's part.
-        // Remove this branch at integration, when cb_bots_scan is real.
-        fprintf(stderr, "NOTE smoke_lambda: cb_bots_scan is a stub; the scan event decoded and dispatched\n");
-    } else {
-        T_EQ_STR(g_posted_path[1], "/2018-06-01/runtime/invocation/req-2/response");
-        T_EQ_STR(body, "{}");
-    }
+    T_EQ_STR(g_posted_path[1], "/2018-06-01/runtime/invocation/req-2/response");
+    T_EQ_STR(body, "{}");
 
     // req-3: an event that does not decode is the invocation's error.
     body = cb_buf_cstr(&g_posted_body[2]);
     T_EQ_STR(g_posted_path[2], "/2018-06-01/runtime/invocation/req-3/error");
     T_EQ_STR(body, "{\"errorMessage\":\"event decode: CB_E_INVALID\",\"errorType\":\"Handler\"}");
+
+    // req-4: a drive for a game that is gone answers {}, not an error, so
+    // Lambda does not retry an async invoke that can never succeed.
+    body = cb_buf_cstr(&g_posted_body[3]);
+    T_EQ_STR(g_posted_path[3], "/2018-06-01/runtime/invocation/req-4/response");
+    T_EQ_STR(body, "{}");
     pthread_mutex_unlock(&g_lock);
     char cmd[300];
     snprintf(cmd, sizeof cmd, "rm -rf '%s'", db);

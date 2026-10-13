@@ -6,13 +6,20 @@
 // (127.0.0.1:8080). SIGTERM or SIGINT drains: in-flight requests finish,
 // WebSockets get 1001, then the process exits 0.
 //
+// THE HEARTBEAT. Under Lambda, EventBridge Scheduler invokes the bot scan every
+// minute; serve has no scheduler, so a loop timer submits cb_bots_scan to the
+// request pool every SCAN_EVERY_MS (the store is never touched on the loop
+// thread). It catches a drive that a kick lost, as bot-heartbeat did.
+//
 // The startup line the smoke test waits for, on stderr:
 //   ... INFO  serve: listening on 127.0.0.1:<port>
+#include "app/bots.h"
 #include "boot.h"
 #include "config.h"
 #include "ctx.h"
 #include "net/loop.h"
 #include "net/server.h"
+#include "util/clock.h"
 #include "util/err.h"
 #include "util/log.h"
 #include "util/pool.h"
@@ -37,6 +44,20 @@ static void on_sigpipe_readable(cb_loop *l, int fd, int ev, void *ud) {
     while (read(fd, &b, 1) > 0) {}
     CB_INFO("serve", "signal received: draining");
     cb_server_drain(ctx->server, 10000);
+}
+
+#define SCAN_EVERY_MS 10000
+
+static void scan_task(void *ud) {
+    cb_ctx *ctx = ud;
+    int n = cb_bots_scan(ctx, cb_now_ms());
+    if (n > 0) CB_INFO("serve", "bot scan: %d game(s) kicked", n);
+}
+
+static void on_scan_timer(cb_loop *l, void *ud) {
+    cb_ctx *ctx = ud;
+    if (ctx->store) cb_pool_submit(ctx->req_pool, scan_task, ctx);
+    cb_loop_timer(l, SCAN_EVERY_MS, on_scan_timer, ctx);
 }
 
 static void log_config(const char *name, const char *value, bool secret, void *ud) {
@@ -84,6 +105,8 @@ int main(int argc, char **argv) {
     sa.sa_handler = on_signal;
     sigaction(SIGTERM, &sa, NULL);
     sigaction(SIGINT, &sa, NULL);
+
+    cb_loop_timer(ctx.loop, SCAN_EVERY_MS, on_scan_timer, &ctx);
 
     CB_INFO("serve", "listening on %s:%d", cfg.listen_host, port);
     int rc = cb_loop_run(ctx.loop);
