@@ -53,7 +53,8 @@ header.top {
   display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--line);
   background: var(--panel); position: sticky; top: 0; z-index: 2;
 }
-header.top h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .01em; }
+header.top h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .01em; white-space: nowrap; }
+header.top .badge { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 header.top .spacer { flex: 1; }
 .badge {
   display: inline-block; padding: 1px 8px; border-radius: 999px; background: var(--chip); color: var(--ink-2);
@@ -107,7 +108,7 @@ pre.hex, pre.log {
   font-family: var(--mono); font-size: 12px; background: var(--code); border: 1px solid var(--line);
   border-radius: 8px; padding: 10px 12px; margin: 0; overflow-x: auto; white-space: pre;
 }
-pre.log { max-height: 60vh; overflow-y: auto; }
+pre.log { max-height: 60vh; overflow-y: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 .lvl-debug { color: var(--ink-3); } .lvl-info { color: var(--ink); } .lvl-warn { color: var(--warn); } .lvl-error { color: var(--bad); }
 .msg { padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); margin-bottom: 12px; }
 .msg.bad { border-color: var(--bad); color: var(--bad); }
@@ -576,7 +577,7 @@ function panelGames(main) {
   const draw = () => {
     clear(out).appendChild(dataTable(games, [
       { key: 'id', label: 'Id', cls: 'mono' }, { key: 'status_label', label: 'Status' },
-      { key: 'version', label: 'Version', num: true }, { key: 'seats', label: 'Seats', render: (v, g) => seatsText(g) },
+      { key: 'version', label: 'Version', num: true }, { key: 'seats', label: 'Seats', render: (v, g) => h('div', { style: 'min-width:200px' }, seatsText(g)) },
       { key: 'needs_bots', label: 'Needs bots', render: (v) => v ? h('span', { class: 'badge warn' }, 'yes') : 'no' },
       { key: 'updated_at', label: 'Updated', render: fmtTime },
     ], { sort: true, onRow: (g) => open(g.id), empty: 'No games.' }));
