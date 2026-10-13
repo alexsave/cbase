@@ -1,0 +1,8 @@
+# Build outputs (make clean removes them).
+/build/
+# The migration export: it holds password hashes. Never commit it.
+/migrate/out/
+# A local database from `build/cbase` run in this directory.
+/*.sqlite
+/*.sqlite-wal
+/*.sqlite-shm
