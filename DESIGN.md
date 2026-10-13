@@ -244,11 +244,13 @@ Tests: `test/unit_app.c` (16 tests through `cb_handle` over an in-RAM store with
 
 Untested: the Lambda deadline budget and the Lambda re-kick (no Lambda yet); create's id redraw on a collision.
 
-Kernel defects found here, present in production today (they are the kernel's, in `foolish/c`):
+Found here:
 
-- `bot_drive_pre_action_hook` (bot_drive.c) is a process global, so serve's bot pool runs drives one at a time (see Kernel thread safety).
-- A pickup of more than `MAX_LOG_PAIRS` (16) cards, which a three-seat passing game reaches, is logged with 16 pairs while the replay carries them all, so `table_replay_code`'s gate refuses the game and no snapshot is written: about 1 in 15 random three-seat games.
-  By the same code (table.c `log_read`), a session over `MAX_LOGS` records would be refused the same way.
+- Kernel, present in production's TypeScript host too: `bot_drive_pre_action_hook` (bot_drive.c) is a process global, so serve's bot pool runs drives one at a time (see Kernel thread safety).
+- c_base's own build, fixed at integration: the kernel was compiled with its native arena's compact capacities (`MAX_LOG_PAIRS=16` and the rest), so a pickup of more than 16 cards was logged short, `table_replay_code`'s gate refused the finished game, and it got no snapshot (about 1 in 15 random three-seat games).
+  The app builder reported it as a production kernel defect; it is not, because the shipped wasm and iOS builds use the wide human-game capacities.
+  `c_base/Makefile` now reads them from `foolish/c`'s own `WASM_FLAGS` (its `print-human-caps` target, so no second copy exists) for the kernel and for c_base's objects, and `table_ops.c` asserts `MAX_LOG_PAIRS >= MAX_DECK` at compile time.
+- Kernel, the same in production: a session over `MAX_LOGS` (1024) records is truncated and its replay refused the same way; it is sized on p99 by design and was not observed.
 
 ## Module: realtime and PostgREST
 
@@ -363,6 +365,11 @@ Test files are found by wildcard, and every `test/lib_*.c` is linked into every 
 The smoke builders extend `smoke.c` to the brief's full scenario: two humans, a bot, a whole game over HTTP and WebSocket, ratings changed, a snapshot stored, pushes with monotone versions, a restart, the game reloaded.
 Every test is mutation-checked: break the code, see the right assertion fail, restore by re-editing (never `git checkout`), and remember that make compares whole seconds, so delete the objects after restoring.
 
+## Kernel capacities
+
+The kernel's array capacities are build parameters, and its compact defaults belong to the native bot arena.
+c_base builds it with the shipped human-game capacities (`KERNEL_CAPS` in the Makefile, read from `foolish/c`'s `WASM_FLAGS` through `print-human-caps`), the same as the wasm module the hosted backend runs and the iOS build, and passes them to its own objects too, because they change the sizes of structs both halves use.
+
 ## Kernel thread safety
 
 `cbase serve` runs kernel calls on several threads, so the kernel is compiled with its `_Thread_local` qualifiers intact (foolish/c's own Makefile strips them for its single-threaded programs).
@@ -449,7 +456,7 @@ Kept on purpose, so behaviour does not change under the clients; each is a later
 ## How it was built, and what integration decided
 
 Six builders (store, auth, app, realtime, aws, admin and ops) worked in parallel on disjoint directories against the skeleton's headers, then one integrator merged the six branches (no textual conflicts) and aligned them.
-The integration decisions:
+The integration decisions and fixes:
 
 1. Refresh tokens: `refresh_revoke_user` and `revoked_at` added to `store.h` and every backend; GoTrue's 10 s reuse grace in `auth.c`; logout `global` revokes every session.
 2. The snapshot stays a separate write after the commit, and a finished game's log is cleared by the next lobby commit, not at once (see App).
@@ -461,4 +468,5 @@ The integration decisions:
 7. `store_dynamo.c` signs and sends through `aws_call.c`, removing a second copy of that step.
 8. `cbase serve` runs the bot scan every 10 s; `smoke_lambda` lost its stub branch and gained a drive for a missing game.
 9. `rt_deps.h` stays (see Realtime).
-10. Every status and body of `functions_http.c` was compared with inv_supabase.md section 3 (wrap400) and agrees; auth follows GoTrue as above.
+10. The kernel is built with the shipped human-game capacities, not its arena's compact defaults (see Kernel capacities); this, not a kernel defect, was why one game in about fifteen had no replay.
+11. Every status and body of `functions_http.c` was compared with inv_supabase.md section 3 (wrap400) and agrees; auth follows GoTrue as above.
