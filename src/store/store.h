@@ -275,6 +275,19 @@ typedef struct cb_store_ops {
     int (*admin_browse)(cb_store *s, const char *collection, const char *prefix, const char *cursor, int limit,
                         cb_admin_row_fn fn, void *ud, char *next_cursor, size_t next_cap);
     int (*admin_query)(cb_store *s, const char *statement, bool allow_write, cb_admin_row_fn fn, void *ud);
+
+    // migration (migrate/import.c): rows written as they are, with no side
+    // effects. Nothing but the import calls these.
+    // The user as given, insert or replace; unlike user_create, no rating row.
+    int (*user_import)(cb_store *s, const cb_user_row *u);
+    // The rating row as given (username "" stores none), insert or replace.
+    int (*rating_import)(cb_store *s, const cb_rating_row *r);
+    // Every bot row replaced by these n (the seeded ones included), atomically.
+    int (*bots_replace)(cb_store *s, const cb_bot_row *rows, int n);
+    // The game at its own version, with exactly these members, insert or
+    // replace. The lease is left free.
+    int (*game_import)(cb_store *s, const cb_game_row *g, const cb_uuid *humans, int n_humans, const cb_uuid *bots,
+                       int n_bots);
 } cb_store_ops;
 
 struct cb_store {
