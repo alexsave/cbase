@@ -63,6 +63,11 @@ typedef struct {
     cb_uuid session_id;
     int64_t created_at;
     bool    revoked;
+    // When refresh_take rotated it (the FIRST take; later takes keep it), so
+    // auth can give a retry of a lost refresh response GoTrue's 10 s grace.
+    // 0 when never taken, and 0 again after refresh_revoke_session or
+    // refresh_revoke_user: a logged-out token never gets the grace.
+    int64_t revoked_at;
 } cb_refresh_row;
 
 // A game as committed: the kernel's bytes plus the scalar columns.
@@ -211,11 +216,15 @@ typedef struct cb_store_ops {
 
     // refresh tokens
     int (*refresh_put)(cb_store *s, const cb_refresh_row *r);
-    // Rotation: atomically marks the token revoked and returns its row as it
-    // was. CB_E_NOT_FOUND for an unknown hash; a row with revoked = true means
-    // the token was already used (the caller treats that as reuse).
-    int (*refresh_take)(cb_store *s, const char *token_hash, cb_refresh_row *out);
+    // Rotation: atomically marks the token revoked, stamps revoked_at = now_ms
+    // unless a take already stamped it, and returns its row as it was before.
+    // CB_E_NOT_FOUND for an unknown hash; a row with revoked = true means the
+    // token was already used or logged out (revoked_at tells the two apart).
+    int (*refresh_take)(cb_store *s, const char *token_hash, int64_t now_ms, cb_refresh_row *out);
+    // Logout: revoke every token of the session (scope local), or of the user
+    // (scope global), setting revoked_at to 0 on each.
     int (*refresh_revoke_session)(cb_store *s, const char *session_id);
+    int (*refresh_revoke_user)(cb_store *s, const char *user_id);
 
     // games
     // CB_E_NOT_FOUND, or the row (caller frees with cb_game_row_free).

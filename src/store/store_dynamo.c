@@ -349,11 +349,11 @@ static int dy_refresh_put(cb_store *s, const cb_refresh_row *t) {
     return simple1(D(s), &r, CB_E_CONFLICT);
 }
 
-static int dy_refresh_take(cb_store *s, const char *hash, cb_refresh_row *out) {
+static int dy_refresh_take(cb_store *s, const char *hash, int64_t now_ms, cb_refresh_row *out) {
     dyn *d = D(s);
     dw_req r;
     dw_req_init(&r);
-    dw_refresh_take(&r, d->table, hash);
+    dw_refresh_take(&r, d->table, hash, now_ms);
     cb_buf resp;
     cb_buf_init(&resp);
     int rc = simple(d, &r, CB_E_NOT_FOUND, &resp);
@@ -366,10 +366,10 @@ static int dy_refresh_take(cb_store *s, const char *hash, cb_refresh_row *out) {
     return rc;
 }
 
-static int dy_refresh_revoke_session(cb_store *s, const char *session) {
-    dyn *d = D(s);
+// Revokes every token a keys-only query lists (a session's, or a user's).
+static int revoke_tokens(dyn *d, dw_query_kind which, const char *arg) {
     keylist keys = { 0 };
-    int rc = query_all(d, DWQ_SESSION_TOKENS, session, true, 0, collect_key, &keys);
+    int rc = query_all(d, which, arg, true, 0, collect_key, &keys);
     if (rc == CB_OK && keys.oom) rc = CB_E_NOMEM;
     for (int i = 0; rc == CB_OK && i < keys.n; i++) {
         dw_req r;
@@ -379,6 +379,12 @@ static int dy_refresh_revoke_session(cb_store *s, const char *session) {
     }
     keylist_free(&keys);
     return rc;
+}
+static int dy_refresh_revoke_session(cb_store *s, const char *session) {
+    return revoke_tokens(D(s), DWQ_SESSION_TOKENS, session);
+}
+static int dy_refresh_revoke_user(cb_store *s, const char *user) {
+    return revoke_tokens(D(s), DWQ_USER_TOKENS, user);
 }
 
 // ---- games -----------------------------------------------------------------------------
@@ -1185,6 +1191,7 @@ static const cb_store_ops DYNAMO_OPS = {
     .refresh_put = dy_refresh_put,
     .refresh_take = dy_refresh_take,
     .refresh_revoke_session = dy_refresh_revoke_session,
+    .refresh_revoke_user = dy_refresh_revoke_user,
     .game_get = dy_game_get,
     .game_create = dy_game_create,
     .game_commit = dy_game_commit,

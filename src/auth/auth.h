@@ -56,11 +56,19 @@ int cb_auth_verify_token(cb_auth *a, const char *jwt, cb_user *out);
 
 int cb_auth_signup(cb_auth *a, const char *email, const char *password, const char *username, cb_session *out);
 int cb_auth_signin(cb_auth *a, const char *email, const char *password, cb_session *out);
+// A consumed token presented again within this window of its first use is a
+// retry, answered with a new pair (GoTrue's REFRESH_TOKEN_REUSE_INTERVAL, 10 s).
+#define CB_AUTH_REUSE_GRACE_MS 10000
 int cb_auth_refresh(cb_auth *a, const char *refresh_token, cb_session *out);
-// Revokes the session's refresh tokens (every scope GoTrue's logout takes is
-// served as "local": store.h has no per-user revoke). The access token lives
-// until it expires.
-int cb_auth_logout(cb_auth *a, const cb_user *u);
+// The clock auth reads (cb_now_ms); a test seam.
+extern int64_t (*cb_auth_now)(void);
+// Logout, by GoTrue's scope: LOCAL revokes this session's refresh tokens,
+// GLOBAL (supabase-js's default signOut()) every session of the user. "others"
+// is answered by auth_http without a call: a hash-only store cannot tell the
+// caller's session apart cheaply enough to be worth it, and no client sends it.
+// Access tokens live until they expire, as GoTrue's did.
+typedef enum { CB_LOGOUT_LOCAL, CB_LOGOUT_GLOBAL } cb_logout_scope;
+int cb_auth_logout(cb_auth *a, const cb_user *u, cb_logout_scope scope);
 int cb_auth_change_password(cb_auth *a, const cb_user *u, const char *new_password);
 // Deletes the account (store user_delete). delete-account calls this AFTER the
 // app layer has redacted the user from every game (functions_http.h).

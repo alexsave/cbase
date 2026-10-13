@@ -525,6 +525,7 @@ bool dw_item_refresh(cb_span it, cb_refresh_row *r) {
     dw_get_s(it, "session_id", r->session_id, sizeof r->session_id);
     r->created_at = get_n_or(it, "created_at", 0);
     dw_get_bool(it, "revoked", &r->revoked);
+    r->revoked_at = get_n_or(it, "revoked_at", 0);
     return true;
 }
 
@@ -1075,7 +1076,7 @@ void dw_refresh_put(dw_req *r, const char *table, const cb_refresh_row *t) {
     finish(&w);
 }
 
-void dw_refresh_take(dw_req *r, const char *table, const char *hash) {
+void dw_refresh_take(dw_req *r, const char *table, const char *hash, int64_t now_ms) {
     char pk[KB];
     cb_jw w;
     begin(r, &w, "UpdateItem");
@@ -1083,6 +1084,10 @@ void dw_refresh_take(dw_req *r, const char *table, const char *hash) {
     ux u;
     ux_init(&u);
     ux_set_bool(&u, "revoked", true);
+    // The first take stamps revoked_at; a later one, or a logout's 0, stays.
+    ux_name(&u, "revoked_at");
+    ux_set_raw(&u, "#revoked_at = if_not_exists(#revoked_at, :now)");
+    ux_val_n(&u, ":now", now_ms);
     ux_emit(&w, &u, "attribute_exists(pk)");
     ux_free(&u);
     cb_jw_kstr(&w, "ReturnValues", "ALL_OLD");
@@ -1098,6 +1103,7 @@ void dw_refresh_revoke(dw_req *r, const char *table, cb_span key) {
     ux u;
     ux_init(&u);
     ux_set_bool(&u, "revoked", true);
+    ux_set_n(&u, "revoked_at", 0);
     ux_emit(&w, &u, "attribute_exists(pk)");
     ux_free(&u);
     finish(&w);

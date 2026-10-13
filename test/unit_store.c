@@ -188,17 +188,44 @@ static void refresh_tokens_rotate(void) {
     T_EQ_INT(CB_STORE_CALL(s, refresh_put, &r), CB_OK);
     T_EQ_INT(CB_STORE_CALL(s, refresh_put, &t1), CB_OK);
     T_EQ_INT(CB_STORE_CALL(s, refresh_put, &r), CB_E_CONFLICT);
-    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "aa", &got), CB_OK);
+    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "aa", 100, &got), CB_OK);
     T_CHECK(!got.revoked);
+    T_EQ_INT(got.revoked_at, 0);
     T_EQ_STR(got.user_id, a.id);
     T_EQ_STR(got.session_id, "sess-1");
     T_EQ_INT(got.created_at, 7);
-    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "aa", &got), CB_OK);
+    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "aa", 200, &got), CB_OK);
     T_CHECK(got.revoked);   // a second use is a reuse
-    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "zz", &got), CB_E_NOT_FOUND);
+    T_EQ_INT(got.revoked_at, 100);   // stamped by the first take
+    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "aa", 300, &got), CB_OK);
+    T_EQ_INT(got.revoked_at, 100);   // and only the first
+    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "zz", 300, &got), CB_E_NOT_FOUND);
     T_EQ_INT(CB_STORE_CALL(s, refresh_revoke_session, "sess-1"), CB_OK);
-    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "bb", &got), CB_OK);
+    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "bb", 400, &got), CB_OK);
     T_CHECK(got.revoked);
+    T_EQ_INT(got.revoked_at, 0);     // a logout's revoke never stamps
+    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "aa", 500, &got), CB_OK);
+    T_EQ_INT(got.revoked_at, 0);     // and clears a rotation's stamp
+    // Per user: every session of the user, nobody else's.
+    cb_user_row b = mkuser("b@x.io", "B", 2);
+    T_EQ_INT(CB_STORE_CALL(s, user_create, &b), CB_OK);
+    cb_refresh_row c1 = r, c2 = r, c3 = r;
+    snprintf(c1.token_hash, sizeof c1.token_hash, "c1");
+    snprintf(c1.session_id, sizeof c1.session_id, "sess-2");
+    snprintf(c2.token_hash, sizeof c2.token_hash, "c2");
+    snprintf(c2.session_id, sizeof c2.session_id, "sess-3");
+    snprintf(c3.token_hash, sizeof c3.token_hash, "c3");
+    memcpy(c3.user_id, b.id, sizeof c3.user_id);
+    T_EQ_INT(CB_STORE_CALL(s, refresh_put, &c1), CB_OK);
+    T_EQ_INT(CB_STORE_CALL(s, refresh_put, &c2), CB_OK);
+    T_EQ_INT(CB_STORE_CALL(s, refresh_put, &c3), CB_OK);
+    T_EQ_INT(CB_STORE_CALL(s, refresh_revoke_user, a.id), CB_OK);
+    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "c1", 600, &got), CB_OK);
+    T_CHECK(got.revoked);
+    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "c2", 600, &got), CB_OK);
+    T_CHECK(got.revoked);
+    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "c3", 600, &got), CB_OK);
+    T_CHECK(!got.revoked);
     cb_store_close(s);
 }
 
@@ -433,7 +460,7 @@ static void user_delete_cascades(void) {
     T_EQ_INT(CB_STORE_CALL(s, user_delete, a.id), CB_OK);
     T_EQ_INT(CB_STORE_CALL(s, user_delete, a.id), CB_E_NOT_FOUND);
     cb_refresh_row got;
-    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "t1", &got), CB_E_NOT_FOUND);
+    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "t1", 1, &got), CB_E_NOT_FOUND);
     T_EQ_INT(CB_STORE_CALL(s, is_member, "ud0001", a.id), 0);
     T_EQ_INT(rating_of(s, a.id), TABLE_RATING_NONE);
     names_t n = { 0 };

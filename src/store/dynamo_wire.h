@@ -182,9 +182,11 @@ void dw_user_delete_txn(dw_req *r, const char *table, const cb_user_row *u);
 
 // Refresh tokens.
 void dw_refresh_put(dw_req *r, const char *table, const cb_refresh_row *t);
-// revoked = true, the old item returned; ConditionalCheckFailed when unknown.
-void dw_refresh_take(dw_req *r, const char *table, const char *hash);
-// revoked = true on a token found through DWQ_SESSION_TOKENS (`key` is its dw_item_key).
+// revoked = true and revoked_at = now_ms unless already set, the old item
+// returned; ConditionalCheckFailed when unknown.
+void dw_refresh_take(dw_req *r, const char *table, const char *hash, int64_t now_ms);
+// revoked = true, revoked_at = 0 on a token found through DWQ_SESSION_TOKENS
+// or DWQ_USER_TOKENS (`key` is its dw_item_key).
 void dw_refresh_revoke(dw_req *r, const char *table, cb_span key);
 
 // Games.

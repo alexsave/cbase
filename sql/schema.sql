@@ -30,13 +30,15 @@ CREATE TABLE IF NOT EXISTS users (
 
 -- One row per refresh token ever issued. token_hash is the lowercase hex
 -- SHA-256 of the token: the token itself is never stored. A use revokes it
--- (rotation); a logout revokes the session's.
+-- (rotation) and stamps revoked_at once, for the 10 s reuse grace; a logout
+-- revokes the session's (or the user's) and zeroes revoked_at.
 CREATE TABLE IF NOT EXISTS refresh_tokens (
     token_hash TEXT PRIMARY KEY,
     user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     session_id TEXT NOT NULL,
     created_at INTEGER NOT NULL,
-    revoked    INTEGER NOT NULL DEFAULT 0
+    revoked    INTEGER NOT NULL DEFAULT 0,
+    revoked_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user ON refresh_tokens(user_id);
 CREATE INDEX IF NOT EXISTS idx_refresh_tokens_session ON refresh_tokens(session_id);

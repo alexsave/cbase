@@ -4,10 +4,14 @@
 // of refresh tokens. Each refresh token is 32 CSPRNG bytes in base64url; only
 // its SHA-256 (lowercase hex) is stored. A refresh consumes the token it was
 // given (store refresh_take marks it revoked atomically) and issues a new pair
-// in the same session. Presenting a consumed token again is reuse: the whole
-// session is revoked, so a stolen token and its legitimate holder are both
-// signed out, which is GoTrue's refresh-token rotation with a reuse interval
-// of zero.
+// in the same session. Presenting a consumed token again within
+// CB_AUTH_REUSE_GRACE_MS of its first use is a retry of a refresh whose
+// response was lost (a phone changing networks), and is answered with another
+// new pair in the same session, as GoTrue's 10 s reuse interval does (GoTrue
+// answers the same child; a hash-only store cannot, so this is a sibling).
+// Later, it is reuse: the whole session is revoked, so a stolen token and its
+// legitimate holder are both signed out. A token a logout revoked has
+// revoked_at 0 (store.h) and never gets the grace.
 //
 // Access tokens are verified locally and never against the store (jwt.h).
 #include "auth.h"
@@ -31,6 +35,8 @@
 #define REFRESH_B64 43   // base64url of 32 bytes, unpadded
 #define PASSWORD_MIN 6   // GoTrue's default minimum
 #define PASSWORD_MAX 72  // bcrypt reads no further
+
+int64_t (*cb_auth_now)(void) = cb_now_ms;
 
 struct cb_auth {
     cb_store *store;    // NULL while the store is not built: only verification works
@@ -69,7 +75,7 @@ void cb_auth_free(cb_auth *a) {
 int cb_auth_verify_token(cb_auth *a, const char *jwt, cb_user *out) {
     if (!a || !jwt) return CB_E_AUTH;
     cb_jwt_claims c;
-    if (cb_jwt_verify(a->secret, jwt, cb_now_ms() / 1000, &c) != CB_OK) return CB_E_AUTH;
+    if (cb_jwt_verify(a->secret, jwt, cb_auth_now() / 1000, &c) != CB_OK) return CB_E_AUTH;
     memset(out, 0, sizeof *out);
     memcpy(out->id, c.sub, sizeof out->id);
     memcpy(out->email, c.email, sizeof out->email);
@@ -140,7 +146,7 @@ static void token_hash(const char *token, char out[65]) {
 // storing the refresh token's hash. CB_OK and *out.
 static int issue(cb_auth *a, const cb_user_row *u, const char *session_id, cb_session *out) {
     memset(out, 0, sizeof *out);
-    int64_t now_s = cb_now_ms() / 1000;
+    int64_t now_s = cb_auth_now() / 1000;
     cb_jwt_claims c;
     memset(&c, 0, sizeof c);
     memcpy(c.sub, u->id, sizeof c.sub);
@@ -161,7 +167,7 @@ static int issue(cb_auth *a, const cb_user_row *u, const char *session_id, cb_se
     token_hash(out->refresh_token, r.token_hash);
     memcpy(r.user_id, u->id, sizeof r.user_id);
     cb_strlcpy(r.session_id, session_id, sizeof r.session_id);
-    r.created_at = cb_now_ms();
+    r.created_at = cb_auth_now();
     int rc = CB_STORE_CALL(a->store, refresh_put, &r);
     if (rc != CB_OK) { memset(out, 0, sizeof *out); return rc; }
 
@@ -187,7 +193,7 @@ int cb_auth_signup(cb_auth *a, const char *email, const char *password, const ch
     cb_strlcpy(u.username, username, sizeof u.username);
     if ((rc = cb_bcrypt_hash(password, CB_BCRYPT_COST, u.password_hash)) != CB_OK) return rc;
     cb_uuid_v4(u.id);
-    u.created_at = u.last_sign_in_at = cb_now_ms();   // confirmations are off: signed in at once
+    u.created_at = u.last_sign_in_at = cb_auth_now();   // confirmations are off: signed in at once
     rc = CB_STORE_CALL(a->store, user_create, &u);
     if (rc == CB_E_CONFLICT) return CB_AUTH_E_EXISTS;
     if (rc != CB_OK) return rc;
@@ -214,7 +220,7 @@ int cb_auth_signin(cb_auth *a, const char *email, const char *password, cb_sessi
     int ok = cb_bcrypt_verify(password, u.password_hash);
     if (ok < 0) CB_WARN("auth", "user %s: stored hash does not parse as bcrypt", u.id);
     if (ok != 1) return CB_AUTH_E_BAD_LOGIN;
-    int64_t now = cb_now_ms();
+    int64_t now = cb_auth_now();
     if ((rc = CB_STORE_CALL(a->store, user_touch_sign_in, u.id, now)) != CB_OK) return rc;
     u.last_sign_in_at = now;
     cb_uuid sid;
@@ -228,10 +234,15 @@ int cb_auth_refresh(cb_auth *a, const char *refresh_token, cb_session *out) {
     char h[65];
     token_hash(refresh_token, h);
     cb_refresh_row r;
-    int rc = CB_STORE_CALL(a->store, refresh_take, h, &r);
+    int64_t now = cb_auth_now();
+    int rc = CB_STORE_CALL(a->store, refresh_take, h, now, &r);
     if (rc == CB_E_NOT_FOUND) return CB_AUTH_E_BAD_REFRESH;
     if (rc != CB_OK) return rc;
-    if (r.revoked) {
+    // A logout's revoked_at is 0, always outside the window.
+    if (r.revoked && now - r.revoked_at <= CB_AUTH_REUSE_GRACE_MS) {
+        CB_INFO("auth", "session %s: a refresh token used %lld ms ago was presented again; within the grace, a new pair",
+                r.session_id, (long long)(now - r.revoked_at));
+    } else if (r.revoked) {
         // Reuse (or a token logout revoked): end the whole session.
         CB_WARN("auth", "session %s: a consumed or revoked refresh token was presented; session revoked", r.session_id);
         rc = CB_STORE_CALL(a->store, refresh_revoke_session, r.session_id);
@@ -244,8 +255,9 @@ int cb_auth_refresh(cb_auth *a, const char *refresh_token, cb_session *out) {
     return issue(a, &u, r.session_id, out);
 }
 
-int cb_auth_logout(cb_auth *a, const cb_user *u) {
+int cb_auth_logout(cb_auth *a, const cb_user *u, cb_logout_scope scope) {
     if (!a->store) return CB_E_STATE;
+    if (scope == CB_LOGOUT_GLOBAL) return CB_STORE_CALL(a->store, refresh_revoke_user, u->id);
     return CB_STORE_CALL(a->store, refresh_revoke_session, u->session_id);
 }
 

@@ -110,8 +110,13 @@ static void signup_refusals(void) {
     teardown();
 }
 
+static int64_t g_fake_now;
+static int64_t fake_now(void) { return g_fake_now; }
+
 static void refresh_rotates_and_reuse_revokes(void) {
     setup();
+    g_fake_now = cb_now_ms();
+    cb_auth_now = fake_now;
     cb_session s0, s1, s2, x;
     T_EQ_INT(cb_auth_signup(ctx.auth, "r@foolish.cards", "secret1", "R", &s0), CB_OK);
     T_EQ_INT(cb_auth_refresh(ctx.auth, s0.refresh_token, &s1), CB_OK);
@@ -129,11 +134,24 @@ static void refresh_rotates_and_reuse_revokes(void) {
     cb_session other, o1;
     T_EQ_INT(cb_auth_signin(ctx.auth, "r@foolish.cards", "secret1", &other), CB_OK);
 
-    // s0 again: reuse. The session dies, so even the newest token fails.
-    T_EQ_INT(cb_auth_refresh(ctx.auth, s0.refresh_token, &x), CB_AUTH_E_REFRESH_USED);
-    T_EQ_INT(auth_fakestore_session_tokens(ctx.store, s0.user.session_id, &revoked), 3);
-    T_EQ_INT(revoked, 3);
+    // s1 again within the grace: a retry of a lost response gets a sibling
+    // pair in the same session, and nothing is revoked beyond s1 itself.
+    g_fake_now += CB_AUTH_REUSE_GRACE_MS;
+    cb_session g;
+    T_EQ_INT(cb_auth_refresh(ctx.auth, s1.refresh_token, &g), CB_OK);
+    T_EQ_STR(g.user.session_id, s0.user.session_id);
+    T_CHECK(strcmp(g.refresh_token, s2.refresh_token) != 0);
+    T_EQ_INT(auth_fakestore_session_tokens(ctx.store, s0.user.session_id, &revoked), 4);
+    T_EQ_INT(revoked, 2);
+    // The window is anchored at the FIRST use: a retry inside it did not
+    // stretch it, so 1 ms later s1 is reuse, and the session dies, so even
+    // the newest token fails.
+    g_fake_now += 1;
+    T_EQ_INT(cb_auth_refresh(ctx.auth, s1.refresh_token, &x), CB_AUTH_E_REFRESH_USED);
+    T_EQ_INT(auth_fakestore_session_tokens(ctx.store, s0.user.session_id, &revoked), 4);
+    T_EQ_INT(revoked, 4);
     T_EQ_INT(cb_auth_refresh(ctx.auth, s2.refresh_token, &x), CB_AUTH_E_REFRESH_USED);
+    T_EQ_INT(cb_auth_refresh(ctx.auth, s0.refresh_token, &x), CB_AUTH_E_REFRESH_USED);
     T_EQ_INT(cb_auth_refresh(ctx.auth, other.refresh_token, &o1), CB_OK);
 
     // Unknown and malformed tokens.
@@ -143,6 +161,7 @@ static void refresh_rotates_and_reuse_revokes(void) {
     T_EQ_INT(cb_auth_refresh(ctx.auth, fake, &x), CB_AUTH_E_BAD_REFRESH);
     T_EQ_INT(cb_auth_refresh(ctx.auth, "short", &x), CB_AUTH_E_BAD_REFRESH);
     T_EQ_INT(cb_auth_refresh(ctx.auth, NULL, &x), CB_AUTH_E_BAD_REFRESH);
+    cb_auth_now = cb_now_ms;
     teardown();
 }
 
@@ -152,8 +171,18 @@ static void logout_password_delete(void) {
     cb_user u;
     T_EQ_INT(cb_auth_signup(ctx.auth, "l@foolish.cards", "secret1", "L", &s), CB_OK);
     T_EQ_INT(cb_auth_verify_token(ctx.auth, s.access_token, &u), CB_OK);
-    T_EQ_INT(cb_auth_logout(ctx.auth, &u), CB_OK);
+    // A second device: local logout ends only this session, global both.
+    cb_session d2, d2b, d2c;
+    T_EQ_INT(cb_auth_signin(ctx.auth, "l@foolish.cards", "secret1", &d2), CB_OK);
+    T_EQ_INT(cb_auth_refresh(ctx.auth, d2.refresh_token, &d2b), CB_OK);
+    T_EQ_INT(cb_auth_logout(ctx.auth, &u, CB_LOGOUT_LOCAL), CB_OK);
     T_EQ_INT(cb_auth_refresh(ctx.auth, s.refresh_token, &x), CB_AUTH_E_REFRESH_USED);
+    T_EQ_INT(cb_auth_refresh(ctx.auth, d2b.refresh_token, &d2c), CB_OK);
+    // d2b was rotated a moment ago, but a logout zeroes the grace: a retry of
+    // it after the global logout is reuse, not a sibling.
+    T_EQ_INT(cb_auth_logout(ctx.auth, &u, CB_LOGOUT_GLOBAL), CB_OK);
+    T_EQ_INT(cb_auth_refresh(ctx.auth, d2c.refresh_token, &x), CB_AUTH_E_REFRESH_USED);
+    T_EQ_INT(cb_auth_refresh(ctx.auth, d2b.refresh_token, &x), CB_AUTH_E_REFRESH_USED);
     // The access token lives until it expires, as GoTrue's did.
     T_EQ_INT(cb_auth_verify_token(ctx.auth, s.access_token, &u), CB_OK);
 
@@ -337,11 +366,18 @@ static void http_signup_signin_refresh(void) {
     char rt1[64];
     T_CHECK(jstr(&r, "refresh_token", rt1, sizeof rt1));
     T_CHECK(strcmp(rt1, rt0) != 0);
+    // A retry at once (its response lost): within the grace, a session.
+    r = call("POST", "/auth/v1/token?grant_type=refresh_token", APIKEY V2024, body);
+    check_session_body(&r, "anna@foolish.cards", "ANNA");
+    // Past the grace: reuse.
+    g_fake_now = cb_now_ms() + CB_AUTH_REUSE_GRACE_MS + 1000;
+    cb_auth_now = fake_now;
     r = call("POST", "/auth/v1/token?grant_type=refresh_token", APIKEY V2024, body);
     check_error(&r, 400, "refresh_token_already_used", true);
     snprintf(body, sizeof body, "{\"refresh_token\":\"%s\"}", rt1);
     r = call("POST", "/auth/v1/token?grant_type=refresh_token", APIKEY V2024, body);
     check_error(&r, 400, "refresh_token_already_used", true);   // the reuse ended the session
+    cb_auth_now = cb_now_ms;
     r = call("POST", "/auth/v1/token?grant_type=refresh_token", APIKEY V2024, "{\"refresh_token\":\"nope\"}");
     check_error(&r, 400, "refresh_token_not_found", true);
 
@@ -427,13 +463,20 @@ static void http_user_and_logout(void) {
     r = call("POST", "/auth/v1/token?grant_type=password", APIKEY V2024,
              "{\"email\":\"c@foolish.cards\",\"password\":\"secret2\"}");
     T_EQ_INT(r.status, 200);
+    char rt2[64];   // a second session (another device)
+    T_CHECK(jstr(&r, "refresh_token", rt2, sizeof rt2));
 
-    // Logout: 204, no body, and the session's refresh token is dead.
-    r = call("POST", "/auth/v1/logout?scope=global", h, NULL);
+    // Logout with no scope is GoTrue's default, global: 204, no body, and
+    // the session's refresh token is dead.
+    r = call("POST", "/auth/v1/logout", h, NULL);
     T_EQ_INT(r.status, 204);
     T_EQ_INT(r.len, 0);
     char body[128];
     snprintf(body, sizeof body, "{\"refresh_token\":\"%s\"}", rt);
+    r = call("POST", "/auth/v1/token?grant_type=refresh_token", APIKEY V2024, body);
+    T_EQ_INT(r.status, 400);
+    // Global is every session of the user, the other device's included.
+    snprintf(body, sizeof body, "{\"refresh_token\":\"%s\"}", rt2);
     r = call("POST", "/auth/v1/token?grant_type=refresh_token", APIKEY V2024, body);
     T_EQ_INT(r.status, 400);
     r = call("POST", "/auth/v1/logout", APIKEY V2024, NULL);

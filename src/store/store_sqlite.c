@@ -42,7 +42,7 @@
 enum {
     ST_USER_GET, ST_USER_BY_EMAIL, ST_USER_INSERT, ST_RATING_FOR_NEW_USER, ST_USER_SET_PASSWORD, ST_USER_TOUCH,
     ST_USER_DELETE, ST_USERS_ALL,
-    ST_REFRESH_PUT, ST_REFRESH_GET, ST_REFRESH_REVOKE, ST_REFRESH_REVOKE_SESSION,
+    ST_REFRESH_PUT, ST_REFRESH_GET, ST_REFRESH_REVOKE, ST_REFRESH_REVOKE_SESSION, ST_REFRESH_REVOKE_USER,
     ST_GAME_GET, ST_GAME_INSERT, ST_GAME_UPDATE_CAS, ST_GAME_EXISTS, ST_GAME_DELETE_CAS,
     ST_MEMBER_INSERT, ST_MEMBERS_OF_GAME, ST_MEMBER_DELETE, ST_MEMBERS_CLEAR,
     ST_BOTSEAT_INSERT, ST_BOTSEATS_OF_GAME, ST_BOTSEAT_DELETE, ST_BOTSEATS_CLEAR,
@@ -81,10 +81,14 @@ static const char *const SQL[ST__COUNT] = {
 
     [ST_REFRESH_PUT] = "INSERT INTO refresh_tokens (token_hash, user_id, session_id, created_at, revoked) "
                        "VALUES (?1, ?2, ?3, ?4, ?5)",
-    [ST_REFRESH_GET] = "SELECT token_hash, user_id, session_id, created_at, revoked FROM refresh_tokens "
+    [ST_REFRESH_GET] = "SELECT token_hash, user_id, session_id, created_at, revoked, revoked_at FROM refresh_tokens "
                        "WHERE token_hash = ?1",
-    [ST_REFRESH_REVOKE] = "UPDATE refresh_tokens SET revoked = 1 WHERE token_hash = ?1",
-    [ST_REFRESH_REVOKE_SESSION] = "UPDATE refresh_tokens SET revoked = 1 WHERE session_id = ?1",
+    // The first take stamps revoked_at; a later one keeps it, so a retry
+    // storm cannot stretch the grace window.
+    [ST_REFRESH_REVOKE] = "UPDATE refresh_tokens SET revoked = 1, revoked_at = COALESCE(revoked_at, ?2) "
+                          "WHERE token_hash = ?1",
+    [ST_REFRESH_REVOKE_SESSION] = "UPDATE refresh_tokens SET revoked = 1, revoked_at = 0 WHERE session_id = ?1",
+    [ST_REFRESH_REVOKE_USER] = "UPDATE refresh_tokens SET revoked = 1, revoked_at = 0 WHERE user_id = ?1",
 
     [ST_GAME_GET] = "SELECT " GAME_COLS " FROM games WHERE id = ?1",
     [ST_GAME_INSERT] = "INSERT INTO games (" GAME_COLS ") VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
@@ -612,7 +616,7 @@ static int sq_refresh_put(cb_store *st, const cb_refresh_row *r) {
     return rc;
 }
 
-static int sq_refresh_take(cb_store *st, const char *hash, cb_refresh_row *out) {
+static int sq_refresh_take(cb_store *st, const char *hash, int64_t now_ms, cb_refresh_row *out) {
     sq *q = Q(st);
     lock(q);
     int rc = begin(q);
@@ -629,13 +633,17 @@ static int sq_refresh_take(cb_store *st, const char *hash, cb_refresh_row *out) 
                 c_text(s, 2, out->session_id, sizeof out->session_id);
                 out->created_at = c_i64(s, 3);
                 out->revoked = c_i64(s, 4) != 0;
+                out->revoked_at = c_i64(s, 5);
             } else rc = r == SQLITE_DONE ? CB_E_NOT_FOUND : fail(q, "refresh get", r);
             done(s);
         }
     }
     if (rc == CB_OK) {
         sqlite3_stmt *s = stmt(q, ST_REFRESH_REVOKE);
-        if (s) b_text(s, 1, hash);
+        if (s) {
+            b_text(s, 1, hash);
+            b_i64(s, 2, now_ms);
+        }
         rc = step_write(q, s, "refresh revoke", false);
     }
     if (rc == CB_OK) rc = commit(q);
@@ -646,6 +654,9 @@ static int sq_refresh_take(cb_store *st, const char *hash, cb_refresh_row *out) 
 
 static int sq_refresh_revoke_session(cb_store *st, const char *session_id) {
     return write1(Q(st), ST_REFRESH_REVOKE_SESSION, "revoke session", false, session_id, NULL, NULL);
+}
+static int sq_refresh_revoke_user(cb_store *st, const char *user_id) {
+    return write1(Q(st), ST_REFRESH_REVOKE_USER, "revoke user", false, user_id, NULL, NULL);
 }
 
 // ---- games -----------------------------------------------------------------------------
@@ -1627,6 +1638,7 @@ static const cb_store_ops SQLITE_OPS = {
     .refresh_put = sq_refresh_put,
     .refresh_take = sq_refresh_take,
     .refresh_revoke_session = sq_refresh_revoke_session,
+    .refresh_revoke_user = sq_refresh_revoke_user,
     .game_get = sq_game_get,
     .game_create = sq_game_create,
     .game_commit = sq_game_commit,

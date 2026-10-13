@@ -255,13 +255,15 @@ static void h_logout(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     NEED_AUTH(ctx, res);
     cb_user u;
     if (!caller(ctx, req, res, &u)) return;
+    // GoTrue's default scope is global, and supabase-js sends it explicitly.
     char scope[16];
-    if (cb_http_query_get(req, "scope", scope, sizeof scope) && strcmp(scope, "others") == 0) {
-        // "Sign out my other devices": nothing here can name them (auth.h).
+    if (!cb_http_query_get(req, "scope", scope, sizeof scope)) cb_strlcpy(scope, "global", sizeof scope);
+    if (strcmp(scope, "others") == 0) {
+        // "Sign out my other devices": not served (auth.h); no client sends it.
         cb_res_status(res, 204);
         return;
     }
-    int rc = cb_auth_logout(ctx->auth, &u);
+    int rc = cb_auth_logout(ctx->auth, &u, strcmp(scope, "local") == 0 ? CB_LOGOUT_LOCAL : CB_LOGOUT_GLOBAL);
     if (rc != CB_OK) { fail_rc(req, res, rc); return; }
     cb_res_status(res, 204);
 }

@@ -106,13 +106,14 @@ static int f_refresh_put(cb_store *s, const cb_refresh_row *r) {
     return rc;
 }
 
-static int f_refresh_take(cb_store *s, const char *hash, cb_refresh_row *out) {
+static int f_refresh_take(cb_store *s, const char *hash, int64_t now_ms, cb_refresh_row *out) {
     fake *f = F(s);
     int rc = CB_E_NOT_FOUND;
     pthread_mutex_lock(&f->mu);
     for (int j = 0; j < f->n_tokens; j++)
         if (strcmp(f->tokens[j].token_hash, hash) == 0) {
             *out = f->tokens[j];
+            if (!f->tokens[j].revoked) f->tokens[j].revoked_at = now_ms;
             f->tokens[j].revoked = true;
             rc = CB_OK;
             break;
@@ -125,7 +126,22 @@ static int f_refresh_revoke_session(cb_store *s, const char *sid) {
     fake *f = F(s);
     pthread_mutex_lock(&f->mu);
     for (int j = 0; j < f->n_tokens; j++)
-        if (strcmp(f->tokens[j].session_id, sid) == 0) f->tokens[j].revoked = true;
+        if (strcmp(f->tokens[j].session_id, sid) == 0) {
+            f->tokens[j].revoked = true;
+            f->tokens[j].revoked_at = 0;
+        }
+    pthread_mutex_unlock(&f->mu);
+    return CB_OK;
+}
+
+static int f_refresh_revoke_user(cb_store *s, const char *uid) {
+    fake *f = F(s);
+    pthread_mutex_lock(&f->mu);
+    for (int j = 0; j < f->n_tokens; j++)
+        if (strcmp(f->tokens[j].user_id, uid) == 0) {
+            f->tokens[j].revoked = true;
+            f->tokens[j].revoked_at = 0;
+        }
     pthread_mutex_unlock(&f->mu);
     return CB_OK;
 }
@@ -144,6 +160,7 @@ static const cb_store_ops FAKE_OPS = {
     .refresh_put = f_refresh_put,
     .refresh_take = f_refresh_take,
     .refresh_revoke_session = f_refresh_revoke_session,
+    .refresh_revoke_user = f_refresh_revoke_user,
 };
 
 cb_store *auth_fakestore_new(void) {
