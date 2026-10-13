@@ -20,6 +20,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+// A pickup can carry every card in play, and the session log must record it
+// whole, or table_replay_code's gate refuses the finished game and it gets no
+// replay. The kernel's compact default (16) is its arena's; the Makefile builds
+// with the shipped human-game capacities (KERNEL_CAPS), and this holds it there.
+#include "game.h"
+_Static_assert(MAX_LOG_PAIRS >= MAX_DECK,
+               "the kernel must be built with the human-game capacities (c_base/Makefile KERNEL_CAPS)");
+
 int64_t (*cb_app_now)(void) = cb_now_ms;
 void (*cb_app_sleep)(int64_t ms) = cb_sleep_ms;
 

@@ -34,6 +34,18 @@ endif
 KERNEL_SRC := $(patsubst ../../%,$(C_ROOT)/%,$(filter ../../%,$(KERNEL_LIST))) \
               $(addprefix $(KDIR)/,$(filter-out ../../%,$(KERNEL_LIST)))
 
+# THE KERNEL'S CAPACITIES for human games: the ones the shipped wasm (which the
+# hosted backend runs) and iOS compile it with, read from foolish/c's own
+# WASM_FLAGS through its print-human-caps target, so no second copy exists. The
+# kernel's compact defaults are the native arena's: under them a pickup of more
+# than 16 cards is logged short and the finished game gets no replay. They
+# change struct sizes (Game, the snapshot stores), so c_base's own objects are
+# compiled with them too, or the two halves would disagree on a layout.
+KERNEL_CAPS := $(shell MAKEFLAGS= $(MAKE) -s --no-print-directory -C $(KDIR) print-human-caps)
+ifeq ($(filter -DMAX_LOG_PAIRS=%,$(KERNEL_CAPS)),)
+  $(error could not read the kernel's human-game capacities (make -C $(KDIR) print-human-caps))
+endif
+
 # THE KERNEL'S OWN FLAGS (foolish/c/Makefile CFLAGS), with two differences, both
 # on purpose:
 #   * no -D_Thread_local= : that Makefile strips the qualifier because its
@@ -45,7 +57,7 @@ KERNEL_SRC := $(patsubst ../../%,$(C_ROOT)/%,$(filter ../../%,$(KERNEL_LIST))) \
 #     kernel measures ~1.5x faster cordite decisions with it).
 # -DCD_PASS_PROBE is a test counter of the kernel's own suite and is left out.
 KERNEL_CFLAGS := -O3 -ffast-math -Wall -Wextra -Wno-unused-parameter -Wno-deprecated-declarations \
-                 -I$(KDIR)/src -I$(C_ROOT)/shared/c -DACCELERATE_NEW_LAPACK -DCD_LEAFBOOK
+                 -I$(KDIR)/src -I$(C_ROOT)/shared/c -DACCELERATE_NEW_LAPACK -DCD_LEAFBOOK $(KERNEL_CAPS)
 ifeq ($(LTO),1)
   KERNEL_CFLAGS += -flto
   LTO_LDFLAGS := -flto
@@ -65,7 +77,7 @@ endif
 # clang does not (client_table.c maybe-uninitialized), and they are the
 # kernel's to fix, not a reason this build fails on Linux.
 CB_CFLAGS := -std=gnu11 -D_GNU_SOURCE -O2 -g -Wall -Wextra -Werror -Wno-unused-parameter -Wshadow -Wvla \
-             -Isrc -Itest -I$(KDIR)/src -I$(C_ROOT)/shared/c $(OPENSSL_CFLAGS) -pthread
+             -Isrc -Itest -I$(KDIR)/src -I$(C_ROOT)/shared/c $(OPENSSL_CFLAGS) -pthread $(KERNEL_CAPS)
 LDLIBS := $(OPENSSL_LDFLAGS) -lsqlite3 -lssl -lcrypto -lpthread -lm $(PLATFORM_LDLIBS) $(LTO_LDFLAGS)
 # STATIC=1: a fully static link (the Lambda bootstrap, built on musl by
 # tools/build_bootstrap.sh). Not meaningful on macOS.
