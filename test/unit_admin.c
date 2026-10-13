@@ -4,6 +4,8 @@
 #include "t.h"
 
 #include "admin/admin.h"
+#include "app/table_ops.h"
+#include "auth/auth.h"
 #include "auth/jwt.h"
 #include "handler.h"
 #include "lib_admin_fakestore.h"
@@ -296,38 +298,47 @@ static void sqlite_backup_is_vacuum_into(void) {
     rmdir(dir);
 }
 
-// Deleting a user goes through POST /functions/v1/delete-account as that
-// user. The app's route is replaced here by a recorder.
-static int g_delete_calls;
-static char g_delete_sub[64];
-static void h_fake_delete(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
-    g_delete_calls++;
-    cb_jwt_claims c;
-    const char *tok = cb_http_bearer(req);
-    if (tok && cb_jwt_verify(ctx->cfg->jwt_secret, tok, cb_now_ms() / 1000, &c) == CB_OK) cb_strlcpy(g_delete_sub, c.sub, sizeof g_delete_sub);
-    cb_res_status(res, 204);
-}
+// Deleting a user is cb_app_delete_account, delete-account's own function, run
+// here against the real SQLite store and real auth: a user seated at a lobby
+// is redacted from it and the account is gone.
+static bool count_game(const cb_member_row *m, void *ud) { (void)m; (*(int *)ud)++; return true; }
 
 static void user_delete_is_the_delete_account_path(void) {
     setup(ADMIN_TOKEN, "sqlite");
-    T_EQ_INT(cb_router_add(g_ctx.router, "POST", "/functions/v1/delete-account", CB_ROUTE_APIKEY, h_fake_delete), CB_OK);
-    g_delete_calls = 0;
-    g_delete_sub[0] = 0;
+    cb_store_close(g_ctx.store);
+    char db[512];
+    const char *tmp = getenv("TMPDIR");
+    snprintf(db, sizeof db, "%s/cbase-admin-delete-%d.sqlite", tmp && *tmp ? tmp : "/tmp", (int)getpid());
+    unlink(db);
+    g_ctx.store = NULL;
+    T_EQ_INT(cb_store_open_sqlite(db, &g_ctx.store), CB_OK);
+    T_EQ_INT(cb_auth_new(&g_ctx, &g_ctx.auth), CB_OK);
+    cb_session s;
+    T_EQ_INT(cb_auth_signup(g_ctx.auth, "gone@foolish.cards", "secret1", "GONE", &s), CB_OK);
+    cb_table_result made;
+    T_EQ_INT(cb_table_create(&g_ctx, &s.user, &made), CB_OK);
+    free(made.envelope);
+    int games = 0;
+    T_EQ_INT(CB_STORE_CALL(g_ctx.store, games_of_user, s.user.id, 10, count_game, &games), 1);
+
     T_EQ_INT(call("POST", "/admin/api/users/delete", NULL, ADMIN_TOKEN, "{\"id\":\"nobody\"}"), 404);
     T_EQ_INT(call("POST", "/admin/api/users/delete", NULL, ADMIN_TOKEN, "{}"), 400);
-    T_EQ_INT(g_delete_calls, 0);
-    char tok[CB_JWT_MAX];
-    cb_jwt_claims probe = { .iat = 1, .exp = 2 };
-    if (cb_jwt_mint(JWT_SECRET, &probe, "x", tok, sizeof tok) == CB_E_NOTIMPL) {
-        // auth/jwt.c is still a stub in this tree: the admin says so and calls nothing.
-        printf("NOTE unit_admin: cb_jwt_mint is a stub; the delete path is checked only up to the mint\n");
-        T_EQ_INT(call("POST", "/admin/api/users/delete", NULL, ADMIN_TOKEN, "{\"id\":\"u0\"}"), 503);
-        T_EQ_INT(g_delete_calls, 0);
-        return;
-    }
-    T_EQ_INT(call("POST", "/admin/api/users/delete", NULL, ADMIN_TOKEN, "{\"id\":\"u0\"}"), 200);
-    T_EQ_INT(g_delete_calls, 1);
-    T_EQ_STR(g_delete_sub, "u0");
+    char body[96];
+    snprintf(body, sizeof body, "{\"id\":\"%s\"}", s.user.id);
+    T_EQ_INT(call("POST", "/admin/api/users/delete", NULL, "not-the-token", body), 401);
+    cb_user_row row;
+    T_EQ_INT(CB_STORE_CALL(g_ctx.store, user_get, s.user.id, &row), CB_OK);
+    T_EQ_INT(call("POST", "/admin/api/users/delete", NULL, ADMIN_TOKEN, body), 200);
+    T_CHECK(strstr(B(), s.user.id) != NULL);
+    T_EQ_INT(CB_STORE_CALL(g_ctx.store, user_get, s.user.id, &row), CB_E_NOT_FOUND);
+    games = 0;
+    CB_STORE_CALL(g_ctx.store, games_of_user, s.user.id, 10, count_game, &games);
+    T_EQ_INT(games, 0);
+    cb_auth_free(g_ctx.auth);
+    g_ctx.auth = NULL;
+    cb_store_close(g_ctx.store);
+    g_ctx.store = NULL;
+    unlink(db);
 }
 
 int main(void) {
@@ -344,7 +355,7 @@ int main(void) {
     T_RUN(sqlite_backup_is_vacuum_into);
     T_RUN(user_delete_is_the_delete_account_path);
     cb_router_free(g_ctx.router);
-    cb_store_close(g_ctx.store);
+    if (g_ctx.store) cb_store_close(g_ctx.store);
     cb_buf_free(&g_body);
     return T_DONE();
 }

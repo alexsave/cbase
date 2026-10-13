@@ -845,6 +845,29 @@ static void admin_reads(void) {
     r.rows = 0;
     CB_STORE_CALL(s, admin_query, "SELECT state FROM games", false, collect_row, &r);
     T_EQ_STR(r.first[0], "\\x010203");
+    // CB_ADMIN_GAMES: rows carry the game's id (the console's Games panel).
+    r.rows = 0;
+    T_EQ_INT(CB_STORE_CALL(s, admin_browse, CB_ADMIN_GAMES, NULL, "", 10, collect_row, &r, next, sizeof next), 1);
+    T_EQ_STR(r.col0, "id");
+    T_EQ_STR(r.first[0], "adm001");
+    // The console's backup: VACUUM INTO is a write, so only when allowed.
+    char vac[512], stmt[600];
+    const char *tmp = getenv("TMPDIR");
+    snprintf(vac, sizeof vac, "%s/cbase-vacuum-%d.sqlite", tmp && *tmp ? tmp : "/tmp", (int)getpid());
+    unlink(vac);
+    snprintf(stmt, sizeof stmt, "VACUUM INTO '%s'", vac);
+    T_EQ_INT(CB_STORE_CALL(s, admin_query, stmt, false, NULL, NULL), CB_E_FORBIDDEN);
+    T_CHECK(access(vac, F_OK) != 0);
+    T_EQ_INT(CB_STORE_CALL(s, admin_query, stmt, true, NULL, NULL), 0);
+    cb_store *copy = NULL;
+    T_EQ_INT(cb_store_open_sqlite(vac, &copy), CB_OK);
+    if (copy) {
+        cb_game_row back;
+        T_EQ_INT(CB_STORE_CALL(copy, game_get, "adm001", &back), CB_OK);
+        cb_game_row_free(&back);
+        cb_store_close(copy);
+    }
+    unlink(vac);
     cb_store_close(s);
 }
 

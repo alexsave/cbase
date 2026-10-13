@@ -188,6 +188,7 @@ typedef bool (*cb_conn_fn)(const cb_conn_row *r, void *ud);
 typedef bool (*cb_name_fn)(const char *name, void *ud);   // a game id, a collection name
 typedef bool (*cb_user_fn)(const cb_user_row *r, void *ud);
 // The admin console's raw browse: one row as name/value text pairs.
+#define CB_ADMIN_GAMES "games"   // see admin_collections
 typedef bool (*cb_admin_row_fn)(int n, const char *const *names, const char *const *values, void *ud);
 
 // ---- the interface ------------------------------------------------------------------
@@ -298,6 +299,10 @@ typedef struct cb_store_ops {
     // DynamoDB it matches the pk after "<FAMILY>#". `cursor` is "" for the
     // first page and next_cursor comes back "" after the last. A value is
     // text, a blob "\x" hex, SQL NULL a NULL pointer. fn may be NULL.
+    // CB_ADMIN_GAMES names the same thing on both backends: browse rows that
+    // each name one game (SQLite's games table, column "id"; DynamoDB's GAME
+    // family, where only the pk GAME#<id> / sk ROW item carries "id"), so the
+    // console's Games panel needs no per-backend knowledge.
     int (*admin_collections)(cb_store *s, cb_name_fn fn, void *ud);
     int (*admin_browse)(cb_store *s, const char *collection, const char *prefix, const char *cursor, int limit,
                         cb_admin_row_fn fn, void *ud, char *next_cursor, size_t next_cap);

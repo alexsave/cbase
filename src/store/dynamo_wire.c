@@ -1720,7 +1720,11 @@ static const char *const FAMILIES[] = { "USER", "EMAIL", "REFRESH", "GAME", "BOT
 
 const char *dw_collection(int i) { return i >= 0 && i < N_FAMILIES ? FAMILIES[i] : NULL; }
 
+// store.h CB_ADMIN_GAMES: the GAME family under the name both backends share.
+static const char *family_of(const char *c) { return c && strcmp(c, CB_ADMIN_GAMES) == 0 ? "GAME" : c; }
+
 bool dw_collection_valid(const char *c) {
+    c = family_of(c);
     for (int i = 0; c && i < N_FAMILIES; i++)
         if (strcmp(FAMILIES[i], c) == 0) return true;
     return false;
@@ -1728,6 +1732,7 @@ bool dw_collection_valid(const char *c) {
 
 void dw_scan_family(dw_req *r, const char *table, const char *family, const char *prefix, int limit, cb_span start) {
     char p[KB];
+    family = family_of(family);
     // SCAN is a whole partition; every other family is "<FAMILY>#...".
     snprintf(p, sizeof p, "%s%s%s", family, strcmp(family, "SCAN") == 0 ? "" : "#", prefix ? prefix : "");
     cb_jw w;

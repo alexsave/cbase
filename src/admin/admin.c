@@ -17,10 +17,9 @@
 //     allow_write. Without that exact word allow_write is false, and the
 //     STORE is the one that refuses a write (SQLite's sqlite3_stmt_readonly,
 //     DynamoDB's PartiQL statement kind); this file never parses SQL.
-//   * POST users/delete: the SAME path the app's delete-account takes. It
-//     mints the user an access token and runs POST /functions/v1/delete-account
-//     through cb_handle, so the redaction from every game, the leaderboard
-//     name and the account delete stay the app's one implementation.
+//   * POST users/delete: cb_app_delete_account, the SAME function the app's
+//     delete-account route calls, so the redaction from every game, the
+//     leaderboard name and the account delete stay one implementation.
 //   * POST backups (SQLite only): VACUUM INTO a timestamped file beside the
 //     database, through admin_query. DynamoDB has point-in-time recovery on
 //     (ops/cbase.yaml) and the console explains it rather than copying.
@@ -29,8 +28,8 @@
 // console is a browser page we own, and JSON is what fetch reads.
 #include "admin.h"
 
+#include "app/functions_http.h"
 #include "app/table_ops.h"
-#include "auth/jwt.h"
 #include "handler.h"
 #include "net/router.h"
 #include "roster.h"
@@ -466,8 +465,8 @@ static void api_users(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     cb_buf_free(&b);
 }
 
-// POST /admin/api/users/delete  {"id": "<uuid>"}: the delete-account path, run
-// as that user (see the header comment).
+// POST /admin/api/users/delete  {"id": "<uuid>"}: cb_app_delete_account, the
+// one implementation delete-account runs (see the header comment).
 static void api_user_delete(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     if (!need_store(ctx, res)) return;
     char id[CB_UUID_LEN + 1];
@@ -478,50 +477,25 @@ static void api_user_delete(cb_ctx *ctx, const cb_http_req *req, cb_http_res *re
     cb_user_row u;
     int rc = CB_STORE_CALL(ctx->store, user_get, id, &u);
     if (rc < 0) { store_error(ctx, res, "delete: user", rc); return; }
-    cb_jwt_claims c;
-    memset(&c, 0, sizeof c);
-    cb_strlcpy(c.sub, u.id, sizeof c.sub);
-    cb_strlcpy(c.email, u.email, sizeof c.email);
-    cb_strlcpy(c.username, u.username, sizeof c.username);
-    cb_uuid_v4(c.session_id);
-    c.iat = cb_now_ms() / 1000;
-    c.exp = c.iat + 60;
-    char iss[600], tok[CB_JWT_MAX], authz[CB_JWT_MAX + 16];
-    snprintf(iss, sizeof iss, "%s/auth/v1", ctx->cfg->public_url);
-    int n = cb_jwt_mint(ctx->cfg->jwt_secret, &c, iss, tok, sizeof tok);
-    if (n < 0) { cb_router_error(res, 503, "delete: cannot mint the user's token (auth not available)"); return; }
-    snprintf(authz, sizeof authz, "Bearer %s", tok);
-
-    cb_http_req in;
-    memset(&in, 0, sizeof in);
-    cb_strlcpy(in.method, "POST", sizeof in.method);
-    in.path = "/functions/v1/delete-account";
-    in.query = "";
-    in.minor = 1;
-    in.headers[in.n_headers++] = (cb_http_header){ "Authorization", authz };
-    if (ctx->cfg->anon_key[0]) in.headers[in.n_headers++] = (cb_http_header){ "apikey", ctx->cfg->anon_key };
-    cb_strlcpy(in.peer, "admin", sizeof in.peer);
-    cb_http_res out;
-    cb_res_init(&out);
-    cb_handle(ctx, &in, &out);
-    int st = out.status;
-    cb_res_free(&out);
-    CB_WARN("admin", "delete-account for user %s: HTTP %d", id, st);
-    if (st == 204 || st == 200) {
-        cb_buf b;
-        cb_buf_init(&b);
-        cb_jw w;
-        cb_jw_init(&w, &b);
-        cb_jw_obj(&w);
-        cb_jw_kstr(&w, "deleted", id);
-        cb_jw_end(&w);
-        send_json(res, 200, &b, &w);
-        cb_buf_free(&b);
+    int code = 0, detail = 0;
+    rc = cb_app_delete_account(ctx, id, &code, &detail);
+    CB_WARN("admin", "delete-account for user %s: %s", id, cb_strerror(rc));
+    if (rc != CB_OK) {
+        char m[160];
+        if (code) snprintf(m, sizeof m, "delete: a table refused the redaction (kernel code %d, detail %d)", code, detail);
+        else snprintf(m, sizeof m, "delete: %s", cb_strerror(rc));
+        cb_router_error(res, code ? 409 : rc == CB_E_STATE ? 503 : 500, m);
         return;
     }
-    char m[128];
-    snprintf(m, sizeof m, "delete-account answered HTTP %d", st);
-    cb_router_error(res, st == 404 ? 503 : 502, m);
+    cb_buf b;
+    cb_buf_init(&b);
+    cb_jw w;
+    cb_jw_init(&w, &b);
+    cb_jw_obj(&w);
+    cb_jw_kstr(&w, "deleted", id);
+    cb_jw_end(&w);
+    send_json(res, 200, &b, &w);
+    cb_buf_free(&b);
 }
 
 // ---- games ----------------------------------------------------------------------------
@@ -597,7 +571,7 @@ static void api_games(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     id_sink *s = calloc(1, sizeof *s);
     if (!s) { cb_router_error(res, 500, "out of memory"); return; }
     s->cap = q_int(req, "limit", 25, 1, GAMES_PAGE_MAX);
-    int rc = CB_STORE_CALL(ctx->store, admin_browse, "games", prefix, cursor[0] ? cursor : NULL, s->cap, take_game_id, s,
+    int rc = CB_STORE_CALL(ctx->store, admin_browse, CB_ADMIN_GAMES, prefix, cursor[0] ? cursor : NULL, s->cap, take_game_id, s,
                            next, sizeof next);
     if (rc < 0) { free(s); store_error(ctx, res, "games", rc); return; }
     cb_buf b;
