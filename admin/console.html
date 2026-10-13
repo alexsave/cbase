@@ -1,0 +1,740 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>c_base console</title>
+<!--
+  c_base console: one static file, embedded into the binary at build time
+  (c_base/Makefile build/gen/console_html.c) and served at GET /admin.
+  Its API is /admin/api/* (c_base/src/admin/admin.c), every call carrying
+  "Authorization: Bearer <CBASE_ADMIN_TOKEN>". The token lives in
+  sessionStorage only, so closing the tab forgets it.
+  No framework, no CDN, no build step: the page's Content-Security-Policy
+  allows nothing but itself and same-origin fetches.
+-->
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --ink: #1b1f24; --ink-2: #57606a; --ink-3: #8b949e;
+  --line: #d8dee4; --line-2: #eaeef2; --accent: #1f6feb; --accent-ink: #ffffff;
+  --ok: #1a7f37; --warn: #9a6700; --bad: #cf222e; --chip: #eef1f4; --code: #f3f4f6;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d1117; --panel: #161b22; --ink: #e6edf3; --ink-2: #9da7b3; --ink-3: #6e7681;
+    --line: #30363d; --line-2: #21262d; --accent: #4493f8; --accent-ink: #0d1117;
+    --ok: #3fb950; --warn: #d29922; --bad: #f85149; --chip: #21262d; --code: #0b0f14;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body { background: var(--bg); color: var(--ink); font: 14px/1.45 var(--sans); min-height: 100vh; }
+a { color: var(--accent); }
+button, input, select, textarea { font: inherit; color: inherit; }
+button {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px;
+  cursor: pointer; white-space: nowrap;
+}
+button:hover { border-color: var(--ink-3); }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+button.danger { color: var(--bad); }
+button:disabled { opacity: .5; cursor: default; }
+input, select, textarea {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; min-width: 0;
+}
+textarea { font-family: var(--mono); font-size: 13px; width: 100%; min-height: 120px; resize: vertical; }
+input:focus, select:focus, textarea:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+header.top {
+  display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--line);
+  background: var(--panel); position: sticky; top: 0; z-index: 2;
+}
+header.top h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .01em; white-space: nowrap; }
+header.top .badge { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+header.top .spacer { flex: 1; }
+.badge {
+  display: inline-block; padding: 1px 8px; border-radius: 999px; background: var(--chip); color: var(--ink-2);
+  font-size: 12px; white-space: nowrap;
+}
+.badge.ok { color: var(--ok); } .badge.warn { color: var(--warn); } .badge.bad { color: var(--bad); }
+
+.shell { display: flex; min-height: calc(100vh - 49px); }
+nav.side { width: 180px; flex: none; border-right: 1px solid var(--line); padding: 12px 8px; background: var(--panel); }
+nav.side button {
+  display: block; width: 100%; text-align: left; border: 0; background: transparent; border-radius: 6px;
+  padding: 7px 10px; margin-bottom: 2px; color: var(--ink-2);
+}
+nav.side button:hover { background: var(--chip); }
+nav.side button.on { background: var(--chip); color: var(--ink); font-weight: 600; }
+main { flex: 1; min-width: 0; padding: 20px 24px 48px; }
+main h2 { font-size: 18px; margin: 0 0 4px; }
+main .sub { color: var(--ink-2); margin: 0 0 16px; }
+
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; margin-bottom: 16px; }
+.card h3 { font-size: 13px; margin: 0 0 10px; color: var(--ink-2); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.tile { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
+.tile .k { color: var(--ink-2); font-size: 12px; }
+.tile .v { font-size: 20px; font-weight: 600; margin-top: 2px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.tile .v.small { font-size: 14px; font-weight: 500; }
+
+.bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+.bar label { color: var(--ink-2); font-size: 12px; display: flex; gap: 6px; align-items: center; }
+.bar .grow { flex: 1; min-width: 140px; }
+
+.tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line-2); vertical-align: top; }
+th { color: var(--ink-2); font-weight: 600; white-space: nowrap; position: sticky; top: 0; background: var(--panel); }
+th.sortable { cursor: pointer; user-select: none; }
+th.sortable:hover { color: var(--ink); }
+tr:last-child td { border-bottom: 0; }
+tr.click { cursor: pointer; }
+tr.click:hover td { background: var(--chip); }
+td.mono, .mono { font-family: var(--mono); font-size: 12px; }
+td .cell { max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+td.null { color: var(--ink-3); font-style: italic; }
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.chips button { border-radius: 999px; padding: 3px 12px; font-size: 13px; }
+.chips button.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+
+pre.hex, pre.log {
+  font-family: var(--mono); font-size: 12px; background: var(--code); border: 1px solid var(--line);
+  border-radius: 8px; padding: 10px 12px; margin: 0; overflow-x: auto; white-space: pre;
+}
+pre.log { max-height: 60vh; overflow-y: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.lvl-debug { color: var(--ink-3); } .lvl-info { color: var(--ink); } .lvl-warn { color: var(--warn); } .lvl-error { color: var(--bad); }
+.msg { padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); margin-bottom: 12px; }
+.msg.bad { border-color: var(--bad); color: var(--bad); }
+.msg.warn { border-color: var(--warn); }
+.muted { color: var(--ink-2); }
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; }
+.kv .k { color: var(--ink-2); }
+.kv .v { overflow-wrap: anywhere; }
+.confirm { border: 1px solid var(--bad); border-radius: 8px; padding: 12px; margin: 12px 0; background: var(--panel); }
+.confirm p { margin: 0 0 8px; }
+
+.login { max-width: 420px; margin: 12vh auto; padding: 0 16px; }
+.login .card { padding: 20px; }
+.login input { width: 100%; margin: 8px 0 12px; }
+
+@media (max-width: 760px) {
+  .shell { display: block; }
+  nav.side {
+    width: auto; border-right: 0; border-bottom: 1px solid var(--line); padding: 6px 16px;
+    display: flex; gap: 4px; overflow-x: auto; position: sticky; top: 49px; z-index: 1;
+  }
+  nav.side button { display: inline-block; width: auto; margin: 0; flex: none; }
+  main { padding: 16px 16px 40px; }
+  header.top { padding: 10px 16px; }
+  header.top .hide-sm { display: none; }
+  .kv { grid-template-columns: 1fr; gap: 2px; }
+  .kv .v { margin-bottom: 8px; }
+}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+'use strict';
+
+// ---- small helpers -------------------------------------------------------------
+
+const API = '/admin/api/';
+const TOKEN_KEY = 'cbase.admin.token';
+
+function storeGet(k) { try { return sessionStorage.getItem(k); } catch (e) { return null; } }
+function storeSet(k, v) { try { if (v == null) sessionStorage.removeItem(k); else sessionStorage.setItem(k, v); } catch (e) {} }
+
+// h('div', {class: 'x', onclick: f}, child, 'text', [more])
+function h(tag, attrs, ...kids) {
+  const el = document.createElement(tag);
+  if (attrs) for (const k in attrs) {
+    const v = attrs[k];
+    if (v == null || v === false) continue;
+    if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
+    else if (k === 'class') el.className = v;
+    else if (k === 'value') el.value = v;
+    else el.setAttribute(k, v === true ? '' : v);
+  }
+  const add = (c) => {
+    if (c == null || c === false) return;
+    if (Array.isArray(c)) c.forEach(add);
+    else el.appendChild(c instanceof Node ? c : document.createTextNode(String(c)));
+  };
+  kids.forEach(add);
+  return el;
+}
+
+function clear(el) { while (el.firstChild) el.removeChild(el.firstChild); return el; }
+
+function fmtDur(s) {
+  if (s == null) return '-';
+  const d = Math.floor(s / 86400), hh = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+  if (d) return d + 'd ' + hh + 'h';
+  if (hh) return hh + 'h ' + m + 'm';
+  return m + 'm ' + (s % 60) + 's';
+}
+function fmtNum(n) { return n == null ? '-' : Number(n).toLocaleString(); }
+function fmtTime(iso) {
+  if (!iso) return '-';
+  const d = new Date(iso);
+  return isNaN(d) ? iso : d.toLocaleString();
+}
+function fmtBytes(n) {
+  if (n == null) return '-';
+  if (n < 1024) return n + ' B';
+  if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+  return (n / 1048576).toFixed(1) + ' MB';
+}
+
+class ApiError extends Error {
+  constructor(status, message) { super(message); this.status = status; }
+}
+
+let token = storeGet(TOKEN_KEY);
+
+async function api(name, opts) {
+  opts = opts || {};
+  const init = { method: opts.method || 'GET', headers: { Authorization: 'Bearer ' + token }, cache: 'no-store' };
+  if (opts.body !== undefined) {
+    init.headers['Content-Type'] = 'application/json';
+    init.body = JSON.stringify(opts.body);
+  }
+  let url = API + name;
+  if (opts.query) {
+    const q = new URLSearchParams();
+    for (const k in opts.query) if (opts.query[k] != null && opts.query[k] !== '') q.set(k, opts.query[k]);
+    const s = q.toString();
+    if (s) url += '?' + s;
+  }
+  const r = await fetch(url, init);
+  let data = null;
+  try { data = await r.json(); } catch (e) { data = null; }
+  if (r.status === 401) { signOut('That token was refused.'); throw new ApiError(401, 'admin token refused'); }
+  if (!r.ok) throw new ApiError(r.status, (data && data.message) || ('HTTP ' + r.status));
+  return data;
+}
+
+function errorBox(e) { return h('div', { class: 'msg bad' }, e && e.message ? e.message : String(e)); }
+
+// A table over rows (objects). cols: [{key, label, render?, cls?, num?}].
+// opts.sort: client-side sort by clicking a header. opts.onRow(row).
+function dataTable(rows, cols, opts) {
+  opts = opts || {};
+  let sortKey = opts.sortKey || null, sortDir = 1;
+  const wrap = h('div', { class: 'tablewrap' });
+  function draw() {
+    let list = rows.slice();
+    if (sortKey) {
+      list.sort((a, b) => {
+        const x = a[sortKey], y = b[sortKey];
+        if (x == null && y == null) return 0;
+        if (x == null) return 1;
+        if (y == null) return -1;
+        const nx = Number(x), ny = Number(y);
+        if (x !== '' && y !== '' && !isNaN(nx) && !isNaN(ny)) return (nx - ny) * sortDir;
+        return String(x).localeCompare(String(y)) * sortDir;
+      });
+    }
+    const head = h('tr', null, cols.map((c) => {
+      const mark = sortKey === c.key ? (sortDir > 0 ? ' ↑' : ' ↓') : '';
+      return h('th', {
+        class: (opts.sort ? 'sortable ' : '') + (c.num ? 'num' : ''),
+        onclick: opts.sort ? () => { if (sortKey === c.key) sortDir = -sortDir; else { sortKey = c.key; sortDir = 1; } draw(); } : null,
+      }, (c.label || c.key) + mark);
+    }));
+    const body = list.length ? list.map((r) => h('tr', { class: opts.onRow ? 'click' : null, onclick: opts.onRow ? () => opts.onRow(r) : null },
+      cols.map((c) => {
+        const v = r[c.key];
+        if (c.render) return h('td', { class: (c.cls || '') + (c.num ? ' num' : '') }, c.render(v, r));
+        if (v == null) return h('td', { class: 'null' }, 'null');
+        return h('td', { class: (c.cls || '') + (c.num ? ' num' : '') }, h('div', { class: 'cell', title: String(v) }, String(v)));
+      })))
+      : [h('tr', null, h('td', { colspan: cols.length, class: 'muted' }, opts.empty || 'Nothing here.'))];
+    clear(wrap).appendChild(h('table', null, h('thead', null, head), h('tbody', null, body)));
+  }
+  draw();
+  return wrap;
+}
+
+// Every column any row has, in first-seen order.
+function columnsOf(rows) {
+  const seen = new Set(), out = [];
+  rows.forEach((r) => Object.keys(r).forEach((k) => { if (!seen.has(k)) { seen.add(k); out.push(k); } }));
+  return out.map((k) => ({ key: k, cls: 'mono' }));
+}
+
+// ---- the shell ------------------------------------------------------------------------
+
+const PANELS = [
+  ['overview', 'Overview', panelOverview],
+  ['tables', 'Tables', panelTables],
+  ['query', 'Query', panelQuery],
+  ['users', 'Users', panelUsers],
+  ['games', 'Games', panelGames],
+  ['bots', 'Bots', panelBots],
+  ['logs', 'Logs', panelLogs],
+  ['config', 'Config', panelConfig],
+  ['backups', 'Backups', panelBackups],
+];
+
+let current = null;
+let stopPanel = null;   // a panel's cleanup (the log poller)
+let modeBadge = null;
+
+function signOut(why) {
+  token = null;
+  storeSet(TOKEN_KEY, null);
+  if (stopPanel) { stopPanel(); stopPanel = null; }
+  renderLogin(why);
+}
+
+function renderLogin(why) {
+  const app = clear(document.getElementById('app'));
+  const input = h('input', { type: 'password', autocomplete: 'off', placeholder: 'CBASE_ADMIN_TOKEN', 'aria-label': 'Admin token' });
+  const go = async () => {
+    const t = input.value.trim();
+    if (!t) return;
+    token = t;
+    try {
+      await api('overview');
+      storeSet(TOKEN_KEY, t);
+      renderShell();
+    } catch (e) {
+      if (e.status !== 401) renderLogin(e.message);
+    }
+  };
+  input.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') go(); });
+  app.appendChild(h('div', { class: 'login' },
+    h('div', { class: 'card' },
+      h('h2', null, 'c_base console'),
+      h('p', { class: 'muted' }, 'Paste the admin token. It is kept in this tab only and forgotten when the tab closes.'),
+      why ? h('div', { class: 'msg bad' }, why) : null,
+      input,
+      h('button', { class: 'primary', onclick: go }, 'Open console'))));
+  input.focus();
+}
+
+function renderShell() {
+  const app = clear(document.getElementById('app'));
+  modeBadge = h('span', { class: 'badge' }, '...');
+  const nav = h('nav', { class: 'side', 'aria-label': 'Panels' });
+  const main = h('main', { id: 'main' });
+  PANELS.forEach(([id, label]) => nav.appendChild(h('button', { 'data-panel': id, onclick: () => show(id) }, label)));
+  app.appendChild(h('header', { class: 'top' },
+    h('h1', null, 'c_base console'), modeBadge,
+    h('span', { class: 'spacer' }),
+    h('button', { onclick: () => signOut(null) }, 'Sign out')));
+  app.appendChild(h('div', { class: 'shell' }, nav, main));
+  const want = (location.hash || '').slice(1);
+  show(PANELS.some((p) => p[0] === want) ? want : 'overview');
+  api('overview').then((o) => {
+    modeBadge.textContent = o.mode + ' · ' + o.store + ' · v' + o.version;
+  }).catch(() => {});
+}
+
+function show(id) {
+  if (stopPanel) { stopPanel(); stopPanel = null; }
+  current = id;
+  if (location.hash !== '#' + id) history.replaceState(null, '', '#' + id);
+  document.querySelectorAll('nav.side button').forEach((b) => b.classList.toggle('on', b.dataset.panel === id));
+  const main = clear(document.getElementById('main'));
+  const p = PANELS.find((x) => x[0] === id);
+  const r = p[2](main);
+  if (typeof r === 'function') stopPanel = r;
+}
+
+function heading(main, title, sub) {
+  main.appendChild(h('h2', null, title));
+  if (sub) main.appendChild(h('p', { class: 'sub' }, sub));
+}
+
+// ---- Overview -----------------------------------------------------------------------
+
+function panelOverview(main) {
+  heading(main, 'Overview', 'This process: under Lambda, the counters are this warm container’s, not the function’s.');
+  const body = h('div', null, h('p', { class: 'muted' }, 'Loading...'));
+  main.appendChild(body);
+  const load = async () => {
+    try {
+      const o = await api('overview');
+      const tile = (k, v, small) => h('div', { class: 'tile' }, h('div', { class: 'k' }, k), h('div', { class: 'v' + (small ? ' small' : '') }, v));
+      const p = o.process || {};
+      clear(body).appendChild(h('div', { class: 'tiles' },
+        tile('Version', o.version),
+        tile('Mode', o.mode),
+        tile('Store', o.store + (o.store === 'dynamo' ? ' (' + o.table + ')' : '')),
+        tile('Uptime', fmtDur(o.uptime_s)),
+        tile(o.mode === 'lambda' ? 'Invocations' : 'Requests', fmtNum(o.requests)),
+        tile('5xx errors', fmtNum(o.errors_5xx)),
+        tile('Games needing bots', o.games_needing_bots == null ? 'n/a' : fmtNum(o.games_needing_bots)),
+        tile('Connections', o.ws_conns == null ? 'API Gateway' : fmtNum(o.ws_conns) + ' ws / ' + fmtNum(o.http_conns) + ' http', o.ws_conns == null),
+        tile('Last backup', o.last_backup ? (o.last_backup.includes('T') ? fmtTime(o.last_backup) : o.last_backup) : 'none yet', true),
+        tile('Max RSS', fmtBytes((p.max_rss_kb || 0) * 1024)),
+        tile('CPU user / sys', fmtNum(p.cpu_user_ms) + ' / ' + fmtNum(p.cpu_sys_ms) + ' ms', true),
+        tile('Started', fmtTime(o.started_at), true)));
+      body.appendChild(h('div', { class: 'card' }, h('h3', null, 'Endpoints'),
+        h('div', { class: 'kv' },
+          h('div', { class: 'k' }, 'Public URL'), h('div', { class: 'v mono' }, o.public_url),
+          h('div', { class: 'k' }, 'Health'), h('div', { class: 'v' }, h('a', { href: '/health', target: '_blank', rel: 'noopener' }, '/health')))));
+      if (o.links) body.appendChild(linksCard(o.links));
+    } catch (e) { clear(body).appendChild(errorBox(e)); }
+  };
+  load();
+  const t = setInterval(load, 10000);
+  return () => clearInterval(t);
+}
+
+function linksCard(l) {
+  const a = (href, text) => h('a', { href, target: '_blank', rel: 'noopener' }, text);
+  return h('div', { class: 'card' }, h('h3', null, 'AWS console'),
+    h('div', { class: 'kv' },
+      h('div', { class: 'k' }, 'Function'), h('div', { class: 'v' }, a(l.lambda, 'Lambda function')),
+      h('div', { class: 'k' }, 'Logs'), h('div', { class: 'v' }, a(l.logs_insights, 'CloudWatch Logs Insights, last hour')),
+      h('div', { class: 'k' }, 'Table'), h('div', { class: 'v' }, a(l.dynamodb, 'DynamoDB table')),
+      h('div', { class: 'k' }, 'Backups'), h('div', { class: 'v' }, a(l.backups, 'Point-in-time recovery'))));
+}
+
+// ---- Tables -----------------------------------------------------------------------------
+
+function panelTables(main) {
+  heading(main, 'Tables', 'Browse a collection by key prefix, a page at a time. The filter and the sort apply to the rows loaded so far.');
+  const chips = h('div', { class: 'chips' });
+  const prefix = h('input', { placeholder: 'key prefix', class: 'grow', 'aria-label': 'Key prefix' });
+  const size = h('select', { 'aria-label': 'Page size' }, [25, 50, 100, 250].map((n) => h('option', { value: n }, n + ' rows')));
+  size.value = '50';
+  const fcol = h('select', { 'aria-label': 'Filter column' }, h('option', { value: '' }, 'filter: column'));
+  const fval = h('input', { placeholder: 'equals', 'aria-label': 'Filter value' });
+  const more = h('button', { disabled: true }, 'Load more');
+  const out = h('div');
+  const status = h('p', { class: 'muted' });
+  let coll = null, rows = [], next = '';
+
+  const draw = () => {
+    const cols = columnsOf(rows);
+    const keep = fcol.value;
+    clear(fcol).appendChild(h('option', { value: '' }, 'filter: column'));
+    cols.forEach((c) => fcol.appendChild(h('option', { value: c.key }, c.key)));
+    fcol.value = cols.some((c) => c.key === keep) ? keep : '';
+    const shown = fcol.value ? rows.filter((r) => String(r[fcol.value] == null ? 'null' : r[fcol.value]) === fval.value) : rows;
+    clear(out).appendChild(dataTable(shown, cols, { sort: true, empty: coll ? 'No rows.' : 'Pick a collection.' }));
+    status.textContent = coll ? shown.length + ' of ' + rows.length + ' loaded rows' + (next ? ', more available' : ', end of collection') : '';
+    more.disabled = !next;
+  };
+  const load = async (append) => {
+    if (!coll) return;
+    try {
+      const r = await api('browse', { query: { c: coll, prefix: prefix.value, cursor: append ? next : '', limit: size.value } });
+      rows = append ? rows.concat(r.rows) : r.rows;
+      next = r.next || '';
+      draw();
+    } catch (e) { clear(out).appendChild(errorBox(e)); }
+  };
+  more.addEventListener('click', () => load(true));
+  fcol.addEventListener('change', draw);
+  fval.addEventListener('input', draw);
+  prefix.addEventListener('keydown', (e) => { if (e.key === 'Enter') load(false); });
+
+  main.append(chips,
+    h('div', { class: 'bar' }, prefix, size, h('button', { class: 'primary', onclick: () => load(false) }, 'Load')),
+    h('div', { class: 'bar' }, fcol, fval),
+    out, h('div', { class: 'bar' }, more, status));
+  draw();
+  api('collections').then((r) => {
+    r.collections.forEach((c) => chips.appendChild(h('button', {
+      onclick: (ev) => {
+        coll = c; rows = []; next = '';
+        chips.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b === ev.currentTarget));
+        load(false);
+      },
+    }, c)));
+    if (!r.collections.length) chips.appendChild(h('span', { class: 'muted' }, 'The store lists no collections.'));
+  }).catch((e) => chips.appendChild(errorBox(e)));
+}
+
+// ---- Query --------------------------------------------------------------------------------
+
+function panelQuery(main) {
+  heading(main, 'Query', 'One statement against the store: SQL on SQLite, PartiQL on DynamoDB. Reads run as they are; a write is refused by the store unless you type the confirmation.');
+  const ta = h('textarea', { spellcheck: 'false', 'aria-label': 'Statement' });
+  const dialect = h('span', { class: 'badge' }, '...');
+  const out = h('div');
+  const confirmBox = h('div');
+  api('config').then((c) => {
+    const sql = c.store === 'sqlite';
+    dialect.textContent = sql ? 'SQLite SQL' : 'DynamoDB PartiQL';
+    if (!ta.value) ta.value = sql ? 'SELECT id, status, version, updated_at FROM games ORDER BY updated_at DESC LIMIT 20'
+      : 'SELECT * FROM "' + c.table + '" WHERE pk = \'SCAN\'';
+  }).catch(() => {});
+  const run = async (confirm) => {
+    clear(out);
+    clear(confirmBox);
+    try {
+      const r = await api('query', { method: 'POST', body: confirm ? { statement: ta.value, confirm } : { statement: ta.value } });
+      out.appendChild(h('p', { class: 'muted' }, r.rows.length + ' row' + (r.rows.length === 1 ? '' : 's') +
+        (r.truncated ? ' (cut at 1000)' : '') + (r.write_allowed ? ', run as a write' : '')));
+      out.appendChild(dataTable(r.rows, columnsOf(r.rows), { sort: true, empty: 'No rows.' }));
+    } catch (e) {
+      if (e.status === 403 && !confirm) {
+        const word = h('input', { placeholder: 'WRITE', autocomplete: 'off', 'aria-label': 'Confirmation' });
+        confirmBox.appendChild(h('div', { class: 'confirm' },
+          h('p', null, 'The store refused this as a read-only statement. To run it as a write against the live data, type WRITE and run it again.'),
+          h('div', { class: 'bar' }, word, h('button', { class: 'danger', onclick: () => { if (word.value === 'WRITE') run('WRITE'); else word.focus(); } }, 'Run as a write'))));
+        word.focus();
+      } else out.appendChild(errorBox(e));
+    }
+  };
+  ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) run(null); });
+  main.append(h('div', { class: 'bar' }, dialect, h('span', { class: 'muted' }, 'Ctrl or Cmd + Enter runs')), ta,
+    h('div', { class: 'bar', style: 'margin-top:8px' }, h('button', { class: 'primary', onclick: () => run(null) }, 'Run')),
+    confirmBox, out);
+}
+
+// ---- Users ---------------------------------------------------------------------------------
+
+function panelUsers(main) {
+  heading(main, 'Users', 'Search by email or username. Deleting runs the same delete-account path a player does: they leave every game, their leaderboard name is cleared, then the account goes.');
+  const search = h('input', { placeholder: 'search email or username', class: 'grow', 'aria-label': 'Search' });
+  const out = h('div');
+  const pager = h('div', { class: 'bar' });
+  const detail = h('div');
+  let offset = 0;
+  const load = async () => {
+    clear(detail);
+    try {
+      const r = await api('users', { query: { search: search.value, offset, limit: 50 } });
+      clear(out).appendChild(dataTable(r.users, [
+        { key: 'username', label: 'Username' }, { key: 'email', label: 'Email', cls: 'mono' },
+        { key: 'created_at', label: 'Created', render: fmtTime }, { key: 'last_sign_in_at', label: 'Last sign-in', render: fmtTime },
+        { key: 'id', label: 'Id', cls: 'mono' },
+      ], { sort: true, onRow: pick, empty: 'No users match.' }));
+      clear(pager).append(
+        h('button', { disabled: offset === 0, onclick: () => { offset = Math.max(0, offset - 50); load(); } }, 'Previous'),
+        h('button', { disabled: r.next_offset == null, onclick: () => { offset = r.next_offset; load(); } }, 'Next'),
+        h('span', { class: 'muted' }, 'from ' + (offset + 1)));
+    } catch (e) { clear(out).appendChild(errorBox(e)); }
+  };
+  function pick(u) {
+    const word = h('input', { placeholder: u.username || u.id.slice(0, 8), autocomplete: 'off', 'aria-label': 'Confirmation' });
+    const need = u.username || u.id.slice(0, 8);
+    const note = h('div');
+    clear(detail).appendChild(h('div', { class: 'card' }, h('h3', null, 'User'),
+      h('div', { class: 'kv' },
+        h('div', { class: 'k' }, 'Id'), h('div', { class: 'v mono' }, u.id),
+        h('div', { class: 'k' }, 'Email'), h('div', { class: 'v mono' }, u.email),
+        h('div', { class: 'k' }, 'Username'), h('div', { class: 'v' }, u.username || '(none)'),
+        h('div', { class: 'k' }, 'Created'), h('div', { class: 'v' }, fmtTime(u.created_at))),
+      h('div', { class: 'confirm' },
+        h('p', null, 'Delete this account? It cannot be undone. Type ', h('b', null, need), ' to confirm.'),
+        h('div', { class: 'bar' }, word, h('button', {
+          class: 'danger', onclick: async () => {
+            if (word.value !== need) { word.focus(); return; }
+            try { await api('users/delete', { method: 'POST', body: { id: u.id } }); load(); }
+            catch (e) { clear(note).appendChild(errorBox(e)); }
+          },
+        }, 'Delete account')), note)));
+    detail.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+  search.addEventListener('keydown', (e) => { if (e.key === 'Enter') { offset = 0; load(); } });
+  main.append(h('div', { class: 'bar' }, search, h('button', { class: 'primary', onclick: () => { offset = 0; load(); } }, 'Search')),
+    detail, out, pager);
+  load();
+}
+
+// ---- Games ---------------------------------------------------------------------------------
+
+function seatsText(g) {
+  if (!g.seats) return '(roster unreadable)';
+  return g.seats.map((s) => s.name + (s.bot ? ' (bot)' : '')).join(', ') || '(empty)';
+}
+
+// 16 bytes a line: offset, hex, ASCII.
+function hexDump(hex) {
+  const lines = [];
+  for (let i = 0; i < hex.length; i += 32) {
+    const chunk = hex.slice(i, i + 32);
+    const bytes = chunk.match(/../g) || [];
+    const ascii = bytes.map((b) => { const c = parseInt(b, 16); return c >= 32 && c < 127 ? String.fromCharCode(c) : '.'; }).join('');
+    lines.push((i / 2).toString(16).padStart(6, '0') + '  ' + bytes.join(' ').padEnd(47) + '  ' + ascii);
+  }
+  return lines.join('\n');
+}
+
+function panelGames(main) {
+  heading(main, 'Games', 'Each row is the stored game. Open one for its byte sizes and the spectator envelope, the bytes spectator_views answers.');
+  const prefix = h('input', { placeholder: 'id prefix', 'aria-label': 'Id prefix' });
+  const out = h('div');
+  const detail = h('div');
+  const more = h('button', { disabled: true }, 'Load more');
+  let games = [], next = '';
+  const draw = () => {
+    clear(out).appendChild(dataTable(games, [
+      { key: 'id', label: 'Id', cls: 'mono' }, { key: 'status_label', label: 'Status' },
+      { key: 'version', label: 'Version', num: true }, { key: 'seats', label: 'Seats', render: (v, g) => h('div', { style: 'min-width:200px' }, seatsText(g)) },
+      { key: 'needs_bots', label: 'Needs bots', render: (v) => v ? h('span', { class: 'badge warn' }, 'yes') : 'no' },
+      { key: 'updated_at', label: 'Updated', render: fmtTime },
+    ], { sort: true, onRow: (g) => open(g.id), empty: 'No games.' }));
+    more.disabled = !next;
+  };
+  const load = async (append) => {
+    try {
+      const r = await api('games', { query: { prefix: prefix.value, cursor: append ? next : '', limit: 25 } });
+      games = append ? games.concat(r.games) : r.games;
+      next = r.next || '';
+      draw();
+    } catch (e) { clear(out).appendChild(errorBox(e)); }
+  };
+  async function open(id) {
+    clear(detail).appendChild(h('p', { class: 'muted' }, 'Loading ' + id + '...'));
+    try {
+      const g = await api('game', { query: { id } });
+      clear(detail).appendChild(h('div', { class: 'card' }, h('h3', null, 'Game ' + g.id),
+        h('div', { class: 'kv' },
+          h('div', { class: 'k' }, 'Title'), h('div', { class: 'v' }, g.title || '(none)'),
+          h('div', { class: 'k' }, 'Status'), h('div', { class: 'v' }, g.status_label + ' (' + g.status + ')'),
+          h('div', { class: 'k' }, 'Version / round'), h('div', { class: 'v' }, g.version + ' / ' + g.round_epoch),
+          h('div', { class: 'k' }, 'Seats'), h('div', { class: 'v' }, seatsText(g)),
+          h('div', { class: 'k' }, 'Needs bots'), h('div', { class: 'v' }, g.needs_bots ? 'yes' : 'no'),
+          h('div', { class: 'k' }, 'Bytes'), h('div', { class: 'v' }, 'state ' + fmtBytes(g.state_len) + ', roster ' + fmtBytes(g.roster_len) + ', log ' + fmtBytes(g.logs_len) + (g.has_seed ? ', seeded' : '')),
+          h('div', { class: 'k' }, 'Created'), h('div', { class: 'v' }, fmtTime(g.created_at)),
+          h('div', { class: 'k' }, 'Last commit'), h('div', { class: 'v' }, fmtTime(g.last_commit_at))),
+        h('h3', { style: 'margin-top:14px' }, 'Spectator envelope' + (g.envelope_hex ? ' (' + g.envelope_hex.length / 2 + ' bytes, v' + g.envelope_version + ')' : '')),
+        g.envelope_hex ? h('pre', { class: 'hex' }, hexDump(g.envelope_hex))
+          : h('p', { class: 'muted' }, 'Not available: ' + (g.envelope_error || 'unknown'))));
+    } catch (e) { clear(detail).appendChild(errorBox(e)); }
+  }
+  more.addEventListener('click', () => load(true));
+  prefix.addEventListener('keydown', (e) => { if (e.key === 'Enter') load(false); });
+  main.append(h('div', { class: 'bar' }, prefix, h('button', { class: 'primary', onclick: () => load(false) }, 'Load')),
+    detail, out, h('div', { class: 'bar' }, more));
+  load(false);
+}
+
+// ---- Bots ------------------------------------------------------------------------------------
+
+function panelBots(main) {
+  heading(main, 'Bots', 'The bot ladder with ratings, in ladder order.');
+  const out = h('div', null, h('p', { class: 'muted' }, 'Loading...'));
+  main.appendChild(out);
+  api('bots').then((r) => {
+    clear(out).appendChild(dataTable(r.bots, [
+      { key: 'nickname', label: 'Nickname' }, { key: 'strategy_key', label: 'Strategy', cls: 'mono' },
+      { key: 'elo_rating', label: 'Rating', num: true }, { key: 'previous_elo', label: 'Previous', num: true },
+      { key: 'games_played', label: 'Games', num: true }, { key: 'updated_at', label: 'Updated', render: fmtTime },
+    ], { sort: true, empty: 'No bots.' }));
+  }).catch((e) => clear(out).appendChild(errorBox(e)));
+}
+
+// ---- Logs ---------------------------------------------------------------------------------------
+
+function panelLogs(main) {
+  heading(main, 'Logs', 'This process’s recent lines (the in-memory ring). Under Lambda that is one warm container; the function’s full history is in CloudWatch.');
+  const level = h('select', { 'aria-label': 'Level' }, ['debug', 'info', 'warn', 'error'].map((l) => h('option', { value: l }, l)));
+  level.value = 'info';
+  const live = h('input', { type: 'checkbox', checked: true });
+  const links = h('span');
+  const pre = h('pre', { class: 'log' });
+  const count = h('span', { class: 'muted' });
+  let after = 0, n = 0, timer = null, busy = false;
+  const MAX_LINES = 2000;
+  const reset = () => { after = 0; n = 0; clear(pre); poll(); };
+  async function poll() {
+    if (busy) return;
+    busy = true;
+    try {
+      const r = await api('logs', { query: { after, level: level.value } });
+      const stick = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 8;
+      r.entries.forEach((e) => {
+        pre.appendChild(h('div', { class: 'lvl-' + e.level },
+          (e.at || '').slice(11, 23) + ' ' + e.level.toUpperCase().padEnd(5) + ' ' + e.module + ': ' + e.msg));
+        n++;
+      });
+      while (pre.childNodes.length > MAX_LINES) pre.removeChild(pre.firstChild);
+      after = r.last_seq;
+      count.textContent = n + ' lines';
+      if (stick) pre.scrollTop = pre.scrollHeight;
+      if (r.links && !links.firstChild) links.appendChild(h('a', { href: r.links.logs_insights, target: '_blank', rel: 'noopener' }, 'Open in CloudWatch Logs Insights'));
+    } catch (e) {
+      if (e.status !== 401) count.textContent = e.message;
+    } finally { busy = false; }
+  }
+  const arm = () => { clearInterval(timer); timer = live.checked ? setInterval(poll, 3000) : null; };
+  level.addEventListener('change', reset);
+  live.addEventListener('change', arm);
+  main.append(h('div', { class: 'bar' }, h('label', null, 'Level', level), h('label', null, live, 'Follow'),
+    h('button', { onclick: poll }, 'Refresh'), count, h('span', { class: 'spacer grow' }), links), pre);
+  reset();
+  arm();
+  return () => clearInterval(timer);
+}
+
+// ---- Config ------------------------------------------------------------------------------------
+
+function panelConfig(main) {
+  heading(main, 'Config', 'What this process read from its environment at start. Secrets show only whether they are set.');
+  const out = h('div', null, h('p', { class: 'muted' }, 'Loading...'));
+  main.appendChild(out);
+  api('config').then((c) => {
+    clear(out).append(
+      h('div', { class: 'card' }, h('h3', null, 'Runtime'), h('div', { class: 'kv' },
+        h('div', { class: 'k' }, 'Mode'), h('div', { class: 'v' }, c.mode),
+        h('div', { class: 'k' }, 'Store backend'), h('div', { class: 'v' }, c.store),
+        h('div', { class: 'k' }, 'DynamoDB table'), h('div', { class: 'v mono' }, c.table),
+        h('div', { class: 'k' }, 'Allowed origins'), h('div', { class: 'v mono' }, c.allowed_origins),
+        c.aws_region ? [h('div', { class: 'k' }, 'AWS region'), h('div', { class: 'v mono' }, c.aws_region)] : null,
+        c.function_name ? [h('div', { class: 'k' }, 'Function'), h('div', { class: 'v mono' }, c.function_name)] : null)),
+      dataTable(c.settings, [
+        { key: 'name', label: 'Variable', cls: 'mono' },
+        { key: 'value', label: 'Value', render: (v, r) => r.secret ? h('span', { class: 'badge' }, v) : h('span', { class: 'mono' }, v) },
+      ]));
+  }).catch((e) => clear(out).appendChild(errorBox(e)));
+}
+
+// ---- Backups -------------------------------------------------------------------------------------
+
+function panelBackups(main) {
+  heading(main, 'Backups');
+  const out = h('div', null, h('p', { class: 'muted' }, 'Loading...'));
+  main.appendChild(out);
+  const load = () => api('backups').then((b) => {
+    clear(out);
+    if (b.kind === 'pitr') {
+      out.append(h('div', { class: 'card' }, h('h3', null, 'Point-in-time recovery'), h('p', { style: 'margin:0' }, b.explain)));
+      if (b.links) out.appendChild(linksCard(b.links));
+      return;
+    }
+    const note = h('div');
+    out.append(
+      h('p', { class: 'sub' }, 'SQLite: a backup is VACUUM INTO a timestamped file in ', h('span', { class: 'mono' }, b.dir), '. It is a complete, consistent copy, safe to take while serving.'),
+      h('div', { class: 'bar' }, h('button', {
+        class: 'primary', onclick: async (ev) => {
+          ev.currentTarget.disabled = true;
+          try { const r = await api('backups', { method: 'POST' }); clear(note).appendChild(h('div', { class: 'msg' }, 'Written: ' + r.written)); load(); }
+          catch (e) { clear(note).appendChild(errorBox(e)); }
+        },
+      }, 'Back up now')), note,
+      dataTable(b.files, [
+        { key: 'name', label: 'File', cls: 'mono' }, { key: 'size', label: 'Size', num: true, render: fmtBytes },
+        { key: 'at', label: 'Written', render: fmtTime },
+      ], { empty: 'No backups yet.' }));
+  }).catch((e) => clear(out).appendChild(errorBox(e)));
+  load();
+}
+
+// ---- start ---------------------------------------------------------------------------------------
+
+window.addEventListener('hashchange', () => {
+  const id = location.hash.slice(1);
+  if (token && id !== current && PANELS.some((p) => p[0] === id)) show(id);
+});
+if (token) renderShell(); else renderLogin(null);
+</script>
+</body>
+</html>
