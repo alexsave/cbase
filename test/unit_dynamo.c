@@ -164,6 +164,17 @@ static void commit_transaction(void) {
     rd[0] = (dw_rating_read){ .exists = false, .account = false };
     T_CHECK(dw_game_commit(&r, "cbase", &c, &s, rd, false));
     T_CHECK(strstr(cb_buf_cstr(&r.body), "RATING") == NULL);
+    // Seats already stored are not written again: a human's seat costs its
+    // write (and its GSI1 entry) once, when taken, not on every commit.
+    snprintf(s.humans[0], sizeof(cb_uuid), U1);
+    c.n_rated = 0;
+    T_CHECK(dw_game_commit(&r, "cbase", &c, &s, NULL, false));
+    T_CHECK(valid(&r));
+    T_CHECK(strstr(cb_buf_cstr(&r.body), "MEMBER#") == NULL);
+    T_CHECK(strstr(cb_buf_cstr(&r.body), "BOT#") == NULL);
+    // The import writes every seat (nothing is stored to compare with).
+    T_CHECK(dw_game_commit(&r, "cbase", &c, NULL, NULL, true));
+    T_CHECK(strstr(cb_buf_cstr(&r.body), "MEMBER#" U1) != NULL);
     dw_req_free(&r);
 }
 

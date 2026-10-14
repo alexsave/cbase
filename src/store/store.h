@@ -248,7 +248,9 @@ typedef struct cb_store_ops {
     int (*game_delete)(cb_store *s, const char *id, int64_t expected_version);
     // The games a user sits at, most recently updated first (the dashboard);
     // limit 0: all. DynamoDB answers from an index, so a seat taken a moment
-    // ago may be missing for a moment.
+    // ago may be missing for a moment, and "updated" there is when the seat
+    // was taken (a commit writes only the seats that change): a caller that
+    // needs the games' own order sorts the rows it loads, as PostgREST does.
     int (*games_of_user)(cb_store *s, const char *user_id, int limit, cb_member_fn fn, void *ud);
     // 1 a member, 0 not, or a CB_E_*.
     int (*is_member)(cb_store *s, const char *game_id, const char *user_id);

@@ -376,7 +376,7 @@ static bool first_value(int n, const char *const *names, const char *const *valu
     return true;
 }
 
-// Membership is rewritten from every commit: listed seats added, the rest removed.
+// Membership follows every commit: listed seats added, the rest removed.
 static void membership_follows_commits(void) {
     cb_store *s = open_fresh();
     cb_user_row a = mkuser("a@x.io", "A", 1), b = mkuser("b@x.io", "B", 1);
@@ -396,12 +396,15 @@ static void membership_follows_commits(void) {
     T_EQ_INT(CB_STORE_CALL(s, game_commit, &c), CB_OK);
     T_EQ_INT(CB_STORE_CALL(s, is_member, "game01", b.id), 1);
 
-    // a's dashboard: most recently updated first.
+    // a's dashboard: most recently updated first. On SQLite the game's
+    // updated_at; on DynamoDB when the seat was written, which is when it was
+    // taken (seats are not rewritten on every commit), so game01, seated at
+    // 10, sorts after game02, seated at 11.
     names_t m = { 0 };
     T_EQ_INT(CB_STORE_CALL(s, games_of_user, a.id, 10, collect_member, &m), 2);
-    T_EQ_STR(m.ids[0], "game01");
-    T_EQ_INT(m.at[0], 50);
-    T_EQ_STR(m.ids[1], "game02");
+    T_EQ_STR(m.ids[0], tsb_dynamo() ? "game02" : "game01");
+    T_EQ_INT(m.at[0], tsb_dynamo() ? 11 : 50);
+    T_EQ_STR(m.ids[1], tsb_dynamo() ? "game01" : "game02");
     m.n = 0;
     T_EQ_INT(CB_STORE_CALL(s, games_of_user, a.id, 1, collect_member, &m), 1);
 

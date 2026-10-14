@@ -1123,8 +1123,8 @@ void dw_refresh_revoke(dw_req *r, const char *table, cb_span key) {
 
 // ---- games ----------------------------------------------------------------------------------------
 
-// A seated human's item: the dashboard's GSI1 entry, ordered by the game's
-// updated_at. joined_at is kept from the first time the seat was written.
+// A seated human's item: the dashboard's GSI1 entry, ordered by when the
+// seat was written (taken). joined_at is kept from the first time.
 static void member_update(cb_jw *w, const char *table, const char *game, const char *user, int64_t at) {
     char pk[KB], sk[KB], g1[KB], g1s[KB];
     update_open(w, table, k(pk, sizeof pk, "GAME#", game), k(sk, sizeof sk, "MEMBER#", user), true);
@@ -1283,7 +1283,15 @@ bool dw_game_commit(dw_req *r, const char *table, const cb_game_commit *c, const
         update_close(&w, true);
     }
     items++;
-    for (int i = 0; i < c->n_humans; i++, items++) member_update(&w, table, g->id, c->humans[i], g->updated_at);
+    // A seat is written when it is taken, not on every commit: a human's
+    // seat is a transactional write (2 WCU) plus its GSI1 entry moving (2
+    // more), every commit, for the dashboard's order alone, which nothing
+    // reads (PostgREST sorts player_views by the row it loads).
+    for (int i = 0; i < c->n_humans; i++)
+        if (!stored || !listed(stored->humans, stored->n_humans, c->humans[i])) {
+            member_update(&w, table, g->id, c->humans[i], g->updated_at);
+            items++;
+        }
     for (int i = 0; stored && i < stored->n_humans; i++)
         if (!listed(c->humans, c->n_humans, stored->humans[i])) {
             txn_delete(&w, table, pk, k(sk, sizeof sk, "MEMBER#", stored->humans[i]));
