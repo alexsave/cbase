@@ -9,3 +9,6 @@
 /dist/
 # ops/deploy.sh's settings and generated secrets (mode 0600). Never commit it.
 /ops/.env
+# bench runs (cbase-bench); only the committed baseline, named baseline-*.txt, is tracked.
+/bench/results/*.txt
+!/bench/results/baseline-*.txt

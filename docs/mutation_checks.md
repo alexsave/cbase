@@ -230,3 +230,15 @@ The console was checked by eye in headless Chrome against a mock API, light and 
 - fanout.c, no pv- publish: smoke `LB->n_pv > 0`; no spectator cast: smoke `LB->n_cast > 0`.
 - bots.c, every drive returns at once: smoke game_scenario `status == GAME_STATUS_GAME_OVER` after the 90 s stall rule (the run stops instead of hanging).
 - Makefile, c_base's objects built without `KERNEL_CAPS`: the compile fails at table_ops.c's `_Static_assert(MAX_LOG_PAIRS >= MAX_DECK)`.
+
+## Bench (bench/unit_bench.c)
+
+- stats.c: the percentile's `- 1e-9` dropped -> `percentiles_of_one_to_hundred` bs_percentile(v, 100, 7) == 7 (7.000000000000001 rounds up to the 8th).
+- stats.c: the rank truncated instead of rounded up -> `percentiles_round_up` s.p50 == 30.
+- stats.c: no sort before the summary -> `percentiles_of_one_to_hundred` s.p50 == 50.
+- stats.c: max read from the bottom -> `percentiles_of_one_to_hundred` s.max == 100.
+- stats.c: the ms rounding `(a + 5) / 10` made `a / 10` -> `report_tables` the whole report (12.35 became 12.34).
+- stats.c: the "-0.00" guard dropped -> `report_tables` the push_pv row of -3 us reads 0.00.
+- stats.c: the 5 ms share off by ten -> `report_tables` the whole report.
+- stats.c: a cpu row with trailing text accepted -> `run_file_round_trip` !bs_run_parse(JUNK).
+- stats.c: the cpu table never printed -> `report_tables` the whole report.
