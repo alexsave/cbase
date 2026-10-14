@@ -36,10 +36,14 @@ typedef struct {
     tls_handler fn;
     void       *ud;
     void       *ctx;
+    atomic_int  plain;          // tls_srv_start_plain: no TLS at all
 } tls_srv;
 
 // 0, or -1.
 int  tls_srv_start(tls_srv *s, tls_handler fn, void *ud);
+// The same server speaking plain HTTP (DynamoDB Local's way), for the
+// client's http:// mode.
+int  tls_srv_start_plain(tls_srv *s, tls_handler fn, void *ud);
 void tls_srv_stop(tls_srv *s);
 // A copy of the last request as a C string (free it).
 char *tls_srv_last(tls_srv *s);

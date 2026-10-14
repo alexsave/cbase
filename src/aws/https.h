@@ -42,6 +42,12 @@ void cb_https_response_free(cb_https_response *r);
 int cb_https_request(const char *host, int port, const char *method, const char *path, const char *headers,
                      const void *body, size_t body_len, int timeout_ms, cb_https_response *out);
 
+// The same exchange over plain TCP, no TLS: for a local stand-in only
+// (DynamoDB Local on http://127.0.0.1:8000). cb_aws_call reaches it only for
+// an endpoint URL that says http://, never for AWS's own hosts.
+int cb_http_plain_request(const char *host, int port, const char *method, const char *path, const char *headers,
+                          const void *body, size_t body_len, int timeout_ms, cb_https_response *out);
+
 // Uses `path` (a PEM bundle) for verification from now on, or the default
 // search above when NULL. Drops pooled connections. CB_OK, or CB_E_IO when
 // the file does not load.

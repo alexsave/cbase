@@ -44,6 +44,7 @@ typedef struct {
     char              table[256];
     char              host[128];
     int               port;
+    bool              tls;
     cb_dynamo_send_fn send;
     void             *ud;
 } dyn;
@@ -61,7 +62,7 @@ static int https_send(void *ud, const char *target, const uint8_t *body, size_t 
     snprintf(tg, sizeof tg, "X-Amz-Target: %s", target);
     const char *const headers[2] = { ct, tg };
     cb_https_response r;
-    int rc = cb_aws_call(dw_service(), "POST", d->host, d->port, "/", headers, 2, body, len, 10000, &r);
+    int rc = cb_aws_call(dw_service(), "POST", d->host, d->port, d->tls, "/", headers, 2, body, len, 10000, &r);
     if (rc != CB_OK) return rc;
     *status = r.status;
     cb_buf_append(resp, r.body.p, r.body.len);
@@ -1244,12 +1245,14 @@ int cb_store_open_dynamo(const char *table, cb_store **out) {
     if ((rc = cb_store_open_dynamo_with(table, https_send, NULL, out)) != CB_OK) return rc;
     dyn *d = D(*out);
     d->port = 443;
-    // The SDKs' own override (a local stand-in, or DynamoDB Local behind TLS).
+    d->tls = true;
+    // The SDKs' own override: DynamoDB Local (http://127.0.0.1:8000, plain
+    // HTTP because the URL says so) or a stand-in behind TLS.
     const char *ep = getenv("AWS_ENDPOINT_URL_DYNAMODB");
     char base[8];
     if (ep && *ep) {
-        if (cb_aws_url_parse(ep, d->host, sizeof d->host, &d->port, base, sizeof base) != CB_OK || base[0]) {
-            CB_ERROR(MOD, "bad AWS_ENDPOINT_URL_DYNAMODB \"%s\" (https://host[:port], no path)", ep);
+        if (cb_aws_url_parse(ep, d->host, sizeof d->host, &d->port, &d->tls, base, sizeof base) != CB_OK || base[0]) {
+            CB_ERROR(MOD, "bad AWS_ENDPOINT_URL_DYNAMODB \"%s\" (http[s]://host[:port], no path)", ep);
             cb_store_close(*out);
             *out = NULL;
             return CB_E_INVALID;

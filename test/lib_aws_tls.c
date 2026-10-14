@@ -37,15 +37,23 @@ static const char KEY[] =
     "PgnCoaZ3yETblLnraeozLrGKxijp+jt62f5gBBN2Gs8rCblBd+N7c3cS\n"
     "-----END PRIVATE KEY-----\n";
 
+// One read or write on the connection: TLS, or plain TCP when ssl is NULL.
+static int io_read(SSL *ssl, int fd, void *p, int n) {
+    return ssl ? SSL_read(ssl, p, n) : (int)recv(fd, p, (size_t)n, 0);
+}
+static int io_write(SSL *ssl, int fd, const void *p, int n) {
+    return ssl ? SSL_write(ssl, p, n) : (int)send(fd, p, (size_t)n, 0);
+}
+
 // Reads one request: the head, then Content-Length bytes. 1, 0 at a clean
 // close before any byte, -1 on error.
-static int read_request(SSL *ssl, cb_buf *in) {
+static int read_request(SSL *ssl, int fd, cb_buf *in) {
     cb_buf_reset(in);
     size_t need = 0;
     for (;;) {
         if (need && in->len >= need) return 1;
         if (!cb_buf_reserve(in, 4096)) return -1;
-        int r = SSL_read(ssl, in->p + in->len, 4096);
+        int r = io_read(ssl, fd, in->p + in->len, 4096);
         if (r <= 0) return in->len == 0 ? 0 : -1;
         in->len += (size_t)r;
         in->p[in->len] = 0;
@@ -62,9 +70,12 @@ static int read_request(SSL *ssl, cb_buf *in) {
 }
 
 static void serve_conn(tls_srv *s, SSL_CTX *ctx, int fd) {
-    SSL *ssl = SSL_new(ctx);
-    SSL_set_fd(ssl, fd);
-    if (SSL_accept(ssl) != 1) { ERR_clear_error(); SSL_free(ssl); close(fd); return; }
+    SSL *ssl = NULL;
+    if (!s->plain) {
+        ssl = SSL_new(ctx);
+        SSL_set_fd(ssl, fd);
+        if (SSL_accept(ssl) != 1) { ERR_clear_error(); SSL_free(ssl); close(fd); return; }
+    }
     atomic_fetch_add(&s->accepts, 1);
     cb_buf in, out;
     cb_buf_init(&in);
@@ -73,9 +84,9 @@ static void serve_conn(tls_srv *s, SSL_CTX *ctx, int fd) {
     while (!atomic_load(&s->stop)) {
         // Wait for the next request without blocking past a stop.
         struct pollfd pf = { fd, POLLIN, 0 };
-        if (SSL_pending(ssl) == 0 && poll(&pf, 1, 50) == 0) continue;
+        if ((!ssl || SSL_pending(ssl) == 0) && poll(&pf, 1, 50) == 0) continue;
         if (drop_next) break;
-        int r = read_request(ssl, &in);
+        int r = read_request(ssl, fd, &in);
         if (r <= 0) break;
         pthread_mutex_lock(&s->lock);
         cb_buf_reset(&s->last);
@@ -89,16 +100,16 @@ static void serve_conn(tls_srv *s, SSL_CTX *ctx, int fd) {
             while (!atomic_load(&s->stop)) {
                 struct pollfd hp = { fd, POLLIN, 0 };
                 char b[64];
-                if (poll(&hp, 1, 50) == 1 && SSL_read(ssl, b, sizeof b) <= 0) break;
+                if (poll(&hp, 1, 50) == 1 && io_read(ssl, fd, b, sizeof b) <= 0) break;
             }
             break;
         }
-        if (SSL_write(ssl, out.p, (int)out.len) <= 0) break;
-        if (a == TLS_CLOSE) { SSL_shutdown(ssl); break; }
+        if (io_write(ssl, fd, out.p, (int)out.len) <= 0) break;
+        if (a == TLS_CLOSE) { if (ssl) SSL_shutdown(ssl); break; }
         if (a == TLS_DROP) drop_next = true;
     }
     ERR_clear_error();
-    SSL_free(ssl);
+    if (ssl) SSL_free(ssl);
     close(fd);
     cb_buf_free(&in);
     cb_buf_free(&out);
@@ -154,6 +165,12 @@ int tls_srv_start(tls_srv *s, tls_handler fn, void *ud) {
         getsockname(s->lfd, (struct sockaddr *)&a, &al) != 0) return -1;
     s->port = ntohs(a.sin_port);
     return pthread_create(&s->th, NULL, run, s) == 0 ? 0 : -1;
+}
+
+int tls_srv_start_plain(tls_srv *s, tls_handler fn, void *ud) {
+    if (tls_srv_start(s, fn, ud) != 0) return -1;
+    s->plain = 1;   // read by the server thread only at its next accept
+    return 0;
 }
 
 void tls_srv_stop(tls_srv *s) {

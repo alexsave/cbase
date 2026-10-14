@@ -34,7 +34,8 @@
 #define IDLE_MAX_MS  50000   // AWS front ends drop idle connections after about a minute
 
 typedef struct {
-    SSL    *ssl;
+    SSL    *ssl;      // NULL on a plain-HTTP connection
+    bool    tls;
     int     fd;
     char    host[256];
     int     port;
@@ -310,11 +311,17 @@ static int dial(const char *host, int port, int64_t deadline) {
     return fd;
 }
 
-static int conn_open(conn *c, const char *host, int port, int64_t deadline) {
+static int conn_open(conn *c, const char *host, int port, bool tls, int64_t deadline) {
     memset(c, 0, sizeof *c);
     c->fd = -1;
     cb_strlcpy(c->host, host, sizeof c->host);
     c->port = port;
+    c->tls = tls;
+    if (!tls) {
+        c->fd = dial(host, port, deadline);
+        if (c->fd < 0) { CB_WARN("https", "connect %s:%d failed", host, port); return CB_E_IO; }
+        return CB_OK;
+    }
     pthread_mutex_lock(&g_lock);
     int rc = g_ctx ? CB_OK : ctx_build();
     if (rc == CB_OK) {
@@ -343,14 +350,14 @@ static int conn_open(conn *c, const char *host, int port, int64_t deadline) {
 }
 
 // An idle pooled connection to host:port, or false.
-static bool pool_take(const char *host, int port, conn *out) {
+static bool pool_take(const char *host, int port, bool tls, conn *out) {
     bool found = false;
     int64_t now = cb_mono_ms();
     pthread_mutex_lock(&g_lock);
     for (int i = g_npool - 1; i >= 0; i--) {
         conn *c = &g_pool[i];
         bool stale = now - c->idle_since > IDLE_MAX_MS;
-        bool match = c->port == port && strcmp(c->host, host) == 0;
+        bool match = c->port == port && c->tls == tls && strcmp(c->host, host) == 0;
         if (stale || (match && !found)) {
             if (stale) conn_close(c);
             else { *out = *c; found = true; }
@@ -369,10 +376,20 @@ static void pool_put(conn *c) {
     conn_close(c);
 }
 
-static int ssl_write_all(SSL *ssl, const void *p, size_t n) {
+static int write_all(conn *c, const void *p, size_t n) {
     const char *b = p;
     while (n) {
-        int w = SSL_write(ssl, b, n > (1u << 30) ? (1 << 30) : (int)n);
+        int chunk = n > (1u << 30) ? (1 << 30) : (int)n;
+        long w;
+        if (c->ssl) w = SSL_write(c->ssl, b, chunk);
+        else {
+#ifdef MSG_NOSIGNAL
+            w = send(c->fd, b, (size_t)chunk, MSG_NOSIGNAL);
+#else
+            w = send(c->fd, b, (size_t)chunk, 0);
+#endif
+            if (w < 0 && errno == EINTR) continue;
+        }
         if (w <= 0) return -1;
         b += w;
         n -= (size_t)w;
@@ -380,11 +397,22 @@ static int ssl_write_all(SSL *ssl, const void *p, size_t n) {
     return 0;
 }
 
+// One read on a plain connection, in SSL_read's terms: > 0 bytes, 0 the peer
+// closed, -1 an error, -2 timed out.
+static int plain_read(conn *c, uint8_t *p, size_t cap) {
+    for (;;) {
+        ssize_t r = recv(c->fd, p, cap, 0);
+        if (r >= 0) return (int)r;
+        if (errno == EINTR) continue;
+        return errno == EAGAIN || errno == EWOULDBLOCK ? -2 : -1;
+    }
+}
+
 // One exchange on c. CB_OK (and *ka), CB_E_IO, or 1 meaning "failed before
 // any response byte" (the caller may retry a reused connection).
 static int exchange(conn *c, const cb_buf *req, bool head, int64_t deadline, cb_https_response *out, bool *ka) {
     set_timeouts(c->fd, left(deadline));
-    if (ssl_write_all(c->ssl, req->p, req->len) != 0) { ERR_clear_error(); return 1; }
+    if (write_all(c, req->p, req->len) != 0) { ERR_clear_error(); return 1; }
     cb_buf in;
     cb_buf_init(&in);
     int rc = CB_E_IO;
@@ -392,20 +420,28 @@ static int exchange(conn *c, const cb_buf *req, bool head, int64_t deadline, cb_
         if (left(deadline) <= 0) { CB_WARN("https", "%s: timed out", c->host); break; }
         if (!cb_buf_reserve(&in, 16384)) { rc = CB_E_NOMEM; break; }
         set_timeouts(c->fd, left(deadline));
-        int r = SSL_read(c->ssl, in.p + in.len, (int)(in.cap - in.len - 1));
         bool eof = false;
-        if (r > 0) {
-            in.len += (size_t)r;
+        if (!c->ssl) {
+            int r = plain_read(c, in.p + in.len, in.cap - in.len - 1);
+            if (r == -2) { CB_WARN("https", "%s: timed out", c->host); break; }
+            if (r < 0) { if (in.len == 0) rc = 1; break; }
+            if (r == 0) eof = true;
+            else in.len += (size_t)r;
         } else {
-            int e = SSL_get_error(c->ssl, r);
-            ERR_clear_error();
-            if (e == SSL_ERROR_ZERO_RETURN || (e == SSL_ERROR_SYSCALL && errno == 0)) eof = true;
-            else if (e == SSL_ERROR_WANT_READ || e == SSL_ERROR_WANT_WRITE) {
-                if (errno == EAGAIN || errno == EWOULDBLOCK) { CB_WARN("https", "%s: timed out", c->host); break; }
-                continue;
+            int r = SSL_read(c->ssl, in.p + in.len, (int)(in.cap - in.len - 1));
+            if (r > 0) {
+                in.len += (size_t)r;
             } else {
-                if (in.len == 0) rc = 1;
-                break;
+                int e = SSL_get_error(c->ssl, r);
+                ERR_clear_error();
+                if (e == SSL_ERROR_ZERO_RETURN || (e == SSL_ERROR_SYSCALL && errno == 0)) eof = true;
+                else if (e == SSL_ERROR_WANT_READ || e == SSL_ERROR_WANT_WRITE) {
+                    if (errno == EAGAIN || errno == EWOULDBLOCK) { CB_WARN("https", "%s: timed out", c->host); break; }
+                    continue;
+                } else {
+                    if (in.len == 0) rc = 1;
+                    break;
+                }
             }
         }
         // A clean close before any byte: the peer had dropped the idle connection.
@@ -423,8 +459,8 @@ static int exchange(conn *c, const cb_buf *req, bool head, int64_t deadline, cb_
 static void ignore_sigpipe(void) { signal(SIGPIPE, SIG_IGN); }
 #endif
 
-int cb_https_request(const char *host, int port, const char *method, const char *path, const char *headers,
-                     const void *body, size_t body_len, int timeout_ms, cb_https_response *out) {
+static int request(bool tls, const char *host, int port, const char *method, const char *path, const char *headers,
+                   const void *body, size_t body_len, int timeout_ms, cb_https_response *out) {
     memset(out, 0, sizeof *out);
     cb_buf_init(&out->headers);
     cb_buf_init(&out->body);
@@ -451,9 +487,9 @@ int cb_https_request(const char *host, int port, const char *method, const char 
     int rc = CB_E_IO;
     for (int attempt = 0; attempt < 2; attempt++) {
         conn c;
-        bool reused = attempt == 0 && pool_take(host, port, &c);
+        bool reused = attempt == 0 && pool_take(host, port, tls, &c);
         if (!reused) {
-            rc = conn_open(&c, host, port, deadline);
+            rc = conn_open(&c, host, port, tls, deadline);
             if (rc != CB_OK) break;
         }
         bool ka = false;
@@ -466,4 +502,14 @@ int cb_https_request(const char *host, int port, const char *method, const char 
     }
     cb_buf_free(&req);
     return rc;
+}
+
+int cb_https_request(const char *host, int port, const char *method, const char *path, const char *headers,
+                     const void *body, size_t body_len, int timeout_ms, cb_https_response *out) {
+    return request(true, host, port, method, path, headers, body, body_len, timeout_ms, out);
+}
+
+int cb_http_plain_request(const char *host, int port, const char *method, const char *path, const char *headers,
+                          const void *body, size_t body_len, int timeout_ms, cb_https_response *out) {
+    return request(false, host, port, method, path, headers, body, body_len, timeout_ms, out);
 }

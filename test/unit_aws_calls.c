@@ -213,19 +213,64 @@ static void dynamo_through_aws_call(void) {
 static void url_parse(void) {
     char host[64], base[64];
     int port;
-    T_EQ_INT(cb_aws_url_parse("https://abc.execute-api.us-west-2.amazonaws.com/prod", host, sizeof host, &port, base, sizeof base), CB_OK);
+    bool tls = false;
+    T_EQ_INT(cb_aws_url_parse("https://abc.execute-api.us-west-2.amazonaws.com/prod", host, sizeof host, &port, &tls, base, sizeof base), CB_OK);
     T_EQ_STR(host, "abc.execute-api.us-west-2.amazonaws.com");
     T_EQ_INT(port, 443);
+    T_CHECK(tls);
     T_EQ_STR(base, "/prod");
-    T_EQ_INT(cb_aws_url_parse("wss://h:8443/a/b//", host, sizeof host, &port, base, sizeof base), CB_OK);
+    T_EQ_INT(cb_aws_url_parse("wss://h:8443/a/b//", host, sizeof host, &port, &tls, base, sizeof base), CB_OK);
     T_EQ_STR(host, "h");
     T_EQ_INT(port, 8443);
     T_EQ_STR(base, "/a/b");
-    T_EQ_INT(cb_aws_url_parse("https://h", host, sizeof host, &port, base, sizeof base), CB_OK);
+    T_EQ_INT(cb_aws_url_parse("https://h", host, sizeof host, &port, &tls, base, sizeof base), CB_OK);
     T_EQ_STR(base, "");
-    T_EQ_INT(cb_aws_url_parse("https://h:0/x", host, sizeof host, &port, base, sizeof base), CB_E_INVALID);
-    T_EQ_INT(cb_aws_url_parse("https://:443/x", host, sizeof host, &port, base, sizeof base), CB_E_INVALID);
-    T_EQ_INT(cb_aws_url_parse("h/x", host, sizeof host, &port, base, sizeof base), CB_E_INVALID);
+    T_EQ_INT(cb_aws_url_parse("https://h:0/x", host, sizeof host, &port, &tls, base, sizeof base), CB_E_INVALID);
+    T_EQ_INT(cb_aws_url_parse("https://:443/x", host, sizeof host, &port, &tls, base, sizeof base), CB_E_INVALID);
+    T_EQ_INT(cb_aws_url_parse("h/x", host, sizeof host, &port, &tls, base, sizeof base), CB_E_INVALID);
+    // http:// is a local stand-in: plain, port 80 unless given.
+    T_EQ_INT(cb_aws_url_parse("http://127.0.0.1:8000", host, sizeof host, &port, &tls, base, sizeof base), CB_OK);
+    T_EQ_STR(host, "127.0.0.1");
+    T_EQ_INT(port, 8000);
+    T_CHECK(!tls);
+    T_EQ_INT(cb_aws_url_parse("http://dynamo-local", host, sizeof host, &port, &tls, base, sizeof base), CB_OK);
+    T_EQ_INT(port, 80);
+    T_CHECK(!tls);
+    // ... and never for AWS itself.
+    T_EQ_INT(cb_aws_url_parse("http://dynamodb.us-east-1.amazonaws.com", host, sizeof host, &port, &tls, base, sizeof base), CB_E_INVALID);
+    T_EQ_INT(cb_aws_url_parse("http://dynamodb.us-east-1.AmazonAWS.com:80", host, sizeof host, &port, &tls, base, sizeof base), CB_E_INVALID);
+}
+
+// AWS_ENDPOINT_URL_DYNAMODB=http://... (DynamoDB Local): the store speaks plain
+// HTTP to it, signed exactly as over TLS, with the port in the Host it signs.
+static void dynamo_over_plain_http(void) {
+    set_env();
+    tls_srv s;
+    T_EQ_INT(tls_srv_start_plain(&s, answer_dynamo, NULL), 0);
+    char ep[128];
+    snprintf(ep, sizeof ep, "http://127.0.0.1:%d", s.port);
+    setenv("AWS_ENDPOINT_URL_DYNAMODB", ep, 1);
+    cb_store *st = NULL;
+    T_EQ_INT(cb_store_open_dynamo("cbase", &st), CB_OK);
+    cb_user_row u;
+    T_EQ_INT(CB_STORE_CALL(st, user_get, "u1", &u), CB_OK);
+    T_EQ_STR(u.email, "a@x.io");
+    T_EQ_INT(CB_STORE_CALL(st, user_get, "u1", &u), CB_OK);   // the kept-alive connection, reused
+    T_EQ_INT(atomic_load(&s.accepts), 1);
+    T_EQ_INT(atomic_load(&s.requests), 2);
+    char *req = tls_srv_last(&s);
+    char v[512], want[64];
+    hdr(req, "Host", v, sizeof v);
+    snprintf(want, sizeof want, "127.0.0.1:%d", s.port);
+    T_EQ_STR(v, want);
+    static const char *const extra[] = { "Content-Type: application/x-amz-json-1.0", "X-Amz-Target: DynamoDB_20120810.GetItem" };
+    signature_matches(req, "dynamodb", extra, 2);
+    free(req);
+    cb_store_close(st);
+    tls_srv_stop(&s);
+    setenv("AWS_ENDPOINT_URL_DYNAMODB", "http://dynamodb.us-west-2.amazonaws.com", 1);
+    T_EQ_INT(cb_store_open_dynamo("cbase", &st), CB_E_INVALID);
+    unsetenv("AWS_ENDPOINT_URL_DYNAMODB");
 }
 
 int main(void) {
@@ -233,5 +278,6 @@ int main(void) {
     T_RUN(apigw_post_and_delete);
     T_RUN(lambda_self_invoke);
     T_RUN(dynamo_through_aws_call);
+    T_RUN(dynamo_over_plain_http);
     return T_DONE();
 }
