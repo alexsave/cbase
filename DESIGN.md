@@ -383,7 +383,7 @@ As built:
   404 for `/m/` and for a path with another slash in it, as Next answered.
 - HEAD, for every route: `cb_router_match` falls back from HEAD to the GET route when a path has no HEAD route of its own, and `cb_handle` marks the response `head`, so `cbase serve` writes GET's headers and Content-Length with no body (RFC 9110 9.3.2).
   HEAD /health answered 405 before.
-  The Lambda encoder still sends the body; the function URL front end drops it and keeps the length.
+  The Lambda encoder still sends the body, and the function URL front end drops it but answers `Content-Length: 0` whatever the body was (seen on the live stack, direct and through CloudFront); that is AWS's, not ours to set.
 - One decode at a time, behind a mutex, with one static `Game`: see the defect below.
 
 Tests: `test/unit_unfurl.c` holds the page to 20 goldens in `test/fixture_unfurl.h`, tag for tag and byte for byte: a live game at turn 10 (3 seats) and at turn 12 (2 seats), a finished 4-seat game, its rematch lobby, a plain lobby, a lobby with one named seat, an unnamed seat, names with all five escaped characters, non-ASCII names, names that are not UTF-8, a share-link suffix, lower case, percent-encoded blanks, a truncated payload, a header the replay refuses, a `2` payload, garbage, a bad escape, and an escape that is not UTF-8.
