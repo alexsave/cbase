@@ -57,7 +57,7 @@ param() {
 deploy_stack() {
   local fn_url api_host
   fn_url="$(output "$api_stack" FunctionUrl)"
-  [ -n "$fn_url" ] && [ "$fn_url" != None ] || die "the $api_stack stack has no FunctionUrl output"
+  if [ -z "$fn_url" ] || [ "$fn_url" = None ]; then die "the $api_stack stack has no FunctionUrl output"; fi
   api_host="${fn_url#https://}"
   api_host="${api_host%/}"
   local overrides=("ApiOriginDomain=$api_host")
@@ -119,8 +119,9 @@ deploy_site() {
 
   if [ -z "$out" ]; then
     if [ "$site" = foolish ]; then
-      [ -n "${NEXT_PUBLIC_SUPABASE_URL:-}" ] && [ -n "${NEXT_PUBLIC_SUPABASE_KEY:-}" ] \
-        || die "building foolish needs NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_KEY (the backend the bundle talks to)"
+      if [ -z "${NEXT_PUBLIC_SUPABASE_URL:-}" ] || [ -z "${NEXT_PUBLIC_SUPABASE_KEY:-}" ]; then
+        die "building foolish needs NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_KEY (the backend the bundle talks to)"
+      fi
     fi
     (cd "$app" && unset VERCEL && npm run build)
     out="$app/out"
