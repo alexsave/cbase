@@ -29,12 +29,11 @@
 #include "aws/event.h"
 #include "auth/bcrypt.h"
 #include "auth/jwt.h"
+#include "json_surface.h"
 #include "realtime/realtime.h"
 #include "realtime/rt_rows.h"
-#include "json_surface.h"
 #include "util/b64.h"
 #include "util/hex.h"
-#include "util/json.h"
 #include "util/uuid.h"
 
 #include "awire.h"
@@ -255,24 +254,7 @@ static bool fixtures(void) {
     char b64body[256];
     cb_b64_encode(body, (size_t)bn, b64body, sizeof b64body);
     cb_buf_init(&g_event);
-    cb_buf_printf(&g_event,
-        "{\"version\":\"2.0\",\"routeKey\":\"$default\",\"rawPath\":\"/functions/v1/action\",\"rawQueryString\":\"\","
-        "\"headers\":{\"accept\":\"*/*\",\"accept-encoding\":\"gzip, deflate, br, zstd\",\"accept-language\":\"en-US,en;q=0.9\","
-        "\"apikey\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\","
-        "\"authorization\":\"Bearer %s\",\"content-length\":\"%d\",\"content-type\":\"application/octet-stream\","
-        "\"host\":\"abcdefghijklmnopqrstuvwxyz012345.lambda-url.us-east-1.on.aws\",\"origin\":\"https://foolish.cards\","
-        "\"referer\":\"https://foolish.cards/\",\"sec-fetch-dest\":\"empty\",\"sec-fetch-mode\":\"cors\",\"sec-fetch-site\":\"cross-site\","
-        "\"user-agent\":\"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36\","
-        "\"via\":\"2.0 0123456789abcdef0123456789abcdef.cloudfront.net (CloudFront)\",\"x-amz-cf-id\":\"AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGhIjKlMnOpQr==\","
-        "\"x-amzn-trace-id\":\"Root=1-670b1c2d-0123456789abcdef01234567\",\"x-client-info\":\"supabase-js-web/2.45.4\","
-        "\"x-forwarded-for\":\"203.0.113.7, 130.176.0.1\",\"x-forwarded-port\":\"443\",\"x-forwarded-proto\":\"https\"},"
-        "\"requestContext\":{\"accountId\":\"anonymous\",\"apiId\":\"abcdefghijklmnopqrstuvwxyz012345\","
-        "\"domainName\":\"abcdefghijklmnopqrstuvwxyz012345.lambda-url.us-east-1.on.aws\",\"domainPrefix\":\"abcdefghijklmnopqrstuvwxyz012345\","
-        "\"http\":{\"method\":\"POST\",\"path\":\"/functions/v1/action\",\"protocol\":\"HTTP/1.1\",\"sourceIp\":\"130.176.0.1\","
-        "\"userAgent\":\"Amazon CloudFront\"},\"requestId\":\"0123abcd-4567-89ab-cdef-0123456789ab\",\"routeKey\":\"$default\","
-        "\"stage\":\"$default\",\"time\":\"13/Oct/2026:12:00:00 +0000\",\"timeEpoch\":1760356800000},"
-        "\"body\":\"%s\",\"isBase64Encoded\":true}",
-        g_token, bn, b64body);
+    cb_js_client_function_url_event(&g_event, g_token, bn, b64body);
     cb_event ev;
     if (cb_event_decode((const char *)g_event.p, g_event.len, &ev) != 0 || ev.kind != CB_EVENT_HTTP) {
         fprintf(stderr, "bench: the event fixture does not decode\n");
@@ -307,15 +289,11 @@ static bool fixtures(void) {
     g_row.updated_at = g_row.last_commit_at = 1760000100000;
     dw_req_init(&g_req);
     dw_game_create(&g_req, "cbase", &g_row, UA);
-    cb_span item;
-    if (cb_json_find((const char *)g_req.body.p, g_req.body.len, "TransactItems.0.Put.Item", &item) != CB_JSON_OBJ) {
+    cb_buf_init(&g_getitem);
+    if (!dw_get_answer_of_create(&g_req, &g_getitem)) {
         fprintf(stderr, "bench: no item in the create transaction\n");
         return false;
     }
-    cb_buf_init(&g_getitem);
-    cb_buf_puts(&g_getitem, "{\"Item\":");
-    cb_buf_append(&g_getitem, item.p, item.n);
-    cb_buf_puts(&g_getitem, "}");
 
     // The commit of the measured move: the products of kernel_action, once,
     // which must apply (a refused move would time a no-op).

@@ -228,6 +228,9 @@ void dw_refresh_revoke(dw_req *r, const char *table, cb_span key);
 
 // Games.
 void dw_game_create(dw_req *r, const char *table, const cb_game_row *g, const char *creator);
+// The bench's fixture: the GetItem answer ({"Item": ..}) for the game row a
+// dw_game_create request writes. false when the request holds no such item.
+bool dw_get_answer_of_create(const dw_req *create, cb_buf *out);
 // What a commit found before it wrote: the seats stored now, and for each
 // rated seat its rating row as read (the transaction is fenced on it, so a
 // rating another game changed meanwhile cancels and the commit re-reads).
@@ -644,5 +647,32 @@ typedef struct {
     cb_js_admin_links         links;
 } cb_js_admin_backups;
 int cb_js_admin_backups_write(cb_buf *out, const cb_js_admin_backups *b);
+
+// =====================================================================================
+// The client's side (bench/): what the bench sends as a browser, supabase-js or
+// API Gateway would, and reads back as they do. Every shape here is the mirror
+// of one above.
+
+// A Function URL event (payload 2.0) for POST /functions/v1/action as AWS
+// delivers a browser's request through CloudFront: its recorded headers, the
+// bearer, the binary body as base64.
+void cb_js_client_function_url_event(cb_buf *out, const char *bearer, int content_length, const char *body_b64);
+// GoTrue's signup body {email, password, data:{username}}.
+void cb_js_client_signup_body(cb_buf *out, const char *email, const char *password, const char *username);
+// A session answer's access_token and user.id. false when either is missing.
+bool cb_js_client_session(const char *body, size_t n, char *token, size_t token_cap, char *user_id, size_t id_cap);
+// realtime-js's heartbeat frame (vsn 2.0.0) and its length.
+const char *cb_js_client_heartbeat(size_t *n);
+// realtime-js's join of pv-<user_id> with a postgres_changes binding on the
+// player's rows (vsn 2.0.0, refs "1"), into out.
+void cb_js_client_pv_join(cb_buf *out, const char *user_id, const char *token);
+// A frame that is a phx_reply: 1 when its status is ok, 0 otherwise; -1 for
+// any other frame.
+int  cb_js_client_reply_status(const char *frame);
+// A vsn 2.0.0 postgres_changes push: its record's version. false for any
+// other frame.
+bool cb_js_client_pv_push_version(const char *frame, size_t n, int64_t *version);
+// A PostgREST array answer: the first row's "view" text. false when absent.
+bool cb_js_client_first_view(const char *body, size_t n, char *out, size_t cap);
 
 #endif

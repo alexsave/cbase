@@ -1213,6 +1213,16 @@ void dw_game_create(dw_req *r, const char *table, const cb_game_row *g, const ch
     txn_end(&w);
 }
 
+bool dw_get_answer_of_create(const dw_req *create, cb_buf *out) {
+    cb_span item;
+    if (cb_json_find((const char *)create->body.p, create->body.len, "TransactItems.0.Put.Item", &item) != CB_JSON_OBJ)
+        return false;
+    cb_buf_puts(out, "{\"Item\":");
+    cb_buf_append(out, item.p, item.n);
+    cb_buf_puts(out, "}");
+    return true;
+}
+
 static bool listed(const cb_uuid *ids, int n, const char *id) {
     for (int i = 0; i < n; i++)
         if (strcmp(ids[i], id) == 0) return true;
@@ -3388,4 +3398,75 @@ int cb_js_admin_backups_write(cb_buf *out, const cb_js_admin_backups *b) {
     adm_links(&w, &b->links);
     cb_jw_end(&w);
     return adm_done(&w);
+}
+
+// =====================================================================================
+// The client's side (bench/).
+
+void cb_js_client_function_url_event(cb_buf *out, const char *bearer, int content_length, const char *body_b64) {
+    cb_buf_printf(out,
+        "{\"version\":\"2.0\",\"routeKey\":\"$default\",\"rawPath\":\"/functions/v1/action\",\"rawQueryString\":\"\","
+        "\"headers\":{\"accept\":\"*/*\",\"accept-encoding\":\"gzip, deflate, br, zstd\",\"accept-language\":\"en-US,en;q=0.9\","
+        "\"apikey\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\","
+        "\"authorization\":\"Bearer %s\",\"content-length\":\"%d\",\"content-type\":\"application/octet-stream\","
+        "\"host\":\"abcdefghijklmnopqrstuvwxyz012345.lambda-url.us-east-1.on.aws\",\"origin\":\"https://foolish.cards\","
+        "\"referer\":\"https://foolish.cards/\",\"sec-fetch-dest\":\"empty\",\"sec-fetch-mode\":\"cors\",\"sec-fetch-site\":\"cross-site\","
+        "\"user-agent\":\"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36\","
+        "\"via\":\"2.0 0123456789abcdef0123456789abcdef.cloudfront.net (CloudFront)\",\"x-amz-cf-id\":\"AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGhIjKlMnOpQr==\","
+        "\"x-amzn-trace-id\":\"Root=1-670b1c2d-0123456789abcdef01234567\",\"x-client-info\":\"supabase-js-web/2.45.4\","
+        "\"x-forwarded-for\":\"203.0.113.7, 130.176.0.1\",\"x-forwarded-port\":\"443\",\"x-forwarded-proto\":\"https\"},"
+        "\"requestContext\":{\"accountId\":\"anonymous\",\"apiId\":\"abcdefghijklmnopqrstuvwxyz012345\","
+        "\"domainName\":\"abcdefghijklmnopqrstuvwxyz012345.lambda-url.us-east-1.on.aws\",\"domainPrefix\":\"abcdefghijklmnopqrstuvwxyz012345\","
+        "\"http\":{\"method\":\"POST\",\"path\":\"/functions/v1/action\",\"protocol\":\"HTTP/1.1\",\"sourceIp\":\"130.176.0.1\","
+        "\"userAgent\":\"Amazon CloudFront\"},\"requestId\":\"0123abcd-4567-89ab-cdef-0123456789ab\",\"routeKey\":\"$default\","
+        "\"stage\":\"$default\",\"time\":\"13/Oct/2026:12:00:00 +0000\",\"timeEpoch\":1760356800000},"
+        "\"body\":\"%s\",\"isBase64Encoded\":true}",
+        bearer, content_length, body_b64);
+}
+
+void cb_js_client_signup_body(cb_buf *out, const char *email, const char *password, const char *username) {
+    cb_jw w;
+    cb_jw_init(&w, out);
+    cb_jw_obj(&w);
+    cb_jw_kstr(&w, "email", email);
+    cb_jw_kstr(&w, "password", password);
+    cb_jw_key(&w, "data");
+    cb_jw_obj(&w);
+    cb_jw_kstr(&w, "username", username);
+    cb_jw_end(&w);
+    cb_jw_end(&w);
+}
+
+bool cb_js_client_session(const char *j, size_t n, char *token, size_t token_cap, char *user_id, size_t id_cap) {
+    return cb_json_get_str(j, n, "access_token", token, token_cap) && cb_json_get_str(j, n, "user.id", user_id, id_cap);
+}
+
+static const char CLIENT_HEARTBEAT[] = "[null,\"hb\",\"phoenix\",\"heartbeat\",{}]";
+
+const char *cb_js_client_heartbeat(size_t *n) {
+    *n = sizeof CLIENT_HEARTBEAT - 1;
+    return CLIENT_HEARTBEAT;
+}
+
+void cb_js_client_pv_join(cb_buf *out, const char *user_id, const char *token) {
+    cb_buf_printf(out,
+                  "[\"1\",\"1\",\"realtime:pv-%s\",\"phx_join\",{\"config\":{\"broadcast\":{\"ack\":false,\"self\":false},"
+                  "\"presence\":{\"key\":\"\"},\"postgres_changes\":[{\"event\":\"*\",\"schema\":\"public\","
+                  "\"table\":\"player_views\",\"filter\":\"player_id=eq.%s\"}],\"private\":false},\"access_token\":\"%s\"}]",
+                  user_id, user_id, token);
+}
+
+int cb_js_client_reply_status(const char *j) {
+    if (!strstr(j, "\"phx_reply\"")) return -1;
+    return strstr(j, "\"status\":\"ok\"") != NULL;
+}
+
+bool cb_js_client_pv_push_version(const char *j, size_t n, int64_t *version) {
+    char ev[32];
+    if (!cb_json_get_str(j, n, "3", ev, sizeof ev) || strcmp(ev, "postgres_changes") != 0) return false;
+    return cb_json_get_i64(j, n, "4.data.record.version", version);
+}
+
+bool cb_js_client_first_view(const char *body, size_t n, char *out, size_t cap) {
+    return cb_json_get_str(body, n, "0.view", out, cap);
 }
