@@ -1,10 +1,12 @@
 // rt_rows.h - the row and payload text realtime.c and postgrest.c share.
 //
-// Postgres prints a timestamp in JSON as ISO-8601 with a 'T', the fraction cut
-// of its trailing zeros (none at all on a whole second), and "+00:00" only for
-// a TIMESTAMPTZ column. The tables carry both kinds (seed.sql): player_views
-// and spectator_views.updated_at are TIMESTAMPTZ, every other time column is a
-// plain TIMESTAMP, and PostgREST and Realtime print each as Postgres does.
+// Every timestamp is printed as Postgres prints a TIMESTAMPTZ in UTC: ISO-8601
+// with a 'T', the fraction cut of its trailing zeros (none at all on a whole
+// second), and "+00:00". Production (seed.sql) has plain TIMESTAMP columns too
+// (chat_messages, game_snapshots, the ratings), which PostgREST prints with no
+// offset, and a browser's new Date() reads such a string as LOCAL time: the
+// chat clock was off by the viewer's UTC offset. Every value here is UTC, so
+// every value carries the offset, whatever production's column type was.
 #ifndef CB_RT_ROWS_H
 #define CB_RT_ROWS_H
 
@@ -17,9 +19,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// "2026-10-13T12:34:56.789" (tz false) or "2026-10-13T12:34:56.789+00:00".
-// The length, or -1 when cap < 40.
-int cb_rt_ts(int64_t ms, bool tz, char *out, size_t cap);
+// "2026-10-13T12:34:56.789+00:00". The length, or -1 when cap < 40.
+int cb_rt_ts(int64_t ms, char *out, size_t cap);
 // Realtime's commit_timestamp: "2026-10-13T12:34:56.789Z". The length, or -1.
 int cb_rt_commit_ts(int64_t ms, char *out, size_t cap);
 

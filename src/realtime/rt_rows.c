@@ -5,7 +5,7 @@
 
 #include <string.h>
 
-int cb_rt_ts(int64_t ms, bool tz, char *out, size_t cap) {
+int cb_rt_ts(int64_t ms, char *out, size_t cap) {
     char iso[40];
     if (cap < 40 || cb_iso8601(ms, iso, sizeof iso) < 0) return -1;
     // iso is "YYYY-MM-DDTHH:MM:SS.ffffff+00:00": keep the fraction's
@@ -20,7 +20,8 @@ int cb_rt_ts(int64_t ms, bool tz, char *out, size_t cap) {
         memcpy(out + n, iso + 20, (size_t)last + 1);
         n += (size_t)last + 1;
     }
-    if (tz) { memcpy(out + n, "+00:00", 6); n += 6; }
+    memcpy(out + n, "+00:00", 6);
+    n += 6;
     out[n] = 0;
     return (int)n;
 }
@@ -36,7 +37,7 @@ int cb_rt_commit_ts(int64_t ms, char *out, size_t cap) {
 
 void cb_rt_write_chat_row(cb_jw *w, const cb_chat_row *r, bool sorted) {
     char ts[40];
-    cb_rt_ts(r->created_at, false, ts, sizeof ts);
+    cb_rt_ts(r->created_at, ts, sizeof ts);
     cb_jw_obj(w);
     if (sorted) {
         cb_jw_kstr(w, "created_at", ts);

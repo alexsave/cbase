@@ -84,7 +84,7 @@ void cb_rt_pv_payload(cb_buf *out, int event, const cb_view_row *row) {
     const char *type = TYPES[event];
     char commit[40], ts[40];
     cb_rt_commit_ts(row->updated_at, commit, sizeof commit);
-    cb_rt_ts(row->updated_at, true, ts, sizeof ts);
+    cb_rt_ts(row->updated_at, ts, sizeof ts);
     char filter[64 + CB_UUID_LEN];
     snprintf(filter, sizeof filter, "player_id=eq.%s", row->player_id);
 

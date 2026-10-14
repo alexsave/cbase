@@ -137,7 +137,7 @@ int cb_pgrst_parse(const char *query, cb_pgrst_query *out) {
 
 // ---- tables and rows --------------------------------------------------------------------
 
-enum { V_NULL, V_TEXT, V_INT, V_BOOL, V_BYTEA, V_TS, V_TSTZ, V_UUIDS };
+enum { V_NULL, V_TEXT, V_INT, V_BOOL, V_BYTEA, V_TS, V_UUIDS };
 
 typedef struct { const char *name; int kind; } pcol;
 
@@ -149,9 +149,9 @@ typedef struct {
 
 #define COLS(a) a, (int)(sizeof a / sizeof a[0])
 static const pcol PV_COLS[] = { { "game_id", V_TEXT }, { "player_id", V_TEXT }, { "view", V_BYTEA },
-                                { "version", V_INT }, { "status", V_TEXT }, { "updated_at", V_TSTZ } };
+                                { "version", V_INT }, { "status", V_TEXT }, { "updated_at", V_TS } };
 static const pcol SV_COLS[] = { { "game_id", V_TEXT }, { "view", V_BYTEA }, { "version", V_INT },
-                                { "status", V_TEXT }, { "updated_at", V_TSTZ } };
+                                { "status", V_TEXT }, { "updated_at", V_TS } };
 static const pcol CHAT_COLS[] = { { "id", V_TEXT }, { "game_id", V_TEXT }, { "user_id", V_TEXT },
                                   { "message", V_TEXT }, { "is_system", V_BOOL }, { "created_at", V_TS } };
 static const pcol RATING_COLS[] = { { "user_id", V_TEXT }, { "username", V_TEXT }, { "elo_rating", V_INT },
@@ -264,7 +264,7 @@ static void add_view(rowset *rs, const cb_view_row *v, bool player) {
     set_bytes(rs, r, k++, v->view ? v->view : (const uint8_t *)"", v->view_len);
     set_int(r, k++, v->version);
     set_text(rs, r, k++, v->status);
-    set_time(r, k++, V_TSTZ, v->updated_at);
+    set_time(r, k++, V_TS, v->updated_at);
 }
 
 static bool view_fn(const cb_view_row *v, void *ud) {
@@ -423,7 +423,7 @@ static bool prep_filter(const ptable *t, const cb_pgrst_query *q, int k, pfilter
         else if (strcmp(v, "false") == 0 || strcmp(v, "f") == 0) out->i = 0;
         else { snprintf(err, cap, "invalid input syntax for type boolean: \"%s\"", v); return false; }
         return true;
-    case V_TS: case V_TSTZ:
+    case V_TS:
         if (cb_iso8601_parse(v, strlen(v), &out->i) != CB_OK) { snprintf(err, cap, "invalid input syntax for type timestamp: \"%s\"", v); return false; }
         return true;
     default:
@@ -462,8 +462,7 @@ static void write_cell(cb_jw *w, const cell *c) {
     case V_INT:   cb_jw_int(w, c->i); break;
     case V_BOOL:  cb_jw_bool(w, c->i != 0); break;
     case V_BYTEA: cb_jw_bytea(w, c->p, c->n); break;
-    case V_TS:    cb_rt_ts(c->i, false, ts, sizeof ts); cb_jw_str(w, ts); break;
-    case V_TSTZ:  cb_rt_ts(c->i, true, ts, sizeof ts); cb_jw_str(w, ts); break;
+    case V_TS:    cb_rt_ts(c->i, ts, sizeof ts); cb_jw_str(w, ts); break;
     case V_UUIDS:
         cb_jw_arr(w);
         for (size_t i = 0; i < c->n; i++) cb_jw_str(w, c->s + i * sizeof(cb_uuid));

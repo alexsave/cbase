@@ -441,23 +441,25 @@ static void cast_and_chat_payloads(void) {
     cb_rt_chat_payload(&b, &c);
     T_EQ_STR(cb_buf_cstr(&b),
              "{\"event\":\"INSERT\",\"payload\":{\"old_record\":null,\"operation\":\"INSERT\",\"record\":{"
-             "\"created_at\":\"2026-10-13T12:34:56\",\"game_id\":\"" G "\",\"id\":\"33333333-3333-4333-8333-333333333333\","
+             "\"created_at\":\"2026-10-13T12:34:56+00:00\",\"game_id\":\"" G "\",\"id\":\"33333333-3333-4333-8333-333333333333\","
              "\"is_system\":false,\"message\":\"hi \\\"there\\\"\",\"user_id\":\"" U1 "\"},"
              "\"schema\":\"public\",\"table\":\"chat_messages\"},\"type\":\"broadcast\"}");
     cb_buf_free(&b);
 }
 
 static void timestamps_as_postgres_prints_them(void) {
+    // Every timestamp carries its UTC offset: a bare one is read as local time
+    // by the browser's new Date(), which put the chat clock off by the offset.
     char t[48];
-    T_EQ_INT(cb_rt_ts(ms_of("2026-10-13T12:34:56.789Z"), false, t, sizeof t), 23);
-    T_EQ_STR(t, "2026-10-13T12:34:56.789");
-    cb_rt_ts(ms_of("2026-10-13T12:34:56.780Z"), true, t, sizeof t);
+    T_EQ_INT(cb_rt_ts(ms_of("2026-10-13T12:34:56.789Z"), t, sizeof t), 29);
+    T_EQ_STR(t, "2026-10-13T12:34:56.789+00:00");
+    cb_rt_ts(ms_of("2026-10-13T12:34:56.780Z"), t, sizeof t);
     T_EQ_STR(t, "2026-10-13T12:34:56.78+00:00");
-    cb_rt_ts(ms_of("2026-10-13T12:34:56Z"), true, t, sizeof t);
+    cb_rt_ts(ms_of("2026-10-13T12:34:56Z"), t, sizeof t);
     T_EQ_STR(t, "2026-10-13T12:34:56+00:00");
-    cb_rt_ts(ms_of("2026-01-02T03:04:05.006Z"), false, t, sizeof t);
-    T_EQ_STR(t, "2026-01-02T03:04:05.006");
-    T_EQ_INT(cb_rt_ts(0, false, t, 39), -1);
+    cb_rt_ts(ms_of("2026-01-02T03:04:05.006Z"), t, sizeof t);
+    T_EQ_STR(t, "2026-01-02T03:04:05.006+00:00");
+    T_EQ_INT(cb_rt_ts(0, t, 39), -1);
     cb_rt_commit_ts(ms_of("2026-10-13T12:34:56Z"), t, sizeof t);
     T_EQ_STR(t, "2026-10-13T12:34:56.000Z");
 }
