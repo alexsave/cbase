@@ -115,8 +115,13 @@ static void unfurl(void) {
     tc_response_free(&h);
 }
 
+// The drain names who sent the signal (main_serve.c): here, this test.
 static void drains_on_sigterm(void) {
-    T_EQ_INT(tp_stop(&g_child, SIGTERM, 15000), 0);
+    char want[64];
+    snprintf(want, sizeof want, "SIGTERM from pid %d ", (int)getpid());
+    T_EQ_INT(kill(g_child.pid, SIGTERM), 0);
+    T_EQ_INT(tp_wait_line(&g_child, want, 15000, NULL, 0), 0);
+    T_EQ_INT(tp_stop(&g_child, 0, 15000), 0);
 }
 
 // ---- the game scenario ---------------------------------------------------------------
