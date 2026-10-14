@@ -201,3 +201,16 @@ Order:
 `utils.foolish.cards` (a CNAME to Vercel) is Alex's personal toys site from the sibling repo `../foolish-utils`, deployed by Vercel's git integration: Next 16 with only client-side pages, no API routes, no env vars and no backend, so it is static in substance.
 It can move whenever, with `output: 'export'` plus `images.unoptimized` (it uses `next/image`), into its own S3 prefix or bucket behind the same web distribution, with `utils.foolish.cards` added to the certificate and the aliases and the Function choosing the prefix by Host.
 Nothing in the monorepo depends on it, and it is not part of the foolish move's order.
+
+## 7. As built (2026-10-14)
+
+Built ahead of the cutover, up to "ready to flip"; c_base/RUNBOOK.md "Web hosting" has the state and the steps.
+Where it differs from sections 4 and 6, and why:
+
+- Two distributions in one stack (`ops/web.yaml`), foolish (with www and utils) and uttt: a flat-rate plan covers one apex, and each distribution has its own copy of the same viewer-request Function, because a Function attached to a plan's distribution cannot be shared. `ops/test/web_router.test.mjs` runs that code out of the template and fails when the copies drift.
+- The page list lives in two stack parameters substituted into the Function, written by `ops/web_deploy.sh` from each export on a stack update with the previous template, so the template stays the Function's one owner and CI can never apply a template change.
+- The COOP/COEP headers come from a viewer-response Function, not a response-headers policy: a Free plan allows only managed headers policies.
+- The SPA shell is `/_shell.html` (the one `generateStaticParams` entry); the clients read the segment from the address bar on it (`foolish/src/utils/useUrlGameId.ts`, `uttt/web/components/Replay.tsx`).
+- Stale hashed chunks are pruned by hand (`web_deploy.sh site <s> --prune-static`), not by a lifecycle rule: an object's age is its first upload, so an age rule would delete live chunks. The bucket is versioned instead, old versions kept 30 days.
+- Both apps still build as a server app when `VERCEL=1`, so the Vercel lanes keep serving the same site during the overlap; on Vercel `/m/:payload` is rewritten to `api.foolish.cards`.
+- Found on the way: Vercel today answers the apex with a 307 to www and serves the association file as `application/octet-stream`, so universal links are broken now; the apex on CloudFront serves it at 200 as `application/json`.
