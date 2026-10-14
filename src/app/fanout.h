@@ -6,8 +6,10 @@
 //     seat's view row (the dashboard), and a gu-<game>-<uid> broadcast
 //     animation_events {b: base64(table_cast(seat, version))};
 //   * for the spectators: game-<game> broadcast of table_cast(-1, version);
-//   * the broadcasts only when n_events > 0 or goods_changed (a good flies no
-//     card but is a move); the pv- update on every commit;
+//   * the broadcasts only when n_events > 0, goods_changed (a good flies no
+//     card but is a move) or roster_changed (a redaction renames a seat and
+//     flies nothing, yet an open page must show it); the pv- update on every
+//     commit;
 //   * a membership change: pv-<uid> INSERT for a new seat, DELETE (primary key
 //     only) for one that left.
 // Called inside the kernel section's aftermath with the bytes already copied
@@ -27,7 +29,7 @@ typedef struct {
     int64_t     version;
     const char *status;            // cb_table_status_label
     int64_t     updated_at;
-    bool        broadcast;         // n_events > 0 || goods_changed
+    bool        broadcast;         // n_events > 0 || goods_changed || roster_changed
     int         n_seats;
     struct {
         cb_uuid        user_id;    // "" for a bot seat (nothing is sent to it)

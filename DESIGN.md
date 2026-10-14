@@ -232,7 +232,8 @@ As built:
   finalize.ts then cleared `logs_packed` with a second, unfenced UPDATE; the store has no such write, so the finished game's log stays until the next commit that leaves the finished table (a lobby commit empties it, a deal replaces it).
   This is accepted: the log is read only by the next deal's append and by the replay gate, both of which handle it.
   The snapshot's `player_ids` include the bots, as finalize.ts wrote them.
-- `fanout.c`: a pv- INSERT/UPDATE/DELETE per human row on every commit, the gu- casts per human seat and the game- cast only when `n_events > 0 || goods_changed` (table_io.ts's rule).
+- `fanout.c`: a pv- INSERT/UPDATE/DELETE per human row on every commit, the gu- casts per human seat and the game- cast only when `n_events > 0 || goods_changed || roster_changed`.
+  table_io.ts's rule had no `roster_changed`, so a delete-account redaction on a dealt table (no card, no good) cast nothing, and an open game page, which ignores the pv- row of the game on screen, kept the deleted name until a reload; the cast carries the roster trailer and the page applies an empty cast as a board.
 - `functions_http.c` follows wrap400: auth is checked before the content type; 400 for every refusal with a reason (AUTH, MALFORMED, REFUSED, NOT_FOUND, NO_BOT), 415 for a body that is not octets, 500 INTERNAL for the server's own failure (write contention included), 503 when the store is not up; create 400 AUTH or 500; delete-account 405, 401, 500.
   These match inv_supabase.md section 3 line by line.
   `cb_app_delete_account` is the one implementation behind delete-account and the console's Users panel.

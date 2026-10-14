@@ -53,6 +53,7 @@ typedef struct {
     bool    broadcast;
     int     humans, casts, joined, left;
     bool    spectator_cast;
+    bool    casts_name_redaction;   // every cast carries REDACTED_PLAYER_NAME (the roster trailer)
     cb_uuid first_joined, first_left;
 } fan_seen;
 static fan_seen g_fan;
@@ -68,6 +69,11 @@ static void fan_observer(const cb_fanout *f) {
         if (f->seats[i].cast) s.casts++;
     }
     s.spectator_cast = f->spectator_cast != NULL;
+    s.casts_name_redaction = s.casts > 0 && s.spectator_cast &&
+        memmem(f->spectator_cast, f->spectator_cast_len, REDACTED_PLAYER_NAME, strlen(REDACTED_PLAYER_NAME)) != NULL;
+    for (int i = 0; i < f->n_seats; i++)
+        if (f->seats[i].cast && !memmem(f->seats[i].cast, f->seats[i].cast_len, REDACTED_PLAYER_NAME, strlen(REDACTED_PLAYER_NAME)))
+            s.casts_name_redaction = false;
     s.joined = f->n_joined;
     s.left = f->n_left;
     if (f->n_joined) snprintf(s.first_joined, sizeof s.first_joined, "%s", f->joined[0]);
@@ -744,6 +750,27 @@ static void delete_account_redacts(void) {
     T_EQ_STR(rb.username, "");
 }
 
+// A redaction on a dealt table flies no card and sets no good, but the open
+// game pages must hear it: the commit casts to every human seat and to the
+// spectators, and each cast carries the renamed roster.
+static void delete_account_casts_the_rename_to_open_pages(void) {
+    setup(0);
+    char gid[CB_GAME_ID_MAX + 1];
+    two_humans_dealt(gid);
+    T_EQ_INT(status_of(gid), GAME_STATUS_PLAYING);
+    int64_t v = version_of(gid);
+    memset(&g_fan, 0, sizeof g_fan);
+    int code, detail;
+    T_EQ_INT(cb_app_delete_account(&g_ctx, UID_B, &code, &detail), CB_E_STATE);   // no auth handle: the account step
+    T_EQ_INT(version_of(gid), v + 1);
+    T_EQ_INT(g_fan.count, 1);
+    T_EQ_INT(g_fan.version, v + 1);
+    T_CHECK(g_fan.broadcast);
+    T_EQ_INT(g_fan.casts, 2);
+    T_CHECK(g_fan.spectator_cast);
+    T_CHECK(g_fan.casts_name_redaction);
+}
+
 // The names a stored replay's extras give its seats, and where the names
 // section ends (the times section follows it byte for byte).
 typedef struct { int n; char names[CB_MAX_SEATS][64]; size_t names_end; } extras_names;
@@ -933,6 +960,7 @@ int main(void) {
     T_RUN(the_wire_surface);
     T_RUN(the_last_seat_leaving_deletes_the_game);
     T_RUN(delete_account_redacts);
+    T_RUN(delete_account_casts_the_rename_to_open_pages);
     T_RUN(delete_account_anonymizes_stored_replays);
     T_RUN(the_bot_loop_drives_until_a_human_owes_a_move);
     T_RUN(a_held_lease_skips_the_drive);
