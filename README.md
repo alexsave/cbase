@@ -10,6 +10,8 @@ The design, every decision and each module's as-built record are in [DESIGN.md](
 make -C c_base             # build/cbase, build/bootstrap (native), build/cbase-import
 make -C c_base check       # every unit test, then both smoke lanes (the full game smoke takes about 1.5 minutes)
 make -C c_base check-asan  # the same, everything (the kernel too) under ASan + UBSan
+make -C c_base check-dynamo  # the store, admin and import tests and the game smoke on DynamoDB Local (Docker)
+make -C c_base bench-dynamo  # the DynamoDB store's per-operation latency against DynamoDB Local
 make -C c_base bootstrap   # dist/bootstrap.zip: static Linux arm64 for Lambda (needs Docker)
 make -C c_base bench       # build/cbase-bench: latency and CPU numbers (DESIGN.md, "The bench")
 ```
@@ -17,6 +19,7 @@ make -C c_base bench       # build/cbase-bench: latency and CPU numbers (DESIGN.
 macOS needs Xcode's clang and `brew install openssl@3`; Ubuntu 24.04 needs `build-essential libssl-dev libsqlite3-dev`.
 The kernel is built from `../foolish/c` with its own source list; nothing is copied.
 `CBASE_SMOKE_GAME=0 make -C c_base smoke` skips the game scenario when only the plumbing is of interest.
+`c_base/ops/dynamo_local.sh` starts DynamoDB Local with the stack's table and prints the environment to export (`--stop` removes it); `CBASE_LOG_LEVEL=debug` logs every request's DynamoDB requests and capacity units.
 
 ## Run locally
 

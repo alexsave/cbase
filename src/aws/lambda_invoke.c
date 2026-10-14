@@ -23,10 +23,11 @@ int cb_lambda_invoke_bot_drive(const char *game_id) {
 
     char host[256], base[256];
     int port = 443;
+    bool tls = true;
     base[0] = 0;
     const char *override = getenv("AWS_ENDPOINT_URL_LAMBDA");
     if (override && *override) {
-        if (cb_aws_url_parse(override, host, sizeof host, &port, base, sizeof base) != CB_OK) {
+        if (cb_aws_url_parse(override, host, sizeof host, &port, &tls, base, sizeof base) != CB_OK) {
             CB_ERROR("invoke", "bad AWS_ENDPOINT_URL_LAMBDA \"%s\"", override);
             return CB_E_IO;
         }
@@ -42,7 +43,7 @@ int cb_lambda_invoke_bot_drive(const char *game_id) {
     cb_buf_puts(&path, "/invocations");
     static const char *const headers[] = { "X-Amz-Invocation-Type: Event" };
     cb_https_response r;
-    int rc = cb_aws_call("lambda", "POST", host, port, cb_buf_cstr(&path), headers, 1, payload, (size_t)pn,
+    int rc = cb_aws_call("lambda", "POST", host, port, tls, cb_buf_cstr(&path), headers, 1, payload, (size_t)pn,
                          INVOKE_TIMEOUT_MS, &r);
     if (rc == CB_OK && r.status != 202) {
         CB_WARN("invoke", "bot_drive:%s answered %d: %.200s", game_id, r.status, cb_buf_cstr(&r.body));

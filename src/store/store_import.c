@@ -2,6 +2,7 @@
 // body of `cbase-import` (migrate/import.c), here so test/unit_import.c can
 // run it on a fixture without a second binary.
 #include "store_import.h"
+#include "store_priv.h"
 
 #include "bot_roster.h"
 #include "table.h"
@@ -424,6 +425,35 @@ static long long export_count(const char *dir, const char *name) {
     return n;
 }
 
+typedef struct {
+    cb_bot_row *rows;
+    int         n;
+} bot_set;
+
+static bool add_bot(const cb_bot_row *b, void *ud) {
+    bot_set *set = ud;
+    if (set->n < 64) set->rows[set->n++] = *b;
+    return set->n < 64;
+}
+
+int cb_import_seed_bots(cb_store *s) {
+    bot_set have = { .rows = calloc(64, sizeof(cb_bot_row)) }, seed = { .rows = calloc(64, sizeof(cb_bot_row)) };
+    cb_store *mem = NULL;
+    int rc = !have.rows || !seed.rows ? CB_E_NOMEM : CB_STORE_CALL(s, bots_list, add_bot, &have);
+    if (rc >= 0 && have.n == 0) {
+        rc = cb_store_open_sqlite(":memory:", &mem);
+        if (rc == CB_OK) rc = CB_STORE_CALL(mem, bots_list, add_bot, &seed);
+        if (rc >= 0) rc = seed.n == 0 ? CB_E_STATE : CB_STORE_CALL(s, bots_replace, seed.rows, seed.n);
+        if (rc == CB_OK) rc = seed.n;
+    } else if (rc >= 0) {
+        rc = 0;
+    }
+    if (mem) cb_store_close(mem);
+    free(have.rows);
+    free(seed.rows);
+    return rc;
+}
+
 int cb_import_dir(cb_store *s, const char *dir, FILE *out) {
     tally users = { 0 }, bots = { 0 }, ratings = { 0 }, games = { 0 }, hands = { 0 }, bhands = { 0 }, snaps = { 0 },
           chat = { 0 };
@@ -434,7 +464,8 @@ int cb_import_dir(cb_store *s, const char *dir, FILE *out) {
         return CB_E_IO;
     bool ok = true;
 
-    // What the store now holds, by its own count (SQLite: one SELECT each).
+    // What the store now holds, by its own count (SQLite: one SELECT each;
+    // DynamoDB: a counting Scan over the items each table became).
     static const struct { const char *export_name, *sql; } checks[] = {
         { "users", "SELECT count(*) FROM users" },
         { "bots", "SELECT count(*) FROM bots" },
@@ -446,17 +477,18 @@ int cb_import_dir(cb_store *s, const char *dir, FILE *out) {
         { "chat_messages", "SELECT count(*) FROM chat_messages" },
     };
     tally *tallies[] = { &users, &bots, &ratings, &games, &hands, &bhands, &snaps, &chat };
-    bool sqlite = strcmp(s->ops->name, "sqlite") == 0;
+    bool sqlite = strcmp(s->ops->name, "sqlite") == 0, dynamo = strcmp(s->ops->name, "dynamo") == 0;
     fprintf(out, "%-18s %8s %8s %8s %8s %8s %8s\n", "table", "export", "read", "written", "present", "failed", "stored");
     for (int i = 0; i < 8; i++) {
         tally *t = tallies[i];
         long long exp = export_count(dir, checks[i].export_name), stored = -1;
         if (sqlite) CB_STORE_CALL(s, admin_query, checks[i].sql, false, count_cb, &stored);
+        if (dynamo && cb_store_dynamo_count(s, checks[i].export_name, &stored) != CB_OK) stored = -2;
         bool row_ok = t->bad == 0 && t->written + t->already == t->read && (exp < 0 || exp == t->read) &&
-                      (!sqlite || stored == t->read);
+                      (!(sqlite || dynamo) || stored == t->read);
         ok &= row_ok;
         char st[24] = "-";
-        if (sqlite) snprintf(st, sizeof st, "%lld", stored);
+        if (sqlite || dynamo) snprintf(st, sizeof st, "%lld", stored);
         fprintf(out, "%-18s %8lld %8d %8d %8d %8d %8s %s\n", checks[i].export_name, exp, t->read, t->written, t->already, t->bad,
                st, row_ok ? "ok" : "MISMATCH");
     }

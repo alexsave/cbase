@@ -13,7 +13,8 @@
 static int call(const char *method, const char *endpoint, const char *connection_id, const void *data, size_t len) {
     char host[256], base[256];
     int port;
-    if (cb_aws_url_parse(endpoint, host, sizeof host, &port, base, sizeof base) != CB_OK || !connection_id ||
+    bool tls;
+    if (cb_aws_url_parse(endpoint, host, sizeof host, &port, &tls, base, sizeof base) != CB_OK || !connection_id ||
         !*connection_id) {
         CB_ERROR("apigw", "bad endpoint \"%s\" or connection id", endpoint ? endpoint : "");
         return CB_E_IO;
@@ -24,7 +25,7 @@ static int call(const char *method, const char *endpoint, const char *connection
     cb_buf_puts(&path, "/@connections/");
     cb_aws_path_segment(&path, connection_id);
     cb_https_response r;
-    int rc = cb_aws_call("execute-api", method, host, port, cb_buf_cstr(&path), NULL, 0, data, len, APIGW_TIMEOUT_MS, &r);
+    int rc = cb_aws_call("execute-api", method, host, port, tls, cb_buf_cstr(&path), NULL, 0, data, len, APIGW_TIMEOUT_MS, &r);
     if (rc == CB_OK) {
         rc = r.status;
         if (rc != 200 && rc != 204 && rc != CB_APIGW_GONE)

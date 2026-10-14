@@ -4,6 +4,7 @@
 // a rerun, and each check that must fail the import: a hash that is not
 // bcrypt, a game the kernel will not load, a count that disagrees.
 #include "t.h"
+#include "lib_store_backend.h"
 
 #include "store/store.h"
 #include "store/store_import.h"
@@ -99,8 +100,8 @@ static void write_export(const char *dir, int variant) {
 static cb_store *fresh_store(const char *name) {
     char path[512];
     snprintf(path, sizeof path, "%s/%s.sqlite", g_dir, name);
-    cb_store *s = NULL;
-    T_EQ_INT(cb_store_open_sqlite(path, &s), CB_OK);
+    cb_store *s = tsb_open_fresh(path);   // SQLite, or a fresh DynamoDB Local table
+    if (!s) { fprintf(stderr, "FAIL no store to import into\n"); exit(1); }
     return s;
 }
 

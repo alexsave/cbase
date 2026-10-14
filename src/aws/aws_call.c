@@ -11,16 +11,19 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
-int cb_aws_url_parse(const char *url, char *host, size_t host_cap, int *port, char *base, size_t base_cap) {
+int cb_aws_url_parse(const char *url, char *host, size_t host_cap, int *port, bool *tls, char *base, size_t base_cap) {
     if (!url) return CB_E_INVALID;
+    *tls = true;
     if (cb_starts_with(url, "https://")) url += 8;
     else if (cb_starts_with(url, "wss://")) url += 6;
+    else if (cb_starts_with(url, "http://")) { url += 7; *tls = false; }
     else return CB_E_INVALID;
     const char *slash = strchr(url, '/');
     const char *hend = slash ? slash : url + strlen(url);
     const char *colon = memchr(url, ':', (size_t)(hend - url));
-    *port = 443;
+    *port = *tls ? 443 : 80;
     if (colon) {
         char *e;
         long p = strtol(colon + 1, &e, 10);
@@ -30,6 +33,9 @@ int cb_aws_url_parse(const char *url, char *host, size_t host_cap, int *port, ch
         colon = hend;
     }
     if (colon == url || !cb_strncpy0(host, host_cap, url, (size_t)(colon - url))) return CB_E_INVALID;
+    size_t hl = strlen(host);
+    static const char AWS[] = ".amazonaws.com";
+    if (!*tls && hl >= sizeof AWS - 1 && strcasecmp(host + hl - (sizeof AWS - 1), AWS) == 0) return CB_E_INVALID;
     size_t bl = slash ? strlen(slash) : 0;
     while (bl > 0 && slash[bl - 1] == '/') bl--;
     if (!cb_strncpy0(base, base_cap, slash ? slash : "", bl)) return CB_E_INVALID;
@@ -45,7 +51,7 @@ void cb_aws_path_segment(cb_buf *b, const char *s) {
     }
 }
 
-int cb_aws_call(const char *service, const char *method, const char *host, int port, const char *path,
+int cb_aws_call(const char *service, const char *method, const char *host, int port, bool tls, const char *path,
                 const char *const *headers, int n_headers, const void *body, size_t body_len, int timeout_ms,
                 cb_https_response *out) {
     memset(out, 0, sizeof *out);
@@ -55,7 +61,7 @@ int cb_aws_call(const char *service, const char *method, const char *host, int p
         return CB_E_IO;
     }
     char hosthdr[300];
-    if (port == 443) cb_strlcpy(hosthdr, host, sizeof hosthdr);
+    if (port == (tls ? 443 : 80)) cb_strlcpy(hosthdr, host, sizeof hosthdr);
     else snprintf(hosthdr, sizeof hosthdr, "%s:%d", host, port);
     const char *q = strchr(path, '?');
     char p[2048];
@@ -71,7 +77,9 @@ int cb_aws_call(const char *service, const char *method, const char *host, int p
         cb_buf_puts(&h, "\r\n");
     }
     int rc = cb_sigv4_sign(&c, &r, &h);
-    if (rc == CB_OK) rc = cb_https_request(host, port, method, path, cb_buf_cstr(&h), body, body_len, timeout_ms, out);
+    if (rc == CB_OK)
+        rc = (tls ? cb_https_request : cb_http_plain_request)(host, port, method, path, cb_buf_cstr(&h), body, body_len,
+                                                              timeout_ms, out);
     cb_buf_free(&h);
     return rc;
 }

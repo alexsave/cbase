@@ -52,3 +52,7 @@ Against the real export into a scratch SQLite file: 41 users, 49 bots, 35 rating
 41 of 41 hashes parse as bcrypt and 60 of 60 games load through the kernel.
 Every game's state, roster, log, seed and scalars and every replay's bytes compared equal to the CSV.
 The export and the scratch database were then deleted.
+
+Then into DynamoDB Local (`ops/dynamo_local.sh`, a table made from `ops/cbase.yaml`), seeded first with `cbase-import --seed-bots` as a deploy is: 41 users, 49 bots, 35 ratings, 67 games, 47 player seats, 47 bot seats, 144 replays and 42 chat messages, every count equal to the CSV's in the import's own check (a counting Scan per table) and in an independent `aws dynamodb scan --select COUNT`.
+41 of 41 hashes parse and `cb_bcrypt_verify` refuses a wrong password on each without an error; 67 of 67 games load through the kernel; a rerun counts replays and messages as present.
+The export and the table were then deleted.

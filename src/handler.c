@@ -6,6 +6,7 @@
 #include "net/router.h"
 #include "realtime/postgrest.h"
 #include "realtime/rt_local.h"
+#include "store/store.h"
 #include "util/clock.h"
 #include "util/err.h"
 #include "util/log.h"
@@ -14,6 +15,8 @@
 #include <string.h>
 
 void cb_handle(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
+    cb_store_tally st;
+    cb_store_tally_take(&st);   // this request's count starts here
     if (strcmp(req->method, "OPTIONS") == 0) {
         bool known = false;
         cb_router_match(ctx->router, "*", req->path, &known);
@@ -27,6 +30,10 @@ void cb_handle(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
         else r->fn(ctx, req, res);
     }
     cb_router_cors(ctx, req, res);
+    cb_store_tally_take(&st);
+    if (st.reads || st.writes)
+        CB_DEBUG("store", "%s %s %d: %d reads, %d writes, %g RCU, %g WCU (%s)", req->method, req->path, res->status,
+                 st.reads, st.writes, st.rcu, st.wcu, st.detail);
 }
 
 bool cb_handle_on_loop(const cb_ctx *ctx, const cb_http_req *req) {

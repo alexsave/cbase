@@ -17,6 +17,8 @@
 #include "util/pool.h"
 #include "aws/lambda_invoke.h"
 
+#include <pthread.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -108,6 +110,8 @@ static int64_t budget_left(const cb_ctx *ctx) {
 
 int cb_bots_drive(cb_ctx *ctx, const char *game_id) {
     if (!ctx->store) return CB_E_STATE;
+    cb_store_tally st;
+    cb_store_tally_take(&st);   // this drive's count starts here
     cb_uuid lease;
     int rc = CB_STORE_CALL(ctx->store, lease_acquire, game_id, cb_app_now(), CB_BOT_LEASE_MS, lease);
     if (rc == CB_E_CONFLICT) {
@@ -143,6 +147,10 @@ int cb_bots_drive(cb_ctx *ctx, const char *game_id) {
         }
         int64_t delay = 0;
         int c = run_cycle(ctx, s, game_id, cycle, &cpu, &delay);
+        cb_store_tally_take(&st);   // the lease (acquire or renew) and the cycle
+        if (st.reads || st.writes)
+            CB_DEBUG("store", "bot cycle %s/%d: %d reads, %d writes, %g RCU, %g WCU (%s)", game_id, cycle, st.reads,
+                     st.writes, st.rcu, st.wcu, st.detail);
         if (c == CYCLE_ERROR) { rc = CB_E_DB; break; }
         if (c == CYCLE_DONE) break;
         if (delay > 0) {
@@ -152,6 +160,10 @@ int cb_bots_drive(cb_ctx *ctx, const char *game_id) {
         }
     }
     CB_STORE_CALL(ctx->store, lease_release, game_id, lease);
+    cb_store_tally_take(&st);
+    if (st.reads || st.writes)
+        CB_DEBUG("store", "bot drive %s end: %d reads, %d writes, %g RCU, %g WCU (%s)", game_id, st.reads, st.writes,
+                 st.rcu, st.wcu, st.detail);
     cb_section_free(s);
     if (rekick && ctx->kick_bots) {
         CB_INFO("bots", "game %s: budget spent with bot work left, kicking a fresh drive", game_id);
@@ -204,20 +216,55 @@ typedef struct {
     char    game_id[CB_GAME_ID_MAX + 1];
 } kick_task;
 
+// The games with a drive queued and not yet started. A kick for one of them
+// is dropped: the queued drive reads the row when it starts, so it sees
+// whatever the later kick would have. Without this every bump during a long
+// drive queued one more drive (thousands in a game), each of which later took
+// the lease, read the row, found nothing and let go. The game leaves the set
+// when its drive STARTS, so a kick during a running drive still queues one.
+// Full (more games waiting than slots): kicks queue as they always did.
+#define KICK_PENDING_MAX 1024
+static pthread_mutex_t g_kick_mu = PTHREAD_MUTEX_INITIALIZER;
+static char g_kick_pending[KICK_PENDING_MAX][CB_GAME_ID_MAX + 1];
+static int g_kick_n;
+
+// true when `id` was not pending and now is (or the set is full).
+static bool kick_mark(const char *id) {
+    pthread_mutex_lock(&g_kick_mu);
+    bool add = true;
+    for (int i = 0; i < g_kick_n && add; i++) add = strcmp(g_kick_pending[i], id) != 0;
+    if (add && g_kick_n < KICK_PENDING_MAX) snprintf(g_kick_pending[g_kick_n++], sizeof g_kick_pending[0], "%s", id);
+    pthread_mutex_unlock(&g_kick_mu);
+    return add;
+}
+
+static void kick_unmark(const char *id) {
+    pthread_mutex_lock(&g_kick_mu);
+    for (int i = 0; i < g_kick_n; i++)
+        if (strcmp(g_kick_pending[i], id) == 0) {
+            memcpy(g_kick_pending[i], g_kick_pending[--g_kick_n], sizeof g_kick_pending[0]);
+            break;
+        }
+    pthread_mutex_unlock(&g_kick_mu);
+}
+
 static void kick_run(void *ud) {
     kick_task *k = ud;
+    kick_unmark(k->game_id);
     cb_bots_drive(k->ctx, k->game_id);
     free(k);
 }
 
 void cb_bots_kick_local(cb_ctx *ctx, const char *game_id) {
     if (!ctx->bot_pool) { CB_WARN("bots", "kick %s: no bot pool", game_id); return; }
+    if (!kick_mark(game_id)) return;   // a drive for it is already waiting
     kick_task *k = calloc(1, sizeof *k);
-    if (!k) return;
+    if (!k) { kick_unmark(game_id); return; }
     k->ctx = ctx;
     snprintf(k->game_id, sizeof k->game_id, "%s", game_id);
     if (cb_pool_submit(ctx->bot_pool, kick_run, k) != CB_OK) {
         CB_WARN("bots", "kick %s: the bot pool is stopping", game_id);
+        kick_unmark(game_id);
         free(k);
     }
 }

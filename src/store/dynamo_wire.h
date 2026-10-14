@@ -274,6 +274,18 @@ const char *dw_collection(int i);   // NULL past the last
 bool dw_collection_valid(const char *c);
 // A page of a Scan over one family, pk beginning with family#prefix.
 void dw_scan_family(dw_req *r, const char *table, const char *family, const char *prefix, int limit, cb_span start);
+// The import's check (store_import.c): how many items the table holds of one
+// export table ("users", "bots", "user_elo_ratings", "games", "player_hands",
+// "bot_hands", "game_snapshots", "chat_messages"), counted by a Scan with
+// Select COUNT over the item kind that table became. false for a name that is
+// not one of these.
+bool dw_scan_count(dw_req *r, const char *table, const char *export_name, cb_span start);
+// The capacity units a response says it consumed (every request asks for
+// them), 0 when it does not say.
+double dw_consumed(const char *body, size_t n);
+// A Scan's "Count" (this page's matches), or -1.
+int64_t dw_count(const char *body, size_t n);
+
 // One PartiQL statement.
 void dw_execute(dw_req *r, const char *statement, const char *next_token);
 // The statement only reads (its first keyword is SELECT).

@@ -9,6 +9,7 @@
 #include "auth/jwt.h"
 #include "handler.h"
 #include "lib_admin_fakestore.h"
+#include "lib_store_backend.h"
 #include "net/router.h"
 #include "util/clock.h"
 #include "util/json.h"
@@ -299,7 +300,8 @@ static void sqlite_backup_is_vacuum_into(void) {
 }
 
 // Deleting a user is cb_app_delete_account, delete-account's own function, run
-// here against the real SQLite store and real auth: a user seated at a lobby
+// here against a real store (SQLite, or DynamoDB Local under
+// CBASE_STORE=dynamo) and real auth: a user seated at a lobby
 // is redacted from it and the account is gone.
 static bool count_game(const cb_member_row *m, void *ud) { (void)m; (*(int *)ud)++; return true; }
 
@@ -311,7 +313,9 @@ static void user_delete_is_the_delete_account_path(void) {
     snprintf(db, sizeof db, "%s/cbase-admin-delete-%d.sqlite", tmp && *tmp ? tmp : "/tmp", (int)getpid());
     unlink(db);
     g_ctx.store = NULL;
-    T_EQ_INT(cb_store_open_sqlite(db, &g_ctx.store), CB_OK);
+    g_ctx.store = tsb_open_fresh(db);
+    T_CHECK(g_ctx.store != NULL);
+    if (!g_ctx.store) return;
     T_EQ_INT(cb_auth_new(&g_ctx, &g_ctx.auth), CB_OK);
     cb_session s;
     T_EQ_INT(cb_auth_signup(g_ctx.auth, "gone@foolish.cards", "secret1", "GONE", &s), CB_OK);
