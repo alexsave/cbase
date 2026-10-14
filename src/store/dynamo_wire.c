@@ -29,12 +29,15 @@ const char *dw_content_type(void) { return "application/x-amz-json-1.0"; }
 const char *dw_service(void) { return "dynamodb"; }
 
 // Starts a request: the target, an empty body, the writer on it with the
-// top-level object open.
+// top-level object open. Every request asks for its ConsumedCapacity, which
+// the per-thread tally adds up (store.h cb_store_tally): what each action
+// costs in capacity units, in the debug log, at no charge.
 static void begin(dw_req *r, cb_jw *w, const char *op) {
     snprintf(r->target, sizeof r->target, TARGET "%s", op);
     cb_buf_reset(&r->body);
     cb_jw_init(w, &r->body);
     cb_jw_obj(w);
+    cb_jw_kstr(w, "ReturnConsumedCapacity", "TOTAL");
 }
 
 static void finish(cb_jw *w) { cb_jw_end(w); }
@@ -1794,6 +1797,23 @@ bool dw_scan_count(dw_req *r, const char *table, const char *export_name, cb_spa
     }
     finish(&w);
     return true;
+}
+
+double dw_consumed(const char *body, size_t n) {
+    // One table: an object (GetItem, Query, ...), or a one-entry array
+    // (BatchGetItem, BatchWriteItem, TransactWriteItems).
+    static const char *const paths[] = { "ConsumedCapacity.CapacityUnits", "ConsumedCapacity.0.CapacityUnits" };
+    for (int i = 0; i < 2; i++) {
+        cb_span v;
+        if (cb_json_find(body, n, paths[i], &v) == CB_JSON_NUM) {
+            char t[32];
+            if (v.n >= sizeof t) return 0;
+            memcpy(t, v.p, v.n);
+            t[v.n] = 0;
+            return strtod(t, NULL);
+        }
+    }
+    return 0;
 }
 
 int64_t dw_count(const char *body, size_t n) {

@@ -36,7 +36,7 @@ static void get_item_shape(void) {
     dw_get_game(&r, "cbase", "ab12cd");
     T_EQ_STR(r.target, "DynamoDB_20120810.GetItem");
     T_EQ_STR(cb_buf_cstr(&r.body),
-             "{\"TableName\":\"cbase\",\"Key\":{\"pk\":{\"S\":\"GAME#ab12cd\"},\"sk\":{\"S\":\"ROW\"}},\"ConsistentRead\":true}");
+             "{\"ReturnConsumedCapacity\":\"TOTAL\",\"TableName\":\"cbase\",\"Key\":{\"pk\":{\"S\":\"GAME#ab12cd\"},\"sk\":{\"S\":\"ROW\"}},\"ConsistentRead\":true}");
     dw_req_free(&r);
 }
 
@@ -48,7 +48,7 @@ static void lease_requests(void) {
     dw_lease_acquire(&r, "cbase", "ab12cd", TOK, 1000000, 25000);
     T_EQ_STR(r.target, "DynamoDB_20120810.UpdateItem");
     T_EQ_STR(cb_buf_cstr(&r.body),
-             "{\"TableName\":\"cbase\",\"Key\":{\"pk\":{\"S\":\"GAME#ab12cd\"},\"sk\":{\"S\":\"ROW\"}},"
+             "{\"ReturnConsumedCapacity\":\"TOTAL\",\"TableName\":\"cbase\",\"Key\":{\"pk\":{\"S\":\"GAME#ab12cd\"},\"sk\":{\"S\":\"ROW\"}},"
              "\"UpdateExpression\":\"SET #lease_token = :lease_token, #lease_until = :lease_until, #updated_at = :updated_at\","
              "\"ConditionExpression\":\"attribute_exists(pk) AND (attribute_not_exists(#lease_until) OR #lease_until < :updated_at)\","
              "\"ExpressionAttributeNames\":{\"#lease_token\":\"lease_token\",\"#lease_until\":\"lease_until\",\"#updated_at\":\"updated_at\"},"
@@ -56,7 +56,7 @@ static void lease_requests(void) {
              "\":updated_at\":{\"N\":\"1000000\"}},\"ReturnValuesOnConditionCheckFailure\":\"ALL_OLD\"}");
     dw_lease_renew(&r, "cbase", "ab12cd", TOK, 1010000, 25000);
     T_EQ_STR(cb_buf_cstr(&r.body),
-             "{\"TableName\":\"cbase\",\"Key\":{\"pk\":{\"S\":\"GAME#ab12cd\"},\"sk\":{\"S\":\"ROW\"}},"
+             "{\"ReturnConsumedCapacity\":\"TOTAL\",\"TableName\":\"cbase\",\"Key\":{\"pk\":{\"S\":\"GAME#ab12cd\"},\"sk\":{\"S\":\"ROW\"}},"
              "\"UpdateExpression\":\"SET #lease_until = :lease_until, #updated_at = :updated_at\","
              "\"ConditionExpression\":\"#lease_token = :token\","
              "\"ExpressionAttributeNames\":{\"#lease_until\":\"lease_until\",\"#updated_at\":\"updated_at\",\"#lease_token\":\"lease_token\"},"
@@ -64,7 +64,7 @@ static void lease_requests(void) {
              "\":token\":{\"S\":\"" TOK "\"}}}");
     dw_lease_release(&r, "cbase", "ab12cd", TOK);
     T_EQ_STR(cb_buf_cstr(&r.body),
-             "{\"TableName\":\"cbase\",\"Key\":{\"pk\":{\"S\":\"GAME#ab12cd\"},\"sk\":{\"S\":\"ROW\"}},"
+             "{\"ReturnConsumedCapacity\":\"TOTAL\",\"TableName\":\"cbase\",\"Key\":{\"pk\":{\"S\":\"GAME#ab12cd\"},\"sk\":{\"S\":\"ROW\"}},"
              "\"UpdateExpression\":\"REMOVE #lease_until\",\"ConditionExpression\":\"#lease_token = :token\","
              "\"ExpressionAttributeNames\":{\"#lease_until\":\"lease_until\",\"#lease_token\":\"lease_token\"},"
              "\"ExpressionAttributeValues\":{\":token\":{\"S\":\"" TOK "\"}}}");
@@ -95,7 +95,7 @@ static void commit_transaction(void) {
     T_CHECK(dw_game_commit(&r, "cbase", &c, &s, rd, false));
     T_EQ_STR(r.target, "DynamoDB_20120810.TransactWriteItems");
     T_EQ_STR(cb_buf_cstr(&r.body),
-             "{\"TransactItems\":["
+             "{\"ReturnConsumedCapacity\":\"TOTAL\",\"TransactItems\":["
              "{\"Update\":{\"TableName\":\"cbase\",\"Key\":{\"pk\":{\"S\":\"GAME#ab12cd\"},\"sk\":{\"S\":\"ROW\"}},"
              "\"UpdateExpression\":\"SET #status = :status, #state = :state, #roster = :roster, #needs_bots = :needs_bots, "
              "#version = :version, #round_epoch = :round_epoch, #updated_at = :updated_at, #last_commit_at = :last_commit_at "
@@ -167,19 +167,19 @@ static void query_shapes(void) {
     dw_query(&r, "cbase", DWQ_USER_GAMES, U1, true, 20, CB_SPAN_LIT("{\"pk\":{\"S\":\"x\"}}"));
     T_EQ_STR(r.target, "DynamoDB_20120810.Query");
     T_EQ_STR(cb_buf_cstr(&r.body),
-             "{\"TableName\":\"cbase\",\"IndexName\":\"gsi1\",\"KeyConditionExpression\":\"#gsi1pk = :pk\","
+             "{\"ReturnConsumedCapacity\":\"TOTAL\",\"TableName\":\"cbase\",\"IndexName\":\"gsi1\",\"KeyConditionExpression\":\"#gsi1pk = :pk\","
              "\"ExpressionAttributeNames\":{\"#gsi1pk\":\"gsi1pk\"},"
              "\"ExpressionAttributeValues\":{\":pk\":{\"S\":\"USERGAMES#" U1 "\"}},"
              "\"ScanIndexForward\":false,\"Limit\":20,\"ExclusiveStartKey\":{\"pk\":{\"S\":\"x\"}}}");
     // A game's seat keys: a key range (a Query cannot filter on a key).
     dw_query(&r, "cbase", DWQ_GAME_PARTITION, "ab12cd", true, 0, cb_span_of("", 0));
     T_EQ_STR(cb_buf_cstr(&r.body),
-             "{\"TableName\":\"cbase\",\"KeyConditionExpression\":\"#pk = :pk AND #sk < :sk\",\"ProjectionExpression\":\"#pk, #sk\","
+             "{\"ReturnConsumedCapacity\":\"TOTAL\",\"TableName\":\"cbase\",\"KeyConditionExpression\":\"#pk = :pk AND #sk < :sk\",\"ProjectionExpression\":\"#pk, #sk\","
              "\"ExpressionAttributeNames\":{\"#pk\":\"pk\",\"#sk\":\"sk\"},"
              "\"ExpressionAttributeValues\":{\":pk\":{\"S\":\"GAME#ab12cd\"},\":sk\":{\"S\":\"ROW\"}},\"ConsistentRead\":true}");
     dw_query(&r, "cbase", DWQ_GAME_MEMBERS, "ab12cd", true, 0, cb_span_of("", 0));
     T_EQ_STR(cb_buf_cstr(&r.body),
-             "{\"TableName\":\"cbase\",\"KeyConditionExpression\":\"#pk = :pk AND begins_with(#sk, :sk)\","
+             "{\"ReturnConsumedCapacity\":\"TOTAL\",\"TableName\":\"cbase\",\"KeyConditionExpression\":\"#pk = :pk AND begins_with(#sk, :sk)\","
              "\"ExpressionAttributeNames\":{\"#pk\":\"pk\",\"#sk\":\"sk\"},"
              "\"ExpressionAttributeValues\":{\":pk\":{\"S\":\"GAME#ab12cd\"},\":sk\":{\"S\":\"MEMBER#\"}},\"ConsistentRead\":true}");
     dw_query(&r, "cbase", DWQ_SCAN, NULL, true, 0, cb_span_of("", 0));
@@ -198,7 +198,7 @@ static void signup_transaction(void) {
     dw_req_init(&r);
     dw_user_create(&r, "cbase", &u, 1000);
     T_EQ_STR(cb_buf_cstr(&r.body),
-             "{\"TransactItems\":["
+             "{\"ReturnConsumedCapacity\":\"TOTAL\",\"TransactItems\":["
              "{\"Put\":{\"TableName\":\"cbase\",\"Item\":{\"pk\":{\"S\":\"EMAIL#ann@x.io\"},\"sk\":{\"S\":\"USER\"},"
              "\"user_id\":{\"S\":\"" U1 "\"}},\"ConditionExpression\":\"attribute_not_exists(pk)\"}},"
              "{\"Put\":{\"TableName\":\"cbase\",\"Item\":{\"pk\":{\"S\":\"USER#" U1 "\"},\"sk\":{\"S\":\"PROFILE\"},"
@@ -850,6 +850,49 @@ static void the_template_matches_the_wire(void) {
     T_EQ_INT(all, 2);
 }
 
+// The import's stored count (store_import.c on DynamoDB): a counting Scan per
+// export table, its pages summed. player_hands are the GAME# partitions'
+// MEMBER# items, whatever else those partitions hold.
+static void flow_import_count(void) {
+    static const char P1[] =
+        "{\"Count\":3,\"ScannedCount\":40,\"LastEvaluatedKey\":{\"pk\":{\"S\":\"GAME#a\"},\"sk\":{\"S\":\"ROW\"}},"
+        "\"ConsumedCapacity\":{\"TableName\":\"cbase\",\"CapacityUnits\":2.5}}";
+    static const char P2[] = "{\"Count\":2,\"ScannedCount\":12}";
+    static const step steps[] = {
+        { "Scan", "\"Select\":\"COUNT\"", 200, P1 },
+        { "Scan", "\"ExclusiveStartKey\":{\"pk\":{\"S\":\"GAME#a\"},\"sk\":{\"S\":\"ROW\"}}", 200, P2 },
+    };
+    RUN(steps, s);
+    long long n = 0;
+    T_EQ_INT(cb_store_dynamo_count(s, "player_hands", &n), CB_OK);
+    T_EQ_INT(n, 5);
+    T_CHECK(strstr(sc_.bodies[0], "\"FilterExpression\":\"begins_with(#pk, :p) AND begins_with(#sk, :s)\"") != NULL);
+    T_CHECK(strstr(sc_.bodies[0], "\":p\":{\"S\":\"GAME#\"},\":s\":{\"S\":\"MEMBER#\"}") != NULL);
+    T_CHECK(strstr(sc_.bodies[0], "\"ConsistentRead\":true") != NULL);
+    T_EQ_INT(cb_store_dynamo_count(s, "nosuch", &n), CB_E_INVALID);
+    cb_store_close(s);
+
+    // An exact sort key is an equality, not a prefix (a ROW, not ROWS).
+    dw_req r;
+    dw_req_init(&r);
+    T_CHECK(dw_scan_count(&r, "cbase", "games", cb_span_of("", 0)));
+    T_CHECK(strstr(cb_buf_cstr(&r.body), "\"FilterExpression\":\"begins_with(#pk, :p) AND #sk = :s\"") != NULL);
+    T_CHECK(strstr(cb_buf_cstr(&r.body), "\":s\":{\"S\":\"ROW\"}") != NULL);
+    dw_req_free(&r);
+}
+
+// ConsumedCapacity comes back as an object (one table) or, for the batch and
+// transaction calls, a one-entry array; capacity is fractional for an
+// eventually consistent read.
+static void consumed_capacity_read(void) {
+    static const char OBJ[] = "{\"Item\":{},\"ConsumedCapacity\":{\"TableName\":\"cbase\",\"CapacityUnits\":0.5}}";
+    static const char ARR[] = "{\"ConsumedCapacity\":[{\"TableName\":\"cbase\",\"CapacityUnits\":18.0}]}";
+    static const char NONE[] = "{\"Item\":{}}";
+    T_CHECK(dw_consumed(OBJ, strlen(OBJ)) == 0.5);
+    T_CHECK(dw_consumed(ARR, strlen(ARR)) == 18.0);
+    T_CHECK(dw_consumed(NONE, strlen(NONE)) == 0);
+}
+
 int main(void) {
     T_RUN(the_template_matches_the_wire);
     T_RUN(get_item_shape);
@@ -871,5 +914,7 @@ int main(void) {
     T_RUN(flow_signup_and_tokens);
     T_RUN(flow_chat_order);
     T_RUN(flow_admin_query_guard);
+    T_RUN(flow_import_count);
+    T_RUN(consumed_capacity_read);
     return T_DONE();
 }

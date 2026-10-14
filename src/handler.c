@@ -32,8 +32,8 @@ void cb_handle(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     cb_router_cors(ctx, req, res);
     cb_store_tally_take(&st);
     if (st.reads || st.writes)
-        CB_DEBUG("store", "%s %s %d: %d reads, %d writes (%s)", req->method, req->path, res->status, st.reads, st.writes,
-                 st.detail);
+        CB_DEBUG("store", "%s %s %d: %d reads, %d writes, %g RCU, %g WCU (%s)", req->method, req->path, res->status,
+                 st.reads, st.writes, st.rcu, st.wcu, st.detail);
 }
 
 bool cb_handle_on_loop(const cb_ctx *ctx, const cb_http_req *req) {

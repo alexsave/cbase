@@ -389,7 +389,12 @@ static void game_scenario(void) {
     while (status == GAME_STATUS_PLAYING && mono_ms() - last_progress < STALL_MS && mono_ms() - t_start < CAP_MS) {
         bool moved = false, answered = false;
         for (int h = 0; h < 2 && status == GAME_STATUS_PLAYING; h++) {
-            if (ask(humans[h], ASK_BUMP, gid, &env) != 200) continue;
+            int st = ask(humans[h], ASK_BUMP, gid, &env);
+            if (st != 200) {
+                fprintf(stderr, "smoke: %s's bump answered %d: %.*s\n", humans[h]->name, st, (int)(env.len < 200 ? env.len : 200),
+                        (const char *)env.p);
+                continue;
+            }
             answered = true;
             client_init(&sc->c, &sc->slot);
             if (client_adopt_envelope(&sc->c, env.p, (int)env.len) < 0) continue;

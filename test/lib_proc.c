@@ -5,14 +5,69 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <pthread.h>
+#include <stdbool.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 extern char **environ;
+
+struct tp_pump {
+    pthread_t       th;
+    pthread_mutex_t mu;
+    pthread_cond_t  cv;
+    char           *log;     // every whole line so far
+    size_t          len, cap, seen;   // seen: the offset after the last matched line
+    bool            eof;
+    int             fd;
+};
+
+static void *pump_run(void *arg) {
+    tp_pump *p = arg;
+    char part[65536];
+    size_t n = 0;
+    for (;;) {
+        struct pollfd pf = { p->fd, POLLIN, 0 };
+        if (poll(&pf, 1, 1000) < 0 && errno != EINTR) break;
+        ssize_t r = read(p->fd, part + n, sizeof part - n);
+        if (r < 0 && (errno == EAGAIN || errno == EINTR)) continue;
+        if (r <= 0) break;
+        n += (size_t)r;
+        char *nl;
+        size_t used = 0;
+        while ((nl = memchr(part + used, '\n', n - used)) || n == sizeof part) {
+            size_t ll = nl ? (size_t)(nl - (part + used)) + 1 : n - used;
+            fprintf(stderr, "  | %.*s%s", (int)ll, part + used, nl ? "" : "\n");
+            pthread_mutex_lock(&p->mu);
+            if (p->len + ll + 1 > p->cap) {
+                size_t cap = (p->cap ? p->cap * 2 : 65536) + ll;
+                char *q = realloc(p->log, cap);
+                if (q) { p->log = q; p->cap = cap; }
+            }
+            if (p->len + ll + 1 <= p->cap) {
+                memcpy(p->log + p->len, part + used, ll);
+                p->len += ll;
+                p->log[p->len] = 0;
+            }
+            pthread_cond_broadcast(&p->cv);
+            pthread_mutex_unlock(&p->mu);
+            used += ll;
+            if (!nl) break;
+        }
+        memmove(part, part + used, n - used);
+        n -= used;
+    }
+    pthread_mutex_lock(&p->mu);
+    p->eof = true;
+    pthread_cond_broadcast(&p->cv);
+    pthread_mutex_unlock(&p->mu);
+    return NULL;
+}
 
 int tp_tempdir(char *out, size_t cap) {
     const char *base = getenv("TMPDIR");
@@ -40,36 +95,44 @@ int tp_start(tp_child *c, char *const argv[], char *const env[]) {
     fcntl(p[0], F_SETFL, O_NONBLOCK);
     c->pid = pid;
     c->err_fd = p[0];
-    return 0;
+    c->pump = calloc(1, sizeof *c->pump);
+    if (!c->pump) return -1;
+    pthread_mutex_init(&c->pump->mu, NULL);
+    pthread_cond_init(&c->pump->cv, NULL);
+    c->pump->fd = p[0];
+    return pthread_create(&c->pump->th, NULL, pump_run, c->pump) == 0 ? 0 : -1;
 }
 
 int tp_wait_line(tp_child *c, const char *needle, int timeout_ms, char *out, size_t cap) {
-    static char acc[65536];
-    static size_t n;
+    tp_pump *p = c->pump;
+    if (!p) return -1;
     int64_t end = cb_mono_ms() + timeout_ms;
+    int rc = -1;
+    pthread_mutex_lock(&p->mu);
     for (;;) {
-        char *nl;
-        while ((nl = memchr(acc, '\n', n))) {
-            size_t len = (size_t)(nl - acc);
-            fprintf(stderr, "  | %.*s\n", (int)len, acc);
-            int hit = 0;
+        // Whole lines after the last match.
+        char *line = p->log ? p->log + p->seen : NULL, *nl;
+        while (line && (nl = strchr(line, '\n'))) {
             *nl = 0;
-            if (strstr(acc, needle)) {
-                hit = 1;
-                if (out) snprintf(out, cap, "%s", acc);
-            }
-            memmove(acc, nl + 1, n - len - 1);
-            n -= len + 1;
-            if (hit) return 0;
+            bool hit = strstr(line, needle) != NULL;
+            if (hit && out) snprintf(out, cap, "%s", line);
+            *nl = '\n';
+            p->seen = (size_t)(nl + 1 - p->log);
+            if (hit) { rc = 0; break; }
+            line = nl + 1;
         }
+        if (rc == 0 || p->eof) break;
         int64_t left = end - cb_mono_ms();
-        if (left <= 0) return -1;
-        struct pollfd p = { c->err_fd, POLLIN, 0 };
-        if (poll(&p, 1, (int)left) <= 0) return -1;
-        ssize_t r = read(c->err_fd, acc + n, sizeof acc - n - 1);
-        if (r <= 0) return -1;
-        n += (size_t)r;
+        if (left <= 0) break;
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        int64_t ns = ts.tv_nsec + (left > 100 ? 100 : left) * 1000000;
+        ts.tv_sec += ns / 1000000000;
+        ts.tv_nsec = ns % 1000000000;
+        pthread_cond_timedwait(&p->cv, &p->mu, &ts);
     }
+    pthread_mutex_unlock(&p->mu);
+    return rc;
 }
 
 int tp_stop(tp_child *c, int sig, int timeout_ms) {
@@ -83,12 +146,18 @@ int tp_stop(tp_child *c, int sig, int timeout_ms) {
             if (cb_mono_ms() > end) { kill(c->pid, SIGKILL); waitpid(c->pid, &status, 0); break; }
             usleep(10000);
         }
-        // Drain what is left of its stderr, for the log.
-        char b[4096];
-        ssize_t r;
-        while ((r = read(c->err_fd, b, sizeof b)) > 0) fprintf(stderr, "  | %.*s", (int)r, b);
-        close(c->err_fd);
         c->pid = 0;
+    }
+    // The pump reads what is left of its stderr, to the end (a child the
+    // caller reaped itself included).
+    if (c->pump) {
+        pthread_join(c->pump->th, NULL);
+        pthread_mutex_destroy(&c->pump->mu);
+        pthread_cond_destroy(&c->pump->cv);
+        free(c->pump->log);
+        free(c->pump);
+        c->pump = NULL;
+        close(c->err_fd);
     }
     if (c->dir[0]) {
         char cmd[300];

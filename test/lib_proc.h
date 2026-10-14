@@ -4,17 +4,24 @@
 
 #include <sys/types.h>
 
+// The child's stderr is read all the time by a thread of ours (echoed to our
+// stderr as "  | <line>"), never only while a test waits for a line: a child
+// that logs more than a pipe holds (64 KB) between two waits would otherwise
+// block in write(2) and look hung.
+typedef struct tp_pump tp_pump;
 typedef struct {
-    pid_t pid;
-    int   err_fd;      // the child's stderr, readable (non-blocking)
-    char  dir[256];    // a fresh temporary directory for its files
+    pid_t    pid;
+    int      err_fd;   // the child's stderr (read by the pump)
+    tp_pump *pump;
+    char     dir[256]; // a fresh temporary directory for its files
 } tp_child;
 
 // Starts `argv` with `env` ("NAME=value" strings, NULL-terminated) added to
 // the current environment, stderr captured. 0, or -1.
 int tp_start(tp_child *c, char *const argv[], char *const env[]);
-// Reads the child's stderr (echoing it to ours) until a line containing
-// `needle` appears; copies that line into out. 0, or -1 on timeout or exit.
+// Waits until a line containing `needle` appears in the child's stderr after
+// the line the previous wait matched; copies that line into out. 0, or -1 on
+// timeout or once the child has closed its stderr.
 int tp_wait_line(tp_child *c, const char *needle, int timeout_ms, char *out, size_t cap);
 // Sends `sig` (0: none, just wait for it to exit) and waits up to timeout_ms; returns the exit status, or -1
 // (the child is then killed).

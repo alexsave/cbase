@@ -19,8 +19,9 @@
 #   5. aws cloudformation deploy of ops/cbase.yaml, which waits for the stack;
 #   6. prints the stack's outputs (FunctionUrl, WebSocketUrl,
 #      DistributionDomain, TableName, PublicUrl);
-#   7. with --import DIR: runs build/cbase-import against the stack's table
-#      with temporary credentials exported from the CLI.
+#   7. seeds the 49 bots into a table that has none (cbase-import --seed-bots),
+#      and with --import DIR runs build/cbase-import against the stack's table,
+#      both with temporary credentials exported from the CLI.
 #
 # Settings, from the environment or ops/.env (the environment wins):
 #   CBASE_CERT_ARN         required: the ACM certificate for the domain, in
@@ -187,17 +188,24 @@ then set the web app's NEXT_PUBLIC_SUPABASE_URL=$(output PublicUrl) and
 NEXT_PUBLIC_SUPABASE_KEY to CBASE_ANON_KEY from $env_file.
 MSG
 
-# ---- 7. the import ----------------------------------------------------------------
-if [ -n "$import_dir" ]; then
-  [ -d "$import_dir" ] || die "--import: $import_dir is not a directory"
-  make -s -C "$here" build/cbase-import
-  stack_table="$(output TableName)"
-  echo "importing $import_dir into DynamoDB table $stack_table"
-  (
-    # Temporary credentials for this subshell only (SSO and assumed roles included).
-    eval "$(aws configure export-credentials --format env)"
-    export AWS_REGION="$region"
+# ---- 7. the bots, and the import ----------------------------------------------------
+# A fresh table has no bots (nothing else seeds DynamoDB; SQLite seeds them at
+# open), so every deploy seeds the schema's 49 into a table that has none and
+# leaves a table with bots alone. The import then replaces them with the
+# hosted rows, as it does on SQLite.
+make -s -C "$here" build/cbase-import
+stack_table="$(output TableName)"
+(
+  # Temporary credentials for this subshell only (SSO and assumed roles included).
+  eval "$(aws configure export-credentials --format env)"
+  export AWS_REGION="$region"
+  CBASE_STORE=dynamo CBASE_TABLE="$stack_table" "$here/build/cbase-import" --seed-bots
+  if [ -n "$import_dir" ]; then
+    [ -d "$import_dir" ] || die "--import: $import_dir is not a directory"
+    echo "importing $import_dir into DynamoDB table $stack_table"
     CBASE_STORE=dynamo CBASE_TABLE="$stack_table" "$here/build/cbase-import" "$import_dir"
-  )
+  fi
+)
+if [ -n "$import_dir" ]; then
   echo "import done. The export holds password hashes: rm -rf $import_dir"
 fi

@@ -10,6 +10,7 @@
 #   make check-dynamo  the store, admin and import tests and the game smoke
 #                   against DynamoDB Local (ops/dynamo_local.sh; needs Docker
 #                   or a DynamoDB Local already on port 8000)
+#   make bench-dynamo  the store's per-operation latency against DynamoDB Local
 #   make clean
 #
 # Builds on macOS (clang, Homebrew openssl@3, the SDK's sqlite3) and on Ubuntu
@@ -137,10 +138,10 @@ $(call prog,build/asan,build/obj/asan,build/obj/asan-kernel,cbase,src/main_serve
 $(call prog,build/asan,build/obj/asan,build/obj/asan-kernel,bootstrap,src/main_lambda.c,ASAN_CB_CFLAGS)
 $(foreach u,$(UNITS),$(call prog,build/test,build/obj/cbase,build/obj/kernel,$(u),test/$(u).c $(TLIB_SRC),CB_CFLAGS))
 $(foreach u,$(UNITS),$(call prog,build/asan/test,build/obj/asan,build/obj/asan-kernel,$(u),test/$(u).c $(TLIB_SRC),ASAN_CB_CFLAGS))
-$(foreach s,smoke smoke_lambda,$(call prog,build/test,build/obj/cbase,build/obj/kernel,$(s),test/$(s).c $(TLIB_SRC),CB_CFLAGS))
+$(foreach s,smoke smoke_lambda bench_dynamo,$(call prog,build/test,build/obj/cbase,build/obj/kernel,$(s),test/$(s).c $(TLIB_SRC),CB_CFLAGS))
 $(foreach s,smoke smoke_lambda,$(call prog,build/asan/test,build/obj/asan,build/obj/asan-kernel,$(s),test/$(s).c $(TLIB_SRC),ASAN_CB_CFLAGS))
 
-.PHONY: all test smoke check check-asan test-asan smoke-asan check-dynamo clean print-kernel-src bootstrap
+.PHONY: all test smoke check check-asan test-asan smoke-asan check-dynamo bench-dynamo clean print-kernel-src bootstrap
 all: build/cbase build/bootstrap build/cbase-import
 
 # Every unit program runs even when an earlier one fails; the target fails if any did.
@@ -175,6 +176,12 @@ check-dynamo: $(addprefix build/test/,$(DYNAMO_UNITS)) build/cbase build/cbase-i
 	. ./build/dynamo.env && fail=0; for t in $(addprefix build/test/,$(DYNAMO_UNITS)); do $$t || fail=1; done; \
 	 if [ $$fail -ne 0 ]; then echo "DYNAMO UNIT TESTS FAILED"; exit 1; fi
 	. ./build/dynamo.env && build/test/smoke build/cbase
+
+# Per-operation latency against DynamoDB Local (test/bench_dynamo.c), the
+# baseline DESIGN.md "Store" records. Not part of any check.
+bench-dynamo: build/test/bench_dynamo
+	ops/dynamo_local.sh > build/dynamo.env
+	. ./build/dynamo.env && build/test/bench_dynamo
 
 # The Lambda artifact: dist/bootstrap and dist/bootstrap.zip, static Linux
 # arm64, built in a pinned arm64 Alpine container (tools/build_bootstrap.sh).

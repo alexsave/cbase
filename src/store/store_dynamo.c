@@ -77,17 +77,21 @@ static const char *const TALLY_OPS[] = { "GetItem", "Query", "Scan", "BatchGetIt
 #define TALLY_N     (int)(sizeof TALLY_OPS / sizeof TALLY_OPS[0])
 #define TALLY_READS 5
 static _Thread_local int t_tally[TALLY_N + 1];   // the last slot: a target not listed
+static _Thread_local double t_rcu, t_wcu;
 
-static void tally(const char *target) {
+static int tally_index(const char *target) {
     const char *op = strchr(target, '.');
     op = op ? op + 1 : target;
     int i = 0;
     while (i < TALLY_N && strcmp(TALLY_OPS[i], op) != 0) i++;
-    t_tally[i]++;
+    return i;
 }
 
 void cb_store_tally_take(cb_store_tally *out) {
     memset(out, 0, sizeof *out);
+    out->rcu = t_rcu;
+    out->wcu = t_wcu;
+    t_rcu = t_wcu = 0;
     size_t off = 0;
     for (int i = 0; i <= TALLY_N; i++) {
         if (!t_tally[i]) continue;
@@ -107,8 +111,10 @@ static dw_status call(dyn *d, const dw_req *r, cb_buf *resp) {
         int status = 0;
         cb_buf_reset(resp);
         if (r->body.oom) return DW_FAILED;
-        tally(r->target);
+        int ti = tally_index(r->target);
+        t_tally[ti]++;
         int rc = d->send(d->ud, r->target, r->body.p, r->body.len, &status, resp);
+        if (rc == CB_OK) *(ti < TALLY_READS ? &t_rcu : &t_wcu) += dw_consumed(cb_buf_cstr(resp), resp->len);
         dw_status st = rc != CB_OK ? DW_RETRY : dw_classify(status, cb_buf_cstr(resp), resp->len);
         if (st == DW_FAILED || (st == DW_RETRY && attempt + 1 >= ATTEMPTS)) {
             char why[320];
