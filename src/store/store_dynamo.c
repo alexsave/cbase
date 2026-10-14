@@ -51,6 +51,16 @@ typedef struct {
     bool              tls;
     cb_dynamo_send_fn send;
     void             *ud;
+    // Bulk mode (cb_store_dynamo_bulk), the import's and never a request's:
+    // throttling is waited out however long it lasts, and each send first
+    // waits for its bucket ([0] reads, [1] writes) to come back to zero.
+    // One thread: the import is single-threaded.
+    bool    bulk;
+    double  rate[2];   // capacity units per second, 0: unpaced
+    double  bal[2];    // units left; the consumed units of a response are taken after it
+    int64_t at[2];     // when bal was last refilled (mono ms)
+    int64_t (*mono)(void);
+    void    (*sleep)(int64_t ms);
 } dyn;
 
 #define D(s) ((dyn *)(s)->impl)
@@ -126,20 +136,31 @@ void cb_store_throttles_get(cb_store_throttles *out) {
 // deadline less DEADLINE_MARGIN_MS (what the caller needs to answer after a
 // request given up), or, with no deadline, CB_STORE_RETRY_WALL_MS from the
 // first send.
+//
+// In bulk mode a throttle is never given up on (an offline import has no one
+// waiting, and a row it gives up on is a row lost), its ceiling is
+// BULK_CAP_MS, and the deadline does not apply; anything else retried (a 5xx,
+// a lost connection, a transaction conflict) still stops after RETRY_SENDS
+// sends of its own, so a dead endpoint cannot hang the import.
 #define RETRY_SENDS        10
 #define RETRY_BASE_MS      25
 #define RETRY_CAP_MS       1000
+#define BULK_CAP_MS        2000
 #define DEADLINE_MARGIN_MS 1000
 
 typedef struct {
+    dyn    *d;
     int64_t until;
     int     sends;
+    int     errors;   // bulk: the sends again for something other than a throttle
 } backoff;
 
 static _Thread_local uint64_t t_rng;
 
-static void backoff_start(backoff *b) {
+static void backoff_start(dyn *d, backoff *b) {
+    b->d = d;
     b->sends = 1;
+    b->errors = 0;
     b->until = t_deadline > 0 ? t_deadline - DEADLINE_MARGIN_MS : cb_now_ms() + CB_STORE_RETRY_WALL_MS;
 }
 
@@ -147,14 +168,18 @@ static void backoff_start(backoff *b) {
 // no time for the pause; a throttled request is then counted as given up.
 static bool backoff_pause(backoff *b, bool throttled, const char *target) {
     if (throttled) atomic_fetch_add_explicit(&g_throttled, 1, memory_order_relaxed);
-    int64_t ceiling = RETRY_BASE_MS << (b->sends < 7 ? b->sends - 1 : 6);
-    if (ceiling > RETRY_CAP_MS) ceiling = RETRY_CAP_MS;
+    bool bulk = b->d->bulk;
+    int64_t cap = bulk ? BULK_CAP_MS : RETRY_CAP_MS;
+    int64_t ceiling = RETRY_BASE_MS << (b->sends < 8 ? b->sends - 1 : 7);
+    if (ceiling > cap) ceiling = cap;
     if (!t_rng) t_rng = (uint64_t)cb_mono_ms() * 0x9E3779B97F4A7C15ull ^ (uint64_t)(uintptr_t)&t_rng;
     t_rng ^= t_rng << 13;   // xorshift64: a jitter, not a secret
     t_rng ^= t_rng >> 7;
     t_rng ^= t_rng << 17;
     int64_t pause = (int64_t)(t_rng % (uint64_t)(ceiling + 1));
-    if (b->sends >= RETRY_SENDS || cb_now_ms() + pause > b->until) {
+    bool stop = bulk ? !throttled && b->errors + 1 >= RETRY_SENDS
+                     : b->sends >= RETRY_SENDS || cb_now_ms() + pause > b->until;
+    if (stop) {
         if (throttled) {
             atomic_fetch_add_explicit(&g_gave_up, 1, memory_order_relaxed);
             CB_WARN(MOD, "%s: throttled, given up after %d send(s)", target, b->sends);
@@ -163,23 +188,45 @@ static bool backoff_pause(backoff *b, bool throttled, const char *target) {
     }
     if (throttled) CB_WARN(MOD, "%s: throttled, send %d after %lld ms", target, b->sends + 1, (long long)pause);
     b->sends++;
-    cb_sleep_ms(pause);
+    if (!throttled) b->errors++;
+    b->d->sleep(pause);
     return true;
+}
+
+// Bulk mode: waits until bucket `k` is back to zero. The bucket fills at
+// rate[k] units a second up to one second's worth, and every response takes
+// what it says it consumed (ReturnConsumedCapacity), so a send that cost
+// more than is left puts the bucket in debt and the next send waits it out.
+static void pace(dyn *d, int k) {
+    if (!d->bulk || d->rate[k] <= 0) return;
+    for (;;) {
+        int64_t now = d->mono();
+        d->bal[k] += (double)(now - d->at[k]) * d->rate[k] / 1000.0;
+        if (d->bal[k] > d->rate[k]) d->bal[k] = d->rate[k];
+        d->at[k] = now;
+        if (d->bal[k] >= 0) return;
+        d->sleep((int64_t)(-d->bal[k] * 1000.0 / d->rate[k]) + 1);
+    }
 }
 
 // Sends `r`, again after a pause while DynamoDB says to (throttled, a 5xx, a
 // lost connection), as long as the backoff allows. The answer is in *resp.
 static dw_status call(dyn *d, const dw_req *r, cb_buf *resp) {
     backoff b;
-    backoff_start(&b);
+    backoff_start(d, &b);
     for (;;) {
         int status = 0;
         cb_buf_reset(resp);
         if (r->body.oom) return DW_FAILED;
-        int ti = tally_index(r->target);
+        int ti = tally_index(r->target), k = ti < TALLY_READS ? 0 : 1;
         t_tally[ti]++;
+        pace(d, k);
         int rc = d->send(d->ud, r->target, r->body.p, r->body.len, &status, resp);
-        if (rc == CB_OK) *(ti < TALLY_READS ? &t_rcu : &t_wcu) += dw_consumed(cb_buf_cstr(resp), resp->len);
+        if (rc == CB_OK) {
+            double used = dw_consumed(cb_buf_cstr(resp), resp->len);
+            *(k == 0 ? &t_rcu : &t_wcu) += used;
+            d->bal[k] -= used;
+        }
         dw_status st = rc != CB_OK ? DW_RETRY : dw_classify(status, cb_buf_cstr(resp), resp->len);
         if (st == DW_RETRY && backoff_pause(&b, rc == CB_OK && dw_throttled(cb_buf_cstr(resp), resp->len), r->target))
             continue;
@@ -200,7 +247,7 @@ static dw_status call(dyn *d, const dw_req *r, cb_buf *resp) {
 // backoff is DW_FAILED.
 static dw_status txn(dyn *d, const dw_req *r, cb_buf *resp) {
     backoff b;
-    backoff_start(&b);
+    backoff_start(d, &b);
     for (;;) {
         dw_status st = call(d, r, resp);
         if (st != DW_TXN_CANCELED) return st;
@@ -308,7 +355,7 @@ static int batch_delete(dyn *d, const keylist *l) {
         int n = l->n - i < 25 ? l->n - i : 25;
         dw_batch_delete(&r, d->table, l->keys + i, n);
         backoff b;
-        backoff_start(&b);
+        backoff_start(d, &b);
         for (;;) {
             if (call(d, &r, &resp) != DW_OK) { rc = CB_E_DB; break; }
             if (!dw_unprocessed(cb_buf_cstr(&resp), resp.len)) break;
@@ -547,7 +594,7 @@ static int read_ratings(dyn *d, const char *const *ids, const bool *is_bot, int 
     cb_buf_init(&resp);
     int rc = CB_E_DB;
     backoff b;
-    backoff_start(&b);
+    backoff_start(d, &b);
     for (;;) {
         if (call(d, &r, &resp) != DW_OK) break;
         if (dw_unprocessed(cb_buf_cstr(&resp), resp.len)) {   // throttled in part; small batch: ask for all of it again
@@ -630,7 +677,7 @@ static int commit_or_import(dyn *d, const cb_game_commit *c0, bool import) {
         }
         // Something else the commit read moved (a rating, an account): read again.
         rc = CB_E_CONFLICT;
-        cb_sleep_ms(10LL << attempt);
+        d->sleep(10LL << attempt);
     }
     dw_req_free(&r);
     cb_buf_free(&resp);
@@ -1062,7 +1109,7 @@ static int conn_batch(dyn *d, dw_req *r) {
     cb_buf_init(&resp);
     int rc = CB_E_DB;
     backoff b;
-    backoff_start(&b);
+    backoff_start(d, &b);
     for (;;) {
         if (call(d, r, &resp) != DW_OK) break;
         if (!dw_unprocessed(cb_buf_cstr(&resp), resp.len)) { rc = CB_OK; break; }
@@ -1074,17 +1121,29 @@ static int conn_batch(dyn *d, dw_req *r) {
     return rc;
 }
 
+// The compare-and-set (store.h conn_put). The read finds the TOPIC items to
+// delete and turns away a stale version without spending a write; the
+// transaction's condition is what decides a race between the read and it.
 static int dy_conn_put(cb_store *s, const cb_conn_row *c) {
-    if (c->n_topics < 0 || c->n_topics > CB_CONN_TOPICS) return CB_E_INVALID;
+    if (c->n_topics < 0 || c->n_topics > CB_CONN_TOPICS || c->version < 0) return CB_E_INVALID;
     dyn *d = D(s);
     cb_conn_row *old = malloc(sizeof *old);
     if (!old) return CB_E_NOMEM;
+    int64_t now = cb_now_ms();
     int rc = conn_read(d, c->conn_id, old);
-    if (rc == CB_OK || rc == CB_E_NOT_FOUND) {
+    bool live = rc == CB_OK && old->expires_at > now;
+    if (rc == CB_OK && (live ? old->version : 0) != c->version) rc = CB_E_CONFLICT;
+    else if (rc == CB_OK || rc == CB_E_NOT_FOUND) {
         dw_req r;
         dw_req_init(&r);
-        dw_conn_put(&r, d->table, c, rc == CB_OK ? old : NULL);
-        rc = conn_batch(d, &r);
+        dw_conn_put(&r, d->table, c, rc == CB_OK ? old : NULL, now);
+        cb_buf resp;
+        cb_buf_init(&resp);
+        bool item;
+        dw_status st = txn(d, &r, &resp);
+        rc = st == DW_OK ? CB_OK : st == DW_TXN_CANCELED && refused(&resp, 0, &item) ? CB_E_CONFLICT : CB_E_DB;
+        cb_buf_free(&resp);
+        dw_req_free(&r);
     }
     free(old);
     return rc;
@@ -1227,8 +1286,37 @@ static int dy_admin_query(cb_store *s, const char *statement, bool allow_write, 
 
 // ---- migration -----------------------------------------------------------------------------------
 
-int cb_store_dynamo_count(cb_store *s, const char *export_name, long long *out) {
-    *out = -1;
+int cb_store_dynamo_bulk(cb_store *s) {
+    if (!s || strcmp(s->ops->name, "dynamo") != 0) return CB_E_INVALID;
+    dyn *d = D(s);
+    d->bulk = true;
+    dw_req r;
+    dw_req_init(&r);
+    dw_describe_table(&r, d->table);
+    cb_buf resp;
+    cb_buf_init(&resp);
+    int64_t rcu = 0, wcu = 0;
+    int rc = call(d, &r, &resp) == DW_OK && dw_provisioned(cb_buf_cstr(&resp), resp.len, &rcu, &wcu) ? CB_OK : CB_E_DB;
+    cb_buf_free(&resp);
+    dw_req_free(&r);
+    d->rate[0] = (double)rcu;
+    d->rate[1] = (double)wcu;
+    for (int k = 0; k < 2; k++) {
+        d->bal[k] = d->rate[k];
+        d->at[k] = d->mono();
+    }
+    if (rc == CB_OK)
+        CB_INFO(MOD, "bulk: reads paced to %lld RCU/s, writes to %lld WCU/s (0: on-demand, unpaced)", (long long)rcu,
+                (long long)wcu);
+    return rc;
+}
+
+void cb_store_dynamo_clock(cb_store *s, int64_t (*mono)(void), void (*sleep)(int64_t ms)) {
+    D(s)->mono = mono;
+    D(s)->sleep = sleep;
+}
+
+int cb_store_dynamo_export_items(cb_store *s, cb_dynamo_item_fn fn, void *ud) {
     if (!s || strcmp(s->ops->name, "dynamo") != 0) return CB_E_INVALID;
     dyn *d = D(s);
     cb_buf resp, start;
@@ -1236,14 +1324,17 @@ int cb_store_dynamo_count(cb_store *s, const char *export_name, long long *out) 
     cb_buf_init(&start);
     dw_req r;
     dw_req_init(&r);
-    long long total = 0;
     int rc = CB_OK;
     for (;;) {
-        if (!dw_scan_count(&r, d->table, export_name, cb_span_of((const char *)start.p, start.len))) { rc = CB_E_INVALID; break; }
+        dw_scan_keys(&r, d->table, 100, cb_span_of((const char *)start.p, start.len));
         if (call(d, &r, &resp) != DW_OK) { rc = CB_E_DB; break; }
-        int64_t c = dw_count(cb_buf_cstr(&resp), resp.len);
-        if (c < 0) { rc = CB_E_DB; break; }
-        total += c;
+        cb_span items = dw_items(cb_buf_cstr(&resp), resp.len), it;
+        size_t pos = 0;
+        while (dw_array_next(items, &pos, &it)) {
+            char id[256];
+            const char *kind = dw_export_kind(it, id, sizeof id);
+            if (kind) fn(kind, id, ud);
+        }
         cb_span last = dw_last_key(cb_buf_cstr(&resp), resp.len);
         if (!last.n) break;
         cb_buf_reset(&start);
@@ -1252,7 +1343,6 @@ int cb_store_dynamo_count(cb_store *s, const char *export_name, long long *out) 
     dw_req_free(&r);
     cb_buf_free(&resp);
     cb_buf_free(&start);
-    if (rc == CB_OK) *out = total;
     return rc;
 }
 
@@ -1379,6 +1469,8 @@ int cb_store_open_dynamo_with(const char *table, cb_dynamo_send_fn send, void *u
     snprintf(d->table, sizeof d->table, "%s", table);
     d->send = send;
     d->ud = ud ? ud : d;
+    d->mono = cb_mono_ms;
+    d->sleep = cb_sleep_ms;
     s->ops = &DYNAMO_OPS;
     s->impl = d;
     *out = s;

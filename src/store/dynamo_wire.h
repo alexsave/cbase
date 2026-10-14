@@ -265,9 +265,11 @@ void dw_snapshot_put(dw_req *r, const char *table, const cb_snapshot_row *s);
 // A transaction: the message (a reused id cancels item 0), and checks that its
 // game (item 1) and its author (item 2) exist, as the foreign keys did.
 void dw_chat_put(dw_req *r, const char *table, const cb_chat_row *c);
-// The CONN item and one TOPIC item per topic, and deletes of the TOPIC items
-// of `old_topics` the row no longer has.
-void dw_conn_put(dw_req *r, const char *table, const cb_conn_row *c, const cb_conn_row *old);
+// A transaction: the CONN item at c->version + 1, conditioned on the stored
+// version being c->version (0: no live row; `now_ms` decides "live"), one
+// TOPIC item per topic, and deletes of the TOPIC items of `old` the row no
+// longer has. Item 0 refused is a lost race (store.h conn_put).
+void dw_conn_put(dw_req *r, const char *table, const cb_conn_row *c, const cb_conn_row *old, int64_t now_ms);
 void dw_conn_delete(dw_req *r, const char *table, const cb_conn_row *c);
 
 // BatchWriteItem deletes of up to 25 raw JSON keys.
@@ -279,17 +281,24 @@ const char *dw_collection(int i);   // NULL past the last
 bool dw_collection_valid(const char *c);
 // A page of a Scan over one family, pk beginning with family#prefix.
 void dw_scan_family(dw_req *r, const char *table, const char *family, const char *prefix, int limit, cb_span start);
-// The import's check (store_import.c): how many items the table holds of one
-// export table ("users", "bots", "user_elo_ratings", "games", "player_hands",
-// "bot_hands", "game_snapshots", "chat_messages"), counted by a Scan with
-// Select COUNT over the item kind that table became. false for a name that is
-// not one of these.
-bool dw_scan_count(dw_req *r, const char *table, const char *export_name, cb_span start);
+// The import's check (store_import.c): a page of a consistent Scan over the
+// whole table, keys only (Limit caps the items a page reads, so the pages stay
+// small enough to pace), and which export table ("users", "bots",
+// "user_elo_ratings", "games", "player_hands", "bot_hands", "game_snapshots",
+// "chat_messages") an item became, with the id after its pk's family (a game,
+// user, bot, replay, or for chat the game): NULL for an item no export table
+// becomes.
+void        dw_scan_keys(dw_req *r, const char *table, int limit, cb_span start);
+const char *dw_export_kind(cb_span item, char *id, size_t cap);
+// The table's provisioned capacity (the import paces itself to it): the
+// smallest read and write units of the table and its indexes, a write to the
+// table also being a write to every index it lands in. 0 for on-demand.
+// false when the answer has no table throughput.
+void dw_describe_table(dw_req *r, const char *table);
+bool dw_provisioned(const char *body, size_t n, int64_t *rcu, int64_t *wcu);
 // The capacity units a response says it consumed (every request asks for
 // them), 0 when it does not say.
 double dw_consumed(const char *body, size_t n);
-// A Scan's "Count" (this page's matches), or -1.
-int64_t dw_count(const char *body, size_t n);
 
 // One PartiQL statement.
 void dw_execute(dw_req *r, const char *statement, const char *next_token);

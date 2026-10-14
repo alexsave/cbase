@@ -170,6 +170,8 @@ typedef struct {
     int64_t expires_at;                // TTL, ms like every time here: a connection not seen for 2 h
                                        // is dropped. DynamoDB keeps it as expires_at in SECONDS (its
                                        // TTL unit) and the exact ms as expires_ms.
+    int64_t version;                   // the stored row's write count: conn_get fills it, conn_put
+                                       // expects it (0: no live row). See conn_put.
 } cb_conn_row;
 
 // What a snapshot query asks (PostgREST's game_snapshots shapes).
@@ -297,7 +299,15 @@ typedef struct cb_store_ops {
     int (*chat_list)(cb_store *s, const char *game_id, int limit, cb_chat_fn fn, void *ud);
 
     // realtime connections (API Gateway only)
-    int (*conn_put)(cb_store *s, const cb_conn_row *c);       // insert or replace
+    //
+    // conn_put is a compare-and-set on the row's version, because API Gateway
+    // runs a connection's frames as concurrent invocations: a page joins three
+    // channels inside a few milliseconds, and a plain read-modify-write keeps
+    // only the last writer's topic. It writes `c` when the stored row is at
+    // c->version (0: there is no row, or it has expired), leaving it at
+    // c->version + 1, and answers CB_E_CONFLICT when another writer moved it
+    // first: the caller re-reads, redoes its change and puts again.
+    int (*conn_put)(cb_store *s, const cb_conn_row *c);
     int (*conn_get)(cb_store *s, const char *conn_id, cb_conn_row *out);
     int (*conn_delete)(cb_store *s, const char *conn_id);
     // Every live connection that joined `topic`, each as its whole row. A row
@@ -383,7 +393,7 @@ void cb_store_throttles_get(cb_store_throttles *out);
 
 // The SQLite schema version this binary applies (store_sqlite.c), and the
 // embedded schema text (build/gen/schema_sql.c, from sql/schema.sql).
-#define CB_SCHEMA_VERSION 1
+#define CB_SCHEMA_VERSION 2
 extern const char cbase_schema_sql[];
 extern const unsigned long cbase_schema_sql_len;
 

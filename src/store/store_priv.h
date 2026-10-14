@@ -25,9 +25,23 @@ typedef int (*cb_dynamo_send_fn)(void *ud, const char *target, const uint8_t *bo
                                  cb_buf *resp);
 int cb_store_open_dynamo_with(const char *table, cb_dynamo_send_fn send, void *ud, cb_store **out);
 
-// The import's stored count on DynamoDB (dw_scan_count): the items one
-// export table became, every page summed. CB_E_INVALID for a store that is not
-// DynamoDB or an unknown name, CB_E_DB on a failed Scan.
-int cb_store_dynamo_count(cb_store *s, const char *export_name, long long *out);
+// Bulk mode, for cbase-import (an offline tool with no one waiting): throttling
+// is retried with no give-up (jittered pauses up to 2 s), and every send is
+// paced to the table's provisioned capacity, read with DescribeTable (the
+// smallest of the table's and its indexes' units; on-demand is unpaced), out
+// of a token bucket each response's ConsumedCapacity is taken from. The
+// request path never turns it on. CB_OK, or CB_E_DB when DescribeTable failed
+// (bulk retrying is on, unpaced), CB_E_INVALID for a store that is not DynamoDB.
+int cb_store_dynamo_bulk(cb_store *s);
+// The clock the pauses and the pacing use (tests: a fake one).
+void cb_store_dynamo_clock(cb_store *s, int64_t (*mono)(void), void (*sleep)(int64_t ms));
+
+// The import's check on DynamoDB (dw_scan_keys): every item of the table one
+// export table became, as fn(export_name, id) with the id in its pk (a game's
+// seats and a game's chat give the game's), in pages of 100 keys, paced in
+// bulk mode. CB_E_INVALID for a store that is not DynamoDB, CB_E_DB on a
+// failed Scan.
+typedef void (*cb_dynamo_item_fn)(const char *export_name, const char *id, void *ud);
+int cb_store_dynamo_export_items(cb_store *s, cb_dynamo_item_fn fn, void *ud);
 
 #endif

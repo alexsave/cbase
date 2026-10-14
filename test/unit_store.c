@@ -848,22 +848,36 @@ static void conns_round_trip(void) {
     T_EQ_STR(got.topics[1], "pv-u1");
     T_EQ_STR(got.join_refs[1], "2");
     T_EQ_INT(got.expires_at, later);
+    T_EQ_INT(got.version, 1);
     names_t n = { 0 };
     T_EQ_INT(CB_STORE_CALL(s, conns_by_topic, "game-ab12cd", collect_conn, &n), 2);
     T_EQ_STR(n.ids[0], "Abc=");
-    // Leaving a topic: the row is put back without it.
+    // The compare-and-set: a writer that read no row loses to the one that wrote it.
+    T_EQ_INT(CB_STORE_CALL(s, conn_put, &c), CB_E_CONFLICT);
+    // Leaving a topic: the row is put back without it, at the version read.
     c.n_topics = 1;
     snprintf(c.topics[0], sizeof c.topics[0], "pv-u1");
+    c.version = got.version;
     T_EQ_INT(CB_STORE_CALL(s, conn_put, &c), CB_OK);
+    T_EQ_INT(CB_STORE_CALL(s, conn_put, &c), CB_E_CONFLICT);   // that version is gone now
+    T_EQ_INT(CB_STORE_CALL(s, conn_get, "Abc=", &got), CB_OK);
+    T_EQ_INT(got.version, 2);
+    T_EQ_INT(got.n_topics, 1);
     n.n = 0;
     T_EQ_INT(CB_STORE_CALL(s, conns_by_topic, "game-ab12cd", collect_conn, &n), 1);
     T_EQ_STR(n.ids[0], "Def=");
     // TTL: an expired connection reads as gone.
     d.expires_at = cb_now_ms() - 1;
+    d.version = 1;
     T_EQ_INT(CB_STORE_CALL(s, conn_put, &d), CB_OK);
     T_EQ_INT(CB_STORE_CALL(s, conn_get, "Def=", &got), CB_E_NOT_FOUND);
     n.n = 0;
     T_EQ_INT(CB_STORE_CALL(s, conns_by_topic, "game-ab12cd", collect_conn, &n), 0);
+    // An expired row reads as none, so a writer that read none may replace it.
+    d.version = 0;
+    d.expires_at = later;
+    T_EQ_INT(CB_STORE_CALL(s, conn_put, &d), CB_OK);
+    T_EQ_INT(CB_STORE_CALL(s, conn_get, "Def=", &got), CB_OK);
     T_EQ_INT(CB_STORE_CALL(s, conn_delete, "Abc="), CB_OK);
     T_EQ_INT(CB_STORE_CALL(s, conn_get, "Abc=", &got), CB_E_NOT_FOUND);
     cb_store_close(s);

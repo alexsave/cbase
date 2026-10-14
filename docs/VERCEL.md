@@ -198,5 +198,6 @@ Order:
 3. Rehearse the whole hosting move on uttt.live, which has no server route and no universal links.
 4. Then foolish.cards: stack, test with `--connect-to`, ALIAS, two weeks in parallel, retire Vercel.
 
-Open question for Alex: `utils.foolish.cards` has a CNAME to Vercel and nothing in the repo explains it.
-Which Vercel project, if any, serves it, and should it move, be deleted, or stay?
+`utils.foolish.cards` (a CNAME to Vercel) is Alex's personal toys site from the sibling repo `../foolish-utils`, deployed by Vercel's git integration: Next 16 with only client-side pages, no API routes, no env vars and no backend, so it is static in substance.
+It can move whenever, with `output: 'export'` plus `images.unoptimized` (it uses `next/image`), into its own S3 prefix or bucket behind the same web distribution, with `utils.foolish.cards` added to the certificate and the aliases and the Function choosing the prefix by Host.
+Nothing in the monorepo depends on it, and it is not part of the foolish move's order.

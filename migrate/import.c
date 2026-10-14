@@ -6,6 +6,9 @@
 //   CBASE_STORE=dynamo CBASE_TABLE=cbase       build/cbase-import migrate/out
 //   CBASE_STORE=dynamo CBASE_TABLE=cbase       build/cbase-import --seed-bots
 //
+// On DynamoDB it runs in the store's bulk mode: paced to the table's
+// provisioned capacity, and never giving up on a throttle.
+//
 // --seed-bots writes the schema's 49 bots into a store that has none (a fresh
 // DynamoDB table; ops/deploy.sh runs it after every deploy) and leaves a store
 // with bots alone.
@@ -13,6 +16,7 @@
 // Exit 0 when every check passed, 1 when one failed, 2 on a usage or I/O error.
 #include "store/store.h"
 #include "store/store_import.h"
+#include "store/store_priv.h"
 #include "util/err.h"
 #include "util/log.h"
 
@@ -39,6 +43,11 @@ int main(int argc, char **argv) {
         fprintf(stderr, "cbase-import: cannot open the %s store: %s\n", kind, cb_strerror(rc));
         return 2;
     }
+    // An offline bulk tool: throttling is waited out rather than given up on,
+    // and every send is paced to the table's provisioned capacity
+    // (store_priv.h cb_store_dynamo_bulk). The Lambda's requests never are.
+    if (strcmp(kind, "dynamo") == 0 && cb_store_dynamo_bulk(s) != CB_OK)
+        fprintf(stderr, "cbase-import: DescribeTable failed; sending unpaced, throttles still waited out\n");
     if (strcmp(argv[1], "--seed-bots") == 0) {
         rc = cb_import_seed_bots(s);
         cb_store_close(s);

@@ -379,6 +379,30 @@ static void leave_and_access_token(void) {
     T_EQ_INT(s.n, 1);
 }
 
+// The page's leave-then-rejoin of one topic, run in the other order (API
+// Gateway runs a connection's frames concurrently; recorded against the live
+// backend 2026-10-14: the leave of join 6 landed after join 14 and closed
+// join 14, so the page's pv- channel was gone while the server still pushed).
+static void a_leave_that_raced_its_rejoin_ends_only_the_old_join(void) {
+    setup();
+    cb_phx_conn c = conn2();
+    sent s;
+    on(&c, &s, "[\"6\",\"6\",\"realtime:pv-" U1 "\",\"phx_join\",{\"access_token\":\"tok-" U1 "\"}]");
+    on(&c, &s, "[\"14\",\"14\",\"realtime:pv-" U1 "\",\"phx_join\",{\"access_token\":\"tok-" U1 "\"}]");
+    T_EQ_STR(c.join_refs[0], "14");
+    T_EQ_INT(on(&c, &s, "[\"6\",\"11\",\"realtime:pv-" U1 "\",\"phx_leave\",{}]"), CB_OK);
+    T_EQ_INT(s.n, 2);
+    T_EQ_STR(s.f[0], "[\"6\",\"11\",\"realtime:pv-" U1 "\",\"phx_reply\",{\"response\":{},\"status\":\"ok\"}]");
+    T_EQ_STR(s.f[1], "[\"6\",\"6\",\"realtime:pv-" U1 "\",\"phx_close\",{}]");   // the old join's, not 14's
+    T_EQ_INT(c.n_topics, 1);
+    T_EQ_STR(c.topics[0], "pv-" U1);
+    T_EQ_STR(c.join_refs[0], "14");
+    // The current join's own leave still ends it.
+    T_EQ_INT(on(&c, &s, "[\"14\",\"15\",\"realtime:pv-" U1 "\",\"phx_leave\",{}]"), CB_OK);
+    T_EQ_STR(s.f[1], "[\"14\",\"14\",\"realtime:pv-" U1 "\",\"phx_close\",{}]");
+    T_EQ_INT(c.n_topics, 0);
+}
+
 static void join_as_another_user_drops_the_old_channels(void) {
     setup();
     cb_phx_conn c = conn2();
@@ -602,6 +626,7 @@ int main(void) {
     T_RUN(join_refusals);
     T_RUN(too_many_channels);
     T_RUN(leave_and_access_token);
+    T_RUN(a_leave_that_raced_its_rejoin_ends_only_the_old_join);
     T_RUN(join_as_another_user_drops_the_old_channels);
     T_RUN(vsn1_connection_speaks_objects);
     T_RUN(pv_payloads);

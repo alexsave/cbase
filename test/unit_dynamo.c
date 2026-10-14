@@ -281,9 +281,20 @@ static void builders_valid_json(void) {
     }
     dw_snapshot_unlink(&r, "cbase", body(&(dw_req){ .body = key })); T_CHECK(valid(&r));
     dw_chat_put(&r, "cbase", &ch);                   T_CHECK(valid(&r));
-    dw_conn_put(&r, "cbase", &cn, &old);             T_CHECK(valid(&r));
+    dw_conn_put(&r, "cbase", &cn, &old, 5000);       T_CHECK(valid(&r));
     T_CHECK(strstr(cb_buf_cstr(&r.body), "\"expires_at\":{\"N\":\"7200\"}") != NULL);   // TTL in seconds
     T_CHECK(strstr(cb_buf_cstr(&r.body), "TOPIC#game-zzzzzz") != NULL);                // the topic left is deleted
+    // The compare-and-set: version 0 is "no live row" (absent, unversioned, or past its TTL at now)...
+    T_CHECK(strstr(cb_buf_cstr(&r.body), "\"ConditionExpression\":\"attribute_not_exists(#ver) OR #expires_ms < :now\"") != NULL);
+    T_CHECK(strstr(cb_buf_cstr(&r.body), "\":now\":{\"N\":\"5000\"}") != NULL);
+    T_CHECK(strstr(cb_buf_cstr(&r.body), "\"ver\":{\"N\":\"1\"}") != NULL);
+    // ...and a read version is matched exactly, the write leaving it one higher.
+    cn.version = 7;
+    dw_conn_put(&r, "cbase", &cn, &old, 5000);       T_CHECK(valid(&r));
+    T_CHECK(strstr(cb_buf_cstr(&r.body), "\"ConditionExpression\":\"#ver = :ver\"") != NULL);
+    T_CHECK(strstr(cb_buf_cstr(&r.body), "\":ver\":{\"N\":\"7\"}") != NULL);
+    T_CHECK(strstr(cb_buf_cstr(&r.body), "\"ver\":{\"N\":\"8\"}") != NULL);
+    cn.version = 0;
     dw_conn_delete(&r, "cbase", &cn);                T_CHECK(valid(&r));
     dw_batch_delete(&r, "cbase", &key, 1);           T_CHECK(valid(&r));
     T_CHECK(dw_bots_replace(&r, "cbase", bots, 1, stored, 2));
@@ -381,9 +392,11 @@ static void items_round_trip(void) {
     snprintf(cn.join_refs[0], sizeof cn.join_refs[0], "3");
     snprintf(cn.topics[1], sizeof cn.topics[1], "game-ab12cd");
     snprintf(cn.join_refs[1], sizeof cn.join_refs[1], "4");
-    dw_conn_put(&r, "cbase", &cn, NULL);
-    T_CHECK(cb_json_find((const char *)r.body.p, r.body.len, "RequestItems.cbase.2.PutRequest.Item", &it) == CB_JSON_OBJ);
+    cn.version = 2;
+    dw_conn_put(&r, "cbase", &cn, NULL, 0);
+    T_CHECK(cb_json_find((const char *)r.body.p, r.body.len, "TransactItems.2.Put.Item", &it) == CB_JSON_OBJ);
     T_CHECK(dw_item_conn(it, &cnb));   // a TOPIC copy carries the whole row
+    T_EQ_INT(cnb.version, 3);          // as written: the version after this put
     T_EQ_INT(cnb.vsn, 2);
     T_EQ_INT(cnb.n_topics, 2);
     T_EQ_STR(cnb.topics[1], "game-ab12cd");
@@ -1082,35 +1095,189 @@ static void the_template_stays_free(void) {
     T_CHECK(wcu <= 25);
 }
 
-// The import's stored count (store_import.c on DynamoDB): a counting Scan per
-// export table, its pages summed. player_hands are the GAME# partitions'
-// MEMBER# items, whatever else those partitions hold.
-static void flow_import_count(void) {
+// The import's stored check (store_import.c on DynamoDB): one keys-only Scan
+// of the whole table in pages of 100, each item told to the import as the
+// export table it became and the id in its pk; items no export table becomes
+// (a SCAN marker, a refresh token) are not told at all.
+typedef struct { int n; char kinds[8][24], ids[8][48]; } told_t;
+static void tell(const char *kind, const char *id, void *ud) {
+    told_t *t = ud;
+    if (t->n < 8) {
+        snprintf(t->kinds[t->n], sizeof t->kinds[0], "%s", kind);
+        snprintf(t->ids[t->n++], sizeof t->ids[0], "%s", id);
+    }
+}
+
+static void flow_export_items(void) {
     static const char P1[] =
-        "{\"Count\":3,\"ScannedCount\":40,\"LastEvaluatedKey\":{\"pk\":{\"S\":\"GAME#a\"},\"sk\":{\"S\":\"ROW\"}},"
+        "{\"Count\":3,\"ScannedCount\":3,\"Items\":["
+        "{\"pk\":{\"S\":\"GAME#ab12cd\"},\"sk\":{\"S\":\"MEMBER#" U1 "\"}},"
+        "{\"pk\":{\"S\":\"GAME#ab12cd\"},\"sk\":{\"S\":\"ROWS\"}},"
+        "{\"pk\":{\"S\":\"GAME#ab12cd\"},\"sk\":{\"S\":\"ROW\"}}],"
+        "\"LastEvaluatedKey\":{\"pk\":{\"S\":\"GAME#ab12cd\"},\"sk\":{\"S\":\"ROW\"}},"
         "\"ConsumedCapacity\":{\"TableName\":\"cbase\",\"CapacityUnits\":2.5}}";
-    static const char P2[] = "{\"Count\":2,\"ScannedCount\":12}";
+    static const char P2[] =
+        "{\"Count\":3,\"ScannedCount\":3,\"Items\":["
+        "{\"pk\":{\"S\":\"CHAT#ab12cd\"},\"sk\":{\"S\":\"000000000000001#m1\"}},"
+        "{\"pk\":{\"S\":\"SCAN\"},\"sk\":{\"S\":\"GAME#ab12cd\"}},"
+        "{\"pk\":{\"S\":\"USER#" U1 "\"},\"sk\":{\"S\":\"RATING\"}}]}";
     static const step steps[] = {
-        { "Scan", "\"Select\":\"COUNT\"", 200, P1 },
-        { "Scan", "\"ExclusiveStartKey\":{\"pk\":{\"S\":\"GAME#a\"},\"sk\":{\"S\":\"ROW\"}}", 200, P2 },
+        { "Scan", "\"ProjectionExpression\":\"#pk, #sk\"", 200, P1 },
+        { "Scan", "\"ExclusiveStartKey\":{\"pk\":{\"S\":\"GAME#ab12cd\"},\"sk\":{\"S\":\"ROW\"}}", 200, P2 },
     };
     RUN(steps, s);
-    long long n = 0;
-    T_EQ_INT(cb_store_dynamo_count(s, "player_hands", &n), CB_OK);
-    T_EQ_INT(n, 5);
-    T_CHECK(strstr(sc_.bodies[0], "\"FilterExpression\":\"begins_with(#pk, :p) AND begins_with(#sk, :s)\"") != NULL);
-    T_CHECK(strstr(sc_.bodies[0], "\":p\":{\"S\":\"GAME#\"},\":s\":{\"S\":\"MEMBER#\"}") != NULL);
+    told_t t = { 0 };
+    T_EQ_INT(cb_store_dynamo_export_items(s, tell, &t), CB_OK);
+    T_EQ_INT(sc_.at, 2);
+    T_EQ_INT(t.n, 4);
+    T_EQ_STR(t.kinds[0], "player_hands");
+    T_EQ_STR(t.ids[0], "ab12cd");
+    T_EQ_STR(t.kinds[1], "games");   // ROWS is not a ROW: an exact sort key is not a prefix
+    T_EQ_STR(t.kinds[2], "chat_messages");
+    T_EQ_STR(t.ids[2], "ab12cd");
+    T_EQ_STR(t.kinds[3], "user_elo_ratings");
+    T_EQ_STR(t.ids[3], U1);
     T_CHECK(strstr(sc_.bodies[0], "\"ConsistentRead\":true") != NULL);
-    T_EQ_INT(cb_store_dynamo_count(s, "nosuch", &n), CB_E_INVALID);
+    T_CHECK(strstr(sc_.bodies[0], "\"Limit\":100") != NULL);
+    T_CHECK(strstr(sc_.bodies[0], "ExclusiveStartKey") == NULL);
+    cb_store_close(s);
+}
+
+// ---- bulk mode (cbase-import): a fake clock, so pauses are measured, not slept ----
+
+static int64_t fk_now;
+static int64_t fk_slept[64];
+static int     fk_n;
+static int64_t fk_mono(void) { return fk_now; }
+static void    fk_sleep(int64_t ms) {
+    if (fk_n < 64) fk_slept[fk_n++] = ms;
+    fk_now += ms;
+}
+static void fk_reset(void) {
+    fk_now = 1000000;
+    fk_n = 0;
+}
+
+// DescribeTable as the live table answered it (aws dynamodb describe-table on
+// cbase, 2026-10-14, cut to the fields read): 15/15 on the table, 5/5 on each
+// GSI, so the import paces both buckets to 5 units a second.
+static const char DESCRIBE_LIVE[] =
+    "{\"Table\":{\"TableName\":\"cbase\",\"TableStatus\":\"ACTIVE\",\"ProvisionedThroughput\":{\"NumberOfDecreasesToday\":0,"
+    "\"ReadCapacityUnits\":15,\"WriteCapacityUnits\":15},\"GlobalSecondaryIndexes\":[{\"IndexName\":\"gsi1\","
+    "\"IndexStatus\":\"ACTIVE\",\"ProvisionedThroughput\":{\"NumberOfDecreasesToday\":0,\"ReadCapacityUnits\":5,"
+    "\"WriteCapacityUnits\":5}},{\"IndexName\":\"gsi2\",\"IndexStatus\":\"ACTIVE\",\"ProvisionedThroughput\":"
+    "{\"NumberOfDecreasesToday\":0,\"ReadCapacityUnits\":5,\"WriteCapacityUnits\":5}}]}}";
+static const char DESCRIBE_ON_DEMAND[] =
+    "{\"Table\":{\"TableName\":\"cbase\",\"ProvisionedThroughput\":{\"NumberOfDecreasesToday\":0,"
+    "\"ReadCapacityUnits\":0,\"WriteCapacityUnits\":0},\"BillingModeSummary\":{\"BillingMode\":\"PAY_PER_REQUEST\"}}}";
+
+static void provisioned_read(void) {
+    int64_t r, w;
+    T_CHECK(dw_provisioned(DESCRIBE_LIVE, strlen(DESCRIBE_LIVE), &r, &w));
+    T_EQ_INT(r, 5);
+    T_EQ_INT(w, 5);
+    T_CHECK(dw_provisioned(DESCRIBE_ON_DEMAND, strlen(DESCRIBE_ON_DEMAND), &r, &w));
+    T_EQ_INT(r, 0);
+    T_EQ_INT(w, 0);
+    T_CHECK(!dw_provisioned("{}", 2, &r, &w));
+}
+
+// The live import's failure (2026-10-14): a Scan throttled ten times in a row
+// was given up on. In bulk mode the same throttling, past ten sends, is waited
+// out: every pause at most 2 s, nothing given up, the read answered.
+static void flow_bulk_throttle_waited_out(void) {
+    static const char GOT[] = "{}";
+    step steps[18] = { { "DescribeTable", "\"TableName\":\"cbase\"", 200, DESCRIBE_LIVE } };
+    for (int i = 1; i < 17; i++) steps[i] = (step){ "GetItem", NULL, 400, THROTTLED_PT };
+    steps[17] = (step){ "GetItem", NULL, 200, GOT };
+    script sc_ = { .steps = steps, .n = 18 };
+    cb_store *s = NULL;
+    T_EQ_INT(cb_store_open_dynamo_with("cbase", fake_send, &sc_, &s), CB_OK);
+    fk_reset();
+    cb_store_dynamo_clock(s, fk_mono, fk_sleep);
+    T_EQ_INT(cb_store_dynamo_bulk(s), CB_OK);
+    cb_store_throttles t0;
+    cb_store_throttles_get(&t0);
+    cb_game_row g = { 0 };
+    T_EQ_INT(CB_STORE_CALL(s, game_get, "ab12cd", &g), CB_E_NOT_FOUND);
+    T_EQ_INT(sc_.at, 18);
+    T_EQ_INT(throttled_since(&t0), 16);
+    T_EQ_INT(gave_up_since(&t0), 0);
+    int64_t most = 0;
+    for (int i = 0; i < fk_n; i++) most = fk_slept[i] > most ? fk_slept[i] : most;
+    T_CHECK(most <= 2000);
+    cb_store_close(s);
+}
+
+// Bulk mode does not wait out everything: a 5xx that never ends still stops
+// after ten sends, so a dead endpoint cannot hang the import.
+static void flow_bulk_errors_bounded(void) {
+    step steps[16] = { { "DescribeTable", NULL, 200, DESCRIBE_ON_DEMAND } };
+    for (int i = 1; i < 16; i++) steps[i] = (step){ "GetItem", NULL, 500, "{}" };
+    script sc_ = { .steps = steps, .n = 16 };
+    cb_store *s = NULL;
+    T_EQ_INT(cb_store_open_dynamo_with("cbase", fake_send, &sc_, &s), CB_OK);
+    fk_reset();
+    cb_store_dynamo_clock(s, fk_mono, fk_sleep);
+    T_EQ_INT(cb_store_dynamo_bulk(s), CB_OK);
+    cb_game_row g = { 0 };
+    T_EQ_INT(CB_STORE_CALL(s, game_get, "ab12cd", &g), CB_E_DB);
+    T_EQ_INT(sc_.at, 11);   // DescribeTable and ten sends
+    cb_store_close(s);
+}
+
+// The pacing: a write that consumed 8 WCU against a 5 WCU/s bucket that held
+// 5 leaves it 3 in debt, so the next write waits 600 ms; reads have their own
+// bucket and do not wait for the writes. On-demand is unpaced.
+static void flow_bulk_paced(void) {
+    static const char PUT8[] = "{\"ConsumedCapacity\":{\"TableName\":\"cbase\",\"CapacityUnits\":8.0}}";
+    static const char GOT[] = "{\"ConsumedCapacity\":{\"TableName\":\"cbase\",\"CapacityUnits\":1.0}}";
+    static const step steps[] = {
+        { "DescribeTable", NULL, 200, DESCRIBE_LIVE },
+        { "PutItem", NULL, 200, PUT8 },
+        { "GetItem", NULL, 200, GOT },
+        { "PutItem", NULL, 200, PUT8 },
+        { "PutItem", NULL, 200, PUT8 },
+        { "PutItem", NULL, 200, PUT8 },
+    };
+    RUN(steps, s);
+    fk_reset();
+    cb_store_dynamo_clock(s, fk_mono, fk_sleep);
+    T_EQ_INT(cb_store_dynamo_bulk(s), CB_OK);
+    cb_rating_row rt = { .user_id = U1, .username = "A", .elo_rating = 1000, .previous_elo = -1 };
+    T_EQ_INT(CB_STORE_CALL(s, rating_import, &rt), CB_OK);
+    T_EQ_INT(fk_n, 0);   // the first write: the bucket held a second's worth
+    cb_game_row g = { 0 };
+    T_EQ_INT(CB_STORE_CALL(s, game_get, "ab12cd", &g), CB_E_NOT_FOUND);
+    T_EQ_INT(fk_n, 0);   // a read: its own bucket
+    T_EQ_INT(CB_STORE_CALL(s, rating_import, &rt), CB_OK);
+    T_EQ_INT(fk_n, 1);
+    T_CHECK(fk_slept[0] >= 600 && fk_slept[0] <= 601);
+    // Ten idle seconds refill only one second's worth (5), not 50: the next
+    // write goes at once and leaves the bucket 3 in debt again.
+    fk_now += 10000;
+    T_EQ_INT(CB_STORE_CALL(s, rating_import, &rt), CB_OK);
+    T_EQ_INT(fk_n, 1);
+    T_EQ_INT(CB_STORE_CALL(s, rating_import, &rt), CB_OK);
+    T_EQ_INT(fk_n, 2);
+    T_CHECK(fk_slept[1] >= 600 && fk_slept[1] <= 601);
+    T_EQ_INT(sc_.at, 6);
     cb_store_close(s);
 
-    // An exact sort key is an equality, not a prefix (a ROW, not ROWS).
-    dw_req r;
-    dw_req_init(&r);
-    T_CHECK(dw_scan_count(&r, "cbase", "games", cb_span_of("", 0)));
-    T_CHECK(strstr(cb_buf_cstr(&r.body), "\"FilterExpression\":\"begins_with(#pk, :p) AND #sk = :s\"") != NULL);
-    T_CHECK(strstr(cb_buf_cstr(&r.body), "\":s\":{\"S\":\"ROW\"}") != NULL);
-    dw_req_free(&r);
+    static const step od[] = {
+        { "DescribeTable", NULL, 200, DESCRIBE_ON_DEMAND },
+        { "PutItem", NULL, 200, PUT8 },
+        { "PutItem", NULL, 200, PUT8 },
+    };
+    script sc2 = { .steps = od, .n = 3 };
+    T_EQ_INT(cb_store_open_dynamo_with("cbase", fake_send, &sc2, &s), CB_OK);
+    fk_reset();
+    cb_store_dynamo_clock(s, fk_mono, fk_sleep);
+    T_EQ_INT(cb_store_dynamo_bulk(s), CB_OK);
+    T_EQ_INT(CB_STORE_CALL(s, rating_import, &rt), CB_OK);
+    T_EQ_INT(CB_STORE_CALL(s, rating_import, &rt), CB_OK);
+    T_EQ_INT(fk_n, 0);
+    cb_store_close(s);
 }
 
 // ConsumedCapacity comes back as an object (one table) or, for the batch and
@@ -1153,7 +1320,11 @@ int main(void) {
     T_RUN(flow_chat_order);
     T_RUN(flow_snapshot_set_extras);
     T_RUN(flow_admin_query_guard);
-    T_RUN(flow_import_count);
+    T_RUN(flow_export_items);
+    T_RUN(provisioned_read);
+    T_RUN(flow_bulk_throttle_waited_out);
+    T_RUN(flow_bulk_errors_bounded);
+    T_RUN(flow_bulk_paced);
     T_RUN(consumed_capacity_read);
     return T_DONE();
 }

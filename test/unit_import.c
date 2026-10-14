@@ -204,8 +204,8 @@ static void failing_checks(void) {
     static const struct { int variant; const char *why; } cases[] = {
         { BAD_HASH, "bcrypt hashes: 1 of 2 parse  FAILED" },
         { BAD_GAME, "games through table_load: 0 of 1 load  FAILED" },
-        { BAD_COUNT, "users                    41        2        2        0        0        2 MISMATCH" },
-        { LOST_SEAT, "player_hands              2        2        2        0        0        1 MISMATCH" },
+        { BAD_COUNT, "users                    41        2        2        0        0        2" },
+        { LOST_SEAT, "player_hands              2        2        2        0        0        1" },
     };
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
         char dir[320], name[32], report[4096];
@@ -216,6 +216,8 @@ static void failing_checks(void) {
         cb_store *s = fresh_store(name);
         T_EQ_INT(run_import(s, dir, report, sizeof report), 1);
         T_CHECK(strstr(report, cases[i].why) != NULL);
+        T_CHECK(strstr(report, "cbase-import: FAILED") != NULL);
+        if (cases[i].variant == BAD_COUNT || cases[i].variant == LOST_SEAT) T_CHECK(strstr(report, "MISMATCH") != NULL);
         if (!strstr(report, cases[i].why)) fprintf(stderr, "%s", report);
         cb_store_close(s);
     }
@@ -223,6 +225,27 @@ static void failing_checks(void) {
     cb_store *s = fresh_store("missing");
     char report[256];
     T_EQ_INT(run_import(s, "/nonexistent/export", report, sizeof report), CB_E_IO);
+    cb_store_close(s);
+}
+
+// DynamoDB: a game the export does not have (one played on the new stack
+// before the import, a bench leftover) is an extra, named in the report, and
+// does not fail the import; every table is still held to the export's count.
+static void extras_named_not_failed(void) {
+    if (!tsb_dynamo()) return;   // SQLite counts rows; the check by id is the Scan's
+    char dir[320], report[4096];
+    snprintf(dir, sizeof dir, "%s/extras", g_dir);
+    mkdir(dir, 0700);
+    write_export(dir, CLEAN);
+    cb_store *s = fresh_store("extras");
+    uint8_t st[1] = { 1 };
+    cb_game_row g = { .id = "zz99zz", .status = 1, .state = st, .state_len = 1, .roster = st, .roster_len = 1,
+                      .version = 1, .updated_at = 2000 };
+    T_EQ_INT(CB_STORE_CALL(s, game_import, &g, NULL, 0, NULL, 0), CB_OK);
+    T_EQ_INT(run_import(s, dir, report, sizeof report), 0);
+    T_CHECK(strstr(report, "extra (not in the export): games zz99zz") != NULL);
+    T_CHECK(strstr(report, "games                     1        1        1        0        0        1        1 ok") != NULL);
+    if (!strstr(report, "zz99zz")) fprintf(stderr, "%s", report);
     cb_store_close(s);
 }
 
@@ -243,6 +266,7 @@ int main(void) {
     kernel_lobby();
     T_RUN(clean_export_imports_everything);
     T_RUN(failing_checks);
+    T_RUN(extras_named_not_failed);
     T_RUN(bcrypt_shapes);
     char cmd[300];
     snprintf(cmd, sizeof cmd, "rm -rf '%s'", g_dir);

@@ -20,7 +20,10 @@
 //   access_token                 re-verify (per channel, as Realtime does); a
 //                                bad token, or one for another user, closes
 //                                that channel (phx_close); no reply
-//   phx_leave                    drop the topic, reply ok, then phx_close
+//   phx_leave                    drop the topic, reply ok, then phx_close; a
+//                                leave whose join_ref is not the topic's
+//                                current one (it raced a rejoin) closes only
+//                                that join_ref and keeps the topic
 //   anything else: ignored (clients do not broadcast here)
 //
 // A join's access_token equal to CBASE_ANON_KEY is "no user" (supabase-js

@@ -152,16 +152,21 @@ static void topic_remove(cb_phx_conn *c, int i) {
     memset(c->join_refs[c->n_topics], 0, sizeof c->join_refs[0]);
 }
 
-// phx_close for topic i, as Phoenix sends it when a channel ends (ref = join_ref).
-static void send_close(const cb_phx_conn *c, int i, cb_phx_send_fn send, void *ud) {
+// phx_close for the channel that joined topic i on `jr`, as Phoenix sends it
+// when a channel ends (ref = join_ref).
+static void send_close_ref(const cb_phx_conn *c, int i, cb_span jr, cb_phx_send_fn send, void *ud) {
     char wire[CB_TOPIC_MAX + sizeof WIRE_PREFIX];
     snprintf(wire, sizeof wire, WIRE_PREFIX "%s", c->topics[i]);
-    cb_span jr = cb_span_cstr(c->join_refs[i]);
     cb_buf f;
     cb_buf_init(&f);
     frame(&f, c->vsn, jr, jr, wire, "phx_close", "{}", 2);
     send(ud, cb_buf_cstr(&f), f.len);
     cb_buf_free(&f);
+}
+
+// phx_close for the channel on topic i now.
+static void send_close(const cb_phx_conn *c, int i, cb_phx_send_fn send, void *ud) {
+    send_close_ref(c, i, cb_span_cstr(c->join_refs[i]), send, ud);
 }
 
 static void reply(const cb_phx_conn *c, const cb_phx_msg *m, bool ok, const char *response, cb_phx_send_fn send, void *ud) {
@@ -306,7 +311,15 @@ int cb_phx_on_frame(cb_ctx *ctx, cb_phx_conn *conn, const char *text, size_t len
         const char *bare = bare_of(m.topic);
         int i = bare ? topic_index(conn, bare) : -1;
         reply(conn, &m, true, "{}", send, ud);
-        if (i >= 0) {
+        if (i >= 0 && m.join_ref.n && !cb_span_eq(m.join_ref, conn->join_refs[i])) {
+            // A leave of an earlier join of this topic, run after the rejoin
+            // that followed it (API Gateway runs a connection's frames
+            // concurrently, so a page's leave-then-rejoin can land in either
+            // order). It ends that earlier channel only: the close carries the
+            // leave's join_ref, which the client routes to the channel it
+            // left, and the rejoined topic stays subscribed.
+            send_close_ref(conn, i, m.join_ref, send, ud);
+        } else if (i >= 0) {
             send_close(conn, i, send, ud);
             topic_remove(conn, i);
         }

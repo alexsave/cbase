@@ -654,6 +654,7 @@ bool dw_item_conn(cb_span it, cb_conn_row *c) {
     dw_get_s(it, "user_id", c->user_id, sizeof c->user_id);
     c->vsn = (int)get_n_or(it, "vsn", 1);
     c->expires_at = get_n_or(it, "expires_ms", 0);
+    c->version = get_n_or(it, "ver", 0);   // a row written before versions: 0
     cb_span topics, list, e;
     size_t pos = 0;
     if (member(it, "topics", &topics) && member(topics, "L", &list))
@@ -1662,6 +1663,7 @@ static void conn_attrs(cb_jw *w, const cb_conn_row *c) {
     cb_jw_end(w);
     av_n(w, "expires_ms", c->expires_at);
     av_n(w, DW_TTL_ATTR, c->expires_at / 1000);   // the TTL attribute is in seconds
+    av_n(w, "ver", c->version);
 }
 
 static bool has_topic(const cb_conn_row *c, const char *t) {
@@ -1670,56 +1672,56 @@ static bool has_topic(const cb_conn_row *c, const char *t) {
     return false;
 }
 
-// BatchWriteItem: the CONN item, a full copy per topic (a fan-out reads one
-// partition and has all it needs), deletes for the topics left.
-void dw_conn_put(dw_req *r, const char *table, const cb_conn_row *c, const cb_conn_row *old) {
+// TransactWriteItems: the CONN item conditioned on the version the caller
+// read (store.h conn_put: 0 passes when there is no row, a row written before
+// versions existed, or one past its TTL that DynamoDB has not swept yet), a
+// full copy per topic (a fan-out reads one partition and has all it needs),
+// and deletes for the topics left. Item 0 refused is the lost race. All in one
+// transaction so the TOPIC copies never disagree with the CONN item they copy.
+void dw_conn_put(dw_req *r, const char *table, const cb_conn_row *c, const cb_conn_row *old, int64_t now_ms) {
     char pk[KB], tpk[KB], sk[KB];
+    cb_conn_row next = *c;
+    next.version = c->version + 1;
     cb_jw w;
-    begin(r, &w, "BatchWriteItem");
-    cb_jw_key(&w, "RequestItems");
-    cb_jw_obj(&w);
-    cb_jw_key(&w, table);
-    cb_jw_arr(&w);
+    txn_begin(r, &w);
     k(pk, sizeof pk, "CONN#", c->conn_id);
-    cb_jw_obj(&w);
-    cb_jw_key(&w, "PutRequest");
-    cb_jw_obj(&w);
-    cb_jw_key(&w, "Item");
-    cb_jw_obj(&w);
+    put_begin(&w, table, "Put");
     av_s(&w, "pk", pk);
     av_s(&w, "sk", "CONN");
-    conn_attrs(&w, c);
+    conn_attrs(&w, &next);
+    cb_jw_end(&w);   // Item
+    cb_jw_kstr(&w, "ConditionExpression", c->version == 0 ? "attribute_not_exists(#ver) OR #expires_ms < :now"
+                                                            : "#ver = :ver");
+    cb_jw_key(&w, "ExpressionAttributeNames");
+    cb_jw_obj(&w);
+    cb_jw_kstr(&w, "#ver", "ver");
+    if (c->version == 0) cb_jw_kstr(&w, "#expires_ms", "expires_ms");
     cb_jw_end(&w);
+    cb_jw_key(&w, "ExpressionAttributeValues");
+    cb_jw_obj(&w);
+    if (c->version == 0) av_n(&w, ":now", now_ms);
+    else av_n(&w, ":ver", c->version);
     cb_jw_end(&w);
-    cb_jw_end(&w);
+    cb_jw_end(&w);   // the Put
+    cb_jw_end(&w);   // its wrapper
     for (int i = 0; i < c->n_topics; i++) {
         bool dup = false;
         for (int j = 0; j < i; j++) dup |= strcmp(c->topics[j], c->topics[i]) == 0;
         if (dup) continue;
-        cb_jw_obj(&w);
-        cb_jw_key(&w, "PutRequest");
-        cb_jw_obj(&w);
-        cb_jw_key(&w, "Item");
-        cb_jw_obj(&w);
+        put_begin(&w, table, "Put");
         av_s(&w, "pk", k(tpk, sizeof tpk, "TOPIC#", c->topics[i]));
         av_s(&w, "sk", pk);
-        conn_attrs(&w, c);
-        cb_jw_end(&w);
-        cb_jw_end(&w);
-        cb_jw_end(&w);
+        conn_attrs(&w, &next);
+        put_end(&w, NULL, true);
     }
     for (int i = 0; old && i < old->n_topics; i++) {
         if (has_topic(c, old->topics[i])) continue;
-        cb_jw_obj(&w);
-        cb_jw_key(&w, "DeleteRequest");
-        cb_jw_obj(&w);
-        key2(&w, k(tpk, sizeof tpk, "TOPIC#", old->topics[i]), k(sk, sizeof sk, "CONN#", c->conn_id));
-        cb_jw_end(&w);
-        cb_jw_end(&w);
+        bool dup = false;
+        for (int j = 0; j < i; j++) dup |= strcmp(old->topics[j], old->topics[i]) == 0;
+        if (dup) continue;
+        txn_delete(&w, table, k(tpk, sizeof tpk, "TOPIC#", old->topics[i]), k(sk, sizeof sk, "CONN#", c->conn_id));
     }
-    cb_jw_end(&w);
-    cb_jw_end(&w);
-    finish(&w);
+    txn_end(&w);
 }
 
 void dw_conn_delete(dw_req *r, const char *table, const cb_conn_row *c) {
@@ -1815,7 +1817,7 @@ void dw_scan_family(dw_req *r, const char *table, const char *family, const char
 }
 
 // Each export table, as the items it was written to: pk family, sk exact or
-// (ending in '#') a prefix.
+// (ending in '#', or empty) a prefix.
 static const struct { const char *export_name, *pk, *sk; } COUNTS[] = {
     { "users", "USER#", "PROFILE" },
     { "bots", "BOT#", "BOT" },
@@ -1827,33 +1829,70 @@ static const struct { const char *export_name, *pk, *sk; } COUNTS[] = {
     { "chat_messages", "CHAT#", "" },
 };
 
-bool dw_scan_count(dw_req *r, const char *table, const char *export_name, cb_span start) {
-    int i = 0, n = (int)(sizeof COUNTS / sizeof COUNTS[0]);
-    while (i < n && strcmp(COUNTS[i].export_name, export_name) != 0) i++;
-    if (i == n) return false;
-    const char *sk = COUNTS[i].sk;
-    size_t skl = strlen(sk);
-    bool prefix = skl == 0 || sk[skl - 1] == '#';
+void dw_scan_keys(dw_req *r, const char *table, int limit, cb_span start) {
     cb_jw w;
     begin(r, &w, "Scan");
     cb_jw_kstr(&w, "TableName", table);
-    cb_jw_kstr(&w, "Select", "COUNT");
     cb_jw_kbool(&w, "ConsistentRead", true);
     ux u;
     ux_init(&u);
     ux_name(&u, "pk");
     ux_name(&u, "sk");
-    ux_val_s(&u, ":p", COUNTS[i].pk);
-    ux_val_s(&u, ":s", sk);
-    cb_jw_kstr(&w, "FilterExpression", prefix ? "begins_with(#pk, :p) AND begins_with(#sk, :s)"
-                                              : "begins_with(#pk, :p) AND #sk = :s");
+    cb_jw_kstr(&w, "ProjectionExpression", "#pk, #sk");
     ux_emit(&w, &u, NULL);
     ux_free(&u);
+    if (limit > 0) cb_jw_kint(&w, "Limit", limit);
     if (start.n) {
         cb_jw_key(&w, "ExclusiveStartKey");
         cb_jw_raw(&w, start.p, start.n);
     }
     finish(&w);
+}
+
+const char *dw_export_kind(cb_span item, char *id, size_t cap) {
+    char pk[KB], sk[KB];
+    if (!dw_get_s(item, "pk", pk, sizeof pk) || !dw_get_s(item, "sk", sk, sizeof sk)) return NULL;
+    for (size_t i = 0; i < sizeof COUNTS / sizeof COUNTS[0]; i++) {
+        size_t pl = strlen(COUNTS[i].pk), sl = strlen(COUNTS[i].sk);
+        bool prefix = sl == 0 || COUNTS[i].sk[sl - 1] == '#';
+        if (strncmp(pk, COUNTS[i].pk, pl) != 0) continue;
+        if (prefix ? strncmp(sk, COUNTS[i].sk, sl) != 0 : strcmp(sk, COUNTS[i].sk) != 0) continue;
+        snprintf(id, cap, "%s", pk + pl);
+        return COUNTS[i].export_name;
+    }
+    return NULL;
+}
+
+void dw_describe_table(dw_req *r, const char *table) {
+    cb_jw w;
+    snprintf(r->target, sizeof r->target, TARGET "DescribeTable");
+    cb_buf_reset(&r->body);
+    cb_jw_init(&w, &r->body);
+    cb_jw_obj(&w);   // DescribeTable takes no ReturnConsumedCapacity: it costs none
+    cb_jw_kstr(&w, "TableName", table);
+    finish(&w);
+}
+
+// One "<path>.ProvisionedThroughput.<Read|Write>CapacityUnits" into *min
+// when it is smaller; false when the path is not there.
+static bool lower_to(const char *body, size_t n, const char *path, const char *what, int64_t *min) {
+    char full[160];
+    int64_t v;
+    snprintf(full, sizeof full, "%s.ProvisionedThroughput.%sCapacityUnits", path, what);
+    if (!cb_json_get_i64(body, n, full, &v)) return false;
+    if (v > 0 && (*min == 0 || v < *min)) *min = v;
+    return true;
+}
+
+bool dw_provisioned(const char *body, size_t n, int64_t *rcu, int64_t *wcu) {
+    *rcu = *wcu = 0;
+    if (!lower_to(body, n, "Table", "Read", rcu) || !lower_to(body, n, "Table", "Write", wcu)) return false;
+    for (int i = 0; i < 64; i++) {
+        char path[64];
+        snprintf(path, sizeof path, "Table.GlobalSecondaryIndexes.%d", i);
+        if (!lower_to(body, n, path, "Read", rcu)) break;
+        lower_to(body, n, path, "Write", wcu);
+    }
     return true;
 }
 
@@ -1872,11 +1911,6 @@ double dw_consumed(const char *body, size_t n) {
         }
     }
     return 0;
-}
-
-int64_t dw_count(const char *body, size_t n) {
-    int64_t c;
-    return cb_json_get_i64(body, n, "Count", &c) ? c : -1;
 }
 
 void dw_execute(dw_req *r, const char *statement, const char *next_token) {

@@ -30,6 +30,12 @@ static int ev(const char *route, const char *conn, const char *query, const char
     return status;
 }
 
+static bool count_conn(const cb_conn_row *r, void *ud) {
+    (void)r;
+    (*(int *)ud)++;
+    return true;
+}
+
 static void setup(void) {
     cb_log_init(CB_LOG_ERROR, 0);
     rtf_install();
@@ -119,6 +125,37 @@ static void a_lost_row_is_rebuilt_and_garbage_closes(void) {
     T_EQ_INT(ev("$connect", "c7", "apikey=anon-key", NULL), 503);
 }
 
+// API Gateway runs a connection's frames as concurrent invocations: a page
+// joins pv-, chat: and gu- within a few milliseconds. Recorded against the
+// live backend 2026-10-14: three joins each read the empty row and each wrote
+// back its own topic, so only the last stuck and the page never heard the
+// gu- pushes it had been answered ok for. Here the chat: join runs whole
+// between the gu- join's read and its write.
+static void g_join_chat(void *ud) {
+    (void)ud;
+    T_EQ_INT(ev("$default", "c1", NULL, "[\"9\",\"9\",\"realtime:chat:" G "\",\"phx_join\",{\"access_token\":\"tok-" U1 "\"}]"), 200);
+}
+
+static void concurrent_frames_of_one_connection_both_stick(void) {
+    setup();
+    rtf_member(G, U1);
+    T_EQ_INT(ev("$connect", "c1", "apikey=anon-key&vsn=2.0.0", NULL), 200);
+    rtf.after_conn_get = g_join_chat;
+    T_EQ_INT(ev("$default", "c1", NULL, "[\"12\",\"12\",\"realtime:gu-" G "-" U1 "\",\"phx_join\",{\"access_token\":\"tok-" U1 "\"}]"), 200);
+    int i = rtf_conn_find("c1");
+    T_EQ_INT(rtf.conns[i].n_topics, 2);
+    T_EQ_STR(rtf.conns[i].topics[0], "chat:" G);
+    T_EQ_STR(rtf.conns[i].topics[1], "gu-" G "-" U1);
+    T_EQ_INT(rtf.conn_conflicts, 1);   // the gu- join lost once and ran again
+    // Each join answered exactly once, the one that lost only after it stored.
+    T_EQ_INT(rtf.n_posts, 2);
+    T_CHECK(cb_starts_with(rtf.posts[0].frame, "[\"9\",\"9\",\"realtime:chat:" G "\",\"phx_reply\""));
+    T_CHECK(cb_starts_with(rtf.posts[1].frame, "[\"12\",\"12\",\"realtime:gu-" G "-" U1 "\",\"phx_reply\""));
+    // Both topics are pushed to.
+    T_EQ_INT(CB_STORE_CALL(&rtf.store, conns_by_topic, "gu-" G "-" U1, count_conn, &(int){ 0 }), 1);
+    T_EQ_INT(CB_STORE_CALL(&rtf.store, conns_by_topic, "chat:" G, count_conn, &(int){ 0 }), 1);
+}
+
 static void publish_posts_each_subscriber_in_its_serializer(void) {
     setup();
     rtf_member(G, U1);
@@ -164,6 +201,7 @@ int main(void) {
     T_RUN(connect_and_disconnect);
     T_RUN(frames_round_trip_through_the_conn_row);
     T_RUN(a_lost_row_is_rebuilt_and_garbage_closes);
+    T_RUN(concurrent_frames_of_one_connection_both_stick);
     T_RUN(publish_posts_each_subscriber_in_its_serializer);
     rtf_reset();
     return T_DONE();
