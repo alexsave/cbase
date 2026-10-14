@@ -190,20 +190,25 @@ static void query_shapes(void) {
              "\"ExpressionAttributeValues\":{\":pk\":{\"S\":\"USERGAMES#" U1 "\"}},"
              "\"ScanIndexForward\":false,\"Limit\":20,\"ExclusiveStartKey\":{\"pk\":{\"S\":\"x\"}}}");
     // A game's seat keys: a key range (a Query cannot filter on a key).
-    dw_query(&r, "cbase", DWQ_GAME_PARTITION, "ab12cd", true, 0, cb_span_of("", 0));
+    dw_query(&r, "cbase", DWQ_GAME_SEATS, "ab12cd", true, 0, cb_span_of("", 0));
     T_EQ_STR(cb_buf_cstr(&r.body),
              "{\"ReturnConsumedCapacity\":\"TOTAL\",\"TableName\":\"cbase\",\"KeyConditionExpression\":\"#pk = :pk AND #sk < :sk\",\"ProjectionExpression\":\"#pk, #sk\","
              "\"ExpressionAttributeNames\":{\"#pk\":\"pk\",\"#sk\":\"sk\"},"
              "\"ExpressionAttributeValues\":{\":pk\":{\"S\":\"GAME#ab12cd\"},\":sk\":{\"S\":\"ROW\"}},\"ConsistentRead\":true}");
-    dw_query(&r, "cbase", DWQ_GAME_MEMBERS, "ab12cd", true, 0, cb_span_of("", 0));
-    T_EQ_STR(cb_buf_cstr(&r.body),
-             "{\"ReturnConsumedCapacity\":\"TOTAL\",\"TableName\":\"cbase\",\"KeyConditionExpression\":\"#pk = :pk AND begins_with(#sk, :sk)\","
-             "\"ExpressionAttributeNames\":{\"#pk\":\"pk\",\"#sk\":\"sk\"},"
-             "\"ExpressionAttributeValues\":{\":pk\":{\"S\":\"GAME#ab12cd\"},\":sk\":{\"S\":\"MEMBER#\"}},\"ConsistentRead\":true}");
+    // A seat is told by its key: humans and bots from the one query.
+    cb_uuid id;
+    bool bot = true;
+    T_CHECK(dw_seat_key(CB_SPAN_LIT("{\"pk\":{\"S\":\"GAME#ab12cd\"},\"sk\":{\"S\":\"MEMBER#" U1 "\"}}"), id, &bot));
+    T_EQ_STR(id, U1);
+    T_CHECK(!bot);
+    T_CHECK(dw_seat_key(CB_SPAN_LIT("{\"pk\":{\"S\":\"GAME#ab12cd\"},\"sk\":{\"S\":\"BOT#" B1 "\"}}"), id, &bot));
+    T_EQ_STR(id, B1);
+    T_CHECK(bot);
+    T_CHECK(!dw_seat_key(CB_SPAN_LIT("{\"pk\":{\"S\":\"GAME#ab12cd\"},\"sk\":{\"S\":\"LOG\"}}"), id, &bot));
     dw_query(&r, "cbase", DWQ_SCAN, NULL, true, 0, cb_span_of("", 0));
     T_CHECK(strstr(cb_buf_cstr(&r.body), "\":pk\":{\"S\":\"SCAN\"}") != NULL);
     // Every kind is valid JSON.
-    for (int k = DWQ_GAME_MEMBERS; k <= DWQ_USERS; k++) {
+    for (int k = DWQ_GAME_SEATS; k <= DWQ_USERS; k++) {
         dw_query(&r, "cbase", (dw_query_kind)k, "x", k % 2, 5, cb_span_of("", 0));
         T_CHECK(valid(&r));
     }
@@ -587,8 +592,7 @@ static cb_game_commit mkcommit(cb_game_row *g, uint8_t *st) {
 // 0 with the stored item attached: CB_E_CONFLICT, and no second attempt.
 static void flow_cas_lost(void) {
     static const step steps[] = {
-        { "Query", "MEMBER#", 200, EMPTY },
-        { "Query", "BOT#", 200, EMPTY },
+        { "Query", "#sk < :sk", 200, EMPTY },
         { "TransactWriteItems", "\":expected\":{\"N\":\"7\"}", 400, CAS_LOST },
     };
     RUN(steps, s);
@@ -596,14 +600,13 @@ static void flow_cas_lost(void) {
     cb_game_row g;
     cb_game_commit c = mkcommit(&g, st);
     T_EQ_INT(CB_STORE_CALL(s, game_commit, &c), CB_E_CONFLICT);
-    T_EQ_INT(sc_.at, 3);
+    T_EQ_INT(sc_.at, 2);
     cb_store_close(s);
 }
 
 static void flow_commit_game_gone(void) {
     static const step steps[] = {
-        { "Query", "MEMBER#", 200, EMPTY },
-        { "Query", "BOT#", 200, EMPTY },
+        { "Query", "#sk < :sk", 200, EMPTY },
         { "TransactWriteItems", NULL, 400, GAME_GONE },
     };
     RUN(steps, s);
@@ -624,12 +627,10 @@ static void flow_rating_moved(void) {
     static const char BOTSEAT[] = "{\"Items\":[{\"pk\":{\"S\":\"GAME#ab12cd\"},\"sk\":{\"S\":\"BOT#" B1 "\"},"
                                   "\"game_id\":{\"S\":\"ab12cd\"},\"bot_id\":{\"S\":\"" B1 "\"}}]}";
     static const step steps[] = {
-        { "Query", "MEMBER#", 200, EMPTY },
-        { "Query", "BOT#", 200, BOTSEAT },
+        { "Query", "#sk < :sk", 200, BOTSEAT },
         { "BatchGetItem", "BOT#" B1, 200, R1 },
         { "TransactWriteItems", "\":read\":{\"N\":\"1000\"}", 400, RATING_MOVED },
-        { "Query", "MEMBER#", 200, EMPTY },
-        { "Query", "BOT#", 200, BOTSEAT },
+        { "Query", "#sk < :sk", 200, BOTSEAT },
         { "BatchGetItem", "BOT#" B1, 200, R2 },
         { "TransactWriteItems", "\":elo_rating\":{\"N\":\"1015\"},\":previous_elo\":{\"N\":\"1010\"}", 200, "{}" },
     };
@@ -644,7 +645,9 @@ static void flow_rating_moved(void) {
     c.rated_is_bot[0] = true;
     c.rating_delta[0] = 5;
     T_EQ_INT(CB_STORE_CALL(s, game_commit, &c), CB_OK);
-    T_EQ_INT(sc_.at, 8);
+    T_EQ_INT(sc_.at, 6);
+    // The seat query told the stored bot from a human: its seat is not put again.
+    T_CHECK(strstr(sc_.bodies[5], "\"sk\":{\"S\":\"BOT#" B1 "\"}") == NULL);
     cb_store_close(s);
 }
 
@@ -652,8 +655,7 @@ static void flow_rating_moved(void) {
 static void flow_commit_drops_missing_account(void) {
     static const char BG[] = "{\"Responses\":{\"cbase\":[{\"pk\":{\"S\":\"USER#" U1 "\"},\"sk\":{\"S\":\"PROFILE\"}}]}}";
     static const step steps[] = {
-        { "Query", "MEMBER#", 200, EMPTY },
-        { "Query", "BOT#", 200, EMPTY },
+        { "Query", "#sk < :sk", 200, EMPTY },
         { "BatchGetItem", "PROFILE", 200, BG },
         { "TransactWriteItems", "MEMBER#" U1, 200, "{}" },
     };
@@ -665,7 +667,7 @@ static void flow_commit_drops_missing_account(void) {
     snprintf(c.humans[0], sizeof(cb_uuid), U1);
     snprintf(c.humans[1], sizeof(cb_uuid), U2);
     T_EQ_INT(CB_STORE_CALL(s, game_commit, &c), CB_OK);
-    T_CHECK(strstr(sc_.bodies[3], "MEMBER#" U2) == NULL);
+    T_CHECK(strstr(sc_.bodies[2], "MEMBER#" U2) == NULL);
     cb_store_close(s);
 }
 

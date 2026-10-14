@@ -133,7 +133,9 @@ bool dw_item_user(cb_span item, cb_user_row *u);
 bool dw_item_refresh(cb_span item, cb_refresh_row *r);
 bool dw_item_game(cb_span item, cb_game_row *g);       // byte fields malloc'd
 bool dw_item_member(cb_span item, cb_member_row *m);   // a MEMBER item (or its GSI1 copy)
-bool dw_item_seat_id(cb_span item, cb_uuid id);        // a MEMBER or BOT item: whose seat
+// A DWQ_GAME_SEATS item's seat: the id after MEMBER# (a human, *bot false)
+// or BOT# (a bot) in its sort key. false for any other item.
+bool dw_seat_key(cb_span item, cb_uuid id, bool *bot);
 bool dw_item_bot(cb_span item, cb_bot_row *b);
 bool dw_item_rating(cb_span item, cb_rating_row *r);
 bool dw_item_snapshot(cb_span item, cb_snapshot_row *s);   // byte fields malloc'd
@@ -161,9 +163,8 @@ void dw_get_conn(dw_req *r, const char *table, const char *conn_id);
 
 // The access patterns the backend reads by, one Query each.
 typedef enum {
-    DWQ_GAME_MEMBERS,      // arg game: its MEMBER items (consistent)
-    DWQ_GAME_BOTS,         // arg game: its BOT items (consistent)
-    DWQ_GAME_PARTITION,    // arg game: every item under GAME#<id> but the ROW, keys only (consistent)
+    DWQ_GAME_SEATS,        // arg game: every item under GAME#<id> but the ROW, which is its
+                           // seats (dw_seat_key), keys only (consistent)
     DWQ_USER_GAMES,        // arg user: GSI1, newest first
     DWQ_USER_CHATS,        // arg user: GSI1, keys
     DWQ_USER_TOKENS,       // arg user: GSI1, keys
@@ -234,7 +235,7 @@ void dw_ratings_read(const char *body, size_t n, const char *table, const char *
                      int count, bool both_kinds, dw_rating_read *out);
 // Deletes the ROW at `expected` (ALL_OLD on failure tells gone from moved),
 // with the partition's other items (`keys`, raw JSON keys from
-// DWQ_GAME_PARTITION) and the SCAN marker. false past 100 items.
+// DWQ_GAME_SEATS) and the SCAN marker. false past 100 items.
 bool dw_game_delete(dw_req *r, const char *table, const char *id, int64_t expected, const cb_buf *keys, int n_keys);
 // A replay's game is gone: game_id "" and its GSI1 entry removed.
 void dw_snapshot_unlink(dw_req *r, const char *table, cb_span key);

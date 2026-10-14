@@ -521,25 +521,21 @@ static int dy_game_create(cb_store *s, const cb_game_row *g, const char *creator
     return rc;
 }
 
-typedef struct {
-    dw_seats *s;
-    bool      bots;
-} seats_walk;
-
 static bool seats_step(cb_span it, void *ud) {
-    seats_walk *w = ud;
-    int *n = w->bots ? &w->s->n_bots : &w->s->n_humans;
-    cb_uuid *ids = w->bots ? w->s->bots : w->s->humans;
-    if (*n < 64 && dw_item_seat_id(it, ids[*n])) (*n)++;
+    dw_seats *s = ud;
+    cb_uuid id;
+    bool bot;
+    if (!dw_seat_key(it, id, &bot)) return true;
+    int *n = bot ? &s->n_bots : &s->n_humans;
+    cb_uuid *ids = bot ? s->bots : s->humans;
+    if (*n < 64) memcpy(ids[(*n)++], id, sizeof id);
     return true;
 }
 
+// The stored seats, humans and bots, in one strongly consistent Query.
 static int read_seats(dyn *d, const char *game, dw_seats *out) {
     memset(out, 0, sizeof *out);
-    seats_walk h = { out, false }, b = { out, true };
-    int rc = query_all(d, DWQ_GAME_MEMBERS, game, true, 0, seats_step, &h);
-    if (rc == CB_OK) rc = query_all(d, DWQ_GAME_BOTS, game, true, 0, seats_step, &b);
-    return rc;
+    return query_all(d, DWQ_GAME_SEATS, game, true, 0, seats_step, out);
 }
 
 // BatchGetItem of the rating rows (and, for humans, the accounts) of `ids`.
@@ -647,7 +643,7 @@ static int dy_game_commit(cb_store *s, const cb_game_commit *c) { return commit_
 static int dy_game_delete(cb_store *s, const char *id, int64_t expected) {
     dyn *d = D(s);
     keylist keys = { 0 };
-    int rc = query_all(d, DWQ_GAME_PARTITION, id, true, 0, collect_key, &keys);
+    int rc = query_all(d, DWQ_GAME_SEATS, id, true, 0, collect_key, &keys);
     if (rc == CB_OK && keys.oom) rc = CB_E_NOMEM;
     if (rc == CB_OK) {
         dw_req r;

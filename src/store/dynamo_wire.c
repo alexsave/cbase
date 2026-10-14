@@ -575,8 +575,15 @@ bool dw_item_member(cb_span it, cb_member_row *m) {
     return dw_get_s(it, "game_id", m->game_id, sizeof m->game_id);
 }
 
-bool dw_item_seat_id(cb_span it, cb_uuid id) {
-    return dw_get_s(it, "user_id", id, sizeof(cb_uuid)) || dw_get_s(it, "bot_id", id, sizeof(cb_uuid));
+bool dw_seat_key(cb_span it, cb_uuid id, bool *bot) {
+    char sk[KB];
+    if (!dw_get_s(it, "sk", sk, sizeof sk)) return false;
+    const char *rest = NULL;
+    if (strncmp(sk, "MEMBER#", 7) == 0) rest = sk + 7, *bot = false;
+    else if (strncmp(sk, "BOT#", 4) == 0) rest = sk + 4, *bot = true;
+    if (!rest || strlen(rest) >= sizeof(cb_uuid)) return false;
+    memcpy(id, rest, strlen(rest) + 1);
+    return true;
 }
 
 bool dw_item_bot(cb_span it, cb_bot_row *b) {
@@ -780,11 +787,10 @@ void dw_query(dw_req *r, const char *table, dw_query_kind kind, const char *arg,
     const char *pfx = "";
     bool consistent = true, keys_only = false, fwd = true;
     switch (kind) {
-    case DWQ_GAME_MEMBERS: pfx = "GAME#"; prefix = "MEMBER#"; break;
-    case DWQ_GAME_BOTS: pfx = "GAME#"; prefix = "BOT#"; break;
     // Every seat item sorts before ROW ("BOT#..." < "MEMBER#..." < "ROW"); a
-    // Query cannot filter on a key attribute, so the range does it.
-    case DWQ_GAME_PARTITION: pfx = "GAME#"; below = "ROW"; keys_only = true; break;
+    // Query cannot filter on a key attribute, so the range does it. One query
+    // for the humans and the bots both: the key says which.
+    case DWQ_GAME_SEATS: pfx = "GAME#"; below = "ROW"; keys_only = true; break;
     case DWQ_USER_GAMES: index = GSI1; pfx = "USERGAMES#"; fwd = false; break;
     case DWQ_USER_CHATS: index = GSI1; pfx = "USERCHAT#"; keys_only = true; break;
     case DWQ_USER_TOKENS: index = GSI1; pfx = "USERREFRESH#"; keys_only = true; break;
