@@ -65,5 +65,12 @@ int  cb_event_encode_ws(int status, cb_buf *out);
 // the writer of what cb_event_decode reads. Returns its length, or
 // CB_E_INVALID for an id outside [A-Za-z0-9_-]{1,31} or a short cap.
 int  cb_event_bot_drive_payload(const char *game_id, char *out, size_t cap);
+// The first `max` bytes of an event with every secret string cut to
+// "REDACTED <n>": the values of authorization, apikey, cookie(s), body,
+// password and token keys (any case), and the apikey and token parameters of
+// rawQueryString. For the log when an event does not decode.
+int  cb_event_redact(const char *json, size_t len, size_t max, cb_buf *out);
+// cb_event_redact(json, len, 4096) logged at WARN, in pieces a line can hold.
+void cb_event_log_raw(const char *json, size_t len);
 
 #endif

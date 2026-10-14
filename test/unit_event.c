@@ -354,7 +354,32 @@ static void encode_ws(void) {
     cb_buf_free(&out);
 }
 
+// The raw event a failed decode logs keeps its shape and loses its secrets.
+static void redact_secrets(void) {
+    static const char EV[] =
+        "{\"rawQueryString\":\"apikey=SEKRIT1&vsn=2.0.0\","
+        "\"cookies\":[\"sb=SEKRIT2\",\"x=SEKRIT3\"],"
+        "\"headers\":{\"Authorization\":\"Bearer SEKRIT4\",\"apikey\":\"SEKRIT5\",\"host\":\"h.example\"},"
+        "\"body\":\"{\\\"password\\\":\\\"SEKRIT6\\\"}\",\"isBase64Encoded\":false}";
+    cb_buf r;
+    cb_buf_init(&r);
+    T_EQ_INT(cb_event_redact(EV, strlen(EV), 4096, &r), CB_OK);
+    const char *s = cb_buf_cstr(&r);
+    T_CHECK(strstr(s, "SEKRIT") == NULL);
+    T_CHECK(strstr(s, "\"rawQueryString\":\"apikey=REDACTED&vsn=2.0.0\"") != NULL);
+    T_CHECK(strstr(s, "\"host\":\"h.example\"") != NULL);
+    T_CHECK(strstr(s, "\"isBase64Encoded\":false") != NULL);
+    T_CHECK(strstr(s, "\"Authorization\":\"REDACTED 14\"") != NULL);
+    cb_buf_free(&r);
+    // The cap cuts the copy.
+    cb_buf_init(&r);
+    T_EQ_INT(cb_event_redact(EV, strlen(EV), 10, &r), CB_OK);
+    T_EQ_INT((int)r.len, 10);
+    cb_buf_free(&r);
+}
+
 int main(void) {
+    T_RUN(redact_secrets);
     T_RUN(function_url_request);
     T_RUN(function_url_binary);
     T_RUN(too_many_headers_dropped);

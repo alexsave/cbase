@@ -440,3 +440,89 @@ int cb_event_encode_ws(int status, cb_buf *out) {
     cb_jw_end(&w);
     return cb_jw_ok(&w) ? CB_OK : CB_E_NOMEM;
 }
+
+// ---- the raw event, for the log ----------------------------------------------------
+
+// Keys whose string value never reaches a log: credentials, and the body
+// (a signup body carries a password). Matched without regard to case.
+static bool secret_key(const char *k, size_t n) {
+    static const char *const S[] = { "authorization", "apikey", "cookie", "cookies", "body",
+                                     "x-amz-security-token", "password", "access_token", "refresh_token" };
+    for (size_t i = 0; i < sizeof S / sizeof S[0]; i++)
+        if (strlen(S[i]) == n && strncasecmp(S[i], k, n) == 0) return true;
+    return false;
+}
+
+// Copies a query string value with the apikey and token parameters' values cut.
+static void redact_query(cb_buf *out, const char *s, size_t n) {
+    size_t i = 0;
+    while (i < n) {
+        size_t j = i;
+        while (j < n && s[j] != '&') j++;
+        const char *eq = memchr(s + i, '=', j - i);
+        size_t kn = eq ? (size_t)(eq - (s + i)) : j - i;
+        if (eq && secret_key(s + i, kn)) {
+            cb_buf_append(out, s + i, kn + 1);
+            cb_buf_puts(out, "REDACTED");
+        } else {
+            cb_buf_append(out, s + i, j - i);
+        }
+        if (j < n) cb_buf_putc(out, '&');
+        i = j + 1;
+    }
+}
+
+int cb_event_redact(const char *json, size_t len, size_t max, cb_buf *out) {
+    if (len > max) len = max;
+    const char *key = NULL;    // the last string that could be a key
+    size_t key_n = 0;
+    bool after_colon = false;  // the next token is key's value
+    bool secret_arr = false;   // inside an array that is a secret key's value (cookies)
+    size_t i = 0;
+    while (i < len) {
+        char c = json[i];
+        if (c != '"') {
+            if (c == ':') after_colon = true;
+            else if (c == '[') { secret_arr = after_colon && key && secret_key(key, key_n); after_colon = false; }
+            else if (c == ']') secret_arr = false;
+            else if (!isspace((unsigned char)c)) after_colon = false;
+            cb_buf_putc(out, c);
+            i++;
+            continue;
+        }
+        size_t j = i + 1;
+        while (j < len && json[j] != '"') j += json[j] == '\\' ? 2 : 1;
+        if (j > len) j = len;
+        const char *s = json + i + 1;
+        size_t sn = j - (i + 1);
+        bool is_value = after_colon;
+        after_colon = false;
+        cb_buf_putc(out, '"');
+        if (secret_arr || (is_value && key && secret_key(key, key_n)))
+            cb_buf_printf(out, "REDACTED %zu", sn);
+        else if (is_value && key && key_n == 14 && strncmp(key, "rawQueryString", 14) == 0)
+            redact_query(out, s, sn);
+        else
+            cb_buf_append(out, s, sn);
+        if (j < len) cb_buf_putc(out, '"');
+        if (!is_value && !secret_arr) { key = s; key_n = sn; }
+        i = j + 1;
+    }
+    return out->oom ? CB_E_NOMEM : CB_OK;
+}
+
+void cb_event_log_raw(const char *json, size_t len) {
+    cb_buf r;
+    cb_buf_init(&r);
+    if (cb_event_redact(json, len, 4096, &r) == CB_OK) {
+        // A log line holds CB_LOG_MSG_MAX bytes, so the event goes in pieces.
+        enum { PIECE = 200 };
+        const char *p = cb_buf_cstr(&r);
+        size_t pieces = (r.len + PIECE - 1) / PIECE;
+        for (size_t k = 0; k < pieces; k++) {
+            size_t o = k * PIECE, n = r.len - o < PIECE ? r.len - o : PIECE;
+            CB_WARN("event", "raw %zu/%zu (%zu bytes): %.*s", k + 1, pieces, len, (int)n, p + o);
+        }
+    }
+    cb_buf_free(&r);
+}

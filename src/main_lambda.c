@@ -34,7 +34,12 @@
 static int dispatch(cb_ctx *ctx, const cb_invocation *inv, cb_buf *out, char *why, size_t cap) {
     cb_event ev;
     int rc = cb_event_decode((const char *)inv->event.p, inv->event.len, &ev);
-    if (rc != CB_OK) { snprintf(why, cap, "event decode: %s", cb_strerror(rc)); cb_event_free(&ev); return rc; }
+    if (rc != CB_OK) {
+        snprintf(why, cap, "event decode: %s", cb_strerror(rc));
+        cb_event_log_raw((const char *)inv->event.p, inv->event.len);
+        cb_event_free(&ev);
+        return rc;
+    }
     switch (ev.kind) {
     case CB_EVENT_HTTP: {
         cb_http_res res;
