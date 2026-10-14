@@ -4,7 +4,9 @@
 #
 # Reads the template's one AWS::DynamoDB::Table resource and writes, into
 # <out dir>:
-#   create.json  create-table's --cli-input-json (keys, attributes, indexes, billing)
+#   create.json  create-table's --cli-input-json (keys, attributes, indexes,
+#                billing and provisioned throughput; DynamoDB Local accepts the
+#                throughput and enforces none of it)
 #   ttl.json     update-time-to-live's --cli-input-json
 #   pitr.json    update-continuous-backups's --cli-input-json
 # so ops/dynamo_local.sh creates exactly the table the stack creates and the two
@@ -138,9 +140,17 @@ def main():
     path, table, out = sys.argv[1:]
     p = dict(table_resource(path, table))
     create = {}
-    for k in ("TableName", "BillingMode", "AttributeDefinitions", "KeySchema", "GlobalSecondaryIndexes"):
+    for k in ("TableName", "BillingMode", "ProvisionedThroughput", "AttributeDefinitions", "KeySchema",
+              "GlobalSecondaryIndexes"):
         if k in p:
             create[k] = p.pop(k)
+    # PROVISIONED needs throughput on the table and on every index, and
+    # PAY_PER_REQUEST refuses it anywhere: said here, not by create-table later.
+    provisioned = create.get("BillingMode") == "PROVISIONED"
+    for what, part in [("the table", create)] + [(g.get("IndexName"), g) for g in create.get("GlobalSecondaryIndexes", [])]:
+        if ("ProvisionedThroughput" in part) != provisioned:
+            die("%s: ProvisionedThroughput %s with BillingMode %s" % (
+                what, "missing" if provisioned else "given", create.get("BillingMode")))
     ttl = p.pop("TimeToLiveSpecification", None)
     pitr = p.pop("PointInTimeRecoverySpecification", None)
     if p:

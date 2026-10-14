@@ -375,6 +375,7 @@ function panelOverview(main) {
         tile(o.mode === 'lambda' ? 'Invocations' : 'Requests', fmtNum(o.requests)),
         tile('5xx errors', fmtNum(o.errors_5xx)),
         tile('Games needing bots', o.games_needing_bots == null ? 'n/a' : fmtNum(o.games_needing_bots)),
+        tile('DynamoDB throttles', o.store === 'dynamo' ? fmtNum((o.store_throttles || {}).throttled || 0) + ' throttled / ' + fmtNum((o.store_throttles || {}).gave_up || 0) + ' failed' : 'n/a', true),
         tile('Connections', o.ws_conns == null ? 'API Gateway' : fmtNum(o.ws_conns) + ' ws / ' + fmtNum(o.http_conns) + ' http', o.ws_conns == null),
         tile('Last backup', o.last_backup ? (o.last_backup.includes('T') ? fmtTime(o.last_backup) : o.last_backup) : 'none yet', true),
         tile('Max RSS', fmtBytes((p.max_rss_kb || 0) * 1024)),

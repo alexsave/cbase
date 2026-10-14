@@ -18,7 +18,7 @@
 //   USER#<id>          RATING             the leaderboard row (GSI2 RATINGS / <id>)
 //   EMAIL#<email>      USER               the user id; signup's uniqueness
 //   REFRESH#<hash>     TOKEN              a refresh token (GSI1 USERREFRESH#<user>, GSI2 SESSION#<session>)
-//   GAME#<id>          ROW                the game, its lease
+//   GAME#<id>          ROW                the game
 //   GAME#<id>          MEMBER#<user>      a seated human (GSI1 USERGAMES#<user> / <updated>#<game>)
 //   GAME#<id>          BOT#<bot>          a seated bot
 //   BOT#<id>           BOT                a bot and its rating (GSI2 BOTS / <id>)
@@ -28,7 +28,8 @@
 //   CHAT#<game>        <created>#<id>     a chat message (GSI1 USERCHAT#<user> / <created>#<id>)
 //   CONN#<conn>        CONN               a realtime connection (TTL)
 //   TOPIC#<topic>      CONN#<conn>        the connection again, per joined topic (TTL)
-//   SCAN               GAME#<id>          present while the game needs bots: the heartbeat's partition
+//   SCAN               GAME#<id>          present while the game needs bots: the heartbeat's
+//                                         partition, and the bot lease
 //
 // Times in sort keys are 15-digit zero-padded ms so they sort as text.
 #ifndef CB_DYNAMO_WIRE_H
@@ -73,6 +74,9 @@ typedef enum {
 } dw_status;
 
 dw_status dw_classify(int http_status, const char *body, size_t n);
+// A DW_RETRY that is throttling (ProvisionedThroughputExceededException,
+// ThrottlingException, RequestLimitExceeded), not a 5xx or a conflict.
+bool dw_throttled(const char *body, size_t n);
 // The error's __type after the '#', and its message, for the log.
 void dw_error_text(const char *body, size_t n, char *out, size_t cap);
 
@@ -82,6 +86,7 @@ typedef enum {
     DW_REASON_COND,           // "ConditionalCheckFailed"
     DW_REASON_CONFLICT,       // "TransactionConflict" (another transaction on the item: retry)
     DW_REASON_OTHER,
+    DW_REASON_THROTTLED,      // "ThrottlingError" or "ProvisionedThroughputExceeded": retry after a pause
     DW_REASON_MISSING = -1,   // no entry at that index
 } dw_reason;
 // The reason at `index`; *has_item says whether the failed item came back
@@ -128,7 +133,9 @@ bool dw_item_user(cb_span item, cb_user_row *u);
 bool dw_item_refresh(cb_span item, cb_refresh_row *r);
 bool dw_item_game(cb_span item, cb_game_row *g);       // byte fields malloc'd
 bool dw_item_member(cb_span item, cb_member_row *m);   // a MEMBER item (or its GSI1 copy)
-bool dw_item_seat_id(cb_span item, cb_uuid id);        // a MEMBER or BOT item: whose seat
+// A DWQ_GAME_SEATS item's seat: the id after MEMBER# (a human, *bot false)
+// or BOT# (a bot) in its sort key. false for any other item.
+bool dw_seat_key(cb_span item, cb_uuid id, bool *bot);
 bool dw_item_bot(cb_span item, cb_bot_row *b);
 bool dw_item_rating(cb_span item, cb_rating_row *r);
 bool dw_item_snapshot(cb_span item, cb_snapshot_row *s);   // byte fields malloc'd
@@ -156,9 +163,8 @@ void dw_get_conn(dw_req *r, const char *table, const char *conn_id);
 
 // The access patterns the backend reads by, one Query each.
 typedef enum {
-    DWQ_GAME_MEMBERS,      // arg game: its MEMBER items (consistent)
-    DWQ_GAME_BOTS,         // arg game: its BOT items (consistent)
-    DWQ_GAME_PARTITION,    // arg game: every item under GAME#<id> but the ROW, keys only (consistent)
+    DWQ_GAME_SEATS,        // arg game: every item under GAME#<id> but the ROW, which is its
+                           // seats (dw_seat_key), keys only (consistent)
     DWQ_USER_GAMES,        // arg user: GSI1, newest first
     DWQ_USER_CHATS,        // arg user: GSI1, keys
     DWQ_USER_TOKENS,       // arg user: GSI1, keys
@@ -229,7 +235,7 @@ void dw_ratings_read(const char *body, size_t n, const char *table, const char *
                      int count, bool both_kinds, dw_rating_read *out);
 // Deletes the ROW at `expected` (ALL_OLD on failure tells gone from moved),
 // with the partition's other items (`keys`, raw JSON keys from
-// DWQ_GAME_PARTITION) and the SCAN marker. false past 100 items.
+// DWQ_GAME_SEATS) and the SCAN marker. false past 100 items.
 bool dw_game_delete(dw_req *r, const char *table, const char *id, int64_t expected, const cb_buf *keys, int n_keys);
 // A replay's game is gone: game_id "" and its GSI1 entry removed.
 void dw_snapshot_unlink(dw_req *r, const char *table, cb_span key);
@@ -240,13 +246,12 @@ void dw_snapshot_unlink(dw_req *r, const char *table, cb_span key);
 bool dw_snapshot_set_extras(dw_req *r, const char *table, const cb_buf *keys, int n_keys,
                             const uint8_t *extras, size_t extras_len);
 
-// The lease (seed.sql try_acquire / renew / release_bot_lease). Each fails
-// with ConditionalCheckFailed (ALL_OLD returned when the game exists).
+// The lease (seed.sql try_acquire / renew / release_bot_lease), on the game's
+// SCAN marker; acquire and renew move the marker's updated_at. Each fails
+// with ConditionalCheckFailed (ALL_OLD returned when the marker exists).
 void dw_lease_acquire(dw_req *r, const char *table, const char *game, const char *token, int64_t now, int64_t ttl);
 void dw_lease_renew(dw_req *r, const char *table, const char *game, const char *token, int64_t now, int64_t ttl);
 void dw_lease_release(dw_req *r, const char *table, const char *game, const char *token);
-// The SCAN marker follows the lease's updated_at, when the marker exists.
-void dw_scan_touch(dw_req *r, const char *table, const char *game, int64_t now);
 
 // Ratings and bots.
 void dw_rating_set_username(dw_req *r, const char *table, const char *user, const char *username);

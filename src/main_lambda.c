@@ -23,6 +23,7 @@
 #include "ctx.h"
 #include "handler.h"
 #include "realtime/rt_apigw.h"
+#include "store/store.h"
 #include "util/clock.h"
 #include "util/err.h"
 #include "util/log.h"
@@ -95,6 +96,7 @@ int main(void) {
         cb_invocation inv;
         if (cb_runtime_next(host, port, &inv) != CB_OK) { cb_invocation_free(&inv); break; }
         ctx.deadline_ms = inv.deadline_ms;
+        cb_store_set_deadline(inv.deadline_ms);   // a throttled request stops retrying before it
         cb_buf out;
         cb_buf_init(&out);
         char why[256];
@@ -105,6 +107,7 @@ int main(void) {
             cb_runtime_error(host, port, inv.request_id, "Handler", why);
         }
         ctx.deadline_ms = 0;
+        cb_store_set_deadline(0);
         cb_buf_free(&out);
         cb_invocation_free(&inv);
     }

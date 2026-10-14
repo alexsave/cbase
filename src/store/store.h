@@ -248,7 +248,9 @@ typedef struct cb_store_ops {
     int (*game_delete)(cb_store *s, const char *id, int64_t expected_version);
     // The games a user sits at, most recently updated first (the dashboard);
     // limit 0: all. DynamoDB answers from an index, so a seat taken a moment
-    // ago may be missing for a moment.
+    // ago may be missing for a moment, and "updated" there is when the seat
+    // was taken (a commit writes only the seats that change): a caller that
+    // needs the games' own order sorts the rows it loads, as PostgREST does.
     int (*games_of_user)(cb_store *s, const char *user_id, int limit, cb_member_fn fn, void *ud);
     // 1 a member, 0 not, or a CB_E_*.
     int (*is_member)(cb_store *s, const char *game_id, const char *user_id);
@@ -258,11 +260,15 @@ typedef struct cb_store_ops {
     // The bot lease (today's try_acquire/renew/release_bot_lease): a random
     // token valid until now + ttl_ms. acquire: CB_OK and the token, or
     // CB_E_CONFLICT while another holder's lease is live (CB_E_NOT_FOUND: no
-    // such game). renew: CB_OK, or CB_E_CONFLICT when the token no longer
-    // holds it. release: CB_OK (a lease that is not the token's is left alone).
-    // acquire and renew move updated_at to `now` (never last_commit_at), as
-    // the update_games_updated_at trigger did, so the scan's staleness window
-    // sees a drive in flight.
+    // such game, or a game with no bot work, which has no lease to take).
+    // renew: CB_OK, or CB_E_CONFLICT when the token no longer holds it.
+    // release: CB_OK (a lease that is not the token's is left alone). A
+    // commit that leaves bot work keeps the lease. acquire and renew move the
+    // scan's staleness clock (games_needing_bots' updated_at) to `now`, never
+    // last_commit_at, as the update_games_updated_at trigger did, so the scan
+    // sees a drive in flight. SQLite keeps that clock on the row, so game_get
+    // sees it move; DynamoDB keeps it, and the lease, on the game's small
+    // SCAN marker (1 WCU a write), so the row's updated_at is its last commit's.
     int (*lease_acquire)(cb_store *s, const char *game_id, int64_t now, int64_t ttl_ms, cb_uuid token_out);
     int (*lease_renew)(cb_store *s, const char *game_id, const char *token, int64_t now, int64_t ttl_ms);
     int (*lease_release)(cb_store *s, const char *game_id, const char *token);
@@ -355,6 +361,25 @@ typedef struct {
     char   detail[192];
 } cb_store_tally;
 void cb_store_tally_take(cb_store_tally *out);
+
+// Throttling (DynamoDB; DESIGN.md "The free tier, provisioned"). The table's
+// capacity is provisioned, so a burst past it is throttled rather than
+// billed: a request answered ProvisionedThroughputExceededException,
+// ThrottlingException or RequestLimitExceeded, a transaction cancelled for
+// throttling, and a batch left partly unprocessed are sent again after a
+// jittered exponential pause, while the calling thread's deadline allows.
+// The deadline is the Lambda invocation's (main_lambda.c sets it around each
+// invocation); with none, each request gets CB_STORE_RETRY_WALL_MS of pauses.
+// A request still throttled at its deadline fails as CB_E_DB.
+#define CB_STORE_RETRY_WALL_MS 5000
+void cb_store_set_deadline(int64_t deadline_ms);   // epoch ms; 0: none
+// This process's throttling since it started (the admin overview shows it;
+// under Lambda it is the warm container's, and every throttle is also a WARN
+// in the log): responses that were throttled, and requests given up on.
+typedef struct {
+    uint64_t throttled, gave_up;
+} cb_store_throttles;
+void cb_store_throttles_get(cb_store_throttles *out);
 
 // The SQLite schema version this binary applies (store_sqlite.c), and the
 // embedded schema text (build/gen/schema_sql.c, from sql/schema.sql).

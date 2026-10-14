@@ -128,6 +128,13 @@ static void overview_counts(void) {
     T_EQ_INT(n, 42);
     T_CHECK(cb_json_get_i64(B(), BN(), "games_needing_bots", &n));
     T_EQ_INT(n, 3);
+    // The store's throttle counters, as the store keeps them.
+    cb_store_throttles th;
+    cb_store_throttles_get(&th);
+    T_CHECK(cb_json_get_i64(B(), BN(), "store_throttles.throttled", &n));
+    T_EQ_INT(n, (int64_t)th.throttled);
+    T_CHECK(cb_json_get_i64(B(), BN(), "store_throttles.gave_up", &n));
+    T_EQ_INT(n, (int64_t)th.gave_up);
 }
 
 static void browse_pages_by_cursor(void) {

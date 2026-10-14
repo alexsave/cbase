@@ -56,7 +56,7 @@ The line items of the chosen shape:
 | Service | Allowance | Our use | Monthly |
 |---|---|---|---|
 | Lambda | 1M requests and 400k GB-seconds always free | well under 100k requests; bot drives sleep inside invocations at 256 MB | $0 |
-| DynamoDB | 25 GB storage, 25 read and 25 write units always free | about 35 MB and a few requests a second at peak | $0 |
+| DynamoDB | 25 GB storage, and 25 read and 25 write units of PROVISIONED capacity always free (on-demand has no free tier) | provisioned at exactly 25/25: 15/15 on the table, 5/5 on each index; about 35 MB | $0 (point-in-time recovery adds about $0.001) |
 | Lambda Function URL | free | the HTTP front door | $0 |
 | API Gateway WebSocket | 1M messages and 750k connection-minutes free for 12 months, then $1 per million messages and $0.25 per million connection-minutes | a few thousand messages a month | $0 then about $0.01 to $0.10 |
 | CloudFront free plan | 1M requests and 100 GB a month | the custom domain and the path split between HTTP and WebSocket | $0 |
@@ -64,6 +64,11 @@ The line items of the chosen shape:
 | EventBridge Scheduler | 14M invocations a month free | one scan a minute, 43,200 a month | $0 |
 | CloudWatch Logs | 5 GB ingest free | function logs | $0 |
 | DNS | foolish.cards is already on Google Cloud DNS | one CNAME | $0 extra |
+
+DynamoDB's free tier is provisioned capacity only: an on-demand table bills every request unit from the first, which at the measured cost was about $0.17 a month for 100 games, so the template now provisions exactly the free 25 read and 25 write units (15 on the table, 5 on each of the two indexes, held to 25 by a unit test) with no auto scaling.
+After cutting what an action writes (the bot lease on a small item, seats written when taken, one seat query), a human move costs about 8 write units and 1 read unit, a bot cycle that waits 1 write unit, and a whole three-seat game about 1,250 write units on the table and about 25 on the indexes, down from about 1,980.
+Fifteen write units a second is 38.9 million a month, about 31,000 such games if spread evenly; the real ceiling is a burst of about one move a second across all tables, above which DynamoDB throttles (the store retries, and a move gets slower) instead of billing.
+Point-in-time recovery is the one DynamoDB line outside the free tier, about a tenth of a cent a month at our size; DESIGN.md "The free tier, provisioned" has the sources and the arithmetic.
 
 The VM option stays in this report as the measured alternative.
 Had Alex chosen it, the recommendation was option B, the $5 Lightsail bundle, Ubuntu 24.04.

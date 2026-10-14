@@ -439,6 +439,13 @@ dw_status dw_classify(int status, const char *body, size_t n) {
     return DW_FAILED;
 }
 
+bool dw_throttled(const char *body, size_t n) {
+    char t[128];
+    error_type(body, n, t, sizeof t);
+    return strcmp(t, "ProvisionedThroughputExceededException") == 0 || strcmp(t, "ThrottlingException") == 0 ||
+           strcmp(t, "RequestLimitExceeded") == 0;
+}
+
 void dw_error_text(const char *body, size_t n, char *out, size_t cap) {
     char t[128], m[256] = "";
     error_type(body, n, t, sizeof t);
@@ -459,6 +466,8 @@ dw_reason dw_cancel_reason(const char *body, size_t n, int index, bool *has_item
     if (strcmp(code, "None") == 0) return DW_REASON_NONE;
     if (strcmp(code, "ConditionalCheckFailed") == 0) return DW_REASON_COND;
     if (strcmp(code, "TransactionConflict") == 0) return DW_REASON_CONFLICT;
+    if (strcmp(code, "ThrottlingError") == 0 || strcmp(code, "ProvisionedThroughputExceeded") == 0)
+        return DW_REASON_THROTTLED;
     return DW_REASON_OTHER;
 }
 
@@ -566,8 +575,15 @@ bool dw_item_member(cb_span it, cb_member_row *m) {
     return dw_get_s(it, "game_id", m->game_id, sizeof m->game_id);
 }
 
-bool dw_item_seat_id(cb_span it, cb_uuid id) {
-    return dw_get_s(it, "user_id", id, sizeof(cb_uuid)) || dw_get_s(it, "bot_id", id, sizeof(cb_uuid));
+bool dw_seat_key(cb_span it, cb_uuid id, bool *bot) {
+    char sk[KB];
+    if (!dw_get_s(it, "sk", sk, sizeof sk)) return false;
+    const char *rest = NULL;
+    if (strncmp(sk, "MEMBER#", 7) == 0) rest = sk + 7, *bot = false;
+    else if (strncmp(sk, "BOT#", 4) == 0) rest = sk + 4, *bot = true;
+    if (!rest || strlen(rest) >= sizeof(cb_uuid)) return false;
+    memcpy(id, rest, strlen(rest) + 1);
+    return true;
 }
 
 bool dw_item_bot(cb_span it, cb_bot_row *b) {
@@ -771,11 +787,10 @@ void dw_query(dw_req *r, const char *table, dw_query_kind kind, const char *arg,
     const char *pfx = "";
     bool consistent = true, keys_only = false, fwd = true;
     switch (kind) {
-    case DWQ_GAME_MEMBERS: pfx = "GAME#"; prefix = "MEMBER#"; break;
-    case DWQ_GAME_BOTS: pfx = "GAME#"; prefix = "BOT#"; break;
     // Every seat item sorts before ROW ("BOT#..." < "MEMBER#..." < "ROW"); a
-    // Query cannot filter on a key attribute, so the range does it.
-    case DWQ_GAME_PARTITION: pfx = "GAME#"; below = "ROW"; keys_only = true; break;
+    // Query cannot filter on a key attribute, so the range does it. One query
+    // for the humans and the bots both: the key says which.
+    case DWQ_GAME_SEATS: pfx = "GAME#"; below = "ROW"; keys_only = true; break;
     case DWQ_USER_GAMES: index = GSI1; pfx = "USERGAMES#"; fwd = false; break;
     case DWQ_USER_CHATS: index = GSI1; pfx = "USERCHAT#"; keys_only = true; break;
     case DWQ_USER_TOKENS: index = GSI1; pfx = "USERREFRESH#"; keys_only = true; break;
@@ -1114,8 +1129,8 @@ void dw_refresh_revoke(dw_req *r, const char *table, cb_span key) {
 
 // ---- games ----------------------------------------------------------------------------------------
 
-// A seated human's item: the dashboard's GSI1 entry, ordered by the game's
-// updated_at. joined_at is kept from the first time the seat was written.
+// A seated human's item: the dashboard's GSI1 entry, ordered by when the
+// seat was written (taken). joined_at is kept from the first time.
 static void member_update(cb_jw *w, const char *table, const char *game, const char *user, int64_t at) {
     char pk[KB], sk[KB], g1[KB], g1s[KB];
     update_open(w, table, k(pk, sizeof pk, "GAME#", game), k(sk, sizeof sk, "MEMBER#", user), true);
@@ -1144,12 +1159,26 @@ static void bot_seat_put(cb_jw *w, const char *table, const char *game, const ch
 }
 
 // The SCAN marker: present (with the times the scan filters on) while the
-// game needs bots, absent otherwise.
-static void scan_marker(cb_jw *w, const char *table, const cb_game_row *g) {
+// game needs bots, absent otherwise. A commit updates it in place (`keep`),
+// leaving a drive's lease on it (lease_update) as it is; a new or imported
+// game puts it whole, with no lease.
+static void scan_marker(cb_jw *w, const char *table, const cb_game_row *g, bool keep) {
     char sk[KB];
     k(sk, sizeof sk, "GAME#", g->id);
     if (!g->needs_bots) {
         txn_delete(w, table, "SCAN", sk);
+        return;
+    }
+    if (keep) {
+        update_open(w, table, "SCAN", sk, true);
+        ux u;
+        ux_init(&u);
+        ux_set_s(&u, "game_id", g->id);
+        ux_set_n(&u, "updated_at", g->updated_at);
+        ux_set_n(&u, "last_commit_at", g->last_commit_at);
+        ux_emit(w, &u, NULL);
+        ux_free(&u);
+        update_close(w, true);
         return;
     }
     put_begin(w, table, "Put");
@@ -1170,7 +1199,7 @@ void dw_game_create(dw_req *r, const char *table, const cb_game_row *g, const ch
     item_game(&w, &row);
     put_end(&w, "attribute_not_exists(pk)", true);
     member_update(&w, table, g->id, creator, g->updated_at);
-    if (g->needs_bots) scan_marker(&w, table, &row);
+    if (g->needs_bots) scan_marker(&w, table, &row, false);
     txn_end(&w);
 }
 
@@ -1260,7 +1289,15 @@ bool dw_game_commit(dw_req *r, const char *table, const cb_game_commit *c, const
         update_close(&w, true);
     }
     items++;
-    for (int i = 0; i < c->n_humans; i++, items++) member_update(&w, table, g->id, c->humans[i], g->updated_at);
+    // A seat is written when it is taken, not on every commit: a human's
+    // seat is a transactional write (2 WCU) plus its GSI1 entry moving (2
+    // more), every commit, for the dashboard's order alone, which nothing
+    // reads (PostgREST sorts player_views by the row it loads).
+    for (int i = 0; i < c->n_humans; i++)
+        if (!stored || !listed(stored->humans, stored->n_humans, c->humans[i])) {
+            member_update(&w, table, g->id, c->humans[i], g->updated_at);
+            items++;
+        }
     for (int i = 0; stored && i < stored->n_humans; i++)
         if (!listed(c->humans, c->n_humans, stored->humans[i])) {
             txn_delete(&w, table, pk, k(sk, sizeof sk, "MEMBER#", stored->humans[i]));
@@ -1281,7 +1318,7 @@ bool dw_game_commit(dw_req *r, const char *table, const cb_game_commit *c, const
         for (int j = 0; j < i; j++) dup |= strcmp(c->rated_ids[j], c->rated_ids[i]) == 0;
         if (!dup) items += rating_write(&w, table, c, i, &ratings[i], g->updated_at);
     }
-    scan_marker(&w, table, &row);
+    scan_marker(&w, table, &row, !import);
     items++;
     txn_end(&w);
     return items <= 100 && cb_jw_ok(&w);
@@ -1426,10 +1463,20 @@ bool dw_snapshot_set_extras(dw_req *r, const char *table, const cb_buf *keys, in
 
 // ---- the lease ------------------------------------------------------------------------------------
 
+// The lease lives on the game's SCAN marker, the small item that exists
+// exactly while the game needs bots: an acquire, renew or release is one
+// write of well under 1 KB (1 WCU), where on the game row it was billed by
+// the row's whole 4 to 8 KB; the marker's updated_at is the scan's staleness
+// clock, so the same write tells the heartbeat a drive is in flight; and a
+// game with no marker (gone, or no bot work) refuses the acquire with no
+// item, which is CB_E_NOT_FOUND. A commit updates the marker in place
+// (scan_marker), so a drive's lease survives the drive's own commits; the
+// commit that ends the bot work deletes the marker and the lease with it, and
+// the drive's next renew is refused, as it should be: nothing is left to drive.
 static void lease_update(dw_req *r, const char *table, const char *game, cb_jw *w, ux *u) {
-    char pk[KB];
+    char sk[KB];
     begin(r, w, "UpdateItem");
-    update_open(w, table, k(pk, sizeof pk, "GAME#", game), "ROW", false);
+    update_open(w, table, "SCAN", k(sk, sizeof sk, "GAME#", game), false);
     ux_init(u);
 }
 
@@ -1468,19 +1515,6 @@ void dw_lease_release(dw_req *r, const char *table, const char *game, const char
     ux_name(&u, "lease_token");
     ux_val_s(&u, ":token", token);
     ux_emit(&w, &u, "#lease_token = :token");
-    ux_free(&u);
-    finish(&w);
-}
-
-void dw_scan_touch(dw_req *r, const char *table, const char *game, int64_t now) {
-    char sk[KB];
-    cb_jw w;
-    begin(r, &w, "UpdateItem");
-    update_open(&w, table, "SCAN", k(sk, sizeof sk, "GAME#", game), false);
-    ux u;
-    ux_init(&u);
-    ux_set_n(&u, "updated_at", now);
-    ux_emit(&w, &u, "attribute_exists(pk)");
     ux_free(&u);
     finish(&w);
 }

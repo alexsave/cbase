@@ -40,15 +40,18 @@ static void get_item_shape(void) {
     dw_req_free(&r);
 }
 
-// try_acquire_bot_lease: free when never taken, released or run out; the
-// failure brings the old item back so a missing game is told apart.
+// try_acquire_bot_lease, on the game's SCAN marker (a small item, so each
+// lease write is 1 WCU, and the one write also moves the scan's staleness
+// clock): free when never taken, released or run out; the failure brings the
+// old item back, so a game with no marker (gone, or no bot work) is told
+// apart from a lease held.
 static void lease_requests(void) {
     dw_req r;
     dw_req_init(&r);
     dw_lease_acquire(&r, "cbase", "ab12cd", TOK, 1000000, 25000);
     T_EQ_STR(r.target, "DynamoDB_20120810.UpdateItem");
     T_EQ_STR(cb_buf_cstr(&r.body),
-             "{\"ReturnConsumedCapacity\":\"TOTAL\",\"TableName\":\"cbase\",\"Key\":{\"pk\":{\"S\":\"GAME#ab12cd\"},\"sk\":{\"S\":\"ROW\"}},"
+             "{\"ReturnConsumedCapacity\":\"TOTAL\",\"TableName\":\"cbase\",\"Key\":{\"pk\":{\"S\":\"SCAN\"},\"sk\":{\"S\":\"GAME#ab12cd\"}},"
              "\"UpdateExpression\":\"SET #lease_token = :lease_token, #lease_until = :lease_until, #updated_at = :updated_at\","
              "\"ConditionExpression\":\"attribute_exists(pk) AND (attribute_not_exists(#lease_until) OR #lease_until < :updated_at)\","
              "\"ExpressionAttributeNames\":{\"#lease_token\":\"lease_token\",\"#lease_until\":\"lease_until\",\"#updated_at\":\"updated_at\"},"
@@ -56,7 +59,7 @@ static void lease_requests(void) {
              "\":updated_at\":{\"N\":\"1000000\"}},\"ReturnValuesOnConditionCheckFailure\":\"ALL_OLD\"}");
     dw_lease_renew(&r, "cbase", "ab12cd", TOK, 1010000, 25000);
     T_EQ_STR(cb_buf_cstr(&r.body),
-             "{\"ReturnConsumedCapacity\":\"TOTAL\",\"TableName\":\"cbase\",\"Key\":{\"pk\":{\"S\":\"GAME#ab12cd\"},\"sk\":{\"S\":\"ROW\"}},"
+             "{\"ReturnConsumedCapacity\":\"TOTAL\",\"TableName\":\"cbase\",\"Key\":{\"pk\":{\"S\":\"SCAN\"},\"sk\":{\"S\":\"GAME#ab12cd\"}},"
              "\"UpdateExpression\":\"SET #lease_until = :lease_until, #updated_at = :updated_at\","
              "\"ConditionExpression\":\"#lease_token = :token\","
              "\"ExpressionAttributeNames\":{\"#lease_until\":\"lease_until\",\"#updated_at\":\"updated_at\",\"#lease_token\":\"lease_token\"},"
@@ -64,7 +67,7 @@ static void lease_requests(void) {
              "\":token\":{\"S\":\"" TOK "\"}}}");
     dw_lease_release(&r, "cbase", "ab12cd", TOK);
     T_EQ_STR(cb_buf_cstr(&r.body),
-             "{\"ReturnConsumedCapacity\":\"TOTAL\",\"TableName\":\"cbase\",\"Key\":{\"pk\":{\"S\":\"GAME#ab12cd\"},\"sk\":{\"S\":\"ROW\"}},"
+             "{\"ReturnConsumedCapacity\":\"TOTAL\",\"TableName\":\"cbase\",\"Key\":{\"pk\":{\"S\":\"SCAN\"},\"sk\":{\"S\":\"GAME#ab12cd\"}},"
              "\"UpdateExpression\":\"REMOVE #lease_until\",\"ConditionExpression\":\"#lease_token = :token\","
              "\"ExpressionAttributeNames\":{\"#lease_until\":\"lease_until\",\"#lease_token\":\"lease_token\"},"
              "\"ExpressionAttributeValues\":{\":token\":{\"S\":\"" TOK "\"}}}");
@@ -73,7 +76,8 @@ static void lease_requests(void) {
 
 // THE CAS: item 0 the version-fenced row, then a new member, a member gone,
 // the ratings fenced on what was read (clamped arithmetic done here), the
-// SCAN marker. The bot already seated is not written again.
+// SCAN marker, updated in place so a drive's lease on it survives the commit.
+// The bot already seated is not written again.
 static void commit_transaction(void) {
     uint8_t st[3] = { 1, 2, 3 }, ro[2] = { 9, 9 };
     cb_game_row g = { .id = "ab12cd", .status = 1, .state = st, .state_len = 3, .roster = ro, .roster_len = 2,
@@ -130,8 +134,11 @@ static void commit_transaction(void) {
              "\"#updated_at\":\"updated_at\",\"#games_played\":\"games_played\"},"
              "\"ExpressionAttributeValues\":{\":elo_rating\":{\"N\":\"0\"},\":previous_elo\":{\"N\":\"990\"},"
              "\":updated_at\":{\"N\":\"2000\"},\":one\":{\"N\":\"1\"},\":read\":{\"N\":\"990\"}}}},"
-             "{\"Put\":{\"TableName\":\"cbase\",\"Item\":{\"pk\":{\"S\":\"SCAN\"},\"sk\":{\"S\":\"GAME#ab12cd\"},"
-             "\"game_id\":{\"S\":\"ab12cd\"},\"updated_at\":{\"N\":\"2000\"},\"last_commit_at\":{\"N\":\"2000\"}}}}"
+             "{\"Update\":{\"TableName\":\"cbase\",\"Key\":{\"pk\":{\"S\":\"SCAN\"},\"sk\":{\"S\":\"GAME#ab12cd\"}},"
+             "\"UpdateExpression\":\"SET #game_id = :game_id, #updated_at = :updated_at, #last_commit_at = :last_commit_at\","
+             "\"ExpressionAttributeNames\":{\"#game_id\":\"game_id\",\"#updated_at\":\"updated_at\",\"#last_commit_at\":\"last_commit_at\"},"
+             "\"ExpressionAttributeValues\":{\":game_id\":{\"S\":\"ab12cd\"},\":updated_at\":{\"N\":\"2000\"},"
+             "\":last_commit_at\":{\"N\":\"2000\"}}}}"
              "]}");
 
     // A human with no rating row but an account gets one from the start
@@ -157,6 +164,17 @@ static void commit_transaction(void) {
     rd[0] = (dw_rating_read){ .exists = false, .account = false };
     T_CHECK(dw_game_commit(&r, "cbase", &c, &s, rd, false));
     T_CHECK(strstr(cb_buf_cstr(&r.body), "RATING") == NULL);
+    // Seats already stored are not written again: a human's seat costs its
+    // write (and its GSI1 entry) once, when taken, not on every commit.
+    snprintf(s.humans[0], sizeof(cb_uuid), U1);
+    c.n_rated = 0;
+    T_CHECK(dw_game_commit(&r, "cbase", &c, &s, NULL, false));
+    T_CHECK(valid(&r));
+    T_CHECK(strstr(cb_buf_cstr(&r.body), "MEMBER#") == NULL);
+    T_CHECK(strstr(cb_buf_cstr(&r.body), "BOT#") == NULL);
+    // The import writes every seat (nothing is stored to compare with).
+    T_CHECK(dw_game_commit(&r, "cbase", &c, NULL, NULL, true));
+    T_CHECK(strstr(cb_buf_cstr(&r.body), "MEMBER#" U1) != NULL);
     dw_req_free(&r);
 }
 
@@ -172,20 +190,25 @@ static void query_shapes(void) {
              "\"ExpressionAttributeValues\":{\":pk\":{\"S\":\"USERGAMES#" U1 "\"}},"
              "\"ScanIndexForward\":false,\"Limit\":20,\"ExclusiveStartKey\":{\"pk\":{\"S\":\"x\"}}}");
     // A game's seat keys: a key range (a Query cannot filter on a key).
-    dw_query(&r, "cbase", DWQ_GAME_PARTITION, "ab12cd", true, 0, cb_span_of("", 0));
+    dw_query(&r, "cbase", DWQ_GAME_SEATS, "ab12cd", true, 0, cb_span_of("", 0));
     T_EQ_STR(cb_buf_cstr(&r.body),
              "{\"ReturnConsumedCapacity\":\"TOTAL\",\"TableName\":\"cbase\",\"KeyConditionExpression\":\"#pk = :pk AND #sk < :sk\",\"ProjectionExpression\":\"#pk, #sk\","
              "\"ExpressionAttributeNames\":{\"#pk\":\"pk\",\"#sk\":\"sk\"},"
              "\"ExpressionAttributeValues\":{\":pk\":{\"S\":\"GAME#ab12cd\"},\":sk\":{\"S\":\"ROW\"}},\"ConsistentRead\":true}");
-    dw_query(&r, "cbase", DWQ_GAME_MEMBERS, "ab12cd", true, 0, cb_span_of("", 0));
-    T_EQ_STR(cb_buf_cstr(&r.body),
-             "{\"ReturnConsumedCapacity\":\"TOTAL\",\"TableName\":\"cbase\",\"KeyConditionExpression\":\"#pk = :pk AND begins_with(#sk, :sk)\","
-             "\"ExpressionAttributeNames\":{\"#pk\":\"pk\",\"#sk\":\"sk\"},"
-             "\"ExpressionAttributeValues\":{\":pk\":{\"S\":\"GAME#ab12cd\"},\":sk\":{\"S\":\"MEMBER#\"}},\"ConsistentRead\":true}");
+    // A seat is told by its key: humans and bots from the one query.
+    cb_uuid id;
+    bool bot = true;
+    T_CHECK(dw_seat_key(CB_SPAN_LIT("{\"pk\":{\"S\":\"GAME#ab12cd\"},\"sk\":{\"S\":\"MEMBER#" U1 "\"}}"), id, &bot));
+    T_EQ_STR(id, U1);
+    T_CHECK(!bot);
+    T_CHECK(dw_seat_key(CB_SPAN_LIT("{\"pk\":{\"S\":\"GAME#ab12cd\"},\"sk\":{\"S\":\"BOT#" B1 "\"}}"), id, &bot));
+    T_EQ_STR(id, B1);
+    T_CHECK(bot);
+    T_CHECK(!dw_seat_key(CB_SPAN_LIT("{\"pk\":{\"S\":\"GAME#ab12cd\"},\"sk\":{\"S\":\"LOG\"}}"), id, &bot));
     dw_query(&r, "cbase", DWQ_SCAN, NULL, true, 0, cb_span_of("", 0));
     T_CHECK(strstr(cb_buf_cstr(&r.body), "\":pk\":{\"S\":\"SCAN\"}") != NULL);
     // Every kind is valid JSON.
-    for (int k = DWQ_GAME_MEMBERS; k <= DWQ_USERS; k++) {
+    for (int k = DWQ_GAME_SEATS; k <= DWQ_USERS; k++) {
         dw_query(&r, "cbase", (dw_query_kind)k, "x", k % 2, 5, cb_span_of("", 0));
         T_CHECK(valid(&r));
     }
@@ -271,7 +294,6 @@ static void builders_valid_json(void) {
     T_CHECK(strstr(cb_buf_cstr(&r.body), "REMOVE #username") != NULL);
     dw_ratings_get(&r, "cbase", ids, isbot, 2, false); T_CHECK(valid(&r));
     dw_ratings_get(&r, "cbase", ids, isbot, 2, true);  T_CHECK(valid(&r));
-    dw_scan_touch(&r, "cbase", "ab12cd", 77);        T_CHECK(valid(&r));
     dw_scan_family(&r, "cbase", "GAME", "ab", 10, cb_span_of("", 0)); T_CHECK(valid(&r));
     T_CHECK(strstr(cb_buf_cstr(&r.body), "\":p\":{\"S\":\"GAME#ab\"}") != NULL);
     dw_execute(&r, "SELECT * FROM \"cbase\"", "tok"); T_CHECK(valid(&r));
@@ -570,8 +592,7 @@ static cb_game_commit mkcommit(cb_game_row *g, uint8_t *st) {
 // 0 with the stored item attached: CB_E_CONFLICT, and no second attempt.
 static void flow_cas_lost(void) {
     static const step steps[] = {
-        { "Query", "MEMBER#", 200, EMPTY },
-        { "Query", "BOT#", 200, EMPTY },
+        { "Query", "#sk < :sk", 200, EMPTY },
         { "TransactWriteItems", "\":expected\":{\"N\":\"7\"}", 400, CAS_LOST },
     };
     RUN(steps, s);
@@ -579,14 +600,13 @@ static void flow_cas_lost(void) {
     cb_game_row g;
     cb_game_commit c = mkcommit(&g, st);
     T_EQ_INT(CB_STORE_CALL(s, game_commit, &c), CB_E_CONFLICT);
-    T_EQ_INT(sc_.at, 3);
+    T_EQ_INT(sc_.at, 2);
     cb_store_close(s);
 }
 
 static void flow_commit_game_gone(void) {
     static const step steps[] = {
-        { "Query", "MEMBER#", 200, EMPTY },
-        { "Query", "BOT#", 200, EMPTY },
+        { "Query", "#sk < :sk", 200, EMPTY },
         { "TransactWriteItems", NULL, 400, GAME_GONE },
     };
     RUN(steps, s);
@@ -607,12 +627,10 @@ static void flow_rating_moved(void) {
     static const char BOTSEAT[] = "{\"Items\":[{\"pk\":{\"S\":\"GAME#ab12cd\"},\"sk\":{\"S\":\"BOT#" B1 "\"},"
                                   "\"game_id\":{\"S\":\"ab12cd\"},\"bot_id\":{\"S\":\"" B1 "\"}}]}";
     static const step steps[] = {
-        { "Query", "MEMBER#", 200, EMPTY },
-        { "Query", "BOT#", 200, BOTSEAT },
+        { "Query", "#sk < :sk", 200, BOTSEAT },
         { "BatchGetItem", "BOT#" B1, 200, R1 },
         { "TransactWriteItems", "\":read\":{\"N\":\"1000\"}", 400, RATING_MOVED },
-        { "Query", "MEMBER#", 200, EMPTY },
-        { "Query", "BOT#", 200, BOTSEAT },
+        { "Query", "#sk < :sk", 200, BOTSEAT },
         { "BatchGetItem", "BOT#" B1, 200, R2 },
         { "TransactWriteItems", "\":elo_rating\":{\"N\":\"1015\"},\":previous_elo\":{\"N\":\"1010\"}", 200, "{}" },
     };
@@ -627,7 +645,9 @@ static void flow_rating_moved(void) {
     c.rated_is_bot[0] = true;
     c.rating_delta[0] = 5;
     T_EQ_INT(CB_STORE_CALL(s, game_commit, &c), CB_OK);
-    T_EQ_INT(sc_.at, 8);
+    T_EQ_INT(sc_.at, 6);
+    // The seat query told the stored bot from a human: its seat is not put again.
+    T_CHECK(strstr(sc_.bodies[5], "\"sk\":{\"S\":\"BOT#" B1 "\"}") == NULL);
     cb_store_close(s);
 }
 
@@ -635,8 +655,7 @@ static void flow_rating_moved(void) {
 static void flow_commit_drops_missing_account(void) {
     static const char BG[] = "{\"Responses\":{\"cbase\":[{\"pk\":{\"S\":\"USER#" U1 "\"},\"sk\":{\"S\":\"PROFILE\"}}]}}";
     static const step steps[] = {
-        { "Query", "MEMBER#", 200, EMPTY },
-        { "Query", "BOT#", 200, EMPTY },
+        { "Query", "#sk < :sk", 200, EMPTY },
         { "BatchGetItem", "PROFILE", 200, BG },
         { "TransactWriteItems", "MEMBER#" U1, 200, "{}" },
     };
@@ -648,16 +667,15 @@ static void flow_commit_drops_missing_account(void) {
     snprintf(c.humans[0], sizeof(cb_uuid), U1);
     snprintf(c.humans[1], sizeof(cb_uuid), U2);
     T_EQ_INT(CB_STORE_CALL(s, game_commit, &c), CB_OK);
-    T_CHECK(strstr(sc_.bodies[3], "MEMBER#" U2) == NULL);
+    T_CHECK(strstr(sc_.bodies[2], "MEMBER#" U2) == NULL);
     cb_store_close(s);
 }
 
 static void flow_lease(void) {
     static const step steps[] = {
         { "UpdateItem", "attribute_not_exists(#lease_until)", 400, COND_WITH_ITEM },   // held by another
-        { "UpdateItem", NULL, 400, COND_NO_ITEM },                                      // no such game
-        { "UpdateItem", "\":updated_at\":{\"N\":\"5000\"}", 200, "{}" },                 // taken
-        { "UpdateItem", "\"S\":\"SCAN\"", 400, COND_NO_ITEM },                           // no marker: fine
+        { "UpdateItem", NULL, 400, COND_NO_ITEM },                                      // no marker: no game, or no bot work
+        { "UpdateItem", "\":updated_at\":{\"N\":\"5000\"}", 200, "{}" },                 // taken: one write
         { "UpdateItem", "#lease_token = :token", 400, COND_NO_ITEM },                    // renew, wrong token
         { "UpdateItem", "REMOVE #lease_until", 400, COND_NO_ITEM },                      // release, not ours
     };
@@ -669,7 +687,7 @@ static void flow_lease(void) {
     T_CHECK(strstr(sc_.bodies[2], tok) != NULL);   // the token returned is the one written
     T_EQ_INT(CB_STORE_CALL(s, lease_renew, "ab12cd", "00000000-0000-4000-8000-000000000000", 6000, 25000), CB_E_CONFLICT);
     T_EQ_INT(CB_STORE_CALL(s, lease_release, "ab12cd", "00000000-0000-4000-8000-000000000000"), CB_OK);
-    T_EQ_INT(sc_.at, 6);
+    T_EQ_INT(sc_.at, 5);
     cb_store_close(s);
 }
 
@@ -695,6 +713,149 @@ static void flow_throttle_retry(void) {
     T_EQ_INT(CB_STORE_CALL(s, game_get, "ab12cd", &g), CB_E_NOT_FOUND);
     T_EQ_INT(CB_STORE_CALL(s, game_get, "ab12cd", &g), CB_E_DB);   // not retried
     T_EQ_INT(sc_.at, 5);
+    cb_store_close(s);
+}
+
+// Throttling, as DynamoDB answers it on a provisioned table: the two error
+// bodies (the documented __type and message of each), and a transaction
+// cancelled for throttling (the CancellationReasons codes DynamoDB documents
+// for TransactionCanceledException). Written from the API reference, not
+// captured from AWS: DynamoDB Local never throttles.
+static const char THROTTLED_PT[] =
+    "{\"__type\":\"com.amazonaws.dynamodb.v20120810#ProvisionedThroughputExceededException\","
+    "\"message\":\"The level of configured provisioned throughput for the table was exceeded. "
+    "Consider increasing your provisioning level with the UpdateTable API.\"}";
+static const char THROTTLED_RATE[] =
+    "{\"__type\":\"com.amazon.coral.availability#ThrottlingException\","
+    "\"message\":\"Rate of requests exceeds the allowed throughput.\"}";
+static const char TXN_THROTTLED[] =
+    "{\"__type\":\"com.amazonaws.dynamodb.v20120810#TransactionCanceledException\","
+    "\"CancellationReasons\":[{\"Code\":\"ThrottlingError\",\"Message\":\"Throughput exceeds the current "
+    "capacity of your table or index. DynamoDB is automatically scaling your table or index so please try again "
+    "shortly.\"},{\"Code\":\"None\"}],\"Message\":\"Transaction cancelled, please refer cancellation reasons for "
+    "specific reasons [ThrottlingError, None]\"}";
+static const char TXN_THROTTLED_PT[] =
+    "{\"__type\":\"com.amazonaws.dynamodb.v20120810#TransactionCanceledException\","
+    "\"CancellationReasons\":[{\"Code\":\"None\"},{\"Code\":\"ProvisionedThroughputExceeded\",\"Message\":"
+    "\"The level of configured provisioned throughput for the table was exceeded.\"}],"
+    "\"Message\":\"Transaction cancelled [None, ProvisionedThroughputExceeded]\"}";
+
+static uint64_t throttled_since(const cb_store_throttles *t0) {
+    cb_store_throttles t;
+    cb_store_throttles_get(&t);
+    return t.throttled - t0->throttled;
+}
+static uint64_t gave_up_since(const cb_store_throttles *t0) {
+    cb_store_throttles t;
+    cb_store_throttles_get(&t);
+    return t.gave_up - t0->gave_up;
+}
+
+// Both throttles, then answered: the read succeeds, and the overview's
+// counter saw two throttled responses and nothing given up.
+static void flow_throttled_then_answered(void) {
+    static const step steps[] = {
+        { "GetItem", NULL, 400, THROTTLED_PT },
+        { "GetItem", NULL, 400, THROTTLED_RATE },
+        { "GetItem", NULL, 200, "{}" },
+    };
+    RUN(steps, s);
+    cb_store_throttles t0;
+    cb_store_throttles_get(&t0);
+    cb_game_row g = { 0 };
+    T_EQ_INT(CB_STORE_CALL(s, game_get, "ab12cd", &g), CB_E_NOT_FOUND);
+    T_EQ_INT(sc_.at, 3);
+    T_EQ_INT(throttled_since(&t0), 2);
+    T_EQ_INT(gave_up_since(&t0), 0);
+    cb_store_close(s);
+}
+
+// A Lambda deadline too close for a pause: the throttled request is not sent
+// again, it fails at once, and is counted as given up.
+static void flow_throttled_past_the_deadline(void) {
+    static const step steps[] = {
+        { "GetItem", NULL, 400, THROTTLED_PT },
+        { "GetItem", NULL, 200, "{}" },   // never reached
+    };
+    RUN(steps, s);
+    cb_store_throttles t0;
+    cb_store_throttles_get(&t0);
+    cb_store_set_deadline(cb_now_ms() + 200);
+    int64_t t = cb_mono_ms();
+    cb_game_row g = { 0 };
+    T_EQ_INT(CB_STORE_CALL(s, game_get, "ab12cd", &g), CB_E_DB);
+    T_CHECK(cb_mono_ms() - t < 200);
+    cb_store_set_deadline(0);
+    T_EQ_INT(sc_.at, 1);
+    T_EQ_INT(throttled_since(&t0), 1);
+    T_EQ_INT(gave_up_since(&t0), 1);
+    cb_store_close(s);
+}
+
+// Throttling never ends: with no deadline the pauses stop at the wall cap,
+// well short of forever, and the request fails.
+static void flow_throttled_to_the_wall(void) {
+    static const step steps[] = {
+        { "GetItem", NULL, 400, THROTTLED_RATE }, { "GetItem", NULL, 400, THROTTLED_RATE },
+        { "GetItem", NULL, 400, THROTTLED_RATE }, { "GetItem", NULL, 400, THROTTLED_RATE },
+        { "GetItem", NULL, 400, THROTTLED_RATE }, { "GetItem", NULL, 400, THROTTLED_RATE },
+        { "GetItem", NULL, 400, THROTTLED_RATE }, { "GetItem", NULL, 400, THROTTLED_RATE },
+        { "GetItem", NULL, 400, THROTTLED_RATE }, { "GetItem", NULL, 400, THROTTLED_RATE },
+        { "GetItem", NULL, 400, THROTTLED_RATE }, { "GetItem", NULL, 400, THROTTLED_RATE },
+        { "GetItem", NULL, 400, THROTTLED_RATE }, { "GetItem", NULL, 400, THROTTLED_RATE },
+        { "GetItem", NULL, 400, THROTTLED_RATE }, { "GetItem", NULL, 400, THROTTLED_RATE },
+    };
+    RUN(steps, s);
+    cb_store_throttles t0;
+    cb_store_throttles_get(&t0);
+    int64_t t = cb_mono_ms();
+    cb_game_row g = { 0 };
+    T_EQ_INT(CB_STORE_CALL(s, game_get, "ab12cd", &g), CB_E_DB);
+    int64_t took = cb_mono_ms() - t;
+    T_CHECK(took <= CB_STORE_RETRY_WALL_MS + 500);
+    T_CHECK(sc_.at >= 2 && sc_.at < 16);   // sent again, and stopped
+    T_EQ_INT(throttled_since(&t0), (uint64_t)sc_.at);
+    T_EQ_INT(gave_up_since(&t0), 1);
+    cb_store_close(s);
+}
+
+// A transaction cancelled for throttling (either code) is sent again, not
+// read as a refused condition: a sign-up goes through on the third send.
+static void flow_transaction_throttled(void) {
+    static const step steps[] = {
+        { "TransactWriteItems", NULL, 400, TXN_THROTTLED },
+        { "TransactWriteItems", NULL, 400, TXN_THROTTLED_PT },
+        { "TransactWriteItems", NULL, 200, "{}" },
+    };
+    RUN(steps, s);
+    cb_store_throttles t0;
+    cb_store_throttles_get(&t0);
+    cb_user_row u = { .id = U1, .email = "a@x.io", .username = "A", .created_at = 1 };
+    T_EQ_INT(CB_STORE_CALL(s, user_create, &u), CB_OK);
+    T_EQ_INT(sc_.at, 3);
+    T_EQ_INT(throttled_since(&t0), 2);
+    cb_store_close(s);
+}
+
+// A batch DynamoDB left partly unprocessed (its way of throttling a batch)
+// is counted as throttled and sent again.
+static void flow_batch_unprocessed(void) {
+    static const char PART[] = "{\"Responses\":{\"cbase\":[]},\"UnprocessedKeys\":{\"cbase\":{\"Keys\":"
+                               "[{\"pk\":{\"S\":\"BOT#" B1 "\"},\"sk\":{\"S\":\"BOT\"}}]}}}";
+    static const char ALL[] = "{\"Responses\":{\"cbase\":[{\"pk\":{\"S\":\"BOT#" B1 "\"},\"sk\":{\"S\":\"BOT\"},"
+                              "\"elo_rating\":{\"N\":\"1234\"}}]},\"UnprocessedKeys\":{}}";
+    static const step steps[] = {
+        { "BatchGetItem", NULL, 200, PART },
+        { "BatchGetItem", NULL, 200, ALL },
+    };
+    RUN(steps, s);
+    cb_store_throttles t0;
+    cb_store_throttles_get(&t0);
+    const char *ids[1] = { B1 };
+    int32_t elo[1] = { 0 };
+    T_EQ_INT(CB_STORE_CALL(s, ratings_for, ids, 1, elo), CB_OK);
+    T_EQ_INT(elo[0], 1234);
+    T_EQ_INT(throttled_since(&t0), 1);
     cb_store_close(s);
 }
 
@@ -890,6 +1051,37 @@ static void the_template_matches_the_wire(void) {
     T_EQ_INT(all, 2);
 }
 
+// The free tier is provisioned capacity only, 25 WCU and 25 RCU shared by
+// every table and index in the account (DESIGN.md "The free tier,
+// provisioned"): the template provisions the table and both indexes, and the
+// six numbers add up to no more than 25 a side. No auto scaling, which would
+// provision past them.
+static void the_template_stays_free(void) {
+    FILE *f = fopen("ops/cbase.yaml", "r");
+    T_CHECK(f != NULL);
+    if (!f) return;
+    static char y[64 * 1024];
+    size_t n = fread(y, 1, sizeof y - 1, f);
+    fclose(f);
+    y[n] = 0;
+    T_CHECK(strstr(y, "      BillingMode: PROVISIONED\n") != NULL);
+    T_CHECK(strstr(y, "PAY_PER_REQUEST") == NULL);
+    T_CHECK(strstr(y, "AWS::ApplicationAutoScaling") == NULL);
+    int count = 0, rcu = 0, wcu = 0;
+    static const char KEY[] = "ProvisionedThroughput: { ReadCapacityUnits: ";
+    for (const char *q = y; (q = strstr(q, KEY)) != NULL; q++) {
+        int r = 0, w = 0;
+        T_EQ_INT(sscanf(q + strlen(KEY), "%d, WriteCapacityUnits: %d }", &r, &w), 2);
+        T_CHECK(r >= 1 && w >= 1);
+        rcu += r;
+        wcu += w;
+        count++;
+    }
+    T_EQ_INT(count, 3);   // the table, gsi1, gsi2
+    T_CHECK(rcu <= 25);
+    T_CHECK(wcu <= 25);
+}
+
 // The import's stored count (store_import.c on DynamoDB): a counting Scan per
 // export table, its pages summed. player_hands are the GAME# partitions'
 // MEMBER# items, whatever else those partitions hold.
@@ -935,6 +1127,7 @@ static void consumed_capacity_read(void) {
 
 int main(void) {
     T_RUN(the_template_matches_the_wire);
+    T_RUN(the_template_stays_free);
     T_RUN(get_item_shape);
     T_RUN(lease_requests);
     T_RUN(commit_transaction);
@@ -950,6 +1143,11 @@ int main(void) {
     T_RUN(flow_commit_drops_missing_account);
     T_RUN(flow_lease);
     T_RUN(flow_throttle_retry);
+    T_RUN(flow_throttled_then_answered);
+    T_RUN(flow_throttled_past_the_deadline);
+    T_RUN(flow_throttled_to_the_wall);
+    T_RUN(flow_transaction_throttled);
+    T_RUN(flow_batch_unprocessed);
     T_RUN(flow_scan_pages);
     T_RUN(flow_signup_and_tokens);
     T_RUN(flow_chat_order);
