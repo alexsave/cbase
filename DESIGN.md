@@ -37,7 +37,7 @@ The decisions here are settled; a builder who finds one impossible says so in th
 
 ## Why Lambda, and what it costs us
 
-Alex chose Lambda because it is free at this scale: 1M requests and 400k GB-seconds a month, DynamoDB's always-free 25 GB, a free Function URL, CloudFront's free plan, free ACM certificates and a free EventBridge Scheduler.
+Alex chose Lambda because it is free at this scale: 1M requests and 400k GB-seconds a month, DynamoDB's always-free 25 GB with 25 provisioned write and 25 read units (see "The free tier, provisioned" under Store), a free Function URL, CloudFront's free plan, free ACM certificates and a free EventBridge Scheduler.
 The only line that is not free after the first year is API Gateway's WebSocket API, at $1 per million messages and $0.25 per million connection-minutes, which at our volume is cents a month.
 Expected total: about $0 to $0.10 a month.
 
@@ -124,7 +124,7 @@ Backends: `store_sqlite.c` (local, tests, import rehearsal) and `store_dynamo.c`
 SQLite: one file, WAL, foreign keys on, `sql/schema.sql` (embedded into the binary at build time) applied in one transaction at every open, `PRAGMA user_version` set to `CB_SCHEMA_VERSION`, and a database newer than the binary refused.
 `game_commit` is one `BEGIN IMMEDIATE` transaction whose `UPDATE games ... WHERE version = ?` is the CAS.
 
-DynamoDB: one table `cbase`, PAY_PER_REQUEST, point-in-time recovery on, TTL on `expires_at` (epoch seconds).
+DynamoDB: one table `cbase`, PROVISIONED at 15 RCU and 15 WCU with 5 and 5 on each index (the always-free 25 a side; see "The free tier, provisioned" below), point-in-time recovery on, TTL on `expires_at` (epoch seconds).
 Two indexes, `gsi1` (`gsi1pk`, `gsi1sk`) and `gsi2` (`gsi2pk`, `gsi2sk`), all four keys String, both projecting ALL.
 `src/store/dynamo_wire.h` owns these names (`DW_GSI1`, `DW_GSI2`, `DW_TTL_ATTR`), and `test/unit_dynamo.c` reads `ops/cbase.yaml` and fails when the template disagrees.
 Items, by partition key and sort key:
@@ -135,7 +135,7 @@ Items, by partition key and sort key:
 | `USER#<id>` | `RATING` | elo_rating, previous_elo, games_played, username (the leaderboard row) |
 | `EMAIL#<lowercase email>` | `USER` | the user id (signup's uniqueness is a conditional put on this) |
 | `REFRESH#<sha256 hex>` | `TOKEN` | user, session, created, revoked, revoked_at; gsi1 `USERREFRESH#<user>`, gsi2 `SESSION#<session>` |
-| `GAME#<id>` | `ROW` | state, roster, logs_packed, seed (Binary); version, round_epoch, status, needs_bots, created/updated/last_commit; lease_token, lease_until |
+| `GAME#<id>` | `ROW` | state, roster, logs_packed, seed (Binary); version, round_epoch, status, needs_bots, created/updated/last_commit |
 | `GAME#<id>` | `MEMBER#<user>` | a seated human; gsi1 `USERGAMES#<user>` / `<updated_at, 15 digits>#<game>` gives the dashboard |
 | `GAME#<id>` | `BOT#<bot id>` | a seated bot |
 | `BOT#<id>` | `BOT` | the 49 bots, with their ratings |
@@ -144,7 +144,7 @@ Items, by partition key and sort key:
 | `CHAT#<game id>` | `<created>#<id>` | a chat message |
 | `CONN#<connection id>` | `CONN` | a realtime connection: user, vsn, topics, expires_at (TTL, seconds) and expires_ms |
 | `TOPIC#<topic>` | `CONN#<connection id>` | the reverse index fan-out queries: a whole copy of the connection row with the same TTL, in the base table so the read is strongly consistent and a push right after a join is not missed |
-| `SCAN` | `GAME#<id>` | present while a game needs bots (sparse; the heartbeat's scan reads one partition) |
+| `SCAN` | `GAME#<id>` | present while a game needs bots (sparse; the heartbeat's scan reads one partition); carries the bot lease (lease_token, lease_until) |
 
 `game_commit` is one `TransactWriteItems`: the game update conditioned on the version, the membership puts and deletes, the rating updates, the SCAN marker.
 
@@ -155,10 +155,13 @@ As built (store builder, then integration):
 
 - `store_sqlite.c` implements every operation over one connection with cached prepared statements; one process mutex spans each operation, and list callbacks run after the lock is released so a callback may call the store again.
 - `game_commit` mirrors `commit_table`: the version-fenced `UPDATE`, membership and bot seats rewritten, and ratings added to the rows as they stand (clamped at 0, `games_played + 1`, `previous_elo` the old value, a missing human rating row created when the account exists).
-- Membership is rewritten on every commit (the header's contract), where `commit_table` touched it only when the roster changed; so a seat whose account is gone (delete-account keeps the id in the roster) is skipped in both backends instead of failing every later commit on the foreign key.
+- Membership follows every commit (the header's contract), where `commit_table` touched it only when the roster changed; a seat whose account is gone (delete-account keeps the id in the roster) is skipped in both backends instead of failing every later commit on the foreign key.
+  DynamoDB writes only the seats that change (a human's MEMBER item when the seat is taken, never again on later commits), so its dashboard index orders by when the seat was taken; PostgREST sorts by the rows it loads, so nothing reads that order.
   The app relies on exactly this, since a redacted roster still names the deleted id; the store tests hold both backends to it (`cas_second_writer_loses` commits with a deleted seat on SQLite, `flow_commit_drops_missing_account` on DynamoDB).
 - `last_commit_at` is stamped by the store from `row->updated_at` on every commit; `row->last_commit_at` is read only by the import.
-- The lease: acquire and renew move `updated_at` (never `last_commit_at`); release clears `lease_until` and does not move `updated_at`.
+- The lease: acquire and renew move the scan's staleness clock (never `last_commit_at`); release clears `lease_until` and does not move it.
+  SQLite keeps lease and clock on the game row; DynamoDB keeps both on the game's SCAN marker (see "The free tier, provisioned"), so there the row's `updated_at` is its last commit's.
+  A game with no bot work has no lease to take: acquire answers `CB_E_NOT_FOUND`, on both backends.
 - `game_commit`, `game_delete` and `lease_acquire` on a game that is gone return `CB_E_NOT_FOUND` (DynamoDB tells it apart from a lost CAS with `ReturnValuesOnConditionCheckFailure: ALL_OLD`).
 - `dynamo_wire.c` spells every DynamoDB string and builds every request as a pure function over buffers; `store_dynamo.c` decides only which requests to send in which order.
   Its transport is `aws/aws_call.h` (one signed-request step for every AWS call in c_base), and it honours `AWS_ENDPOINT_URL_DYNAMODB`, the SDKs' own override.
@@ -217,11 +220,77 @@ One 3-seat game of 171 commits cost 922 requests, 552 RCU and 2,756 WCU.
 Under Lambda add the fan-out: `rt_apigw` reads each pushed topic's connections, one Query per topic, 2 per seated human plus 1 per commit.
 The write units go mostly to the game row: a transaction bills 2 WCU per KB of every item it writes, and the row (state, roster and the growing log, 4 to 8 KB) is rewritten on every commit along with every seat; the lease renew and the SCAN touch are an `UpdateItem` on that same row, billed by its whole size, every bot think cycle.
 Cheaper, if it matters: the lease on its own small item, one partition Query for the seats instead of two, and seats written only when they change.
-Note on the free tier: DynamoDB's always-free 25 WCU and 25 RCU are provisioned capacity; the table is `PAY_PER_REQUEST`, which bills each request unit, so these numbers are what the bill counts.
+All three are built; the numbers after them are in "The free tier, provisioned" below.
 
-Unverified until AWS: real IAM (the role's policy against each call), throttling and its retry path, `TransactWriteItems` conflict behaviour under real concurrency (DynamoDB Local serializes, so `TransactionConflict` never occurs and `cas_under_threads` only proves the fence), GSI eventual consistency (Local's indexes are effectively synchronous: on AWS a dashboard, replay list or session revoke read through a GSI right after a write may miss it), TTL deletion (Local never deletes), point-in-time recovery (Local has none), and latency over the network.
+Unverified until AWS: real IAM (the role's policy against each call), throttling (the retry path is unit-tested against the documented bodies, see below), `TransactWriteItems` conflict behaviour under real concurrency (DynamoDB Local serializes, so `TransactionConflict` never occurs and `cas_under_threads` only proves the fence), GSI eventual consistency (Local's indexes are effectively synchronous: on AWS a dashboard, replay list or session revoke read through a GSI right after a write may miss it), TTL deletion (Local never deletes), point-in-time recovery (Local has none), and latency over the network.
 
-Open defects: DynamoDB `user_delete` and `game_delete` cascade in steps after the main delete, so a crash between them leaves unreachable orphans; `users_list`, `bots_list` and `ratings_list` read a whole index partition and sort in C (fine at 41 users, not at thousands); `game_commit` reads the seats on every commit (two Queries on DynamoDB) where a `membership_changed` flag would skip them; `store_import.c` is linked into `cbase` and `bootstrap` too, unused there.
+Open defects: DynamoDB `user_delete` and `game_delete` cascade in steps after the main delete, so a crash between them leaves unreachable orphans; `users_list`, `bots_list` and `ratings_list` read a whole index partition and sort in C (fine at 41 users, not at thousands); `game_commit` reads the seats on every commit (one keys-only Query on DynamoDB) where a `membership_changed` flag would skip it; `store_import.c` is linked into `cbase` and `bootstrap` too, unused there.
+
+### The free tier, provisioned (2026-10-13)
+
+The table was `PAY_PER_REQUEST`, and on-demand capacity has no free tier: every request unit is billed from the first, about $0.17 a month for 100 games at the measured cost.
+DynamoDB's always-free allowance is 25 GB of storage and 25 write and 25 read capacity units of PROVISIONED capacity, and the template now provisions exactly that.
+
+What AWS says, read on 2026-10-13:
+
+- The free tier is "25 WCUs, 25 RCUs" a month "on a per Region, per-payer account basis", and "uses provisioned capacity and the DynamoDB Standard table class" ([DynamoDB pricing, provisioned capacity](https://aws.amazon.com/dynamodb/pricing/provisioned/)).
+- A global secondary index on a provisioned table has its own read and write capacity, "separate from those of its base table"; index updates "consume write capacity units from the index, not from the base table"; and when an index lacks write capacity, "the write activity on the table will be throttled" ([Developer Guide, Global Secondary Indexes, "Provisioned throughput considerations"](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/GSI.html)).
+- Every table and every index needs at least 1 read and 1 write unit ([API reference, ProvisionedThroughput](https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_ProvisionedThroughput.html): "Valid Range: Minimum value of 1").
+- The account's throughput quotas "apply to the sum of the provisioned throughput capacity for all your account's tables and global secondary indexes in a given Region"; a table can lower its capacity at most 27 times a day ([Developer Guide, quotas](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/ServiceQuotas.html)).
+- Unused capacity banks for up to 300 seconds as burst capacity, which "might change in the future" ([Developer Guide, burst and adaptive capacity](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/burst-adaptive-capacity.html)).
+- A transaction writes every item twice, prepare and commit: 2 WCU per KB, consumed even when the transaction is cancelled ([Developer Guide, transactions, "Capacity management"](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/transaction-apis.html)).
+- The 2025-07-15 free tier change (credits and a six-month Free plan for new accounts) did not touch the always-free offers: "30+ AWS services are always free within monthly usage limits on both the Free and Paid plans" ([AWS Free Tier](https://aws.amazon.com/free/)), and "All customers, new and existing, can access over 30 services with always free offers" ([Free Tier FAQs](https://aws.amazon.com/free/free-tier-faqs/)). An account opened before that date keeps them too.
+
+What AWS does not say in so many words is whether an index's provisioned units draw on the same 25.
+The design assumes they do: the allowance is "provisioned capacity" for the account and Region, an index's capacity is provisioned capacity billed in the same unit hours, and the quotas already add tables and indexes together.
+It is the reading under which "$0" cannot be wrong, and the Billing console's Free Tier page settles it after the first deploy (RUNBOOK step 1).
+
+**The split: table 15 RCU / 15 WCU, `gsi1` 5 / 5, `gsi2` 5 / 5, 25 a side.**
+No auto scaling (it would scale past 25 and bill); `test/unit_dynamo.c` (`the_template_stays_free`) fails when the template's six numbers add up to more than 25 a side, when the billing mode is not PROVISIONED, or when an auto scaling resource appears.
+The table gets most because the table takes almost every write: the CAS on the game row is the bulk of every action.
+The indexes take only seat changes, ratings, replays, chat and refresh tokens, and their reads are the dashboard, replay lists and the leaderboard; 5 each is their floor with room.
+An index throttled for writes throttles the table write behind it, which is why neither index is at the minimum of 1.
+
+**What the cuts bought.**
+Measured with `make check-dynamo` and `CBASE_LOG_LEVEL=DEBUG` (the handler's and the drive's per-request tally of `ReturnConsumedCapacity`), each run summed per kind of action, on the same smoke game mix (115 human moves, 26 bot moves, 45 bot cycles that wait out think time, sign-ups, a create, 62 view reads).
+DynamoDB Local reports the table's units and not the indexes', so these are table units; the index units are worked out below.
+
+| step | human move | bot move | bot wait | one smoke game |
+|---|---|---|---|---|
+| before | 3.0 req, 2.1 RCU, 11.6 WCU | 6 req, 3 RCU, 15.0 WCU | 3 req, 1 RCU, 4.0 WCU | 729 req, 439 RCU, 1,984 WCU |
+| (a) the lease on the SCAN marker | 3.0, 2.1, 10.8 | 5, 3, 12.5 | 2, 1, 1.0 | 659, 441, 1,683 |
+| (b) seats written when taken | 3.0, 2.0, 8.6 | 5, 3.4, 10.8 | 2, 1.2, 1.0 | 657, 451, 1,356 |
+| (c) one Query for the seats | 2.0, 1.1, 8.2 | 4, 2, 8.3 | 2, 1, 1.0 | 515, 296, 1,248 |
+
+(a) The lease lives on the game's SCAN marker, not a new `LEASE#<game>` item: the marker is the small item that exists exactly while the game needs bots, and its `updated_at` is already the heartbeat's staleness clock, so one write of well under 1 KB acquires or renews the lease and tells the scan a drive is in flight (it was two writes, the first billed by the row's whole 4 to 8 KB).
+A separate item would still need the marker touch, would outlive its game, and could not tell a missing game from a free lease without reading the row; a refused acquire on the marker with no item back is `CB_E_NOT_FOUND` for free.
+The interplay with commits: the commit's CAS on the row's version is the only thing that keeps two writers apart, and it never depended on the lease, which only keeps two drives off one game.
+A commit now updates the marker in place (an `Update`, where it was a whole `Put`), so a drive's lease survives the drive's own commits; the commit that ends the bot work deletes the marker and the lease with it, and the drive's next renew is refused and it stops, which is right.
+If a later commit brings bot work back while that drive is still finishing a cycle, a second drive can take the new marker's lease for at most that one cycle; the CAS keeps them from both committing.
+A lease renew no longer contends with a human's commit transaction on the row, which on AWS could cancel the commit with `TransactionConflict`.
+(b) A human's MEMBER item was rewritten on every commit (2 WCU in the transaction plus 2 on GSI1 as its sort key moved) to keep the dashboard index in commit order, which nothing reads; it is now written when the seat is taken, as bot seats already were, and the deleted-account skip still holds because the comparison is made after `drop_missing_accounts`.
+(c) Both seat kinds sort below `ROW` in the game partition, so one keys-only range Query reads them; the sort key says which is which.
+
+**Index units, worked out** (Local does not report them; 1 WCU per KB per index item written, 2 when a key moves): a seat taken, 1 on GSI1; a game's end, its rated rows on GSI2 (about 3) and its replay, the SNAP item and one copy per player on GSI1 and the copies again on GSI2 (about 8 and 6 for three players at 2 KB); a chat message, 1 on GSI1; a refresh-token rotation, about 4 across both.
+Before (b), every human move also cost 2 GSI1 units a seated human.
+So a three-seat game now costs about 15 units on GSI1 and 9 on GSI2, against 18,000 an hour each index can sustain at 5 a second.
+
+**What fits.**
+The table sustains 15 WCU a second: 54,000 an hour, about 38.9 million in a 30-day month.
+One smoke game is 1,248 table WCU, so an even month holds about 31,000 such games, and an even hour about 43; foolish plays a few games a day.
+The real limit is a burst, not a month: a game in play writes about 8 WCU a move, so 15 a second is one move a second sustained from every table together, plus the burst bank.
+A 13-WCU commit fits inside one second's 15.
+A commit larger than the second's capacity (the 23-WCU game end with its ratings and seats, or two moves landing in the same second) draws on the burst bank: up to 300 seconds of unused capacity, 4,500 WCU on the table and 1,500 on each index, refilled at the provisioned rate whenever the load is under it.
+When the bank is empty, DynamoDB throttles instead of billing: the store retries with jittered exponential backoff (25 ms doubling to 1 s, at most 10 sends, inside the Lambda deadline less a second or 5 s of pauses with no deadline), counts each throttle in the admin overview (`store_throttles`), and fails the request as a 500 only past that; a move then takes longer, it does not cost money.
+Reads: 15 RCU a second on the table against about 1 RCU a move and 1 per view read.
+
+**Not free, still:** point-in-time recovery bills $0.20 per GB-month of table and is not in the always-free set: at our few MB that is about a tenth of a cent a month, under the zero-spend budget's one-cent threshold but not zero.
+It stays on (it is the only backup); turning it off in the template is the one line that makes DynamoDB exactly $0.
+
+**Switching an existing table:** a stack created while the template said `PAY_PER_REQUEST` switches to PROVISIONED on a stack update in place; DynamoDB allows on-demand to provisioned "at any time", and the way back up to four times in a 24-hour window ([Developer Guide, switching capacity modes](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/bp-switching-capacity-modes.html)).
+
+Unverified until AWS: that the indexes' units come out of the same 25 (the Free Tier page will show it), the throttle bodies (the unit test's are the API reference's; Local never throttles), and the burst bank's behaviour, which AWS documents as subject to change.
+A further cut not built: the commit could leave the transaction when it writes only the row and the marker (a plain `UpdateItem` at 1 WCU a KB instead of 2), with the marker written after it; that halves the dominant cost but splits an atomic write in two, and at a few games a day it is not needed.
 
 ## Module: auth
 

@@ -105,6 +105,9 @@ The steps below do the same by hand, with no CLI.
    On the Free plan, some services are blocked until you upgrade; if a stack resource later fails with an error that mentions the plan, upgrade to the Paid plan (Billing > Free Tier > Upgrade plan), which keeps any remaining credits.
 4. Set a spending alarm: **Billing and Cost Management > Budgets > Create budget > Use a template > Zero spend budget**, with your email.
    Two budgets are free.
+   This is what catches a mistake: anything that starts billing, a DynamoDB table switched to on-demand or provisioned past the free units included, emails you once the month's actual spend passes one cent.
+   After the stack is up, **Billing and Cost Management > Free Tier** lists DynamoDB's always-free offers (25 GB, 25 write capacity units, 25 read capacity units) with this month's usage against each; the stack provisions exactly 25 and 25 across the table and its two indexes, so both should read at or under 100%.
+   If they read over, the indexes are billed outside the free units: tell me, and the split in `ops/cbase.yaml` moves.
 5. Switch the region selector (top right) to **US East (N. Virginia) us-east-1**.
 
 ## 2. Generate the three secrets on your Mac
@@ -303,7 +306,8 @@ The web is the only switch that matters on day one, and it flips back in minutes
 
 ## Costs, for reference
 
-Lambda (1M requests and 400,000 GB-seconds a month), DynamoDB (25 GB), the Function URL, EventBridge Scheduler, CloudFront and ACM are inside their always-free allowances at foolish's volume.
+Lambda (1M requests and 400,000 GB-seconds a month), DynamoDB (25 GB, and 25 write and 25 read units of provisioned capacity, which the table and its indexes use exactly), the Function URL, EventBridge Scheduler, CloudFront and ACM are inside their always-free allowances at foolish's volume.
+DynamoDB's point-in-time recovery is not: $0.20 per GB-month, about a tenth of a cent a month at our few MB.
 The WebSocket API is free for the first 12 months, then $1 per million messages and $0.25 per million connection-minutes: cents a month.
 The code zip in S3 is about 2 MB: well under a cent a month.
 CloudWatch Logs keeps 30 days (set in the template) inside its 5 GB free allowance.
