@@ -389,6 +389,10 @@ As built:
 - `rt_local.c` (serve): `GET /realtime/v1/websocket` on the loop thread, refusing an unknown vsn with 400 and echoing `Sec-WebSocket-Protocol: phoenix` (Chrome fails the handshake otherwise); each client frame runs on the request pool, one at a time per connection, so frames are answered in order.
   The server's idle sweep closes a WebSocket with no client traffic for 120 s, which a client's 25 s heartbeat prevents.
 - `rt_apigw.c` (Lambda): `$connect` stores a CONN row with a 2 h TTL, `$disconnect` deletes it, `$default` runs the frame and writes the row back only when it changed or a third of the TTL has gone (heartbeats cost no write); replies and pushes go through the management API, and 410 deletes the row.
+  API Gateway does not serialize a connection's frames: each is its own invocation, and a page joins its pv-, chat: and gu- channels within a few milliseconds.
+  So the row is written by compare-and-set on its version (`conn_put`, one `TransactWriteItems` with the TOPIC copies), a frame that loses re-reads and runs again (up to 12 times), and its replies are held until the run that stored.
+  A `phx_leave` whose join_ref is not the topic's current one raced the rejoin that followed it: it closes that join_ref only and keeps the topic.
+  Found by the live browser acceptance of 2026-10-14, where three joins each wrote back only their own topic and a stale leave closed the rejoined pv- channel, so the page heard no pushes until it reloaded.
 - `postgrest.c`: GET for player_views, spectator_views, chat_messages, bots, user_elo_ratings and game_snapshots, and POST for chat_messages, through one filter, order, page and select pipeline after a per-table fetch that applies the RLS.
   `gt` is supported (the leaderboard sends `games_played=gt.0`); spectator_views and chat_messages require `game_id=eq.`; a bearer equal to the anon key, or to the request's own apikey, is anon.
 - `rt_deps.h` is a table of the four calls into auth, table_ops and API Gateway that the unit tests swap for fakes.

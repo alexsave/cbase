@@ -126,8 +126,26 @@ static void open_applies_schema_and_seeds_bots(void) {
     T_EQ_INT(CB_STORE_CALL(s, bots_list, collect_bot, &b), 49);
     cb_store_close(s);
 
-    // A database from a newer binary is refused.
+    // Schema 1 -> 2: rt_conns without ver (conn_put's compare-and-set) is
+    // replaced, and its rows go (connections are transient).
     sqlite3 *db;
+    T_EQ_INT(sqlite3_open(path, &db), SQLITE_OK);
+    T_EQ_INT(sqlite3_exec(db, "DROP TABLE rt_conn_topics; DROP TABLE rt_conns; "
+                              "CREATE TABLE rt_conns (conn_id TEXT PRIMARY KEY, user_id TEXT NOT NULL DEFAULT '', "
+                              "vsn INTEGER NOT NULL, expires_at INTEGER NOT NULL); "
+                              "INSERT INTO rt_conns VALUES ('Old=', '', 2, 9999999999999); "
+                              "PRAGMA user_version = 1", NULL, NULL, NULL), SQLITE_OK);
+    sqlite3_close(db);
+    T_EQ_INT(cb_store_open_sqlite(path, &s), CB_OK);
+    cb_conn_row cr;
+    T_EQ_INT(CB_STORE_CALL(s, conn_get, "Old=", &cr), CB_E_NOT_FOUND);
+    cb_conn_row cw = { .conn_id = "New=", .vsn = 2, .expires_at = cb_now_ms() + 60000 };
+    T_EQ_INT(CB_STORE_CALL(s, conn_put, &cw), CB_OK);
+    T_EQ_INT(CB_STORE_CALL(s, conn_get, "New=", &cr), CB_OK);
+    T_EQ_INT(cr.version, 1);
+    cb_store_close(s);
+
+    // A database from a newer binary is refused.
     T_EQ_INT(sqlite3_open(path, &db), SQLITE_OK);
     T_EQ_INT(sqlite3_exec(db, "PRAGMA user_version = 99", NULL, NULL, NULL), SQLITE_OK);
     sqlite3_close(db);
