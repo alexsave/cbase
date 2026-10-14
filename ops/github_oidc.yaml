@@ -50,6 +50,9 @@ Parameters:
   CodeBucket:
     Type: String
     Default: cbase-code-487337210065-us-east-1
+  ApiDistributionId:
+    Type: String
+    Default: EUSADBN5SXTDP
   WebStack:
     Type: String
     Default: cbase-web
@@ -124,19 +127,26 @@ Resources:
                   - lambda:UpdateFunctionCode
                   - lambda:GetFunction
                   - lambda:GetFunctionConfiguration
+                  - lambda:GetFunctionUrlConfig
                   - lambda:GetFunctionCodeSigningConfig
                   - lambda:GetFunctionRecursionConfig
                   - lambda:GetRuntimeManagementConfig
                   - lambda:ListTags
                 Resource: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${FunctionName}"
-              # The update re-resolves the function's `Role: !GetAtt FunctionRole.Arn`,
-              # which CloudFormation reads with the caller's credentials
-              # (measured: without this the code update fails on iam:GetRole and
-              # rolls back). Read-only, and only the stack's own roles.
+              # CloudFormation applies the update with the caller's credentials,
+              # and re-resolves every GetAtt the function and the Outputs name:
+              # FunctionRole.Arn (iam:GetRole), FunctionUrl.FunctionUrl
+              # (lambda:GetFunctionUrlConfig above) and Distribution.DomainName
+              # (cloudfront:GetDistribution). Measured: each one missing failed
+              # the update and rolled it back. All read-only.
               - Sid: StackRoles
                 Effect: Allow
                 Action: iam:GetRole
                 Resource: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${ApiStack}-*"
+              - Sid: StackDistribution
+                Effect: Allow
+                Action: cloudfront:GetDistribution
+                Resource: !Sub "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${ApiDistributionId}"
 
               # ---- the web ----
               - Sid: WebFiles
