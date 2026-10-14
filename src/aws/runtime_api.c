@@ -5,6 +5,8 @@
 // there is no read timeout on it.
 #include "runtime_api.h"
 
+#include "aws/https.h"
+
 #include "util/err.h"
 #include "util/json.h"
 #include "util/log.h"
@@ -69,7 +71,10 @@ static void head_get(const char *head, const char *name, char *out, size_t cap) 
 }
 
 // One request; the response head into `head`, body into `body`. Returns the
-// status, or CB_E_IO.
+// status, or CB_E_IO. The response is read to the close (Connection: close)
+// and parsed by the HTTPS client's parser, the one owner of HTTP/1.1 response
+// framing here: Lambda answers /next with Content-Length for a small event and
+// Transfer-Encoding: chunked for a larger one (unit_runtime_api.c).
 static int roundtrip(const char *host, int port, const char *method, const char *path, const char *extra,
                      const void *body, size_t len, cb_buf *head, cb_buf *resp) {
     int fd = dial(host, port);
@@ -86,24 +91,28 @@ static int roundtrip(const char *host, int port, const char *method, const char 
     cb_buf_init(&in);
     for (;;) {
         if (!cb_buf_reserve(&in, 65536)) { close(fd); cb_buf_free(&in); return CB_E_NOMEM; }
-        ssize_t r = recv(fd, in.p + in.len, in.cap - in.len - 1, 0);
+        ssize_t r = recv(fd, in.p + in.len, in.cap - in.len, 0);
         if (r < 0 && errno == EINTR) continue;
         if (r <= 0) break;
         in.len += (size_t)r;
-        in.p[in.len] = 0;
     }
     close(fd);
-    const char *he = strstr(cb_buf_cstr(&in), "\r\n\r\n");
-    int status = 0;
-    if (!he || sscanf(cb_buf_cstr(&in), "HTTP/1.%*d %d", &status) != 1) { cb_buf_free(&in); return CB_E_IO; }
-    size_t hl = (size_t)(he - (const char *)in.p) + 4;
-    cb_buf_append(head, in.p, hl);
-    char cl[32];
-    head_get(cb_buf_cstr(head), "content-length", cl, sizeof cl);
-    size_t blen = in.len - hl;
-    if (cl[0] && (size_t)strtoull(cl, NULL, 10) < blen) blen = (size_t)strtoull(cl, NULL, 10);
-    cb_buf_append(resp, in.p + hl, blen);
+    cb_https_response res = { 0 };
+    cb_buf_init(&res.headers);
+    cb_buf_init(&res.body);
+    bool keep_alive;
+    int k = cb_https_parse_response(in.p, in.len, false, true, &res, &keep_alive);
     cb_buf_free(&in);
+    int status = CB_E_IO;
+    if (k > 0) {
+        status = res.status;
+        cb_buf_append(head, res.headers.p, res.headers.len);
+        cb_buf_append(resp, res.body.p, res.body.len);
+        if (head->oom || resp->oom) status = CB_E_NOMEM;
+    } else if (k == CB_E_NOMEM) {
+        status = CB_E_NOMEM;
+    }
+    cb_https_response_free(&res);
     return status;
 }
 

@@ -8,6 +8,7 @@
 #include "t.h"
 
 #include "aws/event.h"
+#include "fixture_cloudfront_event.h"
 #include "util/b64.h"
 #include "util/err.h"
 #include "util/json.h"
@@ -354,6 +355,28 @@ static void encode_ws(void) {
     cb_buf_free(&out);
 }
 
+// A request through CloudFront, as Lambda delivered it: 30-odd cloudfront-*
+// and x-amz* headers, the origin's own host, a JSON body. The decoder always
+// read this shape; what broke in production was the chunked /next answer
+// around it (unit_runtime_api.c).
+static void function_url_via_cloudfront(void) {
+    cb_event ev;
+    T_EQ_INT(decode(CLOUDFRONT_SIGNUP_EVENT, &ev), CB_OK);
+    T_EQ_INT(ev.kind, CB_EVENT_HTTP);
+    T_EQ_STR(ev.http.method, "POST");
+    T_EQ_STR(ev.http.path, "/auth/v1/signup");
+    T_EQ_STR(ev.http.query, "");
+    T_EQ_STR(cb_http_header_get(&ev.http, "apikey"), "test-anon-key");
+    T_EQ_STR(cb_http_header_get(&ev.http, "content-type"), "application/json");
+    T_EQ_STR(cb_http_header_get(&ev.http, "x-forwarded-for"), "203.0.113.7");
+    T_EQ_STR(ev.http.peer, "198.51.100.72");
+    static const char BODY[] = "{\"email\":\"probecf1@probe.invalid\",\"password\":\"probe-pass-123\","
+                               "\"data\":{\"username\":\"probecf1\"}}";
+    T_EQ_INT((int)ev.http.body_len, (int)strlen(BODY));
+    T_CHECK(ev.http.body && memcmp(ev.http.body, BODY, strlen(BODY)) == 0);
+    cb_event_free(&ev);
+}
+
 // The raw event a failed decode logs keeps its shape and loses its secrets.
 static void redact_secrets(void) {
     static const char EV[] =
@@ -379,6 +402,7 @@ static void redact_secrets(void) {
 }
 
 int main(void) {
+    T_RUN(function_url_via_cloudfront);
     T_RUN(redact_secrets);
     T_RUN(function_url_request);
     T_RUN(function_url_binary);
