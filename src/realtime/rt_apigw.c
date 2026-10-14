@@ -18,6 +18,7 @@
 #include "rt_apigw.h"
 
 #include "aws/apigw_mgmt.h"
+#include "json_surface.h"
 #include "phoenix.h"
 #include "rt_deps.h"
 #include "util/clock.h"
@@ -126,7 +127,7 @@ static int on_default(cb_ctx *ctx, const cb_ws_event *ev) {
             // start afresh, taking the serializer from the frame's own shape.
             memset(&row, 0, sizeof row);
             cb_strlcpy(row.conn_id, ev->connection_id, sizeof row.conn_id);
-            row.vsn = ev->body_len && ev->body[0] == '[' ? 2 : 1;
+            row.vsn = cb_phx_vsn_of_frame(ev->body, ev->body_len);
         } else if (rc != CB_OK) {
             CB_ERROR("realtime", "conn %s: load failed: %s", ev->connection_id, cb_strerror(rc));
             ret = rc;

@@ -28,6 +28,8 @@
 #include "ctx.h"
 
 #include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 
 #define CB_PGRST_MAX_FILTERS 8
 #define CB_PGRST_MAX_COLS    16
@@ -43,6 +45,21 @@ typedef struct {
     int  limit;                          // 0: none
     int  offset;
 } cb_pgrst_query;
+
+// The kinds of cell PostgREST prints (seed.sql's column types, as the clients
+// read them).
+enum { CB_PGRST_NULL, CB_PGRST_TEXT, CB_PGRST_INT, CB_PGRST_BOOL, CB_PGRST_BYTEA, CB_PGRST_TS, CB_PGRST_UUIDS };
+
+// One cell. `s` (text, or n uuids of 37 bytes each) and `p` (bytea) are owned.
+typedef struct {
+    int      kind;   // CB_PGRST_NULL, or the column's kind
+    char    *s;
+    int64_t  i;
+    uint8_t *p;
+    size_t   n;
+} cb_pgrst_cell;
+
+typedef struct { cb_pgrst_cell c[CB_PGRST_MAX_COLS]; } cb_pgrst_row;
 
 // Parses a raw query string. CB_OK, or CB_E_INVALID (an operator other than
 // eq or gt, a select with renames, casts or embeds, a repeated select, order,

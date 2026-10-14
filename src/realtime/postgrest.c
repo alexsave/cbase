@@ -9,12 +9,12 @@
 // call sites listed in postgrest.h.
 #include "postgrest.h"
 
+#include "json_surface.h"
 #include "net/router.h"
 #include "realtime.h"
 #include "rt_deps.h"
 #include "rt_rows.h"
 #include "util/clock.h"
-#include "util/json.h"
 #include "util/log.h"
 #include "util/uuid.h"
 
@@ -137,8 +137,6 @@ int cb_pgrst_parse(const char *query, cb_pgrst_query *out) {
 
 // ---- tables and rows --------------------------------------------------------------------
 
-enum { V_NULL, V_TEXT, V_INT, V_BOOL, V_BYTEA, V_TS, V_UUIDS };
-
 typedef struct { const char *name; int kind; } pcol;
 
 typedef struct {
@@ -148,20 +146,20 @@ typedef struct {
 } ptable;
 
 #define COLS(a) a, (int)(sizeof a / sizeof a[0])
-static const pcol PV_COLS[] = { { "game_id", V_TEXT }, { "player_id", V_TEXT }, { "view", V_BYTEA },
-                                { "version", V_INT }, { "status", V_TEXT }, { "updated_at", V_TS } };
-static const pcol SV_COLS[] = { { "game_id", V_TEXT }, { "view", V_BYTEA }, { "version", V_INT },
-                                { "status", V_TEXT }, { "updated_at", V_TS } };
-static const pcol CHAT_COLS[] = { { "id", V_TEXT }, { "game_id", V_TEXT }, { "user_id", V_TEXT },
-                                  { "message", V_TEXT }, { "is_system", V_BOOL }, { "created_at", V_TS } };
-static const pcol RATING_COLS[] = { { "user_id", V_TEXT }, { "username", V_TEXT }, { "elo_rating", V_INT },
-                                    { "previous_elo", V_INT }, { "games_played", V_INT }, { "created_at", V_TS },
-                                    { "updated_at", V_TS } };
-static const pcol BOT_COLS[] = { { "id", V_TEXT }, { "nickname", V_TEXT }, { "strategy_key", V_TEXT },
-                                 { "elo_rating", V_INT }, { "previous_elo", V_INT }, { "games_played", V_INT },
-                                 { "created_at", V_TS }, { "updated_at", V_TS } };
-static const pcol SNAP_COLS[] = { { "id", V_TEXT }, { "game_id", V_TEXT }, { "player_ids", V_UUIDS },
-                                  { "moves", V_BYTEA }, { "extras", V_BYTEA }, { "created_at", V_TS } };
+static const pcol PV_COLS[] = { { "game_id", CB_PGRST_TEXT }, { "player_id", CB_PGRST_TEXT }, { "view", CB_PGRST_BYTEA },
+                                { "version", CB_PGRST_INT }, { "status", CB_PGRST_TEXT }, { "updated_at", CB_PGRST_TS } };
+static const pcol SV_COLS[] = { { "game_id", CB_PGRST_TEXT }, { "view", CB_PGRST_BYTEA }, { "version", CB_PGRST_INT },
+                                { "status", CB_PGRST_TEXT }, { "updated_at", CB_PGRST_TS } };
+static const pcol CHAT_COLS[] = { { "id", CB_PGRST_TEXT }, { "game_id", CB_PGRST_TEXT }, { "user_id", CB_PGRST_TEXT },
+                                  { "message", CB_PGRST_TEXT }, { "is_system", CB_PGRST_BOOL }, { "created_at", CB_PGRST_TS } };
+static const pcol RATING_COLS[] = { { "user_id", CB_PGRST_TEXT }, { "username", CB_PGRST_TEXT }, { "elo_rating", CB_PGRST_INT },
+                                    { "previous_elo", CB_PGRST_INT }, { "games_played", CB_PGRST_INT }, { "created_at", CB_PGRST_TS },
+                                    { "updated_at", CB_PGRST_TS } };
+static const pcol BOT_COLS[] = { { "id", CB_PGRST_TEXT }, { "nickname", CB_PGRST_TEXT }, { "strategy_key", CB_PGRST_TEXT },
+                                 { "elo_rating", CB_PGRST_INT }, { "previous_elo", CB_PGRST_INT }, { "games_played", CB_PGRST_INT },
+                                 { "created_at", CB_PGRST_TS }, { "updated_at", CB_PGRST_TS } };
+static const pcol SNAP_COLS[] = { { "id", CB_PGRST_TEXT }, { "game_id", CB_PGRST_TEXT }, { "player_ids", CB_PGRST_UUIDS },
+                                  { "moves", CB_PGRST_BYTEA }, { "extras", CB_PGRST_BYTEA }, { "created_at", CB_PGRST_TS } };
 
 enum { T_PV, T_SV, T_CHAT, T_RATINGS, T_BOTS, T_SNAPS, T_COUNT };
 static const ptable TABLES[T_COUNT] = {
@@ -179,20 +177,9 @@ static int col_index(const ptable *t, const char *name) {
     return -1;
 }
 
-// One cell. `s` (text, or n uuids of 37 bytes each) and `p` (bytea) are owned.
-typedef struct {
-    int      kind;   // V_NULL, or the column's kind
-    char    *s;
-    int64_t  i;
-    uint8_t *p;
-    size_t   n;
-} cell;
-
-typedef struct { cell c[CB_PGRST_MAX_COLS]; } prow;
-
 typedef struct {
     const ptable *t;
-    prow *rows;
+    cb_pgrst_row *rows;
     size_t n, cap;
     bool oom;
 } rowset;
@@ -205,39 +192,39 @@ static void rowset_free(rowset *rs) {
     rs->n = rs->cap = 0;
 }
 
-static prow *row_add(rowset *rs) {
+static cb_pgrst_row *row_add(rowset *rs) {
     if (rs->oom) return NULL;
     if (rs->n == rs->cap) {
         size_t nc = rs->cap ? rs->cap * 2 : 16;
-        prow *nr = realloc(rs->rows, nc * sizeof *nr);
+        cb_pgrst_row *nr = realloc(rs->rows, nc * sizeof *nr);
         if (!nr) { rs->oom = true; return NULL; }
         rs->rows = nr;
         rs->cap = nc;
     }
-    prow *r = &rs->rows[rs->n++];
+    cb_pgrst_row *r = &rs->rows[rs->n++];
     memset(r, 0, sizeof *r);
     return r;
 }
 
-static void set_text(rowset *rs, prow *r, int k, const char *s) {
-    if (!s) { r->c[k].kind = V_NULL; return; }
-    r->c[k].kind = V_TEXT;
+static void set_text(rowset *rs, cb_pgrst_row *r, int k, const char *s) {
+    if (!s) { r->c[k].kind = CB_PGRST_NULL; return; }
+    r->c[k].kind = CB_PGRST_TEXT;
     r->c[k].s = strdup(s);
     if (!r->c[k].s) rs->oom = true;
 }
-static void set_int(prow *r, int k, int64_t v) { r->c[k].kind = V_INT; r->c[k].i = v; }
-static void set_bool(prow *r, int k, bool v) { r->c[k].kind = V_BOOL; r->c[k].i = v; }
-static void set_time(prow *r, int k, int kind, int64_t ms) { r->c[k].kind = kind; r->c[k].i = ms; }
-static void set_bytes(rowset *rs, prow *r, int k, const uint8_t *p, size_t n) {
-    if (!p) { r->c[k].kind = V_NULL; return; }
-    r->c[k].kind = V_BYTEA;
+static void set_int(cb_pgrst_row *r, int k, int64_t v) { r->c[k].kind = CB_PGRST_INT; r->c[k].i = v; }
+static void set_bool(cb_pgrst_row *r, int k, bool v) { r->c[k].kind = CB_PGRST_BOOL; r->c[k].i = v; }
+static void set_time(cb_pgrst_row *r, int k, int kind, int64_t ms) { r->c[k].kind = kind; r->c[k].i = ms; }
+static void set_bytes(rowset *rs, cb_pgrst_row *r, int k, const uint8_t *p, size_t n) {
+    if (!p) { r->c[k].kind = CB_PGRST_NULL; return; }
+    r->c[k].kind = CB_PGRST_BYTEA;
     r->c[k].p = malloc(n ? n : 1);
     if (!r->c[k].p) { rs->oom = true; return; }
     if (n) memcpy(r->c[k].p, p, n);
     r->c[k].n = n;
 }
-static void set_uuids(rowset *rs, prow *r, int k, const cb_uuid *ids, int n) {
-    r->c[k].kind = V_UUIDS;
+static void set_uuids(rowset *rs, cb_pgrst_row *r, int k, const cb_uuid *ids, int n) {
+    r->c[k].kind = CB_PGRST_UUIDS;
     r->c[k].s = calloc((size_t)(n ? n : 1), sizeof(cb_uuid));
     if (!r->c[k].s) { rs->oom = true; return; }
     for (int i = 0; i < n; i++) memcpy(r->c[k].s + (size_t)i * sizeof(cb_uuid), ids[i], sizeof(cb_uuid));
@@ -256,7 +243,7 @@ typedef struct {
 } fetch;
 
 static void add_view(rowset *rs, const cb_view_row *v, bool player) {
-    prow *r = row_add(rs);
+    cb_pgrst_row *r = row_add(rs);
     if (!r) return;
     int k = 0;
     set_text(rs, r, k++, v->game_id);
@@ -264,7 +251,7 @@ static void add_view(rowset *rs, const cb_view_row *v, bool player) {
     set_bytes(rs, r, k++, v->view ? v->view : (const uint8_t *)"", v->view_len);
     set_int(r, k++, v->version);
     set_text(rs, r, k++, v->status);
-    set_time(r, k++, V_TS, v->updated_at);
+    set_time(r, k++, CB_PGRST_TS, v->updated_at);
 }
 
 static bool view_fn(const cb_view_row *v, void *ud) {
@@ -305,14 +292,14 @@ static void fetch_views(fetch *f, bool player) {
 
 static bool chat_fn(const cb_chat_row *c, void *ud) {
     rowset *rs = ud;
-    prow *r = row_add(rs);
+    cb_pgrst_row *r = row_add(rs);
     if (!r) return false;
     set_text(rs, r, 0, c->id);
     set_text(rs, r, 1, c->game_id);
     set_text(rs, r, 2, c->user_id);
     set_text(rs, r, 3, c->message ? c->message : "");
     set_bool(r, 4, c->is_system);
-    set_time(r, 5, V_TS, c->created_at);
+    set_time(r, 5, CB_PGRST_TS, c->created_at);
     return !rs->oom;
 }
 
@@ -330,7 +317,7 @@ static void fetch_chat(fetch *f) {
 
 static bool bot_fn(const cb_bot_row *b, void *ud) {
     rowset *rs = ud;
-    prow *r = row_add(rs);
+    cb_pgrst_row *r = row_add(rs);
     if (!r) return false;
     set_text(rs, r, 0, b->id);
     set_text(rs, r, 1, b->nickname);
@@ -338,14 +325,14 @@ static bool bot_fn(const cb_bot_row *b, void *ud) {
     set_int(r, 3, b->elo_rating);
     if (b->previous_elo >= 0) set_int(r, 4, b->previous_elo);
     set_int(r, 5, b->games_played);
-    set_time(r, 6, V_TS, b->created_at);
-    set_time(r, 7, V_TS, b->updated_at);
+    set_time(r, 6, CB_PGRST_TS, b->created_at);
+    set_time(r, 7, CB_PGRST_TS, b->updated_at);
     return !rs->oom;
 }
 
 static bool rating_fn(const cb_rating_row *g, void *ud) {
     rowset *rs = ud;
-    prow *r = row_add(rs);
+    cb_pgrst_row *r = row_add(rs);
     if (!r) return false;
     set_text(rs, r, 0, g->user_id);
     set_text(rs, r, 1, g->username[0] ? g->username : NULL);
@@ -353,20 +340,20 @@ static bool rating_fn(const cb_rating_row *g, void *ud) {
     if (g->previous_elo >= 0) set_int(r, 3, g->previous_elo);
     set_int(r, 4, g->games_played);
     // created_at: the store does not keep it (cb_rating_row); null.
-    set_time(r, 6, V_TS, g->updated_at);
+    set_time(r, 6, CB_PGRST_TS, g->updated_at);
     return !rs->oom;
 }
 
 static bool snap_fn(const cb_snapshot_row *s, void *ud) {
     rowset *rs = ud;
-    prow *r = row_add(rs);
+    cb_pgrst_row *r = row_add(rs);
     if (!r) return false;
     set_text(rs, r, 0, s->id);
     set_text(rs, r, 1, s->game_id[0] ? s->game_id : NULL);
     set_uuids(rs, r, 2, s->player_ids, s->n_players);
     set_bytes(rs, r, 3, s->moves ? s->moves : (const uint8_t *)"", s->moves_len);
     set_bytes(rs, r, 4, s->extras, s->extras_len);
-    set_time(r, 5, V_TS, s->created_at);
+    set_time(r, 5, CB_PGRST_TS, s->created_at);
     return !rs->oom;
 }
 
@@ -410,20 +397,20 @@ static bool prep_filter(const ptable *t, const cb_pgrst_query *q, int k, pfilter
     out->s = q->filters[k].value;
     const char *v = out->s;
     switch (out->kind) {
-    case V_TEXT: return true;
-    case V_INT: {
+    case CB_PGRST_TEXT: return true;
+    case CB_PGRST_INT: {
         char *e;
         long long x = strtoll(v, &e, 10);
         if (!*v || *e) { snprintf(err, cap, "invalid input syntax for type bigint: \"%s\"", v); return false; }
         out->i = x;
         return true;
     }
-    case V_BOOL:
+    case CB_PGRST_BOOL:
         if (strcmp(v, "true") == 0 || strcmp(v, "t") == 0) out->i = 1;
         else if (strcmp(v, "false") == 0 || strcmp(v, "f") == 0) out->i = 0;
         else { snprintf(err, cap, "invalid input syntax for type boolean: \"%s\"", v); return false; }
         return true;
-    case V_TS:
+    case CB_PGRST_TS:
         if (cb_iso8601_parse(v, strlen(v), &out->i) != CB_OK) { snprintf(err, cap, "invalid input syntax for type timestamp: \"%s\"", v); return false; }
         return true;
     default:
@@ -432,11 +419,11 @@ static bool prep_filter(const ptable *t, const cb_pgrst_query *q, int k, pfilter
     }
 }
 
-static bool matches(const prow *r, const pfilter *f) {
-    const cell *c = &r->c[f->col];
-    if (c->kind == V_NULL) return false;   // NULL = x is not true
+static bool matches(const cb_pgrst_row *r, const pfilter *f) {
+    const cb_pgrst_cell *c = &r->c[f->col];
+    if (c->kind == CB_PGRST_NULL) return false;   // NULL = x is not true
     int cmp;
-    if (f->kind == V_TEXT) cmp = strcmp(c->s, f->s);
+    if (f->kind == CB_PGRST_TEXT) cmp = strcmp(c->s, f->s);
     else cmp = c->i < f->i ? -1 : c->i > f->i;
     return f->gt ? cmp > 0 : cmp == 0;
 }
@@ -444,41 +431,13 @@ static bool matches(const prow *r, const pfilter *f) {
 static _Thread_local struct { int col; bool desc; } g_sort;
 
 static int cmp_rows(const void *a, const void *b) {
-    const cell *x = &((const prow *)a)->c[g_sort.col], *y = &((const prow *)b)->c[g_sort.col];
+    const cb_pgrst_cell *x = &((const cb_pgrst_row *)a)->c[g_sort.col], *y = &((const cb_pgrst_row *)b)->c[g_sort.col];
     int c;
     // Postgres puts NULLs last ascending and first descending.
-    if (x->kind == V_NULL || y->kind == V_NULL) c = (x->kind == V_NULL) - (y->kind == V_NULL);
-    else if (x->kind == V_TEXT) c = strcmp(x->s, y->s);
+    if (x->kind == CB_PGRST_NULL || y->kind == CB_PGRST_NULL) c = (x->kind == CB_PGRST_NULL) - (y->kind == CB_PGRST_NULL);
+    else if (x->kind == CB_PGRST_TEXT) c = strcmp(x->s, y->s);
     else c = x->i < y->i ? -1 : x->i > y->i;
     return g_sort.desc ? -c : c;
-}
-
-// ---- writing rows ------------------------------------------------------------------------
-
-static void write_cell(cb_jw *w, const cell *c) {
-    char ts[48];
-    switch (c->kind) {
-    case V_TEXT:  cb_jw_str(w, c->s); break;
-    case V_INT:   cb_jw_int(w, c->i); break;
-    case V_BOOL:  cb_jw_bool(w, c->i != 0); break;
-    case V_BYTEA: cb_jw_bytea(w, c->p, c->n); break;
-    case V_TS:    cb_rt_ts(c->i, ts, sizeof ts); cb_jw_str(w, ts); break;
-    case V_UUIDS:
-        cb_jw_arr(w);
-        for (size_t i = 0; i < c->n; i++) cb_jw_str(w, c->s + i * sizeof(cb_uuid));
-        cb_jw_end(w);
-        break;
-    default:      cb_jw_null(w); break;
-    }
-}
-
-static void write_row(cb_jw *w, const ptable *t, const prow *r, const int *sel, int n_sel) {
-    cb_jw_obj(w);
-    for (int k = 0; k < n_sel; k++) {
-        cb_jw_key(w, t->cols[sel[k]].name);
-        write_cell(w, &r->c[sel[k]]);
-    }
-    cb_jw_end(w);
 }
 
 // ---- answers --------------------------------------------------------------------------
@@ -486,14 +445,7 @@ static void write_row(cb_jw *w, const ptable *t, const prow *r, const int *sel, 
 static void pg_error(cb_http_res *res, int status, const char *code, const char *message, const char *details) {
     cb_buf b;
     cb_buf_init(&b);
-    cb_jw w;
-    cb_jw_init(&w, &b);
-    cb_jw_obj(&w);
-    cb_jw_kstr(&w, "code", code);
-    cb_jw_kstr(&w, "details", details);
-    cb_jw_knull(&w, "hint");
-    cb_jw_kstr(&w, "message", message);
-    cb_jw_end(&w);
+    cb_js_pgrst_error(&b, code, message, details);
     cb_res_send(res, status, "application/json; charset=utf-8", b.p, b.len);
     cb_buf_free(&b);
 }
@@ -565,17 +517,11 @@ static void send_rows(cb_http_res *res, int status, const rowset *rs, size_t fro
         pg_error(res, 406, "PGRST116", "JSON object requested, multiple (or no) rows returned", details);
         return;
     }
+    const char *names[CB_PGRST_MAX_COLS];
+    for (int k = 0; k < rs->t->n_cols; k++) names[k] = rs->t->cols[k].name;
     cb_buf b;
     cb_buf_init(&b);
-    cb_jw w;
-    cb_jw_init(&w, &b);
-    if (object) write_row(&w, rs->t, &rs->rows[from], sel, n_sel);
-    else {
-        cb_jw_arr(&w);
-        for (size_t i = 0; i < n; i++) write_row(&w, rs->t, &rs->rows[from + i], sel, n_sel);
-        cb_jw_end(&w);
-    }
-    if (!cb_jw_ok(&w)) { cb_buf_free(&b); pg_error(res, 500, "XX000", "internal error", "row encoding failed"); return; }
+    if (cb_js_pgrst_rows(&b, rs->rows + from, n, names, sel, n_sel, object) != CB_OK) { cb_buf_free(&b); pg_error(res, 500, "XX000", "internal error", "row encoding failed"); return; }
     cb_res_send(res, status, object ? "application/vnd.pgrst.object+json; charset=utf-8" : "application/json; charset=utf-8", b.p, b.len);
     if (content_range) {
         char cr[64];
@@ -643,52 +589,29 @@ static void h_get(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
 
 // ---- POST /rest/v1/chat_messages ------------------------------------------------------
 
-// One object of the insert body, read and checked. false and a written answer on a refusal.
-static bool read_chat(cb_ctx *ctx, const char *body, size_t n, const char *base, const char *uid, cb_chat_row *out,
+// One object of the insert body (index -1: the body is that object), read and
+// checked. false and a written answer on a refusal.
+static bool read_chat(cb_ctx *ctx, const char *body, size_t n, int index, const char *uid, cb_chat_row *out,
                       cb_http_res *res) {
-    char path[64], uuidbuf[64];
-    memset(out, 0, sizeof *out);
-#define P(k) (snprintf(path, sizeof path, "%s%s", base, k), path)
-    static const char *const required[3] = { "game_id", "user_id", "message" };
-    for (int i = 0; i < 3; i++) {
-        if (cb_json_find(body, n, P(required[i]), NULL) != CB_JSON_STR) {
-            char msg[160];
-            snprintf(msg, sizeof msg, "null value in column \"%s\" of relation \"chat_messages\" violates not-null constraint", required[i]);
-            pg_error(res, 400, "23502", msg, NULL);
-            return false;
-        }
-    }
-    if (!cb_json_get_str(body, n, P("game_id"), out->game_id, sizeof out->game_id) ||
-        !cb_json_get_str(body, n, P("user_id"), uuidbuf, sizeof uuidbuf) || !cb_uuid_valid(uuidbuf, strlen(uuidbuf))) {
-        pg_error(res, 400, "22P02", "invalid input syntax for type uuid", NULL);
+    const char *missing = NULL;
+    switch (cb_js_pgrst_chat_row(body, n, index, out, &missing)) {
+    case CB_JS_CHAT_OK: break;
+    case CB_JS_CHAT_NOT_OBJECT: pg_error(res, 400, "PGRST102", "Empty or invalid json", NULL); return false;
+    case CB_JS_CHAT_MISSING: {
+        char msg[160];
+        snprintf(msg, sizeof msg, "null value in column \"%s\" of relation \"chat_messages\" violates not-null constraint", missing);
+        pg_error(res, 400, "23502", msg, NULL);
         return false;
     }
-    for (char *p = uuidbuf; *p; p++) *p = (char)tolower((unsigned char)*p);
-    cb_strlcpy(out->user_id, uuidbuf, sizeof out->user_id);
-    cb_span tok;
-    cb_json_find(body, n, P("message"), &tok);
-    out->message = malloc(tok.n + 1);
-    if (!out->message) { pg_error(res, 500, "XX000", "internal error", "out of memory"); return false; }
-    int ml = cb_json_unescape(tok, out->message, tok.n + 1);
-    if (ml < 0 || strlen(out->message) != (size_t)ml) {
+    case CB_JS_CHAT_BAD_UUID: pg_error(res, 400, "22P02", "invalid input syntax for type uuid", NULL); return false;
+    case CB_JS_CHAT_NOMEM: pg_error(res, 500, "XX000", "internal error", "out of memory"); return false;
+    case CB_JS_CHAT_NUL:
         // Postgres TEXT cannot hold a NUL.
         pg_error(res, 400, "22P05", "unsupported Unicode escape sequence", NULL);
         return false;
+    case CB_JS_CHAT_BAD_BOOL: pg_error(res, 400, "22P02", "invalid input syntax for type boolean", NULL); return false;
     }
-    cb_json_type st = cb_json_find(body, n, P("is_system"), NULL);
-    if (st == CB_JSON_BOOL) cb_json_get_bool(body, n, P("is_system"), &out->is_system);
-    else if (st != CB_JSON_MISSING && st != CB_JSON_NULL) { pg_error(res, 400, "22P02", "invalid input syntax for type boolean", NULL); return false; }
-    if (cb_json_find(body, n, P("id"), NULL) == CB_JSON_STR) {
-        if (!cb_json_get_str(body, n, P("id"), uuidbuf, sizeof uuidbuf) || !cb_uuid_valid(uuidbuf, strlen(uuidbuf))) {
-            pg_error(res, 400, "22P02", "invalid input syntax for type uuid", NULL);
-            return false;
-        }
-        for (char *p = uuidbuf; *p; p++) *p = (char)tolower((unsigned char)*p);
-        cb_strlcpy(out->id, uuidbuf, sizeof out->id);
-    } else {
-        cb_uuid_v4(out->id);
-    }
-#undef P
+    if (!out->id[0]) cb_uuid_v4(out->id);
     // The INSERT policy: the caller's own user_id, in a game they sit at.
     int m = strcmp(out->user_id, uid) == 0 ? CB_STORE_CALL(ctx->store, is_member, out->game_id, uid) : 0;
     if (m < 0) { store_error(res, m); return false; }
@@ -723,9 +646,8 @@ static void h_post(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     if (!resolve_select(t, &q, sel, &n_sel, res)) return;
     const char *body = (const char *)req->body;
     size_t n = req->body_len;
-    if (!body || !cb_json_valid(body, n)) { pg_error(res, 400, "PGRST102", "Empty or invalid json", NULL); return; }
-    cb_json_type top = cb_json_find(body, n, "", NULL);
-    int count = top == CB_JSON_OBJ ? 1 : top == CB_JSON_ARR ? cb_json_array_len(body, n, "") : -1;
+    bool array = false;
+    int count = cb_js_pgrst_chat_count(body, n, &array);
     if (count < 0 || count > CHAT_INSERT_MAX) { pg_error(res, 400, "PGRST102", "Empty or invalid json", NULL); return; }
     cb_chat_row rows[CHAT_INSERT_MAX];
     memset(rows, 0, sizeof rows);
@@ -733,13 +655,7 @@ static void h_post(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     int64_t now = cb_now_ms();
     // Every row is checked before any is written: one statement, all or nothing.
     for (; ok < count; ok++) {
-        char base[16];
-        if (top == CB_JSON_ARR) {
-            snprintf(base, sizeof base, "%d", ok);
-            if (cb_json_find(body, n, base, NULL) != CB_JSON_OBJ) { pg_error(res, 400, "PGRST102", "Empty or invalid json", NULL); break; }
-            snprintf(base, sizeof base, "%d.", ok);
-        } else base[0] = 0;
-        if (!read_chat(ctx, body, n, base, u.id, &rows[ok], res)) { cb_chat_row_free(&rows[ok]); break; }
+        if (!read_chat(ctx, body, n, array ? ok : -1, u.id, &rows[ok], res)) { cb_chat_row_free(&rows[ok]); break; }
         rows[ok].created_at = now;
     }
     if (ok == count) {

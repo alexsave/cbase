@@ -3,6 +3,7 @@
 // authorization matrix, and the exact bytes of every push.
 #include "t.h"
 
+#include "json_surface.h"
 #include "lib_rt_fakestore.h"
 #include "realtime/phoenix.h"
 #include "realtime/realtime.h"
