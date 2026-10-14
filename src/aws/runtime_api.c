@@ -6,9 +6,8 @@
 #include "runtime_api.h"
 
 #include "aws/https.h"
-
+#include "json_surface.h"
 #include "util/err.h"
-#include "util/json.h"
 #include "util/log.h"
 
 #include <errno.h>
@@ -160,23 +159,12 @@ int cb_runtime_respond(const char *host, int port, const char *request_id, const
     return post(host, port, path, NULL, body, len);
 }
 
-// The error body Lambda documents: {"errorMessage": .., "errorType": ..}. JSON
-// because that is Lambda's contract (DESIGN.md "Where JSON is tolerated").
-static void error_body(cb_buf *b, const char *type, const char *message) {
-    cb_jw w;
-    cb_jw_init(&w, b);
-    cb_jw_obj(&w);
-    cb_jw_kstr(&w, "errorMessage", message);
-    cb_jw_kstr(&w, "errorType", type);
-    cb_jw_end(&w);
-}
-
 int cb_runtime_error(const char *host, int port, const char *request_id, const char *type, const char *message) {
     char path[256];
     snprintf(path, sizeof path, "/2018-06-01/runtime/invocation/%s/error", request_id);
     cb_buf b;
     cb_buf_init(&b);
-    error_body(&b, type, message);
+    cb_runtime_error_body(&b, type, message);
     int rc = post(host, port, path, "Lambda-Runtime-Function-Error-Type: Unhandled\r\n", b.p, b.len);
     cb_buf_free(&b);
     return rc;
@@ -185,7 +173,7 @@ int cb_runtime_error(const char *host, int port, const char *request_id, const c
 int cb_runtime_init_error(const char *host, int port, const char *type, const char *message) {
     cb_buf b;
     cb_buf_init(&b);
-    error_body(&b, type, message);
+    cb_runtime_error_body(&b, type, message);
     int rc = post(host, port, "/2018-06-01/runtime/init/error", "Lambda-Runtime-Function-Error-Type: Unhandled\r\n", b.p, b.len);
     cb_buf_free(&b);
     return rc;

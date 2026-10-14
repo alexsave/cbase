@@ -3,6 +3,7 @@
 
 #include "aws_call.h"
 #include "event.h"
+#include "json_surface.h"
 #include "sigv4.h"
 
 #include "util/err.h"

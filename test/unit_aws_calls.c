@@ -13,6 +13,7 @@
 #include "aws/https.h"
 #include "aws/lambda_invoke.h"
 #include "aws/sigv4.h"
+#include "json_surface.h"
 #include "lib_aws_tls.h"
 #include "store/store.h"
 #include "util/err.h"

@@ -20,6 +20,7 @@
 #define CB_JSON_SURFACE_H
 
 #include "store/store.h"
+#include "aws/event.h"
 #include "util/str.h"
 
 #include <stdbool.h>
@@ -321,5 +322,58 @@ double dw_consumed(const char *body, size_t n);
 void dw_execute(dw_req *r, const char *statement, const char *next_token);
 // The statement only reads (its first keyword is SELECT).
 bool dw_statement_reads(const char *statement);
+
+// =====================================================================================
+// The Lambda event envelope (cb_event_*): Lambda's event JSON in, the response JSON out
+// (main_lambda.c; the struct is aws/event.h).
+//
+// The kinds of event the one function receives:
+//   HTTP       a Function URL (payload format 2.0, same as an HTTP API):
+//              requestContext.http.method, rawPath, rawQueryString, headers
+//              (lowercase names; repeated values comma-joined), cookies (joined
+//              into one "cookie" header, "; " between), body, isBase64Encoded.
+//              Decoded into a cb_http_req for cb_handle.
+//   WS         an API Gateway WebSocket event: requestContext.routeKey
+//              ($connect | $disconnect | $default), connectionId, domainName,
+//              stage, queryStringParameters ($connect; re-encoded into `query`),
+//              body ($default; base64 when isBase64Encoded).
+//   SCHEDULE   the bot scan: an EventBridge event ("source":"aws.events"), or
+//              the JSON string literal "scan" (the Scheduler's configured input).
+//   BOT_DRIVE  our self-invoke: the JSON string literal "bot_drive:<game id>".
+// The two literals are valid JSON for Lambda and are read by stripping the
+// quotes: no object parsing on that path (decision record, 2026-10-13).
+// The HTTP response is {statusCode, headers:{..}, body, isBase64Encoded} plus
+// "cookies" for any Set-Cookie; a body goes base64 when its Content-Type is
+// application/octet-stream (every function answer) or it is not valid UTF-8.
+// A WS event is answered {statusCode}.
+//
+// Decoding validates the whole event as JSON first (cb_json_valid), then reads
+// only the fields above. Every string the request keeps is copied into
+// ev->storage; pointers into it are set at the end, once the buffer has
+// stopped growing, so a realloc can never leave one dangling.
+
+// CB_OK and *out (free with cb_event_free), or CB_E_INVALID.
+int  cb_event_decode(const char *json, size_t len, cb_event *out);
+// The response JSON for an HTTP event.
+int  cb_event_encode_http(const cb_http_res *res, cb_buf *out);
+// The response JSON for a WebSocket event.
+int  cb_event_encode_ws(int status, cb_buf *out);
+// The response JSON for an event that answers nothing (the bot scan, a
+// self-invoke): {}. CB_OK or CB_E_NOMEM.
+int  cb_event_encode_none(cb_buf *out);
+// The self-invoke payload "bot_drive:<game id>" (with its quotes) into out,
+// the writer of what cb_event_decode reads. Returns its length, or
+// CB_E_INVALID for an id outside [A-Za-z0-9_-]{1,31} or a short cap.
+int  cb_event_bot_drive_payload(const char *game_id, char *out, size_t cap);
+// The first `max` bytes of an event with every secret string cut to
+// "REDACTED <n>": the values of authorization, apikey, cookie(s), body,
+// password and token keys (any case), and the apikey and token parameters of
+// rawQueryString. For the log when an event does not decode.
+int  cb_event_redact(const char *json, size_t len, size_t max, cb_buf *out);
+
+// =====================================================================================
+// The Lambda Runtime API (runtime_api.c): the error body Lambda documents for an
+// invocation or init error, {"errorMessage": .., "errorType": ..}, into b.
+void cb_runtime_error_body(cb_buf *b, const char *type, const char *message);
 
 #endif
