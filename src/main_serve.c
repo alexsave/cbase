@@ -13,6 +13,13 @@
 //
 // The startup line the smoke test waits for, on stderr:
 //   ... INFO  serve: listening on 127.0.0.1:<port>
+//
+// A drain names who asked for it: "serve: SIGTERM from pid 4242 (pkill):
+// draining". On a machine where many agents and tests run at once, a server
+// that drains in the middle of a test was signalled by somebody, and the pid
+// (and the name, while that process is still alive to be named) says who: a
+// `pkill -f "build/cbase serve"` meant for one hand-started server reaches
+// every server whose command line matches, a smoke's among them.
 #include "app/bots.h"
 #include "boot.h"
 #include "config.h"
@@ -29,20 +36,52 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <libproc.h>
+#endif
 
 static int g_sigpipe[2] = { -1, -1 };
 
-static void on_signal(int sig) {
-    char b = (char)sig;
-    ssize_t r = write(g_sigpipe[1], &b, 1);   // async-signal-safe; the loop does the rest
+// What the handler hands the loop: the signal and who sent it.
+typedef struct {
+    int   sig;
+    pid_t from;   // si_pid: 0 for a signal the kernel or a terminal raised
+} sig_note;
+
+static void on_signal(int sig, siginfo_t *info, void *uctx) {
+    sig_note n = { sig, info ? info->si_pid : 0 };
+    // async-signal-safe, and one write below PIPE_BUF is never split; the loop does the rest
+    ssize_t r = write(g_sigpipe[1], &n, sizeof n);
     (void)r;
+}
+
+// The sender's name, or "" once it has exited (pkill and kill(1) usually have).
+static void sender_name(pid_t pid, char *out, size_t cap) {
+    out[0] = 0;
+    if (pid <= 0) return;
+#ifdef __APPLE__
+    if (proc_name(pid, out, (uint32_t)cap) <= 0) out[0] = 0;
+#else
+    char path[64];
+    snprintf(path, sizeof path, "/proc/%d/comm", (int)pid);
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    if (!fgets(out, (int)cap, f)) out[0] = 0;
+    fclose(f);
+    out[strcspn(out, "\n")] = 0;
+#endif
 }
 
 static void on_sigpipe_readable(cb_loop *l, int fd, int ev, void *ud) {
     cb_ctx *ctx = ud;
-    char b;
-    while (read(fd, &b, 1) > 0) {}
-    CB_INFO("serve", "signal received: draining");
+    sig_note n;
+    while (read(fd, &n, sizeof n) == (ssize_t)sizeof n) {
+        char name[64];
+        sender_name(n.from, name, sizeof name);
+        const char *sig = n.sig == SIGTERM ? "SIGTERM" : n.sig == SIGINT ? "SIGINT" : "signal";
+        if (n.from > 0) CB_INFO("serve", "%s from pid %d (%s): draining", sig, (int)n.from, name[0] ? name : "exited");
+        else CB_INFO("serve", "%s: draining", sig);
+    }
     cb_server_drain(ctx->server, 10000);
 }
 
@@ -101,7 +140,8 @@ int main(int argc, char **argv) {
     cb_loop_add(ctx.loop, g_sigpipe[0], CB_EV_READ, on_sigpipe_readable, &ctx);
     struct sigaction sa;
     memset(&sa, 0, sizeof sa);
-    sa.sa_handler = on_signal;
+    sa.sa_sigaction = on_signal;
+    sa.sa_flags = SA_SIGINFO;
     sigaction(SIGTERM, &sa, NULL);
     sigaction(SIGINT, &sa, NULL);
 

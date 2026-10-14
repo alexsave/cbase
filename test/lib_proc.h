@@ -16,8 +16,22 @@ typedef struct {
     char     dir[256]; // a fresh temporary directory for its files
 } tp_child;
 
+// What every child runs as, in its own directory (below).
+#define TP_CHILD_NAME "tpchild"
+
 // Starts `argv` with `env` ("NAME=value" strings, NULL-terminated) added to
 // the current environment, stderr captured. 0, or -1.
+//
+// The child is a test's own: nothing outside the test may signal it. So it
+// does not run as argv[0] but as $TMPDIR/tp-XXXXXX/tpchild, a hard link to it
+// (a copy across file systems), with that path as its argv[0]. Its command
+// line then never matches a pattern aimed at a hand-started binary: on a Mac
+// where several agents work at once, `pkill -f "build/cbase serve"` (run to
+// stop one server by hand) SIGTERMed the game smoke's server mid-game twice,
+// and the smoke failed 14 checks against a server that had drained and gone.
+// Nor does its process name ("tpchild") match `pkill cbase` or `killall cbase`.
+// So argv[0] must be a binary of ours (a system one such as /bin/sh may not
+// run from a copy): a test that needs a scripted child runs its own binary.
 int tp_start(tp_child *c, char *const argv[], char *const env[]);
 // Waits until a line containing `needle` appears in the child's stderr after
 // the line the previous wait matched; copies that line into out. 0, or -1 on

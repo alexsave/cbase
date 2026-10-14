@@ -75,22 +75,55 @@ int tp_tempdir(char *out, size_t cap) {
     return mkdtemp(out) ? 0 : -1;
 }
 
+// The child runs as <c->dir>/TP_CHILD_NAME, a hard link to argv[0] (a copy
+// across file systems), and that path is its argv[0]: see lib_proc.h.
+static int private_image(tp_child *c, const char *bin, char *out, size_t cap) {
+    snprintf(out, cap, "%s/" TP_CHILD_NAME, c->dir);
+    if (link(bin, out) == 0) return 0;
+    int in = open(bin, O_RDONLY), rc = -1;
+    int to = in >= 0 ? open(out, O_WRONLY | O_CREAT | O_EXCL, 0755) : -1;
+    if (to >= 0) {
+        char buf[65536];
+        ssize_t n;
+        rc = 0;
+        while (rc == 0 && (n = read(in, buf, sizeof buf)) != 0)
+            if (n < 0 || write(to, buf, (size_t)n) != n) rc = -1;
+        close(to);
+    }
+    if (in >= 0) close(in);
+    return rc;
+}
+
 int tp_start(tp_child *c, char *const argv[], char *const env[]) {
     memset(c, 0, sizeof *c);
-    if (tp_tempdir(c->dir, sizeof c->dir)) return -1;
+    const char *base = getenv("TMPDIR");
+    snprintf(c->dir, sizeof c->dir, "%s/tp-XXXXXX", base && *base ? base : "/tmp");
+    if (!mkdtemp(c->dir)) return -1;
+    char image[512];
+    if (private_image(c, argv[0], image, sizeof image) != 0) {
+        fprintf(stderr, "tp_start: cannot place %s at %s: %s\n", argv[0], image, strerror(errno));
+        return -1;
+    }
+    int argc = 0;
+    while (argv[argc]) argc++;
+    char **cargv = calloc((size_t)argc + 1, sizeof *cargv);
+    if (!cargv) return -1;
+    cargv[0] = image;
+    for (int i = 1; i < argc; i++) cargv[i] = argv[i];
     int p[2];
-    if (pipe(p)) return -1;
+    if (pipe(p)) { free(cargv); return -1; }
     pid_t pid = fork();
-    if (pid < 0) return -1;
+    if (pid < 0) { free(cargv); return -1; }
     if (pid == 0) {
         dup2(p[1], 2);
         close(p[0]);
         close(p[1]);
         for (int i = 0; env && env[i]; i++) putenv(env[i]);
-        execv(argv[0], argv);
-        fprintf(stderr, "exec %s: %s\n", argv[0], strerror(errno));
+        execv(image, cargv);
+        fprintf(stderr, "exec %s (as %s): %s\n", argv[0], image, strerror(errno));
         _exit(127);
     }
+    free(cargv);
     close(p[1]);
     fcntl(p[0], F_SETFL, O_NONBLOCK);
     c->pid = pid;
