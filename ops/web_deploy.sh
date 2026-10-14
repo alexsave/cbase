@@ -9,6 +9,7 @@
 #   c_base/ops/web_deploy.sh site foolish --prune-static   # and delete hashed files this build does not use
 #
 # A site deploy, in order (c_base/docs/VERCEL.md section 4d):
+#   0. refuses a tree that does not contain origin/main (require_main below);
 #   1. builds the export (npm run build: gen, wasm, next build), unless --out;
 #   2. uploads _next/static/** with Cache-Control immutable for a year, without
 #      deleting anything: a tab still holding the old HTML asks for old chunks;
@@ -109,6 +110,30 @@ set_pages() {
   aws cloudformation wait stack-update-complete --stack-name "$stack"
 }
 
+# A site is deployed only from a tree that contains origin/main.
+#
+# WHY. On 2026-10-14 foolish.cards was deployed by hand from claude/c_base,
+# which had branched before PR #287 (the kernel fix for "anim_build_plan error
+# -2", the lobby that stays up after Ready) reached main. The site then served a
+# web.wasm byte-identical to a c_base build and to no build of main, so a fix
+# that was merged, tested and green was not live, and the defect it fixed was
+# seen twice in production. Every build step here is a function of the tree; the
+# one thing nothing checked was WHICH tree. A tree behind main ships whatever
+# main has fixed since, unfixed, so this refuses it: merge main and deploy again.
+#
+# On a push to main in CI, HEAD is the pushed commit. If main has moved on since,
+# the refusal is right: the newer push deploys. A shallow checkout is enough for
+# that, because HEAD can only contain the fetched main by being it.
+require_main() {
+  local main head
+  git -C "$repo" fetch --quiet origin main || die "cannot fetch origin main to check this tree against it"
+  main="$(git -C "$repo" rev-parse FETCH_HEAD)"
+  head="$(git -C "$repo" rev-parse HEAD)"
+  if ! git -C "$repo" merge-base --is-ancestor "$main" "$head"; then
+    die "this tree ($head) does not contain origin/main ($main): a deploy from it would ship code main has already replaced. Merge main and deploy again."
+  fi
+}
+
 deploy_site() {
   local site="$1" out="$2" prune="$3" app pages_key dist_key
   case "$site" in
@@ -205,6 +230,7 @@ case "$1" in
         *) usage ;;
       esac
     done
+    require_main
     deploy_site "$site" "$out" "$prune" ;;
   -h|--help) usage ;;
   *) usage ;;
