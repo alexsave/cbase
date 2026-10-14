@@ -42,7 +42,7 @@ static int page_tags(const char *html, char out[][1024], int cap) {
 
 // Every golden, byte for byte and in order.
 static void goldens(void) {
-    T_CHECK(UNFURL_N_GOLDENS >= 18);
+    T_CHECK(UNFURL_N_GOLDENS >= 20);
     for (int i = 0; i < UNFURL_N_GOLDENS; i++) {
         const unfurl_golden *g = &UNFURL_GOLDENS[i];
         cb_buf html;
@@ -68,6 +68,7 @@ static void titles(void) {
         { "finished4", "Alex vs Mira vs Jonas vs Priya - a finished Durak game" },
         { "rematch4", "Alex vs Mira vs Jonas vs Priya - a rematch, waiting to start" },
         { "lobby_one_name", "4 players - turn 0" },
+        { "names_one_empty", "2 players - turn 12" },
         { "names_html", "<b>Ann</b> vs Tom & \"Jerry\" 'J' - turn 12" },
         { "names_bad_utf8", "A\xef\xbf\xbd" "B vs C\xef\xbf\xbd - turn 12" },
         { "replay_refuses", "A Durak game in iMessage" },

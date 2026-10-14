@@ -99,6 +99,12 @@ static void edit_bad_utf8(MsgEnvelope *e) {
     set_name(e, 0, "A\x80" "B");
     set_name(e, 1, "C\xe2\x82");
 }
+// Two seats, one of them unnamed: the empty name is dropped before the count,
+// so the title says "2 players".
+static void edit_one_empty(MsgEnvelope *e) {
+    set_name(e, 0, "");
+    set_name(e, 1, "Bob");
+}
 // A lobby with one named seat: the title falls back to "N players".
 static void edit_one_join(MsgEnvelope *e) {
     e->n_joins = 1;
@@ -126,6 +132,7 @@ int main(void) {
     printf("names_html\t1%s\n", make(LIVE2, edit_html, 1));
     printf("names_utf8\t1%s\n", make(LIVE2, edit_utf8, 1));
     printf("names_bad_utf8\t1%s\n", make(LIVE2, edit_bad_utf8, 1));
+    printf("names_one_empty\t1%s\n", make(LIVE2, edit_one_empty, 1));
     char *share = strdup(make(LIVE2, NULL, 1));
     // A share link's extras suffix: replay_b32_decode stops at the dash.
     printf("share_suffix\t1%s-ABCDEFGH\n", share);
@@ -141,6 +148,10 @@ int main(void) {
     printf("garbage\thello-world\n");
     printf("one_garbage\t1zzzz9999\n");
     printf("bad_escape\t1%%E0%%A4%%A\n");
+    // A good game with an escape that is not UTF-8 after it: decodeURIComponent
+    // throws on it, so the whole link is generic, though the base32 decoder
+    // would have skipped the byte.
+    printf("bad_utf8_escape\t1%s%%FF\n", make(LIVE2, NULL, 1));
     // A header that claims a bout the chain never closed: msg_decode accepts it
     // and only msg_replay (MSG_EROUND) refuses it, so a route that skipped the
     // replay would claim "turn 10" here.
