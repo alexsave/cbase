@@ -2993,3 +2993,14 @@ cb_js_chat_rc cb_js_pgrst_chat_row(const char *body, size_t n, int index, cb_cha
 #undef P
     return CB_JS_CHAT_OK;
 }
+
+// =====================================================================================
+// The gateway's error.
+
+void cb_js_gateway_error(cb_buf *out, const char *msg) {
+    cb_jw w;
+    cb_jw_init(&w, out);
+    cb_jw_obj(&w);
+    cb_jw_kstr(&w, "message", msg);
+    cb_jw_end(&w);
+}

@@ -514,4 +514,9 @@ typedef enum {
 // is malloc'd (free with cb_chat_row_free, also on a refusal).
 cb_js_chat_rc cb_js_pgrst_chat_row(const char *body, size_t n, int index, cb_chat_row *out, const char **missing);
 
+// =====================================================================================
+// The gateway's error (net/router.c): {"message": msg}, the shape the Supabase
+// gateway answers with, which both SDKs surface as the error text.
+void cb_js_gateway_error(cb_buf *out, const char *msg);
+
 #endif
