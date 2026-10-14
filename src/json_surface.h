@@ -25,6 +25,7 @@
 #include "realtime/phoenix.h"
 #include "app/table_ops.h"
 #include "realtime/postgrest.h"
+#include "roster.h"
 #include "util/str.h"
 
 #include <stdbool.h>
@@ -518,5 +519,130 @@ cb_js_chat_rc cb_js_pgrst_chat_row(const char *body, size_t n, int index, cb_cha
 // The gateway's error (net/router.c): {"message": msg}, the shape the Supabase
 // gateway answers with, which both SDKs surface as the error text.
 void cb_js_gateway_error(cb_buf *out, const char *msg);
+
+// =====================================================================================
+// The admin console's API (admin/admin.c; admin.h lists the calls). JSON
+// because the console is a browser page we own and JSON is what fetch reads.
+// Times are cb_iso8601's spelling, null for 0 or less.
+//
+// A list answer is written as it streams out of the store: a *_begin opens
+// the document (NULL when out of memory), the matching adds append one
+// element each, and *_end closes it, frees the stream and returns CB_OK, or
+// CB_E_NOMEM when the document did not encode. A stream is always ended,
+// even when the store failed and the document is thrown away.
+typedef struct cb_js_stream cb_js_stream;
+
+// The function's AWS console pages under Lambda; lambda NULL writes
+// "links": null (outside Lambda).
+typedef struct {
+    const char *lambda, *logs_insights, *dynamodb, *backups;
+} cb_js_admin_links;
+
+typedef struct {
+    const char *version, *mode, *store, *table, *public_url;
+    int64_t     uptime_s, started_ms, requests, errors_5xx;
+    bool        conns_known;             // serve: the process holds the sockets
+    int64_t     http_conns, ws_conns;
+    int64_t     games_needing_bots;      // < 0: null (the store could not say)
+    uint64_t    throttled, gave_up;      // store.h cb_store_throttles
+    bool        continuous_backup;       // DynamoDB: point-in-time recovery
+    int64_t     last_backup_ms;          // SQLite: the newest backup file, 0 for none
+    int64_t     pid, max_rss_kb, cpu_user_ms, cpu_sys_ms;
+    cb_js_admin_links links;
+} cb_js_admin_overview;
+int cb_js_admin_overview_write(cb_buf *out, const cb_js_admin_overview *o);
+
+// GET collections: {"store","collections":[name..]}.
+cb_js_stream *cb_js_admin_collections_begin(cb_buf *out, const char *store);
+void          cb_js_admin_collections_add(cb_js_stream *s, const char *name);
+int           cb_js_admin_collections_end(cb_js_stream *s);
+
+// One store row as an object of strings (a NULL name is "?", a NULL value
+// null): the element of browse's and query's "rows".
+void cb_js_admin_row(cb_js_stream *s, int n, const char *const *names, const char *const *values);
+// GET browse: {"collection","rows":[..],"next"}.
+cb_js_stream *cb_js_admin_browse_begin(cb_buf *out, const char *collection);
+int           cb_js_admin_browse_end(cb_js_stream *s, const char *next);
+// POST query: {"dialect","write_allowed","rows":[..],"truncated"}.
+cb_js_stream *cb_js_admin_query_begin(cb_buf *out, const char *dialect, bool write_allowed);
+int           cb_js_admin_query_end(cb_js_stream *s, bool truncated);
+// POST query's body {"statement","confirm"}: false when statement is missing,
+// not a string, or does not fit (stmt has room for the whole body); confirm
+// "" when absent or too long for its buffer.
+bool cb_js_admin_query_body(const char *body, size_t n, char *stmt, size_t stmt_cap, char *confirm, size_t confirm_cap);
+
+// GET users: {"users":[{id,email,username,created_at,last_sign_in_at}..],
+// "offset","next_offset"} (next_offset < 0: null).
+cb_js_stream *cb_js_admin_users_begin(cb_buf *out);
+void          cb_js_admin_users_add(cb_js_stream *s, const cb_user_row *u);
+int           cb_js_admin_users_end(cb_js_stream *s, int64_t offset, int64_t next_offset);
+// POST users/delete's body {"id"}: false when id is missing or does not fit.
+bool cb_js_admin_id_body(const char *body, size_t n, char *id, size_t cap);
+// {"deleted": id} and {"written": path}.
+int  cb_js_admin_deleted(cb_buf *out, const char *id);
+int  cb_js_admin_written(cb_buf *out, const char *path);
+
+// One game as the console shows it: its scalar columns and its seats, read
+// with the kernel's roster_decode by the caller (roster_rc not ROSTER_OK:
+// "seats": null and "roster_error").
+typedef struct {
+    const cb_game_row *g;
+    const char        *status_label;
+    const Roster      *roster;
+    int                roster_rc;
+} cb_js_admin_game;
+// GET games: {"games":[game..],"next"}.
+cb_js_stream *cb_js_admin_games_begin(cb_buf *out);
+void          cb_js_admin_games_add(cb_js_stream *s, const cb_js_admin_game *g);
+int           cb_js_admin_games_end(cb_js_stream *s, const char *next);
+// GET game: the game, its byte sizes, and the spectator envelope as hex
+// (view_ok false: envelope_hex null and envelope_error; envelope_hex NULL
+// with view_ok: null).
+typedef struct {
+    bool        view_ok;
+    const char *envelope_hex;
+    int64_t     envelope_version;
+    const char *envelope_error;
+} cb_js_admin_envelope;
+int cb_js_admin_game_write(cb_buf *out, const cb_js_admin_game *g, const cb_js_admin_envelope *e);
+
+// GET bots: {"bots":[{id,nickname,strategy_key,elo_rating,previous_elo (null
+// when < 0),games_played,updated_at}..]}.
+cb_js_stream *cb_js_admin_bots_begin(cb_buf *out);
+void          cb_js_admin_bots_add(cb_js_stream *s, const cb_bot_row *b);
+int           cb_js_admin_bots_end(cb_js_stream *s);
+
+// GET logs: {"last_seq","entries":[{seq,at,level,module,msg}..],"links"}.
+cb_js_stream *cb_js_admin_logs_begin(cb_buf *out, uint64_t last_seq);
+void          cb_js_admin_logs_add(cb_js_stream *s, uint64_t seq, int64_t at_ms, const char *level, const char *module,
+                                   const char *msg);
+int           cb_js_admin_logs_end(cb_js_stream *s, const cb_js_admin_links *links);
+
+// GET config: {"mode","store","table","allowed_origins","aws_region",
+// "function_name","settings":[{name,value,secret}..]}.
+typedef struct {
+    const char *mode, *store, *table, *allowed_origins, *aws_region, *function_name;
+} cb_js_admin_config;
+cb_js_stream *cb_js_admin_config_begin(cb_buf *out, const cb_js_admin_config *c);
+void          cb_js_admin_config_add(cb_js_stream *s, const char *name, const char *value, bool secret);
+int           cb_js_admin_config_end(cb_js_stream *s);
+
+// GET backups: SQLite's VACUUM INTO files ({"store","kind":"vacuum_into",
+// "dir","files":[{name,size,at}..],"links"}), or DynamoDB's point-in-time
+// recovery explained ({"store","kind":"pitr","explain","links"}).
+typedef struct {
+    const char *name;
+    int64_t     size, mtime_ms;
+} cb_js_admin_backup;
+typedef struct {
+    const char               *store;
+    bool                      sqlite;
+    const char               *dir;        // sqlite
+    const char               *explain;    // not sqlite
+    const cb_js_admin_backup *files;
+    int                       n_files;
+    cb_js_admin_links         links;
+} cb_js_admin_backups;
+int cb_js_admin_backups_write(cb_buf *out, const cb_js_admin_backups *b);
 
 #endif
