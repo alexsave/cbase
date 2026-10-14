@@ -283,6 +283,16 @@ static void api_overview(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) 
                         : CB_E_STATE;
     if (rc < 0) cb_jw_knull(&w, "games_needing_bots");
     else cb_jw_kint(&w, "games_needing_bots", due);
+    // DynamoDB throttling (store.h cb_store_throttles_get): this process's
+    // throttled responses, and the requests that failed still throttled.
+    // Nonzero means the provisioned capacity is too small for the load.
+    cb_store_throttles th;
+    cb_store_throttles_get(&th);
+    cb_jw_key(&w, "store_throttles");
+    cb_jw_obj(&w);
+    cb_jw_kint(&w, "throttled", (int64_t)th.throttled);
+    cb_jw_kint(&w, "gave_up", (int64_t)th.gave_up);
+    cb_jw_end(&w);
     if (is_sqlite(ctx)) {
         backup_file f[1];
         if (list_backups(ctx, f, 1) == 1) kiso(&w, "last_backup", f[0].mtime_ms);

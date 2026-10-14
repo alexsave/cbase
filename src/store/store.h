@@ -356,6 +356,25 @@ typedef struct {
 } cb_store_tally;
 void cb_store_tally_take(cb_store_tally *out);
 
+// Throttling (DynamoDB; DESIGN.md "The free tier, provisioned"). The table's
+// capacity is provisioned, so a burst past it is throttled rather than
+// billed: a request answered ProvisionedThroughputExceededException,
+// ThrottlingException or RequestLimitExceeded, a transaction cancelled for
+// throttling, and a batch left partly unprocessed are sent again after a
+// jittered exponential pause, while the calling thread's deadline allows.
+// The deadline is the Lambda invocation's (main_lambda.c sets it around each
+// invocation); with none, each request gets CB_STORE_RETRY_WALL_MS of pauses.
+// A request still throttled at its deadline fails as CB_E_DB.
+#define CB_STORE_RETRY_WALL_MS 5000
+void cb_store_set_deadline(int64_t deadline_ms);   // epoch ms; 0: none
+// This process's throttling since it started (the admin overview shows it;
+// under Lambda it is the warm container's, and every throttle is also a WARN
+// in the log): responses that were throttled, and requests given up on.
+typedef struct {
+    uint64_t throttled, gave_up;
+} cb_store_throttles;
+void cb_store_throttles_get(cb_store_throttles *out);
+
 // The SQLite schema version this binary applies (store_sqlite.c), and the
 // embedded schema text (build/gen/schema_sql.c, from sql/schema.sql).
 #define CB_SCHEMA_VERSION 1

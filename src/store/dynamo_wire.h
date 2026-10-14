@@ -73,6 +73,9 @@ typedef enum {
 } dw_status;
 
 dw_status dw_classify(int http_status, const char *body, size_t n);
+// A DW_RETRY that is throttling (ProvisionedThroughputExceededException,
+// ThrottlingException, RequestLimitExceeded), not a 5xx or a conflict.
+bool dw_throttled(const char *body, size_t n);
 // The error's __type after the '#', and its message, for the log.
 void dw_error_text(const char *body, size_t n, char *out, size_t cap);
 
@@ -82,6 +85,7 @@ typedef enum {
     DW_REASON_COND,           // "ConditionalCheckFailed"
     DW_REASON_CONFLICT,       // "TransactionConflict" (another transaction on the item: retry)
     DW_REASON_OTHER,
+    DW_REASON_THROTTLED,      // "ThrottlingError" or "ProvisionedThroughputExceeded": retry after a pause
     DW_REASON_MISSING = -1,   // no entry at that index
 } dw_reason;
 // The reason at `index`; *has_item says whether the failed item came back

@@ -698,6 +698,149 @@ static void flow_throttle_retry(void) {
     cb_store_close(s);
 }
 
+// Throttling, as DynamoDB answers it on a provisioned table: the two error
+// bodies (the documented __type and message of each), and a transaction
+// cancelled for throttling (the CancellationReasons codes DynamoDB documents
+// for TransactionCanceledException). Written from the API reference, not
+// captured from AWS: DynamoDB Local never throttles.
+static const char THROTTLED_PT[] =
+    "{\"__type\":\"com.amazonaws.dynamodb.v20120810#ProvisionedThroughputExceededException\","
+    "\"message\":\"The level of configured provisioned throughput for the table was exceeded. "
+    "Consider increasing your provisioning level with the UpdateTable API.\"}";
+static const char THROTTLED_RATE[] =
+    "{\"__type\":\"com.amazon.coral.availability#ThrottlingException\","
+    "\"message\":\"Rate of requests exceeds the allowed throughput.\"}";
+static const char TXN_THROTTLED[] =
+    "{\"__type\":\"com.amazonaws.dynamodb.v20120810#TransactionCanceledException\","
+    "\"CancellationReasons\":[{\"Code\":\"ThrottlingError\",\"Message\":\"Throughput exceeds the current "
+    "capacity of your table or index. DynamoDB is automatically scaling your table or index so please try again "
+    "shortly.\"},{\"Code\":\"None\"}],\"Message\":\"Transaction cancelled, please refer cancellation reasons for "
+    "specific reasons [ThrottlingError, None]\"}";
+static const char TXN_THROTTLED_PT[] =
+    "{\"__type\":\"com.amazonaws.dynamodb.v20120810#TransactionCanceledException\","
+    "\"CancellationReasons\":[{\"Code\":\"None\"},{\"Code\":\"ProvisionedThroughputExceeded\",\"Message\":"
+    "\"The level of configured provisioned throughput for the table was exceeded.\"}],"
+    "\"Message\":\"Transaction cancelled [None, ProvisionedThroughputExceeded]\"}";
+
+static uint64_t throttled_since(const cb_store_throttles *t0) {
+    cb_store_throttles t;
+    cb_store_throttles_get(&t);
+    return t.throttled - t0->throttled;
+}
+static uint64_t gave_up_since(const cb_store_throttles *t0) {
+    cb_store_throttles t;
+    cb_store_throttles_get(&t);
+    return t.gave_up - t0->gave_up;
+}
+
+// Both throttles, then answered: the read succeeds, and the overview's
+// counter saw two throttled responses and nothing given up.
+static void flow_throttled_then_answered(void) {
+    static const step steps[] = {
+        { "GetItem", NULL, 400, THROTTLED_PT },
+        { "GetItem", NULL, 400, THROTTLED_RATE },
+        { "GetItem", NULL, 200, "{}" },
+    };
+    RUN(steps, s);
+    cb_store_throttles t0;
+    cb_store_throttles_get(&t0);
+    cb_game_row g = { 0 };
+    T_EQ_INT(CB_STORE_CALL(s, game_get, "ab12cd", &g), CB_E_NOT_FOUND);
+    T_EQ_INT(sc_.at, 3);
+    T_EQ_INT(throttled_since(&t0), 2);
+    T_EQ_INT(gave_up_since(&t0), 0);
+    cb_store_close(s);
+}
+
+// A Lambda deadline too close for a pause: the throttled request is not sent
+// again, it fails at once, and is counted as given up.
+static void flow_throttled_past_the_deadline(void) {
+    static const step steps[] = {
+        { "GetItem", NULL, 400, THROTTLED_PT },
+        { "GetItem", NULL, 200, "{}" },   // never reached
+    };
+    RUN(steps, s);
+    cb_store_throttles t0;
+    cb_store_throttles_get(&t0);
+    cb_store_set_deadline(cb_now_ms() + 200);
+    int64_t t = cb_mono_ms();
+    cb_game_row g = { 0 };
+    T_EQ_INT(CB_STORE_CALL(s, game_get, "ab12cd", &g), CB_E_DB);
+    T_CHECK(cb_mono_ms() - t < 200);
+    cb_store_set_deadline(0);
+    T_EQ_INT(sc_.at, 1);
+    T_EQ_INT(throttled_since(&t0), 1);
+    T_EQ_INT(gave_up_since(&t0), 1);
+    cb_store_close(s);
+}
+
+// Throttling never ends: with no deadline the pauses stop at the wall cap,
+// well short of forever, and the request fails.
+static void flow_throttled_to_the_wall(void) {
+    static const step steps[] = {
+        { "GetItem", NULL, 400, THROTTLED_RATE }, { "GetItem", NULL, 400, THROTTLED_RATE },
+        { "GetItem", NULL, 400, THROTTLED_RATE }, { "GetItem", NULL, 400, THROTTLED_RATE },
+        { "GetItem", NULL, 400, THROTTLED_RATE }, { "GetItem", NULL, 400, THROTTLED_RATE },
+        { "GetItem", NULL, 400, THROTTLED_RATE }, { "GetItem", NULL, 400, THROTTLED_RATE },
+        { "GetItem", NULL, 400, THROTTLED_RATE }, { "GetItem", NULL, 400, THROTTLED_RATE },
+        { "GetItem", NULL, 400, THROTTLED_RATE }, { "GetItem", NULL, 400, THROTTLED_RATE },
+        { "GetItem", NULL, 400, THROTTLED_RATE }, { "GetItem", NULL, 400, THROTTLED_RATE },
+        { "GetItem", NULL, 400, THROTTLED_RATE }, { "GetItem", NULL, 400, THROTTLED_RATE },
+    };
+    RUN(steps, s);
+    cb_store_throttles t0;
+    cb_store_throttles_get(&t0);
+    int64_t t = cb_mono_ms();
+    cb_game_row g = { 0 };
+    T_EQ_INT(CB_STORE_CALL(s, game_get, "ab12cd", &g), CB_E_DB);
+    int64_t took = cb_mono_ms() - t;
+    T_CHECK(took <= CB_STORE_RETRY_WALL_MS + 500);
+    T_CHECK(sc_.at >= 2 && sc_.at < 16);   // sent again, and stopped
+    T_EQ_INT(throttled_since(&t0), (uint64_t)sc_.at);
+    T_EQ_INT(gave_up_since(&t0), 1);
+    cb_store_close(s);
+}
+
+// A transaction cancelled for throttling (either code) is sent again, not
+// read as a refused condition: a sign-up goes through on the third send.
+static void flow_transaction_throttled(void) {
+    static const step steps[] = {
+        { "TransactWriteItems", NULL, 400, TXN_THROTTLED },
+        { "TransactWriteItems", NULL, 400, TXN_THROTTLED_PT },
+        { "TransactWriteItems", NULL, 200, "{}" },
+    };
+    RUN(steps, s);
+    cb_store_throttles t0;
+    cb_store_throttles_get(&t0);
+    cb_user_row u = { .id = U1, .email = "a@x.io", .username = "A", .created_at = 1 };
+    T_EQ_INT(CB_STORE_CALL(s, user_create, &u), CB_OK);
+    T_EQ_INT(sc_.at, 3);
+    T_EQ_INT(throttled_since(&t0), 2);
+    cb_store_close(s);
+}
+
+// A batch DynamoDB left partly unprocessed (its way of throttling a batch)
+// is counted as throttled and sent again.
+static void flow_batch_unprocessed(void) {
+    static const char PART[] = "{\"Responses\":{\"cbase\":[]},\"UnprocessedKeys\":{\"cbase\":{\"Keys\":"
+                               "[{\"pk\":{\"S\":\"BOT#" B1 "\"},\"sk\":{\"S\":\"BOT\"}}]}}}";
+    static const char ALL[] = "{\"Responses\":{\"cbase\":[{\"pk\":{\"S\":\"BOT#" B1 "\"},\"sk\":{\"S\":\"BOT\"},"
+                              "\"elo_rating\":{\"N\":\"1234\"}}]},\"UnprocessedKeys\":{}}";
+    static const step steps[] = {
+        { "BatchGetItem", NULL, 200, PART },
+        { "BatchGetItem", NULL, 200, ALL },
+    };
+    RUN(steps, s);
+    cb_store_throttles t0;
+    cb_store_throttles_get(&t0);
+    const char *ids[1] = { B1 };
+    int32_t elo[1] = { 0 };
+    T_EQ_INT(CB_STORE_CALL(s, ratings_for, ids, 1, elo), CB_OK);
+    T_EQ_INT(elo[0], 1234);
+    T_EQ_INT(throttled_since(&t0), 1);
+    cb_store_close(s);
+}
+
 typedef struct { int n; char ids[8][16]; } ids_t;
 static bool collect_id(const char *id, void *ud) {
     ids_t *t = ud;
@@ -982,6 +1125,11 @@ int main(void) {
     T_RUN(flow_commit_drops_missing_account);
     T_RUN(flow_lease);
     T_RUN(flow_throttle_retry);
+    T_RUN(flow_throttled_then_answered);
+    T_RUN(flow_throttled_past_the_deadline);
+    T_RUN(flow_throttled_to_the_wall);
+    T_RUN(flow_transaction_throttled);
+    T_RUN(flow_batch_unprocessed);
     T_RUN(flow_scan_pages);
     T_RUN(flow_signup_and_tokens);
     T_RUN(flow_chat_order);

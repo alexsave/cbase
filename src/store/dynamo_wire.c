@@ -439,6 +439,13 @@ dw_status dw_classify(int status, const char *body, size_t n) {
     return DW_FAILED;
 }
 
+bool dw_throttled(const char *body, size_t n) {
+    char t[128];
+    error_type(body, n, t, sizeof t);
+    return strcmp(t, "ProvisionedThroughputExceededException") == 0 || strcmp(t, "ThrottlingException") == 0 ||
+           strcmp(t, "RequestLimitExceeded") == 0;
+}
+
 void dw_error_text(const char *body, size_t n, char *out, size_t cap) {
     char t[128], m[256] = "";
     error_type(body, n, t, sizeof t);
@@ -459,6 +466,8 @@ dw_reason dw_cancel_reason(const char *body, size_t n, int index, bool *has_item
     if (strcmp(code, "None") == 0) return DW_REASON_NONE;
     if (strcmp(code, "ConditionalCheckFailed") == 0) return DW_REASON_COND;
     if (strcmp(code, "TransactionConflict") == 0) return DW_REASON_CONFLICT;
+    if (strcmp(code, "ThrottlingError") == 0 || strcmp(code, "ProvisionedThroughputExceeded") == 0)
+        return DW_REASON_THROTTLED;
     return DW_REASON_OTHER;
 }
 

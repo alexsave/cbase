@@ -33,6 +33,8 @@
 #include "util/log.h"
 #include "util/uuid.h"
 
+#include <stdatomic.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -104,10 +106,71 @@ void cb_store_tally_take(cb_store_tally *out) {
     }
 }
 
+// ---- throttling (store.h cb_store_set_deadline) -------------------------------------
+
+static _Thread_local int64_t t_deadline;
+static _Atomic uint64_t g_throttled, g_gave_up;
+
+void cb_store_set_deadline(int64_t deadline_ms) { t_deadline = deadline_ms; }
+
+void cb_store_throttles_get(cb_store_throttles *out) {
+    out->throttled = atomic_load_explicit(&g_throttled, memory_order_relaxed);
+    out->gave_up = atomic_load_explicit(&g_gave_up, memory_order_relaxed);
+}
+
+// The pauses between sends of one request: full jitter (a uniform pause up to
+// a ceiling that doubles from RETRY_BASE_MS to RETRY_CAP_MS), at most
+// RETRY_SENDS sends, and every pause over before `until`: the thread's
+// deadline less DEADLINE_MARGIN_MS (what the caller needs to answer after a
+// request given up), or, with no deadline, CB_STORE_RETRY_WALL_MS from the
+// first send.
+#define RETRY_SENDS        10
+#define RETRY_BASE_MS      25
+#define RETRY_CAP_MS       1000
+#define DEADLINE_MARGIN_MS 1000
+
+typedef struct {
+    int64_t until;
+    int     sends;
+} backoff;
+
+static _Thread_local uint64_t t_rng;
+
+static void backoff_start(backoff *b) {
+    b->sends = 1;
+    b->until = t_deadline > 0 ? t_deadline - DEADLINE_MARGIN_MS : cb_now_ms() + CB_STORE_RETRY_WALL_MS;
+}
+
+// Waits before the next send, counting a throttle. false: no send left, or
+// no time for the pause; a throttled request is then counted as given up.
+static bool backoff_pause(backoff *b, bool throttled, const char *target) {
+    if (throttled) atomic_fetch_add_explicit(&g_throttled, 1, memory_order_relaxed);
+    int64_t ceiling = RETRY_BASE_MS << (b->sends < 7 ? b->sends - 1 : 6);
+    if (ceiling > RETRY_CAP_MS) ceiling = RETRY_CAP_MS;
+    if (!t_rng) t_rng = (uint64_t)cb_mono_ms() * 0x9E3779B97F4A7C15ull ^ (uint64_t)(uintptr_t)&t_rng;
+    t_rng ^= t_rng << 13;   // xorshift64: a jitter, not a secret
+    t_rng ^= t_rng >> 7;
+    t_rng ^= t_rng << 17;
+    int64_t pause = (int64_t)(t_rng % (uint64_t)(ceiling + 1));
+    if (b->sends >= RETRY_SENDS || cb_now_ms() + pause > b->until) {
+        if (throttled) {
+            atomic_fetch_add_explicit(&g_gave_up, 1, memory_order_relaxed);
+            CB_WARN(MOD, "%s: throttled, given up after %d send(s)", target, b->sends);
+        }
+        return false;
+    }
+    if (throttled) CB_WARN(MOD, "%s: throttled, send %d after %lld ms", target, b->sends + 1, (long long)pause);
+    b->sends++;
+    cb_sleep_ms(pause);
+    return true;
+}
+
 // Sends `r`, again after a pause while DynamoDB says to (throttled, a 5xx, a
-// lost connection), up to ATTEMPTS times. The answer is in *resp.
+// lost connection), as long as the backoff allows. The answer is in *resp.
 static dw_status call(dyn *d, const dw_req *r, cb_buf *resp) {
-    for (int attempt = 0;; attempt++) {
+    backoff b;
+    backoff_start(&b);
+    for (;;) {
         int status = 0;
         cb_buf_reset(resp);
         if (r->body.oom) return DW_FAILED;
@@ -116,34 +179,39 @@ static dw_status call(dyn *d, const dw_req *r, cb_buf *resp) {
         int rc = d->send(d->ud, r->target, r->body.p, r->body.len, &status, resp);
         if (rc == CB_OK) *(ti < TALLY_READS ? &t_rcu : &t_wcu) += dw_consumed(cb_buf_cstr(resp), resp->len);
         dw_status st = rc != CB_OK ? DW_RETRY : dw_classify(status, cb_buf_cstr(resp), resp->len);
-        if (st == DW_FAILED || (st == DW_RETRY && attempt + 1 >= ATTEMPTS)) {
+        if (st == DW_RETRY && backoff_pause(&b, rc == CB_OK && dw_throttled(cb_buf_cstr(resp), resp->len), r->target))
+            continue;
+        if (st == DW_FAILED || st == DW_RETRY) {
             char why[320];
             if (rc != CB_OK) snprintf(why, sizeof why, "transport: %s", cb_strerror(rc));
             else dw_error_text(cb_buf_cstr(resp), resp->len, why, sizeof why);
             CB_ERROR(MOD, "%s: HTTP %d %s", r->target, status, why);
             return DW_FAILED;
         }
-        if (st != DW_RETRY) return st;
-        cb_sleep_ms(25LL << attempt);
+        return st;
     }
 }
 
 // A transaction, sent again while it is cancelled only by transient
-// conflicts (another transaction on one of its items). A refusal by a
-// condition is the caller's to read.
+// conflicts (another transaction on one of its items) or by throttling. A
+// refusal by a condition is the caller's to read; throttling past the
+// backoff is DW_FAILED.
 static dw_status txn(dyn *d, const dw_req *r, cb_buf *resp) {
-    for (int attempt = 0;; attempt++) {
+    backoff b;
+    backoff_start(&b);
+    for (;;) {
         dw_status st = call(d, r, resp);
-        if (st != DW_TXN_CANCELED || attempt + 1 >= ATTEMPTS) return st;
-        bool conflict = false, cond = false, item;
+        if (st != DW_TXN_CANCELED) return st;
+        bool conflict = false, cond = false, throttled = false, item;
         for (int i = 0;; i++) {
             dw_reason why = dw_cancel_reason(cb_buf_cstr(resp), resp->len, i, &item);
             if (why == DW_REASON_MISSING) break;
             conflict |= why == DW_REASON_CONFLICT;
+            throttled |= why == DW_REASON_THROTTLED;
             cond |= why == DW_REASON_COND || why == DW_REASON_OTHER;
         }
-        if (cond || !conflict) return st;
-        cb_sleep_ms(25LL << attempt);
+        if (cond || !(conflict || throttled)) return st;
+        if (!backoff_pause(&b, throttled, r->target)) return throttled ? DW_FAILED : st;
     }
 }
 
@@ -237,11 +305,14 @@ static int batch_delete(dyn *d, const keylist *l) {
     for (int i = 0; rc == CB_OK && i < l->n; i += 25) {
         int n = l->n - i < 25 ? l->n - i : 25;
         dw_batch_delete(&r, d->table, l->keys + i, n);
-        for (int attempt = 0;; attempt++) {
+        backoff b;
+        backoff_start(&b);
+        for (;;) {
             if (call(d, &r, &resp) != DW_OK) { rc = CB_E_DB; break; }
             if (!dw_unprocessed(cb_buf_cstr(&resp), resp.len)) break;
-            if (attempt + 1 >= ATTEMPTS) { rc = CB_E_DB; break; }
-            cb_sleep_ms(25LL << attempt);   // deletes are idempotent: send the batch again
+            // A batch left partly undone is a batch throttled. Deletes are
+            // idempotent: send the whole batch again.
+            if (!backoff_pause(&b, true, r.target)) { rc = CB_E_DB; break; }
         }
     }
     dw_req_free(&r);
@@ -477,10 +548,12 @@ static int read_ratings(dyn *d, const char *const *ids, const bool *is_bot, int 
     cb_buf resp;
     cb_buf_init(&resp);
     int rc = CB_E_DB;
-    for (int attempt = 0; attempt < ATTEMPTS; attempt++) {
+    backoff b;
+    backoff_start(&b);
+    for (;;) {
         if (call(d, &r, &resp) != DW_OK) break;
-        if (dw_unprocessed(cb_buf_cstr(&resp), resp.len)) {   // small batch: ask for all of it again
-            cb_sleep_ms(25LL << attempt);
+        if (dw_unprocessed(cb_buf_cstr(&resp), resp.len)) {   // throttled in part; small batch: ask for all of it again
+            if (!backoff_pause(&b, true, r.target)) break;
             continue;
         }
         dw_ratings_read(cb_buf_cstr(&resp), resp.len, d->table, ids, is_bot, n, both, out);
@@ -1004,10 +1077,13 @@ static int conn_batch(dyn *d, dw_req *r) {
     cb_buf resp;
     cb_buf_init(&resp);
     int rc = CB_E_DB;
-    for (int attempt = 0; attempt < ATTEMPTS; attempt++) {
+    backoff b;
+    backoff_start(&b);
+    for (;;) {
         if (call(d, r, &resp) != DW_OK) break;
         if (!dw_unprocessed(cb_buf_cstr(&resp), resp.len)) { rc = CB_OK; break; }
-        cb_sleep_ms(25LL << attempt);   // puts and deletes of whole items: idempotent
+        // Throttled in part. Puts and deletes of whole items: idempotent.
+        if (!backoff_pause(&b, true, r->target)) break;
     }
     cb_buf_free(&resp);
     dw_req_free(r);
