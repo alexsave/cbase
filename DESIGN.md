@@ -257,7 +257,7 @@ Found here:
 Owner: `src/realtime/`.
 Headers: `realtime.h` (the publish calls and the transport interface), `phoenix.h` (the protocol, shared), `rt_local.h` (serve's in-process WebSocket), `rt_apigw.h` (API Gateway's WebSocket API and CONN rows), `postgrest.h` (the reads the clients make, and the chat insert).
 
-Both Phoenix serializers are needed: realtime-js 2.x sends `vsn=2.0.0` arrays, supabase-swift `vsn=1.0.0` objects.
+Both Phoenix serializers are kept: realtime-js 2.x and supabase-swift 2.55.4 (the iOS app's) send `vsn=2.0.0` arrays, and older supabase-swift releases sent `vsn=1.0.0` objects.
 Topic policy in C mirrors the `realtime.messages` policies: `pv-<uid>` only that user, `gu-<game>-<uid>` that user if a member, `game-<game>` any authenticated user, `chat:<game>` members.
 There is no catch-up, as today: a client that missed a push refetches its view row when it rejoins.
 The web client reaches API Gateway through CloudFront at the same domain, `/realtime/v1/websocket` rewritten to the stage by a CloudFront Function; if that proves fragile, the fallback is a client-side realtime URL override, documented, not built.
@@ -280,10 +280,10 @@ As built:
   Integration kept it: the API Gateway entries cannot be real without AWS, and the fakes let the unit tests pin edge cases (410, expired rows, a lost CONN row) deterministically.
   The production table is exercised end to end by the game smoke, where real JWTs, the real table_ops and `rt_local` carry every push.
 
-Tests: `test/unit_phoenix.c`, `test/unit_postgrest.c`, `test/unit_rt_apigw.c`, `test/unit_rt_local.c` (a real loopback server), and the game smoke, where A listens as realtime-js (vsn 2.0.0, gu-) and B as supabase-swift (vsn 1.0.0, pv- and game-).
+Tests: `test/unit_phoenix.c`, `test/unit_postgrest.c`, `test/unit_rt_apigw.c`, `test/unit_rt_local.c` (a real loopback server), and the game smoke, where A listens as realtime-js (vsn 2.0.0, gu-) and B on the object serializer (vsn 1.0.0, pv- and game-).
 The browser acceptance ran realtime-js against it (see Acceptance).
 
-Untested: supabase-swift against a running cbase; `rt_apigw` against real API Gateway.
+Untested: `rt_apigw` against real API Gateway. supabase-swift was run against `cbase serve` from the iOS app (see Acceptance on iOS), and its recorded frames are `unit_phoenix.c` supabase_swift_frames.
 Carried over on purpose: no catch-up after a missed push; chat `is_system` settable by a client; chat length bounded only by the 1 MB body limit.
 
 ## Module: aws
@@ -536,6 +536,15 @@ The detailed record and screenshots are in REPORT.md.
 
 Found on the way, NOT a c_base defect: when the first player joins a one-player lobby, the host's page fails to plan the join's animation (`anim_build_plan error -2`, `n_players < 2` in anim_plan.c, because the page plans against its held one-player board) and its animation queue then stalls until a reload.
 The same failure reproduces against `e2e/fake_supabase.mts`, which mirrors the hosted adapter, so production has it today; it belongs to the web client and kernel (`src/state/animPlan.ts`, `useAnimationRun.ts`, `c/src/anim_plan.c`).
+
+## Acceptance on iOS (2026-10-13)
+
+The iOS app (`foolish/ios`, scheme Foolish, Debug, supabase-swift 2.55.4) was built with an untracked `Config/Local.xcconfig` pointing at `cbase serve` and driven on one simulator, every byte recorded by a TCP tap in front of the server.
+Verified: sign-up and sign-in through GoTrue (a wrong password renders GoTrue's "Invalid login credentials"); create; a second player (curl) joining and leaving the lobby, each seen on the iOS pv- feed; add bot; start; moves (pickup, covers, a transfer answered by the bot, attacks, Good) played to game over and the win screen, with the replay snapshot stored; the 9 s resync watchdog refetching `player_views` and healing two pushes the tap dropped on purpose; reconnect and rejoin after the socket was cut; token refresh every 30 s under a 120 s token TTL with supabase-swift's `access_token` channel frames accepted and the feed still live; sign-out (`logout?scope=global`, 204) and delete-account (204, then sign-in refused).
+No request was refused or misread by the server: every response the app received was the shape it decodes.
+supabase-swift 2.55.4 connects with `vsn=2.0.0`, offers `permessage-deflate` (not negotiated, so frames stay plain), and sends its join payload as a Swift dictionary, whose key order changes between runs; `unit_phoenix.c` supabase_swift_frames pins both recorded orders.
+
+Found on the way, NOT c_base defects (the hosted backend answers the same, because the kernel decides): the app's `RootView` does not observe the `OnlineGame`, so after Ready it stays on the lobby with a spinner while the started board sits in the model; joining one's own started game by code is refused 400 `TABLE_E_NOT_WAITING`; Home after game over sends an exit the kernel refuses the same way; stored bot nicknames are cities (`%Vienna 1`), which `BotNames.displayNickname` does not know, so the lobby and table print the raw `%`; after delete-account the app stays on a Dashboard whose Create game does nothing; the win screen's buttons sit over the fool's hand.
 
 ## Open defects carried over from Supabase
 

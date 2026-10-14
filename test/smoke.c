@@ -10,7 +10,7 @@
 // THE GAME SCENARIO (the brief's), always, unless CBASE_SMOKE_GAME=0: two
 // humans sign up (GoTrue's /auth/v1/signup); A opens a Realtime WebSocket
 // (Phoenix vsn 2.0.0, as realtime-js) on its private gu- topic, B one in vsn
-// 1.0.0 (as supabase-swift) on its pv- player_views changes and the game-
+// 1.0.0 (the object serializer older supabase-swift spoke) on its pv- player_views changes and the game-
 // spectator stream; A creates, B joins, A adds a bot, both start, and the
 // humans play legal moves (chosen on their own masked envelope with the
 // kernel's client table, as the browser does) while the bot pool drives the
@@ -180,7 +180,8 @@ static int choose_move(smoke_client *sc, const cb_buf *env, uint8_t *wire, int c
 
 // One realtime socket and what it heard. vsn 2.0.0 frames are arrays
 // [join_ref, ref, topic, event, payload] (realtime-js), vsn 1.0.0 frames are
-// objects {join_ref, ref, topic, event, payload} (supabase-swift).
+// objects {join_ref, ref, topic, event, payload} (older supabase-swift; 2.55.4
+// sends arrays too).
 typedef struct {
     int      fd;
     bool     v1;
@@ -321,8 +322,8 @@ static void game_scenario(void) {
     snprintf(gid, sizeof gid, "%.*s", (int)sc->c.gid_len, sc->c.gid);
     T_EQ_INT(strlen(gid), 6);
 
-    // A (realtime-js, vsn 2.0.0) hears its private gu- topic; B (supabase-swift,
-    // vsn 1.0.0) hears its pv- player_views changes and the game- spectator
+    // A (realtime-js, vsn 2.0.0) hears its private gu- topic; B (vsn 1.0.0, the
+    // object serializer) hears its pv- player_views changes and the game- spectator
     // stream. Together they cover fanout.c's three pushes.
     listener *LA = calloc(1, sizeof *LA), *LB = calloc(1, sizeof *LB);
     LB->v1 = true;

@@ -1,10 +1,12 @@
 // phoenix.h - the Phoenix channel protocol as @supabase/realtime-js 2.x and
 // supabase-swift speak it, independent of the socket underneath.
 //
-// THE WIRE. A text frame per message. vsn=2.0.0 (realtime-js 2.x) is a JSON
-// array [join_ref, ref, topic, event, payload]; vsn=1.0.0 (supabase-swift's
-// default) is an object {join_ref, ref, topic, event, payload}. The vsn comes
-// from the connect URL's query and is fixed per connection. The executable
+// THE WIRE. A text frame per message. vsn=2.0.0 is a JSON array [join_ref,
+// ref, topic, event, payload]: realtime-js 2.x sends it, and so does
+// supabase-swift 2.55.4, which the iOS app links (recorded 2026-10-13; see
+// unit_phoenix.c supabase_swift_frames). vsn=1.0.0 is an object {join_ref,
+// ref, topic, event, payload}, which older supabase-swift releases sent. The
+// vsn comes from the connect URL's query and is fixed per connection. The executable
 // spec is foolish/e2e/helpers/ws_phoenix.ts and e2e/fake_supabase.mts.
 //
 // WHAT THE SERVER DOES WITH A CLIENT MESSAGE (cb_phx_on_frame):
