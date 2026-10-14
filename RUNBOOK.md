@@ -326,8 +326,8 @@ What exists (us-east-1, account 487337210065):
 | Bucket | `cbase-web-487337210065` (prefixes `foolish/`, `utils/`, `uttt/`) |
 | foolish distribution | `E1YC4MJXHIOBQD`, `dgow77nr7v5kf.cloudfront.net` (foolish.cards, www, utils) |
 | uttt distribution | `E1PSTHCGSF35HM`, `d2hb0vxf10cj0w.cloudfront.net` (uttt.live, www) |
-| foolish certificate | `arn:aws:acm:us-east-1:487337210065:certificate/21fa37fe-708a-43aa-8bc2-e7eec5188f48` |
-| uttt certificate | `arn:aws:acm:us-east-1:487337210065:certificate/c1a2ec68-1704-4900-b44f-ff43c2e51ac4` |
+| foolish certificate | `arn:aws:acm:us-east-1:487337210065:certificate/42ecb64e-bf84-4372-9170-2e645119b12f` |
+| uttt certificate | `arn:aws:acm:us-east-1:487337210065:certificate/6f0b38fc-6ed7-40b3-83ef-14347c9cb4ae` |
 
 Two distributions, not one: a CloudFront flat-rate plan covers one distribution with at most one apex domain, and an account holds three Free plans, so api, foolish and uttt use exactly the three.
 
@@ -354,8 +354,8 @@ aws acm describe-certificate --region us-east-1 --certificate-arn <arn> --query 
 ### W2. Put the names on the distributions
 
 ```
-CBASE_WEB_FOOLISH_CERT=arn:aws:acm:us-east-1:487337210065:certificate/21fa37fe-708a-43aa-8bc2-e7eec5188f48 \
-CBASE_WEB_UTTT_CERT=arn:aws:acm:us-east-1:487337210065:certificate/c1a2ec68-1704-4900-b44f-ff43c2e51ac4 \
+CBASE_WEB_FOOLISH_CERT=arn:aws:acm:us-east-1:487337210065:certificate/42ecb64e-bf84-4372-9170-2e645119b12f \
+CBASE_WEB_UTTT_CERT=arn:aws:acm:us-east-1:487337210065:certificate/6f0b38fc-6ed7-40b3-83ef-14347c9cb4ae \
   c_base/ops/web_deploy.sh stack
 ```
 
