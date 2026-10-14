@@ -393,9 +393,97 @@ Alex chose DynamoDB for the exact $0 after being shown three fully binary altern
 
 The honest expectation, stated before any measurement: the binary options are not expected to be faster end to end, because the dominant cost is the network hop to the store, and S3 is slower than DynamoDB; what they buy is the removal of JSON from our code.
 
-The bench is owed and NOT built: `c_base/bench/` does not exist yet.
-It is to be a C program driven from this Mac against the deployed stack and against `cbase serve`, measuring per variant the cold start (the first request after a forced new container), warm p50, p95 and p99 of `POST /functions/v1/action` end to end, store GET and conditional PUT latency, bytes on the wire per request, and the CPU time in JSON encode and decode (measurable locally today with a microbenchmark over recorded envelopes).
 `store.h` and the handler split already let an S3 backend and the adapter mode be added as variants without touching the app layer.
+
+### The bench: `c_base/bench/` (built 2026-10-13)
+
+`make -C c_base bench` builds `build/cbase-bench` (`make all` builds it too, so CI keeps it compiling); `bench/bench.h` lists the sub-commands and `bench/stats.h` the run file.
+It is one C program, and the same client measures `cbase serve` and the deployed stack: `http://` is a kept-alive socket read by `https.c`'s own response parser, `https://` goes through `cb_https_request` itself, and the WebSocket (ws or wss) uses the frame codec of `net/ws.c`.
+
+- `roundtrip --url <base> --anon <key> [--n 500] [--concurrency 1|4]`: each worker signs up two players, opens a Realtime socket per player (Phoenix vsn 2.0.0, as realtime-js) joined to its `pv-` topic, and plays two-human games (create, join, both ready, moves until the end, then a new game).
+  Per move it times `GET /rest/v1/player_views` for the mover (the move is then chosen on that envelope with the kernel's client table and legal moves, as the browser does), `POST /functions/v1/action` from request to response, and `push_pv`: the opponent's `pv-` change for the new version, its arrival on the opponent's socket minus the action response's arrival (a reader thread per socket stamps each frame, so a push that beats the response is negative, not lost).
+  Setup is not timed; bytes are the mean HTTP head and body per request, each way.
+- `coldstart --url <base> [--idle S] [--repeat K] [--path /health] [--force-cmd CMD]`: per repeat it runs the forcing command, sleeps, then times the first GET on a fresh connection and the next one on the same connection.
+- `cpu`: no network; fixtures come from a game the kernel plays in-process (two humans, dealt, eight moves in), and each operation's median nanoseconds per call over batches of at least 2 ms is reported with its share of a 5 ms request: the Function URL event decode and response encode (`event.c`), a GetItem answer read into a game row and the commit's TransactWriteItems built (`dynamo_wire.c`), one player's `pv-` push JSON, base64 of a 2 KB envelope each way, a JWT verify, a bcrypt verify (cost 10, sign-in only, for scale), and the kernel section itself (`table_load`, `table_set_deal_seed`, `table_act`, `table_commit_products`).
+- `report [FILE...]`: the Markdown tables of saved runs (default: every `bench/results/*.txt`).
+
+Every run prints itself and is saved as `bench/results/<kind>-<UTC stamp>.txt` (gitignored); its note carries the concurrency, games, rejected moves, lost pushes, errors and the machine's 1-minute load average.
+The baseline below is committed as `bench/results/baseline-*.txt`.
+Not built: a `store` sub-command timing DynamoDB (or S3) GET and conditional PUT directly from this Mac; it needs credentials and a table, and the deployed `roundtrip` already includes those calls.
+
+### The local baseline (2026-10-13, Apple M1, macOS 27.0.1)
+
+`cbase serve` on SQLite (WAL), the default build (`-O2`, no LTO), client and server on the same Mac over loopback.
+The Mac was shared with other builders' jobs: the 1-minute load average was 30 to 35 during these runs (an hour earlier it was 290, and the same runs gave p50s about twice these), so the tails are the machine's as much as the server's.
+
+| metric | concurrency | n | p50 ms | p95 ms | p99 ms | max ms | bytes out / in |
+|---|--:|--:|--:|--:|--:|--:|--:|
+| action | 1 | 500 | 0.16 | 0.34 | 0.46 | 6.60 | 768 / 211 |
+| player_views | 1 | 508 | 0.11 | 0.21 | 0.28 | 0.39 | 781 / 681 |
+| push_pv | 1 | 500 | -0.02 | 0.00 | 0.01 | 0.03 | |
+| action | 4 | 500 | 0.24 | 0.56 | 1.78 | 6.48 | 767 / 211 |
+| player_views | 4 | 511 | 0.18 | 0.40 | 0.82 | 1.03 | 781 / 682 |
+| push_pv | 4 | 500 | -0.02 | 0.02 | 0.04 | 0.08 | |
+| coldstart first (fresh connection, 2 s idle) | 1 | 5 | 0.33 | 0.41 | 0.41 | 0.41 | 47 / 270 |
+| coldstart warm | 1 | 5 | 0.09 | 0.11 | 0.11 | 0.11 | 47 / 270 |
+
+Locally the push arrives before the action's response: `cbase serve` hands the pushes to its loop before the worker's answer is written.
+Against `serve` the cold start has no container to start, so both of its rows are warm numbers.
+
+| operation (cpu) | ns per call | share of 5 ms |
+|---|--:|--:|
+| event_decode (Function URL event, 2.2 KB) | 24,500 | 0.49% |
+| event_encode (the 7-byte answer) | 912 | 0.02% |
+| dynamo_get_parse (GetItem, 2.4 KB) | 22,960 | 0.46% |
+| dynamo_commit_build (TransactWriteItems, 4.6 KB) | 18,632 | 0.37% |
+| pv_push_json (one player) | 2,349 | 0.05% |
+| b64_encode_2k | 822 | 0.02% |
+| b64_decode_2k | 4,724 | 0.09% |
+| jwt_verify | 5,925 | 0.12% |
+| bcrypt_verify (sign-in only) | 60,921,000 | 1218% |
+| kernel_action (the whole section) | 1,403 | 0.03% |
+
+The JSON tax of one action on the Lambda path is about 70 µs of CPU on this chip (the event in and out, the GetItem read, the commit's body, two `pv-` payloads), about 1.4% of a 5 ms request; the kernel's own work for the move is 1.4 µs.
+
+Where `cbase serve`'s time goes: `/usr/bin/sample` on the server for 10 s during an 80,000-move `roundtrip` (concurrency 1) took 20,232 samples over six threads, 1,756 of them not waiting.
+The top three frames, by time on the CPU outside waits:
+
+1. `guarded_pwrite_np` (208 samples): SQLite's WAL write inside `sq_game_commit`, the commit of the CAS, which is 532 samples (40% of the request threads' busy time) with its locks (`__fcntl`, 99) and checkpoints.
+2. `__sendto` (192): the loop thread writing responses and pushes.
+3. `__fcntl` (99): SQLite's file locks and syncs.
+
+By whole calls on the request threads: the commit 40%, the `player_views` read (`h_get`) 22%, the fanout's pushes (`cb_fanout_commit`) 17%, the JWT check about 15%; JSON's own frames (`cb_json_*`, `cb_jw_*`, `skip_value`, `skip_string`) are about 5% of the busy samples by self time.
+
+What it says so far: the JSON tax is real and small.
+The Lambda path pays about 0.07 ms of CPU per action for JSON, while each DynamoDB call it would replace costs milliseconds over the network, two to three per action.
+So the fully binary stack can win at most that 0.07 ms per action on CPU, and S3's slower calls would cost more than that back; this supports the expectation above, and the deployed run will test it with the network included.
+
+### Running it against the deployed stack, and the variants
+
+The deployed baseline is one command from this Mac once the stack answers (RUNBOOK.md "What you must give me afterwards"):
+
+```
+make -C c_base bench
+c_base/build/cbase-bench roundtrip --url https://api.foolish.cards --anon <AnonKey> --n 500 --concurrency 1
+c_base/build/cbase-bench roundtrip --url https://api.foolish.cards --anon <AnonKey> --n 500 --concurrency 4
+c_base/build/cbase-bench coldstart --url https://api.foolish.cards --repeat 6 \
+  --force-cmd 'm=$(aws lambda get-function-configuration --function-name cbase --query MemorySize --output text); aws lambda update-function-configuration --function-name cbase --memory-size $((m == 256 ? 257 : 256)) >/dev/null && aws lambda wait function-updated --function-name cbase'
+c_base/build/cbase-bench report
+```
+
+Each `roundtrip` worker signs up two real accounts (`bench<hex><n>@bench.invalid`) and plays real games; delete them in the console's Users panel afterwards if they matter.
+A Lambda container lives for minutes after its last request, so `--idle` alone rarely gives a cold start; the `--force-cmd` above toggles the memory size between 256 and 257 MB, which makes Lambda start new environments on the next request without touching the environment variables (an `--environment` update would replace them all).
+It needs the CLI's credentials, and `--idle 0` is right with it; an even `--repeat` leaves the memory at the template's 256 MB, since CloudFormation does not put back a value changed outside it.
+Pass `--note variant=...` on every run so the report tells variants apart.
+
+The three binary variants do not exist yet; when one does, the same commands measure it:
+
+- **Web Adapter:** deploy a second function from the same zip with the adapter layer and `cbase serve` as the process, behind its own Function URL, and run `roundtrip` and `coldstart` against that URL with `--note variant=web-adapter`.
+  Its saving is exactly the `event_decode` and `event_encode` rows of `cpu`; its cost is the localhost hop and the adapter's start, which `roundtrip` and `coldstart` see.
+- **S3 store:** once a `store_s3.c` backend exists (`store.h` admits it), a second stack with `CBASE_STORE=s3`, measured with `--note variant=s3`.
+  `cpu` would gain the S3 rows (a raw GET body, a PUT with `If-Match`) beside `dynamo_get_parse` and `dynamo_commit_build`, which are what it removes.
+- **Polling:** it needs a binary poll endpoint on the server and a polling client; `roundtrip` would then gain a `--poll-ms` mode in which `push_pv` is the poll's arrival instead of the socket's.
+  Neither the endpoint nor the mode exists.
 
 ## What stays TypeScript, and why
 

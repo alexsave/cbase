@@ -31,6 +31,14 @@ Paste these back into the session so I can finish the verification:
 
 Never paste the JWT secret or the admin token into a chat.
 
+With those I run the latency bench against the live stack from this Mac (DESIGN.md, "The bench"); it needs only the public anon key:
+
+```
+make -C c_base bench && c_base/build/cbase-bench roundtrip --url https://api.foolish.cards --anon <AnonKey> --n 500 --concurrency 1
+```
+
+It signs up two throwaway accounts (`bench...@bench.invalid`) and plays real games against the function, so run it after step 9 and before the import (step 10), or delete those two accounts in the console afterwards.
+
 ## The CLI path
 
 1. Do step 1 below (the account, the plan, the zero-spend budget).
