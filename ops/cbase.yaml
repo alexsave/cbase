@@ -5,8 +5,9 @@ AWSTemplateFormatVersion: "2010-09-09"
 # template file). c_base/RUNBOOK.md walks through every click, in order.
 #
 # What it makes:
-#   * the DynamoDB table (single-table design, DESIGN.md "Store"), on-demand,
-#     point-in-time recovery on, TTL on expires_at;
+#   * the DynamoDB table (single-table design, DESIGN.md "Store"), PROVISIONED
+#     inside the always-free 25 WCU / 25 RCU, point-in-time recovery on, TTL
+#     on expires_at;
 #   * the Lambda function (the static arm64 `bootstrap`, ops/package.sh), its
 #     role and its log group;
 #   * a Function URL for the HTTP routes (/auth, /rest, /functions, /admin, /health);
@@ -21,10 +22,12 @@ AWSTemplateFormatVersion: "2010-09-09"
 # us-east-1 for CloudFront whatever region the stack is in, and keeping
 # everything in one region keeps the runbook to one region selector.
 #
-# Cost at foolish's volume: Lambda, DynamoDB on-demand, the Function URL,
-# EventBridge Scheduler, CloudFront and ACM sit inside their always-free
-# allowances; the WebSocket API is about $0.01 to $0.10 a month after its
-# first free year; the code zip in S3 is a few MB.
+# Cost at foolish's volume: Lambda, DynamoDB (provisioned capacity; on-demand
+# has no free tier), the Function URL, EventBridge Scheduler, CloudFront and
+# ACM sit inside their always-free allowances; the WebSocket API is about
+# $0.01 to $0.10 a month after its first free year; the code zip in S3 is a
+# few MB; point-in-time recovery bills $0.20 per GB-month of table, a
+# fraction of a cent at our few MB (DESIGN.md "The free tier, provisioned").
 
 Description: c_base, the foolish backend (Lambda + DynamoDB + CloudFront)
 
@@ -112,13 +115,25 @@ Resources:
   # consistent, so a push right after a join is not missed). TTL deletes items
   # whose expires_at (epoch SECONDS: DynamoDB's TTL unit) has passed: the CONN
   # rows and their TOPIC reverse-index rows.
+  #
+  # Capacity: PROVISIONED, because DynamoDB's always-free allowance (25 WCU
+  # and 25 RCU per Region per payer account) is provisioned capacity only and
+  # an on-demand table bills every request unit. The 25 are shared by every
+  # table and every global secondary index in the account and Region, and each
+  # index has its own provisioned throughput (minimum 1). The split, 15 to the
+  # table and 5 to each index, with the arithmetic behind it, is DESIGN.md
+  # "The free tier, provisioned"; test/unit_dynamo.c fails when these six
+  # numbers add up to more than 25 a side. No auto scaling: it would scale
+  # past the free 25. A sustained overload is throttled (and retried, then
+  # failed, store_dynamo.c), never billed.
   Table:
     Type: AWS::DynamoDB::Table
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
       TableName: !Ref TableName
-      BillingMode: PAY_PER_REQUEST
+      BillingMode: PROVISIONED
+      ProvisionedThroughput: { ReadCapacityUnits: 15, WriteCapacityUnits: 15 }
       AttributeDefinitions:
         - { AttributeName: pk, AttributeType: S }
         - { AttributeName: sk, AttributeType: S }
@@ -135,11 +150,13 @@ Resources:
             - { AttributeName: gsi1pk, KeyType: HASH }
             - { AttributeName: gsi1sk, KeyType: RANGE }
           Projection: { ProjectionType: ALL }
+          ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 }
         - IndexName: gsi2
           KeySchema:
             - { AttributeName: gsi2pk, KeyType: HASH }
             - { AttributeName: gsi2sk, KeyType: RANGE }
           Projection: { ProjectionType: ALL }
+          ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 }
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: true
       TimeToLiveSpecification:

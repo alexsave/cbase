@@ -890,6 +890,37 @@ static void the_template_matches_the_wire(void) {
     T_EQ_INT(all, 2);
 }
 
+// The free tier is provisioned capacity only, 25 WCU and 25 RCU shared by
+// every table and index in the account (DESIGN.md "The free tier,
+// provisioned"): the template provisions the table and both indexes, and the
+// six numbers add up to no more than 25 a side. No auto scaling, which would
+// provision past them.
+static void the_template_stays_free(void) {
+    FILE *f = fopen("ops/cbase.yaml", "r");
+    T_CHECK(f != NULL);
+    if (!f) return;
+    static char y[64 * 1024];
+    size_t n = fread(y, 1, sizeof y - 1, f);
+    fclose(f);
+    y[n] = 0;
+    T_CHECK(strstr(y, "      BillingMode: PROVISIONED\n") != NULL);
+    T_CHECK(strstr(y, "PAY_PER_REQUEST") == NULL);
+    T_CHECK(strstr(y, "AWS::ApplicationAutoScaling") == NULL);
+    int count = 0, rcu = 0, wcu = 0;
+    static const char KEY[] = "ProvisionedThroughput: { ReadCapacityUnits: ";
+    for (const char *q = y; (q = strstr(q, KEY)) != NULL; q++) {
+        int r = 0, w = 0;
+        T_EQ_INT(sscanf(q + strlen(KEY), "%d, WriteCapacityUnits: %d }", &r, &w), 2);
+        T_CHECK(r >= 1 && w >= 1);
+        rcu += r;
+        wcu += w;
+        count++;
+    }
+    T_EQ_INT(count, 3);   // the table, gsi1, gsi2
+    T_CHECK(rcu <= 25);
+    T_CHECK(wcu <= 25);
+}
+
 // The import's stored count (store_import.c on DynamoDB): a counting Scan per
 // export table, its pages summed. player_hands are the GAME# partitions'
 // MEMBER# items, whatever else those partitions hold.
@@ -935,6 +966,7 @@ static void consumed_capacity_read(void) {
 
 int main(void) {
     T_RUN(the_template_matches_the_wire);
+    T_RUN(the_template_stays_free);
     T_RUN(get_item_shape);
     T_RUN(lease_requests);
     T_RUN(commit_transaction);
