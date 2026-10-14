@@ -129,6 +129,14 @@ Resources:
                   - lambda:GetRuntimeManagementConfig
                   - lambda:ListTags
                 Resource: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${FunctionName}"
+              # The update re-resolves the function's `Role: !GetAtt FunctionRole.Arn`,
+              # which CloudFormation reads with the caller's credentials
+              # (measured: without this the code update fails on iam:GetRole and
+              # rolls back). Read-only, and only the stack's own roles.
+              - Sid: StackRoles
+                Effect: Allow
+                Action: iam:GetRole
+                Resource: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${ApiStack}-*"
 
               # ---- the web ----
               - Sid: WebFiles
