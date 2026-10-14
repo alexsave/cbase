@@ -1,6 +1,6 @@
-// dynamo_wire.c - the DynamoDB JSON (dynamo_wire.h). Every DynamoDB string in
-// c_base is in this file: the targets, the item layout, the expressions.
-#include "dynamo_wire.h"
+// json_surface.c - every JSON shape c_base speaks (json_surface.h says why
+// they are all here). The only file that includes util/json.h.
+#include "json_surface.h"
 
 #include "util/b64.h"
 #include "util/hex.h"
@@ -12,6 +12,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+
+// =====================================================================================
+// DynamoDB. Every DynamoDB string in c_base is in this section: the targets, the
+// item layout, the expressions.
 
 #define TARGET "DynamoDB_20120810."
 #define GSI1 DW_GSI1

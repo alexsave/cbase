@@ -9,7 +9,7 @@
 //                      a cb_http_req (src/aws/event.c)
 //   event_encode       the action's 7-byte answer back into the response JSON
 //   dynamo_get_parse   a GetItem answer for the game row (the row the kernel
-//                      just committed, as dynamo_wire writes it) read back into
+//                      just committed, as json_surface.c writes it) read back into
 //                      a cb_game_row: the JSON scan and the base64 of the blobs
 //   dynamo_commit_build the commit's TransactWriteItems body (the CAS)
 //   pv_push_json       one player's pv- postgres_changes payload: the envelope
@@ -31,7 +31,7 @@
 #include "auth/jwt.h"
 #include "realtime/realtime.h"
 #include "realtime/rt_rows.h"
-#include "store/dynamo_wire.h"
+#include "json_surface.h"
 #include "util/b64.h"
 #include "util/hex.h"
 #include "util/json.h"

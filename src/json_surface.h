@@ -1,13 +1,39 @@
-// dynamo_wire.h - the DynamoDB wire, and nothing else: the JSON requests the
-// DynamoDB backend sends and the readers for what DynamoDB answers. Private to
-// src/store (store_dynamo.c and test/unit_dynamo.c).
+// json_surface.h - EVERY JSON SHAPE c_base speaks, and nothing else.
 //
-// EVERY DynamoDB STRING LIVES IN dynamo_wire.c: the X-Amz-Target names, the
+// JSON is tolerated in c_base only where something outside it sets the format
+// (DESIGN.md "Where JSON is tolerated"): AWS (the Lambda event and response
+// envelopes, the Runtime API's error body, DynamoDB, the API Gateway
+// Management API, Lambda Invoke), the Supabase-compatible facade (GoTrue
+// bodies and JWT claims, PostgREST rows, Phoenix frames, Realtime payloads)
+// and the admin console's API. All of it is contained in ONE file,
+// json_surface.c: every key name, every shape, every call into the low-level
+// writer and reader (util/json.h, which nothing else includes). Everything
+// else in c_base hands this file structs and spans and gets bytes or structs
+// back. test/unit_json_gate.c fails the build when a JSON key literal, a
+// util/json.h include or a cb_jw_/cb_json_ call appears in any other file
+// under src/, bench/ or migrate/.
+//
+// The functions are pure over buffers (no socket, no clock, no randomness: a
+// token or a time is an argument), so each shape is checked byte for byte
+// against a recorded body in the unit tests.
+#ifndef CB_JSON_SURFACE_H
+#define CB_JSON_SURFACE_H
+
+#include "store/store.h"
+#include "util/str.h"
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+// =====================================================================================
+// DynamoDB (dw_): the JSON requests the DynamoDB backend sends and the readers for
+// what DynamoDB answers (store_dynamo.c, store_import.c and test/unit_dynamo.c).
+//
+// EVERY DynamoDB STRING LIVES IN json_surface.c: the X-Amz-Target names, the
 // item layout (pk/sk spellings, attribute names, the GSI names), the key,
 // condition, update and filter expressions. store_dynamo.c decides which
-// requests to send in which order and never spells one. Pure functions over
-// buffers: no socket, no clock, no randomness (a token or a time is an
-// argument), so a request is checked byte for byte against a recorded body.
+// requests to send in which order and never spells one.
 //
 // THE ITEM LAYOUT (one table, string pk and sk; GSI1 = gsi1pk/gsi1sk and
 // GSI2 = gsi2pk/gsi2sk, all four String keys, both projecting ALL; TTL
@@ -32,15 +58,6 @@
 //                                         partition, and the bot lease
 //
 // Times in sort keys are 15-digit zero-padded ms so they sort as text.
-#ifndef CB_DYNAMO_WIRE_H
-#define CB_DYNAMO_WIRE_H
-
-#include "store.h"
-#include "util/str.h"
-
-#include <stdbool.h>
-#include <stdint.h>
-
 // The index names and the TTL attribute the table must be created with.
 // ops/cbase.yaml spells them too; test/unit_dynamo.c reads the template and
 // fails when the two disagree.
