@@ -1,0 +1,16 @@
+cbase-bench 1
+kind cpu
+date 2026-10-14T00:19:26Z
+host Apple M1
+target -
+note serve build -O2 load1=35
+cpu event_decode ns=24500 iters=5248
+cpu event_encode ns=912 iters=167936
+cpu dynamo_get_parse ns=22960 iters=5248
+cpu dynamo_commit_build ns=18632 iters=5248
+cpu pv_push_json ns=2349 iters=41984
+cpu b64_encode_2k ns=822 iters=167936
+cpu b64_decode_2k ns=4724 iters=20992
+cpu jwt_verify ns=5925 iters=20992
+cpu bcrypt_verify_signin_only ns=60921000 iters=7
+cpu kernel_action ns=1403 iters=83968

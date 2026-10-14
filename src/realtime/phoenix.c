@@ -4,8 +4,8 @@
 // (RealtimeChannel.js: the join payload, _updatePostgresBindings, the
 // postgres_changes filter by `ids`), its vendored phoenix (Channel.isMember:
 // a push with a join_ref other than the channel's is dropped, so pushes carry
-// null), supabase-swift's RealtimeV2 (RealtimeMessageV2's v1 object keys,
-// PostgresJoinConfig), and foolish/e2e/helpers/ws_phoenix.ts.
+// null), supabase-swift's RealtimeV2 (RealtimeMessageV2, PostgresJoinConfig; 2.55.4
+// speaks vsn 2.0.0, earlier releases the v1 object keys), and foolish/e2e/helpers/ws_phoenix.ts.
 #include "phoenix.h"
 
 #include "realtime.h"

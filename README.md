@@ -13,6 +13,7 @@ make -C c_base check-asan  # the same, everything (the kernel too) under ASan + 
 make -C c_base check-dynamo  # the store, admin and import tests and the game smoke on DynamoDB Local (Docker)
 make -C c_base bench-dynamo  # the DynamoDB store's per-operation latency against DynamoDB Local
 make -C c_base bootstrap   # dist/bootstrap.zip: static Linux arm64 for Lambda (needs Docker)
+make -C c_base bench       # build/cbase-bench: latency and CPU numbers (DESIGN.md, "The bench")
 ```
 
 macOS needs Xcode's clang and `brew install openssl@3`; Ubuntu 24.04 needs `build-essential libssl-dev libsqlite3-dev`.

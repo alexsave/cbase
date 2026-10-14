@@ -49,7 +49,7 @@ Backups to S3 cost cents, or nothing if they stay on the box's disk.
 The decision (Alex, 2026-10-13): option C, Lambda plus DynamoDB, because it is $0.
 What that costs in design: no resident state, so the CAS on version, the 25 second bot lease, the once-a-minute heartbeat scan and the async self-invoke for bot drives are rebuilt in C on DynamoDB.
 What it costs in JSON: the Lambda event envelope and the DynamoDB API are JSON by AWS's design; both are confined to src/aws/ and store_dynamo.c and the rest of c_base never sees them.
-Alex was shown the fully binary alternatives (AWS Lambda Web Adapter as the front door, S3 with If-Match conditional writes as the store at about $0.15 a month, client polling instead of API Gateway WebSocket) and kept DynamoDB for the exact zero; those alternatives are written into c_base/DESIGN.md and owed a latency bench in c_base/bench/ once the stack exists.
+Alex was shown the fully binary alternatives (AWS Lambda Web Adapter as the front door, S3 with If-Match conditional writes as the store at about $0.15 a month, client polling instead of API Gateway WebSocket) and kept DynamoDB for the exact zero; those alternatives are written into c_base/DESIGN.md, and c_base/bench/ now measures them: the local baseline is in DESIGN.md, the run against the deployed stack is owed.
 
 The line items of the chosen shape:
 
@@ -167,7 +167,7 @@ Not verified, and why:
 - `ops/deploy.sh` and the CI workflow have never run (`bash -n`, shellcheck and actionlint only).
 - iOS: supabase-swift has not talked to c_base; the smoke speaks its Phoenix serializer, and the auth error shape was chosen from its decoder's source.
 - Under Lambda: the bot drive's deadline budget and re-kick, and the per-container cache under real concurrency.
-- The latency bench of the binary alternatives (DESIGN.md) is owed and not built.
+- The latency bench (c_base/bench/, DESIGN.md) is built with a local baseline; its run against the deployed stack is owed.
 - A migrated GoTrue password has been shape-checked but not verified against a known password.
 
 The TypeScript this migration deletes once Supabase is switched off, measured on this branch without deleting anything: 1,687 non-blank lines in `foolish/server/impls/supabase` (the five edge functions and their adapter, 14 files, none of them tests) and 417 in `foolish/sdk/ts/table/server_table.ts`, 2,104 lines in all, plus 1,683 lines of SQL (`seed.sql` and five migrations).

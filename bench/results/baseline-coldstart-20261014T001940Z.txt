@@ -1,0 +1,8 @@
+cbase-bench 1
+kind coldstart
+date 2026-10-14T00:19:40Z
+host Apple M1
+target http://127.0.0.1:18080
+note idle_s=2 path=/health forced=no serve: no container, warm only load1=30
+lat first n=5 p50_us=326 p95_us=406 p99_us=406 max_us=406 sent_b=47 recv_b=270
+lat warm n=5 p50_us=87 p95_us=112 p99_us=112 max_us=112 sent_b=47 recv_b=270

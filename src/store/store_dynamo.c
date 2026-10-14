@@ -882,6 +882,32 @@ static int dy_snapshots_query(cb_store *s, const cb_snapshot_query *q, cb_snapsh
     return rc == CB_OK ? w.n : rc;
 }
 
+// Every copy of the replay (SNAP and one PLAYER# per player), read
+// consistently, then rewritten in one transaction: a reader never sees one
+// copy redacted and another not.
+static int dy_snapshot_set_extras(cb_store *s, const char *id, const uint8_t *extras, size_t extras_len) {
+    dyn *d = D(s);
+    keylist keys = { 0 };
+    int rc = query_all(d, DWQ_SNAPSHOT_ITEMS, id, true, 0, collect_key, &keys);
+    if (rc == CB_OK && keys.oom) rc = CB_E_NOMEM;
+    if (rc == CB_OK && keys.n == 0) rc = CB_E_NOT_FOUND;
+    if (rc == CB_OK) {
+        dw_req r;
+        dw_req_init(&r);
+        if (!dw_snapshot_set_extras(&r, d->table, keys.keys, keys.n, extras, extras_len)) rc = CB_E_FULL;
+        cb_buf resp;
+        cb_buf_init(&resp);
+        if (rc == CB_OK) {
+            dw_status st = txn(d, &r, &resp);
+            rc = st == DW_OK ? CB_OK : st == DW_TXN_CANCELED ? CB_E_NOT_FOUND : CB_E_DB;
+        }
+        cb_buf_free(&resp);
+        dw_req_free(&r);
+    }
+    keylist_free(&keys);
+    return rc;
+}
+
 static int dy_chat_put(cb_store *s, const cb_chat_row *c) {
     dyn *d = D(s);
     dw_req r;
@@ -1264,6 +1290,7 @@ static const cb_store_ops DYNAMO_OPS = {
     .rating_set_username = dy_rating_set_username,
     .snapshot_put = dy_snapshot_put,
     .snapshots_query = dy_snapshots_query,
+    .snapshot_set_extras = dy_snapshot_set_extras,
     .chat_put = dy_chat_put,
     .chat_list = dy_chat_list,
     .conn_put = dy_conn_put,

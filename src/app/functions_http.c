@@ -18,12 +18,13 @@
 #include "util/log.h"
 #include "util/uuid.h"
 
+#include "replay_extras.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define OCTETS "application/octet-stream"
-#define DELETED_PLAYER_NAME "Deleted player"
 
 static int verify_bearer(cb_ctx *ctx, const cb_http_req *req, cb_user *out) {
     if (!ctx->auth) return CB_E_STATE;
@@ -256,7 +257,84 @@ static bool collect_game(const cb_member_row *m, void *ud) {
 
 static int run_redact(Table *t, const cb_game_row *row, const uint8_t seed[32], void *ud) {
     const char *uid = ud;
-    return table_redact(t, uid, (int)strlen(uid), DELETED_PLAYER_NAME, (int)strlen(DELETED_PLAYER_NAME));
+    return table_redact(t, uid, (int)strlen(uid), REDACTED_PLAYER_NAME, (int)strlen(REDACTED_PLAYER_NAME));
+}
+
+// The user's stored replays, collected first and rewritten after: a store's
+// list callback may not write (SQLite's runs after its lock, DynamoDB's
+// between pages), and the rewrite reads nothing the list did not hand over.
+typedef struct {
+    cb_uuid  id;
+    int      n_players, seat;
+    uint8_t *extras;
+    size_t   extras_len;
+} snap_redaction;
+
+typedef struct {
+    const char     *user_id;
+    snap_redaction *v;
+    int             n, cap;
+    bool            oom;
+} snap_list;
+
+static bool collect_snapshot(const cb_snapshot_row *r, void *ud) {
+    snap_list *l = ud;
+    int seat = -1;
+    for (int i = 0; i < r->n_players && seat < 0; i++)
+        if (strcmp(r->player_ids[i], l->user_id) == 0) seat = i;
+    if (seat < 0 || !r->extras_len) return true;   // nobody to rename, or no names at all
+    if (l->n == l->cap) {
+        int cap = l->cap ? 2 * l->cap : 16;
+        void *p = realloc(l->v, (size_t)cap * sizeof *l->v);
+        if (!p) { l->oom = true; return false; }
+        l->v = p;
+        l->cap = cap;
+    }
+    snap_redaction *e = &l->v[l->n];
+    e->extras = malloc(r->extras_len);
+    if (!e->extras) { l->oom = true; return false; }
+    memcpy(e->extras, r->extras, r->extras_len);
+    e->extras_len = r->extras_len;
+    snprintf(e->id, sizeof e->id, "%s", r->id);
+    e->n_players = r->n_players;
+    e->seat = seat;
+    l->n++;
+    return true;
+}
+
+// Every finished game's replay keeps the game and loses the person: the seat's
+// name in its extras becomes REDACTED_PLAYER_NAME (the kernel's
+// replay_extras_redact, which leaves every other byte as it was). An extras
+// blob the kernel cannot read is cleared instead, because the promise is that
+// no stored replay names a deleted player; a replay without extras still plays,
+// its seats called P1, P2. A rerun (a retried delete) finds the name already
+// gone and writes nothing.
+static int redact_snapshots(cb_ctx *ctx, const char *user_id) {
+    snap_list l = { .user_id = user_id };
+    cb_snapshot_query q = { .viewer_id = user_id };
+    int rc = CB_STORE_CALL(ctx->store, snapshots_query, &q, collect_snapshot, &l);
+    if (rc >= 0) rc = l.oom ? CB_E_NOMEM : CB_OK;
+    const int name_len = (int)strlen(REDACTED_PLAYER_NAME);
+    for (int i = 0; i < l.n && rc == CB_OK; i++) {
+        snap_redaction *e = &l.v[i];
+        int cap = (int)e->extras_len + name_len + 1;
+        uint8_t *out = malloc((size_t)cap);
+        if (!out) { rc = CB_E_NOMEM; break; }
+        int n = replay_extras_redact(e->extras, (int)e->extras_len, e->n_players, e->seat,
+                                     (const unsigned char *)REDACTED_PLAYER_NAME, name_len, out, cap);
+        if (n < 0) {
+            CB_WARN("functions", "delete-account: replay %s has extras the kernel cannot read (%d); clearing them", e->id, n);
+            n = 0;
+        }
+        if ((size_t)n != e->extras_len || memcmp(out, e->extras, (size_t)n) != 0) {
+            int w = CB_STORE_CALL(ctx->store, snapshot_set_extras, e->id, out, (size_t)n);
+            if (w != CB_OK && w != CB_E_NOT_FOUND) rc = w;   // a replay gone meanwhile names nobody
+        }
+        free(out);
+    }
+    for (int i = 0; i < l.n; i++) free(l.v[i].extras);
+    free(l.v);
+    return rc;
 }
 
 int cb_app_delete_account(cb_ctx *ctx, const char *user_id, int *refused_code, int *refused_detail) {
@@ -282,6 +360,8 @@ int cb_app_delete_account(cb_ctx *ctx, const char *user_id, int *refused_code, i
     }
     free(l.ids);
     if (rc != CB_OK) return rc;
+    // 2b. The stored replays of their finished games, the same name in each.
+    if ((rc = redact_snapshots(ctx, user_id)) != CB_OK) return rc;
     // 3. The leaderboard name, then 4. the account (sessions, memberships,
     //    the rating row and chat go with it).
     rc = CB_STORE_CALL(ctx->store, rating_set_username, user_id, NULL);

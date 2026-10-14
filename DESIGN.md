@@ -274,10 +274,14 @@ As built:
   finalize.ts then cleared `logs_packed` with a second, unfenced UPDATE; the store has no such write, so the finished game's log stays until the next commit that leaves the finished table (a lobby commit empties it, a deal replaces it).
   This is accepted: the log is read only by the next deal's append and by the replay gate, both of which handle it.
   The snapshot's `player_ids` include the bots, as finalize.ts wrote them.
-- `fanout.c`: a pv- INSERT/UPDATE/DELETE per human row on every commit, the gu- casts per human seat and the game- cast only when `n_events > 0 || goods_changed` (table_io.ts's rule).
+- `fanout.c`: a pv- INSERT/UPDATE/DELETE per human row on every commit, the gu- casts per human seat and the game- cast only when `n_events > 0 || goods_changed || roster_changed`.
+  table_io.ts's rule had no `roster_changed`, so a delete-account redaction on a dealt table (no card, no good) cast nothing, and an open game page, which ignores the pv- row of the game on screen, kept the deleted name until a reload; the cast carries the roster trailer and the page applies an empty cast as a board.
 - `functions_http.c` follows wrap400: auth is checked before the content type; 400 for every refusal with a reason (AUTH, MALFORMED, REFUSED, NOT_FOUND, NO_BOT), 415 for a body that is not octets, 500 INTERNAL for the server's own failure (write contention included), 503 when the store is not up; create 400 AUTH or 500; delete-account 405, 401, 500.
   These match inv_supabase.md section 3 line by line.
   `cb_app_delete_account` is the one implementation behind delete-account and the console's Users panel.
+  After the live tables, it anonymizes the user's stored replays: each snapshot whose `player_ids` hold the user gets its extras rewritten by the kernel's `replay_extras_redact` (the seat's name becomes `REDACTED_PLAYER_NAME`, every other byte stays) through the store's `snapshot_set_extras`, which rewrites every DynamoDB copy in one transaction.
+  An extras blob the kernel cannot read is cleared rather than kept; the moves code names nobody.
+  Production's delete-account (Supabase) never did this, so its replays still name deleted players.
 - `bots.c`: `cb_bots_drive` (lease, cycles with the kernel's wait, renew per cycle, release on every exit, re-kick when the budget ends with work left), `cb_bots_scan`, and the two kicks.
   The edge runtime's 1700 ms CPU budget is gone: a Lambda drive stops when the predicted next cycle would pass the invocation deadline minus 5 s; the 120 s wall ceiling stays.
   `cbase serve` runs the scan every 10 s on a loop timer, on the request pool, as the heartbeat; `main_lambda.c` answers `{}` for a drive whose game is gone, so Lambda does not retry it.
@@ -299,7 +303,7 @@ Found here:
 Owner: `src/realtime/`.
 Headers: `realtime.h` (the publish calls and the transport interface), `phoenix.h` (the protocol, shared), `rt_local.h` (serve's in-process WebSocket), `rt_apigw.h` (API Gateway's WebSocket API and CONN rows), `postgrest.h` (the reads the clients make, and the chat insert).
 
-Both Phoenix serializers are needed: realtime-js 2.x sends `vsn=2.0.0` arrays, supabase-swift `vsn=1.0.0` objects.
+Both Phoenix serializers are kept: realtime-js 2.x and supabase-swift 2.55.4 (the iOS app's) send `vsn=2.0.0` arrays, and older supabase-swift releases sent `vsn=1.0.0` objects.
 Topic policy in C mirrors the `realtime.messages` policies: `pv-<uid>` only that user, `gu-<game>-<uid>` that user if a member, `game-<game>` any authenticated user, `chat:<game>` members.
 There is no catch-up, as today: a client that missed a push refetches its view row when it rejoins.
 The web client reaches API Gateway through CloudFront at the same domain, `/realtime/v1/websocket` rewritten to the stage by a CloudFront Function; if that proves fragile, the fallback is a client-side realtime URL override, documented, not built.
@@ -312,7 +316,7 @@ As built:
   A join token equal to `CBASE_ANON_KEY` is "nobody" and is refused by policy, since supabase-js hands Realtime the anon key when signed out.
   Topics must carry "realtime:"; unknown families (`user-`, `room:`) are refused.
 - Binding ids are a hash (`cb_phx_binding_id`, FNV-1a over event, schema, table and filter), so neither transport stores anything per binding; a pv- change is tagged with the ids of its event and "*" crossed with its filter and none.
-- `realtime.c` builds each frame once per serializer in Supabase Realtime's own shapes (keys sorted as Jason writes small maps; `commit_timestamp` with milliseconds and "Z"); `rt_rows.c` prints timestamps as Postgres does (an offset only on the TIMESTAMPTZ columns).
+- `realtime.c` builds each frame once per serializer in Supabase Realtime's own shapes (keys sorted as Jason writes small maps; `commit_timestamp` with milliseconds and "Z"); `rt_rows.c` prints every timestamp as Postgres prints a TIMESTAMPTZ in UTC, with "+00:00", including the columns production keeps as plain TIMESTAMP (chat, snapshots, ratings): a bare timestamp is read as local time by the browser, which put the chat clock off by the viewer's UTC offset.
 - `rt_local.c` (serve): `GET /realtime/v1/websocket` on the loop thread, refusing an unknown vsn with 400 and echoing `Sec-WebSocket-Protocol: phoenix` (Chrome fails the handshake otherwise); each client frame runs on the request pool, one at a time per connection, so frames are answered in order.
   The server's idle sweep closes a WebSocket with no client traffic for 120 s, which a client's 25 s heartbeat prevents.
 - `rt_apigw.c` (Lambda): `$connect` stores a CONN row with a 2 h TTL, `$disconnect` deletes it, `$default` runs the frame and writes the row back only when it changed or a third of the TTL has gone (heartbeats cost no write); replies and pushes go through the management API, and 410 deletes the row.
@@ -322,10 +326,10 @@ As built:
   Integration kept it: the API Gateway entries cannot be real without AWS, and the fakes let the unit tests pin edge cases (410, expired rows, a lost CONN row) deterministically.
   The production table is exercised end to end by the game smoke, where real JWTs, the real table_ops and `rt_local` carry every push.
 
-Tests: `test/unit_phoenix.c`, `test/unit_postgrest.c`, `test/unit_rt_apigw.c`, `test/unit_rt_local.c` (a real loopback server), and the game smoke, where A listens as realtime-js (vsn 2.0.0, gu-) and B as supabase-swift (vsn 1.0.0, pv- and game-).
+Tests: `test/unit_phoenix.c`, `test/unit_postgrest.c`, `test/unit_rt_apigw.c`, `test/unit_rt_local.c` (a real loopback server), and the game smoke, where A listens as realtime-js (vsn 2.0.0, gu-) and B on the object serializer (vsn 1.0.0, pv- and game-).
 The browser acceptance ran realtime-js against it (see Acceptance).
 
-Untested: supabase-swift against a running cbase; `rt_apigw` against real API Gateway.
+Untested: `rt_apigw` against real API Gateway. supabase-swift was run against `cbase serve` from the iOS app (see Acceptance on iOS), and its recorded frames are `unit_phoenix.c` supabase_swift_frames.
 Carried over on purpose: no catch-up after a missed push; chat `is_system` settable by a client; chat length bounded only by the 1 MB body limit.
 
 ## Module: aws
@@ -436,9 +440,97 @@ Alex chose DynamoDB for the exact $0 after being shown three fully binary altern
 
 The honest expectation, stated before any measurement: the binary options are not expected to be faster end to end, because the dominant cost is the network hop to the store, and S3 is slower than DynamoDB; what they buy is the removal of JSON from our code.
 
-The bench is owed and NOT built: `c_base/bench/` does not exist yet.
-It is to be a C program driven from this Mac against the deployed stack and against `cbase serve`, measuring per variant the cold start (the first request after a forced new container), warm p50, p95 and p99 of `POST /functions/v1/action` end to end, store GET and conditional PUT latency, bytes on the wire per request, and the CPU time in JSON encode and decode (measurable locally today with a microbenchmark over recorded envelopes).
 `store.h` and the handler split already let an S3 backend and the adapter mode be added as variants without touching the app layer.
+
+### The bench: `c_base/bench/` (built 2026-10-13)
+
+`make -C c_base bench` builds `build/cbase-bench` (`make all` builds it too, so CI keeps it compiling); `bench/bench.h` lists the sub-commands and `bench/stats.h` the run file.
+It is one C program, and the same client measures `cbase serve` and the deployed stack: `http://` is a kept-alive socket read by `https.c`'s own response parser, `https://` goes through `cb_https_request` itself, and the WebSocket (ws or wss) uses the frame codec of `net/ws.c`.
+
+- `roundtrip --url <base> --anon <key> [--n 500] [--concurrency 1|4]`: each worker signs up two players, opens a Realtime socket per player (Phoenix vsn 2.0.0, as realtime-js) joined to its `pv-` topic, and plays two-human games (create, join, both ready, moves until the end, then a new game).
+  Per move it times `GET /rest/v1/player_views` for the mover (the move is then chosen on that envelope with the kernel's client table and legal moves, as the browser does), `POST /functions/v1/action` from request to response, and `push_pv`: the opponent's `pv-` change for the new version, its arrival on the opponent's socket minus the action response's arrival (a reader thread per socket stamps each frame, so a push that beats the response is negative, not lost).
+  Setup is not timed; bytes are the mean HTTP head and body per request, each way.
+- `coldstart --url <base> [--idle S] [--repeat K] [--path /health] [--force-cmd CMD]`: per repeat it runs the forcing command, sleeps, then times the first GET on a fresh connection and the next one on the same connection.
+- `cpu`: no network; fixtures come from a game the kernel plays in-process (two humans, dealt, eight moves in), and each operation's median nanoseconds per call over batches of at least 2 ms is reported with its share of a 5 ms request: the Function URL event decode and response encode (`event.c`), a GetItem answer read into a game row and the commit's TransactWriteItems built (`dynamo_wire.c`), one player's `pv-` push JSON, base64 of a 2 KB envelope each way, a JWT verify, a bcrypt verify (cost 10, sign-in only, for scale), and the kernel section itself (`table_load`, `table_set_deal_seed`, `table_act`, `table_commit_products`).
+- `report [FILE...]`: the Markdown tables of saved runs (default: every `bench/results/*.txt`).
+
+Every run prints itself and is saved as `bench/results/<kind>-<UTC stamp>.txt` (gitignored); its note carries the concurrency, games, rejected moves, lost pushes, errors and the machine's 1-minute load average.
+The baseline below is committed as `bench/results/baseline-*.txt`.
+Not built: a `store` sub-command timing DynamoDB (or S3) GET and conditional PUT directly from this Mac; it needs credentials and a table, and the deployed `roundtrip` already includes those calls.
+
+### The local baseline (2026-10-13, Apple M1, macOS 27.0.1)
+
+`cbase serve` on SQLite (WAL), the default build (`-O2`, no LTO), client and server on the same Mac over loopback.
+The Mac was shared with other builders' jobs: the 1-minute load average was 30 to 35 during these runs (an hour earlier it was 290, and the same runs gave p50s about twice these), so the tails are the machine's as much as the server's.
+
+| metric | concurrency | n | p50 ms | p95 ms | p99 ms | max ms | bytes out / in |
+|---|--:|--:|--:|--:|--:|--:|--:|
+| action | 1 | 500 | 0.16 | 0.34 | 0.46 | 6.60 | 768 / 211 |
+| player_views | 1 | 508 | 0.11 | 0.21 | 0.28 | 0.39 | 781 / 681 |
+| push_pv | 1 | 500 | -0.02 | 0.00 | 0.01 | 0.03 | |
+| action | 4 | 500 | 0.24 | 0.56 | 1.78 | 6.48 | 767 / 211 |
+| player_views | 4 | 511 | 0.18 | 0.40 | 0.82 | 1.03 | 781 / 682 |
+| push_pv | 4 | 500 | -0.02 | 0.02 | 0.04 | 0.08 | |
+| coldstart first (fresh connection, 2 s idle) | 1 | 5 | 0.33 | 0.41 | 0.41 | 0.41 | 47 / 270 |
+| coldstart warm | 1 | 5 | 0.09 | 0.11 | 0.11 | 0.11 | 47 / 270 |
+
+Locally the push arrives before the action's response: `cbase serve` hands the pushes to its loop before the worker's answer is written.
+Against `serve` the cold start has no container to start, so both of its rows are warm numbers.
+
+| operation (cpu) | ns per call | share of 5 ms |
+|---|--:|--:|
+| event_decode (Function URL event, 2.2 KB) | 24,500 | 0.49% |
+| event_encode (the 7-byte answer) | 912 | 0.02% |
+| dynamo_get_parse (GetItem, 2.4 KB) | 22,960 | 0.46% |
+| dynamo_commit_build (TransactWriteItems, 4.6 KB) | 18,632 | 0.37% |
+| pv_push_json (one player) | 2,349 | 0.05% |
+| b64_encode_2k | 822 | 0.02% |
+| b64_decode_2k | 4,724 | 0.09% |
+| jwt_verify | 5,925 | 0.12% |
+| bcrypt_verify (sign-in only) | 60,921,000 | 1218% |
+| kernel_action (the whole section) | 1,403 | 0.03% |
+
+The JSON tax of one action on the Lambda path is about 70 µs of CPU on this chip (the event in and out, the GetItem read, the commit's body, two `pv-` payloads), about 1.4% of a 5 ms request; the kernel's own work for the move is 1.4 µs.
+
+Where `cbase serve`'s time goes: `/usr/bin/sample` on the server for 10 s during an 80,000-move `roundtrip` (concurrency 1) took 20,232 samples over six threads, 1,756 of them not waiting.
+The top three frames, by time on the CPU outside waits:
+
+1. `guarded_pwrite_np` (208 samples): SQLite's WAL write inside `sq_game_commit`, the commit of the CAS, which is 532 samples (40% of the request threads' busy time) with its locks (`__fcntl`, 99) and checkpoints.
+2. `__sendto` (192): the loop thread writing responses and pushes.
+3. `__fcntl` (99): SQLite's file locks and syncs.
+
+By whole calls on the request threads: the commit 40%, the `player_views` read (`h_get`) 22%, the fanout's pushes (`cb_fanout_commit`) 17%, the JWT check about 15%; JSON's own frames (`cb_json_*`, `cb_jw_*`, `skip_value`, `skip_string`) are about 5% of the busy samples by self time.
+
+What it says so far: the JSON tax is real and small.
+The Lambda path pays about 0.07 ms of CPU per action for JSON, while each DynamoDB call it would replace costs milliseconds over the network, two to three per action.
+So the fully binary stack can win at most that 0.07 ms per action on CPU, and S3's slower calls would cost more than that back; this supports the expectation above, and the deployed run will test it with the network included.
+
+### Running it against the deployed stack, and the variants
+
+The deployed baseline is one command from this Mac once the stack answers (RUNBOOK.md "What you must give me afterwards"):
+
+```
+make -C c_base bench
+c_base/build/cbase-bench roundtrip --url https://api.foolish.cards --anon <AnonKey> --n 500 --concurrency 1
+c_base/build/cbase-bench roundtrip --url https://api.foolish.cards --anon <AnonKey> --n 500 --concurrency 4
+c_base/build/cbase-bench coldstart --url https://api.foolish.cards --repeat 6 \
+  --force-cmd 'm=$(aws lambda get-function-configuration --function-name cbase --query MemorySize --output text); aws lambda update-function-configuration --function-name cbase --memory-size $((m == 256 ? 257 : 256)) >/dev/null && aws lambda wait function-updated --function-name cbase'
+c_base/build/cbase-bench report
+```
+
+Each `roundtrip` worker signs up two real accounts (`bench<hex><n>@bench.invalid`) and plays real games; delete them in the console's Users panel afterwards if they matter.
+A Lambda container lives for minutes after its last request, so `--idle` alone rarely gives a cold start; the `--force-cmd` above toggles the memory size between 256 and 257 MB, which makes Lambda start new environments on the next request without touching the environment variables (an `--environment` update would replace them all).
+It needs the CLI's credentials, and `--idle 0` is right with it; an even `--repeat` leaves the memory at the template's 256 MB, since CloudFormation does not put back a value changed outside it.
+Pass `--note variant=...` on every run so the report tells variants apart.
+
+The three binary variants do not exist yet; when one does, the same commands measure it:
+
+- **Web Adapter:** deploy a second function from the same zip with the adapter layer and `cbase serve` as the process, behind its own Function URL, and run `roundtrip` and `coldstart` against that URL with `--note variant=web-adapter`.
+  Its saving is exactly the `event_decode` and `event_encode` rows of `cpu`; its cost is the localhost hop and the adapter's start, which `roundtrip` and `coldstart` see.
+- **S3 store:** once a `store_s3.c` backend exists (`store.h` admits it), a second stack with `CBASE_STORE=s3`, measured with `--note variant=s3`.
+  `cpu` would gain the S3 rows (a raw GET body, a PUT with `If-Match`) beside `dynamo_get_parse` and `dynamo_commit_build`, which are what it removes.
+- **Polling:** it needs a binary poll endpoint on the server and a polling client; `roundtrip` would then gain a `--poll-ms` mode in which `push_pv` is the poll's arrival instead of the socket's.
+  Neither the endpoint nor the mode exists.
 
 ## What stays TypeScript, and why
 
@@ -491,6 +583,15 @@ The detailed record and screenshots are in REPORT.md.
 
 Found on the way, NOT a c_base defect: when the first player joins a one-player lobby, the host's page fails to plan the join's animation (`anim_build_plan error -2`, `n_players < 2` in anim_plan.c, because the page plans against its held one-player board) and its animation queue then stalls until a reload.
 The same failure reproduces against `e2e/fake_supabase.mts`, which mirrors the hosted adapter, so production has it today; it belongs to the web client and kernel (`src/state/animPlan.ts`, `useAnimationRun.ts`, `c/src/anim_plan.c`).
+
+## Acceptance on iOS (2026-10-13)
+
+The iOS app (`foolish/ios`, scheme Foolish, Debug, supabase-swift 2.55.4) was built with an untracked `Config/Local.xcconfig` pointing at `cbase serve` and driven on one simulator, every byte recorded by a TCP tap in front of the server.
+Verified: sign-up and sign-in through GoTrue (a wrong password renders GoTrue's "Invalid login credentials"); create; a second player (curl) joining and leaving the lobby, each seen on the iOS pv- feed; add bot; start; moves (pickup, covers, a transfer answered by the bot, attacks, Good) played to game over and the win screen, with the replay snapshot stored; the 9 s resync watchdog refetching `player_views` and healing two pushes the tap dropped on purpose; reconnect and rejoin after the socket was cut; token refresh every 30 s under a 120 s token TTL with supabase-swift's `access_token` channel frames accepted and the feed still live; sign-out (`logout?scope=global`, 204) and delete-account (204, then sign-in refused).
+No request was refused or misread by the server: every response the app received was the shape it decodes.
+supabase-swift 2.55.4 connects with `vsn=2.0.0`, offers `permessage-deflate` (not negotiated, so frames stay plain), and sends its join payload as a Swift dictionary, whose key order changes between runs; `unit_phoenix.c` supabase_swift_frames pins both recorded orders.
+
+Found on the way, NOT c_base defects (the hosted backend answers the same, because the kernel decides): the app's `RootView` does not observe the `OnlineGame`, so after Ready it stays on the lobby with a spinner while the started board sits in the model; joining one's own started game by code is refused 400 `TABLE_E_NOT_WAITING`; Home after game over sends an exit the kernel refuses the same way; stored bot nicknames are cities (`%Vienna 1`), which `BotNames.displayNickname` does not know, so the lobby and table print the raw `%`; after delete-account the app stays on a Dashboard whose Create game does nothing; the win screen's buttons sit over the fool's hand.
 
 ## Open defects carried over from Supabase
 
