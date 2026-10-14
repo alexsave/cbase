@@ -523,6 +523,7 @@ static void lease_semantics(void) {
     cb_user_row a = mkuser("a@x.io", "A", 1);
     CB_STORE_CALL(s, user_create, &a);
     cb_game_row g = mkgame("lease1", 10);
+    g.needs_bots = true;   // a drive takes the lease only on a game with bot work
     CB_STORE_CALL(s, game_create, &g, a.id);
     const int64_t T0 = 1000000, TTL = 25000;
     cb_uuid t1, t2;
@@ -550,14 +551,33 @@ static void lease_semantics(void) {
     T_EQ_INT(CB_STORE_CALL(s, lease_renew, "lease1", t2, T0 + 10002 + TTL + 2, TTL), CB_E_CONFLICT);
     T_EQ_INT(CB_STORE_CALL(s, lease_renew, "lease1", t3, T0 + 10002 + TTL + 2, TTL), CB_OK);
     T_EQ_INT(CB_STORE_CALL(s, lease_acquire, "nogame", T0, TTL, t2), CB_E_NOT_FOUND);
+    // A game with no bot work has no lease to take.
+    cb_game_row idle = mkgame("idle01", 10);
+    CB_STORE_CALL(s, game_create, &idle, a.id);
+    T_EQ_INT(CB_STORE_CALL(s, lease_acquire, "idle01", T0, TTL, t2), CB_E_NOT_FOUND);
 
-    // The lease moves updated_at (the scan sees a drive in flight), never last_commit_at.
+    // The lease moves the scan's staleness clock (the scan sees a drive in
+    // flight), never last_commit_at. SQLite keeps that clock on the row;
+    // DynamoDB keeps it on the SCAN marker the lease lives on, so the row's
+    // updated_at stays its last commit's.
     cb_game_row got;
     T_EQ_INT(CB_STORE_CALL(s, game_get, "lease1", &got), CB_OK);
-    T_EQ_INT(got.updated_at, T0 + 10002 + TTL + 2);
+    T_EQ_INT(got.updated_at, tsb_dynamo() ? 10 : T0 + 10002 + TTL + 2);
     T_EQ_INT(got.last_commit_at, 10);
     T_EQ_INT(got.version, 0);
     cb_game_row_free(&got);
+
+    // A commit that leaves bot work keeps the drive's lease: still held
+    // against a second drive, still the holder's to renew.
+    cb_game_row n = mkgame("lease1", 10);
+    n.needs_bots = true;
+    n.version = 1;
+    n.updated_at = T0 + 10002 + TTL + 3;
+    cb_game_commit c = { .row = &n, .expected_version = 0, .n_humans = 1 };
+    memcpy(c.humans[0], a.id, sizeof(cb_uuid));
+    T_EQ_INT(CB_STORE_CALL(s, game_commit, &c), CB_OK);
+    T_EQ_INT(CB_STORE_CALL(s, lease_acquire, "lease1", T0 + 10002 + TTL + 4, TTL, t2), CB_E_CONFLICT);
+    T_EQ_INT(CB_STORE_CALL(s, lease_renew, "lease1", t3, T0 + 10002 + TTL + 5, TTL), CB_OK);
     cb_store_close(s);
 }
 

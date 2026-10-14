@@ -40,15 +40,18 @@ static void get_item_shape(void) {
     dw_req_free(&r);
 }
 
-// try_acquire_bot_lease: free when never taken, released or run out; the
-// failure brings the old item back so a missing game is told apart.
+// try_acquire_bot_lease, on the game's SCAN marker (a small item, so each
+// lease write is 1 WCU, and the one write also moves the scan's staleness
+// clock): free when never taken, released or run out; the failure brings the
+// old item back, so a game with no marker (gone, or no bot work) is told
+// apart from a lease held.
 static void lease_requests(void) {
     dw_req r;
     dw_req_init(&r);
     dw_lease_acquire(&r, "cbase", "ab12cd", TOK, 1000000, 25000);
     T_EQ_STR(r.target, "DynamoDB_20120810.UpdateItem");
     T_EQ_STR(cb_buf_cstr(&r.body),
-             "{\"ReturnConsumedCapacity\":\"TOTAL\",\"TableName\":\"cbase\",\"Key\":{\"pk\":{\"S\":\"GAME#ab12cd\"},\"sk\":{\"S\":\"ROW\"}},"
+             "{\"ReturnConsumedCapacity\":\"TOTAL\",\"TableName\":\"cbase\",\"Key\":{\"pk\":{\"S\":\"SCAN\"},\"sk\":{\"S\":\"GAME#ab12cd\"}},"
              "\"UpdateExpression\":\"SET #lease_token = :lease_token, #lease_until = :lease_until, #updated_at = :updated_at\","
              "\"ConditionExpression\":\"attribute_exists(pk) AND (attribute_not_exists(#lease_until) OR #lease_until < :updated_at)\","
              "\"ExpressionAttributeNames\":{\"#lease_token\":\"lease_token\",\"#lease_until\":\"lease_until\",\"#updated_at\":\"updated_at\"},"
@@ -56,7 +59,7 @@ static void lease_requests(void) {
              "\":updated_at\":{\"N\":\"1000000\"}},\"ReturnValuesOnConditionCheckFailure\":\"ALL_OLD\"}");
     dw_lease_renew(&r, "cbase", "ab12cd", TOK, 1010000, 25000);
     T_EQ_STR(cb_buf_cstr(&r.body),
-             "{\"ReturnConsumedCapacity\":\"TOTAL\",\"TableName\":\"cbase\",\"Key\":{\"pk\":{\"S\":\"GAME#ab12cd\"},\"sk\":{\"S\":\"ROW\"}},"
+             "{\"ReturnConsumedCapacity\":\"TOTAL\",\"TableName\":\"cbase\",\"Key\":{\"pk\":{\"S\":\"SCAN\"},\"sk\":{\"S\":\"GAME#ab12cd\"}},"
              "\"UpdateExpression\":\"SET #lease_until = :lease_until, #updated_at = :updated_at\","
              "\"ConditionExpression\":\"#lease_token = :token\","
              "\"ExpressionAttributeNames\":{\"#lease_until\":\"lease_until\",\"#updated_at\":\"updated_at\",\"#lease_token\":\"lease_token\"},"
@@ -64,7 +67,7 @@ static void lease_requests(void) {
              "\":token\":{\"S\":\"" TOK "\"}}}");
     dw_lease_release(&r, "cbase", "ab12cd", TOK);
     T_EQ_STR(cb_buf_cstr(&r.body),
-             "{\"ReturnConsumedCapacity\":\"TOTAL\",\"TableName\":\"cbase\",\"Key\":{\"pk\":{\"S\":\"GAME#ab12cd\"},\"sk\":{\"S\":\"ROW\"}},"
+             "{\"ReturnConsumedCapacity\":\"TOTAL\",\"TableName\":\"cbase\",\"Key\":{\"pk\":{\"S\":\"SCAN\"},\"sk\":{\"S\":\"GAME#ab12cd\"}},"
              "\"UpdateExpression\":\"REMOVE #lease_until\",\"ConditionExpression\":\"#lease_token = :token\","
              "\"ExpressionAttributeNames\":{\"#lease_until\":\"lease_until\",\"#lease_token\":\"lease_token\"},"
              "\"ExpressionAttributeValues\":{\":token\":{\"S\":\"" TOK "\"}}}");
@@ -73,7 +76,8 @@ static void lease_requests(void) {
 
 // THE CAS: item 0 the version-fenced row, then a new member, a member gone,
 // the ratings fenced on what was read (clamped arithmetic done here), the
-// SCAN marker. The bot already seated is not written again.
+// SCAN marker, updated in place so a drive's lease on it survives the commit.
+// The bot already seated is not written again.
 static void commit_transaction(void) {
     uint8_t st[3] = { 1, 2, 3 }, ro[2] = { 9, 9 };
     cb_game_row g = { .id = "ab12cd", .status = 1, .state = st, .state_len = 3, .roster = ro, .roster_len = 2,
@@ -130,8 +134,11 @@ static void commit_transaction(void) {
              "\"#updated_at\":\"updated_at\",\"#games_played\":\"games_played\"},"
              "\"ExpressionAttributeValues\":{\":elo_rating\":{\"N\":\"0\"},\":previous_elo\":{\"N\":\"990\"},"
              "\":updated_at\":{\"N\":\"2000\"},\":one\":{\"N\":\"1\"},\":read\":{\"N\":\"990\"}}}},"
-             "{\"Put\":{\"TableName\":\"cbase\",\"Item\":{\"pk\":{\"S\":\"SCAN\"},\"sk\":{\"S\":\"GAME#ab12cd\"},"
-             "\"game_id\":{\"S\":\"ab12cd\"},\"updated_at\":{\"N\":\"2000\"},\"last_commit_at\":{\"N\":\"2000\"}}}}"
+             "{\"Update\":{\"TableName\":\"cbase\",\"Key\":{\"pk\":{\"S\":\"SCAN\"},\"sk\":{\"S\":\"GAME#ab12cd\"}},"
+             "\"UpdateExpression\":\"SET #game_id = :game_id, #updated_at = :updated_at, #last_commit_at = :last_commit_at\","
+             "\"ExpressionAttributeNames\":{\"#game_id\":\"game_id\",\"#updated_at\":\"updated_at\",\"#last_commit_at\":\"last_commit_at\"},"
+             "\"ExpressionAttributeValues\":{\":game_id\":{\"S\":\"ab12cd\"},\":updated_at\":{\"N\":\"2000\"},"
+             "\":last_commit_at\":{\"N\":\"2000\"}}}}"
              "]}");
 
     // A human with no rating row but an account gets one from the start
@@ -271,7 +278,6 @@ static void builders_valid_json(void) {
     T_CHECK(strstr(cb_buf_cstr(&r.body), "REMOVE #username") != NULL);
     dw_ratings_get(&r, "cbase", ids, isbot, 2, false); T_CHECK(valid(&r));
     dw_ratings_get(&r, "cbase", ids, isbot, 2, true);  T_CHECK(valid(&r));
-    dw_scan_touch(&r, "cbase", "ab12cd", 77);        T_CHECK(valid(&r));
     dw_scan_family(&r, "cbase", "GAME", "ab", 10, cb_span_of("", 0)); T_CHECK(valid(&r));
     T_CHECK(strstr(cb_buf_cstr(&r.body), "\":p\":{\"S\":\"GAME#ab\"}") != NULL);
     dw_execute(&r, "SELECT * FROM \"cbase\"", "tok"); T_CHECK(valid(&r));
@@ -655,9 +661,8 @@ static void flow_commit_drops_missing_account(void) {
 static void flow_lease(void) {
     static const step steps[] = {
         { "UpdateItem", "attribute_not_exists(#lease_until)", 400, COND_WITH_ITEM },   // held by another
-        { "UpdateItem", NULL, 400, COND_NO_ITEM },                                      // no such game
-        { "UpdateItem", "\":updated_at\":{\"N\":\"5000\"}", 200, "{}" },                 // taken
-        { "UpdateItem", "\"S\":\"SCAN\"", 400, COND_NO_ITEM },                           // no marker: fine
+        { "UpdateItem", NULL, 400, COND_NO_ITEM },                                      // no marker: no game, or no bot work
+        { "UpdateItem", "\":updated_at\":{\"N\":\"5000\"}", 200, "{}" },                 // taken: one write
         { "UpdateItem", "#lease_token = :token", 400, COND_NO_ITEM },                    // renew, wrong token
         { "UpdateItem", "REMOVE #lease_until", 400, COND_NO_ITEM },                      // release, not ours
     };
@@ -669,7 +674,7 @@ static void flow_lease(void) {
     T_CHECK(strstr(sc_.bodies[2], tok) != NULL);   // the token returned is the one written
     T_EQ_INT(CB_STORE_CALL(s, lease_renew, "ab12cd", "00000000-0000-4000-8000-000000000000", 6000, 25000), CB_E_CONFLICT);
     T_EQ_INT(CB_STORE_CALL(s, lease_release, "ab12cd", "00000000-0000-4000-8000-000000000000"), CB_OK);
-    T_EQ_INT(sc_.at, 6);
+    T_EQ_INT(sc_.at, 5);
     cb_store_close(s);
 }
 

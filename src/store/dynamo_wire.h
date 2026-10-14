@@ -18,7 +18,7 @@
 //   USER#<id>          RATING             the leaderboard row (GSI2 RATINGS / <id>)
 //   EMAIL#<email>      USER               the user id; signup's uniqueness
 //   REFRESH#<hash>     TOKEN              a refresh token (GSI1 USERREFRESH#<user>, GSI2 SESSION#<session>)
-//   GAME#<id>          ROW                the game, its lease
+//   GAME#<id>          ROW                the game
 //   GAME#<id>          MEMBER#<user>      a seated human (GSI1 USERGAMES#<user> / <updated>#<game>)
 //   GAME#<id>          BOT#<bot>          a seated bot
 //   BOT#<id>           BOT                a bot and its rating (GSI2 BOTS / <id>)
@@ -28,7 +28,8 @@
 //   CHAT#<game>        <created>#<id>     a chat message (GSI1 USERCHAT#<user> / <created>#<id>)
 //   CONN#<conn>        CONN               a realtime connection (TTL)
 //   TOPIC#<topic>      CONN#<conn>        the connection again, per joined topic (TTL)
-//   SCAN               GAME#<id>          present while the game needs bots: the heartbeat's partition
+//   SCAN               GAME#<id>          present while the game needs bots: the heartbeat's
+//                                         partition, and the bot lease
 //
 // Times in sort keys are 15-digit zero-padded ms so they sort as text.
 #ifndef CB_DYNAMO_WIRE_H
@@ -244,13 +245,12 @@ void dw_snapshot_unlink(dw_req *r, const char *table, cb_span key);
 bool dw_snapshot_set_extras(dw_req *r, const char *table, const cb_buf *keys, int n_keys,
                             const uint8_t *extras, size_t extras_len);
 
-// The lease (seed.sql try_acquire / renew / release_bot_lease). Each fails
-// with ConditionalCheckFailed (ALL_OLD returned when the game exists).
+// The lease (seed.sql try_acquire / renew / release_bot_lease), on the game's
+// SCAN marker; acquire and renew move the marker's updated_at. Each fails
+// with ConditionalCheckFailed (ALL_OLD returned when the marker exists).
 void dw_lease_acquire(dw_req *r, const char *table, const char *game, const char *token, int64_t now, int64_t ttl);
 void dw_lease_renew(dw_req *r, const char *table, const char *game, const char *token, int64_t now, int64_t ttl);
 void dw_lease_release(dw_req *r, const char *table, const char *game, const char *token);
-// The SCAN marker follows the lease's updated_at, when the marker exists.
-void dw_scan_touch(dw_req *r, const char *table, const char *game, int64_t now);
 
 // Ratings and bots.
 void dw_rating_set_username(dw_req *r, const char *table, const char *user, const char *username);

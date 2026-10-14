@@ -95,7 +95,7 @@ static const char *const SQL[ST__COUNT] = {
     [ST_GAME_UPDATE_CAS] =
         "UPDATE games SET status = ?2, state = ?3, roster = ?4, logs_packed = ?5, game_seed = ?6, needs_bots = ?7, "
         "version = ?8, round_epoch = ?9, updated_at = ?10, last_commit_at = ?11 WHERE id = ?1 AND version = ?12",
-    [ST_GAME_EXISTS] = "SELECT 1 FROM games WHERE id = ?1",
+    [ST_GAME_EXISTS] = "SELECT needs_bots FROM games WHERE id = ?1",
     [ST_GAME_DELETE_CAS] = "DELETE FROM games WHERE id = ?1 AND version = ?2",
 
     // A seat whose account is gone (delete-account redacts the roster, the id
@@ -123,7 +123,7 @@ static const char *const SQL[ST__COUNT] = {
     // heartbeat's staleness window sees a drive in flight; they never move
     // last_commit_at (games_stamp_last_commit left it alone).
     [ST_LEASE_ACQUIRE] = "UPDATE games SET bot_lease_token = ?2, bot_lease_until = ?3 + ?4, updated_at = ?3 "
-                         "WHERE id = ?1 AND (bot_lease_until IS NULL OR bot_lease_until < ?3)",
+                         "WHERE id = ?1 AND needs_bots = 1 AND (bot_lease_until IS NULL OR bot_lease_until < ?3)",
     [ST_LEASE_RENEW] = "UPDATE games SET bot_lease_until = ?3 + ?4, updated_at = ?3 "
                        "WHERE id = ?1 AND bot_lease_token = ?2",
     [ST_LEASE_RELEASE] = "UPDATE games SET bot_lease_until = NULL WHERE id = ?1 AND bot_lease_token = ?2",
@@ -780,12 +780,15 @@ static bool commit_valid(const cb_game_commit *c) {
 }
 
 // 1 when the game row exists, 0 when not, or a CB_E_*. Lock held.
-static int game_exists(sq *q, const char *id) {
+// 1 when the game exists (and, with `needing_bots`, needs bots), 0 when not.
+static int game_exists(sq *q, const char *id, bool needing_bots) {
     sqlite3_stmt *s = stmt(q, ST_GAME_EXISTS);
     if (!s) return CB_E_DB;
     b_text(s, 1, id);
     int r = sqlite3_step(s);
-    int rc = r == SQLITE_ROW ? 1 : r == SQLITE_DONE ? 0 : fail(q, "game exists", r);
+    int rc = r == SQLITE_ROW ? (!needing_bots || sqlite3_column_int64(s, 0) != 0)
+           : r == SQLITE_DONE ? 0
+                              : fail(q, "game exists", r);
     done(s);
     return rc;
 }
@@ -816,7 +819,7 @@ static int sq_game_commit(cb_store *st, const cb_game_commit *c) {
             b_i64(s, 12, c->expected_version);
             rc = step_write(q, s, "game commit", true);
             if (rc == CB_E_NOT_FOUND) {   // the fence refused: moved on, or gone
-                int e = game_exists(q, g->id);
+                int e = game_exists(q, g->id, false);
                 rc = e == 1 ? CB_E_CONFLICT : e == 0 ? CB_E_NOT_FOUND : e;
             }
         }
@@ -840,7 +843,7 @@ static int sq_game_delete(cb_store *st, const char *id, int64_t expected) {
     }
     int rc = step_write(q, s, "game delete", true);
     if (rc == CB_E_NOT_FOUND) {
-        int e = game_exists(q, id);
+        int e = game_exists(q, id, false);
         rc = e == 1 ? CB_E_CONFLICT : e == 0 ? CB_E_NOT_FOUND : e;
     }
     unlock(q);
@@ -960,7 +963,9 @@ static int sq_lease_acquire(cb_store *st, const char *game, int64_t now, int64_t
     }
     int rc = step_write(q, s, "lease acquire", true);
     if (rc == CB_E_NOT_FOUND) {
-        int e = game_exists(q, game);
+        // Held, or nothing to hold: a game gone or with no bot work, as
+        // DynamoDB answers when the game has no SCAN marker.
+        int e = game_exists(q, game, true);
         rc = e == 1 ? CB_E_CONFLICT : e == 0 ? CB_E_NOT_FOUND : e;
     }
     unlock(q);

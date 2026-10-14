@@ -13,9 +13,11 @@
 // rating another table changed, a seat's account deleted): it re-reads and
 // sends again, up to five times.
 //
-// THE LEASE is a conditional UpdateItem on the game row, as the plpgsql
-// functions were; a successful acquire or renew also moves the SCAN marker's
-// updated_at, which the heartbeat's staleness window reads.
+// THE LEASE is a conditional UpdateItem on the game's SCAN marker (see
+// dynamo_wire.c lease_update), as the plpgsql functions were on the row: one
+// small write that also moves the marker's updated_at, the heartbeat's
+// staleness clock. The commit's CAS on the row's version is what keeps two
+// writers apart; the lease only keeps two drives from working one game.
 //
 // Not atomic across calls (each documented where it happens): user_delete's
 // cascade and game_delete's chat and replay cleanup run after the row they
@@ -773,15 +775,6 @@ static int dy_games_needing_bots(cb_store *s, int64_t stale_before, int64_t acti
 
 // ---- the lease --------------------------------------------------------------------------
 
-// The SCAN marker follows the lease's updated_at (best effort: a game that
-// needs no bots has no marker, and a failure only means one early scan).
-static void scan_touch(dyn *d, const char *game, int64_t now) {
-    dw_req r;
-    dw_req_init(&r);
-    dw_scan_touch(&r, d->table, game, now);
-    simple1(d, &r, CB_OK);
-}
-
 static int dy_lease_acquire(cb_store *s, const char *game, int64_t now, int64_t ttl, cb_uuid token_out) {
     dyn *d = D(s);
     cb_uuid tok;
@@ -797,10 +790,7 @@ static int dy_lease_acquire(cb_store *s, const char *game, int64_t now, int64_t 
                                   : CB_E_DB;
     cb_buf_free(&resp);
     dw_req_free(&r);
-    if (rc == CB_OK) {
-        memcpy(token_out, tok, sizeof tok);
-        scan_touch(d, game, now);
-    }
+    if (rc == CB_OK) memcpy(token_out, tok, sizeof tok);
     return rc;
 }
 
@@ -809,9 +799,7 @@ static int dy_lease_renew(cb_store *s, const char *game, const char *token, int6
     dw_req r;
     dw_req_init(&r);
     dw_lease_renew(&r, d->table, game, token, now, ttl);
-    int rc = simple1(d, &r, CB_E_CONFLICT);
-    if (rc == CB_OK) scan_touch(d, game, now);
-    return rc;
+    return simple1(d, &r, CB_E_CONFLICT);
 }
 
 static int dy_lease_release(cb_store *s, const char *game, const char *token) {

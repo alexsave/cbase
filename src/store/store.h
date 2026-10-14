@@ -258,11 +258,15 @@ typedef struct cb_store_ops {
     // The bot lease (today's try_acquire/renew/release_bot_lease): a random
     // token valid until now + ttl_ms. acquire: CB_OK and the token, or
     // CB_E_CONFLICT while another holder's lease is live (CB_E_NOT_FOUND: no
-    // such game). renew: CB_OK, or CB_E_CONFLICT when the token no longer
-    // holds it. release: CB_OK (a lease that is not the token's is left alone).
-    // acquire and renew move updated_at to `now` (never last_commit_at), as
-    // the update_games_updated_at trigger did, so the scan's staleness window
-    // sees a drive in flight.
+    // such game, or a game with no bot work, which has no lease to take).
+    // renew: CB_OK, or CB_E_CONFLICT when the token no longer holds it.
+    // release: CB_OK (a lease that is not the token's is left alone). A
+    // commit that leaves bot work keeps the lease. acquire and renew move the
+    // scan's staleness clock (games_needing_bots' updated_at) to `now`, never
+    // last_commit_at, as the update_games_updated_at trigger did, so the scan
+    // sees a drive in flight. SQLite keeps that clock on the row, so game_get
+    // sees it move; DynamoDB keeps it, and the lease, on the game's small
+    // SCAN marker (1 WCU a write), so the row's updated_at is its last commit's.
     int (*lease_acquire)(cb_store *s, const char *game_id, int64_t now, int64_t ttl_ms, cb_uuid token_out);
     int (*lease_renew)(cb_store *s, const char *game_id, const char *token, int64_t now, int64_t ttl_ms);
     int (*lease_release)(cb_store *s, const char *game_id, const char *token);
