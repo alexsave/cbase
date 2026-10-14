@@ -285,9 +285,9 @@ static void chat_history_is_members_only(void) {
     answer a = get("chat_messages", "select=*&game_id=eq." G "&order=created_at.asc&limit=100", "tok-" U1);
     T_EQ_INT(a.status, 200);
     T_EQ_STR(a.body, "[{\"id\":\"00000000-0000-4000-8000-000000000002\",\"game_id\":\"" G "\",\"user_id\":\"" U1 "\",\"message\":\"first\","
-                     "\"is_system\":false,\"created_at\":\"2026-10-13T10:00:01.25\"},"
+                     "\"is_system\":false,\"created_at\":\"2026-10-13T10:00:01.25+00:00\"},"
                      "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"game_id\":\"" G "\",\"user_id\":\"" U2 "\",\"message\":\"second\","
-                     "\"is_system\":false,\"created_at\":\"2026-10-13T10:00:02\"}]");
+                     "\"is_system\":false,\"created_at\":\"2026-10-13T10:00:02+00:00\"}]");
     a = get("chat_messages", "select=message&game_id=eq." G "&order=created_at.asc&limit=1", "tok-" U1);
     T_EQ_STR(a.body, "[{\"message\":\"first\"}]");
     a = get("chat_messages", "select=*&game_id=eq." G, "tok-" U3);   // not a member
@@ -380,7 +380,7 @@ static void leaderboard_and_lobby(void) {
     T_CHECK(strstr(a.body, "\"strategy_key\":\"random\"") != NULL);
     a = get("bots", "id=eq.b0000000-0000-4000-8000-000000000001", NULL);
     T_EQ_STR(a.body, "[{\"id\":\"b0000000-0000-4000-8000-000000000001\",\"nickname\":\"%Miami 1\",\"strategy_key\":\"random\",\"elo_rating\":900,"
-                     "\"previous_elo\":null,\"games_played\":0,\"created_at\":\"2026-10-01T00:00:00\",\"updated_at\":\"2026-10-01T00:00:00\"}]");
+                     "\"previous_elo\":null,\"games_played\":0,\"created_at\":\"2026-10-01T00:00:00+00:00\",\"updated_at\":\"2026-10-01T00:00:00+00:00\"}]");
     a = get("user_elo_ratings", "select=user_id%2Cusername%2Celo_rating%2Cgames_played&games_played=gt.0&order=elo_rating.desc&limit=50", NULL);
     T_EQ_STR(a.body, "[{\"user_id\":\"" U1 "\",\"username\":\"ALEX\",\"elo_rating\":1050,\"games_played\":4},"
                      "{\"user_id\":\"" U2 "\",\"username\":null,\"elo_rating\":990,\"games_played\":1}]");
@@ -389,7 +389,7 @@ static void leaderboard_and_lobby(void) {
     T_EQ_STR(a.body, "[{\"elo_rating\":1050}]");
     a = get("user_elo_ratings", "user_id=eq." U2, NULL);
     T_EQ_STR(a.body, "[{\"user_id\":\"" U2 "\",\"username\":null,\"elo_rating\":990,\"previous_elo\":null,\"games_played\":1,"
-                     "\"created_at\":null,\"updated_at\":\"2026-10-02T00:00:00\"}]");
+                     "\"created_at\":null,\"updated_at\":\"2026-10-02T00:00:00+00:00\"}]");
 }
 
 static void snapshots_are_their_players_only(void) {
@@ -403,9 +403,9 @@ static void snapshots_are_their_players_only(void) {
     answer a = get("game_snapshots", "select=id%2Cplayer_ids%2Cmoves%2Cextras%2Ccreated_at&order=created_at.desc&limit=20", "tok-" U1);
     T_EQ_INT(a.status, 200);
     T_EQ_STR(a.body, "[{\"id\":\"55555555-5555-4555-8555-000000000003\",\"player_ids\":[\"" U1 "\",\"" U2 "\"],\"moves\":\"\\\\x60\",\"extras\":null,"
-                     "\"created_at\":\"2026-10-12T00:00:00\"},"
+                     "\"created_at\":\"2026-10-12T00:00:00+00:00\"},"
                      "{\"id\":\"55555555-5555-4555-8555-000000000001\",\"player_ids\":[\"" U1 "\",\"" U2 "\"],\"moves\":\"\\\\x6001\",\"extras\":\"\\\\x02\","
-                     "\"created_at\":\"2026-10-10T00:00:00\"}]");
+                     "\"created_at\":\"2026-10-10T00:00:00+00:00\"}]");
     // ReplayShare.tsx: one game's newest.
     a = get("game_snapshots", "select=moves%2Cextras&game_id=eq." G "&order=created_at.desc&limit=1", "tok-" U2);
     T_EQ_STR(a.body, "[{\"moves\":\"\\\\x6001\",\"extras\":\"\\\\x02\"}]");

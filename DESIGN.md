@@ -232,10 +232,14 @@ As built:
   finalize.ts then cleared `logs_packed` with a second, unfenced UPDATE; the store has no such write, so the finished game's log stays until the next commit that leaves the finished table (a lobby commit empties it, a deal replaces it).
   This is accepted: the log is read only by the next deal's append and by the replay gate, both of which handle it.
   The snapshot's `player_ids` include the bots, as finalize.ts wrote them.
-- `fanout.c`: a pv- INSERT/UPDATE/DELETE per human row on every commit, the gu- casts per human seat and the game- cast only when `n_events > 0 || goods_changed` (table_io.ts's rule).
+- `fanout.c`: a pv- INSERT/UPDATE/DELETE per human row on every commit, the gu- casts per human seat and the game- cast only when `n_events > 0 || goods_changed || roster_changed`.
+  table_io.ts's rule had no `roster_changed`, so a delete-account redaction on a dealt table (no card, no good) cast nothing, and an open game page, which ignores the pv- row of the game on screen, kept the deleted name until a reload; the cast carries the roster trailer and the page applies an empty cast as a board.
 - `functions_http.c` follows wrap400: auth is checked before the content type; 400 for every refusal with a reason (AUTH, MALFORMED, REFUSED, NOT_FOUND, NO_BOT), 415 for a body that is not octets, 500 INTERNAL for the server's own failure (write contention included), 503 when the store is not up; create 400 AUTH or 500; delete-account 405, 401, 500.
   These match inv_supabase.md section 3 line by line.
   `cb_app_delete_account` is the one implementation behind delete-account and the console's Users panel.
+  After the live tables, it anonymizes the user's stored replays: each snapshot whose `player_ids` hold the user gets its extras rewritten by the kernel's `replay_extras_redact` (the seat's name becomes `REDACTED_PLAYER_NAME`, every other byte stays) through the store's `snapshot_set_extras`, which rewrites every DynamoDB copy in one transaction.
+  An extras blob the kernel cannot read is cleared rather than kept; the moves code names nobody.
+  Production's delete-account (Supabase) never did this, so its replays still name deleted players.
 - `bots.c`: `cb_bots_drive` (lease, cycles with the kernel's wait, renew per cycle, release on every exit, re-kick when the budget ends with work left), `cb_bots_scan`, and the two kicks.
   The edge runtime's 1700 ms CPU budget is gone: a Lambda drive stops when the predicted next cycle would pass the invocation deadline minus 5 s; the 120 s wall ceiling stays.
   `cbase serve` runs the scan every 10 s on a loop timer, on the request pool, as the heartbeat; `main_lambda.c` answers `{}` for a drive whose game is gone, so Lambda does not retry it.
@@ -270,7 +274,7 @@ As built:
   A join token equal to `CBASE_ANON_KEY` is "nobody" and is refused by policy, since supabase-js hands Realtime the anon key when signed out.
   Topics must carry "realtime:"; unknown families (`user-`, `room:`) are refused.
 - Binding ids are a hash (`cb_phx_binding_id`, FNV-1a over event, schema, table and filter), so neither transport stores anything per binding; a pv- change is tagged with the ids of its event and "*" crossed with its filter and none.
-- `realtime.c` builds each frame once per serializer in Supabase Realtime's own shapes (keys sorted as Jason writes small maps; `commit_timestamp` with milliseconds and "Z"); `rt_rows.c` prints timestamps as Postgres does (an offset only on the TIMESTAMPTZ columns).
+- `realtime.c` builds each frame once per serializer in Supabase Realtime's own shapes (keys sorted as Jason writes small maps; `commit_timestamp` with milliseconds and "Z"); `rt_rows.c` prints every timestamp as Postgres prints a TIMESTAMPTZ in UTC, with "+00:00", including the columns production keeps as plain TIMESTAMP (chat, snapshots, ratings): a bare timestamp is read as local time by the browser, which put the chat clock off by the viewer's UTC offset.
 - `rt_local.c` (serve): `GET /realtime/v1/websocket` on the loop thread, refusing an unknown vsn with 400 and echoing `Sec-WebSocket-Protocol: phoenix` (Chrome fails the handshake otherwise); each client frame runs on the request pool, one at a time per connection, so frames are answered in order.
   The server's idle sweep closes a WebSocket with no client traffic for 120 s, which a client's 25 s heartbeat prevents.
 - `rt_apigw.c` (Lambda): `$connect` stores a CONN row with a 2 h TTL, `$disconnect` deletes it, `$default` runs the frame and writes the row back only when it changed or a third of the TTL has gone (heartbeats cost no write); replies and pushes go through the management API, and 410 deletes the row.

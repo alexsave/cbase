@@ -50,7 +50,7 @@ enum {
     ST_LEASE_ACQUIRE, ST_LEASE_RENEW, ST_LEASE_RELEASE,
     ST_RATING_INSERT_MISSING, ST_RATING_APPLY, ST_BOT_RATING_APPLY,
     ST_BOTS_ALL, ST_RATINGS_ALL, ST_BOT_ELO, ST_USER_ELO, ST_RATING_SET_USERNAME,
-    ST_SNAPSHOT_PUT, ST_SNAPSHOTS_ASC, ST_SNAPSHOTS_DESC,
+    ST_SNAPSHOT_PUT, ST_SNAPSHOT_SET_EXTRAS, ST_SNAPSHOTS_ASC, ST_SNAPSHOTS_DESC,
     ST_CHAT_PUT, ST_CHAT_LIST,
     ST_CONN_PRUNE, ST_CONN_UPSERT, ST_CONN_TOPICS_CLEAR, ST_CONN_TOPIC_INSERT, ST_CONN_GET, ST_CONN_TOPICS_OF,
     ST_CONN_DELETE, ST_CONNS_BY_TOPIC,
@@ -145,6 +145,7 @@ static const char *const SQL[ST__COUNT] = {
     [ST_RATING_SET_USERNAME] = "UPDATE ratings SET username = ?2 WHERE user_id = ?1",
 
     [ST_SNAPSHOT_PUT] = "INSERT INTO game_snapshots (" SNAP_COLS ") VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+    [ST_SNAPSHOT_SET_EXTRAS] = "UPDATE game_snapshots SET extras = ?2 WHERE id = ?1",
     [ST_SNAPSHOTS_ASC] = "SELECT " SNAP_COLS " FROM game_snapshots "
                          "WHERE instr(',' || player_ids || ',', ',' || ?1 || ',') > 0 "
                          "AND (?2 IS NULL OR game_id = ?2) AND (?3 IS NULL OR id = ?3) "
@@ -1094,6 +1095,19 @@ static int sq_snapshot_put(cb_store *st, const cb_snapshot_row *r) {
     return rc;
 }
 
+static int sq_snapshot_set_extras(cb_store *st, const char *id, const uint8_t *extras, size_t extras_len) {
+    sq *q = Q(st);
+    lock(q);
+    sqlite3_stmt *s = stmt(q, ST_SNAPSHOT_SET_EXTRAS);
+    if (s) {
+        b_text(s, 1, id);
+        b_blob(s, 2, extras, extras_len);
+    }
+    int rc = step_write(q, s, "snapshot extras", true);
+    unlock(q);
+    return rc;
+}
+
 static int sq_snapshots_query(cb_store *st, const cb_snapshot_query *qy, cb_snapshot_fn fn, void *ud) {
     if (!qy || !qy->viewer_id || !*qy->viewer_id) return CB_E_INVALID;
     sq *q = Q(st);
@@ -1655,6 +1669,7 @@ static const cb_store_ops SQLITE_OPS = {
     .rating_set_username = sq_rating_set_username,
     .snapshot_put = sq_snapshot_put,
     .snapshots_query = sq_snapshots_query,
+    .snapshot_set_extras = sq_snapshot_set_extras,
     .chat_put = sq_chat_put,
     .chat_list = sq_chat_list,
     .conn_put = sq_conn_put,

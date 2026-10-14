@@ -211,7 +211,8 @@ typedef struct cb_store_ops {
     int (*user_touch_sign_in)(cb_store *s, const char *id, int64_t at);
     // Deletes the user, their refresh tokens, memberships, rating row and chat
     // messages (the cascade auth.admin.deleteUser had). Snapshots keep their
-    // player_ids, as today (DESIGN.md "Open defects carried over").
+    // player_ids, as today (DESIGN.md "Open defects carried over"); the app
+    // has already redacted the name in their extras (snapshot_set_extras).
     int (*user_delete)(cb_store *s, const char *id);
     // Admin: users whose email or username contains `search` ("" for all),
     // newest first, from `offset`.
@@ -278,6 +279,11 @@ typedef struct cb_store_ops {
     // snapshots
     int (*snapshot_put)(cb_store *s, const cb_snapshot_row *r);
     int (*snapshots_query)(cb_store *s, const cb_snapshot_query *q, cb_snapshot_fn fn, void *ud);
+    // Account deletion: one replay's extras replaced (the kernel's
+    // replay_extras_redact), on every copy of the row; the moves, player_ids,
+    // game and date stay. extras_len 0 clears them. CB_E_NOT_FOUND when the
+    // snapshot is gone. A user's snapshots are snapshots_query by viewer_id.
+    int (*snapshot_set_extras)(cb_store *s, const char *id, const uint8_t *extras, size_t extras_len);
 
     // chat
     int (*chat_put)(cb_store *s, const cb_chat_row *r);

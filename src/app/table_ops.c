@@ -377,7 +377,15 @@ int cb_section_commit(cb_ctx *ctx, cb_section *s, const cb_game_row *row, const 
     }
 
     // ---- everything the aftermath needs, copied out of the section ----------------
-    const bool broadcast = c->n_events > 0 || c->goods_changed;
+    // A cast goes out when the operation moved a card, moved the goods, or
+    // changed the roster. The last is a delete-account redaction (or any other
+    // rename) on a table already dealt: it flies nothing and sets no good, and
+    // table_io.ts's rule (events or goods) sent no cast, so an open game page
+    // kept the deleted player's name until a reload; the pv- row that did go
+    // out is ignored for the game on screen (ServerContext applyRow). The cast
+    // carries the roster trailer (table_push), and the page applies a cast with
+    // no events as a board (AnimationContext's empty-stream path).
+    const bool broadcast = c->n_events > 0 || c->goods_changed || c->roster_changed;
     cb_fanout f;
     memset(&f, 0, sizeof f);
     f.game_id = row->id;
