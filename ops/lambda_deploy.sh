@@ -60,7 +60,7 @@ if [ "$current" = "$key" ]; then
 else
   # ---- 2. upload ----------------------------------------------------------------------
   bucket="$(param CodeBucket)"
-  [ -n "$bucket" ] && [ "$bucket" != None ] || die "the $stack stack has no CodeBucket parameter"
+  if [ -z "$bucket" ] || [ "$bucket" = None ]; then die "the $stack stack has no CodeBucket parameter"; fi
   aws s3 cp "$zip" "s3://$bucket/$key" --only-show-errors
   echo "uploaded s3://$bucket/$key (was $current)"
 
