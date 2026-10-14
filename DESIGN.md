@@ -574,6 +574,23 @@ What it says so far: the JSON tax is real and small.
 The Lambda path pays about 0.07 ms of CPU per action for JSON, while each DynamoDB call it would replace costs milliseconds over the network, two to three per action.
 So the fully binary stack can win at most that 0.07 ms per action on CPU, and S3's slower calls would cost more than that back; this supports the expectation above, and the deployed run will test it with the network included.
 
+### The first AWS run (2026-10-14, from an Apple M1 in New York to us-east-1)
+
+The stack `cbase` (Lambda arm64 256 MB, DynamoDB at 25 provisioned units, API Gateway WebSocket), reached through CloudFront's own domain `d3rcf2zypd78ll.cloudfront.net` because `api.foolish.cards` had no DNS record yet.
+`roundtrip --n 150 --concurrency 1` over home Wi-Fi: 2 games, 0 rejected moves, 0 lost pushes, 0 errors, 24 s of wall time.
+
+| metric | concurrency | n | p50 ms | p95 ms | p99 ms | max ms | bytes out / in |
+|---|--:|--:|--:|--:|--:|--:|--:|
+| action | 1 | 150 | 92.90 | 132.20 | 166.10 | 221.44 | 840 / 614 |
+| player_views | 1 | 151 | 40.93 | 69.54 | 76.39 | 83.59 | 853 / 1086 |
+| push_pv | 1 | 150 | -15.27 | -7.60 | -1.67 | -1.39 | |
+
+Every push arrived before its action's response, by 15 ms at the median: the function posts the `pv-` frames to API Gateway's management API before it answers, and the response then still travels Lambda, the Function URL and CloudFront.
+`player_views` (one GetItem behind the edge) is about 41 ms, which is mostly the round trip from New York to Virginia through CloudFront; `action` adds the conditional commit and the two management-API posts to that, about 52 ms more at the median.
+The run is saved outside the repository; these rows are its numbers as printed.
+
+This run came after the first real-AWS defect was fixed: every POST through CloudFront answered 502, because Lambda's Runtime API answers `/next` with `Transfer-Encoding: chunked` once an event is large, CloudFront's added headers take an event past 2 KB, and the runtime client honoured only `Content-Length` (`unit_runtime_api.c`).
+
 ### Running it against the deployed stack, and the variants
 
 The deployed baseline is one command from this Mac once the stack answers (RUNBOOK.md "What you must give me afterwards"):
