@@ -16,7 +16,8 @@ AWSTemplateFormatVersion: "2010-09-09"
 #   * a CloudFront distribution at the custom domain, sending
 #     /realtime/v1/websocket to the WebSocket API and everything else to the
 #     Function URL, so the clients see one origin;
-#   * optionally, the role GitHub Actions assumes (OIDC) to deploy new code.
+#   (GitHub Actions deploys new code through ops/github_oidc.yaml's role, which
+#   holds no other rights here: see that file.)
 #
 # Region: create the stack in us-east-1. The ACM certificate must be in
 # us-east-1 for CloudFront whatever region the stack is in, and keeping
@@ -42,8 +43,6 @@ Metadata:
         Parameters: [DomainName, CertificateArn, AllowedOrigins]
       - Label: { default: "Names" }
         Parameters: [FunctionName, TableName]
-      - Label: { default: "GitHub Actions deploys (optional)" }
-        Parameters: [GitHubRepo, CreateGitHubOidcProvider]
 
 Parameters:
   CodeBucket:
@@ -89,19 +88,6 @@ Parameters:
     Type: String
     Default: cbase
     AllowedPattern: "[a-zA-Z0-9_.-]{3,255}"
-  GitHubRepo:
-    Type: String
-    Default: ""
-    Description: owner/name (alexsave/foolish) to create the role GitHub Actions assumes to deploy from main. Empty creates no role.
-  CreateGitHubOidcProvider:
-    Type: String
-    Default: "yes"
-    AllowedValues: ["yes", "no"]
-    Description: An account holds one GitHub OIDC provider. Say no if IAM > Identity providers already lists token.actions.githubusercontent.com.
-
-Conditions:
-  HasGitHub: !Not [!Equals [!Ref GitHubRepo, ""]]
-  MakeOidcProvider: !And [!Condition HasGitHub, !Equals [!Ref CreateGitHubOidcProvider, "yes"]]
 
 Resources:
   # ---- the store ----------------------------------------------------------------
@@ -449,45 +435,6 @@ Resources:
               - EventType: viewer-request
                 FunctionARN: !GetAtt WsPathRewrite.FunctionMetadata.FunctionARN
 
-  # ---- GitHub Actions deploys (optional) ------------------------------------------
-  # The role .github/workflows/c_base.yml assumes on a push to main, through
-  # GitHub's OIDC provider: it may replace this function's code and nothing else.
-  GitHubOidcProvider:
-    Type: AWS::IAM::OIDCProvider
-    Condition: MakeOidcProvider
-    Properties:
-      Url: https://token.actions.githubusercontent.com
-      ClientIdList: [sts.amazonaws.com]
-
-  DeployRole:
-    Type: AWS::IAM::Role
-    Condition: HasGitHub
-    Properties:
-      RoleName: !Sub "${FunctionName}-github-deploy"
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Federated: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com"
-            Action: sts:AssumeRoleWithWebIdentity
-            Condition:
-              StringEquals:
-                "token.actions.githubusercontent.com:aud": sts.amazonaws.com
-                "token.actions.githubusercontent.com:sub": !Sub "repo:${GitHubRepo}:ref:refs/heads/main"
-      Policies:
-        - PolicyName: deploy-code
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: Allow
-                Action:
-                  - lambda:UpdateFunctionCode
-                  - lambda:GetFunction
-                  - lambda:GetFunctionConfiguration
-                  - lambda:GetFunctionUrlConfig
-                Resource: !GetAtt Function.Arn
-
 Outputs:
   FunctionUrl:
     Description: The Function URL (the HTTP routes, before CloudFront).
@@ -505,7 +452,3 @@ Outputs:
   PublicUrl:
     Description: What the web and iOS clients use as their Supabase URL.
     Value: !Sub "https://${DomainName}"
-  DeployRoleArn:
-    Condition: HasGitHub
-    Description: The GitHub secret CBASE_AWS_ROLE_ARN.
-    Value: !GetAtt DeployRole.Arn

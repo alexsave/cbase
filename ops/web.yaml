@@ -22,7 +22,7 @@ AWSTemplateFormatVersion: "2010-09-09"
 #     errors would be rewritten too;
 #   * on foolish, /m/* to the c_base Lambda Function URL (the link unfurl, a C
 #     route), and optionally the COOP/COEP headers;
-#   * optionally, the role GitHub Actions assumes to deploy (OIDC).
+#   (GitHub Actions deploys through ops/github_oidc.yaml's role.)
 #
 # Caching: only AWS-managed cache policies (a Free plan allows no custom
 # ones). Managed-CachingOptimized honours each object's own Cache-Control,
@@ -44,8 +44,6 @@ Metadata:
         Parameters: [ApiOriginDomain, CrossOriginIsolation]
       - Label: { default: "Routing (web_deploy.sh writes these from each build)" }
         Parameters: [FoolishPages, UtttPages]
-      - Label: { default: "GitHub Actions deploys (optional)" }
-        Parameters: [GitHubRepo, CreateGitHubOidcProvider]
 
 Parameters:
   FoolishCertificateArn:
@@ -80,22 +78,11 @@ Parameters:
     Default: ""
     Description: The uttt export's pages, as FoolishPages.
     AllowedPattern: "[a-zA-Z0-9_./ -]*"
-  GitHubRepo:
-    Type: String
-    Default: ""
-    Description: owner/name (alexsave/foolish) to create the role .github/workflows/web_aws.yml assumes from main. Empty creates no role.
-  CreateGitHubOidcProvider:
-    Type: String
-    Default: "no"
-    AllowedValues: ["yes", "no"]
-    Description: An account holds one GitHub OIDC provider. Say yes only if IAM > Identity providers does not list token.actions.githubusercontent.com and the cbase stack did not make it.
 
 Conditions:
   HasFoolishCert: !Not [!Equals [!Ref FoolishCertificateArn, ""]]
   HasUtttCert: !Not [!Equals [!Ref UtttCertificateArn, ""]]
   Isolate: !Equals [!Ref CrossOriginIsolation, "yes"]
-  HasGitHub: !Not [!Equals [!Ref GitHubRepo, ""]]
-  MakeOidcProvider: !And [!Condition HasGitHub, !Equals [!Ref CreateGitHubOidcProvider, "yes"]]
 
 Resources:
   # ---- the files -------------------------------------------------------------------
@@ -452,72 +439,6 @@ Resources:
           FunctionAssociations:
             - { EventType: viewer-request, FunctionARN: !GetAtt UtttRouter.FunctionMetadata.FunctionARN }
 
-  # ---- GitHub Actions deploys (optional) ------------------------------------------
-  # What .github/workflows/web_aws.yml does from main: upload the files,
-  # update this stack's two page-list parameters on its PREVIOUS template
-  # (web_deploy.sh), and invalidate. It cannot change the template itself:
-  # a template change is deployed by hand (web_deploy.sh stack).
-  GitHubOidcProvider:
-    Type: AWS::IAM::OIDCProvider
-    Condition: MakeOidcProvider
-    Properties:
-      Url: https://token.actions.githubusercontent.com
-      ClientIdList: [sts.amazonaws.com]
-
-  DeployRole:
-    Type: AWS::IAM::Role
-    Condition: HasGitHub
-    Properties:
-      RoleName: !Sub "${AWS::StackName}-github-deploy"
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Federated: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com"
-            Action: sts:AssumeRoleWithWebIdentity
-            Condition:
-              StringEquals:
-                "token.actions.githubusercontent.com:aud": sts.amazonaws.com
-                "token.actions.githubusercontent.com:sub": !Sub "repo:${GitHubRepo}:ref:refs/heads/main"
-      Policies:
-        - PolicyName: deploy-web
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Sid: Files
-                Effect: Allow
-                Action: [s3:PutObject, s3:GetObject, s3:DeleteObject]
-                Resource: !Sub "${Bucket.Arn}/*"
-              - Sid: List
-                Effect: Allow
-                Action: s3:ListBucket
-                Resource: !GetAtt Bucket.Arn
-              - Sid: Invalidate
-                Effect: Allow
-                Action: [cloudfront:CreateInvalidation, cloudfront:GetInvalidation]
-                Resource:
-                  - !Sub "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${FoolishDistribution}"
-                  - !Sub "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${UtttDistribution}"
-              - Sid: PageLists
-                Effect: Allow
-                Action:
-                  - cloudformation:UpdateStack
-                  - cloudformation:DescribeStacks
-                  - cloudformation:DescribeStackEvents
-                Resource: !Ref AWS::StackId
-              # What CloudFormation calls, as this role, to apply new page lists.
-              - Sid: Routers
-                Effect: Allow
-                Action:
-                  - cloudfront:UpdateFunction
-                  - cloudfront:PublishFunction
-                  - cloudfront:DescribeFunction
-                  - cloudfront:GetFunction
-                Resource:
-                  - !GetAtt FoolishRouter.FunctionMetadata.FunctionARN
-                  - !GetAtt UtttRouter.FunctionMetadata.FunctionARN
-
 Outputs:
   BucketName:
     Value: !Ref Bucket
@@ -531,7 +452,3 @@ Outputs:
   UtttDistributionDomain:
     Description: Point uttt.live (ALIAS) and www (CNAME) here.
     Value: !GetAtt UtttDistribution.DomainName
-  DeployRoleArn:
-    Condition: HasGitHub
-    Description: The GitHub secret CBASE_WEB_AWS_ROLE_ARN.
-    Value: !GetAtt DeployRole.Arn

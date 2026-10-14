@@ -32,8 +32,6 @@
 #   CBASE_TABLE            cbase
 #   CBASE_CODE_BUCKET      cbase-code-<account>-<region>
 #   CBASE_ALLOWED_ORIGINS  *
-#   CBASE_GITHUB_REPO      empty (owner/name creates the GitHub Actions deploy role)
-#   CBASE_GITHUB_OIDC      yes (no when the account already has GitHub's OIDC provider)
 #
 # The secrets travel to CloudFormation as parameters (NoEcho for the two
 # secret ones), so they appear in this Mac's process list while the deploy
@@ -111,8 +109,6 @@ function_name="${CBASE_FUNCTION_NAME:-cbase}"
 table="${CBASE_TABLE:-cbase}"
 bucket="${CBASE_CODE_BUCKET:-cbase-code-$account-$region}"
 origins="${CBASE_ALLOWED_ORIGINS:-*}"
-github_repo="${CBASE_GITHUB_REPO:-}"
-github_oidc="${CBASE_GITHUB_OIDC:-yes}"
 cert="${CBASE_CERT_ARN:-}"
 if [ -z "$cert" ]; then
   cat >&2 <<MSG
@@ -170,9 +166,7 @@ aws cloudformation deploy \
     "CertificateArn=$cert" \
     "AllowedOrigins=$origins" \
     "FunctionName=$function_name" \
-    "TableName=$table" \
-    "GitHubRepo=$github_repo" \
-    "CreateGitHubOidcProvider=$github_oidc"
+    "TableName=$table"
 
 # ---- 6. what the stack made -------------------------------------------------------
 output() {

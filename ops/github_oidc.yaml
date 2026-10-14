@@ -1,0 +1,165 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  GitHub Actions deploys for c_base: the account's GitHub OIDC provider and the
+  one role .github/workflows/c_base.yml and web_aws.yml assume from main.
+
+# The stack `cbase-github`, deployed by hand from this Mac (c_base/RUNBOOK.md,
+# "GitHub deploys"):
+#
+#   aws cloudformation deploy --region us-east-1 --stack-name cbase-github \
+#     --template-file c_base/ops/github_oidc.yaml --capabilities CAPABILITY_NAMED_IAM
+#
+# Its DeployRoleArn output is the repository secret CBASE_AWS_ROLE_ARN, which
+# both deploy workflows read. One role, one owner: cbase.yaml and web.yaml
+# carry no GitHub resources.
+#
+# What the role may do, and nothing else:
+#   * the Lambda: upload a zip to the code bucket and point the cbase stack's
+#     CodeKey at it (c_base/ops/lambda_deploy.sh). CloudFormation applies that
+#     update with the caller's credentials, so the role also holds what the
+#     Lambda::Function update calls (UpdateFunctionCode and its reads, and
+#     s3:GetObject on the zip, which Lambda fetches as the caller);
+#   * the web: upload to and delete from the web bucket, invalidate the two
+#     distributions, and update the cbase-web stack's page-list parameters on
+#     its previous template, which republishes the two router Functions
+#     (c_base/ops/web_deploy.sh site);
+#   * read both stacks.
+# It cannot change a template: UpdateStack is allowed, but CloudFormation would
+# need IAM, DynamoDB, API Gateway, CloudFront distribution and Scheduler rights
+# to apply any template change, and the role has none of them. A template
+# change is deployed by hand (ops/deploy.sh, ops/web_deploy.sh stack).
+
+Parameters:
+  GitHubRepo:
+    Type: String
+    Default: alexsave/foolish
+    Description: owner/name of the only repository the role trusts.
+  ExtraSubject:
+    Type: String
+    Default: ""
+    Description: >-
+      One more OIDC subject to trust, for proving a workflow change from its
+      branch before it reaches main (repo:owner/name:ref:refs/heads/<branch>).
+      Leave empty: set it for the proof, then redeploy with it empty.
+  ApiStack:
+    Type: String
+    Default: cbase
+  FunctionName:
+    Type: String
+    Default: cbase
+  CodeBucket:
+    Type: String
+    Default: cbase-code-487337210065-us-east-1
+  WebStack:
+    Type: String
+    Default: cbase-web
+  WebBucket:
+    Type: String
+    Default: cbase-web-487337210065
+  FoolishDistributionId:
+    Type: String
+    Default: E1YC4MJXHIOBQD
+  UtttDistributionId:
+    Type: String
+    Default: E1PSTHCGSF35HM
+
+Conditions:
+  HasExtra: !Not [!Equals [!Ref ExtraSubject, ""]]
+
+Resources:
+  # An account holds one provider for this URL; this stack is its owner.
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList: [sts.amazonaws.com]
+
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: cbase-github-deploy
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref GitHubOidcProvider
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                "token.actions.githubusercontent.com:aud": sts.amazonaws.com
+                "token.actions.githubusercontent.com:sub": !If
+                  - HasExtra
+                  - [!Sub "repo:${GitHubRepo}:ref:refs/heads/main", !Ref ExtraSubject]
+                  - [!Sub "repo:${GitHubRepo}:ref:refs/heads/main"]
+      Policies:
+        - PolicyName: deploy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ReadStacks
+                Effect: Allow
+                Action:
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeStackEvents
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${ApiStack}/*"
+                  - !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${WebStack}/*"
+              - Sid: UpdateStacks
+                Effect: Allow
+                Action: cloudformation:UpdateStack
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${ApiStack}/*"
+                  - !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${WebStack}/*"
+
+              # ---- the Lambda ----
+              - Sid: CodeUpload
+                Effect: Allow
+                Action: [s3:PutObject, s3:GetObject]
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${CodeBucket}/cbase-lambda-*.zip"
+              - Sid: FunctionCode
+                Effect: Allow
+                Action:
+                  - lambda:UpdateFunctionCode
+                  - lambda:GetFunction
+                  - lambda:GetFunctionConfiguration
+                  - lambda:GetFunctionCodeSigningConfig
+                  - lambda:GetFunctionRecursionConfig
+                  - lambda:GetRuntimeManagementConfig
+                  - lambda:ListTags
+                Resource: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${FunctionName}"
+
+              # ---- the web ----
+              - Sid: WebFiles
+                Effect: Allow
+                Action: [s3:PutObject, s3:GetObject, s3:DeleteObject]
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${WebBucket}/*"
+              - Sid: WebList
+                Effect: Allow
+                Action: s3:ListBucket
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${WebBucket}"
+              - Sid: Invalidate
+                Effect: Allow
+                Action: [cloudfront:CreateInvalidation, cloudfront:GetInvalidation]
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${FoolishDistributionId}"
+                  - !Sub "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${UtttDistributionId}"
+              # What CloudFormation calls, as this role, to apply new page lists.
+              - Sid: Routers
+                Effect: Allow
+                Action:
+                  - cloudfront:UpdateFunction
+                  - cloudfront:PublishFunction
+                  - cloudfront:DescribeFunction
+                  - cloudfront:GetFunction
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:function/${WebStack}-foolish-router"
+                  - !Sub "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:function/${WebStack}-uttt-router"
+
+Outputs:
+  DeployRoleArn:
+    Description: The repository secret CBASE_AWS_ROLE_ARN.
+    Value: !GetAtt DeployRole.Arn
+  OidcProviderArn:
+    Value: !Ref GitHubOidcProvider

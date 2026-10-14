@@ -520,7 +520,7 @@ The export holds password hashes: it lives under `migrate/out/`, is gitignored, 
 
 As built:
 
-- `ops/cbase.yaml`: the table, the function (arm64, provided.al2023, 256 MB, 60 s), its role, the Function URL, the WebSocket API with its three routes and stage, the one-minute scan schedule (input `"scan"`), CloudFront with a CloudFront Function that rewrites `/realtime/v1/websocket` onto the stage, and an optional GitHub Actions deploy role.
+- `ops/cbase.yaml`: the table, the function (arm64, provided.al2023, 256 MB, 60 s), its role, the Function URL, the WebSocket API with its three routes and stage, the one-minute scan schedule (input `"scan"`), CloudFront with a CloudFront Function that rewrites `/realtime/v1/websocket` onto the stage. The GitHub Actions deploy role and OIDC provider are `ops/github_oidc.yaml`'s, a stack of their own (RUNBOOK.md step 13).
   It passes `cfn-lint`; its index names, key types and TTL are held to the store's by `test/unit_dynamo.c`.
   The zip comes from an S3 bucket parameter, because CloudFormation's inline code works only for Node.js and Python.
 - `ops/package.sh` calls `make bootstrap` and checks the zip holds exactly one executable `bootstrap`.

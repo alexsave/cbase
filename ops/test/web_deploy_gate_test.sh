@@ -1,12 +1,13 @@
 #!/bin/bash
-# web_deploy.sh refuses to deploy a site from a tree behind origin/main
-# (require_main), and lets a tree that contains main through. No AWS: `aws` is a
-# stub that records any call, and the gate has to fire before the first one.
+# web_deploy.sh and lambda_deploy.sh refuse to deploy from a tree behind
+# origin/main (require_main.sh), and let a tree that contains main through. No
+# AWS: `aws` is a stub that records any call, and the gate has to fire before
+# the first one.
 #
 # Run: bash c_base/ops/test/web_deploy_gate_test.sh
 set -euo pipefail
 
-script="$(cd "$(dirname "$0")/.." && pwd)/web_deploy.sh"
+ops="$(cd "$(dirname "$0")/.." && pwd)"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
@@ -25,7 +26,7 @@ g() { git -c user.name=t -c user.email=t@t -c init.defaultBranch=main "$@"; }
 g init -q --bare "$tmp/origin.git"
 g clone -q "$tmp/origin.git" "$tmp/seed" 2>/dev/null
 mkdir -p "$tmp/seed/c_base/ops"
-cp "$script" "$tmp/seed/c_base/ops/web_deploy.sh"
+cp "$ops/web_deploy.sh" "$ops/lambda_deploy.sh" "$ops/require_main.sh" "$tmp/seed/c_base/ops/"
 g -C "$tmp/seed" add -A
 g -C "$tmp/seed" commit -q -m A
 g -C "$tmp/seed" push -q origin HEAD:main
@@ -42,11 +43,21 @@ run() {
     bash "$tmp/work/c_base/ops/web_deploy.sh" site foolish > "$tmp/out" 2>&1 && return 0 || return $?
 }
 
+run_lambda() {
+  echo zip > "$tmp/fake.zip"
+  bash "$tmp/work/c_base/ops/lambda_deploy.sh" "$tmp/fake.zip" > "$tmp/out" 2>&1 && return 0 || return $?
+}
+
 # 1. Behind main: refused, by the gate, with no AWS call.
 if run; then fail "a tree behind origin/main deployed"; fi
 grep -q 'does not contain origin/main' "$tmp/out" || { cat "$tmp/out" >&2; fail "behind main: refused, but not by require_main"; }
 [ ! -e "$tmp/aws_calls" ] || fail "behind main: aws was called before the refusal: $(cat "$tmp/aws_calls")"
 echo "ok - a tree behind origin/main is refused before any AWS call"
+
+if run_lambda; then fail "lambda: a tree behind origin/main deployed"; fi
+grep -q 'does not contain origin/main' "$tmp/out" || { cat "$tmp/out" >&2; fail "lambda, behind main: refused, but not by require_main"; }
+[ ! -e "$tmp/aws_calls" ] || fail "lambda, behind main: aws was called before the refusal: $(cat "$tmp/aws_calls")"
+echo "ok - lambda: a tree behind origin/main is refused before any AWS call"
 
 # 2. Main merged in (a branch of its own on top of main): through the gate.
 g -C "$tmp/work" pull -q --no-rebase origin main
@@ -58,3 +69,9 @@ if grep -q 'does not contain origin/main' "$tmp/out"; then cat "$tmp/out" >&2; f
 grep -q 'NEXT_PUBLIC_SUPABASE_URL' "$tmp/out" || { cat "$tmp/out" >&2; fail "contains main: did not reach deploy_site"; }
 [ ! -e "$tmp/aws_calls" ] || fail "contains main: unexpected aws call: $(cat "$tmp/aws_calls")"
 echo "ok - a tree containing origin/main gets past the gate"
+
+# The Lambda gets past the gate to its first AWS call (the stub fails it there).
+if run_lambda; then fail "lambda: expected the stub aws to stop the deploy"; fi
+if grep -q 'does not contain origin/main' "$tmp/out"; then cat "$tmp/out" >&2; fail "lambda: a tree containing main was refused"; fi
+grep -q '^aws cloudformation describe-stacks' "$tmp/aws_calls" 2>/dev/null || { cat "$tmp/out" >&2; fail "lambda, contains main: never reached the stack"; }
+echo "ok - lambda: a tree containing origin/main gets past the gate"
