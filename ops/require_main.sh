@@ -13,11 +13,15 @@
 # has fixed since, unfixed, so this refuses it: merge main and deploy again.
 #
 # On a push to main in CI, HEAD is the pushed commit. If main has moved on since
-# (a re-run of an old push), the refusal is right: the newer push deploys. A
-# shallow checkout is enough, because HEAD can only contain the fetched main by
-# being it.
+# (a re-run of an old push), the refusal is right: the newer push deploys.
+# A shallow checkout (actions/checkout's default) is deepened first: on any
+# other ref, HEAD contains main through history the clone does not have, and
+# the ancestry test would refuse a tree that is fine.
 require_main() {
   local tree="$1" main head
+  if [ "$(git -C "$tree" rev-parse --is-shallow-repository)" = true ]; then
+    git -C "$tree" fetch --quiet --unshallow origin || { echo "cannot unshallow $tree to check it against origin/main" >&2; exit 1; }
+  fi
   git -C "$tree" fetch --quiet origin main || { echo "cannot fetch origin main to check $tree against it" >&2; exit 1; }
   main="$(git -C "$tree" rev-parse FETCH_HEAD)"
   head="$(git -C "$tree" rev-parse HEAD)"

@@ -75,3 +75,16 @@ if run_lambda; then fail "lambda: expected the stub aws to stop the deploy"; fi
 if grep -q 'does not contain origin/main' "$tmp/out"; then cat "$tmp/out" >&2; fail "lambda: a tree containing main was refused"; fi
 grep -q '^aws cloudformation describe-stacks' "$tmp/aws_calls" 2>/dev/null || { cat "$tmp/out" >&2; fail "lambda, contains main: never reached the stack"; }
 echo "ok - lambda: a tree containing origin/main gets past the gate"
+
+# 3. A depth-1 clone of a branch that contains main (actions/checkout's default
+#    on a workflow_dispatch from a branch): main is in history the clone does
+#    not have, and the gate must deepen it rather than refuse.
+g -C "$tmp/work" push -q origin HEAD:refs/heads/feature
+rm -f "$tmp/aws_calls"
+g clone -q --depth 1 --branch feature "file://$tmp/origin.git" "$tmp/shallow" 2>/dev/null
+[ "$(git -C "$tmp/shallow" rev-parse --is-shallow-repository)" = true ] || fail "the test clone is not shallow"
+echo zip > "$tmp/fake.zip"
+if bash "$tmp/shallow/c_base/ops/lambda_deploy.sh" "$tmp/fake.zip" > "$tmp/out" 2>&1; then fail "shallow: expected the stub aws to stop the deploy"; fi
+if grep -q 'does not contain origin/main' "$tmp/out"; then cat "$tmp/out" >&2; fail "shallow: a shallow clone of a branch containing main was refused"; fi
+grep -q '^aws cloudformation describe-stacks' "$tmp/aws_calls" 2>/dev/null || { cat "$tmp/out" >&2; fail "shallow: never reached the stack"; }
+echo "ok - a shallow clone of a branch containing origin/main gets past the gate"
