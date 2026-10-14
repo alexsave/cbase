@@ -230,3 +230,16 @@ The console was checked by eye in headless Chrome against a mock API, light and 
 - fanout.c, no pv- publish: smoke `LB->n_pv > 0`; no spectator cast: smoke `LB->n_cast > 0`.
 - bots.c, every drive returns at once: smoke game_scenario `status == GAME_STATUS_GAME_OVER` after the 90 s stall rule (the run stops instead of hanging).
 - Makefile, c_base's objects built without `KERNEL_CAPS`: the compile fails at table_ops.c's `_Static_assert(MAX_LOG_PAIRS >= MAX_DECK)`.
+
+## DynamoDB Local (2026-10-13)
+
+- aws_call.c, `http://` leaves tls set: unit_aws_calls url_parse `!tls`, port 80, and dynamo_over_plain_http `user_get == CB_OK`.
+- aws_call.c, the amazonaws.com guard removed: unit_aws_calls url_parse, both `CB_E_INVALID` for http:// to AWS, and dynamo_over_plain_http's refused open.
+- dynamo_wire.c, an `#`-ending sort key read as exact: unit_dynamo flow_import_count, the `begins_with(#sk, :s)` filter.
+- dynamo_wire.c, the array shape of ConsumedCapacity not read: unit_dynamo consumed_capacity_read `== 18.0`.
+- store_import.c, the seed never writes: unit_store (dynamo) open_applies_schema_and_seeds_bots, 49 bots and their order.
+- store_import.c, DynamoDB's stored count taken as the read count: unit_import (dynamo) failing_checks, the lost seat passes.
+- dynamo_wire.c, expires_at written in ms: unit_store (dynamo) conn_ttl_is_seconds, both `1760000000`.
+- store_dynamo.c, query_all stops after one page: unit_store (dynamo) big_items_and_pages, 24 replays and the chat; chat_list stops after one page: the 300 and the newest 250.
+- bots.c, the game unmarked after its drive instead of before: unit_bots_kick, the kick during a running drive is lost (1 drive, want 2); no dedupe at all (before the fix): 502 drives and 3 queued.
+- lib_proc.c, the pump starts reading 12 s late: unit_proc, the 4 MB writer has not exited within 3 s and its last lines never arrive.

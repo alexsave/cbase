@@ -173,11 +173,53 @@ As built (store builder, then integration):
 The rehearsal against the real export (2026-10-13): 41 users, 49 bots, 35 ratings, 60 games, 47 player seats, 44 bot seats, 144 replays and 42 chat messages, every count equal to the export's; 41 of 41 hashes bcrypt-shaped; 60 of 60 games load through `table_load`; every blob compared equal to the CSV; a rerun duplicated nothing.
 The export and the scratch database were deleted afterwards.
 
-Tests: `test/unit_store.c` (SQLite), `test/unit_dynamo.c` (the wire byte for byte, scripted flows, and the template check), `test/unit_import.c`, and the DynamoDB transport on the wire in `test/unit_aws_calls.c`.
+Tests: `test/unit_store.c` (SQLite, and DynamoDB Local under `make check-dynamo`), `test/unit_dynamo.c` (the wire byte for byte, scripted flows, and the template check), `test/unit_import.c`, and the DynamoDB transport on the wire in `test/unit_aws_calls.c`.
 
-Untested: the DynamoDB backend has never talked to DynamoDB; the scripted answers follow the API reference's documented shapes, and the first thing to run once a table exists is a create, join, rated game end and lease cycle against it.
-GSI eventual consistency (a dashboard or replay list read right after a write) is not exercised.
-The DynamoDB console paths (Scan, PartiQL) are checked only as request shapes and the write guard.
+### Against DynamoDB Local (2026-10-13)
+
+`make check-dynamo` runs `unit_store`, `unit_admin`, `unit_import` and the whole game smoke (two humans, a bot, a SIGKILL mid-game, ratings, a replay, a restart) with `CBASE_STORE=dynamo` against Amazon's DynamoDB Local, and CI runs it on every pull request.
+`ops/dynamo_local.sh` starts the container (`amazon/dynamodb-local:3.3.1`, pinned by digest, in memory, `-sharedDb` so a dummy key sees the CLI's table) and creates the table from `ops/cbase.yaml` itself: `ops/dynamo_table.py` reads the template's table resource and refuses any property it does not carry over, so the two cannot drift.
+Each unit test gets its own fresh table (`test/lib_store_backend.c`), which is only ever made at an `http://` endpoint, so a test cannot create a table in AWS.
+The AWS client speaks plain HTTP for exactly that case: an endpoint URL that says `http://`, refused for any `amazonaws.com` host.
+
+What the first contact found, all fixed and each held by a test:
+
+- A fresh DynamoDB table had no bots: SQLite seeds them at open, nothing seeded DynamoDB, so a deploy without an import could not add a bot.
+  `cb_import_seed_bots` writes the schema's 49 into a store that has none (read through an in-memory SQLite store, so the list keeps one owner), `cbase-import --seed-bots` runs it, and `ops/deploy.sh` runs that after every deploy.
+- The import never checked what DynamoDB stored (only SQLite's counts were read), so a lost seat passed. A counting Scan per export table (`dw_scan_count`) now holds DynamoDB to the same check.
+- Serve's bot pool queued one drive per kick, and a long drive let thousands pile up (every bump kicks); each then took the lease, read the row and let go, and the SIGTERM drain outlived its 15 s. At most one drive per game now waits in the queue.
+- The smoke read its server's stderr only while waiting for a line, so a debug-level server filled the pipe and stopped answering; `test/lib_proc.c` now reads it on a thread all the time.
+
+What held without a change: every attribute shape, condition and update expression, the CAS and its cancellation reasons, the lease, `TransactWriteItems` at 98 items (the import's `bots_replace` of 49 seeded and 49 hosted bots), Query paging at 1 MB (1.5 MB of replays through GSI2, 1.2 MB of chat), a 250 KB item with Binary attributes byte for byte, numbers (negative, 13-digit ms), TTL in seconds, both GSIs, PartiQL in the console, and `BatchWriteItem` cascades.
+
+The import rehearsal into DynamoDB Local (the real export, 2026-10-13, seeded first exactly as a deploy is): 41 users, 49 bots, 35 ratings, 67 games, 47 player seats, 47 bot seats, 144 replays (685 per-player copies) and 42 chat messages, every count equal to the CSV's both in the import's own check and in an independent `aws dynamodb scan --select COUNT` per item kind; 67 of 67 games load through the kernel; all 41 hashes parse as `$2a$` bcrypt (40 at cost 10, one at another cost) and `cb_bcrypt_verify` answers 0, not an error, for a wrong password on each; a rerun counts the replays and messages as present.
+The export and the rehearsal table were then deleted.
+
+Latency against DynamoDB Local on this Mac (`make bench-dynamo`, median of 200 after 10 warm-ups, one kept-alive connection, a 4 KB state and a 1 KB log, 2 humans and a bot seated), the baseline the AWS numbers are compared with:
+
+| operation | median | p90 | requests | capacity |
+|---|---|---|---|---|
+| `game_get` | 0.64 ms | 0.84 ms | 1 GetItem | 2 RCU |
+| `game_commit` | 4.5 ms | 5.4 ms | 2 Query + 1 TransactWriteItems | 2 RCU, 20 WCU |
+| `games_of_user` (20 rows) | 0.79 ms | 0.99 ms | 1 Query on GSI1 | 1 RCU |
+
+What an action costs, measured over a whole smoke game (every request asks for `ReturnConsumedCapacity`, and the handler and the bot drive log the per-thread tally at debug level, `cb_store_tally_take`):
+
+| what | requests | RCU | WCU (min to max) |
+|---|---|---|---|
+| a human move (`/functions/v1/action`) | 2 Query + 1 TransactWriteItems | 2 | 12.7 (8 to 32) |
+| a bot cycle that moves | 1 GetItem + 2 Query + 2 UpdateItem + 1 TransactWriteItems | 3 | 17.9 (12 to 24) |
+| a bot cycle that waits out the bot's think time | 1 GetItem + 2 UpdateItem (lease renew, SCAN touch) | 1.2 | 4.6 (3 to 6) |
+| a view read (`/rest/v1/player_views`) | 1 GetItem | 1 | 0 |
+| sign-up | 1 PutItem + 1 TransactWriteItems | 0 | 9 |
+
+One 3-seat game of 171 commits cost 922 requests, 552 RCU and 2,756 WCU.
+Under Lambda add the fan-out: `rt_apigw` reads each pushed topic's connections, one Query per topic, 2 per seated human plus 1 per commit.
+The write units go mostly to the game row: a transaction bills 2 WCU per KB of every item it writes, and the row (state, roster and the growing log, 4 to 8 KB) is rewritten on every commit along with every seat; the lease renew and the SCAN touch are an `UpdateItem` on that same row, billed by its whole size, every bot think cycle.
+Cheaper, if it matters: the lease on its own small item, one partition Query for the seats instead of two, and seats written only when they change.
+Note on the free tier: DynamoDB's always-free 25 WCU and 25 RCU are provisioned capacity; the table is `PAY_PER_REQUEST`, which bills each request unit, so these numbers are what the bill counts.
+
+Unverified until AWS: real IAM (the role's policy against each call), throttling and its retry path, `TransactWriteItems` conflict behaviour under real concurrency (DynamoDB Local serializes, so `TransactionConflict` never occurs and `cas_under_threads` only proves the fence), GSI eventual consistency (Local's indexes are effectively synchronous: on AWS a dashboard, replay list or session revoke read through a GSI right after a write may miss it), TTL deletion (Local never deletes), point-in-time recovery (Local has none), and latency over the network.
 
 Open defects: DynamoDB `user_delete` and `game_delete` cascade in steps after the main delete, so a crash between them leaves unreachable orphans; `users_list`, `bots_list` and `ratings_list` read a whole index partition and sort in C (fine at 41 users, not at thousands); `game_commit` reads the seats on every commit (two Queries on DynamoDB) where a `membership_changed` flag would skip them; `store_import.c` is linked into `cbase` and `bootstrap` too, unused there.
 
@@ -300,6 +342,7 @@ As built:
 - `https.c`: a blocking HTTPS/1.1 client on OpenSSL, TLS 1.2+, peer and hostname verified, one deadline per exchange, Content-Length, chunked and read-to-close bodies, a small idle pool per host with one retry for a pooled connection that died before any byte.
   The CA bundle is found on provided.al2023 without configuration (`CBASE_CA_FILE` overrides).
 - `aws_call.c`: the one signed-request step (credentials, SigV4, HTTPS) under `apigw_mgmt.c`, `lambda_invoke.c` and the DynamoDB store.
+  An endpoint URL that says `http://` (DynamoDB Local) is reached over plain TCP (`cb_http_plain_request`), signed the same way; plain HTTP is decided by the URL alone and refused for any `amazonaws.com` host.
 - `event.c`: Lambda events in, responses out; binary bodies are base64 both ways.
   The self-invoke and schedule payloads are the JSON string literals `"bot_drive:<id>"` and `"scan"` (the decision record), read by stripping the quotes; EventBridge's `"source":"aws.events"` is also a scan.
   `cb_event_bot_drive_payload` is the one writer of the literal.
