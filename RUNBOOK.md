@@ -311,3 +311,123 @@ DynamoDB's point-in-time recovery is not: $0.20 per GB-month, about a tenth of a
 The WebSocket API is free for the first 12 months, then $1 per million messages and $0.25 per million connection-minutes: cents a month.
 The code zip in S3 is about 2 MB: well under a cent a month.
 CloudWatch Logs keeps 30 days (set in the template) inside its 5 GB free allowance.
+
+## Web hosting: foolish.cards and uttt.live off Vercel
+
+The design is `docs/VERCEL.md`; the stack is `ops/web.yaml`; the deploy is `ops/web_deploy.sh`.
+Everything up to the DNS flip is done: the stack `cbase-web` is live and both sites are uploaded and serving on their CloudFront names.
+Until DNS moves nothing reaches it, so it is harmless.
+
+What exists (us-east-1, account 487337210065):
+
+| Thing | Value |
+|---|---|
+| Stack | `cbase-web` |
+| Bucket | `cbase-web-487337210065` (prefixes `foolish/`, `utils/`, `uttt/`) |
+| foolish distribution | `E1YC4MJXHIOBQD`, `dgow77nr7v5kf.cloudfront.net` (foolish.cards, www, utils) |
+| uttt distribution | `E1PSTHCGSF35HM`, `d2hb0vxf10cj0w.cloudfront.net` (uttt.live, www) |
+| foolish certificate | `arn:aws:acm:us-east-1:487337210065:certificate/21fa37fe-708a-43aa-8bc2-e7eec5188f48` |
+| uttt certificate | `arn:aws:acm:us-east-1:487337210065:certificate/c1a2ec68-1704-4900-b44f-ff43c2e51ac4` |
+
+Two distributions, not one: a CloudFront flat-rate plan covers one distribution with at most one apex domain, and an account holds three Free plans, so api, foolish and uttt use exactly the three.
+
+### W1. Validate the two certificates
+
+Squarespace > Domains > foolish.cards (then uttt.live) > **DNS > DNS Settings > Add record**, type **CNAME**, one per row.
+In Squarespace's Host field type the name WITHOUT the domain at its end (the first column below already has it cut).
+
+| Domain | Host | Type | Data |
+|---|---|---|---|
+| foolish.cards | `_94dd294a48c86186e616d0b27ff953cb` | CNAME | `_49023923d4e291bfda886e04ed7e8969.wzccmgtwzk.acm-validations.aws.` |
+| foolish.cards | `_1043bf13b4c9c7509aa150c4cf652ea4.www` | CNAME | `_7b65955f569b0ee08fb6d70cd92bda60.wzccmgtwzk.acm-validations.aws.` |
+| foolish.cards | `_647d6b5b48d15624b07a1f54887974e5.utils` | CNAME | `_e29e73ddf64b9147f3550aa0f62662c9.wzccmgtwzk.acm-validations.aws.` |
+| uttt.live | `_faca958838ac79f06a92911f68615c4c` | CNAME | `_da5d6f5a49462a73d3f1535041af4c67.wzccmgtwzk.acm-validations.aws.` |
+| uttt.live | `_7f7b50a58f31999214fc4ad280da4a73.www` | CNAME | `_eca85018c66683829aebdad41c6a2b38.wzccmgtwzk.acm-validations.aws.` |
+
+These records only prove ownership; they change nothing that is served, and they stay in place for good (ACM renews against them).
+Check, until both say ISSUED (minutes to an hour):
+
+```
+aws acm describe-certificate --region us-east-1 --certificate-arn <arn> --query Certificate.Status
+```
+
+### W2. Put the names on the distributions
+
+```
+CBASE_WEB_FOOLISH_CERT=arn:aws:acm:us-east-1:487337210065:certificate/21fa37fe-708a-43aa-8bc2-e7eec5188f48 \
+CBASE_WEB_UTTT_CERT=arn:aws:acm:us-east-1:487337210065:certificate/c1a2ec68-1704-4900-b44f-ff43c2e51ac4 \
+  c_base/ops/web_deploy.sh stack
+```
+
+CloudFront refuses an alias another distribution holds, but Vercel is not a CloudFront distribution, so this works while DNS still points at Vercel.
+The distribution update takes a few minutes.
+
+### W3. Put both distributions on the Free plan
+
+CloudFront console > **Distributions** > the distribution > the pricing plan > **Free**, once for each of the two.
+Plans are chosen only in the console; until then they run pay-as-you-go, which is also $0 at this volume.
+
+### W4. Prove it before DNS moves
+
+The certificate and Host are exactly what visitors will send; only the address is forced:
+
+```
+for p in / /dashboard /privacy /imessage-privacy /support /abc123 /.well-known/apple-app-site-association; do
+  curl -sI --connect-to foolish.cards:443:dgow77nr7v5kf.cloudfront.net:443 "https://foolish.cards$p" | head -1
+done
+curl -sI --connect-to foolish.cards:443:dgow77nr7v5kf.cloudfront.net:443 https://foolish.cards/.well-known/apple-app-site-association | grep -i content-type   # application/json
+curl -sI -H 'Accept-Encoding: gzip, br' --connect-to foolish.cards:443:dgow77nr7v5kf.cloudfront.net:443 https://foolish.cards/oracle.wasm.gz | grep -ci content-encoding   # 0
+curl -s --connect-to foolish.cards:443:dgow77nr7v5kf.cloudfront.net:443 https://foolish.cards/m/1x | grep -o '<title>[^<]*'
+curl -sI --connect-to uttt.live:443:d2hb0vxf10cj0w.cloudfront.net:443 https://uttt.live/234 | grep -i location   # /243
+```
+
+Today, before any of this, Vercel answers `https://foolish.cards/...` with a 307 to `www`, and serves the association file there as `application/octet-stream`.
+Apple fetches the association file at the apex without following redirects, so universal links are broken on Vercel today; the apex flip below fixes that.
+
+### W5. The DNS flip, in this order
+
+A day ahead, lower the TTL of every record you are about to change to 300 (Squarespace > DNS Settings, each record's TTL).
+DNSSEC must be off for an ALIAS at `@` (it is: `dig +short DS foolish.cards` prints nothing).
+
+1. **uttt.live**, the rehearsal: replace the `@` A record (76.76.21.21) with an **ALIAS** `@` to `d2hb0vxf10cj0w.cloudfront.net`, and the `www` CNAME with `d2hb0vxf10cj0w.cloudfront.net`.
+   Test: `dig +short uttt.live A` and `dig +short uttt.live AAAA` return CloudFront addresses (not 76.76.21.21), `curl -sI https://uttt.live/` says `server: CloudFront`, and a replay link from the app plays.
+   If Squarespace will not take the ALIAS, stop here and use the fallback below before touching foolish.cards.
+2. **www.foolish.cards**: the `www` CNAME (today `d204b352f329121a.vercel-dns-017.com`) becomes `dgow77nr7v5kf.cloudfront.net`.
+   Test: `curl -sI https://www.foolish.cards/` says `server: CloudFront`; sign in and play a move against a bot.
+3. **foolish.cards**: the `@` A record (216.198.79.193) becomes an **ALIAS** `@` to `dgow77nr7v5kf.cloudfront.net`.
+   Test: `dig +short foolish.cards A` and `AAAA` return CloudFront addresses, `curl -sI https://foolish.cards/.well-known/apple-app-site-association` is a 200 with `application/json` and no redirect, then `cd foolish && npm run test:validate` (universal_links_validation) and a link tapped on a phone opens the app.
+4. **utils.foolish.cards**, whenever: it is a different site (the sibling repo `foolish-utils`), so first build it there with `output: 'export'` and `images.unoptimized`, upload with `aws s3 sync out s3://cbase-web-487337210065/utils --delete`, check it with `curl --connect-to` as in W4, then point the `utils` CNAME (today `1a8ccd91b52ad608.vercel-dns-017.com`) at `dgow77nr7v5kf.cloudfront.net`.
+
+Fallback if the apex ALIAS does not work: a Route 53 hosted zone ($0.50 a month; ALIAS queries to CloudFront are free).
+Create the zone for the domain, recreate EVERY record from Squarespace in it (the ACM CNAMEs too), add the apex as an A and AAAA alias to the distribution, then change the domain's nameservers at Squarespace to the zone's four.
+Not an apex-to-www forward: the iOS app's entitlement is `applinks:foolish.cards` only, and Apple does not follow redirects for the association file.
+
+### W6. Two weeks in parallel
+
+`web.yml` and `uttt-web.yml` keep deploying every push to Vercel (their builds set `VERCEL=1`, which keeps the server build), and `web_aws.yml` deploys the same commit to S3, so either host serves the current site.
+Watch for two weeks; the c_base admin console's Logs panel shows the `/m` unfurl requests coming through the new distribution.
+
+### W7. Rollback
+
+DNS only, and the 300-second TTL makes it minutes:
+
+- foolish.cards: `@` back to an A record 216.198.79.193; `www` back to CNAME `d204b352f329121a.vercel-dns-017.com`.
+- uttt.live: `@` back to an A record 76.76.21.21; `www` back to CNAME `e0da883ddeb2a161.vercel-dns-017.com`.
+- utils: CNAME back to `1a8ccd91b52ad608.vercel-dns-017.com`.
+
+A bad web deploy on AWS without a DNS rollback: re-run `web_aws` on the last good commit (Actions > web_aws > that run > Re-run all jobs), or restore objects from the bucket's versions (kept 30 days).
+
+### W8. GitHub deploys for the web
+
+1. Create the role: `CBASE_WEB_GITHUB_REPO=alexsave/foolish CBASE_WEB_GITHUB_OIDC=yes c_base/ops/web_deploy.sh stack`.
+   An account holds one GitHub OIDC provider: say `CBASE_WEB_GITHUB_OIDC=yes` only if IAM > Identity providers does not list `token.actions.githubusercontent.com` yet (today it does not), and then step 13's stack update must say CreateGitHubOidcProvider `no`.
+2. GitHub > Settings > Secrets and variables > Actions: `CBASE_WEB_AWS_ROLE_ARN` = the cbase-web stack's `DeployRoleArn` output, and `CBASE_ANON_KEY` = the AnonKey from step 2 (`c_base/ops/.env`).
+3. The role may upload to the bucket, invalidate the two distributions, and update the stack's two page-list parameters on its existing template; a template change is always `web_deploy.sh stack` from this Mac.
+4. Now and then, `c_base/ops/web_deploy.sh site foolish --prune-static` (and `uttt`) deletes hashed files no current page uses; a tab left open across two deploys reloads.
+5. The Infinite Oracle's Mode B headers: `CBASE_WEB_ISOLATION=yes c_base/ops/web_deploy.sh stack` (and `no` to undo).
+
+### W9. Retire Vercel, after the two weeks
+
+1. Delete the `scope` and `deploy` jobs from `web.yml`, the `deploy` job from `uttt-web.yml`, `scripts/web_deploy_scope.sh` and `e2e/validation/web_deploy_scope_validation.test.ts` (they ration Vercel's 100 deploys a day), and the `VERCEL` halves of `foolish/next.config.mjs` and `uttt/web/next.config.mjs`.
+2. Delete the repository secrets `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID` and `UTTT_VERCEL_PROJECT_ID`.
+3. Vercel dashboard: remove the domains from both projects, then delete the two projects (and the foolish-utils one once utils has moved).
