@@ -24,7 +24,8 @@ const char *tc_header(const tc_response *r, const char *name, char *out, size_t 
 
 // A TCP connection to 127.0.0.1:port, or -1.
 int tc_connect(int port);
-// Sends one request on `fd` and reads one response. `headers` is extra header
+// Sends one request on `fd` and reads one response (for HEAD, the head, and as
+// the body only bytes that came with it, which a correct server never sends). `headers` is extra header
 // lines, each ending "\r\n" (NULL for none). 0 on success, -1 on I/O error or
 // a response that does not parse within timeout_ms.
 int tc_request(int fd, const char *method, const char *path, const char *headers,
