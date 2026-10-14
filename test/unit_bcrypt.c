@@ -3,8 +3,13 @@
 #include "t.h"
 
 #include "auth/bcrypt.h"
-#include "util/clock.h"
 #include "util/err.h"
+
+#include <stdint.h>
+#include <time.h>
+#ifdef __APPLE__
+#include <pthread/qos.h>
+#endif
 
 // crypt_blowfish's and OpenBSD's published vectors (wrapper.c / regress).
 static const struct { const char *hash, *pw; } VECTORS[] = {
@@ -76,16 +81,36 @@ static void hash_round_trip(void) {
     T_EQ_INT(cb_bcrypt_hash("x", 32, h1), CB_E_INVALID);
 }
 
-// GoTrue's cost on this machine: one hash and one verify each well under 100 ms.
+// This thread's CPU time in ms: what the work cost, not how long a loaded
+// machine took to schedule it (wall time made this test fail under
+// `make -j8 check` beside a busy machine: verify 121 ms against a 65 ms norm).
+static int64_t cpu_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+// GoTrue's cost on this machine: one hash and one verify each well under 100 ms
+// of CPU. The best of three, on a performance core where the OS offers one: a
+// thread moved to an efficiency core mid-hash costs more CPU for the same work.
 static void cost_ten_budget(void) {
+#ifdef __APPLE__
+    pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+#endif
     char h[CB_BCRYPT_HASH_LEN + 1];
-    int64_t t0 = cb_mono_ms();
-    T_EQ_INT(cb_bcrypt_hash("budget", CB_BCRYPT_COST, h), CB_OK);
-    int64_t t1 = cb_mono_ms();
-    T_EQ_INT(cb_bcrypt_verify("budget", h), 1);
-    int64_t t2 = cb_mono_ms();
+    int64_t hash_ms = INT64_MAX, verify_ms = INT64_MAX;
+    for (int i = 0; i < 3; i++) {
+        int64_t t0 = cpu_ms();
+        T_EQ_INT(cb_bcrypt_hash("budget", CB_BCRYPT_COST, h), CB_OK);
+        int64_t t1 = cpu_ms();
+        T_EQ_INT(cb_bcrypt_verify("budget", h), 1);
+        int64_t t2 = cpu_ms();
+        if (t1 - t0 < hash_ms) hash_ms = t1 - t0;
+        if (t2 - t1 < verify_ms) verify_ms = t2 - t1;
+    }
     T_CHECK(strncmp(h, "$2b$10$", 7) == 0);
-    printf("     bcrypt cost %d: hash %lld ms, verify %lld ms\n", CB_BCRYPT_COST, (long long)(t1 - t0), (long long)(t2 - t1));
+    printf("     bcrypt cost %d: hash %lld ms, verify %lld ms of CPU (best of 3)\n", CB_BCRYPT_COST, (long long)hash_ms,
+           (long long)verify_ms);
 #if defined(__SANITIZE_ADDRESS__)
 #define CB_SANITIZED 1
 #elif defined(__has_feature)
@@ -94,7 +119,9 @@ static void cost_ten_budget(void) {
 #endif
 #endif
 #ifndef CB_SANITIZED
-    T_CHECK(t2 - t1 < 100);   // the sanitized build is several times slower; the budget is the shipped one
+    // The sanitized build is several times slower; the budget is the shipped one.
+    T_CHECK(hash_ms < 100);
+    T_CHECK(verify_ms < 100);
 #endif
 }
 
