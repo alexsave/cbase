@@ -188,10 +188,19 @@ The deletion is a follow-up PR after cutover.
 5. Switch the web build's two environment values in Vercel and re-run the web workflow; the old values are the rollback.
 6. Ship an iOS build with the new URL and key; keep Supabase running 30 days for old installs, then pause it.
 7. Send back the stack outputs and the health check, so the first real-AWS verification (a game against DynamoDB, a push through CloudFront) can be run.
-8. The two kernel follow-ups the builders reported, one confirmed and one corrected:
-   - `bot_drive_pre_action_hook` (bot_drive.c) is a process global, so serve runs bot drives one at a time; making it `_Thread_local` in `foolish/c` lets serve's bot pool grow (Lambda is unaffected: one invocation per container).
-   - "A pickup of more than `MAX_LOG_PAIRS` (16) cards truncates the session log, so the replay check refuses the game and no snapshot is written, about 1 in 15 random three-seat games, present in production": true of c_base as first built, not of production, whose wasm and iOS builds use 64; fixed here in c_base's build (section 5), nothing to do in the kernel.
-9. One web-client defect found in the browser run, also in production today (section 5): the host's lobby does not draw the first player who joins until a reload.
+8. Merge the three PRs against main that this work produced on the side, each with a red-then-green test: #287 (kernel: the host's lobby did not draw the first joiner because `client_plan` took the table width from the stale board and `anim_build_plan` refused one-seat tables), #288 (kernel: `bot_drive_pre_action_hook` is `_Thread_local`, so a bot worker pool is safe), and #293 (iOS: `RootView` did not observe `OnlineGame`, so an online lobby never became the table after Ready, and bot names showed a raw `%`).
+9. Merge PR #286 (this branch); it also carries two small kernel changes of its own: `replay_extras_redact` (deleted players are anonymised in stored replays, which the delete page already promised) and `thread_heap.h` (the solver's thread-local tables leaked 1 MB per worker thread, found by the ASan lane).
+
+## 5b. Round two: what was done while Alex was away, after the first report
+
+- DynamoDB Local: `make check-dynamo` runs the store, admin and import tests and the whole game smoke against Amazon's DynamoDB Local in Docker, locally and in CI; four first-contact bugs were fixed (a fresh table had no bots, the import never checked DynamoDB's counts, serve queued one bot drive per kick, the smoke harness blocked on a full stderr pipe); the real export was imported into DynamoDB and matched by an independent count, then deleted.
+- The free tier, made true: the always-free 25 read and 25 write units are for PROVISIONED capacity only, and the template was on-demand; it now provisions 15/15 on the table and 5/5 on each index, a test refuses any template that adds up past 25, throttles are retried with jittered backoff and counted in the admin overview, and three cuts (the lease off the game row, seats written only when they change, one query for the seats) took a three-seat game from 1,984 to 1,248 table write units; a human move is now 2 requests and about 8 write units, which fits roughly one move a second across all games before DynamoDB slows rather than bills.
+  Point-in-time recovery is the one DynamoDB line still billed, about $0.001 a month at our size; it is the only backup.
+  Whether index units draw from the same free 25 is AWS's least explicit rule; the Billing console's Free Tier page settles it after the deploy.
+- The latency bench (c_base/bench/): built, with a local baseline; the JSON on the Lambda path costs about 70 microseconds of CPU per action, about 1.4% of a 5 ms request, so the binary alternatives can save at most that against milliseconds of store round trips.
+- iOS: supabase-swift 2.55 ran the whole online flow against `cbase serve` (sign-up, sign-in, create, bot, a game to the end, the 9 s watchdog, reconnects, token refresh, sign-out, delete-account) with zero server mismatches; its recorded frames are unit tests.
+- Browser: a game played to its end by two tabs and a bot, the win screen's rating stamp, match history, the replay, the leaderboard, chat, delete-account, a reload and a server kill mid-game all verified.
+- Three product defects found in the browser and fixed on the server (production has them too, see the PR body for what the Supabase side would need): chat times were shown off by the UTC offset, deleted players' names survived in stored replays, and a redaction did not reach an open game page.
 
 ## 7. North star: TypeScript left in the repo after the migration
 
