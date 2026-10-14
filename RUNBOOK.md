@@ -279,11 +279,12 @@ Since 2026-10-14 every push to `main` deploys what is live, to AWS, with no hand
 | What changed on `main` | Workflow, job | What it does |
 |---|---|---|
 | `c_base/**`, `foolish/c/**`, `shared/c/**`, `shared/tools/**` | `c_base`, `deploy to Lambda` | after every test job passes, `ops/lambda_deploy.sh`: the CI-built zip to the code bucket, the `cbase` stack's `CodeKey` pointed at it (previous template, every other parameter kept), then CodeSha256 and `https://api.foolish.cards/health` checked |
+| `uttt/c/**`, `uttt/web/**` and the shared C it builds from | `uttt-web`, `deploy` | Vercel production for the apex `uttt.live`, as before: its Squarespace DNSSEC is stuck on, so the apex cannot move to CloudFront yet |
 | `foolish/**`, `shared/**`, `uttt/c/**`, `uttt/web/**` | `web_aws`, `deploy` | `ops/web_deploy.sh site foolish`, then `site uttt`: upload, page lists, invalidation, then `www.foolish.cards` and `www.uttt.live` must answer 200 |
 
 Both refuse a tree that does not contain `origin/main` (`ops/require_main.sh`), so re-running an old run after main moved on deploys nothing.
 Both can also be run by hand on `main` (Actions > the workflow > Run workflow) to redeploy main as it is.
-Nothing deploys to Vercel or Supabase on push any more.
+Nothing deploys foolish to Vercel or Supabase on push any more; uttt.live deploys to both Vercel (apex) and CloudFront (`www`) on every push, so either answers with the current commit.
 
 The credentials are one role, `cbase-github-deploy`, made by the stack `cbase-github` from `ops/github_oidc.yaml` together with the account's GitHub OIDC provider:
 
@@ -299,8 +300,9 @@ aws cloudformation deploy --region us-east-1 --stack-name cbase-github \
 
 The rollback lanes, workflow_dispatch only, kept until their deletion dates:
 
-- `web` and `uttt-web` (Vercel production, on `main`): until 2026-10-28, then W9.
-  They matter only with DNS pointed back at Vercel (W7).
+- `web` (foolish on Vercel production, on `main`): until 2026-10-28, then W9.
+  It matters only with DNS pointed back at Vercel (W7).
+- `uttt-web` is not a rollback lane: it still deploys on push, until the uttt.live apex moves (W5 step 1) and two more weeks pass.
 - `deploy` (Supabase edge functions, on `main`): until 2026-11-13, then step 14.
 
 ## 14. Retire Supabase, after 30 days
@@ -421,7 +423,8 @@ Not an apex-to-www forward: the iOS app's entitlement is `applinks:foolish.cards
 ### W6. Two weeks in parallel
 
 Since 2026-10-14 only `web_aws.yml` deploys on push (step 13).
-`web.yml` and `uttt-web.yml` deploy to Vercel only when run by hand on `main` (their builds set `VERCEL=1`, which keeps the server build), so after a DNS rollback (W7) run both once to bring Vercel up to the current commit.
+`web.yml` deploys foolish to Vercel only when run by hand on `main` (its build sets `VERCEL=1`, which keeps the server build), so after a DNS rollback (W7) run it once to bring Vercel up to the current commit.
+`uttt-web.yml` still deploys every push to Vercel, because the uttt.live apex is still there (Squarespace DNSSEC is stuck on); `web_aws.yml` deploys the same commit to CloudFront for `www.uttt.live`.
 Watch for two weeks; the c_base admin console's Logs panel shows the `/m` unfurl requests coming through the new distribution.
 
 ### W7. Rollback
@@ -444,6 +447,7 @@ A bad web deploy on AWS without a DNS rollback: re-run `web_aws` on the last goo
 
 ### W9. Retire Vercel, after the two weeks
 
-1. Delete `.github/workflows/web.yml` and `.github/workflows/uttt-web.yml` (workflow_dispatch-only since 2026-10-14; their pull-request gates already live in `web_aws.yml`), and the `VERCEL` halves of `foolish/next.config.mjs` and `uttt/web/next.config.mjs`.
-2. Delete the repository secrets `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID` and `UTTT_VERCEL_PROJECT_ID`.
-3. Vercel dashboard: remove the domains from both projects, then delete the two projects (and the foolish-utils one once utils has moved).
+1. Delete `.github/workflows/web.yml` (workflow_dispatch-only since 2026-10-14; its pull-request gate lives in `web_aws.yml`) and the `VERCEL` half of `foolish/next.config.mjs`.
+   `uttt-web.yml` and the `VERCEL` half of `uttt/web/next.config.mjs` go only two weeks after the uttt.live apex has moved to CloudFront.
+2. Delete the repository secret `VERCEL_PROJECT_ID`; `VERCEL_TOKEN`, `VERCEL_ORG_ID` and `UTTT_VERCEL_PROJECT_ID` stay while `uttt-web.yml` deploys.
+3. Vercel dashboard: remove the domains from the foolish project and delete it (and the foolish-utils one once utils has moved); the uttt project goes with `uttt-web.yml`.
