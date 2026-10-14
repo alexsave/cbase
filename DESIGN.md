@@ -189,7 +189,7 @@ What the first contact found, all fixed and each held by a test:
 
 - A fresh DynamoDB table had no bots: SQLite seeds them at open, nothing seeded DynamoDB, so a deploy without an import could not add a bot.
   `cb_import_seed_bots` writes the schema's 49 into a store that has none (read through an in-memory SQLite store, so the list keeps one owner), `cbase-import --seed-bots` runs it, and `ops/deploy.sh` runs that after every deploy.
-- The import never checked what DynamoDB stored (only SQLite's counts were read), so a lost seat passed. A counting Scan per export table (`dw_scan_count`) now holds DynamoDB to the same check.
+- The import never checked what DynamoDB stored (only SQLite's counts were read), so a lost seat passed. A keys-only Scan of the table (`dw_scan_keys`, each item classed by `dw_export_kind`) now holds DynamoDB to the same check, counted against the export's own ids (see "The import against the provisioned table").
 - Serve's bot pool queued one drive per kick, and a long drive let thousands pile up (every bump kicks); each then took the lease, read the row and let go, and the SIGTERM drain outlived its 15 s. At most one drive per game now waits in the queue.
 - The smoke read its server's stderr only while waiting for a line, so a debug-level server filled the pipe and stopped answering; `test/lib_proc.c` now reads it on a thread all the time.
 
@@ -291,6 +291,22 @@ It stays on (it is the only backup); turning it off in the template is the one l
 
 Unverified until AWS: that the indexes' units come out of the same 25 (the Free Tier page will show it), the throttle bodies (the unit test's are the API reference's; Local never throttles), and the burst bank's behaviour, which AWS documents as subject to change.
 A further cut not built: the commit could leave the transaction when it writes only the row and the marker (a plain `UpdateItem` at 1 WCU a KB instead of 2), with the marker written after it; that halves the dominant cost but splits an atomic write in two, and at a few games a day it is not needed.
+
+### The import against the provisioned table (2026-10-14)
+
+The first live import (`ops/deploy.sh --import`) failed: the store's request-path retry gave up after 10 sends and about 5 s of pauses, which is right when someone waits on a move and wrong for an offline bulk tool.
+It lost 1 game, 1 bot seat, 4 replays and 2 chat messages to `ProvisionedThroughputExceededException`, and the counting Scans were themselves throttled.
+`cbase-import` now puts the store in bulk mode (`store_priv.h cb_store_dynamo_bulk`), which the Lambda never does:
+
+- A throttle is never given up on: jittered pauses (25 ms doubling, capped at 2 s) for as long as it lasts, with no deadline.
+  Anything else retried (a 5xx, a lost connection, a transaction conflict) still stops after 10 sends of its own, so a dead endpoint cannot hang the import.
+- Every send is paced: `DescribeTable` gives the provisioned units, the smallest of the table's and each index's is the rate (5 RCU and 5 WCU on our table, since every write also lands in an index), and a token bucket per direction holding at most one second's worth is debited each response's `ConsumedCapacity`; a send waits until its bucket is back to zero.
+  On-demand reads as 0 and is unpaced.
+- The check is one keys-only, consistent Scan in pages of 100 instead of eight counting Scans, each item counted against the ids the export holds.
+  An item of an id the export lacks (a game played on the new stack, a bench leftover) is listed as an extra and does not fail the import.
+
+The rerun into the live table: 3 min 43 s, not one throttle, every table at its export count (games 67, replays 144, chat 42, the other five as before), 41 of 41 hashes, 67 of 67 games through `table_load`, exit 0, with 15 extras named (5 games, 2 seats, 2 replays, 2 accounts with their ratings).
+An independent per-family `aws dynamodb scan --select COUNT` agreed with export plus extras for all eight, the admin users list held 43 (41 + 2), and a wrong password for an imported email answered 400 `invalid_credentials` through CloudFront.
 
 ## Module: auth
 
