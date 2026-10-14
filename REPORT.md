@@ -207,3 +207,4 @@ The deletion is a follow-up PR after cutover.
 Today, outside node_modules and generated code, the repo holds about 81,900 non-blank lines of TS/JS: 20,600 web client, 37,600 tests and harnesses, 15,300 generated, and about 8,500 of everything else.
 The migration deletes the 1,900 lines of server TypeScript (five edge functions and their adapter) and the 420 line Deno-only server_table.ts, and retires the 1,343 line seed.sql and 5 migrations with it.
 It does not touch the 2,600 lines of tools and visualisers, the 1,300 lines of scripts, or the 37,600 lines of tests; those are the next targets and are listed in c_base/DESIGN.md under "What stays TypeScript, and why".
+The next north-star step outside the server is the web hosting: c_base/docs/VERCEL.md moves foolish.cards off Vercel and its last Next server code, the /m link unfurl, into a C route.
