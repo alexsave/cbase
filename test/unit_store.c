@@ -1,7 +1,14 @@
-// unit_store.c - the SQLite store (store/store.h) against a real file: every
+// unit_store.c - the store (store/store.h) against a real backend: every
 // table round-trips, the CAS, the bot lease, the heartbeat scan's windows, the
 // ratings a commit applies, the admin console's reads, the import writes.
+//
+// SQLite (a real file) by default; DynamoDB Local with CBASE_STORE=dynamo
+// (`make check-dynamo`, each test on a fresh table made from ops/cbase.yaml).
+// The same assertions hold both backends to one contract; the few that need
+// the backend's own query language (SQL or PartiQL) say which they run.
 #include "t.h"
+#include "lib_store_backend.h"
+#include "store/store_import.h"
 
 #include "store/store.h"
 #include "table.h"
@@ -20,8 +27,8 @@ static int g_seq;
 static cb_store *open_fresh(void) {
     char path[320];
     snprintf(path, sizeof path, "%s/s%d.sqlite", g_dir, ++g_seq);
-    cb_store *s = NULL;
-    T_EQ_INT(cb_store_open_sqlite(path, &s), CB_OK);
+    cb_store *s = tsb_open_fresh(path);
+    if (!s) { fprintf(stderr, "FAIL [%s] no store to test against\n", t_current); exit(1); }
     return s;
 }
 
@@ -90,7 +97,7 @@ static int32_t rating_of(cb_store *s, const char *id) {
 
 static void open_applies_schema_and_seeds_bots(void) {
     cb_store *s = open_fresh();
-    T_EQ_STR(s->ops->name, "sqlite");
+    T_EQ_STR(s->ops->name, tsb_dynamo() ? "dynamo" : "sqlite");
     bots_t b = { 0 };
     T_EQ_INT(CB_STORE_CALL(s, bots_list, collect_bot, &b), 49);
     T_EQ_STR(b.rows[0].nickname, "%Miami 1");
@@ -101,6 +108,14 @@ static void open_applies_schema_and_seeds_bots(void) {
     T_EQ_STR(b.rows[0].id, "2c601cde-63d2-5291-8fcb-735f5860b1ec");
     T_EQ_INT(b.rows[0].elo_rating, 1000);
     T_EQ_INT(b.rows[0].previous_elo, -1);
+    if (tsb_dynamo()) {
+        // A second seed finds the bots there and writes nothing.
+        T_EQ_INT(cb_import_seed_bots(s), 0);
+        b.n = 0;
+        T_EQ_INT(CB_STORE_CALL(s, bots_list, collect_bot, &b), 49);
+        cb_store_close(s);
+        return;
+    }
     cb_store_close(s);
 
     // Reopening applies the (idempotent) schema again and keeps the rows.
@@ -320,24 +335,28 @@ static void cas_second_writer_loses(void) {
     T_EQ_INT(rating_of(s, b.id), 1050);
 
     // One transaction: when the last write of a commit (a rating) fails,
-    // nothing of it stays, the row included. A trigger makes the rating fail.
-    T_EQ_INT(CB_STORE_CALL(s, admin_query,
-                           "CREATE TRIGGER no_ratings BEFORE UPDATE ON ratings BEGIN SELECT RAISE(ABORT, 'no'); END",
-                           true, NULL, NULL), 0);
+    // nothing of it stays, the row included. A trigger makes the rating fail
+    // (SQLite only: DynamoDB has no trigger; unit_dynamo.c cancels the
+    // transaction's rating item in flow_rating_moved instead).
     cb_game_row w3 = mkgame("cas001", 10);
     w3.version = 3;
     cb_game_commit c3 = { .row = &w3, .expected_version = 2, .n_humans = 1, .n_rated = 1 };
     memcpy(c3.humans[0], a.id, sizeof(cb_uuid));
     memcpy(c3.rated_ids[0], a.id, sizeof(cb_uuid));
-    T_EQ_INT(CB_STORE_CALL(s, game_commit, &c3), CB_E_DB);
-    T_EQ_INT(CB_STORE_CALL(s, game_get, "cas001", &got), CB_OK);
-    T_EQ_INT(got.version, 2);
-    cb_game_row_free(&got);
-    T_EQ_INT(CB_STORE_CALL(s, is_member, "cas001", b.id), 1);   // the seats were not rewritten either
+    if (!tsb_dynamo()) {
+        T_EQ_INT(CB_STORE_CALL(s, admin_query,
+                               "CREATE TRIGGER no_ratings BEFORE UPDATE ON ratings BEGIN SELECT RAISE(ABORT, 'no'); END",
+                               true, NULL, NULL), 0);
+        T_EQ_INT(CB_STORE_CALL(s, game_commit, &c3), CB_E_DB);
+        T_EQ_INT(CB_STORE_CALL(s, game_get, "cas001", &got), CB_OK);
+        T_EQ_INT(got.version, 2);
+        cb_game_row_free(&got);
+        T_EQ_INT(CB_STORE_CALL(s, is_member, "cas001", b.id), 1);   // the seats were not rewritten either
+        CB_STORE_CALL(s, admin_query, "DROP TRIGGER no_ratings", true, NULL, NULL);
+    }
 
     // A seat with no account (deleted, its id still in the roster) is skipped,
     // not a reason to refuse the commit.
-    CB_STORE_CALL(s, admin_query, "DROP TRIGGER no_ratings", true, NULL, NULL);
     c3.n_rated = 0;
     snprintf(c3.humans[0], sizeof c3.humans[0], "00000000-0000-4000-8000-0000000000ff");
     T_EQ_INT(CB_STORE_CALL(s, game_commit, &c3), CB_OK);
@@ -396,10 +415,30 @@ static void membership_follows_commits(void) {
     T_EQ_INT(CB_STORE_CALL(s, game_commit, &c), CB_OK);
     T_EQ_INT(CB_STORE_CALL(s, is_member, "game01", a.id), 0);
     T_EQ_INT(CB_STORE_CALL(s, is_member, "game01", b.id), 1);
-    char v[64];
-    T_EQ_INT(CB_STORE_CALL(s, admin_query, "SELECT count(*) FROM game_bots", false, first_value, v), 1);
-    T_EQ_STR(v, "0");
+    char v[64], q[256];
+    if (tsb_dynamo()) {
+        // PartiQL: the game's BOT# seat items, of which none is left.
+        snprintf(q, sizeof q, "SELECT sk FROM \"%s\" WHERE pk = 'GAME#game01' AND begins_with(sk, 'BOT#')", tsb_table());
+        T_EQ_INT(CB_STORE_CALL(s, admin_query, q, false, first_value, v), 0);
+        snprintf(q, sizeof q, "SELECT sk FROM \"%s\" WHERE pk = 'GAME#game01' AND begins_with(sk, 'MEMBER#')", tsb_table());
+        T_EQ_INT(CB_STORE_CALL(s, admin_query, q, false, first_value, v), 1);
+    } else {
+        (void)q;
+        T_EQ_INT(CB_STORE_CALL(s, admin_query, "SELECT count(*) FROM game_bots", false, first_value, v), 1);
+        T_EQ_STR(v, "0");
+    }
     cb_store_close(s);
+}
+
+typedef struct { cb_snapshot_row row; } snapcopy;
+static bool copy_snap(const cb_snapshot_row *r, void *ud) {
+    snapcopy *c = ud;
+    c->row = *r;
+    c->row.moves = malloc(r->moves_len);
+    memcpy(c->row.moves, r->moves, r->moves_len);
+    c->row.extras = r->extras_len ? malloc(r->extras_len) : NULL;
+    if (r->extras_len) memcpy(c->row.extras, r->extras, r->extras_len);
+    return true;
 }
 
 static void game_delete_cascades(void) {
@@ -427,9 +466,16 @@ static void game_delete_cascades(void) {
     names_t n = { 0 };
     T_EQ_INT(CB_STORE_CALL(s, chat_list, "del001", 0, collect_chat, &n), 0);
     // The replay outlives the game, its game_id cleared (ON DELETE SET NULL).
-    char v[64];
-    T_EQ_INT(CB_STORE_CALL(s, admin_query, "SELECT game_id FROM game_snapshots", false, first_value, v), 1);
-    T_EQ_STR(v, "(null)");
+    snapcopy c = { 0 };
+    cb_snapshot_query q = { .viewer_id = a.id };
+    T_EQ_INT(CB_STORE_CALL(s, snapshots_query, &q, copy_snap, &c), 1);
+    T_EQ_STR(c.row.game_id, "");
+    cb_snapshot_row_free(&c.row);
+    if (!tsb_dynamo()) {
+        char v[64];
+        T_EQ_INT(CB_STORE_CALL(s, admin_query, "SELECT game_id FROM game_snapshots", false, first_value, v), 1);
+        T_EQ_STR(v, "(null)");
+    }
     cb_store_close(s);
 }
 
@@ -670,17 +716,6 @@ static void snapshots_query_shapes(void) {
     cb_store_close(s);
 }
 
-typedef struct { cb_snapshot_row row; } snapcopy;
-static bool copy_snap(const cb_snapshot_row *r, void *ud) {
-    snapcopy *c = ud;
-    c->row = *r;
-    c->row.moves = malloc(r->moves_len);
-    memcpy(c->row.moves, r->moves, r->moves_len);
-    c->row.extras = r->extras_len ? malloc(r->extras_len) : NULL;
-    if (r->extras_len) memcpy(c->row.extras, r->extras, r->extras_len);
-    return true;
-}
-
 static void snapshot_round_trip(void) {
     cb_store *s = open_fresh();
     uint8_t mv[4] = { 1, 2, 3, 4 }, ex[3] = { 5, 6, 7 };
@@ -871,6 +906,70 @@ static void admin_reads(void) {
     cb_store_close(s);
 }
 
+typedef struct { int rows; char id[64]; } id_rows;
+static bool collect_id(int n, const char *const *names, const char *const *values, void *ud) {
+    id_rows *r = ud;
+    r->rows++;
+    for (int i = 0; i < n; i++)
+        if (strcmp(names[i], "id") == 0 && values[i] && !r->id[0]) snprintf(r->id, sizeof r->id, "%s", values[i]);
+    return true;
+}
+
+// The console's reads on DynamoDB: key families as collections, a Scan per
+// page, PartiQL for the query box.
+static void admin_reads_dynamo(void) {
+    cb_store *s = open_fresh();
+    names_t n = { 0 };
+    T_EQ_INT(CB_STORE_CALL(s, admin_collections, collect_name, &n), 10);
+    T_EQ_STR(n.ids[3], "GAME");
+    // Pages of 20 over the 49 bots (the only items in a fresh table): 20, 20, 9.
+    rows_t r = { 0 };
+    char cur[1024] = "", next[1024];
+    int pages = 0, total = 0;
+    do {
+        int k = CB_STORE_CALL(s, admin_browse, "BOT", NULL, cur, 20, collect_row, &r, next, sizeof next);
+        T_CHECK(k >= 0);
+        total += k > 0 ? k : 0;
+        pages++;
+        snprintf(cur, sizeof cur, "%s", next);
+    } while (cur[0] && pages < 10);
+    T_EQ_INT(total, 49);
+    T_CHECK(pages >= 3);
+    r.rows = 0;
+    T_EQ_INT(CB_STORE_CALL(s, admin_browse, "BOT", "2c601cde", "", 100, collect_row, &r, next, sizeof next), 1);
+    T_EQ_INT(CB_STORE_CALL(s, admin_browse, "bots; DROP", NULL, "", 10, collect_row, &r, next, sizeof next), CB_E_INVALID);
+
+    // PartiQL: reads always, writes only when allowed.
+    char q[512];
+    snprintf(q, sizeof q, "SELECT nickname FROM \"%s\" WHERE pk = 'BOT#2c601cde-63d2-5291-8fcb-735f5860b1ec' AND sk = 'BOT'",
+             tsb_table());
+    r.rows = 0;
+    T_EQ_INT(CB_STORE_CALL(s, admin_query, q, false, collect_row, &r), 1);
+    T_EQ_STR(r.first[0], "%Miami 1");
+    snprintf(q, sizeof q, "DELETE FROM \"%s\" WHERE pk = 'BOT#2c601cde-63d2-5291-8fcb-735f5860b1ec' AND sk = 'BOT'",
+             tsb_table());
+    T_EQ_INT(CB_STORE_CALL(s, admin_query, q, false, collect_row, &r), CB_E_FORBIDDEN);
+    T_EQ_INT(CB_STORE_CALL(s, admin_query, q, true, collect_row, &r), 0);
+    bots_t b = { 0 };
+    T_EQ_INT(CB_STORE_CALL(s, bots_list, collect_bot, &b), 48);
+    T_EQ_INT(CB_STORE_CALL(s, admin_query, "SELEKT", true, collect_row, &r), CB_E_INVALID);
+
+    // A Binary attribute reads as "\x" hex.
+    cb_user_row a = mkuser("a@x.io", "A", 1);
+    CB_STORE_CALL(s, user_create, &a);
+    cb_game_row g = mkgame("adm001", 1);
+    CB_STORE_CALL(s, game_create, &g, a.id);
+    snprintf(q, sizeof q, "SELECT state FROM \"%s\" WHERE pk = 'GAME#adm001' AND sk = 'ROW'", tsb_table());
+    r.rows = 0;
+    T_EQ_INT(CB_STORE_CALL(s, admin_query, q, false, collect_row, &r), 1);
+    T_EQ_STR(r.first[0], "\\x010203");
+    // CB_ADMIN_GAMES: the GAME family; only the ROW item carries the id.
+    id_rows ir = { 0 };
+    T_CHECK(CB_STORE_CALL(s, admin_browse, CB_ADMIN_GAMES, NULL, "", 100, collect_id, &ir, next, sizeof next) >= 1);
+    T_EQ_STR(ir.id, "adm001");
+    cb_store_close(s);
+}
+
 // ---- import writes -------------------------------------------------------------------------
 
 static void import_writes(void) {
@@ -922,6 +1021,119 @@ static void import_writes(void) {
     // Imported again with no members: the old seats go.
     T_EQ_INT(CB_STORE_CALL(s, game_import, &g, humans, 0, botids, 0), CB_OK);
     T_EQ_INT(CB_STORE_CALL(s, is_member, "imp001", a.id), 0);
+    cb_store_close(s);
+}
+
+// ---- big items and many pages ----------------------------------------------------------------
+
+typedef struct { int n; int64_t last_at; bool ordered; size_t bytes; } pages_t;
+static bool count_snap_pages(const cb_snapshot_row *r, void *ud) {
+    pages_t *p = ud;
+    if (p->n && r->created_at <= p->last_at) p->ordered = false;
+    p->last_at = r->created_at;
+    p->bytes += r->moves_len;
+    p->n++;
+    return true;
+}
+static bool count_chat_pages(const cb_chat_row *r, void *ud) {
+    pages_t *p = ud;
+    if (p->n && r->created_at <= p->last_at) p->ordered = false;
+    p->last_at = r->created_at;
+    p->bytes += strlen(r->message);
+    p->n++;
+    return true;
+}
+
+// Sizes DynamoDB answers in pages (a Query stops at 1 MB) and an item near its
+// 400 KB cap: a 250 KB game row round-trips byte for byte, 24 replays of 64 KB
+// (1.5 MB through GSI2) all come back in order, and so do 300 chat messages of
+// 4 KB (1.2 MB), whole and as the newest 250.
+static void big_items_and_pages(void) {
+    cb_store *s = open_fresh();
+    cb_user_row a = mkuser("a@x.io", "A", 1);
+    T_EQ_INT(CB_STORE_CALL(s, user_create, &a), CB_OK);
+    cb_game_row g = mkgame("big001", 10);
+    T_EQ_INT(CB_STORE_CALL(s, game_create, &g, a.id), CB_OK);
+    size_t sn = 150000, ln = 100000;
+    uint8_t *state = malloc(sn), *logs = malloc(ln);
+    for (size_t i = 0; i < sn; i++) state[i] = (uint8_t)(i * 131 + (i >> 8));
+    for (size_t i = 0; i < ln; i++) logs[i] = (uint8_t)(255 - i % 251);
+    cb_game_row n = mkgame("big001", 10);
+    n.state = state, n.state_len = sn, n.logs = logs, n.logs_len = ln, n.version = 1, n.updated_at = 20;
+    cb_game_commit c = { .row = &n, .expected_version = 0, .n_humans = 1 };
+    memcpy(c.humans[0], a.id, sizeof(cb_uuid));
+    T_EQ_INT(CB_STORE_CALL(s, game_commit, &c), CB_OK);
+    cb_game_row got;
+    T_EQ_INT(CB_STORE_CALL(s, game_get, "big001", &got), CB_OK);
+    T_EQ_MEM(got.state, got.state_len, state, sn);
+    T_EQ_MEM(got.logs, got.logs_len, logs, ln);
+    cb_game_row_free(&got);
+
+    enum { NSNAP = 24, SNAPLEN = 64000 };
+    uint8_t *mv = malloc(SNAPLEN);
+    for (int i = 0; i < SNAPLEN; i++) mv[i] = (uint8_t)(i * 7);
+    for (int i = 0; i < NSNAP; i++) {
+        cb_snapshot_row r = { .n_players = 2, .moves = mv, .moves_len = SNAPLEN, .created_at = 1000 + i };
+        cb_uuid_v4(r.id);
+        memcpy(r.player_ids[0], a.id, sizeof(cb_uuid));
+        cb_uuid_v4(r.player_ids[1]);
+        T_EQ_INT(CB_STORE_CALL(s, snapshot_put, &r), CB_OK);
+    }
+    pages_t p = { .ordered = true };
+    cb_snapshot_query q = { .viewer_id = a.id };
+    T_EQ_INT(CB_STORE_CALL(s, snapshots_query, &q, count_snap_pages, &p), NSNAP);
+    T_EQ_INT(p.n, NSNAP);
+    T_CHECK(p.ordered);
+    T_EQ_INT((long long)p.bytes, (long long)NSNAP * SNAPLEN);
+
+    enum { NCHAT = 300, CHATLEN = 4000 };
+    char *msg = malloc(CHATLEN + 1);
+    memset(msg, 'm', CHATLEN);
+    msg[CHATLEN] = 0;
+    for (int i = 0; i < NCHAT; i++) {
+        cb_chat_row m = { .message = msg, .created_at = 5000 + i };
+        cb_uuid_v4(m.id);
+        snprintf(m.game_id, sizeof m.game_id, "big001");
+        memcpy(m.user_id, a.id, sizeof(cb_uuid));
+        T_EQ_INT(CB_STORE_CALL(s, chat_put, &m), CB_OK);
+    }
+    p = (pages_t){ .ordered = true };
+    T_EQ_INT(CB_STORE_CALL(s, chat_list, "big001", 0, count_chat_pages, &p), NCHAT);
+    T_CHECK(p.ordered);
+    T_EQ_INT(p.last_at, 5000 + NCHAT - 1);
+    p = (pages_t){ .ordered = true };
+    T_EQ_INT(CB_STORE_CALL(s, chat_list, "big001", 250, count_chat_pages, &p), 250);
+    T_CHECK(p.ordered);
+    T_EQ_INT(p.last_at, 5000 + NCHAT - 1);   // the newest 250, oldest of them first
+    // A game with that much under it still deletes (its chat in batches of 25).
+    T_EQ_INT(CB_STORE_CALL(s, game_delete, "big001", 1), CB_OK);
+    p = (pages_t){ .ordered = true };
+    T_EQ_INT(CB_STORE_CALL(s, chat_list, "big001", 0, count_chat_pages, &p), 0);
+    free(msg);
+    free(mv);
+    free(state);
+    free(logs);
+    cb_store_close(s);
+}
+
+// DynamoDB's TTL reads epoch SECONDS: the CONN item and every TOPIC copy carry
+// expires_at = expires_ms / 1000, or the table would keep them for 1000 times
+// as long (DynamoDB Local never deletes, so the attribute is what is checked).
+static void conn_ttl_is_seconds(void) {
+    if (!tsb_dynamo()) return;
+    cb_store *s = open_fresh();
+    int64_t at = 1760000000123LL;
+    cb_conn_row c = { .conn_id = "Ttl=", .vsn = 2, .n_topics = 1, .expires_at = at };
+    snprintf(c.topics[0], sizeof c.topics[0], "game-ttl001");
+    snprintf(c.join_refs[0], sizeof c.join_refs[0], "1");
+    T_EQ_INT(CB_STORE_CALL(s, conn_put, &c), CB_OK);
+    char q[256], v[64];
+    snprintf(q, sizeof q, "SELECT expires_at FROM \"%s\" WHERE pk = 'CONN#Ttl=' AND sk = 'CONN'", tsb_table());
+    T_EQ_INT(CB_STORE_CALL(s, admin_query, q, false, first_value, v), 1);
+    T_EQ_STR(v, "1760000000");
+    snprintf(q, sizeof q, "SELECT expires_at FROM \"%s\" WHERE pk = 'TOPIC#game-ttl001'", tsb_table());
+    T_EQ_INT(CB_STORE_CALL(s, admin_query, q, false, first_value, v), 1);
+    T_EQ_STR(v, "1760000000");
     cb_store_close(s);
 }
 
@@ -994,8 +1206,11 @@ int main(void) {
     T_RUN(snapshot_round_trip);
     T_RUN(chat_newest_oldest_first);
     T_RUN(conns_round_trip);
-    T_RUN(admin_reads);
+    if (tsb_dynamo()) T_RUN(admin_reads_dynamo);
+    else T_RUN(admin_reads);
     T_RUN(import_writes);
+    T_RUN(big_items_and_pages);
+    T_RUN(conn_ttl_is_seconds);
     T_RUN(cas_under_threads);
     char cmd[300];
     snprintf(cmd, sizeof cmd, "rm -rf '%s'", g_dir);

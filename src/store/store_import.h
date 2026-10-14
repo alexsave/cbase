@@ -24,6 +24,14 @@
 // CB_E_* when a file could not be read.
 int cb_import_dir(cb_store *s, const char *dir, FILE *out);
 
+// The 49 bots sql/schema.sql seeds (fixed ids, ladder order), written into a
+// store that has no bots yet: a fresh DynamoDB table, which nothing else
+// seeds (SQLite seeds them at open from the same schema). Read from an
+// in-memory SQLite store, so the list has one owner. The number written, 0
+// when the store already has bots (an import's hosted rows are never
+// replaced), or a CB_E_*.
+int cb_import_seed_bots(cb_store *s);
+
 // "$2a$" or "$2b$", a two-digit cost 04..31, "$", then 53 characters of
 // bcrypt's base64 alphabet: 60 in all.
 bool cb_import_bcrypt_shaped(const char *hash);

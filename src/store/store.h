@@ -337,6 +337,17 @@ int cb_store_open_sqlite(const char *path, cb_store **out);
 int cb_store_open_dynamo(const char *table, cb_store **out);
 void cb_store_close(cb_store *s);
 
+// What the calling thread has sent DynamoDB since its last take: every request
+// (each attempt of a retried one, as DynamoDB bills it), reads and writes, and
+// "GetItem 1 Query 3 TransactWriteItems 1" in `detail`. The handler and the
+// bot drive log it per request and per cycle at debug level, the measure of
+// what an action costs in requests. Zero on SQLite. Resets the tally.
+typedef struct {
+    int  reads, writes;
+    char detail[192];
+} cb_store_tally;
+void cb_store_tally_take(cb_store_tally *out);
+
 // The SQLite schema version this binary applies (store_sqlite.c), and the
 // embedded schema text (build/gen/schema_sql.c, from sql/schema.sql).
 #define CB_SCHEMA_VERSION 1

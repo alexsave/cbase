@@ -1753,6 +1753,54 @@ void dw_scan_family(dw_req *r, const char *table, const char *family, const char
     finish(&w);
 }
 
+// Each export table, as the items it was written to: pk family, sk exact or
+// (ending in '#') a prefix.
+static const struct { const char *export_name, *pk, *sk; } COUNTS[] = {
+    { "users", "USER#", "PROFILE" },
+    { "bots", "BOT#", "BOT" },
+    { "user_elo_ratings", "USER#", "RATING" },
+    { "games", "GAME#", "ROW" },
+    { "player_hands", "GAME#", "MEMBER#" },
+    { "bot_hands", "GAME#", "BOT#" },
+    { "game_snapshots", "SNAP#", "SNAP" },
+    { "chat_messages", "CHAT#", "" },
+};
+
+bool dw_scan_count(dw_req *r, const char *table, const char *export_name, cb_span start) {
+    int i = 0, n = (int)(sizeof COUNTS / sizeof COUNTS[0]);
+    while (i < n && strcmp(COUNTS[i].export_name, export_name) != 0) i++;
+    if (i == n) return false;
+    const char *sk = COUNTS[i].sk;
+    size_t skl = strlen(sk);
+    bool prefix = skl == 0 || sk[skl - 1] == '#';
+    cb_jw w;
+    begin(r, &w, "Scan");
+    cb_jw_kstr(&w, "TableName", table);
+    cb_jw_kstr(&w, "Select", "COUNT");
+    cb_jw_kbool(&w, "ConsistentRead", true);
+    ux u;
+    ux_init(&u);
+    ux_name(&u, "pk");
+    ux_name(&u, "sk");
+    ux_val_s(&u, ":p", COUNTS[i].pk);
+    ux_val_s(&u, ":s", sk);
+    cb_jw_kstr(&w, "FilterExpression", prefix ? "begins_with(#pk, :p) AND begins_with(#sk, :s)"
+                                              : "begins_with(#pk, :p) AND #sk = :s");
+    ux_emit(&w, &u, NULL);
+    ux_free(&u);
+    if (start.n) {
+        cb_jw_key(&w, "ExclusiveStartKey");
+        cb_jw_raw(&w, start.p, start.n);
+    }
+    finish(&w);
+    return true;
+}
+
+int64_t dw_count(const char *body, size_t n) {
+    int64_t c;
+    return cb_json_get_i64(body, n, "Count", &c) ? c : -1;
+}
+
 void dw_execute(dw_req *r, const char *statement, const char *next_token) {
     cb_jw w;
     begin(r, &w, "ExecuteStatement");

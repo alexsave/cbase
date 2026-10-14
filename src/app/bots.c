@@ -108,6 +108,8 @@ static int64_t budget_left(const cb_ctx *ctx) {
 
 int cb_bots_drive(cb_ctx *ctx, const char *game_id) {
     if (!ctx->store) return CB_E_STATE;
+    cb_store_tally st;
+    cb_store_tally_take(&st);   // this drive's count starts here
     cb_uuid lease;
     int rc = CB_STORE_CALL(ctx->store, lease_acquire, game_id, cb_app_now(), CB_BOT_LEASE_MS, lease);
     if (rc == CB_E_CONFLICT) {
@@ -143,6 +145,9 @@ int cb_bots_drive(cb_ctx *ctx, const char *game_id) {
         }
         int64_t delay = 0;
         int c = run_cycle(ctx, s, game_id, cycle, &cpu, &delay);
+        cb_store_tally_take(&st);   // the lease (acquire or renew) and the cycle
+        if (st.reads || st.writes)
+            CB_DEBUG("store", "bot cycle %s/%d: %d reads, %d writes (%s)", game_id, cycle, st.reads, st.writes, st.detail);
         if (c == CYCLE_ERROR) { rc = CB_E_DB; break; }
         if (c == CYCLE_DONE) break;
         if (delay > 0) {
@@ -152,6 +157,9 @@ int cb_bots_drive(cb_ctx *ctx, const char *game_id) {
         }
     }
     CB_STORE_CALL(ctx->store, lease_release, game_id, lease);
+    cb_store_tally_take(&st);
+    if (st.reads || st.writes)
+        CB_DEBUG("store", "bot drive %s end: %d reads, %d writes (%s)", game_id, st.reads, st.writes, st.detail);
     cb_section_free(s);
     if (rekick && ctx->kick_bots) {
         CB_INFO("bots", "game %s: budget spent with bot work left, kicking a fresh drive", game_id);

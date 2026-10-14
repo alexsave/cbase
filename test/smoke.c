@@ -25,6 +25,7 @@
 // Every module is real here: auth (real JWTs), the SQLite store, postgrest,
 // realtime (rt_local + phoenix, through rt_deps' production table), the app.
 #include "t.h"
+#include "lib_store_backend.h"
 
 #include "lib_client.h"
 #include "lib_proc.h"
@@ -270,8 +271,20 @@ static bool ws_open(listener *l) {
     return l->fd >= 0;
 }
 
-// The game's row as the server stored it, read from the database file itself.
+// The game's row as the server stored it: from the database file itself, or
+// (CBASE_STORE=dynamo, `make check-dynamo`) from the server's DynamoDB table.
 static bool db_game(const char *gid, int64_t *needs_bots, int64_t *version) {
+    if (tsb_dynamo()) {
+        static cb_store *dy;
+        const char *t = getenv("CBASE_TABLE");
+        if (!dy && cb_store_open_dynamo(t && *t ? t : "cbase", &dy) != CB_OK) return false;
+        cb_game_row g;
+        if (CB_STORE_CALL(dy, game_get, gid, &g) != CB_OK) return false;
+        *needs_bots = g.needs_bots;
+        *version = g.version;
+        cb_game_row_free(&g);
+        return true;
+    }
     char path[512];
     snprintf(path, sizeof path, "%s/cbase.sqlite", g_dbdir);
     sqlite3 *db = NULL;

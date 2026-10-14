@@ -7,6 +7,9 @@
 #   make smoke      the end-to-end smoke test against a real build/cbase
 #   make check      test + smoke
 #   make check-asan the same, every object rebuilt under ASan + UBSan
+#   make check-dynamo  the store, admin and import tests and the game smoke
+#                   against DynamoDB Local (ops/dynamo_local.sh; needs Docker
+#                   or a DynamoDB Local already on port 8000)
 #   make clean
 #
 # Builds on macOS (clang, Homebrew openssl@3, the SDK's sqlite3) and on Ubuntu
@@ -137,7 +140,7 @@ $(foreach u,$(UNITS),$(call prog,build/asan/test,build/obj/asan,build/obj/asan-k
 $(foreach s,smoke smoke_lambda,$(call prog,build/test,build/obj/cbase,build/obj/kernel,$(s),test/$(s).c $(TLIB_SRC),CB_CFLAGS))
 $(foreach s,smoke smoke_lambda,$(call prog,build/asan/test,build/obj/asan,build/obj/asan-kernel,$(s),test/$(s).c $(TLIB_SRC),ASAN_CB_CFLAGS))
 
-.PHONY: all test smoke check check-asan test-asan smoke-asan clean print-kernel-src bootstrap
+.PHONY: all test smoke check check-asan test-asan smoke-asan check-dynamo clean print-kernel-src bootstrap
 all: build/cbase build/bootstrap build/cbase-import
 
 # Every unit program runs even when an earlier one fails; the target fails if any did.
@@ -160,6 +163,18 @@ smoke-asan: build/asan/cbase build/asan/bootstrap build/asan/test/smoke build/as
 	build/asan/test/smoke build/asan/cbase
 	build/asan/test/smoke_lambda build/asan/bootstrap
 check-asan: test-asan smoke-asan
+
+# The DynamoDB backend against Amazon's DynamoDB Local: the table made from
+# ops/cbase.yaml (dropped and made empty first), the schema's bots seeded as a
+# deploy seeds them, then the unit tests that touch a real store (each on its
+# own fresh table) and the whole game smoke, every one with CBASE_STORE=dynamo.
+DYNAMO_UNITS := unit_store unit_admin unit_import
+check-dynamo: $(addprefix build/test/,$(DYNAMO_UNITS)) build/cbase build/cbase-import build/test/smoke
+	ops/dynamo_local.sh --reset > build/dynamo.env
+	. ./build/dynamo.env && build/cbase-import --seed-bots
+	. ./build/dynamo.env && fail=0; for t in $(addprefix build/test/,$(DYNAMO_UNITS)); do $$t || fail=1; done; \
+	 if [ $$fail -ne 0 ]; then echo "DYNAMO UNIT TESTS FAILED"; exit 1; fi
+	. ./build/dynamo.env && build/test/smoke build/cbase
 
 # The Lambda artifact: dist/bootstrap and dist/bootstrap.zip, static Linux
 # arm64, built in a pinned arm64 Alpine container (tools/build_bootstrap.sh).

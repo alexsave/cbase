@@ -25,4 +25,9 @@ typedef int (*cb_dynamo_send_fn)(void *ud, const char *target, const uint8_t *bo
                                  cb_buf *resp);
 int cb_store_open_dynamo_with(const char *table, cb_dynamo_send_fn send, void *ud, cb_store **out);
 
+// The import's stored count on DynamoDB (dw_scan_count): the items one
+// export table became, every page summed. CB_E_INVALID for a store that is not
+// DynamoDB or an unknown name, CB_E_DB on a failed Scan.
+int cb_store_dynamo_count(cb_store *s, const char *export_name, long long *out);
+
 #endif

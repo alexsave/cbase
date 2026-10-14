@@ -70,6 +70,36 @@ static int https_send(void *ud, const char *target, const uint8_t *body, size_t 
     return resp->oom ? CB_E_NOMEM : CB_OK;
 }
 
+// ---- the per-thread tally (store.h cb_store_tally_take) --------------------------
+
+static const char *const TALLY_OPS[] = { "GetItem", "Query", "Scan", "BatchGetItem", "ExecuteStatement",   // reads
+                                         "PutItem", "UpdateItem", "DeleteItem", "BatchWriteItem", "TransactWriteItems" };
+#define TALLY_N     (int)(sizeof TALLY_OPS / sizeof TALLY_OPS[0])
+#define TALLY_READS 5
+static _Thread_local int t_tally[TALLY_N + 1];   // the last slot: a target not listed
+
+static void tally(const char *target) {
+    const char *op = strchr(target, '.');
+    op = op ? op + 1 : target;
+    int i = 0;
+    while (i < TALLY_N && strcmp(TALLY_OPS[i], op) != 0) i++;
+    t_tally[i]++;
+}
+
+void cb_store_tally_take(cb_store_tally *out) {
+    memset(out, 0, sizeof *out);
+    size_t off = 0;
+    for (int i = 0; i <= TALLY_N; i++) {
+        if (!t_tally[i]) continue;
+        if (i < TALLY_READS) out->reads += t_tally[i];
+        else out->writes += t_tally[i];
+        int k = snprintf(out->detail + off, sizeof out->detail - off, "%s%s %d", off ? " " : "",
+                         i < TALLY_N ? TALLY_OPS[i] : "other", t_tally[i]);
+        if (k > 0 && (size_t)k < sizeof out->detail - off) off += (size_t)k;
+        t_tally[i] = 0;
+    }
+}
+
 // Sends `r`, again after a pause while DynamoDB says to (throttled, a 5xx, a
 // lost connection), up to ATTEMPTS times. The answer is in *resp.
 static dw_status call(dyn *d, const dw_req *r, cb_buf *resp) {
@@ -77,6 +107,7 @@ static dw_status call(dyn *d, const dw_req *r, cb_buf *resp) {
         int status = 0;
         cb_buf_reset(resp);
         if (r->body.oom) return DW_FAILED;
+        tally(r->target);
         int rc = d->send(d->ud, r->target, r->body.p, r->body.len, &status, resp);
         dw_status st = rc != CB_OK ? DW_RETRY : dw_classify(status, cb_buf_cstr(resp), resp->len);
         if (st == DW_FAILED || (st == DW_RETRY && attempt + 1 >= ATTEMPTS)) {
@@ -1103,6 +1134,35 @@ static int dy_admin_query(cb_store *s, const char *statement, bool allow_write, 
 }
 
 // ---- migration -----------------------------------------------------------------------------------
+
+int cb_store_dynamo_count(cb_store *s, const char *export_name, long long *out) {
+    *out = -1;
+    if (!s || strcmp(s->ops->name, "dynamo") != 0) return CB_E_INVALID;
+    dyn *d = D(s);
+    cb_buf resp, start;
+    cb_buf_init(&resp);
+    cb_buf_init(&start);
+    dw_req r;
+    dw_req_init(&r);
+    long long total = 0;
+    int rc = CB_OK;
+    for (;;) {
+        if (!dw_scan_count(&r, d->table, export_name, cb_span_of((const char *)start.p, start.len))) { rc = CB_E_INVALID; break; }
+        if (call(d, &r, &resp) != DW_OK) { rc = CB_E_DB; break; }
+        int64_t c = dw_count(cb_buf_cstr(&resp), resp.len);
+        if (c < 0) { rc = CB_E_DB; break; }
+        total += c;
+        cb_span last = dw_last_key(cb_buf_cstr(&resp), resp.len);
+        if (!last.n) break;
+        cb_buf_reset(&start);
+        cb_buf_append(&start, last.p, last.n);
+    }
+    dw_req_free(&r);
+    cb_buf_free(&resp);
+    cb_buf_free(&start);
+    if (rc == CB_OK) *out = total;
+    return rc;
+}
 
 static int dy_user_import(cb_store *s, const cb_user_row *u) {
     dyn *d = D(s);
