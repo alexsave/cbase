@@ -11,12 +11,12 @@ Everything is in the region **US East (N. Virginia) us-east-1**.
 
 ## What I set up for you already
 
-- `c_base/ops/cbase.yaml`: one CloudFormation template that creates the whole backend (DynamoDB table, Lambda function, Function URL, WebSocket API, the one-minute bot scan, CloudFront at your domain, and an optional deploy role for GitHub Actions).
+- `c_base/ops/cbase.yaml`: one CloudFormation template that creates the whole backend (DynamoDB table, Lambda function, Function URL, WebSocket API, the one-minute bot scan, CloudFront at your domain).
   It passes `cfn-lint`; nothing in it has been run against AWS yet.
 - `c_base/ops/deploy.sh`: the CLI path, end to end (it has been checked with `bash -n` and shellcheck, never run against AWS: there were no credentials).
 - `c_base/ops/package.sh`: builds `c_base/build/cbase-lambda.zip`, the static arm64 Lambda binary, and prints its sha256.
   The same zip is built by CI on every change and kept as the `cbase-lambda` artifact of the `c_base` workflow run, so Docker on your Mac is optional.
-- `.github/workflows/c_base.yml`: builds and tests c_base on Linux and macOS, under ASan, lints the template, builds the zip, and on `main` deploys it to the function once the two deploy secrets exist (step 13).
+- `.github/workflows/c_base.yml`: builds and tests c_base on Linux and macOS, under ASan, lints the template, builds the zip, and on `main` deploys it to the function (step 13).
 - The admin console at `https://api.foolish.cards/admin` (the token from step 2).
 - This runbook.
 
@@ -25,7 +25,7 @@ Everything is in the region **US East (N. Virginia) us-east-1**.
 Paste these back into the session so I can finish the verification:
 
 1. The stack status (it should say `CREATE_COMPLETE`).
-2. The stack's **Outputs** tab: `FunctionUrl`, `WebSocketUrl`, `DistributionDomain`, `TableName`, `FunctionName`, and `DeployRoleArn` if you made it.
+2. The stack's **Outputs** tab: `FunctionUrl`, `WebSocketUrl`, `DistributionDomain`, `TableName`, and `FunctionName`.
 3. The anon key (it is public: it ships inside the web bundle); on the CLI path it is `CBASE_ANON_KEY` in `c_base/ops/.env`.
 4. Whether `https://api.foolish.cards/health` answers `ok cbase ...` (step 9).
 
@@ -61,12 +61,10 @@ It signs up two throwaway accounts (`bench...@bench.invalid`) and plays real gam
    ```
 
    Add that CNAME in Google Cloud DNS exactly as step 3.6 to 3.8 below describe, and wait until `aws acm describe-certificate ... --query Certificate.Status` says `ISSUED`.
-4. Put the ARN where the script reads it, and if `IAM > Identity providers` already lists `token.actions.githubusercontent.com`, say so:
+4. Put the ARN where the script reads it:
 
    ```
    echo 'CBASE_CERT_ARN=arn:aws:acm:us-east-1:...' >> c_base/ops/.env
-   echo 'CBASE_GITHUB_REPO=alexsave/foolish' >> c_base/ops/.env     # optional: the deploy role for step 13
-   echo 'CBASE_GITHUB_OIDC=no' >> c_base/ops/.env                   # only if the provider already exists
    ```
 
    `c_base/ops/.env` is gitignored and kept at mode 0600; the script creates it and generates the three secrets into it on its first run (`openssl rand -hex 32`), and reuses them on every later run.
@@ -167,11 +165,10 @@ CloudFormation cannot create a Lambda function of this runtime without its code,
 
 ## 6. Create the stack
 
-1. Before you start: open **IAM > Identity providers** and note whether `token.actions.githubusercontent.com` is already listed.
-2. Open **CloudFormation** > **Create stack** > **With new resources (standard)**.
-3. Prepare template: **Choose an existing template**; template source: **Upload a template file** > **Choose file** > `c_base/ops/cbase.yaml` > **Next**.
-4. Stack name: `cbase`.
-5. Parameters:
+1. Open **CloudFormation** > **Create stack** > **With new resources (standard)**.
+2. Prepare template: **Choose an existing template**; template source: **Upload a template file** > **Choose file** > `c_base/ops/cbase.yaml` > **Next**.
+3. Stack name: `cbase`.
+4. Parameters:
    - CodeBucket: the bucket name from step 5.
    - CodeKey: `cbase-lambda.zip` (the default).
    - JwtSecret, AnonKey, AdminToken: the three values from step 2.
@@ -179,13 +176,11 @@ CloudFormation cannot create a Lambda function of this runtime without its code,
    - CertificateArn: the ARN from step 3.
    - AllowedOrigins: `*` (the default, which is what the Supabase functions answered).
    - FunctionName: `cbase`; TableName: `cbase` (the defaults).
-   - GitHubRepo: `alexsave/foolish` to create the deploy role for step 13, or empty to skip it.
-   - CreateGitHubOidcProvider: `no` if step 6.1 found the provider already listed, else `yes`.
-6. **Next**. On **Configure stack options** leave everything at its default and tick **I acknowledge that AWS CloudFormation might create IAM resources with custom names**. **Next**.
-7. Review, then **Submit**.
-8. Wait for the stack status to reach **CREATE_COMPLETE** (5 to 15 minutes; the CloudFront distribution is the slow part).
+5. **Next**. On **Configure stack options** leave everything at its default and tick **I acknowledge that AWS CloudFormation might create IAM resources with custom names**. **Next**.
+6. Review, then **Submit**.
+7. Wait for the stack status to reach **CREATE_COMPLETE** (5 to 15 minutes; the CloudFront distribution is the slow part).
    The **Events** tab shows progress.
-9. Open the **Outputs** tab and copy every value: you need `DistributionDomain` next, and the whole list goes back to me.
+8. Open the **Outputs** tab and copy every value: you need `DistributionDomain` next, and the whole list goes back to me.
 
 If the status becomes `ROLLBACK_COMPLETE`, open **Events**, find the first row whose status is `CREATE_FAILED`, and send me its **Status reason**.
 Then delete the stack, and also delete the `cbase` table in **DynamoDB > Tables** if it is still there (the template keeps the table on delete so data is never lost by accident, which would make a second create fail on the name).
@@ -279,14 +274,34 @@ The web build bakes these two values in at build time, and CI builds the site (V
 
 ## 13. GitHub deploys
 
-With the deploy role from step 6 (GitHubRepo set), every push to `main` that changes c_base redeploys the function after the tests pass.
+Since 2026-10-14 every push to `main` deploys what is live, to AWS, with no hand steps:
 
-1. GitHub > the repository > **Settings > Secrets and variables > Actions > New repository secret**.
-2. `CBASE_AWS_ROLE_ARN`: the `DeployRoleArn` output.
-3. `CBASE_FUNCTION_NAME`: `cbase`.
-4. Optional `CBASE_AWS_REGION`: only if the stack is not in us-east-1.
-5. The role trusts only workflow runs on `refs/heads/main` of `alexsave/foolish`, and may only update this one function's code.
-6. If you skipped GitHubRepo in step 6, create the role later by updating the stack: **CloudFormation > cbase > Update > Use existing template**, set GitHubRepo, and submit.
+| What changed on `main` | Workflow, job | What it does |
+|---|---|---|
+| `c_base/**`, `foolish/c/**`, `shared/c/**`, `shared/tools/**` | `c_base`, `deploy to Lambda` | after every test job passes, `ops/lambda_deploy.sh`: the CI-built zip to the code bucket, the `cbase` stack's `CodeKey` pointed at it (previous template, every other parameter kept), then CodeSha256 and `https://api.foolish.cards/health` checked |
+| `foolish/**`, `shared/**`, `uttt/c/**`, `uttt/web/**` | `web_aws`, `deploy` | `ops/web_deploy.sh site foolish`, then `site uttt`: upload, page lists, invalidation, then `www.foolish.cards` and `www.uttt.live` must answer 200 |
+
+Both refuse a tree that does not contain `origin/main` (`ops/require_main.sh`), so re-running an old run after main moved on deploys nothing.
+Both can also be run by hand on `main` (Actions > the workflow > Run workflow) to redeploy main as it is.
+Nothing deploys to Vercel or Supabase on push any more.
+
+The credentials are one role, `cbase-github-deploy`, made by the stack `cbase-github` from `ops/github_oidc.yaml` together with the account's GitHub OIDC provider:
+
+```
+aws cloudformation deploy --region us-east-1 --stack-name cbase-github \
+  --template-file c_base/ops/github_oidc.yaml --capabilities CAPABILITY_NAMED_IAM
+```
+
+1. It trusts only `repo:alexsave/foolish:ref:refs/heads/main`.
+   To prove a workflow change from its branch before merging, deploy the stack once with `--parameter-overrides ExtraSubject=repo:alexsave/foolish:ref:refs/heads/<branch>` (and let the workflow's `if:` accept that ref on the branch), then deploy it again with `ExtraSubject=` empty.
+2. It may upload the Lambda zip and update the `cbase` stack's code, upload to the web bucket, invalidate the two distributions, rewrite the `cbase-web` page lists, and read both stacks; it holds none of the rights a template change needs, so `ops/deploy.sh` and `ops/web_deploy.sh stack` stay hand steps from this Mac.
+3. Repository secrets (Settings > Secrets and variables > Actions): `CBASE_AWS_ROLE_ARN` (the stack's `DeployRoleArn` output) and `CBASE_ANON_KEY` (the anon key from `c_base/ops/.env`, built into the web bundle).
+
+The rollback lanes, workflow_dispatch only, kept until their deletion dates:
+
+- `web` and `uttt-web` (Vercel production, on `main`): until 2026-10-28, then W9.
+  They matter only with DNS pointed back at Vercel (W7).
+- `deploy` (Supabase edge functions, on `main`): until 2026-11-13, then step 14.
 
 ## 14. Retire Supabase, after 30 days
 
@@ -302,7 +317,8 @@ The web is the only switch that matters on day one, and it flips back in minutes
 1. Vercel > **Settings > Environment Variables**: set `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_KEY` (Production) back to the old values from step 11.4.
 2. GitHub > **Actions** > **web** > the latest run on `main` > **Re-run all jobs**.
 3. Anything players did on c_base since the switch stays in DynamoDB and is not copied back.
-4. A bad c_base build is rolled back separately: **Lambda > cbase > Code > Upload from > .zip file** with an earlier `cbase-lambda.zip` (every CI run keeps one for 30 days).
+4. A bad c_base build is rolled back separately: download an earlier `cbase-lambda` artifact (every CI run keeps one for 30 days) and run `c_base/ops/lambda_deploy.sh <its cbase-lambda.zip>` from a tree that contains main; it points the stack back at that zip.
+   Or point the stack straight at the earlier key, which is still in the code bucket: **CloudFormation > cbase > Update > Use existing template**, CodeKey = the old `cbase-lambda-<hash>.zip`.
 
 ## Costs, for reference
 
@@ -404,7 +420,8 @@ Not an apex-to-www forward: the iOS app's entitlement is `applinks:foolish.cards
 
 ### W6. Two weeks in parallel
 
-`web.yml` and `uttt-web.yml` keep deploying every push to Vercel (their builds set `VERCEL=1`, which keeps the server build), and `web_aws.yml` deploys the same commit to S3, so either host serves the current site.
+Since 2026-10-14 only `web_aws.yml` deploys on push (step 13).
+`web.yml` and `uttt-web.yml` deploy to Vercel only when run by hand on `main` (their builds set `VERCEL=1`, which keeps the server build), so after a DNS rollback (W7) run both once to bring Vercel up to the current commit.
 Watch for two weeks; the c_base admin console's Logs panel shows the `/m` unfurl requests coming through the new distribution.
 
 ### W7. Rollback
@@ -419,15 +436,14 @@ A bad web deploy on AWS without a DNS rollback: re-run `web_aws` on the last goo
 
 ### W8. GitHub deploys for the web
 
-1. Create the role: `CBASE_WEB_GITHUB_REPO=alexsave/foolish CBASE_WEB_GITHUB_OIDC=yes c_base/ops/web_deploy.sh stack`.
-   An account holds one GitHub OIDC provider: say `CBASE_WEB_GITHUB_OIDC=yes` only if IAM > Identity providers does not list `token.actions.githubusercontent.com` yet (today it does not), and then step 13's stack update must say CreateGitHubOidcProvider `no`.
-2. GitHub > Settings > Secrets and variables > Actions: `CBASE_WEB_AWS_ROLE_ARN` = the cbase-web stack's `DeployRoleArn` output, and `CBASE_ANON_KEY` = the AnonKey from step 2 (`c_base/ops/.env`).
-3. The role may upload to the bucket, invalidate the two distributions, and update the stack's two page-list parameters on its existing template; a template change is always `web_deploy.sh stack` from this Mac.
+1. The role and the two secrets are step 13's: one role deploys the Lambda and the web.
+2. A template change to `ops/web.yaml` is always `web_deploy.sh stack` from this Mac; CI only uploads and rewrites the two page lists on the existing template.
+3. utils.foolish.cards is built in the sibling repo `foolish-utils` and still deployed by hand (W5 step 4).
 4. Now and then, `c_base/ops/web_deploy.sh site foolish --prune-static` (and `uttt`) deletes hashed files no current page uses; a tab left open across two deploys reloads.
 5. The Infinite Oracle's Mode B headers: `CBASE_WEB_ISOLATION=yes c_base/ops/web_deploy.sh stack` (and `no` to undo).
 
 ### W9. Retire Vercel, after the two weeks
 
-1. Delete the `scope` and `deploy` jobs from `web.yml`, the `deploy` job from `uttt-web.yml`, `scripts/web_deploy_scope.sh` and `e2e/validation/web_deploy_scope_validation.test.ts` (they ration Vercel's 100 deploys a day), and the `VERCEL` halves of `foolish/next.config.mjs` and `uttt/web/next.config.mjs`.
+1. Delete `.github/workflows/web.yml` and `.github/workflows/uttt-web.yml` (workflow_dispatch-only since 2026-10-14; their pull-request gates already live in `web_aws.yml`), and the `VERCEL` halves of `foolish/next.config.mjs` and `uttt/web/next.config.mjs`.
 2. Delete the repository secrets `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID` and `UTTT_VERCEL_PROJECT_ID`.
 3. Vercel dashboard: remove the domains from both projects, then delete the two projects (and the foolish-utils one once utils has moved).
