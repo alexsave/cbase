@@ -233,6 +233,12 @@ void dw_ratings_read(const char *body, size_t n, const char *table, const char *
 bool dw_game_delete(dw_req *r, const char *table, const char *id, int64_t expected, const cb_buf *keys, int n_keys);
 // A replay's game is gone: game_id "" and its GSI1 entry removed.
 void dw_snapshot_unlink(dw_req *r, const char *table, cb_span key);
+// Account deletion: one replay's extras on every copy of it (`keys`, raw JSON
+// keys from DWQ_SNAPSHOT_ITEMS), as one transaction, each conditioned on the
+// item still being there; extras_len 0 removes the attribute (snapshot_put
+// writes none then). false past 100 items.
+bool dw_snapshot_set_extras(dw_req *r, const char *table, const cb_buf *keys, int n_keys,
+                            const uint8_t *extras, size_t extras_len);
 
 // The lease (seed.sql try_acquire / renew / release_bot_lease). Each fails
 // with ConditionalCheckFailed (ALL_OLD returned when the game exists).

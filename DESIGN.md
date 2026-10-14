@@ -236,6 +236,9 @@ As built:
 - `functions_http.c` follows wrap400: auth is checked before the content type; 400 for every refusal with a reason (AUTH, MALFORMED, REFUSED, NOT_FOUND, NO_BOT), 415 for a body that is not octets, 500 INTERNAL for the server's own failure (write contention included), 503 when the store is not up; create 400 AUTH or 500; delete-account 405, 401, 500.
   These match inv_supabase.md section 3 line by line.
   `cb_app_delete_account` is the one implementation behind delete-account and the console's Users panel.
+  After the live tables, it anonymizes the user's stored replays: each snapshot whose `player_ids` hold the user gets its extras rewritten by the kernel's `replay_extras_redact` (the seat's name becomes `REDACTED_PLAYER_NAME`, every other byte stays) through the store's `snapshot_set_extras`, which rewrites every DynamoDB copy in one transaction.
+  An extras blob the kernel cannot read is cleared rather than kept; the moves code names nobody.
+  Production's delete-account (Supabase) never did this, so its replays still name deleted players.
 - `bots.c`: `cb_bots_drive` (lease, cycles with the kernel's wait, renew per cycle, release on every exit, re-kick when the budget ends with work left), `cb_bots_scan`, and the two kicks.
   The edge runtime's 1700 ms CPU budget is gone: a Lambda drive stops when the predicted next cycle would pass the invocation deadline minus 5 s; the 120 s wall ceiling stays.
   `cbase serve` runs the scan every 10 s on a loop timer, on the request pool, as the heartbeat; `main_lambda.c` answers `{}` for a drive whose game is gone, so Lambda does not retry it.

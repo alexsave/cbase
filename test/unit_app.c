@@ -17,6 +17,8 @@
 #include "handler.h"
 #include "legal.h"
 #include "net/router.h"
+#include "replay_extras.h"
+#include "auth/auth.h"
 #include "table.h"
 #include "util/err.h"
 
@@ -742,6 +744,88 @@ static void delete_account_redacts(void) {
     T_EQ_STR(rb.username, "");
 }
 
+// The names a stored replay's extras give its seats, and where the names
+// section ends (the times section follows it byte for byte).
+typedef struct { int n; char names[CB_MAX_SEATS][64]; size_t names_end; } extras_names;
+
+static bool read_extras_names(const uint8_t *blob, size_t len, int n_players, extras_names *out) {
+    memset(out, 0, sizeof *out);
+    uint8_t ans[4096];
+    int m = replay_extras_decode(blob, (int)len, n_players, 0, ans, (int)sizeof ans);
+    if (m < 2 || !(ans[0] & REPLAY_EXTRAS_FLAG_NAMES)) return false;
+    out->n = ans[1];
+    size_t p = 2, end = 2;
+    for (int i = 0; i < out->n; i++) {
+        int l = ans[p] | (ans[p + 1] << 8);
+        p += 2;
+        snprintf(out->names[i], sizeof out->names[i], "%.*s", l, (const char *)ans + p);
+        p += (size_t)l;
+        end += (size_t)l + 1;
+    }
+    out->names_end = end;
+    return true;
+}
+
+typedef struct { cb_snapshot_row row; int n; } snap_copy;
+static bool copy_snap(const cb_snapshot_row *r, void *ud) {
+    snap_copy *c = ud;
+    c->n++;
+    c->row = *r;
+    c->row.moves = malloc(r->moves_len);
+    memcpy(c->row.moves, r->moves, r->moves_len);
+    c->row.extras = r->extras_len ? malloc(r->extras_len) : NULL;
+    if (r->extras_len) memcpy(c->row.extras, r->extras, r->extras_len);
+    return true;
+}
+
+// delete-account through cb_handle: the stored replay of a finished game keeps
+// the game and loses the name. Its extras name the deleted seat "Deleted
+// player", the other seat as it was, and the times section and the moves are
+// the same bytes as before.
+static void delete_account_anonymizes_stored_replays(void) {
+    setup(0);
+    char gid[CB_GAME_ID_MAX + 1];
+    two_humans_dealt(gid);
+    reply r;
+    for (int moves = 0; status_of(gid) == GAME_STATUS_PLAYING && moves < 3000; moves++)
+        if (!any_human_move(gid, &r)) break;
+    T_EQ_INT(status_of(gid), GAME_STATUS_GAME_OVER);
+    T_EQ_INT(tm_hooks_of(g_store)->snapshots, 1);
+    snap_copy before = { .n = 0 }, after = { .n = 0 };
+    cb_snapshot_query q = { UID_A, gid, NULL, 0, false };
+    T_EQ_INT(CB_STORE_CALL(g_store, snapshots_query, &q, copy_snap, &before), 1);
+    extras_names nb, na;
+    T_CHECK(read_extras_names(before.row.extras, before.row.extras_len, before.row.n_players, &nb));
+    T_EQ_INT(nb.n, 2);
+    T_EQ_STR(nb.names[0], "ALICE");
+    T_EQ_STR(nb.names[1], "BOB");
+
+    // A real auth handle over the same store, so the route runs to its 204.
+    snprintf(g_cfg.jwt_secret, sizeof g_cfg.jwt_secret, "unit-app-secret-0123456789abcdef");
+    T_EQ_INT(cb_auth_new(&g_ctx, &g_ctx.auth), CB_OK);
+    call("POST", "delete-account", "B", NULL, NULL, 0, &r);
+    T_EQ_INT(r.status, 204);
+    cb_auth_free(g_ctx.auth);
+    g_ctx.auth = NULL;
+
+    T_EQ_INT(CB_STORE_CALL(g_store, snapshots_query, &q, copy_snap, &after), 1);
+    T_CHECK(read_extras_names(after.row.extras, after.row.extras_len, after.row.n_players, &na));
+    T_EQ_INT(na.n, 2);
+    T_EQ_STR(na.names[0], "ALICE");
+    T_EQ_STR(na.names[1], REDACTED_PLAYER_NAME);
+    T_CHECK(memmem(after.row.extras, after.row.extras_len, "BOB", 3) == NULL);
+    // Everything else as it was: the times section, the moves, who played.
+    T_EQ_INT(after.row.extras_len - na.names_end, before.row.extras_len - nb.names_end);
+    T_CHECK(memcmp(after.row.extras + na.names_end, before.row.extras + nb.names_end,
+                   before.row.extras_len - nb.names_end) == 0);
+    T_EQ_INT(after.row.moves_len, before.row.moves_len);
+    T_CHECK(memcmp(after.row.moves, before.row.moves, before.row.moves_len) == 0);
+    T_EQ_INT(after.row.n_players, 2);
+    T_EQ_STR(after.row.player_ids[1], UID_B);
+    cb_snapshot_row_free(&before.row);
+    cb_snapshot_row_free(&after.row);
+}
+
 // ---- bots --------------------------------------------------------------------------------------
 
 static void the_bot_loop_drives_until_a_human_owes_a_move(void) {
@@ -849,6 +933,7 @@ int main(void) {
     T_RUN(the_wire_surface);
     T_RUN(the_last_seat_leaving_deletes_the_game);
     T_RUN(delete_account_redacts);
+    T_RUN(delete_account_anonymizes_stored_replays);
     T_RUN(the_bot_loop_drives_until_a_human_owes_a_move);
     T_RUN(a_held_lease_skips_the_drive);
     T_RUN(the_scan_kicks_stale_active_bot_games);

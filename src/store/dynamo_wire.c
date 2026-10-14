@@ -1397,6 +1397,30 @@ void dw_snapshot_unlink(dw_req *r, const char *table, cb_span key) {
     finish(&w);
 }
 
+bool dw_snapshot_set_extras(dw_req *r, const char *table, const cb_buf *keys, int n_keys,
+                            const uint8_t *extras, size_t extras_len) {
+    cb_jw w;
+    txn_begin(r, &w);
+    for (int i = 0; i < n_keys; i++) {
+        cb_jw_obj(&w);
+        cb_jw_key(&w, "Update");
+        cb_jw_obj(&w);
+        cb_jw_kstr(&w, "TableName", table);
+        cb_jw_key(&w, "Key");
+        cb_jw_raw(&w, (const char *)keys[i].p, keys[i].len);
+        ux u;
+        ux_init(&u);
+        if (extras_len) ux_set_b(&u, "extras", extras, extras_len);
+        else ux_remove(&u, "extras");
+        ux_emit(&w, &u, "attribute_exists(pk)");
+        ux_free(&u);
+        cb_jw_end(&w);
+        cb_jw_end(&w);
+    }
+    txn_end(&w);
+    return n_keys >= 1 && n_keys <= 100 && cb_jw_ok(&w);
+}
+
 // ---- the lease ------------------------------------------------------------------------------------
 
 static void lease_update(dw_req *r, const char *table, const char *game, cb_jw *w, ux *u) {

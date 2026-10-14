@@ -802,6 +802,46 @@ static void flow_chat_order(void) {
     cb_store_close(s);
 }
 
+// Account deletion rewrites a replay's extras on EVERY copy (the SNAP item and
+// each player's PLAYER# item) in one transaction, read consistently first; a
+// replay with no items is gone, and so is one that vanished under the write.
+static void flow_snapshot_set_extras(void) {
+    static const char ITEMS[] =
+        "{\"Items\":["
+        "{\"pk\":{\"S\":\"SNAP#" U2 "\"},\"sk\":{\"S\":\"PLAYER#" U1 "\"},\"id\":{\"S\":\"" U2 "\"}},"
+        "{\"pk\":{\"S\":\"SNAP#" U2 "\"},\"sk\":{\"S\":\"SNAP\"},\"id\":{\"S\":\"" U2 "\"}}]}";
+    static const char CANCELED[] =
+        "{\"__type\":\"com.amazonaws.dynamodb.v20120810#TransactionCanceledException\","
+        "\"CancellationReasons\":[{\"Code\":\"None\"},{\"Code\":\"ConditionalCheckFailed\"}],\"Message\":\"Transaction cancelled\"}";
+    static const step steps[] = {
+        { "Query", "\"S\":\"SNAP#" U2 "\"", 200, ITEMS },
+        { "TransactWriteItems", "\"ConditionExpression\":\"attribute_exists(pk)\"", 200, "{}" },
+        { "Query", "SNAP#", 200, EMPTY },
+        { "Query", "SNAP#", 200, ITEMS },
+        { "TransactWriteItems", NULL, 400, CANCELED },
+        { "Query", "SNAP#", 200, ITEMS },
+        { "TransactWriteItems", "REMOVE #extras", 200, "{}" },
+    };
+    RUN(steps, s);
+    const uint8_t ex[] = { 2, 1, 'X', 0 };
+    T_EQ_INT(CB_STORE_CALL(s, snapshot_set_extras, U2, ex, sizeof ex), CB_OK);
+    T_CHECK(strstr(sc_.bodies[0], "\"ConsistentRead\":true") != NULL);
+    const char *upd =
+        "{\"Update\":{\"TableName\":\"cbase\",\"Key\":{\"pk\":{\"S\":\"SNAP#" U2 "\"},\"sk\":{\"S\":\"%s\"}},"
+        "\"UpdateExpression\":\"SET #extras = :extras\",\"ConditionExpression\":\"attribute_exists(pk)\","
+        "\"ExpressionAttributeNames\":{\"#extras\":\"extras\"},\"ExpressionAttributeValues\":{\":extras\":{\"B\":\"AgFYAA==\"}}}}";
+    char a[1024], b[1024], want[2600];
+    snprintf(a, sizeof a, upd, "PLAYER#" U1);
+    snprintf(b, sizeof b, upd, "SNAP");
+    snprintf(want, sizeof want, "{\"TransactItems\":[%s,%s]}", a, b);
+    T_EQ_STR(sc_.bodies[1], want);
+    T_EQ_INT(CB_STORE_CALL(s, snapshot_set_extras, U2, ex, sizeof ex), CB_E_NOT_FOUND);
+    T_EQ_INT(CB_STORE_CALL(s, snapshot_set_extras, U2, ex, sizeof ex), CB_E_NOT_FOUND);
+    T_EQ_INT(CB_STORE_CALL(s, snapshot_set_extras, U2, NULL, 0), CB_OK);
+    T_EQ_INT(sc_.at, 7);
+    cb_store_close(s);
+}
+
 static void flow_admin_query_guard(void) {
     static const step steps[] = {
         { "ExecuteStatement", "SELECT", 200, "{\"Items\":[{\"pk\":{\"S\":\"BOT#x\"}}]}" },
@@ -870,6 +910,7 @@ int main(void) {
     T_RUN(flow_scan_pages);
     T_RUN(flow_signup_and_tokens);
     T_RUN(flow_chat_order);
+    T_RUN(flow_snapshot_set_extras);
     T_RUN(flow_admin_query_guard);
     return T_DONE();
 }

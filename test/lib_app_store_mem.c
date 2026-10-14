@@ -380,6 +380,22 @@ static int m_snapshots_query(cb_store *s, const cb_snapshot_query *q, cb_snapsho
     return n;
 }
 
+static int m_snapshot_set_extras(cb_store *s, const char *id, const uint8_t *extras, size_t extras_len) {
+    tm_impl *m = IMPL(s);
+    int rc = CB_E_NOT_FOUND;
+    pthread_mutex_lock(&m->mu);
+    for (int i = 0; i < m->n_snaps; i++) {
+        cb_snapshot_row *r = &m->snaps[i];
+        if (strcmp(r->id, id) != 0) continue;
+        free(r->extras);
+        r->extras = dupb(extras, extras_len);
+        r->extras_len = extras_len;
+        rc = CB_OK;
+    }
+    pthread_mutex_unlock(&m->mu);
+    return rc;
+}
+
 // ---- the store ----------------------------------------------------------------------------
 
 static void m_close(cb_store *s) {
@@ -412,6 +428,7 @@ static const cb_store_ops tm_ops = {
     .rating_set_username = m_rating_set_username,
     .snapshot_put = m_snapshot_put,
     .snapshots_query = m_snapshots_query,
+    .snapshot_set_extras = m_snapshot_set_extras,
 };
 
 cb_store *tm_store_new(int n_bots, const char *brain) {

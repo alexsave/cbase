@@ -702,6 +702,42 @@ static void snapshot_round_trip(void) {
     cb_store_close(s);
 }
 
+// Account deletion's rewrite: the extras change and nothing else does; an
+// unknown replay is NOT_FOUND; zero bytes clear them.
+static void snapshot_set_extras_rewrites_only_extras(void) {
+    cb_store *s = open_fresh();
+    uint8_t mv[4] = { 1, 2, 3, 4 }, ex[3] = { 5, 6, 7 }, ex2[5] = { 9, 8, 7, 6, 5 };
+    cb_snapshot_row sn = { .n_players = 2, .moves = mv, .moves_len = 4, .extras = ex, .extras_len = 3, .created_at = 42 };
+    cb_snapshot_row other = sn;
+    cb_uuid_v4(sn.id);
+    cb_uuid_v4(other.id);
+    for (int i = 0; i < 2; i++) cb_uuid_v4(sn.player_ids[i]);
+    memcpy(other.player_ids, sn.player_ids, sizeof sn.player_ids);
+    T_EQ_INT(CB_STORE_CALL(s, snapshot_put, &sn), CB_OK);
+    T_EQ_INT(CB_STORE_CALL(s, snapshot_put, &other), CB_OK);
+    T_EQ_INT(CB_STORE_CALL(s, snapshot_set_extras, sn.id, ex2, sizeof ex2), CB_OK);
+    snapcopy c = { 0 };
+    cb_snapshot_query q = { .viewer_id = sn.player_ids[1], .id = sn.id };
+    T_EQ_INT(CB_STORE_CALL(s, snapshots_query, &q, copy_snap, &c), 1);
+    T_EQ_MEM(c.row.extras, c.row.extras_len, ex2, 5);
+    T_EQ_MEM(c.row.moves, c.row.moves_len, mv, 4);
+    T_EQ_INT(c.row.created_at, 42);
+    T_EQ_STR(c.row.player_ids[0], sn.player_ids[0]);
+    cb_snapshot_row_free(&c.row);
+    snapcopy o = { 0 };
+    cb_snapshot_query qo = { .viewer_id = other.player_ids[0], .id = other.id };
+    T_EQ_INT(CB_STORE_CALL(s, snapshots_query, &qo, copy_snap, &o), 1);
+    T_EQ_MEM(o.row.extras, o.row.extras_len, ex, 3);   // another replay is untouched
+    cb_snapshot_row_free(&o.row);
+    T_EQ_INT(CB_STORE_CALL(s, snapshot_set_extras, "00000000-0000-4000-8000-00000000dead", ex2, 5), CB_E_NOT_FOUND);
+    T_EQ_INT(CB_STORE_CALL(s, snapshot_set_extras, sn.id, NULL, 0), CB_OK);
+    memset(&c, 0, sizeof c);
+    T_EQ_INT(CB_STORE_CALL(s, snapshots_query, &q, copy_snap, &c), 1);
+    T_EQ_INT(c.row.extras_len, 0);
+    cb_snapshot_row_free(&c.row);
+    cb_store_close(s);
+}
+
 static void chat_newest_oldest_first(void) {
     cb_store *s = open_fresh();
     cb_user_row a = mkuser("a@x.io", "A", 1);
@@ -992,6 +1028,7 @@ int main(void) {
     T_RUN(ratings_applied_by_commit);
     T_RUN(snapshots_query_shapes);
     T_RUN(snapshot_round_trip);
+    T_RUN(snapshot_set_extras_rewrites_only_extras);
     T_RUN(chat_newest_oldest_first);
     T_RUN(conns_round_trip);
     T_RUN(admin_reads);
