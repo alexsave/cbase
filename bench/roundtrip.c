@@ -26,8 +26,8 @@
 #include "client_table.h"
 #include "legal.h"
 #include "table.h"
+#include "json_surface.h"
 #include "util/hex.h"
-#include "util/json.h"
 #include "util/uuid.h"
 
 #include <pthread.h>
@@ -63,19 +63,17 @@ static void *reader(void *arg) {
     while (!atomic_load(&l->stop)) {
         // realtime-js's heartbeat, so the server's idle sweep keeps the socket.
         if (bn_now_us() - last_hb > 25000000) {
-            static const char HB[] = "[null,\"hb\",\"phoenix\",\"heartbeat\",{}]";
-            bn_ws_send_text(l->ws, HB, sizeof HB - 1);
+            size_t hn;
+            const char *hb = cb_js_client_heartbeat(&hn);
+            bn_ws_send_text(l->ws, hb, hn);
             last_hb = bn_now_us();
         }
         int op = bn_ws_recv(l->ws, 200, &f);
         if (op == -2) break;
         if (op < 0) continue;
         int64_t t = bn_now_us();
-        const char *j = cb_buf_cstr(&f);
-        char ev[32];
         int64_t v;
-        if (!cb_json_get_str(j, f.len, "3", ev, sizeof ev) || strcmp(ev, "postgres_changes") != 0) continue;
-        if (!cb_json_get_i64(j, f.len, "4.data.record.version", &v)) continue;
+        if (!cb_js_client_pv_push_version(cb_buf_cstr(&f), f.len, &v)) continue;
         pthread_mutex_lock(&l->mu);
         l->t_us[l->count % RING] = t;
         l->ver[l->count % RING] = v;
@@ -144,19 +142,20 @@ static int call(worker *w, const char *method, const char *path, const char *hea
 static int signup(worker *w, player *p, int k) {
     uint8_t rnd[4];
     cb_random_bytes(rnd, sizeof rnd);
-    char name[32], body[256];
+    char name[32], email[64];
     snprintf(name, sizeof name, "bench%02x%02x%02x%02x%d", rnd[0], rnd[1], rnd[2], rnd[3], k);
-    snprintf(body, sizeof body,
-             "{\"email\":\"%s@bench.invalid\",\"password\":\"bench-pass-123\",\"data\":{\"username\":\"%s\"}}", name,
-             name);
+    snprintf(email, sizeof email, "%s@bench.invalid", name);
+    cb_buf body;
+    cb_buf_init(&body);
+    cb_js_client_signup_body(&body, email, "bench-pass-123", name);
     char headers[512];
     snprintf(headers, sizeof headers, "apikey: %s\r\nContent-Type: application/json\r\n", w->o->anon);
     bn_resp r;
     bn_resp_init(&r);
-    int s = call(w, "POST", "/auth/v1/signup", headers, body, strlen(body), &r);
+    int s = call(w, "POST", "/auth/v1/signup", headers, cb_buf_cstr(&body), body.len, &r);
+    cb_buf_free(&body);
     const char *j = cb_buf_cstr(&r.body);
-    bool ok = s == 200 && cb_json_get_str(j, r.body.len, "access_token", p->token, sizeof p->token) &&
-              cb_json_get_str(j, r.body.len, "user.id", p->id, sizeof p->id);
+    bool ok = s == 200 && cb_js_client_session(j, r.body.len, p->token, sizeof p->token, p->id, sizeof p->id);
     if (!ok) fprintf(stderr, "bench: signup answered %d: %.300s\n", s, j);
     bn_resp_free(&r);
     snprintf(p->auth, sizeof p->auth, "Authorization: Bearer %s\r\napikey: %s\r\n", p->token, w->o->anon);
@@ -165,23 +164,19 @@ static int signup(worker *w, player *p, int k) {
 
 static bool listen_pv(worker *w, int k) {
     listener *l = &w->l[k];
-    char path[512], frame[4096];
+    char path[512];
     snprintf(path, sizeof path, "/realtime/v1/websocket?apikey=%s&vsn=2.0.0", w->o->anon);
     l->ws = bn_ws_open(&w->u, path, TIMEOUT_MS);
     if (!l->ws) return false;
-    snprintf(frame, sizeof frame,
-             "[\"1\",\"1\",\"realtime:pv-%s\",\"phx_join\",{\"config\":{\"broadcast\":{\"ack\":false,\"self\":false},"
-             "\"presence\":{\"key\":\"\"},\"postgres_changes\":[{\"event\":\"*\",\"schema\":\"public\","
-             "\"table\":\"player_views\",\"filter\":\"player_id=eq.%s\"}],\"private\":false},\"access_token\":\"%s\"}]",
-             w->p[k].id, w->p[k].id, w->p[k].token);
-    if (bn_ws_send_text(l->ws, frame, strlen(frame)) != 0) return false;
     cb_buf f;
     cb_buf_init(&f);
+    cb_js_client_pv_join(&f, w->p[k].id, w->p[k].token);
+    if (bn_ws_send_text(l->ws, cb_buf_cstr(&f), f.len) != 0) { cb_buf_free(&f); return false; }
     bool ok = false;
     for (int i = 0; i < 20; i++) {
         if (bn_ws_recv(l->ws, TIMEOUT_MS, &f) < 0) break;
-        const char *j = cb_buf_cstr(&f);
-        if (strstr(j, "\"phx_reply\"")) { ok = strstr(j, "\"status\":\"ok\"") != NULL; break; }
+        int st = cb_js_client_reply_status(cb_buf_cstr(&f));
+        if (st >= 0) { ok = st == 1; break; }
     }
     cb_buf_free(&f);
     if (!ok) { fprintf(stderr, "bench: the pv- join was refused\n"); return false; }
@@ -268,7 +263,7 @@ static bool read_view(worker *w, int k, cb_buf *env) {
         w->pv_recv += (int64_t)r.recv;
     }
     static _Thread_local char hex[1 << 17];
-    ok = ok && cb_json_get_str(cb_buf_cstr(&r.body), r.body.len, "0.view", hex, sizeof hex) &&
+    ok = ok && cb_js_client_first_view(cb_buf_cstr(&r.body), r.body.len, hex, sizeof hex) &&
          strncmp(hex, "\\x", 2) == 0;
     if (ok) {
         size_t hl = strlen(hex + 2);

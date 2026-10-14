@@ -57,12 +57,8 @@ typedef struct {
     cb_span payload;    // the payload's JSON text
 } cb_phx_msg;
 
-// CB_OK, or CB_E_INVALID for a frame that is not a Phoenix message in `vsn`.
-int cb_phx_decode(const char *text, size_t len, int vsn, cb_phx_msg *out);
-
-// Frame writers (into `out`, replacing its contents).
-void cb_phx_reply(cb_buf *out, int vsn, const cb_phx_msg *to, bool ok, const char *response_json);
-void cb_phx_push(cb_buf *out, int vsn, const char *wire_topic, const char *event, const char *payload_json);
+// The frames themselves (cb_phx_decode, cb_phx_reply, cb_phx_push, the close
+// frame, the join reply's response) are JSON, so they are in json_surface.h.
 
 // The subscription state of one connection: kept in memory by rt_local, and
 // in a store CONN row by rt_apigw (cb_conn_row has the same fields).

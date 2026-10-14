@@ -21,7 +21,6 @@
 #include "util/clock.h"
 #include "util/err.h"
 #include "util/hex.h"
-#include "util/json.h"
 #include "util/log.h"
 #include "util/str.h"
 #include "util/uuid.h"
@@ -281,46 +280,4 @@ int cb_auth_delete_user(cb_auth *a, const char *user_id) {
 int cb_auth_user_row(cb_auth *a, const char *user_id, cb_user_row *out) {
     if (!a->store) return CB_E_STATE;
     return CB_STORE_CALL(a->store, user_get, user_id, out);
-}
-
-// ---- the user object -------------------------------------------------------------
-
-// GoTrue's spelling of a time: UTC with microseconds and a 'Z', which is what
-// supabase-swift's ISO-8601 parser reads (Go's RFC 3339).
-static void kts(cb_jw *w, const char *k, int64_t ms) {
-    char t[40];
-    if (ms <= 0 || cb_iso8601(ms, t, sizeof t) != 32) { cb_jw_knull(w, k); return; }
-    memcpy(t + 26, "Z", 2);   // "...ss.ffffff+00:00" -> "...ss.ffffffZ"
-    cb_jw_kstr(w, k, t);
-}
-
-void cb_auth_write_user(struct cb_jw *w, const cb_user *u, int64_t created_at, int64_t last_sign_in_at) {
-    cb_jw_obj(w);
-    cb_jw_kstr(w, "id", u->id);
-    cb_jw_kstr(w, "aud", "authenticated");
-    cb_jw_kstr(w, "role", "authenticated");
-    cb_jw_kstr(w, "email", u->email);
-    kts(w, "email_confirmed_at", created_at);
-    cb_jw_kstr(w, "phone", "");
-    kts(w, "confirmed_at", created_at);
-    kts(w, "last_sign_in_at", last_sign_in_at);
-    cb_jw_key(w, "app_metadata");
-    cb_jw_obj(w);
-    cb_jw_kstr(w, "provider", "email");
-    cb_jw_key(w, "providers");
-    cb_jw_arr(w);
-    cb_jw_str(w, "email");
-    cb_jw_end(w);
-    cb_jw_end(w);
-    cb_jw_key(w, "user_metadata");
-    cb_jw_obj(w);
-    cb_jw_kstr(w, "username", u->username);
-    cb_jw_end(w);
-    cb_jw_key(w, "identities");
-    cb_jw_arr(w);
-    cb_jw_end(w);
-    kts(w, "created_at", created_at);
-    kts(w, "updated_at", last_sign_in_at > created_at ? last_sign_in_at : created_at);
-    cb_jw_kbool(w, "is_anonymous", false);
-    cb_jw_end(w);
 }

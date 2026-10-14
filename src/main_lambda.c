@@ -22,6 +22,7 @@
 #include "config.h"
 #include "ctx.h"
 #include "handler.h"
+#include "json_surface.h"
 #include "realtime/rt_apigw.h"
 #include "store/store.h"
 #include "util/clock.h"
@@ -59,12 +60,12 @@ static int dispatch(cb_ctx *ctx, const cb_invocation *inv, cb_buf *out, char *wh
     }
     case CB_EVENT_SCHEDULE:
         rc = cb_bots_scan(ctx, cb_now_ms());
-        if (rc >= 0) { cb_buf_puts(out, "{}"); rc = CB_OK; }
+        if (rc >= 0) rc = cb_event_encode_none(out);
         break;
     case CB_EVENT_BOT_DRIVE:
         rc = cb_bots_drive(ctx, ev.game_id);
         if (rc == CB_E_NOT_FOUND) { CB_INFO("lambda", "bot_drive:%s: no such game", ev.game_id); rc = CB_OK; }
-        if (rc >= 0) { cb_buf_puts(out, "{}"); rc = CB_OK; }
+        if (rc >= 0) rc = cb_event_encode_none(out);
         break;
     default:
         rc = CB_E_INVALID;

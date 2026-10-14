@@ -1,8 +1,8 @@
 // store_dynamo.c - the DynamoDB backend (store.h): production under Lambda.
 //
-// One table (dynamo_wire.h has the item layout), reached over HTTPS with
+// One table (json_surface.h has the item layout), reached over HTTPS with
 // SigV4 (aws/aws_call.h). This file decides which requests each
-// operation sends and in what order; dynamo_wire.c spells every one of them,
+// operation sends and in what order; json_surface.c spells every one of them,
 // so no DynamoDB string appears here.
 //
 // THE CAS. game_commit reads the stored seats (and, for a rated commit, the
@@ -14,7 +14,7 @@
 // sends again, up to five times.
 //
 // THE LEASE is a conditional UpdateItem on the game's SCAN marker (see
-// dynamo_wire.c lease_update), as the plpgsql functions were on the row: one
+// json_surface.c lease_update), as the plpgsql functions were on the row: one
 // small write that also moves the marker's updated_at, the heartbeat's
 // staleness clock. The commit's CAS on the row's version is what keeps two
 // writers apart; the lease only keeps two drives from working one game.
@@ -28,7 +28,7 @@
 
 #include "aws/aws_call.h"
 #include "aws/sigv4.h"
-#include "dynamo_wire.h"
+#include "json_surface.h"
 #include "table.h"
 #include "util/clock.h"
 #include "util/hex.h"

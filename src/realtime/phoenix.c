@@ -8,99 +8,15 @@
 // speaks vsn 2.0.0, earlier releases the v1 object keys), and foolish/e2e/helpers/ws_phoenix.ts.
 #include "phoenix.h"
 
+#include "json_surface.h"
 #include "realtime.h"
 #include "rt_deps.h"
-#include "util/json.h"
 #include "util/log.h"
 
 #include <stdio.h>
 #include <string.h>
 
 #define WIRE_PREFIX "realtime:"
-#define MAX_BINDINGS 16
-
-// ---- frames ----------------------------------------------------------------------
-
-// One string element of a frame into `out`: a ref (no escapes allowed, empty
-// for null or missing) or the topic/event (unescaped into a fixed buffer).
-static bool ref_of(const char *t, size_t n, const char *path, cb_span *out) {
-    cb_span v;
-    cb_json_type ty = cb_json_find(t, n, path, &v);
-    if (ty == CB_JSON_NULL || ty == CB_JSON_MISSING) { *out = cb_span_of("", 0); return true; }
-    if (ty != CB_JSON_STR || v.n < 2) return false;
-    if (memchr(v.p, '\\', v.n)) return false;   // refs are counters; an escape is not one
-    *out = cb_span_of(v.p + 1, v.n - 2);
-    return true;
-}
-
-static bool str_of(const char *t, size_t n, const char *path, char *out, size_t cap) {
-    return cb_json_find(t, n, path, NULL) == CB_JSON_STR && cb_json_get_str(t, n, path, out, cap);
-}
-
-int cb_phx_decode(const char *text, size_t len, int vsn, cb_phx_msg *out) {
-    memset(out, 0, sizeof *out);
-    if (!text || !cb_json_valid(text, len)) return CB_E_INVALID;
-    cb_json_type top = cb_json_find(text, len, "", NULL);
-    const char *k_jr, *k_ref, *k_topic, *k_event, *k_payload;
-    if (vsn == 2) {
-        if (top != CB_JSON_ARR || cb_json_array_len(text, len, "") < 5) return CB_E_INVALID;
-        k_jr = "0"; k_ref = "1"; k_topic = "2"; k_event = "3"; k_payload = "4";
-    } else if (vsn == 1) {
-        if (top != CB_JSON_OBJ) return CB_E_INVALID;
-        k_jr = "join_ref"; k_ref = "ref"; k_topic = "topic"; k_event = "event"; k_payload = "payload";
-    } else {
-        return CB_E_INVALID;
-    }
-    if (!ref_of(text, len, k_jr, &out->join_ref) || !ref_of(text, len, k_ref, &out->ref)) return CB_E_INVALID;
-    if (!str_of(text, len, k_topic, out->topic, sizeof out->topic)) return CB_E_INVALID;
-    if (!str_of(text, len, k_event, out->event, sizeof out->event)) return CB_E_INVALID;
-    cb_json_type pt = cb_json_find(text, len, k_payload, &out->payload);
-    if (pt == CB_JSON_MISSING || pt == CB_JSON_ERR) return CB_E_INVALID;
-    return CB_OK;
-}
-
-static void put_ref(cb_jw *w, cb_span s) {
-    if (s.n) cb_jw_strn(w, s.p, s.n);
-    else cb_jw_null(w);
-}
-
-// The one frame writer: [join_ref, ref, topic, event, payload] for vsn 2, the
-// same five as an object for vsn 1. `payload` is JSON text.
-static void frame(cb_buf *out, int vsn, cb_span join_ref, cb_span ref, const char *topic, const char *event,
-                  const char *payload, size_t payload_n) {
-    cb_buf_reset(out);
-    cb_jw w;
-    cb_jw_init(&w, out);
-    if (vsn == 2) {
-        cb_jw_arr(&w);
-        put_ref(&w, join_ref);
-        put_ref(&w, ref);
-        cb_jw_str(&w, topic);
-        cb_jw_str(&w, event);
-        cb_jw_raw(&w, payload, payload_n);
-    } else {
-        cb_jw_obj(&w);
-        cb_jw_key(&w, "join_ref"); put_ref(&w, join_ref);
-        cb_jw_key(&w, "ref"); put_ref(&w, ref);
-        cb_jw_kstr(&w, "topic", topic);
-        cb_jw_kstr(&w, "event", event);
-        cb_jw_key(&w, "payload"); cb_jw_raw(&w, payload, payload_n);
-    }
-    cb_jw_end(&w);
-}
-
-void cb_phx_reply(cb_buf *out, int vsn, const cb_phx_msg *to, bool ok, const char *response_json) {
-    cb_buf p;
-    cb_buf_init(&p);
-    cb_buf_printf(&p, "{\"response\":%s,\"status\":\"%s\"}", response_json && *response_json ? response_json : "{}",
-                  ok ? "ok" : "error");
-    frame(out, vsn, to->join_ref, to->ref, to->topic, "phx_reply", cb_buf_cstr(&p), p.len);
-    cb_buf_free(&p);
-}
-
-void cb_phx_push(cb_buf *out, int vsn, const char *wire_topic, const char *event, const char *payload_json) {
-    frame(out, vsn, cb_span_of("", 0), cb_span_of("", 0), wire_topic, event, payload_json, strlen(payload_json));
-}
 
 // ---- helpers -----------------------------------------------------------------------
 
@@ -159,7 +75,7 @@ static void send_close_ref(const cb_phx_conn *c, int i, cb_span jr, cb_phx_send_
     snprintf(wire, sizeof wire, WIRE_PREFIX "%s", c->topics[i]);
     cb_buf f;
     cb_buf_init(&f);
-    frame(&f, c->vsn, jr, jr, wire, "phx_close", "{}", 2);
+    cb_phx_close(&f, c->vsn, jr, wire);
     send(ud, cb_buf_cstr(&f), f.len);
     cb_buf_free(&f);
 }
@@ -180,11 +96,7 @@ static void reply(const cb_phx_conn *c, const cb_phx_msg *m, bool ok, const char
 static void refuse(const cb_phx_conn *c, const cb_phx_msg *m, const char *reason, cb_phx_send_fn send, void *ud) {
     cb_buf r;
     cb_buf_init(&r);
-    cb_jw w;
-    cb_jw_init(&w, &r);
-    cb_jw_obj(&w);
-    cb_jw_kstr(&w, "reason", reason);
-    cb_jw_end(&w);
+    cb_phx_refusal(&r, reason);
     reply(c, m, false, cb_buf_cstr(&r), send, ud);
     cb_buf_free(&r);
 }
@@ -193,51 +105,13 @@ static void refuse(const cb_phx_conn *c, const cb_phx_msg *m, const char *reason
 // key), CB_E_AUTH a token that does not verify, another CB_E_* on failure.
 static int user_of_token(cb_ctx *ctx, const char *payload, size_t n, cb_user *u) {
     char tok[4096];
-    if (cb_json_find(payload, n, "access_token", NULL) != CB_JSON_STR) return 0;
-    if (!cb_json_get_str(payload, n, "access_token", tok, sizeof tok)) return CB_E_AUTH;
+    int has = cb_phx_access_token(payload, n, tok, sizeof tok);
+    if (has == 0) return 0;
+    if (has < 0) return CB_E_AUTH;
     if (!tok[0]) return 0;
     if (ctx->cfg && ctx->cfg->anon_key[0] && strcmp(tok, ctx->cfg->anon_key) == 0) return 0;
     int rc = cb_rt_deps_g.verify_token(ctx, tok, u);
     return rc == CB_OK ? 1 : rc;
-}
-
-// The join reply's response: {} for a broadcast channel, or every
-// postgres_changes binding echoed whole with its id appended (realtime-js and
-// supabase-swift compare the echo field by field and error the channel on a
-// mismatch, so the request's own text is the only safe answer).
-static int join_response(const char *payload, size_t n, cb_buf *out) {
-    int nb = cb_json_array_len(payload, n, "config.postgres_changes");
-    if (nb <= 0) { cb_buf_puts(out, "{}"); return CB_OK; }
-    if (nb > MAX_BINDINGS) return CB_E_FULL;
-    cb_buf_puts(out, "{\"postgres_changes\":[");
-    for (int i = 0; i < nb; i++) {
-        char path[64], f[4][256];
-        static const char *const keys[4] = { "event", "schema", "table", "filter" };
-        cb_span obj;
-        snprintf(path, sizeof path, "config.postgres_changes.%d", i);
-        if (cb_json_find(payload, n, path, &obj) != CB_JSON_OBJ) return CB_E_INVALID;
-        for (int k = 0; k < 4; k++) {
-            char kp[96];
-            snprintf(kp, sizeof kp, "%s.%s", path, keys[k]);
-            cb_json_type t = cb_json_find(payload, n, kp, NULL);
-            if (t == CB_JSON_MISSING || t == CB_JSON_NULL) f[k][0] = 0;
-            else if (!str_of(payload, n, kp, f[k], sizeof f[k])) return CB_E_INVALID;
-        }
-        int32_t id = cb_phx_binding_id(f[0], f[1], f[2], f[3]);
-        if (i) cb_buf_putc(out, ',');
-        // The object minus its closing brace, then the id. obj.p[0] is '{'.
-        size_t body = obj.n - 1;
-        bool empty = true;
-        for (size_t k = 1; k < body; k++)
-            if (obj.p[k] != ' ' && obj.p[k] != '\t' && obj.p[k] != '\n' && obj.p[k] != '\r') { empty = false; break; }
-        if (empty) cb_buf_printf(out, "{\"id\":%d}", (int)id);
-        else {
-            cb_buf_append(out, obj.p, body);
-            cb_buf_printf(out, ",\"id\":%d}", (int)id);
-        }
-    }
-    cb_buf_puts(out, "]}");
-    return out->oom ? CB_E_NOMEM : CB_OK;
 }
 
 static void handle_join(cb_ctx *ctx, cb_phx_conn *c, const cb_phx_msg *m, cb_phx_send_fn send, void *ud) {
@@ -262,7 +136,7 @@ static void handle_join(cb_ctx *ctx, cb_phx_conn *c, const cb_phx_msg *m, cb_phx
     }
     cb_buf resp;
     cb_buf_init(&resp);
-    int rc = join_response(m->payload.p, m->payload.n, &resp);
+    int rc = cb_phx_join_response(m->payload.p, m->payload.n, &resp);
     if (rc != CB_OK) {
         refuse(c, m, rc == CB_E_FULL ? "too many postgres_changes bindings" : "malformed postgres_changes binding", send, ud);
         cb_buf_free(&resp);
@@ -291,7 +165,8 @@ static void handle_access_token(cb_ctx *ctx, cb_phx_conn *c, const cb_phx_msg *m
     cb_user u;
     memset(&u, 0, sizeof u);
     int who = user_of_token(ctx, m->payload.p, m->payload.n, &u);
-    if (who == 0 && cb_json_find(m->payload.p, m->payload.n, "access_token", NULL) != CB_JSON_STR) return;   // nothing presented
+    char tok[4096];
+    if (who == 0 && cb_phx_access_token(m->payload.p, m->payload.n, tok, sizeof tok) == 0) return;   // nothing presented
     if (who == 1 && strcmp(u.id, c->user_id) == 0) return;   // the same user, a fresh token
     // A bad token, the anon key, or someone else: this channel ends.
     send_close(c, i, send, ud);
@@ -302,7 +177,7 @@ int cb_phx_on_frame(cb_ctx *ctx, cb_phx_conn *conn, const char *text, size_t len
     cb_phx_msg m;
     if (cb_phx_decode(text, len, conn->vsn, &m) != CB_OK) return CB_E_INVALID;
     if (strcmp(m.topic, "phoenix") == 0) {
-        if (strcmp(m.event, "heartbeat") == 0) reply(conn, &m, true, "{}", send, ud);
+        if (strcmp(m.event, "heartbeat") == 0) reply(conn, &m, true, NULL, send, ud);
         return CB_OK;
     }
     if (strcmp(m.event, "phx_join") == 0) {
@@ -310,7 +185,7 @@ int cb_phx_on_frame(cb_ctx *ctx, cb_phx_conn *conn, const char *text, size_t len
     } else if (strcmp(m.event, "phx_leave") == 0) {
         const char *bare = bare_of(m.topic);
         int i = bare ? topic_index(conn, bare) : -1;
-        reply(conn, &m, true, "{}", send, ud);
+        reply(conn, &m, true, NULL, send, ud);
         if (i >= 0 && m.join_ref.n && !cb_span_eq(m.join_ref, conn->join_refs[i])) {
             // A leave of an earlier join of this topic, run after the rejoin
             // that followed it (API Gateway runs a connection's frames

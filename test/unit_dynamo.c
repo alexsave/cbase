@@ -12,7 +12,7 @@
 // here was captured from a live table (there is none yet).
 #include "t.h"
 
-#include "store/dynamo_wire.h"
+#include "json_surface.h"
 #include "store/store_priv.h"
 #include "table.h"
 #include "util/clock.h"

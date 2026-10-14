@@ -33,7 +33,7 @@ The decisions here are settled; a builder who finds one impossible says so in th
 8. **Ops:** one CloudFormation template (`ops/cbase.yaml`) Alex uploads in the console; no AWS CLI needed locally.
 9. **Migration:** an export through the Supabase Management API, and `cbase-import` writing through the store interface.
 10. **Tests in C**, every one mutation-checked.
-11. **Conventions:** no em dashes; no JSON outside the list below; no hand-rolled kernel byte layouts (the kernel's own encoders and decoders only); every kernel call takes now_ms from the host; the kernel never sees a socket, a JWT, SQLite or DynamoDB.
+11. **Conventions:** no em dashes; no JSON outside the list below, and all of it in `src/json_surface.c`; no hand-rolled kernel byte layouts (the kernel's own encoders and decoders only); every kernel call takes now_ms from the host; the kernel never sees a socket, a JWT, SQLite or DynamoDB.
 
 ## Why Lambda, and what it costs us
 
@@ -126,7 +126,7 @@ SQLite: one file, WAL, foreign keys on, `sql/schema.sql` (embedded into the bina
 
 DynamoDB: one table `cbase`, PROVISIONED at 15 RCU and 15 WCU with 5 and 5 on each index (the always-free 25 a side; see "The free tier, provisioned" below), point-in-time recovery on, TTL on `expires_at` (epoch seconds).
 Two indexes, `gsi1` (`gsi1pk`, `gsi1sk`) and `gsi2` (`gsi2pk`, `gsi2sk`), all four keys String, both projecting ALL.
-`src/store/dynamo_wire.h` owns these names (`DW_GSI1`, `DW_GSI2`, `DW_TTL_ATTR`), and `test/unit_dynamo.c` reads `ops/cbase.yaml` and fails when the template disagrees.
+`src/json_surface.h` owns these names (`DW_GSI1`, `DW_GSI2`, `DW_TTL_ATTR`), and `test/unit_dynamo.c` reads `ops/cbase.yaml` and fails when the template disagrees.
 Items, by partition key and sort key:
 
 | pk | sk | what |
@@ -163,7 +163,7 @@ As built (store builder, then integration):
   SQLite keeps lease and clock on the game row; DynamoDB keeps both on the game's SCAN marker (see "The free tier, provisioned"), so there the row's `updated_at` is its last commit's.
   A game with no bot work has no lease to take: acquire answers `CB_E_NOT_FOUND`, on both backends.
 - `game_commit`, `game_delete` and `lease_acquire` on a game that is gone return `CB_E_NOT_FOUND` (DynamoDB tells it apart from a lost CAS with `ReturnValuesOnConditionCheckFailure: ALL_OLD`).
-- `dynamo_wire.c` spells every DynamoDB string and builds every request as a pure function over buffers; `store_dynamo.c` decides only which requests to send in which order.
+- The DynamoDB section of `json_surface.c` (formerly `dynamo_wire.c`) spells every DynamoDB string and builds every request as a pure function over buffers; `store_dynamo.c` decides only which requests to send in which order.
   Its transport is `aws/aws_call.h` (one signed-request step for every AWS call in c_base), and it honours `AWS_ENDPOINT_URL_DYNAMODB`, the SDKs' own override.
 - Ratings on DynamoDB are read, clamped in C and written fenced on the value read, because an update expression cannot clamp; a rating another table moved cancels the transaction and the commit re-reads and resends (up to 5 times).
 - Refresh tokens carry `revoked_at`: the first `refresh_take` stamps it (later takes keep it), and `refresh_revoke_session` and `refresh_revoke_user` set it to 0, so auth can grant GoTrue's 10 s reuse grace to a rotation and never to a logout (see Auth).
@@ -476,7 +476,7 @@ As built:
   The CA bundle is found on provided.al2023 without configuration (`CBASE_CA_FILE` overrides).
 - `aws_call.c`: the one signed-request step (credentials, SigV4, HTTPS) under `apigw_mgmt.c`, `lambda_invoke.c` and the DynamoDB store.
   An endpoint URL that says `http://` (DynamoDB Local) is reached over plain TCP (`cb_http_plain_request`), signed the same way; plain HTTP is decided by the URL alone and refused for any `amazonaws.com` host.
-- `event.c`: Lambda events in, responses out; binary bodies are base64 both ways.
+- The event section of `json_surface.c` (formerly `event.c`, which keeps only freeing and logging an event): Lambda events in, responses out; binary bodies are base64 both ways.
   The self-invoke and schedule payloads are the JSON string literals `"bot_drive:<id>"` and `"scan"` (the decision record), read by stripping the quotes; EventBridge's `"source":"aws.events"` is also a scan.
   `cb_event_bot_drive_payload` is the one writer of the literal.
 - `lambda_invoke.c` (`AWS_ENDPOINT_URL_LAMBDA` overrides the endpoint) and `apigw_mgmt.c` (410 reaches `rt_apigw` as `CB_APIGW_GONE`).
@@ -581,7 +581,7 @@ It is one C program, and the same client measures `cbase serve` and the deployed
   Per move it times `GET /rest/v1/player_views` for the mover (the move is then chosen on that envelope with the kernel's client table and legal moves, as the browser does), `POST /functions/v1/action` from request to response, and `push_pv`: the opponent's `pv-` change for the new version, its arrival on the opponent's socket minus the action response's arrival (a reader thread per socket stamps each frame, so a push that beats the response is negative, not lost).
   Setup is not timed; bytes are the mean HTTP head and body per request, each way.
 - `coldstart --url <base> [--idle S] [--repeat K] [--path /health] [--force-cmd CMD]`: per repeat it runs the forcing command, sleeps, then times the first GET on a fresh connection and the next one on the same connection.
-- `cpu`: no network; fixtures come from a game the kernel plays in-process (two humans, dealt, eight moves in), and each operation's median nanoseconds per call over batches of at least 2 ms is reported with its share of a 5 ms request: the Function URL event decode and response encode (`event.c`), a GetItem answer read into a game row and the commit's TransactWriteItems built (`dynamo_wire.c`), one player's `pv-` push JSON, base64 of a 2 KB envelope each way, a JWT verify, a bcrypt verify (cost 10, sign-in only, for scale), and the kernel section itself (`table_load`, `table_set_deal_seed`, `table_act`, `table_commit_products`).
+- `cpu`: no network; fixtures come from a game the kernel plays in-process (two humans, dealt, eight moves in), and each operation's median nanoseconds per call over batches of at least 2 ms is reported with its share of a 5 ms request: the Function URL event decode and response encode (`event.c` then, `json_surface.c` now), a GetItem answer read into a game row and the commit's TransactWriteItems built (`dynamo_wire.c` then, `json_surface.c` now), one player's `pv-` push JSON, base64 of a 2 KB envelope each way, a JWT verify, a bcrypt verify (cost 10, sign-in only, for scale), and the kernel section itself (`table_load`, `table_set_deal_seed`, `table_act`, `table_commit_products`).
 - `report [FILE...]`: the Markdown tables of saved runs (default: every `bench/results/*.txt`).
 
 Every run prints itself and is saved as `bench/results/<kind>-<UTC stamp>.txt` (gitignored); its note carries the concurrency, games, rejected moves, lost pushes, errors and the machine's 1-minute load average.
@@ -695,13 +695,41 @@ Phase 2 (above) is what removes the client-side Supabase SDKs.
 The kernel's bytes never become JSON.
 JSON appears only where something outside c_base speaks it and cannot be changed:
 
-1. GoTrue's auth bodies, because supabase-js and supabase-swift send and read them (`src/auth/auth_http.c`).
-2. PostgREST's rows and the chat insert, because both clients read rows through supabase-js and supabase-swift (`src/realtime/postgrest.c`); the view bytes inside them are `\x` hex, as today.
-3. Phoenix frames, because realtime-js and supabase-swift speak them (`src/realtime/phoenix.c`); a cast inside them is base64, as today.
-4. The admin console's API, because it is a browser page we own and JSON is what `fetch` reads (`src/admin/`).
-5. AWS's APIs: the Lambda event and response envelope, the Runtime API's error body, DynamoDB, the API Gateway Management API and Lambda Invoke (`src/aws/`, `src/store/store_dynamo.c`).
+1. GoTrue's auth bodies and the access token's claims, because supabase-js and supabase-swift send and read them.
+2. PostgREST's rows, its error object and the chat insert, because both clients read rows through supabase-js and supabase-swift; the view bytes inside them are `\x` hex, as today.
+3. Phoenix frames and the Realtime payloads inside them, because realtime-js and supabase-swift speak them; a cast inside them is base64, as today.
+4. The admin console's API, because it is a browser page we own and JSON is what `fetch` reads.
+5. AWS's APIs: the Lambda event and response envelope, the Runtime API's error body, DynamoDB, and the self-invoke payload Lambda Invoke carries.
+   API Gateway Management posts a Phoenix frame (item 3) as its body and needs no JSON of its own.
 
 The edge function bodies (create, action, meta, delete-account) stay binary, as `e2e/validation/no_json_validation.test.ts` holds them today.
+
+### One file holds all of it
+
+Every JSON shape above lives in one file, `src/json_surface.c` (declared in `src/json_surface.h`): every key name, every shape, and every call into the low-level writer and reader `src/util/json.c`, which nothing else includes.
+Everything else in c_base hands it structs and spans and gets bytes or structs back, so a reader who wants to know what c_base says in JSON reads one file, and deleting a facade (Phase 2) is deleting its section.
+The functions are pure over buffers (no socket, no clock, no randomness), so each shape is checked byte for byte against a recorded body in the unit tests.
+
+The sections of `json_surface.c`, with their callers:
+
+- DynamoDB (`dw_*`, for `store_dynamo.c` and `store_import.c`): every request the store sends (the point reads, the 14 query shapes, the user, refresh-token, game, commit, rating, bot, snapshot, chat, connection, lease, batch, scan, describe and PartiQL requests) and every reader of an answer (the error classes and cancellation reasons, Item, Attributes, Items, pages, unprocessed work, the item-to-row readers, provisioned and consumed capacity), with the item layout and the expressions.
+- The Lambda event envelope (`cb_event_*`, for `main_lambda.c` and `lambda_invoke.c`): the Function URL and WebSocket events in, the HTTP, WS and empty answers out, the `"bot_drive:<id>"` payload, and the redaction a raw event gets before it is logged.
+- The Lambda Runtime API's error body (`cb_runtime_error_body`).
+- The JWT header and claims (`cb_js_jwt_*`, for `jwt.c`, which keeps the base64url, the HMAC and the time checks).
+- GoTrue (`cb_js_gotrue_*`, for `auth_http.c`): the request body read field by field as a route asks, the error in both API versions, the session and the user.
+- Phoenix (`cb_phx_*`, for `phoenix.c`, `realtime.c` and `rt_apigw.c`): decode, reply, push, close, a refusal's reason, the join reply's echoed bindings, the access token in a payload, and a frame's vsn by its shape.
+- The Realtime payloads (`cb_rt_*_payload`, for `realtime.c`): `postgres_changes` on `player_views`, the `animation_events` broadcast and the chat broadcast.
+- PostgREST (`cb_js_pgrst_*`, for `postgrest.c`, which keeps the table schema, the RLS and the paging): rows, the error object, and the chat insert's rows.
+- The gateway's `{"message"}` error (`cb_js_gateway_error`, for `cb_router_error`).
+- The admin console (`cb_js_admin_*`, for `admin.c`): one-shot answers take a struct, and the lists the store streams row by row are written through an opaque `cb_js_stream`, so no writer leaves the file.
+- The client's side (`cb_js_client_*`, for `bench/`): what the bench sends and reads as a browser, supabase-js or API Gateway would, each the mirror of a server shape above.
+
+The one JSON outside it is `migrate/export.sh`, the one-off shell exporter that reads production through Supabase's Management API (JSON by Supabase's design) with `python3`; it is not C, it never runs in c_base, and it is deleted with Supabase.
+
+`test/unit_json_gate.c` holds the rule.
+It reads every C source under `src/`, `bench/` and `migrate/` and fails, naming the file and line, when any file other than `json_surface.c` and `util/json.{c,h}` includes `util/json.h`, names the writer or reader (`cb_jw`, `cb_jw_*`, `cb_json_*`, `CB_JW_*`, `CB_JSON_*`), or holds a string literal with a JSON key in it (a quoted word and a colon).
+It lexes rather than greps: comments may describe a shape, two literals around a ternary's colon are not a key, and adjacent literals are joined first, as the compiler joins them.
+Tests (`test/`) are not scanned: their recorded bodies are the oracle the shapes are checked against.
 
 ## Phase 2: the binary surface, and deleting the facade (not built now)
 
@@ -712,7 +740,7 @@ Phase 2 replaces them:
 - binary reads (my games with their envelopes, one game's envelope, chat history, the leaderboard, snapshots) in the same style;
 - a binary push stream on the WebSocket: each message a version and a kernel cast or envelope, so a reconnecting client can ask for what it missed by version (the catch-up the Phoenix facade never had);
 - the web and iOS clients moved onto them, behind their existing version gates;
-- then the facade (`auth_http.c`, `postgrest.c`, `phoenix.c`) deleted, once the last client that speaks it has aged out (iOS builds in the wild are the long pole).
+- then the facade (`auth_http.c`, `postgrest.c`, `phoenix.c`, and their sections of `json_surface.c`) deleted, once the last client that speaks it has aged out (iOS builds in the wild are the long pole).
 
 The AWS JSON (item 5) stays, because AWS sets it.
 

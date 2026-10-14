@@ -9,6 +9,7 @@
 
 #include "aws/event.h"
 #include "fixture_cloudfront_event.h"
+#include "json_surface.h"
 #include "util/b64.h"
 #include "util/err.h"
 #include "util/json.h"

@@ -14,7 +14,7 @@
 // X-Supabase-Api-Version header for 2024-01-01 (what both SDKs send), else
 // {"code":<status>,"error_code":"..","msg":".."} (auth_http.c says why it must
 // be both). JSON here is the compatibility tax (DESIGN.md "Where JSON is
-// tolerated").
+// tolerated"); every body is read and written in json_surface.c.
 #ifndef CB_AUTH_HTTP_H
 #define CB_AUTH_HTTP_H
 

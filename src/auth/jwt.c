@@ -1,6 +1,6 @@
 // jwt.c - HS256 access tokens in GoTrue's claim shape (jwt.h).
 //
-// Minting writes the header and claims with the JSON writer, base64url
+// Minting takes the header and claims JSON from json_surface.c, base64url
 // (unpadded) each, and signs "<header>.<payload>" with HMAC-SHA256.
 // Verification is strict where strictness costs nothing: each part must be in
 // the URL-safe alphabet with no padding, the signature is recomputed and
@@ -10,9 +10,9 @@
 // exp. exp and nbf allow CB_JWT_SKEW_S of clock skew, as auth.ts did.
 #include "jwt.h"
 
+#include "json_surface.h"
 #include "util/b64.h"
 #include "util/err.h"
-#include "util/json.h"
 #include "util/str.h"
 
 #include <openssl/crypto.h>
@@ -22,8 +22,6 @@
 
 #define CB_JWT_SKEW_S 30
 #define SIG_B64_LEN   43   // base64url of 32 bytes, unpadded
-
-static const char HEADER_JSON[] = "{\"alg\":\"HS256\",\"typ\":\"JWT\"}";
 
 // base64url(HMAC-SHA256(secret, msg[0..n))) into out (SIG_B64_LEN + 1).
 static bool sign(const char *secret, const char *msg, size_t n, char out[SIG_B64_LEN + 1]) {
@@ -38,39 +36,16 @@ static bool sign(const char *secret, const char *msg, size_t n, char out[SIG_B64
 
 int cb_jwt_mint(const char *secret, const cb_jwt_claims *c, const char *issuer, char *out, size_t cap) {
     if (!secret || !secret[0]) return CB_E_INVALID;
+    size_t hl;
+    const char *header = cb_js_jwt_header(&hl);
     cb_buf claims;
     cb_buf_init(&claims);
-    cb_jw w;
-    cb_jw_init(&w, &claims);
-    cb_jw_obj(&w);
-    cb_jw_kstr(&w, "aud", "authenticated");
-    cb_jw_kint(&w, "exp", c->exp);
-    cb_jw_kint(&w, "iat", c->iat);
-    if (issuer && issuer[0]) cb_jw_kstr(&w, "iss", issuer);
-    cb_jw_kstr(&w, "sub", c->sub);
-    cb_jw_kstr(&w, "email", c->email);
-    cb_jw_kstr(&w, "role", "authenticated");
-    cb_jw_kstr(&w, "session_id", c->session_id);
-    cb_jw_key(&w, "user_metadata");
-    cb_jw_obj(&w);
-    cb_jw_kstr(&w, "username", c->username);
-    cb_jw_end(&w);
-    cb_jw_key(&w, "app_metadata");
-    cb_jw_obj(&w);
-    cb_jw_kstr(&w, "provider", "email");
-    cb_jw_key(&w, "providers");
-    cb_jw_arr(&w);
-    cb_jw_str(&w, "email");
-    cb_jw_end(&w);
-    cb_jw_end(&w);
-    cb_jw_kbool(&w, "is_anonymous", false);
-    cb_jw_end(&w);
-    if (!cb_jw_ok(&w)) { cb_buf_free(&claims); return CB_E_NOMEM; }
+    if (cb_js_jwt_claims(&claims, c, issuer) != CB_OK) { cb_buf_free(&claims); return CB_E_NOMEM; }
 
-    size_t hn = cb_b64url_len(sizeof HEADER_JSON - 1), pn = cb_b64url_len(claims.len);
+    size_t hn = cb_b64url_len(hl), pn = cb_b64url_len(claims.len);
     size_t total = hn + 1 + pn + 1 + SIG_B64_LEN;
     if (total + 1 > cap) { cb_buf_free(&claims); return CB_E_FULL; }
-    cb_b64url_encode((const uint8_t *)HEADER_JSON, sizeof HEADER_JSON - 1, out, cap);
+    cb_b64url_encode((const uint8_t *)header, hl, out, cap);
     out[hn] = '.';
     cb_b64url_encode(claims.p, claims.len, out + hn + 1, cap - hn - 1);
     out[hn + 1 + pn] = '.';
@@ -90,19 +65,15 @@ static bool b64url_part(const char *p, size_t n) {
     return true;
 }
 
-// Decodes one part into a NUL-terminated buffer that must hold valid JSON.
-static bool decode_json(const char *p, size_t n, char *out, size_t cap, size_t *len) {
+// Decodes one part into a NUL-terminated buffer (json_surface.c checks it is
+// the JSON it must be).
+static bool decode_part(const char *p, size_t n, char *out, size_t cap, size_t *len) {
     if (!b64url_part(p, n)) return false;
     int k = cb_b64_decode(p, n, (uint8_t *)out, cap - 1);
     if (k <= 0) return false;
     out[k] = 0;
     *len = (size_t)k;
-    return cb_json_valid(out, *len);
-}
-
-static bool str_is(const char *json, size_t n, const char *path, const char *want) {
-    char v[64];
-    return cb_json_get_str(json, n, path, v, sizeof v) && strcmp(v, want) == 0;
+    return true;
 }
 
 int cb_jwt_verify(const char *secret, const char *token, int64_t now_s, cb_jwt_claims *out) {
@@ -124,28 +95,17 @@ int cb_jwt_verify(const char *secret, const char *token, int64_t now_s, cb_jwt_c
 
     char head[256], body[CB_JWT_MAX];
     size_t hl, bl;
-    if (!decode_json(token, (size_t)(d1 - token), head, sizeof head, &hl)) return CB_E_AUTH;
-    if (cb_json_find(head, hl, "", NULL) != CB_JSON_OBJ || !str_is(head, hl, "alg", "HS256")) return CB_E_AUTH;
-    if (!decode_json(d1 + 1, (size_t)(d2 - d1 - 1), body, sizeof body, &bl)) return CB_E_AUTH;
-    if (cb_json_find(body, bl, "", NULL) != CB_JSON_OBJ) return CB_E_AUTH;
+    if (!decode_part(token, (size_t)(d1 - token), head, sizeof head, &hl) || !cb_js_jwt_header_ok(head, hl))
+        return CB_E_AUTH;
+    if (!decode_part(d1 + 1, (size_t)(d2 - d1 - 1), body, sizeof body, &bl)) return CB_E_AUTH;
 
     cb_jwt_claims c;
-    memset(&c, 0, sizeof c);
-    if (!str_is(body, bl, "aud", "authenticated") || !str_is(body, bl, "role", "authenticated")) return CB_E_AUTH;
-    if (!cb_json_get_i64(body, bl, "exp", &c.exp)) return CB_E_AUTH;
+    bool has_nbf;
+    int64_t nbf;
+    if (!cb_js_jwt_claims_decode(body, bl, &c, &has_nbf, &nbf)) return CB_E_AUTH;
     if (now_s > c.exp + CB_JWT_SKEW_S) return CB_E_AUTH;
-    cb_json_type nbt = cb_json_find(body, bl, "nbf", NULL);
-    if (nbt != CB_JSON_MISSING) {
-        int64_t nbf;
-        if (!cb_json_get_i64(body, bl, "nbf", &nbf) || now_s + CB_JWT_SKEW_S < nbf) return CB_E_AUTH;
-    }
-    if (!cb_json_get_i64(body, bl, "iat", &c.iat)) c.iat = 0;
-    if (!cb_json_get_str(body, bl, "sub", c.sub, sizeof c.sub) || !cb_uuid_valid(c.sub, strlen(c.sub))) return CB_E_AUTH;
-    if (!cb_json_get_str(body, bl, "session_id", c.session_id, sizeof c.session_id) ||
-        !cb_uuid_valid(c.session_id, strlen(c.session_id)))
-        return CB_E_AUTH;
-    if (!cb_json_get_str(body, bl, "email", c.email, sizeof c.email)) c.email[0] = 0;
-    if (!cb_json_get_str(body, bl, "user_metadata.username", c.username, sizeof c.username)) c.username[0] = 0;
+    if (has_nbf && now_s + CB_JWT_SKEW_S < nbf) return CB_E_AUTH;
+    if (!cb_uuid_valid(c.sub, strlen(c.sub)) || !cb_uuid_valid(c.session_id, strlen(c.session_id))) return CB_E_AUTH;
     *out = c;
     return CB_OK;
 }

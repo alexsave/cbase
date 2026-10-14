@@ -1,7 +1,7 @@
 #include "router.h"
 
+#include "json_surface.h"
 #include "util/err.h"
-#include "util/json.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -123,11 +123,7 @@ bool cb_router_apikey_ok(const cb_ctx *ctx, const cb_http_req *req) {
 void cb_router_error(cb_http_res *res, int status, const char *msg) {
     cb_buf b;
     cb_buf_init(&b);
-    cb_jw w;
-    cb_jw_init(&w, &b);
-    cb_jw_obj(&w);
-    cb_jw_kstr(&w, "message", msg);
-    cb_jw_end(&w);
+    cb_js_gateway_error(&b, msg);
     cb_res_send(res, status, "application/json", b.p, b.len);
     cb_buf_free(&b);
 }

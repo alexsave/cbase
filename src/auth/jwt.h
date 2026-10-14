@@ -7,7 +7,8 @@
 //    "user_metadata":{"username":".."},"app_metadata":{"provider":"email","providers":["email"]},
 //    "is_anonymous":false}
 // Signed HMAC-SHA256 with CBASE_JWT_SECRET (libcrypto HMAC). The header is
-// {"alg":"HS256","typ":"JWT"}; verification accepts only alg HS256.
+// {"alg":"HS256","typ":"JWT"}; verification accepts only alg HS256. The JSON
+// of both is written and read in json_surface.c.
 #ifndef CB_JWT_H
 #define CB_JWT_H
 

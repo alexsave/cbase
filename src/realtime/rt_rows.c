@@ -34,25 +34,3 @@ int cb_rt_commit_ts(int64_t ms, char *out, size_t cap) {
     out[24] = 0;
     return 24;
 }
-
-void cb_rt_write_chat_row(cb_jw *w, const cb_chat_row *r, bool sorted) {
-    char ts[40];
-    cb_rt_ts(r->created_at, ts, sizeof ts);
-    cb_jw_obj(w);
-    if (sorted) {
-        cb_jw_kstr(w, "created_at", ts);
-        cb_jw_kstr(w, "game_id", r->game_id);
-        cb_jw_kstr(w, "id", r->id);
-        cb_jw_kbool(w, "is_system", r->is_system);
-        cb_jw_kstr(w, "message", r->message ? r->message : "");
-        cb_jw_kstr(w, "user_id", r->user_id);
-    } else {
-        cb_jw_kstr(w, "id", r->id);
-        cb_jw_kstr(w, "game_id", r->game_id);
-        cb_jw_kstr(w, "user_id", r->user_id);
-        cb_jw_kstr(w, "message", r->message ? r->message : "");
-        cb_jw_kbool(w, "is_system", r->is_system);
-        cb_jw_kstr(w, "created_at", ts);
-    }
-    cb_jw_end(w);
-}

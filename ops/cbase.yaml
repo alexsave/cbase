@@ -105,7 +105,7 @@ Conditions:
 
 Resources:
   # ---- the store ----------------------------------------------------------------
-  # Keys (DESIGN.md "Store"; src/store/dynamo_wire.h is the owner and this
+  # Keys (DESIGN.md "Store"; src/json_surface.h is the owner and this
   # must match it exactly): pk/sk on the table, and two indexes, both String
   # keys, both projecting ALL. gsi1 carries USERGAMES#<user> (the dashboard,
   # gsi1sk "<updated_at>#<game>" zero-padded so text order is time order),

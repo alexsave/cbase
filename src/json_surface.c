@@ -1,7 +1,12 @@
-// dynamo_wire.c - the DynamoDB JSON (dynamo_wire.h). Every DynamoDB string in
-// c_base is in this file: the targets, the item layout, the expressions.
-#include "dynamo_wire.h"
+// json_surface.c - every JSON shape c_base speaks (json_surface.h says why
+// they are all here). The only file that includes util/json.h.
+#include "json_surface.h"
 
+#include "util/err.h"
+#include "util/log.h"
+#include "util/clock.h"
+#include "realtime/realtime.h"
+#include "realtime/rt_rows.h"
 #include "util/b64.h"
 #include "util/hex.h"
 #include "util/json.h"
@@ -12,6 +17,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+
+// =====================================================================================
+// DynamoDB. Every DynamoDB string in c_base is in this section: the targets, the
+// item layout, the expressions.
 
 #define TARGET "DynamoDB_20120810."
 #define GSI1 DW_GSI1
@@ -1204,6 +1213,16 @@ void dw_game_create(dw_req *r, const char *table, const cb_game_row *g, const ch
     txn_end(&w);
 }
 
+bool dw_get_answer_of_create(const dw_req *create, cb_buf *out) {
+    cb_span item;
+    if (cb_json_find((const char *)create->body.p, create->body.len, "TransactItems.0.Put.Item", &item) != CB_JSON_OBJ)
+        return false;
+    cb_buf_puts(out, "{\"Item\":");
+    cb_buf_append(out, item.p, item.n);
+    cb_buf_puts(out, "}");
+    return true;
+}
+
 static bool listed(const cb_uuid *ids, int n, const char *id) {
     for (int i = 0; i < n; i++)
         if (strcmp(ids[i], id) == 0) return true;
@@ -1925,4 +1944,1529 @@ void dw_execute(dw_req *r, const char *statement, const char *next_token) {
 bool dw_statement_reads(const char *s) {
     while (s && isspace((unsigned char)*s)) s++;
     return s && strncasecmp(s, "SELECT", 6) == 0 && (s[6] == '\0' || isspace((unsigned char)s[6]));
+}
+
+// =====================================================================================
+// The Lambda event envelope.
+
+// ---- small JSON walking --------------------------------------------------------
+
+typedef bool (*member_fn)(cb_span key, cb_span value, cb_json_type t, void *ud);
+
+// Calls fn for each member of an object (key as its quoted token) or each
+// element of an array (key empty). The document has been validated already.
+static bool walk(cb_span v, member_fn fn, void *ud) {
+    if (v.n < 2 || (v.p[0] != '{' && v.p[0] != '[')) return false;
+    bool obj = v.p[0] == '{';
+    const char *p = v.p + 1, *end = v.p + v.n - 1;
+    for (;;) {
+        while (p < end && isspace((unsigned char)*p)) p++;
+        if (p >= end) return true;
+        cb_span key = { "", 0 };
+        if (obj) {
+            if (cb_json_find(p, (size_t)(end - p), "", &key) != CB_JSON_STR) return false;
+            p = key.p + key.n;
+            while (p < end && isspace((unsigned char)*p)) p++;
+            if (p >= end || *p != ':') return false;
+            p++;
+        }
+        cb_span val;
+        cb_json_type t = cb_json_find(p, (size_t)(end - p), "", &val);
+        if (t == CB_JSON_ERR || t == CB_JSON_MISSING) return false;
+        if (!fn(key, val, t, ud)) return true;
+        p = val.p + val.n;
+        while (p < end && isspace((unsigned char)*p)) p++;
+        if (p < end && *p == ',') p++;
+    }
+}
+
+// Unescapes a string token into storage with a NUL. The offset, or -1.
+static long put_token(cb_buf *st, cb_span tok) {
+    if (!cb_buf_reserve(st, tok.n + 1)) return -1;
+    long off = (long)st->len;
+    int k = cb_json_unescape(tok, (char *)st->p + st->len, st->cap - st->len);
+    if (k < 0) return -1;
+    st->len += (size_t)k + 1;
+    return off;
+}
+
+static long put_bytes(cb_buf *st, const void *p, size_t n) {
+    long off = (long)st->len;
+    cb_buf_append(st, p, n);
+    cb_buf_putc(st, 0);
+    return st->oom ? -1 : off;
+}
+
+// A body field: unescaped text, or base64-decoded bytes. Offset and length.
+static int put_body(cb_buf *st, const char *json, size_t len, long *off, size_t *n) {
+    cb_span tok;
+    cb_json_type t = cb_json_find(json, len, "body", &tok);
+    *off = -1;
+    *n = 0;
+    if (t == CB_JSON_MISSING || t == CB_JSON_NULL) return CB_OK;
+    if (t != CB_JSON_STR) return CB_E_INVALID;
+    bool b64 = false;
+    cb_json_get_bool(json, len, "isBase64Encoded", &b64);
+    long o = put_token(st, tok);
+    if (o < 0) return CB_E_INVALID;
+    size_t tn = strlen((const char *)st->p + o);
+    if (b64) {
+        // Decoded in place: base64 never grows.
+        int k = cb_b64_decode((const char *)st->p + o, tn, st->p + o, tn + 1);
+        if (k < 0) return CB_E_INVALID;
+        st->len = (size_t)o + (size_t)k;
+        cb_buf_putc(st, 0);
+        tn = (size_t)k;
+    }
+    *off = o;
+    *n = tn;
+    return st->oom ? CB_E_NOMEM : CB_OK;
+}
+
+// ---- HTTP ------------------------------------------------------------------------
+
+typedef struct {
+    cb_buf *st;
+    long    name[CB_HTTP_MAX_HEADERS], value[CB_HTTP_MAX_HEADERS];
+    int     n;
+    int     dropped;
+    bool    bad;
+    bool    cookie_started;
+    long    cookie;
+} hdr_acc;
+
+static bool on_header(cb_span key, cb_span val, cb_json_type t, void *ud) {
+    hdr_acc *a = ud;
+    if (t != CB_JSON_STR) return true;   // API Gateway sends strings; anything else is not a header
+    if (a->n == CB_HTTP_MAX_HEADERS) { a->dropped++; return true; }
+    long k = put_token(a->st, key);
+    if (k < 0) { a->bad = true; return false; }
+    for (char *c = (char *)a->st->p + k; *c; c++) *c = (char)tolower((unsigned char)*c);
+    long v = put_token(a->st, val);
+    if (v < 0) { a->bad = true; return false; }
+    a->name[a->n] = k;
+    a->value[a->n] = v;
+    a->n++;
+    return true;
+}
+
+typedef struct {
+    cb_buf joined;
+    bool   bad;
+} cookie_acc;
+
+static bool on_cookie(cb_span key, cb_span val, cb_json_type t, void *ud) {
+    cookie_acc *a = ud;
+    if (t != CB_JSON_STR) return true;
+    char tmp[4096];
+    int k = cb_json_unescape(val, tmp, sizeof tmp);
+    if (k < 0) { a->bad = true; return false; }
+    if (a->joined.len) cb_buf_puts(&a->joined, "; ");
+    cb_buf_append(&a->joined, tmp, (size_t)k);
+    return true;
+}
+
+static int decode_http(const char *json, size_t len, cb_event *ev) {
+    cb_http_req *r = &ev->http;
+    cb_buf *st = &ev->storage;
+    if (!cb_json_get_str(json, len, "requestContext.http.method", r->method, sizeof r->method)) return CB_E_INVALID;
+    cb_span tok;
+    if (cb_json_find(json, len, "rawPath", &tok) != CB_JSON_STR) return CB_E_INVALID;
+    long path = put_token(st, tok);
+    long query = cb_json_find(json, len, "rawQueryString", &tok) == CB_JSON_STR ? put_token(st, tok) : put_bytes(st, "", 0);
+    if (path < 0 || query < 0) return CB_E_INVALID;
+
+    hdr_acc h = { .st = st };
+    cb_span obj;
+    cb_json_type ht = cb_json_find(json, len, "headers", &obj);
+    if (ht == CB_JSON_OBJ && !walk(obj, on_header, &h)) return CB_E_INVALID;
+    if (ht != CB_JSON_OBJ && ht != CB_JSON_MISSING && ht != CB_JSON_NULL) return CB_E_INVALID;
+    if (h.bad) return CB_E_INVALID;
+    // Payload 2.0 moves the Cookie header into an array; put it back.
+    cookie_acc ck;
+    cb_buf_init(&ck.joined);
+    ck.bad = false;
+    if (cb_json_find(json, len, "cookies", &obj) == CB_JSON_ARR && !walk(obj, on_cookie, &ck)) ck.bad = true;
+    if (ck.bad) { cb_buf_free(&ck.joined); return CB_E_INVALID; }
+    if (ck.joined.len) {
+        if (h.n == CB_HTTP_MAX_HEADERS) h.dropped++;
+        else {
+            h.name[h.n] = put_bytes(st, "cookie", 6);
+            h.value[h.n] = put_bytes(st, ck.joined.p, ck.joined.len);
+            h.n++;
+        }
+    }
+    cb_buf_free(&ck.joined);
+    if (h.dropped) CB_WARN("event", "%d headers over %d dropped", h.dropped, CB_HTTP_MAX_HEADERS);
+
+    long body;
+    size_t body_len;
+    int rc = put_body(st, json, len, &body, &body_len);
+    if (rc != CB_OK) return rc;
+    cb_json_get_str(json, len, "requestContext.http.sourceIp", r->peer, sizeof r->peer);
+    if (st->oom) return CB_E_NOMEM;
+
+    // The storage is final: point into it.
+    const char *base = (const char *)st->p;
+    r->path = base + path;
+    r->query = base + query;
+    for (int i = 0; i < h.n; i++) {
+        r->headers[i].name = base + h.name[i];
+        r->headers[i].value = base + h.value[i];
+    }
+    r->n_headers = h.n;
+    r->body = body >= 0 && body_len ? (const uint8_t *)base + body : NULL;
+    r->body_len = body_len;
+    r->minor = 1;
+    r->keep_alive = false;
+    return CB_OK;
+}
+
+// ---- WebSocket ---------------------------------------------------------------------
+
+static void url_encode(cb_buf *b, const char *s, size_t n) {
+    static const char H[] = "0123456789ABCDEF";
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)s[i];
+        if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') cb_buf_putc(b, (char)c);
+        else { cb_buf_putc(b, '%'); cb_buf_putc(b, H[c >> 4]); cb_buf_putc(b, H[c & 15]); }
+    }
+}
+
+typedef struct {
+    cb_buf q;
+    bool   bad;
+} query_acc;
+
+static bool on_param(cb_span key, cb_span val, cb_json_type t, void *ud) {
+    query_acc *a = ud;
+    if (t != CB_JSON_STR) return true;
+    char k[1024], v[4096];
+    int kn = cb_json_unescape(key, k, sizeof k), vn = cb_json_unescape(val, v, sizeof v);
+    if (kn < 0 || vn < 0) { a->bad = true; return false; }
+    if (a->q.len) cb_buf_putc(&a->q, '&');
+    url_encode(&a->q, k, (size_t)kn);
+    cb_buf_putc(&a->q, '=');
+    url_encode(&a->q, v, (size_t)vn);
+    return true;
+}
+
+static int decode_ws(const char *json, size_t len, cb_event *ev) {
+    cb_ws_event *w = &ev->ws;
+    cb_buf *st = &ev->storage;
+    if (!cb_json_get_str(json, len, "requestContext.routeKey", w->route_key, sizeof w->route_key) ||
+        !cb_json_get_str(json, len, "requestContext.connectionId", w->connection_id, sizeof w->connection_id))
+        return CB_E_INVALID;
+    cb_json_get_str(json, len, "requestContext.domainName", w->domain, sizeof w->domain);
+    cb_json_get_str(json, len, "requestContext.stage", w->stage, sizeof w->stage);
+
+    query_acc qa;
+    cb_buf_init(&qa.q);
+    qa.bad = false;
+    cb_span obj;
+    if (cb_json_find(json, len, "queryStringParameters", &obj) == CB_JSON_OBJ && !walk(obj, on_param, &qa)) qa.bad = true;
+    long query = qa.bad ? -1 : put_bytes(st, qa.q.p ? qa.q.p : (const uint8_t *)"", qa.q.len);
+    cb_buf_free(&qa.q);
+    if (query < 0) return CB_E_INVALID;
+
+    long body;
+    size_t body_len;
+    int rc = put_body(st, json, len, &body, &body_len);
+    if (rc != CB_OK) return rc;
+    if (st->oom) return CB_E_NOMEM;
+    const char *base = (const char *)st->p;
+    w->query = base + query;
+    w->body = body >= 0 ? (const uint8_t *)base + body : (const uint8_t *)base + query + strlen(base + query);
+    w->body_len = body_len;
+    return CB_OK;
+}
+
+// ---- the string literals ------------------------------------------------------------
+
+static bool game_id_ok(const char *s, size_t n, size_t cap) {
+    if (n == 0 || n >= cap) return false;
+    for (size_t i = 0; i < n; i++)
+        if (!isalnum((unsigned char)s[i]) && s[i] != '-' && s[i] != '_') return false;
+    return true;
+}
+
+// "scan" and "bot_drive:<id>": the quotes stripped, nothing else parsed.
+static int decode_literal(const char *s, size_t n, cb_event *ev) {
+    if (n < 2 || s[n - 1] != '"') return CB_E_INVALID;
+    s++;
+    n -= 2;
+    if (n == 4 && memcmp(s, "scan", 4) == 0) { ev->kind = CB_EVENT_SCHEDULE; return CB_OK; }
+    static const char P[] = "bot_drive:";
+    if (n > sizeof P - 1 && memcmp(s, P, sizeof P - 1) == 0) {
+        const char *id = s + sizeof P - 1;
+        size_t idn = n - (sizeof P - 1);
+        if (!game_id_ok(id, idn, sizeof ev->game_id)) return CB_E_INVALID;
+        memcpy(ev->game_id, id, idn);
+        ev->game_id[idn] = 0;
+        ev->kind = CB_EVENT_BOT_DRIVE;
+        return CB_OK;
+    }
+    return CB_E_INVALID;
+}
+
+int cb_event_bot_drive_payload(const char *game_id, char *out, size_t cap) {
+    size_t n = game_id ? strlen(game_id) : 0;
+    if (!game_id_ok(game_id, n, sizeof ((cb_event *)0)->game_id)) return CB_E_INVALID;
+    int k = snprintf(out, cap, "\"bot_drive:%s\"", game_id);
+    return k > 0 && (size_t)k < cap ? k : CB_E_INVALID;
+}
+
+int cb_event_decode(const char *json, size_t len, cb_event *out) {
+    memset(out, 0, sizeof *out);
+    cb_buf_init(&out->storage);
+    while (len && isspace((unsigned char)json[len - 1])) len--;
+    while (len && isspace((unsigned char)*json)) { json++; len--; }
+    if (len && *json == '"') return decode_literal(json, len, out);
+    if (!cb_json_valid(json, len) || len == 0 || *json != '{') return CB_E_INVALID;
+
+    // Reserve once for the common case (every string fits in about the event's size).
+    cb_buf_reserve(&out->storage, len + 256);
+    int rc;
+    char src[32];
+    if (cb_json_find(json, len, "requestContext.connectionId", NULL) == CB_JSON_STR) {
+        out->kind = CB_EVENT_WS;
+        rc = decode_ws(json, len, out);
+    } else if (cb_json_find(json, len, "requestContext.http.method", NULL) == CB_JSON_STR) {
+        out->kind = CB_EVENT_HTTP;
+        rc = decode_http(json, len, out);
+    } else if (cb_json_get_str(json, len, "source", src, sizeof src) && strcmp(src, "aws.events") == 0) {
+        out->kind = CB_EVENT_SCHEDULE;
+        rc = CB_OK;
+    } else {
+        rc = CB_E_INVALID;
+    }
+    if (rc != CB_OK) {
+        cb_buf_free(&out->storage);
+        cb_buf *keep = &out->storage;
+        memset(out, 0, sizeof *out);
+        cb_buf_init(keep);
+        return rc == CB_E_NOMEM ? rc : CB_E_INVALID;
+    }
+    return CB_OK;
+}
+
+// ---- responses ----------------------------------------------------------------------
+
+static bool utf8_valid(const uint8_t *p, size_t n) {
+    size_t i = 0;
+    while (i < n) {
+        uint8_t c = p[i];
+        size_t k;
+        uint32_t cp;
+        if (c < 0x80) { i++; continue; }
+        if ((c & 0xE0) == 0xC0) { k = 1; cp = c & 0x1F; }
+        else if ((c & 0xF0) == 0xE0) { k = 2; cp = c & 0x0F; }
+        else if ((c & 0xF8) == 0xF0) { k = 3; cp = c & 0x07; }
+        else return false;
+        for (size_t j = 1; j <= k; j++) {
+            if (i + j >= n || (p[i + j] & 0xC0) != 0x80) return false;
+            cp = cp << 6 | (p[i + j] & 0x3F);
+        }
+        // Overlong forms, surrogates and values past U+10FFFF.
+        if ((k == 1 && cp < 0x80) || (k == 2 && cp < 0x800) || (k == 3 && cp < 0x10000) || cp > 0x10FFFF ||
+            (cp >= 0xD800 && cp <= 0xDFFF))
+            return false;
+        i += k + 1;
+    }
+    return true;
+}
+
+typedef struct {
+    const char *name;
+    size_t      nlen;
+    const char *value;
+    size_t      vlen;
+    bool        done;
+} line;
+
+int cb_event_encode_http(const cb_http_res *res, cb_buf *out) {
+    // The header lines, "Name: value\r\n" each.
+    enum { MAXL = 128 };
+    line l[MAXL];
+    int nl = 0;
+    const char *p = cb_buf_cstr(&res->headers), *end = p + res->headers.len;
+    while (p < end && nl < MAXL) {
+        const char *e = strstr(p, "\r\n");
+        if (!e) e = end;
+        const char *colon = memchr(p, ':', (size_t)(e - p));
+        if (colon) {
+            const char *v = colon + 1;
+            while (v < e && *v == ' ') v++;
+            l[nl++] = (line){ p, (size_t)(colon - p), v, (size_t)(e - v), false };
+        }
+        p = e + 2;
+    }
+    const char *ctype = NULL;
+    size_t ctlen = 0;
+    for (int i = 0; i < nl; i++)
+        if (l[i].nlen == 12 && strncasecmp(l[i].name, "content-type", 12) == 0) { ctype = l[i].value; ctlen = l[i].vlen; }
+
+    cb_jw w;
+    cb_jw_init(&w, out);
+    cb_jw_obj(&w);
+    cb_jw_kint(&w, "statusCode", res->status ? res->status : 200);
+    cb_jw_key(&w, "headers");
+    cb_jw_obj(&w);
+    bool cookies = false;
+    for (int i = 0; i < nl; i++) {
+        if (l[i].done) continue;
+        if (l[i].nlen == 10 && strncasecmp(l[i].name, "set-cookie", 10) == 0) { cookies = true; continue; }
+        // One JSON member per name: later lines of the same name joined with ", ".
+        char name[128];
+        if (!cb_strncpy0(name, sizeof name, l[i].name, l[i].nlen)) continue;
+        cb_buf joined;
+        cb_buf_init(&joined);
+        cb_buf_append(&joined, l[i].value, l[i].vlen);
+        for (int j = i + 1; j < nl; j++) {
+            if (l[j].nlen == l[i].nlen && strncasecmp(l[j].name, l[i].name, l[i].nlen) == 0) {
+                cb_buf_puts(&joined, ", ");
+                cb_buf_append(&joined, l[j].value, l[j].vlen);
+                l[j].done = true;
+            }
+        }
+        cb_jw_key(&w, name);
+        cb_jw_strn(&w, (const char *)joined.p ? (const char *)joined.p : "", joined.len);
+        cb_buf_free(&joined);
+    }
+    cb_jw_end(&w);
+    if (cookies) {
+        cb_jw_key(&w, "cookies");
+        cb_jw_arr(&w);
+        for (int i = 0; i < nl; i++)
+            if (l[i].nlen == 10 && strncasecmp(l[i].name, "set-cookie", 10) == 0) cb_jw_strn(&w, l[i].value, l[i].vlen);
+        cb_jw_end(&w);
+    }
+    const uint8_t *body = res->body.p ? res->body.p : (const uint8_t *)"";
+    size_t n = res->body.len;
+    bool octet = ctype && ctlen >= 24 && strncasecmp(ctype, "application/octet-stream", 24) == 0;
+    bool b64 = n > 0 && (octet || !utf8_valid(body, n));
+    if (b64) {
+        size_t cap = cb_b64_len(n) + 1;
+        char *enc = malloc(cap);
+        if (!enc) return CB_E_NOMEM;
+        cb_b64_encode(body, n, enc, cap);
+        cb_jw_key(&w, "body");
+        cb_jw_strn(&w, enc, cap - 1);
+        free(enc);
+    } else {
+        cb_jw_key(&w, "body");
+        cb_jw_strn(&w, (const char *)body, n);
+    }
+    cb_jw_kbool(&w, "isBase64Encoded", b64);
+    cb_jw_end(&w);
+    return cb_jw_ok(&w) ? CB_OK : CB_E_NOMEM;
+}
+
+int cb_event_encode_ws(int status, cb_buf *out) {
+    cb_jw w;
+    cb_jw_init(&w, out);
+    cb_jw_obj(&w);
+    cb_jw_kint(&w, "statusCode", status);
+    cb_jw_end(&w);
+    return cb_jw_ok(&w) ? CB_OK : CB_E_NOMEM;
+}
+
+int cb_event_encode_none(cb_buf *out) {
+    cb_jw w;
+    cb_jw_init(&w, out);
+    cb_jw_obj(&w);
+    cb_jw_end(&w);
+    return cb_jw_ok(&w) ? CB_OK : CB_E_NOMEM;
+}
+
+// ---- the raw event, for the log ----------------------------------------------------
+
+// Keys whose string value never reaches a log: credentials, and the body
+// (a signup body carries a password). Matched without regard to case.
+static bool secret_key(const char *k, size_t n) {
+    static const char *const S[] = { "authorization", "apikey", "cookie", "cookies", "body",
+                                     "x-amz-security-token", "password", "access_token", "refresh_token" };
+    for (size_t i = 0; i < sizeof S / sizeof S[0]; i++)
+        if (strlen(S[i]) == n && strncasecmp(S[i], k, n) == 0) return true;
+    return false;
+}
+
+// Copies a query string value with the apikey and token parameters' values cut.
+static void redact_query(cb_buf *out, const char *s, size_t n) {
+    size_t i = 0;
+    while (i < n) {
+        size_t j = i;
+        while (j < n && s[j] != '&') j++;
+        const char *eq = memchr(s + i, '=', j - i);
+        size_t kn = eq ? (size_t)(eq - (s + i)) : j - i;
+        if (eq && secret_key(s + i, kn)) {
+            cb_buf_append(out, s + i, kn + 1);
+            cb_buf_puts(out, "REDACTED");
+        } else {
+            cb_buf_append(out, s + i, j - i);
+        }
+        if (j < n) cb_buf_putc(out, '&');
+        i = j + 1;
+    }
+}
+
+int cb_event_redact(const char *json, size_t len, size_t max, cb_buf *out) {
+    if (len > max) len = max;
+    const char *key = NULL;    // the last string that could be a key
+    size_t key_n = 0;
+    bool after_colon = false;  // the next token is key's value
+    bool secret_arr = false;   // inside an array that is a secret key's value (cookies)
+    size_t i = 0;
+    while (i < len) {
+        char c = json[i];
+        if (c != '"') {
+            if (c == ':') after_colon = true;
+            else if (c == '[') { secret_arr = after_colon && key && secret_key(key, key_n); after_colon = false; }
+            else if (c == ']') secret_arr = false;
+            else if (!isspace((unsigned char)c)) after_colon = false;
+            cb_buf_putc(out, c);
+            i++;
+            continue;
+        }
+        size_t j = i + 1;
+        while (j < len && json[j] != '"') j += json[j] == '\\' ? 2 : 1;
+        if (j > len) j = len;
+        const char *s = json + i + 1;
+        size_t sn = j - (i + 1);
+        bool is_value = after_colon;
+        after_colon = false;
+        cb_buf_putc(out, '"');
+        if (secret_arr || (is_value && key && secret_key(key, key_n)))
+            cb_buf_printf(out, "REDACTED %zu", sn);
+        else if (is_value && key && key_n == 14 && strncmp(key, "rawQueryString", 14) == 0)
+            redact_query(out, s, sn);
+        else
+            cb_buf_append(out, s, sn);
+        if (j < len) cb_buf_putc(out, '"');
+        if (!is_value && !secret_arr) { key = s; key_n = sn; }
+        i = j + 1;
+    }
+    return out->oom ? CB_E_NOMEM : CB_OK;
+}
+
+// =====================================================================================
+// The Lambda Runtime API.
+
+void cb_runtime_error_body(cb_buf *b, const char *type, const char *message) {
+    cb_jw w;
+    cb_jw_init(&w, b);
+    cb_jw_obj(&w);
+    cb_jw_kstr(&w, "errorMessage", message);
+    cb_jw_kstr(&w, "errorType", type);
+    cb_jw_end(&w);
+}
+
+// =====================================================================================
+// JWT.
+
+static const char JWT_HEADER_JSON[] = "{\"alg\":\"HS256\",\"typ\":\"JWT\"}";
+
+const char *cb_js_jwt_header(size_t *n) {
+    *n = sizeof JWT_HEADER_JSON - 1;
+    return JWT_HEADER_JSON;
+}
+
+static bool jwt_str_is(const char *json, size_t n, const char *path, const char *want) {
+    char v[64];
+    return cb_json_get_str(json, n, path, v, sizeof v) && strcmp(v, want) == 0;
+}
+
+bool cb_js_jwt_header_ok(const char *json, size_t n) {
+    return cb_json_valid(json, n) && cb_json_find(json, n, "", NULL) == CB_JSON_OBJ && jwt_str_is(json, n, "alg", "HS256");
+}
+
+int cb_js_jwt_claims(cb_buf *out, const cb_jwt_claims *c, const char *issuer) {
+    cb_jw w;
+    cb_jw_init(&w, out);
+    cb_jw_obj(&w);
+    cb_jw_kstr(&w, "aud", "authenticated");
+    cb_jw_kint(&w, "exp", c->exp);
+    cb_jw_kint(&w, "iat", c->iat);
+    if (issuer && issuer[0]) cb_jw_kstr(&w, "iss", issuer);
+    cb_jw_kstr(&w, "sub", c->sub);
+    cb_jw_kstr(&w, "email", c->email);
+    cb_jw_kstr(&w, "role", "authenticated");
+    cb_jw_kstr(&w, "session_id", c->session_id);
+    cb_jw_key(&w, "user_metadata");
+    cb_jw_obj(&w);
+    cb_jw_kstr(&w, "username", c->username);
+    cb_jw_end(&w);
+    cb_jw_key(&w, "app_metadata");
+    cb_jw_obj(&w);
+    cb_jw_kstr(&w, "provider", "email");
+    cb_jw_key(&w, "providers");
+    cb_jw_arr(&w);
+    cb_jw_str(&w, "email");
+    cb_jw_end(&w);
+    cb_jw_end(&w);
+    cb_jw_kbool(&w, "is_anonymous", false);
+    cb_jw_end(&w);
+    return cb_jw_ok(&w) ? CB_OK : CB_E_NOMEM;
+}
+
+bool cb_js_jwt_claims_decode(const char *body, size_t bl, cb_jwt_claims *out, bool *has_nbf, int64_t *nbf) {
+    memset(out, 0, sizeof *out);
+    *has_nbf = false;
+    *nbf = 0;
+    if (!cb_json_valid(body, bl) || cb_json_find(body, bl, "", NULL) != CB_JSON_OBJ) return false;
+    cb_jwt_claims c;
+    memset(&c, 0, sizeof c);
+    if (!jwt_str_is(body, bl, "aud", "authenticated") || !jwt_str_is(body, bl, "role", "authenticated")) return false;
+    if (!cb_json_get_i64(body, bl, "exp", &c.exp)) return false;
+    if (cb_json_find(body, bl, "nbf", NULL) != CB_JSON_MISSING) {
+        if (!cb_json_get_i64(body, bl, "nbf", nbf)) return false;
+        *has_nbf = true;
+    }
+    if (!cb_json_get_i64(body, bl, "iat", &c.iat)) c.iat = 0;
+    if (!cb_json_get_str(body, bl, "sub", c.sub, sizeof c.sub)) return false;
+    if (!cb_json_get_str(body, bl, "session_id", c.session_id, sizeof c.session_id)) return false;
+    if (!cb_json_get_str(body, bl, "email", c.email, sizeof c.email)) c.email[0] = 0;
+    if (!cb_json_get_str(body, bl, "user_metadata.username", c.username, sizeof c.username)) c.username[0] = 0;
+    *out = c;
+    return true;
+}
+
+// =====================================================================================
+// GoTrue.
+
+static bool gt_field(const char *json, size_t n, const char *path, char *out, size_t cap) {
+    out[0] = 0;
+    cb_json_type t = cb_json_find(json, n, path, NULL);
+    if (t == CB_JSON_MISSING || t == CB_JSON_NULL) return true;
+    return t == CB_JSON_STR && cb_json_get_str(json, n, path, out, cap);
+}
+
+cb_js_gt_rc cb_js_gotrue_body_decode(const char *json, size_t n, unsigned want, cb_js_gotrue_body *out) {
+    memset(out, 0, sizeof *out);
+    if (!json || !cb_json_valid(json, n) || cb_json_find(json, n, "", NULL) != CB_JSON_OBJ) return CB_JS_GT_NOT_OBJECT;
+    if ((want & CB_JS_GT_EMAIL) && !gt_field(json, n, "email", out->email, sizeof out->email)) return CB_JS_GT_BAD_FIELD;
+    if ((want & CB_JS_GT_PASSWORD) && !gt_field(json, n, "password", out->password, sizeof out->password))
+        return CB_JS_GT_BAD_FIELD;
+    if ((want & CB_JS_GT_USERNAME) && !gt_field(json, n, "data.username", out->username, sizeof out->username))
+        return CB_JS_GT_BAD_FIELD;
+    if ((want & CB_JS_GT_REFRESH_TOKEN) &&
+        !gt_field(json, n, "refresh_token", out->refresh_token, sizeof out->refresh_token))
+        return CB_JS_GT_BAD_FIELD;
+    out->has_password = (want & CB_JS_GT_PASSWORD) && cb_json_find(json, n, "password", NULL) == CB_JSON_STR;
+    return CB_JS_GT_OK;
+}
+
+void cb_js_gotrue_error(cb_buf *b, bool api_2024, int status, const char *code, const char *msg) {
+    cb_jw w;
+    cb_jw_init(&w, b);
+    cb_jw_obj(&w);
+    if (api_2024) {
+        cb_jw_kstr(&w, "code", code);
+    } else {
+        cb_jw_kint(&w, "code", status);
+        cb_jw_kstr(&w, "error_code", code);
+    }
+    cb_jw_kstr(&w, "msg", msg);
+    if (strcmp(code, "weak_password") == 0) {
+        cb_jw_key(&w, "weak_password");
+        cb_jw_obj(&w);
+        cb_jw_key(&w, "reasons");
+        cb_jw_arr(&w);
+        cb_jw_str(&w, "length");
+        cb_jw_end(&w);
+        cb_jw_end(&w);
+    }
+    cb_jw_end(&w);
+}
+
+// GoTrue's spelling of a time: UTC with microseconds and a 'Z', which is what
+// supabase-swift's ISO-8601 parser reads (Go's RFC 3339).
+static void gt_kts(cb_jw *w, const char *k, int64_t ms) {
+    char t[40];
+    if (ms <= 0 || cb_iso8601(ms, t, sizeof t) != 32) { cb_jw_knull(w, k); return; }
+    memcpy(t + 26, "Z", 2);   // "...ss.ffffff+00:00" -> "...ss.ffffffZ"
+    cb_jw_kstr(w, k, t);
+}
+
+static void gt_user(cb_jw *w, const cb_user *u, int64_t created_at, int64_t last_sign_in_at) {
+    cb_jw_obj(w);
+    cb_jw_kstr(w, "id", u->id);
+    cb_jw_kstr(w, "aud", "authenticated");
+    cb_jw_kstr(w, "role", "authenticated");
+    cb_jw_kstr(w, "email", u->email);
+    gt_kts(w, "email_confirmed_at", created_at);
+    cb_jw_kstr(w, "phone", "");
+    gt_kts(w, "confirmed_at", created_at);
+    gt_kts(w, "last_sign_in_at", last_sign_in_at);
+    cb_jw_key(w, "app_metadata");
+    cb_jw_obj(w);
+    cb_jw_kstr(w, "provider", "email");
+    cb_jw_key(w, "providers");
+    cb_jw_arr(w);
+    cb_jw_str(w, "email");
+    cb_jw_end(w);
+    cb_jw_end(w);
+    cb_jw_key(w, "user_metadata");
+    cb_jw_obj(w);
+    cb_jw_kstr(w, "username", u->username);
+    cb_jw_end(w);
+    cb_jw_key(w, "identities");
+    cb_jw_arr(w);
+    cb_jw_end(w);
+    gt_kts(w, "created_at", created_at);
+    gt_kts(w, "updated_at", last_sign_in_at > created_at ? last_sign_in_at : created_at);
+    cb_jw_kbool(w, "is_anonymous", false);
+    cb_jw_end(w);
+}
+
+int cb_js_gotrue_session(cb_buf *b, const cb_session *s) {
+    cb_jw w;
+    cb_jw_init(&w, b);
+    cb_jw_obj(&w);
+    cb_jw_kstr(&w, "access_token", s->access_token);
+    cb_jw_kstr(&w, "token_type", "bearer");
+    cb_jw_kint(&w, "expires_in", s->expires_in);
+    cb_jw_kint(&w, "expires_at", s->expires_at);
+    cb_jw_kstr(&w, "refresh_token", s->refresh_token);
+    cb_jw_key(&w, "user");
+    gt_user(&w, &s->user, s->user_created_at, s->last_sign_in_at);
+    cb_jw_end(&w);
+    return cb_jw_ok(&w) ? CB_OK : CB_E_NOMEM;
+}
+
+int cb_js_gotrue_user(cb_buf *b, const cb_user *u, int64_t created_at, int64_t last_sign_in_at) {
+    cb_jw w;
+    cb_jw_init(&w, b);
+    gt_user(&w, u, created_at, last_sign_in_at);
+    return cb_jw_ok(&w) ? CB_OK : CB_E_NOMEM;
+}
+
+// =====================================================================================
+// Phoenix (phoenix.c, realtime.c, rt_apigw.c): the realtime-js and supabase-swift
+// channel frames. Ground truth: phoenix.c's header.
+
+#define PHX_MAX_BINDINGS 16
+
+// One string element of a frame into `out`: a ref (no escapes allowed, empty
+// for null or missing) or the topic/event (unescaped into a fixed buffer).
+static bool ref_of(const char *t, size_t n, const char *path, cb_span *out) {
+    cb_span v;
+    cb_json_type ty = cb_json_find(t, n, path, &v);
+    if (ty == CB_JSON_NULL || ty == CB_JSON_MISSING) { *out = cb_span_of("", 0); return true; }
+    if (ty != CB_JSON_STR || v.n < 2) return false;
+    if (memchr(v.p, '\\', v.n)) return false;   // refs are counters; an escape is not one
+    *out = cb_span_of(v.p + 1, v.n - 2);
+    return true;
+}
+
+static bool str_of(const char *t, size_t n, const char *path, char *out, size_t cap) {
+    return cb_json_find(t, n, path, NULL) == CB_JSON_STR && cb_json_get_str(t, n, path, out, cap);
+}
+
+int cb_phx_decode(const char *text, size_t len, int vsn, cb_phx_msg *out) {
+    memset(out, 0, sizeof *out);
+    if (!text || !cb_json_valid(text, len)) return CB_E_INVALID;
+    cb_json_type top = cb_json_find(text, len, "", NULL);
+    const char *k_jr, *k_ref, *k_topic, *k_event, *k_payload;
+    if (vsn == 2) {
+        if (top != CB_JSON_ARR || cb_json_array_len(text, len, "") < 5) return CB_E_INVALID;
+        k_jr = "0"; k_ref = "1"; k_topic = "2"; k_event = "3"; k_payload = "4";
+    } else if (vsn == 1) {
+        if (top != CB_JSON_OBJ) return CB_E_INVALID;
+        k_jr = "join_ref"; k_ref = "ref"; k_topic = "topic"; k_event = "event"; k_payload = "payload";
+    } else {
+        return CB_E_INVALID;
+    }
+    if (!ref_of(text, len, k_jr, &out->join_ref) || !ref_of(text, len, k_ref, &out->ref)) return CB_E_INVALID;
+    if (!str_of(text, len, k_topic, out->topic, sizeof out->topic)) return CB_E_INVALID;
+    if (!str_of(text, len, k_event, out->event, sizeof out->event)) return CB_E_INVALID;
+    cb_json_type pt = cb_json_find(text, len, k_payload, &out->payload);
+    if (pt == CB_JSON_MISSING || pt == CB_JSON_ERR) return CB_E_INVALID;
+    return CB_OK;
+}
+
+static void put_ref(cb_jw *w, cb_span s) {
+    if (s.n) cb_jw_strn(w, s.p, s.n);
+    else cb_jw_null(w);
+}
+
+// The one frame writer: [join_ref, ref, topic, event, payload] for vsn 2, the
+// same five as an object for vsn 1. `payload` is JSON text.
+static void frame(cb_buf *out, int vsn, cb_span join_ref, cb_span ref, const char *topic, const char *event,
+                  const char *payload, size_t payload_n) {
+    cb_buf_reset(out);
+    cb_jw w;
+    cb_jw_init(&w, out);
+    if (vsn == 2) {
+        cb_jw_arr(&w);
+        put_ref(&w, join_ref);
+        put_ref(&w, ref);
+        cb_jw_str(&w, topic);
+        cb_jw_str(&w, event);
+        cb_jw_raw(&w, payload, payload_n);
+    } else {
+        cb_jw_obj(&w);
+        cb_jw_key(&w, "join_ref"); put_ref(&w, join_ref);
+        cb_jw_key(&w, "ref"); put_ref(&w, ref);
+        cb_jw_kstr(&w, "topic", topic);
+        cb_jw_kstr(&w, "event", event);
+        cb_jw_key(&w, "payload"); cb_jw_raw(&w, payload, payload_n);
+    }
+    cb_jw_end(&w);
+}
+
+void cb_phx_reply(cb_buf *out, int vsn, const cb_phx_msg *to, bool ok, const char *response_json) {
+    cb_buf p;
+    cb_buf_init(&p);
+    cb_buf_printf(&p, "{\"response\":%s,\"status\":\"%s\"}", response_json && *response_json ? response_json : "{}",
+                  ok ? "ok" : "error");
+    frame(out, vsn, to->join_ref, to->ref, to->topic, "phx_reply", cb_buf_cstr(&p), p.len);
+    cb_buf_free(&p);
+}
+
+void cb_phx_push(cb_buf *out, int vsn, const char *wire_topic, const char *event, const char *payload_json) {
+    frame(out, vsn, cb_span_of("", 0), cb_span_of("", 0), wire_topic, event, payload_json, strlen(payload_json));
+}
+
+void cb_phx_close(cb_buf *out, int vsn, cb_span join_ref, const char *wire_topic) {
+    frame(out, vsn, join_ref, join_ref, wire_topic, "phx_close", "{}", 2);
+}
+
+void cb_phx_refusal(cb_buf *out, const char *reason) {
+    cb_jw w;
+    cb_jw_init(&w, out);
+    cb_jw_obj(&w);
+    cb_jw_kstr(&w, "reason", reason);
+    cb_jw_end(&w);
+}
+
+int cb_phx_access_token(const char *payload, size_t n, char *out, size_t cap) {
+    out[0] = 0;
+    if (cb_json_find(payload, n, "access_token", NULL) != CB_JSON_STR) return 0;
+    return cb_json_get_str(payload, n, "access_token", out, cap) ? 1 : -1;
+}
+
+int cb_phx_vsn_of_frame(const uint8_t *text, size_t len) { return len && text[0] == '[' ? 2 : 1; }
+
+// The join reply's response: {} for a broadcast channel, or every
+// postgres_changes binding echoed whole with its id appended (realtime-js and
+// supabase-swift compare the echo field by field and error the channel on a
+// mismatch, so the request's own text is the only safe answer).
+int cb_phx_join_response(const char *payload, size_t n, cb_buf *out) {
+    int nb = cb_json_array_len(payload, n, "config.postgres_changes");
+    if (nb <= 0) { cb_buf_puts(out, "{}"); return CB_OK; }
+    if (nb > PHX_MAX_BINDINGS) return CB_E_FULL;
+    cb_buf_puts(out, "{\"postgres_changes\":[");
+    for (int i = 0; i < nb; i++) {
+        char path[64], f[4][256];
+        static const char *const keys[4] = { "event", "schema", "table", "filter" };
+        cb_span obj;
+        snprintf(path, sizeof path, "config.postgres_changes.%d", i);
+        if (cb_json_find(payload, n, path, &obj) != CB_JSON_OBJ) return CB_E_INVALID;
+        for (int k = 0; k < 4; k++) {
+            char kp[96];
+            snprintf(kp, sizeof kp, "%s.%s", path, keys[k]);
+            cb_json_type t = cb_json_find(payload, n, kp, NULL);
+            if (t == CB_JSON_MISSING || t == CB_JSON_NULL) f[k][0] = 0;
+            else if (!str_of(payload, n, kp, f[k], sizeof f[k])) return CB_E_INVALID;
+        }
+        int32_t id = cb_phx_binding_id(f[0], f[1], f[2], f[3]);
+        if (i) cb_buf_putc(out, ',');
+        // The object minus its closing brace, then the id. obj.p[0] is '{'.
+        size_t body = obj.n - 1;
+        bool empty = true;
+        for (size_t k = 1; k < body; k++)
+            if (obj.p[k] != ' ' && obj.p[k] != '\t' && obj.p[k] != '\n' && obj.p[k] != '\r') { empty = false; break; }
+        if (empty) cb_buf_printf(out, "{\"id\":%d}", (int)id);
+        else {
+            cb_buf_append(out, obj.p, body);
+            cb_buf_printf(out, ",\"id\":%d}", (int)id);
+        }
+    }
+    cb_buf_puts(out, "]}");
+    return out->oom ? CB_E_NOMEM : CB_OK;
+}
+
+// =====================================================================================
+// Supabase Realtime payloads (realtime.c): what a postgres_changes or broadcast
+// push carries inside its Phoenix frame.
+
+static void rt_chat_row(cb_jw *w, const cb_chat_row *r, bool sorted) {
+    char ts[40];
+    cb_rt_ts(r->created_at, ts, sizeof ts);
+    cb_jw_obj(w);
+    if (sorted) {
+        cb_jw_kstr(w, "created_at", ts);
+        cb_jw_kstr(w, "game_id", r->game_id);
+        cb_jw_kstr(w, "id", r->id);
+        cb_jw_kbool(w, "is_system", r->is_system);
+        cb_jw_kstr(w, "message", r->message ? r->message : "");
+        cb_jw_kstr(w, "user_id", r->user_id);
+    } else {
+        cb_jw_kstr(w, "id", r->id);
+        cb_jw_kstr(w, "game_id", r->game_id);
+        cb_jw_kstr(w, "user_id", r->user_id);
+        cb_jw_kstr(w, "message", r->message ? r->message : "");
+        cb_jw_kbool(w, "is_system", r->is_system);
+        cb_jw_kstr(w, "created_at", ts);
+    }
+    cb_jw_end(w);
+}
+
+// The columns player_views reports (realtime's "columns", in table order).
+static const char *const PV_COLUMNS =
+    "[{\"name\":\"game_id\",\"type\":\"text\"},{\"name\":\"player_id\",\"type\":\"uuid\"},"
+    "{\"name\":\"view\",\"type\":\"bytea\"},{\"name\":\"version\",\"type\":\"int8\"},"
+    "{\"name\":\"status\",\"type\":\"text\"},{\"name\":\"updated_at\",\"type\":\"timestamptz\"}]";
+
+static void pv_pk(cb_jw *w, const cb_view_row *row) {
+    cb_jw_obj(w);
+    cb_jw_kstr(w, "game_id", row->game_id);
+    cb_jw_kstr(w, "player_id", row->player_id);
+    cb_jw_end(w);
+}
+
+void cb_rt_pv_payload(cb_buf *out, int event, const cb_view_row *row) {
+    static const char *const TYPES[4] = { "", "INSERT", "UPDATE", "DELETE" };
+    const char *type = TYPES[event];
+    char commit[40], ts[40];
+    cb_rt_commit_ts(row->updated_at, commit, sizeof commit);
+    cb_rt_ts(row->updated_at, ts, sizeof ts);
+    char filter[64 + CB_UUID_LEN];
+    snprintf(filter, sizeof filter, "player_id=eq.%s", row->player_id);
+
+    cb_jw w;
+    cb_jw_init(&w, out);
+    cb_jw_obj(&w);
+    cb_jw_key(&w, "data");
+    cb_jw_obj(&w);
+    cb_jw_key(&w, "columns"); cb_jw_raw(&w, PV_COLUMNS, strlen(PV_COLUMNS));
+    cb_jw_kstr(&w, "commit_timestamp", commit);
+    cb_jw_knull(&w, "errors");
+    if (event != CB_RT_INSERT) { cb_jw_key(&w, "old_record"); pv_pk(&w, row); }
+    if (event != CB_RT_DELETE) {
+        cb_jw_key(&w, "record");
+        cb_jw_obj(&w);
+        cb_jw_kstr(&w, "game_id", row->game_id);
+        cb_jw_kstr(&w, "player_id", row->player_id);
+        cb_jw_kstr(&w, "status", row->status);
+        cb_jw_kstr(&w, "updated_at", ts);
+        cb_jw_kint(&w, "version", row->version);
+        cb_jw_key(&w, "view"); cb_jw_bytea(&w, row->view, row->view_len);
+        cb_jw_end(&w);
+    }
+    cb_jw_kstr(&w, "schema", "public");
+    cb_jw_kstr(&w, "table", "player_views");
+    cb_jw_kstr(&w, "type", type);
+    cb_jw_end(&w);
+    // Every binding this change satisfies: its own event or "*", with the
+    // player's filter or none (the RLS scopes an unfiltered binding to the same rows).
+    cb_jw_key(&w, "ids");
+    cb_jw_arr(&w);
+    const char *events[2] = { type, "*" };
+    const char *filters[2] = { filter, "" };
+    for (int e = 0; e < 2; e++)
+        for (int f = 0; f < 2; f++) cb_jw_int(&w, cb_phx_binding_id(events[e], "public", "player_views", filters[f]));
+    cb_jw_end(&w);
+    cb_jw_end(&w);
+}
+
+void cb_rt_cast_payload(cb_buf *out, const uint8_t *cast, size_t len) {
+    size_t n = cb_b64_len(len) + 1;
+    char *b = malloc(n);
+    if (!b) { out->oom = true; return; }
+    cb_b64_encode(cast, len, b, n);
+    cb_buf_puts(out, "{\"event\":\"animation_events\",\"payload\":{\"b\":\"");
+    cb_buf_puts(out, b);   // base64 needs no JSON escaping
+    cb_buf_puts(out, "\"},\"type\":\"broadcast\"}");
+    free(b);
+}
+
+void cb_rt_chat_payload(cb_buf *out, const cb_chat_row *row) {
+    cb_jw w;
+    cb_jw_init(&w, out);
+    cb_jw_obj(&w);
+    cb_jw_kstr(&w, "event", "INSERT");
+    cb_jw_key(&w, "payload");
+    cb_jw_obj(&w);
+    cb_jw_knull(&w, "old_record");
+    cb_jw_kstr(&w, "operation", "INSERT");
+    cb_jw_key(&w, "record");
+    rt_chat_row(&w, row, true);
+    cb_jw_kstr(&w, "schema", "public");
+    cb_jw_kstr(&w, "table", "chat_messages");
+    cb_jw_end(&w);
+    cb_jw_kstr(&w, "type", "broadcast");
+    cb_jw_end(&w);
+}
+
+// =====================================================================================
+// PostgREST.
+
+static void pg_cell(cb_jw *w, const cb_pgrst_cell *c) {
+    char ts[48];
+    switch (c->kind) {
+    case CB_PGRST_TEXT:  cb_jw_str(w, c->s); break;
+    case CB_PGRST_INT:   cb_jw_int(w, c->i); break;
+    case CB_PGRST_BOOL:  cb_jw_bool(w, c->i != 0); break;
+    case CB_PGRST_BYTEA: cb_jw_bytea(w, c->p, c->n); break;
+    case CB_PGRST_TS:    cb_rt_ts(c->i, ts, sizeof ts); cb_jw_str(w, ts); break;
+    case CB_PGRST_UUIDS:
+        cb_jw_arr(w);
+        for (size_t i = 0; i < c->n; i++) cb_jw_str(w, c->s + i * sizeof(cb_uuid));
+        cb_jw_end(w);
+        break;
+    default:      cb_jw_null(w); break;
+    }
+}
+
+static void pg_row(cb_jw *w, const char *const *names, const cb_pgrst_row *r, const int *sel, int n_sel) {
+    cb_jw_obj(w);
+    for (int k = 0; k < n_sel; k++) {
+        cb_jw_key(w, names[sel[k]]);
+        pg_cell(w, &r->c[sel[k]]);
+    }
+    cb_jw_end(w);
+}
+
+int cb_js_pgrst_rows(cb_buf *out, const cb_pgrst_row *rows, size_t n, const char *const *names, const int *sel,
+                     int n_sel, bool object) {
+    cb_jw w;
+    cb_jw_init(&w, out);
+    if (object) pg_row(&w, names, &rows[0], sel, n_sel);
+    else {
+        cb_jw_arr(&w);
+        for (size_t i = 0; i < n; i++) pg_row(&w, names, &rows[i], sel, n_sel);
+        cb_jw_end(&w);
+    }
+    return cb_jw_ok(&w) ? CB_OK : CB_E_NOMEM;
+}
+
+void cb_js_pgrst_error(cb_buf *out, const char *code, const char *message, const char *details) {
+    cb_jw w;
+    cb_jw_init(&w, out);
+    cb_jw_obj(&w);
+    cb_jw_kstr(&w, "code", code);
+    cb_jw_kstr(&w, "details", details);
+    cb_jw_knull(&w, "hint");
+    cb_jw_kstr(&w, "message", message);
+    cb_jw_end(&w);
+}
+
+int cb_js_pgrst_chat_count(const char *body, size_t n, bool *array) {
+    *array = false;
+    if (!body || !cb_json_valid(body, n)) return -1;
+    cb_json_type top = cb_json_find(body, n, "", NULL);
+    *array = top == CB_JSON_ARR;
+    return top == CB_JSON_OBJ ? 1 : top == CB_JSON_ARR ? cb_json_array_len(body, n, "") : -1;
+}
+
+cb_js_chat_rc cb_js_pgrst_chat_row(const char *body, size_t n, int index, cb_chat_row *out, const char **missing) {
+    char base[16], path[64], uuidbuf[64];
+    memset(out, 0, sizeof *out);
+    *missing = NULL;
+    if (index >= 0) {
+        snprintf(base, sizeof base, "%d", index);
+        if (cb_json_find(body, n, base, NULL) != CB_JSON_OBJ) return CB_JS_CHAT_NOT_OBJECT;
+        snprintf(base, sizeof base, "%d.", index);
+    } else {
+        base[0] = 0;
+    }
+#define P(k) (snprintf(path, sizeof path, "%s%s", base, k), path)
+    static const char *const required[3] = { "game_id", "user_id", "message" };
+    for (int i = 0; i < 3; i++) {
+        if (cb_json_find(body, n, P(required[i]), NULL) != CB_JSON_STR) {
+            *missing = required[i];
+            return CB_JS_CHAT_MISSING;
+        }
+    }
+    if (!cb_json_get_str(body, n, P("game_id"), out->game_id, sizeof out->game_id) ||
+        !cb_json_get_str(body, n, P("user_id"), uuidbuf, sizeof uuidbuf) || !cb_uuid_valid(uuidbuf, strlen(uuidbuf)))
+        return CB_JS_CHAT_BAD_UUID;
+    for (char *p = uuidbuf; *p; p++) *p = (char)tolower((unsigned char)*p);
+    cb_strlcpy(out->user_id, uuidbuf, sizeof out->user_id);
+    cb_span tok;
+    cb_json_find(body, n, P("message"), &tok);
+    out->message = malloc(tok.n + 1);
+    if (!out->message) return CB_JS_CHAT_NOMEM;
+    int ml = cb_json_unescape(tok, out->message, tok.n + 1);
+    if (ml < 0 || strlen(out->message) != (size_t)ml) return CB_JS_CHAT_NUL;
+    cb_json_type st = cb_json_find(body, n, P("is_system"), NULL);
+    if (st == CB_JSON_BOOL) cb_json_get_bool(body, n, P("is_system"), &out->is_system);
+    else if (st != CB_JSON_MISSING && st != CB_JSON_NULL) return CB_JS_CHAT_BAD_BOOL;
+    if (cb_json_find(body, n, P("id"), NULL) == CB_JSON_STR) {
+        if (!cb_json_get_str(body, n, P("id"), uuidbuf, sizeof uuidbuf) || !cb_uuid_valid(uuidbuf, strlen(uuidbuf)))
+            return CB_JS_CHAT_BAD_UUID;
+        for (char *p = uuidbuf; *p; p++) *p = (char)tolower((unsigned char)*p);
+        cb_strlcpy(out->id, uuidbuf, sizeof out->id);
+    }
+#undef P
+    return CB_JS_CHAT_OK;
+}
+
+// =====================================================================================
+// The gateway's error.
+
+void cb_js_gateway_error(cb_buf *out, const char *msg) {
+    cb_jw w;
+    cb_jw_init(&w, out);
+    cb_jw_obj(&w);
+    cb_jw_kstr(&w, "message", msg);
+    cb_jw_end(&w);
+}
+
+// =====================================================================================
+// The admin console's API.
+
+struct cb_js_stream {
+    cb_jw w;
+};
+
+static cb_js_stream *adm_open(cb_buf *out) {
+    cb_js_stream *s = malloc(sizeof *s);
+    if (!s) return NULL;
+    cb_jw_init(&s->w, out);
+    cb_jw_obj(&s->w);
+    return s;
+}
+
+// Closes the document and frees the stream.
+static int adm_close(cb_js_stream *s) {
+    if (!s) return CB_E_NOMEM;
+    cb_jw_end(&s->w);
+    bool ok = cb_jw_ok(&s->w);
+    free(s);
+    return ok ? CB_OK : CB_E_NOMEM;
+}
+
+static void adm_kiso(cb_jw *w, const char *k, int64_t ms) {
+    char t[40];
+    if (ms <= 0 || cb_iso8601(ms, t, sizeof t) < 0) cb_jw_knull(w, k);
+    else cb_jw_kstr(w, k, t);
+}
+
+static void adm_links(cb_jw *w, const cb_js_admin_links *l) {
+    if (!l->lambda) { cb_jw_knull(w, "links"); return; }
+    cb_jw_key(w, "links");
+    cb_jw_obj(w);
+    cb_jw_kstr(w, "lambda", l->lambda);
+    cb_jw_kstr(w, "logs_insights", l->logs_insights);
+    cb_jw_kstr(w, "dynamodb", l->dynamodb);
+    cb_jw_kstr(w, "backups", l->backups);
+    cb_jw_end(w);
+}
+
+static int adm_done(cb_jw *w) { return cb_jw_ok(w) ? CB_OK : CB_E_NOMEM; }
+
+int cb_js_admin_overview_write(cb_buf *out, const cb_js_admin_overview *o) {
+    cb_jw w;
+    cb_jw_init(&w, out);
+    cb_jw_obj(&w);
+    cb_jw_kstr(&w, "version", o->version);
+    cb_jw_kstr(&w, "mode", o->mode);
+    cb_jw_kint(&w, "uptime_s", o->uptime_s);
+    adm_kiso(&w, "started_at", o->started_ms);
+    cb_jw_kstr(&w, "store", o->store);
+    cb_jw_kstr(&w, "table", o->table);
+    cb_jw_kstr(&w, "public_url", o->public_url);
+    cb_jw_kint(&w, "requests", o->requests);
+    cb_jw_kint(&w, "errors_5xx", o->errors_5xx);
+    if (o->conns_known) {
+        cb_jw_kint(&w, "http_conns", o->http_conns);
+        cb_jw_kint(&w, "ws_conns", o->ws_conns);
+    } else {
+        cb_jw_knull(&w, "http_conns");
+        cb_jw_knull(&w, "ws_conns");
+    }
+    if (o->games_needing_bots < 0) cb_jw_knull(&w, "games_needing_bots");
+    else cb_jw_kint(&w, "games_needing_bots", o->games_needing_bots);
+    cb_jw_key(&w, "store_throttles");
+    cb_jw_obj(&w);
+    cb_jw_kint(&w, "throttled", (int64_t)o->throttled);
+    cb_jw_kint(&w, "gave_up", (int64_t)o->gave_up);
+    cb_jw_end(&w);
+    if (o->continuous_backup) cb_jw_kstr(&w, "last_backup", "continuous (point-in-time recovery)");
+    else if (o->last_backup_ms) adm_kiso(&w, "last_backup", o->last_backup_ms);
+    else cb_jw_knull(&w, "last_backup");
+    cb_jw_key(&w, "process");
+    cb_jw_obj(&w);
+    cb_jw_kint(&w, "pid", o->pid);
+    cb_jw_kint(&w, "max_rss_kb", o->max_rss_kb);
+    cb_jw_kint(&w, "cpu_user_ms", o->cpu_user_ms);
+    cb_jw_kint(&w, "cpu_sys_ms", o->cpu_sys_ms);
+    cb_jw_end(&w);
+    adm_links(&w, &o->links);
+    cb_jw_end(&w);
+    return adm_done(&w);
+}
+
+cb_js_stream *cb_js_admin_collections_begin(cb_buf *out, const char *store) {
+    cb_js_stream *s = adm_open(out);
+    if (!s) return NULL;
+    cb_jw_kstr(&s->w, "store", store);
+    cb_jw_key(&s->w, "collections");
+    cb_jw_arr(&s->w);
+    return s;
+}
+
+void cb_js_admin_collections_add(cb_js_stream *s, const char *name) { cb_jw_str(&s->w, name); }
+
+int cb_js_admin_collections_end(cb_js_stream *s) {
+    if (s) cb_jw_end(&s->w);
+    return adm_close(s);
+}
+
+void cb_js_admin_row(cb_js_stream *s, int n, const char *const *names, const char *const *values) {
+    cb_jw_obj(&s->w);
+    for (int i = 0; i < n; i++) {
+        cb_jw_key(&s->w, names[i] ? names[i] : "?");
+        cb_jw_str(&s->w, values[i]);   // NULL writes null
+    }
+    cb_jw_end(&s->w);
+}
+
+cb_js_stream *cb_js_admin_browse_begin(cb_buf *out, const char *collection) {
+    cb_js_stream *s = adm_open(out);
+    if (!s) return NULL;
+    cb_jw_kstr(&s->w, "collection", collection);
+    cb_jw_key(&s->w, "rows");
+    cb_jw_arr(&s->w);
+    return s;
+}
+
+int cb_js_admin_browse_end(cb_js_stream *s, const char *next) {
+    if (s) {
+        cb_jw_end(&s->w);
+        cb_jw_kstr(&s->w, "next", next);
+    }
+    return adm_close(s);
+}
+
+cb_js_stream *cb_js_admin_query_begin(cb_buf *out, const char *dialect, bool write_allowed) {
+    cb_js_stream *s = adm_open(out);
+    if (!s) return NULL;
+    cb_jw_kstr(&s->w, "dialect", dialect);
+    cb_jw_kbool(&s->w, "write_allowed", write_allowed);
+    cb_jw_key(&s->w, "rows");
+    cb_jw_arr(&s->w);
+    return s;
+}
+
+int cb_js_admin_query_end(cb_js_stream *s, bool truncated) {
+    if (s) {
+        cb_jw_end(&s->w);
+        cb_jw_kbool(&s->w, "truncated", truncated);
+    }
+    return adm_close(s);
+}
+
+bool cb_js_admin_query_body(const char *body, size_t n, char *stmt, size_t stmt_cap, char *confirm, size_t confirm_cap) {
+    if (!body || !cb_json_get_str(body, n, "statement", stmt, stmt_cap)) return false;
+    if (!cb_json_get_str(body, n, "confirm", confirm, confirm_cap)) confirm[0] = 0;
+    return true;
+}
+
+cb_js_stream *cb_js_admin_users_begin(cb_buf *out) {
+    cb_js_stream *s = adm_open(out);
+    if (!s) return NULL;
+    cb_jw_key(&s->w, "users");
+    cb_jw_arr(&s->w);
+    return s;
+}
+
+void cb_js_admin_users_add(cb_js_stream *s, const cb_user_row *u) {
+    cb_jw *w = &s->w;
+    cb_jw_obj(w);
+    cb_jw_kstr(w, "id", u->id);
+    cb_jw_kstr(w, "email", u->email);
+    cb_jw_kstr(w, "username", u->username);
+    adm_kiso(w, "created_at", u->created_at);
+    adm_kiso(w, "last_sign_in_at", u->last_sign_in_at);
+    cb_jw_end(w);
+}
+
+int cb_js_admin_users_end(cb_js_stream *s, int64_t offset, int64_t next_offset) {
+    if (s) {
+        cb_jw_end(&s->w);
+        cb_jw_kint(&s->w, "offset", offset);
+        if (next_offset >= 0) cb_jw_kint(&s->w, "next_offset", next_offset);
+        else cb_jw_knull(&s->w, "next_offset");
+    }
+    return adm_close(s);
+}
+
+bool cb_js_admin_id_body(const char *body, size_t n, char *id, size_t cap) {
+    return body && cb_json_get_str(body, n, "id", id, cap);
+}
+
+static int adm_one(cb_buf *out, const char *key, const char *value) {
+    cb_jw w;
+    cb_jw_init(&w, out);
+    cb_jw_obj(&w);
+    cb_jw_kstr(&w, key, value);
+    cb_jw_end(&w);
+    return adm_done(&w);
+}
+
+int cb_js_admin_deleted(cb_buf *out, const char *id) { return adm_one(out, "deleted", id); }
+int cb_js_admin_written(cb_buf *out, const char *path) { return adm_one(out, "written", path); }
+
+// One game's scalar columns and its seats, into an open object.
+static void adm_game(cb_jw *w, const cb_js_admin_game *a) {
+    const cb_game_row *g = a->g;
+    cb_jw_kstr(w, "id", g->id);
+    cb_jw_kint(w, "status", g->status);
+    cb_jw_kstr(w, "status_label", a->status_label);
+    cb_jw_kint(w, "version", g->version);
+    cb_jw_kint(w, "round_epoch", g->round_epoch);
+    cb_jw_kbool(w, "needs_bots", g->needs_bots);
+    adm_kiso(w, "created_at", g->created_at);
+    adm_kiso(w, "updated_at", g->updated_at);
+    adm_kiso(w, "last_commit_at", g->last_commit_at);
+    cb_jw_key(w, "seats");
+    if (a->roster_rc != ROSTER_OK) {
+        cb_jw_null(w);
+        cb_jw_kint(w, "roster_error", a->roster_rc);
+        return;
+    }
+    const Roster *r = a->roster;
+    cb_jw_arr(w);
+    for (int i = 0; i < r->n; i++) {
+        cb_jw_obj(w);
+        cb_jw_key(w, "name");
+        cb_jw_strn(w, r->seats[i].name, r->seats[i].name_len);
+        cb_jw_key(w, "id");
+        cb_jw_strn(w, r->seats[i].id, r->seats[i].id_len);
+        cb_jw_kbool(w, "bot", r->seats[i].brain_len > 0);
+        cb_jw_end(w);
+    }
+    cb_jw_end(w);
+    cb_jw_key(w, "title");
+    cb_jw_strn(w, r->title, r->title_len);
+}
+
+cb_js_stream *cb_js_admin_games_begin(cb_buf *out) {
+    cb_js_stream *s = adm_open(out);
+    if (!s) return NULL;
+    cb_jw_key(&s->w, "games");
+    cb_jw_arr(&s->w);
+    return s;
+}
+
+void cb_js_admin_games_add(cb_js_stream *s, const cb_js_admin_game *g) {
+    cb_jw_obj(&s->w);
+    adm_game(&s->w, g);
+    cb_jw_end(&s->w);
+}
+
+int cb_js_admin_games_end(cb_js_stream *s, const char *next) {
+    if (s) {
+        cb_jw_end(&s->w);
+        cb_jw_kstr(&s->w, "next", next);
+    }
+    return adm_close(s);
+}
+
+int cb_js_admin_game_write(cb_buf *out, const cb_js_admin_game *a, const cb_js_admin_envelope *e) {
+    const cb_game_row *g = a->g;
+    cb_jw w;
+    cb_jw_init(&w, out);
+    cb_jw_obj(&w);
+    adm_game(&w, a);
+    cb_jw_kint(&w, "state_len", (int64_t)g->state_len);
+    cb_jw_kint(&w, "roster_len", (int64_t)g->roster_len);
+    cb_jw_kint(&w, "logs_len", (int64_t)g->logs_len);
+    cb_jw_kbool(&w, "has_seed", g->has_seed);
+    if (e->view_ok) {
+        if (e->envelope_hex) cb_jw_kstr(&w, "envelope_hex", e->envelope_hex);
+        else cb_jw_knull(&w, "envelope_hex");
+        cb_jw_kint(&w, "envelope_version", e->envelope_version);
+    } else {
+        cb_jw_knull(&w, "envelope_hex");
+        cb_jw_kstr(&w, "envelope_error", e->envelope_error);
+    }
+    cb_jw_end(&w);
+    return adm_done(&w);
+}
+
+cb_js_stream *cb_js_admin_bots_begin(cb_buf *out) {
+    cb_js_stream *s = adm_open(out);
+    if (!s) return NULL;
+    cb_jw_key(&s->w, "bots");
+    cb_jw_arr(&s->w);
+    return s;
+}
+
+void cb_js_admin_bots_add(cb_js_stream *s, const cb_bot_row *r) {
+    cb_jw *w = &s->w;
+    cb_jw_obj(w);
+    cb_jw_kstr(w, "id", r->id);
+    cb_jw_kstr(w, "nickname", r->nickname);
+    cb_jw_kstr(w, "strategy_key", r->strategy_key);
+    cb_jw_kint(w, "elo_rating", r->elo_rating);
+    if (r->previous_elo < 0) cb_jw_knull(w, "previous_elo");
+    else cb_jw_kint(w, "previous_elo", r->previous_elo);
+    cb_jw_kint(w, "games_played", r->games_played);
+    adm_kiso(w, "updated_at", r->updated_at);
+    cb_jw_end(w);
+}
+
+int cb_js_admin_bots_end(cb_js_stream *s) {
+    if (s) cb_jw_end(&s->w);
+    return adm_close(s);
+}
+
+cb_js_stream *cb_js_admin_logs_begin(cb_buf *out, uint64_t last_seq) {
+    cb_js_stream *s = adm_open(out);
+    if (!s) return NULL;
+    cb_jw_kint(&s->w, "last_seq", (int64_t)last_seq);
+    cb_jw_key(&s->w, "entries");
+    cb_jw_arr(&s->w);
+    return s;
+}
+
+void cb_js_admin_logs_add(cb_js_stream *s, uint64_t seq, int64_t at_ms, const char *level, const char *module,
+                          const char *msg) {
+    cb_jw *w = &s->w;
+    cb_jw_obj(w);
+    cb_jw_kint(w, "seq", (int64_t)seq);
+    adm_kiso(w, "at", at_ms);
+    cb_jw_kstr(w, "level", level);
+    cb_jw_kstr(w, "module", module);
+    cb_jw_kstr(w, "msg", msg);
+    cb_jw_end(w);
+}
+
+int cb_js_admin_logs_end(cb_js_stream *s, const cb_js_admin_links *links) {
+    if (s) {
+        cb_jw_end(&s->w);
+        adm_links(&s->w, links);
+    }
+    return adm_close(s);
+}
+
+cb_js_stream *cb_js_admin_config_begin(cb_buf *out, const cb_js_admin_config *c) {
+    cb_js_stream *s = adm_open(out);
+    if (!s) return NULL;
+    cb_jw_kstr(&s->w, "mode", c->mode);
+    cb_jw_kstr(&s->w, "store", c->store);
+    cb_jw_kstr(&s->w, "table", c->table);
+    cb_jw_kstr(&s->w, "allowed_origins", c->allowed_origins);
+    cb_jw_kstr(&s->w, "aws_region", c->aws_region);
+    cb_jw_kstr(&s->w, "function_name", c->function_name);
+    cb_jw_key(&s->w, "settings");
+    cb_jw_arr(&s->w);
+    return s;
+}
+
+void cb_js_admin_config_add(cb_js_stream *s, const char *name, const char *value, bool secret) {
+    cb_jw *w = &s->w;
+    cb_jw_obj(w);
+    cb_jw_kstr(w, "name", name);
+    cb_jw_kstr(w, "value", value);   // cb_config_each has already redacted a secret
+    cb_jw_kbool(w, "secret", secret);
+    cb_jw_end(w);
+}
+
+int cb_js_admin_config_end(cb_js_stream *s) {
+    if (s) cb_jw_end(&s->w);
+    return adm_close(s);
+}
+
+int cb_js_admin_backups_write(cb_buf *out, const cb_js_admin_backups *b) {
+    cb_jw w;
+    cb_jw_init(&w, out);
+    cb_jw_obj(&w);
+    cb_jw_kstr(&w, "store", b->store);
+    if (b->sqlite) {
+        cb_jw_kstr(&w, "kind", "vacuum_into");
+        cb_jw_kstr(&w, "dir", b->dir);
+        cb_jw_key(&w, "files");
+        cb_jw_arr(&w);
+        for (int i = 0; i < b->n_files; i++) {
+            cb_jw_obj(&w);
+            cb_jw_kstr(&w, "name", b->files[i].name);
+            cb_jw_kint(&w, "size", b->files[i].size);
+            adm_kiso(&w, "at", b->files[i].mtime_ms);
+            cb_jw_end(&w);
+        }
+        cb_jw_end(&w);
+    } else {
+        cb_jw_kstr(&w, "kind", "pitr");
+        cb_jw_kstr(&w, "explain", b->explain);
+    }
+    adm_links(&w, &b->links);
+    cb_jw_end(&w);
+    return adm_done(&w);
+}
+
+// =====================================================================================
+// The client's side (bench/).
+
+void cb_js_client_function_url_event(cb_buf *out, const char *bearer, int content_length, const char *body_b64) {
+    cb_buf_printf(out,
+        "{\"version\":\"2.0\",\"routeKey\":\"$default\",\"rawPath\":\"/functions/v1/action\",\"rawQueryString\":\"\","
+        "\"headers\":{\"accept\":\"*/*\",\"accept-encoding\":\"gzip, deflate, br, zstd\",\"accept-language\":\"en-US,en;q=0.9\","
+        "\"apikey\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\","
+        "\"authorization\":\"Bearer %s\",\"content-length\":\"%d\",\"content-type\":\"application/octet-stream\","
+        "\"host\":\"abcdefghijklmnopqrstuvwxyz012345.lambda-url.us-east-1.on.aws\",\"origin\":\"https://foolish.cards\","
+        "\"referer\":\"https://foolish.cards/\",\"sec-fetch-dest\":\"empty\",\"sec-fetch-mode\":\"cors\",\"sec-fetch-site\":\"cross-site\","
+        "\"user-agent\":\"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36\","
+        "\"via\":\"2.0 0123456789abcdef0123456789abcdef.cloudfront.net (CloudFront)\",\"x-amz-cf-id\":\"AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGhIjKlMnOpQr==\","
+        "\"x-amzn-trace-id\":\"Root=1-670b1c2d-0123456789abcdef01234567\",\"x-client-info\":\"supabase-js-web/2.45.4\","
+        "\"x-forwarded-for\":\"203.0.113.7, 130.176.0.1\",\"x-forwarded-port\":\"443\",\"x-forwarded-proto\":\"https\"},"
+        "\"requestContext\":{\"accountId\":\"anonymous\",\"apiId\":\"abcdefghijklmnopqrstuvwxyz012345\","
+        "\"domainName\":\"abcdefghijklmnopqrstuvwxyz012345.lambda-url.us-east-1.on.aws\",\"domainPrefix\":\"abcdefghijklmnopqrstuvwxyz012345\","
+        "\"http\":{\"method\":\"POST\",\"path\":\"/functions/v1/action\",\"protocol\":\"HTTP/1.1\",\"sourceIp\":\"130.176.0.1\","
+        "\"userAgent\":\"Amazon CloudFront\"},\"requestId\":\"0123abcd-4567-89ab-cdef-0123456789ab\",\"routeKey\":\"$default\","
+        "\"stage\":\"$default\",\"time\":\"13/Oct/2026:12:00:00 +0000\",\"timeEpoch\":1760356800000},"
+        "\"body\":\"%s\",\"isBase64Encoded\":true}",
+        bearer, content_length, body_b64);
+}
+
+void cb_js_client_signup_body(cb_buf *out, const char *email, const char *password, const char *username) {
+    cb_jw w;
+    cb_jw_init(&w, out);
+    cb_jw_obj(&w);
+    cb_jw_kstr(&w, "email", email);
+    cb_jw_kstr(&w, "password", password);
+    cb_jw_key(&w, "data");
+    cb_jw_obj(&w);
+    cb_jw_kstr(&w, "username", username);
+    cb_jw_end(&w);
+    cb_jw_end(&w);
+}
+
+bool cb_js_client_session(const char *j, size_t n, char *token, size_t token_cap, char *user_id, size_t id_cap) {
+    return cb_json_get_str(j, n, "access_token", token, token_cap) && cb_json_get_str(j, n, "user.id", user_id, id_cap);
+}
+
+static const char CLIENT_HEARTBEAT[] = "[null,\"hb\",\"phoenix\",\"heartbeat\",{}]";
+
+const char *cb_js_client_heartbeat(size_t *n) {
+    *n = sizeof CLIENT_HEARTBEAT - 1;
+    return CLIENT_HEARTBEAT;
+}
+
+void cb_js_client_pv_join(cb_buf *out, const char *user_id, const char *token) {
+    cb_buf_printf(out,
+                  "[\"1\",\"1\",\"realtime:pv-%s\",\"phx_join\",{\"config\":{\"broadcast\":{\"ack\":false,\"self\":false},"
+                  "\"presence\":{\"key\":\"\"},\"postgres_changes\":[{\"event\":\"*\",\"schema\":\"public\","
+                  "\"table\":\"player_views\",\"filter\":\"player_id=eq.%s\"}],\"private\":false},\"access_token\":\"%s\"}]",
+                  user_id, user_id, token);
+}
+
+int cb_js_client_reply_status(const char *j) {
+    if (!strstr(j, "\"phx_reply\"")) return -1;
+    return strstr(j, "\"status\":\"ok\"") != NULL;
+}
+
+bool cb_js_client_pv_push_version(const char *j, size_t n, int64_t *version) {
+    char ev[32];
+    if (!cb_json_get_str(j, n, "3", ev, sizeof ev) || strcmp(ev, "postgres_changes") != 0) return false;
+    return cb_json_get_i64(j, n, "4.data.record.version", version);
+}
+
+bool cb_js_client_first_view(const char *body, size_t n, char *out, size_t cap) {
+    return cb_json_get_str(body, n, "0.view", out, cap);
 }
