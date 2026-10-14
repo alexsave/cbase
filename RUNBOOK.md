@@ -284,7 +284,7 @@ Since 2026-10-14 every push to `main` deploys what is live, to AWS, with no hand
 
 Both refuse a tree that does not contain `origin/main` (`ops/require_main.sh`), so re-running an old run after main moved on deploys nothing.
 Both can also be run by hand on `main` (Actions > the workflow > Run workflow) to redeploy main as it is.
-Nothing deploys foolish to Vercel or Supabase on push any more; uttt.live deploys to both Vercel (apex) and CloudFront (`www`) on every push, so either answers with the current commit.
+Nothing deploys foolish to Vercel on push any more, and nothing deploys to Supabase at all; uttt.live deploys to both Vercel (apex) and CloudFront (`www`) on every push, so either answers with the current commit.
 
 The credentials are one role, `cbase-github-deploy`, made by the stack `cbase-github` from `ops/github_oidc.yaml` together with the account's GitHub OIDC provider:
 
@@ -303,14 +303,16 @@ The rollback lanes, workflow_dispatch only, kept until their deletion dates:
 - `web` (foolish on Vercel production, on `main`): until 2026-10-28, then W9.
   It matters only with DNS pointed back at Vercel (W7).
 - `uttt-web` is not a rollback lane: it still deploys on push, until the uttt.live apex moves (W5 step 1) and two more weeks pass.
-- `deploy` (Supabase edge functions, on `main`): until 2026-11-13, then step 14.
+- There is no Supabase lane: `deploy.yml` was deleted on 2026-10-14, because the standalone iOS app never shipped and no client talks to Supabase (step 14).
 
-## 14. Retire Supabase, after 30 days
+## 14. Retire Supabase
 
-1. Keep the Supabase project running for 30 days after the TestFlight build of step 12 is released, so old iOS installs keep working.
-2. A free Supabase project pauses itself after a week without traffic; if that happens inside the 30 days and old installs still matter, restore it from the Supabase dashboard.
-3. After 30 days: Supabase dashboard > the project > **Project Settings > General > Pause project**.
-4. Do not delete it until you are sure no rollback is needed; a paused project keeps its data.
+The standalone iOS app never shipped, so no client talks to Supabase, and nothing waits 30 days.
+`.github/workflows/deploy.yml`, the Supabase functions deploy, was deleted on 2026-10-14.
+
+1. Delete the repository secrets `SUPABASE_ACCESS_TOKEN` and `SUPABASE_DB_PASSWORD` (GitHub > Settings > Secrets and variables > Actions): no workflow reads them any more. Left for you on purpose.
+2. Supabase dashboard > the project > **Project Settings > General > Pause project**.
+3. Do not delete it until you are sure no rollback is needed; a paused project keeps its data.
 
 ## Rollback
 
