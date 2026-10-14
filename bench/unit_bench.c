@@ -1,10 +1,10 @@
-// unit_bench.c - the bench's statistics, run file and report (stats.h).
+// unit_bench.c - the bench's statistics, run file and report (bench_stats.h).
 //
 // Built and run by `make test` with the other unit programs (the Makefile
 // names it: it lives beside the code it checks, not in test/).
 #include "t.h"
 
-#include "stats.h"
+#include "bench_stats.h"
 
 #include <stdlib.h>
 

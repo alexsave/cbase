@@ -444,7 +444,7 @@ The honest expectation, stated before any measurement: the binary options are no
 
 ### The bench: `c_base/bench/` (built 2026-10-13)
 
-`make -C c_base bench` builds `build/cbase-bench` (`make all` builds it too, so CI keeps it compiling); `bench/bench.h` lists the sub-commands and `bench/stats.h` the run file.
+`make -C c_base bench` builds `build/cbase-bench` (`make all` builds it too, so CI keeps it compiling); `bench/bench.h` lists the sub-commands and `bench/bench_stats.h` the run file.
 It is one C program, and the same client measures `cbase serve` and the deployed stack: `http://` is a kept-alive socket read by `https.c`'s own response parser, `https://` goes through `cb_https_request` itself, and the WebSocket (ws or wss) uses the frame codec of `net/ws.c`.
 
 - `roundtrip --url <base> --anon <key> [--n 500] [--concurrency 1|4]`: each worker signs up two players, opens a Realtime socket per player (Phoenix vsn 2.0.0, as realtime-js) joined to its `pv-` topic, and plays two-human games (create, join, both ready, moves until the end, then a new game).

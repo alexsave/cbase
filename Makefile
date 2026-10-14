@@ -144,8 +144,8 @@ $(foreach s,smoke smoke_lambda bench_dynamo,$(call prog,build/test,build/obj/cba
 # report that runs with the others.
 BENCH_SRC := $(filter-out bench/unit_%.c,$(sort $(wildcard bench/*.c)))
 $(call prog,build,build/obj/cbase,build/obj/kernel,cbase-bench,$(BENCH_SRC),CB_CFLAGS)
-$(call prog,build/test,build/obj/cbase,build/obj/kernel,unit_bench,bench/unit_bench.c bench/stats.c,CB_CFLAGS)
-$(call prog,build/asan/test,build/obj/asan,build/obj/asan-kernel,unit_bench,bench/unit_bench.c bench/stats.c,ASAN_CB_CFLAGS)
+$(call prog,build/test,build/obj/cbase,build/obj/kernel,unit_bench,bench/unit_bench.c bench/bench_stats.c,CB_CFLAGS)
+$(call prog,build/asan/test,build/obj/asan,build/obj/asan-kernel,unit_bench,bench/unit_bench.c bench/bench_stats.c,ASAN_CB_CFLAGS)
 $(foreach s,smoke smoke_lambda,$(call prog,build/asan/test,build/obj/asan,build/obj/asan-kernel,$(s),test/$(s).c $(TLIB_SRC),ASAN_CB_CFLAGS))
 
 .PHONY: all test smoke check check-asan test-asan smoke-asan check-dynamo bench-dynamo clean print-kernel-src bootstrap bench

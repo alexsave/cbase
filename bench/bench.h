@@ -6,13 +6,13 @@
 //   cbase-bench report [FILE...]        (default: every bench/results/*.txt)
 //
 // Each measuring command prints its run and saves it as
-// <out>/<kind>-<UTC stamp>.txt (stats.h has the format). --out defaults to
+// <out>/<kind>-<UTC stamp>.txt (bench_stats.h has the format). --out defaults to
 // bench/results when that directory exists from the current one, else
 // c_base/bench/results, else the current directory.
 #ifndef CB_BENCH_H
 #define CB_BENCH_H
 
-#include "stats.h"
+#include "bench_stats.h"
 
 typedef struct {
     const char *url;

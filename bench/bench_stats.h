@@ -1,4 +1,4 @@
-// stats.h - the bench's numbers: percentiles, the saved run format, the report.
+// bench_stats.h - the bench's numbers: percentiles, the saved run format, the report.
 //
 // Pure functions over arrays and buffers, so test/unit_bench.c holds them to
 // known answers. Nothing here reads a clock or a socket.

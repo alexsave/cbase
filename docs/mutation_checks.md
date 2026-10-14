@@ -245,12 +245,12 @@ The console was checked by eye in headless Chrome against a mock API, light and 
 - lib_proc.c, the pump starts reading 12 s late: unit_proc, the 4 MB writer has not exited within 3 s and its last lines never arrive.
 ## Bench (bench/unit_bench.c)
 
-- stats.c: the percentile's `- 1e-9` dropped -> `percentiles_of_one_to_hundred` bs_percentile(v, 100, 7) == 7 (7.000000000000001 rounds up to the 8th).
-- stats.c: the rank truncated instead of rounded up -> `percentiles_round_up` s.p50 == 30.
-- stats.c: no sort before the summary -> `percentiles_of_one_to_hundred` s.p50 == 50.
-- stats.c: max read from the bottom -> `percentiles_of_one_to_hundred` s.max == 100.
-- stats.c: the ms rounding `(a + 5) / 10` made `a / 10` -> `report_tables` the whole report (12.35 became 12.34).
-- stats.c: the "-0.00" guard dropped -> `report_tables` the push_pv row of -3 us reads 0.00.
-- stats.c: the 5 ms share off by ten -> `report_tables` the whole report.
-- stats.c: a cpu row with trailing text accepted -> `run_file_round_trip` !bs_run_parse(JUNK).
-- stats.c: the cpu table never printed -> `report_tables` the whole report.
+- bench_stats.c: the percentile's `- 1e-9` dropped -> `percentiles_of_one_to_hundred` bs_percentile(v, 100, 7) == 7 (7.000000000000001 rounds up to the 8th).
+- bench_stats.c: the rank truncated instead of rounded up -> `percentiles_round_up` s.p50 == 30.
+- bench_stats.c: no sort before the summary -> `percentiles_of_one_to_hundred` s.p50 == 50.
+- bench_stats.c: max read from the bottom -> `percentiles_of_one_to_hundred` s.max == 100.
+- bench_stats.c: the ms rounding `(a + 5) / 10` made `a / 10` -> `report_tables` the whole report (12.35 became 12.34).
+- bench_stats.c: the "-0.00" guard dropped -> `report_tables` the push_pv row of -3 us reads 0.00.
+- bench_stats.c: the 5 ms share off by ten -> `report_tables` the whole report.
+- bench_stats.c: a cpu row with trailing text accepted -> `run_file_round_trip` !bs_run_parse(JUNK).
+- bench_stats.c: the cpu table never printed -> `report_tables` the whole report.
