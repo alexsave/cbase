@@ -228,6 +228,68 @@ static void join_echoes_postgres_bindings(void) {
     T_EQ_INT(c.n_topics, 3);
 }
 
+// supabase-swift 2.55.4 (the iOS app, recorded against `cbase serve` on
+// 2026-10-13) connects with vsn=2.0.0, not 1.0.0, and its join payload is a
+// Swift dictionary: the key order changes from run to run (both orders below
+// were sent by the same build), a "version" string with JSON-escaped slashes
+// sits beside the config, and broadcast carries "replication_ready". Only the
+// user id and the JWT are replaced here. The reply echoes each binding with an
+// id, and a refreshed token on the channel is not answered.
+static void supabase_swift_frames(void) {
+    setup();
+    cb_phx_conn c = conn2();
+    sent s;
+    const char *join_token_first =
+        "[\"1\",\"1\",\"realtime:pv-" U1 "\",\"phx_join\",{\"access_token\":\"tok-" U1 "\",\"config\":{\"postgres_changes\":["
+        "{\"schema\":\"public\",\"table\":\"player_views\",\"filter\":\"player_id=eq." U1 "\",\"event\":\"INSERT\"},"
+        "{\"schema\":\"public\",\"table\":\"player_views\",\"filter\":\"player_id=eq." U1 "\",\"event\":\"UPDATE\"}],"
+        "\"private\":false,\"broadcast\":{\"self\":false,\"ack\":false,\"replication_ready\":false},\"presence\":{\"enabled\":false,\"key\":\"\"}},"
+        "\"version\":\"supabase-swift\\/2.55.4; platform=iOS; platform-version=27.0.0; runtime=swift; runtime-version=6.4\"}]";
+    const char *join_token_last =
+        "[\"5\",\"5\",\"realtime:pv-" U1 "\",\"phx_join\",{\"config\":{\"postgres_changes\":["
+        "{\"filter\":\"player_id=eq." U1 "\",\"schema\":\"public\",\"table\":\"player_views\",\"event\":\"INSERT\"},"
+        "{\"schema\":\"public\",\"filter\":\"player_id=eq." U1 "\",\"table\":\"player_views\",\"event\":\"UPDATE\"}],"
+        "\"presence\":{\"enabled\":false,\"key\":\"\"},\"broadcast\":{\"ack\":false,\"replication_ready\":false,\"self\":false},\"private\":false},"
+        "\"version\":\"supabase-swift\\/2.55.4; platform=iOS; platform-version=27.0.0; runtime=swift; runtime-version=6.4\","
+        "\"access_token\":\"tok-" U1 "\"}]";
+    int ins = (int)cb_phx_binding_id("INSERT", "public", "player_views", "player_id=eq." U1);
+    int upd = (int)cb_phx_binding_id("UPDATE", "public", "player_views", "player_id=eq." U1);
+    char want[2048];
+
+    T_EQ_INT(on(&c, &s, join_token_first), CB_OK);
+    T_EQ_INT(s.n, 1);
+    snprintf(want, sizeof want,
+             "[\"1\",\"1\",\"realtime:pv-" U1 "\",\"phx_reply\",{\"response\":{\"postgres_changes\":["
+             "{\"schema\":\"public\",\"table\":\"player_views\",\"filter\":\"player_id=eq." U1 "\",\"event\":\"INSERT\",\"id\":%d},"
+             "{\"schema\":\"public\",\"table\":\"player_views\",\"filter\":\"player_id=eq." U1 "\",\"event\":\"UPDATE\",\"id\":%d}]},"
+             "\"status\":\"ok\"}]", ins, upd);
+    T_EQ_STR(s.f[0], want);
+    T_EQ_STR(c.user_id, U1);
+
+    // The heartbeat, as sent (no join_ref, topic "phoenix").
+    T_EQ_INT(on(&c, &s, "[null,\"2\",\"phoenix\",\"heartbeat\",{}]"), CB_OK);
+    T_EQ_INT(s.n, 1);
+    T_EQ_STR(s.f[0], "[null,\"2\",\"phoenix\",\"phx_reply\",{\"response\":{},\"status\":\"ok\"}]");
+
+    // A reconnect: the same channel joined again with the token last.
+    cb_phx_conn c2 = conn2();
+    T_EQ_INT(on(&c2, &s, join_token_last), CB_OK);
+    T_EQ_INT(s.n, 1);
+    snprintf(want, sizeof want,
+             "[\"5\",\"5\",\"realtime:pv-" U1 "\",\"phx_reply\",{\"response\":{\"postgres_changes\":["
+             "{\"filter\":\"player_id=eq." U1 "\",\"schema\":\"public\",\"table\":\"player_views\",\"event\":\"INSERT\",\"id\":%d},"
+             "{\"schema\":\"public\",\"filter\":\"player_id=eq." U1 "\",\"table\":\"player_views\",\"event\":\"UPDATE\",\"id\":%d}]},"
+             "\"status\":\"ok\"}]", ins, upd);
+    T_EQ_STR(s.f[0], want);
+    T_EQ_INT(c2.n_topics, 1);
+    T_EQ_STR(c2.topics[0], "pv-" U1);
+
+    // The token refresh supabase-swift sends on every auth state change.
+    T_EQ_INT(on(&c2, &s, "[\"5\",\"6\",\"realtime:pv-" U1 "\",\"access_token\",{\"access_token\":\"tok-" U1 "\"}]"), CB_OK);
+    T_EQ_INT(s.n, 0);
+    T_EQ_INT(c2.n_topics, 1);
+}
+
 static void join_refusals(void) {
     setup();
     rtf_member(G, U1);
@@ -534,6 +596,7 @@ int main(void) {
     T_RUN(may_join_matrix);
     T_RUN(heartbeat_and_garbage);
     T_RUN(join_echoes_postgres_bindings);
+    T_RUN(supabase_swift_frames);
     T_RUN(join_refusals);
     T_RUN(too_many_channels);
     T_RUN(leave_and_access_token);
