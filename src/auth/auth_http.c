@@ -24,9 +24,9 @@
 #include "auth_http.h"
 
 #include "auth.h"
+#include "json_surface.h"
 #include "net/router.h"
 #include "util/err.h"
-#include "util/json.h"
 #include "util/log.h"
 #include "util/str.h"
 
@@ -53,26 +53,7 @@ static void send_json(const cb_http_req *req, cb_http_res *res, int status, cb_b
 static void fail(const cb_http_req *req, cb_http_res *res, int status, const char *code, const char *msg) {
     cb_buf b;
     cb_buf_init(&b);
-    cb_jw w;
-    cb_jw_init(&w, &b);
-    cb_jw_obj(&w);
-    if (api_2024(req)) {
-        cb_jw_kstr(&w, "code", code);
-    } else {
-        cb_jw_kint(&w, "code", status);
-        cb_jw_kstr(&w, "error_code", code);
-    }
-    cb_jw_kstr(&w, "msg", msg);
-    if (strcmp(code, "weak_password") == 0) {
-        cb_jw_key(&w, "weak_password");
-        cb_jw_obj(&w);
-        cb_jw_key(&w, "reasons");
-        cb_jw_arr(&w);
-        cb_jw_str(&w, "length");
-        cb_jw_end(&w);
-        cb_jw_end(&w);
-    }
-    cb_jw_end(&w);
+    cb_js_gotrue_error(&b, api_2024(req), status, code, msg);
     send_json(req, res, status, &b);
     cb_buf_free(&b);
 }
@@ -102,44 +83,19 @@ static void fail_rc(const cb_http_req *req, cb_http_res *res, int rc) {
     }
 }
 
-// The body as a JSON object, or a 400 already answered.
-static bool body_object(const cb_http_req *req, cb_http_res *res, const char **json, size_t *n) {
-    *json = (const char *)req->body;
-    *n = req->body_len;
-    if (!*json || !cb_json_valid(*json, *n) || cb_json_find(*json, *n, "", NULL) != CB_JSON_OBJ) {
-        fail(req, res, 400, "bad_json", "Could not parse request body as JSON");
-        return false;
+// The `want` fields of the body, or false with a 400 already answered.
+static bool body(const cb_http_req *req, cb_http_res *res, unsigned want, cb_js_gotrue_body *out) {
+    switch (cb_js_gotrue_body_decode((const char *)req->body, req->body_len, want, out)) {
+    case CB_JS_GT_OK: return true;
+    case CB_JS_GT_NOT_OBJECT: fail(req, res, 400, "bad_json", "Could not parse request body as JSON"); return false;
+    default: fail(req, res, 400, "validation_failed", "A field is not a string, or is too long"); return false;
     }
-    return true;
-}
-
-// A string field into out, "" when absent; false (and a 400 answered) when it
-// is present but not a string or too long.
-static bool field(const cb_http_req *req, cb_http_res *res, const char *json, size_t n, const char *path, char *out,
-                  size_t cap) {
-    out[0] = 0;
-    cb_json_type t = cb_json_find(json, n, path, NULL);
-    if (t == CB_JSON_MISSING || t == CB_JSON_NULL) return true;
-    if (t == CB_JSON_STR && cb_json_get_str(json, n, path, out, cap)) return true;
-    fail(req, res, 400, "validation_failed", "A field is not a string, or is too long");
-    return false;
 }
 
 static void send_session(const cb_http_req *req, cb_http_res *res, const cb_session *s) {
     cb_buf b;
     cb_buf_init(&b);
-    cb_jw w;
-    cb_jw_init(&w, &b);
-    cb_jw_obj(&w);
-    cb_jw_kstr(&w, "access_token", s->access_token);
-    cb_jw_kstr(&w, "token_type", "bearer");
-    cb_jw_kint(&w, "expires_in", s->expires_in);
-    cb_jw_kint(&w, "expires_at", s->expires_at);
-    cb_jw_kstr(&w, "refresh_token", s->refresh_token);
-    cb_jw_key(&w, "user");
-    cb_auth_write_user(&w, &s->user, s->user_created_at, s->last_sign_in_at);
-    cb_jw_end(&w);
-    if (cb_jw_ok(&w)) send_json(req, res, 200, &b);
+    if (cb_js_gotrue_session(&b, s) == CB_OK) send_json(req, res, 200, &b);
     else fail(req, res, 500, "unexpected_failure", "response too large");
     cb_buf_free(&b);
 }
@@ -167,10 +123,7 @@ static void send_user(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res, con
     memcpy(cur.username, row.username, sizeof cur.username);
     cb_buf b;
     cb_buf_init(&b);
-    cb_jw w;
-    cb_jw_init(&w, &b);
-    cb_auth_write_user(&w, &cur, row.created_at, row.last_sign_in_at);
-    if (cb_jw_ok(&w)) send_json(req, res, 200, &b);
+    if (cb_js_gotrue_user(&b, &cur, row.created_at, row.last_sign_in_at) == CB_OK) send_json(req, res, 200, &b);
     else fail(req, res, 500, "unexpected_failure", "response too large");
     cb_buf_free(&b);
 }
@@ -183,17 +136,12 @@ static void send_user(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res, con
 // POST /auth/v1/signup {email, password, data:{username}}
 static void h_signup(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     NEED_AUTH(ctx, res);
-    const char *j;
-    size_t n;
-    char email[CB_EMAIL_MAX + 1], pw[256], name[CB_USERNAME_MAX * 4 + 1];
-    if (!body_object(req, res, &j, &n)) return;
-    if (!field(req, res, j, n, "email", email, sizeof email) || !field(req, res, j, n, "password", pw, sizeof pw) ||
-        !field(req, res, j, n, "data.username", name, sizeof name))
-        return;
-    if (!email[0]) { fail(req, res, 400, "validation_failed", "Signup requires an email"); return; }
-    if (!pw[0]) { fail(req, res, 400, "validation_failed", "Signup requires a valid password"); return; }
+    cb_js_gotrue_body f;
+    if (!body(req, res, CB_JS_GT_EMAIL | CB_JS_GT_PASSWORD | CB_JS_GT_USERNAME, &f)) return;
+    if (!f.email[0]) { fail(req, res, 400, "validation_failed", "Signup requires an email"); return; }
+    if (!f.password[0]) { fail(req, res, 400, "validation_failed", "Signup requires a valid password"); return; }
     cb_session s;
-    int rc = cb_auth_signup(ctx->auth, email, pw, name, &s);
+    int rc = cb_auth_signup(ctx->auth, f.email, f.password, f.username, &s);
     if (rc != CB_OK) fail_rc(req, res, rc);
     else send_session(req, res, &s);
 }
@@ -203,20 +151,15 @@ static void h_token(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     NEED_AUTH(ctx, res);
     char grant[32];
     if (!cb_http_query_get(req, "grant_type", grant, sizeof grant)) grant[0] = 0;
-    const char *j;
-    size_t n;
-    if (!body_object(req, res, &j, &n)) return;
+    bool password = strcmp(grant, "password") == 0, refresh = strcmp(grant, "refresh_token") == 0;
+    cb_js_gotrue_body f;
+    if (!body(req, res, password ? CB_JS_GT_EMAIL | CB_JS_GT_PASSWORD : refresh ? CB_JS_GT_REFRESH_TOKEN : 0, &f)) return;
     cb_session s;
     int rc;
-    if (strcmp(grant, "password") == 0) {
-        char email[CB_EMAIL_MAX + 1], pw[256];
-        if (!field(req, res, j, n, "email", email, sizeof email) || !field(req, res, j, n, "password", pw, sizeof pw))
-            return;
-        rc = cb_auth_signin(ctx->auth, email, pw, &s);
-    } else if (strcmp(grant, "refresh_token") == 0) {
-        char rt[128];
-        if (!field(req, res, j, n, "refresh_token", rt, sizeof rt)) return;
-        rc = cb_auth_refresh(ctx->auth, rt, &s);
+    if (password) {
+        rc = cb_auth_signin(ctx->auth, f.email, f.password, &s);
+    } else if (refresh) {
+        rc = cb_auth_refresh(ctx->auth, f.refresh_token, &s);
     } else {
         fail(req, res, 400, "validation_failed", "unsupported_grant_type");
         return;
@@ -239,12 +182,10 @@ static void h_user_put(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     NEED_AUTH(ctx, res);
     cb_user u;
     if (!caller(ctx, req, res, &u)) return;
-    const char *j;
-    size_t n;
-    char pw[256];
-    if (!body_object(req, res, &j, &n) || !field(req, res, j, n, "password", pw, sizeof pw)) return;
-    if (cb_json_find(j, n, "password", NULL) == CB_JSON_STR) {
-        int rc = cb_auth_change_password(ctx->auth, &u, pw);
+    cb_js_gotrue_body f;
+    if (!body(req, res, CB_JS_GT_PASSWORD, &f)) return;
+    if (f.has_password) {
+        int rc = cb_auth_change_password(ctx->auth, &u, f.password);
         if (rc != CB_OK) { fail_rc(req, res, rc); return; }
     }
     send_user(ctx, req, res, &u);

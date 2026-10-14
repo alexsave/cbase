@@ -4,6 +4,7 @@
 
 #include "util/err.h"
 #include "util/log.h"
+#include "util/clock.h"
 #include "util/b64.h"
 #include "util/hex.h"
 #include "util/json.h"
@@ -2446,4 +2447,184 @@ void cb_runtime_error_body(cb_buf *b, const char *type, const char *message) {
     cb_jw_kstr(&w, "errorMessage", message);
     cb_jw_kstr(&w, "errorType", type);
     cb_jw_end(&w);
+}
+
+// =====================================================================================
+// JWT.
+
+static const char JWT_HEADER_JSON[] = "{\"alg\":\"HS256\",\"typ\":\"JWT\"}";
+
+const char *cb_js_jwt_header(size_t *n) {
+    *n = sizeof JWT_HEADER_JSON - 1;
+    return JWT_HEADER_JSON;
+}
+
+static bool jwt_str_is(const char *json, size_t n, const char *path, const char *want) {
+    char v[64];
+    return cb_json_get_str(json, n, path, v, sizeof v) && strcmp(v, want) == 0;
+}
+
+bool cb_js_jwt_header_ok(const char *json, size_t n) {
+    return cb_json_valid(json, n) && cb_json_find(json, n, "", NULL) == CB_JSON_OBJ && jwt_str_is(json, n, "alg", "HS256");
+}
+
+int cb_js_jwt_claims(cb_buf *out, const cb_jwt_claims *c, const char *issuer) {
+    cb_jw w;
+    cb_jw_init(&w, out);
+    cb_jw_obj(&w);
+    cb_jw_kstr(&w, "aud", "authenticated");
+    cb_jw_kint(&w, "exp", c->exp);
+    cb_jw_kint(&w, "iat", c->iat);
+    if (issuer && issuer[0]) cb_jw_kstr(&w, "iss", issuer);
+    cb_jw_kstr(&w, "sub", c->sub);
+    cb_jw_kstr(&w, "email", c->email);
+    cb_jw_kstr(&w, "role", "authenticated");
+    cb_jw_kstr(&w, "session_id", c->session_id);
+    cb_jw_key(&w, "user_metadata");
+    cb_jw_obj(&w);
+    cb_jw_kstr(&w, "username", c->username);
+    cb_jw_end(&w);
+    cb_jw_key(&w, "app_metadata");
+    cb_jw_obj(&w);
+    cb_jw_kstr(&w, "provider", "email");
+    cb_jw_key(&w, "providers");
+    cb_jw_arr(&w);
+    cb_jw_str(&w, "email");
+    cb_jw_end(&w);
+    cb_jw_end(&w);
+    cb_jw_kbool(&w, "is_anonymous", false);
+    cb_jw_end(&w);
+    return cb_jw_ok(&w) ? CB_OK : CB_E_NOMEM;
+}
+
+bool cb_js_jwt_claims_decode(const char *body, size_t bl, cb_jwt_claims *out, bool *has_nbf, int64_t *nbf) {
+    memset(out, 0, sizeof *out);
+    *has_nbf = false;
+    *nbf = 0;
+    if (!cb_json_valid(body, bl) || cb_json_find(body, bl, "", NULL) != CB_JSON_OBJ) return false;
+    cb_jwt_claims c;
+    memset(&c, 0, sizeof c);
+    if (!jwt_str_is(body, bl, "aud", "authenticated") || !jwt_str_is(body, bl, "role", "authenticated")) return false;
+    if (!cb_json_get_i64(body, bl, "exp", &c.exp)) return false;
+    if (cb_json_find(body, bl, "nbf", NULL) != CB_JSON_MISSING) {
+        if (!cb_json_get_i64(body, bl, "nbf", nbf)) return false;
+        *has_nbf = true;
+    }
+    if (!cb_json_get_i64(body, bl, "iat", &c.iat)) c.iat = 0;
+    if (!cb_json_get_str(body, bl, "sub", c.sub, sizeof c.sub)) return false;
+    if (!cb_json_get_str(body, bl, "session_id", c.session_id, sizeof c.session_id)) return false;
+    if (!cb_json_get_str(body, bl, "email", c.email, sizeof c.email)) c.email[0] = 0;
+    if (!cb_json_get_str(body, bl, "user_metadata.username", c.username, sizeof c.username)) c.username[0] = 0;
+    *out = c;
+    return true;
+}
+
+// =====================================================================================
+// GoTrue.
+
+static bool gt_field(const char *json, size_t n, const char *path, char *out, size_t cap) {
+    out[0] = 0;
+    cb_json_type t = cb_json_find(json, n, path, NULL);
+    if (t == CB_JSON_MISSING || t == CB_JSON_NULL) return true;
+    return t == CB_JSON_STR && cb_json_get_str(json, n, path, out, cap);
+}
+
+cb_js_gt_rc cb_js_gotrue_body_decode(const char *json, size_t n, unsigned want, cb_js_gotrue_body *out) {
+    memset(out, 0, sizeof *out);
+    if (!json || !cb_json_valid(json, n) || cb_json_find(json, n, "", NULL) != CB_JSON_OBJ) return CB_JS_GT_NOT_OBJECT;
+    if ((want & CB_JS_GT_EMAIL) && !gt_field(json, n, "email", out->email, sizeof out->email)) return CB_JS_GT_BAD_FIELD;
+    if ((want & CB_JS_GT_PASSWORD) && !gt_field(json, n, "password", out->password, sizeof out->password))
+        return CB_JS_GT_BAD_FIELD;
+    if ((want & CB_JS_GT_USERNAME) && !gt_field(json, n, "data.username", out->username, sizeof out->username))
+        return CB_JS_GT_BAD_FIELD;
+    if ((want & CB_JS_GT_REFRESH_TOKEN) &&
+        !gt_field(json, n, "refresh_token", out->refresh_token, sizeof out->refresh_token))
+        return CB_JS_GT_BAD_FIELD;
+    out->has_password = (want & CB_JS_GT_PASSWORD) && cb_json_find(json, n, "password", NULL) == CB_JSON_STR;
+    return CB_JS_GT_OK;
+}
+
+void cb_js_gotrue_error(cb_buf *b, bool api_2024, int status, const char *code, const char *msg) {
+    cb_jw w;
+    cb_jw_init(&w, b);
+    cb_jw_obj(&w);
+    if (api_2024) {
+        cb_jw_kstr(&w, "code", code);
+    } else {
+        cb_jw_kint(&w, "code", status);
+        cb_jw_kstr(&w, "error_code", code);
+    }
+    cb_jw_kstr(&w, "msg", msg);
+    if (strcmp(code, "weak_password") == 0) {
+        cb_jw_key(&w, "weak_password");
+        cb_jw_obj(&w);
+        cb_jw_key(&w, "reasons");
+        cb_jw_arr(&w);
+        cb_jw_str(&w, "length");
+        cb_jw_end(&w);
+        cb_jw_end(&w);
+    }
+    cb_jw_end(&w);
+}
+
+// GoTrue's spelling of a time: UTC with microseconds and a 'Z', which is what
+// supabase-swift's ISO-8601 parser reads (Go's RFC 3339).
+static void gt_kts(cb_jw *w, const char *k, int64_t ms) {
+    char t[40];
+    if (ms <= 0 || cb_iso8601(ms, t, sizeof t) != 32) { cb_jw_knull(w, k); return; }
+    memcpy(t + 26, "Z", 2);   // "...ss.ffffff+00:00" -> "...ss.ffffffZ"
+    cb_jw_kstr(w, k, t);
+}
+
+static void gt_user(cb_jw *w, const cb_user *u, int64_t created_at, int64_t last_sign_in_at) {
+    cb_jw_obj(w);
+    cb_jw_kstr(w, "id", u->id);
+    cb_jw_kstr(w, "aud", "authenticated");
+    cb_jw_kstr(w, "role", "authenticated");
+    cb_jw_kstr(w, "email", u->email);
+    gt_kts(w, "email_confirmed_at", created_at);
+    cb_jw_kstr(w, "phone", "");
+    gt_kts(w, "confirmed_at", created_at);
+    gt_kts(w, "last_sign_in_at", last_sign_in_at);
+    cb_jw_key(w, "app_metadata");
+    cb_jw_obj(w);
+    cb_jw_kstr(w, "provider", "email");
+    cb_jw_key(w, "providers");
+    cb_jw_arr(w);
+    cb_jw_str(w, "email");
+    cb_jw_end(w);
+    cb_jw_end(w);
+    cb_jw_key(w, "user_metadata");
+    cb_jw_obj(w);
+    cb_jw_kstr(w, "username", u->username);
+    cb_jw_end(w);
+    cb_jw_key(w, "identities");
+    cb_jw_arr(w);
+    cb_jw_end(w);
+    gt_kts(w, "created_at", created_at);
+    gt_kts(w, "updated_at", last_sign_in_at > created_at ? last_sign_in_at : created_at);
+    cb_jw_kbool(w, "is_anonymous", false);
+    cb_jw_end(w);
+}
+
+int cb_js_gotrue_session(cb_buf *b, const cb_session *s) {
+    cb_jw w;
+    cb_jw_init(&w, b);
+    cb_jw_obj(&w);
+    cb_jw_kstr(&w, "access_token", s->access_token);
+    cb_jw_kstr(&w, "token_type", "bearer");
+    cb_jw_kint(&w, "expires_in", s->expires_in);
+    cb_jw_kint(&w, "expires_at", s->expires_at);
+    cb_jw_kstr(&w, "refresh_token", s->refresh_token);
+    cb_jw_key(&w, "user");
+    gt_user(&w, &s->user, s->user_created_at, s->last_sign_in_at);
+    cb_jw_end(&w);
+    return cb_jw_ok(&w) ? CB_OK : CB_E_NOMEM;
+}
+
+int cb_js_gotrue_user(cb_buf *b, const cb_user *u, int64_t created_at, int64_t last_sign_in_at) {
+    cb_jw w;
+    cb_jw_init(&w, b);
+    gt_user(&w, u, created_at, last_sign_in_at);
+    return cb_jw_ok(&w) ? CB_OK : CB_E_NOMEM;
 }

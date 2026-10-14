@@ -21,6 +21,7 @@
 
 #include "store/store.h"
 #include "aws/event.h"
+#include "auth/auth.h"
 #include "util/str.h"
 
 #include <stdbool.h>
@@ -375,5 +376,58 @@ int  cb_event_redact(const char *json, size_t len, size_t max, cb_buf *out);
 // The Lambda Runtime API (runtime_api.c): the error body Lambda documents for an
 // invocation or init error, {"errorMessage": .., "errorType": ..}, into b.
 void cb_runtime_error_body(cb_buf *b, const char *type, const char *message);
+
+// =====================================================================================
+// JWT (jwt.c): the header and claims JSON of an access token. jwt.c does the
+// base64url, the HMAC and the time and UUID checks.
+
+// The header {"alg":"HS256","typ":"JWT"} and its length.
+const char *cb_js_jwt_header(size_t *n);
+// The header decodes to a JSON object whose alg is HS256.
+bool cb_js_jwt_header_ok(const char *json, size_t n);
+// GoTrue's claims for c, in jwt.h's order (iss only when issuer is not empty),
+// into out. CB_OK or CB_E_NOMEM.
+int  cb_js_jwt_claims(cb_buf *out, const cb_jwt_claims *c, const char *issuer);
+// The claims back: false unless the body is a valid JSON object with aud and
+// role "authenticated", an integer exp, string sub and session_id, and nbf
+// (when present, *has_nbf) an integer. iat defaults to 0, email and username
+// to "".
+bool cb_js_jwt_claims_decode(const char *json, size_t n, cb_jwt_claims *c, bool *has_nbf, int64_t *nbf);
+
+// =====================================================================================
+// GoTrue (auth_http.c): the bodies supabase-js and supabase-swift send and read.
+
+// The fields a route reads from its request body.
+enum {
+    CB_JS_GT_EMAIL         = 1 << 0,   // email
+    CB_JS_GT_PASSWORD      = 1 << 1,   // password
+    CB_JS_GT_USERNAME      = 1 << 2,   // data.username (signup)
+    CB_JS_GT_REFRESH_TOKEN = 1 << 3,   // refresh_token
+};
+typedef struct {
+    char email[CB_EMAIL_MAX + 1];
+    char password[256];
+    char username[CB_USERNAME_MAX * 4 + 1];
+    char refresh_token[128];
+    bool has_password;   // password was present as a string (possibly "")
+} cb_js_gotrue_body;
+typedef enum {
+    CB_JS_GT_OK = 0,
+    CB_JS_GT_NOT_OBJECT,   // not a JSON object: GoTrue's 400 bad_json
+    CB_JS_GT_BAD_FIELD,    // a wanted field is not a string, or too long: 400 validation_failed
+} cb_js_gt_rc;
+// Reads the `want` fields (absent or null: ""); fields not wanted are not looked at.
+cb_js_gt_rc cb_js_gotrue_body_decode(const char *json, size_t n, unsigned want, cb_js_gotrue_body *out);
+// The error body for the API version the request named: {"code":"<code>","msg":..}
+// for 2024-01-01, else {"code":<status>,"error_code":"<code>","msg":..}; a
+// weak_password also carries weak_password.reasons ["length"].
+void cb_js_gotrue_error(cb_buf *out, bool api_2024, int status, const char *code, const char *msg);
+// The session object ({access_token, token_type:"bearer", expires_in,
+// expires_at, refresh_token, user}). CB_OK or CB_E_NOMEM.
+int  cb_js_gotrue_session(cb_buf *out, const cb_session *s);
+// The user object ({"id","aud","role","email",..,"user_metadata":{"username"},
+// "app_metadata",..,"created_at","updated_at"}), times as GoTrue spells them
+// (UTC, microseconds, 'Z'; null for 0). CB_OK or CB_E_NOMEM.
+int  cb_js_gotrue_user(cb_buf *out, const cb_user *u, int64_t created_at, int64_t last_sign_in_at);
 
 #endif

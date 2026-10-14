@@ -77,10 +77,4 @@ int cb_auth_delete_user(cb_auth *a, const char *user_id);
 // deleted account stops answering while its token lives). CB_E_NOT_FOUND.
 int cb_auth_user_row(cb_auth *a, const char *user_id, cb_user_row *out);
 
-// The user object GoTrue answers with ({"id","aud","role","email",
-// "user_metadata":{"username"},"app_metadata",...,"created_at"}), written into
-// an open JSON writer. Shared by auth_http.c and the admin Users panel.
-struct cb_jw;
-void cb_auth_write_user(struct cb_jw *w, const cb_user *u, int64_t created_at, int64_t last_sign_in_at);
-
 #endif
