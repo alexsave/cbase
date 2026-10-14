@@ -49,7 +49,7 @@ static long score(const char *pattern, const char *path) {
     return strcmp(path, pattern) == 0 ? (long)stem * 2 + 1 : -1;
 }
 
-const cb_route *cb_router_match(const cb_router *r, const char *method, const char *path, bool *path_known) {
+static const cb_route *match(const cb_router *r, const char *method, const char *path, bool *path_known) {
     const cb_route *best = NULL;
     long best_score = -1;
     bool known = false;
@@ -61,6 +61,14 @@ const cb_route *cb_router_match(const cb_router *r, const char *method, const ch
         if (s > best_score) { best = &r->r[i]; best_score = s; }
     }
     if (path_known) *path_known = known;
+    return best;
+}
+
+const cb_route *cb_router_match(const cb_router *r, const char *method, const char *path, bool *path_known) {
+    const cb_route *best = match(r, method, path, path_known);
+    // HEAD is GET without the body (RFC 9110 9.3.2): a path with no HEAD route
+    // of its own answers through its GET route, and handler.c drops the body.
+    if (!best && strcmp(method, "HEAD") == 0) best = match(r, "GET", path, NULL);
     return best;
 }
 

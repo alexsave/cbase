@@ -78,6 +78,10 @@ typedef struct cb_http_res {
     cb_buf headers;    // "Name: value\r\n" lines (Content-Length is added on write)
     cb_buf body;
     bool   close;      // close the connection after this response
+    // The answer to a HEAD (cb_handle sets it): serialized with the body's
+    // Content-Length but without the body. The Lambda encoder still sends the
+    // body; the function URL front end drops it (and says Content-Length: 0).
+    bool   head;
     // A WebSocket upgrade (ws.h cb_ws_upgrade fills these; nothing else should).
     bool   upgrade;
     const struct cb_ws_handlers *ws_handlers;

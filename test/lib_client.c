@@ -104,6 +104,9 @@ int tc_request(int fd, const char *method, const char *path, const char *headers
     char cl[32];
     size_t want = tc_header(out, "content-length", cl, sizeof cl) ? (size_t)strtoul(cl, NULL, 10) : 0;
     if (out->status == 101) want = 0;
+    // A HEAD answer has GET's Content-Length and no body. Whatever arrived
+    // behind the head anyway is kept as the body, so a test sees the bug.
+    if (strcmp(method, "HEAD") == 0) want = in.len - head_len;
     while (in.len - head_len < want) {
         if (read_more(fd, &in, timeout_ms) != 1) { cb_buf_free(&in); return -1; }
     }

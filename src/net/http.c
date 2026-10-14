@@ -288,6 +288,6 @@ void cb_res_serialize(const cb_http_res *res, bool keep_alive, cb_buf *out) {
     if (res->status >= 200 && res->status != 204) cb_buf_printf(out, "Content-Length: %zu\r\n", res->body.len);
     if (res->status != 101) cb_buf_puts(out, keep_alive ? "Connection: keep-alive\r\n" : "Connection: close\r\n");
     cb_buf_puts(out, "\r\n");
-    if (res->status >= 200 && res->status != 204 && res->body.len)
+    if (res->status >= 200 && res->status != 204 && res->body.len && !res->head)
         cb_buf_append(out, res->body.p, res->body.len);
 }

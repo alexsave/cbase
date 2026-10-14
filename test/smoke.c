@@ -29,6 +29,7 @@
 
 #include "lib_client.h"
 #include "lib_proc.h"
+#include "fixture_unfurl.h"
 
 #include "awire.h"
 #include "client_table.h"
@@ -86,6 +87,32 @@ static void health(void) {
     T_EQ_INT(tc_http(g_port, "GET", "/nope", NULL, NULL, 0, &r), 0);
     T_EQ_INT(r.status, 404);
     tc_response_free(&r);
+}
+
+// GET and HEAD /m/<payload>: the link preview a crawler fetches, with no key.
+static void unfurl(void) {
+    char path[4096];
+    snprintf(path, sizeof path, "/m/%s", UNFURL_GOLDENS[0].payload);
+    tc_response g, h;
+    T_EQ_INT(tc_http(g_port, "GET", path, NULL, NULL, 0, &g), 0);
+    T_EQ_INT(g.status, 200);
+    char v[128];
+    T_EQ_STR(tc_header(&g, "content-type", v, sizeof v), "text/html; charset=utf-8");
+    T_EQ_STR(tc_header(&g, "cache-control", v, sizeof v), "public, max-age=300");
+    for (int k = 0; k < UNFURL_N_TAGS; k++) T_CHECK(strstr(cb_buf_cstr(&g.body), UNFURL_GOLDENS[0].tags[k]) != NULL);
+    T_EQ_INT(tc_http(g_port, "HEAD", path, NULL, NULL, 0, &h), 0);
+    T_EQ_INT(h.status, 200);
+    char cl[32];
+    snprintf(cl, sizeof cl, "%zu", g.body.len);
+    T_EQ_STR(tc_header(&h, "content-length", v, sizeof v), cl);
+    T_EQ_INT(h.body.len, 0);
+    tc_response_free(&g);
+    tc_response_free(&h);
+    // HEAD on any GET route: /health answered 405 to it before.
+    T_EQ_INT(tc_http(g_port, "HEAD", "/health", NULL, NULL, 0, &h), 0);
+    T_EQ_INT(h.status, 200);
+    T_EQ_INT(h.body.len, 0);
+    tc_response_free(&h);
 }
 
 static void drains_on_sigterm(void) {
@@ -519,6 +546,7 @@ int main(int argc, char **argv) {
     g_bin = argv[1];
     T_RUN(starts_and_listens);
     if (g_port > 0) T_RUN(health);
+    if (g_port > 0) T_RUN(unfurl);
     const char *game = getenv("CBASE_SMOKE_GAME");
     if (g_port > 0 && !(game && strcmp(game, "0") == 0)) T_RUN(game_scenario);
     else printf("NOTE smoke: the game scenario is off (CBASE_SMOKE_GAME=0)\n");
