@@ -367,6 +367,46 @@ Found here:
   `c_base/Makefile` now reads them from `foolish/c`'s own `WASM_FLAGS` (its `print-human-caps` target, so no second copy exists) for the kernel and for c_base's objects, and `table_ops.c` asserts `MAX_LOG_PAIRS >= MAX_DECK` at compile time.
 - Kernel, the same in production: a session over `MAX_LOGS` (1024) records is truncated and its replay refused the same way; it is sized on p99 by design and was not observed.
 
+## Unfurl route
+
+`GET /m/<payload>` (`src/app/unfurl_http.{h,c}`, built 2026-10-14) is the link preview a shared iMessage game gets in Messages, Slack and WhatsApp, which run no JavaScript.
+It replaces the Next app's only server code, `foolish/src/app/m/[payload]/layout.tsx` generateMetadata (docs/VERCEL.md 4(a)), so the web app can become a static export.
+
+As built:
+
+- The payload is percent-decoded as `decodeURIComponent` does (a bad escape, or escapes that are not UTF-8, give the generic tags) and trimmed with JavaScript's whitespace set.
+  A `1` payload goes through the same kernel C the wasm wraps: `replay_b32_decode` (case-blind, stops at a share link's `-`), `msg_decode`, then `msg_replay` into a `Game`, because a header that lies about its chain decodes and only the replay refuses it.
+  Names are decoded as TextDecoder decodes them (WHATWG: each bad subpart one U+FFFD, a leading BOM dropped), empty names are dropped before the count, and the title is "A vs B - turn N", "- a finished Durak game" (phase 3) or "- a rematch, waiting to start" (phase 0 with a carry key), or "N players" when fewer than two seats are named.
+- The page: title, description, robots `noindex, follow`, og:title, og:description, og:site_name Foolish, og:type website, twitter:card summary, twitter:title, twitter:description, escaped as React escapes (`& < > " '`, the apostrophe as `&#x27;`), then `<meta http-equiv="refresh" content="0;url=https://foolish.cards/">` and a plain link to the same place.
+  No script: page.tsx's `router.replace('/')` becomes the refresh.
+  200 `text/html; charset=utf-8`, `Cache-Control: public, max-age=300`, no API key.
+  404 for `/m/` and for a path with another slash in it, as Next answered.
+- HEAD, for every route: `cb_router_match` falls back from HEAD to the GET route when a path has no HEAD route of its own, and `cb_handle` marks the response `head`, so `cbase serve` writes GET's headers and Content-Length with no body (RFC 9110 9.3.2).
+  HEAD /health answered 405 before.
+  The Lambda encoder still sends the body; the function URL front end drops it and keeps the length.
+- One decode at a time, behind a mutex, with one static `Game`: see the defect below.
+
+Tests: `test/unit_unfurl.c` holds the page to 20 goldens in `test/fixture_unfurl.h`, tag for tag and byte for byte: a live game at turn 10 (3 seats) and at turn 12 (2 seats), a finished 4-seat game, its rematch lobby, a plain lobby, a lobby with one named seat, an unnamed seat, names with all five escaped characters, non-ASCII names, names that are not UTF-8, a share-link suffix, lower case, percent-encoded blanks, a truncated payload, a header the replay refuses, a `2` payload, garbage, a bad escape, and an escape that is not UTF-8.
+The payloads are kernel-made (`tools/unfurl_payloads.c`, `make build/unfurl-payloads`: kernel-sealed fixtures decoded, renamed, encoded again, base32'd).
+The tags are the TS route's generateMetadata output under tsx with bots.wasm loaded, each rendered by react-dom/server so the escaping is React's own; the mapping from Metadata to tags was checked tag for tag against a real `next start` page.
+The smoke (`test/smoke.c`) does GET and HEAD `/m/<payload>` and HEAD `/health` through `cbase serve`.
+Mutation-checked: no replay, the apostrophe as `&#39;`, no carry-key test, no trim, no U+FFFD for a cut sequence, no empty-name filter, no UTF-8 check on escapes, no HEAD fallback, a body on HEAD, no 404, the cache age.
+
+Found here:
+
+- Production foolish.cards has unfurled every link with the generic tags.
+  Under `next build` the route's server bundle hands node:fs a URL object from another realm when it loads bots.wasm.gz ("The "path" argument must be of type string or an instance of Buffer or URL. Received an instance of URL"), the catch swallows it, and the title is always "A Durak game in iMessage" (seen with `next start` and on https://foolish.cards on 2026-10-14).
+  e2e/msg_og.test.ts calls generateMetadata under tsx, where the load works, so it never saw this.
+  The goldens are what the route was written to say, and the C route says it.
+- Kernel, and a c_base defect in `cbase serve`: the replay codec keeps its scratch in plain process globals (`replay.c`: `g_bn`, `g_rec`, `g_model`, `g_opts`, `g_weights`, `g_deal_slot`, `g_atom_sink`, `g_err`), not `_Thread_local` ones, so two replay encodes or decodes on two pool threads race.
+  The unfurl's mutex covers unfurl against unfurl only; `table_replay_code` (a game finishing) runs the same codec on another pool thread.
+  Lambda runs one invocation per container and is not affected.
+  The fix is the kernel's: mark those statics `_Thread_local` (every single-threaded build defines the qualifier away already), then drop the mutex.
+- What differs from the TS page on purpose: the root layout's tags (theme-color, apple-itunes-app, the web-app tags, fonts, analytics) are not on this page, because nothing renders it but a crawler and the instant redirect; the payload is percent-decoded once (Next may decode a param before the route's own `decodeURIComponent`, which differs only for a payload holding `%25`, which base32 never does).
+- Open: crawlers that follow a meta refresh would unfurl the homepage instead.
+  The TS page redirected in JavaScript for exactly that reason; docs/VERCEL.md 4(a) proposed an inline `location.replace` with the refresh only under `<noscript>`, and this build follows the later instruction to use no script.
+  Check a real Messages, Slack and WhatsApp unfurl once the web distribution routes `/m/*` here.
+
 ## Module: realtime and PostgREST
 
 Owner: `src/realtime/`.
@@ -494,6 +534,7 @@ Two concurrent drives race on the restore, and one of them can lose its per-deci
 So serve's bot pool defaults to one thread (`CBASE_BOT_WORKERS=1`) until the kernel makes that hook `_Thread_local`, a one-word kernel change outside c_base.
 Lambda runs one invocation per container at a time and is not affected.
 Human moves and lobby edits do not touch the hook.
+The replay codec is not per-thread either (replay.c's scratch is plain process globals): see "Unfurl route", Found here.
 
 ## Binary alternatives and the latency bench
 
