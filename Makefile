@@ -135,6 +135,10 @@ prog = $(eval $(call PROG,$(1),$(2),$(3),$(4),$(5),$(6)))
 $(call prog,build,build/obj/cbase,build/obj/kernel,cbase,src/main_serve.c,CB_CFLAGS)
 $(call prog,build,build/obj/cbase,build/obj/kernel,bootstrap,src/main_lambda.c,CB_CFLAGS)
 $(call prog,build,build/obj/cbase,build/obj/kernel,cbase-import,$(IMPORT_SRC),CB_CFLAGS)
+# The /m/<payload> cases test/fixture_unfurl.h holds, made by the kernel
+# (tools/unfurl_payloads.c). Not part of any check: it is run by hand when the
+# goldens are regenerated.
+$(call prog,build,build/obj/cbase,build/obj/kernel,unfurl-payloads,tools/unfurl_payloads.c,CB_CFLAGS)
 $(call prog,build/asan,build/obj/asan,build/obj/asan-kernel,cbase,src/main_serve.c,ASAN_CB_CFLAGS)
 $(call prog,build/asan,build/obj/asan,build/obj/asan-kernel,bootstrap,src/main_lambda.c,ASAN_CB_CFLAGS)
 $(foreach u,$(UNITS),$(call prog,build/test,build/obj/cbase,build/obj/kernel,$(u),test/$(u).c $(TLIB_SRC),CB_CFLAGS))

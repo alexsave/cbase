@@ -1,0 +1,291 @@
+// fixture_unfurl.h - the /m/<payload> goldens unit_unfurl.c holds the C route to.
+//
+// WHERE THEY CAME FROM (2026-10-14). The payloads are kernel-made
+// (tools/unfurl_payloads.c: kernel-sealed fixtures decoded, renamed where a case
+// needs other names, encoded again, base32'd). The tags are what the TypeScript
+// route, foolish/src/app/m/[payload]/layout.tsx generateMetadata, answered for
+// each payload, run under tsx with bots.wasm loaded, its Metadata mapped to tags
+// in the order and spelling Next 16 renders them and each tag rendered by
+// react-dom/server's renderToStaticMarkup, so the HTML escaping is React's own.
+// The mapping was checked against a real `next start` page for the generic
+// case, tag for tag.
+//
+// Why not straight from `next start`: under `next build` the route never
+// decoded anything. Its server bundle hands node:fs a URL object from another
+// realm when it loads bots.wasm.gz ("The "path" argument must be of type
+// string or an instance of Buffer or URL. Received an instance of URL"), the
+// catch swallows it, and every link unfurled with the generic tags. Production
+// foolish.cards did exactly that on 2026-10-14. These goldens are what the
+// route was written to say, which is what the C route says.
+//
+// The TS route is to be deleted (docs/VERCEL.md 4(a)), so these strings are the
+// contract from here on, not something to regenerate.
+#ifndef CB_FIXTURE_UNFURL_H
+#define CB_FIXTURE_UNFURL_H
+
+#define UNFURL_N_TAGS 10
+
+typedef struct {
+    const char *label;
+    const char *payload;                // exactly as it follows /m/ in the path
+    const char *tags[UNFURL_N_TAGS];    // in page order, as React writes them
+} unfurl_golden;
+
+static const unfurl_golden UNFURL_GOLDENS[] = {
+    { "live3_turn10",
+      "164BAAAXPZWVYSZ2FEMAQUAAAAMAACAAAAAAAAAAAAB45Q4QGIEGTPUYCYGO7W3FMXSF6X6DZ2JBGEIECGFLQTTAPDA3YQAYAARAW43RQAECEC3TOGEBAIQLONYZAUAABFFI5UW7PGCLPT557FT5VRUAT63L7U",
+      {
+        "<title>Ann0 vs Ann1 vs Ann2 - turn 10</title>",
+        "<meta name=\"description\" content=\"A Durak game in iMessage. Foolish turns a message thread into a card table.\"/>",
+        "<meta name=\"robots\" content=\"noindex, follow\"/>",
+        "<meta property=\"og:title\" content=\"Ann0 vs Ann1 vs Ann2 - turn 10\"/>",
+        "<meta property=\"og:description\" content=\"A Durak game in iMessage. Foolish turns a message thread into a card table.\"/>",
+        "<meta property=\"og:site_name\" content=\"Foolish\"/>",
+        "<meta property=\"og:type\" content=\"website\"/>",
+        "<meta name=\"twitter:card\" content=\"summary\"/>",
+        "<meta name=\"twitter:title\" content=\"Ann0 vs Ann1 vs Ann2 - turn 10\"/>",
+        "<meta name=\"twitter:description\" content=\"A Durak game in iMessage. Foolish turns a message thread into a card table.\"/>",
+      } },
+    { "live2_turn12",
+      "164CQAAXPZWVYSZ2FEMAQYAAAAIAAEAAAAAAAAAAAAAPJTBXDSOQYNGC3ZELGHGEMHRQH2T7CEZZAD43FF27HZCO3M7GFKNASAABAABCBNZXDAAIEIFXG4MIMAAORPELHMIP3JSVRVYNCLZKPZI",
+      {
+        "<title>Ann0 vs Ann1 - turn 12</title>",
+        "<meta name=\"description\" content=\"A Durak game in iMessage. Foolish turns a message thread into a card table.\"/>",
+        "<meta name=\"robots\" content=\"noindex, follow\"/>",
+        "<meta property=\"og:title\" content=\"Ann0 vs Ann1 - turn 12\"/>",
+        "<meta property=\"og:description\" content=\"A Durak game in iMessage. Foolish turns a message thread into a card table.\"/>",
+        "<meta property=\"og:site_name\" content=\"Foolish\"/>",
+        "<meta property=\"og:type\" content=\"website\"/>",
+        "<meta name=\"twitter:card\" content=\"summary\"/>",
+        "<meta name=\"twitter:title\" content=\"Ann0 vs Ann1 - turn 12\"/>",
+        "<meta name=\"twitter:description\" content=\"A Durak game in iMessage. Foolish turns a message thread into a card table.\"/>",
+      } },
+    { "finished4",
+      "164CQAA3AMAAAAAAAAAAGIAAAAQARCAAAAAAAAAAAABWTQDY4VZ3DQESIKDXCZOXBJZ74DHQBQ6APK2GNTHYLDASS2D7CDZBUAACAABCBNRSXQAIEJVUXEYICAVFG63TBOMBQKUDSNF4WCZAAANYNS267ZJJ2V4KZWCHHEOHOKBLE57Q7DBSKGRNXDVU66QKH3IUEWR7TF4GNZIC2DTCGMGUCPLLM7Q7I265PU",
+      {
+        "<title>Alex vs Mira vs Jonas vs Priya - a finished Durak game</title>",
+        "<meta name=\"description\" content=\"A Durak game in iMessage. Foolish turns a message thread into a card table.\"/>",
+        "<meta name=\"robots\" content=\"noindex, follow\"/>",
+        "<meta property=\"og:title\" content=\"Alex vs Mira vs Jonas vs Priya - a finished Durak game\"/>",
+        "<meta property=\"og:description\" content=\"A Durak game in iMessage. Foolish turns a message thread into a card table.\"/>",
+        "<meta property=\"og:site_name\" content=\"Foolish\"/>",
+        "<meta property=\"og:type\" content=\"website\"/>",
+        "<meta name=\"twitter:card\" content=\"summary\"/>",
+        "<meta name=\"twitter:title\" content=\"Alex vs Mira vs Jonas vs Priya - a finished Durak game\"/>",
+        "<meta name=\"twitter:description\" content=\"A Durak game in iMessage. Foolish turns a message thread into a card table.\"/>",
+      } },
+    { "rematch4",
+      "164DAAADAMAAAAAAAAAAAAAACAQAQB6EHKNOKHTSBBVLZFJBLWW5XA5UHVWDTKZMNNOJRDTLVBYEWSIPGVCFE32UPHAKKUNASAAAP6RGJ5UAQABAAARAWYZLYAECE22LSMEBAKSTPNZQXGAYFKBZGS6LBAAAA",
+      {
+        "<title>Alex vs Mira vs Jonas vs Priya - a rematch, waiting to start</title>",
+        "<meta name=\"description\" content=\"A Durak game in iMessage. Foolish turns a message thread into a card table.\"/>",
+        "<meta name=\"robots\" content=\"noindex, follow\"/>",
+        "<meta property=\"og:title\" content=\"Alex vs Mira vs Jonas vs Priya - a rematch, waiting to start\"/>",
+        "<meta property=\"og:description\" content=\"A Durak game in iMessage. Foolish turns a message thread into a card table.\"/>",
+        "<meta property=\"og:site_name\" content=\"Foolish\"/>",
+        "<meta property=\"og:type\" content=\"website\"/>",
+        "<meta name=\"twitter:card\" content=\"summary\"/>",
+        "<meta name=\"twitter:title\" content=\"Alex vs Mira vs Jonas vs Priya - a rematch, waiting to start\"/>",
+        "<meta name=\"twitter:description\" content=\"A Durak game in iMessage. Foolish turns a message thread into a card table.\"/>",
+      } },
+    { "lobby_one_name",
+      "164DAAADAMAAAAAAAAAAAAAACAQAQB6EHKNOKHTSBBVLZFJBLWW5XA5UHVWDTKZMNNOJRDTLVBYEWSIPGVCFE32UPHAKKUNASAAAP6AAAAAAP6AIAARAWYZLYAAAA",
+      {
+        "<title>4 players - turn 0</title>",
+        "<meta name=\"description\" content=\"A Durak game in iMessage. Foolish turns a message thread into a card table.\"/>",
+        "<meta name=\"robots\" content=\"noindex, follow\"/>",
+        "<meta property=\"og:title\" content=\"4 players - turn 0\"/>",
+        "<meta property=\"og:description\" content=\"A Durak game in iMessage. Foolish turns a message thread into a card table.\"/>",
+        "<meta property=\"og:site_name\" content=\"Foolish\"/>",
+        "<meta property=\"og:type\" content=\"website\"/>",
+        "<meta name=\"twitter:card\" content=\"summary\"/>",
+        "<meta name=\"twitter:title\" content=\"4 players - turn 0\"/>",
+        "<meta name=\"twitter:description\" content=\"A Durak game in iMessage. Foolish turns a message thread into a card table.\"/>",
+      } },
+    { "lobby_plain",
+      "164DAAADAMAAAAAAAAAAAAAACAQAQB6EHKNOKHTSBBVLZFJBLWW5XA5UHVWDTKZMNNOJRDTLVBYEWSIPGVCFE32UPHAKKUNASAAAP6AAAAAAP6AQAARAWYZLYAECE22LSMEAAA",
+      {
+        "<title>Alex vs Mira - turn 0</title>",
+        "<meta name=\"description\" content=\"A Durak game in iMessage. Foolish turns a message thread into a card table.\"/>",
+        "<meta name=\"robots\" content=\"noindex, follow\"/>",
+        "<meta property=\"og:title\" content=\"Alex vs Mira - turn 0\"/>",
+        "<meta property=\"og:description\" content=\"A Durak game in iMessage. Foolish turns a message thread into a card table.\"/>",
+        "<meta property=\"og:site_name\" content=\"Foolish\"/>",
+        "<meta property=\"og:type\" content=\"website\"/>",
+        "<meta name=\"twitter:card\" content=\"summary\"/>",
+        "<meta name=\"twitter:title\" content=\"Alex vs Mira - turn 0\"/>",
+        "<meta name=\"twitter:description\" content=\"A Durak game in iMessage. Foolish turns a message thread into a card table.\"/>",
+      } },
+    { "names_html",
+      "164CQAAXPZWVYSZ2FEMAQYAAAAIAAEAAAAAAAAAAAAAPJTBXDSOQYNGC3ZELGHGEMHRQH2T7CEZZAD43FF27HZCO3M7GFKNASAABAACR4MI7EC3TOHQXWEPQBCFKG63JAEYQCESTFOJZHSIRAE5FCODAADULZCZ3CD62MVMNODIS6KT6K",
+      {
+        "<title>&lt;b&gt;Ann&lt;/b&gt; vs Tom &amp; &quot;Jerry&quot; &#x27;J&#x27; - turn 12</title>",
+        "<meta name=\"description\" content=\"A Durak game in iMessage. Foolish turns a message thread into a card table.\"/>",
+        "<meta name=\"robots\" content=\"noindex, follow\"/>",
+        "<meta property=\"og:title\" content=\"&lt;b&gt;Ann&lt;/b&gt; vs Tom &amp; &quot;Jerry&quot; &#x27;J&#x27; - turn 12\"/>",
+        "<meta property=\"og:description\" content=\"A Durak game in iMessage. Foolish turns a message thread into a card table.\"/>",
+        "<meta property=\"og:site_name\" content=\"Foolish\"/>",
+        "<meta property=\"og:type\" content=\"website\"/>",
+        "<meta name=\"twitter:card\" content=\"summary\"/>",
+        "<meta name=\"twitter:title\" content=\"&lt;b&gt;Ann&lt;/b&gt; vs Tom &amp; &quot;Jerry&quot; &#x27;J&#x27; - turn 12\"/>",
+        "<meta name=\"twitter:description\" content=\"A Durak game in iMessage. Foolish turns a message thread into a card table.\"/>",
+      } },
+    { "names_utf8",
+      "164CQAAXPZWVYSZ2FEMAQYAAAAIAAEAAAAAAAAAAAAAPJTBXDSOQYNGC3ZELGHGEMHRQH2T7CEZZAD43FF27HZCO3M7GFKNASAABAACGQQHILXUF22CYACCK2N7B2WIHQT6BY6DAADULZCZ3CD62MVMNODIS6KT6K",
+      {
+        "<title>\320\201\320\273\320\272\320\260 vs Zo\303\253 \360\237\203\217 - turn 12</title>",
+        "<meta name=\"description\" content=\"A Durak game in iMessage. Foolish turns a message thread into a card table.\"/>",
+        "<meta name=\"robots\" content=\"noindex, follow\"/>",
+        "<meta property=\"og:title\" content=\"\320\201\320\273\320\272\320\260 vs Zo\303\253 \360\237\203\217 - turn 12\"/>",
+        "<meta property=\"og:description\" content=\"A Durak game in iMessage. Foolish turns a message thread into a card table.\"/>",
+        "<meta property=\"og:site_name\" content=\"Foolish\"/>",
+        "<meta property=\"og:type\" content=\"website\"/>",
+        "<meta name=\"twitter:card\" content=\"summary\"/>",
+        "<meta name=\"twitter:title\" content=\"\320\201\320\273\320\272\320\260 vs Zo\303\253 \360\237\203\217 - turn 12\"/>",
+        "<meta name=\"twitter:description\" content=\"A Durak game in iMessage. Foolish turns a message thread into a card table.\"/>",
+      } },
+    { "names_bad_utf8",
+      "164CQAAXPZWVYSZ2FEMAQYAAAAIAAEAAAAAAAAAAAAAPJTBXDSOQYNGC3ZELGHGEMHRQH2T7CEZZAD43FF27HZCO3M7GFKNASAABAAA2BQBBACA2D4KBAYAA5C6IWOYQ7WTFLDLQ2EXSU7SQ",
+      {
+        "<title>A\357\277\275B vs C\357\277\275 - turn 12</title>",
+        "<meta name=\"description\" content=\"A Durak game in iMessage. Foolish turns a message thread into a card table.\"/>",
+        "<meta name=\"robots\" content=\"noindex, follow\"/>",
+        "<meta property=\"og:title\" content=\"A\357\277\275B vs C\357\277\275 - turn 12\"/>",
+        "<meta property=\"og:description\" content=\"A Durak game in iMessage. Foolish turns a message thread into a card table.\"/>",
+        "<meta property=\"og:site_name\" content=\"Foolish\"/>",
+        "<meta property=\"og:type\" content=\"website\"/>",
+        "<meta name=\"twitter:card\" content=\"summary\"/>",
+        "<meta name=\"twitter:title\" content=\"A\357\277\275B vs C\357\277\275 - turn 12\"/>",
+        "<meta name=\"twitter:description\" content=\"A Durak game in iMessage. Foolish turns a message thread into a card table.\"/>",
+      } },
+    { "share_suffix",
+      "164CQAAXPZWVYSZ2FEMAQYAAAAIAAEAAAAAAAAAAAAAPJTBXDSOQYNGC3ZELGHGEMHRQH2T7CEZZAD43FF27HZCO3M7GFKNASAABAABCBNZXDAAIEIFXG4MIMAAORPELHMIP3JSVRVYNCLZKPZI-ABCDEFGH",
+      {
+        "<title>Ann0 vs Ann1 - turn 12</title>",
+        "<meta name=\"description\" content=\"A Durak game in iMessage. Foolish turns a message thread into a card table.\"/>",
+        "<meta name=\"robots\" content=\"noindex, follow\"/>",
+        "<meta property=\"og:title\" content=\"Ann0 vs Ann1 - turn 12\"/>",
+        "<meta property=\"og:description\" content=\"A Durak game in iMessage. Foolish turns a message thread into a card table.\"/>",
+        "<meta property=\"og:site_name\" content=\"Foolish\"/>",
+        "<meta property=\"og:type\" content=\"website\"/>",
+        "<meta name=\"twitter:card\" content=\"summary\"/>",
+        "<meta name=\"twitter:title\" content=\"Ann0 vs Ann1 - turn 12\"/>",
+        "<meta name=\"twitter:description\" content=\"A Durak game in iMessage. Foolish turns a message thread into a card table.\"/>",
+      } },
+    { "lowercase",
+      "164cqaaxpzwvysz2femaqyaaaaiaaeaaaaaaaaaaaaapjtbxdsoqyngc3zelghgemhrqh2t7cezzad43ff27hzco3m7gfknasaabaabcbnzxdaaieifxg4mimaaorpelhmip3jsvrvynclzkpzi",
+      {
+        "<title>Ann0 vs Ann1 - turn 12</title>",
+        "<meta name=\"description\" content=\"A Durak game in iMessage. Foolish turns a message thread into a card table.\"/>",
+        "<meta name=\"robots\" content=\"noindex, follow\"/>",
+        "<meta property=\"og:title\" content=\"Ann0 vs Ann1 - turn 12\"/>",
+        "<meta property=\"og:description\" content=\"A Durak game in iMessage. Foolish turns a message thread into a card table.\"/>",
+        "<meta property=\"og:site_name\" content=\"Foolish\"/>",
+        "<meta property=\"og:type\" content=\"website\"/>",
+        "<meta name=\"twitter:card\" content=\"summary\"/>",
+        "<meta name=\"twitter:title\" content=\"Ann0 vs Ann1 - turn 12\"/>",
+        "<meta name=\"twitter:description\" content=\"A Durak game in iMessage. Foolish turns a message thread into a card table.\"/>",
+      } },
+    { "percent_blanks",
+      "%20%0A164BAAAXPZWVYSZ2FEMAQUAAAAMAACAAAAAAAAAAAAB45Q4QGIEGTPUYCYGO7W3FMXSF6X6DZ2JBGEIECGFLQTTAPDA3YQAYAARAW43RQAECEC3TOGEBAIQLONYZAUAABFFI5UW7PGCLPT557FT5VRUAT63L7U%20",
+      {
+        "<title>Ann0 vs Ann1 vs Ann2 - turn 10</title>",
+        "<meta name=\"description\" content=\"A Durak game in iMessage. Foolish turns a message thread into a card table.\"/>",
+        "<meta name=\"robots\" content=\"noindex, follow\"/>",
+        "<meta property=\"og:title\" content=\"Ann0 vs Ann1 vs Ann2 - turn 10\"/>",
+        "<meta property=\"og:description\" content=\"A Durak game in iMessage. Foolish turns a message thread into a card table.\"/>",
+        "<meta property=\"og:site_name\" content=\"Foolish\"/>",
+        "<meta property=\"og:type\" content=\"website\"/>",
+        "<meta name=\"twitter:card\" content=\"summary\"/>",
+        "<meta name=\"twitter:title\" content=\"Ann0 vs Ann1 vs Ann2 - turn 10\"/>",
+        "<meta name=\"twitter:description\" content=\"A Durak game in iMessage. Foolish turns a message thread into a card table.\"/>",
+      } },
+    { "truncated",
+      "164BAAAXPZWVYSZ2FEMAQUAAAAMAACAAAAAAAAAAAAB45Q4QGIEGTPUYCYGO7W3FMXSF6X6DZ2JBGEI",
+      {
+        "<title>A Durak game in iMessage</title>",
+        "<meta name=\"description\" content=\"Foolish turns a message thread into a card table.\"/>",
+        "<meta name=\"robots\" content=\"noindex, follow\"/>",
+        "<meta property=\"og:title\" content=\"A Durak game in iMessage\"/>",
+        "<meta property=\"og:description\" content=\"Foolish turns a message thread into a card table.\"/>",
+        "<meta property=\"og:site_name\" content=\"Foolish\"/>",
+        "<meta property=\"og:type\" content=\"website\"/>",
+        "<meta name=\"twitter:card\" content=\"summary\"/>",
+        "<meta name=\"twitter:title\" content=\"A Durak game in iMessage\"/>",
+        "<meta name=\"twitter:description\" content=\"Foolish turns a message thread into a card table.\"/>",
+      } },
+    { "other_version",
+      "264BAAAXPZWVYSZ2FEMAQUAAAAMAACAAAAAAAAAAAAB45Q4QGIEGTPUYCYGO7W3FMXSF6X6DZ2JBGEIECGFLQTTAPDA3YQAYAARAW43RQAECEC3TOGEBAIQLONYZAUAABFFI5UW7PGCLPT557FT5VRUAT63L7U",
+      {
+        "<title>A Durak game in iMessage</title>",
+        "<meta name=\"description\" content=\"Foolish turns a message thread into a card table.\"/>",
+        "<meta name=\"robots\" content=\"noindex, follow\"/>",
+        "<meta property=\"og:title\" content=\"A Durak game in iMessage\"/>",
+        "<meta property=\"og:description\" content=\"Foolish turns a message thread into a card table.\"/>",
+        "<meta property=\"og:site_name\" content=\"Foolish\"/>",
+        "<meta property=\"og:type\" content=\"website\"/>",
+        "<meta name=\"twitter:card\" content=\"summary\"/>",
+        "<meta name=\"twitter:title\" content=\"A Durak game in iMessage\"/>",
+        "<meta name=\"twitter:description\" content=\"Foolish turns a message thread into a card table.\"/>",
+      } },
+    { "garbage",
+      "hello-world",
+      {
+        "<title>A Durak game in iMessage</title>",
+        "<meta name=\"description\" content=\"Foolish turns a message thread into a card table.\"/>",
+        "<meta name=\"robots\" content=\"noindex, follow\"/>",
+        "<meta property=\"og:title\" content=\"A Durak game in iMessage\"/>",
+        "<meta property=\"og:description\" content=\"Foolish turns a message thread into a card table.\"/>",
+        "<meta property=\"og:site_name\" content=\"Foolish\"/>",
+        "<meta property=\"og:type\" content=\"website\"/>",
+        "<meta name=\"twitter:card\" content=\"summary\"/>",
+        "<meta name=\"twitter:title\" content=\"A Durak game in iMessage\"/>",
+        "<meta name=\"twitter:description\" content=\"Foolish turns a message thread into a card table.\"/>",
+      } },
+    { "one_garbage",
+      "1zzzz9999",
+      {
+        "<title>A Durak game in iMessage</title>",
+        "<meta name=\"description\" content=\"Foolish turns a message thread into a card table.\"/>",
+        "<meta name=\"robots\" content=\"noindex, follow\"/>",
+        "<meta property=\"og:title\" content=\"A Durak game in iMessage\"/>",
+        "<meta property=\"og:description\" content=\"Foolish turns a message thread into a card table.\"/>",
+        "<meta property=\"og:site_name\" content=\"Foolish\"/>",
+        "<meta property=\"og:type\" content=\"website\"/>",
+        "<meta name=\"twitter:card\" content=\"summary\"/>",
+        "<meta name=\"twitter:title\" content=\"A Durak game in iMessage\"/>",
+        "<meta name=\"twitter:description\" content=\"Foolish turns a message thread into a card table.\"/>",
+      } },
+    { "bad_escape",
+      "1%E0%A4%A",
+      {
+        "<title>A Durak game in iMessage</title>",
+        "<meta name=\"description\" content=\"Foolish turns a message thread into a card table.\"/>",
+        "<meta name=\"robots\" content=\"noindex, follow\"/>",
+        "<meta property=\"og:title\" content=\"A Durak game in iMessage\"/>",
+        "<meta property=\"og:description\" content=\"Foolish turns a message thread into a card table.\"/>",
+        "<meta property=\"og:site_name\" content=\"Foolish\"/>",
+        "<meta property=\"og:type\" content=\"website\"/>",
+        "<meta name=\"twitter:card\" content=\"summary\"/>",
+        "<meta name=\"twitter:title\" content=\"A Durak game in iMessage\"/>",
+        "<meta name=\"twitter:description\" content=\"Foolish turns a message thread into a card table.\"/>",
+      } },
+    { "replay_refuses",
+      "164BAAAXPZWVYSZ2FEMAQUAAAAMAAEAAAAAAAAAAAAB45Q4QGIEGTPUYCYGO7W3FMXSF6X6DZ2JBGEIECGFLQTTAPDA3YQAYAARAW43RQAECEC3TOGEBAIQLONYZAUAABFFI5UW7PGCLPT557FT5VRUAT63L7U",
+      {
+        "<title>A Durak game in iMessage</title>",
+        "<meta name=\"description\" content=\"Foolish turns a message thread into a card table.\"/>",
+        "<meta name=\"robots\" content=\"noindex, follow\"/>",
+        "<meta property=\"og:title\" content=\"A Durak game in iMessage\"/>",
+        "<meta property=\"og:description\" content=\"Foolish turns a message thread into a card table.\"/>",
+        "<meta property=\"og:site_name\" content=\"Foolish\"/>",
+        "<meta property=\"og:type\" content=\"website\"/>",
+        "<meta name=\"twitter:card\" content=\"summary\"/>",
+        "<meta name=\"twitter:title\" content=\"A Durak game in iMessage\"/>",
+        "<meta name=\"twitter:description\" content=\"Foolish turns a message thread into a card table.\"/>",
+      } },
+};
+
+#define UNFURL_N_GOLDENS ((int)(sizeof UNFURL_GOLDENS / sizeof UNFURL_GOLDENS[0]))
+
+#endif

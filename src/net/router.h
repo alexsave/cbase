@@ -22,6 +22,9 @@
 //     sends it in the query). Off when CBASE_ANON_KEY is unset.
 //   * 404 for no route, 405 for a path routed only under other methods, 503
 //     when the request pool is saturated or gone.
+//   * HEAD. A path with no HEAD route of its own matches its GET route, and
+//     cb_handle marks the response `head` so it goes out with GET's headers
+//     and Content-Length and no body. CloudFront and link crawlers send HEAD.
 #ifndef CB_ROUTER_H
 #define CB_ROUTER_H
 

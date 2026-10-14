@@ -2,6 +2,7 @@
 
 #include "admin/admin.h"
 #include "app/functions_http.h"
+#include "app/unfurl_http.h"
 #include "auth/auth_http.h"
 #include "net/router.h"
 #include "realtime/postgrest.h"
@@ -17,6 +18,7 @@
 void cb_handle(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     cb_store_tally st;
     cb_store_tally_take(&st);   // this request's count starts here
+    res->head = strcmp(req->method, "HEAD") == 0;
     if (strcmp(req->method, "OPTIONS") == 0) {
         bool known = false;
         cb_router_match(ctx->router, "*", req->path, &known);
@@ -67,6 +69,7 @@ int cb_routes_register(cb_ctx *ctx) {
     if (rc == CB_OK) rc = reg("postgrest", cb_postgrest_routes(ctx));
     if (rc == CB_OK) rc = reg("functions", cb_functions_routes(ctx));
     if (rc == CB_OK) rc = reg("admin", cb_admin_routes(ctx));
+    if (rc == CB_OK) rc = reg("unfurl", cb_unfurl_routes(ctx));
     if (rc == CB_OK && ctx->mode == CB_MODE_SERVE) rc = reg("realtime", cb_rt_local_routes(ctx));
     return rc;
 }
