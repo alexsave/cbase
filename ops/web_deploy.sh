@@ -10,8 +10,9 @@
 #   c_base/ops/web_deploy.sh site foolish --prune-static   # and delete hashed files this build does not use
 #
 # A site deploy, in order (c_base/docs/VERCEL.md section 4d):
-#   0. refuses a tree that does not contain origin/main (require_main.sh;
-#      for utils, the foolish-utils tree that holds --out);
+#   0. refuses a tree that does not contain origin/main, and in CI skips a
+#      push main has since superseded (require_main.sh; for utils, the
+#      foolish-utils tree that holds --out);
 #   1. builds the export (npm run build: gen, wasm, next build), unless --out;
 #   2. uploads _next/static/** with Cache-Control immutable for a year, without
 #      deleting anything: a tab still holding the old HTML asks for old chunks;
@@ -221,7 +222,8 @@ case "$1" in
       [ -n "$out" ] || die "utils is built in the foolish-utils repo: pass --out its out/ directory"
       require_main "$out"
     else
-      require_main "$repo"
+      # The inputs are web_aws.yml's push paths: keep the two lists the same.
+      require_main "$repo" foolish shared uttt/c uttt/web c_base/ops/web_deploy.sh c_base/ops/require_main.sh .github/workflows/web_aws.yml
     fi
     deploy_site "$site" "$out" "$prune" ;;
   -h|--help) usage ;;
