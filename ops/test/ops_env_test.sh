@@ -7,6 +7,8 @@ here="$(cd "$(dirname "$0")/../.." && pwd)"
 # shellcheck source=c_base/ops/ops_env.sh
 . "$here/ops/ops_env.sh"
 fails=0
+# The mode in octal: GNU stat first, since its -f means the filesystem.
+perm() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
 check() { if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1: got [$2] want [$3]"; fails=$((fails + 1)); fi; }
 
 tmp="$(mktemp -d)"
@@ -54,6 +56,6 @@ check "a present secret passes" "$?" "0"
 f="$tmp/new/ops.env"
 cbase_ops_secret CBASE_JWT_SECRET "$f" no >/dev/null
 check "a new stack generates" "$(grep -c '^CBASE_JWT_SECRET=[0-9a-f]\{64\}$' "$f")" "1"
-check "the file is 0600" "$(stat -f %Lp "$f" 2>/dev/null || stat -c %a "$f")" "600"
+check "the file is 0600" "$(perm "$f")" "600"
 
 if [ "$fails" -eq 0 ]; then echo "ops_env: all pass"; else echo "ops_env: $fails failed"; exit 1; fi
