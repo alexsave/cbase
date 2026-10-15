@@ -8,7 +8,7 @@
 //   POST /v1/auth/password   (bearer) NW_PASSWORD -> 204
 //   GET  /v1/games           (bearer) -> NW_GAMES, the caller's views, newest first
 //   GET  /v1/games/<id>      (bearer) -> NW_VIEW, the caller's view, else the spectators'
-//   GET  /v1/chat/<id>       (bearer, member) -> NW_CHATS, the last 100, oldest first
+//   GET  /v1/chat/<id>       (bearer) -> NW_CHATS, the last 100, oldest first (none for a non-member)
 //   POST /v1/chat/<id>       (bearer, member) NW_CHAT_SEND -> 204
 //   GET  /v1/bots            (bearer) -> NW_BOTS, ladder order
 //   GET  /v1/leaderboard     -> NW_BOARD: the top 100 humans and the top 100 bots who have played

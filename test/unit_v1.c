@@ -308,10 +308,12 @@ static void games_views_and_chat(void) {
     T_CHECK(row != NULL);
     if (row) T_CHECK(row->env_len != (uint32_t)mine_len || memcmp(g_body + row->env_off, mine, (size_t)mine_len) != 0);
 
-    // Chat: members only, both ways.
-    T_EQ_INT(call(b_chats, gid), 403);
-    T_EQ_INT(nc_list_read(g_status, g_body, g_len, NW_CHATS), -ASK_WHY_FORBIDDEN);
+    // Chat: members only. A non-member reads an empty chat and may not post.
+    T_EQ_INT(call(b_chats, gid), 200);
+    T_EQ_INT(nc_list_read(g_status, g_body, g_len, NW_CHATS), 0);
     T_EQ_INT(send_req(nc_req_chat_send(gid, (int)strlen(gid), "hi", 2, g_now)), 403);
+    uint8_t eve[NC_SESSION_BLOB_MAX];
+    int en = nc_session_save(eve, sizeof eve);
     as(dora, dn);
     g_pub.n = 0;
     T_EQ_INT(send_req(nc_req_chat_send(gid, (int)strlen(gid), "hello there", 11, g_now)), 204);
@@ -329,6 +331,10 @@ static void games_views_and_chat(void) {
     const NcChatRow *c = nc_chat_row(g_body, g_len, 0);
     T_CHECK(c && c->message_len == 11 && memcmp(c->message, "hello there", 11) == 0 && !c->is_system);
     T_CHECK(c && c->created_ms > 0);
+    // Eve still reads none of it.
+    as(eve, en);
+    T_EQ_INT(call(b_chats, gid), 200);
+    T_EQ_INT(nc_list_read(g_status, g_body, g_len, NW_CHATS), 0);
     teardown();
 }
 

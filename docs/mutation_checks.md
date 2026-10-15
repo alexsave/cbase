@@ -274,7 +274,7 @@ Run by a script that copies each file aside, applies the mutation, refuses one t
 - netclient.c: the reconnect delay not reset by a frame -> `stream_order_and_retries` nc_stream_closed == NC_RETRY_FIRST_MS.
 - netclient.c: a refused token not told again -> `stream_order_and_retries` next frame is NW_WS_AUTH.
 - v1_http.c: no spectator fallback -> `games_views_and_chat` call(b_game) == 200 for a non-member.
-- v1_http.c: chat open to non-members -> `games_views_and_chat` call(b_chats) == 403.
+- v1_http.c: chat open to non-members -> `games_views_and_chat` the non-member's empty list (nc_list_read == 0), and the post 403.
 - v1_http.c: 15 hex digits of the name's digest -> `the_email_is_the_clients_derivation` the address.
 - v1_http.c: a taken name answered 400 -> `accounts` status == 409.
 - v1_http.c: unplayed humans on the leaderboard -> `bots_board_history_replay` the one human is FAY.

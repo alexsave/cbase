@@ -778,7 +778,7 @@ The client decodes it into an enum the host localizes, so no host string-matches
 | `POST /v1/meta` (B) | the kernel's ask | the caller's envelope (unchanged) |
 | `GET /v1/games` (B) | | `NW_GAMES`: every view of the caller, newest first: version, envelope |
 | `GET /v1/games/<id>` (B) | | `NW_VIEW`: the caller's view if seated, else the spectator view; 404 when neither exists |
-| `GET /v1/chat/<id>` (B, member) | | `NW_CHATS`: the newest 100 messages, oldest first (the web asked PostgREST for the oldest 100, against its own comment) |
+| `GET /v1/chat/<id>` (B) | | `NW_CHATS`: the newest 100 messages, oldest first (the web asked PostgREST for the oldest 100, against its own comment); empty for a non-member, as the row policy answered |
 | `POST /v1/chat/<id>` (B, member) | `NW_CHAT_SEND`: message (u16, 1 to 1000 bytes) | 204 |
 | `GET /v1/bots` (B) | | `NW_BOTS`: id, nickname, strategy key |
 | `GET /v1/leaderboard` | | `NW_BOARD`: the top 100 humans and top 100 bots with games played, each kind, id, name, rating, games |

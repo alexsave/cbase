@@ -278,12 +278,13 @@ static void h_game(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
 
 // ---- chat -------------------------------------------------------------------------------
 
-// The game in the path, when the caller sits at it; else false with the refusal.
-static bool member_of(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res, cb_user *u, char *gid, size_t cap) {
+// The game in the path and whether the caller sits at it (*member), or false
+// with the refusal answered.
+static bool chat_of(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res, cb_user *u, char *gid, size_t cap, bool *member) {
     if (!caller(ctx, req, res, u) || !path_id(req, res, "/v1/chat/", gid, cap)) return false;
     int m = CB_STORE_CALL(ctx->store, is_member, gid, u->id);
     if (m < 0) { failed(res, m); return false; }
-    if (m != 1) { refuse(res, 403, ASK_WHY_FORBIDDEN, 0); return false; }
+    *member = m == 1;
     return true;
 }
 
@@ -298,10 +299,13 @@ static bool chat_fn(const cb_chat_row *c, void *ud) {
 static void h_chat_get(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     cb_user u;
     char gid[CB_GAME_ID_MAX + 1];
-    if (!member_of(ctx, req, res, &u, gid, sizeof gid)) return;
+    bool member;
+    if (!chat_of(ctx, req, res, &u, gid, sizeof gid, &member)) return;
     list l;
     list_begin(&l, NW_LIST_HEAD_BYTES);
-    int rc = CB_STORE_CALL(ctx->store, chat_list, gid, CHAT_PAGE, chat_fn, &l);
+    // Someone who does not sit at the game sees no messages, as chat_messages'
+    // row policy answered: an empty list, not a refusal (a spectator's page asks).
+    int rc = member ? CB_STORE_CALL(ctx->store, chat_list, gid, CHAT_PAGE, chat_fn, &l) : 0;
     if (rc < 0) { cb_buf_free(&l.body); failed(res, rc); return; }
     list_send(res, &l, NW_CHATS);
 }
@@ -309,7 +313,9 @@ static void h_chat_get(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
 static void h_chat_post(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     cb_user u;
     char gid[CB_GAME_ID_MAX + 1];
-    if (!member_of(ctx, req, res, &u, gid, sizeof gid)) return;
+    bool member;
+    if (!chat_of(ctx, req, res, &u, gid, sizeof gid, &member)) return;
+    if (!member) { refuse(res, 403, ASK_WHY_FORBIDDEN, 0); return; }
     NwRequest q;
     if (!request_of(req, res, NW_CHAT_SEND, &q)) return;
     if (q.message_len == 0 || memchr(q.message, 0, q.message_len)) { refuse(res, 400, ASK_WHY_MALFORMED, 0); return; }
