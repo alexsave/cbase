@@ -53,11 +53,14 @@ cbase_ops_secret() {
     echo "ops_env: recover it from the live function (c_base/RUNBOOK.md, \"The ops settings file\") and run again." >&2
     return 1
   fi
+  local value
+  value="$(openssl rand -hex 32 2>/dev/null)"
+  [ "${#value}" -eq 64 ] || { echo "ops_env: openssl could not make $name" >&2; return 1; }
   mkdir -p "$(dirname "$file")"
   chmod 700 "$(dirname "$file")" 2>/dev/null || true
   [ -f "$file" ] || (umask 077; : > "$file")
   chmod 600 "$file"
-  printf -v "$name" '%s' "$(openssl rand -hex 32)"
+  printf -v "$name" '%s' "$value"
   export "${name?}"
   printf '%s=%s\n' "$name" "${!name}" >> "$file"
   echo "generated $name into $file (a new stack)"
