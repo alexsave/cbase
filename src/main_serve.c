@@ -115,7 +115,6 @@ int main(int argc, char **argv) {
     cb_log_init(cfg.log_level, 0);
     cb_config_each(&cfg, log_config, NULL);
     if (cfg.jwt_secret_generated) CB_WARN("config", "CBASE_JWT_SECRET is unset: sessions die when this process does");
-    if (!cfg.anon_key[0]) CB_WARN("config", "CBASE_ANON_KEY is unset: the apikey check is OFF");
 
     static cb_ctx ctx;
     ctx.cfg = &cfg;

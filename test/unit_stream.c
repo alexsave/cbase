@@ -1,8 +1,8 @@
 // unit_stream.c - the binary push stream (realtime/stream.h): the protocol
-// against the fake world, the frames a publish builds, both transports (API
-// Gateway's base64 posts, and a real loopback `cbase serve` socket carrying
-// binary frames), and the kernel's client library (netclient.h) driving the
-// loopback socket end to end.
+// against the fake world, the frames a publish builds, and a real loopback
+// `cbase serve` socket carrying binary frames, driven end to end by the
+// kernel's client library (netclient.h). API Gateway's transport is
+// unit_rt_apigw.c's.
 #include "t.h"
 
 #include "lib_client.h"
@@ -12,7 +12,6 @@
 #include "net/server.h"
 #include "net/ws.h"
 #include "realtime/realtime.h"
-#include "realtime/rt_apigw.h"
 #include "realtime/rt_local.h"
 #include "realtime/stream.h"
 #include "util/clock.h"
@@ -93,7 +92,6 @@ static void setup_world(void) {
     rtf_install();
     rtf_reset();
     memset(&g_cfg, 0, sizeof g_cfg);
-    strcpy(g_cfg.anon_key, "anon-key");
     strcpy(g_cfg.allowed_origins, "*");
     g_ctx.cfg = &g_cfg;
     g_ctx.store = &rtf.store;
@@ -186,18 +184,18 @@ static void protocol(void) {
     T_EQ_INT(c.n_topics, 0);
 
     T_EQ_INT(cb_nw_proto_of_query("proto=nw1"), CB_VSN_NW);
-    T_EQ_INT(cb_nw_proto_of_query("vsn=2.0.0"), 0);
+    T_EQ_INT(cb_nw_proto_of_query("vsn=2.0.0"), CB_E_INVALID);
     T_EQ_INT(cb_nw_proto_of_query("proto=nw2"), CB_E_INVALID);
 }
 
 // ---- what a publish builds ---------------------------------------------------------------
 
 static struct { int n; char topic[128]; uint8_t nw[512]; size_t nw_len; } g_cap;
-static void cap_deliver(cb_rt *rt, const char *topic, const char *const frames[CB_RT_PROTOS], const size_t lens[CB_RT_PROTOS]) {
+static void cap_deliver(cb_rt *rt, const char *topic, const uint8_t *frame, size_t len) {
     g_cap.n++;
     cb_strlcpy(g_cap.topic, topic, sizeof g_cap.topic);
-    g_cap.nw_len = lens[2] <= sizeof g_cap.nw ? lens[2] : 0;
-    memcpy(g_cap.nw, frames[2], g_cap.nw_len);
+    g_cap.nw_len = len <= sizeof g_cap.nw ? len : 0;
+    memcpy(g_cap.nw, frame, g_cap.nw_len);
 }
 static const cb_rt_transport CAP_T = { "cap", cap_deliver, NULL };
 
@@ -218,12 +216,12 @@ static void publishes(void) {
     r.view_len = 1;
     r.version = 9;
     strcpy(r.status, "playing");
-    rt_publish_pv_update(&rt, U1, CB_RT_UPDATE, &r);
+    rt_publish_view(&rt, U1, &r, false);
     T_EQ_STR(g_cap.topic, "pv-" U1);
     const uint8_t want_view[] = { 1, NW_WS_VIEW, 6, 'a', 'b', '1', '2', 'c', 'd', 9, 0, 0, 0, 1, 0, 0, 0, 0xee };
     T_EQ_MEM(g_cap.nw, g_cap.nw_len, want_view, sizeof want_view);
     // A seat given up: the view with no envelope.
-    rt_publish_pv_update(&rt, U1, CB_RT_DELETE, &r);
+    rt_publish_view(&rt, U1, &r, true);
     const uint8_t want_gone[] = { 1, NW_WS_VIEW, 6, 'a', 'b', '1', '2', 'c', 'd', 0, 0, 0, 0, 0, 0, 0, 0 };
     T_EQ_MEM(g_cap.nw, g_cap.nw_len, want_gone, sizeof want_gone);
 
@@ -238,98 +236,6 @@ static void publishes(void) {
     const uint8_t want_chat[] = { 1, NW_WS_CHAT, 6, 'a', 'b', '1', '2', 'c', 'd', 1, 'm', 1, 'u', 6, 0, 0, 0, 0, 0, 0, 2, 0, 'h', 'i' };
     T_EQ_MEM(g_cap.nw, g_cap.nw_len, want_chat, sizeof want_chat);
     T_EQ_INT(g_cap.n, 4);
-}
-
-// ---- API Gateway: base64 text both ways ----------------------------------------------------
-
-static int apigw_ev(const char *route, const char *conn, const char *query, const char *body) {
-    cb_ws_event e;
-    memset(&e, 0, sizeof e);
-    cb_strlcpy(e.route_key, route, sizeof e.route_key);
-    cb_strlcpy(e.connection_id, conn, sizeof e.connection_id);
-    strcpy(e.domain, "abc.execute-api.us-east-1.amazonaws.com");
-    strcpy(e.stage, "prod");
-    e.query = query ? query : "";
-    e.body = (const uint8_t *)body;
-    e.body_len = body ? strlen(body) : 0;
-    int status = 0;
-    cb_rt_apigw_event(&g_ctx, &e, &status);
-    return status;
-}
-
-// A frame as the client sends it to API Gateway: base64 text.
-static const char *as_text(const NwFrame *f) {
-    static char text[NC_TEXT_MAX + 1];
-    uint8_t raw[NW_ACCESS_MAX + 64];
-    int n = nw_frame_encode(f, raw, sizeof raw);
-    int t = nw_text_encode(raw, n, text, NC_TEXT_MAX);
-    text[t > 0 ? t : 0] = 0;
-    return text;
-}
-
-// The post at i, as the frame its base64 says.
-static NwFrame posted(int i) {
-    static uint8_t raw[2048];
-    NwFrame f;
-    memset(&f, 0, sizeof f);
-    int n = nw_text_decode(rtf.posts[i].frame, (int)strlen(rtf.posts[i].frame), raw, sizeof raw);
-    T_CHECK(n > 0 && nw_frame_decode(raw, n, &f) == NW_OK);
-    return f;
-}
-
-static void apigw(void) {
-    setup_world();
-    rtf_member(G, U1);
-    strcpy(g_cfg.ws_endpoint, "https://abc.execute-api.us-east-1.amazonaws.com/prod");
-    cb_rt_free(g_ctx.rt);
-    T_EQ_INT(cb_rt_apigw_new(&g_ctx, &g_ctx.rt), CB_OK);
-    // The stream needs no API key; a protocol that is not one is refused.
-    T_EQ_INT(apigw_ev("$connect", "s1", "proto=nw1", NULL), 200);
-    T_EQ_INT(rtf.conns[rtf_conn_find("s1")].vsn, CB_VSN_NW);
-    T_EQ_INT(apigw_ev("$connect", "s2", "proto=nw9", NULL), 400);
-    T_EQ_INT(apigw_ev("$connect", "s2", "vsn=2.0.0", NULL), 401);   // Phoenix still needs the key
-
-    NwFrame f;
-    memset(&f, 0, sizeof f);
-    f.kind = NW_WS_AUTH;
-    f.token_len = (uint16_t)strlen("tok-" U1);
-    memcpy(f.token, "tok-" U1, f.token_len);
-    T_EQ_INT(apigw_ev("$default", "s1", NULL, as_text(&f)), 200);
-    T_EQ_STR(rtf.conns[rtf_conn_find("s1")].user_id, U1);
-    memset(&f, 0, sizeof f);
-    f.kind = NW_WS_SUB;
-    f.ref = 4;
-    f.what = NW_SUB_GAME;
-    f.gid_len = 6;
-    memcpy(f.gid, G, 6);
-    f.version = 0;
-    int posts0 = rtf.n_posts;
-    T_EQ_INT(apigw_ev("$default", "s1", NULL, as_text(&f)), 200);
-    T_EQ_INT(rtf.n_posts, posts0 + 1);   // the ACK (the fake world has no view of G to catch up)
-    NwFrame a = posted(posts0);
-    T_CHECK(a.kind == NW_WS_ACK && a.ref == 4 && a.seated == 1 && a.why == 0);
-    T_CHECK(has_topic(&rtf.conns[rtf_conn_find("s1")], "gu-" G "-" U1));
-
-    // A publish reaches it as base64 text.
-    const uint8_t cast[] = { 7 };
-    rt_publish_cast(g_ctx.rt, "gu-" G "-" U1, G, 3, cast, 1);
-    NwFrame c = posted(rtf.n_posts - 1);
-    T_CHECK(c.kind == NW_WS_CAST && c.version == 3 && c.blob.len == 1 && c.blob.p[0] == 7);
-    T_EQ_STR(rtf.posts[rtf.n_posts - 1].conn_id, "s1");
-
-    // Not base64, or not a frame: the socket is closed and the row dropped.
-    int del0 = rtf.n_deletes;
-    T_EQ_INT(apigw_ev("$default", "s1", NULL, "!!!!"), 200);
-    T_EQ_INT(rtf.n_deletes, del0 + 1);
-    T_EQ_INT(rtf_conn_find("s1"), -1);
-    // A lost row is rebuilt as the protocol the frame's shape says.
-    memset(&f, 0, sizeof f);
-    f.kind = NW_WS_PING;
-    T_EQ_INT(apigw_ev("$default", "s3", NULL, as_text(&f)), 200);
-    T_EQ_INT(rtf.conns[rtf_conn_find("s3")].vsn, CB_VSN_NW);
-    T_EQ_INT(posted(rtf.n_posts - 1).kind, NW_WS_PONG);
-    cb_rt_free(g_ctx.rt);
-    g_ctx.rt = NULL;
 }
 
 // ---- cbase serve: a real socket, driven by the client library -------------------------------
@@ -436,7 +342,7 @@ static void serve_end_to_end(void) {
     v.view_len = 2;
     v.version = 11;
     strcpy(v.status, "playing");
-    rt_publish_pv_update(g_ctx.rt, U1, CB_RT_UPDATE, &v);
+    rt_publish_view(g_ctx.rt, U1, &v, false);
     e = next_event(fd, 2000, &m);   // the stale cast made no event: this is the view
     T_CHECK(e->kind == NC_EV_VIEW && e->version == 11 && e->what == NW_SUB_GAMES);
     T_EQ_MEM(nc_event_payload(), e->payload_len, env, 2);
@@ -472,7 +378,6 @@ static void serve_end_to_end(void) {
 int main(void) {
     T_RUN(protocol);
     T_RUN(publishes);
-    T_RUN(apigw);
     T_RUN(serve_end_to_end);
     return T_DONE();
 }

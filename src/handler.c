@@ -4,9 +4,7 @@
 #include "app/functions_http.h"
 #include "app/unfurl_http.h"
 #include "app/v1_http.h"
-#include "auth/auth_http.h"
 #include "net/router.h"
-#include "realtime/postgrest.h"
 #include "realtime/rt_local.h"
 #include "store/store.h"
 #include "util/clock.h"
@@ -29,7 +27,6 @@ void cb_handle(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
         bool known = false;
         const cb_route *r = cb_router_match(ctx->router, req->method, req->path, &known);
         if (!r) cb_router_error(res, known ? 405 : 404, known ? "method not allowed" : "not found");
-        else if ((r->flags & CB_ROUTE_APIKEY) && !cb_router_apikey_ok(ctx, req)) cb_router_error(res, 401, "Invalid API key");
         else r->fn(ctx, req, res);
     }
     cb_router_cors(ctx, req, res);
@@ -66,8 +63,6 @@ static int reg(const char *what, int rc) {
 
 int cb_routes_register(cb_ctx *ctx) {
     int rc = cb_router_add(ctx->router, "GET", "/health", CB_ROUTE_LOOP, h_health);
-    if (rc == CB_OK) rc = reg("auth", cb_auth_routes(ctx));
-    if (rc == CB_OK) rc = reg("postgrest", cb_postgrest_routes(ctx));
     if (rc == CB_OK) rc = reg("functions", cb_functions_routes(ctx));
     if (rc == CB_OK) rc = reg("v1", cb_v1_routes(ctx));
     if (rc == CB_OK) rc = reg("admin", cb_admin_routes(ctx));

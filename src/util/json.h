@@ -1,8 +1,9 @@
 // json.h - the compatibility tax: a tiny JSON writer and a tolerant reader.
 //
-// JSON exists in c_base ONLY where a shipped client speaks it: the GoTrue auth
-// bodies, the PostgREST rows, the Phoenix realtime frames, and the admin
-// console's API (DESIGN.md "Where JSON is tolerated"). The kernel's bytes never
+// JSON exists in c_base ONLY where something outside it sets the format: AWS
+// (Lambda's events, DynamoDB, the Runtime and Management APIs), the access
+// token's JWT, and the admin console's API (DESIGN.md "Where JSON is
+// tolerated"); json_surface.c holds every shape. The kernel's bytes never
 // pass through here. Both halves are small on purpose: the bodies they handle
 // are a few hundred bytes.
 //
@@ -57,7 +58,6 @@ void cb_jw_num(cb_jw *w, double v);                 // non-finite writes null
 void cb_jw_bool(cb_jw *w, bool v);
 void cb_jw_null(cb_jw *w);
 void cb_jw_raw(cb_jw *w, const char *json, size_t n);  // an already-encoded value
-void cb_jw_bytea(cb_jw *w, const uint8_t *p, size_t n); // "\\x<hex>", PostgREST's BYTEA
 
 // key + value in one call.
 void cb_jw_kstr(cb_jw *w, const char *k, const char *s);

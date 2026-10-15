@@ -3,7 +3,7 @@
 // Every fixture is made here, from a real game the kernel plays in-process
 // (two humans, dealt, a few moves in, so the state carries a session log):
 //
-//   event_decode       a Function URL event for POST /functions/v1/action, as
+//   event_decode       a Function URL event for POST /v1/action, as
 //                      AWS would deliver the browser's request (its headers,
 //                      a minted access token, the binary body as base64), into
 //                      a cb_http_req (src/aws/event.c)
@@ -12,8 +12,9 @@
 //                      just committed, as json_surface.c writes it) read back into
 //                      a cb_game_row: the JSON scan and the base64 of the blobs
 //   dynamo_commit_build the commit's TransactWriteItems body (the CAS)
-//   pv_push_json       one player's pv- postgres_changes payload: the envelope
-//                      as "\x" hex inside Realtime's JSON (src/realtime/rt_rows.c)
+//   view_push          one player's view push: the stream's NW_WS_VIEW frame
+//                      around the envelope (realtime.c rt_publish_view), then
+//                      the base64 text API Gateway carries it as
 //   b64_encode_2k,     a 2 KB envelope through base64 each way, the cost a
 //   b64_decode_2k      binary body pays in the Lambda envelope
 //   jwt_verify         the access token every request carries
@@ -31,7 +32,6 @@
 #include "auth/jwt.h"
 #include "json_surface.h"
 #include "realtime/realtime.h"
-#include "realtime/rt_rows.h"
 #include "util/b64.h"
 #include "util/hex.h"
 #include "util/uuid.h"
@@ -39,6 +39,7 @@
 #include "awire.h"
 #include "game.h"
 #include "legal.h"
+#include "netwire.h"
 #include "table.h"
 
 #include <stdio.h>
@@ -208,10 +209,19 @@ static void op_dynamo_commit_build(void) {
     g_sink += (int64_t)g_req.body.len;
 }
 
-static void op_pv_push_json(void) {
+static void op_view_push(void) {
+    static NwFrame f;
+    f.kind = NW_WS_VIEW;
+    f.gid_len = (uint8_t)strlen(g_view.game_id);
+    memcpy(f.gid, g_view.game_id, f.gid_len);
+    f.version = (uint32_t)g_view.version;
+    f.blob.p = g_view.view;
+    f.blob.len = (uint32_t)g_view.view_len;
     cb_buf_reset(&g_out);
-    cb_rt_pv_payload(&g_out, CB_RT_UPDATE, &g_view);
-    g_sink += (int64_t)g_out.len;
+    if (!cb_buf_reserve(&g_out, 3 * (g_view.view_len + 64))) return;
+    int n = nw_frame_encode(&f, g_out.p, (int)(g_view.view_len + 64));
+    int t = n > 0 ? nw_text_encode(g_out.p, n, (char *)g_out.p + g_view.view_len + 64, (int)(2 * (g_view.view_len + 64))) : 0;
+    g_sink += t;
 }
 
 static void op_b64_encode(void) { g_sink += cb_b64_encode(g_env2k, sizeof g_env2k, g_b64, sizeof g_b64); }
@@ -342,7 +352,7 @@ int bench_cpu(const bench_opts *o) {
         { "event_encode", op_event_encode },
         { "dynamo_get_parse", op_dynamo_get_parse },
         { "dynamo_commit_build", op_dynamo_commit_build },
-        { "pv_push_json", op_pv_push_json },
+        { "view_push", op_view_push },
         { "b64_encode_2k", op_b64_encode },
         { "b64_decode_2k", op_b64_decode },
         { "jwt_verify", op_jwt_verify },

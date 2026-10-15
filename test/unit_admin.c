@@ -35,7 +35,6 @@ static void setup(const char *admin_token, const char *store_name) {
     memset(&g_cfg, 0, sizeof g_cfg);
     cb_strlcpy(g_cfg.admin_token, admin_token, sizeof g_cfg.admin_token);
     cb_strlcpy(g_cfg.jwt_secret, JWT_SECRET, sizeof g_cfg.jwt_secret);
-    cb_strlcpy(g_cfg.anon_key, ANON_KEY, sizeof g_cfg.anon_key);
     cb_strlcpy(g_cfg.allowed_origins, "*", sizeof g_cfg.allowed_origins);
     cb_strlcpy(g_cfg.table, "cbase", sizeof g_cfg.table);
     cb_strlcpy(g_cfg.db_path, "/nonexistent-cbase-test/cbase.sqlite", sizeof g_cfg.db_path);

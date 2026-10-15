@@ -1,24 +1,22 @@
 // rt_local.c - realtime for `cbase serve` (rt_local.h).
 //
 // THREADS. Every socket and the connection list belong to the loop thread.
-// A client frame is handled on the REQUEST POOL, because a join may read the
-// store (membership) and the loop must never block on SQLite: the loop copies
-// the connection's subscription state into a job, the pool runs
-// cb_phx_on_frame on the copy and collects the replies, and the loop takes the
-// new state back and sends them. One job per connection at a time, so a
-// connection's frames are handled in the order they arrived; frames that come
-// meanwhile wait in its inbox. A publish from any thread copies its frames
-// and posts them to the loop, which sends each subscriber the one in its
-// protocol: Phoenix text in either serializer, or the binary stream's message
-// as a binary frame (stream.h; a client of it sends text frames of base64,
-// which are decoded here before they are queued, or binary frames as they are).
+// A client frame is handled on the REQUEST POOL, because a subscription may
+// read the store (membership, the catch-up view) and the loop must never block
+// on SQLite: the loop copies the connection's subscription state into a job,
+// the pool runs cb_nw_on_frame on the copy and collects the replies, and the
+// loop takes the new state back and sends them. One job per connection at a
+// time, so a connection's frames are handled in the order they arrived; frames
+// that come meanwhile wait in its inbox. A publish from any thread copies its
+// message and posts it to the loop, which sends it to each subscriber as a
+// binary frame. A client sends text frames of base64 (what API Gateway
+// requires), decoded here before they are queued, or binary frames as they are.
 #include "rt_local.h"
 
 #include "net/loop.h"
 #include "net/router.h"
 #include "net/server.h"
 #include "net/ws.h"
-#include "phoenix.h"
 #include "stream.h"
 #include "util/err.h"
 #include "util/log.h"
@@ -39,7 +37,7 @@ typedef struct lconn {
     struct lconn *prev, *next;
     cb_ws *ws;
     uint64_t ws_id;
-    cb_phx_conn phx;        // the state as of the last finished job
+    cb_conn_row phx;        // the state as of the last finished job
     bool busy;              // a job is out on the pool
     msg *in_head, *in_tail; // frames not handled yet
     size_t in_bytes;
@@ -50,7 +48,7 @@ typedef struct {
     lconn *head;            // loop thread only
 } local;
 
-#define INBOX_MAX (1u << 20)   // a client this far ahead of us is not a Phoenix client
+#define INBOX_MAX (1u << 20)   // a client this far ahead of us is not a stream client
 
 static const cb_rt_transport LOCAL_T;
 
@@ -81,7 +79,7 @@ static lconn *find(local *L, uint64_t ws_id) {
 typedef struct {
     local *L;
     uint64_t ws_id;
-    cb_phx_conn phx;
+    cb_conn_row phx;
     msg *frame;
     msg *out_head, *out_tail;
     int rc;
@@ -104,21 +102,18 @@ static void job_free(job *j) {
 
 static void pump(local *L, lconn *c);
 
-// Sends one frame to the connection with that id, as text for Phoenix and as
-// binary for the stream. false when it is gone (closed before, or by this
-// send: a failed send closes the socket, and on_close frees the lconn, so the
-// caller must look it up again).
-static bool send_to(local *L, uint64_t ws_id, const char *text, size_t len) {
+// Sends one message to the connection with that id, as a binary frame. false
+// when it is gone (closed before, or by this send: a failed send closes the
+// socket, and on_close frees the lconn, so the caller must look it up again).
+static bool send_to(local *L, uint64_t ws_id, const char *bytes, size_t len) {
     lconn *c = find(L, ws_id);
     if (!c) return false;
-    if (c->phx.vsn == CB_VSN_NW) cb_ws_send(c->ws, CB_WS_OP_BIN, text, len);
-    else cb_ws_send_text(c->ws, text, len);
+    cb_ws_send(c->ws, CB_WS_OP_BIN, bytes, len);
     return find(L, ws_id) != NULL;
 }
 
-static int on_frame(cb_ctx *ctx, cb_phx_conn *c, const msg *m, cb_phx_send_fn send, void *ud) {
-    if (c->vsn == CB_VSN_NW) return cb_nw_on_frame(ctx, c, (const uint8_t *)m->text, m->len, send, ud);
-    return cb_phx_on_frame(ctx, c, m->text, m->len, send, ud);
+static int on_frame(cb_ctx *ctx, cb_conn_row *c, const msg *m, cb_rt_send_fn send, void *ud) {
+    return cb_nw_on_frame(ctx, c, (const uint8_t *)m->text, m->len, send, ud);
 }
 
 static void job_done(cb_loop *l, void *ud) {
@@ -131,7 +126,7 @@ static void job_done(cb_loop *l, void *ud) {
         c->phx = j->phx;
         for (msg *m = j->out_head; m && send_to(L, id, m->text, m->len); m = m->next) {}
         c = find(L, id);
-        // A frame that is not the protocol: Phoenix drops such a socket, and so do we.
+        // A frame that is not the protocol: the socket is dropped.
         if (c && j->rc == CB_E_INVALID) cb_ws_close(c->ws, 1003);
         else if (c) pump(L, c);
     }
@@ -174,8 +169,7 @@ static void on_open(cb_ws *ws, void *ud) {
     if (!c) { cb_ws_close(ws, 1011); return; }
     c->ws = ws;
     c->ws_id = cb_ws_id(ws);
-    int vsn = cb_nw_proto_of_query(cb_ws_query(ws)) == CB_VSN_NW ? CB_VSN_NW : cb_phx_vsn_of_query(cb_ws_query(ws));
-    c->phx.vsn = vsn > 0 ? vsn : 1;   // the upgrade routes refused a bad vsn or proto already
+    c->phx.vsn = CB_VSN_NW;   // the upgrade route refused any other proto
     snprintf(c->phx.conn_id, sizeof c->phx.conn_id, "local-%llu", (unsigned long long)c->ws_id);
     c->next = L->head;
     if (L->head) L->head->prev = c;
@@ -189,16 +183,14 @@ static void on_message(cb_ws *ws, int opcode, const uint8_t *data, size_t len, v
     if (!c) return;
     if (c->in_bytes + len > INBOX_MAX) { cb_ws_close(ws, 1008); return; }
     msg *m;
-    if (c->phx.vsn == CB_VSN_NW && opcode == CB_WS_OP_TEXT) {
-        // The stream's text form: base64 of the message.
+    if (opcode == CB_WS_OP_TEXT) {
+        // The text form: base64 of the message.
         m = msg_new(NULL, len);
         int n = m ? nw_text_decode((const char *)data, (int)len, (uint8_t *)m->text, (int)len) : -1;
         if (m && n < 0) { free(m); cb_ws_close(ws, 1003); return; }
         if (m) m->len = (size_t)n;
-    } else if (opcode == CB_WS_OP_TEXT || c->phx.vsn == CB_VSN_NW) {
-        m = msg_new((const char *)data, len);
     } else {
-        return;   // a Phoenix client never sends binary
+        m = msg_new((const char *)data, len);
     }
     if (!m) return;
     if (c->in_tail) c->in_tail->next = m;
@@ -230,16 +222,16 @@ static const cb_ws_handlers WS_H = { on_open, on_message, on_close };
 typedef struct {
     cb_rt *rt;
     char topic[CB_TOPIC_MAX];
-    size_t len[CB_RT_PROTOS];
-    char *frame[CB_RT_PROTOS];
+    size_t len;
+    char *frame;
 } pub;
 
 static void pub_free(pub *p) {
-    for (int i = 0; i < CB_RT_PROTOS; i++) free(p->frame[i]);
+    free(p->frame);
     free(p);
 }
 
-static bool joined(const cb_phx_conn *c, const char *topic) {
+static bool joined(const cb_conn_row *c, const char *topic) {
     for (int i = 0; i < c->n_topics; i++)
         if (strcmp(c->topics[i], topic) == 0) return true;
     return false;
@@ -265,27 +257,23 @@ static void pub_on_loop(cb_loop *l, void *ud) {
     for (size_t i = 0; i < n; i++) {
         lconn *c = find(L, ids[i]);
         if (!c) continue;
-        int v = cb_rt_proto(c->phx.vsn);
-        send_to(L, ids[i], p->frame[v], p->len[v]);
+        send_to(L, ids[i], p->frame, p->len);
     }
     free(ids);
     pub_free(p);
 }
 
-static void local_deliver(cb_rt *rt, const char *topic, const char *const frames[CB_RT_PROTOS], const size_t lens[CB_RT_PROTOS]) {
+static void local_deliver(cb_rt *rt, const char *topic, const uint8_t *frame, size_t len) {
     cb_loop *loop = rt->ctx->loop;
     if (!loop) return;
     pub *p = calloc(1, sizeof *p);
     if (!p) return;
     p->rt = rt;
     cb_strlcpy(p->topic, topic, sizeof p->topic);
-    for (int i = 0; i < CB_RT_PROTOS; i++) {
-        p->frame[i] = malloc(lens[i] + 1);
-        if (!p->frame[i]) { pub_free(p); return; }
-        memcpy(p->frame[i], frames[i], lens[i]);
-        p->frame[i][lens[i]] = 0;
-        p->len[i] = lens[i];
-    }
+    p->frame = malloc(len ? len : 1);
+    if (!p->frame) { pub_free(p); return; }
+    memcpy(p->frame, frame, len);
+    p->len = len;
     if (cb_loop_post(loop, pub_on_loop, p) != CB_OK) pub_free(p);
 }
 
@@ -313,36 +301,13 @@ int cb_rt_local_new(cb_ctx *ctx, cb_rt **out) {
 
 // ---- the upgrade route ---------------------------------------------------------------
 
-static bool offers_phoenix(const char *protocols) {
-    // "phoenix, base64url.bearer.phx.<token>": a comma list of tokens.
-    for (const char *p = protocols; p && *p;) {
-        while (*p == ' ' || *p == ',') p++;
-        const char *e = p;
-        while (*e && *e != ',' && *e != ' ') e++;
-        if ((size_t)(e - p) == 7 && memcmp(p, "phoenix", 7) == 0) return true;
-        p = e;
-    }
-    return false;
-}
-
+// GET /v1/stream?proto=nw1 (stream.h). The first frame names the user.
 static void h_upgrade(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
-    if (!ctx->rt || ctx->rt->t != &LOCAL_T) { cb_router_error(res, 503, "realtime is not running"); return; }
-    if (cb_phx_vsn_of_query(req->query) < 0) { cb_router_error(res, 400, "unsupported vsn"); return; }
-    if (cb_ws_upgrade(req, res, &WS_H, ctx->rt) != CB_OK) return;
-    // A browser that offered subprotocols fails the handshake unless one is picked.
-    if (offers_phoenix(cb_http_header_get(req, "sec-websocket-protocol"))) cb_res_header(res, "Sec-WebSocket-Protocol", "phoenix");
-}
-
-// GET /v1/stream?proto=nw1: the binary stream (stream.h). No API key: the
-// binary surface has none, and the first frame names the user.
-static void h_upgrade_nw(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     if (!ctx->rt || ctx->rt->t != &LOCAL_T) { cb_router_error(res, 503, "realtime is not running"); return; }
     if (cb_nw_proto_of_query(req->query) != CB_VSN_NW) { cb_router_error(res, 400, "unsupported proto"); return; }
     cb_ws_upgrade(req, res, &WS_H, ctx->rt);
 }
 
 int cb_rt_local_routes(cb_ctx *ctx) {
-    int rc = cb_router_add(ctx->router, "GET", "/realtime/v1/websocket", CB_ROUTE_LOOP | CB_ROUTE_APIKEY, h_upgrade);
-    if (rc == CB_OK) rc = cb_router_add(ctx->router, "GET", "/v1/stream", CB_ROUTE_LOOP, h_upgrade_nw);
-    return rc;
+    return cb_router_add(ctx->router, "GET", "/v1/stream", CB_ROUTE_LOOP, h_upgrade);
 }

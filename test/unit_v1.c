@@ -35,11 +35,11 @@ static int64_t test_now(void) { return g_now; }
 
 // What the realtime transport was handed: the last binary-stream frame per publish.
 static struct { int n; char topic[128]; uint8_t nw[4096]; size_t nw_len; } g_pub;
-static void cap_deliver(cb_rt *rt, const char *topic, const char *const frames[CB_RT_PROTOS], const size_t lens[CB_RT_PROTOS]) {
+static void cap_deliver(cb_rt *rt, const char *topic, const uint8_t *frame, size_t len) {
     g_pub.n++;
     cb_strlcpy(g_pub.topic, topic, sizeof g_pub.topic);
-    g_pub.nw_len = lens[2] < sizeof g_pub.nw ? lens[2] : 0;
-    memcpy(g_pub.nw, frames[2], g_pub.nw_len);
+    g_pub.nw_len = len < sizeof g_pub.nw ? len : 0;
+    memcpy(g_pub.nw, frame, g_pub.nw_len);
 }
 static const cb_rt_transport CAP_T = { "cap", cap_deliver, NULL };
 static cb_rt g_rt = { &CAP_T, &g_ctx, NULL };
@@ -49,7 +49,6 @@ static void setup(void) {
     memset(&g_ctx, 0, sizeof g_ctx);
     memset(&g_cfg, 0, sizeof g_cfg);
     cb_strlcpy(g_cfg.jwt_secret, JWT_SECRET, sizeof g_cfg.jwt_secret);
-    cb_strlcpy(g_cfg.anon_key, "anon", sizeof g_cfg.anon_key);
     cb_strlcpy(g_cfg.allowed_origins, "*", sizeof g_cfg.allowed_origins);
     cb_strlcpy(g_cfg.public_url, "http://127.0.0.1:8080", sizeof g_cfg.public_url);
     g_cfg.jwt_ttl_s = 3600;
@@ -196,6 +195,26 @@ static void accounts(void) {
     anon.path_len = 9;
     T_EQ_INT(send_req(&anon), 401);
     T_EQ_INT(nc_status_read(g_status, g_body, g_len), ASK_WHY_AUTH);
+    teardown();
+}
+
+// A backend not up yet (no auth module, no store) answers 503 INTERNAL, never crashes.
+static void without_a_backend(void) {
+    setup();
+    T_EQ_INT(sign(1, "ALICE", "secret1"), 0);
+    cb_auth *auth = g_ctx.auth;
+    g_ctx.auth = NULL;
+    nc_reset();
+    T_EQ_INT(sign(1, "BOB", "secret1"), ASK_WHY_INTERNAL);
+    T_EQ_INT(nc_error()->status, 503);
+    g_ctx.auth = auth;
+    T_EQ_INT(sign(0, "ALICE", "secret1"), 0);
+    cb_store *store = g_ctx.store;
+    g_ctx.store = NULL;
+    T_EQ_INT(call(b_games, NULL), 503);
+    T_EQ_INT(nc_status_read(g_status, g_body, g_len), ASK_WHY_INTERNAL);
+    T_EQ_INT(send_req(nc_req_board()), 503);
+    g_ctx.store = store;
     teardown();
 }
 
@@ -444,6 +463,7 @@ static void bots_board_history_replay(void) {
 int main(void) {
     T_RUN(the_email_is_the_clients_derivation);
     T_RUN(accounts);
+    T_RUN(without_a_backend);
     T_RUN(refresh_password_signout_delete);
     T_RUN(games_views_and_chat);
     T_RUN(bots_board_history_replay);

@@ -78,7 +78,6 @@ int cb_config_from_env(cb_config *c, char *err, size_t cap) {
         cb_b64url_encode(raw, sizeof raw, c->jwt_secret, sizeof c->jwt_secret);
         c->jwt_secret_generated = true;
     }
-    if (!copy(c->anon_key, sizeof c->anon_key, "CBASE_ANON_KEY", env("CBASE_ANON_KEY", ""), err, cap)) return CB_E_INVALID;
     if (!copy(c->admin_token, sizeof c->admin_token, "CBASE_ADMIN_TOKEN", env("CBASE_ADMIN_TOKEN", ""), err, cap)) return CB_E_INVALID;
     if (!copy(c->allowed_origins, sizeof c->allowed_origins, "CBASE_ALLOWED_ORIGINS", env("CBASE_ALLOWED_ORIGINS", "*"), err, cap))
         return CB_E_INVALID;
@@ -113,7 +112,6 @@ void cb_config_each(const cb_config *c, cb_config_fn fn, void *ud) {
     fn("CBASE_TABLE", c->table, false, ud);
     fn("CBASE_WS_ENDPOINT", c->ws_endpoint, false, ud);
     fn("CBASE_JWT_SECRET", c->jwt_secret_generated ? "(unset: random per process)" : "(set)", true, ud);
-    fn("CBASE_ANON_KEY", c->anon_key[0] ? "(set)" : "(unset: apikey check off)", true, ud);
     fn("CBASE_ADMIN_TOKEN", c->admin_token[0] ? "(set)" : "(unset: console refused)", true, ud);
     fn("CBASE_ALLOWED_ORIGINS", c->allowed_origins, false, ud);
     fn("CBASE_PUBLIC_URL", c->public_url, false, ud);

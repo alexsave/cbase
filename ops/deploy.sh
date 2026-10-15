@@ -11,8 +11,8 @@
 #   2. reads the ops settings file (ops/ops_env.sh: $CBASE_OPS_ENV, else
 #      ~/.config/cbase/ops.env, else ops/.env). For a stack that does not exist
 #      yet it generates the missing secrets into it (openssl rand -hex 32):
-#      CBASE_JWT_SECRET, CBASE_ANON_KEY, CBASE_ADMIN_TOKEN. Later runs reuse
-#      them, so sessions and the shipped anon key survive a redeploy;
+#      CBASE_JWT_SECRET and CBASE_ADMIN_TOKEN. Later runs reuse them, so
+#      sessions survive a redeploy;
 #   3. creates the code bucket if it is missing (private, public access blocked);
 #   4. builds the Lambda zip (ops/package.sh: a static arm64 binary, Docker)
 #      and uploads it under a name carrying its sha256, so a new build is a
@@ -81,7 +81,6 @@ if aws cloudformation describe-stacks --region "$region" --stack-name "${CBASE_S
 fi
 ensure_secret() { cbase_ops_secret "$1" "$env_file" "$stack_exists" || exit 1; }
 ensure_secret CBASE_JWT_SECRET
-ensure_secret CBASE_ANON_KEY
 ensure_secret CBASE_ADMIN_TOKEN
 if [ "$stack_exists" = yes ]; then
   live_jwt="$(aws lambda get-function-configuration --region "$region" --function-name "${CBASE_FUNCTION_NAME:-cbase}" \
@@ -148,7 +147,6 @@ aws cloudformation deploy \
     "CodeBucket=$bucket" \
     "CodeKey=$key" \
     "JwtSecret=$CBASE_JWT_SECRET" \
-    "AnonKey=$CBASE_ANON_KEY" \
     "AdminToken=$CBASE_ADMIN_TOKEN" \
     "DomainName=$domain" \
     "CertificateArn=$cert" \

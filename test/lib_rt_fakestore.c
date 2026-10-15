@@ -173,20 +173,6 @@ static int d_view(cb_ctx *ctx, const char *game, const char *viewer, cb_view_row
     return CB_E_NOT_FOUND;
 }
 
-static int d_views_of_user(cb_ctx *ctx, const char *user, int limit, cb_view_fn fn, void *ud) {
-    int n = 0;
-    for (int i = 0; i < rtf.n_views; i++) {
-        if (strcmp(rtf.views[i].player_id, user) != 0) continue;
-        cb_view_row v;
-        fill_view(&rtf.views[i], &v);
-        n++;
-        bool go = fn(&v, ud);
-        cb_view_row_free(&v);
-        if (!go) break;
-    }
-    return n;
-}
-
 static int d_post(const char *endpoint, const char *conn, const void *data, size_t len) {
     LOCK();
     int st = 200;
@@ -223,7 +209,6 @@ void rtf_install(void) {
     rtf_reset();
     cb_rt_deps_g.verify_token = d_verify;
     cb_rt_deps_g.table_view = d_view;
-    cb_rt_deps_g.table_views_of_user = d_views_of_user;
     cb_rt_deps_g.apigw_post = d_post;
     cb_rt_deps_g.apigw_delete = d_delete;
 }

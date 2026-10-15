@@ -162,13 +162,11 @@ static void json_writer(void) {
     cb_jw_arr(&w);
     cb_jw_int(&w, 1);
     cb_jw_str(&w, NULL);
-    const uint8_t bytes[] = { 0xde, 0xad };
-    cb_jw_bytea(&w, bytes, 2);
     cb_jw_end(&w);
     cb_jw_end(&w);
     T_CHECK(cb_jw_ok(&w));
     T_EQ_STR(cb_buf_cstr(&b), "{\"s\":\"a\\\"b\\\\c\\n\\u0001\xc3\xa9\",\"i\":-7,\"t\":true,\"z\":null,"
-                              "\"arr\":[1,null,\"\\\\xdead\"]}");
+                              "\"arr\":[1,null]}");
     T_CHECK(cb_json_valid((const char *)b.p, b.len));
     // A value where a key is due is an error, not a malformed document on the wire.
     cb_buf_reset(&b);

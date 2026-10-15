@@ -26,18 +26,17 @@ Paste these back into the session so I can finish the verification:
 
 1. The stack status (it should say `CREATE_COMPLETE`).
 2. The stack's **Outputs** tab: `FunctionUrl`, `WebSocketUrl`, `DistributionDomain`, `TableName`, and `FunctionName`.
-3. The anon key (it is public: it ships inside the web bundle); on the CLI path it is `CBASE_ANON_KEY` in the ops settings file.
-4. Whether `https://api.foolish.cards/health` answers `ok cbase ...` (step 9).
+3. Whether `https://api.foolish.cards/health` answers `ok cbase ...` (step 9).
 
 Never paste the JWT secret or the admin token into a chat.
 
-With those I run the latency bench against the live stack from this Mac (DESIGN.md, "The bench"); it needs only the public anon key:
+With those I run the latency bench against the live stack from this Mac (DESIGN.md, "The bench"); it needs no key:
 
 ```
-make -C c_base bench && c_base/build/cbase-bench roundtrip --url https://api.foolish.cards --anon <AnonKey> --n 500 --concurrency 1
+make -C c_base bench && c_base/build/cbase-bench roundtrip --url https://api.foolish.cards --n 500 --concurrency 1
 ```
 
-It signs up two throwaway accounts (`bench...@bench.invalid`) and plays real games against the function, so run it after step 9 and before the import (step 10), or delete those two accounts in the console afterwards.
+It signs up two throwaway accounts (`BENCH...`) and plays real games against the function, so run it after step 9 and before the import (step 10), or delete those two accounts in the console afterwards.
 
 ## The CLI path
 
@@ -98,7 +97,7 @@ It signs up two throwaway accounts (`bench...@bench.invalid`) and plays real gam
 2. else `~/.config/cbase/ops.env`;
 3. else the old `c_base/ops/.env`, when it is the only one there.
 
-It is mode 0600, holds only `CBASE_*` `NAME=value` lines (`CBASE_JWT_SECRET`, `CBASE_ADMIN_TOKEN`, `CBASE_ANON_KEY` until the facade's removal, `CBASE_CERT_ARN`, `CBASE_WEB_FOOLISH_CERT`, `CBASE_WEB_UTTT_CERT`), and a value already in the environment wins over it.
+It is mode 0600, holds only `CBASE_*` `NAME=value` lines (`CBASE_JWT_SECRET`, `CBASE_ADMIN_TOKEN`, `CBASE_CERT_ARN`, `CBASE_WEB_FOOLISH_CERT`, `CBASE_WEB_UTTT_CERT`), and a value already in the environment wins over it.
 It lives outside the repo because the only copy once lived in `c_base/ops/.env` and went with a removed worktree.
 
 A secret is generated only for a stack that does not exist yet.
@@ -108,7 +107,7 @@ If the file is lost, recover the values from the live function, not from a new `
 ```
 umask 077; mkdir -p ~/.config/cbase
 aws lambda get-function-configuration --function-name cbase --query Environment.Variables --output json \
-  | python3 -c 'import json,sys; [print(f"{k}={v}") for k,v in json.load(sys.stdin).items() if k in ("CBASE_JWT_SECRET","CBASE_ADMIN_TOKEN","CBASE_ANON_KEY")]' \
+  | python3 -c 'import json,sys; [print(f"{k}={v}") for k,v in json.load(sys.stdin).items() if k in ("CBASE_JWT_SECRET","CBASE_ADMIN_TOKEN")]' \
   >> ~/.config/cbase/ops.env
 ```
 
@@ -141,11 +140,7 @@ Run these in Terminal, one at a time, and save each result in your password mana
 ```
 openssl rand -base64 32    # JwtSecret     (CBASE_JWT_SECRET)
 openssl rand -base64 32    # AdminToken    (CBASE_ADMIN_TOKEN)
-openssl rand -hex 32       # AnonKey       (CBASE_ANON_KEY)
 ```
-
-The anon key is hex rather than base64 on purpose.
-Realtime clients send it in a URL query string, where base64's `+` reads as a space, and the iOS build reads it from an `.xcconfig`, where `//` starts a comment.
 
 ## 3. The certificate for api.foolish.cards
 
@@ -197,10 +192,10 @@ CloudFormation cannot create a Lambda function of this runtime without its code,
 4. Parameters:
    - CodeBucket: the bucket name from step 5.
    - CodeKey: `cbase-lambda.zip` (the default).
-   - JwtSecret, AnonKey, AdminToken: the three values from step 2.
+   - JwtSecret, AdminToken: the two values from step 2.
    - DomainName: `api.foolish.cards` (the default).
    - CertificateArn: the ARN from step 3.
-   - AllowedOrigins: `*` (the default, which is what the Supabase functions answered).
+   - AllowedOrigins: `*` (the default).
    - FunctionName: `cbase`; TableName: `cbase` (the defaults).
 5. **Next**. On **Configure stack options** leave everything at its default and tick **I acknowledge that AWS CloudFormation might create IAM resources with custom names**. **Next**.
 6. Review, then **Submit**.
@@ -273,12 +268,12 @@ Players who sign up or move between the export and step 11 are lost, so do steps
 
 ## 11. Move the website
 
-The web build bakes these two values in at build time, and CI builds the site (Vercel no longer builds from Git), so a value change needs a CI rebuild.
+The web build bakes the backend's URL in at build time, and CI builds the site (Vercel no longer builds from Git), so a value change needs a CI rebuild.
 
 1. Vercel > the foolish project > **Settings > Environment Variables**.
-2. Edit `NEXT_PUBLIC_SUPABASE_URL` for **Production** to `https://api.foolish.cards`.
-3. Edit `NEXT_PUBLIC_SUPABASE_KEY` for **Production** to the AnonKey from step 2.
-4. Write down the old two values first: they are the rollback.
+2. Set `NEXT_PUBLIC_BACKEND_URL` for **Production** to `https://api.foolish.cards`.
+3. (The binary surface has no anon key: nothing else to set.)
+4. The site no longer speaks Supabase's protocols, so there is no backend to roll the web back to; a web rollback is a rollback of the hosting only (below).
 5. GitHub > **Actions** > **web** > the latest successful run on `main` > **Re-run all jobs**.
    Its `vercel pull` fetches the new values and the deploy ships them.
 6. Open https://foolish.cards, sign in with an existing account, and play a move against a bot.
@@ -286,11 +281,10 @@ The web build bakes these two values in at build time, and CI builds the site (V
 
 ## 12. Move the iOS apps
 
-1. Set the Release values wherever the Release build reads `SUPABASE_URL` and `SUPABASE_KEY` (`foolish/ios/Config/Release.xcconfig`, or the untracked `Local.xcconfig` that includes it):
+1. The Release build reads `BACKEND_URL` from `foolish/ios/Config/Release.xcconfig`, which already says:
 
    ```
-   SUPABASE_URL = https:/$()/api.foolish.cards
-   SUPABASE_KEY = <the AnonKey>
+   BACKEND_URL = https:/$()/api.foolish.cards
    ```
 
    The `$()` is required: in an `.xcconfig`, `//` starts a comment.
@@ -324,7 +318,7 @@ aws cloudformation deploy --region us-east-1 --stack-name cbase-github \
 1. It trusts only `repo:alexsave/foolish:ref:refs/heads/main`.
    To prove a workflow change from its branch before merging, deploy the stack once with `--parameter-overrides ExtraSubject=repo:alexsave/foolish:ref:refs/heads/<branch>` (and let the workflow's `if:` accept that ref on the branch), then deploy it again with `ExtraSubject=` empty.
 2. It may upload the Lambda zip and update the `cbase` stack's code, upload to the web bucket, invalidate the two distributions, rewrite the `cbase-web` page lists, and read both stacks; it holds none of the rights a template change needs, so `ops/deploy.sh` and `ops/web_deploy.sh stack` stay hand steps from this Mac.
-3. Repository secrets (Settings > Secrets and variables > Actions): `CBASE_AWS_ROLE_ARN` (the stack's `DeployRoleArn` output) and `CBASE_ANON_KEY` (the anon key from the ops settings file, built into the web bundle).
+3. Repository secrets (Settings > Secrets and variables > Actions): `CBASE_AWS_ROLE_ARN` (the stack's `DeployRoleArn` output).
 
 The rollback lanes, workflow_dispatch only, kept until their deletion dates:
 
@@ -347,8 +341,8 @@ The standalone iOS app never shipped, so no client talks to Supabase, and nothin
 
 The web is the only switch that matters on day one, and it flips back in minutes:
 
-1. Vercel > **Settings > Environment Variables**: set `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_KEY` (Production) back to the old values from step 11.4.
-2. GitHub > **Actions** > **web** > the latest run on `main` > **Re-run all jobs**.
+1. The web's hosting: point the foolish.cards DNS back at Vercel; Vercel's Production `NEXT_PUBLIC_BACKEND_URL` is `https://api.foolish.cards` too, so either host talks to c_base.
+2. GitHub > **Actions** > **web** > the latest run on `main` > **Re-run all jobs**, so Vercel serves the current build.
 3. Anything players did on c_base since the switch stays in DynamoDB and is not copied back.
 4. A bad c_base build is rolled back separately: download an earlier `cbase-lambda` artifact (every CI run keeps one for 30 days) and run `c_base/ops/lambda_deploy.sh <its cbase-lambda.zip>` from a tree that contains main; it points the stack back at that zip.
    Or point the stack straight at the earlier key, which is still in the code bucket: **CloudFormation > cbase > Update > Use existing template**, CodeKey = the old `cbase-lambda-<hash>.zip`.

@@ -2,6 +2,8 @@
 #include "stream.h"
 
 #include "rt_deps.h"
+#include "net/http.h"
+#include "util/str.h"
 #include "util/log.h"
 
 #include <stdio.h>
@@ -21,8 +23,7 @@ static bool proto_fn(const char *key, const char *value, void *ud) {
 
 int cb_nw_proto_of_query(const char *query) {
     proto_scan p = { "", false };
-    if (cb_http_query_each(query ? query : "", proto_fn, &p) < 0) return CB_E_INVALID;
-    if (!p.found) return 0;
+    if (cb_http_query_each(query ? query : "", proto_fn, &p) < 0 || !p.found) return CB_E_INVALID;
     const char *v = p.value;
     return strcmp(v, "nw1") == 0 ? CB_VSN_NW : CB_E_INVALID;
 }
@@ -43,7 +44,7 @@ void cb_chat_to_nw(const cb_chat_row *r, NwChat *out) {
     if (n) memcpy(out->message, r->message, n);
 }
 
-static void send_frame(const NwFrame *f, cb_phx_send_fn send, void *ud) {
+static void send_frame(const NwFrame *f, cb_rt_send_fn send, void *ud) {
     uint8_t small[64];
     int n = nw_frame_encode(f, small, sizeof small);
     if (n == NW_E_CAP) {
@@ -60,7 +61,7 @@ static void send_frame(const NwFrame *f, cb_phx_send_fn send, void *ud) {
     else CB_ERROR("stream", "a frame of kind %d was not written (%d)", f->kind, n);
 }
 
-static void ack(uint16_t ref, int why, bool seated, cb_phx_send_fn send, void *ud) {
+static void ack(uint16_t ref, int why, bool seated, cb_rt_send_fn send, void *ud) {
     NwFrame f;
     memset(&f, 0, sizeof f);
     f.kind = NW_WS_ACK;
@@ -111,7 +112,7 @@ static bool gid_of(const NwFrame *f, char *gid, size_t cap) {
 }
 
 // The caller's current view of the game when it is newer than `since`.
-static void catch_up(cb_ctx *ctx, const char *gid, const char *viewer, uint32_t since, cb_phx_send_fn send, void *ud) {
+static void catch_up(cb_ctx *ctx, const char *gid, const char *viewer, uint32_t since, cb_rt_send_fn send, void *ud) {
     cb_view_row v;
     memset(&v, 0, sizeof v);
     int rc = cb_rt_deps_g.table_view(ctx, gid, viewer, &v);
@@ -131,7 +132,7 @@ static void catch_up(cb_ctx *ctx, const char *gid, const char *viewer, uint32_t 
     cb_view_row_free(&v);
 }
 
-static void on_sub(cb_ctx *ctx, cb_conn_row *c, const NwFrame *f, cb_phx_send_fn send, void *ud) {
+static void on_sub(cb_ctx *ctx, cb_conn_row *c, const NwFrame *f, cb_rt_send_fn send, void *ud) {
     if (!c->user_id[0]) { ack(f->ref, ASK_WHY_AUTH, false, send, ud); return; }
     char gid[CB_GAME_ID_MAX + 1] = "";
     char topic[CB_TOPIC_MAX];
@@ -146,13 +147,13 @@ static void on_sub(cb_ctx *ctx, cb_conn_row *c, const NwFrame *f, cb_phx_send_fn
         } else {
             // A member hears their own seat; anyone else the spectators' stream.
             snprintf(topic, sizeof topic, "gu-%s-%s", gid, c->user_id);
-            int m = cb_phx_may_join(ctx, c->user_id, topic);
+            int m = cb_rt_may_hear(ctx, c->user_id, topic);
             if (m < 0) { CB_WARN("stream", "sub %s: %s", topic, cb_strerror(m)); ack(f->ref, ASK_WHY_INTERNAL, false, send, ud); return; }
             seated = m == 1;
             if (!seated) snprintf(topic, sizeof topic, "game-%s", gid);
         }
     }
-    int may = cb_phx_may_join(ctx, c->user_id, topic);
+    int may = cb_rt_may_hear(ctx, c->user_id, topic);
     if (may < 0) { CB_WARN("stream", "sub %s: %s", topic, cb_strerror(may)); ack(f->ref, ASK_WHY_INTERNAL, false, send, ud); return; }
     if (may == 0) { ack(f->ref, ASK_WHY_FORBIDDEN, false, send, ud); return; }
     if (f->what == NW_SUB_GAME) {
@@ -187,7 +188,7 @@ static void on_unsub(cb_conn_row *c, const NwFrame *f) {
     topic_drop(c, topic);
 }
 
-int cb_nw_on_frame(cb_ctx *ctx, cb_conn_row *conn, const uint8_t *msg, size_t len, cb_phx_send_fn send, void *ud) {
+int cb_nw_on_frame(cb_ctx *ctx, cb_conn_row *conn, const uint8_t *msg, size_t len, cb_rt_send_fn send, void *ud) {
     static _Thread_local NwFrame f;
     if (len > (size_t)INT32_MAX || nw_frame_decode(msg, (int)len, &f) != NW_OK) return CB_E_INVALID;
     switch (f.kind) {
@@ -222,4 +223,29 @@ int cb_nw_on_frame(cb_ctx *ctx, cb_conn_row *conn, const uint8_t *msg, size_t le
     default:
         return CB_E_INVALID;   // a server frame sent by a client
     }
+}
+
+// ---- the topic policy ----------------------------------------------------------------
+//
+// The gu- topic is rebuilt from the member and compared whole, never split on
+// '-' (a user id is a hyphenated UUID).
+int cb_rt_may_hear(cb_ctx *ctx, const char *user_id, const char *topic) {
+    if (!user_id || !*user_id || !topic) return 0;
+    if (cb_starts_with(topic, "pv-")) return strcmp(topic + 3, user_id) == 0;
+    if (cb_starts_with(topic, "game-")) return topic[5] != 0;
+    char game[CB_GAME_ID_MAX + 1];
+    if (cb_starts_with(topic, "gu-")) {
+        size_t tl = strlen(topic), ul = strlen(user_id);
+        // "gu-" + game + "-" + uid, with a non-empty game.
+        if (tl < 3 + 1 + 1 + ul || strcmp(topic + tl - ul, user_id) != 0 || topic[tl - ul - 1] != '-') return 0;
+        size_t gl = tl - ul - 1 - 3;
+        if (!cb_strncpy0(game, sizeof game, topic + 3, gl)) return 0;
+    } else if (cb_starts_with(topic, "chat:")) {
+        if (!topic[5] || cb_strlcpy(game, topic + 5, sizeof game) >= sizeof game) return 0;
+    } else {
+        return 0;
+    }
+    if (!ctx->store) return CB_E_STATE;
+    int r = CB_STORE_CALL(ctx->store, is_member, game, user_id);
+    return r < 0 ? r : r == 1;
 }

@@ -1,8 +1,8 @@
 // router.h - which handler answers which request, and where it runs.
 //
 // A route is a method, a path pattern and a handler. Patterns are exact
-// ("/health") or a prefix ending in "/*" ("/rest/v1/*" matches "/rest/v1/bots"
-// and "/rest/v1/"). The longest matching pattern wins; an exact pattern beats a
+// ("/health") or a prefix ending in "/*" ("/v1/games/*" matches "/v1/games/ab12"
+// and "/v1/games/"). The longest matching pattern wins; an exact pattern beats a
 // prefix of the same length. Method "*" matches any method.
 //
 // WHERE A HANDLER RUNS. By default on the REQUEST POOL (util/pool.h): it may
@@ -13,13 +13,10 @@
 //
 // WHAT THE ROUTER DOES ITSELF, so no module repeats it:
 //   * CORS. An OPTIONS request to any routed path is answered 200 "ok" with
-//     Access-Control-Allow-Origin (CBASE_ALLOWED_ORIGINS), -Headers (the set
-//     supabase-js and supabase-swift send), -Methods and Max-Age 7200, exactly
-//     as the edge functions' cors.ts did. Every other response gets
-//     Access-Control-Allow-Origin unless the handler set its own.
-//   * The anon key. A CB_ROUTE_APIKEY route is refused 401 unless the request
-//     carries CBASE_ANON_KEY as the `apikey` header or `?apikey=` (Realtime
-//     sends it in the query). Off when CBASE_ANON_KEY is unset.
+//     Access-Control-Allow-Origin (CBASE_ALLOWED_ORIGINS), -Headers (what the
+//     web client sends: authorization, content-type), -Methods and Max-Age
+//     7200. Every other response gets Access-Control-Allow-Origin unless the
+//     handler set its own.
 //   * 404 for no route, 405 for a path routed only under other methods, 503
 //     when the request pool is saturated or gone.
 //   * HEAD. A path with no HEAD route of its own matches its GET route, and
@@ -37,7 +34,6 @@ typedef void (*cb_handler)(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res
 
 #define CB_ROUTE_POOL   0x0   // run on the request pool (the default)
 #define CB_ROUTE_LOOP   0x1   // run on the loop thread; must not block
-#define CB_ROUTE_APIKEY 0x2   // require the anon key
 
 typedef struct {
     const char *method;    // "GET", "POST", ..., or "*"
@@ -61,12 +57,11 @@ const cb_route *cb_router_match(const cb_router *r, const char *method, const ch
 // test can drive them without sockets.
 // Answers an OPTIONS preflight into res.
 void cb_router_preflight(const cb_ctx *ctx, const cb_http_req *req, cb_http_res *res);
-// true when the request passes the anon-key check (or the check is off).
-bool cb_router_apikey_ok(const cb_ctx *ctx, const cb_http_req *req);
 // Adds Access-Control-Allow-Origin to a finished response if it has none.
 void cb_router_cors(const cb_ctx *ctx, const cb_http_req *req, cb_http_res *res);
-// Writes a small JSON error body {"message": msg} with `status`: the shape the
-// Supabase gateway answers with, which both SDKs surface as the error text.
+// Writes a plain-text error body with `status`. Clients read the status; the
+// text is for people and logs (a refusal a client acts on is the kernel's
+// AskRefusal, written by the route itself).
 void cb_router_error(cb_http_res *res, int status, const char *msg);
 
 #endif

@@ -157,18 +157,16 @@ static void routing(void) {
     cb_router_free(r);
 }
 
-static void apikey_and_cors(void) {
+static void cors(void) {
     cb_config cfg;
     memset(&cfg, 0, sizeof cfg);
-    strcpy(cfg.anon_key, "anon-123");
     strcpy(cfg.allowed_origins, "https://foolish.cards, http://localhost:3000");
     cb_ctx ctx;
     memset(&ctx, 0, sizeof ctx);
     ctx.cfg = &cfg;
     cb_http_req r;
     char *b;
-    parse("GET /realtime/v1/websocket?apikey=anon-123&vsn=1.0.0 HTTP/1.1\r\nOrigin: http://localhost:3000\r\n\r\n", 0, &r, &b);
-    T_CHECK(cb_router_apikey_ok(&ctx, &r));
+    parse("GET /v1/stream?proto=nw1 HTTP/1.1\r\nOrigin: http://localhost:3000\r\n\r\n", 0, &r, &b);
     cb_http_res res;
     cb_res_init(&res);
     cb_router_cors(&ctx, &r, &res);
@@ -179,16 +177,11 @@ static void apikey_and_cors(void) {
     cb_buf_free(&out);
     cb_res_free(&res);
     free(b);
-    parse("GET /rest/v1/bots HTTP/1.1\r\napikey: anon-12\r\nOrigin: https://evil.example\r\n\r\n", 0, &r, &b);
-    T_CHECK(!cb_router_apikey_ok(&ctx, &r));
+    parse("GET /v1/bots HTTP/1.1\r\nOrigin: https://evil.example\r\n\r\n", 0, &r, &b);
     cb_res_init(&res);
     cb_router_cors(&ctx, &r, &res);
     T_CHECK(!cb_res_has_header(&res, "Access-Control-Allow-Origin"));
     cb_res_free(&res);
-    free(b);
-    cfg.anon_key[0] = 0;   // unset: the check is off
-    parse("GET /rest/v1/bots HTTP/1.1\r\n\r\n", 0, &r, &b);
-    T_CHECK(cb_router_apikey_ok(&ctx, &r));
     free(b);
 }
 
@@ -200,6 +193,6 @@ int main(void) {
     T_RUN(query_iteration);
     T_RUN(responses);
     T_RUN(routing);
-    T_RUN(apikey_and_cors);
+    T_RUN(cors);
     return T_DONE();
 }

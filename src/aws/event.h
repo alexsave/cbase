@@ -21,7 +21,7 @@ typedef struct {
     char        connection_id[64];
     char        domain[256];
     char        stage[64];
-    const char *query;              // $connect: the raw query ("apikey=..&vsn=2.0.0"), "" otherwise
+    const char *query;              // $connect: the raw query ("proto=nw1"), "" otherwise
     const uint8_t *body;            // $default: the frame text
     size_t      body_len;
 } cb_ws_event;

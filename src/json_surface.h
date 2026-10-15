@@ -3,9 +3,9 @@
 // JSON is tolerated in c_base only where something outside it sets the format
 // (DESIGN.md "Where JSON is tolerated"): AWS (the Lambda event and response
 // envelopes, the Runtime API's error body, DynamoDB, the API Gateway
-// Management API, Lambda Invoke), the Supabase-compatible facade (GoTrue
-// bodies and JWT claims, PostgREST rows, Phoenix frames, Realtime payloads)
-// and the admin console's API. All of it is contained in ONE file,
+// Management API, Lambda Invoke), the access token's JWT header and claims,
+// and the admin console's API. The clients' surface is binary (the kernel's
+// netwire.h), so none of it is here. All of it is contained in ONE file,
 // json_surface.c: every key name, every shape, every call into the low-level
 // writer and reader (util/json.h, which nothing else includes). Everything
 // else in c_base hands this file structs and spans and gets bytes or structs
@@ -22,9 +22,7 @@
 #include "store/store.h"
 #include "aws/event.h"
 #include "auth/auth.h"
-#include "realtime/phoenix.h"
 #include "app/table_ops.h"
-#include "realtime/postgrest.h"
 #include "roster.h"
 #include "util/str.h"
 
@@ -402,128 +400,6 @@ int  cb_js_jwt_claims(cb_buf *out, const cb_jwt_claims *c, const char *issuer);
 bool cb_js_jwt_claims_decode(const char *json, size_t n, cb_jwt_claims *c, bool *has_nbf, int64_t *nbf);
 
 // =====================================================================================
-// GoTrue (auth_http.c): the bodies supabase-js and supabase-swift send and read.
-
-// The fields a route reads from its request body.
-enum {
-    CB_JS_GT_EMAIL         = 1 << 0,   // email
-    CB_JS_GT_PASSWORD      = 1 << 1,   // password
-    CB_JS_GT_USERNAME      = 1 << 2,   // data.username (signup)
-    CB_JS_GT_REFRESH_TOKEN = 1 << 3,   // refresh_token
-};
-typedef struct {
-    char email[CB_EMAIL_MAX + 1];
-    char password[256];
-    char username[CB_USERNAME_MAX * 4 + 1];
-    char refresh_token[128];
-    bool has_password;   // password was present as a string (possibly "")
-} cb_js_gotrue_body;
-typedef enum {
-    CB_JS_GT_OK = 0,
-    CB_JS_GT_NOT_OBJECT,   // not a JSON object: GoTrue's 400 bad_json
-    CB_JS_GT_BAD_FIELD,    // a wanted field is not a string, or too long: 400 validation_failed
-} cb_js_gt_rc;
-// Reads the `want` fields (absent or null: ""); fields not wanted are not looked at.
-cb_js_gt_rc cb_js_gotrue_body_decode(const char *json, size_t n, unsigned want, cb_js_gotrue_body *out);
-// The error body for the API version the request named: {"code":"<code>","msg":..}
-// for 2024-01-01, else {"code":<status>,"error_code":"<code>","msg":..}; a
-// weak_password also carries weak_password.reasons ["length"].
-void cb_js_gotrue_error(cb_buf *out, bool api_2024, int status, const char *code, const char *msg);
-// The session object ({access_token, token_type:"bearer", expires_in,
-// expires_at, refresh_token, user}). CB_OK or CB_E_NOMEM.
-int  cb_js_gotrue_session(cb_buf *out, const cb_session *s);
-// The user object ({"id","aud","role","email",..,"user_metadata":{"username"},
-// "app_metadata",..,"created_at","updated_at"}), times as GoTrue spells them
-// (UTC, microseconds, 'Z'; null for 0). CB_OK or CB_E_NOMEM.
-int  cb_js_gotrue_user(cb_buf *out, const cb_user *u, int64_t created_at, int64_t last_sign_in_at);
-
-// =====================================================================================
-// Phoenix (phoenix.h has the protocol): the channel frames realtime-js 2.x and
-// supabase-swift speak, vsn 2.0.0 as an array [join_ref, ref, topic, event,
-// payload], vsn 1.0.0 as an object with those five keys.
-
-// CB_OK, or CB_E_INVALID for a frame that is not a Phoenix message in `vsn`.
-int  cb_phx_decode(const char *text, size_t len, int vsn, cb_phx_msg *out);
-// Frame writers (into `out`, replacing its contents). response_json is the
-// reply's response as JSON text from this file (cb_phx_refusal,
-// cb_phx_join_response); NULL or "" is {}. payload_json likewise.
-void cb_phx_reply(cb_buf *out, int vsn, const cb_phx_msg *to, bool ok, const char *response_json);
-void cb_phx_push(cb_buf *out, int vsn, const char *wire_topic, const char *event, const char *payload_json);
-// phx_close for the channel joined on join_ref (ref = join_ref, payload {}),
-// as Phoenix sends it when a channel ends.
-void cb_phx_close(cb_buf *out, int vsn, cb_span join_ref, const char *wire_topic);
-// A refused reply's response, {"reason": reason}, appended to out.
-void cb_phx_refusal(cb_buf *out, const char *reason);
-// The payload's access_token: 1 and the token in out, 0 when it is absent or
-// not a string (nothing presented), -1 when it does not unescape into cap.
-int  cb_phx_access_token(const char *payload, size_t n, char *out, size_t cap);
-// The vsn a frame's own shape implies (an array is 2.0.0): for a connection
-// whose stored vsn was lost.
-int  cb_phx_vsn_of_frame(const uint8_t *text, size_t len);
-// The join reply's response for a phx_join payload: {} for a broadcast
-// channel, or every postgres_changes binding echoed whole with its id
-// (cb_phx_binding_id) appended. CB_OK, CB_E_FULL past 16 bindings,
-// CB_E_INVALID for a malformed binding, CB_E_NOMEM.
-int  cb_phx_join_response(const char *payload, size_t n, cb_buf *out);
-
-// =====================================================================================
-// Supabase Realtime payloads (realtime.c): what a push carries inside its
-// Phoenix frame. The shapes are Supabase Realtime's own, keys in the order its
-// encoder (Elixir's Jason over small maps) writes them, which is sorted:
-//   postgres_changes  {"data":{"columns":[..],"commit_timestamp":"..Z",
-//                      "errors":null,["old_record":{pk}],["record":{row}],
-//                      "schema":"public","table":"player_views","type":"UPDATE"},
-//                      "ids":[..]}
-//                     INSERT has no old_record, DELETE no record, and an
-//                     old_record is the primary key only (player_views has the
-//                     default replica identity). Every object's keys are
-//                     sorted, the record's too.
-//   broadcast         {"event":"animation_events","payload":{"b":".."},"type":"broadcast"}
-//   chat              {"event":"INSERT","payload":{"old_record":null,"operation":"INSERT",
-//                      "record":{row},"schema":"public","table":"chat_messages"},
-//                      "type":"broadcast"}  (realtime.broadcast_changes)
-// Each appends to `out`; the tests compare them with recorded frames.
-void cb_rt_pv_payload(cb_buf *out, int event, const cb_view_row *row);
-void cb_rt_cast_payload(cb_buf *out, const uint8_t *cast, size_t len);
-void cb_rt_chat_payload(cb_buf *out, const cb_chat_row *row);
-
-// =====================================================================================
-// PostgREST (postgrest.c): the rows the clients read through supabase-js and
-// supabase-swift, PostgREST's error object, and the chat insert's body. The
-// view bytes inside a row are "\x" hex, times as rt_rows.h prints them.
-
-// PostgREST's error body {"code","details","hint":null,"message"} into out
-// (details NULL writes null).
-void cb_js_pgrst_error(cb_buf *out, const char *code, const char *message, const char *details);
-// rows[0, n) as an array of objects, or (object) rows[0] alone, each with the
-// columns sel[0, n_sel) named by names[] (indexed by column). CB_OK, or
-// CB_E_NOMEM.
-int  cb_js_pgrst_rows(cb_buf *out, const cb_pgrst_row *rows, size_t n, const char *const *names, const int *sel,
-                      int n_sel, bool object);
-// The chat insert body: 1 for an object, the element count for an array
-// (*array set), -1 for anything else, including JSON that does not parse.
-int  cb_js_pgrst_chat_count(const char *body, size_t n, bool *array);
-typedef enum {
-    CB_JS_CHAT_OK = 0,
-    CB_JS_CHAT_NOT_OBJECT,   // the array element is not an object
-    CB_JS_CHAT_MISSING,      // game_id, user_id or message absent or not a string (*missing names it)
-    CB_JS_CHAT_BAD_UUID,     // user_id or id is not a UUID (or game_id does not fit)
-    CB_JS_CHAT_NOMEM,
-    CB_JS_CHAT_NUL,          // the message unescapes to a NUL, which TEXT cannot hold
-    CB_JS_CHAT_BAD_BOOL,     // is_system present and neither a boolean nor null
-} cb_js_chat_rc;
-// One row of the chat insert body: the object itself (index -1) or element
-// `index` of the array, checked in Postgres's order. user_id and id are
-// lowercased; id is "" when the body had none (the caller mints one); message
-// is malloc'd (free with cb_chat_row_free, also on a refusal).
-cb_js_chat_rc cb_js_pgrst_chat_row(const char *body, size_t n, int index, cb_chat_row *out, const char **missing);
-
-// =====================================================================================
-// The gateway's error (net/router.c): {"message": msg}, the shape the Supabase
-// gateway answers with, which both SDKs surface as the error text.
-void cb_js_gateway_error(cb_buf *out, const char *msg);
-
-// =====================================================================================
 // The admin console's API (admin/admin.c; admin.h lists the calls). JSON
 // because the console is a browser page we own and JSON is what fetch reads.
 // Times are cb_iso8601's spelling, null for 0 or less.
@@ -649,30 +525,12 @@ typedef struct {
 int cb_js_admin_backups_write(cb_buf *out, const cb_js_admin_backups *b);
 
 // =====================================================================================
-// The client's side (bench/): what the bench sends as a browser, supabase-js or
-// API Gateway would, and reads back as they do. Every shape here is the mirror
-// of one above.
+// The client's side (bench/): what AWS hands the function for a browser's
+// request, the mirror of the event envelope above.
 
-// A Function URL event (payload 2.0) for POST /functions/v1/action as AWS
+// A Function URL event (payload 2.0) for POST /v1/action as AWS
 // delivers a browser's request through CloudFront: its recorded headers, the
 // bearer, the binary body as base64.
 void cb_js_client_function_url_event(cb_buf *out, const char *bearer, int content_length, const char *body_b64);
-// GoTrue's signup body {email, password, data:{username}}.
-void cb_js_client_signup_body(cb_buf *out, const char *email, const char *password, const char *username);
-// A session answer's access_token and user.id. false when either is missing.
-bool cb_js_client_session(const char *body, size_t n, char *token, size_t token_cap, char *user_id, size_t id_cap);
-// realtime-js's heartbeat frame (vsn 2.0.0) and its length.
-const char *cb_js_client_heartbeat(size_t *n);
-// realtime-js's join of pv-<user_id> with a postgres_changes binding on the
-// player's rows (vsn 2.0.0, refs "1"), into out.
-void cb_js_client_pv_join(cb_buf *out, const char *user_id, const char *token);
-// A frame that is a phx_reply: 1 when its status is ok, 0 otherwise; -1 for
-// any other frame.
-int  cb_js_client_reply_status(const char *frame);
-// A vsn 2.0.0 postgres_changes push: its record's version. false for any
-// other frame.
-bool cb_js_client_pv_push_version(const char *frame, size_t n, int64_t *version);
-// A PostgREST array answer: the first row's "view" text. false when absent.
-bool cb_js_client_first_view(const char *body, size_t n, char *out, size_t cap);
 
 #endif

@@ -1,7 +1,7 @@
 // unit_net.c - the loop, the server and the router over real sockets.
 //
 // A server on a free loopback port, run on its own thread, with a test route
-// table: a pool handler, a loop handler, an apikey route and a WebSocket echo.
+// table: a pool handler, a loop handler and a WebSocket echo.
 // Each check talks to it through test/lib_client.c as a client would.
 #include "t.h"
 
@@ -63,7 +63,6 @@ static void *run(void *arg) {
 static void start(void) {
     cb_log_init(CB_LOG_WARN, 0);
     memset(&g_cfg, 0, sizeof g_cfg);
-    strcpy(g_cfg.anon_key, "anon");
     strcpy(g_cfg.allowed_origins, "*");
     g_ctx.cfg = &g_cfg;
     g_ctx.loop = cb_loop_new();
@@ -71,7 +70,6 @@ static void start(void) {
     g_ctx.router = cb_router_new();
     cb_router_add(g_ctx.router, "POST", "/echo", CB_ROUTE_POOL, h_echo);
     cb_router_add(g_ctx.router, "GET", "/loop/*", CB_ROUTE_LOOP, h_loop);
-    cb_router_add(g_ctx.router, "GET", "/key", CB_ROUTE_APIKEY | CB_ROUTE_LOOP, h_loop);
     cb_router_add(g_ctx.router, "GET", "/slow", CB_ROUTE_POOL, h_slow);
     cb_router_add(g_ctx.router, "GET", "/ws", CB_ROUTE_LOOP, h_ws);
     cb_server_opts o;
@@ -99,6 +97,9 @@ static void http_basics(void) {
     tc_response_free(&r);
     T_EQ_INT(tc_http(g_port, "GET", "/nothing", NULL, NULL, 0, &r), 0);
     T_EQ_INT(r.status, 404);
+    // The router's own refusals are plain text, never a JSON gateway error.
+    T_EQ_STR(tc_header(&r, "content-type", v, sizeof v), "text/plain; charset=utf-8");
+    T_EQ_STR(cb_buf_cstr(&r.body), "not found");
     tc_response_free(&r);
     T_EQ_INT(tc_http(g_port, "DELETE", "/echo", NULL, NULL, 0, &r), 0);
     T_EQ_INT(r.status, 405);
@@ -107,12 +108,6 @@ static void http_basics(void) {
     T_EQ_INT(r.status, 200);
     T_EQ_STR(cb_buf_cstr(&r.body), "ok");
     T_EQ_STR(tc_header(&r, "access-control-max-age", v, sizeof v), "7200");
-    tc_response_free(&r);
-    T_EQ_INT(tc_http(g_port, "GET", "/key", NULL, NULL, 0, &r), 0);
-    T_EQ_INT(r.status, 401);
-    tc_response_free(&r);
-    T_EQ_INT(tc_http(g_port, "GET", "/key", "apikey: anon\r\n", NULL, 0, &r), 0);
-    T_EQ_INT(r.status, 200);
     tc_response_free(&r);
     T_EQ_INT(tc_http(g_port, "POST", "/echo", NULL, "x", 1, &r), 0);   // body within the limit
     tc_response_free(&r);

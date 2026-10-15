@@ -2,7 +2,8 @@
 
 c_base is the foolish backend written in C, replacing Supabase (Postgres, PostgREST, GoTrue, Realtime, the Deno edge functions, pg_cron, pg_net and Vault).
 It runs on AWS Lambda as a custom runtime in production, and as a local server for development and tests.
-The shipped web and iOS clients switch to it by changing a URL and an anon key, and nothing else.
+The web and iOS clients speak its binary surface ("Binary surface", below), the kernel's bytes end to end.
+It first shipped a Supabase-compatible facade, so the clients of the day could switch by changing a URL and an anon key; that facade and the Supabase code it stood in for were deleted once every client had moved (stage 4 of "Binary surface").
 
 This document is the brief the orchestrator wrote (2026-10-13), expanded, with the Lambda addendum folded in.
 Each module section names its owner directory and public header, and has an "As built" note its builder fills in.
@@ -29,7 +30,7 @@ The decisions here are settled; a builder who finds one impossible says so in th
 6. **Client surface: a Supabase-compatible facade, then the binary surface.**
    The four edge functions byte for byte, the GoTrue auth routes, the PostgREST reads the clients make, and Realtime's Phoenix protocol.
    iOS installs cannot be updated in place, so old installs keep calling Supabase until they update; the runbook says so.
-   Superseded (2026-10-14): every client moves to the binary surface and the facade is deleted ("Binary surface", below).
+   Superseded (2026-10-14) and done: every client moved to the binary surface and the facade was deleted ("Binary surface", below).
 7. **Admin console:** one static HTML file served at /admin, its JSON API at /admin/api/*, behind a Bearer token.
 8. **Ops:** one CloudFormation template (`ops/cbase.yaml`) Alex uploads in the console; no AWS CLI needed locally.
 9. **Migration:** an export through the Supabase Management API, and `cbase-import` writing through the store interface.
@@ -61,7 +62,7 @@ A Lambda has no process between invocations, so the "one consistent server" is a
   This is `scheduleBotLoop` with `EdgeRuntime.waitUntil`, moved.
 - **A per-container cache** of rows the container just committed, as `game_cache.ts` had: a stale entry costs one CAS conflict, and a refusal computed from the cache is re-checked fresh.
 
-The semantics being preserved live in `foolish/server/impls/supabase/functions/_shared/adapter/table_io.ts`, `bot_actions.ts`, `game_cache.ts`, `finalize.ts` and `functions/bot-heartbeat/index.ts`.
+The semantics preserved lived in the Supabase adapter's `table_io.ts`, `bot_actions.ts`, `game_cache.ts`, `finalize.ts` and `bot-heartbeat/index.ts` (deleted in stage 4; `git log --diff-filter=D -- foolish/server/impls` finds them).
 A builder who changes one of these behaviours writes down why.
 
 The other cost is JSON.
@@ -79,11 +80,11 @@ It was not chosen because DynamoDB costs nothing and gives the query indexes (a 
                  +---------------+---------------+     +----------------+---------------+
                                  |   cb_http_req / cb_http_res          |
                                  +---------------> cb_handle <----------+
-                                                  (handler.c: CORS, apikey, 404/405, /health)
+                                                  (handler.c: CORS, 404/405, /health)
                                                       | routes
-          auth_http  postgrest  functions_http  admin  (rt_local's upgrade, serve only)
+             v1_http  functions_http  admin  unfurl  (rt_local's upgrade, serve only)
                                                       |
-              app/table_ops (load, kernel, CAS)  app/bots  app/fanout -> realtime (phoenix)
+              app/table_ops (load, kernel, CAS)  app/bots  app/fanout -> realtime (stream)
                                                       |
                        store.h: store_sqlite | store_dynamo        realtime: rt_local | rt_apigw
 ```
@@ -312,13 +313,14 @@ An independent per-family `aws dynamodb scan --select COUNT` agreed with export 
 ## Module: auth
 
 Owner: `src/auth/`.
-Headers: `auth.h` (users, sessions, verify a bearer), `jwt.h` (HS256 in GoTrue's claim shape), `bcrypt.h` (to embed: a public-domain OpenBSD-derived bcrypt with its test vectors), `auth_http.h` (the six GoTrue routes).
+Headers: `auth.h` (users, sessions, verify a bearer), `jwt.h` (HS256 in GoTrue's claim shape), `bcrypt.h` (to embed: a public-domain OpenBSD-derived bcrypt with its test vectors).
+The routes over them are `app/v1_http.c`'s (`/v1/auth/*`, "Binary surface").
 
 Email and password only; the clients derive the email from the username.
 Access tokens are HS256 JWTs signed with `CBASE_JWT_SECRET`, 3600 s; refresh tokens are 32 random bytes, stored hashed, rotated on use.
 GoTrue's bcrypt hashes import unchanged, so existing players keep their passwords.
 A username with '%' is refused.
-Error bodies follow GoTrue's shape only as far as supabase-js and supabase-swift read them.
+A refusal is the kernel's AskRefusal with an `NW_ACCOUNT_E_*` code (netwire.h).
 
 As built:
 
@@ -330,13 +332,11 @@ As built:
   Later it is reuse, and the whole session is revoked; a token a logout revoked never gets the grace.
   An unknown email still spends one bcrypt verify against a dummy hash.
   Passwords are 6 to 72 bytes (longer is refused, not cut); usernames 1 to 64 bytes with no '%' and no control bytes.
-- `auth_http.c` serves the six GoTrue routes.
-  Error bodies follow the request's API version as GoTrue does: with `X-Supabase-Api-Version: 2024-01-01` (both SDKs send it) `{"code":"<error_code>","msg":..}`, else `{"code":<status>,"error_code":..,"msg":..}`; supabase-swift decodes `code` as a String, so the brief's single integer shape would have broken every auth error on iOS.
-  Dates are `YYYY-MM-DDTHH:MM:SS.ffffffZ`, which supabase-swift's `ISO8601FormatStyle` reads.
-- Logout: no scope or `global` (supabase-js's default) revokes every session of the user (`refresh_revoke_user`), `local` only the caller's, `others` nothing (no client sends it).
-- PUT /user changes only the password; GET and PUT /user answer from the stored row, so a deleted account answers 403 `user_not_found` while its token lives.
+- `auth_http.c`, the six GoTrue routes with GoTrue's error bodies and dates, served the supabase clients until stage 4 deleted it.
+- Sign-out: global revokes every session of the user (`refresh_revoke_user`), local only the caller's.
+- Change password changes only the password; a deleted account's token is refused by the routes that read its row while the token lives.
 
-Tests: `test/unit_bcrypt.c`, `test/unit_jwt.c`, `test/unit_auth.c` (the accounts over a fake store, the routes through `cb_handle`), and the game smoke, where every request carries a real JWT.
+Tests: `test/unit_bcrypt.c`, `test/unit_jwt.c`, `test/unit_auth.c` (the accounts over a fake store), `test/unit_v1.c` (the routes through `cb_handle`), and the game smoke, where every request carries a real JWT.
 
 Untested: a real GoTrue hash from the export was checked for shape by the import rehearsal but not verified against its password (no password is known); the import must sign in one migrated account before cutover.
 Open: access tokens outlive logout and account deletion until they expire (up to an hour), as GoTrue's did.
@@ -424,43 +424,34 @@ Found here:
   The TS page redirected in JavaScript for exactly that reason; docs/VERCEL.md 4(a) proposed an inline `location.replace` with the refresh only under `<noscript>`, and this build follows the later instruction to use no script.
   Check a real Messages, Slack and WhatsApp unfurl once the web distribution routes `/m/*` here.
 
-## Module: realtime and PostgREST
+## Module: realtime
 
 Owner: `src/realtime/`.
-Headers: `realtime.h` (the publish calls and the transport interface), `phoenix.h` (the protocol, shared), `rt_local.h` (serve's in-process WebSocket), `rt_apigw.h` (API Gateway's WebSocket API and CONN rows), `postgrest.h` (the reads the clients make, and the chat insert).
+Headers: `realtime.h` (the publish calls and the transport interface), `stream.h` (the protocol and the topic policy), `rt_local.h` (serve's in-process WebSocket), `rt_apigw.h` (API Gateway's WebSocket API and CONN rows).
 
-Both Phoenix serializers are kept: realtime-js 2.x and supabase-swift 2.55.4 (the iOS app's) send `vsn=2.0.0` arrays, and older supabase-swift releases sent `vsn=1.0.0` objects.
-Topic policy in C mirrors the `realtime.messages` policies: `pv-<uid>` only that user, `gu-<game>-<uid>` that user if a member, `game-<game>` any authenticated user, `chat:<game>` members.
-There is no catch-up, as today: a client that missed a push refetches its view row when it rejoins.
-The web client reaches API Gateway through CloudFront at the same domain, `/realtime/v1/websocket` rewritten to the stage by a CloudFront Function; if that proves fragile, the fallback is a client-side realtime URL override, documented, not built.
+The protocol is "The push stream" under "Binary surface".
+Topics inside the server are strings with the policy of the `realtime.messages` policies they replaced: `pv-<uid>` only that user, `gu-<game>-<uid>` that user if a member, `game-<game>` any authenticated user, `chat:<game>` members.
+Under Lambda the client reaches API Gateway through CloudFront at the same domain, `/v1/stream` rewritten to the stage by a CloudFront Function.
 
 As built:
 
-- `phoenix.c`: both serializers (vsn 2.0.0 arrays, 1.0.0 objects; no vsn means 1.0.0), heartbeat, `phx_join`, `phx_leave` (ok, then `phx_close` with ref = join_ref, as Phoenix sends it), `access_token`, and `cb_phx_may_join`.
-  A gu- topic is rebuilt from the caller's uid and compared whole before membership is checked.
-  `access_token` is handled per channel with no reply, as Realtime does; a token that does not verify closes that channel.
-  A join token equal to `CBASE_ANON_KEY` is "nobody" and is refused by policy, since supabase-js hands Realtime the anon key when signed out.
-  Topics must carry "realtime:"; unknown families (`user-`, `room:`) are refused.
-- Binding ids are a hash (`cb_phx_binding_id`, FNV-1a over event, schema, table and filter), so neither transport stores anything per binding; a pv- change is tagged with the ids of its event and "*" crossed with its filter and none.
-- `realtime.c` builds each frame once per serializer in Supabase Realtime's own shapes (keys sorted as Jason writes small maps; `commit_timestamp` with milliseconds and "Z"); `rt_rows.c` prints every timestamp as Postgres prints a TIMESTAMPTZ in UTC, with "+00:00", including the columns production keeps as plain TIMESTAMP (chat, snapshots, ratings): a bare timestamp is read as local time by the browser, which put the chat clock off by the viewer's UTC offset.
-- `rt_local.c` (serve): `GET /realtime/v1/websocket` on the loop thread, refusing an unknown vsn with 400 and echoing `Sec-WebSocket-Protocol: phoenix` (Chrome fails the handshake otherwise); each client frame runs on the request pool, one at a time per connection, so frames are answered in order.
-  The server's idle sweep closes a WebSocket with no client traffic for 120 s, which a client's 25 s heartbeat prevents.
-- `rt_apigw.c` (Lambda): `$connect` stores a CONN row with a 2 h TTL, `$disconnect` deletes it, `$default` runs the frame and writes the row back only when it changed or a third of the TTL has gone (heartbeats cost no write); replies and pushes go through the management API, and 410 deletes the row.
-  API Gateway does not serialize a connection's frames: each is its own invocation, and a page joins its pv-, chat: and gu- channels within a few milliseconds.
+- `stream.c`: `cb_nw_on_frame` runs one client frame against the connection's row (its user and topics) and answers through a send callback, so both transports share it; `cb_rt_may_hear` is the policy.
+  A game subscription picks the caller's own seat's topic when they are a member and the spectators' otherwise, and is answered after its ACK with the caller's current view when it is newer than `since` (the catch-up).
+- `realtime.c` builds each push once, as the stream's message, and hands it to the transport.
+- `rt_local.c` (serve): `GET /v1/stream?proto=nw1` on the loop thread; each client frame runs on the request pool, one at a time per connection, so frames are answered in order; client frames may be binary or base64 text, and pushes go out binary.
+  The server's idle sweep closes a WebSocket with no client traffic for 120 s, which a client's 25 s ping prevents.
+- `rt_apigw.c` (Lambda): `$connect` requires `proto=nw1` and stores a CONN row with a 2 h TTL, `$disconnect` deletes it, `$default` runs the frame (base64 text) and writes the row back only when it changed or a third of the TTL has gone (pings cost no write); replies and pushes go through the management API as base64 text, and 410 deletes the row.
+  API Gateway does not serialize a connection's frames: each is its own invocation, and a page subscribes to its games, a game and its chat within a few milliseconds.
   So the row is written by compare-and-set on its version (`conn_put`, one `TransactWriteItems` with the TOPIC copies), a frame that loses re-reads and runs again (up to 12 times), and its replies are held until the run that stored.
-  A `phx_leave` whose join_ref is not the topic's current one raced the rejoin that followed it: it closes that join_ref only and keeps the topic.
-  Found by the live browser acceptance of 2026-10-14, where three joins each wrote back only their own topic and a stale leave closed the rejoined pv- channel, so the page heard no pushes until it reloaded.
-- `postgrest.c`: GET for player_views, spectator_views, chat_messages, bots, user_elo_ratings and game_snapshots, and POST for chat_messages, through one filter, order, page and select pipeline after a per-table fetch that applies the RLS.
-  `gt` is supported (the leaderboard sends `games_played=gt.0`); spectator_views and chat_messages require `game_id=eq.`; a bearer equal to the anon key, or to the request's own apikey, is anon.
-- `rt_deps.h` is a table of the four calls into auth, table_ops and API Gateway that the unit tests swap for fakes.
-  Integration kept it: the API Gateway entries cannot be real without AWS, and the fakes let the unit tests pin edge cases (410, expired rows, a lost CONN row) deterministically.
+  Found by the live browser acceptance of 2026-10-14 (then on Phoenix), where three joins each wrote back only their own topic and the page heard no pushes until it reloaded.
+- `rt_deps.h` is a table of the calls into auth, table_ops and API Gateway that the unit tests swap for fakes: the API Gateway entries cannot be real without AWS, and the fakes pin edge cases (410, expired rows, a lost CONN row) deterministically.
   The production table is exercised end to end by the game smoke, where real JWTs, the real table_ops and `rt_local` carry every push.
+- Until stage 4 the module also held the facade: `phoenix.c` (both Phoenix serializers), the Supabase Realtime payloads (`rt_rows.c`), and `postgrest.c` (the PostgREST reads and the chat insert); "Binary surface" says what replaced each.
 
-Tests: `test/unit_phoenix.c`, `test/unit_postgrest.c`, `test/unit_rt_apigw.c`, `test/unit_rt_local.c` (a real loopback server), and the game smoke, where A listens as realtime-js (vsn 2.0.0, gu-) and B on the object serializer (vsn 1.0.0, pv- and game-).
-The browser acceptance ran realtime-js against it (see Acceptance).
+Tests: `test/unit_stream.c` (the protocol on the fake world, the frames a publish builds, and a loopback `cbase serve` socket driven by the kernel's client library), `test/unit_rt_apigw.c` (the three events, base64 both ways, the CAS race, 410 and expired rows), `test/unit_rt_local.c` (a real loopback server: the upgrade route, isolation between sockets, frames answered in order, garbage closing), and the game smoke, where three sockets hear a seat's casts, the spectators' casts and a user's views through a whole game and a crash.
 
-Untested: `rt_apigw` against real API Gateway. supabase-swift was run against `cbase serve` from the iOS app (see Acceptance on iOS), and its recorded frames are `unit_phoenix.c` supabase_swift_frames.
-Carried over on purpose: no catch-up after a missed push; chat `is_system` settable by a client; chat length bounded only by the 1 MB body limit.
+Untested: `rt_apigw` against real API Gateway before the stage 3 web deploy.
+Carried over on purpose: chat `is_system` settable by a client (the server ignores it now: `NW_CHAT_SEND` has no such field).
 
 ## Module: aws
 
@@ -578,11 +569,13 @@ The honest expectation, stated before any measurement: the binary options are no
 `make -C c_base bench` builds `build/cbase-bench` (`make all` builds it too, so CI keeps it compiling); `bench/bench.h` lists the sub-commands and `bench/bench_stats.h` the run file.
 It is one C program, and the same client measures `cbase serve` and the deployed stack: `http://` is a kept-alive socket read by `https.c`'s own response parser, `https://` goes through `cb_https_request` itself, and the WebSocket (ws or wss) uses the frame codec of `net/ws.c`.
 
-- `roundtrip --url <base> --anon <key> [--n 500] [--concurrency 1|4]`: each worker signs up two players, opens a Realtime socket per player (Phoenix vsn 2.0.0, as realtime-js) joined to its `pv-` topic, and plays two-human games (create, join, both ready, moves until the end, then a new game).
-  Per move it times `GET /rest/v1/player_views` for the mover (the move is then chosen on that envelope with the kernel's client table and legal moves, as the browser does), `POST /functions/v1/action` from request to response, and `push_pv`: the opponent's `pv-` change for the new version, its arrival on the opponent's socket minus the action response's arrival (a reader thread per socket stamps each frame, so a push that beats the response is negative, not lost).
+- `roundtrip --url <base> [--n 500] [--concurrency 1|4]`: each worker signs up two players, opens a stream socket per player (`/v1/stream`, frames as base64 text, which both transports take) subscribed to its games list, and plays two-human games (create, join, both ready, moves until the end, then a new game).
+  Per move it times `view`, `GET /v1/games/<id>` for the mover (the move is then chosen on that envelope with the kernel's client table and legal moves, as the browser does), `action`, `POST /v1/action` from request to response, and `push_view`: the opponent's view push for the new version, its arrival on the opponent's socket minus the action response's arrival (a reader thread per socket stamps each frame, so a push that beats the response is negative, not lost).
+  Bodies go through the kernel's pure codecs (`netwire.h`), because the client library keeps one session in statics and the workers are threads.
+  Until stage 4 it measured the facade (`player_views` over PostgREST, `push_pv` over Phoenix); the baselines below are those runs.
   Setup is not timed; bytes are the mean HTTP head and body per request, each way.
 - `coldstart --url <base> [--idle S] [--repeat K] [--path /health] [--force-cmd CMD]`: per repeat it runs the forcing command, sleeps, then times the first GET on a fresh connection and the next one on the same connection.
-- `cpu`: no network; fixtures come from a game the kernel plays in-process (two humans, dealt, eight moves in), and each operation's median nanoseconds per call over batches of at least 2 ms is reported with its share of a 5 ms request: the Function URL event decode and response encode (`event.c` then, `json_surface.c` now), a GetItem answer read into a game row and the commit's TransactWriteItems built (`dynamo_wire.c` then, `json_surface.c` now), one player's `pv-` push JSON, base64 of a 2 KB envelope each way, a JWT verify, a bcrypt verify (cost 10, sign-in only, for scale), and the kernel section itself (`table_load`, `table_set_deal_seed`, `table_act`, `table_commit_products`).
+- `cpu`: no network; fixtures come from a game the kernel plays in-process (two humans, dealt, eight moves in), and each operation's median nanoseconds per call over batches of at least 2 ms is reported with its share of a 5 ms request: the Function URL event decode and response encode (`event.c` then, `json_surface.c` now), a GetItem answer read into a game row and the commit's TransactWriteItems built (`dynamo_wire.c` then, `json_surface.c` now), one player's view push (`view_push`: the stream's frame and its base64 text; it was the `pv-` Realtime JSON, `pv_push_json`, 2141 ns against 114 ns on the same Mac), base64 of a 2 KB envelope each way, a JWT verify, a bcrypt verify (cost 10, sign-in only, for scale), and the kernel section itself (`table_load`, `table_set_deal_seed`, `table_act`, `table_commit_products`).
 - `report [FILE...]`: the Markdown tables of saved runs (default: every `bench/results/*.txt`).
 
 Every run prints itself and is saved as `bench/results/<kind>-<UTC stamp>.txt` (gitignored); its note carries the concurrency, games, rejected moves, lost pushes, errors and the machine's 1-minute load average.
@@ -659,14 +652,14 @@ The deployed baseline is one command from this Mac once the stack answers (RUNBO
 
 ```
 make -C c_base bench
-c_base/build/cbase-bench roundtrip --url https://api.foolish.cards --anon <AnonKey> --n 500 --concurrency 1
-c_base/build/cbase-bench roundtrip --url https://api.foolish.cards --anon <AnonKey> --n 500 --concurrency 4
+c_base/build/cbase-bench roundtrip --url https://api.foolish.cards --n 500 --concurrency 1
+c_base/build/cbase-bench roundtrip --url https://api.foolish.cards --n 500 --concurrency 4
 c_base/build/cbase-bench coldstart --url https://api.foolish.cards --repeat 6 \
   --force-cmd 'm=$(aws lambda get-function-configuration --function-name cbase --query MemorySize --output text); aws lambda update-function-configuration --function-name cbase --memory-size $((m == 256 ? 257 : 256)) >/dev/null && aws lambda wait function-updated --function-name cbase'
 c_base/build/cbase-bench report
 ```
 
-Each `roundtrip` worker signs up two real accounts (`bench<hex><n>@bench.invalid`) and plays real games; delete them in the console's Users panel afterwards if they matter.
+Each `roundtrip` worker signs up two real accounts (`BENCH<HEX><n>`) and plays real games; delete them in the console's Users panel afterwards if they matter.
 A Lambda container lives for minutes after its last request, so `--idle` alone rarely gives a cold start; the `--force-cmd` above toggles the memory size between 256 and 257 MB, which makes Lambda start new environments on the next request without touching the environment variables (an `--environment` update would replace them all).
 It needs the CLI's credentials, and `--idle 0` is right with it; an even `--repeat` leaves the memory at the template's 256 MB, since CloudFormation does not put back a value changed outside it.
 Pass `--note variant=...` on every run so the report tells variants apart.
@@ -677,38 +670,36 @@ The three binary variants do not exist yet; when one does, the same commands mea
   Its saving is exactly the `event_decode` and `event_encode` rows of `cpu`; its cost is the localhost hop and the adapter's start, which `roundtrip` and `coldstart` see.
 - **S3 store:** once a `store_s3.c` backend exists (`store.h` admits it), a second stack with `CBASE_STORE=s3`, measured with `--note variant=s3`.
   `cpu` would gain the S3 rows (a raw GET body, a PUT with `If-Match`) beside `dynamo_get_parse` and `dynamo_commit_build`, which are what it removes.
-- **Polling:** it needs a binary poll endpoint on the server and a polling client; `roundtrip` would then gain a `--poll-ms` mode in which `push_pv` is the poll's arrival instead of the socket's.
+- **Polling:** it needs a binary poll endpoint on the server and a polling client; `roundtrip` would then gain a `--poll-ms` mode in which `push_view` is the poll's arrival instead of the socket's.
   Neither the endpoint nor the mode exists.
 
 ## What stays TypeScript, and why
 
-The migration deletes the server TypeScript once Supabase is switched off (measured in REPORT.md, section 5): the edge functions and their adapter under `foolish/server/impls/supabase`, `foolish/server/api`, and `foolish/sdk/ts/table/server_table.ts`.
+Stage 4 deleted the server TypeScript (measured in REPORT.md, section 5): the edge functions and their adapter under `foolish/server/impls/supabase`, `foolish/sdk/ts/table/server_table.ts`, the schema and its migrations, and the harnesses that existed only to run them (`fake_supabase.mts`, the Postgres e2e adapter).
 It does not delete, and does not try to:
 
-- the web client (`foolish/src`): it is the product, and it reaches the kernel through generated bindings already;
-- the tests and harnesses (`foolish/e2e`), which drive the web client and today's server; once the server TypeScript is gone, the harnesses that exist only to run it (`fake_supabase.mts`, the edge helpers) go with it, and the rest are the next target;
+- the web client (`foolish/src`): it is the product, and it reaches the kernel and the client library through generated bindings;
+- `foolish/server/api`, the types and constants the web still imports;
+- the tests and harnesses (`foolish/e2e`) that drive the web client;
 - the tools, visualisers and scripts, each its own later decision;
 - generated code, which is a build artifact.
-The binary surface (above) is what removes the client-side Supabase SDKs.
 
 ## Where JSON is tolerated, and why
 
-The kernel's bytes never become JSON.
-JSON appears only where something outside c_base speaks it and cannot be changed:
+The kernel's bytes never become JSON, and no client speaks JSON to c_base: the client surface is binary ("Binary surface").
+JSON appears only where something outside c_base sets the format and cannot be changed:
 
-1. GoTrue's auth bodies and the access token's claims, because supabase-js and supabase-swift send and read them.
-2. PostgREST's rows, its error object and the chat insert, because both clients read rows through supabase-js and supabase-swift; the view bytes inside them are `\x` hex, as today.
-3. Phoenix frames and the Realtime payloads inside them, because realtime-js and supabase-swift speak them; a cast inside them is base64, as today.
-4. The admin console's API, because it is a browser page we own and JSON is what `fetch` reads.
-5. AWS's APIs: the Lambda event and response envelope, the Runtime API's error body, DynamoDB, and the self-invoke payload Lambda Invoke carries.
-   API Gateway Management posts a Phoenix frame (item 3) as its body and needs no JSON of its own.
+1. AWS's APIs: the Lambda event and response envelope, the Runtime API's error body, DynamoDB, and the self-invoke payload Lambda Invoke carries.
+   API Gateway Management posts a stream message (base64 text) as its body and needs no JSON of its own.
+2. The access token's header and claims, because a JWT is JSON by RFC 7519 (the clients never read it: the session states its expiry).
+3. The admin console's API, because it is a browser page we own and JSON is what `fetch` reads.
 
-The edge function bodies (create, action, meta, delete-account) stay binary, as `e2e/validation/no_json_validation.test.ts` holds them today.
+Until stage 4 the list also held the Supabase facade: GoTrue's bodies, PostgREST's rows and error object, Phoenix frames and the Realtime payloads inside them, and the gateway's `{"message"}` error.
 
 ### One file holds all of it
 
 Every JSON shape above lives in one file, `src/json_surface.c` (declared in `src/json_surface.h`): every key name, every shape, and every call into the low-level writer and reader `src/util/json.c`, which nothing else includes.
-Everything else in c_base hands it structs and spans and gets bytes or structs back, so a reader who wants to know what c_base says in JSON reads one file, and deleting a facade (Phase 2) is deleting its section.
+Everything else in c_base hands it structs and spans and gets bytes or structs back, so a reader who wants to know what c_base says in JSON reads one file; deleting the facade in stage 4 was deleting its sections.
 The functions are pure over buffers (no socket, no clock, no randomness), so each shape is checked byte for byte against a recorded body in the unit tests.
 
 The sections of `json_surface.c`, with their callers:
@@ -717,15 +708,10 @@ The sections of `json_surface.c`, with their callers:
 - The Lambda event envelope (`cb_event_*`, for `main_lambda.c` and `lambda_invoke.c`): the Function URL and WebSocket events in, the HTTP, WS and empty answers out, the `"bot_drive:<id>"` payload, and the redaction a raw event gets before it is logged.
 - The Lambda Runtime API's error body (`cb_runtime_error_body`).
 - The JWT header and claims (`cb_js_jwt_*`, for `jwt.c`, which keeps the base64url, the HMAC and the time checks).
-- GoTrue (`cb_js_gotrue_*`, for `auth_http.c`): the request body read field by field as a route asks, the error in both API versions, the session and the user.
-- Phoenix (`cb_phx_*`, for `phoenix.c`, `realtime.c` and `rt_apigw.c`): decode, reply, push, close, a refusal's reason, the join reply's echoed bindings, the access token in a payload, and a frame's vsn by its shape.
-- The Realtime payloads (`cb_rt_*_payload`, for `realtime.c`): `postgres_changes` on `player_views`, the `animation_events` broadcast and the chat broadcast.
-- PostgREST (`cb_js_pgrst_*`, for `postgrest.c`, which keeps the table schema, the RLS and the paging): rows, the error object, and the chat insert's rows.
-- The gateway's `{"message"}` error (`cb_js_gateway_error`, for `cb_router_error`).
 - The admin console (`cb_js_admin_*`, for `admin.c`): one-shot answers take a struct, and the lists the store streams row by row are written through an opaque `cb_js_stream`, so no writer leaves the file.
-- The client's side (`cb_js_client_*`, for `bench/`): what the bench sends and reads as a browser, supabase-js or API Gateway would, each the mirror of a server shape above.
+- The client's side (`cb_js_client_function_url_event`, for `bench/cpu.c`): a Function URL event as AWS delivers a browser's request, the mirror of the event envelope.
 
-The one JSON outside it is `migrate/export.sh`, the one-off shell exporter that reads production through Supabase's Management API (JSON by Supabase's design) with `python3`; it is not C, it never runs in c_base, and it is deleted with Supabase.
+The one JSON outside it is `migrate/export.sh`, the one-off shell exporter that read production through Supabase's Management API (JSON by Supabase's design) with `python3`; it is not C and it never runs in c_base.
 
 `test/unit_json_gate.c` holds the rule.
 It reads every C source under `src/`, `bench/` and `migrate/` and fails, naming the file and line, when any file other than `json_surface.c` and `util/json.{c,h}` includes `util/json.h`, names the writer or reader (`cb_jw`, `cb_jw_*`, `cb_json_*`, `CB_JW_*`, `CB_JSON_*`), or holds a string literal with a JSON key in it (a quoted word and a colon).
@@ -785,7 +771,7 @@ The client decodes it into an enum the host localizes, so no host string-matches
 | `GET /v1/history` (B) | | `NW_HISTORY`: the caller's rating (or none) and their newest 50 replays: id, created, player ids, moves, extras |
 | `GET /v1/replay/<game id>` (B) | | `NW_REPLAY`: the newest replay of that game, if the caller played in it (game_snapshots' policy) |
 
-The writes keep their bodies byte for byte (they were binary already) and their functions in `functions_http.c`; `/v1/` is a second mount of the same handlers without the `apikey` gate, and phase 4 removes the `/functions/v1/` mount.
+The writes keep their bodies byte for byte (they were binary already) and their functions in `functions_http.c`; until stage 4 the same handlers were also mounted at `/functions/v1/` behind the `apikey` gate.
 Sign-up and sign-in take the upper-cased username rather than an email: the server derives the account email exactly as both clients did (`hex(SHA-256(name))[:16]@foolish.cards`), so existing accounts sign in unchanged and neither client carries the derivation any more.
 Upper-casing stays the host's one text call (`String.uppercased()`, `toUpperCase()`), because it is Unicode case mapping that both platforms already agree on and the kernel has no table for; a username with `%` is refused by the server, as before.
 Change password and sign-out are the GoTrue semantics they replace (auth.h), from the same functions.
@@ -798,8 +784,8 @@ Rotation, reuse grace and revocation are auth.c's, unchanged.
 ### The push stream
 
 One WebSocket per client at `/v1/stream`, carrying the kernel's bytes.
-Under `cbase serve` it is `rt_local`'s upgrade; under Lambda it is the API Gateway stage, reached through CloudFront as `/realtime/v1/websocket` is today (the CloudFront Function rewrites both paths onto the stage, and `$connect` tells the two protocols apart by the query string: `proto=nw1` against Phoenix's `vsn=`).
-The connection row (`cb_conn_row`) keeps its user, topics and version; its `vsn` becomes the protocol (1 and 2 Phoenix, 3 this one), so a fan-out writes each frame once per protocol, as it writes once per Phoenix serializer today.
+Under `cbase serve` it is `rt_local`'s upgrade; under Lambda it is the API Gateway stage, reached through CloudFront (a CloudFront Function rewrites the path onto the stage, and `$connect` requires `proto=nw1`).
+The connection row (`cb_conn_row`) keeps its user, topics and version; its `vsn` is the protocol, `CB_VSN_NW` (3), the only one since stage 4 (1 and 2 were Phoenix's serializers).
 
 Client to server:
 
@@ -816,7 +802,7 @@ Server to client:
 - `NW_WS_CHAT`: game id and the message (id, user, created, is_system, text).
 - `NW_WS_PONG`.
 
-Topics inside the server stay the strings they are (`pv-`, `gu-`, `game-`, `chat:`), with the policy of `cb_phx_may_join` moved into one function both protocols call.
+Topics inside the server stay the strings they were (`pv-`, `gu-`, `game-`, `chat:`), with the policy of the old `cb_phx_may_join` in one function, `cb_rt_may_hear`.
 The catch-up the Phoenix facade never had: a `NW_SUB_GAME` with `since` below the game's version is answered, after its ACK, with the caller's current `NW_WS_VIEW` of that game, so a client that reconnects asks for what it missed by version instead of refetching on a guess.
 Version gating is the client's, in C: `nc_stream_in` drops a VIEW or CAST at or below the newest version applied for its game and stream, and answers the host with what to apply; `nc_gate_reset` is the watchdog's resync.
 Subscriptions, their retries after a refusal (a member's join can race the membership write, as the web's `privateChannel.ts` handles now: 0.5 s doubling to 10 s), the 25 s ping and the reconnect delay are the client's too: the host reports `open`, `frame` and `closed` and asks `nc_stream_tick(now_ms)` for the frames that are due, so the retry policy has one implementation instead of one per host.
@@ -837,7 +823,7 @@ The host's whole job is: ask for a request, send it with URLSession or fetch, ha
 
 ### What it deletes, and what stays
 
-Phase 4 deletes `auth_http.c`, `postgrest.c`, `phoenix.c`, the facade's routes, the Phoenix half of `realtime.c` and the transports, and their sections of `json_surface.c` (GoTrue, PostgREST, Phoenix, the Realtime payloads, the gateway error, and the bench's client mirror of them), and the JSON gate's allowed list shrinks to what AWS forces (the Lambda envelope, the Runtime API error, DynamoDB, the self-invoke), the JWT's claims (a JWT is JSON by RFC 7519), and the admin console's API.
+Stage 4 deletes `auth_http.c`, `postgrest.c`, `phoenix.c`, `rt_rows.c`, the facade's routes and the anon key, the Phoenix half of `realtime.c` and the transports, and their sections of `json_surface.c` (GoTrue, PostgREST, Phoenix, the Realtime payloads, the gateway error, and the bench's client mirror of them), so the JSON gate's allowed surface shrinks to what AWS forces, the JWT's claims and the admin console's API ("Where JSON is tolerated").
 The hosts lose supabase-js, supabase-swift, `Connector.ts`, `privateChannel.ts`, the hex decoding of view rows, `PackedAction`'s hand-written envelope, `VersionGate.swift` and the client-side email derivation.
 
 ### As built (stage 1, 2026-10-14)
@@ -858,6 +844,16 @@ The hosts lose supabase-js, supabase-swift, `Connector.ts`, `privateChannel.ts`,
 Tests: `unit_netwire` (every layout against hand-written bytes; every prefix and every body one byte long refused, from exactly-sized heap copies so an over-read is an ASan failure), `unit_netclient` (the client with no server: the blob, every request, refresh timing, answers, the stream's order, retries, reconnects, pings and gates), `unit_v1` (every route driven by the client library through `cb_handle` on a real store and real auth; also in `make check-dynamo`), `unit_stream` (the protocol on the fake world, the frames a publish builds byte for byte, API Gateway's base64 posts, and a real loopback `cbase serve` socket driven end to end by the client library).
 Mutation-checked: `docs/mutation_checks.md`, "Binary surface".
 The JSON gate is unchanged: none of this is JSON.
+
+### As built (stage 4, the facade deleted)
+
+- c_base: `auth_http`, `postgrest`, `phoenix` and `rt_rows` are gone with their tests, as are the anon key (`CBASE_ANON_KEY`, the router's `CB_ROUTE_APIKEY`, the template's `AnonKey`), the `/functions/v1/` mounts, the `/realtime/v1/websocket` CloudFront behaviour and the router's JSON gateway error (its own refusals are plain text now).
+  `realtime.c` builds one message per push; `rt_local` and `rt_apigw` speak only the stream.
+  `json_surface.c` lost its GoTrue, Phoenix, Realtime payload, PostgREST, gateway error and bench client sections (3472 lines to about 2940).
+- The game smoke (`test/smoke.c`) plays its whole game, crash included, over `/v1` and `/v1/stream` with the kernel's client library building every request and reading every answer; three sockets hear a seat's casts, the spectators' casts and a user's views.
+  `cbase-bench roundtrip` and `cpu` measure the binary surface.
+- The TypeScript server, its schema and its harnesses are deleted ("What stays TypeScript").
+- Still in the row format on purpose: `cb_conn_row.vsn` (always `CB_VSN_NW`) and `join_refs` (unused by the stream); dropping them is a store schema change in both backends for no behaviour.
 
 ## Corrections to the brief, found while building the skeleton
 

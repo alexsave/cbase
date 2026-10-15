@@ -127,17 +127,6 @@ void cb_jw_raw(cb_jw *w, const char *json, size_t n) {
     cb_buf_append(w->b, json, n);
 }
 
-void cb_jw_bytea(cb_jw *w, const uint8_t *p, size_t n) {
-    if (!value_start(w)) return;
-    // "\\x" inside the JSON string is the text \x Postgres writes.
-    cb_buf_puts(w->b, "\"\\\\x");
-    if (!cb_buf_reserve(w->b, 2 * n + 1)) return;
-    int k = cb_hex_encode(p, n, (char *)w->b->p + w->b->len, w->b->cap - w->b->len);
-    if (k < 0) { w->err = true; return; }
-    w->b->len += (size_t)k;
-    cb_buf_putc(w->b, '"');
-}
-
 void cb_jw_kstr(cb_jw *w, const char *k, const char *s) { cb_jw_key(w, k); cb_jw_str(w, s); }
 void cb_jw_kint(cb_jw *w, const char *k, int64_t v) { cb_jw_key(w, k); cb_jw_int(w, v); }
 void cb_jw_kbool(cb_jw *w, const char *k, bool v) { cb_jw_key(w, k); cb_jw_bool(w, v); }

@@ -31,9 +31,6 @@ typedef struct {
     // process (logged as a warning: every session dies at restart).
     char jwt_secret[512];
     bool jwt_secret_generated;
-    // CBASE_ANON_KEY: the opaque string clients send as `apikey`. Unset: the
-    // apikey check is OFF (development only; logged as a warning).
-    char anon_key[1024];
     // CBASE_ADMIN_TOKEN: Bearer token for /admin/api/*. Unset: the console is refused.
     char admin_token[256];
     // CBASE_ALLOWED_ORIGINS: "*" (default) or a comma list of origins echoed in

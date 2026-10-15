@@ -1,9 +1,9 @@
 // rt_local.h - realtime for `cbase serve`: the in-process WebSocket.
 //
-// GET /realtime/v1/websocket?apikey=..&vsn=.. (CB_ROUTE_LOOP | CB_ROUTE_APIKEY)
-// upgrades (net/ws.h) and keeps a cb_phx_conn per socket on the loop thread.
-// deliver() posts the frame to the loop (loop.h cb_loop_post), which sends it
-// to every socket joined to the topic.
+// GET /v1/stream?proto=nw1 (CB_ROUTE_LOOP) upgrades (net/ws.h) and keeps a
+// cb_conn_row per socket on the loop thread. deliver() posts the message to the
+// loop (loop.h cb_loop_post), which sends it to every socket subscribed to the
+// topic.
 #ifndef CB_RT_LOCAL_H
 #define CB_RT_LOCAL_H
 

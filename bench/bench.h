@@ -1,6 +1,6 @@
 // bench.h - cbase-bench's sub-commands and what they share (main.c).
 //
-//   cbase-bench roundtrip --url <base> --anon <key> [--n 500] [--concurrency 1|4] [--out DIR] [--note TEXT]
+//   cbase-bench roundtrip --url <base> [--n 500] [--concurrency 1|4] [--out DIR] [--note TEXT]
 //   cbase-bench coldstart --url <base> [--idle S] [--repeat K] [--path P] [--force-cmd CMD] [--out DIR]
 //   cbase-bench cpu [--out DIR]
 //   cbase-bench report [FILE...]        (default: every bench/results/*.txt)
@@ -16,7 +16,6 @@
 
 typedef struct {
     const char *url;
-    const char *anon;
     const char *out_dir;
     const char *note;
     const char *path;        // coldstart

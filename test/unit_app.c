@@ -133,7 +133,7 @@ static void call(const char *method, const char *fn, const char *bearer, const c
     memset(&req, 0, sizeof req);
     snprintf(req.method, sizeof req.method, "%s", method);
     char path[64], auth[64];
-    snprintf(path, sizeof path, "/functions/v1/%s", fn);
+    snprintf(path, sizeof path, "/v1/%s", fn);
     req.path = path;
     req.query = "";
     if (bearer) {
@@ -708,10 +708,10 @@ static void the_wire_surface(void) {
     T_EQ_INT(r.status, 400);
     T_EQ_INT(refusal_why(&r, NULL), ASK_WHY_NOT_FOUND);
     // delete-account: POST only, 401 without a bearer.
-    call("GET", "delete-account", "A", NULL, NULL, 0, &r);
+    call("GET", "account/delete", "A", NULL, NULL, 0, &r);
     T_EQ_INT(r.status, 405);
     T_EQ_INT(refusal_why(&r, NULL), ASK_WHY_METHOD);
-    call("POST", "delete-account", NULL, NULL, NULL, 0, &r);
+    call("POST", "account/delete", NULL, NULL, NULL, 0, &r);
     T_EQ_INT(r.status, 401);
     T_EQ_INT(refusal_why(&r, NULL), ASK_WHY_AUTH);
 }
@@ -833,7 +833,7 @@ static void delete_account_anonymizes_stored_replays(void) {
     // A real auth handle over the same store, so the route runs to its 204.
     snprintf(g_cfg.jwt_secret, sizeof g_cfg.jwt_secret, "unit-app-secret-0123456789abcdef");
     T_EQ_INT(cb_auth_new(&g_ctx, &g_ctx.auth), CB_OK);
-    call("POST", "delete-account", "B", NULL, NULL, 0, &r);
+    call("POST", "account/delete", "B", NULL, NULL, 0, &r);
     T_EQ_INT(r.status, 204);
     cb_auth_free(g_ctx.auth);
     g_ctx.auth = NULL;

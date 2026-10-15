@@ -1,28 +1,21 @@
 // unit_auth.c - accounts and sessions (auth/auth.h) against an in-RAM store
-// (lib_auth_fakestore.c), then the GoTrue routes (auth/auth_http.h) through
-// cb_handle exactly as both mains call it.
+// (lib_auth_fakestore.c). The routes over them are unit_v1.c's.
 #include "t.h"
 
 #include "auth/auth.h"
-#include "auth/auth_http.h"
 #include "auth/bcrypt.h"
-#include "handler.h"
 #include "lib_auth_fakestore.h"
-#include "net/router.h"
 #include "util/clock.h"
 #include "util/err.h"
-#include "util/json.h"
 
 #include <stdlib.h>
 
-static const char ANON[] = "anon-key-for-tests";
 static cb_config cfg;
 static cb_ctx ctx;
 
 static void setup(void) {
     memset(&cfg, 0, sizeof cfg);
     strcpy(cfg.jwt_secret, "a-unit-test-secret-with-enough-bytes");
-    strcpy(cfg.anon_key, ANON);
     strcpy(cfg.allowed_origins, "*");
     strcpy(cfg.public_url, "https://api.example/");
     cfg.jwt_ttl_s = 3600;
@@ -31,12 +24,9 @@ static void setup(void) {
     ctx.mode = CB_MODE_SERVE;
     ctx.store = auth_fakestore_new();
     T_EQ_INT(cb_auth_new(&ctx, &ctx.auth), CB_OK);
-    ctx.router = cb_router_new();
-    T_EQ_INT(cb_auth_routes(&ctx), CB_OK);
 }
 
 static void teardown(void) {
-    cb_router_free(ctx.router);
     cb_auth_free(ctx.auth);
     auth_fakestore_free(ctx.store);
     memset(&ctx, 0, sizeof ctx);
@@ -235,287 +225,11 @@ static void verify_bearer_and_expiry(void) {
     teardown();
 }
 
-// ---- the routes, through cb_handle ------------------------------------------------
-
-typedef struct {
-    int status;
-    char body[8192];
-    size_t len;
-    char headers[2048];
-} reply;
-
-// One request through cb_handle. `hdrs` are extra header lines ("A: b\r\n").
-static reply call(const char *method, const char *target, const char *hdrs, const char *body) {
-    static char raw[16384];
-    snprintf(raw, sizeof raw, "%s %s HTTP/1.1\r\nHost: t\r\n%sContent-Length: %zu\r\n\r\n%s", method, target, hdrs,
-             body ? strlen(body) : 0, body ? body : "");
-    cb_http_req req;
-    reply r;
-    memset(&r, 0, sizeof r);
-    if (cb_http_parse(raw, strlen(raw), 1 << 16, &req) <= 0) { r.status = -1; return r; }
-    cb_http_res res;
-    cb_res_init(&res);
-    cb_handle(&ctx, &req, &res);
-    r.status = res.status;
-    r.len = res.body.len < sizeof r.body - 1 ? res.body.len : sizeof r.body - 1;
-    if (r.len) memcpy(r.body, res.body.p, r.len);
-    snprintf(r.headers, sizeof r.headers, "%s", cb_buf_cstr(&res.headers));
-    cb_res_free(&res);
-    return r;
-}
-
-#define APIKEY "apikey: anon-key-for-tests\r\n"
-#define V2024  "X-Supabase-Api-Version: 2024-01-01\r\n"
-
-static bool jstr(const reply *r, const char *path, char *out, size_t cap) {
-    return cb_json_get_str(r->body, r->len, path, out, cap);
-}
-static bool jstr_is(const reply *r, const char *path, const char *want) {
-    char v[2048];
-    return jstr(r, path, v, sizeof v) && strcmp(v, want) == 0;
-}
-static int64_t jint(const reply *r, const char *path) {
-    int64_t v = -1;
-    return cb_json_get_i64(r->body, r->len, path, &v) ? v : -1;
-}
-// A GoTrue / supabase-swift date: "YYYY-MM-DDTHH:MM:SS.ffffffZ".
-static bool jdate(const reply *r, const char *path) {
-    char v[64];
-    if (!jstr(r, path, v, sizeof v) || strlen(v) != 27 || v[10] != 'T' || v[19] != '.' || v[26] != 'Z') return false;
-    int64_t ms;
-    return cb_iso8601_parse(v, strlen(v), &ms) == CB_OK && ms > 0;
-}
-
-// Every field the two SDKs read from a session, present and well formed.
-static void check_session_body(const reply *r, const char *email, const char *username) {
-    T_EQ_INT(r->status, 200);
-    T_CHECK(cb_json_valid(r->body, r->len));
-    char at[CB_JWT_MAX], rt[64], id[64];
-    T_CHECK(jstr(r, "access_token", at, sizeof at));
-    T_CHECK(jstr_is(r, "token_type", "bearer"));
-    T_EQ_INT(jint(r, "expires_in"), 3600);
-    T_CHECK(jint(r, "expires_at") >= cb_now_ms() / 1000 + 3590);
-    T_CHECK(jstr(r, "refresh_token", rt, sizeof rt) && strlen(rt) == 43);
-    T_CHECK(jstr(r, "user.id", id, sizeof id) && cb_uuid_valid(id, strlen(id)));
-    T_CHECK(jstr_is(r, "user.aud", "authenticated"));
-    T_CHECK(jstr_is(r, "user.role", "authenticated"));
-    T_CHECK(jstr_is(r, "user.email", email));
-    T_CHECK(jstr_is(r, "user.phone", ""));
-    T_CHECK(jdate(r, "user.email_confirmed_at"));
-    T_CHECK(jdate(r, "user.confirmed_at"));
-    T_CHECK(jdate(r, "user.last_sign_in_at"));
-    T_CHECK(jdate(r, "user.created_at"));
-    T_CHECK(jdate(r, "user.updated_at"));
-    T_CHECK(jstr_is(r, "user.app_metadata.provider", "email"));
-    T_CHECK(jstr_is(r, "user.app_metadata.providers.0", "email"));
-    T_CHECK(jstr_is(r, "user.user_metadata.username", username));
-    T_EQ_INT(cb_json_array_len(r->body, r->len, "user.identities"), 0);
-    bool anon = true;
-    T_CHECK(cb_json_get_bool(r->body, r->len, "user.is_anonymous", &anon) && !anon);
-    cb_user u;
-    T_EQ_INT(cb_auth_verify_token(ctx.auth, at, &u), CB_OK);
-    T_EQ_STR(u.id, id);
-}
-
-// An error in the shape the request's API version asks for.
-static void check_error(const reply *r, int status, const char *code, bool v2024) {
-    T_EQ_INT(r->status, status);
-    T_CHECK(cb_json_valid(r->body, r->len));
-    char m[256];
-    T_CHECK(jstr(r, "msg", m, sizeof m) && m[0]);
-    if (v2024) {
-        T_CHECK(jstr_is(r, "code", code));
-        T_CHECK(strstr(r->headers, "X-Supabase-Api-Version: 2024-01-01\r\n") != NULL);
-    } else {
-        T_EQ_INT(jint(r, "code"), status);
-        T_CHECK(jstr_is(r, "error_code", code));
-    }
-}
-
-static void http_signup_signin_refresh(void) {
-    setup();
-    reply r = call("POST", "/auth/v1/signup", APIKEY V2024,
-                   "{\"email\":\"Anna@Foolish.Cards\",\"password\":\"secret1\",\"data\":{\"username\":\"ANNA\"},"
-                   "\"gotrue_meta_security\":{},\"code_challenge\":null,\"code_challenge_method\":null}");
-    check_session_body(&r, "anna@foolish.cards", "ANNA");
-    T_CHECK(strstr(r.headers, "Access-Control-Allow-Origin: *\r\n") != NULL);
-
-    // The same email again, both error dialects.
-    r = call("POST", "/auth/v1/signup", APIKEY V2024,
-             "{\"email\":\"anna@foolish.cards\",\"password\":\"secret1\",\"data\":{\"username\":\"ANNA\"}}");
-    check_error(&r, 422, "user_already_exists", true);
-    r = call("POST", "/auth/v1/signup", APIKEY,
-             "{\"email\":\"anna@foolish.cards\",\"password\":\"secret1\",\"data\":{\"username\":\"ANNA\"}}");
-    check_error(&r, 422, "user_already_exists", false);
-
-    // Password grant, right and wrong.
-    r = call("POST", "/auth/v1/token?grant_type=password", APIKEY V2024,
-             "{\"email\":\"anna@foolish.cards\",\"password\":\"secret1\",\"gotrue_meta_security\":{}}");
-    check_session_body(&r, "anna@foolish.cards", "ANNA");
-    char rt0[64];
-    T_CHECK(jstr(&r, "refresh_token", rt0, sizeof rt0));
-    reply bad = call("POST", "/auth/v1/token?grant_type=password", APIKEY V2024,
-                     "{\"email\":\"anna@foolish.cards\",\"password\":\"secret2\"}");
-    check_error(&bad, 400, "invalid_credentials", true);
-
-    // Refresh: rotation, then the consumed token again.
-    char body[256];
-    snprintf(body, sizeof body, "{\"refresh_token\":\"%s\"}", rt0);
-    r = call("POST", "/auth/v1/token?grant_type=refresh_token", APIKEY V2024, body);
-    check_session_body(&r, "anna@foolish.cards", "ANNA");
-    char rt1[64];
-    T_CHECK(jstr(&r, "refresh_token", rt1, sizeof rt1));
-    T_CHECK(strcmp(rt1, rt0) != 0);
-    // A retry at once (its response lost): within the grace, a session.
-    r = call("POST", "/auth/v1/token?grant_type=refresh_token", APIKEY V2024, body);
-    check_session_body(&r, "anna@foolish.cards", "ANNA");
-    // Past the grace: reuse.
-    g_fake_now = cb_now_ms() + CB_AUTH_REUSE_GRACE_MS + 1000;
-    cb_auth_now = fake_now;
-    r = call("POST", "/auth/v1/token?grant_type=refresh_token", APIKEY V2024, body);
-    check_error(&r, 400, "refresh_token_already_used", true);
-    snprintf(body, sizeof body, "{\"refresh_token\":\"%s\"}", rt1);
-    r = call("POST", "/auth/v1/token?grant_type=refresh_token", APIKEY V2024, body);
-    check_error(&r, 400, "refresh_token_already_used", true);   // the reuse ended the session
-    cb_auth_now = cb_now_ms;
-    r = call("POST", "/auth/v1/token?grant_type=refresh_token", APIKEY V2024, "{\"refresh_token\":\"nope\"}");
-    check_error(&r, 400, "refresh_token_not_found", true);
-
-    r = call("POST", "/auth/v1/token?grant_type=magic", APIKEY V2024, "{}");
-    check_error(&r, 400, "validation_failed", true);
-    teardown();
-}
-
-static void http_refusals(void) {
-    setup();
-    const char *ok_body = "{\"email\":\"b@foolish.cards\",\"password\":\"secret1\",\"data\":{\"username\":\"B\"}}";
-    // The anon key: missing, wrong, and in the query (Realtime's habit).
-    reply r = call("POST", "/auth/v1/signup", V2024, ok_body);
-    T_EQ_INT(r.status, 401);
-    r = call("POST", "/auth/v1/signup", "apikey: anon-key-for-testz\r\n" V2024, ok_body);
-    T_EQ_INT(r.status, 401);
-    r = call("GET", "/auth/v1/user", "apikey: \r\n", NULL);
-    T_EQ_INT(r.status, 401);
-
-    r = call("POST", "/auth/v1/signup", APIKEY V2024,
-             "{\"email\":\"b@foolish.cards\",\"password\":\"12345\",\"data\":{\"username\":\"B\"}}");
-    check_error(&r, 422, "weak_password", true);
-    T_CHECK(jstr_is(&r, "weak_password.reasons.0", "length"));
-    r = call("POST", "/auth/v1/signup", APIKEY V2024,
-             "{\"email\":\"b@foolish.cards\",\"password\":\"secret1\",\"data\":{\"username\":\"%B\"}}");
-    check_error(&r, 422, "validation_failed", true);
-    r = call("POST", "/auth/v1/signup", APIKEY V2024,
-             "{\"email\":\"b-at-foolish\",\"password\":\"secret1\",\"data\":{\"username\":\"B\"}}");
-    check_error(&r, 400, "email_address_invalid", true);
-    r = call("POST", "/auth/v1/signup", APIKEY V2024, "{\"email\":\"b@foolish.cards\"");
-    check_error(&r, 400, "bad_json", true);
-    r = call("POST", "/auth/v1/signup", APIKEY V2024, "{\"email\":7,\"password\":\"secret1\"}");
-    check_error(&r, 400, "validation_failed", true);
-    r = call("POST", "/auth/v1/signup", APIKEY V2024, "{\"email\":\"b@foolish.cards\",\"data\":{\"username\":\"B\"}}");
-    check_error(&r, 400, "validation_failed", true);
-
-    // None of those created the account; this does.
-    r = call("POST", "/auth/v1/signup?apikey=anon-key-for-tests", V2024, ok_body);
-    check_session_body(&r, "b@foolish.cards", "B");
-    teardown();
-}
-
-static void http_user_and_logout(void) {
-    setup();
-    reply r = call("POST", "/auth/v1/signup", APIKEY V2024,
-                   "{\"email\":\"c@foolish.cards\",\"password\":\"secret1\",\"data\":{\"username\":\"CAT\"}}");
-    T_EQ_INT(r.status, 200);
-    char at[CB_JWT_MAX], rt[64], id[64], h[CB_JWT_MAX + 128];
-    T_CHECK(jstr(&r, "access_token", at, sizeof at));
-    T_CHECK(jstr(&r, "refresh_token", rt, sizeof rt));
-    T_CHECK(jstr(&r, "user.id", id, sizeof id));
-    snprintf(h, sizeof h, APIKEY V2024 "Authorization: Bearer %s\r\n", at);
-
-    r = call("GET", "/auth/v1/user", h, NULL);
-    T_EQ_INT(r.status, 200);
-    T_CHECK(jstr_is(&r, "id", id));
-    T_CHECK(jstr_is(&r, "email", "c@foolish.cards"));
-    T_CHECK(jstr_is(&r, "user_metadata.username", "CAT"));
-    T_CHECK(jdate(&r, "created_at") && jdate(&r, "updated_at"));
-
-    r = call("GET", "/auth/v1/user", APIKEY V2024, NULL);
-    check_error(&r, 401, "no_authorization", true);
-
-    // An expired token, correctly signed.
-    cb_jwt_claims c;
-    memset(&c, 0, sizeof c);
-    memcpy(c.sub, id, sizeof c.sub);
-    cb_uuid_v4(c.session_id);
-    c.iat = cb_now_ms() / 1000 - 4000;
-    c.exp = c.iat + 3600;
-    char old[CB_JWT_MAX], h2[CB_JWT_MAX + 128];
-    T_CHECK(cb_jwt_mint(cfg.jwt_secret, &c, NULL, old, sizeof old) > 0);
-    snprintf(h2, sizeof h2, APIKEY V2024 "Authorization: Bearer %s\r\n", old);
-    r = call("GET", "/auth/v1/user", h2, NULL);
-    check_error(&r, 403, "bad_jwt", true);
-
-    // Change the password; same password refused; the new one signs in.
-    r = call("PUT", "/auth/v1/user", h, "{\"password\":\"secret1\"}");
-    check_error(&r, 422, "same_password", true);
-    r = call("PUT", "/auth/v1/user", h, "{\"password\":\"secret2\",\"code_challenge\":null}");
-    T_EQ_INT(r.status, 200);
-    T_CHECK(jstr_is(&r, "id", id));
-    r = call("POST", "/auth/v1/token?grant_type=password", APIKEY V2024,
-             "{\"email\":\"c@foolish.cards\",\"password\":\"secret2\"}");
-    T_EQ_INT(r.status, 200);
-    char rt2[64];   // a second session (another device)
-    T_CHECK(jstr(&r, "refresh_token", rt2, sizeof rt2));
-
-    // Logout with no scope is GoTrue's default, global: 204, no body, and
-    // the session's refresh token is dead.
-    r = call("POST", "/auth/v1/logout", h, NULL);
-    T_EQ_INT(r.status, 204);
-    T_EQ_INT(r.len, 0);
-    char body[128];
-    snprintf(body, sizeof body, "{\"refresh_token\":\"%s\"}", rt);
-    r = call("POST", "/auth/v1/token?grant_type=refresh_token", APIKEY V2024, body);
-    T_EQ_INT(r.status, 400);
-    // Global is every session of the user, the other device's included.
-    snprintf(body, sizeof body, "{\"refresh_token\":\"%s\"}", rt2);
-    r = call("POST", "/auth/v1/token?grant_type=refresh_token", APIKEY V2024, body);
-    T_EQ_INT(r.status, 400);
-    r = call("POST", "/auth/v1/logout", APIKEY V2024, NULL);
-    check_error(&r, 401, "no_authorization", true);
-
-    // A deleted account stops answering GET /user while its token lives.
-    T_EQ_INT(cb_auth_delete_user(ctx.auth, id), CB_OK);
-    r = call("GET", "/auth/v1/user", h, NULL);
-    check_error(&r, 403, "user_not_found", true);
-    teardown();
-}
-
-// The module with no store (a backend not built yet) answers 503, never crashes.
-static void http_without_a_store(void) {
-    setup();
-    cb_store *keep = ctx.store;
-    cb_auth_free(ctx.auth);
-    ctx.store = NULL;
-    T_EQ_INT(cb_auth_new(&ctx, &ctx.auth), CB_OK);
-    reply r = call("POST", "/auth/v1/signup", APIKEY V2024,
-                   "{\"email\":\"d@foolish.cards\",\"password\":\"secret1\",\"data\":{\"username\":\"D\"}}");
-    T_EQ_INT(r.status, 503);
-    cb_auth_free(ctx.auth);
-    ctx.auth = NULL;
-    r = call("GET", "/auth/v1/user", APIKEY V2024, NULL);
-    T_EQ_INT(r.status, 503);
-    ctx.store = keep;
-    teardown();
-}
-
 int main(void) {
     T_RUN(signup_then_signin);
     T_RUN(signup_refusals);
     T_RUN(refresh_rotates_and_reuse_revokes);
     T_RUN(logout_password_delete);
     T_RUN(verify_bearer_and_expiry);
-    T_RUN(http_signup_signin_refresh);
-    T_RUN(http_refusals);
-    T_RUN(http_user_and_logout);
-    T_RUN(http_without_a_store);
     return T_DONE();
 }

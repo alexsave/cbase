@@ -1,5 +1,5 @@
-// functions_http.h - POST /functions/v1/{create,action,meta,delete-account}:
-// the four edge functions, byte for byte.
+// functions_http.h - POST /v1/{create,action,meta,account/delete}: the game
+// writes of the binary surface (DESIGN.md "Binary surface").
 //
 // Bodies are application/octet-stream both ways and never JSON
 // (e2e/validation/no_json_validation.test.ts held the old ones to it):
@@ -20,7 +20,7 @@
 // NO_BOT), 415 for a body that is not octets, 500 INTERNAL for the server's
 // own failure (write contention included), 503 INTERNAL when the store is not
 // up. create: 400 AUTH, else 500. delete-account: 405 METHOD, 401 AUTH, 500.
-// CORS as the router does it. All CB_ROUTE_APIKEY, every method.
+// CORS as the router does it. Every method reaches the handler.
 #ifndef CB_FUNCTIONS_HTTP_H
 #define CB_FUNCTIONS_HTTP_H
 

@@ -1,23 +1,26 @@
 // roundtrip.c - `cbase-bench roundtrip`: a real game, measured as a client sees it.
 //
 // Each worker (--concurrency of them, each its own pair of players and its own
-// connections) signs up two users, opens one Realtime socket per player
-// (Phoenix vsn 2.0.0, as realtime-js) joined to that player's pv- topic, and
-// plays two-human games: create, join, both ready, then moves until the game
-// ends, and a new game after that. Per move it measures:
+// connections) signs up two users, opens one stream socket per player
+// (/v1/stream, its frames as base64 text, which both `cbase serve` and API
+// Gateway take) subscribed to that player's games list, and plays two-human
+// games: create, join, both ready, then moves until the game ends, and a new
+// game after that. Per move it measures:
 //
-//   player_views  GET /rest/v1/player_views for the mover (the client's read
-//                 of its envelope; the move is chosen on it with the kernel's
-//                 client table and legal moves, as the browser does)
-//   action        POST /functions/v1/action, request out to response in
-//   push_pv       the OPPONENT's pv- postgres_changes for the new version:
-//                 its arrival time on the opponent's socket minus the time
-//                 the action's response arrived. A reader thread per socket
-//                 stamps each frame as it lands, so a push that beats the
-//                 response is a negative number, not a lost one.
+//   view       GET /v1/games/<id> for the mover (the client's read of its
+//              envelope; the move is chosen on it with the kernel's client
+//              table and legal moves, as the browser does)
+//   action     POST /v1/action, request out to response in
+//   push_view  the OPPONENT's view push for the new version: its arrival time
+//              on the opponent's socket minus the time the action's response
+//              arrived. A reader thread per socket stamps each frame as it
+//              lands, so a push that beats the response is a negative number,
+//              not a lost one.
 //
-// Setup (sign-up, create, join, ready) is not timed. Bytes per request are
-// the HTTP heads and bodies (net.h).
+// Every body is the kernel's (netwire.h, table.h, ask.h), through its pure
+// codecs: the client library (netclient.h) keeps one session in statics, and
+// the workers are threads. Setup (sign-up, create, join, ready) is not timed.
+// Bytes per request are the HTTP heads and bodies (net.h).
 #include "bench.h"
 #include "net.h"
 
@@ -26,8 +29,8 @@
 #include "client_table.h"
 #include "legal.h"
 #include "table.h"
-#include "json_surface.h"
-#include "util/hex.h"
+#include "net/ws.h"
+#include "netwire.h"
 #include "util/uuid.h"
 
 #include <pthread.h>
@@ -41,7 +44,7 @@
 #define PUSH_WAIT_MS 5000
 #define RING 1024
 
-// ---- one realtime socket and its reader thread ---------------------------------------
+// ---- one stream socket and its reader thread ---------------------------------------
 
 typedef struct {
     bn_ws          *ws;
@@ -55,25 +58,44 @@ typedef struct {
     bool            running;
 } listener;
 
+// Sends one frame as base64 text, as the clients do. 0 on success.
+static int send_frame(bn_ws *ws, const NwFrame *f) {
+    uint8_t raw[NW_ACCESS_MAX + 64];
+    char text[2 * (NW_ACCESS_MAX + 64)];
+    int n = nw_frame_encode(f, raw, sizeof raw);
+    int t = n > 0 ? nw_text_encode(raw, n, text, sizeof text) : -1;
+    return t > 0 ? bn_ws_send_text(ws, text, (size_t)t) : -1;
+}
+
+// A frame as it arrived: binary from `cbase serve`, base64 text from API Gateway.
+static bool recv_frame(int op, const cb_buf *in, NwFrame *f) {
+    static _Thread_local uint8_t raw[1 << 17];
+    if (op == CB_WS_OP_BIN) return nw_frame_decode(in->p, (int)in->len, f) == NW_OK;
+    if (op != CB_WS_OP_TEXT || in->len > sizeof raw) return false;
+    int n = nw_text_decode((const char *)in->p, (int)in->len, raw, sizeof raw);
+    return n > 0 && nw_frame_decode(raw, n, f) == NW_OK;
+}
+
 static void *reader(void *arg) {
     listener *l = arg;
-    cb_buf f;
-    cb_buf_init(&f);
-    int64_t last_hb = bn_now_us();
+    cb_buf b;
+    cb_buf_init(&b);
+    NwFrame f;
+    int64_t last_ping = bn_now_us();
     while (!atomic_load(&l->stop)) {
-        // realtime-js's heartbeat, so the server's idle sweep keeps the socket.
-        if (bn_now_us() - last_hb > 25000000) {
-            size_t hn;
-            const char *hb = cb_js_client_heartbeat(&hn);
-            bn_ws_send_text(l->ws, hb, hn);
-            last_hb = bn_now_us();
+        // The clients' ping, so the server's idle sweep keeps the socket.
+        if (bn_now_us() - last_ping > 25000000) {
+            memset(&f, 0, sizeof f);
+            f.kind = NW_WS_PING;
+            send_frame(l->ws, &f);
+            last_ping = bn_now_us();
         }
-        int op = bn_ws_recv(l->ws, 200, &f);
+        int op = bn_ws_recv(l->ws, 200, &b);
         if (op == -2) break;
         if (op < 0) continue;
         int64_t t = bn_now_us();
-        int64_t v;
-        if (!cb_js_client_pv_push_version(cb_buf_cstr(&f), f.len, &v)) continue;
+        if (!recv_frame(op, &b, &f) || f.kind != NW_WS_VIEW || !f.blob.len) continue;
+        int64_t v = f.version;
         pthread_mutex_lock(&l->mu);
         l->t_us[l->count % RING] = t;
         l->ver[l->count % RING] = v;
@@ -81,7 +103,7 @@ static void *reader(void *arg) {
         pthread_cond_broadcast(&l->cv);
         pthread_mutex_unlock(&l->mu);
     }
-    cb_buf_free(&f);
+    cb_buf_free(&b);
     return NULL;
 }
 
@@ -107,9 +129,8 @@ static bool wait_version(listener *l, int64_t version, int timeout_ms, int64_t *
 // ---- a player ------------------------------------------------------------------------
 
 typedef struct {
-    char id[64];
-    char token[2048];
-    char auth[2600];   // the headers every call carries
+    char token[NW_ACCESS_MAX + 1];
+    char auth[NW_ACCESS_MAX + 64];   // the header every call carries
 } player;
 
 typedef struct {
@@ -142,44 +163,53 @@ static int call(worker *w, const char *method, const char *path, const char *hea
 static int signup(worker *w, player *p, int k) {
     uint8_t rnd[4];
     cb_random_bytes(rnd, sizeof rnd);
-    char name[32], email[64];
-    snprintf(name, sizeof name, "bench%02x%02x%02x%02x%d", rnd[0], rnd[1], rnd[2], rnd[3], k);
-    snprintf(email, sizeof email, "%s@bench.invalid", name);
-    cb_buf body;
-    cb_buf_init(&body);
-    cb_js_client_signup_body(&body, email, "bench-pass-123", name);
-    char headers[512];
-    snprintf(headers, sizeof headers, "apikey: %s\r\nContent-Type: application/json\r\n", w->o->anon);
+    NwRequest q;
+    memset(&q, 0, sizeof q);
+    q.kind = NW_SIGNUP;
+    q.name_len = (uint8_t)snprintf(q.name, sizeof q.name, "BENCH%02X%02X%02X%02X%d", rnd[0], rnd[1], rnd[2], rnd[3], k);
+    q.password_len = (uint8_t)snprintf(q.password, sizeof q.password, "bench-pass-123");
+    uint8_t body[256];
+    int n = nw_request_encode(&q, body, sizeof body);
     bn_resp r;
     bn_resp_init(&r);
-    int s = call(w, "POST", "/auth/v1/signup", headers, cb_buf_cstr(&body), body.len, &r);
-    cb_buf_free(&body);
-    const char *j = cb_buf_cstr(&r.body);
-    bool ok = s == 200 && cb_js_client_session(j, r.body.len, p->token, sizeof p->token, p->id, sizeof p->id);
-    if (!ok) fprintf(stderr, "bench: signup answered %d: %.300s\n", s, j);
+    int s = n > 0 ? call(w, "POST", "/v1/auth/signup", "Content-Type: application/octet-stream\r\n", body, (size_t)n, &r) : -1;
+    NwSession ses;
+    bool ok = s == 200 && nw_session_decode(r.body.p, (int)r.body.len, &ses) == NW_OK;
+    if (ok) {
+        snprintf(p->token, sizeof p->token, "%.*s", (int)ses.access_len, ses.access);
+        snprintf(p->auth, sizeof p->auth, "Authorization: Bearer %s\r\n", p->token);
+    } else {
+        fprintf(stderr, "bench: signup answered %d\n", s);
+    }
     bn_resp_free(&r);
-    snprintf(p->auth, sizeof p->auth, "Authorization: Bearer %s\r\napikey: %s\r\n", p->token, w->o->anon);
     return ok ? 0 : -1;
 }
 
-static bool listen_pv(worker *w, int k) {
+static bool listen_games(worker *w, int k) {
     listener *l = &w->l[k];
-    char path[512];
-    snprintf(path, sizeof path, "/realtime/v1/websocket?apikey=%s&vsn=2.0.0", w->o->anon);
-    l->ws = bn_ws_open(&w->u, path, TIMEOUT_MS);
+    l->ws = bn_ws_open(&w->u, "/v1/stream?proto=nw1", TIMEOUT_MS);
     if (!l->ws) return false;
-    cb_buf f;
-    cb_buf_init(&f);
-    cb_js_client_pv_join(&f, w->p[k].id, w->p[k].token);
-    if (bn_ws_send_text(l->ws, cb_buf_cstr(&f), f.len) != 0) { cb_buf_free(&f); return false; }
+    NwFrame f;
+    memset(&f, 0, sizeof f);
+    f.kind = NW_WS_AUTH;
+    f.token_len = (uint16_t)strlen(w->p[k].token);
+    memcpy(f.token, w->p[k].token, f.token_len);
+    if (send_frame(l->ws, &f) != 0) return false;
+    memset(&f, 0, sizeof f);
+    f.kind = NW_WS_SUB;
+    f.ref = 1;
+    f.what = NW_SUB_GAMES;
+    if (send_frame(l->ws, &f) != 0) return false;
+    cb_buf b;
+    cb_buf_init(&b);
     bool ok = false;
     for (int i = 0; i < 20; i++) {
-        if (bn_ws_recv(l->ws, TIMEOUT_MS, &f) < 0) break;
-        int st = cb_js_client_reply_status(cb_buf_cstr(&f));
-        if (st >= 0) { ok = st == 1; break; }
+        int op = bn_ws_recv(l->ws, TIMEOUT_MS, &b);
+        if (op < 0) break;
+        if (recv_frame(op, &b, &f) && f.kind == NW_WS_ACK) { ok = f.why == 0; break; }
     }
-    cb_buf_free(&f);
-    if (!ok) { fprintf(stderr, "bench: the pv- join was refused\n"); return false; }
+    cb_buf_free(&b);
+    if (!ok) { fprintf(stderr, "bench: the games subscription was refused\n"); return false; }
     pthread_mutex_init(&l->mu, NULL);
     pthread_cond_init(&l->cv, NULL);
     atomic_store(&l->stop, false);
@@ -189,7 +219,7 @@ static bool listen_pv(worker *w, int k) {
 
 static int fn(worker *w, int k, const char *name, const void *body, size_t n, bn_resp *r) {
     char path[64], headers[2800];
-    snprintf(path, sizeof path, "/functions/v1/%s", name);
+    snprintf(path, sizeof path, "/v1/%s", name);
     snprintf(headers, sizeof headers, "%sContent-Type: application/octet-stream\r\n", w->p[k].auth);
     return call(w, "POST", path, headers, body, n, r);
 }
@@ -246,11 +276,10 @@ static int choose_move(worker *w, uint8_t *wire, int cap) {
     return 0;
 }
 
-// The mover's envelope through player_views, timed. false on a failure.
+// The mover's envelope through GET /v1/games/<id>, timed. false on a failure.
 static bool read_view(worker *w, int k, cb_buf *env) {
-    char path[512];
-    snprintf(path, sizeof path, "/rest/v1/player_views?select=view,version&game_id=eq.%s&player_id=eq.%s", w->gid,
-             w->p[k].id);
+    char path[64];
+    snprintf(path, sizeof path, "/v1/games/%s", w->gid);
     bn_resp r;
     bn_resp_init(&r);
     int64_t t0 = bn_now_us();
@@ -262,18 +291,14 @@ static bool read_view(worker *w, int k, cb_buf *env) {
         w->pv_sent += (int64_t)r.sent;
         w->pv_recv += (int64_t)r.recv;
     }
-    static _Thread_local char hex[1 << 17];
-    ok = ok && cb_js_client_first_view(cb_buf_cstr(&r.body), r.body.len, hex, sizeof hex) &&
-         strncmp(hex, "\\x", 2) == 0;
+    uint32_t version;
+    NwBlob e;
+    ok = ok && nw_view_decode(r.body.p, (int)r.body.len, &version, &e) == NW_OK && e.len;
     if (ok) {
-        size_t hl = strlen(hex + 2);
         cb_buf_reset(env);
-        ok = cb_buf_reserve(env, hl / 2 + 1);
-        int n = ok ? cb_hex_decode(hex + 2, hl, env->p, hl / 2 + 1) : -1;
-        ok = n >= 0;
-        if (ok) env->len = (size_t)n;
+        cb_buf_append(env, e.p, e.len);
     }
-    if (!ok) fprintf(stderr, "bench: player_views answered %d: %.200s\n", s, cb_buf_cstr(&r.body));
+    if (!ok) fprintf(stderr, "bench: the view answered %d\n", s);
     bn_resp_free(&r);
     return ok;
 }
@@ -319,7 +344,7 @@ static int move(worker *w, int k, cb_buf *env) {
 static void *work(void *arg) {
     worker *w = arg;
     bn_http_init(&w->http, &w->u);
-    if (signup(w, &w->p[0], 0) || signup(w, &w->p[1], 1) || !listen_pv(w, 0) || !listen_pv(w, 1)) {
+    if (signup(w, &w->p[0], 0) || signup(w, &w->p[1], 1) || !listen_games(w, 0) || !listen_games(w, 1)) {
         w->errors++;
         return NULL;
     }
@@ -364,7 +389,7 @@ int bench_roundtrip(const bench_opts *o) {
         w->o = o;
         w->u = u;
         w->rng = 7u + (uint32_t)i * 7919u;
-        // Every move claims one slot, so a worker's moves fit o->n; player_views
+        // Every move claims one slot, so a worker's moves fit o->n; view
         // reads outnumber moves (a player with nothing to do still reads).
         w->cap = o->n + 1;
         w->pv_cap = 4 * o->n + 4;
@@ -419,8 +444,8 @@ int bench_roundtrip(const bench_opts *o) {
     bs_run run;
     bs_run_init(&run, "roundtrip", date, host, o->url, note);
     bs_run_lat(&run, "action", act, na, na ? as / na : 0, na ? ar / na : 0);
-    bs_run_lat(&run, "player_views", pv, npv, npv ? ps / npv : 0, npv ? pr / npv : 0);
-    bs_run_lat(&run, "push_pv", push, npush, 0, 0);
+    bs_run_lat(&run, "view", pv, npv, npv ? ps / npv : 0, npv ? pr / npv : 0);
+    bs_run_lat(&run, "push_view", push, npush, 0, 0);
     free(act);
     free(pv);
     free(push);

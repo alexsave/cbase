@@ -1,7 +1,7 @@
 # c_base
 
 The foolish backend as one C program: AWS Lambda and DynamoDB in production (`bootstrap`), a local server on SQLite for development and tests (`cbase serve`).
-It speaks the Supabase surface the shipped web and iOS clients already use (GoTrue auth, PostgREST reads, Realtime over Phoenix, the four edge functions byte for byte), so a client moves to it by changing a URL and an anon key.
+Clients speak its binary surface: `/v1` over HTTP and the `/v1/stream` WebSocket, every byte written and read by the kernel's codec (`foolish/c/src/netwire.h`) and client library (`netclient.h`), which the web reaches through `web.wasm` and iOS through its xcframework (DESIGN.md, "Binary surface").
 The design, every decision and each module's as-built record are in [DESIGN.md](DESIGN.md); the deploy is [RUNBOOK.md](RUNBOOK.md); the summary for Alex is [REPORT.md](REPORT.md).
 
 ## Build and test
@@ -25,7 +25,7 @@ The kernel is built from `../foolish/c` with its own source list; nothing is cop
 
 ```
 cd c_base
-CBASE_ANON_KEY=dev-anon-key-0123456789 CBASE_JWT_SECRET=$(openssl rand -hex 32) \
+CBASE_JWT_SECRET=$(openssl rand -hex 32) \
 CBASE_DB=/tmp/cbase.sqlite CBASE_ADMIN_TOKEN=dev-admin-token-0123456789 build/cbase serve
 curl http://127.0.0.1:8080/health
 ```
@@ -35,11 +35,10 @@ The console is at http://127.0.0.1:8080/admin (paste the admin token).
 
 ## Point the web app at it
 
-In `foolish/`, create `.env.local` (gitignored) with the server's URL and anon key, then start Next:
+In `foolish/`, create `.env.local` (gitignored) with the server's URL, then start Next:
 
 ```
-NEXT_PUBLIC_SUPABASE_URL=http://127.0.0.1:8080
-NEXT_PUBLIC_SUPABASE_KEY=dev-anon-key-0123456789
+NEXT_PUBLIC_BACKEND_URL=http://127.0.0.1:8080
 ```
 
 ```

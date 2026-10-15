@@ -27,7 +27,7 @@ void cb_handle(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res);
 bool cb_handle_on_loop(const cb_ctx *ctx, const cb_http_req *req);
 
 // Builds ctx->router: GET /health here, then every module's routes
-// (auth_http.h, postgrest.h, functions_http.h, admin.h, and under serve
+// (v1_http.h, functions_http.h, admin.h, unfurl_http.h, and under serve
 // rt_local.h's WebSocket upgrade). CB_OK, or the first registration error.
 int cb_routes_register(cb_ctx *ctx);
 

@@ -163,10 +163,10 @@ void cb_chat_row_free(cb_chat_row *c);
 typedef struct {
     char    conn_id[64];               // API Gateway connectionId
     cb_uuid user_id;                   // "" until a join presents a token
-    int     vsn;                       // Phoenix serializer: 1 (objects) or 2 (arrays)
+    int     vsn;                       // the protocol: CB_VSN_NW (realtime/stream.h), the only one
     int     n_topics;
     char    topics[CB_CONN_TOPICS][CB_TOPIC_MAX];   // bare topics ("gu-ab12cd-<uid>")
-    char    join_refs[CB_CONN_TOPICS][24];          // the join_ref each topic was joined on
+    char    join_refs[CB_CONN_TOPICS][24];          // per topic, unused by the stream (kept: the row format)
     int64_t expires_at;                // TTL, ms like every time here: a connection not seen for 2 h
                                        // is dropped. DynamoDB keeps it as expires_at in SECONDS (its
                                        // TTL unit) and the exact ms as expires_ms.

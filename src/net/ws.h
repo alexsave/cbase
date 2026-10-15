@@ -4,8 +4,8 @@
 // The codec is lifted from the native server (ws.c's frame writer and
 // shard.c's resumable reader) and made a pure function over a buffer: it never
 // touches a socket, so the hostile-length tests run without one. Realtime
-// (src/realtime) is the only user of a connection; it speaks Phoenix JSON in
-// TEXT frames on top.
+// (src/realtime) is the only user of a connection; it speaks the binary
+// stream (realtime/stream.h) on top.
 #ifndef CB_WS_H
 #define CB_WS_H
 

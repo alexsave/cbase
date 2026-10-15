@@ -7,23 +7,25 @@
 // skeleton: the process starts (the kernel self-test passed), answers
 // GET /health, and drains on SIGTERM with exit status 0.
 //
-// THE GAME SCENARIO (the brief's), always, unless CBASE_SMOKE_GAME=0: two
-// humans sign up (GoTrue's /auth/v1/signup); A opens a Realtime WebSocket
-// (Phoenix vsn 2.0.0, as realtime-js) on its private gu- topic, B one in vsn
-// 1.0.0 (the object serializer older supabase-swift spoke) on its pv- player_views changes and the game-
-// spectator stream; A creates, B joins, A adds a bot, both start, and the
-// humans play legal moves (chosen on their own masked envelope with the
-// kernel's client table, as the browser does) while the bot pool drives the
-// bot. Once mid-game, when only the bots owe a move, the server is killed
-// and restarted with nobody bumping: the 10 s heartbeat must resume the bot
-// after the dead process's lease runs out. At the end: game over, every push
-// stream strictly increasing in version (B's last pv- change is B's stored
-// row), the ratings changed (user_elo_ratings), one snapshot stored
-// (game_snapshots), and after a clean restart on the same database the game
-// reloads (player_views) at the same version with the same envelope.
+// THE GAME SCENARIO (the brief's), always, unless CBASE_SMOKE_GAME=0, over
+// the binary surface (DESIGN.md "Binary surface") as the clients speak it,
+// every request built and every answer read by the kernel's client library
+// (netclient.h): three humans sign up; A creates, B joins, A adds a bot, both
+// start; each holds a stream socket: A on its game (its own seat's casts), B
+// on its games list (its views), C, who never sits, on the game (the
+// spectators' casts). The humans play legal moves (chosen on their own masked
+// envelope with the kernel's client table, as the browser does) while the bot
+// pool drives the bot. Once mid-game, when only the bots owe a move, the
+// server is killed and restarted with nobody bumping: the 10 s heartbeat must
+// resume the bot after the dead process's lease runs out. At the end: game
+// over, every push stream strictly increasing in version (B's last view push
+// is B's stored view), the ratings changed (the leaderboard), one replay
+// stored (A's history), and after a clean restart on the same database the
+// game reloads at the same version with the same envelope.
 //
-// Every module is real here: auth (real JWTs), the SQLite store, postgrest,
-// realtime (rt_local + phoenix, through rt_deps' production table), the app.
+// Every module is real here: auth (real JWTs), the SQLite store, the /v1
+// routes, realtime (rt_local + stream, through rt_deps' production table),
+// the app.
 #include "t.h"
 #include "lib_store_backend.h"
 
@@ -36,9 +38,12 @@
 #include "evwire.h"
 #include "legal.h"
 #include "table.h"
-#include "util/b64.h"
-#include "util/hex.h"
-#include "util/json.h"
+#include "net/ws.h"
+#include "util/clock.h"
+
+#include "ask.h"
+#include "netclient.h"
+#include "netwire.h"
 
 #include <signal.h>
 #include <sqlite3.h>
@@ -54,14 +59,11 @@ static tp_child g_child;
 static int g_port;
 static char g_dbdir[400];
 
-#define ANON "smoke-anon"
-
 static void start_server(void) {
     char line[512];
     static char envdb[512];
     snprintf(envdb, sizeof envdb, "CBASE_DB=%s/cbase.sqlite", g_dbdir);
-    char *env[] = { "CBASE_LISTEN=127.0.0.1:0", envdb, "CBASE_ANON_KEY=" ANON,
-                    "CBASE_JWT_SECRET=smoke-secret-smoke-secret-smoke-secret", NULL };
+    char *env[] = { "CBASE_LISTEN=127.0.0.1:0", envdb, "CBASE_JWT_SECRET=smoke-secret-smoke-secret-smoke-secret", NULL };
     char *argv[] = { (char *)g_bin, "serve", NULL };
     g_port = 0;
     T_EQ_INT(tp_start(&g_child, argv, env), 0);
@@ -126,11 +128,13 @@ static void drains_on_sigterm(void) {
 
 // ---- the game scenario ---------------------------------------------------------------
 
+// A signed-in user: the client library's session, saved between turns (it
+// holds one session at a time, as one app does).
 typedef struct {
-    char name[32];
-    char id[64];
-    char token[2048];
-    char bearer[2200];   // "Authorization: Bearer ...\r\napikey: ...\r\n"
+    char    name[32];
+    char    id[64];
+    uint8_t blob[NC_SESSION_BLOB_MAX];
+    int     blob_len;
 } smoke_user;
 
 static int64_t mono_ms(void) {
@@ -139,38 +143,62 @@ static int64_t mono_ms(void) {
     return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
+// The last answer, as the host received it.
+static int g_status;
+static uint8_t g_body[1 << 20];
+static int g_len;
+
+// One request over HTTP, as a host's transport sends it.
+static int send_req(const NcRequest *q) {
+    g_status = -1;
+    g_len = 0;
+    if (!q) return -1;
+    char path[NC_PATH_MAX + 1], headers[NC_AUTH_MAX + 128];
+    memcpy(path, q->path, q->path_len);
+    path[q->path_len] = 0;
+    int h = 0;
+    if (q->auth_len) h += snprintf(headers + h, sizeof headers - (size_t)h, "Authorization: %.*s\r\n", (int)q->auth_len, q->auth);
+    if (q->method == NC_POST) h += snprintf(headers + h, sizeof headers - (size_t)h, "Content-Type: application/octet-stream\r\n");
+    headers[h] = 0;
+    tc_response r;
+    if (tc_http(g_port, q->method == NC_GET ? "GET" : "POST", path, headers, q->body, q->body_len, &r) != 0) return -1;
+    g_status = r.status;
+    g_len = r.body.len < sizeof g_body ? (int)r.body.len : 0;
+    memcpy(g_body, r.body.p, (size_t)g_len);
+    tc_response_free(&r);
+    return g_status;
+}
+
+// u's request: the session loaded, a refresh sent first when the library asks
+// for one, the session saved again. The status.
+static int call(smoke_user *u, int which, const void *a, int an, const void *b, int bn, int64_t n) {
+    T_EQ_INT(nc_session_load(u->blob, u->blob_len), NW_OK);
+    int st = -1;
+    for (int i = 0; i < 3; i++) {
+        const NcRequest *q = nc_req(which, (const char *)a, an, (const char *)b, bn, n, cb_now_ms());
+        if (!q) break;
+        st = send_req(q);
+        if (!q->is_refresh) break;
+        if (nc_session_read(g_status, g_body, g_len) != 0) break;
+    }
+    u->blob_len = nc_session_save(u->blob, sizeof u->blob);
+    return st;
+}
+
 static int signup(smoke_user *u, const char *name) {
     snprintf(u->name, sizeof u->name, "%s", name);
-    char body[512];
-    snprintf(body, sizeof body, "{\"email\":\"%s@smoke.test\",\"password\":\"smoke-pass-123\",\"data\":{\"username\":\"%s\"}}",
-             name, name);
-    tc_response r;
-    if (tc_http(g_port, "POST", "/auth/v1/signup", "apikey: " ANON "\r\nContent-Type: application/json\r\n",
-                body, strlen(body), &r) != 0) return -1;
-    const char *j = cb_buf_cstr(&r.body);
-    int ok = r.status == 200 && cb_json_get_str(j, r.body.len, "access_token", u->token, sizeof u->token)
-             && cb_json_get_str(j, r.body.len, "user.id", u->id, sizeof u->id);
-    if (!ok) fprintf(stderr, "signup %s: %d %s\n", name, r.status, j);
-    tc_response_free(&r);
-    snprintf(u->bearer, sizeof u->bearer, "Authorization: Bearer %s\r\napikey: " ANON "\r\n", u->token);
-    return ok ? 0 : -1;
+    nc_reset();
+    send_req(nc_req_signup(name, (int)strlen(name), "smoke-pass-123", 14));
+    int why = nc_session_read(g_status, g_body, g_len);
+    if (why) { fprintf(stderr, "signup %s: %d why %d\n", name, g_status, why); return -1; }
+    const NcSessionInfo *i = nc_session_info();
+    snprintf(u->id, sizeof u->id, "%.*s", (int)i->user_id_len, i->user_id);
+    u->blob_len = nc_session_save(u->blob, sizeof u->blob);
+    return u->blob_len > 0 ? 0 : -1;
 }
 
-// POST /functions/v1/<fn> with octets. The status, the body into out.
-static int fn_call(const smoke_user *u, const char *fn, const void *body, size_t n, cb_buf *out) {
-    char path[64], headers[2400];
-    snprintf(path, sizeof path, "/functions/v1/%s", fn);
-    snprintf(headers, sizeof headers, "%sContent-Type: application/octet-stream\r\n", u->bearer);
-    tc_response r;
-    if (tc_http(g_port, "POST", path, headers, body, n, &r) != 0) return -1;
-    cb_buf_reset(out);
-    cb_buf_append(out, r.body.p, r.body.len);
-    int status = r.status;
-    tc_response_free(&r);
-    return status;
-}
-
-static int ask(const smoke_user *u, int kind, const char *gid, cb_buf *env) {
+// An ask; the asker's envelope into env. The status.
+static int ask(smoke_user *u, int kind, const char *gid, cb_buf *env) {
     TableAsk a;
     memset(&a, 0, sizeof a);
     a.kind = (uint8_t)kind;
@@ -178,7 +206,23 @@ static int ask(const smoke_user *u, int kind, const char *gid, cb_buf *env) {
     memcpy(a.gid, gid, a.gid_len);
     uint8_t body[ASK_BYTES_MAX];
     int n = ask_encode(&a, body, sizeof body);
-    return n > 0 ? fn_call(u, "meta", body, (size_t)n, env) : -1;
+    int st = n > 0 ? call(u, NC_REQ_META, body, n, NULL, 0, 0) : -1;
+    cb_buf_reset(env);
+    cb_buf_append(env, g_body, (size_t)g_len);
+    return st;
+}
+
+// u's view of the game: its version, the envelope into env. false when there is none.
+static bool game_view(smoke_user *u, const char *gid, int64_t *version, cb_buf *env) {
+    if (call(u, NC_REQ_GAME, gid, (int)strlen(gid), NULL, 0, 0) != 200) return false;
+    const NcGameRow *row = nc_view_read(g_status, g_body, g_len);
+    if (!row) return false;
+    *version = row->version;
+    if (env) {
+        cb_buf_reset(env);
+        cb_buf_append(env, g_body + row->env_off, row->env_len);
+    }
+    return true;
 }
 
 typedef struct {
@@ -211,97 +255,99 @@ static int choose_move(smoke_client *sc, const cb_buf *env, uint8_t *wire, int c
     return 0;
 }
 
-// One realtime socket and what it heard. vsn 2.0.0 frames are arrays
-// [join_ref, ref, topic, event, payload] (realtime-js), vsn 1.0.0 frames are
-// objects {join_ref, ref, topic, event, payload} (older supabase-swift; 2.55.4
-// sends arrays too).
+// One stream socket and what it heard: the versions of the casts and of the
+// views pushed, in order. Frames are the kernel's (netwire.h), binary both
+// ways, as `cbase serve` takes them.
 typedef struct {
     int      fd;
-    bool     v1;
-    int      n_cast;              // broadcast animation_events: the cast's version
+    char     token[NW_ACCESS_MAX + 1];
+    int      what;                // NW_SUB_*
+    char     gid[16];
+    int      n_cast;
     uint32_t cast_v[4096];
-    int      n_pv;                // postgres_changes on player_views: record.version
-    int64_t  pv_v[4096];
-    int      bad_pv;              // a pv change whose record.view is not "\x" hex
-    int64_t  last_hb;             // when this socket last sent a heartbeat
+    int      n_view;
+    uint32_t view_v[4096];
+    int      refused;             // ACKs with a why
+    int64_t  last_ping;           // when this socket last pinged
 } listener;
 
-static void hear(listener *l, const char *j, size_t n) {
-    const char *E = l->v1 ? "event" : "3", *P = l->v1 ? "payload" : "4";
-    char event[64], path[64];
-    if (!cb_json_get_str(j, n, E, event, sizeof event)) return;
-    if (strcmp(event, "broadcast") == 0) {
-        static char b64[16384];
-        snprintf(path, sizeof path, "%s.payload.b", P);
-        if (!cb_json_get_str(j, n, path, b64, sizeof b64)) return;
-        static uint8_t cast[12288];
-        int k = cb_b64_decode(b64, strlen(b64), cast, sizeof cast);
-        uint32_t v = 0;
-        if (k > 0 && evwire_cast_header_get(cast, k, &v) > 0 && l->n_cast < 4096) l->cast_v[l->n_cast++] = v;
-    } else if (strcmp(event, "postgres_changes") == 0) {
-        int64_t v = -1;
-        static char view[32768];
-        snprintf(path, sizeof path, "%s.data.record.version", P);
-        bool ok = cb_json_get_i64(j, n, path, &v);
-        snprintf(path, sizeof path, "%s.data.record.view", P);
-        ok = ok && cb_json_get_str(j, n, path, view, sizeof view) && strncmp(view, "\\x", 2) == 0;
-        if (!ok) l->bad_pv++;
-        else if (l->n_pv < 4096) l->pv_v[l->n_pv++] = v;
-    }
+static void ws_send(listener *l, const NwFrame *f) {
+    static uint8_t raw[NW_ACCESS_MAX + 64];
+    int n = nw_frame_encode(f, raw, sizeof raw);
+    if (n > 0) tc_ws_send(l->fd, CB_WS_OP_BIN, raw, (size_t)n);
+}
+
+static void hear(listener *l, const uint8_t *p, size_t n) {
+    static NwFrame f;
+    if (nw_frame_decode(p, (int)n, &f) != NW_OK) return;
+    if (f.kind == NW_WS_CAST && l->n_cast < 4096) l->cast_v[l->n_cast++] = f.version;
+    else if (f.kind == NW_WS_VIEW && f.blob.len && l->n_view < 4096) l->view_v[l->n_view++] = f.version;
+    else if (f.kind == NW_WS_ACK && f.why) l->refused++;
 }
 
 // Reads every frame that arrives within timeout_ms (then 50 ms between frames).
-// Like realtime-js, sends a Phoenix heartbeat every 25 s: a socket the client
-// keeps silent is closed by the server's 120 s idle sweep, as a real one is.
+// Like the clients, pings every 25 s: a socket kept silent is closed by the
+// server's 120 s idle sweep, as a real one is.
 static void drain_ws(listener *l, int timeout_ms) {
-    if (l->fd >= 0 && mono_ms() - l->last_hb > 25000) {
-        const char *hb = l->v1 ? "{\"join_ref\":null,\"ref\":\"hb\",\"topic\":\"phoenix\",\"event\":\"heartbeat\",\"payload\":{}}"
-                               : "[null,\"hb\",\"phoenix\",\"heartbeat\",{}]";
-        tc_ws_send(l->fd, 1, hb, strlen(hb));
-        l->last_hb = mono_ms();
+    if (l->fd >= 0 && mono_ms() - l->last_ping > NC_PING_MS) {
+        NwFrame f;
+        memset(&f, 0, sizeof f);
+        f.kind = NW_WS_PING;
+        ws_send(l, &f);
+        l->last_ping = mono_ms();
     }
     cb_buf f;
     cb_buf_init(&f);
     while (l->fd >= 0 && tc_ws_recv(l->fd, timeout_ms, &f) >= 0) {
-        hear(l, cb_buf_cstr(&f), f.len);
+        hear(l, f.p, f.len);
         cb_buf_reset(&f);
         timeout_ms = 50;
     }
     cb_buf_free(&f);
 }
 
-// Joins `topic` with `config` (a JSON object) as the holder of `token`; true on
-// an ok reply. Pushes that arrive first are heard.
-static bool ws_join(listener *l, const char *topic, const char *config, const char *token, int ref) {
-    static char frame[8192];
-    if (l->v1)
-        snprintf(frame, sizeof frame,
-                 "{\"join_ref\":\"%d\",\"ref\":\"%d\",\"topic\":\"realtime:%s\",\"event\":\"phx_join\","
-                 "\"payload\":{\"config\":%s,\"access_token\":\"%s\"}}", ref, ref, topic, config, token);
-    else
-        snprintf(frame, sizeof frame, "[\"%d\",\"%d\",\"realtime:%s\",\"phx_join\",{\"config\":%s,\"access_token\":\"%s\"}]",
-                 ref, ref, topic, config, token);
-    if (tc_ws_send(l->fd, 1, frame, strlen(frame)) != 0) return false;
-    cb_buf f;
-    cb_buf_init(&f);
+// Opens the socket, names the user and subscribes; true once the subscription
+// is acknowledged without a why. Pushes that arrive first are heard.
+static bool ws_open(listener *l) {
+    l->fd = tc_ws_open(g_port, "/v1/stream?proto=nw1", NULL);
+    l->last_ping = mono_ms();
+    if (l->fd < 0) return false;
+    NwFrame f;
+    memset(&f, 0, sizeof f);
+    f.kind = NW_WS_AUTH;
+    f.token_len = (uint16_t)strlen(l->token);
+    memcpy(f.token, l->token, f.token_len);
+    ws_send(l, &f);
+    memset(&f, 0, sizeof f);
+    f.kind = NW_WS_SUB;
+    f.ref = 1;
+    f.what = (uint8_t)l->what;
+    f.gid_len = (uint8_t)strlen(l->gid);
+    memcpy(f.gid, l->gid, f.gid_len);
+    ws_send(l, &f);
+    cb_buf b;
+    cb_buf_init(&b);
     bool ok = false;
+    static NwFrame in;
     for (int i = 0; i < 50; i++) {
-        if (tc_ws_recv(l->fd, 5000, &f) < 0) break;
-        const char *j = cb_buf_cstr(&f);
-        if (strstr(j, "\"phx_reply\"")) { ok = strstr(j, "\"status\":\"ok\"") != NULL; break; }
-        hear(l, j, f.len);
-        cb_buf_reset(&f);
+        if (tc_ws_recv(l->fd, 5000, &b) < 0) break;
+        if (nw_frame_decode(b.p, (int)b.len, &in) == NW_OK && in.kind == NW_WS_ACK) { ok = in.why == 0; break; }
+        hear(l, b.p, b.len);
+        cb_buf_reset(&b);
     }
-    cb_buf_free(&f);
+    cb_buf_free(&b);
     return ok;
 }
 
-static bool ws_open(listener *l) {
-    char path[256];
-    snprintf(path, sizeof path, "/realtime/v1/websocket?apikey=%s&vsn=%s", ANON, l->v1 ? "1.0.0" : "2.0.0");
-    l->fd = tc_ws_open(g_port, path, NULL);
-    l->last_hb = mono_ms();
-    return l->fd >= 0;
+// The listener for u: its bearer token (what a built request carries) and the subscription.
+static void ws_for(listener *l, smoke_user *u, int what, const char *gid) {
+    T_EQ_INT(nc_session_load(u->blob, u->blob_len), NW_OK);
+    const NcRequest *q = nc_req_games(cb_now_ms());
+    T_CHECK(q && !q->is_refresh && q->auth_len > 7);
+    if (q) snprintf(l->token, sizeof l->token, "%.*s", (int)q->auth_len - 7, q->auth + 7);
+    l->what = what;
+    snprintf(l->gid, sizeof l->gid, "%s", gid);
+    l->fd = -1;
 }
 
 // The game's row as the server stored it: from the database file itself, or
@@ -334,61 +380,34 @@ static bool db_game(const char *gid, int64_t *needs_bots, int64_t *version) {
     return ok;
 }
 
-// GET a PostgREST path with u's bearer; the body into out. The status.
-static int rest_get(const smoke_user *u, const char *path, cb_buf *out) {
-    tc_response r;
-    if (tc_http(g_port, "GET", path, u->bearer, NULL, 0, &r) != 0) return -1;
-    cb_buf_reset(out);
-    cb_buf_append(out, r.body.p, r.body.len);
-    int s = r.status;
-    tc_response_free(&r);
-    return s;
-}
-
 static void game_scenario(void) {
-    smoke_user A, B;
-    int sa = signup(&A, "SMOKEA"), sb = signup(&B, "SMOKEB");
+    smoke_user A, B, C;
+    int sa = signup(&A, "SMOKEA"), sb = signup(&B, "SMOKEB"), sc_ = signup(&C, "SMOKEC");
     T_EQ_INT(sa, 0);
     T_EQ_INT(sb, 0);
-    if (sa || sb) return;   // nothing below can pass without two sessions
+    T_EQ_INT(sc_, 0);
+    if (sa || sb || sc_) return;   // nothing below can pass without the sessions
     smoke_client *sc = calloc(1, sizeof *sc);
-    char path_pv[512];
-    cb_buf env, tmp;
+    cb_buf env;
     cb_buf_init(&env);
-    cb_buf_init(&tmp);
 
     // create: A's envelope names the game.
-    int created = fn_call(&A, "create", NULL, 0, &env);
+    int created = call(&A, NC_REQ_CREATE, NULL, 0, NULL, 0, 0);
     T_EQ_INT(created, 200);
-    if (created != 200) { cb_buf_free(&env); cb_buf_free(&tmp); free(sc); return; }
+    if (created != 200) { cb_buf_free(&env); free(sc); return; }
     client_init(&sc->c, &sc->slot);
-    T_CHECK(client_adopt_envelope(&sc->c, env.p, (int)env.len) >= 0);
+    T_CHECK(client_adopt_envelope(&sc->c, g_body, g_len) >= 0);
     char gid[32];
     snprintf(gid, sizeof gid, "%.*s", (int)sc->c.gid_len, sc->c.gid);
     T_EQ_INT(strlen(gid), 6);
 
-    // A (realtime-js, vsn 2.0.0) hears its private gu- topic; B (vsn 1.0.0, the
-    // object serializer) hears its pv- player_views changes and the game- spectator
-    // stream. Together they cover fanout.c's three pushes.
-    listener *LA = calloc(1, sizeof *LA), *LB = calloc(1, sizeof *LB);
-    LB->v1 = true;
-    char topic[160], pvconf[512];
-    snprintf(pvconf, sizeof pvconf,
-             "{\"broadcast\":{\"ack\":false,\"self\":false},\"presence\":{\"key\":\"\"},\"postgres_changes\":"
-             "[{\"event\":\"*\",\"schema\":\"public\",\"table\":\"player_views\",\"filter\":\"player_id=eq.%s\"}],"
-             "\"private\":false}", B.id);
-    static const char GU_CONF[] = "{\"broadcast\":{\"ack\":false,\"self\":false},\"presence\":{\"key\":\"\"},"
-                                  "\"postgres_changes\":[],\"private\":true}";
-#define SUBSCRIBE()                                                                     \
-    do {                                                                                \
-        T_CHECK(ws_open(LA) && ws_open(LB));                                            \
-        snprintf(topic, sizeof topic, "gu-%s-%s", gid, A.id);                            \
-        T_CHECK(ws_join(LA, topic, GU_CONF, A.token, 1));                               \
-        snprintf(topic, sizeof topic, "pv-%s", B.id);                                    \
-        T_CHECK(ws_join(LB, topic, pvconf, B.token, 1));                                \
-        snprintf(topic, sizeof topic, "game-%s", gid);                                   \
-        T_CHECK(ws_join(LB, topic, "{\"private\":false}", B.token, 2));                 \
-    } while (0)
+    // A hears its own seat's casts, B its views (the games list), C the
+    // spectators' casts. Together they cover fanout.c's three pushes.
+    listener *LA = calloc(1, sizeof *LA), *LB = calloc(1, sizeof *LB), *LC = calloc(1, sizeof *LC);
+    ws_for(LA, &A, NW_SUB_GAME, gid);
+    ws_for(LB, &B, NW_SUB_GAMES, "");
+    ws_for(LC, &C, NW_SUB_GAME, gid);
+#define SUBSCRIBE() T_CHECK(ws_open(LA) && ws_open(LB) && ws_open(LC))
     SUBSCRIBE();
 
     T_EQ_INT(ask(&B, ASK_JOIN, gid, &env), 200);
@@ -408,7 +427,7 @@ static void game_scenario(void) {
     // drive, and only once the dead process's 25 s lease has run out. The
     // stored version moving on proves the heartbeat, the lease expiry and the
     // reload from a crash.
-    const smoke_user *humans[2] = { &A, &B };
+    smoke_user *humans[2] = { &A, &B };
     uint32_t rng = 7;
     int status = GAME_STATUS_PLAYING, moves = 0, crash_tries = 0;
     bool crashed = false;
@@ -424,8 +443,7 @@ static void game_scenario(void) {
         for (int h = 0; h < 2 && status == GAME_STATUS_PLAYING; h++) {
             int st = ask(humans[h], ASK_BUMP, gid, &env);
             if (st != 200) {
-                fprintf(stderr, "smoke: %s's bump answered %d: %.*s\n", humans[h]->name, st, (int)(env.len < 200 ? env.len : 200),
-                        (const char *)env.p);
+                fprintf(stderr, "smoke: %s's bump answered %d (why %d)\n", humans[h]->name, st, nc_status_read(g_status, g_body, g_len));
                 continue;
             }
             answered = true;
@@ -434,19 +452,17 @@ static void game_scenario(void) {
             status = sc->c.view.status;
             uint32_t version = sc->c.view.version;
             if ((int64_t)version != last_version) { last_version = version; last_progress = mono_ms(); }
-            uint8_t wire[64], body[128];
+            uint8_t wire[64];
             int n = choose_move(sc, &env, wire, sizeof wire, &rng);
             if (n <= 0) continue;
-            memcpy(body, gid, 6);
-            memcpy(body + 6, wire, (size_t)n);
-            int bn = table_request_encode(body, sizeof body, 6, n, true, version);
-            T_EQ_INT(fn_call(humans[h], "action", body, (size_t)bn, &tmp), 200);
-            T_EQ_INT(tmp.len, TABLE_RESP_BYTES);
+            T_EQ_INT(call(humans[h], NC_REQ_ACTION, gid, 6, wire, n, version), 200);
+            T_CHECK(nc_action_read(g_status, g_body, g_len) != NULL);
             moved = true;
             moves++;
         }
         drain_ws(LA, 0);
         drain_ws(LB, 0);
+        drain_ws(LC, 0);
         if (!answered) break;   // the server stopped answering: the asserts below say so
         int64_t nb = 0, ver = 0;
         if (!moved && !crashed && moves >= 4 && crash_tries < 5 && status == GAME_STATUS_PLAYING
@@ -455,18 +471,18 @@ static void game_scenario(void) {
             tp_stop(&g_child, SIGKILL, 5000);
             close(LA->fd);
             close(LB->fd);
+            close(LC->fd);
             bool owed = db_game(gid, &nb, &ver) && nb;
             start_server();
             SUBSCRIBE();
             if (!owed) continue;   // the bot moved before the kill landed: try again later
             crashed = true;
-            snprintf(path_pv, sizeof path_pv, "/rest/v1/player_views?select=version&game_id=eq.%s&player_id=eq.%s", gid,
-                     A.id);
             int64_t t0 = mono_ms(), now_v = ver;
             while (mono_ms() - t0 < 75000 && now_v <= ver) {
                 struct timespec ts = { 0, 500 * 1000000 };
                 nanosleep(&ts, NULL);
-                if (rest_get(&A, path_pv, &tmp) == 200) cb_json_get_i64(cb_buf_cstr(&tmp), tmp.len, "0.version", &now_v);
+                int64_t v;
+                if (game_view(&A, gid, &v, NULL)) now_v = v;
             }
             fprintf(stderr, "smoke: after a crash at version %lld the bots moved on to %lld in %lld ms, unbumped\n",
                     (long long)ver, (long long)now_v, (long long)(mono_ms() - t0));
@@ -487,62 +503,67 @@ static void game_scenario(void) {
     T_CHECK(moves > 0);
     T_CHECK(crashed);
 
-    // Pushes, each stream strictly increasing in version: A's private casts,
-    // the spectators' casts, B's player_views changes (each with "\x" hex).
+    // Pushes, each stream strictly increasing in version: A's own casts, the
+    // spectators' casts, B's views.
     drain_ws(LA, 1000);
     drain_ws(LB, 1000);
-    fprintf(stderr, "smoke: heard %d gu- casts, %d game- casts, %d pv- changes\n", LA->n_cast, LB->n_cast, LB->n_pv);
+    drain_ws(LC, 1000);
+    fprintf(stderr, "smoke: heard %d seat casts, %d spectator casts, %d views\n", LA->n_cast, LC->n_cast, LB->n_view);
     T_CHECK(LA->n_cast > 0);
-    T_CHECK(LB->n_cast > 0);
-    T_CHECK(LB->n_pv > 0);
-    T_EQ_INT(LB->bad_pv, 0);
+    T_CHECK(LC->n_cast > 0);
+    T_CHECK(LB->n_view > 0);
+    T_EQ_INT(LA->refused + LB->refused + LC->refused, 0);
     for (int i = 1; i < LA->n_cast; i++) T_CHECK(LA->cast_v[i] > LA->cast_v[i - 1]);
-    for (int i = 1; i < LB->n_cast; i++) T_CHECK(LB->cast_v[i] > LB->cast_v[i - 1]);
-    for (int i = 1; i < LB->n_pv; i++) T_CHECK(LB->pv_v[i] > LB->pv_v[i - 1]);
+    for (int i = 1; i < LC->n_cast; i++) T_CHECK(LC->cast_v[i] > LC->cast_v[i - 1]);
+    for (int i = 1; i < LB->n_view; i++) T_CHECK(LB->view_v[i] > LB->view_v[i - 1]);
 
-    // Ratings and the snapshot.
-    char path[512];
-    // B's last pv- change is B's stored row.
-    snprintf(path, sizeof path, "/rest/v1/player_views?select=version&game_id=eq.%s&player_id=eq.%s", gid, B.id);
-    T_EQ_INT(rest_get(&B, path, &tmp), 200);
+    // B's last view push is B's stored view.
     int64_t bv = -1;
-    T_CHECK(cb_json_get_i64(cb_buf_cstr(&tmp), tmp.len, "0.version", &bv));
-    if (LB->n_pv > 0 && LB->pv_v[LB->n_pv - 1] != bv) {
-        fprintf(stderr, "smoke: B's row is at version %lld; the pv- changes heard end", (long long)bv);
-        for (int i = LB->n_pv > 6 ? LB->n_pv - 6 : 0; i < LB->n_pv; i++) fprintf(stderr, " %lld", (long long)LB->pv_v[i]);
+    T_CHECK(game_view(&B, gid, &bv, NULL));
+    if (LB->n_view > 0 && LB->view_v[LB->n_view - 1] != bv) {
+        fprintf(stderr, "smoke: B's view is at version %lld; the pushes heard end", (long long)bv);
+        for (int i = LB->n_view > 6 ? LB->n_view - 6 : 0; i < LB->n_view; i++) fprintf(stderr, " %u", LB->view_v[i]);
         fprintf(stderr, "\n");
     }
-    T_CHECK(LB->n_pv > 0 && LB->pv_v[LB->n_pv - 1] == bv);
+    T_CHECK(LB->n_view > 0 && LB->view_v[LB->n_view - 1] == bv);
     close(LA->fd);
     close(LB->fd);
+    close(LC->fd);
     free(LA);
     free(LB);
-    snprintf(path, sizeof path, "/rest/v1/user_elo_ratings?select=user_id,elo_rating,games_played&user_id=eq.%s", A.id);
-    T_EQ_INT(rest_get(&A, path, &tmp), 200);
-    int64_t played = 0;
-    T_CHECK(cb_json_get_i64(cb_buf_cstr(&tmp), tmp.len, "0.games_played", &played) && played == 1);
-    snprintf(path, sizeof path, "/rest/v1/game_snapshots?select=id,moves,extras&game_id=eq.%s", gid);
-    T_EQ_INT(rest_get(&A, path, &tmp), 200);
-    T_EQ_INT(cb_json_array_len(cb_buf_cstr(&tmp), tmp.len, ""), 1);
+    free(LC);
 
-    // The view row, then a restart on the same database: the same row.
-    snprintf(path, sizeof path, "/rest/v1/player_views?select=view,version&game_id=eq.%s&player_id=eq.%s", gid, A.id);
-    T_EQ_INT(rest_get(&A, path, &tmp), 200);
+    // The ratings (A is on the board with one game) and the replay (A's history holds one).
+    T_EQ_INT(call(&A, NC_REQ_BOARD, NULL, 0, NULL, 0, 0), 200);
+    int rows = nc_list_read(g_status, g_body, g_len, NW_BOARD);
+    bool on_board = false;
+    for (int i = 0; i < rows; i++) {
+        const NcBoardRow *r = nc_board_row(g_body, g_len, i);
+        if (r && !r->is_bot && r->id_len == strlen(A.id) && memcmp(r->id, A.id, r->id_len) == 0) on_board = r->games == 1;
+    }
+    T_CHECK(on_board);
+    T_EQ_INT(call(&A, NC_REQ_HISTORY, NULL, 0, NULL, 0, 0), 200);
+    T_EQ_INT(nc_list_read(g_status, g_body, g_len, NW_HISTORY), 1);
+    const NcHistoryHead *head = nc_history_head(g_body, g_len);
+    T_CHECK(head && head->has_rating);
+    T_EQ_INT(call(&A, NC_REQ_REPLAY, gid, 6, NULL, 0, 0), 200);
+    const NcReplay *rp = nc_replay_read(g_status, g_body, g_len);
+    T_CHECK(rp && rp->moves_len > 0);
+
+    // The view, then a restart on the same database: the same view.
     int64_t v1 = -1, v2 = -2;
-    char view1[16384] = "", view2[16384] = "";
-    T_CHECK(cb_json_get_i64(cb_buf_cstr(&tmp), tmp.len, "0.version", &v1));
-    T_CHECK(cb_json_get_str(cb_buf_cstr(&tmp), tmp.len, "0.view", view1, sizeof view1));
+    cb_buf env2;
+    cb_buf_init(&env2);
+    T_CHECK(game_view(&A, gid, &v1, &env));
     T_EQ_INT(tp_stop(&g_child, SIGTERM, 15000), 0);
     start_server();
-    T_EQ_INT(rest_get(&A, path, &tmp), 200);
-    T_CHECK(cb_json_get_i64(cb_buf_cstr(&tmp), tmp.len, "0.version", &v2));
-    T_CHECK(cb_json_get_str(cb_buf_cstr(&tmp), tmp.len, "0.view", view2, sizeof view2));
+    T_CHECK(game_view(&A, gid, &v2, &env2));
     T_EQ_INT(v2, v1);
-    T_EQ_STR(view2, view1);
-    T_CHECK(strncmp(view1, "\\x", 2) == 0);
+    T_EQ_MEM(env2.p, env2.len, env.p, env.len);
+    T_CHECK(env.len > 0);
 
     cb_buf_free(&env);
-    cb_buf_free(&tmp);
+    cb_buf_free(&env2);
     free(sc);
 }
 

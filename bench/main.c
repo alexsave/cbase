@@ -152,7 +152,7 @@ static int report(int argc, char **argv) {
 static void usage(void) {
     fprintf(stderr,
             "usage:\n"
-            "  cbase-bench roundtrip --url <base> --anon <key> [--n 500] [--concurrency 1|4] [--note TEXT] [--out DIR]\n"
+            "  cbase-bench roundtrip --url <base> [--n 500] [--concurrency 1|4] [--note TEXT] [--out DIR]\n"
             "  cbase-bench coldstart --url <base> [--idle S] [--repeat K] [--path P] [--force-cmd CMD] [--note TEXT] [--out DIR]\n"
             "  cbase-bench cpu [--note TEXT] [--out DIR]\n"
             "  cbase-bench report [FILE...]\n");
@@ -170,7 +170,6 @@ int main(int argc, char **argv) {
         const char *v = i + 1 < argc ? argv[i + 1] : NULL;
         if (!v) { usage(); return 2; }
         if (strcmp(a, "--url") == 0) o.url = v;
-        else if (strcmp(a, "--anon") == 0) o.anon = v;
         else if (strcmp(a, "--out") == 0) o.out_dir = v;
         else if (strcmp(a, "--note") == 0) o.note = v;
         else if (strcmp(a, "--path") == 0) o.path = v;
@@ -184,7 +183,7 @@ int main(int argc, char **argv) {
     if (strcmp(cmd, "cpu") == 0) return bench_cpu(&o);
     if (!o.url) { usage(); return 2; }
     if (strcmp(cmd, "roundtrip") == 0) {
-        if (!o.anon || o.n < 1 || o.concurrency < 1 || o.concurrency > 64) { usage(); return 2; }
+        if (o.n < 1 || o.concurrency < 1 || o.concurrency > 64) { usage(); return 2; }
         return bench_roundtrip(&o);
     }
     if (strcmp(cmd, "coldstart") == 0) {

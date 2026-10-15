@@ -1,17 +1,13 @@
 // fanout.h - after a winning commit, who hears about it.
 //
-// Exactly what table_io.ts did after commit_table (lines 406-412) plus what the
-// player_views publication did on its own:
-//   * for every HUMAN seat: realtime pv-<uid> postgres_changes UPDATE with the
-//     seat's view row (the dashboard), and a gu-<game>-<uid> broadcast
-//     animation_events {b: base64(table_cast(seat, version))};
-//   * for the spectators: game-<game> broadcast of table_cast(-1, version);
-//   * the broadcasts only when n_events > 0, goods_changed (a good flies no
-//     card but is a move) or roster_changed (a redaction renames a seat and
-//     flies nothing, yet an open page must show it); the pv- update on every
-//     commit;
-//   * a membership change: pv-<uid> INSERT for a new seat, DELETE (primary key
-//     only) for one that left.
+// On the push stream (realtime.h):
+//   * for every HUMAN seat: its view on pv-<uid> (the dashboard), and its cast
+//     on gu-<game>-<uid> (table_cast(seat, version));
+//   * for the spectators: game-<game>, table_cast(-1, version);
+//   * the casts only when n_events > 0, goods_changed (a good flies no card but
+//     is a move) or roster_changed (a redaction renames a seat and flies
+//     nothing, yet an open page must show it); the views on every commit;
+//   * a seat that left: its pv-<uid> hears the view with no envelope.
 // Called inside the kernel section's aftermath with the bytes already copied
 // out (casts and envelopes), so it never touches the kernel.
 #ifndef CB_FANOUT_H

@@ -1,7 +1,8 @@
 // unit_rt_local.c - realtime under `cbase serve` (realtime/rt_local.h), over
-// a real loopback server: the upgrade route, joins handled on the request
-// pool, publishes from another thread, both serializers on one server, and a
-// chat insert over HTTP reaching a WebSocket subscriber.
+// a real loopback server: the upgrade route, subscriptions handled on the
+// request pool, publishes from another thread reaching only their topic's
+// sockets, a connection's frames answered in order, and garbage closing.
+// unit_stream.c drives the same server with the kernel's client library.
 #include "t.h"
 
 #include "handler.h"
@@ -10,15 +11,15 @@
 #include "net/loop.h"
 #include "net/router.h"
 #include "net/server.h"
-#include "realtime/postgrest.h"
+#include "realtime/stream.h"
 #include "realtime/realtime.h"
 #include "realtime/rt_local.h"
 #include "util/log.h"
 #include "util/pool.h"
 
-#include <poll.h>
+#include "netwire.h"
+
 #include <pthread.h>
-#include <sys/socket.h>
 #include <unistd.h>
 
 #define U1 "11111111-1111-4111-8111-111111111111"
@@ -40,7 +41,6 @@ static void start(void) {
     rtf_install();
     rtf_member(G, U1);
     memset(&g_cfg, 0, sizeof g_cfg);
-    strcpy(g_cfg.anon_key, "anon-key");
     strcpy(g_cfg.allowed_origins, "*");
     g_ctx.cfg = &g_cfg;
     g_ctx.mode = CB_MODE_SERVE;
@@ -50,7 +50,6 @@ static void start(void) {
     g_ctx.router = cb_router_new();
     T_EQ_INT(cb_rt_local_new(&g_ctx, &g_ctx.rt), CB_OK);
     T_EQ_INT(cb_rt_local_routes(&g_ctx), CB_OK);
-    T_EQ_INT(cb_postgrest_routes(&g_ctx), CB_OK);
     cb_server_opts o;
     cb_server_opts_default(&o);
     g_ctx.server = cb_server_new(&g_ctx, &o);
@@ -58,134 +57,158 @@ static void start(void) {
     pthread_create(&g_thread, NULL, run, NULL);
 }
 
-static int open_ws(const char *vsn) {
-    char path[128];
-    snprintf(path, sizeof path, "/realtime/v1/websocket?apikey=anon-key&vsn=%s", vsn);
-    return tc_ws_open(g_port, path, NULL);
+static int open_ws(void) { return tc_ws_open(g_port, "/v1/stream?proto=nw1", NULL); }
+
+static void send_frame(int fd, const NwFrame *f) {
+    uint8_t raw[NW_ACCESS_MAX + 64];
+    int n = nw_frame_encode(f, raw, sizeof raw);
+    T_CHECK(n > 0);
+    T_EQ_INT(tc_ws_send(fd, CB_WS_OP_BIN, raw, (size_t)n), 0);
 }
 
-static void send_text(int fd, const char *s) { T_EQ_INT(tc_ws_send(fd, CB_WS_OP_TEXT, s, strlen(s)), 0); }
+static void send_auth(int fd, const char *uid) {
+    NwFrame f;
+    memset(&f, 0, sizeof f);
+    f.kind = NW_WS_AUTH;
+    f.token_len = (uint16_t)snprintf(f.token, sizeof f.token, "tok-%s", uid);
+    send_frame(fd, &f);
+}
 
-// The next text frame, or "" on a timeout.
-static const char *recv_text(int fd, int timeout_ms, cb_buf *m) {
+static void send_sub(int fd, uint8_t kind, uint16_t ref, uint8_t what, const char *gid) {
+    NwFrame f;
+    memset(&f, 0, sizeof f);
+    f.kind = kind;
+    f.ref = ref;
+    f.what = what;
+    f.gid_len = (uint8_t)strlen(gid);
+    memcpy(f.gid, gid, f.gid_len);
+    send_frame(fd, &f);
+}
+
+static void send_ping(int fd) {
+    NwFrame f;
+    memset(&f, 0, sizeof f);
+    f.kind = NW_WS_PING;
+    send_frame(fd, &f);
+}
+
+// The next binary frame, decoded; kind 0 on a timeout.
+static NwFrame recv_frame(int fd, int timeout_ms, cb_buf *m) {
+    NwFrame f;
+    memset(&f, 0, sizeof f);
     cb_buf_reset(m);
-    int op = tc_ws_recv(fd, timeout_ms, m);
-    if (op != CB_WS_OP_TEXT) { cb_buf_reset(m); return ""; }
-    return cb_buf_cstr(m);
+    if (tc_ws_recv(fd, timeout_ms, m) != CB_WS_OP_BIN) return f;
+    T_EQ_INT(nw_frame_decode(m->p, (int)m->len, &f), NW_OK);
+    return f;
 }
 
 static void the_upgrade_route(void) {
     tc_response r;
-    T_EQ_INT(tc_http(g_port, "GET", "/realtime/v1/websocket?vsn=2.0.0", NULL, NULL, 0, &r), 0);
-    T_EQ_INT(r.status, 401);   // no apikey
+    T_EQ_INT(tc_http(g_port, "GET", "/v1/stream", NULL, NULL, 0, &r), 0);
+    T_EQ_INT(r.status, 400);   // no proto
     tc_response_free(&r);
-    T_EQ_INT(tc_http(g_port, "GET", "/realtime/v1/websocket?apikey=anon-key&vsn=3.0.0", NULL, NULL, 0, &r), 0);
+    T_EQ_INT(tc_http(g_port, "GET", "/v1/stream?proto=nw2", NULL, NULL, 0, &r), 0);
     T_EQ_INT(r.status, 400);
     tc_response_free(&r);
-    // A client that offers subprotocols is given "phoenix" back, or a browser fails the handshake.
-    int fd = tc_connect(g_port);
-    const char *req = "GET /realtime/v1/websocket?apikey=anon-key&vsn=2.0.0 HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\n"
-                      "Connection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
-                      "Sec-WebSocket-Protocol: phoenix, base64url.bearer.phx.abc\r\n\r\n";
-    T_CHECK(write(fd, req, strlen(req)) == (ssize_t)strlen(req));
-    char head[1024] = { 0 };
-    size_t n = 0;
-    while (n < sizeof head - 1 && !strstr(head, "\r\n\r\n")) {
-        struct pollfd p = { fd, POLLIN, 0 };
-        if (poll(&p, 1, 2000) <= 0 || recv(fd, head + n, 1, 0) != 1) break;
-        n++;
-    }
-    T_CHECK(strstr(head, "HTTP/1.1 101") != NULL);
-    T_CHECK(strstr(head, "Sec-WebSocket-Protocol: phoenix\r\n") != NULL);
-    close(fd);
-    fd = open_ws("2.0.0");
+    // The facade's old URL is not routed.
+    T_EQ_INT(tc_http(g_port, "GET", "/realtime/v1/websocket?apikey=k&vsn=2.0.0", NULL, NULL, 0, &r), 0);
+    T_EQ_INT(r.status, 404);
+    tc_response_free(&r);
+    int fd = open_ws();
     T_CHECK(fd >= 0);
     close(fd);
 }
 
-static void join_publish_and_isolation(void) {
+static void subscribe_publish_and_isolation(void) {
     cb_buf m;
     cb_buf_init(&m);
-    int a = open_ws("2.0.0"), b = open_ws("1.0.0"), c = open_ws("2.0.0");
+    int a = open_ws(), b = open_ws(), c = open_ws();
     T_CHECK(a >= 0 && b >= 0 && c >= 0);
-    // a: a seated player's stream; b (vsn 1): the spectator stream; c: another game.
-    send_text(a, "[\"1\",\"1\",\"realtime:gu-" G "-" U1 "\",\"phx_join\",{\"config\":{\"private\":true},\"access_token\":\"tok-" U1 "\"}]");
-    T_EQ_STR(recv_text(a, 2000, &m), "[\"1\",\"1\",\"realtime:gu-" G "-" U1 "\",\"phx_reply\",{\"response\":{},\"status\":\"ok\"}]");
-    send_text(b, "{\"join_ref\":\"1\",\"ref\":\"1\",\"topic\":\"realtime:game-" G "\",\"event\":\"phx_join\",\"payload\":{\"access_token\":\"tok-" U2 "\"}}");
-    T_EQ_STR(recv_text(b, 2000, &m), "{\"join_ref\":\"1\",\"ref\":\"1\",\"topic\":\"realtime:game-" G "\",\"event\":\"phx_reply\","
-                                     "\"payload\":{\"response\":{},\"status\":\"ok\"}}");
-    send_text(c, "[\"1\",\"1\",\"realtime:game-zzzzzz\",\"phx_join\",{\"access_token\":\"tok-" U2 "\"}]");
-    T_CHECK(strstr(recv_text(c, 2000, &m), "\"status\":\"ok\"") != NULL);
-    // U2 may not hear U1's stream.
-    send_text(c, "[\"2\",\"2\",\"realtime:gu-" G "-" U1 "\",\"phx_join\",{\"access_token\":\"tok-" U2 "\"}]");
-    T_CHECK(strstr(recv_text(c, 2000, &m), "\"status\":\"error\"") != NULL);
+    // a: a seated player's game; b: a spectator of it; c: another game.
+    send_auth(a, U1);
+    send_sub(a, NW_WS_SUB, 1, NW_SUB_GAME, G);
+    NwFrame f = recv_frame(a, 2000, &m);
+    T_CHECK(f.kind == NW_WS_ACK && f.ref == 1 && f.why == 0 && f.seated == 1);
+    send_auth(b, U2);
+    send_sub(b, NW_WS_SUB, 1, NW_SUB_GAME, G);
+    f = recv_frame(b, 2000, &m);
+    T_CHECK(f.kind == NW_WS_ACK && f.why == 0 && f.seated == 0);
+    send_auth(c, U2);
+    send_sub(c, NW_WS_SUB, 1, NW_SUB_GAME, "zzzzzz");
+    T_EQ_INT(recv_frame(c, 2000, &m).kind, NW_WS_ACK);
+    // U2 may not hear U1's chat.
+    send_sub(c, NW_WS_SUB, 2, NW_SUB_CHAT, G);
+    f = recv_frame(c, 2000, &m);
+    T_CHECK(f.kind == NW_WS_ACK && f.ref == 2 && f.why != 0);
 
-    // Publish from this thread (as a bot drive would): each hears its own topic, in its own serializer.
+    // Publish from this thread (as a bot drive would): each hears its own topic.
     const uint8_t cast[] = { 1, 2 };
     rt_publish_cast(g_ctx.rt, "gu-" G "-" U1, G, 7, cast, 2);
     rt_publish_cast(g_ctx.rt, "game-" G, G, 7, cast, 1);
-    T_EQ_STR(recv_text(a, 2000, &m), "[null,null,\"realtime:gu-" G "-" U1 "\",\"broadcast\",{\"event\":\"animation_events\",\"payload\":{\"b\":\"AQI=\"},\"type\":\"broadcast\"}]");
-    T_EQ_STR(recv_text(b, 2000, &m), "{\"join_ref\":null,\"ref\":null,\"topic\":\"realtime:game-" G "\",\"event\":\"broadcast\","
-                                     "\"payload\":{\"event\":\"animation_events\",\"payload\":{\"b\":\"AQ==\"},\"type\":\"broadcast\"}}");
-    T_EQ_STR(recv_text(c, 300, &m), "");   // nothing for another game
-    T_EQ_STR(recv_text(a, 300, &m), "");   // and a's stream got only its own
+    f = recv_frame(a, 2000, &m);
+    T_CHECK(f.kind == NW_WS_CAST && f.version == 7 && f.blob.len == 2);
+    f = recv_frame(b, 2000, &m);
+    T_CHECK(f.kind == NW_WS_CAST && f.version == 7 && f.blob.len == 1);
+    T_EQ_INT(recv_frame(c, 300, &m).kind, 0);   // nothing for another game
+    T_EQ_INT(recv_frame(a, 300, &m).kind, 0);   // and a's stream got only its own
 
     // Frames sent back to back are answered in order (one job per connection at a time).
-    send_text(a, "[null,\"10\",\"phoenix\",\"heartbeat\",{}]");
-    send_text(a, "[null,\"11\",\"phoenix\",\"heartbeat\",{}]");
-    send_text(a, "[\"1\",\"12\",\"realtime:gu-" G "-" U1 "\",\"phx_leave\",{}]");
-    send_text(a, "[null,\"13\",\"phoenix\",\"heartbeat\",{}]");
-    T_CHECK(strstr(recv_text(a, 2000, &m), "\"10\"") != NULL);
-    T_CHECK(strstr(recv_text(a, 2000, &m), "\"11\"") != NULL);
-    T_CHECK(strstr(recv_text(a, 2000, &m), "\"12\",\"realtime:gu-") != NULL);
-    T_CHECK(strstr(recv_text(a, 2000, &m), "\"phx_close\"") != NULL);
-    T_CHECK(strstr(recv_text(a, 2000, &m), "\"13\"") != NULL);
-    // After the leave, a's stream is quiet.
-    rt_publish_cast(g_ctx.rt, "gu-" G "-" U1, G, 7, cast, 2);
-    T_EQ_STR(recv_text(a, 300, &m), "");
+    send_sub(a, NW_WS_SUB, 10, NW_SUB_CHAT, G);
+    send_ping(a);
+    send_sub(a, NW_WS_SUB, 11, NW_SUB_GAMES, "");
+    send_sub(a, NW_WS_UNSUB, 0, NW_SUB_GAME, G);
+    send_ping(a);
+    f = recv_frame(a, 2000, &m);
+    T_CHECK(f.kind == NW_WS_ACK && f.ref == 10);
+    T_EQ_INT(recv_frame(a, 2000, &m).kind, NW_WS_PONG);
+    f = recv_frame(a, 2000, &m);
+    T_CHECK(f.kind == NW_WS_ACK && f.ref == 11);
+    T_EQ_INT(recv_frame(a, 2000, &m).kind, NW_WS_PONG);   // UNSUB has no reply
+    // After the UNSUB, a hears no casts, but still its chat.
+    rt_publish_cast(g_ctx.rt, "gu-" G "-" U1, G, 8, cast, 2);
+    cb_chat_row ch;
+    memset(&ch, 0, sizeof ch);
+    strcpy(ch.id, "m1");
+    strcpy(ch.game_id, G);
+    strcpy(ch.user_id, U2);
+    ch.message = "hello";
+    ch.created_at = 5;
+    rt_publish_chat(g_ctx.rt, G, &ch);
+    f = recv_frame(a, 2000, &m);
+    T_CHECK(f.kind == NW_WS_CHAT && f.chat.message_len == 5 && memcmp(f.chat.message, "hello", 5) == 0);
+    T_EQ_INT(recv_frame(b, 300, &m).kind, 0);   // a spectator did not subscribe to the chat
+    // A spectator's UNSUB quiets the spectators' stream too.
+    send_sub(b, NW_WS_UNSUB, 0, NW_SUB_GAME, G);
+    send_ping(b);
+    T_EQ_INT(recv_frame(b, 2000, &m).kind, NW_WS_PONG);
+    rt_publish_cast(g_ctx.rt, "game-" G, G, 9, cast, 1);
+    T_EQ_INT(recv_frame(b, 300, &m).kind, 0);
     close(a);
     close(b);
     close(c);
     cb_buf_free(&m);
 }
 
-static void chat_over_http_reaches_the_socket(void) {
-    cb_buf m;
-    cb_buf_init(&m);
-    int a = open_ws("2.0.0");
-    send_text(a, "[\"1\",\"1\",\"realtime:chat:" G "\",\"phx_join\",{\"config\":{\"private\":true},\"access_token\":\"tok-" U1 "\"}]");
-    T_CHECK(strstr(recv_text(a, 2000, &m), "\"status\":\"ok\"") != NULL);
-    const char *body = "{\"game_id\":\"" G "\",\"user_id\":\"" U1 "\",\"message\":\"hello\",\"is_system\":false}";
-    tc_response r;
-    T_EQ_INT(tc_http(g_port, "POST", "/rest/v1/chat_messages", "apikey: anon-key\r\nAuthorization: Bearer tok-" U1 "\r\nContent-Type: application/json\r\n",
-                     body, strlen(body), &r), 0);
-    T_EQ_INT(r.status, 201);
-    tc_response_free(&r);
-    const char *f = recv_text(a, 2000, &m);
-    T_CHECK(cb_starts_with(f, "[null,null,\"realtime:chat:" G "\",\"broadcast\",{\"event\":\"INSERT\",\"payload\":{\"old_record\":null,\"operation\":\"INSERT\""));
-    T_CHECK(strstr(f, "\"message\":\"hello\"") != NULL);
-    close(a);
-    cb_buf_free(&m);
-}
-
 static void garbage_closes_the_socket(void) {
     cb_buf m;
     cb_buf_init(&m);
-    int a = open_ws("2.0.0");
-    send_text(a, "this is not phoenix");
+    int a = open_ws();
+    T_EQ_INT(tc_ws_send(a, CB_WS_OP_BIN, "this is not a frame", 19), 0);
+    cb_buf_reset(&m);
     T_EQ_INT(tc_ws_recv(a, 2000, &m), CB_WS_OP_CLOSE);
     T_EQ_INT(m.len, 2);
     T_EQ_INT((m.p[0] << 8) | m.p[1], 1003);
     close(a);
-    // A socket that closes with a join still out on the pool does not take the server down.
+    // A socket that closes with a subscription still out on the pool does not take the server down.
     for (int i = 0; i < 20; i++) {
-        int b = open_ws("2.0.0");
-        send_text(b, "[\"1\",\"1\",\"realtime:chat:" G "\",\"phx_join\",{\"access_token\":\"tok-" U1 "\"}]");
+        int b = open_ws();
+        send_auth(b, U1);
+        send_sub(b, NW_WS_SUB, 1, NW_SUB_CHAT, G);
         close(b);
     }
-    int c = open_ws("2.0.0");
-    send_text(c, "[null,\"1\",\"phoenix\",\"heartbeat\",{}]");
-    T_CHECK(strstr(recv_text(c, 2000, &m), "phx_reply") != NULL);
+    int c = open_ws();
+    send_ping(c);
+    T_EQ_INT(recv_frame(c, 2000, &m).kind, NW_WS_PONG);
     close(c);
     cb_buf_free(&m);
 }
@@ -206,8 +229,7 @@ static void stop(void) {
 int main(void) {
     start();
     T_RUN(the_upgrade_route);
-    T_RUN(join_publish_and_isolation);
-    T_RUN(chat_over_http_reaches_the_socket);
+    T_RUN(subscribe_publish_and_isolation);
     T_RUN(garbage_closes_the_socket);
     stop();
     return T_DONE();

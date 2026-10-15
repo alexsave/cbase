@@ -102,6 +102,8 @@ This file collects the six builders' records and the integration's; DESIGN.md sa
 
 ## Realtime and PostgREST
 
+The Phoenix and PostgREST tests below were deleted with the facade in stage 4; the section is the record of what they held.
+
 - `test/unit_phoenix.c` (17 tests): decode in both serializers and 13 refusals, byte-exact writers, vsn parsing, binding ids, the may_join matrix, join echo with ids, refusals with reasons, the 16-topic cap, leave and access_token, another user's join, a vsn 1 connection, the three push payloads byte for byte (and the broadcast against the fake backend's recorded frame), timestamps, publish through a capturing transport, and a join's id appearing in the matching push.
 - `test/unit_postgrest.c` (11 tests): the parser on every client query shape and 26 refusals; every table through `cb_handle`.
 - `test/unit_rt_apigw.c` (4 tests): the three events against CONN rows, TTL writes, a lost row, garbage, publishes per serializer, 410, expired rows.
@@ -285,7 +287,27 @@ Run by a script that copies each file aside, applies the mutation, refuses one t
 - stream.c: a token that does not verify keeps the old user -> `protocol` c.user_id == "".
 - stream.c: the catch-up ignores `since` -> `protocol` g_out.n == 1.
 - stream.c: chat open to non-members -> `protocol` ACK FORBIDDEN.
-- rt_apigw.c: the stream's frames posted raw, not base64 -> `apigw` the post decodes as a frame.
+- rt_apigw.c: the stream's frames posted raw, not base64 -> `apigw` the post decodes as a frame (that test moved to unit_rt_apigw.c in stage 4).
 - rt_local.c: the stream's frames sent as text -> `serve_end_to_end` the first event is NC_EV_SEATED.
 - realtime.c: a DELETE carries the envelope -> `publishes` g_cap.nw == want_gone.
 - realtime.c: the cast's version dropped -> `publishes` g_cap.nw == want_cast.
+
+## Facade deleted (stage 4: unit_rt_apigw, unit_rt_local, unit_net, unit_v1, smoke)
+
+`unit_rt_apigw.c` and `unit_rt_local.c` were rewritten for the stream, `unit_stream.c`'s API Gateway test moved into `unit_rt_apigw.c`, `unit_v1.c` took over unit_auth's "no backend" test, and the game smoke plays over `/v1`.
+Each mutant below was applied, the named test went red on the named assertion, and the source was restored (scratchpad runner, perl over the file, the object rebuilt).
+
+- rt_apigw.c: a lost CAS gives up instead of re-running -> `concurrent_frames_of_one_connection_both_stick` n_topics == 2.
+- rt_apigw.c: `$connect` takes any query -> `connect_and_disconnect` an empty query is 400.
+- rt_apigw.c: an expired row still posted to -> `publish_posts_each_subscriber` n_posts == 2.
+- rt_apigw.c: garbage keeps the socket -> `a_lost_row_is_rebuilt_and_garbage_closes` n_deletes == 1.
+- rt_apigw.c: the TTL never pushed forward by a frame that changes nothing -> `frames_round_trip_through_the_conn_row` conn_puts == puts0 + 2.
+- rt_local.c: pushes and replies sent as text frames -> `subscribe_publish_and_isolation` the first ACK.
+- rt_local.c: the upgrade takes any proto -> `the_upgrade_route` 400.
+- stream.c: UNSUB of a game leaves the spectators' topic -> `subscribe_publish_and_isolation` the spectator hears nothing after its UNSUB (found surviving first; the spectator UNSUB was added for it).
+- stream.c: chat open to non-members -> `subscribe_publish_and_isolation` the second ACK carries a why.
+- router.c: the router's refusals as JSON -> `http_basics` content-type text/plain.
+- v1_http.c: no store answered 500 -> `without_a_backend` the games list is 503.
+- v1_http.c: no auth module answered 500 -> `without_a_backend` the sign-up's status is 503.
+- realtime.c: `rt_publish_view` sends nothing -> the game smoke, B heard no views.
+

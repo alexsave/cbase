@@ -22,7 +22,7 @@ typedef struct {
     long    max_body;      // request body bytes (CBASE_MAX_BODY)
     int64_t idle_ms;       // an HTTP connection with nothing in flight (default 60 s)
     int64_t head_ms;       // a request that has started but not finished arriving (default 15 s)
-    int64_t ws_idle_ms;    // a WebSocket that has sent nothing (default 120 s; Phoenix heartbeats every 25-30 s)
+    int64_t ws_idle_ms;    // a WebSocket that has sent nothing (default 120 s; the stream pings every 25 s)
     int     max_conns;     // refused past this (default 4096)
 } cb_server_opts;
 
