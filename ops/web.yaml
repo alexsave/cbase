@@ -1,0 +1,454 @@
+AWSTemplateFormatVersion: "2010-09-09"
+# The web: foolish.cards (with www and utils) and uttt.live, static files in S3
+# behind CloudFront. c_base/docs/VERCEL.md sections 4b to 4f are the design,
+# c_base/RUNBOOK.md "Web hosting" the clicks, ops/web_deploy.sh the deploy.
+#
+# What it makes:
+#   * one private S3 bucket, a prefix per site (foolish/, utils/, uttt/), read
+#     only by the two distributions through Origin Access Control;
+#   * TWO distributions, because a CloudFront flat-rate plan covers one
+#     distribution with at most one apex domain:
+#       foolish  foolish.cards, www.foolish.cards, utils.foolish.cards
+#       uttt     uttt.live, www.uttt.live
+#     With the API's distribution that is the three Free plans an account may
+#     hold. Plans are chosen in the console only (RUNBOOK); the stack creates
+#     the distributions on pay-as-you-go, which is also $0 at this volume.
+#   * one viewer-request CloudFront Function per distribution (a Function on a
+#     plan cannot be shared with another distribution), the SAME code in both:
+#     it picks the S3 prefix by Host, maps clean URLs to the export's .html
+#     files, and answers any other one-segment path with the site's shell
+#     page. Not custom error responses: those are distribution-wide, so a
+#     missing JS chunk would come back as a 200 of HTML and the /m origin's
+#     errors would be rewritten too;
+#   * on foolish, /m/* to the c_base Lambda Function URL (the link unfurl, a C
+#     route), and optionally the COOP/COEP headers;
+#   (GitHub Actions deploys through ops/github_oidc.yaml's role.)
+#
+# Caching: only AWS-managed cache policies (a Free plan allows no custom
+# ones). Managed-CachingOptimized honours each object's own Cache-Control,
+# which web_deploy.sh sets at upload: hashed _next/static immutable for a
+# year, everything else revalidated by browsers and held by CloudFront until
+# the deploy's one invalidation.
+#
+# Region: us-east-1, like ops/cbase.yaml (CloudFront reads certificates only
+# there).
+
+Description: c_base web, the static sites (S3 + CloudFront)
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: { default: "Certificates (empty: no custom domains yet)" }
+        Parameters: [FoolishCertificateArn, UtttCertificateArn]
+      - Label: { default: "Origins and headers" }
+        Parameters: [ApiOriginDomain, CrossOriginIsolation]
+      - Label: { default: "Routing (web_deploy.sh writes these from each build)" }
+        Parameters: [FoolishPages, UtttPages]
+
+Parameters:
+  FoolishCertificateArn:
+    Type: String
+    Default: ""
+    Description: The ACM certificate (us-east-1) for foolish.cards, www.foolish.cards and utils.foolish.cards. Empty serves the distribution on its cloudfront.net name only; set it once ACM says Issued, and the three names become the distribution's aliases.
+    AllowedPattern: "(arn:aws:acm:us-east-1:[0-9]{12}:certificate/[0-9a-f-]+)?"
+    ConstraintDescription: empty, or an ACM certificate ARN in us-east-1
+  UtttCertificateArn:
+    Type: String
+    Default: ""
+    Description: The ACM certificate (us-east-1) for uttt.live and www.uttt.live. Empty serves the distribution on its cloudfront.net name only.
+    AllowedPattern: "(arn:aws:acm:us-east-1:[0-9]{12}:certificate/[0-9a-f-]+)?"
+    ConstraintDescription: empty, or an ACM certificate ARN in us-east-1
+  ApiOriginDomain:
+    Type: String
+    Description: The host of the c_base Function URL (the cbase stack's FunctionUrl output without https:// and the slash), the origin of /m/*.
+    AllowedPattern: "[a-z0-9]+\\.lambda-url\\.[a-z0-9-]+\\.on\\.aws"
+    ConstraintDescription: a Lambda Function URL host such as abc123.lambda-url.us-east-1.on.aws
+  CrossOriginIsolation:
+    Type: String
+    Default: "no"
+    AllowedValues: ["yes", "no"]
+    Description: yes adds Cross-Origin-Opener-Policy same-origin and Cross-Origin-Embedder-Policy credentialless to every foolish response (the Infinite Oracle's Mode B; foolish/next.config.mjs says what it risks). A viewer-response Function, since a Free plan allows no custom response-headers policy.
+  FoolishPages:
+    Type: String
+    Default: ""
+    Description: The foolish export's pages, space-separated paths without .html (about dashboard ...). web_deploy.sh writes it from out/ on every deploy; nobody edits it by hand.
+    AllowedPattern: "[a-zA-Z0-9_./ -]*"
+  UtttPages:
+    Type: String
+    Default: ""
+    Description: The uttt export's pages, as FoolishPages.
+    AllowedPattern: "[a-zA-Z0-9_./ -]*"
+
+Conditions:
+  HasFoolishCert: !Not [!Equals [!Ref FoolishCertificateArn, ""]]
+  HasUtttCert: !Not [!Equals [!Ref UtttCertificateArn, ""]]
+  Isolate: !Equals [!Ref CrossOriginIsolation, "yes"]
+
+Resources:
+  # ---- the files -------------------------------------------------------------------
+  # Versioned, so a bad deploy can be rolled back object by object; old
+  # versions expire after 30 days. Stale hashed chunks are NOT expired by a
+  # lifecycle rule: an object's age is when it was first uploaded, not when the
+  # build stopped using it, so an age rule would delete live chunks.
+  # web_deploy.sh --prune-static removes them by hand.
+  Bucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub "cbase-web-${AWS::AccountId}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules: [{ ObjectOwnership: BucketOwnerEnforced }]
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      VersioningConfiguration: { Status: Enabled }
+      LifecycleConfiguration:
+        Rules:
+          - Id: old-versions
+            Status: Enabled
+            NoncurrentVersionExpiration: { NoncurrentDays: 30 }
+            AbortIncompleteMultipartUpload: { DaysAfterInitiation: 1 }
+            ExpiredObjectDeleteMarker: true
+
+  # GetObject for the files; ListBucket so a missing file is a 404, not a 403.
+  # The Function never sends an empty key, so ListBucket is never a listing.
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref Bucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: CloudFrontRead
+            Effect: Allow
+            Principal: { Service: cloudfront.amazonaws.com }
+            Action: s3:GetObject
+            Resource: !Sub "${Bucket.Arn}/*"
+            Condition:
+              StringEquals:
+                "AWS:SourceArn":
+                  - !Sub "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${FoolishDistribution}"
+                  - !Sub "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${UtttDistribution}"
+          - Sid: CloudFrontList
+            Effect: Allow
+            Principal: { Service: cloudfront.amazonaws.com }
+            Action: s3:ListBucket
+            Resource: !GetAtt Bucket.Arn
+            Condition:
+              StringEquals:
+                "AWS:SourceArn":
+                  - !Sub "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${FoolishDistribution}"
+                  - !Sub "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${UtttDistribution}"
+
+  # One per distribution: nothing attached to a plan's distribution is shared.
+  FoolishOac:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${AWS::StackName}-foolish"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  UtttOac:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${AWS::StackName}-uttt"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # ---- the router ------------------------------------------------------------------
+  # JavaScript because CloudFront Functions accept nothing else. The two
+  # Functions carry the SAME code (test/web_router.test.mjs fails when they
+  # differ, and runs the rules below against it); only DefaultSite differs.
+  #
+  # Per request, in order:
+  #   1. the site: the Host's (foolish.cards and www -> foolish,
+  #      utils.foolish.cards -> utils, uttt.live and www -> uttt); on any other
+  #      host (the distribution's own *.cloudfront.net name, before DNS moves)
+  #      the cookie cbase-site=<site> if it names one, else DefaultSite;
+  #   2. the site's redirects (uttt: /234 -> /243, a 302 like the Next one);
+  #   3. the path: trailing slashes go; / is /index.html; a path whose last
+  #      segment has a dot, or under /.well-known/, is a file and passes as is;
+  #      a known page gets .html; on a site without a shell (utils) every other
+  #      path gets .html too and a miss is S3's 404; any other one-segment path
+  #      is the shell (/_shell.html: a game id or replay code); deeper unknown
+  #      paths get /404.html;
+  #   4. the S3 key: /<site> + the path.
+  FoolishRouter:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: !Sub "${AWS::StackName}-foolish-router"
+      AutoPublish: true
+      FunctionConfig:
+        Comment: Host -> S3 prefix, clean URLs, the SPA shell
+        Runtime: cloudfront-js-2.0
+      FunctionCode: !Sub
+        - |
+          // ---- web router begin
+          var SITES = {
+            foolish: { pages: ' ${FoolishPages} ', shell: '/_shell.html', redirects: {} },
+            utils: { pages: '', shell: '', redirects: {} },
+            uttt: { pages: ' ${UtttPages} ', shell: '/_shell.html', redirects: { '/234': '/243' } }
+          };
+          var HOSTS = {
+            'foolish.cards': 'foolish', 'www.foolish.cards': 'foolish',
+            'utils.foolish.cards': 'utils',
+            'uttt.live': 'uttt', 'www.uttt.live': 'uttt'
+          };
+          function siteOf(request) {
+            var host = request.headers.host ? request.headers.host.value.toLowerCase() : '';
+            if (HOSTS[host]) return HOSTS[host];
+            var c = request.cookies['cbase-site'];
+            if (c && SITES[c.value]) return c.value;
+            return DEFAULT_SITE;
+          }
+          function query(request) {
+            var out = [];
+            var q = request.querystring;
+            for (var k in q) {
+              var vs = q[k].multiValue ? q[k].multiValue : [q[k]];
+              for (var i = 0; i < vs.length; i++) out.push(vs[i].value === '' ? k : k + '=' + vs[i].value);
+            }
+            return out.length ? '?' + out.join('&') : '';
+          }
+          function handler(event) {
+            var request = event.request;
+            var name = siteOf(request);
+            var site = SITES[name];
+            var uri = request.uri;
+            var to = site.redirects[uri];
+            if (to) {
+              return { statusCode: 302, statusDescription: 'Found',
+                       headers: { location: { value: to + query(request) },
+                                  'cache-control': { value: 'no-cache' } } };
+            }
+            while (uri.length > 1 && uri.charAt(uri.length - 1) === '/') uri = uri.substring(0, uri.length - 1);
+            if (uri === '/') {
+              uri = '/index.html';
+            } else if (uri.indexOf('/.well-known/') === 0 || uri.substring(uri.lastIndexOf('/')).indexOf('.') >= 0) {
+              // a file
+            } else if (site.pages.indexOf(' ' + uri.substring(1) + ' ') >= 0 || !site.shell) {
+              uri = uri + '.html';
+            } else if (uri.indexOf('/', 1) < 0) {
+              uri = site.shell;
+            } else {
+              uri = '/404.html';
+            }
+            request.uri = '/' + name + uri;
+            return request;
+          }
+          // ---- web router end
+          var DEFAULT_SITE = '${DefaultSite}';
+        - { DefaultSite: foolish }
+
+  UtttRouter:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: !Sub "${AWS::StackName}-uttt-router"
+      AutoPublish: true
+      FunctionConfig:
+        Comment: Host -> S3 prefix, clean URLs, the SPA shell
+        Runtime: cloudfront-js-2.0
+      FunctionCode: !Sub
+        - |
+          // ---- web router begin
+          var SITES = {
+            foolish: { pages: ' ${FoolishPages} ', shell: '/_shell.html', redirects: {} },
+            utils: { pages: '', shell: '', redirects: {} },
+            uttt: { pages: ' ${UtttPages} ', shell: '/_shell.html', redirects: { '/234': '/243' } }
+          };
+          var HOSTS = {
+            'foolish.cards': 'foolish', 'www.foolish.cards': 'foolish',
+            'utils.foolish.cards': 'utils',
+            'uttt.live': 'uttt', 'www.uttt.live': 'uttt'
+          };
+          function siteOf(request) {
+            var host = request.headers.host ? request.headers.host.value.toLowerCase() : '';
+            if (HOSTS[host]) return HOSTS[host];
+            var c = request.cookies['cbase-site'];
+            if (c && SITES[c.value]) return c.value;
+            return DEFAULT_SITE;
+          }
+          function query(request) {
+            var out = [];
+            var q = request.querystring;
+            for (var k in q) {
+              var vs = q[k].multiValue ? q[k].multiValue : [q[k]];
+              for (var i = 0; i < vs.length; i++) out.push(vs[i].value === '' ? k : k + '=' + vs[i].value);
+            }
+            return out.length ? '?' + out.join('&') : '';
+          }
+          function handler(event) {
+            var request = event.request;
+            var name = siteOf(request);
+            var site = SITES[name];
+            var uri = request.uri;
+            var to = site.redirects[uri];
+            if (to) {
+              return { statusCode: 302, statusDescription: 'Found',
+                       headers: { location: { value: to + query(request) },
+                                  'cache-control': { value: 'no-cache' } } };
+            }
+            while (uri.length > 1 && uri.charAt(uri.length - 1) === '/') uri = uri.substring(0, uri.length - 1);
+            if (uri === '/') {
+              uri = '/index.html';
+            } else if (uri.indexOf('/.well-known/') === 0 || uri.substring(uri.lastIndexOf('/')).indexOf('.') >= 0) {
+              // a file
+            } else if (site.pages.indexOf(' ' + uri.substring(1) + ' ') >= 0 || !site.shell) {
+              uri = uri + '.html';
+            } else if (uri.indexOf('/', 1) < 0) {
+              uri = site.shell;
+            } else {
+              uri = '/404.html';
+            }
+            request.uri = '/' + name + uri;
+            return request;
+          }
+          // ---- web router end
+          var DEFAULT_SITE = '${DefaultSite}';
+        - { DefaultSite: uttt }
+
+  # The Oracle's Mode B headers (foolish/next.config.mjs), on every foolish
+  # response, only when CrossOriginIsolation is yes.
+  IsolationHeaders:
+    Type: AWS::CloudFront::Function
+    Condition: Isolate
+    Properties:
+      Name: !Sub "${AWS::StackName}-foolish-isolation"
+      AutoPublish: true
+      FunctionConfig:
+        Comment: COOP same-origin, COEP credentialless
+        Runtime: cloudfront-js-2.0
+      FunctionCode: |
+        function handler(event) {
+          var h = event.response.headers;
+          h['cross-origin-opener-policy'] = { value: 'same-origin' };
+          h['cross-origin-embedder-policy'] = { value: 'credentialless' };
+          return event.response;
+        }
+
+  # ---- foolish.cards, www, utils ---------------------------------------------------
+  FoolishDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Comment: c_base web foolish.cards
+        Enabled: true
+        Aliases: !If
+          - HasFoolishCert
+          - [foolish.cards, www.foolish.cards, utils.foolish.cards]
+          - !Ref AWS::NoValue
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        PriceClass: PriceClass_100
+        ViewerCertificate: !If
+          - HasFoolishCert
+          - AcmCertificateArn: !Ref FoolishCertificateArn
+            SslSupportMethod: sni-only
+            MinimumProtocolVersion: TLSv1.2_2021
+          - CloudFrontDefaultCertificate: true
+        Origins:
+          - Id: s3
+            DomainName: !GetAtt Bucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt FoolishOac.Id
+            S3OriginConfig: { OriginAccessIdentity: "" }
+          - Id: api
+            DomainName: !Ref ApiOriginDomain
+            CustomOriginConfig:
+              OriginProtocolPolicy: https-only
+              OriginSSLProtocols: [TLSv1.2]
+        DefaultCacheBehavior:
+          TargetOriginId: s3
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD]
+          CachedMethods: [GET, HEAD]
+          Compress: true
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6   # Managed-CachingOptimized
+          FunctionAssociations: !If
+            - Isolate
+            - - { EventType: viewer-request, FunctionARN: !GetAtt FoolishRouter.FunctionMetadata.FunctionARN }
+              - { EventType: viewer-response, FunctionARN: !GetAtt IsolationHeaders.FunctionMetadata.FunctionARN }
+            - - { EventType: viewer-request, FunctionARN: !GetAtt FoolishRouter.FunctionMetadata.FunctionARN }
+        CacheBehaviors:
+          # The link unfurl: the C route answers HTML with its own
+          # Cache-Control (a day), which CachingOptimized honours, so one
+          # crawler fetch per link reaches Lambda. The Function URL needs its
+          # own Host, hence AllViewerExceptHostHeader, as in ops/cbase.yaml.
+          - PathPattern: /m/*
+            TargetOriginId: api
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD]
+            CachedMethods: [GET, HEAD]
+            Compress: true
+            CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6          # Managed-CachingOptimized
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac  # Managed-AllViewerExceptHostHeader
+          # The universal-links association file. Its Content-Type
+          # (application/json) is set at upload; served at the apex and www
+          # with no redirect, never compressed, never the shell.
+          - PathPattern: /.well-known/*
+            TargetOriginId: s3
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD]
+            CachedMethods: [GET, HEAD]
+            Compress: false
+            CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6   # Managed-CachingOptimized
+            FunctionAssociations:
+              - { EventType: viewer-request, FunctionARN: !GetAtt FoolishRouter.FunctionMetadata.FunctionARN }
+
+  # ---- uttt.live, www --------------------------------------------------------------
+  UtttDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Comment: c_base web uttt.live
+        Enabled: true
+        Aliases: !If
+          - HasUtttCert
+          - [uttt.live, www.uttt.live]
+          - !Ref AWS::NoValue
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        PriceClass: PriceClass_100
+        ViewerCertificate: !If
+          - HasUtttCert
+          - AcmCertificateArn: !Ref UtttCertificateArn
+            SslSupportMethod: sni-only
+            MinimumProtocolVersion: TLSv1.2_2021
+          - CloudFrontDefaultCertificate: true
+        Origins:
+          - Id: s3
+            DomainName: !GetAtt Bucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt UtttOac.Id
+            S3OriginConfig: { OriginAccessIdentity: "" }
+        DefaultCacheBehavior:
+          TargetOriginId: s3
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD]
+          CachedMethods: [GET, HEAD]
+          Compress: true
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6   # Managed-CachingOptimized
+          FunctionAssociations:
+            - { EventType: viewer-request, FunctionARN: !GetAtt UtttRouter.FunctionMetadata.FunctionARN }
+
+Outputs:
+  BucketName:
+    Value: !Ref Bucket
+  FoolishDistributionId:
+    Value: !Ref FoolishDistribution
+  FoolishDistributionDomain:
+    Description: Point foolish.cards (ALIAS), www and utils (CNAME) here.
+    Value: !GetAtt FoolishDistribution.DomainName
+  UtttDistributionId:
+    Value: !Ref UtttDistribution
+  UtttDistributionDomain:
+    Description: Point uttt.live (ALIAS) and www (CNAME) here.
+    Value: !GetAtt UtttDistribution.DomainName

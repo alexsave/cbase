@@ -1,0 +1,454 @@
+AWSTemplateFormatVersion: "2010-09-09"
+# c_base on AWS: everything the foolish backend runs on, in one stack.
+#
+# Upload this file in the CloudFormation console (Create stack > Upload a
+# template file). c_base/RUNBOOK.md walks through every click, in order.
+#
+# What it makes:
+#   * the DynamoDB table (single-table design, DESIGN.md "Store"), PROVISIONED
+#     inside the always-free 25 WCU / 25 RCU, point-in-time recovery on, TTL
+#     on expires_at;
+#   * the Lambda function (the static arm64 `bootstrap`, ops/package.sh), its
+#     role and its log group;
+#   * a Function URL for the HTTP routes (/auth, /rest, /functions, /admin, /health);
+#   * the API Gateway WebSocket API for realtime ($connect, $disconnect, $default);
+#   * an EventBridge Scheduler schedule that invokes the bot scan every minute;
+#   * a CloudFront distribution at the custom domain, sending
+#     /realtime/v1/websocket to the WebSocket API and everything else to the
+#     Function URL, so the clients see one origin;
+#   (GitHub Actions deploys new code through ops/github_oidc.yaml's role, which
+#   holds no other rights here: see that file.)
+#
+# Region: create the stack in us-east-1. The ACM certificate must be in
+# us-east-1 for CloudFront whatever region the stack is in, and keeping
+# everything in one region keeps the runbook to one region selector.
+#
+# Cost at foolish's volume: Lambda, DynamoDB (provisioned capacity; on-demand
+# has no free tier), the Function URL, EventBridge Scheduler, CloudFront and
+# ACM sit inside their always-free allowances; the WebSocket API is about
+# $0.01 to $0.10 a month after its first free year; the code zip in S3 is a
+# few MB; point-in-time recovery bills $0.20 per GB-month of table, a
+# fraction of a cent at our few MB (DESIGN.md "The free tier, provisioned").
+
+Description: c_base, the foolish backend (Lambda + DynamoDB + CloudFront)
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: { default: "Code" }
+        Parameters: [CodeBucket, CodeKey]
+      - Label: { default: "Secrets (generate each with: openssl rand -base64 32)" }
+        Parameters: [JwtSecret, AnonKey, AdminToken]
+      - Label: { default: "Domain" }
+        Parameters: [DomainName, CertificateArn, AllowedOrigins]
+      - Label: { default: "Names" }
+        Parameters: [FunctionName, TableName]
+
+Parameters:
+  CodeBucket:
+    Type: String
+    Description: The S3 bucket holding cbase-lambda.zip (ops/package.sh builds it). A provided.al2023 function cannot be created without code, and CloudFormation's inline code works only for Node.js and Python, so the zip goes to S3 first.
+    AllowedPattern: "[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]"
+  CodeKey:
+    Type: String
+    Default: cbase-lambda.zip
+    Description: The object key of the zip in CodeBucket.
+  JwtSecret:
+    Type: String
+    NoEcho: true
+    MinLength: 32
+    Description: CBASE_JWT_SECRET, the HS256 key for access tokens. At least 32 characters.
+  AnonKey:
+    Type: String
+    MinLength: 16
+    Description: CBASE_ANON_KEY, the public key the web and iOS clients send as `apikey` (it ships inside the web bundle, so it is not secret).
+  AdminToken:
+    Type: String
+    NoEcho: true
+    MinLength: 24
+    Description: CBASE_ADMIN_TOKEN, the Bearer token for the console at /admin.
+  DomainName:
+    Type: String
+    Default: api.foolish.cards
+    Description: The custom domain clients use. CBASE_PUBLIC_URL becomes https://<this>.
+  CertificateArn:
+    Type: String
+    Description: The ACM certificate for DomainName. It MUST be in us-east-1 (N. Virginia) for CloudFront.
+    AllowedPattern: "arn:aws:acm:us-east-1:[0-9]{12}:certificate/[0-9a-f-]+"
+    ConstraintDescription: an ACM certificate ARN in us-east-1
+  AllowedOrigins:
+    Type: String
+    Default: "*"
+    Description: CBASE_ALLOWED_ORIGINS, "*" (what the Supabase functions answered) or a comma list such as https://foolish.cards,https://www.foolish.cards.
+  FunctionName:
+    Type: String
+    Default: cbase
+    AllowedPattern: "[a-zA-Z0-9-_]{1,64}"
+  TableName:
+    Type: String
+    Default: cbase
+    AllowedPattern: "[a-zA-Z0-9_.-]{3,255}"
+
+Resources:
+  # ---- the store ----------------------------------------------------------------
+  # Keys (DESIGN.md "Store"; src/json_surface.h is the owner and this
+  # must match it exactly): pk/sk on the table, and two indexes, both String
+  # keys, both projecting ALL. gsi1 carries USERGAMES#<user> (the dashboard,
+  # gsi1sk "<updated_at>#<game>" zero-padded so text order is time order),
+  # USERCHAT#, USERREFRESH# and GAMESNAPS#; gsi2 carries USERS, RATINGS, BOTS,
+  # SESSION#<session> and PLAYER#<user>. A topic's connections are plain items
+  # under pk "TOPIC#<topic>" and need no index (a base-table Query is strongly
+  # consistent, so a push right after a join is not missed). TTL deletes items
+  # whose expires_at (epoch SECONDS: DynamoDB's TTL unit) has passed: the CONN
+  # rows and their TOPIC reverse-index rows.
+  #
+  # Capacity: PROVISIONED, because DynamoDB's always-free allowance (25 WCU
+  # and 25 RCU per Region per payer account) is provisioned capacity only and
+  # an on-demand table bills every request unit. The 25 are shared by every
+  # table and every global secondary index in the account and Region, and each
+  # index has its own provisioned throughput (minimum 1). The split, 15 to the
+  # table and 5 to each index, with the arithmetic behind it, is DESIGN.md
+  # "The free tier, provisioned"; test/unit_dynamo.c fails when these six
+  # numbers add up to more than 25 a side. No auto scaling: it would scale
+  # past the free 25. A sustained overload is throttled (and retried, then
+  # failed, store_dynamo.c), never billed.
+  Table:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Ref TableName
+      BillingMode: PROVISIONED
+      ProvisionedThroughput: { ReadCapacityUnits: 15, WriteCapacityUnits: 15 }
+      AttributeDefinitions:
+        - { AttributeName: pk, AttributeType: S }
+        - { AttributeName: sk, AttributeType: S }
+        - { AttributeName: gsi1pk, AttributeType: S }
+        - { AttributeName: gsi1sk, AttributeType: S }
+        - { AttributeName: gsi2pk, AttributeType: S }
+        - { AttributeName: gsi2sk, AttributeType: S }
+      KeySchema:
+        - { AttributeName: pk, KeyType: HASH }
+        - { AttributeName: sk, KeyType: RANGE }
+      GlobalSecondaryIndexes:
+        - IndexName: gsi1
+          KeySchema:
+            - { AttributeName: gsi1pk, KeyType: HASH }
+            - { AttributeName: gsi1sk, KeyType: RANGE }
+          Projection: { ProjectionType: ALL }
+          ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 }
+        - IndexName: gsi2
+          KeySchema:
+            - { AttributeName: gsi2pk, KeyType: HASH }
+            - { AttributeName: gsi2sk, KeyType: RANGE }
+          Projection: { ProjectionType: ALL }
+          ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 }
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+
+  # ---- the function ---------------------------------------------------------------
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${FunctionName}"
+      RetentionInDays: 30
+
+  FunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: cbase
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: Table
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:BatchGetItem
+                  - dynamodb:BatchWriteItem
+                  # TransactWriteItems is authorized per item, by the actions
+                  # above and this one; it is not an IAM action of its own.
+                  - dynamodb:ConditionCheckItem
+                  - dynamodb:DescribeTable
+                  # The console's Query panel (ExecuteStatement).
+                  - dynamodb:PartiQLSelect
+                  - dynamodb:PartiQLInsert
+                  - dynamodb:PartiQLUpdate
+                  - dynamodb:PartiQLDelete
+                Resource:
+                  - !GetAtt Table.Arn
+                  - !Sub "${Table.Arn}/index/*"
+              - Sid: RealtimePush
+                Effect: Allow
+                Action: execute-api:ManageConnections
+                Resource: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WsApi}/*"
+              - Sid: SelfInvoke   # the bot drive's async kick (DESIGN.md "The kick")
+                Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${FunctionName}"
+              - Sid: Logs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "${LogGroup.Arn}:*"
+
+  Function:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Ref FunctionName
+      Description: c_base, the foolish backend (static arm64 bootstrap)
+      Runtime: provided.al2023
+      Architectures: [arm64]
+      Handler: bootstrap
+      MemorySize: 256
+      Timeout: 60
+      Role: !GetAtt FunctionRole.Arn
+      Code:
+        S3Bucket: !Ref CodeBucket
+        S3Key: !Ref CodeKey
+      LoggingConfig:
+        LogGroup: !Ref LogGroup
+        LogFormat: Text
+      Environment:
+        Variables:
+          CBASE_STORE: dynamo
+          CBASE_TABLE: !Ref Table
+          CBASE_JWT_SECRET: !Ref JwtSecret
+          CBASE_ANON_KEY: !Ref AnonKey
+          CBASE_ADMIN_TOKEN: !Ref AdminToken
+          CBASE_ALLOWED_ORIGINS: !Ref AllowedOrigins
+          CBASE_PUBLIC_URL: !Sub "https://${DomainName}"
+          # The management endpoint pushes are POSTed to (realtime/rt_apigw.h).
+          CBASE_WS_ENDPOINT: !Sub "https://${WsApi}.execute-api.${AWS::Region}.amazonaws.com/prod"
+          CBASE_LOG_LEVEL: info
+
+  # ---- the HTTP front: a Function URL ---------------------------------------------
+  # AuthType NONE and no CORS block: the function answers CORS itself
+  # (net/router.h), as the edge functions did.
+  FunctionUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn: !GetAtt Function.Arn
+      AuthType: NONE
+
+  # A public Function URL needs both statements (AWS, October 2025): the URL
+  # permission, and InvokeFunction limited to calls that come through the URL.
+  FunctionUrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref Function
+      Action: lambda:InvokeFunctionUrl
+      Principal: "*"
+      FunctionUrlAuthType: NONE
+
+  FunctionUrlInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref Function
+      Action: lambda:InvokeFunction
+      Principal: "*"
+      InvokedViaFunctionUrl: true
+
+  # ---- realtime: the WebSocket API ------------------------------------------------
+  # Every route goes to the function as a proxy integration. Replies travel
+  # over the management API (CBASE_WS_ENDPOINT), not route responses.
+  WsApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub "${FunctionName}-realtime"
+      ProtocolType: WEBSOCKET
+      RouteSelectionExpression: "$request.body.action"
+
+  WsIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WsApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${Function.Arn}/invocations"
+
+  WsConnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WsApi
+      RouteKey: $connect
+      AuthorizationType: NONE
+      Target: !Sub "integrations/${WsIntegration}"
+
+  WsDisconnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WsApi
+      RouteKey: $disconnect
+      AuthorizationType: NONE
+      Target: !Sub "integrations/${WsIntegration}"
+
+  WsDefaultRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WsApi
+      RouteKey: $default
+      AuthorizationType: NONE
+      Target: !Sub "integrations/${WsIntegration}"
+
+  WsStage:
+    Type: AWS::ApiGatewayV2::Stage
+    DependsOn: [WsConnectRoute, WsDisconnectRoute, WsDefaultRoute]
+    Properties:
+      ApiId: !Ref WsApi
+      StageName: prod
+      AutoDeploy: true
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 200
+        ThrottlingRateLimit: 100
+
+  WsInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref Function
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WsApi}/*"
+
+  # ---- the heartbeat: the bot scan every minute -----------------------------------
+  # The payload is the JSON string literal "scan" (c_base_brief_lambda.md,
+  # decision record): valid JSON for Lambda, read by stripping two quotes.
+  SchedulerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: scheduler.amazonaws.com }
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals: { "aws:SourceAccount": !Ref "AWS::AccountId" }
+      Policies:
+        - PolicyName: invoke
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt Function.Arn
+
+  ScanSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: !Sub "${FunctionName}-bot-scan"
+      Description: The bot heartbeat (bot-heartbeat/index.ts, moved). Games that need bots, untouched for 10 s, active within the hour.
+      ScheduleExpression: rate(1 minute)
+      FlexibleTimeWindow: { Mode: "OFF" }
+      State: ENABLED
+      Target:
+        Arn: !GetAtt Function.Arn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: '"scan"'
+        RetryPolicy:
+          MaximumRetryAttempts: 0   # the next minute's scan is the retry
+
+  # ---- the front door: CloudFront at the custom domain ----------------------------
+  # Rewrites /realtime/v1/websocket (what supabase-js and supabase-swift open)
+  # to the WebSocket API's stage path. Only the URI changes; the query string
+  # (apikey, vsn) passes through untouched.
+  WsPathRewrite:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: !Sub "${FunctionName}-ws-path"
+      AutoPublish: true
+      FunctionConfig:
+        Comment: /realtime/v1/websocket -> /prod
+        Runtime: cloudfront-js-2.0
+      FunctionCode: |
+        function handler(event) {
+          var request = event.request;
+          request.uri = '/prod';
+          return request;
+        }
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Comment: !Sub "c_base ${DomainName}"
+        Enabled: true
+        Aliases: [!Ref DomainName]
+        HttpVersion: http2
+        IPV6Enabled: true
+        PriceClass: PriceClass_100
+        ViewerCertificate:
+          AcmCertificateArn: !Ref CertificateArn
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1.2_2021
+        Origins:
+          - Id: function
+            # https://<id>.lambda-url.<region>.on.aws/ -> the host name.
+            DomainName: !Select [2, !Split ["/", !GetAtt FunctionUrl.FunctionUrl]]
+            CustomOriginConfig:
+              OriginProtocolPolicy: https-only
+              OriginSSLProtocols: [TLSv1.2]
+              OriginReadTimeout: 60
+          - Id: realtime
+            DomainName: !Sub "${WsApi}.execute-api.${AWS::Region}.amazonaws.com"
+            CustomOriginConfig:
+              OriginProtocolPolicy: https-only
+              OriginSSLProtocols: [TLSv1.2]
+        # Nothing is cached (CachingDisabled), and every viewer header, cookie
+        # and query string but Host reaches the origin (AllViewerExceptHostHeader):
+        # the Function URL and API Gateway each require their own Host, and the
+        # WebSocket handshake needs its Sec-WebSocket-* headers and the query.
+        DefaultCacheBehavior:
+          TargetOriginId: function
+          ViewerProtocolPolicy: https-only
+          AllowedMethods: [GET, HEAD, OPTIONS, PUT, PATCH, POST, DELETE]
+          CachedMethods: [GET, HEAD]
+          Compress: true
+          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad          # Managed-CachingDisabled
+          OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac  # Managed-AllViewerExceptHostHeader
+        CacheBehaviors:
+          - PathPattern: /realtime/v1/websocket*
+            TargetOriginId: realtime
+            ViewerProtocolPolicy: https-only
+            AllowedMethods: [GET, HEAD]
+            CachedMethods: [GET, HEAD]
+            Compress: false
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad          # Managed-CachingDisabled
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac  # Managed-AllViewerExceptHostHeader
+            FunctionAssociations:
+              - EventType: viewer-request
+                FunctionARN: !GetAtt WsPathRewrite.FunctionMetadata.FunctionARN
+
+Outputs:
+  FunctionUrl:
+    Description: The Function URL (the HTTP routes, before CloudFront).
+    Value: !GetAtt FunctionUrl.FunctionUrl
+  WebSocketUrl:
+    Description: The WebSocket API stage (realtime, before CloudFront).
+    Value: !Sub "wss://${WsApi}.execute-api.${AWS::Region}.amazonaws.com/prod"
+  DistributionDomain:
+    Description: Point the DNS CNAME for DomainName here.
+    Value: !GetAtt Distribution.DomainName
+  TableName:
+    Value: !Ref Table
+  FunctionName:
+    Value: !Ref Function
+  PublicUrl:
+    Description: What the web and iOS clients use as their Supabase URL.
+    Value: !Sub "https://${DomainName}"

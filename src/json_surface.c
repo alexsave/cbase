@@ -1,0 +1,3472 @@
+// json_surface.c - every JSON shape c_base speaks (json_surface.h says why
+// they are all here). The only file that includes util/json.h.
+#include "json_surface.h"
+
+#include "util/err.h"
+#include "util/log.h"
+#include "util/clock.h"
+#include "realtime/realtime.h"
+#include "realtime/rt_rows.h"
+#include "util/b64.h"
+#include "util/hex.h"
+#include "util/json.h"
+
+#include <ctype.h>
+#include <inttypes.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <strings.h>
+
+// =====================================================================================
+// DynamoDB. Every DynamoDB string in c_base is in this section: the targets, the
+// item layout, the expressions.
+
+#define TARGET "DynamoDB_20120810."
+#define GSI1 DW_GSI1
+#define GSI2 DW_GSI2
+
+void dw_req_init(dw_req *r) {
+    r->target[0] = '\0';
+    cb_buf_init(&r->body);
+}
+
+void dw_req_free(dw_req *r) { cb_buf_free(&r->body); }
+
+void dw_host(const char *region, char *out, size_t cap) { snprintf(out, cap, "dynamodb.%s.amazonaws.com", region); }
+const char *dw_content_type(void) { return "application/x-amz-json-1.0"; }
+const char *dw_service(void) { return "dynamodb"; }
+
+// Starts a request: the target, an empty body, the writer on it with the
+// top-level object open. Every request asks for its ConsumedCapacity, which
+// the per-thread tally adds up (store.h cb_store_tally): what each action
+// costs in capacity units, in the debug log, at no charge.
+static void begin(dw_req *r, cb_jw *w, const char *op) {
+    snprintf(r->target, sizeof r->target, TARGET "%s", op);
+    cb_buf_reset(&r->body);
+    cb_jw_init(w, &r->body);
+    cb_jw_obj(w);
+    cb_jw_kstr(w, "ReturnConsumedCapacity", "TOTAL");
+}
+
+static void finish(cb_jw *w) { cb_jw_end(w); }
+
+// ---- keys -------------------------------------------------------------------------------
+
+// "<prefix><id>" into out.
+static const char *k(char *out, size_t cap, const char *prefix, const char *id) {
+    snprintf(out, cap, "%s%s", prefix, id ? id : "");
+    return out;
+}
+
+// "<15-digit ms>#<id>": sorts as time, then id.
+static const char *tsk(char *out, size_t cap, int64_t ms, const char *id) {
+    snprintf(out, cap, "%015" PRId64 "#%s", ms < 0 ? (int64_t)0 : ms, id ? id : "");
+    return out;
+}
+
+#define KB 400   // room for any key we build (a topic is at most 128)
+
+// ---- attribute values ------------------------------------------------------------------
+
+static void av_s(cb_jw *w, const char *name, const char *v) {
+    cb_jw_key(w, name);
+    cb_jw_obj(w);
+    cb_jw_kstr(w, "S", v ? v : "");
+    cb_jw_end(w);
+}
+
+static void av_n(cb_jw *w, const char *name, int64_t v) {
+    char t[24];
+    snprintf(t, sizeof t, "%" PRId64, v);
+    cb_jw_key(w, name);
+    cb_jw_obj(w);
+    cb_jw_kstr(w, "N", t);
+    cb_jw_end(w);
+}
+
+static void av_bool(cb_jw *w, const char *name, bool v) {
+    cb_jw_key(w, name);
+    cb_jw_obj(w);
+    cb_jw_kbool(w, "BOOL", v);
+    cb_jw_end(w);
+}
+
+// Binary: base64 in the JSON. Zero bytes are a valid (empty) Binary value.
+static void av_b(cb_jw *w, const char *name, const uint8_t *p, size_t n) {
+    size_t len = cb_b64_len(n) + 1;
+    char *t = malloc(len);
+    cb_jw_key(w, name);
+    cb_jw_obj(w);
+    if (t && cb_b64_encode(p, n, t, len) >= 0) cb_jw_kstr(w, "B", t);
+    else w->err = true;
+    cb_jw_end(w);
+    free(t);
+}
+
+static void key2(cb_jw *w, const char *pk, const char *sk) {
+    cb_jw_key(w, "Key");
+    cb_jw_obj(w);
+    av_s(w, "pk", pk);
+    av_s(w, "sk", sk);
+    cb_jw_end(w);
+}
+
+// ---- expressions ------------------------------------------------------------------------
+//
+// An update or condition expression with its two maps. Every attribute name
+// is aliased (#name), so no reserved word (status, state, version, ...) can
+// break one, and a name enters the map only when an expression uses it:
+// DynamoDB refuses an unused alias.
+
+typedef struct {
+    cb_buf set, rem, names_b, vals_b;
+    cb_jw  names, vals;
+    int    n_names, n_vals;
+    char   used[32][32];
+} ux;
+
+static void ux_init(ux *u) {
+    memset(u, 0, sizeof *u);
+    cb_buf_init(&u->set);
+    cb_buf_init(&u->rem);
+    cb_buf_init(&u->names_b);
+    cb_buf_init(&u->vals_b);
+    cb_jw_init(&u->names, &u->names_b);
+    cb_jw_obj(&u->names);
+    cb_jw_init(&u->vals, &u->vals_b);
+    cb_jw_obj(&u->vals);
+}
+
+static void ux_free(ux *u) {
+    cb_buf_free(&u->set);
+    cb_buf_free(&u->rem);
+    cb_buf_free(&u->names_b);
+    cb_buf_free(&u->vals_b);
+}
+
+// Registers #attr once.
+static void ux_name(ux *u, const char *attr) {
+    for (int i = 0; i < u->n_names; i++)
+        if (strcmp(u->used[i], attr) == 0) return;
+    if (u->n_names == 32) { u->names.err = true; return; }
+    snprintf(u->used[u->n_names++], sizeof u->used[0], "%s", attr);
+    char a[40];
+    snprintf(a, sizeof a, "#%s", attr);
+    cb_jw_kstr(&u->names, a, attr);
+}
+
+// The value :name's key is due next in vals.
+static cb_jw *ux_val(ux *u, const char *name) {
+    u->n_vals++;
+    cb_jw_key(&u->vals, name);
+    return &u->vals;
+}
+
+static void ux_val_s(ux *u, const char *name, const char *v) {
+    cb_jw *w = ux_val(u, name);
+    cb_jw_obj(w);
+    cb_jw_kstr(w, "S", v ? v : "");
+    cb_jw_end(w);
+}
+
+static void ux_val_n(ux *u, const char *name, int64_t v) {
+    char t[24];
+    snprintf(t, sizeof t, "%" PRId64, v);
+    cb_jw *w = ux_val(u, name);
+    cb_jw_obj(w);
+    cb_jw_kstr(w, "N", t);
+    cb_jw_end(w);
+}
+
+static void ux_val_bool(ux *u, const char *name, bool v) {
+    cb_jw *w = ux_val(u, name);
+    cb_jw_obj(w);
+    cb_jw_kbool(w, "BOOL", v);
+    cb_jw_end(w);
+}
+
+static void ux_val_b(ux *u, const char *name, const uint8_t *p, size_t n) {
+    size_t len = cb_b64_len(n) + 1;
+    char *t = malloc(len);
+    cb_jw *w = ux_val(u, name);
+    cb_jw_obj(w);
+    if (t && cb_b64_encode(p, n, t, len) >= 0) cb_jw_kstr(w, "B", t);
+    else w->err = true;
+    cb_jw_end(w);
+    free(t);
+}
+
+// "#attr = :attr" in the SET clause; the caller writes the value.
+static void ux_set(ux *u, const char *attr) {
+    ux_name(u, attr);
+    if (u->set.len) cb_buf_puts(&u->set, ", ");
+    cb_buf_printf(&u->set, "#%s = :%s", attr, attr);
+}
+static void ux_set_s(ux *u, const char *attr, const char *v) {
+    char n[40];
+    ux_set(u, attr);
+    snprintf(n, sizeof n, ":%s", attr);
+    ux_val_s(u, n, v);
+}
+static void ux_set_n(ux *u, const char *attr, int64_t v) {
+    char n[40];
+    ux_set(u, attr);
+    snprintf(n, sizeof n, ":%s", attr);
+    ux_val_n(u, n, v);
+}
+static void ux_set_bool(ux *u, const char *attr, bool v) {
+    char n[40];
+    ux_set(u, attr);
+    snprintf(n, sizeof n, ":%s", attr);
+    ux_val_bool(u, n, v);
+}
+static void ux_set_b(ux *u, const char *attr, const uint8_t *p, size_t len) {
+    char n[40];
+    ux_set(u, attr);
+    snprintf(n, sizeof n, ":%s", attr);
+    ux_val_b(u, n, p, len);
+}
+// A SET clause written out (its names registered by the caller).
+static void ux_set_raw(ux *u, const char *clause) {
+    if (u->set.len) cb_buf_puts(&u->set, ", ");
+    cb_buf_puts(&u->set, clause);
+}
+static void ux_remove(ux *u, const char *attr) {
+    ux_name(u, attr);
+    if (u->rem.len) cb_buf_puts(&u->rem, ", ");
+    cb_buf_printf(&u->rem, "#%s", attr);
+}
+
+// Writes UpdateExpression (when there is one), ConditionExpression (when
+// given) and the two maps into w's open object.
+static void ux_emit(cb_jw *w, ux *u, const char *cond) {
+    if (u->set.len || u->rem.len) {
+        cb_buf e;
+        cb_buf_init(&e);
+        if (u->set.len) cb_buf_printf(&e, "SET %s", cb_buf_cstr(&u->set));
+        if (u->rem.len) cb_buf_printf(&e, "%sREMOVE %s", u->set.len ? " " : "", cb_buf_cstr(&u->rem));
+        cb_jw_kstr(w, "UpdateExpression", cb_buf_cstr(&e));
+        cb_buf_free(&e);
+    }
+    if (cond) cb_jw_kstr(w, "ConditionExpression", cond);
+    cb_jw_end(&u->names);
+    cb_jw_end(&u->vals);
+    if (!cb_jw_ok(&u->names) || !cb_jw_ok(&u->vals)) w->err = true;
+    if (u->n_names) {
+        cb_jw_key(w, "ExpressionAttributeNames");
+        cb_jw_raw(w, (const char *)u->names_b.p, u->names_b.len);
+    }
+    if (u->n_vals) {
+        cb_jw_key(w, "ExpressionAttributeValues");
+        cb_jw_raw(w, (const char *)u->vals_b.p, u->vals_b.len);
+    }
+}
+
+// ---- reading JSON -------------------------------------------------------------------------
+
+static size_t skip_ws(cb_span s, size_t i) {
+    while (i < s.n && (s.p[i] == ' ' || s.p[i] == '\t' || s.p[i] == '\n' || s.p[i] == '\r')) i++;
+    return i;
+}
+
+// The end of the value starting at i (after whitespace), or 0 when malformed.
+static size_t skip_value(cb_span s, size_t i, int depth) {
+    i = skip_ws(s, i);
+    if (i >= s.n || depth > 64) return 0;
+    char c = s.p[i];
+    if (c == '"') {
+        for (i++; i < s.n; i++) {
+            if (s.p[i] == '\\') i++;
+            else if (s.p[i] == '"') return i + 1;
+        }
+        return 0;
+    }
+    if (c == '{' || c == '[') {
+        char close = c == '{' ? '}' : ']';
+        i = skip_ws(s, i + 1);
+        if (i < s.n && s.p[i] == close) return i + 1;
+        for (;;) {
+            if (c == '{') {
+                size_t e = skip_value(s, i, depth + 1);   // the key
+                if (!e) return 0;
+                i = skip_ws(s, e);
+                if (i >= s.n || s.p[i] != ':') return 0;
+                i++;
+            }
+            size_t e = skip_value(s, i, depth + 1);
+            if (!e) return 0;
+            i = skip_ws(s, e);
+            if (i >= s.n) return 0;
+            if (s.p[i] == close) return i + 1;
+            if (s.p[i] != ',') return 0;
+            i++;
+        }
+    }
+    size_t j = i;
+    while (j < s.n && (isalnum((unsigned char)s.p[j]) || s.p[j] == '-' || s.p[j] == '+' || s.p[j] == '.')) j++;
+    return j > i ? j : 0;
+}
+
+bool dw_array_next(cb_span arr, size_t *pos, cb_span *elem) {
+    size_t i = *pos;
+    if (i == 0) {
+        i = skip_ws(arr, 0);
+        if (i >= arr.n || arr.p[i] != '[') return false;
+        i = skip_ws(arr, i + 1);
+    } else {
+        i = skip_ws(arr, i);
+        if (i >= arr.n || arr.p[i] != ',') return false;
+        i = skip_ws(arr, i + 1);
+    }
+    if (i >= arr.n || arr.p[i] == ']') return false;
+    size_t e = skip_value(arr, i, 0);
+    if (!e) return false;
+    *elem = cb_span_of(arr.p + i, e - i);
+    *pos = e;
+    return true;
+}
+
+bool dw_object_next(cb_span obj, size_t *pos, cb_span *key, cb_span *val) {
+    size_t i = *pos;
+    if (i == 0) {
+        i = skip_ws(obj, 0);
+        if (i >= obj.n || obj.p[i] != '{') return false;
+        i = skip_ws(obj, i + 1);
+    } else {
+        i = skip_ws(obj, i);
+        if (i >= obj.n || obj.p[i] != ',') return false;
+        i = skip_ws(obj, i + 1);
+    }
+    if (i >= obj.n || obj.p[i] != '"') return false;
+    size_t e = skip_value(obj, i, 0);
+    if (!e) return false;
+    *key = cb_span_of(obj.p + i, e - i);
+    i = skip_ws(obj, e);
+    if (i >= obj.n || obj.p[i] != ':') return false;
+    i = skip_ws(obj, i + 1);
+    e = skip_value(obj, i, 0);
+    if (!e) return false;
+    *val = cb_span_of(obj.p + i, e - i);
+    *pos = e;
+    return true;
+}
+
+// A key token equals "name" (attribute and type names never need escapes).
+static bool key_is(cb_span key, const char *name) {
+    size_t n = strlen(name);
+    return key.n == n + 2 && memcmp(key.p + 1, name, n) == 0;
+}
+
+// The member `name` of an object value.
+static bool member(cb_span obj, const char *name, cb_span *val) {
+    size_t pos = 0;
+    cb_span key;
+    while (dw_object_next(obj, &pos, &key, val))
+        if (key_is(key, name)) return true;
+    return false;
+}
+
+// Attribute `name` of an item, as the token of its `type` member.
+static bool attr(cb_span item, const char *name, const char *type, cb_span *tok) {
+    cb_span v;
+    return member(item, name, &v) && member(v, type, tok);
+}
+
+bool dw_get_s(cb_span item, const char *name, char *out, size_t cap) {
+    cb_span tok;
+    if (!attr(item, name, "S", &tok) || tok.n < 2 || tok.p[0] != '"') return false;
+    return cb_json_unescape(tok, out, cap) >= 0;
+}
+
+bool dw_get_n(cb_span item, const char *name, int64_t *out) {
+    char t[32];
+    cb_span tok;
+    if (!attr(item, name, "N", &tok) || cb_json_unescape(tok, t, sizeof t) < 1) return false;
+    char *end;
+    long long v = strtoll(t, &end, 10);
+    if (*end) return false;
+    *out = v;
+    return true;
+}
+
+bool dw_get_bool(cb_span item, const char *name, bool *out) {
+    cb_span tok;
+    if (!attr(item, name, "BOOL", &tok)) return false;
+    if (tok.n == 4 && memcmp(tok.p, "true", 4) == 0) *out = true;
+    else if (tok.n == 5 && memcmp(tok.p, "false", 5) == 0) *out = false;
+    else return false;
+    return true;
+}
+
+bool dw_get_b(cb_span item, const char *name, uint8_t **out, size_t *len) {
+    *out = NULL;
+    *len = 0;
+    cb_span tok;
+    if (!attr(item, name, "B", &tok)) return true;
+    if (tok.n < 2 || tok.p[0] != '"') return false;
+    char *text = malloc(tok.n);
+    if (!text) return false;
+    int tn = cb_json_unescape(tok, text, tok.n);
+    if (tn < 0) { free(text); return false; }
+    size_t cap = (size_t)tn / 4 * 3 + 3;
+    uint8_t *p = malloc(cap);
+    int n = p ? cb_b64_decode(text, (size_t)tn, p, cap) : -1;
+    free(text);
+    if (n < 0) { free(p); return false; }
+    if (n == 0) { free(p); return true; }
+    *out = p;
+    *len = (size_t)n;
+    return true;
+}
+
+static int64_t get_n_or(cb_span item, const char *name, int64_t none) {
+    int64_t v;
+    return dw_get_n(item, name, &v) ? v : none;
+}
+
+// ---- responses ----------------------------------------------------------------------------
+
+static void error_type(const char *body, size_t n, char *out, size_t cap) {
+    char t[160] = "";
+    if (!cb_json_get_str(body, n, "__type", t, sizeof t)) out[0] = '\0';
+    const char *h = strrchr(t, '#');
+    snprintf(out, cap, "%s", h ? h + 1 : t);
+}
+
+dw_status dw_classify(int status, const char *body, size_t n) {
+    if (status == 200) return DW_OK;
+    char t[128];
+    error_type(body, n, t, sizeof t);
+    if (strcmp(t, "ConditionalCheckFailedException") == 0) return DW_COND_FAILED;
+    if (strcmp(t, "TransactionCanceledException") == 0) return DW_TXN_CANCELED;
+    if (strcmp(t, "ProvisionedThroughputExceededException") == 0 || strcmp(t, "ThrottlingException") == 0 ||
+        strcmp(t, "RequestLimitExceeded") == 0 || strcmp(t, "InternalServerError") == 0 ||
+        strcmp(t, "ServiceUnavailable") == 0 || strcmp(t, "TransactionInProgressException") == 0 ||
+        strcmp(t, "TransactionConflictException") == 0 || status >= 500)
+        return DW_RETRY;
+    return DW_FAILED;
+}
+
+bool dw_throttled(const char *body, size_t n) {
+    char t[128];
+    error_type(body, n, t, sizeof t);
+    return strcmp(t, "ProvisionedThroughputExceededException") == 0 || strcmp(t, "ThrottlingException") == 0 ||
+           strcmp(t, "RequestLimitExceeded") == 0;
+}
+
+void dw_error_text(const char *body, size_t n, char *out, size_t cap) {
+    char t[128], m[256] = "";
+    error_type(body, n, t, sizeof t);
+    if (!cb_json_get_str(body, n, "message", m, sizeof m)) cb_json_get_str(body, n, "Message", m, sizeof m);
+    snprintf(out, cap, "%s: %s", t[0] ? t : "(no __type)", m);
+}
+
+dw_reason dw_cancel_reason(const char *body, size_t n, int index, bool *has_item) {
+    char path[64], code[64];
+    *has_item = false;
+    snprintf(path, sizeof path, "CancellationReasons.%d.Code", index);
+    if (!cb_json_get_str(body, n, path, code, sizeof code)) {
+        snprintf(path, sizeof path, "CancellationReasons.%d", index);
+        return cb_json_find(body, n, path, NULL) == CB_JSON_OBJ ? DW_REASON_NONE : DW_REASON_MISSING;
+    }
+    snprintf(path, sizeof path, "CancellationReasons.%d.Item", index);
+    *has_item = cb_json_find(body, n, path, NULL) == CB_JSON_OBJ;
+    if (strcmp(code, "None") == 0) return DW_REASON_NONE;
+    if (strcmp(code, "ConditionalCheckFailed") == 0) return DW_REASON_COND;
+    if (strcmp(code, "TransactionConflict") == 0) return DW_REASON_CONFLICT;
+    if (strcmp(code, "ThrottlingError") == 0 || strcmp(code, "ProvisionedThroughputExceeded") == 0)
+        return DW_REASON_THROTTLED;
+    return DW_REASON_OTHER;
+}
+
+bool dw_cond_failed_has_item(const char *body, size_t n) { return cb_json_find(body, n, "Item", NULL) == CB_JSON_OBJ; }
+
+bool dw_item(const char *body, size_t n, cb_span *item) {
+    return cb_json_find(body, n, "Item", item) == CB_JSON_OBJ;
+}
+
+bool dw_attributes(const char *body, size_t n, cb_span *item) {
+    return cb_json_find(body, n, "Attributes", item) == CB_JSON_OBJ;
+}
+
+cb_span dw_items(const char *body, size_t n) {
+    cb_span s;
+    if (cb_json_find(body, n, "Items", &s) != CB_JSON_ARR) return CB_SPAN_LIT("[]");
+    return s;
+}
+
+cb_span dw_batch_items(const char *body, size_t n, const char *table) {
+    cb_span resp, key, val;
+    size_t pos = 0;
+    if (cb_json_find(body, n, "Responses", &resp) == CB_JSON_OBJ)
+        while (dw_object_next(resp, &pos, &key, &val))
+            if (key_is(key, table)) return val;
+    return CB_SPAN_LIT("[]");
+}
+
+cb_span dw_last_key(const char *body, size_t n) {
+    cb_span s;
+    if (cb_json_find(body, n, "LastEvaluatedKey", &s) != CB_JSON_OBJ) return cb_span_of("", 0);
+    return s;
+}
+
+static bool nonempty_object(const char *body, size_t n, const char *path) {
+    cb_span s, k, v;
+    size_t pos = 0;
+    return cb_json_find(body, n, path, &s) == CB_JSON_OBJ && dw_object_next(s, &pos, &k, &v);
+}
+
+bool dw_unprocessed(const char *body, size_t n) {
+    return nonempty_object(body, n, "UnprocessedItems") || nonempty_object(body, n, "UnprocessedKeys");
+}
+
+void dw_next_token(const char *body, size_t n, char *out, size_t cap) {
+    if (!cb_json_get_str(body, n, "NextToken", out, cap)) out[0] = '\0';
+}
+
+// ---- items as rows --------------------------------------------------------------------------
+
+bool dw_item_user(cb_span it, cb_user_row *u) {
+    memset(u, 0, sizeof *u);
+    if (!dw_get_s(it, "id", u->id, sizeof u->id) || !dw_get_s(it, "email", u->email, sizeof u->email) ||
+        !dw_get_s(it, "password_hash", u->password_hash, sizeof u->password_hash))
+        return false;
+    dw_get_s(it, "username", u->username, sizeof u->username);
+    u->created_at = get_n_or(it, "created_at", 0);
+    u->last_sign_in_at = get_n_or(it, "last_sign_in_at", 0);
+    return true;
+}
+
+bool dw_item_refresh(cb_span it, cb_refresh_row *r) {
+    memset(r, 0, sizeof *r);
+    if (!dw_get_s(it, "token_hash", r->token_hash, sizeof r->token_hash) ||
+        !dw_get_s(it, "user_id", r->user_id, sizeof r->user_id))
+        return false;
+    dw_get_s(it, "session_id", r->session_id, sizeof r->session_id);
+    r->created_at = get_n_or(it, "created_at", 0);
+    dw_get_bool(it, "revoked", &r->revoked);
+    r->revoked_at = get_n_or(it, "revoked_at", 0);
+    return true;
+}
+
+bool dw_item_game(cb_span it, cb_game_row *g) {
+    memset(g, 0, sizeof *g);
+    int64_t status, version;
+    if (!dw_get_s(it, "id", g->id, sizeof g->id) || !dw_get_n(it, "status", &status) ||
+        !dw_get_n(it, "version", &version))
+        return false;
+    g->status = (int)status;
+    g->version = version;
+    uint8_t *seed;
+    size_t seed_len;
+    if (!dw_get_b(it, "state", &g->state, &g->state_len) || !dw_get_b(it, "roster", &g->roster, &g->roster_len) ||
+        !dw_get_b(it, "logs_packed", &g->logs, &g->logs_len) || !dw_get_b(it, "game_seed", &seed, &seed_len)) {
+        cb_game_row_free(g);
+        return false;
+    }
+    if (seed && seed_len == CB_SEED_LEN) {
+        g->has_seed = true;
+        memcpy(g->seed, seed, CB_SEED_LEN);
+    }
+    free(seed);
+    dw_get_bool(it, "needs_bots", &g->needs_bots);
+    g->round_epoch = get_n_or(it, "round_epoch", 0);
+    g->created_at = get_n_or(it, "created_at", 0);
+    g->updated_at = get_n_or(it, "updated_at", 0);
+    g->last_commit_at = get_n_or(it, "last_commit_at", 0);
+    return true;
+}
+
+bool dw_item_member(cb_span it, cb_member_row *m) {
+    memset(m, 0, sizeof *m);
+    m->updated_at = get_n_or(it, "updated_at", 0);
+    return dw_get_s(it, "game_id", m->game_id, sizeof m->game_id);
+}
+
+bool dw_seat_key(cb_span it, cb_uuid id, bool *bot) {
+    char sk[KB];
+    if (!dw_get_s(it, "sk", sk, sizeof sk)) return false;
+    const char *rest = NULL;
+    if (strncmp(sk, "MEMBER#", 7) == 0) rest = sk + 7, *bot = false;
+    else if (strncmp(sk, "BOT#", 4) == 0) rest = sk + 4, *bot = true;
+    if (!rest || strlen(rest) >= sizeof(cb_uuid)) return false;
+    memcpy(id, rest, strlen(rest) + 1);
+    return true;
+}
+
+bool dw_item_bot(cb_span it, cb_bot_row *b) {
+    memset(b, 0, sizeof *b);
+    if (!dw_get_s(it, "id", b->id, sizeof b->id) || !dw_get_s(it, "nickname", b->nickname, sizeof b->nickname) ||
+        !dw_get_s(it, "strategy_key", b->strategy_key, sizeof b->strategy_key))
+        return false;
+    b->elo_rating = (int32_t)get_n_or(it, "elo_rating", 1000);
+    b->previous_elo = (int32_t)get_n_or(it, "previous_elo", -1);
+    b->games_played = (int32_t)get_n_or(it, "games_played", 0);
+    b->created_at = get_n_or(it, "created_at", 0);
+    b->updated_at = get_n_or(it, "updated_at", 0);
+    return true;
+}
+
+bool dw_item_rating(cb_span it, cb_rating_row *r) {
+    memset(r, 0, sizeof *r);
+    if (!dw_get_s(it, "user_id", r->user_id, sizeof r->user_id)) return false;
+    dw_get_s(it, "username", r->username, sizeof r->username);
+    r->elo_rating = (int32_t)get_n_or(it, "elo_rating", 1000);
+    r->previous_elo = (int32_t)get_n_or(it, "previous_elo", -1);
+    r->games_played = (int32_t)get_n_or(it, "games_played", 0);
+    r->updated_at = get_n_or(it, "updated_at", 0);
+    return true;
+}
+
+bool dw_item_snapshot(cb_span it, cb_snapshot_row *s) {
+    memset(s, 0, sizeof *s);
+    if (!dw_get_s(it, "id", s->id, sizeof s->id)) return false;
+    dw_get_s(it, "game_id", s->game_id, sizeof s->game_id);
+    cb_span players, list, e;
+    size_t pos = 0;
+    if (member(it, "player_ids", &players) && member(players, "L", &list))
+        while (s->n_players < CB_MAX_SEATS && dw_array_next(list, &pos, &e)) {
+            cb_span tok;
+            if (!member(e, "S", &tok) || cb_json_unescape(tok, s->player_ids[s->n_players], sizeof(cb_uuid)) < 0)
+                return false;
+            s->n_players++;
+        }
+    if (!dw_get_b(it, "moves", &s->moves, &s->moves_len) || !dw_get_b(it, "extras", &s->extras, &s->extras_len)) {
+        cb_snapshot_row_free(s);
+        return false;
+    }
+    s->created_at = get_n_or(it, "created_at", 0);
+    return true;
+}
+
+bool dw_item_chat(cb_span it, cb_chat_row *c) {
+    memset(c, 0, sizeof *c);
+    cb_span tok;
+    if (!dw_get_s(it, "id", c->id, sizeof c->id) || !dw_get_s(it, "game_id", c->game_id, sizeof c->game_id) ||
+        !dw_get_s(it, "user_id", c->user_id, sizeof c->user_id) || !attr(it, "message", "S", &tok))
+        return false;
+    c->message = malloc(tok.n);
+    if (!c->message || cb_json_unescape(tok, c->message, tok.n) < 0) {
+        free(c->message);
+        c->message = NULL;
+        return false;
+    }
+    dw_get_bool(it, "is_system", &c->is_system);
+    c->created_at = get_n_or(it, "created_at", 0);
+    return true;
+}
+
+bool dw_item_conn(cb_span it, cb_conn_row *c) {
+    memset(c, 0, sizeof *c);
+    if (!dw_get_s(it, "conn_id", c->conn_id, sizeof c->conn_id)) return false;
+    dw_get_s(it, "user_id", c->user_id, sizeof c->user_id);
+    c->vsn = (int)get_n_or(it, "vsn", 1);
+    c->expires_at = get_n_or(it, "expires_ms", 0);
+    c->version = get_n_or(it, "ver", 0);   // a row written before versions: 0
+    cb_span topics, list, e;
+    size_t pos = 0;
+    if (member(it, "topics", &topics) && member(topics, "L", &list))
+        while (c->n_topics < CB_CONN_TOPICS && dw_array_next(list, &pos, &e)) {
+            cb_span m;
+            if (!member(e, "M", &m) || !dw_get_s(m, "t", c->topics[c->n_topics], sizeof c->topics[0])) return false;
+            dw_get_s(m, "r", c->join_refs[c->n_topics], sizeof c->join_refs[0]);
+            c->n_topics++;
+        }
+    return true;
+}
+
+bool dw_item_scan(cb_span it, char game_id[CB_GAME_ID_MAX + 1], int64_t *updated_at, int64_t *last_commit_at) {
+    *updated_at = get_n_or(it, "updated_at", 0);
+    *last_commit_at = get_n_or(it, "last_commit_at", 0);
+    return dw_get_s(it, "game_id", game_id, CB_GAME_ID_MAX + 1);
+}
+
+bool dw_item_email_user(cb_span it, cb_uuid id) { return dw_get_s(it, "user_id", id, sizeof(cb_uuid)); }
+
+bool dw_item_key(cb_span it, cb_buf *out) {
+    cb_span pk, sk;
+    if (!member(it, "pk", &pk) || !member(it, "sk", &sk)) return false;
+    cb_buf_puts(out, "{\"pk\":");
+    cb_buf_append(out, pk.p, pk.n);
+    cb_buf_puts(out, ",\"sk\":");
+    cb_buf_append(out, sk.p, sk.n);
+    cb_buf_putc(out, '}');
+    return !out->oom;
+}
+
+int dw_item_text(cb_span it, cb_buf *st, const char **names, const char **values, int cap) {
+    size_t noff[64], voff[64];
+    bool vnull[64];
+    int n = 0;
+    size_t pos = 0;
+    cb_span key, val;
+    if (cap > 64) cap = 64;
+    cb_buf_reset(st);
+    while (n < cap && dw_object_next(it, &pos, &key, &val)) {
+        size_t vpos = 0;
+        cb_span type, tok;
+        if (!dw_object_next(val, &vpos, &type, &tok)) return -1;
+        noff[n] = st->len;
+        char *tmp = malloc(key.n + 1);
+        if (!tmp || cb_json_unescape(key, tmp, key.n + 1) < 0) { free(tmp); return -1; }
+        cb_buf_puts(st, tmp);
+        cb_buf_putc(st, '\0');
+        free(tmp);
+        voff[n] = st->len;
+        vnull[n] = false;
+        if ((key_is(type, "S") || key_is(type, "N")) && tok.n >= 2 && tok.p[0] == '"') {
+            tmp = malloc(tok.n);
+            if (!tmp || cb_json_unescape(tok, tmp, tok.n) < 0) { free(tmp); return -1; }
+            cb_buf_puts(st, tmp);
+            free(tmp);
+        } else if (key_is(type, "B")) {
+            uint8_t *b;
+            size_t blen;
+            // Reuse the attribute reader on a one-member item.
+            cb_buf wrap;
+            cb_buf_init(&wrap);
+            cb_buf_puts(&wrap, "{\"v\":");
+            cb_buf_append(&wrap, val.p, val.n);
+            cb_buf_putc(&wrap, '}');
+            bool ok = dw_get_b(cb_span_of((const char *)wrap.p, wrap.len), "v", &b, &blen);
+            cb_buf_free(&wrap);
+            if (!ok) return -1;
+            char *hex = malloc(2 * blen + 3);
+            if (!hex) { free(b); return -1; }
+            cb_bytea_encode(b, blen, hex, 2 * blen + 3);
+            cb_buf_puts(st, hex);
+            free(hex);
+            free(b);
+        } else if (key_is(type, "NULL")) {
+            vnull[n] = true;
+        } else {
+            cb_buf_append(st, tok.p, tok.n);   // BOOL's literal, or a list or map as JSON
+        }
+        cb_buf_putc(st, '\0');
+        n++;
+    }
+    if (st->oom) return -1;
+    for (int i = 0; i < n; i++) {
+        names[i] = (const char *)st->p + noff[i];
+        values[i] = vnull[i] ? NULL : (const char *)st->p + voff[i];
+    }
+    return n;
+}
+
+// ---- point reads ----------------------------------------------------------------------------
+
+static void get_item(dw_req *r, const char *table, const char *pk, const char *sk) {
+    cb_jw w;
+    begin(r, &w, "GetItem");
+    cb_jw_kstr(&w, "TableName", table);
+    key2(&w, pk, sk);
+    cb_jw_kbool(&w, "ConsistentRead", true);
+    finish(&w);
+}
+
+void dw_get_user(dw_req *r, const char *table, const char *id) {
+    char pk[KB];
+    get_item(r, table, k(pk, sizeof pk, "USER#", id), "PROFILE");
+}
+
+void dw_get_email(dw_req *r, const char *table, const char *email) {
+    char pk[KB];
+    get_item(r, table, k(pk, sizeof pk, "EMAIL#", email), "USER");
+}
+
+void dw_get_game(dw_req *r, const char *table, const char *id) {
+    char pk[KB];
+    get_item(r, table, k(pk, sizeof pk, "GAME#", id), "ROW");
+}
+
+void dw_get_member(dw_req *r, const char *table, const char *game, const char *user) {
+    char pk[KB], sk[KB];
+    get_item(r, table, k(pk, sizeof pk, "GAME#", game), k(sk, sizeof sk, "MEMBER#", user));
+}
+
+void dw_get_conn(dw_req *r, const char *table, const char *conn_id) {
+    char pk[KB];
+    get_item(r, table, k(pk, sizeof pk, "CONN#", conn_id), "CONN");
+}
+
+// ---- queries ----------------------------------------------------------------------------------
+
+void dw_query(dw_req *r, const char *table, dw_query_kind kind, const char *arg, bool forward, int limit, cb_span start) {
+    const char *index = NULL, *pkattr = "pk", *skattr = "sk", *prefix = NULL, *below = NULL;
+    const char *pfx = "";
+    bool consistent = true, keys_only = false, fwd = true;
+    switch (kind) {
+    // Every seat item sorts before ROW ("BOT#..." < "MEMBER#..." < "ROW"); a
+    // Query cannot filter on a key attribute, so the range does it. One query
+    // for the humans and the bots both: the key says which.
+    case DWQ_GAME_SEATS: pfx = "GAME#"; below = "ROW"; keys_only = true; break;
+    case DWQ_USER_GAMES: index = GSI1; pfx = "USERGAMES#"; fwd = false; break;
+    case DWQ_USER_CHATS: index = GSI1; pfx = "USERCHAT#"; keys_only = true; break;
+    case DWQ_USER_TOKENS: index = GSI1; pfx = "USERREFRESH#"; keys_only = true; break;
+    case DWQ_SESSION_TOKENS: index = GSI2; pfx = "SESSION#"; keys_only = true; break;
+    case DWQ_GAME_SNAPSHOTS: index = GSI1; pfx = "GAMESNAPS#"; keys_only = true; break;
+    case DWQ_PLAYER_SNAPSHOTS: index = GSI2; pfx = "PLAYER#"; fwd = forward; break;
+    case DWQ_SNAPSHOT_ITEMS: pfx = "SNAP#"; break;
+    case DWQ_CHAT: pfx = "CHAT#"; fwd = false; break;
+    case DWQ_TOPIC_CONNS: pfx = "TOPIC#"; break;
+    case DWQ_SCAN: pfx = "SCAN"; arg = ""; break;
+    case DWQ_BOTS: index = GSI2; pfx = "BOTS"; arg = ""; break;
+    case DWQ_RATINGS: index = GSI2; pfx = "RATINGS"; arg = ""; break;
+    case DWQ_USERS: index = GSI2; pfx = "USERS"; arg = ""; fwd = false; break;
+    }
+    if (index) {
+        consistent = false;   // a GSI is eventually consistent; asking otherwise is an error
+        pkattr = index[3] == '1' ? "gsi1pk" : "gsi2pk";
+        skattr = index[3] == '1' ? "gsi1sk" : "gsi2sk";
+    }
+    char pk[KB];
+    k(pk, sizeof pk, pfx, arg);
+    cb_jw w;
+    begin(r, &w, "Query");
+    cb_jw_kstr(&w, "TableName", table);
+    if (index) cb_jw_kstr(&w, "IndexName", index);
+    ux u;
+    ux_init(&u);
+    ux_name(&u, pkattr);
+    ux_val_s(&u, ":pk", pk);
+    char kc[160];
+    if (prefix) {
+        ux_name(&u, skattr);
+        ux_val_s(&u, ":sk", prefix);
+        snprintf(kc, sizeof kc, "#%s = :pk AND begins_with(#%s, :sk)", pkattr, skattr);
+    } else if (below) {
+        ux_name(&u, skattr);
+        ux_val_s(&u, ":sk", below);
+        snprintf(kc, sizeof kc, "#%s = :pk AND #%s < :sk", pkattr, skattr);
+    } else snprintf(kc, sizeof kc, "#%s = :pk", pkattr);
+    cb_jw_kstr(&w, "KeyConditionExpression", kc);
+    if (keys_only) {
+        ux_name(&u, "pk");
+        ux_name(&u, "sk");
+        cb_jw_kstr(&w, "ProjectionExpression", "#pk, #sk");
+    }
+    ux_emit(&w, &u, NULL);
+    ux_free(&u);
+    if (!fwd) cb_jw_kbool(&w, "ScanIndexForward", false);
+    if (limit > 0) cb_jw_kint(&w, "Limit", limit);
+    if (consistent) cb_jw_kbool(&w, "ConsistentRead", true);
+    if (start.n) {
+        cb_jw_key(&w, "ExclusiveStartKey");
+        cb_jw_raw(&w, start.p, start.n);
+    }
+    finish(&w);
+}
+
+// ---- items --------------------------------------------------------------------------------
+
+static void item_profile(cb_jw *w, const cb_user_row *u) {
+    char pk[KB], gsk[KB];
+    av_s(w, "pk", k(pk, sizeof pk, "USER#", u->id));
+    av_s(w, "sk", "PROFILE");
+    av_s(w, "gsi2pk", "USERS");
+    av_s(w, "gsi2sk", tsk(gsk, sizeof gsk, u->created_at, u->id));
+    av_s(w, "id", u->id);
+    av_s(w, "email", u->email);
+    av_s(w, "password_hash", u->password_hash);
+    if (u->username[0]) av_s(w, "username", u->username);
+    av_n(w, "created_at", u->created_at);
+    if (u->last_sign_in_at) av_n(w, "last_sign_in_at", u->last_sign_in_at);
+}
+
+static void item_email(cb_jw *w, const cb_user_row *u) {
+    char pk[KB];
+    av_s(w, "pk", k(pk, sizeof pk, "EMAIL#", u->email));
+    av_s(w, "sk", "USER");
+    av_s(w, "user_id", u->id);
+}
+
+static void item_rating(cb_jw *w, const cb_rating_row *rt) {
+    char pk[KB];
+    av_s(w, "pk", k(pk, sizeof pk, "USER#", rt->user_id));
+    av_s(w, "sk", "RATING");
+    av_s(w, "gsi2pk", "RATINGS");
+    av_s(w, "gsi2sk", rt->user_id);
+    av_s(w, "user_id", rt->user_id);
+    if (rt->username[0]) av_s(w, "username", rt->username);
+    av_n(w, "elo_rating", rt->elo_rating);
+    if (rt->previous_elo >= 0) av_n(w, "previous_elo", rt->previous_elo);
+    av_n(w, "games_played", rt->games_played);
+    av_n(w, "updated_at", rt->updated_at);
+}
+
+static void item_game(cb_jw *w, const cb_game_row *g) {
+    char pk[KB];
+    av_s(w, "pk", k(pk, sizeof pk, "GAME#", g->id));
+    av_s(w, "sk", "ROW");
+    av_s(w, "id", g->id);
+    av_n(w, "status", g->status);
+    av_b(w, "state", g->state, g->state_len);
+    av_b(w, "roster", g->roster, g->roster_len);
+    if (g->logs_len) av_b(w, "logs_packed", g->logs, g->logs_len);
+    if (g->has_seed) av_b(w, "game_seed", g->seed, CB_SEED_LEN);
+    av_bool(w, "needs_bots", g->needs_bots);
+    av_n(w, "version", g->version);
+    av_n(w, "round_epoch", g->round_epoch);
+    av_n(w, "created_at", g->created_at);
+    av_n(w, "updated_at", g->updated_at);
+    av_n(w, "last_commit_at", g->last_commit_at);
+}
+
+static void item_bot(cb_jw *w, const cb_bot_row *b) {
+    char pk[KB];
+    av_s(w, "pk", k(pk, sizeof pk, "BOT#", b->id));
+    av_s(w, "sk", "BOT");
+    av_s(w, "gsi2pk", "BOTS");
+    av_s(w, "gsi2sk", b->id);
+    av_s(w, "id", b->id);
+    av_s(w, "nickname", b->nickname);
+    av_s(w, "strategy_key", b->strategy_key);
+    av_n(w, "elo_rating", b->elo_rating);
+    if (b->previous_elo >= 0) av_n(w, "previous_elo", b->previous_elo);
+    av_n(w, "games_played", b->games_played);
+    av_n(w, "created_at", b->created_at);
+    av_n(w, "updated_at", b->updated_at);
+}
+
+// ---- transactions ------------------------------------------------------------------------------
+
+static void txn_begin(dw_req *r, cb_jw *w) {
+    begin(r, w, "TransactWriteItems");
+    cb_jw_key(w, "TransactItems");
+    cb_jw_arr(w);
+}
+
+static void txn_end(cb_jw *w) {
+    cb_jw_end(w);   // TransactItems
+    finish(w);
+}
+
+// {"Put":{"TableName":..,"Item":{ (the caller writes the attributes, then calls put_end)
+static void put_begin(cb_jw *w, const char *table, const char *op_wrapper) {
+    if (op_wrapper) {
+        cb_jw_obj(w);
+        cb_jw_key(w, op_wrapper);
+    }
+    cb_jw_obj(w);
+    cb_jw_kstr(w, "TableName", table);
+    cb_jw_key(w, "Item");
+    cb_jw_obj(w);
+}
+
+static void put_end(cb_jw *w, const char *cond, bool wrapped) {
+    cb_jw_end(w);   // Item
+    if (cond) cb_jw_kstr(w, "ConditionExpression", cond);
+    cb_jw_end(w);
+    if (wrapped) cb_jw_end(w);
+}
+
+static void txn_delete(cb_jw *w, const char *table, const char *pk, const char *sk) {
+    cb_jw_obj(w);
+    cb_jw_key(w, "Delete");
+    cb_jw_obj(w);
+    cb_jw_kstr(w, "TableName", table);
+    key2(w, pk, sk);
+    cb_jw_end(w);
+    cb_jw_end(w);
+}
+
+static void txn_delete_raw(cb_jw *w, const char *table, const char *key, size_t n) {
+    cb_jw_obj(w);
+    cb_jw_key(w, "Delete");
+    cb_jw_obj(w);
+    cb_jw_kstr(w, "TableName", table);
+    cb_jw_key(w, "Key");
+    cb_jw_raw(w, key, n);
+    cb_jw_end(w);
+    cb_jw_end(w);
+}
+
+static void txn_check_exists(cb_jw *w, const char *table, const char *pk, const char *sk) {
+    cb_jw_obj(w);
+    cb_jw_key(w, "ConditionCheck");
+    cb_jw_obj(w);
+    cb_jw_kstr(w, "TableName", table);
+    key2(w, pk, sk);
+    cb_jw_kstr(w, "ConditionExpression", "attribute_exists(pk)");
+    cb_jw_end(w);
+    cb_jw_end(w);
+}
+
+// {"Update":{"TableName","Key", expressions}} (or a bare UpdateItem body when
+// `wrapped` is false: the caller has the object open).
+static void update_open(cb_jw *w, const char *table, const char *pk, const char *sk, bool wrapped) {
+    if (wrapped) {
+        cb_jw_obj(w);
+        cb_jw_key(w, "Update");
+        cb_jw_obj(w);
+    }
+    cb_jw_kstr(w, "TableName", table);
+    key2(w, pk, sk);
+}
+
+static void update_close(cb_jw *w, bool wrapped) {
+    if (wrapped) {
+        cb_jw_end(w);
+        cb_jw_end(w);
+    }
+}
+
+// ---- users ----------------------------------------------------------------------------------------
+
+void dw_user_create(dw_req *r, const char *table, const cb_user_row *u, int32_t start) {
+    cb_jw w;
+    txn_begin(r, &w);
+    put_begin(&w, table, "Put");
+    item_email(&w, u);
+    put_end(&w, "attribute_not_exists(pk)", true);
+    put_begin(&w, table, "Put");
+    item_profile(&w, u);
+    put_end(&w, "attribute_not_exists(pk)", true);
+    // The auth.users trigger's row: the start rating, previous_elo the
+    // column default (the start too), the username.
+    cb_rating_row rt = { .elo_rating = start, .previous_elo = start, .updated_at = u->created_at };
+    memcpy(rt.user_id, u->id, sizeof rt.user_id);
+    memcpy(rt.username, u->username, sizeof rt.username);
+    put_begin(&w, table, "Put");
+    item_rating(&w, &rt);
+    put_end(&w, NULL, true);
+    txn_end(&w);
+}
+
+void dw_user_import(dw_req *r, const char *table, const cb_user_row *u) {
+    cb_jw w;
+    txn_begin(r, &w);
+    put_begin(&w, table, "Put");
+    item_email(&w, u);
+    put_end(&w, NULL, true);
+    put_begin(&w, table, "Put");
+    item_profile(&w, u);
+    put_end(&w, NULL, true);
+    txn_end(&w);
+}
+
+static void user_update(dw_req *r, const char *table, const char *id, const char *attr_name, const char *s, int64_t n) {
+    char pk[KB];
+    cb_jw w;
+    begin(r, &w, "UpdateItem");
+    update_open(&w, table, k(pk, sizeof pk, "USER#", id), "PROFILE", false);
+    ux u;
+    ux_init(&u);
+    if (s) ux_set_s(&u, attr_name, s);
+    else ux_set_n(&u, attr_name, n);
+    ux_emit(&w, &u, "attribute_exists(pk)");
+    ux_free(&u);
+    finish(&w);
+}
+
+void dw_user_set_password(dw_req *r, const char *table, const char *id, const char *hash) {
+    user_update(r, table, id, "password_hash", hash, 0);
+}
+
+void dw_user_touch(dw_req *r, const char *table, const char *id, int64_t at) {
+    user_update(r, table, id, "last_sign_in_at", NULL, at);
+}
+
+void dw_user_delete_txn(dw_req *r, const char *table, const cb_user_row *u) {
+    char pk[KB], epk[KB];
+    cb_jw w;
+    txn_begin(r, &w);
+    k(pk, sizeof pk, "USER#", u->id);
+    txn_delete(&w, table, pk, "PROFILE");
+    txn_delete(&w, table, pk, "RATING");
+    txn_delete(&w, table, k(epk, sizeof epk, "EMAIL#", u->email), "USER");
+    txn_end(&w);
+}
+
+// ---- refresh tokens -----------------------------------------------------------------------------
+
+void dw_refresh_put(dw_req *r, const char *table, const cb_refresh_row *t) {
+    char pk[KB], g1[KB], g2[KB];
+    cb_jw w;
+    begin(r, &w, "PutItem");
+    cb_jw_kstr(&w, "TableName", table);
+    cb_jw_key(&w, "Item");
+    cb_jw_obj(&w);
+    av_s(&w, "pk", k(pk, sizeof pk, "REFRESH#", t->token_hash));
+    av_s(&w, "sk", "TOKEN");
+    av_s(&w, "gsi1pk", k(g1, sizeof g1, "USERREFRESH#", t->user_id));
+    av_s(&w, "gsi1sk", t->token_hash);
+    av_s(&w, "gsi2pk", k(g2, sizeof g2, "SESSION#", t->session_id));
+    av_s(&w, "gsi2sk", t->token_hash);
+    av_s(&w, "token_hash", t->token_hash);
+    av_s(&w, "user_id", t->user_id);
+    av_s(&w, "session_id", t->session_id);
+    av_n(&w, "created_at", t->created_at);
+    av_bool(&w, "revoked", t->revoked);
+    cb_jw_end(&w);
+    cb_jw_kstr(&w, "ConditionExpression", "attribute_not_exists(pk)");
+    finish(&w);
+}
+
+void dw_refresh_take(dw_req *r, const char *table, const char *hash, int64_t now_ms) {
+    char pk[KB];
+    cb_jw w;
+    begin(r, &w, "UpdateItem");
+    update_open(&w, table, k(pk, sizeof pk, "REFRESH#", hash), "TOKEN", false);
+    ux u;
+    ux_init(&u);
+    ux_set_bool(&u, "revoked", true);
+    // The first take stamps revoked_at; a later one, or a logout's 0, stays.
+    ux_name(&u, "revoked_at");
+    ux_set_raw(&u, "#revoked_at = if_not_exists(#revoked_at, :now)");
+    ux_val_n(&u, ":now", now_ms);
+    ux_emit(&w, &u, "attribute_exists(pk)");
+    ux_free(&u);
+    cb_jw_kstr(&w, "ReturnValues", "ALL_OLD");
+    finish(&w);
+}
+
+void dw_refresh_revoke(dw_req *r, const char *table, cb_span key) {
+    cb_jw w;
+    begin(r, &w, "UpdateItem");
+    cb_jw_kstr(&w, "TableName", table);
+    cb_jw_key(&w, "Key");
+    cb_jw_raw(&w, key.p, key.n);
+    ux u;
+    ux_init(&u);
+    ux_set_bool(&u, "revoked", true);
+    ux_set_n(&u, "revoked_at", 0);
+    ux_emit(&w, &u, "attribute_exists(pk)");
+    ux_free(&u);
+    finish(&w);
+}
+
+// ---- games ----------------------------------------------------------------------------------------
+
+// A seated human's item: the dashboard's GSI1 entry, ordered by when the
+// seat was written (taken). joined_at is kept from the first time.
+static void member_update(cb_jw *w, const char *table, const char *game, const char *user, int64_t at) {
+    char pk[KB], sk[KB], g1[KB], g1s[KB];
+    update_open(w, table, k(pk, sizeof pk, "GAME#", game), k(sk, sizeof sk, "MEMBER#", user), true);
+    ux u;
+    ux_init(&u);
+    ux_set_s(&u, "game_id", game);
+    ux_set_s(&u, "user_id", user);
+    ux_set_n(&u, "updated_at", at);
+    ux_set_s(&u, "gsi1pk", k(g1, sizeof g1, "USERGAMES#", user));
+    ux_set_s(&u, "gsi1sk", tsk(g1s, sizeof g1s, at, game));
+    ux_name(&u, "joined_at");
+    ux_set_raw(&u, "#joined_at = if_not_exists(#joined_at, :updated_at)");
+    ux_emit(w, &u, NULL);
+    ux_free(&u);
+    update_close(w, true);
+}
+
+static void bot_seat_put(cb_jw *w, const char *table, const char *game, const char *bot) {
+    char pk[KB], sk[KB];
+    put_begin(w, table, "Put");
+    av_s(w, "pk", k(pk, sizeof pk, "GAME#", game));
+    av_s(w, "sk", k(sk, sizeof sk, "BOT#", bot));
+    av_s(w, "game_id", game);
+    av_s(w, "bot_id", bot);
+    put_end(w, NULL, true);
+}
+
+// The SCAN marker: present (with the times the scan filters on) while the
+// game needs bots, absent otherwise. A commit updates it in place (`keep`),
+// leaving a drive's lease on it (lease_update) as it is; a new or imported
+// game puts it whole, with no lease.
+static void scan_marker(cb_jw *w, const char *table, const cb_game_row *g, bool keep) {
+    char sk[KB];
+    k(sk, sizeof sk, "GAME#", g->id);
+    if (!g->needs_bots) {
+        txn_delete(w, table, "SCAN", sk);
+        return;
+    }
+    if (keep) {
+        update_open(w, table, "SCAN", sk, true);
+        ux u;
+        ux_init(&u);
+        ux_set_s(&u, "game_id", g->id);
+        ux_set_n(&u, "updated_at", g->updated_at);
+        ux_set_n(&u, "last_commit_at", g->last_commit_at);
+        ux_emit(w, &u, NULL);
+        ux_free(&u);
+        update_close(w, true);
+        return;
+    }
+    put_begin(w, table, "Put");
+    av_s(w, "pk", "SCAN");
+    av_s(w, "sk", sk);
+    av_s(w, "game_id", g->id);
+    av_n(w, "updated_at", g->updated_at);
+    av_n(w, "last_commit_at", g->last_commit_at);
+    put_end(w, NULL, true);
+}
+
+void dw_game_create(dw_req *r, const char *table, const cb_game_row *g, const char *creator) {
+    cb_jw w;
+    txn_begin(r, &w);
+    cb_game_row row = *g;
+    row.last_commit_at = g->updated_at;   // a new row's last commit is its creation
+    put_begin(&w, table, "Put");
+    item_game(&w, &row);
+    put_end(&w, "attribute_not_exists(pk)", true);
+    member_update(&w, table, g->id, creator, g->updated_at);
+    if (g->needs_bots) scan_marker(&w, table, &row, false);
+    txn_end(&w);
+}
+
+bool dw_get_answer_of_create(const dw_req *create, cb_buf *out) {
+    cb_span item;
+    if (cb_json_find((const char *)create->body.p, create->body.len, "TransactItems.0.Put.Item", &item) != CB_JSON_OBJ)
+        return false;
+    cb_buf_puts(out, "{\"Item\":");
+    cb_buf_append(out, item.p, item.n);
+    cb_buf_puts(out, "}");
+    return true;
+}
+
+static bool listed(const cb_uuid *ids, int n, const char *id) {
+    for (int i = 0; i < n; i++)
+        if (strcmp(ids[i], id) == 0) return true;
+    return false;
+}
+
+// One rated seat's write, fenced on the rating it read. Returns the items it
+// added (0 when the seat has nothing to rate: a bot or account that is gone).
+static int rating_write(cb_jw *w, const char *table, const cb_game_commit *c, int i, const dw_rating_read *rd,
+                        int64_t at) {
+    char pk[KB];
+    const char *id = c->rated_ids[i];
+    bool bot = c->rated_is_bot[i];
+    k(pk, sizeof pk, bot ? "BOT#" : "USER#", id);
+    const char *sk = bot ? "BOT" : "RATING";
+    int32_t cur = rd->elo, delta = c->rating_delta[i];
+    if (!rd->exists) {
+        if (bot || !rd->account) return 0;
+        // A human with no row yet starts from the start rating, if the account
+        // is still there (checked in the same transaction).
+        int64_t v = (int64_t)1000 + delta;
+        cb_rating_row rt = { .elo_rating = (int32_t)(v < 0 ? 0 : v), .previous_elo = 1000, .games_played = 1,
+                             .updated_at = at };
+        snprintf(rt.user_id, sizeof rt.user_id, "%s", id);
+        snprintf(rt.username, sizeof rt.username, "%s", c->rated_names[i]);
+        put_begin(w, table, "Put");
+        item_rating(w, &rt);
+        put_end(w, "attribute_not_exists(pk)", true);
+        txn_check_exists(w, table, pk, "PROFILE");
+        return 2;
+    }
+    int64_t v = (int64_t)cur + delta;
+    update_open(w, table, pk, sk, true);
+    ux u;
+    ux_init(&u);
+    ux_set_n(&u, "elo_rating", v < 0 ? 0 : v);
+    ux_set_n(&u, "previous_elo", cur);
+    ux_set_n(&u, "updated_at", at);
+    ux_name(&u, "games_played");
+    ux_val_n(&u, ":one", 1);
+    ux_set_raw(&u, "#games_played = #games_played + :one");
+    ux_val_n(&u, ":read", cur);
+    ux_emit(w, &u, "#elo_rating = :read");
+    ux_free(&u);
+    update_close(w, true);
+    return 1;
+}
+
+bool dw_game_commit(dw_req *r, const char *table, const cb_game_commit *c, const dw_seats *stored,
+                    const dw_rating_read *ratings, bool import) {
+    const cb_game_row *g = c->row;
+    cb_game_row row = *g;
+    row.last_commit_at = import ? g->last_commit_at : g->updated_at;   // a commit's time is its last commit
+    int items = 0;
+    cb_jw w;
+    txn_begin(r, &w);
+    char pk[KB], sk[KB];
+    k(pk, sizeof pk, "GAME#", g->id);
+    if (import) {
+        put_begin(&w, table, "Put");
+        item_game(&w, &row);
+        put_end(&w, NULL, true);
+    } else {
+        // Item 0, THE CAS: every scalar and blob, fenced on the version read.
+        update_open(&w, table, pk, "ROW", true);
+        ux u;
+        ux_init(&u);
+        ux_set_n(&u, "status", g->status);
+        ux_set_b(&u, "state", g->state, g->state_len);
+        ux_set_b(&u, "roster", g->roster, g->roster_len);
+        if (g->logs_len) ux_set_b(&u, "logs_packed", g->logs, g->logs_len);
+        else ux_remove(&u, "logs_packed");
+        if (g->has_seed) ux_set_b(&u, "game_seed", g->seed, CB_SEED_LEN);
+        else ux_remove(&u, "game_seed");
+        ux_set_bool(&u, "needs_bots", g->needs_bots);
+        ux_set_n(&u, "version", g->version);
+        ux_set_n(&u, "round_epoch", g->round_epoch);
+        ux_set_n(&u, "updated_at", g->updated_at);
+        ux_set_n(&u, "last_commit_at", row.last_commit_at);
+        ux_val_n(&u, ":expected", c->expected_version);
+        ux_emit(&w, &u, "#version = :expected");
+        ux_free(&u);
+        cb_jw_kstr(&w, "ReturnValuesOnConditionCheckFailure", "ALL_OLD");
+        update_close(&w, true);
+    }
+    items++;
+    // A seat is written when it is taken, not on every commit: a human's
+    // seat is a transactional write (2 WCU) plus its GSI1 entry moving (2
+    // more), every commit, for the dashboard's order alone, which nothing
+    // reads (PostgREST sorts player_views by the row it loads).
+    for (int i = 0; i < c->n_humans; i++)
+        if (!stored || !listed(stored->humans, stored->n_humans, c->humans[i])) {
+            member_update(&w, table, g->id, c->humans[i], g->updated_at);
+            items++;
+        }
+    for (int i = 0; stored && i < stored->n_humans; i++)
+        if (!listed(c->humans, c->n_humans, stored->humans[i])) {
+            txn_delete(&w, table, pk, k(sk, sizeof sk, "MEMBER#", stored->humans[i]));
+            items++;
+        }
+    for (int i = 0; i < c->n_bots; i++)
+        if (!stored || !listed(stored->bots, stored->n_bots, c->bots[i])) {
+            bot_seat_put(&w, table, g->id, c->bots[i]);
+            items++;
+        }
+    for (int i = 0; stored && i < stored->n_bots; i++)
+        if (!listed(c->bots, c->n_bots, stored->bots[i])) {
+            txn_delete(&w, table, pk, k(sk, sizeof sk, "BOT#", stored->bots[i]));
+            items++;
+        }
+    for (int i = 0; ratings && i < c->n_rated; i++) {
+        bool dup = false;   // one write per item: a repeated id is rated once
+        for (int j = 0; j < i; j++) dup |= strcmp(c->rated_ids[j], c->rated_ids[i]) == 0;
+        if (!dup) items += rating_write(&w, table, c, i, &ratings[i], g->updated_at);
+    }
+    scan_marker(&w, table, &row, !import);
+    items++;
+    txn_end(&w);
+    return items <= 100 && cb_jw_ok(&w);
+}
+
+void dw_ratings_get(dw_req *r, const char *table, const char *const *ids, const bool *is_bot, int n, bool both) {
+    char pk[KB];
+    cb_jw w;
+    begin(r, &w, "BatchGetItem");
+    cb_jw_key(&w, "RequestItems");
+    cb_jw_obj(&w);
+    cb_jw_key(&w, table);
+    cb_jw_obj(&w);
+    cb_jw_key(&w, "Keys");
+    cb_jw_arr(&w);
+    for (int i = 0; i < n; i++) {
+        bool dup = false;   // BatchGetItem refuses a repeated key
+        for (int j = 0; j < i; j++) dup |= strcmp(ids[j], ids[i]) == 0 && (both || is_bot[j] == is_bot[i]);
+        if (dup) continue;
+        if (both || is_bot[i]) {
+            cb_jw_obj(&w);
+            av_s(&w, "pk", k(pk, sizeof pk, "BOT#", ids[i]));
+            av_s(&w, "sk", "BOT");
+            cb_jw_end(&w);
+        }
+        if (both || !is_bot[i]) {
+            k(pk, sizeof pk, "USER#", ids[i]);
+            cb_jw_obj(&w);
+            av_s(&w, "pk", pk);
+            av_s(&w, "sk", "RATING");
+            cb_jw_end(&w);
+            if (!both) {
+                cb_jw_obj(&w);
+                av_s(&w, "pk", pk);
+                av_s(&w, "sk", "PROFILE");
+                cb_jw_end(&w);
+            }
+        }
+    }
+    cb_jw_end(&w);
+    cb_jw_kbool(&w, "ConsistentRead", true);
+    cb_jw_kstr(&w, "ProjectionExpression", "pk, sk, elo_rating");
+    cb_jw_end(&w);
+    cb_jw_end(&w);
+    finish(&w);
+}
+
+void dw_ratings_read(const char *body, size_t n, const char *table, const char *const *ids, const bool *is_bot,
+                     int count, bool both, dw_rating_read *out) {
+    cb_span items = dw_batch_items(body, n, table);
+    bool from_bot[64] = { false };
+    for (int i = 0; i < count; i++) memset(&out[i], 0, sizeof out[i]);
+    size_t pos = 0;
+    cb_span it;
+    while (dw_array_next(items, &pos, &it)) {
+        char pk[KB], sk[16];
+        int64_t elo = 0;
+        if (!dw_get_s(it, "pk", pk, sizeof pk) || !dw_get_s(it, "sk", sk, sizeof sk) || !strchr(pk, '#')) continue;
+        bool has_elo = dw_get_n(it, "elo_rating", &elo);
+        bool bot = strncmp(pk, "BOT#", 4) == 0;
+        const char *id = strchr(pk, '#') + 1;
+        for (int i = 0; i < count && i < 64; i++) {
+            if (strcmp(ids[i], id) != 0 || (!both && bot != is_bot[i])) continue;
+            if (strcmp(sk, "PROFILE") == 0) {
+                out[i].account = true;
+                continue;
+            }
+            // Both kinds asked: a bot's row wins over a user's, whichever came
+            // first (seat_ratings' COALESCE(b.elo_rating, u.elo_rating) order).
+            if (!has_elo || (both && from_bot[i] && !bot)) continue;
+            out[i].exists = true;
+            out[i].elo = (int32_t)elo;
+            from_bot[i] = bot;
+        }
+    }
+}
+
+bool dw_game_delete(dw_req *r, const char *table, const char *id, int64_t expected, const cb_buf *keys, int n_keys) {
+    char pk[KB], sk[KB];
+    cb_jw w;
+    txn_begin(r, &w);
+    // Item 0: the row, fenced on the version (ALL_OLD tells gone from moved).
+    cb_jw_obj(&w);
+    cb_jw_key(&w, "Delete");
+    cb_jw_obj(&w);
+    cb_jw_kstr(&w, "TableName", table);
+    key2(&w, k(pk, sizeof pk, "GAME#", id), "ROW");
+    ux u;
+    ux_init(&u);
+    ux_name(&u, "version");
+    ux_val_n(&u, ":expected", expected);
+    ux_emit(&w, &u, "#version = :expected");
+    ux_free(&u);
+    cb_jw_kstr(&w, "ReturnValuesOnConditionCheckFailure", "ALL_OLD");
+    cb_jw_end(&w);
+    cb_jw_end(&w);
+    for (int i = 0; i < n_keys; i++) txn_delete_raw(&w, table, (const char *)keys[i].p, keys[i].len);
+    txn_delete(&w, table, "SCAN", k(sk, sizeof sk, "GAME#", id));
+    txn_end(&w);
+    return n_keys + 2 <= 100 && cb_jw_ok(&w);
+}
+
+void dw_snapshot_unlink(dw_req *r, const char *table, cb_span key) {
+    cb_jw w;
+    begin(r, &w, "UpdateItem");
+    cb_jw_kstr(&w, "TableName", table);
+    cb_jw_key(&w, "Key");
+    cb_jw_raw(&w, key.p, key.n);
+    ux u;
+    ux_init(&u);
+    ux_set_s(&u, "game_id", "");
+    ux_remove(&u, "gsi1pk");
+    ux_remove(&u, "gsi1sk");
+    ux_emit(&w, &u, "attribute_exists(pk)");
+    ux_free(&u);
+    finish(&w);
+}
+
+bool dw_snapshot_set_extras(dw_req *r, const char *table, const cb_buf *keys, int n_keys,
+                            const uint8_t *extras, size_t extras_len) {
+    cb_jw w;
+    txn_begin(r, &w);
+    for (int i = 0; i < n_keys; i++) {
+        cb_jw_obj(&w);
+        cb_jw_key(&w, "Update");
+        cb_jw_obj(&w);
+        cb_jw_kstr(&w, "TableName", table);
+        cb_jw_key(&w, "Key");
+        cb_jw_raw(&w, (const char *)keys[i].p, keys[i].len);
+        ux u;
+        ux_init(&u);
+        if (extras_len) ux_set_b(&u, "extras", extras, extras_len);
+        else ux_remove(&u, "extras");
+        ux_emit(&w, &u, "attribute_exists(pk)");
+        ux_free(&u);
+        cb_jw_end(&w);
+        cb_jw_end(&w);
+    }
+    txn_end(&w);
+    return n_keys >= 1 && n_keys <= 100 && cb_jw_ok(&w);
+}
+
+// ---- the lease ------------------------------------------------------------------------------------
+
+// The lease lives on the game's SCAN marker, the small item that exists
+// exactly while the game needs bots: an acquire, renew or release is one
+// write of well under 1 KB (1 WCU), where on the game row it was billed by
+// the row's whole 4 to 8 KB; the marker's updated_at is the scan's staleness
+// clock, so the same write tells the heartbeat a drive is in flight; and a
+// game with no marker (gone, or no bot work) refuses the acquire with no
+// item, which is CB_E_NOT_FOUND. A commit updates the marker in place
+// (scan_marker), so a drive's lease survives the drive's own commits; the
+// commit that ends the bot work deletes the marker and the lease with it, and
+// the drive's next renew is refused, as it should be: nothing is left to drive.
+static void lease_update(dw_req *r, const char *table, const char *game, cb_jw *w, ux *u) {
+    char sk[KB];
+    begin(r, w, "UpdateItem");
+    update_open(w, table, "SCAN", k(sk, sizeof sk, "GAME#", game), false);
+    ux_init(u);
+}
+
+void dw_lease_acquire(dw_req *r, const char *table, const char *game, const char *token, int64_t now, int64_t ttl) {
+    cb_jw w;
+    ux u;
+    lease_update(r, table, game, &w, &u);
+    ux_set_s(&u, "lease_token", token);
+    ux_set_n(&u, "lease_until", now + ttl);
+    ux_set_n(&u, "updated_at", now);
+    // Free when never taken, released (removed) or run out: lease_until < now.
+    ux_emit(&w, &u, "attribute_exists(pk) AND (attribute_not_exists(#lease_until) OR #lease_until < :updated_at)");
+    ux_free(&u);
+    cb_jw_kstr(&w, "ReturnValuesOnConditionCheckFailure", "ALL_OLD");
+    finish(&w);
+}
+
+void dw_lease_renew(dw_req *r, const char *table, const char *game, const char *token, int64_t now, int64_t ttl) {
+    cb_jw w;
+    ux u;
+    lease_update(r, table, game, &w, &u);
+    ux_set_n(&u, "lease_until", now + ttl);
+    ux_set_n(&u, "updated_at", now);
+    ux_name(&u, "lease_token");
+    ux_val_s(&u, ":token", token);
+    ux_emit(&w, &u, "#lease_token = :token");
+    ux_free(&u);
+    finish(&w);
+}
+
+void dw_lease_release(dw_req *r, const char *table, const char *game, const char *token) {
+    cb_jw w;
+    ux u;
+    lease_update(r, table, game, &w, &u);
+    ux_remove(&u, "lease_until");
+    ux_name(&u, "lease_token");
+    ux_val_s(&u, ":token", token);
+    ux_emit(&w, &u, "#lease_token = :token");
+    ux_free(&u);
+    finish(&w);
+}
+
+// ---- ratings and bots --------------------------------------------------------------------------------
+
+void dw_rating_set_username(dw_req *r, const char *table, const char *user, const char *username) {
+    char pk[KB];
+    cb_jw w;
+    begin(r, &w, "UpdateItem");
+    update_open(&w, table, k(pk, sizeof pk, "USER#", user), "RATING", false);
+    ux u;
+    ux_init(&u);
+    if (username && *username) ux_set_s(&u, "username", username);
+    else ux_remove(&u, "username");
+    ux_emit(&w, &u, "attribute_exists(pk)");
+    ux_free(&u);
+    finish(&w);
+}
+
+void dw_rating_import(dw_req *r, const char *table, const cb_rating_row *rt) {
+    cb_jw w;
+    begin(r, &w, "PutItem");
+    cb_jw_kstr(&w, "TableName", table);
+    cb_jw_key(&w, "Item");
+    cb_jw_obj(&w);
+    item_rating(&w, rt);
+    cb_jw_end(&w);
+    finish(&w);
+}
+
+bool dw_bots_replace(dw_req *r, const char *table, const cb_bot_row *rows, int n, const cb_uuid *stored, int n_stored) {
+    char pk[KB];
+    int items = 0;
+    cb_jw w;
+    txn_begin(r, &w);
+    for (int i = 0; i < n_stored; i++) {
+        bool kept = false;
+        for (int j = 0; j < n && !kept; j++) kept = strcmp(rows[j].id, stored[i]) == 0;
+        if (kept) continue;
+        txn_delete(&w, table, k(pk, sizeof pk, "BOT#", stored[i]), "BOT");
+        items++;
+    }
+    for (int i = 0; i < n; i++, items++) {
+        put_begin(&w, table, "Put");
+        item_bot(&w, &rows[i]);
+        put_end(&w, NULL, true);
+    }
+    txn_end(&w);
+    return items <= 100 && cb_jw_ok(&w);
+}
+
+// ---- snapshots, chat, connections ----------------------------------------------------------------------
+
+static void snapshot_attrs(cb_jw *w, const cb_snapshot_row *s) {
+    char g1[KB], ts[KB];
+    if (s->game_id[0]) {
+        av_s(w, "gsi1pk", k(g1, sizeof g1, "GAMESNAPS#", s->game_id));
+        av_s(w, "gsi1sk", tsk(ts, sizeof ts, s->created_at, s->id));
+    }
+    av_s(w, "id", s->id);
+    av_s(w, "game_id", s->game_id);
+    cb_jw_key(w, "player_ids");
+    cb_jw_obj(w);
+    cb_jw_key(w, "L");
+    cb_jw_arr(w);
+    for (int i = 0; i < s->n_players; i++) {
+        cb_jw_obj(w);
+        cb_jw_kstr(w, "S", s->player_ids[i]);
+        cb_jw_end(w);
+    }
+    cb_jw_end(w);
+    cb_jw_end(w);
+    av_b(w, "moves", s->moves, s->moves_len);
+    if (s->extras_len) av_b(w, "extras", s->extras, s->extras_len);
+    av_n(w, "created_at", s->created_at);
+}
+
+// The replay and a copy per player, in one transaction (so a reader never
+// sees half of one), the main item refusing a reused id.
+void dw_snapshot_put(dw_req *r, const char *table, const cb_snapshot_row *s) {
+    char pk[KB], sk[KB], g2[KB], ts[KB];
+    cb_jw w;
+    txn_begin(r, &w);
+    k(pk, sizeof pk, "SNAP#", s->id);
+    put_begin(&w, table, "Put");
+    av_s(&w, "pk", pk);
+    av_s(&w, "sk", "SNAP");
+    snapshot_attrs(&w, s);
+    put_end(&w, "attribute_not_exists(pk)", true);
+    for (int i = 0; i < s->n_players; i++) {
+        bool dup = false;
+        for (int j = 0; j < i; j++) dup |= strcmp(s->player_ids[j], s->player_ids[i]) == 0;
+        if (dup) continue;
+        put_begin(&w, table, "Put");
+        av_s(&w, "pk", pk);
+        av_s(&w, "sk", k(sk, sizeof sk, "PLAYER#", s->player_ids[i]));
+        av_s(&w, "gsi2pk", k(g2, sizeof g2, "PLAYER#", s->player_ids[i]));
+        av_s(&w, "gsi2sk", tsk(ts, sizeof ts, s->created_at, s->id));
+        snapshot_attrs(&w, s);
+        put_end(&w, NULL, true);
+    }
+    txn_end(&w);
+}
+
+void dw_chat_put(dw_req *r, const char *table, const cb_chat_row *c) {
+    char pk[KB], sk[KB], g1[KB], gpk[KB], upk[KB];
+    cb_jw w;
+    txn_begin(r, &w);
+    put_begin(&w, table, "Put");
+    av_s(&w, "pk", k(pk, sizeof pk, "CHAT#", c->game_id));
+    av_s(&w, "sk", tsk(sk, sizeof sk, c->created_at, c->id));
+    av_s(&w, "gsi1pk", k(g1, sizeof g1, "USERCHAT#", c->user_id));
+    av_s(&w, "gsi1sk", sk);
+    av_s(&w, "id", c->id);
+    av_s(&w, "game_id", c->game_id);
+    av_s(&w, "user_id", c->user_id);
+    av_s(&w, "message", c->message ? c->message : "");
+    av_bool(&w, "is_system", c->is_system);
+    av_n(&w, "created_at", c->created_at);
+    put_end(&w, "attribute_not_exists(pk)", true);
+    txn_check_exists(&w, table, k(gpk, sizeof gpk, "GAME#", c->game_id), "ROW");
+    txn_check_exists(&w, table, k(upk, sizeof upk, "USER#", c->user_id), "PROFILE");
+    txn_end(&w);
+}
+
+static void conn_attrs(cb_jw *w, const cb_conn_row *c) {
+    av_s(w, "conn_id", c->conn_id);
+    if (c->user_id[0]) av_s(w, "user_id", c->user_id);
+    av_n(w, "vsn", c->vsn);
+    cb_jw_key(w, "topics");
+    cb_jw_obj(w);
+    cb_jw_key(w, "L");
+    cb_jw_arr(w);
+    for (int i = 0; i < c->n_topics; i++) {
+        cb_jw_obj(w);
+        cb_jw_key(w, "M");
+        cb_jw_obj(w);
+        av_s(w, "t", c->topics[i]);
+        av_s(w, "r", c->join_refs[i]);
+        cb_jw_end(w);
+        cb_jw_end(w);
+    }
+    cb_jw_end(w);
+    cb_jw_end(w);
+    av_n(w, "expires_ms", c->expires_at);
+    av_n(w, DW_TTL_ATTR, c->expires_at / 1000);   // the TTL attribute is in seconds
+    av_n(w, "ver", c->version);
+}
+
+static bool has_topic(const cb_conn_row *c, const char *t) {
+    for (int i = 0; c && i < c->n_topics; i++)
+        if (strcmp(c->topics[i], t) == 0) return true;
+    return false;
+}
+
+// TransactWriteItems: the CONN item conditioned on the version the caller
+// read (store.h conn_put: 0 passes when there is no row, a row written before
+// versions existed, or one past its TTL that DynamoDB has not swept yet), a
+// full copy per topic (a fan-out reads one partition and has all it needs),
+// and deletes for the topics left. Item 0 refused is the lost race. All in one
+// transaction so the TOPIC copies never disagree with the CONN item they copy.
+void dw_conn_put(dw_req *r, const char *table, const cb_conn_row *c, const cb_conn_row *old, int64_t now_ms) {
+    char pk[KB], tpk[KB], sk[KB];
+    cb_conn_row next = *c;
+    next.version = c->version + 1;
+    cb_jw w;
+    txn_begin(r, &w);
+    k(pk, sizeof pk, "CONN#", c->conn_id);
+    put_begin(&w, table, "Put");
+    av_s(&w, "pk", pk);
+    av_s(&w, "sk", "CONN");
+    conn_attrs(&w, &next);
+    cb_jw_end(&w);   // Item
+    cb_jw_kstr(&w, "ConditionExpression", c->version == 0 ? "attribute_not_exists(#ver) OR #expires_ms < :now"
+                                                            : "#ver = :ver");
+    cb_jw_key(&w, "ExpressionAttributeNames");
+    cb_jw_obj(&w);
+    cb_jw_kstr(&w, "#ver", "ver");
+    if (c->version == 0) cb_jw_kstr(&w, "#expires_ms", "expires_ms");
+    cb_jw_end(&w);
+    cb_jw_key(&w, "ExpressionAttributeValues");
+    cb_jw_obj(&w);
+    if (c->version == 0) av_n(&w, ":now", now_ms);
+    else av_n(&w, ":ver", c->version);
+    cb_jw_end(&w);
+    cb_jw_end(&w);   // the Put
+    cb_jw_end(&w);   // its wrapper
+    for (int i = 0; i < c->n_topics; i++) {
+        bool dup = false;
+        for (int j = 0; j < i; j++) dup |= strcmp(c->topics[j], c->topics[i]) == 0;
+        if (dup) continue;
+        put_begin(&w, table, "Put");
+        av_s(&w, "pk", k(tpk, sizeof tpk, "TOPIC#", c->topics[i]));
+        av_s(&w, "sk", pk);
+        conn_attrs(&w, &next);
+        put_end(&w, NULL, true);
+    }
+    for (int i = 0; old && i < old->n_topics; i++) {
+        if (has_topic(c, old->topics[i])) continue;
+        bool dup = false;
+        for (int j = 0; j < i; j++) dup |= strcmp(old->topics[j], old->topics[i]) == 0;
+        if (dup) continue;
+        txn_delete(&w, table, k(tpk, sizeof tpk, "TOPIC#", old->topics[i]), k(sk, sizeof sk, "CONN#", c->conn_id));
+    }
+    txn_end(&w);
+}
+
+void dw_conn_delete(dw_req *r, const char *table, const cb_conn_row *c) {
+    char pk[KB], tpk[KB];
+    cb_jw w;
+    begin(r, &w, "BatchWriteItem");
+    cb_jw_key(&w, "RequestItems");
+    cb_jw_obj(&w);
+    cb_jw_key(&w, table);
+    cb_jw_arr(&w);
+    k(pk, sizeof pk, "CONN#", c->conn_id);
+    cb_jw_obj(&w);
+    cb_jw_key(&w, "DeleteRequest");
+    cb_jw_obj(&w);
+    key2(&w, pk, "CONN");
+    cb_jw_end(&w);
+    cb_jw_end(&w);
+    for (int i = 0; i < c->n_topics; i++) {
+        bool dup = false;
+        for (int j = 0; j < i; j++) dup |= strcmp(c->topics[j], c->topics[i]) == 0;
+        if (dup) continue;
+        cb_jw_obj(&w);
+        cb_jw_key(&w, "DeleteRequest");
+        cb_jw_obj(&w);
+        key2(&w, k(tpk, sizeof tpk, "TOPIC#", c->topics[i]), pk);
+        cb_jw_end(&w);
+        cb_jw_end(&w);
+    }
+    cb_jw_end(&w);
+    cb_jw_end(&w);
+    finish(&w);
+}
+
+void dw_batch_delete(dw_req *r, const char *table, const cb_buf *keys, int n) {
+    cb_jw w;
+    begin(r, &w, "BatchWriteItem");
+    cb_jw_key(&w, "RequestItems");
+    cb_jw_obj(&w);
+    cb_jw_key(&w, table);
+    cb_jw_arr(&w);
+    for (int i = 0; i < n; i++) {
+        cb_jw_obj(&w);
+        cb_jw_key(&w, "DeleteRequest");
+        cb_jw_obj(&w);
+        cb_jw_key(&w, "Key");
+        cb_jw_raw(&w, (const char *)keys[i].p, keys[i].len);
+        cb_jw_end(&w);
+        cb_jw_end(&w);
+    }
+    cb_jw_end(&w);
+    cb_jw_end(&w);
+    finish(&w);
+}
+
+// ---- admin -----------------------------------------------------------------------------------------------
+
+static const char *const FAMILIES[] = { "USER", "EMAIL", "REFRESH", "GAME", "BOT", "SNAP", "CHAT", "CONN", "TOPIC", "SCAN" };
+#define N_FAMILIES (int)(sizeof FAMILIES / sizeof FAMILIES[0])
+
+const char *dw_collection(int i) { return i >= 0 && i < N_FAMILIES ? FAMILIES[i] : NULL; }
+
+// store.h CB_ADMIN_GAMES: the GAME family under the name both backends share.
+static const char *family_of(const char *c) { return c && strcmp(c, CB_ADMIN_GAMES) == 0 ? "GAME" : c; }
+
+bool dw_collection_valid(const char *c) {
+    c = family_of(c);
+    for (int i = 0; c && i < N_FAMILIES; i++)
+        if (strcmp(FAMILIES[i], c) == 0) return true;
+    return false;
+}
+
+void dw_scan_family(dw_req *r, const char *table, const char *family, const char *prefix, int limit, cb_span start) {
+    char p[KB];
+    family = family_of(family);
+    // SCAN is a whole partition; every other family is "<FAMILY>#...".
+    snprintf(p, sizeof p, "%s%s%s", family, strcmp(family, "SCAN") == 0 ? "" : "#", prefix ? prefix : "");
+    cb_jw w;
+    begin(r, &w, "Scan");
+    cb_jw_kstr(&w, "TableName", table);
+    ux u;
+    ux_init(&u);
+    ux_name(&u, "pk");
+    ux_val_s(&u, ":p", p);
+    cb_jw_kstr(&w, "FilterExpression", "begins_with(#pk, :p)");
+    ux_emit(&w, &u, NULL);
+    ux_free(&u);
+    if (limit > 0) cb_jw_kint(&w, "Limit", limit);
+    if (start.n) {
+        cb_jw_key(&w, "ExclusiveStartKey");
+        cb_jw_raw(&w, start.p, start.n);
+    }
+    finish(&w);
+}
+
+// Each export table, as the items it was written to: pk family, sk exact or
+// (ending in '#', or empty) a prefix.
+static const struct { const char *export_name, *pk, *sk; } COUNTS[] = {
+    { "users", "USER#", "PROFILE" },
+    { "bots", "BOT#", "BOT" },
+    { "user_elo_ratings", "USER#", "RATING" },
+    { "games", "GAME#", "ROW" },
+    { "player_hands", "GAME#", "MEMBER#" },
+    { "bot_hands", "GAME#", "BOT#" },
+    { "game_snapshots", "SNAP#", "SNAP" },
+    { "chat_messages", "CHAT#", "" },
+};
+
+void dw_scan_keys(dw_req *r, const char *table, int limit, cb_span start) {
+    cb_jw w;
+    begin(r, &w, "Scan");
+    cb_jw_kstr(&w, "TableName", table);
+    cb_jw_kbool(&w, "ConsistentRead", true);
+    ux u;
+    ux_init(&u);
+    ux_name(&u, "pk");
+    ux_name(&u, "sk");
+    cb_jw_kstr(&w, "ProjectionExpression", "#pk, #sk");
+    ux_emit(&w, &u, NULL);
+    ux_free(&u);
+    if (limit > 0) cb_jw_kint(&w, "Limit", limit);
+    if (start.n) {
+        cb_jw_key(&w, "ExclusiveStartKey");
+        cb_jw_raw(&w, start.p, start.n);
+    }
+    finish(&w);
+}
+
+const char *dw_export_kind(cb_span item, char *id, size_t cap) {
+    char pk[KB], sk[KB];
+    if (!dw_get_s(item, "pk", pk, sizeof pk) || !dw_get_s(item, "sk", sk, sizeof sk)) return NULL;
+    for (size_t i = 0; i < sizeof COUNTS / sizeof COUNTS[0]; i++) {
+        size_t pl = strlen(COUNTS[i].pk), sl = strlen(COUNTS[i].sk);
+        bool prefix = sl == 0 || COUNTS[i].sk[sl - 1] == '#';
+        if (strncmp(pk, COUNTS[i].pk, pl) != 0) continue;
+        if (prefix ? strncmp(sk, COUNTS[i].sk, sl) != 0 : strcmp(sk, COUNTS[i].sk) != 0) continue;
+        snprintf(id, cap, "%s", pk + pl);
+        return COUNTS[i].export_name;
+    }
+    return NULL;
+}
+
+void dw_describe_table(dw_req *r, const char *table) {
+    cb_jw w;
+    snprintf(r->target, sizeof r->target, TARGET "DescribeTable");
+    cb_buf_reset(&r->body);
+    cb_jw_init(&w, &r->body);
+    cb_jw_obj(&w);   // DescribeTable takes no ReturnConsumedCapacity: it costs none
+    cb_jw_kstr(&w, "TableName", table);
+    finish(&w);
+}
+
+// One "<path>.ProvisionedThroughput.<Read|Write>CapacityUnits" into *min
+// when it is smaller; false when the path is not there.
+static bool lower_to(const char *body, size_t n, const char *path, const char *what, int64_t *min) {
+    char full[160];
+    int64_t v;
+    snprintf(full, sizeof full, "%s.ProvisionedThroughput.%sCapacityUnits", path, what);
+    if (!cb_json_get_i64(body, n, full, &v)) return false;
+    if (v > 0 && (*min == 0 || v < *min)) *min = v;
+    return true;
+}
+
+bool dw_provisioned(const char *body, size_t n, int64_t *rcu, int64_t *wcu) {
+    *rcu = *wcu = 0;
+    if (!lower_to(body, n, "Table", "Read", rcu) || !lower_to(body, n, "Table", "Write", wcu)) return false;
+    for (int i = 0; i < 64; i++) {
+        char path[64];
+        snprintf(path, sizeof path, "Table.GlobalSecondaryIndexes.%d", i);
+        if (!lower_to(body, n, path, "Read", rcu)) break;
+        lower_to(body, n, path, "Write", wcu);
+    }
+    return true;
+}
+
+double dw_consumed(const char *body, size_t n) {
+    // One table: an object (GetItem, Query, ...), or a one-entry array
+    // (BatchGetItem, BatchWriteItem, TransactWriteItems).
+    static const char *const paths[] = { "ConsumedCapacity.CapacityUnits", "ConsumedCapacity.0.CapacityUnits" };
+    for (int i = 0; i < 2; i++) {
+        cb_span v;
+        if (cb_json_find(body, n, paths[i], &v) == CB_JSON_NUM) {
+            char t[32];
+            if (v.n >= sizeof t) return 0;
+            memcpy(t, v.p, v.n);
+            t[v.n] = 0;
+            return strtod(t, NULL);
+        }
+    }
+    return 0;
+}
+
+void dw_execute(dw_req *r, const char *statement, const char *next_token) {
+    cb_jw w;
+    begin(r, &w, "ExecuteStatement");
+    cb_jw_kstr(&w, "Statement", statement);
+    cb_jw_kbool(&w, "ConsistentRead", false);
+    if (next_token && *next_token) cb_jw_kstr(&w, "NextToken", next_token);
+    finish(&w);
+}
+
+bool dw_statement_reads(const char *s) {
+    while (s && isspace((unsigned char)*s)) s++;
+    return s && strncasecmp(s, "SELECT", 6) == 0 && (s[6] == '\0' || isspace((unsigned char)s[6]));
+}
+
+// =====================================================================================
+// The Lambda event envelope.
+
+// ---- small JSON walking --------------------------------------------------------
+
+typedef bool (*member_fn)(cb_span key, cb_span value, cb_json_type t, void *ud);
+
+// Calls fn for each member of an object (key as its quoted token) or each
+// element of an array (key empty). The document has been validated already.
+static bool walk(cb_span v, member_fn fn, void *ud) {
+    if (v.n < 2 || (v.p[0] != '{' && v.p[0] != '[')) return false;
+    bool obj = v.p[0] == '{';
+    const char *p = v.p + 1, *end = v.p + v.n - 1;
+    for (;;) {
+        while (p < end && isspace((unsigned char)*p)) p++;
+        if (p >= end) return true;
+        cb_span key = { "", 0 };
+        if (obj) {
+            if (cb_json_find(p, (size_t)(end - p), "", &key) != CB_JSON_STR) return false;
+            p = key.p + key.n;
+            while (p < end && isspace((unsigned char)*p)) p++;
+            if (p >= end || *p != ':') return false;
+            p++;
+        }
+        cb_span val;
+        cb_json_type t = cb_json_find(p, (size_t)(end - p), "", &val);
+        if (t == CB_JSON_ERR || t == CB_JSON_MISSING) return false;
+        if (!fn(key, val, t, ud)) return true;
+        p = val.p + val.n;
+        while (p < end && isspace((unsigned char)*p)) p++;
+        if (p < end && *p == ',') p++;
+    }
+}
+
+// Unescapes a string token into storage with a NUL. The offset, or -1.
+static long put_token(cb_buf *st, cb_span tok) {
+    if (!cb_buf_reserve(st, tok.n + 1)) return -1;
+    long off = (long)st->len;
+    int k = cb_json_unescape(tok, (char *)st->p + st->len, st->cap - st->len);
+    if (k < 0) return -1;
+    st->len += (size_t)k + 1;
+    return off;
+}
+
+static long put_bytes(cb_buf *st, const void *p, size_t n) {
+    long off = (long)st->len;
+    cb_buf_append(st, p, n);
+    cb_buf_putc(st, 0);
+    return st->oom ? -1 : off;
+}
+
+// A body field: unescaped text, or base64-decoded bytes. Offset and length.
+static int put_body(cb_buf *st, const char *json, size_t len, long *off, size_t *n) {
+    cb_span tok;
+    cb_json_type t = cb_json_find(json, len, "body", &tok);
+    *off = -1;
+    *n = 0;
+    if (t == CB_JSON_MISSING || t == CB_JSON_NULL) return CB_OK;
+    if (t != CB_JSON_STR) return CB_E_INVALID;
+    bool b64 = false;
+    cb_json_get_bool(json, len, "isBase64Encoded", &b64);
+    long o = put_token(st, tok);
+    if (o < 0) return CB_E_INVALID;
+    size_t tn = strlen((const char *)st->p + o);
+    if (b64) {
+        // Decoded in place: base64 never grows.
+        int k = cb_b64_decode((const char *)st->p + o, tn, st->p + o, tn + 1);
+        if (k < 0) return CB_E_INVALID;
+        st->len = (size_t)o + (size_t)k;
+        cb_buf_putc(st, 0);
+        tn = (size_t)k;
+    }
+    *off = o;
+    *n = tn;
+    return st->oom ? CB_E_NOMEM : CB_OK;
+}
+
+// ---- HTTP ------------------------------------------------------------------------
+
+typedef struct {
+    cb_buf *st;
+    long    name[CB_HTTP_MAX_HEADERS], value[CB_HTTP_MAX_HEADERS];
+    int     n;
+    int     dropped;
+    bool    bad;
+    bool    cookie_started;
+    long    cookie;
+} hdr_acc;
+
+static bool on_header(cb_span key, cb_span val, cb_json_type t, void *ud) {
+    hdr_acc *a = ud;
+    if (t != CB_JSON_STR) return true;   // API Gateway sends strings; anything else is not a header
+    if (a->n == CB_HTTP_MAX_HEADERS) { a->dropped++; return true; }
+    long k = put_token(a->st, key);
+    if (k < 0) { a->bad = true; return false; }
+    for (char *c = (char *)a->st->p + k; *c; c++) *c = (char)tolower((unsigned char)*c);
+    long v = put_token(a->st, val);
+    if (v < 0) { a->bad = true; return false; }
+    a->name[a->n] = k;
+    a->value[a->n] = v;
+    a->n++;
+    return true;
+}
+
+typedef struct {
+    cb_buf joined;
+    bool   bad;
+} cookie_acc;
+
+static bool on_cookie(cb_span key, cb_span val, cb_json_type t, void *ud) {
+    cookie_acc *a = ud;
+    if (t != CB_JSON_STR) return true;
+    char tmp[4096];
+    int k = cb_json_unescape(val, tmp, sizeof tmp);
+    if (k < 0) { a->bad = true; return false; }
+    if (a->joined.len) cb_buf_puts(&a->joined, "; ");
+    cb_buf_append(&a->joined, tmp, (size_t)k);
+    return true;
+}
+
+static int decode_http(const char *json, size_t len, cb_event *ev) {
+    cb_http_req *r = &ev->http;
+    cb_buf *st = &ev->storage;
+    if (!cb_json_get_str(json, len, "requestContext.http.method", r->method, sizeof r->method)) return CB_E_INVALID;
+    cb_span tok;
+    if (cb_json_find(json, len, "rawPath", &tok) != CB_JSON_STR) return CB_E_INVALID;
+    long path = put_token(st, tok);
+    long query = cb_json_find(json, len, "rawQueryString", &tok) == CB_JSON_STR ? put_token(st, tok) : put_bytes(st, "", 0);
+    if (path < 0 || query < 0) return CB_E_INVALID;
+
+    hdr_acc h = { .st = st };
+    cb_span obj;
+    cb_json_type ht = cb_json_find(json, len, "headers", &obj);
+    if (ht == CB_JSON_OBJ && !walk(obj, on_header, &h)) return CB_E_INVALID;
+    if (ht != CB_JSON_OBJ && ht != CB_JSON_MISSING && ht != CB_JSON_NULL) return CB_E_INVALID;
+    if (h.bad) return CB_E_INVALID;
+    // Payload 2.0 moves the Cookie header into an array; put it back.
+    cookie_acc ck;
+    cb_buf_init(&ck.joined);
+    ck.bad = false;
+    if (cb_json_find(json, len, "cookies", &obj) == CB_JSON_ARR && !walk(obj, on_cookie, &ck)) ck.bad = true;
+    if (ck.bad) { cb_buf_free(&ck.joined); return CB_E_INVALID; }
+    if (ck.joined.len) {
+        if (h.n == CB_HTTP_MAX_HEADERS) h.dropped++;
+        else {
+            h.name[h.n] = put_bytes(st, "cookie", 6);
+            h.value[h.n] = put_bytes(st, ck.joined.p, ck.joined.len);
+            h.n++;
+        }
+    }
+    cb_buf_free(&ck.joined);
+    if (h.dropped) CB_WARN("event", "%d headers over %d dropped", h.dropped, CB_HTTP_MAX_HEADERS);
+
+    long body;
+    size_t body_len;
+    int rc = put_body(st, json, len, &body, &body_len);
+    if (rc != CB_OK) return rc;
+    cb_json_get_str(json, len, "requestContext.http.sourceIp", r->peer, sizeof r->peer);
+    if (st->oom) return CB_E_NOMEM;
+
+    // The storage is final: point into it.
+    const char *base = (const char *)st->p;
+    r->path = base + path;
+    r->query = base + query;
+    for (int i = 0; i < h.n; i++) {
+        r->headers[i].name = base + h.name[i];
+        r->headers[i].value = base + h.value[i];
+    }
+    r->n_headers = h.n;
+    r->body = body >= 0 && body_len ? (const uint8_t *)base + body : NULL;
+    r->body_len = body_len;
+    r->minor = 1;
+    r->keep_alive = false;
+    return CB_OK;
+}
+
+// ---- WebSocket ---------------------------------------------------------------------
+
+static void url_encode(cb_buf *b, const char *s, size_t n) {
+    static const char H[] = "0123456789ABCDEF";
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)s[i];
+        if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') cb_buf_putc(b, (char)c);
+        else { cb_buf_putc(b, '%'); cb_buf_putc(b, H[c >> 4]); cb_buf_putc(b, H[c & 15]); }
+    }
+}
+
+typedef struct {
+    cb_buf q;
+    bool   bad;
+} query_acc;
+
+static bool on_param(cb_span key, cb_span val, cb_json_type t, void *ud) {
+    query_acc *a = ud;
+    if (t != CB_JSON_STR) return true;
+    char k[1024], v[4096];
+    int kn = cb_json_unescape(key, k, sizeof k), vn = cb_json_unescape(val, v, sizeof v);
+    if (kn < 0 || vn < 0) { a->bad = true; return false; }
+    if (a->q.len) cb_buf_putc(&a->q, '&');
+    url_encode(&a->q, k, (size_t)kn);
+    cb_buf_putc(&a->q, '=');
+    url_encode(&a->q, v, (size_t)vn);
+    return true;
+}
+
+static int decode_ws(const char *json, size_t len, cb_event *ev) {
+    cb_ws_event *w = &ev->ws;
+    cb_buf *st = &ev->storage;
+    if (!cb_json_get_str(json, len, "requestContext.routeKey", w->route_key, sizeof w->route_key) ||
+        !cb_json_get_str(json, len, "requestContext.connectionId", w->connection_id, sizeof w->connection_id))
+        return CB_E_INVALID;
+    cb_json_get_str(json, len, "requestContext.domainName", w->domain, sizeof w->domain);
+    cb_json_get_str(json, len, "requestContext.stage", w->stage, sizeof w->stage);
+
+    query_acc qa;
+    cb_buf_init(&qa.q);
+    qa.bad = false;
+    cb_span obj;
+    if (cb_json_find(json, len, "queryStringParameters", &obj) == CB_JSON_OBJ && !walk(obj, on_param, &qa)) qa.bad = true;
+    long query = qa.bad ? -1 : put_bytes(st, qa.q.p ? qa.q.p : (const uint8_t *)"", qa.q.len);
+    cb_buf_free(&qa.q);
+    if (query < 0) return CB_E_INVALID;
+
+    long body;
+    size_t body_len;
+    int rc = put_body(st, json, len, &body, &body_len);
+    if (rc != CB_OK) return rc;
+    if (st->oom) return CB_E_NOMEM;
+    const char *base = (const char *)st->p;
+    w->query = base + query;
+    w->body = body >= 0 ? (const uint8_t *)base + body : (const uint8_t *)base + query + strlen(base + query);
+    w->body_len = body_len;
+    return CB_OK;
+}
+
+// ---- the string literals ------------------------------------------------------------
+
+static bool game_id_ok(const char *s, size_t n, size_t cap) {
+    if (n == 0 || n >= cap) return false;
+    for (size_t i = 0; i < n; i++)
+        if (!isalnum((unsigned char)s[i]) && s[i] != '-' && s[i] != '_') return false;
+    return true;
+}
+
+// "scan" and "bot_drive:<id>": the quotes stripped, nothing else parsed.
+static int decode_literal(const char *s, size_t n, cb_event *ev) {
+    if (n < 2 || s[n - 1] != '"') return CB_E_INVALID;
+    s++;
+    n -= 2;
+    if (n == 4 && memcmp(s, "scan", 4) == 0) { ev->kind = CB_EVENT_SCHEDULE; return CB_OK; }
+    static const char P[] = "bot_drive:";
+    if (n > sizeof P - 1 && memcmp(s, P, sizeof P - 1) == 0) {
+        const char *id = s + sizeof P - 1;
+        size_t idn = n - (sizeof P - 1);
+        if (!game_id_ok(id, idn, sizeof ev->game_id)) return CB_E_INVALID;
+        memcpy(ev->game_id, id, idn);
+        ev->game_id[idn] = 0;
+        ev->kind = CB_EVENT_BOT_DRIVE;
+        return CB_OK;
+    }
+    return CB_E_INVALID;
+}
+
+int cb_event_bot_drive_payload(const char *game_id, char *out, size_t cap) {
+    size_t n = game_id ? strlen(game_id) : 0;
+    if (!game_id_ok(game_id, n, sizeof ((cb_event *)0)->game_id)) return CB_E_INVALID;
+    int k = snprintf(out, cap, "\"bot_drive:%s\"", game_id);
+    return k > 0 && (size_t)k < cap ? k : CB_E_INVALID;
+}
+
+int cb_event_decode(const char *json, size_t len, cb_event *out) {
+    memset(out, 0, sizeof *out);
+    cb_buf_init(&out->storage);
+    while (len && isspace((unsigned char)json[len - 1])) len--;
+    while (len && isspace((unsigned char)*json)) { json++; len--; }
+    if (len && *json == '"') return decode_literal(json, len, out);
+    if (!cb_json_valid(json, len) || len == 0 || *json != '{') return CB_E_INVALID;
+
+    // Reserve once for the common case (every string fits in about the event's size).
+    cb_buf_reserve(&out->storage, len + 256);
+    int rc;
+    char src[32];
+    if (cb_json_find(json, len, "requestContext.connectionId", NULL) == CB_JSON_STR) {
+        out->kind = CB_EVENT_WS;
+        rc = decode_ws(json, len, out);
+    } else if (cb_json_find(json, len, "requestContext.http.method", NULL) == CB_JSON_STR) {
+        out->kind = CB_EVENT_HTTP;
+        rc = decode_http(json, len, out);
+    } else if (cb_json_get_str(json, len, "source", src, sizeof src) && strcmp(src, "aws.events") == 0) {
+        out->kind = CB_EVENT_SCHEDULE;
+        rc = CB_OK;
+    } else {
+        rc = CB_E_INVALID;
+    }
+    if (rc != CB_OK) {
+        cb_buf_free(&out->storage);
+        cb_buf *keep = &out->storage;
+        memset(out, 0, sizeof *out);
+        cb_buf_init(keep);
+        return rc == CB_E_NOMEM ? rc : CB_E_INVALID;
+    }
+    return CB_OK;
+}
+
+// ---- responses ----------------------------------------------------------------------
+
+static bool utf8_valid(const uint8_t *p, size_t n) {
+    size_t i = 0;
+    while (i < n) {
+        uint8_t c = p[i];
+        size_t k;
+        uint32_t cp;
+        if (c < 0x80) { i++; continue; }
+        if ((c & 0xE0) == 0xC0) { k = 1; cp = c & 0x1F; }
+        else if ((c & 0xF0) == 0xE0) { k = 2; cp = c & 0x0F; }
+        else if ((c & 0xF8) == 0xF0) { k = 3; cp = c & 0x07; }
+        else return false;
+        for (size_t j = 1; j <= k; j++) {
+            if (i + j >= n || (p[i + j] & 0xC0) != 0x80) return false;
+            cp = cp << 6 | (p[i + j] & 0x3F);
+        }
+        // Overlong forms, surrogates and values past U+10FFFF.
+        if ((k == 1 && cp < 0x80) || (k == 2 && cp < 0x800) || (k == 3 && cp < 0x10000) || cp > 0x10FFFF ||
+            (cp >= 0xD800 && cp <= 0xDFFF))
+            return false;
+        i += k + 1;
+    }
+    return true;
+}
+
+typedef struct {
+    const char *name;
+    size_t      nlen;
+    const char *value;
+    size_t      vlen;
+    bool        done;
+} line;
+
+int cb_event_encode_http(const cb_http_res *res, cb_buf *out) {
+    // The header lines, "Name: value\r\n" each.
+    enum { MAXL = 128 };
+    line l[MAXL];
+    int nl = 0;
+    const char *p = cb_buf_cstr(&res->headers), *end = p + res->headers.len;
+    while (p < end && nl < MAXL) {
+        const char *e = strstr(p, "\r\n");
+        if (!e) e = end;
+        const char *colon = memchr(p, ':', (size_t)(e - p));
+        if (colon) {
+            const char *v = colon + 1;
+            while (v < e && *v == ' ') v++;
+            l[nl++] = (line){ p, (size_t)(colon - p), v, (size_t)(e - v), false };
+        }
+        p = e + 2;
+    }
+    const char *ctype = NULL;
+    size_t ctlen = 0;
+    for (int i = 0; i < nl; i++)
+        if (l[i].nlen == 12 && strncasecmp(l[i].name, "content-type", 12) == 0) { ctype = l[i].value; ctlen = l[i].vlen; }
+
+    cb_jw w;
+    cb_jw_init(&w, out);
+    cb_jw_obj(&w);
+    cb_jw_kint(&w, "statusCode", res->status ? res->status : 200);
+    cb_jw_key(&w, "headers");
+    cb_jw_obj(&w);
+    bool cookies = false;
+    for (int i = 0; i < nl; i++) {
+        if (l[i].done) continue;
+        if (l[i].nlen == 10 && strncasecmp(l[i].name, "set-cookie", 10) == 0) { cookies = true; continue; }
+        // One JSON member per name: later lines of the same name joined with ", ".
+        char name[128];
+        if (!cb_strncpy0(name, sizeof name, l[i].name, l[i].nlen)) continue;
+        cb_buf joined;
+        cb_buf_init(&joined);
+        cb_buf_append(&joined, l[i].value, l[i].vlen);
+        for (int j = i + 1; j < nl; j++) {
+            if (l[j].nlen == l[i].nlen && strncasecmp(l[j].name, l[i].name, l[i].nlen) == 0) {
+                cb_buf_puts(&joined, ", ");
+                cb_buf_append(&joined, l[j].value, l[j].vlen);
+                l[j].done = true;
+            }
+        }
+        cb_jw_key(&w, name);
+        cb_jw_strn(&w, (const char *)joined.p ? (const char *)joined.p : "", joined.len);
+        cb_buf_free(&joined);
+    }
+    cb_jw_end(&w);
+    if (cookies) {
+        cb_jw_key(&w, "cookies");
+        cb_jw_arr(&w);
+        for (int i = 0; i < nl; i++)
+            if (l[i].nlen == 10 && strncasecmp(l[i].name, "set-cookie", 10) == 0) cb_jw_strn(&w, l[i].value, l[i].vlen);
+        cb_jw_end(&w);
+    }
+    const uint8_t *body = res->body.p ? res->body.p : (const uint8_t *)"";
+    size_t n = res->body.len;
+    bool octet = ctype && ctlen >= 24 && strncasecmp(ctype, "application/octet-stream", 24) == 0;
+    bool b64 = n > 0 && (octet || !utf8_valid(body, n));
+    if (b64) {
+        size_t cap = cb_b64_len(n) + 1;
+        char *enc = malloc(cap);
+        if (!enc) return CB_E_NOMEM;
+        cb_b64_encode(body, n, enc, cap);
+        cb_jw_key(&w, "body");
+        cb_jw_strn(&w, enc, cap - 1);
+        free(enc);
+    } else {
+        cb_jw_key(&w, "body");
+        cb_jw_strn(&w, (const char *)body, n);
+    }
+    cb_jw_kbool(&w, "isBase64Encoded", b64);
+    cb_jw_end(&w);
+    return cb_jw_ok(&w) ? CB_OK : CB_E_NOMEM;
+}
+
+int cb_event_encode_ws(int status, cb_buf *out) {
+    cb_jw w;
+    cb_jw_init(&w, out);
+    cb_jw_obj(&w);
+    cb_jw_kint(&w, "statusCode", status);
+    cb_jw_end(&w);
+    return cb_jw_ok(&w) ? CB_OK : CB_E_NOMEM;
+}
+
+int cb_event_encode_none(cb_buf *out) {
+    cb_jw w;
+    cb_jw_init(&w, out);
+    cb_jw_obj(&w);
+    cb_jw_end(&w);
+    return cb_jw_ok(&w) ? CB_OK : CB_E_NOMEM;
+}
+
+// ---- the raw event, for the log ----------------------------------------------------
+
+// Keys whose string value never reaches a log: credentials, and the body
+// (a signup body carries a password). Matched without regard to case.
+static bool secret_key(const char *k, size_t n) {
+    static const char *const S[] = { "authorization", "apikey", "cookie", "cookies", "body",
+                                     "x-amz-security-token", "password", "access_token", "refresh_token" };
+    for (size_t i = 0; i < sizeof S / sizeof S[0]; i++)
+        if (strlen(S[i]) == n && strncasecmp(S[i], k, n) == 0) return true;
+    return false;
+}
+
+// Copies a query string value with the apikey and token parameters' values cut.
+static void redact_query(cb_buf *out, const char *s, size_t n) {
+    size_t i = 0;
+    while (i < n) {
+        size_t j = i;
+        while (j < n && s[j] != '&') j++;
+        const char *eq = memchr(s + i, '=', j - i);
+        size_t kn = eq ? (size_t)(eq - (s + i)) : j - i;
+        if (eq && secret_key(s + i, kn)) {
+            cb_buf_append(out, s + i, kn + 1);
+            cb_buf_puts(out, "REDACTED");
+        } else {
+            cb_buf_append(out, s + i, j - i);
+        }
+        if (j < n) cb_buf_putc(out, '&');
+        i = j + 1;
+    }
+}
+
+int cb_event_redact(const char *json, size_t len, size_t max, cb_buf *out) {
+    if (len > max) len = max;
+    const char *key = NULL;    // the last string that could be a key
+    size_t key_n = 0;
+    bool after_colon = false;  // the next token is key's value
+    bool secret_arr = false;   // inside an array that is a secret key's value (cookies)
+    size_t i = 0;
+    while (i < len) {
+        char c = json[i];
+        if (c != '"') {
+            if (c == ':') after_colon = true;
+            else if (c == '[') { secret_arr = after_colon && key && secret_key(key, key_n); after_colon = false; }
+            else if (c == ']') secret_arr = false;
+            else if (!isspace((unsigned char)c)) after_colon = false;
+            cb_buf_putc(out, c);
+            i++;
+            continue;
+        }
+        size_t j = i + 1;
+        while (j < len && json[j] != '"') j += json[j] == '\\' ? 2 : 1;
+        if (j > len) j = len;
+        const char *s = json + i + 1;
+        size_t sn = j - (i + 1);
+        bool is_value = after_colon;
+        after_colon = false;
+        cb_buf_putc(out, '"');
+        if (secret_arr || (is_value && key && secret_key(key, key_n)))
+            cb_buf_printf(out, "REDACTED %zu", sn);
+        else if (is_value && key && key_n == 14 && strncmp(key, "rawQueryString", 14) == 0)
+            redact_query(out, s, sn);
+        else
+            cb_buf_append(out, s, sn);
+        if (j < len) cb_buf_putc(out, '"');
+        if (!is_value && !secret_arr) { key = s; key_n = sn; }
+        i = j + 1;
+    }
+    return out->oom ? CB_E_NOMEM : CB_OK;
+}
+
+// =====================================================================================
+// The Lambda Runtime API.
+
+void cb_runtime_error_body(cb_buf *b, const char *type, const char *message) {
+    cb_jw w;
+    cb_jw_init(&w, b);
+    cb_jw_obj(&w);
+    cb_jw_kstr(&w, "errorMessage", message);
+    cb_jw_kstr(&w, "errorType", type);
+    cb_jw_end(&w);
+}
+
+// =====================================================================================
+// JWT.
+
+static const char JWT_HEADER_JSON[] = "{\"alg\":\"HS256\",\"typ\":\"JWT\"}";
+
+const char *cb_js_jwt_header(size_t *n) {
+    *n = sizeof JWT_HEADER_JSON - 1;
+    return JWT_HEADER_JSON;
+}
+
+static bool jwt_str_is(const char *json, size_t n, const char *path, const char *want) {
+    char v[64];
+    return cb_json_get_str(json, n, path, v, sizeof v) && strcmp(v, want) == 0;
+}
+
+bool cb_js_jwt_header_ok(const char *json, size_t n) {
+    return cb_json_valid(json, n) && cb_json_find(json, n, "", NULL) == CB_JSON_OBJ && jwt_str_is(json, n, "alg", "HS256");
+}
+
+int cb_js_jwt_claims(cb_buf *out, const cb_jwt_claims *c, const char *issuer) {
+    cb_jw w;
+    cb_jw_init(&w, out);
+    cb_jw_obj(&w);
+    cb_jw_kstr(&w, "aud", "authenticated");
+    cb_jw_kint(&w, "exp", c->exp);
+    cb_jw_kint(&w, "iat", c->iat);
+    if (issuer && issuer[0]) cb_jw_kstr(&w, "iss", issuer);
+    cb_jw_kstr(&w, "sub", c->sub);
+    cb_jw_kstr(&w, "email", c->email);
+    cb_jw_kstr(&w, "role", "authenticated");
+    cb_jw_kstr(&w, "session_id", c->session_id);
+    cb_jw_key(&w, "user_metadata");
+    cb_jw_obj(&w);
+    cb_jw_kstr(&w, "username", c->username);
+    cb_jw_end(&w);
+    cb_jw_key(&w, "app_metadata");
+    cb_jw_obj(&w);
+    cb_jw_kstr(&w, "provider", "email");
+    cb_jw_key(&w, "providers");
+    cb_jw_arr(&w);
+    cb_jw_str(&w, "email");
+    cb_jw_end(&w);
+    cb_jw_end(&w);
+    cb_jw_kbool(&w, "is_anonymous", false);
+    cb_jw_end(&w);
+    return cb_jw_ok(&w) ? CB_OK : CB_E_NOMEM;
+}
+
+bool cb_js_jwt_claims_decode(const char *body, size_t bl, cb_jwt_claims *out, bool *has_nbf, int64_t *nbf) {
+    memset(out, 0, sizeof *out);
+    *has_nbf = false;
+    *nbf = 0;
+    if (!cb_json_valid(body, bl) || cb_json_find(body, bl, "", NULL) != CB_JSON_OBJ) return false;
+    cb_jwt_claims c;
+    memset(&c, 0, sizeof c);
+    if (!jwt_str_is(body, bl, "aud", "authenticated") || !jwt_str_is(body, bl, "role", "authenticated")) return false;
+    if (!cb_json_get_i64(body, bl, "exp", &c.exp)) return false;
+    if (cb_json_find(body, bl, "nbf", NULL) != CB_JSON_MISSING) {
+        if (!cb_json_get_i64(body, bl, "nbf", nbf)) return false;
+        *has_nbf = true;
+    }
+    if (!cb_json_get_i64(body, bl, "iat", &c.iat)) c.iat = 0;
+    if (!cb_json_get_str(body, bl, "sub", c.sub, sizeof c.sub)) return false;
+    if (!cb_json_get_str(body, bl, "session_id", c.session_id, sizeof c.session_id)) return false;
+    if (!cb_json_get_str(body, bl, "email", c.email, sizeof c.email)) c.email[0] = 0;
+    if (!cb_json_get_str(body, bl, "user_metadata.username", c.username, sizeof c.username)) c.username[0] = 0;
+    *out = c;
+    return true;
+}
+
+// =====================================================================================
+// GoTrue.
+
+static bool gt_field(const char *json, size_t n, const char *path, char *out, size_t cap) {
+    out[0] = 0;
+    cb_json_type t = cb_json_find(json, n, path, NULL);
+    if (t == CB_JSON_MISSING || t == CB_JSON_NULL) return true;
+    return t == CB_JSON_STR && cb_json_get_str(json, n, path, out, cap);
+}
+
+cb_js_gt_rc cb_js_gotrue_body_decode(const char *json, size_t n, unsigned want, cb_js_gotrue_body *out) {
+    memset(out, 0, sizeof *out);
+    if (!json || !cb_json_valid(json, n) || cb_json_find(json, n, "", NULL) != CB_JSON_OBJ) return CB_JS_GT_NOT_OBJECT;
+    if ((want & CB_JS_GT_EMAIL) && !gt_field(json, n, "email", out->email, sizeof out->email)) return CB_JS_GT_BAD_FIELD;
+    if ((want & CB_JS_GT_PASSWORD) && !gt_field(json, n, "password", out->password, sizeof out->password))
+        return CB_JS_GT_BAD_FIELD;
+    if ((want & CB_JS_GT_USERNAME) && !gt_field(json, n, "data.username", out->username, sizeof out->username))
+        return CB_JS_GT_BAD_FIELD;
+    if ((want & CB_JS_GT_REFRESH_TOKEN) &&
+        !gt_field(json, n, "refresh_token", out->refresh_token, sizeof out->refresh_token))
+        return CB_JS_GT_BAD_FIELD;
+    out->has_password = (want & CB_JS_GT_PASSWORD) && cb_json_find(json, n, "password", NULL) == CB_JSON_STR;
+    return CB_JS_GT_OK;
+}
+
+void cb_js_gotrue_error(cb_buf *b, bool api_2024, int status, const char *code, const char *msg) {
+    cb_jw w;
+    cb_jw_init(&w, b);
+    cb_jw_obj(&w);
+    if (api_2024) {
+        cb_jw_kstr(&w, "code", code);
+    } else {
+        cb_jw_kint(&w, "code", status);
+        cb_jw_kstr(&w, "error_code", code);
+    }
+    cb_jw_kstr(&w, "msg", msg);
+    if (strcmp(code, "weak_password") == 0) {
+        cb_jw_key(&w, "weak_password");
+        cb_jw_obj(&w);
+        cb_jw_key(&w, "reasons");
+        cb_jw_arr(&w);
+        cb_jw_str(&w, "length");
+        cb_jw_end(&w);
+        cb_jw_end(&w);
+    }
+    cb_jw_end(&w);
+}
+
+// GoTrue's spelling of a time: UTC with microseconds and a 'Z', which is what
+// supabase-swift's ISO-8601 parser reads (Go's RFC 3339).
+static void gt_kts(cb_jw *w, const char *k, int64_t ms) {
+    char t[40];
+    if (ms <= 0 || cb_iso8601(ms, t, sizeof t) != 32) { cb_jw_knull(w, k); return; }
+    memcpy(t + 26, "Z", 2);   // "...ss.ffffff+00:00" -> "...ss.ffffffZ"
+    cb_jw_kstr(w, k, t);
+}
+
+static void gt_user(cb_jw *w, const cb_user *u, int64_t created_at, int64_t last_sign_in_at) {
+    cb_jw_obj(w);
+    cb_jw_kstr(w, "id", u->id);
+    cb_jw_kstr(w, "aud", "authenticated");
+    cb_jw_kstr(w, "role", "authenticated");
+    cb_jw_kstr(w, "email", u->email);
+    gt_kts(w, "email_confirmed_at", created_at);
+    cb_jw_kstr(w, "phone", "");
+    gt_kts(w, "confirmed_at", created_at);
+    gt_kts(w, "last_sign_in_at", last_sign_in_at);
+    cb_jw_key(w, "app_metadata");
+    cb_jw_obj(w);
+    cb_jw_kstr(w, "provider", "email");
+    cb_jw_key(w, "providers");
+    cb_jw_arr(w);
+    cb_jw_str(w, "email");
+    cb_jw_end(w);
+    cb_jw_end(w);
+    cb_jw_key(w, "user_metadata");
+    cb_jw_obj(w);
+    cb_jw_kstr(w, "username", u->username);
+    cb_jw_end(w);
+    cb_jw_key(w, "identities");
+    cb_jw_arr(w);
+    cb_jw_end(w);
+    gt_kts(w, "created_at", created_at);
+    gt_kts(w, "updated_at", last_sign_in_at > created_at ? last_sign_in_at : created_at);
+    cb_jw_kbool(w, "is_anonymous", false);
+    cb_jw_end(w);
+}
+
+int cb_js_gotrue_session(cb_buf *b, const cb_session *s) {
+    cb_jw w;
+    cb_jw_init(&w, b);
+    cb_jw_obj(&w);
+    cb_jw_kstr(&w, "access_token", s->access_token);
+    cb_jw_kstr(&w, "token_type", "bearer");
+    cb_jw_kint(&w, "expires_in", s->expires_in);
+    cb_jw_kint(&w, "expires_at", s->expires_at);
+    cb_jw_kstr(&w, "refresh_token", s->refresh_token);
+    cb_jw_key(&w, "user");
+    gt_user(&w, &s->user, s->user_created_at, s->last_sign_in_at);
+    cb_jw_end(&w);
+    return cb_jw_ok(&w) ? CB_OK : CB_E_NOMEM;
+}
+
+int cb_js_gotrue_user(cb_buf *b, const cb_user *u, int64_t created_at, int64_t last_sign_in_at) {
+    cb_jw w;
+    cb_jw_init(&w, b);
+    gt_user(&w, u, created_at, last_sign_in_at);
+    return cb_jw_ok(&w) ? CB_OK : CB_E_NOMEM;
+}
+
+// =====================================================================================
+// Phoenix (phoenix.c, realtime.c, rt_apigw.c): the realtime-js and supabase-swift
+// channel frames. Ground truth: phoenix.c's header.
+
+#define PHX_MAX_BINDINGS 16
+
+// One string element of a frame into `out`: a ref (no escapes allowed, empty
+// for null or missing) or the topic/event (unescaped into a fixed buffer).
+static bool ref_of(const char *t, size_t n, const char *path, cb_span *out) {
+    cb_span v;
+    cb_json_type ty = cb_json_find(t, n, path, &v);
+    if (ty == CB_JSON_NULL || ty == CB_JSON_MISSING) { *out = cb_span_of("", 0); return true; }
+    if (ty != CB_JSON_STR || v.n < 2) return false;
+    if (memchr(v.p, '\\', v.n)) return false;   // refs are counters; an escape is not one
+    *out = cb_span_of(v.p + 1, v.n - 2);
+    return true;
+}
+
+static bool str_of(const char *t, size_t n, const char *path, char *out, size_t cap) {
+    return cb_json_find(t, n, path, NULL) == CB_JSON_STR && cb_json_get_str(t, n, path, out, cap);
+}
+
+int cb_phx_decode(const char *text, size_t len, int vsn, cb_phx_msg *out) {
+    memset(out, 0, sizeof *out);
+    if (!text || !cb_json_valid(text, len)) return CB_E_INVALID;
+    cb_json_type top = cb_json_find(text, len, "", NULL);
+    const char *k_jr, *k_ref, *k_topic, *k_event, *k_payload;
+    if (vsn == 2) {
+        if (top != CB_JSON_ARR || cb_json_array_len(text, len, "") < 5) return CB_E_INVALID;
+        k_jr = "0"; k_ref = "1"; k_topic = "2"; k_event = "3"; k_payload = "4";
+    } else if (vsn == 1) {
+        if (top != CB_JSON_OBJ) return CB_E_INVALID;
+        k_jr = "join_ref"; k_ref = "ref"; k_topic = "topic"; k_event = "event"; k_payload = "payload";
+    } else {
+        return CB_E_INVALID;
+    }
+    if (!ref_of(text, len, k_jr, &out->join_ref) || !ref_of(text, len, k_ref, &out->ref)) return CB_E_INVALID;
+    if (!str_of(text, len, k_topic, out->topic, sizeof out->topic)) return CB_E_INVALID;
+    if (!str_of(text, len, k_event, out->event, sizeof out->event)) return CB_E_INVALID;
+    cb_json_type pt = cb_json_find(text, len, k_payload, &out->payload);
+    if (pt == CB_JSON_MISSING || pt == CB_JSON_ERR) return CB_E_INVALID;
+    return CB_OK;
+}
+
+static void put_ref(cb_jw *w, cb_span s) {
+    if (s.n) cb_jw_strn(w, s.p, s.n);
+    else cb_jw_null(w);
+}
+
+// The one frame writer: [join_ref, ref, topic, event, payload] for vsn 2, the
+// same five as an object for vsn 1. `payload` is JSON text.
+static void frame(cb_buf *out, int vsn, cb_span join_ref, cb_span ref, const char *topic, const char *event,
+                  const char *payload, size_t payload_n) {
+    cb_buf_reset(out);
+    cb_jw w;
+    cb_jw_init(&w, out);
+    if (vsn == 2) {
+        cb_jw_arr(&w);
+        put_ref(&w, join_ref);
+        put_ref(&w, ref);
+        cb_jw_str(&w, topic);
+        cb_jw_str(&w, event);
+        cb_jw_raw(&w, payload, payload_n);
+    } else {
+        cb_jw_obj(&w);
+        cb_jw_key(&w, "join_ref"); put_ref(&w, join_ref);
+        cb_jw_key(&w, "ref"); put_ref(&w, ref);
+        cb_jw_kstr(&w, "topic", topic);
+        cb_jw_kstr(&w, "event", event);
+        cb_jw_key(&w, "payload"); cb_jw_raw(&w, payload, payload_n);
+    }
+    cb_jw_end(&w);
+}
+
+void cb_phx_reply(cb_buf *out, int vsn, const cb_phx_msg *to, bool ok, const char *response_json) {
+    cb_buf p;
+    cb_buf_init(&p);
+    cb_buf_printf(&p, "{\"response\":%s,\"status\":\"%s\"}", response_json && *response_json ? response_json : "{}",
+                  ok ? "ok" : "error");
+    frame(out, vsn, to->join_ref, to->ref, to->topic, "phx_reply", cb_buf_cstr(&p), p.len);
+    cb_buf_free(&p);
+}
+
+void cb_phx_push(cb_buf *out, int vsn, const char *wire_topic, const char *event, const char *payload_json) {
+    frame(out, vsn, cb_span_of("", 0), cb_span_of("", 0), wire_topic, event, payload_json, strlen(payload_json));
+}
+
+void cb_phx_close(cb_buf *out, int vsn, cb_span join_ref, const char *wire_topic) {
+    frame(out, vsn, join_ref, join_ref, wire_topic, "phx_close", "{}", 2);
+}
+
+void cb_phx_refusal(cb_buf *out, const char *reason) {
+    cb_jw w;
+    cb_jw_init(&w, out);
+    cb_jw_obj(&w);
+    cb_jw_kstr(&w, "reason", reason);
+    cb_jw_end(&w);
+}
+
+int cb_phx_access_token(const char *payload, size_t n, char *out, size_t cap) {
+    out[0] = 0;
+    if (cb_json_find(payload, n, "access_token", NULL) != CB_JSON_STR) return 0;
+    return cb_json_get_str(payload, n, "access_token", out, cap) ? 1 : -1;
+}
+
+int cb_phx_vsn_of_frame(const uint8_t *text, size_t len) { return len && text[0] == '[' ? 2 : 1; }
+
+// The join reply's response: {} for a broadcast channel, or every
+// postgres_changes binding echoed whole with its id appended (realtime-js and
+// supabase-swift compare the echo field by field and error the channel on a
+// mismatch, so the request's own text is the only safe answer).
+int cb_phx_join_response(const char *payload, size_t n, cb_buf *out) {
+    int nb = cb_json_array_len(payload, n, "config.postgres_changes");
+    if (nb <= 0) { cb_buf_puts(out, "{}"); return CB_OK; }
+    if (nb > PHX_MAX_BINDINGS) return CB_E_FULL;
+    cb_buf_puts(out, "{\"postgres_changes\":[");
+    for (int i = 0; i < nb; i++) {
+        char path[64], f[4][256];
+        static const char *const keys[4] = { "event", "schema", "table", "filter" };
+        cb_span obj;
+        snprintf(path, sizeof path, "config.postgres_changes.%d", i);
+        if (cb_json_find(payload, n, path, &obj) != CB_JSON_OBJ) return CB_E_INVALID;
+        for (int k = 0; k < 4; k++) {
+            char kp[96];
+            snprintf(kp, sizeof kp, "%s.%s", path, keys[k]);
+            cb_json_type t = cb_json_find(payload, n, kp, NULL);
+            if (t == CB_JSON_MISSING || t == CB_JSON_NULL) f[k][0] = 0;
+            else if (!str_of(payload, n, kp, f[k], sizeof f[k])) return CB_E_INVALID;
+        }
+        int32_t id = cb_phx_binding_id(f[0], f[1], f[2], f[3]);
+        if (i) cb_buf_putc(out, ',');
+        // The object minus its closing brace, then the id. obj.p[0] is '{'.
+        size_t body = obj.n - 1;
+        bool empty = true;
+        for (size_t k = 1; k < body; k++)
+            if (obj.p[k] != ' ' && obj.p[k] != '\t' && obj.p[k] != '\n' && obj.p[k] != '\r') { empty = false; break; }
+        if (empty) cb_buf_printf(out, "{\"id\":%d}", (int)id);
+        else {
+            cb_buf_append(out, obj.p, body);
+            cb_buf_printf(out, ",\"id\":%d}", (int)id);
+        }
+    }
+    cb_buf_puts(out, "]}");
+    return out->oom ? CB_E_NOMEM : CB_OK;
+}
+
+// =====================================================================================
+// Supabase Realtime payloads (realtime.c): what a postgres_changes or broadcast
+// push carries inside its Phoenix frame.
+
+static void rt_chat_row(cb_jw *w, const cb_chat_row *r, bool sorted) {
+    char ts[40];
+    cb_rt_ts(r->created_at, ts, sizeof ts);
+    cb_jw_obj(w);
+    if (sorted) {
+        cb_jw_kstr(w, "created_at", ts);
+        cb_jw_kstr(w, "game_id", r->game_id);
+        cb_jw_kstr(w, "id", r->id);
+        cb_jw_kbool(w, "is_system", r->is_system);
+        cb_jw_kstr(w, "message", r->message ? r->message : "");
+        cb_jw_kstr(w, "user_id", r->user_id);
+    } else {
+        cb_jw_kstr(w, "id", r->id);
+        cb_jw_kstr(w, "game_id", r->game_id);
+        cb_jw_kstr(w, "user_id", r->user_id);
+        cb_jw_kstr(w, "message", r->message ? r->message : "");
+        cb_jw_kbool(w, "is_system", r->is_system);
+        cb_jw_kstr(w, "created_at", ts);
+    }
+    cb_jw_end(w);
+}
+
+// The columns player_views reports (realtime's "columns", in table order).
+static const char *const PV_COLUMNS =
+    "[{\"name\":\"game_id\",\"type\":\"text\"},{\"name\":\"player_id\",\"type\":\"uuid\"},"
+    "{\"name\":\"view\",\"type\":\"bytea\"},{\"name\":\"version\",\"type\":\"int8\"},"
+    "{\"name\":\"status\",\"type\":\"text\"},{\"name\":\"updated_at\",\"type\":\"timestamptz\"}]";
+
+static void pv_pk(cb_jw *w, const cb_view_row *row) {
+    cb_jw_obj(w);
+    cb_jw_kstr(w, "game_id", row->game_id);
+    cb_jw_kstr(w, "player_id", row->player_id);
+    cb_jw_end(w);
+}
+
+void cb_rt_pv_payload(cb_buf *out, int event, const cb_view_row *row) {
+    static const char *const TYPES[4] = { "", "INSERT", "UPDATE", "DELETE" };
+    const char *type = TYPES[event];
+    char commit[40], ts[40];
+    cb_rt_commit_ts(row->updated_at, commit, sizeof commit);
+    cb_rt_ts(row->updated_at, ts, sizeof ts);
+    char filter[64 + CB_UUID_LEN];
+    snprintf(filter, sizeof filter, "player_id=eq.%s", row->player_id);
+
+    cb_jw w;
+    cb_jw_init(&w, out);
+    cb_jw_obj(&w);
+    cb_jw_key(&w, "data");
+    cb_jw_obj(&w);
+    cb_jw_key(&w, "columns"); cb_jw_raw(&w, PV_COLUMNS, strlen(PV_COLUMNS));
+    cb_jw_kstr(&w, "commit_timestamp", commit);
+    cb_jw_knull(&w, "errors");
+    if (event != CB_RT_INSERT) { cb_jw_key(&w, "old_record"); pv_pk(&w, row); }
+    if (event != CB_RT_DELETE) {
+        cb_jw_key(&w, "record");
+        cb_jw_obj(&w);
+        cb_jw_kstr(&w, "game_id", row->game_id);
+        cb_jw_kstr(&w, "player_id", row->player_id);
+        cb_jw_kstr(&w, "status", row->status);
+        cb_jw_kstr(&w, "updated_at", ts);
+        cb_jw_kint(&w, "version", row->version);
+        cb_jw_key(&w, "view"); cb_jw_bytea(&w, row->view, row->view_len);
+        cb_jw_end(&w);
+    }
+    cb_jw_kstr(&w, "schema", "public");
+    cb_jw_kstr(&w, "table", "player_views");
+    cb_jw_kstr(&w, "type", type);
+    cb_jw_end(&w);
+    // Every binding this change satisfies: its own event or "*", with the
+    // player's filter or none (the RLS scopes an unfiltered binding to the same rows).
+    cb_jw_key(&w, "ids");
+    cb_jw_arr(&w);
+    const char *events[2] = { type, "*" };
+    const char *filters[2] = { filter, "" };
+    for (int e = 0; e < 2; e++)
+        for (int f = 0; f < 2; f++) cb_jw_int(&w, cb_phx_binding_id(events[e], "public", "player_views", filters[f]));
+    cb_jw_end(&w);
+    cb_jw_end(&w);
+}
+
+void cb_rt_cast_payload(cb_buf *out, const uint8_t *cast, size_t len) {
+    size_t n = cb_b64_len(len) + 1;
+    char *b = malloc(n);
+    if (!b) { out->oom = true; return; }
+    cb_b64_encode(cast, len, b, n);
+    cb_buf_puts(out, "{\"event\":\"animation_events\",\"payload\":{\"b\":\"");
+    cb_buf_puts(out, b);   // base64 needs no JSON escaping
+    cb_buf_puts(out, "\"},\"type\":\"broadcast\"}");
+    free(b);
+}
+
+void cb_rt_chat_payload(cb_buf *out, const cb_chat_row *row) {
+    cb_jw w;
+    cb_jw_init(&w, out);
+    cb_jw_obj(&w);
+    cb_jw_kstr(&w, "event", "INSERT");
+    cb_jw_key(&w, "payload");
+    cb_jw_obj(&w);
+    cb_jw_knull(&w, "old_record");
+    cb_jw_kstr(&w, "operation", "INSERT");
+    cb_jw_key(&w, "record");
+    rt_chat_row(&w, row, true);
+    cb_jw_kstr(&w, "schema", "public");
+    cb_jw_kstr(&w, "table", "chat_messages");
+    cb_jw_end(&w);
+    cb_jw_kstr(&w, "type", "broadcast");
+    cb_jw_end(&w);
+}
+
+// =====================================================================================
+// PostgREST.
+
+static void pg_cell(cb_jw *w, const cb_pgrst_cell *c) {
+    char ts[48];
+    switch (c->kind) {
+    case CB_PGRST_TEXT:  cb_jw_str(w, c->s); break;
+    case CB_PGRST_INT:   cb_jw_int(w, c->i); break;
+    case CB_PGRST_BOOL:  cb_jw_bool(w, c->i != 0); break;
+    case CB_PGRST_BYTEA: cb_jw_bytea(w, c->p, c->n); break;
+    case CB_PGRST_TS:    cb_rt_ts(c->i, ts, sizeof ts); cb_jw_str(w, ts); break;
+    case CB_PGRST_UUIDS:
+        cb_jw_arr(w);
+        for (size_t i = 0; i < c->n; i++) cb_jw_str(w, c->s + i * sizeof(cb_uuid));
+        cb_jw_end(w);
+        break;
+    default:      cb_jw_null(w); break;
+    }
+}
+
+static void pg_row(cb_jw *w, const char *const *names, const cb_pgrst_row *r, const int *sel, int n_sel) {
+    cb_jw_obj(w);
+    for (int k = 0; k < n_sel; k++) {
+        cb_jw_key(w, names[sel[k]]);
+        pg_cell(w, &r->c[sel[k]]);
+    }
+    cb_jw_end(w);
+}
+
+int cb_js_pgrst_rows(cb_buf *out, const cb_pgrst_row *rows, size_t n, const char *const *names, const int *sel,
+                     int n_sel, bool object) {
+    cb_jw w;
+    cb_jw_init(&w, out);
+    if (object) pg_row(&w, names, &rows[0], sel, n_sel);
+    else {
+        cb_jw_arr(&w);
+        for (size_t i = 0; i < n; i++) pg_row(&w, names, &rows[i], sel, n_sel);
+        cb_jw_end(&w);
+    }
+    return cb_jw_ok(&w) ? CB_OK : CB_E_NOMEM;
+}
+
+void cb_js_pgrst_error(cb_buf *out, const char *code, const char *message, const char *details) {
+    cb_jw w;
+    cb_jw_init(&w, out);
+    cb_jw_obj(&w);
+    cb_jw_kstr(&w, "code", code);
+    cb_jw_kstr(&w, "details", details);
+    cb_jw_knull(&w, "hint");
+    cb_jw_kstr(&w, "message", message);
+    cb_jw_end(&w);
+}
+
+int cb_js_pgrst_chat_count(const char *body, size_t n, bool *array) {
+    *array = false;
+    if (!body || !cb_json_valid(body, n)) return -1;
+    cb_json_type top = cb_json_find(body, n, "", NULL);
+    *array = top == CB_JSON_ARR;
+    return top == CB_JSON_OBJ ? 1 : top == CB_JSON_ARR ? cb_json_array_len(body, n, "") : -1;
+}
+
+cb_js_chat_rc cb_js_pgrst_chat_row(const char *body, size_t n, int index, cb_chat_row *out, const char **missing) {
+    char base[16], path[64], uuidbuf[64];
+    memset(out, 0, sizeof *out);
+    *missing = NULL;
+    if (index >= 0) {
+        snprintf(base, sizeof base, "%d", index);
+        if (cb_json_find(body, n, base, NULL) != CB_JSON_OBJ) return CB_JS_CHAT_NOT_OBJECT;
+        snprintf(base, sizeof base, "%d.", index);
+    } else {
+        base[0] = 0;
+    }
+#define P(k) (snprintf(path, sizeof path, "%s%s", base, k), path)
+    static const char *const required[3] = { "game_id", "user_id", "message" };
+    for (int i = 0; i < 3; i++) {
+        if (cb_json_find(body, n, P(required[i]), NULL) != CB_JSON_STR) {
+            *missing = required[i];
+            return CB_JS_CHAT_MISSING;
+        }
+    }
+    if (!cb_json_get_str(body, n, P("game_id"), out->game_id, sizeof out->game_id) ||
+        !cb_json_get_str(body, n, P("user_id"), uuidbuf, sizeof uuidbuf) || !cb_uuid_valid(uuidbuf, strlen(uuidbuf)))
+        return CB_JS_CHAT_BAD_UUID;
+    for (char *p = uuidbuf; *p; p++) *p = (char)tolower((unsigned char)*p);
+    cb_strlcpy(out->user_id, uuidbuf, sizeof out->user_id);
+    cb_span tok;
+    cb_json_find(body, n, P("message"), &tok);
+    out->message = malloc(tok.n + 1);
+    if (!out->message) return CB_JS_CHAT_NOMEM;
+    int ml = cb_json_unescape(tok, out->message, tok.n + 1);
+    if (ml < 0 || strlen(out->message) != (size_t)ml) return CB_JS_CHAT_NUL;
+    cb_json_type st = cb_json_find(body, n, P("is_system"), NULL);
+    if (st == CB_JSON_BOOL) cb_json_get_bool(body, n, P("is_system"), &out->is_system);
+    else if (st != CB_JSON_MISSING && st != CB_JSON_NULL) return CB_JS_CHAT_BAD_BOOL;
+    if (cb_json_find(body, n, P("id"), NULL) == CB_JSON_STR) {
+        if (!cb_json_get_str(body, n, P("id"), uuidbuf, sizeof uuidbuf) || !cb_uuid_valid(uuidbuf, strlen(uuidbuf)))
+            return CB_JS_CHAT_BAD_UUID;
+        for (char *p = uuidbuf; *p; p++) *p = (char)tolower((unsigned char)*p);
+        cb_strlcpy(out->id, uuidbuf, sizeof out->id);
+    }
+#undef P
+    return CB_JS_CHAT_OK;
+}
+
+// =====================================================================================
+// The gateway's error.
+
+void cb_js_gateway_error(cb_buf *out, const char *msg) {
+    cb_jw w;
+    cb_jw_init(&w, out);
+    cb_jw_obj(&w);
+    cb_jw_kstr(&w, "message", msg);
+    cb_jw_end(&w);
+}
+
+// =====================================================================================
+// The admin console's API.
+
+struct cb_js_stream {
+    cb_jw w;
+};
+
+static cb_js_stream *adm_open(cb_buf *out) {
+    cb_js_stream *s = malloc(sizeof *s);
+    if (!s) return NULL;
+    cb_jw_init(&s->w, out);
+    cb_jw_obj(&s->w);
+    return s;
+}
+
+// Closes the document and frees the stream.
+static int adm_close(cb_js_stream *s) {
+    if (!s) return CB_E_NOMEM;
+    cb_jw_end(&s->w);
+    bool ok = cb_jw_ok(&s->w);
+    free(s);
+    return ok ? CB_OK : CB_E_NOMEM;
+}
+
+static void adm_kiso(cb_jw *w, const char *k, int64_t ms) {
+    char t[40];
+    if (ms <= 0 || cb_iso8601(ms, t, sizeof t) < 0) cb_jw_knull(w, k);
+    else cb_jw_kstr(w, k, t);
+}
+
+static void adm_links(cb_jw *w, const cb_js_admin_links *l) {
+    if (!l->lambda) { cb_jw_knull(w, "links"); return; }
+    cb_jw_key(w, "links");
+    cb_jw_obj(w);
+    cb_jw_kstr(w, "lambda", l->lambda);
+    cb_jw_kstr(w, "logs_insights", l->logs_insights);
+    cb_jw_kstr(w, "dynamodb", l->dynamodb);
+    cb_jw_kstr(w, "backups", l->backups);
+    cb_jw_end(w);
+}
+
+static int adm_done(cb_jw *w) { return cb_jw_ok(w) ? CB_OK : CB_E_NOMEM; }
+
+int cb_js_admin_overview_write(cb_buf *out, const cb_js_admin_overview *o) {
+    cb_jw w;
+    cb_jw_init(&w, out);
+    cb_jw_obj(&w);
+    cb_jw_kstr(&w, "version", o->version);
+    cb_jw_kstr(&w, "mode", o->mode);
+    cb_jw_kint(&w, "uptime_s", o->uptime_s);
+    adm_kiso(&w, "started_at", o->started_ms);
+    cb_jw_kstr(&w, "store", o->store);
+    cb_jw_kstr(&w, "table", o->table);
+    cb_jw_kstr(&w, "public_url", o->public_url);
+    cb_jw_kint(&w, "requests", o->requests);
+    cb_jw_kint(&w, "errors_5xx", o->errors_5xx);
+    if (o->conns_known) {
+        cb_jw_kint(&w, "http_conns", o->http_conns);
+        cb_jw_kint(&w, "ws_conns", o->ws_conns);
+    } else {
+        cb_jw_knull(&w, "http_conns");
+        cb_jw_knull(&w, "ws_conns");
+    }
+    if (o->games_needing_bots < 0) cb_jw_knull(&w, "games_needing_bots");
+    else cb_jw_kint(&w, "games_needing_bots", o->games_needing_bots);
+    cb_jw_key(&w, "store_throttles");
+    cb_jw_obj(&w);
+    cb_jw_kint(&w, "throttled", (int64_t)o->throttled);
+    cb_jw_kint(&w, "gave_up", (int64_t)o->gave_up);
+    cb_jw_end(&w);
+    if (o->continuous_backup) cb_jw_kstr(&w, "last_backup", "continuous (point-in-time recovery)");
+    else if (o->last_backup_ms) adm_kiso(&w, "last_backup", o->last_backup_ms);
+    else cb_jw_knull(&w, "last_backup");
+    cb_jw_key(&w, "process");
+    cb_jw_obj(&w);
+    cb_jw_kint(&w, "pid", o->pid);
+    cb_jw_kint(&w, "max_rss_kb", o->max_rss_kb);
+    cb_jw_kint(&w, "cpu_user_ms", o->cpu_user_ms);
+    cb_jw_kint(&w, "cpu_sys_ms", o->cpu_sys_ms);
+    cb_jw_end(&w);
+    adm_links(&w, &o->links);
+    cb_jw_end(&w);
+    return adm_done(&w);
+}
+
+cb_js_stream *cb_js_admin_collections_begin(cb_buf *out, const char *store) {
+    cb_js_stream *s = adm_open(out);
+    if (!s) return NULL;
+    cb_jw_kstr(&s->w, "store", store);
+    cb_jw_key(&s->w, "collections");
+    cb_jw_arr(&s->w);
+    return s;
+}
+
+void cb_js_admin_collections_add(cb_js_stream *s, const char *name) { cb_jw_str(&s->w, name); }
+
+int cb_js_admin_collections_end(cb_js_stream *s) {
+    if (s) cb_jw_end(&s->w);
+    return adm_close(s);
+}
+
+void cb_js_admin_row(cb_js_stream *s, int n, const char *const *names, const char *const *values) {
+    cb_jw_obj(&s->w);
+    for (int i = 0; i < n; i++) {
+        cb_jw_key(&s->w, names[i] ? names[i] : "?");
+        cb_jw_str(&s->w, values[i]);   // NULL writes null
+    }
+    cb_jw_end(&s->w);
+}
+
+cb_js_stream *cb_js_admin_browse_begin(cb_buf *out, const char *collection) {
+    cb_js_stream *s = adm_open(out);
+    if (!s) return NULL;
+    cb_jw_kstr(&s->w, "collection", collection);
+    cb_jw_key(&s->w, "rows");
+    cb_jw_arr(&s->w);
+    return s;
+}
+
+int cb_js_admin_browse_end(cb_js_stream *s, const char *next) {
+    if (s) {
+        cb_jw_end(&s->w);
+        cb_jw_kstr(&s->w, "next", next);
+    }
+    return adm_close(s);
+}
+
+cb_js_stream *cb_js_admin_query_begin(cb_buf *out, const char *dialect, bool write_allowed) {
+    cb_js_stream *s = adm_open(out);
+    if (!s) return NULL;
+    cb_jw_kstr(&s->w, "dialect", dialect);
+    cb_jw_kbool(&s->w, "write_allowed", write_allowed);
+    cb_jw_key(&s->w, "rows");
+    cb_jw_arr(&s->w);
+    return s;
+}
+
+int cb_js_admin_query_end(cb_js_stream *s, bool truncated) {
+    if (s) {
+        cb_jw_end(&s->w);
+        cb_jw_kbool(&s->w, "truncated", truncated);
+    }
+    return adm_close(s);
+}
+
+bool cb_js_admin_query_body(const char *body, size_t n, char *stmt, size_t stmt_cap, char *confirm, size_t confirm_cap) {
+    if (!body || !cb_json_get_str(body, n, "statement", stmt, stmt_cap)) return false;
+    if (!cb_json_get_str(body, n, "confirm", confirm, confirm_cap)) confirm[0] = 0;
+    return true;
+}
+
+cb_js_stream *cb_js_admin_users_begin(cb_buf *out) {
+    cb_js_stream *s = adm_open(out);
+    if (!s) return NULL;
+    cb_jw_key(&s->w, "users");
+    cb_jw_arr(&s->w);
+    return s;
+}
+
+void cb_js_admin_users_add(cb_js_stream *s, const cb_user_row *u) {
+    cb_jw *w = &s->w;
+    cb_jw_obj(w);
+    cb_jw_kstr(w, "id", u->id);
+    cb_jw_kstr(w, "email", u->email);
+    cb_jw_kstr(w, "username", u->username);
+    adm_kiso(w, "created_at", u->created_at);
+    adm_kiso(w, "last_sign_in_at", u->last_sign_in_at);
+    cb_jw_end(w);
+}
+
+int cb_js_admin_users_end(cb_js_stream *s, int64_t offset, int64_t next_offset) {
+    if (s) {
+        cb_jw_end(&s->w);
+        cb_jw_kint(&s->w, "offset", offset);
+        if (next_offset >= 0) cb_jw_kint(&s->w, "next_offset", next_offset);
+        else cb_jw_knull(&s->w, "next_offset");
+    }
+    return adm_close(s);
+}
+
+bool cb_js_admin_id_body(const char *body, size_t n, char *id, size_t cap) {
+    return body && cb_json_get_str(body, n, "id", id, cap);
+}
+
+static int adm_one(cb_buf *out, const char *key, const char *value) {
+    cb_jw w;
+    cb_jw_init(&w, out);
+    cb_jw_obj(&w);
+    cb_jw_kstr(&w, key, value);
+    cb_jw_end(&w);
+    return adm_done(&w);
+}
+
+int cb_js_admin_deleted(cb_buf *out, const char *id) { return adm_one(out, "deleted", id); }
+int cb_js_admin_written(cb_buf *out, const char *path) { return adm_one(out, "written", path); }
+
+// One game's scalar columns and its seats, into an open object.
+static void adm_game(cb_jw *w, const cb_js_admin_game *a) {
+    const cb_game_row *g = a->g;
+    cb_jw_kstr(w, "id", g->id);
+    cb_jw_kint(w, "status", g->status);
+    cb_jw_kstr(w, "status_label", a->status_label);
+    cb_jw_kint(w, "version", g->version);
+    cb_jw_kint(w, "round_epoch", g->round_epoch);
+    cb_jw_kbool(w, "needs_bots", g->needs_bots);
+    adm_kiso(w, "created_at", g->created_at);
+    adm_kiso(w, "updated_at", g->updated_at);
+    adm_kiso(w, "last_commit_at", g->last_commit_at);
+    cb_jw_key(w, "seats");
+    if (a->roster_rc != ROSTER_OK) {
+        cb_jw_null(w);
+        cb_jw_kint(w, "roster_error", a->roster_rc);
+        return;
+    }
+    const Roster *r = a->roster;
+    cb_jw_arr(w);
+    for (int i = 0; i < r->n; i++) {
+        cb_jw_obj(w);
+        cb_jw_key(w, "name");
+        cb_jw_strn(w, r->seats[i].name, r->seats[i].name_len);
+        cb_jw_key(w, "id");
+        cb_jw_strn(w, r->seats[i].id, r->seats[i].id_len);
+        cb_jw_kbool(w, "bot", r->seats[i].brain_len > 0);
+        cb_jw_end(w);
+    }
+    cb_jw_end(w);
+    cb_jw_key(w, "title");
+    cb_jw_strn(w, r->title, r->title_len);
+}
+
+cb_js_stream *cb_js_admin_games_begin(cb_buf *out) {
+    cb_js_stream *s = adm_open(out);
+    if (!s) return NULL;
+    cb_jw_key(&s->w, "games");
+    cb_jw_arr(&s->w);
+    return s;
+}
+
+void cb_js_admin_games_add(cb_js_stream *s, const cb_js_admin_game *g) {
+    cb_jw_obj(&s->w);
+    adm_game(&s->w, g);
+    cb_jw_end(&s->w);
+}
+
+int cb_js_admin_games_end(cb_js_stream *s, const char *next) {
+    if (s) {
+        cb_jw_end(&s->w);
+        cb_jw_kstr(&s->w, "next", next);
+    }
+    return adm_close(s);
+}
+
+int cb_js_admin_game_write(cb_buf *out, const cb_js_admin_game *a, const cb_js_admin_envelope *e) {
+    const cb_game_row *g = a->g;
+    cb_jw w;
+    cb_jw_init(&w, out);
+    cb_jw_obj(&w);
+    adm_game(&w, a);
+    cb_jw_kint(&w, "state_len", (int64_t)g->state_len);
+    cb_jw_kint(&w, "roster_len", (int64_t)g->roster_len);
+    cb_jw_kint(&w, "logs_len", (int64_t)g->logs_len);
+    cb_jw_kbool(&w, "has_seed", g->has_seed);
+    if (e->view_ok) {
+        if (e->envelope_hex) cb_jw_kstr(&w, "envelope_hex", e->envelope_hex);
+        else cb_jw_knull(&w, "envelope_hex");
+        cb_jw_kint(&w, "envelope_version", e->envelope_version);
+    } else {
+        cb_jw_knull(&w, "envelope_hex");
+        cb_jw_kstr(&w, "envelope_error", e->envelope_error);
+    }
+    cb_jw_end(&w);
+    return adm_done(&w);
+}
+
+cb_js_stream *cb_js_admin_bots_begin(cb_buf *out) {
+    cb_js_stream *s = adm_open(out);
+    if (!s) return NULL;
+    cb_jw_key(&s->w, "bots");
+    cb_jw_arr(&s->w);
+    return s;
+}
+
+void cb_js_admin_bots_add(cb_js_stream *s, const cb_bot_row *r) {
+    cb_jw *w = &s->w;
+    cb_jw_obj(w);
+    cb_jw_kstr(w, "id", r->id);
+    cb_jw_kstr(w, "nickname", r->nickname);
+    cb_jw_kstr(w, "strategy_key", r->strategy_key);
+    cb_jw_kint(w, "elo_rating", r->elo_rating);
+    if (r->previous_elo < 0) cb_jw_knull(w, "previous_elo");
+    else cb_jw_kint(w, "previous_elo", r->previous_elo);
+    cb_jw_kint(w, "games_played", r->games_played);
+    adm_kiso(w, "updated_at", r->updated_at);
+    cb_jw_end(w);
+}
+
+int cb_js_admin_bots_end(cb_js_stream *s) {
+    if (s) cb_jw_end(&s->w);
+    return adm_close(s);
+}
+
+cb_js_stream *cb_js_admin_logs_begin(cb_buf *out, uint64_t last_seq) {
+    cb_js_stream *s = adm_open(out);
+    if (!s) return NULL;
+    cb_jw_kint(&s->w, "last_seq", (int64_t)last_seq);
+    cb_jw_key(&s->w, "entries");
+    cb_jw_arr(&s->w);
+    return s;
+}
+
+void cb_js_admin_logs_add(cb_js_stream *s, uint64_t seq, int64_t at_ms, const char *level, const char *module,
+                          const char *msg) {
+    cb_jw *w = &s->w;
+    cb_jw_obj(w);
+    cb_jw_kint(w, "seq", (int64_t)seq);
+    adm_kiso(w, "at", at_ms);
+    cb_jw_kstr(w, "level", level);
+    cb_jw_kstr(w, "module", module);
+    cb_jw_kstr(w, "msg", msg);
+    cb_jw_end(w);
+}
+
+int cb_js_admin_logs_end(cb_js_stream *s, const cb_js_admin_links *links) {
+    if (s) {
+        cb_jw_end(&s->w);
+        adm_links(&s->w, links);
+    }
+    return adm_close(s);
+}
+
+cb_js_stream *cb_js_admin_config_begin(cb_buf *out, const cb_js_admin_config *c) {
+    cb_js_stream *s = adm_open(out);
+    if (!s) return NULL;
+    cb_jw_kstr(&s->w, "mode", c->mode);
+    cb_jw_kstr(&s->w, "store", c->store);
+    cb_jw_kstr(&s->w, "table", c->table);
+    cb_jw_kstr(&s->w, "allowed_origins", c->allowed_origins);
+    cb_jw_kstr(&s->w, "aws_region", c->aws_region);
+    cb_jw_kstr(&s->w, "function_name", c->function_name);
+    cb_jw_key(&s->w, "settings");
+    cb_jw_arr(&s->w);
+    return s;
+}
+
+void cb_js_admin_config_add(cb_js_stream *s, const char *name, const char *value, bool secret) {
+    cb_jw *w = &s->w;
+    cb_jw_obj(w);
+    cb_jw_kstr(w, "name", name);
+    cb_jw_kstr(w, "value", value);   // cb_config_each has already redacted a secret
+    cb_jw_kbool(w, "secret", secret);
+    cb_jw_end(w);
+}
+
+int cb_js_admin_config_end(cb_js_stream *s) {
+    if (s) cb_jw_end(&s->w);
+    return adm_close(s);
+}
+
+int cb_js_admin_backups_write(cb_buf *out, const cb_js_admin_backups *b) {
+    cb_jw w;
+    cb_jw_init(&w, out);
+    cb_jw_obj(&w);
+    cb_jw_kstr(&w, "store", b->store);
+    if (b->sqlite) {
+        cb_jw_kstr(&w, "kind", "vacuum_into");
+        cb_jw_kstr(&w, "dir", b->dir);
+        cb_jw_key(&w, "files");
+        cb_jw_arr(&w);
+        for (int i = 0; i < b->n_files; i++) {
+            cb_jw_obj(&w);
+            cb_jw_kstr(&w, "name", b->files[i].name);
+            cb_jw_kint(&w, "size", b->files[i].size);
+            adm_kiso(&w, "at", b->files[i].mtime_ms);
+            cb_jw_end(&w);
+        }
+        cb_jw_end(&w);
+    } else {
+        cb_jw_kstr(&w, "kind", "pitr");
+        cb_jw_kstr(&w, "explain", b->explain);
+    }
+    adm_links(&w, &b->links);
+    cb_jw_end(&w);
+    return adm_done(&w);
+}
+
+// =====================================================================================
+// The client's side (bench/).
+
+void cb_js_client_function_url_event(cb_buf *out, const char *bearer, int content_length, const char *body_b64) {
+    cb_buf_printf(out,
+        "{\"version\":\"2.0\",\"routeKey\":\"$default\",\"rawPath\":\"/functions/v1/action\",\"rawQueryString\":\"\","
+        "\"headers\":{\"accept\":\"*/*\",\"accept-encoding\":\"gzip, deflate, br, zstd\",\"accept-language\":\"en-US,en;q=0.9\","
+        "\"apikey\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\","
+        "\"authorization\":\"Bearer %s\",\"content-length\":\"%d\",\"content-type\":\"application/octet-stream\","
+        "\"host\":\"abcdefghijklmnopqrstuvwxyz012345.lambda-url.us-east-1.on.aws\",\"origin\":\"https://foolish.cards\","
+        "\"referer\":\"https://foolish.cards/\",\"sec-fetch-dest\":\"empty\",\"sec-fetch-mode\":\"cors\",\"sec-fetch-site\":\"cross-site\","
+        "\"user-agent\":\"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36\","
+        "\"via\":\"2.0 0123456789abcdef0123456789abcdef.cloudfront.net (CloudFront)\",\"x-amz-cf-id\":\"AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGhIjKlMnOpQr==\","
+        "\"x-amzn-trace-id\":\"Root=1-670b1c2d-0123456789abcdef01234567\",\"x-client-info\":\"supabase-js-web/2.45.4\","
+        "\"x-forwarded-for\":\"203.0.113.7, 130.176.0.1\",\"x-forwarded-port\":\"443\",\"x-forwarded-proto\":\"https\"},"
+        "\"requestContext\":{\"accountId\":\"anonymous\",\"apiId\":\"abcdefghijklmnopqrstuvwxyz012345\","
+        "\"domainName\":\"abcdefghijklmnopqrstuvwxyz012345.lambda-url.us-east-1.on.aws\",\"domainPrefix\":\"abcdefghijklmnopqrstuvwxyz012345\","
+        "\"http\":{\"method\":\"POST\",\"path\":\"/functions/v1/action\",\"protocol\":\"HTTP/1.1\",\"sourceIp\":\"130.176.0.1\","
+        "\"userAgent\":\"Amazon CloudFront\"},\"requestId\":\"0123abcd-4567-89ab-cdef-0123456789ab\",\"routeKey\":\"$default\","
+        "\"stage\":\"$default\",\"time\":\"13/Oct/2026:12:00:00 +0000\",\"timeEpoch\":1760356800000},"
+        "\"body\":\"%s\",\"isBase64Encoded\":true}",
+        bearer, content_length, body_b64);
+}
+
+void cb_js_client_signup_body(cb_buf *out, const char *email, const char *password, const char *username) {
+    cb_jw w;
+    cb_jw_init(&w, out);
+    cb_jw_obj(&w);
+    cb_jw_kstr(&w, "email", email);
+    cb_jw_kstr(&w, "password", password);
+    cb_jw_key(&w, "data");
+    cb_jw_obj(&w);
+    cb_jw_kstr(&w, "username", username);
+    cb_jw_end(&w);
+    cb_jw_end(&w);
+}
+
+bool cb_js_client_session(const char *j, size_t n, char *token, size_t token_cap, char *user_id, size_t id_cap) {
+    return cb_json_get_str(j, n, "access_token", token, token_cap) && cb_json_get_str(j, n, "user.id", user_id, id_cap);
+}
+
+static const char CLIENT_HEARTBEAT[] = "[null,\"hb\",\"phoenix\",\"heartbeat\",{}]";
+
+const char *cb_js_client_heartbeat(size_t *n) {
+    *n = sizeof CLIENT_HEARTBEAT - 1;
+    return CLIENT_HEARTBEAT;
+}
+
+void cb_js_client_pv_join(cb_buf *out, const char *user_id, const char *token) {
+    cb_buf_printf(out,
+                  "[\"1\",\"1\",\"realtime:pv-%s\",\"phx_join\",{\"config\":{\"broadcast\":{\"ack\":false,\"self\":false},"
+                  "\"presence\":{\"key\":\"\"},\"postgres_changes\":[{\"event\":\"*\",\"schema\":\"public\","
+                  "\"table\":\"player_views\",\"filter\":\"player_id=eq.%s\"}],\"private\":false},\"access_token\":\"%s\"}]",
+                  user_id, user_id, token);
+}
+
+int cb_js_client_reply_status(const char *j) {
+    if (!strstr(j, "\"phx_reply\"")) return -1;
+    return strstr(j, "\"status\":\"ok\"") != NULL;
+}
+
+bool cb_js_client_pv_push_version(const char *j, size_t n, int64_t *version) {
+    char ev[32];
+    if (!cb_json_get_str(j, n, "3", ev, sizeof ev) || strcmp(ev, "postgres_changes") != 0) return false;
+    return cb_json_get_i64(j, n, "4.data.record.version", version);
+}
+
+bool cb_js_client_first_view(const char *body, size_t n, char *out, size_t cap) {
+    return cb_json_get_str(body, n, "0.view", out, cap);
+}

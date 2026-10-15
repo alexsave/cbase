@@ -1,0 +1,9 @@
+cbase-bench 1
+kind roundtrip
+date 2026-10-14T00:19:28Z
+host Apple M1
+target http://127.0.0.1:18080
+note concurrency=1 games=6 rejected=0 lost_push=0 errors=0 wall_s=0 store=sqlite load1=35
+lat action n=500 p50_us=157 p95_us=335 p99_us=464 max_us=6601 sent_b=768 recv_b=211
+lat player_views n=508 p50_us=105 p95_us=210 p99_us=280 max_us=387 sent_b=781 recv_b=681
+lat push_pv n=500 p50_us=-16 p95_us=-2 p99_us=12 max_us=29 sent_b=0 recv_b=0
