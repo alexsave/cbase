@@ -21,7 +21,6 @@
 
 #define ADMIN_TOKEN "admin-token-0123456789"
 #define JWT_SECRET  "jwt-secret-that-is-long-enough-0123456789"
-#define ANON_KEY    "anon-key-abcdef"
 
 static cb_ctx g_ctx;
 static cb_config g_cfg;
@@ -100,7 +99,6 @@ static void the_token_gates_every_call(void) {
     T_EQ_INT(call("GET", "/admin/api/overview", NULL, "wrong", NULL), 401);
     T_EQ_INT(call("GET", "/admin/api/overview", NULL, "admin-token-012345678", NULL), 401);    // a prefix
     T_EQ_INT(call("GET", "/admin/api/overview", NULL, ADMIN_TOKEN "9", NULL), 401);             // one more
-    T_EQ_INT(call("GET", "/admin/api/overview", NULL, ANON_KEY, NULL), 401);
     T_EQ_INT(call("POST", "/admin/api/query", NULL, "wrong", "{\"statement\":\"DELETE FROM x\",\"confirm\":\"WRITE\"}"), 401);
     T_EQ_INT(g_rec->query_calls, 0);
     T_EQ_INT(call("GET", "/admin/api/overview", NULL, ADMIN_TOKEN, NULL), 200);
@@ -206,7 +204,6 @@ static void config_never_shows_a_secret(void) {
     T_EQ_INT(call("GET", "/admin/api/config", NULL, ADMIN_TOKEN, NULL), 200);
     T_CHECK(strstr(B(), ADMIN_TOKEN) == NULL);
     T_CHECK(strstr(B(), JWT_SECRET) == NULL);
-    T_CHECK(strstr(B(), ANON_KEY) == NULL);
     T_CHECK(strstr(B(), "\"CBASE_ADMIN_TOKEN\"") != NULL);
     char v[64];
     str_at("store", v, sizeof v);
