@@ -43,9 +43,9 @@ g -C "$tmp/seed" commit -q -m B
 g -C "$tmp/seed" push -q origin HEAD:main
 
 run() {
-  # The NEXT_PUBLIC_* pair unset on purpose: a tree the gate lets through then
+  # NEXT_PUBLIC_BACKEND_URL unset on purpose: a tree the gate lets through then
   # stops at deploy_site's first check, still before any AWS call.
-  env -u NEXT_PUBLIC_SUPABASE_URL -u NEXT_PUBLIC_SUPABASE_KEY \
+  env -u NEXT_PUBLIC_BACKEND_URL \
     bash "$tmp/work/c_base/ops/web_deploy.sh" site foolish > "$tmp/out" 2>&1 && return 0 || return $?
 }
 
@@ -113,7 +113,7 @@ g -C "$tmp/work" add -A
 g -C "$tmp/work" commit -q -m C
 if run; then fail "expected the NEXT_PUBLIC_* check to stop the deploy"; fi
 if grep -q 'does not contain origin/main' "$tmp/out"; then cat "$tmp/out" >&2; fail "a tree containing main was refused"; fi
-grep -q 'NEXT_PUBLIC_SUPABASE_URL' "$tmp/out" || { cat "$tmp/out" >&2; fail "contains main: did not reach deploy_site"; }
+grep -q 'NEXT_PUBLIC_BACKEND_URL' "$tmp/out" || { cat "$tmp/out" >&2; fail "contains main: did not reach deploy_site"; }
 [ ! -e "$tmp/aws_calls" ] || fail "contains main: unexpected aws call: $(cat "$tmp/aws_calls")"
 echo "ok - a tree containing origin/main gets past the gate"
 

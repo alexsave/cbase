@@ -34,7 +34,7 @@
 #   CBASE_WEB_FOOLISH_CERT   `stack`: the foolish.cards certificate ARN, once ISSUED
 #   CBASE_WEB_UTTT_CERT      `stack`: the uttt.live certificate ARN, once ISSUED
 #   CBASE_WEB_ISOLATION      `stack`: yes for the COOP/COEP headers (default: keep)
-#   NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_KEY   building foolish: the backend
+#   NEXT_PUBLIC_BACKEND_URL  building foolish: the backend (https://api.foolish.cards)
 # A `stack` parameter left unset keeps the stack's current value.
 set -euo pipefail
 
@@ -133,9 +133,7 @@ deploy_site() {
 
   if [ -z "$out" ]; then
     if [ "$site" = foolish ]; then
-      if [ -z "${NEXT_PUBLIC_SUPABASE_URL:-}" ] || [ -z "${NEXT_PUBLIC_SUPABASE_KEY:-}" ]; then
-        die "building foolish needs NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_KEY (the backend the bundle talks to)"
-      fi
+      [ -n "${NEXT_PUBLIC_BACKEND_URL:-}" ] || die "building foolish needs NEXT_PUBLIC_BACKEND_URL (the backend the bundle talks to)"
     fi
     (cd "$app" && unset VERCEL && npm run build)
     out="$app/out"

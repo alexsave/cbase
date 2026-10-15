@@ -166,8 +166,7 @@ aws cloudformation describe-stacks --region "$region" --stack-name "$stack" \
 cat <<MSG
 
 Next (RUNBOOK.md): point the DNS CNAME for $domain at $(output DistributionDomain),
-then set the web app's NEXT_PUBLIC_SUPABASE_URL=$(output PublicUrl) and
-NEXT_PUBLIC_SUPABASE_KEY to CBASE_ANON_KEY from $env_file.
+then build the web app with NEXT_PUBLIC_BACKEND_URL=$(output PublicUrl).
 MSG
 
 # ---- 7. the bots, and the import ----------------------------------------------------

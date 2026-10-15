@@ -19,7 +19,7 @@ We use almost none of that value:
 | Static hosting + CDN | yes | the whole site; `_next/static/**` immutable, HTML and `public/` revalidated |
 | Server rendering | one route | `foolish/src/app/m/[payload]/layout.tsx` `generateMetadata`, for link unfurls |
 | Web Analytics | yes | `@vercel/analytics` in the root layout; page views only, which MONETIZATION_ROADMAP calls "not enough" |
-| Env vars | yes | `vercel pull` exists only to fetch `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_KEY` |
+| Env vars | yes | `vercel pull` exists only to fetch `NEXT_PUBLIC_BACKEND_URL` |
 | Prebuilt CLI deploy | yes | `.github/workflows/web.yml`: CI builds, then `vercel deploy --prebuilt --archive=tgz [--prod]` |
 | Previews | opt-in | a `preview` label, gated by `scripts/web_deploy_scope.sh` to save the 100 deploys a day |
 | Git integration, builds | no | disconnected on purpose: Vercel's image has no libclang for structgen |
