@@ -268,6 +268,32 @@ out:
     free(extras);
 }
 
+// ---- commit order ---------------------------------------------------------------------------
+
+// A game's pushes go out in its commit order. Each commit is published by the
+// thread that made it, and two threads (a bot drive and a human's action, say)
+// can commit v10 and v11 in that order and publish v11 first, which a client
+// gating on version reads as a gap (the game smoke caught it under Linux
+// ASan). So a commit and its publish happen under the game's lock, striped by
+// id: the next commit of the same game waits for this one's pushes. Lambda
+// runs one invocation per container, so there the lock is never contended;
+// two containers' pushes can still cross, which the clients' version gates
+// and resync cover (DESIGN.md "The push stream").
+#define ORDER_STRIPES 64
+static pthread_mutex_t g_order_mu[ORDER_STRIPES];
+static pthread_once_t g_order_once = PTHREAD_ONCE_INIT;
+static void order_init(void) {
+    for (int i = 0; i < ORDER_STRIPES; i++) pthread_mutex_init(&g_order_mu[i], NULL);
+}
+static pthread_mutex_t *order_lock(const char *gid) {
+    pthread_once(&g_order_once, order_init);
+    uint32_t h = 2166136261u;
+    for (const char *p = gid; *p; p++) h = (h ^ (uint8_t)*p) * 16777619u;
+    pthread_mutex_t *m = &g_order_mu[h % ORDER_STRIPES];
+    pthread_mutex_lock(m);
+    return m;
+}
+
 // ---- the commit ---------------------------------------------------------------------------
 
 // The seats' ratings into `ratings` (TABLE_RATING_NONE for none). false when
@@ -435,6 +461,7 @@ int cb_section_commit(cb_ctx *ctx, cb_section *s, const cb_game_row *row, const 
     if (rc == CB_OK) rc = row_copy(&kept, &nrow);
 
     if (rc == CB_OK) {
+        pthread_mutex_t *order = order_lock(row->id);
         rc = CB_STORE_CALL(ctx->store, game_commit, &gc);
         if (rc == CB_E_CONFLICT) {
             // Somebody committed first: nothing was written.
@@ -446,11 +473,14 @@ int cb_section_commit(cb_ctx *ctx, cb_section *s, const cb_game_row *row, const 
             out->needs_bots = c->needs_bots;
             out->ended = c->ended;
             cb_row_cache_note(&kept);
+            // The replay is stored before the push that ends the game, so a
+            // client that asks for it on game over finds it.
             if (c->ended) finalize_game(ctx, s, &kept);
             cb_fanout_commit(ctx, &f);
         } else {
             CB_ERROR("table", "game %s: commit failed (%s)", row->id, cb_strerror(rc));
         }
+        pthread_mutex_unlock(order);
     }
 
     cb_game_row_free(&kept);
@@ -524,7 +554,12 @@ int cb_table_run(cb_ctx *ctx, const cb_table_op *op, cb_table_result *out) {
         if (rc == TABLE_EMPTY) {
             // The last seat left: the row goes, fenced on the version like a commit.
             ret = cb_section_envelope(s, -1, (uint32_t)row.version, &out->envelope, &out->envelope_len);
-            if (ret == CB_OK) ret = CB_STORE_CALL(ctx->store, game_delete, op->game_id, row.version);
+            pthread_mutex_t *order = NULL;
+            if (ret == CB_OK) {
+                order = order_lock(op->game_id);
+                ret = CB_STORE_CALL(ctx->store, game_delete, op->game_id, row.version);
+                if (ret != CB_OK) { pthread_mutex_unlock(order); order = NULL; }
+            }
             cb_row_cache_drop(op->game_id);
             if (ret == CB_E_CONFLICT) {
                 free(out->envelope);
@@ -544,6 +579,7 @@ int cb_table_run(cb_ctx *ctx, const cb_table_op *op, cb_table_result *out) {
                 for (int i = 0; i < s->n_old; i++) snprintf(f.left[f.n_left++], sizeof(cb_uuid), "%s", s->old_humans[i]);
                 cb_fanout_commit(ctx, &f);
             }
+            if (order) pthread_mutex_unlock(order);
             cb_game_row_free(&row);
             break;
         }

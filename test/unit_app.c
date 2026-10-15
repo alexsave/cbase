@@ -6,6 +6,9 @@
 // kernel's pacing costs no wall time; every fan-out is recorded through the
 // cb_fanout_observer seam.
 #include "t.h"
+
+#include <pthread.h>
+#include <time.h>
 #include "lib_app_store_mem.h"
 
 #include "app/app_internal.h"
@@ -853,6 +856,75 @@ static void delete_account_anonymizes_stored_replays(void) {
     cb_snapshot_row_free(&after.row);
 }
 
+// ---- push order -------------------------------------------------------------------------
+
+// Two commits of one game publish in their commit order. Found as a flake of
+// the game smoke under Linux ASan: a bot drive and a human's action, each on
+// its own pool thread, committed v10 and v11, and v11's casts went out first.
+// Here the first commit is held inside its publish; the second commit must not
+// overtake it (with no ordering it commits and publishes meanwhile).
+static struct {
+    pthread_mutex_t mu;
+    pthread_cond_t cv;
+    bool armed, arrived, released;
+    int n;
+    int64_t versions[8];
+} g_order = { PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, false, false, false, 0, { 0 } };
+
+static void order_observer(const cb_fanout *f) {
+    pthread_mutex_lock(&g_order.mu);
+    if (g_order.armed) {
+        g_order.armed = false;
+        g_order.arrived = true;
+        pthread_cond_broadcast(&g_order.cv);
+        while (!g_order.released) pthread_cond_wait(&g_order.cv, &g_order.mu);
+    }
+    if (g_order.n < 8) g_order.versions[g_order.n++] = f->version;
+    pthread_cond_broadcast(&g_order.cv);
+    pthread_mutex_unlock(&g_order.mu);
+}
+
+static void *order_move(void *arg) {
+    reply r;
+    any_human_move(arg, &r);
+    return NULL;
+}
+
+static void pushes_go_out_in_commit_order(void) {
+    setup(0);
+    char gid[CB_GAME_ID_MAX + 1];
+    two_humans_dealt(gid);
+    cb_fanout_observer = order_observer;
+    g_order.n = 0;
+    g_order.arrived = g_order.released = false;
+    g_order.armed = true;
+    pthread_t a, b;
+    pthread_create(&a, NULL, order_move, gid);
+    pthread_mutex_lock(&g_order.mu);
+    while (!g_order.arrived) pthread_cond_wait(&g_order.cv, &g_order.mu);
+    pthread_mutex_unlock(&g_order.mu);
+    // The first move is committed and held in its publish. The next one, by
+    // whoever has a move now, starts.
+    int64_t first = version_of(gid);
+    pthread_create(&b, NULL, order_move, gid);
+    // Give it the time it needs to commit and publish if nothing stops it.
+    struct timespec dl;
+    clock_gettime(CLOCK_REALTIME, &dl);
+    dl.tv_nsec += 300 * 1000000L;
+    if (dl.tv_nsec >= 1000000000L) { dl.tv_sec++; dl.tv_nsec -= 1000000000L; }
+    pthread_mutex_lock(&g_order.mu);
+    while (g_order.n == 0 && pthread_cond_timedwait(&g_order.cv, &g_order.mu, &dl) == 0) {}
+    g_order.released = true;
+    pthread_cond_broadcast(&g_order.cv);
+    pthread_mutex_unlock(&g_order.mu);
+    pthread_join(a, NULL);
+    pthread_join(b, NULL);
+    T_EQ_INT(g_order.n, 2);
+    T_EQ_INT(g_order.versions[0], first);
+    T_CHECK(g_order.versions[1] > g_order.versions[0]);
+    cb_fanout_observer = fan_observer;
+}
+
 // ---- bots --------------------------------------------------------------------------------------
 
 static void the_bot_loop_drives_until_a_human_owes_a_move(void) {
@@ -962,6 +1034,7 @@ int main(void) {
     T_RUN(delete_account_redacts);
     T_RUN(delete_account_casts_the_rename_to_open_pages);
     T_RUN(delete_account_anonymizes_stored_replays);
+    T_RUN(pushes_go_out_in_commit_order);
     T_RUN(the_bot_loop_drives_until_a_human_owes_a_move);
     T_RUN(a_held_lease_skips_the_drive);
     T_RUN(the_scan_kicks_stale_active_bot_games);
