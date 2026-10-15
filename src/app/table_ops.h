@@ -1,9 +1,9 @@
 // table_ops.h - one game operation per request: load, run the kernel, commit
 // with a compare-and-swap, push.
 //
-// The port of foolish/server/impls/supabase/functions/_shared/adapter/
-// table_io.ts (runTableOp, commitProducts, ratingsFor) and sdk/ts/table/
-// server_table.ts onto the C kernel called directly (foolish/c/src/table.h).
+// The port of the TypeScript server's table_io.ts (runTableOp, commitProducts,
+// ratingsFor) and server_table.ts, both deleted since, onto the C kernel called
+// directly (foolish/c/src/table.h).
 // There is no resident table: each request loads the row, runs ONE kernel
 // section on per-thread scratch (a Game and TableSnaps, about 84 KB), and
 // commits the products with store game_commit at expected_version = the

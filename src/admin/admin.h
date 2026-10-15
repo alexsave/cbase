@@ -5,7 +5,7 @@
 // variable is unset every route here, the page included, answers 404, as if
 // it were not routed. Not CB_ROUTE_APIKEY: the console is not a client.
 //
-// The API (admin.c), each a panel of Supabase Studio's information
+// The API (admin.c), each a panel of a hosted database console's information
 // architecture cut to what c_base has:
 //   GET  overview       version, mode, uptime, store, requests, 5xx,
 //                       connections (serve), games needing bots, last backup,

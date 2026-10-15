@@ -102,7 +102,7 @@ CREATE TABLE IF NOT EXISTS game_bots (
 );
 
 -- One row per human who has a rating. username is the leaderboard's name
--- (NULL after an account is deleted, as the Supabase delete_account did).
+-- (NULL after an account is deleted, as the old delete_account did).
 CREATE TABLE IF NOT EXISTS ratings (
     user_id      TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
     username     TEXT,
@@ -159,9 +159,8 @@ CREATE TABLE IF NOT EXISTS rt_conn_topics (
 CREATE INDEX IF NOT EXISTS idx_rt_conn_topics_topic ON rt_conn_topics(topic);
 
 -- THE BOTS: seven of every family, in ladder order, exactly the nicknames and
--- strategy keys of foolish/server/impls/supabase/seed.sql (which
--- e2e/bot_roster_parity.test.ts holds to the kernel's c/src/bot_roster.c).
--- seed.sql leaves the ids to uuid_generate_v4(), so they differ per database;
+-- strategy keys of the kernel's c/src/bot_roster.c (which the old Postgres
+-- seed carried too). That seed left the ids to uuid_generate_v4(), so they differ per database;
 -- these are FIXED (UUIDv5 of the nickname in a c_base namespace) so every fresh
 -- c_base database agrees. A migrated database replaces this table with the
 -- hosted rows (c_base/migrate), because the hosted rosters name the hosted ids.

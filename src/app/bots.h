@@ -1,8 +1,7 @@
 // bots.h - the bot loop, rebuilt: a lease, a drive, a scan.
 //
-// The semantics being preserved are today's, in
-// foolish/server/impls/supabase/functions/_shared/adapter/bot_actions.ts and
-// functions/bot-heartbeat/index.ts. There are no timers in a Lambda, so:
+// The semantics preserved are the TypeScript server's (its bot_actions.ts and
+// bot-heartbeat function, deleted once c_base served every client). There are no timers in a Lambda, so:
 //   * after a commit that leaves bot work, the request kicks a drive
 //     (ctx->kick_bots: an async self-invoke under Lambda, the bot pool under serve);
 //   * a drive takes the game's lease (store lease_acquire, CB_BOT_LEASE_MS) or

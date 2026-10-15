@@ -279,7 +279,6 @@ static bool fixtures(void) {
     cb_res_send(&g_res, 200, "application/octet-stream", resp, sizeof resp);
     cb_res_header(&g_res, "Cache-Control", "no-store");
     cb_res_header(&g_res, "Access-Control-Allow-Origin", "*");
-    cb_res_header(&g_res, "Access-Control-Expose-Headers", "Content-Range, X-Supabase-Api-Version");
     cb_buf_init(&g_out);
 
     // The stored row, and DynamoDB's GetItem answer for it.

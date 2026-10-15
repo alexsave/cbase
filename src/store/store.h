@@ -10,7 +10,7 @@
 // wrappers below; callers use the wrappers. Every function is safe to call from
 // several threads at once (serve runs handlers on a pool).
 //
-// CONSISTENCY is the same "fake consistent server" the Supabase backend had,
+// CONSISTENCY is the same "fake consistent server" the TypeScript backend had,
 // rebuilt on a compare-and-swap (DESIGN.md "Why Lambda"):
 //   * a game commit carries the version it read, and loses (CB_E_CONFLICT) if
 //     the row moved on; the caller reloads and re-runs (app/table_ops.h);

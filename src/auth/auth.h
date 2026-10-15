@@ -62,11 +62,9 @@ int cb_auth_signin(cb_auth *a, const char *email, const char *password, cb_sessi
 int cb_auth_refresh(cb_auth *a, const char *refresh_token, cb_session *out);
 // The clock auth reads (cb_now_ms); a test seam.
 extern int64_t (*cb_auth_now)(void);
-// Logout, by GoTrue's scope: LOCAL revokes this session's refresh tokens,
-// GLOBAL (supabase-js's default signOut()) every session of the user. "others"
-// is answered by auth_http without a call: a hash-only store cannot tell the
-// caller's session apart cheaply enough to be worth it, and no client sends it.
-// Access tokens live until they expire, as GoTrue's did.
+// Logout (NW_SIGNOUT's scope): LOCAL revokes this session's refresh tokens,
+// GLOBAL every session of the user. Access tokens live until they expire, as
+// GoTrue's did.
 typedef enum { CB_LOGOUT_LOCAL, CB_LOGOUT_GLOBAL } cb_logout_scope;
 int cb_auth_logout(cb_auth *a, const cb_user *u, cb_logout_scope scope);
 int cb_auth_change_password(cb_auth *a, const cb_user *u, const char *new_password);

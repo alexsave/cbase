@@ -1,7 +1,7 @@
 // jwt.h - access tokens: HS256 JWTs in GoTrue's claim shape.
 //
-// Both client SDKs decode the access token they are given (supabase-js reads
-// exp and sub from it; supabase-swift reads exp), so the claims are GoTrue's:
+// The claims are GoTrue's, as the accounts' first tokens were (no client reads
+// them any more: the session states its expiry, netwire.h NW_SESSION):
 //   {"aud":"authenticated","exp":..,"iat":..,"iss":"<public url>/auth/v1",
 //    "sub":"<user id>","email":"..","role":"authenticated","session_id":"..",
 //    "user_metadata":{"username":".."},"app_metadata":{"provider":"email","providers":["email"]},
