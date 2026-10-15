@@ -8,8 +8,9 @@
 #
 # What it does, in order:
 #   1. checks the CLI has credentials and a region (aws sts get-caller-identity);
-#   2. reads c_base/ops/.env (gitignored, mode 0600), creating it on the first
-#      run with the three secrets generated here (openssl rand -hex 32):
+#   2. reads the ops settings file (ops/ops_env.sh: $CBASE_OPS_ENV, else
+#      ~/.config/cbase/ops.env, else ops/.env). For a stack that does not exist
+#      yet it generates the missing secrets into it (openssl rand -hex 32):
 #      CBASE_JWT_SECRET, CBASE_ANON_KEY, CBASE_ADMIN_TOKEN. Later runs reuse
 #      them, so sessions and the shipped anon key survive a redeploy;
 #   3. creates the code bucket if it is missing (private, public access blocked);
@@ -23,7 +24,10 @@
 #      and with --import DIR runs build/cbase-import against the stack's table,
 #      both with temporary credentials exported from the CLI.
 #
-# Settings, from the environment or ops/.env (the environment wins):
+#      Against an existing stack it never generates one: a missing secret
+#      stops the run, and a JWT secret that differs from the live function's
+#      stops it too (either would sign every user out).
+# Settings, from the environment or the settings file (the environment wins):
 #   CBASE_CERT_ARN         required: the ACM certificate for the domain, in
 #                          us-east-1 (CloudFront reads certificates only there)
 #   CBASE_DOMAIN           api.foolish.cards
@@ -39,7 +43,8 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")/.." && pwd)"
-env_file="$here/ops/.env"
+. "$here/ops/ops_env.sh"
+env_file="$(cbase_ops_env_file "$here")"
 import_dir=""
 
 usage() {
@@ -66,42 +71,24 @@ region="${AWS_REGION:-${AWS_DEFAULT_REGION:-$(aws configure get region 2>/dev/nu
 [ -n "$region" ] || die "no region: run 'aws configure set region us-east-1' (or export AWS_REGION)"
 echo "account $account, region $region"
 
-# ---- 2. ops/.env: settings and the three secrets ----------------------------------
-# Only NAME=value lines are read, and only CBASE_* names, so the file can never
-# run anything.
-read_env() {
-  local line name value
-  while IFS= read -r line || [ -n "$line" ]; do
-    case "$line" in ''|'#'*) continue ;; esac
-    name="${line%%=*}"
-    value="${line#*=}"
-    case "$name" in CBASE_[A-Z_]*) ;; *) continue ;; esac
-    # The environment wins over the file.
-    if [ -z "${!name:-}" ]; then
-      printf -v "$name" '%s' "$value"
-      export "${name?}"
-    fi
-  done < "$env_file"
-}
-if [ ! -f "$env_file" ]; then
-  (umask 077; : > "$env_file")
-  echo "created $env_file (mode 0600, gitignored)"
+# ---- 2. the settings file and the secrets -----------------------------------------
+cbase_ops_read "$env_file"
+echo "settings: $env_file"
+stack_exists=no
+if aws cloudformation describe-stacks --region "$region" --stack-name "${CBASE_STACK:-cbase}" >/dev/null 2>&1; then
+  stack_exists=yes
 fi
-chmod 600 "$env_file"
-read_env
-
-ensure_secret() {
-  local name="$1"
-  if [ -z "${!name:-}" ]; then
-    printf -v "$name" '%s' "$(openssl rand -hex 32)"
-    export "${name?}"
-    printf '%s=%s\n' "$name" "${!name}" >> "$env_file"
-    echo "generated $name into $env_file"
-  fi
-}
+ensure_secret() { cbase_ops_secret "$1" "$env_file" "$stack_exists" || exit 1; }
 ensure_secret CBASE_JWT_SECRET
 ensure_secret CBASE_ANON_KEY
 ensure_secret CBASE_ADMIN_TOKEN
+if [ "$stack_exists" = yes ]; then
+  live_jwt="$(aws lambda get-function-configuration --region "$region" --function-name "${CBASE_FUNCTION_NAME:-cbase}" \
+    --query 'Environment.Variables.CBASE_JWT_SECRET' --output text 2>/dev/null || true)"
+  if [ -n "$live_jwt" ] && [ "$live_jwt" != None ] && [ "$live_jwt" != "$CBASE_JWT_SECRET" ]; then
+    die "CBASE_JWT_SECRET in $env_file is not the live function's: deploying it would sign every user out (RUNBOOK, \"The ops settings file\")"
+  fi
+fi
 
 domain="${CBASE_DOMAIN:-api.foolish.cards}"
 stack="${CBASE_STACK:-cbase}"

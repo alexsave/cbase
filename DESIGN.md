@@ -525,7 +525,7 @@ As built:
   It passes `cfn-lint`; its index names, key types and TTL are held to the store's by `test/unit_dynamo.c`.
   The zip comes from an S3 bucket parameter, because CloudFormation's inline code works only for Node.js and Python.
 - `ops/package.sh` calls `make bootstrap` and checks the zip holds exactly one executable `bootstrap`.
-- `ops/deploy.sh` is the whole deploy from this Mac once `aws configure` has credentials: secrets generated once into a gitignored `ops/.env`, the code bucket, the zip under a sha-named key, `cloudformation deploy`, the outputs, and the import with `--import`.
+- `ops/deploy.sh` is the whole deploy from this Mac once `aws configure` has credentials: secrets generated once, for a new stack only, into the ops settings file outside the repo (`ops/ops_env.sh`, RUNBOOK "The ops settings file"), the code bucket, the zip under a sha-named key, `cloudformation deploy`, the outputs, and the import with `--import`.
   Checked with `bash -n` and shellcheck only.
 - `.github/workflows/c_base.yml` builds and tests on Ubuntu and macOS, under ASan, lints the template, builds the zip, and deploys on `main` once the deploy secrets exist; it has not run yet.
 - `migrate/export.sh` (read-only, through the Management API with the Supabase CLI's keychain token) and `cbase-import` (see Store).

@@ -26,7 +26,7 @@ Paste these back into the session so I can finish the verification:
 
 1. The stack status (it should say `CREATE_COMPLETE`).
 2. The stack's **Outputs** tab: `FunctionUrl`, `WebSocketUrl`, `DistributionDomain`, `TableName`, and `FunctionName`.
-3. The anon key (it is public: it ships inside the web bundle); on the CLI path it is `CBASE_ANON_KEY` in `c_base/ops/.env`.
+3. The anon key (it is public: it ships inside the web bundle); on the CLI path it is `CBASE_ANON_KEY` in the ops settings file.
 4. Whether `https://api.foolish.cards/health` answers `ok cbase ...` (step 9).
 
 Never paste the JWT secret or the admin token into a chat.
@@ -64,11 +64,12 @@ It signs up two throwaway accounts (`bench...@bench.invalid`) and plays real gam
 4. Put the ARN where the script reads it:
 
    ```
-   echo 'CBASE_CERT_ARN=arn:aws:acm:us-east-1:...' >> c_base/ops/.env
+   mkdir -p ~/.config/cbase && chmod 700 ~/.config/cbase
+   echo 'CBASE_CERT_ARN=arn:aws:acm:us-east-1:...' >> ~/.config/cbase/ops.env
    ```
 
-   `c_base/ops/.env` is gitignored and kept at mode 0600; the script creates it and generates the three secrets into it on its first run (`openssl rand -hex 32`), and reuses them on every later run.
-   Keep a copy in your password manager: losing the JWT secret signs everyone out, and the anon key is baked into the web and iOS builds.
+   That is the ops settings file ("The ops settings file", below); the script generates the secrets into it on the first run, while the stack does not exist yet, and reuses them on every later run.
+   Keep a copy in your password manager: losing the JWT secret signs everyone out.
 5. Start Docker Desktop (the build runs in an arm64 Alpine container), then deploy:
 
    ```
@@ -88,6 +89,31 @@ It signs up two throwaway accounts (`bench...@bench.invalid`) and plays real gam
    The script hands `cbase-import` temporary credentials exported from the CLI for that one command; no access key is created for it.
    Do it back to back with step 11 at a quiet hour, as step 10 explains.
 8. Continue with steps 11 to 14.
+
+## The ops settings file
+
+`deploy.sh` and `web_deploy.sh` read their settings and secrets from one file, outside the repo (`c_base/ops/ops_env.sh` is the one reader):
+
+1. `$CBASE_OPS_ENV` when it is set;
+2. else `~/.config/cbase/ops.env`;
+3. else the old `c_base/ops/.env`, when it is the only one there.
+
+It is mode 0600, holds only `CBASE_*` `NAME=value` lines (`CBASE_JWT_SECRET`, `CBASE_ADMIN_TOKEN`, `CBASE_ANON_KEY` until the facade's removal, `CBASE_CERT_ARN`, `CBASE_WEB_FOOLISH_CERT`, `CBASE_WEB_UTTT_CERT`), and a value already in the environment wins over it.
+It lives outside the repo because the only copy once lived in `c_base/ops/.env` and went with a removed worktree.
+
+A secret is generated only for a stack that does not exist yet.
+Against the live stack a missing secret stops `deploy.sh` with a message, and so does a `CBASE_JWT_SECRET` that differs from the live function's: either would sign every user out.
+If the file is lost, recover the values from the live function, not from a new `openssl rand`:
+
+```
+umask 077; mkdir -p ~/.config/cbase
+aws lambda get-function-configuration --function-name cbase --query Environment.Variables --output json \
+  | python3 -c 'import json,sys; [print(f"{k}={v}") for k,v in json.load(sys.stdin).items() if k in ("CBASE_JWT_SECRET","CBASE_ADMIN_TOKEN","CBASE_ANON_KEY")]' \
+  >> ~/.config/cbase/ops.env
+```
+
+Then add the certificate ARNs (`aws acm list-certificates --region us-east-1`).
+`c_base/ops/test/ops_env_test.sh` holds the rules (CI runs it).
 
 ## The console path (the fallback)
 
@@ -298,7 +324,7 @@ aws cloudformation deploy --region us-east-1 --stack-name cbase-github \
 1. It trusts only `repo:alexsave/foolish:ref:refs/heads/main`.
    To prove a workflow change from its branch before merging, deploy the stack once with `--parameter-overrides ExtraSubject=repo:alexsave/foolish:ref:refs/heads/<branch>` (and let the workflow's `if:` accept that ref on the branch), then deploy it again with `ExtraSubject=` empty.
 2. It may upload the Lambda zip and update the `cbase` stack's code, upload to the web bucket, invalidate the two distributions, rewrite the `cbase-web` page lists, and read both stacks; it holds none of the rights a template change needs, so `ops/deploy.sh` and `ops/web_deploy.sh stack` stay hand steps from this Mac.
-3. Repository secrets (Settings > Secrets and variables > Actions): `CBASE_AWS_ROLE_ARN` (the stack's `DeployRoleArn` output) and `CBASE_ANON_KEY` (the anon key from `c_base/ops/.env`, built into the web bundle).
+3. Repository secrets (Settings > Secrets and variables > Actions): `CBASE_AWS_ROLE_ARN` (the stack's `DeployRoleArn` output) and `CBASE_ANON_KEY` (the anon key from the ops settings file, built into the web bundle).
 
 The rollback lanes, workflow_dispatch only, kept until their deletion dates:
 

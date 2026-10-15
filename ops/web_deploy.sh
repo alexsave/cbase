@@ -27,7 +27,8 @@
 #      with --delete, so no page points at a chunk that has not landed;
 #   6. one invalidation of /* (one path, free).
 #
-# Settings, from the environment:
+# Settings, from the environment, else the ops settings file (ops/ops_env.sh:
+# $CBASE_OPS_ENV, else ~/.config/cbase/ops.env, else ops/.env):
 #   CBASE_WEB_STACK          cbase-web (the stack name)
 #   CBASE_STACK              cbase (the API stack; `stack` reads its FunctionUrl for /m/*)
 #   CBASE_WEB_FOOLISH_CERT   `stack`: the foolish.cards certificate ARN, once ISSUED
@@ -38,6 +39,8 @@
 set -euo pipefail
 
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
+. "$repo/c_base/ops/ops_env.sh"
+cbase_ops_read "$(cbase_ops_env_file "$repo/c_base")"
 stack="${CBASE_WEB_STACK:-cbase-web}"
 api_stack="${CBASE_STACK:-cbase}"
 region="${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-1}}"
