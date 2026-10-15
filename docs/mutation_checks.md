@@ -254,3 +254,38 @@ The console was checked by eye in headless Chrome against a mock API, light and 
 - bench_stats.c: the 5 ms share off by ten -> `report_tables` the whole report.
 - bench_stats.c: a cpu row with trailing text accepted -> `run_file_round_trip` !bs_run_parse(JUNK).
 - bench_stats.c: the cpu table never printed -> `report_tables` the whole report.
+
+## Binary surface (unit_netwire, unit_netclient, unit_v1, unit_stream)
+
+Run by a script that copies each file aside, applies the mutation, refuses one that did not change the file, deletes the object, rebuilds the one test and restores the copy (2026-10-14).
+
+- netwire.c: a body read whole no longer required (trailing bytes taken) -> `requests` refused_everywhere(signin) == 0.
+- netwire.c: a u48 written as 5 bytes -> `session` out == want.
+- netwire.c: padding allowed mid-text -> `text_form` nw_text_decode("Zg==Zg==") == NW_E_WIRE.
+- netwire.c: is_bot past 1 taken -> `lists` nw_list_open(not_bool) == NW_E_WIRE.
+- netwire.c: a rating beside "none" taken -> `lists` nw_list_open(none) == NW_E_WIRE.
+- netwire.c: a separate blob-length check against the body (a second guard) survived its removal; r_take's own bound refuses the same lengths, so the second guard was deleted, and `make check-asan` (UBSan) then caught `r->at + n` overflowing on a 2^31 - 1 length: the bound is now `n > len - at`, in the reader and the writer.
+- netclient.c: refresh due one ms late (`<=` made `<`) -> `requests` q->is_refresh at expiry less NC_REFRESH_EARLY_MS.
+- netclient.c: the gate drops only older, not equal, versions -> `gates` the same version again is NC_EV_NONE.
+- netclient.c: the retry backoff not doubled -> `stream_order_and_retries` no frame before 1 s after the second refusal.
+- netclient.c: a used refresh token leaves the client signed in -> `answers` nc_session_read == ASK_WHY_ACCOUNT then signed_in == 0.
+- netclient.c: a resubscription without what is held -> `gates` s.version == 6.
+- netclient.c: an id put into a path unchecked -> `requests` nc_req_game("ab/../x") == NULL.
+- netclient.c: the reconnect delay not reset by a frame -> `stream_order_and_retries` nc_stream_closed == NC_RETRY_FIRST_MS.
+- netclient.c: a refused token not told again -> `stream_order_and_retries` next frame is NW_WS_AUTH.
+- v1_http.c: no spectator fallback -> `games_views_and_chat` call(b_game) == 200 for a non-member.
+- v1_http.c: chat open to non-members -> `games_views_and_chat` call(b_chats) == 403.
+- v1_http.c: 15 hex digits of the name's digest -> `the_email_is_the_clients_derivation` the address.
+- v1_http.c: a taken name answered 400 -> `accounts` status == 409.
+- v1_http.c: unplayed humans on the leaderboard -> `bots_board_history_replay` the one human is FAY.
+- v1_http.c: the replay not filtered by game -> `bots_board_history_replay` the moves are the asked game's.
+- v1_http.c: a chat message not published -> `games_views_and_chat` g_pub.n == 1.
+- stream.c: no catch-up -> `protocol` two frames (ACK, VIEW).
+- stream.c: seated inverted -> `protocol` one frame when the client holds the version (the spectator view caught up instead).
+- stream.c: a token that does not verify keeps the old user -> `protocol` c.user_id == "".
+- stream.c: the catch-up ignores `since` -> `protocol` g_out.n == 1.
+- stream.c: chat open to non-members -> `protocol` ACK FORBIDDEN.
+- rt_apigw.c: the stream's frames posted raw, not base64 -> `apigw` the post decodes as a frame.
+- rt_local.c: the stream's frames sent as text -> `serve_end_to_end` the first event is NC_EV_SEATED.
+- realtime.c: a DELETE carries the envelope -> `publishes` g_cap.nw == want_gone.
+- realtime.c: the cast's version dropped -> `publishes` g_cap.nw == want_cast.

@@ -7,7 +7,7 @@
 #   make smoke      the end-to-end smoke test against a real build/cbase
 #   make check      test + smoke
 #   make check-asan the same, every object rebuilt under ASan + UBSan
-#   make check-dynamo  the store, admin and import tests and the game smoke
+#   make check-dynamo  the store, admin, import and binary-surface tests and the game smoke
 #                   against DynamoDB Local (ops/dynamo_local.sh; needs Docker
 #                   or a DynamoDB Local already on port 8000)
 #   make bench-dynamo  the store's per-operation latency against DynamoDB Local
@@ -180,7 +180,7 @@ check-asan: test-asan smoke-asan
 # ops/cbase.yaml (dropped and made empty first), the schema's bots seeded as a
 # deploy seeds them, then the unit tests that touch a real store (each on its
 # own fresh table) and the whole game smoke, every one with CBASE_STORE=dynamo.
-DYNAMO_UNITS := unit_store unit_admin unit_import
+DYNAMO_UNITS := unit_store unit_admin unit_import unit_v1
 check-dynamo: $(addprefix build/test/,$(DYNAMO_UNITS)) build/cbase build/cbase-import build/test/smoke
 	ops/dynamo_local.sh --reset > build/dynamo.env
 	. ./build/dynamo.env && build/cbase-import --seed-bots
