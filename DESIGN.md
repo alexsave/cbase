@@ -26,9 +26,10 @@ The decisions here are settled; a builder who finds one impossible says so in th
    Clients gate on the version exactly as today.
 5. **Bots: no timers.**
    A commit that leaves bot work starts a drive (an async self-invoke under Lambda, a worker pool under serve); a scan every minute catches what a lost kick missed.
-6. **Client surface: a Supabase-compatible facade.**
+6. **Client surface: a Supabase-compatible facade, then the binary surface.**
    The four edge functions byte for byte, the GoTrue auth routes, the PostgREST reads the clients make, and Realtime's Phoenix protocol.
    iOS installs cannot be updated in place, so old installs keep calling Supabase until they update; the runbook says so.
+   Superseded (2026-10-14): every client moves to the binary surface and the facade is deleted ("Binary surface", below).
 7. **Admin console:** one static HTML file served at /admin, its JSON API at /admin/api/*, behind a Bearer token.
 8. **Ops:** one CloudFormation template (`ops/cbase.yaml`) Alex uploads in the console; no AWS CLI needed locally.
 9. **Migration:** an export through the Supabase Management API, and `cbase-import` writing through the store interface.
@@ -688,7 +689,7 @@ It does not delete, and does not try to:
 - the tests and harnesses (`foolish/e2e`), which drive the web client and today's server; once the server TypeScript is gone, the harnesses that exist only to run it (`fake_supabase.mts`, the edge helpers) go with it, and the rest are the next target;
 - the tools, visualisers and scripts, each its own later decision;
 - generated code, which is a build artifact.
-Phase 2 (above) is what removes the client-side Supabase SDKs.
+The binary surface (above) is what removes the client-side Supabase SDKs.
 
 ## Where JSON is tolerated, and why
 
@@ -731,18 +732,132 @@ It reads every C source under `src/`, `bench/` and `migrate/` and fails, naming 
 It lexes rather than greps: comments may describe a shape, two literals around a ternary's colon are not a key, and adjacent literals are joined first, as the compiler joins them.
 Tests (`test/`) are not scanned: their recorded bodies are the oracle the shapes are checked against.
 
-## Phase 2: the binary surface, and deleting the facade (not built now)
+## Binary surface (designed 2026-10-14)
 
-Items 1 to 3 above are a compatibility tax paid only because the shipped clients speak Supabase.
-Phase 2 replaces them:
+Phase 2, decided: the binary surface replaces the Supabase-compatible facade for every client, the iOS app and the web alike, and the facade is then deleted.
+Alex: "if we're gonna do this, let's do it right".
+It lands as four pull requests, each green and landed before the next: (1) this surface on the server and the C client library; (2) iOS on it, supabase-swift removed; (3) the web on it, supabase-js removed, the env names renamed; (4) the facade deleted from c_base (GoTrue, PostgREST and Phoenix routes and their sections of `json_surface.c`) with the dead Supabase server code and harnesses.
 
-- binary auth endpoints (sign up, sign in, refresh, sign out, change password) whose bodies are kernel-style packed structs with generated writers;
-- binary reads (my games with their envelopes, one game's envelope, chat history, the leaderboard, snapshots) in the same style;
-- a binary push stream on the WebSocket: each message a version and a kernel cast or envelope, so a reconnecting client can ask for what it missed by version (the catch-up the Phoenix facade never had);
-- the web and iOS clients moved onto them, behind their existing version gates;
-- then the facade (`auth_http.c`, `postgrest.c`, `phoenix.c`, and their sections of `json_surface.c`) deleted, once the last client that speaks it has aged out (iOS builds in the wild are the long pole).
+### What the clients use (the inventory this is cut to)
 
-The AWS JSON (item 5) stays, because AWS sets it.
+iOS (`foolish/ios/FoolishNet`): sign-up, sign-in, the restored session, sign-out, delete-account; create, action, meta (join, start, add bot, exit, continue, bump); one game's player view (the watchdog's resync); the `pv-` feed of the user's views; the `game-` spectator feed (declared, never fired).
+The web (`foolish/src`): all of that, plus change password (Settings), the dashboard list (every view of the user), one game's view with the spectator fallback, the `gu-` cast stream of the open game and the spectators' `game-` stream, chat (history, send, the `chat:` stream), the bot roster (the lobby picker), the leaderboard (humans and bots), match history (the user's replays and their rating), and one game's replay (the share screen).
+Nothing else: no client reads `bots` beyond id, nickname and strategy key, or ratings beyond the leaderboard's four columns.
+
+### One owner for the bytes: `foolish/c/src/netwire.{h,c}` and `netclient.{h,c}`
+
+The wire is the kernel's, like every other wire in this repo (awire, ask, the table request and response, the roster trailer, the envelope).
+`netwire.c` is the one codec: it writes and reads every request body, response body and stream frame below, both directions, so the server and every client run the same encoder against the same decoder and there is no second statement of a layout anywhere.
+`netclient.c` is the client: the session (the token store as plain data), the request builders, the response readers, the stream's subscriptions, retries and version gates.
+Both are in the kernel's source list (`CORE_SRC` and `IOS_CORE_SRC`), so c_base links them through the list it already reads (`print-core`), `web.wasm` exports the client's entry points, and the iOS xcframework carries them; structgen reads `netclient.h` for the Swift and TypeScript readers of the answer structs, so no host writes or reads a byte of any of it.
+They sit in the kernel's tree rather than under `c_base/` because three builds compile one list and the kernel already owns the neighbouring formats; they import nothing, never see a socket, parse no JWT (a token is opaque bytes with an expiry the server states), and take `now_ms` from the host like every kernel call.
+Nothing under `shared/` changes, so the rule that nothing there names a product is untouched.
+
+All integers are little-endian.
+Every body and frame starts with two bytes, `[NW_V1][kind]`; a reader refuses another version or a kind it does not expect.
+A string is a length byte and UTF-8 (ids, names, tokens up to 255 bytes) or, where noted, a u16 length; a blob (an envelope, a cast, a replay) is a u32 length and bytes; a time is u48 epoch ms.
+The byte-level contract, every layout written out, is the comment at the top of `netwire.h`.
+
+### HTTP endpoints
+
+All under `/v1/`, `application/octet-stream` both ways, `Authorization: Bearer <access token>` where marked (B).
+No `apikey` header: the anon key was a Supabase concept, and the binary surface has no anonymous key.
+A refusal is a 4xx or 5xx whose body is the kernel's `AskRefusal` (ask.h), the one the writes answer with already: `why` (AUTH, MALFORMED, REFUSED, NOT_FOUND, NO_BOT, INTERNAL, METHOD, and two new ones, ACCOUNT with `code` an `NW_ACCOUNT_E_*` (bad login, name taken, weak, long or same password, bad name, bad or reused refresh token), and FORBIDDEN for a read the caller may not make), `code` and `detail`.
+The client decodes it into an enum the host localizes, so no host string-matches a server message, and every route under `/v1/` refuses in one format.
+
+| route | request body | response |
+|---|---|---|
+| `POST /v1/auth/signup` | `NW_SIGNUP`: name (the username upper-cased by the host), password | 200 `NW_SESSION` |
+| `POST /v1/auth/signin` | `NW_SIGNIN`: name, password | 200 `NW_SESSION` |
+| `POST /v1/auth/refresh` | `NW_REFRESH`: refresh token | 200 `NW_SESSION` |
+| `POST /v1/auth/signout` (B) | `NW_SIGNOUT`: scope (local, global) | 204 |
+| `POST /v1/auth/password` (B) | `NW_PASSWORD`: new password | 204 |
+| `POST /v1/account/delete` (B) | none | 204 (delete-account's function) |
+| `POST /v1/create` (B) | none | the caller's envelope (create's function, unchanged) |
+| `POST /v1/action` (B) | the kernel's table request | the kernel's 7-byte table response (unchanged) |
+| `POST /v1/meta` (B) | the kernel's ask | the caller's envelope (unchanged) |
+| `GET /v1/games` (B) | | `NW_GAMES`: every view of the caller, newest first: version, envelope |
+| `GET /v1/games/<id>` (B) | | `NW_VIEW`: the caller's view if seated, else the spectator view; 404 when neither exists |
+| `GET /v1/chat/<id>` (B, member) | | `NW_CHATS`: the newest 100 messages, oldest first (the web asked PostgREST for the oldest 100, against its own comment) |
+| `POST /v1/chat/<id>` (B, member) | `NW_CHAT_SEND`: message (u16, 1 to 1000 bytes) | 204 |
+| `GET /v1/bots` (B) | | `NW_BOTS`: id, nickname, strategy key |
+| `GET /v1/leaderboard` | | `NW_BOARD`: the top 100 humans and top 100 bots with games played, each kind, id, name, rating, games |
+| `GET /v1/history` (B) | | `NW_HISTORY`: the caller's rating (or none) and their newest 50 replays: id, created, player ids, moves, extras |
+| `GET /v1/replay/<game id>` (B) | | `NW_REPLAY`: the newest replay of that game, if the caller played in it (game_snapshots' policy) |
+
+The writes keep their bodies byte for byte (they were binary already) and their functions in `functions_http.c`; `/v1/` is a second mount of the same handlers without the `apikey` gate, and phase 4 removes the `/functions/v1/` mount.
+Sign-up and sign-in take the upper-cased username rather than an email: the server derives the account email exactly as both clients did (`hex(SHA-256(name))[:16]@foolish.cards`), so existing accounts sign in unchanged and neither client carries the derivation any more.
+Upper-casing stays the host's one text call (`String.uppercased()`, `toUpperCase()`), because it is Unicode case mapping that both platforms already agree on and the kernel has no table for; a username with `%` is refused by the server, as before.
+Change password and sign-out are the GoTrue semantics they replace (auth.h), from the same functions.
+
+`NW_SESSION`: access token (u16 string), refresh token, `expires_at` (i64 ms), user id, username.
+The client keeps it as a struct and hands the host an opaque blob to persist (`nc_session_save`/`nc_session_load`: the Keychain on iOS, localStorage on the web); a host never reads a token's contents, only asks for the `Authorization` value.
+Refresh is the client's decision: every authenticated request builder first checks `now_ms` against `expires_at` less 60 s and, when due, answers with the refresh request instead, flagged so the host sends it, hands the answer back and asks again.
+Rotation, reuse grace and revocation are auth.c's, unchanged.
+
+### The push stream
+
+One WebSocket per client at `/v1/stream`, carrying the kernel's bytes.
+Under `cbase serve` it is `rt_local`'s upgrade; under Lambda it is the API Gateway stage, reached through CloudFront as `/realtime/v1/websocket` is today (the CloudFront Function rewrites both paths onto the stage, and `$connect` tells the two protocols apart by the query string: `proto=nw1` against Phoenix's `vsn=`).
+The connection row (`cb_conn_row`) keeps its user, topics and version; its `vsn` becomes the protocol (1 and 2 Phoenix, 3 this one), so a fan-out writes each frame once per protocol, as it writes once per Phoenix serializer today.
+
+Client to server:
+
+- `NW_WS_AUTH`: the access token (u16). First on every connection and again after every refresh; it names the connection's user. A subscription before it, or a token that does not verify, is refused with AUTH.
+- `NW_WS_SUB`: ref (u16), what (`NW_SUB_GAMES` the caller's views, `NW_SUB_GAME` one game's casts, `NW_SUB_CHAT` one game's chat), game id, and `since` (u32, the newest version the client holds, 0 for none).
+- `NW_WS_UNSUB`: what, game id.
+- `NW_WS_PING`.
+
+Server to client:
+
+- `NW_WS_ACK`: ref, why (0, or the `ASK_WHY_*` of the refusal: AUTH, FORBIDDEN), and for a game subscription whether the caller is seated.
+- `NW_WS_VIEW`: game id, version (u32), envelope; an empty envelope means the seat is gone. The `pv-` feed.
+- `NW_WS_CAST`: game id, version, the kernel's cast. A member hears its own seat's casts (`gu-<game>-<user>`), anyone else the spectators' (`game-<game>`); the server picks by membership when the subscription is made, and the ACK says which.
+- `NW_WS_CHAT`: game id and the message (id, user, created, is_system, text).
+- `NW_WS_PONG`.
+
+Topics inside the server stay the strings they are (`pv-`, `gu-`, `game-`, `chat:`), with the policy of `cb_phx_may_join` moved into one function both protocols call.
+The catch-up the Phoenix facade never had: a `NW_SUB_GAME` with `since` below the game's version is answered, after its ACK, with the caller's current `NW_WS_VIEW` of that game, so a client that reconnects asks for what it missed by version instead of refetching on a guess.
+Version gating is the client's, in C: `nc_stream_in` drops a VIEW or CAST at or below the newest version applied for its game and stream, and answers the host with what to apply; `nc_gate_reset` is the watchdog's resync.
+Subscriptions, their retries after a refusal (a member's join can race the membership write, as the web's `privateChannel.ts` handles now: 0.5 s doubling to 10 s), the 25 s ping and the reconnect delay are the client's too: the host reports `open`, `frame` and `closed` and asks `nc_stream_tick(now_ms)` for the frames that are due, so the retry policy has one implementation instead of one per host.
+
+**Frames on the two transports.**
+API Gateway does not accept binary frames from a client: "API Gateway WebSocket APIs don't currently support binary frames in incoming message payloads. If a client app sends a binary frame, API Gateway rejects it and disconnects the client with code 1003" ([Binary media types for WebSocket APIs](https://docs.aws.amazon.com/apigateway/latest/developerguide/websocket-api-develop-binary-media-types.html)).
+Its workaround is text that carries base64 (the same page: `contentHandlingStrategy` `CONVERT_TO_BINARY` on the integration), and AWS documents no opcode for what an `@connections` post is delivered as; a question on AWS re:Post, "API Gateway Websocket Binary Frames" (https://repost.aws/questions/QUtbrnTNl6RJeseAE6ZCzx9Q, which refused a direct read and is known here only through a search summary), reports those posts arriving as text frames, which a browser refuses to decode when the bytes are not UTF-8.
+Not verified against the live API: creating a throwaway WebSocket API to watch the opcode was refused by this session's permissions, so the design does not depend on the answer.
+So the stream is defined over messages, and each transport carries them in the frame it can: the client always sends a text frame holding the message in base64; `rt_local` answers with binary frames; `rt_apigw` posts the message in base64, which arrives as text whatever opcode API Gateway picks.
+The client accepts both (`nc_stream_in` takes the frame and whether it was text), so neither host branches on the transport, and a deployment that is shown to deliver binary from `@connections` changes one line in `rt_apigw.c`.
+The cost is a third more bytes on the Lambda path for frames of a few hundred bytes to a few KB; the JSON gate is untouched, because none of this is JSON.
+
+### The client's surface (what structgen reads)
+
+`netclient.h` declares the answer structs the hosts read through generated readers: `NcRequest` (method, path, whether to attach the bearer and the full `Authorization` value, the body), `NcSessionInfo` (signed in, user id, username), `NcError` (the refusal's why, code and detail), `NcEvent` (one thing for the host to do: apply a view, apply a cast, apply a chat message, resync a game, a subscription refused, nothing), and one row struct per list (`NcGameRow`, `NcChatRow`, `NcBoardRow`, `NcBotRow`, `NcHistoryRow`), read one row at a time by index after the list is parsed, so a 100-row answer is not one 100 KB struct.
+Blobs (an envelope, a cast, a replay's moves and extras) cross as a count and a fixed array in the answer, copied out by the generated snapshot readers; the host hands an envelope straight to `client_adopt_envelope` as it does today.
+The host's whole job is: ask for a request, send it with URLSession or fetch, hand back the status and bytes; open the socket the client names, pass frames in, send the frames it asks for, call tick on a timer; persist the session blob.
+
+### What it deletes, and what stays
+
+Phase 4 deletes `auth_http.c`, `postgrest.c`, `phoenix.c`, the facade's routes, the Phoenix half of `realtime.c` and the transports, and their sections of `json_surface.c` (GoTrue, PostgREST, Phoenix, the Realtime payloads, the gateway error, and the bench's client mirror of them), and the JSON gate's allowed list shrinks to what AWS forces (the Lambda envelope, the Runtime API error, DynamoDB, the self-invoke), the JWT's claims (a JWT is JSON by RFC 7519), and the admin console's API.
+The hosts lose supabase-js, supabase-swift, `Connector.ts`, `privateChannel.ts`, the hex decoding of view rows, `PackedAction`'s hand-written envelope, `VersionGate.swift` and the client-side email derivation.
+
+### As built (stage 1, 2026-10-14)
+
+- `foolish/c/src/netwire.{h,c}`: the codec, both directions, as above. The action request and response moved out of `table.c` into `table_wire.c` (same functions, same bytes), because `table.c` reaches every bot and the iOS core library and the client link neither.
+  `ask.h` gained `ASK_WHY_ACCOUNT` (code an `NW_ACCOUNT_E_*`) and `ASK_WHY_FORBIDDEN`.
+- `foolish/c/src/netclient.{h,c}`: the client, in the kernel's source list for c_base, the iOS core library and (stage 3) `web.wasm`; nothing exports it yet.
+  One request builder per route; an authenticated builder answers the refresh first when the token is within 60 s of its expiry (`NcRequest.is_refresh`), so a host's whole transport is one loop of "build, send, if it was the refresh hand it back and build again".
+  Answers are read into fixed structs, with blobs as offsets into the body the host passed (no copy); a stream event's payload is in the client's own 32 KB buffer, because a text frame has to be decoded somewhere.
+- `c_base/src/app/v1_http.c`: the routes, reading the store through the same calls `postgrest.c` makes, without its query language.
+  `functions_http.c` mounts its four handlers under `/v1/` too (no anon key), so the writes keep one implementation.
+  The leaderboard sorts each population in C and sends each one's top 100; the web merges them and cuts the whole again, as it did.
+- `c_base/src/realtime/stream.c`: the stream's protocol (`cb_nw_on_frame`), with the topic policy of `cb_phx_may_join`.
+  `realtime.c` builds each push's binary frame beside the two Phoenix ones (`CB_RT_PROTOS` frames per publish, indexed by `cb_rt_proto(vsn)`), `rt_local` serves `GET /v1/stream?proto=nw1` and sends binary frames, and `rt_apigw` takes `proto=nw1` at `$connect` (no anon key) and posts base64 text.
+  A CONN row whose `$connect` was lost is rebuilt as the stream when its frame does not start like JSON.
+- `ops/cbase.yaml`: CloudFront sends `/v1/stream*` to the WebSocket API through the same rewrite as `/realtime/v1/websocket*`.
+
+Tests: `unit_netwire` (every layout against hand-written bytes; every prefix and every body one byte long refused, from exactly-sized heap copies so an over-read is an ASan failure), `unit_netclient` (the client with no server: the blob, every request, refresh timing, answers, the stream's order, retries, reconnects, pings and gates), `unit_v1` (every route driven by the client library through `cb_handle` on a real store and real auth; also in `make check-dynamo`), `unit_stream` (the protocol on the fake world, the frames a publish builds byte for byte, API Gateway's base64 posts, and a real loopback `cbase serve` socket driven end to end by the client library).
+Mutation-checked: `docs/mutation_checks.md`, "Binary surface".
+The JSON gate is unchanged: none of this is JSON.
 
 ## Corrections to the brief, found while building the skeleton
 
