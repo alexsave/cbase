@@ -7,22 +7,23 @@
 #include <stdio.h>
 #include <string.h>
 
-typedef struct { const char *key; bool found; } proto_scan;
+// The value is copied in the callback: cb_http_query_each hands it a buffer
+// on its own stack, gone once it returns.
+typedef struct { char value[16]; bool found; } proto_scan;
 
 static bool proto_fn(const char *key, const char *value, void *ud) {
     if (strcmp(key, "proto") != 0) return true;
     proto_scan *p = ud;
     p->found = true;
-    p->key = value;
+    cb_strlcpy(p->value, value, sizeof p->value);
     return false;
 }
 
 int cb_nw_proto_of_query(const char *query) {
-    char v[16] = "";
-    proto_scan p = { NULL, false };
+    proto_scan p = { "", false };
     if (cb_http_query_each(query ? query : "", proto_fn, &p) < 0) return CB_E_INVALID;
     if (!p.found) return 0;
-    cb_strlcpy(v, p.key ? p.key : "", sizeof v);
+    const char *v = p.value;
     return strcmp(v, "nw1") == 0 ? CB_VSN_NW : CB_E_INVALID;
 }
 

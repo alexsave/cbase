@@ -54,12 +54,14 @@ typedef struct {
 
 static const cb_rt_transport LOCAL_T;
 
+// A message of n bytes copied from p, or n uninitialised bytes when p is NULL
+// (the caller decodes into them).
 static msg *msg_new(const char *p, size_t n) {
     msg *m = malloc(sizeof *m + n + 1);
     if (!m) return NULL;
     m->next = NULL;
     m->len = n;
-    memcpy(m->text, p, n);
+    if (p && n) memcpy(m->text, p, n);
     m->text[n] = 0;
     return m;
 }
@@ -189,7 +191,7 @@ static void on_message(cb_ws *ws, int opcode, const uint8_t *data, size_t len, v
     msg *m;
     if (c->phx.vsn == CB_VSN_NW && opcode == CB_WS_OP_TEXT) {
         // The stream's text form: base64 of the message.
-        m = msg_new("", len);
+        m = msg_new(NULL, len);
         int n = m ? nw_text_decode((const char *)data, (int)len, (uint8_t *)m->text, (int)len) : -1;
         if (m && n < 0) { free(m); cb_ws_close(ws, 1003); return; }
         if (m) m->len = (size_t)n;

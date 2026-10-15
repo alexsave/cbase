@@ -112,7 +112,7 @@ static int send_req(const NcRequest *q) {
     cb_handle(&g_ctx, &r, &res);
     g_status = res.status;
     g_len = (int)(res.body.len < sizeof g_body ? res.body.len : 0);
-    memcpy(g_body, res.body.p, (size_t)g_len);
+    if (g_len) memcpy(g_body, res.body.p, (size_t)g_len);   // an empty body may have no buffer
     cb_res_free(&res);
     return g_status;
 }

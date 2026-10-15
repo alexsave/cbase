@@ -416,8 +416,8 @@ static void h_board(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     if (rc >= 0 && (humans.oom || bots.oom)) rc = CB_E_NOMEM;
     if (rc < 0) { free(humans.rows); free(bots.rows); failed(res, rc); return; }
     // Each population's top: the leaderboard merges them and cuts the whole again.
-    qsort(humans.rows, (size_t)humans.n, sizeof *humans.rows, by_rating);
-    qsort(bots.rows, (size_t)bots.n, sizeof *bots.rows, by_rating);
+    if (humans.n) qsort(humans.rows, (size_t)humans.n, sizeof *humans.rows, by_rating);   // no rows: rows is NULL
+    if (bots.n) qsort(bots.rows, (size_t)bots.n, sizeof *bots.rows, by_rating);
     list l;
     list_begin(&l, NW_LIST_HEAD_BYTES);
     for (int i = 0; i < humans.n && i < BOARD_TOP; i++) LIST_PUT(&l, 16 + 2 * NW_ID_MAX + NW_NAME_MAX, nw_put_board(&humans.rows[i], out, (int)cap_));

@@ -443,8 +443,14 @@ static void serve_end_to_end(void) {
     // A client frame sent as binary is taken too (rt_local is not API Gateway).
     uint8_t ping[] = { NW_V1, NW_WS_PING };
     T_EQ_INT(tc_ws_send(fd, CB_WS_OP_BIN, ping, 2), 0);
-    cb_buf_reset(&m);
-    T_EQ_INT(tc_ws_recv(fd, 2000, &m), CB_WS_OP_BIN);
+    // The retried chat subscription's ACK runs on the pool while the pushes
+    // above went straight to the loop, so it may arrive only now: skip it.
+    int op;
+    do {
+        cb_buf_reset(&m);
+        op = tc_ws_recv(fd, 2000, &m);
+    } while (op == CB_WS_OP_BIN && m.len >= 2 && m.p[1] == NW_WS_ACK);
+    T_EQ_INT(op, CB_WS_OP_BIN);
     T_EQ_MEM(m.p, m.len, ((const uint8_t[]){ NW_V1, NW_WS_PONG }), 2);
     // Garbage closes the socket.
     T_EQ_INT(tc_ws_send(fd, CB_WS_OP_TEXT, "!!!!", 4), 0);
