@@ -14,7 +14,7 @@ AWSTemplateFormatVersion: "2010-09-09"
 #   * the API Gateway WebSocket API for realtime ($connect, $disconnect, $default);
 #   * an EventBridge Scheduler schedule that invokes the bot scan every minute;
 #   * a CloudFront distribution at the custom domain, sending
-#     /realtime/v1/websocket to the WebSocket API and everything else to the
+#     /realtime/v1/websocket and /v1/stream to the WebSocket API and everything else to the
 #     Function URL, so the clients see one origin;
 #   (GitHub Actions deploys new code through ops/github_oidc.yaml's role, which
 #   holds no other rights here: see that file.)
@@ -366,15 +366,17 @@ Resources:
 
   # ---- the front door: CloudFront at the custom domain ----------------------------
   # Rewrites /realtime/v1/websocket (what supabase-js and supabase-swift open)
-  # to the WebSocket API's stage path. Only the URI changes; the query string
-  # (apikey, vsn) passes through untouched.
+  # and /v1/stream (the binary stream, DESIGN.md "Binary surface") to the
+  # WebSocket API's stage path. Only the URI changes; the query string (apikey
+  # and vsn, or proto) passes through untouched, and $connect tells the two
+  # protocols apart by it.
   WsPathRewrite:
     Type: AWS::CloudFront::Function
     Properties:
       Name: !Sub "${FunctionName}-ws-path"
       AutoPublish: true
       FunctionConfig:
-        Comment: /realtime/v1/websocket -> /prod
+        Comment: /realtime/v1/websocket and /v1/stream -> /prod
         Runtime: cloudfront-js-2.0
       FunctionCode: |
         function handler(event) {
@@ -424,6 +426,17 @@ Resources:
           OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac  # Managed-AllViewerExceptHostHeader
         CacheBehaviors:
           - PathPattern: /realtime/v1/websocket*
+            TargetOriginId: realtime
+            ViewerProtocolPolicy: https-only
+            AllowedMethods: [GET, HEAD]
+            CachedMethods: [GET, HEAD]
+            Compress: false
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad          # Managed-CachingDisabled
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac  # Managed-AllViewerExceptHostHeader
+            FunctionAssociations:
+              - EventType: viewer-request
+                FunctionARN: !GetAtt WsPathRewrite.FunctionMetadata.FunctionARN
+          - PathPattern: /v1/stream*
             TargetOriginId: realtime
             ViewerProtocolPolicy: https-only
             AllowedMethods: [GET, HEAD]

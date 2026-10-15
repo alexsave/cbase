@@ -555,7 +555,7 @@ static void timestamps_as_postgres_prints_them(void) {
 
 static struct { int n; char topic[128]; char f[2][4096]; } g_cap;
 
-static void cap_deliver(cb_rt *rt, const char *topic, const char *const frames[2], const size_t lens[2]) {
+static void cap_deliver(cb_rt *rt, const char *topic, const char *const frames[CB_RT_PROTOS], const size_t lens[CB_RT_PROTOS]) {
     g_cap.n++;
     cb_strlcpy(g_cap.topic, topic, sizeof g_cap.topic);
     for (int i = 0; i < 2; i++) cb_strncpy0(g_cap.f[i], sizeof g_cap.f[i], frames[i], lens[i]);
@@ -567,7 +567,7 @@ static void publish_builds_both_frames(void) {
     cb_rt rt = { &CAP_T, &g_ctx, NULL };
     memset(&g_cap, 0, sizeof g_cap);
     const uint8_t cast[] = { 9 };
-    rt_publish_cast(&rt, "gu-" G "-" U1, cast, 1);
+    rt_publish_cast(&rt, "gu-" G "-" U1, G, 7, cast, 1);
     T_EQ_INT(g_cap.n, 1);
     T_EQ_STR(g_cap.topic, "gu-" G "-" U1);
     T_EQ_STR(g_cap.f[1], "[null,null,\"realtime:gu-" G "-" U1 "\",\"broadcast\",{\"event\":\"animation_events\",\"payload\":{\"b\":\"CQ==\"},\"type\":\"broadcast\"}]");

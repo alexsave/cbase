@@ -21,6 +21,7 @@
 #include "json_surface.h"
 #include "phoenix.h"
 #include "rt_deps.h"
+#include "stream.h"
 #include "util/clock.h"
 #include "util/err.h"
 #include "util/log.h"
@@ -81,14 +82,30 @@ static void hold_reply(void *ud, const char *frame, size_t len) {
     cb_buf_append(&h->frames, frame, len);
 }
 
+// One post to a connection. The binary stream's message goes as base64 text:
+// API Gateway refuses binary frames from clients and documents no opcode for
+// what @connections posts, and text decodes the same whichever one it picks
+// (DESIGN.md "Binary surface").
+static int post(const char *endpoint, const char *conn_id, int vsn, const char *frame, size_t len) {
+    if (vsn != CB_VSN_NW) return cb_rt_deps_g.apigw_post(endpoint, conn_id, frame, len);
+    if (len > (size_t)INT32_MAX / 2) return 413;
+    int cap = (int)((len + 2) / 3 * 4);
+    char *text = malloc((size_t)cap + 1);
+    if (!text) return 500;
+    int n = nw_text_encode((const uint8_t *)frame, (int)len, text, cap);
+    int st = n < 0 ? 500 : cb_rt_deps_g.apigw_post(endpoint, conn_id, text, (size_t)n);
+    free(text);
+    return st;
+}
+
 // Posts the held frames in order. False when the connection is gone.
-static bool post_held(const char *endpoint, const char *conn_id, const held *h) {
+static bool post_held(const char *endpoint, const char *conn_id, int vsn, const held *h) {
     if (!endpoint[0]) return true;
     for (size_t at = 0; at + sizeof(uint32_t) <= h->frames.len;) {
         uint32_t n;
         memcpy(&n, h->frames.p + at, sizeof n);
         at += sizeof n;
-        int st = cb_rt_deps_g.apigw_post(endpoint, conn_id, (const char *)h->frames.p + at, n);
+        int st = post(endpoint, conn_id, vsn, (const char *)h->frames.p + at, n);
         at += n;
         if (st == CB_APIGW_GONE) return false;
         if (st != 200) CB_WARN("realtime", "reply to %s: %d", conn_id, st);
@@ -124,10 +141,12 @@ static int on_default(cb_ctx *ctx, const cb_ws_event *ev) {
         int rc = CB_STORE_CALL(ctx->store, conn_get, ev->connection_id, &row);
         if (rc == CB_E_NOT_FOUND) {
             // The row is gone (its TTL ran out, or $connect's write was lost):
-            // start afresh, taking the serializer from the frame's own shape.
+            // start afresh, taking the protocol from the frame's own shape (a
+            // Phoenix frame is a JSON array or object; the stream's is base64).
             memset(&row, 0, sizeof row);
             cb_strlcpy(row.conn_id, ev->connection_id, sizeof row.conn_id);
-            row.vsn = cb_phx_vsn_of_frame(ev->body, ev->body_len);
+            row.vsn = ev->body_len && ev->body[0] != '[' && ev->body[0] != '{' ? CB_VSN_NW
+                                                                              : cb_phx_vsn_of_frame(ev->body, ev->body_len);
         } else if (rc != CB_OK) {
             CB_ERROR("realtime", "conn %s: load failed: %s", ev->connection_id, cb_strerror(rc));
             ret = rc;
@@ -135,9 +154,16 @@ static int on_default(cb_ctx *ctx, const cb_ws_event *ev) {
         }
         before = row;
         cb_buf_reset(&h.frames);
-        rc = cb_phx_on_frame(ctx, &row, (const char *)ev->body, ev->body_len, hold_reply, &h);
+        if (row.vsn == CB_VSN_NW) {
+            uint8_t *msg = malloc(ev->body_len + 1);
+            int n = msg ? nw_text_decode((const char *)ev->body, (int)ev->body_len, msg, (int)ev->body_len + 1) : -1;
+            rc = n < 0 ? CB_E_INVALID : cb_nw_on_frame(ctx, &row, msg, (size_t)n, hold_reply, &h);
+            free(msg);
+        } else {
+            rc = cb_phx_on_frame(ctx, &row, (const char *)ev->body, ev->body_len, hold_reply, &h);
+        }
         if (rc == CB_E_INVALID) {
-            // Not a Phoenix frame: Phoenix drops such a socket, and so do we.
+            // Not a frame of its protocol: Phoenix drops such a socket, and so do we.
             if (endpoint[0]) cb_rt_deps_g.apigw_delete(endpoint, ev->connection_id);
             CB_STORE_CALL(ctx->store, conn_delete, ev->connection_id);
             break;
@@ -151,7 +177,7 @@ static int on_default(cb_ctx *ctx, const cb_ws_event *ev) {
             if (w == CB_E_CONFLICT) continue;   // another frame of this connection stored first
             if (w != CB_OK) CB_ERROR("realtime", "conn %s: save failed: %s", ev->connection_id, cb_strerror(w));
         }
-        if (!post_held(endpoint, ev->connection_id, &h)) CB_STORE_CALL(ctx->store, conn_delete, ev->connection_id);
+        if (!post_held(endpoint, ev->connection_id, row.vsn, &h)) CB_STORE_CALL(ctx->store, conn_delete, ev->connection_id);
         break;
     }
     cb_buf_free(&h.frames);
@@ -162,8 +188,12 @@ int cb_rt_apigw_event(cb_ctx *ctx, const cb_ws_event *ev, int *status_out) {
     *status_out = 500;
     if (!ctx->store) { *status_out = 503; return CB_E_STATE; }
     if (strcmp(ev->route_key, "$connect") == 0) {
-        if (!apikey_ok(ctx, ev->query)) { *status_out = 401; return CB_E_AUTH; }
-        int vsn = cb_phx_vsn_of_query(ev->query);
+        // The binary stream asks with proto=nw1 and carries no API key (the
+        // binary surface has none); a Phoenix client names its vsn.
+        int proto = cb_nw_proto_of_query(ev->query);
+        if (proto < 0) { *status_out = 400; return CB_E_INVALID; }
+        if (proto != CB_VSN_NW && !apikey_ok(ctx, ev->query)) { *status_out = 401; return CB_E_AUTH; }
+        int vsn = proto == CB_VSN_NW ? CB_VSN_NW : cb_phx_vsn_of_query(ev->query);
         if (vsn < 0) { *status_out = 400; return CB_E_INVALID; }
         cb_conn_row row;
         memset(&row, 0, sizeof row);
@@ -215,7 +245,7 @@ static bool collect_conn(const cb_conn_row *r, void *ud) {
     return true;
 }
 
-static void apigw_deliver(cb_rt *rt, const char *topic, const char *const frames[2], const size_t lens[2]) {
+static void apigw_deliver(cb_rt *rt, const char *topic, const char *const frames[CB_RT_PROTOS], const size_t lens[CB_RT_PROTOS]) {
     apigw *A = rt->impl;
     cb_ctx *ctx = rt->ctx;
     char endpoint[600];
@@ -230,8 +260,8 @@ static void apigw_deliver(cb_rt *rt, const char *topic, const char *const frames
     int rc = CB_STORE_CALL(ctx->store, conns_by_topic, topic, collect_conn, &ts);
     if (rc < 0) CB_ERROR("realtime", "push %s: connections not read: %s", topic, cb_strerror(rc));
     for (size_t i = 0; i < ts.n; i++) {
-        int v = ts.t[i].vsn == 2 ? 1 : 0;
-        int st = cb_rt_deps_g.apigw_post(endpoint, ts.t[i].id, frames[v], lens[v]);
+        int v = cb_rt_proto(ts.t[i].vsn);
+        int st = post(endpoint, ts.t[i].id, ts.t[i].vsn, frames[v], lens[v]);
         if (st == CB_APIGW_GONE) CB_STORE_CALL(ctx->store, conn_delete, ts.t[i].id);
         else if (st != 200) CB_WARN("realtime", "push %s to %s: %d", topic, ts.t[i].id, st);
     }

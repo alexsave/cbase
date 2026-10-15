@@ -122,8 +122,8 @@ static void join_publish_and_isolation(void) {
 
     // Publish from this thread (as a bot drive would): each hears its own topic, in its own serializer.
     const uint8_t cast[] = { 1, 2 };
-    rt_publish_cast(g_ctx.rt, "gu-" G "-" U1, cast, 2);
-    rt_publish_cast(g_ctx.rt, "game-" G, cast, 1);
+    rt_publish_cast(g_ctx.rt, "gu-" G "-" U1, G, 7, cast, 2);
+    rt_publish_cast(g_ctx.rt, "game-" G, G, 7, cast, 1);
     T_EQ_STR(recv_text(a, 2000, &m), "[null,null,\"realtime:gu-" G "-" U1 "\",\"broadcast\",{\"event\":\"animation_events\",\"payload\":{\"b\":\"AQI=\"},\"type\":\"broadcast\"}]");
     T_EQ_STR(recv_text(b, 2000, &m), "{\"join_ref\":null,\"ref\":null,\"topic\":\"realtime:game-" G "\",\"event\":\"broadcast\","
                                      "\"payload\":{\"event\":\"animation_events\",\"payload\":{\"b\":\"AQ==\"},\"type\":\"broadcast\"}}");
@@ -141,7 +141,7 @@ static void join_publish_and_isolation(void) {
     T_CHECK(strstr(recv_text(a, 2000, &m), "\"phx_close\"") != NULL);
     T_CHECK(strstr(recv_text(a, 2000, &m), "\"13\"") != NULL);
     // After the leave, a's stream is quiet.
-    rt_publish_cast(g_ctx.rt, "gu-" G "-" U1, cast, 2);
+    rt_publish_cast(g_ctx.rt, "gu-" G "-" U1, G, 7, cast, 2);
     T_EQ_STR(recv_text(a, 300, &m), "");
     close(a);
     close(b);

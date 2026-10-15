@@ -394,15 +394,18 @@ static void h_delete_account(cb_ctx *ctx, const cb_http_req *req, cb_http_res *r
 int cb_functions_routes(cb_ctx *ctx) {
     // Every method reaches the handler, as it reached the edge function: the
     // method rules are the functions' own (delete-account's 405), and the
-    // router answers OPTIONS.
-    static const struct { const char *path; cb_handler fn; } routes[] = {
-        { "/functions/v1/create", h_create },
-        { "/functions/v1/action", h_action },
-        { "/functions/v1/meta", h_meta },
-        { "/functions/v1/delete-account", h_delete_account },
+    // router answers OPTIONS. Each is mounted twice: under /functions/v1/ for
+    // the Supabase clients, with the anon key, and under /v1/ for the binary
+    // surface (DESIGN.md "Binary surface"), which has no anon key.
+    static const struct { const char *path, *v1; cb_handler fn; } routes[] = {
+        { "/functions/v1/create", "/v1/create", h_create },
+        { "/functions/v1/action", "/v1/action", h_action },
+        { "/functions/v1/meta", "/v1/meta", h_meta },
+        { "/functions/v1/delete-account", "/v1/account/delete", h_delete_account },
     };
     for (size_t i = 0; i < sizeof routes / sizeof routes[0]; i++) {
         int rc = cb_router_add(ctx->router, "*", routes[i].path, CB_ROUTE_APIKEY, routes[i].fn);
+        if (rc == CB_OK) rc = cb_router_add(ctx->router, "*", routes[i].v1, CB_ROUTE_POOL, routes[i].fn);
         if (rc != CB_OK) return rc;
     }
     return CB_OK;

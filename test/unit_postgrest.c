@@ -110,7 +110,7 @@ static cb_ctx g_ctx;
 static cb_config g_cfg;
 static struct { int n; char topic[128]; char f2[4096]; } g_cap;
 
-static void cap_deliver(cb_rt *rt, const char *topic, const char *const frames[2], const size_t lens[2]) {
+static void cap_deliver(cb_rt *rt, const char *topic, const char *const frames[CB_RT_PROTOS], const size_t lens[CB_RT_PROTOS]) {
     g_cap.n++;
     cb_strlcpy(g_cap.topic, topic, sizeof g_cap.topic);
     cb_strncpy0(g_cap.f2, sizeof g_cap.f2, frames[1], lens[1]);

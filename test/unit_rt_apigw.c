@@ -174,10 +174,10 @@ static void publish_posts_each_subscriber_in_its_serializer(void) {
     rtf.n_posts = 0;
     // No endpoint configured: the event's own domain is not known here, so pushes need CBASE_WS_ENDPOINT.
     const uint8_t cast[] = { 7 };
-    rt_publish_cast(g_ctx.rt, "game-" G, cast, 1);
+    rt_publish_cast(g_ctx.rt, "game-" G, G, 7, cast, 1);
     T_EQ_INT(rtf.n_posts, 0);
     strcpy(g_cfg.ws_endpoint, "https://abc.execute-api.us-west-1.amazonaws.com/prod");
-    rt_publish_cast(g_ctx.rt, "game-" G, cast, 1);
+    rt_publish_cast(g_ctx.rt, "game-" G, G, 7, cast, 1);
     T_EQ_INT(rtf.n_posts, 2);
     int seen = 0;
     for (int i = 0; i < rtf.n_posts; i++) {

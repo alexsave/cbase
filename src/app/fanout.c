@@ -54,10 +54,10 @@ void cb_fanout_commit(cb_ctx *ctx, const cb_fanout *f) {
     for (int i = 0; i < f->n_seats; i++) {
         if (!f->seats[i].user_id[0] || !f->seats[i].cast) continue;
         snprintf(topic, sizeof topic, "gu-%s-%s", f->game_id, f->seats[i].user_id);
-        rt_publish_cast(rt, topic, f->seats[i].cast, f->seats[i].cast_len);
+        rt_publish_cast(rt, topic, f->game_id, f->version, f->seats[i].cast, f->seats[i].cast_len);
     }
     if (f->spectator_cast) {
         snprintf(topic, sizeof topic, "game-%s", f->game_id);
-        rt_publish_cast(rt, topic, f->spectator_cast, f->spectator_cast_len);
+        rt_publish_cast(rt, topic, f->game_id, f->version, f->spectator_cast, f->spectator_cast_len);
     }
 }

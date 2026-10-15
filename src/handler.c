@@ -3,6 +3,7 @@
 #include "admin/admin.h"
 #include "app/functions_http.h"
 #include "app/unfurl_http.h"
+#include "app/v1_http.h"
 #include "auth/auth_http.h"
 #include "net/router.h"
 #include "realtime/postgrest.h"
@@ -68,6 +69,7 @@ int cb_routes_register(cb_ctx *ctx) {
     if (rc == CB_OK) rc = reg("auth", cb_auth_routes(ctx));
     if (rc == CB_OK) rc = reg("postgrest", cb_postgrest_routes(ctx));
     if (rc == CB_OK) rc = reg("functions", cb_functions_routes(ctx));
+    if (rc == CB_OK) rc = reg("v1", cb_v1_routes(ctx));
     if (rc == CB_OK) rc = reg("admin", cb_admin_routes(ctx));
     if (rc == CB_OK) rc = reg("unfurl", cb_unfurl_routes(ctx));
     if (rc == CB_OK && ctx->mode == CB_MODE_SERVE) rc = reg("realtime", cb_rt_local_routes(ctx));

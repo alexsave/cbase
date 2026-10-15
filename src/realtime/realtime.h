@@ -32,12 +32,16 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// The transport: deliver one already-encoded Phoenix frame to every
-// connection joined to `topic`, each in its own serializer (the frame is
-// built per vsn by the caller through phoenix.h, so `frames[vsn - 1]`).
+// The transport: deliver one already-encoded frame to every connection
+// joined to `topic`, each in its own protocol: the two Phoenix serializers
+// (vsn 1 and 2) and the binary stream (stream.h, CB_VSN_NW), so
+// `frames[cb_rt_proto(vsn)]`. The binary frame is the message's bytes; the
+// transport decides how it travels (rt_local: a binary frame; rt_apigw: base64
+// text, since what API Gateway's @connections posts arrive as is not documented).
+#define CB_RT_PROTOS 3
 typedef struct cb_rt_transport {
     const char *name;   // "local", "apigw"
-    void (*deliver)(cb_rt *rt, const char *topic, const char *const frames[2], const size_t lens[2]);
+    void (*deliver)(cb_rt *rt, const char *topic, const char *const frames[CB_RT_PROTOS], const size_t lens[CB_RT_PROTOS]);
     void (*free)(cb_rt *rt);
 } cb_rt_transport;
 
@@ -49,6 +53,9 @@ struct cb_rt {
 
 enum { CB_RT_INSERT = 1, CB_RT_UPDATE = 2, CB_RT_DELETE = 3 };
 
+// The index into a publish's frames of a connection's vsn (1, 2, or CB_VSN_NW).
+static inline int cb_rt_proto(int vsn) { return vsn == 3 ? 2 : vsn == 2 ? 1 : 0; }
+
 // pv-<uid>: a postgres_changes event for the user's player_views row, shaped
 // as Supabase sends it ({data:{type, schema:"public", table:"player_views",
 // commit_timestamp, record:{game_id, player_id, view:"\\x..", version, status,
@@ -56,9 +63,10 @@ enum { CB_RT_INSERT = 1, CB_RT_UPDATE = 2, CB_RT_DELETE = 3 };
 // key only.
 void rt_publish_pv_update(cb_rt *rt, const char *user_id, int event, const cb_view_row *row);
 // gu-<game>-<uid> or game-<game>: broadcast event "animation_events" with
-// payload {b: base64(cast)}.
-void rt_publish_cast(cb_rt *rt, const char *topic, const uint8_t *cast, size_t len);
-// chat:<game>: broadcast event "INSERT" with the row, as broadcast_changes did.
+// payload {b: base64(cast)}; NW_WS_CAST {game, version, cast} on the stream.
+void rt_publish_cast(cb_rt *rt, const char *topic, const char *game_id, int64_t version, const uint8_t *cast, size_t len);
+// chat:<game>: broadcast event "INSERT" with the row, as broadcast_changes did;
+// NW_WS_CHAT on the stream.
 void rt_publish_chat(cb_rt *rt, const char *game_id, const cb_chat_row *row);
 
 void cb_rt_free(cb_rt *rt);
