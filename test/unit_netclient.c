@@ -296,7 +296,7 @@ static void gates(void) {
     v.version = 1;
     T_EQ_INT(feed(&v, 0, T0)->kind, NC_EV_VIEW);
     // Many games: the least recently seen gives way, and nothing breaks.
-    char gid[8];
+    char gid[16];
     for (int i = 0; i < NC_GATES_MAX + 5; i++) {
         snprintf(gid, sizeof gid, "x%d", i);
         NwFrame w = push(NW_WS_VIEW, gid, 1, env, 3);
