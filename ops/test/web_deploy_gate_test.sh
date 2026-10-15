@@ -1,6 +1,8 @@
 #!/bin/bash
 # web_deploy.sh and lambda_deploy.sh refuse to deploy from a tree behind
-# origin/main (require_main.sh), and let a tree that contains main through. No
+# origin/main (require_main.sh), and let a tree that contains main through. In
+# CI, a push main has superseded ends as skipped (exit 0, no AWS call) when
+# main has since changed the deploy's inputs, and deploys when it has not. No
 # AWS: `aws` is a stub that records any call, and the gate has to fire before
 # the first one.
 #
@@ -19,6 +21,8 @@ mkdir -p "$tmp/bin"
 printf '#!/bin/bash\necho "aws $*" >> "%s/aws_calls"\nexit 99\n' "$tmp" > "$tmp/bin/aws"
 chmod +x "$tmp/bin/aws"
 export PATH="$tmp/bin:$PATH"
+# By hand unless a case says otherwise (this test itself runs in CI).
+unset GITHUB_ACTIONS
 
 g() { git -c user.name=t -c user.email=t@t -c init.defaultBranch=main "$@"; }
 
@@ -58,6 +62,47 @@ if run_lambda; then fail "lambda: a tree behind origin/main deployed"; fi
 grep -q 'does not contain origin/main' "$tmp/out" || { cat "$tmp/out" >&2; fail "lambda, behind main: refused, but not by require_main"; }
 [ ! -e "$tmp/aws_calls" ] || fail "lambda, behind main: aws was called before the refusal: $(cat "$tmp/aws_calls")"
 echo "ok - lambda: a tree behind origin/main is refused before any AWS call"
+
+# 1b. In CI the same tree is an older commit OF main, and main's newer commit
+#     (B, a file no deploy builds from) changed none of the inputs: no newer
+#     run exists, this build is main's, and it goes through the gate.
+if GITHUB_ACTIONS=true run; then fail "ci, inputs unchanged: expected the NEXT_PUBLIC_* check to stop the deploy"; fi
+grep -q 'changed none of this deploy' "$tmp/out" || { cat "$tmp/out" >&2; fail "ci, inputs unchanged: web did not get past the gate"; }
+if GITHUB_ACTIONS=true run_lambda; then fail "ci, inputs unchanged: expected the stub aws to stop the lambda deploy"; fi
+grep -q '^aws cloudformation describe-stacks' "$tmp/aws_calls" 2>/dev/null || { cat "$tmp/out" >&2; fail "ci, inputs unchanged: lambda never reached the stack"; }
+rm -f "$tmp/aws_calls"
+echo "ok - ci: an older commit of main deploys when main has changed none of its inputs"
+
+# 1c. Main moves on with a change to an input of both deploys (shared/c/): that
+#     push runs its own deploy, so this one ends skipped, green, before any AWS call.
+mkdir -p "$tmp/seed/shared/c"
+echo input > "$tmp/seed/shared/c/x"
+g -C "$tmp/seed" add -A
+g -C "$tmp/seed" commit -q -m B2
+g -C "$tmp/seed" push -q origin HEAD:main
+GITHUB_ACTIONS=true run || { cat "$tmp/out" >&2; fail "ci, superseded: web went red instead of skipping"; }
+grep -q '::notice title=deploy skipped::superseded' "$tmp/out" || { cat "$tmp/out" >&2; fail "ci, superseded: web exited 0 without the skip notice"; }
+GITHUB_ACTIONS=true run_lambda || { cat "$tmp/out" >&2; fail "ci, superseded: lambda went red instead of skipping"; }
+grep -q '::notice title=deploy skipped::superseded' "$tmp/out" || { cat "$tmp/out" >&2; fail "ci, superseded: lambda exited 0 without the skip notice"; }
+[ ! -e "$tmp/aws_calls" ] || fail "ci, superseded: aws was called: $(cat "$tmp/aws_calls")"
+echo "ok - ci: a push main has superseded ends skipped, with a notice, before any AWS call"
+
+# 1d. By hand, the same superseded commit is still refused: nobody else is
+#     about to deploy main's tip.
+if run_lambda; then fail "by hand, superseded: lambda did not refuse"; fi
+grep -q 'does not contain origin/main' "$tmp/out" || { cat "$tmp/out" >&2; fail "by hand, superseded: refused, but not by require_main"; }
+echo "ok - by hand: an older commit of main is refused, not skipped"
+
+# 1e. In CI, a branch behind main (not a commit of main) is refused, never
+#     skipped: the skip is for main's own superseded pushes only.
+echo branch > "$tmp/work/diverged"
+g -C "$tmp/work" add -A
+g -C "$tmp/work" commit -q -m D
+if GITHUB_ACTIONS=true run_lambda; then fail "ci, diverged: a branch behind main did not refuse"; fi
+grep -q 'does not contain origin/main' "$tmp/out" || { cat "$tmp/out" >&2; fail "ci, diverged: refused, but not by require_main"; }
+[ ! -e "$tmp/aws_calls" ] || fail "ci, diverged: aws was called: $(cat "$tmp/aws_calls")"
+g -C "$tmp/work" reset -q --hard HEAD~1
+echo "ok - ci: a branch behind main is refused, not skipped"
 
 # 2. Main merged in (a branch of its own on top of main): through the gate.
 g -C "$tmp/work" pull -q --no-rebase origin main
