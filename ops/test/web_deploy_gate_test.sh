@@ -23,6 +23,8 @@ chmod +x "$tmp/bin/aws"
 export PATH="$tmp/bin:$PATH"
 # By hand unless a case says otherwise (this test itself runs in CI).
 unset GITHUB_ACTIONS
+# The ops settings file: an empty one of the test's own, never this Mac's.
+export CBASE_OPS_ENV="$tmp/ops.env"
 
 g() { git -c user.name=t -c user.email=t@t -c init.defaultBranch=main "$@"; }
 
@@ -30,7 +32,7 @@ g() { git -c user.name=t -c user.email=t@t -c init.defaultBranch=main "$@"; }
 g init -q --bare "$tmp/origin.git"
 g clone -q "$tmp/origin.git" "$tmp/seed" 2>/dev/null
 mkdir -p "$tmp/seed/c_base/ops"
-cp "$ops/web_deploy.sh" "$ops/lambda_deploy.sh" "$ops/require_main.sh" "$tmp/seed/c_base/ops/"
+cp "$ops/web_deploy.sh" "$ops/lambda_deploy.sh" "$ops/require_main.sh" "$ops/ops_env.sh" "$tmp/seed/c_base/ops/"
 g -C "$tmp/seed" add -A
 g -C "$tmp/seed" commit -q -m A
 g -C "$tmp/seed" push -q origin HEAD:main
