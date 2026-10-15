@@ -39,6 +39,7 @@
 set -euo pipefail
 
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
+# shellcheck source=c_base/ops/ops_env.sh
 . "$repo/c_base/ops/ops_env.sh"
 cbase_ops_read "$(cbase_ops_env_file "$repo/c_base")"
 stack="${CBASE_WEB_STACK:-cbase-web}"

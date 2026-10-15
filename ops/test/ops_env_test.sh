@@ -4,7 +4,7 @@
 # exist yet. No AWS calls.
 set -u
 here="$(cd "$(dirname "$0")/../.." && pwd)"
-# shellcheck source=../ops_env.sh
+# shellcheck source=c_base/ops/ops_env.sh
 . "$here/ops/ops_env.sh"
 fails=0
 check() { if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1: got [$2] want [$3]"; fails=$((fails + 1)); fi; }

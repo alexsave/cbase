@@ -43,6 +43,7 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=c_base/ops/ops_env.sh
 . "$here/ops/ops_env.sh"
 env_file="$(cbase_ops_env_file "$here")"
 import_dir=""
