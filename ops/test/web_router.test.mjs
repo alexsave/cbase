@@ -83,7 +83,7 @@ test('any other one-segment path is the shell: game ids and replay codes', () =>
 });
 
 test('files pass untouched, so a missing chunk stays a 404', () => {
-    for (const p of ['/_next/static/chunks/0a1b.js', '/_next/static/media/bots.wasm.08p.jvewh7r_1.gz',
+    for (const p of ['/_next/static/chunks/0a1b.js', '/_next/static/media/web.wasm.08p.jvewh7r_1.gz',
                      '/oracle.wasm.gz', '/dashboard.txt', '/manifest.json', '/favicon.ico']) {
         assert.equal(key(foolish, 'foolish.cards', p), `/foolish${p}`);
     }

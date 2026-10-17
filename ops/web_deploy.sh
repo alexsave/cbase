@@ -157,7 +157,7 @@ deploy_site() {
   if [ -d "$out/_next/static" ]; then
     aws s3 sync "$out/_next/static" "$dest/_next/static" "${q[@]}" \
       --exclude '*.gz' --cache-control "$immutable"
-    # 3a. the bundled wasm (bots.wasm.gz, web.wasm.gz under media/): hashed, raw gzip bytes
+    # 3a. the bundled wasm (web.wasm.gz under media/): hashed, raw gzip bytes
     aws s3 sync "$out/_next/static" "$dest/_next/static" "${q[@]}" \
       --exclude '*' --include '*.gz' --content-type application/octet-stream --cache-control "$immutable"
   fi
