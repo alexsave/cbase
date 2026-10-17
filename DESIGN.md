@@ -895,6 +895,9 @@ Server to client:
 - `NW_WS_CAST`: game id, version, the kernel's cast. A member hears its own seat's casts (`gu-<game>-<user>`), anyone else the spectators' (`game-<game>`); the server picks by membership when the subscription is made, and the ACK says which.
 - `NW_WS_CHAT`: game id and the message (id, user, created, is_system, text).
 - `NW_WS_PONG`.
+- `NW_WS_CATCHUP`: a `NW_WS_VIEW`'s fields, sent right behind the ACK of a game subscription made with `NW_WS_SUB_AS`: the caller's view of the game when it is newer than the `since` the subscription named.
+  Its own kind because a client holding a game on its own stream takes no dashboard views of it (its casts animate it), so a catch-up sent as a plain view was dropped; a commit that landed between the client's read of the game and its subscription going live was then lost until the next push (seen on production: a join that never reached the creator's lobby, about 1 game in 50).
+  A bare `NW_WS_SUB` still gets a `NW_WS_VIEW`, which every older client reads.
 
 Topics inside the server stay the strings they were (`pv-`, `gu-`, `game-`, `chat:`), with the policy of the old `cb_phx_may_join` in one function, `cb_rt_may_hear`.
 The catch-up the Phoenix facade never had: a `NW_SUB_GAME` with `since` below the game's version is answered, after its ACK, with the caller's current `NW_WS_VIEW` of that game, so a client that reconnects asks for what it missed by version instead of refetching on a guess.

@@ -127,12 +127,29 @@ static void protocol(void) {
     a = out(0);
     T_CHECK(a.kind == NW_WS_ACK && a.ref == 3 && a.why == 0 && a.seated == 1);
     NwFrame v = out(1);
-    T_CHECK(v.kind == NW_WS_VIEW && v.version == 5 && v.gid_len == 6);
+    T_CHECK(v.kind == NW_WS_VIEW && v.version == 5 && v.gid_len == 6);   // a bare SUB: an older client
     T_EQ_MEM(v.blob.p, v.blob.len, mine, sizeof mine);
     T_CHECK(has_topic(&c, "gu-" G "-" U1));
     // Asked again by a client that holds version 5: no view to catch up.
     sub(&c, 4, NW_SUB_GAME, G, 5);
     T_EQ_INT(g_out.n, 1);
+    // A subscription that says who asks gets its catch-up as its own kind, so
+    // the client tells it from a dashboard push.
+    NwFrame sa;
+    memset(&sa, 0, sizeof sa);
+    sa.kind = NW_WS_SUB_AS;
+    sa.token_len = (uint16_t)strlen("tok-" U1);
+    memcpy(sa.token, "tok-" U1, sa.token_len);
+    sa.ref = 9;
+    sa.what = NW_SUB_GAME;
+    sa.gid_len = 6;
+    memcpy(sa.gid, G, 6);
+    T_EQ_INT(run(&c, &sa), CB_OK);
+    T_EQ_INT(g_out.n, 2);
+    T_CHECK(out(0).kind == NW_WS_ACK && out(0).ref == 9 && out(0).seated == 1);
+    v = out(1);
+    T_CHECK(v.kind == NW_WS_CATCHUP && v.version == 5);
+    T_EQ_MEM(v.blob.p, v.blob.len, mine, sizeof mine);
 
     // Someone else's game: the spectators' stream and view.
     sub(&c, 5, NW_SUB_GAME, G2, 0);

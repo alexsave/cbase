@@ -111,15 +111,18 @@ static bool gid_of(const NwFrame *f, char *gid, size_t cap) {
     return true;
 }
 
-// The caller's current view of the game when it is newer than `since`.
-static void catch_up(cb_ctx *ctx, const char *gid, const char *viewer, uint32_t since, cb_rt_send_fn send, void *ud) {
+// The caller's current view of the game when it is newer than `since`, as
+// `kind`: NW_WS_CATCHUP for a client that subscribed with NW_WS_SUB_AS (it
+// tells the catch-up from a dashboard push), NW_WS_VIEW for an older one.
+static void catch_up(cb_ctx *ctx, const char *gid, const char *viewer, uint32_t since, uint8_t kind,
+                     cb_rt_send_fn send, void *ud) {
     cb_view_row v;
     memset(&v, 0, sizeof v);
     int rc = cb_rt_deps_g.table_view(ctx, gid, viewer, &v);
     if (rc == CB_OK && v.version > (int64_t)since && v.view_len) {
         NwFrame f;
         memset(&f, 0, sizeof f);
-        f.kind = NW_WS_VIEW;
+        f.kind = kind;
         f.gid_len = (uint8_t)strlen(gid);
         memcpy(f.gid, gid, f.gid_len);
         f.version = (uint32_t)v.version;
@@ -165,7 +168,8 @@ static void on_sub(cb_ctx *ctx, cb_conn_row *c, const NwFrame *f, cb_rt_send_fn 
     }
     if (!topic_add(c, topic)) { ack(f->ref, ASK_WHY_INTERNAL, false, send, ud); return; }
     ack(f->ref, 0, seated, send, ud);
-    if (f->what == NW_SUB_GAME) catch_up(ctx, gid, seated ? c->user_id : NULL, f->version, send, ud);
+    if (f->what == NW_SUB_GAME)
+        catch_up(ctx, gid, seated ? c->user_id : NULL, f->version, f->kind == NW_WS_SUB_AS ? NW_WS_CATCHUP : NW_WS_VIEW, send, ud);
 }
 
 static void on_unsub(cb_conn_row *c, const NwFrame *f) {

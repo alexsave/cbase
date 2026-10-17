@@ -298,6 +298,14 @@ static void frames(void) {
     T_CHECK(g.blob.p == cast + 13 && g.blob.len == 1 && g.version == 9);
     T_EQ_INT(refused_everywhere(cast, sizeof cast, dec_frame), 0);
 
+    // The catch-up: a VIEW's layout under its own kind.
+    f.kind = NW_WS_CATCHUP;
+    const uint8_t catchup[] = { 1, 55, 2, 'g', '1', 9, 0, 0, 0, 1, 0, 0, 0, 0x0c };
+    T_EQ_MEM(out, nw_frame_encode(&f, out, sizeof out), catchup, sizeof catchup);
+    T_EQ_INT(nw_frame_decode(catchup, sizeof catchup, &g), NW_OK);
+    T_CHECK(g.kind == NW_WS_CATCHUP && g.version == 9 && g.blob.len == 1);
+    T_EQ_INT(refused_everywhere(catchup, sizeof catchup, dec_frame), 0);
+
     memset(&f, 0, sizeof f);
     f.kind = NW_WS_CHAT;
     f.gid_len = 2; memcpy(f.gid, "g1", 2);

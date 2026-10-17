@@ -1007,6 +1007,30 @@ static void a_busy_read_goes_again_a_write_does_not(void) {
     T_CHECK(d && d->ticket == t && d->why == ASK_WHY_BUSY);
 }
 
+// What a game subscription missed comes behind its ACK as NW_WS_CATCHUP: for a
+// game held on its own stream it is the table's board, where a dashboard view
+// of it is not. The case: the game was created at 1, someone joined at 2 before
+// the subscription was live, so the join's cast never came.
+static void a_catch_up_is_the_tables(void) {
+    signed_in(T0 + 3600000);
+    nc_stream_sub(NW_SUB_GAME, "g1", 2);
+    nc_stream_opened(T0);
+    while (next_frame(T0).kind) {}
+    host_t h;
+    memset(&h, 0, sizeof h);
+    const uint8_t c1[] = { 0xc1 }, v2[] = { 0x22 }, u2[] = { 0xd2 };
+    host_push(&h, NW_WS_CAST, "g1", 1, c1, 1, T0);
+    host_push(&h, NW_WS_VIEW, "g1", 2, v2, 1, T0);
+    T_EQ_INT(h.views, 0);   // a dashboard view of a held game: not handed out
+    host_push(&h, NW_WS_CATCHUP, "g1", 2, u2, 1, T0);
+    T_EQ_INT(h.refetched, 1);   // the table's, as an answer is
+    T_EQ_INT(h.table_v, 2);
+    T_EQ_MEM(h.table, h.table_len, u2, 1);
+    // Older than what is held: stale.
+    host_push(&h, NW_WS_CATCHUP, "g1", 1, c1, 1, T0);
+    T_EQ_INT(h.refetched, 1);
+}
+
 int main(void) {
     T_RUN(session_blob);
     T_RUN(requests);
@@ -1027,5 +1051,6 @@ int main(void) {
     T_RUN(waiting_intents_keep_their_bytes);
     T_RUN(a_host_of_boards_gets_boards);
     T_RUN(a_busy_read_goes_again_a_write_does_not);
+    T_RUN(a_catch_up_is_the_tables);
     return T_DONE();
 }
