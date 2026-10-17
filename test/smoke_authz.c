@@ -235,7 +235,7 @@ static void stream_only_through_the_edge(void) {
 // guessing one account's password locks it, after which even the right
 // password is answered 429 TOO_MANY.
 static void limits_hold(void) {
-    char name[16];
+    char name[32];
     int refused_at = -1;
     for (int i = 0; i < 10 && refused_at < 0; i++) {
         snprintf(name, sizeof name, "AUTHZ_L%d", i);

@@ -683,7 +683,7 @@ static void only_through_the_edge(void) {
 static void rate_limited_account_routes(void) {
     setup();
     g_peer = "198.51.100.20";
-    char name[16];
+    char name[32];
     const int up = cb_limit_rules[CB_LIMIT_SIGNUP_IP].burst;
     for (int i = 0; i < up; i++) {
         snprintf(name, sizeof name, "RL%d", i);
