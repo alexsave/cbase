@@ -1,0 +1,13 @@
+cbase-bench 1
+kind direct
+date 2026-10-17T15:25:05Z
+host Apple M1
+target https://api.foolish.cards
+note signed=no edge_hits=200/200 burst=0 wifi RCN AS6079 New York, CloudFront POP BOS50 load1=3
+lat cbase_board n=200 p50_us=31677 p95_us=40686 p99_us=56419 max_us=144645 sent_b=57 recv_b=1755
+lat cbase_games n=200 p50_us=29735 p95_us=38334 p99_us=43610 max_us=69511 sent_b=670 recv_b=817
+lat cbase_game n=200 p50_us=27568 p95_us=39745 p99_us=49013 max_us=58587 sent_b=677 recv_b=815
+lat cbase_history n=200 p50_us=30667 p95_us=41856 p99_us=50312 max_us=897087 sent_b=672 recv_b=572
+lat cbase_bots n=200 p50_us=30197 p95_us=38161 p99_us=48151 max_us=101988 sent_b=669 recv_b=3398
+lat direct_floor_unsigned n=200 p50_us=17357 p95_us=21161 p99_us=23309 max_us=24678 sent_b=126 recv_b=125
+lat edge_hit n=200 p50_us=13888 p95_us=16988 p99_us=19248 max_us=21207 sent_b=50 recv_b=16068

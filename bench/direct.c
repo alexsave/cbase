@@ -13,6 +13,8 @@
 //     cbase_board   GET /v1/leaderboard
 //     cbase_games   GET /v1/games         (the caller's dashboard)
 //     cbase_game    GET /v1/games/<id>    (one game, masked for the caller)
+//     cbase_history GET /v1/history       (the caller's finished games)
+//     cbase_bots    GET /v1/bots
 //
 //   DIRECT, warm, signed with the credentials in the environment
 //   (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN, AWS_REGION;
@@ -22,6 +24,9 @@
 //     direct_board  Query GSI2 RATINGS + Query GSI2 BOTS, every page
 //     direct_games  Query GSI1 USERGAMES#<user>, then GetItem GAME#<id> ROW each
 //     direct_game   GetItem GAME#<id> ROW
+//     direct_history Query GSI2 RATINGS (the caller's own rating, as h_history
+//                   finds it) + Query GSI2 PLAYER#<user>, every page
+//     direct_bots   Query GSI2 BOTS
 //   Every one is a read: no write is ever signed here. Without credentials the
 //   direct rows are left out and the run says so.
 //
@@ -120,6 +125,8 @@ static bool ask(bn_http *h, build_fn build, const void *arg, bn_resp *r) {
 static const NcRequest *b_board(const void *a) { (void)a; return nc_req_board(); }
 static const NcRequest *b_games(const void *a) { (void)a; return nc_req_games(now_ms()); }
 static const NcRequest *b_game(const void *a) { return nc_req_game(a, (int)strlen(a), now_ms()); }
+static const NcRequest *b_history(const void *a) { (void)a; return nc_req_history(now_ms()); }
+static const NcRequest *b_bots(const void *a) { (void)a; return nc_req_bots(now_ms()); }
 static const NcRequest *b_create(const void *a) { (void)a; return nc_req_create(now_ms()); }
 static const NcRequest *b_delete(const void *a) { (void)a; return nc_req(NC_REQ_DELETE, NULL, 0, NULL, 0, 0, now_ms()); }
 static const NcRequest *b_meta(const void *a) {
@@ -267,6 +274,10 @@ static bool d_board(direct *d) {
     return d_query(d, DWQ_RATINGS, NULL, NULL, NULL) && d_query(d, DWQ_BOTS, NULL, NULL, NULL);
 }
 
+static bool d_history(direct *d, const char *user) {
+    return d_query(d, DWQ_RATINGS, NULL, NULL, NULL) && d_query(d, DWQ_PLAYER_SNAPSHOTS, user, NULL, NULL);
+}
+
 static bool d_games(direct *d, const char *user) {
     static gids g;
     g.n = 0;
@@ -369,9 +380,11 @@ int bench_direct(const bench_opts *o) {
     char gid[CB_GAME_ID_MAX + 1] = "", user[64] = "";
     if (!setup(&h, gid, user)) { bn_http_close(&h); return 1; }
 
-    enum { C_BOARD, C_GAMES, C_GAME, D_BOARD, D_GAMES, D_GAME, D_FLOOR, EDGE, NS };
-    static const char *const names[NS] = { "cbase_board", "cbase_games", "cbase_game", "direct_board",
-                                           "direct_games", "direct_game", "direct_floor_unsigned", "edge_hit" };
+    enum { C_BOARD, C_GAMES, C_GAME, C_HISTORY, C_BOTS, D_BOARD, D_GAMES, D_GAME, D_HISTORY, D_BOTS, D_FLOOR, EDGE, NS };
+    static const char *const names[NS] = { "cbase_board", "cbase_games", "cbase_game", "cbase_history", "cbase_bots",
+                                           "direct_board", "direct_games", "direct_game", "direct_history", "direct_bots",
+                                           "direct_floor_unsigned", "edge_hit" };
+    static const build_fn via[C_BOTS + 1] = { b_board, b_games, b_game, b_history, b_bots };
     series s[NS];
     for (int i = 0; i < NS; i++) s[i] = (series){ names[i], calloc((size_t)o->n, sizeof(int64_t)), 0, 0, 0 };
     int errors = 0, edge_hits = 0;
@@ -380,19 +393,25 @@ int bench_direct(const bench_opts *o) {
     for (int round = -WARMUP; round < o->n && errors < 10; round++) {
         bool keep = round >= 0;
         for (int op = 0; op < NS; op++) {
-            if (op >= D_BOARD && op <= D_GAME && !signed_ok) continue;
+            if (op >= D_BOARD && op <= D_BOTS && !signed_ok) continue;
             if (op == EDGE && !o->edge) continue;
             int64_t t0 = bn_now_us();
             bool ok = false;
             size_t sent = 0, recv = 0;
-            if (op <= C_GAME) {
-                ok = op == C_BOARD ? ask(&h, b_board, NULL, &r) : op == C_GAMES ? ask(&h, b_games, NULL, &r) : ask(&h, b_game, gid, &r);
+            if (op <= C_BOTS) {
+                ok = ask(&h, via[op], op == C_GAME ? gid : NULL, &r);
                 ok = ok && r.status == 200;
                 sent = r.sent;
                 recv = r.recv;
-            } else if (op <= D_GAME) {
+            } else if (op <= D_BOTS) {
                 d.sent = d.recv = 0;
-                ok = op == D_BOARD ? d_board(&d) : op == D_GAMES ? d_games(&d, user) : d_get_game(&d, gid);
+                switch (op) {
+                case D_BOARD: ok = d_board(&d); break;
+                case D_GAMES: ok = d_games(&d, user); break;
+                case D_GAME: ok = d_get_game(&d, gid); break;
+                case D_HISTORY: ok = d_history(&d, user); break;
+                default: ok = d_query(&d, DWQ_BOTS, NULL, NULL, NULL); break;
+                }
                 sent = d.sent;
                 recv = d.recv;
             } else if (op == D_FLOOR) {
