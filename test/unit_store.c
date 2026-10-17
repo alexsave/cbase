@@ -1355,6 +1355,40 @@ static void conn_ttl_is_seconds(void) {
     cb_store_close(s);
 }
 
+// Failed sign-ins (store.h signin_fails): a count by email, replaced whole,
+// cleared, and gone once an hour has passed since its last write. On
+// DynamoDB the TTL attribute is in seconds, so the table sweeps it.
+static void signin_fails_round_trip(void) {
+    cb_store *s = open_fresh();
+    const int64_t now = 1760000000123LL;
+    cb_signin_fails f = { 0 };
+    T_EQ_INT(CB_STORE_CALL(s, signin_fails_get, "ann@x.io", now, &f), CB_E_NOT_FOUND);
+    T_EQ_INT(f.n, 0);
+    cb_signin_fails w = { .n = 6, .last_at = now - 5, .locked_until = now + 30000 };
+    T_EQ_INT(CB_STORE_CALL(s, signin_fails_put, "ann@x.io", &w, now), CB_OK);
+    T_EQ_INT(CB_STORE_CALL(s, signin_fails_get, "ann@x.io", now, &f), CB_OK);
+    T_EQ_INT(f.n, 6);
+    T_CHECK(f.last_at == now - 5 && f.locked_until == now + 30000);
+    T_EQ_INT(CB_STORE_CALL(s, signin_fails_get, "bob@x.io", now, &f), CB_E_NOT_FOUND);
+    w.n = 7;
+    T_EQ_INT(CB_STORE_CALL(s, signin_fails_put, "ann@x.io", &w, now + 1000), CB_OK);
+    T_EQ_INT(CB_STORE_CALL(s, signin_fails_get, "ann@x.io", now + 1000, &f), CB_OK);
+    T_EQ_INT(f.n, 7);
+    // An hour after the last write it reads as none.
+    T_EQ_INT(CB_STORE_CALL(s, signin_fails_get, "ann@x.io", now + 1000 + 3600 * 1000LL - 1, &f), CB_OK);
+    T_EQ_INT(CB_STORE_CALL(s, signin_fails_get, "ann@x.io", now + 1000 + 3600 * 1000LL, &f), CB_E_NOT_FOUND);
+    if (tsb_dynamo()) {
+        char q[256], v[64];
+        snprintf(q, sizeof q, "SELECT expires_at FROM \"%s\" WHERE pk = 'AUTHFAIL#ann@x.io' AND sk = 'FAILS'", tsb_table());
+        T_EQ_INT(CB_STORE_CALL(s, admin_query, q, false, first_value, v), 1);
+        T_EQ_STR(v, "1760003601");
+    }
+    T_EQ_INT(CB_STORE_CALL(s, signin_fails_clear, "ann@x.io"), CB_OK);
+    T_EQ_INT(CB_STORE_CALL(s, signin_fails_get, "ann@x.io", now, &f), CB_E_NOT_FOUND);
+    T_EQ_INT(CB_STORE_CALL(s, signin_fails_clear, "ann@x.io"), CB_OK);   // none: still fine
+    cb_store_close(s);
+}
+
 // ---- concurrency: the CAS under threads ----------------------------------------------------
 
 typedef struct { cb_store *s; int wins, losses; } racer;
@@ -1411,6 +1445,7 @@ int main(void) {
     if (!mkdtemp(g_dir)) { perror("mkdtemp"); return 1; }
     T_RUN(open_applies_schema_and_seeds_bots);
     T_RUN(users_round_trip);
+    T_RUN(signin_fails_round_trip);
     T_RUN(refresh_tokens_rotate);
     T_RUN(game_round_trip);
     T_RUN(cas_second_writer_loses);

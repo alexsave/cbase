@@ -665,6 +665,17 @@ bool dw_item_chat(cb_span it, cb_chat_row *c) {
     return true;
 }
 
+bool dw_item_signin_fails(cb_span it, int64_t now_ms, cb_signin_fails *f) {
+    memset(f, 0, sizeof f[0]);
+    int64_t n, expires;
+    // TTL deletion lags by up to days: a row past its time reads as none.
+    if (!dw_get_n(it, "n", &n) || !dw_get_n(it, "expires_ms", &expires) || expires <= now_ms) return false;
+    f->n = n < 0 ? 0 : n > INT32_MAX ? INT32_MAX : (int32_t)n;
+    f->last_at = get_n_or(it, "last_at", 0);
+    f->locked_until = get_n_or(it, "locked_until", 0);
+    return true;
+}
+
 bool dw_item_conn(cb_span it, cb_conn_row *c) {
     memset(c, 0, sizeof *c);
     if (!dw_get_s(it, "conn_id", c->conn_id, sizeof c->conn_id)) return false;
@@ -789,6 +800,11 @@ void dw_get_user(dw_req *r, const char *table, const char *id) {
 void dw_get_email(dw_req *r, const char *table, const char *email) {
     char pk[KB];
     get_item(r, table, k(pk, sizeof pk, "EMAIL#", email), "USER");
+}
+
+void dw_get_signin_fails(dw_req *r, const char *table, const char *email) {
+    char pk[KB];
+    get_item(r, table, k(pk, sizeof pk, "AUTHFAIL#", email), "FAILS");
 }
 
 void dw_get_game(dw_req *r, const char *table, const char *id) {
@@ -1091,6 +1107,35 @@ void dw_user_set_password(dw_req *r, const char *table, const char *id, const ch
 
 void dw_user_touch(dw_req *r, const char *table, const char *id, int64_t at) {
     user_update(r, table, id, "last_sign_in_at", NULL, at);
+}
+
+#define SIGNIN_FAILS_TTL_MS (3600LL * 1000)   // store.h: an hour after the last write
+
+void dw_signin_fails_put(dw_req *r, const char *table, const char *email, const cb_signin_fails *f, int64_t now_ms) {
+    char pk[KB];
+    cb_jw w;
+    begin(r, &w, "PutItem");
+    cb_jw_kstr(&w, "TableName", table);
+    cb_jw_key(&w, "Item");
+    cb_jw_obj(&w);
+    av_s(&w, "pk", k(pk, sizeof pk, "AUTHFAIL#", email));
+    av_s(&w, "sk", "FAILS");
+    av_n(&w, "n", f->n);
+    av_n(&w, "last_at", f->last_at);
+    av_n(&w, "locked_until", f->locked_until);
+    av_n(&w, "expires_ms", now_ms + SIGNIN_FAILS_TTL_MS);
+    av_n(&w, DW_TTL_ATTR, (now_ms + SIGNIN_FAILS_TTL_MS) / 1000);   // the TTL attribute is in seconds
+    cb_jw_end(&w);
+    finish(&w);
+}
+
+void dw_signin_fails_delete(dw_req *r, const char *table, const char *email) {
+    char pk[KB];
+    cb_jw w;
+    begin(r, &w, "DeleteItem");
+    cb_jw_kstr(&w, "TableName", table);
+    key2(&w, k(pk, sizeof pk, "AUTHFAIL#", email), "FAILS");
+    finish(&w);
 }
 
 void dw_user_delete_txn(dw_req *r, const char *table, const cb_user_row *u) {

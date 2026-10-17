@@ -36,13 +36,38 @@ typedef struct {
 // Refusal codes beyond the common ones, for auth_http's error bodies.
 #define CB_AUTH_E_EXISTS        (-101)  // signup: the email is registered ("user_already_exists")
 #define CB_AUTH_E_BAD_LOGIN     (-102)  // signin: wrong email or password ("invalid_credentials")
-#define CB_AUTH_E_WEAK_PASSWORD (-103)  // under 6 characters ("weak_password")
+#define CB_AUTH_E_WEAK_PASSWORD (-103)  // under 8 characters, common, or the username ("weak_password")
 #define CB_AUTH_E_BAD_USERNAME  (-104)  // empty, too long, or containing '%'
 #define CB_AUTH_E_BAD_REFRESH   (-105)  // unknown refresh token, or its user is gone ("refresh_token_not_found")
 #define CB_AUTH_E_REFRESH_USED  (-106)  // a consumed or revoked token: the session is now revoked ("refresh_token_already_used")
 #define CB_AUTH_E_SAME_PASSWORD (-107)  // change password: the new one is the old one ("same_password")
 #define CB_AUTH_E_BAD_EMAIL     (-108)  // signup: not an address ("email_address_invalid")
 #define CB_AUTH_E_LONG_PASSWORD (-109)  // over 72 bytes, which bcrypt would silently cut ("validation_failed")
+#define CB_AUTH_E_TOO_MANY      (-110)  // signin: the account is locked for failed attempts, or a rate limit (limits.h)
+
+// Passwords (sign-up and a change; sign-in takes any password, so an account
+// made under an older rule still signs in): at least CB_AUTH_PASSWORD_MIN
+// characters, at most 72 bytes, and not one of the most common passwords nor
+// the username itself (case aside).
+#define CB_AUTH_PASSWORD_MIN 8
+// Is pw one of the embedded most-common passwords (any case)? passwords.c.
+bool cb_auth_password_common(const char *pw);
+
+// Guessing one account's password (security finding H1). A wrong password
+// at an account counts in the table (store.h signin_fails); after
+// CB_AUTH_FAIL_FREE of them, none CB_AUTH_FAIL_WINDOW_MS after the one
+// before (a quiet window starts the count again), each further one
+// locks the account for CB_AUTH_LOCK_BASE_MS, doubling, at most
+// CB_AUTH_LOCK_MAX_MS. While locked, a sign-in is refused CB_AUTH_E_TOO_MANY
+// at once, with no bcrypt and no write, whatever the password: a guess
+// learns nothing, and costs one read. A name with no account is never
+// counted (nothing to guess, and nothing written for it); that it is never
+// locked tells no more than sign-up's "name taken" already does. A sign-in
+// that succeeds clears the count.
+#define CB_AUTH_FAIL_FREE       5
+#define CB_AUTH_FAIL_WINDOW_MS  (15LL * 60 * 1000)
+#define CB_AUTH_LOCK_BASE_MS    (30LL * 1000)
+#define CB_AUTH_LOCK_MAX_MS     (15LL * 60 * 1000)
 
 // Uses ctx->store and ctx->cfg (secret, TTL, public URL). CB_OK and *out.
 int  cb_auth_new(cb_ctx *ctx, cb_auth **out);

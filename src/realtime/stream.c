@@ -2,6 +2,8 @@
 #include "stream.h"
 
 #include "rt_deps.h"
+#include "app/limits.h"
+#include "util/clock.h"
 #include "net/http.h"
 #include "util/str.h"
 #include "util/log.h"
@@ -133,6 +135,10 @@ static void catch_up(cb_ctx *ctx, const char *gid, const char *viewer, uint32_t 
 
 static void on_sub(cb_ctx *ctx, cb_conn_row *c, const NwFrame *f, cb_rt_send_fn send, void *ud) {
     if (!c->user_id[0]) { ack(f->ref, ASK_WHY_AUTH, false, send, ud); return; }
+    // Each subscription reads the store and may write the connection's
+    // TOPIC rows: an account gets limits.h's share (the client backs off a
+    // refusal by itself).
+    if (!cb_limit_take(CB_LIMIT_SUB_USER, c->user_id, cb_now_ms(), NULL)) { ack(f->ref, ASK_WHY_BUSY, false, send, ud); return; }
     char gid[CB_GAME_ID_MAX + 1] = "";
     char topic[CB_TOPIC_MAX];
     bool seated = false;

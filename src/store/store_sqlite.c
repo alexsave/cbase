@@ -42,6 +42,7 @@
 enum {
     ST_USER_GET, ST_USER_BY_EMAIL, ST_USER_INSERT, ST_RATING_FOR_NEW_USER, ST_USER_SET_PASSWORD, ST_USER_TOUCH,
     ST_USER_DELETE, ST_USERS_ALL,
+    ST_FAILS_GET, ST_FAILS_PUT, ST_FAILS_CLEAR,
     ST_REFRESH_PUT, ST_REFRESH_GET, ST_REFRESH_REVOKE, ST_REFRESH_REVOKE_SESSION, ST_REFRESH_REVOKE_USER,
     ST_GAME_GET, ST_GAME_INSERT, ST_GAME_UPDATE_CAS, ST_GAME_EXISTS, ST_GAME_DELETE_CAS,
     ST_MEMBER_INSERT, ST_MEMBERS_OF_GAME, ST_MEMBER_DELETE, ST_MEMBERS_CLEAR,
@@ -76,6 +77,11 @@ static const char *const SQL[ST__COUNT] = {
         "VALUES (?1, ?2, ?3, ?3, 0, ?4) ON CONFLICT (user_id) DO UPDATE SET username = excluded.username",
     [ST_USER_SET_PASSWORD] = "UPDATE users SET password_hash = ?2 WHERE id = ?1",
     [ST_USER_TOUCH] = "UPDATE users SET last_sign_in_at = ?2 WHERE id = ?1",
+    [ST_FAILS_GET] = "SELECT n, last_at, locked_until FROM signin_fails WHERE email = ?1 AND expires_at > ?2",
+    [ST_FAILS_PUT] = "INSERT INTO signin_fails (email, n, last_at, locked_until, expires_at) VALUES (?1, ?2, ?3, ?4, ?5) "
+                     "ON CONFLICT(email) DO UPDATE SET n = excluded.n, last_at = excluded.last_at, "
+                     "locked_until = excluded.locked_until, expires_at = excluded.expires_at",
+    [ST_FAILS_CLEAR] = "DELETE FROM signin_fails WHERE email = ?1",
     [ST_USER_DELETE] = "DELETE FROM users WHERE id = ?1",
     [ST_USERS_ALL] = "SELECT " USER_COLS " FROM users ORDER BY created_at DESC, id",
 
@@ -578,6 +584,52 @@ static int sq_user_set_password(cb_store *st, const char *id, const char *hash) 
 static int sq_user_touch_sign_in(cb_store *st, const char *id, int64_t at) {
     return write1(Q(st), ST_USER_TOUCH, "touch sign-in", true, id, NULL, &at);
 }
+// ---- failed sign-ins ----------------------------------------------------------------------
+
+#define FAILS_TTL_MS (3600LL * 1000)   // store.h: an hour after the last write
+
+static int sq_signin_fails_get(cb_store *st, const char *email, int64_t now_ms, cb_signin_fails *out) {
+    sq *q = Q(st);
+    memset(out, 0, sizeof *out);
+    lock(q);
+    sqlite3_stmt *s = stmt(q, ST_FAILS_GET);
+    int rc = CB_E_DB;
+    if (s) {
+        b_text(s, 1, email);
+        b_i64(s, 2, now_ms);
+        int r = sqlite3_step(s);
+        if (r == SQLITE_ROW) {
+            out->n = (int32_t)c_i64(s, 0);
+            out->last_at = c_i64(s, 1);
+            out->locked_until = c_i64(s, 2);
+            rc = CB_OK;
+        } else rc = r == SQLITE_DONE ? CB_E_NOT_FOUND : fail(q, "signin fails get", r);
+    }
+    done(s);
+    unlock(q);
+    return rc;
+}
+
+static int sq_signin_fails_put(cb_store *st, const char *email, const cb_signin_fails *f, int64_t now_ms) {
+    sq *q = Q(st);
+    lock(q);
+    sqlite3_stmt *s = stmt(q, ST_FAILS_PUT);
+    if (s) {
+        b_text(s, 1, email);
+        b_i64(s, 2, f->n);
+        b_i64(s, 3, f->last_at);
+        b_i64(s, 4, f->locked_until);
+        b_i64(s, 5, now_ms + FAILS_TTL_MS);
+    }
+    int rc = step_write(q, s, "signin fails put", false);
+    unlock(q);
+    return rc;
+}
+
+static int sq_signin_fails_clear(cb_store *st, const char *email) {
+    return write1(Q(st), ST_FAILS_CLEAR, "signin fails clear", false, email, NULL, NULL);
+}
+
 // The cascade does the rest: refresh_tokens, game_members, ratings and
 // chat_messages reference users ON DELETE CASCADE.
 static int sq_user_delete(cb_store *st, const char *id) {
@@ -1722,6 +1774,9 @@ static const cb_store_ops SQLITE_OPS = {
     .user_create = sq_user_create,
     .user_set_password = sq_user_set_password,
     .user_touch_sign_in = sq_user_touch_sign_in,
+    .signin_fails_get = sq_signin_fails_get,
+    .signin_fails_put = sq_signin_fails_put,
+    .signin_fails_clear = sq_signin_fails_clear,
     .user_delete = sq_user_delete,
     .users_list = sq_users_list,
     .refresh_put = sq_refresh_put,

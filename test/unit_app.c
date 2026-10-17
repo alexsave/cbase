@@ -6,6 +6,7 @@
 // kernel's pacing costs no wall time; every fan-out is recorded through the
 // cb_fanout_observer seam.
 #include "t.h"
+#include "app/limits.h"
 
 #include <pthread.h>
 #include <time.h>
@@ -138,6 +139,7 @@ static void setup(int n_bots) {
     cb_fanout_observer = fan_observer;
     memset(&g_fan, 0, sizeof g_fan);
     g_kicks = 0;
+    cb_limits_reset();
     g_kicked[0] = 0;
     g_nseq = 0;
 }
@@ -719,21 +721,53 @@ static void add_bot_never_picks_a_seated_bot(void) {
     T_EQ_INT(version_of(gid), 1);
 }
 
-static void bump_is_moot_and_commits_nothing(void) {
+// limits.h: an account's game creations are limited; past the burst, 429 BUSY.
+static void create_is_limited(void) {
+    setup(0);
+    reply r;
+    for (int i = 0; i < cb_limit_rules[CB_LIMIT_CREATE_USER].burst; i++) {
+        call("POST", "create", "C", NULL, NULL, 0, &r);
+        T_EQ_INT(r.status, 200);
+    }
+    call("POST", "create", "C", NULL, NULL, 0, &r);
+    T_EQ_INT(r.status, 429);
+    T_EQ_INT(refusal_why(&r, NULL), ASK_WHY_BUSY);
+    call("POST", "create", "D", NULL, NULL, 0, &r);   // another account may
+    T_EQ_INT(r.status, 200);
+}
+
+// A bump starts a bot run (a Lambda invocation and a lease write): only a
+// seated player may ask (security finding M8), and not without limit.
+static void bump_is_moot_and_seated_only(void) {
     setup(0);
     char gid[CB_GAME_ID_MAX + 1];
     reply r;
     create_game(gid, &r);
     int commits = tm_hooks_of(g_store)->commits, fans = g_fan.count;
-    // A spectator may bump: the answer is the spectator envelope.
+    // Someone who does not sit there is refused, and wakes nothing.
     meta("B", ASK_BUMP, gid, NULL, &r);
+    T_EQ_INT(r.status, 400);
+    AskRefusal why;
+    T_EQ_INT(refusal_why(&r, &why), ASK_WHY_REFUSED);
+    T_EQ_INT(why.code, TABLE_E_NOT_SEATED);
+    T_EQ_INT(g_kicks, 0);
+    // The seated creator: moot, the creator's own envelope, nothing committed.
+    meta("A", ASK_BUMP, gid, NULL, &r);
     T_EQ_INT(r.status, 200);
     EnvHeader h;
-    T_CHECK(env_header_read(r.body, (int)r.len, &h) && h.seat == -1 && h.version == 0);
+    T_CHECK(env_header_read(r.body, (int)r.len, &h) && h.seat == 0 && h.version == 0);
     T_EQ_INT(version_of(gid), 0);
     T_EQ_INT(tm_hooks_of(g_store)->commits, commits);
     T_EQ_INT(g_fan.count, fans);
     T_EQ_INT(g_kicks, 0);
+    // limits.h: an account's bumps are counted; past the burst, 429 BUSY.
+    for (int i = 1; i < cb_limit_rules[CB_LIMIT_BUMP_USER].burst; i++) {
+        meta("A", ASK_BUMP, gid, NULL, &r);
+        T_EQ_INT(r.status, 200);
+    }
+    meta("A", ASK_BUMP, gid, NULL, &r);
+    T_EQ_INT(r.status, 429);
+    T_EQ_INT(refusal_why(&r, &why), ASK_WHY_BUSY);
 }
 
 static void the_wire_surface(void) {
@@ -1198,10 +1232,12 @@ static void a_bump_wakes_the_bots(void) {
     T_EQ_INT(g_kicks, kicks + 1);
     T_EQ_STR(g_kicked, gid);
     T_EQ_INT(version_of(gid), v);
-    // A stranger's bump wakes them too: anyone watching may nudge a table.
+    // A stranger's bump is refused and wakes nothing (security finding M8:
+    // each kick is a Lambda run; the minute's heartbeat scan still wakes a
+    // table nobody seated is watching).
     meta("D", ASK_BUMP, gid, NULL, &r);
-    T_EQ_INT(r.status, 200);
-    T_EQ_INT(g_kicks, kicks + 2);
+    T_EQ_INT(r.status, 400);
+    T_EQ_INT(g_kicks, kicks + 1);
 }
 
 // waiting_stale_blob.test.ts and meta.test.ts: continue takes a finished game
@@ -1349,7 +1385,6 @@ static void hidden_observer(const cb_fanout *f) {
 
 static void hidden_info_at(int n_humans, int n_bots) {
     static const char *const uids[3] = { UID_A, UID_B, UID_C }, *const bearers[3] = { "A", "B", "C" };
-    static const char *const askers[4] = { "A", "B", "C", "D" };
     static const char *const asker_ids[4] = { UID_A, UID_B, UID_C, UID_D };
     setup(n_bots);
     cb_fanout_observer = hidden_observer;
@@ -1379,12 +1414,16 @@ static void hidden_info_at(int n_humans, int n_bots) {
             moved = true;
         }
         if (!moved) T_EQ_INT(cb_bots_drive(&g_ctx, gid), CB_OK);
-        // Every asker's answer: their own seat, or the spectators' (-1).
+        // Every asker's view (the read the view routes make): their own
+        // seat, or the spectators' (-1). Read directly, not by a bump: a bump
+        // is a seated player's only, and limited (limits.h).
         for (int k = 0; k < 4; k++) {
-            meta(askers[k], ASK_BUMP, gid, NULL, &r);
+            int seat = seat_of(gid, asker_ids[k]);
+            cb_view_row v;
             EnvHeader h;
-            if (r.status != 200 || !env_header_read(r.body, (int)r.len, &h) || h.seat != seat_of(gid, asker_ids[k]))
-                g_hidden_bad++;
+            if (cb_table_view(&g_ctx, gid, seat >= 0 ? asker_ids[k] : NULL, &v) != CB_OK) { g_hidden_bad++; continue; }
+            if (!env_header_read(v.view, (int)v.view_len, &h) || h.seat != seat) g_hidden_bad++;
+            cb_view_row_free(&v);
         }
     }
     T_EQ_INT(status_of(gid), GAME_STATUS_GAME_OVER);
@@ -1749,7 +1788,8 @@ int main(void) {
     T_RUN(a_refusal_from_a_stale_cache_is_rechecked_fresh);
     T_RUN(a_finished_game_writes_a_snapshot_and_ratings);
     T_RUN(add_bot_never_picks_a_seated_bot);
-    T_RUN(bump_is_moot_and_commits_nothing);
+    T_RUN(bump_is_moot_and_seated_only);
+    T_RUN(create_is_limited);
     T_RUN(the_wire_surface);
     T_RUN(the_last_seat_leaving_deletes_the_game);
     T_RUN(delete_account_redacts);

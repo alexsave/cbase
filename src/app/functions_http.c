@@ -15,10 +15,12 @@
 
 #include "app_internal.h"
 #include "edge.h"
+#include "limits.h"
 #include "v1_http.h"
 #include "auth/auth.h"
 #include "net/router.h"
 #include "realtime/realtime.h"
+#include "util/clock.h"
 #include "util/err.h"
 #include "util/log.h"
 #include "util/uuid.h"
@@ -226,6 +228,14 @@ static void h_meta(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     memcpy(gid, ask.gid, ask.gid_len);
     gid[ask.gid_len] = 0;
     if (ask.kind == ASK_JOIN && !account_lives(ctx, &u, res)) return;
+    // A bump starts a bot run (a Lambda invocation and a lease write): only a
+    // seated player may ask (the kernel's rule, TABLE_E_NOT_SEATED), and not
+    // often (limits.h).
+    int retry;
+    if (ask.kind == ASK_BUMP && !cb_limit_take(CB_LIMIT_BUMP_USER, u.id, cb_now_ms(), &retry)) {
+        cb_v1_limited(res, retry, false);
+        return;
+    }
     bot_list bots = { 0, 0, NULL };
     if (ask.kind == ASK_ADD_BOT && CB_STORE_CALL(ctx->store, bots_list, collect_bot, &bots) < 0) {
         CB_ERROR("functions", "meta: failed to fetch bots");
@@ -261,6 +271,8 @@ static void h_create(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     // No wrap400 here, so no content-type check: create has no body.
     if (!verified(ctx, req, &u, res, 400)) return;
     if (!account_lives(ctx, &u, res)) return;
+    int retry;
+    if (!cb_limit_take(CB_LIMIT_CREATE_USER, u.id, cb_now_ms(), &retry)) { cb_v1_limited(res, retry, false); return; }
     cb_table_result r;
     int rc = cb_table_create(ctx, &u, &r);
     if (rc != CB_OK) {

@@ -16,6 +16,10 @@ typedef struct {
     bool user_live[FAKE_USERS];
     cb_refresh_row tokens[FAKE_TOKENS];
     int n_tokens;
+    char fail_email[FAKE_USERS][CB_EMAIL_MAX + 1];
+    cb_signin_fails fails[FAKE_USERS];
+    int64_t fail_expires[FAKE_USERS];
+    int fail_puts, fail_reads;
 } fake;
 
 static fake *F(cb_store *s) { return (fake *)s->impl; }
@@ -146,6 +150,53 @@ static int f_refresh_revoke_user(cb_store *s, const char *uid) {
     return CB_OK;
 }
 
+static int fail_find(fake *f, const char *email) {
+    for (int i = 0; i < FAKE_USERS; i++)
+        if (f->fail_email[i][0] && strcmp(f->fail_email[i], email) == 0) return i;
+    return -1;
+}
+
+static int f_fails_get(cb_store *s, const char *email, int64_t now, cb_signin_fails *out) {
+    fake *f = F(s);
+    memset(out, 0, sizeof *out);
+    pthread_mutex_lock(&f->mu);
+    f->fail_reads++;
+    int i = fail_find(f, email);
+    bool ok = i >= 0 && f->fail_expires[i] > now;
+    if (ok) *out = f->fails[i];
+    pthread_mutex_unlock(&f->mu);
+    return ok ? CB_OK : CB_E_NOT_FOUND;
+}
+
+static int f_fails_put(cb_store *s, const char *email, const cb_signin_fails *in, int64_t now) {
+    fake *f = F(s);
+    pthread_mutex_lock(&f->mu);
+    f->fail_puts++;
+    int i = fail_find(f, email);
+    for (int j = 0; i < 0 && j < FAKE_USERS; j++)
+        if (!f->fail_email[j][0]) { i = j; cb_strlcpy(f->fail_email[j], email, sizeof f->fail_email[j]); }
+    if (i >= 0) { f->fails[i] = *in; f->fail_expires[i] = now + 3600 * 1000LL; }
+    pthread_mutex_unlock(&f->mu);
+    return i >= 0 ? CB_OK : CB_E_FULL;
+}
+
+static int f_fails_clear(cb_store *s, const char *email) {
+    fake *f = F(s);
+    pthread_mutex_lock(&f->mu);
+    int i = fail_find(f, email);
+    if (i >= 0) f->fail_email[i][0] = 0;
+    pthread_mutex_unlock(&f->mu);
+    return CB_OK;
+}
+
+int auth_fakestore_fail_writes(cb_store *s) {
+    fake *f = F(s);
+    pthread_mutex_lock(&f->mu);
+    int n = f->fail_puts;
+    pthread_mutex_unlock(&f->mu);
+    return n;
+}
+
 static void f_close(cb_store *s) { auth_fakestore_free(s); }
 
 static const cb_store_ops FAKE_OPS = {
@@ -156,6 +207,9 @@ static const cb_store_ops FAKE_OPS = {
     .user_create = f_user_create,
     .user_set_password = f_user_set_password,
     .user_touch_sign_in = f_user_touch,
+    .signin_fails_get = f_fails_get,
+    .signin_fails_put = f_fails_put,
+    .signin_fails_clear = f_fails_clear,
     .user_delete = f_user_delete,
     .refresh_put = f_refresh_put,
     .refresh_take = f_refresh_take,

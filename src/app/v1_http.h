@@ -32,12 +32,17 @@ int cb_v1_routes(cb_ctx *ctx);
 // The account email a username names: hex(SHA-256(name))[:16] "@foolish.cards",
 // the derivation both clients made before the server took it over (`name` is
 // upper-cased by the client). `out` holds at least CB_V1_EMAIL_BYTES.
+#include <stdbool.h>
+
 #define CB_V1_EMAIL_BYTES 32
 
 // 503 ASK_WHY_BUSY with Retry-After: the store was throttled past its backoff
 // (CB_E_BUSY). A client sends a read again (netclient.h nc_retry_ms).
 struct cb_http_res;
 void cb_v1_busy(struct cb_http_res *res);
+// Over a rate limit (limits.h): 429 with Retry-After retry_s, refused as
+// ACCOUNT TOO_MANY on an account route (`account`), else as BUSY.
+void cb_v1_limited(struct cb_http_res *res, int retry_s, bool account);
 void cb_v1_email_of(const char *name, size_t len, char out[CB_V1_EMAIL_BYTES]);
 
 #endif

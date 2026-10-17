@@ -321,7 +321,7 @@ static void user_delete_is_the_delete_account_path(void) {
     if (!g_ctx.store) return;
     T_EQ_INT(cb_auth_new(&g_ctx, &g_ctx.auth), CB_OK);
     cb_session s;
-    T_EQ_INT(cb_auth_signup(g_ctx.auth, "gone@foolish.cards", "secret1", "GONE", &s), CB_OK);
+    T_EQ_INT(cb_auth_signup(g_ctx.auth, "gone@foolish.cards", "secret-11", "GONE", &s), CB_OK);
     cb_table_result made;
     T_EQ_INT(cb_table_create(&g_ctx, &s.user, &made), CB_OK);
     free(made.envelope);

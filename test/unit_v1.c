@@ -4,6 +4,7 @@
 // store (SQLite, or DynamoDB Local under CBASE_STORE=dynamo) and real auth,
 // every request through cb_handle.
 #include "t.h"
+#include "app/limits.h"
 
 #include "app/fanout.h"
 #include "app/functions_http.h"
@@ -28,6 +29,7 @@
 #define JWT_SECRET "unit-v1-secret-unit-v1-secret-unit-v1-secret"
 
 static cb_ctx g_ctx;
+static const char *g_peer;     // the socket's address, NULL for none (not limited)
 static cb_config g_cfg;
 static char g_db[512];
 static int64_t g_now;
@@ -70,6 +72,8 @@ static void setup(void) {
     nc_reset();
     g_now = cb_now_ms();
     cb_auth_now = test_now;
+    cb_limits_reset();
+    g_peer = NULL;
 }
 
 static void teardown(void) {
@@ -109,6 +113,7 @@ static int send_req(const NcRequest *q) {
     }
     if (q->method == NC_POST) r.headers[r.n_headers++] = (cb_http_header){ "Content-Type", "application/octet-stream" };
     if (g_origin) r.headers[r.n_headers++] = (cb_http_header){ "x-cbase-origin", g_origin };
+    if (g_peer) cb_strlcpy(r.peer, g_peer, sizeof r.peer);
     r.body = q->body;
     r.body_len = q->body_len;
     cb_http_res res;
@@ -164,7 +169,7 @@ static void the_email_is_the_clients_derivation(void) {
 
 static void accounts(void) {
     setup();
-    T_EQ_INT(sign(1, "ALICE", "secret1"), 0);
+    T_EQ_INT(sign(1, "ALICE", "secret-11"), 0);
     const NcSessionInfo *i = nc_session_info();
     T_EQ_INT(i->signed_in, 1);
     T_EQ_MEM(i->username, i->username_len, "ALICE", 5);
@@ -181,11 +186,11 @@ static void accounts(void) {
     T_EQ_INT(sign(0, "ALICE", "wrong-pw"), ASK_WHY_ACCOUNT);
     T_EQ_INT(nc_error()->code, NW_ACCOUNT_E_BAD_LOGIN);
     T_EQ_INT(nc_session_info()->signed_in, 0);
-    T_EQ_INT(sign(1, "B%T", "secret1"), ASK_WHY_ACCOUNT);
+    T_EQ_INT(sign(1, "B%T", "secret-11"), ASK_WHY_ACCOUNT);
     T_EQ_INT(nc_error()->code, NW_ACCOUNT_E_BAD_NAME);
     T_EQ_INT(sign(1, "BOB", "abc"), ASK_WHY_ACCOUNT);
     T_EQ_INT(nc_error()->code, NW_ACCOUNT_E_WEAK_PASSWORD);
-    T_EQ_INT(sign(0, "ALICE", "secret1"), 0);
+    T_EQ_INT(sign(0, "ALICE", "secret-11"), 0);
     T_EQ_INT(nc_session_info()->signed_in, 1);
 
     // A body that is not a request of the route's kind.
@@ -207,14 +212,14 @@ static void accounts(void) {
 // A backend not up yet (no auth module, no store) answers 503 INTERNAL, never crashes.
 static void without_a_backend(void) {
     setup();
-    T_EQ_INT(sign(1, "ALICE", "secret1"), 0);
+    T_EQ_INT(sign(1, "ALICE", "secret-11"), 0);
     cb_auth *auth = g_ctx.auth;
     g_ctx.auth = NULL;
     nc_reset();
-    T_EQ_INT(sign(1, "BOB", "secret1"), ASK_WHY_INTERNAL);
+    T_EQ_INT(sign(1, "BOB", "secret-11"), ASK_WHY_INTERNAL);
     T_EQ_INT(nc_error()->status, 503);
     g_ctx.auth = auth;
-    T_EQ_INT(sign(0, "ALICE", "secret1"), 0);
+    T_EQ_INT(sign(0, "ALICE", "secret-11"), 0);
     cb_store *store = g_ctx.store;
     g_ctx.store = NULL;
     T_EQ_INT(call(b_games, NULL), 503);
@@ -226,7 +231,7 @@ static void without_a_backend(void) {
 
 static void refresh_password_signout_delete(void) {
     setup();
-    T_EQ_INT(sign(1, "CARL", "secret1"), 0);
+    T_EQ_INT(sign(1, "CARL", "secret-11"), 0);
     uint8_t blob[NC_SESSION_BLOB_MAX];
     int n = nc_session_save(blob, sizeof blob);
     T_CHECK(n > 0);
@@ -241,14 +246,14 @@ static void refresh_password_signout_delete(void) {
     T_CHECK(fn > 0 && (fn != n || memcmp(fresh, blob, (size_t)n) != 0));
 
     // Change the password: the same one is refused, a new one signs in.
-    T_EQ_INT(send_req(nc_req_password("secret1", 7, g_now)), 400);
+    T_EQ_INT(send_req(nc_req_password("secret-11", 9, g_now)), 400);
     T_EQ_INT(nc_status_read(g_status, g_body, g_len), ASK_WHY_ACCOUNT);
     T_EQ_INT(nc_error()->code, NW_ACCOUNT_E_SAME_PASSWORD);
-    T_EQ_INT(send_req(nc_req_password("secret2", 7, g_now)), 204);
+    T_EQ_INT(send_req(nc_req_password("secret-22", 9, g_now)), 204);
     T_EQ_INT(nc_status_read(g_status, g_body, g_len), 0);
     nc_reset();
-    T_EQ_INT(sign(0, "CARL", "secret1"), ASK_WHY_ACCOUNT);
-    T_EQ_INT(sign(0, "CARL", "secret2"), 0);
+    T_EQ_INT(sign(0, "CARL", "secret-11"), ASK_WHY_ACCOUNT);
+    T_EQ_INT(sign(0, "CARL", "secret-22"), 0);
     n = nc_session_save(blob, sizeof blob);
 
     // Sign out everywhere: the refresh token no longer refreshes, and the
@@ -261,10 +266,10 @@ static void refresh_password_signout_delete(void) {
     T_EQ_INT(nc_session_info()->signed_in, 0);
 
     // Delete the account: it no longer signs in.
-    T_EQ_INT(sign(0, "CARL", "secret2"), 0);
+    T_EQ_INT(sign(0, "CARL", "secret-22"), 0);
     T_EQ_INT(send_req(nc_req_delete_account(g_now)), 204);
     nc_reset();
-    T_EQ_INT(sign(0, "CARL", "secret2"), ASK_WHY_ACCOUNT);
+    T_EQ_INT(sign(0, "CARL", "secret-22"), ASK_WHY_ACCOUNT);
     T_EQ_INT(nc_error()->code, NW_ACCOUNT_E_BAD_LOGIN);
     teardown();
 }
@@ -280,7 +285,7 @@ static int hr_skip;
 
 static void games_views_and_chat(void) {
     setup();
-    T_EQ_INT(sign(1, "DORA", "secret1"), 0);
+    T_EQ_INT(sign(1, "DORA", "secret-11"), 0);
     uint8_t dora[NC_SESSION_BLOB_MAX];
     int dn = nc_session_save(dora, sizeof dora);
     char dora_id[40];
@@ -327,7 +332,7 @@ static void games_views_and_chat(void) {
 
     // Someone else sees the spectators' view, which is not the player's.
     nc_reset();
-    T_EQ_INT(sign(1, "EVE", "secret1"), 0);
+    T_EQ_INT(sign(1, "EVE", "secret-11"), 0);
     T_EQ_INT(call(b_game, gid), 200);
     row = nc_view_read(g_status, g_body, g_len);
     T_CHECK(row != NULL);
@@ -360,12 +365,18 @@ static void games_views_and_chat(void) {
     as(eve, en);
     T_EQ_INT(call(b_chats, gid), 200);
     T_EQ_INT(nc_list_read(g_status, g_body, g_len, NW_CHATS), 0);
+    // limits.h: an account's chat is limited; past the burst, 429 BUSY.
+    as(dora, dn);
+    for (int i = 1; i < cb_limit_rules[CB_LIMIT_CHAT_USER].burst; i++)
+        T_EQ_INT(send_req(nc_req_chat_send(gid, (int)strlen(gid), "again", 5, g_now)), 204);
+    T_EQ_INT(send_req(nc_req_chat_send(gid, (int)strlen(gid), "again", 5, g_now)), 429);
+    T_EQ_INT(nc_status_read(g_status, g_body, g_len), ASK_WHY_BUSY);
     teardown();
 }
 
 static void bots_board_history_replay(void) {
     setup();
-    T_EQ_INT(sign(1, "FAY", "secret1"), 0);
+    T_EQ_INT(sign(1, "FAY", "secret-11"), 0);
     char fay[40];
     memcpy(fay, nc_session_info()->user_id, 36);
     fay[36] = 0;
@@ -387,7 +398,7 @@ static void bots_board_history_replay(void) {
     // Someone who has not played is not on the board (sign-up made their row).
     uint8_t fay_blob[NC_SESSION_BLOB_MAX];
     int fbn = nc_session_save(fay_blob, sizeof fay_blob);
-    T_EQ_INT(sign(1, "HAL", "secret1"), 0);
+    T_EQ_INT(sign(1, "HAL", "secret-11"), 0);
     as(fay_blob, fbn);
     T_EQ_INT(send_req(nc_req_board()), 200);
     int nboard = nc_list_read(g_status, g_body, g_len, NW_BOARD);
@@ -457,7 +468,7 @@ static void bots_board_history_replay(void) {
     if (rp) T_EQ_MEM(g_body + rp->moves_off, rp->moves_len, moves, 3);
     // Someone who did not play it is not shown it.
     nc_reset();
-    T_EQ_INT(sign(1, "GUS", "secret1"), 0);
+    T_EQ_INT(sign(1, "GUS", "secret-11"), 0);
     T_EQ_INT(call(b_replay, gid), 404);
     T_CHECK(nc_replay_read(g_status, g_body, g_len) == NULL);
     T_EQ_INT(call(b_history, NULL), 200);
@@ -499,7 +510,7 @@ static void cache_control_per_route(void) {
     T_EQ_STR(res_header("Cache-Control"), "public, max-age=0, s-maxage=3600");
     T_EQ_STR(res_header("Access-Control-Allow-Origin"), "*");
     // Signed in, every other read is the caller's own and is never stored.
-    T_EQ_INT(sign(1, "IDA", "secret1"), 0);
+    T_EQ_INT(sign(1, "IDA", "secret-11"), 0);
     T_EQ_INT(call(b_games, NULL), 200);
     T_EQ_STR(res_header("Cache-Control"), "no-store");
     T_EQ_INT(call(b_history, NULL), 200);
@@ -546,7 +557,7 @@ static void a_throttled_read_is_busy_and_retried(void) {
     g_busy_ops.ratings_for = busy_for;
     g_busy_ops.ratings_list = no_list;
     g_ctx.store->ops = &g_busy_ops;
-    T_EQ_INT(sign(1, "JO", "secret1"), 0);
+    T_EQ_INT(sign(1, "JO", "secret-11"), 0);
     // The history reads only the caller's rating, never every rating row.
     g_busy = false;
     T_EQ_INT(call(b_history, NULL), 200);
@@ -622,7 +633,7 @@ static int pair_snaps(cb_store *s, const cb_snapshot_query *q, cb_snapshot_fn fn
 
 static void independent_reads_run_at_once(void) {
     setup();
-    T_EQ_INT(sign(1, "JO", "secret1"), 0);
+    T_EQ_INT(sign(1, "JO", "secret-11"), 0);
     g_real_ops = g_ctx.store->ops;
     g_pair_ops = *g_real_ops;
     g_pair_ops.ratings_top = pair_top;
@@ -666,8 +677,58 @@ static void only_through_the_edge(void) {
     teardown();
 }
 
+// The rate limits on the account routes (limits.h, security finding H1): an
+// address's sign-ups and sign-ins, and a locked account, answered 429 with
+// Retry-After and the account refusal TOO_MANY, so a client can say "wait".
+static void rate_limited_account_routes(void) {
+    setup();
+    g_peer = "198.51.100.20";
+    char name[16];
+    const int up = cb_limit_rules[CB_LIMIT_SIGNUP_IP].burst;
+    for (int i = 0; i < up; i++) {
+        snprintf(name, sizeof name, "RL%d", i);
+        nc_reset();
+        T_EQ_INT(sign(1, name, "limit-pass-1"), 0);
+    }
+    nc_reset();
+    T_EQ_INT(sign(1, "RLX", "limit-pass-1"), ASK_WHY_ACCOUNT);
+    T_EQ_INT(nc_error()->status, 429);
+    T_EQ_INT(nc_error()->code, NW_ACCOUNT_E_TOO_MANY);
+    T_CHECK(strstr(g_hdrs, "Retry-After: ") != NULL);
+    g_peer = "198.51.100.21";   // another address may
+    T_EQ_INT(sign(1, "RLX", "limit-pass-1"), 0);
+
+    // Guessing RL0's password: five free, the sixth locks it, and then the
+    // right password is refused TOO_MANY too (no bcrypt, nothing learned).
+    for (int i = 0; i <= CB_AUTH_FAIL_FREE; i++) {
+        nc_reset();
+        T_EQ_INT(sign(0, "RL0", "guess-pass-1"), ASK_WHY_ACCOUNT);
+        T_EQ_INT(nc_error()->code, NW_ACCOUNT_E_BAD_LOGIN);
+    }
+    nc_reset();
+    T_EQ_INT(sign(0, "RL0", "limit-pass-1"), ASK_WHY_ACCOUNT);
+    T_EQ_INT(nc_error()->status, 429);
+    T_EQ_INT(nc_error()->code, NW_ACCOUNT_E_TOO_MANY);
+    g_now += CB_AUTH_LOCK_BASE_MS;
+    T_EQ_INT(sign(0, "RL0", "limit-pass-1"), 0);
+
+    // An address's sign-ins, whichever accounts they name.
+    g_peer = "198.51.100.22";
+    const int in = cb_limit_rules[CB_LIMIT_SIGNIN_IP].burst;
+    int refused = 0;
+    for (int i = 0; i < in + 1; i++) {
+        snprintf(name, sizeof name, "NOBODY%d", i);
+        nc_reset();
+        if (sign(0, name, "guess-pass-1") == ASK_WHY_ACCOUNT && nc_error()->code == NW_ACCOUNT_E_TOO_MANY) refused++;
+    }
+    T_EQ_INT(refused, 1);
+    g_peer = NULL;
+    teardown();
+}
+
 int main(void) {
     T_RUN(only_through_the_edge);
+    T_RUN(rate_limited_account_routes);
     T_RUN(the_email_is_the_clients_derivation);
     T_RUN(accounts);
     T_RUN(without_a_backend);

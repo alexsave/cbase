@@ -3,6 +3,7 @@
 // text both ways, replies as POSTs or as the route response, batches, and
 // publishing through the management API with a 410 cleaning up.
 #include "t.h"
+#include "app/limits.h"
 
 #include "lib_rt_fakestore.h"
 #include "realtime/realtime.h"
@@ -170,6 +171,7 @@ static void setup(void) {
     g_ctx.store = &rtf.store;
     cb_rt_free(g_ctx.rt);
     T_EQ_INT(cb_rt_apigw_new(&g_ctx, &g_ctx.rt), CB_OK);
+    cb_limits_reset();
 }
 
 static void connect_and_disconnect(void) {
@@ -510,10 +512,34 @@ static void publish_posts_each_subscriber(void) {
     g_ctx.rt = NULL;
 }
 
+// An account's subscriptions are limited (limits.h): each reads the store and
+// may write TOPIC rows. Past the burst the ACK says BUSY and nothing is kept
+// (the client backs off and asks again by itself).
+static void subscriptions_are_limited(void) {
+    setup();
+    const int b = cb_limit_rules[CB_LIMIT_SUB_USER].burst;
+    for (int i = 0; i < b; i++) {
+        rtf.n_posts = 0;   // the fake keeps RTF_MAX posts
+        T_EQ_INT(ev("$default", "c1", NULL, sub_as_text("tok-" U1, (uint16_t)i, NW_SUB_GAMES, "")), 200);
+    }
+    NwFrame a = posted(rtf.n_posts - 1);
+    T_CHECK(a.kind == NW_WS_ACK && a.why == 0);
+    rtf.n_posts = 0;
+    T_EQ_INT(ev("$default", "c1", NULL, sub_as_text("tok-" U1, 999, NW_SUB_CHAT, G)), 200);
+    a = posted(rtf.n_posts - 1);
+    T_CHECK(a.kind == NW_WS_ACK && a.ref == 999 && a.why == ASK_WHY_BUSY);
+    T_EQ_INT(rtf.conns[rtf_conn_find("c1")].n_topics, 1);
+    // Another account is not held back by it.
+    T_EQ_INT(ev("$default", "c2", NULL, sub_as_text("tok-" U2, 1, NW_SUB_GAMES, "")), 200);
+    a = posted(rtf.n_posts - 1);
+    T_CHECK(a.kind == NW_WS_ACK && a.why == 0);
+}
+
 int main(void) {
     T_RUN(connect_and_disconnect);
     T_RUN(nobody_writes_nothing);
     T_RUN(connect_only_through_the_edge);
+    T_RUN(subscriptions_are_limited);
     T_RUN(frames_round_trip_through_the_conn_row);
     T_RUN(the_last_reply_is_the_route_response);
     T_RUN(a_batch_is_one_read_one_write_one_answer);

@@ -500,12 +500,14 @@ static void game_scenario(void) {
     T_CHECK(client_adopt_envelope(&sc->c, env.p, (int)env.len) >= 0);
     T_EQ_INT(sc->c.view.status, GAME_STATUS_PLAYING);
 
-    // Play: each human bumps (which also wakes the bots) for their envelope and
-    // moves when they have a move; the bot pool plays the bot.
+    // Play: each human reads the game for their envelope, as a client does,
+    // and moves when they have a move; the bot pool plays the bot (a move
+    // that leaves the bot to act wakes it). Not by bumping: a bump is a
+    // seated player's nudge, limited (limits.h), not a way to poll.
     //
     // Once, when neither human has a move and the stored row says the bots owe
     // one, the server is KILLED (no drain) and started again on the same file,
-    // and nobody bumps: only serve's heartbeat (the 10 s scan) can restart the
+    // and nobody moves: only serve's heartbeat (the 10 s scan) can restart the
     // drive, and only once the dead process's 25 s lease has run out. The
     // stored version moving on proves the heartbeat, the lease expiry and the
     // reload from a crash.
@@ -523,9 +525,9 @@ static void game_scenario(void) {
     while (status == GAME_STATUS_PLAYING && mono_ms() - last_progress < STALL_MS && mono_ms() - t_start < CAP_MS) {
         bool moved = false, answered = false;
         for (int h = 0; h < 2 && status == GAME_STATUS_PLAYING; h++) {
-            int st = ask(humans[h], ASK_BUMP, gid, &env);
-            if (st != 200) {
-                fprintf(stderr, "smoke: %s's bump answered %d (why %d)\n", humans[h]->name, st, nc_status_read(g_status, g_body, g_len));
+            int64_t seen;
+            if (!game_view(humans[h], gid, &seen, &env)) {
+                fprintf(stderr, "smoke: %s's game read answered %d (why %d)\n", humans[h]->name, g_status, nc_status_read(g_status, g_body, g_len));
                 continue;
             }
             answered = true;

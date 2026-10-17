@@ -6,6 +6,7 @@
 #include "v1_http.h"
 
 #include "auth/auth.h"
+#include "limits.h"
 #include "net/router.h"
 #include "realtime/realtime.h"
 #include "realtime/stream.h"
@@ -76,6 +77,23 @@ void cb_v1_busy(cb_http_res *res) {
     refuse(res, 503, ASK_WHY_BUSY, 0);
 }
 
+void cb_v1_limited(cb_http_res *res, int retry_s, bool account) {
+    char ra[16];
+    snprintf(ra, sizeof ra, "%d", retry_s > 0 ? retry_s : 1);
+    cb_res_header(res, "Retry-After", ra);
+    if (account) refuse(res, 429, ASK_WHY_ACCOUNT, NW_ACCOUNT_E_TOO_MANY);
+    else refuse(res, 429, ASK_WHY_BUSY, 0);
+}
+
+// One from key's bucket of `kind`, or false with the 429 answered.
+static bool within(cb_http_res *res, cb_limit_kind kind, const char *key, bool account) {
+    int retry;
+    if (cb_limit_take(kind, key, cb_now_ms(), &retry)) return true;
+    CB_INFO("v1", "rate limit %s: %s", cb_limit_rules[kind].name, key);
+    cb_v1_limited(res, retry, account);
+    return false;
+}
+
 // A store or app failure: 404 for a game that is not there, 503 BUSY for a
 // store throttled past its backoff (the client sends a read again), else the server's.
 static void failed(cb_http_res *res, int rc) {
@@ -143,13 +161,14 @@ static int account_code(int rc) {
     case CB_AUTH_E_BAD_REFRESH: return NW_ACCOUNT_E_BAD_REFRESH;
     case CB_AUTH_E_REFRESH_USED: return NW_ACCOUNT_E_REFRESH_USED;
     case CB_AUTH_E_SAME_PASSWORD: return NW_ACCOUNT_E_SAME_PASSWORD;
+    case CB_AUTH_E_TOO_MANY: return NW_ACCOUNT_E_TOO_MANY;
     default: return 0;
     }
 }
 
 static void auth_failed(cb_http_res *res, int rc) {
     int code = account_code(rc);
-    if (code) refuse(res, code == NW_ACCOUNT_E_EXISTS ? 409 : 400, ASK_WHY_ACCOUNT, code);
+    if (code) refuse(res, code == NW_ACCOUNT_E_EXISTS ? 409 : code == NW_ACCOUNT_E_TOO_MANY ? 429 : 400, ASK_WHY_ACCOUNT, code);
     else if (rc == CB_E_NOT_FOUND) refuse(res, 401, ASK_WHY_AUTH, 0);   // the account behind the token is gone
     else failed(res, rc);
 }
@@ -185,6 +204,15 @@ static void h_credentials(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res,
         return;
     }
     cb_v1_email_of(q.name, q.name_len, email);
+    // The limits before any work: an address's attempts, an account's
+    // guesses, and every sign-up this container makes (limits.h).
+    char ip[96];
+    cb_viewer_key(ctx, req, ip, sizeof ip);
+    if (kind == NW_SIGNUP ? !within(res, CB_LIMIT_SIGNUP_IP, ip, true) || !within(res, CB_LIMIT_SIGNUP_ALL, "*", true)
+                          : !within(res, CB_LIMIT_SIGNIN_IP, ip, true) || !within(res, CB_LIMIT_SIGNIN_NAME, email, true)) {
+        memset(pw, 0, sizeof pw);
+        return;
+    }
     cb_session s;
     int rc = kind == NW_SIGNUP ? cb_auth_signup(ctx->auth, email, pw, name, &s) : cb_auth_signin(ctx->auth, email, pw, &s);
     memset(pw, 0, sizeof pw);
@@ -201,6 +229,9 @@ static void h_refresh(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     if (!request_of(req, res, NW_REFRESH, &q)) return;
     char tok[NW_REFRESH_MAX + 1];
     if (!cstr(q.refresh, q.refresh_len, tok, sizeof tok)) { refuse(res, 400, ASK_WHY_MALFORMED, 0); return; }
+    char ip[96];
+    cb_viewer_key(ctx, req, ip, sizeof ip);
+    if (!within(res, CB_LIMIT_REFRESH_IP, ip, true)) return;
     cb_session s;
     int rc = cb_auth_refresh(ctx->auth, tok, &s);
     if (rc != CB_OK) auth_failed(res, rc);
@@ -222,6 +253,7 @@ static void h_password(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     if (!caller(ctx, req, res, &u)) return;
     NwRequest q;
     if (!request_of(req, res, NW_PASSWORD, &q)) return;
+    if (!within(res, CB_LIMIT_PASSWORD_USER, u.id, true)) return;
     char pw[NW_PASSWORD_MAX + 1];
     if (!cstr(q.password, q.password_len, pw, sizeof pw)) { refuse(res, 400, ASK_WHY_MALFORMED, 0); return; }
     int rc = cb_auth_change_password(ctx->auth, &u, pw);
@@ -345,6 +377,7 @@ static void h_chat_post(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     if (!member) { refuse(res, 403, ASK_WHY_FORBIDDEN, 0); return; }
     NwRequest q;
     if (!request_of(req, res, NW_CHAT_SEND, &q)) return;
+    if (!within(res, CB_LIMIT_CHAT_USER, u.id, false)) return;
     if (q.message_len == 0 || memchr(q.message, 0, q.message_len)) { refuse(res, 400, ASK_WHY_MALFORMED, 0); return; }
     cb_chat_row row;
     memset(&row, 0, sizeof row);

@@ -43,6 +43,16 @@ CREATE TABLE IF NOT EXISTS refresh_tokens (
 CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user ON refresh_tokens(user_id);
 CREATE INDEX IF NOT EXISTS idx_refresh_tokens_session ON refresh_tokens(session_id);
 
+-- Failed sign-ins per account (auth.h CB_AUTH_FAIL_*), by the normalized
+-- email. A row past expires_at (an hour after its last write) reads as none.
+CREATE TABLE IF NOT EXISTS signin_fails (
+    email        TEXT PRIMARY KEY,
+    n            INTEGER NOT NULL,
+    last_at     INTEGER NOT NULL,
+    locked_until INTEGER NOT NULL,
+    expires_at   INTEGER NOT NULL
+);
+
 -- The bots, seeded below. Not a foreign-key target of games: a roster names a
 -- bot by id inside the kernel's roster blob, and game_bots is the index.
 CREATE TABLE IF NOT EXISTS bots (

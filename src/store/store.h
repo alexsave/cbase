@@ -71,6 +71,15 @@ typedef struct {
     int64_t revoked_at;
 } cb_refresh_row;
 
+// Failed sign-ins at one account (auth.h CB_AUTH_FAIL_*): how many, when the
+// last one was, and until when the account is locked. Kept by email,
+// expiring by itself an hour after its last write (DynamoDB's TTL).
+typedef struct {
+    int32_t n;
+    int64_t last_at;
+    int64_t locked_until;   // 0: not locked
+} cb_signin_fails;
+
 // A game as committed: the kernel's bytes plus the scalar columns.
 typedef struct {
     char     id[CB_GAME_ID_MAX + 1];
@@ -221,6 +230,14 @@ typedef struct cb_store_ops {
     // Admin: users whose email or username contains `search` ("" for all),
     // newest first, from `offset`.
     int (*users_list)(cb_store *s, const char *search, int offset, int limit, cb_user_fn fn, void *ud);
+
+    // failed sign-ins (auth.h): CB_E_NOT_FOUND when none are counted (or the
+    // count has expired); put replaces the count, clear removes it (CB_OK
+    // when there was none). Last writer wins: two failures at the same moment
+    // may count once, which only ever errs by one.
+    int (*signin_fails_get)(cb_store *s, const char *email, int64_t now_ms, cb_signin_fails *out);
+    int (*signin_fails_put)(cb_store *s, const char *email, const cb_signin_fails *f, int64_t now_ms);
+    int (*signin_fails_clear)(cb_store *s, const char *email);
 
     // refresh tokens
     int (*refresh_put)(cb_store *s, const cb_refresh_row *r);

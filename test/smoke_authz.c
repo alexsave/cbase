@@ -194,7 +194,7 @@ static const row ROWS[] = {
     { "GET",  "/v1/replay/%s",      B_NONE,       { 403, 401, 401, 404, 404 } },  // nobody's replay yet; never a stranger's
     // The functions answer an unverified caller 400 AUTH (wrap400, the edge functions' rule).
     { "POST", "/v1/create",         B_NONE,       { 403, 400, 400, 0, 0 } },
-    { "POST", "/v1/meta",           B_ASK_BUMP,   { 403, 400, 400, 0, 0 } },
+    { "POST", "/v1/meta",           B_ASK_BUMP,   { 403, 400, 400, 200, 400 } },  // a bump is a seated player's only (M8)
     { "POST", "/v1/action",         B_NONE,       { 403, 400, 400, 0, 0 } },
     { "POST", "/v1/account/delete", B_NONE,       { 403, 401, 401, 0, 0 } },
     { "GET",  "/admin/api/overview", B_NONE,      { 403, 401, 401, 401, 401 } },  // a user's token is not the admin's
@@ -231,6 +231,48 @@ static void stream_only_through_the_edge(void) {
     if (fd >= 0) close(fd);
 }
 
+// limits.h and auth.h over real HTTP (H1): an address's sign-ups run out, and
+// guessing one account's password locks it, after which even the right
+// password is answered 429 TOO_MANY.
+static void limits_hold(void) {
+    char name[16];
+    int refused_at = -1;
+    for (int i = 0; i < 10 && refused_at < 0; i++) {
+        snprintf(name, sizeof name, "AUTHZ_L%d", i);
+        NwRequest q;
+        memset(&q, 0, sizeof q);
+        q.kind = NW_SIGNUP;
+        q.name_len = (uint8_t)strlen(name);
+        memcpy(q.name, name, q.name_len);
+        q.password_len = 14;
+        memcpy(q.password, "authz-pass-123", 14);
+        uint8_t b[256];
+        int n = request_body(&q, b, sizeof b);
+        if (req(ANON, "POST", "/v1/auth/signup", b, (size_t)n, NULL) == 429) refused_at = i;
+    }
+    // Two sign-ups were the world's; the address's burst is 5.
+    T_EQ_INT(refused_at, 3);
+    uint8_t b[256];
+    int n = build(B_SIGNIN, b, sizeof b);   // AUTHZ_A, a wrong password; the matrix spent one
+    int st = 0;
+    for (int i = 0; i < 5; i++) st = req(ANON, "POST", "/v1/auth/signin", b, (size_t)n, NULL);
+    T_EQ_INT(st, 400);   // the sixth failure: still "wrong", and now locked
+    NwRequest q;
+    memset(&q, 0, sizeof q);
+    q.kind = NW_SIGNIN;
+    q.name_len = 7;
+    memcpy(q.name, "AUTHZ_A", 7);
+    q.password_len = 14;
+    memcpy(q.password, "authz-pass-123", 14);
+    n = request_body(&q, b, sizeof b);
+    cb_buf out;
+    cb_buf_init(&out);
+    T_EQ_INT(req(ANON, "POST", "/v1/auth/signin", b, (size_t)n, &out), 429);
+    AskRefusal r;
+    T_CHECK(ask_refusal_decode(out.p, (int)out.len, &r) == ASK_OK && r.why == ASK_WHY_ACCOUNT && r.code == NW_ACCOUNT_E_TOO_MANY);
+    cb_buf_free(&out);
+}
+
 static void stops(void) {
     T_EQ_INT(kill(g_child.pid, SIGTERM), 0);
     T_EQ_INT(tp_stop(&g_child, 0, 15000), 0);
@@ -242,6 +284,7 @@ int main(int argc, char **argv) {
     T_RUN(setup_world);
     T_RUN(matrix);
     T_RUN(stream_only_through_the_edge);
+    T_RUN(limits_hold);
     T_RUN(stops);
     return T_DONE();
 }

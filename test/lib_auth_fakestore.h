@@ -9,6 +9,8 @@
 cb_store *auth_fakestore_new(void);
 void auth_fakestore_free(cb_store *s);
 // Refresh rows stored for a session, and how many of them are revoked.
+// signin_fails_put calls so far (each a table write in production).
+int auth_fakestore_fail_writes(cb_store *s);
 int auth_fakestore_session_tokens(cb_store *s, const char *session_id, int *revoked);
 
 #endif

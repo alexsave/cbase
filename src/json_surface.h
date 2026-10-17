@@ -48,6 +48,7 @@
 //   USER#<id>          RATING             the leaderboard row (GSI2 RATINGS / E#<rank>#<id>, only
 //                                         once games_played > 0: a sparse, rating-ordered key)
 //   EMAIL#<email>      USER               the user id; signup's uniqueness
+//   AUTHFAIL#<email>   FAILS              failed sign-ins at the account (auth.h CB_AUTH_FAIL_*; TTL an hour)
 //   REFRESH#<hash>     TOKEN              a refresh token (GSI1 USERREFRESH#<user>, GSI2 SESSION#<session>)
 //   GAME#<id>          ROW                the game
 //   GAME#<id>          MEMBER#<user>      a seated human (GSI1 USERGAMES#<user> / <updated>#<game>)
@@ -173,6 +174,8 @@ bool dw_item_scan(cb_span item, char game_id[CB_GAME_ID_MAX + 1], int64_t *updat
 // A SCAN marker's lease_until, or INT64_MIN when it carries none.
 int64_t dw_item_lease_until(cb_span item);
 bool dw_item_email_user(cb_span item, cb_uuid id);
+// An AUTHFAIL item; false when it is not one or has expired by now_ms.
+bool dw_item_signin_fails(cb_span item, int64_t now_ms, cb_signin_fails *f);
 // The item's keys as raw JSON ({"pk":..,"sk":..}), for a delete or an update.
 bool dw_item_key(cb_span item, cb_buf *out);
 // The item rendered for the admin console: each attribute as name and text
@@ -187,6 +190,7 @@ int dw_item_text(cb_span item, cb_buf *storage, const char **names, const char *
 // Point reads (ConsistentRead).
 void dw_get_user(dw_req *r, const char *table, const char *id);
 void dw_get_email(dw_req *r, const char *table, const char *email);
+void dw_get_signin_fails(dw_req *r, const char *table, const char *email);
 void dw_get_game(dw_req *r, const char *table, const char *id);
 void dw_get_member(dw_req *r, const char *table, const char *game, const char *user);
 // The game's SCAN marker (store.h lease_held), consistent.
@@ -224,6 +228,9 @@ void dw_user_import(dw_req *r, const char *table, const cb_user_row *u);
 // Present-only updates (ConditionalCheckFailed when the user is gone).
 void dw_user_set_password(dw_req *r, const char *table, const char *id, const char *hash);
 void dw_user_touch(dw_req *r, const char *table, const char *id, int64_t at);
+// The AUTHFAIL item replaced (PutItem), expiring an hour after now_ms; and deleted.
+void dw_signin_fails_put(dw_req *r, const char *table, const char *email, const cb_signin_fails *f, int64_t now_ms);
+void dw_signin_fails_delete(dw_req *r, const char *table, const char *email);
 // Deletes the PROFILE, RATING and EMAIL items (the caller deletes the rest).
 void dw_user_delete_txn(dw_req *r, const char *table, const cb_user_row *u);
 

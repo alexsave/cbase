@@ -407,6 +407,38 @@ static int dy_user_by_email(cb_store *s, const char *email, cb_user_row *out) {
     return rc == CB_OK ? dy_user_get(s, id, out) : rc;
 }
 
+static int dy_signin_fails_get(cb_store *s, const char *email, int64_t now_ms, cb_signin_fails *out) {
+    dyn *d = D(s);
+    dw_req r;
+    dw_req_init(&r);
+    dw_get_signin_fails(&r, d->table, email);
+    cb_buf resp;
+    cb_buf_init(&resp);
+    int rc = CB_E_DB;
+    memset(out, 0, sizeof *out);
+    if (call(d, &r, &resp) == DW_OK) {
+        cb_span it;
+        rc = dw_item(cb_buf_cstr(&resp), resp.len, &it) && dw_item_signin_fails(it, now_ms, out) ? CB_OK : CB_E_NOT_FOUND;
+    }
+    cb_buf_free(&resp);
+    dw_req_free(&r);
+    return rc;
+}
+
+static int dy_signin_fails_put(cb_store *s, const char *email, const cb_signin_fails *f, int64_t now_ms) {
+    dw_req r;
+    dw_req_init(&r);
+    dw_signin_fails_put(&r, D(s)->table, email, f, now_ms);
+    return simple1(D(s), &r, CB_E_DB);
+}
+
+static int dy_signin_fails_clear(cb_store *s, const char *email) {
+    dw_req r;
+    dw_req_init(&r);
+    dw_signin_fails_delete(&r, D(s)->table, email);
+    return simple1(D(s), &r, CB_E_DB);
+}
+
 static int dy_user_create(cb_store *s, const cb_user_row *u) {
     dyn *d = D(s);
     dw_req r;
@@ -1558,6 +1590,9 @@ static const cb_store_ops DYNAMO_OPS = {
     .user_create = dy_user_create,
     .user_set_password = dy_user_set_password,
     .user_touch_sign_in = dy_user_touch_sign_in,
+    .signin_fails_get = dy_signin_fails_get,
+    .signin_fails_put = dy_signin_fails_put,
+    .signin_fails_clear = dy_signin_fails_clear,
     .user_delete = dy_user_delete,
     .users_list = dy_users_list,
     .refresh_put = dy_refresh_put,

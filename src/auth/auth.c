@@ -29,10 +29,10 @@
 #include <openssl/sha.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #define REFRESH_RAW 32
 #define REFRESH_B64 43   // base64url of 32 bytes, unpadded
-#define PASSWORD_MIN 6   // GoTrue's default minimum
 #define PASSWORD_MAX 72  // bcrypt reads no further
 
 int64_t (*cb_auth_now)(void) = cb_now_ms;
@@ -115,14 +115,17 @@ static int normalize_email(const char *in, char out[CB_EMAIL_MAX + 1]) {
     return CB_OK;
 }
 
-static int check_password(const char *pw) {
+// auth.h "Passwords". `username` NULL: not compared (a change has the stored one).
+static int check_password(const char *pw, const char *username) {
     if (!pw) return CB_AUTH_E_WEAK_PASSWORD;
     size_t n = strlen(pw);
     if (n > PASSWORD_MAX) return CB_AUTH_E_LONG_PASSWORD;
-    // GoTrue counts characters, not bytes: a UTF-8 continuation byte is not one.
+    // Characters, not bytes: a UTF-8 continuation byte is not one.
     size_t chars = 0;
     for (size_t i = 0; i < n; i++) chars += ((unsigned char)pw[i] & 0xC0) != 0x80;
-    return chars < PASSWORD_MIN ? CB_AUTH_E_WEAK_PASSWORD : CB_OK;
+    if (chars < CB_AUTH_PASSWORD_MIN || cb_auth_password_common(pw)) return CB_AUTH_E_WEAK_PASSWORD;
+    if (username && strcasecmp(pw, username) == 0) return CB_AUTH_E_WEAK_PASSWORD;
+    return CB_OK;
 }
 
 // Bot nicknames carry a '%' prefix, so a human may never hold one
@@ -187,8 +190,8 @@ int cb_auth_signup(cb_auth *a, const char *email, const char *password, const ch
     cb_user_row u;
     memset(&u, 0, sizeof u);
     int rc = normalize_email(email, u.email);
-    if (rc == CB_OK) rc = check_password(password);
     if (rc == CB_OK) rc = check_username(username);
+    if (rc == CB_OK) rc = check_password(password, username);
     if (rc != CB_OK) return rc;
     cb_strlcpy(u.username, username, sizeof u.username);
     if ((rc = cb_bcrypt_hash(password, CB_BCRYPT_COST, u.password_hash)) != CB_OK) return rc;
@@ -206,6 +209,22 @@ int cb_auth_signup(cb_auth *a, const char *email, const char *password, const ch
 // hash of a random password nobody kept (htpasswd -B, respelled $2b$).
 static const char DUMMY_HASH[] = "$2b$10$OJvZ7hLjzyMHI.C85EGMDOs4pIvjMhJwQ1XaHEDVepxMCI.baQEUO";
 
+// The count after one more failure at `now` (auth.h CB_AUTH_FAIL_*).
+static void count_failure(cb_signin_fails *f, int64_t now) {
+    if (f->n <= 0 || now - f->last_at > CB_AUTH_FAIL_WINDOW_MS) {
+        f->n = 0;
+        f->locked_until = 0;
+    }
+    f->n++;
+    f->last_at = now;
+    if (f->n > CB_AUTH_FAIL_FREE) {
+        int over = f->n - CB_AUTH_FAIL_FREE - 1;   // 0 for the first failure past the free ones
+        int64_t lock = CB_AUTH_LOCK_BASE_MS << (over < 20 ? over : 20);   // the shift bounded, the cap is the rule
+        if (lock > CB_AUTH_LOCK_MAX_MS) lock = CB_AUTH_LOCK_MAX_MS;
+        f->locked_until = now + lock;
+    }
+}
+
 int cb_auth_signin(cb_auth *a, const char *email, const char *password, cb_session *out) {
     if (!a->store) return CB_E_STATE;
     char em[CB_EMAIL_MAX + 1];
@@ -217,10 +236,25 @@ int cb_auth_signin(cb_auth *a, const char *email, const char *password, cb_sessi
         return CB_AUTH_E_BAD_LOGIN;
     }
     if (rc != CB_OK) return rc;
+    int64_t now = cb_auth_now();
+    cb_signin_fails f;
+    memset(&f, 0, sizeof f);
+    rc = CB_STORE_CALL(a->store, signin_fails_get, em, now, &f);
+    if (rc != CB_OK && rc != CB_E_NOT_FOUND) return rc;
+    bool counted = rc == CB_OK && f.n > 0;
+    if (counted && f.locked_until > now) return CB_AUTH_E_TOO_MANY;   // no bcrypt, no write
     int ok = cb_bcrypt_verify(password, u.password_hash);
     if (ok < 0) CB_WARN("auth", "user %s: stored hash does not parse as bcrypt", u.id);
-    if (ok != 1) return CB_AUTH_E_BAD_LOGIN;
-    int64_t now = cb_auth_now();
+    if (ok != 1) {
+        count_failure(&f, now);
+        if (f.locked_until) CB_WARN("auth", "user %s: %d failed sign-ins; locked for %lld s", u.id, f.n,
+                                    (long long)((f.locked_until - now) / 1000));
+        rc = CB_STORE_CALL(a->store, signin_fails_put, em, &f, now);
+        if (rc != CB_OK) CB_WARN("auth", "user %s: the failed sign-in was not counted: %s", u.id, cb_strerror(rc));
+        return CB_AUTH_E_BAD_LOGIN;
+    }
+    if (counted && (rc = CB_STORE_CALL(a->store, signin_fails_clear, em)) != CB_OK)
+        CB_WARN("auth", "user %s: the failed sign-ins were not cleared: %s", u.id, cb_strerror(rc));
     if ((rc = CB_STORE_CALL(a->store, user_touch_sign_in, u.id, now)) != CB_OK) return rc;
     u.last_sign_in_at = now;
     cb_uuid sid;
@@ -263,10 +297,10 @@ int cb_auth_logout(cb_auth *a, const cb_user *u, cb_logout_scope scope) {
 
 int cb_auth_change_password(cb_auth *a, const cb_user *u, const char *new_password) {
     if (!a->store) return CB_E_STATE;
-    int rc = check_password(new_password);
-    if (rc != CB_OK) return rc;
     cb_user_row row;
-    if ((rc = CB_STORE_CALL(a->store, user_get, u->id, &row)) != CB_OK) return rc;
+    int rc = CB_STORE_CALL(a->store, user_get, u->id, &row);
+    if (rc != CB_OK) return rc;
+    if ((rc = check_password(new_password, row.username)) != CB_OK) return rc;
     if (cb_bcrypt_verify(new_password, row.password_hash) == 1) return CB_AUTH_E_SAME_PASSWORD;
     char hash[CB_BCRYPT_HASH_LEN + 1];
     if ((rc = cb_bcrypt_hash(new_password, CB_BCRYPT_COST, hash)) != CB_OK) return rc;
