@@ -10,6 +10,7 @@ The design, every decision and each module's as-built record are in [DESIGN.md](
 make -C c_base             # build/cbase, build/bootstrap (native), build/cbase-import
 make -C c_base check       # every unit test, then the three smoke lanes (the full game smoke takes about 1.5 minutes)
 make -C c_base check-asan  # the same, everything (the kernel too) under ASan + UBSan
+make -C c_base coverage    # every test against an instrumented build; fails below tools/cov_floor.txt or with a function no test calls (docs/COVERAGE.md; needs gcovr)
 make -C c_base check-dynamo  # the store, admin and import tests and the game smoke on DynamoDB Local (Docker)
 make -C c_base bench-dynamo  # the DynamoDB store's per-operation latency against DynamoDB Local
 make -C c_base bootstrap   # dist/bootstrap.zip: static Linux arm64 for Lambda (needs Docker)

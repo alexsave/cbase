@@ -1,0 +1,6 @@
+# c_base's coverage floors (tools/cov_gate.c, `make coverage`, docs/COVERAGE.md).
+# The numbers CI measures (gcc and gcov on ubuntu-24.04). Raise them when
+# coverage climbs, in the same change; never lower one to make a red build pass.
+line 97.00
+branch 70.00
+# zero <file> <function> <why no test calls it>: none.

@@ -143,16 +143,16 @@ $(call prog,build/asan,build/obj/asan,build/obj/asan-kernel,cbase,src/main_serve
 $(call prog,build/asan,build/obj/asan,build/obj/asan-kernel,bootstrap,src/main_lambda.c,ASAN_CB_CFLAGS)
 $(foreach u,$(UNITS),$(call prog,build/test,build/obj/cbase,build/obj/kernel,$(u),test/$(u).c $(TLIB_SRC),CB_CFLAGS))
 $(foreach u,$(UNITS),$(call prog,build/asan/test,build/obj/asan,build/obj/asan-kernel,$(u),test/$(u).c $(TLIB_SRC),ASAN_CB_CFLAGS))
-$(foreach s,smoke smoke_lambda smoke_authz smoke_matrix bench_dynamo,$(call prog,build/test,build/obj/cbase,build/obj/kernel,$(s),test/$(s).c $(TLIB_SRC),CB_CFLAGS))
+$(foreach s,smoke smoke_lambda smoke_lambda_after smoke_authz smoke_matrix smoke_boot bench_dynamo,$(call prog,build/test,build/obj/cbase,build/obj/kernel,$(s),test/$(s).c $(TLIB_SRC),CB_CFLAGS))
 # The bench (bench/): its own program, and a unit test of its statistics and
 # report that runs with the others.
 BENCH_SRC := $(filter-out bench/unit_%.c,$(sort $(wildcard bench/*.c)))
 $(call prog,build,build/obj/cbase,build/obj/kernel,cbase-bench,$(BENCH_SRC),CB_CFLAGS)
 $(call prog,build/test,build/obj/cbase,build/obj/kernel,unit_bench,bench/unit_bench.c bench/bench_stats.c,CB_CFLAGS)
 $(call prog,build/asan/test,build/obj/asan,build/obj/asan-kernel,unit_bench,bench/unit_bench.c bench/bench_stats.c,ASAN_CB_CFLAGS)
-$(foreach s,smoke smoke_lambda smoke_authz smoke_matrix,$(call prog,build/asan/test,build/obj/asan,build/obj/asan-kernel,$(s),test/$(s).c $(TLIB_SRC),ASAN_CB_CFLAGS))
+$(foreach s,smoke smoke_lambda smoke_lambda_after smoke_authz smoke_matrix smoke_boot,$(call prog,build/asan/test,build/obj/asan,build/obj/asan-kernel,$(s),test/$(s).c $(TLIB_SRC),ASAN_CB_CFLAGS))
 
-.PHONY: all test smoke check check-asan test-asan smoke-asan check-dynamo bench-dynamo clean print-kernel-src bootstrap bench
+.PHONY: coverage all test smoke check check-asan test-asan smoke-asan check-dynamo bench-dynamo clean print-kernel-src bootstrap bench
 all: build/cbase build/bootstrap build/cbase-import build/cbase-bench
 
 # Every unit program runs even when an earlier one fails; the target fails if any did.
@@ -164,20 +164,24 @@ test: $(addprefix build/test/,$(UNITS)) build/test/unit_bench
 	$(call RUN_UNITS,$^)
 # Two lanes: `cbase serve` over real HTTP, and the real bootstrap binary
 # driven through a fake Lambda Runtime API (no AWS needed).
-smoke: build/cbase build/bootstrap build/test/smoke build/test/smoke_lambda build/test/smoke_authz build/test/smoke_matrix
+smoke: build/cbase build/bootstrap build/test/smoke build/test/smoke_lambda build/test/smoke_lambda_after build/test/smoke_authz build/test/smoke_matrix build/test/smoke_boot
 	build/test/smoke build/cbase
 	build/test/smoke_authz build/cbase
 	build/test/smoke_matrix build/cbase
+	build/test/smoke_boot build/cbase build/bootstrap
 	build/test/smoke_lambda build/bootstrap
+	build/test/smoke_lambda_after build/bootstrap
 check: test smoke
 
 test-asan: $(addprefix build/asan/test/,$(UNITS)) build/asan/test/unit_bench
 	$(call RUN_UNITS,$^)
-smoke-asan: build/asan/cbase build/asan/bootstrap build/asan/test/smoke build/asan/test/smoke_lambda build/asan/test/smoke_authz build/asan/test/smoke_matrix
+smoke-asan: build/asan/cbase build/asan/bootstrap build/asan/test/smoke build/asan/test/smoke_lambda build/asan/test/smoke_lambda_after build/asan/test/smoke_authz build/asan/test/smoke_matrix build/asan/test/smoke_boot
 	build/asan/test/smoke build/asan/cbase
 	build/asan/test/smoke_authz build/asan/cbase
 	build/asan/test/smoke_matrix build/asan/cbase
+	build/asan/test/smoke_boot build/asan/cbase build/asan/bootstrap
 	build/asan/test/smoke_lambda build/asan/bootstrap
+	build/asan/test/smoke_lambda_after build/asan/bootstrap
 check-asan: test-asan smoke-asan
 
 # The DynamoDB backend against Amazon's DynamoDB Local: the table made from
@@ -205,6 +209,54 @@ bootstrap:
 	tools/build_bootstrap.sh
 
 bench: build/cbase-bench
+
+# ---- coverage (docs/COVERAGE.md) ------------------------------------------------
+# Every c_base object at -O0 --coverage, and of the kernel only the two files
+# the binary surface is made of (netwire.c, netclient.c): the rest of the
+# kernel keeps its own flags, so the bots play at speed. Every unit test and
+# every smoke but the paced game run against it at once, gcovr reads the
+# counts, and tools/cov_gate holds them against tools/cov_floor.txt. The
+# kernel's other files are measured by foolish/c's own coverage job.
+COV_GCOV ?= $(if $(filter Darwin,$(UNAME)),xcrun llvm-cov gcov,gcov)
+COV_FLAGS := -O0 --coverage
+# bcrypt keeps -O2: unit_bcrypt holds cost 10 to GoTrue's CPU budget, which -O0 misses.
+COV_CB_CFLAGS = $(filter-out -O2,$(CB_CFLAGS)) $(COV_FLAGS) $(COVO_$*)
+COVO_src/auth/bcrypt := -O2
+COVK_foolish/c/src/netwire := $(COV_FLAGS)
+COVK_foolish/c/src/netclient := $(COV_FLAGS)
+COV_KERNEL_CFLAGS = $(KERNEL_CFLAGS) $(COVK_$*)
+$(eval $(call C_VARIANT,build/obj/cov,CC,COV_CB_CFLAGS,,bcrypt:-O2))
+$(eval $(call C_VARIANT,build/obj/cov-kernel,CC,COV_KERNEL_CFLAGS,,netwire+netclient:$(COV_FLAGS)))
+$(call prog,build/cov,build/obj/cov,build/obj/cov-kernel,cbase,src/main_serve.c,COV_CB_CFLAGS)
+$(call prog,build/cov,build/obj/cov,build/obj/cov-kernel,bootstrap,src/main_lambda.c,COV_CB_CFLAGS)
+$(foreach u,$(UNITS),$(call prog,build/cov/test,build/obj/cov,build/obj/cov-kernel,$(u),test/$(u).c $(TLIB_SRC),COV_CB_CFLAGS))
+$(foreach s,smoke smoke_lambda smoke_lambda_after smoke_authz smoke_matrix smoke_boot,$(call prog,build/cov/test,build/obj/cov,build/obj/cov-kernel,$(s),test/$(s).c $(TLIB_SRC),COV_CB_CFLAGS))
+build/cov_gate: tools/cov_gate.c
+	@mkdir -p $(@D)
+	$(CC) -std=gnu11 -O2 -Wall -Wextra -Werror $< -o $@
+
+COV_FILTER := --filter 'src/' --filter '\.\./foolish/c/src/net(wire|client)\.c'
+COV_EXCLUDE := --exclude 'build/' --exclude 'test/'
+# Every test program at once, each to its own log (the gcov runtime locks a
+# .gcda while it merges into it); a failed one prints its log and fails the
+# target. smoke's game is left out: its bots pace themselves like people, and
+# smoke_matrix plays a whole game without them (docs/COVERAGE.md).
+COV_RUNS := $(addprefix build/cov/test/,$(UNITS)) \
+            'CBASE_SMOKE_GAME=0 build/cov/test/smoke build/cov/cbase' \
+            'build/cov/test/smoke_lambda build/cov/bootstrap' \
+            'build/cov/test/smoke_lambda_after build/cov/bootstrap' \
+            'build/cov/test/smoke_matrix build/cov/cbase' \
+            'build/cov/test/smoke_boot build/cov/cbase build/cov/bootstrap' \
+            'build/cov/test/smoke_authz build/cov/cbase'
+coverage: $(addprefix build/cov/test/,$(UNITS)) build/cov/cbase build/cov/bootstrap build/cov/test/smoke build/cov/test/smoke_lambda build/cov/test/smoke_matrix build/cov/test/smoke_authz build/cov/test/smoke_boot build/cov/test/smoke_lambda_after build/cov_gate
+	@find build/obj/cov build/obj/cov-kernel -name '*.gcda' -delete
+	@printf '%s\0' $(COV_RUNS) | xargs -0 -P $(COV_JOBS) -n 1 sh -c 'log=build/cov/$$(echo "$$0" | tr " /=" "___").log; eval "$$0" > $$log 2>&1 || { cat $$log; echo "coverage: FAILED: $$0"; exit 1; }'
+	gcovr --root . --object-directory build/obj --gcov-executable '$(COV_GCOV)' --gcov-ignore-parse-errors=all \
+	  $(COV_FILTER) $(COV_EXCLUDE) --exclude-unreachable-branches --exclude-throw-branches \
+	  --lcov build/cov/coverage.lcov
+	build/cov_gate build/cov/coverage.lcov tools/cov_floor.txt --report > build/cov/report.txt || { cat build/cov/report.txt; exit 1; }
+	@tail -4 build/cov/report.txt
+COV_JOBS ?= $(shell getconf _NPROCESSORS_ONLN)
 
 print-kernel-src:
 	@echo $(KERNEL_SRC)
