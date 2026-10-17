@@ -1,0 +1,8 @@
+cbase-bench 1
+kind subscribe
+date 2026-10-17T16:29:21Z
+host Apple M1
+target https://api.foolish.cards
+note after NW_WS_SUB_AS deployed (prod) refused_after_auth=29 refused_as=0 failed=0 load1=22
+lat sub_after_auth n=30 p50_us=638607 p95_us=710942 p99_us=981206 max_us=981206 sent_b=0 recv_b=0
+lat sub_as n=30 p50_us=72486 p95_us=84276 p99_us=87015 max_us=87015 sent_b=0 recv_b=0
