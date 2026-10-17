@@ -964,10 +964,10 @@ static int games_send(void *ud, const char *target, const uint8_t *b, size_t len
     return CB_OK;
 }
 
-typedef struct { int n; char ids[GB_N][8]; bool logs; } rows_seen;
+typedef struct { int n; char ids[GB_N][CB_GAME_ID_MAX + 1]; bool logs; } rows_seen;
 static bool seen_row(const cb_game_row *r, void *ud) {
     rows_seen *s = ud;
-    if (s->n < GB_N) snprintf(s->ids[s->n++], 8, "%s", r->id);
+    if (s->n < GB_N) snprintf(s->ids[s->n++], sizeof s->ids[0], "%s", r->id);
     s->logs |= r->logs != NULL || r->logs_len != 0;
     return true;
 }
