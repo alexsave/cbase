@@ -894,12 +894,19 @@ static void hidden_card_game(void) {
     while (status == GAME_STATUS_PLAYING && mono_ms() - last_move < 30000) {
         bool moved = false;
         for (int h = 0; h < 3 && status == GAME_STATUS_PLAYING; h++) {
-            if (meta(who[h], ASK_BUMP, G, NULL, NULL) != 200) continue;
+            // The seat's view, read as a client reads it (GET, not a BUMP: a
+            // bump is a seat's nudge to the bots, and limited per account).
+            char gpath[48];
+            snprintf(gpath, sizeof gpath, "/v1/games/%s", G);
+            if (http("GET", gpath, who[h]->auth, NULL, 0, NULL) != 200) continue;
+            uint32_t gv;
+            NwBlob genv;
+            if (nw_view_decode(g_a.body, g_a.len, &gv, &genv) != NW_OK) continue;
             char what[48];
-            snprintf(what, sizeof what, "%s's bump", who[h]->name);
+            snprintf(what, sizeof what, "%s's view", who[h]->name);
             static uint8_t env[1 << 16];
-            int el = g_a.len < (int)sizeof env ? g_a.len : 0;
-            memcpy(env, g_a.body, (size_t)el);
+            int el = genv.len < sizeof env ? (int)genv.len : 0;
+            memcpy(env, genv.p, (size_t)el);
             T_CHECK(envelope_hides(env, el, seats[h], NULL, NULL, NULL, what));
             uint8_t wire[64];
             uint32_t version = 0;
