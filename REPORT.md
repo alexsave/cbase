@@ -5,7 +5,7 @@
 > The Supabase-compatible facade (GoTrue, PostgREST, Phoenix, the anon key) is deleted: every client speaks the binary `/v1` surface through the kernel's `netclient` (DESIGN.md, "Binary surface").
 > The TypeScript server, its schema and its Postgres harness are deleted, and so is `deploy.yml`; nothing deploys to Supabase.
 > The web is a static export on S3 behind CloudFront and the `/m` unfurl is a C route (docs/VERCEL.md); Vercel is a dispatch-only rollback until about 2026-10-28.
-> The native C server this report weighs is being retired (PR #332, in progress 2026-10-17).
+> The native C server this report weighs was retired on 2026-10-17 (PR #332; the last tree is in git at `56ad0609`).
 > For the present, read README.md, DESIGN.md and RUNBOOK.md.
 
 ## 1. The one-line answer on cost
