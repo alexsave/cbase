@@ -1667,6 +1667,76 @@ static void a_drive_that_finds_nothing_takes_the_game_out_of_the_scan(void) {
     cb_game_row_free(&row);
 }
 
+// Production, 2026-10-17: about one drive per human move in a game against a
+// bot started only to find the lease taken (24 of 34 drives in one game): the
+// human moved while a drive was waiting out its pace. A kick now looks at the
+// lease after its commit and leaves the move to the drive that holds it.
+static void a_kick_leaves_the_move_to_the_drive_holding_the_lease(void) {
+    setup(1);
+    char gid[CB_GAME_ID_MAX + 1];
+    reply r;
+    create_game(gid, &r);
+    meta("A", ASK_ADD_BOT, gid, NULL, &r);
+    meta("A", ASK_START, gid, NULL, &r);
+    T_CHECK(until_the_human_owes(gid));
+    T_EQ_INT(tm_hold_lease(g_store, gid, g_now + CB_BOT_LEASE_MS), CB_OK);   // a drive elsewhere
+    int kicks = g_kicks;
+    T_CHECK(until_a_bot_is_due(gid));
+    T_EQ_INT(g_kicks, kicks);
+    meta("A", ASK_BUMP, gid, NULL, &r);
+    T_EQ_INT(g_kicks, kicks);
+    // The drive let go (or its lease ran out): a kick goes again.
+    T_EQ_INT(tm_hold_lease(g_store, gid, g_now - 1), CB_OK);
+    meta("A", ASK_BUMP, gid, NULL, &r);
+    T_EQ_INT(g_kicks, kicks + 1);
+}
+
+// The other half: the drive that held the lease looks once more after it lets
+// go, so a move whose kick it swallowed is driven by it, not left to the scan.
+static const char *g_release_gid;
+static int g_release_moves;
+static int64_t g_release_version;
+static bool g_release_left_due;
+static void move_at_release(const char *game_id) {
+    if (!g_release_gid || strcmp(game_id, g_release_gid) != 0 || g_release_moves > 0) return;
+    if (bots_due(game_id)) return;   // a release mid-drive: not the case under test
+    uint8_t w[64];
+    int n = pick_move(game_id, 0, w, sizeof w);
+    if (n <= 0) return;
+    reply r;
+    action("A", game_id, w, n, (uint32_t)version_of(game_id), &r);
+    g_release_moves++;
+    g_release_version = version_of(game_id);
+    g_release_left_due = bots_due(game_id);
+}
+
+static void a_move_made_while_the_lease_is_held_is_driven(void) {
+    setup(1);
+    char gid[CB_GAME_ID_MAX + 1];
+    reply r;
+    create_game(gid, &r);
+    meta("A", ASK_ADD_BOT, gid, NULL, &r);
+    meta("A", ASK_START, gid, NULL, &r);
+    bool tested = false;
+    for (int i = 0; i < 40 && !tested && status_of(gid) == GAME_STATUS_PLAYING; i++) {
+        T_CHECK(until_a_bot_is_due(gid));
+        g_release_gid = gid;
+        g_release_moves = 0;
+        tm_on_release = move_at_release;
+        int kicks = g_kicks;
+        T_EQ_INT(cb_bots_drive(&g_ctx, gid), CB_OK);
+        tm_on_release = NULL;
+        if (g_release_moves == 0 || !g_release_left_due) continue;
+        // A's move left a bot to act, its kick was left to the drive, and the
+        // drive drove it before returning.
+        tested = true;
+        T_EQ_INT(g_kicks, kicks);
+        T_CHECK(version_of(gid) > g_release_version);
+        T_CHECK(!bots_due(gid));
+    }
+    T_CHECK(tested);
+}
+
 int main(void) {
     T_RUN(create_answers_the_seat_0_envelope);
     T_RUN(the_answer_goes_before_its_pushes);
@@ -1691,6 +1761,8 @@ int main(void) {
     T_RUN(the_scan_kicks_stale_active_bot_games);
     T_RUN(the_scan_never_kicks_a_game_waiting_on_its_human);
     T_RUN(a_drive_that_finds_nothing_takes_the_game_out_of_the_scan);
+    T_RUN(a_kick_leaves_the_move_to_the_drive_holding_the_lease);
+    T_RUN(a_move_made_while_the_lease_is_held_is_driven);
     T_RUN(a_taken_game_id_is_drawn_again);
     T_RUN(a_goods_only_commit_is_broadcast);
     T_RUN(a_bump_wakes_the_bots);

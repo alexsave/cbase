@@ -919,6 +919,25 @@ static int dy_bots_idle(cb_store *s, const char *game, int64_t version) {
     return simple1(D(s), &r, CB_E_CONFLICT);
 }
 
+static int dy_lease_held(cb_store *s, const char *game, int64_t now) {
+    dyn *d = D(s);
+    dw_req r;
+    dw_req_init(&r);
+    dw_get_scan(&r, d->table, game);
+    cb_buf resp;
+    cb_buf_init(&resp);
+    int rc = CB_E_DB;
+    if (call(d, &r, &resp) == DW_OK) {
+        cb_span it;
+        // No marker, no lease (the acquire's CB_E_NOT_FOUND); held as the
+        // acquire's condition refuses it: lease_until not yet before now.
+        rc = dw_item(cb_buf_cstr(&resp), resp.len, &it) && dw_item_lease_until(it) >= now ? 1 : 0;
+    }
+    cb_buf_free(&resp);
+    dw_req_free(&r);
+    return rc;
+}
+
 // ---- bots and ratings -----------------------------------------------------------------------
 
 typedef struct {
@@ -1557,6 +1576,7 @@ static const cb_store_ops DYNAMO_OPS = {
     .lease_renew = dy_lease_renew,
     .lease_release = dy_lease_release,
     .bots_idle = dy_bots_idle,
+    .lease_held = dy_lease_held,
     .bots_list = dy_bots_list,
     .ratings_list = dy_ratings_list,
     .ratings_top = dy_ratings_top,

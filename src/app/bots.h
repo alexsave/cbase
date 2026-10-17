@@ -45,6 +45,12 @@ extern void (*cb_bots_cycle_observer)(const char *game_id, int attempt, int logs
 // The heartbeat's scan: kicks every due game. Returns how many it kicked.
 int cb_bots_scan(cb_ctx *ctx, int64_t now_ms);
 
+// A kick as every caller makes one (a commit's, a bump's, the scan's): through
+// ctx->kick_bots, unless another drive holds the game's lease. That drive
+// reloads before every cycle and looks once more after it lets go, so it
+// takes the move; a second drive would only find the lease taken.
+void cb_bots_kick(cb_ctx *ctx, const char *game_id);
+
 // serve's cb_kick_fn: submits cb_bots_drive to ctx->bot_pool.
 void cb_bots_kick_local(cb_ctx *ctx, const char *game_id);
 // Lambda's cb_kick_fn: an async self-invoke with the literal "bot_drive:<id>"

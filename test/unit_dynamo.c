@@ -71,6 +71,16 @@ static void lease_requests(void) {
              "\"UpdateExpression\":\"REMOVE #lease_until\",\"ConditionExpression\":\"#lease_token = :token\","
              "\"ExpressionAttributeNames\":{\"#lease_until\":\"lease_until\",\"#lease_token\":\"lease_token\"},"
              "\"ExpressionAttributeValues\":{\":token\":{\"S\":\"" TOK "\"}}}");
+    // A kick's look at the lease: the marker, read consistently.
+    dw_get_scan(&r, "cbase", "ab12cd");
+    T_EQ_STR(r.target, "DynamoDB_20120810.GetItem");
+    T_EQ_STR(cb_buf_cstr(&r.body),
+             "{\"ReturnConsumedCapacity\":\"TOTAL\",\"TableName\":\"cbase\",\"Key\":{\"pk\":{\"S\":\"SCAN\"},\"sk\":{\"S\":\"GAME#ab12cd\"}},"
+             "\"ConsistentRead\":true}");
+    cb_span lit = cb_span_of("{\"pk\":{\"S\":\"SCAN\"},\"lease_until\":{\"N\":\"1025000\"}}", 49);
+    T_EQ_INT(dw_item_lease_until(lit), 1025000);
+    cb_span nolease = cb_span_of("{\"pk\":{\"S\":\"SCAN\"}}", 19);
+    T_CHECK(dw_item_lease_until(nolease) == INT64_MIN);
     // A drive that found no bot can act takes the marker (and its lease)
     // away, fenced on the row version the marker carries, or on none (a
     // marker no commit has written since markers carried it).

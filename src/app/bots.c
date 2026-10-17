@@ -130,10 +130,13 @@ static int64_t budget_left(const cb_ctx *ctx) {
     return ctx->deadline_ms - BOT_DEADLINE_MARGIN_MS - cb_app_now();
 }
 
-int cb_bots_drive(cb_ctx *ctx, const char *game_id) {
-    if (!ctx->store) return CB_E_STATE;
-    cb_store_tally st;
-    cb_store_tally_take(&st);   // this drive's count starts here
+// One leased round of a drive: acquire, cycle until done or out of budget,
+// release. *settled is true when it let go because no bot could act (or the
+// game ended) with the lease still its own: the case a kick skipped while the
+// lease was held relies on (kick_wanted), so the caller looks once more.
+static int drive_round(cb_ctx *ctx, const char *game_id, cb_store_tally *stp, bool *settled) {
+    cb_store_tally st = *stp;
+    *settled = false;
     cb_uuid lease;
     int rc = CB_STORE_CALL(ctx->store, lease_acquire, game_id, cb_app_now(), CB_BOT_LEASE_MS, lease);
     if (rc == CB_E_CONFLICT) {
@@ -175,7 +178,7 @@ int cb_bots_drive(cb_ctx *ctx, const char *game_id) {
             CB_DEBUG("store", "bot cycle %s/%d: %d reads, %d writes, %g RCU, %g WCU (%s)", game_id, cycle, st.reads,
                      st.writes, st.rcu, st.wcu, st.detail);
         if (c == CYCLE_ERROR) { rc = CB_E_DB; break; }
-        if (c == CYCLE_DONE) break;
+        if (c == CYCLE_DONE) { *settled = true; break; }
         if (delay > 0) {
             // A wait that would outlive the budget is the next drive's to sit out.
             if (delay > budget_left(ctx)) { rekick = true; break; }
@@ -199,6 +202,38 @@ int cb_bots_drive(cb_ctx *ctx, const char *game_id) {
     if (rekick && ctx->kick_bots) {
         CB_INFO("bots", "game %s: budget spent with bot work left, kicking a fresh drive", game_id);
         ctx->kick_bots(ctx, game_id);
+    }
+    *stp = st;
+    return rc;
+}
+
+// A bot can act on the stored row now (a fresh read).
+static bool due_now(cb_ctx *ctx, const char *game_id) {
+    cb_game_row row;
+    bool cached = false;
+    if (cb_row_load(ctx, game_id, false, &row, &cached) != CB_OK) return false;
+    cb_section *s = cb_section_new();
+    bool due = s && cb_section_load(s, &row) >= 0 && table_bots_due(&s->t);
+    cb_section_free(s);
+    cb_game_row_free(&row);
+    return due;
+}
+
+#define BOT_DRIVE_ROUNDS 8
+
+int cb_bots_drive(cb_ctx *ctx, const char *game_id) {
+    if (!ctx->store) return CB_E_STATE;
+    cb_store_tally st;
+    cb_store_tally_take(&st);   // this drive's count starts here
+    int rc = CB_OK;
+    for (int round = 0; round < BOT_DRIVE_ROUNDS; round++) {
+        bool settled = false;
+        rc = drive_round(ctx, game_id, &st, &settled);
+        // A commit that landed while this drive held the lease kicked no drive
+        // (kick_wanted): its kick's lease check came after its commit, and this
+        // read comes after the release, so one of the two saw the other.
+        if (rc != CB_OK || !settled || !due_now(ctx, game_id)) break;
+        CB_INFO("bots", "game %s: a move landed while the lease was held, driving again", game_id);
     }
     return rc;
 }
@@ -231,7 +266,7 @@ int cb_bots_scan(cb_ctx *ctx, int64_t now_ms) {
         free(l);
         return rc;
     }
-    for (int i = 0; i < l->n; i++) if (ctx->kick_bots) ctx->kick_bots(ctx, l->ids[i]);
+    for (int i = 0; i < l->n; i++) cb_bots_kick(ctx, l->ids[i]);
     // An idle minute (or, under serve, an idle 10 s) is not news.
     if (l->n > 0) CB_INFO("bots", "heartbeat dispatched=%d", l->n);
     else CB_DEBUG("bots", "heartbeat dispatched=0");
@@ -277,6 +312,26 @@ static void kick_unmark(const char *id) {
             break;
         }
     pthread_mutex_unlock(&g_kick_mu);
+}
+
+// Whether a kick should start a drive: not while another drive holds the
+// game's lease. That drive reloads the row before every cycle, and looks once
+// more after it lets go (cb_bots_drive), so the move that asked for the kick
+// is driven either way; a second drive would only find the lease taken
+// (production, 2026-10-17: about one such drive per human move in a bot
+// game). A store that cannot say kicks: a wasted drive beats a stalled game.
+static bool kick_wanted(cb_ctx *ctx, const char *game_id) {
+    if (!ctx->store) return true;
+    int held = CB_STORE_CALL(ctx->store, lease_held, game_id, cb_app_now());
+    if (held == 1) {
+        CB_DEBUG("bots", "kick %s: a drive holds the lease, it takes this move", game_id);
+        return false;
+    }
+    return true;
+}
+
+void cb_bots_kick(cb_ctx *ctx, const char *game_id) {
+    if (ctx->kick_bots && kick_wanted(ctx, game_id)) ctx->kick_bots(ctx, game_id);
 }
 
 static void kick_run(void *ud) {

@@ -168,6 +168,9 @@ As built (store builder, then integration):
   Until 2026-10-17 it was the second, and every game whose human sat on a move was kicked by every minute's scan for the whole abandon hour, each drive finding nothing (1,037 of 1,149 bot cycles in a week drove zero actions).
   A drive that finds no bot can act on a row the scan still holds (a row written before the change) takes it out with `bots_idle`, fenced on the version it read: SQLite clears `needs_bots`, DynamoDB deletes the SCAN marker on condition of its `row_version` (or none), leaving the row's own flag to its next commit.
   A bump wakes the bots on the same question.
+- A kick (a commit's, a bump's, the scan's; `cb_bots_kick`) first asks the store whether a drive holds the game's lease (`lease_held`, a consistent read of the marker after the commit), and starts no drive while one does: that drive reloads before every cycle, and after it releases it reads the row once more and drives again if a bot can act.
+  The kick's read follows its commit and the drive's read follows its release, so whichever came second sees the other's write; a move is never left to the scan.
+  Before this, about one Lambda drive per human move in a game against a bot started only to find the lease taken (24 of 34 in one game).
 - `game_commit`, `game_delete` and `lease_acquire` on a game that is gone return `CB_E_NOT_FOUND` (DynamoDB tells it apart from a lost CAS with `ReturnValuesOnConditionCheckFailure: ALL_OLD`).
 - The DynamoDB section of `json_surface.c` (formerly `dynamo_wire.c`) spells every DynamoDB string and builds every request as a pure function over buffers; `store_dynamo.c` decides only which requests to send in which order.
   Its transport is `aws/aws_call.h` (one signed-request step for every AWS call in c_base), and it honours `AWS_ENDPOINT_URL_DYNAMODB`, the SDKs' own override.

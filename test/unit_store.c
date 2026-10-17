@@ -593,8 +593,13 @@ static void lease_semantics(void) {
     CB_STORE_CALL(s, game_create, &g, a.id);
     const int64_t T0 = 1000000, TTL = 25000;
     cb_uuid t1, t2;
+    T_EQ_INT(CB_STORE_CALL(s, lease_held, "lease1", T0), 0);   // never taken
     T_EQ_INT(CB_STORE_CALL(s, lease_acquire, "lease1", T0, TTL, t1), CB_OK);
     T_CHECK(cb_uuid_valid(t1, strlen(t1)));
+    // Held exactly while an acquire is refused: up to and including its last ms.
+    T_EQ_INT(CB_STORE_CALL(s, lease_held, "lease1", T0 + TTL), 1);
+    T_EQ_INT(CB_STORE_CALL(s, lease_held, "lease1", T0 + TTL + 1), 0);
+    T_EQ_INT(CB_STORE_CALL(s, lease_held, "nogame", T0), 0);
     // A second acquire while the lease is live fails, up to and including its last ms.
     T_EQ_INT(CB_STORE_CALL(s, lease_acquire, "lease1", T0 + 1, TTL, t2), CB_E_CONFLICT);
     T_EQ_INT(CB_STORE_CALL(s, lease_acquire, "lease1", T0 + TTL, TTL, t2), CB_E_CONFLICT);
@@ -607,7 +612,9 @@ static void lease_semantics(void) {
     T_EQ_INT(CB_STORE_CALL(s, lease_release, "lease1", "00000000-0000-4000-8000-000000000000"), CB_OK);
     T_EQ_INT(CB_STORE_CALL(s, lease_acquire, "lease1", T0 + 10001, TTL, t2), CB_E_CONFLICT);
     // Released by its holder, it is free at once.
+    T_EQ_INT(CB_STORE_CALL(s, lease_held, "lease1", T0 + 10001), 1);
     T_EQ_INT(CB_STORE_CALL(s, lease_release, "lease1", t1), CB_OK);
+    T_EQ_INT(CB_STORE_CALL(s, lease_held, "lease1", T0 + 10001), 0);
     T_EQ_INT(CB_STORE_CALL(s, lease_acquire, "lease1", T0 + 10002, TTL, t2), CB_OK);
     T_CHECK(strcmp(t1, t2) != 0);
     T_EQ_INT(CB_STORE_CALL(s, lease_renew, "lease1", t1, T0 + 10003, TTL), CB_E_CONFLICT);

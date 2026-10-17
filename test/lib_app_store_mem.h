@@ -38,6 +38,11 @@ int tm_rating(cb_store *s, const char *id, cb_rating_row *out);
 // The game's lease holder token ("" for none) and until (ms).
 int tm_lease(cb_store *s, const char *game_id, char token[CB_UUID_LEN + 1], int64_t *until);
 // Rewrites what the heartbeat's scan reads of a stored game.
+// Puts a lease on the game by hand (a drive elsewhere holding it), until `until`; 0 frees it.
+int tm_hold_lease(cb_store *s, const char *game_id, int64_t until);
+// Called (outside the store's lock) by lease_release before it frees the
+// lease: a move made there lands while the drive still holds it. NULL: none.
+extern void (*tm_on_release)(const char *game_id);
 int tm_set_scan(cb_store *s, const char *game_id, bool needs_bots, int64_t updated_at, int64_t last_commit_at);
 
 #endif

@@ -693,6 +693,11 @@ bool dw_item_scan(cb_span it, char game_id[CB_GAME_ID_MAX + 1], int64_t *updated
     return dw_get_s(it, "game_id", game_id, CB_GAME_ID_MAX + 1);
 }
 
+int64_t dw_item_lease_until(cb_span it) {
+    // A lease never taken, or released (the attribute removed): before any now.
+    return get_n_or(it, "lease_until", INT64_MIN);
+}
+
 bool dw_item_email_user(cb_span it, cb_uuid id) { return dw_get_s(it, "user_id", id, sizeof(cb_uuid)); }
 
 bool dw_item_key(cb_span it, cb_buf *out) {
@@ -789,6 +794,11 @@ void dw_get_email(dw_req *r, const char *table, const char *email) {
 void dw_get_game(dw_req *r, const char *table, const char *id) {
     char pk[KB];
     get_item(r, table, k(pk, sizeof pk, "GAME#", id), "ROW");
+}
+
+void dw_get_scan(dw_req *r, const char *table, const char *game) {
+    char sk[KB];
+    get_item(r, table, "SCAN", k(sk, sizeof sk, "GAME#", game));
 }
 
 void dw_get_member(dw_req *r, const char *table, const char *game, const char *user) {

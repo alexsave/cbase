@@ -292,6 +292,11 @@ typedef struct cb_store_ops {
     // its next commit (the row is 4 to 8 KB a write, the marker 1 WCU).
     // CB_OK, or CB_E_CONFLICT when the row has moved on (SQLite: or is gone).
     int (*bots_idle)(cb_store *s, const char *game_id, int64_t version);
+    // 1 while some drive's lease on the game is live at `now` (acquire would
+    // answer CB_E_CONFLICT), 0 when it is free or there is none (no game, or
+    // no bot work), or a CB_E_*. A consistent read: a kick asks it after its
+    // commit, so it sees any lease taken before (app/bots.c kick_wanted).
+    int (*lease_held)(cb_store *s, const char *game_id, int64_t now);
 
     // bots and ratings
     int (*bots_list)(cb_store *s, cb_bot_fn fn, void *ud);                 // ladder order

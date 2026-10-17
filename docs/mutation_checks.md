@@ -426,3 +426,14 @@ Each test was red against the unfixed code first; the mutants below re-break eac
 - oom.h: `the_seam_reaches_cbase` holds the seam itself (a failure delivered to util/str.c, a held block counted, then freed).
 - auth.c/jwt.c: a token check whose HMAC could not be computed answered CB_E_AUTH (the code before the fix) -> unit_oom `a_token_check_that_cannot_be_made_is_not_a_bad_token`, red on CI's ubuntu lane (allocations 1-3 of the check: CB_E_AUTH), green after; on macOS OpenSSL's allocations are out of the seam's reach and the sweep fails nothing.
 - lib_faultstore.c: its operation count one short -> the static assert stops the build (store.h has an operation lib_faultstore.c does not wrap).
+
+## A kick leaves the move to the drive holding the lease (2026-10-17)
+
+Same method as above (mtime pushed past the objects both ways).
+
+- bots.c: `kick_wanted` never sees a held lease (the old behaviour) -> unit_app `a_kick_leaves_the_move_to_the_drive_holding_the_lease` g_kicks == kicks (three), `a_move_made_while_the_lease_is_held_is_driven` g_kicks == kicks.
+- bots.c: no look after the release (the old behaviour) -> `a_move_made_while_the_lease_is_held_is_driven` version moved past the move, !bots_due.
+- store_sqlite.c: ST_LEASE_HELD `>` for `>=` -> unit_store `lease_semantics` held at T0 + TTL == 1; held without the game's bot work and lease -> four assertions of the same test.
+- json_surface.c: a marker with no lease reads 0, not INT64_MIN -> unit_dynamo `lease_requests` dw_item_lease_until(nolease); the marker's key misspelled -> the GetItem body.
+- `cbase serve` never showed the waste (its one bot thread runs a kicked drive after the running one ends), so the reproduction is production's own: game f6b571, 24 "lease held" skips among 34 drive invocations.
+

@@ -302,7 +302,10 @@ static int m_lease_renew(cb_store *s, const char *id, const char *token, int64_t
     return rc;
 }
 
+void (*tm_on_release)(const char *game_id);
+
 static int m_lease_release(cb_store *s, const char *id, const char *token) {
+    if (tm_on_release) tm_on_release(id);
     tm_impl *m = IMPL(s);
     pthread_mutex_lock(&m->mu);
     tm_game *g = find_game(m, id);
@@ -320,6 +323,15 @@ static int m_bots_idle(cb_store *s, const char *id, int64_t version) {
     if (g && rc == CB_OK) m->hooks.bots_idle++;
     pthread_mutex_unlock(&m->mu);
     return rc;
+}
+
+static int m_lease_held(cb_store *s, const char *id, int64_t now) {
+    tm_impl *m = IMPL(s);
+    pthread_mutex_lock(&m->mu);
+    tm_game *g = find_game(m, id);
+    int held = g && g->row.needs_bots && g->lease_until > now ? 1 : 0;   // as m_lease_acquire refuses
+    pthread_mutex_unlock(&m->mu);
+    return held;
 }
 
 // ---- bots and ratings ----------------------------------------------------------------------
@@ -436,6 +448,7 @@ static const cb_store_ops tm_ops = {
     .lease_renew = m_lease_renew,
     .lease_release = m_lease_release,
     .bots_idle = m_bots_idle,
+    .lease_held = m_lease_held,
     .bots_list = m_bots_list,
     .ratings_for = m_ratings_for,
     .rating_set_username = m_rating_set_username,
@@ -503,6 +516,15 @@ int tm_lease(cb_store *s, const char *game_id, char token[CB_UUID_LEN + 1], int6
     pthread_mutex_lock(&m->mu);
     tm_game *g = find_game(m, game_id);
     if (g) { snprintf(token, CB_UUID_LEN + 1, "%s", g->lease_token); *until = g->lease_until; }
+    pthread_mutex_unlock(&m->mu);
+    return g ? CB_OK : CB_E_NOT_FOUND;
+}
+
+int tm_hold_lease(cb_store *s, const char *game_id, int64_t until) {
+    tm_impl *m = IMPL(s);
+    pthread_mutex_lock(&m->mu);
+    tm_game *g = find_game(m, game_id);
+    if (g) { snprintf(g->lease_token, sizeof g->lease_token, "00000000-0000-4000-8000-00000000dead"); g->lease_until = until; }
     pthread_mutex_unlock(&m->mu);
     return g ? CB_OK : CB_E_NOT_FOUND;
 }

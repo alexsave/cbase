@@ -1,6 +1,7 @@
 // after.c - what an invocation does once its answer is out (after.h).
 #include "after.h"
 
+#include "bots.h"
 #include "edge.h"
 #include "realtime/realtime.h"
 #include "table_ops.h"
@@ -83,7 +84,7 @@ void cb_after_kick(cb_ctx *ctx, const char *game_id) {
     if (!ctx->kick_bots) return;
     after_job *j = t_open ? calloc(1, sizeof *j) : NULL;
     if (!j) {
-        ctx->kick_bots(ctx, game_id);
+        cb_bots_kick(ctx, game_id);
         return;
     }
     j->kick = true;
@@ -98,7 +99,7 @@ void cb_after_run(cb_ctx *ctx) {
     while (j) {
         after_job *next = j->next;
         if (j->kick) {
-            if (ctx->kick_bots) ctx->kick_bots(ctx, j->game_id);
+            cb_bots_kick(ctx, j->game_id);   // after the commit, so its lease check sees any drive
         } else {
             pthread_mutex_t *order = cb_table_order_lock(j->game_id);
             cb_rt_failures_take();

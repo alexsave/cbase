@@ -170,6 +170,8 @@ bool dw_item_snapshot(cb_span item, cb_snapshot_row *s);   // byte fields malloc
 bool dw_item_chat(cb_span item, cb_chat_row *c);           // message malloc'd
 bool dw_item_conn(cb_span item, cb_conn_row *c);
 bool dw_item_scan(cb_span item, char game_id[CB_GAME_ID_MAX + 1], int64_t *updated_at, int64_t *last_commit_at);
+// A SCAN marker's lease_until, or INT64_MIN when it carries none.
+int64_t dw_item_lease_until(cb_span item);
 bool dw_item_email_user(cb_span item, cb_uuid id);
 // The item's keys as raw JSON ({"pk":..,"sk":..}), for a delete or an update.
 bool dw_item_key(cb_span item, cb_buf *out);
@@ -187,6 +189,8 @@ void dw_get_user(dw_req *r, const char *table, const char *id);
 void dw_get_email(dw_req *r, const char *table, const char *email);
 void dw_get_game(dw_req *r, const char *table, const char *id);
 void dw_get_member(dw_req *r, const char *table, const char *game, const char *user);
+// The game's SCAN marker (store.h lease_held), consistent.
+void dw_get_scan(dw_req *r, const char *table, const char *game);
 void dw_get_conn(dw_req *r, const char *table, const char *conn_id);
 
 // The access patterns the backend reads by, one Query each.
