@@ -125,8 +125,12 @@ Resources:
                 Effect: Allow
                 Action:
                   - lambda:UpdateFunctionCode
+                  # CloudFormation's update calls GetFunction as this role (CloudTrail,
+                  # 2026-10-17), which returns the function's environment: so no
+                  # secret is in it (the JWT secret and admin token are in SSM,
+                  # where this role has no access; cbase.yaml SecretsPrefix).
+                  # GetFunctionConfiguration is not needed and not granted.
                   - lambda:GetFunction
-                  - lambda:GetFunctionConfiguration
                   - lambda:GetFunctionUrlConfig
                   - lambda:GetFunctionCodeSigningConfig
                   - lambda:GetFunctionRecursionConfig

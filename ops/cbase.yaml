@@ -40,7 +40,7 @@ Metadata:
       - Label: { default: "Code" }
         Parameters: [CodeBucket, CodeKey]
       - Label: { default: "Secrets (generate each with: openssl rand -base64 32)" }
-        Parameters: [JwtSecret, AdminToken, OriginSecret, OriginEnforced]
+        Parameters: [SecretsPrefix, OriginSecret, OriginEnforced]
       - Label: { default: "Alarms" }
         Parameters: [AlarmEmail]
       - Label: { default: "Domain" }
@@ -59,16 +59,18 @@ Parameters:
     Type: String
     Default: cbase-lambda.zip
     Description: The object key of the zip in CodeBucket.
-  JwtSecret:
+  SecretsPrefix:
     Type: String
-    NoEcho: true
-    MinLength: 32
-    Description: CBASE_JWT_SECRET, the HS256 key for access tokens. At least 32 characters.
-  AdminToken:
-    Type: String
-    NoEcho: true
-    MinLength: 24
-    Description: CBASE_ADMIN_TOKEN, the Bearer token for the console at /admin.
+    Default: /cbase/
+    AllowedPattern: "/[a-z0-9-]+/"
+    Description: >-
+      The SSM Parameter Store prefix of the function's two secrets, SecureString
+      parameters ops/deploy.sh writes: <prefix>jwt-secret (CBASE_JWT_SECRET, the
+      HS256 key for access tokens) and <prefix>admin-token (CBASE_ADMIN_TOKEN, the
+      console's bearer). The function reads them when a container starts
+      (src/aws/ssm.h); they are not in its environment, which the GitHub deploy
+      role can read. CloudFormation cannot make a SecureString, so the
+      parameters are not resources here.
   OriginSecret:
     Type: String
     NoEcho: true
@@ -251,6 +253,14 @@ Resources:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource: !Sub "${LogGroup.Arn}:*"
+              # The two secrets (src/aws/ssm.h), read at container start. They
+              # are SecureStrings under the AWS-managed aws/ssm key, whose key
+              # policy lets SSM decrypt for any principal of the account that
+              # may read the parameter: no kms statement is needed.
+              - Sid: Secrets
+                Effect: Allow
+                Action: ssm:GetParameters
+                Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SecretsPrefix}*"
 
   # The one CloudFront right the function holds: invalidating its own
   # distribution's cached public reads (app/edge.h). A policy of its own, not a
@@ -297,8 +307,8 @@ Resources:
         Variables:
           CBASE_STORE: dynamo
           CBASE_TABLE: !Ref Table
-          CBASE_JWT_SECRET: !Ref JwtSecret
-          CBASE_ADMIN_TOKEN: !Ref AdminToken
+          # The JWT secret and the admin token are read from SSM, not set here.
+          CBASE_SECRETS_SSM: !Ref SecretsPrefix
           CBASE_ALLOWED_ORIGINS: !Ref AllowedOrigins
           CBASE_PUBLIC_URL: !Sub "https://${DomainName}"
           # The management endpoint pushes are POSTed to (realtime/rt_apigw.h).

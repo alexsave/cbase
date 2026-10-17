@@ -31,6 +31,7 @@
 #include "aws/event.h"
 #include "aws/https.h"
 #include "aws/runtime_api.h"
+#include "aws/ssm.h"
 #include "boot.h"
 #include "config.h"
 #include "ctx.h"
@@ -125,6 +126,12 @@ int main(void) {
     cb_config cfg;
     char err[512];
     if (cb_config_from_env(&cfg, err, sizeof err) != CB_OK) {
+        cb_runtime_init_error(host, port, "Config", err);
+        return 1;
+    }
+    // The secrets from SSM (aws/ssm.h), then the rule every one must meet.
+    if ((cfg.secrets_ssm[0] && cb_ssm_load_secrets(&cfg, err, sizeof err) != CB_OK) ||
+        cb_config_check_secrets(&cfg, true, err, sizeof err) != CB_OK) {
         cb_runtime_init_error(host, port, "Config", err);
         return 1;
     }

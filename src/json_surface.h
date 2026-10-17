@@ -579,6 +579,18 @@ int cb_js_admin_backups_write(cb_buf *out, const cb_js_admin_backups *b);
 bool cf_invalidation_xml(cb_buf *out, const char *const *paths, int n, const char *caller_ref);
 
 // =====================================================================================
+// SSM Parameter Store (ssm_): where the function's secrets live (aws/ssm.h).
+
+// The body of GetParameters for these names, decrypted (WithDecryption).
+// false when `out` ran out of memory.
+bool ssm_get_parameters_body(cb_buf *out, const char *const *names, int n);
+// The Value of the parameter `name` in a GetParameters answer, into out: 1;
+// 0 when the answer does not list it; -1 when it does but the value is not
+// one to hold (not text, longer than cap - 1, a NUL in it, an answer that
+// does not parse). out is "" unless 1.
+int ssm_parameter_value(const char *body, size_t len, const char *name, char *out, size_t cap);
+
+// =====================================================================================
 // The client's side (bench/): what AWS hands the function for a browser's
 // request, the mirror of the event envelope above.
 

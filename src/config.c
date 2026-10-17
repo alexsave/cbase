@@ -81,10 +81,6 @@ int cb_config_from_env(cb_config *c, char *err, size_t cap) {
         }
     const char *secret = env("CBASE_JWT_SECRET", NULL);
     if (secret) {
-        if (strlen(secret) < 32) {
-            snprintf(err, cap, "CBASE_JWT_SECRET must be at least 32 characters");
-            return CB_E_INVALID;
-        }
         if (!copy(c->jwt_secret, sizeof c->jwt_secret, "CBASE_JWT_SECRET", secret, err, cap)) return CB_E_INVALID;
     } else {
         uint8_t raw[32];
@@ -93,12 +89,9 @@ int cb_config_from_env(cb_config *c, char *err, size_t cap) {
         c->jwt_secret_generated = true;
     }
     if (!copy(c->admin_token, sizeof c->admin_token, "CBASE_ADMIN_TOKEN", env("CBASE_ADMIN_TOKEN", ""), err, cap)) return CB_E_INVALID;
-    const char *osec = env("CBASE_ORIGIN_SECRET", "");
-    if (*osec && strlen(osec) < 32) {
-        snprintf(err, cap, "CBASE_ORIGIN_SECRET must be at least 32 characters");
+    if (!copy(c->secrets_ssm, sizeof c->secrets_ssm, "CBASE_SECRETS_SSM", env("CBASE_SECRETS_SSM", ""), err, cap)) return CB_E_INVALID;
+    if (!copy(c->origin_secret, sizeof c->origin_secret, "CBASE_ORIGIN_SECRET", env("CBASE_ORIGIN_SECRET", ""), err, cap))
         return CB_E_INVALID;
-    }
-    if (!copy(c->origin_secret, sizeof c->origin_secret, "CBASE_ORIGIN_SECRET", osec, err, cap)) return CB_E_INVALID;
     if (!copy(c->allowed_origins, sizeof c->allowed_origins, "CBASE_ALLOWED_ORIGINS", env("CBASE_ALLOWED_ORIGINS", "*"), err, cap))
         return CB_E_INVALID;
     char dflt_url[128];
@@ -120,7 +113,9 @@ int cb_config_from_env(cb_config *c, char *err, size_t cap) {
         snprintf(err, cap, "CBASE_LOG_LEVEL=%s is not debug, info, warn or error", lvl);
         return CB_E_INVALID;
     }
-    return CB_OK;
+    // The lengths of what the environment gave (SSM's are checked again
+    // once read, main_lambda.c): one rule, cb_config_check_secrets.
+    return cb_config_check_secrets(c, false, err, cap);
 }
 
 void cb_config_each(const cb_config *c, cb_config_fn fn, void *ud) {
@@ -136,6 +131,7 @@ void cb_config_each(const cb_config *c, cb_config_fn fn, void *ud) {
     fn("CBASE_JWT_SECRET", c->jwt_secret_generated ? "(unset: random per process)" : "(set)", true, ud);
     fn("CBASE_ADMIN_TOKEN", c->admin_token[0] ? "(set)" : "(unset: console refused)", true, ud);
     fn("CBASE_ORIGIN_SECRET", c->origin_secret[0] ? "(set)" : "(unset: the origin is open)", true, ud);
+    fn("CBASE_SECRETS_SSM", c->secrets_ssm[0] ? c->secrets_ssm : "(unset: secrets from the environment)", false, ud);
     fn("CBASE_ALLOWED_ORIGINS", c->allowed_origins, false, ud);
     fn("CBASE_PUBLIC_URL", c->public_url, false, ud);
     snprintf(b, sizeof b, "%d", c->req_workers);
@@ -147,6 +143,24 @@ void cb_config_each(const cb_config *c, cb_config_fn fn, void *ud) {
     snprintf(b, sizeof b, "%d", c->jwt_ttl_s);
     fn("CBASE_JWT_TTL", b, false, ud);
     fn("CBASE_LOG_LEVEL", cb_log_level_name(c->log_level), false, ud);
+}
+
+int cb_config_check_secrets(const cb_config *c, bool lambda, char *err, size_t cap) {
+    if (lambda && c->jwt_secret_generated) {
+        snprintf(err, cap, "no CBASE_JWT_SECRET (environment or SSM): refusing to start with a random one");
+        return CB_E_INVALID;
+    }
+    struct { const char *name; const char *v; } s[] = {
+        { "CBASE_JWT_SECRET", c->jwt_secret },
+        { "CBASE_ADMIN_TOKEN", c->admin_token },
+        { "CBASE_ORIGIN_SECRET", c->origin_secret },
+    };
+    for (size_t i = 0; i < sizeof s / sizeof s[0]; i++)
+        if (s[i].v[0] && strlen(s[i].v) < 32) {
+            snprintf(err, cap, "%s must be at least 32 characters", s[i].name);
+            return CB_E_INVALID;
+        }
+    return CB_OK;
 }
 
 bool cb_config_origin_proven(const cb_config *c, const char *value) {

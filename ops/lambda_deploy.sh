@@ -87,7 +87,9 @@ fi
 
 # ---- 4. is it live ------------------------------------------------------------------
 fn="$(output FunctionName)"
-live_sha="$(aws lambda get-function-configuration --function-name "$fn" --query CodeSha256 --output text)"
+# GetFunction, which CloudFormation needs the role to hold anyway; the role has
+# no GetFunctionConfiguration (ops/github_oidc.yaml).
+live_sha="$(aws lambda get-function --function-name "$fn" --query Configuration.CodeSha256 --output text)"
 [ "$live_sha" = "$code_sha" ] || die "function $fn runs CodeSha256 $live_sha, not this zip's $code_sha"
 url="$(output PublicUrl)"
 for i in 1 2 3 4 5 6; do

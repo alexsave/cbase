@@ -12,7 +12,9 @@
 #      ~/.config/cbase/ops.env, else ops/.env). For a stack that does not exist
 #      yet it generates the missing secrets into it (openssl rand -hex 32):
 #      CBASE_JWT_SECRET and CBASE_ADMIN_TOKEN. Later runs reuse them, so
-#      sessions survive a redeploy;
+#      sessions survive a redeploy. Those two go to SSM Parameter Store as
+#      SecureStrings (<SecretsPrefix>jwt-secret, admin-token), written only
+#      when missing or changed; the function reads them from there;
 #   3. creates the code bucket if it is missing (private, public access blocked);
 #   4. builds the Lambda zip (ops/package.sh: a static arm64 binary, Docker)
 #      and uploads it under a name carrying its sha256, so a new build is a
@@ -42,9 +44,10 @@
 #                          for the first deploy of a new or rotated secret)
 #   CBASE_ALARM_EMAIL      where the alarms are emailed ("" for nobody)
 #
-# The secrets travel to CloudFormation as parameters (NoEcho for the two
-# secret ones), so they appear in this Mac's process list while the deploy
-# runs; nothing else ever prints them.
+# The JWT secret and the admin token travel to SSM through a 0600 file; the
+# origin secret travels to CloudFormation as a NoEcho parameter, so it appears
+# in this Mac's process list while the deploy runs (CloudFront holds it in the
+# distribution anyway). Nothing else ever prints them.
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")/.." && pwd)"
@@ -99,13 +102,35 @@ cbase_ops_secret CBASE_ORIGIN_SECRET "$env_file" "$origin_live" || exit 1
 if [ "$origin_live" = no ] && [ "${CBASE_ORIGIN_ENFORCED:-yes}" = yes ] && [ "$stack_exists" = yes ]; then
   die "the stack does not send X-Cbase-Origin yet: deploy once with CBASE_ORIGIN_ENFORCED=no, wait for the distribution to deploy, then again"
 fi
+secrets_prefix="${CBASE_SECRETS_PREFIX:-/cbase/}"
+# The live JWT secret: SSM's, else (a stack from before SSM) the function's environment.
+ssm_value() {
+  aws ssm get-parameter --region "$region" --name "$1" --with-decryption --query Parameter.Value --output text 2>/dev/null || true
+}
 if [ "$stack_exists" = yes ]; then
-  live_jwt="$(aws lambda get-function-configuration --region "$region" --function-name "${CBASE_FUNCTION_NAME:-cbase}" \
-    --query 'Environment.Variables.CBASE_JWT_SECRET' --output text 2>/dev/null || true)"
+  live_jwt="$(ssm_value "${secrets_prefix}jwt-secret")"
+  if [ -z "$live_jwt" ] || [ "$live_jwt" = None ]; then
+    live_jwt="$(aws lambda get-function-configuration --region "$region" --function-name "${CBASE_FUNCTION_NAME:-cbase}" \
+      --query 'Environment.Variables.CBASE_JWT_SECRET' --output text 2>/dev/null || true)"
+  fi
   if [ -n "$live_jwt" ] && [ "$live_jwt" != None ] && [ "$live_jwt" != "$CBASE_JWT_SECRET" ]; then
-    die "CBASE_JWT_SECRET in $env_file is not the live function's: deploying it would sign every user out (RUNBOOK, \"The ops settings file\")"
+    die "CBASE_JWT_SECRET in $env_file is not the live one: deploying it would sign every user out (RUNBOOK, \"The ops settings file\")"
   fi
 fi
+# The two secrets into SSM, as SecureStrings, before the stack points the
+# function at them. Through a 0600 file, so no value is on a command line.
+put_secret() {
+  local name="$1" value="$2" current tmp
+  current="$(ssm_value "$name")"
+  [ "$current" = "$value" ] && return 0
+  tmp="$(umask 077; mktemp)"
+  jq -n --arg n "$name" --arg v "$value" '{Name: $n, Value: $v, Type: "SecureString", Overwrite: true, Tier: "Standard"}' > "$tmp"
+  aws ssm put-parameter --region "$region" --cli-input-json "file://$tmp" >/dev/null || { rm -f "$tmp"; die "could not write $name"; }
+  rm -f "$tmp"
+  echo "wrote $name (SecureString)"
+}
+put_secret "${secrets_prefix}jwt-secret" "$CBASE_JWT_SECRET"
+put_secret "${secrets_prefix}admin-token" "$CBASE_ADMIN_TOKEN"
 
 domain="${CBASE_DOMAIN:-api.foolish.cards}"
 stack="${CBASE_STACK:-cbase}"
@@ -179,8 +204,7 @@ aws cloudformation deploy \
   --parameter-overrides \
     "CodeBucket=$bucket" \
     "CodeKey=$key" \
-    "JwtSecret=$CBASE_JWT_SECRET" \
-    "AdminToken=$CBASE_ADMIN_TOKEN" \
+    "SecretsPrefix=$secrets_prefix" \
     "OriginSecret=$CBASE_ORIGIN_SECRET" \
     "OriginEnforced=${CBASE_ORIGIN_ENFORCED:-yes}" \
     "AlarmEmail=${CBASE_ALARM_EMAIL:-}" \

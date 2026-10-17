@@ -3292,3 +3292,47 @@ bool cf_invalidation_xml(cb_buf *out, const char *const *paths, int n, const cha
     cb_buf_puts(out, "</CallerReference></InvalidationBatch>");
     return !out->oom;
 }
+
+// ---- SSM Parameter Store -------------------------------------------------------------------
+
+bool ssm_get_parameters_body(cb_buf *out, const char *const *names, int n) {
+    cb_jw w;
+    cb_jw_init(&w, out);
+    cb_jw_obj(&w);
+    cb_jw_key(&w, "Names");
+    cb_jw_arr(&w);
+    for (int i = 0; i < n; i++) cb_jw_str(&w, names[i]);
+    cb_jw_end(&w);
+    cb_jw_kbool(&w, "WithDecryption", true);
+    cb_jw_end(&w);
+    return cb_jw_ok(&w) && !out->oom;
+}
+
+typedef struct {
+    const char *name;
+    char       *out;
+    size_t      cap;
+    int         found;   // 1 a value, -1 listed but not one this process can hold, 0 not listed
+} ssm_find;
+
+static bool ssm_param(cb_span key, cb_span val, cb_json_type t, void *ud) {
+    ssm_find *f = ud;
+    if (t != CB_JSON_OBJ) return true;
+    char got[1024];
+    if (!cb_json_get_str(val.p, val.n, "Name", got, sizeof got) || strcmp(got, f->name) != 0) return true;
+    cb_span v;
+    int n = cb_json_find(val.p, val.n, "Value", &v) == CB_JSON_STR ? cb_json_unescape(v, f->out, f->cap) : -1;
+    // Too long, not text, or a NUL in it (\u0000, which a C string would cut short).
+    f->found = n >= 0 && (size_t)n == strlen(f->out) ? 1 : -1;
+    return false;
+}
+
+int ssm_parameter_value(const char *body, size_t len, const char *name, char *out, size_t cap) {
+    if (cap) out[0] = 0;
+    cb_span arr;
+    if (cb_json_find(body, len, "Parameters", &arr) != CB_JSON_ARR) return 0;
+    ssm_find f = { name, out, cap, 0 };
+    if (!walk(arr, ssm_param, &f)) f.found = -1;
+    if (f.found != 1 && cap) out[0] = 0;
+    return f.found;
+}

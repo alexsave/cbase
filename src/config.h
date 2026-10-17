@@ -41,8 +41,14 @@ typedef struct {
     // process (logged as a warning: every session dies at restart).
     char jwt_secret[512];
     bool jwt_secret_generated;
-    // CBASE_ADMIN_TOKEN: Bearer token for /admin/api/*. Unset: the console is refused.
+    // CBASE_ADMIN_TOKEN: Bearer token for /admin/api/*, at least 32
+    // characters. Unset: the console is refused.
     char admin_token[256];
+    // CBASE_SECRETS_SSM: an SSM Parameter Store prefix ("/cbase/") the JWT
+    // secret and the admin token above are read from when a Lambda container starts
+    // (aws/ssm.h), so they are not in the function's environment. Empty: the
+    // environment's.
+    char secrets_ssm[256];
     // CBASE_ORIGIN_SECRET: the value CloudFront adds to every request it sends
     // on, as the header X-Cbase-Origin (ops/cbase.yaml). Set: an HTTP request
     // or a WebSocket $connect without it is refused with 403 before anything
@@ -72,6 +78,13 @@ int cb_config_from_env(cb_config *cfg, char *err, size_t cap);
 // for the startup log and the admin console's Config panel.
 typedef void (*cb_config_fn)(const char *name, const char *value, bool secret, void *ud);
 void cb_config_each(const cb_config *cfg, cb_config_fn fn, void *ud);
+
+// The secrets as they must be to serve, once every source has been read
+// (the environment, then SSM under Lambda): under Lambda the JWT secret must
+// have been given (a random one per container would sign users out at
+// random), and every secret that is set must be at least 32 characters.
+// CB_OK, or CB_E_INVALID with a sentence in err.
+int cb_config_check_secrets(const cb_config *cfg, bool lambda, char *err, size_t cap);
 
 // The header CloudFront adds (CBASE_ORIGIN_SECRET above).
 #define CB_ORIGIN_HEADER "X-Cbase-Origin"

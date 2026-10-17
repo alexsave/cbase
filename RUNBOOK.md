@@ -102,14 +102,20 @@ It is mode 0600, holds only `CBASE_*` `NAME=value` lines (`CBASE_JWT_SECRET`, `C
 It lives outside the repo because the only copy once lived in `c_base/ops/.env` and went with a removed worktree.
 
 A secret is generated only for a stack that does not exist yet.
-Against the live stack a missing secret stops `deploy.sh` with a message, and so does a `CBASE_JWT_SECRET` that differs from the live function's: either would sign every user out.
-If the file is lost, recover the values from the live function, not from a new `openssl rand`:
+Against the live stack a missing secret stops `deploy.sh` with a message, and so does a `CBASE_JWT_SECRET` that differs from the live one: either would sign every user out.
+
+`CBASE_JWT_SECRET` and `CBASE_ADMIN_TOKEN` live in SSM Parameter Store as SecureStrings, `/cbase/jwt-secret` and `/cbase/admin-token` (standard tier, free; `deploy.sh` writes them only when missing or changed).
+The function reads them when a container starts (`src/aws/ssm.h`); they are not in its environment, which the GitHub deploy role can read through `lambda:GetFunction` (CloudFormation needs it).
+If the file is lost, recover the values from SSM, not from a new `openssl rand`:
 
 ```
 umask 077; mkdir -p ~/.config/cbase
-aws lambda get-function-configuration --function-name cbase --query Environment.Variables --output json \
-  | python3 -c 'import json,sys; [print(f"{k}={v}") for k,v in json.load(sys.stdin).items() if k in ("CBASE_JWT_SECRET","CBASE_ADMIN_TOKEN","CBASE_ORIGIN_SECRET")]' \
-  >> ~/.config/cbase/ops.env
+for n in jwt-secret:CBASE_JWT_SECRET admin-token:CBASE_ADMIN_TOKEN; do
+  printf '%s=%s\n' "${n#*:}" "$(aws ssm get-parameter --name /cbase/${n%%:*} --with-decryption --query Parameter.Value --output text)"
+done >> ~/.config/cbase/ops.env
+# CBASE_ORIGIN_SECRET is the distribution's X-Cbase-Origin header value:
+aws cloudfront get-distribution-config --id <DistributionId> \
+  --query 'DistributionConfig.Origins.Items[0].CustomHeaders.Items[0].HeaderValue' --output text
 ```
 
 Then add the certificate ARNs (`aws acm list-certificates --region us-east-1`).

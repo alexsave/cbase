@@ -15,6 +15,8 @@
 #include "aws/https.h"
 #include "aws/lambda_invoke.h"
 #include "aws/sigv4.h"
+#include "aws/ssm.h"
+#include "config.h"
 #include "json_surface.h"
 #include "lib_aws_tls.h"
 #include "store/store.h"
@@ -372,11 +374,85 @@ static void dynamo_over_plain_http(void) {
     unsetenv("AWS_ENDPOINT_URL_DYNAMODB");
 }
 
+// The secrets from SSM (aws/ssm.h): one GetParameters, signed for ssm,
+// decrypted, every name under the prefix; each listed value lands in its
+// field, an unlisted one leaves the field alone, and nothing about a value
+// ever reaches the error text.
+static const char *g_ssm_answer;
+static tls_action ssm_answer(const cb_buf *req, cb_buf *resp, void *ud) {
+    cb_buf_printf(resp, "HTTP/1.1 %d X\r\nContent-Type: application/x-amz-json-1.1\r\nContent-Length: %zu\r\n\r\n%s",
+                  g_status, strlen(g_ssm_answer), g_ssm_answer);
+    return TLS_KEEP;
+}
+
+static void ssm_secrets(void) {
+    set_env();
+    tls_srv s;
+    T_EQ_INT(tls_srv_start(&s, ssm_answer, NULL), 0);
+    T_EQ_INT(cb_https_set_ca_file(s.ca_file), CB_OK);
+    char ep[128];
+    snprintf(ep, sizeof ep, "https://localhost:%d", s.port);
+    setenv("AWS_ENDPOINT_URL_SSM", ep, 1);
+    cb_config c;
+    memset(&c, 0, sizeof c);
+    strcpy(c.secrets_ssm, "/cbase/");
+    strcpy(c.admin_token, "from-the-environment");
+    c.jwt_secret_generated = true;
+    g_status = 200;
+    g_ssm_answer = "{\"InvalidParameters\":[\"/cbase/admin-token\"],\"Parameters\":["
+                   "{\"Name\":\"/cbase/origin-secret\",\"Type\":\"SecureString\",\"Value\":\"origin-0123456789abcdef0123456789\"},"
+                   "{\"Name\":\"/cbase/jwt-secret\",\"Type\":\"SecureString\",\"Value\":\"jwt-\\u00410123456789abcdef0123456789\"}]}";
+    char err[512] = "";
+    T_EQ_INT(cb_ssm_load_secrets(&c, err, sizeof err), CB_OK);
+    T_EQ_STR(c.jwt_secret, "jwt-A0123456789abcdef0123456789");
+    T_CHECK(!c.jwt_secret_generated);
+    T_EQ_STR(c.origin_secret, "");   // not one SSM holds: a name it was not asked for is ignored
+    T_EQ_STR(c.admin_token, "from-the-environment");   // not listed: left alone
+    char *req = tls_srv_last(&s);
+    T_CHECK(cb_starts_with(req, "POST / HTTP/1.1\r\n"));
+    char v[512];
+    hdr(req, "X-Amz-Target", v, sizeof v);
+    T_EQ_STR(v, "AmazonSSM.GetParameters");
+    T_EQ_STR(strstr(req, "\r\n\r\n") + 4,
+             "{\"Names\":[\"/cbase/jwt-secret\",\"/cbase/admin-token\"],\"WithDecryption\":true}");
+    hdr(req, "Authorization", v, sizeof v);
+    T_CHECK(strstr(v, "/us-west-2/ssm/aws4_request") != NULL);
+    static const char *const extra[] = { "X-Amz-Target: AmazonSSM.GetParameters", "Content-Type: application/x-amz-json-1.1" };
+    signature_matches(req, "ssm", extra, 2);
+    free(req);
+
+    // A value with a NUL in it is not a secret this process can hold whole: refused.
+    memset(&c, 0, sizeof c);
+    strcpy(c.secrets_ssm, "/cbase/");
+    g_ssm_answer = "{\"Parameters\":[{\"Name\":\"/cbase/jwt-secret\",\"Value\":\"abc\\u0000def\"}]}";
+    T_EQ_INT(cb_ssm_load_secrets(&c, err, sizeof err), CB_E_IO);
+    T_EQ_STR(c.jwt_secret, "");
+    T_CHECK(strstr(err, "/cbase/jwt-secret") != NULL && strstr(err, "abc") == NULL);
+    // Refused (no access, say): an error, and its text holds no value.
+    g_status = 400;
+    g_ssm_answer = "{\"__type\":\"AccessDeniedException\",\"Message\":\"not authorized to perform ssm:GetParameters\"}";
+    T_EQ_INT(cb_ssm_load_secrets(&c, err, sizeof err), CB_E_IO);
+    T_CHECK(strstr(err, "AccessDenied") != NULL);
+    // A value too long for its field.
+    g_status = 200;
+    static char big[1200];
+    char longv[600];
+    memset(longv, 'x', sizeof longv - 1);
+    longv[sizeof longv - 1] = 0;
+    snprintf(big, sizeof big, "{\"Parameters\":[{\"Name\":\"/cbase/admin-token\",\"Value\":\"%s\"}]}", longv);
+    g_ssm_answer = big;
+    T_EQ_INT(cb_ssm_load_secrets(&c, err, sizeof err), CB_E_IO);
+    T_CHECK(strstr(err, "/cbase/admin-token") != NULL && strstr(err, "xxxx") == NULL);
+    unsetenv("AWS_ENDPOINT_URL_SSM");
+    tls_srv_stop(&s);
+}
+
 int main(void) {
     T_RUN(url_parse);
     T_RUN(apigw_post_and_delete);
     T_RUN(lambda_self_invoke);
     T_RUN(cloudfront_invalidation);
+    T_RUN(ssm_secrets);
     T_RUN(dynamo_through_aws_call);
     T_RUN(dynamo_over_plain_http);
     return T_DONE();
