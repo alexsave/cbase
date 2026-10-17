@@ -3,10 +3,11 @@
 // serve` (rt_local.h) and API Gateway's WebSocket API under Lambda (rt_apigw.h).
 //
 // A connection asks for it with `proto=nw1` on the upgrade or $connect URL
-// (cb_conn_row.vsn == CB_VSN_NW) and keeps its user and topics in its row. The
-// client sends NW_WS_AUTH, NW_WS_SUB, NW_WS_UNSUB and NW_WS_PING; the server
-// answers ACK and PONG, and pushes VIEW, CAST and CHAT (realtime.c builds each
-// once per publish).
+// and keeps its user and topics in its row. The client sends NW_WS_AUTH,
+// NW_WS_SUB, NW_WS_SUB_AS, NW_WS_UNSUB and NW_WS_PING, or several of them in
+// one NW_WS_BATCH; the server answers ACK, CATCHUP and PONG (a batch's replies
+// as batches: cb_nw_send_batched), and pushes VIEW, CAST and CHAT (realtime.c
+// builds each once per publish).
 //
 // Subscriptions map onto topics, each with its policy (cb_rt_may_hear):
 //   NW_SUB_GAMES          pv-<user>
@@ -47,6 +48,18 @@ int cb_rt_may_hear(cb_ctx *ctx, const char *user_id, const char *topic);
 // reply through `send`. CB_OK, or CB_E_INVALID for bytes that are not a client
 // frame (the caller may close the socket).
 int cb_nw_on_frame(cb_ctx *ctx, cb_conn_row *conn, const uint8_t *msg, size_t len, cb_rt_send_fn send, void *ud);
+
+// The most bytes of entries one reply batch carries before the next begins
+// (API Gateway takes a message of up to 128 KB; base64 grows it by a third).
+#define CB_NW_REPLY_BYTES (64u * 1024)
+
+// Sends `n` replies held as batch entries (netwire.h nw_batch_add) as
+// NW_WS_BATCH messages of at most NW_BATCH_MAX entries and about
+// CB_NW_REPLY_BYTES each; a lone reply goes as itself.
+void cb_nw_send_batched(const uint8_t *entries, size_t len, int n, cb_rt_send_fn send, void *ud);
+
+// The message is a lone NW_WS_PING: its answer needs no connection state.
+bool cb_nw_is_ping(const uint8_t *msg, size_t len);
 
 // A stored chat row as the stream and GET /v1/chat/<id> carry it.
 void cb_chat_to_nw(const cb_chat_row *r, NwChat *out);

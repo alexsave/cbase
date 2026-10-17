@@ -126,8 +126,9 @@ static void open_applies_schema_and_seeds_bots(void) {
     T_EQ_INT(CB_STORE_CALL(s, bots_list, collect_bot, &b), 49);
     cb_store_close(s);
 
-    // Schema 1 -> 2: rt_conns without ver (conn_put's compare-and-set) is
-    // replaced, and its rows go (connections are transient).
+    // Schema 1 (or 2) -> 3: rt_conns without ver (conn_put's compare-and-set),
+    // or with the Phoenix vsn and join_ref, is replaced, and its rows go
+    // (connections are transient).
     sqlite3 *db;
     T_EQ_INT(sqlite3_open(path, &db), SQLITE_OK);
     T_EQ_INT(sqlite3_exec(db, "DROP TABLE rt_conn_topics; DROP TABLE rt_conns; "
@@ -139,8 +140,8 @@ static void open_applies_schema_and_seeds_bots(void) {
     T_EQ_INT(cb_store_open_sqlite(path, &s), CB_OK);
     cb_conn_row cr;
     T_EQ_INT(CB_STORE_CALL(s, conn_get, "Old=", &cr), CB_E_NOT_FOUND);
-    cb_conn_row cw = { .conn_id = "New=", .vsn = 2, .expires_at = cb_now_ms() + 60000 };
-    T_EQ_INT(CB_STORE_CALL(s, conn_put, &cw), CB_OK);
+    cb_conn_row cw = { .conn_id = "New=", .expires_at = cb_now_ms() + 60000 }, none = { 0 };
+    T_EQ_INT(CB_STORE_CALL(s, conn_put, &none, &cw), CB_OK);
     T_EQ_INT(CB_STORE_CALL(s, conn_get, "New=", &cr), CB_OK);
     T_EQ_INT(cr.version, 1);
     cb_store_close(s);
@@ -956,57 +957,68 @@ static void chat_newest_oldest_first(void) {
 static void conns_round_trip(void) {
     cb_store *s = open_fresh();
     int64_t later = cb_now_ms() + 3600000;
-    cb_conn_row c = { .conn_id = "Abc=", .vsn = 2, .n_topics = 2, .expires_at = later };
+    cb_conn_row none = { 0 };
+    cb_conn_row c = { .conn_id = "Abc=", .n_topics = 2, .expires_at = later };
     snprintf(c.user_id, sizeof c.user_id, "00000000-0000-4000-8000-000000000001");
     snprintf(c.topics[0], sizeof c.topics[0], "game-ab12cd");
-    snprintf(c.join_refs[0], sizeof c.join_refs[0], "1");
     snprintf(c.topics[1], sizeof c.topics[1], "pv-u1");
-    snprintf(c.join_refs[1], sizeof c.join_refs[1], "2");
-    T_EQ_INT(CB_STORE_CALL(s, conn_put, &c), CB_OK);
-    cb_conn_row d = { .conn_id = "Def=", .vsn = 1, .n_topics = 1, .expires_at = later };
+    T_EQ_INT(CB_STORE_CALL(s, conn_put, &none, &c), CB_OK);
+    cb_conn_row d = { .conn_id = "Def=", .n_topics = 1, .expires_at = later };
     snprintf(d.topics[0], sizeof d.topics[0], "game-ab12cd");
-    snprintf(d.join_refs[0], sizeof d.join_refs[0], "9");
-    T_EQ_INT(CB_STORE_CALL(s, conn_put, &d), CB_OK);
+    T_EQ_INT(CB_STORE_CALL(s, conn_put, &none, &d), CB_OK);
     cb_conn_row got;
     T_EQ_INT(CB_STORE_CALL(s, conn_get, "Abc=", &got), CB_OK);
-    T_EQ_INT(got.vsn, 2);
     T_EQ_STR(got.user_id, c.user_id);
     T_EQ_INT(got.n_topics, 2);
+    T_EQ_STR(got.topics[0], "game-ab12cd");
     T_EQ_STR(got.topics[1], "pv-u1");
-    T_EQ_STR(got.join_refs[1], "2");
     T_EQ_INT(got.expires_at, later);
     T_EQ_INT(got.version, 1);
     names_t n = { 0 };
     T_EQ_INT(CB_STORE_CALL(s, conns_by_topic, "game-ab12cd", collect_conn, &n), 2);
     T_EQ_STR(n.ids[0], "Abc=");
+    n.n = 0;
+    T_EQ_INT(CB_STORE_CALL(s, conns_by_topic, "pv-u1", collect_conn, &n), 1);
     // The compare-and-set: a writer that read no row loses to the one that wrote it.
-    T_EQ_INT(CB_STORE_CALL(s, conn_put, &c), CB_E_CONFLICT);
-    // Leaving a topic: the row is put back without it, at the version read.
-    c.n_topics = 1;
-    snprintf(c.topics[0], sizeof c.topics[0], "pv-u1");
-    c.version = got.version;
-    T_EQ_INT(CB_STORE_CALL(s, conn_put, &c), CB_OK);
-    T_EQ_INT(CB_STORE_CALL(s, conn_put, &c), CB_E_CONFLICT);   // that version is gone now
-    T_EQ_INT(CB_STORE_CALL(s, conn_get, "Abc=", &got), CB_OK);
-    T_EQ_INT(got.version, 2);
-    T_EQ_INT(got.n_topics, 1);
+    T_EQ_INT(CB_STORE_CALL(s, conn_put, &none, &c), CB_E_CONFLICT);
+    // Leaving a topic and joining one: the row is put back at the version read,
+    // and the index follows it.
+    cb_conn_row next = got;
+    next.n_topics = 2;
+    snprintf(next.topics[0], sizeof next.topics[0], "pv-u1");
+    snprintf(next.topics[1], sizeof next.topics[1], "chat:ab12cd");
+    T_EQ_INT(CB_STORE_CALL(s, conn_put, &got, &next), CB_OK);
+    T_EQ_INT(CB_STORE_CALL(s, conn_put, &got, &next), CB_E_CONFLICT);   // that version is gone now
+    cb_conn_row got2;
+    T_EQ_INT(CB_STORE_CALL(s, conn_get, "Abc=", &got2), CB_OK);
+    T_EQ_INT(got2.version, 2);
+    T_EQ_INT(got2.n_topics, 2);
+    T_EQ_STR(got2.topics[1], "chat:ab12cd");
     n.n = 0;
     T_EQ_INT(CB_STORE_CALL(s, conns_by_topic, "game-ab12cd", collect_conn, &n), 1);
     T_EQ_STR(n.ids[0], "Def=");
-    // TTL: an expired connection reads as gone.
-    d.expires_at = cb_now_ms() - 1;
-    d.version = 1;
-    T_EQ_INT(CB_STORE_CALL(s, conn_put, &d), CB_OK);
-    T_EQ_INT(CB_STORE_CALL(s, conn_get, "Def=", &got), CB_E_NOT_FOUND);
     n.n = 0;
-    T_EQ_INT(CB_STORE_CALL(s, conns_by_topic, "game-ab12cd", collect_conn, &n), 0);
+    T_EQ_INT(CB_STORE_CALL(s, conns_by_topic, "chat:ab12cd", collect_conn, &n), 1);
+    T_EQ_STR(n.ids[0], "Abc=");
+    // TTL: an expired connection reads as gone, from the row and the index.
+    cb_conn_row dgot = { 0 };
+    T_EQ_INT(CB_STORE_CALL(s, conn_get, "Def=", &dgot), CB_OK);
+    cb_conn_row dexp = dgot;
+    dexp.expires_at = cb_now_ms() - 1;
+    T_EQ_INT(CB_STORE_CALL(s, conn_put, &dgot, &dexp), CB_OK);
+    T_EQ_INT(CB_STORE_CALL(s, conn_get, "Def=", &got), CB_E_NOT_FOUND);
+    // (the index entry was written with the TTL the row had when it was added)
     // An expired row reads as none, so a writer that read none may replace it.
-    d.version = 0;
     d.expires_at = later;
-    T_EQ_INT(CB_STORE_CALL(s, conn_put, &d), CB_OK);
+    T_EQ_INT(CB_STORE_CALL(s, conn_put, &none, &d), CB_OK);
     T_EQ_INT(CB_STORE_CALL(s, conn_get, "Def=", &got), CB_OK);
+    // Delete takes the row and every index entry.
     T_EQ_INT(CB_STORE_CALL(s, conn_delete, "Abc="), CB_OK);
     T_EQ_INT(CB_STORE_CALL(s, conn_get, "Abc=", &got), CB_E_NOT_FOUND);
+    n.n = 0;
+    T_EQ_INT(CB_STORE_CALL(s, conns_by_topic, "pv-u1", collect_conn, &n), 0);
+    n.n = 0;
+    T_EQ_INT(CB_STORE_CALL(s, conns_by_topic, "chat:ab12cd", collect_conn, &n), 0);
     cb_store_close(s);
 }
 
@@ -1323,10 +1335,9 @@ static void conn_ttl_is_seconds(void) {
     if (!tsb_dynamo()) return;
     cb_store *s = open_fresh();
     int64_t at = 1760000000123LL;
-    cb_conn_row c = { .conn_id = "Ttl=", .vsn = 2, .n_topics = 1, .expires_at = at };
+    cb_conn_row c = { .conn_id = "Ttl=", .n_topics = 1, .expires_at = at }, none = { 0 };
     snprintf(c.topics[0], sizeof c.topics[0], "game-ttl001");
-    snprintf(c.join_refs[0], sizeof c.join_refs[0], "1");
-    T_EQ_INT(CB_STORE_CALL(s, conn_put, &c), CB_OK);
+    T_EQ_INT(CB_STORE_CALL(s, conn_put, &none, &c), CB_OK);
     char q[256], v[64];
     snprintf(q, sizeof q, "SELECT expires_at FROM \"%s\" WHERE pk = 'CONN#Ttl=' AND sk = 'CONN'", tsb_table());
     T_EQ_INT(CB_STORE_CALL(s, admin_query, q, false, first_value, v), 1);

@@ -27,6 +27,12 @@ typedef struct {
     // (https://<api-id>.execute-api.<region>.amazonaws.com/<stage>). Lambda
     // only; empty means pushes are dropped (logged once).
     char ws_endpoint[512];
+    // CBASE_WS_ROUTE_REPLY "yes" or "no" (default): the WebSocket API's $default
+    // route has a route response, so a frame's last reply rides back in the
+    // invocation's answer instead of a POST to @connections (rt_apigw.c). Set
+    // by the template together with the RouteResponse it needs: with "yes"
+    // and no route response, replies would be lost.
+    bool ws_route_reply;
     // CBASE_CF_DISTRIBUTION, the CloudFront distribution in front of the API
     // (its id, E...): the one the edge cache's invalidations go to (app/edge.h).
     // Empty: nothing is invalidated (serve, tests, a first deploy).

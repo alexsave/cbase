@@ -58,7 +58,7 @@
 //                                         GSI2 PLAYER#<user> / <created>#<id>)
 //   CHAT#<game>        <created>#<id>     a chat message (GSI1 USERCHAT#<user> / <created>#<id>)
 //   CONN#<conn>        CONN               a realtime connection (TTL)
-//   TOPIC#<topic>      CONN#<conn>        the connection again, per joined topic (TTL)
+//   TOPIC#<topic>      CONN#<conn>        the topic index: conn_id and the row's TTL
 //   SCAN               GAME#<id>          present while a bot can act (table_bots_due): the
 //                                         heartbeat's partition, the bot lease, row_version
 //
@@ -312,11 +312,15 @@ void dw_snapshot_put(dw_req *r, const char *table, const cb_snapshot_row *s);
 // A transaction: the message (a reused id cancels item 0), and checks that its
 // game (item 1) and its author (item 2) exist, as the foreign keys did.
 void dw_chat_put(dw_req *r, const char *table, const cb_chat_row *c);
-// A transaction: the CONN item at c->version + 1, conditioned on the stored
-// version being c->version (0: no live row; `now_ms` decides "live"), one
-// TOPIC item per topic, and deletes of the TOPIC items of `old` the row no
-// longer has. Item 0 refused is a lost race (store.h conn_put).
-void dw_conn_put(dw_req *r, const char *table, const cb_conn_row *c, const cb_conn_row *old, int64_t now_ms);
+// PutItem of the CONN item at was_version + 1, conditioned on the stored
+// version being was_version (0: no live row; `now_ms` decides "live"); refused
+// is a lost race (store.h conn_put).
+void dw_conn_put(dw_req *r, const char *table, const cb_conn_row *c, int64_t was_version, int64_t now_ms);
+// BatchWriteItem of the topic index (TOPIC#<topic> / CONN#<conn_id>): puts of
+// entries carrying only conn_id and the TTL, or deletes. 1..24 topics.
+void dw_conn_index(dw_req *r, const char *table, const char *conn_id, const char *const *topics, int n, bool put,
+                   int64_t expires_ms);
+// BatchWriteItem deletes of the CONN item and its index entries.
 void dw_conn_delete(dw_req *r, const char *table, const cb_conn_row *c);
 
 // BatchWriteItem deletes of up to 25 raw JSON keys.
@@ -386,7 +390,8 @@ int  cb_event_decode(const char *json, size_t len, cb_event *out);
 // The response JSON for an HTTP event.
 int  cb_event_encode_http(const cb_http_res *res, cb_buf *out);
 // The response JSON for a WebSocket event.
-int  cb_event_encode_ws(int status, cb_buf *out);
+// {"statusCode":N} and, when body_len, "body": the route response text.
+int  cb_event_encode_ws(int status, const char *body, size_t body_len, cb_buf *out);
 // The response JSON for an event that answers nothing (the bot scan, a
 // self-invoke): {}. CB_OK or CB_E_NOMEM.
 int  cb_event_encode_none(cb_buf *out);

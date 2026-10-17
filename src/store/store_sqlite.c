@@ -168,13 +168,13 @@ static const char *const SQL[ST__COUNT] = {
 
     [ST_CONN_PRUNE] = "DELETE FROM rt_conns WHERE expires_at <= ?1",
     // ?5 is the version the caller read: a row at any other version is left alone (no change).
-    [ST_CONN_UPSERT] = "INSERT INTO rt_conns (conn_id, user_id, vsn, expires_at, ver) VALUES (?1, ?2, ?3, ?4, ?5 + 1) "
-                       "ON CONFLICT (conn_id) DO UPDATE SET user_id = excluded.user_id, vsn = excluded.vsn, "
-                       "expires_at = excluded.expires_at, ver = excluded.ver WHERE rt_conns.ver = ?5",
+    [ST_CONN_UPSERT] = "INSERT INTO rt_conns (conn_id, user_id, expires_at, ver) VALUES (?1, ?2, ?3, ?4 + 1) "
+                       "ON CONFLICT (conn_id) DO UPDATE SET user_id = excluded.user_id, "
+                       "expires_at = excluded.expires_at, ver = excluded.ver WHERE rt_conns.ver = ?4",
     [ST_CONN_TOPICS_CLEAR] = "DELETE FROM rt_conn_topics WHERE conn_id = ?1",
-    [ST_CONN_TOPIC_INSERT] = "INSERT INTO rt_conn_topics (conn_id, ord, topic, join_ref) VALUES (?1, ?2, ?3, ?4)",
-    [ST_CONN_GET] = "SELECT conn_id, user_id, vsn, expires_at, ver FROM rt_conns WHERE conn_id = ?1 AND expires_at > ?2",
-    [ST_CONN_TOPICS_OF] = "SELECT topic, join_ref FROM rt_conn_topics WHERE conn_id = ?1 ORDER BY ord",
+    [ST_CONN_TOPIC_INSERT] = "INSERT INTO rt_conn_topics (conn_id, ord, topic) VALUES (?1, ?2, ?3)",
+    [ST_CONN_GET] = "SELECT conn_id, user_id, expires_at, ver FROM rt_conns WHERE conn_id = ?1 AND expires_at > ?2",
+    [ST_CONN_TOPICS_OF] = "SELECT topic FROM rt_conn_topics WHERE conn_id = ?1 ORDER BY ord",
     [ST_CONN_DELETE] = "DELETE FROM rt_conns WHERE conn_id = ?1",
     [ST_CONNS_BY_TOPIC] = "SELECT DISTINCT c.conn_id FROM rt_conn_topics t JOIN rt_conns c ON c.conn_id = t.conn_id "
                           "WHERE t.topic = ?1 AND c.expires_at > ?2 ORDER BY c.conn_id",
@@ -451,9 +451,10 @@ static int apply_schema(sq *q) {
     }
     int rc = begin(q);
     if (rc != CB_OK) return rc;
-    // 1 -> 2: rt_conns gained ver (conn_put's compare-and-set). Connections are
-    // transient (a client reconnects), so the old tables are dropped, not altered.
-    if (have >= 1 && have < 2 &&
+    // 1 -> 2: rt_conns gained ver (conn_put's compare-and-set); 2 -> 3: they lost
+    // vsn and join_ref (the Phoenix facade's). Connections are transient (a
+    // client reconnects), so the old tables are dropped, not altered.
+    if (have >= 1 && have < 3 &&
         (rc = exec(q, "DROP TABLE IF EXISTS rt_conn_topics; DROP TABLE IF EXISTS rt_conns;")) != CB_OK)
         goto out;
     if ((rc = exec(q, cbase_schema_sql)) != CB_OK) goto out;
@@ -1255,8 +1256,9 @@ static int sq_chat_list(cb_store *st, const char *game, int limit, cb_chat_fn fn
 
 // ---- realtime connections --------------------------------------------------------------
 
-static int sq_conn_put(cb_store *st, const cb_conn_row *c) {
-    if (c->n_topics < 0 || c->n_topics > CB_CONN_TOPICS) return CB_E_INVALID;
+// One transaction: SQLite has no index to keep in step apart from the row.
+static int sq_conn_put(cb_store *st, const cb_conn_row *was, const cb_conn_row *c) {
+    if (c->n_topics < 0 || c->n_topics > CB_CONN_TOPICS || was->version < 0) return CB_E_INVALID;
     sq *q = Q(st);
     lock(q);
     int rc = begin(q);
@@ -1271,9 +1273,8 @@ static int sq_conn_put(cb_store *st, const cb_conn_row *c) {
         if (s) {
             b_text(s, 1, c->conn_id);
             b_text(s, 2, c->user_id);
-            b_i64(s, 3, c->vsn);
-            b_i64(s, 4, c->expires_at);
-            b_i64(s, 5, c->version);
+            b_i64(s, 3, c->expires_at);
+            b_i64(s, 4, was->version);
         }
         rc = step_write(q, s, "conn put", false);
         if (rc == CB_OK && sqlite3_changes(q->db) == 0) rc = CB_E_CONFLICT;   // another writer moved it
@@ -1289,7 +1290,6 @@ static int sq_conn_put(cb_store *st, const cb_conn_row *c) {
             b_text(s, 1, c->conn_id);
             b_i64(s, 2, i);
             b_text(s, 3, c->topics[i]);
-            b_text(s, 4, c->join_refs[i]);
         }
         rc = step_write(q, s, "conn topic", false);
     }
@@ -1310,9 +1310,8 @@ static int conn_read(sq *q, const char *id, int64_t now, cb_conn_row *out) {
     if (r == SQLITE_ROW) {
         c_text(s, 0, out->conn_id, sizeof out->conn_id);
         c_text(s, 1, out->user_id, sizeof out->user_id);
-        out->vsn = (int)c_i64(s, 2);
-        out->expires_at = c_i64(s, 3);
-        out->version = c_i64(s, 4);
+        out->expires_at = c_i64(s, 2);
+        out->version = c_i64(s, 3);
     } else rc = r == SQLITE_DONE ? CB_E_NOT_FOUND : fail(q, "conn get", r);
     done(s);
     if (rc != CB_OK) return rc;
@@ -1321,7 +1320,6 @@ static int conn_read(sq *q, const char *id, int64_t now, cb_conn_row *out) {
     b_text(s, 1, id);
     while ((r = sqlite3_step(s)) == SQLITE_ROW && out->n_topics < CB_CONN_TOPICS) {
         c_text(s, 0, out->topics[out->n_topics], sizeof out->topics[0]);
-        c_text(s, 1, out->join_refs[out->n_topics], sizeof out->join_refs[0]);
         out->n_topics++;
     }
     if (r != SQLITE_ROW && r != SQLITE_DONE) rc = fail(q, "conn topics", r);

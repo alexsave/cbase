@@ -346,8 +346,15 @@ Resources:
       InvokedViaFunctionUrl: true
 
   # ---- realtime: the WebSocket API ------------------------------------------------
-  # Every route goes to the function as a proxy integration. Replies travel
-  # over the management API (CBASE_WS_ENDPOINT), not route responses.
+  # Every route goes to the function as a proxy integration. $default has a
+  # route response, so a frame's last reply (a pong, an ACK, a batch of them)
+  # is the invocation's answer; pushes, and any reply before the last, travel
+  # over the management API (CBASE_WS_ENDPOINT). The function is told by
+  # CBASE_WS_ROUTE_REPLY=yes, set in the Function's environment one deploy
+  # AFTER the route response exists: CloudFormation updates the Function before
+  # the route response that depends on it, and answers given with no route
+  # response are dropped. With it, a frame answered with no body still reaches
+  # the client as an empty text message, which clients ignore.
   WsApi:
     Type: AWS::ApiGatewayV2::Api
     Properties:
@@ -385,10 +392,18 @@ Resources:
       RouteKey: $default
       AuthorizationType: NONE
       Target: !Sub "integrations/${WsIntegration}"
+      RouteResponseSelectionExpression: $default
+
+  WsDefaultRouteResponse:
+    Type: AWS::ApiGatewayV2::RouteResponse
+    Properties:
+      ApiId: !Ref WsApi
+      RouteId: !Ref WsDefaultRoute
+      RouteResponseKey: $default
 
   WsStage:
     Type: AWS::ApiGatewayV2::Stage
-    DependsOn: [WsConnectRoute, WsDisconnectRoute, WsDefaultRoute]
+    DependsOn: [WsConnectRoute, WsDisconnectRoute, WsDefaultRoute, WsDefaultRouteResponse]
     Properties:
       ApiId: !Ref WsApi
       StageName: prod

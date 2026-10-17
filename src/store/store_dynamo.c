@@ -1216,32 +1216,51 @@ static int conn_batch(dyn *d, dw_req *r) {
     return rc;
 }
 
-// The compare-and-set (store.h conn_put). The read finds the TOPIC items to
-// delete and turns away a stale version without spending a write; the
-// transaction's condition is what decides a race between the read and it.
-static int dy_conn_put(cb_store *s, const cb_conn_row *c) {
-    if (c->n_topics < 0 || c->n_topics > CB_CONN_TOPICS || c->version < 0) return CB_E_INVALID;
+static bool has_topic(const cb_conn_row *c, const char *t) {
+    for (int i = 0; i < c->n_topics; i++)
+        if (strcmp(c->topics[i], t) == 0) return true;
+    return false;
+}
+
+// The topics `a` lists that `b` does not, into out (pointers into a).
+static int topics_minus(const cb_conn_row *a, const cb_conn_row *b, const char **out) {
+    int n = 0;
+    for (int i = 0; i < a->n_topics; i++)
+        if (!has_topic(b, a->topics[i])) out[n++] = a->topics[i];
+    return n;
+}
+
+static int conn_index(dyn *d, const char *conn_id, const char **topics, int n, bool put, int64_t expires_ms) {
+    if (n == 0) return CB_OK;
+    dw_req r;
+    dw_req_init(&r);
+    dw_conn_index(&r, d->table, conn_id, topics, n, put, expires_ms);
+    return conn_batch(d, &r);
+}
+
+// The compare-and-set (store.h conn_put): the index entries the row gains,
+// then the row on its version, then the entries it lost. Three plain writes, no
+// read and no transaction (half a transaction's units each): a page's three
+// subscriptions in one frame cost the row and three small entries.
+static int dy_conn_put(cb_store *s, const cb_conn_row *was, const cb_conn_row *c) {
+    if (c->n_topics < 0 || c->n_topics > CB_CONN_TOPICS || was->n_topics < 0 || was->n_topics > CB_CONN_TOPICS ||
+        was->version < 0)
+        return CB_E_INVALID;
     dyn *d = D(s);
-    cb_conn_row *old = malloc(sizeof *old);
-    if (!old) return CB_E_NOMEM;
-    int64_t now = cb_now_ms();
-    int rc = conn_read(d, c->conn_id, old);
-    bool live = rc == CB_OK && old->expires_at > now;
-    if (rc == CB_OK && (live ? old->version : 0) != c->version) rc = CB_E_CONFLICT;
-    else if (rc == CB_OK || rc == CB_E_NOT_FOUND) {
-        dw_req r;
-        dw_req_init(&r);
-        dw_conn_put(&r, d->table, c, rc == CB_OK ? old : NULL, now);
-        cb_buf resp;
-        cb_buf_init(&resp);
-        bool item;
-        dw_status st = txn(d, &r, &resp);
-        rc = st == DW_OK ? CB_OK : st == DW_TXN_CANCELED && refused(&resp, 0, &item) ? CB_E_CONFLICT : CB_E_DB;
-        cb_buf_free(&resp);
-        dw_req_free(&r);
-    }
-    free(old);
-    return rc;
+    const char *gained[CB_CONN_TOPICS], *lost[CB_CONN_TOPICS];
+    int n_gained = topics_minus(c, was, gained), n_lost = topics_minus(was, c, lost);
+    int rc = conn_index(d, c->conn_id, gained, n_gained, true, c->expires_at);
+    if (rc != CB_OK) return rc;
+    dw_req r;
+    dw_req_init(&r);
+    dw_conn_put(&r, d->table, c, was->version, cb_now_ms());
+    rc = simple1(d, &r, CB_E_CONFLICT);
+    if (rc != CB_OK) return rc;
+    // Stored: the entries for what it no longer hears go. Failing here leaves
+    // entries the row does not list (store.h: they go with the connection).
+    int w = conn_index(d, c->conn_id, lost, n_lost, false, 0);
+    if (w != CB_OK) CB_ERROR(MOD, "conn %s: %d stale index entries left: %s", c->conn_id, n_lost, cb_strerror(w));
+    return CB_OK;
 }
 
 static int dy_conn_get(cb_store *s, const char *id, cb_conn_row *out) {

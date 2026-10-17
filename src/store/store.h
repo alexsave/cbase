@@ -163,14 +163,14 @@ void cb_chat_row_free(cb_chat_row *c);
 #define CB_CONN_TOPICS 16
 typedef struct {
     char    conn_id[64];               // API Gateway connectionId
-    cb_uuid user_id;                   // "" until a join presents a token
-    int     vsn;                       // the protocol: CB_VSN_NW (realtime/stream.h), the only one
+    cb_uuid user_id;                   // "" until a frame presents a token
     int     n_topics;
     char    topics[CB_CONN_TOPICS][CB_TOPIC_MAX];   // bare topics ("gu-ab12cd-<uid>")
-    char    join_refs[CB_CONN_TOPICS][24];          // per topic, unused by the stream (kept: the row format)
-    int64_t expires_at;                // TTL, ms like every time here: a connection not seen for 2 h
-                                       // is dropped. DynamoDB keeps it as expires_at in SECONDS (its
-                                       // TTL unit) and the exact ms as expires_ms.
+    int64_t expires_at;                // TTL, ms like every time here, set once when the row is
+                                       // first stored (rt_apigw.c CONN_TTL_MS: past API Gateway's
+                                       // two-hour cap on a connection). DynamoDB keeps it as
+                                       // expires_at in SECONDS (its TTL unit) and the exact ms as
+                                       // expires_ms.
     int64_t version;                   // the stored row's write count: conn_get fills it, conn_put
                                        // expects it (0: no live row). See conn_put.
 } cb_conn_row;
@@ -329,17 +329,28 @@ typedef struct cb_store_ops {
     // realtime connections (API Gateway only)
     //
     // conn_put is a compare-and-set on the row's version, because API Gateway
-    // runs a connection's frames as concurrent invocations: a page joins three
-    // channels inside a few milliseconds, and a plain read-modify-write keeps
-    // only the last writer's topic. It writes `c` when the stored row is at
-    // c->version (0: there is no row, or it has expired), leaving it at
-    // c->version + 1, and answers CB_E_CONFLICT when another writer moved it
-    // first: the caller re-reads, redoes its change and puts again.
-    int (*conn_put)(cb_store *s, const cb_conn_row *c);
+    // runs a connection's frames as concurrent invocations: a page's frames
+    // arrive inside a few milliseconds, and a plain read-modify-write keeps
+    // only the last writer's topic. `was` is the row this caller read (conn_get,
+    // or a zeroed row with version 0 when there was none or it had expired) and
+    // `c` the row to store: it is written when the stored row is still at
+    // was->version, leaving it at was->version + 1, and CB_E_CONFLICT answers
+    // that another writer moved it first: the caller re-reads, redoes its change
+    // and puts again. Nothing is read here (the caller's read is the one).
+    //
+    // The topic index (conns_by_topic) follows the row: entries for the topics
+    // `c` adds are written BEFORE the compare-and-set and entries for the topics
+    // it drops AFTER it, so the index always holds at least the stored row's
+    // topics. A lost race can leave an entry the row does not list; it only
+    // ever names a topic some frame on this connection was allowed to hear, and
+    // it goes with the connection (conn_delete, a push's 410, or the TTL).
+    int (*conn_put)(cb_store *s, const cb_conn_row *was, const cb_conn_row *c);
     int (*conn_get)(cb_store *s, const char *conn_id, cb_conn_row *out);
     int (*conn_delete)(cb_store *s, const char *conn_id);
-    // Every live connection that joined `topic`, each as its whole row. A row
-    // past expires_at reads as absent (conn_get: CB_E_NOT_FOUND).
+    // Every live connection in `topic`'s index, past-expiry entries skipped:
+    // conn_id and expires_at are what a caller may rely on (DynamoDB's index
+    // entries carry nothing else). conn_get answers
+    // CB_E_NOT_FOUND for a row past expires_at.
     int (*conns_by_topic)(cb_store *s, const char *topic, cb_conn_fn fn, void *ud);
 
     // admin console: list the collections, browse one in pages, and run one
@@ -448,7 +459,7 @@ void cb_store_throttles_get(cb_store_throttles *out);
 
 // The SQLite schema version this binary applies (store_sqlite.c), and the
 // embedded schema text (build/gen/schema_sql.c, from sql/schema.sql).
-#define CB_SCHEMA_VERSION 2
+#define CB_SCHEMA_VERSION 3
 extern const char cbase_schema_sql[];
 extern const unsigned long cbase_schema_sql_len;
 

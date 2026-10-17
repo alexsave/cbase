@@ -169,7 +169,6 @@ static void on_open(cb_ws *ws, void *ud) {
     if (!c) { cb_ws_close(ws, 1011); return; }
     c->ws = ws;
     c->ws_id = cb_ws_id(ws);
-    c->phx.vsn = CB_VSN_NW;   // the upgrade route refused any other proto
     snprintf(c->phx.conn_id, sizeof c->phx.conn_id, "local-%llu", (unsigned long long)c->ws_id);
     c->next = L->head;
     if (L->head) L->head->prev = c;

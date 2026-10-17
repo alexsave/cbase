@@ -78,13 +78,9 @@ static int topic_index(const cb_conn_row *c, const char *topic) {
 }
 
 static void topic_remove(cb_conn_row *c, int i) {
-    for (int k = i; k + 1 < c->n_topics; k++) {
-        memcpy(c->topics[k], c->topics[k + 1], sizeof c->topics[k]);
-        memcpy(c->join_refs[k], c->join_refs[k + 1], sizeof c->join_refs[k]);
-    }
+    for (int k = i; k + 1 < c->n_topics; k++) memcpy(c->topics[k], c->topics[k + 1], sizeof c->topics[k]);
     c->n_topics--;
     memset(c->topics[c->n_topics], 0, sizeof c->topics[0]);
-    memset(c->join_refs[c->n_topics], 0, sizeof c->join_refs[0]);
 }
 
 static void topic_drop(cb_conn_row *c, const char *topic) {
@@ -213,13 +209,12 @@ static bool take_user(cb_ctx *ctx, cb_conn_row *conn, const NwFrame *f, int *why
     return true;
 }
 
-int cb_nw_on_frame(cb_ctx *ctx, cb_conn_row *conn, const uint8_t *msg, size_t len, cb_rt_send_fn send, void *ud) {
-    static _Thread_local NwFrame f;
-    if (len > (size_t)INT32_MAX || nw_frame_decode(msg, (int)len, &f) != NW_OK) return CB_E_INVALID;
+// One decoded client frame (never a batch).
+static int on_one(cb_ctx *ctx, cb_conn_row *conn, NwFrame *f, cb_rt_send_fn send, void *ud) {
     int why = 0;
-    switch (f.kind) {
+    switch (f->kind) {
     case NW_WS_AUTH:
-        if (!take_user(ctx, conn, &f, &why)) {
+        if (!take_user(ctx, conn, f, &why)) {
             // Not someone: every subscription made as the old user ends.
             conn->user_id[0] = 0;
             while (conn->n_topics) topic_remove(conn, 0);
@@ -228,11 +223,11 @@ int cb_nw_on_frame(cb_ctx *ctx, cb_conn_row *conn, const uint8_t *msg, size_t le
     case NW_WS_SUB_AS:
         // Who asks rides with the ask: it never depends on an AUTH frame having
         // been stored first, which API Gateway does not promise.
-        if (!take_user(ctx, conn, &f, &why)) { ack(f.ref, ASK_WHY_AUTH, false, send, ud); return CB_OK; }
-        on_sub(ctx, conn, &f, send, ud);
+        if (!take_user(ctx, conn, f, &why)) { ack(f->ref, ASK_WHY_AUTH, false, send, ud); return CB_OK; }
+        on_sub(ctx, conn, f, send, ud);
         return CB_OK;
-    case NW_WS_SUB: on_sub(ctx, conn, &f, send, ud); return CB_OK;
-    case NW_WS_UNSUB: on_unsub(conn, &f); return CB_OK;
+    case NW_WS_SUB: on_sub(ctx, conn, f, send, ud); return CB_OK;
+    case NW_WS_UNSUB: on_unsub(conn, f); return CB_OK;
     case NW_WS_PING: {
         NwFrame p;
         memset(&p, 0, sizeof p);
@@ -243,6 +238,96 @@ int cb_nw_on_frame(cb_ctx *ctx, cb_conn_row *conn, const uint8_t *msg, size_t le
     default:
         return CB_E_INVALID;   // a server frame sent by a client
     }
+}
+
+static bool client_kind(uint8_t k) {
+    return k == NW_WS_AUTH || k == NW_WS_SUB || k == NW_WS_UNSUB || k == NW_WS_PING || k == NW_WS_SUB_AS;
+}
+
+// A batch's replies, held as batch entries (u32 length, frame) until the batch
+// has run.
+typedef struct {
+    cb_buf entries;
+    int    n;
+} held_replies;
+
+static void hold(void *ud, const char *frame, size_t len) {
+    held_replies *h = ud;
+    size_t at = h->entries.len;
+    if (len > (size_t)INT32_MAX - 8 || !cb_buf_reserve(&h->entries, at + len + 4)) {
+        CB_ERROR("stream", "a batch reply of %zu bytes was not held", len);
+        return;
+    }
+    int n = nw_batch_add((const uint8_t *)frame, (int)len, h->entries.p + at, (int)(len + 4));
+    if (n < 0) { CB_ERROR("stream", "a batch reply was not held (%d)", n); return; }
+    h->entries.len = at + (size_t)n;
+    h->n++;
+}
+
+// Sends held replies as NW_WS_BATCH messages of at most NW_BATCH_MAX entries
+// and CB_NW_REPLY_BYTES bytes each (a lone reply as itself).
+void cb_nw_send_batched(const uint8_t *entries, size_t len, int n, cb_rt_send_fn send, void *ud) {
+    NwBlob all = { entries, (uint32_t)len }, one;
+    if (n == 1) {
+        uint32_t pos = 0;
+        if (nw_batch_next(all, &pos, &one) == 1) send(ud, (const char *)one.p, one.len);
+        return;
+    }
+    uint32_t pos = 0, start = 0;
+    int count = 0;
+    for (;;) {
+        uint32_t at = pos;
+        int rc = nw_batch_next(all, &pos, &one);
+        bool full = count == NW_BATCH_MAX || (count > 0 && pos - start > CB_NW_REPLY_BYTES);
+        if (rc != 1 || full) {
+            if (count) {
+                NwFrame b;
+                memset(&b, 0, sizeof b);
+                b.kind = NW_WS_BATCH;
+                b.blob.p = entries + start;
+                b.blob.len = at - start;
+                if (count == 1) {
+                    uint32_t p0 = 0;
+                    NwBlob lone;
+                    if (nw_batch_next(b.blob, &p0, &lone) == 1) send(ud, (const char *)lone.p, lone.len);
+                } else {
+                    send_frame(&b, send, ud);
+                }
+            }
+            if (rc != 1) return;
+            start = at;
+            count = 0;
+        }
+        count++;
+    }
+}
+
+int cb_nw_on_frame(cb_ctx *ctx, cb_conn_row *conn, const uint8_t *msg, size_t len, cb_rt_send_fn send, void *ud) {
+    static _Thread_local NwFrame f;
+    if (len > (size_t)INT32_MAX || nw_frame_decode(msg, (int)len, &f) != NW_OK) return CB_E_INVALID;
+    if (f.kind != NW_WS_BATCH) return on_one(ctx, conn, &f, send, ud);
+    // A batch: every entry a client frame, or none of it runs (the decoder has
+    // checked the list's shape; the entries are checked here, before anything
+    // changes).
+    NwBlob all = f.blob, one;
+    uint32_t pos = 0;
+    while (nw_batch_next(all, &pos, &one) == 1)
+        if (nw_frame_decode(one.p, (int)one.len, &f) != NW_OK || !client_kind(f.kind)) return CB_E_INVALID;
+    held_replies h;
+    cb_buf_init(&h.entries);
+    h.n = 0;
+    pos = 0;
+    while (nw_batch_next(all, &pos, &one) == 1) {
+        nw_frame_decode(one.p, (int)one.len, &f);
+        on_one(ctx, conn, &f, hold, &h);
+    }
+    if (h.n) cb_nw_send_batched(h.entries.p, h.entries.len, h.n, send, ud);
+    cb_buf_free(&h.entries);
+    return CB_OK;
+}
+
+bool cb_nw_is_ping(const uint8_t *msg, size_t len) {
+    return len == 2 && msg[0] == NW_V1 && msg[1] == NW_WS_PING;
 }
 
 // ---- the topic policy ----------------------------------------------------------------

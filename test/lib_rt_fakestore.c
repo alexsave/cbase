@@ -72,13 +72,13 @@ static int f_snapshots_query(cb_store *s, const cb_snapshot_query *q, cb_snapsho
     return n;
 }
 
-static int f_conn_put(cb_store *s, const cb_conn_row *c) {
+static int f_conn_put(cb_store *s, const cb_conn_row *was, const cb_conn_row *c) {
     LOCK();
     rtf.conn_puts++;
     int i = 0;
     while (i < rtf.n_conns && strcmp(rtf.conns[i].conn_id, c->conn_id) != 0) i++;
     int64_t stored = i < rtf.n_conns ? rtf.conns[i].version : 0;
-    if (stored != c->version) {   // store.h conn_put: the compare-and-set
+    if (stored != was->version) {   // store.h conn_put: the compare-and-set
         rtf.conn_conflicts++;
         UNLOCK();
         return CB_E_CONFLICT;
@@ -86,7 +86,7 @@ static int f_conn_put(cb_store *s, const cb_conn_row *c) {
     if (i == rtf.n_conns && rtf.n_conns < RTF_MAX) rtf.n_conns++;
     if (i < RTF_MAX) {
         rtf.conns[i] = *c;
-        rtf.conns[i].version = c->version + 1;
+        rtf.conns[i].version = was->version + 1;
     }
     UNLOCK();
     return CB_OK;
@@ -99,6 +99,7 @@ int rtf_conn_find(const char *conn_id) {
 }
 
 static int f_conn_get(cb_store *s, const char *id, cb_conn_row *out) {
+    rtf.conn_gets++;
     int i = rtf_conn_find(id);
     int rc = CB_E_NOT_FOUND;
     if (i >= 0) {
@@ -114,6 +115,7 @@ static int f_conn_get(cb_store *s, const char *id, cb_conn_row *out) {
 }
 
 static int f_conn_delete(cb_store *s, const char *id) {
+    rtf.conn_deletes++;
     int i = rtf_conn_find(id);
     if (i < 0) return CB_E_NOT_FOUND;
     rtf.conns[i] = rtf.conns[--rtf.n_conns];

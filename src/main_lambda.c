@@ -87,8 +87,11 @@ static int dispatch(cb_ctx *ctx, const cb_invocation *inv, cb_buf *out, char *wh
     }
     case CB_EVENT_WS: {
         int status = 500;
-        cb_rt_apigw_event(ctx, &ev.ws, &status);
-        rc = cb_event_encode_ws(status, out);
+        cb_buf answer;
+        cb_buf_init(&answer);
+        cb_rt_apigw_event(ctx, &ev.ws, &status, &answer);
+        rc = cb_event_encode_ws(status, (const char *)answer.p, answer.len, out);
+        cb_buf_free(&answer);
         snprintf(what, what_cap, "ws %s %d", ev.ws.route_key, status);
         break;
     }

@@ -669,16 +669,19 @@ bool dw_item_conn(cb_span it, cb_conn_row *c) {
     memset(c, 0, sizeof *c);
     if (!dw_get_s(it, "conn_id", c->conn_id, sizeof c->conn_id)) return false;
     dw_get_s(it, "user_id", c->user_id, sizeof c->user_id);
-    c->vsn = (int)get_n_or(it, "vsn", 1);
     c->expires_at = get_n_or(it, "expires_ms", 0);
     c->version = get_n_or(it, "ver", 0);   // a row written before versions: 0
     cb_span topics, list, e;
     size_t pos = 0;
     if (member(it, "topics", &topics) && member(topics, "L", &list))
         while (c->n_topics < CB_CONN_TOPICS && dw_array_next(list, &pos, &e)) {
-            cb_span m;
-            if (!member(e, "M", &m) || !dw_get_s(m, "t", c->topics[c->n_topics], sizeof c->topics[0])) return false;
-            dw_get_s(m, "r", c->join_refs[c->n_topics], sizeof c->join_refs[0]);
+            // {"S": topic}; a row written before 2026-10-17 has {"M": {"t": topic, "r": ref}}
+            // (it lives at most its two-hour TTL).
+            cb_span m, tok;
+            char *t = c->topics[c->n_topics];
+            bool ok = member(e, "M", &m) ? dw_get_s(m, "t", t, sizeof c->topics[0])
+                      : member(e, "S", &tok) && tok.n >= 2 && tok.p[0] == '"' && cb_json_unescape(tok, t, sizeof c->topics[0]) >= 0;
+            if (!ok) return false;
             c->n_topics++;
         }
     return true;
@@ -1804,18 +1807,13 @@ void dw_chat_put(dw_req *r, const char *table, const cb_chat_row *c) {
 static void conn_attrs(cb_jw *w, const cb_conn_row *c) {
     av_s(w, "conn_id", c->conn_id);
     if (c->user_id[0]) av_s(w, "user_id", c->user_id);
-    av_n(w, "vsn", c->vsn);
     cb_jw_key(w, "topics");
     cb_jw_obj(w);
     cb_jw_key(w, "L");
     cb_jw_arr(w);
     for (int i = 0; i < c->n_topics; i++) {
         cb_jw_obj(w);
-        cb_jw_key(w, "M");
-        cb_jw_obj(w);
-        av_s(w, "t", c->topics[i]);
-        av_s(w, "r", c->join_refs[i]);
-        cb_jw_end(w);
+        cb_jw_kstr(w, "S", c->topics[i]);
         cb_jw_end(w);
     }
     cb_jw_end(w);
@@ -1825,62 +1823,75 @@ static void conn_attrs(cb_jw *w, const cb_conn_row *c) {
     av_n(w, "ver", c->version);
 }
 
-static bool has_topic(const cb_conn_row *c, const char *t) {
-    for (int i = 0; c && i < c->n_topics; i++)
-        if (strcmp(c->topics[i], t) == 0) return true;
-    return false;
-}
-
-// TransactWriteItems: the CONN item conditioned on the version the caller
-// read (store.h conn_put: 0 passes when there is no row, a row written before
-// versions existed, or one past its TTL that DynamoDB has not swept yet), a
-// full copy per topic (a fan-out reads one partition and has all it needs),
-// and deletes for the topics left. Item 0 refused is the lost race. All in one
-// transaction so the TOPIC copies never disagree with the CONN item they copy.
-void dw_conn_put(dw_req *r, const char *table, const cb_conn_row *c, const cb_conn_row *old, int64_t now_ms) {
-    char pk[KB], tpk[KB], sk[KB];
+// PutItem: the CONN item at was_version + 1, conditioned on the stored version
+// being was_version (0: there is no row, a row written before versions existed,
+// or one past its TTL that DynamoDB has not swept yet; `now_ms` decides).
+// Refused is a lost race (store.h conn_put). Not a transaction: one item, so a
+// plain conditional write at half a transaction's units.
+void dw_conn_put(dw_req *r, const char *table, const cb_conn_row *c, int64_t was_version, int64_t now_ms) {
+    char pk[KB];
     cb_conn_row next = *c;
-    next.version = c->version + 1;
+    next.version = was_version + 1;
     cb_jw w;
-    txn_begin(r, &w);
-    k(pk, sizeof pk, "CONN#", c->conn_id);
-    put_begin(&w, table, "Put");
-    av_s(&w, "pk", pk);
+    begin(r, &w, "PutItem");
+    cb_jw_kstr(&w, "TableName", table);
+    cb_jw_key(&w, "Item");
+    cb_jw_obj(&w);
+    av_s(&w, "pk", k(pk, sizeof pk, "CONN#", c->conn_id));
     av_s(&w, "sk", "CONN");
     conn_attrs(&w, &next);
     cb_jw_end(&w);   // Item
-    cb_jw_kstr(&w, "ConditionExpression", c->version == 0 ? "attribute_not_exists(#ver) OR #expires_ms < :now"
+    cb_jw_kstr(&w, "ConditionExpression", was_version == 0 ? "attribute_not_exists(#ver) OR #expires_ms < :now"
                                                             : "#ver = :ver");
     cb_jw_key(&w, "ExpressionAttributeNames");
     cb_jw_obj(&w);
     cb_jw_kstr(&w, "#ver", "ver");
-    if (c->version == 0) cb_jw_kstr(&w, "#expires_ms", "expires_ms");
+    if (was_version == 0) cb_jw_kstr(&w, "#expires_ms", "expires_ms");
     cb_jw_end(&w);
     cb_jw_key(&w, "ExpressionAttributeValues");
     cb_jw_obj(&w);
-    if (c->version == 0) av_n(&w, ":now", now_ms);
-    else av_n(&w, ":ver", c->version);
+    if (was_version == 0) av_n(&w, ":now", now_ms);
+    else av_n(&w, ":ver", was_version);
     cb_jw_end(&w);
-    cb_jw_end(&w);   // the Put
-    cb_jw_end(&w);   // its wrapper
-    for (int i = 0; i < c->n_topics; i++) {
+    finish(&w);
+}
+
+void dw_conn_index(dw_req *r, const char *table, const char *conn_id, const char *const *topics, int n, bool put,
+                   int64_t expires_ms) {
+    char pk[KB], tpk[KB];
+    cb_jw w;
+    begin(r, &w, "BatchWriteItem");
+    cb_jw_key(&w, "RequestItems");
+    cb_jw_obj(&w);
+    cb_jw_key(&w, table);
+    cb_jw_arr(&w);
+    k(pk, sizeof pk, "CONN#", conn_id);
+    for (int i = 0; i < n; i++) {
         bool dup = false;
-        for (int j = 0; j < i; j++) dup |= strcmp(c->topics[j], c->topics[i]) == 0;
+        for (int j = 0; j < i; j++) dup |= strcmp(topics[j], topics[i]) == 0;
         if (dup) continue;
-        put_begin(&w, table, "Put");
-        av_s(&w, "pk", k(tpk, sizeof tpk, "TOPIC#", c->topics[i]));
-        av_s(&w, "sk", pk);
-        conn_attrs(&w, &next);
-        put_end(&w, NULL, true);
+        k(tpk, sizeof tpk, "TOPIC#", topics[i]);
+        cb_jw_obj(&w);
+        cb_jw_key(&w, put ? "PutRequest" : "DeleteRequest");
+        cb_jw_obj(&w);
+        if (put) {
+            cb_jw_key(&w, "Item");
+            cb_jw_obj(&w);
+            av_s(&w, "pk", tpk);
+            av_s(&w, "sk", pk);
+            av_s(&w, "conn_id", conn_id);
+            av_n(&w, "expires_ms", expires_ms);
+            av_n(&w, DW_TTL_ATTR, expires_ms / 1000);
+            cb_jw_end(&w);
+        } else {
+            key2(&w, tpk, pk);
+        }
+        cb_jw_end(&w);
+        cb_jw_end(&w);
     }
-    for (int i = 0; old && i < old->n_topics; i++) {
-        if (has_topic(c, old->topics[i])) continue;
-        bool dup = false;
-        for (int j = 0; j < i; j++) dup |= strcmp(old->topics[j], old->topics[i]) == 0;
-        if (dup) continue;
-        txn_delete(&w, table, k(tpk, sizeof tpk, "TOPIC#", old->topics[i]), k(sk, sizeof sk, "CONN#", c->conn_id));
-    }
-    txn_end(&w);
+    cb_jw_end(&w);
+    cb_jw_end(&w);
+    finish(&w);
 }
 
 void dw_conn_delete(dw_req *r, const char *table, const cb_conn_row *c) {
@@ -2518,11 +2529,17 @@ int cb_event_encode_http(const cb_http_res *res, cb_buf *out) {
     return cb_jw_ok(&w) ? CB_OK : CB_E_NOMEM;
 }
 
-int cb_event_encode_ws(int status, cb_buf *out) {
+int cb_event_encode_ws(int status, const char *body, size_t body_len, cb_buf *out) {
     cb_jw w;
     cb_jw_init(&w, out);
     cb_jw_obj(&w);
     cb_jw_kint(&w, "statusCode", status);
+    // The route response's message (base64 text): API Gateway sends the body
+    // to the client as one text frame.
+    if (body && body_len) {
+        cb_jw_key(&w, "body");
+        cb_jw_strn(&w, body, body_len);
+    }
     cb_jw_end(&w);
     return cb_jw_ok(&w) ? CB_OK : CB_E_NOMEM;
 }

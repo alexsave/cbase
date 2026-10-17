@@ -325,6 +325,63 @@ static void frames(void) {
     T_EQ_INT(nw_frame_decode(not_frame, 2, &g), NW_E_WIRE);
 }
 
+// NW_WS_BATCH: a blob of entries, each a u32 length and one whole frame.
+static void batches(void) {
+    uint8_t out[128], entries[64];
+    const uint8_t ping[] = { 1, 43 }, ack[] = { 1, 50, 7, 0, 0, 1 };
+    int a = nw_batch_add(ping, 2, entries, sizeof entries);
+    T_EQ_INT(a, 6);
+    int b = nw_batch_add(ack, sizeof ack, entries + a, (int)sizeof entries - a);
+    T_EQ_INT(b, 10);
+    NwFrame f, g;
+    memset(&f, 0, sizeof f);
+    f.kind = NW_WS_BATCH;
+    f.blob.p = entries;
+    f.blob.len = (uint32_t)(a + b);
+    const uint8_t batch[] = { 1, 56, 16, 0, 0, 0, 2, 0, 0, 0, 1, 43, 6, 0, 0, 0, 1, 50, 7, 0, 0, 1 };
+    T_EQ_MEM(out, nw_frame_encode(&f, out, sizeof out), batch, sizeof batch);
+    T_EQ_INT(nw_frame_decode(batch, sizeof batch, &g), NW_OK);
+    T_EQ_INT(g.kind, NW_WS_BATCH);
+    T_EQ_INT(refused_everywhere(batch, sizeof batch, dec_frame), 0);
+    // The entries, in order, pointing into the body.
+    uint32_t pos = 0;
+    NwBlob one;
+    T_EQ_INT(nw_batch_next(g.blob, &pos, &one), 1);
+    T_EQ_MEM(one.p, one.len, ping, 2);
+    T_EQ_INT(nw_batch_next(g.blob, &pos, &one), 1);
+    T_EQ_MEM(one.p, one.len, ack, sizeof ack);
+    T_EQ_INT(nw_batch_next(g.blob, &pos, &one), 0);
+    // Not an entry: shorter than a head, another version, or a batch inside a batch.
+    T_EQ_INT(nw_batch_add(ping, 1, entries, sizeof entries), NW_E_WIRE);
+    const uint8_t v2[] = { 2, 43 }, inner[] = { 1, 56 };
+    T_EQ_INT(nw_batch_add(v2, 2, entries, sizeof entries), NW_E_WIRE);
+    T_EQ_INT(nw_batch_add(inner, 2, entries, sizeof entries), NW_E_WIRE);
+    T_EQ_INT(nw_batch_add(ping, 2, entries, 5), NW_E_CAP);
+    // Refused on the wire: empty, a nested batch, an entry past the end, a
+    // one-byte entry; and more than NW_BATCH_MAX entries.
+    const uint8_t empty[] = { 1, 56, 0, 0, 0, 0 };
+    const uint8_t nested[] = { 1, 56, 6, 0, 0, 0, 2, 0, 0, 0, 1, 56 };
+    const uint8_t past[] = { 1, 56, 6, 0, 0, 0, 3, 0, 0, 0, 1, 43 };
+    const uint8_t tiny[] = { 1, 56, 5, 0, 0, 0, 1, 0, 0, 0, 1 };
+    T_EQ_INT(nw_frame_decode(empty, sizeof empty, &g), NW_E_WIRE);
+    T_EQ_INT(nw_frame_decode(nested, sizeof nested, &g), NW_E_WIRE);
+    T_EQ_INT(nw_frame_decode(past, sizeof past, &g), NW_E_WIRE);
+    T_EQ_INT(nw_frame_decode(tiny, sizeof tiny, &g), NW_E_WIRE);
+    static uint8_t many[(NW_BATCH_MAX + 1) * 6], body[sizeof many + 16];
+    int at = 0;
+    for (int i = 0; i <= NW_BATCH_MAX; i++) at += nw_batch_add(ping, 2, many + at, (int)sizeof many - at);
+    f.blob.p = many;
+    f.blob.len = (uint32_t)(at - 6);   // NW_BATCH_MAX: fine
+    int n = nw_frame_encode(&f, body, sizeof body);
+    T_CHECK(n > 0);
+    T_EQ_INT(nw_frame_decode(body, n, &g), NW_OK);
+    f.blob.len = (uint32_t)at;          // one more: refused both ways
+    T_EQ_INT(nw_frame_encode(&f, body, sizeof body), NW_E_WIRE);
+    body[2] = (uint8_t)at;
+    memcpy(body + 6, many, (size_t)at);
+    T_EQ_INT(nw_frame_decode(body, 6 + at, &g), NW_E_WIRE);
+}
+
 static void text_form(void) {
     // RFC 4648 section 10.
     static const char *const in[] = { "", "f", "fo", "foo", "foob", "fooba", "foobar" };
@@ -359,6 +416,7 @@ int main(void) {
     T_RUN(views_and_replays);
     T_RUN(lists);
     T_RUN(frames);
+    T_RUN(batches);
     T_RUN(text_form);
     return T_DONE();
 }

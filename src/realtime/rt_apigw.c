@@ -1,21 +1,29 @@
 // rt_apigw.c - realtime under Lambda: API Gateway's WebSocket API (rt_apigw.h).
 //
 // API Gateway holds the sockets; each event is one invocation, so the
-// subscription state lives in the store's CONN row, read and written around
-// cb_nw_on_frame. Replies and pushes are POSTs to the management API, each a
-// text frame of base64 (stream.h).
+// subscription state lives in the store's CONN row, read once per frame and
+// written back (with its topic index) only when the frame changed it.
 //
 // A connection's frames are NOT serialized: API Gateway invokes the function
-// for each one as it arrives, so a page's three subscriptions run at once. The row is
+// for each one as it arrives, so frames sent together run at once. The row is
 // therefore stored by compare-and-set on its version (store.h conn_put), and
 // a frame that loses re-reads and runs again; its replies are held until its
 // run is the one stored. (cbase serve's rt_local runs a connection's frames
-// one at a time and needs none of this.)
+// one at a time and needs none of this.) A client that subscribes to several
+// things at once sends them in one NW_WS_BATCH, so a page's subscriptions are
+// one invocation and one write, and nothing races.
 //
-// The CONN row's expires_at is the DynamoDB TTL: a connection not heard from
-// for CONN_TTL_MS is dropped by the table itself (a missed $disconnect). It is
-// pushed forward on a frame only when the row changes anyway or a third of the
-// TTL has gone, so the 25-second heartbeats do not each cost a write.
+// REPLIES. With CBASE_WS_ROUTE_REPLY=yes the $default route has a route
+// response, and the last message of a frame's replies rides back in the
+// invocation's answer: a ping's pong and a batch's replies (one NW_WS_BATCH)
+// cost no POST at all. Any messages before it (an old client's ACK ahead of
+// its catch-up) are POSTed first, in order, which API Gateway delivers ahead
+// of the answer. Without it every reply is a POST. A ping reads no row.
+//
+// The CONN row's expires_at is the DynamoDB TTL, set once when the row is
+// first stored: API Gateway closes every connection within two hours, so a
+// row past CONN_TTL_MS is one whose $disconnect was missed, and the table
+// drops it itself. No frame pushes it forward.
 #include "rt_apigw.h"
 
 #include "aws/apigw_mgmt.h"
@@ -30,7 +38,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define CONN_TTL_MS (2LL * 3600 * 1000)
+// API Gateway's cap on a WebSocket connection is two hours (not adjustable);
+// ten minutes past it covers a first write a little after $connect.
+#define CONN_TTL_MS ((2LL * 3600 + 600) * 1000)
 
 typedef struct {
     cb_ctx *ctx;
@@ -49,12 +59,13 @@ static void endpoint_of(cb_ctx *ctx, const cb_ws_event *ev, char *out, size_t ca
 
 // ---- replies ----------------------------------------------------------------------------
 
-// A frame's replies are held until its subscription change is stored: a
+// A frame's reply messages, held until its subscription change is stored: a
 // frame that loses the race is run again on the fresh row, and only the run
 // that stored is answered (a subscription acknowledged whose topic was then
 // lost is one that never hears a push).
 typedef struct {
-    cb_buf frames;    // each frame as a 4-byte length, then its bytes
+    cb_buf frames;    // each message as a 4-byte length, then its bytes
+    int    n;
 } held;
 
 static void hold_reply(void *ud, const char *frame, size_t len) {
@@ -62,32 +73,50 @@ static void hold_reply(void *ud, const char *frame, size_t len) {
     uint32_t n = (uint32_t)len;
     cb_buf_append(&h->frames, &n, sizeof n);
     cb_buf_append(&h->frames, frame, len);
+    h->n++;
 }
 
-// One post to a connection. The message goes as base64 text: API Gateway
-// refuses binary frames from clients and documents no opcode for what
-// @connections posts, and text decodes the same whichever one it picks
-// (DESIGN.md "Binary surface").
+// A message as text: API Gateway refuses binary frames from clients and
+// documents no opcode for what @connections posts, and text decodes the same
+// whichever one it picks (DESIGN.md "Binary surface"). CB_OK or CB_E_NOMEM.
+static int as_text(const char *frame, size_t len, cb_buf *out) {
+    if (len > (size_t)INT32_MAX / 2) return CB_E_NOMEM;
+    size_t cap = (len + 2) / 3 * 4;
+    cb_buf_reset(out);
+    if (!cb_buf_reserve(out, cap + 1)) return CB_E_NOMEM;
+    int n = nw_text_encode((const uint8_t *)frame, (int)len, (char *)out->p, (int)cap);
+    if (n < 0) return CB_E_NOMEM;
+    out->len = (size_t)n;
+    return CB_OK;
+}
+
+// One post to a connection.
 static int post(const char *endpoint, const char *conn_id, const char *frame, size_t len) {
-    if (len > (size_t)INT32_MAX / 2) return 413;
-    int cap = (int)((len + 2) / 3 * 4);
-    char *text = malloc((size_t)cap + 1);
-    if (!text) return 500;
-    int n = nw_text_encode((const uint8_t *)frame, (int)len, text, cap);
-    int st = n < 0 ? 500 : cb_rt_deps_g.apigw_post(endpoint, conn_id, text, (size_t)n);
-    free(text);
+    cb_buf text;
+    cb_buf_init(&text);
+    int st = as_text(frame, len, &text) != CB_OK ? 500 : cb_rt_deps_g.apigw_post(endpoint, conn_id, (const char *)text.p, text.len);
+    cb_buf_free(&text);
     return st;
 }
 
-// Posts the held frames in order. False when the connection is gone.
-static bool post_held(const char *endpoint, const char *conn_id, const held *h) {
-    if (!endpoint[0]) return true;
-    for (size_t at = 0; at + sizeof(uint32_t) <= h->frames.len;) {
+// Answers the held messages: every one but the last POSTed in order, and the
+// last as `answer` (the route response) when route replies are on, else
+// POSTed too. False when the connection is gone.
+static bool answer_held(cb_ctx *ctx, const char *endpoint, const char *conn_id, const held *h, cb_buf *answer) {
+    bool route = ctx->cfg && ctx->cfg->ws_route_reply && answer;
+    int i = 0;
+    for (size_t at = 0; at + sizeof(uint32_t) <= h->frames.len; i++) {
         uint32_t n;
         memcpy(&n, h->frames.p + at, sizeof n);
         at += sizeof n;
-        int st = post(endpoint, conn_id, (const char *)h->frames.p + at, n);
+        const char *frame = (const char *)h->frames.p + at;
         at += n;
+        if (route && i == h->n - 1) {
+            if (as_text(frame, n, answer) != CB_OK) CB_ERROR("realtime", "reply to %s: not encoded", conn_id);
+            break;
+        }
+        if (!endpoint[0]) continue;
+        int st = post(endpoint, conn_id, frame, n);
         if (st == CB_APIGW_GONE) return false;
         if (st != 200) CB_WARN("realtime", "reply to %s: %d", conn_id, st);
     }
@@ -97,75 +126,89 @@ static bool post_held(const char *endpoint, const char *conn_id, const held *h) 
 static bool same_subscriptions(const cb_conn_row *a, const cb_conn_row *b) {
     if (strcmp(a->user_id, b->user_id) != 0 || a->n_topics != b->n_topics) return false;
     for (int i = 0; i < a->n_topics; i++)
-        if (strcmp(a->topics[i], b->topics[i]) != 0 || strcmp(a->join_refs[i], b->join_refs[i]) != 0) return false;
+        if (strcmp(a->topics[i], b->topics[i]) != 0) return false;
     return true;
 }
 
-// Tries at a frame before it gives up on storing it. A page joins three or
-// four channels at once and each lost race costs one read and one write, so
-// this is far above what a client produces.
+// Tries at a frame before it gives up on storing it. A batched client never
+// races itself; an old client's three or four frames at once lose a few times.
 #define CONN_CAS_TRIES 12
 
-static int on_default(cb_ctx *ctx, const cb_ws_event *ev) {
+// The row as read, or a fresh one (none stored, or its TTL ran out).
+static int load(cb_ctx *ctx, const char *conn_id, cb_conn_row *row) {
+    int rc = CB_STORE_CALL(ctx->store, conn_get, conn_id, row);
+    if (rc != CB_E_NOT_FOUND) return rc;
+    memset(row, 0, sizeof *row);
+    cb_strlcpy(row->conn_id, conn_id, sizeof row->conn_id);
+    row->expires_at = cb_now_ms() + CONN_TTL_MS;
+    return CB_OK;
+}
+
+static int on_default(cb_ctx *ctx, const cb_ws_event *ev, cb_buf *answer) {
     char endpoint[600];
     endpoint_of(ctx, ev, endpoint, sizeof endpoint);
     held h;
     cb_buf_init(&h.frames);
+    h.n = 0;
     int ret = CB_OK;
-    for (int attempt = 0;; attempt++) {
-        if (attempt == CONN_CAS_TRIES) {
-            // Unanswered, so the client's own timeout rejoins.
-            CB_ERROR("realtime", "conn %s: lost the row %d times running; frame dropped", ev->connection_id, attempt);
-            break;
-        }
-        cb_conn_row row, before;
-        int rc = CB_STORE_CALL(ctx->store, conn_get, ev->connection_id, &row);
-        bool stored = rc == CB_OK;
-        if (rc == CB_E_NOT_FOUND) {
-            // No row yet ($connect writes none), or its TTL ran out: start afresh.
-            memset(&row, 0, sizeof row);
-            cb_strlcpy(row.conn_id, ev->connection_id, sizeof row.conn_id);
-            row.vsn = CB_VSN_NW;
-        } else if (rc != CB_OK) {
-            CB_ERROR("realtime", "conn %s: load failed: %s", ev->connection_id, cb_strerror(rc));
-            ret = rc;
-            break;
-        }
-        before = row;
-        cb_buf_reset(&h.frames);
-        uint8_t *msg = malloc(ev->body_len + 1);
-        int n = msg ? nw_text_decode((const char *)ev->body, (int)ev->body_len, msg, (int)ev->body_len + 1) : -1;
-        rc = !msg ? CB_E_NOMEM : n < 0 ? CB_E_INVALID : cb_nw_on_frame(ctx, &row, msg, (size_t)n, hold_reply, &h);
-        free(msg);
-        if (rc == CB_E_INVALID) {
-            // Not a frame of the protocol: the socket is dropped.
-            if (endpoint[0]) cb_rt_deps_g.apigw_delete(endpoint, ev->connection_id);
+    uint8_t *msg = malloc(ev->body_len + 1);
+    int n = msg ? nw_text_decode((const char *)ev->body, (int)ev->body_len, msg, (int)ev->body_len + 1) : -1;
+    if (!msg) ret = CB_E_NOMEM;
+    else if (n >= 0 && cb_nw_is_ping(msg, (size_t)n)) {
+        // The pong needs no row.
+        cb_conn_row none;
+        memset(&none, 0, sizeof none);
+        cb_nw_on_frame(ctx, &none, msg, (size_t)n, hold_reply, &h);
+        if (!answer_held(ctx, endpoint, ev->connection_id, &h, answer))
             CB_STORE_CALL(ctx->store, conn_delete, ev->connection_id);
+    } else {
+        for (int attempt = 0;; attempt++) {
+            if (attempt == CONN_CAS_TRIES) {
+                // Unanswered, so the client's own timeout rejoins.
+                CB_ERROR("realtime", "conn %s: lost the row %d times running; frame dropped", ev->connection_id, attempt);
+                break;
+            }
+            cb_conn_row row, was;
+            int rc = load(ctx, ev->connection_id, &row);
+            if (rc != CB_OK) {
+                CB_ERROR("realtime", "conn %s: load failed: %s", ev->connection_id, cb_strerror(rc));
+                ret = rc;
+                break;
+            }
+            was = row;
+            cb_buf_reset(&h.frames);
+            h.n = 0;
+            rc = n < 0 ? CB_E_INVALID : cb_nw_on_frame(ctx, &row, msg, (size_t)n, hold_reply, &h);
+            if (rc == CB_E_INVALID) {
+                // Not a frame of the protocol: the socket is dropped.
+                if (endpoint[0]) cb_rt_deps_g.apigw_delete(endpoint, ev->connection_id);
+                if (was.version) CB_STORE_CALL(ctx->store, conn_delete, ev->connection_id);
+                break;
+            }
+            if (!same_subscriptions(&row, &was)) {
+                int w;
+                if (!row.user_id[0] && !row.n_topics) {
+                    // Nobody and nothing: the row is not worth keeping.
+                    w = was.version ? CB_STORE_CALL(ctx->store, conn_delete, ev->connection_id) : CB_OK;
+                } else {
+                    w = CB_STORE_CALL(ctx->store, conn_put, &was, &row);
+                    if (w == CB_E_CONFLICT) continue;   // another frame of this connection stored first
+                }
+                if (w != CB_OK) CB_ERROR("realtime", "conn %s: save failed: %s", ev->connection_id, cb_strerror(w));
+            }
+            if (!answer_held(ctx, endpoint, ev->connection_id, &h, answer))
+                CB_STORE_CALL(ctx->store, conn_delete, ev->connection_id);
             break;
         }
-        int64_t now = cb_now_ms();
-        bool changed = !same_subscriptions(&row, &before);
-        if (!row.user_id[0]) {
-            // Nobody, so nothing to keep: a connection that has not named a
-            // user (pings, refused frames) writes nothing, and one whose AUTH
-            // named nobody loses the row it had.
-            if (stored) CB_STORE_CALL(ctx->store, conn_delete, ev->connection_id);
-        } else if (changed || row.expires_at - now < CONN_TTL_MS * 2 / 3) {
-            row.expires_at = now + CONN_TTL_MS;
-            row.version = before.version;
-            int w = CB_STORE_CALL(ctx->store, conn_put, &row);
-            if (w == CB_E_CONFLICT) continue;   // another frame of this connection stored first
-            if (w != CB_OK) CB_ERROR("realtime", "conn %s: save failed: %s", ev->connection_id, cb_strerror(w));
-        }
-        if (!post_held(endpoint, ev->connection_id, &h)) CB_STORE_CALL(ctx->store, conn_delete, ev->connection_id);
-        break;
     }
+    free(msg);
     cb_buf_free(&h.frames);
     return ret;
 }
 
-int cb_rt_apigw_event(cb_ctx *ctx, const cb_ws_event *ev, int *status_out) {
+int cb_rt_apigw_event(cb_ctx *ctx, const cb_ws_event *ev, int *status_out, cb_buf *answer) {
     *status_out = 500;
+    if (answer) cb_buf_reset(answer);
     if (!ctx->store) { *status_out = 503; return CB_E_STATE; }
     if (strcmp(ev->route_key, "$connect") == 0) {
         // Only through the edge (config.h CBASE_ORIGIN_SECRET), and only the
@@ -184,7 +227,7 @@ int cb_rt_apigw_event(cb_ctx *ctx, const cb_ws_event *ev, int *status_out) {
         return CB_OK;
     }
     if (strcmp(ev->route_key, "$default") == 0) {
-        int rc = on_default(ctx, ev);
+        int rc = on_default(ctx, ev, answer);
         if (rc != CB_OK) return rc;
         *status_out = 200;
         return CB_OK;

@@ -58,6 +58,8 @@ typedef struct {
     char gone[4][64];
     // Counters and forced failures.
     int conn_puts;
+    int conn_gets;
+    int conn_deletes;
     int conn_conflicts;                 // conn_put calls refused by the version check
     void (*after_conn_get)(void *ud);   // run once, right after the next conn_get
     void *after_conn_get_ud;

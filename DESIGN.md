@@ -144,8 +144,8 @@ Items, by partition key and sort key:
 | `SNAP#<snapshot id>` | `SNAP` | a replay (gsi1 `GAMESNAPS#<game>`); it outlives its game, as `ON DELETE SET NULL` did |
 | `SNAP#<snapshot id>` | `PLAYER#<user>` | one copy per player, gsi2 `PLAYER#<user>`: "my replays" is one query |
 | `CHAT#<game id>` | `<created>#<id>` | a chat message |
-| `CONN#<connection id>` | `CONN` | a realtime connection: user, vsn, topics, expires_at (TTL, seconds) and expires_ms |
-| `TOPIC#<topic>` | `CONN#<connection id>` | the reverse index fan-out queries: a whole copy of the connection row with the same TTL, in the base table so the read is strongly consistent and a push right after a join is not missed |
+| `CONN#<connection id>` | `CONN` | a realtime connection: user, topics, ver (the compare-and-set), expires_at (TTL, seconds) and expires_ms |
+| `TOPIC#<topic>` | `CONN#<connection id>` | the reverse index fan-out queries: the connection id and the row's TTL only, in the base table so the read is strongly consistent and a push right after a join is not missed |
 | `SCAN` | `GAME#<id>` | present while a bot can act on the game (the kernel's `table_bots_due`; sparse, the heartbeat's scan reads one partition); carries the bot lease (lease_token, lease_until) and the row's version (row_version) |
 
 `game_commit` is one `TransactWriteItems`: the game update conditioned on the version, the membership puts and deletes, the rating updates, the SCAN marker.
@@ -444,10 +444,15 @@ As built:
 - `realtime.c` builds each push once, as the stream's message, and hands it to the transport.
 - `rt_local.c` (serve): `GET /v1/stream?proto=nw1` on the loop thread; each client frame runs on the request pool, one at a time per connection, so frames are answered in order; client frames may be binary or base64 text, and pushes go out binary.
   The server's idle sweep closes a WebSocket with no client traffic for 120 s, which a client's 25 s ping prevents.
-- `rt_apigw.c` (Lambda): `$connect` requires `proto=nw1` and stores a CONN row with a 2 h TTL, `$disconnect` deletes it, `$default` runs the frame (base64 text) and writes the row back only when it changed or a third of the TTL has gone (pings cost no write); replies and pushes go through the management API as base64 text, and 410 deletes the row.
+- `rt_apigw.c` (Lambda): `$connect` requires `proto=nw1` and stores nothing, `$disconnect` deletes the row and its index entries, `$default` runs the message (base64 text: a frame, or several in one `NW_WS_BATCH`) after one read of the row, and writes the row back only when its user or topics changed; a ping reads nothing.
+  The row's TTL is set once, when it is first stored, past API Gateway's two-hour cap on a connection, so nothing pushes it forward.
+  With `CBASE_WS_ROUTE_REPLY=yes` (the template's `$default` route response) a message's last reply is the invocation's answer, so a pong or a batch's replies cost no POST; any reply before it, and every push, goes through the management API as base64 text, and 410 deletes the row.
   API Gateway does not serialize a connection's frames: each is its own invocation, and a page subscribes to its games, a game and its chat within a few milliseconds.
-  So the row is written by compare-and-set on its version (`conn_put`, one `TransactWriteItems` with the TOPIC copies), a frame that loses re-reads and runs again (up to 12 times), and its replies are held until the run that stored.
+  So the row is written by compare-and-set on its version (`conn_put`), a frame that loses re-reads and runs again (up to 12 times), and its replies are held until the run that stored.
   Found by the live browser acceptance of 2026-10-14 (then on Phoenix), where three joins each wrote back only their own topic and the page heard no pushes until it reloaded.
+  The client now sends a moment's subscriptions as one batch, so a page is one invocation and one write and does not race itself; the compare-and-set stays for clients that send them one by one.
+  The write is three plain writes, not a transaction: index entries for the topics gained, the row on its version, then deletes of the entries for the topics lost, so the index always holds at least the stored row's topics (store.h `conn_put` says why a stray entry is harmless).
+  Measured on production (2026-10-17, `cbase-bench page`): see c_base/bench/results for the page runs before and after.
 - Answer first (`src/app/after.{h,c}`): under Lambda an HTTP invocation POSTs its response, then publishes its commits' pushes and kicks the bots before it asks for the next event, so a move's answer no longer waits for the stream's connection Queries, the @connections POSTs and the async invoke.
   The work queues on the invocation's thread in call order and is drained in that order, each fan-out under the game's order lock; under Lambda that thread is the only committer, so a game's pushes still go out in commit order.
   A response can now arrive before its own pushes (the clients gate every push on its version, as they always had to across containers).
@@ -879,7 +884,7 @@ Rotation, reuse grace and revocation are auth.c's, unchanged.
 
 One WebSocket per client at `/v1/stream`, carrying the kernel's bytes.
 Under `cbase serve` it is `rt_local`'s upgrade; under Lambda it is the API Gateway stage, reached through CloudFront (a CloudFront Function rewrites the path onto the stage, and `$connect` requires `proto=nw1`).
-The connection row (`cb_conn_row`) keeps its user, topics and version; its `vsn` is the protocol, `CB_VSN_NW` (3), the only one since stage 4 (1 and 2 were Phoenix's serializers).
+The connection row (`cb_conn_row`) keeps its user, topics, version and TTL; the protocol is `proto=nw1` on the connect URL, the only one since stage 4.
 
 Client to server:
 
@@ -891,6 +896,9 @@ Client to server:
   A token that does not verify is refused with AUTH and changes nothing; another user's token ends the subscriptions made as the first one, as AUTH does.
 - `NW_WS_UNSUB`: what, game id.
 - `NW_WS_PING`.
+- `NW_WS_BATCH`: 1 to `NW_BATCH_MAX` (16) entries, each a u32 length and one whole frame of the kinds above, run in order on the one connection row.
+  An entry that is not a client frame refuses the whole batch (the socket is closed, nothing it carried is stored).
+  Behind API Gateway a batch is one invocation and at most one row write, where the same frames one by one were an invocation each, all at once, racing each other's compare-and-set.
 
 Server to client:
 
@@ -899,6 +907,7 @@ Server to client:
 - `NW_WS_CAST`: game id, version, the kernel's cast. A member hears its own seat's casts (`gu-<game>-<user>`), anyone else the spectators' (`game-<game>`); the server picks by membership when the subscription is made, and the ACK says which.
 - `NW_WS_CHAT`: game id and the message (id, user, created, is_system, text).
 - `NW_WS_PONG`.
+- `NW_WS_BATCH`: a batch's replies, in order (`cb_nw_send_batched`: at most 16 entries and about 64 KB a batch, a lone reply sent as itself). Only a client that sent a batch is sent one.
 - `NW_WS_CATCHUP`: a `NW_WS_VIEW`'s fields, sent right behind the ACK of a game subscription made with `NW_WS_SUB_AS`: the caller's view of the game when it is newer than the `since` the subscription named.
   Its own kind because a client holding a game on its own stream takes no dashboard views of it (its casts animate it), so a catch-up sent as a plain view was dropped; a commit that landed between the client's read of the game and its subscription going live was then lost until the next push (seen on production: a join that never reached the creator's lobby, about 1 game in 50).
   A bare `NW_WS_SUB` still gets a `NW_WS_VIEW`, which every older client reads.
@@ -959,7 +968,7 @@ The JSON gate is unchanged: none of this is JSON.
 - The game smoke (`test/smoke.c`) plays its whole game, crash included, over `/v1` and `/v1/stream` with the kernel's client library building every request and reading every answer; three sockets hear a seat's casts, the spectators' casts and a user's views.
   `cbase-bench roundtrip` and `cpu` measure the binary surface.
 - The TypeScript server, its schema and its harnesses are deleted ("What stays TypeScript").
-- Still in the row format on purpose: `cb_conn_row.vsn` (always `CB_VSN_NW`) and `join_refs` (unused by the stream); dropping them is a store schema change in both backends for no behaviour.
+- `cb_conn_row.vsn` and `join_refs`, the Phoenix leftovers, left the row format on 2026-10-17 (SQLite schema 3 drops and recreates the connection tables; DynamoDB items written before still read, for their two-hour TTL).
 
 ## Corrections to the brief, found while building the skeleton
 

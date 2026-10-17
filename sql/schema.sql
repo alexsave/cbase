@@ -145,7 +145,6 @@ CREATE INDEX IF NOT EXISTS idx_chat_messages_game ON chat_messages(game_id, crea
 CREATE TABLE IF NOT EXISTS rt_conns (
     conn_id    TEXT PRIMARY KEY,
     user_id    TEXT NOT NULL DEFAULT '',
-    vsn        INTEGER NOT NULL,
     expires_at INTEGER NOT NULL,
     ver        INTEGER NOT NULL DEFAULT 0
 );
@@ -153,7 +152,6 @@ CREATE TABLE IF NOT EXISTS rt_conn_topics (
     conn_id  TEXT NOT NULL REFERENCES rt_conns(conn_id) ON DELETE CASCADE,
     ord      INTEGER NOT NULL,
     topic    TEXT NOT NULL,
-    join_ref TEXT NOT NULL,
     PRIMARY KEY (conn_id, ord)
 );
 CREATE INDEX IF NOT EXISTS idx_rt_conn_topics_topic ON rt_conn_topics(topic);

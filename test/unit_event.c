@@ -380,8 +380,12 @@ static void utf8_rule(void) {
 static void encode_ws(void) {
     cb_buf out;
     cb_buf_init(&out);
-    T_EQ_INT(cb_event_encode_ws(401, &out), CB_OK);
+    T_EQ_INT(cb_event_encode_ws(401, NULL, 0, &out), CB_OK);
     T_EQ_STR(cb_buf_cstr(&out), "{\"statusCode\":401}");
+    // The route response: its text is the body API Gateway sends the client.
+    cb_buf_reset(&out);
+    T_EQ_INT(cb_event_encode_ws(200, "ATY=", 4, &out), CB_OK);
+    T_EQ_STR(cb_buf_cstr(&out), "{\"statusCode\":200,\"body\":\"ATY=\"}");
     cb_buf_free(&out);
 }
 

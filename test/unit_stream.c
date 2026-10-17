@@ -105,7 +105,6 @@ static void protocol(void) {
     rtf_add_view(G2, "", "playing", 3, 1, theirs, sizeof theirs);
     cb_conn_row c;
     memset(&c, 0, sizeof c);
-    c.vsn = CB_VSN_NW;
 
     // Nothing before a token, and a token that does not verify is nobody.
     sub(&c, 1, NW_SUB_GAMES, "", 0);
@@ -260,6 +259,127 @@ static void publishes(void) {
 
 static int g_port;
 static pthread_t g_thread;
+// A batch's frames as one message: entries from encoded frames.
+static int run_batch(cb_conn_row *c, const NwFrame *frames, int n) {
+    static uint8_t entries[4 * (NW_ACCESS_MAX + 64)], b[sizeof entries + 64];
+    int at = 0;
+    for (int i = 0; i < n; i++) {
+        uint8_t one[NW_ACCESS_MAX + 64];
+        int k = nw_frame_encode(&frames[i], one, sizeof one);
+        T_CHECK(k > 0);
+        at += nw_batch_add(one, k, entries + at, (int)sizeof entries - at);
+    }
+    NwFrame f;
+    memset(&f, 0, sizeof f);
+    f.kind = NW_WS_BATCH;
+    f.blob.p = entries;
+    f.blob.len = (uint32_t)at;
+    int len = nw_frame_encode(&f, b, sizeof b);
+    T_CHECK(len > 0);
+    memset(&g_out, 0, sizeof g_out);
+    return cb_nw_on_frame(&g_ctx, c, b, (size_t)len, collect, NULL);
+}
+
+// The entries of output message i, a batch, decoded into fs; their count.
+static int out_batch(int i, NwFrame *fs, int cap) {
+    NwFrame f = out(i);
+    T_EQ_INT(f.kind, NW_WS_BATCH);
+    static uint8_t copy[256];
+    memcpy(copy, g_out.f[i], g_out.len[i]);
+    T_CHECK(nw_frame_decode(copy, (int)g_out.len[i], &f) == NW_OK);
+    NwBlob all = f.blob, one;
+    int k = 0;
+    for (uint32_t pos = 0; k < cap && nw_batch_next(all, &pos, &one) == 1; k++)
+        T_CHECK(nw_frame_decode(one.p, (int)one.len, &fs[k]) == NW_OK);
+    return k;
+}
+
+static NwFrame sub_as(uint16_t ref, int what, const char *gid, const char *tok) {
+    NwFrame f;
+    memset(&f, 0, sizeof f);
+    f.kind = NW_WS_SUB_AS;
+    f.token_len = (uint16_t)strlen(tok);
+    memcpy(f.token, tok, f.token_len);
+    f.ref = ref;
+    f.what = (uint8_t)what;
+    f.gid_len = (uint8_t)strlen(gid);
+    memcpy(f.gid, gid, f.gid_len);
+    return f;
+}
+
+// A batch runs its frames in order on the one row and answers them all in one
+// message; one entry that is not a client frame refuses the whole of it.
+static void batches(void) {
+    setup_world();
+    rtf_member(G, U1);
+    const uint8_t mine[] = { 0xe1 };
+    rtf_add_view(G, U1, "playing", 5, 1, mine, sizeof mine);
+    cb_conn_row c;
+    memset(&c, 0, sizeof c);
+    NwFrame in[4] = { sub_as(1, NW_SUB_GAMES, "", "tok-" U1), sub_as(2, NW_SUB_GAME, G, "tok-" U1),
+                      sub_as(3, NW_SUB_CHAT, G, "tok-" U1) };
+    memset(&in[3], 0, sizeof in[3]);
+    in[3].kind = NW_WS_PING;
+    T_EQ_INT(run_batch(&c, in, 4), CB_OK);
+    T_EQ_INT(g_out.n, 1);   // one message
+    NwFrame got[8];
+    T_EQ_INT(out_batch(0, got, 8), 5);
+    T_CHECK(got[0].kind == NW_WS_ACK && got[0].ref == 1 && got[0].why == 0);
+    T_CHECK(got[1].kind == NW_WS_ACK && got[1].ref == 2 && got[1].seated == 1);
+    T_CHECK(got[2].kind == NW_WS_CATCHUP && got[2].version == 5);
+    T_CHECK(got[3].kind == NW_WS_ACK && got[3].ref == 3 && got[3].why == 0);
+    T_EQ_INT(got[4].kind, NW_WS_PONG);
+    T_EQ_INT(c.n_topics, 3);
+    T_CHECK(has_topic(&c, "pv-" U1) && has_topic(&c, "gu-" G "-" U1) && has_topic(&c, "chat:" G));
+    // A lone reply goes as itself, not as a batch of one.
+    T_EQ_INT(run_batch(&c, &in[3], 1), CB_OK);
+    T_EQ_INT(g_out.n, 1);
+    T_EQ_INT(out(0).kind, NW_WS_PONG);
+    // A server's frame inside: refused whole, the row untouched.
+    cb_conn_row d;
+    memset(&d, 0, sizeof d);
+    NwFrame bad[2] = { sub_as(1, NW_SUB_GAMES, "", "tok-" U1) };
+    memset(&bad[1], 0, sizeof bad[1]);
+    bad[1].kind = NW_WS_PONG;
+    T_EQ_INT(run_batch(&d, bad, 2), CB_E_INVALID);
+    T_EQ_INT(g_out.n, 0);
+    T_EQ_INT(d.n_topics, 0);
+    T_EQ_STR(d.user_id, "");
+}
+
+// Replies past NW_BATCH_MAX are cut into several batches, in order.
+static void long_replies_split(void) {
+    static uint8_t entries[(NW_BATCH_MAX + 3) * 16];
+    int at = 0;
+    for (int i = 0; i < NW_BATCH_MAX + 3; i++) {
+        NwFrame a;
+        memset(&a, 0, sizeof a);
+        a.kind = NW_WS_ACK;
+        a.ref = (uint16_t)i;
+        uint8_t one[16];
+        int k = nw_frame_encode(&a, one, sizeof one);
+        int w = nw_batch_add(one, k, entries + at, (int)sizeof entries - at);
+        T_EQ_INT(w, 10);
+        at += w;
+    }
+    memset(&g_out, 0, sizeof g_out);
+    cb_nw_send_batched(entries, (size_t)at, NW_BATCH_MAX + 3, collect, NULL);
+    T_EQ_INT(g_out.n, 2);
+    NwFrame got[NW_BATCH_MAX];
+    T_EQ_INT(out_batch(0, got, NW_BATCH_MAX), NW_BATCH_MAX);
+    T_EQ_INT(got[NW_BATCH_MAX - 1].ref, NW_BATCH_MAX - 1);
+    T_EQ_INT(out_batch(1, got, NW_BATCH_MAX), 3);
+    T_EQ_INT(got[0].ref, NW_BATCH_MAX);
+    T_EQ_INT(got[2].ref, NW_BATCH_MAX + 2);
+    // One past a whole batch leaves a lone reply, sent as itself.
+    memset(&g_out, 0, sizeof g_out);
+    int one_more = at / (NW_BATCH_MAX + 3) * (NW_BATCH_MAX + 1);
+    cb_nw_send_batched(entries, (size_t)one_more, NW_BATCH_MAX + 1, collect, NULL);
+    T_EQ_INT(g_out.n, 2);
+    T_EQ_INT(out(1).kind, NW_WS_ACK);
+    T_EQ_INT(out(1).ref, NW_BATCH_MAX);
+}
+
 static void *loop_run(void *arg) { cb_loop_run(g_ctx.loop); return NULL; }
 static void drain_post(cb_loop *l, void *ud) { cb_server_drain(g_ctx.server, 2000); }
 
@@ -404,6 +524,8 @@ static void serve_end_to_end(void) {
 int main(void) {
     T_RUN(protocol);
     T_RUN(publishes);
+    T_RUN(batches);
+    T_RUN(long_replies_split);
     T_RUN(serve_end_to_end);
     return T_DONE();
 }

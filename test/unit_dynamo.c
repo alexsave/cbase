@@ -284,10 +284,9 @@ static void builders_valid_json(void) {
     snprintf(sn.player_ids[0], sizeof(cb_uuid), U1);
     snprintf(sn.player_ids[1], sizeof(cb_uuid), U1);   // a repeat is written once
     cb_chat_row ch = { .id = U2, .game_id = "ab12cd", .user_id = U1, .message = "line\n\"quoted\"", .created_at = 9 };
-    cb_conn_row cn = { .conn_id = "Abc=", .vsn = 2, .n_topics = 1, .expires_at = 7200123 };
+    cb_conn_row cn = { .conn_id = "Abc=", .n_topics = 1, .expires_at = 7200123 };
     snprintf(cn.topics[0], sizeof cn.topics[0], "gu-ab12cd-" U1);
-    cb_conn_row old = cn;
-    snprintf(old.topics[0], sizeof old.topics[0], "game-zzzzzz");
+    const char *index_topics[2] = { "gu-ab12cd-" U1, "game-zzzzzz" };
     cb_bot_row bots[1] = { { .id = B1, .nickname = "%Miami 1", .strategy_key = "random", .elo_rating = 1000, .previous_elo = -1 } };
     cb_uuid stored[2];
     snprintf(stored[0], sizeof stored[0], B1);
@@ -319,19 +318,29 @@ static void builders_valid_json(void) {
     }
     dw_snapshot_unlink(&r, "cbase", body(&(dw_req){ .body = key })); T_CHECK(valid(&r));
     dw_chat_put(&r, "cbase", &ch);                   T_CHECK(valid(&r));
-    dw_conn_put(&r, "cbase", &cn, &old, 5000);       T_CHECK(valid(&r));
+    dw_conn_put(&r, "cbase", &cn, 0, 5000);          T_CHECK(valid(&r));
+    T_EQ_STR(r.target, "DynamoDB_20120810.PutItem");   // one item: no transaction
     T_CHECK(strstr(cb_buf_cstr(&r.body), "\"expires_at\":{\"N\":\"7200\"}") != NULL);   // TTL in seconds
-    T_CHECK(strstr(cb_buf_cstr(&r.body), "TOPIC#game-zzzzzz") != NULL);                // the topic left is deleted
+    T_CHECK(strstr(cb_buf_cstr(&r.body), "TOPIC#") == NULL);                           // the index is not in it
+    T_CHECK(strstr(cb_buf_cstr(&r.body), "\"vsn\"") == NULL);                         // the Phoenix leftovers are gone
     // The compare-and-set: version 0 is "no live row" (absent, unversioned, or past its TTL at now)...
     T_CHECK(strstr(cb_buf_cstr(&r.body), "\"ConditionExpression\":\"attribute_not_exists(#ver) OR #expires_ms < :now\"") != NULL);
     T_CHECK(strstr(cb_buf_cstr(&r.body), "\":now\":{\"N\":\"5000\"}") != NULL);
     T_CHECK(strstr(cb_buf_cstr(&r.body), "\"ver\":{\"N\":\"1\"}") != NULL);
     // ...and a read version is matched exactly, the write leaving it one higher.
-    cn.version = 7;
-    dw_conn_put(&r, "cbase", &cn, &old, 5000);       T_CHECK(valid(&r));
+    dw_conn_put(&r, "cbase", &cn, 7, 5000);          T_CHECK(valid(&r));
     T_CHECK(strstr(cb_buf_cstr(&r.body), "\"ConditionExpression\":\"#ver = :ver\"") != NULL);
     T_CHECK(strstr(cb_buf_cstr(&r.body), "\":ver\":{\"N\":\"7\"}") != NULL);
     T_CHECK(strstr(cb_buf_cstr(&r.body), "\"ver\":{\"N\":\"8\"}") != NULL);
+    // The index: small entries (the connection and its TTL), each topic once.
+    dw_conn_index(&r, "cbase", "Abc=", index_topics, 2, true, 7200123); T_CHECK(valid(&r));
+    T_EQ_STR(r.target, "DynamoDB_20120810.BatchWriteItem");
+    T_CHECK(strstr(cb_buf_cstr(&r.body), "\"pk\":{\"S\":\"TOPIC#game-zzzzzz\"},\"sk\":{\"S\":\"CONN#Abc=\"}") != NULL);
+    T_CHECK(strstr(cb_buf_cstr(&r.body), "\"expires_at\":{\"N\":\"7200\"}") != NULL);
+    T_CHECK(strstr(cb_buf_cstr(&r.body), "\"topics\"") == NULL);
+    dw_conn_index(&r, "cbase", "Abc=", index_topics, 2, false, 0); T_CHECK(valid(&r));
+    T_CHECK(strstr(cb_buf_cstr(&r.body), "DeleteRequest") != NULL);
+    T_CHECK(strstr(cb_buf_cstr(&r.body), "PutRequest") == NULL);
     cn.version = 0;
     dw_conn_delete(&r, "cbase", &cn);                T_CHECK(valid(&r));
     dw_batch_delete(&r, "cbase", &key, 1);           T_CHECK(valid(&r));
@@ -426,21 +435,35 @@ static void items_round_trip(void) {
     T_CHECK(cbk.is_system);
     cb_chat_row_free(&cbk);
 
-    cb_conn_row cn = { .conn_id = "Abc=", .user_id = U1, .vsn = 2, .n_topics = 2, .expires_at = 7200123 }, cnb;
+    cb_conn_row cn = { .conn_id = "Abc=", .user_id = U1, .n_topics = 2, .expires_at = 7200123 }, cnb;
     snprintf(cn.topics[0], sizeof cn.topics[0], "pv-" U1);
-    snprintf(cn.join_refs[0], sizeof cn.join_refs[0], "3");
     snprintf(cn.topics[1], sizeof cn.topics[1], "game-ab12cd");
-    snprintf(cn.join_refs[1], sizeof cn.join_refs[1], "4");
-    cn.version = 2;
-    dw_conn_put(&r, "cbase", &cn, NULL, 0);
-    T_CHECK(cb_json_find((const char *)r.body.p, r.body.len, "TransactItems.2.Put.Item", &it) == CB_JSON_OBJ);
-    T_CHECK(dw_item_conn(it, &cnb));   // a TOPIC copy carries the whole row
+    dw_conn_put(&r, "cbase", &cn, 2, 0);
+    T_CHECK(cb_json_find((const char *)r.body.p, r.body.len, "Item", &it) == CB_JSON_OBJ);
+    T_CHECK(dw_item_conn(it, &cnb));
     T_EQ_INT(cnb.version, 3);          // as written: the version after this put
-    T_EQ_INT(cnb.vsn, 2);
     T_EQ_INT(cnb.n_topics, 2);
+    T_EQ_STR(cnb.topics[0], "pv-" U1);
     T_EQ_STR(cnb.topics[1], "game-ab12cd");
-    T_EQ_STR(cnb.join_refs[1], "4");
+    T_EQ_STR(cnb.user_id, U1);
     T_EQ_INT(cnb.expires_at, 7200123);
+    // An index entry reads as its connection and TTL.
+    const char *one_topic[1] = { "game-ab12cd" };
+    dw_conn_index(&r, "cbase", "Abc=", one_topic, 1, true, 7200123);
+    T_CHECK(cb_json_find((const char *)r.body.p, r.body.len, "RequestItems.cbase.0.PutRequest.Item", &it) == CB_JSON_OBJ);
+    T_CHECK(dw_item_conn(it, &cnb));
+    T_EQ_STR(cnb.conn_id, "Abc=");
+    T_EQ_INT(cnb.expires_at, 7200123);
+    T_EQ_INT(cnb.n_topics, 0);
+    // A row stored before 2026-10-17 (topics as {t, r} maps, a vsn) still reads,
+    // for the two hours its TTL lets it live.
+    const char *old_item = "{\"conn_id\":{\"S\":\"Old=\"},\"vsn\":{\"N\":\"3\"},\"ver\":{\"N\":\"4\"},"
+                           "\"expires_ms\":{\"N\":\"99\"},\"topics\":{\"L\":[{\"M\":{\"t\":{\"S\":\"pv-x\"},"
+                           "\"r\":{\"S\":\"1\"}}}]}}";
+    T_CHECK(dw_item_conn(cb_span_of(old_item, strlen(old_item)), &cnb));
+    T_EQ_INT(cnb.version, 4);
+    T_EQ_INT(cnb.n_topics, 1);
+    T_EQ_STR(cnb.topics[0], "pv-x");
 
     cb_bot_row bot = { .id = B1, .nickname = "%Seoul 3", .strategy_key = "robusta", .elo_rating = 1111, .previous_elo = 1100,
                        .games_played = 6, .created_at = 1, .updated_at = 2 }, bb;

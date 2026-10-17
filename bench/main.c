@@ -157,6 +157,7 @@ static void usage(void) {
             "  cbase-bench cpu [--note TEXT] [--out DIR]\n"
             "  cbase-bench direct --url <base> [--n 200] [--table cbase] [--region R] [--edge URL] [--burst K] [--note TEXT] [--out DIR]\n"
             "  cbase-bench subscribe --url <base> [--n 30] [--as 1] [--note TEXT] [--out DIR]\n"
+            "  cbase-bench page --url <base> [--n 5] [--batch 0|1] [--pushes 20] [--gap MS] [--note TEXT] [--out DIR]\n"
             "  cbase-bench spaced --url <base> [--path P] [--n 30] [--gap MS] [--games K] [--note TEXT] [--out DIR]\n"
             "  cbase-bench report [FILE...]\n");
 }
@@ -188,6 +189,8 @@ int main(int argc, char **argv) {
         else if (strcmp(a, "--as") == 0) o.as = atoi(v) != 0;
         else if (strcmp(a, "--gap") == 0) o.gap_ms = atoi(v);
         else if (strcmp(a, "--games") == 0) o.games = atoi(v);
+        else if (strcmp(a, "--batch") == 0) o.batch = atoi(v) != 0;
+        else if (strcmp(a, "--pushes") == 0) o.pushes = atoi(v);
         else { usage(); return 2; }
     }
     if (strcmp(cmd, "cpu") == 0) return bench_cpu(&o);
@@ -203,6 +206,10 @@ int main(int argc, char **argv) {
     if (strcmp(cmd, "subscribe") == 0) {
         if (o.n < 1) { usage(); return 2; }
         return bench_subscribe(&o);
+    }
+    if (strcmp(cmd, "page") == 0) {
+        if (o.n < 1 || o.n > 20 || o.pushes < 0) { usage(); return 2; }
+        return bench_page(&o);
     }
     if (strcmp(cmd, "spaced") == 0) {
         if (o.n < 1 || o.gap_ms < 0) { usage(); return 2; }
