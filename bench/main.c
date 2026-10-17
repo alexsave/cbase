@@ -157,7 +157,7 @@ static void usage(void) {
             "  cbase-bench cpu [--note TEXT] [--out DIR]\n"
             "  cbase-bench direct --url <base> [--n 200] [--table cbase] [--region R] [--edge URL] [--burst K] [--note TEXT] [--out DIR]\n"
             "  cbase-bench subscribe --url <base> [--n 30] [--as 1] [--note TEXT] [--out DIR]\n"
-            "  cbase-bench spaced --url <base> [--path P] [--n 30] [--gap MS] [--note TEXT] [--out DIR]\n"
+            "  cbase-bench spaced --url <base> [--path P] [--n 30] [--gap MS] [--games K] [--note TEXT] [--out DIR]\n"
             "  cbase-bench report [FILE...]\n");
 }
 
@@ -187,6 +187,7 @@ int main(int argc, char **argv) {
         else if (strcmp(a, "--burst") == 0) o.burst = atoi(v);
         else if (strcmp(a, "--as") == 0) o.as = atoi(v) != 0;
         else if (strcmp(a, "--gap") == 0) o.gap_ms = atoi(v);
+        else if (strcmp(a, "--games") == 0) o.games = atoi(v);
         else { usage(); return 2; }
     }
     if (strcmp(cmd, "cpu") == 0) return bench_cpu(&o);

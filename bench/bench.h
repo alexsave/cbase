@@ -5,7 +5,7 @@
 //   cbase-bench cpu [--out DIR]
 //   cbase-bench direct --url <base> [--n 200] [--table cbase] [--region us-east-1] [--edge URL] [--burst K]
 //   cbase-bench subscribe --url <base> [--n 30] [--as 1]
-//   cbase-bench spaced --url <base> [--path P] [--n 30] [--gap MS]
+//   cbase-bench spaced --url <base> [--path P] [--n 30] [--gap MS] [--games K]
 //   cbase-bench report [FILE...]        (default: every bench/results/*.txt)
 //
 // Each measuring command prints its run and saves it as
@@ -35,6 +35,7 @@ typedef struct {
     int         burst;       // direct: fresh connections at once, for a cold start
     bool        as;          // subscribe: also time NW_WS_SUB_AS
     int         gap_ms;      // spaced, roundtrip: quiet before each timed request
+    int         games;       // spaced: a throwaway account with this many games
 } bench_opts;
 
 int bench_roundtrip(const bench_opts *o);
