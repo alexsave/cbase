@@ -265,6 +265,25 @@ static void refresh_tokens_rotate(void) {
 
 // ---- games ---------------------------------------------------------------------------
 
+typedef struct {
+    int         n;
+    cb_game_row rows[4];   // the byte fields are not kept: state is checked in the walk
+    bool        state_ok, logs;
+} views_got;
+
+static bool collect_view_row(const cb_game_row *r, void *ud) {
+    views_got *v = ud;
+    v->state_ok &= r->state_len == sizeof g_state && memcmp(r->state, g_state, sizeof g_state) == 0 &&
+                   r->roster_len == sizeof g_roster && memcmp(r->roster, g_roster, sizeof g_roster) == 0;
+    v->logs |= r->logs != NULL || r->logs_len != 0;
+    if (v->n < 4) {
+        v->rows[v->n] = *r;
+        v->rows[v->n].state = v->rows[v->n].roster = v->rows[v->n].logs = NULL;
+        v->n++;
+    }
+    return true;
+}
+
 static void game_round_trip(void) {
     cb_store *s = open_fresh();
     cb_user_row a = mkuser("a@x.io", "A", 1);
@@ -311,6 +330,30 @@ static void game_round_trip(void) {
     T_EQ_INT(got.updated_at, 200);
     T_EQ_INT(got.last_commit_at, 200);
     cb_game_row_free(&got);
+
+    // The dashboard's read: every column but the log, in the order asked, a
+    // game that does not exist left out.
+    cb_game_row g2 = mkgame("ef34gh", 150);
+    T_EQ_INT(CB_STORE_CALL(s, game_create, &g2, a.id), CB_OK);
+    const char *ids[3] = { "ef34gh", "ffffff", "ab12cd" };
+    views_got v = { .state_ok = true };
+    T_EQ_INT(CB_STORE_CALL(s, games_get_views, ids, 3, collect_view_row, &v), 2);
+    T_EQ_INT(v.n, 2);
+    T_CHECK(v.state_ok);
+    T_CHECK(!v.logs);
+    T_EQ_STR(v.rows[0].id, "ef34gh");
+    T_EQ_INT(v.rows[0].version, 0);
+    T_EQ_INT(v.rows[0].created_at, 150);
+    T_EQ_STR(v.rows[1].id, "ab12cd");
+    T_EQ_INT(v.rows[1].status, 1);
+    T_EQ_INT(v.rows[1].version, 1);
+    T_CHECK(v.rows[1].has_seed);
+    T_EQ_MEM(v.rows[1].seed, CB_SEED_LEN, n.seed, CB_SEED_LEN);
+    T_CHECK(v.rows[1].needs_bots);
+    T_EQ_INT(v.rows[1].round_epoch, 1);
+    T_EQ_INT(v.rows[1].created_at, 100);
+    T_EQ_INT(v.rows[1].updated_at, 200);
+    T_EQ_INT(v.rows[1].last_commit_at, 200);
     cb_store_close(s);
 }
 

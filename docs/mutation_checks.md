@@ -260,6 +260,14 @@ The console was checked by eye in headless Chrome against a mock API, light and 
 
 Equivalent, recorded so nobody chases it: dropping the order lock around a drained fan-out survives, because the test (like Lambda) has one committing thread; the lock is kept for the invariant table_ops.c documents. Not unit-tested: main_lambda.c opening the window for an HTTP event (smoke_lambda's events commit nothing); the production timing line's `after` field shows it.
 
+## My games in one batch (2026-10-17)
+
+- store_dynamo.c: batches of 130 keys, not 100 -> `flow_games_batched` g.keys[0] == 100 (and the call count).
+- store_dynamo.c: an unprocessed answer sends the whole batch again -> `flow_games_batched` g.keys[1] == 2.
+- store_dynamo.c: unprocessed keys never sent again -> `flow_games_batched` the row count, g.calls == 3.
+- json_surface.c: logs_packed in the projection -> `games_get_shape` the exact body and strstr(body, "logs_packed") == NULL.
+- store.c: cb_store_games_get_each keeps the log -> `game_round_trip` !v.logs (unit_store, also run on DynamoDB Local).
+
 ## Bench (bench/unit_bench.c)
 
 - bench_stats.c: the percentile's `- 1e-9` dropped -> `percentiles_of_one_to_hundred` bs_percentile(v, 100, 7) == 7 (7.000000000000001 rounds up to the 8th).

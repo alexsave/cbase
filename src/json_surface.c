@@ -1404,6 +1404,75 @@ void dw_ratings_get(dw_req *r, const char *table, const char *const *ids, const 
     finish(&w);
 }
 
+// The game ROW items of ids for a list of views: BatchGetItem, consistent, a
+// repeated id asked once, and every column but logs_packed (the session log,
+// the bulk of a game's bytes, which a view never reads). The names are
+// aliased: status and state are DynamoDB reserved words.
+void dw_games_get(dw_req *r, const char *table, const char *const *ids, int n) {
+    char pk[KB];
+    cb_jw w;
+    begin(r, &w, "BatchGetItem");
+    cb_jw_key(&w, "RequestItems");
+    cb_jw_obj(&w);
+    cb_jw_key(&w, table);
+    cb_jw_obj(&w);
+    cb_jw_key(&w, "Keys");
+    cb_jw_arr(&w);
+    for (int i = 0; i < n; i++) {
+        bool dup = false;
+        for (int j = 0; j < i; j++) dup |= strcmp(ids[j], ids[i]) == 0;
+        if (dup) continue;
+        cb_jw_obj(&w);
+        av_s(&w, "pk", k(pk, sizeof pk, "GAME#", ids[i]));
+        av_s(&w, "sk", "ROW");
+        cb_jw_end(&w);
+    }
+    cb_jw_end(&w);
+    cb_jw_kbool(&w, "ConsistentRead", true);
+    static const char *const COLS[] = { "id", "status", "version", "state", "roster", "game_seed", "needs_bots",
+                                        "round_epoch", "created_at", "updated_at", "last_commit_at" };
+    const int nc = (int)(sizeof COLS / sizeof COLS[0]);
+    char proj[256] = "";
+    size_t off = 0;
+    for (int i = 0; i < nc; i++) off += (size_t)snprintf(proj + off, sizeof proj - off, "%s#c%d", i ? ", " : "", i);
+    cb_jw_kstr(&w, "ProjectionExpression", proj);
+    cb_jw_key(&w, "ExpressionAttributeNames");
+    cb_jw_obj(&w);
+    for (int i = 0; i < nc; i++) {
+        char name[8];
+        snprintf(name, sizeof name, "#c%d", i);
+        cb_jw_kstr(&w, name, COLS[i]);
+    }
+    cb_jw_end(&w);
+    cb_jw_end(&w);
+    cb_jw_end(&w);
+    finish(&w);
+}
+
+int dw_unprocessed_games(const char *body, size_t n, const char *table, const char *const *ids, int count,
+                         const char **out) {
+    cb_span un, key, val, keys, it;
+    size_t pos = 0;
+    int m = 0;
+    if (cb_json_find(body, n, "UnprocessedKeys", &un) != CB_JSON_OBJ) return 0;
+    while (dw_object_next(un, &pos, &key, &val)) {
+        if (!key_is(key, table) || cb_json_find(val.p, val.n, "Keys", &keys) != CB_JSON_ARR) continue;
+        size_t kp = 0;
+        while (dw_array_next(keys, &kp, &it)) {
+            char pk[KB];
+            if (!dw_get_s(it, "pk", pk, sizeof pk) || strncmp(pk, "GAME#", 5) != 0) continue;
+            for (int i = 0; i < count; i++) {
+                if (strcmp(ids[i], pk + 5) != 0) continue;
+                bool dup = false;   // asked once, so listed once; a repeated id in ids is still one key
+                for (int j = 0; j < m; j++) dup |= out[j] == ids[i] || strcmp(out[j], ids[i]) == 0;
+                if (!dup) out[m++] = ids[i];
+                break;
+            }
+        }
+    }
+    return m;
+}
+
 void dw_ratings_read(const char *body, size_t n, const char *table, const char *const *ids, const bool *is_bot,
                      int count, bool both, dw_rating_read *out) {
     cb_span items = dw_batch_items(body, n, table);

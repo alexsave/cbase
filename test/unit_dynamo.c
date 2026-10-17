@@ -898,6 +898,117 @@ static void flow_batch_unprocessed(void) {
     cb_store_close(s);
 }
 
+// The dashboard's rows: one BatchGetItem per 100 games (not a GetItem each),
+// without the session log, the unprocessed keys and only they sent again,
+// rows handed over in the order asked, a game that does not exist skipped.
+static void games_get_shape(void) {
+    dw_req r;
+    dw_req_init(&r);
+    const char *ids[3] = { "ab12cd", "ef34gh", "ab12cd" };
+    dw_games_get(&r, "cbase", ids, 3);
+    T_EQ_STR(r.target, "DynamoDB_20120810.BatchGetItem");
+    T_EQ_STR(cb_buf_cstr(&r.body),
+             "{\"ReturnConsumedCapacity\":\"TOTAL\",\"RequestItems\":{\"cbase\":{\"Keys\":["
+             "{\"pk\":{\"S\":\"GAME#ab12cd\"},\"sk\":{\"S\":\"ROW\"}},{\"pk\":{\"S\":\"GAME#ef34gh\"},\"sk\":{\"S\":\"ROW\"}}],"
+             "\"ConsistentRead\":true,\"ProjectionExpression\":\"#c0, #c1, #c2, #c3, #c4, #c5, #c6, #c7, #c8, #c9, #c10\","
+             "\"ExpressionAttributeNames\":{\"#c0\":\"id\",\"#c1\":\"status\",\"#c2\":\"version\",\"#c3\":\"state\","
+             "\"#c4\":\"roster\",\"#c5\":\"game_seed\",\"#c6\":\"needs_bots\",\"#c7\":\"round_epoch\",\"#c8\":\"created_at\","
+             "\"#c9\":\"updated_at\",\"#c10\":\"last_commit_at\"}}}}");
+    T_CHECK(valid(&r));
+    T_CHECK(strstr(cb_buf_cstr(&r.body), "logs_packed") == NULL);
+    dw_req_free(&r);
+}
+
+#define GB_N 130
+typedef struct {
+    int  calls, keys[8];
+    char asked[8][GB_N][8];
+} games_srv;
+
+// A table with every game but g00007, answering the first request with all
+// but two of its keys left unprocessed (g00100, g00050); every key is read
+// from the request body itself.
+static int games_send(void *ud, const char *target, const uint8_t *b, size_t len, int *status, cb_buf *resp) {
+    games_srv *g = ud;
+    T_EQ_STR(target, "DynamoDB_20120810.BatchGetItem");
+    T_CHECK(cb_json_valid((const char *)b, len));
+    int c = g->calls < 8 ? g->calls : 7;
+    g->calls++;
+    char body[65536];
+    snprintf(body, sizeof body, "%.*s", (int)len, (const char *)b);
+    cb_buf_puts(resp, "{\"Responses\":{\"cbase\":[");
+    cb_buf un;
+    cb_buf_init(&un);
+    int items = 0, held = 0;
+    g->keys[c] = 0;
+    for (const char *p = body; (p = strstr(p, "GAME#")) != NULL; p += 5) {
+        char id[8];
+        snprintf(id, sizeof id, "%.6s", p + 5);
+        if (g->keys[c] < GB_N) snprintf(g->asked[c][g->keys[c]], 8, "%s", id);
+        g->keys[c]++;
+        if (strcmp(id, "g00007") == 0) continue;
+        if (c == 0 && (strcmp(id, "g00100") == 0 || strcmp(id, "g00050") == 0)) {
+            cb_buf_printf(&un, "%s{\"pk\":{\"S\":\"GAME#%s\"},\"sk\":{\"S\":\"ROW\"}}", held++ ? "," : "", id);
+            continue;
+        }
+        cb_buf_printf(resp, "%s{\"pk\":{\"S\":\"GAME#%s\"},\"sk\":{\"S\":\"ROW\"},\"id\":{\"S\":\"%s\"},"
+                            "\"status\":{\"N\":\"1\"},\"version\":{\"N\":\"%d\"},\"state\":{\"B\":\"AQ==\"},"
+                            "\"roster\":{\"B\":\"Ag==\"}}",
+                      items++ ? "," : "", id, id, atoi(id + 1));
+    }
+    cb_buf_puts(resp, "]},\"UnprocessedKeys\":{");
+    if (held) cb_buf_printf(resp, "\"cbase\":{\"Keys\":[%s]}", cb_buf_cstr(&un));
+    cb_buf_puts(resp, "}}");
+    cb_buf_free(&un);
+    *status = 200;
+    return CB_OK;
+}
+
+typedef struct { int n; char ids[GB_N][8]; bool logs; } rows_seen;
+static bool seen_row(const cb_game_row *r, void *ud) {
+    rows_seen *s = ud;
+    if (s->n < GB_N) snprintf(s->ids[s->n++], 8, "%s", r->id);
+    s->logs |= r->logs != NULL || r->logs_len != 0;
+    return true;
+}
+
+static void flow_games_batched(void) {
+    games_srv g = { 0 };
+    cb_store *s = NULL;
+    T_EQ_INT(cb_store_open_dynamo_with("cbase", games_send, &g, &s), CB_OK);
+    char idbuf[GB_N][8];
+    const char *ids[GB_N];
+    for (int i = 0; i < GB_N; i++) {
+        snprintf(idbuf[i], sizeof idbuf[i], "g%05d", GB_N - i);   // newest first, not sorted
+        ids[i] = idbuf[i];
+    }
+    cb_store_throttles t0;
+    cb_store_throttles_get(&t0);
+    rows_seen seen = { 0 };
+    T_EQ_INT(CB_STORE_CALL(s, games_get_views, ids, GB_N, seen_row, &seen), GB_N - 1);
+    // 100 keys, then the two left unprocessed alone, then the last 30.
+    T_EQ_INT(g.calls, 3);
+    T_EQ_INT(g.keys[0], 100);
+    T_EQ_INT(g.keys[1], 2);
+    T_CHECK((strcmp(g.asked[1][0], "g00050") == 0 && strcmp(g.asked[1][1], "g00100") == 0) ||
+            (strcmp(g.asked[1][0], "g00100") == 0 && strcmp(g.asked[1][1], "g00050") == 0));
+    T_EQ_INT(g.keys[2], 30);
+    T_EQ_INT(throttled_since(&t0), 1);
+    // In the order asked, g00007 (no such game) left out, no session logs.
+    T_EQ_INT(seen.n, GB_N - 1);
+    int at = 0;
+    for (int i = 0; i < GB_N; i++) {
+        if (strcmp(ids[i], "g00007") == 0) continue;
+        if (at < seen.n && strcmp(seen.ids[at], ids[i]) != 0) {
+            T_EQ_STR(seen.ids[at], ids[i]);
+            break;
+        }
+        at++;
+    }
+    T_CHECK(!seen.logs);
+    cb_store_close(s);
+}
+
 typedef struct { int n; char ids[8][16]; } ids_t;
 static bool collect_id(const char *id, void *ud) {
     ids_t *t = ud;
@@ -1341,6 +1452,8 @@ int main(void) {
     T_RUN(flow_throttled_to_the_wall);
     T_RUN(flow_transaction_throttled);
     T_RUN(flow_batch_unprocessed);
+    T_RUN(games_get_shape);
+    T_RUN(flow_games_batched);
     T_RUN(flow_scan_pages);
     T_RUN(flow_signup_and_tokens);
     T_RUN(flow_chat_order);

@@ -184,6 +184,7 @@ typedef struct {
 } cb_snapshot_query;
 
 typedef bool (*cb_member_fn)(const cb_member_row *r, void *ud);
+typedef bool (*cb_game_fn)(const cb_game_row *r, void *ud);
 typedef bool (*cb_bot_fn)(const cb_bot_row *r, void *ud);
 typedef bool (*cb_rating_fn)(const cb_rating_row *r, void *ud);
 typedef bool (*cb_snapshot_fn)(const cb_snapshot_row *r, void *ud);
@@ -254,6 +255,12 @@ typedef struct cb_store_ops {
     // was taken (a commit writes only the seats that change): a caller that
     // needs the games' own order sorts the rows it loads, as PostgREST does.
     int (*games_of_user)(cb_store *s, const char *user_id, int limit, cb_member_fn fn, void *ud);
+    // The rows of `ids` for a list of views (the dashboard): every column but
+    // the session log (logs NULL, logs_len 0), read consistently. fn once per
+    // game that exists, in the order of ids (a missing id is skipped); false
+    // from fn stops. The number of rows handed to fn, or a CB_E_*. DynamoDB
+    // reads them in BatchGetItems of up to 100 keys, not one GetItem each.
+    int (*games_get_views)(cb_store *s, const char *const *ids, int n, cb_game_fn fn, void *ud);
     // 1 a member, 0 not, or a CB_E_*.
     int (*is_member)(cb_store *s, const char *game_id, const char *user_id);
     // The heartbeat's scan: needs_bots, updated_at < stale_before,
@@ -416,6 +423,10 @@ void cb_store_throttles_get(cb_store_throttles *out);
 #define CB_SCHEMA_VERSION 2
 extern const char cbase_schema_sql[];
 extern const unsigned long cbase_schema_sql_len;
+
+// games_get_views for a store with no round trip to save (SQLite, the tests'
+// memory store): game_get for each id, its log dropped.
+int cb_store_games_get_each(cb_store *s, const char *const *ids, int n, cb_game_fn fn, void *ud);
 
 // ---- wrappers: call these, not s->ops->... ------------------------------------------
 //

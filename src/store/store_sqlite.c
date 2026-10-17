@@ -1705,6 +1705,7 @@ static const cb_store_ops SQLITE_OPS = {
     .game_commit = sq_game_commit,
     .game_delete = sq_game_delete,
     .games_of_user = sq_games_of_user,
+    .games_get_views = cb_store_games_get_each,
     .is_member = sq_is_member,
     .games_needing_bots = sq_games_needing_bots,
     .lease_acquire = sq_lease_acquire,

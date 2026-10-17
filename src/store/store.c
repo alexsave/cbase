@@ -45,6 +45,25 @@ int cb_store_end_(int rc) {
 
 void cb_store_mark_busy(void) { t_busy = true; }
 
+int cb_store_games_get_each(cb_store *s, const char *const *ids, int n, cb_game_fn fn, void *ud) {
+    int count = 0;
+    for (int i = 0; i < n; i++) {
+        cb_game_row row;
+        memset(&row, 0, sizeof row);
+        int rc = s->ops->game_get(s, ids[i], &row);
+        if (rc == CB_E_NOT_FOUND) continue;
+        if (rc != CB_OK) return rc;
+        free(row.logs);
+        row.logs = NULL;
+        row.logs_len = 0;
+        count++;
+        bool more = fn(&row, ud);
+        cb_game_row_free(&row);
+        if (!more) break;
+    }
+    return count;
+}
+
 void cb_store_close(cb_store *s) {
     if (s && s->ops->close) s->ops->close(s);
 }

@@ -747,6 +747,27 @@ typedef struct {
     char (*ids)[CB_GAME_ID_MAX + 1];
 } id_list;
 
+// One dashboard row at a time, as the store reads them.
+typedef struct {
+    cb_section *s;
+    const char *user_id;
+    cb_view_fn  fn;
+    void       *ud;
+    int         n, rc;
+} views_walk;
+
+static bool view_step(const cb_game_row *row, void *ud) {
+    views_walk *w = ud;
+    cb_view_row v;
+    int g = view_of_row(w->s, row, w->user_id, &v);
+    if (g == CB_E_NOT_FOUND) { cb_view_row_free(&v); return true; }   // a membership the roster no longer seats
+    if (g != CB_OK) { cb_view_row_free(&v); w->rc = g; return false; }
+    w->n++;
+    bool more = w->fn(&v, w->ud);
+    cb_view_row_free(&v);
+    return more;
+}
+
 static bool collect_member(const cb_member_row *r, void *ud) {
     id_list *l = ud;
     if (l->n == l->cap) {
@@ -766,26 +787,16 @@ int cb_table_views_of_user(cb_ctx *ctx, const char *user_id, int limit, cb_view_
     int rc = CB_STORE_CALL(ctx->store, games_of_user, user_id, limit, collect_member, &l);
     if (rc < 0) { free(l.ids); return rc; }
     cb_section *s = cb_section_new();
-    if (!s) { free(l.ids); return CB_E_NOMEM; }
-    int n = 0;
-    rc = CB_OK;
-    for (int i = 0; i < l.n; i++) {
-        cb_game_row row;
-        memset(&row, 0, sizeof row);
-        int g = CB_STORE_CALL(ctx->store, game_get, l.ids[i], &row);
-        if (g == CB_E_NOT_FOUND) continue;   // deleted between the two reads
-        if (g != CB_OK) { rc = g; break; }
-        cb_view_row v;
-        g = view_of_row(s, &row, user_id, &v);
-        cb_game_row_free(&row);
-        if (g == CB_E_NOT_FOUND) { cb_view_row_free(&v); continue; }   // a membership the roster no longer seats
-        if (g != CB_OK) { cb_view_row_free(&v); rc = g; break; }
-        n++;
-        bool more = fn(&v, ud);
-        cb_view_row_free(&v);
-        if (!more) break;
-    }
+    const char **ptrs = malloc((size_t)(l.n ? l.n : 1) * sizeof *ptrs);
+    if (!s || !ptrs) { cb_section_free(s); free(ptrs); free(l.ids); return CB_E_NOMEM; }
+    for (int i = 0; i < l.n; i++) ptrs[i] = l.ids[i];
+    // One batch read of the rows (a game deleted between the two reads is
+    // simply not among them), each masked for this viewer by the kernel.
+    views_walk w = { .s = s, .user_id = user_id, .fn = fn, .ud = ud };
+    rc = CB_STORE_CALL(ctx->store, games_get_views, ptrs, l.n, view_step, &w);
     cb_section_free(s);
+    free(ptrs);
     free(l.ids);
-    return rc == CB_OK ? n : rc;
+    if (rc < 0) return rc;
+    return w.rc != CB_OK ? w.rc : w.n;
 }

@@ -261,6 +261,14 @@ bool dw_game_commit(dw_req *r, const char *table, const cb_game_commit *c, const
 // rated seat its RATING (a human, plus the PROFILE) or BOT item. Also used by
 // ratings_for (every id as both a bot and a human).
 void dw_ratings_get(dw_req *r, const char *table, const char *const *ids, const bool *is_bot, int n, bool both_kinds);
+// The game rows of ids (at most 100) for a list of views: BatchGetItem,
+// consistent, every column but logs_packed; read the answer with
+// dw_batch_items and dw_item_game (logs NULL).
+void dw_games_get(dw_req *r, const char *table, const char *const *ids, int n);
+// The ids of a dw_games_get answer's UnprocessedKeys (throttled, or past the
+// 16 MB answer limit), as pointers into ids, into out (room for count); how many.
+int dw_unprocessed_games(const char *body, size_t n, const char *table, const char *const *ids, int count,
+                         const char **out);
 // Reads a dw_ratings_get answer into one dw_rating_read per id (bots first
 // when both kinds were asked for).
 void dw_ratings_read(const char *body, size_t n, const char *table, const char *const *ids, const bool *is_bot,

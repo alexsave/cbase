@@ -554,6 +554,65 @@ static int dy_game_get(cb_store *s, const char *id, cb_game_row *out) {
     return rc;
 }
 
+// BatchGetItem of up to 100 game rows into got[] (by position in ids), sending
+// again only the keys DynamoDB left unprocessed, with the throttle's pauses.
+#define GAMES_BATCH 100
+static int games_batch(dyn *d, const char *const *ids, int n, cb_game_row *got, bool *have) {
+    const char *pend[GAMES_BATCH];
+    int np = n;
+    for (int i = 0; i < n; i++) pend[i] = ids[i];
+    dw_req r;
+    dw_req_init(&r);
+    cb_buf resp;
+    cb_buf_init(&resp);
+    backoff b;
+    backoff_start(d, &b);
+    int rc = CB_OK;
+    while (np > 0) {
+        dw_req_free(&r);
+        dw_req_init(&r);
+        dw_games_get(&r, d->table, pend, np);
+        if (call(d, &r, &resp) != DW_OK) { rc = CB_E_DB; break; }
+        cb_span items = dw_batch_items(cb_buf_cstr(&resp), resp.len, d->table), it;
+        size_t pos = 0;
+        while (rc == CB_OK && dw_array_next(items, &pos, &it)) {
+            cb_game_row row;
+            if (!dw_item_game(it, &row)) { rc = CB_E_DB; break; }
+            bool kept = false;
+            for (int i = 0; i < n && !kept; i++)
+                if (!have[i] && strcmp(ids[i], row.id) == 0) { got[i] = row; have[i] = kept = true; }
+            if (!kept) cb_game_row_free(&row);
+        }
+        if (rc != CB_OK) break;
+        np = dw_unprocessed_games(cb_buf_cstr(&resp), resp.len, d->table, ids, n, pend);
+        if (np > 0 && !backoff_pause(&b, true, r.target)) { rc = CB_E_DB; break; }
+    }
+    cb_buf_free(&resp);
+    dw_req_free(&r);
+    return rc;
+}
+
+static int dy_games_get_views(cb_store *s, const char *const *ids, int n, cb_game_fn fn, void *ud) {
+    cb_game_row got[GAMES_BATCH];
+    bool have[GAMES_BATCH];
+    int count = 0, rc = CB_OK;
+    bool more = true;
+    for (int base = 0; base < n && more && rc == CB_OK; base += GAMES_BATCH) {
+        int m = n - base < GAMES_BATCH ? n - base : GAMES_BATCH;
+        memset(have, 0, sizeof have);
+        rc = games_batch(D(s), ids + base, m, got, have);
+        for (int i = 0; i < m; i++) {
+            if (!have[i]) continue;
+            if (rc == CB_OK && more) {
+                count++;
+                more = fn(&got[i], ud);
+            }
+            cb_game_row_free(&got[i]);
+        }
+    }
+    return rc == CB_OK ? count : rc;
+}
+
 static int dy_game_create(cb_store *s, const cb_game_row *g, const char *creator) {
     dyn *d = D(s);
     dw_req r;
@@ -1465,6 +1524,7 @@ static const cb_store_ops DYNAMO_OPS = {
     .game_commit = dy_game_commit,
     .game_delete = dy_game_delete,
     .games_of_user = dy_games_of_user,
+    .games_get_views = dy_games_get_views,
     .is_member = dy_is_member,
     .games_needing_bots = dy_games_needing_bots,
     .lease_acquire = dy_lease_acquire,

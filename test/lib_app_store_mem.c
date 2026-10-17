@@ -414,6 +414,7 @@ static const cb_store_ops tm_ops = {
     .user_create = m_user_create,
     .user_delete = m_user_delete,
     .game_get = m_game_get,
+    .games_get_views = cb_store_games_get_each,
     .game_create = m_game_create,
     .game_commit = m_game_commit,
     .game_delete = m_game_delete,
