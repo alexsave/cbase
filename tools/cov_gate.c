@@ -63,7 +63,7 @@ static int read_lcov(const char *path) {
             GROW(g_files, g_nfiles, g_capfiles);
             cur = &g_files[g_nfiles++];
             memset(cur, 0, sizeof *cur);
-            snprintf(cur->path, sizeof cur->path, "%s", short_path(line + 3));
+            snprintf(cur->path, sizeof cur->path, "%.*s", (int)sizeof cur->path - 1, short_path(line + 3));
         } else if (!cur) {
             continue;
         } else if (!strncmp(line, "FN:", 3)) {

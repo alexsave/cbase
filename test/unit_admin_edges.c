@@ -254,7 +254,7 @@ static void lambda_links(void) {
 // The backups directory beside the database: listed newest first, only the
 // console's own files; and one that cannot be made is a 500.
 static void backups_newest_first(void) {
-    char dir[256], path[400], b[400];
+    char dir[256], path[700], b[400];
     const char *tmp = getenv("TMPDIR");
     snprintf(dir, sizeof dir, "%s/cbase-admin-edges-%d", tmp && *tmp ? tmp : "/tmp", (int)getpid());
     mkdir(dir, 0700);

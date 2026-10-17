@@ -275,10 +275,10 @@ static void game_create_delete(void) {
     cb_store_close(s);
 }
 
-typedef struct { int n; char ids[8][16]; int stop_after; } games_seen;
+typedef struct { int n; char ids[8][CB_GAME_ID_MAX + 1]; int stop_after; } games_seen;
 static bool see_member(const cb_member_row *m, void *ud) {
     games_seen *w = ud;
-    if (w->n < 8) snprintf(w->ids[w->n], 16, "%s", m->game_id);
+    if (w->n < 8) snprintf(w->ids[w->n], sizeof w->ids[0], "%s", m->game_id);
     w->n++;
     return w->stop_after <= 0 || w->n < w->stop_after;
 }
@@ -328,16 +328,16 @@ static void bots_idle_deletes_the_marker(void) {
 
 // ---- bots and ratings ------------------------------------------------------------------------------
 
-typedef struct { int n; char names[8][40]; int32_t elo[8]; int stop_after; } names_seen;
+typedef struct { int n; char names[8][80]; int32_t elo[8]; int stop_after; } names_seen;
 static bool see_bot(const cb_bot_row *b, void *ud) {
     names_seen *w = ud;
-    if (w->n < 8) { snprintf(w->names[w->n], 40, "%s", b->nickname); w->elo[w->n] = b->elo_rating; }
+    if (w->n < 8) { snprintf(w->names[w->n], sizeof w->names[0], "%s", b->nickname); w->elo[w->n] = b->elo_rating; }
     w->n++;
     return w->stop_after <= 0 || w->n < w->stop_after;
 }
 static bool see_rating(const cb_rating_row *r, void *ud) {
     names_seen *w = ud;
-    if (w->n < 8) { snprintf(w->names[w->n], 40, "%s", r->user_id); w->elo[w->n] = r->elo_rating; }
+    if (w->n < 8) { snprintf(w->names[w->n], sizeof w->names[0], "%s", r->user_id); w->elo[w->n] = r->elo_rating; }
     w->n++;
     return w->stop_after <= 0 || w->n < w->stop_after;
 }
@@ -577,7 +577,7 @@ static void conns_put_get_delete_by_topic(void) {
 
 static bool see_name(const char *name, void *ud) {
     names_seen *w = ud;
-    if (w->n < 8) snprintf(w->names[w->n], 40, "%s", name);
+    if (w->n < 8) snprintf(w->names[w->n], sizeof w->names[0], "%s", name);
     w->n++;
     return w->n < 3;
 }
