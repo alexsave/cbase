@@ -177,11 +177,12 @@ static void users_round_trip(void) {
     T_EQ_INT(CB_STORE_CALL(s, user_create, &dup), CB_E_CONFLICT);
     T_EQ_INT(CB_STORE_CALL(s, user_get, dup.id, &got), CB_E_NOT_FOUND);
 
-    // The trigger's rating row came with the account.
+    // The trigger's rating row came with the account, off the leaderboard
+    // until they play (the index key is sparse).
     T_EQ_INT(rating_of(s, a.id), TABLE_RATING_START);
     ratings_t r = { 0 };
-    T_EQ_INT(CB_STORE_CALL(s, ratings_list, collect_rating, &r), 2);
-    T_EQ_STR(r.rows[0].user_id, strcmp(a.id, b.id) < 0 ? a.id : b.id);
+    T_EQ_INT(CB_STORE_CALL(s, ratings_list, collect_rating, &r), 0);
+    T_EQ_INT(CB_STORE_CALL(s, ratings_top, 100, collect_rating, &r), 0);
 
     T_EQ_INT(CB_STORE_CALL(s, user_set_password, a.id, "$2b$10$new"), CB_OK);
     T_EQ_INT(CB_STORE_CALL(s, user_touch_sign_in, a.id, 5555), CB_OK);
@@ -699,6 +700,26 @@ static void ratings_applied_by_commit(void) {
     CB_STORE_CALL(s, ratings_list, collect_rating, &r);
     T_EQ_INT(r.rows[0].previous_elo, 1012);
     T_EQ_INT(r.rows[0].games_played, 2);
+    // The leaderboard's read: the played rows, highest first, at most `limit`.
+    r.n = 0;
+    T_EQ_INT(CB_STORE_CALL(s, ratings_top, 100, collect_rating, &r), 2);
+    T_EQ_STR(r.rows[0].user_id, b.id);
+    T_EQ_INT(r.rows[0].elo_rating, 1010);
+    T_EQ_STR(r.rows[1].user_id, a.id);
+    T_EQ_INT(r.rows[1].elo_rating, 0);
+    r.n = 0;
+    T_EQ_INT(CB_STORE_CALL(s, ratings_top, 1, collect_rating, &r), 1);
+    T_EQ_STR(r.rows[0].user_id, b.id);
+    T_EQ_INT(CB_STORE_CALL(s, ratings_top, 0, collect_rating, &r), 0);
+    // A third player who signed up and never played is not on it.
+    cb_user_row z = mkuser("zed@x.io", "Zed", 9);
+    T_EQ_INT(CB_STORE_CALL(s, user_create, &z), CB_OK);
+    r.n = 0;
+    T_EQ_INT(CB_STORE_CALL(s, ratings_top, 100, collect_rating, &r), 2);
+    // The reindex leaves every row's values as they are.
+    cb_rating_row same = r.rows[0];
+    T_EQ_INT(CB_STORE_CALL(s, rating_reindex, &same), CB_OK);
+    T_EQ_INT(rating_of(s, b.id), 1010);
     cb_store_close(s);
 }
 

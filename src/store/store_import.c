@@ -501,6 +501,39 @@ int cb_import_seed_bots(cb_store *s) {
     return rc;
 }
 
+typedef struct {
+    cb_rating_row *rows;
+    int            n, cap;
+    bool           oom;
+} rating_set;
+
+static bool add_rating(const cb_rating_row *r, void *ud) {
+    rating_set *set = ud;
+    if (set->n == set->cap) {
+        int cap = set->cap ? set->cap * 2 : 64;
+        cb_rating_row *p = realloc(set->rows, (size_t)cap * sizeof *p);
+        if (!p) { set->oom = true; return false; }
+        set->rows = p;
+        set->cap = cap;
+    }
+    set->rows[set->n++] = *r;
+    return true;
+}
+
+int cb_import_reindex_ratings(cb_store *s) {
+    rating_set all = { 0 };
+    int rc = CB_STORE_CALL(s, ratings_list, add_rating, &all);
+    if (rc >= 0 && all.oom) rc = CB_E_NOMEM;
+    int done = 0;
+    for (int i = 0; rc >= 0 && i < all.n; i++) {
+        int r = CB_STORE_CALL(s, rating_reindex, &all.rows[i]);
+        if (r == CB_OK) done++;
+        else if (r != CB_E_CONFLICT) rc = r;   // a raced row is the commit's; anything else stops it
+    }
+    free(all.rows);
+    return rc < 0 ? rc : done;
+}
+
 int cb_import_dir(cb_store *s, const char *dir, FILE *out) {
     tally users = { 0 }, bots = { 0 }, ratings = { 0 }, games = { 0 }, hands = { 0 }, bhands = { 0 }, snaps = { 0 },
           chat = { 0 };

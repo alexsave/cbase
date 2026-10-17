@@ -64,6 +64,14 @@ static const char *tsk(char *out, size_t cap, int64_t ms, const char *id) {
     return out;
 }
 
+// A rating's GSI2 sort key (json_surface.h "THE ITEM LAYOUT").
+static const char *rsk(char *out, size_t cap, int64_t elo, const char *id) {
+    if (elo < 0) elo = 0;
+    if (elo > INT32_MAX) elo = INT32_MAX;
+    snprintf(out, cap, "E#%010" PRId64 "#%s", (int64_t)INT32_MAX - elo, id ? id : "");
+    return out;
+}
+
 #define KB 400   // room for any key we build (a topic is at most 128)
 
 // ---- attribute values ------------------------------------------------------------------
@@ -812,6 +820,7 @@ void dw_query(dw_req *r, const char *table, dw_query_kind kind, const char *arg,
     case DWQ_SCAN: pfx = "SCAN"; arg = ""; break;
     case DWQ_BOTS: index = GSI2; pfx = "BOTS"; arg = ""; break;
     case DWQ_RATINGS: index = GSI2; pfx = "RATINGS"; arg = ""; break;
+    case DWQ_RATINGS_TOP: index = GSI2; pfx = "RATINGS"; arg = ""; prefix = "E#"; break;
     case DWQ_USERS: index = GSI2; pfx = "USERS"; arg = ""; fwd = false; break;
     }
     if (index) {
@@ -884,8 +893,11 @@ static void item_rating(cb_jw *w, const cb_rating_row *rt) {
     char pk[KB];
     av_s(w, "pk", k(pk, sizeof pk, "USER#", rt->user_id));
     av_s(w, "sk", "RATING");
-    av_s(w, "gsi2pk", "RATINGS");
-    av_s(w, "gsi2sk", rt->user_id);
+    if (rt->games_played > 0) {   // sparse: only a player who has played is on the leaderboard
+        char gsk[KB];
+        av_s(w, "gsi2pk", "RATINGS");
+        av_s(w, "gsi2sk", rsk(gsk, sizeof gsk, rt->elo_rating, rt->user_id));
+    }
     av_s(w, "user_id", rt->user_id);
     if (rt->username[0]) av_s(w, "username", rt->username);
     av_n(w, "elo_rating", rt->elo_rating);
@@ -1254,10 +1266,17 @@ static int rating_write(cb_jw *w, const char *table, const cb_game_commit *c, in
         return 2;
     }
     int64_t v = (int64_t)cur + delta;
+    if (v < 0) v = 0;
     update_open(w, table, pk, sk, true);
     ux u;
     ux_init(&u);
-    ux_set_n(&u, "elo_rating", v < 0 ? 0 : v);
+    ux_set_n(&u, "elo_rating", v);
+    if (!bot) {
+        // The row joins (or moves in) the leaderboard index: it has played now.
+        char gsk[KB];
+        ux_set_s(&u, "gsi2pk", "RATINGS");
+        ux_set_s(&u, "gsi2sk", rsk(gsk, sizeof gsk, v, id));
+    }
     ux_set_n(&u, "previous_elo", cur);
     ux_set_n(&u, "updated_at", at);
     ux_name(&u, "games_played");
@@ -1562,6 +1581,29 @@ void dw_rating_import(dw_req *r, const char *table, const cb_rating_row *rt) {
     cb_jw_obj(&w);
     item_rating(&w, rt);
     cb_jw_end(&w);
+    finish(&w);
+}
+
+void dw_rating_reindex(dw_req *r, const char *table, const cb_rating_row *rt) {
+    char pk[KB], gsk[KB];
+    cb_jw w;
+    begin(r, &w, "UpdateItem");
+    update_open(&w, table, k(pk, sizeof pk, "USER#", rt->user_id), "RATING", false);
+    ux u;
+    ux_init(&u);
+    if (rt->games_played > 0) {
+        ux_set_s(&u, "gsi2pk", "RATINGS");
+        ux_set_s(&u, "gsi2sk", rsk(gsk, sizeof gsk, rt->elo_rating, rt->user_id));
+    } else {
+        ux_remove(&u, "gsi2pk");
+        ux_remove(&u, "gsi2sk");
+    }
+    ux_name(&u, "elo_rating");
+    ux_name(&u, "games_played");
+    ux_val_n(&u, ":elo", rt->elo_rating);
+    ux_val_n(&u, ":games", rt->games_played);
+    ux_emit(&w, &u, "#elo_rating = :elo AND #games_played = :games");
+    ux_free(&u);
     finish(&w);
 }
 
@@ -2936,4 +2978,34 @@ void cb_js_client_function_url_event(cb_buf *out, const char *bearer, int conten
         "\"stage\":\"$default\",\"time\":\"13/Oct/2026:12:00:00 +0000\",\"timeEpoch\":1760356800000},"
         "\"body\":\"%s\",\"isBase64Encoded\":true}",
         bearer, content_length, body_b64);
+}
+
+// ---- CloudFront: the one XML shape (json_surface.h "CloudFront") --------------------------
+
+static void xml_text(cb_buf *b, const char *s) {
+    for (; *s; s++) {
+        switch (*s) {
+        case '&': cb_buf_puts(b, "&amp;"); break;
+        case '<': cb_buf_puts(b, "&lt;"); break;
+        case '>': cb_buf_puts(b, "&gt;"); break;
+        case '"': cb_buf_puts(b, "&quot;"); break;
+        case '\'': cb_buf_puts(b, "&apos;"); break;
+        default: cb_buf_putc(b, *s);
+        }
+    }
+}
+
+bool cf_invalidation_xml(cb_buf *out, const char *const *paths, int n, const char *caller_ref) {
+    cb_buf_puts(out, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                     "<InvalidationBatch xmlns=\"http://cloudfront.amazonaws.com/doc/2020-05-31/\">");
+    cb_buf_printf(out, "<Paths><Quantity>%d</Quantity><Items>", n);
+    for (int i = 0; i < n; i++) {
+        cb_buf_puts(out, "<Path>");
+        xml_text(out, paths[i]);
+        cb_buf_puts(out, "</Path>");
+    }
+    cb_buf_puts(out, "</Items></Paths><CallerReference>");
+    xml_text(out, caller_ref);
+    cb_buf_puts(out, "</CallerReference></InvalidationBatch>");
+    return !out->oom;
 }

@@ -8,7 +8,9 @@
 #include "t.h"
 
 #include "aws/apigw_mgmt.h"
+#include "app/edge.h"
 #include "aws/aws_call.h"
+#include "aws/cloudfront.h"
 #include "aws/event.h"
 #include "aws/https.h"
 #include "aws/lambda_invoke.h"
@@ -168,6 +170,102 @@ static void lambda_self_invoke(void) {
     unsetenv("AWS_ENDPOINT_URL_LAMBDA");
 }
 
+// CreateInvalidation: the recorded request (API reference, CreateInvalidation,
+// "Request Syntax", with our two paths), signed for cloudfront in us-east-1
+// whatever AWS_REGION says, and 201 is its only success.
+static const char CF_BODY[] =
+    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+    "<InvalidationBatch xmlns=\"http://cloudfront.amazonaws.com/doc/2020-05-31/\">"
+    "<Paths><Quantity>2</Quantity><Items><Path>/v1/leaderboard</Path><Path>/v1/bots</Path></Items></Paths>"
+    "<CallerReference>cbase-1760700000000-ref</CallerReference></InvalidationBatch>";
+
+static void cloudfront_invalidation(void) {
+    // The bytes, pure.
+    const char *paths[2];
+    T_EQ_INT(cb_edge_paths(CB_EDGE_ALL, paths), 2);
+    T_EQ_STR(paths[0], "/v1/leaderboard");
+    T_EQ_STR(paths[1], "/v1/bots");
+    T_EQ_INT(cb_edge_paths(CB_EDGE_BOARD, paths), 1);
+    T_EQ_STR(paths[0], "/v1/leaderboard");
+    T_EQ_INT(cb_edge_paths(CB_EDGE_BOTS, paths), 1);
+    T_EQ_STR(paths[0], "/v1/bots");
+    T_EQ_INT(cb_edge_paths(CB_EDGE_ALL, paths), 2);
+    cb_buf path, body;
+    cb_buf_init(&path);
+    cb_buf_init(&body);
+    T_EQ_INT(cb_cloudfront_invalidation("E2ABCDEF123456", paths, 2, "cbase-1760700000000-ref", &path, &body), CB_OK);
+    T_EQ_STR(cb_buf_cstr(&path), "/2020-05-31/distribution/E2ABCDEF123456/invalidation");
+    T_EQ_STR(cb_buf_cstr(&body), CF_BODY);
+    cb_buf_free(&path);
+    cb_buf_free(&body);
+    cb_buf_init(&body);   // text is escaped
+    const char *odd[1] = { "/a&b<c>" };
+    T_CHECK(cf_invalidation_xml(&body, odd, 1, "r\"'"));
+    T_CHECK(strstr(cb_buf_cstr(&body), "<Path>/a&amp;b&lt;c&gt;</Path>") != NULL);
+    T_CHECK(strstr(cb_buf_cstr(&body), "<CallerReference>r&quot;&apos;</CallerReference>") != NULL);
+    cb_buf_free(&body);
+    cb_buf_init(&path);
+    cb_buf_init(&body);
+    T_EQ_INT(cb_cloudfront_invalidation("", paths, 2, "r", &path, &body), CB_E_INVALID);
+    T_EQ_INT(cb_cloudfront_invalidation("E1", paths, 0, "r", &path, &body), CB_E_INVALID);
+    cb_buf_free(&path);
+    cb_buf_free(&body);
+
+    // On the wire.
+    set_env();
+    tls_srv s;
+    T_EQ_INT(tls_srv_start(&s, answer, NULL), 0);
+    T_EQ_INT(cb_https_set_ca_file(s.ca_file), CB_OK);
+    char ep[128];
+    snprintf(ep, sizeof ep, "https://localhost:%d", s.port);
+    setenv("AWS_ENDPOINT_URL_CLOUDFRONT", ep, 1);
+    g_status = 201;
+    T_EQ_INT(cb_cloudfront_invalidate("E2ABCDEF123456", paths, 2, "cbase-1760700000000-ref"), CB_OK);
+    char *req = tls_srv_last(&s);
+    T_CHECK(cb_starts_with(req, "POST /2020-05-31/distribution/E2ABCDEF123456/invalidation HTTP/1.1\r\n"));
+    T_EQ_STR(strstr(req, "\r\n\r\n") + 4, CF_BODY);
+    char v[512];
+    hdr(req, "Content-Type", v, sizeof v);
+    T_EQ_STR(v, "application/xml");
+    hdr(req, "Authorization", v, sizeof v);
+    T_CHECK(strstr(v, "/us-east-1/cloudfront/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-security-token, ") != NULL);
+    setenv("AWS_REGION", "us-east-1", 1);   // what it was signed for, so the signature can be recomputed
+    static const char *const extra[] = { "Content-Type: application/xml" };
+    signature_matches(req, "cloudfront", extra, 1);
+    free(req);
+    set_env();
+    // Anything but 201 is a failure (a 200 included).
+    g_status = 200;
+    T_EQ_INT(cb_cloudfront_invalidate("E2ABCDEF123456", paths, 1, "r2"), CB_E_IO);
+
+    // The flush: one request for everything marked, then nothing pending.
+    cb_config cfg;
+    memset(&cfg, 0, sizeof cfg);
+    snprintf(cfg.cf_distribution, sizeof cfg.cf_distribution, "E2ABCDEF123456");
+    int before = atomic_load(&s.requests);
+    T_EQ_INT(cb_edge_flush(&cfg), CB_OK);   // nothing marked: nothing sent
+    T_EQ_INT(atomic_load(&s.requests), before);
+    g_status = 201;
+    cb_edge_stale(CB_EDGE_BOARD);
+    cb_edge_stale(CB_EDGE_BOARD);
+    cb_edge_stale(CB_EDGE_BOTS);
+    T_EQ_INT(cb_edge_flush(&cfg), CB_OK);
+    T_EQ_INT(atomic_load(&s.requests), before + 1);
+    req = tls_srv_last(&s);
+    T_CHECK(strstr(req, "<Quantity>2</Quantity><Items><Path>/v1/leaderboard</Path><Path>/v1/bots</Path></Items>") != NULL);
+    T_CHECK(strstr(req, "<CallerReference>cbase-") != NULL);
+    free(req);
+    T_EQ_INT(cb_edge_pending(), 0);
+    // No distribution: the marks are dropped, nothing is sent.
+    cb_edge_stale(CB_EDGE_BOARD);
+    cfg.cf_distribution[0] = 0;
+    T_EQ_INT(cb_edge_flush(&cfg), CB_OK);
+    T_EQ_INT(atomic_load(&s.requests), before + 1);
+    T_EQ_INT(cb_edge_pending(), 0);
+    tls_srv_stop(&s);
+    unsetenv("AWS_ENDPOINT_URL_CLOUDFRONT");
+}
+
 // The DynamoDB backend's production transport is cb_aws_call too: a GetItem
 // reaches the endpoint signed for "dynamodb" with its target and content type
 // among the signed headers, and the answer comes back through the store.
@@ -278,6 +376,7 @@ int main(void) {
     T_RUN(url_parse);
     T_RUN(apigw_post_and_delete);
     T_RUN(lambda_self_invoke);
+    T_RUN(cloudfront_invalidation);
     T_RUN(dynamo_through_aws_call);
     T_RUN(dynamo_over_plain_http);
     return T_DONE();

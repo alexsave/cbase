@@ -12,6 +12,8 @@
 #include "functions_http.h"
 
 #include "app_internal.h"
+#include "edge.h"
+#include "v1_http.h"
 #include "auth/auth.h"
 #include "net/router.h"
 #include "util/err.h"
@@ -54,8 +56,11 @@ static void octets(cb_http_res *res, const uint8_t *body, size_t n) {
 // What a cb_table_run failure says to the client: a game that is not there is
 // the client's (NOT_FOUND, 400), anything else the server's (INTERNAL, 500;
 // "write contention" included, as runTableOp's thrown Error was).
+// A store throttled past its backoff is 503 BUSY (v1_http.h cb_v1_busy); the
+// clients send only reads again, since a write may have landed before it.
 static void run_failure(cb_http_res *res, int rc) {
     if (rc == CB_E_NOT_FOUND) refusal(res, 400, ASK_WHY_NOT_FOUND, 0, 0);
+    else if (rc == CB_E_BUSY) cb_v1_busy(res);
     else refusal(res, 500, ASK_WHY_INTERNAL, 0, 0);
 }
 
@@ -228,7 +233,7 @@ static void h_create(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     int rc = cb_table_create(ctx, &u, &r);
     if (rc != CB_OK) {
         CB_ERROR("functions", "create failed (%s)", cb_strerror(rc));
-        refusal(res, 500, ASK_WHY_INTERNAL, 0, 0);
+        run_failure(res, rc == CB_E_NOT_FOUND ? CB_E_DB : rc);
         return;
     }
     octets(res, r.envelope, r.envelope_len);
@@ -366,6 +371,7 @@ int cb_app_delete_account(cb_ctx *ctx, const char *user_id, int *refused_code, i
     //    the rating row and chat go with it).
     rc = CB_STORE_CALL(ctx->store, rating_set_username, user_id, NULL);
     if (rc != CB_OK && rc != CB_E_NOT_FOUND) return rc;
+    cb_edge_stale(CB_EDGE_BOARD);   // their name and row leave the leaderboard
     if (!ctx->auth) return CB_E_STATE;
     return cb_auth_delete_user(ctx->auth, user_id);
 }

@@ -27,6 +27,10 @@ typedef struct {
     // (https://<api-id>.execute-api.<region>.amazonaws.com/<stage>). Lambda
     // only; empty means pushes are dropped (logged once).
     char ws_endpoint[512];
+    // CBASE_CF_DISTRIBUTION, the CloudFront distribution in front of the API
+    // (its id, E...): the one the edge cache's invalidations go to (app/edge.h).
+    // Empty: nothing is invalidated (serve, tests, a first deploy).
+    char cf_distribution[64];
     // CBASE_JWT_SECRET: HS256 key for access tokens. Unset: a random one per
     // process (logged as a warning: every session dies at restart).
     char jwt_secret[512];

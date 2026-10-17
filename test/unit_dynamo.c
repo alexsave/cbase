@@ -121,11 +121,13 @@ static void commit_transaction(void) {
              "\":updated_at\":{\"N\":\"2000\"},\":gsi1pk\":{\"S\":\"USERGAMES#" U1 "\"},\":gsi1sk\":{\"S\":\"000000000002000#ab12cd\"}}}},"
              "{\"Delete\":{\"TableName\":\"cbase\",\"Key\":{\"pk\":{\"S\":\"GAME#ab12cd\"},\"sk\":{\"S\":\"MEMBER#" U2 "\"}}}},"
              "{\"Update\":{\"TableName\":\"cbase\",\"Key\":{\"pk\":{\"S\":\"USER#" U1 "\"},\"sk\":{\"S\":\"RATING\"}},"
-             "\"UpdateExpression\":\"SET #elo_rating = :elo_rating, #previous_elo = :previous_elo, #updated_at = :updated_at, "
+             "\"UpdateExpression\":\"SET #elo_rating = :elo_rating, #gsi2pk = :gsi2pk, #gsi2sk = :gsi2sk, "
+             "#previous_elo = :previous_elo, #updated_at = :updated_at, "
              "#games_played = #games_played + :one\",\"ConditionExpression\":\"#elo_rating = :read\","
-             "\"ExpressionAttributeNames\":{\"#elo_rating\":\"elo_rating\",\"#previous_elo\":\"previous_elo\","
-             "\"#updated_at\":\"updated_at\",\"#games_played\":\"games_played\"},"
-             "\"ExpressionAttributeValues\":{\":elo_rating\":{\"N\":\"1012\"},\":previous_elo\":{\"N\":\"1000\"},"
+             "\"ExpressionAttributeNames\":{\"#elo_rating\":\"elo_rating\",\"#gsi2pk\":\"gsi2pk\",\"#gsi2sk\":\"gsi2sk\","
+             "\"#previous_elo\":\"previous_elo\",\"#updated_at\":\"updated_at\",\"#games_played\":\"games_played\"},"
+             "\"ExpressionAttributeValues\":{\":elo_rating\":{\"N\":\"1012\"},\":gsi2pk\":{\"S\":\"RATINGS\"},"
+             "\":gsi2sk\":{\"S\":\"E#2147482635#" U1 "\"},\":previous_elo\":{\"N\":\"1000\"},"
              "\":updated_at\":{\"N\":\"2000\"},\":one\":{\"N\":\"1\"},\":read\":{\"N\":\"1000\"}}}},"
              "{\"Update\":{\"TableName\":\"cbase\",\"Key\":{\"pk\":{\"S\":\"BOT#" B1 "\"},\"sk\":{\"S\":\"BOT\"}},"
              "\"UpdateExpression\":\"SET #elo_rating = :elo_rating, #previous_elo = :previous_elo, #updated_at = :updated_at, "
@@ -152,7 +154,7 @@ static void commit_transaction(void) {
     T_CHECK(valid(&r));
     T_CHECK(strstr(cb_buf_cstr(&r.body),
                    "{\"Put\":{\"TableName\":\"cbase\",\"Item\":{\"pk\":{\"S\":\"USER#" U1 "\"},\"sk\":{\"S\":\"RATING\"},"
-                   "\"gsi2pk\":{\"S\":\"RATINGS\"},\"gsi2sk\":{\"S\":\"" U1 "\"},\"user_id\":{\"S\":\"" U1 "\"},"
+                   "\"gsi2pk\":{\"S\":\"RATINGS\"},\"gsi2sk\":{\"S\":\"E#2147482650#" U1 "\"},\"user_id\":{\"S\":\"" U1 "\"},"
                    "\"username\":{\"S\":\"Ann\"},\"elo_rating\":{\"N\":\"997\"},\"previous_elo\":{\"N\":\"1000\"},"
                    "\"games_played\":{\"N\":\"1\"},\"updated_at\":{\"N\":\"2000\"}},"
                    "\"ConditionExpression\":\"attribute_not_exists(pk)\"}},"
@@ -189,6 +191,29 @@ static void query_shapes(void) {
              "\"ExpressionAttributeNames\":{\"#gsi1pk\":\"gsi1pk\"},"
              "\"ExpressionAttributeValues\":{\":pk\":{\"S\":\"USERGAMES#" U1 "\"}},"
              "\"ScanIndexForward\":false,\"Limit\":20,\"ExclusiveStartKey\":{\"pk\":{\"S\":\"x\"}}}");
+    // The leaderboard: GSI2's rating-ordered keys only ("E#"), forward, bounded.
+    dw_query(&r, "cbase", DWQ_RATINGS_TOP, NULL, true, 100, cb_span_of("", 0));
+    T_EQ_STR(cb_buf_cstr(&r.body),
+             "{\"ReturnConsumedCapacity\":\"TOTAL\",\"TableName\":\"cbase\",\"IndexName\":\"gsi2\","
+             "\"KeyConditionExpression\":\"#gsi2pk = :pk AND begins_with(#gsi2sk, :sk)\","
+             "\"ExpressionAttributeNames\":{\"#gsi2pk\":\"gsi2pk\",\"#gsi2sk\":\"gsi2sk\"},"
+             "\"ExpressionAttributeValues\":{\":pk\":{\"S\":\"RATINGS\"},\":sk\":{\"S\":\"E#\"}},\"Limit\":100}");
+    // The reindex: only the keys, only while the values are the ones read.
+    cb_rating_row rt = { .elo_rating = 1210, .games_played = 4, .previous_elo = -1 };
+    snprintf(rt.user_id, sizeof rt.user_id, "%s", U1);
+    dw_rating_reindex(&r, "cbase", &rt);
+    T_EQ_STR(r.target, "DynamoDB_20120810.UpdateItem");
+    T_EQ_STR(cb_buf_cstr(&r.body),
+             "{\"ReturnConsumedCapacity\":\"TOTAL\",\"TableName\":\"cbase\",\"Key\":{\"pk\":{\"S\":\"USER#" U1 "\"},\"sk\":{\"S\":\"RATING\"}},"
+             "\"UpdateExpression\":\"SET #gsi2pk = :gsi2pk, #gsi2sk = :gsi2sk\","
+             "\"ConditionExpression\":\"#elo_rating = :elo AND #games_played = :games\","
+             "\"ExpressionAttributeNames\":{\"#gsi2pk\":\"gsi2pk\",\"#gsi2sk\":\"gsi2sk\",\"#elo_rating\":\"elo_rating\","
+             "\"#games_played\":\"games_played\"},"
+             "\"ExpressionAttributeValues\":{\":gsi2pk\":{\"S\":\"RATINGS\"},\":gsi2sk\":{\"S\":\"E#2147482437#" U1 "\"},"
+             "\":elo\":{\"N\":\"1210\"},\":games\":{\"N\":\"4\"}}}");
+    rt.games_played = 0;   // never played: out of the index
+    dw_rating_reindex(&r, "cbase", &rt);
+    T_CHECK(strstr(cb_buf_cstr(&r.body), "\"UpdateExpression\":\"REMOVE #gsi2pk, #gsi2sk\"") != NULL);
     // A game's seat keys: a key range (a Query cannot filter on a key).
     dw_query(&r, "cbase", DWQ_GAME_SEATS, "ab12cd", true, 0, cb_span_of("", 0));
     T_EQ_STR(cb_buf_cstr(&r.body),
@@ -229,7 +254,7 @@ static void signup_transaction(void) {
              "\"email\":{\"S\":\"ann@x.io\"},\"password_hash\":{\"S\":\"$2a$10$h\"},\"username\":{\"S\":\"Ann\"},"
              "\"created_at\":{\"N\":\"5\"}},\"ConditionExpression\":\"attribute_not_exists(pk)\"}},"
              "{\"Put\":{\"TableName\":\"cbase\",\"Item\":{\"pk\":{\"S\":\"USER#" U1 "\"},\"sk\":{\"S\":\"RATING\"},"
-             "\"gsi2pk\":{\"S\":\"RATINGS\"},\"gsi2sk\":{\"S\":\"" U1 "\"},\"user_id\":{\"S\":\"" U1 "\"},"
+             "\"user_id\":{\"S\":\"" U1 "\"},"
              "\"username\":{\"S\":\"Ann\"},\"elo_rating\":{\"N\":\"1000\"},\"previous_elo\":{\"N\":\"1000\"},"
              "\"games_played\":{\"N\":\"0\"},\"updated_at\":{\"N\":\"5\"}}}}]}");
     dw_req_free(&r);
@@ -796,7 +821,7 @@ static void flow_throttled_past_the_deadline(void) {
     cb_store_set_deadline(cb_now_ms() + 200);
     int64_t t = cb_mono_ms();
     cb_game_row g = { 0 };
-    T_EQ_INT(CB_STORE_CALL(s, game_get, "ab12cd", &g), CB_E_DB);
+    T_EQ_INT(CB_STORE_CALL(s, game_get, "ab12cd", &g), CB_E_BUSY);
     T_CHECK(cb_mono_ms() - t < 200);
     cb_store_set_deadline(0);
     T_EQ_INT(sc_.at, 1);
@@ -823,7 +848,7 @@ static void flow_throttled_to_the_wall(void) {
     cb_store_throttles_get(&t0);
     int64_t t = cb_mono_ms();
     cb_game_row g = { 0 };
-    T_EQ_INT(CB_STORE_CALL(s, game_get, "ab12cd", &g), CB_E_DB);
+    T_EQ_INT(CB_STORE_CALL(s, game_get, "ab12cd", &g), CB_E_BUSY);
     int64_t took = cb_mono_ms() - t;
     T_CHECK(took <= CB_STORE_RETRY_WALL_MS + 500);
     T_CHECK(sc_.at >= 2 && sc_.at < 16);   // sent again, and stopped

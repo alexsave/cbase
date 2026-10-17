@@ -16,6 +16,7 @@
 // exists answers {} rather than an error: retrying it cannot help. The process holds nothing between invocations
 // but what a warm container may cache (app/table_ops.h).
 #include "app/bots.h"
+#include "app/edge.h"
 #include "aws/event.h"
 #include "aws/runtime_api.h"
 #include "boot.h"
@@ -112,6 +113,8 @@ int main(void) {
             CB_WARN("lambda", "invocation %s: %s", inv.request_id, why);
             cb_runtime_error(host, port, inv.request_id, "Handler", why);
         }
+        // After the response is out: the caller never waits for CloudFront.
+        cb_edge_flush(&cfg);
         ctx.deadline_ms = 0;
         cb_store_set_deadline(0);
         cb_buf_free(&out);

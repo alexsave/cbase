@@ -13,6 +13,7 @@
 
 #include "app/app_internal.h"
 #include "app/bots.h"
+#include "app/edge.h"
 #include "app/fanout.h"
 #include "app/functions_http.h"
 #include "app/table_ops.h"
@@ -616,11 +617,20 @@ static void a_finished_game_writes_a_snapshot_and_ratings(void) {
     two_humans_dealt(gid);
     int moves = 0;
     reply r;
+    // The edge's leaderboard copy is marked stale by the commit that rates,
+    // exactly once, and by no other move (app/edge.h); the bots never.
+    uint64_t board0 = cb_edge_marks(CB_EDGE_BOARD), bots0 = cb_edge_marks(CB_EDGE_BOTS);
     while (status_of(gid) == GAME_STATUS_PLAYING && moves < 3000) {
         if (!any_human_move(gid, &r)) break;
         moves++;
     }
     T_EQ_INT(status_of(gid), GAME_STATUS_GAME_OVER);
+    T_CHECK(moves > 1);
+    T_EQ_INT((int)(cb_edge_marks(CB_EDGE_BOARD) - board0), 1);
+    T_EQ_INT((int)(cb_edge_marks(CB_EDGE_BOTS) - bots0), 0);
+    T_EQ_INT(cb_edge_pending(), CB_EDGE_BOARD);
+    T_EQ_INT(cb_edge_flush(g_ctx.cfg), CB_OK);   // no distribution in a test: cleared, nothing sent
+    T_EQ_INT(cb_edge_pending(), 0);
     T_CHECK(log_encodable(gid));
     T_EQ_INT(tm_hooks_of(g_store)->snapshots, 1);
     cb_rating_row ra, rb;
@@ -649,6 +659,7 @@ static void a_finished_game_writes_a_snapshot_and_ratings(void) {
     meta("A", ASK_UPDATE_NAME, gid, NULL, &r);
     T_EQ_INT(tm_rating(g_store, UID_A, &ra), CB_OK);
     T_EQ_INT(ra.games_played, 1);
+    T_EQ_INT((int)(cb_edge_marks(CB_EDGE_BOARD) - board0), 1);
 }
 
 static void add_bot_never_picks_a_seated_bot(void) {
@@ -748,7 +759,10 @@ static void delete_account_redacts(void) {
     int code, detail;
     // There is no auth handle here, so the last step (the account itself)
     // refuses; the redaction before it is what this test is about.
+    uint64_t board0 = cb_edge_marks(CB_EDGE_BOARD);
     T_EQ_INT(cb_app_delete_account(&g_ctx, UID_B, &code, &detail), CB_E_STATE);
+    // Their name left the leaderboard: its edge copy is stale.
+    T_EQ_INT((int)(cb_edge_marks(CB_EDGE_BOARD) - board0), 1);
     T_EQ_INT(version_of(gid), v + 1);
     cb_game_row row = stored(gid);
     Roster ro;
@@ -773,7 +787,10 @@ static void delete_account_casts_the_rename_to_open_pages(void) {
     int64_t v = version_of(gid);
     memset(&g_fan, 0, sizeof g_fan);
     int code, detail;
-    T_EQ_INT(cb_app_delete_account(&g_ctx, UID_B, &code, &detail), CB_E_STATE);   // no auth handle: the account step
+    uint64_t board0 = cb_edge_marks(CB_EDGE_BOARD);
+    T_EQ_INT(cb_app_delete_account(&g_ctx, UID_B, &code, &detail), CB_E_STATE);
+    // Their name left the leaderboard: its edge copy is stale.
+    T_EQ_INT((int)(cb_edge_marks(CB_EDGE_BOARD) - board0), 1);   // no auth handle: the account step
     T_EQ_INT(version_of(gid), v + 1);
     T_EQ_INT(g_fan.count, 1);
     T_EQ_INT(g_fan.version, v + 1);
@@ -1300,6 +1317,7 @@ static void pace_observer(const cb_fanout *f) {
 
 static void bot_moves_wait_for_the_table_to_settle(void) {
     setup(1);
+    uint64_t board0 = cb_edge_marks(CB_EDGE_BOARD);   // a game the bots end is marked once too
     char gid[CB_GAME_ID_MAX + 1];
     reply r;
     create_game(gid, &r);
@@ -1344,6 +1362,7 @@ static void bot_moves_wait_for_the_table_to_settle(void) {
     T_EQ_INT(cb_bots_drive(&g_ctx, gid), CB_OK);
     T_EQ_INT(tm_rating(g_store, UID_A, &ra), CB_OK);
     T_EQ_INT(ra.games_played, 1);
+    T_EQ_INT((int)(cb_edge_marks(CB_EDGE_BOARD) - board0), 1);
 }
 
 // ---- bots --------------------------------------------------------------------------------------

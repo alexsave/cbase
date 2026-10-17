@@ -10,8 +10,9 @@
 //   GET  /v1/games/<id>      (bearer) -> NW_VIEW, the caller's view, else the spectators'
 //   GET  /v1/chat/<id>       (bearer) -> NW_CHATS, the last 100, oldest first (none for a non-member)
 //   POST /v1/chat/<id>       (bearer, member) NW_CHAT_SEND -> 204
-//   GET  /v1/bots            (bearer) -> NW_BOTS, ladder order
+//   GET  /v1/bots            -> NW_BOTS, ladder order (public: cached at the edge, a day)
 //   GET  /v1/leaderboard     -> NW_BOARD: the top 100 humans and the top 100 bots who have played
+//                               (public: cached at the edge, an hour; invalidated by a rated game)
 //   GET  /v1/history         (bearer) -> NW_HISTORY: the caller's rating and last 50 replays
 //   GET  /v1/replay/<id>     (bearer) -> NW_REPLAY: the newest replay of a game the caller played
 //
@@ -32,6 +33,11 @@ int cb_v1_routes(cb_ctx *ctx);
 // the derivation both clients made before the server took it over (`name` is
 // upper-cased by the client). `out` holds at least CB_V1_EMAIL_BYTES.
 #define CB_V1_EMAIL_BYTES 32
+
+// 503 ASK_WHY_BUSY with Retry-After: the store was throttled past its backoff
+// (CB_E_BUSY). A client sends a read again (netclient.h nc_retry_ms).
+struct cb_http_res;
+void cb_v1_busy(struct cb_http_res *res);
 void cb_v1_email_of(const char *name, size_t len, char out[CB_V1_EMAIL_BYTES]);
 
 #endif

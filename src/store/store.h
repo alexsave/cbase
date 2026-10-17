@@ -277,7 +277,17 @@ typedef struct cb_store_ops {
 
     // bots and ratings
     int (*bots_list)(cb_store *s, cb_bot_fn fn, void *ud);                 // ladder order
-    int (*ratings_list)(cb_store *s, cb_rating_fn fn, void *ud);           // highest first
+    // EVERY rating row the leaderboard index holds, highest first: the played
+    // ones, and on DynamoDB any row still in the layout before the sparse key
+    // (which cbase-import --reindex-ratings takes out). A read that grows with
+    // the players, for that tool and tests, never for a request.
+    int (*ratings_list)(cb_store *s, cb_rating_fn fn, void *ud);
+    // The leaderboard's read: the players who have played (games_played > 0),
+    // highest rating first, then user id, at most `limit` of them. Bounded
+    // whatever the number of sign-ups: on DynamoDB it is one Query of `limit`
+    // items on GSI2's rating-ordered key, which only played rows carry
+    // (json_surface.h "THE ITEM LAYOUT", DESIGN.md "Edge cache").
+    int (*ratings_top)(cb_store *s, int limit, cb_rating_fn fn, void *ud);
     // seat_ratings: ids[i]'s rating (a bot's, else a user's), or -1
     // (TABLE_RATING_NONE) when it has none, into out[i].
     int (*ratings_for)(cb_store *s, const char *const *ids, int n, int32_t *out);
@@ -338,6 +348,11 @@ typedef struct cb_store_ops {
     int (*user_import)(cb_store *s, const cb_user_row *u);
     // The rating row as given (username "" stores none), insert or replace.
     int (*rating_import)(cb_store *s, const cb_rating_row *r);
+    // The row's leaderboard index key brought to the current layout, the
+    // values untouched and only while they are still r's (a commit that
+    // raced it already wrote the new key): CB_OK, or CB_E_CONFLICT when the
+    // row changed or is gone. SQLite has no index key: CB_OK.
+    int (*rating_reindex)(cb_store *s, const cb_rating_row *r);
     // Every bot row replaced by these n (the seeded ones included), atomically.
     int (*bots_replace)(cb_store *s, const cb_bot_row *rows, int n);
     // The game at its own version, with exactly these members, insert or
@@ -380,7 +395,11 @@ void cb_store_tally_take(cb_store_tally *out);
 // jittered exponential pause, while the calling thread's deadline allows.
 // The deadline is the Lambda invocation's (main_lambda.c sets it around each
 // invocation); with none, each request gets CB_STORE_RETRY_WALL_MS of pauses.
-// A request still throttled at its deadline fails as CB_E_DB.
+// A request still throttled at its deadline fails as CB_E_BUSY: the HTTP
+// routes answer it 503 with Retry-After (ASK_WHY_BUSY), and the clients send a
+// read again (netclient.h nc_retry_ms). The backend marks the give-up on the
+// calling thread (cb_store_mark_busy) and CB_STORE_CALL turns the store
+// function's CB_E_DB into CB_E_BUSY, so no backend function maps it itself.
 #define CB_STORE_RETRY_WALL_MS 5000
 void cb_store_set_deadline(int64_t deadline_ms);   // epoch ms; 0: none
 // This process's throttling since it started (the admin overview shows it;
@@ -402,6 +421,17 @@ extern const unsigned long cbase_schema_sql_len;
 //   int rc = CB_STORE_CALL(ctx->store, game_get, id, &row);
 //
 // A backend that leaves an entry NULL answers CB_E_NOTIMPL for it.
-#define CB_STORE_CALL(s, fn, ...) ((s)->ops->fn ? (s)->ops->fn((s), __VA_ARGS__) : CB_E_NOTIMPL)
+#define CB_STORE_CALL(s, fn, ...) \
+    (cb_store_begin_(), cb_store_end_((s)->ops->fn ? (s)->ops->fn((s), __VA_ARGS__) : CB_E_NOTIMPL))
+
+// CB_STORE_CALL's two halves (store.c), the comma sequencing begin before the
+// call: the outermost begin clears this thread's busy mark, and end answers
+// rc, or CB_E_BUSY for a CB_E_DB that came with the mark (a store function
+// that calls another through CB_STORE_CALL nests; the mark stays until the
+// outermost call ends). cb_store_mark_busy is the backend's: store_dynamo.c
+// calls it when it gives up on a throttled request.
+void cb_store_begin_(void);
+int  cb_store_end_(int rc);
+void cb_store_mark_busy(void);
 
 #endif

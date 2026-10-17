@@ -283,7 +283,7 @@ One smoke game is 1,248 table WCU, so an even month holds about 31,000 such game
 The real limit is a burst, not a month: a game in play writes about 8 WCU a move, so 15 a second is one move a second sustained from every table together, plus the burst bank.
 A 13-WCU commit fits inside one second's 15.
 A commit larger than the second's capacity (the 23-WCU game end with its ratings and seats, or two moves landing in the same second) draws on the burst bank: up to 300 seconds of unused capacity, 4,500 WCU on the table and 1,500 on each index, refilled at the provisioned rate whenever the load is under it.
-When the bank is empty, DynamoDB throttles instead of billing: the store retries with jittered exponential backoff (25 ms doubling to 1 s, at most 10 sends, inside the Lambda deadline less a second or 5 s of pauses with no deadline), counts each throttle in the admin overview (`store_throttles`), and fails the request as a 500 only past that; a move then takes longer, it does not cost money.
+When the bank is empty, DynamoDB throttles instead of billing: the store retries with jittered exponential backoff (25 ms doubling to 1 s, at most 10 sends, inside the Lambda deadline less a second or 5 s of pauses with no deadline), counts each throttle in the admin overview (`store_throttles`), and fails the request only past that, as a 503 the clients send a read again on ("Edge cache", "A throttle is busy, not broken"); a move then takes longer, it does not cost money.
 Reads: 15 RCU a second on the table against about 1 RCU a move and 1 per view read.
 
 **Not free, still:** point-in-time recovery bills $0.20 per GB-month of table and is not in the always-free set: at our few MB that is about a tenth of a cent a month, under the zero-spend budget's one-cent threshold but not zero.
@@ -711,13 +711,97 @@ The sections of `json_surface.c`, with their callers:
 - The JWT header and claims (`cb_js_jwt_*`, for `jwt.c`, which keeps the base64url, the HMAC and the time checks).
 - The admin console (`cb_js_admin_*`, for `admin.c`): one-shot answers take a struct, and the lists the store streams row by row are written through an opaque `cb_js_stream`, so no writer leaves the file.
 - The client's side (`cb_js_client_function_url_event`, for `bench/cpu.c`): a Function URL event as AWS delivers a browser's request, the mirror of the event envelope.
+- CloudFront (`cf_invalidation_xml`, for `aws/cloudfront.c`): the CreateInvalidation body, the one XML shape c_base speaks ("Edge cache").
+  CloudFront's API has no JSON form, so XML is the second tolerated foreign text format, and it is contained the same way: in this file, with the same gate.
 
 The one JSON outside it is `migrate/export.sh`, the one-off shell exporter that read production through Supabase's Management API (JSON by Supabase's design) with `python3`; it is not C and it never runs in c_base.
 
 `test/unit_json_gate.c` holds the rule.
 It reads every C source under `src/`, `bench/` and `migrate/` and fails, naming the file and line, when any file other than `json_surface.c` and `util/json.{c,h}` includes `util/json.h`, names the writer or reader (`cb_jw`, `cb_jw_*`, `cb_json_*`, `CB_JW_*`, `CB_JSON_*`), or holds a string literal with a JSON key in it (a quoted word and a colon).
+It also fails a string literal that is XML: an `<?xml` prolog or an `xmlns` namespace (the unfurl route's HTML has neither, and is not XML to the gate).
 It lexes rather than greps: comments may describe a shape, two literals around a ternary's colon are not a key, and adjacent literals are joined first, as the compiler joins them.
 Tests (`test/`) are not scanned: their recorded bodies are the oracle the shapes are checked against.
+
+## Edge cache (2026-10-17)
+
+Alex, approving it: "Bot list almost never changes and leaderboard requires a game to change. Go do it."
+The measurement behind it is docs/DIRECT_DYNAMO.md: a CloudFront hit is about 14 ms p50 from New York, against 30 to 45 ms for the same read through Lambda.
+
+### What is cached
+
+Exactly two routes, the two whose answer is the same for every caller:
+
+| route | Cache-Control | why that long |
+|---|---|---|
+| `GET /v1/leaderboard` | `public, max-age=0, s-maxage=3600` | changes only when a rated game ends; invalidated then, so the hour is a safety net |
+| `GET /v1/bots` | `public, max-age=0, s-maxage=86400` | changes only when the bots are seeded; invalidated then |
+| everything else, refusals included | `no-store` | per caller, or an error |
+
+Both were checked to carry nothing of the caller: `h_board` never read one, and `h_bots` read the bearer only to refuse an anonymous caller, then answered the same list to everyone; it no longer reads it, and the client's `nc_req_bots` no longer sends a token (its `now_ms` argument stays so no host changes).
+`max-age=0` keeps browsers asking the edge every time (no browser cache to invalidate); `s-maxage` is for CloudFront alone.
+A public answer says `Access-Control-Allow-Origin: *` whatever `CBASE_ALLOWED_ORIGINS` lists, so it cannot vary by `Origin` either.
+
+The template (ops/cbase.yaml) gives each path its own cache behavior with `PublicReadsCachePolicy`: the key is the path alone, with no header, cookie or query string in it, and gzip and brotli normalised.
+The brief said path and query; the query is left out on purpose, since no client sends one and a key with it would let `?x=<random>` walk past the cache to the origin on every request.
+`Authorization` is never in the key and never reaches the function on these paths, so a client that still sends a token (an old app build) gets the shared copy.
+`Managed-CORS-CustomOrigin` forwards only the CORS request headers, so an old page that still preflights is answered, and the Host stays the Function URL's.
+TTL: the origin's `s-maxage`, minimum 0, default 0 (an answer without one is not kept), maximum a day.
+Every other path keeps `CachingDisabled` and the stream keeps its own behavior.
+
+The web's `fetch` and iOS's `URLRequest` add nothing that splits the key: no query string, no cache-busting header, and the C client builds every path (netclient.c).
+
+### Freshness by event: invalidations
+
+`src/app/edge.{h,c}` owns it.
+Whatever changes one of the two answers marks its path stale, a bit in a process-wide mask (never blocking, never failing what marked it):
+
+- the leaderboard: the commit that applied ratings (`cb_section_commit`, when `gc.n_rated > 0`, after the store accepted it; a human's game or a game the bots ended alike), an account deleted (`cb_app_delete_account`, the user's own or the admin console's), an admin write query, an import, and a ratings reindex that rewrote anything;
+- the bots: a seed that wrote bots, an import, an admin write query.
+
+`cb_edge_flush` sends one CreateInvalidation for every path marked since the last flush.
+The Lambda main calls it after it has POSTed the invocation's response, so no caller waits for CloudFront (an HTTP request, a bot drive or the scan alike); `cbase-import` calls it before it exits.
+A failed flush is logged and dropped: the `s-maxage` bounds how stale the edge can get.
+The request (`aws/cloudfront.c`) is signed for `cloudfront` in us-east-1 from any region (`cb_aws_call_region`), and only 201 is success; its XML body is `json_surface.c`'s, checked byte for byte against the API reference's request in `test/unit_aws_calls.c`.
+Each flush's CallerReference is unique (`cbase-<ms>-<uuid>`): CloudFront answers a repeated one with the first batch, which would invalidate nothing new.
+
+The function names its own distribution through `CBASE_CF_DISTRIBUTION`, a stack parameter `ops/deploy.sh` reads from the stack and passes back: a reference would be a cycle (Distribution -> FunctionUrl -> Function).
+On a first deploy it is empty and nothing is invalidated until the next deploy.
+The right to invalidate is its own `AWS::IAM::Policy` (`cloudfront:CreateInvalidation` on that one distribution), for the same cycle.
+
+**The free 1,000 paths a month, counted.**
+foolish plays a few games a day ("The free tier, provisioned" above; the import of 2026-10-14 held 67 games and 144 replays from the whole Supabase era).
+At five rated games a day that is about 150 leaderboard paths a month, plus a handful for deploys and deletions: well under the ~800 at which coalescing would be needed, so there is none.
+A coalescing window would also need a trailing send that Lambda has no timer for, and to stay under 1,000 a month it would have to be about 45 minutes, about the safety TTL itself.
+If traffic grows past about 25 rated games a day, the billing page will show it first; each path past the 1,000 costs $0.005.
+
+### The origin is cheap regardless
+
+A request that misses (the first after an invalidation, at each POP, or a cold POP) still reaches DynamoDB, and before this change two routes read every rating row there.
+A bench run throttled `gsi2` (73 throttled reads, 4 user-facing 500s, PR #311): `/v1/leaderboard` and `/v1/history` each read the whole `RATINGS` partition, one row per account ever made.
+
+- The leaderboard reads only what it shows: store `ratings_top(limit)`, one Query of at most 100 items.
+  A rating row's GSI2 key is now sparse and rating-ordered (json_surface.h "THE ITEM LAYOUT"): `gsi2sk` = `E#` + (2147483647 - rating, ten digits) + `#<user id>`, written only once the player has played; a sign-up's row is not in the index at all.
+  Every rated commit moves the key with the rating, in the same transaction write (2 index units instead of 1 for that seat).
+  `cbase-import --reindex-ratings` (run by every deploy, idempotent) moves rows written before the layout, by a conditional UpdateItem that touches only the keys and only while the values are the ones it read, so it cannot lose a concurrent commit.
+- The history reads only the caller's own rating, `ratings_for` by key (two keys, consistent, on the table), instead of the whole partition.
+
+RCU per request, measured on DynamoDB Local with `ReturnConsumedCapacity` (rating rows the size of production's; the bots' Query, unchanged, is not counted):
+
+| accounts / played | leaderboard before | leaderboard after | history's rating before | after |
+|---|--:|--:|--:|--:|
+| 43 / 12 (today) | 1.5 gsi2 | 0.5 gsi2 | 1.5 gsi2 | 1.0 table |
+| 1,000 / 12 | 27 gsi2 | 0.5 gsi2 | 27 gsi2 | 1.0 table |
+| 1,000 / 300 | 27 gsi2 | 3.0 gsi2 | 27 gsi2 | 1.0 table |
+
+gsi2 is provisioned at 5 RCU a second, so at a thousand accounts one leaderboard or history read a second would have throttled it; now the cost follows the 100 rows shown, not the sign-ups.
+
+### A throttle is busy, not broken
+
+A request DynamoDB still throttles after the store's backoff used to fail as `CB_E_DB` and answer 500.
+Now the backend marks the give-up on the calling thread (`cb_store_mark_busy`, store_dynamo.c), and `CB_STORE_CALL` turns that call's `CB_E_DB` into `CB_E_BUSY`: one owner, so no store function maps it itself.
+The routes answer `CB_E_BUSY` with 503, `Retry-After: 1` and the kernel's `ASK_WHY_BUSY` refusal (`cb_v1_busy`), never a 500.
+The client decides what to do with it, in C: `nc_retry_ms(method, attempt, status, body)` says wait 250, 500, then 1000 ms and send a GET again, and 0 for anything else (a POST may have committed before the throttle, so a write is never sent twice).
+The two transports (web `backend.ts`, iOS `Backend.swift`) wait what it says and build the request again; they decide nothing.
 
 ## Binary surface (designed 2026-10-14)
 

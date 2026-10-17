@@ -17,10 +17,12 @@
 #   4. builds the Lambda zip (ops/package.sh: a static arm64 binary, Docker)
 #      and uploads it under a name carrying its sha256, so a new build is a
 #      new CodeKey and CloudFormation updates the function's code;
-#   5. aws cloudformation deploy of ops/cbase.yaml, which waits for the stack;
+#   5. a change set of ops/cbase.yaml, printed and refused when it replaces a
+#      resource (CBASE_ALLOW_REPLACE=1 to mean it), then executed and waited for;
 #   6. prints the stack's outputs (FunctionUrl, WebSocketUrl,
 #      DistributionDomain, TableName, PublicUrl);
 #   7. seeds the 49 bots into a table that has none (cbase-import --seed-bots),
+#      moves rating rows to the leaderboard's index key (--reindex-ratings),
 #      and with --import DIR runs build/cbase-import against the stack's table,
 #      both with temporary credentials exported from the CLI.
 #
@@ -136,6 +138,21 @@ aws s3 cp "$zip" "s3://$bucket/$key" --only-show-errors
 echo "uploaded s3://$bucket/$key"
 
 # ---- 5. the stack -----------------------------------------------------------------
+# The distribution's own id goes back in as a parameter (CBASE_CF_DISTRIBUTION,
+# the edge cache's invalidations; cbase.yaml DistributionId says why it cannot
+# be a reference). Empty for a stack that has none yet.
+dist_id=""
+if [ "$stack_exists" = yes ]; then
+  dist_id="$(aws cloudformation describe-stack-resource --region "$region" --stack-name "$stack" \
+    --logical-resource-id Distribution --query StackResourceDetail.PhysicalResourceId --output text 2>/dev/null || true)"
+  [ "$dist_id" = None ] && dist_id=""
+fi
+echo "distribution: ${dist_id:-(none yet)}"
+
+# The change set is made, read, and only then executed: a change that would
+# REPLACE a resource (the table, the distribution, the domain's alias) stops
+# the run unless CBASE_ALLOW_REPLACE=1. CloudFormation's own deploy would
+# execute it unseen.
 aws cloudformation deploy \
   --region "$region" \
   --stack-name "$stack" \
@@ -143,6 +160,7 @@ aws cloudformation deploy \
   --s3-bucket "$bucket" --s3-prefix templates \
   --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
   --no-fail-on-empty-changeset \
+  --no-execute-changeset \
   --parameter-overrides \
     "CodeBucket=$bucket" \
     "CodeKey=$key" \
@@ -152,7 +170,29 @@ aws cloudformation deploy \
     "CertificateArn=$cert" \
     "AllowedOrigins=$origins" \
     "FunctionName=$function_name" \
-    "TableName=$table"
+    "TableName=$table" \
+    "DistributionId=$dist_id" | tee "$here/build/deploy-changeset.txt"
+changeset="$(grep -o 'arn:aws:cloudformation:[^ ]*changeSet/[^ ]*' "$here/build/deploy-changeset.txt" | head -1 || true)"
+if [ -n "$changeset" ]; then
+  aws cloudformation describe-change-set --region "$region" --change-set-name "$changeset" \
+    --query 'Changes[].ResourceChange.[Action,LogicalResourceId,ResourceType,Replacement]' --output table
+  replacing="$(aws cloudformation describe-change-set --region "$region" --change-set-name "$changeset" \
+    --query "Changes[?ResourceChange.Replacement=='True' || ResourceChange.Replacement=='Conditional'].ResourceChange.LogicalResourceId" \
+    --output text)"
+  if [ -n "$replacing" ] && [ "$replacing" != None ] && [ "${CBASE_ALLOW_REPLACE:-}" != 1 ]; then
+    aws cloudformation delete-change-set --region "$region" --change-set-name "$changeset" >/dev/null || true
+    die "the change set replaces: $replacing. Read it, then rerun with CBASE_ALLOW_REPLACE=1 if that is meant"
+  fi
+  aws cloudformation execute-change-set --region "$region" --change-set-name "$changeset"
+  if [ "$stack_exists" = yes ]; then
+    aws cloudformation wait stack-update-complete --region "$region" --stack-name "$stack"
+  else
+    aws cloudformation wait stack-create-complete --region "$region" --stack-name "$stack"
+  fi
+  echo "stack $stack updated"
+else
+  echo "no changes to the stack"
+fi
 
 # ---- 6. what the stack made -------------------------------------------------------
 output() {
@@ -178,7 +218,12 @@ stack_table="$(output TableName)"
   # Temporary credentials for this subshell only (SSO and assumed roles included).
   eval "$(aws configure export-credentials --format env)"
   export AWS_REGION="$region"
+  # The import tool invalidates what it changed at the edge (app/edge.h).
+  export CBASE_CF_DISTRIBUTION="$(output DistributionId)"
   CBASE_STORE=dynamo CBASE_TABLE="$stack_table" "$here/build/cbase-import" --seed-bots
+  # The leaderboard's sparse, rating-ordered index key: rows from before it
+  # move once; afterwards this rewrites nothing.
+  CBASE_STORE=dynamo CBASE_TABLE="$stack_table" "$here/build/cbase-import" --reindex-ratings
   if [ -n "$import_dir" ]; then
     [ -d "$import_dir" ] || die "--import: $import_dir is not a directory"
     echo "importing $import_dir into DynamoDB table $stack_table"

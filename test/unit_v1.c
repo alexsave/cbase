@@ -83,6 +83,7 @@ static void teardown(void) {
 static int g_status;
 static uint8_t g_body[1 << 20];
 static int g_len;
+static char g_hdrs[4096];   // the last answer's header lines
 
 static int send_req(const NcRequest *q) {
     T_CHECK(q != NULL);
@@ -110,6 +111,7 @@ static int send_req(const NcRequest *q) {
     cb_res_init(&res);
     cb_handle(&g_ctx, &r, &res);
     g_status = res.status;
+    cb_strlcpy(g_hdrs, cb_buf_cstr(&res.headers), sizeof g_hdrs);
     g_len = (int)(res.body.len < sizeof g_body ? res.body.len : 0);
     if (g_len) memcpy(g_body, res.body.p, (size_t)g_len);   // an empty body may have no buffer
     cb_res_free(&res);
@@ -460,6 +462,119 @@ static void bots_board_history_replay(void) {
     teardown();
 }
 
+// The value of header `name` in the last answer ("" when absent).
+static const char *res_header(const char *name) {
+    static char v[256];
+    v[0] = 0;
+    char pat[64];
+    snprintf(pat, sizeof pat, "%s: ", name);
+    const char *p = strstr(g_hdrs, pat);
+    if (!p) return v;
+    p += strlen(pat);
+    const char *e = strstr(p, "\r\n");
+    cb_strncpy0(v, sizeof v, p, e ? (size_t)(e - p) : strlen(p));
+    return v;
+}
+
+// Each route's Cache-Control: only the two public reads may be kept by the
+// edge, they never need a caller, and they never vary by Origin.
+static void cache_control_per_route(void) {
+    setup();
+    cb_strlcpy(g_cfg.allowed_origins, "https://foolish.cards", sizeof g_cfg.allowed_origins);
+    // Nobody signed in: the public reads carry no token and are answered.
+    const NcRequest *q = nc_req_bots(g_now);
+    T_CHECK(q && q->auth_len == 0);
+    T_EQ_INT(send_req(q), 200);
+    T_EQ_INT(nc_list_read(g_status, g_body, g_len, NW_BOTS), 49);
+    T_EQ_STR(res_header("Cache-Control"), "public, max-age=0, s-maxage=86400");
+    T_EQ_STR(res_header("Access-Control-Allow-Origin"), "*");
+    T_EQ_STR(res_header("Vary"), "");
+    q = nc_req_board();
+    T_CHECK(q && q->auth_len == 0);
+    T_EQ_INT(send_req(q), 200);
+    T_EQ_STR(res_header("Cache-Control"), "public, max-age=0, s-maxage=3600");
+    T_EQ_STR(res_header("Access-Control-Allow-Origin"), "*");
+    // Signed in, every other read is the caller's own and is never stored.
+    T_EQ_INT(sign(1, "IDA", "secret1"), 0);
+    T_EQ_INT(call(b_games, NULL), 200);
+    T_EQ_STR(res_header("Cache-Control"), "no-store");
+    T_EQ_INT(call(b_history, NULL), 200);
+    T_EQ_STR(res_header("Cache-Control"), "no-store");
+    // A token sent anyway changes nothing about the public answer.
+    NcRequest with = *nc_req_board();
+    const NcRequest *g = nc_req_games(g_now);
+    memcpy(with.auth, g->auth, g->auth_len);
+    with.auth_len = g->auth_len;
+    T_EQ_INT(send_req(&with), 200);
+    T_EQ_STR(res_header("Cache-Control"), "public, max-age=0, s-maxage=3600");
+    // A refusal is never stored either.
+    NcRequest anon = *nc_req_board();
+    memcpy(anon.path, "/v1/games", 9);
+    anon.path_len = 9;
+    nc_reset();
+    T_EQ_INT(send_req(&anon), 401);
+    T_EQ_STR(res_header("Cache-Control"), "no-store");
+    teardown();
+}
+
+// A store that gives up on a throttle: the leaderboard's read and the
+// history's rating read fail as DynamoDB's does (store.h CB_STORE_CALL), and
+// the full ratings read is not to be called by any route.
+static cb_store_ops g_busy_ops;
+static const cb_store_ops *g_real_ops;
+static bool g_busy;
+static int busy_top(cb_store *s, int limit, cb_rating_fn fn, void *ud) {
+    if (g_busy) { cb_store_mark_busy(); return CB_E_DB; }
+    return g_real_ops->ratings_top(s, limit, fn, ud);
+}
+static int busy_for(cb_store *s, const char *const *ids, int n, int32_t *out) {
+    if (g_busy) { cb_store_mark_busy(); return CB_E_DB; }
+    return g_real_ops->ratings_for(s, ids, n, out);
+}
+static int no_list(cb_store *s, cb_rating_fn fn, void *ud) { return CB_E_DB; }
+static int plain_fail(cb_store *s, int limit, cb_rating_fn fn, void *ud) { return CB_E_DB; }
+
+static void a_throttled_read_is_busy_and_retried(void) {
+    setup();
+    g_real_ops = g_ctx.store->ops;
+    g_busy_ops = *g_real_ops;
+    g_busy_ops.ratings_top = busy_top;
+    g_busy_ops.ratings_for = busy_for;
+    g_busy_ops.ratings_list = no_list;
+    g_ctx.store->ops = &g_busy_ops;
+    T_EQ_INT(sign(1, "JO", "secret1"), 0);
+    // The history reads only the caller's rating, never every rating row.
+    g_busy = false;
+    T_EQ_INT(call(b_history, NULL), 200);
+    T_EQ_INT(send_req(nc_req_board()), 200);
+    g_busy = true;
+    T_EQ_INT(send_req(nc_req_board()), 503);
+    T_EQ_STR(res_header("Retry-After"), "1");
+    T_EQ_STR(res_header("Cache-Control"), "no-store");
+    T_EQ_INT(nc_list_read(g_status, g_body, g_len, NW_BOARD), -ASK_WHY_BUSY);
+    // The client sends a read again, after 250 ms doubling, three times; never a write.
+    T_EQ_INT(nc_retry_ms(NC_GET, 0, g_status, g_body, g_len), 250);
+    T_EQ_INT(nc_retry_ms(NC_GET, 1, g_status, g_body, g_len), 500);
+    T_EQ_INT(nc_retry_ms(NC_GET, 2, g_status, g_body, g_len), 1000);
+    T_EQ_INT(nc_retry_ms(NC_GET, 3, g_status, g_body, g_len), 0);
+    T_EQ_INT(nc_retry_ms(NC_POST, 0, g_status, g_body, g_len), 0);
+    T_EQ_INT(call(b_history, NULL), 503);
+    T_EQ_INT(nc_retry_ms(NC_GET, 0, g_status, g_body, g_len), 250);
+    // A plain server failure is not busy, and is not sent again.
+    g_busy_ops.ratings_top = plain_fail;
+    T_EQ_INT(send_req(nc_req_board()), 500);
+    T_EQ_INT(nc_retry_ms(NC_GET, 0, g_status, g_body, g_len), 0);
+    T_EQ_STR(res_header("Retry-After"), "");
+    // Nor is any other 503 (a backend not up yet): only BUSY is.
+    cb_store *store = g_ctx.store;
+    g_ctx.store = NULL;
+    T_EQ_INT(send_req(nc_req_board()), 503);
+    T_EQ_INT(nc_retry_ms(NC_GET, 0, g_status, g_body, g_len), 0);
+    g_ctx.store = store;
+    g_ctx.store->ops = g_real_ops;
+    teardown();
+}
+
 int main(void) {
     T_RUN(the_email_is_the_clients_derivation);
     T_RUN(accounts);
@@ -467,5 +582,7 @@ int main(void) {
     T_RUN(refresh_password_signout_delete);
     T_RUN(games_views_and_chat);
     T_RUN(bots_board_history_replay);
+    T_RUN(cache_control_per_route);
+    T_RUN(a_throttled_read_is_busy_and_retried);
     return T_DONE();
 }

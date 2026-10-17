@@ -42,22 +42,45 @@ void cb_v1_email_of(const char *name, size_t len, char out[CB_V1_EMAIL_BYTES]) {
 
 // ---- replies ---------------------------------------------------------------------------
 
+// Every answer's Cache-Control. Nothing is cached but the two public reads,
+// whose bytes are the same for every caller: browsers ask again every time
+// (max-age=0) and CloudFront keeps one copy for s-maxage, a safety net only,
+// since the server invalidates the path when the answer changes (app/edge.h).
+// A route that sends one of these may never read the caller (DESIGN.md "Edge
+// cache").
+#define CC_PRIVATE "no-store"
+#define CC_BOTS    "public, max-age=0, s-maxage=86400"   // a day: bots change only when seeded
+#define CC_BOARD   "public, max-age=0, s-maxage=3600"    // an hour: a rated game invalidates it
+
 static void refuse(cb_http_res *res, int status, int why, int code) {
     AskRefusal r = { (uint8_t)why, code, 0 };
     uint8_t body[ASK_REFUSAL_BYTES];
     int n = ask_refusal_encode(&r, body, sizeof body);
-    cb_res_header(res, "Cache-Control", "no-store");
+    cb_res_header(res, "Cache-Control", CC_PRIVATE);
     cb_res_send(res, status, OCTETS, body, n > 0 ? (size_t)n : 0);
 }
 
-static void octets(cb_http_res *res, const void *p, size_t n) {
-    cb_res_header(res, "Cache-Control", "no-store");
+static void reply(cb_http_res *res, const char *cache, const void *p, size_t n) {
+    cb_res_header(res, "Cache-Control", cache);
+    // A public answer must not vary by Origin either: the edge keys it on the
+    // path alone, so it says "*" whatever CBASE_ALLOWED_ORIGINS lists (the
+    // router's CORS step leaves a header already set alone).
+    if (strcmp(cache, CC_PRIVATE) != 0) cb_res_header(res, "Access-Control-Allow-Origin", "*");
     cb_res_send(res, 200, OCTETS, p, n);
 }
 
-// A store or app failure: 404 for a game that is not there, else the server's.
+static void octets(cb_http_res *res, const void *p, size_t n) { reply(res, CC_PRIVATE, p, n); }
+
+void cb_v1_busy(cb_http_res *res) {
+    cb_res_header(res, "Retry-After", "1");
+    refuse(res, 503, ASK_WHY_BUSY, 0);
+}
+
+// A store or app failure: 404 for a game that is not there, 503 BUSY for a
+// store throttled past its backoff (the client sends a read again), else the server's.
 static void failed(cb_http_res *res, int rc) {
     if (rc == CB_E_NOT_FOUND) refuse(res, 404, ASK_WHY_NOT_FOUND, 0);
+    else if (rc == CB_E_BUSY) cb_v1_busy(res);
     else if (rc == CB_E_STATE) refuse(res, 503, ASK_WHY_INTERNAL, 0);
     else {
         CB_ERROR("v1", "request failed: %s", cb_strerror(rc));
@@ -233,11 +256,13 @@ static void list_begin(list *l, size_t head) {
         (l)->n++;                                                                \
     } while (0)
 
-static void list_send(cb_http_res *res, list *l, uint8_t kind) {
-    if (!l->bad && nw_list_head(kind, l->n, l->body.p, NW_LIST_HEAD_BYTES) == NW_LIST_HEAD_BYTES) octets(res, l->body.p, l->body.len);
+static void list_send_as(cb_http_res *res, list *l, uint8_t kind, const char *cache) {
+    if (!l->bad && nw_list_head(kind, l->n, l->body.p, NW_LIST_HEAD_BYTES) == NW_LIST_HEAD_BYTES) reply(res, cache, l->body.p, l->body.len);
     else failed(res, CB_E_NOMEM);
     cb_buf_free(&l->body);
 }
+
+static void list_send(cb_http_res *res, list *l, uint8_t kind) { list_send_as(res, l, kind, CC_PRIVATE); }
 
 static bool game_fn(const cb_view_row *v, void *ud) {
     list *l = ud;
@@ -356,14 +381,14 @@ static bool bot_fn(const cb_bot_row *b, void *ud) {
     return !l->bad;
 }
 
+// Public: the same bytes for everyone, so it never reads the caller.
 static void h_bots(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
-    cb_user u;
-    if (!caller(ctx, req, res, &u)) return;
+    if (!ctx->store) { refuse(res, 503, ASK_WHY_INTERNAL, 0); return; }
     list l;
     list_begin(&l, NW_LIST_HEAD_BYTES);
     int rc = CB_STORE_CALL(ctx->store, bots_list, bot_fn, &l);
     if (rc < 0) { cb_buf_free(&l.body); failed(res, rc); return; }
-    list_send(res, &l, NW_BOTS);
+    list_send_as(res, &l, NW_BOTS, CC_BOTS);
 }
 
 typedef struct {
@@ -408,10 +433,12 @@ static int by_rating(const void *a, const void *b) {
     return x->rating < y->rating ? 1 : x->rating > y->rating ? -1 : 0;
 }
 
+// Public, as h_bots. It reads only what it shows: the top BOARD_TOP played
+// humans (ratings_top, one bounded Query) and the bots (a fixed few dozen).
 static void h_board(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     if (!ctx->store) { refuse(res, 503, ASK_WHY_INTERNAL, 0); return; }
     board humans = { 0 }, bots = { 0 };
-    int rc = CB_STORE_CALL(ctx->store, ratings_list, board_human, &humans);
+    int rc = CB_STORE_CALL(ctx->store, ratings_top, BOARD_TOP, board_human, &humans);
     if (rc >= 0) rc = CB_STORE_CALL(ctx->store, bots_list, board_bot, &bots);
     if (rc >= 0 && (humans.oom || bots.oom)) rc = CB_E_NOMEM;
     if (rc < 0) { free(humans.rows); free(bots.rows); failed(res, rc); return; }
@@ -424,7 +451,7 @@ static void h_board(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     for (int i = 0; i < bots.n && i < BOARD_TOP; i++) LIST_PUT(&l, 16 + 2 * NW_ID_MAX + NW_NAME_MAX, nw_put_board(&bots.rows[i], out, (int)cap_));
     free(humans.rows);
     free(bots.rows);
-    list_send(res, &l, NW_BOARD);
+    list_send_as(res, &l, NW_BOARD, CC_BOARD);
 }
 
 static bool history_fn(const cb_snapshot_row *s, void *ud) {
@@ -450,29 +477,22 @@ static bool history_fn(const cb_snapshot_row *s, void *ud) {
     return !l->bad;
 }
 
-typedef struct { const char *uid; bool found; int32_t rating; } my_rating;
-
-static bool rating_fn(const cb_rating_row *g, void *ud) {
-    my_rating *m = ud;
-    if (strcmp(g->user_id, m->uid) != 0) return true;
-    m->found = true;
-    m->rating = g->elo_rating;
-    return false;
-}
-
 static void h_history(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     cb_user u;
     if (!caller(ctx, req, res, &u)) return;
-    my_rating m = { u.id, false, 0 };
-    int rc = CB_STORE_CALL(ctx->store, ratings_list, rating_fn, &m);
+    // The caller's own rating: one read by key, not the leaderboard.
+    const char *ids[1] = { u.id };
+    int32_t mine = TABLE_RATING_NONE;
+    int rc = CB_STORE_CALL(ctx->store, ratings_for, ids, 1, &mine);
     if (rc < 0) { failed(res, rc); return; }
     list l;
     list_begin(&l, NW_HISTORY_HEAD_BYTES);
     cb_snapshot_query q = { u.id, NULL, NULL, HISTORY_PAGE, true };
     rc = CB_STORE_CALL(ctx->store, snapshots_query, &q, history_fn, &l);
     if (rc < 0) { cb_buf_free(&l.body); failed(res, rc); return; }
-    uint32_t rating = m.found && m.rating > 0 ? (uint32_t)m.rating : 0;
-    if (!l.bad && nw_history_head(m.found, rating, l.n, l.body.p, NW_HISTORY_HEAD_BYTES) == NW_HISTORY_HEAD_BYTES)
+    bool found = mine != TABLE_RATING_NONE;
+    uint32_t rating = found && mine > 0 ? (uint32_t)mine : 0;
+    if (!l.bad && nw_history_head(found, rating, l.n, l.body.p, NW_HISTORY_HEAD_BYTES) == NW_HISTORY_HEAD_BYTES)
         octets(res, l.body.p, l.body.len);
     else failed(res, CB_E_NOMEM);
     cb_buf_free(&l.body);

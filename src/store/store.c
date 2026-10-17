@@ -4,6 +4,7 @@
 
 #include "bot_roster.h"
 
+#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -27,6 +28,22 @@ void cb_chat_row_free(cb_chat_row *c) {
     free(c->message);
     c->message = NULL;
 }
+
+// ---- busy: a throttle given up on (store.h CB_STORE_CALL) ----------------------
+
+static _Thread_local int  t_depth;
+static _Thread_local bool t_busy;
+
+void cb_store_begin_(void) {
+    if (t_depth++ == 0) t_busy = false;
+}
+
+int cb_store_end_(int rc) {
+    if (t_depth > 0) t_depth--;
+    return rc == CB_E_DB && t_busy ? CB_E_BUSY : rc;
+}
+
+void cb_store_mark_busy(void) { t_busy = true; }
 
 void cb_store_close(cb_store *s) {
     if (s && s->ops->close) s->ops->close(s);

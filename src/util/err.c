@@ -14,6 +14,7 @@ const char *cb_strerror(int code) {
     case CB_E_FULL:      return "CB_E_FULL";
     case CB_E_DB:        return "CB_E_DB";
     case CB_E_STATE:     return "CB_E_STATE";
+    case CB_E_BUSY:      return "CB_E_BUSY";
     default:             return code >= 0 ? "CB_OK(count)" : "CB_E_UNKNOWN";
     }
 }

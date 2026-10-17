@@ -7,6 +7,7 @@
 // kernel's; what is here is which row to read, which results commit, the CAS
 // loop, and the new row's bookkeeping columns.
 #include "app_internal.h"
+#include "edge.h"
 #include "fanout.h"
 
 #include "util/clock.h"
@@ -474,6 +475,8 @@ int cb_section_commit(cb_ctx *ctx, cb_section *s, const cb_game_row *row, const 
             out->needs_bots = c->needs_bots;
             out->ended = c->ended;
             cb_row_cache_note(&kept);
+            // A rated game moved the leaderboard: the edge's copy goes (edge.h).
+            if (gc.n_rated > 0) cb_edge_stale(CB_EDGE_BOARD);
             // The replay is stored before the push that ends the game, so a
             // client that asks for it on game over finds it.
             if (c->ended) finalize_game(ctx, s, &kept);

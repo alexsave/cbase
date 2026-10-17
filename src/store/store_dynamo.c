@@ -182,6 +182,7 @@ static bool backoff_pause(backoff *b, bool throttled, const char *target) {
     if (stop) {
         if (throttled) {
             atomic_fetch_add_explicit(&g_gave_up, 1, memory_order_relaxed);
+            cb_store_mark_busy();   // the request's CB_E_DB reaches its caller as CB_E_BUSY
             CB_WARN(MOD, "%s: throttled, given up after %d send(s)", target, b->sends);
         }
         return false;
@@ -922,6 +923,34 @@ static int dy_ratings_list(cb_store *s, cb_rating_fn fn, void *ud) {
     return rc == CB_OK ? n : rc;
 }
 
+typedef struct {
+    vec v;
+    int limit;
+} top_vec;
+
+static bool top_step(cb_span it, void *ud) {
+    top_vec *t = ud;
+    return rating_step(it, &t->v) && t->v.n < t->limit;
+}
+
+// One Query of at most `limit` items: the index holds only played rows, in
+// leaderboard order, so nothing past the limit is read.
+static int dy_ratings_top(cb_store *s, int limit, cb_rating_fn fn, void *ud) {
+    if (limit <= 0) return 0;
+    top_vec t = { { .size = sizeof(cb_rating_row) }, limit };
+    int rc = query_all(D(s), DWQ_RATINGS_TOP, NULL, true, limit, top_step, &t);
+    if (rc == CB_OK && t.v.oom) rc = CB_E_NOMEM;
+    int n = 0;
+    for (int i = 0; rc == CB_OK && i < t.v.n; i++) {
+        const cb_rating_row *r = &((cb_rating_row *)t.v.rows)[i];
+        if (r->games_played <= 0) continue;   // never in the index; a hand edit could put one there
+        n++;
+        if (!fn(r, ud)) break;
+    }
+    free(t.v.rows);
+    return rc == CB_OK ? n : rc;
+}
+
 static int dy_ratings_for(cb_store *s, const char *const *ids, int n, int32_t *out) {
     if (n < 0 || n > 50) return CB_E_INVALID;   // two keys an id, BatchGetItem's 100
     if (n == 0) return CB_OK;
@@ -1366,6 +1395,13 @@ static int dy_rating_import(cb_store *s, const cb_rating_row *rt) {
     return simple1(D(s), &r, CB_E_DB);
 }
 
+static int dy_rating_reindex(cb_store *s, const cb_rating_row *rt) {
+    dw_req r;
+    dw_req_init(&r);
+    dw_rating_reindex(&r, D(s)->table, rt);
+    return simple1(D(s), &r, CB_E_CONFLICT);
+}
+
 static bool bot_id_step(cb_span it, void *ud) {
     vec *v = ud;
     cb_uuid id;
@@ -1436,6 +1472,8 @@ static const cb_store_ops DYNAMO_OPS = {
     .lease_release = dy_lease_release,
     .bots_list = dy_bots_list,
     .ratings_list = dy_ratings_list,
+    .ratings_top = dy_ratings_top,
+    .rating_reindex = dy_rating_reindex,
     .ratings_for = dy_ratings_for,
     .rating_set_username = dy_rating_set_username,
     .snapshot_put = dy_snapshot_put,

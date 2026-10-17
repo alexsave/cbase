@@ -45,7 +45,8 @@
 //
 //   pk                 sk                 what (GSI keys)
 //   USER#<id>          PROFILE            the account (GSI2 USERS / <created>#<id>)
-//   USER#<id>          RATING             the leaderboard row (GSI2 RATINGS / <id>)
+//   USER#<id>          RATING             the leaderboard row (GSI2 RATINGS / E#<rank>#<id>, only
+//                                         once games_played > 0: a sparse, rating-ordered key)
 //   EMAIL#<email>      USER               the user id; signup's uniqueness
 //   REFRESH#<hash>     TOKEN              a refresh token (GSI1 USERREFRESH#<user>, GSI2 SESSION#<session>)
 //   GAME#<id>          ROW                the game
@@ -61,7 +62,13 @@
 //   SCAN               GAME#<id>          present while the game needs bots: the heartbeat's
 //                                         partition, and the bot lease
 //
-// Times in sort keys are 15-digit zero-padded ms so they sort as text.
+// Times in sort keys are 15-digit zero-padded ms so they sort as text. A
+// rating's GSI2 sort key is "E#" + (2147483647 - rating) as 10 zero-padded
+// digits + "#" + the user id, so a forward Query is the leaderboard (highest
+// first, then user id) and a Limit bounds it; a row with no games carries no
+// GSI2 key and is not in the index at all. The "E#" prefix keeps the Query
+// off the rows written before this layout (GSI2 RATINGS / <id>), which
+// cbase-import --reindex-ratings rewrites once.
 // The index names and the TTL attribute the table must be created with.
 // ops/cbase.yaml spells them too; test/unit_dynamo.c reads the template and
 // fails when the two disagree.
@@ -197,7 +204,8 @@ typedef enum {
     DWQ_TOPIC_CONNS,       // arg topic (consistent)
     DWQ_SCAN,              // arg unused: the SCAN partition (consistent)
     DWQ_BOTS,              // GSI2 BOTS
-    DWQ_RATINGS,           // GSI2 RATINGS
+    DWQ_RATINGS,           // GSI2 RATINGS: every row the index holds, either layout
+    DWQ_RATINGS_TOP,       // GSI2 RATINGS, "E#" keys only: the leaderboard order
     DWQ_USERS,             // GSI2 USERS, newest first
 } dw_query_kind;
 // `limit` 0 for none; `forward` only matters for DWQ_PLAYER_SNAPSHOTS;
@@ -280,6 +288,9 @@ void dw_lease_release(dw_req *r, const char *table, const char *game, const char
 // Ratings and bots.
 void dw_rating_set_username(dw_req *r, const char *table, const char *user, const char *username);
 void dw_rating_import(dw_req *r, const char *table, const cb_rating_row *rt);
+// UpdateItem: the GSI2 keys of rt's row set to the rating-ordered layout (or
+// removed for a row with no games), on condition its rating and games are rt's.
+void dw_rating_reindex(dw_req *r, const char *table, const cb_rating_row *rt);
 // Every bot replaced: deletes for the stored ids not in rows, puts for rows.
 // false past 100 items.
 bool dw_bots_replace(dw_req *r, const char *table, const cb_bot_row *rows, int n, const cb_uuid *stored, int n_stored);
@@ -523,6 +534,17 @@ typedef struct {
     cb_js_admin_links         links;
 } cb_js_admin_backups;
 int cb_js_admin_backups_write(cb_buf *out, const cb_js_admin_backups *b);
+
+// =====================================================================================
+// CloudFront (cf_): THE ONE XML SHAPE c_base speaks. CloudFront's API is XML,
+// not JSON; it lives here so every tolerated foreign text format has one
+// file, and the containment gate (test/unit_json_gate.c) fails any other
+// file that holds an XML-looking literal (an "<?xml" prolog or an xmlns).
+
+// The body of CreateInvalidation (API version 2020-05-31): an
+// InvalidationBatch of `n` paths and the caller reference, the paths in the
+// order given. Text is escaped (& < > " '). false when `out` ran out of memory.
+bool cf_invalidation_xml(cb_buf *out, const char *const *paths, int n, const char *caller_ref);
 
 // =====================================================================================
 // The client's side (bench/): what AWS hands the function for a browser's

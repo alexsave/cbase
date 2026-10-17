@@ -49,7 +49,7 @@ enum {
     ST_GAMES_OF_USER, ST_IS_MEMBER, ST_GAMES_NEEDING_BOTS,
     ST_LEASE_ACQUIRE, ST_LEASE_RENEW, ST_LEASE_RELEASE,
     ST_RATING_INSERT_MISSING, ST_RATING_APPLY, ST_BOT_RATING_APPLY,
-    ST_BOTS_ALL, ST_RATINGS_ALL, ST_BOT_ELO, ST_USER_ELO, ST_RATING_SET_USERNAME,
+    ST_BOTS_ALL, ST_RATINGS_ALL, ST_RATINGS_TOP, ST_BOT_ELO, ST_USER_ELO, ST_RATING_SET_USERNAME,
     ST_SNAPSHOT_PUT, ST_SNAPSHOT_SET_EXTRAS, ST_SNAPSHOTS_ASC, ST_SNAPSHOTS_DESC,
     ST_CHAT_PUT, ST_CHAT_LIST,
     ST_CONN_PRUNE, ST_CONN_UPSERT, ST_CONN_TOPICS_CLEAR, ST_CONN_TOPIC_INSERT, ST_CONN_GET, ST_CONN_TOPICS_OF,
@@ -139,7 +139,10 @@ static const char *const SQL[ST__COUNT] = {
                             "games_played = games_played + 1, updated_at = ?3 WHERE id = ?1",
 
     [ST_BOTS_ALL] = "SELECT " BOT_COLS " FROM bots",
-    [ST_RATINGS_ALL] = "SELECT user_id, username, elo_rating, previous_elo, games_played, updated_at FROM ratings",
+    [ST_RATINGS_ALL] = "SELECT user_id, username, elo_rating, previous_elo, games_played, updated_at FROM ratings"
+                       " WHERE games_played > 0",
+    [ST_RATINGS_TOP] = "SELECT user_id, username, elo_rating, previous_elo, games_played, updated_at FROM ratings"
+                       " WHERE games_played > 0 ORDER BY elo_rating DESC, user_id LIMIT ?1",
     [ST_BOT_ELO] = "SELECT elo_rating FROM bots WHERE id = ?1",
     [ST_USER_ELO] = "SELECT elo_rating FROM ratings WHERE user_id = ?1",
     [ST_RATING_SET_USERNAME] = "UPDATE ratings SET username = ?2 WHERE user_id = ?1",
@@ -1055,6 +1058,33 @@ static int sq_ratings_list(cb_store *st, cb_rating_fn fn, void *ud) {
     return rc == CB_OK ? n : rc;
 }
 
+static int sq_ratings_top(cb_store *st, int limit, cb_rating_fn fn, void *ud) {
+    if (limit <= 0) return 0;
+    sq *q = Q(st);
+    vec v = { .size = sizeof(cb_rating_row) };
+    int rc = CB_OK;
+    lock(q);
+    sqlite3_stmt *s = stmt(q, ST_RATINGS_TOP);
+    if (!s) rc = CB_E_DB;
+    else sqlite3_bind_int(s, 1, limit);
+    int r = SQLITE_DONE;
+    while (rc == CB_OK && (r = sqlite3_step(s)) == SQLITE_ROW) {
+        cb_rating_row *e = vec_push(&v);
+        if (!e) rc = CB_E_NOMEM;
+        else read_rating(s, e);
+    }
+    if (rc == CB_OK && r != SQLITE_DONE) rc = fail(q, "ratings top", r);
+    done(s);
+    unlock(q);
+    int n = 0;
+    for (int i = 0; rc == CB_OK && i < v.n; i++) {
+        n++;
+        if (!fn(&((cb_rating_row *)v.p)[i], ud)) break;
+    }
+    free(v.p);
+    return rc == CB_OK ? n : rc;
+}
+
 // seat_ratings: a bot's row, else the user's, else TABLE_RATING_NONE.
 static int sq_ratings_for(cb_store *st, const char *const *ids, int n, int32_t *out) {
     sq *q = Q(st);
@@ -1580,6 +1610,8 @@ static int sq_user_import(cb_store *st, const cb_user_row *u) {
     return rc;
 }
 
+static int sq_rating_reindex(cb_store *st, const cb_rating_row *r) { return CB_OK; }   // no index key
+
 static int sq_rating_import(cb_store *st, const cb_rating_row *r) {
     sq *q = Q(st);
     lock(q);
@@ -1679,6 +1711,7 @@ static const cb_store_ops SQLITE_OPS = {
     .lease_release = sq_lease_release,
     .bots_list = sq_bots_list,
     .ratings_list = sq_ratings_list,
+    .ratings_top = sq_ratings_top,
     .ratings_for = sq_ratings_for,
     .rating_set_username = sq_rating_set_username,
     .snapshot_put = sq_snapshot_put,
@@ -1695,6 +1728,7 @@ static const cb_store_ops SQLITE_OPS = {
     .admin_query = sq_admin_query,
     .user_import = sq_user_import,
     .rating_import = sq_rating_import,
+    .rating_reindex = sq_rating_reindex,
     .bots_replace = sq_bots_replace,
     .game_import = sq_game_import,
 };

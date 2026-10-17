@@ -65,6 +65,13 @@ int cb_config_from_env(cb_config *c, char *err, size_t cap) {
     if (!copy(c->db_path, sizeof c->db_path, "CBASE_DB", env("CBASE_DB", "./cbase.sqlite"), err, cap)) return CB_E_INVALID;
     if (!copy(c->table, sizeof c->table, "CBASE_TABLE", env("CBASE_TABLE", "cbase"), err, cap)) return CB_E_INVALID;
     if (!copy(c->ws_endpoint, sizeof c->ws_endpoint, "CBASE_WS_ENDPOINT", env("CBASE_WS_ENDPOINT", ""), err, cap)) return CB_E_INVALID;
+    if (!copy(c->cf_distribution, sizeof c->cf_distribution, "CBASE_CF_DISTRIBUTION", env("CBASE_CF_DISTRIBUTION", ""), err, cap))
+        return CB_E_INVALID;
+    for (const char *d = c->cf_distribution; *d; d++)
+        if (!((*d >= 'A' && *d <= 'Z') || (*d >= '0' && *d <= '9'))) {
+            snprintf(err, cap, "CBASE_CF_DISTRIBUTION=%s is not a CloudFront distribution id", c->cf_distribution);
+            return CB_E_INVALID;
+        }
     const char *secret = env("CBASE_JWT_SECRET", NULL);
     if (secret) {
         if (strlen(secret) < 32) {
@@ -111,6 +118,7 @@ void cb_config_each(const cb_config *c, cb_config_fn fn, void *ud) {
     fn("CBASE_DB", c->db_path, false, ud);
     fn("CBASE_TABLE", c->table, false, ud);
     fn("CBASE_WS_ENDPOINT", c->ws_endpoint, false, ud);
+    fn("CBASE_CF_DISTRIBUTION", c->cf_distribution[0] ? c->cf_distribution : "(unset: no edge invalidation)", false, ud);
     fn("CBASE_JWT_SECRET", c->jwt_secret_generated ? "(unset: random per process)" : "(set)", true, ud);
     fn("CBASE_ADMIN_TOKEN", c->admin_token[0] ? "(set)" : "(unset: console refused)", true, ud);
     fn("CBASE_ALLOWED_ORIGINS", c->allowed_origins, false, ud);

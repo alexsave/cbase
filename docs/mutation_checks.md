@@ -327,3 +327,30 @@ The TypeScript server's e2e suite went with it; these unit_app.c tests carry ove
 - `bot_moves_wait_for_the_table_to_settle` (web_bot_first_move_pace, web_throwin_vs_bot, win_screen_rating_is_the_games): the kernel's wait ignored -> `g_pace.at[k] >= t_last + wait`.
 
 Equivalent, recorded so nobody chases it: a bot cycle reading the row cache instead of the store survives, because in one process the cache holds the newest commit. Not ported: the casts' per-seat masking (the test checks every envelope against the seat's view, not every cast, which the kernel's own table_cast tests hold).
+
+## Edge cache, the bounded leaderboard read, and busy (2026-10-17)
+
+Each mutation rewritten in, its one test binary rebuilt with the touched object deleted, then rewritten back (DESIGN.md "Edge cache").
+
+- v1_http.c: CC_BOARD s-maxage 3600 -> 3601 -> `cache_control_per_route` Cache-Control == "public, max-age=0, s-maxage=3600".
+- v1_http.c: h_board answered as a private list -> the same assertion.
+- v1_http.c: h_bots reads the caller again -> `bots_board_history_replay` call(b_bots) == 200.
+- v1_http.c: public answer without `Access-Control-Allow-Origin: *` -> `cache_control_per_route` ACAO == "*".
+- netclient.c: nc_req_bots carries the token again -> `cache_control_per_route` q->auth_len == 0.
+- v1_http.c: CB_E_BUSY not mapped -> `a_throttled_read_is_busy_and_retried` board == 503.
+- v1_http.c: no Retry-After -> the same test, Retry-After == "1".
+- v1_http.c: history reads every rating row again -> `bots_board_history_replay` has_rating and rating == 1600 (the fake's full read fails).
+- store.c: CB_STORE_CALL never turns CB_E_DB into CB_E_BUSY -> `a_throttled_read_is_busy_and_retried` board == 503.
+- store.c: the busy mark never cleared -> the same test, a plain failure == 500.
+- netclient.c: nc_retry_ms retries a POST -> NC_POST == 0; retries a fourth time -> attempt 3 == 0; retries any 503 -> the no-backend 503 == 0.
+- ask.c: ASK_WHY_BUSY not a known reason -> `a_throttled_read_is_busy_and_retried` nc_list_read == -ASK_WHY_BUSY.
+- store_dynamo.c: a throttle given up on not marked busy -> `flow_throttled_past_the_deadline` == CB_E_BUSY.
+- store_sqlite.c: ratings_top without `games_played > 0` -> `users_round_trip` ratings_top == 0; lowest first -> `ratings_applied_by_commit` rows[0] == b; ratings_list without the filter -> `users_round_trip` ratings_list == 0.
+- store_dynamo.c: ratings_top does not stop at its limit -> under DynamoDB Local only, `ratings_applied_by_commit` ratings_top(1) == 1 (the fake transport never pages it).
+- json_surface.c: the top Query without `begins_with(E#)` -> `query_shapes` body; a rated commit's Update without gsi2sk -> `commit_transaction` body; the rank not inverted -> the same; a sign-up's rating row in the index -> `signup_transaction` body; the reindex without its condition -> `query_shapes` body.
+- json_surface.c: Quantity off by one -> `cloudfront_invalidation` body == CF_BODY; `&` not escaped -> the escape assertion.
+- cloudfront.c: signed for AWS_REGION instead of us-east-1 -> `cloudfront_invalidation` Authorization names us-east-1/cloudfront; any 2xx accepted -> a 200 == CB_E_IO.
+- edge.c: flush does not clear the marks -> `cloudfront_invalidation` pending == 0; the bots path never named -> cb_edge_paths(ALL) == 2.
+- table_ops.c: a rated commit not marked -> `a_finished_game_writes_a_snapshot_and_ratings` marks == 1; every commit marked -> the same assertion.
+- functions_http.c: an account deleted not marked -> `delete_account_redacts` marks == 1.
+- unit_json_gate.c: `xmlns` not seen -> `the_scanner_sees_each_kind` planted namespace == 1; an XML literal planted in cloudfront.c -> `only_json_surface_speaks_json` violations == 0.

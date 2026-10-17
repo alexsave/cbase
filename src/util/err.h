@@ -19,6 +19,7 @@
 #define CB_E_FULL      (-9)   // a buffer, queue or table is at its cap
 #define CB_E_DB       (-10)   // SQLite said no; the log says why
 #define CB_E_STATE    (-11)   // called in the wrong state (closed, stopped, not loaded)
+#define CB_E_BUSY     (-12)   // the store stayed throttled past its backoff: try again shortly
 
 // A short constant name for logs ("CB_E_NOT_FOUND"), never NULL.
 const char *cb_strerror(int code);

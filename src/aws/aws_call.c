@@ -54,12 +54,20 @@ void cb_aws_path_segment(cb_buf *b, const char *s) {
 int cb_aws_call(const char *service, const char *method, const char *host, int port, bool tls, const char *path,
                 const char *const *headers, int n_headers, const void *body, size_t body_len, int timeout_ms,
                 cb_https_response *out) {
+    return cb_aws_call_region(NULL, service, method, host, port, tls, path, headers, n_headers, body, body_len,
+                              timeout_ms, out);
+}
+
+int cb_aws_call_region(const char *region, const char *service, const char *method, const char *host, int port, bool tls,
+                       const char *path, const char *const *headers, int n_headers, const void *body, size_t body_len,
+                       int timeout_ms, cb_https_response *out) {
     memset(out, 0, sizeof *out);
     cb_aws_creds c;
     if (cb_aws_creds_from_env(&c) != CB_OK) {
         CB_ERROR("aws", "%s: no AWS credentials (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION)", service);
         return CB_E_IO;
     }
+    if (region && !cb_strncpy0(c.region, sizeof c.region, region, strlen(region))) return CB_E_INVALID;
     char hosthdr[300];
     if (port == (tls ? 443 : 80)) cb_strlcpy(hosthdr, host, sizeof hosthdr);
     else snprintf(hosthdr, sizeof hosthdr, "%s:%d", host, port);

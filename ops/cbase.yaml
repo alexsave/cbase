@@ -15,7 +15,9 @@ AWSTemplateFormatVersion: "2010-09-09"
 #   * an EventBridge Scheduler schedule that invokes the bot scan every minute;
 #   * a CloudFront distribution at the custom domain, sending
 #     /v1/stream to the WebSocket API and everything else to the Function
-#     URL, so the clients see one origin;
+#     URL, so the clients see one origin; it caches exactly two paths, the
+#     public /v1/leaderboard and /v1/bots, which the function invalidates
+#     when they change (DESIGN.md "Edge cache");
 #   (GitHub Actions deploys new code through ops/github_oidc.yaml's role, which
 #   holds no other rights here: see that file.)
 #
@@ -43,6 +45,8 @@ Metadata:
         Parameters: [DomainName, CertificateArn, AllowedOrigins]
       - Label: { default: "Names" }
         Parameters: [FunctionName, TableName]
+      - Label: { default: "Edge cache" }
+        Parameters: [DistributionId]
 
 Parameters:
   CodeBucket:
@@ -84,6 +88,17 @@ Parameters:
     Type: String
     Default: cbase
     AllowedPattern: "[a-zA-Z0-9_.-]{3,255}"
+  DistributionId:
+    Type: String
+    Default: ""
+    AllowedPattern: "[A-Z0-9]*"
+    Description: >-
+      This stack's own CloudFront distribution id (the DistributionId output), for
+      CBASE_CF_DISTRIBUTION: the function invalidates the cached public reads there.
+      The function cannot name the distribution in front of it without a cycle
+      (Distribution -> FunctionUrl -> Function), so ops/deploy.sh reads it from the
+      stack and passes it back. Empty on a first deploy: nothing is invalidated until
+      the next one, and the cached reads are fresh within their s-maxage meanwhile.
 
 Resources:
   # ---- the store ----------------------------------------------------------------
@@ -205,6 +220,22 @@ Resources:
                   - logs:PutLogEvents
                 Resource: !Sub "${LogGroup.Arn}:*"
 
+  # The one CloudFront right the function holds: invalidating its own
+  # distribution's cached public reads (app/edge.h). A policy of its own, not a
+  # statement in FunctionRole, so the role does not depend on the distribution
+  # (Distribution -> FunctionUrl -> Function -> FunctionRole would be a cycle).
+  EdgeInvalidationPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: edge-invalidation
+      Roles: [!Ref FunctionRole]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: cloudfront:CreateInvalidation
+            Resource: !Sub "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Distribution}"
+
   Function:
     Type: AWS::Lambda::Function
     Properties:
@@ -233,6 +264,8 @@ Resources:
           # The management endpoint pushes are POSTed to (realtime/rt_apigw.h).
           CBASE_WS_ENDPOINT: !Sub "https://${WsApi}.execute-api.${AWS::Region}.amazonaws.com/prod"
           CBASE_LOG_LEVEL: info
+          # The edge cache's invalidations go here (app/edge.h).
+          CBASE_CF_DISTRIBUTION: !Ref DistributionId
 
   # ---- the HTTP front: a Function URL ---------------------------------------------
   # AuthType NONE and no CORS block: the function answers CORS itself
@@ -378,6 +411,28 @@ Resources:
           return request;
         }
 
+  # The two public reads (v1_http.c CC_BOTS, CC_BOARD): the same bytes for every
+  # caller, so the key is the path alone. No header, cookie or query string is
+  # in it: Authorization is never part of the key (nor sent on), and a query
+  # string cannot split the cache or walk past it to the origin (no client
+  # sends one). The TTL is the origin's s-maxage, capped at a day; an answer
+  # without one (a refusal says no-store) is not kept.
+  PublicReadsCachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+        Name: !Sub "${FunctionName}-public-reads"
+        Comment: /v1/leaderboard and /v1/bots, keyed on the path only
+        MinTTL: 0
+        DefaultTTL: 0
+        MaxTTL: 86400
+        ParametersInCacheKeyAndForwardedToOrigin:
+          EnableAcceptEncodingGzip: true
+          EnableAcceptEncodingBrotli: true
+          HeadersConfig: { HeaderBehavior: none }
+          CookiesConfig: { CookieBehavior: none }
+          QueryStringsConfig: { QueryStringBehavior: none }
+
   Distribution:
     Type: AWS::CloudFront::Distribution
     Properties:
@@ -405,7 +460,7 @@ Resources:
             CustomOriginConfig:
               OriginProtocolPolicy: https-only
               OriginSSLProtocols: [TLSv1.2]
-        # Nothing is cached (CachingDisabled), and every viewer header, cookie
+        # Nothing else is cached (CachingDisabled), and every viewer header, cookie
         # and query string but Host reaches the origin (AllViewerExceptHostHeader):
         # the Function URL and API Gateway each require their own Host, and the
         # WebSocket handshake needs its Sec-WebSocket-* headers and the query.
@@ -417,7 +472,26 @@ Resources:
           Compress: true
           CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad          # Managed-CachingDisabled
           OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac  # Managed-AllViewerExceptHostHeader
+        # The public reads: cached (PublicReadsCachePolicy), and only the CORS
+        # request headers reach the function (Managed-CORS-CustomOrigin), so a
+        # browser's preflight is still answered; the Host stays the origin's.
         CacheBehaviors:
+          - PathPattern: /v1/leaderboard
+            TargetOriginId: function
+            ViewerProtocolPolicy: https-only
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD]
+            Compress: true
+            CachePolicyId: !Ref PublicReadsCachePolicy
+            OriginRequestPolicyId: 59781a5b-3903-41f3-afcb-af62929ccde1  # Managed-CORS-CustomOrigin
+          - PathPattern: /v1/bots
+            TargetOriginId: function
+            ViewerProtocolPolicy: https-only
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD]
+            Compress: true
+            CachePolicyId: !Ref PublicReadsCachePolicy
+            OriginRequestPolicyId: 59781a5b-3903-41f3-afcb-af62929ccde1  # Managed-CORS-CustomOrigin
           - PathPattern: /v1/stream*
             TargetOriginId: realtime
             ViewerProtocolPolicy: https-only
@@ -440,6 +514,9 @@ Outputs:
   DistributionDomain:
     Description: Point the DNS CNAME for DomainName here.
     Value: !GetAtt Distribution.DomainName
+  DistributionId:
+    Description: The distribution's id; ops/deploy.sh passes it back as the DistributionId parameter.
+    Value: !Ref Distribution
   TableName:
     Value: !Ref Table
   FunctionName:

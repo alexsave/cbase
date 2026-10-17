@@ -29,6 +29,7 @@
 // answer's shape is written in json_surface.c; this file gathers the values.
 #include "admin.h"
 
+#include "app/edge.h"
 #include "app/functions_http.h"
 #include "app/table_ops.h"
 #include "handler.h"
@@ -378,6 +379,8 @@ static void api_query(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     row_sink s = { cb_js_admin_query_begin(&b, is_sqlite(ctx) ? "sql" : "partiql", allow_write), 0, ADMIN_QUERY_ROWS, false };
     if (!s.s) { cb_buf_free(&b); free(stmt); no_memory(res); return; }
     int rc = CB_STORE_CALL(ctx->store, admin_query, stmt, allow_write, put_row, &s);
+    // A hand edit may have touched a rating or a bot: both edge copies go (app/edge.h).
+    if (allow_write) cb_edge_stale(CB_EDGE_ALL);
     int enc = cb_js_admin_query_end(s.s, s.truncated);
     if (rc < 0) store_error(ctx, res, "query", rc);
     else send_json(res, 200, &b, enc);

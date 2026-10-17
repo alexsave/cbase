@@ -32,6 +32,13 @@ int cb_import_dir(cb_store *s, const char *dir, FILE *out);
 // replaced), or a CB_E_*.
 int cb_import_seed_bots(cb_store *s);
 
+// Every rating row the leaderboard index holds, brought to its current key
+// layout (store.h rating_reindex; json_surface.h "THE ITEM LAYOUT"): the rows
+// written before the sparse rating-ordered key move to it, rows with no games
+// leave the index. Idempotent; a row a commit changes meanwhile is left to
+// the commit. The number of rows rewritten, or a CB_E_* code.
+int cb_import_reindex_ratings(cb_store *s);
+
 // "$2a$" or "$2b$", a two-digit cost 04..31, "$", then 53 characters of
 // bcrypt's base64 alphabet: 60 in all.
 bool cb_import_bcrypt_shaped(const char *hash);

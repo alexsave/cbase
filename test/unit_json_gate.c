@@ -8,7 +8,11 @@
 //   * names the writer or reader: an identifier cb_jw, cb_jw_*, cb_json_*,
 //     CB_JW_* or CB_JSON_* (cb_jwt_* is the JWT module, not JSON), or
 //   * holds a string literal with a JSON key in it: a quoted word followed by
-//     a colon ("key": in the literal's text, \"key\": in the source).
+//     a colon ("key": in the literal's text, \"key\": in the source), or
+//   * holds a string literal that is XML: an "<?xml" prolog or an "xmlns"
+//     namespace. CloudFront's API is XML (json_surface.h "CloudFront"); the
+//     same containment holds for it, and the unfurl route's HTML (which has
+//     neither) is not XML to this gate.
 //
 // Comments are skipped, so a comment may describe a shape; adjacent literals
 // are joined first, as the compiler joins them, so a key cannot hide across
@@ -83,8 +87,16 @@ static void lit_put(lit *l, char c) {
     l->p[l->n++] = c;
 }
 
+// XML in a literal's text: a prolog or a namespace declaration.
+static bool has_xml(const char *s, size_t n) {
+    for (size_t i = 0; i < n; i++)
+        if ((n - i >= 5 && memcmp(s + i, "<?xml", 5) == 0) || (n - i >= 5 && memcmp(s + i, "xmlns", 5) == 0)) return true;
+    return false;
+}
+
 static void lit_flush(lit *l, const char *path) {
     if (l->n && has_json_key(l->p, l->n)) violation(path, l->line, "a JSON key in a string literal", l->p, l->n);
+    else if (l->n && has_xml(l->p, l->n)) violation(path, l->line, "XML in a string literal", l->p, l->n);
     l->n = 0;
     l->line = 0;
 }
@@ -233,6 +245,10 @@ static void the_scanner_sees_each_kind(void) {
     T_EQ_INT(planted("// {\"key\": 1} described in a comment\n/* \"k\": */\n"), 0);
     T_EQ_INT(planted("cb_jwt_verify(s, t, 0, &c); char q = '\"';\n"), 0);
     T_EQ_INT(planted("#include \"json_surface.h\"\n"), 0);
+    // XML: a prolog, a namespace (also across literals); HTML is not XML here.
+    T_EQ_INT(planted("const char *x = \"<?xml version=\\\"1.0\\\"?>\";\n"), 1);
+    T_EQ_INT(planted("const char *x = \"<Batch xml\" \"ns=\\\"http://a/\\\">\";\n"), 1);
+    T_EQ_INT(planted("const char *h = \"<title>%s</title><meta property=og:title>\";\n"), 0);
 }
 
 int main(void) {
