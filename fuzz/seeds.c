@@ -271,7 +271,7 @@ static void dynamo_items(void) {
     cn.n_topics = 2;
     snprintf(cn.topics[0], sizeof cn.topics[0], "pv-" U1);
     snprintf(cn.topics[1], sizeof cn.topics[1], "game-ab12cd");
-    dw_conn_put(&r, "cbase", &cn, NULL, 5000); take(&r);
+    dw_conn_put(&r, "cbase", &cn, 0, 5000); take(&r);
     cb_rating_row rt;
     memset(&rt, 0, sizeof rt);
     snprintf(rt.user_id, sizeof rt.user_id, U1);
@@ -621,6 +621,28 @@ static void seeds_netclient(void) {
     cb_buf_free(&b);
 }
 
+// The table target's programs (fz_table.c): a seed, the table's shape, then
+// legal moves with a probe between them.
+static void seeds_table(void) {
+    static const uint8_t SHAPES[][2] = { { 1, 1 }, { 2, 0 }, { 1, 3 }, { 3, 3 }, { 0, 5 } };
+    for (size_t k = 0; k < sizeof SHAPES / sizeof SHAPES[0]; k++) {
+        uint8_t p[1024];
+        size_t n = 0;
+        for (int i = 0; i < 32; i++) p[n++] = (uint8_t)(i * 11 + k);
+        p[n++] = SHAPES[k][0];       // humans - 1
+        p[n++] = SHAPES[k][1];       // bots
+        for (int b = 0; b < 5; b++) p[n++] = 0;   // every bot plays at random
+        for (int i = 0; i < 150 && n + 8 < sizeof p; i++) {
+            p[n++] = 0; p[n++] = (uint8_t)i; p[n++] = (uint8_t)(i * 7); p[n++] = 0;   // a legal move
+            if (i % 5 == 2) { p[n++] = 3; p[n++] = (uint8_t)i; p[n++] = 0; p[n++] = 0; p[n++] = 0; p[n++] = (uint8_t)(i * 13); p[n++] = 1; }
+            if (i % 9 == 4) { p[n++] = 7; }
+        }
+        char name[32];
+        snprintf(name, sizeof name, "shape-%zu", k);
+        put("table", name, p, n);
+    }
+}
+
 // The sequence target's programs (fz_sequence.c): op = 12 * user + step.
 #define OP(user, step) (uint8_t)(12 * (user) + (step))
 static void seeds_sequence(void) {
@@ -683,6 +705,7 @@ int main(int argc, char **argv) {
     seeds_unfurl();
     seeds_import();
     seeds_netclient();
+    seeds_table();
     seeds_sequence();
     printf("seeds: %d files (%d DynamoDB items, %d envelopes, %d casts, %d moves)\n", g_written, g_n_items, g_n_env,
            g_n_cast, g_n_wire);

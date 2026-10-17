@@ -745,7 +745,6 @@ static void reset_world(uint64_t seed) {
     memset(g_conn, 0, sizeof g_conn);
     for (int i = 0; i < N_CONNS; i++) {
         snprintf(g_conn[i].row.conn_id, sizeof g_conn[i].row.conn_id, "conn%d", i);
-        g_conn[i].row.vsn = CB_VSN_NW;
         g_conn[i].user = -1;
     }
     g_steal = 0;
