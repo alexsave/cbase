@@ -6,6 +6,7 @@
 #include "v1_http.h"
 
 #include "auth/auth.h"
+#include "auth/names.h"
 #include "limits.h"
 #include "net/router.h"
 #include "realtime/realtime.h"
@@ -203,7 +204,17 @@ static void h_credentials(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res,
         refuse(res, 400, ASK_WHY_MALFORMED, 0);
         return;
     }
-    cb_v1_email_of(q.name, q.name_len, email);
+    // The case step of the canonical name (auth/names.h) for both routes: the
+    // account is the one the name's bytes derive, so "alice" is "ALICE" as
+    // every client has always sent it. Not UTF-8: no account has that name.
+    char canon[NW_NAME_MAX * 2 + 8];
+    int cn = cb_name_case(q.name, q.name_len, canon, sizeof canon);
+    if (cn < 0 || cn > NW_NAME_MAX) {
+        memset(pw, 0, sizeof pw);
+        auth_failed(res, kind == NW_SIGNUP ? CB_AUTH_E_BAD_USERNAME : CB_AUTH_E_BAD_LOGIN);
+        return;
+    }
+    cb_v1_email_of(canon, (size_t)cn, email);
     // The limits before any work: an address's attempts, an account's
     // guesses, and every sign-up this container makes (limits.h).
     char ip[96];
@@ -214,7 +225,7 @@ static void h_credentials(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res,
         return;
     }
     cb_session s;
-    int rc = kind == NW_SIGNUP ? cb_auth_signup(ctx->auth, email, pw, name, &s) : cb_auth_signin(ctx->auth, email, pw, &s);
+    int rc = kind == NW_SIGNUP ? cb_auth_signup(ctx->auth, email, pw, canon, &s) : cb_auth_signin(ctx->auth, email, pw, &s);
     memset(pw, 0, sizeof pw);
     if (rc != CB_OK) auth_failed(res, rc);
     else send_session(res, &s);

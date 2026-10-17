@@ -109,7 +109,9 @@ static void one_invocation(const char *bin) {
     tp_child c;
     T_EQ_INT(tp_start(&c, argv, env), 0);
     // Every invocation logs its timing line (main_lambda.c), in order.
-    T_EQ_INT(tp_wait_line(&c, "inv: http GET /health 200 ms=", 20000, NULL, 0), 0);
+    char hl[512];
+    T_EQ_INT(tp_wait_line(&c, "inv: http GET /health 200 ms=", 20000, hl, sizeof hl), 0);
+    T_CHECK(strstr(hl, " ip=") != NULL);   // the access log's viewer (M9)
     // Each names its Lambda request id, the one the REPORT line carries.
     char line[512] = "";
     T_EQ_INT(tp_wait_line(&c, "inv: scan ms=", 20000, line, sizeof line), 0);

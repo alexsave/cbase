@@ -64,7 +64,9 @@ static void start_server(void) {
     char line[512];
     static char envdb[512];
     snprintf(envdb, sizeof envdb, "CBASE_DB=%s/cbase.sqlite", g_dbdir);
-    char *env[] = { "CBASE_LISTEN=127.0.0.1:0", envdb, "CBASE_JWT_SECRET=smoke-secret-smoke-secret-smoke-secret", NULL };
+    // Fresh accounts, rated at once (CBASE_RATED_MIN_AGE, table_ops.c): the scenario checks the leaderboard moves.
+    char *env[] = { "CBASE_LISTEN=127.0.0.1:0", envdb, "CBASE_JWT_SECRET=smoke-secret-smoke-secret-smoke-secret",
+                    "CBASE_RATED_MIN_AGE=0", NULL };
     char *argv[] = { (char *)g_bin, "serve", NULL };
     g_port = 0;
     T_EQ_INT(tp_start(&g_child, argv, env), 0);

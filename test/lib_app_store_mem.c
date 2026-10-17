@@ -490,6 +490,14 @@ int tm_add_user(cb_store *s, const char *id, const char *username) {
     return m_user_create(s, &u);
 }
 
+void tm_set_user_created(cb_store *s, const char *id, int64_t created_at) {
+    tm_impl *m = IMPL(s);
+    pthread_mutex_lock(&m->mu);
+    tm_user *u = find_user(m, id);
+    if (u) u->user.created_at = created_at;
+    pthread_mutex_unlock(&m->mu);
+}
+
 int tm_rating(cb_store *s, const char *id, cb_rating_row *out) {
     tm_impl *m = IMPL(s);
     int rc = CB_E_NOT_FOUND;

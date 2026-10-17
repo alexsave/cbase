@@ -33,6 +33,7 @@ typedef enum {
     CB_LIMIT_CHAT_USER,      // chat messages by one account
     CB_LIMIT_SUB_USER,       // stream subscriptions by one account
     CB_LIMIT_BUMP_USER,      // bumps (bot kicks) by one account
+    CB_LIMIT_ADMIN_FAIL_IP,  // wrong console tokens from one address (finding L7): taken on a failure only
     CB_LIMIT_KINDS
 } cb_limit_kind;
 
@@ -47,6 +48,10 @@ extern const cb_limit_rule cb_limit_rules[CB_LIMIT_KINDS];
 // Takes one from `key`'s bucket of `kind` at now_ms: true when allowed. When
 // refused, *retry_s (if given) is the whole seconds until one is back.
 bool cb_limit_take(cb_limit_kind kind, const char *key, int64_t now_ms, int *retry_s);
+// Whether `key`'s bucket of `kind` has one to give at now_ms, taking none:
+// for a limit counted on failures only (CB_LIMIT_ADMIN_FAIL_IP), checked
+// before the attempt and taken after a failed one.
+bool cb_limit_peek(cb_limit_kind kind, const char *key, int64_t now_ms);
 // Forgets every bucket (the tests, between cases).
 void cb_limits_reset(void);
 

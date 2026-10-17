@@ -107,6 +107,8 @@ int cb_config_from_env(cb_config *c, char *err, size_t cap) {
     c->max_body = v;
     if (!num("CBASE_JWT_TTL", 3600, 60, 86400 * 7, &v, err, cap)) return CB_E_INVALID;
     c->jwt_ttl_s = (int)v;
+    if (!num("CBASE_RATED_MIN_AGE", 72 * 3600, 0, 30 * 86400, &v, err, cap)) return CB_E_INVALID;
+    c->rated_min_age_s = (int)v;
     const char *lvl = env("CBASE_LOG_LEVEL", "info");
     c->log_level = cb_log_level_parse(lvl);
     if (c->log_level < 0) {
@@ -142,6 +144,8 @@ void cb_config_each(const cb_config *c, cb_config_fn fn, void *ud) {
     fn("CBASE_MAX_BODY", b, false, ud);
     snprintf(b, sizeof b, "%d", c->jwt_ttl_s);
     fn("CBASE_JWT_TTL", b, false, ud);
+    snprintf(b, sizeof b, "%d", c->rated_min_age_s);
+    fn("CBASE_RATED_MIN_AGE", b, false, ud);
     fn("CBASE_LOG_LEVEL", cb_log_level_name(c->log_level), false, ud);
 }
 

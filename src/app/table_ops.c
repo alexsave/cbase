@@ -308,9 +308,37 @@ pthread_mutex_t *cb_table_order_lock(const char *gid) {
 
 // ---- the commit ---------------------------------------------------------------------------
 
+// Rating farming (security finding M6): sign-ups are free, so a player could
+// lose games on purpose from fresh accounts to feed one main account. A game
+// with a human seat whose account is younger than this ends unrated, for
+// everyone at it: the kernel's own path for a host that has no ratings (no
+// stamp, no change, table.h table_rate). A deleted account (no row) is no
+// reason; a row that cannot be read is, as an unreadable rating is. The age
+// is config.h CBASE_RATED_MIN_AGE (72 h; the smoke tests' fresh accounts set 0).
+static bool accounts_old_enough(cb_ctx *ctx, const Table *t, int64_t now) {
+    const int64_t min_age_ms = (int64_t)(ctx->cfg ? ctx->cfg->rated_min_age_s : 72 * 3600) * 1000;
+    if (min_age_ms <= 0) return true;
+    for (int i = 0; i < t->r.n; i++) {
+        if (!seat_is_human(&t->r.seats[i])) continue;
+        cb_uuid id;
+        seat_id(&t->r.seats[i], id);
+        cb_user_row u;
+        int rc = CB_STORE_CALL(ctx->store, user_get, id, &u);
+        if (rc == CB_E_NOT_FOUND) continue;
+        if (rc != CB_OK) { CB_WARN("table", "account %s unreadable (%s): the game ends unrated", id, cb_strerror(rc)); return false; }
+        if (now - u.created_at < min_age_ms) {
+            CB_INFO("table", "account %s is under %lld s old: the game ends unrated", id, (long long)(min_age_ms / 1000));
+            return false;
+        }
+    }
+    return true;
+}
+
 // The seats' ratings into `ratings` (TABLE_RATING_NONE for none). false when
-// they cannot be read: the game then ends unrated, as ratingsFor's null did.
+// they cannot be read, or an account is too new to be rated against
+// (accounts_old_enough): the game then ends unrated, as ratingsFor's null did.
 static bool read_ratings(cb_ctx *ctx, const Table *t, int32_t ratings[CB_MAX_SEATS]) {
+    if (!accounts_old_enough(ctx, t, cb_app_now())) return false;
     cb_uuid ids[CB_MAX_SEATS];
     const char *ptrs[CB_MAX_SEATS];
     for (int i = 0; i < t->r.n; i++) { seat_id(&t->r.seats[i], ids[i]); ptrs[i] = ids[i]; }

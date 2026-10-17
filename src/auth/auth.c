@@ -25,6 +25,7 @@
 #include "auth.h"
 
 #include "bcrypt.h"
+#include "names.h"
 #include "util/b64.h"
 #include "util/clock.h"
 #include "util/err.h"
@@ -136,14 +137,8 @@ static int check_password(const char *pw, const char *username) {
     return CB_OK;
 }
 
-// Bot nicknames carry a '%' prefix, so a human may never hold one
-// (seed.sql's enforce_username_not_bot).
-static int check_username(const char *u) {
-    if (!u || !u[0] || strlen(u) > CB_USERNAME_MAX || strchr(u, '%')) return CB_AUTH_E_BAD_USERNAME;
-    for (const unsigned char *p = (const unsigned char *)u; *p; p++)
-        if (*p < ' ' || *p == 0x7f) return CB_AUTH_E_BAD_USERNAME;
-    return CB_OK;
-}
+// A new name's rule (names.h; '%', a bot's prefix, among it).
+static int check_username(const char *u) { return u ? cb_name_check(u, strlen(u)) : CB_AUTH_E_BAD_USERNAME; }
 
 static void token_hash(const char *token, char out[65]) {
     unsigned char d[SHA256_DIGEST_LENGTH];

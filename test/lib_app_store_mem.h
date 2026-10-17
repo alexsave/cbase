@@ -33,6 +33,8 @@ tm_hooks *tm_hooks_of(cb_store *s);
 const char *tm_bot_id(cb_store *s, int i);
 // A user row (email "<name>@test", no password), its rating row with it.
 int tm_add_user(cb_store *s, const char *id, const char *username);
+// A user's account age, for the rated-age rule (table_ops.c, M6).
+void tm_set_user_created(cb_store *s, const char *id, int64_t created_at);
 // A user's or a bot's rating row: CB_OK and the row, or CB_E_NOT_FOUND.
 int tm_rating(cb_store *s, const char *id, cb_rating_row *out);
 // The game's lease holder token ("" for none) and until (ms).

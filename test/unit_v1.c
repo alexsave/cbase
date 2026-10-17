@@ -190,6 +190,22 @@ static void accounts(void) {
     T_EQ_INT(nc_error()->code, NW_ACCOUNT_E_BAD_NAME);
     T_EQ_INT(sign(1, "BOB", "abc"), ASK_WHY_ACCOUNT);
     T_EQ_INT(nc_error()->code, NW_ACCOUNT_E_WEAK_PASSWORD);
+    // The canonical name (auth/names.h, M4): lower case is the same account as
+    // upper, as the clients always sent it, and a name dressed up to look like
+    // another is refused.
+    nc_reset();
+    T_EQ_INT(sign(1, "alice", "another1"), ASK_WHY_ACCOUNT);
+    T_EQ_INT(nc_error()->code, NW_ACCOUNT_E_EXISTS);
+    T_EQ_INT(sign(0, "alice", "secret-11"), 0);
+    T_EQ_MEM(nc_session_info()->username, nc_session_info()->username_len, "ALICE", 5);
+    nc_reset();
+    T_EQ_INT(sign(1, "ALICE\xe2\x80\x8b", "secret-11"), ASK_WHY_ACCOUNT);   // + zero width space
+    T_EQ_INT(nc_error()->code, NW_ACCOUNT_E_BAD_NAME);
+    T_EQ_INT(sign(1, "\xd0\x90LICE", "secret-11"), ASK_WHY_ACCOUNT);         // Cyrillic A
+    T_EQ_INT(nc_error()->code, NW_ACCOUNT_E_BAD_NAME);
+    T_EQ_INT(sign(1, "zoe", "secret-11"), 0);                                 // a new lower-case name is stored upper
+    T_EQ_MEM(nc_session_info()->username, nc_session_info()->username_len, "ZOE", 3);
+    nc_reset();
     T_EQ_INT(sign(0, "ALICE", "secret-11"), 0);
     T_EQ_INT(nc_session_info()->signed_in, 1);
 

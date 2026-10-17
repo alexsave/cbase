@@ -29,6 +29,9 @@
 // answer's shape is written in json_surface.c; this file gathers the values.
 #include "admin.h"
 
+#include "app/limits.h"
+#include "util/clock.h"
+
 #include "app/edge.h"
 #include "app/functions_http.h"
 #include "app/table_ops.h"
@@ -79,10 +82,23 @@ static bool console_on(const cb_ctx *ctx, cb_http_res *res) {
 }
 
 // true when an API request may proceed; otherwise res holds the refusal.
+// One bearer guards the whole console, so guessing it is limited (finding
+// L7): an address's wrong tokens are counted (limits.h, in memory), each is
+// logged, and an address past the limit is refused before its token is even
+// compared, the right one included.
 static bool admin_gate(const cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     if (!console_on(ctx, res)) return false;
+    char ip[96];
+    cb_viewer_key(ctx, req, ip, sizeof ip);
+    const int64_t now = cb_now_ms();
+    if (!cb_limit_peek(CB_LIMIT_ADMIN_FAIL_IP, ip, now)) {
+        cb_router_error(res, 429, "too many wrong admin tokens");
+        return false;
+    }
     const char *tok = cb_http_bearer(req);
     if (!tok || !const_eq(tok, ctx->cfg->admin_token)) {
+        CB_WARN("admin", "wrong or missing admin token from %s for %s %.80s", ip[0] ? ip : "?", req->method, req->path);
+        cb_limit_take(CB_LIMIT_ADMIN_FAIL_IP, ip, now, NULL);
         cb_router_error(res, 401, "admin token required");
         return false;
     }

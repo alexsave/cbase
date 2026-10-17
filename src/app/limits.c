@@ -22,6 +22,7 @@ const cb_limit_rule cb_limit_rules[CB_LIMIT_KINDS] = {
     [CB_LIMIT_CHAT_USER]     = { "chat per account", 30, MIN_MS },
     [CB_LIMIT_SUB_USER]      = { "subscribe per account", 120, MIN_MS },
     [CB_LIMIT_BUMP_USER]     = { "bump per account", 30, MIN_MS },
+    [CB_LIMIT_ADMIN_FAIL_IP] = { "wrong admin token per address", 10, 60 * MIN_MS },
 };
 
 // An open-addressed table of buckets. A key's slot is found within PROBE
@@ -48,7 +49,17 @@ static uint64_t hash_of(cb_limit_kind kind, const char *key) {
     return h ? h : 1;
 }
 
+static bool take_or_peek(cb_limit_kind kind, const char *key, int64_t now_ms, int *retry_s, bool take);
+
 bool cb_limit_take(cb_limit_kind kind, const char *key, int64_t now_ms, int *retry_s) {
+    return take_or_peek(kind, key, now_ms, retry_s, true);
+}
+
+bool cb_limit_peek(cb_limit_kind kind, const char *key, int64_t now_ms) {
+    return take_or_peek(kind, key, now_ms, NULL, false);
+}
+
+static bool take_or_peek(cb_limit_kind kind, const char *key, int64_t now_ms, int *retry_s, bool take) {
     if (retry_s) *retry_s = 0;
     if ((int)kind < 0 || kind >= CB_LIMIT_KINDS || !key || !key[0]) return true;
     const cb_limit_rule *r = &cb_limit_rules[kind];
@@ -74,7 +85,7 @@ bool cb_limit_take(cb_limit_kind kind, const char *key, int64_t now_ms, int *ret
         b->last_ms = now_ms;
     }
     bool ok = b->tokens >= 1.0;
-    if (ok) b->tokens -= 1.0;
+    if (ok && take) b->tokens -= 1.0;
     else if (retry_s) *retry_s = (int)((1.0 - b->tokens) / rate / 1000.0) + 1;
     pthread_mutex_unlock(&g_mu);
     return ok;

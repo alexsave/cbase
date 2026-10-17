@@ -655,6 +655,32 @@ static void a_refusal_from_a_stale_cache_is_rechecked_fresh(void) {
     T_CHECK(found);
 }
 
+// Rating farming (M6): a game with a seat whose account is under three days
+// old ends unrated for everyone at it, and the leaderboard is not touched.
+static void a_new_account_plays_unrated(void) {
+    setup(0);
+    tm_set_user_created(g_store, UID_B, fake_now() - 3600 * 1000);   // an hour old
+    char gid[CB_GAME_ID_MAX + 1];
+    two_humans_dealt(gid);
+    int moves = 0;
+    reply r;
+    uint64_t board0 = cb_edge_marks(CB_EDGE_BOARD);
+    while (status_of(gid) == GAME_STATUS_PLAYING && moves < 3000) {
+        if (!any_human_move(gid, &r)) break;
+        moves++;
+    }
+    T_EQ_INT(status_of(gid), GAME_STATUS_GAME_OVER);
+    cb_rating_row ra, rb;
+    T_EQ_INT(tm_rating(g_store, UID_A, &ra), CB_OK);
+    T_EQ_INT(tm_rating(g_store, UID_B, &rb), CB_OK);
+    T_EQ_INT(ra.games_played, 0);
+    T_EQ_INT(rb.games_played, 0);
+    T_EQ_INT(ra.elo_rating, TABLE_RATING_START);
+    T_EQ_INT((int)(cb_edge_marks(CB_EDGE_BOARD) - board0), 0);
+    T_EQ_INT(tm_hooks_of(g_store)->snapshots, 1);   // the replay is still kept
+    cb_edge_flush(g_ctx.cfg);
+}
+
 static void a_finished_game_writes_a_snapshot_and_ratings(void) {
     setup(0);
     char gid[CB_GAME_ID_MAX + 1];
@@ -1823,6 +1849,7 @@ int main(void) {
     T_RUN(a_lost_cas_reloads_and_wins);
     T_RUN(a_refusal_from_a_stale_cache_is_rechecked_fresh);
     T_RUN(a_finished_game_writes_a_snapshot_and_ratings);
+    T_RUN(a_new_account_plays_unrated);
     T_RUN(add_bot_never_picks_a_seated_bot);
     T_RUN(bump_is_moot_and_seated_only);
     T_RUN(create_is_limited);

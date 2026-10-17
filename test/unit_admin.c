@@ -2,6 +2,7 @@
 // fake store (test/lib_admin_fakestore.c): the gate, paging, the write
 // confirmation, redaction, the log tail and the games list.
 #include "t.h"
+#include "app/limits.h"
 
 #include "admin/admin.h"
 #include "app/table_ops.h"
@@ -26,6 +27,7 @@ static cb_ctx g_ctx;
 static cb_config g_cfg;
 static fake_admin_record *g_rec;
 static cb_buf g_body;   // the last response's body
+static const char *g_peer;   // the caller's address ("" / NULL: none, not limited)
 
 static void setup(const char *admin_token, const char *store_name) {
     if (g_ctx.router) cb_router_free(g_ctx.router);
@@ -66,6 +68,7 @@ static int call(const char *method, const char *path, const char *query, const c
         q.body = (const uint8_t *)body;
         q.body_len = strlen(body);
     }
+    if (g_peer) cb_strlcpy(q.peer, g_peer, sizeof q.peer);
     cb_http_res r;
     cb_res_init(&r);
     cb_handle(&g_ctx, &q, &r);
@@ -109,6 +112,31 @@ static void the_token_gates_every_call(void) {
     T_EQ_INT(call("GET", "/admin/api/nope", NULL, ADMIN_TOKEN, NULL), 404);
     T_EQ_INT(call("GET", "/admin/api/query", NULL, ADMIN_TOKEN, NULL), 405);
     T_EQ_INT(call("GET", "/admin/api/nope", NULL, NULL, NULL), 401);
+}
+
+// One bearer guards the console (finding L7): an address's wrong tokens are
+// counted, each is logged, and past the limit the address is refused before
+// any token is compared, the right one included; another address is not.
+static void wrong_tokens_are_limited_per_address(void) {
+    setup(ADMIN_TOKEN, "sqlite");
+    cb_limits_reset();
+    g_peer = "198.51.100.66";
+    uint64_t seq = cb_log_last_seq();
+    const int b = cb_limit_rules[CB_LIMIT_ADMIN_FAIL_IP].burst;
+    for (int i = 0; i < b; i++) T_EQ_INT(call("GET", "/admin/api/overview", NULL, "guess", NULL), 401);
+    T_EQ_INT(call("GET", "/admin/api/overview", NULL, "guess", NULL), 429);
+    T_EQ_INT(call("GET", "/admin/api/overview", NULL, ADMIN_TOKEN, NULL), 429);   // locked out, right token or not
+    cb_log_entry e[64];
+    size_t n = cb_log_read(seq, CB_LOG_WARN, e, 64);
+    int warned = 0;
+    for (size_t i = 0; i < n; i++) warned += strcmp(e[i].module, "admin") == 0 && strstr(e[i].msg, "198.51.100.66") != NULL;
+    T_EQ_INT(warned, b);
+    g_peer = "198.51.100.67";
+    T_EQ_INT(call("GET", "/admin/api/overview", NULL, ADMIN_TOKEN, NULL), 200);
+    // The right token spends nothing.
+    for (int i = 0; i < 2 * b; i++) T_EQ_INT(call("GET", "/admin/api/overview", NULL, ADMIN_TOKEN, NULL), 200);
+    g_peer = NULL;
+    cb_limits_reset();
 }
 
 static void overview_counts(void) {
@@ -353,6 +381,7 @@ int main(void) {
     cb_buf_init(&g_body);
     T_RUN(unset_token_hides_the_console);
     T_RUN(the_token_gates_every_call);
+    T_RUN(wrong_tokens_are_limited_per_address);
     T_RUN(overview_counts);
     T_RUN(browse_pages_by_cursor);
     T_RUN(query_needs_the_typed_confirmation_to_write);
