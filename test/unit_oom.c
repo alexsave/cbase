@@ -17,6 +17,7 @@
 
 #include "app/app_internal.h"
 #include "app/table_ops.h"
+#include "auth/auth.h"
 #include "boot.h"
 #include "config.h"
 #include "ctx.h"
@@ -358,6 +359,37 @@ static void the_seam_reaches_cbase(void) {
     oom_off();
 }
 
+// A token's check, with every allocation failing in turn, the libraries'
+// included (oom_everywhere: the HMAC is OpenSSL's, which glibc lets the seam
+// reach; on macOS OpenSSL's allocations are its own and this sweep fails
+// nothing). A check that could not be made is the server's fault, never a
+// token that does not verify: that answer signs the user out.
+static void a_token_check_that_cannot_be_made_is_not_a_bad_token(void) {
+    T_EQ_INT(boot(), CB_OK);
+    char auth[NW_ACCESS_MAX + 16];
+    sign_up("OOM-JWT", auth, NULL);
+    const char *tok = auth + 7;
+    int failures = 0, wrong = 0;
+    oom_everywhere(true);
+    for (int k = 0; k < 10000; k++) {
+        cb_user u;
+        oom_fail_after(k);
+        int rc = cb_auth_verify_token(g_ctx.auth, tok, &u);
+        bool failed = oom_failed();
+        oom_off();
+        if (!failed) { T_EQ_INT(rc, CB_OK); break; }
+        failures++;
+        if (rc == CB_E_AUTH && wrong++ < 3) fprintf(stderr, "     allocation %d of the token check failed: CB_E_AUTH\n", k);
+    }
+    oom_everywhere(false);
+    T_EQ_INT(wrong, 0);
+#if defined(__linux__) && OOM_AVAILABLE
+    T_CHECK(failures > 0);   // glibc's interposition reaches the HMAC
+#endif
+    printf("  oom %-28s %4d allocations failed one at a time\n", "the token check", failures);
+    cb_unboot(&g_ctx);
+}
+
 // Boot itself, its every allocation failed: an error, never a crash, nothing kept.
 static void boot_fails_cleanly(void) {
     int k = 0, failures = 0;
@@ -384,6 +416,7 @@ int main(void) {
     if (!OOM_AVAILABLE) printf("NOTE unit_oom: under a sanitizer the allocator is the sanitizer's; each sweep runs once, unfailed\n");
     T_RUN(the_seam_reaches_cbase);
     T_RUN(boot_fails_cleanly);
+    T_RUN(a_token_check_that_cannot_be_made_is_not_a_bad_token);
     T_RUN(routes_fail_cleanly);
     return T_DONE();
 }
