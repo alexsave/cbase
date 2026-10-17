@@ -347,6 +347,9 @@ static void serve_end_to_end(void) {
     v.view_len = 2;
     v.version = 11;
     strcpy(v.status, "playing");
+    // A game held on its own stream is given no dashboard views (its casts
+    // animate it): let it go, and the view of it is handed out.
+    T_EQ_INT(nc_stream_unsub(NW_SUB_GAME, G, 6), NW_OK);
     rt_publish_view(g_ctx.rt, U1, &v, false);
     e = next_event(fd, 2000, &m);   // the stale cast made no event: this is the view
     T_CHECK(e->kind == NC_EV_VIEW && e->version == 11 && e->what == NW_SUB_GAMES);
