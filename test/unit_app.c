@@ -24,12 +24,15 @@
 #include "auth/auth.h"
 #include "table.h"
 #include "util/err.h"
+#include "util/uuid.h"
 
 #include <stdlib.h>
 #include <string.h>
 
 static const char UID_A[] = "aaaaaaaa-0000-4000-8000-000000000001";
 static const char UID_B[] = "bbbbbbbb-0000-4000-8000-000000000002";
+static const char UID_C[] = "cccccccc-0000-4000-8000-000000000003";
+static const char UID_D[] = "dddddddd-0000-4000-8000-000000000004";
 
 static cb_config g_cfg;
 static cb_ctx g_ctx;
@@ -90,6 +93,8 @@ static int fake_verify(cb_ctx *ctx, const struct cb_http_req *req, cb_user *out)
     if (!b) return CB_E_AUTH;
     if (strcmp(b, "A") == 0) { snprintf(out->id, sizeof out->id, "%s", UID_A); snprintf(out->username, sizeof out->username, "ALICE"); return CB_OK; }
     if (strcmp(b, "B") == 0) { snprintf(out->id, sizeof out->id, "%s", UID_B); snprintf(out->username, sizeof out->username, "BOB"); return CB_OK; }
+    if (strcmp(b, "C") == 0) { snprintf(out->id, sizeof out->id, "%s", UID_C); snprintf(out->username, sizeof out->username, "CAROL"); return CB_OK; }
+    if (strcmp(b, "D") == 0) { snprintf(out->id, sizeof out->id, "%s", UID_D); snprintf(out->username, sizeof out->username, "DAVE"); return CB_OK; }
     return CB_E_AUTH;
 }
 
@@ -108,6 +113,10 @@ static void setup(int n_bots) {
     cb_functions_routes(&g_ctx);
     tm_add_user(g_store, UID_A, "ALICE");
     tm_add_user(g_store, UID_B, "BOB");
+    tm_add_user(g_store, UID_C, "CAROL");
+    tm_add_user(g_store, UID_D, "DAVE");
+    cb_app_game_uuid = cb_uuid_v4;
+    cb_bots_cycle_observer = NULL;
     cb_row_cache_clear();
     cb_app_now = fake_now;
     cb_app_sleep = fake_sleep;
@@ -231,7 +240,7 @@ static void create_game(char gid[CB_GAME_ID_MAX + 1], reply *r) {
 
 // A legal move for `seat` on the stored board (WAIT excluded), as its action
 // wire, chosen by a seeded LCG. Its length, or 0 when the seat has none.
-static uint32_t g_lcg = 12345;
+static _Thread_local uint32_t g_lcg = 12345;
 static int pick_move(const char *gid, int seat, uint8_t *wire, int cap) {
     cb_game_row row = stored(gid);
     Game *g = calloc(1, sizeof *g);
@@ -925,6 +934,418 @@ static void pushes_go_out_in_commit_order(void) {
     cb_fanout_observer = fan_observer;
 }
 
+// ---- ported from the TypeScript e2e (stage 4) ----------------------------------------------
+
+// create_game_id.test.ts: create never hands out a game it did not store. The
+// id is six characters of a UUID (24 bits), so a draw can name a stored game:
+// the store refuses it, and create draws again, CB_TABLE_ID_DRAWS times.
+static char g_taken[CB_GAME_ID_MAX + 1];
+static int g_taken_draws, g_draws;
+static void colliding_uuid(char out[CB_UUID_LEN + 1]) {
+    if (g_draws++ < g_taken_draws) snprintf(out, CB_UUID_LEN + 1, "%.6s00-0000-4000-8000-000000000000", g_taken);
+    else snprintf(out, CB_UUID_LEN + 1, "fedcba00-0000-4000-8000-000000000000");
+}
+
+static int games_of(const char *uid) {
+    char gid[CB_GAME_ID_MAX + 1] = "";
+    return cb_table_views_of_user(&g_ctx, uid, 100, first_game, gid);
+}
+
+static void a_taken_game_id_is_drawn_again(void) {
+    setup(0);
+    reply r;
+    create_game(g_taken, &r);
+    T_EQ_INT(r.status, 200);
+    // Two draws name A's game, the third is free: B gets the free one.
+    cb_app_game_uuid = colliding_uuid;
+    g_draws = 0;
+    g_taken_draws = 2;
+    call("POST", "create", "B", NULL, NULL, 0, &r);
+    T_EQ_INT(r.status, 200);
+    T_EQ_INT(g_draws, 3);
+    char gid[CB_GAME_ID_MAX + 1];
+    cb_table_views_of_user(&g_ctx, UID_B, 1, first_game, gid);
+    T_EQ_STR(gid, "fedcba");
+    // The answer names the stored game, and A's game is untouched.
+    cb_view_row v;
+    T_EQ_INT(cb_table_view(&g_ctx, "fedcba", UID_B, &v), CB_OK);
+    T_EQ_MEM(r.body, r.len, v.view, v.view_len);
+    cb_view_row_free(&v);
+    T_EQ_INT(CB_STORE_CALL(g_store, is_member, g_taken, UID_B), 0);
+    T_EQ_INT(version_of(g_taken), 0);
+    // Every draw taken: a failure, and nothing stored for C.
+    g_draws = 0;
+    g_taken_draws = 1000;
+    call("POST", "create", "C", NULL, NULL, 0, &r);
+    T_CHECK(r.status != 200);
+    T_EQ_INT(g_draws, CB_TABLE_ID_DRAWS);
+    T_EQ_INT(games_of(UID_C), 0);
+}
+
+// good_is_a_move.test.ts: an operation whose only effect is a Good (no card
+// event) still goes out, or an open page never sees the badge.
+static void a_goods_only_commit_is_broadcast(void) {
+    setup(0);
+    char gid[CB_GAME_ID_MAX + 1];
+    reply r;
+    create_game(gid, &r);
+    meta("B", ASK_JOIN, gid, NULL, &r);
+    meta("C", ASK_JOIN, gid, NULL, &r);
+    meta("A", ASK_START, gid, NULL, &r);
+    meta("B", ASK_START, gid, NULL, &r);
+    meta("C", ASK_START, gid, NULL, &r);
+    T_EQ_INT(status_of(gid), GAME_STATUS_PLAYING);
+    static const char *const uids[3] = { UID_A, UID_B, UID_C }, *const bearers[3] = { "A", "B", "C" };
+    cb_section *s = cb_section_new();
+    int found = 0;
+    for (int step = 0; step < 4000 && found < 3 && status_of(gid) == GAME_STATUS_PLAYING; step++) {
+        int k = step % 3;
+        int seat = seat_of(gid, uids[k]);
+        uint8_t wire[64];
+        int n = pick_move(gid, seat, wire, sizeof wire);
+        if (n <= 0) continue;
+        // What the kernel will make of it, on a scratch copy of the stored row.
+        cb_game_row row = stored(gid);
+        bool goods_only = false;
+        if (cb_section_load(s, &row) >= 0 &&
+            table_act(&s->t, uids[k], (int)strlen(uids[k]), wire, n, -1, row.round_epoch) == TABLE_OK &&
+            table_commit_products(&s->t, gid, (int)strlen(gid), (uint32_t)row.version + 1, g_now, &s->c, s->arena,
+                                  sizeof s->arena) >= 0)
+            goods_only = s->c.n_events == 0 && s->c.goods_changed && !s->c.roster_changed;
+        int64_t v = row.version;
+        cb_game_row_free(&row);
+        int fans = g_fan.count;
+        action(bearers[k], gid, wire, n, (uint32_t)v, &r);
+        if (!goods_only || version_of(gid) != v + 1) continue;
+        found++;
+        T_EQ_INT(g_fan.count, fans + 1);
+        T_EQ_INT(g_fan.version, v + 1);
+        T_CHECK(g_fan.broadcast);
+        T_CHECK(g_fan.casts > 0 && g_fan.spectator_cast);
+    }
+    cb_section_free(s);
+    T_CHECK(found > 0);
+}
+
+// heartbeat_needs_bots.test.ts: a bump on a table with a bot still in wakes the bots.
+static void a_bump_wakes_the_bots(void) {
+    setup(1);
+    char gid[CB_GAME_ID_MAX + 1];
+    reply r;
+    create_game(gid, &r);
+    meta("A", ASK_ADD_BOT, gid, NULL, &r);
+    meta("A", ASK_START, gid, NULL, &r);
+    T_EQ_INT(status_of(gid), GAME_STATUS_PLAYING);
+    int kicks = g_kicks;
+    int64_t v = version_of(gid);
+    meta("A", ASK_BUMP, gid, NULL, &r);
+    T_EQ_INT(r.status, 200);
+    T_EQ_INT(g_kicks, kicks + 1);
+    T_EQ_STR(g_kicked, gid);
+    T_EQ_INT(version_of(gid), v);
+    // A stranger's bump wakes them too: anyone watching may nudge a table.
+    meta("D", ASK_BUMP, gid, NULL, &r);
+    T_EQ_INT(r.status, 200);
+    T_EQ_INT(g_kicks, kicks + 2);
+}
+
+// waiting_stale_blob.test.ts and meta.test.ts: continue takes a finished game
+// back to a lobby that carries no seed and no log, and that deals afresh.
+static void continue_returns_a_clean_lobby(void) {
+    setup(0);
+    char gid[CB_GAME_ID_MAX + 1];
+    two_humans_dealt(gid);
+    reply r;
+    for (int i = 0; i < 3000 && status_of(gid) == GAME_STATUS_PLAYING; i++)
+        if (!any_human_move(gid, &r)) break;
+    T_EQ_INT(status_of(gid), GAME_STATUS_GAME_OVER);
+    // A stranger may not continue it.
+    int64_t v = version_of(gid);
+    meta("D", ASK_CONTINUE, gid, NULL, &r);
+    T_EQ_INT(r.status, 400);
+    T_EQ_INT(version_of(gid), v);
+    meta("A", ASK_CONTINUE, gid, NULL, &r);
+    T_EQ_INT(r.status, 200);
+    cb_game_row row = stored(gid);
+    T_EQ_INT(row.status, GAME_STATUS_WAITING);
+    T_CHECK(!row.has_seed);
+    T_EQ_INT(row.logs_len, 0);
+    T_EQ_INT(row.version, v + 1);
+    cb_game_row_free(&row);
+    meta("A", ASK_START, gid, NULL, &r);
+    meta("B", ASK_START, gid, NULL, &r);
+    row = stored(gid);
+    T_EQ_INT(row.status, GAME_STATUS_PLAYING);
+    T_CHECK(row.has_seed);
+    T_CHECK(row.logs_len > 0);
+    cb_game_row_free(&row);
+    T_CHECK(any_human_move(gid, &r));
+    TableResponse resp;
+    T_EQ_INT(table_response_decode(r.body, (int)r.len, &resp), 0);
+    T_EQ_INT(resp.status, TABLE_STATUS_APPLIED);
+}
+
+// security_seat_from_auth.test.ts, table_server_seat.test.ts: the seat a request
+// acts as is the bearer's, so a stranger's action and lobby edits commit nothing.
+static void a_stranger_changes_nothing(void) {
+    setup(1);
+    char gid[CB_GAME_ID_MAX + 1];
+    reply r;
+    create_game(gid, &r);
+    meta("B", ASK_JOIN, gid, NULL, &r);
+    int commits = tm_hooks_of(g_store)->commits;
+    int64_t v = version_of(gid);
+    static const int kinds[] = { ASK_ADD_BOT, ASK_EXIT, ASK_START, ASK_UPDATE_NAME, ASK_REARRANGE_PLAYERS, ASK_SET_RULES };
+    for (size_t i = 0; i < sizeof kinds / sizeof kinds[0]; i++) {
+        meta("D", kinds[i], gid, NULL, &r);
+        T_EQ_INT(r.status, 400);
+        T_EQ_INT(version_of(gid), v);
+    }
+    T_EQ_INT(tm_hooks_of(g_store)->commits, commits);
+    meta("A", ASK_START, gid, NULL, &r);
+    meta("B", ASK_START, gid, NULL, &r);
+    T_EQ_INT(status_of(gid), GAME_STATUS_PLAYING);
+    // Each seated player's own legal move, sent by the stranger: refused.
+    commits = tm_hooks_of(g_store)->commits;
+    v = version_of(gid);
+    for (int seat = 0; seat < 2; seat++) {
+        uint8_t wire[64];
+        int n = pick_move(gid, seat, wire, sizeof wire);
+        if (n <= 0) continue;
+        action("D", gid, wire, n, (uint32_t)v, &r);
+        T_EQ_INT(r.status, 400);
+        T_EQ_INT(refusal_why(&r, NULL), ASK_WHY_REFUSED);
+    }
+    meta("D", ASK_EXIT, gid, NULL, &r);
+    T_EQ_INT(r.status, 400);
+    meta("D", ASK_REARRANGE_HAND, gid, NULL, &r);
+    T_EQ_INT(r.status, 400);
+    T_EQ_INT(version_of(gid), v);
+    T_EQ_INT(tm_hooks_of(g_store)->commits, commits);
+}
+
+// adversarial_ts_layer.test.ts, concurrent_games.test.ts: both players submit
+// moves from their own threads at once, on stale versions as often as not.
+// Every APPLIED answer is exactly one stored version, and the board stays one
+// the kernel loads.
+typedef struct { const char *gid, *uid, *bearer; int applied; } hammer_arg;
+static void *hammer(void *p) {
+    hammer_arg *a = p;
+    g_lcg = (uint32_t)(uintptr_t)a->uid;
+    for (int i = 0; i < 150; i++) {
+        int seat = seat_of(a->gid, a->uid);
+        uint8_t wire[64];
+        int n = seat >= 0 ? pick_move(a->gid, seat, wire, sizeof wire) : 0;
+        if (n <= 0) continue;
+        reply r;
+        action(a->bearer, a->gid, wire, n, (uint32_t)version_of(a->gid), &r);
+        TableResponse resp;
+        if (r.status == 200 && table_response_decode(r.body, (int)r.len, &resp) == 0 &&
+            resp.status == TABLE_STATUS_APPLIED)
+            a->applied++;
+    }
+    return NULL;
+}
+
+static void concurrent_moves_lose_and_duplicate_nothing(void) {
+    setup(0);
+    char gid[CB_GAME_ID_MAX + 1];
+    two_humans_dealt(gid);
+    cb_fanout_observer = NULL;   // g_fan is one struct; two threads would tear it
+    int64_t v0 = version_of(gid);
+    hammer_arg a = { gid, UID_A, "A", 0 }, b = { gid, UID_B, "B", 0 };
+    pthread_t ta, tb;
+    pthread_create(&ta, NULL, hammer, &a);
+    pthread_create(&tb, NULL, hammer, &b);
+    pthread_join(ta, NULL);
+    pthread_join(tb, NULL);
+    cb_fanout_observer = fan_observer;
+    T_CHECK(a.applied + b.applied > 0);
+    T_EQ_INT(version_of(gid), v0 + a.applied + b.applied);
+    cb_game_row row = stored(gid);
+    cb_section *s = cb_section_new();
+    T_CHECK(cb_section_load(s, &row) >= 0);   // table_load validates the board (state_import)
+    cb_section_free(s);
+    cb_game_row_free(&row);
+}
+
+// security_hidden_info_{2p,4p,6p}.test.ts: every envelope goes to the user
+// whose seat it was cut for, and is exactly that seat's view; every HTTP
+// answer is the asker's seat or the spectators'.
+static int g_hidden_bad, g_hidden_seen;
+static const char *g_hidden_gid;
+static void hidden_observer(const cb_fanout *f) {
+    fan_observer(f);
+    for (int i = 0; i < f->n_seats; i++) {
+        if (!f->seats[i].envelope) continue;
+        g_hidden_seen++;
+        EnvHeader h;
+        if (!f->seats[i].user_id[0] || !env_header_read(f->seats[i].envelope, (int)f->seats[i].envelope_len, &h)) {
+            g_hidden_bad++;
+            continue;
+        }
+        if (h.seat != seat_of(f->game_id, f->seats[i].user_id)) { g_hidden_bad++; continue; }
+        cb_view_row v;
+        if (cb_table_view(&g_ctx, f->game_id, f->seats[i].user_id, &v) != CB_OK) { g_hidden_bad++; continue; }
+        if (v.view_len != f->seats[i].envelope_len || memcmp(v.view, f->seats[i].envelope, v.view_len) != 0) g_hidden_bad++;
+        cb_view_row_free(&v);
+    }
+}
+
+static void hidden_info_at(int n_humans, int n_bots) {
+    static const char *const uids[3] = { UID_A, UID_B, UID_C }, *const bearers[3] = { "A", "B", "C" };
+    static const char *const askers[4] = { "A", "B", "C", "D" };
+    static const char *const asker_ids[4] = { UID_A, UID_B, UID_C, UID_D };
+    setup(n_bots);
+    cb_fanout_observer = hidden_observer;
+    g_hidden_bad = g_hidden_seen = 0;
+    char gid[CB_GAME_ID_MAX + 1];
+    reply r;
+    create_game(gid, &r);
+    g_hidden_gid = gid;
+    // Seats interleaved: a human, a bot, a human, ...
+    int humans = 1, bots = 0;
+    for (int i = 1; i < n_humans + n_bots; i++) {
+        if ((i % 2 == 1 && bots < n_bots) || humans == n_humans) { meta("A", ASK_ADD_BOT, gid, NULL, &r); bots++; }
+        else meta(bearers[humans++], ASK_JOIN, gid, NULL, &r);
+        T_EQ_INT(r.status, 200);
+    }
+    for (int k = 0; k < n_humans; k++) meta(bearers[k], ASK_START, gid, NULL, &r);
+    T_EQ_INT(status_of(gid), GAME_STATUS_PLAYING);
+    int steps = 0;
+    while (status_of(gid) == GAME_STATUS_PLAYING && steps++ < 3000) {
+        bool moved = false;
+        for (int k = 0; k < n_humans && !moved; k++) {
+            int seat = seat_of(gid, uids[k]);
+            uint8_t wire[64];
+            int n = seat >= 0 ? pick_move(gid, seat, wire, sizeof wire) : 0;
+            if (n <= 0) continue;
+            action(bearers[k], gid, wire, n, (uint32_t)version_of(gid), &r);
+            moved = true;
+        }
+        if (!moved) T_EQ_INT(cb_bots_drive(&g_ctx, gid), CB_OK);
+        // Every asker's answer: their own seat, or the spectators' (-1).
+        for (int k = 0; k < 4; k++) {
+            meta(askers[k], ASK_BUMP, gid, NULL, &r);
+            EnvHeader h;
+            if (r.status != 200 || !env_header_read(r.body, (int)r.len, &h) || h.seat != seat_of(gid, asker_ids[k]))
+                g_hidden_bad++;
+        }
+    }
+    T_EQ_INT(status_of(gid), GAME_STATUS_GAME_OVER);
+    T_CHECK(g_hidden_seen > 0);
+    T_EQ_INT(g_hidden_bad, 0);
+    cb_fanout_observer = fan_observer;
+}
+
+static void every_view_goes_to_its_own_seat(void) {
+    hidden_info_at(2, 0);
+    hidden_info_at(2, 2);
+    hidden_info_at(3, 3);
+}
+
+// belief_logs_wiring.test.ts, belief_human_freshness.test.ts: every bot cycle
+// is handed the stored session log whole (octogen reads it), fresh after a
+// human's commit; resilience.test.ts: a cycle that lost its CAS offers back the
+// moves it already chose.
+static struct { int calls, short_log, retries_with_prefs, retries; } g_cyc;
+static void cycle_observer(const char *game_id, int attempt, int logs_len, int prefs_len) {
+    g_cyc.calls++;
+    cb_game_row row = stored(game_id);
+    if (logs_len <= 0 || (size_t)logs_len != row.logs_len) g_cyc.short_log++;
+    cb_game_row_free(&row);
+    if (attempt > 1) {
+        g_cyc.retries++;
+        if (prefs_len > 0) g_cyc.retries_with_prefs++;
+    }
+}
+
+static void every_bot_cycle_gets_the_whole_log_and_its_choices_back(void) {
+    setup(1);
+    char gid[CB_GAME_ID_MAX + 1];
+    reply r;
+    create_game(gid, &r);
+    meta("A", ASK_ADD_BOT, gid, NULL, &r);
+    meta("A", ASK_START, gid, NULL, &r);
+    memset(&g_cyc, 0, sizeof g_cyc);
+    cb_bots_cycle_observer = cycle_observer;
+    tm_hooks *hk = tm_hooks_of(g_store);
+    int steals = 0;
+    for (int i = 0; i < 3000 && status_of(gid) == GAME_STATUS_PLAYING; i++) {
+        uint8_t wire[64];
+        int n = pick_move(gid, 0, wire, sizeof wire);
+        if (n > 0) { action("A", gid, wire, n, (uint32_t)version_of(gid), &r); continue; }
+        // Now and then the drive's first commit loses to "another writer".
+        if (steals < 5) { hk->steal_commits = 1; steals++; }
+        T_EQ_INT(cb_bots_drive(&g_ctx, gid), CB_OK);
+        hk->steal_commits = 0;
+    }
+    cb_bots_cycle_observer = NULL;
+    T_EQ_INT(status_of(gid), GAME_STATUS_GAME_OVER);
+    T_CHECK(g_cyc.calls > 0);
+    T_EQ_INT(g_cyc.short_log, 0);
+    T_CHECK(g_cyc.retries > 0);
+    T_EQ_INT(g_cyc.retries_with_prefs, g_cyc.retries);
+}
+
+// web_bot_first_move_pace.test.ts, web_throwin_vs_bot.test.ts,
+// win_screen_rating_is_the_games.test.ts: a bot move lands no sooner than the
+// kernel's wait after the commit before it (the deal's settle and the pace, or
+// a human's move still playing), and a game the bot loop ends is rated once.
+static struct { int n; int64_t at[4096]; int64_t version[4096]; } g_pace;
+static void pace_observer(const cb_fanout *f) {
+    fan_observer(f);
+    if (g_pace.n < 4096) { g_pace.at[g_pace.n] = g_now; g_pace.version[g_pace.n] = f->version; g_pace.n++; }
+}
+
+static void bot_moves_wait_for_the_table_to_settle(void) {
+    setup(1);
+    char gid[CB_GAME_ID_MAX + 1];
+    reply r;
+    create_game(gid, &r);
+    meta("A", ASK_ADD_BOT, gid, NULL, &r);
+    memset(&g_pace, 0, sizeof g_pace);
+    cb_fanout_observer = pace_observer;
+    meta("A", ASK_START, gid, NULL, &r);
+    T_EQ_INT(status_of(gid), GAME_STATUS_PLAYING);
+    cb_section *s = cb_section_new();
+    int drives = 0, waited = 0;
+    for (int i = 0; i < 3000 && status_of(gid) == GAME_STATUS_PLAYING; i++) {
+        uint8_t wire[64];
+        int n = pick_move(gid, 0, wire, sizeof wire);
+        if (n > 0) { action("A", gid, wire, n, (uint32_t)version_of(gid), &r); continue; }
+        // The kernel's wait as of the last commit, which happened at g_now.
+        cb_game_row row = stored(gid);
+        int wait = cb_section_load(s, &row) >= 0 ? table_bot_wait_ms(&s->t, g_now) : -1;
+        int64_t v = row.version, t_last = g_now;
+        cb_game_row_free(&row);
+        int before = g_pace.n;
+        T_EQ_INT(cb_bots_drive(&g_ctx, gid), CB_OK);
+        drives++;
+        // The drive's first commit.
+        for (int k = before; k < g_pace.n; k++) {
+            if (g_pace.version[k] != v + 1) continue;
+            T_CHECK(g_pace.at[k] >= t_last + (wait > 0 ? wait : 0));
+            if (wait >= BOT_PACE_MS_WITH_HUMANS) waited++;
+            break;
+        }
+    }
+    cb_section_free(s);
+    cb_fanout_observer = fan_observer;
+    T_CHECK(drives > 0);
+    T_CHECK(waited > 0);
+    T_EQ_INT(status_of(gid), GAME_STATUS_GAME_OVER);
+    cb_rating_row ra, rb;
+    T_EQ_INT(tm_rating(g_store, UID_A, &ra), CB_OK);
+    T_EQ_INT(tm_rating(g_store, tm_bot_id(g_store, 0), &rb), CB_OK);
+    T_EQ_INT(ra.games_played, 1);
+    T_EQ_INT(rb.games_played, 1);
+    // A drive after the end rates nobody again.
+    T_EQ_INT(cb_bots_drive(&g_ctx, gid), CB_OK);
+    T_EQ_INT(tm_rating(g_store, UID_A, &ra), CB_OK);
+    T_EQ_INT(ra.games_played, 1);
+}
+
 // ---- bots --------------------------------------------------------------------------------------
 
 static void the_bot_loop_drives_until_a_human_owes_a_move(void) {
@@ -1038,6 +1459,15 @@ int main(void) {
     T_RUN(the_bot_loop_drives_until_a_human_owes_a_move);
     T_RUN(a_held_lease_skips_the_drive);
     T_RUN(the_scan_kicks_stale_active_bot_games);
+    T_RUN(a_taken_game_id_is_drawn_again);
+    T_RUN(a_goods_only_commit_is_broadcast);
+    T_RUN(a_bump_wakes_the_bots);
+    T_RUN(continue_returns_a_clean_lobby);
+    T_RUN(a_stranger_changes_nothing);
+    T_RUN(concurrent_moves_lose_and_duplicate_nothing);
+    T_RUN(every_view_goes_to_its_own_seat);
+    T_RUN(every_bot_cycle_gets_the_whole_log_and_its_choices_back);
+    T_RUN(bot_moves_wait_for_the_table_to_settle);
     cb_row_cache_clear();
     cb_router_free(g_ctx.router);
     cb_store_close(g_store);

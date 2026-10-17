@@ -31,6 +31,7 @@ _Static_assert(MAX_LOG_PAIRS >= MAX_DECK,
 
 int64_t (*cb_app_now)(void) = cb_now_ms;
 void (*cb_app_sleep)(int64_t ms) = cb_sleep_ms;
+void (*cb_app_game_uuid)(char out[CB_UUID_LEN + 1]) = cb_uuid_v4;
 
 // ---- byte helpers ------------------------------------------------------------------
 
@@ -628,7 +629,7 @@ int cb_table_create(cb_ctx *ctx, const cb_user *u, cb_table_result *out) {
         // Six characters of a random UUID: 24 bits, so a draw can name a game
         // that exists; the store refuses it and we draw again.
         cb_uuid id;
-        cb_uuid_v4(id);
+        cb_app_game_uuid(id);
         snprintf(s->gid, sizeof s->gid, "%.6s", id);
         table_init(&s->t, &s->g, &s->snaps);
         int rc = table_create(&s->t, u->id, (int)strlen(u->id), u->username, (int)strlen(u->username));

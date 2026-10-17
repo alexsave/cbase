@@ -27,6 +27,8 @@
 #define BOT_DEADLINE_MARGIN_MS  5000   // Lambda: stop this long before the invocation's deadline
 #define BOT_PREFS_CAP           4096
 
+void (*cb_bots_cycle_observer)(const char *game_id, int attempt, int logs_len, int prefs_len);
+
 typedef struct {
     double  compute_ms;
     int     cycles;
@@ -67,12 +69,14 @@ static int run_cycle(cb_ctx *ctx, cb_section *s, const char *game_id, int cycle,
         if (!table_needs_bots(&s->t)) { cb_game_row_free(&row); return CYCLE_DONE; }
         int wait = table_bot_wait_ms(&s->t, cb_app_now());
         if (wait > 0) { cb_game_row_free(&row); *delay_ms = wait; return CYCLE_AGAIN; }
-        kr = table_set_session_log(&s->t, row.logs, (int)row.logs_len);
+        const int log_len = (int)row.logs_len;
+        kr = table_set_session_log(&s->t, row.logs, log_len);
         if (kr < 0) {
             CB_ERROR("bots", "game %s: session log refused (%d)", game_id, kr);
             cb_game_row_free(&row);
             return CYCLE_ERROR;
         }
+        if (cb_bots_cycle_observer) cb_bots_cycle_observer(game_id, attempt, log_len, prefs_len);
         BotDriveOut drv;
         const int64_t t0 = cb_mono_ms();
         kr = table_bot_drive(&s->t, prefs, prefs_len, 0, &drv);

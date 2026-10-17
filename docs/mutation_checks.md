@@ -311,3 +311,19 @@ Each mutant below was applied, the named test went red on the named assertion, a
 - v1_http.c: no auth module answered 500 -> `without_a_backend` the sign-up's status is 503.
 - realtime.c: `rt_publish_view` sends nothing -> the game smoke, B heard no views.
 
+
+## Ported from the TypeScript e2e (stage 4)
+
+The TypeScript server's e2e suite went with it; these unit_app.c tests carry over what it guarded that no C test did. Two seams were added for them: `cb_app_game_uuid` (the UUID a game id is cut from) and `cb_bots_cycle_observer` (what each bot cycle is handed). Each mutant was applied, the named test failed on the named assertion, and the source was restored.
+
+- `a_taken_game_id_is_drawn_again` (create_game_id): a taken id ends create instead of drawing again; CB_TABLE_ID_DRAWS + 3 draws -> `g_draws == CB_TABLE_ID_DRAWS`.
+- `a_goods_only_commit_is_broadcast` (good_is_a_move): `goods_changed` dropped from the broadcast rule -> `g_fan.broadcast`.
+- `a_bump_wakes_the_bots` (heartbeat_needs_bots): a bump wakes only on a commit -> `g_kicks == kicks + 1`.
+- `continue_returns_a_clean_lobby` (waiting_stale_blob, meta): a lobby appends to the log -> `row.logs_len == 0`; a lobby keeps the seed -> `!row.has_seed`.
+- `a_stranger_changes_nothing` (security_seat_from_auth, table_server_seat): an unseated bearer acts as seat 0 -> `r.status == 400`.
+- `concurrent_moves_lose_and_duplicate_nothing` (adversarial_ts_layer, concurrent_games): a lost CAS reported as stored -> `version_of(gid) == v0 + applied` (a_lost_cas_reloads_and_wins fails on it too).
+- `every_view_goes_to_its_own_seat` (security_hidden_info 2p/4p/6p): each seat's pushed envelope cut for the next seat -> `g_hidden_bad == 0`; an uncommitted answer (bump) cut for seat 0 -> `g_hidden_bad == 0`.
+- `every_bot_cycle_gets_the_whole_log_and_its_choices_back` (belief_logs_wiring, belief_human_freshness, resilience): half the log handed to the cycle -> `g_cyc.short_log == 0`; the chosen moves not offered back after a lost CAS -> `g_cyc.retries_with_prefs == g_cyc.retries`.
+- `bot_moves_wait_for_the_table_to_settle` (web_bot_first_move_pace, web_throwin_vs_bot, win_screen_rating_is_the_games): the kernel's wait ignored -> `g_pace.at[k] >= t_last + wait`.
+
+Equivalent, recorded so nobody chases it: a bot cycle reading the row cache instead of the store survives, because in one process the cache holds the newest commit. Not ported: the casts' per-seat masking (the test checks every envelope against the seat's view, not every cast, which the kernel's own table_cast tests hold).

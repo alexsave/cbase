@@ -24,6 +24,9 @@
 // kernel's pacing costs no wall time.
 extern int64_t (*cb_app_now)(void);
 extern void (*cb_app_sleep)(int64_t ms);
+// The UUID a new game's id is cut from (its first six characters): cb_uuid_v4.
+// A test points it at a fixed sequence to make an id collide.
+extern void (*cb_app_game_uuid)(char out[CB_UUID_LEN + 1]);
 
 // ---- the per-process row cache (game_cache.ts) ------------------------------------
 
