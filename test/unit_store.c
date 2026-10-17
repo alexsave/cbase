@@ -146,25 +146,42 @@ static void open_applies_schema_and_seeds_bots(void) {
     T_EQ_INT(cr.version, 1);
     cb_store_close(s);
 
-    // Schema 2 -> 3: users without session_gen and kept_session,
-    // refresh_tokens without expires_at. The columns come back, the rows stay.
-    T_EQ_INT(sqlite3_open(path, &db), SQLITE_OK);
-    T_EQ_INT(sqlite3_exec(db, "DROP INDEX idx_refresh_tokens_expires; ALTER TABLE refresh_tokens DROP COLUMN expires_at; "
-                              "ALTER TABLE users DROP COLUMN kept_session; ALTER TABLE users DROP COLUMN session_gen; "
-                              "DROP TABLE sessions; "
+    // Schema 2 -> 3, from a file as version 2 wrote it (its users and
+    // refresh_tokens as they were, nothing of sessions): the columns are
+    // added, the rows stay and read with generation 0, and the new table is
+    // made. Built from that version's own statements, not by dropping columns.
+    char path2[340];
+    snprintf(path2, sizeof path2, "%s/v2-%d.sqlite", g_dir, g_seq);
+    unlink(path2);
+    T_EQ_INT(sqlite3_open(path2, &db), SQLITE_OK);
+    T_EQ_INT(sqlite3_exec(db, "CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, "
+                              "password_hash TEXT NOT NULL, username TEXT, created_at INTEGER NOT NULL, last_sign_in_at INTEGER); "
+                              "CREATE TABLE refresh_tokens (token_hash TEXT PRIMARY KEY, "
+                              "user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, session_id TEXT NOT NULL, "
+                              "created_at INTEGER NOT NULL, revoked INTEGER NOT NULL DEFAULT 0, revoked_at INTEGER); "
                               "INSERT INTO users (id, email, password_hash, created_at) "
                               "VALUES ('00000000-0000-4000-8000-0000000000aa', 'old@x.io', 'h', 1); "
+                              "INSERT INTO refresh_tokens (token_hash, user_id, session_id, created_at) "
+                              "VALUES ('oldtok', '00000000-0000-4000-8000-0000000000aa', 's-old', 5); "
                               "PRAGMA user_version = 2", NULL, NULL, NULL), SQLITE_OK);
     sqlite3_close(db);
-    T_EQ_INT(cb_store_open_sqlite(path, &s), CB_OK);
+    T_EQ_INT(cb_store_open_sqlite(path2, &s), CB_OK);
+    if (!s) return;
     cb_user_row old_user;
     T_EQ_INT(CB_STORE_CALL(s, user_by_email, "old@x.io", &old_user), CB_OK);
     T_EQ_INT(old_user.session_gen, 0);
+    cb_refresh_row old_tok;
+    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "oldtok", 10, 1000, &old_tok), CB_OK);   // no expiry: a pre-3 token
+    T_EQ_STR(old_tok.session_id, "s-old");
     T_EQ_INT(CB_STORE_CALL(s, user_end_sessions, old_user.id), CB_OK);
     cb_session_row sr = { .id = "s-old", .created_at = 1, .expires_at = cb_now_ms() + 60000 };
     memcpy(sr.user_id, old_user.id, sizeof sr.user_id);
     T_EQ_INT(CB_STORE_CALL(s, session_put, &sr), CB_OK);
     cb_store_close(s);
+    // Opened again at 3: the column adds are not repeated (the file stays openable).
+    T_EQ_INT(cb_store_open_sqlite(path2, &s), CB_OK);
+    if (s) cb_store_close(s);
+    unlink(path2);
 
     // A database from a newer binary is refused.
     T_EQ_INT(sqlite3_open(path, &db), SQLITE_OK);
