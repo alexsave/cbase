@@ -53,8 +53,16 @@ static char *slurp(const char *path, size_t *len) {
     return (char *)cb_buf_take(&b, len);
 }
 
+static void row_free(csv_row *r) {
+    for (int j = 0; j < r->n; j++) free(r->v[j]);
+    free(r->v);
+    memset(r, 0, sizeof *r);
+}
+
 // false on a malformed file (an unterminated quote, a quote inside an
-// unquoted field) or no memory.
+// unquoted field) or no memory, with nothing of it left allocated: every
+// failure goes through `fail`, which frees the field, the row and the rows
+// read so far.
 static bool csv_read(const char *path, csv *out) {
     memset(out, 0, sizeof *out);
     size_t len;
@@ -62,16 +70,17 @@ static bool csv_read(const char *path, csv *out) {
     if (!t) return false;
     out->text = t;
     size_t i = 0;
+    cb_buf f;
+    cb_buf_init(&f);
+    csv_row row = { 0 };
     while (i < len) {
-        csv_row row = { 0 };
         int cap = 0;
         for (;;) {   // one field
-            cb_buf f;
-            cb_buf_init(&f);
+            cb_buf_reset(&f);
             bool null = false;
             if (t[i] == '"') {
                 for (i++;; i++) {
-                    if (i >= len) { cb_buf_free(&f); return false; }
+                    if (i >= len) goto fail;
                     if (t[i] == '"') {
                         if (i + 1 < len && t[i + 1] == '"') { cb_buf_putc(&f, '"'); i++; continue; }
                         i++;
@@ -81,18 +90,19 @@ static bool csv_read(const char *path, csv *out) {
                 }
             } else {
                 while (i < len && t[i] != ',' && t[i] != '\n' && t[i] != '\r') {
-                    if (t[i] == '"') { cb_buf_free(&f); return false; }
+                    if (t[i] == '"') goto fail;
                     cb_buf_putc(&f, t[i++]);
                 }
                 null = f.len == 0;
             }
             if (row.n == cap) {
-                cap = cap ? cap * 2 : 16;
-                row.v = realloc(row.v, (size_t)cap * sizeof *row.v);
-                if (!row.v) return false;
+                int ncap = cap ? cap * 2 : 16;
+                char **v = realloc(row.v, (size_t)ncap * sizeof *row.v);
+                if (!v) goto fail;
+                row.v = v;
+                cap = ncap;
             }
             if (null) {
-                cb_buf_free(&f);
                 row.v[row.n++] = NULL;
             } else {
                 size_t fl;
@@ -104,13 +114,22 @@ static bool csv_read(const char *path, csv *out) {
             break;
         }
         if (out->n == out->cap) {
-            out->cap = out->cap ? out->cap * 2 : 64;
-            out->rows = realloc(out->rows, (size_t)out->cap * sizeof *out->rows);
-            if (!out->rows) return false;
+            int ncap = out->cap ? out->cap * 2 : 64;
+            csv_row *rows = realloc(out->rows, (size_t)ncap * sizeof *out->rows);
+            if (!rows) goto fail;
+            out->rows = rows;
+            out->cap = ncap;
         }
         out->rows[out->n++] = row;
+        memset(&row, 0, sizeof row);
     }
+    cb_buf_free(&f);
     return true;
+fail:
+    cb_buf_free(&f);
+    row_free(&row);
+    csv_free(out);
+    return false;
 }
 
 // The column `name` of the header, or -1.
@@ -219,7 +238,7 @@ static bool load(const char *dir, const char *file, csv *c, tally *t) {
     for (size_t i = 0; i < sizeof KEY_COLUMN / sizeof KEY_COLUMN[0]; i++)
         if (strcmp(KEY_COLUMN[i].file, file) == 0) kc = col(c, KEY_COLUMN[i].column);
     t->ids = calloc((size_t)(t->read ? t->read : 1), sizeof *t->ids);
-    if (!t->ids) return false;
+    if (!t->ids) { csv_free(c); return false; }
     for (int r = 1; r < c->n; r++) copy(t->ids[t->n_ids++], sizeof(key_id), cell(c, r, kc));
     qsort(t->ids, (size_t)t->n_ids, sizeof *t->ids, key_cmp);
     return true;
@@ -318,8 +337,13 @@ static int seats_of(const csv *c, int game_col, int id_col, const char *game, cb
 static bool import_games(cb_store *s, const char *dir, tally *t, tally *th, tally *tb, int *unloadable) {
     csv c, ph, bh;
     if (!load(dir, "games", &c, t)) return false;
-    if (!load(dir, "player_hands", &ph, th) || !load(dir, "bot_hands", &bh, tb)) {
+    if (!load(dir, "player_hands", &ph, th)) {
         csv_free(&c);
+        return false;
+    }
+    if (!load(dir, "bot_hands", &bh, tb)) {
+        csv_free(&c);
+        csv_free(&ph);
         return false;
     }
     int id = col(&c, "id"), stt = col(&c, "status"), sta = col(&c, "state"), ros = col(&c, "roster"),
