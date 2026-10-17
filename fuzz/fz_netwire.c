@@ -68,13 +68,17 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
                 uint32_t v; NwBlob e;
                 static NwChat c; static NwBot b; static NwBoardRow br; static NwHistoryRow h;
                 switch (kinds[k]) {
-                case NW_GAMES: rc = nw_get_game(p, len, i, &v, &e);
-                    if (!rc) FZ_CHECK(!e.len || (e.p >= p && e.p + e.len <= p + len)); break;
+                case NW_GAMES:
+                    rc = nw_get_game(p, len, i, &v, &e);
+                    if (!rc) FZ_CHECK(!e.len || (e.p >= p && e.p + e.len <= p + len));
+                    break;
                 case NW_CHATS: rc = nw_get_chat(p, len, i, &c); break;
                 case NW_BOTS: rc = nw_get_bot(p, len, i, &b); break;
                 case NW_BOARD: rc = nw_get_board(p, len, i, &br); break;
-                case NW_HISTORY: rc = nw_get_history(p, len, i, &h);
-                    if (!rc) FZ_CHECK(h.n_players <= MAX_PLAYERS); break;
+                case NW_HISTORY:
+                    rc = nw_get_history(p, len, i, &h);
+                    if (!rc) FZ_CHECK(h.n_players <= MAX_PLAYERS);
+                    break;
                 }
                 // The list opened, so the whole body holds exactly n rows.
                 FZ_CHECK(rc == NW_OK);
