@@ -659,7 +659,9 @@ static void seeds_sequence(void) {
     p[n++] = OP(0, 1); p[n++] = 1; p[n++] = 0; p[n++] = 0;  // START
     for (int i = 0; i < 40; i++) {
         p[n++] = OP(0, 3); p[n++] = 0; p[n++] = 0; p[n++] = (uint8_t)i; p[n++] = 0;   // a legal move
-        p[n++] = OP(0, 8); p[n++] = 0;                                              // the bots
+        p[n++] = OP(0, 8); p[n++] = 1; p[n++] = 0;                                  // the bots
+        if (i % 6 == 3) { p[n++] = OP(0, 9); p[n++] = 0xff; p[n++] = 0x0f; p[n++] = OP(0, 8); p[n++] = 0; }   // time, then the heartbeat
+        if (i % 11 == 7) { p[n++] = OP(0, 10); p[n++] = 4; p[n++] = 0; p[n++] = OP(0, 8); p[n++] = 0; p[n++] = OP(0, 8); p[n++] = 1; p[n++] = 0; }   // a planted marker, the scan, a drive
         if (i % 8 == 0) { p[n++] = OP(0, 5); p[n++] = 1; p[n++] = 0; }               // GET the game
     }
     put("sequence", "solo-vs-bot", p, n);

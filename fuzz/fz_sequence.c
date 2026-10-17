@@ -128,6 +128,10 @@ static void fz_sleep(int64_t ms) { g_now += ms; }
 static char g_gid[N_GAMES][CB_GAME_ID_MAX + 1];
 static int g_n_games;
 static int64_t g_max_version[N_GAMES];   // the highest stored version seen
+// A marker this harness planted (case 10), at the version it was planted on,
+// -1 none: until a commit or a drive, the scan may kick it, and that kick is
+// the harness's doing, not the server's.
+static int64_t g_planted[N_GAMES];
 
 // ---- the CAS, watched ---------------------------------------------------------------------
 
@@ -367,7 +371,14 @@ static const cb_rt_transport FZ_T = { "fuzz", fz_deliver, NULL };
 static cb_rt g_rt = { &FZ_T, &g_ctx, NULL };
 
 static int g_kicks;
-static void fz_kick(cb_ctx *ctx, const char *game_id) { g_kicks++; }
+// While a scan runs, the games it kicks.
+static bool g_scanning;
+static int g_scan_n;
+static char g_scan_kicked[64][CB_GAME_ID_MAX + 1];
+static void fz_kick(cb_ctx *ctx, const char *game_id) {
+    g_kicks++;
+    if (g_scanning && g_scan_n < 64) snprintf(g_scan_kicked[g_scan_n++], CB_GAME_ID_MAX + 1, "%s", game_id);
+}
 
 // ---- requests -----------------------------------------------------------------------------
 
@@ -732,6 +743,51 @@ static void step_stream(fz_in *in) {
     }
 }
 
+// ---- the bot scan ---------------------------------------------------------------------------
+
+// Whether the scan partition lists `gid` at all, whatever its windows.
+static bool listed_cb_found;
+static const char *listed_cb_want;
+static bool listed_cb(const char *name, void *ud) {
+    if (strcmp(name, listed_cb_want) == 0) listed_cb_found = true;
+    return true;
+}
+static bool in_scan(const char *gid) {
+    listed_cb_found = false;
+    listed_cb_want = gid;
+    FZ_CHECK(g_real->games_needing_bots(g_store, INT64_MAX, INT64_MIN, 0, listed_cb, NULL) >= 0);
+    return listed_cb_found;
+}
+
+// The heartbeat: every game it kicks is one a bot can act on now (table.h
+// table_bots_due on the stored board).
+static void step_scan(void) {
+    g_scanning = true;
+    g_scan_n = 0;
+    int rc = cb_bots_scan(&g_ctx, g_now);
+    g_scanning = false;
+    FZ_CHECK(rc >= 0 && rc == g_scan_n);
+    for (int i = 0; i < g_scan_n; i++) {
+        Table t;
+        int64_t v;
+        if (!stored_table(g_scan_kicked[i], &t, &v)) continue;   // a kicked game since deleted
+        int gi = game_index(g_scan_kicked[i], strlen(g_scan_kicked[i]));
+        if (gi >= 0 && g_planted[gi] == v) continue;
+        FZ_CHECK(table_bots_due(&t));
+    }
+}
+
+// A drive: one that finds nothing to do (commits nothing) leaves the game out
+// of the scan, unless a newer commit arrived (none can here: one thread).
+static void step_drive(const char *gid) {
+    int64_t before = stored_version(gid);
+    int rc = cb_bots_drive(&g_ctx, gid);
+    int64_t after = stored_version(gid);
+    if (rc == CB_OK && before >= 0 && after == before) FZ_CHECK(!in_scan(gid));
+    int gi = game_index(gid, strlen(gid));
+    if (gi >= 0) g_planted[gi] = -1;
+}
+
 // ---- one run ------------------------------------------------------------------------------
 
 static bool collect_nothing(int n, const char *const *names, const char *const *values, void *ud) { return true; }
@@ -742,6 +798,7 @@ static void reset_world(uint64_t seed) {
     g_n_games = 0;
     memset(g_gid, 0, sizeof g_gid);
     memset(g_max_version, 0, sizeof g_max_version);
+    for (int i = 0; i < N_GAMES; i++) g_planted[i] = -1;
     memset(g_conn, 0, sizeof g_conn);
     for (int i = 0; i < N_CONNS; i++) {
         snprintf(g_conn[i].row.conn_id, sizeof g_conn[i].row.conn_id, "conn%d", i);
@@ -835,9 +892,26 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         case 5: step_reads(&in, user); break;
         case 6: step_unauthorised(&in, user); break;
         case 7: step_stream(&in); break;
-        case 8: if (g_n_games) (void)cb_bots_drive(&g_ctx, game_of(&in)); break;
+        case 8:
+            if (fz_u8(&in) % 4 == 0) step_scan();
+            else if (g_n_games) step_drive(game_of(&in));
+            break;
         case 9: g_now += (int64_t)fz_u16(&in) * 50; break;
-        case 10: g_steal = fz_u8(&in) % 3; break;
+        case 10: {
+            uint8_t b = fz_u8(&in);
+            g_steal = b % 3;
+            // A scan marker with no bot work behind it: what a commit racing
+            // a drive's idle, or DynamoDB's lagging marker, leaves. The next
+            // drive must find nothing and take the game out.
+            if ((b & 4) && g_n_games) {
+                char sql[128];
+                snprintf(sql, sizeof sql, "UPDATE games SET needs_bots = 1 WHERE id = '%s'", game_of(&in));
+                FZ_CHECK(g_real->admin_query(g_store, sql, true, NULL, NULL) >= 0);
+                int gi = game_index(sql + strlen(sql) - 7, 6);
+                if (gi >= 0) g_planted[gi] = stored_version(g_gid[gi]);
+            }
+            break;
+        }
         case 11: step_raw(&in, user); break;
         }
         // VERSIONS: a stored version never goes back.
