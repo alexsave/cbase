@@ -1439,7 +1439,7 @@ void dw_games_get(dw_req *r, const char *table, const char *const *ids, int n) {
     cb_jw_key(&w, "ExpressionAttributeNames");
     cb_jw_obj(&w);
     for (int i = 0; i < nc; i++) {
-        char name[8];
+        char name[16];
         snprintf(name, sizeof name, "#c%d", i);
         cb_jw_kstr(&w, name, COLS[i]);
     }
