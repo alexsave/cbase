@@ -59,6 +59,18 @@ static int w_user_touch_sign_in(cb_store *s, const char *id, int64_t at) {
     if (take()) return atomic_load(&g_rc);
     return IN(s)->ops->user_touch_sign_in ? IN(s)->ops->user_touch_sign_in(IN(s), id, at) : CB_E_NOTIMPL;
 }
+static int w_signin_fails_get(cb_store *s, const char *email, int64_t now, cb_signin_fails *out) {
+    if (take()) return atomic_load(&g_rc);
+    return IN(s)->ops->signin_fails_get ? IN(s)->ops->signin_fails_get(IN(s), email, now, out) : CB_E_NOTIMPL;
+}
+static int w_signin_fails_put(cb_store *s, const char *email, const cb_signin_fails *f, int64_t now) {
+    if (take()) return atomic_load(&g_rc);
+    return IN(s)->ops->signin_fails_put ? IN(s)->ops->signin_fails_put(IN(s), email, f, now) : CB_E_NOTIMPL;
+}
+static int w_signin_fails_clear(cb_store *s, const char *email) {
+    if (take()) return atomic_load(&g_rc);
+    return IN(s)->ops->signin_fails_clear ? IN(s)->ops->signin_fails_clear(IN(s), email) : CB_E_NOTIMPL;
+}
 static int w_user_delete(cb_store *s, const char *id) {
     if (take()) return atomic_load(&g_rc);
     return IN(s)->ops->user_delete ? IN(s)->ops->user_delete(IN(s), id) : CB_E_NOTIMPL;
@@ -237,6 +249,9 @@ static const cb_store_ops FAULT_OPS = {
     .user_create = w_user_create,
     .user_set_password = w_user_set_password,
     .user_touch_sign_in = w_user_touch_sign_in,
+    .signin_fails_get = w_signin_fails_get,
+    .signin_fails_put = w_signin_fails_put,
+    .signin_fails_clear = w_signin_fails_clear,
     .user_delete = w_user_delete,
     .users_list = w_users_list,
     .refresh_put = w_refresh_put,
@@ -282,8 +297,8 @@ static const cb_store_ops FAULT_OPS = {
 
 // Every operation of store.h is wrapped above. An operation added there and
 // not here would be left NULL (CB_E_NOTIMPL to whatever calls it through this
-// store), so the table's size is held to the count: the name, close, and 47 - 1.
-_Static_assert(sizeof(cb_store_ops) == (size_t)(47 + 1) * sizeof(void *),
+// store), so the table's size is held to the count: the name, close, and 50 - 1.
+_Static_assert(sizeof(cb_store_ops) == (size_t)(50 + 1) * sizeof(void *),
                "store.h has an operation lib_faultstore.c does not wrap: add its w_ wrapper and its line in FAULT_OPS");
 
 cb_store *fs_wrap(cb_store *inner) {

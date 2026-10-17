@@ -14,6 +14,7 @@
 // booted context (the in-RAM store), and boot itself.
 #include "oom.h"
 #include "t.h"
+#include "app/limits.h"
 
 #include "app/app_internal.h"
 #include "app/table_ops.h"
@@ -91,6 +92,9 @@ static void run(const rq *q) {
     r.body_len = q->body_len;
     cb_http_res res;
     cb_res_init(&res);
+    // A sweep repeats a request hundreds of times: the in-memory rate limits
+    // (limits.h) are not what it measures, and no allocation is in them.
+    cb_limits_reset();
     cb_handle(&g_ctx, &r, &res);
     g_status = res.status;
     g_len = res.body.len < sizeof g_body ? (int)res.body.len : 0;

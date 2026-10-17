@@ -715,10 +715,10 @@ static void another_user_sees_only_their_own(void) {
     meta(&D, ASK_EXIT, G, fill_exit_player, B.id);
     g_cells++;
     T_CHECK(g_a.status == 400 && g_a.len == ASK_REFUSAL_BYTES);
-    // A bump is a read: the spectators' envelope.
-    T_EQ_INT(meta(&D, ASK_BUMP, G, NULL, NULL), 200);
-    T_CHECK(envelope_hides(g_a.body, g_a.len, -1, NULL, NULL, NULL, "D's bump"));
+    // A bump wakes the bots, a server run: a seated player's only (finding M8).
+    meta(&D, ASK_BUMP, G, NULL, NULL);
     g_cells++;
+    T_CHECK(g_a.status == 400 && g_a.len == ASK_REFUSAL_BYTES);
     // (A seated player MAY remove another human and retitle the table: the
     // kernel's lobby policy, table.h "lobby edits". Not exercised here.)
     // The table is as it was: three seats, still in its lobby, A's title.
