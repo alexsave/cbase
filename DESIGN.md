@@ -801,7 +801,7 @@ A request DynamoDB still throttles after the store's backoff used to fail as `CB
 Now the backend marks the give-up on the calling thread (`cb_store_mark_busy`, store_dynamo.c), and `CB_STORE_CALL` turns that call's `CB_E_DB` into `CB_E_BUSY`: one owner, so no store function maps it itself.
 The routes answer `CB_E_BUSY` with 503, `Retry-After: 1` and the kernel's `ASK_WHY_BUSY` refusal (`cb_v1_busy`), never a 500.
 The client decides what to do with it, in C: `nc_retry_ms(method, attempt, status, body)` says wait 250, 500, then 1000 ms and send a GET again, and 0 for anything else (a POST may have committed before the throttle, so a write is never sent twice).
-The two transports (web `backend.ts`, iOS `Backend.swift`) wait what it says and build the request again; they decide nothing.
+The client's pump applies it to every read it sends; the two transports (web `backend.ts`, iOS `Backend.swift`) only send what the pump names, so they decide nothing.
 
 ## Binary surface (designed 2026-10-14)
 
@@ -874,7 +874,7 @@ The connection row (`cb_conn_row`) keeps its user, topics and version; its `vsn`
 
 Client to server:
 
-- `NW_WS_AUTH`: the access token (u16). First on every connection and again after every refresh; it names the connection's user. A subscription before it, or a token that does not verify, is refused with AUTH.
+- `NW_WS_AUTH`: the access token (u16); it names the connection's user. A bare `NW_WS_SUB` before it, or a token that does not verify, is refused with AUTH. Today's clients send no AUTH frame: every subscription is a `NW_WS_SUB_AS`.
 - `NW_WS_SUB`: ref (u16), what (`NW_SUB_GAMES` the caller's views, `NW_SUB_GAME` one game's casts, `NW_SUB_CHAT` one game's chat), game id, and `since` (u32, the newest version the client holds, 0 for none).
 - `NW_WS_SUB_AS`: the access token (u16), then a `NW_WS_SUB`'s fields.
   The subscription says who asks, so it never depends on an AUTH frame having been stored before it.
@@ -893,8 +893,13 @@ Server to client:
 
 Topics inside the server stay the strings they were (`pv-`, `gu-`, `game-`, `chat:`), with the policy of the old `cb_phx_may_join` in one function, `cb_rt_may_hear`.
 The catch-up the Phoenix facade never had: a `NW_SUB_GAME` with `since` below the game's version is answered, after its ACK, with the caller's current `NW_WS_VIEW` of that game, so a client that reconnects asks for what it missed by version instead of refetching on a guess.
-Version gating is the client's, in C: `nc_stream_in` drops a VIEW or CAST at or below the newest version applied for its game and stream, and answers the host with what to apply; `nc_gate_reset` is the watchdog's resync.
-Subscriptions, their retries after a refusal (a member's join can race the membership write, as the web's `privateChannel.ts` handles now: 0.5 s doubling to 10 s), the 25 s ping and the reconnect delay are the client's too: the host reports `open`, `frame` and `closed` and asks `nc_stream_tick(now_ms)` for the frames that are due, so the retry policy has one implementation instead of one per host.
+Version gating is the client's, in C, over one book of games that the stream (`nc_stream_in`) and the answers (`nc_on_response`) both feed (netclient.h "what changed"): a stale push or answer is dropped, a cast that skips a version is dropped and the game refetched, a refused move refetches the game when no push catches up within `NC_RECONCILE_MS`, and a game subscription accepted again (a reconnect, a refusal before it) refetches the game.
+Subscriptions, their retries after a refusal (a member's join can race the membership write: 0.5 s doubling to 10 s), the 25 s ping and the reconnect delay are the client's too, and so are the subscription changes a create, a join or a leave makes: the host reports `open`, `frame` and `closed`, holds and lets go of what its screens show, and sends whatever `nc_stream_next` has.
+
+**The pump.**
+A host states intents (`NcIntent`: sign in, create, play, ask, open a game, the lists) with `nc_do` and gets a ticket; it sends every request `nc_next_request` names, hands each answer back with `nc_on_response(id, status, body)` (status 0: it never arrived), settles the ticket the answer finished, reads what the feed changed with `nc_event(i)`, and calls again when `nc_due_ms` says.
+Endpoints, tokens, refreshes, retries and the meaning of every answer are the client's; the web's loop is `src/common/backend.ts` and iOS's `ios/FoolishNet/Backend.swift`, each a transport and nothing else.
+A host that shows boards and never decodes a cast (iOS) says so with `nc_set_boards`, and every cast becomes a refetch of the game.
 
 **Frames on the two transports.**
 API Gateway does not accept binary frames from a client: "API Gateway WebSocket APIs don't currently support binary frames in incoming message payloads. If a client app sends a binary frame, API Gateway rejects it and disconnects the client with code 1003" ([Binary media types for WebSocket APIs](https://docs.aws.amazon.com/apigateway/latest/developerguide/websocket-api-develop-binary-media-types.html)).
