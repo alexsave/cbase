@@ -10,7 +10,7 @@
 #
 #     structgen.c:100:10: fatal error: clang-c/Index.h: No such file or directory
 #
-# at the bottom of a `make wasm-bots-test` run, three layers below whatever the
+# at the bottom of a whole-kernel wasm test build, three layers below whatever the
 # lane was actually doing; 26 validation scenarios reported it as their own
 # failure and main was red for a day (#171). A default that names a path the
 # platform cannot have is worse than no default: say so here instead.
@@ -22,12 +22,13 @@ ifeq ($(strip $(LLVM_PREFIX)),)
   endif
 endif
 
-# ASKING THIS MAKEFILE A QUESTION IS NOT BUILDING WITH IT. scripts/wasm_stamp.sh
-# asks structgen's Makefile for its own source list (tools/structgen/print.mk),
-# because a stamp that mirrors the file list by hand goes stale the moment the
-# tool is split - which it did. That question compiles nothing and needs no
-# compiler, but the $(error) below fires at PARSE time, so it fired on the one
-# lane that only ever asks: wasm.yml's `freshness` job, which installs no
+# ASKING THIS MAKEFILE A QUESTION IS NOT BUILDING WITH IT. A Makefile that
+# includes this one is asked for its variables through tools/structgen/print.mk
+# (structgen/gen.sh asks c/Makefile for its flags and export lists that way; a
+# source stamp, scripts/wasm_stamp.sh, asked structgen's own Makefile for its
+# file list until it was retired). That question compiles nothing and needs no
+# compiler, but the $(error) below fires at PARSE time, so it once fired on a
+# lane that only ever asked: wasm.yml's old `freshness` job, which installed no
 # toolchain and never needed one. It failed in 9 seconds naming libclang, three
 # layers away from anything it was doing.
 #
