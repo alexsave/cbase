@@ -354,3 +354,5 @@ Each mutation rewritten in, its one test binary rebuilt with the touched object 
 - table_ops.c: a rated commit not marked -> `a_finished_game_writes_a_snapshot_and_ratings` marks == 1; every commit marked -> the same assertion.
 - functions_http.c: an account deleted not marked -> `delete_account_redacts` marks == 1.
 - unit_json_gate.c: `xmlns` not seen -> `the_scanner_sees_each_kind` planted namespace == 1; an XML literal planted in cloudfront.c -> `only_json_surface_speaks_json` violations == 0.
+- json_surface.c: the reindex rewrites a row already keyed -> `query_shapes` body (and, on DynamoDB Local, `ratings_applied_by_commit` reindex == CB_E_CONFLICT).
+- store_sqlite.c: the reindex reports a row as rewritten -> `ratings_applied_by_commit` reindex == CB_E_CONFLICT.

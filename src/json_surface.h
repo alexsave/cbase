@@ -289,7 +289,8 @@ void dw_lease_release(dw_req *r, const char *table, const char *game, const char
 void dw_rating_set_username(dw_req *r, const char *table, const char *user, const char *username);
 void dw_rating_import(dw_req *r, const char *table, const cb_rating_row *rt);
 // UpdateItem: the GSI2 keys of rt's row set to the rating-ordered layout (or
-// removed for a row with no games), on condition its rating and games are rt's.
+// removed for a row with no games), on condition its rating and games are rt's
+// and its key is not already that: a row already in the layout is refused.
 void dw_rating_reindex(dw_req *r, const char *table, const cb_rating_row *rt);
 // Every bot replaced: deletes for the stored ids not in rows, puts for rows.
 // false past 100 items.

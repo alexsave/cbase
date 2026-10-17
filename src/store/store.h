@@ -351,7 +351,8 @@ typedef struct cb_store_ops {
     // The row's leaderboard index key brought to the current layout, the
     // values untouched and only while they are still r's (a commit that
     // raced it already wrote the new key): CB_OK, or CB_E_CONFLICT when the
-    // row changed or is gone. SQLite has no index key: CB_OK.
+    // row changed, is gone, or already has that key. SQLite has no index
+    // key, so every row already has it: CB_E_CONFLICT.
     int (*rating_reindex)(cb_store *s, const cb_rating_row *r);
     // Every bot row replaced by these n (the seeded ones included), atomically.
     int (*bots_replace)(cb_store *s, const cb_bot_row *rows, int n);

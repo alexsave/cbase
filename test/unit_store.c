@@ -716,9 +716,9 @@ static void ratings_applied_by_commit(void) {
     T_EQ_INT(CB_STORE_CALL(s, user_create, &z), CB_OK);
     r.n = 0;
     T_EQ_INT(CB_STORE_CALL(s, ratings_top, 100, collect_rating, &r), 2);
-    // The reindex leaves every row's values as they are.
+    // A row the commit already keyed is not rewritten, and its values stay.
     cb_rating_row same = r.rows[0];
-    T_EQ_INT(CB_STORE_CALL(s, rating_reindex, &same), CB_OK);
+    T_EQ_INT(CB_STORE_CALL(s, rating_reindex, &same), CB_E_CONFLICT);
     T_EQ_INT(rating_of(s, b.id), 1010);
     cb_store_close(s);
 }

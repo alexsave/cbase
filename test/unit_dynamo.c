@@ -206,7 +206,7 @@ static void query_shapes(void) {
     T_EQ_STR(cb_buf_cstr(&r.body),
              "{\"ReturnConsumedCapacity\":\"TOTAL\",\"TableName\":\"cbase\",\"Key\":{\"pk\":{\"S\":\"USER#" U1 "\"},\"sk\":{\"S\":\"RATING\"}},"
              "\"UpdateExpression\":\"SET #gsi2pk = :gsi2pk, #gsi2sk = :gsi2sk\","
-             "\"ConditionExpression\":\"#elo_rating = :elo AND #games_played = :games\","
+             "\"ConditionExpression\":\"#elo_rating = :elo AND #games_played = :games AND #gsi2sk <> :gsi2sk\","
              "\"ExpressionAttributeNames\":{\"#gsi2pk\":\"gsi2pk\",\"#gsi2sk\":\"gsi2sk\",\"#elo_rating\":\"elo_rating\","
              "\"#games_played\":\"games_played\"},"
              "\"ExpressionAttributeValues\":{\":gsi2pk\":{\"S\":\"RATINGS\"},\":gsi2sk\":{\"S\":\"E#2147482437#" U1 "\"},"
@@ -214,6 +214,7 @@ static void query_shapes(void) {
     rt.games_played = 0;   // never played: out of the index
     dw_rating_reindex(&r, "cbase", &rt);
     T_CHECK(strstr(cb_buf_cstr(&r.body), "\"UpdateExpression\":\"REMOVE #gsi2pk, #gsi2sk\"") != NULL);
+    T_CHECK(strstr(cb_buf_cstr(&r.body), "AND attribute_exists(#gsi2pk)\"") != NULL);
     // A game's seat keys: a key range (a Query cannot filter on a key).
     dw_query(&r, "cbase", DWQ_GAME_SEATS, "ab12cd", true, 0, cb_span_of("", 0));
     T_EQ_STR(cb_buf_cstr(&r.body),

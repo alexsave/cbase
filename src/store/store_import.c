@@ -528,7 +528,7 @@ int cb_import_reindex_ratings(cb_store *s) {
     for (int i = 0; rc >= 0 && i < all.n; i++) {
         int r = CB_STORE_CALL(s, rating_reindex, &all.rows[i]);
         if (r == CB_OK) done++;
-        else if (r != CB_E_CONFLICT) rc = r;   // a raced row is the commit's; anything else stops it
+        else if (r != CB_E_CONFLICT) rc = r;   // already done, or raced (the commit's); anything else stops it
     }
     free(all.rows);
     return rc < 0 ? rc : done;

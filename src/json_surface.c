@@ -1591,18 +1591,23 @@ void dw_rating_reindex(dw_req *r, const char *table, const cb_rating_row *rt) {
     update_open(&w, table, k(pk, sizeof pk, "USER#", rt->user_id), "RATING", false);
     ux u;
     ux_init(&u);
+    // Only a row whose key is not already the one it should have: a second
+    // run rewrites nothing (and so invalidates nothing).
+    const char *cond;
     if (rt->games_played > 0) {
         ux_set_s(&u, "gsi2pk", "RATINGS");
         ux_set_s(&u, "gsi2sk", rsk(gsk, sizeof gsk, rt->elo_rating, rt->user_id));
+        cond = "#elo_rating = :elo AND #games_played = :games AND #gsi2sk <> :gsi2sk";
     } else {
         ux_remove(&u, "gsi2pk");
         ux_remove(&u, "gsi2sk");
+        cond = "#elo_rating = :elo AND #games_played = :games AND attribute_exists(#gsi2pk)";
     }
     ux_name(&u, "elo_rating");
     ux_name(&u, "games_played");
     ux_val_n(&u, ":elo", rt->elo_rating);
     ux_val_n(&u, ":games", rt->games_played);
-    ux_emit(&w, &u, "#elo_rating = :elo AND #games_played = :games");
+    ux_emit(&w, &u, cond);
     ux_free(&u);
     finish(&w);
 }

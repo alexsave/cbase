@@ -1610,7 +1610,8 @@ static int sq_user_import(cb_store *st, const cb_user_row *u) {
     return rc;
 }
 
-static int sq_rating_reindex(cb_store *st, const cb_rating_row *r) { return CB_OK; }   // no index key
+// No index key: every row is already in the layout.
+static int sq_rating_reindex(cb_store *st, const cb_rating_row *r) { return CB_E_CONFLICT; }
 
 static int sq_rating_import(cb_store *st, const cb_rating_row *r) {
     sq *q = Q(st);

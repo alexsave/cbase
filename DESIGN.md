@@ -782,7 +782,7 @@ A bench run throttled `gsi2` (73 throttled reads, 4 user-facing 500s, PR #311): 
 - The leaderboard reads only what it shows: store `ratings_top(limit)`, one Query of at most 100 items.
   A rating row's GSI2 key is now sparse and rating-ordered (json_surface.h "THE ITEM LAYOUT"): `gsi2sk` = `E#` + (2147483647 - rating, ten digits) + `#<user id>`, written only once the player has played; a sign-up's row is not in the index at all.
   Every rated commit moves the key with the rating, in the same transaction write (2 index units instead of 1 for that seat).
-  `cbase-import --reindex-ratings` (run by every deploy, idempotent) moves rows written before the layout, by a conditional UpdateItem that touches only the keys and only while the values are the ones it read, so it cannot lose a concurrent commit.
+  `cbase-import --reindex-ratings` (run by every deploy) moves rows written before the layout, by a conditional UpdateItem that touches only the keys, only while the values are the ones it read (so it cannot lose a concurrent commit) and only when the key is not already right (so a second run writes and invalidates nothing). It ran once against production before this merged, so the new leaderboard read had every played row from its first request: 36 rows.
 - The history reads only the caller's own rating, `ratings_for` by key (two keys, consistent, on the table), instead of the whole partition.
 
 RCU per request, measured on DynamoDB Local with `ReturnConsumedCapacity` (rating rows the size of production's; the bots' Query, unchanged, is not counted):
