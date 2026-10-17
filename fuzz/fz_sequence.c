@@ -120,6 +120,11 @@ static cb_store_ops g_ops;               // the store's ops with game_commit wra
 static const cb_store_ops *g_real;
 static int64_t g_now;
 static char g_token[N_USERS][CB_JWT_MAX];
+// Accounts this run deleted: their tokens still verify, and nothing may answer them.
+static bool g_deleted[N_USERS];
+// The games a deleted account still sat at when it went: a game in play keeps
+// the seat, redacted (functions_http.c run_redact); no other may gain it.
+static bool g_kept_seat[N_USERS][N_GAMES];
 
 static int64_t fz_now(void) { return g_now; }
 static void fz_sleep(int64_t ms) { g_now += ms; }
@@ -294,6 +299,7 @@ static void conn_hears(conn *c, const uint8_t *msg, size_t len, const char *topi
     NwFrame *f = calloc(1, sizeof *f);
     FZ_CHECK(nw_frame_decode(msg, (int)len, f) == NW_OK);
     const char *uid = c->row.user_id[0] ? c->row.user_id : NULL;
+    for (int u = 0; uid && u < N_USERS; u++) FZ_CHECK(!(g_deleted[u] && strcmp(uid, UID[u]) == 0));
     if (f->kind == NW_WS_VIEW || f->kind == NW_WS_CATCHUP || f->kind == NW_WS_CAST || f->kind == NW_WS_CHAT) {
         // Nothing about a game reaches a connection that is no one.
         FZ_CHECK(uid != NULL);
@@ -367,7 +373,15 @@ static int fz_deliver(cb_rt *rt, const char *topic, const uint8_t *frame, size_t
             if (strcmp(g_conn[i].row.topics[k], topic) == 0) conn_hears(&g_conn[i], frame, len, topic);
     return 0;
 }
-static const cb_rt_transport FZ_T = { "fuzz", fz_deliver, NULL };
+// Ends the user's connections, as rt_local closes their sockets.
+static void fz_forget(cb_rt *rt, const char *user_id, const char *const *topics, int n) {
+    for (int i = 0; i < N_CONNS; i++)
+        if (strcmp(g_conn[i].row.user_id, user_id) == 0) {
+            g_conn[i].row.user_id[0] = 0;
+            g_conn[i].row.n_topics = 0;
+        }
+}
+static const cb_rt_transport FZ_T = { "fuzz", fz_deliver, NULL, fz_forget };
 static cb_rt g_rt = { &FZ_T, &g_ctx, NULL };
 
 static int g_kicks;
@@ -430,6 +444,14 @@ static void send(const char *method, const char *path, int user, auth_kind ak, c
     cb_res_init(&res);
     cb_handle(&g_ctx, &r, &res);
     g_status = res.status;
+    // A deleted account's token still verifies until it expires (auth.h), and
+    // the server's rule is that it can never SEAT anyone (functions_http.c
+    // account_lives): a create is refused, and whatever it asks, it holds no
+    // seat afterwards. Reading as a spectator is what any token may do.
+    if (ak == AUTH_GOOD && g_deleted[user]) {
+        if (strcmp(path, "/v1/create") == 0) FZ_CHECK(res.status >= 400);
+        for (int i = 0; i < g_n_games; i++) FZ_CHECK(g_kept_seat[user][i] || seat_of_user(g_gid[i], UID[user]) < 0);
+    }
     free(g_body);
     g_len = res.body.len;
     g_body = fz_dup(res.body.p ? res.body.p : (const uint8_t *)"", g_len);
@@ -799,6 +821,8 @@ static void reset_world(uint64_t seed) {
     memset(g_gid, 0, sizeof g_gid);
     memset(g_max_version, 0, sizeof g_max_version);
     for (int i = 0; i < N_GAMES; i++) g_planted[i] = -1;
+    memset(g_deleted, 0, sizeof g_deleted);
+    memset(g_kept_seat, 0, sizeof g_kept_seat);
     memset(g_conn, 0, sizeof g_conn);
     for (int i = 0; i < N_CONNS; i++) {
         snprintf(g_conn[i].row.conn_id, sizeof g_conn[i].row.conn_id, "conn%d", i);
@@ -890,7 +914,17 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         case 1: case 2: step_meta(&in, user); break;
         case 3: case 4: step_action(&in, user); break;
         case 5: step_reads(&in, user); break;
-        case 6: step_unauthorised(&in, user); break;
+        case 6:
+            if (fz_u8(&in) == 0xff) {   // the account goes
+                send("POST", "/v1/account/delete", user, AUTH_GOOD, NULL, 0, false);
+                if (g_status == 204) {
+                    g_deleted[user] = true;
+                    for (int i = 0; i < g_n_games; i++) g_kept_seat[user][i] = seat_of_user(g_gid[i], UID[user]) >= 0;
+                }
+            } else {
+                step_unauthorised(&in, user);
+            }
+            break;
         case 7: step_stream(&in); break;
         case 8:
             if (fz_u8(&in) % 4 == 0) step_scan();
