@@ -477,10 +477,12 @@ static char g_conn_live[1024], g_conn_dead[1024];
 
 static void conn_items(void) {
     int64_t now = cb_now_ms();
+    // The row as written today (topics a list of strings), and one written
+    // before 2026-10-17 (topics as maps), which still reads for its TTL.
     snprintf(g_conn_live, sizeof g_conn_live,
              "{\"Item\":{\"pk\":{\"S\":\"CONN#c1\"},\"sk\":{\"S\":\"CONN\"},\"conn_id\":{\"S\":\"c1\"},\"user_id\":{\"S\":\"" U1 "\"},"
-             "\"vsn\":{\"N\":\"3\"},\"expires_ms\":{\"N\":\"%lld\"},\"ver\":{\"N\":\"2\"},"
-             "\"topics\":{\"L\":[{\"M\":{\"t\":{\"S\":\"pv-" U1 "\"},\"r\":{\"S\":\"1\"}}}]}}}",
+             "\"expires_ms\":{\"N\":\"%lld\"},\"ver\":{\"N\":\"2\"},"
+             "\"topics\":{\"L\":[{\"S\":\"pv-" U1 "\"},{\"M\":{\"t\":{\"S\":\"chat:ab12cd\"},\"r\":{\"S\":\"1\"}}}]}}}",
              (long long)(now + 3600000));
     snprintf(g_conn_dead, sizeof g_conn_dead,
              "{\"Item\":{\"pk\":{\"S\":\"CONN#c1\"},\"sk\":{\"S\":\"CONN\"},\"conn_id\":{\"S\":\"c1\"},\"expires_ms\":{\"N\":\"%lld\"},"
@@ -488,10 +490,10 @@ static void conn_items(void) {
              (long long)(now - 1000));
 }
 
-typedef struct { int n; char users[8][40]; } conns_seen;
+typedef struct { int n; char users[8][80]; } conns_seen;
 static bool see_conn(const cb_conn_row *c, void *ud) {
     conns_seen *w = ud;
-    if (w->n < 8) snprintf(w->users[w->n], 40, "%s", c->user_id);
+    if (w->n < 8) snprintf(w->users[w->n], sizeof w->users[0], "%s", c->user_id);
     w->n++;
     return true;
 }
@@ -505,23 +507,23 @@ static void conns_put_get_delete_by_topic(void) {
              "{\"conn_id\":{\"S\":\"c2\"},\"user_id\":{\"S\":\"" U2 "\"},\"expires_ms\":{\"N\":\"%lld\"}},{\"broken\":{\"S\":\"x\"}}]}",
              (long long)(now + 60000), (long long)(now - 60000));
     const step steps[] = {
-        // put at version 2 over a live row at 2: the old topics go, the new ones come
+        // put over a row at version 2: the topic it gains indexed first, the row on its
+        // version, then the index entry of the topic it lost
+        { "BatchWriteItem", "TOPIC#game-ab12cd", 200, "{}" },
+        { "PutItem", "\"N\":\"2\"", 200, "{}" },
+        { "BatchWriteItem", "TOPIC#pv-" U1, 200, "{}" },
+        // a lost race: the index entry written, the row refused
+        { "BatchWriteItem", "TOPIC#game-ab12cd", 200, "{}" },
+        { "PutItem", NULL, 400, COND_NO_ITEM },
+        // the index failing first stops it before the row
+        { "BatchWriteItem", NULL, 400, VALIDATION },
+        // nothing gained or lost: the row alone
+        { "PutItem", NULL, 200, "{}" },
+        // get: live (both topic shapes), expired (TTL deletes lazily), absent
         { "GetItem", "CONN#c1", 200, g_conn_live },
-        { "TransactWriteItems", "TOPIC#", 200, "{}" },
-        // a stale version: turned away without a write
-        { "GetItem", "CONN#c1", 200, g_conn_live },
-        // an expired row counts as none (version 0)
         { "GetItem", "CONN#c1", 200, g_conn_dead },
-        { "TransactWriteItems", NULL, 400, CANCEL_0 },       // lost the race
-        // no row at all
         { "GetItem", "CONN#c1", 200, NOITEM },
-        { "TransactWriteItems", NULL, 400, VALIDATION },
-        { "GetItem", NULL, 400, VALIDATION },
-        // get: live, expired (TTL deletes lazily), absent
-        { "GetItem", "CONN#c1", 200, g_conn_live },
-        { "GetItem", "CONN#c1", 200, g_conn_dead },
-        { "GetItem", "CONN#c1", 200, NOITEM },
-        // delete: the row and its topic items in one batch; absent is done; a failed read fails
+        // delete: the row and its topic entries in one batch; absent is done; a failed read fails
         { "GetItem", "CONN#c1", 200, g_conn_live },
         { "BatchWriteItem", "TOPIC#pv-" U1, 200, "{}" },
         { "GetItem", "CONN#c1", 200, NOITEM },
@@ -533,31 +535,33 @@ static void conns_put_get_delete_by_topic(void) {
         { "Query", NULL, 400, VALIDATION },
     };
     RUN(steps, s);
-    cb_conn_row c;
-    memset(&c, 0, sizeof c);
-    snprintf(c.conn_id, sizeof c.conn_id, "c1");
+    cb_conn_row was, c;
+    memset(&was, 0, sizeof was);
+    snprintf(was.conn_id, sizeof was.conn_id, "c1");
+    was.version = 2;
+    was.n_topics = 1;
+    snprintf(was.topics[0], sizeof was.topics[0], "pv-" U1);
+    c = was;
     snprintf(c.user_id, sizeof c.user_id, U1);
-    c.vsn = 3;
-    c.version = 2;
-    c.n_topics = 1;
+    c.expires_at = now + 600000;
     snprintf(c.topics[0], sizeof c.topics[0], "game-ab12cd");
-    T_EQ_INT(CB_STORE_CALL(s, conn_put, &c), CB_OK);
-    T_CHECK(strstr(sc_.bodies[1], "TOPIC#pv-" U1) != NULL);       // the old topic's item deleted
-    T_CHECK(strstr(sc_.bodies[1], "TOPIC#game-ab12cd") != NULL);  // the new one written
-    c.version = 1;
-    T_EQ_INT(CB_STORE_CALL(s, conn_put, &c), CB_E_CONFLICT);
-    c.version = 0;
-    T_EQ_INT(CB_STORE_CALL(s, conn_put, &c), CB_E_CONFLICT);
-    T_EQ_INT(CB_STORE_CALL(s, conn_put, &c), CB_E_DB);
-    T_EQ_INT(CB_STORE_CALL(s, conn_put, &c), CB_E_DB);
-    c.n_topics = -1;
-    T_EQ_INT(CB_STORE_CALL(s, conn_put, &c), CB_E_INVALID);
+    T_EQ_INT(CB_STORE_CALL(s, conn_put, &was, &c), CB_OK);
+    T_CHECK(strstr(sc_.bodies[2], "DeleteRequest") != NULL);   // the lost topic's entry goes
+    T_EQ_INT(CB_STORE_CALL(s, conn_put, &was, &c), CB_E_CONFLICT);
+    T_EQ_INT(CB_STORE_CALL(s, conn_put, &was, &c), CB_E_DB);
+    T_EQ_INT(CB_STORE_CALL(s, conn_put, &c, &c), CB_OK);
+    cb_conn_row bad = c;
+    bad.n_topics = -1;
+    T_EQ_INT(CB_STORE_CALL(s, conn_put, &was, &bad), CB_E_INVALID);
+    bad = was;
+    bad.version = -1;
+    T_EQ_INT(CB_STORE_CALL(s, conn_put, &bad, &c), CB_E_INVALID);
     cb_conn_row got;
     T_EQ_INT(CB_STORE_CALL(s, conn_get, "c1", &got), CB_OK);
     T_EQ_STR(got.user_id, U1);
-    T_EQ_INT(got.n_topics, 1);
+    T_EQ_INT(got.n_topics, 2);
     T_EQ_STR(got.topics[0], "pv-" U1);
-    T_EQ_STR(got.join_refs[0], "1");
+    T_EQ_STR(got.topics[1], "chat:ab12cd");
     T_EQ_INT(got.version, 2);
     T_EQ_INT(CB_STORE_CALL(s, conn_get, "c1", &got), CB_E_NOT_FOUND);
     T_EQ_INT(CB_STORE_CALL(s, conn_get, "c1", &got), CB_E_NOT_FOUND);

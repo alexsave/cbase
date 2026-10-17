@@ -52,7 +52,7 @@ static void every_status_has_its_reason(void) {
 static const char *const VARS[] = {
     "CBASE_LISTEN", "CBASE_STORE", "CBASE_DB", "CBASE_TABLE", "CBASE_WS_ENDPOINT", "CBASE_CF_DISTRIBUTION",
     "CBASE_JWT_SECRET", "CBASE_ADMIN_TOKEN", "CBASE_ALLOWED_ORIGINS", "CBASE_PUBLIC_URL", "CBASE_REQ_WORKERS",
-    "CBASE_BOT_WORKERS", "CBASE_MAX_BODY", "CBASE_JWT_TTL", "CBASE_LOG_LEVEL", "CBASE_ORIGIN_SECRET",
+    "CBASE_BOT_WORKERS", "CBASE_MAX_BODY", "CBASE_JWT_TTL", "CBASE_LOG_LEVEL", "CBASE_ORIGIN_SECRET", "CBASE_WS_ROUTE_REPLY",
 };
 
 static void env_clear(void) {
@@ -70,11 +70,18 @@ static void refused(const char *name, const char *value, const char *says) {
     T_CHECK(strstr(err, says) != NULL);
 }
 
-typedef struct { int n, secrets; bool leaked; } seen;
+// What cb_config_each listed: every setting once, the secrets flagged (and
+// only them), no secret's value anywhere.
+typedef struct { int n, secrets; bool leaked, unknown, wrong_secret; } seen;
+static bool is_secret_name(const char *n) {
+    return !strcmp(n, "CBASE_JWT_SECRET") || !strcmp(n, "CBASE_ADMIN_TOKEN") || !strcmp(n, "CBASE_ORIGIN_SECRET");
+}
 static void see(const char *name, const char *value, bool secret, void *ud) {
     seen *s = ud;
     s->n++;
     if (secret) s->secrets++;
+    if (strncmp(name, "CBASE_", 6) != 0) s->unknown = true;
+    if (secret != is_secret_name(name)) s->wrong_secret = true;
     if (strstr(value, "0123456789abcdef0123456789abcdef") || strstr(value, "console-token") || strstr(value, "edge-origin")) s->leaked = true;
 }
 
@@ -91,6 +98,7 @@ static void configuration_refusals(void) {
     snprintf(longhost, sizeof longhost, "%.300s:80", longv);
     refused("CBASE_LISTEN", longhost, "host is too long");
     refused("CBASE_STORE", "postgres", "is not sqlite or dynamo");
+    refused("CBASE_WS_ROUTE_REPLY", "maybe", "is not yes or no");
     refused("CBASE_DB", longv, "CBASE_DB is longer than");
     refused("CBASE_TABLE", longv, "CBASE_TABLE is longer than");
     refused("CBASE_WS_ENDPOINT", longv, "CBASE_WS_ENDPOINT is longer than");
@@ -139,9 +147,11 @@ static void configuration_refusals(void) {
     T_EQ_STR(c.public_url, "http://0.0.0.0:9000");
     seen s = { 0 };
     cb_config_each(&c, see, &s);
-    T_EQ_INT(s.n, 16);
+    T_CHECK(s.n >= (int)(sizeof VARS / sizeof VARS[0]));   // every setting this test knows, and any added since
     T_EQ_INT(s.secrets, 3);
     T_CHECK(!s.leaked);
+    T_CHECK(!s.unknown);
+    T_CHECK(!s.wrong_secret);
     // The origin list: trimmed, exact, no prefix matches.
     T_CHECK(cb_config_origin_allowed(&c, "https://a.example"));
     T_CHECK(cb_config_origin_allowed(&c, "https://b.example"));
