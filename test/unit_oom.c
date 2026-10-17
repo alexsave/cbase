@@ -101,6 +101,10 @@ static void run(const rq *q) {
 // The k-th allocation of `q` fails, for every k the request makes. `ok` is the
 // status of a request that had all its memory; `prep` (optional) runs before
 // each attempt, unarmed (a fresh name for a sign-up, say).
+// g_everywhere: the sweep reaches into the libraries too (oom_everywhere, glibc
+// only), and leaks are not counted, since a library keeps what it caches.
+static bool g_everywhere;
+
 static void sweep(const char *what, rq *q, int ok, void (*prep)(rq *, int)) {
     // OOM_ONLY=<text>: only the sweeps whose name holds it (to chase one by hand).
     const char *only = getenv("OOM_ONLY");
@@ -114,9 +118,11 @@ static void sweep(const char *what, rq *q, int ok, void (*prep)(rq *, int)) {
     for (;; k++) {
         if (prep) prep(q, k);
         oom_fail_after(k);
+        oom_everywhere(g_everywhere);
         run(q);
         cb_row_cache_clear();   // the one thing a request may keep
-        long live = oom_live();
+        long live = g_everywhere ? 0 : oom_live();
+        oom_everywhere(false);
         bool failed = oom_failed();
         oom_off();
         if (!failed) break;
@@ -132,7 +138,7 @@ static void sweep(const char *what, rq *q, int ok, void (*prep)(rq *, int)) {
     // The run with every allocation: the request's own answer, nothing kept.
     if (g_status != ok) fprintf(stderr, "     %s: unfailed run answered %d, want %d\n", what, g_status, ok);
     T_EQ_INT(g_status, ok);
-    if (OOM_AVAILABLE) T_CHECK(failures > 0);
+    if (OOM_AVAILABLE && !g_everywhere) T_CHECK(failures > 0);
     if (wrong) fprintf(stderr, "     %s: %d of %d failed allocations answered as the caller's fault\n", what, wrong, failures);
     if (leaks) fprintf(stderr, "     %s: %d of %d failed allocations leaked\n", what, leaks, failures);
     T_EQ_INT(wrong, 0);
@@ -288,6 +294,23 @@ static void routes_fail_cleanly(void) {
         sweep(q.path, &q, reads[i].ok, NULL);
     }
 
+    // The same reads and a bump with every library's allocations failing too
+    // (glibc): the token check's HMAC, sqlite's. Still the server's fault.
+    g_everywhere = true;
+    memset(&q, 0, sizeof q);
+    q.method = "GET";
+    snprintf(q.path, sizeof q.path, "/v1/games");
+    snprintf(q.auth, sizeof q.auth, "%s", g_auth_a);
+    sweep("GET /v1/games (everywhere)", &q, 200, NULL);
+    memset(&q, 0, sizeof q);
+    q.method = "POST";
+    snprintf(q.path, sizeof q.path, "/v1/meta");
+    snprintf(q.auth, sizeof q.auth, "%s", g_auth_a);
+    q.ctype = "application/octet-stream";
+    ask_body(&q, ASK_BUMP, g_gid);
+    sweep("POST /v1/meta bump (everywhere)", &q, 200, NULL);
+    g_everywhere = false;
+
     // A chat line, then a move.
     memset(&q, 0, sizeof q);
     q.method = "POST";
@@ -406,7 +429,7 @@ static void boot_fails_cleanly(void) {
         T_EQ_INT(live, 0);
         if (k > 20000) break;
     }
-    if (OOM_AVAILABLE) T_CHECK(failures > 0);
+    if (OOM_AVAILABLE && !g_everywhere) T_CHECK(failures > 0);
     printf("  oom %-28s %4d allocations failed one at a time\n", "cb_boot", failures);
 }
 
