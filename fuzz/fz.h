@@ -62,7 +62,8 @@ static inline char *fz_cstr(const uint8_t *p, size_t n) {
     return s;
 }
 static inline uint8_t *fz_dup(const uint8_t *p, size_t n) {
-    uint8_t *s = malloc(n ? n : 1);
+    // calloc: an empty input's one byte is defined too (gcc warns otherwise).
+    uint8_t *s = calloc(n ? n : 1, 1);
     if (!s) abort();
     if (n) memcpy(s, p, n);
     return s;
