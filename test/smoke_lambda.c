@@ -31,6 +31,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <signal.h>
+#include <string.h>
 #include <unistd.h>
 
 static cb_ctx g_ctx;
@@ -109,8 +110,12 @@ static void one_invocation(const char *bin) {
     T_EQ_INT(tp_start(&c, argv, env), 0);
     // Every invocation logs its timing line (main_lambda.c), in order.
     T_EQ_INT(tp_wait_line(&c, "inv: http GET /health 200 ms=", 20000, NULL, 0), 0);
-    T_EQ_INT(tp_wait_line(&c, "inv: scan ms=", 20000, NULL, 0), 0);
-    T_EQ_INT(tp_wait_line(&c, "inv: drive abc123 ms=", 20000, NULL, 0), 0);
+    // Each names its Lambda request id, the one the REPORT line carries.
+    char line[512] = "";
+    T_EQ_INT(tp_wait_line(&c, "inv: scan ms=", 20000, line, sizeof line), 0);
+    T_CHECK(strstr(line, " rid=req-2") != NULL);
+    T_EQ_INT(tp_wait_line(&c, "inv: drive abc123 ms=", 20000, line, sizeof line), 0);
+    T_CHECK(strstr(line, " rid=req-4") != NULL);
     // bootstrap exits by itself once /next answers 500.
     T_EQ_INT(tp_wait_line(&c, "invocation/next answered 500", 20000, NULL, 0), 0);
     T_EQ_INT(tp_stop(&c, 0, 10000), 0);   // and it exits 0 by itself
