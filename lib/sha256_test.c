@@ -9,9 +9,10 @@
 #include <stdint.h>
 #include "test/check.h"
 #include "sha256.h"
+#include "rng.h"
 
 static uint64_t rng = 1234567;
-static uint32_t next(void) { rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17; return (uint32_t)rng; }
+static uint32_t next(void) { return (uint32_t)rng_xorshift64(&rng); }
 
 static void hex(const uint8_t *d, char *o)
 {

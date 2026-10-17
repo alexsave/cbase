@@ -90,6 +90,15 @@ int main(void)
         CHECK(RNG_XORSHIFT64STAR_MUL == UINT64_C(2685821657736338717), "the multiplier in decimal");
     }
 
+    TEST("unit: the top 53 bits, in [0, 1)");
+    {
+        CHECK(rng_unit(0) == 0.0, "0");
+        CHECK(rng_unit(UINT64_C(1) << 63) == 0.5, "the top bit alone is a half");
+        CHECK(rng_unit(UINT64_C(0x7ff)) == 0.0, "the low 11 bits are dropped");
+        CHECK(rng_unit(UINT64_C(0x800)) == 1.0 / 9007199254740992.0, "bit 11 is 2^-53");
+        CHECK(rng_unit(~UINT64_C(0)) == 1.0 - 1.0 / 9007199254740992.0, "all ones is the largest double below 1");
+    }
+
     TEST("lcg32: Numerical Recipes' ranqd1 from 0");
     {
         static const uint32_t want[4] = { 1013904223u, 1196435762u, 3519870697u, 2868466484u };

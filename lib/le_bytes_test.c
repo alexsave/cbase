@@ -9,9 +9,10 @@
 #include <string.h>
 #include "test/check.h"
 #include "le_bytes.h"
+#include "rng.h"
 
 static uint64_t rng = 88172645463325252ull;
-static uint64_t next(void) { rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17; return rng; }
+static uint64_t next(void) { return rng_xorshift64(&rng); }
 
 int main(void)
 {

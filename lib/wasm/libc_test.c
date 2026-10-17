@@ -58,6 +58,7 @@ int    wlibc_snprintf(char *out, size_t cap, const char *fmt, ...);
 int    wlibc_atoi(const char *s);
 long   wlibc_atol(const char *s);
 #include "libc.c"
+#include "../rng.h"
 #undef memcpy
 #undef memmove
 #undef memset
@@ -70,7 +71,7 @@ long   wlibc_atol(const char *s);
 #undef atol
 
 static uint32_t rng = 0x9e3779b9u;
-static uint32_t next(void) { rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5; return rng; }
+static uint32_t next(void) { return rng_xorshift32(&rng); }
 
 static int sign(int v) { return (v > 0) - (v < 0); }
 

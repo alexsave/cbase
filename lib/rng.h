@@ -29,6 +29,8 @@
  *   own their own mixing and their own formats.
  * - how a draw becomes a number in [0, n): each caller's reduction (a modulo,
  *   a mask, Lemire's multiply) is part of its sequence and stays with it.
+ *   The one conversion here is rng_unit, to [0, 1), because a double has one
+ *   right way to take it.
  *
  * Sources: splitmix64 is Steele, Lea and Flood, "Fast splittable pseudorandom
  * number generators" (OOPSLA 2014), as in Vigna's splitmix64.c; xorshift32
@@ -118,6 +120,15 @@ static inline uint32_t rng_xorshift32(uint32_t *state)
     x ^= x >> 17;
     x ^= x << 5;
     return *state = x;
+}
+
+/* ---- a 64-bit draw as a double ----------------------------------------- */
+
+/* The top 53 bits of a 64-bit draw as a double in [0, 1): every value a
+ * multiple of 2^-53, exactly, with no rounding up to 1. */
+static inline double rng_unit(uint64_t draw)
+{
+    return (double)(draw >> 11) * (1.0 / 9007199254740992.0);
 }
 
 /* ---- the 32-bit LCG ------------------------------------------------------ */
