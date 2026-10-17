@@ -499,6 +499,13 @@ static void game_scenario(void) {
     fprintf(stderr, "smoke: %s after %d human moves, %lld s, version %lld\n",
             status == GAME_STATUS_GAME_OVER ? "game over" : "NO PROGRESS", moves, (long long)((mono_ms() - t_start) / 1000),
             (long long)last_version);
+    if (status != GAME_STATUS_GAME_OVER) {
+        // A stall is a stuck thread until shown otherwise: print every thread's
+        // stack of the live server, where gdb is there to do it (CI's Linux).
+        char cmd[160];
+        snprintf(cmd, sizeof cmd, "command -v gdb >/dev/null && gdb -q -batch -p %d -ex 'thread apply all bt' 1>&2", (int)g_child.pid);
+        if (system(cmd) != 0) fprintf(stderr, "smoke: no stacks (gdb is not here, or could not attach)\n");
+    }
     T_EQ_INT(status, GAME_STATUS_GAME_OVER);
     T_CHECK(moves > 0);
     T_CHECK(crashed);
