@@ -30,7 +30,9 @@ typedef struct {
 // Writes the signed token and a NUL. Its length, or CB_E_FULL.
 int cb_jwt_mint(const char *secret, const cb_jwt_claims *c, const char *issuer, char *out, size_t cap);
 // Checks the signature (constant time), alg HS256, aud "authenticated", and
-// exp against now_s with 30 s of skew. CB_OK and *out, or CB_E_AUTH.
+// exp against now_s with 30 s of skew. CB_OK and *out, CB_E_AUTH, or CB_E_NOMEM
+// when the HMAC itself could not be computed: the server's failure, not the
+// token's, which a caller must not answer as a bad token (that signs a user out).
 int cb_jwt_verify(const char *secret, const char *token, int64_t now_s, cb_jwt_claims *out);
 
 #endif

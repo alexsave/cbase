@@ -223,7 +223,9 @@ static int on_one(cb_ctx *ctx, cb_conn_row *conn, NwFrame *f, cb_rt_send_fn send
     case NW_WS_SUB_AS:
         // Who asks rides with the ask: it never depends on an AUTH frame having
         // been stored first, which API Gateway does not promise.
-        if (!take_user(ctx, conn, f, &why)) { ack(f->ref, ASK_WHY_AUTH, false, send, ud); return CB_OK; }
+        // A token that does not verify is AUTH; one whose check could not run
+        // (no memory, the store) is the server's: INTERNAL, and the client asks again.
+        if (!take_user(ctx, conn, f, &why)) { ack(f->ref, why == CB_E_AUTH ? ASK_WHY_AUTH : ASK_WHY_INTERNAL, false, send, ud); return CB_OK; }
         on_sub(ctx, conn, f, send, ud);
         return CB_OK;
     case NW_WS_SUB: on_sub(ctx, conn, f, send, ud); return CB_OK;

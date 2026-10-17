@@ -74,7 +74,8 @@ void cb_auth_free(cb_auth *a) {
 int cb_auth_verify_token(cb_auth *a, const char *jwt, cb_user *out) {
     if (!a || !jwt) return CB_E_AUTH;
     cb_jwt_claims c;
-    if (cb_jwt_verify(a->secret, jwt, cb_auth_now() / 1000, &c) != CB_OK) return CB_E_AUTH;
+    int rc = cb_jwt_verify(a->secret, jwt, cb_auth_now() / 1000, &c);
+    if (rc != CB_OK) return rc == CB_E_NOMEM ? rc : CB_E_AUTH;
     memset(out, 0, sizeof *out);
     memcpy(out->id, c.sub, sizeof out->id);
     memcpy(out->email, c.email, sizeof out->email);

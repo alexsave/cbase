@@ -92,7 +92,9 @@ static void failed(cb_http_res *res, int rc) {
 static bool caller(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res, cb_user *u) {
     if (!ctx->auth || !ctx->store) { refuse(res, 503, ASK_WHY_INTERNAL, 0); return false; }
     memset(u, 0, sizeof *u);
-    if (cb_auth_verify_bearer(ctx->auth, req, u) != CB_OK) { refuse(res, 401, ASK_WHY_AUTH, 0); return false; }
+    int rc = cb_auth_verify_bearer(ctx->auth, req, u);
+    if (rc == CB_E_AUTH) { refuse(res, 401, ASK_WHY_AUTH, 0); return false; }
+    if (rc != CB_OK) { failed(res, rc); return false; }   // the check could not run: the server's failure
     return true;
 }
 

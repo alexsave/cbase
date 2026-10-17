@@ -48,9 +48,10 @@ typedef struct {
 int  cb_auth_new(cb_ctx *ctx, cb_auth **out);
 void cb_auth_free(cb_auth *a);
 
-// The user a request's "Authorization: Bearer <jwt>" names. CB_OK, or CB_E_AUTH
-// (no token, a bad signature, expired). Never touches the store: a verified
-// token is trusted until it expires, as GoTrue's were.
+// The user a request's "Authorization: Bearer <jwt>" names. CB_OK, CB_E_AUTH
+// (no token, a bad signature, expired), or CB_E_NOMEM when the check itself
+// could not run (jwt.h): a 5xx, never "signed out". Never touches the store:
+// a verified token is trusted until it expires, as GoTrue's were.
 int cb_auth_verify_bearer(cb_auth *a, const cb_http_req *req, cb_user *out);
 int cb_auth_verify_token(cb_auth *a, const char *jwt, cb_user *out);
 

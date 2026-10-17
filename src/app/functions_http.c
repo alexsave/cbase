@@ -72,11 +72,22 @@ static bool octet_body(const cb_http_req *req) {
     return ct && strstr(ct, OCTETS) != NULL;
 }
 
+// The bearer, or false with the refusal answered: `status` AUTH for a token
+// that does not verify (400 for the writes, 401 for delete-account), 500 when
+// the check itself could not run (auth.h): that is not the caller's token.
+static bool verified(cb_ctx *ctx, const cb_http_req *req, cb_user *u, cb_http_res *res, int status) {
+    int rc = cb_functions_verify(ctx, req, u);
+    if (rc == CB_OK) return true;
+    if (rc == CB_E_AUTH) refusal(res, status, ASK_WHY_AUTH, 0, 0);
+    else refusal(res, rc == CB_E_STATE ? 503 : 500, ASK_WHY_INTERNAL, 0, 0);
+    return false;
+}
+
 // The prologue every wrap400 endpoint shares: the handles, the bearer, the
 // content type. false when the response is already written.
 static bool wrap400(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res, cb_user *u) {
     if (!ctx->store) { refusal(res, 503, ASK_WHY_INTERNAL, 0, 0); return false; }
-    if (cb_functions_verify(ctx, req, u) != CB_OK) { refusal(res, 400, ASK_WHY_AUTH, 0, 0); return false; }
+    if (!verified(ctx, req, u, res, 400)) return false;
     // A client that still sends JSON must not have it read as an ask.
     if (!octet_body(req)) { refusal(res, 415, ASK_WHY_MALFORMED, 0, 0); return false; }
     return true;
@@ -248,7 +259,7 @@ static void h_create(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     if (!ctx->store) { refusal(res, 503, ASK_WHY_INTERNAL, 0, 0); return; }
     cb_user u;
     // No wrap400 here, so no content-type check: create has no body.
-    if (cb_functions_verify(ctx, req, &u) != CB_OK) { refusal(res, 400, ASK_WHY_AUTH, 0, 0); return; }
+    if (!verified(ctx, req, &u, res, 400)) return;
     if (!account_lives(ctx, &u, res)) return;
     cb_table_result r;
     int rc = cb_table_create(ctx, &u, &r);
@@ -410,7 +421,7 @@ static void h_delete_account(cb_ctx *ctx, const cb_http_req *req, cb_http_res *r
     if (!ctx->store) { refusal(res, 503, ASK_WHY_INTERNAL, 0, 0); return; }
     cb_user u;
     // No or an invalid token: the client reads 401 as "already deleted".
-    if (cb_functions_verify(ctx, req, &u) != CB_OK) { refusal(res, 401, ASK_WHY_AUTH, 0, 0); return; }
+    if (!verified(ctx, req, &u, res, 401)) return;
     int code, detail;
     int rc = cb_app_delete_account(ctx, u.id, &code, &detail);
     if (rc != CB_OK) {

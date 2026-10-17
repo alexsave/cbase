@@ -90,7 +90,7 @@ int cb_jwt_verify(const char *secret, const char *token, int64_t now_s, cb_jwt_c
 
     // The signature first: nothing unauthenticated is parsed beyond the dots.
     char want[SIG_B64_LEN + 1];
-    if (!sign(secret, token, (size_t)(d2 - token), want)) return CB_E_AUTH;
+    if (!sign(secret, token, (size_t)(d2 - token), want)) return CB_E_NOMEM;
     if (CRYPTO_memcmp(want, sig, SIG_B64_LEN) != 0) return CB_E_AUTH;
 
     char head[256], body[CB_JWT_MAX];
