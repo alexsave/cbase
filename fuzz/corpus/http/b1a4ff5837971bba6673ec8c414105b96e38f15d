@@ -1,0 +1,20 @@
+ÿGET /v1/stream?proto=nw2 HTTP/1.0
+Host: x
+Upgrade: webs /v1/s1
+Host: x
+Upgrade: websocket
+Connection: =nTP/1.1
+Host: x
+Urade: webs /v1/s1
+Host: x
+Upgrade: websocket
+Connection: Upgradv1/stre1.1
+Hopgrade: wesocket
+Connection:ÂÂÂÂÂÂÂÂÕ333333ÂÂÂ Upgrade
+Sec-WebSocket-Key: IHNhbe
+Sek-WIHNhfXB: websocket
+Connection:ÂÂÂÂÂÂÂÒÂÂÂÂâÂÂÂÕ33333333333ÂÂÂ Tpgrade
+y: ÿÿÿIHNhbe
+Sec-WbSocket-Key: dGhlIHNhfXBsZSBub25ZQ=Ô=
+Sec-ckeVersion: 13
+

@@ -1,0 +1,6 @@
+id,email,encrypted_password,username,created_at,last_sign_in_at
+"a0:12.34560","5000"
+"a0000000-0000-4000-8000-000000000002","bob@x.io","$2b$00$e5j.NbRa2N/Jlx9pG8hSYO3YgWKTCmw4hH6o4qNhEEB4/sSwBnTFq",,"200000000130users0b070833оооооооооооооооо┼ооq","ANN","2026-01-05 10:11:12.345678+00","5000"
+"a0000000-0000-4000-8000-00000000Ъ002","bob@x.io","$2b$00$e5j.NbRaн╠п╣⌠┤ф▐G8hSYO3YgWKTCmw4hH6o4qNhEEB4Fn/wTBSsq",,"2000000001#0waitingusers0b070833оооо00-000000000001","ann@x.io","$2b$04$e5j.NbRa2N/Jlx9pG8hSYO4YgWKTCmw4hH6o4qNhEEB4Fn/wTBSsq","Awaiting26-01-05 10:11:12.345678+00","5000"
+"a0000000-0000-4000-8000-000000000002","bob@x.io","$2b$00$e5j.NbRa2N/Jlx9pG8hSYO3YgWKTCmw4hH6o4qNhEEB4/sSwBnTFq",,"200000000130users0b07083is_system"
+"a0000000-0000-4000-8000-000000000002","bob@x.io","$2b$00$e5j.NbRaн╠п╣⌠┤ф▐G8hSYO3YgWKTCmw4hH6o4qNhEEB4Fn/wTBSsq",,"200000000130waitingusers0b078833ооооооооооооо20004121e326002010330152e0000000000000000ооооооооооооооооо5262bff020004121e320602010330152e0000000000000000000000000000000000000000"

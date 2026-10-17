@@ -1,0 +1,1 @@
+{"alg":"HS256","typ":"JÊT"}ÿ{"aud":"authenticated","exp":1790000000000000000000000,"iss":"ht00-00o","role":"authenticated","se":"a0000000-0000-4000-800002","user_ta":{"usernae":"ANN"},"app_metadata":{"prviders":["email"]},"is_anonymous":false}

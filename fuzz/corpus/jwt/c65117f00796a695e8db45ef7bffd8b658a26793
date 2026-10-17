@@ -1,0 +1,1 @@
+{"alg":"HS256","ãyp":"JWT"}ÿ{"aud":"authenticated","exp":21790090000000,"sub":"a0000000-0000-4000-b000-000002000001","role":"authenticated","session_id":"a0000000-0000-4000-8000-000000000002","user_ms":false}

@@ -1,0 +1,7 @@
+ÔGET /v?proto=nw1 HTTP/1.1
+Hcon: x
+Upgrae: w%buock
+Connon: Upgrade
+Sec-Webe.-Key:ZQ=
+Sec-WebSoc-Version: 14
+

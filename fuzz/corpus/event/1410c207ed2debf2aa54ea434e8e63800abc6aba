@@ -1,0 +1,5 @@
+{"version":".0","hrouteKey":"$default","rawPath":"/auth/v1/signup","rawQuemyString":"","headers":{"cloudfront-is-cndroid-viewer":"fal;se","coy"
+:"U0001","cloudfront-viont-viewer-country"
+:"US","cloudfront-viewer-loudfront-viewer-country"
+:"US","clouAAAAAAAAfront-viewer-country"
+:"US","clo‹›™zn-":"false"},"requestContext":{"accountId":"anonymznppvj1yny3tsdp40esnlg.lambda-url.uny3tsdp40eónlg","http":{"method":"POST","path":"/auth/v1/signup","protocol":"HTTP/1.1~ÿÿÿÿÿÿõ","sourceIp":"ËÆÇÑ51.100.72","userAgent":"curl/8.7.b/dy1"},"meEpoch":1791998918003},"body":"{\"email\":\"probecf2@probe.invalid\",\"password\":\"123\",\"data\":{\"use}","isBase64Encoded":false}

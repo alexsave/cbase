@@ -1,0 +1,1 @@
+€{"__type":"s.dynamodb.v20120810#TransactionCanceledException","CancellationReasons":[{"Code":"None"},{"Code":"ConitionalCheckFailed","Item":{"pk":{"S":"x"}}},{"Code":"Throttl"}]}ÿ

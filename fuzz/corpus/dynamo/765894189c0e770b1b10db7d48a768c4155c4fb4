@@ -1,0 +1,1 @@
+€{"__type":"com.amaz","message":"Transaction cancelled","CancellationReasons":[{"Code":"None"},{"Code":"Condit","CancellationReasons":[{"Code":"None"},{"Code":"ConditionalCheckttlingError"}]}

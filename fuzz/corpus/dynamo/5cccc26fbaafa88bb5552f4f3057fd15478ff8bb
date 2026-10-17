@@ -1,0 +1,1 @@
+{"Table":{"ProvisionedThroughput":{"ts":25,"WriteCapacityUnits":25},"GobalondyIndexes":[{"IndexName":"gsi1","Provoughput":{"RedCapacityUnits":5,"WriteCapacityUnits":4}}]}}

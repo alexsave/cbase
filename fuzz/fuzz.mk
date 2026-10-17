@@ -11,6 +11,9 @@
 #                       once, under the ordinary ASan build (any compiler, no
 #                       libFuzzer): the corpus as a regression test
 #   make fuzz-merge     each scratch corpus minimised back into fuzz/corpus/<target>
+#                       (inputs are renamed to their hashes, except a found
+#                       bug's reproducer, fuzz/corpus/<target>/repro-<what>,
+#                       which is kept by name beside its unit test)
 #   make fuzz-seeds     build/fuzz/seeds writes the seed inputs (fuzz/seeds.c)
 #                       into fuzz/corpus/ (made from the real encoders and the
 #                       tests' recorded fixtures)
@@ -100,6 +103,7 @@ fuzz-merge: fuzz
 	  [ -d build/fuzz-work/$$t ] || continue; \
 	  rm -rf build/fuzz-merged/$$t; mkdir -p build/fuzz-merged/$$t; \
 	  build/fuzz/$$t -merge=1 $(FUZZ_FLAGS) build/fuzz-merged/$$t fuzz/corpus/$$t build/fuzz-work/$$t > build/fuzz-work/$$t.merge.log 2>&1 \
+	    && { cp fuzz/corpus/$$t/repro-* build/fuzz-merged/$$t/ 2>/dev/null; true; } \
 	    && rm -rf fuzz/corpus/$$t && mv build/fuzz-merged/$$t fuzz/corpus/$$t \
 	    && echo "$$t: $$(ls fuzz/corpus/$$t | wc -l | tr -d ' ') inputs"; \
 	done

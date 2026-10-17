@@ -1,0 +1,10 @@
+€{"__type":"n","message":"Transaction cancelled","CancellationReasons":[{"Code":"None"},{"Code":{"N":"ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ000000000-0000-4000-8000QkiGQQTFi0KFAwgMQMRHwUmK/8CAAQSHjIGAgEDMBUuAA0aaaaaaaaaaaaaaaaaaaaaaÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿaaaaaaaaaaaaaaaaaa"},"token_hash":{"S":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"user_id":{"S":"a0000000-0000-4000-8000-000000000001"},"session_id":{"S":"a0000000-0000-4000-8000000-0000-4000-8000-000000000002"},"created_at":{"////////////////N":"0"},"revoked":{"BOOL":false}},{"pk":{"S":"GAME#ab12cdaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"token_hash":{"S":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"user_id":{"S":"a0000000-0000-4000-8000-000000000001"},"created_atsession_id":{"S":"a0000000-0000-4000-8000-000000000002"},"created_at":{"N":"0"},"revoked":{"BOOL":false}},{"pk":{"S":"GAME#ab12cd"},"skThrottlingErrorid":{"S":"ab24cd"},"status":{"N":"0"},"state":{"B":"BQMBAgIBAAQAASMAAAAAABMALywLBwgzIQkiGQQTFi0KFAwgMQMRHwUmK/8CAAQSAAAAAAA?AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA00-0000-4000-8000-000000000002"},"created§at":{"N":"0"},"revoked":{"BOOL":false}},{"pk":{"S":"GAME#ab06cd"},"sk":{"S":"ROW"},"id":{"S":"ab12cd"},"status":{"N":"0"},"state":{"B":"BQMBAgIBAAQAASMAAAAAABMALywLBwgzIQkiGQQTFi0KFAwgMQMRHwUmK/8CAAQSHjIGAgEDMBUuAAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"gsi2pk":{"S":"SESSION#a0000000-0000-4000-800ÿÿÿÿÿÿÿÿ000002"},"gsi2skL":true},"version":{"N":"3"},"round_epoch":{"N":"0"},"creat-00000000-0000-4000-8000-00ThrottlingError0AAAAAAAAAAA8000-00ThrottlingError0000000001"},{ProvisionedThrughput"M{
+
+""?
+
+{
+S":"a0000001"":{
+
+"":
+{-0000-
+""
