@@ -120,6 +120,15 @@ static void expiry_and_skew(void) {
     claims_body(body, sizeof body, "authenticated", "authenticated", UID, NOW + 100, ",\"nbf\":\"soon\"");
     forge(SECRET, HS256, body, tok, sizeof tok);
     T_EQ_INT(cb_jwt_verify(SECRET, tok, NOW, &got), CB_E_AUTH);              // nbf not a number
+    // The largest exp a signed token can say is far in the future, not a
+    // signed overflow (exp + the skew was, under UBSan: fuzz/fz_jwt.c found it),
+    claims_body(body, sizeof body, "authenticated", "authenticated", UID, INT64_MAX, "");
+    forge(SECRET, HS256, body, tok, sizeof tok);
+    T_EQ_INT(cb_jwt_verify(SECRET, tok, NOW, &got), CB_OK);
+    // and the smallest one is long past.
+    claims_body(body, sizeof body, "authenticated", "authenticated", UID, INT64_MIN, "");
+    forge(SECRET, HS256, body, tok, sizeof tok);
+    T_EQ_INT(cb_jwt_verify(SECRET, tok, NOW, &got), CB_E_AUTH);
     // No exp at all.
     snprintf(body, sizeof body, "{\"aud\":\"authenticated\",\"role\":\"authenticated\",\"sub\":\"%s\",\"session_id\":\"%s\"}", UID, SID);
     forge(SECRET, HS256, body, tok, sizeof tok);

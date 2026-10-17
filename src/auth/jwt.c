@@ -103,7 +103,9 @@ int cb_jwt_verify(const char *secret, const char *token, int64_t now_s, cb_jwt_c
     bool has_nbf;
     int64_t nbf;
     if (!cb_js_jwt_claims_decode(body, bl, &c, &has_nbf, &nbf)) return CB_E_AUTH;
-    if (now_s > c.exp + CB_JWT_SKEW_S) return CB_E_AUTH;
+    // The skew moves our clock, never the token's numbers: exp and nbf are any
+    // int64 a signed body says, and adding to one can overflow.
+    if (now_s - CB_JWT_SKEW_S > c.exp) return CB_E_AUTH;
     if (has_nbf && now_s + CB_JWT_SKEW_S < nbf) return CB_E_AUTH;
     if (!cb_uuid_valid(c.sub, strlen(c.sub)) || !cb_uuid_valid(c.session_id, strlen(c.session_id))) return CB_E_AUTH;
     *out = c;
