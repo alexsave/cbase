@@ -6,6 +6,7 @@
 // spectators, only when the operation moved something a viewer sees.
 #include "fanout.h"
 
+#include "after.h"
 #include "realtime/realtime.h"
 #include "util/log.h"
 
@@ -15,6 +16,10 @@
 void (*cb_fanout_observer)(const cb_fanout *f);
 
 void cb_fanout_commit(cb_ctx *ctx, const cb_fanout *f) {
+    if (!cb_after_fanout(f)) cb_fanout_publish(ctx, f);
+}
+
+void cb_fanout_publish(cb_ctx *ctx, const cb_fanout *f) {
     if (cb_fanout_observer) cb_fanout_observer(f);
     cb_rt *rt = ctx->rt;
     if (!rt) {

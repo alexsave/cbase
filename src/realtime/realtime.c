@@ -27,14 +27,26 @@ cb_rt_deps cb_rt_deps_g = {
 
 // ---- publishing ------------------------------------------------------------------------
 
+static _Thread_local int t_failed;
+
+int cb_rt_failures_take(void) {
+    int n = t_failed;
+    t_failed = 0;
+    return n;
+}
+
 static void publish(cb_rt *rt, const char *topic, const NwFrame *f) {
     if (!rt || !rt->t || !rt->t->deliver) return;
     size_t cap = 96 + (size_t)f->blob.len + (f->kind == NW_WS_CHAT ? NW_CHAT_MAX + 2 * NW_ID_MAX : 0);
     cb_buf b;
     cb_buf_init(&b);
     int n = cb_buf_reserve(&b, cap) ? nw_frame_encode(f, b.p, (int)cap) : -1;
-    if (n < 0) CB_ERROR("realtime", "a push to %s was not written (%d)", topic, n);
-    else rt->t->deliver(rt, topic, b.p, (size_t)n);
+    if (n < 0) {
+        CB_ERROR("realtime", "a push to %s was not written (%d)", topic, n);
+        t_failed++;
+    } else {
+        t_failed += rt->t->deliver(rt, topic, b.p, (size_t)n);
+    }
     cb_buf_free(&b);
 }
 

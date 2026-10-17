@@ -11,6 +11,8 @@
 // failure) chose their own.
 #include "functions_http.h"
 
+#include "after.h"
+
 #include "app_internal.h"
 #include "edge.h"
 #include "v1_http.h"
@@ -79,9 +81,8 @@ static bool wrap400(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res, cb_us
     return true;
 }
 
-static void kick(cb_ctx *ctx, const char *game_id) {
-    if (ctx->kick_bots) ctx->kick_bots(ctx, game_id);
-}
+// Once the answer is out under Lambda (app/after.h), at once otherwise.
+static void kick(cb_ctx *ctx, const char *game_id) { cb_after_kick(ctx, game_id); }
 
 // ---- action ------------------------------------------------------------------------------
 

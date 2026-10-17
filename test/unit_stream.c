@@ -191,11 +191,12 @@ static void protocol(void) {
 // ---- what a publish builds ---------------------------------------------------------------
 
 static struct { int n; char topic[128]; uint8_t nw[512]; size_t nw_len; } g_cap;
-static void cap_deliver(cb_rt *rt, const char *topic, const uint8_t *frame, size_t len) {
+static int cap_deliver(cb_rt *rt, const char *topic, const uint8_t *frame, size_t len) {
     g_cap.n++;
     cb_strlcpy(g_cap.topic, topic, sizeof g_cap.topic);
     g_cap.nw_len = len <= sizeof g_cap.nw ? len : 0;
     memcpy(g_cap.nw, frame, g_cap.nw_len);
+    return 0;
 }
 static const cb_rt_transport CAP_T = { "cap", cap_deliver, NULL };
 

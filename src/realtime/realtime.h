@@ -32,10 +32,12 @@
 // The transport: deliver one encoded message to every connection subscribed to
 // `topic`. The bytes are the message's; the transport decides how they travel
 // (rt_local: a binary frame; rt_apigw: base64 text, because what API Gateway's
-// @connections posts arrive as is not documented).
+// @connections posts arrive as is not documented). Returns how many deliveries
+// failed (a connection not reached, or the subscribers not read: 1), having
+// logged each; 0 when all went out.
 typedef struct cb_rt_transport {
     const char *name;   // "local", "apigw"
-    void (*deliver)(cb_rt *rt, const char *topic, const uint8_t *frame, size_t len);
+    int (*deliver)(cb_rt *rt, const char *topic, const uint8_t *frame, size_t len);
     void (*free)(cb_rt *rt);
 } cb_rt_transport;
 
@@ -52,6 +54,10 @@ void rt_publish_view(cb_rt *rt, const char *user_id, const cb_view_row *row, boo
 void rt_publish_cast(cb_rt *rt, const char *topic, const char *game_id, int64_t version, const uint8_t *cast, size_t len);
 // chat:<game>: NW_WS_CHAT {game, the message}.
 void rt_publish_chat(cb_rt *rt, const char *game_id, const cb_chat_row *row);
+
+// The failed deliveries this thread's publishes counted since the last take
+// (app/after.c logs those that happened after an answer was sent).
+int cb_rt_failures_take(void);
 
 void cb_rt_free(cb_rt *rt);
 

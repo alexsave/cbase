@@ -444,6 +444,11 @@ As built:
   API Gateway does not serialize a connection's frames: each is its own invocation, and a page subscribes to its games, a game and its chat within a few milliseconds.
   So the row is written by compare-and-set on its version (`conn_put`, one `TransactWriteItems` with the TOPIC copies), a frame that loses re-reads and runs again (up to 12 times), and its replies are held until the run that stored.
   Found by the live browser acceptance of 2026-10-14 (then on Phoenix), where three joins each wrote back only their own topic and the page heard no pushes until it reloaded.
+- Answer first (`src/app/after.{h,c}`): under Lambda an HTTP invocation POSTs its response, then publishes its commits' pushes and kicks the bots before it asks for the next event, so a move's answer no longer waits for the stream's connection Queries, the @connections POSTs and the async invoke.
+  The work queues on the invocation's thread in call order and is drained in that order, each fan-out under the game's order lock; under Lambda that thread is the only committer, so a game's pushes still go out in commit order.
+  A response can now arrive before its own pushes (the clients gate every push on its version, as they always had to across containers).
+  A queue copy that cannot be made publishes at once; a push that fails after the answer is logged at WARN with its game and version (`after: game <id> v<n>: <k> push(es) failed after the answer was sent`), since it can no longer fail the invocation.
+  `cbase serve`, bot drives and the scan publish at once, as before: a drive's pushes are paced and must not wait for its end.
 - `rt_deps.h` is a table of the calls into auth, table_ops and API Gateway that the unit tests swap for fakes: the API Gateway entries cannot be real without AWS, and the fakes pin edge cases (410, expired rows, a lost CONN row) deterministically.
   The production table is exercised end to end by the game smoke, where real JWTs, the real table_ops and `rt_local` carry every push.
 - Until stage 4 the module also held the facade: `phoenix.c` (both Phoenix serializers), the Supabase Realtime payloads (`rt_rows.c`), and `postgrest.c` (the PostgREST reads and the chat insert); "Binary surface" says what replaced each.
@@ -759,7 +764,7 @@ Whatever changes one of the two answers marks its path stale, a bit in a process
 - the bots: a seed that wrote bots, an import, an admin write query.
 
 `cb_edge_flush` sends one CreateInvalidation for every path marked since the last flush.
-The Lambda main calls it after it has POSTed the invocation's response, so no caller waits for CloudFront (an HTTP request, a bot drive or the scan alike); `cbase-import` calls it before it exits.
+The Lambda main calls it after it has POSTed the invocation's response (`cb_after_run`, last, after the pushes), so no caller waits for CloudFront (an HTTP request, a bot drive or the scan alike); `cbase-import` calls it before it exits.
 A failed flush is logged and dropped: the `s-maxage` bounds how stale the edge can get.
 The request (`aws/cloudfront.c`) is signed for `cloudfront` in us-east-1 from any region (`cb_aws_call_region`), and only 201 is success; its XML body is `json_surface.c`'s, checked byte for byte against the API reference's request in `test/unit_aws_calls.c`.
 Each flush's CallerReference is unique (`cbase-<ms>-<uuid>`): CloudFront answers a repeated one with the first batch, which would invalidate nothing new.

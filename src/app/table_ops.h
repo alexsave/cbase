@@ -38,6 +38,7 @@
 #include "ctx.h"
 #include "table.h"   // the kernel: Table, TableAsk, TABLE_*, ASK_*
 
+#include <pthread.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -73,6 +74,10 @@ typedef struct {
     uint8_t *envelope;
     size_t   envelope_len;
 } cb_table_result;
+
+// A game's commit order lock, taken (striped by id; table_ops.c says why a
+// commit and its pushes share it). The caller unlocks what it returns.
+pthread_mutex_t *cb_table_order_lock(const char *gid);
 
 // Runs one operation with the CAS retry loop. CB_OK (look at out->result for
 // the kernel's answer), CB_E_NOT_FOUND (no such game), CB_E_CONFLICT (lost the

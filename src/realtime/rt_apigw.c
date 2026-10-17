@@ -214,26 +214,34 @@ static bool collect_conn(const cb_conn_row *r, void *ud) {
     return true;
 }
 
-static void apigw_deliver(cb_rt *rt, const char *topic, const uint8_t *frame, size_t len) {
+static int apigw_deliver(cb_rt *rt, const char *topic, const uint8_t *frame, size_t len) {
     apigw *A = rt->impl;
     cb_ctx *ctx = rt->ctx;
     char endpoint[600];
     endpoint_of(ctx, NULL, endpoint, sizeof endpoint);
     if (!endpoint[0]) {
         if (!atomic_exchange(&A->warned_no_endpoint, true)) CB_WARN("realtime", "CBASE_WS_ENDPOINT is unset: pushes are dropped");
-        return;
+        return 0;   // configured not to push: nothing failed
     }
-    if (!ctx->store) return;
+    if (!ctx->store) return 0;
+    int failed = 0;
     // Collected first and posted after: no store call is held open across the network.
     targets ts = { cb_now_ms(), 0, 0, NULL };
     int rc = CB_STORE_CALL(ctx->store, conns_by_topic, topic, collect_conn, &ts);
-    if (rc < 0) CB_ERROR("realtime", "push %s: connections not read: %s", topic, cb_strerror(rc));
+    if (rc < 0) {
+        CB_ERROR("realtime", "push %s: connections not read: %s", topic, cb_strerror(rc));
+        failed++;
+    }
     for (size_t i = 0; i < ts.n; i++) {
         int st = post(endpoint, ts.t[i].id, (const char *)frame, len);
         if (st == CB_APIGW_GONE) CB_STORE_CALL(ctx->store, conn_delete, ts.t[i].id);
-        else if (st != 200) CB_WARN("realtime", "push %s to %s: %d", topic, ts.t[i].id, st);
+        else if (st != 200) {
+            CB_WARN("realtime", "push %s to %s: %d", topic, ts.t[i].id, st);
+            failed++;
+        }
     }
     free(ts.t);
+    return failed;
 }
 
 static void apigw_free(cb_rt *rt) {

@@ -11,6 +11,7 @@
 #include <time.h>
 #include "lib_app_store_mem.h"
 
+#include "app/after.h"
 #include "app/app_internal.h"
 #include "app/bots.h"
 #include "app/edge.h"
@@ -21,10 +22,12 @@
 #include "handler.h"
 #include "legal.h"
 #include "net/router.h"
+#include "realtime/realtime.h"
 #include "replay_extras.h"
 #include "auth/auth.h"
 #include "table.h"
 #include "util/err.h"
+#include "util/log.h"
 #include "util/uuid.h"
 
 #include <stdlib.h>
@@ -49,7 +52,15 @@ static void fake_sleep(int64_t ms) { g_now += ms; }
 
 static int g_kicks;
 static char g_kicked[CB_GAME_ID_MAX + 1];
+// Everything that left the app, in order: a fan-out's version, or -1 a kick.
+static int64_t g_seq[64];
+static int     g_nseq;
+static void seq_note(int64_t v) {
+    if (g_nseq < 64) g_seq[g_nseq++] = v;
+}
+
 static void kick_recorder(cb_ctx *ctx, const char *game_id) {
+    seq_note(-1);
     g_kicks++;
     snprintf(g_kicked, sizeof g_kicked, "%s", game_id);
 }
@@ -66,6 +77,7 @@ typedef struct {
 static fan_seen g_fan;
 
 static void fan_observer(const cb_fanout *f) {
+    seq_note(f->version);
     fan_seen s;
     memset(&s, 0, sizeof s);
     s.count = g_fan.count + 1;
@@ -126,6 +138,7 @@ static void setup(int n_bots) {
     memset(&g_fan, 0, sizeof g_fan);
     g_kicks = 0;
     g_kicked[0] = 0;
+    g_nseq = 0;
 }
 
 // ---- requests ------------------------------------------------------------------------------
@@ -1044,6 +1057,91 @@ static void a_goods_only_commit_is_broadcast(void) {
     T_CHECK(found > 0);
 }
 
+// ---- answer first (app/after.h) ---------------------------------------------------------------
+
+// Under Lambda an HTTP invocation answers before it publishes: with the window
+// open, the commits' pushes and the bots' kicks wait for cb_after_run, then
+// go out in the order they were made, the pushes in version order.
+static void the_answer_goes_before_its_pushes(void) {
+    setup(1);
+    char gid[CB_GAME_ID_MAX + 1];
+    reply r;
+    create_game(gid, &r);
+    int64_t v0 = version_of(gid);
+    g_nseq = 0;
+    cb_after_begin();
+    meta("A", ASK_ADD_BOT, gid, NULL, &r);   // commits v0+1
+    T_EQ_INT(r.status, 200);
+    meta("A", ASK_START, gid, NULL, &r);     // commits v0+2, a kick when a bot is to act
+    T_EQ_INT(r.status, 200);
+    meta("A", ASK_BUMP, gid, NULL, &r);      // commits nothing, a kick (the bot has work)
+    T_EQ_INT(r.status, 200);
+    T_EQ_INT(version_of(gid), v0 + 2);
+    // Answered, and nothing has left yet.
+    T_EQ_INT(g_nseq, 0);
+    T_CHECK(cb_after_open());
+    cb_after_run(&g_ctx);
+    T_CHECK(!cb_after_open());
+    // The two commits' pushes in version order, the bump's kick last.
+    int64_t last = v0;
+    int fans = 0, kicks = 0;
+    for (int i = 0; i < g_nseq; i++) {
+        if (g_seq[i] < 0) { kicks++; continue; }
+        T_EQ_INT(g_seq[i], last + 1);
+        last = g_seq[i];
+        fans++;
+    }
+    T_EQ_INT(fans, 2);
+    T_CHECK(kicks >= 1);
+    T_CHECK(g_nseq > 0 && g_seq[g_nseq - 1] == -1);
+    // Run again: nothing is left to do, and with the window closed a commit
+    // publishes at once, as a bot drive or `cbase serve` does.
+    g_nseq = 0;
+    cb_after_run(&g_ctx);
+    T_EQ_INT(g_nseq, 0);
+    meta("A", ASK_BUMP, gid, NULL, &r);
+    T_EQ_INT(g_nseq, 1);
+    T_EQ_INT(g_seq[0], -1);
+}
+
+// A transport that reaches nobody: every delivery fails.
+static int g_failed_deliveries;
+static int failing_deliver(cb_rt *rt, const char *topic, const uint8_t *frame, size_t len) {
+    g_failed_deliveries++;
+    return 1;
+}
+static const cb_rt_transport FAILING_T = { "failing", failing_deliver, NULL };
+
+// Once the answer is out a failed push cannot fail the invocation any more:
+// it is logged at WARN with its game and version.
+static void a_push_that_fails_after_the_answer_is_logged(void) {
+    setup(1);
+    cb_log_init(CB_LOG_WARN, 0);
+    char gid[CB_GAME_ID_MAX + 1];
+    reply r;
+    create_game(gid, &r);
+    cb_rt rt = { &FAILING_T, &g_ctx, NULL };
+    g_ctx.rt = &rt;
+    g_failed_deliveries = 0;
+    uint64_t seq = cb_log_last_seq();
+    cb_after_begin();
+    meta("A", ASK_ADD_BOT, gid, NULL, &r);
+    T_EQ_INT(r.status, 200);
+    int64_t v = version_of(gid);
+    T_EQ_INT(g_failed_deliveries, 0);
+    cb_after_run(&g_ctx);
+    T_CHECK(g_failed_deliveries > 0);
+    cb_log_entry e[16];
+    size_t n = cb_log_read(seq, CB_LOG_WARN, e, 16);
+    char want[96];
+    snprintf(want, sizeof want, "game %s v%lld: %d push(es) failed after the answer was sent", gid, (long long)v,
+             g_failed_deliveries);
+    bool found = false;
+    for (size_t i = 0; i < n; i++) found |= strcmp(e[i].module, "after") == 0 && strcmp(e[i].msg, want) == 0;
+    T_CHECK(found);
+    g_ctx.rt = NULL;
+}
+
 // heartbeat_needs_bots.test.ts: a bump on a table with a bot still in wakes the bots.
 static void a_bump_wakes_the_bots(void) {
     setup(1);
@@ -1460,6 +1558,8 @@ static void the_scan_kicks_stale_active_bot_games(void) {
 
 int main(void) {
     T_RUN(create_answers_the_seat_0_envelope);
+    T_RUN(the_answer_goes_before_its_pushes);
+    T_RUN(a_push_that_fails_after_the_answer_is_logged);
     T_RUN(join_add_bot_and_start);
     T_RUN(a_legal_action_applies_and_bumps_the_version);
     T_RUN(an_illegal_action_is_rejected_and_commits_nothing);

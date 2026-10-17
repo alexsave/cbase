@@ -263,18 +263,21 @@ static void pub_on_loop(cb_loop *l, void *ud) {
     pub_free(p);
 }
 
-static void local_deliver(cb_rt *rt, const char *topic, const uint8_t *frame, size_t len) {
+// Posted to the loop, which writes each subscriber's socket: a failure to hand
+// it over counts as one; what the loop's writes do later is the socket's.
+static int local_deliver(cb_rt *rt, const char *topic, const uint8_t *frame, size_t len) {
     cb_loop *loop = rt->ctx->loop;
-    if (!loop) return;
+    if (!loop) return 0;
     pub *p = calloc(1, sizeof *p);
-    if (!p) return;
+    if (!p) return 1;
     p->rt = rt;
     cb_strlcpy(p->topic, topic, sizeof p->topic);
     p->frame = malloc(len ? len : 1);
-    if (!p->frame) { pub_free(p); return; }
+    if (!p->frame) { pub_free(p); return 1; }
     memcpy(p->frame, frame, len);
     p->len = len;
-    if (cb_loop_post(loop, pub_on_loop, p) != CB_OK) pub_free(p);
+    if (cb_loop_post(loop, pub_on_loop, p) != CB_OK) { pub_free(p); return 1; }
+    return 0;
 }
 
 static void local_free(cb_rt *rt) {

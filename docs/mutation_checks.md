@@ -251,6 +251,15 @@ The console was checked by eye in headless Chrome against a mock API, light and 
 - https.c: every host counted as DynamoDB -> `verified_and_kept_alive` tally.other.calls == 2 (and dials, us).
 - main_lambda.c: the timing line logged at DEBUG, so never at the function's INFO -> smoke_lambda `tp_wait_line("inv: http GET /health 200 ms=")` and the scan and drive lines.
 
+## Answer first (2026-10-17)
+
+- fanout.c: cb_fanout_commit publishes at once, window or not -> `the_answer_goes_before_its_pushes` g_nseq == 0 (nothing left before cb_after_run).
+- after.c: the queue drained newest first -> `the_answer_goes_before_its_pushes` g_seq[i] == last + 1 (version order) and the kick last.
+- after.c: a kick never queued -> `the_answer_goes_before_its_pushes` g_nseq == 0 and the kick last.
+- after.c: a failed push after the answer not logged -> `a_push_that_fails_after_the_answer_is_logged` found.
+
+Equivalent, recorded so nobody chases it: dropping the order lock around a drained fan-out survives, because the test (like Lambda) has one committing thread; the lock is kept for the invariant table_ops.c documents. Not unit-tested: main_lambda.c opening the window for an HTTP event (smoke_lambda's events commit nothing); the production timing line's `after` field shows it.
+
 ## Bench (bench/unit_bench.c)
 
 - bench_stats.c: the percentile's `- 1e-9` dropped -> `percentiles_of_one_to_hundred` bs_percentile(v, 100, 7) == 7 (7.000000000000001 rounds up to the 8th).

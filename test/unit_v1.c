@@ -35,11 +35,12 @@ static int64_t test_now(void) { return g_now; }
 
 // What the realtime transport was handed: the last binary-stream frame per publish.
 static struct { int n; char topic[128]; uint8_t nw[4096]; size_t nw_len; } g_pub;
-static void cap_deliver(cb_rt *rt, const char *topic, const uint8_t *frame, size_t len) {
+static int cap_deliver(cb_rt *rt, const char *topic, const uint8_t *frame, size_t len) {
     g_pub.n++;
     cb_strlcpy(g_pub.topic, topic, sizeof g_pub.topic);
     g_pub.nw_len = len < sizeof g_pub.nw ? len : 0;
     memcpy(g_pub.nw, frame, g_pub.nw_len);
+    return 0;
 }
 static const cb_rt_transport CAP_T = { "cap", cap_deliver, NULL };
 static cb_rt g_rt = { &CAP_T, &g_ctx, NULL };

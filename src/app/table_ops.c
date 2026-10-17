@@ -287,7 +287,7 @@ static pthread_once_t g_order_once = PTHREAD_ONCE_INIT;
 static void order_init(void) {
     for (int i = 0; i < ORDER_STRIPES; i++) pthread_mutex_init(&g_order_mu[i], NULL);
 }
-static pthread_mutex_t *order_lock(const char *gid) {
+pthread_mutex_t *cb_table_order_lock(const char *gid) {
     pthread_once(&g_order_once, order_init);
     uint32_t h = 2166136261u;
     for (const char *p = gid; *p; p++) h = (h ^ (uint8_t)*p) * 16777619u;
@@ -463,7 +463,7 @@ int cb_section_commit(cb_ctx *ctx, cb_section *s, const cb_game_row *row, const 
     if (rc == CB_OK) rc = row_copy(&kept, &nrow);
 
     if (rc == CB_OK) {
-        pthread_mutex_t *order = order_lock(row->id);
+        pthread_mutex_t *order = cb_table_order_lock(row->id);
         rc = CB_STORE_CALL(ctx->store, game_commit, &gc);
         if (rc == CB_E_CONFLICT) {
             // Somebody committed first: nothing was written.
@@ -560,7 +560,7 @@ int cb_table_run(cb_ctx *ctx, const cb_table_op *op, cb_table_result *out) {
             ret = cb_section_envelope(s, -1, (uint32_t)row.version, &out->envelope, &out->envelope_len);
             pthread_mutex_t *order = NULL;
             if (ret == CB_OK) {
-                order = order_lock(op->game_id);
+                order = cb_table_order_lock(op->game_id);
                 ret = CB_STORE_CALL(ctx->store, game_delete, op->game_id, row.version);
                 if (ret != CB_OK) { pthread_mutex_unlock(order); order = NULL; }
             }

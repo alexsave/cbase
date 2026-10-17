@@ -4,7 +4,9 @@
 // Start: read the config, cb_boot (kernel self-test, store, auth, realtime
 // over API Gateway, routes); a failure is reported to /runtime/init/error and
 // the process exits. Then forever: GET the next invocation, decode the event
-// (aws/event.h), dispatch it, POST the response:
+// (aws/event.h), dispatch it, POST the response, then do what the caller does
+// not wait for (app/after.h: an HTTP request's pushes and bot kicks, and the
+// edge cache's invalidation):
 //   HTTP       cb_handle -> cb_event_encode_http
 //   WS         cb_rt_apigw_event -> cb_event_encode_ws
 //   SCHEDULE   cb_bots_scan                                      -> {}
@@ -20,10 +22,10 @@
 // than estimated (CloudWatch Logs Insights reads it with `parse`):
 //   inv: http GET /v1/leaderboard 200 ms=8.4 after=0.0 ddb=2/7.9/0 push=0/0.0/0 other=0/0.0/0
 // ms is decode to response posted, after is the work done once the response
-// is out (the edge cache's invalidation, app/edge.h), and each ddb|push|other
+// is out (app/after.h: the pushes, the kicks, the edge invalidation), and each ddb|push|other
 // is calls/ms/new connections (aws/https.h).
 #include "app/bots.h"
-#include "app/edge.h"
+#include "app/after.h"
 #include "aws/event.h"
 #include "aws/https.h"
 #include "aws/runtime_api.h"
@@ -72,6 +74,7 @@ static int dispatch(cb_ctx *ctx, const cb_invocation *inv, cb_buf *out, char *wh
     case CB_EVENT_HTTP: {
         cb_http_res res;
         cb_res_init(&res);
+        cb_after_begin();   // the pushes and kicks wait for the answer (app/after.h)
         cb_handle(ctx, &ev.http, &res);
         atomic_fetch_add_explicit(&ctx->stats.requests, 1, memory_order_relaxed);
         if (res.status >= 500) atomic_fetch_add_explicit(&ctx->stats.responses_5xx, 1, memory_order_relaxed);
@@ -147,8 +150,8 @@ int main(void) {
             cb_runtime_error(host, port, inv.request_id, "Handler", why);
         }
         const int64_t t_resp = mono_us();
-        // After the response is out: the caller never waits for CloudFront.
-        cb_edge_flush(&cfg);
+        // After the response is out: the caller waits for none of this.
+        cb_after_run(&ctx);
         log_timing(what, t0, t_resp, mono_us());
         ctx.deadline_ms = 0;
         cb_store_set_deadline(0);
