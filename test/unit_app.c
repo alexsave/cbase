@@ -819,6 +819,10 @@ static void the_last_seat_leaving_deletes_the_game(void) {
     create_game(gid, &r);
     meta("A", ASK_EXIT, gid, NULL, &r);
     T_EQ_INT(r.status, 200);
+    // The game is gone, so the answer carries no board: an envelope of a
+    // table with no seats is one client_adopt_envelope refuses (it was, until
+    // the sequence fuzzer, fuzz/fz_sequence.c, found it).
+    T_EQ_INT((int)r.len, 0);
     cb_game_row row;
     T_EQ_INT(CB_STORE_CALL(g_store, game_get, gid, &row), CB_E_NOT_FOUND);
     T_EQ_INT(g_fan.left, 1);

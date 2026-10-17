@@ -228,10 +228,6 @@ static void check_envelope(const char *uid, const uint8_t *p, size_t n, const ch
         for (size_t i = 0; i < n && i < 64; i++) fprintf(stderr, " %02x", p[i]);
         fprintf(stderr, "\n");
     }
-    // PENDING FIX (finding 1): the last seat leaving is answered with a
-    // zero-seat envelope no client adopts. Tolerated until the fix lands so
-    // the run goes deeper; the fix removes this line.
-    if (rc == CLIENT_E_MISMATCH && g_c.g->num_players == 0) return;
     FZ_CHECK(rc == CLIENT_OK);   // the server's own envelope always reads
     const TableView *v = &g_c.view;
     int want = -1;

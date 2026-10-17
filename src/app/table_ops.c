@@ -556,18 +556,15 @@ int cb_table_run(cb_ctx *ctx, const cb_table_op *op, cb_table_result *out) {
         out->reject = rc == TABLE_REJECTED ? s->t.reject : 0;
 
         if (rc == TABLE_EMPTY) {
-            // The last seat left: the row goes, fenced on the version like a commit.
-            ret = cb_section_envelope(s, -1, (uint32_t)row.version, &out->envelope, &out->envelope_len);
-            pthread_mutex_t *order = NULL;
-            if (ret == CB_OK) {
-                order = cb_table_order_lock(op->game_id);
-                ret = CB_STORE_CALL(ctx->store, game_delete, op->game_id, row.version);
-                if (ret != CB_OK) { pthread_mutex_unlock(order); order = NULL; }
-            }
+            // The last seat left: the row goes, fenced on the version like a
+            // commit. The answer carries no envelope: a table with no seats is
+            // not a board, and client_adopt_envelope refuses one (the asker's
+            // client takes the empty answer as "the game is gone").
+            pthread_mutex_t *order = cb_table_order_lock(op->game_id);
+            ret = CB_STORE_CALL(ctx->store, game_delete, op->game_id, row.version);
+            if (ret != CB_OK) { pthread_mutex_unlock(order); order = NULL; }
             cb_row_cache_drop(op->game_id);
             if (ret == CB_E_CONFLICT) {
-                free(out->envelope);
-                out->envelope = NULL;
                 cb_game_row_free(&row);
                 continue;
             }
