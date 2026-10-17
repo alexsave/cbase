@@ -460,3 +460,4 @@ A mutation that would not compile (an unused variable under -Werror) was replace
 - main_serve.c: any first argument accepted -> `smoke_boot` cbase_refuses; json_surface.c: every init error typed Runtime -> bootstrap_refuses.
 - store_dynamo.c: bots_idle's lost condition taken as done -> `bots_idle_deletes_the_marker`.
 - config.c (unit_edges): the origin secret listed in the clear and not flagged secret -> `configuration_refusals` (secrets == 3, leaked, wrong_secret); the listing is held by name, not by count, so a new setting does not break it.
+- store_dynamo.c: lease_held's last millisecond not counted as held -> `lease_held_reads_the_marker` (the gate named dy_lease_held as never called the day it landed).

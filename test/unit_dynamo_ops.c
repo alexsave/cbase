@@ -326,6 +326,26 @@ static void bots_idle_deletes_the_marker(void) {
     cb_store_close(s);
 }
 
+// Whether a drive holds the game's lease: its SCAN marker's lease_until not
+// yet before now; no marker, no lease; a failed read is the store's error.
+static void lease_held_reads_the_marker(void) {
+    static const step steps[] = {
+        { "GetItem", "\"GAME#ab12cd\"", 200, "{\"Item\":{\"pk\":{\"S\":\"SCAN\"},\"lease_until\":{\"N\":\"5000\"}}}" },
+        { "GetItem", NULL, 200, "{\"Item\":{\"pk\":{\"S\":\"SCAN\"},\"lease_until\":{\"N\":\"5000\"}}}" },
+        { "GetItem", NULL, 200, "{\"Item\":{\"pk\":{\"S\":\"SCAN\"}}}" },   // never leased
+        { "GetItem", NULL, 200, NOITEM },
+        { "GetItem", NULL, 400, VALIDATION },
+    };
+    RUN(steps, s);
+    T_EQ_INT(CB_STORE_CALL(s, lease_held, "ab12cd", 5000), 1);   // the last millisecond still holds
+    T_EQ_INT(CB_STORE_CALL(s, lease_held, "ab12cd", 5001), 0);
+    T_EQ_INT(CB_STORE_CALL(s, lease_held, "ab12cd", 1), 0);
+    T_EQ_INT(CB_STORE_CALL(s, lease_held, "ab12cd", 1), 0);
+    T_EQ_INT(CB_STORE_CALL(s, lease_held, "ab12cd", 1), CB_E_DB);
+    T_EQ_INT(sc_.at, sc_.n);
+    cb_store_close(s);
+}
+
 // ---- bots and ratings ------------------------------------------------------------------------------
 
 typedef struct { int n; char names[8][80]; int32_t elo[8]; int stop_after; } names_seen;
@@ -744,6 +764,7 @@ int main(void) {
     T_RUN(game_create_delete);
     T_RUN(games_of_user_and_membership);
     T_RUN(bots_idle_deletes_the_marker);
+    T_RUN(lease_held_reads_the_marker);
     T_RUN(bots_and_ratings);
     T_RUN(snapshots_put_and_query);
     T_RUN(chat_put_refusals);
