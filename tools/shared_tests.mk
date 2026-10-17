@@ -27,12 +27,13 @@
 
 SHARED_C := $(C_ROOT)/shared/c
 
-# The header-only ones (check, collapse, msg_stage, le_bytes) and libc_test,
+# The header-only ones (check, collapse, msg_stage, le_bytes, rng) and libc_test,
 # which includes the libc it tests, are one file each.
 SHARED_TEST_SRC_check_test            := test/check_test.c
 SHARED_TEST_SRC_collapse_test         := collapse/collapse_test.c
 SHARED_TEST_SRC_msg_stage_test        := msg_stage/msg_stage_test.c
 SHARED_TEST_SRC_le_bytes_test         := le_bytes_test.c
+SHARED_TEST_SRC_rng_test              := rng_test.c
 SHARED_TEST_SRC_libc_test             := wasm/libc_test.c
 SHARED_TEST_SRC_b32_test              := b32_test.c b32.c
 SHARED_TEST_SRC_mixrad_test           := mixrad_test.c mixrad.c
@@ -44,7 +45,7 @@ SHARED_TEST_SRC_msg_seat_tag_test     := msg_seat_tag/msg_seat_tag.c msg_seat_ta
 SHARED_TEST_SRC_msg_lobby_roster_test := msg_lobby_roster/msg_lobby_roster.c msg_lobby_roster/msg_lobby_roster_test.c
 SHARED_TEST_SRC_stats_test            := stats/stats.c stats/stats_test.c
 
-SHARED_TEST_NAMES := check_test collapse_test msg_stage_test le_bytes_test libc_test \
+SHARED_TEST_NAMES := check_test collapse_test msg_stage_test le_bytes_test rng_test libc_test \
                      b32_test mixrad_test sha256_test deal_rng_test text_util_test \
                      wire_check_test msg_seat_tag_test msg_lobby_roster_test stats_test
 
