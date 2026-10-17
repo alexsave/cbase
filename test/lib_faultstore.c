@@ -175,6 +175,10 @@ static int w_bots_idle(cb_store *s, const char *game_id, int64_t version) {
     if (take()) return atomic_load(&g_rc);
     return IN(s)->ops->bots_idle ? IN(s)->ops->bots_idle(IN(s), game_id, version) : CB_E_NOTIMPL;
 }
+static int w_lease_held(cb_store *s, const char *game_id, int64_t now) {
+    if (take()) return atomic_load(&g_rc);
+    return IN(s)->ops->lease_held ? IN(s)->ops->lease_held(IN(s), game_id, now) : CB_E_NOTIMPL;
+}
 static int w_conn_get(cb_store *s, const char *conn_id, cb_conn_row *out) {
     if (take()) return atomic_load(&g_rc);
     return IN(s)->ops->conn_get ? IN(s)->ops->conn_get(IN(s), conn_id, out) : CB_E_NOTIMPL;
@@ -262,6 +266,7 @@ static const cb_store_ops FAULT_OPS = {
     .chat_list = w_chat_list,
     .conn_put = w_conn_put,
     .bots_idle = w_bots_idle,
+    .lease_held = w_lease_held,
     .conn_get = w_conn_get,
     .conn_delete = w_conn_delete,
     .conns_by_topic = w_conns_by_topic,
@@ -277,8 +282,8 @@ static const cb_store_ops FAULT_OPS = {
 
 // Every operation of store.h is wrapped above. An operation added there and
 // not here would be left NULL (CB_E_NOTIMPL to whatever calls it through this
-// store), so the table's size is held to the count: the name, close, and 46 - 1.
-_Static_assert(sizeof(cb_store_ops) == (size_t)(46 + 1) * sizeof(void *),
+// store), so the table's size is held to the count: the name, close, and 47 - 1.
+_Static_assert(sizeof(cb_store_ops) == (size_t)(47 + 1) * sizeof(void *),
                "store.h has an operation lib_faultstore.c does not wrap: add its w_ wrapper and its line in FAULT_OPS");
 
 cb_store *fs_wrap(cb_store *inner) {
