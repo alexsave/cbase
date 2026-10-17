@@ -907,6 +907,38 @@ static void another_user_starts_the_book_over(void) {
     T_EQ_INT(next_frame(T0).kind, 0);
 }
 
+// The bytes an intent carries wait in one shared arena: each request is built
+// from its own, a full arena refuses at once, and room let go is used again.
+static void waiting_intents_keep_their_bytes(void) {
+    signed_in(T0 + 3600000);
+    NcIntent chat[3];
+    for (int k = 0; k < 3; k++) {
+        chat[k] = intent(NC_DO_SEND_CHAT, "g1");
+        chat[k].bytes_len = 1000;
+        memset(chat[k].bytes, 'a' + k, 1000);
+    }
+    NcIntent move = intent(NC_DO_PLAY, "g1");
+    move.bytes_len = 2; move.bytes[0] = 3; move.bytes[1] = 7;
+    T_CHECK(nc_do(&chat[0], T0) != 0);
+    T_CHECK(nc_do(&move, T0) != 0);
+    T_CHECK(nc_do(&chat[1], T0) != 0);
+    T_EQ_INT(nc_do(&chat[2], T0), 0);   // 2,002 bytes wait; 1,000 more do not fit
+    T_EQ_INT(nc_error()->why, ASK_WHY_INTERNAL);
+    // Each request carries its own bytes (the chat's: [v][kind][u16 len][message]).
+    const NcRequest *q = nc_next_request(T0);
+    T_CHECK(path_is(q, "/v1/chat/g1") && q->body_len == 1004 && q->body[4] == 'a' && q->body[1003] == 'a');
+    uint32_t first = q->id;
+    q = nc_next_request(T0);
+    T_CHECK(path_is(q, "/v1/action") && q->body[q->body_len - 1] == 7);
+    q = nc_next_request(T0);
+    T_CHECK(path_is(q, "/v1/chat/g1") && q->body[4] == 'b' && q->body[1003] == 'b');
+    // The first chat answered: its room takes the third.
+    T_CHECK(nc_on_response(first, 204, NULL, 0, T0) != NULL);
+    T_CHECK(nc_do(&chat[2], T0) != 0);
+    q = nc_next_request(T0);
+    T_CHECK(path_is(q, "/v1/chat/g1") && q->body[4] == 'c' && q->body[1003] == 'c');
+}
+
 int main(void) {
     T_RUN(session_blob);
     T_RUN(requests);
@@ -924,5 +956,6 @@ int main(void) {
     T_RUN(create_and_join_move_the_subscription);
     T_RUN(the_session_is_told_once);
     T_RUN(another_user_starts_the_book_over);
+    T_RUN(waiting_intents_keep_their_bytes);
     return T_DONE();
 }
