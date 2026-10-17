@@ -1121,6 +1121,19 @@ static void flow_scan_pages(void) {
     cb_store_close(s);
 }
 
+// An empty SCAN partition: nothing to sort, and no NULL handed to qsort (glibc
+// declares its array nonnull, so UBSan on Linux reported the empty sort;
+// fuzz/fz_dynamo_store.c found it).
+static void flow_scan_empty(void) {
+    static const step steps[] = {
+        { "Query", "\"ConsistentRead\":true", 200, "{\"Items\":[],\"Count\":0}" },
+    };
+    RUN(steps, s);
+    ids_t got = { 0 };
+    T_EQ_INT(CB_STORE_CALL(s, games_needing_bots, 90000, 20000, 100, collect_id, &got), 0);
+    cb_store_close(s);
+}
+
 static void flow_signup_and_tokens(void) {
     static const char TAKEN[] =
         "{\"__type\":\"com.amazonaws.dynamodb.v20120810#TransactionCanceledException\","
@@ -1532,6 +1545,7 @@ int main(void) {
     T_RUN(games_get_shape);
     T_RUN(flow_games_batched);
     T_RUN(flow_scan_pages);
+    T_RUN(flow_scan_empty);
     T_RUN(flow_signup_and_tokens);
     T_RUN(flow_chat_order);
     T_RUN(flow_snapshot_set_extras);

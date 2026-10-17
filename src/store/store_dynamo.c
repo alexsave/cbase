@@ -898,7 +898,7 @@ static int dy_games_needing_bots(cb_store *s, int64_t stale_before, int64_t acti
     if (rc == CB_OK && w.oom) rc = CB_E_NOMEM;
     int n = 0;
     if (rc == CB_OK) {
-        qsort(w.rows, (size_t)w.n, sizeof *w.rows, due_cmp);
+        if (w.n > 1) qsort(w.rows, (size_t)w.n, sizeof *w.rows, due_cmp);   // no rows: rows is NULL
         for (int i = 0; i < w.n && (limit <= 0 || n < limit); i++) {
             n++;
             if (!fn(w.rows[i].id, ud)) break;
