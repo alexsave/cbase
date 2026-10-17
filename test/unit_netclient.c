@@ -980,6 +980,33 @@ static void a_host_of_boards_gets_boards(void) {
     nc_set_boards(0);
 }
 
+// 503 ASK_WHY_BUSY (the server's store was throttled): a read is sent again
+// after NC_BUSY_FIRST_MS doubling, NC_BUSY_TRIES times; a write's answer stands.
+static void a_busy_read_goes_again_a_write_does_not(void) {
+    signed_in(T0 + 3600000);
+    uint8_t busy[16];
+    int n = refusal_body(busy, ASK_WHY_BUSY, 0);
+    NcIntent games = intent(NC_DO_GAMES, NULL);
+    uint32_t t = nc_do(&games, T0);
+    int64_t now = T0;
+    for (int k = 0; k < NC_BUSY_TRIES; k++) {
+        const NcRequest *q = nc_next_request(now);
+        T_CHECK(path_is(q, "/v1/games"));
+        T_CHECK(nc_on_response(q->id, 503, busy, n, now) == NULL);
+        T_EQ_INT(nc_pump_due_ms(now), NC_BUSY_FIRST_MS << k);
+        T_CHECK(nc_next_request(now + (NC_BUSY_FIRST_MS << k) - 1) == NULL);
+        now += NC_BUSY_FIRST_MS << k;
+    }
+    const NcRequest *q = nc_next_request(now);
+    const NcDone *d = nc_on_response(q->id, 503, busy, n, now);
+    T_CHECK(d && d->ticket == t && d->why == ASK_WHY_BUSY);
+    NcIntent create = intent(NC_DO_CREATE, NULL);
+    t = nc_do(&create, now);
+    q = nc_next_request(now);
+    d = nc_on_response(q->id, 503, busy, n, now);
+    T_CHECK(d && d->ticket == t && d->why == ASK_WHY_BUSY);
+}
+
 int main(void) {
     T_RUN(session_blob);
     T_RUN(requests);
@@ -999,5 +1026,6 @@ int main(void) {
     T_RUN(another_user_starts_the_book_over);
     T_RUN(waiting_intents_keep_their_bytes);
     T_RUN(a_host_of_boards_gets_boards);
+    T_RUN(a_busy_read_goes_again_a_write_does_not);
     return T_DONE();
 }
