@@ -30,6 +30,7 @@
 #include "legal.h"
 #include "table.h"
 #include "net/ws.h"
+#include "netclient.h"   // NC_RETRY_*: the browser client's retry schedule, one owner
 #include "netwire.h"
 #include "util/uuid.h"
 
@@ -185,31 +186,49 @@ static int signup(worker *w, player *p, int k) {
     return ok ? 0 : -1;
 }
 
+static int send_auth(bn_ws *ws, const char *token) {
+    NwFrame f;
+    memset(&f, 0, sizeof f);
+    f.kind = NW_WS_AUTH;
+    f.token_len = (uint16_t)strlen(token);
+    memcpy(f.token, token, f.token_len);
+    return send_frame(ws, &f);
+}
+
+// Subscribes to the games list as the browser's client does (netclient.c):
+// the token, then the subscription, and on a refusal for the token both again
+// after NC_RETRY_FIRST_MS, doubling. Behind API Gateway each frame is its own
+// Lambda invocation, so a subscription sent right behind the token can be
+// handled before the token is stored, and is refused for want of a user.
 static bool listen_games(worker *w, int k) {
     listener *l = &w->l[k];
     l->ws = bn_ws_open(&w->u, "/v1/stream?proto=nw1", TIMEOUT_MS);
     if (!l->ws) return false;
-    NwFrame f;
-    memset(&f, 0, sizeof f);
-    f.kind = NW_WS_AUTH;
-    f.token_len = (uint16_t)strlen(w->p[k].token);
-    memcpy(f.token, w->p[k].token, f.token_len);
-    if (send_frame(l->ws, &f) != 0) return false;
-    memset(&f, 0, sizeof f);
-    f.kind = NW_WS_SUB;
-    f.ref = 1;
-    f.what = NW_SUB_GAMES;
-    if (send_frame(l->ws, &f) != 0) return false;
+    if (send_auth(l->ws, w->p[k].token) != 0) return false;
     cb_buf b;
     cb_buf_init(&b);
-    bool ok = false;
-    for (int i = 0; i < 20; i++) {
-        int op = bn_ws_recv(l->ws, TIMEOUT_MS, &b);
-        if (op < 0) break;
-        if (recv_frame(op, &b, &f) && f.kind == NW_WS_ACK) { ok = f.why == 0; break; }
+    int why = -1;
+    for (int attempt = 0, backoff = NC_RETRY_FIRST_MS; attempt < 6; attempt++) {
+        NwFrame f;
+        memset(&f, 0, sizeof f);
+        f.kind = NW_WS_SUB;
+        f.ref = (uint16_t)(attempt + 1);
+        f.what = NW_SUB_GAMES;
+        if (send_frame(l->ws, &f) != 0) break;
+        why = -1;
+        for (int i = 0; i < 20 && why < 0; i++) {
+            int op = bn_ws_recv(l->ws, TIMEOUT_MS, &b);
+            if (op < 0) break;
+            if (recv_frame(op, &b, &f) && f.kind == NW_WS_ACK && f.ref == attempt + 1) why = f.why;
+        }
+        if (why != ASK_WHY_AUTH) break;
+        struct timespec ts = { backoff / 1000, (long)(backoff % 1000) * 1000000L };
+        nanosleep(&ts, NULL);
+        backoff = backoff * 2 > NC_RETRY_MAX_MS ? NC_RETRY_MAX_MS : backoff * 2;
+        if (send_auth(l->ws, w->p[k].token) != 0) break;
     }
     cb_buf_free(&b);
-    if (!ok) { fprintf(stderr, "bench: the games subscription was refused\n"); return false; }
+    if (why != 0) { fprintf(stderr, "bench: the games subscription was refused (why %d)\n", why); return false; }
     pthread_mutex_init(&l->mu, NULL);
     pthread_cond_init(&l->cv, NULL);
     atomic_store(&l->stop, false);
