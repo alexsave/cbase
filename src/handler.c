@@ -18,7 +18,11 @@ void cb_handle(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     cb_store_tally st;
     cb_store_tally_take(&st);   // this request's count starts here
     res->head = strcmp(req->method, "HEAD") == 0;
-    if (strcmp(req->method, "OPTIONS") == 0) {
+    if (ctx->cfg && !cb_config_origin_proven(ctx->cfg, cb_http_header_get(req, CB_ORIGIN_HEADER))) {
+        // Not through the edge (config.h CBASE_ORIGIN_SECRET): nothing else runs.
+        cb_router_error(res, 403, "forbidden");
+        return;
+    } else if (strcmp(req->method, "OPTIONS") == 0) {
         bool known = false;
         cb_router_match(ctx->router, "*", req->path, &known);
         if (known) cb_router_preflight(ctx, req, res);

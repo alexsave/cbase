@@ -22,6 +22,10 @@ typedef struct {
     char        domain[256];
     char        stage[64];
     const char *query;              // $connect: the raw query ("proto=nw1"), "" otherwise
+    // $connect: the X-Cbase-Origin header CloudFront added (config.h
+    // CBASE_ORIGIN_SECRET); has_origin false when the request carried none.
+    bool        has_origin;
+    char        origin[128];
     const uint8_t *body;            // $default: the frame text
     size_t      body_len;
 } cb_ws_event;

@@ -143,14 +143,14 @@ $(call prog,build/asan,build/obj/asan,build/obj/asan-kernel,cbase,src/main_serve
 $(call prog,build/asan,build/obj/asan,build/obj/asan-kernel,bootstrap,src/main_lambda.c,ASAN_CB_CFLAGS)
 $(foreach u,$(UNITS),$(call prog,build/test,build/obj/cbase,build/obj/kernel,$(u),test/$(u).c $(TLIB_SRC),CB_CFLAGS))
 $(foreach u,$(UNITS),$(call prog,build/asan/test,build/obj/asan,build/obj/asan-kernel,$(u),test/$(u).c $(TLIB_SRC),ASAN_CB_CFLAGS))
-$(foreach s,smoke smoke_lambda bench_dynamo,$(call prog,build/test,build/obj/cbase,build/obj/kernel,$(s),test/$(s).c $(TLIB_SRC),CB_CFLAGS))
+$(foreach s,smoke smoke_lambda smoke_authz bench_dynamo,$(call prog,build/test,build/obj/cbase,build/obj/kernel,$(s),test/$(s).c $(TLIB_SRC),CB_CFLAGS))
 # The bench (bench/): its own program, and a unit test of its statistics and
 # report that runs with the others.
 BENCH_SRC := $(filter-out bench/unit_%.c,$(sort $(wildcard bench/*.c)))
 $(call prog,build,build/obj/cbase,build/obj/kernel,cbase-bench,$(BENCH_SRC),CB_CFLAGS)
 $(call prog,build/test,build/obj/cbase,build/obj/kernel,unit_bench,bench/unit_bench.c bench/bench_stats.c,CB_CFLAGS)
 $(call prog,build/asan/test,build/obj/asan,build/obj/asan-kernel,unit_bench,bench/unit_bench.c bench/bench_stats.c,ASAN_CB_CFLAGS)
-$(foreach s,smoke smoke_lambda,$(call prog,build/asan/test,build/obj/asan,build/obj/asan-kernel,$(s),test/$(s).c $(TLIB_SRC),ASAN_CB_CFLAGS))
+$(foreach s,smoke smoke_lambda smoke_authz,$(call prog,build/asan/test,build/obj/asan,build/obj/asan-kernel,$(s),test/$(s).c $(TLIB_SRC),ASAN_CB_CFLAGS))
 
 .PHONY: all test smoke check check-asan test-asan smoke-asan check-dynamo bench-dynamo clean print-kernel-src bootstrap bench
 all: build/cbase build/bootstrap build/cbase-import build/cbase-bench
@@ -164,15 +164,17 @@ test: $(addprefix build/test/,$(UNITS)) build/test/unit_bench
 	$(call RUN_UNITS,$^)
 # Two lanes: `cbase serve` over real HTTP, and the real bootstrap binary
 # driven through a fake Lambda Runtime API (no AWS needed).
-smoke: build/cbase build/bootstrap build/test/smoke build/test/smoke_lambda
+smoke: build/cbase build/bootstrap build/test/smoke build/test/smoke_lambda build/test/smoke_authz
 	build/test/smoke build/cbase
+	build/test/smoke_authz build/cbase
 	build/test/smoke_lambda build/bootstrap
 check: test smoke
 
 test-asan: $(addprefix build/asan/test/,$(UNITS)) build/asan/test/unit_bench
 	$(call RUN_UNITS,$^)
-smoke-asan: build/asan/cbase build/asan/bootstrap build/asan/test/smoke build/asan/test/smoke_lambda
+smoke-asan: build/asan/cbase build/asan/bootstrap build/asan/test/smoke build/asan/test/smoke_lambda build/asan/test/smoke_authz
 	build/asan/test/smoke build/asan/cbase
+	build/asan/test/smoke_authz build/asan/cbase
 	build/asan/test/smoke_lambda build/asan/bootstrap
 check-asan: test-asan smoke-asan
 

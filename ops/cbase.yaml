@@ -40,7 +40,9 @@ Metadata:
       - Label: { default: "Code" }
         Parameters: [CodeBucket, CodeKey]
       - Label: { default: "Secrets (generate each with: openssl rand -base64 32)" }
-        Parameters: [JwtSecret, AdminToken]
+        Parameters: [JwtSecret, AdminToken, OriginSecret, OriginEnforced]
+      - Label: { default: "Alarms" }
+        Parameters: [AlarmEmail]
       - Label: { default: "Domain" }
         Parameters: [DomainName, CertificateArn, AllowedOrigins]
       - Label: { default: "Names" }
@@ -67,6 +69,32 @@ Parameters:
     NoEcho: true
     MinLength: 24
     Description: CBASE_ADMIN_TOKEN, the Bearer token for the console at /admin.
+  OriginSecret:
+    Type: String
+    NoEcho: true
+    MinLength: 32
+    Description: >-
+      CBASE_ORIGIN_SECRET, the value CloudFront adds to every request it sends to
+      the function and the WebSocket API as X-Cbase-Origin. The function refuses
+      anything without it (403), so neither origin hostname can be used to walk
+      around the distribution. At least 32 characters.
+  OriginEnforced:
+    Type: String
+    Default: "yes"
+    AllowedValues: ["yes", "no"]
+    Description: >-
+      "yes": the function refuses a request without the origin header. "no": the
+      header is sent but not checked. Adding or rotating the secret is two
+      deploys: "no" with the new value (CloudFront takes minutes to send it
+      everywhere, the function changes at once), then "yes" (RUNBOOK.md).
+  AlarmEmail:
+    Type: String
+    Default: ""
+    Description: >-
+      Where the alarms (throttles, errors, concurrency, the table's capacity) are
+      emailed through SNS. Empty: the alarms still exist and show in the
+      console, but nobody is mailed. A new address must confirm the email SNS
+      sends it before anything arrives.
   DomainName:
     Type: String
     Default: api.foolish.cards
@@ -99,6 +127,10 @@ Parameters:
       (Distribution -> FunctionUrl -> Function), so ops/deploy.sh reads it from the
       stack and passes it back. Empty on a first deploy: nothing is invalidated until
       the next one, and the cached reads are fresh within their s-maxage meanwhile.
+
+Conditions:
+  OriginChecked: !Equals [!Ref OriginEnforced, "yes"]
+  HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, ""]]
 
 Resources:
   # ---- the store ----------------------------------------------------------------
@@ -246,6 +278,14 @@ Resources:
       Handler: bootstrap
       MemorySize: 256
       Timeout: 60
+      # The most invocations that run at once (free to set). It is the ceiling
+      # on what a flood can bill: at 30 x 256 MB a day of saturation is about
+      # 650k GB-seconds, under $9, against about $290 at the account's 1000.
+      # The peak measured over two weeks, benches included, was 10 (CloudWatch
+      # ConcurrentExecutions, 2026-10-03..17); a bot drive and a request's
+      # pushes each hold one slot. A request past it is throttled (429), and
+      # the Throttles alarm below says so.
+      ReservedConcurrentExecutions: 30
       Role: !GetAtt FunctionRole.Arn
       Code:
         S3Bucket: !Ref CodeBucket
@@ -266,10 +306,21 @@ Resources:
           CBASE_LOG_LEVEL: info
           # The edge cache's invalidations go here (app/edge.h).
           CBASE_CF_DISTRIBUTION: !Ref DistributionId
+          # Requests that did not come through the distribution are refused (config.h).
+          CBASE_ORIGIN_SECRET: !If [OriginChecked, !Ref OriginSecret, ""]
 
   # ---- the HTTP front: a Function URL ---------------------------------------------
   # AuthType NONE and no CORS block: the function answers CORS itself
-  # (net/router.h), as the edge functions did.
+  # (net/router.h), as the edge functions did. NONE is not open: every request
+  # must carry the distribution's X-Cbase-Origin (CBASE_ORIGIN_SECRET), so a
+  # direct hit costs one invocation that answers 403 and touches nothing.
+  # (CloudFront Origin Access Control with AuthType AWS_IAM was weighed and
+  # not taken: CloudFront then signs every request and overwrites the
+  # clients' Authorization: Bearer header, and Lambda refuses a POST whose
+  # body hash the viewer did not compute into x-amz-content-sha256, so every
+  # client and the console would have to change how they authenticate. Its
+  # one gain, a direct hit never invoking the function, buys nothing while
+  # the same flood sent through CloudFront invokes it all the same.)
   FunctionUrl:
     Type: AWS::Lambda::Url
     Properties:
@@ -451,6 +502,8 @@ Resources:
           - Id: function
             # https://<id>.lambda-url.<region>.on.aws/ -> the host name.
             DomainName: !Select [2, !Split ["/", !GetAtt FunctionUrl.FunctionUrl]]
+            OriginCustomHeaders:
+              - { HeaderName: X-Cbase-Origin, HeaderValue: !Ref OriginSecret }
             CustomOriginConfig:
               OriginProtocolPolicy: https-only
               OriginSSLProtocols: [TLSv1.2]
@@ -465,6 +518,9 @@ Resources:
               OriginKeepaliveTimeout: 60
           - Id: realtime
             DomainName: !Sub "${WsApi}.execute-api.${AWS::Region}.amazonaws.com"
+            # $connect refuses a socket without it (realtime/rt_apigw.c).
+            OriginCustomHeaders:
+              - { HeaderName: X-Cbase-Origin, HeaderValue: !Ref OriginSecret }
             CustomOriginConfig:
               OriginProtocolPolicy: https-only
               OriginSSLProtocols: [TLSv1.2]
@@ -511,6 +567,226 @@ Resources:
             FunctionAssociations:
               - EventType: viewer-request
                 FunctionARN: !GetAtt WsPathRewrite.FunctionMetadata.FunctionARN
+
+  # ---- alarms: CloudWatch, emailed through SNS ---------------------------------------
+  # Ten alarm metrics, CloudWatch's always-free allowance (10 standard-resolution
+  # alarm metrics; each alarm below watches one), and an SNS email topic (1,000
+  # emails a month free). Each says something is being spent that should not
+  # be: the function's ceiling, its errors, a flood, or the table's free units
+  # nearly gone (a throttled table refuses every player's moves, H2).
+  # Adding an alarm here means taking one out.
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${FunctionName}-alarms"
+      DisplayName: c_base alarms
+
+  AlarmEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlarmEmail
+    Properties:
+      TopicArn: !Ref AlarmTopic
+      Protocol: email
+      Endpoint: !Ref AlarmEmail
+
+  # The topic takes alarms from this account's CloudWatch only.
+  AlarmTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics: [!Ref AlarmTopic]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: cloudwatch.amazonaws.com }
+            Action: sns:Publish
+            Resource: !Ref AlarmTopic
+            Condition:
+              ArnLike: { "aws:SourceArn": !Sub "arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:*" }
+
+  # 1. Any invocation refused for the concurrency ceiling.
+  AlarmThrottles:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${FunctionName}-lambda-throttles"
+      AlarmDescription: Invocations were refused at the reserved concurrency (a flood, or the ceiling is too low).
+      Namespace: AWS/Lambda
+      MetricName: Throttles
+      Dimensions: [{ Name: FunctionName, Value: !Ref Function }]
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+      OKActions: [!Ref AlarmTopic]
+
+  # 2. Invocations that failed (an event that did not decode, a handler that could not answer).
+  AlarmErrors:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${FunctionName}-lambda-errors"
+      AlarmDescription: More than 5 failed invocations in 5 minutes.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions: [{ Name: FunctionName, Value: !Ref Function }]
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+      OKActions: [!Ref AlarmTopic]
+
+  # 3. Near the ceiling: 20 of the 30 at once.
+  AlarmConcurrency:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${FunctionName}-lambda-concurrency"
+      AlarmDescription: 20 or more invocations at once (the reserved ceiling is 30; the normal peak is under 10).
+      Namespace: AWS/Lambda
+      MetricName: ConcurrentExecutions
+      Dimensions: [{ Name: FunctionName, Value: !Ref Function }]
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 3
+      DatapointsToAlarm: 2
+      Threshold: 20
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+      OKActions: [!Ref AlarmTopic]
+
+  # 4. Server errors answered through the Function URL (the API's 5xx).
+  AlarmUrl5xx:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${FunctionName}-url-5xx"
+      AlarmDescription: More than 10 5xx answers from the Function URL in 5 minutes (503 BUSY is the table throttled).
+      Namespace: AWS/Lambda
+      MetricName: Url5xxCount
+      Dimensions: [{ Name: FunctionName, Value: !Ref Function }]
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 10
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+      OKActions: [!Ref AlarmTopic]
+
+  # 5. A flood: Lambda's free allowance is 1M requests a month, about 115 per
+  # 5 minutes on average; this is far above foolish's traffic.
+  AlarmInvocations:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${FunctionName}-lambda-invocations"
+      AlarmDescription: More than 6000 invocations in 5 minutes (20 a second sustained); a flood or a loop.
+      Namespace: AWS/Lambda
+      MetricName: Invocations
+      Dimensions: [{ Name: FunctionName, Value: !Ref Function }]
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 6000
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+      OKActions: [!Ref AlarmTopic]
+
+  # 6-9. The table's provisioned units nearly spent: consumed over 5 minutes
+  # against 80% of 300 s x the provisioned rate (table 15/15, each index 5 WCU).
+  AlarmTableWrites:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${FunctionName}-ddb-table-writes"
+      AlarmDescription: The table used over 80% of its 15 provisioned WCU for 5 minutes.
+      Namespace: AWS/DynamoDB
+      MetricName: ConsumedWriteCapacityUnits
+      Dimensions: [{ Name: TableName, Value: !Ref Table }]
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 3600
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+      OKActions: [!Ref AlarmTopic]
+
+  AlarmTableReads:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${FunctionName}-ddb-table-reads"
+      AlarmDescription: The table used over 80% of its 15 provisioned RCU for 5 minutes.
+      Namespace: AWS/DynamoDB
+      MetricName: ConsumedReadCapacityUnits
+      Dimensions: [{ Name: TableName, Value: !Ref Table }]
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 3600
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+      OKActions: [!Ref AlarmTopic]
+
+  AlarmGsi1Writes:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${FunctionName}-ddb-gsi1-writes"
+      AlarmDescription: Index gsi1 used over 80% of its 5 provisioned WCU for 5 minutes (a throttled index throttles the table's writes).
+      Namespace: AWS/DynamoDB
+      MetricName: ConsumedWriteCapacityUnits
+      Dimensions:
+        - { Name: TableName, Value: !Ref Table }
+        - { Name: GlobalSecondaryIndexName, Value: gsi1 }
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1200
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+      OKActions: [!Ref AlarmTopic]
+
+  AlarmGsi2Writes:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${FunctionName}-ddb-gsi2-writes"
+      AlarmDescription: Index gsi2 used over 80% of its 5 provisioned WCU for 5 minutes (a throttled index throttles the table's writes).
+      Namespace: AWS/DynamoDB
+      MetricName: ConsumedWriteCapacityUnits
+      Dimensions:
+        - { Name: TableName, Value: !Ref Table }
+        - { Name: GlobalSecondaryIndexName, Value: gsi2 }
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1200
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+      OKActions: [!Ref AlarmTopic]
+
+  # 10. Writes actually refused (the table's, which an index's throttle causes too).
+  AlarmWriteThrottles:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${FunctionName}-ddb-write-throttles"
+      AlarmDescription: The table refused writes for capacity (players see 503 BUSY on moves).
+      Namespace: AWS/DynamoDB
+      MetricName: WriteThrottleEvents
+      Dimensions: [{ Name: TableName, Value: !Ref Table }]
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+      OKActions: [!Ref AlarmTopic]
 
 Outputs:
   FunctionUrl:

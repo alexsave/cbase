@@ -6,6 +6,7 @@
 #include "util/str.h"
 #include "util/uuid.h"
 
+#include <openssl/crypto.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -86,6 +87,12 @@ int cb_config_from_env(cb_config *c, char *err, size_t cap) {
         c->jwt_secret_generated = true;
     }
     if (!copy(c->admin_token, sizeof c->admin_token, "CBASE_ADMIN_TOKEN", env("CBASE_ADMIN_TOKEN", ""), err, cap)) return CB_E_INVALID;
+    const char *osec = env("CBASE_ORIGIN_SECRET", "");
+    if (*osec && strlen(osec) < 32) {
+        snprintf(err, cap, "CBASE_ORIGIN_SECRET must be at least 32 characters");
+        return CB_E_INVALID;
+    }
+    if (!copy(c->origin_secret, sizeof c->origin_secret, "CBASE_ORIGIN_SECRET", osec, err, cap)) return CB_E_INVALID;
     if (!copy(c->allowed_origins, sizeof c->allowed_origins, "CBASE_ALLOWED_ORIGINS", env("CBASE_ALLOWED_ORIGINS", "*"), err, cap))
         return CB_E_INVALID;
     char dflt_url[128];
@@ -121,6 +128,7 @@ void cb_config_each(const cb_config *c, cb_config_fn fn, void *ud) {
     fn("CBASE_CF_DISTRIBUTION", c->cf_distribution[0] ? c->cf_distribution : "(unset: no edge invalidation)", false, ud);
     fn("CBASE_JWT_SECRET", c->jwt_secret_generated ? "(unset: random per process)" : "(set)", true, ud);
     fn("CBASE_ADMIN_TOKEN", c->admin_token[0] ? "(set)" : "(unset: console refused)", true, ud);
+    fn("CBASE_ORIGIN_SECRET", c->origin_secret[0] ? "(set)" : "(unset: the origin is open)", true, ud);
     fn("CBASE_ALLOWED_ORIGINS", c->allowed_origins, false, ud);
     fn("CBASE_PUBLIC_URL", c->public_url, false, ud);
     snprintf(b, sizeof b, "%d", c->req_workers);
@@ -132,6 +140,14 @@ void cb_config_each(const cb_config *c, cb_config_fn fn, void *ud) {
     snprintf(b, sizeof b, "%d", c->jwt_ttl_s);
     fn("CBASE_JWT_TTL", b, false, ud);
     fn("CBASE_LOG_LEVEL", cb_log_level_name(c->log_level), false, ud);
+}
+
+bool cb_config_origin_proven(const cb_config *c, const char *value) {
+    if (!c->origin_secret[0]) return true;
+    if (!value) return false;
+    size_t n = strlen(c->origin_secret);
+    if (strlen(value) != n) return false;
+    return CRYPTO_memcmp(value, c->origin_secret, n) == 0;
 }
 
 bool cb_config_origin_allowed(const cb_config *c, const char *origin) {

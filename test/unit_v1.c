@@ -83,6 +83,7 @@ static void teardown(void) {
 // ---- the host: one request through cb_handle ------------------------------------------
 
 static int g_status;
+static const char *g_origin;   // X-Cbase-Origin to send, NULL for none
 static uint8_t g_body[1 << 20];
 static int g_len;
 static char g_hdrs[4096];   // the last answer's header lines
@@ -107,6 +108,7 @@ static int send_req(const NcRequest *q) {
         r.headers[r.n_headers++] = (cb_http_header){ "Authorization", authz };
     }
     if (q->method == NC_POST) r.headers[r.n_headers++] = (cb_http_header){ "Content-Type", "application/octet-stream" };
+    if (g_origin) r.headers[r.n_headers++] = (cb_http_header){ "x-cbase-origin", g_origin };
     r.body = q->body;
     r.body_len = q->body_len;
     cb_http_res res;
@@ -644,7 +646,28 @@ static void independent_reads_run_at_once(void) {
     teardown();
 }
 
+// With CBASE_ORIGIN_SECRET set, a request without the edge's X-Cbase-Origin
+// (the Function URL hit directly) is refused before any route runs: no store
+// read, no bcrypt. Unset, nothing is checked (serve, tests).
+static void only_through_the_edge(void) {
+    setup();
+    g_origin = NULL;
+    T_EQ_INT(call(b_bots, NULL), 200);
+    cb_strlcpy(g_cfg.origin_secret, "0123456789abcdef0123456789abcdef", sizeof g_cfg.origin_secret);
+    T_EQ_INT(call(b_bots, NULL), 403);
+    T_EQ_INT(send_req(nc_req_signin("ANA", 3, "password1", 9)), 403);
+    g_origin = "0123456789abcdef0123456789abcdeF";
+    T_EQ_INT(call(b_bots, NULL), 403);
+    g_origin = "0123456789abcdef0123456789abcdef ";
+    T_EQ_INT(call(b_bots, NULL), 403);
+    g_origin = "0123456789abcdef0123456789abcdef";
+    T_EQ_INT(call(b_bots, NULL), 200);
+    g_origin = NULL;
+    teardown();
+}
+
 int main(void) {
+    T_RUN(only_through_the_edge);
     T_RUN(the_email_is_the_clients_derivation);
     T_RUN(accounts);
     T_RUN(without_a_backend);

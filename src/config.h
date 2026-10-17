@@ -37,6 +37,14 @@ typedef struct {
     bool jwt_secret_generated;
     // CBASE_ADMIN_TOKEN: Bearer token for /admin/api/*. Unset: the console is refused.
     char admin_token[256];
+    // CBASE_ORIGIN_SECRET: the value CloudFront adds to every request it sends
+    // on, as the header X-Cbase-Origin (ops/cbase.yaml). Set: an HTTP request
+    // or a WebSocket $connect without it is refused with 403 before anything
+    // else runs, so the Function URL and the WebSocket API's own hostname
+    // cannot be used to walk around the edge (and around the viewer address
+    // the edge vouches for). Unset (serve, tests): nothing is checked. At
+    // least 32 characters when set.
+    char origin_secret[128];
     // CBASE_ALLOWED_ORIGINS: "*" (default) or a comma list of origins echoed in
     // Access-Control-Allow-Origin.
     char allowed_origins[1024];
@@ -58,6 +66,12 @@ int cb_config_from_env(cb_config *cfg, char *err, size_t cap);
 // for the startup log and the admin console's Config panel.
 typedef void (*cb_config_fn)(const char *name, const char *value, bool secret, void *ud);
 void cb_config_each(const cb_config *cfg, cb_config_fn fn, void *ud);
+
+// The header CloudFront adds (CBASE_ORIGIN_SECRET above).
+#define CB_ORIGIN_HEADER "X-Cbase-Origin"
+// Did the request come through the edge? True when no secret is configured;
+// else only for `value` equal to it (constant time). NULL is a missing header.
+bool cb_config_origin_proven(const cb_config *cfg, const char *value);
 
 // Is `origin` allowed by CBASE_ALLOWED_ORIGINS? Always true for "*".
 bool cb_config_origin_allowed(const cb_config *cfg, const char *origin);

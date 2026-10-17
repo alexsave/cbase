@@ -38,6 +38,9 @@
 #   CBASE_TABLE            cbase
 #   CBASE_CODE_BUCKET      cbase-code-<account>-<region>
 #   CBASE_ALLOWED_ORIGINS  *
+#   CBASE_ORIGIN_ENFORCED  yes (no: send the origin header without checking it,
+#                          for the first deploy of a new or rotated secret)
+#   CBASE_ALARM_EMAIL      where the alarms are emailed ("" for nobody)
 #
 # The secrets travel to CloudFormation as parameters (NoEcho for the two
 # secret ones), so they appear in this Mac's process list while the deploy
@@ -84,6 +87,18 @@ fi
 ensure_secret() { cbase_ops_secret "$1" "$env_file" "$stack_exists" || exit 1; }
 ensure_secret CBASE_JWT_SECRET
 ensure_secret CBASE_ADMIN_TOKEN
+# The origin secret (cbase.yaml OriginSecret) is new to a stack made before it:
+# generating it there is safe as long as the same deploy only sends it and does
+# not yet check it (CBASE_ORIGIN_ENFORCED=no; RUNBOOK "Closing the origin").
+origin_live=no
+if [ "$stack_exists" = yes ] && aws cloudformation describe-stacks --region "$region" --stack-name "${CBASE_STACK:-cbase}" \
+     --query "Stacks[0].Parameters[?ParameterKey=='OriginSecret'].ParameterKey" --output text 2>/dev/null | grep -q OriginSecret; then
+  origin_live=yes
+fi
+cbase_ops_secret CBASE_ORIGIN_SECRET "$env_file" "$origin_live" || exit 1
+if [ "$origin_live" = no ] && [ "${CBASE_ORIGIN_ENFORCED:-yes}" = yes ] && [ "$stack_exists" = yes ]; then
+  die "the stack does not send X-Cbase-Origin yet: deploy once with CBASE_ORIGIN_ENFORCED=no, wait for the distribution to deploy, then again"
+fi
 if [ "$stack_exists" = yes ]; then
   live_jwt="$(aws lambda get-function-configuration --region "$region" --function-name "${CBASE_FUNCTION_NAME:-cbase}" \
     --query 'Environment.Variables.CBASE_JWT_SECRET' --output text 2>/dev/null || true)"
@@ -166,6 +181,9 @@ aws cloudformation deploy \
     "CodeKey=$key" \
     "JwtSecret=$CBASE_JWT_SECRET" \
     "AdminToken=$CBASE_ADMIN_TOKEN" \
+    "OriginSecret=$CBASE_ORIGIN_SECRET" \
+    "OriginEnforced=${CBASE_ORIGIN_ENFORCED:-yes}" \
+    "AlarmEmail=${CBASE_ALARM_EMAIL:-}" \
     "DomainName=$domain" \
     "CertificateArn=$cert" \
     "AllowedOrigins=$origins" \

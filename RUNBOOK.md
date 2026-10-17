@@ -97,7 +97,7 @@ It signs up two throwaway accounts (`BENCH...`) and plays real games against the
 2. else `~/.config/cbase/ops.env`;
 3. else the old `c_base/ops/.env`, when it is the only one there.
 
-It is mode 0600, holds only `CBASE_*` `NAME=value` lines (`CBASE_JWT_SECRET`, `CBASE_ADMIN_TOKEN`, `CBASE_CERT_ARN`, `CBASE_WEB_FOOLISH_CERT`, `CBASE_WEB_UTTT_CERT`), and a value already in the environment wins over it.
+It is mode 0600, holds only `CBASE_*` `NAME=value` lines (`CBASE_JWT_SECRET`, `CBASE_ADMIN_TOKEN`, `CBASE_ORIGIN_SECRET`, `CBASE_ALARM_EMAIL`, `CBASE_CERT_ARN`, `CBASE_WEB_FOOLISH_CERT`, `CBASE_WEB_UTTT_CERT`), and a value already in the environment wins over it.
 It lives outside the repo because the only copy once lived in `c_base/ops/.env` and went with a removed worktree.
 
 A secret is generated only for a stack that does not exist yet.
@@ -107,12 +107,31 @@ If the file is lost, recover the values from the live function, not from a new `
 ```
 umask 077; mkdir -p ~/.config/cbase
 aws lambda get-function-configuration --function-name cbase --query Environment.Variables --output json \
-  | python3 -c 'import json,sys; [print(f"{k}={v}") for k,v in json.load(sys.stdin).items() if k in ("CBASE_JWT_SECRET","CBASE_ADMIN_TOKEN")]' \
+  | python3 -c 'import json,sys; [print(f"{k}={v}") for k,v in json.load(sys.stdin).items() if k in ("CBASE_JWT_SECRET","CBASE_ADMIN_TOKEN","CBASE_ORIGIN_SECRET")]' \
   >> ~/.config/cbase/ops.env
 ```
 
 Then add the certificate ARNs (`aws acm list-certificates --region us-east-1`).
 `c_base/ops/test/ops_env_test.sh` holds the rules (CI runs it).
+
+## Closing the origin, the concurrency ceiling and the alarms
+
+The Function URL and the WebSocket API each have a public AWS hostname.
+CloudFront adds `X-Cbase-Origin: <CBASE_ORIGIN_SECRET>` to everything it sends to either, and the function answers anything without it 403 before it reads the store or a password (`src/config.h`).
+Adding the secret to a stack, or rotating it, is two deploys, because the function changes at once and the distribution takes minutes:
+
+```
+CBASE_ORIGIN_ENFORCED=no c_base/ops/deploy.sh   # CloudFront starts sending it; nothing checks it yet
+aws cloudfront wait distribution-deployed --id <DistributionId>
+c_base/ops/deploy.sh                            # now the function refuses requests without it
+```
+
+To rotate, delete `CBASE_ORIGIN_SECRET` from the settings file, set it to a new `openssl rand -hex 32`, and run the same two deploys.
+The value sits in the distribution's configuration, which the GitHub deploy role can read (`cloudfront:GetDistribution`); it only proves a request came through CloudFront, so that is accepted.
+
+The function's reserved concurrency (30, `cbase.yaml`) is the ceiling on what a flood can bill, about $9 a day at saturation.
+Ten CloudWatch alarms (the always-free ten) mail `CBASE_ALARM_EMAIL` through the SNS topic `cbase-alarms`: Lambda throttles, errors, concurrency of 20 or more, Function URL 5xx, more than 6000 invocations in 5 minutes, the table's read and write units and each index's write units past 80%, and refused writes.
+A new address gets a confirmation email from AWS first; nothing is sent to it until the link in it is clicked.
 
 ## The console path (the fallback)
 
@@ -354,6 +373,8 @@ DynamoDB's point-in-time recovery is not: $0.20 per GB-month, about a tenth of a
 The WebSocket API is free for the first 12 months, then $1 per million messages and $0.25 per million connection-minutes: cents a month.
 The code zip in S3 is about 2 MB: well under a cent a month.
 CloudWatch Logs keeps 30 days (set in the template) inside its 5 GB free allowance.
+The ten alarms are CloudWatch's always-free ten alarm metrics, and the SNS email topic is inside SNS's free 1,000 emails a month.
+Reserved concurrency costs nothing.
 
 ## Web hosting: foolish.cards and uttt.live off Vercel
 

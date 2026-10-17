@@ -1,6 +1,7 @@
 // json_surface.c - every JSON shape c_base speaks (json_surface.h says why
 // they are all here). The only file that includes util/json.h.
 #include "json_surface.h"
+#include "config.h"
 
 #include "util/err.h"
 #include "util/log.h"
@@ -2266,6 +2267,20 @@ static bool on_param(cb_span key, cb_span val, cb_json_type t, void *ud) {
     return true;
 }
 
+// $connect's X-Cbase-Origin, whatever case the name arrives in. A value too
+// long for the field is kept as absent (it cannot be the secret).
+static bool on_ws_header(cb_span key, cb_span val, cb_json_type t, void *ud) {
+    cb_ws_event *w = ud;
+    if (t != CB_JSON_STR) return true;
+    char k[32];
+    int kn = cb_json_unescape(key, k, sizeof k);
+    if (kn < 0 || (size_t)kn != strlen(CB_ORIGIN_HEADER) || strncasecmp(k, CB_ORIGIN_HEADER, (size_t)kn) != 0) return true;
+    int vn = cb_json_unescape(val, w->origin, sizeof w->origin);
+    w->has_origin = vn >= 0 && (size_t)vn == strlen(w->origin);
+    if (!w->has_origin) w->origin[0] = 0;
+    return false;
+}
+
 static int decode_ws(const char *json, size_t len, cb_event *ev) {
     cb_ws_event *w = &ev->ws;
     cb_buf *st = &ev->storage;
@@ -2274,6 +2289,8 @@ static int decode_ws(const char *json, size_t len, cb_event *ev) {
         return CB_E_INVALID;
     cb_json_get_str(json, len, "requestContext.domainName", w->domain, sizeof w->domain);
     cb_json_get_str(json, len, "requestContext.stage", w->stage, sizeof w->stage);
+    cb_span hdrs;
+    if (cb_json_find(json, len, "headers", &hdrs) == CB_JSON_OBJ) walk(hdrs, on_ws_header, w);
 
     query_acc qa;
     cb_buf_init(&qa.q);

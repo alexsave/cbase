@@ -50,6 +50,15 @@ static const char *as_text(const NwFrame *f) {
     return text;
 }
 
+static const char *auth_token_text(const char *tok) {
+    NwFrame f;
+    memset(&f, 0, sizeof f);
+    f.kind = NW_WS_AUTH;
+    f.token_len = (uint16_t)strlen(tok);
+    memcpy(f.token, tok, f.token_len);
+    return as_text(&f);
+}
+
 static const char *auth_text(const char *uid) {
     NwFrame f;
     memset(&f, 0, sizeof f);
@@ -121,23 +130,74 @@ static void setup(void) {
 
 static void connect_and_disconnect(void) {
     setup();
+    int puts0 = rtf.conn_puts;
     T_EQ_INT(ev("$connect", "c1", "proto=nw1", NULL), 200);
-    int i = rtf_conn_find("c1");
-    T_CHECK(i >= 0);
-    T_EQ_INT(rtf.conns[i].vsn, CB_VSN_NW);
-    T_EQ_INT(rtf.conns[i].n_topics, 0);
-    T_EQ_STR(rtf.conns[i].user_id, "");
-    int64_t ttl = rtf.conns[i].expires_at - cb_now_ms();
-    T_CHECK(ttl > 7100000 && ttl <= 7200000);
+    // $connect writes nothing: a socket costs the table no write until a frame names a user.
+    T_EQ_INT(rtf_conn_find("c1"), -1);
+    T_EQ_INT(rtf.conn_puts, puts0);
     // No proto, another proto, or the old Phoenix URL: refused, no row.
     T_EQ_INT(ev("$connect", "c3", "", NULL), 400);
     T_EQ_INT(ev("$connect", "c3", "proto=nw9", NULL), 400);
     T_EQ_INT(ev("$connect", "c3", "apikey=anon-key&vsn=2.0.0", NULL), 400);
     T_EQ_INT(rtf_conn_find("c3"), -1);
+    T_EQ_INT(ev("$default", "c1", NULL, auth_text(U1)), 200);
+    int i = rtf_conn_find("c1");
+    T_CHECK(i >= 0);
+    T_EQ_INT(rtf.conns[i].vsn, CB_VSN_NW);
+    T_EQ_INT(rtf.conns[i].n_topics, 0);
+    T_EQ_STR(rtf.conns[i].user_id, U1);
+    int64_t ttl = rtf.conns[i].expires_at - cb_now_ms();
+    T_CHECK(ttl > 7100000 && ttl <= 7200000);
     T_EQ_INT(ev("$disconnect", "c1", NULL, NULL), 200);
     T_EQ_INT(rtf_conn_find("c1"), -1);
     T_EQ_INT(ev("$disconnect", "c1", NULL, NULL), 200);   // already gone
     T_EQ_INT(ev("$whatever", "c1", NULL, NULL), 400);
+}
+
+// A connection that has not named a user writes nothing, whatever it sends;
+// one whose AUTH stops naming anyone loses its row.
+static void nobody_writes_nothing(void) {
+    setup();
+    int puts0 = rtf.conn_puts;
+    T_EQ_INT(ev("$connect", "c1", "proto=nw1", NULL), 200);
+    for (int k = 0; k < 5; k++) T_EQ_INT(ev("$default", "c1", NULL, ping_text()), 200);
+    T_EQ_INT(ev("$default", "c1", NULL, sub_text(NW_WS_SUB, 1, NW_SUB_GAMES, "")), 200);   // refused: AUTH
+    T_EQ_INT(ev("$default", "c1", NULL, sub_as_text("forged", 2, NW_SUB_GAMES, "")), 200);
+    T_EQ_INT(rtf.conn_puts, puts0);
+    T_EQ_INT(rtf_conn_find("c1"), -1);
+    T_EQ_INT(rtf.n_posts, 7);   // every frame still answered: 5 pongs, 2 refusals
+    T_EQ_INT(ev("$default", "c1", NULL, auth_text(U1)), 200);
+    T_CHECK(rtf_conn_find("c1") >= 0);
+    T_EQ_INT(ev("$default", "c1", NULL, auth_token_text("forged")), 200);   // names nobody
+    T_EQ_INT(rtf_conn_find("c1"), -1);
+}
+
+// With CBASE_ORIGIN_SECRET set, only a $connect carrying it (the edge's
+// X-Cbase-Origin) is let in: the WebSocket API's own hostname is closed.
+static int ev_origin(const char *conn, const char *origin) {
+    cb_ws_event e;
+    memset(&e, 0, sizeof e);
+    strcpy(e.route_key, "$connect");
+    cb_strlcpy(e.connection_id, conn, sizeof e.connection_id);
+    e.query = "proto=nw1";
+    e.body = (const uint8_t *)"";
+    if (origin) { e.has_origin = true; cb_strlcpy(e.origin, origin, sizeof e.origin); }
+    int status = 0;
+    cb_rt_apigw_event(&g_ctx, &e, &status);
+    return status;
+}
+
+static void connect_only_through_the_edge(void) {
+    setup();
+    T_EQ_INT(ev_origin("c1", NULL), 200);   // no secret configured: open (serve, tests)
+    strcpy(g_cfg.origin_secret, "0123456789abcdef0123456789abcdef");
+    T_EQ_INT(ev_origin("c1", NULL), 403);
+    T_EQ_INT(ev_origin("c1", ""), 403);
+    T_EQ_INT(ev_origin("c1", "0123456789abcdef0123456789abcdeX"), 403);
+    T_EQ_INT(ev_origin("c1", "0123456789abcdef0123456789abcdef0"), 403);
+    T_EQ_INT(ev_origin("c1", "0123456789abcdef0123456789abcde"), 403);
+    T_EQ_INT(ev_origin("c1", "0123456789abcdef0123456789abcdef"), 200);
+    g_cfg.origin_secret[0] = 0;
 }
 
 static void frames_round_trip_through_the_conn_row(void) {
@@ -218,7 +278,8 @@ static void a_subscription_says_who_asks(void) {
 
 static void a_lost_row_is_rebuilt_and_garbage_closes(void) {
     setup();
-    // No $connect seen (or its TTL ran out): the row starts afresh.
+    // No row (or its TTL ran out): the row starts afresh with the first user.
+    T_EQ_INT(ev("$default", "c9", NULL, auth_text(U1)), 200);
     T_EQ_INT(ev("$default", "c9", NULL, ping_text()), 200);
     T_EQ_INT(rtf.n_posts, 1);
     T_EQ_INT(posted(0).kind, NW_WS_PONG);
@@ -228,17 +289,19 @@ static void a_lost_row_is_rebuilt_and_garbage_closes(void) {
     T_EQ_INT(rtf.n_deletes, 1);
     T_EQ_INT(rtf_conn_find("c9"), -1);
     T_EQ_INT(ev("$connect", "c9", "proto=nw1", NULL), 200);
+    T_EQ_INT(ev("$default", "c9", NULL, auth_text(U1)), 200);
     T_EQ_INT(ev("$default", "c9", NULL, "aGVsbG8="), 200);   // "hello"
     T_EQ_INT(rtf.n_deletes, 2);
     T_EQ_INT(rtf_conn_find("c9"), -1);
     // A reply to a connection that has gone (410) drops the row.
     T_EQ_INT(ev("$connect", "c8", "proto=nw1", NULL), 200);
+    T_EQ_INT(ev("$default", "c8", NULL, auth_text(U1)), 200);
     strcpy(rtf.gone[0], "c8");
     T_EQ_INT(ev("$default", "c8", NULL, ping_text()), 200);
     T_EQ_INT(rtf_conn_find("c8"), -1);
     // No store: 503.
     g_ctx.store = NULL;
-    T_EQ_INT(ev("$connect", "c7", "proto=nw1", NULL), 503);
+    T_EQ_INT(ev("$default", "c7", NULL, ping_text()), 503);
 }
 
 // API Gateway runs a connection's frames as concurrent invocations: a page
@@ -313,6 +376,8 @@ static void publish_posts_each_subscriber(void) {
 
 int main(void) {
     T_RUN(connect_and_disconnect);
+    T_RUN(nobody_writes_nothing);
+    T_RUN(connect_only_through_the_edge);
     T_RUN(frames_round_trip_through_the_conn_row);
     T_RUN(a_subscription_says_who_asks);
     T_RUN(a_lost_row_is_rebuilt_and_garbage_closes);

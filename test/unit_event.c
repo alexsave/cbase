@@ -168,6 +168,35 @@ static void ws_connect(void) {
     T_EQ_INT(cb_http_query_each(ev.ws.query, collect, &q), 2);   // and it decodes back exactly
     T_EQ_STR(q.got, "[apikey=anon key+/=][vsn=2.0.0]");
     T_EQ_INT(ev.ws.body_len, 0);
+    T_CHECK(!ev.ws.has_origin);   // straight to the WebSocket API: no X-Cbase-Origin
+    cb_event_free(&ev);
+}
+
+// $connect through the edge carries CloudFront's X-Cbase-Origin, whatever case
+// the name arrives in; a value too long for the field is not taken.
+static void ws_connect_origin(void) {
+    char json[4096];
+    cb_event ev;
+    snprintf(json, sizeof json, "{\"headers\":{\"Host\":\"h\",\"x-cbase-ORIGIN\":\"s3cret\\u0021\"},%s",
+             strstr(WS_CONNECT, "\"queryStringParameters\""));
+    T_EQ_INT(decode(json, &ev), CB_OK);
+    T_CHECK(ev.ws.has_origin);
+    T_EQ_STR(ev.ws.origin, "s3cret!");
+    cb_event_free(&ev);
+    char longv[300];
+    memset(longv, 'a', sizeof longv - 1);
+    longv[sizeof longv - 1] = 0;
+    snprintf(json, sizeof json, "{\"headers\":{\"X-Cbase-Origin\":\"%s\"},%s", longv,
+             strstr(WS_CONNECT, "\"queryStringParameters\""));
+    T_EQ_INT(decode(json, &ev), CB_OK);
+    T_CHECK(!ev.ws.has_origin);
+    T_EQ_STR(ev.ws.origin, "");
+    cb_event_free(&ev);
+    // A near name is not the header.
+    snprintf(json, sizeof json, "{\"headers\":{\"X-Cbase-Origin2\":\"s\",\"X-Cbase-Origi\":\"s\"},%s",
+             strstr(WS_CONNECT, "\"queryStringParameters\""));
+    T_EQ_INT(decode(json, &ev), CB_OK);
+    T_CHECK(!ev.ws.has_origin);
     cb_event_free(&ev);
 }
 
@@ -409,6 +438,7 @@ int main(void) {
     T_RUN(function_url_binary);
     T_RUN(too_many_headers_dropped);
     T_RUN(ws_connect);
+    T_RUN(ws_connect_origin);
     T_RUN(ws_default_and_disconnect);
     T_RUN(schedule_and_bot_drive);
     T_RUN(encode_text);

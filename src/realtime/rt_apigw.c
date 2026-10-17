@@ -120,9 +120,9 @@ static int on_default(cb_ctx *ctx, const cb_ws_event *ev) {
         }
         cb_conn_row row, before;
         int rc = CB_STORE_CALL(ctx->store, conn_get, ev->connection_id, &row);
+        bool stored = rc == CB_OK;
         if (rc == CB_E_NOT_FOUND) {
-            // The row is gone (its TTL ran out, or $connect's write was lost):
-            // start afresh.
+            // No row yet ($connect writes none), or its TTL ran out: start afresh.
             memset(&row, 0, sizeof row);
             cb_strlcpy(row.conn_id, ev->connection_id, sizeof row.conn_id);
             row.vsn = CB_VSN_NW;
@@ -145,7 +145,12 @@ static int on_default(cb_ctx *ctx, const cb_ws_event *ev) {
         }
         int64_t now = cb_now_ms();
         bool changed = !same_subscriptions(&row, &before);
-        if (changed || row.expires_at - now < CONN_TTL_MS * 2 / 3) {
+        if (!row.user_id[0]) {
+            // Nobody, so nothing to keep: a connection that has not named a
+            // user (pings, refused frames) writes nothing, and one whose AUTH
+            // named nobody loses the row it had.
+            if (stored) CB_STORE_CALL(ctx->store, conn_delete, ev->connection_id);
+        } else if (changed || row.expires_at - now < CONN_TTL_MS * 2 / 3) {
             row.expires_at = now + CONN_TTL_MS;
             row.version = before.version;
             int w = CB_STORE_CALL(ctx->store, conn_put, &row);
@@ -163,15 +168,12 @@ int cb_rt_apigw_event(cb_ctx *ctx, const cb_ws_event *ev, int *status_out) {
     *status_out = 500;
     if (!ctx->store) { *status_out = 503; return CB_E_STATE; }
     if (strcmp(ev->route_key, "$connect") == 0) {
-        // The stream asks with proto=nw1; its first frame names the user.
+        // Only through the edge (config.h CBASE_ORIGIN_SECRET), and only the
+        // stream's protocol. Nothing is written: a connection costs the table
+        // nothing until a frame names a user (on_default), so opening
+        // sockets is not a way to spend the table's writes.
+        if (ctx->cfg && !cb_config_origin_proven(ctx->cfg, ev->has_origin ? ev->origin : NULL)) { *status_out = 403; return CB_E_AUTH; }
         if (cb_nw_proto_of_query(ev->query) != CB_VSN_NW) { *status_out = 400; return CB_E_INVALID; }
-        cb_conn_row row;
-        memset(&row, 0, sizeof row);
-        cb_strlcpy(row.conn_id, ev->connection_id, sizeof row.conn_id);
-        row.vsn = CB_VSN_NW;
-        row.expires_at = cb_now_ms() + CONN_TTL_MS;
-        int rc = CB_STORE_CALL(ctx->store, conn_put, &row);
-        if (rc != CB_OK) { CB_ERROR("realtime", "connect %s: %s", ev->connection_id, cb_strerror(rc)); return rc; }
         *status_out = 200;
         return CB_OK;
     }
