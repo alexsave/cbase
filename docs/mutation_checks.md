@@ -356,3 +356,4 @@ Each mutation rewritten in, its one test binary rebuilt with the touched object 
 - unit_json_gate.c: `xmlns` not seen -> `the_scanner_sees_each_kind` planted namespace == 1; an XML literal planted in cloudfront.c -> `only_json_surface_speaks_json` violations == 0.
 - json_surface.c: the reindex rewrites a row already keyed -> `query_shapes` body (and, on DynamoDB Local, `ratings_applied_by_commit` reindex == CB_E_CONFLICT).
 - store_sqlite.c: the reindex reports a row as rewritten -> `ratings_applied_by_commit` reindex == CB_E_CONFLICT.
+- changeset_replacements.jq: every conditional counted -> `changeset_gate_test.sh` code_only empty; a conditional on a replaced resource's attribute not counted -> mixed == "Other Dep Big".

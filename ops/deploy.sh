@@ -63,7 +63,7 @@ while [ $# -gt 0 ]; do
 done
 
 die() { echo "deploy.sh: $*" >&2; exit 1; }
-for tool in aws openssl docker unzip; do
+for tool in aws openssl docker unzip jq; do
   command -v "$tool" >/dev/null 2>&1 || die "$tool is not installed"
 done
 
@@ -176,9 +176,14 @@ changeset="$(grep -o 'arn:aws:cloudformation:[^ ]*changeSet/[^ ]*' "$here/build/
 if [ -n "$changeset" ]; then
   aws cloudformation describe-change-set --region "$region" --change-set-name "$changeset" \
     --query 'Changes[].ResourceChange.[Action,LogicalResourceId,ResourceType,Replacement]' --output table
-  replacing="$(aws cloudformation describe-change-set --region "$region" --change-set-name "$changeset" \
-    --query "Changes[?ResourceChange.Replacement=='True' || ResourceChange.Replacement=='Conditional'].ResourceChange.LogicalResourceId" \
-    --output text)"
+  # What may be recreated: ops/changeset_replacements.jq (a "Conditional" on
+  # an attribute of a resource that is only modified is not).
+  aws cloudformation describe-change-set --region "$region" --change-set-name "$changeset" --output json \
+    > "$here/build/deploy-changeset.json"
+  jq -r '.Changes[].ResourceChange | select(.Replacement == "Conditional")
+         | "  conditional: \(.LogicalResourceId) <- \([.Details[] | select(.Target.RequiresRecreation != "Never")
+           | "\(.ChangeSource) \(.CausingEntity // .Target.Name)"] | join(", "))"' "$here/build/deploy-changeset.json"
+  replacing="$(jq -r -f "$here/ops/changeset_replacements.jq" "$here/build/deploy-changeset.json")"
   if [ -n "$replacing" ] && [ "$replacing" != None ] && [ "${CBASE_ALLOW_REPLACE:-}" != 1 ]; then
     aws cloudformation delete-change-set --region "$region" --change-set-name "$changeset" >/dev/null || true
     die "the change set replaces: $replacing. Read it, then rerun with CBASE_ALLOW_REPLACE=1 if that is meant"

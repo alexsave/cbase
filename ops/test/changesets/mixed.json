@@ -1,0 +1,7 @@
+{"Changes":[
+ {"ResourceChange":{"LogicalResourceId":"Function","Replacement":"False","Details":[{"Target":{"RequiresRecreation":"Never","Name":"Code"},"ChangeSource":"DirectModification"}]}},
+ {"ResourceChange":{"LogicalResourceId":"FunctionUrl","Replacement":"Conditional","Details":[{"Target":{"RequiresRecreation":"Always","Name":"TargetFunctionArn"},"ChangeSource":"ResourceAttribute","CausingEntity":"Function.Arn"}]}},
+ {"ResourceChange":{"LogicalResourceId":"Other","Replacement":"Conditional","Details":[{"Target":{"RequiresRecreation":"Conditionally","Name":"X"},"ChangeSource":"DirectModification"}]}},
+ {"ResourceChange":{"LogicalResourceId":"Dep","Replacement":"Conditional","Details":[{"Target":{"RequiresRecreation":"Always","Name":"Y"},"ChangeSource":"ResourceAttribute","CausingEntity":"Big.Arn"}]}},
+ {"ResourceChange":{"LogicalResourceId":"Big","Replacement":"True","Details":[]}}
+]}
