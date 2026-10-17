@@ -1,0 +1,1 @@
+{"alg":"HS256","typ":"JWT"}ÿ{"aud":"authenticated","exp":1790003600,"iat":1790000000,"iss":"https://fuzz","sub":"a0000000-0000-4000-8000-000000000001","email":"ann@x.io","role":"authenticated","session_id":"a0000000-0000-4000-8000-000000000002","user_metadata":{"username":"ANN"},"app_metadata":{"provider":"email","providers":["email"]},"is_anonymous":false}

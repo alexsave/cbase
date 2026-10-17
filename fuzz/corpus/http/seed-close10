@@ -1,0 +1,4 @@
+HEAD / HTTP/1.0
+Connection: close
+Content-Length: 0
+
