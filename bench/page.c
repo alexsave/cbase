@@ -229,7 +229,7 @@ static void *post_chat(void *arg) {
     memcpy(q.message, msg, (size_t)mlen);
     uint8_t body[256];
     int n = nw_request_encode(&q, body, sizeof body);
-    char path[64], headers[NW_ACCESS_MAX + 128];
+    char path[96], headers[NW_ACCESS_MAX + 128];
     snprintf(path, sizeof path, "/v1/chat/%s", p->c->gid);
     snprintf(headers, sizeof headers, "%sContent-Type: application/octet-stream\r\n", p->c->auth);
     bn_resp r;
