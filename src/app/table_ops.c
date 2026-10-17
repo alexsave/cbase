@@ -590,7 +590,7 @@ int cb_table_run(cb_ctx *ctx, const cb_table_op *op, cb_table_result *out) {
 
         if (commits_nothing(rc)) {
             int seat = actor ? table_seat_of(&s->t, actor, (int)strlen(actor)) : -1;
-            out->needs_bots = table_needs_bots(&s->t);
+            out->needs_bots = table_bots_due(&s->t);
             out->version = row.version;
             ret = cb_section_envelope(s, seat >= 0 ? seat : -1, (uint32_t)row.version, &out->envelope, &out->envelope_len);
             cb_game_row_free(&row);

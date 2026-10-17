@@ -912,6 +912,13 @@ static int dy_lease_release(cb_store *s, const char *game, const char *token) {
     return simple1(D(s), &r, CB_OK);
 }
 
+static int dy_bots_idle(cb_store *s, const char *game, int64_t version) {
+    dw_req r;
+    dw_req_init(&r);
+    dw_bots_idle(&r, D(s)->table, game, version);
+    return simple1(D(s), &r, CB_E_CONFLICT);
+}
+
 // ---- bots and ratings -----------------------------------------------------------------------
 
 typedef struct {
@@ -1530,6 +1537,7 @@ static const cb_store_ops DYNAMO_OPS = {
     .lease_acquire = dy_lease_acquire,
     .lease_renew = dy_lease_renew,
     .lease_release = dy_lease_release,
+    .bots_idle = dy_bots_idle,
     .bots_list = dy_bots_list,
     .ratings_list = dy_ratings_list,
     .ratings_top = dy_ratings_top,

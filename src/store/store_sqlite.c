@@ -47,7 +47,7 @@ enum {
     ST_MEMBER_INSERT, ST_MEMBERS_OF_GAME, ST_MEMBER_DELETE, ST_MEMBERS_CLEAR,
     ST_BOTSEAT_INSERT, ST_BOTSEATS_OF_GAME, ST_BOTSEAT_DELETE, ST_BOTSEATS_CLEAR,
     ST_GAMES_OF_USER, ST_IS_MEMBER, ST_GAMES_NEEDING_BOTS,
-    ST_LEASE_ACQUIRE, ST_LEASE_RENEW, ST_LEASE_RELEASE,
+    ST_LEASE_ACQUIRE, ST_LEASE_RENEW, ST_LEASE_RELEASE, ST_BOTS_IDLE,
     ST_RATING_INSERT_MISSING, ST_RATING_APPLY, ST_BOT_RATING_APPLY,
     ST_BOTS_ALL, ST_RATINGS_ALL, ST_RATINGS_TOP, ST_BOT_ELO, ST_USER_ELO, ST_RATING_SET_USERNAME,
     ST_SNAPSHOT_PUT, ST_SNAPSHOT_SET_EXTRAS, ST_SNAPSHOTS_ASC, ST_SNAPSHOTS_DESC,
@@ -127,6 +127,8 @@ static const char *const SQL[ST__COUNT] = {
     [ST_LEASE_RENEW] = "UPDATE games SET bot_lease_until = ?3 + ?4, updated_at = ?3 "
                        "WHERE id = ?1 AND bot_lease_token = ?2",
     [ST_LEASE_RELEASE] = "UPDATE games SET bot_lease_until = NULL WHERE id = ?1 AND bot_lease_token = ?2",
+    // Fenced on the version the drive read: a later commit set needs_bots itself.
+    [ST_BOTS_IDLE] = "UPDATE games SET needs_bots = 0 WHERE id = ?1 AND version = ?2",
 
     // commit_table's rating block (seed.sql 727-751).
     [ST_RATING_INSERT_MISSING] =
@@ -1004,6 +1006,11 @@ static int sq_lease_release(cb_store *st, const char *game, const char *token) {
     return rc == CB_E_DB ? rc : CB_OK;
 }
 
+static int sq_bots_idle(cb_store *st, const char *game, int64_t version) {
+    int rc = write1(Q(st), ST_BOTS_IDLE, "bots idle", true, game, NULL, &version);
+    return rc == CB_E_NOT_FOUND ? CB_E_CONFLICT : rc;
+}
+
 // ---- bots and ratings ------------------------------------------------------------------
 
 static int sq_bots_list(cb_store *st, cb_bot_fn fn, void *ud) {
@@ -1711,6 +1718,7 @@ static const cb_store_ops SQLITE_OPS = {
     .lease_acquire = sq_lease_acquire,
     .lease_renew = sq_lease_renew,
     .lease_release = sq_lease_release,
+    .bots_idle = sq_bots_idle,
     .bots_list = sq_bots_list,
     .ratings_list = sq_ratings_list,
     .ratings_top = sq_ratings_top,

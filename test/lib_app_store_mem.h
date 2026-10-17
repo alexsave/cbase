@@ -22,6 +22,7 @@ typedef struct {
     int commits;           // game_commit calls that wrote
     int conflicts;         // game_commit calls that lost the CAS
     int snapshots;         // snapshot_put calls
+    int bots_idle;         // bots_idle calls that took a game out of the scan
 } tm_hooks;
 
 // A fresh store with `n_bots` bots seated in the bots table, each with

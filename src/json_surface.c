@@ -1180,10 +1180,12 @@ static void bot_seat_put(cb_jw *w, const char *table, const char *game, const ch
     put_end(w, NULL, true);
 }
 
-// The SCAN marker: present (with the times the scan filters on) while the
-// game needs bots, absent otherwise. A commit updates it in place (`keep`),
-// leaving a drive's lease on it (lease_update) as it is; a new or imported
-// game puts it whole, with no lease.
+// The SCAN marker: present (with the times the scan filters on) while a bot
+// can act on the game (the row's needs_bots, table.h table_bots_due), absent
+// otherwise. It carries the row's version (row_version), which fences a
+// drive's dw_bots_idle. A commit updates it in place (`keep`), leaving a
+// drive's lease on it (lease_update) as it is; a new or imported game puts it
+// whole, with no lease.
 static void scan_marker(cb_jw *w, const char *table, const cb_game_row *g, bool keep) {
     char sk[KB];
     k(sk, sizeof sk, "GAME#", g->id);
@@ -1198,6 +1200,7 @@ static void scan_marker(cb_jw *w, const char *table, const cb_game_row *g, bool 
         ux_set_s(&u, "game_id", g->id);
         ux_set_n(&u, "updated_at", g->updated_at);
         ux_set_n(&u, "last_commit_at", g->last_commit_at);
+        ux_set_n(&u, "row_version", g->version);
         ux_emit(w, &u, NULL);
         ux_free(&u);
         update_close(w, true);
@@ -1209,6 +1212,7 @@ static void scan_marker(cb_jw *w, const char *table, const cb_game_row *g, bool 
     av_s(w, "game_id", g->id);
     av_n(w, "updated_at", g->updated_at);
     av_n(w, "last_commit_at", g->last_commit_at);
+    av_n(w, "row_version", g->version);
     put_end(w, NULL, true);
 }
 
@@ -1623,6 +1627,26 @@ void dw_lease_release(dw_req *r, const char *table, const char *game, const char
     ux_name(&u, "lease_token");
     ux_val_s(&u, ":token", token);
     ux_emit(&w, &u, "#lease_token = :token");
+    ux_free(&u);
+    finish(&w);
+}
+
+// A drive found no bot can act on the row at `version`: the marker goes (and
+// any lease on it) unless a commit has moved it past that version. A marker
+// written before the marker carried row_version passes too: every commit since
+// that change writes one, so a marker without it has seen no commit since.
+// Deleting a marker that is already gone is no failure.
+void dw_bots_idle(dw_req *r, const char *table, const char *game, int64_t version) {
+    char sk[KB];
+    cb_jw w;
+    begin(r, &w, "DeleteItem");
+    cb_jw_kstr(&w, "TableName", table);
+    key2(&w, "SCAN", k(sk, sizeof sk, "GAME#", game));
+    ux u;
+    ux_init(&u);
+    ux_name(&u, "row_version");
+    ux_val_n(&u, ":version", version);
+    ux_emit(&w, &u, "attribute_not_exists(#row_version) OR #row_version = :version");
     ux_free(&u);
     finish(&w);
 }

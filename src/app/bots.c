@@ -40,8 +40,11 @@ enum { CYCLE_DONE = 0, CYCLE_AGAIN = 1, CYCLE_ERROR = -1 };
 
 // One cycle, committed (runCycle). CYCLE_AGAIN with *delay_ms set to the
 // kernel's wait (0 after a committed cycle), CYCLE_DONE when nothing is left to
-// drive (no bot work, the game ended, or the game is gone), CYCLE_ERROR.
-static int run_cycle(cb_ctx *ctx, cb_section *s, const char *game_id, int cycle, cpu_acct *cpu, int64_t *delay_ms) {
+// drive (no bot can act, the game ended, or the game is gone), CYCLE_ERROR.
+// *idle_version is the version of a row the scan holds although the kernel
+// says no bot can act on it (store.h bots_idle), else -1.
+static int run_cycle(cb_ctx *ctx, cb_section *s, const char *game_id, int cycle, cpu_acct *cpu, int64_t *delay_ms,
+                     int64_t *idle_version) {
     // The moves an attempt that lost the CAS already chose, offered back: the
     // kernel replays one only while the reloaded board still makes it legal.
     uint8_t prefs[BOT_PREFS_CAP];
@@ -49,6 +52,7 @@ static int run_cycle(cb_ctx *ctx, cb_section *s, const char *game_id, int cycle,
     int32_t ratings[CB_MAX_SEATS];
     bool have_ratings = false;
     *delay_ms = 0;
+    *idle_version = -1;
 
     for (int attempt = 1; attempt <= CB_TABLE_ATTEMPTS; attempt++) {
         // Always fresh, and always with the log: its length seeds every bot
@@ -66,7 +70,13 @@ static int run_cycle(cb_ctx *ctx, cb_section *s, const char *game_id, int cycle,
             cb_game_row_free(&row);
             return CYCLE_ERROR;
         }
-        if (!table_needs_bots(&s->t)) { cb_game_row_free(&row); return CYCLE_DONE; }
+        // The kernel's own answer, the one the row's needs_bots was written
+        // from (table_bots_due): a row that says otherwise leaves the scan.
+        if (!table_bots_due(&s->t)) {
+            if (row.needs_bots) *idle_version = row.version;
+            cb_game_row_free(&row);
+            return CYCLE_DONE;
+        }
         int wait = table_bot_wait_ms(&s->t, cb_app_now());
         if (wait > 0) { cb_game_row_free(&row); *delay_ms = wait; return CYCLE_AGAIN; }
         const int log_len = (int)row.logs_len;
@@ -91,7 +101,15 @@ static int run_cycle(cb_ctx *ctx, cb_section *s, const char *game_id, int cycle,
         if (drive_ms > cpu->max_ms) cpu->max_ms = drive_ms;
         CB_INFO("bots", "game %s cycle %d: drove %d action(s) in %lldms (stop %d)", game_id, cycle, drv.n,
                 (long long)drive_ms, drv.stop);
-        if (drv.n == 0) { cb_game_row_free(&row); return CYCLE_DONE; }
+        if (drv.n == 0) {
+            // table_bots_due said a bot could act and the drive found none:
+            // the kernel disagrees with itself. Out of the scan all the same,
+            // or the heartbeat would ask it the same question every minute.
+            CB_WARN("bots", "game %s: a bot was due at version %lld and none acted", game_id, (long long)row.version);
+            if (row.needs_bots) *idle_version = row.version;
+            cb_game_row_free(&row);
+            return CYCLE_DONE;
+        }
 
         int pl = table_drive_prefs(&s->t, &drv, prefs, sizeof prefs);
         prefs_len = pl > 0 ? pl : 0;
@@ -134,6 +152,7 @@ int cb_bots_drive(cb_ctx *ctx, const char *game_id) {
     cpu_acct cpu = { 0, 0, 0 };
     const int64_t started = cb_app_now();
     bool rekick = false;
+    int64_t idle_version = -1;
     rc = CB_OK;
     for (int cycle = 0;; cycle++) {
         if (cycle > 0) {
@@ -150,7 +169,7 @@ int cb_bots_drive(cb_ctx *ctx, const char *game_id) {
             if (r != CB_OK) CB_ERROR("bots", "game %s: lease renewal failed (%s), driving on", game_id, cb_strerror(r));
         }
         int64_t delay = 0;
-        int c = run_cycle(ctx, s, game_id, cycle, &cpu, &delay);
+        int c = run_cycle(ctx, s, game_id, cycle, &cpu, &delay, &idle_version);
         cb_store_tally_take(&st);   // the lease (acquire or renew) and the cycle
         if (st.reads || st.writes)
             CB_DEBUG("store", "bot cycle %s/%d: %d reads, %d writes, %g RCU, %g WCU (%s)", game_id, cycle, st.reads,
@@ -162,6 +181,14 @@ int cb_bots_drive(cb_ctx *ctx, const char *game_id) {
             if (delay > budget_left(ctx)) { rekick = true; break; }
             cb_app_sleep(delay);
         }
+    }
+    if (idle_version >= 0) {
+        // Before the release: the delete takes the lease with the marker.
+        int r = CB_STORE_CALL(ctx->store, bots_idle, game_id, idle_version);
+        if (r == CB_OK)
+            CB_INFO("bots", "game %s: no bot can act at version %lld, out of the scan", game_id, (long long)idle_version);
+        else if (r != CB_E_CONFLICT)
+            CB_ERROR("bots", "game %s: could not take it out of the scan (%s)", game_id, cb_strerror(r));
     }
     CB_STORE_CALL(ctx->store, lease_release, game_id, lease);
     cb_store_tally_take(&st);

@@ -282,6 +282,16 @@ typedef struct cb_store_ops {
     int (*lease_acquire)(cb_store *s, const char *game_id, int64_t now, int64_t ttl_ms, cb_uuid token_out);
     int (*lease_renew)(cb_store *s, const char *game_id, const char *token, int64_t now, int64_t ttl_ms);
     int (*lease_release)(cb_store *s, const char *game_id, const char *token);
+    // A drive found that NO BOT CAN ACT on the row at `version` (table.h
+    // table_bots_due) although the row is in the scan, which a row written
+    // before the scan asked that question can be: takes the game out of the
+    // scan, unless a commit has moved the row past `version` (that commit
+    // wrote the scan's answer itself). SQLite clears the row's needs_bots;
+    // DynamoDB deletes the SCAN marker (and the lease on it), fenced on the
+    // row version the marker carries, and leaves the row's own needs_bots to
+    // its next commit (the row is 4 to 8 KB a write, the marker 1 WCU).
+    // CB_OK, or CB_E_CONFLICT when the row has moved on (SQLite: or is gone).
+    int (*bots_idle)(cb_store *s, const char *game_id, int64_t version);
 
     // bots and ratings
     int (*bots_list)(cb_store *s, cb_bot_fn fn, void *ud);                 // ladder order

@@ -15,10 +15,13 @@
 //     The lease is released on every exit path. If work remains when the
 //     budget ends, it kicks a fresh drive and returns;
 //   * a scan (EventBridge every minute under Lambda, a 10 s timer under serve)
-//     finds games with needs_bots whose updated_at is older than
+//     finds games with needs_bots (a bot can act: table.h table_bots_due, so
+//     never a game waiting on its human) whose updated_at is older than
 //     CB_BOT_STALE_MS and whose last_commit_at is within CB_BOT_ABANDON_MS, and
 //     kicks each (at most CB_BOT_SCAN_MAX);
-//   * a client's ASK_BUMP kicks a drive when the table has bot work.
+//   * a client's ASK_BUMP kicks a drive when a bot can act;
+//   * a drive that finds no bot can act on a row the scan holds takes the
+//     game out of the scan (store bots_idle), fenced on the row's version.
 #ifndef CB_BOTS_H
 #define CB_BOTS_H
 

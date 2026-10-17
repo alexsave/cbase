@@ -71,6 +71,16 @@ static void lease_requests(void) {
              "\"UpdateExpression\":\"REMOVE #lease_until\",\"ConditionExpression\":\"#lease_token = :token\","
              "\"ExpressionAttributeNames\":{\"#lease_until\":\"lease_until\",\"#lease_token\":\"lease_token\"},"
              "\"ExpressionAttributeValues\":{\":token\":{\"S\":\"" TOK "\"}}}");
+    // A drive that found no bot can act takes the marker (and its lease)
+    // away, fenced on the row version the marker carries, or on none (a
+    // marker no commit has written since markers carried it).
+    dw_bots_idle(&r, "cbase", "ab12cd", 41);
+    T_EQ_STR(r.target, "DynamoDB_20120810.DeleteItem");
+    T_EQ_STR(cb_buf_cstr(&r.body),
+             "{\"ReturnConsumedCapacity\":\"TOTAL\",\"TableName\":\"cbase\",\"Key\":{\"pk\":{\"S\":\"SCAN\"},\"sk\":{\"S\":\"GAME#ab12cd\"}},"
+             "\"ConditionExpression\":\"attribute_not_exists(#row_version) OR #row_version = :version\","
+             "\"ExpressionAttributeNames\":{\"#row_version\":\"row_version\"},"
+             "\"ExpressionAttributeValues\":{\":version\":{\"N\":\"41\"}}}");
     dw_req_free(&r);
 }
 
@@ -137,10 +147,12 @@ static void commit_transaction(void) {
              "\"ExpressionAttributeValues\":{\":elo_rating\":{\"N\":\"0\"},\":previous_elo\":{\"N\":\"990\"},"
              "\":updated_at\":{\"N\":\"2000\"},\":one\":{\"N\":\"1\"},\":read\":{\"N\":\"990\"}}}},"
              "{\"Update\":{\"TableName\":\"cbase\",\"Key\":{\"pk\":{\"S\":\"SCAN\"},\"sk\":{\"S\":\"GAME#ab12cd\"}},"
-             "\"UpdateExpression\":\"SET #game_id = :game_id, #updated_at = :updated_at, #last_commit_at = :last_commit_at\","
-             "\"ExpressionAttributeNames\":{\"#game_id\":\"game_id\",\"#updated_at\":\"updated_at\",\"#last_commit_at\":\"last_commit_at\"},"
+             "\"UpdateExpression\":\"SET #game_id = :game_id, #updated_at = :updated_at, #last_commit_at = :last_commit_at, "
+             "#row_version = :row_version\","
+             "\"ExpressionAttributeNames\":{\"#game_id\":\"game_id\",\"#updated_at\":\"updated_at\",\"#last_commit_at\":\"last_commit_at\","
+             "\"#row_version\":\"row_version\"},"
              "\"ExpressionAttributeValues\":{\":game_id\":{\"S\":\"ab12cd\"},\":updated_at\":{\"N\":\"2000\"},"
-             "\":last_commit_at\":{\"N\":\"2000\"}}}}"
+             "\":last_commit_at\":{\"N\":\"2000\"},\":row_version\":{\"N\":\"8\"}}}}"
              "]}");
 
     // A human with no rating row but an account gets one from the start
@@ -381,6 +393,7 @@ static void items_round_trip(void) {
     int64_t up, lc;
     T_CHECK(dw_item_scan(it, gid, &up, &lc));
     T_EQ_STR(gid, "ab12cd");
+    T_CHECK(strstr(cb_buf_cstr(&r.body), "\"row_version\":{\"N\":\"") != NULL);   // the fence dw_bots_idle reads
 
     cb_user_row u = { .id = U1, .email = "e\"@x.io", .password_hash = "$2a$10$abc", .created_at = 3, .last_sign_in_at = 4 }, ub;
     dw_user_import(&r, "cbase", &u);

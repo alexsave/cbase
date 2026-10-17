@@ -59,8 +59,8 @@
 //   CHAT#<game>        <created>#<id>     a chat message (GSI1 USERCHAT#<user> / <created>#<id>)
 //   CONN#<conn>        CONN               a realtime connection (TTL)
 //   TOPIC#<topic>      CONN#<conn>        the connection again, per joined topic (TTL)
-//   SCAN               GAME#<id>          present while the game needs bots: the heartbeat's
-//                                         partition, and the bot lease
+//   SCAN               GAME#<id>          present while a bot can act (table_bots_due): the
+//                                         heartbeat's partition, the bot lease, row_version
 //
 // Times in sort keys are 15-digit zero-padded ms so they sort as text. A
 // rating's GSI2 sort key is "E#" + (2147483647 - rating) as 10 zero-padded
@@ -292,6 +292,9 @@ bool dw_snapshot_set_extras(dw_req *r, const char *table, const cb_buf *keys, in
 void dw_lease_acquire(dw_req *r, const char *table, const char *game, const char *token, int64_t now, int64_t ttl);
 void dw_lease_renew(dw_req *r, const char *table, const char *game, const char *token, int64_t now, int64_t ttl);
 void dw_lease_release(dw_req *r, const char *table, const char *game, const char *token);
+// store.h bots_idle: DeleteItem of the game's SCAN marker, on condition its
+// row_version is `version` (or it has none); fails with ConditionalCheckFailed.
+void dw_bots_idle(dw_req *r, const char *table, const char *game, int64_t version);
 
 // Ratings and bots.
 void dw_rating_set_username(dw_req *r, const char *table, const char *user, const char *username);

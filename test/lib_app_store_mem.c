@@ -278,7 +278,7 @@ static int m_lease_acquire(cb_store *s, const char *id, int64_t now, int64_t ttl
     int rc;
     pthread_mutex_lock(&m->mu);
     tm_game *g = find_game(m, id);
-    if (!g) rc = CB_E_NOT_FOUND;
+    if (!g || !g->row.needs_bots) rc = CB_E_NOT_FOUND;
     else if (g->lease_until > now) rc = CB_E_CONFLICT;
     else {
         cb_uuid_v4(g->lease_token);
@@ -309,6 +309,17 @@ static int m_lease_release(cb_store *s, const char *id, const char *token) {
     if (g && strcmp(g->lease_token, token) == 0) g->lease_until = 0;
     pthread_mutex_unlock(&m->mu);
     return CB_OK;
+}
+
+static int m_bots_idle(cb_store *s, const char *id, int64_t version) {
+    tm_impl *m = IMPL(s);
+    int rc = CB_E_CONFLICT;
+    pthread_mutex_lock(&m->mu);
+    tm_game *g = find_game(m, id);
+    if (g && g->row.version == version) { g->row.needs_bots = false; rc = CB_OK; }
+    if (g && rc == CB_OK) m->hooks.bots_idle++;
+    pthread_mutex_unlock(&m->mu);
+    return rc;
 }
 
 // ---- bots and ratings ----------------------------------------------------------------------
@@ -424,6 +435,7 @@ static const cb_store_ops tm_ops = {
     .lease_acquire = m_lease_acquire,
     .lease_renew = m_lease_renew,
     .lease_release = m_lease_release,
+    .bots_idle = m_bots_idle,
     .bots_list = m_bots_list,
     .ratings_for = m_ratings_for,
     .rating_set_username = m_rating_set_username,

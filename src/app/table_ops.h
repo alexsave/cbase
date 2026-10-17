@@ -68,7 +68,7 @@ typedef struct {
     int      detail;           // the ROSTER_E_* behind TABLE_E_ROSTER
     bool     committed;        // a commit was written (MOOT, REJECTED, STALE_ROUND write nothing)
     int64_t  version;          // the version the client should now hold
-    bool     needs_bots;       // the committed table has bot work (the caller may kick)
+    bool     needs_bots;       // a bot can act on the table (table_bots_due): the caller kicks
     // The actor's envelope at `version` (their seat's, or the spectator's when
     // not seated): the body create/meta answer with. Owned; free() it.
     uint8_t *envelope;

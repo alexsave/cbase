@@ -285,6 +285,35 @@ static int pick_move(const char *gid, int seat, uint8_t *wire, int cap) {
     return n;
 }
 
+// What the kernel says of the stored board: a bot can act on it (table_bots_due).
+static bool bots_due(const char *gid) {
+    cb_game_row row = stored(gid);
+    cb_section *s = cb_section_new();
+    bool due = s && cb_section_load(s, &row) >= 0 && table_bots_due(&s->t);
+    cb_section_free(s);
+    cb_game_row_free(&row);
+    return due;
+}
+
+// A (seat 0) against bots: A moves until a bot can act. true when one can.
+static bool until_a_bot_is_due(const char *gid) {
+    reply r;
+    for (int i = 0; i < 200 && !bots_due(gid) && status_of(gid) == GAME_STATUS_PLAYING; i++) {
+        uint8_t w[64];
+        int n = pick_move(gid, 0, w, sizeof w);
+        if (n <= 0) return false;
+        action("A", gid, w, n, (uint32_t)version_of(gid), &r);
+    }
+    return bots_due(gid);
+}
+
+// The bots drive until A owes the move and no bot can act. true when so.
+static bool until_the_human_owes(const char *gid) {
+    for (int i = 0; i < 200 && bots_due(gid); i++) cb_bots_drive(&g_ctx, gid);
+    uint8_t w[64];
+    return !bots_due(gid) && status_of(gid) == GAME_STATUS_PLAYING && pick_move(gid, 0, w, sizeof w) > 0;
+}
+
 // The seat a user id holds in the stored roster, or -1.
 static int seat_of(const char *gid, const char *uid) {
     cb_game_row row = stored(gid);
@@ -1074,9 +1103,10 @@ static void the_answer_goes_before_its_pushes(void) {
     T_EQ_INT(r.status, 200);
     meta("A", ASK_START, gid, NULL, &r);     // commits v0+2, a kick when a bot is to act
     T_EQ_INT(r.status, 200);
-    meta("A", ASK_BUMP, gid, NULL, &r);      // commits nothing, a kick (the bot has work)
+    meta("A", ASK_BUMP, gid, NULL, &r);      // commits nothing, a kick when a bot is to act
     T_EQ_INT(r.status, 200);
     T_EQ_INT(version_of(gid), v0 + 2);
+    const bool due = bots_due(gid);   // the deal decides who opens
     // Answered, and nothing has left yet.
     T_EQ_INT(g_nseq, 0);
     T_CHECK(cb_after_open());
@@ -1092,13 +1122,15 @@ static void the_answer_goes_before_its_pushes(void) {
         fans++;
     }
     T_EQ_INT(fans, 2);
-    T_CHECK(kicks >= 1);
-    T_CHECK(g_nseq > 0 && g_seq[g_nseq - 1] == -1);
+    T_EQ_INT(kicks, due ? 2 : 0);
+    T_CHECK(g_nseq > 0 && (g_seq[g_nseq - 1] == -1) == due);
     // Run again: nothing is left to do, and with the window closed a commit
     // publishes at once, as a bot drive or `cbase serve` does.
     g_nseq = 0;
     cb_after_run(&g_ctx);
     T_EQ_INT(g_nseq, 0);
+    T_CHECK(until_a_bot_is_due(gid));
+    g_nseq = 0;
     meta("A", ASK_BUMP, gid, NULL, &r);
     T_EQ_INT(g_nseq, 1);
     T_EQ_INT(g_seq[0], -1);
@@ -1142,7 +1174,9 @@ static void a_push_that_fails_after_the_answer_is_logged(void) {
     g_ctx.rt = NULL;
 }
 
-// heartbeat_needs_bots.test.ts: a bump on a table with a bot still in wakes the bots.
+// heartbeat_needs_bots.test.ts: a bump wakes the bots when one can act, and
+// only then: a bump on a table waiting on its human would start a drive that
+// finds nothing (every page load of a game against a bot did).
 static void a_bump_wakes_the_bots(void) {
     setup(1);
     char gid[CB_GAME_ID_MAX + 1];
@@ -1151,7 +1185,13 @@ static void a_bump_wakes_the_bots(void) {
     meta("A", ASK_ADD_BOT, gid, NULL, &r);
     meta("A", ASK_START, gid, NULL, &r);
     T_EQ_INT(status_of(gid), GAME_STATUS_PLAYING);
+    T_CHECK(until_the_human_owes(gid));
     int kicks = g_kicks;
+    meta("A", ASK_BUMP, gid, NULL, &r);
+    T_EQ_INT(r.status, 200);
+    T_EQ_INT(g_kicks, kicks);
+    T_CHECK(until_a_bot_is_due(gid));
+    kicks = g_kicks;
     int64_t v = version_of(gid);
     meta("A", ASK_BUMP, gid, NULL, &r);
     T_EQ_INT(r.status, 200);
@@ -1456,8 +1496,9 @@ static void bot_moves_wait_for_the_table_to_settle(void) {
     T_EQ_INT(tm_rating(g_store, tm_bot_id(g_store, 0), &rb), CB_OK);
     T_EQ_INT(ra.games_played, 1);
     T_EQ_INT(rb.games_played, 1);
-    // A drive after the end rates nobody again.
-    T_EQ_INT(cb_bots_drive(&g_ctx, gid), CB_OK);
+    // A drive after the end rates nobody again: a finished game is out of the
+    // scan, so there is no lease to take.
+    T_EQ_INT(cb_bots_drive(&g_ctx, gid), CB_E_NOT_FOUND);
     T_EQ_INT(tm_rating(g_store, UID_A, &ra), CB_OK);
     T_EQ_INT(ra.games_played, 1);
     T_EQ_INT((int)(cb_edge_marks(CB_EDGE_BOARD) - board0), 1);
@@ -1518,6 +1559,7 @@ static void a_held_lease_skips_the_drive(void) {
     create_game(gid, &r);
     meta("A", ASK_ADD_BOT, gid, NULL, &r);
     meta("A", ASK_START, gid, NULL, &r);
+    T_CHECK(until_a_bot_is_due(gid));
     cb_uuid other;
     T_EQ_INT(CB_STORE_CALL(g_store, lease_acquire, gid, g_now, CB_BOT_LEASE_MS, other), CB_OK);
     int64_t v = version_of(gid);
@@ -1556,6 +1598,75 @@ static void the_scan_kicks_stale_active_bot_games(void) {
     T_EQ_INT(g_kicks, 0);
 }
 
+// Production, 2026-10-17: 1,037 of 1,149 bot cycles in a week drove nothing.
+// The row said "needs bots" whenever a bot was IN, so a game whose human sat
+// on a move was kicked by every minute's scan for the whole abandon hour, and
+// each drive found no bot could act. The row now says what the kernel says
+// (table_bots_due), so the scan never lists such a game.
+static void the_scan_never_kicks_a_game_waiting_on_its_human(void) {
+    setup(1);
+    char gid[CB_GAME_ID_MAX + 1];
+    reply r;
+    create_game(gid, &r);
+    meta("A", ASK_ADD_BOT, gid, NULL, &r);
+    meta("A", ASK_START, gid, NULL, &r);
+    const int idle0 = tm_hooks_of(g_store)->bots_idle;
+    T_CHECK(until_the_human_owes(gid));
+    cb_game_row row = stored(gid);
+    T_CHECK(!row.needs_bots);
+    cb_game_row_free(&row);
+    // The commits wrote that answer themselves: no drive had to correct one.
+    T_EQ_INT(tm_hooks_of(g_store)->bots_idle, idle0);
+    // The human walks away: every scan of the abandon hour passes it by.
+    g_kicks = 0;
+    int kicked = 0;
+    for (int64_t t = g_now + CB_BOT_STALE_MS + 1; t < g_now + CB_BOT_ABANDON_MS; t += 60000)
+        kicked += cb_bots_scan(&g_ctx, t);
+    T_EQ_INT(kicked, 0);
+    T_EQ_INT(g_kicks, 0);
+    // The human moves: a bot can act, the row says so, and a stale row is kicked.
+    T_CHECK(until_a_bot_is_due(gid));
+    row = stored(gid);
+    T_CHECK(row.needs_bots);
+    cb_game_row_free(&row);
+    T_EQ_INT(cb_bots_scan(&g_ctx, g_now + CB_BOT_STALE_MS + 1), 1);
+    T_EQ_STR(g_kicked, gid);
+}
+
+// A row the scan holds although no bot can act (written before the row asked
+// the kernel's question, as production's were): the first drive that finds
+// nothing takes it out of the scan, so the next minute's scan does not kick it
+// again; and only at the version it read, so a commit in between wins.
+static void a_drive_that_finds_nothing_takes_the_game_out_of_the_scan(void) {
+    setup(1);
+    char gid[CB_GAME_ID_MAX + 1];
+    reply r;
+    create_game(gid, &r);
+    meta("A", ASK_ADD_BOT, gid, NULL, &r);
+    meta("A", ASK_START, gid, NULL, &r);
+    T_CHECK(until_the_human_owes(gid));
+    const int64_t now = g_now + CB_BOT_STALE_MS + 1;
+    T_EQ_INT(tm_set_scan(g_store, gid, true, g_now - 1, g_now - 1), CB_OK);
+    T_EQ_INT(cb_bots_scan(&g_ctx, now), 1);   // the old row, kicked
+    const int64_t v = version_of(gid);
+    const int idle0 = tm_hooks_of(g_store)->bots_idle;
+    T_EQ_INT(cb_bots_drive(&g_ctx, gid), CB_OK);
+    T_EQ_INT(version_of(gid), v);
+    T_EQ_INT(tm_hooks_of(g_store)->bots_idle, idle0 + 1);
+    cb_game_row row = stored(gid);
+    T_CHECK(!row.needs_bots);
+    cb_game_row_free(&row);
+    T_EQ_INT(cb_bots_scan(&g_ctx, now + 60000), 0);
+    // The lease went with it: the next drive has none to take.
+    T_EQ_INT(cb_bots_drive(&g_ctx, gid), CB_E_NOT_FOUND);
+    // The fence: a commit after the read leaves its own answer alone.
+    T_EQ_INT(tm_set_scan(g_store, gid, true, g_now - 1, g_now - 1), CB_OK);
+    T_EQ_INT(CB_STORE_CALL(g_store, bots_idle, gid, v - 1), CB_E_CONFLICT);
+    row = stored(gid);
+    T_CHECK(row.needs_bots);
+    cb_game_row_free(&row);
+}
+
 int main(void) {
     T_RUN(create_answers_the_seat_0_envelope);
     T_RUN(the_answer_goes_before_its_pushes);
@@ -1578,6 +1689,8 @@ int main(void) {
     T_RUN(the_bot_loop_drives_until_a_human_owes_a_move);
     T_RUN(a_held_lease_skips_the_drive);
     T_RUN(the_scan_kicks_stale_active_bot_games);
+    T_RUN(the_scan_never_kicks_a_game_waiting_on_its_human);
+    T_RUN(a_drive_that_finds_nothing_takes_the_game_out_of_the_scan);
     T_RUN(a_taken_game_id_is_drawn_again);
     T_RUN(a_goods_only_commit_is_broadcast);
     T_RUN(a_bump_wakes_the_bots);

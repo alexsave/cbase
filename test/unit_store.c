@@ -646,6 +646,51 @@ static void lease_semantics(void) {
     cb_store_close(s);
 }
 
+// A drive that finds no bot can act on a row the scan holds takes the game
+// out of the scan (and the lease with it), at the version it read only.
+static void bots_idle_semantics(void) {
+    cb_store *s = open_fresh();
+    cb_user_row a = mkuser("a@x.io", "A", 1);
+    CB_STORE_CALL(s, user_create, &a);
+    const int64_t NOW = 10000000, STALE = NOW - 10000, ACTIVE = NOW - 3600000;
+    cb_game_row g = mkgame("idle02", NOW - 20000);
+    g.needs_bots = true;
+    CB_STORE_CALL(s, game_create, &g, a.id);
+    // A commit moves the row to version 1, still with a bot able to act.
+    cb_game_row n = mkgame("idle02", NOW - 20000);
+    n.needs_bots = true;
+    n.version = 1;
+    n.updated_at = NOW - 20000;
+    cb_game_commit c = { .row = &n, .expected_version = 0, .n_humans = 1 };
+    memcpy(c.humans[0], a.id, sizeof(cb_uuid));
+    T_EQ_INT(CB_STORE_CALL(s, game_commit, &c), CB_OK);
+    cb_uuid tok;
+    T_EQ_INT(CB_STORE_CALL(s, lease_acquire, "idle02", STALE - 5000, 1000, tok), CB_OK);
+    names_t nm = { 0 };
+    T_EQ_INT(CB_STORE_CALL(s, games_needing_bots, STALE, ACTIVE, 100, collect_name, &nm), 1);
+    // A stale read (version 0) changes nothing: the commit's answer stands.
+    T_EQ_INT(CB_STORE_CALL(s, bots_idle, "idle02", 0), CB_E_CONFLICT);
+    nm.n = 0;
+    T_EQ_INT(CB_STORE_CALL(s, games_needing_bots, STALE, ACTIVE, 100, collect_name, &nm), 1);
+    // At the version read: out of the scan, and no lease left to take.
+    T_EQ_INT(CB_STORE_CALL(s, bots_idle, "idle02", 1), CB_OK);
+    nm.n = 0;
+    T_EQ_INT(CB_STORE_CALL(s, games_needing_bots, STALE, ACTIVE, 100, collect_name, &nm), 0);
+    T_EQ_INT(CB_STORE_CALL(s, lease_acquire, "idle02", NOW, 25000, tok), CB_E_NOT_FOUND);
+    // The game itself is untouched.
+    cb_game_row got;
+    T_EQ_INT(CB_STORE_CALL(s, game_get, "idle02", &got), CB_OK);
+    T_EQ_INT(got.version, 1);
+    cb_game_row_free(&got);
+    // The next commit that leaves a bot able to act puts it back.
+    n.version = 2;
+    c.expected_version = 1;
+    T_EQ_INT(CB_STORE_CALL(s, game_commit, &c), CB_OK);
+    nm.n = 0;
+    T_EQ_INT(CB_STORE_CALL(s, games_needing_bots, STALE, ACTIVE, 100, collect_name, &nm), 1);
+    cb_store_close(s);
+}
+
 // ---- the heartbeat scan --------------------------------------------------------------
 
 static void games_needing_bots_windows(void) {
@@ -1356,6 +1401,7 @@ int main(void) {
     T_RUN(user_delete_cascades);
     T_RUN(lease_semantics);
     T_RUN(games_needing_bots_windows);
+    T_RUN(bots_idle_semantics);
     T_RUN(ratings_applied_by_commit);
     T_RUN(snapshots_query_shapes);
     T_RUN(snapshot_round_trip);

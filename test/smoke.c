@@ -386,6 +386,82 @@ static bool db_game(const char *gid, int64_t *needs_bots, int64_t *version) {
     return ok;
 }
 
+// The scan's staleness clock (SQLite: the row's updated_at, which every lease
+// acquire moves); -1 under DynamoDB, where it lives on the SCAN marker.
+static int64_t db_scan_clock(const char *gid) {
+    if (tsb_dynamo()) return -1;
+    char path[512];
+    snprintf(path, sizeof path, "%s/cbase.sqlite", g_dbdir);
+    sqlite3 *db = NULL;
+    sqlite3_stmt *st = NULL;
+    int64_t at = -2;
+    if (sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL) == SQLITE_OK
+        && sqlite3_prepare_v2(db, "SELECT updated_at FROM games WHERE id = ?1", -1, &st, NULL) == SQLITE_OK
+        && sqlite3_bind_text(st, 1, gid, -1, SQLITE_STATIC) == SQLITE_OK && sqlite3_step(st) == SQLITE_ROW)
+        at = sqlite3_column_int64(st, 0);
+    sqlite3_finalize(st);
+    sqlite3_close(db);
+    return at;
+}
+
+// THE IDLE HUMAN (production, 2026-10-17: 1,037 of 1,149 bot cycles in a week
+// drove nothing). One human against one bot; the human owes the move and walks
+// away. No bot can act, so the stored row must not say the bots are owed one,
+// and serve's heartbeat (a scan every 10 s, a game stale after 10 s) must
+// never start a drive for it: no lease is taken (SQLite's lease acquire moves
+// the row's updated_at) and nothing is committed, across two scans.
+static void an_idle_human_turn_is_never_kicked(void) {
+    smoke_user D;
+    if (signup(&D, "SMOKED") != 0) { T_CHECK(0); return; }
+    smoke_client *sc = calloc(1, sizeof *sc);
+    cb_buf env;
+    cb_buf_init(&env);
+    T_EQ_INT(call(&D, NC_DO_CREATE, NULL, NULL, 0, -1), 200);
+    client_init(&sc->c, &sc->slot);
+    T_CHECK(client_adopt_envelope(&sc->c, g_body, g_len) >= 0);
+    char gid[32];
+    snprintf(gid, sizeof gid, "%.*s", (int)sc->c.gid_len, sc->c.gid);
+    T_EQ_INT(ask(&D, ASK_ADD_BOT, gid, &env), 200);
+    T_EQ_INT(ask(&D, ASK_START, gid, &env), 200);
+    // Until D owes a move: the bot pool plays the bot's (the deal's pacing first).
+    uint8_t wire[64];
+    uint32_t rng = 11;
+    bool owes = false;
+    const int64_t t0 = mono_ms();
+    while (!owes && mono_ms() - t0 < 30000) {
+        if (ask(&D, ASK_BUMP, gid, &env) != 200) break;
+        owes = choose_move(sc, &env, wire, sizeof wire, &rng) > 0;
+        if (!owes) {
+            struct timespec ts = { 0, 100 * 1000000 };
+            nanosleep(&ts, NULL);
+        }
+    }
+    T_CHECK(owes);
+    // While D deliberates a bot may still act (an attacker throws in or says
+    // good), paced 3 s a move: the bots are done once the stored version has
+    // held for longer than a pace.
+    int64_t nb = -1, v0 = -1, v1 = -1, held_since = mono_ms();
+    T_CHECK(db_game(gid, &nb, &v0));
+    while (mono_ms() - held_since < 5000 && mono_ms() - t0 < 60000) {
+        struct timespec ts = { 0, 200 * 1000000 };
+        nanosleep(&ts, NULL);
+        int64_t v = -1;
+        if (db_game(gid, &nb, &v) && v != v0) { v0 = v; held_since = mono_ms(); }
+    }
+    T_CHECK(db_game(gid, &nb, &v0));
+    T_EQ_INT(nb, 0);
+    const int64_t clock0 = db_scan_clock(gid);
+    struct timespec idle = { 22, 0 };   // two scans past the staleness window
+    nanosleep(&idle, NULL);
+    T_CHECK(db_game(gid, &nb, &v1));
+    T_EQ_INT(v1, v0);
+    T_EQ_INT(db_scan_clock(gid), clock0);
+    fprintf(stderr, "smoke: an idle human's turn rested 22 s at version %lld, scan clock %lld -> %lld\n", (long long)v0,
+            (long long)clock0, (long long)db_scan_clock(gid));
+    cb_buf_free(&env);
+    free(sc);
+}
+
 static void game_scenario(void) {
     smoke_user A, B, C;
     int sa = signup(&A, "SMOKEA"), sb = signup(&B, "SMOKEB"), sc_ = signup(&C, "SMOKEC");
@@ -587,6 +663,7 @@ int main(int argc, char **argv) {
     if (g_port > 0) T_RUN(health);
     if (g_port > 0) T_RUN(unfurl);
     const char *game = getenv("CBASE_SMOKE_GAME");
+    if (g_port > 0 && !(game && strcmp(game, "0") == 0)) T_RUN(an_idle_human_turn_is_never_kicked);
     if (g_port > 0 && !(game && strcmp(game, "0") == 0)) T_RUN(game_scenario);
     else printf("NOTE smoke: the game scenario is off (CBASE_SMOKE_GAME=0)\n");
     T_RUN(drains_on_sigterm);

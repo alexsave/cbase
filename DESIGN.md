@@ -146,7 +146,7 @@ Items, by partition key and sort key:
 | `CHAT#<game id>` | `<created>#<id>` | a chat message |
 | `CONN#<connection id>` | `CONN` | a realtime connection: user, vsn, topics, expires_at (TTL, seconds) and expires_ms |
 | `TOPIC#<topic>` | `CONN#<connection id>` | the reverse index fan-out queries: a whole copy of the connection row with the same TTL, in the base table so the read is strongly consistent and a push right after a join is not missed |
-| `SCAN` | `GAME#<id>` | present while a game needs bots (sparse; the heartbeat's scan reads one partition); carries the bot lease (lease_token, lease_until) |
+| `SCAN` | `GAME#<id>` | present while a bot can act on the game (the kernel's `table_bots_due`; sparse, the heartbeat's scan reads one partition); carries the bot lease (lease_token, lease_until) and the row's version (row_version) |
 
 `game_commit` is one `TransactWriteItems`: the game update conditioned on the version, the membership puts and deletes, the rating updates, the SCAN marker.
 
@@ -164,6 +164,10 @@ As built (store builder, then integration):
 - The lease: acquire and renew move the scan's staleness clock (never `last_commit_at`); release clears `lease_until` and does not move it.
   SQLite keeps lease and clock on the game row; DynamoDB keeps both on the game's SCAN marker (see "The free tier, provisioned"), so there the row's `updated_at` is its last commit's.
   A game with no bot work has no lease to take: acquire answers `CB_E_NOT_FOUND`, on both backends.
+- "Bot work" is the row's `needs_bots`, which the commit writes from the kernel's `TableCommit.needs_bots` = `table_bots_due`: a bot can act on the board now (after its pacing wait), not merely "a bot is in" (`table_needs_bots`, the client's question).
+  Until 2026-10-17 it was the second, and every game whose human sat on a move was kicked by every minute's scan for the whole abandon hour, each drive finding nothing (1,037 of 1,149 bot cycles in a week drove zero actions).
+  A drive that finds no bot can act on a row the scan still holds (a row written before the change) takes it out with `bots_idle`, fenced on the version it read: SQLite clears `needs_bots`, DynamoDB deletes the SCAN marker on condition of its `row_version` (or none), leaving the row's own flag to its next commit.
+  A bump wakes the bots on the same question.
 - `game_commit`, `game_delete` and `lease_acquire` on a game that is gone return `CB_E_NOT_FOUND` (DynamoDB tells it apart from a lost CAS with `ReturnValuesOnConditionCheckFailure: ALL_OLD`).
 - The DynamoDB section of `json_surface.c` (formerly `dynamo_wire.c`) spells every DynamoDB string and builds every request as a pure function over buffers; `store_dynamo.c` decides only which requests to send in which order.
   Its transport is `aws/aws_call.h` (one signed-request step for every AWS call in c_base), and it honours `AWS_ENDPOINT_URL_DYNAMODB`, the SDKs' own override.
