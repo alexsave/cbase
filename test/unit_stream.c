@@ -391,17 +391,22 @@ static void flush(int fd, int64_t now) {
 // The next event the server's frames make, skipping NC_EV_NONE and the
 // session's; kind 255 on a timeout. g_ev is its index, for nc_event_payload.
 static int g_ev;
+// The next event that is not NONE or the session's: first from what is left
+// of the last message (a batch's replies are one message), then from new ones.
+static int g_ev_n;
 static const NcEvent *next_event(int fd, int timeout_ms, cb_buf *m) {
     static NcEvent none = { .kind = 255 };
     for (;;) {
-        cb_buf_reset(m);
-        int op = tc_ws_recv(fd, timeout_ms, m);
-        if (op != CB_WS_OP_BIN && op != CB_WS_OP_TEXT) return &none;
-        int n = nc_stream_in(m->p, (int)m->len, op == CB_WS_OP_TEXT, cb_now_ms());
-        for (g_ev = 0; g_ev < n; g_ev++) {
+        for (g_ev++; g_ev < g_ev_n; g_ev++) {
             const NcEvent *e = nc_event(g_ev);
+            if (!e) break;   // the client has fed something else since
             if (e->kind != NC_EV_NONE && e->kind != NC_EV_SESSION) return e;
         }
+        cb_buf_reset(m);
+        int op = tc_ws_recv(fd, timeout_ms, m);
+        if (op != CB_WS_OP_BIN && op != CB_WS_OP_TEXT) { g_ev_n = 0; return &none; }
+        g_ev_n = nc_stream_in(m->p, (int)m->len, op == CB_WS_OP_TEXT, cb_now_ms());
+        g_ev = -1;
     }
 }
 

@@ -14,7 +14,10 @@
 
 #define T0 1700000000000LL
 
+static void pending_drop(void);
+
 static void signed_in(uint64_t expires_at_ms) {
+    pending_drop();
     NwSession s;
     memset(&s, 0, sizeof s);
     s.access_len = 3; memcpy(s.access, "jwt", 3);
@@ -132,15 +135,30 @@ static void answers(void) {
 
 // ---- the stream ---------------------------------------------------------------------------
 
+// The next frame the client sends. A batch's entries come out one at a time,
+// in order; g_batches counts the batches and g_last_batch is the size of the
+// last one.
+static struct { NwFrame f[NW_BATCH_MAX]; int n, at; } g_pending;
+static int g_batches, g_last_batch;
+static void pending_drop(void) { g_pending.n = g_pending.at = 0; }
 static NwFrame next_frame(int64_t now) {
     NwFrame f;
     memset(&f, 0, sizeof f);
+    if (g_pending.at < g_pending.n) return g_pending.f[g_pending.at++];
     const NcOut *o = nc_stream_next(now);
     if (!o) { f.kind = 0; return f; }
-    static uint8_t raw[NW_ACCESS_MAX + 64];
+    static uint8_t raw[NC_TEXT_MAX];
     int n = nw_text_decode(o->text, o->len, raw, sizeof raw);
     T_CHECK(n > 0 && nw_frame_decode(raw, n, &f) == NW_OK);
-    return f;
+    if (f.kind != NW_WS_BATCH) return f;
+    g_batches++;
+    g_pending.n = g_pending.at = 0;
+    NwBlob all = f.blob, one;
+    for (uint32_t pos = 0; g_pending.n < NW_BATCH_MAX && nw_batch_next(all, &pos, &one) == 1; g_pending.n++)
+        T_CHECK(nw_frame_decode(one.p, (int)one.len, &g_pending.f[g_pending.n]) == NW_OK);
+    g_last_batch = g_pending.n;
+    T_CHECK(g_pending.n >= 2);   // a lone frame goes as itself
+    return g_pending.f[g_pending.at++];
 }
 
 // The first event a feed made that is not the session's (a session loaded by
@@ -196,13 +214,17 @@ static void stream_order_and_retries(void) {
     T_EQ_INT(nc_stream_due_ms(T0), -1);
     nc_stream_opened(T0);
     T_EQ_INT(nc_stream_due_ms(T0), 0);
-    // Each subscription says who asks (no AUTH frame it could overtake).
+    // Each subscription says who asks (no AUTH frame it could overtake), and
+    // the two go in one batch: one invocation behind API Gateway.
+    int batches0 = g_batches;
     NwFrame s1 = next_frame(T0), s2 = next_frame(T0);
+    T_EQ_INT(g_batches, batches0 + 1);
+    T_EQ_INT(g_last_batch, 2);
     T_CHECK(s1.kind == NW_WS_SUB_AS && s1.what == NW_SUB_GAMES && s1.gid_len == 0);
     T_CHECK(s1.token_len == 3 && memcmp(s1.token, "jwt", 3) == 0);
     T_CHECK(s2.kind == NW_WS_SUB_AS && s2.what == NW_SUB_GAME && s2.gid_len == 2 && s2.ref != s1.ref && s2.version == 0);
     T_EQ_INT(next_frame(T0).kind, 0);
-    T_EQ_INT(nc_stream_due_ms(T0), NC_PING_MS);
+    T_EQ_INT(nc_stream_due_ms(T0), NC_ACK_WAIT_MS);   // unanswered, they are asked again then
 
     // Accepted, and the game's says which stream it hears.
     NwFrame a = ack(s1.ref, 0, 0);
@@ -228,7 +250,8 @@ static void stream_order_and_retries(void) {
     a = ack(c.ref, ASK_WHY_FORBIDDEN, 0);
     feed(&a, 0, T0 + 1000);
     T_EQ_INT(next_frame(T0 + 1000 + 2 * NC_RETRY_FIRST_MS - 1).kind, 0);
-    T_EQ_INT(next_frame(T0 + 1000 + 2 * NC_RETRY_FIRST_MS).kind, NW_WS_SUB_AS);
+    NwFrame c3 = next_frame(T0 + 1000 + 2 * NC_RETRY_FIRST_MS);
+    T_EQ_INT(c3.kind, NW_WS_SUB_AS);
     // Held twice, let go once: still held, and nothing is sent.
     T_EQ_INT(nc_stream_sub(NW_SUB_GAME, "g1", 2), NW_OK);
     T_EQ_INT(nc_stream_unsub(NW_SUB_GAME, "g1", 2), NW_OK);
@@ -255,6 +278,10 @@ static void stream_order_and_retries(void) {
     T_EQ_INT(nc_stream_unsub(NW_SUB_GAMES, NULL, 0), NW_OK);
     NwFrame f = next_frame(T0 + 2000);
     T_CHECK(f.kind == NW_WS_UNSUB && f.what == NW_SUB_GAMES);
+    a = ack(s3.ref, 0, 0);   // answered, so neither is asked again below
+    feed(&a, 0, T0 + 2000);
+    a = ack(c3.ref, 0, 0);
+    feed(&a, 0, T0 + 2000);
 
     // The ping, every NC_PING_MS.
     while (next_frame(T0 + 10000).kind) {}
@@ -1031,11 +1058,191 @@ static void a_catch_up_is_the_tables(void) {
     T_EQ_INT(h.refetched, 1);
 }
 
+// A moment's subscriptions go as one batch, at most NW_BATCH_MAX at a time and
+// never past a message's text; a lone one goes as itself; the server's batch of
+// replies reads as each of its frames would alone; an empty message is nothing.
+static void subscriptions_batch(void) {
+    signed_in(T0 + 3600000);
+    // One alone: a plain frame.
+    T_EQ_INT(nc_stream_sub(NW_SUB_GAMES, NULL, 0), NW_OK);
+    nc_stream_opened(T0);
+    int batches0 = g_batches;
+    NwFrame s0 = next_frame(T0);
+    T_EQ_INT(s0.kind, NW_WS_SUB_AS);
+    T_EQ_INT(g_batches, batches0);
+    // More than a batch holds: NW_BATCH_MAX, then the rest.
+    signed_in(T0 + 3600000);
+    char gid[8];
+    for (int i = 0; i < NC_SUBS_MAX; i++) {
+        snprintf(gid, sizeof gid, "g%02d", i);
+        T_EQ_INT(nc_stream_sub(NW_SUB_GAME, gid, 3), NW_OK);
+    }
+    nc_stream_opened(T0);
+    int seen = 0;
+    batches0 = g_batches;
+    while (seen < 100 && next_frame(T0).kind == NW_WS_SUB_AS) seen++;   // bounded: a broken client must not hang the test
+    T_EQ_INT(seen, NC_SUBS_MAX);
+    T_EQ_INT(g_batches - batches0, (NC_SUBS_MAX + NW_BATCH_MAX - 1) / NW_BATCH_MAX);
+    // A long token: as many as the text holds, the rest in the next message.
+    NwSession ses;
+    memset(&ses, 0, sizeof ses);
+    ses.access_len = 1000;
+    memset(ses.access, 'j', 1000);
+    ses.refresh_len = 2; memcpy(ses.refresh, "rt", 2);
+    ses.expires_at_ms = T0 + 3600000;
+    ses.user_id_len = 2; memcpy(ses.user_id, "u1", 2);
+    ses.username_len = 3; memcpy(ses.username, "ANA", 3);
+    uint8_t b[1400];
+    int n = nw_session_encode(&ses, b, sizeof b);
+    pending_drop();
+    nc_reset();
+    T_EQ_INT(nc_session_load(b, n), NW_OK);
+    for (int i = 0; i < 3; i++) {
+        snprintf(gid, sizeof gid, "g%02d", i);
+        nc_stream_sub(NW_SUB_GAME, gid, 3);
+    }
+    nc_stream_opened(T0);
+    const NcOut *o = nc_stream_next(T0);
+    T_CHECK(o && o->len <= NC_TEXT_MAX);
+    uint8_t raw[NC_TEXT_MAX];
+    NwFrame f;
+    n = nw_text_decode(o->text, o->len, raw, sizeof raw);
+    T_CHECK(n > 0 && nw_frame_decode(raw, n, &f) == NW_OK);
+    T_EQ_INT(f.kind, NW_WS_BATCH);   // two of 1000-byte tokens fit, three do not
+    int in_first = 0;
+    NwBlob one;
+    for (uint32_t pos = 0; nw_batch_next(f.blob, &pos, &one) == 1;) in_first++;
+    T_EQ_INT(in_first, 2);
+    o = nc_stream_next(T0);
+    T_CHECK(o != NULL);
+    n = nw_text_decode(o->text, o->len, raw, sizeof raw);
+    T_CHECK(n > 0 && nw_frame_decode(raw, n, &f) == NW_OK);
+    T_EQ_INT(f.kind, NW_WS_SUB_AS);
+
+    // At the edge of the text: two entries that need 3 bytes past the room
+    // left for the batch's head go one at a time, each as itself.
+    ses.access_len = 1067;
+    memset(ses.access, 'k', 1067);
+    n = nw_session_encode(&ses, b, sizeof b);
+    pending_drop();
+    nc_reset();
+    T_EQ_INT(nc_session_load(b, n), NW_OK);
+    nc_stream_sub(NW_SUB_GAME, "g00", 3);
+    nc_stream_sub(NW_SUB_GAME, "g01", 3);
+    nc_stream_opened(T0);
+    for (int i = 0; i < 2; i++) {
+        o = nc_stream_next(T0);
+        T_CHECK(o != NULL);
+        if (!o) break;
+        n = nw_text_decode(o->text, o->len, raw, sizeof raw);
+        T_CHECK(n > 0 && nw_frame_decode(raw, n, &f) == NW_OK);
+        T_EQ_INT(f.kind, NW_WS_SUB_AS);
+    }
+    // Unsubscriptions and subscriptions together past NW_BATCH_MAX: no batch
+    // carries more than NW_BATCH_MAX.
+    signed_in(T0 + 3600000);
+    for (int i = 0; i < NC_SUBS_MAX; i++) {
+        snprintf(gid, sizeof gid, "g%02d", i);
+        nc_stream_sub(NW_SUB_GAME, gid, 3);
+    }
+    nc_stream_opened(T0);
+    for (int k = 0; k < 100 && next_frame(T0).kind == NW_WS_SUB_AS; k++) {}
+    for (int i = 0; i < NC_SUBS_MAX; i++) {
+        snprintf(gid, sizeof gid, "g%02d", i);
+        nc_stream_unsub(NW_SUB_GAME, gid, 3);
+        snprintf(gid, sizeof gid, "h%02d", i);
+        nc_stream_sub(NW_SUB_GAME, gid, 3);
+    }
+    int frames = 0, biggest = 0;
+    batches0 = g_batches;
+    g_last_batch = 0;
+    while (frames < 100 && next_frame(T0).kind) {
+        frames++;
+        if (g_last_batch > biggest) biggest = g_last_batch;
+    }
+    T_EQ_INT(frames, 2 * NC_SUBS_MAX);
+    T_EQ_INT(biggest, NW_BATCH_MAX);
+    T_EQ_INT(g_batches - batches0, 2 * NC_SUBS_MAX / NW_BATCH_MAX);
+
+    // The replies, as a batch: each frame's event, in order, payloads in place.
+    signed_in(T0 + 3600000);
+    nc_stream_sub(NW_SUB_GAME, "g1", 2);
+    nc_stream_sub(NW_SUB_CHAT, "g1", 2);
+    nc_stream_opened(T0);
+    NwFrame sg = next_frame(T0), sc = next_frame(T0);
+    T_CHECK(sg.what == NW_SUB_GAME && sc.what == NW_SUB_CHAT);
+    NwFrame parts[3] = { ack(sg.ref, 0, 1) };
+    const uint8_t env[] = { 0xe7, 0xe8 };
+    parts[1] = push(NW_WS_CATCHUP, "g1", 4, env, 2);
+    parts[2] = ack(sc.ref, 0, 0);
+    uint8_t entries[256];
+    int at = 0;
+    for (int i = 0; i < 3; i++) {
+        uint8_t one_raw[64];
+        int k = nw_frame_encode(&parts[i], one_raw, sizeof one_raw);
+        at += nw_batch_add(one_raw, k, entries + at, (int)sizeof entries - at);
+    }
+    memset(&f, 0, sizeof f);
+    f.kind = NW_WS_BATCH;
+    f.blob.p = entries;
+    f.blob.len = (uint32_t)at;
+    uint8_t whole[300];
+    n = nw_frame_encode(&f, whole, sizeof whole);
+    char text[500];
+    int t = nw_text_encode(whole, n, text, sizeof text);
+    int k = nc_stream_in((const uint8_t *)text, t, 1, T0);
+    const int e0 = 0;   // the batch's three, then the loaded session, told with this feed
+    T_EQ_INT(k, 4);
+    T_EQ_INT(nc_event(3)->kind, NC_EV_SESSION);
+    T_EQ_INT(nc_event(e0)->kind, NC_EV_SEATED);
+    T_EQ_INT(nc_event(e0 + 1)->kind, NC_EV_VIEW);
+    T_EQ_INT(nc_event(e0 + 1)->version, 4);
+    T_EQ_MEM(nc_event_payload(e0 + 1), nc_event(e0 + 1)->payload_len, env, 2);
+    T_EQ_INT(nc_event(e0 + 2)->kind, NC_EV_NONE);
+    T_EQ_INT(nc_event(e0 + 2)->what, NW_SUB_CHAT);
+    // An empty message (a route response with nothing in it): no event at all.
+    T_EQ_INT(nc_stream_in((const uint8_t *)"", 0, 1, T0), 0);
+}
+
+// A subscription the server never answers is asked again after
+// NC_ACK_WAIT_MS, with a new ref; its acceptance then takes the game whole.
+static void an_unanswered_subscription_is_asked_again(void) {
+    signed_in(T0 + 3600000);
+    nc_stream_sub(NW_SUB_GAME, "g1", 2);
+    nc_stream_opened(T0);
+    NwFrame s1 = next_frame(T0);
+    T_EQ_INT(s1.kind, NW_WS_SUB_AS);
+    T_EQ_INT(nc_stream_due_ms(T0), NC_ACK_WAIT_MS);
+    T_EQ_INT(next_frame(T0 + NC_ACK_WAIT_MS - 1).kind, 0);
+    NwFrame s2 = next_frame(T0 + NC_ACK_WAIT_MS);
+    T_EQ_INT(s2.kind, NW_WS_SUB_AS);
+    T_CHECK(s2.ref != s1.ref);
+    NwFrame a = ack(s1.ref, 0, 1);   // the first one's, late: nobody waits on it
+    T_EQ_INT(feed(&a, 0, T0 + NC_ACK_WAIT_MS)->kind, NC_EV_NONE);
+    T_CHECK(nc_next_request(T0 + NC_ACK_WAIT_MS) == NULL);
+    a = ack(s2.ref, 0, 1);
+    T_EQ_INT(feed(&a, 0, T0 + NC_ACK_WAIT_MS)->kind, NC_EV_SEATED);
+    T_CHECK(path_is(nc_next_request(T0 + NC_ACK_WAIT_MS), "/v1/games/g1"));
+    // Accepted: never asked again.
+    T_EQ_INT(next_frame(T0 + 3 * NC_ACK_WAIT_MS).kind, NW_WS_PING);
+    // Asked again and again, its ref wraps past 65535 and is never 0 (an ACK's
+    // ref 0 would be nobody's).
+    signed_in(T0 + 100000000LL);
+    nc_stream_sub(NW_SUB_GAMES, NULL, 0);
+    nc_stream_opened(T0);
+    int zero = 0;
+    int64_t t = T0;
+    for (int i = 0; i < 65540; i++, t += NC_ACK_WAIT_MS) zero += next_frame(t).ref == 0;
+    T_EQ_INT(zero, 0);
+}
+
 int main(void) {
     T_RUN(session_blob);
     T_RUN(requests);
     T_RUN(answers);
     T_RUN(stream_order_and_retries);
+    T_RUN(subscriptions_batch);
+    T_RUN(an_unanswered_subscription_is_asked_again);
     T_RUN(gates);
     T_RUN(pump_signs_in_and_reads_answers);
     T_RUN(pump_refreshes_first_and_after_a_401);
