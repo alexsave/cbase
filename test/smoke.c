@@ -322,12 +322,9 @@ static bool ws_open(listener *l) {
     if (l->fd < 0) return false;
     NwFrame f;
     memset(&f, 0, sizeof f);
-    f.kind = NW_WS_AUTH;
+    f.kind = NW_WS_SUB_AS;   // the subscription says who asks, as the clients send it
     f.token_len = (uint16_t)strlen(l->token);
     memcpy(f.token, l->token, f.token_len);
-    ws_send(l, &f);
-    memset(&f, 0, sizeof f);
-    f.kind = NW_WS_SUB;
     f.ref = 1;
     f.what = (uint8_t)l->what;
     f.gid_len = (uint8_t)strlen(l->gid);

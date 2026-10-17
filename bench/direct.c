@@ -135,7 +135,7 @@ static const NcRequest *b_game(const void *a) { return nc_req_game(a, (int)strle
 static const NcRequest *b_history(const void *a) { (void)a; return nc_req_history(now_ms()); }
 static const NcRequest *b_bots(const void *a) { (void)a; return nc_req_bots(now_ms()); }
 static const NcRequest *b_create(const void *a) { (void)a; return nc_req_create(now_ms()); }
-static const NcRequest *b_delete(const void *a) { (void)a; return nc_req(NC_REQ_DELETE, NULL, 0, NULL, 0, 0, now_ms()); }
+static const NcRequest *b_delete(const void *a) { (void)a; return nc_req_delete_account(now_ms()); }
 static const NcRequest *b_meta(const void *a) {
     uint8_t body[ASK_BYTES_MAX];
     int n = ask_encode(a, body, sizeof body);
@@ -176,7 +176,7 @@ static bool setup(bn_http *h, char *gid, char *user) {
     snprintf(name, sizeof name, "benchd%08x", x);
     snprintf(pw, sizeof pw, "bd-%08x%08x", (unsigned)arc4random(), x);
     nc_reset();
-    const NcRequest *q = nc_req(NC_REQ_SIGNUP, name, (int)strlen(name), pw, (int)strlen(pw), 0, now_ms());
+    const NcRequest *q = nc_req_signup(name, (int)strlen(name), pw, (int)strlen(pw));
     bool ok = q && carry(h, q, &r) && nc_session_read(r.status, r.body.p, (int)r.body.len) == NW_OK;
     if (!ok) fprintf(stderr, "bench: signup answered %d\n", r.status);
     if (ok) {

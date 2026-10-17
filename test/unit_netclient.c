@@ -196,11 +196,11 @@ static void stream_order_and_retries(void) {
     T_EQ_INT(nc_stream_due_ms(T0), -1);
     nc_stream_opened(T0);
     T_EQ_INT(nc_stream_due_ms(T0), 0);
-    NwFrame f = next_frame(T0);
-    T_CHECK(f.kind == NW_WS_AUTH && f.token_len == 3 && memcmp(f.token, "jwt", 3) == 0);
+    // Each subscription says who asks (no AUTH frame it could overtake).
     NwFrame s1 = next_frame(T0), s2 = next_frame(T0);
-    T_CHECK(s1.kind == NW_WS_SUB && s1.what == NW_SUB_GAMES && s1.gid_len == 0);
-    T_CHECK(s2.kind == NW_WS_SUB && s2.what == NW_SUB_GAME && s2.gid_len == 2 && s2.ref != s1.ref && s2.version == 0);
+    T_CHECK(s1.kind == NW_WS_SUB_AS && s1.what == NW_SUB_GAMES && s1.gid_len == 0);
+    T_CHECK(s1.token_len == 3 && memcmp(s1.token, "jwt", 3) == 0);
+    T_CHECK(s2.kind == NW_WS_SUB_AS && s2.what == NW_SUB_GAME && s2.gid_len == 2 && s2.ref != s1.ref && s2.version == 0);
     T_EQ_INT(next_frame(T0).kind, 0);
     T_EQ_INT(nc_stream_due_ms(T0), NC_PING_MS);
 
@@ -217,18 +217,18 @@ static void stream_order_and_retries(void) {
     // A refused chat is retried after 0.5 s, then 1 s, then 2 s.
     T_EQ_INT(nc_stream_sub(NW_SUB_CHAT, "g1", 2), NW_OK);
     NwFrame c = next_frame(T0);
-    T_CHECK(c.kind == NW_WS_SUB && c.what == NW_SUB_CHAT);
+    T_CHECK(c.kind == NW_WS_SUB_AS && c.what == NW_SUB_CHAT);
     a = ack(c.ref, ASK_WHY_FORBIDDEN, 0);
     e = feed(&a, 0, T0);
     T_CHECK(e->kind == NC_EV_REFUSED && e->why == ASK_WHY_FORBIDDEN && e->what == NW_SUB_CHAT);
     T_EQ_INT(next_frame(T0 + NC_RETRY_FIRST_MS - 1).kind, 0);
     T_EQ_INT(nc_stream_due_ms(T0), NC_RETRY_FIRST_MS);
     c = next_frame(T0 + NC_RETRY_FIRST_MS);
-    T_CHECK(c.kind == NW_WS_SUB && c.what == NW_SUB_CHAT);
+    T_CHECK(c.kind == NW_WS_SUB_AS && c.what == NW_SUB_CHAT);
     a = ack(c.ref, ASK_WHY_FORBIDDEN, 0);
     feed(&a, 0, T0 + 1000);
     T_EQ_INT(next_frame(T0 + 1000 + 2 * NC_RETRY_FIRST_MS - 1).kind, 0);
-    T_EQ_INT(next_frame(T0 + 1000 + 2 * NC_RETRY_FIRST_MS).kind, NW_WS_SUB);
+    T_EQ_INT(next_frame(T0 + 1000 + 2 * NC_RETRY_FIRST_MS).kind, NW_WS_SUB_AS);
     // Held twice, let go once: still held, and nothing is sent.
     T_EQ_INT(nc_stream_sub(NW_SUB_GAME, "g1", 2), NW_OK);
     T_EQ_INT(nc_stream_unsub(NW_SUB_GAME, "g1", 2), NW_OK);
@@ -236,16 +236,24 @@ static void stream_order_and_retries(void) {
     // Let go and held again: asked again (the pending unsubscribe is moot).
     T_EQ_INT(nc_stream_unsub(NW_SUB_GAME, "g1", 2), NW_OK);
     T_EQ_INT(nc_stream_sub(NW_SUB_GAME, "g1", 2), NW_OK);
-    // A refused token is told again with the session's token.
+    // Refused for the token (an old server's race, or a token gone stale): asked
+    // again later, with whatever token the session holds then.
     NwFrame s3 = next_frame(T0 + 2000);
-    T_CHECK(s3.kind == NW_WS_SUB && s3.what == NW_SUB_GAME);
+    T_CHECK(s3.kind == NW_WS_SUB_AS && s3.what == NW_SUB_GAME);
     a = ack(s3.ref, ASK_WHY_AUTH, 0);
     feed(&a, 0, T0 + 2000);
-    T_EQ_INT(next_frame(T0 + 2000).kind, NW_WS_AUTH);
+    T_EQ_INT(next_frame(T0 + 2000).kind, 0);
+    uint8_t blob[256];
+    NwSession ses;
+    T_EQ_INT(nw_session_decode(blob, nc_session_save(blob, sizeof blob), &ses), NW_OK);
+    ses.access_len = 4; memcpy(ses.access, "jwt2", 4);
+    T_EQ_INT(nc_session_load(blob, nw_session_encode(&ses, blob, sizeof blob)), NW_OK);
+    s3 = next_frame(T0 + 2000 + NC_RETRY_FIRST_MS);
+    T_CHECK(s3.kind == NW_WS_SUB_AS && s3.token_len == 4 && memcmp(s3.token, "jwt2", 4) == 0);
 
     // Unsubscribing a live subscription tells the server; one never sent does not.
     T_EQ_INT(nc_stream_unsub(NW_SUB_GAMES, NULL, 0), NW_OK);
-    f = next_frame(T0 + 2000);
+    NwFrame f = next_frame(T0 + 2000);
     T_CHECK(f.kind == NW_WS_UNSUB && f.what == NW_SUB_GAMES);
 
     // The ping, every NC_PING_MS.
@@ -266,11 +274,10 @@ static void stream_order_and_retries(void) {
     pong.kind = NW_WS_PONG;
     feed(&pong, 0, T0);
     T_EQ_INT(nc_stream_closed(T0), NC_RETRY_FIRST_MS);
-    // Reopened: the token and every subscription again, the game's with what the client holds.
+    // Reopened: every subscription again, the game's with what the client holds.
     nc_stream_opened(T0);
-    T_EQ_INT(next_frame(T0).kind, NW_WS_AUTH);
     int subs = 0;
-    for (NwFrame x; (x = next_frame(T0)).kind == NW_WS_SUB;) subs++;
+    for (NwFrame x; (x = next_frame(T0)).kind == NW_WS_SUB_AS;) subs++;
     T_EQ_INT(subs, 2);   // the game and the chat; the dashboard was dropped
     // Signed out: nothing at all.
     nc_reset();
@@ -309,8 +316,8 @@ static void gates(void) {
     // A resubscription carries what is held, so the server catches up only what is newer.
     T_EQ_INT(nc_stream_sub(NW_SUB_GAME, "g1", 2), NW_OK);
     NwFrame s;
-    while ((s = next_frame(T0)).kind && s.kind != NW_WS_SUB) {}
-    T_CHECK(s.kind == NW_WS_SUB && s.version == 6);
+    while ((s = next_frame(T0)).kind && s.kind != NW_WS_SUB_AS) {}
+    T_CHECK(s.kind == NW_WS_SUB_AS && s.version == 6);
     T_EQ_INT(nc_stream_unsub(NW_SUB_GAME, "g1", 2), NW_OK);
     // The resync: the gate forgets, and an older view applies.
     nc_gate_reset("g1", 2);
@@ -745,7 +752,6 @@ static void accepted_again_refetches(void) {
     T_EQ_INT(nc_stream_sub(NW_SUB_GAME, "g1", 2), NW_OK);
     T_EQ_INT(nc_stream_sub(NW_SUB_CHAT, "g1", 2), NW_OK);
     nc_stream_opened(T0);
-    T_EQ_INT(next_frame(T0).kind, NW_WS_AUTH);
     NwFrame s = next_frame(T0), c = next_frame(T0);
     NwFrame a = ack(s.ref, 0, 1);
     feed(&a, 0, T0);
@@ -755,7 +761,7 @@ static void accepted_again_refetches(void) {
     // The socket reopened: what was pushed meanwhile is gone, so the game is fetched.
     nc_stream_closed(T0);
     nc_stream_opened(T0);
-    while ((s = next_frame(T0)).kind && !(s.kind == NW_WS_SUB && s.what == NW_SUB_GAME)) {}
+    while ((s = next_frame(T0)).kind && !(s.kind == NW_WS_SUB_AS && s.what == NW_SUB_GAME)) {}
     a = ack(s.ref, 0, 1);
     feed(&a, 0, T0);
     const NcRequest *q = nc_next_request(T0);
@@ -767,7 +773,6 @@ static void accepted_again_refetches(void) {
     signed_in(T0 + 3600000);
     nc_stream_sub(NW_SUB_GAME, "g2", 2);
     nc_stream_opened(T0);
-    next_frame(T0);
     s = next_frame(T0);
     a = ack(s.ref, ASK_WHY_FORBIDDEN, 0);
     feed(&a, 0, T0);
@@ -794,7 +799,6 @@ static int envelope(const char *gid, uint32_t v, uint8_t *out, int cap) {
 static void create_and_join_move_the_subscription(void) {
     signed_in(T0 + 3600000);
     nc_stream_opened(T0);
-    T_EQ_INT(next_frame(T0).kind, NW_WS_AUTH);
     uint8_t b[512];
     // A create: the new game is named, and heard from now on.
     NcIntent create = intent(NC_DO_CREATE, NULL);
@@ -805,7 +809,7 @@ static void create_and_join_move_the_subscription(void) {
     T_CHECK(d && d->why == 0 && d->gid_len == 6 && memcmp(d->gid, "newg01", 6) == 0);
     T_CHECK(d && d->version == 1 && d->a_off == 0 && (int)d->a_len == n && !d->stale);
     NwFrame s = next_frame(T0);
-    T_CHECK(s.kind == NW_WS_SUB && s.what == NW_SUB_GAME && s.gid_len == 6 && memcmp(s.gid, "newg01", 6) == 0);
+    T_CHECK(s.kind == NW_WS_SUB_AS && s.what == NW_SUB_GAME && s.gid_len == 6 && memcmp(s.gid, "newg01", 6) == 0);
     // The host holds it and lets it go: it is let go.
     nc_stream_sub(NW_SUB_GAME, "newg01", 6);
     nc_stream_unsub(NW_SUB_GAME, "newg01", 6);
@@ -831,7 +835,7 @@ static void create_and_join_move_the_subscription(void) {
     d = nc_on_response(q->id, 200, b, n, T0);
     T_CHECK(d && d->gid_len == 2 && d->version == 8 && (int)d->a_len == n);
     s = next_frame(T0);
-    T_CHECK(s.kind == NW_WS_SUB && s.what == NW_SUB_GAME && s.version == 8);
+    T_CHECK(s.kind == NW_WS_SUB_AS && s.what == NW_SUB_GAME && s.version == 8);
     // The join's own cast went out before the seat could hear it: at 8 it is stale.
     const uint8_t c[] = { 1 };
     NwFrame c8 = push(NW_WS_CAST, "g2", 8, c, 1);
@@ -900,7 +904,6 @@ static void another_user_starts_the_book_over(void) {
     T_EQ_INT(nc_session_load(b, n), NW_OK);
     T_EQ_INT(feed(&v, 0, T0)->kind, NC_EV_VIEW);
     nc_stream_opened(T0);
-    T_EQ_INT(next_frame(T0).kind, NW_WS_AUTH);
     T_EQ_INT(next_frame(T0).kind, 0);
 }
 
