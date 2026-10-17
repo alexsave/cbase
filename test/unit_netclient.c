@@ -1072,7 +1072,7 @@ static void subscriptions_batch(void) {
     T_EQ_INT(g_batches, batches0);
     // More than a batch holds: NW_BATCH_MAX, then the rest.
     signed_in(T0 + 3600000);
-    char gid[8];
+    char gid[16];
     for (int i = 0; i < NC_SUBS_MAX; i++) {
         snprintf(gid, sizeof gid, "g%02d", i);
         T_EQ_INT(nc_stream_sub(NW_SUB_GAME, gid, 3), NW_OK);
@@ -1082,7 +1082,7 @@ static void subscriptions_batch(void) {
     batches0 = g_batches;
     while (seen < 100 && next_frame(T0).kind == NW_WS_SUB_AS) seen++;   // bounded: a broken client must not hang the test
     T_EQ_INT(seen, NC_SUBS_MAX);
-    T_EQ_INT(g_batches - batches0, (NC_SUBS_MAX + NW_BATCH_MAX - 1) / NW_BATCH_MAX);
+    T_EQ_INT(g_batches - batches0, (NC_SUBS_MAX + NC_BATCH_OUT - 1) / NC_BATCH_OUT);
     // A long token: as many as the text holds, the rest in the next message.
     NwSession ses;
     memset(&ses, 0, sizeof ses);
@@ -1138,8 +1138,8 @@ static void subscriptions_batch(void) {
         T_CHECK(n > 0 && nw_frame_decode(raw, n, &f) == NW_OK);
         T_EQ_INT(f.kind, NW_WS_SUB_AS);
     }
-    // Unsubscriptions and subscriptions together past NW_BATCH_MAX: no batch
-    // carries more than NW_BATCH_MAX.
+    // Unsubscriptions and subscriptions together: no batch carries more than
+    // NC_BATCH_OUT.
     signed_in(T0 + 3600000);
     for (int i = 0; i < NC_SUBS_MAX; i++) {
         snprintf(gid, sizeof gid, "g%02d", i);
@@ -1161,8 +1161,8 @@ static void subscriptions_batch(void) {
         if (g_last_batch > biggest) biggest = g_last_batch;
     }
     T_EQ_INT(frames, 2 * NC_SUBS_MAX);
-    T_EQ_INT(biggest, NW_BATCH_MAX);
-    T_EQ_INT(g_batches - batches0, 2 * NC_SUBS_MAX / NW_BATCH_MAX);
+    T_EQ_INT(biggest, NC_BATCH_OUT);
+    T_EQ_INT(g_batches - batches0, 2 * NC_SUBS_MAX / NC_BATCH_OUT);
 
     // The replies, as a batch: each frame's event, in order, payloads in place.
     signed_in(T0 + 3600000);
@@ -1200,6 +1200,31 @@ static void subscriptions_batch(void) {
     T_EQ_MEM(nc_event_payload(e0 + 1), nc_event(e0 + 1)->payload_len, env, 2);
     T_EQ_INT(nc_event(e0 + 2)->kind, NC_EV_NONE);
     T_EQ_INT(nc_event(e0 + 2)->what, NW_SUB_CHAT);
+    // A reply batch longer than the client asks for: its tail is dropped, the
+    // events never overrun, and the session keeps its slot.
+    {
+        // Catch-ups of ever newer versions: each one an event.
+        uint8_t many[NW_BATCH_MAX * 24];
+        int m = 0;
+        const uint8_t one_byte[] = { 0x5a };
+        for (int i = 0; i < NW_BATCH_MAX; i++) {
+            NwFrame x = push(NW_WS_CATCHUP, "g1", (uint32_t)(100 + i), one_byte, 1);
+            uint8_t xr[24];
+            int xn = nw_frame_encode(&x, xr, sizeof xr);
+            m += nw_batch_add(xr, xn, many + m, (int)sizeof many - m);
+        }
+        NwFrame big;
+        memset(&big, 0, sizeof big);
+        big.kind = NW_WS_BATCH;
+        big.blob.p = many;
+        big.blob.len = (uint32_t)m;
+        uint8_t bw[sizeof many + 16];
+        int bn = nw_frame_encode(&big, bw, sizeof bw);
+        T_CHECK(bn > 0);
+        int got = nc_stream_in(bw, bn, 0, T0);
+        T_EQ_INT(got, NC_EVENTS_MAX - 1);   // the frames that fit; the session's slot is kept
+        T_EQ_INT(nc_event(got - 1)->version, (uint32_t)(100 + NC_EVENTS_MAX - 2));
+    }
     // An empty message (a route response with nothing in it): no event at all.
     T_EQ_INT(nc_stream_in((const uint8_t *)"", 0, 1, T0), 0);
 }
