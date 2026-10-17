@@ -41,6 +41,7 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include "../../shared/c/rng.h"
 
 #define TIMEOUT_MS 15000
 #define PUSH_WAIT_MS 5000
@@ -263,7 +264,7 @@ static int choose_move(worker *w, uint8_t *wire, int cap) {
     int seat = w->ct.view.my_seat;
     if (seat < 0 || w->ct.view.status != GAME_STATUS_PLAYING) return 0;
     calculate_legal_moves(w->ct.g, seat, &w->moves);
-    int start = w->moves.n ? (int)((w->rng = w->rng * 1103515245u + 12345u) >> 8) % w->moves.n : 0;
+    int start = w->moves.n ? (int)((rng_lcg32(&w->rng) >> 8) % (uint32_t)w->moves.n) : 0;
     for (int k = 0; k < w->moves.n; k++) {
         const LegalMove *m = &w->moves.moves[(start + k) % w->moves.n];
         if (m->type == MOVE_WAIT) continue;

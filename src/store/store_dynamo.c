@@ -34,6 +34,7 @@
 #include "util/hex.h"
 #include "util/log.h"
 #include "util/uuid.h"
+#include "../../../shared/c/rng.h"
 
 #include <stdatomic.h>
 #include <stdint.h>
@@ -172,11 +173,9 @@ static bool backoff_pause(backoff *b, bool throttled, const char *target) {
     int64_t cap = bulk ? BULK_CAP_MS : RETRY_CAP_MS;
     int64_t ceiling = RETRY_BASE_MS << (b->sends < 8 ? b->sends - 1 : 7);
     if (ceiling > cap) ceiling = cap;
-    if (!t_rng) t_rng = (uint64_t)cb_mono_ms() * 0x9E3779B97F4A7C15ull ^ (uint64_t)(uintptr_t)&t_rng;
-    t_rng ^= t_rng << 13;   // xorshift64: a jitter, not a secret
-    t_rng ^= t_rng >> 7;
-    t_rng ^= t_rng << 17;
-    int64_t pause = (int64_t)(t_rng % (uint64_t)(ceiling + 1));
+    // xorshift64 (rng.h), one stream a thread: a jitter, not a secret
+    if (!t_rng) t_rng = rng_seed64((uint64_t)cb_mono_ms() ^ (uint64_t)(uintptr_t)&t_rng);
+    int64_t pause = (int64_t)(rng_xorshift64(&t_rng) % (uint64_t)(ceiling + 1));
     bool stop = bulk ? !throttled && b->errors + 1 >= RETRY_SENDS
                      : b->sends >= RETRY_SENDS || cb_now_ms() + pause > b->until;
     if (stop) {

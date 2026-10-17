@@ -32,6 +32,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include "../../shared/c/rng.h"
 
 static const char UID_A[] = "aaaaaaaa-0000-4000-8000-000000000001";
 static const char UID_B[] = "bbbbbbbb-0000-4000-8000-000000000002";
@@ -268,8 +269,7 @@ static int pick_move(const char *gid, int seat, uint8_t *wire, int cap) {
         int idx[MAX_LEGAL_MOVES], k = 0;
         for (int i = 0; i < moves->n; i++) if (moves->moves[i].type != MOVE_WAIT) idx[k++] = i;
         if (k > 0) {
-            g_lcg = g_lcg * 1103515245u + 12345u;
-            const LegalMove *m = &moves->moves[idx[(g_lcg >> 8) % (uint32_t)k]];
+            const LegalMove *m = &moves->moves[idx[(rng_lcg32(&g_lcg) >> 8) % (uint32_t)k]];
             AwireAction a;
             memset(&a, 0, sizeof a);
             a.kind = m->type;

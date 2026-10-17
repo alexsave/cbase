@@ -53,6 +53,7 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include "../../shared/c/rng.h"
 
 static const char *g_bin;
 static tp_child g_child;
@@ -248,7 +249,7 @@ static int choose_move(smoke_client *sc, const cb_buf *env, uint8_t *wire, int c
     int seat = sc->c.view.my_seat;
     if (seat < 0 || sc->c.view.status != GAME_STATUS_PLAYING) return 0;
     calculate_legal_moves(sc->c.g, seat, &sc->moves);
-    int start = sc->moves.n ? (int)((*rng = *rng * 1103515245u + 12345u) >> 8) % sc->moves.n : 0;
+    int start = sc->moves.n ? (int)((rng_lcg32(rng) >> 8) % (uint32_t)sc->moves.n) : 0;
     for (int k = 0; k < sc->moves.n; k++) {
         const LegalMove *m = &sc->moves.moves[(start + k) % sc->moves.n];
         if (m->type == MOVE_WAIT) continue;
