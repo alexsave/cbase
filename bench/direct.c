@@ -30,9 +30,16 @@
 //   Every one is a read: no write is ever signed here. Without credentials the
 //   direct rows are left out and the run says so.
 //
-//   THE FLOOR, always: the direct_game request sent UNSIGNED. DynamoDB's front
-//   end refuses it (400, no authentication) before any storage is touched, so
-//   it is the network and TLS round trip to dynamodb.<region> alone.
+//   THE REFUSAL, always: the direct_game request sent UNSIGNED, which DynamoDB
+//   refuses (400, no authentication). It was meant as the network floor, but
+//   measured slower than the signed read (16.4 against 13.5 ms): the refusal
+//   path costs time of its own, so it is a rough bound, not a floor.
+//
+//   LOAD: every round reads every RATINGS row four times (/v1/leaderboard and
+//   /v1/history, and their direct twins), about 4.5 read units each on gsi2,
+//   which is provisioned at 5. At n=200 it outran DynamoDB's burst credit and
+//   throttled the live index (docs/DIRECT_DYNAMO.md); keep n small, or space
+//   the runs, until those reads stop scanning the whole board.
 //
 //   THE EDGE: GET --edge (a cached static file on the same CDN), the latency a
 //   leaderboard cached at CloudFront would have; the note counts the hits.
