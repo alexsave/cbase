@@ -454,7 +454,15 @@ Resources:
             CustomOriginConfig:
               OriginProtocolPolicy: https-only
               OriginSSLProtocols: [TLSv1.2]
+              # The function's Timeout (60 s), so CloudFront never gives up
+              # on an answer the Lambda is still allowed to send.
               OriginReadTimeout: 60
+              # How long CloudFront keeps an idle connection to the Function
+              # URL. The default, 5 s, is shorter than the usual gap between
+              # requests at our traffic, so most requests paid a new TCP + TLS
+              # handshake to the origin (about 45 ms at p50, measured with
+              # `cbase-bench spaced`). 60 is the most without a quota request.
+              OriginKeepaliveTimeout: 60
           - Id: realtime
             DomainName: !Sub "${WsApi}.execute-api.${AWS::Region}.amazonaws.com"
             CustomOriginConfig:

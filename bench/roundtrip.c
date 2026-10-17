@@ -40,6 +40,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 #define TIMEOUT_MS 15000
 #define PUSH_WAIT_MS 5000
@@ -320,6 +321,9 @@ static int move(worker *w, int k, cb_buf *env) {
     int bn = table_request_encode(body, sizeof body, (int)gl, n, true, w->ct.view.version);
     bn_resp r;
     bn_resp_init(&r);
+    // --gap: a player thinks between the board arriving and the move, and the
+    // hops in front of the Lambda close idle connections meanwhile.
+    if (w->o->gap_ms > 0) usleep((useconds_t)w->o->gap_ms * 1000u);
     int64_t t0 = bn_now_us();
     int s = fn(w, k, "action", body, (size_t)bn, &r);
     int64_t t1 = bn_now_us();
@@ -439,7 +443,7 @@ int bench_roundtrip(const bench_opts *o) {
     char date[32], host[64], note[256];
     bench_date(date, sizeof date);
     bench_host(host, sizeof host);
-    snprintf(note, sizeof note, "concurrency=%d games=%d rejected=%d lost_push=%d errors=%d wall_s=%lld%s%s", nw, games,
+    snprintf(note, sizeof note, "concurrency=%d gap_ms=%d games=%d rejected=%d lost_push=%d errors=%d wall_s=%lld%s%s", nw, o->gap_ms, games,
              rejected, lost, errors, (long long)(wall / 1000000), o->note && *o->note ? " " : "", o->note ? o->note : "");
     bench_note_load(note, sizeof note);
     bs_run run;

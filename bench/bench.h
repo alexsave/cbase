@@ -5,6 +5,7 @@
 //   cbase-bench cpu [--out DIR]
 //   cbase-bench direct --url <base> [--n 200] [--table cbase] [--region us-east-1] [--edge URL] [--burst K]
 //   cbase-bench subscribe --url <base> [--n 30] [--as 1]
+//   cbase-bench spaced --url <base> [--path P] [--n 30] [--gap MS]
 //   cbase-bench report [FILE...]        (default: every bench/results/*.txt)
 //
 // Each measuring command prints its run and saves it as
@@ -33,6 +34,7 @@ typedef struct {
     const char *edge;        // direct: a cached file on the CDN, https://host/path
     int         burst;       // direct: fresh connections at once, for a cold start
     bool        as;          // subscribe: also time NW_WS_SUB_AS
+    int         gap_ms;      // spaced, roundtrip: quiet before each timed request
 } bench_opts;
 
 int bench_roundtrip(const bench_opts *o);
@@ -40,6 +42,7 @@ int bench_coldstart(const bench_opts *o);
 int bench_cpu(const bench_opts *o);
 int bench_direct(const bench_opts *o);
 int bench_subscribe(const bench_opts *o);
+int bench_spaced(const bench_opts *o);
 
 // "2026-10-13T14:02:11Z" now.
 void bench_date(char *out, size_t cap);
