@@ -125,6 +125,7 @@ static _Thread_local int64_t t_deadline;
 static _Atomic uint64_t g_throttled, g_gave_up;
 
 void cb_store_set_deadline(int64_t deadline_ms) { t_deadline = deadline_ms; }
+int64_t cb_store_deadline(void) { return t_deadline; }
 
 void cb_store_throttles_get(cb_store_throttles *out) {
     out->throttled = atomic_load_explicit(&g_throttled, memory_order_relaxed);

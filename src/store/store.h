@@ -32,6 +32,7 @@
 #include "util/err.h"
 #include "util/uuid.h"
 
+#include <pthread.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -410,6 +411,23 @@ void cb_store_tally_take(cb_store_tally *out);
 // function's CB_E_DB into CB_E_BUSY, so no backend function maps it itself.
 #define CB_STORE_RETRY_WALL_MS 5000
 void cb_store_set_deadline(int64_t deadline_ms);   // epoch ms; 0: none
+int64_t cb_store_deadline(void);                    // this thread's, as set
+
+// Two independent reads at once (a route that needs both and neither needs
+// the other's answer): cb_store_side_start runs fn(ud) on a thread of its own,
+// with this thread's store deadline, while the caller makes its own read;
+// cb_store_side_join waits for it. A thread that cannot be started runs fn at
+// once, in the caller: the same answers, one after the other. fn must touch
+// only what ud gives it, and the store, which is safe from any thread.
+typedef struct {
+    pthread_t th;
+    bool      started;
+    void    (*fn)(void *ud);
+    void     *ud;
+    int64_t   deadline;
+} cb_store_side;
+void cb_store_side_start(cb_store_side *s, void (*fn)(void *ud), void *ud);
+void cb_store_side_join(cb_store_side *s);
 // This process's throttling since it started (the admin overview shows it;
 // under Lambda it is the warm container's, and every throttle is also a WARN
 // in the log): responses that were throttled, and requests given up on.

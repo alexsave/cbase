@@ -64,6 +64,26 @@ int cb_store_games_get_each(cb_store *s, const char *const *ids, int n, cb_game_
     return count;
 }
 
+static void *side_main(void *p) {
+    cb_store_side *s = p;
+    cb_store_set_deadline(s->deadline);
+    s->fn(s->ud);
+    return NULL;
+}
+
+void cb_store_side_start(cb_store_side *s, void (*fn)(void *ud), void *ud) {
+    s->fn = fn;
+    s->ud = ud;
+    s->deadline = cb_store_deadline();
+    s->started = pthread_create(&s->th, NULL, side_main, s) == 0;
+    if (!s->started) fn(ud);
+}
+
+void cb_store_side_join(cb_store_side *s) {
+    if (s->started) pthread_join(s->th, NULL);
+    s->started = false;
+}
+
 void cb_store_close(cb_store *s) {
     if (s && s->ops->close) s->ops->close(s);
 }

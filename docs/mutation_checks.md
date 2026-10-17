@@ -268,6 +268,11 @@ Equivalent, recorded so nobody chases it: dropping the order lock around a drain
 - json_surface.c: logs_packed in the projection -> `games_get_shape` the exact body and strstr(body, "logs_packed") == NULL.
 - store.c: cb_store_games_get_each keeps the log -> `game_round_trip` !v.logs (unit_store, also run on DynamoDB Local).
 
+## Independent reads at once (2026-10-17)
+
+- store.c: cb_store_side_start runs the side read in the caller, one after the other -> `independent_reads_run_at_once` g_overlapped == 2 (leaderboard and history).
+- store.c: the side thread without the request's store deadline -> `independent_reads_run_at_once` g_side_deadline[1] == deadline.
+
 ## Bench (bench/unit_bench.c)
 
 - bench_stats.c: the percentile's `- 1e-9` dropped -> `percentiles_of_one_to_hundred` bs_percentile(v, 100, 7) == 7 (7.000000000000001 rounds up to the 8th).

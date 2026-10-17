@@ -435,11 +435,28 @@ static int by_rating(const void *a, const void *b) {
 
 // Public, as h_bots. It reads only what it shows: the top BOARD_TOP played
 // humans (ratings_top, one bounded Query) and the bots (a fixed few dozen).
+typedef struct {
+    cb_store *store;
+    board     rows;
+    int       rc;
+} bots_read;
+
+static void read_bots(void *ud) {
+    bots_read *b = ud;
+    b->rc = CB_STORE_CALL(b->store, bots_list, board_bot, &b->rows);
+}
+
 static void h_board(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     if (!ctx->store) { refuse(res, 503, ASK_WHY_INTERNAL, 0); return; }
-    board humans = { 0 }, bots = { 0 };
+    board humans = { 0 };
+    // The two populations are independent reads: the bots' on a side thread.
+    bots_read br = { .store = ctx->store };
+    cb_store_side side;
+    cb_store_side_start(&side, read_bots, &br);
     int rc = CB_STORE_CALL(ctx->store, ratings_top, BOARD_TOP, board_human, &humans);
-    if (rc >= 0) rc = CB_STORE_CALL(ctx->store, bots_list, board_bot, &bots);
+    cb_store_side_join(&side);
+    board bots = br.rows;
+    if (rc >= 0) rc = br.rc;
     if (rc >= 0 && (humans.oom || bots.oom)) rc = CB_E_NOMEM;
     if (rc < 0) { free(humans.rows); free(bots.rows); failed(res, rc); return; }
     // Each population's top: the leaderboard merges them and cuts the whole again.
@@ -477,19 +494,35 @@ static bool history_fn(const cb_snapshot_row *s, void *ud) {
     return !l->bad;
 }
 
+typedef struct {
+    cb_store   *store;
+    const char *id;
+    int32_t     mine;
+    int         rc;
+} rating_read;
+
+static void read_rating(void *ud) {
+    rating_read *r = ud;
+    const char *ids[1] = { r->id };
+    r->rc = CB_STORE_CALL(r->store, ratings_for, ids, 1, &r->mine);
+}
+
 static void h_history(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     cb_user u;
     if (!caller(ctx, req, res, &u)) return;
-    // The caller's own rating: one read by key, not the leaderboard.
-    const char *ids[1] = { u.id };
-    int32_t mine = TABLE_RATING_NONE;
-    int rc = CB_STORE_CALL(ctx->store, ratings_for, ids, 1, &mine);
-    if (rc < 0) { failed(res, rc); return; }
+    // The caller's own rating (one read by key, not the leaderboard) on a side
+    // thread, while this one reads the replays: neither needs the other.
+    rating_read rr = { .store = ctx->store, .id = u.id, .mine = TABLE_RATING_NONE };
+    cb_store_side side;
+    cb_store_side_start(&side, read_rating, &rr);
     list l;
     list_begin(&l, NW_HISTORY_HEAD_BYTES);
     cb_snapshot_query q = { u.id, NULL, NULL, HISTORY_PAGE, true };
-    rc = CB_STORE_CALL(ctx->store, snapshots_query, &q, history_fn, &l);
+    int rc = CB_STORE_CALL(ctx->store, snapshots_query, &q, history_fn, &l);
+    cb_store_side_join(&side);
+    if (rc >= 0 && rr.rc < 0) rc = rr.rc;
     if (rc < 0) { cb_buf_free(&l.body); failed(res, rc); return; }
+    int32_t mine = rr.mine;
     bool found = mine != TABLE_RATING_NONE;
     uint32_t rating = found && mine > 0 ? (uint32_t)mine : 0;
     if (!l.bad && nw_history_head(found, rating, l.n, l.body.p, NW_HISTORY_HEAD_BYTES) == NW_HISTORY_HEAD_BYTES)

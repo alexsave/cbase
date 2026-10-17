@@ -21,6 +21,7 @@
 #include "ask.h"
 #include "netclient.h"
 
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <unistd.h>
 
@@ -576,6 +577,73 @@ static void a_throttled_read_is_busy_and_retried(void) {
     teardown();
 }
 
+// The leaderboard's two reads and the history's two reads are independent,
+// so each pair is in flight at once (cb_store_side), the side thread under
+// the request's store deadline. Each wrapped read waits (up to 2 s) for its
+// partner to start: one after the other, neither ever sees the other.
+static cb_store_ops g_pair_ops;
+static atomic_int g_in_flight;
+static atomic_int g_overlapped;
+static int64_t g_side_deadline[2];
+// g_overlapped: the most reads ever in flight together.
+static void pair_enter(int k) {
+    int now = atomic_fetch_add(&g_in_flight, 1) + 1;
+    for (int peak = atomic_load(&g_overlapped); now > peak && !atomic_compare_exchange_weak(&g_overlapped, &peak, now);) {}
+    g_side_deadline[k] = cb_store_deadline();
+    for (int i = 0; i < 200 && atomic_load(&g_overlapped) < 2; i++) usleep(10000);
+}
+static void pair_leave(void) { atomic_fetch_sub(&g_in_flight, 1); }
+static int pair_top(cb_store *s, int limit, cb_rating_fn fn, void *ud) {
+    pair_enter(0);
+    int rc = g_real_ops->ratings_top(s, limit, fn, ud);
+    pair_leave();
+    return rc;
+}
+static int pair_bots(cb_store *s, cb_bot_fn fn, void *ud) {
+    pair_enter(1);
+    int rc = g_real_ops->bots_list(s, fn, ud);
+    pair_leave();
+    return rc;
+}
+static int pair_for(cb_store *s, const char *const *ids, int n, int32_t *out) {
+    pair_enter(1);
+    int rc = g_real_ops->ratings_for(s, ids, n, out);
+    pair_leave();
+    return rc;
+}
+static int pair_snaps(cb_store *s, const cb_snapshot_query *q, cb_snapshot_fn fn, void *ud) {
+    pair_enter(0);
+    int rc = g_real_ops->snapshots_query(s, q, fn, ud);
+    pair_leave();
+    return rc;
+}
+
+static void independent_reads_run_at_once(void) {
+    setup();
+    T_EQ_INT(sign(1, "JO", "secret1"), 0);
+    g_real_ops = g_ctx.store->ops;
+    g_pair_ops = *g_real_ops;
+    g_pair_ops.ratings_top = pair_top;
+    g_pair_ops.bots_list = pair_bots;
+    g_pair_ops.ratings_for = pair_for;
+    g_pair_ops.snapshots_query = pair_snaps;
+    g_ctx.store->ops = &g_pair_ops;
+    const int64_t deadline = cb_now_ms() + 60000;
+    cb_store_set_deadline(deadline);
+    atomic_store(&g_overlapped, 0);
+    T_EQ_INT(send_req(nc_req_board()), 200);
+    T_EQ_INT(atomic_load(&g_overlapped), 2);
+    T_EQ_INT(g_side_deadline[1], deadline);   // the bots' read, on the side thread
+    atomic_store(&g_overlapped, 0);
+    g_side_deadline[1] = 0;
+    T_EQ_INT(call(b_history, NULL), 200);
+    T_EQ_INT(atomic_load(&g_overlapped), 2);
+    T_EQ_INT(g_side_deadline[1], deadline);   // the rating's read, on the side thread
+    cb_store_set_deadline(0);
+    g_ctx.store->ops = g_real_ops;
+    teardown();
+}
+
 int main(void) {
     T_RUN(the_email_is_the_clients_derivation);
     T_RUN(accounts);
@@ -583,6 +651,7 @@ int main(void) {
     T_RUN(refresh_password_signout_delete);
     T_RUN(games_views_and_chat);
     T_RUN(bots_board_history_replay);
+    T_RUN(independent_reads_run_at_once);
     T_RUN(cache_control_per_route);
     T_RUN(a_throttled_read_is_busy_and_retried);
     return T_DONE();
