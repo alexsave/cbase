@@ -1142,7 +1142,7 @@ static int failing_deliver(cb_rt *rt, const char *topic, const uint8_t *frame, s
     g_failed_deliveries++;
     return 1;
 }
-static const cb_rt_transport FAILING_T = { "failing", failing_deliver, NULL };
+static const cb_rt_transport FAILING_T = { .name = "failing", .deliver = failing_deliver };
 
 // Once the answer is out a failed push cannot fail the invocation any more:
 // it is logged at WARN with its game and version.

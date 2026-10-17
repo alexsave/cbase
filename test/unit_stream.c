@@ -214,7 +214,7 @@ static int cap_deliver(cb_rt *rt, const char *topic, const uint8_t *frame, size_
     memcpy(g_cap.nw, frame, g_cap.nw_len);
     return 0;
 }
-static const cb_rt_transport CAP_T = { "cap", cap_deliver, NULL };
+static const cb_rt_transport CAP_T = { .name = "cap", .deliver = cap_deliver };
 
 static void publishes(void) {
     cb_rt rt = { &CAP_T, &g_ctx, NULL };

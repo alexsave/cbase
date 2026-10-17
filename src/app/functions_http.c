@@ -18,6 +18,7 @@
 #include "v1_http.h"
 #include "auth/auth.h"
 #include "net/router.h"
+#include "realtime/realtime.h"
 #include "util/err.h"
 #include "util/log.h"
 #include "util/uuid.h"
@@ -83,6 +84,23 @@ static bool wrap400(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res, cb_us
 
 // Once the answer is out under Lambda (app/after.h), at once otherwise.
 static void kick(cb_ctx *ctx, const char *game_id) { cb_after_kick(ctx, game_id); }
+
+// THE ONE RULE for a request that SEATS its caller (a create, a join): the
+// account behind the token must still exist. An access token is verified
+// locally and outlives the account it names by up to its TTL (auth.h), so a
+// deleted account's token, or a validly signed one for an id that never had
+// an account, would otherwise make a seat nobody owns (smoke_matrix.c). One
+// read, on the two requests that are rare; a move by a seat that already
+// exists is the seat's, and costs nothing more. false with the refusal
+// answered: 400 AUTH, as every refused bearer here.
+static bool account_lives(cb_ctx *ctx, const cb_user *u, cb_http_res *res) {
+    cb_user_row row;
+    int rc = CB_STORE_CALL(ctx->store, user_get, u->id, &row);
+    if (rc == CB_OK) return true;
+    if (rc == CB_E_NOT_FOUND) refusal(res, 400, ASK_WHY_AUTH, 0, 0);
+    else run_failure(res, rc);
+    return false;
+}
 
 // ---- action ------------------------------------------------------------------------------
 
@@ -196,6 +214,7 @@ static void h_meta(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     if (ask.gid_len > CB_GAME_ID_MAX) { refusal(res, 400, ASK_WHY_NOT_FOUND, 0, 0); return; }
     memcpy(gid, ask.gid, ask.gid_len);
     gid[ask.gid_len] = 0;
+    if (ask.kind == ASK_JOIN && !account_lives(ctx, &u, res)) return;
     bot_list bots = { 0, 0, NULL };
     if (ask.kind == ASK_ADD_BOT && CB_STORE_CALL(ctx->store, bots_list, collect_bot, &bots) < 0) {
         CB_ERROR("functions", "meta: failed to fetch bots");
@@ -230,6 +249,7 @@ static void h_create(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     cb_user u;
     // No wrap400 here, so no content-type check: create has no body.
     if (cb_functions_verify(ctx, req, &u) != CB_OK) { refusal(res, 400, ASK_WHY_AUTH, 0, 0); return; }
+    if (!account_lives(ctx, &u, res)) return;
     cb_table_result r;
     int rc = cb_table_create(ctx, &u, &r);
     if (rc != CB_OK) {
@@ -364,17 +384,25 @@ int cb_app_delete_account(cb_ctx *ctx, const char *user_id, int *refused_code, i
         if (r.result == TABLE_E_NOT_SEATED) continue;
         if (r.result < 0) { *refused_code = r.result; *refused_detail = r.detail; rc = CB_E_FORBIDDEN; }
     }
-    free(l.ids);
-    if (rc != CB_OK) return rc;
+    if (rc != CB_OK) { free(l.ids); return rc; }
     // 2b. The stored replays of their finished games, the same name in each.
-    if ((rc = redact_snapshots(ctx, user_id)) != CB_OK) return rc;
+    if ((rc = redact_snapshots(ctx, user_id)) != CB_OK) { free(l.ids); return rc; }
     // 3. The leaderboard name, then 4. the account (sessions, memberships,
     //    the rating row and chat go with it).
     rc = CB_STORE_CALL(ctx->store, rating_set_username, user_id, NULL);
-    if (rc != CB_OK && rc != CB_E_NOT_FOUND) return rc;
+    if (rc != CB_OK && rc != CB_E_NOT_FOUND) { free(l.ids); return rc; }
     cb_edge_stale(CB_EDGE_BOARD);   // their name and row leave the leaderboard
-    if (!ctx->auth) return CB_E_STATE;
-    return cb_auth_delete_user(ctx->auth, user_id);
+    if (!ctx->auth) { free(l.ids); return CB_E_STATE; }
+    // A retry of a delete that already removed the account (its answer was
+    // lost, or a step after it failed) finds nothing left to remove: done, as
+    // the first attempt meant. It was a 500 forever (unit_oom.c, smoke_matrix.c).
+    rc = cb_auth_delete_user(ctx->auth, user_id);
+    if (rc == CB_E_NOT_FOUND) rc = CB_OK;
+    // 5. Their open streams end: their seats keep the id, so a page left open
+    //    would go on hearing those games (smoke_matrix.c).
+    if (rc == CB_OK) cb_rt_forget_user(ctx->rt, user_id, (const char (*)[CB_GAME_ID_MAX + 1])l.ids, l.n);
+    free(l.ids);
+    return rc;
 }
 
 static void h_delete_account(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {

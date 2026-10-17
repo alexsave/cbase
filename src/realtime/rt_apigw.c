@@ -289,12 +289,54 @@ static int apigw_deliver(cb_rt *rt, const char *topic, const uint8_t *frame, siz
     return failed;
 }
 
+// The user's connections, found through the topics they could have joined
+// (a CONN row is indexed by topic, not by user): each is told to go (API
+// Gateway closes it) and its row deleted.
+typedef struct {
+    const char *user;
+    size_t      n, cap;
+    struct target *t;
+} user_targets;
+
+static bool collect_user_conn(const cb_conn_row *r, void *ud) {
+    user_targets *u = ud;
+    if (strcmp(r->user_id, u->user) != 0) return true;
+    for (size_t i = 0; i < u->n; i++)
+        if (strcmp(u->t[i].id, r->conn_id) == 0) return true;   // met under another topic
+    if (u->n == u->cap) {
+        size_t nc = u->cap ? u->cap * 2 : 8;
+        struct target *nt = realloc(u->t, nc * sizeof *nt);
+        if (!nt) return false;
+        u->t = nt;
+        u->cap = nc;
+    }
+    cb_strlcpy(u->t[u->n++].id, r->conn_id, sizeof u->t[0].id);
+    return true;
+}
+
+static void apigw_forget(cb_rt *rt, const char *user_id, const char *const *topics, int n) {
+    cb_ctx *ctx = rt->ctx;
+    if (!ctx->store) return;
+    char endpoint[600];
+    endpoint_of(ctx, NULL, endpoint, sizeof endpoint);
+    user_targets u = { user_id, 0, 0, NULL };
+    for (int i = 0; i < n; i++) {
+        int rc = CB_STORE_CALL(ctx->store, conns_by_topic, topics[i], collect_user_conn, &u);
+        if (rc < 0) CB_WARN("realtime", "forget %s: %s not read: %s", user_id, topics[i], cb_strerror(rc));
+    }
+    for (size_t i = 0; i < u.n; i++) {
+        if (endpoint[0]) cb_rt_deps_g.apigw_delete(endpoint, u.t[i].id);
+        CB_STORE_CALL(ctx->store, conn_delete, u.t[i].id);
+    }
+    free(u.t);
+}
+
 static void apigw_free(cb_rt *rt) {
     free(rt->impl);
     free(rt);
 }
 
-static const cb_rt_transport APIGW_T = { "apigw", apigw_deliver, apigw_free };
+static const cb_rt_transport APIGW_T = { "apigw", apigw_deliver, apigw_free, apigw_forget };
 
 int cb_rt_apigw_new(cb_ctx *ctx, cb_rt **out) {
     *out = NULL;

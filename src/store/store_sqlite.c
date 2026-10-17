@@ -1411,12 +1411,17 @@ static void textrow_free(textrow *t) {
     free(t->values);
 }
 
+// On false, *t holds what was read so far and textrow_free frees it: t->n
+// counts columns only once both arrays exist (unit_oom.c failed the second
+// calloc and textrow_free walked a NULL names array).
 static bool textrow_read(sqlite3_stmt *s, int first, textrow *t) {
     int n = sqlite3_column_count(s) - first;
-    t->n = n > 0 ? n : 0;
-    t->names = calloc((size_t)t->n + 1, sizeof *t->names);
-    t->values = calloc((size_t)t->n + 1, sizeof *t->values);
+    if (n < 0) n = 0;
+    t->n = 0;
+    t->names = calloc((size_t)n + 1, sizeof *t->names);
+    t->values = calloc((size_t)n + 1, sizeof *t->values);
     if (!t->names || !t->values) return false;
+    t->n = n;
     for (int i = 0; i < t->n; i++) {
         int c = i + first;
         const char *nm = sqlite3_column_name(s, c);

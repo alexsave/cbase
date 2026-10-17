@@ -9,13 +9,21 @@
 #include "stream.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 // ---- the live dependencies (rt_deps.h) ----------------------------------------------
 
+// The token, and the account it names: a deleted account's token is still
+// signed and unexpired for up to its TTL, and must not open a subscription
+// (cb_rt_forget_user ends the ones it had).
 static int live_verify(cb_ctx *ctx, const char *jwt, cb_user *out) {
     if (!ctx->auth) return CB_E_STATE;
-    return cb_auth_verify_token(ctx->auth, jwt, out);
+    int rc = cb_auth_verify_token(ctx->auth, jwt, out);
+    if (rc != CB_OK || !ctx->store) return rc;
+    cb_user_row row;
+    rc = CB_STORE_CALL(ctx->store, user_get, out->id, &row);
+    return rc == CB_E_NOT_FOUND ? CB_E_AUTH : rc;
 }
 
 cb_rt_deps cb_rt_deps_g = {
@@ -95,6 +103,29 @@ void rt_publish_chat(cb_rt *rt, const char *game_id, const cb_chat_row *row) {
     frame_gid(&f, game_id);
     cb_chat_to_nw(row, &f.chat);
     publish(rt, topic, &f);
+}
+
+void cb_rt_forget_user(cb_rt *rt, const char *user_id, const char (*game_ids)[CB_GAME_ID_MAX + 1], int n) {
+    if (!rt || !rt->t || !rt->t->forget || !user_id || !*user_id) return;
+    // Every topic the user could hold: their feed, and per game their seat and the chat.
+    int cap = 1 + 2 * (n > 0 ? n : 0);
+    char (*topics)[CB_TOPIC_MAX] = calloc((size_t)cap, sizeof *topics);
+    const char **ptrs = calloc((size_t)cap, sizeof *ptrs);
+    int k = 0;
+    if (topics && ptrs) {
+        snprintf(topics[k++], CB_TOPIC_MAX, "pv-%s", user_id);
+        for (int i = 0; i < n; i++) {
+            snprintf(topics[k++], CB_TOPIC_MAX, "gu-%s-%s", game_ids[i], user_id);
+            snprintf(topics[k++], CB_TOPIC_MAX, "chat:%s", game_ids[i]);
+        }
+        for (int i = 0; i < k; i++) ptrs[i] = topics[i];
+    } else {
+        CB_ERROR("realtime", "forget %s: no memory for its topics; its connections are ended by user alone", user_id);
+        k = 0;
+    }
+    rt->t->forget(rt, user_id, ptrs, k);
+    free(topics);
+    free(ptrs);
 }
 
 void cb_rt_free(cb_rt *rt) {

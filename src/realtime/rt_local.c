@@ -286,7 +286,36 @@ static void local_free(cb_rt *rt) {
     free(rt);
 }
 
-static const cb_rt_transport LOCAL_T = { "local", local_deliver, local_free };
+// Every socket of the user is closed (1008): on the loop, which owns them.
+typedef struct {
+    cb_rt  *rt;
+    cb_uuid user;
+} forget_job;
+
+static void forget_on_loop(cb_loop *l, void *ud) {
+    forget_job *f = ud;
+    local *L = f->rt->impl;
+    for (lconn *c = L->head, *next; c; c = next) {
+        next = c->next;
+        if (strcmp(c->phx.user_id, f->user) == 0) {
+            c->phx.user_id[0] = 0;   // a frame still out on the pool comes back to nobody
+            c->phx.n_topics = 0;
+            cb_ws_close(c->ws, 1008);
+        }
+    }
+    free(f);
+}
+
+static void local_forget(cb_rt *rt, const char *user_id, const char *const *topics, int n) {
+    cb_loop *loop = rt->ctx->loop;
+    forget_job *f = loop ? calloc(1, sizeof *f) : NULL;
+    if (!f) return;
+    f->rt = rt;
+    cb_strlcpy(f->user, user_id, sizeof f->user);
+    if (cb_loop_post(loop, forget_on_loop, f) != CB_OK) free(f);
+}
+
+static const cb_rt_transport LOCAL_T = { "local", local_deliver, local_free, local_forget };
 
 int cb_rt_local_new(cb_ctx *ctx, cb_rt **out) {
     *out = NULL;
