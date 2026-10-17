@@ -1570,8 +1570,10 @@ static int dy_game_import(cb_store *s, const cb_game_row *g, const cb_uuid *huma
                           int n_bots) {
     if (n_humans < 0 || n_humans > CB_MAX_SEATS || n_bots < 0 || n_bots > CB_MAX_SEATS) return CB_E_INVALID;
     cb_game_commit c = { .row = g, .expected_version = g->version, .n_humans = n_humans, .n_bots = n_bots };
-    memcpy(c.humans, humans, (size_t)n_humans * sizeof(cb_uuid));
-    memcpy(c.bots, bots, (size_t)n_bots * sizeof(cb_uuid));
+    // A game with no humans or no bots may hand NULL for the list, and memcpy's
+    // pointer may never be NULL, even for no bytes (UBSan, unit_dynamo_ops).
+    if (n_humans) memcpy(c.humans, humans, (size_t)n_humans * sizeof(cb_uuid));
+    if (n_bots) memcpy(c.bots, bots, (size_t)n_bots * sizeof(cb_uuid));
     return commit_or_import(D(s), &c, true);
 }
 
