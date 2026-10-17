@@ -265,6 +265,19 @@ static void frames(void) {
     f.what = 9;
     T_EQ_INT(nw_frame_encode(&f, out, sizeof out), NW_E_WIRE);
 
+    // The subscription that says who asks: the token, then a SUB's fields.
+    f.what = NW_SUB_GAME;
+    f.kind = NW_WS_SUB_AS;
+    f.token_len = 3; memcpy(f.token, "jwt", 3);
+    const uint8_t sub_as[] = { 1, 44, 3, 0, 'j', 'w', 't', 7, 0, 2, 2, 'g', '1', 5, 0, 0, 0 };
+    T_EQ_MEM(out, nw_frame_encode(&f, out, sizeof out), sub_as, sizeof sub_as);
+    T_EQ_INT(nw_frame_decode(sub_as, sizeof sub_as, &g), NW_OK);
+    T_CHECK(g.kind == NW_WS_SUB_AS && g.ref == 7 && g.what == NW_SUB_GAME && g.version == 5 && g.gid_len == 2);
+    T_EQ_MEM(g.token, g.token_len, "jwt", 3);
+    T_EQ_INT(refused_everywhere(sub_as, sizeof sub_as, dec_frame), 0);
+    f.what = 9;
+    T_EQ_INT(nw_frame_encode(&f, out, sizeof out), NW_E_WIRE);
+
     memset(&f, 0, sizeof f);
     f.kind = NW_WS_ACK;
     f.ref = 7;

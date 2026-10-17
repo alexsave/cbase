@@ -188,29 +188,45 @@ static void on_unsub(cb_conn_row *c, const NwFrame *f) {
     topic_drop(c, topic);
 }
 
+// The token's user, made the connection's: true, or false (rc in *why) when the
+// token names nobody. A different user than the connection had ends every
+// subscription made as the old one.
+static bool take_user(cb_ctx *ctx, cb_conn_row *conn, const NwFrame *f, int *why) {
+    char tok[NW_ACCESS_MAX + 1];
+    memcpy(tok, f->token, f->token_len);
+    tok[f->token_len] = 0;
+    cb_user u;
+    memset(&u, 0, sizeof u);
+    int rc = f->token_len ? cb_rt_deps_g.verify_token(ctx, tok, &u) : CB_E_AUTH;
+    if (rc != CB_OK) {
+        if (rc != CB_E_AUTH) CB_WARN("stream", "token check failed: %s", cb_strerror(rc));
+        *why = rc;
+        return false;
+    }
+    if (conn->user_id[0] && strcmp(conn->user_id, u.id) != 0)
+        while (conn->n_topics) topic_remove(conn, 0);
+    cb_strlcpy(conn->user_id, u.id, sizeof conn->user_id);
+    return true;
+}
+
 int cb_nw_on_frame(cb_ctx *ctx, cb_conn_row *conn, const uint8_t *msg, size_t len, cb_rt_send_fn send, void *ud) {
     static _Thread_local NwFrame f;
     if (len > (size_t)INT32_MAX || nw_frame_decode(msg, (int)len, &f) != NW_OK) return CB_E_INVALID;
+    int why = 0;
     switch (f.kind) {
-    case NW_WS_AUTH: {
-        char tok[NW_ACCESS_MAX + 1];
-        memcpy(tok, f.token, f.token_len);
-        tok[f.token_len] = 0;
-        cb_user u;
-        memset(&u, 0, sizeof u);
-        int rc = f.token_len ? cb_rt_deps_g.verify_token(ctx, tok, &u) : CB_E_AUTH;
-        if (rc != CB_OK) {
+    case NW_WS_AUTH:
+        if (!take_user(ctx, conn, &f, &why)) {
             // Not someone: every subscription made as the old user ends.
-            if (rc != CB_E_AUTH) CB_WARN("stream", "token check failed: %s", cb_strerror(rc));
             conn->user_id[0] = 0;
             while (conn->n_topics) topic_remove(conn, 0);
-            return CB_OK;
         }
-        if (conn->user_id[0] && strcmp(conn->user_id, u.id) != 0)
-            while (conn->n_topics) topic_remove(conn, 0);
-        cb_strlcpy(conn->user_id, u.id, sizeof conn->user_id);
         return CB_OK;
-    }
+    case NW_WS_SUB_AS:
+        // Who asks rides with the ask: it never depends on an AUTH frame having
+        // been stored first, which API Gateway does not promise.
+        if (!take_user(ctx, conn, &f, &why)) { ack(f.ref, ASK_WHY_AUTH, false, send, ud); return CB_OK; }
+        on_sub(ctx, conn, &f, send, ud);
+        return CB_OK;
     case NW_WS_SUB: on_sub(ctx, conn, &f, send, ud); return CB_OK;
     case NW_WS_UNSUB: on_unsub(conn, &f); return CB_OK;
     case NW_WS_PING: {

@@ -792,6 +792,10 @@ Client to server:
 
 - `NW_WS_AUTH`: the access token (u16). First on every connection and again after every refresh; it names the connection's user. A subscription before it, or a token that does not verify, is refused with AUTH.
 - `NW_WS_SUB`: ref (u16), what (`NW_SUB_GAMES` the caller's views, `NW_SUB_GAME` one game's casts, `NW_SUB_CHAT` one game's chat), game id, and `since` (u32, the newest version the client holds, 0 for none).
+- `NW_WS_SUB_AS`: the access token (u16), then a `NW_WS_SUB`'s fields.
+  The subscription says who asks, so it never depends on an AUTH frame having been stored before it.
+  API Gateway invokes the function once per frame with no order per connection, and the connection row is written by compare-and-set, so an AUTH sent first can still be stored after the SUB that followed it was read; a bare SUB then finds nobody and is refused with AUTH until its retry.
+  A token that does not verify is refused with AUTH and changes nothing; another user's token ends the subscriptions made as the first one, as AUTH does.
 - `NW_WS_UNSUB`: what, game id.
 - `NW_WS_PING`.
 

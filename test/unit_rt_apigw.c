@@ -15,6 +15,7 @@
 #include "netwire.h"
 
 #define U1 "11111111-1111-4111-8111-111111111111"
+#define U2 "22222222-2222-4222-8222-222222222222"
 #define G  "ab12cd"
 
 static cb_ctx g_ctx;
@@ -64,6 +65,20 @@ static const char *sub_text(uint8_t kind, uint16_t ref, uint8_t what, const char
     NwFrame f;
     memset(&f, 0, sizeof f);
     f.kind = kind;
+    f.ref = ref;
+    f.what = what;
+    f.gid_len = (uint8_t)strlen(gid);
+    memcpy(f.gid, gid, f.gid_len);
+    return as_text(&f);
+}
+
+// A subscription that says who asks (NW_WS_SUB_AS), with `token` as its token.
+static const char *sub_as_text(const char *token, uint16_t ref, uint8_t what, const char *gid) {
+    NwFrame f;
+    memset(&f, 0, sizeof f);
+    f.kind = NW_WS_SUB_AS;
+    f.token_len = (uint16_t)strlen(token);
+    memcpy(f.token, token, f.token_len);
     f.ref = ref;
     f.what = what;
     f.gid_len = (uint8_t)strlen(gid);
@@ -159,6 +174,46 @@ static void frames_round_trip_through_the_conn_row(void) {
     // UNSUB removes the topic from the row.
     T_EQ_INT(ev("$default", "c1", NULL, sub_text(NW_WS_UNSUB, 0, NW_SUB_GAME, G)), 200);
     T_EQ_INT(rtf.conns[rtf_conn_find("c1")].n_topics, 0);
+}
+
+// API Gateway runs a connection's frames in no order: a SUB that reaches the
+// function before the AUTH sent ahead of it was stored finds nobody. The
+// subscription that carries its own token does not depend on that write.
+static void a_subscription_says_who_asks(void) {
+    setup();
+    rtf_member(G, U1);
+    T_EQ_INT(ev("$connect", "c1", "proto=nw1", NULL), 200);
+    // The race, as a bare SUB loses it: AUTH not stored yet, refused.
+    T_EQ_INT(ev("$default", "c1", NULL, sub_text(NW_WS_SUB, 1, NW_SUB_GAME, G)), 200);
+    NwFrame a = posted(rtf.n_posts - 1);
+    T_CHECK(a.kind == NW_WS_ACK && a.ref == 1 && a.why == ASK_WHY_AUTH);
+    // Self-authenticating, in the reversed order: the SUB first, then the AUTH.
+    T_EQ_INT(ev("$default", "c1", NULL, sub_as_text("tok-" U1, 2, NW_SUB_GAME, G)), 200);
+    a = posted(rtf.n_posts - 1);
+    T_CHECK(a.kind == NW_WS_ACK && a.ref == 2 && a.why == 0 && a.seated == 1);
+    int i = rtf_conn_find("c1");
+    T_EQ_STR(rtf.conns[i].user_id, U1);
+    T_EQ_INT(rtf.conns[i].n_topics, 1);
+    T_EQ_STR(rtf.conns[i].topics[0], "gu-" G "-" U1);
+    T_EQ_INT(ev("$default", "c1", NULL, auth_text(U1)), 200);
+    i = rtf_conn_find("c1");
+    T_EQ_STR(rtf.conns[i].user_id, U1);
+    T_EQ_INT(rtf.conns[i].n_topics, 1);
+    // A token that names nobody: refused, and the row is untouched.
+    T_EQ_INT(ev("$default", "c1", NULL, sub_as_text("forged", 3, NW_SUB_GAMES, "")), 200);
+    a = posted(rtf.n_posts - 1);
+    T_CHECK(a.kind == NW_WS_ACK && a.ref == 3 && a.why == ASK_WHY_AUTH);
+    i = rtf_conn_find("c1");
+    T_EQ_STR(rtf.conns[i].user_id, U1);
+    T_EQ_INT(rtf.conns[i].n_topics, 1);
+    // Another user's: what was subscribed as the first one ends.
+    T_EQ_INT(ev("$default", "c1", NULL, sub_as_text("tok-" U2, 4, NW_SUB_GAMES, "")), 200);
+    a = posted(rtf.n_posts - 1);
+    T_CHECK(a.kind == NW_WS_ACK && a.ref == 4 && a.why == 0);
+    i = rtf_conn_find("c1");
+    T_EQ_STR(rtf.conns[i].user_id, U2);
+    T_EQ_INT(rtf.conns[i].n_topics, 1);
+    T_EQ_STR(rtf.conns[i].topics[0], "pv-" U2);
 }
 
 static void a_lost_row_is_rebuilt_and_garbage_closes(void) {
@@ -259,6 +314,7 @@ static void publish_posts_each_subscriber(void) {
 int main(void) {
     T_RUN(connect_and_disconnect);
     T_RUN(frames_round_trip_through_the_conn_row);
+    T_RUN(a_subscription_says_who_asks);
     T_RUN(a_lost_row_is_rebuilt_and_garbage_closes);
     T_RUN(concurrent_frames_of_one_connection_both_stick);
     T_RUN(publish_posts_each_subscriber);
