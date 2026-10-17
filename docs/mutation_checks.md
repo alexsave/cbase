@@ -408,3 +408,19 @@ Each mutant built with its source's mtime pushed past the objects (make's same-s
   json_surface.c: a CONN item stored before 2026-10-17 unread -> `items_round_trip` the old item reads; the version-0 condition swapped -> `builders_valid_json` both ConditionExpressions; an index entry carrying topics -> "topics" absent; the route response body dropped -> `encode_ws`.
   store_sqlite.c: conn_put without its version check -> `conns_round_trip` CB_E_CONFLICT twice.
   store_dynamo.c (DynamoDB Local only): the lost topics' entries not deleted -> `conns_round_trip` conns_by_topic(game-ab12cd) == 1; the gained topics' entries not written -> == 2; the row put unconditionally -> CB_E_CONFLICT twice.
+
+## Defects the coverage work found (2026-10-17)
+
+Each test was red against the unfixed code first; the mutants below re-break each fix and its test goes red again (the source rewritten back after each, its mtime moved past the objects').
+
+- store_sqlite.c: textrow_read counting columns before its arrays exist -> unit_oom crashes in the console's browse (SIGSEGV in textrow_free).
+- functions_http.c: a retried delete answering the store's NOT_FOUND -> smoke_matrix "POST /v1/account/delete (again)" and unit_oom's delete sweep (unfailed run 500).
+- functions_http.c: create without account_lives -> smoke_matrix `a_token_for_nobody` and the deleted user's create cell.
+- realtime.c: live_verify not reading the account -> smoke_matrix: the deleted account's token subscribes again, and a token for nobody subscribes.
+- rt_local.c: the deleted user's sockets not closed -> smoke_matrix sE->closed, close code 1008.
+- rt_apigw.c: forget not filtering by user -> unit_forget: B1, another user's connection, deleted.
+- v1_http.c: a non-member's chat post stored -> smoke_matrix D's POST /v1/chat cell; a replay of a game the caller did not play answered -> the replay cells; failed() answering 404 for every store error -> unit_store_faults "answered 404".
+- admin.c: any bearer taken for the admin token -> smoke_matrix's console and bad-identity cells (58 checks).
+- view.c (the kernel): seat 0's hand shown to every viewer -> smoke_matrix "is shown to viewer"; evwire.c: deals never masked -> smoke_matrix's casts "shown to viewer".
+- stream.c: a FORBIDDEN subscription accepted -> smoke_matrix `stream_frames`.
+- oom.h: `the_seam_reaches_cbase` holds the seam itself (a failure delivered to util/str.c, a held block counted, then freed).
