@@ -21,6 +21,7 @@
 #include <poll.h>
 #include <pthread.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,6 +29,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/time.h>
+#include <time.h>
 #include <unistd.h>
 
 #define POOL_MAX     8
@@ -47,6 +49,33 @@ static SSL_CTX *g_ctx;
 static char g_ca_file[1024];   // cb_https_set_ca_file's, "" for the default search
 static conn g_pool[POOL_MAX];
 static int g_npool;
+
+// ---- the tally (https.h) ----------------------------------------------------------
+
+enum { K_DDB, K_PUSH, K_OTHER, K_N };
+static _Atomic int     g_calls[K_N], g_dials[K_N];
+static _Atomic int64_t g_us[K_N];
+
+static int host_kind(const char *host, bool tls) {
+    if (!tls || strncmp(host, "dynamodb.", 9) == 0) return K_DDB;
+    if (strstr(host, ".execute-api.")) return K_PUSH;
+    return K_OTHER;
+}
+
+static int64_t mono_us(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+}
+
+void cb_https_tally_take(cb_https_tally *out) {
+    cb_https_count *rows[K_N] = { &out->ddb, &out->push, &out->other };
+    for (int k = 0; k < K_N; k++) {
+        rows[k]->calls = atomic_exchange_explicit(&g_calls[k], 0, memory_order_relaxed);
+        rows[k]->dials = atomic_exchange_explicit(&g_dials[k], 0, memory_order_relaxed);
+        rows[k]->us = atomic_exchange_explicit(&g_us[k], 0, memory_order_relaxed);
+    }
+}
 
 void cb_https_response_free(cb_https_response *r) {
     cb_buf_free(&r->headers);
@@ -484,11 +513,14 @@ static int request(bool tls, const char *host, int port, const char *method, con
     if (body_len) cb_buf_append(&req, body, body_len);
     if (req.oom) { cb_buf_free(&req); return CB_E_NOMEM; }
 
+    const int kind = host_kind(host, tls);
+    const int64_t t0 = mono_us();
     int rc = CB_E_IO;
     for (int attempt = 0; attempt < 2; attempt++) {
         conn c;
         bool reused = attempt == 0 && pool_take(host, port, tls, &c);
         if (!reused) {
+            atomic_fetch_add_explicit(&g_dials[kind], 1, memory_order_relaxed);
             rc = conn_open(&c, host, port, tls, deadline);
             if (rc != CB_OK) break;
         }
@@ -500,6 +532,8 @@ static int request(bool tls, const char *host, int port, const char *method, con
         if (rc == 1) rc = CB_E_IO;
         break;
     }
+    atomic_fetch_add_explicit(&g_calls[kind], 1, memory_order_relaxed);
+    atomic_fetch_add_explicit(&g_us[kind], mono_us() - t0, memory_order_relaxed);
     cb_buf_free(&req);
     return rc;
 }

@@ -15,9 +15,17 @@
 // self-invoke, the schedule) twice, so a drive for a game that no longer
 // exists answers {} rather than an error: retrying it cannot help. The process holds nothing between invocations
 // but what a warm container may cache (app/table_ops.h).
+//
+// Every invocation ends with one INFO line, so latency is measured rather
+// than estimated (CloudWatch Logs Insights reads it with `parse`):
+//   inv: http GET /v1/leaderboard 200 ms=8.4 after=0.0 ddb=2/7.9/0 push=0/0.0/0 other=0/0.0/0
+// ms is decode to response posted, after is the work done once the response
+// is out (the edge cache's invalidation, app/edge.h), and each ddb|push|other
+// is calls/ms/new connections (aws/https.h).
 #include "app/bots.h"
 #include "app/edge.h"
 #include "aws/event.h"
+#include "aws/https.h"
 #include "aws/runtime_api.h"
 #include "boot.h"
 #include "config.h"
@@ -32,8 +40,26 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
-static int dispatch(cb_ctx *ctx, const cb_invocation *inv, cb_buf *out, char *why, size_t cap) {
+static int64_t mono_us(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+}
+
+// The invocation's timing line (above). `what` names it: kind, route, status.
+static void log_timing(const char *what, int64_t t0, int64_t t_resp, int64_t t_end) {
+    cb_https_tally t;
+    cb_https_tally_take(&t);
+    CB_INFO("inv", "%s ms=%.1f after=%.1f ddb=%d/%.1f/%d push=%d/%.1f/%d other=%d/%.1f/%d", what,
+            (double)(t_resp - t0) / 1000.0, (double)(t_end - t_resp) / 1000.0, t.ddb.calls, (double)t.ddb.us / 1000.0,
+            t.ddb.dials, t.push.calls, (double)t.push.us / 1000.0, t.push.dials, t.other.calls,
+            (double)t.other.us / 1000.0, t.other.dials);
+}
+
+static int dispatch(cb_ctx *ctx, const cb_invocation *inv, cb_buf *out, char *why, size_t cap, char *what,
+                    size_t what_cap) {
     cb_event ev;
     int rc = cb_event_decode((const char *)inv->event.p, inv->event.len, &ev);
     if (rc != CB_OK) {
@@ -50,6 +76,7 @@ static int dispatch(cb_ctx *ctx, const cb_invocation *inv, cb_buf *out, char *wh
         atomic_fetch_add_explicit(&ctx->stats.requests, 1, memory_order_relaxed);
         if (res.status >= 500) atomic_fetch_add_explicit(&ctx->stats.responses_5xx, 1, memory_order_relaxed);
         rc = cb_event_encode_http(&res, out);
+        snprintf(what, what_cap, "http %s %.60s %d", ev.http.method, ev.http.path ? ev.http.path : "", res.status);
         cb_res_free(&res);
         break;
     }
@@ -57,13 +84,16 @@ static int dispatch(cb_ctx *ctx, const cb_invocation *inv, cb_buf *out, char *wh
         int status = 500;
         cb_rt_apigw_event(ctx, &ev.ws, &status);
         rc = cb_event_encode_ws(status, out);
+        snprintf(what, what_cap, "ws %s %d", ev.ws.route_key, status);
         break;
     }
     case CB_EVENT_SCHEDULE:
+        snprintf(what, what_cap, "scan");
         rc = cb_bots_scan(ctx, cb_now_ms());
         if (rc >= 0) rc = cb_event_encode_none(out);
         break;
     case CB_EVENT_BOT_DRIVE:
+        snprintf(what, what_cap, "drive %s", ev.game_id);
         rc = cb_bots_drive(ctx, ev.game_id);
         if (rc == CB_E_NOT_FOUND) { CB_INFO("lambda", "bot_drive:%s: no such game", ev.game_id); rc = CB_OK; }
         if (rc >= 0) rc = cb_event_encode_none(out);
@@ -106,15 +136,20 @@ int main(void) {
         cb_store_set_deadline(inv.deadline_ms);   // a throttled request stops retrying before it
         cb_buf out;
         cb_buf_init(&out);
-        char why[256];
-        if (dispatch(&ctx, &inv, &out, why, sizeof why) == CB_OK) {
+        char why[256], what[96] = "event";
+        cb_https_tally skip;
+        cb_https_tally_take(&skip);   // this invocation's count starts here
+        const int64_t t0 = mono_us();
+        if (dispatch(&ctx, &inv, &out, why, sizeof why, what, sizeof what) == CB_OK) {
             cb_runtime_respond(host, port, inv.request_id, out.p, out.len);
         } else {
             CB_WARN("lambda", "invocation %s: %s", inv.request_id, why);
             cb_runtime_error(host, port, inv.request_id, "Handler", why);
         }
+        const int64_t t_resp = mono_us();
         // After the response is out: the caller never waits for CloudFront.
         cb_edge_flush(&cfg);
+        log_timing(what, t0, t_resp, mono_us());
         ctx.deadline_ms = 0;
         cb_store_set_deadline(0);
         cb_buf_free(&out);

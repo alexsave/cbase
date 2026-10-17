@@ -161,6 +161,8 @@ static void verified_and_kept_alive(void) {
     T_EQ_INT(cb_https_request("127.0.0.1", s.port, "GET", "/x", NULL, NULL, 0, 3000, &r), CB_E_IO);
     cb_https_response_free(&r);
     int before = atomic_load(&s.accepts);
+    cb_https_tally tally;
+    cb_https_tally_take(&tally);   // from here on
 
     T_EQ_INT(cb_https_request("localhost", s.port, "POST", "/echo", "X-Amz-Target: T\r\n", "hello", 5, 3000, &r), CB_OK);
     T_EQ_INT(r.status, 200);
@@ -179,6 +181,13 @@ static void verified_and_kept_alive(void) {
     // Both requests rode one TLS connection.
     T_EQ_INT(atomic_load(&s.accepts) - before, 1);
     T_EQ_INT(atomic_load(&s.requests), 2);
+    // The timing line's tally saw them: two calls on one new connection, to a
+    // host that is neither DynamoDB nor API Gateway, and some time.
+    cb_https_tally_take(&tally);
+    T_EQ_INT(tally.other.calls, 2);
+    T_EQ_INT(tally.other.dials, 1);
+    T_CHECK(tally.other.us > 0);
+    T_EQ_INT(tally.ddb.calls + tally.push.calls, 0);
     tls_srv_stop(&s);
 }
 

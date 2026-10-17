@@ -245,6 +245,12 @@ The console was checked by eye in headless Chrome against a mock API, light and 
 - store_dynamo.c, query_all stops after one page: unit_store (dynamo) big_items_and_pages, 24 replays and the chat; chat_list stops after one page: the 300 and the newest 250.
 - bots.c, the game unmarked after its drive instead of before: unit_bots_kick, the kick during a running drive is lost (1 drive, want 2); no dedupe at all (before the fix): 502 drives and 3 queued.
 - lib_proc.c, the pump starts reading 12 s late: unit_proc, the 4 MB writer has not exited within 3 s and its last lines never arrive.
+## Per-invocation timing line (2026-10-17)
+
+- https.c: a new connection not counted as a dial -> `verified_and_kept_alive` tally.other.dials == 1.
+- https.c: every host counted as DynamoDB -> `verified_and_kept_alive` tally.other.calls == 2 (and dials, us).
+- main_lambda.c: the timing line logged at DEBUG, so never at the function's INFO -> smoke_lambda `tp_wait_line("inv: http GET /health 200 ms=")` and the scan and drive lines.
+
 ## Bench (bench/unit_bench.c)
 
 - bench_stats.c: the percentile's `- 1e-9` dropped -> `percentiles_of_one_to_hundred` bs_percentile(v, 100, 7) == 7 (7.000000000000001 rounds up to the 8th).
