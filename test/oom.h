@@ -18,7 +18,13 @@
 //                       and whatever it may keep (a cache) is let go.
 //
 // Only the thread that armed it fails, so a pool worker's allocation never
-// fails behind a test's back. pthread_self allocates nothing, which
+// fails behind a test's back. And only an allocation the program's own code
+// makes (c_base and the kernel): on glibc the definitions also catch every
+// shared library's calls (sqlite's caches, OpenSSL's lazily made tables), whose
+// failures and long-lived blocks are the libraries' business, so a caller
+// outside the executable's text is passed through, as macOS's two-level
+// namespaces pass it. oom_everywhere(true) lifts that, where it can (glibc),
+// for a sweep that means to reach into a library (a JWT's HMAC). pthread_self allocates nothing, which
 // _Thread_local storage on macOS can (the first touch of a TLV mallocs).
 //
 // The usual way to use it is a sweep: run the operation with the k-th
@@ -54,6 +60,7 @@ static inline void oom_off(void) {}
 static inline long oom_count(void) { return 0; }
 static inline bool oom_failed(void) { return false; }
 static inline long oom_live(void) { return 0; }
+static inline void oom_everywhere(bool on) { (void)on; }
 #else
 #  define OOM_AVAILABLE 1
 
@@ -121,7 +128,19 @@ static inline long oom_count(void) { return oom_seen_; }
 static inline bool oom_failed(void) { return oom_hit_; }
 static inline long oom_live(void) { return oom_live_; }
 
-static bool oom_mine_(void) { return atomic_load(&oom_armed_) && pthread_equal(pthread_self(), oom_thread_); }
+static bool oom_everywhere_;
+static inline void oom_everywhere(bool on) { oom_everywhere_ = on; }
+
+#if defined(__APPLE__)
+#  define OOM_OURS_(caller) ((void)(caller), true)   // the linker already bound only our objects here
+#else
+// The executable's text, as the default linker script names it.
+extern char __executable_start[], etext[];
+#  define OOM_OURS_(caller) (oom_everywhere_ || ((char *)(caller) >= __executable_start && (char *)(caller) < etext))
+#endif
+
+static bool oom_armed_here_(void) { return atomic_load(&oom_armed_) && pthread_equal(pthread_self(), oom_thread_); }
+#define oom_mine_() (oom_armed_here_() && OOM_OURS_(__builtin_return_address(0)))
 
 // true when this allocation is the one to fail.
 static bool oom_take_(void) {
@@ -153,7 +172,7 @@ void *realloc(void *p, size_t n) {
     return q;
 }
 void free(void *p) {
-    if (p && oom_mine_()) oom_forget_(p);
+    if (p && oom_armed_here_()) oom_forget_(p);   // whoever frees it, it is no longer live
     OOM_REAL_FREE(p);
 }
 #endif
