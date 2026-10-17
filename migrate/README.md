@@ -1,5 +1,9 @@
 # Migrating the hosted Supabase data into c_base
 
+> **Since then (2026-10-17):** the migration is done.
+> The hosted data was imported into the production DynamoDB table on 2026-10-14, every client has moved to c_base, and nothing deploys to Supabase any more (RUNBOOK.md, steps 10 and 14).
+> `export.sh` is kept as the record of how the data left; `cbase-import` is still built and tested (`make check`, `make check-dynamo`).
+
 Two steps: a read-only export from the hosted project, then `cbase-import` writing it through the store interface.
 The same import fills a local SQLite file (the rehearsal) and the production DynamoDB table.
 

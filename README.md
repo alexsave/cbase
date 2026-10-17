@@ -2,13 +2,13 @@
 
 The foolish backend as one C program: AWS Lambda and DynamoDB in production (`bootstrap`), a local server on SQLite for development and tests (`cbase serve`).
 Clients speak its binary surface: `/v1` over HTTP and the `/v1/stream` WebSocket, every byte written and read by the kernel's codec (`foolish/c/src/netwire.h`) and client library (`netclient.h`), which the web reaches through `web.wasm` and iOS through its xcframework (DESIGN.md, "Binary surface").
-The design, every decision and each module's as-built record are in [DESIGN.md](DESIGN.md); the deploy is [RUNBOOK.md](RUNBOOK.md); the summary for Alex is [REPORT.md](REPORT.md).
+The design, every decision and each module's as-built record are in [DESIGN.md](DESIGN.md); the deploy and the operations are [RUNBOOK.md](RUNBOOK.md); [REPORT.md](REPORT.md) is the dated report of 2026-10-13 that chose this shape.
 
 ## Build and test
 
 ```
 make -C c_base             # build/cbase, build/bootstrap (native), build/cbase-import
-make -C c_base check       # every unit test, then both smoke lanes (the full game smoke takes about 1.5 minutes)
+make -C c_base check       # every unit test, then the three smoke lanes (the full game smoke takes about 1.5 minutes)
 make -C c_base check-asan  # the same, everything (the kernel too) under ASan + UBSan
 make -C c_base check-dynamo  # the store, admin and import tests and the game smoke on DynamoDB Local (Docker)
 make -C c_base bench-dynamo  # the DynamoDB store's per-operation latency against DynamoDB Local
@@ -49,4 +49,5 @@ Sign up, create a table, open it in a second browser profile, and play; DESIGN.m
 
 ## Deploy
 
-`c_base/ops/deploy.sh` after `aws configure`, as RUNBOOK.md explains; the console click-path is its fallback.
+Production is `https://api.foolish.cards`, and every push to `main` that touches c_base or the kernel deploys it from GitHub Actions through an OIDC role (`.github/workflows/c_base.yml`, RUNBOOK.md step 13).
+A template change, or a new stack, is `c_base/ops/deploy.sh` after `aws configure`, by hand, as RUNBOOK.md explains; the console click-path is its fallback.

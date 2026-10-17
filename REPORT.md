@@ -1,5 +1,13 @@
 # c_base - report to Alex (2026-10-13)
 
+> **Since then (2026-10-17):** this report is the record of 2026-10-13 and 14 and is not kept current.
+> c_base is live at `https://api.foolish.cards` (since 2026-10-14) and deploys from GitHub Actions on every push to `main` (RUNBOOK.md, step 13).
+> The Supabase-compatible facade (GoTrue, PostgREST, Phoenix, the anon key) is deleted: every client speaks the binary `/v1` surface through the kernel's `netclient` (DESIGN.md, "Binary surface").
+> The TypeScript server, its schema and its Postgres harness are deleted, and so is `deploy.yml`; nothing deploys to Supabase.
+> The web is a static export on S3 behind CloudFront and the `/m` unfurl is a C route (docs/VERCEL.md); Vercel is a dispatch-only rollback until about 2026-10-28.
+> The native C server this report weighs is being retired (PR #332, in progress 2026-10-17).
+> For the present, read README.md, DESIGN.md and RUNBOOK.md.
+
 ## 1. The one-line answer on cost
 
 Yes, at $0, but only by giving up the always-on process.

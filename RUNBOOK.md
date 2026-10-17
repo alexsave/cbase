@@ -1,6 +1,7 @@
 # c_base runbook: the first deploy to AWS
 
 This puts c_base live at `https://api.foolish.cards`.
+It has been live there since 2026-10-14: the first deploy, the import and the web cutover (steps 1 to 11, and W1 to W5 under "Web hosting") are done and kept for rebuilding the stack, and what changes it day to day is step 13 (every push to `main` deploys) and the hand steps it names.
 There are two ways, and they build the same stack:
 
 - **The CLI path (do this one):** `aws configure` once, then one script, `c_base/ops/deploy.sh`, does the bucket, the build, the upload, the stack, and the import.
@@ -12,8 +13,8 @@ Everything is in the region **US East (N. Virginia) us-east-1**.
 ## What I set up for you already
 
 - `c_base/ops/cbase.yaml`: one CloudFormation template that creates the whole backend (DynamoDB table, Lambda function, Function URL, WebSocket API, the one-minute bot scan, CloudFront at your domain).
-  It passes `cfn-lint`; nothing in it has been run against AWS yet.
-- `c_base/ops/deploy.sh`: the CLI path, end to end (it has been checked with `bash -n` and shellcheck, never run against AWS: there were no credentials).
+  It passes `cfn-lint`, and it is the live stack's template.
+- `c_base/ops/deploy.sh`: the CLI path, end to end (it created the live stack on 2026-10-14, and a template change still goes through it).
 - `c_base/ops/package.sh`: builds `c_base/build/cbase-lambda.zip`, the static arm64 Lambda binary, and prints its sha256.
   The same zip is built by CI on every change and kept as the `cbase-lambda` artifact of the `c_base` workflow run, so Docker on your Mac is optional.
 - `.github/workflows/c_base.yml`: builds and tests c_base on Linux and macOS, under ASan, lints the template, builds the zip, and on `main` deploys it to the function (step 13).
@@ -177,7 +178,7 @@ CloudFront only takes certificates from us-east-1, whatever region the rest is i
    For example, if ACM shows `_3f9c2a.api.foolish.cards.`, type `_3f9c2a.api` (Cloud DNS adds `.foolish.cards.` itself).
 8. Resource record type: **CNAME**; TTL: 300; canonical name: the ACM CNAME value exactly, ending in `.acm-validations.aws.`.
    Click **Create**.
-9. Leave the apex `foolish.cards` A record (Vercel) alone; nothing in this runbook touches it.
+9. Leave the apex `foolish.cards` and `www` records alone: they serve the website ("Web hosting", below), and nothing in steps 1 to 12 touches them.
 10. Wait until ACM shows the certificate as **Issued** (usually 5 to 30 minutes; refresh the page).
 11. Copy the certificate's **ARN** (starts with `arn:aws:acm:us-east-1:`).
     You need it in step 6.
@@ -296,6 +297,8 @@ The web build bakes the backend's URL in at build time, and CI builds the site (
 5. GitHub > **Actions** > **web** > the latest successful run on `main` > **Re-run all jobs**.
    Its `vercel pull` fetches the new values and the deploy ships them.
 6. Open https://foolish.cards, sign in with an existing account, and play a move against a bot.
+
+That was the cutover on Vercel; the site is on AWS now, where `web_aws.yml` sets `NEXT_PUBLIC_BACKEND_URL` to `https://api.foolish.cards` itself, and the Vercel value matters only to the rollback lane (W7).
    The admin console's Logs panel shows the requests.
 
 ## 12. Move the iOS apps
@@ -308,8 +311,7 @@ The web build bakes the backend's URL in at build time, and CI builds the site (
 
    The `$()` is required: in an `.xcconfig`, `//` starts a comment.
 2. Bump the build number, archive, and upload a TestFlight build as usual; test online play on a device before releasing it.
-3. Installs that do not update keep calling Supabase until they do.
-   That is why step 14 waits 30 days.
+3. The standalone iOS app never shipped, so no installed build calls Supabase, and step 14 waits for nothing.
 
 ## 13. GitHub deploys
 
@@ -379,8 +381,8 @@ Reserved concurrency costs nothing.
 ## Web hosting: foolish.cards and uttt.live off Vercel
 
 The design is `docs/VERCEL.md`; the stack is `ops/web.yaml`; the deploy is `ops/web_deploy.sh`.
-Everything up to the DNS flip is done: the stack `cbase-web` is live and both sites are uploaded and serving on their CloudFront names.
-Until DNS moves nothing reaches it, so it is harmless.
+W1 to W5 are done: the stack `cbase-web` is live, and foolish.cards, www, utils.foolish.cards and uttt.live all resolve to its two distributions (checked with `dig`, 2026-10-17).
+Those steps stay as the record and for a rebuild; W7 is the rollback and W9 the teardown.
 
 What exists (us-east-1, account 487337210065):
 
@@ -445,8 +447,8 @@ curl -s --connect-to foolish.cards:443:dgow77nr7v5kf.cloudfront.net:443 https://
 curl -sI --connect-to uttt.live:443:d2hb0vxf10cj0w.cloudfront.net:443 https://uttt.live/234 | grep -i location   # /243
 ```
 
-Today, before any of this, Vercel answers `https://foolish.cards/...` with a 307 to `www`, and serves the association file there as `application/octet-stream`.
-Apple fetches the association file at the apex without following redirects, so universal links are broken on Vercel today; the apex flip below fixes that.
+Before the flip, Vercel answered `https://foolish.cards/...` with a 307 to `www`, and served the association file there as `application/octet-stream`.
+Apple fetches the association file at the apex without following redirects, so universal links were broken on Vercel; the apex flip below fixed that.
 
 ### W5. The DNS flip, in this order
 
@@ -456,11 +458,11 @@ DNSSEC must be off for an ALIAS at `@` (it is: `dig +short DS foolish.cards` pri
 1. **uttt.live**, the rehearsal: replace the `@` A record (76.76.21.21) with an **ALIAS** `@` to `d2hb0vxf10cj0w.cloudfront.net`, and the `www` CNAME with `d2hb0vxf10cj0w.cloudfront.net`.
    Test: `dig +short uttt.live A` and `dig +short uttt.live AAAA` return CloudFront addresses (not 76.76.21.21), `curl -sI https://uttt.live/` says `server: CloudFront`, and a replay link from the app plays.
    If Squarespace will not take the ALIAS, stop here and use the fallback below before touching foolish.cards.
-2. **www.foolish.cards**: the `www` CNAME (today `d204b352f329121a.vercel-dns-017.com`) becomes `dgow77nr7v5kf.cloudfront.net`.
+2. **www.foolish.cards**: the `www` CNAME (then `d204b352f329121a.vercel-dns-017.com`) becomes `dgow77nr7v5kf.cloudfront.net`.
    Test: `curl -sI https://www.foolish.cards/` says `server: CloudFront`; sign in and play a move against a bot.
 3. **foolish.cards**: the `@` A record (216.198.79.193) becomes an **ALIAS** `@` to `dgow77nr7v5kf.cloudfront.net`.
    Test: `dig +short foolish.cards A` and `AAAA` return CloudFront addresses, `curl -sI https://foolish.cards/.well-known/apple-app-site-association` is a 200 with `application/json` and no redirect, then `cd foolish && npm run test:validate` (universal_links_validation) and a link tapped on a phone opens the app.
-4. **utils.foolish.cards**, whenever: it is a different site (the sibling repo `foolish-utils`), so first build it there with `output: 'export'` and `images.unoptimized`, upload with `c_base/ops/web_deploy.sh site utils --out ../foolish-utils/out` (the right content types, cache headers and invalidation), check it with `curl --connect-to` as in W4, then point the `utils` CNAME (today `1a8ccd91b52ad608.vercel-dns-017.com`) at `dgow77nr7v5kf.cloudfront.net`.
+4. **utils.foolish.cards**, whenever: it is a different site (the sibling repo `foolish-utils`), so first build it there with `output: 'export'` and `images.unoptimized`, upload with `c_base/ops/web_deploy.sh site utils --out ../foolish-utils/out` (the right content types, cache headers and invalidation), check it with `curl --connect-to` as in W4, then point the `utils` CNAME (then `1a8ccd91b52ad608.vercel-dns-017.com`) at `dgow77nr7v5kf.cloudfront.net`.
 
 Fallback if the apex ALIAS does not work: a Route 53 hosted zone ($0.50 a month; ALIAS queries to CloudFront are free).
 Create the zone for the domain, recreate EVERY record from Squarespace in it (the ACM CNAMEs too), add the apex as an A and AAAA alias to the distribution, then change the domain's nameservers at Squarespace to the zone's four.
@@ -485,7 +487,7 @@ A bad web deploy on AWS without a DNS rollback: re-run `web_aws` on the last goo
 
 ### W8. GitHub deploys for the web
 
-1. The role and the two secrets are step 13's: one role deploys the Lambda and the web.
+1. The role and its one secret (`CBASE_AWS_ROLE_ARN`) are step 13's: one role deploys the Lambda and the web.
 2. A template change to `ops/web.yaml` is always `web_deploy.sh stack` from this Mac; CI only uploads and rewrites the two page lists on the existing template.
 3. utils.foolish.cards is built in the sibling repo `foolish-utils` and still deployed by hand (W5 step 4).
 4. Now and then, `c_base/ops/web_deploy.sh site foolish --prune-static` (and `uttt`) deletes hashed files no current page uses; a tab left open across two deploys reloads.

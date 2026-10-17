@@ -1,5 +1,8 @@
 # Should the web's list reads go straight to DynamoDB?
 
+> **Since then (2026-10-17):** the recommendation landed.
+> The list reads stayed on c_base, and `/v1/leaderboard` and `/v1/bots` are cached at CloudFront and invalidated by event (DESIGN.md, "Edge cache").
+
 ## Recommendation
 
 No: keep the list reads (my games, leaderboard, match history, bots) on c_base, CloudFront -> Lambda -> DynamoDB, even though a direct read is faster.

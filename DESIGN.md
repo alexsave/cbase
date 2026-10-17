@@ -521,20 +521,20 @@ The export holds password hashes: it lives under `migrate/out/`, is gitignored, 
 
 As built:
 
-- `ops/cbase.yaml`: the table, the function (arm64, provided.al2023, 256 MB, 60 s), its role, the Function URL, the WebSocket API with its three routes and stage, the one-minute scan schedule (input `"scan"`), CloudFront with a CloudFront Function that rewrites `/realtime/v1/websocket` onto the stage. The GitHub Actions deploy role and OIDC provider are `ops/github_oidc.yaml`'s, a stack of their own (RUNBOOK.md step 13).
+- `ops/cbase.yaml`: the table, the function (arm64, provided.al2023, 256 MB, 60 s), its role, the Function URL, the WebSocket API with its three routes and stage, the one-minute scan schedule (input `"scan"`), CloudFront with a CloudFront Function that rewrites `/v1/stream` onto the stage. The GitHub Actions deploy role and OIDC provider are `ops/github_oidc.yaml`'s, a stack of their own (RUNBOOK.md step 13).
   It passes `cfn-lint`; its index names, key types and TTL are held to the store's by `test/unit_dynamo.c`.
   The zip comes from an S3 bucket parameter, because CloudFormation's inline code works only for Node.js and Python.
 - `ops/package.sh` calls `make bootstrap` and checks the zip holds exactly one executable `bootstrap`.
 - `ops/deploy.sh` is the whole deploy from this Mac once `aws configure` has credentials: secrets generated once, for a new stack only, into the ops settings file outside the repo (`ops/ops_env.sh`, RUNBOOK "The ops settings file"), the code bucket, the zip under a sha-named key, `cloudformation deploy`, the outputs, and the import with `--import`.
-  Checked with `bash -n` and shellcheck only.
-- `.github/workflows/c_base.yml` builds and tests on Ubuntu and macOS, under ASan, lints the template, builds the zip, and deploys on `main` once the deploy secrets exist; it has not run yet.
+  It created the live stack on 2026-10-14 and stays the hand step for a template change.
+- `.github/workflows/c_base.yml` builds and tests on Ubuntu and macOS, under ASan, lints the template, builds the zip, and on every push to `main` deploys it to the function through `ops/lambda_deploy.sh` with the OIDC role (RUNBOOK.md step 13).
 - `migrate/export.sh` (read-only, through the Management API with the Supabase CLI's keychain token) and `cbase-import` (see Store).
 
-Unproven until the first deploy: the CloudFront WebSocket path, the Function URL permission, the CI lanes and the deploy job.
+The first deploy (2026-10-14) proved what was unproven until then: the CloudFront WebSocket path, the Function URL permission, the CI lanes and the deploy job.
 
 ## Tests
 
-`make test` builds and runs every `test/unit_*.c` as its own program; `make smoke` runs both smoke lanes; `make check` is both; `make check-asan` rebuilds everything, the kernel included, under ASan and UBSan.
+`make test` builds and runs every `test/unit_*.c` as its own program; `make smoke` runs the three smoke lanes (the game smoke, `smoke_authz`'s authorization matrix and the Lambda smoke); `make check` is both; `make check-asan` rebuilds everything, the kernel included, under ASan and UBSan.
 The game scenario in `test/smoke.c` runs by default (`CBASE_SMOKE_GAME=0` turns it off): two humans and a bot play whole games against `cbase serve` over real HTTP and WebSocket, the server is SIGKILLed mid-game when only the bots owe a move and restarted with nobody bumping (the heartbeat must resume them once the dead process's lease expires, about 30 s), every push stream is checked strictly increasing, ratings change, one snapshot is stored, and a clean restart reloads the finished game unchanged.
 Each module's mutation checks are listed in `docs/mutation_checks.md`.
 Test files are found by wildcard, and every `test/lib_*.c` is linked into every test program (`lib_client.c` is an HTTP and WebSocket client, `lib_proc.c` starts a binary as a child).
@@ -987,7 +987,8 @@ Found on the way, NOT c_base defects (the hosted backend answers the same, becau
 
 ## Open defects carried over from Supabase
 
-Kept on purpose, so behaviour does not change under the clients; each is a later decision, not an accident: no rate limiting (create is unlimited, BUMP is open to non-members), ratings are world-readable, `game_snapshots.player_ids` survives account deletion, nothing cleans up stale lobbies or old snapshots, the game id space is 24 bits with five redraws, a snapshot failure is logged and swallowed, and there is no realtime catch-up.
+Kept on purpose, so behaviour does not change under the clients; each is a later decision, not an accident: no rate limiting (create is unlimited, BUMP is open to non-members), ratings are world-readable, `game_snapshots.player_ids` survives account deletion, nothing cleans up stale lobbies or old snapshots, the game id space is 24 bits with five redraws, and a snapshot failure is logged and swallowed.
+Changed since: realtime catch-up exists ("Binary surface", `NW_WS_CATCHUP`); the origin is closed and a concurrency ceiling caps a flood (RUNBOOK.md, "Closing the origin"); rate limits are in progress (PR #329, 2026-10-17).
 
 ## How it was built, and what integration decided
 

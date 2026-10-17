@@ -1,5 +1,11 @@
 # Moving foolish.cards off Vercel (2026-10-14)
 
+> **Since then (2026-10-17):** the move is done.
+> foolish.cards, www, utils.foolish.cards and uttt.live are all served from S3 behind CloudFront (`ops/web.yaml`), and `.github/workflows/web_aws.yml` builds and deploys both sites on every push to `main`.
+> The `/m` unfurl is the C route `src/app/unfurl_http.c` (DESIGN.md, "Unfurl route"), and `foolish/src/app/m/` is gone.
+> `web.yml` and `uttt-web.yml` remain only as workflow_dispatch Vercel rollbacks until about 2026-10-28 (RUNBOOK.md, "W9").
+> What follows is the design as written and its as-built record (section 7); the present state is RUNBOOK.md, "Web hosting".
+
 ## 1. The one-line answer
 
 It does not save money: Vercel Hobby is $0 today and the AWS shape is $0 too.
