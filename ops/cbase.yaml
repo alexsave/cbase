@@ -303,6 +303,9 @@ Resources:
           CBASE_PUBLIC_URL: !Sub "https://${DomainName}"
           # The management endpoint pushes are POSTed to (realtime/rt_apigw.h).
           CBASE_WS_ENDPOINT: !Sub "https://${WsApi}.execute-api.${AWS::Region}.amazonaws.com/prod"
+          # $default has a route response (WsDefaultRouteResponse, deployed
+          # before this line): a frame's last reply is the invocation's answer.
+          CBASE_WS_ROUTE_REPLY: "yes"
           CBASE_LOG_LEVEL: info
           # The edge cache's invalidations go here (app/edge.h).
           CBASE_CF_DISTRIBUTION: !Ref DistributionId
