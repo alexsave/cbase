@@ -577,10 +577,11 @@ It is one C program, and the same client measures `cbase serve` and the deployed
 - `coldstart --url <base> [--idle S] [--repeat K] [--path /health] [--force-cmd CMD]`: per repeat it runs the forcing command, sleeps, then times the first GET on a fresh connection and the next one on the same connection.
 - `cpu`: no network; fixtures come from a game the kernel plays in-process (two humans, dealt, eight moves in), and each operation's median nanoseconds per call over batches of at least 2 ms is reported with its share of a 5 ms request: the Function URL event decode and response encode (`event.c` then, `json_surface.c` now), a GetItem answer read into a game row and the commit's TransactWriteItems built (`dynamo_wire.c` then, `json_surface.c` now), one player's view push (`view_push`: the stream's frame and its base64 text; it was the `pv-` Realtime JSON, `pv_push_json`, 2141 ns against 114 ns on the same Mac), base64 of a 2 KB envelope each way, a JWT verify, a bcrypt verify (cost 10, sign-in only, for scale), and the kernel section itself (`table_load`, `table_set_deal_seed`, `table_act`, `table_commit_products`).
 - `report [FILE...]`: the Markdown tables of saved runs (default: every `bench/results/*.txt`).
+- `direct --url <base> [--n 200] [--edge URL] [--burst K]`: the web's three /v1 reads (leaderboard, the dashboard, one dealt game) through the stack, the same DynamoDB calls signed from this Mac with the environment's credentials (reads only), the unsigned GetItem DynamoDB's front door refuses (the network floor), a cached file on the CDN, and a burst of fresh connections for a cold start; docs/DIRECT_DYNAMO.md has the run and what it decides.
 
 Every run prints itself and is saved as `bench/results/<kind>-<UTC stamp>.txt` (gitignored); its note carries the concurrency, games, rejected moves, lost pushes, errors and the machine's 1-minute load average.
 The baseline below is committed as `bench/results/baseline-*.txt`.
-Not built: a `store` sub-command timing DynamoDB (or S3) GET and conditional PUT directly from this Mac; it needs credentials and a table, and the deployed `roundtrip` already includes those calls.
+Not built: a `store` sub-command timing a conditional PUT directly from this Mac; the deployed `roundtrip` already includes it.
 
 ### The local baseline (2026-10-13, Apple M1, macOS 27.0.1)
 
