@@ -424,3 +424,5 @@ Each test was red against the unfixed code first; the mutants below re-break eac
 - view.c (the kernel): seat 0's hand shown to every viewer -> smoke_matrix "is shown to viewer"; evwire.c: deals never masked -> smoke_matrix's casts "shown to viewer".
 - stream.c: a FORBIDDEN subscription accepted -> smoke_matrix `stream_frames`.
 - oom.h: `the_seam_reaches_cbase` holds the seam itself (a failure delivered to util/str.c, a held block counted, then freed).
+- auth.c/jwt.c: a token check whose HMAC could not be computed answered CB_E_AUTH (the code before the fix) -> unit_oom `a_token_check_that_cannot_be_made_is_not_a_bad_token`, red on CI's ubuntu lane (allocations 1-3 of the check: CB_E_AUTH), green after; on macOS OpenSSL's allocations are out of the seam's reach and the sweep fails nothing.
+- lib_faultstore.c: its operation count one short -> the static assert stops the build (store.h has an operation lib_faultstore.c does not wrap).
