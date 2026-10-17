@@ -24,7 +24,9 @@ static void conn(const char *id, const char *user, const char *t1, const char *t
     c.expires_at = cb_now_ms() + 600000;
     if (t1) snprintf(c.topics[c.n_topics++], sizeof c.topics[0], "%s", t1);
     if (t2) snprintf(c.topics[c.n_topics++], sizeof c.topics[0], "%s", t2);
-    T_EQ_INT(CB_STORE_CALL(&rtf.store, conn_put, &c), CB_OK);
+    cb_conn_row none;
+    memset(&none, 0, sizeof none);   // no row before it
+    T_EQ_INT(CB_STORE_CALL(&rtf.store, conn_put, &none, &c), CB_OK);
 }
 
 static void apigw_forgets_only_the_user(void) {
