@@ -36,6 +36,7 @@
 // alignment) and for their id outside the games' and replays' own rows, the
 // other players' replays no longer name them, and their open stream hears
 // nothing more.
+#include "../../shared/c/rng.h"
 #include "t.h"
 #include "lib_client.h"
 #include "lib_proc.h"
@@ -476,7 +477,7 @@ static int choose(const uint8_t *env, int len, uint8_t *wire, int cap, uint32_t 
     int seat = g_mv.c.view.my_seat;
     if (seat < 0 || g_mv.c.view.status != GAME_STATUS_PLAYING) return 0;
     calculate_legal_moves(g_mv.c.g, seat, &g_mv.moves);
-    int start = g_mv.moves.n ? (int)((*rng = *rng * 1103515245u + 12345u) >> 8) % g_mv.moves.n : 0;
+    int start = g_mv.moves.n ? (int)((rng_lcg32(rng) >> 8) % (uint32_t)g_mv.moves.n) : 0;
     for (int k = 0; k < g_mv.moves.n; k++) {
         const LegalMove *m = &g_mv.moves.moves[(start + k) % g_mv.moves.n];
         if (m->type == MOVE_WAIT) continue;
