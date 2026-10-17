@@ -285,9 +285,6 @@ void cb_ws_close(cb_ws *c, uint16_t code) {
 }
 
 uint64_t cb_ws_id(const cb_ws *c) { return c->id; }
-void *cb_ws_userdata(const cb_ws *c) { return c->ud; }
-const char *cb_ws_peer(const cb_ws *c) { return c->peer; }
-const char *cb_ws_query(const cb_ws *c) { return c->query ? c->query : ""; }
 
 // Reads every whole frame in `in`. Returns false when the connection was closed.
 static bool ws_frames(conn *c) {
@@ -571,12 +568,6 @@ void cb_server_free(cb_server *s) {
     reap(s->ctx->loop, s);
     if (s->lfd >= 0) close(s->lfd);
     free(s);
-}
-
-cb_ws *cb_server_ws_find(cb_server *s, uint64_t id) {
-    for (conn *c = s->all; c; c = c->next)
-        if (c->id == id) return c->state == C_WS && !c->dead && !c->closing ? c : NULL;
-    return NULL;
 }
 
 void cb_server_ws_each(cb_server *s, void (*fn)(cb_ws *ws, void *ud), void *ud) {

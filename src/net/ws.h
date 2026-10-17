@@ -88,11 +88,8 @@ int  cb_ws_send(cb_ws *ws, int opcode, const void *data, size_t len);
 int  cb_ws_send_text(cb_ws *ws, const char *text, size_t len);
 // Sends a CLOSE with `code` and closes once it is written. on_close follows.
 void cb_ws_close(cb_ws *ws, uint16_t code);
-// A process-unique id (never reused), for finding the socket from another
-// thread's post (server.h cb_server_ws_find).
+// A process-unique id (never reused), for finding the socket again from
+// another thread's post (rt_local.c).
 uint64_t cb_ws_id(const cb_ws *ws);
-void *cb_ws_userdata(const cb_ws *ws);              // the `ud` given at upgrade
-const char *cb_ws_peer(const cb_ws *ws);
-const char *cb_ws_query(const cb_ws *ws);           // the upgrade request's raw query, kept
 
 #endif

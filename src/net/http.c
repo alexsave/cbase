@@ -238,7 +238,6 @@ void cb_res_body(cb_http_res *res, const void *p, size_t n) {
     cb_buf_append(&res->body, p, n);
 }
 
-void cb_res_append(cb_http_res *res, const void *p, size_t n) { cb_buf_append(&res->body, p, n); }
 
 void cb_res_send(cb_http_res *res, int status, const char *content_type, const void *body, size_t n) {
     res->status = status;

@@ -29,7 +29,6 @@ typedef struct {
 // `ring`: entries kept for cb_log_read (0 picks 2048). Safe to call once,
 // before any thread logs; logging before it prints to stderr only.
 void cb_log_init(int min_level, size_t ring);
-void cb_log_set_level(int min_level);
 // "debug" | "info" | "warn" | "error" -> CB_LOG_*, or -1.
 int  cb_log_level_parse(const char *s);
 const char *cb_log_level_name(int level);

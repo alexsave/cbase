@@ -29,12 +29,6 @@ void cb_log_init(int min_level, size_t ring) {
     pthread_mutex_unlock(&g_lock);
 }
 
-void cb_log_set_level(int min_level) {
-    pthread_mutex_lock(&g_lock);
-    g_min = min_level;
-    pthread_mutex_unlock(&g_lock);
-}
-
 int cb_log_level_parse(const char *s) {
     for (int i = 0; i < 4; i++) if (strcasecmp(s, NAMES[i]) == 0) return i;
     return -1;

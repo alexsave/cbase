@@ -6,12 +6,6 @@
 #include <string.h>
 #include <strings.h>
 
-cb_span cb_span_cstr(const char *s) { cb_span v = { s ? s : "", s ? strlen(s) : 0 }; return v; }
-
-bool cb_span_eq(cb_span a, const char *cstr) {
-    size_t n = strlen(cstr);
-    return a.n == n && memcmp(a.p, cstr, n) == 0;
-}
 
 bool cb_span_eq_nocase(cb_span a, const char *cstr) {
     size_t n = strlen(cstr);
@@ -102,7 +96,6 @@ bool cb_strncpy0(char *dst, size_t cap, const char *src, size_t n) {
     return true;
 }
 
-bool cb_streq_nocase(const char *a, const char *b) { return strcasecmp(a, b) == 0; }
 
 bool cb_starts_with(const char *s, const char *prefix) { return strncmp(s, prefix, strlen(prefix)) == 0; }
 

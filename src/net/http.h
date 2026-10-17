@@ -96,7 +96,6 @@ void cb_res_header(cb_http_res *res, const char *name, const char *value);
 // true when a header of that name has been added (case-insensitive).
 bool cb_res_has_header(const cb_http_res *res, const char *name);
 void cb_res_body(cb_http_res *res, const void *p, size_t n);     // replaces
-void cb_res_append(cb_http_res *res, const void *p, size_t n);
 // status + Content-Type + body in one call.
 void cb_res_send(cb_http_res *res, int status, const char *content_type, const void *body, size_t n);
 // Content-Type: text/plain; charset=utf-8.

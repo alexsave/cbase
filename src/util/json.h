@@ -54,7 +54,6 @@ void cb_jw_key(cb_jw *w, const char *k);
 void cb_jw_str(cb_jw *w, const char *s);            // NULL writes null
 void cb_jw_strn(cb_jw *w, const char *s, size_t n);
 void cb_jw_int(cb_jw *w, int64_t v);
-void cb_jw_num(cb_jw *w, double v);                 // non-finite writes null
 void cb_jw_bool(cb_jw *w, bool v);
 void cb_jw_null(cb_jw *w);
 void cb_jw_raw(cb_jw *w, const char *json, size_t n);  // an already-encoded value

@@ -106,12 +106,6 @@ void cb_jw_int(cb_jw *w, int64_t v) {
     cb_buf_printf(w->b, "%lld", (long long)v);
 }
 
-void cb_jw_num(cb_jw *w, double v) {
-    if (!isfinite(v)) { cb_jw_null(w); return; }
-    if (!value_start(w)) return;
-    cb_buf_printf(w->b, "%.17g", v);
-}
-
 void cb_jw_bool(cb_jw *w, bool v) {
     if (!value_start(w)) return;
     cb_buf_puts(w->b, v ? "true" : "false");

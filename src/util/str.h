@@ -20,8 +20,6 @@ typedef struct {
 
 #define CB_SPAN_LIT(s) ((cb_span){ (s), sizeof(s) - 1 })
 static inline cb_span cb_span_of(const char *s, size_t n) { cb_span v = { s, n }; return v; }
-cb_span cb_span_cstr(const char *s);                   // NULL -> empty span
-bool    cb_span_eq(cb_span a, const char *cstr);       // exact bytes
 bool    cb_span_eq_nocase(cb_span a, const char *cstr);  // ASCII case-insensitive
 
 typedef struct {
@@ -54,7 +52,6 @@ size_t cb_strlcpy(char *dst, const char *src, size_t cap);
 // Copies exactly n bytes of src and terminates; false (and "" in dst) when n >= cap.
 // src may be NULL when n is 0 (an empty span).
 bool   cb_strncpy0(char *dst, size_t cap, const char *src, size_t n);
-bool   cb_streq_nocase(const char *a, const char *b);
 bool   cb_starts_with(const char *s, const char *prefix);
 
 // Percent-decoding of a URL component. `plus_is_space` for a query string

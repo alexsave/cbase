@@ -3,8 +3,8 @@
 // Ties the loop, the HTTP parser, the router, the request pool and the
 // WebSocket codec together. Owned by the loop thread: every function here is
 // loop-thread-only. Other threads reach a WebSocket by posting to the loop
-// (loop.h cb_loop_post) and looking it up by id (cb_server_ws_find), which is
-// how realtime's publish calls get from a bot worker to a socket.
+// (loop.h cb_loop_post), which is how realtime's publish calls get from a bot
+// worker to a socket (rt_local.c keeps its sockets' ids).
 //
 // One connection at a time per socket: a request is parsed, its handler runs
 // (on the pool, the socket paused meanwhile), its response is written, and only
@@ -42,8 +42,6 @@ void cb_server_drain(cb_server *s, int64_t timeout_ms);
 // still running against a connection.
 void cb_server_free(cb_server *s);
 
-// The open WebSocket with that id, or NULL (closed since).
-cb_ws *cb_server_ws_find(cb_server *s, uint64_t id);
 // Calls fn for every open WebSocket. fn may send, and may close the one it is given.
 void cb_server_ws_each(cb_server *s, void (*fn)(cb_ws *ws, void *ud), void *ud);
 
