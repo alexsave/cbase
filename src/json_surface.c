@@ -543,7 +543,20 @@ bool dw_item_user(cb_span it, cb_user_row *u) {
     dw_get_s(it, "username", u->username, sizeof u->username);
     u->created_at = get_n_or(it, "created_at", 0);
     u->last_sign_in_at = get_n_or(it, "last_sign_in_at", 0);
+    u->session_gen = get_n_or(it, "session_gen", 0);
+    dw_get_s(it, "kept_session", u->kept_session, sizeof u->kept_session);
     return true;
+}
+
+bool dw_item_session(cb_span it, int64_t now_ms, cb_session_row *s) {
+    memset(s, 0, sizeof *s);
+    if (!dw_get_s(it, "id", s->id, sizeof s->id)) return false;
+    dw_get_s(it, "user_id", s->user_id, sizeof s->user_id);
+    s->created_at = get_n_or(it, "created_at", 0);
+    s->expires_at = get_n_or(it, "expires_ms", 0);
+    s->gen = get_n_or(it, "gen", 0);
+    dw_get_bool(it, "revoked", &s->revoked);
+    return s->expires_at > now_ms;   // TTL deletion lags by up to days
 }
 
 bool dw_item_refresh(cb_span it, cb_refresh_row *r) {
@@ -555,6 +568,7 @@ bool dw_item_refresh(cb_span it, cb_refresh_row *r) {
     r->created_at = get_n_or(it, "created_at", 0);
     dw_get_bool(it, "revoked", &r->revoked);
     r->revoked_at = get_n_or(it, "revoked_at", 0);
+    r->expires_at = get_n_or(it, "expires_ms", 0);
     return true;
 }
 
@@ -807,6 +821,11 @@ void dw_get_signin_fails(dw_req *r, const char *table, const char *email) {
     get_item(r, table, k(pk, sizeof pk, "AUTHFAIL#", email), "FAILS");
 }
 
+void dw_get_session(dw_req *r, const char *table, const char *id) {
+    char pk[KB];
+    get_item(r, table, k(pk, sizeof pk, "SESSION#", id), "SESSION");
+}
+
 void dw_get_game(dw_req *r, const char *table, const char *id) {
     char pk[KB];
     get_item(r, table, k(pk, sizeof pk, "GAME#", id), "ROW");
@@ -841,7 +860,6 @@ void dw_query(dw_req *r, const char *table, dw_query_kind kind, const char *arg,
     case DWQ_USER_GAMES: index = GSI1; pfx = "USERGAMES#"; fwd = false; break;
     case DWQ_USER_CHATS: index = GSI1; pfx = "USERCHAT#"; keys_only = true; break;
     case DWQ_USER_TOKENS: index = GSI1; pfx = "USERREFRESH#"; keys_only = true; break;
-    case DWQ_SESSION_TOKENS: index = GSI2; pfx = "SESSION#"; keys_only = true; break;
     case DWQ_GAME_SNAPSHOTS: index = GSI1; pfx = "GAMESNAPS#"; keys_only = true; break;
     case DWQ_PLAYER_SNAPSHOTS: index = GSI2; pfx = "PLAYER#"; fwd = forward; break;
     case DWQ_SNAPSHOT_ITEMS: pfx = "SNAP#"; break;
@@ -1101,8 +1119,42 @@ static void user_update(dw_req *r, const char *table, const char *id, const char
     finish(&w);
 }
 
-void dw_user_set_password(dw_req *r, const char *table, const char *id, const char *hash) {
-    user_update(r, table, id, "password_hash", hash, 0);
+// session_gen one up (a missing one counts as 0): store.h cb_user_row.
+static void next_session_gen(ux *u) {
+    ux_name(u, "session_gen");
+    ux_set_raw(u, "#session_gen = if_not_exists(#session_gen, :gen0) + :gen1");
+    ux_val_n(u, ":gen0", 0);
+    ux_val_n(u, ":gen1", 1);
+}
+
+// The new hash and, in the same write, every session so far ended but `keep`.
+void dw_user_set_password(dw_req *r, const char *table, const char *id, const char *hash, const char *keep) {
+    char pk[KB];
+    cb_jw w;
+    begin(r, &w, "UpdateItem");
+    update_open(&w, table, k(pk, sizeof pk, "USER#", id), "PROFILE", false);
+    ux u;
+    ux_init(&u);
+    ux_set_s(&u, "password_hash", hash);
+    next_session_gen(&u);
+    ux_set_s(&u, "kept_session", keep ? keep : "");
+    ux_emit(&w, &u, "attribute_exists(pk)");
+    ux_free(&u);
+    finish(&w);
+}
+
+void dw_user_end_sessions(dw_req *r, const char *table, const char *id) {
+    char pk[KB];
+    cb_jw w;
+    begin(r, &w, "UpdateItem");
+    update_open(&w, table, k(pk, sizeof pk, "USER#", id), "PROFILE", false);
+    ux u;
+    ux_init(&u);
+    next_session_gen(&u);
+    ux_set_s(&u, "kept_session", "");
+    ux_emit(&w, &u, "attribute_exists(pk)");
+    ux_free(&u);
+    finish(&w);
 }
 
 void dw_user_touch(dw_req *r, const char *table, const char *id, int64_t at) {
@@ -1151,8 +1203,10 @@ void dw_user_delete_txn(dw_req *r, const char *table, const cb_user_row *u) {
 
 // ---- refresh tokens -----------------------------------------------------------------------------
 
+// A token row: GSI1 lists a user's (account deletion removes them), and its
+// TTL is its session's end (store.h cb_refresh_row).
 void dw_refresh_put(dw_req *r, const char *table, const cb_refresh_row *t) {
-    char pk[KB], g1[KB], g2[KB];
+    char pk[KB], g1[KB];
     cb_jw w;
     begin(r, &w, "PutItem");
     cb_jw_kstr(&w, "TableName", table);
@@ -1162,19 +1216,21 @@ void dw_refresh_put(dw_req *r, const char *table, const cb_refresh_row *t) {
     av_s(&w, "sk", "TOKEN");
     av_s(&w, "gsi1pk", k(g1, sizeof g1, "USERREFRESH#", t->user_id));
     av_s(&w, "gsi1sk", t->token_hash);
-    av_s(&w, "gsi2pk", k(g2, sizeof g2, "SESSION#", t->session_id));
-    av_s(&w, "gsi2sk", t->token_hash);
     av_s(&w, "token_hash", t->token_hash);
     av_s(&w, "user_id", t->user_id);
     av_s(&w, "session_id", t->session_id);
     av_n(&w, "created_at", t->created_at);
     av_bool(&w, "revoked", t->revoked);
+    if (t->expires_at > 0) {
+        av_n(&w, "expires_ms", t->expires_at);
+        av_n(&w, DW_TTL_ATTR, t->expires_at / 1000);   // the TTL attribute is in seconds
+    }
     cb_jw_end(&w);
     cb_jw_kstr(&w, "ConditionExpression", "attribute_not_exists(pk)");
     finish(&w);
 }
 
-void dw_refresh_take(dw_req *r, const char *table, const char *hash, int64_t now_ms) {
+void dw_refresh_take(dw_req *r, const char *table, const char *hash, int64_t now_ms, int64_t spent_ms) {
     char pk[KB];
     cb_jw w;
     begin(r, &w, "UpdateItem");
@@ -1182,27 +1238,67 @@ void dw_refresh_take(dw_req *r, const char *table, const char *hash, int64_t now
     ux u;
     ux_init(&u);
     ux_set_bool(&u, "revoked", true);
-    // The first take stamps revoked_at; a later one, or a logout's 0, stays.
+    // The first take stamps revoked_at; a later one keeps it.
     ux_name(&u, "revoked_at");
     ux_set_raw(&u, "#revoked_at = if_not_exists(#revoked_at, :now)");
     ux_val_n(&u, ":now", now_ms);
+    // A spent token is kept spent_ms more, for reuse detection, then the TTL takes it.
+    ux_set_n(&u, "expires_ms", now_ms + spent_ms);
+    ux_set_n(&u, DW_TTL_ATTR, (now_ms + spent_ms) / 1000);
     ux_emit(&w, &u, "attribute_exists(pk)");
     ux_free(&u);
     cb_jw_kstr(&w, "ReturnValues", "ALL_OLD");
     finish(&w);
 }
 
-void dw_refresh_revoke(dw_req *r, const char *table, cb_span key) {
+// ---- sessions ----------------------------------------------------------------------------------
+
+static void session_attrs(cb_jw *w, const cb_session_row *s) {
+    av_s(w, "id", s->id);
+    av_s(w, "user_id", s->user_id);
+    av_n(w, "created_at", s->created_at);
+    av_bool(w, "revoked", s->revoked);
+    av_n(w, "gen", s->gen);
+    av_n(w, "expires_ms", s->expires_at);
+    av_n(w, DW_TTL_ATTR, s->expires_at / 1000);   // the TTL attribute is in seconds
+}
+
+void dw_session_put(dw_req *r, const char *table, const cb_session_row *s) {
+    char pk[KB];
+    cb_jw w;
+    begin(r, &w, "PutItem");
+    cb_jw_kstr(&w, "TableName", table);
+    cb_jw_key(&w, "Item");
+    cb_jw_obj(&w);
+    av_s(&w, "pk", k(pk, sizeof pk, "SESSION#", s->id));
+    av_s(&w, "sk", "SESSION");
+    session_attrs(&w, s);
+    cb_jw_end(&w);
+    finish(&w);
+}
+
+// Ended in one write; a session with no item yet gets one (store.h session_revoke).
+void dw_session_revoke(dw_req *r, const char *table, const char *id, const char *user_id, int64_t expires_at) {
+    char pk[KB];
     cb_jw w;
     begin(r, &w, "UpdateItem");
-    cb_jw_kstr(&w, "TableName", table);
-    cb_jw_key(&w, "Key");
-    cb_jw_raw(&w, key.p, key.n);
+    update_open(&w, table, k(pk, sizeof pk, "SESSION#", id), "SESSION", false);
     ux u;
     ux_init(&u);
     ux_set_bool(&u, "revoked", true);
-    ux_set_n(&u, "revoked_at", 0);
-    ux_emit(&w, &u, "attribute_exists(pk)");
+    ux_name(&u, "id");
+    ux_set_raw(&u, "#id = if_not_exists(#id, :id)");
+    ux_val_s(&u, ":id", id);
+    ux_name(&u, "user_id");
+    ux_set_raw(&u, "#user_id = if_not_exists(#user_id, :uid)");
+    ux_val_s(&u, ":uid", user_id);
+    ux_name(&u, "expires_ms");
+    ux_set_raw(&u, "#expires_ms = if_not_exists(#expires_ms, :exp)");
+    ux_val_n(&u, ":exp", expires_at);
+    ux_name(&u, DW_TTL_ATTR);
+    ux_set_raw(&u, "#" DW_TTL_ATTR " = if_not_exists(#" DW_TTL_ATTR ", :exps)");
+    ux_val_n(&u, ":exps", expires_at / 1000);
+    ux_emit(&w, &u, NULL);
     ux_free(&u);
     finish(&w);
 }

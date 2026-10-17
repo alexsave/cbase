@@ -245,12 +245,34 @@ static void refresh_password_signout_delete(void) {
     int fn = nc_session_save(fresh, sizeof fresh);
     T_CHECK(fn > 0 && (fn != n || memcmp(fresh, blob, (size_t)n) != 0));
 
-    // Change the password: the same one is refused, a new one signs in.
-    T_EQ_INT(send_req(nc_req_password("secret-11", 9, g_now)), 400);
+    // Another device: a second session of the same account.
+    nc_reset();
+    T_EQ_INT(sign(0, "CARL", "secret-11"), 0);
+    uint8_t other[NC_SESSION_BLOB_MAX];
+    int on = nc_session_save(other, sizeof other);
+    as(fresh, fn);
+    // Change the password (finding M1): the current one is required, the same
+    // one is refused, and every other session ends while this one goes on.
+    T_EQ_INT(send_req(nc_req_password("not-the-pass", 12, "secret-22", 9, g_now)), 400);
+    T_EQ_INT(nc_status_read(g_status, g_body, g_len), ASK_WHY_ACCOUNT);
+    T_EQ_INT(nc_error()->code, NW_ACCOUNT_E_BAD_LOGIN);
+    T_EQ_INT(send_req(nc_req_password("secret-11", 9, "secret-11", 9, g_now)), 400);
     T_EQ_INT(nc_status_read(g_status, g_body, g_len), ASK_WHY_ACCOUNT);
     T_EQ_INT(nc_error()->code, NW_ACCOUNT_E_SAME_PASSWORD);
-    T_EQ_INT(send_req(nc_req_password("secret-22", 9, g_now)), 204);
+    T_EQ_INT(send_req(nc_req_password("secret-11", 9, "secret-22", 9, g_now)), 204);
     T_EQ_INT(nc_status_read(g_status, g_body, g_len), 0);
+    // An old one-field body (the layout before the current password) is refused.
+    NcRequest old = *nc_req_password("secret-11", 9, "secret-22", 9, g_now);
+    old.body_len = (uint16_t)(2 + 1 + 9);
+    T_EQ_INT(send_req(&old), 400);
+    T_EQ_INT(nc_status_read(g_status, g_body, g_len), ASK_WHY_MALFORMED);
+    as(other, on);
+    T_EQ_INT(send_req(nc_req_refresh()), 400);
+    T_EQ_INT(nc_session_read(g_status, g_body, g_len), ASK_WHY_ACCOUNT);
+    T_EQ_INT(nc_error()->code, NW_ACCOUNT_E_REFRESH_USED);
+    as(fresh, fn);
+    T_EQ_INT(send_req(nc_req_refresh()), 200);
+    T_EQ_INT(nc_session_read(g_status, g_body, g_len), 0);
     nc_reset();
     T_EQ_INT(sign(0, "CARL", "secret-11"), ASK_WHY_ACCOUNT);
     T_EQ_INT(sign(0, "CARL", "secret-22"), 0);

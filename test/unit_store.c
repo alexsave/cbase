@@ -146,6 +146,26 @@ static void open_applies_schema_and_seeds_bots(void) {
     T_EQ_INT(cr.version, 1);
     cb_store_close(s);
 
+    // Schema 2 -> 3: users without session_gen and kept_session,
+    // refresh_tokens without expires_at. The columns come back, the rows stay.
+    T_EQ_INT(sqlite3_open(path, &db), SQLITE_OK);
+    T_EQ_INT(sqlite3_exec(db, "DROP INDEX idx_refresh_tokens_expires; ALTER TABLE refresh_tokens DROP COLUMN expires_at; "
+                              "ALTER TABLE users DROP COLUMN kept_session; ALTER TABLE users DROP COLUMN session_gen; "
+                              "DROP TABLE sessions; "
+                              "INSERT INTO users (id, email, password_hash, created_at) "
+                              "VALUES ('00000000-0000-4000-8000-0000000000aa', 'old@x.io', 'h', 1); "
+                              "PRAGMA user_version = 2", NULL, NULL, NULL), SQLITE_OK);
+    sqlite3_close(db);
+    T_EQ_INT(cb_store_open_sqlite(path, &s), CB_OK);
+    cb_user_row old_user;
+    T_EQ_INT(CB_STORE_CALL(s, user_by_email, "old@x.io", &old_user), CB_OK);
+    T_EQ_INT(old_user.session_gen, 0);
+    T_EQ_INT(CB_STORE_CALL(s, user_end_sessions, old_user.id), CB_OK);
+    cb_session_row sr = { .id = "s-old", .created_at = 1, .expires_at = cb_now_ms() + 60000 };
+    memcpy(sr.user_id, old_user.id, sizeof sr.user_id);
+    T_EQ_INT(CB_STORE_CALL(s, session_put, &sr), CB_OK);
+    cb_store_close(s);
+
     // A database from a newer binary is refused.
     T_EQ_INT(sqlite3_open(path, &db), SQLITE_OK);
     T_EQ_INT(sqlite3_exec(db, "PRAGMA user_version = 99", NULL, NULL, NULL), SQLITE_OK);
@@ -185,12 +205,21 @@ static void users_round_trip(void) {
     T_EQ_INT(CB_STORE_CALL(s, ratings_list, collect_rating, &r), 0);
     T_EQ_INT(CB_STORE_CALL(s, ratings_top, 100, collect_rating, &r), 0);
 
-    T_EQ_INT(CB_STORE_CALL(s, user_set_password, a.id, "$2b$10$new"), CB_OK);
+    T_EQ_INT(got.session_gen, 0);
+    T_EQ_STR(got.kept_session, "");
+    T_EQ_INT(CB_STORE_CALL(s, user_set_password, a.id, "$2b$10$new", "keep-me"), CB_OK);
     T_EQ_INT(CB_STORE_CALL(s, user_touch_sign_in, a.id, 5555), CB_OK);
     T_EQ_INT(CB_STORE_CALL(s, user_get, a.id, &got), CB_OK);
     T_EQ_STR(got.password_hash, "$2b$10$new");
     T_EQ_INT(got.last_sign_in_at, 5555);
-    T_EQ_INT(CB_STORE_CALL(s, user_set_password, "00000000-0000-4000-8000-000000000000", "x"), CB_E_NOT_FOUND);
+    T_EQ_INT(got.session_gen, 1);   // the same write ends the other sessions
+    T_EQ_STR(got.kept_session, "keep-me");
+    T_EQ_INT(CB_STORE_CALL(s, user_end_sessions, a.id), CB_OK);
+    T_EQ_INT(CB_STORE_CALL(s, user_by_email, "ann@x.io", &got), CB_OK);
+    T_EQ_INT(got.session_gen, 2);   // a global sign-out keeps none
+    T_EQ_STR(got.kept_session, "");
+    T_EQ_INT(CB_STORE_CALL(s, user_set_password, "00000000-0000-4000-8000-000000000000", "x", ""), CB_E_NOT_FOUND);
+    T_EQ_INT(CB_STORE_CALL(s, user_end_sessions, "00000000-0000-4000-8000-000000000000"), CB_E_NOT_FOUND);
 
     // users_list: newest first, search on email or username, offset and limit.
     names_t n = { 0 };
@@ -216,51 +245,58 @@ static void refresh_tokens_rotate(void) {
     cb_store *s = open_fresh();
     cb_user_row a = mkuser("a@x.io", "A", 1);
     T_EQ_INT(CB_STORE_CALL(s, user_create, &a), CB_OK);
-    cb_refresh_row r = { .token_hash = "aa", .session_id = "sess-1", .created_at = 7 }, t1 = r, got;
+    cb_refresh_row r = { .token_hash = "aa", .session_id = "sess-1", .created_at = 7, .expires_at = 100000 }, t1 = r, got;
     memcpy(r.user_id, a.id, sizeof r.user_id);
     t1 = r;
     snprintf(t1.token_hash, sizeof t1.token_hash, "bb");
     T_EQ_INT(CB_STORE_CALL(s, refresh_put, &r), CB_OK);
     T_EQ_INT(CB_STORE_CALL(s, refresh_put, &t1), CB_OK);
     T_EQ_INT(CB_STORE_CALL(s, refresh_put, &r), CB_E_CONFLICT);
-    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "aa", 100, &got), CB_OK);
+    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "aa", 100, 1000, &got), CB_OK);
     T_CHECK(!got.revoked);
     T_EQ_INT(got.revoked_at, 0);
     T_EQ_STR(got.user_id, a.id);
     T_EQ_STR(got.session_id, "sess-1");
     T_EQ_INT(got.created_at, 7);
-    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "aa", 200, &got), CB_OK);
+    T_EQ_INT(got.expires_at, 100000);
+    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "aa", 200, 1000, &got), CB_OK);
     T_CHECK(got.revoked);   // a second use is a reuse
     T_EQ_INT(got.revoked_at, 100);   // stamped by the first take
-    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "aa", 300, &got), CB_OK);
-    T_EQ_INT(got.revoked_at, 100);   // and only the first
-    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "zz", 300, &got), CB_E_NOT_FOUND);
-    T_EQ_INT(CB_STORE_CALL(s, refresh_revoke_session, "sess-1"), CB_OK);
-    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "bb", 400, &got), CB_OK);
+    T_EQ_INT(got.expires_at, 1100);  // a spent token is kept spent_ms after a take
+    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "aa", 300, 1000, &got), CB_OK);
+    T_EQ_INT(got.revoked_at, 100);   // and only the first stamps
+    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "zz", 300, 1000, &got), CB_E_NOT_FOUND);
+    // Past its time a token is gone, whatever the TTL has swept.
+    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "aa", 1300, 1000, &got), CB_E_NOT_FOUND);
+    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "bb", 99999, 1000, &got), CB_OK);
+    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "bb", 200000, 1000, &got), CB_E_NOT_FOUND);
+    cb_store_close(s);
+}
+
+// Sessions (store.h cb_session_row): put, read back consistently, ended by
+// one write (an unknown one gets its row, ended), gone past their end.
+static void sessions_round_trip(void) {
+    cb_store *s = open_fresh();
+    cb_user_row a = mkuser("a@x.io", "A", 1);
+    T_EQ_INT(CB_STORE_CALL(s, user_create, &a), CB_OK);
+    cb_session_row r = { .id = "11111111-aaaa-4aaa-8aaa-111111111111", .created_at = 1000, .expires_at = 5000, .gen = 3 }, got;
+    memcpy(r.user_id, a.id, sizeof r.user_id);
+    T_EQ_INT(CB_STORE_CALL(s, session_get, r.id, 2000, &got), CB_E_NOT_FOUND);
+    T_EQ_INT(CB_STORE_CALL(s, session_put, &r), CB_OK);
+    T_EQ_INT(CB_STORE_CALL(s, session_get, r.id, 2000, &got), CB_OK);
+    T_EQ_STR(got.id, r.id);
+    T_EQ_STR(got.user_id, a.id);
+    T_CHECK(got.created_at == 1000 && got.expires_at == 5000 && got.gen == 3 && !got.revoked);
+    T_EQ_INT(CB_STORE_CALL(s, session_revoke, r.id, a.id, 9999), CB_OK);
+    T_EQ_INT(CB_STORE_CALL(s, session_get, r.id, 2000, &got), CB_OK);
     T_CHECK(got.revoked);
-    T_EQ_INT(got.revoked_at, 0);     // a logout's revoke never stamps
-    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "aa", 500, &got), CB_OK);
-    T_EQ_INT(got.revoked_at, 0);     // and clears a rotation's stamp
-    // Per user: every session of the user, nobody else's.
-    cb_user_row b = mkuser("b@x.io", "B", 2);
-    T_EQ_INT(CB_STORE_CALL(s, user_create, &b), CB_OK);
-    cb_refresh_row c1 = r, c2 = r, c3 = r;
-    snprintf(c1.token_hash, sizeof c1.token_hash, "c1");
-    snprintf(c1.session_id, sizeof c1.session_id, "sess-2");
-    snprintf(c2.token_hash, sizeof c2.token_hash, "c2");
-    snprintf(c2.session_id, sizeof c2.session_id, "sess-3");
-    snprintf(c3.token_hash, sizeof c3.token_hash, "c3");
-    memcpy(c3.user_id, b.id, sizeof c3.user_id);
-    T_EQ_INT(CB_STORE_CALL(s, refresh_put, &c1), CB_OK);
-    T_EQ_INT(CB_STORE_CALL(s, refresh_put, &c2), CB_OK);
-    T_EQ_INT(CB_STORE_CALL(s, refresh_put, &c3), CB_OK);
-    T_EQ_INT(CB_STORE_CALL(s, refresh_revoke_user, a.id), CB_OK);
-    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "c1", 600, &got), CB_OK);
-    T_CHECK(got.revoked);
-    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "c2", 600, &got), CB_OK);
-    T_CHECK(got.revoked);
-    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "c3", 600, &got), CB_OK);
-    T_CHECK(!got.revoked);
+    T_CHECK(got.expires_at == 5000 && got.created_at == 1000 && got.gen == 3);   // the revoke changed nothing else
+    T_EQ_INT(CB_STORE_CALL(s, session_get, r.id, 5000, &got), CB_E_NOT_FOUND);   // past its end
+    // A session with no row (begun before sessions were stored): revoked, it gets one.
+    T_EQ_INT(CB_STORE_CALL(s, session_revoke, "22222222-bbbb-4bbb-8bbb-222222222222", a.id, 7000), CB_OK);
+    T_EQ_INT(CB_STORE_CALL(s, session_get, "22222222-bbbb-4bbb-8bbb-222222222222", 2000, &got), CB_OK);
+    T_CHECK(got.revoked && got.expires_at == 7000);
+    T_EQ_STR(got.user_id, a.id);
     cb_store_close(s);
 }
 
@@ -572,7 +608,7 @@ static void user_delete_cascades(void) {
     T_EQ_INT(CB_STORE_CALL(s, user_delete, a.id), CB_OK);
     T_EQ_INT(CB_STORE_CALL(s, user_delete, a.id), CB_E_NOT_FOUND);
     cb_refresh_row got;
-    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "t1", 1, &got), CB_E_NOT_FOUND);
+    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "t1", 1, 1000, &got), CB_E_NOT_FOUND);
     T_EQ_INT(CB_STORE_CALL(s, is_member, "ud0001", a.id), 0);
     T_EQ_INT(rating_of(s, a.id), TABLE_RATING_NONE);
     names_t n = { 0 };
@@ -1447,6 +1483,7 @@ int main(void) {
     T_RUN(users_round_trip);
     T_RUN(signin_fails_round_trip);
     T_RUN(refresh_tokens_rotate);
+    T_RUN(sessions_round_trip);
     T_RUN(game_round_trip);
     T_RUN(cas_second_writer_loses);
     T_RUN(membership_follows_commits);

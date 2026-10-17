@@ -310,14 +310,18 @@ static void builders_valid_json(void) {
     bool isbot[2] = { false, true };
 
     dw_user_import(&r, "cbase", &u);                 T_CHECK(valid(&r));
-    dw_user_set_password(&r, "cbase", U1, "$2b$x");  T_CHECK(valid(&r));
+    dw_user_set_password(&r, "cbase", U1, "$2b$x", "");  T_CHECK(valid(&r));
+    T_CHECK(strstr(cb_buf_cstr(&r.body), "if_not_exists(#session_gen, :gen0) + :gen1") != NULL);
+    dw_user_end_sessions(&r, "cbase", U1);           T_CHECK(valid(&r));
     dw_user_touch(&r, "cbase", U1, 5);               T_CHECK(valid(&r));
     dw_user_delete_txn(&r, "cbase", &u);             T_CHECK(valid(&r));
     dw_refresh_put(&r, "cbase", &rt);                T_CHECK(valid(&r));
-    dw_refresh_take(&r, "cbase", "ff", 9);           T_CHECK(valid(&r));
+    dw_refresh_take(&r, "cbase", "ff", 9, 1000);     T_CHECK(valid(&r));
     T_CHECK(strstr(cb_buf_cstr(&r.body), "if_not_exists(#revoked_at, :now)") != NULL);
-    dw_refresh_revoke(&r, "cbase", body(&(dw_req){ .body = key }));
-    T_CHECK(valid(&r));
+    cb_session_row se = { .id = "s1", .user_id = U1, .created_at = 1, .expires_at = 2000 };
+    dw_session_put(&r, "cbase", &se);                T_CHECK(valid(&r));
+    dw_session_revoke(&r, "cbase", "s1", U1, 2000);  T_CHECK(valid(&r));
+    dw_get_session(&r, "cbase", "s1");               T_CHECK(valid(&r));
     dw_snapshot_put(&r, "cbase", &sn);               T_CHECK(valid(&r));
     T_CHECK(strstr(cb_buf_cstr(&r.body), "\"moves\":{\"B\":\"AAECA/8=\"}") != NULL);
     {   // the main item and ONE copy for the repeated player
@@ -1151,26 +1155,25 @@ static void flow_signup_and_tokens(void) {
         { "UpdateItem", "\":now\":{\"N\":\"100\"}", 200, OLD },
         { "UpdateItem", "if_not_exists(#revoked_at, :now)", 200, OLD_TAKEN },
         { "UpdateItem", NULL, 400, COND_NO_ITEM },
-        // revoke_user: the user's tokens by GSI1, each revoked with its stamp zeroed
-        { "Query", "USERREFRESH#" U1, 200, "{\"Items\":[{\"pk\":{\"S\":\"REFRESH#aa\"},\"sk\":{\"S\":\"TOKEN\"}}]}" },
-        { "UpdateItem", "\":revoked_at\":{\"N\":\"0\"}", 200, "{}" },
+        // end_sessions: one write to the user, nothing listed
+        { "UpdateItem", "if_not_exists(#session_gen, :gen0) + :gen1", 200, "{}" },
     };
     RUN(steps, s);
     cb_user_row a = { .id = U1, .email = "ann@x.io", .password_hash = "h" }, b = { .id = U2, .email = "bob@x.io", .password_hash = "h" };
     T_EQ_INT(CB_STORE_CALL(s, user_create, &a), CB_E_CONFLICT);
     T_EQ_INT(CB_STORE_CALL(s, user_create, &b), CB_OK);
     cb_refresh_row rt;
-    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "aa", 100, &rt), CB_OK);
+    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "aa", 100, 1000, &rt), CB_OK);
     T_EQ_STR(rt.user_id, U1);
     T_EQ_STR(rt.session_id, "s1");
     T_CHECK(!rt.revoked);
     T_EQ_INT(rt.revoked_at, 0);
-    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "aa", 200, &rt), CB_OK);
+    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "aa", 200, 1000, &rt), CB_OK);
     T_CHECK(rt.revoked);
     T_EQ_INT(rt.revoked_at, 100);
-    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "zz", 300, &rt), CB_E_NOT_FOUND);
-    T_EQ_INT(CB_STORE_CALL(s, refresh_revoke_user, U1), CB_OK);
-    T_EQ_INT(sc_.at, 8);
+    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "zz", 300, 1000, &rt), CB_E_NOT_FOUND);
+    T_EQ_INT(CB_STORE_CALL(s, user_end_sessions, U1), CB_OK);
+    T_EQ_INT(sc_.at, 7);
     cb_store_close(s);
 }
 

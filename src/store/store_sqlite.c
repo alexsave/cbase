@@ -42,8 +42,9 @@
 enum {
     ST_USER_GET, ST_USER_BY_EMAIL, ST_USER_INSERT, ST_RATING_FOR_NEW_USER, ST_USER_SET_PASSWORD, ST_USER_TOUCH,
     ST_USER_DELETE, ST_USERS_ALL,
-    ST_FAILS_GET, ST_FAILS_PUT, ST_FAILS_CLEAR,
-    ST_REFRESH_PUT, ST_REFRESH_GET, ST_REFRESH_REVOKE, ST_REFRESH_REVOKE_SESSION, ST_REFRESH_REVOKE_USER,
+    ST_FAILS_GET, ST_FAILS_PUT, ST_FAILS_CLEAR, ST_USER_END_SESSIONS,
+    ST_SESSION_PUT, ST_SESSION_GET, ST_SESSION_REVOKE, ST_SESSIONS_PRUNE, ST_REFRESH_PRUNE,
+    ST_REFRESH_PUT, ST_REFRESH_GET, ST_REFRESH_REVOKE,
     ST_GAME_GET, ST_GAME_INSERT, ST_GAME_UPDATE_CAS, ST_GAME_EXISTS, ST_GAME_DELETE_CAS,
     ST_MEMBER_INSERT, ST_MEMBERS_OF_GAME, ST_MEMBER_DELETE, ST_MEMBERS_CLEAR,
     ST_BOTSEAT_INSERT, ST_BOTSEATS_OF_GAME, ST_BOTSEAT_DELETE, ST_BOTSEATS_CLEAR,
@@ -61,21 +62,31 @@ enum {
 };
 
 #define USER_COLS "id, email, password_hash, username, created_at, last_sign_in_at"
+#define USER_READ_COLS USER_COLS ", session_gen, kept_session"
 #define GAME_COLS "id, status, state, roster, logs_packed, game_seed, needs_bots, version, round_epoch, " \
                   "created_at, updated_at, last_commit_at"
 #define BOT_COLS "id, nickname, strategy_key, elo_rating, previous_elo, games_played, created_at, updated_at"
 #define SNAP_COLS "id, game_id, player_ids, moves, extras, created_at"
 
 static const char *const SQL[ST__COUNT] = {
-    [ST_USER_GET] = "SELECT " USER_COLS " FROM users WHERE id = ?1",
-    [ST_USER_BY_EMAIL] = "SELECT " USER_COLS " FROM users WHERE email = ?1",
+    [ST_USER_GET] = "SELECT " USER_READ_COLS " FROM users WHERE id = ?1",
+    [ST_USER_BY_EMAIL] = "SELECT " USER_READ_COLS " FROM users WHERE email = ?1",
     [ST_USER_INSERT] = "INSERT INTO users (" USER_COLS ") VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
     // The auth.users trigger's row (create_default_elo_rating): the start
     // rating, previous_elo the column default (also the start), the username.
     [ST_RATING_FOR_NEW_USER] =
         "INSERT INTO ratings (user_id, username, elo_rating, previous_elo, games_played, updated_at) "
         "VALUES (?1, ?2, ?3, ?3, 0, ?4) ON CONFLICT (user_id) DO UPDATE SET username = excluded.username",
-    [ST_USER_SET_PASSWORD] = "UPDATE users SET password_hash = ?2 WHERE id = ?1",
+    [ST_USER_SET_PASSWORD] = "UPDATE users SET password_hash = ?2, session_gen = session_gen + 1, kept_session = ?3 WHERE id = ?1",
+    [ST_USER_END_SESSIONS] = "UPDATE users SET session_gen = session_gen + 1, kept_session = NULL WHERE id = ?1",
+    [ST_SESSION_PUT] = "INSERT INTO sessions (id, user_id, created_at, expires_at, revoked, gen) VALUES (?1, ?2, ?3, ?4, ?5, ?6) "
+                       "ON CONFLICT(id) DO UPDATE SET user_id = excluded.user_id, created_at = excluded.created_at, "
+                       "expires_at = excluded.expires_at, revoked = excluded.revoked, gen = excluded.gen",
+    [ST_SESSION_GET] = "SELECT id, user_id, created_at, expires_at, revoked, gen FROM sessions WHERE id = ?1 AND expires_at > ?2",
+    [ST_SESSION_REVOKE] = "INSERT INTO sessions (id, user_id, created_at, expires_at, revoked) VALUES (?1, ?2, 0, ?3, 1) "
+                          "ON CONFLICT(id) DO UPDATE SET revoked = 1",
+    [ST_SESSIONS_PRUNE] = "DELETE FROM sessions WHERE expires_at <= ?1",
+    [ST_REFRESH_PRUNE] = "DELETE FROM refresh_tokens WHERE expires_at IS NOT NULL AND expires_at <= ?1",
     [ST_USER_TOUCH] = "UPDATE users SET last_sign_in_at = ?2 WHERE id = ?1",
     [ST_FAILS_GET] = "SELECT n, last_at, locked_until FROM signin_fails WHERE email = ?1 AND expires_at > ?2",
     [ST_FAILS_PUT] = "INSERT INTO signin_fails (email, n, last_at, locked_until, expires_at) VALUES (?1, ?2, ?3, ?4, ?5) "
@@ -83,18 +94,16 @@ static const char *const SQL[ST__COUNT] = {
                      "locked_until = excluded.locked_until, expires_at = excluded.expires_at",
     [ST_FAILS_CLEAR] = "DELETE FROM signin_fails WHERE email = ?1",
     [ST_USER_DELETE] = "DELETE FROM users WHERE id = ?1",
-    [ST_USERS_ALL] = "SELECT " USER_COLS " FROM users ORDER BY created_at DESC, id",
+    [ST_USERS_ALL] = "SELECT " USER_READ_COLS " FROM users ORDER BY created_at DESC, id",
 
-    [ST_REFRESH_PUT] = "INSERT INTO refresh_tokens (token_hash, user_id, session_id, created_at, revoked) "
-                       "VALUES (?1, ?2, ?3, ?4, ?5)",
-    [ST_REFRESH_GET] = "SELECT token_hash, user_id, session_id, created_at, revoked, revoked_at FROM refresh_tokens "
-                       "WHERE token_hash = ?1",
+    [ST_REFRESH_PUT] = "INSERT INTO refresh_tokens (token_hash, user_id, session_id, created_at, revoked, expires_at) "
+                       "VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+    [ST_REFRESH_GET] = "SELECT token_hash, user_id, session_id, created_at, revoked, revoked_at, expires_at FROM refresh_tokens "
+                       "WHERE token_hash = ?1 AND (expires_at IS NULL OR expires_at > ?2)",
     // The first take stamps revoked_at; a later one keeps it, so a retry
-    // storm cannot stretch the grace window.
-    [ST_REFRESH_REVOKE] = "UPDATE refresh_tokens SET revoked = 1, revoked_at = COALESCE(revoked_at, ?2) "
+    // storm cannot stretch the grace window. A spent token is kept ?3 longer.
+    [ST_REFRESH_REVOKE] = "UPDATE refresh_tokens SET revoked = 1, revoked_at = COALESCE(revoked_at, ?2), expires_at = ?3 "
                           "WHERE token_hash = ?1",
-    [ST_REFRESH_REVOKE_SESSION] = "UPDATE refresh_tokens SET revoked = 1, revoked_at = 0 WHERE session_id = ?1",
-    [ST_REFRESH_REVOKE_USER] = "UPDATE refresh_tokens SET revoked = 1, revoked_at = 0 WHERE user_id = ?1",
 
     [ST_GAME_GET] = "SELECT " GAME_COLS " FROM games WHERE id = ?1",
     [ST_GAME_INSERT] = "INSERT INTO games (" GAME_COLS ") VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
@@ -315,6 +324,8 @@ static void read_user(sqlite3_stmt *s, cb_user_row *u) {
     c_text(s, 3, u->username, sizeof u->username);
     u->created_at = c_i64(s, 4);
     u->last_sign_in_at = c_i64(s, 5);
+    u->session_gen = c_i64(s, 6);
+    c_text(s, 7, u->kept_session, sizeof u->kept_session);
 }
 
 static void bind_user(sqlite3_stmt *s, const cb_user_row *u) {
@@ -446,6 +457,17 @@ static int pragma_int(sqlite3 *db, const char *sql, int64_t *out) {
     return rc == SQLITE_ROW ? CB_OK : CB_E_DB;
 }
 
+// ALTER TABLE ... ADD COLUMN, unless the table has the column already.
+static int add_column(sq *q, const char *table, const char *column, const char *decl) {
+    char sql[256];
+    snprintf(sql, sizeof sql, "SELECT count(*) FROM pragma_table_info('%s') WHERE name = '%s'", table, column);
+    int64_t have = 0;
+    if (pragma_int(q->db, sql, &have) != CB_OK) return fail(q, "table_info", 0);
+    if (have) return CB_OK;
+    snprintf(sql, sizeof sql, "ALTER TABLE %s ADD COLUMN %s %s", table, column, decl);
+    return exec(q, sql);
+}
+
 // The schema, applied in one transaction, then the version stamp. Steps for a
 // future CB_SCHEMA_VERSION that are not idempotent go here, each guarded by
 // the user_version it upgrades from.
@@ -464,6 +486,14 @@ static int apply_schema(sq *q) {
     // client reconnects), so the old tables are dropped, not altered.
     if (have >= 1 && have < 3 &&
         (rc = exec(q, "DROP TABLE IF EXISTS rt_conn_topics; DROP TABLE IF EXISTS rt_conns;")) != CB_OK)
+        goto out;
+    // 2 -> 3: users gained session_gen and kept_session, refresh_tokens
+    // expires_at (sessions, security findings M1-M3); sessions is a new table
+    // (the schema below makes it). Each column only where it is missing.
+    if (have >= 1 && have < 3 &&
+        ((rc = add_column(q, "users", "session_gen", "INTEGER NOT NULL DEFAULT 0")) != CB_OK ||
+         (rc = add_column(q, "users", "kept_session", "TEXT")) != CB_OK ||
+         (rc = add_column(q, "refresh_tokens", "expires_at", "INTEGER")) != CB_OK))
         goto out;
     if ((rc = exec(q, cbase_schema_sql)) != CB_OK) goto out;
     char v[64];
@@ -578,8 +608,21 @@ static int write1(sq *q, int st_id, const char *what, bool need_row, const char 
     return rc;
 }
 
-static int sq_user_set_password(cb_store *st, const char *id, const char *hash) {
-    return write1(Q(st), ST_USER_SET_PASSWORD, "set password", true, id, hash, NULL);
+static int sq_user_set_password(cb_store *st, const char *id, const char *hash, const char *keep) {
+    sq *q = Q(st);
+    lock(q);
+    sqlite3_stmt *s = stmt(q, ST_USER_SET_PASSWORD);
+    if (s) {
+        b_text(s, 1, id);
+        b_text(s, 2, hash);
+        b_text_null(s, 3, keep);
+    }
+    int rc = step_write(q, s, "set password", true);
+    unlock(q);
+    return rc;
+}
+static int sq_user_end_sessions(cb_store *st, const char *id) {
+    return write1(Q(st), ST_USER_END_SESSIONS, "end sessions", true, id, NULL, NULL);
 }
 static int sq_user_touch_sign_in(cb_store *st, const char *id, int64_t at) {
     return write1(Q(st), ST_USER_TOUCH, "touch sign-in", true, id, NULL, &at);
@@ -670,20 +713,28 @@ static int sq_users_list(cb_store *st, const char *search, int offset, int limit
 static int sq_refresh_put(cb_store *st, const cb_refresh_row *r) {
     sq *q = Q(st);
     lock(q);
-    sqlite3_stmt *s = stmt(q, ST_REFRESH_PUT);
-    if (s) {
-        b_text(s, 1, r->token_hash);
-        b_text(s, 2, r->user_id);
-        b_text(s, 3, r->session_id);
-        b_i64(s, 4, r->created_at);
-        b_i64(s, 5, r->revoked);
+    // Rows past their time go here, so the table holds only live ones.
+    sqlite3_stmt *s = stmt(q, ST_REFRESH_PRUNE);
+    if (s) b_i64(s, 1, r->created_at);
+    int rc = step_write(q, s, "refresh prune", false);
+    if (rc == CB_OK) {
+        s = stmt(q, ST_REFRESH_PUT);
+        if (s) {
+            b_text(s, 1, r->token_hash);
+            b_text(s, 2, r->user_id);
+            b_text(s, 3, r->session_id);
+            b_i64(s, 4, r->created_at);
+            b_i64(s, 5, r->revoked);
+            if (r->expires_at) b_i64(s, 6, r->expires_at);
+            else sqlite3_bind_null(s, 6);
+        }
+        rc = step_write(q, s, "refresh put", false);
     }
-    int rc = step_write(q, s, "refresh put", false);
     unlock(q);
     return rc;
 }
 
-static int sq_refresh_take(cb_store *st, const char *hash, int64_t now_ms, cb_refresh_row *out) {
+static int sq_refresh_take(cb_store *st, const char *hash, int64_t now_ms, int64_t spent_ms, cb_refresh_row *out) {
     sq *q = Q(st);
     lock(q);
     int rc = begin(q);
@@ -692,6 +743,7 @@ static int sq_refresh_take(cb_store *st, const char *hash, int64_t now_ms, cb_re
         if (!s) rc = CB_E_DB;
         else {
             b_text(s, 1, hash);
+            b_i64(s, 2, now_ms);
             int r = sqlite3_step(s);
             if (r == SQLITE_ROW) {
                 memset(out, 0, sizeof *out);
@@ -701,6 +753,7 @@ static int sq_refresh_take(cb_store *st, const char *hash, int64_t now_ms, cb_re
                 out->created_at = c_i64(s, 3);
                 out->revoked = c_i64(s, 4) != 0;
                 out->revoked_at = c_i64(s, 5);
+                out->expires_at = c_i64(s, 6);
             } else rc = r == SQLITE_DONE ? CB_E_NOT_FOUND : fail(q, "refresh get", r);
             done(s);
         }
@@ -710,6 +763,7 @@ static int sq_refresh_take(cb_store *st, const char *hash, int64_t now_ms, cb_re
         if (s) {
             b_text(s, 1, hash);
             b_i64(s, 2, now_ms);
+            b_i64(s, 3, now_ms + spent_ms);
         }
         rc = step_write(q, s, "refresh revoke", false);
     }
@@ -719,11 +773,67 @@ static int sq_refresh_take(cb_store *st, const char *hash, int64_t now_ms, cb_re
     return rc;
 }
 
-static int sq_refresh_revoke_session(cb_store *st, const char *session_id) {
-    return write1(Q(st), ST_REFRESH_REVOKE_SESSION, "revoke session", false, session_id, NULL, NULL);
+// ---- sessions --------------------------------------------------------------------------
+
+static int sq_session_put(cb_store *st, const cb_session_row *r) {
+    sq *q = Q(st);
+    lock(q);
+    sqlite3_stmt *s = stmt(q, ST_SESSIONS_PRUNE);
+    if (s) b_i64(s, 1, r->created_at);
+    int rc = step_write(q, s, "sessions prune", false);
+    if (rc == CB_OK) {
+        s = stmt(q, ST_SESSION_PUT);
+        if (s) {
+            b_text(s, 1, r->id);
+            b_text(s, 2, r->user_id);
+            b_i64(s, 3, r->created_at);
+            b_i64(s, 4, r->expires_at);
+            b_i64(s, 5, r->revoked);
+            b_i64(s, 6, r->gen);
+        }
+        rc = step_write(q, s, "session put", false);
+    }
+    unlock(q);
+    return rc;
 }
-static int sq_refresh_revoke_user(cb_store *st, const char *user_id) {
-    return write1(Q(st), ST_REFRESH_REVOKE_USER, "revoke user", false, user_id, NULL, NULL);
+
+static int sq_session_get(cb_store *st, const char *id, int64_t now_ms, cb_session_row *out) {
+    sq *q = Q(st);
+    memset(out, 0, sizeof *out);
+    lock(q);
+    sqlite3_stmt *s = stmt(q, ST_SESSION_GET);
+    int rc = CB_E_DB;
+    if (s) {
+        b_text(s, 1, id);
+        b_i64(s, 2, now_ms);
+        int r = sqlite3_step(s);
+        if (r == SQLITE_ROW) {
+            c_text(s, 0, out->id, sizeof out->id);
+            c_text(s, 1, out->user_id, sizeof out->user_id);
+            out->created_at = c_i64(s, 2);
+            out->expires_at = c_i64(s, 3);
+            out->revoked = c_i64(s, 4) != 0;
+            out->gen = c_i64(s, 5);
+            rc = CB_OK;
+        } else rc = r == SQLITE_DONE ? CB_E_NOT_FOUND : fail(q, "session get", r);
+    }
+    done(s);
+    unlock(q);
+    return rc;
+}
+
+static int sq_session_revoke(cb_store *st, const char *id, const char *user_id, int64_t expires_at) {
+    sq *q = Q(st);
+    lock(q);
+    sqlite3_stmt *s = stmt(q, ST_SESSION_REVOKE);
+    if (s) {
+        b_text(s, 1, id);
+        b_text(s, 2, user_id);
+        b_i64(s, 3, expires_at);
+    }
+    int rc = step_write(q, s, "session revoke", false);
+    unlock(q);
+    return rc;
 }
 
 // ---- games -----------------------------------------------------------------------------
@@ -1781,8 +1891,10 @@ static const cb_store_ops SQLITE_OPS = {
     .users_list = sq_users_list,
     .refresh_put = sq_refresh_put,
     .refresh_take = sq_refresh_take,
-    .refresh_revoke_session = sq_refresh_revoke_session,
-    .refresh_revoke_user = sq_refresh_revoke_user,
+    .session_put = sq_session_put,
+    .session_get = sq_session_get,
+    .session_revoke = sq_session_revoke,
+    .user_end_sessions = sq_user_end_sessions,
     .game_get = sq_game_get,
     .game_create = sq_game_create,
     .game_commit = sq_game_commit,

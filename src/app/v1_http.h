@@ -5,7 +5,7 @@
 //   POST /v1/auth/signin     NW_SIGNIN -> 200 NW_SESSION
 //   POST /v1/auth/refresh    NW_REFRESH -> 200 NW_SESSION
 //   POST /v1/auth/signout    (bearer) NW_SIGNOUT -> 204
-//   POST /v1/auth/password   (bearer) NW_PASSWORD -> 204
+//   POST /v1/auth/password   (bearer) NW_PASSWORD (current, new) -> 204; every other session ends
 //   GET  /v1/games           (bearer) -> NW_GAMES, the caller's views, newest first
 //   GET  /v1/games/<id>      (bearer) -> NW_VIEW, the caller's view, else the spectators'
 //   GET  /v1/chat/<id>       (bearer) -> NW_CHATS, the last 100, oldest first (none for a non-member)

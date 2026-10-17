@@ -49,7 +49,9 @@
 //                                         once games_played > 0: a sparse, rating-ordered key)
 //   EMAIL#<email>      USER               the user id; signup's uniqueness
 //   AUTHFAIL#<email>   FAILS              failed sign-ins at the account (auth.h CB_AUTH_FAIL_*; TTL an hour)
-//   REFRESH#<hash>     TOKEN              a refresh token (GSI1 USERREFRESH#<user>, GSI2 SESSION#<session>)
+//   REFRESH#<hash>     TOKEN              a refresh token (GSI1 USERREFRESH#<user>; TTL its session's
+//                                         end, a week once spent; rows before sessions also GSI2 SESSION#)
+//   SESSION#<id>       SESSION            a session: revoked, its absolute end (TTL)
 //   GAME#<id>          ROW                the game
 //   GAME#<id>          MEMBER#<user>      a seated human (GSI1 USERGAMES#<user> / <updated>#<game>)
 //   GAME#<id>          BOT#<bot>          a seated bot
@@ -160,6 +162,8 @@ bool dw_get_bool(cb_span item, const char *name, bool *out);
 // Items as rows. Each returns false when a required attribute is missing.
 bool dw_item_user(cb_span item, cb_user_row *u);
 bool dw_item_refresh(cb_span item, cb_refresh_row *r);
+// A SESSION item; false when it is not one or has ended by now_ms.
+bool dw_item_session(cb_span item, int64_t now_ms, cb_session_row *s);
 bool dw_item_game(cb_span item, cb_game_row *g);       // byte fields malloc'd
 bool dw_item_member(cb_span item, cb_member_row *m);   // a MEMBER item (or its GSI1 copy)
 // A DWQ_GAME_SEATS item's seat: the id after MEMBER# (a human, *bot false)
@@ -191,6 +195,7 @@ int dw_item_text(cb_span item, cb_buf *storage, const char **names, const char *
 void dw_get_user(dw_req *r, const char *table, const char *id);
 void dw_get_email(dw_req *r, const char *table, const char *email);
 void dw_get_signin_fails(dw_req *r, const char *table, const char *email);
+void dw_get_session(dw_req *r, const char *table, const char *id);
 void dw_get_game(dw_req *r, const char *table, const char *id);
 void dw_get_member(dw_req *r, const char *table, const char *game, const char *user);
 // The game's SCAN marker (store.h lease_held), consistent.
@@ -204,7 +209,6 @@ typedef enum {
     DWQ_USER_GAMES,        // arg user: GSI1, newest first
     DWQ_USER_CHATS,        // arg user: GSI1, keys
     DWQ_USER_TOKENS,       // arg user: GSI1, keys
-    DWQ_SESSION_TOKENS,    // arg session: GSI2, keys
     DWQ_GAME_SNAPSHOTS,    // arg game: GSI1, keys
     DWQ_PLAYER_SNAPSHOTS,  // arg user: GSI2 (forward chooses the order)
     DWQ_SNAPSHOT_ITEMS,    // arg snapshot id: SNAP#<id>, consistent
@@ -226,7 +230,8 @@ void dw_user_create(dw_req *r, const char *table, const cb_user_row *u, int32_t 
 // import: EMAIL and PROFILE as given, no condition, no rating row.
 void dw_user_import(dw_req *r, const char *table, const cb_user_row *u);
 // Present-only updates (ConditionalCheckFailed when the user is gone).
-void dw_user_set_password(dw_req *r, const char *table, const char *id, const char *hash);
+void dw_user_set_password(dw_req *r, const char *table, const char *id, const char *hash, const char *keep);
+void dw_user_end_sessions(dw_req *r, const char *table, const char *id);
 void dw_user_touch(dw_req *r, const char *table, const char *id, int64_t at);
 // The AUTHFAIL item replaced (PutItem), expiring an hour after now_ms; and deleted.
 void dw_signin_fails_put(dw_req *r, const char *table, const char *email, const cb_signin_fails *f, int64_t now_ms);
@@ -238,10 +243,9 @@ void dw_user_delete_txn(dw_req *r, const char *table, const cb_user_row *u);
 void dw_refresh_put(dw_req *r, const char *table, const cb_refresh_row *t);
 // revoked = true and revoked_at = now_ms unless already set, the old item
 // returned; ConditionalCheckFailed when unknown.
-void dw_refresh_take(dw_req *r, const char *table, const char *hash, int64_t now_ms);
-// revoked = true, revoked_at = 0 on a token found through DWQ_SESSION_TOKENS
-// or DWQ_USER_TOKENS (`key` is its dw_item_key).
-void dw_refresh_revoke(dw_req *r, const char *table, cb_span key);
+void dw_refresh_take(dw_req *r, const char *table, const char *hash, int64_t now_ms, int64_t spent_ms);
+void dw_session_put(dw_req *r, const char *table, const cb_session_row *s);
+void dw_session_revoke(dw_req *r, const char *table, const char *id, const char *user_id, int64_t expires_at);
 
 // Games.
 void dw_game_create(dw_req *r, const char *table, const cb_game_row *g, const char *creator);

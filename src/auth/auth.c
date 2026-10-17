@@ -10,8 +10,16 @@
 // new pair in the same session, as GoTrue's 10 s reuse interval does (GoTrue
 // answers the same child; a hash-only store cannot, so this is a sibling).
 // Later, it is reuse: the whole session is revoked, so a stolen token and its
-// legitimate holder are both signed out. A token a logout revoked has
-// revoked_at 0 (store.h) and never gets the grace.
+// legitimate holder are both signed out.
+//
+// The session itself is a row (store.h cb_session_row) that every refresh
+// reads strongly consistent before anything else: ending a session (a
+// logout, a detected reuse) is one write to it, and ending all of a user's
+// but one (a global sign-out, a password change) is one write to the user
+// (session_gen one up, kept_session). Nothing is listed through an index to be
+// revoked, so revocation is complete the moment it is written (findings M2,
+// M3). Each session has an absolute end (CB_AUTH_SESSION_MS), and each token
+// row a TTL: the session's end while live, CB_AUTH_SPENT_TOKEN_MS once spent.
 //
 // Access tokens are verified locally and never against the store (jwt.h).
 #include "auth.h"
@@ -145,9 +153,10 @@ static void token_hash(const char *token, char out[65]) {
 
 // ---- sessions --------------------------------------------------------------------
 
-// Mints an access token and a fresh refresh token for `u` in `session_id`,
-// storing the refresh token's hash. CB_OK and *out.
-static int issue(cb_auth *a, const cb_user_row *u, const char *session_id, cb_session *out) {
+// Mints an access token and a fresh refresh token for `u` in session `sess`,
+// storing the refresh token's hash, kept until the session's end. CB_OK and *out.
+static int issue(cb_auth *a, const cb_user_row *u, const cb_session_row *sess, cb_session *out) {
+    const char *session_id = sess->id;
     memset(out, 0, sizeof *out);
     int64_t now_s = cb_auth_now() / 1000;
     cb_jwt_claims c;
@@ -171,6 +180,7 @@ static int issue(cb_auth *a, const cb_user_row *u, const char *session_id, cb_se
     memcpy(r.user_id, u->id, sizeof r.user_id);
     cb_strlcpy(r.session_id, session_id, sizeof r.session_id);
     r.created_at = cb_auth_now();
+    r.expires_at = sess->expires_at;
     int rc = CB_STORE_CALL(a->store, refresh_put, &r);
     if (rc != CB_OK) { memset(out, 0, sizeof *out); return rc; }
 
@@ -183,6 +193,19 @@ static int issue(cb_auth *a, const cb_user_row *u, const char *session_id, cb_se
     out->user_created_at = u->created_at;
     out->last_sign_in_at = u->last_sign_in_at;
     return CB_OK;
+}
+
+// A new session for `u`, stored, then its first pair.
+static int begin_session(cb_auth *a, const cb_user_row *u, cb_session *out) {
+    cb_session_row sess;
+    memset(&sess, 0, sizeof sess);
+    cb_uuid_v4(sess.id);
+    memcpy(sess.user_id, u->id, sizeof sess.user_id);
+    sess.created_at = cb_auth_now();
+    sess.expires_at = sess.created_at + CB_AUTH_SESSION_MS;
+    sess.gen = u->session_gen;
+    int rc = CB_STORE_CALL(a->store, session_put, &sess);
+    return rc == CB_OK ? issue(a, u, &sess, out) : rc;
 }
 
 int cb_auth_signup(cb_auth *a, const char *email, const char *password, const char *username, cb_session *out) {
@@ -200,9 +223,7 @@ int cb_auth_signup(cb_auth *a, const char *email, const char *password, const ch
     rc = CB_STORE_CALL(a->store, user_create, &u);
     if (rc == CB_E_CONFLICT) return CB_AUTH_E_EXISTS;
     if (rc != CB_OK) return rc;
-    cb_uuid sid;
-    cb_uuid_v4(sid);
-    return issue(a, &u, sid, out);
+    return begin_session(a, &u, out);
 }
 
 // Spent on an unknown email, so a miss costs what a wrong password does. A
@@ -225,6 +246,33 @@ static void count_failure(cb_signin_fails *f, int64_t now) {
     }
 }
 
+// The password checked against u's hash, counted (auth.h CB_AUTH_FAIL_*):
+// CB_OK, CB_AUTH_E_BAD_LOGIN, CB_AUTH_E_TOO_MANY (locked: not even checked),
+// or a store error. A sign-in and a password change's current password both
+// come through here, so a stolen access token cannot guess the password
+// faster than a sign-in can.
+static int verify_counted(cb_auth *a, const cb_user_row *u, const char *password, int64_t now) {
+    cb_signin_fails f;
+    memset(&f, 0, sizeof f);
+    int rc = CB_STORE_CALL(a->store, signin_fails_get, u->email, now, &f);
+    if (rc != CB_OK && rc != CB_E_NOT_FOUND) return rc;
+    bool counted = rc == CB_OK && f.n > 0;
+    if (counted && f.locked_until > now) return CB_AUTH_E_TOO_MANY;   // no bcrypt, no write
+    int ok = cb_bcrypt_verify(password, u->password_hash);
+    if (ok < 0) CB_WARN("auth", "user %s: stored hash does not parse as bcrypt", u->id);
+    if (ok != 1) {
+        count_failure(&f, now);
+        if (f.locked_until) CB_WARN("auth", "user %s: %d failed sign-ins; locked for %lld s", u->id, f.n,
+                                    (long long)((f.locked_until - now) / 1000));
+        rc = CB_STORE_CALL(a->store, signin_fails_put, u->email, &f, now);
+        if (rc != CB_OK) CB_WARN("auth", "user %s: the failed sign-in was not counted: %s", u->id, cb_strerror(rc));
+        return CB_AUTH_E_BAD_LOGIN;
+    }
+    if (counted && (rc = CB_STORE_CALL(a->store, signin_fails_clear, u->email)) != CB_OK)
+        CB_WARN("auth", "user %s: the failed sign-ins were not cleared: %s", u->id, cb_strerror(rc));
+    return CB_OK;
+}
+
 int cb_auth_signin(cb_auth *a, const char *email, const char *password, cb_session *out) {
     if (!a->store) return CB_E_STATE;
     char em[CB_EMAIL_MAX + 1];
@@ -237,29 +285,18 @@ int cb_auth_signin(cb_auth *a, const char *email, const char *password, cb_sessi
     }
     if (rc != CB_OK) return rc;
     int64_t now = cb_auth_now();
-    cb_signin_fails f;
-    memset(&f, 0, sizeof f);
-    rc = CB_STORE_CALL(a->store, signin_fails_get, em, now, &f);
-    if (rc != CB_OK && rc != CB_E_NOT_FOUND) return rc;
-    bool counted = rc == CB_OK && f.n > 0;
-    if (counted && f.locked_until > now) return CB_AUTH_E_TOO_MANY;   // no bcrypt, no write
-    int ok = cb_bcrypt_verify(password, u.password_hash);
-    if (ok < 0) CB_WARN("auth", "user %s: stored hash does not parse as bcrypt", u.id);
-    if (ok != 1) {
-        count_failure(&f, now);
-        if (f.locked_until) CB_WARN("auth", "user %s: %d failed sign-ins; locked for %lld s", u.id, f.n,
-                                    (long long)((f.locked_until - now) / 1000));
-        rc = CB_STORE_CALL(a->store, signin_fails_put, em, &f, now);
-        if (rc != CB_OK) CB_WARN("auth", "user %s: the failed sign-in was not counted: %s", u.id, cb_strerror(rc));
-        return CB_AUTH_E_BAD_LOGIN;
-    }
-    if (counted && (rc = CB_STORE_CALL(a->store, signin_fails_clear, em)) != CB_OK)
-        CB_WARN("auth", "user %s: the failed sign-ins were not cleared: %s", u.id, cb_strerror(rc));
+    if ((rc = verify_counted(a, &u, password, now)) != CB_OK) return rc;
     if ((rc = CB_STORE_CALL(a->store, user_touch_sign_in, u.id, now)) != CB_OK) return rc;
     u.last_sign_in_at = now;
-    cb_uuid sid;
-    cb_uuid_v4(sid);
-    return issue(a, &u, sid, out);
+    return begin_session(a, &u, out);
+}
+
+// Is the session over for u (auth.h): revoked, or begun at a generation the
+// user has since ended (all but kept_session). Its end needs no check here:
+// session_get answers none past it, and a token never outlives its session.
+static bool session_over(const cb_session_row *s, const cb_user_row *u) {
+    if (s->revoked) return true;
+    return s->gen < u->session_gen && strcmp(s->id, u->kept_session) != 0;
 }
 
 int cb_auth_refresh(cb_auth *a, const char *refresh_token, cb_session *out) {
@@ -269,42 +306,71 @@ int cb_auth_refresh(cb_auth *a, const char *refresh_token, cb_session *out) {
     token_hash(refresh_token, h);
     cb_refresh_row r;
     int64_t now = cb_auth_now();
-    int rc = CB_STORE_CALL(a->store, refresh_take, h, now, &r);
+    int rc = CB_STORE_CALL(a->store, refresh_take, h, now, CB_AUTH_SPENT_TOKEN_MS, &r);
     if (rc == CB_E_NOT_FOUND) return CB_AUTH_E_BAD_REFRESH;
     if (rc != CB_OK) return rc;
-    // A logout's revoked_at is 0, always outside the window.
-    if (r.revoked && now - r.revoked_at <= CB_AUTH_REUSE_GRACE_MS) {
-        CB_INFO("auth", "session %s: a refresh token used %lld ms ago was presented again; within the grace, a new pair",
-                r.session_id, (long long)(now - r.revoked_at));
-    } else if (r.revoked) {
-        // Reuse (or a token logout revoked): end the whole session.
-        CB_WARN("auth", "session %s: a consumed or revoked refresh token was presented; session revoked", r.session_id);
-        rc = CB_STORE_CALL(a->store, refresh_revoke_session, r.session_id);
-        return rc == CB_OK ? CB_AUTH_E_REFRESH_USED : rc;
-    }
     cb_user_row u;
     rc = CB_STORE_CALL(a->store, user_get, r.user_id, &u);
     if (rc == CB_E_NOT_FOUND) return CB_AUTH_E_BAD_REFRESH;
     if (rc != CB_OK) return rc;
-    return issue(a, &u, r.session_id, out);
+    // The session decides first, read strongly consistent (finding M3): a
+    // session ended by a logout, a global sign-out, a password change or a
+    // detected reuse never refreshes again, whatever its tokens say.
+    cb_session_row sess;
+    rc = CB_STORE_CALL(a->store, session_get, r.session_id, now, &sess);
+    if (rc == CB_E_NOT_FOUND) {
+        // A session begun before sessions were stored: its row is made now,
+        // from the token, at generation 0 (it began before any generation
+        // was ended), so it can be ended like any other. One past its end
+        // never gets here with a live token, but an old token that carries no
+        // end of its own does: refused by its session's end.
+        memset(&sess, 0, sizeof sess);
+        cb_strlcpy(sess.id, r.session_id, sizeof sess.id);
+        memcpy(sess.user_id, r.user_id, sizeof sess.user_id);
+        sess.created_at = r.created_at;
+        sess.expires_at = r.created_at + CB_AUTH_SESSION_MS;
+        if (sess.expires_at <= now) return CB_AUTH_E_BAD_REFRESH;
+        if ((rc = CB_STORE_CALL(a->store, session_put, &sess)) != CB_OK) return rc;
+    } else if (rc != CB_OK) {
+        return rc;
+    }
+    if (session_over(&sess, &u)) return CB_AUTH_E_REFRESH_USED;
+    if (r.revoked && now - r.revoked_at <= CB_AUTH_REUSE_GRACE_MS) {
+        CB_INFO("auth", "session %s: a refresh token used %lld ms ago was presented again; within the grace, a new pair",
+                r.session_id, (long long)(now - r.revoked_at));
+    } else if (r.revoked) {
+        // Reuse: end the whole session, so a stolen token and its legitimate
+        // holder are both signed out. One write.
+        CB_WARN("auth", "session %s: a consumed refresh token was presented; session revoked", r.session_id);
+        rc = CB_STORE_CALL(a->store, session_revoke, r.session_id, r.user_id, sess.expires_at);
+        return rc == CB_OK ? CB_AUTH_E_REFRESH_USED : rc;
+    }
+    return issue(a, &u, &sess, out);
 }
 
 int cb_auth_logout(cb_auth *a, const cb_user *u, cb_logout_scope scope) {
     if (!a->store) return CB_E_STATE;
-    if (scope == CB_LOGOUT_GLOBAL) return CB_STORE_CALL(a->store, refresh_revoke_user, u->id);
-    return CB_STORE_CALL(a->store, refresh_revoke_session, u->session_id);
+    if (scope == CB_LOGOUT_GLOBAL) return CB_STORE_CALL(a->store, user_end_sessions, u->id);
+    return CB_STORE_CALL(a->store, session_revoke, u->session_id, u->id, cb_auth_now() + CB_AUTH_SESSION_MS);
 }
 
-int cb_auth_change_password(cb_auth *a, const cb_user *u, const char *new_password) {
+int cb_auth_change_password(cb_auth *a, const cb_user *u, const char *current, const char *new_password) {
     if (!a->store) return CB_E_STATE;
+    if (!current) return CB_AUTH_E_BAD_LOGIN;
     cb_user_row row;
     int rc = CB_STORE_CALL(a->store, user_get, u->id, &row);
     if (rc != CB_OK) return rc;
+    int64_t now = cb_auth_now();
+    // The current password first (finding M1): an access token alone does
+    // not prove the caller owns the account.
+    if ((rc = verify_counted(a, &row, current, now)) != CB_OK) return rc;
     if ((rc = check_password(new_password, row.username)) != CB_OK) return rc;
-    if (cb_bcrypt_verify(new_password, row.password_hash) == 1) return CB_AUTH_E_SAME_PASSWORD;
+    if (strcmp(current, new_password) == 0) return CB_AUTH_E_SAME_PASSWORD;
     char hash[CB_BCRYPT_HASH_LEN + 1];
     if ((rc = cb_bcrypt_hash(new_password, CB_BCRYPT_COST, hash)) != CB_OK) return rc;
-    return CB_STORE_CALL(a->store, user_set_password, u->id, hash);
+    // The new hash and the end of every other session, in one write: whoever
+    // held a stolen session is out, the caller stays in.
+    return CB_STORE_CALL(a->store, user_set_password, u->id, hash, u->session_id);
 }
 
 int cb_auth_delete_user(cb_auth *a, const char *user_id) {

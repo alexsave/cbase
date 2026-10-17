@@ -138,6 +138,10 @@ Rate limits (`src/app/limits.h`) are held in each warm container's memory and co
 The one counted in the table is failed sign-ins per account (`AUTHFAIL#<email>`, `src/auth/auth.h`): a wrong password costs one more read (1 RCU) and one write (1 WCU) than before, a sign-in while the account is locked costs one read and no write or bcrypt, and a success after failures costs one delete (1 WCU).
 A name with no account is never counted, so guessing names writes nothing.
 
+Sessions (`src/auth/auth.c`) are one `SESSION#<id>` item each: a sign-in writes it (1 WCU), every refresh reads it strongly consistent (1 RCU), and a token row no longer writes the `gsi2` index (one index WCU fewer per refresh).
+Ending a session, all of a user's sessions, or every session but the caller's on a password change is one write, where it was one write per token ever issued.
+Token rows expire by TTL (a week after they are spent, or with their session), and a session ends 180 days after it began.
+
 ## The console path (the fallback)
 
 The steps below do the same by hand, with no CLI.

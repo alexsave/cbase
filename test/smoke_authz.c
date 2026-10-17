@@ -147,9 +147,11 @@ static int build(body_kind k, uint8_t *b, int cap) {
         q.kind = NW_SIGNOUT;
         return request_body(&q, b, cap);
     case B_PASSWORD:
-        q.kind = NW_PASSWORD;
+        q.kind = NW_PASSWORD;   // a wrong current password, then a new one
         q.password_len = 14;
         memcpy(q.password, "other-pass-123", 14);
+        q.new_password_len = 14;
+        memcpy(q.new_password, "fresh-pass-123", 14);
         return request_body(&q, b, cap);
     case B_CHAT:
         q.kind = NW_CHAT_SEND;
@@ -185,7 +187,7 @@ static const row ROWS[] = {
     { "POST", "/v1/auth/signin",    B_SIGNIN,     { 403, 400, 0, 0, 0 } },    // wrong password: ACCOUNT refusal
     { "POST", "/v1/auth/refresh",   B_REFRESH,    { 403, 400, 0, 0, 0 } },    // unknown token
     { "POST", "/v1/auth/signout",   B_SIGNOUT,    { 403, 401, 401, 0, 0 } },
-    { "POST", "/v1/auth/password",  B_PASSWORD,   { 403, 401, 401, 0, 0 } },
+    { "POST", "/v1/auth/password",  B_PASSWORD,   { 403, 401, 401, 400, 0 } },   // the current password is required (M1)
     { "GET",  "/v1/games",          B_NONE,       { 403, 401, 401, 200, 200 } },
     { "GET",  "/v1/games/%s",       B_NONE,       { 403, 401, 401, 200, 200 } },  // a stranger spectates (by design)
     { "GET",  "/v1/chat/%s",        B_NONE,       { 403, 401, 401, 200, 200 } },  // a stranger reads an empty list
@@ -253,9 +255,9 @@ static void limits_hold(void) {
     // Two sign-ups were the world's; the address's burst is 5.
     T_EQ_INT(refused_at, 3);
     uint8_t b[256];
-    int n = build(B_SIGNIN, b, sizeof b);   // AUTHZ_A, a wrong password; the matrix spent one
+    int n = build(B_SIGNIN, b, sizeof b);   // AUTHZ_A, a wrong password; the matrix spent two (a sign-in, a change)
     int st = 0;
-    for (int i = 0; i < 5; i++) st = req(ANON, "POST", "/v1/auth/signin", b, (size_t)n, NULL);
+    for (int i = 0; i < 4; i++) st = req(ANON, "POST", "/v1/auth/signin", b, (size_t)n, NULL);
     T_EQ_INT(st, 400);   // the sixth failure: still "wrong", and now locked
     NwRequest q;
     memset(&q, 0, sizeof q);

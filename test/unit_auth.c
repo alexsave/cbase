@@ -8,7 +8,10 @@
 #include "util/clock.h"
 #include "util/err.h"
 
+#include <openssl/sha.h>
 #include <stdlib.h>
+
+#include "util/hex.h"
 
 static cb_config cfg;
 static cb_ctx ctx;
@@ -143,10 +146,15 @@ static void refresh_rotates_and_reuse_revokes(void) {
     // stretch it, so 1 ms later s1 is reuse, and the session dies, so even
     // the newest token fails.
     g_fake_now += 1;
+    int sessions = auth_fakestore_session_rows(ctx.store);
     T_EQ_INT(cb_auth_refresh(ctx.auth, s1.refresh_token, &x), CB_AUTH_E_REFRESH_USED);
+    // Ended by one write to the session, not one per token (findings M2, M3):
+    // the live tokens are still unspent rows, and refuse all the same.
     T_EQ_INT(auth_fakestore_session_tokens(ctx.store, s0.user.session_id, &revoked), 4);
-    T_EQ_INT(revoked, 4);
+    T_EQ_INT(revoked, 2);
+    T_EQ_INT(auth_fakestore_session_rows(ctx.store), sessions);
     T_EQ_INT(cb_auth_refresh(ctx.auth, s2.refresh_token, &x), CB_AUTH_E_REFRESH_USED);
+    T_EQ_INT(cb_auth_refresh(ctx.auth, g.refresh_token, &x), CB_AUTH_E_REFRESH_USED);
     T_EQ_INT(cb_auth_refresh(ctx.auth, s0.refresh_token, &x), CB_AUTH_E_REFRESH_USED);
     T_EQ_INT(cb_auth_refresh(ctx.auth, other.refresh_token, &o1), CB_OK);
 
@@ -174,18 +182,18 @@ static void logout_password_delete(void) {
     T_EQ_INT(cb_auth_logout(ctx.auth, &u, CB_LOGOUT_LOCAL), CB_OK);
     T_EQ_INT(cb_auth_refresh(ctx.auth, s.refresh_token, &x), CB_AUTH_E_REFRESH_USED);
     T_EQ_INT(cb_auth_refresh(ctx.auth, d2b.refresh_token, &d2c), CB_OK);
-    // d2b was rotated a moment ago, but a logout zeroes the grace: a retry of
-    // it after the global logout is reuse, not a sibling.
+    // d2b was rotated a moment ago, but the session's end decides first: a
+    // retry of it after the global logout is refused, not a sibling.
     T_EQ_INT(cb_auth_logout(ctx.auth, &u, CB_LOGOUT_GLOBAL), CB_OK);
     T_EQ_INT(cb_auth_refresh(ctx.auth, d2c.refresh_token, &x), CB_AUTH_E_REFRESH_USED);
     T_EQ_INT(cb_auth_refresh(ctx.auth, d2b.refresh_token, &x), CB_AUTH_E_REFRESH_USED);
     // The access token lives until it expires, as GoTrue's did.
     T_EQ_INT(cb_auth_verify_token(ctx.auth, s.access_token, &u), CB_OK);
 
-    T_EQ_INT(cb_auth_change_password(ctx.auth, &u, "secret-11"), CB_AUTH_E_SAME_PASSWORD);
-    T_EQ_INT(cb_auth_change_password(ctx.auth, &u, "short"), CB_AUTH_E_WEAK_PASSWORD);
-    T_EQ_INT(cb_auth_change_password(ctx.auth, &u, "Password1"), CB_AUTH_E_WEAK_PASSWORD);
-    T_EQ_INT(cb_auth_change_password(ctx.auth, &u, "secret-22"), CB_OK);
+    T_EQ_INT(cb_auth_change_password(ctx.auth, &u, "secret-11", "secret-11"), CB_AUTH_E_SAME_PASSWORD);
+    T_EQ_INT(cb_auth_change_password(ctx.auth, &u, "secret-11", "short"), CB_AUTH_E_WEAK_PASSWORD);
+    T_EQ_INT(cb_auth_change_password(ctx.auth, &u, "secret-11", "Password1"), CB_AUTH_E_WEAK_PASSWORD);
+    T_EQ_INT(cb_auth_change_password(ctx.auth, &u, "secret-11", "secret-22"), CB_OK);
     T_EQ_INT(cb_auth_signin(ctx.auth, "l@foolish.cards", "secret-11", &x), CB_AUTH_E_BAD_LOGIN);
     T_EQ_INT(cb_auth_signin(ctx.auth, "l@foolish.cards", "secret-22", &s2), CB_OK);
 
@@ -197,6 +205,119 @@ static void logout_password_delete(void) {
     T_EQ_INT(cb_auth_delete_user(ctx.auth, u.id), CB_E_NOT_FOUND);
     // The email is free again.
     T_EQ_INT(cb_auth_signup(ctx.auth, "l@foolish.cards", "secret-33", "L", &x), CB_OK);
+    teardown();
+}
+
+// A password change (finding M1): the current password is required (and
+// counted as a sign-in is, so a stolen access token cannot guess it), and
+// every OTHER session ends in the same write; the caller's goes on.
+static void password_change_needs_the_current_one_and_ends_the_rest(void) {
+    setup();
+    g_fake_now = 1700000000000LL;
+    cb_auth_now = fake_now;
+    cb_session mine, thief, x;
+    cb_user u;
+    T_EQ_INT(cb_auth_signup(ctx.auth, "p@foolish.cards", "first-pass-1", "P", &mine), CB_OK);
+    T_EQ_INT(cb_auth_signin(ctx.auth, "p@foolish.cards", "first-pass-1", &thief), CB_OK);
+    // Holding only the thief's access token, without the password: refused.
+    T_EQ_INT(cb_auth_verify_token(ctx.auth, thief.access_token, &u), CB_OK);
+    T_EQ_INT(cb_auth_change_password(ctx.auth, &u, "a-guess-123", "thief-pass-1"), CB_AUTH_E_BAD_LOGIN);
+    T_EQ_INT(cb_auth_change_password(ctx.auth, &u, NULL, "thief-pass-1"), CB_AUTH_E_BAD_LOGIN);
+    // The owner changes it from their own session.
+    g_fake_now += 1000;
+    T_EQ_INT(cb_auth_verify_token(ctx.auth, mine.access_token, &u), CB_OK);
+    T_EQ_INT(cb_auth_change_password(ctx.auth, &u, "first-pass-1", "second-pass-2"), CB_OK);
+    // The other session is over; the caller's refreshes on.
+    T_EQ_INT(cb_auth_refresh(ctx.auth, thief.refresh_token, &x), CB_AUTH_E_REFRESH_USED);
+    cb_session mine2;
+    T_EQ_INT(cb_auth_refresh(ctx.auth, mine.refresh_token, &mine2), CB_OK);
+    T_EQ_STR(mine2.user.session_id, mine.user.session_id);
+    // A session begun after the change is not touched by it.
+    g_fake_now += 1000;
+    cb_session later, later2;
+    T_EQ_INT(cb_auth_signin(ctx.auth, "p@foolish.cards", "second-pass-2", &later), CB_OK);
+    T_EQ_INT(cb_auth_refresh(ctx.auth, later.refresh_token, &later2), CB_OK);
+    // Guessing the current password counts toward the lock, as sign-ins do.
+    T_EQ_INT(cb_auth_verify_token(ctx.auth, later2.access_token, &u), CB_OK);
+    for (int i = 0; i <= CB_AUTH_FAIL_FREE; i++)
+        T_EQ_INT(cb_auth_change_password(ctx.auth, &u, "a-guess-123", "third-pass-3"), CB_AUTH_E_BAD_LOGIN);
+    T_EQ_INT(cb_auth_change_password(ctx.auth, &u, "second-pass-2", "third-pass-3"), CB_AUTH_E_TOO_MANY);
+    T_EQ_INT(cb_auth_signin(ctx.auth, "p@foolish.cards", "second-pass-2", &x), CB_AUTH_E_TOO_MANY);
+    cb_auth_now = cb_now_ms;
+    teardown();
+}
+
+// Sessions end, and the rows they leave behind are bounded (finding M2): a
+// live token lives as long as its session, a spent one a week, and a session
+// ends CB_AUTH_SESSION_MS after it began however often it is refreshed.
+static void sessions_and_tokens_expire(void) {
+    setup();
+    g_fake_now = 1700000000000LL;
+    cb_auth_now = fake_now;
+    cb_session s0, s1, x;
+    T_EQ_INT(cb_auth_signup(ctx.auth, "e@foolish.cards", "expire-pass-1", "E", &s0), CB_OK);
+    const int64_t began = g_fake_now;
+    int64_t lo, hi;
+    auth_fakestore_token_expires(ctx.store, s0.user.session_id, &lo, &hi);
+    T_EQ_INT(lo, began + CB_AUTH_SESSION_MS);
+    g_fake_now += 1000;
+    T_EQ_INT(cb_auth_refresh(ctx.auth, s0.refresh_token, &s1), CB_OK);
+    auth_fakestore_token_expires(ctx.store, s0.user.session_id, &lo, &hi);
+    T_EQ_INT(lo, g_fake_now + CB_AUTH_SPENT_TOKEN_MS);   // the spent one: a week
+    T_EQ_INT(hi, began + CB_AUTH_SESSION_MS);            // the live one: the session's end
+    // A spent token past its week is unknown, not reuse: nothing more is revoked.
+    g_fake_now += CB_AUTH_SPENT_TOKEN_MS;
+    T_EQ_INT(cb_auth_refresh(ctx.auth, s0.refresh_token, &x), CB_AUTH_E_BAD_REFRESH);
+    T_EQ_INT(cb_auth_refresh(ctx.auth, s1.refresh_token, &s1), CB_OK);
+    // Refreshed every day, the session still ends when its lifetime does.
+    while (g_fake_now + 24 * 3600 * 1000LL < began + CB_AUTH_SESSION_MS) {
+        g_fake_now += 24 * 3600 * 1000LL;
+        T_EQ_INT(cb_auth_refresh(ctx.auth, s1.refresh_token, &s1), CB_OK);
+    }
+    g_fake_now = began + CB_AUTH_SESSION_MS;
+    int rc = cb_auth_refresh(ctx.auth, s1.refresh_token, &x);
+    T_CHECK(rc == CB_AUTH_E_BAD_REFRESH || rc == CB_AUTH_E_REFRESH_USED);
+    cb_auth_now = cb_now_ms;
+    teardown();
+}
+
+// A session begun before sessions were stored has token rows and no session
+// row: it refreshes (nobody is signed out by the change), gets its row on
+// the way, and can then be ended like any other.
+static void a_session_from_before_sessions(void) {
+    setup();
+    cb_session s0, s1, x;
+    T_EQ_INT(cb_auth_signup(ctx.auth, "o@foolish.cards", "older-pass-1", "O", &s0), CB_OK);
+    // A token as the old code wrote it: no expiry, a session nobody stored.
+    cb_refresh_row r;
+    memset(&r, 0, sizeof r);
+    unsigned char d[32];
+    SHA256((const unsigned char *)"OLDTOKEN0000000000000000000000000000000000x", 43, d);
+    cb_hex_encode(d, 32, r.token_hash, sizeof r.token_hash);
+    cb_strlcpy(r.user_id, s0.user.id, sizeof r.user_id);
+    cb_strlcpy(r.session_id, "99999999-9999-4999-8999-999999999999", sizeof r.session_id);
+    r.created_at = cb_now_ms() - 1000;
+    T_EQ_INT(CB_STORE_CALL(ctx.store, refresh_put, &r), CB_OK);
+    int rows = auth_fakestore_session_rows(ctx.store);
+    T_EQ_INT(cb_auth_refresh(ctx.auth, "OLDTOKEN0000000000000000000000000000000000x", &s1), CB_OK);
+    T_EQ_STR(s1.user.session_id, "99999999-9999-4999-8999-999999999999");
+    T_EQ_INT(auth_fakestore_session_rows(ctx.store), rows + 1);
+    cb_user u;
+    T_EQ_INT(cb_auth_verify_token(ctx.auth, s1.access_token, &u), CB_OK);
+    T_EQ_INT(cb_auth_logout(ctx.auth, &u, CB_LOGOUT_LOCAL), CB_OK);
+    T_EQ_INT(cb_auth_refresh(ctx.auth, s1.refresh_token, &x), CB_AUTH_E_REFRESH_USED);
+    // The other session (the sign-up's) is untouched by that local logout.
+    T_EQ_INT(cb_auth_refresh(ctx.auth, s0.refresh_token, &x), CB_OK);
+    // An old token whose session would have ended by now (it carries no end
+    // of its own): refused, and no session is made for it.
+    SHA256((const unsigned char *)"OLDTOKEN1111111111111111111111111111111111x", 43, d);
+    cb_hex_encode(d, 32, r.token_hash, sizeof r.token_hash);
+    cb_strlcpy(r.session_id, "88888888-8888-4888-8888-888888888888", sizeof r.session_id);
+    r.created_at = cb_now_ms() - CB_AUTH_SESSION_MS - 1;
+    T_EQ_INT(CB_STORE_CALL(ctx.store, refresh_put, &r), CB_OK);
+    rows = auth_fakestore_session_rows(ctx.store);
+    T_EQ_INT(cb_auth_refresh(ctx.auth, "OLDTOKEN1111111111111111111111111111111111x", &x), CB_AUTH_E_BAD_REFRESH);
+    T_EQ_INT(auth_fakestore_session_rows(ctx.store), rows);
     teardown();
 }
 
@@ -298,6 +419,9 @@ int main(void) {
     T_RUN(signin_lockout);
     T_RUN(refresh_rotates_and_reuse_revokes);
     T_RUN(logout_password_delete);
+    T_RUN(password_change_needs_the_current_one_and_ends_the_rest);
+    T_RUN(sessions_and_tokens_expire);
+    T_RUN(a_session_from_before_sessions);
     T_RUN(verify_bearer_and_expiry);
     return T_DONE();
 }

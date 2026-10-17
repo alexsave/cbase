@@ -4,11 +4,13 @@
 #include "util/str.h"
 
 #include <pthread.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define FAKE_USERS  64
 #define FAKE_TOKENS 256
+#define FAKE_SESSIONS 128
 
 typedef struct {
     pthread_mutex_t mu;
@@ -20,6 +22,8 @@ typedef struct {
     cb_signin_fails fails[FAKE_USERS];
     int64_t fail_expires[FAKE_USERS];
     int fail_puts, fail_reads;
+    cb_session_row sessions[FAKE_SESSIONS];
+    int n_sessions;
 } fake;
 
 static fake *F(cb_store *s) { return (fake *)s->impl; }
@@ -65,13 +69,95 @@ out:
     return rc;
 }
 
-static int f_user_set_password(cb_store *s, const char *id, const char *hash) {
+static int f_user_set_password(cb_store *s, const char *id, const char *hash, const char *keep) {
     fake *f = F(s);
     pthread_mutex_lock(&f->mu);
     int i = find_user(f, id);
-    if (i >= 0) cb_strlcpy(f->users[i].password_hash, hash, sizeof f->users[i].password_hash);
+    if (i >= 0) {
+        cb_strlcpy(f->users[i].password_hash, hash, sizeof f->users[i].password_hash);
+        f->users[i].session_gen++;
+        cb_strlcpy(f->users[i].kept_session, keep ? keep : "", sizeof f->users[i].kept_session);
+    }
     pthread_mutex_unlock(&f->mu);
     return i >= 0 ? CB_OK : CB_E_NOT_FOUND;
+}
+
+static int f_user_end_sessions(cb_store *s, const char *id) {
+    fake *f = F(s);
+    pthread_mutex_lock(&f->mu);
+    int i = find_user(f, id);
+    if (i >= 0) {
+        f->users[i].session_gen++;
+        f->users[i].kept_session[0] = 0;
+    }
+    pthread_mutex_unlock(&f->mu);
+    return i >= 0 ? CB_OK : CB_E_NOT_FOUND;
+}
+
+static int session_find(fake *f, const char *id) {
+    for (int i = 0; i < f->n_sessions; i++)
+        if (strcmp(f->sessions[i].id, id) == 0) return i;
+    return -1;
+}
+
+static int f_session_put(cb_store *s, const cb_session_row *r) {
+    fake *f = F(s);
+    int rc = CB_OK;
+    pthread_mutex_lock(&f->mu);
+    int i = session_find(f, r->id);
+    if (i < 0 && f->n_sessions == FAKE_SESSIONS) rc = CB_E_FULL;
+    else f->sessions[i >= 0 ? i : f->n_sessions++] = *r;
+    pthread_mutex_unlock(&f->mu);
+    return rc;
+}
+
+static int f_session_get(cb_store *s, const char *id, int64_t now, cb_session_row *out) {
+    fake *f = F(s);
+    pthread_mutex_lock(&f->mu);
+    int i = session_find(f, id);
+    bool ok = i >= 0 && f->sessions[i].expires_at > now;
+    if (ok) *out = f->sessions[i];
+    pthread_mutex_unlock(&f->mu);
+    return ok ? CB_OK : CB_E_NOT_FOUND;
+}
+
+static int f_session_revoke(cb_store *s, const char *id, const char *uid, int64_t expires) {
+    fake *f = F(s);
+    int rc = CB_OK;
+    pthread_mutex_lock(&f->mu);
+    int i = session_find(f, id);
+    if (i < 0 && f->n_sessions == FAKE_SESSIONS) rc = CB_E_FULL;
+    else if (i < 0) {
+        cb_session_row *r = &f->sessions[f->n_sessions++];
+        memset(r, 0, sizeof *r);
+        cb_strlcpy(r->id, id, sizeof r->id);
+        cb_strlcpy(r->user_id, uid, sizeof r->user_id);
+        r->expires_at = expires;
+        r->revoked = true;
+    } else f->sessions[i].revoked = true;
+    pthread_mutex_unlock(&f->mu);
+    return rc;
+}
+
+int auth_fakestore_session_rows(cb_store *s) {
+    fake *f = F(s);
+    pthread_mutex_lock(&f->mu);
+    int n = f->n_sessions;
+    pthread_mutex_unlock(&f->mu);
+    return n;
+}
+
+void auth_fakestore_token_expires(cb_store *s, const char *session_id, int64_t *min_out, int64_t *max_out) {
+    fake *f = F(s);
+    *min_out = INT64_MAX;
+    *max_out = 0;
+    pthread_mutex_lock(&f->mu);
+    for (int j = 0; j < f->n_tokens; j++)
+        if (strcmp(f->tokens[j].session_id, session_id) == 0) {
+            if (f->tokens[j].expires_at < *min_out) *min_out = f->tokens[j].expires_at;
+            if (f->tokens[j].expires_at > *max_out) *max_out = f->tokens[j].expires_at;
+        }
+    pthread_mutex_unlock(&f->mu);
 }
 
 static int f_user_touch(cb_store *s, const char *id, int64_t at) {
@@ -110,44 +196,22 @@ static int f_refresh_put(cb_store *s, const cb_refresh_row *r) {
     return rc;
 }
 
-static int f_refresh_take(cb_store *s, const char *hash, int64_t now_ms, cb_refresh_row *out) {
+static int f_refresh_take(cb_store *s, const char *hash, int64_t now_ms, int64_t spent_ms, cb_refresh_row *out) {
     fake *f = F(s);
     int rc = CB_E_NOT_FOUND;
     pthread_mutex_lock(&f->mu);
     for (int j = 0; j < f->n_tokens; j++)
         if (strcmp(f->tokens[j].token_hash, hash) == 0) {
+            if (f->tokens[j].expires_at && f->tokens[j].expires_at <= now_ms) break;   // gone with its TTL
             *out = f->tokens[j];
             if (!f->tokens[j].revoked) f->tokens[j].revoked_at = now_ms;
             f->tokens[j].revoked = true;
+            f->tokens[j].expires_at = now_ms + spent_ms;
             rc = CB_OK;
             break;
         }
     pthread_mutex_unlock(&f->mu);
     return rc;
-}
-
-static int f_refresh_revoke_session(cb_store *s, const char *sid) {
-    fake *f = F(s);
-    pthread_mutex_lock(&f->mu);
-    for (int j = 0; j < f->n_tokens; j++)
-        if (strcmp(f->tokens[j].session_id, sid) == 0) {
-            f->tokens[j].revoked = true;
-            f->tokens[j].revoked_at = 0;
-        }
-    pthread_mutex_unlock(&f->mu);
-    return CB_OK;
-}
-
-static int f_refresh_revoke_user(cb_store *s, const char *uid) {
-    fake *f = F(s);
-    pthread_mutex_lock(&f->mu);
-    for (int j = 0; j < f->n_tokens; j++)
-        if (strcmp(f->tokens[j].user_id, uid) == 0) {
-            f->tokens[j].revoked = true;
-            f->tokens[j].revoked_at = 0;
-        }
-    pthread_mutex_unlock(&f->mu);
-    return CB_OK;
 }
 
 static int fail_find(fake *f, const char *email) {
@@ -213,8 +277,10 @@ static const cb_store_ops FAKE_OPS = {
     .user_delete = f_user_delete,
     .refresh_put = f_refresh_put,
     .refresh_take = f_refresh_take,
-    .refresh_revoke_session = f_refresh_revoke_session,
-    .refresh_revoke_user = f_refresh_revoke_user,
+    .session_put = f_session_put,
+    .session_get = f_session_get,
+    .session_revoke = f_session_revoke,
+    .user_end_sessions = f_user_end_sessions,
 };
 
 cb_store *auth_fakestore_new(void) {

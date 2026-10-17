@@ -56,7 +56,27 @@ typedef struct {
     char    username[CB_USERNAME_MAX + 1]; // "" for none
     int64_t created_at;
     int64_t last_sign_in_at;               // 0 for never
+    // The generation of the user's sessions: one begun at a lower one is
+    // over, but kept_session. A global sign-out and a password change (auth.h)
+    // each move it up by one, in one write; a count, not a time, so a session
+    // begun in the same millisecond is neither missed nor caught.
+    int64_t session_gen;                   // 0 until sessions are first ended
+    cb_uuid kept_session;                  // "" for none
 } cb_user_row;
+
+// A session: what a sign-in or sign-up begins and every refresh continues.
+// Ending it is one write (revoked), read back strongly consistent by every
+// refresh, so a revoked session never refreshes again (security finding M3).
+// It ends by itself at expires_at, the absolute lifetime (auth.h
+// CB_AUTH_SESSION_MS); DynamoDB's TTL then removes the item.
+typedef struct {
+    cb_uuid id;
+    cb_uuid user_id;
+    int64_t created_at;
+    int64_t expires_at;
+    int64_t gen;        // the user's session_gen when it began
+    bool    revoked;
+} cb_session_row;
 
 typedef struct {
     char    token_hash[65];   // lowercase hex SHA-256 of the refresh token
@@ -66,9 +86,13 @@ typedef struct {
     bool    revoked;
     // When refresh_take rotated it (the FIRST take; later takes keep it), so
     // auth can give a retry of a lost refresh response GoTrue's 10 s grace.
-    // 0 when never taken, and 0 again after refresh_revoke_session or
-    // refresh_revoke_user: a logged-out token never gets the grace.
+    // 0 when never taken.
     int64_t revoked_at;
+    // When the row may go (DynamoDB's TTL; SQLite deletes it at the next
+    // write past it): its session's end while live, CB_AUTH_SPENT_TOKEN_MS
+    // after its first use once spent, so the rows a session leaves behind are
+    // bounded (security finding M2).
+    int64_t expires_at;
 } cb_refresh_row;
 
 // Failed sign-ins at one account (auth.h CB_AUTH_FAIL_*): how many, when the
@@ -220,7 +244,11 @@ typedef struct cb_store_ops {
     // CB_E_CONFLICT when the email is taken. Also creates the rating row
     // (username, TABLE_RATING_START), as the auth.users trigger did.
     int (*user_create)(cb_store *s, const cb_user_row *u);
-    int (*user_set_password)(cb_store *s, const char *id, const char *password_hash);
+    // The new hash, and in the same write session_gen one up (every session
+    // so far over) but keep_session (store.h cb_user_row).
+    int (*user_set_password)(cb_store *s, const char *id, const char *password_hash, const char *keep_session);
+    // session_gen one up, none kept (a global sign-out).
+    int (*user_end_sessions)(cb_store *s, const char *id);
     int (*user_touch_sign_in)(cb_store *s, const char *id, int64_t at);
     // Deletes the user, their refresh tokens, memberships, rating row and chat
     // messages (the cascade auth.admin.deleteUser had). Snapshots keep their
@@ -242,14 +270,19 @@ typedef struct cb_store_ops {
     // refresh tokens
     int (*refresh_put)(cb_store *s, const cb_refresh_row *r);
     // Rotation: atomically marks the token revoked, stamps revoked_at = now_ms
-    // unless a take already stamped it, and returns its row as it was before.
-    // CB_E_NOT_FOUND for an unknown hash; a row with revoked = true means the
-    // token was already used or logged out (revoked_at tells the two apart).
-    int (*refresh_take)(cb_store *s, const char *token_hash, int64_t now_ms, cb_refresh_row *out);
-    // Logout: revoke every token of the session (scope local), or of the user
-    // (scope global), setting revoked_at to 0 on each.
-    int (*refresh_revoke_session)(cb_store *s, const char *session_id);
-    int (*refresh_revoke_user)(cb_store *s, const char *user_id);
+    // unless a take already stamped it, moves its expires_at to now_ms +
+    // spent_ms (a spent token is kept only that long, for reuse detection),
+    // and returns its row as it was before. CB_E_NOT_FOUND for an unknown (or
+    // expired) hash; a row with revoked = true was already used.
+    int (*refresh_take)(cb_store *s, const char *token_hash, int64_t now_ms, int64_t spent_ms, cb_refresh_row *out);
+
+    // sessions (cb_session_row). get: CB_E_NOT_FOUND when there is none or it
+    // has expired, read strongly consistent. put: the row as given. revoke:
+    // ended, in one write; a session with no row yet (one begun before
+    // sessions were stored) gets one, revoked, for user_id until expires_at.
+    int (*session_put)(cb_store *s, const cb_session_row *r);
+    int (*session_get)(cb_store *s, const char *id, int64_t now_ms, cb_session_row *out);
+    int (*session_revoke)(cb_store *s, const char *id, const char *user_id, int64_t expires_at);
 
     // games
     // CB_E_NOT_FOUND, or the row (caller frees with cb_game_row_free).

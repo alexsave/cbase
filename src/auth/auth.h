@@ -82,18 +82,27 @@ int cb_auth_verify_token(cb_auth *a, const char *jwt, cb_user *out);
 
 int cb_auth_signup(cb_auth *a, const char *email, const char *password, const char *username, cb_session *out);
 int cb_auth_signin(cb_auth *a, const char *email, const char *password, cb_session *out);
+// A session ends by itself this long after it began, refreshed or not
+// (store.h cb_session_row): an absolute lifetime, then a sign-in again.
+#define CB_AUTH_SESSION_MS (180LL * 24 * 3600 * 1000)
+// A spent refresh token is kept this long after its first use, for reuse
+// detection; then the table's TTL removes it (security finding M2).
+#define CB_AUTH_SPENT_TOKEN_MS (7LL * 24 * 3600 * 1000)
 // A consumed token presented again within this window of its first use is a
 // retry, answered with a new pair (GoTrue's REFRESH_TOKEN_REUSE_INTERVAL, 10 s).
 #define CB_AUTH_REUSE_GRACE_MS 10000
 int cb_auth_refresh(cb_auth *a, const char *refresh_token, cb_session *out);
 // The clock auth reads (cb_now_ms); a test seam.
 extern int64_t (*cb_auth_now)(void);
-// Logout (NW_SIGNOUT's scope): LOCAL revokes this session's refresh tokens,
-// GLOBAL every session of the user. Access tokens live until they expire, as
+// Logout (NW_SIGNOUT's scope): LOCAL ends this session, GLOBAL every session
+// of the user, each in one write that every refresh reads consistently. Access tokens live until they expire, as
 // GoTrue's did.
 typedef enum { CB_LOGOUT_LOCAL, CB_LOGOUT_GLOBAL } cb_logout_scope;
 int cb_auth_logout(cb_auth *a, const cb_user *u, cb_logout_scope scope);
-int cb_auth_change_password(cb_auth *a, const cb_user *u, const char *new_password);
+// A password change: the current password must be right (counted as a
+// sign-in is, so it can lock the account), the new one must pass the rules,
+// and every OTHER session ends in the same write (security finding M1).
+int cb_auth_change_password(cb_auth *a, const cb_user *u, const char *current, const char *new_password);
 // Deletes the account (store user_delete). delete-account calls this AFTER the
 // app layer has redacted the user from every game (functions_http.h).
 int cb_auth_delete_user(cb_auth *a, const char *user_id);

@@ -254,9 +254,13 @@ static void h_password(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     NwRequest q;
     if (!request_of(req, res, NW_PASSWORD, &q)) return;
     if (!within(res, CB_LIMIT_PASSWORD_USER, u.id, true)) return;
-    char pw[NW_PASSWORD_MAX + 1];
-    if (!cstr(q.password, q.password_len, pw, sizeof pw)) { refuse(res, 400, ASK_WHY_MALFORMED, 0); return; }
-    int rc = cb_auth_change_password(ctx->auth, &u, pw);
+    char cur[NW_PASSWORD_MAX + 1], pw[NW_PASSWORD_MAX + 1];
+    if (!cstr(q.password, q.password_len, cur, sizeof cur) || !cstr(q.new_password, q.new_password_len, pw, sizeof pw)) {
+        refuse(res, 400, ASK_WHY_MALFORMED, 0);
+        return;
+    }
+    int rc = cb_auth_change_password(ctx->auth, &u, cur, pw);
+    memset(cur, 0, sizeof cur);
     memset(pw, 0, sizeof pw);
     if (rc != CB_OK) auth_failed(res, rc);
     else cb_res_status(res, 204);

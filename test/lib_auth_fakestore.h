@@ -11,6 +11,10 @@ void auth_fakestore_free(cb_store *s);
 // Refresh rows stored for a session, and how many of them are revoked.
 // signin_fails_put calls so far (each a table write in production).
 int auth_fakestore_fail_writes(cb_store *s);
+// Session rows stored (ever, by id).
+int auth_fakestore_session_rows(cb_store *s);
+// The earliest and latest expires_at among a session's token rows.
+void auth_fakestore_token_expires(cb_store *s, const char *session_id, int64_t *min_out, int64_t *max_out);
 int auth_fakestore_session_tokens(cb_store *s, const char *session_id, int *revoked);
 
 #endif

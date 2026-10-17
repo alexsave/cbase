@@ -456,10 +456,17 @@ static int dy_user_create(cb_store *s, const cb_user_row *u) {
     return rc;
 }
 
-static int dy_user_set_password(cb_store *s, const char *id, const char *hash) {
+static int dy_user_set_password(cb_store *s, const char *id, const char *hash, const char *keep) {
     dw_req r;
     dw_req_init(&r);
-    dw_user_set_password(&r, D(s)->table, id, hash);
+    dw_user_set_password(&r, D(s)->table, id, hash, keep);
+    return simple1(D(s), &r, CB_E_NOT_FOUND);
+}
+
+static int dy_user_end_sessions(cb_store *s, const char *id) {
+    dw_req r;
+    dw_req_init(&r);
+    dw_user_end_sessions(&r, D(s)->table, id);
     return simple1(D(s), &r, CB_E_NOT_FOUND);
 }
 
@@ -529,42 +536,57 @@ static int dy_refresh_put(cb_store *s, const cb_refresh_row *t) {
     return simple1(D(s), &r, CB_E_CONFLICT);
 }
 
-static int dy_refresh_take(cb_store *s, const char *hash, int64_t now_ms, cb_refresh_row *out) {
+static int dy_refresh_take(cb_store *s, const char *hash, int64_t now_ms, int64_t spent_ms, cb_refresh_row *out) {
     dyn *d = D(s);
     dw_req r;
     dw_req_init(&r);
-    dw_refresh_take(&r, d->table, hash, now_ms);
+    dw_refresh_take(&r, d->table, hash, now_ms, spent_ms);
     cb_buf resp;
     cb_buf_init(&resp);
     int rc = simple(d, &r, CB_E_NOT_FOUND, &resp);
     if (rc == CB_OK) {
         cb_span it;
         rc = dw_attributes(cb_buf_cstr(&resp), resp.len, &it) && dw_item_refresh(it, out) ? CB_OK : CB_E_DB;
+        // Past its time but not yet swept by the TTL: as good as gone.
+        if (rc == CB_OK && out->expires_at > 0 && out->expires_at <= now_ms) rc = CB_E_NOT_FOUND;
     }
     cb_buf_free(&resp);
     dw_req_free(&r);
     return rc;
 }
 
-// Revokes every token a keys-only query lists (a session's, or a user's).
-static int revoke_tokens(dyn *d, dw_query_kind which, const char *arg) {
-    keylist keys = { 0 };
-    int rc = query_all(d, which, arg, true, 0, collect_key, &keys);
-    if (rc == CB_OK && keys.oom) rc = CB_E_NOMEM;
-    for (int i = 0; rc == CB_OK && i < keys.n; i++) {
-        dw_req r;
-        dw_req_init(&r);
-        dw_refresh_revoke(&r, d->table, cb_span_of((const char *)keys.keys[i].p, keys.keys[i].len));
-        rc = simple1(d, &r, CB_OK);   // a token deleted meanwhile has nothing to revoke
+// ---- sessions --------------------------------------------------------------------------
+
+static int dy_session_put(cb_store *s, const cb_session_row *row) {
+    dw_req r;
+    dw_req_init(&r);
+    dw_session_put(&r, D(s)->table, row);
+    return simple1(D(s), &r, CB_E_DB);
+}
+
+static int dy_session_get(cb_store *s, const char *id, int64_t now_ms, cb_session_row *out) {
+    dyn *d = D(s);
+    dw_req r;
+    dw_req_init(&r);
+    dw_get_session(&r, d->table, id);   // ConsistentRead: a revoke just written is seen
+    cb_buf resp;
+    cb_buf_init(&resp);
+    int rc = CB_E_DB;
+    memset(out, 0, sizeof *out);
+    if (call(d, &r, &resp) == DW_OK) {
+        cb_span it;
+        rc = dw_item(cb_buf_cstr(&resp), resp.len, &it) && dw_item_session(it, now_ms, out) ? CB_OK : CB_E_NOT_FOUND;
     }
-    keylist_free(&keys);
+    cb_buf_free(&resp);
+    dw_req_free(&r);
     return rc;
 }
-static int dy_refresh_revoke_session(cb_store *s, const char *session) {
-    return revoke_tokens(D(s), DWQ_SESSION_TOKENS, session);
-}
-static int dy_refresh_revoke_user(cb_store *s, const char *user) {
-    return revoke_tokens(D(s), DWQ_USER_TOKENS, user);
+
+static int dy_session_revoke(cb_store *s, const char *id, const char *user_id, int64_t expires_at) {
+    dw_req r;
+    dw_req_init(&r);
+    dw_session_revoke(&r, D(s)->table, id, user_id, expires_at);
+    return simple1(D(s), &r, CB_E_DB);
 }
 
 // ---- games -----------------------------------------------------------------------------
@@ -1599,8 +1621,10 @@ static const cb_store_ops DYNAMO_OPS = {
     .users_list = dy_users_list,
     .refresh_put = dy_refresh_put,
     .refresh_take = dy_refresh_take,
-    .refresh_revoke_session = dy_refresh_revoke_session,
-    .refresh_revoke_user = dy_refresh_revoke_user,
+    .session_put = dy_session_put,
+    .session_get = dy_session_get,
+    .session_revoke = dy_session_revoke,
+    .user_end_sessions = dy_user_end_sessions,
     .game_get = dy_game_get,
     .game_create = dy_game_create,
     .game_commit = dy_game_commit,

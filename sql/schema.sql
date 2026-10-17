@@ -25,21 +25,39 @@ CREATE TABLE IF NOT EXISTS users (
     password_hash   TEXT NOT NULL,
     username        TEXT,
     created_at      INTEGER NOT NULL,
-    last_sign_in_at INTEGER
+    last_sign_in_at INTEGER,
+    -- A session begun at a lower session_gen is over, but kept_session
+    -- (a global sign-out, a password change: store.h cb_user_row).
+    session_gen     INTEGER NOT NULL DEFAULT 0,
+    kept_session    TEXT
 );
 
--- One row per refresh token ever issued. token_hash is the lowercase hex
--- SHA-256 of the token: the token itself is never stored. A use revokes it
--- (rotation) and stamps revoked_at once, for the 10 s reuse grace; a logout
--- revokes the session's (or the user's) and zeroes revoked_at.
+-- Sessions (store.h cb_session_row): ended by one write, read by every refresh.
+CREATE TABLE IF NOT EXISTS sessions (
+    id         TEXT PRIMARY KEY,
+    user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    gen        INTEGER NOT NULL DEFAULT 0,
+    revoked    INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
+
+-- One row per refresh token issued and not yet expired. token_hash is the
+-- lowercase hex SHA-256 of the token: the token itself is never stored. A use
+-- revokes it (rotation), stamps revoked_at once, for the 10 s reuse grace, and
+-- moves expires_at to a week on; a row past expires_at reads as none and goes
+-- at the next refresh_put.
 CREATE TABLE IF NOT EXISTS refresh_tokens (
     token_hash TEXT PRIMARY KEY,
     user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     session_id TEXT NOT NULL,
     created_at INTEGER NOT NULL,
     revoked    INTEGER NOT NULL DEFAULT 0,
-    revoked_at INTEGER
+    revoked_at INTEGER,
+    expires_at INTEGER
 );
+CREATE INDEX IF NOT EXISTS idx_refresh_tokens_expires ON refresh_tokens(expires_at);
 CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user ON refresh_tokens(user_id);
 CREATE INDEX IF NOT EXISTS idx_refresh_tokens_session ON refresh_tokens(session_id);
 
