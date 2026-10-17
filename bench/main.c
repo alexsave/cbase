@@ -156,6 +156,7 @@ static void usage(void) {
             "  cbase-bench coldstart --url <base> [--idle S] [--repeat K] [--path P] [--force-cmd CMD] [--note TEXT] [--out DIR]\n"
             "  cbase-bench cpu [--note TEXT] [--out DIR]\n"
             "  cbase-bench direct --url <base> [--n 200] [--table cbase] [--region R] [--edge URL] [--burst K] [--note TEXT] [--out DIR]\n"
+            "  cbase-bench subscribe --url <base> [--n 30] [--as 1] [--note TEXT] [--out DIR]\n"
             "  cbase-bench report [FILE...]\n");
 }
 
@@ -183,6 +184,7 @@ int main(int argc, char **argv) {
         else if (strcmp(a, "--region") == 0) o.region = v;
         else if (strcmp(a, "--edge") == 0) o.edge = v;
         else if (strcmp(a, "--burst") == 0) o.burst = atoi(v);
+        else if (strcmp(a, "--as") == 0) o.as = atoi(v) != 0;
         else { usage(); return 2; }
     }
     if (strcmp(cmd, "cpu") == 0) return bench_cpu(&o);
@@ -194,6 +196,10 @@ int main(int argc, char **argv) {
     if (strcmp(cmd, "direct") == 0) {
         if (o.n < 1) { usage(); return 2; }
         return bench_direct(&o);
+    }
+    if (strcmp(cmd, "subscribe") == 0) {
+        if (o.n < 1) { usage(); return 2; }
+        return bench_subscribe(&o);
     }
     if (strcmp(cmd, "coldstart") == 0) {
         if (o.repeat < 1 || o.idle_s < 0) { usage(); return 2; }

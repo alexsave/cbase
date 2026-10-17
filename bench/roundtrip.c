@@ -59,24 +59,6 @@ typedef struct {
     bool            running;
 } listener;
 
-// Sends one frame as base64 text, as the clients do. 0 on success.
-static int send_frame(bn_ws *ws, const NwFrame *f) {
-    uint8_t raw[NW_ACCESS_MAX + 64];
-    char text[2 * (NW_ACCESS_MAX + 64)];
-    int n = nw_frame_encode(f, raw, sizeof raw);
-    int t = n > 0 ? nw_text_encode(raw, n, text, sizeof text) : -1;
-    return t > 0 ? bn_ws_send_text(ws, text, (size_t)t) : -1;
-}
-
-// A frame as it arrived: binary from `cbase serve`, base64 text from API Gateway.
-static bool recv_frame(int op, const cb_buf *in, NwFrame *f) {
-    static _Thread_local uint8_t raw[1 << 17];
-    if (op == CB_WS_OP_BIN) return nw_frame_decode(in->p, (int)in->len, f) == NW_OK;
-    if (op != CB_WS_OP_TEXT || in->len > sizeof raw) return false;
-    int n = nw_text_decode((const char *)in->p, (int)in->len, raw, sizeof raw);
-    return n > 0 && nw_frame_decode(raw, n, f) == NW_OK;
-}
-
 static void *reader(void *arg) {
     listener *l = arg;
     cb_buf b;
@@ -88,14 +70,14 @@ static void *reader(void *arg) {
         if (bn_now_us() - last_ping > 25000000) {
             memset(&f, 0, sizeof f);
             f.kind = NW_WS_PING;
-            send_frame(l->ws, &f);
+            bn_ws_send_frame(l->ws, &f);
             last_ping = bn_now_us();
         }
         int op = bn_ws_recv(l->ws, 200, &b);
         if (op == -2) break;
         if (op < 0) continue;
         int64_t t = bn_now_us();
-        if (!recv_frame(op, &b, &f) || f.kind != NW_WS_VIEW || !f.blob.len) continue;
+        if (!bn_ws_frame_of(op, &b, &f) || f.kind != NW_WS_VIEW || !f.blob.len) continue;
         int64_t v = f.version;
         pthread_mutex_lock(&l->mu);
         l->t_us[l->count % RING] = t;
@@ -192,7 +174,7 @@ static int send_auth(bn_ws *ws, const char *token) {
     f.kind = NW_WS_AUTH;
     f.token_len = (uint16_t)strlen(token);
     memcpy(f.token, token, f.token_len);
-    return send_frame(ws, &f);
+    return bn_ws_send_frame(ws, &f);
 }
 
 // Subscribes to the games list as the browser's client does (netclient.c):
@@ -214,12 +196,12 @@ static bool listen_games(worker *w, int k) {
         f.kind = NW_WS_SUB;
         f.ref = (uint16_t)(attempt + 1);
         f.what = NW_SUB_GAMES;
-        if (send_frame(l->ws, &f) != 0) break;
+        if (bn_ws_send_frame(l->ws, &f) != 0) break;
         why = -1;
         for (int i = 0; i < 20 && why < 0; i++) {
             int op = bn_ws_recv(l->ws, TIMEOUT_MS, &b);
             if (op < 0) break;
-            if (recv_frame(op, &b, &f) && f.kind == NW_WS_ACK && f.ref == attempt + 1) why = f.why;
+            if (bn_ws_frame_of(op, &b, &f) && f.kind == NW_WS_ACK && f.ref == attempt + 1) why = f.why;
         }
         if (why != ASK_WHY_AUTH) break;
         struct timespec ts = { backoff / 1000, (long)(backoff % 1000) * 1000000L };

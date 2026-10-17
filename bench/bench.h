@@ -4,6 +4,7 @@
 //   cbase-bench coldstart --url <base> [--idle S] [--repeat K] [--path P] [--force-cmd CMD] [--out DIR]
 //   cbase-bench cpu [--out DIR]
 //   cbase-bench direct --url <base> [--n 200] [--table cbase] [--region us-east-1] [--edge URL] [--burst K]
+//   cbase-bench subscribe --url <base> [--n 30] [--as 1]
 //   cbase-bench report [FILE...]        (default: every bench/results/*.txt)
 //
 // Each measuring command prints its run and saves it as
@@ -14,6 +15,8 @@
 #define CB_BENCH_H
 
 #include "bench_stats.h"
+
+#include <stdbool.h>
 
 typedef struct {
     const char *url;
@@ -29,12 +32,14 @@ typedef struct {
     const char *region;      // direct: when the environment names none
     const char *edge;        // direct: a cached file on the CDN, https://host/path
     int         burst;       // direct: fresh connections at once, for a cold start
+    bool        as;          // subscribe: also time NW_WS_SUB_AS
 } bench_opts;
 
 int bench_roundtrip(const bench_opts *o);
 int bench_coldstart(const bench_opts *o);
 int bench_cpu(const bench_opts *o);
 int bench_direct(const bench_opts *o);
+int bench_subscribe(const bench_opts *o);
 
 // "2026-10-13T14:02:11Z" now.
 void bench_date(char *out, size_t cap);

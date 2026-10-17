@@ -3,6 +3,7 @@
 
 #include "aws/https.h"
 #include "net/ws.h"
+#include "netwire.h"
 #include "util/b64.h"
 #include "util/uuid.h"
 
@@ -380,4 +381,21 @@ int bn_ws_recv(bn_ws *w, int timeout_ms, cb_buf *out) {
         if (r == -2) return -2;
         if (r == -1 && bn_now_us() >= deadline) return -1;
     }
+}
+
+int bn_ws_send_frame(bn_ws *w, const void *nw_frame) {
+    uint8_t raw[NW_ACCESS_MAX + 128];
+    char text[2 * (NW_ACCESS_MAX + 128)];
+    int n = nw_frame_encode((const NwFrame *)nw_frame, raw, sizeof raw);
+    int t = n > 0 ? nw_text_encode(raw, n, text, sizeof text) : -1;
+    return t > 0 ? bn_ws_send_text(w, text, (size_t)t) : -1;
+}
+
+bool bn_ws_frame_of(int op, const cb_buf *in, void *nw_frame) {
+    static _Thread_local uint8_t raw[1 << 17];
+    NwFrame *f = nw_frame;
+    if (op == CB_WS_OP_BIN) return nw_frame_decode(in->p, (int)in->len, f) == NW_OK;
+    if (op != CB_WS_OP_TEXT || in->len > sizeof raw) return false;
+    int n = nw_text_decode((const char *)in->p, (int)in->len, raw, sizeof raw);
+    return n > 0 && nw_frame_decode(raw, n, f) == NW_OK;
 }

@@ -73,4 +73,11 @@ int    bn_ws_send_text(bn_ws *w, const char *text, size_t len);
 // peer closed or the stream broke. A ping is answered and skipped.
 int    bn_ws_recv(bn_ws *w, int timeout_ms, cb_buf *out);
 
+
+// One stream frame (netwire.h) sent as base64 text, as the clients send every
+// frame (API Gateway refuses a client's binary frame). 0 on success.
+int    bn_ws_send_frame(bn_ws *w, const void *nw_frame);
+// A frame as it arrived into *nw_frame (an NwFrame): binary from `cbase serve`,
+// base64 text from API Gateway. false for anything else.
+bool   bn_ws_frame_of(int op, const cb_buf *in, void *nw_frame);
 #endif
