@@ -169,17 +169,25 @@ static int send_req(const NcRequest *q) {
     return g_status;
 }
 
-// u's request: the session loaded, a refresh sent first when the library asks
-// for one, the session saved again. The status.
-static int call(smoke_user *u, int which, const void *a, int an, const void *b, int bn, int64_t n) {
+// u's intent, through the library's pump as a host runs it: the session
+// loaded, every request it names sent (a refresh first when it asks for one)
+// until the intent's ticket is done, the session saved again. The status of
+// the answer that finished it (g_body holds it), -1 when none did.
+static int call(smoke_user *u, int kind, const char *gid, const void *bytes, int n, int64_t intent) {
     T_EQ_INT(nc_session_load(u->blob, u->blob_len), NW_OK);
+    NcIntent in;
+    memset(&in, 0, sizeof in);
+    in.kind = (uint8_t)kind;
+    if (gid) { in.gid_len = (uint8_t)strlen(gid); memcpy(in.gid, gid, in.gid_len); }
+    if (n > 0) { in.bytes_len = (uint16_t)n; memcpy(in.bytes, bytes, (size_t)n); }
+    in.intent = intent;
     int st = -1;
-    for (int i = 0; i < 3; i++) {
-        const NcRequest *q = nc_req(which, (const char *)a, an, (const char *)b, bn, n, cb_now_ms());
-        if (!q) break;
-        st = send_req(q);
-        if (!q->is_refresh) break;
-        if (nc_session_read(g_status, g_body, g_len) != 0) break;
+    uint32_t t = nc_do(&in, cb_now_ms());
+    for (const NcRequest *q; t && (q = nc_next_request(cb_now_ms()));) {
+        uint32_t id = q->id;
+        int got = send_req(q);
+        const NcDone *d = nc_on_response(id, got < 0 ? 0 : got, g_body, g_len, cb_now_ms());
+        if (d && d->ticket == t) { st = got; break; }
     }
     u->blob_len = nc_session_save(u->blob, sizeof u->blob);
     return st;
@@ -206,7 +214,7 @@ static int ask(smoke_user *u, int kind, const char *gid, cb_buf *env) {
     memcpy(a.gid, gid, a.gid_len);
     uint8_t body[ASK_BYTES_MAX];
     int n = ask_encode(&a, body, sizeof body);
-    int st = n > 0 ? call(u, NC_REQ_META, body, n, NULL, 0, 0) : -1;
+    int st = n > 0 ? call(u, NC_DO_ASK, NULL, body, n, -1) : -1;
     cb_buf_reset(env);
     cb_buf_append(env, g_body, (size_t)g_len);
     return st;
@@ -214,7 +222,7 @@ static int ask(smoke_user *u, int kind, const char *gid, cb_buf *env) {
 
 // u's view of the game: its version, the envelope into env. false when there is none.
 static bool game_view(smoke_user *u, const char *gid, int64_t *version, cb_buf *env) {
-    if (call(u, NC_REQ_GAME, gid, (int)strlen(gid), NULL, 0, 0) != 200) return false;
+    if (call(u, NC_DO_OPEN_GAME, gid, NULL, 0, -1) != 200) return false;
     const NcGameRow *row = nc_view_read(g_status, g_body, g_len);
     if (!row) return false;
     *version = row->version;
@@ -392,7 +400,7 @@ static void game_scenario(void) {
     cb_buf_init(&env);
 
     // create: A's envelope names the game.
-    int created = call(&A, NC_REQ_CREATE, NULL, 0, NULL, 0, 0);
+    int created = call(&A, NC_DO_CREATE, NULL, NULL, 0, -1);
     T_EQ_INT(created, 200);
     if (created != 200) { cb_buf_free(&env); free(sc); return; }
     client_init(&sc->c, &sc->slot);
@@ -455,7 +463,7 @@ static void game_scenario(void) {
             uint8_t wire[64];
             int n = choose_move(sc, &env, wire, sizeof wire, &rng);
             if (n <= 0) continue;
-            T_EQ_INT(call(humans[h], NC_REQ_ACTION, gid, 6, wire, n, version), 200);
+            T_EQ_INT(call(humans[h], NC_DO_PLAY, gid, wire, n, version), 200);
             T_CHECK(nc_action_read(g_status, g_body, g_len) != NULL);
             moved = true;
             moves++;
@@ -541,7 +549,7 @@ static void game_scenario(void) {
     free(LC);
 
     // The ratings (A is on the board with one game) and the replay (A's history holds one).
-    T_EQ_INT(call(&A, NC_REQ_BOARD, NULL, 0, NULL, 0, 0), 200);
+    T_EQ_INT(call(&A, NC_DO_LEADERBOARD, NULL, NULL, 0, -1), 200);
     int rows = nc_list_read(g_status, g_body, g_len, NW_BOARD);
     bool on_board = false;
     for (int i = 0; i < rows; i++) {
@@ -549,11 +557,11 @@ static void game_scenario(void) {
         if (r && !r->is_bot && r->id_len == strlen(A.id) && memcmp(r->id, A.id, r->id_len) == 0) on_board = r->games == 1;
     }
     T_CHECK(on_board);
-    T_EQ_INT(call(&A, NC_REQ_HISTORY, NULL, 0, NULL, 0, 0), 200);
+    T_EQ_INT(call(&A, NC_DO_HISTORY, NULL, NULL, 0, -1), 200);
     T_EQ_INT(nc_list_read(g_status, g_body, g_len, NW_HISTORY), 1);
     const NcHistoryHead *head = nc_history_head(g_body, g_len);
     T_CHECK(head && head->has_rating);
-    T_EQ_INT(call(&A, NC_REQ_REPLAY, gid, 6, NULL, 0, 0), 200);
+    T_EQ_INT(call(&A, NC_DO_REPLAY, gid, NULL, 0, -1), 200);
     const NcReplay *rp = nc_replay_read(g_status, g_body, g_len);
     T_CHECK(rp && rp->moves_len > 0);
 

@@ -250,15 +250,20 @@ static void flush(int fd, int64_t now) {
     for (const NcOut *o; (o = nc_stream_next(now));) T_EQ_INT(tc_ws_send(fd, CB_WS_OP_TEXT, o->text, o->len), 0);
 }
 
-// The next event the server's frames make, skipping NC_EV_NONE; kind -1 on a timeout.
+// The next event the server's frames make, skipping NC_EV_NONE and the
+// session's; kind 255 on a timeout. g_ev is its index, for nc_event_payload.
+static int g_ev;
 static const NcEvent *next_event(int fd, int timeout_ms, cb_buf *m) {
     static NcEvent none = { .kind = 255 };
     for (;;) {
         cb_buf_reset(m);
         int op = tc_ws_recv(fd, timeout_ms, m);
         if (op != CB_WS_OP_BIN && op != CB_WS_OP_TEXT) return &none;
-        const NcEvent *e = nc_stream_in(m->p, (int)m->len, op == CB_WS_OP_TEXT, cb_now_ms());
-        if (e->kind != NC_EV_NONE) return e;
+        int n = nc_stream_in(m->p, (int)m->len, op == CB_WS_OP_TEXT, cb_now_ms());
+        for (g_ev = 0; g_ev < n; g_ev++) {
+            const NcEvent *e = nc_event(g_ev);
+            if (e->kind != NC_EV_NONE && e->kind != NC_EV_SESSION) return e;
+        }
     }
 }
 
@@ -331,7 +336,7 @@ static void serve_end_to_end(void) {
     rt_publish_cast(g_ctx.rt, "gu-" G "-" U1, G, 11, cast, 2);
     e = next_event(fd, 2000, &m);
     T_CHECK(e->kind == NC_EV_CAST && e->version == 11 && e->payload_len == 2);
-    T_EQ_MEM(nc_event_payload(), e->payload_len, cast, 2);
+    T_EQ_MEM(nc_event_payload(g_ev), e->payload_len, cast, 2);
     rt_publish_cast(g_ctx.rt, "gu-" G "-" U1, G, 11, cast, 2);
     cb_view_row v;
     memset(&v, 0, sizeof v);
@@ -345,7 +350,7 @@ static void serve_end_to_end(void) {
     rt_publish_view(g_ctx.rt, U1, &v, false);
     e = next_event(fd, 2000, &m);   // the stale cast made no event: this is the view
     T_CHECK(e->kind == NC_EV_VIEW && e->version == 11 && e->what == NW_SUB_GAMES);
-    T_EQ_MEM(nc_event_payload(), e->payload_len, env, 2);
+    T_EQ_MEM(nc_event_payload(g_ev), e->payload_len, env, 2);
     // A client frame sent as binary is taken too (rt_local is not API Gateway).
     uint8_t ping[] = { NW_V1, NW_WS_PING };
     T_EQ_INT(tc_ws_send(fd, CB_WS_OP_BIN, ping, 2), 0);
