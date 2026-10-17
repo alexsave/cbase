@@ -13,7 +13,7 @@
 //                   them before NW_WS_BATCH (behind API Gateway each is its own
 //                   invocation, and the three run at once)
 //        --batch 1  one NW_WS_BATCH carrying the three (one invocation)
-//      Timed: open to the last ACK (subscribed), open to the catch-up (caught_up).
+//      Timed: open to the last ACK (subscribed).
 //   2. --pushes chat messages on one subscribed socket, each timed from its
 //      POST going out to its NW_WS_CHAT arriving (send_to_push), and from the
 //      POST's answer to it (push_after_answer; negative when the push wins).
@@ -158,6 +158,7 @@ typedef struct {
 } seen;
 
 static void take(const NwFrame *f, int64_t t, seen *s) {
+    if (getenv("BENCH_TRACE")) fprintf(stderr, "bench: heard kind %d ref %d why %d v%u len %u\n", f->kind, f->ref, f->why, f->version, f->blob.len);
     if (f->kind == NW_WS_ACK && f->why == 0 && ++s->acks == N_SUBS) s->t_acks = t;
     if (f->kind == NW_WS_CATCHUP && !s->catchups++) s->t_catchup = t;
     if (f->kind == NW_WS_CHAT && !s->chats++) s->t_chat = t;
@@ -187,11 +188,12 @@ static bool pump(bn_ws *ws, seen *s, bool (*done)(const seen *), cb_buf *b) {
     return true;
 }
 
-static bool subscribed(const seen *s) { return s->acks >= N_SUBS && s->catchups >= 1; }
+// A fresh lobby is at version 0, so its game subscription has no catch-up to send.
+static bool subscribed(const seen *s) { return s->acks >= N_SUBS; }
 static bool chatted(const seen *s) { return s->chats >= 1; }
 
 // One page load: microseconds from open to the last ACK and to the catch-up.
-static bool page_load(const page_ctx *c, bool batch, int64_t *t_sub, int64_t *t_catch) {
+static bool page_load(const page_ctx *c, bool batch, int64_t *t_sub) {
     bn_ws *ws = bn_ws_open(&c->u, "/v1/stream?proto=nw1", TIMEOUT_MS);
     if (!ws) return false;
     int64_t t0 = bn_now_us();
@@ -199,9 +201,9 @@ static bool page_load(const page_ctx *c, bool batch, int64_t *t_sub, int64_t *t_
     cb_buf b;
     cb_buf_init(&b);
     bool ok = send_subs(ws, c, batch) == 0 && pump(ws, &s, subscribed, &b);
+    if (!ok) fprintf(stderr, "bench: page load heard %d ACKs and %d catch-ups\n", s.acks, s.catchups);
     if (ok) {
         *t_sub = s.t_acks - t0;
-        *t_catch = s.t_catchup - t0;
         sleep_ms(1000);
     }
     cb_buf_free(&b);
@@ -245,23 +247,23 @@ int bench_page(const bench_opts *o) {
     bn_http_init(&c.h, &c.u);
     if (signup(&c) != 0 || create_game(&c) != 0) { bn_http_close(&c.h); return 1; }
     int n = o->n, failed = 0;
-    int64_t *sub = calloc((size_t)n, sizeof *sub), *cat = calloc((size_t)n, sizeof *cat);
+    int64_t *sub = calloc((size_t)n, sizeof *sub);
     int pushes = o->pushes;
     int64_t *s2p = calloc((size_t)(pushes > 0 ? pushes : 1), sizeof *s2p);
     int64_t *a2p = calloc((size_t)(pushes > 0 ? pushes : 1), sizeof *a2p);
     int n_ok = 0, n_push = 0;
 
     // 1. The page loads, alone in their minute.
-    next_minute(1);
+    if (!getenv("BENCH_NOWAIT")) next_minute(1);
     char from[32], to[32];
     bench_date(from, sizeof from);
-    for (int i = 0; i < n && sub && cat; i++) {
-        if (page_load(&c, o->batch, &sub[n_ok], &cat[n_ok])) n_ok++;
+    for (int i = 0; i < n && sub; i++) {
+        if (page_load(&c, o->batch, &sub[n_ok])) n_ok++;
         else failed++;
     }
     bench_date(to, sizeof to);
     fprintf(stderr, "bench: page loads from %s to %s (batch %d)\n", from, to, o->batch ? 1 : 0);
-    next_minute(1);
+    if (!getenv("BENCH_NOWAIT")) next_minute(1);
 
     // 2. Push latency on one socket.
     if (pushes > 0) {
@@ -279,7 +281,11 @@ int bench_page(const bench_opts *o) {
             if (pthread_create(&th, NULL, post_chat, &p) != 0) break;
             bool heard = pump(ws, &s, chatted, &b);
             pthread_join(th, NULL);
-            if (!heard || (p.status != 201 && p.status != 200)) { failed++; continue; }
+            if (!heard || (p.status < 200 || p.status >= 300)) {
+                fprintf(stderr, "bench: chat %d answered %d, push %s\n", k, p.status, heard ? "heard" : "not heard");
+                failed++;
+                continue;
+            }
             s2p[n_push] = s.t_chat - t_send;
             a2p[n_push] = s.t_chat - p.t_answer;
             n_push++;
@@ -300,14 +306,12 @@ int bench_page(const bench_opts *o) {
     bs_run run;
     bs_run_init(&run, "page", date, host, o->url, note);
     bs_run_lat(&run, "subscribed", sub, n_ok, 0, 0);
-    bs_run_lat(&run, "caught_up", cat, n_ok, 0, 0);
     if (pushes > 0) {
         bs_run_lat(&run, "send_to_push", s2p, n_push, 0, 0);
         bs_run_lat(&run, "push_after_answer", a2p, n_push, 0, 0);
     }
     int rc = bench_save(&run, o);
     free(sub);
-    free(cat);
     free(s2p);
     free(a2p);
     return rc != 0 ? 1 : failed ? 1 : 0;
