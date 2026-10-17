@@ -429,7 +429,8 @@ static void an_idle_human_turn_is_never_kicked(void) {
     bool owes = false;
     const int64_t t0 = mono_ms();
     while (!owes && mono_ms() - t0 < 30000) {
-        if (ask(&D, ASK_BUMP, gid, &env) != 200) break;
+        int64_t seen;
+        if (!game_view(&D, gid, &seen, &env)) break;   // a read, as a client polls; a bump is limited
         owes = choose_move(sc, &env, wire, sizeof wire, &rng) > 0;
         if (!owes) {
             struct timespec ts = { 0, 100 * 1000000 };
