@@ -939,6 +939,47 @@ static void waiting_intents_keep_their_bytes(void) {
     T_CHECK(path_is(q, "/v1/chat/g1") && q->body[4] == 'c' && q->body[1003] == 'c');
 }
 
+// The iOS app shows boards and never decodes a cast: a cast is the client's
+// cue to take the game whole, a view of a game held on its own stream is still
+// handed out, and a create does not subscribe the game's stream.
+static void a_host_of_boards_gets_boards(void) {
+    signed_in(T0 + 3600000);
+    nc_set_boards(1);
+    nc_stream_sub(NW_SUB_GAME, "g1", 2);
+    nc_stream_opened(T0);
+    while (next_frame(T0).kind) {}
+    host_t h;
+    memset(&h, 0, sizeof h);
+    const uint8_t c[] = { 0xc1 }, v[] = { 0x55 }, env[] = { 0xe6 };
+    host_push(&h, NW_WS_VIEW, "g1", 5, v, 1, T0);
+    T_EQ_INT(h.views, 1);   // held on its own stream, and handed out all the same
+    // A cast at a version already shown: nothing to fetch.
+    host_push(&h, NW_WS_CAST, "g1", 5, c, 1, T0);
+    T_EQ_INT(h.casts, 0);
+    T_CHECK(nc_next_request(T0) == NULL);
+    // A newer one: not handed out, and the game is fetched; its board comes as a view.
+    host_push(&h, NW_WS_CAST, "g1", 6, c, 1, T0);
+    T_EQ_INT(h.casts, 0);
+    const NcRequest *q = nc_next_request(T0);
+    T_CHECK(path_is(q, "/v1/games/g1"));
+    host_answer(&h, q->id, 6, env, 1, T0);
+    T_EQ_INT(h.refetched, 1);
+    T_EQ_INT(h.table_v, 6);
+    // Its view arriving first makes the fetch moot.
+    host_push(&h, NW_WS_CAST, "g1", 7, c, 1, T0);
+    host_push(&h, NW_WS_VIEW, "g1", 7, v, 1, T0);
+    T_CHECK(nc_next_request(T0) == NULL);
+    // A create subscribes nothing.
+    uint8_t b[512];
+    NcIntent create = intent(NC_DO_CREATE, NULL);
+    nc_do(&create, T0);
+    q = nc_next_request(T0);
+    int n = envelope("newg02", 1, b, sizeof b);
+    T_CHECK(nc_on_response(q->id, 200, b, n, T0) != NULL);
+    T_EQ_INT(next_frame(T0).kind, 0);
+    nc_set_boards(0);
+}
+
 int main(void) {
     T_RUN(session_blob);
     T_RUN(requests);
@@ -957,5 +998,6 @@ int main(void) {
     T_RUN(the_session_is_told_once);
     T_RUN(another_user_starts_the_book_over);
     T_RUN(waiting_intents_keep_their_bytes);
+    T_RUN(a_host_of_boards_gets_boards);
     return T_DONE();
 }
