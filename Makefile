@@ -12,6 +12,8 @@
 #                   or a DynamoDB Local already on port 8000)
 #   make bench-dynamo  the store's per-operation latency against DynamoDB Local
 #   make bench      build/cbase-bench, the latency and CPU bench (bench/bench.h)
+#   make fuzz, fuzz-smoke, fuzz-nightly, fuzz-replay, fuzz-merge, fuzz-seeds
+#                   the libFuzzer targets (fuzz/fuzz.mk says what each does)
 #   make clean
 #
 # Builds on macOS (clang, Homebrew openssl@3, the SDK's sqlite3) and on Ubuntu
@@ -257,6 +259,9 @@ coverage: $(addprefix build/cov/test/,$(UNITS)) build/cov/cbase build/cov/bootst
 	build/cov_gate build/cov/coverage.lcov tools/cov_floor.txt --report > build/cov/report.txt || { cat build/cov/report.txt; exit 1; }
 	@tail -4 build/cov/report.txt
 COV_JOBS ?= $(shell getconf _NPROCESSORS_ONLN)
+
+# The fuzz targets: every fuzz/fz_*.c (fuzz/fuzz.mk).
+include fuzz/fuzz.mk
 
 print-kernel-src:
 	@echo $(KERNEL_SRC)

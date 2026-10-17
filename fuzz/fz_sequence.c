@@ -58,20 +58,14 @@
 #include "netwire.h"
 #include "table.h"
 
-#include <openssl/rand.h>
+#include "rng.h"
 
 // ---- determinism: the process's randomness, replaced -------------------------------------
 
-static uint64_t g_rng[2];
+// The run's stream: rng.h's splitmix64, seeded from the input.
+static uint64_t g_rng;
 
-static uint64_t rng_next(void) {
-    // xorshift128+: the deal seed only needs to be a function of the input.
-    uint64_t s1 = g_rng[0], s0 = g_rng[1];
-    g_rng[0] = s0;
-    s1 ^= s1 << 23;
-    g_rng[1] = s1 ^ s0 ^ (s1 >> 17) ^ (s0 >> 26);
-    return g_rng[1] + s0;
-}
+static uint64_t rng_next(void) { return rng_splitmix64(&g_rng); }
 
 void cb_random_bytes(void *out, size_t n) {
     uint8_t *p = out;
@@ -300,7 +294,7 @@ static void conn_hears(conn *c, const uint8_t *msg, size_t len, const char *topi
     NwFrame *f = calloc(1, sizeof *f);
     FZ_CHECK(nw_frame_decode(msg, (int)len, f) == NW_OK);
     const char *uid = c->row.user_id[0] ? c->row.user_id : NULL;
-    if (f->kind == NW_WS_VIEW || f->kind == NW_WS_CAST || f->kind == NW_WS_CHAT) {
+    if (f->kind == NW_WS_VIEW || f->kind == NW_WS_CATCHUP || f->kind == NW_WS_CAST || f->kind == NW_WS_CHAT) {
         // Nothing about a game reaches a connection that is no one.
         FZ_CHECK(uid != NULL);
         char gid[CB_GAME_ID_MAX + 1];
@@ -310,12 +304,12 @@ static void conn_hears(conn *c, const uint8_t *msg, size_t len, const char *topi
             note_version(f->gid, f->gid_len, f->version);
             if (getenv("FZ_TRACE")) fprintf(stderr, "  conn %s hears kind %d %s v%u (%u bytes)%s%s\n", c->row.conn_id, f->kind, gid, f->version, f->blob.len, topic ? " on " : "", topic ? topic : "");
             // A seat-gone view (no envelope) carries no version: the seat is gone.
-            if (gi >= 0 && !(f->kind == NW_WS_VIEW && f->blob.len == 0)) {
+            if (gi >= 0 && !((f->kind == NW_WS_VIEW || f->kind == NW_WS_CATCHUP) && f->blob.len == 0)) {
                 FZ_CHECK(f->version >= c->last_version[gi]);
                 c->last_version[gi] = f->version;
             }
         }
-        if (f->kind == NW_WS_VIEW) check_envelope(uid, f->blob.p, f->blob.len, gid);
+        if (f->kind == NW_WS_VIEW || f->kind == NW_WS_CATCHUP) check_envelope(uid, f->blob.p, f->blob.len, gid);
         if (f->kind == NW_WS_CAST) {
             // A cast is only ever a push, and its topic says whose it is: the
             // seat's (gu-<game>-<uid>, the connection's own user) or the
@@ -723,10 +717,23 @@ static void step_stream(fz_in *in) {
     free(f);
     if (n < 0) return;
     uint8_t *exact = fz_dup(buf, (size_t)n);
+    cb_conn_row before = c->row;
     (void)cb_nw_on_frame(&g_ctx, &c->row, exact, (size_t)n, reply_to, c);
     free(exact);
     FZ_CHECK(c->row.n_topics >= 0 && c->row.n_topics <= CB_CONN_TOPICS);
     check_topics(c);
+    // A topic this frame added is one its user may hear now: a seat's stream
+    // and a game's chat only for a member of the game.
+    for (int i = 0; i < c->row.n_topics; i++) {
+        const char *t = c->row.topics[i];
+        bool had = false;
+        for (int k = 0; k < before.n_topics && !had; k++) had = strcmp(before.topics[k], t) == 0;
+        if (had) continue;
+        char gid[CB_GAME_ID_MAX + 1] = "";
+        if (strncmp(t, "gu-", 3) == 0) snprintf(gid, sizeof gid, "%.*s", (int)(strchr(t + 3, '-') - (t + 3)), t + 3);
+        if (strncmp(t, "chat:", 5) == 0) snprintf(gid, sizeof gid, "%s", t + 5);
+        if (gid[0]) FZ_CHECK(g_real->is_member(g_store, gid, c->row.user_id) == 1);
+    }
 }
 
 // ---- one run ------------------------------------------------------------------------------
@@ -734,8 +741,7 @@ static void step_stream(fz_in *in) {
 static bool collect_nothing(int n, const char *const *names, const char *const *values, void *ud) { return true; }
 
 static void reset_world(uint64_t seed) {
-    g_rng[0] = seed ^ 0x9E3779B97F4A7C15ull;
-    g_rng[1] = seed * 0xBF58476D1CE4E5B9ull + 1;
+    g_rng = rng_seed64(seed);
     g_now = 1790000000000LL;
     g_n_games = 0;
     memset(g_gid, 0, sizeof g_gid);
