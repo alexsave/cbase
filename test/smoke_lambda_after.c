@@ -324,6 +324,12 @@ static void answers_then_pushes(const char *bin, bool route) {
 
     cb_loop_post(g_ctx.loop, stop, NULL);
     pthread_join(th, NULL);
+    // Down in reverse, as main_serve.c does: the next scenario builds its own.
+    cb_pool_free(g_ctx.req_pool);
+    cb_server_free(g_ctx.server);
+    cb_router_free(g_ctx.router);
+    cb_loop_free(g_ctx.loop);
+    memset(&g_ctx, 0, sizeof g_ctx);
 }
 
 static const char *g_bin;
