@@ -452,12 +452,10 @@ static void same_items(cb_span it) {
     for (size_t i = 0; i < sizeof names / sizeof names[0]; i++) {
         char sa[64], sb[64];
         int64_t na = 0, nb = 0;
-        bool ba = false, bb = false;
         uint8_t *pa, *pb;
         size_t la, lb;
         FZ_CHECK(dw_get_s(it, names[i], sa, sizeof sa) == ref_get_s(it, names[i], sb, sizeof sb));
         FZ_CHECK(dw_get_n(it, names[i], &na) == ref_get_n(it, names[i], &nb) && na == nb);
-        FZ_CHECK(dw_get_bool(it, names[i], &ba) == ref_get_bool(it, names[i], &bb) && ba == bb);
         FZ_CHECK(dw_get_b(it, names[i], &pa, &la) == ref_get_b(it, names[i], &pb, &lb) && same_bytes(pa, la, pb, lb));
         free(pa);
         free(pb);
@@ -519,10 +517,9 @@ static void items_of(cb_span item) {
     FZ_CHECK(n <= 64);
     for (int i = 0; i < n; i++) { (void)strlen(names[i]); if (values[i]) (void)strlen(values[i]); }
     cb_buf_free(&st);
-    char sv[64]; int64_t nv; bool bv; uint8_t *bp = NULL; size_t bl = 0;
+    char sv[64]; int64_t nv; uint8_t *bp = NULL; size_t bl = 0;
     (void)dw_get_s(item, "pk", sv, sizeof sv);
     (void)dw_get_n(item, "version", &nv);
-    (void)dw_get_bool(item, "needs_bots", &bv);
     if (dw_get_b(item, "state", &bp, &bl)) free(bp);
     char exp[64]; (void)dw_export_kind(item, exp, sizeof exp);
 }

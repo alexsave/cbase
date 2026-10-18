@@ -176,7 +176,6 @@ bool dw_get_n(cb_span item, const char *name, int64_t *out);
 // A Binary attribute, base64-decoded into a malloc'd buffer (*out NULL and
 // *len 0 when absent). false: present but not valid base64, or no memory.
 bool dw_get_b(cb_span item, const char *name, uint8_t **out, size_t *len);
-bool dw_get_bool(cb_span item, const char *name, bool *out);
 
 // Items as rows. Each returns false when a required attribute is missing.
 bool dw_item_user(cb_span item, cb_user_row *u);

@@ -564,11 +564,6 @@ bool dw_get_n(cb_span item, const char *name, int64_t *out) {
     return attr(item, name, "N", &tok) && tok_n(tok, out);
 }
 
-bool dw_get_bool(cb_span item, const char *name, bool *out) {
-    cb_span tok;
-    return attr(item, name, "BOOL", &tok) && tok_bool(tok, out);
-}
-
 bool dw_get_b(cb_span item, const char *name, uint8_t **out, size_t *len) {
     *out = NULL;
     *len = 0;
