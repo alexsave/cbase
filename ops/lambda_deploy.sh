@@ -6,8 +6,8 @@
 #   c_base/ops/lambda_deploy.sh c_base/build/cbase-lambda.zip
 #
 # In order:
-#   0. refuses a tree that does not contain origin/main, and in CI skips a
-#      push main has since superseded (require_main.sh);
+#   0. refuses a tree that does not contain origin/main, except a CI run of a
+#      commit of main that a newer push's run is queued behind (require_main.sh);
 #   1. names the zip by its sha256 (cbase-lambda-<16 hex>.zip, as deploy.sh
 #      does), and if the stack's CodeKey is already that name, ships nothing;
 #   2. uploads it to the stack's CodeBucket;
@@ -32,8 +32,7 @@ command -v aws >/dev/null 2>&1 || die "the AWS CLI is not installed"
 
 # shellcheck source=c_base/ops/require_main.sh
 . "$repo/c_base/ops/require_main.sh"
-# The inputs are c_base.yml's push paths: keep the two lists the same.
-require_main "$repo" c_base foolish/c shared/c shared/tools .github/workflows/c_base.yml
+require_main "$repo"
 
 # ---- 1. the name --------------------------------------------------------------------
 if command -v sha256sum >/dev/null 2>&1; then

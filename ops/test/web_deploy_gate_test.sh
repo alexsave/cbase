@@ -1,8 +1,8 @@
 #!/bin/bash
 # web_deploy.sh and lambda_deploy.sh refuse to deploy from a tree behind
 # origin/main (require_main.sh), and let a tree that contains main through. In
-# CI, a push main has superseded ends as skipped (exit 0, no AWS call) when
-# main has since changed the deploy's inputs, and deploys when it has not. No
+# CI, the first attempt of a run of an older commit of main deploys (the newer
+# push's run is queued behind it), and a re-run of one is refused. No
 # AWS: `aws` is a stub that records any call, and the gate has to fire before
 # the first one.
 #
@@ -65,42 +65,45 @@ grep -q 'does not contain origin/main' "$tmp/out" || { cat "$tmp/out" >&2; fail 
 [ ! -e "$tmp/aws_calls" ] || fail "lambda, behind main: aws was called before the refusal: $(cat "$tmp/aws_calls")"
 echo "ok - lambda: a tree behind origin/main is refused before any AWS call"
 
-# 1b. In CI the same tree is an older commit OF main, and main's newer commit
-#     (B, a file no deploy builds from) changed none of the inputs: no newer
-#     run exists, this build is main's, and it goes through the gate.
-if GITHUB_ACTIONS=true run; then fail "ci, inputs unchanged: expected the NEXT_PUBLIC_* check to stop the deploy"; fi
-grep -q 'changed none of this deploy' "$tmp/out" || { cat "$tmp/out" >&2; fail "ci, inputs unchanged: web did not get past the gate"; }
-if GITHUB_ACTIONS=true run_lambda; then fail "ci, inputs unchanged: expected the stub aws to stop the lambda deploy"; fi
-grep -q '^aws cloudformation describe-stacks' "$tmp/aws_calls" 2>/dev/null || { cat "$tmp/out" >&2; fail "ci, inputs unchanged: lambda never reached the stack"; }
-rm -f "$tmp/aws_calls"
-echo "ok - ci: an older commit of main deploys when main has changed none of its inputs"
-
-# 1c. Main moves on with a change to an input of both deploys (shared/c/): that
-#     push runs its own deploy, so this one ends skipped, green, before any AWS call.
+# 1b. In CI, on the first attempt of a run on main, the same tree is an older
+#     commit OF main whose newer push's run is queued behind this one (the
+#     workflow's concurrency group): it deploys, whatever main changed since.
+#     Main first moves on with a change to an input of both deploys (shared/c/),
+#     the case the old SUPERSEDED rule skipped and so starved.
 mkdir -p "$tmp/seed/shared/c"
 echo input > "$tmp/seed/shared/c/x"
 g -C "$tmp/seed" add -A
 g -C "$tmp/seed" commit -q -m B2
 g -C "$tmp/seed" push -q origin HEAD:main
-GITHUB_ACTIONS=true run || { cat "$tmp/out" >&2; fail "ci, superseded: web went red instead of skipping"; }
-grep -q '::notice title=deploy skipped::superseded' "$tmp/out" || { cat "$tmp/out" >&2; fail "ci, superseded: web exited 0 without the skip notice"; }
-GITHUB_ACTIONS=true run_lambda || { cat "$tmp/out" >&2; fail "ci, superseded: lambda went red instead of skipping"; }
-grep -q '::notice title=deploy skipped::superseded' "$tmp/out" || { cat "$tmp/out" >&2; fail "ci, superseded: lambda exited 0 without the skip notice"; }
-[ ! -e "$tmp/aws_calls" ] || fail "ci, superseded: aws was called: $(cat "$tmp/aws_calls")"
-echo "ok - ci: a push main has superseded ends skipped, with a notice, before any AWS call"
+ci() { GITHUB_ACTIONS=true GITHUB_REF=refs/heads/main GITHUB_RUN_ATTEMPT="${attempt:-1}" "$@"; }
+if ci run; then fail "ci, queued: expected the NEXT_PUBLIC_* check to stop the deploy"; fi
+grep -q 'the run queued behind this one deploys' "$tmp/out" || { cat "$tmp/out" >&2; fail "ci, queued: web did not get past the gate"; }
+if ci run_lambda; then fail "ci, queued: expected the stub aws to stop the lambda deploy"; fi
+grep -q '^aws cloudformation describe-stacks' "$tmp/aws_calls" 2>/dev/null || { cat "$tmp/out" >&2; fail "ci, queued: lambda never reached the stack"; }
+rm -f "$tmp/aws_calls"
+echo "ok - ci: an older commit of main deploys on its run's first attempt"
 
-# 1d. By hand, the same superseded commit is still refused: nobody else is
-#     about to deploy main's tip.
-if run_lambda; then fail "by hand, superseded: lambda did not refuse"; fi
-grep -q 'does not contain origin/main' "$tmp/out" || { cat "$tmp/out" >&2; fail "by hand, superseded: refused, but not by require_main"; }
-echo "ok - by hand: an older commit of main is refused, not skipped"
+# 1c. A re-run of that old run (attempt 2) is queued behind nothing newer, and
+#     would roll main back: refused, before any AWS call.
+if attempt=2 ci run_lambda; then fail "ci, re-run: lambda did not refuse"; fi
+grep -q 'does not contain origin/main' "$tmp/out" || { cat "$tmp/out" >&2; fail "ci, re-run: refused, but not by require_main"; }
+if attempt=2 ci run; then fail "ci, re-run: web did not refuse"; fi
+grep -q 'does not contain origin/main' "$tmp/out" || { cat "$tmp/out" >&2; fail "ci, re-run: web refused, but not by require_main"; }
+[ ! -e "$tmp/aws_calls" ] || fail "ci, re-run: aws was called: $(cat "$tmp/aws_calls")"
+echo "ok - ci: a re-run of an old run of main is refused before any AWS call"
 
-# 1e. In CI, a branch behind main (not a commit of main) is refused, never
-#     skipped: the skip is for main's own superseded pushes only.
+# 1d. By hand, the same older commit is still refused: nobody is queued to
+#     deploy main's tip after it.
+if run_lambda; then fail "by hand, behind: lambda did not refuse"; fi
+grep -q 'does not contain origin/main' "$tmp/out" || { cat "$tmp/out" >&2; fail "by hand, behind: refused, but not by require_main"; }
+echo "ok - by hand: an older commit of main is refused"
+
+# 1e. In CI, a branch behind main (not a commit of main) is refused: the
+#     queue only orders main's own pushes.
 echo branch > "$tmp/work/diverged"
 g -C "$tmp/work" add -A
 g -C "$tmp/work" commit -q -m D
-if GITHUB_ACTIONS=true run_lambda; then fail "ci, diverged: a branch behind main did not refuse"; fi
+if ci run_lambda; then fail "ci, diverged: a branch behind main did not refuse"; fi
 grep -q 'does not contain origin/main' "$tmp/out" || { cat "$tmp/out" >&2; fail "ci, diverged: refused, but not by require_main"; }
 [ ! -e "$tmp/aws_calls" ] || fail "ci, diverged: aws was called: $(cat "$tmp/aws_calls")"
 g -C "$tmp/work" reset -q --hard HEAD~1

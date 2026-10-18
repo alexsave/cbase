@@ -337,9 +337,10 @@ Since 2026-10-14 every push to `main` deploys what is live, to AWS, with no hand
 | `foolish/**`, `shared/**`, `uttt/c/**`, `uttt/web/**` | `web_aws`, `deploy` | `ops/web_deploy.sh site foolish`, then `site uttt`: upload, page lists, invalidation, then `www.foolish.cards` and `www.uttt.live` must answer 200 (both apexes are on CloudFront too) |
 
 Both refuse a tree that does not contain `origin/main` (`ops/require_main.sh`), so a branch behind main, or a re-run of an old run by hand, deploys nothing.
-One deploy per lane runs at a time (the job's `concurrency` group, `cancel-in-progress: false`, because a cancel can land in the middle of a CloudFormation update); a newer push's deploy waiting behind it replaces any older one still waiting.
-A run whose commit main has since moved past, with a change to that lane's inputs (its push `paths`), ends skipped: green, a "deploy skipped" notice, no AWS call, because the newer push's own run deploys main's tip.
-If main's newer commits changed none of the lane's inputs, no newer run exists and the older commit's build is main's, so it deploys.
+One run per lane runs on main at a time (the workflow's `concurrency` group, `cancel-in-progress: false` on main, because a cancel can land in the middle of a CloudFormation update); a newer push's run waiting behind it replaces any older one still waiting, so the waiting slot always holds the newest commit.
+A run that starts deploys its own commit even if main moved on while it built (the first attempt only; a re-run is refused), because the newest push's run is queued behind it and deploys next.
+So the newest commit of main always deploys.
+This replaced a rule that skipped a run whose commit main had moved past: on 2026-10-18, from 01:25 to 03:05 UTC, main moved on inside every c_base run, so every deploy skipped and nothing shipped until the pushes paused.
 Both can also be run by hand on `main` (Actions > the workflow > Run workflow) to redeploy main as it is.
 Nothing deploys to Vercel on push any more, and nothing deploys to Supabase at all.
 
