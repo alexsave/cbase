@@ -18,7 +18,7 @@ The decisions here are settled; a builder who finds one impossible says so in th
 2. **Shape: one binary per environment, one handler.**
    `bootstrap` is the Lambda custom runtime (provided.al2023, arm64, statically linked).
    `cbase serve` is a plain HTTP and WebSocket server on 127.0.0.1:8080 for development, the tests and the browser acceptance run.
-   Both call the same `cb_handle` (src/handler.h).
+   Both call the same `cb_handle` (core/src/handler.h).
 3. **Store: one interface, two backends.**
    SQLite for `cbase serve`, the tests and the import rehearsal; DynamoDB in production.
    Every write a request makes is done before its response is sent.
@@ -32,10 +32,10 @@ The decisions here are settled; a builder who finds one impossible says so in th
    iOS installs cannot be updated in place, so old installs keep calling Supabase until they update; the runbook says so.
    Superseded (2026-10-14) and done: every client moved to the binary surface and the facade was deleted ("Binary surface", below).
 7. **Admin console:** one static HTML file served at /admin, its JSON API at /admin/api/*, behind a Bearer token.
-8. **Ops:** one CloudFormation template (`ops/cbase.yaml`) Alex uploads in the console; no AWS CLI needed locally.
+8. **Ops:** one CloudFormation template (`providers/aws/ops/cbase.yaml`) Alex uploads in the console; no AWS CLI needed locally.
 9. **Migration:** an export through the Supabase Management API, and `cbase-import` writing through the store interface.
 10. **Tests in C**, every one mutation-checked.
-11. **Conventions:** no em dashes; no JSON outside the list below, and all of it in `src/json_surface.c`; no hand-rolled kernel byte layouts (the kernel's own encoders and decoders only); every kernel call takes now_ms from the host; the kernel never sees a socket, a JWT, SQLite or DynamoDB.
+11. **Conventions:** no em dashes; no JSON outside the list below, and all of it in `core/src/core_json.c` and `providers/aws/src/aws_json.c`; no hand-rolled kernel byte layouts (the kernel's own encoders and decoders only); every kernel call takes now_ms from the host; the kernel never sees a socket, a JWT, SQLite or DynamoDB.
 
 ## Why Lambda, and what it costs us
 
@@ -67,7 +67,7 @@ A builder who changes one of these behaviours writes down why.
 
 The other cost is JSON.
 The Lambda event envelope, the DynamoDB API, IoT Core's custom authorizer request and answer, and the Lambda Invoke API are JSON by AWS's design.
-That tax is confined: only `src/aws/` and `src/store/store_dynamo.c` read or write it, and nothing above `store.h` and `event.h` knows it exists.
+That tax is confined: only `providers/aws/src/aws/` and `providers/aws/src/store/store_dynamo.c` read or write it, and nothing above `store.h` and `event.h` knows it exists.
 
 S3 with conditional writes (`If-Match` on an ETag) was the binary-bodied alternative for the store, at about $0.10 a month.
 It was not chosen because DynamoDB costs nothing and gives the query indexes (a user's games, a game's replays, the bot scan) that S3 would have needed a second store for.
@@ -89,10 +89,10 @@ It was not chosen because DynamoDB costs nothing and gives the query indexes (a 
                        store.h: store_sqlite | store_dynamo        realtime: rt_local | rt_iot
 ```
 
-`ctx.h` holds the three seams: `ctx->store`, `ctx->rt` (with its transport), and `ctx->job_start` (`src/jobs.h`: the app's jobs and schedules by name; the provider starts a job on its pool or by a self-invoke).
-Each main names its provider (`src/cbase/provider.h`: `cb_provider_aws` or `cb_provider_local`, which picks the store, the transport, the kick, the edge's viewer header and the admin's console links) and its app (`src/cbase/app.h`: `cb_foolish_app`, its route lists and its self-test); nothing else asks which main is running (docs/PLATFORM.md).
-The provider owns `main` and calls only core's entries (`src/core.h`: `cb_core_http`, `cb_core_connect` for IoT's authorizer, `cb_core_job`, `cb_core_schedule`, `cb_core_after`), so core never sees a Lambda event; `cbase serve`'s body is the process ingress (`src/ingress_process.c`, `cb_process_main`), which a Cloud Run provider would share, and `main_serve.c` is one line naming the local provider and foolish.
-The fake Runtime API that drives the real `bootstrap` in `smoke_lambda` and `smoke_lambda_after` is one library, `test/lib_fake_runtime.{h,c}`.
+`ctx.h` holds the three seams: `ctx->store`, `ctx->rt` (with its transport), and `ctx->job_start` (`core/src/jobs.h`: the app's jobs and schedules by name; the provider starts a job on its pool or by a self-invoke).
+Each main names its provider (`core/include/cbase/provider.h`: `cb_provider_aws` or `cb_provider_local`, which picks the store, the transport, the kick, the edge's viewer header and the admin's console links) and its app (`core/include/cbase/app.h`: `cb_foolish_app`, its route lists and its self-test); nothing else asks which main is running (docs/PLATFORM.md).
+The provider owns `main` and calls only core's entries (`core/src/core.h`: `cb_core_http`, `cb_core_connect` for IoT's authorizer, `cb_core_job`, `cb_core_schedule`, `cb_core_after`), so core never sees a Lambda event; `cbase serve`'s body is the process ingress (`core/src/ingress_process.c`, `cb_process_main`), which a Cloud Run provider would share, and `main_serve.c` is one line naming the local provider and foolish.
+The fake Runtime API that drives the real `bootstrap` in `smoke_lambda` and `smoke_lambda_after` is one library, `providers/aws/test/lib_fake_runtime.{h,c}`.
 `boot.c` brings a context up the same way for both mains, runs the app's self-test (foolish's kernel self-test) first, and leaves a module whose constructor answers `CB_E_NOTIMPL` as NULL with a warning, so the skeleton serves /health while modules are being built.
 Every handler answers 503 when a handle it needs is NULL.
 
@@ -101,17 +101,17 @@ Under Lambda one invocation is one request.
 
 ## Module: util (foundation, complete)
 
-Owner: `src/util/`.
+Owner: `core/src/util/`.
 Headers: `err.h` (the process-wide codes), `str.h` (cb_buf, spans, URL decoding), `b64.h`, `hex.h` (with the Postgres bytea spelling), `uuid.h` (the one CSPRNG entry point), `clock.h` (wall and monotonic ms, ISO-8601 both ways), `log.h` (stderr plus a ring buffer the console tails), `json.h` (a small writer and a tolerant path reader), `pool.h` (a thread pool).
 
-As built: complete and tested (`test/unit_util.c`).
+As built: complete and tested (`core/test/unit_util.c`).
 The JSON reader validates what it walks, so a document cut after the value asked for still answers; `cb_json_valid` is the strict check.
 
 ## Module: net (foundation, complete)
 
-Owner: `src/net/`.
+Owner: `core/src/net/`.
 Headers: `loop.h`, `http.h`, `ws.h`, `router.h`, `server.h`.
-Used by `cbase serve`, by the fake Runtime API in `test/smoke_lambda.c`, and (`http.h`, `router.h`) by both mains through `cb_handle`.
+Used by `cbase serve`, by the fake Runtime API in `providers/aws/test/smoke_lambda.c`, and (`http.h`, `router.h`) by both mains through `cb_handle`.
 
 As built: lifted from `foolish/server/impls/native`.
 `httpd.c`'s one-pass header scan and `ws.c`/`shard.c`'s frame codec were made pure functions over a buffer.
@@ -122,23 +122,23 @@ Tests: `unit_ws.c` (the native frame test, ported), `unit_http.c`, `unit_net.c` 
 
 ## Module: store
 
-Owner: `src/store/` and `sql/schema.sql`.
-Header: `src/store/store.h`, one table of functions (`cb_store_ops`) and the `CB_STORE_CALL` wrapper.
+Owner: `core/src/store/` and `providers/local/sql/schema.sql`.
+Header: `foolish/server/src/store/rows_foolish.h`, one table of functions (`cb_store_ops`) and the `CB_STORE_CALL` wrapper.
 Backends: `store_sqlite.c` (local, tests, import rehearsal) and `store_dynamo.c` (production).
 
-SQLite: one file, WAL, `sql/schema.sql` (embedded into the binary at build time) applied in one transaction at every open, `PRAGMA user_version` set to `CB_SCHEMA_VERSION`, and a database newer than the binary refused.
+SQLite: one file, WAL, `providers/local/sql/schema.sql` (embedded into the binary at build time) applied in one transaction at every open, `PRAGMA user_version` set to `CB_SCHEMA_VERSION`, and a database newer than the binary refused.
 Since schema 6 (stage 6, 2026-10-18) it holds nothing but the `items` table and the bots' seed (`bot_seed`, written into `BOT#` items at an open that finds none); the tables of schemas 1 to 5 are dropped with what a development database had in them, and there are no foreign keys: the account and game cascades are explicit, as on DynamoDB.
 
-THE ITEM LAYER (`src/store/items.h`, docs/PLATFORM.md stages 5 and 6): DynamoDB's model on both backends, seven operations in `cb_store_ops` (`item_get`, `item_write`, `item_txn`, `item_query`, `item_batch_get`, `item_batch_delete`, `item_keys`): a string pk and sk, typed attributes (a list of strings among them, for a replay's `player_ids`), the two overloaded indexes, a write conditioned by up to four clauses, sets that are plain, if-absent, an increment or a removal, the item back on a refusal, transactions, and TTL as the `expires_ms`/`expires_at` pair.
+THE ITEM LAYER (`core/src/store/items.h`, docs/PLATFORM.md stages 5 and 6): DynamoDB's model on both backends, seven operations in `cb_store_ops` (`item_get`, `item_write`, `item_txn`, `item_query`, `item_batch_get`, `item_batch_delete`, `item_keys`): a string pk and sk, typed attributes (a list of strings among them, for a replay's `player_ids`), the two overloaded indexes, a write conditioned by up to four clauses, sets that are plain, if-absent, an increment or a removal, the item back on a refusal, transactions, and TTL as the `expires_ms`/`expires_at` pair.
 DynamoDB spells it in `json_surface.c` (`dw_iget`, `dw_iwrite`, `dw_itxn`, `dw_iquery`, `dw_ibatch`, `dw_ibatch_delete`, `dw_item_read`); SQLite keeps one `items` table (schema 6), the keys in columns and every attribute in one binary record (`cb_item_record_*`, no JSON), and never deletes an expired item, so readers check `expires_ms` on both.
-Every row is written once above it, the same items and attributes DynamoDB held before: sessions, refresh tokens and failed sign-ins in `src/store/rows_auth.c`, users, email and every foolish row in `src/store/rows_foolish.c` (a port of the DynamoDB backend's logic: the CAS, the lone commit, the lease on the SCAN marker, seats, ratings, snapshots, chat, imports), so SQLite behaves as DynamoDB by construction.
+Every row is written once above it, the same items and attributes DynamoDB held before: sessions, refresh tokens and failed sign-ins in `core/src/store/rows_auth.c`, users, email and every foolish row in `foolish/server/src/store/rows_foolish.c` (a port of the DynamoDB backend's logic: the CAS, the lone commit, the lease on the SCAN marker, seats, ratings, snapshots, chat, imports), so SQLite behaves as DynamoDB by construction.
 Attribute names that differ from the row structs: a game's `logs` is `logs_packed` and its seed `game_seed`, every TTL'd row's `expires_at` field is `expires_ms`; absent attributes default to elo 1000, previous_elo -1 (never written when negative), games_played 0.
-`make check-dynamo` holds the keys: every request its lane sends is reduced to its shape (`dw_shape`: each key value as the template slot it fills, never by what an id looks like, and every attribute name), and the set must equal `test/golden/dynamo_shapes.txt`.
+`make check-dynamo` holds the keys: every request its lane sends is reduced to its shape (`dw_shape`: each key value as the template slot it fills, never by what an id looks like, and every attribute name), and the set must equal `providers/aws/test/golden/dynamo_shapes.txt`.
 The 99 shapes were the same on main's store code, on stage 5's and on stage 6's before its one intended change, the replay pointers (below); the golden then holds 102, three of them requests only `unit_store` sends (a legacy rating row put by hand, read back, and reindexed out of the leaderboard).
 
 DynamoDB: one table `cbase`, PROVISIONED at 15 RCU and 15 WCU with 5 and 5 on each index (the always-free 25 a side; see "The free tier, provisioned" below), point-in-time recovery on, TTL on `expires_at` (epoch seconds).
 Two indexes, `gsi1` (`gsi1pk`, `gsi1sk`) and `gsi2` (`gsi2pk`, `gsi2sk`), all four keys String, both projecting ALL.
-`src/json_surface.h` owns these names (`DW_GSI1`, `DW_GSI2`, `DW_TTL_ATTR`), and `test/unit_dynamo.c` reads `ops/cbase.yaml` and fails when the template disagrees.
+`providers/aws/src/aws_json.h` owns these names (`DW_GSI1`, `DW_GSI2`, `DW_TTL_ATTR`), and `providers/aws/test/unit_dynamo.c` reads `providers/aws/ops/cbase.yaml` and fails when the template disagrees.
 Items, by partition key and sort key:
 
 | pk | sk | what |
@@ -161,7 +161,7 @@ Items, by partition key and sort key:
 `game_commit` is one `TransactWriteItems`: the game update conditioned on the version, the membership puts and deletes, the rating updates, the SCAN marker.
 When the row is all it would write (a move between humans), it is that update alone, one conditional `UpdateItem` (see "The commit that writes the row alone" below).
 
-The 49 bots: `sql/schema.sql` seeds the nicknames and strategy keys of `seed.sql` with FIXED ids (UUIDv5 of the nickname), because `seed.sql` leaves bot ids to `uuid_generate_v4()` and so they differ per database.
+The 49 bots: `providers/local/sql/schema.sql` seeds the nicknames and strategy keys of `seed.sql` with FIXED ids (UUIDv5 of the nickname), because `seed.sql` leaves bot ids to `uuid_generate_v4()` and so they differ per database.
 A migrated store replaces them with the hosted rows, since the hosted rosters name the hosted ids.
 
 As built (store builder, then integration):
@@ -190,7 +190,7 @@ As built (store builder, then integration):
     That has held since the backend's first commit (2ee6c6bf5; the lease moved onto the marker in e4a045cd3 with the same conditions).
     The row's own `needs_bots` changes only with its version on DynamoDB (`bots_idle` leaves it to the next commit), so the row the app loaded at version v, cached or read, says what the stored row at v says, and the fence makes that the stored row when the commit lands.
     The lone commit writes `needs_bots` false only on a row that already said false: no marker before, none created since, none after; the invariant is kept.
-    A stray marker is the failure the rule guards against (the scan would kick the game every minute, and `bots_idle`, fenced on the marker's older `row_version`, could not take it away), so a `prev_needs_bots` claimed false wrongly is what the app's memory store refuses (`test/lib_app_store_mem.c`, every app test).
+    A stray marker is the failure the rule guards against (the scan would kick the game every minute, and `bots_idle`, fenced on the marker's older `row_version`, could not take it away), so a `prev_needs_bots` claimed false wrongly is what the app's memory store refuses (`foolish/server/test/lib_app_store_mem.c`, every app test).
   - Ratings: a rated commit is a transaction, so its ratings and its row stay one write.
   A transport loss after DynamoDB applied the write reads, on the retry, as a lost CAS: the same as a transaction sent without a client request token, which c_base never sends.
   Tests: `unit_dynamo` (the request byte for byte, every condition that sends the transaction instead, the lost CAS, the gone game, a transaction conflict retried, any other refusal `CB_E_DB`), `unit_store` on DynamoDB Local (`lone_commit_cas`: one `UpdateItem` per move by the tally, the second writer losing and writing nothing, a gone game not created, the marker taken by the commit after bot work and not brought back; `lone_cas_under_threads`: four threads racing lone commits, no lost update), and the game smoke under `make check-dynamo`.
@@ -217,28 +217,28 @@ As built (store builder, then integration):
   Measured from the items the store writes (2 WCU per started KB of each item, transactional), a 1 KB replay went from 12 to 8 WCU with two humans and from 20 to 12 with four; 3 KB from 24 to 12 and 40 to 16; 6 KB from 42 to 18 and 70 to 22; the copies no longer write GSI1 either.
   Redaction (`snapshot_set_extras`) is one conditional UpdateItem of the replay; a copy written before the change still holds the whole replay, so the replay's copies are read first and every fat one is slimmed to a pointer in the same transaction (`unit_store` `replay_copies_hold_no_names`).
   A pointer whose replay no longer names its game (the game was deleted) hands out nothing, as before.
-- Four import-only operations (`user_import`, `rating_import`, `bots_replace`, `game_import`) write rows as they are; `store_import.c` is the import as a library so a unit test runs it, and `migrate/import.c` is a thin main.
+- Four import-only operations (`user_import`, `rating_import`, `bots_replace`, `game_import`) write rows as they are; `store_import.c` is the import as a library so a unit test runs it, and `foolish/server/migrate/import.c` is a thin main.
 - The bot ladder order is the kernel's `bot_roster` tier, then the nickname, so it holds for the hosted ids too.
 
 The rehearsal against the real export (2026-10-13): 41 users, 49 bots, 35 ratings, 60 games, 47 player seats, 44 bot seats, 144 replays and 42 chat messages, every count equal to the export's; 41 of 41 hashes bcrypt-shaped; 60 of 60 games load through `table_load`; every blob compared equal to the CSV; a rerun duplicated nothing.
 The export and the scratch database were deleted afterwards.
 
-Tests: `test/unit_store.c` (SQLite, and DynamoDB Local under `make check-dynamo`), `test/unit_dynamo.c` (the wire byte for byte, scripted flows, and the template check), `test/unit_import.c`, and the DynamoDB transport on the wire in `test/unit_aws_calls.c`.
+Tests: `foolish/server/test/unit_store.c` (SQLite, and DynamoDB Local under `make check-dynamo`), `providers/aws/test/unit_dynamo.c` (the wire byte for byte, scripted flows, and the template check), `foolish/server/test/unit_import.c`, and the DynamoDB transport on the wire in `providers/aws/test/unit_aws_calls.c`.
 
 ### Against DynamoDB Local (2026-10-13)
 
 `make check-dynamo` runs `unit_store`, `unit_admin`, `unit_import` and the whole game smoke (two humans, a bot, a SIGKILL mid-game, ratings, a replay, a restart) with `CBASE_STORE=dynamo` against Amazon's DynamoDB Local, and CI runs it on every pull request.
-`ops/dynamo_local.sh` starts the container (`amazon/dynamodb-local:3.3.1`, pinned by digest, in memory, `-sharedDb` so a dummy key sees the CLI's table) and creates the table from `ops/cbase.yaml` itself: `ops/dynamo_table.py` reads the template's table resource and refuses any property it does not carry over, so the two cannot drift.
-Each unit test gets its own fresh table (`test/lib_store_backend.c`), which is only ever made at an `http://` endpoint, so a test cannot create a table in AWS.
+`providers/aws/ops/dynamo_local.sh` starts the container (`amazon/dynamodb-local:3.3.1`, pinned by digest, in memory, `-sharedDb` so a dummy key sees the CLI's table) and creates the table from `providers/aws/ops/cbase.yaml` itself: `providers/aws/ops/dynamo_table.py` reads the template's table resource and refuses any property it does not carry over, so the two cannot drift.
+Each unit test gets its own fresh table (`foolish/server/test/lib_store_backend.c`), which is only ever made at an `http://` endpoint, so a test cannot create a table in AWS.
 The AWS client speaks plain HTTP for exactly that case: an endpoint URL that says `http://`, refused for any `amazonaws.com` host.
 
 What the first contact found, all fixed and each held by a test:
 
 - A fresh DynamoDB table had no bots: SQLite seeds them at open, nothing seeded DynamoDB, so a deploy without an import could not add a bot.
-  `cb_import_seed_bots` writes the schema's 49 into a store that has none (read through an in-memory SQLite store, so the list keeps one owner), `cbase-import --seed-bots` runs it, and `ops/deploy.sh` runs that after every deploy.
+  `cb_import_seed_bots` writes the schema's 49 into a store that has none (read through an in-memory SQLite store, so the list keeps one owner), `cbase-import --seed-bots` runs it, and `providers/aws/ops/deploy.sh` runs that after every deploy.
 - The import never checked what DynamoDB stored (only SQLite's counts were read), so a lost seat passed. A walk of every item's keys (`item_keys`: DynamoDB's keys-only Scan, SQLite's `SELECT pk, sk`; each item classed by `cb_import_export_kind`) now holds both backends to the same check, counted against the export's own ids (see "The import against the provisioned table").
 - Serve's bot pool queued one drive per kick, and a long drive let thousands pile up (every bump kicks); each then took the lease, read the row and let go, and the SIGTERM drain outlived its 15 s. At most one drive per game now waits in the queue.
-- The smoke read its server's stderr only while waiting for a line, so a debug-level server filled the pipe and stopped answering; `test/lib_proc.c` now reads it on a thread all the time.
+- The smoke read its server's stderr only while waiting for a line, so a debug-level server filled the pipe and stopped answering; `core/test/lib_proc.c` now reads it on a thread all the time.
 
 What held without a change: every attribute shape, condition and update expression, the CAS and its cancellation reasons, the lease, `TransactWriteItems` at 98 items (the import's `bots_replace` of 49 seeded and 49 hosted bots), Query paging at 1 MB (1.5 MB of replays through GSI2, 1.2 MB of chat), a 250 KB item with Binary attributes byte for byte, numbers (negative, 13-digit ms), TTL in seconds, both GSIs, PartiQL in the console, and `BatchWriteItem` cascades.
 
@@ -293,7 +293,7 @@ The design assumes they do: the allowance is "provisioned capacity" for the acco
 It is the reading under which "$0" cannot be wrong, and the Billing console's Free Tier page settles it after the first deploy (RUNBOOK step 1).
 
 **The split: table 15 RCU / 15 WCU, `gsi1` 5 / 5, `gsi2` 5 / 5, 25 a side.**
-No auto scaling (it would scale past 25 and bill); `test/unit_dynamo.c` (`the_template_stays_free`) fails when the template's six numbers add up to more than 25 a side, when the billing mode is not PROVISIONED, or when an auto scaling resource appears.
+No auto scaling (it would scale past 25 and bill); `providers/aws/test/unit_dynamo.c` (`the_template_stays_free`) fails when the template's six numbers add up to more than 25 a side, when the billing mode is not PROVISIONED, or when an auto scaling resource appears.
 The table gets most because the table takes almost every write: the CAS on the game row is the bulk of every action.
 The indexes take only seat changes, ratings, replays, chat and refresh tokens, and their reads are the dashboard, replay lists and the leaderboard; 5 each is their floor with room.
 An index throttled for writes throttles the table write behind it, which is why neither index is at the minimum of 1.
@@ -341,7 +341,7 @@ A further cut not built: the commit could leave the transaction when it writes o
 
 ### The import against the provisioned table (2026-10-14)
 
-The first live import (`ops/deploy.sh --import`) failed: the store's request-path retry gave up after 10 sends and about 5 s of pauses, which is right when someone waits on a move and wrong for an offline bulk tool.
+The first live import (`providers/aws/ops/deploy.sh --import`) failed: the store's request-path retry gave up after 10 sends and about 5 s of pauses, which is right when someone waits on a move and wrong for an offline bulk tool.
 It lost 1 game, 1 bot seat, 4 replays and 2 chat messages to `ProvisionedThroughputExceededException`, and the counting Scans were themselves throttled.
 `cbase-import` now puts the store in bulk mode (`store_priv.h cb_store_dynamo_bulk`), which the Lambda never does:
 
@@ -357,7 +357,7 @@ An independent per-family `aws dynamodb scan --select COUNT` agreed with export 
 
 ## Module: auth
 
-Owner: `src/auth/`.
+Owner: `core/src/auth/`.
 Headers: `auth.h` (users, sessions, verify a bearer), `jwt.h` (HS256 in GoTrue's claim shape), `bcrypt.h` (to embed: a public-domain OpenBSD-derived bcrypt with its test vectors).
 The routes over them are `app/v1_http.c`'s (`/v1/auth/*`, "Binary surface").
 
@@ -381,14 +381,14 @@ As built:
 - Sign-out: global revokes every session of the user (`refresh_revoke_user`), local only the caller's.
 - Change password changes only the password; a deleted account's token is refused by the routes that read its row while the token lives.
 
-Tests: `test/unit_bcrypt.c`, `test/unit_jwt.c`, `test/unit_auth.c` (the accounts over a fake store), `test/unit_v1.c` (the routes through `cb_handle`), and the game smoke, where every request carries a real JWT.
+Tests: `core/test/unit_bcrypt.c`, `core/test/unit_jwt.c`, `core/test/unit_auth.c` (the accounts over a fake store), `foolish/server/test/unit_v1.c` (the routes through `cb_handle`), and the game smoke, where every request carries a real JWT.
 
 Untested: a real GoTrue hash from the export was checked for shape by the import rehearsal but not verified against its password (no password is known); the import must sign in one migrated account before cutover.
 Open: access tokens outlive logout and account deletion until they expire (up to an hour), as GoTrue's did.
 
 ## Module: app
 
-Owner: `src/app/`.
+Owner: `foolish/server/src/app/`.
 Headers: `table_ops.h` (one operation per request: load, kernel section, CAS commit with retries, finalize, views on demand), `bots.h` (drive, scan, the two kick functions), `fanout.h` (after a winning commit, who hears), `functions_http.h` (create, action, meta, delete-account, byte for byte).
 
 The kernel section uses per-thread scratch (a `Game` of about 37 KB and `TableSnaps` of about 46 KB).
@@ -421,7 +421,7 @@ As built:
   The edge runtime's 1700 ms CPU budget is gone: a Lambda drive stops when the predicted next cycle would pass the invocation deadline minus 5 s; the 120 s wall ceiling stays.
   `cbase serve` runs the scan every 10 s on a loop timer, on the request pool, as the heartbeat; `main_lambda.c` answers `{}` for a drive whose game is gone, so Lambda does not retry it.
 
-Tests: `test/unit_app.c` (16 tests through `cb_handle` over an in-RAM store with a CAS-stealing hook), and the game smoke (`test/smoke.c`), which plays whole games over HTTP and WebSocket, crashes the server mid-game and proves the heartbeat resumes the bots.
+Tests: `foolish/server/test/unit_app.c` (16 tests through `cb_handle` over an in-RAM store with a CAS-stealing hook), and the game smoke (`foolish/server/test/smoke.c`), which plays whole games over HTTP and WebSocket, crashes the server mid-game and proves the heartbeat resumes the bots.
 
 Untested: the Lambda deadline budget and the Lambda re-kick (no Lambda yet); create's id redraw on a collision.
 
@@ -435,7 +435,7 @@ Found here:
 
 ## Unfurl route
 
-`GET /m/<payload>` (`src/app/unfurl_http.{h,c}`, built 2026-10-14) is the link preview a shared iMessage game gets in Messages, Slack and WhatsApp, which run no JavaScript.
+`GET /m/<payload>` (`foolish/server/src/app/unfurl_http.{h,c}`, built 2026-10-14) is the link preview a shared iMessage game gets in Messages, Slack and WhatsApp, which run no JavaScript.
 It replaces the Next app's only server code, `foolish/src/app/m/[payload]/layout.tsx` generateMetadata (docs/VERCEL.md 4(a)), so the web app can become a static export.
 
 As built:
@@ -452,10 +452,10 @@ As built:
   The Lambda encoder still sends the body, and the function URL front end drops it but answers `Content-Length: 0` whatever the body was (seen on the live stack, direct and through CloudFront); that is AWS's, not ours to set.
 - One decode at a time, behind a mutex, with one static `Game`: see the defect below.
 
-Tests: `test/unit_unfurl.c` holds the page to 20 goldens in `test/fixture_unfurl.h`, tag for tag and byte for byte: a live game at turn 10 (3 seats) and at turn 12 (2 seats), a finished 4-seat game, its rematch lobby, a plain lobby, a lobby with one named seat, an unnamed seat, names with all five escaped characters, non-ASCII names, names that are not UTF-8, a share-link suffix, lower case, percent-encoded blanks, a truncated payload, a header the replay refuses, a `2` payload, garbage, a bad escape, and an escape that is not UTF-8.
-The payloads are kernel-made (`tools/unfurl_payloads.c`, `make build/unfurl-payloads`: kernel-sealed fixtures decoded, renamed, encoded again, base32'd).
+Tests: `foolish/server/test/unit_unfurl.c` holds the page to 20 goldens in `foolish/server/test/fixture_unfurl.h`, tag for tag and byte for byte: a live game at turn 10 (3 seats) and at turn 12 (2 seats), a finished 4-seat game, its rematch lobby, a plain lobby, a lobby with one named seat, an unnamed seat, names with all five escaped characters, non-ASCII names, names that are not UTF-8, a share-link suffix, lower case, percent-encoded blanks, a truncated payload, a header the replay refuses, a `2` payload, garbage, a bad escape, and an escape that is not UTF-8.
+The payloads are kernel-made (`foolish/server/tools/unfurl_payloads.c`, `make build/unfurl-payloads`: kernel-sealed fixtures decoded, renamed, encoded again, base32'd).
 The tags are the TS route's generateMetadata output under tsx with bots.wasm loaded, each rendered by react-dom/server so the escaping is React's own; the mapping from Metadata to tags was checked tag for tag against a real `next start` page.
-The smoke (`test/smoke.c`) does GET and HEAD `/m/<payload>` and HEAD `/health` through `cbase serve`.
+The smoke (`foolish/server/test/smoke.c`) does GET and HEAD `/m/<payload>` and HEAD `/health` through `cbase serve`.
 Mutation-checked: no replay, the apostrophe as `&#39;`, no carry-key test, no trim, no U+FFFD for a cut sequence, no empty-name filter, no UTF-8 check on escapes, no HEAD fallback, a body on HEAD, no 404, the cache age.
 
 Found here:
@@ -475,7 +475,7 @@ Found here:
 
 ## Module: realtime
 
-Owner: `src/realtime/`.
+Owner: `core/src/realtime/`.
 Headers: `realtime.h` (the publish calls, the targets and the transport interface), `stream_mqtt.h` (the MQTT protocol: who may connect and subscribe, and the hub's side of a connection), `rt_local.h` (serve's in-process hub), `rt_iot.h` (AWS IoT Core: the publish and the custom authorizer).
 
 Realtime is MQTT 3.1.1 over WebSocket at QoS 0, at `/mqtt` with the subprotocol `mqtt`, under `cbase serve` and in production alike.
@@ -492,7 +492,7 @@ It moved in three stages, each landed and deployed before the next, production n
 
 A push names a target (`cb_rt_to`: one of the app's topic families and the ids it is about), and `cb_rt_topic` fills the family's pattern.
 The families are data the app declares (`cbase/app.h` `cb_topic_family`, docs/PLATFORM.md 2.3); boot refuses one whose pattern is not under `u/{user}/` or `s/` (`cb_rt_families_check`).
-Foolish's, in `src/app/pushes.{h,c}` with the frames it writes:
+Foolish's, in `foolish/server/src/app/pushes.{h,c}` with the frames it writes:
 
 | family | ids | pattern |
 |---|---|---|
@@ -506,7 +506,7 @@ A seat's casts and a game's chat are therefore published once per member, to the
 An id that could add a level or a wildcard to a topic is refused before a topic is written.
 The payload of every PUBLISH is one netwire.h message (`NW_WS_VIEW`, `NW_WS_CAST`, `NW_WS_CHAT`).
 
-The MQTT 3.1.1 subset both sides speak is `shared/c/mqtt/mqtt.{h,c}`, one owner of every packet's bytes: the client's writers and the broker's, and each side's reader refusing what the other side never sends (from the first byte), a remaining length past the reader's limit before a byte of its body arrives, a length written in more bytes than it needs, and every malformed shape (`test/unit_mqtt.c`).
+The MQTT 3.1.1 subset both sides speak is `shared/c/mqtt/mqtt.{h,c}`, one owner of every packet's bytes: the client's writers and the broker's, and each side's reader refusing what the other side never sends (from the first byte), a remaining length past the reader's limit before a byte of its body arrives, a length written in more bytes than it needs, and every malformed shape (`core/test/unit_mqtt.c`).
 
 ### The policy, answered two ways
 
@@ -521,12 +521,12 @@ The MQTT 3.1.1 subset both sides speak is `shared/c/mqtt/mqtt.{h,c}`, one owner 
   Deleting an account closes the user's sockets (1008).
 - Under Lambda `rt_iot.c` publishes each target with one SigV4-signed `POST /topics/<topic>?qos=0` to the account's iot:Data-ATS endpoint (`aws/iot_data.c`, `CBASE_IOT_ENDPOINT`, kept alive by `https.c`'s pool, tallied as `push`), and answers IoT's custom authorizer requests (`CB_EVENT_IOT_AUTH`, the same function, the same warm containers, the JWT secret read from SSM at container start like every other request's): `cb_iot_authorize` checks `X-Cbase-Origin` (CloudFront adds it on `/mqtt` too, so IoT's own host cannot be used to walk around the edge), runs `cb_mqtt_authorize`, and answers the policy (`json_surface.c` `cb_iot_auth_encode`: `iot:Connect` on `client/<user>-*`, `iot:Subscribe` on `topicfilter/u/<user>/*` and `topicfilter/s/*`, `iot:Receive` on `topic/u/<user>/*` and `topic/s/*`, no `iot:Publish`, every ARN under the function's own region and account, a user id that is not a canonical UUID or a region with a wildcard refused before a policy is written).
   IoT names no connection we could end, so `forget` is NULL there: a deleted user's open connections end at their token's expiry, and hear nothing private meanwhile, because nothing is published to a deleted user's topics any more.
-- `ops/cbase.yaml` (when `IotEndpoint` is set, which `ops/deploy.sh` reads with `aws iot describe-endpoint`): the authorizer (`<function>-stream`, signing off, since a browser cannot sign a WebSocket URL), the invoke permission for `iot.amazonaws.com`, `iot:Publish` on `topic/u/*` and `topic/s/*` for the function, and the `/mqtt*` behaviour at the edge to IoT, with a CloudFront Function adding `x-amz-customauthorizer-name` so no client knows the name.
+- `providers/aws/ops/cbase.yaml` (when `IotEndpoint` is set, which `providers/aws/ops/deploy.sh` reads with `aws iot describe-endpoint`): the authorizer (`<function>-stream`, signing off, since a browser cannot sign a WebSocket URL), the invoke permission for `iot.amazonaws.com`, `iot:Publish` on `topic/u/*` and `topic/s/*` for the function, and the `/mqtt*` behaviour at the edge to IoT, with a CloudFront Function adding `x-amz-customauthorizer-name` so no client knows the name.
 
 ### Pushes, after the answer
 
 `app/pushes.c` builds each push once, as the stream's message, and `realtime.c` (`cb_rt_publish`) hands it to the transport with its targets.
-Under Lambda an HTTP invocation POSTs its response, then runs what the app deferred (`src/app/after.{h,c}`: a generic queue of steps; foolish's are each commit's pushes, `fanout.c`, and its bot kicks, `bots.c`) before it asks for the next event, so a move's answer never waits for IoT.
+Under Lambda an HTTP invocation POSTs its response, then runs what the app deferred (`core/src/after.{h,c}`: a generic queue of steps; foolish's are each commit's pushes, `fanout.c`, and its bot kicks, `bots.c`) before it asks for the next event, so a move's answer never waits for IoT.
 The work queues on the invocation's thread in call order and is drained in that order, each fan-out under the game's order lock; under Lambda that thread is the only committer, so a game's pushes still go out in commit order.
 A response can arrive before its own pushes (the clients gate every push on its version, as they must across containers).
 A queue copy that cannot be made publishes at once; a push that fails after the answer is logged at WARN with its game and version (`after: game <id> v<n>: <k> push(es) failed after the answer was sent`), since it can no longer fail the invocation.
@@ -553,19 +553,19 @@ The response still goes first: the batch runs inside the after-phase, under the 
 
 `unit_mqtt` (the codec), `unit_stream_mqtt` (the policy as an authz matrix, and the hub's side of a connection fed whole packets, packets split at every byte, several in one message, and every packet a client must not send), `unit_rt_iot` (publishes, a commit's fan-out on its lanes at once with each user's view before its cast and failures counted, batches nesting, overflowing and kept to their transport, the authorizer's decode and answer, only through the edge, the encoder's refusals, the endpoint setting), `unit_https` (concurrent requests each on a pooled connection of its own, the next round dialing none), `unit_rt_local` (a real loopback socket: the upgrade, pushes reaching only their topics, every refusal ending the connection, sockets closed with work still on the pool), `unit_stream` (the messages and topics a publish builds byte for byte, and the kernel's client against the hub over a real socket), `unit_store` (`game_members` on SQLite and DynamoDB Local; the schema 3 to 4 step), `smoke_lambda_after` (the real `bootstrap` answering first and publishing after, to a TLS stand-in for IoT), and against a real `cbase serve`: `smoke_authz`'s MQTT rows, `smoke_matrix`'s stream matrix (every bad token, another user's client id, every forbidden filter, a client PUBLISH, a second CONNECT, a deleted account's token) and hidden-card game, judged by topic, and the game smoke's three listeners through a whole game and a crash.
 Fuzz targets (`fuzz/`): `fz_mqtt` (the codec both ways: every packet read lies in its input and writes back to one that reads the same; topic matching), `fz_mqtt_hub` (the hub's side fed any bytes as messages of any size), `fz_iot_auth` (any bytes as IoT's request: the answer is valid JSON, an allowed one names exactly the token's user and never a publish or a wildcard user), and `fz_sequence`, whose connections are the hub's own state fed MQTT packets: a push reaches only open connections and only on their own user's topics or the spectators', every envelope and cast it carries is that topic's viewer's, a member's own chat is only ever published to someone who sits there, and a deleted account's token connects nothing.
-Their first runs found one defect, kept as `fuzz/corpus/mqtt/repro-nonminimal-length`: a remaining length written in more bytes than it needs read as a packet that wrote back differently; such lengths are now refused.
+Their first runs found one defect, kept as `core/fuzz/corpus/mqtt/repro-nonminimal-length`: a remaining length written in more bytes than it needs read as a packet that wrote back differently; such lengths are now refused.
 
 Carried over on purpose: chat `is_system` settable by a client (the server ignores it now: `NW_CHAT_SEND` has no such field).
 
 ## Module: aws
 
-Owner: `src/aws/`.
+Owner: `providers/aws/src/aws/`.
 Headers: `runtime_api.h` (complete: the Lambda Runtime API client), `event.h` (the event envelope in, the response out), `sigv4.h` (signing and credentials), `https.h` (a TLS client on OpenSSL), `iot_data.h` (publish to IoT Core), `lambda_invoke.h` (the async self-invoke), `ssm.h` (the secrets).
 The stubs live together in `aws_stubs.c`; each builder file replaces its part and deletes it there.
 
 As built:
 
-- `runtime_api.c`: the Runtime API client, exercised by `test/smoke_lambda.c` against the real `bootstrap` through a fake Runtime API.
+- `runtime_api.c`: the Runtime API client, exercised by `providers/aws/test/smoke_lambda.c` against the real `bootstrap` through a fake Runtime API.
 - `sigv4.c`: Signature Version 4 with libcrypto, credentials from the Lambda environment (`AWS_REGION`, falling back to `AWS_DEFAULT_REGION`); the path is signed double-encoded (every service but S3); `X-Amz-Content-Sha256` is not sent (only S3 needs it).
   Checked against seven cases of AWS's signing test suite.
 - `https.c`: a blocking HTTPS/1.1 client on OpenSSL, TLS 1.2+, peer and hostname verified, one deadline per exchange, Content-Length, chunked and read-to-close bodies, a small idle pool per host with one retry for a pooled connection that died before any byte.
@@ -573,12 +573,12 @@ As built:
 - `aws_call.c`: the one signed-request step (credentials, SigV4, HTTPS) under `iot_data.c`, `lambda_invoke.c`, `ssm.c`, `cloudfront.c` and the DynamoDB store.
   An endpoint URL that says `http://` (DynamoDB Local) is reached over plain TCP (`cb_http_plain_request`), signed the same way; plain HTTP is decided by the URL alone and refused for any `amazonaws.com` host.
 - The event section of `json_surface.c` (formerly `event.c`, which keeps only freeing and logging an event): Lambda events in, responses out; binary bodies are base64 both ways.
-  The self-invoke and schedule payloads are the JSON string literals `"<job>:<key>"` and `"<schedule>"` (`src/jobs.h`; foolish's are `"bot_drive:<id>"` and `"scan"`, the decision record), read by stripping the quotes; EventBridge's `"source":"aws.events"` runs every schedule.
+  The self-invoke and schedule payloads are the JSON string literals `"<job>:<key>"` and `"<schedule>"` (`core/src/jobs.h`; foolish's are `"bot_drive:<id>"` and `"scan"`, the decision record), read by stripping the quotes; EventBridge's `"source":"aws.events"` runs every schedule.
   `cb_event_job_payload` is the one writer of the literal.
 - `lambda_invoke.c` (`AWS_ENDPOINT_URL_LAMBDA` overrides the endpoint) and `iot_data.c` (one `POST /topics/<topic>?qos=0`, service `iotdata`; a `host:port` endpoint is a test's stand-in, always over TLS).
 - `main_lambda.c` clears the deadline after each invocation and answers `{}` for a job with nothing to do (`CB_E_NOT_FOUND`: a drive whose game is gone).
 
-Tests: `test/unit_sigv4.c`, `test/unit_https.c` and `test/unit_aws_calls.c` against a local TLS server, where each request's signature is recomputed from the bytes that arrived; `test/unit_event.c`; `test/smoke_lambda.c` (health, scan, a garbage event, a drive for a missing game).
+Tests: `providers/aws/test/unit_sigv4.c`, `providers/aws/test/unit_https.c` and `providers/aws/test/unit_aws_calls.c` against a local TLS server, where each request's signature is recomputed from the bytes that arrived; `providers/aws/test/unit_event.c`; `providers/aws/test/smoke_lambda.c` (health, scan, a garbage event, a drive for a missing game).
 `make bootstrap` links a static aarch64 ELF; the unit tests pass in an Ubuntu 24.04 arm64 container.
 
 Untested: nothing here has run against real AWS; the double-encoded `@connections/<id>` path follows botocore's rule and the first real push confirms it.
@@ -586,21 +586,21 @@ Open: `getaddrinfo` has no timeout, so a hung resolver can outlive `timeout_ms`.
 
 ## Module: admin
 
-Owner: `src/admin/` and `admin/console.html`.
-Header: `src/admin/admin.h`.
+Owner: `core/src/admin/` and `core/src/admin/console.html`.
+Header: `core/src/admin/admin.h`.
 One HTML file, vanilla JS, light and dark, under about 1500 lines, embedded at build time like the schema.
 Panels: Overview, Tables (by key family on both backends), Query (PartiQL or SQL, SELECT only unless confirmed), Users, Games, Bots, Logs (this process's ring, plus a CloudWatch Logs Insights link under Lambda), Config (secrets redacted), Backups (point-in-time recovery explained; SQLite `VACUUM INTO`).
 
 As built:
 
-- `src/admin/admin.c` serves the page (embedded by `tools/embed.c`) and one `/admin/api/*` route dispatching 13 calls: overview, collections, browse, query, users, users/delete, games, game, bots, logs, config, backups (GET and POST).
+- `core/src/admin/admin.c` serves the page (embedded by `tools/embed.c`) and one `/admin/api/*` route dispatching 13 calls: overview, collections, browse, query, users, users/delete, games, game, bots, logs, config, backups (GET and POST).
   With `CBASE_ADMIN_TOKEN` unset every admin route answers 404; an API call without the exact Bearer answers 401 (constant-time compare).
 - Only three paths write, each a deliberate act: a query confirmed by typing `WRITE` (the store refuses a write otherwise, with `CB_E_FORBIDDEN`), users/delete (`cb_app_delete_account`, delete-account's own function), and the SQLite backup (`VACUUM INTO` a timestamped file through the same guarded query).
 - The Games panel browses `CB_ADMIN_GAMES` and reads each game; seats come from the kernel's `roster_decode`, and the envelope is the spectator's `cb_table_view`.
-- `admin/console.html`: about 740 lines, vanilla JS, no CDN, a strict CSP, light and dark, usable at phone width; the token lives in `sessionStorage` only.
+- `core/src/admin/console.html`: about 740 lines, vanilla JS, no CDN, a strict CSP, light and dark, usable at phone width; the token lives in `sessionStorage` only.
 - Under DynamoDB the Backups panel explains point-in-time recovery (on in the template) rather than offering an export.
 
-Tests: `test/unit_admin.c` drives every route through `cb_handle`; the user delete runs on the real SQLite store with real auth.
+Tests: `foolish/server/test/unit_admin.c` drives every route through `cb_handle`; the user delete runs on the real SQLite store with real auth.
 The page was checked by eye in headless Chrome, light and dark, at 1280 and 390 px, against a mock API, by its builder.
 
 Untested: the console against a live server with data was not looked at by eye after integration.
@@ -609,34 +609,34 @@ Open: under Lambda the Logs panel and the Overview counters see one warm contain
 ## Module: ops and migrate
 
 Owner: `ops/` (`cbase.yaml`, `package.sh`, the GitHub workflow) and `migrate/` (`export.sh`, `import.c`, `out/` gitignored).
-`make bootstrap` already produces `dist/bootstrap` and `dist/bootstrap.zip`: a stripped static Linux arm64 binary built in an arm64 Alpine container pinned by digest (`tools/build_bootstrap.sh`), byte-for-byte reproducible across runs on this Mac.
+`make bootstrap` already produces `dist/bootstrap` and `dist/bootstrap.zip`: a stripped static Linux arm64 binary built in an arm64 Alpine container pinned by digest (`providers/aws/ops/build_bootstrap.sh`), byte-for-byte reproducible across runs on this Mac.
 Alpine (musl) rather than Ubuntu because glibc's static `getaddrinfo` still loads NSS modules at run time.
-`ops/package.sh` should call it rather than repeat it.
-The export holds password hashes: it lives under `migrate/out/`, is gitignored, and is deleted after the rehearsal.
+`providers/aws/ops/package.sh` should call it rather than repeat it.
+The export holds password hashes: it lives under `foolish/server/migrate/out/`, is gitignored, and is deleted after the rehearsal.
 
 As built:
 
-- `ops/cbase.yaml`: the table, the function (arm64, provided.al2023, 256 MB, 60 s), its role, the Function URL, IoT Core's custom authorizer and the function's right to publish (since 2026-10-18; the WebSocket API before), the one-minute scan schedule (input `"scan"`), CloudFront with `/mqtt*` to IoT Core and a CloudFront Function naming the authorizer. The GitHub Actions deploy role and OIDC provider are `ops/github_oidc.yaml`'s, a stack of their own (RUNBOOK.md step 13).
-  It passes `cfn-lint`; its index names, key types and TTL are held to the store's by `test/unit_dynamo.c`.
+- `providers/aws/ops/cbase.yaml`: the table, the function (arm64, provided.al2023, 256 MB, 60 s), its role, the Function URL, IoT Core's custom authorizer and the function's right to publish (since 2026-10-18; the WebSocket API before), the one-minute scan schedule (input `"scan"`), CloudFront with `/mqtt*` to IoT Core and a CloudFront Function naming the authorizer. The GitHub Actions deploy role and OIDC provider are `providers/aws/ops/github_oidc.yaml`'s, a stack of their own (RUNBOOK.md step 13).
+  It passes `cfn-lint`; its index names, key types and TTL are held to the store's by `providers/aws/test/unit_dynamo.c`.
   The zip comes from an S3 bucket parameter, because CloudFormation's inline code works only for Node.js and Python.
-- `ops/package.sh` calls `make bootstrap` and checks the zip holds exactly one executable `bootstrap`.
-- `ops/deploy.sh` is the whole deploy from this Mac once `aws configure` has credentials: secrets generated once, for a new stack only, into the ops settings file outside the repo (`ops/ops_env.sh`, RUNBOOK "The ops settings file"), the code bucket, the zip under a sha-named key, `cloudformation deploy`, the outputs, and the import with `--import`.
+- `providers/aws/ops/package.sh` calls `make bootstrap` and checks the zip holds exactly one executable `bootstrap`.
+- `providers/aws/ops/deploy.sh` is the whole deploy from this Mac once `aws configure` has credentials: secrets generated once, for a new stack only, into the ops settings file outside the repo (`ops/ops_env.sh`, RUNBOOK "The ops settings file"), the code bucket, the zip under a sha-named key, `cloudformation deploy`, the outputs, and the import with `--import`.
   It created the live stack on 2026-10-14 and stays the hand step for a template change.
-- `.github/workflows/c_base.yml` builds and tests on Ubuntu and macOS, under ASan, lints the template, builds the zip, and on every push to `main` deploys it to the function through `ops/lambda_deploy.sh` with the OIDC role (RUNBOOK.md step 13).
-- `migrate/export.sh` (read-only, through the Management API with the Supabase CLI's keychain token) and `cbase-import` (see Store).
+- `.github/workflows/c_base.yml` builds and tests on Ubuntu and macOS, under ASan, lints the template, builds the zip, and on every push to `main` deploys it to the function through `providers/aws/ops/lambda_deploy.sh` with the OIDC role (RUNBOOK.md step 13).
+- `foolish/server/migrate/export.sh` (read-only, through the Management API with the Supabase CLI's keychain token) and `cbase-import` (see Store).
 
 The first deploy (2026-10-14) proved what was unproven until then: the CloudFront WebSocket path, the Function URL permission, the CI lanes and the deploy job.
 
 ## Tests
 
-`make test` builds and runs every `test/unit_*.c` as its own program; `make smoke` runs the smokes (the game smoke, `smoke_matrix`, `smoke_authz`'s authorization matrix, `smoke_boot` and the two Lambda smokes); `make check` is both; `make check-asan` rebuilds everything, the kernel included, under ASan and UBSan.
+`make test` builds and runs every `<side>/test/unit_*.c` as its own program; `make smoke` runs the smokes (the game smoke, `smoke_matrix`, `smoke_authz`'s authorization matrix, `smoke_boot` and the two Lambda smokes); `make check` is both; `make check-asan` rebuilds everything, the kernel included, under ASan and UBSan.
 Every program in each of them runs at once (the Makefile's `RUN_ALL`): each has its own server, port, directory and database or table, so nothing is shared, and each one's output is printed whole when it ends.
-The game scenario in `test/smoke.c` runs by default (`CBASE_SMOKE_GAME=0` turns it off): two humans and a bot play whole games against `cbase serve` over real HTTP and WebSocket, the server is SIGKILLed mid-game when only the bots owe a move and restarted with nobody bumping (the heartbeat must resume them once the dead process's lease expires), every push stream is checked strictly increasing, ratings change, one snapshot is stored, and a clean restart reloads the finished game unchanged.
+The game scenario in `foolish/server/test/smoke.c` runs by default (`CBASE_SMOKE_GAME=0` turns it off): two humans and a bot play whole games against `cbase serve` over real HTTP and WebSocket, the server is SIGKILLed mid-game when only the bots owe a move and restarted with nobody bumping (the heartbeat must resume them once the dead process's lease expires), every push stream is checked strictly increasing, ratings change, one snapshot is stored, and a clean restart reloads the finished game unchanged.
 Its server runs with `CBASE_BOT_SPEEDUP=20` (config.h, `app/bots.h` `cb_bots_ms` and `cb_bots_board_now`): the lease, the scan's stale and abandon windows, the drive's wall ceiling, serve's scan period, and the board's time the kernel stamps and paces by all run 20 times faster, so every ratio between them holds and the crash resumes in about 1.5 s instead of 30.
 Lambda refuses to start with the knob set, and `unit_app` pins production's values and plays a paced game at speedups 1 and 10 to the millisecond.
 Each module's mutation checks are listed in `docs/mutation_checks.md`.
-Test files are found by wildcard, and every `test/lib_*.c` is linked into every test program (`lib_client.c` is an HTTP and WebSocket client, `lib_proc.c` starts a binary as a child).
-`test/smoke.c` starts `cbase serve`; `test/smoke_lambda.c` is a fake Runtime API that drives the real `bootstrap`.
+Test files are found by wildcard, and every `<side>/test/lib_*.c` is linked into every test program (`lib_client.c` is an HTTP and WebSocket client, `lib_proc.c` starts a binary as a child).
+`foolish/server/test/smoke.c` starts `cbase serve`; `providers/aws/test/smoke_lambda.c` is a fake Runtime API that drives the real `bootstrap`.
 The smoke builders extend `smoke.c` to the brief's full scenario: two humans, a bot, a whole game over HTTP and WebSocket, ratings changed, a snapshot stored, pushes with monotone versions, a restart, the game reloaded.
 Every test is mutation-checked: break the code, see the right assertion fail, restore by re-editing (never `git checkout`), and remember that make compares whole seconds, so delete the objects after restoring.
 
@@ -812,7 +812,7 @@ Until stage 4 the list also held the Supabase facade: GoTrue's bodies, PostgREST
 
 ### One file holds all of it
 
-Every JSON shape above lives in one file, `src/json_surface.c` (declared in `src/json_surface.h`): every key name, every shape, and every call into the low-level writer and reader `src/util/json.c`, which nothing else includes.
+Every JSON shape above lives in one file, `core/src/core_json.c` and `providers/aws/src/aws_json.c` (declared in `providers/aws/src/aws_json.h`): every key name, every shape, and every call into the low-level writer and reader `core/src/util/json.c`, which nothing else includes.
 Everything else in c_base hands it structs and spans and gets bytes or structs back, so a reader who wants to know what c_base says in JSON reads one file; deleting the facade in stage 4 was deleting its sections.
 The functions are pure over buffers (no socket, no clock, no randomness), so each shape is checked byte for byte against a recorded body in the unit tests.
 
@@ -823,13 +823,13 @@ The sections of `json_surface.c`, with their callers:
 - The Lambda Runtime API's error body (`cb_runtime_error_body`).
 - The JWT header and claims (`cb_js_jwt_*`, for `jwt.c`, which keeps the base64url, the HMAC and the time checks).
 - The admin console (`cb_js_admin_*`, for `admin.c`): one-shot answers take a struct, and the lists the store streams row by row are written through an opaque `cb_js_stream`, so no writer leaves the file.
-- The client's side (`cb_js_client_function_url_event`, for `bench/cpu.c`): a Function URL event as AWS delivers a browser's request, the mirror of the event envelope.
+- The client's side (`cb_js_client_function_url_event`, for `foolish/server/bench/cpu.c`): a Function URL event as AWS delivers a browser's request, the mirror of the event envelope.
 - CloudFront (`cf_invalidation_xml`, for `aws/cloudfront.c`): the CreateInvalidation body, the one XML shape c_base speaks ("Edge cache").
   CloudFront's API has no JSON form, so XML is the second tolerated foreign text format, and it is contained the same way: in this file, with the same gate.
 
-The one JSON outside it is `migrate/export.sh`, the one-off shell exporter that read production through Supabase's Management API (JSON by Supabase's design) with `python3`; it is not C and it never runs in c_base.
+The one JSON outside it is `foolish/server/migrate/export.sh`, the one-off shell exporter that read production through Supabase's Management API (JSON by Supabase's design) with `python3`; it is not C and it never runs in c_base.
 
-`test/unit_json_gate.c` holds the rule.
+`core/test/unit_json_gate.c` holds the rule.
 It reads every C source under `src/`, `bench/` and `migrate/` and fails, naming the file and line, when any file other than `json_surface.c` and `util/json.{c,h}` includes `util/json.h`, names the writer or reader (`cb_jw`, `cb_jw_*`, `cb_json_*`, `CB_JW_*`, `CB_JSON_*`), or holds a string literal with a JSON key in it (a quoted word and a colon).
 It also fails a string literal that is XML: an `<?xml` prolog or an `xmlns` namespace (the unfurl route's HTML has neither, and is not XML to the gate).
 It lexes rather than greps: comments may describe a shape, two literals around a ternary's colon are not a key, and adjacent literals are joined first, as the compiler joins them.
@@ -842,9 +842,9 @@ It takes exactly `-?[0-9]+`, the `-` only when the range has negatives, and the 
 The C library's parsers took a leading blank and `+`, `strtoull` wrapped `-1` to 2^64-1, and the call sites that ignored the end pointer took anything after the digits, so `CBASE_BOT_SPEEDUP=" 20"` was 20 and an admin cursor of `"3x"` was 3.
 Leading zeros are taken: base 10 is fixed, so `007` can only mean 7.
 
-`test/unit_num_gate.c` holds the rule: it lexes every C source under `src/` and fails on `strtol`, `strtoll`, `strtoul`, `strtoull`, `strtoimax`, `strtoumax`, `atoi`, `atol`, `atoll` or any `scanf`.
+`core/test/unit_num_gate.c` holds the rule: it lexes every C source under `src/` and fails on `strtol`, `strtoll`, `strtoul`, `strtoull`, `strtoimax`, `strtoumax`, `atoi`, `atol`, `atoll` or any `scanf`.
 `strtod` and its kin are allowed only in `json_surface.c`, for the one fractional number c_base reads (DynamoDB's `CapacityUnits`).
-`fuzz/fz_num.c` holds the parser against a model that accumulates in `__int128`.
+`core/fuzz/fz_num.c` holds the parser against a model that accumulates in `__int128`.
 
 ## Edge cache (2026-10-17)
 
@@ -865,7 +865,7 @@ Both were checked to carry nothing of the caller: `h_board` never read one, and 
 `max-age=0` keeps browsers asking the edge every time (no browser cache to invalidate); `s-maxage` is for CloudFront alone.
 A public answer says `Access-Control-Allow-Origin: *` whatever `CBASE_ALLOWED_ORIGINS` lists, so it cannot vary by `Origin` either.
 
-The template (ops/cbase.yaml) gives each path its own cache behavior with `PublicReadsCachePolicy`: the key is the path alone, with no header, cookie or query string in it, and gzip and brotli normalised.
+The template (providers/aws/ops/cbase.yaml) gives each path its own cache behavior with `PublicReadsCachePolicy`: the key is the path alone, with no header, cookie or query string in it, and gzip and brotli normalised.
 The brief said path and query; the query is left out on purpose, since no client sends one and a key with it would let `?x=<random>` walk past the cache to the origin on every request.
 `Authorization` is never in the key and never reaches the function on these paths, so a client that still sends a token (an old app build) gets the shared copy.
 `Managed-CORS-CustomOrigin` forwards only the CORS request headers, so an old page that still preflights is answered, and the Host stays the Function URL's.
@@ -876,7 +876,7 @@ The web's `fetch` and iOS's `URLRequest` add nothing that splits the key: no que
 
 ### Freshness by event: invalidations
 
-`src/app/edge.{h,c}` owns the marks; the paths are the app's declared `cached_paths` (`cbase/app.h`; bit i is path i) and the purge is the provider's `edge_purge` (`cbase/provider.h`: CloudFront under AWS, none under serve), both handed to `cb_edge_setup` at boot.
+`core/src/edge.{h,c}` owns the marks; the paths are the app's declared `cached_paths` (`cbase/app.h`; bit i is path i) and the purge is the provider's `edge_purge` (`cbase/provider.h`: CloudFront under AWS, none under serve), both handed to `cb_edge_setup` at boot.
 Whatever changes one of the two answers marks its path stale, a bit in a process-wide mask (never blocking, never failing what marked it):
 
 - the leaderboard: the commit that applied ratings (`cb_section_commit`, when `gc.n_rated > 0`, after the store accepted it; a human's game or a game the bots ended alike), an account deleted (`cb_app_delete_account`, the user's own or the admin console's), an admin write query, an import, and a ratings reindex that rewrote anything;
@@ -885,10 +885,10 @@ Whatever changes one of the two answers marks its path stale, a bit in a process
 `cb_edge_flush` sends one purge (under AWS, one CreateInvalidation, `provider_aws.c`) for every path marked since the last flush.
 The Lambda main calls it after it has POSTed the invocation's response (`cb_after_run`, last, after the pushes), so no caller waits for CloudFront (an HTTP request, a bot drive or the scan alike); `cbase-import` calls it before it exits.
 A failed flush is logged and dropped: the `s-maxage` bounds how stale the edge can get.
-The request (`aws/cloudfront.c`) is signed for `cloudfront` in us-east-1 from any region (`cb_aws_call_region`), and only 201 is success; its XML body is `json_surface.c`'s, checked byte for byte against the API reference's request in `test/unit_aws_calls.c`.
+The request (`aws/cloudfront.c`) is signed for `cloudfront` in us-east-1 from any region (`cb_aws_call_region`), and only 201 is success; its XML body is `json_surface.c`'s, checked byte for byte against the API reference's request in `providers/aws/test/unit_aws_calls.c`.
 Each flush's CallerReference is unique (`cbase-<ms>-<uuid>`): CloudFront answers a repeated one with the first batch, which would invalidate nothing new.
 
-The function names its own distribution through `CBASE_CF_DISTRIBUTION`, a stack parameter `ops/deploy.sh` reads from the stack and passes back: a reference would be a cycle (Distribution -> FunctionUrl -> Function).
+The function names its own distribution through `CBASE_CF_DISTRIBUTION`, a stack parameter `providers/aws/ops/deploy.sh` reads from the stack and passes back: a reference would be a cycle (Distribution -> FunctionUrl -> Function).
 On a first deploy it is empty and nothing is invalidated until the next deploy.
 The right to invalidate is its own `AWS::IAM::Policy` (`cloudfront:CreateInvalidation` on that one distribution), for the same cycle.
 
@@ -904,7 +904,7 @@ A request that misses (the first after an invalidation, at each POP, or a cold P
 A bench run throttled `gsi2` (73 throttled reads, 4 user-facing 500s, PR #311): `/v1/leaderboard` and `/v1/history` each read the whole `RATINGS` partition, one row per account ever made.
 
 - The leaderboard reads only what it shows: store `ratings_top(limit)`, one Query of at most 100 items.
-  A rating row's GSI2 key is now sparse and rating-ordered (json_surface.h "THE ITEM LAYOUT"): `gsi2sk` = `E#` + (2147483647 - rating, ten digits) + `#<user id>`, written only once the player has played; a sign-up's row is not in the index at all.
+  A rating row's GSI2 key is now sparse and rating-ordered (aws_json.h "THE ITEM LAYOUT"): `gsi2sk` = `E#` + (2147483647 - rating, ten digits) + `#<user id>`, written only once the player has played; a sign-up's row is not in the index at all.
   Every rated commit moves the key with the rating, in the same transaction write (2 index units instead of 1 for that seat).
   `cbase-import --reindex-ratings` (run by every deploy) moves rows written before the layout, by a conditional UpdateItem that touches only the keys, only while the values are the ones it read (so it cannot lose a concurrent commit) and only when the key is not already right (so a second run writes and invalidates nothing). It ran once against production before this merged, so the new leaderboard read had every played row from its first request: 36 rows.
 - The history reads only the caller's own rating, `ratings_for` by key (two keys, consistent, on the table), instead of the whole partition.
@@ -1040,13 +1040,13 @@ History: the stream named here (`stream.c`, `/v1/stream`, `rt_apigw`, the connec
 - `foolish/c/src/netclient.{h,c}`: the client, in the kernel's source list for c_base, the iOS core library and (stage 3) `web.wasm`; nothing exports it yet.
   One request builder per route; an authenticated builder answers the refresh first when the token is within 60 s of its expiry (`NcRequest.is_refresh`), so a host's whole transport is one loop of "build, send, if it was the refresh hand it back and build again".
   Answers are read into fixed structs, with blobs as offsets into the body the host passed (no copy); a stream event's payload is in the client's own 32 KB buffer, because a text frame has to be decoded somewhere.
-- `c_base/src/app/v1_http.c`: the routes, reading the store through the same calls `postgrest.c` makes, without its query language.
+- `foolish/server/src/app/v1_http.c`: the routes, reading the store through the same calls `postgrest.c` makes, without its query language.
   `functions_http.c` mounts its four handlers under `/v1/` too (no anon key), so the writes keep one implementation.
   The leaderboard sorts each population in C and sends each one's top 100; the web merges them and cuts the whole again, as it did.
 - `c_base/src/realtime/stream.c`: the stream's protocol (`cb_nw_on_frame`), with the topic policy of `cb_phx_may_join`.
   `realtime.c` builds each push's binary frame beside the two Phoenix ones (`CB_RT_PROTOS` frames per publish, indexed by `cb_rt_proto(vsn)`), `rt_local` serves `GET /v1/stream?proto=nw1` and sends binary frames, and `rt_apigw` takes `proto=nw1` at `$connect` (no anon key) and posts base64 text.
   A CONN row whose `$connect` was lost is rebuilt as the stream when its frame does not start like JSON.
-- `ops/cbase.yaml`: CloudFront sends `/v1/stream*` to the WebSocket API through the same rewrite as `/realtime/v1/websocket*`.
+- `providers/aws/ops/cbase.yaml`: CloudFront sends `/v1/stream*` to the WebSocket API through the same rewrite as `/realtime/v1/websocket*`.
 
 Tests: `unit_netwire` (every layout against hand-written bytes; every prefix and every body one byte long refused, from exactly-sized heap copies so an over-read is an ASan failure), `unit_netclient` (the client with no server: the blob, every request, refresh timing, answers, the stream's order, retries, reconnects, pings and gates), `unit_v1` (every route driven by the client library through `cb_handle` on a real store and real auth; also in `make check-dynamo`), `unit_stream` (the protocol on the fake world, the frames a publish builds byte for byte, API Gateway's base64 posts, and a real loopback `cbase serve` socket driven end to end by the client library).
 Mutation-checked: `docs/mutation_checks.md`, "Binary surface".
@@ -1057,7 +1057,7 @@ The JSON gate is unchanged: none of this is JSON.
 - c_base: `auth_http`, `postgrest`, `phoenix` and `rt_rows` are gone with their tests, as are the anon key (`CBASE_ANON_KEY`, the router's `CB_ROUTE_APIKEY`, the template's `AnonKey`), the `/functions/v1/` mounts, the `/realtime/v1/websocket` CloudFront behaviour and the router's JSON gateway error (its own refusals are plain text now).
   `realtime.c` builds one message per push; `rt_local` and `rt_apigw` speak only the stream.
   `json_surface.c` lost its GoTrue, Phoenix, Realtime payload, PostgREST, gateway error and bench client sections (3472 lines to about 2940).
-- The game smoke (`test/smoke.c`) plays its whole game, crash included, over `/v1` and `/v1/stream` with the kernel's client library building every request and reading every answer; three sockets hear a seat's casts, the spectators' casts and a user's views.
+- The game smoke (`foolish/server/test/smoke.c`) plays its whole game, crash included, over `/v1` and `/v1/stream` with the kernel's client library building every request and reading every answer; three sockets hear a seat's casts, the spectators' casts and a user's views.
   `cbase-bench roundtrip` and `cpu` measure the binary surface.
 - The TypeScript server, its schema and its harnesses are deleted ("What stays TypeScript").
 - `cb_conn_row.vsn` and `join_refs`, the Phoenix leftovers, left the row format on 2026-10-17 (SQLite schema 3 drops and recreates the connection tables; DynamoDB items written before still read, for their two-hour TTL).
@@ -1066,7 +1066,7 @@ The JSON gate is unchanged: none of this is JSON.
 
 - `seed.sql` does not give the bots fixed ids (it uses `uuid_generate_v4()`), so "copy the ids" was impossible; parity is of nicknames and strategy keys, which is what `e2e/bot_roster_parity.test.ts` checks, and the ids are fixed here instead (see Store).
 - realtime-js 2.x speaks Phoenix `vsn=2.0.0` (arrays), not `1.0.0` (objects) as the brief said; supabase-swift may use either, so both are required (see Realtime).
-- PostgREST lives under `src/realtime/` as the brief's layout said, though it is not realtime; it stays there to keep the builders' directories disjoint.
+- PostgREST lives under `core/src/realtime/` as the brief's layout said, though it is not realtime; it stays there to keep the builders' directories disjoint.
 
 ## Acceptance in a real browser (2026-10-13)
 

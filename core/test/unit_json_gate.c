@@ -12,7 +12,7 @@
 //   * holds a string literal with a JSON key in it: a quoted word followed by
 //     a colon ("key": in the literal's text, \"key\": in the source), or
 //   * holds a string literal that is XML: an "<?xml" prolog or an "xmlns"
-//     namespace. CloudFront's API is XML (json_surface.h "CloudFront"); the
+//     namespace. CloudFront's API is XML (aws_json.h "CloudFront"); the
 //     same containment holds for it, and the unfurl route's HTML (which has
 //     neither) is not XML to this gate.
 //

@@ -3,8 +3,8 @@
 // One client for both targets, so a number from `cbase serve` and a number
 // from https://api.foolish.cards are the same measurement:
 //   * http:// is a kept-alive TCP connection per bn_http (as a browser keeps
-//     one), parsed by src/aws/https.c's own response parser;
-//   * https:// goes through cb_https_request itself (src/aws/https.c: its
+//     one), parsed by providers/aws/src/aws/https.c's own response parser;
+//   * https:// goes through cb_https_request itself (providers/aws/src/aws/https.c: its
 //     kept-alive TLS pool, its CA search, its certificate check), the client
 //     the Lambda uses to reach AWS;
 //   * a WebSocket is ws:// or wss:// beside the base URL's scheme, on its own

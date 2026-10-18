@@ -1,5 +1,5 @@
 // fz_iot_auth.c - IoT Core's custom authorizer request (aws/event.h
-// CB_EVENT_IOT_AUTH, decoded in json_surface.c) and its answer
+// CB_EVENT_IOT_AUTH, decoded in core_json.c or aws_json.c) and its answer
 // (realtime/rt_iot.h cb_iot_authorize): any bytes as the event, the token
 // check faked so "tok-<uuid>" is a live account. The answer is always valid
 // JSON; an allowed one names exactly the token's user, and its policy never

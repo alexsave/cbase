@@ -121,7 +121,7 @@ static void expiry_and_skew(void) {
     forge(SECRET, HS256, body, tok, sizeof tok);
     T_EQ_INT(cb_jwt_verify(SECRET, tok, NOW, &got), CB_E_AUTH);              // nbf not a number
     // The largest exp a signed token can say is far in the future, not a
-    // signed overflow (exp + the skew was, under UBSan: fuzz/fz_jwt.c found it),
+    // signed overflow (exp + the skew was, under UBSan: core/fuzz/fz_jwt.c found it),
     claims_body(body, sizeof body, "authenticated", "authenticated", UID, INT64_MAX, "");
     forge(SECRET, HS256, body, tok, sizeof tok);
     T_EQ_INT(cb_jwt_verify(SECRET, tok, NOW, &got), CB_OK);

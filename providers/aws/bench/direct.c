@@ -19,7 +19,7 @@
 //   DIRECT, warm, signed with the credentials in the environment
 //   (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN, AWS_REGION;
 //   `aws configure export-credentials --format env`). The same calls the
-//   server makes for each read, built by json_surface.c's item-layer writers and
+//   server makes for each read, built by core_json.c or aws_json.c's item-layer writers and
 //   sent by aws_call.c, one after another as store_dynamo.c sends them:
 //     direct_board  Query GSI2 RATINGS + Query GSI2 BOTS, every page
 //     direct_games  Query GSI1 USERGAMES#<user>, then GetItem GAME#<id> ROW each

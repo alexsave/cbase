@@ -24,7 +24,7 @@ int cb_rt_iot_new(cb_ctx *ctx, cb_rt **out);
 extern int (*cb_rt_iot_publish)(const char *endpoint, const char *topic, const void *data, size_t len);
 
 // THE CUSTOM AUTHORIZER: IoT Core's request at an MQTT CONNECT (aws/event.h
-// cb_iot_auth_event), answered into `out` (json_surface.h cb_iot_auth_encode):
+// cb_iot_auth_event), answered into `out` (aws_json.h cb_iot_auth_encode):
 // the policy for the token's user when stream_mqtt.h cb_mqtt_authorize grants
 // it and the connection came through the edge (X-Cbase-Origin, as every HTTP
 // request must), "not authenticated" otherwise. The connection's lifetime is

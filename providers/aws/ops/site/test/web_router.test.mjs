@@ -1,8 +1,8 @@
-// The web distributions' viewer-request Function (ops/web.yaml), run in node
+// The web distributions' viewer-request Function (providers/aws/ops/site/web.yaml), run in node
 // against the rules the template's comment states. The code is read out of the
 // template itself, so what is tested is what CloudFront runs.
 //
-//   node --test c_base/ops/test/web_router.test.mjs
+//   node --test c_base/providers/aws/ops/site/test/web_router.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';

@@ -6,7 +6,7 @@
 //
 // One connection (SQLITE_OPEN_FULLMUTEX), WAL, synchronous=NORMAL, a busy
 // timeout for a second process (cbase-import beside a running serve).
-// sql/schema.sql (cbase_schema_sql) is applied in one transaction at every
+// providers/local/sql/schema.sql (cbase_schema_sql) is applied in one transaction at every
 // open, then PRAGMA user_version = CB_SCHEMA_VERSION; a database whose
 // user_version is newer is refused.
 //

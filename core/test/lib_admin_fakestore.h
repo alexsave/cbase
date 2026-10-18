@@ -1,4 +1,4 @@
-// lib_admin_fakestore.h - a tiny in-memory store for test/unit_admin.c: just
+// lib_admin_fakestore.h - a tiny in-memory store for foolish/server/test/unit_admin.c: just
 // the operations the admin console reads, with call records a test can check.
 #ifndef CB_LIB_ADMIN_FAKESTORE_H
 #define CB_LIB_ADMIN_FAKESTORE_H

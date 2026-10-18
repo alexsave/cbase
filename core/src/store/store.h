@@ -229,7 +229,7 @@ struct cb_store {
 // A backend's open: ops and impl, and the linked product's cb_store_app.
 void cb_store_init(cb_store *s, const cb_store_ops *ops, void *impl);
 
-// Opens SQLite at `path`, applying sql/schema.sql (embedded) under a
+// Opens SQLite at `path`, applying providers/local/sql/schema.sql (embedded) under a
 // PRAGMA user_version check. CB_OK and *out, or a CB_E_*.
 int cb_store_open_sqlite(const char *path, cb_store **out);
 // Opens the DynamoDB table `table` in the region and with the credentials the
@@ -295,7 +295,7 @@ typedef struct {
 void cb_store_throttles_get(cb_store_throttles *out);
 
 // The SQLite schema version this binary applies (store_sqlite.c), and the
-// embedded schema text (build/gen/schema_sql.c, from sql/schema.sql).
+// embedded schema text (build/gen/schema_sql.c, from providers/local/sql/schema.sql).
 #define CB_SCHEMA_VERSION 6
 extern const char cbase_schema_sql[];
 extern const unsigned long cbase_schema_sql_len;

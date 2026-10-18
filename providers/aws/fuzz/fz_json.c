@@ -1,10 +1,10 @@
 // fz_json.c - the low-level JSON reader every AWS answer goes through
 // (util/json.h: cb_json_valid, cb_json_find, the typed getters, unescape),
-// and the json_surface.c readers of bodies a caller sends: the JWT header
+// and the core_json.c or aws_json.c readers of bodies a caller sends: the JWT header
 // and claims after base64 (fz_jwt reaches them only with a valid HMAC), and
 // the admin console's POST bodies. util/json.h is included here, outside
 // src/, because the reader itself is what is under test (the containment gate,
-// test/unit_json_gate.c, holds src/, bench/ and migrate/).
+// core/test/unit_json_gate.c, holds src/, bench/ and migrate/).
 #include "fz.h"
 
 #include "aws_json.h"

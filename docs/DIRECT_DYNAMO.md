@@ -24,7 +24,7 @@ Two things made that right, and neither holds on c_base: the skipped hop cost hu
 
 ## How it was measured
 
-`cbase-bench direct` (c_base/bench/direct.c), from an Apple M1 in New York on home Wi-Fi (RCN, AS6079; not a phone hotspot); ICMP is 13 ms to both dynamodb.us-east-1.amazonaws.com and api.foolish.cards, whose CloudFront POP is BOS50 (Boston).
+`cbase-bench direct` (c_base/providers/aws/bench/direct.c), from an Apple M1 in New York on home Wi-Fi (RCN, AS6079; not a phone hotspot); ICMP is 13 ms to both dynamodb.us-east-1.amazonaws.com and api.foolish.cards, whose CloudFront POP is BOS50 (Boston).
 It signs up a throwaway account through /v1 with the kernel's own client (netclient.h), creates a game, seats a bot and starts it, then times each read once per round, interleaved, 200 rounds after 5 warm-up rounds, over kept-alive TLS (https.c, the client the Lambda itself uses); it deletes the account at the end.
 The direct side sends the server's own DynamoDB calls, built by json_surface.c's `dw_*` writers, in store_dynamo.c's order, signed with `aws configure export-credentials`; all are reads.
 It also sends the GetItem unsigned; DynamoDB refuses it, and that refusal (16.4 ms) turned out slower than the signed read (13.5 ms), so it is no floor, and the estimates an earlier version of this page drew from it were too high.
@@ -61,11 +61,11 @@ Do not run `direct` at n=200 again without that fix or a pause between rounds.
 The dashboard's list answers each game as the caller's own masked envelope: the web reads every row into a full table view (`readEnvelope` in contexts/ServerContext.tsx), with the caller's hand, and uses it as the game cache.
 The `GAME#<id> / MEMBER#<user>` items the list is found by hold only `game_id`, `user_id`, `updated_at` and `joined_at`, so a direct client must then read `GAME#<id> / ROW`.
 That item is the whole game: `state` (every hand and the deck), `logs_packed`, and `game_seed`, the secret every later draw and bot decision is seeded from.
-Masking happens only in the kernel at read time (`view_of_row` in src/app/table_ops.c), and IAM cannot hide bytes inside an attribute, so no policy makes that read safe.
+Masking happens only in the kernel at read time (`view_of_row` in foolish/server/src/app/table_ops.c), and IAM cannot hide bytes inside an attribute, so no policy makes that read safe.
 
 A public list item would: one item per human seat, written by the server inside the commit, carrying only public fields (status, players, whose turn, card counts, version).
-Its price is written down in `dw_game_commit` (src/json_surface.c), which stopped rewriting the seat item on every commit for exactly this cost: a transactional write of a small item is 2 WCU, and moving its GSI1 sort key (to keep the list newest first) is 2 more on the index.
-So a two-human game would pay about 4 table WCU and 4 GSI1 WCU per move on top of the commit, and GSI1 is provisioned at 5 WCU (ops/cbase.yaml): about one move a second across every game before index throttling pushes back on the commits themselves.
+Its price is written down in `dw_game_commit` (core/src/core_json.c and providers/aws/src/aws_json.c), which stopped rewriting the seat item on every commit for exactly this cost: a transactional write of a small item is 2 WCU, and moving its GSI1 sort key (to keep the list newest first) is 2 more on the index.
+So a two-human game would pay about 4 table WCU and 4 GSI1 WCU per move on top of the commit, and GSI1 is provisioned at 5 WCU (providers/aws/ops/cbase.yaml): about one move a second across every game before index throttling pushes back on the commits themselves.
 A single public item per game (`GAME#<id> / PUBLIC`, no index) is 2 WCU per commit, but the list then needs the member Query and a BatchGetItem, two trips, about the 27.6 ms measured above.
 And either way the rows carry no hand, so opening a game from the dashboard would cost one more read through c_base, which today the list already answered.
 
@@ -91,7 +91,7 @@ The DynamoDB API is JSON in its typed-attribute shape and every request is SigV4
 
 ## What edge caching of the public lists would take
 
-Today nothing on api.foolish.cards is cacheable: every path uses the managed CachingDisabled policy (ops/cbase.yaml) and every /v1 answer says `Cache-Control: no-store` (`octets` in src/app/v1_http.c).
+Today nothing on api.foolish.cards is cacheable: every path uses the managed CachingDisabled policy (providers/aws/ops/cbase.yaml) and every /v1 answer says `Cache-Control: no-store` (`octets` in foolish/server/src/app/v1_http.c).
 
 1. A CloudFront cache behavior for `/v1/leaderboard` whose cache policy keys on nothing (no headers, cookies or query strings) and honours the origin's TTL; `nc_req_board` already sends no Authorization header.
 2. `h_board` answering `Cache-Control: public, max-age=0, s-maxage=30`, so the POP keeps it and browsers always ask the POP.

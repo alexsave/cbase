@@ -3,7 +3,7 @@
 //
 // THE POLICY. One rule set, answered two ways: AWS IoT Core asks our custom
 // authorizer at CONNECT and enforces the IoT policy it gets back
-// (json_surface.h cb_iot_auth_answer, from cb_mqtt_authorize below), and the
+// (aws_json.h cb_iot_auth_answer, from cb_mqtt_authorize below), and the
 // hub `cbase serve` runs (rt_local.c) enforces the same rules itself, so a
 // client behaves the same against either:
 //   CONNECT    a token that verifies, of an account that still exists, and a

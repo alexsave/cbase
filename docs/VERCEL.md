@@ -1,8 +1,8 @@
 # Moving foolish.cards off Vercel (2026-10-14)
 
 > **Since then (2026-10-17):** the move is done.
-> foolish.cards, www, utils.foolish.cards and uttt.live are all served from S3 behind CloudFront (`ops/web.yaml`), and `.github/workflows/web_aws.yml` builds and deploys both sites on every push to `main`.
-> The `/m` unfurl is the C route `src/app/unfurl_http.c` (DESIGN.md, "Unfurl route"), and `foolish/src/app/m/` is gone.
+> foolish.cards, www, utils.foolish.cards and uttt.live are all served from S3 behind CloudFront (`providers/aws/ops/site/web.yaml`), and `.github/workflows/web_aws.yml` builds and deploys both sites on every push to `main`.
+> The `/m` unfurl is the C route `foolish/server/src/app/unfurl_http.c` (DESIGN.md, "Unfurl route"), and `foolish/src/app/m/` is gone.
 > `web.yml` and `uttt-web.yml` remain only as workflow_dispatch Vercel rollbacks until about 2026-10-28 (RUNBOOK.md, "W9").
 > What follows is the design as written and its as-built record (section 7); the present state is RUNBOOK.md, "Web hosting".
 
@@ -68,7 +68,7 @@ Today the TS route percent-decodes and trims the payload, and if it starts with 
 `msg_wire.c` and `replay.c` are already in the kernel's core list that `c_base/Makefile` compiles, so the route adds no kernel source.
 The C route must call `msg_replay` too, not only `msg_decode`: the TS route falls back to the generic tags when the replay fails, and the golden test below would catch the difference.
 
-The route, in `src/app/` next to the other GET handlers, answers `GET /m/<payload>` with a small HTML page:
+The route, in `foolish/server/src/app/` next to the other GET handlers, answers `GET /m/<payload>` with a small HTML page:
 
 - `<title>` and `description`: "A vs B - turn N", "A vs B - a finished Durak game" (phase 3), "A vs B - a rematch, waiting to start" (phase 0 with a carry key), names joined with " vs " when two or more are non-empty, else "N players"; the description "A Durak game in iMessage. Foolish turns a message thread into a card table."; and on any failure the fallback title "A Durak game in iMessage" with the bare blurb as description.
 - `og:title`, `og:description`, `og:type` website, `og:site_name` Foolish, `twitter:card` summary, `twitter:title`, `twitter:description`, and `robots` noindex, follow.
@@ -76,7 +76,7 @@ The route, in `src/app/` next to the other GET handlers, answers `GET /m/<payloa
 - Every name HTML-escaped (`& < > " '`): nicknames are self-reported, and Next escaped them for us.
 - `Cache-Control: public, max-age=86400`: the payload is the content, so one crawler fetch per link reaches Lambda.
 
-The test is a unit test, `c_base/test/unit_unfurl.c`, against goldens taken from the TS route's current output before it is deleted: run `next build` and `next start` once, fetch a fixed set of payloads (a two-seat game mid-turn, a four-seat game, a finished game, a rematch lobby, a game with one named seat, a name holding `<` and `"`, a truncated payload, a payload with a share-link `-extras` suffix, a non-`1` prefix, garbage), and record each page's tag set as (name or property, content) pairs.
+The test is a unit test, `foolish/server/test/unit_unfurl.c`, against goldens taken from the TS route's current output before it is deleted: run `next build` and `next start` once, fetch a fixed set of payloads (a two-seat game mid-turn, a four-seat game, a finished game, a rematch lobby, a game with one named seat, a name holding `<` and `"`, a truncated payload, a payload with a share-link `-extras` suffix, a non-`1` prefix, garbage), and record each page's tag set as (name or property, content) pairs.
 The C output is compared as the same pair set, not byte for byte, because Next's surrounding markup is not part of the contract.
 The fixtures are kernel-made envelopes, not hand-written bytes, and the test is mutation-checked like every other.
 
@@ -99,11 +99,11 @@ The SPA fallback is a CloudFront Function, not custom error responses.
 Custom error responses are distribution-wide: they would turn a missing JS chunk into a 200 of HTML and would also rewrite error answers from the `/m` origin.
 The Function (viewer request, default behaviour only) does three things: an extensionless path that is a known page gets `.html` appended, any other extensionless path becomes the game shell, and a path with an extension passes through.
 The known-page list is written into the Function's code by the deploy from the export's own `out/*.html`, so nobody maintains it by hand.
-It is JavaScript because CloudFront Functions accept nothing else, tolerated for the same reason as the existing `/realtime/v1/websocket` rewrite in `ops/cbase.yaml`.
+It is JavaScript because CloudFront Functions accept nothing else, tolerated for the same reason as the existing `/realtime/v1/websocket` rewrite in `providers/aws/ops/cbase.yaml`.
 
 ### (c) A second CloudFront distribution, not more behaviours on the API's
 
-A new stack `ops/web.yaml`, separate from `cbase.yaml`, with its own distribution for `foolish.cards` and `www.foolish.cards`.
+A new stack `providers/aws/ops/site/web.yaml`, separate from `cbase.yaml`, with its own distribution for `foolish.cards` and `www.foolish.cards`.
 Why separate:
 
 - The API distribution's default behaviour is the Function URL with caching disabled; the web's default is S3 with caching on, so sharing one would make every path a special case in one direction or the other.
@@ -193,7 +193,7 @@ Only after the two weeks does the Vercel job leave `web.yml`.
 
 ## 6. Effort, risk and recommendation
 
-Effort: the C route and its golden test about a day; the static export, the Function, `ops/web.yaml` and the deploy steps about a day; the cutover and its checks half a day; uttt.live half a day.
+Effort: the C route and its golden test about a day; the static export, the Function, `providers/aws/ops/site/web.yaml` and the deploy steps about a day; the cutover and its checks half a day; uttt.live half a day.
 Risks, highest first: the Squarespace apex ALIAS (tested before anything moves, Route 53 behind it); universal links (the association file at the apex, held by `e2e/validation/universal_links_validation.test.ts`, run against the live host after cutover); the shell fallback missing a page (the page list is generated, and the e2e suite runs against the CloudFront host before DNS moves); and unfurl caches at Apple and Slack, which keep the old card for a while but never break.
 
 Recommendation: move, for the account, the quotas and the north star, not for money.
@@ -213,8 +213,8 @@ Nothing in the monorepo depends on it, and it is not part of the foolish move's 
 Built ahead of the cutover, up to "ready to flip"; c_base/RUNBOOK.md "Web hosting" has the state and the steps.
 Where it differs from sections 4 and 6, and why:
 
-- Two distributions in one stack (`ops/web.yaml`), foolish (with www and utils) and uttt: a flat-rate plan covers one apex, and each distribution has its own copy of the same viewer-request Function, because a Function attached to a plan's distribution cannot be shared. `ops/test/web_router.test.mjs` runs that code out of the template and fails when the copies drift.
-- The page list lives in two stack parameters substituted into the Function, written by `ops/web_deploy.sh` from each export on a stack update with the previous template, so the template stays the Function's one owner and CI can never apply a template change.
+- Two distributions in one stack (`providers/aws/ops/site/web.yaml`), foolish (with www and utils) and uttt: a flat-rate plan covers one apex, and each distribution has its own copy of the same viewer-request Function, because a Function attached to a plan's distribution cannot be shared. `providers/aws/ops/site/test/web_router.test.mjs` runs that code out of the template and fails when the copies drift.
+- The page list lives in two stack parameters substituted into the Function, written by `providers/aws/ops/site/web_deploy.sh` from each export on a stack update with the previous template, so the template stays the Function's one owner and CI can never apply a template change.
 - The COOP/COEP headers come from a viewer-response Function, not a response-headers policy: a Free plan allows only managed headers policies.
 - The SPA shell is `/_shell.html` (the one `generateStaticParams` entry); the clients read the segment from the address bar on it (`foolish/src/utils/useUrlGameId.ts`, `uttt/web/components/Replay.tsx`).
 - Stale hashed chunks are pruned by hand (`web_deploy.sh site <s> --prune-static`), not by a lifecycle rule: an object's age is its first upload, so an age rule would delete live chunks. The bucket is versioned instead, old versions kept 30 days.

@@ -7,7 +7,7 @@
 // Signed headers: host, x-amz-date, x-amz-security-token when there is one,
 // and every header the caller passes (x-amz-target, content-type, ...).
 // Test vectors: AWS's published SigV4 test suite (get-vanilla, post-vanilla,
-// post-x-www-form-urlencoded, post-sts-header-before, ...) in test/unit_sigv4.c.
+// post-x-www-form-urlencoded, post-sts-header-before, ...) in providers/aws/test/unit_sigv4.c.
 #ifndef CB_SIGV4_H
 #define CB_SIGV4_H
 

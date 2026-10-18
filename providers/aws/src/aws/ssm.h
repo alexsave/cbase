@@ -1,7 +1,7 @@
 // ssm.h - the function's secrets from SSM Parameter Store (security finding M5).
 //
 // The JWT secret and the admin token are SecureString parameters under one
-// prefix (ops/cbase.yaml SecretsPrefix, "/cbase/"):
+// prefix (providers/aws/ops/cbase.yaml SecretsPrefix, "/cbase/"):
 //   <prefix>jwt-secret     CBASE_JWT_SECRET
 //   <prefix>admin-token    CBASE_ADMIN_TOKEN
 // read once, when a container starts, with the function role's

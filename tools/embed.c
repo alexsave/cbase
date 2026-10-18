@@ -1,5 +1,5 @@
 // embed.c - writes a file's bytes as a C string constant, so the binary
-// carries sql/schema.sql (and later the admin console) and a deploy is one
+// carries providers/local/sql/schema.sql (and later the admin console) and a deploy is one
 // file. A tiny C tool rather than `xxd -i`, which is not on every Linux image.
 //
 //   build/embed <input> <symbol> > out.c

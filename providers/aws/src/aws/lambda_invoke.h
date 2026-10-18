@@ -12,7 +12,7 @@
 #include "ctx.h"
 
 // CB_OK when Lambda accepted the event (202), CB_E_IO, or CB_E_INVALID for a
-// job or key the payload cannot carry (json_surface.h cb_event_job_payload).
+// job or key the payload cannot carry (aws_json.h cb_event_job_payload).
 // ctx is unused: the function is the one this process runs as.
 int cb_lambda_invoke_job(cb_ctx *ctx, const char *job, const char *key);
 

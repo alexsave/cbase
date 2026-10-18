@@ -1,4 +1,4 @@
-// fz_dynamo.c - every reader of what DynamoDB answers (json_surface.h dw_):
+// fz_dynamo.c - every reader of what DynamoDB answers (aws_json.h dw_):
 // the error classification, the transaction's cancellation reasons, the
 // response's Item / Items / Responses / LastEvaluatedKey / NextToken, and
 // every item decoder the store turns a row back into a struct with. In
@@ -17,7 +17,7 @@
 
 // ---- the old decode, kept as the oracle ----------------------------------------
 //
-// json_surface.c reads an item through a one-pass index and a response through
+// core_json.c or aws_json.c reads an item through a one-pass index and a response through
 // its top level, crossing strings with memchr. What follows is the decode it
 // replaced, as it was (2026-10-18): a byte-at-a-time string skip, every
 // attribute found by walking the item from its start, every response member

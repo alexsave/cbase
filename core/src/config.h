@@ -1,7 +1,7 @@
 // config.h - everything cbase reads from its environment, read once at start.
 //
 // Production sets these as the Lambda function's environment, from the
-// CloudFormation parameters (ops/cbase.yaml); `cbase serve` reads the shell's.
+// CloudFormation parameters (providers/aws/ops/cbase.yaml); `cbase serve` reads the shell's.
 // Every one has a development default except the secrets, whose absence is
 // logged loudly (see each field). The AWS_* variables Lambda itself sets
 // (credentials, region) are read by src/aws, not here.
@@ -46,7 +46,7 @@ typedef struct {
     // environment's.
     char secrets_ssm[256];
     // CBASE_ORIGIN_SECRET: the value CloudFront adds to every request it sends
-    // on, as the header X-Cbase-Origin (ops/cbase.yaml). Set: an HTTP request
+    // on, as the header X-Cbase-Origin (providers/aws/ops/cbase.yaml). Set: an HTTP request
     // or an MQTT CONNECT (realtime/rt_iot.c) without it is refused before
     // anything else runs, so the Function URL and IoT Core's own hostname
     // cannot be used to walk around the edge (and around the viewer address

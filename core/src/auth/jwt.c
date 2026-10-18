@@ -1,6 +1,6 @@
 // jwt.c - HS256 access tokens in GoTrue's claim shape (jwt.h).
 //
-// Minting takes the header and claims JSON from json_surface.c, base64url
+// Minting takes the header and claims JSON from core_json.c or aws_json.c, base64url
 // (unpadded) each, and signs "<header>.<payload>" with HMAC-SHA256.
 // Verification is strict where strictness costs nothing: each part must be in
 // the URL-safe alphabet with no padding, the signature is recomputed and
@@ -65,7 +65,7 @@ static bool b64url_part(const char *p, size_t n) {
     return true;
 }
 
-// Decodes one part into a NUL-terminated buffer (json_surface.c checks it is
+// Decodes one part into a NUL-terminated buffer (core_json.c or aws_json.c checks it is
 // the JSON it must be).
 static bool decode_part(const char *p, size_t n, char *out, size_t cap, size_t *len) {
     if (!b64url_part(p, n)) return false;

@@ -1,11 +1,11 @@
 // store_dynamo.c - the DynamoDB backend (store.h): production under Lambda.
 //
-// One table (json_surface.h has the item layout), reached over HTTPS with
+// One table (aws_json.h has the item layout), reached over HTTPS with
 // SigV4 (aws/aws_call.h). This file is the item layer on DynamoDB
 // (items.h: GetItem, PutItem/UpdateItem/DeleteItem, TransactWriteItems,
 // Query, BatchGetItem, BatchWriteItem deletes), with the transport, the
 // throttle's backoff, the tally, the admin console's scans and PartiQL, and
-// the import's bulk mode; json_surface.c spells every request, so no DynamoDB
+// the import's bulk mode; core_json.c or aws_json.c spells every request, so no DynamoDB
 // string appears here. The rows above it are written once for both backends
 // (rows_auth.c, rows_foolish.c: the CAS, the lease and the rest are there).
 #include "store/store.h"
@@ -197,7 +197,7 @@ static void pace(dyn *d, int k) {
     }
 }
 
-// ---- the key-capture proof (json_surface.h dw_shape) ---------------------------------
+// ---- the key-capture proof (aws_json.h dw_shape) ---------------------------------
 //
 // With CBASE_DYNAMO_CAPTURE naming a file, every request's shape is appended
 // to it (one write per request: lines below PIPE_BUF stay whole across the
@@ -229,7 +229,7 @@ static void capture(const dw_req *r) {
 
 // Sends `r`, again after a pause while DynamoDB says to (throttled, a 5xx, a
 // lost connection), as long as the backoff allows. The answer is in *resp,
-// and its top level, walked once, in *top (json_surface.h dw_top): valid
+// and its top level, walked once, in *top (aws_json.h dw_top): valid
 // while *resp is not changed. top may be NULL.
 static dw_status call_top(dyn *d, const dw_req *r, cb_buf *resp, dw_top *top) {
     dw_top own;

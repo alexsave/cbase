@@ -773,7 +773,7 @@ static void flow_scan_pages(void) {
 
 // An empty SCAN partition: nothing to sort, and no NULL handed to qsort (glibc
 // declares its array nonnull, so UBSan on Linux reported the empty sort;
-// fuzz/fz_dynamo_store.c found it).
+// providers/aws/fuzz/fz_dynamo_store.c found it).
 static void flow_scan_empty(void) {
     static const step steps[] = {
         { "Query", "\"ConsistentRead\":true", 200, "{\"Items\":[],\"Count\":0}" },
@@ -915,7 +915,7 @@ static void flow_admin_query_guard(void) {
     cb_store_close(s);
 }
 
-// ops/cbase.yaml creates the table this wire writes to: the same index names,
+// providers/aws/ops/cbase.yaml creates the table this wire writes to: the same index names,
 // all four index keys String (gsi1sk is "<ms>#<id>" text, not a Number),
 // both projecting ALL, and the TTL on the attribute the wire writes seconds to.
 static void the_template_matches_the_wire(void) {
@@ -1180,7 +1180,7 @@ static void consumed_capacity_read(void) {
 
 // ---- the one-pass decode --------------------------------------------------------------------
 //
-// json_surface.c crosses a string with memchr, reads an item through a
+// core_json.c or aws_json.c crosses a string with memchr, reads an item through a
 // one-pass index and a response through its top level. Each case is one the
 // old byte-at-a-time walk answered, and fz_dynamo.c checks the rest against it.
 

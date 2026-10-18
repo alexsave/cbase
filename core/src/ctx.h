@@ -4,8 +4,8 @@
 //   * `bootstrap`, an AWS Lambda custom runtime: one request per invocation, no
 //     state between invocations but a warm container's cache;
 //   * `cbase serve`, a local HTTP + WebSocket server for development and tests.
-// Both build one cb_ctx (src/boot.c) and hand every request to the same
-// handler (src/handler.h). What differs is the PROVIDER (cbase/provider.h:
+// Both build one cb_ctx (core/src/boot.c) and hand every request to the same
+// handler (core/src/handler.h). What differs is the PROVIDER (cbase/provider.h:
 // the store backend, the realtime transport, how a bot drive is started, the
 // edge's viewer header), which each main names, and what is served is the APP
 // (cbase/app.h: its routes and its self-test), which each main names too

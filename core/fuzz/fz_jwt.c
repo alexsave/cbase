@@ -7,7 +7,7 @@
 //   odd   a header and a claims JSON (split at the first 0xff), signed here
 //         with the server's secret: the token a server minted, or one a
 //         leaked secret could mint. This is the only way to reach the header
-//         and claims decoders (json_surface.c) behind the HMAC.
+//         and claims decoders (core_json.c or aws_json.c) behind the HMAC.
 // A token that verifies must mint back to one that verifies to the same claims.
 #include "fz.h"
 

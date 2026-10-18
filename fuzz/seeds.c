@@ -181,7 +181,7 @@ static void seeds_query(void) {
     puts_("query", "bad", "a=%zz&b=%");
 }
 
-// num_parse_i64: [mode][range for mode 3][text] (fuzz/fz_num.c).
+// num_parse_i64: [mode][range for mode 3][text] (core/fuzz/fz_num.c).
 static void seeds_num(void) {
     put1("num", "speedup", 0, "20", 2);
     put1("num", "space", 0, " 20", 3);
@@ -348,7 +348,7 @@ static void seeds_dynamo(void) {
           "\x01{\"Table\":{\"ProvisionedThroughput\":{\"ReadCapacityUnits\":25,\"WriteCapacityUnits\":25},"
           "\"GlobalSecondaryIndexes\":[{\"IndexName\":\"gsi1\",\"ProvisionedThroughput\":{\"ReadCapacityUnits\":5,\"WriteCapacityUnits\":5}}]}}");
     puts_("dynamo", "execute", "\x01{\"Items\":[],\"NextToken\":\"abc\"}");
-    // The one-pass decode's corners (json_surface.c "one pass over an item"): an
+    // The one-pass decode's corners (core_json.c or aws_json.c "one pass over an item"): an
     // escaped key, a type twice, a second type, an escaped slash in a blob,
     // backslash runs before a quote, an object keyed "0" in ConsumedCapacity.
     puts_("dynamo", "decode-escaped-key", "\x01{\"\\u0049tem\":{\"id\":{\"S\":\"a\\\\\\\"b\"},\"email\":{\"S\":\"e\"},\"password_hash\":{\"S\":\"h\"},\"created_at\":{\"N\":\"1\",\"N\":\"2\"}},\"ConsumedCapacity\":{\"0\":{\"CapacityUnits\":3}}}");

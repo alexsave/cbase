@@ -4,7 +4,7 @@
 #
 #   aws configure            # or: aws sso login --profile <p>; export AWS_PROFILE=<p>
 #   c_base/providers/aws/ops/deploy.sh                 # build, upload, create or update the stack
-#   c_base/providers/aws/ops/deploy.sh --import DIR    # and then import a migrate/export.sh export into DynamoDB
+#   c_base/providers/aws/ops/deploy.sh --import DIR    # and then import a foolish/server/migrate/export.sh export into DynamoDB
 #
 # What it does, in order:
 #   1. checks the CLI has credentials and a region (aws sts get-caller-identity);
@@ -16,10 +16,10 @@
 #      SecureStrings (<SecretsPrefix>jwt-secret, admin-token), written only
 #      when missing or changed; the function reads them from there;
 #   3. creates the code bucket if it is missing (private, public access blocked);
-#   4. builds the Lambda zip (ops/package.sh: a static arm64 binary, Docker)
+#   4. builds the Lambda zip (providers/aws/ops/package.sh: a static arm64 binary, Docker)
 #      and uploads it under a name carrying its sha256, so a new build is a
 #      new CodeKey and CloudFormation updates the function's code;
-#   5. a change set of ops/cbase.yaml, printed and refused when it replaces a
+#   5. a change set of providers/aws/ops/cbase.yaml, printed and refused when it replaces a
 #      resource (CBASE_ALLOW_REPLACE=1 to mean it), then executed and waited for;
 #   6. prints the stack's outputs (FunctionUrl,
 #      DistributionDomain, TableName, PublicUrl);
@@ -231,7 +231,7 @@ changeset="$(grep -o 'arn:aws:cloudformation:[^ ]*changeSet/[^ ]*' "$here/build/
 if [ -n "$changeset" ]; then
   aws cloudformation describe-change-set --region "$region" --change-set-name "$changeset" \
     --query 'Changes[].ResourceChange.[Action,LogicalResourceId,ResourceType,Replacement]' --output table
-  # What may be recreated: ops/changeset_replacements.jq (a "Conditional" on
+  # What may be recreated: providers/aws/ops/changeset_replacements.jq (a "Conditional" on
   # an attribute of a resource that is only modified is not).
   aws cloudformation describe-change-set --region "$region" --change-set-name "$changeset" --output json \
     > "$here/build/deploy-changeset.json"

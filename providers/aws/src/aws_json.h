@@ -5,7 +5,7 @@
 // bench. The core's JSON (the JWT, the admin console's API) is core_json.h.
 // These two files are the only ones that include util/json.h; everything else
 // hands them structs and spans and gets bytes or structs back.
-// test/unit_json_gate.c fails the build when a JSON key literal, a util/json.h
+// core/test/unit_json_gate.c fails the build when a JSON key literal, a util/json.h
 // include or a cb_jw_/cb_json_ call appears in any other file.
 //
 // The functions are pure over buffers (no socket, no clock, no randomness: a
@@ -27,9 +27,9 @@
 
 // =====================================================================================
 // DynamoDB (dw_): the JSON requests the DynamoDB backend sends and the readers for
-// what DynamoDB answers (store_dynamo.c, store_import.c and test/unit_dynamo.c).
+// what DynamoDB answers (store_dynamo.c, store_import.c and providers/aws/test/unit_dynamo.c).
 //
-// EVERY DynamoDB STRING LIVES IN json_surface.c: the X-Amz-Target names, the
+// EVERY DynamoDB STRING LIVES IN core_json.c or aws_json.c: the X-Amz-Target names, the
 // item layout (pk/sk spellings, attribute names, the GSI names), the key,
 // condition, update and filter expressions. store_dynamo.c decides which
 // requests to send in which order and never spells one.
@@ -67,7 +67,7 @@
 // off the rows written before this layout (GSI2 RATINGS / <id>), which
 // cbase-import --reindex-ratings rewrites once.
 // The index names and the TTL attribute the table must be created with.
-// ops/cbase.yaml spells them too; test/unit_dynamo.c reads the template and
+// providers/aws/ops/cbase.yaml spells them too; providers/aws/test/unit_dynamo.c reads the template and
 // fails when the two disagree.
 #define DW_GSI1     "gsi1"
 #define DW_GSI2     "gsi2"
@@ -135,7 +135,7 @@ bool dw_array_next(cb_span arr, size_t *pos, cb_span *elem);
 // Walks the members of a JSON object value: key (a string token, quotes
 // included) and value.
 bool dw_object_next(cb_span obj, size_t *pos, cb_span *key, cb_span *val);
-// A response's top-level members, walked once (json_surface.c "a response's
+// A response's top-level members, walked once (core_json.c or aws_json.c "a response's
 // top-level members"): call() scans every answer, reads its ConsumedCapacity
 // from the index and hands the index on, so the operation's own reader does
 // not walk the body again. Past DW_TOP_MAX members a reader walks the body.
@@ -302,7 +302,7 @@ void cb_runtime_error_body(cb_buf *b, const char *type, const char *message);
 // =====================================================================================
 // CloudFront (cf_): THE ONE XML SHAPE c_base speaks. CloudFront's API is XML,
 // not JSON; it lives here so every tolerated foreign text format has one
-// file, and the containment gate (test/unit_json_gate.c) fails any other
+// file, and the containment gate (core/test/unit_json_gate.c) fails any other
 // file that holds an XML-looking literal (an "<?xml" prolog or an xmlns).
 
 // The body of CreateInvalidation (API version 2020-05-31): an

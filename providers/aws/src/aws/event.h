@@ -1,7 +1,7 @@
 // event.h - the Lambda event, decoded: the kinds of event the one function
 // receives and the struct they decode into. The JSON both ways (the decoder,
 // the HTTP response encoder, the job payload, the redaction for
-// the log) lives in json_surface.c and is declared in json_surface.h.
+// the log) lives in core_json.c or aws_json.c and is declared in aws_json.h.
 #ifndef CB_EVENT_H
 #define CB_EVENT_H
 

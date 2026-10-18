@@ -2,7 +2,7 @@
 // behind one table so the unit tests can stand in for them.
 //
 // Production never changes this table: cb_rt_deps_g starts out pointing at the
-// real functions (auth.h). The tests in test/unit_stream_mqtt.c,
+// real functions (auth.h). The tests in core/test/unit_stream_mqtt.c,
 // unit_rt_iot.c and unit_rt_local.c
 // swap entries for fakes, because every object of the program is linked into
 // every test, so a fake cannot replace a real function by name. Nothing else

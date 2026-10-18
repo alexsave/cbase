@@ -4,7 +4,7 @@
 // migration copies the hashes unchanged, so every existing player keeps their
 // password. To embed: a public-domain bcrypt (the OpenBSD-derived one, e.g.
 // Solar Designer's crypt_blowfish), with the published test vectors in
-// test/unit_bcrypt.c. Verification compares in constant time.
+// core/test/unit_bcrypt.c. Verification compares in constant time.
 #ifndef CB_BCRYPT_H
 #define CB_BCRYPT_H
 

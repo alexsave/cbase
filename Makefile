@@ -260,7 +260,7 @@ check-asan: shared-tests-asan $(call UNIT_RUNS,build/asan/test) $(call SMOKE_PRO
 DYNAMO_UNITS := unit_store unit_admin unit_import unit_v1
 #
 # THE KEY-CAPTURE PROOF (docs/PLATFORM.md stages 5 and 6): every request the
-# lane sends is reduced to its shape (json_surface.h dw_shape: the keys and
+# lane sends is reduced to its shape (aws_json.h dw_shape: the keys and
 # index keys it touches, normalized, and every attribute name), and the set of
 # shapes must equal providers/aws/test/golden/dynamo_shapes.txt. A change that moves a key
 # or renames an attribute fails here; `make dynamo-shapes` rewrites the golden

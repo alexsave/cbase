@@ -1,5 +1,5 @@
 #!/bin/bash
-# deploy.sh's replacement gate (ops/changeset_replacements.jq) against
+# deploy.sh's replacement gate (providers/aws/ops/changeset_replacements.jq) against
 # recorded change sets: a code deploy's "Conditional" FunctionUrl on
 # Function.Arn passes; a real replacement, a conditional on a property, and a
 # conditional on an attribute of a replaced resource each stop it.

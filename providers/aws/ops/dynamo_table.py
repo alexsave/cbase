@@ -1,6 +1,6 @@
-# dynamo_table.py - the DynamoDB table ops/cbase.yaml defines, as AWS CLI input.
+# dynamo_table.py - the DynamoDB table providers/aws/ops/cbase.yaml defines, as AWS CLI input.
 #
-#   python3 -I ops/dynamo_table.py ops/cbase.yaml <table name> <out dir>
+#   python3 -I providers/aws/ops/dynamo_table.py providers/aws/ops/cbase.yaml <table name> <out dir>
 #
 # Reads the template's one AWS::DynamoDB::Table resource and writes, into
 # <out dir>:
@@ -9,7 +9,7 @@
 #                throughput and enforces none of it)
 #   ttl.json     update-time-to-live's --cli-input-json
 #   pitr.json    update-continuous-backups's --cli-input-json
-# so ops/dynamo_local.sh creates exactly the table the stack creates and the two
+# so providers/aws/ops/dynamo_local.sh creates exactly the table the stack creates and the two
 # cannot drift. A property this script does not know how to carry over is an
 # error, not a silent omission: a new one in the template must be mapped here.
 #

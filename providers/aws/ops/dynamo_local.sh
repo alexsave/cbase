@@ -1,5 +1,5 @@
 #!/bin/bash
-# Amazon's DynamoDB Local with the table ops/cbase.yaml defines, for the
+# Amazon's DynamoDB Local with the table providers/aws/ops/cbase.yaml defines, for the
 # DynamoDB store's tests and the import rehearsal (DESIGN.md "Store").
 #
 #   c_base/providers/aws/ops/dynamo_local.sh            start (or reuse) it, create the table if missing
@@ -12,7 +12,7 @@
 # credentials (DynamoDB Local accepts any non-empty pair). Progress goes to
 # stderr.
 #
-# The table: ops/dynamo_table.py reads the template's AWS::DynamoDB::Table
+# The table: providers/aws/ops/dynamo_table.py reads the template's AWS::DynamoDB::Table
 # resource and writes the create-table, TTL and point-in-time-recovery input,
 # so this table is the stack's table, never a second spelling of it.
 #
@@ -89,7 +89,7 @@ if ! exists; then
   input="$(mktemp -d)"
   trap 'rm -rf "$input"' EXIT
   python3 -I "$here/providers/aws/ops/dynamo_table.py" "$here/providers/aws/ops/cbase.yaml" "$table" "$input"
-  say "creating table $table from ops/cbase.yaml"
+  say "creating table $table from providers/aws/ops/cbase.yaml"
   ddb create-table --cli-input-json "file://$input/create.json" >/dev/null
   ddb wait table-exists --table-name "$table"
   ddb update-time-to-live --cli-input-json "file://$input/ttl.json" >/dev/null

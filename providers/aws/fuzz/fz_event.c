@@ -1,4 +1,4 @@
-// fz_event.c - the Lambda event decoder (json_surface.h cb_event_decode): a
+// fz_event.c - the Lambda event decoder (aws_json.h cb_event_decode): a
 // Function URL request (payload 2.0), an IoT Core custom authorizer request,
 // the scheduler's literal, the self-invoke literal. Everything in the event is
 // the caller's, the headers and the body most of all. Then what main_lambda

@@ -1,5 +1,5 @@
 #!/bin/bash
-# ops/role_covers_template.sh against small templates: a covered read passes,
+# providers/aws/ops/role_covers_template.sh against small templates: a covered read passes,
 # a read the role lacks fails, and a resource type the check does not know
 # fails; then the real template and role pass.
 set -euo pipefail

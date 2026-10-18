@@ -3,7 +3,7 @@
 // other is the AWS provider's aws_json.c (DynamoDB, the Lambda envelope, the
 // IoT authorizer, the client's function URL event; and CloudFront's one XML
 // shape). Both sit on the one low-level writer and reader (util/json.h), and
-// test/unit_json_gate.c fails the build when JSON appears in any other file.
+// core/test/unit_json_gate.c fails the build when JSON appears in any other file.
 // Pure over buffers: no socket, no clock, no randomness.
 #ifndef CB_CORE_JSON_H
 #define CB_CORE_JSON_H

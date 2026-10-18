@@ -1,5 +1,5 @@
 // unit_items.c - the item layer (store/items.h) on both backends, and the
-// key-capture proof's shapes (json_surface.h dw_shape): just enough to hold
+// key-capture proof's shapes (aws_json.h dw_shape): just enough to hold
 // the coverage floors through stage 5 (docs/PLATFORM.md section 9 lists the
 // full suite owed by stage 8).
 #include "t.h"

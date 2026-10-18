@@ -21,7 +21,7 @@ macOS needs Xcode's clang and `brew install openssl@3`; Ubuntu 24.04 needs `buil
 The kernel is built from `../foolish/c` with its own source list; nothing is copied.
 `CBASE_SMOKE_GAME=0 make -C c_base smoke` skips the game scenario when only the plumbing is of interest.
 The game smoke runs its server with `CBASE_BOT_SPEEDUP=20` (config.h): every bot timer, and the board's time the kernel paces by, 20 times faster, so the game, the crash's lease expiry and the idle human's rest take seconds; Lambda refuses to start with it set.
-`c_base/ops/dynamo_local.sh` starts DynamoDB Local with the stack's table and prints the environment to export (`--stop` removes it); `CBASE_LOG_LEVEL=debug` logs every request's DynamoDB requests and capacity units.
+`c_base/providers/aws/ops/dynamo_local.sh` starts DynamoDB Local with the stack's table and prints the environment to export (`--stop` removes it); `CBASE_LOG_LEVEL=debug` logs every request's DynamoDB requests and capacity units.
 
 ## Run locally
 
@@ -32,7 +32,7 @@ CBASE_DB=/tmp/cbase.sqlite CBASE_ADMIN_TOKEN=dev-admin-token-0123456789 build/cb
 curl http://127.0.0.1:8080/health
 ```
 
-Settings come from `CBASE_*` environment variables, listed in `src/config.h` and logged at start with secrets redacted.
+Settings come from `CBASE_*` environment variables, listed in `core/src/config.h` and logged at start with secrets redacted.
 The console is at http://127.0.0.1:8080/admin (paste the admin token).
 
 ## Point the web app at it
@@ -52,4 +52,4 @@ Sign up, create a table, open it in a second browser profile, and play; DESIGN.m
 ## Deploy
 
 Production is `https://api.foolish.cards`, and every push to `main` that touches c_base or the kernel deploys it from GitHub Actions through an OIDC role (`.github/workflows/c_base.yml`, RUNBOOK.md step 13).
-A template change, or a new stack, is `c_base/ops/deploy.sh` after `aws configure`, by hand, as RUNBOOK.md explains; the console click-path is its fallback.
+A template change, or a new stack, is `c_base/providers/aws/ops/deploy.sh` after `aws configure`, by hand, as RUNBOOK.md explains; the console click-path is its fallback.

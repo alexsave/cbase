@@ -2,7 +2,7 @@
 //
 // A server on a free loopback port, run on its own thread, with a test route
 // table: a pool handler, a loop handler and a WebSocket echo.
-// Each check talks to it through test/lib_client.c as a client would.
+// Each check talks to it through core/test/lib_client.c as a client would.
 #include "t.h"
 
 #include "lib_client.h"

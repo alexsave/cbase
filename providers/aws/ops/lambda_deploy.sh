@@ -1,7 +1,7 @@
 #!/bin/bash
 # Ships a built Lambda zip to the cbase stack: the code only, never the
 # template. .github/workflows/c_base.yml runs it on every push to main, as the
-# role ops/github_oidc.yaml makes; it runs the same from this Mac.
+# role providers/aws/ops/github_oidc.yaml makes; it runs the same from this Mac.
 #
 #   c_base/providers/aws/ops/lambda_deploy.sh c_base/build/cbase-lambda.zip
 #
@@ -87,7 +87,7 @@ fi
 # ---- 4. is it live ------------------------------------------------------------------
 fn="$(output FunctionName)"
 # GetFunction, which CloudFormation needs the role to hold anyway; the role has
-# no GetFunctionConfiguration (ops/github_oidc.yaml).
+# no GetFunctionConfiguration (providers/aws/ops/github_oidc.yaml).
 live_sha="$(aws lambda get-function --function-name "$fn" --query Configuration.CodeSha256 --output text)"
 [ "$live_sha" = "$code_sha" ] || die "function $fn runs CodeSha256 $live_sha, not this zip's $code_sha"
 url="$(output PublicUrl)"

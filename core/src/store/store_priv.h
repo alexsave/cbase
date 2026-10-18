@@ -7,7 +7,7 @@
 #include "util/str.h"
 
 // THE ADMIN CONSOLE'S COLLECTIONS, the same on both backends: the key
-// families of the item layout (json_surface.h "THE ITEM LAYOUT"). The i-th
+// families of the item layout (aws_json.h "THE ITEM LAYOUT"). The i-th
 // (NULL past the last); and the pk prefix a collection's items start with,
 // with `prefix` after it ("GAME#ab", or "SCAN": a whole partition), into out:
 // false for a name that is not one (CB_ADMIN_GAMES is GAME).
@@ -19,7 +19,7 @@ bool cb_store_collection_pk(const char *c, const char *prefix, char *out, size_t
 bool cb_store_user_matches(const cb_user_row *u, const char *needle);
 
 // The DynamoDB backend over a transport the caller supplies: what
-// cb_store_open_dynamo does with HTTPS and SigV4, and what test/unit_dynamo.c
+// cb_store_open_dynamo does with HTTPS and SigV4, and what providers/aws/test/unit_dynamo.c
 // does with recorded answers. `send` posts one request (its X-Amz-Target and
 // JSON body) and fills the HTTP status and the response body; it returns
 // CB_OK, or CB_E_IO when nothing came back.

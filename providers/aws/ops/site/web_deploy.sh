@@ -1,5 +1,5 @@
 #!/bin/bash
-# Deploys the static web (ops/web.yaml) with the AWS CLI: the stack, and each
+# Deploys the static web (providers/aws/ops/site/web.yaml) with the AWS CLI: the stack, and each
 # site's files. The same script runs on this Mac and in .github/workflows/web_aws.yml.
 #
 #   c_base/providers/aws/ops/site/web_deploy.sh stack                  # create or update the stack (by hand: template changes)

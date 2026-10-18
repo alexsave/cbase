@@ -1,5 +1,5 @@
 // admin.c - the c_base console (admin.h): GET /admin serves the embedded
-// admin/console.html, and /admin/api/* is its JSON API.
+// core/src/admin/console.html, and /admin/api/* is its JSON API.
 //
 // THE GATE. Every route here, the page included, answers 404 when
 // CBASE_ADMIN_TOKEN is unset (the console does not exist on that deploy:
@@ -22,11 +22,11 @@
 //     leaderboard name and the account delete stay one implementation.
 //   * POST backups (SQLite only): VACUUM INTO a timestamped file beside the
 //     database, through admin_query. DynamoDB has point-in-time recovery on
-//     (ops/cbase.yaml) and the console explains it rather than copying.
+//     (providers/aws/ops/cbase.yaml) and the console explains it rather than copying.
 //
 // JSON is tolerated for this API (DESIGN.md "Where JSON is tolerated", item 4):
 // the console is a browser page we own, and JSON is what fetch reads. Every
-// answer's shape is written in json_surface.c; this file gathers the values.
+// answer's shape is written in core_json.c or aws_json.c; this file gathers the values.
 #include "admin.h"
 
 #include "rate_limits.h"
@@ -54,7 +54,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-// build/gen/console_html.c, from admin/console.html (tools/embed.c).
+// build/gen/console_html.c, from core/src/admin/console.html (tools/embed.c).
 extern const char cbase_console_html[];
 extern const unsigned long cbase_console_html_len;
 
@@ -106,7 +106,7 @@ static bool admin_gate(const cb_ctx *ctx, const cb_http_req *req, cb_http_res *r
 
 // ---- answers ---------------------------------------------------------------------
 
-// Sends a document json_surface.c wrote (rc its CB_OK or CB_E_NOMEM).
+// Sends a document core_json.c or aws_json.c wrote (rc its CB_OK or CB_E_NOMEM).
 void cb_admin_send_json(cb_http_res *res, int status, cb_buf *b, int rc) {
     if (rc != CB_OK) {
         cb_router_error(res, 500, "admin: response did not encode");

@@ -1,5 +1,5 @@
 // event.c - what is left of the Lambda envelope once its JSON moved to
-// json_surface.c (cb_event_decode, the encoders, the redaction): freeing an
+// core_json.c or aws_json.c (cb_event_decode, the encoders, the redaction): freeing an
 // event and logging a raw one.
 #include "event.h"
 
