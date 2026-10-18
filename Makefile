@@ -29,14 +29,15 @@ UNAME  := $(shell uname)
 .DEFAULT_GOAL := all
 
 # ---- the kernel ------------------------------------------------------------------
-# THE KERNEL'S OWN SOURCE LIST: foolish/c/Makefile's CORE_SRC, read through its
-# print-core target, so a source added to the kernel is linked here without an
-# edit and no second copy of the list exists to drift. Its paths are relative to
+# THE KERNEL'S OWN SOURCE LIST: foolish/c/Makefile's KERNEL_SRC, read through its
+# print-kernel target (print-core adds the host-only arena tools), so a source
+# added to the kernel is linked here without an edit and no second copy of the
+# list exists to drift. Its paths are relative to
 # foolish/c, and are respelled through $(C_ROOT) so c_rules.mk places the objects
 # under _root/.
-KERNEL_LIST := $(shell MAKEFLAGS= $(MAKE) -s --no-print-directory -C $(KDIR) print-core)
+KERNEL_LIST := $(shell MAKEFLAGS= $(MAKE) -s --no-print-directory -C $(KDIR) print-kernel)
 ifeq ($(strip $(KERNEL_LIST)),)
-  $(error could not read the kernel's source list (make -C $(KDIR) print-core))
+  $(error could not read the kernel's source list (make -C $(KDIR) print-kernel))
 endif
 KERNEL_SRC := $(patsubst ../../%,$(C_ROOT)/%,$(filter ../../%,$(KERNEL_LIST))) \
               $(addprefix $(KDIR)/,$(filter-out ../../%,$(KERNEL_LIST)))
