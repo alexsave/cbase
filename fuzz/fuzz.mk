@@ -122,14 +122,20 @@ fuzz-merge: fuzz
 	    && echo "$$t: $$(ls $$c | wc -l | tr -d ' ') inputs"; \
 	done
 
-# The seeds land in build/fuzz-seeds/<target>, then in each target's corpus.
-fuzz-seeds: build/asan/fuzz/seeds
-	rm -rf build/fuzz-seeds && mkdir -p build/fuzz-seeds
-	build/asan/fuzz/seeds build/fuzz-seeds
+# The seeds land in build/fuzz-seeds/<target>, then in each target's corpus;
+# seeds for a name that is no target are refused before any corpus is
+# written. The program and the staging directory are variables so
+# fuzz/test/fuzz_mk_test.sh can run these rules with a stand-in program.
+FUZZ_SEEDS_PROG := build/asan/fuzz/seeds
+FUZZ_SEEDS_OUT  := build/fuzz-seeds
+fuzz-seeds: $(FUZZ_SEEDS_PROG)
+	rm -rf $(FUZZ_SEEDS_OUT) && mkdir -p $(FUZZ_SEEDS_OUT)
+	$(FUZZ_SEEDS_PROG) $(FUZZ_SEEDS_OUT)
+	@for d in $(FUZZ_SEEDS_OUT)/*; do [ -d "$$d" ] || continue; case " $(FUZZ_ALL) " in *" $${d##*/} "*) ;; \
+	  *) echo "fuzz-seeds: seeds for $${d##*/}, which is no target"; exit 1;; esac; done
 	@for tc in $(FUZZ_PAIRS); do t=$${tc%%=*}; c=$${tc#*=}; \
-	  [ -d build/fuzz-seeds/$$t ] || continue; mkdir -p $$c; cp build/fuzz-seeds/$$t/* $$c/; \
+	  [ -d $(FUZZ_SEEDS_OUT)/$$t ] || continue; mkdir -p $$c; cp $(FUZZ_SEEDS_OUT)/$$t/* $$c/; \
 	done
-	@for d in build/fuzz-seeds/*; do [ -n "$$(echo " $(FUZZ_ALL) " | grep " $${d##*/} ")" ] || { echo "fuzz-seeds: seeds for $${d##*/}, which is no target"; exit 1; }; done
 
 # Every target's name, for CI's matrix (c_base.yml, c_base_fuzz_nightly.yml).
 .PHONY: print-fuzz-targets
