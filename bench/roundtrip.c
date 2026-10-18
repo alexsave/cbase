@@ -20,6 +20,7 @@
 // Every body is the kernel's (netwire.h, table.h, ask.h), through its pure
 // codecs: the client library (netclient.h) keeps one session in statics, and
 // the workers are threads. Setup (sign-up, create, join, ready) is not timed.
+// Each worker deletes its two accounts at the end (POST /v1/account/delete).
 // Bytes per request are the HTTP heads and bodies (net.h).
 #include "bench.h"
 #include "net.h"
@@ -166,6 +167,9 @@ static int signup(worker *w, player *p, int k) {
         snprintf(p->token, sizeof p->token, "%.*s", (int)ses.access_len, ses.access);
         snprintf(p->uid, sizeof p->uid, "%.*s", (int)ses.user_id_len, ses.user_id);
         snprintf(p->auth, sizeof p->auth, "Authorization: Bearer %s\r\n", p->token);
+        // Named at once: a run cut short leaves an account the admin API's
+        // users/delete takes by this id.
+        fprintf(stderr, "bench: signed up %.*s (user %s)\n", (int)q.name_len, q.name, p->uid);
     } else {
         fprintf(stderr, "bench: signup answered %d\n", s);
     }
@@ -324,11 +328,26 @@ static int move(worker *w, int k, cb_buf *env) {
     return ok ? 1 : -1;
 }
 
+// The worker's accounts go at the end: a run leaves no account
+// behind in the store it measured.
+static void delete_accounts(worker *w) {
+    for (int k = 0; k < 2; k++) {
+        if (!w->p[k].uid[0]) continue;
+        bn_resp r;
+        bn_resp_init(&r);
+        int s = call(w, "POST", "/v1/account/delete", w->p[k].auth, NULL, 0, &r);
+        if (s < 200 || s >= 300)
+            fprintf(stderr, "bench: deleting user %s answered %d; delete it with the admin API\n", w->p[k].uid, s);
+        bn_resp_free(&r);
+    }
+}
+
 static void *work(void *arg) {
     worker *w = arg;
     bn_http_init(&w->http, &w->u);
     if (signup(w, &w->p[0], 0) || signup(w, &w->p[1], 1) || !listen_games(w, 0) || !listen_games(w, 1)) {
         w->errors++;
+        delete_accounts(w);
         return NULL;
     }
     cb_buf env;
@@ -347,6 +366,7 @@ static void *work(void *arg) {
         if (idle > 20) { w->have_game = false; idle = 0; }
     }
     cb_buf_free(&env);
+    delete_accounts(w);
     return NULL;
 }
 

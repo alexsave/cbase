@@ -750,7 +750,7 @@ c_base/build/cbase-bench coldstart --url https://api.foolish.cards --repeat 6 \
 c_base/build/cbase-bench report
 ```
 
-Each `roundtrip` worker signs up two real accounts (`BENCH<HEX><n>`) and plays real games; delete them in the console's Users panel afterwards if they matter.
+Each `roundtrip` worker signs up two real accounts (`BENCH<HEX><n>`), prints their user ids as it makes them, plays real games, and deletes both accounts at the end (`POST /v1/account/delete`; their games stay, as any deleted account's do); a run cut short names the ids to delete with the admin API (`POST /admin/api/users/delete`).
 A Lambda container lives for minutes after its last request, so `--idle` alone rarely gives a cold start; the `--force-cmd` above toggles the memory size between 256 and 257 MB, which makes Lambda start new environments on the next request without touching the environment variables (an `--environment` update would replace them all).
 It needs the CLI's credentials, and `--idle 0` is right with it; an even `--repeat` leaves the memory at the template's 256 MB, since CloudFormation does not put back a value changed outside it.
 Pass `--note variant=...` on every run so the report tells variants apart.
