@@ -9,7 +9,7 @@
 #include "util/log.h"
 #include "util/str.h"
 
-#include "../../../shared/c/mqtt/mqtt.h"
+#include "../../../../../shared/c/mqtt/mqtt.h"
 
 #include <pthread.h>
 #include <stdbool.h>

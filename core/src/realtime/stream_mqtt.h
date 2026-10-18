@@ -28,7 +28,7 @@
 #include "netwire.h"
 #include "store/store.h"
 
-#include "../../../shared/c/mqtt/mqtt.h"
+#include "../../../../shared/c/mqtt/mqtt.h"
 
 #include <stdbool.h>
 #include <stddef.h>

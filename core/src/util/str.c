@@ -1,6 +1,6 @@
 #include "str.h"
 
-#include "../../../shared/c/hex/hex.h"
+#include "../../../../shared/c/hex/hex.h"
 
 #include <ctype.h>
 #include <stdio.h>

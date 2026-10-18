@@ -1,7 +1,7 @@
 #include "json.h"
 
-#include "../../../shared/c/b64/b64.h"
-#include "../../../shared/c/hex/hex.h"
+#include "../../../../shared/c/b64/b64.h"
+#include "../../../../shared/c/hex/hex.h"
 
 #include <math.h>
 #include <stdio.h>

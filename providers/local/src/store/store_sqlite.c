@@ -25,7 +25,7 @@
 #include "util/clock.h"
 #include "util/log.h"
 #include "util/str.h"
-#include "../../../shared/c/num_parse.h"
+#include "../../../../../shared/c/num_parse.h"
 
 #include <ctype.h>
 #include <pthread.h>

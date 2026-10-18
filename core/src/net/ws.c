@@ -11,7 +11,7 @@
 // rather than a second hand-written copy, since cbase links libcrypto anyway.
 #include "ws.h"
 
-#include "../../../shared/c/b64/b64.h"
+#include "../../../../shared/c/b64/b64.h"
 #include "util/err.h"
 
 #include <openssl/sha.h>

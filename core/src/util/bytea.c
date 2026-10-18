@@ -1,6 +1,6 @@
 #include "bytea.h"
 
-#include "../../../shared/c/hex/hex.h"
+#include "../../../../shared/c/hex/hex.h"
 
 int cb_bytea_encode(const uint8_t *in, size_t n, char *out, size_t cap) {
     if (cap < 3) return -1;

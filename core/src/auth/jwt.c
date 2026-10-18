@@ -11,7 +11,7 @@
 #include "jwt.h"
 
 #include "core_json.h"
-#include "../../../shared/c/b64/b64.h"
+#include "../../../../shared/c/b64/b64.h"
 #include "util/err.h"
 #include "util/str.h"
 

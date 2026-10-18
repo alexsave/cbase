@@ -1,6 +1,6 @@
 #include "uuid.h"
 
-#include "../../../shared/c/hex/hex.h"
+#include "../../../../shared/c/hex/hex.h"
 
 
 void cb_uuid_v4(char out[CB_UUID_LEN + 1]) {

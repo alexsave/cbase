@@ -8,11 +8,11 @@
 
 #include "util/err.h"
 #include "util/log.h"
-#include "../../shared/c/num_parse.h"
+#include "../../../../shared/c/num_parse.h"
 #include "util/clock.h"
 #include "realtime/realtime.h"
 #include "realtime/stream_mqtt.h"
-#include "../../shared/c/b64/b64.h"
+#include "../../../../shared/c/b64/b64.h"
 #include "net/http.h"
 #include "util/json.h"
 

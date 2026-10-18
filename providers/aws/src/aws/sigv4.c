@@ -10,7 +10,7 @@
 #include "sigv4.h"
 
 #include "util/err.h"
-#include "../../../shared/c/hex/hex.h"
+#include "../../../../../shared/c/hex/hex.h"
 
 #include <openssl/evp.h>
 #include <openssl/opensslv.h>

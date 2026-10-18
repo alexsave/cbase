@@ -9,7 +9,7 @@
 #include "aws_json.h"
 #include "util/err.h"
 #include "util/log.h"
-#include "../../../shared/c/num_parse.h"
+#include "../../../../../shared/c/num_parse.h"
 
 #include <errno.h>
 #include <netdb.h>

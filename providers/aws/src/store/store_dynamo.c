@@ -18,10 +18,10 @@
 #include "aws_json.h"
 #include "table.h"
 #include "util/clock.h"
-#include "../../../shared/c/hex/hex.h"
+#include "../../../../../shared/c/hex/hex.h"
 #include "util/log.h"
 #include "util/uuid.h"
-#include "../../../shared/c/rng.h"
+#include "../../../../../shared/c/rng.h"
 
 #include <fcntl.h>
 #include <stdatomic.h>
