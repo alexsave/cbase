@@ -14,7 +14,6 @@
 #include "realtime/stream_mqtt.h"
 #include "../../shared/c/b64/b64.h"
 #include "net/http.h"
-#include "util/bytea.h"
 #include "util/json.h"
 
 #include <ctype.h>
@@ -671,14 +670,6 @@ bool dw_get_n(cb_span item, const char *name, int64_t *out) {
     return attr(item, name, "N", &tok) && tok_n(tok, out);
 }
 
-bool dw_get_b(cb_span item, const char *name, uint8_t **out, size_t *len) {
-    *out = NULL;
-    *len = 0;
-    cb_span tok;
-    if (!attr(item, name, "B", &tok)) return true;
-    return tok_b(tok, out, len);
-}
-
 // ---- responses ----------------------------------------------------------------------------
 
 static void error_type(const char *body, size_t n, char *out, size_t cap) {
@@ -870,67 +861,6 @@ void dw_next_token(const char *body, size_t n, char *out, size_t cap) {
     if (!cb_json_get_str(body, n, "NextToken", out, cap)) out[0] = '\0';
 }
 
-// ---- the admin console's item text ---------------------------------------------------
-
-int dw_item_text(cb_span it, cb_buf *st, const char **names, const char **values, int cap) {
-    size_t noff[64], voff[64];
-    bool vnull[64];
-    int n = 0;
-    size_t pos = 0;
-    cb_span key, val;
-    if (cap > 64) cap = 64;
-    cb_buf_reset(st);
-    while (n < cap && dw_object_next(it, &pos, &key, &val)) {
-        size_t vpos = 0;
-        cb_span type, tok;
-        if (!dw_object_next(val, &vpos, &type, &tok)) return -1;
-        noff[n] = st->len;
-        char *tmp = malloc(key.n + 1);
-        if (!tmp || cb_json_unescape(key, tmp, key.n + 1) < 0) { free(tmp); return -1; }
-        cb_buf_puts(st, tmp);
-        cb_buf_putc(st, '\0');
-        free(tmp);
-        voff[n] = st->len;
-        vnull[n] = false;
-        if ((key_is(type, "S") || key_is(type, "N")) && tok.n >= 2 && tok.p[0] == '"') {
-            tmp = malloc(tok.n);
-            if (!tmp || cb_json_unescape(tok, tmp, tok.n) < 0) { free(tmp); return -1; }
-            cb_buf_puts(st, tmp);
-            free(tmp);
-        } else if (key_is(type, "B")) {
-            uint8_t *b;
-            size_t blen;
-            // Reuse the attribute reader on a one-member item.
-            cb_buf wrap;
-            cb_buf_init(&wrap);
-            cb_buf_puts(&wrap, "{\"v\":");
-            cb_buf_append(&wrap, val.p, val.n);
-            cb_buf_putc(&wrap, '}');
-            bool ok = dw_get_b(cb_span_of((const char *)wrap.p, wrap.len), "v", &b, &blen);
-            cb_buf_free(&wrap);
-            if (!ok) return -1;
-            char *hex = malloc(2 * blen + 3);
-            if (!hex) { free(b); return -1; }
-            cb_bytea_encode(b, blen, hex, 2 * blen + 3);
-            cb_buf_puts(st, hex);
-            free(hex);
-            free(b);
-        } else if (key_is(type, "NULL")) {
-            vnull[n] = true;
-        } else {
-            cb_buf_append(st, tok.p, tok.n);   // BOOL's literal, or a list or map as JSON
-        }
-        cb_buf_putc(st, '\0');
-        n++;
-    }
-    if (st->oom) return -1;
-    for (int i = 0; i < n; i++) {
-        names[i] = (const char *)st->p + noff[i];
-        values[i] = vnull[i] ? NULL : (const char *)st->p + voff[i];
-    }
-    return n;
-}
-
 // ---- the item layer (json_surface.h dw_iget ..., store/items.h) ------------------------------
 
 static void txn_begin(dw_req *r, cb_jw *w);
@@ -1005,18 +935,6 @@ static bool ux_iset(ux *u, const cb_av *v, cb_set_how how) {
     return true;
 }
 
-// Is a the same value as b (a scalar; a list is never shared)?
-static bool same_av(const cb_av *a, const cb_av *b) {
-    if (a->kind != b->kind || strcmp(a->name, b->name) != 0) return false;
-    switch (a->kind) {
-    case CB_AV_S: return strcmp(a->s ? a->s : "", b->s ? b->s : "") == 0;
-    case CB_AV_N: return a->n == b->n;
-    case CB_AV_BOOL: return a->b == b->b;
-    case CB_AV_B: return a->len == b->len && (a->len == 0 || memcmp(a->bytes, b->bytes, a->len) == 0);
-    default: return false;
-    }
-}
-
 // The condition, its names and values registered in u, into out. false on a
 // clause that cannot be spelled. A clause comparing an attribute with the
 // very value an update sets it to reuses the set's ":<attribute>" (a rating's
@@ -1028,7 +946,7 @@ static bool icond(ux *u, const cb_iwrite *x, cb_buf *out) {
         snprintf(vn, sizeof vn, ":c%d", i);
         bool shared = false;
         for (int j = 0; x->op == CB_IW_UPDATE && c->v.name && j < x->n_sets && !shared; j++)
-            if (x->sets[j].how == CB_SET_TO && same_av(&x->sets[j].v, &c->v)) {
+            if (x->sets[j].how == CB_SET_TO && strcmp(x->sets[j].v.name, c->v.name) == 0 && cb_av_same(&x->sets[j].v, &c->v)) {
                 snprintf(vn, sizeof vn, ":%s", c->v.name);
                 shared = true;
             }
@@ -1284,14 +1202,8 @@ bool dw_item_read(cb_span item, cb_item *out) {
             a.b = tv.n == 4;
         } else if (key_is(tk, "B")) {
             a.kind = CB_AV_B;
-            char *b64 = malloc(tv.n);
-            int n = b64 ? cb_json_unescape(tv, b64, tv.n) : -1;
-            bytes = n >= 0 ? malloc((size_t)n + 1) : NULL;
-            int m = bytes ? b64_decode(b64, (size_t)n, bytes, (size_t)n + 1) : -1;
-            free(b64);
-            ok = m >= 0;
+            ok = tok_b(tv, &bytes, &a.len);
             a.bytes = bytes;
-            a.len = ok ? (size_t)m : 0;
         } else if (key_is(tk, "L")) {
             // A list of strings (snapshots' player_ids); anything else in it is refused.
             a.kind = CB_AV_SL;

@@ -937,6 +937,50 @@ static void games_needing_bots_windows(void) {
 
 // ---- ratings ---------------------------------------------------------------------------
 
+static bool has_attr(cb_store *s, const char *pk, const char *sk, const char *name);
+
+// rating_reindex on both backends (the item layer made it real on SQLite in
+// stage 6; written to hold the coverage floor, docs/PLATFORM.md section 9):
+// a row in the leaderboard index with no games leaves it, a played row at an
+// old key gets the current one, and a second run finds nothing to do.
+static void ratings_reindexed(void) {
+    cb_store *s = open_fresh();
+    cb_user_row a = mkuser("a@x.io", "A", 1), b = mkuser("b@x.io", "B", 1);
+    CB_STORE_CALL(s, user_create, &a);
+    CB_STORE_CALL(s, user_create, &b);
+    char pa[64], pb[64];
+    snprintf(pa, sizeof pa, "USER#%s", a.id);
+    snprintf(pb, sizeof pb, "USER#%s", b.id);
+    // a: no games, yet listed (an old layout listed every row); b: played, at an old key.
+    const cb_av ra[] = { CB_AVS("gsi2pk", "RATINGS"), CB_AVS("gsi2sk", "old"), CB_AVS("user_id", a.id),
+                         CB_AVN("elo_rating", 1000), CB_AVN("games_played", 0) };
+    const cb_av rb[] = { CB_AVS("gsi2pk", "RATINGS"), CB_AVS("gsi2sk", "old"), CB_AVS("user_id", b.id),
+                         CB_AVN("elo_rating", 1100), CB_AVN("games_played", 3) };
+    cb_iwrite wa = { .op = CB_IW_PUT, .key = { pa, "RATING" }, .attrs = ra, .n_attrs = 5 };
+    cb_iwrite wb = { .op = CB_IW_PUT, .key = { pb, "RATING" }, .attrs = rb, .n_attrs = 5 };
+    T_EQ_INT(s->ops->item_write(s, &wa, NULL), CB_OK);
+    T_EQ_INT(s->ops->item_write(s, &wb, NULL), CB_OK);
+    cb_rating_row ta = { .elo_rating = 1000, .games_played = 0 }, tb = { .elo_rating = 1100, .games_played = 3 };
+    memcpy(ta.user_id, a.id, sizeof ta.user_id);
+    memcpy(tb.user_id, b.id, sizeof tb.user_id);
+    T_EQ_INT(CB_STORE_CALL(s, rating_reindex, &ta), CB_OK);
+    T_EQ_INT(CB_STORE_CALL(s, rating_reindex, &tb), CB_OK);
+    T_CHECK(!has_attr(s, pa, "RATING", "gsi2pk"));
+    cb_item it;
+    cb_item_init(&it);
+    char sk[96] = "";
+    T_EQ_INT(s->ops->item_get(s, (cb_ikey){ pb, "RATING" }, true, &it), CB_OK);
+    T_CHECK(cb_item_s(&it, "gsi2sk", sk, sizeof sk));
+    T_CHECK(strncmp(sk, "E#", 2) == 0 && strstr(sk, b.id) != NULL);
+    cb_item_free(&it);
+    T_EQ_INT(CB_STORE_CALL(s, rating_reindex, &ta), CB_E_CONFLICT);
+    T_EQ_INT(CB_STORE_CALL(s, rating_reindex, &tb), CB_E_CONFLICT);
+    // A row a commit moved meanwhile (another elo) is left to the commit.
+    tb.elo_rating = 1200;
+    T_EQ_INT(CB_STORE_CALL(s, rating_reindex, &tb), CB_E_CONFLICT);
+    cb_store_close(s);
+}
+
 static void ratings_applied_by_commit(void) {
     cb_store *s = open_fresh();
     cb_user_row a = mkuser("a@x.io", "A", 1), b = mkuser("b@x.io", "B", 1);
@@ -1126,6 +1170,70 @@ static void snapshot_set_extras_rewrites_only_extras(void) {
     memset(&c, 0, sizeof c);
     T_EQ_INT(CB_STORE_CALL(s, snapshots_query, &q, copy_snap, &c), 1);
     T_EQ_INT(c.row.extras_len, 0);
+    cb_snapshot_row_free(&c.row);
+    cb_store_close(s);
+}
+
+// DATA SAFETY (account deletion's promise: no stored replay names a deleted
+// player). A player's copy of a replay is a pointer that holds no moves,
+// extras or players; one written before the pointers holds the whole replay,
+// and redacting the replay slims it, in the same write.
+static bool has_attr(cb_store *s, const char *pk, const char *sk, const char *name) {
+    cb_item it;
+    cb_item_init(&it);
+    cb_av v;
+    bool has = s->ops->item_get(s, (cb_ikey){ pk, sk }, true, &it) == CB_OK && cb_item_get(&it, name, &v);
+    cb_item_free(&it);
+    return has;
+}
+
+static void replay_copies_hold_no_names(void) {
+    cb_store *s = open_fresh();
+    uint8_t mv[4] = { 1, 2, 3, 4 }, ex[3] = { 5, 6, 7 }, ex2[2] = { 9, 9 };
+    cb_snapshot_row sn = { .n_players = 2, .moves = mv, .moves_len = 4, .extras = ex, .extras_len = 3, .created_at = 42 };
+    cb_uuid_v4(sn.id);
+    snprintf(sn.game_id, sizeof sn.game_id, "nm0001");
+    for (int i = 0; i < 2; i++) cb_uuid_v4(sn.player_ids[i]);
+    T_EQ_INT(CB_STORE_CALL(s, snapshot_put, &sn), CB_OK);
+    char pk[64], sk0[64], sk1[64];
+    snprintf(pk, sizeof pk, "SNAP#%s", sn.id);
+    snprintf(sk0, sizeof sk0, "PLAYER#%s", sn.player_ids[0]);
+    snprintf(sk1, sizeof sk1, "PLAYER#%s", sn.player_ids[1]);
+    T_CHECK(has_attr(s, pk, "SNAP", "extras"));
+    T_CHECK(has_attr(s, pk, "SNAP", "moves"));
+    static const char *const NOT_ON_A_POINTER[] = { "extras", "moves", "player_ids", "gsi1pk" };
+    for (int i = 0; i < 4; i++) {
+        T_CHECK(!has_attr(s, pk, sk0, NOT_ON_A_POINTER[i]));
+        T_CHECK(!has_attr(s, pk, sk1, NOT_ON_A_POINTER[i]));
+    }
+    T_CHECK(has_attr(s, pk, sk0, "game_id"));
+
+    // A copy as the store wrote it before the pointers: the whole replay.
+    char g2[64], g2s[64], g1[64];
+    snprintf(g2, sizeof g2, "PLAYER#%s", sn.player_ids[1]);
+    snprintf(g2s, sizeof g2s, "000000000000042#%s", sn.id);
+    snprintf(g1, sizeof g1, "GAMESNAPS#%s", sn.game_id);
+    const char *players[2] = { sn.player_ids[0], sn.player_ids[1] };
+    const cb_av fat[] = { CB_AVS("gsi1pk", g1), CB_AVS("gsi1sk", g2s), CB_AVS("gsi2pk", g2), CB_AVS("gsi2sk", g2s),
+                          CB_AVS("id", sn.id), CB_AVS("game_id", sn.game_id), CB_AVSL("player_ids", players, 2),
+                          CB_AVB("moves", mv, 4), CB_AVB("extras", ex, 3), CB_AVN("created_at", 42) };
+    cb_iwrite w = { .op = CB_IW_PUT, .key = { pk, sk1 }, .attrs = fat, .n_attrs = 10 };
+    T_EQ_INT(s->ops->item_write(s, &w, NULL), CB_OK);
+    T_CHECK(has_attr(s, pk, sk1, "extras"));
+    // Read compatibly: the viewer still gets the replay, from the replay itself.
+    snapcopy c = { 0 };
+    cb_snapshot_query q = { .viewer_id = sn.player_ids[1], .id = sn.id };
+    T_EQ_INT(CB_STORE_CALL(s, snapshots_query, &q, copy_snap, &c), 1);
+    T_EQ_MEM(c.row.extras, c.row.extras_len, ex, 3);
+    cb_snapshot_row_free(&c.row);
+    // Redacted: the replay's extras are the new ones, and the fat copy is a pointer.
+    T_EQ_INT(CB_STORE_CALL(s, snapshot_set_extras, sn.id, ex2, sizeof ex2), CB_OK);
+    for (int i = 0; i < 4; i++) T_CHECK(!has_attr(s, pk, sk1, NOT_ON_A_POINTER[i]));
+    T_CHECK(has_attr(s, pk, sk1, "gsi2pk"));
+    memset(&c, 0, sizeof c);
+    T_EQ_INT(CB_STORE_CALL(s, snapshots_query, &q, copy_snap, &c), 1);
+    T_EQ_MEM(c.row.extras, c.row.extras_len, ex2, 2);
+    T_EQ_MEM(c.row.moves, c.row.moves_len, mv, 4);
     cb_snapshot_row_free(&c.row);
     cb_store_close(s);
 }
@@ -1598,9 +1706,11 @@ int main(void) {
     T_RUN(games_needing_bots_windows);
     T_RUN(bots_idle_semantics);
     T_RUN(ratings_applied_by_commit);
+    T_RUN(ratings_reindexed);
     T_RUN(snapshots_query_shapes);
     T_RUN(snapshot_round_trip);
     T_RUN(snapshot_set_extras_rewrites_only_extras);
+    T_RUN(replay_copies_hold_no_names);
     T_RUN(chat_newest_oldest_first);
     if (tsb_dynamo()) T_RUN(admin_reads_dynamo);
     else T_RUN(admin_reads);

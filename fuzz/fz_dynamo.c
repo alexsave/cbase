@@ -217,20 +217,27 @@ static void same_walks(cb_span s) {
 // The attribute readers on one item against the old ones: the same answer.
 // (The row decoders over JSON, which this held against their predecessors,
 // went in stage 6: rows are read from cb_item now, items_of below.)
+// A Binary attribute the item layer read is the old reader's bytes.
 static void same_items(cb_span it) {
     same_walks(it);
+    cb_item ii;
+    cb_item_init(&ii);
+    bool read = dw_item_read(it, &ii);
     static const char *const names[] = { "pk", "sk", "id", "version", "state", "needs_bots", "message", "n", "" };
     for (size_t i = 0; i < sizeof names / sizeof names[0]; i++) {
         char sa[64], sb[64];
         int64_t na = 0, nb = 0;
-        uint8_t *pa, *pb;
-        size_t la, lb;
         FZ_CHECK(dw_get_s(it, names[i], sa, sizeof sa) == ref_get_s(it, names[i], sb, sizeof sb));
         FZ_CHECK(dw_get_n(it, names[i], &na) == ref_get_n(it, names[i], &nb) && na == nb);
-        FZ_CHECK(dw_get_b(it, names[i], &pa, &la) == ref_get_b(it, names[i], &pb, &lb) && same_bytes(pa, la, pb, lb));
-        free(pa);
-        free(pb);
+        cb_av v;
+        if (read && cb_item_get(&ii, names[i], &v) && v.kind == CB_AV_B) {
+            uint8_t *pb;
+            size_t lb;
+            FZ_CHECK(ref_get_b(it, names[i], &pb, &lb) && same_bytes(v.bytes, v.len, pb, lb));
+            free(pb);
+        }
     }
+    cb_item_free(&ii);
 }
 
 // The response readers against cb_json_find, on a valid document.
@@ -297,16 +304,9 @@ static void items_of(cb_span item) {
     cb_item_free(&ii);
     char pk[CB_ITEM_KEY_MAX], sk[CB_ITEM_KEY_MAX];
     (void)dw_item_keys(item, pk, sizeof pk, sk, sizeof sk);
-    cb_buf st; cb_buf_init(&st);
-    const char *names[64], *values[64];
-    int n = dw_item_text(item, &st, names, values, 64);
-    FZ_CHECK(n <= 64);
-    for (int i = 0; i < n; i++) { (void)strlen(names[i]); if (values[i]) (void)strlen(values[i]); }
-    cb_buf_free(&st);
-    char sv[64]; int64_t nv; uint8_t *bp = NULL; size_t bl = 0;
+    char sv[64]; int64_t nv;
     (void)dw_get_s(item, "pk", sv, sizeof sv);
     (void)dw_get_n(item, "version", &nv);
-    if (dw_get_b(item, "state", &bp, &bl)) free(bp);
 }
 
 static void walk(cb_span arr) {

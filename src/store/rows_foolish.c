@@ -1377,8 +1377,18 @@ static void snapshot_attrs(attrs *x, strs *z, const cb_snapshot_row *s, const ch
     add(x, CB_AVN("created_at", s->created_at));
 }
 
-// The replay and a copy per player, in one transaction (so a reader never
-// sees half of one), the main item refusing a reused id.
+// THE REPLAY AND ITS POINTERS (Alex, 2026-10-18). SNAP#<id> SNAP is the
+// replay: the only item holding the moves, the extras (the seats' names) and
+// player_ids, listed on GSI1 GAMESNAPS#<game>. Each player's SNAP#<id>
+// PLAYER#<user> is a pointer listed on GSI2 PLAYER#<user> by date: the id,
+// the game and the date, nothing else, so a game end writes the replay once
+// and N small items, and no copy ever holds a name. "My replays" is a Query
+// of the pointers and one BatchGetItem of the replays (snapshots_query).
+// Copies written before the change hold the whole replay; a reader ignores
+// what a pointer should not have, and redaction slims them (set_extras).
+
+// The replay and a pointer per player, in one transaction (so a reader never
+// sees half of one), the replay refusing a reused id.
 int cb_rows_snapshot_put(cb_store *s, const cb_snapshot_row *sn) {
     if (sn->n_players < 0 || sn->n_players > CB_MAX_SEATS) return CB_E_INVALID;
     batch *b = calloc(1, sizeof *b);
@@ -1398,7 +1408,9 @@ int cb_rows_snapshot_put(cb_store *s, const cb_snapshot_row *sn) {
         strs *z = bz_next(b);
         add(a, CB_AVS("gsi2pk", keep(z, k(g2, sizeof g2, "PLAYER#", sn->player_ids[i]))));
         add(a, CB_AVS("gsi2sk", keep(z, tsk(ts, sizeof ts, sn->created_at, sn->id))));
-        snapshot_attrs(a, bz_next(b), sn, players);
+        add(a, CB_AVS("id", sn->id));
+        add(a, CB_AVS("game_id", sn->game_id));
+        add(a, CB_AVN("created_at", sn->created_at));
         b->w[b->n] = (cb_iwrite){ .op = CB_IW_PUT, .key = { pkk, keep(bz_next(b), k(sk, sizeof sk, "PLAYER#", sn->player_ids[i])) },
                                   .attrs = a->a, .n_attrs = a->n };
         b->n++;
@@ -1409,57 +1421,115 @@ int cb_rows_snapshot_put(cb_store *s, const cb_snapshot_row *sn) {
     return rc == CB_E_CONFLICT ? (failed == 0 ? CB_E_CONFLICT : CB_E_DB) : rc;
 }
 
+// The viewer's pointers, in the query's order, narrowed by the pointer's own
+// id and game (the replay confirms both), up to the query's limit.
 typedef struct {
     const cb_snapshot_query *q;
-    int                      n;
-    cb_snapshot_fn           fn;
-    void                    *ud;
-    bool                     bad;
-} snaps_walk;
+    char (*key)[KB];   // each pointer's replay pk, SNAP#<id>
+    int    n, cap;
+    bool   oom;
+} pointers;
 
-static bool snaps_step(const cb_item *it, void *ud) {
-    snaps_walk *w = ud;
-    cb_snapshot_row sn;
-    if (!cb_rows_snapshot_of(it, &sn)) { w->bad = true; return true; }
-    bool match = (!w->q->game_id || strcmp(sn.game_id, w->q->game_id) == 0) && (!w->q->id || strcmp(sn.id, w->q->id) == 0);
-    bool more = true;
-    if (match) {
-        w->n++;
-        more = w->fn(&sn, w->ud) && (w->q->limit <= 0 || w->n < w->q->limit);
+static bool pointer_step(const cb_item *it, void *ud) {
+    pointers *p = ud;
+    char id[KB], gid[CB_GAME_ID_MAX + 1] = "";
+    if (!s_of(it, "id", id, sizeof id)) return true;
+    s_of(it, "game_id", gid, sizeof gid);
+    if ((p->q->id && strcmp(id, p->q->id) != 0) || (p->q->game_id && strcmp(gid, p->q->game_id) != 0)) return true;
+    if (p->n == p->cap) {
+        int cap = p->cap ? p->cap * 2 : 16;
+        char (*t)[KB] = realloc(p->key, (size_t)cap * sizeof *t);
+        if (!t) { p->oom = true; return false; }
+        p->key = t;
+        p->cap = cap;
     }
-    cb_snapshot_row_free(&sn);
-    return more;
+    k(p->key[p->n++], KB, "SNAP#", id);
+    return p->q->limit <= 0 || p->n < p->q->limit;
+}
+
+typedef struct {
+    cb_snapshot_row *rows;
+    bool            *got;
+    bool             bad;
+} replays;
+
+static bool replay_step(int i, const cb_item *it, void *ud) {
+    replays *r = ud;
+    if (!cb_rows_snapshot_of(it, &r->rows[i])) { r->bad = true; return true; }
+    r->got[i] = true;
+    return true;
 }
 
 int cb_rows_snapshots_query(cb_store *s, const cb_snapshot_query *q, cb_snapshot_fn fn, void *ud) {
     if (!q || !q->viewer_id || !*q->viewer_id) return CB_E_INVALID;
     char g2[KB];
-    snaps_walk w = { .q = q, .fn = fn, .ud = ud };
+    pointers p = { .q = q };
     int rc = query(s, (cb_iquery){ .index = 2, .pk = k(g2, sizeof g2, "PLAYER#", q->viewer_id), .forward = !q->newest_first },
-                   snaps_step, &w);
-    return rc == CB_OK ? w.n : rc;
+                   pointer_step, &p);
+    if (rc == CB_OK && p.oom) rc = CB_E_NOMEM;
+    cb_ikey *keys = rc == CB_OK ? malloc((size_t)(p.n ? p.n : 1) * sizeof *keys) : NULL;
+    replays r = { .rows = rc == CB_OK ? calloc((size_t)(p.n ? p.n : 1), sizeof *r.rows) : NULL,
+                  .got = rc == CB_OK ? calloc((size_t)(p.n ? p.n : 1), sizeof *r.got) : NULL };
+    if (rc == CB_OK && (!keys || !r.rows || !r.got)) rc = CB_E_NOMEM;
+    for (int i = 0; rc == CB_OK && i < p.n; i++) keys[i] = (cb_ikey){ p.key[i], "SNAP" };
+    if (rc == CB_OK && p.n) rc = s->ops->item_batch_get(s, keys, p.n, NULL, 0, replay_step, &r);
+    // In the pointers' order; a pointer whose replay is gone, or whose game
+    // the replay no longer names (its game deleted), hands out nothing.
+    int n = 0;
+    bool more = true;
+    for (int i = 0; rc == CB_OK && more && i < p.n; i++) {
+        if (!r.got[i]) continue;
+        const cb_snapshot_row *sn = &r.rows[i];
+        if ((q->id && strcmp(sn->id, q->id) != 0) || (q->game_id && strcmp(sn->game_id, q->game_id) != 0)) continue;
+        n++;
+        more = fn(sn, ud);
+    }
+    for (int i = 0; r.rows && i < p.n; i++)
+        if (r.got[i]) cb_snapshot_row_free(&r.rows[i]);
+    free(r.rows);
+    free(r.got);
+    free(keys);
+    free(p.key);
+    if (rc == CB_OK && r.bad) CB_WARN(MOD, "a replay of %s does not decode", q->viewer_id);
+    return rc == CB_OK ? n : rc;
 }
 
-// Every copy of the replay (SNAP and one PLAYER# per player), read
-// consistently, then rewritten in one transaction: a reader never sees one
-// copy redacted and another not.
+// The replay's extras replaced: one conditional UpdateItem of the replay
+// alone, since a pointer holds no name. A copy written before the pointers
+// (THE REPLAY AND ITS POINTERS) still holds the whole replay, names and all,
+// so when the replay has one, every such copy is slimmed to a pointer in the
+// same transaction: a reader never sees the replay redacted and a copy not.
+static bool fat_step(const cb_item *it, void *ud) {
+    cb_av v;
+    char sk[KB];
+    if (!s_of(it, CB_ITEM_SK, sk, sizeof sk) || strcmp(sk, "SNAP") == 0) return true;
+    if (!cb_item_get(it, "extras", &v) && !cb_item_get(it, "moves", &v) && !cb_item_get(it, "player_ids", &v)) return true;
+    return collect_key(it, ud);
+}
+
 int cb_rows_snapshot_set_extras(cb_store *s, const char *id, const uint8_t *extras, size_t extras_len) {
     char pk[KB];
-    keylist keys = { 0 };
-    int rc = query(s, (cb_iquery){ .pk = k(pk, sizeof pk, "SNAP#", id), .forward = true }, collect_key, &keys);
-    if (rc == CB_OK && keys.oom) rc = CB_E_NOMEM;
-    if (rc == CB_OK && keys.n == 0) rc = CB_E_NOT_FOUND;
-    if (rc == CB_OK && keys.n > CB_ITEM_TXN_MAX) rc = CB_E_FULL;
+    k(pk, sizeof pk, "SNAP#", id);
+    keylist fat = { 0 };
+    int rc = query(s, (cb_iquery){ .pk = pk, .sk_prefix = "PLAYER#", .forward = true }, fat_step, &fat);
+    if (rc == CB_OK && fat.oom) rc = CB_E_NOMEM;
+    if (rc == CB_OK && fat.n + 1 > CB_ITEM_TXN_MAX) rc = CB_E_FULL;
     if (rc == CB_OK) {
         cb_iwrite w[CB_ITEM_TXN_MAX];
         const cb_iset st[] = { { CB_AVB("extras", extras, extras_len), extras_len ? CB_SET_TO : CB_SET_REMOVE } };
-        for (int i = 0; i < keys.n; i++)
-            w[i] = (cb_iwrite){ .op = CB_IW_UPDATE, .key = { keys.text[i][0], keys.text[i][1] }, .sets = st, .n_sets = 1,
-                                .cond = { CB_IF_EXISTS }, .n_cond = 1 };
-        rc = s->ops->item_txn(s, w, keys.n, NULL, NULL);
+        w[0] = (cb_iwrite){ .op = CB_IW_UPDATE, .key = { pk, "SNAP" }, .sets = st, .n_sets = 1, .cond = { CB_IF_EXISTS }, .n_cond = 1 };
+        static const cb_iset slim[] = { { CB_AVS("extras", ""), CB_SET_REMOVE },
+                                        { CB_AVS("moves", ""), CB_SET_REMOVE },
+                                        { CB_AVS("player_ids", ""), CB_SET_REMOVE },
+                                        { CB_AVS(CB_ITEM_GSI1PK, ""), CB_SET_REMOVE },
+                                        { CB_AVS(CB_ITEM_GSI1SK, ""), CB_SET_REMOVE } };
+        for (int i = 0; i < fat.n; i++)
+            w[1 + i] = (cb_iwrite){ .op = CB_IW_UPDATE, .key = { fat.text[i][0], fat.text[i][1] }, .sets = slim, .n_sets = 5,
+                                    .cond = { CB_IF_EXISTS }, .n_cond = 1 };
+        rc = fat.n ? s->ops->item_txn(s, w, 1 + fat.n, NULL, NULL) : s->ops->item_write(s, &w[0], NULL);
         if (rc == CB_E_CONFLICT) rc = CB_E_NOT_FOUND;
     }
-    keylist_free(&keys);
+    keylist_free(&fat);
     return rc;
 }
 

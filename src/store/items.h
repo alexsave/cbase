@@ -89,6 +89,9 @@ void cb_item_reset(cb_item *it);
 void cb_item_free(cb_item *it);
 // Adds one attribute (copied). false when the item is full or out of memory.
 bool cb_item_add(cb_item *it, const cb_av *v);
+// Do a and b hold the same value (the kind and the value; the names are not
+// compared)? A condition's comparison, on SQLite and in DynamoDB's spelling.
+bool cb_av_same(const cb_av *a, const cb_av *b);
 // The attribute `name`: true and *out (its strings point into the item, valid
 // until it changes), or false when it is absent.
 bool cb_item_get(const cb_item *it, const char *name, cb_av *out);

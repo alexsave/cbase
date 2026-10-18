@@ -28,6 +28,22 @@ static size_t put_str(cb_buf *b, const void *p, size_t n) {
     return off;
 }
 
+bool cb_av_same(const cb_av *a, const cb_av *b) {
+    if (a->kind != b->kind) return false;
+    switch (a->kind) {
+    case CB_AV_S: return strcmp(a->s ? a->s : "", b->s ? b->s : "") == 0;
+    case CB_AV_N: return a->n == b->n;
+    case CB_AV_BOOL: return a->b == b->b;
+    case CB_AV_B: return a->len == b->len && (!a->len || memcmp(a->bytes, b->bytes, a->len) == 0);
+    case CB_AV_SL:
+        if (a->n_list != b->n_list) return false;
+        for (int i = 0; i < a->n_list; i++)
+            if (strcmp(a->list[i], b->list[i]) != 0) return false;
+        return true;
+    }
+    return false;
+}
+
 bool cb_item_add(cb_item *it, const cb_av *v) {
     if (it->n >= CB_ITEM_ATTRS || !v->name) return false;
     int i = it->n;

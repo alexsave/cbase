@@ -180,16 +180,7 @@ void dw_next_token(const char *body, size_t n, char *out, size_t cap);
 // Attribute readers over one item (a map of name -> typed value).
 bool dw_get_s(cb_span item, const char *name, char *out, size_t cap);
 bool dw_get_n(cb_span item, const char *name, int64_t *out);
-// A Binary attribute, base64-decoded into a malloc'd buffer (*out NULL and
-// *len 0 when absent). false: present but not valid base64, or no memory.
-bool dw_get_b(cb_span item, const char *name, uint8_t **out, size_t *len);
 
-// The item rendered for the admin console: each attribute as name and text
-// (S as is, N as its digits, B as "\x" hex, BOOL as true/false, NULL as a NULL
-// value, anything else as its JSON). The strings live in *storage until it is
-// freed; names[i] and values[i] point into it. Returns the attribute count,
-// at most cap, or -1 when the item does not parse.
-int dw_item_text(cb_span item, cb_buf *storage, const char **names, const char **values, int cap);
 
 // ---- the requests ---------------------------------------------------------------------
 

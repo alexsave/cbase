@@ -464,21 +464,39 @@ static bool see_snap(const cb_snapshot_row *r, void *ud) {
     return true;
 }
 
-#define SNAP_ITEM(id, game) \
-    "{\"pk\":{\"S\":\"PLAYERSNAPS#" U1 "\"},\"id\":{\"S\":\"" id "\"},\"game_id\":{\"S\":\"" game "\"}," \
+// A player's pointer (SNAP#<id> PLAYER#<user>: the id, the game, the date)
+// and the replay it points at (SNAP#<id> SNAP: the only item with the moves).
+#define SNAP_POINTER(id, game) \
+    "{\"pk\":{\"S\":\"SNAP#" id "\"},\"sk\":{\"S\":\"PLAYER#" U1 "\"},\"id\":{\"S\":\"" id "\"}," \
+    "\"game_id\":{\"S\":\"" game "\"},\"created_at\":{\"N\":\"3\"}}"
+#define SNAP_MAIN(id, game) \
+    "{\"pk\":{\"S\":\"SNAP#" id "\"},\"sk\":{\"S\":\"SNAP\"},\"id\":{\"S\":\"" id "\"},\"game_id\":{\"S\":\"" game "\"}," \
     "\"player_ids\":{\"L\":[{\"S\":\"" U1 "\"},{\"S\":\"" U2 "\"}]},\"moves\":{\"B\":\"AQI=\"},\"created_at\":{\"N\":\"3\"}}"
+#define SNAP_BATCH(...) "{\"Responses\":{\"cbase\":[" __VA_ARGS__ "]},\"UnprocessedKeys\":{}}"
+
+static int count_of(const char *hay, const char *needle) {
+    int n = 0;
+    for (const char *p = hay; (p = strstr(p, needle)) != NULL; p++) n++;
+    return n;
+}
 
 static void snapshots_put_and_query(void) {
-    static const char SNAPS[] = "{\"Items\":[" SNAP_ITEM("s1", "aaaaaa") "," SNAP_ITEM("s2", "bbbbbb")
-                                ",{\"pk\":{\"S\":\"x\"}}]}";
+    static const char POINTERS[] = "{\"Items\":[" SNAP_POINTER("s1", "aaaaaa") "," SNAP_POINTER("s2", "bbbbbb")
+                                   ",{\"pk\":{\"S\":\"x\"}}]}";
     static const step steps[] = {
         { "TransactWriteItems", "PLAYER#" U2, 200, "{}" },
         { "TransactWriteItems", NULL, 400, CANCEL_0 },
         { "TransactWriteItems", NULL, 400, VALIDATION },
-        { "Query", "PLAYER#" U1, 200, SNAPS },
-        { "Query", NULL, 200, SNAPS },
-        { "Query", "\"ScanIndexForward\":false", 200, SNAPS },
+        { "Query", "PLAYER#" U1, 200, POINTERS },
+        { "BatchGetItem", "\"S\":\"SNAP\"", 200, SNAP_BATCH(SNAP_MAIN("s2", "bbbbbb") "," SNAP_MAIN("s1", "aaaaaa")) },
+        { "Query", NULL, 200, POINTERS },
+        { "BatchGetItem", "SNAP#s2", 200, SNAP_BATCH(SNAP_MAIN("s2", "bbbbbb")) },
+        { "Query", "\"ScanIndexForward\":false", 200, POINTERS },
+        { "BatchGetItem", "SNAP#s1", 200, SNAP_BATCH(SNAP_MAIN("s1", "aaaaaa")) },
         { "Query", NULL, 400, VALIDATION },
+        // The pointer still names the game; its replay does not (the game was deleted).
+        { "Query", NULL, 200, POINTERS },
+        { "BatchGetItem", "SNAP#s1", 200, SNAP_BATCH(SNAP_MAIN("s1", "")) },
     };
     RUN(steps, s);
     uint8_t mv[2] = { 1, 2 };
@@ -486,6 +504,10 @@ static void snapshots_put_and_query(void) {
     snprintf(r.player_ids[0], sizeof r.player_ids[0], U1);
     snprintf(r.player_ids[1], sizeof r.player_ids[1], U2);
     T_EQ_INT(CB_STORE_CALL(s, snapshot_put, &r), CB_OK);
+    // The replay and two pointers: only the replay holds the moves and the players.
+    T_EQ_INT(count_of(sc_.bodies[0], "\"Put\""), 3);
+    T_EQ_INT(count_of(sc_.bodies[0], "\"moves\""), 1);
+    T_EQ_INT(count_of(sc_.bodies[0], "\"player_ids\""), 1);
     T_EQ_INT(CB_STORE_CALL(s, snapshot_put, &r), CB_E_CONFLICT);
     T_EQ_INT(CB_STORE_CALL(s, snapshot_put, &r), CB_E_DB);
     r.n_players = 9;
@@ -493,6 +515,8 @@ static void snapshots_put_and_query(void) {
     snaps_seen w = { 0 };
     cb_snapshot_query q = { .viewer_id = U1 };
     T_EQ_INT(CB_STORE_CALL(s, snapshots_query, &q, see_snap, &w), 2);
+    T_EQ_STR(w.ids[0], "s1");   // the pointers' order, not the batch's
+    T_EQ_STR(w.ids[1], "s2");
     T_EQ_INT(w.players, 2);
     memset(&w, 0, sizeof w);
     q.game_id = "bbbbbb";
@@ -502,6 +526,9 @@ static void snapshots_put_and_query(void) {
     cb_snapshot_query q2 = { .viewer_id = U1, .id = "s1", .limit = 1, .newest_first = true };
     T_EQ_INT(CB_STORE_CALL(s, snapshots_query, &q2, see_snap, &w), 1);
     T_EQ_INT(CB_STORE_CALL(s, snapshots_query, &q2, see_snap, &w), CB_E_DB);
+    memset(&w, 0, sizeof w);
+    q.game_id = "aaaaaa";
+    T_EQ_INT(CB_STORE_CALL(s, snapshots_query, &q, see_snap, &w), 0);
     cb_snapshot_query none = { .viewer_id = "" };
     T_EQ_INT(CB_STORE_CALL(s, snapshots_query, &none, see_snap, &w), CB_E_INVALID);
     T_EQ_INT(sc_.at, sc_.n);

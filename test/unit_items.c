@@ -216,10 +216,36 @@ static void shapes_ignore_what_an_id_looks_like(void) {
     cb_buf_free(&other);
 }
 
+// THE PROOF'S CAPTURE (data safety: what `make check-dynamo` compares with
+// the golden): with CBASE_DYNAMO_CAPTURE set, every request the DynamoDB store
+// sends is appended to the file as its shape lines.
+static char g_capture[400];
+
+static void the_capture_records_every_request(void) {
+    FILE *f = fopen(g_capture, "r");
+    T_CHECK(f != NULL);
+    if (!f) return;
+    char line[512];
+    int puts = 0, checks = 0, queries = 0;
+    while (fgets(line, sizeof line, f)) {
+        puts += strncmp(line, "Txn.Put ", 8) == 0;
+        checks += strncmp(line, "Txn.ConditionCheck ", 19) == 0;
+        queries += strncmp(line, "Query ", 6) == 0;
+    }
+    fclose(f);
+    T_EQ_INT(puts, 1);
+    T_EQ_INT(checks, 1);
+    T_EQ_INT(queries, 1);
+}
+
 int main(void) {
     if (tp_tempdir(g_dir, sizeof g_dir) != 0) return 1;
+    // Set before the first DynamoDB request (the store reads it once).
+    snprintf(g_capture, sizeof g_capture, "%s/capture.txt", g_dir);
+    setenv("CBASE_DYNAMO_CAPTURE", g_capture, 1);
     T_RUN(sqlite_txn_and_query);
     T_RUN(dynamo_txn_and_query);
+    T_RUN(the_capture_records_every_request);
     T_RUN(records_and_reads);
     T_RUN(shapes_ignore_what_an_id_looks_like);
     char cmd[300];

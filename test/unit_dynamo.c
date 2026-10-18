@@ -851,43 +851,51 @@ static void flow_chat_order(void) {
     cb_store_close(s);
 }
 
-// Account deletion rewrites a replay's extras on EVERY copy (the SNAP item and
-// each player's PLAYER# item) in one transaction, read consistently first; a
-// replay with no items is gone, and so is one that vanished under the write.
+// Account deletion rewrites a replay's extras on the replay alone (SNAP#<id>
+// SNAP; a pointer holds no name): one conditional UpdateItem, a replay that
+// is gone answering NOT_FOUND. A copy written before the pointers holds the
+// whole replay, names and all: the replay's copies are read consistently
+// first, and every fat one is slimmed to a pointer in the same transaction.
 static void flow_snapshot_set_extras(void) {
-    static const char ITEMS[] =
+    static const char FAT[] =
         "{\"Items\":["
-        "{\"pk\":{\"S\":\"SNAP#" U2 "\"},\"sk\":{\"S\":\"PLAYER#" U1 "\"},\"id\":{\"S\":\"" U2 "\"}},"
-        "{\"pk\":{\"S\":\"SNAP#" U2 "\"},\"sk\":{\"S\":\"SNAP\"},\"id\":{\"S\":\"" U2 "\"}}]}";
+        "{\"pk\":{\"S\":\"SNAP#" U2 "\"},\"sk\":{\"S\":\"PLAYER#" U1 "\"},\"id\":{\"S\":\"" U2 "\"},"
+        "\"moves\":{\"B\":\"AQI=\"},\"extras\":{\"B\":\"AgFYAA==\"}}]}";
+    static const char SLIM[] =
+        "{\"Items\":["
+        "{\"pk\":{\"S\":\"SNAP#" U2 "\"},\"sk\":{\"S\":\"PLAYER#" U1 "\"},\"id\":{\"S\":\"" U2 "\"},"
+        "\"game_id\":{\"S\":\"ab12cd\"},\"created_at\":{\"N\":\"3\"}}]}";
     static const char CANCELED[] =
         "{\"__type\":\"com.amazonaws.dynamodb.v20120810#TransactionCanceledException\","
-        "\"CancellationReasons\":[{\"Code\":\"None\"},{\"Code\":\"ConditionalCheckFailed\"}],\"Message\":\"Transaction cancelled\"}";
+        "\"CancellationReasons\":[{\"Code\":\"ConditionalCheckFailed\"},{\"Code\":\"None\"}],\"Message\":\"Transaction cancelled\"}";
     static const step steps[] = {
-        { "Query", "\"S\":\"SNAP#" U2 "\"", 200, ITEMS },
-        { "TransactWriteItems", "\"ConditionExpression\":\"attribute_exists(pk)\"", 200, "{}" },
+        { "Query", "\"S\":\"SNAP#" U2 "\"", 200, FAT },
+        { "TransactWriteItems", "REMOVE #extras, #moves, #player_ids, #gsi1pk, #gsi1sk", 200, "{}" },
+        { "Query", "PLAYER#", 200, SLIM },
+        { "UpdateItem", "\"ConditionExpression\":\"attribute_exists(pk)\"", 200, "{}" },
         { "Query", "SNAP#", 200, EMPTY },
-        { "Query", "SNAP#", 200, ITEMS },
+        { "UpdateItem", NULL, 400, COND_NO_ITEM },
+        { "Query", "SNAP#", 200, FAT },
         { "TransactWriteItems", NULL, 400, CANCELED },
-        { "Query", "SNAP#", 200, ITEMS },
-        { "TransactWriteItems", "REMOVE #extras", 200, "{}" },
+        { "Query", "SNAP#", 200, SLIM },
+        { "UpdateItem", "REMOVE #extras", 200, "{}" },
     };
     RUN(steps, s);
     const uint8_t ex[] = { 2, 1, 'X', 0 };
     T_EQ_INT(CB_STORE_CALL(s, snapshot_set_extras, U2, ex, sizeof ex), CB_OK);
     T_CHECK(strstr(sc_.bodies[0], "\"ConsistentRead\":true") != NULL);
-    const char *upd =
-        "{\"Update\":{\"TableName\":\"cbase\",\"Key\":{\"pk\":{\"S\":\"SNAP#" U2 "\"},\"sk\":{\"S\":\"%s\"}},"
+    const char *main_upd =
+        "{\"Update\":{\"TableName\":\"cbase\",\"Key\":{\"pk\":{\"S\":\"SNAP#" U2 "\"},\"sk\":{\"S\":\"SNAP\"}},"
         "\"UpdateExpression\":\"SET #extras = :extras\",\"ConditionExpression\":\"attribute_exists(pk)\","
         "\"ExpressionAttributeNames\":{\"#extras\":\"extras\"},\"ExpressionAttributeValues\":{\":extras\":{\"B\":\"AgFYAA==\"}}}}";
-    char a[1024], b[1024], want[2600];
-    snprintf(a, sizeof a, upd, "PLAYER#" U1);
-    snprintf(b, sizeof b, upd, "SNAP");
-    snprintf(want, sizeof want, "{\"ReturnConsumedCapacity\":\"TOTAL\",\"TransactItems\":[%s,%s]}", a, b);
-    T_EQ_STR(sc_.bodies[1], want);
+    T_CHECK(strstr(sc_.bodies[1], main_upd) != NULL);
+    T_CHECK(strstr(sc_.bodies[1], "\"sk\":{\"S\":\"PLAYER#" U1 "\"}") != NULL);
+    T_EQ_INT(CB_STORE_CALL(s, snapshot_set_extras, U2, ex, sizeof ex), CB_OK);   // a pointer: the replay alone
+    T_CHECK(strstr(sc_.bodies[3], "PLAYER#") == NULL);
     T_EQ_INT(CB_STORE_CALL(s, snapshot_set_extras, U2, ex, sizeof ex), CB_E_NOT_FOUND);
     T_EQ_INT(CB_STORE_CALL(s, snapshot_set_extras, U2, ex, sizeof ex), CB_E_NOT_FOUND);
     T_EQ_INT(CB_STORE_CALL(s, snapshot_set_extras, U2, NULL, 0), CB_OK);
-    T_EQ_INT(sc_.at, 7);
+    T_EQ_INT(sc_.at, 10);
     cb_store_close(s);
 }
 

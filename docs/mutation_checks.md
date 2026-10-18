@@ -626,3 +626,13 @@ The hand-minimised input is `fuzz/corpus/event/crash-40a6db73`.
 - json_surface.c shape_value: a value whose first character is a digit printed as {n} instead of its template -> `unit_items` `shapes_ignore_what_an_id_looks_like` (the seat's dashboard key `{}#{}` for a game id `ab12cd`; and every all-digit game id's shape differs from it).
 - json_surface.c fits: a variable slot refusing a 10- or 15-character value that starts with '0' (the old width rule, narrowed so only the new ids trip it) -> `unit_items` `shapes_ignore_what_an_id_looks_like` (the game ids `0000000000` and `000000000000000` shape differently from `ab12cd`).
 - Proof against main: origin/main dcc186a8b's store code with this classifier and golden gives the same 99 shapes, md5 c75fcd08f8a4aa9830aaadd0a39b4559, over two runs.
+
+## A replay's copies hold no names (stage 6, 2026-10-18)
+
+- rows_foolish.c cb_rows_snapshot_put: a player's copy written with the whole replay (snapshot_attrs) -> `unit_store` `replay_copies_hold_no_names` (the PLAYER# copies hold extras, moves, player_ids and gsi1pk).
+- rows_foolish.c fat_step: no copy found fat (redaction leaves a legacy copy as it was) -> `unit_store` `replay_copies_hold_no_names` (after snapshot_set_extras the legacy copy still holds extras and moves).
+
+## Held to the coverage floor in stage 6 (2026-10-18)
+
+- store_dynamo.c capture: Query requests not recorded -> `unit_items` `the_capture_records_every_request` (queries == 1, got 0).
+- rows_foolish.c cb_rows_rating_reindex: a row with no games given a leaderboard key (`games_played >= 0`) -> `unit_store` `ratings_reindexed` (the unplayed row still holds gsi2pk).

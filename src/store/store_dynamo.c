@@ -502,16 +502,20 @@ static int dy_admin_collections(cb_store *s, cb_name_fn fn, void *ud) {
 static int emit_items(cb_span items, cb_admin_row_fn fn, void *ud, bool *more) {
     cb_buf st;
     cb_buf_init(&st);
-    const char *names[64], *values[64];
+    cb_item ii;
+    cb_item_init(&ii);
+    const char *names[CB_ITEM_ATTRS], *values[CB_ITEM_ATTRS];
     size_t pos = 0;
     cb_span it;
     int n = 0;
     while (*more && dw_array_next(items, &pos, &it)) {
-        int k = dw_item_text(it, &st, names, values, 64);
+        cb_item_reset(&ii);
+        int k = dw_item_read(it, &ii) ? cb_item_text(&ii, &st, names, values, CB_ITEM_ATTRS) : -1;
         if (k < 0) continue;
         n++;
         *more = fn ? fn(k, names, values, ud) : true;
     }
+    cb_item_free(&ii);
     cb_buf_free(&st);
     return n;
 }

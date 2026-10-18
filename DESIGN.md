@@ -126,13 +126,15 @@ Owner: `src/store/` and `sql/schema.sql`.
 Header: `src/store/store.h`, one table of functions (`cb_store_ops`) and the `CB_STORE_CALL` wrapper.
 Backends: `store_sqlite.c` (local, tests, import rehearsal) and `store_dynamo.c` (production).
 
-SQLite: one file, WAL, foreign keys on, `sql/schema.sql` (embedded into the binary at build time) applied in one transaction at every open, `PRAGMA user_version` set to `CB_SCHEMA_VERSION`, and a database newer than the binary refused.
-`game_commit` is one `BEGIN IMMEDIATE` transaction whose `UPDATE games ... WHERE version = ?` is the CAS.
+SQLite: one file, WAL, `sql/schema.sql` (embedded into the binary at build time) applied in one transaction at every open, `PRAGMA user_version` set to `CB_SCHEMA_VERSION`, and a database newer than the binary refused.
+Since schema 6 (stage 6, 2026-10-18) it holds nothing but the `items` table and the bots' seed (`bot_seed`, written into `BOT#` items at an open that finds none); the tables of schemas 1 to 5 are dropped with what a development database had in them, and there are no foreign keys: the account and game cascades are explicit, as on DynamoDB.
 
-THE ITEM LAYER (`src/store/items.h`, docs/PLATFORM.md stage 5): DynamoDB's model on both backends, four operations in `cb_store_ops` (`item_get`, `item_write`, `item_txn`, `item_query`): a string pk and sk, typed attributes, the two overloaded indexes, a write conditioned on the item existing or not, sets that are plain, if-absent or an increment, transactions, and TTL as the `expires_ms`/`expires_at` pair.
-DynamoDB spells it in `json_surface.c` (`dw_iget`, `dw_iwrite`, `dw_itxn`, `dw_iquery`, `dw_item_read`); SQLite keeps one `items` table (schema 5), the keys in columns and every attribute in one binary record (`cb_item_record_*`, no JSON), and never deletes an expired item, so readers check `expires_ms` on both.
-Rows written once above it (`src/store/rows_auth.c`): sessions, refresh tokens and failed sign-ins, the same items and attributes DynamoDB held before; users, email and every foolish row move in stage 6.
-`make check-dynamo` holds the keys: every request its lane sends is reduced to its shape (`dw_shape`: the keys and index keys, normalized, and every attribute name), and the set must equal `test/golden/dynamo_shapes.txt`; the move of these rows changed none of the 129.
+THE ITEM LAYER (`src/store/items.h`, docs/PLATFORM.md stages 5 and 6): DynamoDB's model on both backends, seven operations in `cb_store_ops` (`item_get`, `item_write`, `item_txn`, `item_query`, `item_batch_get`, `item_batch_delete`, `item_keys`): a string pk and sk, typed attributes (a list of strings among them, for a replay's `player_ids`), the two overloaded indexes, a write conditioned by up to four clauses, sets that are plain, if-absent, an increment or a removal, the item back on a refusal, transactions, and TTL as the `expires_ms`/`expires_at` pair.
+DynamoDB spells it in `json_surface.c` (`dw_iget`, `dw_iwrite`, `dw_itxn`, `dw_iquery`, `dw_ibatch`, `dw_ibatch_delete`, `dw_item_read`); SQLite keeps one `items` table (schema 6), the keys in columns and every attribute in one binary record (`cb_item_record_*`, no JSON), and never deletes an expired item, so readers check `expires_ms` on both.
+Every row is written once above it, the same items and attributes DynamoDB held before: sessions, refresh tokens and failed sign-ins in `src/store/rows_auth.c`, users, email and every foolish row in `src/store/rows_foolish.c` (a port of the DynamoDB backend's logic: the CAS, the lone commit, the lease on the SCAN marker, seats, ratings, snapshots, chat, imports), so SQLite behaves as DynamoDB by construction.
+Attribute names that differ from the row structs: a game's `logs` is `logs_packed` and its seed `game_seed`, every TTL'd row's `expires_at` field is `expires_ms`; absent attributes default to elo 1000, previous_elo -1 (never written when negative), games_played 0.
+`make check-dynamo` holds the keys: every request its lane sends is reduced to its shape (`dw_shape`: each key value as the template slot it fills, never by what an id looks like, and every attribute name), and the set must equal `test/golden/dynamo_shapes.txt`.
+The 99 shapes were the same on main's store code, on stage 5's and on stage 6's before its one intended change, the replay pointers (below); the golden then holds 102, three of them requests only `unit_store` sends (a legacy rating row put by hand, read back, and reindexed out of the leaderboard).
 
 DynamoDB: one table `cbase`, PROVISIONED at 15 RCU and 15 WCU with 5 and 5 on each index (the always-free 25 a side; see "The free tier, provisioned" below), point-in-time recovery on, TTL on `expires_at` (epoch seconds).
 Two indexes, `gsi1` (`gsi1pk`, `gsi1sk`) and `gsi2` (`gsi2pk`, `gsi2sk`), all four keys String, both projecting ALL.
@@ -151,8 +153,8 @@ Items, by partition key and sort key:
 | `GAME#<id>` | `MEMBER#<user>` | a seated human; gsi1 `USERGAMES#<user>` / `<updated_at, 15 digits>#<game>` gives the dashboard |
 | `GAME#<id>` | `BOT#<bot id>` | a seated bot |
 | `BOT#<id>` | `BOT` | the 49 bots, with their ratings |
-| `SNAP#<snapshot id>` | `SNAP` | a replay (gsi1 `GAMESNAPS#<game>`); it outlives its game, as `ON DELETE SET NULL` did |
-| `SNAP#<snapshot id>` | `PLAYER#<user>` | one copy per player, gsi2 `PLAYER#<user>`: "my replays" is one query |
+| `SNAP#<snapshot id>` | `SNAP` | a replay, the only item with its moves, extras and player_ids (gsi1 `GAMESNAPS#<game>`); it outlives its game, as `ON DELETE SET NULL` did |
+| `SNAP#<snapshot id>` | `PLAYER#<user>` | a pointer per player (id, game_id, created_at; no names), gsi2 `PLAYER#<user>`: "my replays" is one Query of the pointers and one BatchGetItem of the replays |
 | `CHAT#<game id>` | `<created>#<id>` | a chat message |
 | `SCAN` | `GAME#<id>` | present while a bot can act on the game (the kernel's `table_bots_due`; sparse, the heartbeat's scan reads one partition); carries the bot lease (lease_token, lease_until) and the row's version (row_version) |
 
@@ -164,7 +166,7 @@ A migrated store replaces them with the hosted rows, since the hosted rosters na
 
 As built (store builder, then integration):
 
-- `store_sqlite.c` implements every operation over one connection with cached prepared statements; one process mutex spans each operation, and list callbacks run after the lock is released so a callback may call the store again.
+- `store_sqlite.c` implements the item operations over one connection with cached prepared statements; one process mutex spans each operation, and list callbacks run after the lock is released so a callback may call the store again.
 - `game_commit` mirrors `commit_table`: the version-fenced `UPDATE`, membership and bot seats rewritten, and ratings added to the rows as they stand (clamped at 0, `games_played + 1`, `previous_elo` the old value, a missing human rating row created when the account exists).
 - Membership follows every commit (the header's contract), where `commit_table` touched it only when the roster changed; a seat whose account is gone (delete-account keeps the id in the roster) is skipped in both backends instead of failing every later commit on the foreign key.
   DynamoDB writes only the seats that change (a human's MEMBER item when the seat is taken, never again on later commits), so its dashboard index orders by when the seat was taken; PostgREST sorts by the rows it loads, so nothing reads that order.
@@ -194,11 +196,11 @@ As built (store builder, then integration):
   Tests: `unit_dynamo` (the request byte for byte, every condition that sends the transaction instead, the lost CAS, the gone game, a transaction conflict retried, any other refusal `CB_E_DB`), `unit_store` on DynamoDB Local (`lone_commit_cas`: one `UpdateItem` per move by the tally, the second writer losing and writing nothing, a gone game not created, the marker taken by the commit after bot work and not brought back; `lone_cas_under_threads`: four threads racing lone commits, no lost update), and the game smoke under `make check-dynamo`.
 - `last_commit_at` is stamped by the store from `row->updated_at` on every commit; `row->last_commit_at` is read only by the import.
 - The lease: acquire and renew move the scan's staleness clock (never `last_commit_at`); release clears `lease_until` and does not move it.
-  SQLite keeps lease and clock on the game row; DynamoDB keeps both on the game's SCAN marker (see "The free tier, provisioned"), so there the row's `updated_at` is its last commit's.
+  Both live on the game's SCAN marker (see "The free tier, provisioned"), on both backends since stage 6, so the row's `updated_at` is its last commit's.
   A game with no bot work has no lease to take: acquire answers `CB_E_NOT_FOUND`, on both backends.
 - "Bot work" is the row's `needs_bots`, which the commit writes from the kernel's `TableCommit.needs_bots` = `table_bots_due`: a bot can act on the board now (after its pacing wait), not merely "a bot is in" (`table_needs_bots`, the client's question).
   Until 2026-10-17 it was the second, and every game whose human sat on a move was kicked by every minute's scan for the whole abandon hour, each drive finding nothing (1,037 of 1,149 bot cycles in a week drove zero actions).
-  A drive that finds no bot can act on a row the scan still holds (a row written before the change) takes it out with `bots_idle`, fenced on the version it read: SQLite clears `needs_bots`, DynamoDB deletes the SCAN marker on condition of its `row_version` (or none), leaving the row's own flag to its next commit.
+  A drive that finds no bot can act on a row the scan still holds (a row written before the change) takes it out with `bots_idle`, fenced on the version it read: it deletes the SCAN marker on condition of its `row_version` (or none), leaving the row's own flag to its next commit.
   A bump wakes the bots on the same question.
 - A kick (a commit's, a bump's, the scan's; `cb_bots_kick`) first asks the store whether a drive holds the game's lease (`lease_held`, a consistent read of the marker after the commit), and starts no drive while one does: that drive reloads before every cycle, and after it releases it reads the row once more and drives again if a bot can act.
   The kick's read follows its commit and the drive's read follows its release, so whichever came second sees the other's write; a move is never left to the scan.
@@ -210,7 +212,11 @@ As built (store builder, then integration):
 - Refresh tokens carry `revoked_at`: the first `refresh_take` stamps it (later takes keep it), and `refresh_revoke_session` and `refresh_revoke_user` set it to 0, so auth can grant GoTrue's 10 s reuse grace to a rotation and never to a logout (see Auth).
 - The snapshot is not inside `game_commit`: it stays a separate `snapshot_put` after the winning commit, as `finalize.ts` did.
   A snapshot failure is logged and the game stays finished without a replay, as today.
-- `CB_ADMIN_GAMES` ("games") names the same collection on both backends for the console: SQLite's `games` table, DynamoDB's `GAME` family.
+- `CB_ADMIN_GAMES` ("games") names the `GAME` family for the console; the collections are the key families on both backends, SQLite's pages by rowid, DynamoDB's by its Scan key.
+- THE REPLAY AND ITS POINTERS (Alex, 2026-10-18; rows_foolish.c): a game end writes the replay once (`SNAP`) and a small pointer per player, where it wrote the whole replay 1 + N times.
+  Measured from the items the store writes (2 WCU per started KB of each item, transactional), a 1 KB replay went from 12 to 8 WCU with two humans and from 20 to 12 with four; 3 KB from 24 to 12 and 40 to 16; 6 KB from 42 to 18 and 70 to 22; the copies no longer write GSI1 either.
+  Redaction (`snapshot_set_extras`) is one conditional UpdateItem of the replay; a copy written before the change still holds the whole replay, so the replay's copies are read first and every fat one is slimmed to a pointer in the same transaction (`unit_store` `replay_copies_hold_no_names`).
+  A pointer whose replay no longer names its game (the game was deleted) hands out nothing, as before.
 - Four import-only operations (`user_import`, `rating_import`, `bots_replace`, `game_import`) write rows as they are; `store_import.c` is the import as a library so a unit test runs it, and `migrate/import.c` is a thin main.
 - The bot ladder order is the kernel's `bot_roster` tier, then the nickname, so it holds for the hosted ids too.
 
@@ -230,7 +236,7 @@ What the first contact found, all fixed and each held by a test:
 
 - A fresh DynamoDB table had no bots: SQLite seeds them at open, nothing seeded DynamoDB, so a deploy without an import could not add a bot.
   `cb_import_seed_bots` writes the schema's 49 into a store that has none (read through an in-memory SQLite store, so the list keeps one owner), `cbase-import --seed-bots` runs it, and `ops/deploy.sh` runs that after every deploy.
-- The import never checked what DynamoDB stored (only SQLite's counts were read), so a lost seat passed. A keys-only Scan of the table (`dw_scan_keys`, each item classed by `dw_export_kind`) now holds DynamoDB to the same check, counted against the export's own ids (see "The import against the provisioned table").
+- The import never checked what DynamoDB stored (only SQLite's counts were read), so a lost seat passed. A walk of every item's keys (`item_keys`: DynamoDB's keys-only Scan, SQLite's `SELECT pk, sk`; each item classed by `cb_import_export_kind`) now holds both backends to the same check, counted against the export's own ids (see "The import against the provisioned table").
 - Serve's bot pool queued one drive per kick, and a long drive let thousands pile up (every bump kicks); each then took the lease, read the row and let go, and the SIGTERM drain outlived its 15 s. At most one drive per game now waits in the queue.
 - The smoke read its server's stderr only while waiting for a line, so a debug-level server filled the pipe and stopped answering; `test/lib_proc.c` now reads it on a thread all the time.
 
@@ -583,7 +589,7 @@ Open: `getaddrinfo` has no timeout, so a hung resolver can outlive `timeout_ms`.
 Owner: `src/admin/` and `admin/console.html`.
 Header: `src/admin/admin.h`.
 One HTML file, vanilla JS, light and dark, under about 1500 lines, embedded at build time like the schema.
-Panels: Overview, Tables (DynamoDB by key prefix, SQLite by table), Query (PartiQL or SQL, SELECT only unless confirmed), Users, Games, Bots, Logs (this process's ring, plus a CloudWatch Logs Insights link under Lambda), Config (secrets redacted), Backups (point-in-time recovery explained; SQLite `VACUUM INTO`).
+Panels: Overview, Tables (by key family on both backends), Query (PartiQL or SQL, SELECT only unless confirmed), Users, Games, Bots, Logs (this process's ring, plus a CloudWatch Logs Insights link under Lambda), Config (secrets redacted), Backups (point-in-time recovery explained; SQLite `VACUUM INTO`).
 
 As built:
 

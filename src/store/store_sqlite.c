@@ -304,22 +304,6 @@ static bool set_named(const cb_item *it, const char *name) {
     return cb_item_get(it, name, &v);
 }
 
-static bool av_equal(const cb_av *a, const cb_av *b) {
-    if (a->kind != b->kind) return false;
-    switch (a->kind) {
-    case CB_AV_S: return strcmp(a->s ? a->s : "", b->s ? b->s : "") == 0;
-    case CB_AV_N: return a->n == b->n;
-    case CB_AV_BOOL: return a->b == b->b;
-    case CB_AV_B: return a->len == b->len && (!a->len || memcmp(a->bytes, b->bytes, a->len) == 0);
-    case CB_AV_SL:
-        if (a->n_list != b->n_list) return false;
-        for (int i = 0; i < a->n_list; i++)
-            if (strcmp(a->list[i], b->list[i]) != 0) return false;
-        return true;
-    }
-    return false;
-}
-
 // Every clause of the write's condition, against the stored item (DynamoDB's
 // semantics: a comparison with an absent attribute is false).
 static bool cond_holds(const cb_item *cur, bool exists, const cb_iwrite *w) {
@@ -331,11 +315,11 @@ static bool cond_holds(const cb_item *cur, bool exists, const cb_iwrite *w) {
         switch (c->check) {
         case CB_C_EXISTS: ok = exists; break;
         case CB_C_ABSENT: ok = !exists; break;
-        case CB_C_EQ: ok = has && av_equal(&have, &c->v); break;
-        case CB_C_NE: ok = !has || !av_equal(&have, &c->v); break;
+        case CB_C_EQ: ok = has && cb_av_same(&have, &c->v); break;
+        case CB_C_NE: ok = !has || !cb_av_same(&have, &c->v); break;
         case CB_C_LT: ok = has && have.kind == CB_AV_N && c->v.kind == CB_AV_N && have.n < c->v.n; break;
         case CB_C_ATTR_EXISTS: ok = has; break;
-        case CB_C_ABSENT_OR_EQ: ok = !has || av_equal(&have, &c->v); break;
+        case CB_C_ABSENT_OR_EQ: ok = !has || cb_av_same(&have, &c->v); break;
         case CB_C_ABSENT_OR_LT: ok = !has || (have.kind == CB_AV_N && c->v.kind == CB_AV_N && have.n < c->v.n); break;
         default: ok = false;
         }
