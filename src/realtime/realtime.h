@@ -67,6 +67,12 @@ typedef struct cb_rt_transport {
     // Ends every connection whose user is `user_id` (cb_rt_forget_user).
     // NULL: the transport keeps no connections it can name.
     void (*forget)(cb_rt *rt, const char *user_id);
+    // A batch's deliveries at once (cb_rt_batch_end): n messages, each in
+    // lane lane[i]; the lanes run concurrently and each lane in the order
+    // given. Returns how many failed. NULL: the transport delivers each
+    // message as it is published (deliver), and a batch changes nothing.
+    int (*deliver_lanes)(cb_rt *rt, const cb_rt_to *to, const uint8_t *const *frames, const size_t *lens,
+                         const int *lane, int n);
 } cb_rt_transport;
 
 struct cb_rt {
@@ -83,6 +89,19 @@ void rt_publish_cast(cb_rt *rt, const char *user_id, const char *game_id, int64_
 // CB_RT_CHAT: NW_WS_CHAT {game, the message}, to each of the game's human
 // members (`members`, n of them) on their own topic.
 void rt_publish_chat(cb_rt *rt, const char *game_id, const cb_chat_row *row, const cb_uuid *members, int n);
+
+// A BATCH: the publishes this thread makes between begin and end are held
+// (each message copied) and handed to the transport at end, all at once, when
+// it can (deliver_lanes): one lane per user and one for the spectators, so a
+// user hears its pushes in the order they were published (a view before the
+// cast of the same version, which a host showing boards relies on:
+// netclient.c NW_WS_CAST) while different users' pushes overlap. Under IoT
+// that is one publish's time for a commit's fan-out instead of the sum of
+// them. Batches nest; the outermost end sends. A publish the batch cannot
+// hold (full, or no memory) is delivered at once. Not for a transport
+// without deliver_lanes, where both calls do nothing.
+void cb_rt_batch_begin(cb_rt *rt);
+void cb_rt_batch_end(cb_rt *rt);
 
 // The failed deliveries this thread's publishes counted since the last take
 // (app/after.c logs those that happened after an answer was sent).

@@ -77,6 +77,8 @@ static void serve_conn(tls_srv *s, SSL_CTX *ctx, int fd) {
         if (SSL_accept(ssl) != 1) { ERR_clear_error(); SSL_free(ssl); close(fd); return; }
     }
     atomic_fetch_add(&s->accepts, 1);
+    int now = atomic_fetch_add(&s->open_now, 1) + 1;
+    for (int m = atomic_load(&s->open_max); now > m && !atomic_compare_exchange_weak(&s->open_max, &m, now);) {}
     cb_buf in, out;
     cb_buf_init(&in);
     cb_buf_init(&out);
@@ -94,7 +96,9 @@ static void serve_conn(tls_srv *s, SSL_CTX *ctx, int fd) {
         pthread_mutex_unlock(&s->lock);
         atomic_fetch_add(&s->requests, 1);
         cb_buf_reset(&out);
+        pthread_mutex_lock(&s->fn_lock);
         tls_action a = s->fn(&in, &out, s->ud);
+        pthread_mutex_unlock(&s->fn_lock);
         if (a == TLS_HANG) {
             // Hold the connection, answering nothing, until the client closes it.
             while (!atomic_load(&s->stop)) {
@@ -114,6 +118,19 @@ static void serve_conn(tls_srv *s, SSL_CTX *ctx, int fd) {
     close(fd);
     cb_buf_free(&in);
     cb_buf_free(&out);
+    atomic_fetch_sub(&s->open_now, 1);
+}
+
+typedef struct {
+    tls_srv *s;
+    int      fd;
+} conn_arg;
+
+static void *serve_thread(void *arg) {
+    conn_arg a = *(conn_arg *)arg;
+    free(arg);
+    serve_conn(a.s, a.s->ctx, a.fd);
+    return NULL;
 }
 
 static void *run(void *arg) {
@@ -127,14 +144,22 @@ static void *run(void *arg) {
         int one = 1;
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
 #endif
+        conn_arg *ca = atomic_load(&s->concurrent) && s->n_conn_th < 32 ? malloc(sizeof *ca) : NULL;
+        if (ca) {
+            *ca = (conn_arg){ s, fd };
+            if (pthread_create(&s->conn_th[s->n_conn_th], NULL, serve_thread, ca) == 0) { s->n_conn_th++; continue; }
+            free(ca);
+        }
         serve_conn(s, s->ctx, fd);
     }
+    for (int i = 0; i < s->n_conn_th; i++) pthread_join(s->conn_th[i], NULL);
     return NULL;
 }
 
 int tls_srv_start(tls_srv *s, tls_handler fn, void *ud) {
     memset(s, 0, sizeof *s);
     pthread_mutex_init(&s->lock, NULL);
+    pthread_mutex_init(&s->fn_lock, NULL);
     cb_buf_init(&s->last);
     s->fn = fn;
     s->ud = ud;
@@ -174,6 +199,12 @@ int tls_srv_start_plain(tls_srv *s, tls_handler fn, void *ud) {
     return 0;
 }
 
+int tls_srv_start_concurrent(tls_srv *s, tls_handler fn, void *ud) {
+    if (tls_srv_start(s, fn, ud) != 0) return -1;
+    s->concurrent = 1;   // read by the server thread at each accept
+    return 0;
+}
+
 void tls_srv_stop(tls_srv *s) {
     atomic_store(&s->stop, 1);
     pthread_join(s->th, NULL);
@@ -182,6 +213,7 @@ void tls_srv_stop(tls_srv *s) {
     unlink(s->ca_file);
     cb_buf_free(&s->last);
     pthread_mutex_destroy(&s->lock);
+    pthread_mutex_destroy(&s->fn_lock);
 }
 
 char *tls_srv_last(tls_srv *s) {

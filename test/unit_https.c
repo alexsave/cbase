@@ -2,6 +2,7 @@
 // TLS verification and keep-alive against a local TLS server, and one real
 // request to https://example.com when this machine is online.
 #include "t.h"
+#include <pthread.h>
 
 #include "aws/https.h"
 #include "lib_aws_tls.h"
@@ -140,6 +141,10 @@ static tls_action answer(const cb_buf *req, cb_buf *resp, void *ud) {
         cb_buf_puts(resp, "HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nfive!");
         return TLS_LATE;
     }
+    if (strncmp(q, "GET /slow ", 10) == 0) {
+        cb_buf_puts(resp, "HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nslow");
+        return TLS_LATE;   // 200 ms, then kept alive
+    }
     if (strncmp(q, "GET /chunked ", 13) == 0) {
         cb_buf_puts(resp, CHUNKED);
         return TLS_KEEP;
@@ -199,6 +204,53 @@ static void verified_and_kept_alive(void) {
     T_EQ_INT(tally.other.dials, 1);
     T_CHECK(tally.other.us > 0);
     T_EQ_INT(tally.ddb.calls + tally.push.calls, 0);
+    tls_srv_stop(&s);
+}
+
+// Requests from several threads at once each take a connection of their own
+// (rt_iot.c's lanes): they overlap, and the pool keeps every one, so the next
+// round of the same width dials nothing.
+#define PAR 6
+typedef struct { int port, rc, status; } par_arg;
+static void *par_get(void *ud) {
+    par_arg *a = ud;
+    cb_https_response r;
+    a->rc = cb_https_request("localhost", a->port, "GET", "/slow", NULL, NULL, 0, 3000, &r);
+    a->status = r.status;
+    cb_https_response_free(&r);
+    return NULL;
+}
+static int64_t par_round(int port, par_arg *a) {
+    pthread_t th[PAR];
+    int64_t t0 = cb_mono_ms();
+    for (int i = 0; i < PAR; i++) {
+        a[i] = (par_arg){ port, -1, 0 };
+        pthread_create(&th[i], NULL, par_get, &a[i]);
+    }
+    for (int i = 0; i < PAR; i++) pthread_join(th[i], NULL);
+    return cb_mono_ms() - t0;
+}
+static void concurrent_requests_pool_their_connections(void) {
+    tls_srv s;
+    T_EQ_INT(tls_srv_start_concurrent(&s, answer, "keep"), 0);
+    T_EQ_INT(cb_https_set_ca_file(s.ca_file), CB_OK);
+    cb_https_tally tally;
+    cb_https_tally_take(&tally);
+    par_arg a[PAR];
+    int64_t took = par_round(s.port, a);
+    for (int i = 0; i < PAR; i++) T_CHECK(a[i].rc == CB_OK && a[i].status == 200);
+    T_CHECK(took < 3 * 200);   // six 200 ms answers at once, not 1.2 s in a row
+    T_EQ_INT(atomic_load(&s.open_max), PAR);
+    cb_https_tally_take(&tally);
+    T_EQ_INT(tally.other.calls, PAR);
+    T_EQ_INT(tally.other.dials, PAR);
+    took = par_round(s.port, a);
+    for (int i = 0; i < PAR; i++) T_CHECK(a[i].rc == CB_OK && a[i].status == 200);
+    T_CHECK(took < 3 * 200);
+    cb_https_tally_take(&tally);
+    T_EQ_INT(tally.other.calls, PAR);
+    T_EQ_INT(tally.other.dials, 0);   // every connection came from the pool
+    T_EQ_INT(atomic_load(&s.accepts), PAR);
     tls_srv_stop(&s);
 }
 
@@ -335,6 +387,7 @@ int main(void) {
     T_RUN(special_statuses);
     T_RUN(malformed);
     T_RUN(verified_and_kept_alive);
+    T_RUN(concurrent_requests_pool_their_connections);
     T_RUN(dead_idle_connection_retried);
     T_RUN(times_out);
     T_RUN(timeouts_follow_the_deadline);

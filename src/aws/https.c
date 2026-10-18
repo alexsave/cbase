@@ -33,7 +33,9 @@
 #include <time.h>
 #include <unistd.h>
 
-#define POOL_MAX     8
+// Idle connections kept, every host together: DynamoDB's one or two, and IoT's
+// one per lane of a commit's fan-out (realtime/rt_iot.c, up to 9 at 8 humans).
+#define POOL_MAX     24
 #define IDLE_MAX_MS  50000   // AWS front ends drop idle connections after about a minute
 
 typedef struct {

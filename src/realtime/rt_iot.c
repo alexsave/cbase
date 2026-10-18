@@ -10,6 +10,8 @@
 
 #include "../../../shared/c/mqtt/mqtt.h"
 
+#include <pthread.h>
+#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -24,9 +26,58 @@ static int iot_deliver(cb_rt *rt, const cb_rt_to *to, const uint8_t *frame, size
     return 1;
 }
 
+// ---- a batch's lanes at once (realtime.h deliver_lanes) -------------------------------
+//
+// Each lane is one thread doing its publishes in order, the first on the
+// caller's thread: a publish is one HTTPS POST that waits about 8 ms for IoT
+// at p50 against well under 1 ms of CPU, so a commit's five publishes, one
+// after another, held the invocation (billed) about 39 ms. On their own
+// threads they take one publish's time. IoT's data plane has no batch publish
+// (one topic per request), and HTTP/1.1 pipelining on one connection is not
+// something it documents; https.c's pool keeps a connection per lane warm
+// instead, so after a container's first fan-out no publish dials.
+#define LANES_MAX 32
+
+typedef struct {
+    cb_rt                 *rt;
+    const cb_rt_to        *to;
+    const uint8_t *const  *frames;
+    const size_t          *lens;
+    const int             *lane;
+    int                    n, me, failed;
+} lane_job;
+
+static void *lane_run(void *arg) {
+    lane_job *j = arg;
+    for (int i = 0; i < j->n; i++)
+        if (j->lane[i] == j->me) j->failed += iot_deliver(j->rt, &j->to[i], j->frames[i], j->lens[i]);
+    return NULL;
+}
+
+static int iot_deliver_lanes(cb_rt *rt, const cb_rt_to *to, const uint8_t *const *frames, const size_t *lens,
+                             const int *lane, int n) {
+    int n_lanes = 0;
+    for (int i = 0; i < n; i++)
+        if (lane[i] + 1 > n_lanes) n_lanes = lane[i] + 1;
+    if (n_lanes > LANES_MAX) n_lanes = LANES_MAX;   // never: realtime.c holds at most 32 messages
+    lane_job job[LANES_MAX];
+    pthread_t th[LANES_MAX];
+    bool started[LANES_MAX] = { false };
+    for (int l = 0; l < n_lanes; l++) job[l] = (lane_job){ rt, to, frames, lens, lane, n, l, 0 };
+    for (int l = 1; l < n_lanes; l++) started[l] = pthread_create(&th[l], NULL, lane_run, &job[l]) == 0;
+    lane_run(&job[0]);
+    int failed = job[0].failed;
+    for (int l = 1; l < n_lanes; l++) {
+        if (started[l]) pthread_join(th[l], NULL);
+        else lane_run(&job[l]);   // no thread to be had: this lane, here, after the others
+        failed += job[l].failed;
+    }
+    return failed;
+}
+
 static void iot_free(cb_rt *rt) { free(rt); }
 
-static const cb_rt_transport IOT_T = { "iot", iot_deliver, iot_free, NULL };
+static const cb_rt_transport IOT_T = { "iot", iot_deliver, iot_free, NULL, iot_deliver_lanes };
 
 int cb_rt_iot_new(cb_ctx *ctx, cb_rt **out) {
     *out = NULL;

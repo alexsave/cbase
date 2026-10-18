@@ -18,8 +18,12 @@
 #include "util/b64.h"
 #include "util/err.h"
 #include "util/json.h"
+#include "app/fanout.h"
+#include "util/clock.h"
 #include "util/log.h"
 
+#include <poll.h>
+#include <pthread.h>
 #include <stdlib.h>
 
 #define UA "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
@@ -42,14 +46,44 @@ static int fake_verify(cb_ctx *ctx, const char *jwt, cb_user *out) {
     return CB_OK;
 }
 
-static struct { int n; char endpoint[256], topic[8][128]; uint8_t body[256]; size_t len; int status; } g_pub;
+// The publishes as IoT would take them. A batch's lanes call this from
+// several threads at once: everything is under the lock but the wait, which
+// stands for IoT's answer time (wait_ms), so concurrent publishes overlap.
+static pthread_mutex_t g_pub_mu = PTHREAD_MUTEX_INITIALIZER;
+static struct {
+    int n;
+    char endpoint[256], topic[48][128];
+    uint8_t body[256];
+    size_t len;
+    int status;
+    int wait_ms;
+    const char *fail_topic;   // this topic answers 500
+    int64_t start_ms[48], end_ms[48];
+    pthread_t thread[48];
+} g_pub;
 static int fake_publish(const char *endpoint, const char *topic, const void *data, size_t len) {
-    if (g_pub.n < 8) cb_strlcpy(g_pub.topic[g_pub.n], topic, sizeof g_pub.topic[0]);
-    g_pub.n++;
+    int64_t t0 = cb_mono_ms();
+    if (g_pub.wait_ms) poll(NULL, 0, g_pub.wait_ms);
+    pthread_mutex_lock(&g_pub_mu);
+    int i = g_pub.n++;
+    if (i < 48) {
+        cb_strlcpy(g_pub.topic[i], topic, sizeof g_pub.topic[0]);
+        g_pub.start_ms[i] = t0;
+        g_pub.end_ms[i] = cb_mono_ms();
+        g_pub.thread[i] = pthread_self();
+    }
     cb_strlcpy(g_pub.endpoint, endpoint, sizeof g_pub.endpoint);
     g_pub.len = len < sizeof g_pub.body ? len : 0;
     memcpy(g_pub.body, data, g_pub.len);
-    return g_pub.status;
+    int st = g_pub.fail_topic && strcmp(topic, g_pub.fail_topic) == 0 ? 500 : g_pub.status;
+    pthread_mutex_unlock(&g_pub_mu);
+    return st;
+}
+
+static int published_at(const char *topic) {
+    for (int i = 0; i < g_pub.n && i < 48; i++)
+        if (strcmp(g_pub.topic[i], topic) == 0) return i;
+    return -1;
 }
 
 static void setup(void) {
@@ -87,8 +121,8 @@ static void pushes_are_publishes(void) {
     cb_uuid members[2] = { UA, UB };
     rt_publish_chat(rt, G, &c, members, 2);
     T_EQ_INT(g_pub.n, 4);
-    T_EQ_STR(g_pub.topic[2], "u/" UA "/m/" G);
-    T_EQ_STR(g_pub.topic[3], "u/" UB "/m/" G);
+    T_CHECK(published_at("u/" UA "/m/" G) >= 2);   // the members' lanes run at once: either order
+    T_CHECK(published_at("u/" UB "/m/" G) >= 2);
     T_EQ_INT(cb_rt_failures_take(), 0);
     // A refused publish counts as a failed delivery.
     g_pub.status = 403;
@@ -109,6 +143,168 @@ static void pushes_are_publishes(void) {
     T_EQ_INT(g_pub.n, before);
     // forget is not this transport's: IoT names no connection to end.
     cb_rt_forget_user(rt, UA);
+    cb_rt_free(rt);
+}
+
+// A commit's fan-out between two humans is five publishes: each human's view
+// (the dashboard, and a boards host's game), each seat's cast, the
+// spectators' cast. In one batch they go out on three lanes at once (one per
+// user, one for the spectators), so with IoT taking WAIT ms a publish the
+// whole fan-out takes about two publishes' time (a user's view, then its
+// cast), not five; and a user still hears its view before its cast.
+#define WAIT 60
+static void a_fanout_overlaps(void) {
+    setup();
+    cb_strlcpy(g_cfg.iot_endpoint, "abc123-ats.iot.us-east-1.amazonaws.com", sizeof g_cfg.iot_endpoint);
+    cb_rt *rt;
+    T_EQ_INT(cb_rt_iot_new(&g_ctx, &rt), CB_OK);
+    g_ctx.rt = rt;
+    const uint8_t env[] = { 1, 2, 3 }, cast[] = { 4, 5 }, spec[] = { 6 };
+    cb_fanout f;
+    memset(&f, 0, sizeof f);
+    f.game_id = G;
+    f.version = 7;
+    f.status = "playing";
+    f.n_seats = 3;
+    cb_strlcpy(f.seats[0].user_id, UA, sizeof f.seats[0].user_id);
+    cb_strlcpy(f.seats[2].user_id, UB, sizeof f.seats[2].user_id);   // seat 1 is a bot: nothing for it
+    for (int i = 0; i < 3; i++) {
+        f.seats[i].envelope = env, f.seats[i].envelope_len = sizeof env;
+        f.seats[i].cast = cast, f.seats[i].cast_len = sizeof cast;
+    }
+    f.spectator_cast = spec;
+    f.spectator_cast_len = sizeof spec;
+    g_pub.wait_ms = WAIT;
+    int64_t t0 = cb_mono_ms();
+    cb_fanout_publish(&g_ctx, &f);
+    int64_t took = cb_mono_ms() - t0;
+    T_EQ_INT(g_pub.n, 5);
+    T_EQ_INT(cb_rt_failures_take(), 0);
+    int va = published_at("u/" UA "/v"), vb = published_at("u/" UB "/v");
+    int ca = published_at("u/" UA "/c/" G), cb = published_at("u/" UB "/c/" G), sp = published_at("s/" G);
+    T_CHECK(va >= 0 && vb >= 0 && ca >= 0 && cb >= 0 && sp >= 0);
+    // Each user's view was answered before its cast was sent, on one lane.
+    T_CHECK(g_pub.end_ms[va] <= g_pub.start_ms[ca]);
+    T_CHECK(g_pub.end_ms[vb] <= g_pub.start_ms[cb]);
+    T_CHECK(pthread_equal(g_pub.thread[va], g_pub.thread[ca]));
+    // Three lanes at once: two publishes' time and some, never five.
+    T_CHECK(took >= 2 * WAIT);
+    T_CHECK(took < 4 * WAIT);
+    T_CHECK(!pthread_equal(g_pub.thread[va], g_pub.thread[vb]));
+    T_CHECK(!pthread_equal(g_pub.thread[sp], g_pub.thread[va]) && !pthread_equal(g_pub.thread[sp], g_pub.thread[vb]));
+
+    // A publish refused on one lane counts once, the rest still go.
+    memset(&g_pub, 0, sizeof g_pub);
+    g_pub.status = 200;
+    g_pub.fail_topic = "u/" UB "/v";
+    cb_fanout_publish(&g_ctx, &f);
+    T_EQ_INT(g_pub.n, 5);
+    T_EQ_INT(cb_rt_failures_take(), 1);
+
+    // A seat that left hears the empty view on its own lane, and a batch
+    // holds every message of the largest commit (8 humans, 8 gone): 25.
+    memset(&g_pub, 0, sizeof g_pub);
+    g_pub.status = 200;
+    f.n_seats = CB_MAX_SEATS;
+    static char ids[2 * CB_MAX_SEATS][40];
+    for (int i = 0; i < CB_MAX_SEATS; i++) {
+        snprintf(ids[i], sizeof ids[i], "aaaaaaaa-aaaa-4aaa-8aaa-%012d", i);
+        cb_strlcpy(f.seats[i].user_id, ids[i], sizeof f.seats[i].user_id);
+        f.seats[i].envelope = env, f.seats[i].envelope_len = sizeof env;
+        f.seats[i].cast = cast, f.seats[i].cast_len = sizeof cast;
+        snprintf(ids[CB_MAX_SEATS + i], sizeof ids[0], "cccccccc-cccc-4ccc-8ccc-%012d", i);
+        cb_strlcpy(f.left[i], ids[CB_MAX_SEATS + i], sizeof f.left[i]);
+    }
+    f.n_left = CB_MAX_SEATS;
+    g_pub.wait_ms = 20;
+    t0 = cb_mono_ms();
+    cb_fanout_publish(&g_ctx, &f);
+    took = cb_mono_ms() - t0;
+    T_EQ_INT(g_pub.n, 3 * CB_MAX_SEATS + 1);
+    T_EQ_INT(cb_rt_failures_take(), 0);
+    T_CHECK(took < 6 * 20);   // 17 lanes at once: a view and a cast each at most
+    char t[128];
+    snprintf(t, sizeof t, "u/%s/v", ids[CB_MAX_SEATS]);
+    T_CHECK(published_at(t) >= 0);
+    g_ctx.rt = NULL;
+    cb_rt_free(rt);
+}
+
+// Without a batch (a single publish, or a transport with no lanes) a
+// publish is sent at once, on the caller's thread; batches nest, and only the
+// outermost end sends.
+static void a_batch_nests(void) {
+    setup();
+    cb_strlcpy(g_cfg.iot_endpoint, "abc123-ats.iot.us-east-1.amazonaws.com", sizeof g_cfg.iot_endpoint);
+    cb_rt *rt;
+    T_EQ_INT(cb_rt_iot_new(&g_ctx, &rt), CB_OK);
+    const uint8_t cast[] = { 5, 6 };
+    rt_publish_cast(rt, UA, G, 3, cast, 2);
+    T_EQ_INT(g_pub.n, 1);
+    T_CHECK(pthread_equal(g_pub.thread[0], pthread_self()));
+    cb_rt_batch_begin(rt);
+    cb_rt_batch_begin(rt);
+    rt_publish_cast(rt, UA, G, 4, cast, 2);
+    rt_publish_cast(rt, UB, G, 4, cast, 2);
+    cb_rt_batch_end(rt);
+    T_EQ_INT(g_pub.n, 1);   // held until the outer end
+    rt_publish_cast(rt, NULL, G, 4, cast, 2);
+    cb_rt_batch_end(rt);
+    T_EQ_INT(g_pub.n, 4);
+    // An end with no batch open does nothing.
+    cb_rt_batch_end(rt);
+    T_EQ_INT(g_pub.n, 4);
+    // A message whose id cannot be held (longer than any topic level) is
+    // delivered at once, and is no topic: nothing is published or failed.
+    cb_rt_batch_begin(rt);
+    char long_id[100];
+    memset(long_id, 'a', sizeof long_id - 1);
+    long_id[sizeof long_id - 1] = 0;
+    rt_publish_cast(rt, long_id, G, 5, cast, 2);
+    rt_publish_cast(rt, UA, G, 5, cast, 2);
+    T_EQ_INT(g_pub.n, 4);
+    cb_rt_batch_end(rt);
+    T_EQ_INT(g_pub.n, 5);
+    T_EQ_INT(cb_rt_failures_take(), 0);
+    // More messages than a batch holds: the rest are sent at once, none lost.
+    memset(&g_pub, 0, sizeof g_pub);
+    g_pub.status = 200;
+    cb_rt_batch_begin(rt);
+    for (int i = 0; i < 40; i++) rt_publish_cast(rt, UA, G, 6 + i, cast, 2);
+    T_EQ_INT(g_pub.n, 8);
+    cb_rt_batch_end(rt);
+    T_EQ_INT(g_pub.n, 40);
+    // In one lane the order is the order published.
+    int prev = -1;
+    bool ordered = true;
+    for (int i = 8; i < 40; i++) ordered &= g_pub.start_ms[i] >= (prev < 0 ? 0 : g_pub.end_ms[prev]), prev = i;
+    T_CHECK(ordered);
+
+    // A batch belongs to its transport: one opened on another while it is
+    // open holds nothing of that one's, and neither carries the other's.
+    static cb_ctx ctx2;
+    static cb_config cfg2;
+    ctx2 = g_ctx;
+    cfg2 = g_cfg;
+    ctx2.cfg = &cfg2;
+    cb_strlcpy(cfg2.iot_endpoint, "other-ats.iot.us-east-1.amazonaws.com", sizeof cfg2.iot_endpoint);
+    cb_rt *rt2;
+    T_EQ_INT(cb_rt_iot_new(&ctx2, &rt2), CB_OK);
+    memset(&g_pub, 0, sizeof g_pub);
+    g_pub.status = 200;
+    cb_rt_batch_begin(rt);
+    rt_publish_cast(rt, UA, G, 50, cast, 2);
+    cb_rt_batch_begin(rt2);
+    rt_publish_cast(rt2, UB, G, 50, cast, 2);
+    T_EQ_INT(g_pub.n, 1);   // rt2's, at once
+    T_EQ_STR(g_pub.endpoint, "other-ats.iot.us-east-1.amazonaws.com");
+    cb_rt_batch_end(rt2);
+    T_EQ_INT(g_pub.n, 1);
+    cb_rt_batch_end(rt);
+    T_EQ_INT(g_pub.n, 2);   // rt's, held to its own end, through its own endpoint
+    T_EQ_STR(g_pub.endpoint, "abc123-ats.iot.us-east-1.amazonaws.com");
+    T_EQ_STR(g_pub.topic[1], "u/" UA "/c/" G);
+    cb_rt_free(rt2);
     cb_rt_free(rt);
 }
 
@@ -302,6 +498,8 @@ static void the_endpoint_setting(void) {
 
 int main(void) {
     T_RUN(pushes_are_publishes);
+    T_RUN(a_fanout_overlaps);
+    T_RUN(a_batch_nests);
     T_RUN(decoded_events);
     T_RUN(the_policy);
     T_RUN(only_through_the_edge);

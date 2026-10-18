@@ -2,7 +2,8 @@
 //
 // For unit_https.c, unit_aws_calls.c: a thread on 127.0.0.1 serving TLS with a
 // fixed self-signed certificate for "localhost" (lib_aws_tls.c embeds it; it
-// is valid until 2126), one connection at a time. Each request (head and
+// is valid until 2126), one connection at a time (or each on its own thread:
+// tls_srv_start_concurrent). Each request (head and
 // Content-Length body) is recorded and answered by the test's callback.
 #ifndef CB_TEST_AWS_TLS_H
 #define CB_TEST_AWS_TLS_H
@@ -38,6 +39,11 @@ typedef struct {
     void       *ud;
     void       *ctx;
     atomic_int  plain;          // tls_srv_start_plain: no TLS at all
+    atomic_int  concurrent;     // tls_srv_start_concurrent: a thread per connection
+    atomic_int  open_now, open_max;   // connections being served at once, now and at most
+    pthread_t   conn_th[32];
+    int         n_conn_th;
+    pthread_mutex_t fn_lock;    // the handler runs under it: tests write it single-threaded
 } tls_srv;
 
 // 0, or -1.
@@ -45,6 +51,12 @@ int  tls_srv_start(tls_srv *s, tls_handler fn, void *ud);
 // The same server speaking plain HTTP (DynamoDB Local's way), for the
 // client's http:// mode.
 int  tls_srv_start_plain(tls_srv *s, tls_handler fn, void *ud);
+// The same server answering every connection at once, each on its own thread
+// (up to 32 in a server's life; past that, one at a time on the accept thread),
+// as AWS's front ends do: for clients that keep several connections open.
+// The handler is still called one request at a time; TLS_LATE's wait is not
+// under that lock, so concurrent requests overlap there.
+int  tls_srv_start_concurrent(tls_srv *s, tls_handler fn, void *ud);
 void tls_srv_stop(tls_srv *s);
 // A copy of the last request as a C string (free it).
 char *tls_srv_last(tls_srv *s);

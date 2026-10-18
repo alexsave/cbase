@@ -79,7 +79,86 @@ int cb_rt_topic(const cb_rt_to *to, char *out, size_t cap) {
 
 // ---- publishing ----------------------------------------------------------------------------
 
+// ---- the batch (realtime.h cb_rt_batch_begin) ------------------------------------------
+
+#define RT_BATCH_MAX 32   // a commit of 8 humans: 8 views, 8 casts, the spectators, up to 8 seats left
+#define RT_ID_MAX    64   // level_ok's longest id: a longer one is never a topic
+
+typedef struct {
+    cb_rt_family family;
+    bool         has_user, has_game;
+    char         user[RT_ID_MAX + 1], game[RT_ID_MAX + 1];
+    uint8_t     *frame;
+    size_t       len;
+} rt_held;
+
+static _Thread_local struct {
+    cb_rt  *rt;
+    int     depth, n;
+    rt_held items[RT_BATCH_MAX];
+} t_batch;
+
+static bool batching(cb_rt *rt) { return rt->t && rt->t->deliver_lanes && t_batch.depth > 0 && t_batch.rt == rt; }
+
+static bool copy_id(char *out, const char *id, bool *has) {
+    *has = id != NULL;
+    if (!id) return true;
+    size_t n = strlen(id);
+    if (n > RT_ID_MAX) return false;
+    memcpy(out, id, n + 1);
+    return true;
+}
+
+// Holds a delivery for the batch's end: false when it cannot (the caller delivers at once).
+static bool hold(const cb_rt_to *to, const uint8_t *frame, size_t len) {
+    if (t_batch.n >= RT_BATCH_MAX) return false;
+    rt_held *h = &t_batch.items[t_batch.n];
+    if (!copy_id(h->user, to->user_id, &h->has_user) || !copy_id(h->game, to->game_id, &h->has_game)) return false;
+    h->frame = malloc(len ? len : 1);
+    if (!h->frame) return false;
+    if (len) memcpy(h->frame, frame, len);
+    h->len = len;
+    h->family = to->family;
+    t_batch.n++;
+    return true;
+}
+
+void cb_rt_batch_begin(cb_rt *rt) {
+    if (!rt || !rt->t || !rt->t->deliver_lanes) return;
+    if (t_batch.depth > 0 && t_batch.rt != rt) return;   // another transport's batch is open: this one is not held
+    t_batch.rt = rt;
+    t_batch.depth++;
+}
+
+void cb_rt_batch_end(cb_rt *rt) {
+    if (!batching(rt) || --t_batch.depth > 0) return;
+    int n = t_batch.n;
+    // Zeroed: gcc cannot see that only the first n are read.
+    cb_rt_to to[RT_BATCH_MAX] = { { 0 } };
+    const uint8_t *frames[RT_BATCH_MAX] = { 0 };
+    size_t lens[RT_BATCH_MAX] = { 0 };
+    int lane[RT_BATCH_MAX] = { 0 }, n_lanes = 0;
+    const char *lane_user[RT_BATCH_MAX] = { 0 };   // NULL: the spectators' lane
+    for (int i = 0; i < n; i++) {
+        rt_held *h = &t_batch.items[i];
+        to[i] = (cb_rt_to){ h->family, h->has_user ? h->user : NULL, h->has_game ? h->game : NULL };
+        frames[i] = h->frame;
+        lens[i] = h->len;
+        int l = 0;
+        while (l < n_lanes && !(lane_user[l] == NULL ? to[i].user_id == NULL
+                                                     : to[i].user_id && strcmp(lane_user[l], to[i].user_id) == 0))
+            l++;
+        if (l == n_lanes) lane_user[n_lanes++] = to[i].user_id;
+        lane[i] = l;
+    }
+    if (n) t_failed += rt->t->deliver_lanes(rt, to, frames, lens, lane, n);
+    for (int i = 0; i < n; i++) free(t_batch.items[i].frame);
+    t_batch.n = 0;
+    t_batch.rt = NULL;
+}
+
 static void deliver(cb_rt *rt, const cb_rt_to *to, const uint8_t *frame, size_t len) {
+    if (batching(rt) && hold(to, frame, len)) return;
     if (rt->t && rt->t->deliver) t_failed += rt->t->deliver(rt, to, frame, len);
 }
 
@@ -94,7 +173,9 @@ static void publish(cb_rt *rt, const cb_rt_to *to, int n, const NwFrame *f) {
         CB_ERROR("realtime", "a push of kind %d for game %.*s was not written (%d)", f->kind, (int)f->gid_len, f->gid, len);
         t_failed += n;
     } else {
+        if (n > 1) cb_rt_batch_begin(rt);   // a chat's members hear it at once
         for (int i = 0; i < n; i++) deliver(rt, &to[i], b.p, (size_t)len);
+        if (n > 1) cb_rt_batch_end(rt);
     }
     cb_buf_free(&b);
 }

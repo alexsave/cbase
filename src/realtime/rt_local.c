@@ -329,7 +329,8 @@ static void local_forget(cb_rt *rt, const char *user_id) {
     if (cb_loop_post(loop, forget_on_loop, f) != CB_OK) free(f);
 }
 
-static const cb_rt_transport LOCAL_T = { "local", local_deliver, local_free, local_forget };
+// No deliver_lanes: a push is a copy posted to the loop, so a batch has nothing to overlap.
+static const cb_rt_transport LOCAL_T = { "local", local_deliver, local_free, local_forget, NULL };
 
 int cb_rt_local_new(cb_ctx *ctx, cb_rt **out) {
     *out = NULL;

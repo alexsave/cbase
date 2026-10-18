@@ -27,6 +27,9 @@ void cb_fanout_publish(cb_ctx *ctx, const cb_fanout *f) {
         CB_DEBUG("fanout", "game %s v%lld: no realtime, nothing published", f->game_id, (long long)f->version);
         return;
     }
+    // One batch (realtime.h): every push of the commit goes out at once, each
+    // user's view before its cast.
+    cb_rt_batch_begin(rt);
     for (int i = 0; i < f->n_seats; i++) {
         if (!f->seats[i].user_id[0]) continue;   // a bot has no client
         cb_view_row row;
@@ -53,4 +56,5 @@ void cb_fanout_publish(cb_ctx *ctx, const cb_fanout *f) {
         rt_publish_cast(rt, f->seats[i].user_id, f->game_id, f->version, f->seats[i].cast, f->seats[i].cast_len);
     }
     if (f->spectator_cast) rt_publish_cast(rt, NULL, f->game_id, f->version, f->spectator_cast, f->spectator_cast_len);
+    cb_rt_batch_end(rt);
 }

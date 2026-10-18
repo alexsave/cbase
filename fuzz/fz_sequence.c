@@ -413,7 +413,7 @@ static void fz_forget(cb_rt *rt, const char *user_id) {
     for (int i = 0; i < N_CONNS; i++)
         if (g_conn[i].mq.state == CB_MQTT_OPEN && strcmp(g_conn[i].mq.user_id, user_id) == 0) cb_mqtt_conn_init(&g_conn[i].mq);
 }
-static const cb_rt_transport FZ_T = { "fuzz", fz_deliver, NULL, fz_forget };
+static const cb_rt_transport FZ_T = { "fuzz", fz_deliver, NULL, fz_forget, NULL };
 static cb_rt g_rt = { &FZ_T, &g_ctx, NULL };
 
 static int g_kicks;
