@@ -21,6 +21,10 @@
 
 static void pending_drop(void);
 
+// A request's id, 0 for none: a request a mutant never made fails an
+// assertion instead of crashing the suite.
+static uint32_t id_of(const NcRequest *q) { return q ? q->id : 0; }
+
 static void signed_in(uint64_t expires_at_ms) {
     pending_drop();
     NwSession s;
@@ -316,7 +320,7 @@ static void connect_carries_the_token(void) {
     ses.expires_at_ms = T0 + 3600000;
     ses.user_id_len = 2; memcpy(ses.user_id, "u1", 2);
     ses.username_len = 3; memcpy(ses.username, "ANA", 3);
-    if (q) nc_on_response(q->id, 200, b, nw_session_encode(&ses, b, sizeof b), T0 + 2);
+    if (q) nc_on_response(id_of(q), 200, b, nw_session_encode(&ses, b, sizeof b), T0 + 2);
     cpkt c3 = next_pkt(T0 + 2);
     T_CHECK(c3.type == MQTT_CONNECT && strcmp(c3.password, "jwt3") == 0);
     // A second CONNACK is not the protocol.
@@ -349,7 +353,7 @@ static void connect_waits_for_a_fresh_token(void) {
     ses.user_id_len = 2; memcpy(ses.user_id, "u1", 2);
     ses.username_len = 3; memcpy(ses.username, "ANA", 3);
     int n = nw_session_encode(&ses, b, sizeof b);
-    T_CHECK(nc_on_response(q->id, 200, b, n, T0) == NULL);
+    T_CHECK(nc_on_response(id_of(q), 200, b, n, T0) == NULL);
     T_EQ_INT(nc_stream_due_ms(T0), 0);
     cpkt c = next_pkt(T0);
     T_CHECK(c.type == MQTT_CONNECT && strcmp(c.password, "jwt2") == 0);
@@ -359,7 +363,7 @@ static void connect_waits_for_a_fresh_token(void) {
     nc_stream_opened(T0);
     q = nc_next_request(T0);
     T_CHECK(q && q->is_refresh);
-    nc_on_response(q->id, 0, NULL, 0, T0);
+    nc_on_response(id_of(q), 0, NULL, 0, T0);
     T_CHECK(nc_next_request(T0) == NULL);
     T_CHECK(nc_pump_due_ms(T0) > 0);
     q = nc_next_request(T0 + NC_RETRY_FIRST_MS);
@@ -386,7 +390,7 @@ static void closed_before_connack_refreshes(void) {
     ses.expires_at_ms = T0 + 3600000;
     ses.user_id_len = 2; memcpy(ses.user_id, "u1", 2);
     ses.username_len = 3; memcpy(ses.username, "ANA", 3);
-    nc_on_response(q->id, 200, b, nw_session_encode(&ses, b, sizeof b), T0 + 500);
+    nc_on_response(id_of(q), 200, b, nw_session_encode(&ses, b, sizeof b), T0 + 500);
     T_EQ_INT(next_pkt(T0 + 500).type, MQTT_CONNECT);
     // Refused again at once: no second refresh inside NC_FORCE_REFRESH_MS.
     nc_stream_closed(T0 + 600);
@@ -729,7 +733,7 @@ static void pump_signs_in_and_reads_answers(void) {
     T_CHECK(path_is(q, "/v1/auth/signin") && q->method == NC_POST && q->auth_len == 0 && q->id != 0);
     const uint8_t signin[] = { 1, NW_SIGNIN, 3, 'A', 'N', 'A', 2, 'p', 'w' };
     T_EQ_MEM(q->body, q->body_len, signin, sizeof signin);
-    uint32_t id = q->id;
+    uint32_t id = id_of(q);
     T_CHECK(nc_next_request(T0) == NULL);   // nothing else to send
     uint8_t b[256];
     int n = session_body(b, sizeof b, "jwt", T0 + 3600000);
@@ -750,7 +754,7 @@ static void pump_signs_in_and_reads_answers(void) {
     T_EQ_MEM(q->body, q->body_len, action, sizeof action);
     uint8_t r[TABLE_RESP_BYTES];
     T_EQ_INT(table_action_response(TABLE_REJECTED, 4, 11, r, sizeof r), TABLE_RESP_BYTES);
-    d = nc_on_response(q->id, 200, r, sizeof r, T0);
+    d = nc_on_response(id_of(q), 200, r, sizeof r, T0);
     T_CHECK(d && d->ticket == t && d->why == 0 && d->action_status == TABLE_STATUS_REJECTED && d->reject_code == 4 && d->version == 11);
 
     // One game: the view's version and the envelope's span.
@@ -761,14 +765,14 @@ static void pump_signs_in_and_reads_answers(void) {
     const uint8_t env[] = { 0xe1, 0xe2, 0xe3 };
     NwBlob eb = { env, 3 };
     n = nw_view_encode(7, eb, b, sizeof b);
-    d = nc_on_response(q->id, 200, b, n, T0);
+    d = nc_on_response(id_of(q), 200, b, n, T0);
     T_CHECK(d && d->version == 7 && d->a_len == 3);
     if (d) T_EQ_MEM(b + d->a_off, d->a_len, env, 3);
     // A refusal is read as one.
     t = nc_do(&open, T0);
     q = nc_next_request(T0);
     n = refusal_body(b, ASK_WHY_NOT_FOUND, 0);
-    d = nc_on_response(q->id, 404, b, n, T0);
+    d = nc_on_response(id_of(q), 404, b, n, T0);
     T_CHECK(d && d->ticket == t && d->why == ASK_WHY_NOT_FOUND && d->status == 404);
 
     // A list: its rows and their kind; the history carries the rating.
@@ -777,7 +781,7 @@ static void pump_signs_in_and_reads_answers(void) {
     q = nc_next_request(T0);
     T_CHECK(path_is(q, "/v1/history"));
     n = nw_history_head(1, 1234, 0, b, sizeof b);
-    d = nc_on_response(q->id, 200, b, n, T0);
+    d = nc_on_response(id_of(q), 200, b, n, T0);
     T_CHECK(d && d->list_kind == NW_HISTORY && d->n_rows == 0 && d->has_rating == 1 && d->rating == 1234);
 }
 
@@ -788,11 +792,11 @@ static void pump_refreshes_first_and_after_a_401(void) {
     T_CHECK(tg && tb);
     const NcRequest *q = nc_next_request(T0);
     T_CHECK(path_is(q, "/v1/auth/refresh"));
-    uint32_t refresh = q->id;
+    uint32_t refresh = id_of(q);
     // While it is out, only what needs nobody goes.
     q = nc_next_request(T0);
     T_CHECK(path_is(q, "/v1/leaderboard"));
-    uint32_t board_id = q->id;
+    uint32_t board_id = id_of(q);
     T_CHECK(nc_next_request(T0) == NULL);
     T_EQ_INT(nc_pump_due_ms(T0), -1);   // the refresh's answer wakes the rest
     uint8_t b[256];
@@ -801,7 +805,7 @@ static void pump_refreshes_first_and_after_a_401(void) {
     q = nc_next_request(T0);
     T_CHECK(path_is(q, "/v1/games"));
     T_EQ_MEM(q->auth, q->auth_len, "Bearer jwt2", 11);
-    uint32_t games_id = q->id;
+    uint32_t games_id = id_of(q);
     n = nw_list_head(NW_BOARD, 0, b, sizeof b);
     const NcDone *d = nc_on_response(board_id, 200, b, n, T0);
     T_CHECK(d && d->ticket == tb && d->list_kind == NW_BOARD);
@@ -811,12 +815,12 @@ static void pump_refreshes_first_and_after_a_401(void) {
     q = nc_next_request(T0);
     T_CHECK(path_is(q, "/v1/auth/refresh"));
     n = session_body(b, sizeof b, "jwt3", T0 + 3600000);
-    nc_on_response(q->id, 200, b, n, T0);
+    nc_on_response(id_of(q), 200, b, n, T0);
     q = nc_next_request(T0);
     T_CHECK(path_is(q, "/v1/games"));
     T_EQ_MEM(q->auth, q->auth_len, "Bearer jwt3", 11);
     // A second 401 is the answer.
-    d = nc_on_response(q->id, 401, NULL, 0, T0);
+    d = nc_on_response(id_of(q), 401, NULL, 0, T0);
     T_CHECK(d && d->ticket == tg && d->why == ASK_WHY_AUTH);
 
     // A refresh refused for its token ends the session and what waited on it.
@@ -825,7 +829,7 @@ static void pump_refreshes_first_and_after_a_401(void) {
     q = nc_next_request(T0);
     T_CHECK(path_is(q, "/v1/auth/refresh"));
     n = refusal_body(b, ASK_WHY_ACCOUNT, NW_ACCOUNT_E_BAD_REFRESH);
-    T_CHECK(nc_on_response(q->id, 400, b, n, T0) == NULL);
+    T_CHECK(nc_on_response(id_of(q), 400, b, n, T0) == NULL);
     T_EQ_INT(nc_session_info()->signed_in, 0);
     T_EQ_INT(nc_pump_due_ms(T0), 0);
     d = nc_next_done();
@@ -841,7 +845,7 @@ static void pump_retries_reads_not_writes(void) {
     for (int k = 1; k < NC_PUMP_TRIES; k++) {
         const NcRequest *q = nc_next_request(now);
         T_CHECK(path_is(q, "/v1/games"));
-        T_CHECK(nc_on_response(q->id, 0, NULL, 0, now) == NULL);   // it never arrived
+        T_CHECK(nc_on_response(id_of(q), 0, NULL, 0, now) == NULL);   // it never arrived
         int due = nc_pump_due_ms(now);
         T_CHECK(due > 0 && due <= NC_RETRY_MAX_MS);
         T_CHECK(nc_next_request(now + due - 1) == NULL);           // not before its backoff
@@ -849,7 +853,7 @@ static void pump_retries_reads_not_writes(void) {
     }
     const NcRequest *q = nc_next_request(now);
     T_CHECK(path_is(q, "/v1/games"));
-    const NcDone *d = nc_on_response(q->id, 0, NULL, 0, now);
+    const NcDone *d = nc_on_response(id_of(q), 0, NULL, 0, now);
     T_CHECK(d && d->ticket == t && d->why == ASK_WHY_INTERNAL && d->status == 0);
 
     // A write that never arrived is not sent again: it may have landed.
@@ -857,7 +861,7 @@ static void pump_retries_reads_not_writes(void) {
     t = nc_do(&create, now);
     q = nc_next_request(now);
     T_CHECK(path_is(q, "/v1/create"));
-    d = nc_on_response(q->id, 0, NULL, 0, now);
+    d = nc_on_response(id_of(q), 0, NULL, 0, now);
     T_CHECK(d && d->ticket == t && d->why == ASK_WHY_INTERNAL);
     T_CHECK(nc_next_request(now + NC_RETRY_MAX_MS) == NULL);
 
@@ -881,7 +885,7 @@ static void pump_signs_out(void) {
     uint32_t tg = nc_do(&games, T0);   // still signed in when asked
     T_CHECK(tg != 0);
     // Whatever the server answers, the session is over here, and so is what waited for it.
-    const NcDone *d = nc_on_response(q->id, 500, NULL, 0, T0);
+    const NcDone *d = nc_on_response(id_of(q), 500, NULL, 0, T0);
     T_CHECK(d && d->ticket == to);
     T_EQ_INT(nc_session_info()->signed_in, 0);
     d = nc_next_done();
@@ -964,7 +968,7 @@ static void a_cast_and_a_stale_answer_end_alike(void) {
             T_CHECK(nc_do(&open, T0) != 0);
             const NcRequest *q = nc_next_request(T0);
             T_CHECK(path_is(q, "/v1/games/g1"));
-            uint32_t id = q->id;
+            uint32_t id = id_of(q);
             // The server answered at 4, then committed 5 and pushed it: the
             // answer is stale whichever reaches the client first.
             if (order == 0) {
@@ -1006,7 +1010,7 @@ static void a_skipped_version_refetches(void) {
     T_EQ_INT(h.casts, 1);
     T_CHECK(nc_next_request(T0) == NULL);   // one fetch, however many gaps
     // Its answer is the host's as an event (no ticket of its own), and the casts go on from it.
-    host_answer(&h, q->id, 7, env7, 1, T0);
+    host_answer(&h, id_of(q), 7, env7, 1, T0);
     T_EQ_INT(h.refetched, 1);
     T_EQ_INT(h.table_v, 7);
     T_EQ_MEM(h.table, h.table_len, env7, 1);
@@ -1017,7 +1021,7 @@ static void a_skipped_version_refetches(void) {
     nc_do(&open, T0);
     q = nc_next_request(T0);
     const uint8_t again[] = { 0xa7 };
-    host_answer(&h, q->id, 7, again, 1, T0);
+    host_answer(&h, id_of(q), 7, again, 1, T0);
     T_EQ_INT(h.tickets, 1);
     T_EQ_INT(h.stale, 1);
     T_EQ_MEM(h.table, h.table_len, env7, 1);
@@ -1026,7 +1030,7 @@ static void a_skipped_version_refetches(void) {
     host_push(&h, NW_WS_VIEW, "g1", 9, v9, 1, T0);
     nc_do(&open, T0);
     q = nc_next_request(T0);
-    host_answer(&h, q->id, 9, e9, 1, T0);
+    host_answer(&h, id_of(q), 9, e9, 1, T0);
     T_EQ_INT(h.stale, 1);
     T_EQ_INT(h.table_v, 9);
     T_EQ_MEM(h.table, h.table_len, e9, 1);
@@ -1054,7 +1058,7 @@ static void a_refused_move_catches_up(void) {
         T_CHECK(path_is(q, "/v1/action"));
         // Refused: the server is at 9.
         T_EQ_INT(table_action_response(TABLE_REJECTED, 4, 9, r, sizeof r), TABLE_RESP_BYTES);
-        const NcDone *d = nc_on_response(q->id, 200, r, sizeof r, T0);
+        const NcDone *d = nc_on_response(id_of(q), 200, r, sizeof r, T0);
         T_CHECK(d && d->action_status == TABLE_STATUS_REJECTED);
         // The pushes get a moment to arrive.
         T_EQ_INT(nc_pump_due_ms(T0), NC_RECONCILE_MS);
@@ -1077,7 +1081,7 @@ static void a_refused_move_catches_up(void) {
     nc_do(&play, T0);
     const NcRequest *q = nc_next_request(T0);
     T_EQ_INT(table_action_response(TABLE_APPLIED, 0, 9, r, sizeof r), TABLE_RESP_BYTES);
-    nc_on_response(q->id, 200, r, sizeof r, T0);
+    nc_on_response(id_of(q), 200, r, sizeof r, T0);
     T_EQ_INT(nc_pump_due_ms(T0), -1);
 }
 
@@ -1113,7 +1117,7 @@ static const NcDone *ask_answered(int kind, const char *gid, const uint8_t *env,
     T_CHECK(nc_do(&in, now) != 0);
     const NcRequest *q = nc_next_request(now);
     T_CHECK(path_is(q, "/v1/meta"));
-    return q ? nc_on_response(q->id, 200, env, n, now) : NULL;
+    return q ? nc_on_response(id_of(q), 200, env, n, now) : NULL;
 }
 
 // A game subscription that goes live takes the game whole once (its catch-up),
@@ -1134,7 +1138,7 @@ static void suback_takes_the_game_whole(void) {
     host_t h;
     memset(&h, 0, sizeof h);
     const uint8_t e5[] = { 0xe5 }, c6[] = { 0xc6 };
-    host_answer(&h, q->id, 5, e5, 1, T0);
+    host_answer(&h, id_of(q), 5, e5, 1, T0);
     T_EQ_INT(h.refetched, 1);
     T_EQ_INT(h.table_v, 5);
     // Reconnected: live again, and the read is queued, but the next version
@@ -1198,7 +1202,7 @@ static void seat_and_spectator_casts(void) {
     nc_do(&create, T0);
     const NcRequest *q = nc_next_request(T0);
     int n = envelope("newg01", 1, b, sizeof b);
-    const NcDone *d = nc_on_response(q->id, 200, b, n, T0);
+    const NcDone *d = nc_on_response(id_of(q), 200, b, n, T0);
     T_CHECK(d && d->why == 0 && d->gid_len == 6 && memcmp(d->gid, "newg01", 6) == 0);
     T_CHECK(d && d->version == 1 && d->a_off == 0 && (int)d->a_len == n && !d->stale);
     cpkt s = next_pkt(T0);
@@ -1218,7 +1222,7 @@ static void seat_and_spectator_casts(void) {
     T_EQ_INT(suback(s.pid, 0, 2, T0)->seated, 0);
     q = nc_next_request(T0);   // the catch-up
     T_CHECK(path_is(q, "/v1/games/g2"));
-    uint32_t catch_id = q->id;
+    uint32_t catch_id = id_of(q);
     host_push_on(&h, NW_WS_CAST, "g2", 7, c, 1, 1, T0);
     T_EQ_INT(h.casts, 0);
     // The read says: a spectator. The spectators' casts apply from then on.
@@ -1276,7 +1280,7 @@ static void the_session_is_told_once(void) {
     const NcRequest *q = nc_next_request(T0);
     uint8_t b[256];
     int n = session_body(b, sizeof b, "jwt", T0 + 30000);
-    nc_on_response(q->id, 200, b, n, T0);
+    nc_on_response(id_of(q), 200, b, n, T0);
     host_t h;
     memset(&h, 0, sizeof h);
     host_events(&h);
@@ -1288,12 +1292,12 @@ static void the_session_is_told_once(void) {
     q = nc_next_request(T0);
     T_CHECK(path_is(q, "/v1/auth/refresh"));
     n = session_body(b, sizeof b, "jwt2", T0 + 3600000);
-    nc_on_response(q->id, 200, b, n, T0);
+    nc_on_response(id_of(q), 200, b, n, T0);
     T_CHECK(nc_event(0) && nc_event(0)->kind == NC_EV_SESSION);
     // A feed that changed no session tells none.
     q = nc_next_request(T0);
     n = nw_list_head(NW_GAMES, 0, b, sizeof b);
-    nc_on_response(q->id, 200, b, n, T0);
+    nc_on_response(id_of(q), 200, b, n, T0);
     T_CHECK(nc_event(0) == NULL);
 }
 
@@ -1341,7 +1345,7 @@ static void waiting_intents_keep_their_bytes(void) {
     // Each request carries its own bytes (the chat's: [v][kind][u16 len][message]).
     const NcRequest *q = nc_next_request(T0);
     T_CHECK(path_is(q, "/v1/chat/g1") && q->body_len == 1004 && q->body[4] == 'a' && q->body[1003] == 'a');
-    uint32_t first = q->id;
+    uint32_t first = id_of(q);
     q = nc_next_request(T0);
     T_CHECK(path_is(q, "/v1/action") && q->body[q->body_len - 1] == 7);
     q = nc_next_request(T0);
@@ -1376,7 +1380,7 @@ static void a_host_of_boards_gets_boards(void) {
     T_EQ_INT(h.casts, 0);
     const NcRequest *q = nc_next_request(T0);
     T_CHECK(path_is(q, "/v1/games/g1"));
-    host_answer(&h, q->id, 6, env, 1, T0);
+    host_answer(&h, id_of(q), 6, env, 1, T0);
     T_EQ_INT(h.refetched, 1);
     T_EQ_INT(h.table_v, 6);
     // Its view arriving first makes the fetch moot.
@@ -1389,7 +1393,7 @@ static void a_host_of_boards_gets_boards(void) {
     nc_do(&create, T0);
     q = nc_next_request(T0);
     int n = envelope("newg02", 1, b, sizeof b);
-    T_CHECK(nc_on_response(q->id, 200, b, n, T0) != NULL);
+    T_CHECK(nc_on_response(id_of(q), 200, b, n, T0) != NULL);
     T_EQ_INT(next_pkt(T0).type, 0);
     nc_set_boards(0);
 }
@@ -1406,18 +1410,18 @@ static void a_busy_read_goes_again_a_write_does_not(void) {
     for (int k = 0; k < NC_BUSY_TRIES; k++) {
         const NcRequest *q = nc_next_request(now);
         T_CHECK(path_is(q, "/v1/games"));
-        T_CHECK(nc_on_response(q->id, 503, busy, n, now) == NULL);
+        T_CHECK(nc_on_response(id_of(q), 503, busy, n, now) == NULL);
         T_EQ_INT(nc_pump_due_ms(now), NC_BUSY_FIRST_MS << k);
         T_CHECK(nc_next_request(now + (NC_BUSY_FIRST_MS << k) - 1) == NULL);
         now += NC_BUSY_FIRST_MS << k;
     }
     const NcRequest *q = nc_next_request(now);
-    const NcDone *d = nc_on_response(q->id, 503, busy, n, now);
+    const NcDone *d = nc_on_response(id_of(q), 503, busy, n, now);
     T_CHECK(d && d->ticket == t && d->why == ASK_WHY_BUSY);
     NcIntent create = intent(NC_DO_CREATE, NULL);
     t = nc_do(&create, now);
     q = nc_next_request(now);
-    d = nc_on_response(q->id, 503, busy, n, now);
+    d = nc_on_response(id_of(q), 503, busy, n, now);
     T_CHECK(d && d->ticket == t && d->why == ASK_WHY_BUSY);
 }
 
@@ -1435,7 +1439,7 @@ static void refused_at_9(const char *gid, int64_t now) {
     const NcRequest *q = nc_next_request(now);
     T_CHECK(path_is(q, "/v1/action"));
     T_EQ_INT(table_action_response(TABLE_REJECTED, 4, 9, r, sizeof r), TABLE_RESP_BYTES);
-    const NcDone *d = nc_on_response(q ? q->id : 0, 200, r, sizeof r, now);
+    const NcDone *d = nc_on_response(id_of(q), 200, r, sizeof r, now);
     T_CHECK(d && d->ticket == t && d->action_status == TABLE_STATUS_REJECTED);
 }
 
@@ -1472,7 +1476,7 @@ static void fast_games_leave_the_pump_as_it_was(void) {
             refetches++;
             T_CHECK((atoi(q->path + 11) % 2) == 1);
         }
-        nc_on_response(q->id, 500, NULL, 0, now);
+        nc_on_response(id_of(q), 500, NULL, 0, now);
     }
     T_EQ_INT(sent, NC_PUMP_MAX + refetches);
     T_CHECK(refetches > 0);
@@ -1516,7 +1520,7 @@ static void a_reconcile_lets_go_once_caught_up(void) {
             T_CHECK(nc_do(&open, T0 + 20) != 0);
             const NcRequest *q = nc_next_request(T0 + 20);
             T_CHECK(path_is(q, "/v1/games/g1"));
-            host_answer(&h, q->id, 9, e9, 1, T0 + 20);
+            host_answer(&h, id_of(q), 9, e9, 1, T0 + 20);
             T_EQ_INT(h.table_v, 9);
         }
         T_EQ_INT(nc_pump_due_ms(T0 + 20), -1);
@@ -1539,7 +1543,7 @@ static void a_reconcile_lets_go_with_the_subscription(void) {
     host_t h;
     memset(&h, 0, sizeof h);
     const uint8_t e5[] = { 0xe5 }, v5[] = { 0x55 };
-    host_answer(&h, q->id, 5, e5, 1, T0);
+    host_answer(&h, id_of(q), 5, e5, 1, T0);
     host_push(&h, NW_WS_VIEW, "g2", 5, v5, 1, T0);
     refused_at_9("g1", T0);
     refused_at_9("g2", T0 + 100);
