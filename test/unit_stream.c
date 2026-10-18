@@ -206,10 +206,15 @@ static void protocol(void) {
 
 // ---- what a publish builds ---------------------------------------------------------------
 
-static struct { int n; char topic[128]; uint8_t nw[512]; size_t nw_len; } g_cap;
-static int cap_deliver(cb_rt *rt, const char *topic, const uint8_t *frame, size_t len) {
+// Each target a publish hands the transport: its nw1 topic and its MQTT topic
+// ("" where it has none), and the last message.
+static struct { int n; char nw_topic[8][128], topic[8][128]; uint8_t nw[512]; size_t nw_len; } g_cap;
+static int cap_deliver(cb_rt *rt, const cb_rt_to *to, const uint8_t *frame, size_t len) {
+    if (g_cap.n < 8) {
+        cb_rt_nw_topic(to, g_cap.nw_topic[g_cap.n], sizeof g_cap.nw_topic[0]);
+        cb_rt_topic(to, g_cap.topic[g_cap.n], sizeof g_cap.topic[0]);
+    }
     g_cap.n++;
-    cb_strlcpy(g_cap.topic, topic, sizeof g_cap.topic);
     g_cap.nw_len = len <= sizeof g_cap.nw ? len : 0;
     memcpy(g_cap.nw, frame, g_cap.nw_len);
     return 0;
@@ -217,12 +222,17 @@ static int cap_deliver(cb_rt *rt, const char *topic, const uint8_t *frame, size_
 static const cb_rt_transport CAP_T = { .name = "cap", .deliver = cap_deliver };
 
 static void publishes(void) {
-    cb_rt rt = { &CAP_T, &g_ctx, NULL };
+    cb_rt rt = { &CAP_T, &g_ctx, NULL, NULL };
     memset(&g_cap, 0, sizeof g_cap);
     const uint8_t cast[] = { 1, 2 };
-    rt_publish_cast(&rt, "gu-" G "-" U1, G, 7, cast, 2);
+    rt_publish_cast(&rt, U1, G, 7, cast, 2);
     const uint8_t want_cast[] = { 1, NW_WS_CAST, 6, 'a', 'b', '1', '2', 'c', 'd', 7, 0, 0, 0, 2, 0, 0, 0, 1, 2 };
     T_EQ_MEM(g_cap.nw, g_cap.nw_len, want_cast, sizeof want_cast);
+    T_EQ_STR(g_cap.nw_topic[0], "gu-" G "-" U1);
+    T_EQ_STR(g_cap.topic[0], "u/" U1 "/c/" G);
+    rt_publish_cast(&rt, NULL, G, 7, cast, 1);
+    T_EQ_STR(g_cap.nw_topic[1], "game-" G);
+    T_EQ_STR(g_cap.topic[1], "s/" G);
 
     cb_view_row r;
     memset(&r, 0, sizeof r);
@@ -234,7 +244,8 @@ static void publishes(void) {
     r.version = 9;
     strcpy(r.status, "playing");
     rt_publish_view(&rt, U1, &r, false);
-    T_EQ_STR(g_cap.topic, "pv-" U1);
+    T_EQ_STR(g_cap.nw_topic[2], "pv-" U1);
+    T_EQ_STR(g_cap.topic[2], "u/" U1 "/v");
     const uint8_t want_view[] = { 1, NW_WS_VIEW, 6, 'a', 'b', '1', '2', 'c', 'd', 9, 0, 0, 0, 1, 0, 0, 0, 0xee };
     T_EQ_MEM(g_cap.nw, g_cap.nw_len, want_view, sizeof want_view);
     // A seat given up: the view with no envelope.
@@ -249,10 +260,52 @@ static void publishes(void) {
     strcpy(c.user_id, "u");
     c.message = "hi";
     c.created_at = 6;
-    rt_publish_chat(&rt, G, &c);
+    // Two members: the game's nw1 chat once, then each member's own MQTT topic.
+    cb_uuid members[2] = { U1, U2 };
+    rt_publish_chat(&rt, G, &c, members, 2);
     const uint8_t want_chat[] = { 1, NW_WS_CHAT, 6, 'a', 'b', '1', '2', 'c', 'd', 1, 'm', 1, 'u', 6, 0, 0, 0, 0, 0, 0, 2, 0, 'h', 'i' };
     T_EQ_MEM(g_cap.nw, g_cap.nw_len, want_chat, sizeof want_chat);
-    T_EQ_INT(g_cap.n, 4);
+    T_EQ_INT(g_cap.n, 7);
+    T_EQ_STR(g_cap.nw_topic[4], "chat:" G);
+    T_EQ_STR(g_cap.topic[4], "");
+    T_EQ_STR(g_cap.nw_topic[5], "");
+    T_EQ_STR(g_cap.topic[5], "u/" U1 "/m/" G);
+    T_EQ_STR(g_cap.topic[6], "u/" U2 "/m/" G);
+    // No members (none read): the nw1 chat alone.
+    rt_publish_chat(&rt, G, &c, NULL, 0);
+    T_EQ_INT(g_cap.n, 8);
+}
+
+// A target's topics, and the ids a topic level refuses: nothing an id holds
+// can add a level or a wildcard to an MQTT topic.
+static void targets_name_topics(void) {
+    char t[128];
+    cb_rt_to views = { CB_RT_VIEWS, U1, NULL };
+    T_EQ_INT(cb_rt_topic(&views, t, sizeof t), 2 + 36 + 2);
+    T_EQ_STR(t, "u/" U1 "/v");
+    cb_rt_to chat_all = { CB_RT_CHAT, NULL, G };
+    T_EQ_INT(cb_rt_topic(&chat_all, t, sizeof t), -1);
+    T_EQ_INT(cb_rt_nw_topic(&chat_all, t, sizeof t), 5 + 6);
+    cb_rt_to chat_one = { CB_RT_CHAT, U1, G };
+    T_EQ_INT(cb_rt_nw_topic(&chat_one, t, sizeof t), -1);
+    const char *bad[] = { "", "a/b", "a+", "#", "a b", "a.b", "a\n",
+                          "x0123456789012345678901234567890123456789012345678901234567890123" };   // 65 bytes
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        cb_rt_to a = { CB_RT_SEAT, bad[i], G }, b = { CB_RT_SEAT, U1, bad[i] }, w = { CB_RT_WATCH, NULL, bad[i] };
+        T_EQ_INT(cb_rt_topic(&a, t, sizeof t), -1);
+        T_EQ_INT(cb_rt_topic(&b, t, sizeof t), -1);
+        T_EQ_INT(cb_rt_topic(&w, t, sizeof t), -1);
+        T_EQ_INT(cb_rt_nw_topic(&a, t, sizeof t), -1);
+    }
+    cb_rt_to none = { CB_RT_SEAT, NULL, G };
+    T_EQ_INT(cb_rt_topic(&none, t, sizeof t), -1);
+    cb_rt_to odd = { (cb_rt_family)99, U1, G };
+    T_EQ_INT(cb_rt_topic(&odd, t, sizeof t), -1);
+    T_EQ_INT(cb_rt_nw_topic(&odd, t, sizeof t), -1);
+    // Too small a buffer is a refusal, not a cut topic.
+    cb_rt_to seat = { CB_RT_SEAT, U1, G };
+    T_EQ_INT(cb_rt_topic(&seat, t, 10), -1);
+    T_EQ_INT(cb_rt_topic(&seat, t, 2 + 36 + 3 + 6 + 1), 2 + 36 + 3 + 6);
 }
 
 // ---- cbase serve: a real socket, driven by the client library -------------------------------
@@ -476,11 +529,11 @@ static void serve_end_to_end(void) {
 
     // Pushes: a cast and a view, each once; the same version again is stale.
     const uint8_t cast[] = { 0xca, 0x57 };
-    rt_publish_cast(g_ctx.rt, "gu-" G "-" U1, G, 11, cast, 2);
+    rt_publish_cast(g_ctx.rt, U1, G, 11, cast, 2);
     e = next_event(fd, 2000, &m);
     T_CHECK(e->kind == NC_EV_CAST && e->version == 11 && e->payload_len == 2);
     T_EQ_MEM(nc_event_payload(g_ev), e->payload_len, cast, 2);
-    rt_publish_cast(g_ctx.rt, "gu-" G "-" U1, G, 11, cast, 2);
+    rt_publish_cast(g_ctx.rt, U1, G, 11, cast, 2);
     cb_view_row v;
     memset(&v, 0, sizeof v);
     strcpy(v.game_id, G);
@@ -529,6 +582,7 @@ static void serve_end_to_end(void) {
 int main(void) {
     T_RUN(protocol);
     T_RUN(publishes);
+    T_RUN(targets_name_topics);
     T_RUN(batches);
     T_RUN(long_replies_split);
     T_RUN(serve_end_to_end);

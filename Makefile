@@ -213,8 +213,9 @@ bootstrap:
 bench: build/cbase-bench
 
 # ---- coverage (docs/COVERAGE.md) ------------------------------------------------
-# Every c_base object at -O0 --coverage, and of the kernel only the two files
-# the binary surface is made of (netwire.c, netclient.c): the rest of the
+# Every c_base object at -O0 --coverage, and of the kernel only the files the
+# binary surface is made of (netwire.c, netclient.c, and shared/c/mqtt, the
+# stream's MQTT codec, whose tests are c_base's): the rest of the
 # kernel keeps its own flags, so the bots play at speed. Every unit test and
 # every smoke but the paced game run against it at once, gcovr reads the
 # counts, and tools/cov_gate holds them against tools/cov_floor.txt. The
@@ -226,9 +227,10 @@ COV_CB_CFLAGS = $(filter-out -O2,$(CB_CFLAGS)) $(COV_FLAGS) $(COVO_$*)
 COVO_src/auth/bcrypt := -O2
 COVK_foolish/c/src/netwire := $(COV_FLAGS)
 COVK_foolish/c/src/netclient := $(COV_FLAGS)
+COVK_shared/c/mqtt/mqtt := $(COV_FLAGS)
 COV_KERNEL_CFLAGS = $(KERNEL_CFLAGS) $(COVK_$*)
 $(eval $(call C_VARIANT,build/obj/cov,CC,COV_CB_CFLAGS,,bcrypt:-O2))
-$(eval $(call C_VARIANT,build/obj/cov-kernel,CC,COV_KERNEL_CFLAGS,,netwire+netclient:$(COV_FLAGS)))
+$(eval $(call C_VARIANT,build/obj/cov-kernel,CC,COV_KERNEL_CFLAGS,,netwire+netclient+mqtt:$(COV_FLAGS)))
 $(call prog,build/cov,build/obj/cov,build/obj/cov-kernel,cbase,src/main_serve.c,COV_CB_CFLAGS)
 $(call prog,build/cov,build/obj/cov,build/obj/cov-kernel,bootstrap,src/main_lambda.c,COV_CB_CFLAGS)
 $(foreach u,$(UNITS),$(call prog,build/cov/test,build/obj/cov,build/obj/cov-kernel,$(u),test/$(u).c $(TLIB_SRC),COV_CB_CFLAGS))
@@ -237,7 +239,7 @@ build/cov_gate: tools/cov_gate.c
 	@mkdir -p $(@D)
 	$(CC) -std=gnu11 -O2 -Wall -Wextra -Werror $< -o $@
 
-COV_FILTER := --filter 'src/' --filter '\.\./foolish/c/src/net(wire|client)\.c'
+COV_FILTER := --filter 'src/' --filter '\.\./foolish/c/src/net(wire|client)\.c' --filter '\.\./shared/c/mqtt/mqtt\.c'
 COV_EXCLUDE := --exclude 'build/' --exclude 'test/'
 # Every test program at once, each to its own log (the gcov runtime locks a
 # .gcda while it merges into it); a failed one prints its log and fails the

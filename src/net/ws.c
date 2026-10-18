@@ -104,6 +104,11 @@ static bool has_token(const char *v, const char *tok) {
 }
 
 int cb_ws_upgrade(const cb_http_req *req, cb_http_res *res, const cb_ws_handlers *h, void *ud) {
+    return cb_ws_upgrade_protocol(req, res, h, ud, NULL);
+}
+
+int cb_ws_upgrade_protocol(const cb_http_req *req, cb_http_res *res, const cb_ws_handlers *h, void *ud,
+                           const char *protocol) {
     const char *up = cb_http_header_get(req, "upgrade");
     const char *conn = cb_http_header_get(req, "connection");
     const char *ver = cb_http_header_get(req, "sec-websocket-version");
@@ -119,11 +124,20 @@ int cb_ws_upgrade(const cb_http_req *req, cb_http_res *res, const cb_ws_handlers
         cb_res_header(res, "Sec-WebSocket-Version", "13");
         return CB_E_INVALID;
     }
+    // A subprotocol the endpoint speaks must be one the client offered (RFC
+    // 6455 4.2.2): a browser that offered it fails a 101 that does not name
+    // it, and a client that offered none is not speaking it.
+    const char *offered = cb_http_header_get(req, "sec-websocket-protocol");
+    if (protocol && (!offered || !has_token(offered, protocol))) {
+        cb_res_text(res, 400, "this endpoint speaks a WebSocket subprotocol the request did not offer\n");
+        return CB_E_INVALID;
+    }
     res->status = 101;
     cb_buf_reset(&res->body);
     cb_res_header(res, "Upgrade", "websocket");
     cb_res_header(res, "Connection", "Upgrade");
     cb_res_header(res, "Sec-WebSocket-Accept", accept);
+    if (protocol) cb_res_header(res, "Sec-WebSocket-Protocol", protocol);
     res->upgrade = true;
     res->ws_handlers = h;
     res->ws_ud = ud;

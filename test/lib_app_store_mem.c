@@ -258,6 +258,23 @@ static int m_is_member(cb_store *s, const char *game, const char *user) {
     return r;
 }
 
+static int m_game_members(cb_store *s, const char *game, cb_name_fn fn, void *ud) {
+    tm_impl *m = IMPL(s);
+    cb_uuid ids[CB_MAX_SEATS];
+    int n = 0;
+    pthread_mutex_lock(&m->mu);
+    tm_game *g = find_game(m, game);
+    for (int j = 0; g && j < g->n_humans && n < CB_MAX_SEATS; j++) memcpy(ids[n++], g->humans[j], sizeof ids[0]);
+    pthread_mutex_unlock(&m->mu);
+    int k = 0;
+    while (k < n) {
+        bool more = fn(ids[k], ud);
+        k++;
+        if (!more) break;
+    }
+    return k;
+}
+
 static int m_games_needing_bots(cb_store *s, int64_t stale_before, int64_t active_after, int limit, cb_name_fn fn, void *ud) {
     tm_impl *m = IMPL(s);
     char ids[TM_GAMES][CB_GAME_ID_MAX + 1];
@@ -443,6 +460,7 @@ static const cb_store_ops tm_ops = {
     .game_delete = m_game_delete,
     .games_of_user = m_games_of_user,
     .is_member = m_is_member,
+    .game_members = m_game_members,
     .games_needing_bots = m_games_needing_bots,
     .lease_acquire = m_lease_acquire,
     .lease_renew = m_lease_renew,

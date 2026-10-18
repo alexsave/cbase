@@ -308,6 +308,43 @@ static void games_of_user_and_membership(void) {
     cb_store_close(s);
 }
 
+// A game's human members (a chat's audience): one consistent Query of the
+// game's seat items, the bots left out; fn may stop it; a failed read is the
+// store's error.
+typedef struct { int n; char ids[4][40]; int stop_after; } ids_seen;
+static bool see_id(const char *id, void *ud) {
+    ids_seen *w = ud;
+    if (w->n < 4) snprintf(w->ids[w->n], sizeof w->ids[0], "%s", id);
+    w->n++;
+    return w->stop_after <= 0 || w->n < w->stop_after;
+}
+
+static void game_members_are_the_human_seats(void) {
+    static const char SEATS[] =
+        "{\"Items\":[{\"pk\":{\"S\":\"GAME#aaaaaa\"},\"sk\":{\"S\":\"BOT#b0000000-0000-4000-8000-000000000001\"}},"
+        "{\"pk\":{\"S\":\"GAME#aaaaaa\"},\"sk\":{\"S\":\"MEMBER#" U1 "\"}},"
+        "{\"pk\":{\"S\":\"GAME#aaaaaa\"},\"sk\":{\"S\":\"MEMBER#" U2 "\"}}],\"Count\":3}";
+    static const step steps[] = {
+        { "Query", "\"GAME#aaaaaa\"", 200, SEATS },
+        { "Query", NULL, 200, SEATS },
+        { "Query", NULL, 200, "{\"Items\":[],\"Count\":0}" },
+        { "Query", NULL, 400, VALIDATION },
+    };
+    RUN(steps, s);
+    ids_seen w = { 0 };
+    T_EQ_INT(CB_STORE_CALL(s, game_members, "aaaaaa", see_id, &w), 2);
+    T_EQ_STR(w.ids[0], U1);
+    T_EQ_STR(w.ids[1], U2);
+    T_CHECK(strstr(sc_.bodies[0], "\"ConsistentRead\":true") != NULL);
+    ids_seen one = { .stop_after = 1 };
+    T_EQ_INT(CB_STORE_CALL(s, game_members, "aaaaaa", see_id, &one), 1);
+    ids_seen none = { 0 };
+    T_EQ_INT(CB_STORE_CALL(s, game_members, "aaaaaa", see_id, &none), 0);
+    T_EQ_INT(CB_STORE_CALL(s, game_members, "aaaaaa", see_id, &none), CB_E_DB);
+    T_EQ_INT(sc_.at, sc_.n);
+    cb_store_close(s);
+}
+
 // A drive that found nothing takes the game out of the scan: the SCAN marker
 // deleted, on condition it still describes the version the drive read.
 static void bots_idle_deletes_the_marker(void) {
@@ -764,6 +801,7 @@ int main(void) {
     T_RUN(games_of_user_and_membership);
     T_RUN(bots_idle_deletes_the_marker);
     T_RUN(lease_held_reads_the_marker);
+    T_RUN(game_members_are_the_human_seats);
     T_RUN(bots_and_ratings);
     T_RUN(snapshots_put_and_query);
     T_RUN(chat_put_refusals);

@@ -7,7 +7,9 @@
 #include "util/log.h"
 #include "util/clock.h"
 #include "realtime/realtime.h"
+#include "realtime/stream_mqtt.h"
 #include "util/b64.h"
+#include "net/http.h"
 #include "util/hex.h"
 #include "util/json.h"
 
@@ -2499,6 +2501,130 @@ static int decode_ws(const char *json, size_t len, cb_event *ev) {
     return CB_OK;
 }
 
+// ---- the IoT custom authorizer -------------------------------------------------------
+
+static bool on_iot_header(cb_span key, cb_span val, cb_json_type t, void *ud) {
+    cb_iot_auth_event *a = ud;
+    if (t != CB_JSON_STR) return true;
+    char k[32];
+    int kn = cb_json_unescape(key, k, sizeof k);
+    if (kn < 0 || (size_t)kn != strlen(CB_ORIGIN_HEADER) || strncasecmp(k, CB_ORIGIN_HEADER, (size_t)kn) != 0) return true;
+    int vn = cb_json_unescape(val, a->origin, sizeof a->origin);
+    a->has_origin = vn >= 0 && (size_t)vn == strlen(a->origin);
+    if (!a->has_origin) a->origin[0] = 0;
+    return false;
+}
+
+static bool iot_query_token(const char *key, const char *value, void *ud) {
+    if (strcmp(key, "token") != 0) return true;
+    cb_iot_auth_event *a = ud;
+    size_t n = strlen(value);
+    if (n < sizeof a->token) {
+        memcpy(a->token, value, n + 1);
+        a->token_len = n;
+    }
+    return false;
+}
+
+static int decode_iot_auth(const char *json, size_t len, cb_event *ev) {
+    cb_iot_auth_event *a = &ev->iot;
+    // A token that does not fit, or does not decode, is left out: no token is
+    // a refusal, and a cut one would be a different string.
+    char pw64[sizeof a->token * 4 / 3 + 8];
+    if (cb_json_get_str(json, len, "protocolData.mqtt.password", pw64, sizeof pw64)) {
+        int n = cb_b64_decode(pw64, strlen(pw64), (uint8_t *)a->token, sizeof a->token - 1);
+        if (n > 0 && !memchr(a->token, 0, (size_t)n)) {
+            a->token[n] = 0;
+            a->token_len = (size_t)n;
+        } else {
+            a->token[0] = 0;
+        }
+    }
+    if (!a->token_len && cb_json_get_str(json, len, "token", a->token, sizeof a->token)) a->token_len = strlen(a->token);
+    if (!a->token_len) {
+        char qs[4096];
+        if (cb_json_get_str(json, len, "protocolData.http.queryString", qs, sizeof qs))
+            cb_http_query_each(qs[0] == '?' ? qs + 1 : qs, iot_query_token, a);
+    }
+    if (!cb_json_get_str(json, len, "protocolData.mqtt.clientId", a->client_id, sizeof a->client_id)) a->client_id[0] = 0;
+    cb_span hdrs;
+    if (cb_json_find(json, len, "protocolData.http.headers", &hdrs) == CB_JSON_OBJ) walk(hdrs, on_iot_header, a);
+    return CB_OK;
+}
+
+// Plain text an ARN may carry: a region or an account id.
+static bool arn_part_ok(const char *s) {
+    if (!s || !*s || strlen(s) > 32) return false;
+    for (; *s; s++)
+        if (!((*s >= 'a' && *s <= 'z') || (*s >= '0' && *s <= '9') || *s == '-')) return false;
+    return true;
+}
+
+// One Allow statement: `action` on each resource "<base>:<res[i]>".
+static void iot_statement(cb_jw *w, const char *action, const char *base, const char *const *res, int n) {
+    cb_jw_obj(w);
+    cb_jw_kstr(w, "Effect", "Allow");
+    cb_jw_kstr(w, "Action", action);
+    cb_jw_key(w, "Resource");
+    cb_jw_arr(w);
+    for (int i = 0; i < n; i++) {
+        char r[256];
+        snprintf(r, sizeof r, "%s:%s", base, res[i]);
+        cb_jw_str(w, r);
+    }
+    cb_jw_end(w);
+    cb_jw_end(w);
+}
+
+int cb_iot_auth_encode(bool ok, const char *user_id, int64_t lifetime_s, const char *region, const char *account,
+                       cb_buf *out) {
+    if (ok && (!cb_mqtt_user_ok(user_id) || !arn_part_ok(region) || !arn_part_ok(account) || lifetime_s < 300 ||
+               lifetime_s > 86400))
+        return CB_E_INVALID;
+    cb_jw w;
+    cb_jw_init(&w, out);
+    cb_jw_obj(&w);
+    cb_jw_kbool(&w, "isAuthenticated", ok);
+    if (ok) {
+        char principal[40];
+        size_t k = 0;
+        for (const char *p = user_id; *p; p++)
+            if (*p != '-') principal[k++] = *p;
+        principal[k] = 0;
+        cb_jw_kstr(&w, "principalId", principal);
+        cb_jw_kint(&w, "disconnectAfterInSeconds", lifetime_s);
+        cb_jw_kint(&w, "refreshAfterInSeconds", lifetime_s);
+        char base[96], client[64], tf_user[64], t_user[64];
+        snprintf(base, sizeof base, "arn:aws:iot:%s:%s", region, account);
+        snprintf(client, sizeof client, "client/%s-*", user_id);
+        snprintf(tf_user, sizeof tf_user, "topicfilter/u/%s/*", user_id);
+        snprintf(t_user, sizeof t_user, "topic/u/%s/*", user_id);
+        const char *connect[] = { client }, *subscribe[] = { tf_user, "topicfilter/s/*" }, *receive[] = { t_user, "topic/s/*" };
+        cb_buf pol;
+        cb_buf_init(&pol);
+        cb_jw pw;
+        cb_jw_init(&pw, &pol);
+        cb_jw_obj(&pw);
+        cb_jw_kstr(&pw, "Version", "2012-10-17");
+        cb_jw_key(&pw, "Statement");
+        cb_jw_arr(&pw);
+        iot_statement(&pw, "iot:Connect", base, connect, 1);
+        iot_statement(&pw, "iot:Subscribe", base, subscribe, 2);
+        iot_statement(&pw, "iot:Receive", base, receive, 2);
+        cb_jw_end(&pw);
+        cb_jw_end(&pw);
+        bool pok = cb_jw_ok(&pw);
+        cb_jw_key(&w, "policyDocuments");
+        cb_jw_arr(&w);
+        cb_jw_strn(&w, (const char *)pol.p, pol.len);
+        cb_jw_end(&w);
+        cb_buf_free(&pol);
+        if (!pok) return CB_E_NOMEM;
+    }
+    cb_jw_end(&w);
+    return cb_jw_ok(&w) ? CB_OK : CB_E_NOMEM;
+}
+
 // ---- the string literals ------------------------------------------------------------
 
 static bool game_id_ok(const char *s, size_t n, size_t cap) {
@@ -2552,6 +2678,9 @@ int cb_event_decode(const char *json, size_t len, cb_event *out) {
     } else if (cb_json_find(json, len, "requestContext.http.method", NULL) == CB_JSON_STR) {
         out->kind = CB_EVENT_HTTP;
         rc = decode_http(json, len, out);
+    } else if (cb_json_find(json, len, "protocolData", NULL) == CB_JSON_OBJ) {
+        out->kind = CB_EVENT_IOT_AUTH;
+        rc = decode_iot_auth(json, len, out);
     } else if (cb_json_get_str(json, len, "source", src, sizeof src) && strcmp(src, "aws.events") == 0) {
         out->kind = CB_EVENT_SCHEDULE;
         rc = CB_OK;

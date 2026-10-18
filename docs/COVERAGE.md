@@ -5,7 +5,7 @@ CI runs it as the `coverage` job of `.github/workflows/c_base.yml`.
 
 ## What is measured
 
-Every source in `c_base/src`, and of the kernel the two files the binary surface is made of, `foolish/c/src/netwire.c` and `netclient.c`.
+Every source in `c_base/src`, and of the kernel the files the binary surface is made of, `foolish/c/src/netwire.c` and `netclient.c`, and the stream's MQTT codec `shared/c/mqtt/mqtt.c` (its tests are c_base's, `test/unit_mqtt.c`).
 The rest of the kernel is measured by foolish/c's own coverage job.
 The objects are built a third way, beside the normal and the sanitized ones: `build/obj/cov` at `-O0 --coverage`, and `build/obj/cov-kernel`, where only `netwire.c` and `netclient.c` are instrumented, so the bots in the tests play at the kernel's own speed.
 `bcrypt.c` keeps `-O2`, because `unit_bcrypt` holds cost 10 to GoTrue's CPU budget and `-O0` misses it.

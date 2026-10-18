@@ -259,9 +259,11 @@ static bool collect_conn(const cb_conn_row *r, void *ud) {
     return true;
 }
 
-static int apigw_deliver(cb_rt *rt, const char *topic, const uint8_t *frame, size_t len) {
+static int apigw_deliver(cb_rt *rt, const cb_rt_to *to, const uint8_t *frame, size_t len) {
     apigw *A = rt->impl;
     cb_ctx *ctx = rt->ctx;
+    char topic[CB_TOPIC_MAX];
+    if (cb_rt_nw_topic(to, topic, sizeof topic) < 0) return 0;   // not an nw1 target (a member's own chat)
     char endpoint[600];
     endpoint_of(ctx, NULL, endpoint, sizeof endpoint);
     if (!endpoint[0]) {
@@ -314,15 +316,17 @@ static bool collect_user_conn(const cb_conn_row *r, void *ud) {
     return true;
 }
 
-static void apigw_forget(cb_rt *rt, const char *user_id, const char *const *topics, int n) {
+static void apigw_forget(cb_rt *rt, const char *user_id, const cb_rt_to *to, int n) {
     cb_ctx *ctx = rt->ctx;
     if (!ctx->store) return;
     char endpoint[600];
     endpoint_of(ctx, NULL, endpoint, sizeof endpoint);
     user_targets u = { user_id, 0, 0, NULL };
     for (int i = 0; i < n; i++) {
-        int rc = CB_STORE_CALL(ctx->store, conns_by_topic, topics[i], collect_user_conn, &u);
-        if (rc < 0) CB_WARN("realtime", "forget %s: %s not read: %s", user_id, topics[i], cb_strerror(rc));
+        char topic[CB_TOPIC_MAX];
+        if (cb_rt_nw_topic(&to[i], topic, sizeof topic) < 0) continue;
+        int rc = CB_STORE_CALL(ctx->store, conns_by_topic, topic, collect_user_conn, &u);
+        if (rc < 0) CB_WARN("realtime", "forget %s: %s not read: %s", user_id, topic, cb_strerror(rc));
     }
     for (size_t i = 0; i < u.n; i++) {
         if (endpoint[0]) cb_rt_deps_g.apigw_delete(endpoint, u.t[i].id);

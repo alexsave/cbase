@@ -464,3 +464,62 @@ A mutation that would not compile (an unused variable under -Werror) was replace
 - stream.c: a batch's entries not checked for a client's kind -> smoke_matrix `stream_frames` "server frame in a batch" (an ACK inside ran nothing before; now the batch's SUB_AS was answered and the socket stayed).
 - rt_apigw.c: route replies taken when CBASE_WS_ROUTE_REPLY says no, and not when it says yes -> smoke_lambda_after: `the_answer_goes_first` (the SUB's ACK never POSTed) and `route_replies_ride_in_the_answer` (no body in the $default answer).
 - smoke.c's two deadlines (the transport's 10 s, "the version held 5 s"): each reproduced red by freezing the server with SIGSTOP (11-15 s, mid-game; 12 s, while the idle test waited for the bots), and green after with the same freeze.
+
+
+
+## MQTT on IoT Core, stage 1 (2026-10-17: unit_mqtt, unit_stream_mqtt, unit_rt_iot, unit_rt_local, unit_store, unit_ws, smoke_authz)
+
+Run one mutant at a time from a script that deletes the mutated file's objects before and after (make compares whole seconds); equivalent or build-breaking mutants were reworded until they compiled and changed behaviour.
+
+- mqtt.c: a fifth remaining-length byte accepted -> `lengths_and_types` parse(five) == -1.
+- mqtt.c: the reader's limit not checked -> `publish_both_ways` parse(out, 5, 4096) == -1 (refused from the length alone).
+- mqtt.c: QoS 2 and DUP at QoS 0 accepted -> `publish_both_ways` QoS 2 == -1, dup0 == -1.
+- mqtt.c: password without username accepted -> `connect_refused_shapes` parse(pw) == -1.
+- mqtt.c: '#' not last accepted -> `client_packets` "u/#/v" == -1 (and the writer's refusal).
+- mqtt.c: '+' as part of a level accepted -> `topics` mqtt_topic_ok("+u") == 0.
+- mqtt.c: '$' topics matched by a leading wildcard -> `topics` match("#", "$SYS/x").
+- mqtt.c: "a/#" not matching "a" -> `topics` match("u/a/#", "u/a").
+- mqtt.c: a level matched past its end -> `topics` match.
+- mqtt.c: CONNECT's trailing bytes accepted -> `connect_refused_shapes` parse(t) == -1.
+- mqtt.c: a 17th filter accepted -> `client_packets` parse(big) == -1.
+- mqtt.c: SUBSCRIBE QoS byte's reserved bits accepted -> `client_packets` 0x41 == -1.
+- mqtt.c: a SUBACK code of 3 accepted -> `connack_suback_unsuback_pingresp` parse(bad_code) == -1.
+- mqtt.c: printable range widened to 0x20 -> `connect_written_and_read` "a b" == -1.
+- mqtt.c: the length-byte boundary at 16384 moved -> `publish_both_ways` mqtt_publish_len == written length.
+- mqtt.c: a type the side never sends waited for -> `lengths_and_types` parse(first) == -1.
+- stream_mqtt.c: "s/" alone allowed -> `subscribe_policy` "s/".
+- stream_mqtt.c: the '/' after the user not required -> `subscribe_policy` "u/<A>0/v".
+- stream_mqtt.c: client id prefix only -> `connect_policy` "<A>", "<A>-", "<A>x".
+- stream_mqtt.c: the policy not asked on SUBSCRIBE -> `a_connection_ends` mixed SUBSCRIBE == CB_E_FORBIDDEN (and `smoke_authz` mqtt subscribe as stranger).
+- stream_mqtt.c: no end at the token's expiry -> `a_connection_ends` PINGREQ at expiry == CB_E_AUTH.
+- stream_mqtt.c: a second CONNECT taken -> `a_connection_ends` == CB_E_INVALID.
+- stream_mqtt.c: PUBLISH taken -> `a_connection_ends` == CB_E_FORBIDDEN.
+- stream_mqtt.c: CB_MQTT_SUBS not enforced -> `a_connection_ends` 33rd filter == CB_E_FULL.
+- stream_mqtt.c: the same filter twice takes two slots -> `a_connection_lives` n_subs == 2.
+- stream_mqtt.c: no 300 s floor -> `connect_policy` expires_s == now + 300.
+- stream_mqtt.c: a user id that is not a UUID granted -> `connect_policy` "tok-u+" == CB_E_AUTH.
+- stream_mqtt.c: a NUL inside the token passed on -> `connect_policy` "tok-<A>\0junk" == CB_E_AUTH.
+- stream_mqtt.c: keep-alive past 1200 s taken -> `a_connection_ends` keep-alive row.
+- rt_local.c: an MQTT connection hears every publish -> `mqtt_publishes_reach_their_topics` b hears nothing of U1's.
+- rt_local.c: text frames taken on MQTT -> `mqtt_refusals_end_the_connection` "wAA=" closes 1003.
+- rt_local.c: a refusal not closing the socket -> `mqtt_refusals_end_the_connection` close 1008.
+- rt_local.c: /mqtt without the subprotocol -> `mqtt_upgrade_route` fd == -1.
+- rt_local.c: forget skipping MQTT connections -> `mqtt_publishes_reach_their_topics` close 1008 after forget.
+- ws.c: the 101 not naming the subprotocol -> `subprotocols` header present.
+- ws.c: an offered list not checked for the whole token -> `subprotocols` "mqttv3.1" == CB_E_INVALID.
+- rt_iot.c: the origin not checked -> `only_through_the_edge` !ok without and with a wrong header.
+- rt_iot.c: a 403 publish counted as delivered -> `pushes_are_publishes` failures == 1.
+- rt_iot.c: the whole-game chat target published -> `pushes_are_publishes` n == 4.
+- rt_iot.c: the event's client id ignored -> `the_policy` another user's client id !ok.
+- rt_iot.c: a fixed lifetime -> `the_policy` disconnectAfterInSeconds == 1800.
+- json_surface.c: a password holding a NUL taken -> `decoded_events` token_len == 0.
+- json_surface.c: the user id not checked before a policy is written -> `the_encoder_refuses_what_a_policy_cannot_hold`.
+- json_surface.c: a '*' allowed in a region -> `the_policy` "us-east-*" == CB_E_INVALID.
+- json_surface.c: the origin header matched by case -> `decoded_events` has_origin.
+- json_surface.c: the event's token ignored -> `decoded_events` token == "tok-<B>".
+- json_surface.c: IoT's leading '?' kept on the query -> `decoded_events` "?token=..." read.
+- config.c: CBASE_IOT_ENDPOINT taken with a scheme or path -> `the_endpoint_setting` == CB_E_INVALID.
+- store_sqlite.c: game_members not stopping when fn says so -> `membership_follows_commits` count == 1.
+- store_dynamo.c: game_members handing out a bot -> `membership_follows_commits` who.n == 2 (DynamoDB Local).
+- realtime.c: the account not read on the token check -> `smoke_authz` a deleted account's token connects.
+- mqtt.c: a non-minimal remaining length accepted -> `fz_mqtt` replay of `repro-nonminimal-length`, FZ_CHECK w == k.

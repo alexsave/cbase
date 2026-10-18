@@ -1,9 +1,10 @@
 // fanout.c - after a winning commit, who hears about it (fanout.h).
 //
-// Two things after every winning commit: each human seat's view on its pv-<uid>
-// stream (on EVERY commit; a seat that left hears the view with no envelope),
-// and the casts, a gu-<game>-<uid> per human seat and a game-<game> for the
-// spectators, only when the operation moved something a viewer sees.
+// Two things after every winning commit: each human seat's view on its own
+// views stream (realtime.h CB_RT_VIEWS, on EVERY commit; a seat that left hears
+// the view with no envelope), and the casts, one per human seat (CB_RT_SEAT)
+// and one for the spectators (CB_RT_WATCH), only when the operation moved
+// something a viewer sees.
 #include "fanout.h"
 
 #include "after.h"
@@ -26,7 +27,6 @@ void cb_fanout_publish(cb_ctx *ctx, const cb_fanout *f) {
         CB_DEBUG("fanout", "game %s v%lld: no realtime, nothing published", f->game_id, (long long)f->version);
         return;
     }
-    char topic[CB_TOPIC_MAX];
     for (int i = 0; i < f->n_seats; i++) {
         if (!f->seats[i].user_id[0]) continue;   // a bot has no client
         cb_view_row row;
@@ -51,11 +51,7 @@ void cb_fanout_publish(cb_ctx *ctx, const cb_fanout *f) {
     if (!f->broadcast) return;
     for (int i = 0; i < f->n_seats; i++) {
         if (!f->seats[i].user_id[0] || !f->seats[i].cast) continue;
-        snprintf(topic, sizeof topic, "gu-%s-%s", f->game_id, f->seats[i].user_id);
-        rt_publish_cast(rt, topic, f->game_id, f->version, f->seats[i].cast, f->seats[i].cast_len);
+        rt_publish_cast(rt, f->seats[i].user_id, f->game_id, f->version, f->seats[i].cast, f->seats[i].cast_len);
     }
-    if (f->spectator_cast) {
-        snprintf(topic, sizeof topic, "game-%s", f->game_id);
-        rt_publish_cast(rt, topic, f->game_id, f->version, f->spectator_cast, f->spectator_cast_len);
-    }
+    if (f->spectator_cast) rt_publish_cast(rt, NULL, f->game_id, f->version, f->spectator_cast, f->spectator_cast_len);
 }

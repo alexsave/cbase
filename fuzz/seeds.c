@@ -16,6 +16,8 @@
 #include "net/ws.h"
 #include "store/store.h"
 #include "util/b64.h"
+
+#include "../../shared/c/mqtt/mqtt.h"
 #include "util/hex.h"
 #include "util/str.h"
 
@@ -690,6 +692,76 @@ static void seeds_sequence(void) {
     put("sequence", "two-players", p, n);
 }
 
+// The MQTT codec, the hub's side and the IoT authorizer's request: packets the
+// shared codec writes, a whole session as WebSocket messages, and the event IoT
+// documents with a real token's shape.
+static void seeds_mqtt(void) {
+    uint8_t b[2048], all[4096];
+    const char *uid = U1;
+    char id[64], tok[64], topic[96];
+    snprintf(id, sizeof id, "%s-seed", uid);
+    snprintf(tok, sizeof tok, "tok-%s", uid);
+    snprintf(topic, sizeof topic, "u/%s/#", uid);
+    MqttTopic t[2] = { { topic, (int)strlen(topic), 0 }, { "s/ab12cd", 8, 0 } };
+    // Client packets, back to back (mode 1), and server packets (mode 0).
+    int at = 0;
+    all[at++] = 0x11;
+    at += mqtt_write_connect(all + at, (int)sizeof all - at, id, (int)strlen(id), 60, "token", 5, (const uint8_t *)tok, (int)strlen(tok));
+    at += mqtt_write_subscribe(all + at, (int)sizeof all - at, 1, t, 2);
+    at += mqtt_write_unsubscribe(all + at, (int)sizeof all - at, 2, t, 1);
+    at += mqtt_write_bare(all + at, (int)sizeof all - at, MQTT_PINGREQ);
+    at += mqtt_write_bare(all + at, (int)sizeof all - at, MQTT_DISCONNECT);
+    put("mqtt", "client-stream", all, (size_t)at);
+    at = 0;
+    all[at++] = 0x10;
+    static const uint8_t codes[] = { 0, MQTT_SUBACK_FAILURE };
+    at += mqtt_write_connack(all + at, (int)sizeof all - at, 0, 0);
+    at += mqtt_write_suback(all + at, (int)sizeof all - at, 1, codes, 2);
+    snprintf(topic, sizeof topic, "u/%s/v", uid);
+    static const uint8_t push[] = { 1, NW_WS_VIEW, 6, 'a', 'b', '1', '2', 'c', 'd', 7, 0, 0, 0, 1, 0, 0, 0, 0xee };
+    at += mqtt_write_publish(all + at, (int)sizeof all - at, topic, (int)strlen(topic), push, sizeof push);
+    at += mqtt_write_unsuback(all + at, (int)sizeof all - at, 2);
+    at += mqtt_write_bare(all + at, (int)sizeof all - at, MQTT_PINGRESP);
+    put("mqtt", "server-stream", all, (size_t)at);
+    static const char match[] = "\x02u/+/c/#\0u/a/c/g1";
+    put("mqtt", "match", match, sizeof match - 1);
+    // The hub: [query token?] then messages of [length/8][time step][bytes].
+    at = 0;
+    all[at++] = 0;
+    int parts[4], np = 0;
+    parts[np++] = mqtt_write_connect(b, sizeof b, id, (int)strlen(id), 60, "token", 5, (const uint8_t *)tok, (int)strlen(tok));
+    for (int i = 0; i < 1; i++) {
+        all[at++] = (uint8_t)((parts[0] - 1) / 8);
+        all[at++] = 0;
+        memcpy(all + at, b, (size_t)parts[0]);
+        at += parts[0];
+    }
+    int n = mqtt_write_subscribe(b, sizeof b, 1, t, 2);
+    all[at++] = (uint8_t)((n - 1) / 8);
+    all[at++] = 0;
+    memcpy(all + at, b, (size_t)n);
+    at += n;
+    n = mqtt_write_bare(b, sizeof b, MQTT_PINGREQ);
+    all[at++] = 0;
+    all[at++] = 0;
+    memcpy(all + at, b, (size_t)n);
+    at += n;
+    put("mqtt_hub", "session", all, (size_t)at);
+    // The authorizer: the request IoT documents, the token as the MQTT password.
+    char pw64[128], ev[1024];
+    cb_b64_encode((const uint8_t *)tok, strlen(tok), pw64, sizeof pw64);
+    snprintf(ev, sizeof ev,
+             "{\"token\":\"\",\"signatureVerified\":false,\"protocols\":[\"tls\",\"http\",\"mqtt\"],"
+             "\"protocolData\":{\"tls\":{\"serverName\":\"api.foolish.cards\"},\"http\":{\"headers\":"
+             "{\"X-Cbase-Origin\":\"0123456789abcdef0123456789abcdef\"},\"queryString\":"
+             "\"?x-amz-customauthorizer-name=cbase-stream\"},\"mqtt\":{\"username\":\"token\",\"password\":\"%s\","
+             "\"clientId\":\"%s\"}},\"connectionMetadata\":{\"id\":\"c1\"}}",
+             pw64, id);
+    puts_("iot_auth", "connect", ev);
+    snprintf(ev, sizeof ev, "{\"protocolData\":{\"http\":{\"headers\":{},\"queryString\":\"?token=%s\"}}}", tok);
+    puts_("iot_auth", "query-token", ev);
+}
+
 int main(int argc, char **argv) {
     if (argc != 2) { fprintf(stderr, "usage: seeds <corpus dir>\n"); return 2; }
     g_root = argv[1];
@@ -713,6 +785,7 @@ int main(int argc, char **argv) {
     seeds_netclient();
     seeds_table();
     seeds_sequence();
+    seeds_mqtt();
     printf("seeds: %d files (%d DynamoDB items, %d envelopes, %d casts, %d moves)\n", g_written, g_n_items, g_n_env,
            g_n_cast, g_n_wire);
     return 0;

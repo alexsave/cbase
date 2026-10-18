@@ -6,6 +6,7 @@
 #include "handler.h"
 #include "net/router.h"
 #include "realtime/rt_apigw.h"
+#include "realtime/rt_iot.h"
 #include "realtime/rt_local.h"
 #include "store/store.h"
 #include "table.h"
@@ -85,6 +86,11 @@ int cb_boot(cb_ctx *ctx, char *err, size_t cap) {
     if ((rc = soft("auth", cb_auth_new(ctx, &ctx->auth), err, cap)) != CB_OK) return rc;
     rc = ctx->mode == CB_MODE_LAMBDA ? cb_rt_apigw_new(ctx, &ctx->rt) : cb_rt_local_new(ctx, &ctx->rt);
     if ((rc = soft("realtime", rc, err, cap)) != CB_OK) return rc;
+    // While clients move from nw1 to MQTT, Lambda publishes to IoT Core too (realtime.h).
+    if (ctx->mode == CB_MODE_LAMBDA && ctx->rt && cfg->iot_endpoint[0]) {
+        rc = cb_rt_iot_new(ctx, &ctx->rt->also);
+        if ((rc = soft("realtime iot", rc, err, cap)) != CB_OK) return rc;
+    }
     ctx->kick_bots = ctx->mode == CB_MODE_LAMBDA ? cb_bots_kick_lambda : cb_bots_kick_local;
     cb_limit_set_admin_fail_burst(cfg->admin_fail_limit);
 

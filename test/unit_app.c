@@ -1234,7 +1234,7 @@ static void the_answer_goes_before_its_pushes(void) {
 
 // A transport that reaches nobody: every delivery fails.
 static int g_failed_deliveries;
-static int failing_deliver(cb_rt *rt, const char *topic, const uint8_t *frame, size_t len) {
+static int failing_deliver(cb_rt *rt, const cb_rt_to *to, const uint8_t *frame, size_t len) {
     g_failed_deliveries++;
     return 1;
 }
@@ -1248,7 +1248,7 @@ static void a_push_that_fails_after_the_answer_is_logged(void) {
     char gid[CB_GAME_ID_MAX + 1];
     reply r;
     create_game(gid, &r);
-    cb_rt rt = { &FAILING_T, &g_ctx, NULL };
+    cb_rt rt = { &FAILING_T, &g_ctx, NULL, NULL };
     g_ctx.rt = &rt;
     g_failed_deliveries = 0;
     uint64_t seq = cb_log_last_seq();

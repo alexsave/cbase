@@ -43,6 +43,9 @@
 #   CBASE_ORIGIN_ENFORCED  yes (no: send the origin header without checking it,
 #                          for the first deploy of a new or rotated secret)
 #   CBASE_ALARM_EMAIL      where the alarms are emailed ("" for nobody)
+#   CBASE_IOT              yes: realtime over AWS IoT Core too (the account's
+#                          iot:Data-ATS endpoint is read and passed as
+#                          IotEndpoint); no: none of it
 #
 # The JWT secret and the admin token travel to SSM through a 0600 file; the
 # origin secret travels to CloudFormation as a NoEcho parameter, so it appears
@@ -189,6 +192,15 @@ if [ "$stack_exists" = yes ]; then
 fi
 echo "distribution: ${dist_id:-(none yet)}"
 
+# Realtime over IoT Core (cbase.yaml IotEndpoint): the account's data endpoint
+# in this region, which only the IoT API names (CloudFormation cannot).
+iot_endpoint=""
+if [ "${CBASE_IOT:-yes}" = yes ]; then
+  iot_endpoint="$(aws iot describe-endpoint --region "$region" --endpoint-type iot:Data-ATS \
+    --query endpointAddress --output text)" || die "could not read the IoT Core endpoint (CBASE_IOT=no to deploy without it)"
+fi
+echo "iot endpoint: ${iot_endpoint:-(none)}"
+
 # The change set is made, read, and only then executed: a change that would
 # REPLACE a resource (the table, the distribution, the domain's alias) stops
 # the run unless CBASE_ALLOW_REPLACE=1. CloudFormation's own deploy would
@@ -213,7 +225,8 @@ aws cloudformation deploy \
     "AllowedOrigins=$origins" \
     "FunctionName=$function_name" \
     "TableName=$table" \
-    "DistributionId=$dist_id" | tee "$here/build/deploy-changeset.txt"
+    "DistributionId=$dist_id" \
+    "IotEndpoint=$iot_endpoint" | tee "$here/build/deploy-changeset.txt"
 changeset="$(grep -o 'arn:aws:cloudformation:[^ ]*changeSet/[^ ]*' "$here/build/deploy-changeset.txt" | head -1 || true)"
 if [ -n "$changeset" ]; then
   aws cloudformation describe-change-set --region "$region" --change-set-name "$changeset" \

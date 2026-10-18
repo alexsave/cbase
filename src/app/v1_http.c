@@ -384,11 +384,29 @@ static void h_chat_get(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     list_send(res, &l, NW_CHATS);
 }
 
+typedef struct {
+    int     n;
+    cb_uuid ids[CB_MAX_SEATS];
+} members;
+
+static bool member_fn(const char *id, void *ud) {
+    members *m = ud;
+    if (m->n < CB_MAX_SEATS) cb_strlcpy(m->ids[m->n++], id, sizeof m->ids[0]);
+    return m->n < CB_MAX_SEATS;
+}
+
 static void h_chat_post(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     cb_user u;
     char gid[CB_GAME_ID_MAX + 1];
-    bool member;
-    if (!chat_of(ctx, req, res, &u, gid, sizeof gid, &member)) return;
+    if (!caller(ctx, req, res, &u) || !path_id(req, res, "/v1/chat/", gid, sizeof gid)) return;
+    // Who sits at the game: the caller must, and each of them hears the
+    // message on their own topic (realtime.h). Read before anything is
+    // written, so a failed read stores nothing.
+    members m = { 0 };
+    int mn = CB_STORE_CALL(ctx->store, game_members, gid, member_fn, &m);
+    if (mn < 0) { failed(res, mn); return; }
+    bool member = false;
+    for (int i = 0; i < m.n; i++) member = member || strcmp(m.ids[i], u.id) == 0;
     if (!member) { refuse(res, 403, ASK_WHY_FORBIDDEN, 0); return; }
     NwRequest q;
     if (!request_of(req, res, NW_CHAT_SEND, &q)) return;
@@ -407,7 +425,7 @@ static void h_chat_post(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     int rc = CB_STORE_CALL(ctx->store, chat_put, &row);
     if (rc != CB_OK) failed(res, rc);
     else {
-        rt_publish_chat(ctx->rt, gid, &row);
+        rt_publish_chat(ctx->rt, gid, &row, m.ids, m.n);
         cb_res_status(res, 204);
     }
     free(row.message);

@@ -90,6 +90,7 @@ int cb_auth_verify_token(cb_auth *a, const char *jwt, cb_user *out) {
     memcpy(out->email, c.email, sizeof out->email);
     memcpy(out->username, c.username, sizeof out->username);
     memcpy(out->session_id, c.session_id, sizeof out->session_id);
+    out->expires_at = c.exp;
     return CB_OK;
 }
 

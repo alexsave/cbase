@@ -388,6 +388,11 @@ bool dw_statement_reads(const char *statement);
 //   SCHEDULE   the bot scan: an EventBridge event ("source":"aws.events"), or
 //              the JSON string literal "scan" (the Scheduler's configured input).
 //   BOT_DRIVE  our self-invoke: the JSON string literal "bot_drive:<game id>".
+//   IOT_AUTH   AWS IoT Core's custom authorizer request at an MQTT CONNECT
+//              (an object with "protocolData"): protocolData.mqtt.password
+//              (base64) and clientId, the top-level "token", and
+//              protocolData.http.queryString and headers (X-Cbase-Origin).
+//              Answered with cb_iot_auth_encode.
 // The two literals are valid JSON for Lambda and are read by stripping the
 // quotes: no object parsing on that path (decision record, 2026-10-13).
 // The HTTP response is {statusCode, headers:{..}, body, isBase64Encoded} plus
@@ -407,6 +412,19 @@ int  cb_event_encode_http(const cb_http_res *res, cb_buf *out);
 // The response JSON for a WebSocket event.
 // {"statusCode":N} and, when body_len, "body": the route response text.
 int  cb_event_encode_ws(int status, const char *body, size_t body_len, cb_buf *out);
+// The answer to an IoT authorizer request (realtime/rt_iot.c decides it):
+//   {"isAuthenticated":false} when !ok; else
+//   {"isAuthenticated":true,"principalId":"<user id, no dashes>",
+//    "disconnectAfterInSeconds":N,"refreshAfterInSeconds":N,
+//    "policyDocuments":["<the policy as a JSON string>"]}
+// with the policy allowing iot:Connect on client/<user>-*, iot:Subscribe on
+// topicfilter/u/<user>/* and topicfilter/s/*, and iot:Receive on
+// topic/u/<user>/* and topic/s/*, every ARN under arn:aws:iot:<region>:<account>.
+// `user_id` must already be a checked UUID (stream_mqtt.h cb_mqtt_user_ok)
+// and region and account plain [a-z0-9-] text: CB_E_INVALID otherwise, so no
+// caller can write a wildcard into a policy. CB_OK or CB_E_NOMEM.
+int  cb_iot_auth_encode(bool ok, const char *user_id, int64_t lifetime_s, const char *region, const char *account,
+                        cb_buf *out);
 // The response JSON for an event that answers nothing (the bot scan, a
 // self-invoke): {}. CB_OK or CB_E_NOMEM.
 int  cb_event_encode_none(cb_buf *out);

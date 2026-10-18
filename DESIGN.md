@@ -434,13 +434,48 @@ Found here:
 ## Module: realtime
 
 Owner: `src/realtime/`.
-Headers: `realtime.h` (the publish calls and the transport interface), `stream.h` (the protocol and the topic policy), `rt_local.h` (serve's in-process WebSocket), `rt_apigw.h` (API Gateway's WebSocket API and CONN rows).
+Headers: `realtime.h` (the publish calls, the targets and the transport interface), `stream.h` (the nw1 protocol and its topic policy), `stream_mqtt.h` (the MQTT protocol: who may connect and subscribe), `rt_local.h` (serve's in-process hub, both protocols), `rt_apigw.h` (API Gateway's WebSocket API and CONN rows), `rt_iot.h` (AWS IoT Core: the publish and the custom authorizer).
 
 The protocol is "The push stream" under "Binary surface".
 Topics inside the server are strings with the policy of the `realtime.messages` policies they replaced: `pv-<uid>` only that user, `gu-<game>-<uid>` that user if a member, `game-<game>` any authenticated user, `chat:<game>` members.
 Under Lambda the client reaches API Gateway through CloudFront at the same domain, `/v1/stream` rewritten to the stage by a CloudFront Function.
 
-As built:
+### Moving to MQTT on AWS IoT Core (2026-10-17, stage 1 of 3)
+
+Alex chose IoT Core for the push stream (the evaluation and the prototype's measurements are in the session's pubsub_eval.md): the broker owns connections, subscriptions and fan-out, so the CONN and TOPIC items, SUB_AS with its compare-and-set, the per-commit Queries and the per-socket POSTs all go, and privacy becomes one static policy decided at CONNECT.
+Three stages, each landed and deployed before the next, production never without realtime: (1) the server publishes to both, (2) the kernel's client speaks MQTT, (3) API Gateway's WebSocket API and everything that served only it is deleted.
+
+A push now names a target (`cb_rt_to`: a family and the ids it is about), not a topic string, and each transport names it in its own protocol:
+
+| family | ids | MQTT topic | nw1 topic |
+|---|---|---|---|
+| `CB_RT_VIEWS` | user | `u/<user>/v` | `pv-<user>` |
+| `CB_RT_SEAT` | user, game | `u/<user>/c/<game>` | `gu-<game>-<user>` |
+| `CB_RT_WATCH` | game | `s/<game>` | `game-<game>` |
+| `CB_RT_CHAT` | user, game | `u/<user>/m/<game>` | `chat:<game>` (the target with no user) |
+
+Every private MQTT topic starts with the user it is for, so the policy is static: a connection may subscribe under `u/<its user>/` and `s/`, and nothing else; no client may publish.
+A seat's casts and a game's chat are therefore published once per member, to the member's own topic: the chat POST reads the game's human members (store `game_members`, one consistent Query, read before the message is written so a failed read stores nothing) and doubles as its membership check.
+The payload of every PUBLISH is the nw1 message itself (`NW_WS_VIEW`, `NW_WS_CAST`, `NW_WS_CHAT`), at QoS 0.
+
+The MQTT 3.1.1 subset both sides speak is `shared/c/mqtt/mqtt.{h,c}`, one owner of every packet's bytes: the client's writers and the broker's, and each side's reader refusing what the other side never sends (from the first byte), a remaining length past the reader's limit before a byte of its body arrives, and every malformed shape (`test/unit_mqtt.c`).
+
+`stream_mqtt.c` holds the policy, answered two ways so a client behaves the same against both:
+
+- CONNECT: the token is the CONNECT's password, else the upgrade URL's `token=`; it must verify and name an account that still exists (`rt_deps.h` verify_token reads it), and the client id must be `<user>-<something>`.
+  The connection ends when the token expires, no sooner than 300 s and no later than 86400 s after it opened (IoT's own floor and cap on `disconnectAfterInSeconds`).
+- Anything refused (a CONNECT, a SUBSCRIBE outside the policy, a PUBLISH, bytes that are not MQTT) ends the connection with no CONNACK and no SUBACK code: IoT Core does exactly that, so the hub does too, and a client has one rule ("closed before CONNACK: refresh, then reconnect").
+- `rt_local.c` serves `GET /mqtt` (WebSocket subprotocol `mqtt`, binary frames only) beside `GET /v1/stream`, on the same hub, connection list and request pool; a publish is built once as a PUBLISH and sent to every MQTT connection a filter of which matches (`mqtt_topic_match`), and once as the nw1 message to the nw1 sockets holding its topic.
+  Deleting an account closes its sockets of both kinds.
+- Under Lambda `rt_iot.c` publishes each target with one SigV4-signed `POST /topics/<topic>?qos=0` to the account's iot:Data-ATS endpoint (`aws/iot_data.c`, `CBASE_IOT_ENDPOINT`, kept alive by `https.c`'s pool, tallied as `push`), beside `rt_apigw` (`cb_rt.also`), and answers IoT's custom authorizer requests (`CB_EVENT_IOT_AUTH`, the same function, the same warm containers): `cb_iot_authorize` checks `X-Cbase-Origin` (CloudFront adds it on `/mqtt` too, so IoT's own host cannot be used to walk around the edge), runs `cb_mqtt_authorize`, and answers the policy (`json_surface.c` `cb_iot_auth_encode`: `iot:Connect` on `client/<user>-*`, `iot:Subscribe` on `topicfilter/u/<user>/*` and `topicfilter/s/*`, `iot:Receive` on `topic/u/<user>/*` and `topic/s/*`, no `iot:Publish`, every ARN under the function's own region and account, a user id that is not a canonical UUID or a region with a wildcard refused before a policy is written).
+  IoT names no connection we could end, so `forget` is NULL there: a deleted user's open MQTT connections end at their token's expiry, and hear nothing private meanwhile, because nothing is published to a deleted user's topics any more.
+- `ops/cbase.yaml` (when `IotEndpoint` is set, which `ops/deploy.sh` reads with `aws iot describe-endpoint`): the authorizer (`<function>-stream`, signing off, since a browser cannot sign a WebSocket URL), the invoke permission for `iot.amazonaws.com`, `iot:Publish` on `topic/u/*` and `topic/s/*` for the function, and the `/mqtt*` behaviour at the edge to IoT, with a CloudFront Function adding `x-amz-customauthorizer-name` so no client knows the name.
+
+Tests: `unit_mqtt` (the codec), `unit_stream_mqtt` (the policy as an authz matrix, and the hub's side of a connection fed whole packets, packets split at every byte, several in one message, and every packet a client must not send), `unit_rt_iot` (publishes, the authorizer's decode and answer, only through the edge, the encoder's refusals, the endpoint setting), `unit_rt_local` (MQTT over a real loopback socket beside nw1: the upgrade, pushes reaching only their topics in both protocols, every refusal ending the connection), `unit_store` (`game_members` on SQLite and DynamoDB Local), `unit_ws` (the subprotocol upgrade), and `smoke_authz`'s MQTT rows against a real `cbase serve`.
+Fuzz targets (`fuzz/`): `fz_mqtt` (the codec both ways: every packet read lies in its input and writes back to one that reads the same; topic matching), `fz_mqtt_hub` (the hub's side fed any bytes as messages of any size: replies are whole server packets, the connection only ever holds filters the policy allows), `fz_iot_auth` (any bytes as IoT's request: the answer is valid JSON, an allowed one names exactly the token's user and never a publish or a wildcard user); `fz_sequence` checks that a member's own chat is only ever published to someone who sits there.
+Their first runs found one defect, kept as `fuzz/corpus/mqtt/repro-nonminimal-length`: a remaining length written in more bytes than it needs read as a packet that wrote back differently; such lengths are now refused.
+
+As built (before the move):
 
 - `stream.c`: `cb_nw_on_frame` runs one client frame against the connection's row (its user and topics) and answers through a send callback, so both transports share it; `cb_rt_may_hear` is the policy.
   A game subscription picks the caller's own seat's topic when they are a member and the spectators' otherwise, and is answered after its ACK with the caller's current view when it is newer than `since` (the catch-up).

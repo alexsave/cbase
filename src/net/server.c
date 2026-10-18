@@ -285,6 +285,7 @@ void cb_ws_close(cb_ws *c, uint16_t code) {
 }
 
 uint64_t cb_ws_id(const cb_ws *c) { return c->id; }
+const char *cb_ws_query(const cb_ws *c) { return c->query ? c->query : ""; }
 
 // Reads every whole frame in `in`. Returns false when the connection was closed.
 static bool ws_frames(conn *c) {

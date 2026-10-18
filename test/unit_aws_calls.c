@@ -13,6 +13,7 @@
 #include "aws/cloudfront.h"
 #include "aws/event.h"
 #include "aws/https.h"
+#include "aws/iot_data.h"
 #include "aws/lambda_invoke.h"
 #include "aws/sigv4.h"
 #include "aws/ssm.h"
@@ -56,6 +57,8 @@ static void hdr(const char *req, const char *name, char *out, size_t cap) {
 static void signature_matches(const char *req, const char *service, const char *const *signed_extra, int n_extra) {
     char method[16], path[512], host[128], date[32], auth[1024];
     T_CHECK(sscanf(req, "%15s %511s HTTP/1.1", method, path) == 2);
+    char *qs = strchr(path, '?');   // the query is signed apart from the path
+    if (qs) *qs++ = 0;
     hdr(req, "Host", host, sizeof host);
     hdr(req, "X-Amz-Date", date, sizeof date);
     hdr(req, "Authorization", auth, sizeof auth);
@@ -65,7 +68,7 @@ static void signature_matches(const char *req, const char *service, const char *
     cb_aws_creds c;
     T_EQ_INT(cb_aws_creds_from_env(&c), CB_OK);
     cb_sigv4_req r = {
-        .method = method, .host = host, .path = path, .query = "", .service = service, .headers = signed_extra,
+        .method = method, .host = host, .path = path, .query = qs ? qs : "", .service = service, .headers = signed_extra,
         .n_headers = n_extra, .payload = body, .payload_len = strlen(body), .now_ms = (int64_t)timegm(&tm) * 1000,
     };
     cb_buf out;
@@ -125,6 +128,37 @@ static void apigw_post_and_delete(void) {
     T_EQ_INT(cb_apigw_post(ep, "A", "x", 1), CB_E_IO);
     unsetenv("AWS_SECRET_ACCESS_KEY");
     T_EQ_INT(cb_apigw_post(ep, "A", "x", 1), CB_E_IO);   // no credentials
+}
+
+// A push to IoT Core: POST /topics/<topic, one encoded segment>?qos=0 with the
+// raw message, signed for iotdata (aws/iot_data.h).
+static void iot_publish(void) {
+    set_env();
+    tls_srv s;
+    T_EQ_INT(tls_srv_start(&s, answer, NULL), 0);
+    T_EQ_INT(cb_https_set_ca_file(s.ca_file), CB_OK);
+    char ep[64];
+    snprintf(ep, sizeof ep, "localhost:%d", s.port);
+    g_status = 200;
+    const uint8_t msg[] = { 1, 0x05, 'b', 0x00 };
+    T_EQ_INT(cb_iot_publish(ep, "u/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/c/ab12cd", msg, 3), 200);
+    char *req = tls_srv_last(&s);
+    T_CHECK(cb_starts_with(req, "POST /topics/u%2Faaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa%2Fc%2Fab12cd?qos=0 HTTP/1.1\r\n"));
+    T_CHECK(strstr(req, "\r\n\r\n") && memcmp(strstr(req, "\r\n\r\n") + 4, msg, 3) == 0);
+    char v[512];
+    hdr(req, "Authorization", v, sizeof v);
+    T_CHECK(strstr(v, "/us-west-2/iotdata/aws4_request, ") != NULL);
+    signature_matches(req, "iotdata", NULL, 0);
+    free(req);
+    g_status = 403;
+    T_EQ_INT(cb_iot_publish(ep, "s/ab12cd", msg, 3), 403);
+    T_EQ_INT(cb_iot_publish("", "s/ab12cd", msg, 3), CB_E_INVALID);
+    T_EQ_INT(cb_iot_publish("localhost/x", "s/ab12cd", msg, 3), CB_E_INVALID);
+    T_EQ_INT(cb_iot_publish("localhost:0", "s/ab12cd", msg, 3), CB_E_INVALID);
+    T_EQ_INT(cb_iot_publish(ep, "", msg, 3), CB_E_INVALID);
+    T_EQ_INT(cb_iot_publish(NULL, "s/a", msg, 3), CB_E_INVALID);
+    tls_srv_stop(&s);
+    T_EQ_INT(cb_iot_publish(ep, "s/ab12cd", msg, 3), CB_E_IO);   // nobody listening
 }
 
 static void lambda_self_invoke(void) {
@@ -457,6 +491,7 @@ static void ssm_secrets(void) {
 int main(void) {
     T_RUN(url_parse);
     T_RUN(apigw_post_and_delete);
+    T_RUN(iot_publish);
     T_RUN(lambda_self_invoke);
     T_RUN(cloudfront_invalidation);
     T_RUN(ssm_secrets);

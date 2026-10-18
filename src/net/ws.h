@@ -80,6 +80,11 @@ typedef struct cb_ws_handlers {
 // written, and on_open runs. CB_OK, or CB_E_INVALID with `res` already set to
 // the 400 / 426 answer.
 int cb_ws_upgrade(const cb_http_req *req, cb_http_res *res, const cb_ws_handlers *h, void *ud);
+// The same for an endpoint that speaks `protocol` (Sec-WebSocket-Protocol,
+// "mqtt"): the request must offer it, and the 101 names it. NULL: none, as
+// cb_ws_upgrade.
+int cb_ws_upgrade_protocol(const cb_http_req *req, cb_http_res *res, const cb_ws_handlers *h, void *ud,
+                           const char *protocol);
 
 // Queues one unfragmented frame. CB_OK; CB_E_STATE when the socket is closing;
 // CB_E_FULL when the peer owes more than CB_WS_MAX_QUEUED (the connection is
@@ -91,5 +96,8 @@ void cb_ws_close(cb_ws *ws, uint16_t code);
 // A process-unique id (never reused), for finding the socket again from
 // another thread's post (rt_local.c).
 uint64_t cb_ws_id(const cb_ws *ws);
+// The upgrade request's raw query, kept ("" for none): an MQTT connection's
+// token may ride in it (realtime/stream_mqtt.h).
+const char *cb_ws_query(const cb_ws *ws);
 
 #endif

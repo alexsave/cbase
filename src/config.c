@@ -72,6 +72,13 @@ int cb_config_from_env(cb_config *c, char *err, size_t cap) {
         return CB_E_INVALID;
     }
     c->ws_route_reply = strcmp(rr, "yes") == 0;
+    if (!copy(c->iot_endpoint, sizeof c->iot_endpoint, "CBASE_IOT_ENDPOINT", env("CBASE_IOT_ENDPOINT", ""), err, cap))
+        return CB_E_INVALID;
+    for (const char *h = c->iot_endpoint; *h; h++)
+        if (!((*h >= 'a' && *h <= 'z') || (*h >= '0' && *h <= '9') || *h == '-' || *h == '.')) {
+            snprintf(err, cap, "CBASE_IOT_ENDPOINT=%s is not a host name", c->iot_endpoint);
+            return CB_E_INVALID;
+        }
     if (!copy(c->cf_distribution, sizeof c->cf_distribution, "CBASE_CF_DISTRIBUTION", env("CBASE_CF_DISTRIBUTION", ""), err, cap))
         return CB_E_INVALID;
     for (const char *d = c->cf_distribution; *d; d++)
@@ -131,6 +138,7 @@ void cb_config_each(const cb_config *c, cb_config_fn fn, void *ud) {
     fn("CBASE_TABLE", c->table, false, ud);
     fn("CBASE_WS_ENDPOINT", c->ws_endpoint, false, ud);
     fn("CBASE_WS_ROUTE_REPLY", c->ws_route_reply ? "yes" : "no", false, ud);
+    fn("CBASE_IOT_ENDPOINT", c->iot_endpoint, false, ud);
     fn("CBASE_CF_DISTRIBUTION", c->cf_distribution[0] ? c->cf_distribution : "(unset: no edge invalidation)", false, ud);
     fn("CBASE_JWT_SECRET", c->jwt_secret_generated ? "(unset: random per process)" : "(set)", true, ud);
     fn("CBASE_ADMIN_TOKEN", c->admin_token[0] ? "(set)" : "(unset: console refused)", true, ud);

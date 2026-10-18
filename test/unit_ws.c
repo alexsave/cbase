@@ -107,11 +107,50 @@ static void accept_key(void) {
     T_EQ_INT(cb_ws_accept_key("short", out), CB_E_INVALID);
 }
 
+// A subprotocol endpoint (MQTT over WebSocket): the request must offer it,
+// and the 101 must name it, or a browser fails the connection.
+static int upgrade_with(const char *offered, const char *protocol, cb_http_res *res) {
+    cb_http_req r;
+    memset(&r, 0, sizeof r);
+    snprintf(r.method, sizeof r.method, "GET");
+    r.path = "/mqtt";
+    r.query = "";
+    r.minor = 1;
+    r.headers[r.n_headers++] = (cb_http_header){ "Upgrade", "websocket" };
+    r.headers[r.n_headers++] = (cb_http_header){ "Connection", "Upgrade" };
+    r.headers[r.n_headers++] = (cb_http_header){ "Sec-WebSocket-Version", "13" };
+    r.headers[r.n_headers++] = (cb_http_header){ "Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==" };
+    if (offered) r.headers[r.n_headers++] = (cb_http_header){ "Sec-WebSocket-Protocol", offered };
+    static const cb_ws_handlers none = { NULL, NULL, NULL };
+    cb_res_init(res);
+    return cb_ws_upgrade_protocol(&r, res, &none, NULL, protocol);
+}
+
+static void subprotocols(void) {
+    cb_http_res res;
+    T_EQ_INT(upgrade_with("mqtt", "mqtt", &res), CB_OK);
+    T_EQ_INT(res.status, 101);
+    T_CHECK(strstr(cb_buf_cstr(&res.headers), "Sec-WebSocket-Protocol: mqtt\r\n") != NULL);
+    cb_res_free(&res);
+    T_EQ_INT(upgrade_with("wamp, MQTT", "mqtt", &res), CB_OK);   // a list, any case
+    cb_res_free(&res);
+    T_EQ_INT(upgrade_with(NULL, "mqtt", &res), CB_E_INVALID);
+    T_EQ_INT(res.status, 400);
+    cb_res_free(&res);
+    T_EQ_INT(upgrade_with("mqttv3.1", "mqtt", &res), CB_E_INVALID);   // a whole token, not a prefix
+    cb_res_free(&res);
+    // An endpoint with none ignores what is offered, and names none.
+    T_EQ_INT(upgrade_with("mqtt", NULL, &res), CB_OK);
+    T_CHECK(strstr(cb_buf_cstr(&res.headers), "Sec-WebSocket-Protocol") == NULL);
+    cb_res_free(&res);
+}
+
 int main(void) {
     T_RUN(hostile_lengths);
     T_RUN(legal_forms);
     T_RUN(protocol_errors);
     T_RUN(header_round_trip);
     T_RUN(accept_key);
+    T_RUN(subprotocols);
     return T_DONE();
 }

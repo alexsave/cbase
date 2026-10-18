@@ -63,6 +63,10 @@ static bool collect_name(const char *name, void *ud) {
     if (n->n < 16) snprintf(n->ids[n->n++], sizeof n->ids[0], "%s", name);
     return true;
 }
+static bool collect_one_name(const char *name, void *ud) {
+    collect_name(name, ud);
+    return false;
+}
 static bool collect_member(const cb_member_row *r, void *ud) {
     names_t *n = ud;
     if (n->n < 16) { n->at[n->n] = r->updated_at; snprintf(n->ids[n->n++], sizeof n->ids[0], "%s", r->game_id); }
@@ -511,6 +515,21 @@ static void membership_follows_commits(void) {
     snprintf(c.bots[0], sizeof c.bots[0], "2c601cde-63d2-5291-8fcb-735f5860b1ec");
     T_EQ_INT(CB_STORE_CALL(s, game_commit, &c), CB_OK);
     T_EQ_INT(CB_STORE_CALL(s, is_member, "game01", b.id), 1);
+    // The game's members: both humans, never the bot (a chat is published to each).
+    names_t who = { 0 };
+    T_EQ_INT(CB_STORE_CALL(s, game_members, "game01", collect_name, &who), 2);
+    T_EQ_INT(who.n, 2);
+    T_CHECK((strcmp(who.ids[0], a.id) == 0 && strcmp(who.ids[1], b.id) == 0) ||
+            (strcmp(who.ids[0], b.id) == 0 && strcmp(who.ids[1], a.id) == 0));
+    who.n = 0;
+    T_EQ_INT(CB_STORE_CALL(s, game_members, "game02", collect_name, &who), 1);   // its creator
+    T_EQ_STR(who.ids[0], a.id);
+    who.n = 0;
+    T_EQ_INT(CB_STORE_CALL(s, game_members, "nogame", collect_name, &who), 0);
+    // fn answering false stops after the one it was handed.
+    who.n = 0;
+    T_EQ_INT(CB_STORE_CALL(s, game_members, "game01", collect_one_name, &who), 1);
+    T_EQ_INT(who.n, 1);
 
     // a's dashboard: most recently updated first. On SQLite the game's
     // updated_at; on DynamoDB when the seat was written, which is when it was
@@ -534,6 +553,9 @@ static void membership_follows_commits(void) {
     T_EQ_INT(CB_STORE_CALL(s, game_commit, &c), CB_OK);
     T_EQ_INT(CB_STORE_CALL(s, is_member, "game01", a.id), 0);
     T_EQ_INT(CB_STORE_CALL(s, is_member, "game01", b.id), 1);
+    who.n = 0;
+    T_EQ_INT(CB_STORE_CALL(s, game_members, "game01", collect_name, &who), 1);   // read consistently: a is gone at once
+    T_EQ_STR(who.ids[0], b.id);
     char v[64], q[256];
     if (tsb_dynamo()) {
         // PartiQL: the game's BOT# seat items, of which none is left.

@@ -314,6 +314,11 @@ typedef struct cb_store_ops {
     int (*games_get_views)(cb_store *s, const char *const *ids, int n, cb_game_fn fn, void *ud);
     // 1 a member, 0 not, or a CB_E_*.
     int (*is_member)(cb_store *s, const char *game_id, const char *user_id);
+    // The humans seated at the game (bots are not members here), read
+    // consistently: fn once with each user id, in no particular order; false
+    // from fn stops. The number handed to fn, or a CB_E_* (no game is 0). A
+    // game's chat is published to each of them (realtime.h rt_publish_chat).
+    int (*game_members)(cb_store *s, const char *game_id, cb_name_fn fn, void *ud);
     // The heartbeat's scan: needs_bots, updated_at < stale_before,
     // last_commit_at > active_after, at most `limit`.
     int (*games_needing_bots)(cb_store *s, int64_t stale_before, int64_t active_after, int limit, cb_name_fn fn, void *ud);

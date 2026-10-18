@@ -1,13 +1,13 @@
 // fanout.h - after a winning commit, who hears about it.
 //
 // On the push stream (realtime.h):
-//   * for every HUMAN seat: its view on pv-<uid> (the dashboard), and its cast
-//     on gu-<game>-<uid> (table_cast(seat, version));
-//   * for the spectators: game-<game>, table_cast(-1, version);
+//   * for every HUMAN seat: its view (realtime.h CB_RT_VIEWS, the dashboard),
+//     and its cast (CB_RT_SEAT, table_cast(seat, version));
+//   * for the spectators: CB_RT_WATCH, table_cast(-1, version);
 //   * the casts only when n_events > 0, goods_changed (a good flies no card but
 //     is a move) or roster_changed (a redaction renames a seat and flies
 //     nothing, yet an open page must show it); the views on every commit;
-//   * a seat that left: its pv-<uid> hears the view with no envelope.
+//   * a seat that left: its views stream hears the view with no envelope.
 // Called inside the kernel section's aftermath with the bytes already copied
 // out (casts and envelopes), so it never touches the kernel.
 #ifndef CB_FANOUT_H
@@ -29,12 +29,12 @@ typedef struct {
     int         n_seats;
     struct {
         cb_uuid        user_id;    // "" for a bot seat (nothing is sent to it)
-        const uint8_t *envelope;   // the seat's view (pv- row)
+        const uint8_t *envelope;   // the seat's view (CB_RT_VIEWS)
         size_t         envelope_len;
-        const uint8_t *cast;       // the seat's cast (gu- broadcast)
+        const uint8_t *cast;       // the seat's cast (CB_RT_SEAT)
         size_t         cast_len;
     } seats[CB_MAX_SEATS];
-    const uint8_t *spectator_cast; // the game- broadcast
+    const uint8_t *spectator_cast; // the spectators' (CB_RT_WATCH)
     size_t         spectator_cast_len;
     int     n_joined, n_left;      // membership changes this commit
     cb_uuid joined[CB_MAX_SEATS], left[CB_MAX_SEATS];

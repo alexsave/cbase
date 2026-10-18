@@ -14,6 +14,7 @@ typedef enum {
     CB_EVENT_WS,
     CB_EVENT_SCHEDULE,
     CB_EVENT_BOT_DRIVE,
+    CB_EVENT_IOT_AUTH,
 } cb_event_kind;
 
 typedef struct {
@@ -30,10 +31,28 @@ typedef struct {
     size_t      body_len;
 } cb_ws_event;
 
+// An AWS IoT Core custom authorizer request (CB_EVENT_IOT_AUTH): what an MQTT
+// client presented at CONNECT (realtime/rt_iot.h answers it).
+typedef struct {
+    // The access token: the MQTT password (base64 on the wire, decoded here),
+    // else the event's "token" (IoT's copy of a query parameter), else the
+    // query string's token=. Empty: none.
+    char        token[2048];
+    size_t      token_len;
+    // protocolData.mqtt.clientId; empty when the event carries none (the
+    // policy's iot:Connect resource still holds the client id to the user).
+    char        client_id[160];
+    // protocolData.http.headers' X-Cbase-Origin (config.h CBASE_ORIGIN_SECRET);
+    // has_origin false when the request carried none.
+    bool        has_origin;
+    char        origin[128];
+} cb_iot_auth_event;
+
 typedef struct {
     cb_event_kind kind;
     cb_http_req   http;             // CB_EVENT_HTTP; strings point into `storage`
     cb_ws_event   ws;               // CB_EVENT_WS
+    cb_iot_auth_event iot;          // CB_EVENT_IOT_AUTH
     char          game_id[32];      // CB_EVENT_BOT_DRIVE
     cb_buf        storage;          // owns every string above
 } cb_event;

@@ -9,6 +9,7 @@
 // edge cache's invalidation):
 //   HTTP       cb_handle -> cb_event_encode_http
 //   WS         cb_rt_apigw_event -> cb_event_encode_ws
+//   IOT_AUTH   cb_iot_authorize (an MQTT CONNECT to IoT Core) -> its policy
 //   SCHEDULE   cb_bots_scan                                      -> {}
 //   BOT_DRIVE  cb_bots_drive, budgeted against ctx->deadline_ms
 //              (Lambda-Runtime-Deadline-Ms)                     -> {}
@@ -43,6 +44,7 @@
 #include "handler.h"
 #include "json_surface.h"
 #include "realtime/rt_apigw.h"
+#include "realtime/rt_iot.h"
 #include "store/store.h"
 #include "util/clock.h"
 #include "util/err.h"
@@ -103,6 +105,12 @@ static int dispatch(cb_ctx *ctx, const cb_invocation *inv, cb_buf *out, char *wh
         rc = cb_event_encode_ws(status, (const char *)answer.p, answer.len, out);
         cb_buf_free(&answer);
         snprintf(what, what_cap, "ws %s %d", ev.ws.route_key, status);
+        break;
+    }
+    case CB_EVENT_IOT_AUTH: {
+        bool allowed = false;
+        rc = cb_iot_authorize(ctx, &ev.iot, inv->function_arn, cb_now_ms(), out, &allowed);
+        snprintf(what, what_cap, "iot connect %s", allowed ? "allow" : "deny");
         break;
     }
     case CB_EVENT_SCHEDULE:

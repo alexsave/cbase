@@ -20,6 +20,7 @@ typedef struct {
     char    email[CB_EMAIL_MAX + 1];
     char    username[CB_USERNAME_MAX + 1];
     cb_uuid session_id;
+    int64_t expires_at;   // the token's exp, seconds since the epoch (cb_auth_verify_token; 0 otherwise)
 } cb_user;
 
 // What a sign-in, sign-up or refresh hands back (GoTrue's session object).

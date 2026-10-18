@@ -876,6 +876,19 @@ static int dy_is_member(cb_store *s, const char *game, const char *user) {
     return rc;
 }
 
+static int dy_game_members(cb_store *s, const char *game, cb_name_fn fn, void *ud) {
+    dw_seats seats;
+    int rc = read_seats(D(s), game, &seats);
+    if (rc != CB_OK) return rc;
+    int n = 0;
+    while (n < seats.n_humans) {
+        bool more = fn(seats.humans[n], ud);
+        n++;
+        if (!more) break;
+    }
+    return n;
+}
+
 typedef struct {
     char    id[CB_GAME_ID_MAX + 1];
     int64_t updated_at;
@@ -1632,6 +1645,7 @@ static const cb_store_ops DYNAMO_OPS = {
     .games_of_user = dy_games_of_user,
     .games_get_views = dy_games_get_views,
     .is_member = dy_is_member,
+    .game_members = dy_game_members,
     .games_needing_bots = dy_games_needing_bots,
     .lease_acquire = dy_lease_acquire,
     .lease_renew = dy_lease_renew,

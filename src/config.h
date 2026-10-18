@@ -33,6 +33,11 @@ typedef struct {
     // by the template together with the RouteResponse it needs: with "yes"
     // and no route response, replies would be lost.
     bool ws_route_reply;
+    // CBASE_IOT_ENDPOINT, the account's AWS IoT Core data endpoint, a host
+    // name ("<prefix>-ats.iot.<region>.amazonaws.com"): every push is also
+    // published there over MQTT (realtime/rt_iot.h). Lambda only; empty means
+    // no IoT transport.
+    char iot_endpoint[256];
     // CBASE_CF_DISTRIBUTION, the CloudFront distribution in front of the API
     // (its id, E...): the one the edge cache's invalidations go to (app/edge.h).
     // Empty: nothing is invalidated (serve, tests, a first deploy).

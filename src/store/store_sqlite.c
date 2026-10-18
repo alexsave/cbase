@@ -1056,6 +1056,32 @@ static int sq_games_of_user(cb_store *st, const char *user, int limit, cb_member
     return rc == CB_OK ? n : rc;
 }
 
+static int sq_game_members(cb_store *st, const char *game, cb_name_fn fn, void *ud) {
+    sq *q = Q(st);
+    cb_uuid have[64];
+    int nh = 0, rc = CB_OK;
+    lock(q);
+    sqlite3_stmt *s = stmt(q, ST_MEMBERS_OF_GAME);
+    if (!s) rc = CB_E_DB;
+    else {
+        b_text(s, 1, game);
+        int r;
+        while ((r = sqlite3_step(s)) == SQLITE_ROW && nh < 64) c_text(s, 0, have[nh++], sizeof have[0]);
+        if (r != SQLITE_ROW && r != SQLITE_DONE) rc = fail(q, "members", r);
+    }
+    done(s);
+    unlock(q);
+    if (rc != CB_OK) return rc;
+    // Called with the lock let go: fn may call the store.
+    int n = 0;
+    while (n < nh) {
+        bool more = fn(have[n], ud);
+        n++;
+        if (!more) break;
+    }
+    return n;
+}
+
 static int sq_is_member(cb_store *st, const char *game, const char *user) {
     sq *q = Q(st);
     lock(q);
@@ -1902,6 +1928,7 @@ static const cb_store_ops SQLITE_OPS = {
     .games_of_user = sq_games_of_user,
     .games_get_views = cb_store_games_get_each,
     .is_member = sq_is_member,
+    .game_members = sq_game_members,
     .games_needing_bots = sq_games_needing_bots,
     .lease_acquire = sq_lease_acquire,
     .lease_renew = sq_lease_renew,

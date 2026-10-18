@@ -35,12 +35,12 @@ static void kick(cb_ctx *ctx, const char *game_id) {
 
 // A transport whose every delivery fails: the drain counts them.
 static int g_delivered;
-static int failing_deliver(cb_rt *rt, const char *topic, const uint8_t *frame, size_t len) {
+static int failing_deliver(cb_rt *rt, const cb_rt_to *to, const uint8_t *frame, size_t len) {
     g_delivered++;
     return 1;
 }
 static const cb_rt_transport FAIL_T = { .name = "fail", .deliver = failing_deliver };
-static cb_rt g_rt = { &FAIL_T, &g_ctx, NULL };
+static cb_rt g_rt = { &FAIL_T, &g_ctx, NULL, NULL };
 
 static void setup(void) {
     cb_log_init(CB_LOG_ERROR + 1, 0);

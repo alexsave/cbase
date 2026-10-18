@@ -13,6 +13,9 @@
 //   req-2  the schedule's string literal "scan": answered on /response with {}
 //   req-3  a literal no one sends ("nonsense"): answered on /error, as an
 //          event that does not decode
+//   req-4  a drive for a game that is gone: answered {}
+//   req-5  IoT Core's custom authorizer request with a token that does not
+//          verify: answered {"isAuthenticated":false}
 // bootstrap runs on SQLite in a temporary directory, so the scan touches no AWS.
 
 #include "t.h"
@@ -46,8 +49,16 @@ static const char HEALTH[] =
     "\"requestContext\":{\"http\":{\"method\":\"GET\",\"path\":\"/health\",\"protocol\":\"HTTP/1.1\","
     "\"sourceIp\":\"127.0.0.1\"},\"requestId\":\"req-1\",\"stage\":\"$default\"},\"isBase64Encoded\":false}";
 
-#define N_EVENTS 4
-static const char *const EVENTS[N_EVENTS] = { HEALTH, "\"scan\"", "\"nonsense\"", "\"bot_drive:abc123\"" };
+// IoT Core's custom authorizer request at an MQTT CONNECT, with a token that
+// does not verify (base64 of "not-a-jwt" as the MQTT password).
+static const char IOT_AUTH[] =
+    "{\"token\":\"\",\"signatureVerified\":false,\"protocols\":[\"tls\",\"http\",\"mqtt\"],"
+    "\"protocolData\":{\"tls\":{\"serverName\":\"api.foolish.cards\"},\"http\":{\"headers\":{},\"queryString\":\"\"},"
+    "\"mqtt\":{\"username\":\"jwt\",\"password\":\"bm90LWEtand0\",\"clientId\":\"x-1\"}},"
+    "\"connectionMetadata\":{\"id\":\"c1\"}}";
+
+#define N_EVENTS 5
+static const char *const EVENTS[N_EVENTS] = { HEALTH, "\"scan\"", "\"nonsense\"", "\"bot_drive:abc123\"", IOT_AUTH };
 static char g_posted_path[N_EVENTS][256];
 static cb_buf g_posted_body[N_EVENTS];
 
@@ -118,6 +129,8 @@ static void one_invocation(const char *bin) {
     T_CHECK(strstr(line, " rid=req-2") != NULL);
     T_EQ_INT(tp_wait_line(&c, "inv: drive abc123 ms=", 20000, line, sizeof line), 0);
     T_CHECK(strstr(line, " rid=req-4") != NULL);
+    T_EQ_INT(tp_wait_line(&c, "inv: iot connect deny ms=", 20000, line, sizeof line), 0);
+    T_CHECK(strstr(line, " rid=req-5") != NULL);
     // bootstrap exits by itself once /next answers 500.
     T_EQ_INT(tp_wait_line(&c, "invocation/next answered 500", 20000, NULL, 0), 0);
     T_EQ_INT(tp_stop(&c, 0, 10000), 0);   // and it exits 0 by itself
@@ -159,6 +172,12 @@ static void one_invocation(const char *bin) {
     body = cb_buf_cstr(&g_posted_body[3]);
     T_EQ_STR(g_posted_path[3], "/2018-06-01/runtime/invocation/req-4/response");
     T_EQ_STR(body, "{}");
+
+    // req-5: the authorizer refuses a token that does not verify, as an
+    // answer (IoT then refuses the CONNECT), not an error.
+    body = cb_buf_cstr(&g_posted_body[4]);
+    T_EQ_STR(g_posted_path[4], "/2018-06-01/runtime/invocation/req-5/response");
+    T_EQ_STR(body, "{\"isAuthenticated\":false}");
     pthread_mutex_unlock(&g_lock);
     char cmd[300];
     snprintf(cmd, sizeof cmd, "rm -rf '%s'", db);

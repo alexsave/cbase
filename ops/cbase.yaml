@@ -12,6 +12,9 @@ AWSTemplateFormatVersion: "2010-09-09"
 #     role and its log group;
 #   * a Function URL for the HTTP routes (/v1, /admin, /m, /health);
 #   * the API Gateway WebSocket API for realtime ($connect, $disconnect, $default);
+#   * realtime over AWS IoT Core (MQTT over WebSocket), when IotEndpoint is set:
+#     the custom authorizer (the same function answers it), the function's
+#     right to publish under u/ and s/, and the /mqtt path at the edge;
 #   * an EventBridge Scheduler schedule that invokes the bot scan every minute;
 #   * a CloudFront distribution at the custom domain, sending
 #     /v1/stream to the WebSocket API and everything else to the Function
@@ -49,6 +52,8 @@ Metadata:
         Parameters: [FunctionName, TableName]
       - Label: { default: "Edge cache" }
         Parameters: [DistributionId]
+      - Label: { default: "Realtime over IoT Core" }
+        Parameters: [IotEndpoint]
 
 Parameters:
   CodeBucket:
@@ -130,8 +135,21 @@ Parameters:
       stack and passes it back. Empty on a first deploy: nothing is invalidated until
       the next one, and the cached reads are fresh within their s-maxage meanwhile.
 
+  IotEndpoint:
+    Type: String
+    Default: ""
+    AllowedPattern: "[a-z0-9.-]*"
+    Description: >-
+      This account's AWS IoT Core data endpoint in this region, a host name
+      (aws iot describe-endpoint --endpoint-type iot:Data-ATS; ops/deploy.sh
+      reads it). Set: every push is also published to IoT Core over MQTT
+      (CBASE_IOT_ENDPOINT, realtime/rt_iot.h), IoT asks this function to
+      authorize each CONNECT, and /mqtt at the edge reaches IoT. Empty: none
+      of that exists.
+
 Conditions:
   OriginChecked: !Equals [!Ref OriginEnforced, "yes"]
+  HasIot: !Not [!Equals [!Ref IotEndpoint, ""]]
   HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, ""]]
 
 Resources:
@@ -243,6 +261,17 @@ Resources:
                 Effect: Allow
                 Action: execute-api:ManageConnections
                 Resource: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WsApi}/*"
+              # Realtime over IoT Core: publish under the stream's two prefixes
+              # (realtime.h: u/<user>/... and s/<game>), nothing else.
+              - !If
+                - HasIot
+                - Sid: IotPublish
+                  Effect: Allow
+                  Action: iot:Publish
+                  Resource:
+                    - !Sub "arn:${AWS::Partition}:iot:${AWS::Region}:${AWS::AccountId}:topic/u/*"
+                    - !Sub "arn:${AWS::Partition}:iot:${AWS::Region}:${AWS::AccountId}:topic/s/*"
+                - !Ref AWS::NoValue
               - Sid: SelfInvoke   # the bot drive's async kick (DESIGN.md "The kick")
                 Effect: Allow
                 Action: lambda:InvokeFunction
@@ -316,6 +345,8 @@ Resources:
           # $default has a route response (WsDefaultRouteResponse, deployed
           # before this line): a frame's last reply is the invocation's answer.
           CBASE_WS_ROUTE_REPLY: "yes"
+          # Every push is also published here, over MQTT (realtime/rt_iot.h); "" for none.
+          CBASE_IOT_ENDPOINT: !Ref IotEndpoint
           CBASE_LOG_LEVEL: info
           # The edge cache's invalidations go here (app/edge.h).
           CBASE_CF_DISTRIBUTION: !Ref DistributionId
@@ -433,6 +464,34 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WsApi}/*"
 
+  # ---- realtime: AWS IoT Core, MQTT over WebSocket ----------------------------------
+  # IoT Core holds the MQTT connections and their subscriptions; at each
+  # CONNECT it asks this same function (main_lambda.c, CB_EVENT_IOT_AUTH), which
+  # verifies the access token and answers a policy for that user alone:
+  # subscribe and receive under u/<user>/ and s/, connect as client id
+  # <user>-*, never publish (realtime/stream_mqtt.h). Signing is off: a browser
+  # cannot sign a WebSocket URL, and the token itself is the credential. The
+  # name reaches IoT as the x-amz-customauthorizer-name parameter the edge adds
+  # (MqttAuthorizerName below), so no client knows it.
+  IotAuthorizer:
+    Type: AWS::IoT::Authorizer
+    Condition: HasIot
+    Properties:
+      AuthorizerName: !Sub "${FunctionName}-stream"
+      AuthorizerFunctionArn: !GetAtt Function.Arn
+      SigningDisabled: true
+      EnableCachingForHttp: false
+      Status: ACTIVE
+
+  IotAuthorizerInvokePermission:
+    Type: AWS::Lambda::Permission
+    Condition: HasIot
+    Properties:
+      FunctionName: !Ref Function
+      Action: lambda:InvokeFunction
+      Principal: iot.amazonaws.com
+      SourceArn: !GetAtt IotAuthorizer.Arn
+
   # ---- the heartbeat: the bot scan every minute -----------------------------------
   # The payload is the JSON string literal "scan" (c_base_brief_lambda.md,
   # decision record): valid JSON for Lambda, read by stripping two quotes.
@@ -487,6 +546,25 @@ Resources:
         function handler(event) {
           var request = event.request;
           request.uri = '/prod';
+          return request;
+        }
+
+  # Names the IoT custom authorizer on an MQTT connection's upgrade
+  # (x-amz-customauthorizer-name), so clients open plain /mqtt, the same path
+  # `cbase serve` answers, and the authorizer's name stays in this template.
+  MqttAuthorizerName:
+    Type: AWS::CloudFront::Function
+    Condition: HasIot
+    Properties:
+      Name: !Sub "${FunctionName}-mqtt-authorizer"
+      AutoPublish: true
+      FunctionConfig:
+        Comment: /mqtt -> IoT Core with the custom authorizer named
+        Runtime: cloudfront-js-2.0
+      FunctionCode: !Sub |
+        function handler(event) {
+          var request = event.request;
+          request.querystring['x-amz-customauthorizer-name'] = { value: '${FunctionName}-stream' };
           return request;
         }
 
@@ -552,6 +630,19 @@ Resources:
             CustomOriginConfig:
               OriginProtocolPolicy: https-only
               OriginSSLProtocols: [TLSv1.2]
+          # IoT Core's MQTT over WebSocket (path /mqtt). The authorizer refuses a
+          # CONNECT without X-Cbase-Origin (realtime/rt_iot.c), so IoT's own
+          # host cannot be used to walk around the edge either.
+          - !If
+            - HasIot
+            - Id: iot
+              DomainName: !Ref IotEndpoint
+              OriginCustomHeaders:
+                - { HeaderName: X-Cbase-Origin, HeaderValue: !Ref OriginSecret }
+              CustomOriginConfig:
+                OriginProtocolPolicy: https-only
+                OriginSSLProtocols: [TLSv1.2]
+            - !Ref AWS::NoValue
         # Nothing else is cached (CachingDisabled), and every viewer header, cookie
         # and query string but Host reaches the origin (AllViewerExceptHostHeader):
         # the Function URL and API Gateway each require their own Host, and the
@@ -595,6 +686,23 @@ Resources:
             FunctionAssociations:
               - EventType: viewer-request
                 FunctionARN: !GetAtt WsPathRewrite.FunctionMetadata.FunctionARN
+          # MQTT over WebSocket to IoT Core: nothing cached, every viewer header
+          # (the upgrade's Sec-WebSocket-* and the mqtt subprotocol) and the
+          # query reach it, the Host becomes IoT's.
+          - !If
+            - HasIot
+            - PathPattern: /mqtt*
+              TargetOriginId: iot
+              ViewerProtocolPolicy: https-only
+              AllowedMethods: [GET, HEAD]
+              CachedMethods: [GET, HEAD]
+              Compress: false
+              CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad          # Managed-CachingDisabled
+              OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac  # Managed-AllViewerExceptHostHeader
+              FunctionAssociations:
+                - EventType: viewer-request
+                  FunctionARN: !GetAtt MqttAuthorizerName.FunctionMetadata.FunctionARN
+            - !Ref AWS::NoValue
 
   # ---- alarms: CloudWatch, emailed through SNS ---------------------------------------
   # Ten alarm metrics, CloudWatch's always-free allowance (10 standard-resolution
@@ -831,6 +939,10 @@ Outputs:
     Value: !Ref Distribution
   TableName:
     Value: !Ref Table
+  IotAuthorizerName:
+    Condition: HasIot
+    Description: The IoT Core custom authorizer the edge names on /mqtt.
+    Value: !Ref IotAuthorizer
   FunctionName:
     Value: !Ref Function
   PublicUrl:

@@ -375,8 +375,17 @@ static void check_topics(const conn *c) {
 
 // The transport: a publish reaches every connection holding the topic.
 static int g_pushes;
-static int fz_deliver(cb_rt *rt, const char *topic, const uint8_t *frame, size_t len) {
+static int fz_deliver(cb_rt *rt, const cb_rt_to *to, const uint8_t *frame, size_t len) {
     g_pushes++;
+    char topic[CB_TOPIC_MAX];
+    if (cb_rt_nw_topic(to, topic, sizeof topic) < 0) {
+        // A member's own chat (realtime.h): only ever published to someone who sits there.
+        FZ_CHECK(to->family == CB_RT_CHAT && to->user_id && to->game_id);
+        char chat[CB_TOPIC_MAX];
+        snprintf(chat, sizeof chat, "chat:%s", to->game_id);
+        FZ_CHECK(cb_rt_may_hear(&g_ctx, to->user_id, chat) == 1);
+        return 0;
+    }
     // Who the topic is for, from its name, whatever connection holds it.
     if (strncmp(topic, "pv-", 3) == 0 || strncmp(topic, "gu-", 3) == 0 || strncmp(topic, "game-", 5) == 0) {
         NwFrame *f = calloc(1, sizeof *f);
@@ -403,7 +412,7 @@ static int fz_deliver(cb_rt *rt, const char *topic, const uint8_t *frame, size_t
     return 0;
 }
 // Ends the user's connections, as rt_local closes their sockets.
-static void fz_forget(cb_rt *rt, const char *user_id, const char *const *topics, int n) {
+static void fz_forget(cb_rt *rt, const char *user_id, const cb_rt_to *targets, int n) {
     for (int i = 0; i < N_CONNS; i++)
         if (strcmp(g_conn[i].row.user_id, user_id) == 0) {
             g_conn[i].row.user_id[0] = 0;
@@ -411,7 +420,7 @@ static void fz_forget(cb_rt *rt, const char *user_id, const char *const *topics,
         }
 }
 static const cb_rt_transport FZ_T = { "fuzz", fz_deliver, NULL, fz_forget };
-static cb_rt g_rt = { &FZ_T, &g_ctx, NULL };
+static cb_rt g_rt = { &FZ_T, &g_ctx, NULL, NULL };
 
 static int g_kicks;
 // While a scan runs, the games it kicks.

@@ -131,6 +131,10 @@ static int w_is_member(cb_store *s, const char *game_id, const char *user_id) {
     if (take()) return atomic_load(&g_rc);
     return IN(s)->ops->is_member ? IN(s)->ops->is_member(IN(s), game_id, user_id) : CB_E_NOTIMPL;
 }
+static int w_game_members(cb_store *s, const char *game_id, cb_name_fn fn, void *ud) {
+    if (take()) return atomic_load(&g_rc);
+    return IN(s)->ops->game_members ? IN(s)->ops->game_members(IN(s), game_id, fn, ud) : CB_E_NOTIMPL;
+}
 static int w_games_needing_bots(cb_store *s, int64_t stale_before, int64_t active_after, int limit, cb_name_fn fn, void *ud) {
     if (take()) return atomic_load(&g_rc);
     return IN(s)->ops->games_needing_bots ? IN(s)->ops->games_needing_bots(IN(s), stale_before, active_after, limit, fn, ud) : CB_E_NOTIMPL;
@@ -275,6 +279,7 @@ static const cb_store_ops FAULT_OPS = {
     .games_of_user = w_games_of_user,
     .games_get_views = w_games_get_views,
     .is_member = w_is_member,
+    .game_members = w_game_members,
     .games_needing_bots = w_games_needing_bots,
     .lease_acquire = w_lease_acquire,
     .lease_renew = w_lease_renew,
@@ -307,8 +312,8 @@ static const cb_store_ops FAULT_OPS = {
 
 // Every operation of store.h is wrapped above. An operation added there and
 // not here would be left NULL (CB_E_NOTIMPL to whatever calls it through this
-// store), so the table's size is held to the count: the name, close, and 52 - 1.
-_Static_assert(sizeof(cb_store_ops) == (size_t)(52 + 1) * sizeof(void *),
+// store), so the table's size is held to the count: the name, close, and 53 - 1.
+_Static_assert(sizeof(cb_store_ops) == (size_t)(53 + 1) * sizeof(void *),
                "store.h has an operation lib_faultstore.c does not wrap: add its w_ wrapper and its line in FAULT_OPS");
 
 cb_store *fs_wrap(cb_store *inner) {
