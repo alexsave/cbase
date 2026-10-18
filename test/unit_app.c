@@ -1885,6 +1885,14 @@ static void paced_game_at(int k) {
             break;
         }
     }
+    // The last commit rated the game (the kernel rates inside the section that
+    // ends it, and the host asks for the products again): the board it stored
+    // is on the board's time too.
+    cb_game_row end = stored(gid);
+    T_CHECK(cb_section_load(s, &end) >= 0);
+    T_EQ_INT(s->t.ratings.n, 2);
+    T_EQ_INT(s->t.clock.shown_ms, cb_bots_board_now(&g_ctx, end.created_at, g_now));
+    cb_game_row_free(&end);
     cb_section_free(s);
     cb_fanout_observer = fan_observer;
     cb_bots_cycle_observer = NULL;
