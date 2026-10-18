@@ -51,9 +51,13 @@ static int w_user_create(cb_store *s, const cb_user_row *u) {
     if (take()) return atomic_load(&g_rc);
     return IN(s)->ops->user_create ? IN(s)->ops->user_create(IN(s), u) : CB_E_NOTIMPL;
 }
-static int w_user_set_password(cb_store *s, const char *id, const char *password_hash) {
+static int w_user_set_password(cb_store *s, const char *id, const char *password_hash, const char *keep) {
     if (take()) return atomic_load(&g_rc);
-    return IN(s)->ops->user_set_password ? IN(s)->ops->user_set_password(IN(s), id, password_hash) : CB_E_NOTIMPL;
+    return IN(s)->ops->user_set_password ? IN(s)->ops->user_set_password(IN(s), id, password_hash, keep) : CB_E_NOTIMPL;
+}
+static int w_user_end_sessions(cb_store *s, const char *id) {
+    if (take()) return atomic_load(&g_rc);
+    return IN(s)->ops->user_end_sessions ? IN(s)->ops->user_end_sessions(IN(s), id) : CB_E_NOTIMPL;
 }
 static int w_user_touch_sign_in(cb_store *s, const char *id, int64_t at) {
     if (take()) return atomic_load(&g_rc);
@@ -83,17 +87,21 @@ static int w_refresh_put(cb_store *s, const cb_refresh_row *r) {
     if (take()) return atomic_load(&g_rc);
     return IN(s)->ops->refresh_put ? IN(s)->ops->refresh_put(IN(s), r) : CB_E_NOTIMPL;
 }
-static int w_refresh_take(cb_store *s, const char *token_hash, int64_t now_ms, cb_refresh_row *out) {
+static int w_refresh_take(cb_store *s, const char *token_hash, int64_t now_ms, int64_t spent_ms, cb_refresh_row *out) {
     if (take()) return atomic_load(&g_rc);
-    return IN(s)->ops->refresh_take ? IN(s)->ops->refresh_take(IN(s), token_hash, now_ms, out) : CB_E_NOTIMPL;
+    return IN(s)->ops->refresh_take ? IN(s)->ops->refresh_take(IN(s), token_hash, now_ms, spent_ms, out) : CB_E_NOTIMPL;
 }
-static int w_refresh_revoke_session(cb_store *s, const char *session_id) {
+static int w_session_put(cb_store *s, const cb_session_row *r) {
     if (take()) return atomic_load(&g_rc);
-    return IN(s)->ops->refresh_revoke_session ? IN(s)->ops->refresh_revoke_session(IN(s), session_id) : CB_E_NOTIMPL;
+    return IN(s)->ops->session_put ? IN(s)->ops->session_put(IN(s), r) : CB_E_NOTIMPL;
 }
-static int w_refresh_revoke_user(cb_store *s, const char *user_id) {
+static int w_session_get(cb_store *s, const char *id, int64_t now_ms, cb_session_row *out) {
     if (take()) return atomic_load(&g_rc);
-    return IN(s)->ops->refresh_revoke_user ? IN(s)->ops->refresh_revoke_user(IN(s), user_id) : CB_E_NOTIMPL;
+    return IN(s)->ops->session_get ? IN(s)->ops->session_get(IN(s), id, now_ms, out) : CB_E_NOTIMPL;
+}
+static int w_session_revoke(cb_store *s, const char *id, const char *user_id, int64_t expires_at) {
+    if (take()) return atomic_load(&g_rc);
+    return IN(s)->ops->session_revoke ? IN(s)->ops->session_revoke(IN(s), id, user_id, expires_at) : CB_E_NOTIMPL;
 }
 static int w_game_get(cb_store *s, const char *id, cb_game_row *out) {
     if (take()) return atomic_load(&g_rc);
@@ -256,8 +264,10 @@ static const cb_store_ops FAULT_OPS = {
     .users_list = w_users_list,
     .refresh_put = w_refresh_put,
     .refresh_take = w_refresh_take,
-    .refresh_revoke_session = w_refresh_revoke_session,
-    .refresh_revoke_user = w_refresh_revoke_user,
+    .session_put = w_session_put,
+    .session_get = w_session_get,
+    .session_revoke = w_session_revoke,
+    .user_end_sessions = w_user_end_sessions,
     .game_get = w_game_get,
     .game_create = w_game_create,
     .game_commit = w_game_commit,
@@ -297,8 +307,8 @@ static const cb_store_ops FAULT_OPS = {
 
 // Every operation of store.h is wrapped above. An operation added there and
 // not here would be left NULL (CB_E_NOTIMPL to whatever calls it through this
-// store), so the table's size is held to the count: the name, close, and 50 - 1.
-_Static_assert(sizeof(cb_store_ops) == (size_t)(50 + 1) * sizeof(void *),
+// store), so the table's size is held to the count: the name, close, and 52 - 1.
+_Static_assert(sizeof(cb_store_ops) == (size_t)(52 + 1) * sizeof(void *),
                "store.h has an operation lib_faultstore.c does not wrap: add its w_ wrapper and its line in FAULT_OPS");
 
 cb_store *fs_wrap(cb_store *inner) {

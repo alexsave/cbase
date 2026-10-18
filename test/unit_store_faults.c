@@ -8,6 +8,7 @@
 // signs a user out, a 404 says their game is gone, a 200 claims a write that
 // did not happen). The unfailed run must answer as it always does.
 #include "t.h"
+#include "app/limits.h"
 
 #include "app/app_internal.h"
 #include "boot.h"
@@ -82,6 +83,9 @@ static void run(const rq *q) {
     r.body_len = q->body_len;
     cb_http_res res;
     cb_res_init(&res);
+    // A sweep repeats a request once per store call: the in-memory rate
+    // limits (limits.h) are not what it measures.
+    cb_limits_reset();
     cb_handle(&g_ctx, &r, &res);
     g_status = res.status;
     g_len = res.body.len < sizeof g_body ? (int)res.body.len : 0;
