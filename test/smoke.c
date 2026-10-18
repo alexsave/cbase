@@ -150,6 +150,8 @@ static uint8_t g_body[1 << 20];
 static int g_len;
 
 // One request over HTTP, as a host's transport sends it.
+#define SMOKE_ANSWER_MS 120000
+
 static int send_req(const NcRequest *q) {
     g_status = -1;
     g_len = 0;
@@ -161,8 +163,17 @@ static int send_req(const NcRequest *q) {
     if (q->auth_len) h += snprintf(headers + h, sizeof headers - (size_t)h, "Authorization: %.*s\r\n", (int)q->auth_len, q->auth);
     if (q->method == NC_POST) h += snprintf(headers + h, sizeof headers - (size_t)h, "Content-Type: application/octet-stream\r\n");
     headers[h] = 0;
+    // A HANG GUARD, NOT A SPEED CLAIM: the answer may take as long as a
+    // starved machine makes it. lib_client's 10 s once failed a move the
+    // server answered correctly, late, on a Mac at load ~700 (a lost answer to
+    // a move is the client's INTERNAL, a non-200 here); reproduced by freezing
+    // the server with SIGSTOP for 11 s mid-request.
     tc_response r;
-    if (tc_http(g_port, q->method == NC_GET ? "GET" : "POST", path, headers, q->body, q->body_len, &r) != 0) return -1;
+    int fd = tc_connect(g_port);
+    if (fd < 0) return -1;
+    int rc = tc_request(fd, q->method == NC_GET ? "GET" : "POST", path, headers, q->body, q->body_len, SMOKE_ANSWER_MS, &r);
+    close(fd);
+    if (rc != 0) return -1;
     g_status = r.status;
     g_len = r.body.len < sizeof g_body ? (int)r.body.len : 0;
     memcpy(g_body, r.body.p, (size_t)g_len);
@@ -439,15 +450,14 @@ static void an_idle_human_turn_is_never_kicked(void) {
     }
     T_CHECK(owes);
     // While D deliberates a bot may still act (an attacker throws in or says
-    // good), paced 3 s a move: the bots are done once the stored version has
-    // held for longer than a pace.
-    int64_t nb = -1, v0 = -1, v1 = -1, held_since = mono_ms();
-    T_CHECK(db_game(gid, &nb, &v0));
-    while (mono_ms() - held_since < 5000 && mono_ms() - t0 < 60000) {
+    // good), paced 3 s a move: the bots are done when the stored row says no
+    // bot owes a move (needs_bots). Not "the version held for longer than a
+    // pace": a starved bot pool holds the version too (it failed once that
+    // way with the server frozen for 12 s, a bot's move still to come).
+    int64_t nb = -1, v0 = -1, v1 = -1;
+    while (db_game(gid, &nb, &v0) && nb != 0 && mono_ms() - t0 < 120000) {
         struct timespec ts = { 0, 200 * 1000000 };
         nanosleep(&ts, NULL);
-        int64_t v = -1;
-        if (db_game(gid, &nb, &v) && v != v0) { v0 = v; held_since = mono_ms(); }
     }
     T_CHECK(db_game(gid, &nb, &v0));
     T_EQ_INT(nb, 0);
@@ -540,7 +550,12 @@ static void game_scenario(void) {
             uint8_t wire[64];
             int n = choose_move(sc, &env, wire, sizeof wire, &rng);
             if (n <= 0) continue;
-            T_EQ_INT(call(humans[h], NC_DO_PLAY, gid, wire, n, version), 200);
+            int64_t t_play = mono_ms();
+            int played = call(humans[h], NC_DO_PLAY, gid, wire, n, version);
+            if (played != 200)
+                fprintf(stderr, "smoke: %s's move at v%u answered %d (last HTTP status %d, why %d) after %lld ms\n", humans[h]->name,
+                        version, played, g_status, nc_status_read(g_status, g_body, g_len), (long long)(mono_ms() - t_play));
+            T_EQ_INT(played, 200);
             T_CHECK(nc_action_read(g_status, g_body, g_len) != NULL);
             moved = true;
             moves++;
