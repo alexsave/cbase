@@ -487,6 +487,23 @@ Resources:
           CookiesConfig: { CookieBehavior: none }
           QueryStringsConfig: { QueryStringBehavior: none }
 
+  # CloudFront's own timing of every API answer, in a Server-Timing header
+  # (free): cdn-upstream-connect (a new connection to the Function URL, else
+  # 0), cdn-upstream-fbl (the origin's first byte), cdn-downstream-fbl, the
+  # POP and the layer. It is how the edge's share of a move is measured
+  # (c_base/docs/BENCH_VM_VS_DYNAMO.md): about 30% of requests through the
+  # edge took 25 to 30 ms more than the same request to the Function URL,
+  # with the Lambda's own time unchanged.
+  ServerTimingPolicy:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: !Sub "${FunctionName}-server-timing"
+        Comment: CloudFront's timing of each API answer (Server-Timing)
+        ServerTimingHeadersConfig:
+          Enabled: true
+          SamplingRate: 100
+
   Distribution:
     Type: AWS::CloudFront::Distribution
     Properties:
@@ -544,6 +561,7 @@ Resources:
           Compress: true
           CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad          # Managed-CachingDisabled
           OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac  # Managed-AllViewerExceptHostHeader
+          ResponseHeadersPolicyId: !Ref ServerTimingPolicy
         # The public reads: cached (PublicReadsCachePolicy), and only the CORS
         # request headers reach the function (Managed-CORS-CustomOrigin), so a
         # browser's preflight is still answered; the Host stays the origin's.
