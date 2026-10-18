@@ -5,6 +5,7 @@
 #include "bot_roster.h"
 
 #include <stdbool.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -135,4 +136,22 @@ static bool contains_nocase(const char *hay, const char *needle) {
 bool cb_store_user_matches(const cb_user_row *u, const char *needle) {
     if (!needle || !*needle) return true;
     return contains_nocase(u->email, needle) || contains_nocase(u->username, needle);
+}
+
+// ---- the admin console's collections (store_priv.h) -------------------------------------
+
+static const char *const FAMILIES[] = { "USER", "EMAIL", "REFRESH", "GAME", "BOT", "SNAP", "CHAT", "SCAN" };
+#define N_FAMILIES (int)(sizeof FAMILIES / sizeof FAMILIES[0])
+
+const char *cb_store_collection(int i) { return i >= 0 && i < N_FAMILIES ? FAMILIES[i] : NULL; }
+
+bool cb_store_collection_pk(const char *c, const char *prefix, char *out, size_t cap) {
+    if (c && strcmp(c, CB_ADMIN_GAMES) == 0) c = "GAME";
+    for (int i = 0; c && i < N_FAMILIES; i++)
+        if (strcmp(FAMILIES[i], c) == 0) {
+            // SCAN is a whole partition; every other family is "<FAMILY>#...".
+            int k = snprintf(out, cap, "%s%s%s", c, strcmp(c, "SCAN") == 0 ? "" : "#", prefix ? prefix : "");
+            return k > 0 && (size_t)k < cap;
+        }
+    return false;
 }

@@ -437,6 +437,9 @@ typedef struct cb_store_ops {
     int (*item_query)(cb_store *s, const cb_iquery *q, cb_item_fn fn, void *ud);
     int (*item_batch_get)(cb_store *s, const cb_ikey *keys, int n, const char *const *proj, int n_proj,
                           cb_item_at_fn fn, void *ud);
+    // The items at keys[0..n) deleted, unconditionally and not atomically
+    // (DynamoDB: BatchWriteItem, 25 a request, again while some are left).
+    int (*item_batch_delete)(cb_store *s, const cb_ikey *keys, int n);
 } cb_store_ops;
 
 struct cb_store {
@@ -511,7 +514,7 @@ void cb_store_throttles_get(cb_store_throttles *out);
 
 // The SQLite schema version this binary applies (store_sqlite.c), and the
 // embedded schema text (build/gen/schema_sql.c, from sql/schema.sql).
-#define CB_SCHEMA_VERSION 5
+#define CB_SCHEMA_VERSION 6
 extern const char cbase_schema_sql[];
 extern const unsigned long cbase_schema_sql_len;
 

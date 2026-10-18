@@ -1,44 +1,24 @@
--- c_base schema (DESIGN.md "Store"). SQLite, WAL, foreign keys on.
+-- c_base schema (DESIGN.md "Store"). SQLite, WAL.
 --
 -- APPLIED AT EVERY START, inside one transaction, by src/store/store_sqlite.c:
--- every statement here is idempotent (IF NOT EXISTS, INSERT OR IGNORE), and the
--- database's PRAGMA user_version is then set to CB_SCHEMA_VERSION
--- (src/store/store.h). A database whose user_version is NEWER than the binary's
--- is refused: an old binary must not write to a schema it does not know. A
--- change that is not idempotent (an ALTER, a backfill) is a numbered step in
--- store_sqlite.c that runs once when user_version is below it, and bumps
--- CB_SCHEMA_VERSION.
+-- every statement here is idempotent (IF NOT EXISTS, INSERT OR IGNORE, DROP
+-- ... IF EXISTS), and the database's PRAGMA user_version is then set to
+-- CB_SCHEMA_VERSION (src/store/store.h). A database whose user_version is
+-- NEWER than the binary's is refused: an old binary must not write to a
+-- schema it does not know.
 --
--- TIMES are INTEGER milliseconds since the Unix epoch, the unit every kernel
--- call takes (now_ms). The facade prints them as ISO-8601 text.
--- IDS are canonical lowercase UUID text, except games.id (12 hex characters; 6 for games made before).
--- BYTES are BLOBs: the kernel's state blob, roster, session log, replay code.
---
--- There are NO player_views or spectator_views tables: a view is computed on
--- demand from the resident table (src/app/table_ops.h), never stored.
+-- EVERY ROW IS AN ITEM (schema 6): the store's item layer (src/store/items.h)
+-- is DynamoDB's model on both backends, and the rows above it are written
+-- once (src/store/rows_auth.c, rows_foolish.c) with the keys and attributes
+-- json_surface.h "THE ITEM LAYOUT" lists. SQLite holds no production data,
+-- so the tables of schemas 1 to 5 are dropped with what a development
+-- database had in them.
 
--- Accounts. password_hash is bcrypt ($2a$ / $2b$), so GoTrue's hashes import
--- unchanged and existing players keep their passwords.
-CREATE TABLE IF NOT EXISTS users (
-    id              TEXT PRIMARY KEY,
-    email           TEXT NOT NULL UNIQUE,
-    password_hash   TEXT NOT NULL,
-    username        TEXT,
-    created_at      INTEGER NOT NULL,
-    last_sign_in_at INTEGER,
-    -- A session begun at a lower session_gen is over, but kept_session
-    -- (a global sign-out, a password change: store.h cb_user_row).
-    session_gen     INTEGER NOT NULL DEFAULT 0,
-    kept_session    TEXT
-);
-
--- THE ITEM LAYER (src/store/items.h): DynamoDB's model, so the rows written
--- once above it (src/store/rows_auth.c: sessions, refresh tokens, failed
--- sign-ins) behave alike on both backends. An item is its pk and sk, the
--- index keys it is listed under, its TTL in ms, and every attribute in one
--- binary record (items.h cb_item_record_*). An item past expires_ms stays
--- until it is overwritten or deleted, as DynamoDB's TTL may keep one for days:
--- a reader treats it as gone (the tightest of the two, docs/PLATFORM.md 8.3.2).
+-- An item is its pk and sk, the index keys it is listed under, its TTL in ms,
+-- and every attribute in one binary record (items.h cb_item_record_*). An item
+-- past expires_ms stays until it is overwritten or deleted, as DynamoDB's TTL
+-- may keep one for days: a reader treats it as gone (the tightest of the two,
+-- docs/PLATFORM.md 8.3.2).
 CREATE TABLE IF NOT EXISTS items (
     pk         TEXT NOT NULL,
     sk         TEXT NOT NULL,
@@ -53,113 +33,34 @@ CREATE TABLE IF NOT EXISTS items (
 CREATE INDEX IF NOT EXISTS idx_items_gsi1 ON items(gsi1pk, gsi1sk) WHERE gsi1pk IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_items_gsi2 ON items(gsi2pk, gsi2sk) WHERE gsi2pk IS NOT NULL;
 
--- Schema 4's tables for the rows that are items now (schema 5). SQLite holds
--- no production data, so what a development database had in them goes.
+-- The tables of schemas 1 to 5, children first.
+DROP TABLE IF EXISTS chat_messages;
+DROP TABLE IF EXISTS game_snapshots;
+DROP TABLE IF EXISTS game_members;
+DROP TABLE IF EXISTS game_bots;
+DROP TABLE IF EXISTS ratings;
+DROP TABLE IF EXISTS games;
 DROP TABLE IF EXISTS sessions;
 DROP TABLE IF EXISTS refresh_tokens;
 DROP TABLE IF EXISTS signin_fails;
+DROP TABLE IF EXISTS users;
+DROP TABLE IF EXISTS bots;
 
--- The bots, seeded below. Not a foreign-key target of games: a roster names a
--- bot by id inside the kernel's roster blob, and game_bots is the index.
-CREATE TABLE IF NOT EXISTS bots (
+-- The seed of the bots (below), read once into BOT# items.
+CREATE TABLE IF NOT EXISTS bot_seed (
     id            TEXT PRIMARY KEY,
     nickname      TEXT NOT NULL,
-    strategy_key  TEXT NOT NULL,
-    elo_rating    INTEGER NOT NULL DEFAULT 1000,
-    previous_elo  INTEGER,
-    games_played  INTEGER NOT NULL DEFAULT 0,
-    created_at    INTEGER NOT NULL DEFAULT 0,
-    updated_at    INTEGER NOT NULL DEFAULT 0
+    strategy_key  TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_bots_strategy ON bots(strategy_key);
-
--- The durability log of the resident tables. status is the kernel's
--- GAME_STATUS_* number; state, roster and logs_packed are the kernel's bytes,
--- written whole by every commit; game_seed is the 32-byte deal seed (NULL in a
--- lobby). version increments per commit and is what clients gate on.
--- last_commit_at is the commit's time, written only when version moves (the
--- heartbeat's abandon guard); updated_at also moves when a bot drive takes or
--- renews the lease, so the scan does not dispatch a second drive on top of a
--- live one. bot_lease_token / bot_lease_until are the bot lease (a NULL or
--- past bot_lease_until is free), as try_acquire_bot_lease kept them.
-CREATE TABLE IF NOT EXISTS games (
-    id             TEXT PRIMARY KEY,
-    status         INTEGER NOT NULL,
-    state          BLOB NOT NULL,
-    roster         BLOB NOT NULL,
-    needs_bots     INTEGER NOT NULL DEFAULT 0,
-    game_seed      BLOB,
-    logs_packed    BLOB,
-    version        INTEGER NOT NULL DEFAULT 0,
-    round_epoch    INTEGER NOT NULL DEFAULT 0,
-    created_at     INTEGER NOT NULL,
-    updated_at     INTEGER NOT NULL,
-    last_commit_at INTEGER NOT NULL,
-    bot_lease_token TEXT,
-    bot_lease_until INTEGER
-);
-CREATE INDEX IF NOT EXISTS idx_games_updated_at ON games(updated_at);
-CREATE INDEX IF NOT EXISTS idx_games_bots_due ON games(last_commit_at) WHERE needs_bots = 1;
-
--- Who sits at a game (the humans). Rewritten by every commit from the roster.
-CREATE TABLE IF NOT EXISTS game_members (
-    game_id   TEXT NOT NULL REFERENCES games(id) ON DELETE CASCADE,
-    user_id   TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    joined_at INTEGER NOT NULL,
-    PRIMARY KEY (game_id, user_id)
-);
-CREATE INDEX IF NOT EXISTS idx_game_members_user ON game_members(user_id);
-
--- Which bots sit at a game. Rewritten by every commit from the roster.
-CREATE TABLE IF NOT EXISTS game_bots (
-    game_id TEXT NOT NULL REFERENCES games(id) ON DELETE CASCADE,
-    bot_id  TEXT NOT NULL,
-    PRIMARY KEY (game_id, bot_id)
-);
-
--- One row per human who has a rating. username is the leaderboard's name
--- (NULL after an account is deleted, as the old delete_account did).
-CREATE TABLE IF NOT EXISTS ratings (
-    user_id      TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-    username     TEXT,
-    elo_rating   INTEGER NOT NULL DEFAULT 1000,
-    previous_elo INTEGER,
-    games_played INTEGER NOT NULL DEFAULT 0,
-    updated_at   INTEGER NOT NULL DEFAULT 0
-);
-CREATE INDEX IF NOT EXISTS idx_ratings_elo ON ratings(elo_rating);
-
--- A finished game's replay: the kernel's v6 replay code and extras blob.
--- player_ids is the seated humans' ids, comma-separated, in seat order.
--- game_id is kept when the game row is deleted (as ON DELETE SET NULL was).
-CREATE TABLE IF NOT EXISTS game_snapshots (
-    id         TEXT PRIMARY KEY,
-    game_id    TEXT REFERENCES games(id) ON DELETE SET NULL,
-    player_ids TEXT NOT NULL,
-    moves      BLOB NOT NULL,
-    extras     BLOB,
-    created_at INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_game_snapshots_game ON game_snapshots(game_id);
-CREATE INDEX IF NOT EXISTS idx_game_snapshots_created ON game_snapshots(created_at);
-
-CREATE TABLE IF NOT EXISTS chat_messages (
-    id         TEXT PRIMARY KEY,
-    game_id    TEXT NOT NULL REFERENCES games(id) ON DELETE CASCADE,
-    user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    message    TEXT NOT NULL,
-    is_system  INTEGER NOT NULL DEFAULT 0,
-    created_at INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_chat_messages_game ON chat_messages(game_id, created_at);
 
 -- THE BOTS: seven of every family, in ladder order, exactly the nicknames and
 -- strategy keys of the kernel's c/src/bot_roster.c (which the old Postgres
 -- seed carried too). That seed left the ids to uuid_generate_v4(), so they differ per database;
 -- these are FIXED (UUIDv5 of the nickname in a c_base namespace) so every fresh
--- c_base database agrees. A migrated database replaces this table with the
--- hosted rows (c_base/migrate), because the hosted rosters name the hosted ids.
-INSERT OR IGNORE INTO bots (id, nickname, strategy_key) VALUES
+-- c_base database agrees. store_sqlite.c writes them as the BOT# items when a
+-- database has none; a migrated store replaces them with the hosted rows
+-- (c_base/migrate), because the hosted rosters name the hosted ids.
+INSERT OR IGNORE INTO bot_seed (id, nickname, strategy_key) VALUES
   ('2c601cde-63d2-5291-8fcb-735f5860b1ec', '%Miami 1', 'random'),
   ('98d81d2b-94d3-540f-a5c9-106293670763', '%Miami 2', 'random'),
   ('283efd87-26ce-5364-af9e-a947112b1958', '%Miami 3', 'random'),

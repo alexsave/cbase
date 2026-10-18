@@ -12,6 +12,14 @@ int  cb_store_bot_ladder_cmp(const cb_bot_row *a, const cb_bot_row *b);
 void cb_store_bots_sort(cb_bot_row *rows, int n);
 // Leaderboard order (ratings_list): rating highest first, then user id.
 void cb_store_ratings_sort(cb_rating_row *rows, int n);
+// THE ADMIN CONSOLE'S COLLECTIONS, the same on both backends: the key
+// families of the item layout (json_surface.h "THE ITEM LAYOUT"). The i-th
+// (NULL past the last); and the pk prefix a collection's items start with,
+// with `prefix` after it ("GAME#ab", or "SCAN": a whole partition), into out:
+// false for a name that is not one (CB_ADMIN_GAMES is GAME).
+const char *cb_store_collection(int i);
+bool cb_store_collection_pk(const char *c, const char *prefix, char *out, size_t cap);
+
 // users_list's search: `needle` ("" matches all) is in the email or the
 // username, ASCII case-insensitively.
 bool cb_store_user_matches(const cb_user_row *u, const char *needle);

@@ -1,6 +1,8 @@
 // items.c - an item as read, and the binary record SQLite keeps it in (items.h).
 #include "items.h"
 
+#include "util/bytea.h"
+
 #include <stdlib.h>
 #include <string.h>
 
@@ -115,6 +117,43 @@ bool cb_item_bool(const cb_item *it, const char *name, bool *out) {
 int64_t cb_item_n_or(const cb_item *it, const char *name, int64_t def) {
     int64_t v;
     return cb_item_n(it, name, &v) ? v : def;
+}
+
+int cb_item_text(const cb_item *it, cb_buf *st, const char **names, const char **values, int cap) {
+    size_t noff[CB_ITEM_ATTRS], voff[CB_ITEM_ATTRS];
+    int n = 0;
+    cb_buf_reset(st);
+    for (int i = 0; i < it->n && n < cap && n < CB_ITEM_ATTRS; i++, n++) {
+        cb_av v;
+        cb_item_at(it, i, &v);
+        noff[n] = st->len;
+        cb_buf_puts(st, v.name);
+        cb_buf_putc(st, 0);
+        voff[n] = st->len;
+        switch (v.kind) {
+        case CB_AV_S: cb_buf_puts(st, v.s); break;
+        case CB_AV_N: cb_buf_printf(st, "%lld", (long long)v.n); break;
+        case CB_AV_BOOL: cb_buf_puts(st, v.b ? "true" : "false"); break;
+        case CB_AV_B: {
+            char *hex = malloc(2 * v.len + 3);
+            if (!hex) return -1;
+            cb_bytea_encode(v.bytes, v.len, hex, 2 * v.len + 3);
+            cb_buf_puts(st, hex);
+            free(hex);
+            break;
+        }
+        case CB_AV_SL:
+            for (int k = 0; k < v.n_list; k++) cb_buf_printf(st, "%s%s", k ? "," : "", v.list[k]);
+            break;
+        }
+        cb_buf_putc(st, 0);
+    }
+    if (st->oom) return -1;
+    for (int i = 0; i < n; i++) {
+        names[i] = (const char *)st->p + noff[i];
+        values[i] = (const char *)st->p + voff[i];
+    }
+    return n;
 }
 
 // ---- the record --------------------------------------------------------------------------

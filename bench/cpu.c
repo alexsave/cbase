@@ -11,7 +11,9 @@
 //   dynamo_get_parse   a GetItem answer for the game row (the row the kernel
 //                      just committed, as json_surface.c writes it) read back into
 //                      a cb_game_row: the JSON scan and the base64 of the blobs
-//   dynamo_commit_build the commit's TransactWriteItems body (the CAS)
+//   dynamo_commit_build the commit's UpdateItem body (the CAS on the row,
+//                      store/rows_foolish.c cb_rows_cas_write, as a move
+//                      between humans sends it)
 //   view_push          one player's view push: the stream's NW_WS_VIEW frame
 //                      around the envelope (realtime.c rt_publish_view), then
 //                      the MQTT PUBLISH the hub sends it as
@@ -31,6 +33,7 @@
 #include "auth/bcrypt.h"
 #include "auth/jwt.h"
 #include "json_surface.h"
+#include "store/rows_foolish.h"
 #include "app/pushes.h"
 #include "realtime/realtime.h"
 #include "../../shared/c/b64/b64.h"
@@ -174,7 +177,7 @@ static cb_http_res g_res;
 static dw_req g_req;
 static cb_game_commit g_commit;
 static cb_game_row g_row;
-static dw_seats g_stored;
+static cb_rows_write g_cas, g_put;
 static cb_view_row g_view;
 static uint8_t g_env2k[2048], g_back[2048];
 static char g_b64[4096], g_token[CB_JWT_MAX], g_hash[CB_BCRYPT_HASH_LEN + 1];
@@ -200,14 +203,17 @@ static void op_event_encode(void) {
 static void op_dynamo_get_parse(void) {
     cb_span item;
     cb_game_row row;
-    if (dw_item((const char *)g_getitem.p, g_getitem.len, &item) && dw_item_game(item, &row)) {
+    static cb_item it;
+    cb_item_reset(&it);
+    if (dw_item((const char *)g_getitem.p, g_getitem.len, &item) && dw_item_read(item, &it) && cb_rows_game_of(&it, &row)) {
         g_sink += (int64_t)row.state_len;
         cb_game_row_free(&row);
     }
 }
 
 static void op_dynamo_commit_build(void) {
-    dw_game_commit(&g_req, "cbase", &g_commit, &g_stored, NULL, false);
+    cb_rows_cas_write(&g_commit, g_commit.row->updated_at, &g_cas);
+    dw_iwrite(&g_req, "cbase", &g_cas.w, true);
     g_sink += (int64_t)g_req.body.len;
 }
 
@@ -303,10 +309,11 @@ static bool fixtures(void) {
     g_row.created_at = 1760000000000;
     g_row.updated_at = g_row.last_commit_at = 1760000100000;
     dw_req_init(&g_req);
-    dw_game_create(&g_req, "cbase", &g_row, UA);
+    cb_rows_game_put_write(&g_row, &g_put);
+    dw_iwrite(&g_req, "cbase", &g_put.w, false);
     cb_buf_init(&g_getitem);
-    if (!dw_get_answer_of_create(&g_req, &g_getitem)) {
-        fprintf(stderr, "bench: no item in the create transaction\n");
+    if (!dw_get_answer_of_put(&g_req, &g_getitem)) {
+        fprintf(stderr, "bench: no item in the row's put\n");
         return false;
     }
 
@@ -327,9 +334,6 @@ static bool fixtures(void) {
     g_commit.n_humans = 2;
     snprintf(g_commit.humans[0], sizeof(cb_uuid), UA);
     snprintf(g_commit.humans[1], sizeof(cb_uuid), UB);
-    g_stored.n_humans = 2;
-    snprintf(g_stored.humans[0], sizeof(cb_uuid), UA);
-    snprintf(g_stored.humans[1], sizeof(cb_uuid), UB);
 
     // One player's view row, for the pv- push.
     memset(&g_view, 0, sizeof g_view);

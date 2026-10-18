@@ -27,4 +27,15 @@ int cb_rows_signin_fails_clear(cb_store *s, const char *email);
 // user_delete finds them on gsi1 itself).
 int cb_rows_refresh_forget_user(cb_store *s, const char *user_id);
 
+// Every operation above but forget_user, for a backend's cb_store_ops.
+#define CB_ROWS_AUTH_OPS \
+    .session_put = cb_rows_session_put, \
+    .session_get = cb_rows_session_get, \
+    .session_revoke = cb_rows_session_revoke, \
+    .refresh_put = cb_rows_refresh_put, \
+    .refresh_take = cb_rows_refresh_take, \
+    .signin_fails_get = cb_rows_signin_fails_get, \
+    .signin_fails_put = cb_rows_signin_fails_put, \
+    .signin_fails_clear = cb_rows_signin_fails_clear,
+
 #endif

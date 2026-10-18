@@ -100,6 +100,12 @@ bool cb_item_n(const cb_item *it, const char *name, int64_t *out);
 bool cb_item_bool(const cb_item *it, const char *name, bool *out);
 int64_t cb_item_n_or(const cb_item *it, const char *name, int64_t def);
 
+// The item as the admin console's text row: each attribute's name and its
+// value as text (S as is, N its digits, BOOL true/false, B "\x" hex, SL its
+// strings joined by ','), at most cap of them, in store (reset first), which
+// names[i] and values[i] point into until it changes. The count.
+int cb_item_text(const cb_item *it, cb_buf *store, const char **names, const char **values, int cap);
+
 // The binary record SQLite keeps an item's attributes in (no JSON): for each
 // attribute, u8 name length, the name, u8 kind, then S/B: u32 length and the
 // bytes, N: 8 bytes little-endian, BOOL: one byte. Encoded from an item into
@@ -122,7 +128,7 @@ typedef enum {
     CB_C_EXISTS = 1,     // the item exists
     CB_C_ABSENT,         // the item does not exist
     CB_C_EQ,             // the attribute v.name equals v (an absent one does not)
-    CB_C_NE,             // the attribute is present and differs from v
+    CB_C_NE,             // the attribute differs from v (an absent one does: DynamoDB's <>)
     CB_C_LT,             // the attribute is a number below v.n
     CB_C_ATTR_EXISTS,    // the attribute v.name is present
     CB_C_ABSENT_OR_EQ,   // the attribute is absent or equals v

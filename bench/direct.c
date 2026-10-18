@@ -19,7 +19,7 @@
 //   DIRECT, warm, signed with the credentials in the environment
 //   (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN, AWS_REGION;
 //   `aws configure export-credentials --format env`). The same calls the
-//   server makes for each read, built by json_surface.c's dw_* writers and
+//   server makes for each read, built by json_surface.c's item-layer writers and
 //   sent by aws_call.c, one after another as store_dynamo.c sends them:
 //     direct_board  Query GSI2 RATINGS + Query GSI2 BOTS, every page
 //     direct_games  Query GSI1 USERGAMES#<user>, then GetItem GAME#<id> ROW each
@@ -227,8 +227,22 @@ static bool d_send(direct *d, const dw_req *q, cb_buf *resp) {
 
 typedef bool (*item_fn)(cb_span it, void *ud);
 
+// The queries the server makes for each read (store/rows_foolish.c).
+#define Q_RATINGS ((cb_iquery){ .index = 2, .pk = "RATINGS", .forward = true })
+#define Q_BOTS    ((cb_iquery){ .index = 2, .pk = "BOTS", .forward = true })
+#define Q_PLAYER  ((cb_iquery){ .index = 2 })
+#define Q_USERGAMES ((cb_iquery){ .index = 1 })
+
+// q with its partition key "<prefix><user>" (held until the next call).
+static cb_iquery q_user(cb_iquery q, const char *prefix, const char *user) {
+    static char pk[128];
+    snprintf(pk, sizeof pk, "%s%s", prefix, user);
+    q.pk = pk;
+    return q;
+}
+
 // Every page of one Query, as store_dynamo.c's query_all walks it.
-static bool d_query(direct *d, dw_query_kind k, const char *arg, item_fn fn, void *ud) {
+static bool d_query(direct *d, cb_iquery k, item_fn fn, void *ud) {
     dw_req q;
     dw_req_init(&q);
     cb_buf resp, start;
@@ -236,7 +250,7 @@ static bool d_query(direct *d, dw_query_kind k, const char *arg, item_fn fn, voi
     cb_buf_init(&start);
     bool ok = true;
     for (;;) {
-        dw_query(&q, d->table, k, arg, false, 0, cb_span_of((const char *)start.p, start.len));
+        dw_iquery(&q, d->table, &k, cb_span_of((const char *)start.p, start.len));
         if (!(ok = d_send(d, &q, &resp))) break;
         cb_span items = dw_items(cb_buf_cstr(&resp), resp.len), it;
         size_t pos = 0;
@@ -255,7 +269,9 @@ static bool d_query(direct *d, dw_query_kind k, const char *arg, item_fn fn, voi
 static bool d_get_game(direct *d, const char *gid) {
     dw_req q;
     dw_req_init(&q);
-    dw_get_game(&q, d->table, gid);
+    char pk[64];
+    snprintf(pk, sizeof pk, "GAME#%s", gid);
+    dw_iget(&q, d->table, (cb_ikey){ pk, "ROW" }, true);
     cb_buf resp;
     cb_buf_init(&resp);
     cb_span it;
@@ -272,23 +288,24 @@ typedef struct {
 
 static bool collect(cb_span it, void *ud) {
     gids *g = ud;
-    cb_member_row m;
-    if (g->n < 64 && dw_item_member(it, &m)) snprintf(g->ids[g->n++], sizeof g->ids[0], "%s", m.game_id);
+    static cb_item m;
+    cb_item_reset(&m);
+    if (g->n < 64 && dw_item_read(it, &m) && cb_item_s(&m, "game_id", g->ids[g->n], sizeof g->ids[0])) g->n++;
     return true;
 }
 
 static bool d_board(direct *d) {
-    return d_query(d, DWQ_RATINGS, NULL, NULL, NULL) && d_query(d, DWQ_BOTS, NULL, NULL, NULL);
+    return d_query(d, Q_RATINGS, NULL, NULL) && d_query(d, Q_BOTS, NULL, NULL);
 }
 
 static bool d_history(direct *d, const char *user) {
-    return d_query(d, DWQ_RATINGS, NULL, NULL, NULL) && d_query(d, DWQ_PLAYER_SNAPSHOTS, user, NULL, NULL);
+    return d_query(d, Q_RATINGS, NULL, NULL) && d_query(d, q_user(Q_PLAYER, "PLAYER#", user), NULL, NULL);
 }
 
 static bool d_games(direct *d, const char *user) {
     static gids g;
     g.n = 0;
-    if (!d_query(d, DWQ_USER_GAMES, user, collect, &g)) return false;
+    if (!d_query(d, q_user(Q_USERGAMES, "USERGAMES#", user), collect, &g)) return false;
     for (int i = 0; i < g.n; i++)
         if (!d_get_game(d, g.ids[i])) return false;
     return g.n > 0;
@@ -298,7 +315,9 @@ static bool d_games(direct *d, const char *user) {
 static bool d_floor(direct *d, const char *gid, size_t *sent, size_t *recv) {
     dw_req q;
     dw_req_init(&q);
-    dw_get_game(&q, d->table, gid);
+    char pk[64];
+    snprintf(pk, sizeof pk, "GAME#%s", gid);
+    dw_iget(&q, d->table, (cb_ikey){ pk, "ROW" }, true);
     char headers[256];
     snprintf(headers, sizeof headers, "Content-Type: %s\r\nX-Amz-Target: %s\r\n", dw_content_type(), q.target);
     cb_https_response r;
@@ -417,7 +436,7 @@ int bench_direct(const bench_opts *o) {
                 case D_GAMES: ok = d_games(&d, user); break;
                 case D_GAME: ok = d_get_game(&d, gid); break;
                 case D_HISTORY: ok = d_history(&d, user); break;
-                default: ok = d_query(&d, DWQ_BOTS, NULL, NULL, NULL); break;
+                default: ok = d_query(&d, Q_BOTS, NULL, NULL); break;
                 }
                 sent = d.sent;
                 recv = d.recv;

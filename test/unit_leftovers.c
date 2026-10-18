@@ -9,6 +9,7 @@
 #include "aws/https.h"
 #include "aws/runtime_api.h"
 #include "json_surface.h"
+#include "store/rows_foolish.h"
 #include "lib_aws_tls.h"
 #include "store/store.h"
 #include "../../shared/c/b64/b64.h"
@@ -145,30 +146,35 @@ static void dynamo_host_from_region(void) {
 // ---- the bench's fixtures ---------------------------------------------------------------------------
 
 static void bench_fixtures(void) {
-    // The GetItem answer for the row a create writes: the same item, readable as a game row.
+    // The GetItem answer for the row a put writes: the same item, readable as a game row.
     uint8_t st[3] = { 1, 2, 3 };
     cb_game_row g = { .id = "ab12cd", .status = 0, .state = st, .state_len = 3, .roster = st, .roster_len = 3,
                       .version = 0, .created_at = 1, .updated_at = 1 };
+    cb_rows_write put;
+    cb_rows_game_put_write(&g, &put);
     dw_req r;
     dw_req_init(&r);
-    dw_game_create(&r, "cbase", &g, "aaaaaaaa-0000-4000-8000-000000000001");
+    T_CHECK(dw_iwrite(&r, "cbase", &put.w, false));
     cb_buf got;
     cb_buf_init(&got);
-    T_CHECK(dw_get_answer_of_create(&r, &got));
+    T_CHECK(dw_get_answer_of_put(&r, &got));
     cb_span it;
     T_CHECK(dw_item(cb_buf_cstr(&got), got.len, &it));
+    cb_item item;
+    cb_item_init(&item);
     cb_game_row back;
-    T_CHECK(dw_item_game(it, &back));
+    T_CHECK(dw_item_read(it, &item) && cb_rows_game_of(&item, &back));
     T_EQ_STR(back.id, "ab12cd");
     T_EQ_MEM(back.state, back.state_len, st, 3);
     cb_game_row_free(&back);
+    cb_item_free(&item);
     cb_buf_free(&got);
-    // A request with no Put first holds no such item.
+    // A request with no item holds no such answer.
     dw_req q;
     dw_req_init(&q);
-    dw_get_game(&q, "cbase", "ab12cd");
+    dw_iget(&q, "cbase", (cb_ikey){ "GAME#ab12cd", "ROW" }, true);
     cb_buf_init(&got);
-    T_CHECK(!dw_get_answer_of_create(&q, &got));
+    T_CHECK(!dw_get_answer_of_put(&q, &got));
     cb_buf_free(&got);
     dw_req_free(&q);
     dw_req_free(&r);

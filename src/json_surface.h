@@ -123,8 +123,6 @@ typedef enum {
 // The reason at `index`; *has_item says whether the failed item came back
 // (ReturnValuesOnConditionCheckFailure ALL_OLD), i.e. whether it exists.
 dw_reason dw_cancel_reason(const char *body, size_t n, int index, bool *has_item);
-// A failed single-item condition (DW_COND_FAILED): did the item exist?
-bool dw_cond_failed_has_item(const char *body, size_t n);
 
 // ---- reading items -------------------------------------------------------------------
 
@@ -186,24 +184,6 @@ bool dw_get_n(cb_span item, const char *name, int64_t *out);
 // *len 0 when absent). false: present but not valid base64, or no memory.
 bool dw_get_b(cb_span item, const char *name, uint8_t **out, size_t *len);
 
-// Items as rows. Each returns false when a required attribute is missing.
-bool dw_item_user(cb_span item, cb_user_row *u);
-// A SESSION item; false when it is not one or has ended by now_ms.
-bool dw_item_game(cb_span item, cb_game_row *g);       // byte fields malloc'd
-bool dw_item_member(cb_span item, cb_member_row *m);   // a MEMBER item (or its GSI1 copy)
-// A DWQ_GAME_SEATS item's seat: the id after MEMBER# (a human, *bot false)
-// or BOT# (a bot) in its sort key. false for any other item.
-bool dw_seat_key(cb_span item, cb_uuid id, bool *bot);
-bool dw_item_bot(cb_span item, cb_bot_row *b);
-bool dw_item_rating(cb_span item, cb_rating_row *r);
-bool dw_item_snapshot(cb_span item, cb_snapshot_row *s);   // byte fields malloc'd
-bool dw_item_chat(cb_span item, cb_chat_row *c);           // message malloc'd
-bool dw_item_scan(cb_span item, char game_id[CB_GAME_ID_MAX + 1], int64_t *updated_at, int64_t *last_commit_at);
-// A SCAN marker's lease_until, or INT64_MIN when it carries none.
-int64_t dw_item_lease_until(cb_span item);
-bool dw_item_email_user(cb_span item, cb_uuid id);
-// The item's keys as raw JSON ({"pk":..,"sk":..}), for a delete or an update.
-bool dw_item_key(cb_span item, cb_buf *out);
 // The item rendered for the admin console: each attribute as name and text
 // (S as is, N as its digits, B as "\x" hex, BOOL as true/false, NULL as a NULL
 // value, anything else as its JSON). The strings live in *storage until it is
@@ -212,35 +192,6 @@ bool dw_item_key(cb_span item, cb_buf *out);
 int dw_item_text(cb_span item, cb_buf *storage, const char **names, const char **values, int cap);
 
 // ---- the requests ---------------------------------------------------------------------
-
-// Point reads (ConsistentRead).
-void dw_get_user(dw_req *r, const char *table, const char *id);
-void dw_get_email(dw_req *r, const char *table, const char *email);
-void dw_get_game(dw_req *r, const char *table, const char *id);
-void dw_get_member(dw_req *r, const char *table, const char *game, const char *user);
-// The game's SCAN marker (store.h lease_held), consistent.
-void dw_get_scan(dw_req *r, const char *table, const char *game);
-
-// The access patterns the backend reads by, one Query each.
-typedef enum {
-    DWQ_GAME_SEATS,        // arg game: every item under GAME#<id> but the ROW, which is its
-                           // seats (dw_seat_key), keys only (consistent)
-    DWQ_USER_GAMES,        // arg user: GSI1, newest first
-    DWQ_USER_CHATS,        // arg user: GSI1, keys
-    DWQ_USER_TOKENS,       // arg user: GSI1, keys
-    DWQ_GAME_SNAPSHOTS,    // arg game: GSI1, keys
-    DWQ_PLAYER_SNAPSHOTS,  // arg user: GSI2 (forward chooses the order)
-    DWQ_SNAPSHOT_ITEMS,    // arg snapshot id: SNAP#<id>, consistent
-    DWQ_CHAT,              // arg game: newest first (consistent)
-    DWQ_SCAN,              // arg unused: the SCAN partition (consistent)
-    DWQ_BOTS,              // GSI2 BOTS
-    DWQ_RATINGS,           // GSI2 RATINGS: every row the index holds, either layout
-    DWQ_RATINGS_TOP,       // GSI2 RATINGS, "E#" keys only: the leaderboard order
-    DWQ_USERS,             // GSI2 USERS, newest first
-} dw_query_kind;
-// `limit` 0 for none; `forward` only matters for DWQ_PLAYER_SNAPSHOTS;
-// `start` is the previous page's dw_last_key (empty for the first).
-void dw_query(dw_req *r, const char *table, dw_query_kind k, const char *arg, bool forward, int limit, cb_span start);
 
 // THE ITEM LAYER (store/items.h), spelled for DynamoDB: one request each.
 // GetItem of a key (ConsistentRead when asked).
@@ -259,6 +210,8 @@ void dw_iquery(dw_req *r, const char *table, const cb_iquery *q, cb_span start);
 // false past 100 keys.
 bool dw_ibatch(dw_req *r, const char *table, const cb_ikey *keys, const int *which, int n, const char *const *proj,
                int n_proj);
+// BatchWriteItem deleting keys[0..n) (n at most 25).
+bool dw_ibatch_delete(dw_req *r, const char *table, const cb_ikey *keys, int n);
 // The indexes (into keys[0..count)) of the keys a BatchGetItem answer left
 // unprocessed, into out: how many.
 int dw_ibatch_unprocessed(const char *body, size_t n, const char *table, const cb_ikey *keys, int count, int *out);
@@ -268,111 +221,9 @@ bool dw_item_read(cb_span item, cb_item *out);
 // An item's pk and sk (into the caller's buffers): false when it has none.
 bool dw_item_keys(cb_span item, char *pk, size_t pk_cap, char *sk, size_t sk_cap);
 
-// Users.
-// signup: EMAIL (absent), PROFILE (absent) and the RATING row at `start`.
-void dw_user_create(dw_req *r, const char *table, const cb_user_row *u, int32_t start);
-// import: EMAIL and PROFILE as given, no condition, no rating row.
-void dw_user_import(dw_req *r, const char *table, const cb_user_row *u);
-// Present-only updates (ConditionalCheckFailed when the user is gone).
-void dw_user_set_password(dw_req *r, const char *table, const char *id, const char *hash, const char *keep);
-void dw_user_end_sessions(dw_req *r, const char *table, const char *id);
-void dw_user_touch(dw_req *r, const char *table, const char *id, int64_t at);
-// Deletes the PROFILE, RATING and EMAIL items (the caller deletes the rest).
-void dw_user_delete_txn(dw_req *r, const char *table, const cb_user_row *u);
-
-// Games.
-void dw_game_create(dw_req *r, const char *table, const cb_game_row *g, const char *creator);
-// The bench's fixture: the GetItem answer ({"Item": ..}) for the game row a
-// dw_game_create request writes. false when the request holds no such item.
-bool dw_get_answer_of_create(const dw_req *create, cb_buf *out);
-// What a commit found before it wrote: the seats stored now, and for each
-// rated seat its rating row as read (the transaction is fenced on it, so a
-// rating another game changed meanwhile cancels and the commit re-reads).
-typedef struct {
-    bool    exists;     // the rating row (or the bot) is there
-    bool    account;    // a human without a row: the account exists, so a row is created
-    int32_t elo;        // as read
-} dw_rating_read;
-typedef struct {
-    int     n_humans, n_bots;
-    cb_uuid humans[64];
-    cb_uuid bots[64];
-} dw_seats;
-// THE CAS as one TransactWriteItems. Item 0 is the game: Update conditioned on
-// version = expected (or, `import`, a Put with no condition). Then the
-// member and bot seat puts and deletes, the rating updates (each fenced on the
-// rating it read), and the SCAN marker. ratings may be NULL when c->n_rated is 0.
-// When item 0 would be the only item (dw_commit_is_lone) it is instead the
-// body of one UpdateItem with the same condition (dw_req_is_txn tells which).
-// false when the transaction would exceed DynamoDB's 100 items.
-bool dw_game_commit(dw_req *r, const char *table, const cb_game_commit *c, const dw_seats *stored,
-                    const dw_rating_read *ratings, bool import);
-// The commit changes the row alone: not the import, no seat to put or delete
-// against `stored`, no rating, and no SCAN marker to write (the game had no
-// bot work at expected_version, c->prev_known vouching for it, and has none
-// after).
-bool dw_commit_is_lone(const cb_game_commit *c, const dw_seats *stored, const dw_rating_read *ratings, bool import);
-// The request is a TransactWriteItems (refusals in CancellationReasons), not
-// a single-item write (a refusal is DW_COND_FAILED).
-bool dw_req_is_txn(const dw_req *r);
-// The rows a commit's ratings live in (BatchGetItem, consistent): for each
-// rated seat its RATING (a human, plus the PROFILE) or BOT item. Also used by
-// ratings_for (every id as both a bot and a human).
-void dw_ratings_get(dw_req *r, const char *table, const char *const *ids, const bool *is_bot, int n, bool both_kinds);
-// The game rows of ids (at most 100) for a list of views: BatchGetItem,
-// consistent, every column but logs_packed; read the answer with
-// dw_batch_items and dw_item_game (logs NULL).
-void dw_games_get(dw_req *r, const char *table, const char *const *ids, int n);
-// The ids of a dw_games_get answer's UnprocessedKeys (throttled, or past the
-// 16 MB answer limit), as pointers into ids, into out (room for count); how many.
-int dw_unprocessed_games(const char *body, size_t n, const char *table, const char *const *ids, int count,
-                         const char **out);
-// Reads a dw_ratings_get answer into one dw_rating_read per id (bots first
-// when both kinds were asked for).
-void dw_ratings_read(const char *body, size_t n, const char *table, const char *const *ids, const bool *is_bot,
-                     int count, bool both_kinds, dw_rating_read *out);
-// Deletes the ROW at `expected` (ALL_OLD on failure tells gone from moved),
-// with the partition's other items (`keys`, raw JSON keys from
-// DWQ_GAME_SEATS) and the SCAN marker. false past 100 items.
-bool dw_game_delete(dw_req *r, const char *table, const char *id, int64_t expected, const cb_buf *keys, int n_keys);
-// A replay's game is gone: game_id "" and its GSI1 entry removed.
-void dw_snapshot_unlink(dw_req *r, const char *table, cb_span key);
-// Account deletion: one replay's extras on every copy of it (`keys`, raw JSON
-// keys from DWQ_SNAPSHOT_ITEMS), as one transaction, each conditioned on the
-// item still being there; extras_len 0 removes the attribute (snapshot_put
-// writes none then). false past 100 items.
-bool dw_snapshot_set_extras(dw_req *r, const char *table, const cb_buf *keys, int n_keys,
-                            const uint8_t *extras, size_t extras_len);
-
-// The lease (seed.sql try_acquire / renew / release_bot_lease), on the game's
-// SCAN marker; acquire and renew move the marker's updated_at. Each fails
-// with ConditionalCheckFailed (ALL_OLD returned when the marker exists).
-void dw_lease_acquire(dw_req *r, const char *table, const char *game, const char *token, int64_t now, int64_t ttl);
-void dw_lease_renew(dw_req *r, const char *table, const char *game, const char *token, int64_t now, int64_t ttl);
-void dw_lease_release(dw_req *r, const char *table, const char *game, const char *token);
-// store.h bots_idle: DeleteItem of the game's SCAN marker, on condition its
-// row_version is `version` (or it has none); fails with ConditionalCheckFailed.
-void dw_bots_idle(dw_req *r, const char *table, const char *game, int64_t version);
-
-// Ratings and bots.
-void dw_rating_set_username(dw_req *r, const char *table, const char *user, const char *username);
-void dw_rating_import(dw_req *r, const char *table, const cb_rating_row *rt);
-// UpdateItem: the GSI2 keys of rt's row set to the rating-ordered layout (or
-// removed for a row with no games), on condition its rating and games are rt's
-// and its key is not already that: a row already in the layout is refused.
-void dw_rating_reindex(dw_req *r, const char *table, const cb_rating_row *rt);
-// Every bot replaced: deletes for the stored ids not in rows, puts for rows.
-// false past 100 items.
-bool dw_bots_replace(dw_req *r, const char *table, const cb_bot_row *rows, int n, const cb_uuid *stored, int n_stored);
-
-// Snapshots and chat.
-void dw_snapshot_put(dw_req *r, const char *table, const cb_snapshot_row *s);
-// A transaction: the message (a reused id cancels item 0), and checks that its
-// game (item 1) and its author (item 2) exist, as the foreign keys did.
-void dw_chat_put(dw_req *r, const char *table, const cb_chat_row *c);
-
-// BatchWriteItem deletes of up to 25 raw JSON keys.
-void dw_batch_delete(dw_req *r, const char *table, const cb_buf *keys, int n);
+// The bench's fixture: the GetItem answer ({"Item": ..}) for the item a
+// PutItem request writes. false when the request holds no item.
+bool dw_get_answer_of_put(const dw_req *put, cb_buf *out);
 
 // Admin.
 // The key families, as the console's collections ("USER", "GAME", ...).
