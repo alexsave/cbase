@@ -134,6 +134,25 @@ bool dw_array_next(cb_span arr, size_t *pos, cb_span *elem);
 // Walks the members of a JSON object value: key (a string token, quotes
 // included) and value.
 bool dw_object_next(cb_span obj, size_t *pos, cb_span *key, cb_span *val);
+// A response's top-level members, walked once (json_surface.c "a response's
+// top-level members"): call() scans every answer, reads its ConsumedCapacity
+// from the index and hands the index on, so the operation's own reader does
+// not walk the body again. Past DW_TOP_MAX members a reader walks the body.
+#define DW_TOP_MAX 16
+typedef struct {
+    cb_span body;
+    int     n;
+    bool    full;
+    struct {
+        cb_span key, val;
+    } m[DW_TOP_MAX];
+} dw_top;
+void dw_top_scan(const char *body, size_t n, dw_top *t);
+// dw_item, dw_items, dw_last_key and dw_consumed over an index.
+bool    dw_top_item(const dw_top *t, cb_span *item);
+cb_span dw_top_items(const dw_top *t);
+cb_span dw_top_last_key(const dw_top *t);
+double  dw_top_consumed(const dw_top *t);
 // The response's "Item" (GetItem). false: none.
 bool dw_item(const char *body, size_t n, cb_span *item);
 // The response's "Attributes" (UpdateItem with ReturnValues). false: none.

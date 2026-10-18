@@ -1552,6 +1552,180 @@ static void consumed_capacity_read(void) {
     T_CHECK(dw_consumed(NONE, strlen(NONE)) == 0);
 }
 
+// ---- the one-pass decode --------------------------------------------------------------------
+//
+// json_surface.c crosses a string with memchr, reads an item through a
+// one-pass index and a response through its top level. Each case is one the
+// old byte-at-a-time walk answered, and fz_dynamo.c checks the rest against it.
+
+static cb_span lit_span(const char *s) { return cb_span_of(s, strlen(s)); }
+
+// A quote closes a string unless an odd run of backslashes ends right before it.
+static void strings_skipped_by_parity(void) {
+    // "a\"b" (one backslash: escaped), "c\\" (two: the second escapes nothing,
+    // the quote closes), "d\\\"e" (three: escaped), then the next key.
+    const char *obj = "{\"k1\":\"a\\\"b\",\"k2\":\"c\\\\\",\"k3\":\"d\\\\\\\"e\",\"k4\":1}";
+    cb_span o = lit_span(obj), k, v;
+    size_t pos = 0;
+    const char *want_v[] = { "\"a\\\"b\"", "\"c\\\\\"", "\"d\\\\\\\"e\"", "1" };
+    for (int i = 0; i < 4; i++) {
+        T_CHECK(dw_object_next(o, &pos, &k, &v));
+        T_EQ_INT(v.n, strlen(want_v[i]));
+        T_CHECK(v.n == strlen(want_v[i]) && memcmp(v.p, want_v[i], v.n) == 0);
+    }
+    T_CHECK(!dw_object_next(o, &pos, &k, &v));
+    // An unclosed string, and one whose only quote is escaped, end the walk.
+    pos = 0;
+    T_CHECK(!dw_object_next(lit_span("{\"k\":\"abc"), &pos, &k, &v));
+    pos = 0;
+    T_CHECK(!dw_object_next(lit_span("{\"k\":\"abc\\\"}"), &pos, &k, &v));
+    // A backslash run that starts the string counts from the string's first byte.
+    pos = 0;
+    T_CHECK(dw_object_next(lit_span("{\"k\":\"\\\\\"}"), &pos, &k, &v));
+    T_EQ_INT(v.n, 4);
+}
+
+// A game row as DynamoDB answers it, its blobs in the middle of the scalars,
+// read once: every field lands, the blobs decode, and the attribute order does
+// not matter.
+static void game_item_one_pass(void) {
+    const char *it =
+        "{\"pk\":{\"S\":\"GAME#ab12cd\"},\"state\":{\"B\":\"AQID\"},\"version\":{\"N\":\"7\"},"
+        "\"roster\":{\"B\":\"BAUG\"},\"sk\":{\"S\":\"ROW\"},\"logs_packed\":{\"B\":\"Bw==\"},"
+        "\"status\":{\"N\":\"2\"},\"needs_bots\":{\"BOOL\":true},\"id\":{\"S\":\"ab12cd\"},"
+        "\"game_seed\":{\"B\":\"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=\"},\"round_epoch\":{\"N\":\"5\"},"
+        "\"created_at\":{\"N\":\"100\"},\"updated_at\":{\"N\":\"200\"},\"last_commit_at\":{\"N\":\"150\"}}";
+    cb_game_row g;
+    T_CHECK(dw_item_game(lit_span(it), &g));
+    T_EQ_STR(g.id, "ab12cd");
+    T_EQ_INT(g.status, 2);
+    T_EQ_INT(g.version, 7);
+    T_EQ_INT(g.state_len, 3);
+    T_CHECK(g.state && g.state[0] == 1 && g.state[2] == 3);
+    T_EQ_INT(g.roster_len, 3);
+    T_CHECK(g.roster && g.roster[0] == 4);
+    T_EQ_INT(g.logs_len, 1);
+    T_CHECK(g.logs && g.logs[0] == 7);
+    T_CHECK(g.has_seed && g.seed[31] == 31);
+    T_CHECK(g.needs_bots);
+    T_EQ_INT(g.round_epoch, 5);
+    T_EQ_INT(g.created_at, 100);
+    T_EQ_INT(g.updated_at, 200);
+    T_EQ_INT(g.last_commit_at, 150);
+    cb_game_row_free(&g);
+}
+
+// The index answers as a walk from the start would: the first attribute of a
+// name wins, a value whose first member is not the type asked for is searched,
+// an untyped value has no type, and a blob with an escaped slash is unescaped
+// before it is decoded.
+static void item_index_rules(void) {
+    cb_user_row u;
+    // id twice: the first is read.
+    const char *dup = "{\"id\":{\"S\":\"first\"},\"email\":{\"S\":\"e\"},\"password_hash\":{\"S\":\"h\"},\"id\":{\"S\":\"second\"}}";
+    T_CHECK(dw_item_user(lit_span(dup), &u));
+    T_EQ_STR(u.id, "first");
+    // created_at's value has another member before N: N is still found.
+    const char *second = "{\"id\":{\"S\":\"i\"},\"email\":{\"S\":\"e\"},\"password_hash\":{\"S\":\"h\"},"
+                         "\"created_at\":{\"X\":{\"N\":\"1\"},\"N\":\"42\"}}";
+    T_CHECK(dw_item_user(lit_span(second), &u));
+    T_EQ_INT(u.created_at, 42);
+    // A type twice in one value: the first is read.
+    const char *twice = "{\"id\":{\"S\":\"i\"},\"email\":{\"S\":\"e\"},\"password_hash\":{\"S\":\"h\"},"
+                        "\"created_at\":{\"N\":\"1\",\"N\":\"2\"}}";
+    T_CHECK(dw_item_user(lit_span(twice), &u));
+    T_EQ_INT(u.created_at, 1);
+    // An untyped first attribute of a name hides a typed second one.
+    const char *hidden = "{\"id\":\"x\",\"id\":{\"S\":\"y\"},\"email\":{\"S\":\"e\"},\"password_hash\":{\"S\":\"h\"}}";
+    T_CHECK(!dw_item_user(lit_span(hidden), &u));
+    // A value that is not a typed object, or is empty, reads as absent.
+    const char *untyped = "{\"id\":\"i\",\"email\":{},\"password_hash\":{\"S\":\"h\"}}";
+    T_CHECK(!dw_item_user(lit_span(untyped), &u));
+    // A walk that breaks stops the index there: what came before is read.
+    cb_member_row m;
+    T_CHECK(dw_item_member(lit_span("{\"game_id\":{\"S\":\"g1\"},\"updated_at\":{\"N\":\"9\"},\"x\":"), &m));
+    T_EQ_STR(m.game_id, "g1");
+    T_EQ_INT(m.updated_at, 9);
+    // "\/" is "/" in JSON: AQ/= decodes once unescaped.
+    cb_game_row g;
+    const char *esc = "{\"id\":{\"S\":\"g\"},\"status\":{\"N\":\"1\"},\"version\":{\"N\":\"1\"},\"state\":{\"B\":\"AQ\\/9\"}}";
+    T_CHECK(dw_item_game(lit_span(esc), &g));
+    T_EQ_INT(g.state_len, 3);
+    T_CHECK(g.state && g.state[0] == 0x01 && g.state[1] == 0x0f && g.state[2] == 0xfd);
+    cb_game_row_free(&g);
+    // A control byte in a blob is refused whether or not the blob has an escape.
+    const char *ctl = "{\"id\":{\"S\":\"g\"},\"status\":{\"N\":\"1\"},\"version\":{\"N\":\"1\"},\"state\":{\"B\":\"AQ\nA\"}}";
+    T_CHECK(!dw_item_game(lit_span(ctl), &g));
+    T_CHECK(g.state == NULL);
+}
+
+// More attributes than the index holds: the ones past it are still found.
+static void item_longer_than_the_index(void) {
+    cb_buf b;
+    cb_buf_init(&b);
+    cb_buf_puts(&b, "{");
+    for (int i = 0; i < 40; i++) cb_buf_printf(&b, "\"pad%d\":{\"S\":\"x\"},", i);
+    cb_buf_puts(&b, "\"game_id\":{\"S\":\"late\"},\"updated_at\":{\"N\":\"77\"}}");
+    cb_member_row m;
+    T_CHECK(dw_item_member(cb_span_of((const char *)b.p, b.len), &m));
+    T_EQ_STR(m.game_id, "late");
+    T_EQ_INT(m.updated_at, 77);
+    cb_buf_free(&b);
+}
+
+// The response readers find a top-level member whatever comes first, with a
+// key spelled with an escape too, and never a member of a member.
+static void response_top_level(void) {
+    cb_span it;
+    const char *after = "{\"ConsumedCapacity\":{\"CapacityUnits\":1.5},\"Item\":{\"a\":{\"S\":\"b\"}}}";
+    T_CHECK(dw_item(after, strlen(after), &it));
+    T_CHECK(it.n == 15 && memcmp(it.p, "{\"a\":{\"S\":\"b\"}}", 15) == 0);
+    T_CHECK(dw_consumed(after, strlen(after)) == 1.5);
+    const char *escaped = "{\"\\u0049tem\":{\"a\":{\"S\":\"b\"}}}";
+    T_CHECK(dw_item(escaped, strlen(escaped), &it));
+    const char *nested = "{\"Other\":{\"Item\":{}}}";
+    T_CHECK(!dw_item(nested, strlen(nested), &it));
+    const char *notobj = "{\"Item\":[1]}";
+    T_CHECK(!dw_item(notobj, strlen(notobj), &it));
+    T_CHECK(!dw_cond_failed_has_item(notobj, strlen(notobj)));
+    // ConsumedCapacity: an object, a one-entry array, an object keyed "0" (the
+    // second path cb_json_find was asked), a units value that is not a number.
+    const char *zero = "{\"ConsumedCapacity\":{\"0\":{\"CapacityUnits\":3}}}";
+    T_CHECK(dw_consumed(zero, strlen(zero)) == 3.0);
+    const char *str = "{\"ConsumedCapacity\":{\"CapacityUnits\":\"4\"}}";
+    T_CHECK(dw_consumed(str, strlen(str)) == 0);
+    const char *str0 = "{\"ConsumedCapacity\":{\"CapacityUnits\":\"4\",\"0\":{\"CapacityUnits\":3}}}";
+    T_CHECK(dw_consumed(str0, strlen(str0)) == 3.0);
+    const char *arr0 = "{\"ConsumedCapacity\":[]}";
+    T_CHECK(dw_consumed(arr0, strlen(arr0)) == 0);
+    const char *page = "{\"Items\":[],\"LastEvaluatedKey\":{\"pk\":{\"S\":\"x\"}}}";
+    cb_span last = dw_last_key(page, strlen(page));
+    T_CHECK(last.n == 16 && memcmp(last.p, "{\"pk\":{\"S\":\"x\"}}", 16) == 0);
+    cb_span none = dw_items("{\"Items\":{}}", 12);   // not an array: the empty one
+    T_CHECK(none.n == 2 && memcmp(none.p, "[]", 2) == 0);
+    T_CHECK(dw_unprocessed("{\"UnprocessedKeys\":{\"t\":{}}}", 28));
+    // One scan serves every reader; past DW_TOP_MAX members the body is walked.
+    dw_top t;
+    const char *both = "{\"Items\":[1],\"LastEvaluatedKey\":{\"k\":1},\"ConsumedCapacity\":{\"CapacityUnits\":2}}";
+    dw_top_scan(both, strlen(both), &t);
+    T_EQ_INT(t.n, 3);
+    T_EQ_INT(dw_top_items(&t).n, 3);
+    T_EQ_INT(dw_top_last_key(&t).n, 7);
+    T_CHECK(dw_top_consumed(&t) == 2.0);
+    T_CHECK(!dw_top_item(&t, &it));
+    cb_buf b;
+    cb_buf_init(&b);
+    cb_buf_puts(&b, "{");
+    for (int i = 0; i < DW_TOP_MAX + 4; i++) cb_buf_printf(&b, "\"m%d\":%d,", i, i);
+    cb_buf_puts(&b, "\"Item\":{\"a\":{\"N\":\"1\"}},\"ConsumedCapacity\":{\"CapacityUnits\":0.5}}");
+    dw_top_scan((const char *)b.p, b.len, &t);
+    T_CHECK(t.full);
+    T_CHECK(dw_top_item(&t, &it) && it.n == 15);
+    T_CHECK(dw_top_consumed(&t) == 0.5);
+    cb_buf_free(&b);
+    T_CHECK(!dw_unprocessed("{\"UnprocessedItems\":{}}", 23));
+}
+
 int main(void) {
     T_RUN(the_template_matches_the_wire);
     T_RUN(the_template_stays_free);
@@ -1591,5 +1765,10 @@ int main(void) {
     T_RUN(flow_bulk_errors_bounded);
     T_RUN(flow_bulk_paced);
     T_RUN(consumed_capacity_read);
+    T_RUN(strings_skipped_by_parity);
+    T_RUN(game_item_one_pass);
+    T_RUN(item_index_rules);
+    T_RUN(item_longer_than_the_index);
+    T_RUN(response_top_level);
     return T_DONE();
 }

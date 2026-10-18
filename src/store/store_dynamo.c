@@ -211,8 +211,15 @@ static void pace(dyn *d, int k) {
 }
 
 // Sends `r`, again after a pause while DynamoDB says to (throttled, a 5xx, a
-// lost connection), as long as the backoff allows. The answer is in *resp.
-static dw_status call(dyn *d, const dw_req *r, cb_buf *resp) {
+// lost connection), as long as the backoff allows. The answer is in *resp,
+// and its top level, walked once, in *top (json_surface.h dw_top): valid
+// while *resp is not changed. top may be NULL.
+static dw_status call_top(dyn *d, const dw_req *r, cb_buf *resp, dw_top *top) {
+    dw_top own;
+    if (!top) top = &own;
+    top->n = 0;
+    top->full = false;
+    top->body = cb_span_of("", 0);
     backoff b;
     backoff_start(d, &b);
     for (;;) {
@@ -224,7 +231,8 @@ static dw_status call(dyn *d, const dw_req *r, cb_buf *resp) {
         pace(d, k);
         int rc = d->send(d->ud, r->target, r->body.p, r->body.len, &status, resp);
         if (rc == CB_OK) {
-            double used = dw_consumed(cb_buf_cstr(resp), resp->len);
+            dw_top_scan(cb_buf_cstr(resp), resp->len, top);
+            double used = dw_top_consumed(top);
             *(k == 0 ? &t_rcu : &t_wcu) += used;
             d->bal[k] -= used;
         }
@@ -241,6 +249,8 @@ static dw_status call(dyn *d, const dw_req *r, cb_buf *resp) {
         return st;
     }
 }
+
+static dw_status call(dyn *d, const dw_req *r, cb_buf *resp) { return call_top(d, r, resp, NULL); }
 
 // A transaction, sent again while it is cancelled only by transient
 // conflicts (another transaction on one of its items) or by throttling. A
@@ -301,12 +311,13 @@ static int query_all(dyn *d, dw_query_kind kind, const char *arg, bool forward, 
     int rc = CB_OK;
     for (;;) {
         dw_query(&r, d->table, kind, arg, forward, limit, cb_span_of((const char *)start.p, start.len));
-        if (call(d, &r, &resp) != DW_OK) { rc = CB_E_DB; break; }
-        cb_span items = dw_items(cb_buf_cstr(&resp), resp.len), it;
+        dw_top top;
+        if (call_top(d, &r, &resp, &top) != DW_OK) { rc = CB_E_DB; break; }
+        cb_span items = dw_top_items(&top), it;
         size_t pos = 0;
         bool more = true;
         while (more && dw_array_next(items, &pos, &it)) more = fn(it, ud);
-        cb_span last = dw_last_key(cb_buf_cstr(&resp), resp.len);
+        cb_span last = dw_top_last_key(&top);
         if (!more || !last.n) break;
         cb_buf_reset(&start);
         cb_buf_append(&start, last.p, last.n);
@@ -380,9 +391,10 @@ static int dy_user_get(cb_store *s, const char *id, cb_user_row *out) {
     cb_buf resp;
     cb_buf_init(&resp);
     int rc = CB_E_DB;
-    if (call(d, &r, &resp) == DW_OK) {
+    dw_top top;
+    if (call_top(d, &r, &resp, &top) == DW_OK) {
         cb_span it;
-        rc = !dw_item(cb_buf_cstr(&resp), resp.len, &it) ? CB_E_NOT_FOUND : dw_item_user(it, out) ? CB_OK : CB_E_DB;
+        rc = !dw_top_item(&top, &it) ? CB_E_NOT_FOUND : dw_item_user(it, out) ? CB_OK : CB_E_DB;
     }
     cb_buf_free(&resp);
     dw_req_free(&r);
@@ -398,9 +410,10 @@ static int dy_user_by_email(cb_store *s, const char *email, cb_user_row *out) {
     cb_buf_init(&resp);
     cb_uuid id;
     int rc = CB_E_DB;
-    if (call(d, &r, &resp) == DW_OK) {
+    dw_top top;
+    if (call_top(d, &r, &resp, &top) == DW_OK) {
         cb_span it;
-        rc = !dw_item(cb_buf_cstr(&resp), resp.len, &it) ? CB_E_NOT_FOUND : dw_item_email_user(it, id) ? CB_OK : CB_E_DB;
+        rc = !dw_top_item(&top, &it) ? CB_E_NOT_FOUND : dw_item_email_user(it, id) ? CB_OK : CB_E_DB;
     }
     cb_buf_free(&resp);
     dw_req_free(&r);
@@ -416,9 +429,10 @@ static int dy_signin_fails_get(cb_store *s, const char *email, int64_t now_ms, c
     cb_buf_init(&resp);
     int rc = CB_E_DB;
     memset(out, 0, sizeof *out);
-    if (call(d, &r, &resp) == DW_OK) {
+    dw_top top;
+    if (call_top(d, &r, &resp, &top) == DW_OK) {
         cb_span it;
-        rc = dw_item(cb_buf_cstr(&resp), resp.len, &it) && dw_item_signin_fails(it, now_ms, out) ? CB_OK : CB_E_NOT_FOUND;
+        rc = dw_top_item(&top, &it) && dw_item_signin_fails(it, now_ms, out) ? CB_OK : CB_E_NOT_FOUND;
     }
     cb_buf_free(&resp);
     dw_req_free(&r);
@@ -573,9 +587,10 @@ static int dy_session_get(cb_store *s, const char *id, int64_t now_ms, cb_sessio
     cb_buf_init(&resp);
     int rc = CB_E_DB;
     memset(out, 0, sizeof *out);
-    if (call(d, &r, &resp) == DW_OK) {
+    dw_top top;
+    if (call_top(d, &r, &resp, &top) == DW_OK) {
         cb_span it;
-        rc = dw_item(cb_buf_cstr(&resp), resp.len, &it) && dw_item_session(it, now_ms, out) ? CB_OK : CB_E_NOT_FOUND;
+        rc = dw_top_item(&top, &it) && dw_item_session(it, now_ms, out) ? CB_OK : CB_E_NOT_FOUND;
     }
     cb_buf_free(&resp);
     dw_req_free(&r);
@@ -599,9 +614,10 @@ static int dy_game_get(cb_store *s, const char *id, cb_game_row *out) {
     cb_buf resp;
     cb_buf_init(&resp);
     int rc = CB_E_DB;
-    if (call(d, &r, &resp) == DW_OK) {
+    dw_top top;
+    if (call_top(d, &r, &resp, &top) == DW_OK) {
         cb_span it;
-        rc = !dw_item(cb_buf_cstr(&resp), resp.len, &it) ? CB_E_NOT_FOUND : dw_item_game(it, out) ? CB_OK : CB_E_DB;
+        rc = !dw_top_item(&top, &it) ? CB_E_NOT_FOUND : dw_item_game(it, out) ? CB_OK : CB_E_DB;
     }
     cb_buf_free(&resp);
     dw_req_free(&r);
@@ -870,7 +886,8 @@ static int dy_is_member(cb_store *s, const char *game, const char *user) {
     cb_buf resp;
     cb_buf_init(&resp);
     cb_span it;
-    int rc = call(d, &r, &resp) != DW_OK ? CB_E_DB : dw_item(cb_buf_cstr(&resp), resp.len, &it) ? 1 : 0;
+    dw_top top;
+    int rc = call_top(d, &r, &resp, &top) != DW_OK ? CB_E_DB : dw_top_item(&top, &it) ? 1 : 0;
     cb_buf_free(&resp);
     dw_req_free(&r);
     return rc;
@@ -994,11 +1011,12 @@ static int dy_lease_held(cb_store *s, const char *game, int64_t now) {
     cb_buf resp;
     cb_buf_init(&resp);
     int rc = CB_E_DB;
-    if (call(d, &r, &resp) == DW_OK) {
+    dw_top top;
+    if (call_top(d, &r, &resp, &top) == DW_OK) {
         cb_span it;
         // No marker, no lease (the acquire's CB_E_NOT_FOUND); held as the
         // acquire's condition refuses it: lease_until not yet before now.
-        rc = dw_item(cb_buf_cstr(&resp), resp.len, &it) && dw_item_lease_until(it) >= now ? 1 : 0;
+        rc = dw_top_item(&top, &it) && dw_item_lease_until(it) >= now ? 1 : 0;
     }
     cb_buf_free(&resp);
     dw_req_free(&r);
@@ -1276,9 +1294,10 @@ static int conn_read(dyn *d, const char *id, cb_conn_row *out) {
     cb_buf resp;
     cb_buf_init(&resp);
     int rc = CB_E_DB;
-    if (call(d, &r, &resp) == DW_OK) {
+    dw_top top;
+    if (call_top(d, &r, &resp, &top) == DW_OK) {
         cb_span it;
-        rc = !dw_item(cb_buf_cstr(&resp), resp.len, &it) ? CB_E_NOT_FOUND : dw_item_conn(it, out) ? CB_OK : CB_E_DB;
+        rc = !dw_top_item(&top, &it) ? CB_E_NOT_FOUND : dw_item_conn(it, out) ? CB_OK : CB_E_DB;
     }
     cb_buf_free(&resp);
     dw_req_free(&r);

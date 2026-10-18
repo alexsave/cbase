@@ -322,6 +322,12 @@ static void seeds_dynamo(void) {
           "\x01{\"Table\":{\"ProvisionedThroughput\":{\"ReadCapacityUnits\":25,\"WriteCapacityUnits\":25},"
           "\"GlobalSecondaryIndexes\":[{\"IndexName\":\"gsi1\",\"ProvisionedThroughput\":{\"ReadCapacityUnits\":5,\"WriteCapacityUnits\":5}}]}}");
     puts_("dynamo", "execute", "\x01{\"Items\":[],\"NextToken\":\"abc\"}");
+    // The one-pass decode's corners (json_surface.c "one pass over an item"): an
+    // escaped key, a type twice, a second type, an escaped slash in a blob,
+    // backslash runs before a quote, an object keyed "0" in ConsumedCapacity.
+    puts_("dynamo", "decode-escaped-key", "\x01{\"\\u0049tem\":{\"id\":{\"S\":\"a\\\\\\\"b\"},\"email\":{\"S\":\"e\"},\"password_hash\":{\"S\":\"h\"},\"created_at\":{\"N\":\"1\",\"N\":\"2\"}},\"ConsumedCapacity\":{\"0\":{\"CapacityUnits\":3}}}");
+    puts_("dynamo", "decode-types", "\x01{\"Item\":{\"id\":{\"X\":1,\"S\":\"g\"},\"status\":{\"N\":\"1\"},\"version\":{\"N\":\"1\"},\"state\":{\"B\":\"AQ\\/9\"},\"id\":{\"S\":\"h\"},\"version\":\"7\"}}");
+    puts_("dynamo", "decode-runs", "\x01{\"Items\":[{\"pk\":{\"S\":\"\\\\\\\\\"},\"sk\":{\"S\":\"\\\\\\\"\\\\\"}}],\"ConsumedCapacity\":[{\"CapacityUnits\":\"2\"}]}");
     cb_buf_free(&b);
 
     // The backend against a fake AWS: a program, then answers.

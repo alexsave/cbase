@@ -280,18 +280,31 @@ static size_t skip_ws(cb_span s, size_t i) {
     return i;
 }
 
+// The end of the string token whose opening quote is at i, or 0 when it is
+// not closed. A quote closes the string unless an odd run of backslashes ends
+// right before it (each backslash escapes the byte after it, so a run pairs off
+// from its start): memchr finds the candidates, and a base64 blob, the bulk of
+// every game row, is crossed at memchr's speed instead of a byte at a time.
+// Linear: every backslash belongs to the run before one quote.
+static size_t skip_string_at(cb_span s, size_t i) {
+    size_t from = i + 1;
+    while (from < s.n) {
+        const char *q = memchr(s.p + from, '"', s.n - from);
+        if (!q) return 0;
+        size_t at = (size_t)(q - s.p), b = at;
+        while (b > i + 1 && s.p[b - 1] == '\\') b--;
+        if (((at - b) & 1) == 0) return at + 1;
+        from = at + 1;
+    }
+    return 0;
+}
+
 // The end of the value starting at i (after whitespace), or 0 when malformed.
 static size_t skip_value(cb_span s, size_t i, int depth) {
     i = skip_ws(s, i);
     if (i >= s.n || depth > 64) return 0;
     char c = s.p[i];
-    if (c == '"') {
-        for (i++; i < s.n; i++) {
-            if (s.p[i] == '\\') i++;
-            else if (s.p[i] == '"') return i + 1;
-        }
-        return 0;
-    }
+    if (c == '"') return skip_string_at(s, i);
     if (c == '{' || c == '[') {
         char close = c == '{' ? '}' : ']';
         i = skip_ws(s, i + 1);
@@ -383,16 +396,128 @@ static bool attr(cb_span item, const char *name, const char *type, cb_span *tok)
     return member(item, name, &v) && member(v, type, tok);
 }
 
-bool dw_get_s(cb_span item, const char *name, char *out, size_t cap) {
-    cb_span tok;
-    if (!attr(item, name, "S", &tok) || tok.n < 2 || tok.p[0] != '"') return false;
+// ---- one pass over an item ------------------------------------------------------------------
+//
+// An item decoder reads ten or more attributes, and `attr` finds each one by
+// walking the item from its start, crossing every blob before it: the game
+// row's state, roster and session log were walked a dozen times per read. The
+// index walks the item once, keeping each attribute's name, its typed value
+// and that value's first member ({"S": ...}: the type and its token), and the
+// decoders read the index.
+//
+// It answers exactly as `attr` does, on any input (fz_dynamo.c holds the
+// old decoders and checks it): the walk stops where dw_object_next stops, the
+// first attribute of a name is the one read, a value that is not an object
+// or whose first key is not a string has no type, a value whose first type
+// is not the one asked for is searched with `member` (DynamoDB writes one),
+// and an item longer than the index is searched with `attr` past it.
+
+#define IX_MAX 32
+
+typedef enum { IX_UNTYPED = 0, IX_TYPED } ix_first;
+
+typedef struct {
+    cb_span  key, val;
+    cb_span  type, tok;   // the value's first member, when IX_TYPED
+    ix_first first;
+} ix_attr;
+
+typedef struct {
+    cb_span item;
+    int     n;
+    bool    full;          // IX_MAX attributes indexed and the walk stopped there
+    ix_attr a[IX_MAX];
+} ix;
+
+// skip_value(s, i, 0) for the object whose '{' is at i, also handing out its
+// first member when that member's key is a string (as dw_object_next reads it).
+static size_t skip_object_first(cb_span s, size_t i, ix_attr *f) {
+    f->first = IX_UNTYPED;
+    i = skip_ws(s, i + 1);
+    if (i < s.n && s.p[i] == '}') return i + 1;
+    for (bool first = true;; first = false) {
+        size_t ks = skip_ws(s, i);
+        size_t e = skip_value(s, i, 1);
+        if (!e) return 0;
+        i = skip_ws(s, e);
+        if (i >= s.n || s.p[i] != ':') return 0;
+        size_t vs = skip_ws(s, i + 1);
+        size_t ve = skip_value(s, i + 1, 1);
+        if (!ve) return 0;
+        if (first && s.p[ks] == '"') {
+            f->first = IX_TYPED;
+            f->type = cb_span_of(s.p + ks, e - ks);
+            f->tok = cb_span_of(s.p + vs, ve - vs);
+        }
+        i = skip_ws(s, ve);
+        if (i >= s.n) return 0;
+        if (s.p[i] == '}') return i + 1;
+        if (s.p[i] != ',') return 0;
+        i++;
+    }
+}
+
+// dw_object_next, with the value's first member kept in *f.
+static bool object_next_typed(cb_span obj, size_t *pos, ix_attr *f) {
+    size_t i = *pos;
+    if (i == 0) {
+        i = skip_ws(obj, 0);
+        if (i >= obj.n || obj.p[i] != '{') return false;
+        i = skip_ws(obj, i + 1);
+    } else {
+        i = skip_ws(obj, i);
+        if (i >= obj.n || obj.p[i] != ',') return false;
+        i = skip_ws(obj, i + 1);
+    }
+    if (i >= obj.n || obj.p[i] != '"') return false;
+    size_t e = skip_value(obj, i, 0);
+    if (!e) return false;
+    f->key = cb_span_of(obj.p + i, e - i);
+    i = skip_ws(obj, e);
+    if (i >= obj.n || obj.p[i] != ':') return false;
+    i = skip_ws(obj, i + 1);
+    if (i < obj.n && obj.p[i] == '{') e = skip_object_first(obj, i, f);
+    else {
+        f->first = IX_UNTYPED;
+        e = skip_value(obj, i, 0);
+    }
+    if (!e) return false;
+    f->val = cb_span_of(obj.p + i, e - i);
+    *pos = e;
+    return true;
+}
+
+static void ix_build(cb_span item, ix *x) {
+    x->item = item;
+    x->n = 0;
+    x->full = false;
+    size_t pos = 0;
+    while (x->n < IX_MAX && object_next_typed(item, &pos, &x->a[x->n])) x->n++;
+    x->full = x->n == IX_MAX;
+}
+
+// attr(x->item, name, type, tok), read from the index.
+static bool ix_get(const ix *x, const char *name, const char *type, cb_span *tok) {
+    for (int i = 0; i < x->n; i++) {
+        const ix_attr *a = &x->a[i];
+        if (!key_is(a->key, name)) continue;
+        if (a->first != IX_TYPED) return false;
+        if (key_is(a->type, type)) { *tok = a->tok; return true; }
+        return member(a->val, type, tok);
+    }
+    return x->full && attr(x->item, name, type, tok);
+}
+
+// ---- typed values ---------------------------------------------------------------------------
+
+static bool tok_s(cb_span tok, char *out, size_t cap) {
+    if (tok.n < 2 || tok.p[0] != '"') return false;
     return cb_json_unescape(tok, out, cap) >= 0;
 }
 
-bool dw_get_n(cb_span item, const char *name, int64_t *out) {
+static bool tok_n(cb_span tok, int64_t *out) {
     char t[32];
-    cb_span tok;
-    if (!attr(item, name, "N", &tok) || cb_json_unescape(tok, t, sizeof t) < 1) return false;
+    if (cb_json_unescape(tok, t, sizeof t) < 1) return false;
     char *end;
     long long v = strtoll(t, &end, 10);
     if (*end) return false;
@@ -400,13 +525,56 @@ bool dw_get_n(cb_span item, const char *name, int64_t *out) {
     return true;
 }
 
-bool dw_get_bool(cb_span item, const char *name, bool *out) {
-    cb_span tok;
-    if (!attr(item, name, "BOOL", &tok)) return false;
+static bool tok_bool(cb_span tok, bool *out) {
     if (tok.n == 4 && memcmp(tok.p, "true", 4) == 0) *out = true;
     else if (tok.n == 5 && memcmp(tok.p, "false", 5) == 0) *out = false;
     else return false;
     return true;
+}
+
+// A B token, base64-decoded into a malloc'd buffer (NULL for none). A token
+// with no backslash is decoded where it lies: unescaping it could only copy it
+// or refuse a control byte, which the decoder refuses as well.
+static bool tok_b(cb_span tok, uint8_t **out, size_t *len) {
+    *out = NULL;
+    *len = 0;
+    if (tok.n < 2 || tok.p[0] != '"') return false;
+    const char *text = tok.p + 1;
+    char *copy = NULL;
+    int tn;
+    if (tok.p[tok.n - 1] == '"' && !memchr(tok.p + 1, '\\', tok.n - 2)) {
+        tn = (int)(tok.n - 2);
+    } else {
+        copy = malloc(tok.n);
+        if (!copy) return false;
+        tn = cb_json_unescape(tok, copy, tok.n);
+        if (tn < 0) { free(copy); return false; }
+        text = copy;
+    }
+    size_t cap = (size_t)tn / 4 * 3 + 3;
+    uint8_t *p = malloc(cap);
+    int n = p ? cb_b64_decode(text, (size_t)tn, p, cap) : -1;
+    free(copy);
+    if (n < 0) { free(p); return false; }
+    if (n == 0) { free(p); return true; }
+    *out = p;
+    *len = (size_t)n;
+    return true;
+}
+
+bool dw_get_s(cb_span item, const char *name, char *out, size_t cap) {
+    cb_span tok;
+    return attr(item, name, "S", &tok) && tok_s(tok, out, cap);
+}
+
+bool dw_get_n(cb_span item, const char *name, int64_t *out) {
+    cb_span tok;
+    return attr(item, name, "N", &tok) && tok_n(tok, out);
+}
+
+bool dw_get_bool(cb_span item, const char *name, bool *out) {
+    cb_span tok;
+    return attr(item, name, "BOOL", &tok) && tok_bool(tok, out);
 }
 
 bool dw_get_b(cb_span item, const char *name, uint8_t **out, size_t *len) {
@@ -414,20 +582,36 @@ bool dw_get_b(cb_span item, const char *name, uint8_t **out, size_t *len) {
     *len = 0;
     cb_span tok;
     if (!attr(item, name, "B", &tok)) return true;
-    if (tok.n < 2 || tok.p[0] != '"') return false;
-    char *text = malloc(tok.n);
-    if (!text) return false;
-    int tn = cb_json_unescape(tok, text, tok.n);
-    if (tn < 0) { free(text); return false; }
-    size_t cap = (size_t)tn / 4 * 3 + 3;
-    uint8_t *p = malloc(cap);
-    int n = p ? cb_b64_decode(text, (size_t)tn, p, cap) : -1;
-    free(text);
-    if (n < 0) { free(p); return false; }
-    if (n == 0) { free(p); return true; }
-    *out = p;
-    *len = (size_t)n;
-    return true;
+    return tok_b(tok, out, len);
+}
+
+// The same four over the index.
+static bool ix_s(const ix *x, const char *name, char *out, size_t cap) {
+    cb_span tok;
+    return ix_get(x, name, "S", &tok) && tok_s(tok, out, cap);
+}
+
+static bool ix_n(const ix *x, const char *name, int64_t *out) {
+    cb_span tok;
+    return ix_get(x, name, "N", &tok) && tok_n(tok, out);
+}
+
+static bool ix_bool(const ix *x, const char *name, bool *out) {
+    cb_span tok;
+    return ix_get(x, name, "BOOL", &tok) && tok_bool(tok, out);
+}
+
+static bool ix_b(const ix *x, const char *name, uint8_t **out, size_t *len) {
+    *out = NULL;
+    *len = 0;
+    cb_span tok;
+    if (!ix_get(x, name, "B", &tok)) return true;
+    return tok_b(tok, out, len);
+}
+
+static int64_t ix_n_or(const ix *x, const char *name, int64_t none) {
+    int64_t v;
+    return ix_n(x, name, &v) ? v : none;
 }
 
 static int64_t get_n_or(cb_span item, const char *name, int64_t none) {
@@ -490,41 +674,137 @@ dw_reason dw_cancel_reason(const char *body, size_t n, int index, bool *has_item
     return DW_REASON_OTHER;
 }
 
-bool dw_cond_failed_has_item(const char *body, size_t n) { return cb_json_find(body, n, "Item", NULL) == CB_JSON_OBJ; }
+// ---- a response's top-level members ---------------------------------------------------------
+//
+// What a response's reader wants (Item, Items, ConsumedCapacity, ...) is a
+// member of its top-level object, and every response is read at least twice
+// (dw_consumed in `call`, then the operation's reader). cb_json_find walked
+// to each one validating every byte it passed, a game row's blobs included.
+// dw_top_scan walks the top level once (dw_object_next, which crosses a blob
+// at memchr's speed) and the dw_top_ readers read the index; the body-taking
+// readers scan for themselves. On a valid document a reader finds what
+// cb_json_find found (the first member whose key unescapes to `name`, typed
+// by its first byte), which fz_dynamo.c checks; on an invalid one it is as
+// tolerant as the item readers.
+
+static bool key_eq(cb_span key, const char *name) {
+    if (!memchr(key.p, '\\', key.n)) return key_is(key, name);
+    char buf[256];
+    size_t n = strlen(name);
+    int k = n < sizeof buf ? cb_json_unescape(key, buf, sizeof buf) : -1;
+    return k >= 0 && (size_t)k == n && memcmp(buf, name, n) == 0;
+}
+
+static cb_json_type token_type(cb_span v) {
+    if (!v.n) return CB_JSON_ERR;
+    switch (v.p[0]) {
+    case '{': return CB_JSON_OBJ;
+    case '[': return CB_JSON_ARR;
+    case '"': return CB_JSON_STR;
+    case 't': case 'f': return CB_JSON_BOOL;
+    case 'n': return CB_JSON_NULL;
+    default:  return (v.p[0] == '-' || (v.p[0] >= '0' && v.p[0] <= '9')) ? CB_JSON_NUM : CB_JSON_ERR;
+    }
+}
+
+// The member `name` of the object `obj`, and its type; CB_JSON_MISSING when absent.
+static cb_json_type obj_get(cb_span obj, const char *name, cb_span *val) {
+    size_t pos = 0;
+    cb_span key, v;
+    while (dw_object_next(obj, &pos, &key, &v))
+        if (key_eq(key, name)) {
+            *val = v;
+            return token_type(v);
+        }
+    return CB_JSON_MISSING;
+}
+
+void dw_top_scan(const char *body, size_t n, dw_top *t) {
+    t->body = cb_span_of(body, n);
+    t->n = 0;
+    size_t pos = 0;
+    while (t->n < DW_TOP_MAX && dw_object_next(t->body, &pos, &t->m[t->n].key, &t->m[t->n].val)) t->n++;
+    t->full = t->n == DW_TOP_MAX;
+}
+
+// obj_get(t->body, name, val), read from the index.
+static cb_json_type top_get(const dw_top *t, const char *name, cb_span *val) {
+    for (int i = 0; i < t->n; i++)
+        if (key_eq(t->m[i].key, name)) {
+            *val = t->m[i].val;
+            return token_type(*val);
+        }
+    return t->full ? obj_get(t->body, name, val) : CB_JSON_MISSING;
+}
+
+static cb_json_type top(const char *body, size_t n, const char *name, cb_span *val) {
+    dw_top t;
+    dw_top_scan(body, n, &t);
+    return top_get(&t, name, val);
+}
+
+bool dw_cond_failed_has_item(const char *body, size_t n) {
+    cb_span v;
+    return top(body, n, "Item", &v) == CB_JSON_OBJ;
+}
+
+bool dw_top_item(const dw_top *t, cb_span *item) {
+    cb_span v;
+    if (top_get(t, "Item", &v) != CB_JSON_OBJ) return false;
+    *item = v;
+    return true;
+}
 
 bool dw_item(const char *body, size_t n, cb_span *item) {
-    return cb_json_find(body, n, "Item", item) == CB_JSON_OBJ;
+    dw_top t;
+    dw_top_scan(body, n, &t);
+    return dw_top_item(&t, item);
 }
 
 bool dw_attributes(const char *body, size_t n, cb_span *item) {
-    return cb_json_find(body, n, "Attributes", item) == CB_JSON_OBJ;
+    cb_span v;
+    if (top(body, n, "Attributes", &v) != CB_JSON_OBJ) return false;
+    *item = v;
+    return true;
+}
+
+cb_span dw_top_items(const dw_top *t) {
+    cb_span s;
+    if (top_get(t, "Items", &s) != CB_JSON_ARR) return CB_SPAN_LIT("[]");
+    return s;
 }
 
 cb_span dw_items(const char *body, size_t n) {
-    cb_span s;
-    if (cb_json_find(body, n, "Items", &s) != CB_JSON_ARR) return CB_SPAN_LIT("[]");
-    return s;
+    dw_top t;
+    dw_top_scan(body, n, &t);
+    return dw_top_items(&t);
 }
 
 cb_span dw_batch_items(const char *body, size_t n, const char *table) {
     cb_span resp, key, val;
     size_t pos = 0;
-    if (cb_json_find(body, n, "Responses", &resp) == CB_JSON_OBJ)
+    if (top(body, n, "Responses", &resp) == CB_JSON_OBJ)
         while (dw_object_next(resp, &pos, &key, &val))
             if (key_is(key, table)) return val;
     return CB_SPAN_LIT("[]");
 }
 
-cb_span dw_last_key(const char *body, size_t n) {
+cb_span dw_top_last_key(const dw_top *t) {
     cb_span s;
-    if (cb_json_find(body, n, "LastEvaluatedKey", &s) != CB_JSON_OBJ) return cb_span_of("", 0);
+    if (top_get(t, "LastEvaluatedKey", &s) != CB_JSON_OBJ) return cb_span_of("", 0);
     return s;
 }
 
-static bool nonempty_object(const char *body, size_t n, const char *path) {
+cb_span dw_last_key(const char *body, size_t n) {
+    dw_top t;
+    dw_top_scan(body, n, &t);
+    return dw_top_last_key(&t);
+}
+
+static bool nonempty_object(const char *body, size_t n, const char *name) {
     cb_span s, k, v;
     size_t pos = 0;
-    return cb_json_find(body, n, path, &s) == CB_JSON_OBJ && dw_object_next(s, &pos, &k, &v);
+    return top(body, n, name, &s) == CB_JSON_OBJ && dw_object_next(s, &pos, &k, &v);
 }
 
 bool dw_unprocessed(const char *body, size_t n) {
@@ -539,53 +819,60 @@ void dw_next_token(const char *body, size_t n, char *out, size_t cap) {
 
 bool dw_item_user(cb_span it, cb_user_row *u) {
     memset(u, 0, sizeof *u);
-    if (!dw_get_s(it, "id", u->id, sizeof u->id) || !dw_get_s(it, "email", u->email, sizeof u->email) ||
-        !dw_get_s(it, "password_hash", u->password_hash, sizeof u->password_hash))
+    ix x;
+    ix_build(it, &x);
+    if (!ix_s(&x, "id", u->id, sizeof u->id) || !ix_s(&x, "email", u->email, sizeof u->email) ||
+        !ix_s(&x, "password_hash", u->password_hash, sizeof u->password_hash))
         return false;
-    dw_get_s(it, "username", u->username, sizeof u->username);
-    u->created_at = get_n_or(it, "created_at", 0);
-    u->last_sign_in_at = get_n_or(it, "last_sign_in_at", 0);
-    u->session_gen = get_n_or(it, "session_gen", 0);
-    dw_get_s(it, "kept_session", u->kept_session, sizeof u->kept_session);
+    ix_s(&x, "username", u->username, sizeof u->username);
+    u->created_at = ix_n_or(&x, "created_at", 0);
+    u->last_sign_in_at = ix_n_or(&x, "last_sign_in_at", 0);
+    u->session_gen = ix_n_or(&x, "session_gen", 0);
+    ix_s(&x, "kept_session", u->kept_session, sizeof u->kept_session);
     return true;
 }
 
 bool dw_item_session(cb_span it, int64_t now_ms, cb_session_row *s) {
     memset(s, 0, sizeof *s);
-    if (!dw_get_s(it, "id", s->id, sizeof s->id)) return false;
-    dw_get_s(it, "user_id", s->user_id, sizeof s->user_id);
-    s->created_at = get_n_or(it, "created_at", 0);
-    s->expires_at = get_n_or(it, "expires_ms", 0);
-    s->gen = get_n_or(it, "gen", 0);
-    dw_get_bool(it, "revoked", &s->revoked);
+    ix x;
+    ix_build(it, &x);
+    if (!ix_s(&x, "id", s->id, sizeof s->id)) return false;
+    ix_s(&x, "user_id", s->user_id, sizeof s->user_id);
+    s->created_at = ix_n_or(&x, "created_at", 0);
+    s->expires_at = ix_n_or(&x, "expires_ms", 0);
+    s->gen = ix_n_or(&x, "gen", 0);
+    ix_bool(&x, "revoked", &s->revoked);
     return s->expires_at > now_ms;   // TTL deletion lags by up to days
 }
 
 bool dw_item_refresh(cb_span it, cb_refresh_row *r) {
     memset(r, 0, sizeof *r);
-    if (!dw_get_s(it, "token_hash", r->token_hash, sizeof r->token_hash) ||
-        !dw_get_s(it, "user_id", r->user_id, sizeof r->user_id))
+    ix x;
+    ix_build(it, &x);
+    if (!ix_s(&x, "token_hash", r->token_hash, sizeof r->token_hash) ||
+        !ix_s(&x, "user_id", r->user_id, sizeof r->user_id))
         return false;
-    dw_get_s(it, "session_id", r->session_id, sizeof r->session_id);
-    r->created_at = get_n_or(it, "created_at", 0);
-    dw_get_bool(it, "revoked", &r->revoked);
-    r->revoked_at = get_n_or(it, "revoked_at", 0);
-    r->expires_at = get_n_or(it, "expires_ms", 0);
+    ix_s(&x, "session_id", r->session_id, sizeof r->session_id);
+    r->created_at = ix_n_or(&x, "created_at", 0);
+    ix_bool(&x, "revoked", &r->revoked);
+    r->revoked_at = ix_n_or(&x, "revoked_at", 0);
+    r->expires_at = ix_n_or(&x, "expires_ms", 0);
     return true;
 }
 
 bool dw_item_game(cb_span it, cb_game_row *g) {
     memset(g, 0, sizeof *g);
+    ix x;
+    ix_build(it, &x);
     int64_t status, version;
-    if (!dw_get_s(it, "id", g->id, sizeof g->id) || !dw_get_n(it, "status", &status) ||
-        !dw_get_n(it, "version", &version))
+    if (!ix_s(&x, "id", g->id, sizeof g->id) || !ix_n(&x, "status", &status) || !ix_n(&x, "version", &version))
         return false;
     g->status = (int)status;
     g->version = version;
     uint8_t *seed;
     size_t seed_len;
-    if (!dw_get_b(it, "state", &g->state, &g->state_len) || !dw_get_b(it, "roster", &g->roster, &g->roster_len) ||
-        !dw_get_b(it, "logs_packed", &g->logs, &g->logs_len) || !dw_get_b(it, "game_seed", &seed, &seed_len)) {
+    if (!ix_b(&x, "state", &g->state, &g->state_len) || !ix_b(&x, "roster", &g->roster, &g->roster_len) ||
+        !ix_b(&x, "logs_packed", &g->logs, &g->logs_len) || !ix_b(&x, "game_seed", &seed, &seed_len)) {
         cb_game_row_free(g);
         return false;
     }
@@ -594,18 +881,20 @@ bool dw_item_game(cb_span it, cb_game_row *g) {
         memcpy(g->seed, seed, CB_SEED_LEN);
     }
     free(seed);
-    dw_get_bool(it, "needs_bots", &g->needs_bots);
-    g->round_epoch = get_n_or(it, "round_epoch", 0);
-    g->created_at = get_n_or(it, "created_at", 0);
-    g->updated_at = get_n_or(it, "updated_at", 0);
-    g->last_commit_at = get_n_or(it, "last_commit_at", 0);
+    ix_bool(&x, "needs_bots", &g->needs_bots);
+    g->round_epoch = ix_n_or(&x, "round_epoch", 0);
+    g->created_at = ix_n_or(&x, "created_at", 0);
+    g->updated_at = ix_n_or(&x, "updated_at", 0);
+    g->last_commit_at = ix_n_or(&x, "last_commit_at", 0);
     return true;
 }
 
 bool dw_item_member(cb_span it, cb_member_row *m) {
     memset(m, 0, sizeof *m);
-    m->updated_at = get_n_or(it, "updated_at", 0);
-    return dw_get_s(it, "game_id", m->game_id, sizeof m->game_id);
+    ix x;
+    ix_build(it, &x);
+    m->updated_at = ix_n_or(&x, "updated_at", 0);
+    return ix_s(&x, "game_id", m->game_id, sizeof m->game_id);
 }
 
 bool dw_seat_key(cb_span it, cb_uuid id, bool *bot) {
@@ -621,54 +910,62 @@ bool dw_seat_key(cb_span it, cb_uuid id, bool *bot) {
 
 bool dw_item_bot(cb_span it, cb_bot_row *b) {
     memset(b, 0, sizeof *b);
-    if (!dw_get_s(it, "id", b->id, sizeof b->id) || !dw_get_s(it, "nickname", b->nickname, sizeof b->nickname) ||
-        !dw_get_s(it, "strategy_key", b->strategy_key, sizeof b->strategy_key))
+    ix x;
+    ix_build(it, &x);
+    if (!ix_s(&x, "id", b->id, sizeof b->id) || !ix_s(&x, "nickname", b->nickname, sizeof b->nickname) ||
+        !ix_s(&x, "strategy_key", b->strategy_key, sizeof b->strategy_key))
         return false;
-    b->elo_rating = (int32_t)get_n_or(it, "elo_rating", 1000);
-    b->previous_elo = (int32_t)get_n_or(it, "previous_elo", -1);
-    b->games_played = (int32_t)get_n_or(it, "games_played", 0);
-    b->created_at = get_n_or(it, "created_at", 0);
-    b->updated_at = get_n_or(it, "updated_at", 0);
+    b->elo_rating = (int32_t)ix_n_or(&x, "elo_rating", 1000);
+    b->previous_elo = (int32_t)ix_n_or(&x, "previous_elo", -1);
+    b->games_played = (int32_t)ix_n_or(&x, "games_played", 0);
+    b->created_at = ix_n_or(&x, "created_at", 0);
+    b->updated_at = ix_n_or(&x, "updated_at", 0);
     return true;
 }
 
 bool dw_item_rating(cb_span it, cb_rating_row *r) {
     memset(r, 0, sizeof *r);
-    if (!dw_get_s(it, "user_id", r->user_id, sizeof r->user_id)) return false;
-    dw_get_s(it, "username", r->username, sizeof r->username);
-    r->elo_rating = (int32_t)get_n_or(it, "elo_rating", 1000);
-    r->previous_elo = (int32_t)get_n_or(it, "previous_elo", -1);
-    r->games_played = (int32_t)get_n_or(it, "games_played", 0);
-    r->updated_at = get_n_or(it, "updated_at", 0);
+    ix x;
+    ix_build(it, &x);
+    if (!ix_s(&x, "user_id", r->user_id, sizeof r->user_id)) return false;
+    ix_s(&x, "username", r->username, sizeof r->username);
+    r->elo_rating = (int32_t)ix_n_or(&x, "elo_rating", 1000);
+    r->previous_elo = (int32_t)ix_n_or(&x, "previous_elo", -1);
+    r->games_played = (int32_t)ix_n_or(&x, "games_played", 0);
+    r->updated_at = ix_n_or(&x, "updated_at", 0);
     return true;
 }
 
 bool dw_item_snapshot(cb_span it, cb_snapshot_row *s) {
     memset(s, 0, sizeof *s);
-    if (!dw_get_s(it, "id", s->id, sizeof s->id)) return false;
-    dw_get_s(it, "game_id", s->game_id, sizeof s->game_id);
-    cb_span players, list, e;
+    ix x;
+    ix_build(it, &x);
+    if (!ix_s(&x, "id", s->id, sizeof s->id)) return false;
+    ix_s(&x, "game_id", s->game_id, sizeof s->game_id);
+    cb_span list, e;
     size_t pos = 0;
-    if (member(it, "player_ids", &players) && member(players, "L", &list))
+    if (ix_get(&x, "player_ids", "L", &list))
         while (s->n_players < CB_MAX_SEATS && dw_array_next(list, &pos, &e)) {
             cb_span tok;
             if (!member(e, "S", &tok) || cb_json_unescape(tok, s->player_ids[s->n_players], sizeof(cb_uuid)) < 0)
                 return false;
             s->n_players++;
         }
-    if (!dw_get_b(it, "moves", &s->moves, &s->moves_len) || !dw_get_b(it, "extras", &s->extras, &s->extras_len)) {
+    if (!ix_b(&x, "moves", &s->moves, &s->moves_len) || !ix_b(&x, "extras", &s->extras, &s->extras_len)) {
         cb_snapshot_row_free(s);
         return false;
     }
-    s->created_at = get_n_or(it, "created_at", 0);
+    s->created_at = ix_n_or(&x, "created_at", 0);
     return true;
 }
 
 bool dw_item_chat(cb_span it, cb_chat_row *c) {
     memset(c, 0, sizeof *c);
+    ix x;
+    ix_build(it, &x);
     cb_span tok;
-    if (!dw_get_s(it, "id", c->id, sizeof c->id) || !dw_get_s(it, "game_id", c->game_id, sizeof c->game_id) ||
-        !dw_get_s(it, "user_id", c->user_id, sizeof c->user_id) || !attr(it, "message", "S", &tok))
+    if (!ix_s(&x, "id", c->id, sizeof c->id) || !ix_s(&x, "game_id", c->game_id, sizeof c->game_id) ||
+        !ix_s(&x, "user_id", c->user_id, sizeof c->user_id) || !ix_get(&x, "message", "S", &tok))
         return false;
     c->message = malloc(tok.n);
     if (!c->message || cb_json_unescape(tok, c->message, tok.n) < 0) {
@@ -676,31 +973,35 @@ bool dw_item_chat(cb_span it, cb_chat_row *c) {
         c->message = NULL;
         return false;
     }
-    dw_get_bool(it, "is_system", &c->is_system);
-    c->created_at = get_n_or(it, "created_at", 0);
+    ix_bool(&x, "is_system", &c->is_system);
+    c->created_at = ix_n_or(&x, "created_at", 0);
     return true;
 }
 
 bool dw_item_signin_fails(cb_span it, int64_t now_ms, cb_signin_fails *f) {
     memset(f, 0, sizeof f[0]);
+    ix x;
+    ix_build(it, &x);
     int64_t n, expires;
     // TTL deletion lags by up to days: a row past its time reads as none.
-    if (!dw_get_n(it, "n", &n) || !dw_get_n(it, "expires_ms", &expires) || expires <= now_ms) return false;
+    if (!ix_n(&x, "n", &n) || !ix_n(&x, "expires_ms", &expires) || expires <= now_ms) return false;
     f->n = n < 0 ? 0 : n > INT32_MAX ? INT32_MAX : (int32_t)n;
-    f->last_at = get_n_or(it, "last_at", 0);
-    f->locked_until = get_n_or(it, "locked_until", 0);
+    f->last_at = ix_n_or(&x, "last_at", 0);
+    f->locked_until = ix_n_or(&x, "locked_until", 0);
     return true;
 }
 
 bool dw_item_conn(cb_span it, cb_conn_row *c) {
     memset(c, 0, sizeof *c);
-    if (!dw_get_s(it, "conn_id", c->conn_id, sizeof c->conn_id)) return false;
-    dw_get_s(it, "user_id", c->user_id, sizeof c->user_id);
-    c->expires_at = get_n_or(it, "expires_ms", 0);
-    c->version = get_n_or(it, "ver", 0);   // a row written before versions: 0
-    cb_span topics, list, e;
+    ix x;
+    ix_build(it, &x);
+    if (!ix_s(&x, "conn_id", c->conn_id, sizeof c->conn_id)) return false;
+    ix_s(&x, "user_id", c->user_id, sizeof c->user_id);
+    c->expires_at = ix_n_or(&x, "expires_ms", 0);
+    c->version = ix_n_or(&x, "ver", 0);   // a row written before versions: 0
+    cb_span list, e;
     size_t pos = 0;
-    if (member(it, "topics", &topics) && member(topics, "L", &list))
+    if (ix_get(&x, "topics", "L", &list))
         while (c->n_topics < CB_CONN_TOPICS && dw_array_next(list, &pos, &e)) {
             // {"S": topic}; a row written before 2026-10-17 has {"M": {"t": topic, "r": ref}}
             // (it lives at most its two-hour TTL).
@@ -715,9 +1016,11 @@ bool dw_item_conn(cb_span it, cb_conn_row *c) {
 }
 
 bool dw_item_scan(cb_span it, char game_id[CB_GAME_ID_MAX + 1], int64_t *updated_at, int64_t *last_commit_at) {
-    *updated_at = get_n_or(it, "updated_at", 0);
-    *last_commit_at = get_n_or(it, "last_commit_at", 0);
-    return dw_get_s(it, "game_id", game_id, CB_GAME_ID_MAX + 1);
+    ix x;
+    ix_build(it, &x);
+    *updated_at = ix_n_or(&x, "updated_at", 0);
+    *last_commit_at = ix_n_or(&x, "last_commit_at", 0);
+    return ix_s(&x, "game_id", game_id, CB_GAME_ID_MAX + 1);
 }
 
 int64_t dw_item_lease_until(cb_span it) {
@@ -2220,20 +2523,34 @@ bool dw_provisioned(const char *body, size_t n, int64_t *rcu, int64_t *wcu) {
 }
 
 double dw_consumed(const char *body, size_t n) {
+    dw_top t;
+    dw_top_scan(body, n, &t);
+    return dw_top_consumed(&t);
+}
+
+double dw_top_consumed(const dw_top *t) {
     // One table: an object (GetItem, Query, ...), or a one-entry array
-    // (BatchGetItem, BatchWriteItem, TransactWriteItems).
-    static const char *const paths[] = { "ConsumedCapacity.CapacityUnits", "ConsumedCapacity.0.CapacityUnits" };
-    for (int i = 0; i < 2; i++) {
-        cb_span v;
-        if (cb_json_find(body, n, paths[i], &v) == CB_JSON_NUM) {
-            char t[32];
-            if (v.n >= sizeof t) return 0;
-            memcpy(t, v.p, v.n);
-            t[v.n] = 0;
-            return strtod(t, NULL);
-        }
+    // (BatchGetItem, BatchWriteItem, TransactWriteItems). The two paths
+    // cb_json_find was asked, "ConsumedCapacity.CapacityUnits" and then
+    // "ConsumedCapacity.0.CapacityUnits" (on an object, "0" is a key).
+    cb_span cc, v;
+    cb_json_type ty = top_get(t, "ConsumedCapacity", &cc);
+    bool found = false;
+    if (ty == CB_JSON_OBJ) {
+        found = obj_get(cc, "CapacityUnits", &v) == CB_JSON_NUM;
+        cb_span z;
+        if (!found && obj_get(cc, "0", &z) == CB_JSON_OBJ) found = obj_get(z, "CapacityUnits", &v) == CB_JSON_NUM;
+    } else if (ty == CB_JSON_ARR) {
+        size_t pos = 0;
+        cb_span e;
+        if (dw_array_next(cc, &pos, &e)) found = obj_get(e, "CapacityUnits", &v) == CB_JSON_NUM;
     }
-    return 0;
+    if (!found) return 0;
+    char tx[32];
+    if (v.n >= sizeof tx) return 0;
+    memcpy(tx, v.p, v.n);
+    tx[v.n] = 0;
+    return strtod(tx, NULL);
 }
 
 void dw_execute(dw_req *r, const char *statement, const char *next_token) {
