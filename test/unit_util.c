@@ -177,6 +177,54 @@ static void json_writer(void) {
     cb_buf_free(&b);
 }
 
+// cb_jw_b64 writes what escaping the encoding as a string wrote, without the
+// copy and the escape pass; for every length the encoding's padding takes.
+static void json_writer_b64(void) {
+    uint8_t bytes[300];
+    for (size_t i = 0; i < sizeof bytes; i++) bytes[i] = (uint8_t)(i * 37 + 11);   // 0x22 and 0x5c among them
+    for (size_t n = 0; n <= sizeof bytes; n += n < 8 ? 1 : 29) {
+        cb_buf a, b;
+        cb_buf_init(&a);
+        cb_buf_init(&b);
+        cb_jw wa, wb;
+        cb_jw_init(&wa, &a);
+        cb_jw_init(&wb, &b);
+        cb_jw_obj(&wa);
+        cb_jw_kb64(&wa, "B", bytes, n);
+        cb_jw_kint(&wa, "after", 1);
+        cb_jw_end(&wa);
+        char enc[512];
+        T_CHECK(cb_b64_encode(bytes, n, enc, sizeof enc) >= 0);
+        cb_jw_obj(&wb);
+        cb_jw_kstr(&wb, "B", enc);
+        cb_jw_kint(&wb, "after", 1);
+        cb_jw_end(&wb);
+        T_CHECK(cb_jw_ok(&wa));
+        T_EQ_STR(cb_buf_cstr(&a), cb_buf_cstr(&b));
+        T_EQ_INT(a.len, b.len);
+        cb_buf_free(&a);
+        cb_buf_free(&b);
+    }
+    // In an array, comma-separated like any value; refused where a key is due.
+    cb_buf o;
+    cb_buf_init(&o);
+    cb_jw w;
+    cb_jw_init(&w, &o);
+    cb_jw_arr(&w);
+    cb_jw_b64(&w, (const uint8_t *)"hi", 2);
+    cb_jw_b64(&w, NULL, 0);
+    cb_jw_end(&w);
+    T_CHECK(cb_jw_ok(&w));
+    T_EQ_STR(cb_buf_cstr(&o), "[\"aGk=\",\"\"]");
+    cb_buf_reset(&o);
+    cb_jw_init(&w, &o);
+    cb_jw_obj(&w);
+    cb_jw_b64(&w, (const uint8_t *)"hi", 2);   // a value where a key is due
+    T_CHECK(!cb_jw_ok(&w));
+    T_EQ_STR(cb_buf_cstr(&o), "{");
+    cb_buf_free(&o);
+}
+
 static void json_reader(void) {
     const char *doc = " {\"email\":\"a@b.c\",\"password\":\"p\\u00e9\\ud83d\\ude00\",\"data\":{\"username\":\"ALEX\"},"
                       "\"n\":-12,\"f\":1.5,\"ok\":true,\"none\":null,"
@@ -252,6 +300,7 @@ int main(void) {
     T_RUN(iso8601);
     T_RUN(strings);
     T_RUN(json_writer);
+    T_RUN(json_writer_b64);
     T_RUN(json_reader);
     T_RUN(log_ring);
     T_RUN(pool_runs_everything);

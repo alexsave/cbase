@@ -8,6 +8,7 @@
 #include "fz.h"
 
 #include "json_surface.h"
+#include "util/b64.h"
 #include "util/json.h"
 
 static const char *const PATHS[] = {
@@ -45,6 +46,38 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     if (cb_js_admin_query_body(json, n, stmt, sizeof stmt, confirm, sizeof confirm))
         FZ_CHECK(strlen(stmt) < sizeof stmt && strlen(confirm) < sizeof confirm);
     if (cb_js_admin_id_body(json, n, id, sizeof id)) FZ_CHECK(strlen(id) < sizeof id);
+
+    // The base64 writer: the input's bytes as a B value are exactly what the
+    // encoding escaped as a string was, valid JSON, and decode back.
+    {
+        cb_buf ja, jb;
+        cb_buf_init(&ja);
+        cb_buf_init(&jb);
+        cb_jw wa, wb;
+        cb_jw_init(&wa, &ja);
+        cb_jw_init(&wb, &jb);
+        cb_jw_obj(&wa);
+        cb_jw_kb64(&wa, "B", data, size);
+        cb_jw_end(&wa);
+        size_t cap = (size + 2) / 3 * 4 + 1;
+        char *enc = malloc(cap);
+        FZ_CHECK(enc && cb_b64_encode(data, size, enc, cap) >= 0);
+        cb_jw_obj(&wb);
+        cb_jw_kstr(&wb, "B", enc);
+        cb_jw_end(&wb);
+        FZ_CHECK(cb_jw_ok(&wa) && cb_jw_ok(&wb));
+        FZ_CHECK(ja.len == jb.len && memcmp(ja.p, jb.p, ja.len) == 0);
+        FZ_CHECK(cb_json_valid((const char *)ja.p, ja.len));
+        cb_span tok;
+        FZ_CHECK(cb_json_find((const char *)ja.p, ja.len, "B", &tok) == CB_JSON_STR);
+        uint8_t *back = malloc(size + 3);
+        FZ_CHECK(back && cb_b64_decode(tok.p + 1, tok.n - 2, back, size + 3) == (int)size);
+        FZ_CHECK(size == 0 || memcmp(back, data, size) == 0);
+        free(back);
+        free(enc);
+        cb_buf_free(&ja);
+        cb_buf_free(&jb);
+    }
     free((void *)json);
     return 0;
 }

@@ -104,14 +104,10 @@ static void av_bool(cb_jw *w, const char *name, bool v) {
 
 // Binary: base64 in the JSON. Zero bytes are a valid (empty) Binary value.
 static void av_b(cb_jw *w, const char *name, const uint8_t *p, size_t n) {
-    size_t len = cb_b64_len(n) + 1;
-    char *t = malloc(len);
     cb_jw_key(w, name);
     cb_jw_obj(w);
-    if (t && cb_b64_encode(p, n, t, len) >= 0) cb_jw_kstr(w, "B", t);
-    else w->err = true;
+    cb_jw_kb64(w, "B", p, n);
     cb_jw_end(w);
-    free(t);
 }
 
 static void key2(cb_jw *w, const char *pk, const char *sk) {
@@ -197,14 +193,10 @@ static void ux_val_bool(ux *u, const char *name, bool v) {
 }
 
 static void ux_val_b(ux *u, const char *name, const uint8_t *p, size_t n) {
-    size_t len = cb_b64_len(n) + 1;
-    char *t = malloc(len);
     cb_jw *w = ux_val(u, name);
     cb_jw_obj(w);
-    if (t && cb_b64_encode(p, n, t, len) >= 0) cb_jw_kstr(w, "B", t);
-    else w->err = true;
+    cb_jw_kb64(w, "B", p, n);
     cb_jw_end(w);
-    free(t);
 }
 
 // "#attr = :attr" in the SET clause; the caller writes the value.
@@ -3110,13 +3102,7 @@ int cb_event_encode_http(const cb_http_res *res, cb_buf *out) {
     bool octet = ctype && ctlen >= 24 && strncasecmp(ctype, "application/octet-stream", 24) == 0;
     bool b64 = n > 0 && (octet || !utf8_valid(body, n));
     if (b64) {
-        size_t cap = cb_b64_len(n) + 1;
-        char *enc = malloc(cap);
-        if (!enc) return CB_E_NOMEM;
-        cb_b64_encode(body, n, enc, cap);
-        cb_jw_key(&w, "body");
-        cb_jw_strn(&w, enc, cap - 1);
-        free(enc);
+        cb_jw_kb64(&w, "body", body, n);
     } else {
         cb_jw_key(&w, "body");
         cb_jw_strn(&w, (const char *)body, n);

@@ -1,5 +1,6 @@
 #include "json.h"
 
+#include "b64.h"
 #include "hex.h"
 
 #include <math.h>
@@ -101,6 +102,21 @@ void cb_jw_str(cb_jw *w, const char *s) {
     cb_jw_strn(w, s, strlen(s));
 }
 
+// Base64's alphabet (A-Z a-z 0-9 + / =) never needs escaping: the encoding
+// is written straight into the buffer between its quotes, with no copy and no
+// pass of cb_json_escape over it.
+void cb_jw_b64(cb_jw *w, const uint8_t *p, size_t n) {
+    if (!value_start(w)) return;
+    size_t k = cb_b64_len(n);
+    if (k < n || !cb_buf_reserve(w->b, k + 2)) { w->err = true; return; }
+    char *o = (char *)w->b->p + w->b->len;
+    o[0] = '"';
+    cb_b64_encode(p, n, o + 1, k + 1);   // k + 1 is exactly what it needs, the NUL included
+    o[1 + k] = '"';
+    w->b->len += k + 2;
+    w->b->p[w->b->len] = 0;
+}
+
 void cb_jw_int(cb_jw *w, int64_t v) {
     if (!value_start(w)) return;
     cb_buf_printf(w->b, "%lld", (long long)v);
@@ -124,6 +140,7 @@ void cb_jw_raw(cb_jw *w, const char *json, size_t n) {
 void cb_jw_kstr(cb_jw *w, const char *k, const char *s) { cb_jw_key(w, k); cb_jw_str(w, s); }
 void cb_jw_kint(cb_jw *w, const char *k, int64_t v) { cb_jw_key(w, k); cb_jw_int(w, v); }
 void cb_jw_kbool(cb_jw *w, const char *k, bool v) { cb_jw_key(w, k); cb_jw_bool(w, v); }
+void cb_jw_kb64(cb_jw *w, const char *k, const uint8_t *p, size_t n) { cb_jw_key(w, k); cb_jw_b64(w, p, n); }
 void cb_jw_knull(cb_jw *w, const char *k) { cb_jw_key(w, k); cb_jw_null(w); }
 
 // ---- reader -------------------------------------------------------------------

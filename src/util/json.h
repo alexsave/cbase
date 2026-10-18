@@ -57,12 +57,15 @@ void cb_jw_int(cb_jw *w, int64_t v);
 void cb_jw_bool(cb_jw *w, bool v);
 void cb_jw_null(cb_jw *w);
 void cb_jw_raw(cb_jw *w, const char *json, size_t n);  // an already-encoded value
+// Bytes as a standard base64 string (padded): no escaping, base64 needs none.
+void cb_jw_b64(cb_jw *w, const uint8_t *p, size_t n);
 
 // key + value in one call.
 void cb_jw_kstr(cb_jw *w, const char *k, const char *s);
 void cb_jw_kint(cb_jw *w, const char *k, int64_t v);
 void cb_jw_kbool(cb_jw *w, const char *k, bool v);
 void cb_jw_knull(cb_jw *w, const char *k);
+void cb_jw_kb64(cb_jw *w, const char *k, const uint8_t *p, size_t n);
 
 // Appends `s` escaped (no quotes) to b: the helper the writer uses.
 void cb_json_escape(cb_buf *b, const char *s, size_t n);
