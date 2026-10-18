@@ -1,7 +1,7 @@
 // unfurl_payloads.c - prints the /m/<payload> cases test/fixture_unfurl.h holds.
 //
 // Every envelope is made by the kernel: a fixture the kernel's own tests sealed
-// (foolish/e2e/msg_wire.test.ts, msg_rematch.test.ts) is decoded with
+// (foolish/e2e/msg_wire.test.ts, foolish/c/tests/msg_wire_test.c) is decoded with
 // msg_decode, its roster edited where a case needs other names, encoded again
 // with msg_encode and checked with msg_replay, then written as base32 with
 // replay_b32_encode. No byte of an envelope is laid out here.
@@ -41,12 +41,12 @@ static const char *LIVE3 =
 static const char *LIVE2 =
     "f7050002efcdab89674523010c000002000200000000000000001e9986e393a186985bc91663988c3c607d4fe2267201f3652ebe7c89db"
     "67cc55341200020004416e6e300104416e6e310c001d179167621fb4cab1ae1a25e54fca";
-// msg_rematch.test.ts FINISHED: 4 seats, Alex Mira Jonas Priya, finished (format 5).
+// msg_wire_test.c REMATCH_FINISHED_HEX: 4 seats, Alex Mira Jonas Priya, finished (format 5).
 static const char *FINISHED4 =
     "f7050003606000000000000064000004011100000000000000006d380f1cae7638124850ee2cbae14e7fc19e018780f568cd99f0b18252"
     "d0fe21e43400040004416c657801044d69726102054a6f6e6173030550726979616400"
     "0370d96bdfca53aaf159b08e7238ee50564efe1f1864a345b71d69ef4147da284b47f32f0cdca05a1cc4661a827ad6cfc3e8d7bafa";
-// msg_rematch.test.ts NATIVE_LOBBY: the rematch lobby of FINISHED4 (format 6).
+// msg_wire_test.c REMATCH_LOBBY_HEX: the rematch lobby of FINISHED4 (format 6).
 static const char *REMATCH4 =
     "f70600006060000000000000000002040100f887535ca3ce410d5792a42bb5bb707687ad8735658d6b9311cd750e096921e6a88a4dea"
     "8f3814aa34120000ff44c9ed0100040004416c657801044d69726102054a6f6e6173030550726979610000";
