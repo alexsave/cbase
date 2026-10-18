@@ -18,8 +18,9 @@
 #include "sg_args.h"
 #include "sg_hash.h"
 #include "sg_model.h"
+#include "../../c/fnv.h"
 
-static unsigned layout_hash = 2166136261u;
+static unsigned layout_hash = FNV32_OFFSET;
 static int hash_path[256], hash_depth;   // the records on the path being hashed, for a pointer cycle
 void hput(const char *fmt, ...) {
     char line[1024];
@@ -27,7 +28,7 @@ void hput(const char *fmt, ...) {
     int k = vsnprintf(line, sizeof line, fmt, ap);
     va_end(ap);
     if (k < 0 || (size_t)k >= sizeof line) die("hash line too long");
-    for (int i = 0; i <= k; i++) layout_hash = (layout_hash ^ (unsigned char)(i < k ? line[i] : '\n')) * 16777619u;
+    for (int i = 0; i <= k; i++) layout_hash = fnv1a32_step(layout_hash, (unsigned char)(i < k ? line[i] : '\n'));
 }
 static void hash_record(int ri, const char *path) {
     Rec *r = &recs[ri];

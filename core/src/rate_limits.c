@@ -9,6 +9,7 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <string.h>
+#include "../../../shared/c/fnv.h"
 
 #define MIN_MS (60LL * 1000)
 
@@ -45,9 +46,7 @@ static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 
 // FNV-1a over the kind and the key; never 0 (0 marks an empty slot).
 static uint64_t hash_of(cb_limit_kind kind, const char *key) {
-    uint64_t h = 1469598103934665603ULL;
-    h = (h ^ (uint64_t)(kind + 1)) * 1099511628211ULL;
-    for (const unsigned char *p = (const unsigned char *)key; *p; p++) h = (h ^ *p) * 1099511628211ULL;
+    uint64_t h = fnv1a64_str(fnv1a64_step(FNV64_OFFSET_SHORT, (uint64_t)(kind + 1)), key);
     return h ? h : 1;
 }
 
