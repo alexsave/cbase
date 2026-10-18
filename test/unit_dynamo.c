@@ -1055,6 +1055,36 @@ static void flow_games_batched(void) {
     cb_store_close(s);
 }
 
+// Failed sign-ins (store.h signin_fails) over the scripted transport: the
+// AUTHFAIL item read consistently, replaced with its TTL in seconds, deleted;
+// an item past its time (TTL deletion lags) reads as none.
+static void flow_signin_fails(void) {
+    static const char LIVE[] =
+        "{\"Item\":{\"pk\":{\"S\":\"AUTHFAIL#a@x.io\"},\"sk\":{\"S\":\"FAILS\"},\"n\":{\"N\":\"6\"},"
+        "\"last_at\":{\"N\":\"900\"},\"locked_until\":{\"N\":\"30900\"},\"expires_ms\":{\"N\":\"3600900\"}}}";
+    static const step steps[] = {
+        { "GetItem", "\"AUTHFAIL#a@x.io\"", 200, LIVE },
+        { "GetItem", "\"ConsistentRead\":true", 200, LIVE },          // read again past its time
+        { "GetItem", NULL, 200, "{}" },                                 // none
+        { "PutItem", "\"expires_at\":{\"N\":\"3601\"}", 200, "{}" },
+        { "PutItem", NULL, 400, VALIDATION },
+        { "DeleteItem", "\"AUTHFAIL#a@x.io\"", 200, "{}" },
+    };
+    RUN(steps, s);
+    cb_signin_fails f;
+    T_EQ_INT(CB_STORE_CALL(s, signin_fails_get, "a@x.io", 1000, &f), CB_OK);
+    T_CHECK(f.n == 6 && f.last_at == 900 && f.locked_until == 30900);
+    T_EQ_INT(CB_STORE_CALL(s, signin_fails_get, "a@x.io", 3600900, &f), CB_E_NOT_FOUND);
+    T_EQ_INT(f.n, 0);
+    T_EQ_INT(CB_STORE_CALL(s, signin_fails_get, "a@x.io", 1000, &f), CB_E_NOT_FOUND);
+    cb_signin_fails w = { .n = 1, .last_at = 1000, .locked_until = 0 };
+    T_EQ_INT(CB_STORE_CALL(s, signin_fails_put, "a@x.io", &w, 1000), CB_OK);
+    T_EQ_INT(CB_STORE_CALL(s, signin_fails_put, "a@x.io", &w, 1000), CB_E_DB);
+    T_EQ_INT(CB_STORE_CALL(s, signin_fails_clear, "a@x.io"), CB_OK);
+    T_EQ_INT(sc_.at, 6);
+    cb_store_close(s);
+}
+
 typedef struct { int n; char ids[8][16]; } ids_t;
 static bool collect_id(const char *id, void *ud) {
     ids_t *t = ud;
@@ -1487,6 +1517,7 @@ int main(void) {
     T_RUN(items_round_trip);
     T_RUN(errors_classified);
     T_RUN(pages_and_batches);
+    T_RUN(flow_signin_fails);
     T_RUN(flow_cas_lost);
     T_RUN(flow_commit_game_gone);
     T_RUN(flow_rating_moved);
