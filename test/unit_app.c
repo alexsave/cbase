@@ -1111,7 +1111,7 @@ static void a_taken_game_id_is_drawn_again(void) {
     T_EQ_INT(games_of(UID_C), 0);
 }
 
-// good_is_a_move.test.ts: an operation whose only effect is a Good (no card
+// tests.c test_table_a_bots_good_is_a_move: an operation whose only effect is a Good (no card
 // event) still goes out, or an open page never sees the badge.
 static void a_goods_only_commit_is_broadcast(void) {
     setup(0);
