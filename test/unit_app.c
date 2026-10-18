@@ -70,7 +70,6 @@ static void kick_recorder(cb_ctx *ctx, const char *game_id) {
 typedef struct {
     int     count;
     int64_t version;
-    bool    broadcast;
     int     humans, casts, joined, left;
     bool    spectator_cast;
     bool    casts_name_redaction;   // every cast carries REDACTED_PLAYER_NAME (the roster trailer)
@@ -84,7 +83,6 @@ static void fan_observer(const cb_fanout *f) {
     memset(&s, 0, sizeof s);
     s.count = g_fan.count + 1;
     s.version = f->version;
-    s.broadcast = f->broadcast;
     for (int i = 0; i < f->n_seats; i++) {
         if (f->seats[i].user_id[0]) s.humans++;
         if (f->seats[i].cast) s.casts++;
@@ -431,7 +429,6 @@ static void join_add_bot_and_start(void) {
     T_CHECK(row.logs_len > 0);
     T_EQ_INT(row.round_epoch, 0);
     // The deal is broadcast: each human's cast and the spectators'.
-    T_CHECK(g_fan.broadcast);
     T_EQ_INT(g_fan.casts, 2);
     T_CHECK(g_fan.spectator_cast);
     // The deal wakes the bots exactly when the table has bot work.
@@ -483,7 +480,7 @@ static void a_legal_action_applies_and_bumps_the_version(void) {
     // Every commit updates both dashboards, the human move is cast.
     T_EQ_INT(g_fan.version, v + 1);
     T_EQ_INT(g_fan.humans, 2);
-    T_CHECK(g_fan.broadcast);
+    T_EQ_INT(g_fan.casts, 2);
     // A PLAYING row this process committed is cached.
     T_EQ_INT(cb_row_cache_size(), 1);
 }
@@ -900,7 +897,6 @@ static void delete_account_casts_the_rename_to_open_pages(void) {
     T_EQ_INT(version_of(gid), v + 1);
     T_EQ_INT(g_fan.count, 1);
     T_EQ_INT(g_fan.version, v + 1);
-    T_CHECK(g_fan.broadcast);
     T_EQ_INT(g_fan.casts, 2);
     T_CHECK(g_fan.spectator_cast);
     T_CHECK(g_fan.casts_name_redaction);
@@ -1175,11 +1171,114 @@ static void a_goods_only_commit_is_broadcast(void) {
         found++;
         T_EQ_INT(g_fan.count, fans + 1);
         T_EQ_INT(g_fan.version, v + 1);
-        T_CHECK(g_fan.broadcast);
         T_CHECK(g_fan.casts > 0 && g_fan.spectator_cast);
     }
     cb_section_free(s);
     T_CHECK(found > 0);
+}
+
+// What the kernel makes of an operation on a scratch copy of the stored row:
+// whether its products have nothing a viewer is shown (no event, no shown
+// good, no roster change). These are the commits a "cast only when something
+// moved" rule leaves without a cast.
+static bool shows_nothing(cb_section *s, const char *gid, const char *uid, const uint8_t *wire, int n,
+                          const TableAsk *ask) {
+    cb_game_row row = stored(gid);
+    bool quiet = false;
+    if (cb_section_load(s, &row) >= 0) {
+        int rc = ask ? table_ask(&s->t, uid, (int)strlen(uid), "X", 1, ask, NULL, NULL)
+                     : table_act(&s->t, uid, (int)strlen(uid), wire, n, -1, row.round_epoch);
+        if (rc == TABLE_OK &&
+            table_commit_products(&s->t, gid, (int)strlen(gid), (uint32_t)row.version + 1, g_now, &s->c, s->arena,
+                                  sizeof s->arena) >= 0)
+            quiet = s->c.n_events == 0 && !s->c.goods_changed && !s->c.roster_changed;
+    }
+    cb_game_row_free(&row);
+    return quiet;
+}
+
+// The seat's hand, reversed, as an ASK_REARRANGE_HAND; false when it holds
+// fewer than two cards (a reversal would be the same order).
+static bool reversed_hand_ask(const char *gid, int seat, TableAsk *a) {
+    cb_game_row row = stored(gid);
+    Game *g = calloc(1, sizeof *g);
+    TableSnaps *snaps = calloc(1, sizeof *snaps);
+    Table t;
+    table_init(&t, g, snaps);
+    int n = 0;
+    if (table_load(&t, row.state, (int)row.state_len, row.roster, (int)row.roster_len) == TABLE_OK) n = g->players[seat].hand_count;
+    free(g);
+    free(snaps);
+    cb_game_row_free(&row);
+    memset(a, 0, sizeof *a);
+    a->kind = ASK_REARRANGE_HAND;
+    a->gid_len = (uint8_t)strlen(gid);
+    memcpy(a->gid, gid, a->gid_len);
+    a->n_idx = (uint8_t)(n > 0 ? n : 0);
+    for (int i = 0; i < n; i++) a->idx[i] = (uint8_t)(n - 1 - i);
+    return n >= 2;
+}
+
+static void meta_ask(const char *bearer, const TableAsk *a, reply *out) {
+    uint8_t body[ASK_BYTES_MAX];
+    int n = ask_encode(a, body, sizeof body);
+    call("POST", "meta", bearer, OCT, body, n > 0 ? (size_t)n : 0, out);
+}
+
+// EVERY COMMIT IS CAST (table_ops.c). A client gates casts on the version and
+// fetches the game whole when one is skipped (netclient.c NW_WS_CAST), so a
+// commit that moved the version and cast nothing made every open page refetch
+// at its next push: a third of each client's requests in a two-player game at
+// full speed. The commits that slipped through were the ones that show nothing:
+// a good said over an uncovered table (game_shown_good_mask) and a hand
+// rearranged. A whole two-player game is played here through the HTTP
+// surface, and every version it commits must reach both seats and the
+// spectators as a cast at that version, the quiet ones by name included.
+static void every_commit_is_cast(void) {
+    setup(0);
+    char gid[CB_GAME_ID_MAX + 1];
+    reply r;
+    create_game(gid, &r);
+    meta("B", ASK_JOIN, gid, NULL, &r);
+    meta("A", ASK_START, gid, NULL, &r);
+    meta("B", ASK_START, gid, NULL, &r);
+    T_EQ_INT(status_of(gid), GAME_STATUS_PLAYING);
+    static const char *const uids[2] = { UID_A, UID_B }, *const bearers[2] = { "A", "B" };
+    cb_section *s = cb_section_new();
+    int commits = 0, quiet_goods = 0, rearranged = 0;
+    for (int step = 0; step < 4000 && status_of(gid) == GAME_STATUS_PLAYING; step++) {
+        const int k = step % 2, seat = seat_of(gid, uids[k]);
+        const int64_t v = version_of(gid);
+        const int fans = g_fan.count;
+        bool quiet;
+        TableAsk ask;
+        if (step % 7 == 3 && reversed_hand_ask(gid, seat, &ask)) {
+            quiet = shows_nothing(s, gid, uids[k], NULL, 0, &ask);
+            meta_ask(bearers[k], &ask, &r);
+            if (version_of(gid) == v + 1) rearranged += quiet;
+        } else {
+            uint8_t wire[64];
+            int n = pick_move(gid, seat, wire, sizeof wire);
+            if (n <= 0) continue;
+            quiet = shows_nothing(s, gid, uids[k], wire, n, NULL);
+            action(bearers[k], gid, wire, n, (uint32_t)v, &r);
+            if (version_of(gid) == v + 1) quiet_goods += quiet && AWIRE_GOOD == wire[0];
+        }
+        if (version_of(gid) != v + 1) continue;
+        commits++;
+        T_EQ_INT(g_fan.count, fans + 1);
+        T_EQ_INT(g_fan.version, v + 1);
+        T_EQ_INT(g_fan.humans, 2);
+        T_EQ_INT(g_fan.casts, 2);
+        T_CHECK(g_fan.spectator_cast);
+    }
+    cb_section_free(s);
+    T_EQ_INT(status_of(gid), GAME_STATUS_GAME_OVER);
+    T_CHECK(commits > 20);
+    // The game must have held the commits the old rule left uncast, or this
+    // proves nothing about them.
+    T_CHECK(quiet_goods > 0);
+    T_CHECK(rearranged > 0);
 }
 
 // ---- answer first (app/after.h) ---------------------------------------------------------------
@@ -1869,6 +1968,7 @@ int main(void) {
     T_RUN(a_taken_game_id_is_drawn_again);
     T_RUN(game_ids_are_wide_and_old_ones_work);
     T_RUN(a_goods_only_commit_is_broadcast);
+    T_RUN(every_commit_is_cast);
     T_RUN(a_bump_wakes_the_bots);
     T_RUN(continue_returns_a_clean_lobby);
     T_RUN(a_stranger_changes_nothing);

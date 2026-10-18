@@ -4,9 +4,9 @@
 //   * for every HUMAN seat: its view (realtime.h CB_RT_VIEWS, the dashboard),
 //     and its cast (CB_RT_SEAT, table_cast(seat, version));
 //   * for the spectators: CB_RT_WATCH, table_cast(-1, version);
-//   * the casts only when n_events > 0, goods_changed (a good flies no card but
-//     is a move) or roster_changed (a redaction renames a seat and flies
-//     nothing, yet an open page must show it); the views on every commit;
+//   * the casts and the views on every commit (table_ops.c says why a commit
+//     that moves the version and casts nothing is a refetch on every page);
+//     the deletion of an empty table writes no version and casts nothing;
 //   * a seat that left: its views stream hears the view with no envelope.
 // Called inside the kernel section's aftermath with the bytes already copied
 // out (casts and envelopes), so it never touches the kernel.
@@ -25,7 +25,6 @@ typedef struct {
     int64_t     version;
     const char *status;            // cb_table_status_label
     int64_t     updated_at;
-    bool        broadcast;         // n_events > 0 || goods_changed || roster_changed
     int         n_seats;
     struct {
         cb_uuid        user_id;    // "" for a bot seat (nothing is sent to it)

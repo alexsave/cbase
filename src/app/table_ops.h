@@ -25,7 +25,7 @@
 // clock, a socket, a JWT or the store.
 //
 // AFTER A WINNING COMMIT (all before the response, as today):
-//   * fan-out (fanout.h) when n_events > 0 or goods_changed;
+//   * fan-out (fanout.h): every commit casts, whatever it moved;
 //   * finalize when products.ended: table_replay_code + table_replay_extras
 //     into store snapshot_put, then the next commit clears logs (finalize.ts);
 //     a failure is logged and swallowed, as today;

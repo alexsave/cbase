@@ -3,8 +3,8 @@
 // Two things after every winning commit: each human seat's view on its own
 // views stream (realtime.h CB_RT_VIEWS, on EVERY commit; a seat that left hears
 // the view with no envelope), and the casts, one per human seat (CB_RT_SEAT)
-// and one for the spectators (CB_RT_WATCH), only when the operation moved
-// something a viewer sees.
+// and one for the spectators (CB_RT_WATCH), on every commit that wrote them
+// (all of them but an empty table's deletion, which has no board to cast).
 #include "fanout.h"
 
 #include "after.h"
@@ -48,7 +48,6 @@ void cb_fanout_publish(cb_ctx *ctx, const cb_fanout *f) {
         snprintf(row.player_id, sizeof row.player_id, "%s", f->left[i]);
         rt_publish_view(rt, f->left[i], &row, true);
     }
-    if (!f->broadcast) return;
     for (int i = 0; i < f->n_seats; i++) {
         if (!f->seats[i].user_id[0] || !f->seats[i].cast) continue;
         rt_publish_cast(rt, f->seats[i].user_id, f->game_id, f->version, f->seats[i].cast, f->seats[i].cast_len);

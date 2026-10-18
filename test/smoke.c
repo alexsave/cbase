@@ -291,7 +291,27 @@ typedef struct {
     uint32_t view_v[4096];
     int      refused;             // ACKs with a why
     int64_t  last_ping;           // when this socket last pinged
+    // n_cast at each reopen (the crash's): a socket that was closed missed what
+    // was cast meanwhile, so the versions may jump there and only there.
+    int      n_reopen;
+    int      reopen_at[16];
 } listener;
+
+// Every cast follows the one before it (version + 1), but across a reopen.
+// A commit the stream never casts is a gap the kernel client takes for a lost
+// push, and it fetches the game whole (netclient.c NW_WS_CAST).
+static int cast_gaps(const listener *l) {
+    int gaps = 0;
+    for (int i = 1; i < l->n_cast; i++) {
+        bool reopened = false;
+        for (int k = 0; k < l->n_reopen; k++) reopened |= l->reopen_at[k] == i;
+        if (!reopened && l->cast_v[i] != l->cast_v[i - 1] + 1) {
+            if (gaps < 4) fprintf(stderr, "smoke: a cast at v%u follows v%u\n", l->cast_v[i], l->cast_v[i - 1]);
+            gaps++;
+        }
+    }
+    return gaps;
+}
 
 static void ws_send(listener *l, const NwFrame *f) {
     static uint8_t raw[NW_ACCESS_MAX + 64];
@@ -331,6 +351,7 @@ static void drain_ws(listener *l, int timeout_ms) {
 // Opens the socket, names the user and subscribes; true once the subscription
 // is acknowledged without a why. Pushes that arrive first are heard.
 static bool ws_open(listener *l) {
+    if (l->n_cast > 0 && l->n_reopen < 16) l->reopen_at[l->n_reopen++] = l->n_cast;
     l->fd = tc_ws_open(g_port, "/v1/stream?proto=nw1", NULL);
     l->last_ping = mono_ms();
     if (l->fd < 0) return false;
@@ -527,7 +548,7 @@ static void game_scenario(void) {
     smoke_user *humans[2] = { &A, &B };
     uint64_t rng = 7;
     int status = GAME_STATUS_PLAYING, moves = 0, crash_tries = 0;
-    bool crashed = false;
+    bool crashed = false, rearranged = false;
     // The game ends when it ends: a long one (many pickups) plus the crash
     // takes minutes. What must not happen is a stall, so the loop gives up
     // only when the version has not moved for STALL_MS (well past the crash's
@@ -549,6 +570,23 @@ static void game_scenario(void) {
             status = sc->c.view.status;
             uint32_t version = sc->c.view.version;
             if ((int64_t)version != last_version) { last_version = version; last_progress = mono_ms(); }
+            // Once, A reverses its hand: a commit that shows nobody anything and
+            // must still be cast (the gap check below).
+            const int me = sc->c.view.my_seat;
+            if (h == 0 && !rearranged && moves >= 4 && me >= 0 && sc->c.g->players[me].hand_count >= 2) {
+                TableAsk ra;
+                memset(&ra, 0, sizeof ra);
+                ra.kind = ASK_REARRANGE_HAND;
+                ra.gid_len = (uint8_t)strlen(gid);
+                memcpy(ra.gid, gid, ra.gid_len);
+                ra.n_idx = (uint8_t)sc->c.g->players[me].hand_count;
+                for (int i = 0; i < ra.n_idx; i++) ra.idx[i] = (uint8_t)(ra.n_idx - 1 - i);
+                uint8_t body[ASK_BYTES_MAX];
+                int bn = ask_encode(&ra, body, sizeof body);
+                T_EQ_INT(bn > 0 ? call(&A, NC_DO_ASK, NULL, body, bn, -1) : -1, 200);
+                rearranged = true;
+                continue;   // the board moved on: read it again
+            }
             uint8_t wire[64];
             int n = choose_move(sc, &env, wire, sizeof wire, &rng);
             if (n <= 0) continue;
@@ -611,6 +649,7 @@ static void game_scenario(void) {
     T_EQ_INT(status, GAME_STATUS_GAME_OVER);
     T_CHECK(moves > 0);
     T_CHECK(crashed);
+    T_CHECK(rearranged);
 
     // Pushes, each stream strictly increasing in version: A's own casts, the
     // spectators' casts, B's views.
@@ -624,6 +663,11 @@ static void game_scenario(void) {
     T_EQ_INT(LA->refused + LB->refused + LC->refused, 0);
     for (int i = 1; i < LA->n_cast; i++) T_CHECK(LA->cast_v[i] > LA->cast_v[i - 1]);
     for (int i = 1; i < LC->n_cast; i++) T_CHECK(LC->cast_v[i] > LC->cast_v[i - 1]);
+    // And none is missing: every commit is cast, to the seat and to the
+    // spectators, the ones that show nothing (a good over an uncovered table, a
+    // hand rearranged) included (table_ops.c).
+    T_EQ_INT(cast_gaps(LA), 0);
+    T_EQ_INT(cast_gaps(LC), 0);
     for (int i = 1; i < LB->n_view; i++) T_CHECK(LB->view_v[i] > LB->view_v[i - 1]);
 
     // B's last view push is B's stored view.

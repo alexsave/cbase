@@ -58,7 +58,6 @@ static cb_fanout fanout(const char *game, uint8_t *env, uint8_t *cast) {
     f.game_id = game;
     f.version = 3;
     f.status = "playing";
-    f.broadcast = true;
     f.n_seats = 1;
     snprintf(f.seats[0].user_id, sizeof f.seats[0].user_id, "aaaaaaaa-0000-4000-8000-000000000001");
     f.seats[0].envelope = env;

@@ -367,8 +367,12 @@ As built:
   finalize.ts then cleared `logs_packed` with a second, unfenced UPDATE; the store has no such write, so the finished game's log stays until the next commit that leaves the finished table (a lobby commit empties it, a deal replaces it).
   This is accepted: the log is read only by the next deal's append and by the replay gate, both of which handle it.
   The snapshot's `player_ids` include the bots, as finalize.ts wrote them.
-- `fanout.c`: a pv- INSERT/UPDATE/DELETE per human row on every commit, the gu- casts per human seat and the game- cast only when `n_events > 0 || goods_changed || roster_changed`.
-  table_io.ts's rule had no `roster_changed`, so a delete-account redaction on a dealt table (no card, no good) cast nothing, and an open game page, which ignores the pv- row of the game on screen, kept the deleted name until a reload; the cast carries the roster trailer and the page applies an empty cast as a board.
+- `fanout.c`: a pv- INSERT/UPDATE/DELETE per human row on every commit, and the gu- casts per human seat and the game- cast on every commit too.
+  table_io.ts cast only when `n_events > 0 || goods_changed`, and c_base added `roster_changed` after a delete-account redaction on a dealt table cast nothing and an open page kept the deleted name until a reload.
+  The rule still missed commits that move the version: a good said over an uncovered table (silent, `game_shown_good_mask`) and a hand rearranged.
+  The kernel client gates casts on the version and fetches the game whole when one is skipped, so in a two-player game at full speed about a third of each client's requests were those refetches.
+  Every commit now casts; a cast with no events carries the viewer's final board, and the page applies it as a board.
+  Not bumping the version for such a commit is not an option: the board it writes is different (the raw good mask is in every envelope), and the version is the CAS fence.
 - `functions_http.c` follows wrap400: auth is checked before the content type; 400 for every refusal with a reason (AUTH, MALFORMED, REFUSED, NOT_FOUND, NO_BOT), 415 for a body that is not octets, 500 INTERNAL for the server's own failure (write contention included), 503 when the store is not up; create 400 AUTH or 500; delete-account 405, 401, 500.
   These match inv_supabase.md section 3 line by line.
   `cb_app_delete_account` is the one implementation behind delete-account and the console's Users panel.

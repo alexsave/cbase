@@ -443,22 +443,28 @@ int cb_section_commit(cb_ctx *ctx, cb_section *s, const cb_game_row *row, const 
     }
 
     // ---- everything the aftermath needs, copied out of the section ----------------
-    // A cast goes out when the operation moved a card, moved the goods, or
-    // changed the roster. The last is a delete-account redaction (or any other
-    // rename) on a table already dealt: it flies nothing and sets no good, and
-    // table_io.ts's rule (events or goods) sent no cast, so an open game page
-    // kept the deleted player's name until a reload; the pv- row that did go
-    // out is ignored for the game on screen (ServerContext applyRow). The cast
-    // carries the roster trailer (table_push), and the page applies a cast with
-    // no events as a board (AnimationContext's empty-stream path).
-    const bool broadcast = c->n_events > 0 || c->goods_changed || c->roster_changed;
+    // EVERY COMMIT IS CAST, one per human seat and one for the spectators, at
+    // the version it wrote. The version is what a client gates on: a cast that
+    // does not follow the one before it lands on a board it does not follow,
+    // so the kernel client drops it and fetches the game whole (netclient.c
+    // NW_WS_CAST). A commit that cast nothing therefore cost every open page a
+    // refetch at its next push.
+    //
+    // There used to be a rule here, "events, a goods change or a roster
+    // change", and the commits it missed were real moves: a good said over an
+    // uncovered table (legal, and silent: game_shown_good_mask) and a hand
+    // rearranged. Both change the stored board - the raw good mask is in every
+    // envelope (view.c), and a good takes the seat out of the attackers - so
+    // neither can commit without moving the version the CAS is fenced on.
+    // The cast carries the viewer's whole final board after its events, so a
+    // cast with none still moves every client to the board the version names;
+    // the pages apply one as a board (AnimationContext's empty-stream path).
     cb_fanout f;
     memset(&f, 0, sizeof f);
     f.game_id = row->id;
     f.version = nrow.version;
     f.status = cb_table_status_label(c->status);
     f.updated_at = now;
-    f.broadcast = broadcast;
     f.n_seats = t->r.n;
     rc = CB_OK;
     for (int i = 0; i < t->r.n && rc == CB_OK; i++) {
@@ -468,13 +474,13 @@ int cb_section_commit(cb_ctx *ctx, cb_section *s, const cb_game_row *row, const 
         f.seats[i].envelope = dup_bytes(A + c->views[i].off, (size_t)c->views[i].len);
         f.seats[i].envelope_len = (size_t)c->views[i].len;
         if (!f.seats[i].envelope) rc = CB_E_NOMEM;
-        if (rc == CB_OK && broadcast) {
+        if (rc == CB_OK) {
             uint8_t *cast = NULL;
             rc = section_cast(s, i, next, &cast, &f.seats[i].cast_len);
             f.seats[i].cast = cast;
         }
     }
-    if (rc == CB_OK && broadcast) {
+    if (rc == CB_OK) {
         uint8_t *cast = NULL;
         rc = section_cast(s, -1, next, &cast, &f.spectator_cast_len);
         f.spectator_cast = cast;

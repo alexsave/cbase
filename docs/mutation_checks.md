@@ -345,7 +345,9 @@ Each mutant below was applied, the named test went red on the named assertion, a
 The TypeScript server's e2e suite went with it; these unit_app.c tests carry over what it guarded that no C test did. Two seams were added for them: `cb_app_game_uuid` (the UUID a game id is cut from) and `cb_bots_cycle_observer` (what each bot cycle is handed). Each mutant was applied, the named test failed on the named assertion, and the source was restored.
 
 - `a_taken_game_id_is_drawn_again` (create_game_id): a taken id ends create instead of drawing again; CB_TABLE_ID_DRAWS + 3 draws -> `g_draws == CB_TABLE_ID_DRAWS`.
-- `a_goods_only_commit_is_broadcast` (good_is_a_move): `goods_changed` dropped from the broadcast rule -> `g_fan.broadcast`.
+- `a_goods_only_commit_is_broadcast` (good_is_a_move): `goods_changed` dropped from the broadcast rule -> `g_fan.casts > 0 && g_fan.spectator_cast` (the rule itself is gone since: every commit casts).
+- `every_commit_is_cast` (table_ops.c, a commit that moves the version and casts nothing): the casts built only when `n_events > 0 || goods_changed || roster_changed` (main before the fix) -> `g_fan.casts == 2` and `g_fan.spectator_cast`, on the quiet goods and the rearranged hands; the casts skipped only for a quiet commit with no log records (a hand rearranged, not a silent good) -> the same two, on the rearrangements alone.
+- smoke.c `game_scenario` cast gaps: the same binary as main before the fix -> `cast_gaps(LA) == 0` and `cast_gaps(LC) == 0` (a cast at v7 follows v5, ...).
 - `a_bump_wakes_the_bots` (heartbeat_needs_bots): a bump wakes only on a commit -> `g_kicks == kicks + 1`.
 - `continue_returns_a_clean_lobby` (waiting_stale_blob, meta): a lobby appends to the log -> `row.logs_len == 0`; a lobby keeps the seed -> `!row.has_seed`.
 - `a_stranger_changes_nothing` (security_seat_from_auth, table_server_seat): an unseated bearer acts as seat 0 -> `r.status == 400`.
