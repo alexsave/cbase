@@ -26,7 +26,7 @@
 #include "store/store.h"
 #include "store/store_import.h"
 #include "store/store_priv.h"
-#include "app/edge.h"
+#include "edge.h"
 #include "app/foolish_app.h"
 #include "cbase/provider.h"
 #include "util/err.h"

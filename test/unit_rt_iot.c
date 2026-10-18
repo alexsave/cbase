@@ -11,7 +11,7 @@
 
 #include "aws/event.h"
 #include "config.h"
-#include "json_surface.h"
+#include "aws_json.h"
 #include "app/pushes.h"
 #include "realtime/realtime.h"
 #include "realtime/rt_deps.h"

@@ -7,7 +7,7 @@
 // DynamoDB Local itself.
 #include "t.h"
 
-#include "json_surface.h"
+#include "aws_json.h"
 #include "store/store_import.h"
 #include "store/store_priv.h"
 #include "util/clock.h"

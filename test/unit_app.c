@@ -17,10 +17,10 @@
 #include <time.h>
 #include "lib_app_store_mem.h"
 
-#include "app/after.h"
+#include "after.h"
 #include "app/app_internal.h"
 #include "app/bots.h"
-#include "app/edge.h"
+#include "edge.h"
 #include "app/fanout.h"
 #include "app/functions_http.h"
 #include "app/table_ops.h"

@@ -8,7 +8,7 @@
 #include "app/bots.h"
 #include "aws/https.h"
 #include "aws/runtime_api.h"
-#include "json_surface.h"
+#include "aws_json.h"
 #include "store/rows_foolish.h"
 #include "lib_aws_tls.h"
 #include "store/store.h"

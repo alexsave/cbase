@@ -32,7 +32,7 @@
 #include "aws/event.h"
 #include "auth/bcrypt.h"
 #include "auth/jwt.h"
-#include "json_surface.h"
+#include "aws_json.h"
 #include "store/rows_foolish.h"
 #include "app/pushes.h"
 #include "realtime/realtime.h"

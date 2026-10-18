@@ -7,7 +7,7 @@
 // test/unit_json_gate.c, holds src/, bench/ and migrate/).
 #include "fz.h"
 
-#include "json_surface.h"
+#include "aws_json.h"
 #include "../../shared/c/b64/b64.h"
 #include "util/json.h"
 

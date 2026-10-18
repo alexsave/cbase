@@ -11,7 +11,7 @@
 #include "aws/event.h"
 #include "aws/runtime_api.h"
 #include "fixture_cloudfront_event.h"
-#include "json_surface.h"
+#include "aws_json.h"
 #include "util/err.h"
 
 #include <arpa/inet.h>

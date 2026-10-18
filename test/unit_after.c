@@ -8,8 +8,8 @@
 #include "app/fanout.h"
 #include "cbase/provider.h"
 
-#include "app/after.h"
-#include "app/edge.h"
+#include "after.h"
+#include "edge.h"
 #include "app/fanout.h"
 #include "realtime/realtime.h"
 #include "util/log.h"

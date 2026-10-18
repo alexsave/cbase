@@ -6,7 +6,7 @@
 // bad answer (or one item a buggy writer stored) from a crash.
 #include "fz.h"
 
-#include "json_surface.h"
+#include "aws_json.h"
 #include "store/rows_foolish.h"
 #include "store/store.h"
 #include "../../shared/c/b64/b64.h"

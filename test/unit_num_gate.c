@@ -1,6 +1,6 @@
 // unit_num_gate.c - the number-parsing gate (shared/c/num_parse.h): every decimal
 // integer c_base reads from text goes through num_parse_i64. This test reads
-// every C source under src/ and fails, naming the file and line, when one
+// every C source under core/, providers/ and ../foolish/server/ and fails, naming the file and line, when one
 // names a C library integer parser:
 //
 //   * strtol, strtoll, strtoul, strtoull, strtoimax, strtoumax: a leading
@@ -10,7 +10,7 @@
 //   * any scanf (sscanf, fscanf, ...): %d and friends have strtol's rules.
 //
 // The floating-point parsers (strtod, strtof, strtold) are allowed in one
-// file, src/json_surface.c, which reads the one fractional number c_base
+// file, providers/aws/src/aws_json.c, which reads the one fractional number c_base
 // takes (DynamoDB's CapacityUnits); anywhere else they are a violation too.
 //
 // Comments, string literals and character literals are skipped, so a comment
@@ -29,7 +29,7 @@ static const char *const INTEGER[] = { "strtol", "strtoll", "strtoul", "strtoull
                                        "atoi",   "atol",    "atoll",   "sscanf",   "fscanf",    "scanf",
                                        "vsscanf", "vfscanf", "vscanf" };
 static const char *const FLOATING[] = { "strtod", "strtof", "strtold" };
-static const char FLOAT_HOME[] = "src/json_surface.c";
+static const char FLOAT_HOME[] = "providers/aws/src/aws_json.c";
 
 static int  g_files, g_violations;
 static bool g_quiet;   // planted text: counted, not printed
@@ -124,9 +124,11 @@ static void scan_dir(const char *dir) {
 // The gate itself: the tree as it is.
 static void only_num_parse_i64_reads_numbers(void) {
     struct stat st;
-    T_CHECK(stat("src/config.c", &st) == 0);   // run from c_base/, or nothing is scanned
-    T_CHECK(stat(FLOAT_HOME, &st) == 0);         // the float exemption names a real file
-    scan_dir("src");
+    T_CHECK(stat("core/src/config.c", &st) == 0);   // run from c_base/, or nothing is scanned
+    T_CHECK(stat(FLOAT_HOME, &st) == 0);              // the float exemption names a real file
+    scan_dir("core");
+    scan_dir("providers");
+    scan_dir("../foolish/server");
     T_CHECK(g_files >= 50);   // a gate that read nothing proves nothing
     T_EQ_INT(g_violations, 0);
 }

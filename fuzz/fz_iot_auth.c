@@ -7,7 +7,7 @@
 #include "fz.h"
 
 #include "aws/event.h"
-#include "json_surface.h"
+#include "aws_json.h"
 #include "realtime/rt_deps.h"
 #include "realtime/rt_iot.h"
 #include "realtime/stream_mqtt.h"

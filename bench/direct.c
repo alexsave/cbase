@@ -57,7 +57,7 @@
 #include "aws/aws_call.h"
 #include "aws/https.h"
 #include "aws/sigv4.h"
-#include "json_surface.h"
+#include "aws_json.h"
 #include "store/store.h"
 
 #include "ask.h"

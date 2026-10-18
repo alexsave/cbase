@@ -11,7 +11,7 @@
 #include "app/fanout.h"
 #include "cbase/provider.h"
 
-#include "app/edge.h"
+#include "edge.h"
 #include "aws/aws_call.h"
 #include "aws/cloudfront.h"
 #include "aws/event.h"
@@ -21,7 +21,7 @@
 #include "aws/sigv4.h"
 #include "aws/ssm.h"
 #include "config.h"
-#include "json_surface.h"
+#include "aws_json.h"
 #include "lib_aws_tls.h"
 #include "store/store.h"
 #include "util/err.h"

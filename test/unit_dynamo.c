@@ -12,7 +12,7 @@
 // here was captured from a live table (there is none yet).
 #include "t.h"
 
-#include "json_surface.h"
+#include "aws_json.h"
 #include "store/store_import.h"
 #include "store/store_priv.h"
 #include "table.h"

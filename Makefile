@@ -19,9 +19,11 @@
 # Builds on macOS (clang, Homebrew openssl@3, the SDK's sqlite3) and on Ubuntu
 # 24.04 (gcc, libssl-dev, libsqlite3-dev). Nothing else is needed.
 #
-# NO FILE LISTS TO EDIT. Every src/*/*.c is part of the program, every
-# test/unit_*.c is a unit test, and every test/lib_*.c is linked into every test
-# program. A builder adding a file in its own directory never touches this one.
+# NO FILE LISTS TO EDIT. Every .c under a source root (SRC_ROOTS: the core,
+# each provider, and the product in ../foolish/server) is part of the program,
+# but for the mains; every test/unit_*.c is a unit test, and every test/lib_*.c
+# is linked into every test program. A builder adding a file in its own
+# directory never touches this one.
 
 C_ROOT := ..
 KDIR   := $(C_ROOT)/foolish/c
@@ -84,8 +86,15 @@ endif
 # -Werror on c_base's sources only: the kernel has warnings gcc reports and
 # clang does not (client_table.c maybe-uninitialized), and they are the
 # kernel's to fix, not a reason this build fails on Linux.
+# THE SOURCE ROOTS (docs/PLATFORM.md 8.4): the core, which names no product
+# and no provider; each provider; the product. Every root is on every
+# compile's include path for now (stage 7 step a); the per-side include gate
+# comes with the store split.
+SRC_ROOTS := core/src providers/local/src providers/aws/src $(C_ROOT)/foolish/server/src
+MAIN_SERVE  := providers/local/src/main_serve.c
+MAIN_LAMBDA := providers/aws/src/main_lambda.c
 CB_CFLAGS := -std=gnu11 -D_GNU_SOURCE -O2 -g -Wall -Wextra -Werror -Wno-unused-parameter -Wshadow -Wvla \
-             -Isrc -Itest -I$(KDIR)/src -I$(C_ROOT)/shared/c $(OPENSSL_CFLAGS) -pthread $(KERNEL_CAPS)
+             -Icore/include $(addprefix -I,$(SRC_ROOTS)) -Itest -I$(KDIR)/src -I$(C_ROOT)/shared/c $(OPENSSL_CFLAGS) -pthread $(KERNEL_CAPS)
 LDLIBS := $(OPENSSL_LDFLAGS) -lsqlite3 -lssl -lcrypto -lpthread -lm $(PLATFORM_LDLIBS) $(LTO_LDFLAGS)
 # STATIC=1: a fully static link (the Lambda bootstrap, built on musl by
 # tools/build_bootstrap.sh). Not meaningful on macOS.
@@ -126,7 +135,7 @@ build/gen/console_html.c: admin/console.html build/embed
 # broadcasts; hex for ids, digests and cursors). Each has its own test there,
 # which this build runs (SHARED_TESTS below).
 SHARED_SRC := $(C_ROOT)/shared/c/b64/b64.c $(C_ROOT)/shared/c/hex/hex.c
-LIB_SRC  := $(sort $(filter-out src/main_%.c,$(wildcard src/*.c src/*/*.c))) $(SHARED_SRC) \
+LIB_SRC  := $(sort $(filter-out $(MAIN_SERVE) $(MAIN_LAMBDA),$(foreach r,$(SRC_ROOTS),$(wildcard $(r)/*.c $(r)/*/*.c)))) $(SHARED_SRC) \
             build/gen/schema_sql.c build/gen/console_html.c
 IMPORT_SRC := migrate/import.c
 TLIB_SRC := $(sort $(wildcard test/lib_*.c))
@@ -142,15 +151,15 @@ $(1)/$(4): $$(call c_objs,$(2),$(5) $$(LIB_SRC)) $$(call c_objs,$(3),$$(KERNEL_S
 endef
 prog = $(eval $(call PROG,$(1),$(2),$(3),$(4),$(5),$(6)))
 
-$(call prog,build,build/obj/cbase,build/obj/kernel,cbase,src/main_serve.c,CB_CFLAGS)
-$(call prog,build,build/obj/cbase,build/obj/kernel,bootstrap,src/main_lambda.c,CB_CFLAGS)
+$(call prog,build,build/obj/cbase,build/obj/kernel,cbase,$(MAIN_SERVE),CB_CFLAGS)
+$(call prog,build,build/obj/cbase,build/obj/kernel,bootstrap,$(MAIN_LAMBDA),CB_CFLAGS)
 $(call prog,build,build/obj/cbase,build/obj/kernel,cbase-import,$(IMPORT_SRC),CB_CFLAGS)
 # The /m/<payload> cases test/fixture_unfurl.h holds, made by the kernel
 # (tools/unfurl_payloads.c). Not part of any check: it is run by hand when the
 # goldens are regenerated.
 $(call prog,build,build/obj/cbase,build/obj/kernel,unfurl-payloads,tools/unfurl_payloads.c,CB_CFLAGS)
-$(call prog,build/asan,build/obj/asan,build/obj/asan-kernel,cbase,src/main_serve.c,ASAN_CB_CFLAGS)
-$(call prog,build/asan,build/obj/asan,build/obj/asan-kernel,bootstrap,src/main_lambda.c,ASAN_CB_CFLAGS)
+$(call prog,build/asan,build/obj/asan,build/obj/asan-kernel,cbase,$(MAIN_SERVE),ASAN_CB_CFLAGS)
+$(call prog,build/asan,build/obj/asan,build/obj/asan-kernel,bootstrap,$(MAIN_LAMBDA),ASAN_CB_CFLAGS)
 $(foreach u,$(UNITS),$(call prog,build/test,build/obj/cbase,build/obj/kernel,$(u),test/$(u).c $(TLIB_SRC),CB_CFLAGS))
 $(foreach u,$(UNITS),$(call prog,build/asan/test,build/obj/asan,build/obj/asan-kernel,$(u),test/$(u).c $(TLIB_SRC),ASAN_CB_CFLAGS))
 $(foreach s,smoke smoke_lambda smoke_lambda_after smoke_authz smoke_matrix smoke_boot bench_dynamo,$(call prog,build/test,build/obj/cbase,build/obj/kernel,$(s),test/$(s).c $(TLIB_SRC),CB_CFLAGS))
@@ -273,15 +282,15 @@ COVK_shared/c/mqtt/mqtt := $(COV_FLAGS)
 COV_KERNEL_CFLAGS = $(KERNEL_CFLAGS) $(COVK_$*)
 $(eval $(call C_VARIANT,build/obj/cov,CC,COV_CB_CFLAGS))
 $(eval $(call C_VARIANT,build/obj/cov-kernel,CC,COV_KERNEL_CFLAGS,,netwire+netclient+mqtt:$(COV_FLAGS)))
-$(call prog,build/cov,build/obj/cov,build/obj/cov-kernel,cbase,src/main_serve.c,COV_CB_CFLAGS)
-$(call prog,build/cov,build/obj/cov,build/obj/cov-kernel,bootstrap,src/main_lambda.c,COV_CB_CFLAGS)
+$(call prog,build/cov,build/obj/cov,build/obj/cov-kernel,cbase,$(MAIN_SERVE),COV_CB_CFLAGS)
+$(call prog,build/cov,build/obj/cov,build/obj/cov-kernel,bootstrap,$(MAIN_LAMBDA),COV_CB_CFLAGS)
 $(foreach u,$(UNITS),$(call prog,build/cov/test,build/obj/cov,build/obj/cov-kernel,$(u),test/$(u).c $(TLIB_SRC),COV_CB_CFLAGS))
 $(foreach s,smoke smoke_lambda smoke_lambda_after smoke_authz smoke_matrix smoke_boot,$(call prog,build/cov/test,build/obj/cov,build/obj/cov-kernel,$(s),test/$(s).c $(TLIB_SRC),COV_CB_CFLAGS))
 build/cov_gate: tools/cov_gate.c
 	@mkdir -p $(@D)
 	$(CC) -std=gnu11 -O2 -Wall -Wextra -Werror $< -o $@
 
-COV_FILTER := --filter 'src/' --filter '\.\./foolish/c/src/net(wire|client)\.c' --filter '\.\./shared/c/mqtt/mqtt\.c' \
+COV_FILTER := --filter '(core|providers/[a-z]+)/src/' --filter '\.\./foolish/server/src/' --filter '\.\./foolish/c/src/net(wire|client)\.c' --filter '\.\./shared/c/mqtt/mqtt\.c' \
               --filter '\.\./shared/c/(b64|hex)/(b64|hex)\.c'
 COV_EXCLUDE := --exclude 'build/' --exclude 'test/'
 # Every test program at once, each to its own log (the gcov runtime locks a

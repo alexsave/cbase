@@ -7,7 +7,7 @@
 #include "fz.h"
 
 #include "aws/event.h"
-#include "json_surface.h"
+#include "aws_json.h"
 #include "net/http.h"
 #include "util/str.h"
 

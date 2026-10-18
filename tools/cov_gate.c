@@ -43,11 +43,15 @@ static int g_nfiles, g_capfiles;
 
 static int by_line(const void *a, const void *b) { return ((const fn_t *)a)->line - ((const fn_t *)b)->line; }
 
-// Path relative to c_base: the part from "src/" or "foolish/" on.
+// Path relative to c_base ("core/src/...", "providers/aws/src/..."), or from
+// "foolish/" on for the kernel and the product.
 static const char *short_path(const char *p) {
     const char *f = strstr(p, "/foolish/c/src/");
     if (f) return f + 1;
-    const char *s = strstr(p, "/c_base/src/");
+    f = strstr(p, "/foolish/server/src/");
+    if (f) return f + 1;
+    if (!strncmp(p, "../foolish/", 11)) return p + 3;
+    const char *s = strstr(p, "/c_base/");
     if (s) return s + 8;
     return p;
 }

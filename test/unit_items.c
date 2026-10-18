@@ -4,7 +4,7 @@
 // full suite owed by stage 8).
 #include "t.h"
 
-#include "json_surface.h"
+#include "aws_json.h"
 #include "lib_proc.h"
 #include "lib_store_backend.h"
 #include "store/items.h"

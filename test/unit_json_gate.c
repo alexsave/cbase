@@ -1,7 +1,7 @@
 // unit_json_gate.c - the JSON containment gate (DESIGN.md "Where JSON is
-// tolerated"): every JSON shape c_base speaks lives in src/json_surface.c, on
-// top of the one low-level writer and reader, src/util/json.{c,h}. This test reads
-// every C source under src/, bench/ and migrate/ and fails, naming the file
+// tolerated"): every JSON shape c_base speaks lives in providers/aws/src/aws_json.c, on
+// top of the one low-level writer and reader, core/src/util/json.{c,h}. This test reads
+// every C source under core/, providers/, ../foolish/server/, bench/ and migrate/ and fails, naming the file
 // and line, when any other file
 //
 //   * includes util/json.h (by any spelling ending in /json.h or json.h),
@@ -28,8 +28,8 @@
 #include <sys/stat.h>
 
 // The files allowed to speak JSON: the surface and the mechanism under it.
-static const char *const ALLOWED[] = { "src/json_surface.c", "src/util/json.c", "src/util/json.h" };
-static const char *const ROOTS[] = { "src", "bench", "migrate" };
+static const char *const ALLOWED[] = { "providers/aws/src/aws_json.c", "core/src/util/json.c", "core/src/util/json.h" };
+static const char *const ROOTS[] = { "core", "providers", "../foolish/server", "bench", "migrate" };
 
 static int  g_files, g_violations;
 static bool g_quiet;   // planted text: counted, not printed
