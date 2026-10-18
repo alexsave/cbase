@@ -288,6 +288,7 @@ static void check_cast(const char *uid, const char *gid, const uint8_t *p, size_
 typedef struct {
     cb_conn_row row;
     int         user;               // whose token it last presented (-1 none) - the harness's own record
+    unsigned    presented;          // every user whose valid token this connection has presented
     uint32_t    last_version[N_GAMES];
 } conn;
 
@@ -325,7 +326,25 @@ static void conn_hears(conn *c, const uint8_t *msg, size_t len, const char *topi
                 c->last_version[gi] = f->version;
             }
         }
-        if (f->kind == NW_WS_VIEW || f->kind == NW_WS_CATCHUP) check_envelope(uid, f->blob.p, f->blob.len, gid);
+        if ((f->kind == NW_WS_VIEW || f->kind == NW_WS_CATCHUP) && topic == NULL && f->blob.len) {
+            // A reply answers the frame that asked, and a batch's replies go
+            // out together after its last frame, which may have presented
+            // another token: the envelope is the view of one of the users
+            // this connection has presented (it holds their tokens), or the
+            // spectators'.
+            client_init(&g_c, &g_slot);
+            FZ_CHECK(client_adopt_envelope(&g_c, f->blob.p, (int)f->blob.len) == CLIENT_OK);
+            int seat = g_c.view.my_seat;
+            const char *who = NULL;
+            for (int u = 0; seat >= 0 && u < N_USERS; u++)
+                if ((c->presented >> u & 1u) && strlen(UID[u]) == g_c.view.seats[seat].id_len &&
+                    memcmp(g_c.view.seats[seat].id, UID[u], g_c.view.seats[seat].id_len) == 0)
+                    who = UID[u];
+            FZ_CHECK(seat < 0 || who != NULL);
+            check_envelope(who, f->blob.p, f->blob.len, gid);
+        } else if (f->kind == NW_WS_VIEW || f->kind == NW_WS_CATCHUP) {
+            check_envelope(uid, f->blob.p, f->blob.len, gid);
+        }
         if (f->kind == NW_WS_CAST) {
             // A cast is only ever a push, and its topic says whose it is: the
             // seat's (gu-<game>-<uid>, the connection's own user) or the
@@ -710,10 +729,11 @@ static void step_raw(fz_in *in, int user) {
 
 // One client frame of `kind` (0 AUTH, 1 SUB, 2 UNSUB, 3 PING, 4 SUB_AS,
 // 5 raw bytes), encoded into buf: its length, or -1.
-static int build_frame(fz_in *in, int kind, uint8_t *buf, int cap) {
+static int build_frame(fz_in *in, int kind, uint8_t *buf, int cap, unsigned *presented) {
     NwFrame *f = calloc(1, sizeof *f);
     int user = fz_u8(in) % N_USERS;
     bool good = fz_u8(in) % 4 != 0;
+    if (good && (kind == 0 || kind == 4)) *presented |= 1u << user;
     switch (kind) {
     case 0: case 4:
         f->kind = kind == 0 ? NW_WS_AUTH : NW_WS_SUB_AS;
@@ -763,13 +783,13 @@ static void step_stream(fz_in *in) {
     static uint8_t buf[NW_BATCH_MAX * 4200 + 64];
     int n;
     if (kind < 6) {
-        n = build_frame(in, kind, buf, 4096);
+        n = build_frame(in, kind, buf, 4096, &c->presented);
     } else {
         // A page's subscriptions of one moment as one NW_WS_BATCH (#341).
         static uint8_t entries[NW_BATCH_MAX * 4200], one[4096];
         int k = 1 + fz_u8(in) % 5, at = 0;
         for (int i = 0; i < k; i++) {
-            int m = build_frame(in, fz_u8(in) % 6, one, sizeof one);
+            int m = build_frame(in, fz_u8(in) % 6, one, sizeof one, &c->presented);
             if (m < 0) continue;
             int w = nw_batch_add(one, m, entries + at, (int)sizeof entries - at);
             if (w > 0) at += w;
