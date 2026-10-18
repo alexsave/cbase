@@ -1,6 +1,6 @@
 // fz_event.c - the Lambda event decoder (json_surface.h cb_event_decode): a
-// Function URL request (payload 2.0), an API Gateway WebSocket event, the
-// scheduler's literal, the self-invoke literal. Everything in the event is
+// Function URL request (payload 2.0), an IoT Core custom authorizer request,
+// the scheduler's literal, the self-invoke literal. Everything in the event is
 // the caller's, the headers and the body most of all. Then what main_lambda
 // does with a decoded event short of handling it: the redaction for the log,
 // and the response envelope.
@@ -32,11 +32,10 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
             if (b) (void)strlen(b);
             break;
         }
-        case CB_EVENT_WS:
-            FZ_CHECK(memchr(ev.ws.route_key, 0, sizeof ev.ws.route_key));
-            FZ_CHECK(memchr(ev.ws.connection_id, 0, sizeof ev.ws.connection_id));
-            if (ev.ws.query) (void)strlen(ev.ws.query);
-            if (ev.ws.body_len) { volatile uint8_t x = ev.ws.body[ev.ws.body_len - 1]; (void)x; }
+        case CB_EVENT_IOT_AUTH:
+            FZ_CHECK(ev.iot.token_len < sizeof ev.iot.token && ev.iot.token[ev.iot.token_len] == 0);
+            FZ_CHECK(memchr(ev.iot.client_id, 0, sizeof ev.iot.client_id));
+            FZ_CHECK(memchr(ev.iot.origin, 0, sizeof ev.iot.origin));
             break;
         case CB_EVENT_BOT_DRIVE: {
             FZ_CHECK(memchr(ev.game_id, 0, sizeof ev.game_id));

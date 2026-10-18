@@ -1,20 +1,22 @@
 // fz_sequence.c - the server as a whole, stateful: random sequences of
 // requests from several users driven through cb_handle in-process (the
 // router, the auth, the functions and /v1 routes, the table operations, a
-// real SQLite store), the push stream's frames through cb_nw_on_frame, bot
+// real SQLite store), the push stream's MQTT packets through cb_mqtt_on_bytes, bot
 // drives, a clock that moves, and another writer that races the CAS. After
 // every step the invariants a player relies on are checked:
 //
 //   PRIVACY   no response or push that reaches a user carries another seat's
 //             hidden cards: every envelope a user is handed (create, meta,
-//             GET /v1/games, GET /v1/games/<id>, a stream VIEW or catch-up)
+//             GET /v1/games, GET /v1/games/<id>, a stream VIEW)
 //             is that user's own seat's view or the spectators', and in every
 //             board it holds (and every cast's boards and events) the other
 //             seats' hands are masked; the user's own hand is the stored one.
 //   AUTH      a request with no token, a malformed one, one signed with
 //             another secret or an expired one gets a refusal and nothing
-//             else; a connection that never presented a token hears nothing.
-//   TOPICS    a connection holds only topics its user may hear.
+//             else; a connection whose CONNECT was refused hears nothing,
+//             and a deleted account's token connects nothing.
+//   TOPICS    a connection holds only its own user's topics and the
+//             spectators', and a push reaches it only on one of those.
 //   VERSIONS  a game's stored version never goes back; no response or push
 //             names a version the store has not reached; each connection
 //             hears a game's versions in order.
@@ -31,8 +33,8 @@
 //
 // The input is a program: one byte picks a step, the next bytes its arguments
 // (fz.h fz_in). Structure where it pays: a move is the k-th legal move of the
-// acting seat on the stored board, an ask is built from parts, a stream frame
-// is a real NwFrame; and raw bytes in every one of those places too.
+// acting seat on the stored board, an ask is built from parts, a stream packet
+// is a real MQTT packet; and raw bytes in every one of those places too.
 #include "fz.h"
 
 #include "app/app_internal.h"
@@ -46,7 +48,7 @@
 #include "handler.h"
 #include "net/router.h"
 #include "realtime/realtime.h"
-#include "realtime/stream.h"
+#include "realtime/stream_mqtt.h"
 #include "store/store.h"
 #include "util/log.h"
 #include "util/uuid.h"
@@ -58,6 +60,7 @@
 #include "netwire.h"
 #include "table.h"
 
+#include "mqtt/mqtt.h"
 #include "rng.h"
 
 // ---- determinism: the process's randomness, replaced -------------------------------------
@@ -284,143 +287,134 @@ static void check_cast(const char *uid, const char *gid, const uint8_t *p, size_
 }
 
 // ---- the stream ---------------------------------------------------------------------------
+//
+// Each connection is the hub's own state (stream_mqtt.h cb_mqtt_conn), fed
+// MQTT packets through cb_mqtt_on_bytes as rt_local feeds a socket's; a
+// connection the hub ends is a fresh socket again at the next step.
 
 typedef struct {
-    cb_conn_row row;
-    int         user;               // whose token it last presented (-1 none) - the harness's own record
-    unsigned    presented;          // every user whose valid token this connection has presented
-    uint32_t    last_version[N_GAMES];
+    cb_mqtt_conn mq;
+    uint32_t     last_version[N_GAMES];
 } conn;
 
 static conn g_conn[N_CONNS];
 
-// A frame the server hands connection `c`: a reply (topic NULL), or a push to
-// a topic it holds.
+static int user_of(const char *uid) {
+    for (int u = 0; uid && u < N_USERS; u++)
+        if (strcmp(uid, UID[u]) == 0) return u;
+    return -1;
+}
+
+// A reply the hub sends connection `c`: whole MQTT packets of the kinds a
+// server sends, and never a PUBLISH (pushes come from the transport).
+static void reply_to(void *ud, const char *frame, size_t len) {
+    (void)ud;
+    MqttPacket p;
+    int k = mqtt_parse((const uint8_t *)frame, (int)len, 1 << 20, MQTT_FROM_SERVER, &p);
+    FZ_CHECK(k == (int)len);
+    FZ_CHECK(p.type == MQTT_CONNACK || p.type == MQTT_SUBACK || p.type == MQTT_UNSUBACK || p.type == MQTT_PINGRESP);
+    if (p.type == MQTT_CONNACK) FZ_CHECK(p.return_code == 0);   // a refusal is a close, never a CONNACK
+    if (p.type == MQTT_SUBACK)
+        for (int i = 0; i < p.n_items; i++) FZ_CHECK(p.items[i] == 0);   // nor a SUBACK's failure code
+}
+
+// A push connection `c` hears on `topic`: only an open connection hears, and
+// only what its subscriptions name; the topic says whose it is.
 static void conn_hears(conn *c, const uint8_t *msg, size_t len, const char *topic) {
+    FZ_CHECK(c->mq.state == CB_MQTT_OPEN);
+    const char *uid = c->mq.user_id;
+    int u = user_of(uid);
+    FZ_CHECK(u >= 0 && !g_deleted[u]);
     NwFrame *f = calloc(1, sizeof *f);
     FZ_CHECK(nw_frame_decode(msg, (int)len, f) == NW_OK);
-    if (f->kind == NW_WS_BATCH) {   // a batch's replies: each entry is heard in order
-        FZ_CHECK(topic == NULL);   // the server batches replies, never pushes
-        uint32_t pos = 0;
-        NwBlob one;
-        int r;
-        while ((r = nw_batch_next(f->blob, &pos, &one)) == 1) conn_hears(c, one.p, one.len, NULL);
-        FZ_CHECK(r == 0);
-        free(f);
-        return;
+    char gid[CB_GAME_ID_MAX + 1];
+    snprintf(gid, sizeof gid, "%.*s", (int)f->gid_len, f->gid);
+    int gi = game_index(f->gid, f->gid_len);
+    if (f->kind != NW_WS_CHAT) {
+        note_version(f->gid, f->gid_len, f->version);
+        if (getenv("FZ_TRACE")) fprintf(stderr, "  %s hears kind %d %s v%u (%u bytes) on %s\n", uid, f->kind, gid, f->version, f->blob.len, topic);
+        // A seat-gone view (no envelope) carries no version: the seat is gone.
+        if (gi >= 0 && !(f->kind == NW_WS_VIEW && f->blob.len == 0)) {
+            FZ_CHECK(f->version >= c->last_version[gi]);
+            c->last_version[gi] = f->version;
+        }
     }
-    const char *uid = c->row.user_id[0] ? c->row.user_id : NULL;
-    for (int u = 0; uid && u < N_USERS; u++) FZ_CHECK(!(g_deleted[u] && strcmp(uid, UID[u]) == 0));
-    if (f->kind == NW_WS_VIEW || f->kind == NW_WS_CATCHUP || f->kind == NW_WS_CAST || f->kind == NW_WS_CHAT) {
-        // Nothing about a game reaches a connection that is no one.
-        FZ_CHECK(uid != NULL);
-        char gid[CB_GAME_ID_MAX + 1];
-        snprintf(gid, sizeof gid, "%.*s", (int)f->gid_len, f->gid);
-        int gi = game_index(f->gid, f->gid_len);
-        if (f->kind != NW_WS_CHAT) {
-            note_version(f->gid, f->gid_len, f->version);
-            if (getenv("FZ_TRACE")) fprintf(stderr, "  conn %s hears kind %d %s v%u (%u bytes)%s%s\n", c->row.conn_id, f->kind, gid, f->version, f->blob.len, topic ? " on " : "", topic ? topic : "");
-            // A seat-gone view (no envelope) carries no version: the seat is gone.
-            if (gi >= 0 && !((f->kind == NW_WS_VIEW || f->kind == NW_WS_CATCHUP) && f->blob.len == 0)) {
-                FZ_CHECK(f->version >= c->last_version[gi]);
-                c->last_version[gi] = f->version;
-            }
-        }
-        if ((f->kind == NW_WS_VIEW || f->kind == NW_WS_CATCHUP) && topic == NULL && f->blob.len) {
-            // A reply answers the frame that asked, and a batch's replies go
-            // out together after its last frame, which may have presented
-            // another token: the envelope is the view of one of the users
-            // this connection has presented (it holds their tokens), or the
-            // spectators'.
-            client_init(&g_c, &g_slot);
-            FZ_CHECK(client_adopt_envelope(&g_c, f->blob.p, (int)f->blob.len) == CLIENT_OK);
-            int seat = g_c.view.my_seat;
-            const char *who = NULL;
-            for (int u = 0; seat >= 0 && u < N_USERS; u++)
-                if ((c->presented >> u & 1u) && strlen(UID[u]) == g_c.view.seats[seat].id_len &&
-                    memcmp(g_c.view.seats[seat].id, UID[u], g_c.view.seats[seat].id_len) == 0)
-                    who = UID[u];
-            FZ_CHECK(seat < 0 || who != NULL);
-            check_envelope(who, f->blob.p, f->blob.len, gid);
-        } else if (f->kind == NW_WS_VIEW || f->kind == NW_WS_CATCHUP) {
-            check_envelope(uid, f->blob.p, f->blob.len, gid);
-        }
-        if (f->kind == NW_WS_CAST) {
-            // A cast is only ever a push, and its topic says whose it is: the
-            // seat's (gu-<game>-<uid>, the connection's own user) or the
-            // spectators' (game-<game>), whatever the user's seat is now.
-            FZ_CHECK(topic != NULL);
-            bool seat_stream = strncmp(topic, "gu-", 3) == 0;
-            if (seat_stream) FZ_CHECK(strcmp(topic + 3 + strlen(gid) + 1, uid) == 0);
-            check_cast(seat_stream ? uid : NULL, gid, f->blob.p, f->blob.len);
-        }
+    char own[160];
+    if (f->kind == NW_WS_VIEW) {
+        snprintf(own, sizeof own, "u/%s/v", uid);
+        FZ_CHECK(strcmp(topic, own) == 0);
+    } else if (f->kind == NW_WS_CAST) {
+        snprintf(own, sizeof own, "u/%s/c/%s", uid, gid);
+        FZ_CHECK(strcmp(topic, own) == 0 || (strncmp(topic, "s/", 2) == 0 && strcmp(topic + 2, gid) == 0));
+    } else {
+        FZ_CHECK(f->kind == NW_WS_CHAT);
+        snprintf(own, sizeof own, "u/%s/m/%s", uid, gid);
+        FZ_CHECK(strcmp(topic, own) == 0);
     }
     free(f);
 }
 
-static void reply_to(void *ud, const char *frame, size_t len) { conn_hears(ud, (const uint8_t *)frame, len, NULL); }
-
-// What a topic says its listener must be.
+// What the policy lets a connection hold: its own user's topics and the
+// spectators'.
 static void check_topics(const conn *c) {
-    for (int i = 0; i < c->row.n_topics; i++) {
-        const char *t = c->row.topics[i];
-        FZ_CHECK(c->row.user_id[0]);
-        if (strncmp(t, "pv-", 3) == 0) FZ_CHECK(strcmp(t + 3, c->row.user_id) == 0);
-        else if (strncmp(t, "gu-", 3) == 0) {
-            const char *dash = strchr(t + 3, '-');
-            FZ_CHECK(dash && strcmp(dash + 1, c->row.user_id) == 0);
-        } else FZ_CHECK(strncmp(t, "game-", 5) == 0 || strncmp(t, "chat:", 5) == 0);
+    // A connection that is not open (refused, closed) hears nothing, whatever
+    // subscriptions it was left holding.
+    if (c->mq.state != CB_MQTT_OPEN) {
+        for (int i = 0; i < c->mq.n_subs; i++) FZ_CHECK(!cb_mqtt_hears(&c->mq, c->mq.subs[i], (int)strlen(c->mq.subs[i])));
+        return;
+    }
+    char own[64];
+    snprintf(own, sizeof own, "u/%s/", c->mq.user_id);
+    for (int i = 0; i < c->mq.n_subs; i++) {
+        const char *t = c->mq.subs[i];
+        FZ_CHECK(strncmp(t, own, strlen(own)) == 0 || strncmp(t, "s/", 2) == 0);
     }
 }
 
-// The transport: a publish reaches every connection holding the topic.
+// The transport: a publish names its target; what it carries must be that
+// target's to hear, and it reaches every open connection subscribed to it.
 static int g_pushes;
 static int fz_deliver(cb_rt *rt, const cb_rt_to *to, const uint8_t *frame, size_t len) {
     g_pushes++;
     char topic[CB_TOPIC_MAX];
-    if (cb_rt_nw_topic(to, topic, sizeof topic) < 0) {
-        // A member's own chat (realtime.h): only ever published to someone who sits there.
-        FZ_CHECK(to->family == CB_RT_CHAT && to->user_id && to->game_id);
-        char chat[CB_TOPIC_MAX];
-        snprintf(chat, sizeof chat, "chat:%s", to->game_id);
-        FZ_CHECK(cb_rt_may_hear(&g_ctx, to->user_id, chat) == 1);
-        return 0;
+    FZ_CHECK(cb_rt_topic(to, topic, sizeof topic) > 0);
+    NwFrame *f = calloc(1, sizeof *f);
+    FZ_CHECK(nw_frame_decode(frame, (int)len, f) == NW_OK);
+    char gid[CB_GAME_ID_MAX + 1];
+    snprintf(gid, sizeof gid, "%.*s", (int)f->gid_len, f->gid);
+    switch (to->family) {
+    case CB_RT_VIEWS:
+        FZ_CHECK(f->kind == NW_WS_VIEW && to->user_id);
+        check_envelope(to->user_id, f->blob.p, f->blob.len, gid);
+        break;
+    case CB_RT_SEAT:
+        FZ_CHECK(f->kind == NW_WS_CAST && to->user_id && strcmp(to->game_id, gid) == 0);
+        check_cast(to->user_id, gid, f->blob.p, f->blob.len);
+        break;
+    case CB_RT_WATCH:
+        FZ_CHECK(f->kind == NW_WS_CAST && !to->user_id && strcmp(to->game_id, gid) == 0);
+        check_cast(NULL, gid, f->blob.p, f->blob.len);
+        break;
+    case CB_RT_CHAT:
+        // A chat goes to a member's own topic, only ever someone who sits there.
+        FZ_CHECK(f->kind == NW_WS_CHAT && to->user_id && strcmp(to->game_id, gid) == 0);
+        FZ_CHECK(g_real->is_member(g_store, gid, to->user_id) == 1);
+        break;
+    default: FZ_CHECK(0);
     }
-    // Who the topic is for, from its name, whatever connection holds it.
-    if (strncmp(topic, "pv-", 3) == 0 || strncmp(topic, "gu-", 3) == 0 || strncmp(topic, "game-", 5) == 0) {
-        NwFrame *f = calloc(1, sizeof *f);
-        FZ_CHECK(nw_frame_decode(frame, (int)len, f) == NW_OK);
-        char gid[CB_GAME_ID_MAX + 1];
-        snprintf(gid, sizeof gid, "%.*s", (int)f->gid_len, f->gid);
-        if (topic[0] == 'p') {
-            FZ_CHECK(f->kind == NW_WS_VIEW);
-            check_envelope(topic + 3, f->blob.p, f->blob.len, gid);
-        } else if (topic[0] == 'g' && topic[1] == 'u') {
-            FZ_CHECK(f->kind == NW_WS_CAST);
-            const char *uid = topic + 3 + strlen(gid) + 1;
-            FZ_CHECK(strncmp(topic + 3, gid, strlen(gid)) == 0);
-            check_cast(uid, gid, f->blob.p, f->blob.len);
-        } else {
-            FZ_CHECK(f->kind == NW_WS_CAST);
-            check_cast(NULL, gid, f->blob.p, f->blob.len);
-        }
-        free(f);
-    }
+    free(f);
     for (int i = 0; i < N_CONNS; i++)
-        for (int k = 0; k < g_conn[i].row.n_topics; k++)
-            if (strcmp(g_conn[i].row.topics[k], topic) == 0) conn_hears(&g_conn[i], frame, len, topic);
+        if (g_conn[i].mq.state == CB_MQTT_OPEN && cb_mqtt_hears(&g_conn[i].mq, topic, (int)strlen(topic)))
+            conn_hears(&g_conn[i], frame, len, topic);
     return 0;
 }
 // Ends the user's connections, as rt_local closes their sockets.
-static void fz_forget(cb_rt *rt, const char *user_id, const cb_rt_to *targets, int n) {
+static void fz_forget(cb_rt *rt, const char *user_id) {
     for (int i = 0; i < N_CONNS; i++)
-        if (strcmp(g_conn[i].row.user_id, user_id) == 0) {
-            g_conn[i].row.user_id[0] = 0;
-            g_conn[i].row.n_topics = 0;
-        }
+        if (g_conn[i].mq.state == CB_MQTT_OPEN && strcmp(g_conn[i].mq.user_id, user_id) == 0) cb_mqtt_conn_init(&g_conn[i].mq);
 }
 static const cb_rt_transport FZ_T = { "fuzz", fz_deliver, NULL, fz_forget };
-static cb_rt g_rt = { &FZ_T, &g_ctx, NULL, NULL };
+static cb_rt g_rt = { &FZ_T, &g_ctx, NULL };
 
 static int g_kicks;
 // While a scan runs, the games it kicks.
@@ -736,99 +730,99 @@ static void step_raw(fz_in *in, int user) {
     if (g_status == 200 && (k == 0 || k == 2)) check_envelope(UID[user], g_body, g_len, NULL);
 }
 
-// One client frame of `kind` (0 AUTH, 1 SUB, 2 UNSUB, 3 PING, 4 SUB_AS,
-// 5 raw bytes), encoded into buf: its length, or -1.
-static int build_frame(fz_in *in, int kind, uint8_t *buf, int cap, unsigned *presented) {
-    NwFrame *f = calloc(1, sizeof *f);
+// A topic filter a client might name: its own topics, the spectators', another
+// user's, wildcards, and junk.
+static int build_filter(fz_in *in, int user, char *out, size_t cap) {
+    int other = (user + 1 + fz_u8(in) % (N_USERS - 1)) % N_USERS;
+    switch (fz_u8(in) % 10) {
+    case 0: return snprintf(out, cap, "u/%s/v", UID[user]);
+    case 1: return snprintf(out, cap, "u/%s/c/%s", UID[user], game_of(in));
+    case 2: return snprintf(out, cap, "u/%s/m/%s", UID[user], game_of(in));
+    case 3: return snprintf(out, cap, "s/%s", game_of(in));
+    case 4: return snprintf(out, cap, "u/%s/#", UID[user]);
+    case 5: return snprintf(out, cap, "u/%s/v", UID[other]);
+    case 6: return snprintf(out, cap, "u/%s/m/%s", UID[other], game_of(in));
+    case 7: return snprintf(out, cap, "%s", fz_u8(in) & 1 ? "u/+/v" : "#");
+    case 8: return snprintf(out, cap, "s/#");
+    default: {
+        size_t got;
+        const uint8_t *b = fz_bytes(in, fz_u8(in) % 64, &got);
+        if (got >= cap) got = cap - 1;
+        memcpy(out, b, got);
+        out[got] = 0;
+        return (int)got;
+    }
+    }
+}
+
+// One client packet of `kind` (0 CONNECT, 1 SUBSCRIBE, 2 UNSUBSCRIBE, 3
+// PINGREQ, 4 PUBLISH, 5 DISCONNECT, 6 raw bytes), written into buf: its
+// length, or -1.
+static int build_packet(fz_in *in, int kind, uint8_t *buf, int cap) {
     int user = fz_u8(in) % N_USERS;
-    bool good = fz_u8(in) % 4 != 0;
-    if (good && (kind == 0 || kind == 4)) *presented |= 1u << user;
     switch (kind) {
-    case 0: case 4:
-        f->kind = kind == 0 ? NW_WS_AUTH : NW_WS_SUB_AS;
-        snprintf(f->token, sizeof f->token, "%s", good ? g_token[user] : "not.a.token");
-        f->token_len = (uint16_t)strlen(f->token);
-        if (kind == 0) break;
-        /* fallthrough */
-    case 1: {
-        if (kind == 1) f->kind = NW_WS_SUB;
-        f->ref = fz_u16(in);
-        f->what = (uint8_t)(1 + fz_u8(in) % 3);
-        if (f->what != NW_SUB_GAMES || fz_u8(in) == 0) {
-            const char *gid = game_of(in);
-            f->gid_len = (uint8_t)strlen(gid);
-            memcpy(f->gid, gid, f->gid_len);
+    case 0: {
+        // A good token, a junk one, or none; under its own user's client id or another's.
+        int how = fz_u8(in) % 4;
+        const char *tok = how == 0 ? "not.a.token" : g_token[user];
+        int idu = fz_u8(in) % 4 == 0 ? (user + 1) % N_USERS : user;
+        char id[64];
+        int idn = snprintf(id, sizeof id, "%s-f%u", UID[idu], fz_u8(in));
+        return mqtt_write_connect(buf, cap, id, idn, (uint16_t)(fz_u8(in) % 3 * 60), how == 3 ? NULL : "token",
+                                  how == 3 ? 0 : 5, how == 3 ? NULL : (const uint8_t *)tok, how == 3 ? 0 : (int)strlen(tok));
+    }
+    case 1: case 2: {
+        char f[3][160];
+        MqttTopic t[3];
+        int n = 1 + fz_u8(in) % 3;
+        for (int i = 0; i < n; i++) {
+            t[i].len = build_filter(in, user, f[i], sizeof f[i]);
+            t[i].p = f[i];
+            t[i].qos = 0;
         }
-        f->version = fz_u8(in) % 8;
-        break;
+        uint16_t id = (uint16_t)(1 + fz_u16(in) % 65535);
+        return kind == 1 ? mqtt_write_subscribe(buf, cap, id, t, n) : mqtt_write_unsubscribe(buf, cap, id, t, n);
     }
-    case 2: {
-        f->kind = NW_WS_UNSUB;
-        f->what = (uint8_t)(1 + fz_u8(in) % 3);
-        const char *gid = game_of(in);
-        f->gid_len = (uint8_t)strlen(gid);
-        memcpy(f->gid, gid, f->gid_len);
-        break;
+    case 3: return mqtt_write_bare(buf, cap, MQTT_PINGREQ);
+    case 4: {
+        char t[160];
+        int tn = snprintf(t, sizeof t, "u/%s/v", UID[user]);
+        return mqtt_write_publish(buf, cap, t, tn, (const uint8_t *)"x", 1);
     }
-    case 3: f->kind = NW_WS_PING; break;
-    }
-    int n;
-    if (kind == 5) {
+    case 5: return mqtt_write_bare(buf, cap, MQTT_DISCONNECT);
+    default: {
         size_t got;
         const uint8_t *b = fz_bytes(in, fz_u8(in), &got);
         if ((int)got > cap) got = (size_t)cap;
         memcpy(buf, b, got);
-        n = (int)got;
-    } else {
-        n = nw_frame_encode(f, buf, cap);
+        return (int)got;
     }
-    free(f);
-    return n < 0 ? -1 : n;
+    }
 }
 
 static void step_stream(fz_in *in) {
     conn *c = &g_conn[fz_u8(in) % N_CONNS];
-    uint8_t kind = fz_u8(in) % 7;
-    static uint8_t buf[NW_BATCH_MAX * 4200 + 64];
-    int n;
-    if (kind < 6) {
-        n = build_frame(in, kind, buf, 4096, &c->presented);
-    } else {
-        // A page's subscriptions of one moment as one NW_WS_BATCH (#341).
-        static uint8_t entries[NW_BATCH_MAX * 4200], one[4096];
-        int k = 1 + fz_u8(in) % 5, at = 0;
-        for (int i = 0; i < k; i++) {
-            int m = build_frame(in, fz_u8(in) % 6, one, sizeof one, &c->presented);
-            if (m < 0) continue;
-            int w = nw_batch_add(one, m, entries + at, (int)sizeof entries - at);
-            if (w > 0) at += w;
-        }
-        NwFrame *f = calloc(1, sizeof *f);
-        f->kind = NW_WS_BATCH;
-        f->blob.p = entries;
-        f->blob.len = (uint32_t)at;
-        n = nw_frame_encode(f, buf, sizeof buf);
-        free(f);
+    static uint8_t buf[5 * 1024];
+    int n = 0;
+    // One packet, or several in one WebSocket message, as MQTT over WebSocket allows.
+    int k = fz_u8(in) % 4 == 0 ? 2 + fz_u8(in) % 3 : 1;
+    for (int i = 0; i < k; i++) {
+        int m = build_packet(in, fz_u8(in) % 7, buf + n, 1024);
+        if (m > 0) n += m;
     }
-    if (n < 0) return;
+    if (n <= 0) return;
     uint8_t *exact = fz_dup(buf, (size_t)n);
-    cb_conn_row before = c->row;
-    (void)cb_nw_on_frame(&g_ctx, &c->row, exact, (size_t)n, reply_to, c);
+    int was = c->mq.state;
+    int rc = cb_mqtt_on_bytes(&g_ctx, &c->mq, exact, (size_t)n, g_now, reply_to, c);
     free(exact);
-    FZ_CHECK(c->row.n_topics >= 0 && c->row.n_topics <= CB_CONN_TOPICS);
-    check_topics(c);
-    // A topic this frame added is one its user may hear now: a seat's stream
-    // and a game's chat only for a member of the game.
-    for (int i = 0; i < c->row.n_topics; i++) {
-        const char *t = c->row.topics[i];
-        bool had = false;
-        for (int k = 0; k < before.n_topics && !had; k++) had = strcmp(before.topics[k], t) == 0;
-        if (had) continue;
-        char gid[CB_GAME_ID_MAX + 1] = "";
-        if (strncmp(t, "gu-", 3) == 0) snprintf(gid, sizeof gid, "%.*s", (int)(strchr(t + 3, '-') - (t + 3)), t + 3);
-        if (strncmp(t, "chat:", 5) == 0) snprintf(gid, sizeof gid, "%s", t + 5);
-        if (gid[0]) FZ_CHECK(g_real->is_member(g_store, gid, c->row.user_id) == 1);
+    FZ_CHECK(c->mq.n_subs >= 0 && c->mq.n_subs <= CB_MQTT_SUBS);
+    if (c->mq.state == CB_MQTT_OPEN) {
+        int u = user_of(c->mq.user_id);
+        FZ_CHECK(u >= 0 && !g_deleted[u]);   // a deleted account's token connects nothing
+        if (was != CB_MQTT_OPEN) memset(c->last_version, 0, sizeof c->last_version);
     }
+    check_topics(c);
+    if (rc != CB_OK) cb_mqtt_conn_init(&c->mq);   // the socket is gone: the next step's is new
 }
 
 // ---- the bot scan ---------------------------------------------------------------------------
@@ -890,16 +884,12 @@ static void reset_world(uint64_t seed) {
     memset(g_deleted, 0, sizeof g_deleted);
     memset(g_kept_seat, 0, sizeof g_kept_seat);
     memset(g_conn, 0, sizeof g_conn);
-    for (int i = 0; i < N_CONNS; i++) {
-        snprintf(g_conn[i].row.conn_id, sizeof g_conn[i].row.conn_id, "conn%d", i);
-        g_conn[i].user = -1;
-    }
+    for (int i = 0; i < N_CONNS; i++) cb_mqtt_conn_init(&g_conn[i].mq);
     g_steal = 0;
     cb_row_cache_clear();
     static const char *const EMPTY[] = {
         "DELETE FROM chat_messages", "DELETE FROM game_snapshots", "DELETE FROM game_members", "DELETE FROM game_bots",
         "DELETE FROM games",         "DELETE FROM ratings",        "DELETE FROM refresh_tokens", "DELETE FROM users",
-        "DELETE FROM rt_conn_topics", "DELETE FROM rt_conns",
     };
     for (size_t i = 0; i < sizeof EMPTY / sizeof EMPTY[0]; i++)
         FZ_CHECK(g_real->admin_query(g_store, EMPTY[i], true, collect_nothing, NULL) >= 0);

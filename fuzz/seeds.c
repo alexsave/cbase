@@ -130,10 +130,11 @@ static void play_game(void) {
 // ---- the targets -----------------------------------------------------------------------------
 
 static void seeds_http(void) {
-    puts_("http", "get", "\x10GET /v1/games?since=3&proto=nw1 HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer abc.def.ghi\r\n\r\n");
+    puts_("http", "get", "\x10GET /v1/games?since=3 HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer abc.def.ghi\r\n\r\n");
     puts_("http", "post", "\x10POST /v1/action HTTP/1.1\r\nHost: x\r\nContent-Type: application/octet-stream\r\nContent-Length: 5\r\n\r\nhello");
-    puts_("http", "upgrade", "\xffGET /v1/stream?proto=nw1 HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
-                             "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n");
+    puts_("http", "upgrade", "\xffGET /mqtt HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                             "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n"
+                             "Sec-WebSocket-Protocol: mqtt\r\n\r\n");
     puts_("http", "chunked", "\x10POST /x HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n");
     puts_("http", "close10", "\x01HEAD / HTTP/1.0\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
 }
@@ -171,13 +172,10 @@ static void seeds_codec(void) {
     put1("codec", "isoz", 4, "2026-10-17T14:43:00Z", 20);
     put1("codec", "url", 5, "a%20b%2Fc", 9);
     put1("codec", "urlplus", 6, "a+b%3D", 6);
-    char t[256];
-    int n = nw_text_encode((const uint8_t *)"\x01\x2b", 2, t, sizeof t);
-    put1("codec", "nwtext", 7, t, (size_t)n);
 }
 
 static void seeds_query(void) {
-    puts_("query", "proto", "proto=nw1");
+    puts_("query", "token", "token=a.b.c");
     puts_("query", "many", "select=view&game_id=eq.abc&apikey=k%20y&a=b+c&empty=&flag");
     puts_("query", "bad", "a=%zz&b=%");
 }
@@ -188,13 +186,6 @@ static void seeds_event(void) {
           "{\"version\":\"2.0\",\"rawPath\":\"/v1/action\",\"rawQueryString\":\"a=1\",\"cookies\":[\"s=1\",\"t=2\"],"
           "\"headers\":{\"authorization\":\"Bearer x.y.z\",\"content-type\":\"application/octet-stream\"},"
           "\"requestContext\":{\"http\":{\"method\":\"POST\",\"path\":\"/v1/action\"}},\"body\":\"AQIDBA==\",\"isBase64Encoded\":true}");
-    puts_("event", "ws-connect",
-          "{\"requestContext\":{\"routeKey\":\"$connect\",\"connectionId\":\"abc=\",\"domainName\":\"x.execute-api.us-east-1.amazonaws.com\","
-          "\"stage\":\"prod\"},\"queryStringParameters\":{\"proto\":\"nw1\"},\"isBase64Encoded\":false}");
-    puts_("event", "ws-default",
-          "{\"requestContext\":{\"routeKey\":\"$default\",\"connectionId\":\"abc=\",\"domainName\":\"d\",\"stage\":\"prod\"},"
-          "\"body\":\"ASs=\",\"isBase64Encoded\":false}");
-    puts_("event", "ws-disconnect", "{\"requestContext\":{\"routeKey\":\"$disconnect\",\"connectionId\":\"abc=\",\"domainName\":\"d\",\"stage\":\"p\"}}");
     puts_("event", "scan", "\"scan\"");
     puts_("event", "bot-drive", "\"bot_drive:ab12cd\"");
     puts_("event", "eventbridge", "{\"source\":\"aws.events\",\"detail-type\":\"Scheduled Event\",\"detail\":{}}");
@@ -266,14 +257,6 @@ static void dynamo_items(void) {
     snprintf(c.user_id, sizeof c.user_id, U1);
     c.message = "hi \"there\"";
     dw_chat_put(&r, "cbase", &c); take(&r);
-    cb_conn_row cn;
-    memset(&cn, 0, sizeof cn);
-    snprintf(cn.conn_id, sizeof cn.conn_id, "conn=");
-    snprintf(cn.user_id, sizeof cn.user_id, U1);
-    cn.n_topics = 2;
-    snprintf(cn.topics[0], sizeof cn.topics[0], "pv-" U1);
-    snprintf(cn.topics[1], sizeof cn.topics[1], "game-ab12cd");
-    dw_conn_put(&r, "cbase", &cn, 0, 5000); take(&r);
     cb_rating_row rt;
     memset(&rt, 0, sizeof rt);
     snprintf(rt.user_id, sizeof rt.user_id, U1);
@@ -458,17 +441,9 @@ static void seeds_netwire(void) {
     put1("netwire", "chat", 0, out, (size_t)nw_request_encode(&q, out, sizeof out));
     static NwFrame f;
     memset(&f, 0, sizeof f);
-    f.kind = NW_WS_SUB_AS; f.ref = 3; f.what = NW_SUB_GAME; f.gid_len = 6; memcpy(f.gid, "ab12cd", 6); f.version = 2;
-    f.token_len = 5; memcpy(f.token, "a.b.c", 5);
-    int n = nw_frame_encode(&f, out, sizeof out);
-    put1("netwire", "sub-as", 0, out, (size_t)n);
-    char text[4096];
-    int tn = nw_text_encode(out, n, text, sizeof text);
-    put1("netwire", "sub-as-text", 1, text, (size_t)tn);
-    memset(&f, 0, sizeof f);
     f.kind = NW_WS_VIEW; f.gid_len = 6; memcpy(f.gid, "ab12cd", 6); f.version = 3;
     f.blob.p = g_env[0]; f.blob.len = (uint32_t)g_env_len[0];
-    put1("netwire", "ws-view", 0, out, (size_t)nw_frame_encode(&f, out, sizeof out));
+    put1("netwire", "ws-view", 1, out, (size_t)nw_frame_encode(&f, out, sizeof out));
     static NwSession s;
     memset(&s, 0, sizeof s);
     s.access_len = 5; memcpy(s.access, "a.b.c", 5); s.refresh_len = 4; memcpy(s.refresh, "rfsh", 4);
@@ -661,8 +636,10 @@ static void seeds_sequence(void) {
     n = 0;
     p[n++] = 7; p[n++] = 0; p[n++] = 0; p[n++] = 0;          // seed
     p[n++] = OP(0, 0);                                        // create
-    p[n++] = OP(0, 7); p[n++] = 0; p[n++] = 0; p[n++] = 0; p[n++] = 1;   // conn0 AUTH as user0 (good)
-    p[n++] = OP(0, 7); p[n++] = 0; p[n++] = 1; p[n++] = 0; p[n++] = 1; p[n++] = 5; p[n++] = 0; p[n++] = 1; p[n++] = 0; p[n++] = 0;  // SUB game
+    // conn0 CONNECT as user0: one packet, CONNECT, user 0, a good token, its own client id, keep-alive 60 s
+    p[n++] = OP(0, 7); p[n++] = 0; p[n++] = 1; p[n++] = 0; p[n++] = 0; p[n++] = 1; p[n++] = 1; p[n++] = 0; p[n++] = 1;
+    // conn0 SUBSCRIBE: user 0, one filter, its own seat's casts of game 0, packet id 1
+    p[n++] = OP(0, 7); p[n++] = 0; p[n++] = 1; p[n++] = 1; p[n++] = 0; p[n++] = 0; p[n++] = 0; p[n++] = 1; p[n++] = 0; p[n++] = 1; p[n++] = 0;
     p[n++] = OP(0, 1); p[n++] = 2; p[n++] = 0; p[n++] = 0;  // ADD_BOT
     p[n++] = OP(0, 1); p[n++] = 1; p[n++] = 0; p[n++] = 0;  // START
     for (int i = 0; i < 40; i++) {
@@ -681,12 +658,17 @@ static void seeds_sequence(void) {
     p[n++] = OP(1, 1); p[n++] = 0; p[n++] = 0; p[n++] = 0;  // user1 JOIN
     p[n++] = OP(0, 1); p[n++] = 1; p[n++] = 0; p[n++] = 0;  // user0 START
     p[n++] = OP(1, 1); p[n++] = 1; p[n++] = 0; p[n++] = 0;  // user1 START
-    p[n++] = OP(2, 7); p[n++] = 2; p[n++] = 4; p[n++] = 2; p[n++] = 1; p[n++] = 0; p[n++] = 0; p[n++] = 1; p[n++] = 0; p[n++] = 0; // conn2 SUB_AS user2 game (spectator)
-    p[n++] = OP(1, 7); p[n++] = 1; p[n++] = 4; p[n++] = 1; p[n++] = 1; p[n++] = 0; p[n++] = 0; p[n++] = 0; p[n++] = 1; p[n++] = 0;          // conn1 SUB_AS user1 games
-    // conn3, a batch of two: user1's SUB_AS of the game (seat stream), a ping
-    p[n++] = OP(1, 7); p[n++] = 3; p[n++] = 6; p[n++] = 1;
-    p[n++] = 4; p[n++] = 1; p[n++] = 1; p[n++] = 7; p[n++] = 0; p[n++] = 1; p[n++] = 0; p[n++] = 0;
-    p[n++] = 3; p[n++] = 1; p[n++] = 1;
+    // conn2: user2 CONNECTs and subscribes to the game's spectator casts (s/<game>)
+    p[n++] = OP(2, 7); p[n++] = 2; p[n++] = 1; p[n++] = 0; p[n++] = 2; p[n++] = 1; p[n++] = 1; p[n++] = 0; p[n++] = 1;
+    p[n++] = OP(2, 7); p[n++] = 2; p[n++] = 1; p[n++] = 1; p[n++] = 2; p[n++] = 0; p[n++] = 0; p[n++] = 3; p[n++] = 0; p[n++] = 1; p[n++] = 0;
+    // conn1: user1 CONNECTs and subscribes to its views (u/<user1>/v)
+    p[n++] = OP(1, 7); p[n++] = 1; p[n++] = 1; p[n++] = 0; p[n++] = 1; p[n++] = 1; p[n++] = 1; p[n++] = 0; p[n++] = 1;
+    p[n++] = OP(1, 7); p[n++] = 1; p[n++] = 1; p[n++] = 1; p[n++] = 1; p[n++] = 0; p[n++] = 0; p[n++] = 0; p[n++] = 1; p[n++] = 0;
+    // conn3, three packets in one message: user1's CONNECT, its seat's casts and chat, a PINGREQ
+    p[n++] = OP(1, 7); p[n++] = 3; p[n++] = 0; p[n++] = 1;
+    p[n++] = 0; p[n++] = 1; p[n++] = 1; p[n++] = 1; p[n++] = 7; p[n++] = 1;
+    p[n++] = 1; p[n++] = 1; p[n++] = 1; p[n++] = 0; p[n++] = 1; p[n++] = 0; p[n++] = 0; p[n++] = 2; p[n++] = 0; p[n++] = 2; p[n++] = 0;
+    p[n++] = 3; p[n++] = 1;
     p[n++] = OP(0, 10); p[n++] = 1;                         // a racing writer
     for (int i = 0; i < 40; i++) {
         p[n++] = OP(i & 1, 3); p[n++] = 0; p[n++] = 0; p[n++] = (uint8_t)(i * 3); p[n++] = 0;
@@ -764,6 +746,7 @@ static void seeds_mqtt(void) {
              "\"clientId\":\"%s\"}},\"connectionMetadata\":{\"id\":\"c1\"}}",
              pw64, id);
     puts_("iot_auth", "connect", ev);
+    puts_("event", "iot-connect", ev);   // the Lambda's own decoder takes the same event
     snprintf(ev, sizeof ev, "{\"protocolData\":{\"http\":{\"headers\":{},\"queryString\":\"?token=%s\"}}}", tok);
     puts_("iot_auth", "query-token", ev);
 }

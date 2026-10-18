@@ -3,13 +3,13 @@
 //   build/test/smoke_matrix build/cbase
 //
 // smoke_authz.c pins one row per authorization rule as each is made; this one
-// is exhaustive the other way: every identity against every route and frame
-// kind, with every body decoded, plus a whole game and an account deletion.
+// is exhaustive the other way: every identity against every route and stream
+// packet, with every body decoded, plus a whole game and an account deletion.
 //
 // The store is the in-RAM one (CBASE_DB=:memory:), or the server's DynamoDB
 // table under CBASE_STORE=dynamo (`make check-dynamo`). Three parts:
 //
-// THE AUTHORIZATION MATRIX. Every route and every stream frame kind, asked by
+// THE AUTHORIZATION MATRIX. Every route and every stream packet, asked by
 // every identity: no token, a token that is not one, an expired one, one
 // signed with another secret, one with alg "none", one whose payload was
 // swapped for another user's under the first's signature, the admin token sent
@@ -56,6 +56,7 @@
 #include "evwire.h"
 #include "legal.h"
 #include "netwire.h"
+#include "mqtt/mqtt.h"
 #include "table.h"
 #include "view.h"
 
@@ -343,104 +344,103 @@ static bool cast_hides(const uint8_t *p, int len, int viewer, const char *what) 
 }
 
 // ---- the stream ---------------------------------------------------------------------------
+//
+// Each socket speaks MQTT on /mqtt (shared/c/mqtt), as the clients do against
+// IoT Core: a CONNECT with the access token as its password, SUBSCRIBEs, and
+// PUBLISHes in whose payload is a netwire.h frame. Every refusal closes the
+// socket with no CONNACK or SUBACK, as IoT Core does.
 
 typedef struct {
     const char *who;
     int  fd;
-    int  seat;            // what an envelope or cast to this socket must be for (-1 spectator)
+    char uid[64];         // the user it CONNECTed as
+    int  seat;            // what a seat cast to this socket must be for (-1 spectator)
     char gid[16];         // the game it may hear about ("" none)
     bool may_chat;
-    int  n_ack, n_ack_refused, last_why, last_seated;
+    int  n_connack, connack_rc;
+    int  n_suback, last_code;   // SUBACKs, and the last one's code
+    int  n_unsuback;
     int  n_view, n_cast, n_chat, n_pong, n_other_game;
-    bool leak;            // a frame it should never have had
+    bool leak;            // a packet it should never have had
     bool closed;          // the server closed it (a CLOSE frame)
     int  close_code;
-    int  n_batch, n_batched;   // NW_WS_BATCH messages, and the entries they held
-    int  whys[8], seateds[8];  // the first eight ACKs' why and seated, in order
-    uint32_t last_cast_v;
+    uint16_t next_id;
 } sock;
 
-static void ws_frame(sock *s, const NwFrame *f) {
-    uint8_t raw[NW_ACCESS_MAX + 128];
-    int n = nw_frame_encode(f, raw, sizeof raw);
+static void mq_send(sock *s, const uint8_t *b, int n) {
     T_CHECK(n > 0);
-    if (n > 0) T_EQ_INT(tc_ws_send(s->fd, CB_WS_OP_BIN, raw, (size_t)n), 0);
+    if (n > 0) T_EQ_INT(tc_ws_send(s->fd, CB_WS_OP_BIN, b, (size_t)n), 0);
 }
 
-static void ws_sub(sock *s, int kind, const char *token, int what, const char *gid, uint16_t ref) {
-    static NwFrame f;
-    memset(&f, 0, sizeof f);
-    f.kind = (uint8_t)kind;
-    f.ref = ref;
-    f.what = (uint8_t)what;
-    if (gid) { f.gid_len = (uint8_t)strlen(gid); memcpy(f.gid, gid, f.gid_len); }
-    if (token) { f.token_len = (uint16_t)strlen(token); memcpy(f.token, token, f.token_len); }
-    ws_frame(s, &f);
-}
-
-// Judges one server message; a batch (NW_WS_BATCH) is each of its entries
-// judged alike, and must hold none of its own kind.
-static void ws_judge(sock *s, const uint8_t *p, int len, bool in_batch) {
+// Judges one PUBLISH by its topic: the user's own views, own seat's casts and
+// own chat, or a game's spectator casts; anything else, or another user's or
+// game's, is a leak.
+static void judge_publish(sock *s, const MqttPacket *m) {
     NwFrame *f = calloc(1, sizeof *f);
     if (!f) return;
-    if (nw_frame_decode(p, len, f) != NW_OK) { s->leak = true; free(f); return; }
-    char gid[NW_GID_MAX + 1];
+    if (m->qos != 0 || nw_frame_decode(m->payload, m->payload_len, f) != NW_OK) { s->leak = true; free(f); return; }
+    char gid[NW_GID_MAX + 1], topic[MQTT_TOPIC_MAX + 1], own[160];
     snprintf(gid, sizeof gid, "%.*s", (int)f->gid_len, f->gid);
+    snprintf(topic, sizeof topic, "%.*s", (int)m->topic_len, (const char *)m->topic);
     char what[96];
     snprintf(what, sizeof what, "%s's %s", s->who, f->kind == NW_WS_VIEW ? "view push" : "cast");
-    switch (f->kind) {
-    case NW_WS_BATCH: {
-        if (in_batch) { s->leak = true; break; }
-        s->n_batch++;
-        NwBlob all = f->blob, one;
-        uint32_t pos = 0;
-        int rc;
-        while ((rc = nw_batch_next(all, &pos, &one)) == 1) { s->n_batched++; ws_judge(s, one.p, (int)one.len, true); }
-        if (rc < 0) s->leak = true;
-        break;
-    }
-    case NW_WS_ACK:
-        s->n_ack++;
-        s->last_why = f->why;
-        s->last_seated = f->seated;
-        if (s->n_ack <= 8) { s->whys[s->n_ack - 1] = f->why; s->seateds[s->n_ack - 1] = f->seated; }
-        if (f->why) s->n_ack_refused++;
-        break;
-    case NW_WS_PONG: s->n_pong++; break;
-    case NW_WS_CATCHUP:   // a subscription's catch-up: the caller's view, as a VIEW is
-    case NW_WS_VIEW:
+    bool game_ok = s->gid[0] && strcmp(gid, s->gid) == 0;
+    if (f->kind == NW_WS_VIEW) {
         s->n_view++;
-        if (!s->gid[0] || strcmp(gid, s->gid) != 0) { s->n_other_game++; s->leak = true; break; }
-        if (f->blob.len && !envelope_hides(f->blob.p, (int)f->blob.len, s->seat, NULL, NULL, NULL, what)) s->leak = true;
-        break;
-    case NW_WS_CAST:
+        snprintf(own, sizeof own, "u/%s/v", s->uid);
+        if (strcmp(topic, own) != 0) s->leak = true;
+        else if (!game_ok) { s->n_other_game++; s->leak = true; }
+        else if (f->blob.len && !envelope_hides(f->blob.p, (int)f->blob.len, s->seat, NULL, NULL, NULL, what)) s->leak = true;
+    } else if (f->kind == NW_WS_CAST) {
         s->n_cast++;
-        if (!s->gid[0] || strcmp(gid, s->gid) != 0) { s->n_other_game++; s->leak = true; break; }
-        if (!cast_hides(f->blob.p, (int)f->blob.len, s->seat, what)) s->leak = true;
-        s->last_cast_v = f->version;
-        break;
-    case NW_WS_CHAT:
+        char spect[NW_GID_MAX + 8];
+        snprintf(own, sizeof own, "u/%s/c/%s", s->uid, gid);
+        snprintf(spect, sizeof spect, "s/%s", gid);
+        int viewer = strcmp(topic, own) == 0 ? s->seat : strcmp(topic, spect) == 0 ? -1 : -2;
+        if (viewer == -2) s->leak = true;
+        else if (!game_ok) { s->n_other_game++; s->leak = true; }
+        else if (!cast_hides(f->blob.p, (int)f->blob.len, viewer, what)) s->leak = true;
+    } else if (f->kind == NW_WS_CHAT) {
         s->n_chat++;
-        if (!s->may_chat || strcmp(gid, s->gid) != 0) s->leak = true;
-        break;
-    default: s->leak = true; break;
+        snprintf(own, sizeof own, "u/%s/m/%s", s->uid, gid);
+        if (strcmp(topic, own) != 0 || !s->may_chat || !game_ok) s->leak = true;
+    } else {
+        s->leak = true;
     }
     free(f);
 }
 
-// Reads what arrives within timeout_ms (then 50 ms between frames), judging each.
+static void judge(sock *s, const uint8_t *p, int len) {
+    MqttPacket m;
+    int at = 0, k = 0;
+    while (at < len && (k = mqtt_parse(p + at, len - at, 1 << 20, MQTT_FROM_SERVER, &m)) > 0) {
+        at += k;
+        switch (m.type) {
+        case MQTT_CONNACK: s->n_connack++; s->connack_rc = m.return_code; break;
+        case MQTT_SUBACK: s->n_suback++; s->last_code = m.n_items ? m.items[0] : -1; break;
+        case MQTT_UNSUBACK: s->n_unsuback++; break;
+        case MQTT_PINGRESP: s->n_pong++; break;
+        case MQTT_PUBLISH: judge_publish(s, &m); break;
+        default: s->leak = true; break;
+        }
+    }
+    if (at != len) s->leak = true;   // a message that is not whole packets
+}
+
+// Reads what arrives within timeout_ms (then 50 ms between messages), judging each.
 static void ws_pump(sock *s, int timeout_ms) {
     cb_buf b;
     cb_buf_init(&b);
     int op;
-    while (s->fd >= 0 && (op = tc_ws_recv(s->fd, timeout_ms, &b)) >= 0) {
+    while (s->fd >= 0 && !s->closed && (op = tc_ws_recv(s->fd, timeout_ms, &b)) >= 0) {
         timeout_ms = 50;
         if (op == CB_WS_OP_CLOSE) {
             s->closed = true;
             s->close_code = b.len >= 2 ? (b.p[0] << 8 | b.p[1]) : 0;
             break;
         }
-        ws_judge(s, b.p, (int)b.len, false);
+        if (op != CB_WS_OP_BIN) s->leak = true;
+        else judge(s, b.p, (int)b.len);
         cb_buf_reset(&b);
     }
     cb_buf_free(&b);
@@ -452,16 +452,58 @@ static void ws_open(sock *s, const char *who, int seat, const char *gid, bool ma
     s->seat = seat;
     snprintf(s->gid, sizeof s->gid, "%s", gid ? gid : "");
     s->may_chat = may_chat;
-    s->fd = tc_ws_open(g_port, "/v1/stream?proto=nw1", NULL);
+    s->connack_rc = -1;
+    s->last_code = -1;
+    s->fd = tc_ws_open(g_port, "/mqtt", "Sec-WebSocket-Protocol: mqtt\r\n");
     T_CHECK(s->fd >= 0);
 }
 
-// Sends one subscription and waits for its ACK (other frames are judged on the way).
-static void ws_ask(sock *s, int kind, const char *token, int what, const char *gid) {
-    int before = s->n_ack;
-    ws_sub(s, kind, token, what, gid, (uint16_t)(before + 1));
+// CONNECT as `uid` (its client id) with `token` as the password (NULL: none);
+// true once accepted. A refusal is a close with no CONNACK.
+static bool mq_connect(sock *s, const char *uid, const char *token) {
+    static uint8_t b[NW_ACCESS_MAX + 256];
+    char id[96];
+    int idn = snprintf(id, sizeof id, "%s-m%d", uid, s->fd);
+    snprintf(s->uid, sizeof s->uid, "%s", uid);
+    int n = mqtt_write_connect(b, sizeof b, id, idn, 60, token ? "token" : NULL, token ? 5 : 0,
+                               (const uint8_t *)token, token ? (int)strlen(token) : 0);
+    int before = s->n_connack;
+    mq_send(s, b, n);
     int64_t t0 = mono_ms();
-    while (s->n_ack == before && mono_ms() - t0 < 5000) ws_pump(s, 200);
+    while (s->n_connack == before && !s->closed && mono_ms() - t0 < 5000) ws_pump(s, 200);
+    return s->n_connack > before && s->connack_rc == 0;
+}
+
+// One SUBSCRIBE: its SUBACK code, or -1 when the server closed the socket instead.
+static int mq_sub(sock *s, const char *filter) {
+    uint8_t b[300];
+    MqttTopic t = { filter, (int)strlen(filter), 0 };
+    int before = s->n_suback;
+    mq_send(s, b, mqtt_write_subscribe(b, sizeof b, ++s->next_id, &t, 1));
+    int64_t t0 = mono_ms();
+    while (s->n_suback == before && !s->closed && mono_ms() - t0 < 5000) ws_pump(s, 200);
+    return s->n_suback > before ? s->last_code : -1;
+}
+
+// What the client library subscribes for a hold (netclient.c topics_of):
+// NW_SUB_GAMES the views, NW_SUB_GAME the seat's casts and the spectators',
+// NW_SUB_CHAT the chat. 0 when every filter was granted.
+static int mq_hold(sock *s, int what, const char *gid) {
+    char t[160];
+    int bad = 0;
+    if (what == NW_SUB_GAMES) {
+        snprintf(t, sizeof t, "u/%s/v", s->uid);
+        bad += mq_sub(s, t) != 0;
+    } else if (what == NW_SUB_GAME) {
+        snprintf(t, sizeof t, "u/%s/c/%s", s->uid, gid);
+        bad += mq_sub(s, t) != 0;
+        snprintf(t, sizeof t, "s/%s", gid);
+        bad += mq_sub(s, t) != 0;
+    } else {
+        snprintf(t, sizeof t, "u/%s/m/%s", s->uid, gid);
+        bad += mq_sub(s, t) != 0;
+    }
+    return bad;
 }
 
 // ---- the game ------------------------------------------------------------------------------
@@ -789,212 +831,139 @@ static void console_takes_only_the_admin_token(void) {
     T_CHECK(memmem(g_a.body, (size_t)g_a.len, A.id, strlen(A.id)) != NULL);
 }
 
-// The stream: every frame kind, from every identity.
-// One NW_WS_BATCH of the n frames given, as a client sends a moment's
-// subscriptions: false when it does not encode (more than NW_BATCH_MAX).
-static bool ws_send_batch(sock *s, const NwFrame *fs, int n) {
-    static uint8_t entries[NW_BATCH_MAX * 2 + 4][NW_ACCESS_MAX + 96];
-    static uint8_t list[(NW_BATCH_MAX + 2) * (NW_ACCESS_MAX + 128)];
-    int at = 0;
-    for (int i = 0; i < n; i++) {
-        int fn = nw_frame_encode(&fs[i], entries[i], sizeof entries[i]);
-        int k = fn > 0 ? nw_batch_add(entries[i], fn, list + at, (int)sizeof list - at) : -1;
-        if (k < 0) return false;
-        at += k;
-    }
-    static NwFrame b;
-    memset(&b, 0, sizeof b);
-    b.kind = NW_WS_BATCH;
-    b.blob.p = list;
-    b.blob.len = (uint32_t)at;
-    static uint8_t raw[sizeof list + 64];
-    int rn = nw_frame_encode(&b, raw, sizeof raw);
-    if (rn <= 0) return false;
-    return tc_ws_send(s->fd, CB_WS_OP_BIN, raw, (size_t)rn) == 0;
-}
-
-static NwFrame sub_frame(int kind, const char *token, int what, const char *gid, uint16_t ref) {
-    NwFrame f;
-    memset(&f, 0, sizeof f);
-    f.kind = (uint8_t)kind;
-    f.ref = ref;
-    f.what = (uint8_t)what;
-    if (gid) { f.gid_len = (uint8_t)strlen(gid); memcpy(f.gid, gid, f.gid_len); }
-    if (token) { f.token_len = (uint16_t)strlen(token); memcpy(f.token, token, f.token_len); }
-    return f;
+// The stream: every packet a client may send, from every identity.
+static void chat_from_b(const char *msg) {
+    NwRequest q;
+    memset(&q, 0, sizeof q);
+    q.kind = NW_CHAT_SEND;
+    q.message_len = (uint16_t)strlen(msg);
+    memcpy(q.message, msg, q.message_len);
+    uint8_t body[64];
+    int n = nw_request_encode(&q, body, sizeof body);
+    char path[48];
+    snprintf(path, sizeof path, "/v1/chat/%s", G);
+    T_EQ_INT(http("POST", path, B.auth, body, (size_t)n, OCTETS), 204);
 }
 
 static void stream_frames(void) {
     sock s;
-    // A bare SUB before any AUTH: refused AUTH.
-    for (int what = NW_SUB_GAMES; what <= NW_SUB_CHAT; what++) {
-        ws_open(&s, "nobody", -1, "", false);
-        ws_ask(&s, NW_WS_SUB, NULL, what, what == NW_SUB_GAMES ? NULL : G);
-        g_cells++;
-        T_EQ_INT(s.last_why, ASK_WHY_AUTH);
-        close(s.fd);
-    }
-    // SUB_AS and AUTH-then-SUB with each bad token: AUTH, for every subscription kind.
+    uint8_t b[512];
+    // A SUBSCRIBE before any CONNECT: closed, nothing answered.
+    ws_open(&s, "nobody", -1, "", false);
+    MqttTopic early = { "s/abc123", 8, 0 };
+    mq_send(&s, b, mqtt_write_subscribe(b, sizeof b, 1, &early, 1));
+    ws_pump(&s, 1000);
+    g_cells++;
+    T_CHECK(s.closed);
+    T_EQ_INT(s.n_suback + s.n_connack, 0);
+    close(s.fd);
+    // A CONNECT with each bad token as its password, and with it in the URL:
+    // closed, no CONNACK.
     for (int i = 0; i < N_BAD; i++) {
         const char *tok = g_bad[i][0] && strncmp(g_bad[i], "Bearer ", 7) == 0 ? g_bad[i] + 7 : g_bad[i];
-        for (int what = NW_SUB_GAMES; what <= NW_SUB_CHAT; what++) {
-            ws_open(&s, BAD_NAMES[i], -1, "", false);
-            ws_ask(&s, NW_WS_SUB_AS, tok, what, what == NW_SUB_GAMES ? NULL : G);
-            g_cells++;
-            if (s.last_why != ASK_WHY_AUTH) fprintf(stderr, "stream SUB_AS %d as %s: why %d\n", what, BAD_NAMES[i], s.last_why);
-            T_EQ_INT(s.last_why, ASK_WHY_AUTH);
-            ws_sub(&s, NW_WS_AUTH, tok, 0, NULL, 0);
-            ws_ask(&s, NW_WS_SUB, NULL, what, what == NW_SUB_GAMES ? NULL : G);
-            g_cells++;
-            T_EQ_INT(s.last_why, ASK_WHY_AUTH);
+        ws_open(&s, BAD_NAMES[i], -1, "", false);
+        g_cells++;
+        T_CHECK(!mq_connect(&s, A.id, tok[0] ? tok : NULL));
+        T_CHECK(s.closed);
+        T_EQ_INT(s.n_connack, 0);
+        close(s.fd);
+        if (!tok[0]) continue;
+        char enc[3 * NW_ACCESS_MAX + 1];
+        char path[sizeof enc + 16];
+        size_t e = 0;
+        for (const char *c = tok; *c && e + 4 < sizeof enc; c++)
+            e += (size_t)snprintf(enc + e, sizeof enc - e, (*c >= 'A' && *c <= 'Z') || (*c >= 'a' && *c <= 'z') || (*c >= '0' && *c <= '9') || *c == '.' || *c == '-' || *c == '_' ? "%c" : "%%%02X", (unsigned char)*c);
+        snprintf(path, sizeof path, "/mqtt?token=%s", enc);
+        memset(&s, 0, sizeof s);
+        s.who = BAD_NAMES[i];
+        s.connack_rc = -1;
+        s.fd = tc_ws_open(g_port, path, "Sec-WebSocket-Protocol: mqtt\r\n");
+        g_cells++;
+        if (s.fd >= 0) {
+            T_CHECK(!mq_connect(&s, A.id, NULL));
+            T_EQ_INT(s.n_connack, 0);
             close(s.fd);
         }
     }
-    // Valid users: games feed always theirs; a game: seated hears its seat, anyone else the spectators';
-    // chat: members only.
+    // A good token under another user's client id: closed.
+    ws_open(&s, "another's client id", -1, "", false);
+    g_cells++;
+    T_CHECK(!mq_connect(&s, D.id, A.auth + 7));
+    close(s.fd);
+    // Valid users: their own topics, and any game's spectators', are granted;
+    // what they hear is judged by topic. Chat reaches members only.
     struct { user *u; const char *who; int seat; bool member; } ids[] = {
         { &A, "host", 0, true }, { &B, "seated", 1, true }, { &C, "spectator", -1, false }, { &D, "another user", -1, false },
     };
     for (size_t i = 0; i < sizeof ids / sizeof ids[0]; i++) {
         const char *tok = ids[i].u->auth + 7;
         ws_open(&s, ids[i].who, ids[i].seat, G, ids[i].member);
-        ws_ask(&s, NW_WS_SUB_AS, tok, NW_SUB_GAMES, NULL);
         g_cells++;
-        T_EQ_INT(s.last_why, 0);
-        ws_ask(&s, NW_WS_SUB_AS, tok, NW_SUB_GAME, G);
+        T_CHECK(mq_connect(&s, ids[i].u->id, tok));
+        g_cells += 3;
+        T_EQ_INT(mq_hold(&s, NW_SUB_GAMES, NULL), 0);
+        T_EQ_INT(mq_hold(&s, NW_SUB_GAME, G), 0);
+        T_EQ_INT(mq_hold(&s, NW_SUB_CHAT, G), 0);
         g_cells++;
-        T_EQ_INT(s.last_why, 0);
-        T_EQ_INT(s.last_seated, ids[i].member ? 1 : 0);
-        ws_ask(&s, NW_WS_SUB_AS, tok, NW_SUB_CHAT, G);
+        char all[96];
+        snprintf(all, sizeof all, "u/%s/#", ids[i].u->id);
+        T_EQ_INT(mq_sub(&s, all), 0);   // everything of its own
+        // B chats: a member hears it on its own topic, nobody else at all.
+        chat_from_b(ids[i].member ? "member" : "outsider");
+        ws_pump(&s, 1000);
         g_cells++;
-        T_EQ_INT(s.last_why, ids[i].member ? 0 : ASK_WHY_FORBIDDEN);
-        // A malformed game id and a games feed with a game id: MALFORMED.
-        ws_ask(&s, NW_WS_SUB_AS, tok, NW_SUB_GAME, "../x");
-        g_cells++;
-        T_EQ_INT(s.last_why, ASK_WHY_MALFORMED);
-        ws_ask(&s, NW_WS_SUB_AS, tok, NW_SUB_GAMES, G);
-        g_cells++;
-        T_EQ_INT(s.last_why, ASK_WHY_MALFORMED);
-        // PING: PONG. UNSUB: nothing back.
-        ws_sub(&s, NW_WS_PING, NULL, 0, NULL, 0);
-        ws_sub(&s, NW_WS_UNSUB, NULL, NW_SUB_GAME, G, 0);
+        // Two filters match it (u/<id>/m/<game> and u/<id>/#): the hub sends it
+        // once, IoT Core may send a copy per match, so "at least once".
+        T_CHECK(ids[i].member ? s.n_chat >= 1 : s.n_chat == 0);
+        // PINGREQ: PINGRESP. UNSUBSCRIBE: UNSUBACK.
+        mq_send(&s, b, mqtt_write_bare(b, sizeof b, MQTT_PINGREQ));
+        MqttTopic un = { all, (int)strlen(all), 0 };
+        mq_send(&s, b, mqtt_write_unsubscribe(b, sizeof b, 99, &un, 1));
         ws_pump(&s, 500);
         g_cells++;
         T_EQ_INT(s.n_pong, 1);
+        T_EQ_INT(s.n_unsuback, 1);
         T_CHECK(!s.leak);
+        T_CHECK(!s.closed);
         close(s.fd);
     }
-    // A server's frame sent by a client ends the socket, and nothing is answered.
-    ws_open(&s, "server frame", -1, "", false);
-    static NwFrame f;
-    memset(&f, 0, sizeof f);
-    f.kind = NW_WS_ACK;
-    ws_frame(&s, &f);
-    ws_pump(&s, 1000);
-    g_cells++;
-    T_EQ_INT(s.n_ack + s.n_pong + s.n_view + s.n_cast + s.n_chat, 0);
-    close(s.fd);
-    // NW_WS_BATCH: a moment's subscriptions in one message, answered as one
-    // batch of ACKs in order; every identity, every subscription kind.
-    {
-        static NwFrame fs[NW_BATCH_MAX + 1];
-        for (int i = 0; i < N_BAD; i++) {
-            const char *tok = g_bad[i][0] && strncmp(g_bad[i], "Bearer ", 7) == 0 ? g_bad[i] + 7 : g_bad[i];
-            ws_open(&s, BAD_NAMES[i], -1, "", false);
-            fs[0] = sub_frame(NW_WS_SUB_AS, tok, NW_SUB_GAMES, NULL, 1);
-            fs[1] = sub_frame(NW_WS_SUB_AS, tok, NW_SUB_GAME, G, 2);
-            fs[2] = sub_frame(NW_WS_SUB_AS, tok, NW_SUB_CHAT, G, 3);
-            T_CHECK(ws_send_batch(&s, fs, 3));
-            ws_pump(&s, 2000);
-            g_cells += 3;
-            T_EQ_INT(s.n_batch, 1);
-            T_EQ_INT(s.n_ack, 3);
-            for (int k = 0; k < 3; k++) T_EQ_INT(s.whys[k], ASK_WHY_AUTH);
-            T_CHECK(!s.leak);
-            close(s.fd);
-        }
-        struct { user *u; const char *who; bool member; } bids[] = {
-            { &A, "host", true }, { &B, "seated", true }, { &C, "spectator", false }, { &D, "another user", false },
-        };
-        for (size_t i = 0; i < sizeof bids / sizeof bids[0]; i++) {
-            const char *tok = bids[i].u->auth + 7;
-            ws_open(&s, bids[i].who, bids[i].member ? (bids[i].u == &A ? 0 : 1) : -1, G, bids[i].member);
-            fs[0] = sub_frame(NW_WS_SUB_AS, tok, NW_SUB_GAMES, NULL, 1);
-            fs[1] = sub_frame(NW_WS_SUB_AS, tok, NW_SUB_GAME, G, 2);
-            fs[2] = sub_frame(NW_WS_SUB_AS, tok, NW_SUB_CHAT, G, 3);
-            fs[3] = sub_frame(NW_WS_PING, NULL, 0, NULL, 0);
-            T_CHECK(ws_send_batch(&s, fs, 4));
-            ws_pump(&s, 2000);
-            g_cells += 4;
-            T_EQ_INT(s.n_ack, 3);
-            T_EQ_INT(s.whys[0], 0);
-            T_EQ_INT(s.whys[1], 0);
-            T_EQ_INT(s.seateds[1], bids[i].member ? 1 : 0);
-            T_EQ_INT(s.whys[2], bids[i].member ? 0 : ASK_WHY_FORBIDDEN);
-            T_EQ_INT(s.n_pong, 1);
-            T_CHECK(!s.leak);
-            close(s.fd);
-        }
-        // A batch holding a server's frame: none of it runs, the socket ends.
-        ws_open(&s, "server frame in a batch", -1, "", false);
-        fs[0] = sub_frame(NW_WS_SUB_AS, D.auth + 7, NW_SUB_GAMES, NULL, 1);
-        fs[1] = sub_frame(NW_WS_ACK, NULL, 0, NULL, 9);
-        T_CHECK(ws_send_batch(&s, fs, 2));
-        ws_pump(&s, 2000);
+    // What no user may subscribe to: another user's topics, a wildcard over
+    // users, everything, a level no topic has. Each closes the socket.
+    char other_v[96], other_all[96], other_chat[96];
+    snprintf(other_v, sizeof other_v, "u/%s/v", A.id);
+    snprintf(other_all, sizeof other_all, "u/%s/#", A.id);
+    snprintf(other_chat, sizeof other_chat, "u/%s/m/%s", A.id, G);
+    const char *forbidden[] = { other_v, other_all, other_chat, "u/+/v", "u/#", "#", "+/#", "x/y" };
+    for (size_t i = 0; i < sizeof forbidden / sizeof forbidden[0]; i++) {
+        ws_open(&s, "another user", -1, "", false);
+        T_CHECK(mq_connect(&s, D.id, D.auth + 7));
         g_cells++;
-        T_EQ_INT(s.n_ack, 0);
+        int code = mq_sub(&s, forbidden[i]);
+        if (code != -1) fprintf(stderr, "stream: D subscribing %s got %d\n", forbidden[i], code);
+        T_EQ_INT(code, -1);
         T_CHECK(s.closed);
         close(s.fd);
-        // More entries than NW_BATCH_MAX: the client library cannot make it, the server never takes it.
-        for (int k = 0; k <= NW_BATCH_MAX; k++) fs[k] = sub_frame(NW_WS_PING, NULL, 0, NULL, 0);
-        ws_open(&s, "an oversized batch", -1, "", false);
-        if (ws_send_batch(&s, fs, NW_BATCH_MAX + 1)) {
-            ws_pump(&s, 2000);
-            T_EQ_INT(s.n_pong, 0);
-        }
-        g_cells++;
-        close(s.fd);
-        // Another user's token inside a batch ends what the first one subscribed to.
-        ws_open(&s, "switch in a batch", 0, G, true);
-        fs[0] = sub_frame(NW_WS_SUB_AS, A.auth + 7, NW_SUB_CHAT, G, 1);
-        fs[1] = sub_frame(NW_WS_AUTH, D.auth + 7, 0, NULL, 0);
-        T_CHECK(ws_send_batch(&s, fs, 2));
-        ws_pump(&s, 1000);
-        T_EQ_INT(s.whys[0], 0);
-        NwRequest cq;
-        memset(&cq, 0, sizeof cq);
-        cq.kind = NW_CHAT_SEND;
-        cq.message_len = 7;
-        memcpy(cq.message, "batched", 7);
-        uint8_t cb[32];
-        int cn = nw_request_encode(&cq, cb, sizeof cb);
-        char cpath[48];
-        snprintf(cpath, sizeof cpath, "/v1/chat/%s", G);
-        T_EQ_INT(http("POST", cpath, B.auth, cb, (size_t)cn, OCTETS), 204);
-        ws_pump(&s, 1000);
-        g_cells++;
-        T_EQ_INT(s.n_chat, 0);
-        close(s.fd);
     }
-    // After AUTH as one user, another's token in AUTH ends the first's subscriptions.
-    ws_open(&s, "switch", 0, G, true);
-    ws_ask(&s, NW_WS_SUB_AS, A.auth + 7, NW_SUB_CHAT, G);
-    T_EQ_INT(s.last_why, 0);
-    ws_sub(&s, NW_WS_AUTH, D.auth + 7, 0, NULL, 0);
-    ws_pump(&s, 300);
-    NwRequest q;
-    memset(&q, 0, sizeof q);
-    q.kind = NW_CHAT_SEND;
-    q.message_len = 5;
-    memcpy(q.message, "after", 5);
-    uint8_t body[32];
-    int n = nw_request_encode(&q, body, sizeof body);
-    char path[48];
-    snprintf(path, sizeof path, "/v1/chat/%s", G);
-    T_EQ_INT(http("POST", path, B.auth, body, (size_t)n, OCTETS), 204);
+    // A client that publishes (the server's own packet), and a second CONNECT
+    // (another identity on a socket already named): closed.
+    ws_open(&s, "publisher", -1, "", false);
+    T_CHECK(mq_connect(&s, D.id, D.auth + 7));
+    char dv[96];
+    snprintf(dv, sizeof dv, "u/%s/v", D.id);
+    mq_send(&s, b, mqtt_write_publish(b, sizeof b, dv, (int)strlen(dv), (const uint8_t *)"x", 1));
     ws_pump(&s, 1000);
     g_cells++;
-    T_EQ_INT(s.n_chat, 0);   // the chat subscription went with A
+    T_CHECK(s.closed);
+    close(s.fd);
+    ws_open(&s, "switch", 0, G, true);
+    T_CHECK(mq_connect(&s, A.id, A.auth + 7));
+    T_EQ_INT(mq_hold(&s, NW_SUB_CHAT, G), 0);
+    g_cells++;
+    T_CHECK(!mq_connect(&s, D.id, D.auth + 7));
+    T_CHECK(s.closed);
+    chat_from_b("after");
+    ws_pump(&s, 500);
+    T_EQ_INT(s.n_chat, 0);   // the socket went with its first identity
     close(s.fd);
 }
 
@@ -1006,13 +975,11 @@ static void hidden_card_game(void) {
     ws_open(&sE, "seated E", 2, G, true);
     ws_open(&sC, "spectator", -1, G, false);
     ws_open(&sD, "another user", -1, "", false);
-    ws_ask(&sA, NW_WS_SUB_AS, A.auth + 7, NW_SUB_GAME, G);
-    ws_ask(&sB, NW_WS_SUB_AS, B.auth + 7, NW_SUB_GAMES, NULL);
-    ws_ask(&sE, NW_WS_SUB_AS, E.auth + 7, NW_SUB_GAME, G);
-    ws_ask(&sE, NW_WS_SUB_AS, E.auth + 7, NW_SUB_CHAT, G);
-    ws_ask(&sC, NW_WS_SUB_AS, C.auth + 7, NW_SUB_GAME, G);
-    ws_ask(&sD, NW_WS_SUB_AS, D.auth + 7, NW_SUB_GAMES, NULL);
-    T_EQ_INT(sA.n_ack_refused + sB.n_ack_refused + sE.n_ack_refused + sC.n_ack_refused + sD.n_ack_refused, 0);
+    T_CHECK(mq_connect(&sA, A.id, A.auth + 7) && mq_connect(&sB, B.id, B.auth + 7) && mq_connect(&sE, E.id, E.auth + 7) &&
+            mq_connect(&sC, C.id, C.auth + 7) && mq_connect(&sD, D.id, D.auth + 7));
+    int refused = mq_hold(&sA, NW_SUB_GAME, G) + mq_hold(&sB, NW_SUB_GAMES, NULL) + mq_hold(&sE, NW_SUB_GAME, G) +
+                  mq_hold(&sE, NW_SUB_CHAT, G) + mq_hold(&sC, NW_SUB_GAME, G) + mq_hold(&sD, NW_SUB_GAMES, NULL);
+    T_EQ_INT(refused, 0);
     T_EQ_INT(meta(&A, ASK_START, G, NULL, NULL), 200);
     T_EQ_INT(meta(&B, ASK_START, G, NULL, NULL), 200);
     T_EQ_INT(meta(&E, ASK_START, G, NULL, NULL), 200);
@@ -1235,10 +1202,8 @@ static void account_deletion(void) {
     snprintf(sE->gid, sizeof sE->gid, "%s", G3);
     sE->seat = 1;
     sE->may_chat = true;
-    ws_ask(sE, NW_WS_SUB_AS, E.auth + 7, NW_SUB_GAME, G3);
-    T_EQ_INT(sE->last_seated, 1);
-    ws_ask(sE, NW_WS_SUB_AS, E.auth + 7, NW_SUB_CHAT, G3);
-    T_EQ_INT(sE->last_why, 0);
+    T_EQ_INT(mq_hold(sE, NW_SUB_GAME, G3), 0);
+    T_EQ_INT(mq_hold(sE, NW_SUB_CHAT, G3), 0);
     ws_pump(sE, 300);
     int heard_before = sE->n_cast + sE->n_view + sE->n_chat;
 
@@ -1300,14 +1265,12 @@ static void account_deletion(void) {
     if (heard_after) fprintf(stderr, "deletion: the deleted user's open stream heard %d more frames\n", heard_after);
     T_EQ_INT(heard_after, 0);
     close(sE->fd);
-    // A new socket with the same, still unexpired, token subscribes to nothing.
+    // A new socket with the same, still unexpired, token is refused at CONNECT.
     sock again_s;
     ws_open(&again_s, "deleted user", 1, G3, true);
-    ws_ask(&again_s, NW_WS_SUB_AS, E.auth + 7, NW_SUB_GAMES, NULL);
     g_cells++;
-    T_EQ_INT(again_s.last_why, ASK_WHY_AUTH);
-    ws_ask(&again_s, NW_WS_SUB_AS, E.auth + 7, NW_SUB_GAME, G3);
-    T_EQ_INT(again_s.last_why, ASK_WHY_AUTH);
+    T_CHECK(!mq_connect(&again_s, E.id, E.auth + 7));
+    T_EQ_INT(again_s.n_connack, 0);
     close(again_s.fd);
     // The deleted user's access token, still unexpired, reaches nothing that was theirs.
     T_EQ_INT(http("GET", "/v1/games", E.auth, NULL, 0, NULL), 200);
@@ -1375,12 +1338,12 @@ static void a_token_for_nobody(void) {
         http("POST", "/v1/meta", ghost, body, (size_t)n, OCTETS);
         CELL_REFUSED("POST /v1/meta join", "a token for nobody", 400, ASK_WHY_AUTH, 0);
     }
-    // Nor may it subscribe.
+    // Nor may it CONNECT.
     sock gs;
     ws_open(&gs, "nobody", -1, "", false);
-    ws_ask(&gs, NW_WS_SUB_AS, ghost + 7, NW_SUB_GAMES, NULL);
     g_cells++;
-    T_EQ_INT(gs.last_why, ASK_WHY_AUTH);
+    T_CHECK(!mq_connect(&gs, "00000000-0000-4000-8000-00000000dead", ghost + 7));
+    T_EQ_INT(gs.n_connack, 0);
     close(gs.fd);
 }
 

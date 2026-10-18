@@ -2,9 +2,8 @@
 //
 // The fixtures are the event shapes AWS documents, written out by hand:
 // a Function URL request ("Invoking Lambda function URLs", payload format
-// 2.0), the API Gateway WebSocket $connect / $default / $disconnect events
-// ("Setting up WebSocket API integrations"), an EventBridge scheduled event,
-// and c_base's own two string literals.
+// 2.0), an EventBridge scheduled event, and c_base's own two string
+// literals; and an API Gateway WebSocket $connect, which nothing takes any more.
 #include "t.h"
 
 #include "aws/event.h"
@@ -145,101 +144,14 @@ static const char WS_CONNECT[] =
     "\"requestId\":\"ABCD1234=\",\"domainName\":\"abcd1234.execute-api.us-east-1.amazonaws.com\","
     "\"connectionId\":\"AAAA1234=\",\"apiId\":\"abcd1234\"},\"isBase64Encoded\":false}";
 
-typedef struct {
-    char got[512];
-} qs;
-static bool collect(const char *k, const char *v, void *ud) {
-    qs *q = ud;
-    size_t n = strlen(q->got);
-    snprintf(q->got + n, sizeof q->got - n, "[%s=%s]", k, v);
-    return true;
-}
-
-static void ws_connect(void) {
+// API Gateway's WebSocket events are not c_base's since realtime moved to IoT
+// Core: one that still arrives is refused like any unknown event.
+static void a_websocket_event_is_refused(void) {
     cb_event ev;
-    T_EQ_INT(decode(WS_CONNECT, &ev), CB_OK);
-    T_EQ_INT(ev.kind, CB_EVENT_WS);
-    T_EQ_STR(ev.ws.route_key, "$connect");
-    T_EQ_STR(ev.ws.connection_id, "AAAA1234=");
-    T_EQ_STR(ev.ws.domain, "abcd1234.execute-api.us-east-1.amazonaws.com");
-    T_EQ_STR(ev.ws.stage, "prod");
-    T_EQ_STR(ev.ws.query, "apikey=anon%20key%2B%2F%3D&vsn=2.0.0");
-    qs q = { "" };
-    T_EQ_INT(cb_http_query_each(ev.ws.query, collect, &q), 2);   // and it decodes back exactly
-    T_EQ_STR(q.got, "[apikey=anon key+/=][vsn=2.0.0]");
-    T_EQ_INT(ev.ws.body_len, 0);
-    T_CHECK(!ev.ws.has_origin);   // straight to the WebSocket API: no X-Cbase-Origin
+    T_EQ_INT(decode(WS_CONNECT, &ev), CB_E_INVALID);
+    T_EQ_INT(ev.kind, CB_EVENT_UNKNOWN);
     cb_event_free(&ev);
 }
-
-// $connect through the edge carries CloudFront's X-Cbase-Origin, whatever case
-// the name arrives in; a value too long for the field is not taken.
-static void ws_connect_origin(void) {
-    char json[4096];
-    cb_event ev;
-    snprintf(json, sizeof json, "{\"headers\":{\"Host\":\"h\",\"x-cbase-ORIGIN\":\"s3cret\\u0021\"},%s",
-             strstr(WS_CONNECT, "\"queryStringParameters\""));
-    T_EQ_INT(decode(json, &ev), CB_OK);
-    T_CHECK(ev.ws.has_origin);
-    T_EQ_STR(ev.ws.origin, "s3cret!");
-    cb_event_free(&ev);
-    char longv[300];
-    memset(longv, 'a', sizeof longv - 1);
-    longv[sizeof longv - 1] = 0;
-    snprintf(json, sizeof json, "{\"headers\":{\"X-Cbase-Origin\":\"%s\"},%s", longv,
-             strstr(WS_CONNECT, "\"queryStringParameters\""));
-    T_EQ_INT(decode(json, &ev), CB_OK);
-    T_CHECK(!ev.ws.has_origin);
-    T_EQ_STR(ev.ws.origin, "");
-    cb_event_free(&ev);
-    // A near name is not the header.
-    snprintf(json, sizeof json, "{\"headers\":{\"X-Cbase-Origin2\":\"s\",\"X-Cbase-Origi\":\"s\"},%s",
-             strstr(WS_CONNECT, "\"queryStringParameters\""));
-    T_EQ_INT(decode(json, &ev), CB_OK);
-    T_CHECK(!ev.ws.has_origin);
-    cb_event_free(&ev);
-}
-
-static void ws_default_and_disconnect(void) {
-    const char *msg =
-        "{\"requestContext\":{\"routeKey\":\"$default\",\"messageId\":\"AAAAAAAAAAAAAAA=\",\"eventType\":\"MESSAGE\","
-        "\"extendedRequestId\":\"ABCD1234=\",\"requestTime\":\"09/Feb/2024:18:13:04 +0000\",\"messageDirection\":\"IN\","
-        "\"stage\":\"prod\",\"connectedAt\":1707502303419,\"requestTimeEpoch\":1707502384346,"
-        "\"identity\":{\"sourceIp\":\"192.0.2.1\"},\"requestId\":\"ABCD1234=\","
-        "\"domainName\":\"abcd1234.execute-api.us-east-1.amazonaws.com\",\"connectionId\":\"AAAA1234=\",\"apiId\":\"abcd1234\"},"
-        "\"body\":\"[\\\"1\\\",\\\"1\\\",\\\"realtime:game-a1b2c3\\\",\\\"phx_join\\\",{}]\",\"isBase64Encoded\":false}";
-    cb_event ev;
-    T_EQ_INT(decode(msg, &ev), CB_OK);
-    T_EQ_INT(ev.kind, CB_EVENT_WS);
-    T_EQ_STR(ev.ws.route_key, "$default");
-    T_EQ_STR(ev.ws.query, "");
-    const char *frame = "[\"1\",\"1\",\"realtime:game-a1b2c3\",\"phx_join\",{}]";
-    T_EQ_MEM(ev.ws.body, ev.ws.body_len, frame, strlen(frame));
-    cb_event_free(&ev);
-
-    const char *bin = "{\"requestContext\":{\"routeKey\":\"$default\",\"connectionId\":\"B=\",\"stage\":\"prod\","
-                      "\"domainName\":\"d\"},\"body\":\"AP8=\",\"isBase64Encoded\":true}";
-    T_EQ_INT(decode(bin, &ev), CB_OK);
-    T_EQ_MEM(ev.ws.body, ev.ws.body_len, "\x00\xff", 2);
-    cb_event_free(&ev);
-
-    const char *bye =
-        "{\"headers\":{\"Host\":\"abcd1234.execute-api.us-east-1.amazonaws.com\",\"x-api-key\":\"\","
-        "\"X-Forwarded-For\":\"\",\"x-restapi\":\"\"},\"multiValueHeaders\":{},"
-        "\"requestContext\":{\"routeKey\":\"$disconnect\",\"disconnectStatusCode\":1005,\"eventType\":\"DISCONNECT\","
-        "\"extendedRequestId\":\"ABCD1234=\",\"requestTime\":\"09/Feb/2024:18:23:28 +0000\",\"messageDirection\":\"IN\","
-        "\"disconnectReason\":\"Client-side close frame status not set\",\"stage\":\"prod\",\"connectedAt\":1707503007396,"
-        "\"requestTimeEpoch\":1707503008941,\"identity\":{\"sourceIp\":\"192.0.2.1\"},\"requestId\":\"ABCD1234=\","
-        "\"domainName\":\"abcd1234.execute-api.us-east-1.amazonaws.com\",\"connectionId\":\"AAAA1234=\",\"apiId\":\"abcd1234\"},"
-        "\"isBase64Encoded\":false}";
-    T_EQ_INT(decode(bye, &ev), CB_OK);
-    T_EQ_INT(ev.kind, CB_EVENT_WS);
-    T_EQ_STR(ev.ws.route_key, "$disconnect");
-    T_EQ_STR(ev.ws.connection_id, "AAAA1234=");
-    cb_event_free(&ev);
-}
-
-// ---- the schedule and the self-invoke ---------------------------------------------
 
 static void schedule_and_bot_drive(void) {
     const char *eb =
@@ -377,18 +289,6 @@ static void utf8_rule(void) {
     }
 }
 
-static void encode_ws(void) {
-    cb_buf out;
-    cb_buf_init(&out);
-    T_EQ_INT(cb_event_encode_ws(401, NULL, 0, &out), CB_OK);
-    T_EQ_STR(cb_buf_cstr(&out), "{\"statusCode\":401}");
-    // The route response: its text is the body API Gateway sends the client.
-    cb_buf_reset(&out);
-    T_EQ_INT(cb_event_encode_ws(200, "ATY=", 4, &out), CB_OK);
-    T_EQ_STR(cb_buf_cstr(&out), "{\"statusCode\":200,\"body\":\"ATY=\"}");
-    cb_buf_free(&out);
-}
-
 // A request through CloudFront, as Lambda delivered it: 30-odd cloudfront-*
 // and x-amz* headers, the origin's own host, a JSON body. The decoder always
 // read this shape; what broke in production was the chunked /next answer
@@ -441,13 +341,10 @@ int main(void) {
     T_RUN(function_url_request);
     T_RUN(function_url_binary);
     T_RUN(too_many_headers_dropped);
-    T_RUN(ws_connect);
-    T_RUN(ws_connect_origin);
-    T_RUN(ws_default_and_disconnect);
+    T_RUN(a_websocket_event_is_refused);
     T_RUN(schedule_and_bot_drive);
     T_RUN(encode_text);
     T_RUN(encode_binary);
     T_RUN(utf8_rule);
-    T_RUN(encode_ws);
     return T_DONE();
 }

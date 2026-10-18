@@ -1,5 +1,5 @@
-// unit_aws_calls.c - the API Gateway management calls and the Lambda
-// self-invoke, against a local TLS server standing in for AWS.
+// unit_aws_calls.c - the IoT publish, the Lambda self-invoke, the CloudFront
+// invalidation, SSM and DynamoDB, against a local TLS server standing in for AWS.
 //
 // Each request is checked on the wire (method, path, headers, body) and its
 // signature is recomputed from what arrived: the X-Amz-Date it carries, the
@@ -7,7 +7,6 @@
 // and sent another fails here, which no AWS test vector can show.
 #include "t.h"
 
-#include "aws/apigw_mgmt.h"
 #include "app/edge.h"
 #include "aws/aws_call.h"
 #include "aws/cloudfront.h"
@@ -83,53 +82,6 @@ static void signature_matches(const char *req, const char *service, const char *
     cb_buf_free(&out);
 }
 
-static void apigw_post_and_delete(void) {
-    set_env();
-    tls_srv s;
-    T_EQ_INT(tls_srv_start(&s, answer, NULL), 0);
-    T_EQ_INT(cb_https_set_ca_file(s.ca_file), CB_OK);
-    char ep[128];
-    snprintf(ep, sizeof ep, "https://localhost:%d/prod/", s.port);
-
-    const char *frame = "[null,null,\"realtime:game-a1b2c3\",\"broadcast\",{\"b\":\"AAE=\"}]";
-    g_status = 200;
-    T_EQ_INT(cb_apigw_post(ep, "AAAA1234=", frame, strlen(frame)), 200);
-    char *req = tls_srv_last(&s);
-    T_CHECK(cb_starts_with(req, "POST /prod/@connections/AAAA1234%3D HTTP/1.1\r\n"));
-    T_CHECK(strstr(req, "\r\n\r\n") && strcmp(strstr(req, "\r\n\r\n") + 4, frame) == 0);
-    char v[512];
-    hdr(req, "Authorization", v, sizeof v);
-    T_CHECK(strstr(v, "Credential=AKIDEXAMPLE/") != NULL);
-    T_CHECK(strstr(v, "/us-west-2/execute-api/aws4_request, SignedHeaders=host;x-amz-date;x-amz-security-token, ") != NULL);
-    hdr(req, "X-Amz-Security-Token", v, sizeof v);
-    T_EQ_STR(v, "SESSIONTOKEN");
-    signature_matches(req, "execute-api", NULL, 0);
-    free(req);
-
-    g_status = 410;
-    T_EQ_INT(cb_apigw_post(ep, "gone/+=", "x", 1), CB_APIGW_GONE);
-    req = tls_srv_last(&s);
-    T_CHECK(cb_starts_with(req, "POST /prod/@connections/gone%2F%2B%3D HTTP/1.1\r\n"));
-    signature_matches(req, "execute-api", NULL, 0);
-    free(req);
-
-    g_status = 204;
-    T_EQ_INT(cb_apigw_delete(ep, "AAAA1234="), 204);
-    req = tls_srv_last(&s);
-    T_CHECK(cb_starts_with(req, "DELETE /prod/@connections/AAAA1234%3D HTTP/1.1\r\n"));
-    T_CHECK(strstr(req, "Content-Length") == NULL);
-    signature_matches(req, "execute-api", NULL, 0);
-    free(req);
-
-    T_EQ_INT(cb_apigw_post("http://localhost/prod", "A", "x", 1), CB_E_IO);   // not https
-    T_EQ_INT(cb_apigw_post(ep, "", "x", 1), CB_E_IO);
-    tls_srv_stop(&s);
-    // Nobody listening any more.
-    T_EQ_INT(cb_apigw_post(ep, "A", "x", 1), CB_E_IO);
-    unsetenv("AWS_SECRET_ACCESS_KEY");
-    T_EQ_INT(cb_apigw_post(ep, "A", "x", 1), CB_E_IO);   // no credentials
-}
-
 // A push to IoT Core: POST /topics/<topic, one encoded segment>?qos=0 with the
 // raw message, signed for iotdata (aws/iot_data.h).
 static void iot_publish(void) {
@@ -157,6 +109,19 @@ static void iot_publish(void) {
     T_EQ_INT(cb_iot_publish("localhost:0", "s/ab12cd", msg, 3), CB_E_INVALID);
     T_EQ_INT(cb_iot_publish(ep, "", msg, 3), CB_E_INVALID);
     T_EQ_INT(cb_iot_publish(NULL, "s/a", msg, 3), CB_E_INVALID);
+    // AWS_ENDPOINT_URL_IOT_DATA_PLANE replaces the endpoint: https only, no path.
+    char url[96];
+    snprintf(url, sizeof url, "https://localhost:%d", s.port);
+    setenv("AWS_ENDPOINT_URL_IOT_DATA_PLANE", url, 1);
+    g_status = 200;
+    T_EQ_INT(cb_iot_publish("a1b2c3-ats.iot.us-west-2.amazonaws.com", "s/ab12cd", msg, 3), 200);
+    snprintf(url, sizeof url, "http://localhost:%d", s.port);
+    setenv("AWS_ENDPOINT_URL_IOT_DATA_PLANE", url, 1);
+    T_EQ_INT(cb_iot_publish("a1b2c3-ats.iot.us-west-2.amazonaws.com", "s/ab12cd", msg, 3), CB_E_INVALID);
+    snprintf(url, sizeof url, "https://localhost:%d/x", s.port);
+    setenv("AWS_ENDPOINT_URL_IOT_DATA_PLANE", url, 1);
+    T_EQ_INT(cb_iot_publish("a1b2c3-ats.iot.us-west-2.amazonaws.com", "s/ab12cd", msg, 3), CB_E_INVALID);
+    unsetenv("AWS_ENDPOINT_URL_IOT_DATA_PLANE");
     tls_srv_stop(&s);
     T_EQ_INT(cb_iot_publish(ep, "s/ab12cd", msg, 3), CB_E_IO);   // nobody listening
 }
@@ -490,7 +455,6 @@ static void ssm_secrets(void) {
 
 int main(void) {
     T_RUN(url_parse);
-    T_RUN(apigw_post_and_delete);
     T_RUN(iot_publish);
     T_RUN(lambda_self_invoke);
     T_RUN(cloudfront_invalidation);

@@ -527,112 +527,6 @@ static void chat_put_refusals(void) {
     cb_store_close(s);
 }
 
-// ---- realtime connections -------------------------------------------------------------------------
-
-static char g_conn_live[1024], g_conn_dead[1024];
-
-static void conn_items(void) {
-    int64_t now = cb_now_ms();
-    // The row as written today (topics a list of strings), and one written
-    // before 2026-10-17 (topics as maps), which still reads for its TTL.
-    snprintf(g_conn_live, sizeof g_conn_live,
-             "{\"Item\":{\"pk\":{\"S\":\"CONN#c1\"},\"sk\":{\"S\":\"CONN\"},\"conn_id\":{\"S\":\"c1\"},\"user_id\":{\"S\":\"" U1 "\"},"
-             "\"expires_ms\":{\"N\":\"%lld\"},\"ver\":{\"N\":\"2\"},"
-             "\"topics\":{\"L\":[{\"S\":\"pv-" U1 "\"},{\"M\":{\"t\":{\"S\":\"chat:ab12cd\"},\"r\":{\"S\":\"1\"}}}]}}}",
-             (long long)(now + 3600000));
-    snprintf(g_conn_dead, sizeof g_conn_dead,
-             "{\"Item\":{\"pk\":{\"S\":\"CONN#c1\"},\"sk\":{\"S\":\"CONN\"},\"conn_id\":{\"S\":\"c1\"},\"expires_ms\":{\"N\":\"%lld\"},"
-             "\"ver\":{\"N\":\"7\"}}}",
-             (long long)(now - 1000));
-}
-
-typedef struct { int n; char users[8][80]; } conns_seen;
-static bool see_conn(const cb_conn_row *c, void *ud) {
-    conns_seen *w = ud;
-    if (w->n < 8) snprintf(w->users[w->n], sizeof w->users[0], "%s", c->user_id);
-    w->n++;
-    return true;
-}
-
-static void conns_put_get_delete_by_topic(void) {
-    conn_items();
-    static char topic[2048];
-    int64_t now = cb_now_ms();
-    snprintf(topic, sizeof topic,
-             "{\"Items\":[{\"conn_id\":{\"S\":\"c1\"},\"user_id\":{\"S\":\"" U1 "\"},\"expires_ms\":{\"N\":\"%lld\"}},"
-             "{\"conn_id\":{\"S\":\"c2\"},\"user_id\":{\"S\":\"" U2 "\"},\"expires_ms\":{\"N\":\"%lld\"}},{\"broken\":{\"S\":\"x\"}}]}",
-             (long long)(now + 60000), (long long)(now - 60000));
-    const step steps[] = {
-        // put over a row at version 2: the topic it gains indexed first, the row on its
-        // version, then the index entry of the topic it lost
-        { "BatchWriteItem", "TOPIC#game-ab12cd", 200, "{}" },
-        { "PutItem", "\"N\":\"2\"", 200, "{}" },
-        { "BatchWriteItem", "TOPIC#pv-" U1, 200, "{}" },
-        // a lost race: the index entry written, the row refused
-        { "BatchWriteItem", "TOPIC#game-ab12cd", 200, "{}" },
-        { "PutItem", NULL, 400, COND_NO_ITEM },
-        // the index failing first stops it before the row
-        { "BatchWriteItem", NULL, 400, VALIDATION },
-        // nothing gained or lost: the row alone
-        { "PutItem", NULL, 200, "{}" },
-        // get: live (both topic shapes), expired (TTL deletes lazily), absent
-        { "GetItem", "CONN#c1", 200, g_conn_live },
-        { "GetItem", "CONN#c1", 200, g_conn_dead },
-        { "GetItem", "CONN#c1", 200, NOITEM },
-        // delete: the row and its topic entries in one batch; absent is done; a failed read fails
-        { "GetItem", "CONN#c1", 200, g_conn_live },
-        { "BatchWriteItem", "TOPIC#pv-" U1, 200, "{}" },
-        { "GetItem", "CONN#c1", 200, NOITEM },
-        { "GetItem", "CONN#c1", 400, VALIDATION },
-        { "GetItem", "CONN#c1", 200, g_conn_live },
-        { "BatchWriteItem", NULL, 400, VALIDATION },
-        // by topic: the live ones only
-        { "Query", "TOPIC#game-ab12cd", 200, topic },
-        { "Query", NULL, 400, VALIDATION },
-    };
-    RUN(steps, s);
-    cb_conn_row was, c;
-    memset(&was, 0, sizeof was);
-    snprintf(was.conn_id, sizeof was.conn_id, "c1");
-    was.version = 2;
-    was.n_topics = 1;
-    snprintf(was.topics[0], sizeof was.topics[0], "pv-" U1);
-    c = was;
-    snprintf(c.user_id, sizeof c.user_id, U1);
-    c.expires_at = now + 600000;
-    snprintf(c.topics[0], sizeof c.topics[0], "game-ab12cd");
-    T_EQ_INT(CB_STORE_CALL(s, conn_put, &was, &c), CB_OK);
-    T_CHECK(strstr(sc_.bodies[2], "DeleteRequest") != NULL);   // the lost topic's entry goes
-    T_EQ_INT(CB_STORE_CALL(s, conn_put, &was, &c), CB_E_CONFLICT);
-    T_EQ_INT(CB_STORE_CALL(s, conn_put, &was, &c), CB_E_DB);
-    T_EQ_INT(CB_STORE_CALL(s, conn_put, &c, &c), CB_OK);
-    cb_conn_row bad = c;
-    bad.n_topics = -1;
-    T_EQ_INT(CB_STORE_CALL(s, conn_put, &was, &bad), CB_E_INVALID);
-    bad = was;
-    bad.version = -1;
-    T_EQ_INT(CB_STORE_CALL(s, conn_put, &bad, &c), CB_E_INVALID);
-    cb_conn_row got;
-    T_EQ_INT(CB_STORE_CALL(s, conn_get, "c1", &got), CB_OK);
-    T_EQ_STR(got.user_id, U1);
-    T_EQ_INT(got.n_topics, 2);
-    T_EQ_STR(got.topics[0], "pv-" U1);
-    T_EQ_STR(got.topics[1], "chat:ab12cd");
-    T_EQ_INT(got.version, 2);
-    T_EQ_INT(CB_STORE_CALL(s, conn_get, "c1", &got), CB_E_NOT_FOUND);
-    T_EQ_INT(CB_STORE_CALL(s, conn_get, "c1", &got), CB_E_NOT_FOUND);
-    T_EQ_INT(CB_STORE_CALL(s, conn_delete, "c1"), CB_OK);
-    T_EQ_INT(CB_STORE_CALL(s, conn_delete, "c1"), CB_OK);
-    T_EQ_INT(CB_STORE_CALL(s, conn_delete, "c1"), CB_E_DB);
-    T_EQ_INT(CB_STORE_CALL(s, conn_delete, "c1"), CB_E_DB);
-    conns_seen w = { 0 };
-    T_EQ_INT(CB_STORE_CALL(s, conns_by_topic, "game-ab12cd", see_conn, &w), 1);
-    T_EQ_STR(w.users[0], U1);
-    T_EQ_INT(CB_STORE_CALL(s, conns_by_topic, "game-ab12cd", see_conn, &w), CB_E_DB);
-    T_EQ_INT(sc_.at, sc_.n);
-    cb_store_close(s);
-}
-
 // ---- admin and the import -------------------------------------------------------------------------
 
 static bool see_name(const char *name, void *ud) {
@@ -653,8 +547,8 @@ static void admin_collections_are_the_families(void) {
     T_EQ_STR(w.names[1], "EMAIL");
     T_EQ_STR(w.names[2], "REFRESH");
     T_CHECK(dw_collection(-1) == NULL);
-    T_CHECK(dw_collection(10) == NULL);
-    T_EQ_STR(dw_collection(9), "SCAN");
+    T_CHECK(dw_collection(8) == NULL);
+    T_EQ_STR(dw_collection(7), "SCAN");
     T_EQ_INT(sc_.at, 0);
     cb_store_close(s);
 }
@@ -805,7 +699,6 @@ int main(void) {
     T_RUN(bots_and_ratings);
     T_RUN(snapshots_put_and_query);
     T_RUN(chat_put_refusals);
-    T_RUN(conns_put_get_delete_by_topic);
     T_RUN(admin_collections_are_the_families);
     T_RUN(import_writes);
     T_RUN(import_seed_and_reindex);

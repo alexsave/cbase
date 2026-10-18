@@ -40,7 +40,7 @@ static int failing_deliver(cb_rt *rt, const cb_rt_to *to, const uint8_t *frame, 
     return 1;
 }
 static const cb_rt_transport FAIL_T = { .name = "fail", .deliver = failing_deliver };
-static cb_rt g_rt = { &FAIL_T, &g_ctx, NULL, NULL };
+static cb_rt g_rt = { &FAIL_T, &g_ctx, NULL };
 
 static void setup(void) {
     cb_log_init(CB_LOG_ERROR + 1, 0);

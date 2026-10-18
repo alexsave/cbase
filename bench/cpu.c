@@ -14,7 +14,7 @@
 //   dynamo_commit_build the commit's TransactWriteItems body (the CAS)
 //   view_push          one player's view push: the stream's NW_WS_VIEW frame
 //                      around the envelope (realtime.c rt_publish_view), then
-//                      the base64 text API Gateway carries it as
+//                      the MQTT PUBLISH the hub sends it as
 //   b64_encode_2k,     a 2 KB envelope through base64 each way, the cost a
 //   b64_decode_2k      binary body pays in the Lambda envelope
 //   jwt_verify         the access token every request carries
@@ -40,6 +40,7 @@
 #include "game.h"
 #include "legal.h"
 #include "netwire.h"
+#include "mqtt/mqtt.h"
 #include "table.h"
 
 #include <stdio.h>
@@ -219,8 +220,12 @@ static void op_view_push(void) {
     f.blob.len = (uint32_t)g_view.view_len;
     cb_buf_reset(&g_out);
     if (!cb_buf_reserve(&g_out, 3 * (g_view.view_len + 64))) return;
+    // The frame, then the hub's PUBLISH of it on the user's views topic.
     int n = nw_frame_encode(&f, g_out.p, (int)(g_view.view_len + 64));
-    int t = n > 0 ? nw_text_encode(g_out.p, n, (char *)g_out.p + g_view.view_len + 64, (int)(2 * (g_view.view_len + 64))) : 0;
+    static const char topic[] = "u/11111111-1111-4111-8111-111111111111/v";
+    int t = n > 0 ? mqtt_write_publish(g_out.p + g_view.view_len + 64, (int)(2 * (g_view.view_len + 64)), topic,
+                                       (int)sizeof topic - 1, g_out.p, n)
+                  : 0;
     g_sink += t;
 }
 

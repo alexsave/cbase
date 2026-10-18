@@ -11,14 +11,13 @@ AWSTemplateFormatVersion: "2010-09-09"
 #   * the Lambda function (the static arm64 `bootstrap`, ops/package.sh), its
 #     role and its log group;
 #   * a Function URL for the HTTP routes (/v1, /admin, /m, /health);
-#   * the API Gateway WebSocket API for realtime ($connect, $disconnect, $default);
 #   * realtime over AWS IoT Core (MQTT over WebSocket), when IotEndpoint is set:
 #     the custom authorizer (the same function answers it), the function's
 #     right to publish under u/ and s/, and the /mqtt path at the edge;
 #   * an EventBridge Scheduler schedule that invokes the bot scan every minute;
-#   * a CloudFront distribution at the custom domain, sending
-#     /v1/stream to the WebSocket API and everything else to the Function
-#     URL, so the clients see one origin; it caches exactly two paths, the
+#   * a CloudFront distribution at the custom domain, sending /mqtt to IoT
+#     Core and everything else to the Function URL, so the clients see one
+#     origin; it caches exactly two paths, the
 #     public /v1/leaderboard and /v1/bots, which the function invalidates
 #     when they change (DESIGN.md "Edge cache");
 #   (GitHub Actions deploys new code through ops/github_oidc.yaml's role, which
@@ -30,8 +29,8 @@ AWSTemplateFormatVersion: "2010-09-09"
 #
 # Cost at foolish's volume: Lambda, DynamoDB (provisioned capacity; on-demand
 # has no free tier), the Function URL, EventBridge Scheduler, CloudFront and
-# ACM sit inside their always-free allowances; the WebSocket API is about
-# $0.01 to $0.10 a month after its first free year; the code zip in S3 is a
+# ACM sit inside their always-free allowances; IoT Core bills per million
+# connection-minutes and messages, cents a month at our volume; the code zip in S3 is a
 # few MB; point-in-time recovery bills $0.20 per GB-month of table, a
 # fraction of a cent at our few MB (DESIGN.md "The free tier, provisioned").
 
@@ -142,10 +141,10 @@ Parameters:
     Description: >-
       This account's AWS IoT Core data endpoint in this region, a host name
       (aws iot describe-endpoint --endpoint-type iot:Data-ATS; ops/deploy.sh
-      reads it). Set: every push is also published to IoT Core over MQTT
+      reads it). Set: every push is published to IoT Core over MQTT
       (CBASE_IOT_ENDPOINT, realtime/rt_iot.h), IoT asks this function to
       authorize each CONNECT, and /mqtt at the edge reaches IoT. Empty: none
-      of that exists.
+      of that exists, and the backend has no realtime push.
 
 Conditions:
   OriginChecked: !Equals [!Ref OriginEnforced, "yes"]
@@ -257,10 +256,6 @@ Resources:
                 Resource:
                   - !GetAtt Table.Arn
                   - !Sub "${Table.Arn}/index/*"
-              - Sid: RealtimePush
-                Effect: Allow
-                Action: execute-api:ManageConnections
-                Resource: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WsApi}/*"
               # Realtime over IoT Core: publish under the stream's two prefixes
               # (realtime.h: u/<user>/... and s/<game>), nothing else.
               - !If
@@ -340,12 +335,7 @@ Resources:
           CBASE_SECRETS_SSM: !Ref SecretsPrefix
           CBASE_ALLOWED_ORIGINS: !Ref AllowedOrigins
           CBASE_PUBLIC_URL: !Sub "https://${DomainName}"
-          # The management endpoint pushes are POSTed to (realtime/rt_apigw.h).
-          CBASE_WS_ENDPOINT: !Sub "https://${WsApi}.execute-api.${AWS::Region}.amazonaws.com/prod"
-          # $default has a route response (WsDefaultRouteResponse, deployed
-          # before this line): a frame's last reply is the invocation's answer.
-          CBASE_WS_ROUTE_REPLY: "yes"
-          # Every push is also published here, over MQTT (realtime/rt_iot.h); "" for none.
+          # Every push is published here, over MQTT (realtime/rt_iot.h); "" for none.
           CBASE_IOT_ENDPOINT: !Ref IotEndpoint
           CBASE_LOG_LEVEL: info
           # The edge cache's invalidations go here (app/edge.h).
@@ -388,81 +378,6 @@ Resources:
       Action: lambda:InvokeFunction
       Principal: "*"
       InvokedViaFunctionUrl: true
-
-  # ---- realtime: the WebSocket API ------------------------------------------------
-  # Every route goes to the function as a proxy integration. $default has a
-  # route response, so a frame's last reply (a pong, an ACK, a batch of them)
-  # is the invocation's answer; pushes, and any reply before the last, travel
-  # over the management API (CBASE_WS_ENDPOINT). The function is told by
-  # CBASE_WS_ROUTE_REPLY=yes, set in the Function's environment one deploy
-  # AFTER the route response exists: CloudFormation updates the Function before
-  # the route response that depends on it, and answers given with no route
-  # response are dropped. With it, a frame answered with no body still reaches
-  # the client as an empty text message, which clients ignore.
-  WsApi:
-    Type: AWS::ApiGatewayV2::Api
-    Properties:
-      Name: !Sub "${FunctionName}-realtime"
-      ProtocolType: WEBSOCKET
-      RouteSelectionExpression: "$request.body.action"
-
-  WsIntegration:
-    Type: AWS::ApiGatewayV2::Integration
-    Properties:
-      ApiId: !Ref WsApi
-      IntegrationType: AWS_PROXY
-      IntegrationUri: !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${Function.Arn}/invocations"
-
-  WsConnectRoute:
-    Type: AWS::ApiGatewayV2::Route
-    Properties:
-      ApiId: !Ref WsApi
-      RouteKey: $connect
-      AuthorizationType: NONE
-      Target: !Sub "integrations/${WsIntegration}"
-
-  WsDisconnectRoute:
-    Type: AWS::ApiGatewayV2::Route
-    Properties:
-      ApiId: !Ref WsApi
-      RouteKey: $disconnect
-      AuthorizationType: NONE
-      Target: !Sub "integrations/${WsIntegration}"
-
-  WsDefaultRoute:
-    Type: AWS::ApiGatewayV2::Route
-    Properties:
-      ApiId: !Ref WsApi
-      RouteKey: $default
-      AuthorizationType: NONE
-      Target: !Sub "integrations/${WsIntegration}"
-      RouteResponseSelectionExpression: $default
-
-  WsDefaultRouteResponse:
-    Type: AWS::ApiGatewayV2::RouteResponse
-    Properties:
-      ApiId: !Ref WsApi
-      RouteId: !Ref WsDefaultRoute
-      RouteResponseKey: $default
-
-  WsStage:
-    Type: AWS::ApiGatewayV2::Stage
-    DependsOn: [WsConnectRoute, WsDisconnectRoute, WsDefaultRoute, WsDefaultRouteResponse]
-    Properties:
-      ApiId: !Ref WsApi
-      StageName: prod
-      AutoDeploy: true
-      DefaultRouteSettings:
-        ThrottlingBurstLimit: 200
-        ThrottlingRateLimit: 100
-
-  WsInvokePermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      FunctionName: !Ref Function
-      Action: lambda:InvokeFunction
-      Principal: apigateway.amazonaws.com
-      SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WsApi}/*"
 
   # ---- realtime: AWS IoT Core, MQTT over WebSocket ----------------------------------
   # IoT Core holds the MQTT connections and their subscriptions; at each
@@ -531,24 +446,6 @@ Resources:
           MaximumRetryAttempts: 0   # the next minute's scan is the retry
 
   # ---- the front door: CloudFront at the custom domain ----------------------------
-  # Rewrites /v1/stream (the binary stream, DESIGN.md "Binary surface") to the
-  # WebSocket API's stage path. Only the URI changes; the query string
-  # (proto=nw1) passes through untouched for $connect to check.
-  WsPathRewrite:
-    Type: AWS::CloudFront::Function
-    Properties:
-      Name: !Sub "${FunctionName}-ws-path"
-      AutoPublish: true
-      FunctionConfig:
-        Comment: /v1/stream -> /prod
-        Runtime: cloudfront-js-2.0
-      FunctionCode: |
-        function handler(event) {
-          var request = event.request;
-          request.uri = '/prod';
-          return request;
-        }
-
   # Names the IoT custom authorizer on an MQTT connection's upgrade
   # (x-amz-customauthorizer-name), so clients open plain /mqtt, the same path
   # `cbase serve` answers, and the authorizer's name stays in this template.
@@ -622,14 +519,6 @@ Resources:
               # handshake to the origin (about 45 ms at p50, measured with
               # `cbase-bench spaced`). 60 is the most without a quota request.
               OriginKeepaliveTimeout: 60
-          - Id: realtime
-            DomainName: !Sub "${WsApi}.execute-api.${AWS::Region}.amazonaws.com"
-            # $connect refuses a socket without it (realtime/rt_apigw.c).
-            OriginCustomHeaders:
-              - { HeaderName: X-Cbase-Origin, HeaderValue: !Ref OriginSecret }
-            CustomOriginConfig:
-              OriginProtocolPolicy: https-only
-              OriginSSLProtocols: [TLSv1.2]
           # IoT Core's MQTT over WebSocket (path /mqtt). The authorizer refuses a
           # CONNECT without X-Cbase-Origin (realtime/rt_iot.c), so IoT's own
           # host cannot be used to walk around the edge either.
@@ -645,7 +534,7 @@ Resources:
             - !Ref AWS::NoValue
         # Nothing else is cached (CachingDisabled), and every viewer header, cookie
         # and query string but Host reaches the origin (AllViewerExceptHostHeader):
-        # the Function URL and API Gateway each require their own Host, and the
+        # the Function URL and IoT Core each require their own Host, and the
         # WebSocket handshake needs its Sec-WebSocket-* headers and the query.
         DefaultCacheBehavior:
           TargetOriginId: function
@@ -675,17 +564,6 @@ Resources:
             Compress: true
             CachePolicyId: !Ref PublicReadsCachePolicy
             OriginRequestPolicyId: 59781a5b-3903-41f3-afcb-af62929ccde1  # Managed-CORS-CustomOrigin
-          - PathPattern: /v1/stream*
-            TargetOriginId: realtime
-            ViewerProtocolPolicy: https-only
-            AllowedMethods: [GET, HEAD]
-            CachedMethods: [GET, HEAD]
-            Compress: false
-            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad          # Managed-CachingDisabled
-            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac  # Managed-AllViewerExceptHostHeader
-            FunctionAssociations:
-              - EventType: viewer-request
-                FunctionARN: !GetAtt WsPathRewrite.FunctionMetadata.FunctionARN
           # MQTT over WebSocket to IoT Core: nothing cached, every viewer header
           # (the upgrade's Sec-WebSocket-* and the mqtt subprotocol) and the
           # query reach it, the Host becomes IoT's.
@@ -928,9 +806,6 @@ Outputs:
   FunctionUrl:
     Description: The Function URL (the HTTP routes, before CloudFront).
     Value: !GetAtt FunctionUrl.FunctionUrl
-  WebSocketUrl:
-    Description: The WebSocket API stage (realtime, before CloudFront).
-    Value: !Sub "wss://${WsApi}.execute-api.${AWS::Region}.amazonaws.com/prod"
   DistributionDomain:
     Description: Point the DNS CNAME for DomainName here.
     Value: !GetAtt Distribution.DomainName

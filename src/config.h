@@ -23,16 +23,6 @@ typedef struct {
     char db_path[1024];
     // CBASE_TABLE, the DynamoDB table (store dynamo), default "cbase".
     char table[256];
-    // CBASE_WS_ENDPOINT, the API Gateway WebSocket stage's management endpoint
-    // (https://<api-id>.execute-api.<region>.amazonaws.com/<stage>). Lambda
-    // only; empty means pushes are dropped (logged once).
-    char ws_endpoint[512];
-    // CBASE_WS_ROUTE_REPLY "yes" or "no" (default): the WebSocket API's $default
-    // route has a route response, so a frame's last reply rides back in the
-    // invocation's answer instead of a POST to @connections (rt_apigw.c). Set
-    // by the template together with the RouteResponse it needs: with "yes"
-    // and no route response, replies would be lost.
-    bool ws_route_reply;
     // CBASE_IOT_ENDPOINT, the account's AWS IoT Core data endpoint, a host
     // name ("<prefix>-ats.iot.<region>.amazonaws.com"): every push is also
     // published there over MQTT (realtime/rt_iot.h). Lambda only; empty means
@@ -56,8 +46,8 @@ typedef struct {
     char secrets_ssm[256];
     // CBASE_ORIGIN_SECRET: the value CloudFront adds to every request it sends
     // on, as the header X-Cbase-Origin (ops/cbase.yaml). Set: an HTTP request
-    // or a WebSocket $connect without it is refused with 403 before anything
-    // else runs, so the Function URL and the WebSocket API's own hostname
+    // or an MQTT CONNECT (realtime/rt_iot.c) without it is refused before
+    // anything else runs, so the Function URL and IoT Core's own hostname
     // cannot be used to walk around the edge (and around the viewer address
     // the edge vouches for). Unset (serve, tests): nothing is checked. At
     // least 32 characters when set.

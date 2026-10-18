@@ -233,16 +233,6 @@ static void matrix(void) {
     cb_buf_free(&out);
 }
 
-// The stream's upgrade is a route like the rest: around the edge it is refused.
-static void stream_only_through_the_edge(void) {
-    int fd = tc_ws_open(g_port, "/v1/stream?proto=nw1", NULL);
-    T_CHECK(fd < 0);
-    if (fd >= 0) close(fd);
-    fd = tc_ws_open(g_port, "/v1/stream?proto=nw1", "X-Cbase-Origin: " ORIGIN_SECRET "\r\n");
-    T_CHECK(fd >= 0);
-    if (fd >= 0) close(fd);
-}
-
 // ---- the MQTT stream (realtime/stream_mqtt.h) ----------------------------------------------
 //
 // The same rows for /mqtt, the path IoT Core serves in production; each
@@ -440,7 +430,6 @@ int main(int argc, char **argv) {
     g_bin = argv[1];
     T_RUN(setup_world);
     T_RUN(matrix);
-    T_RUN(stream_only_through_the_edge);
     T_RUN(mqtt_matrix);
     T_RUN(limits_hold);
     T_RUN(stops);

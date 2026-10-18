@@ -1,6 +1,6 @@
 // aws_call.h - one signed AWS request: credentials, SigV4, HTTPS.
 //
-// The shared step under apigw_mgmt.c and lambda_invoke.c, and the one
+// The shared step under iot_data.c and lambda_invoke.c, and the one
 // store_dynamo.c can use for DynamoDB: read the Lambda credentials, sign the
 // request for `service`, send it over https.h, hand back the response.
 #ifndef CB_AWS_CALL_H

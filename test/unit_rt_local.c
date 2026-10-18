@@ -1,17 +1,16 @@
-// unit_rt_local.c - realtime under `cbase serve` (realtime/rt_local.h), over
-// a real loopback server: the upgrade route, subscriptions handled on the
-// request pool, publishes from another thread reaching only their topic's
-// sockets, a connection's frames answered in order, and garbage closing.
+// unit_rt_local.c - realtime under `cbase serve` (realtime/rt_local.h), the
+// MQTT hub, over a real loopback server: the upgrade route, packets handled on
+// the request pool, publishes from another thread reaching only their topic's
+// sockets, and every refusal closing.
 // unit_stream.c drives the same server with the kernel's client library.
 #include "t.h"
 
 #include "handler.h"
 #include "lib_client.h"
-#include "lib_rt_fakestore.h"
+#include "lib_rt_token.h"
 #include "net/loop.h"
 #include "net/router.h"
 #include "net/server.h"
-#include "realtime/stream.h"
 #include "realtime/realtime.h"
 #include "realtime/rt_local.h"
 #include "realtime/stream_mqtt.h"
@@ -39,13 +38,11 @@ static void *run(void *arg) {
 
 static void start(void) {
     cb_log_init(CB_LOG_ERROR, 0);
-    rtf_install();
-    rtf_member(G, U1);
+    rtt_install();
     memset(&g_cfg, 0, sizeof g_cfg);
     strcpy(g_cfg.allowed_origins, "*");
     g_ctx.cfg = &g_cfg;
     g_ctx.mode = CB_MODE_SERVE;
-    g_ctx.store = &rtf.store;
     g_ctx.loop = cb_loop_new();
     g_ctx.req_pool = cb_pool_new(3, "trt");
     g_ctx.router = cb_router_new();
@@ -58,163 +55,7 @@ static void start(void) {
     pthread_create(&g_thread, NULL, run, NULL);
 }
 
-static int open_ws(void) { return tc_ws_open(g_port, "/v1/stream?proto=nw1", NULL); }
-
-static void send_frame(int fd, const NwFrame *f) {
-    uint8_t raw[NW_ACCESS_MAX + 64];
-    int n = nw_frame_encode(f, raw, sizeof raw);
-    T_CHECK(n > 0);
-    T_EQ_INT(tc_ws_send(fd, CB_WS_OP_BIN, raw, (size_t)n), 0);
-}
-
-static void send_auth(int fd, const char *uid) {
-    NwFrame f;
-    memset(&f, 0, sizeof f);
-    f.kind = NW_WS_AUTH;
-    f.token_len = (uint16_t)snprintf(f.token, sizeof f.token, "tok-%s", uid);
-    send_frame(fd, &f);
-}
-
-static void send_sub(int fd, uint8_t kind, uint16_t ref, uint8_t what, const char *gid) {
-    NwFrame f;
-    memset(&f, 0, sizeof f);
-    f.kind = kind;
-    f.ref = ref;
-    f.what = what;
-    f.gid_len = (uint8_t)strlen(gid);
-    memcpy(f.gid, gid, f.gid_len);
-    send_frame(fd, &f);
-}
-
-static void send_ping(int fd) {
-    NwFrame f;
-    memset(&f, 0, sizeof f);
-    f.kind = NW_WS_PING;
-    send_frame(fd, &f);
-}
-
-// The next binary frame, decoded; kind 0 on a timeout.
-static NwFrame recv_frame(int fd, int timeout_ms, cb_buf *m) {
-    NwFrame f;
-    memset(&f, 0, sizeof f);
-    cb_buf_reset(m);
-    if (tc_ws_recv(fd, timeout_ms, m) != CB_WS_OP_BIN) return f;
-    T_EQ_INT(nw_frame_decode(m->p, (int)m->len, &f), NW_OK);
-    return f;
-}
-
-static void the_upgrade_route(void) {
-    tc_response r;
-    T_EQ_INT(tc_http(g_port, "GET", "/v1/stream", NULL, NULL, 0, &r), 0);
-    T_EQ_INT(r.status, 400);   // no proto
-    tc_response_free(&r);
-    T_EQ_INT(tc_http(g_port, "GET", "/v1/stream?proto=nw2", NULL, NULL, 0, &r), 0);
-    T_EQ_INT(r.status, 400);
-    tc_response_free(&r);
-    // The facade's old URL is not routed.
-    T_EQ_INT(tc_http(g_port, "GET", "/realtime/v1/websocket?apikey=k&vsn=2.0.0", NULL, NULL, 0, &r), 0);
-    T_EQ_INT(r.status, 404);
-    tc_response_free(&r);
-    int fd = open_ws();
-    T_CHECK(fd >= 0);
-    close(fd);
-}
-
-static void subscribe_publish_and_isolation(void) {
-    cb_buf m;
-    cb_buf_init(&m);
-    int a = open_ws(), b = open_ws(), c = open_ws();
-    T_CHECK(a >= 0 && b >= 0 && c >= 0);
-    // a: a seated player's game; b: a spectator of it; c: another game.
-    send_auth(a, U1);
-    send_sub(a, NW_WS_SUB, 1, NW_SUB_GAME, G);
-    NwFrame f = recv_frame(a, 2000, &m);
-    T_CHECK(f.kind == NW_WS_ACK && f.ref == 1 && f.why == 0 && f.seated == 1);
-    send_auth(b, U2);
-    send_sub(b, NW_WS_SUB, 1, NW_SUB_GAME, G);
-    f = recv_frame(b, 2000, &m);
-    T_CHECK(f.kind == NW_WS_ACK && f.why == 0 && f.seated == 0);
-    send_auth(c, U2);
-    send_sub(c, NW_WS_SUB, 1, NW_SUB_GAME, "zzzzzz");
-    T_EQ_INT(recv_frame(c, 2000, &m).kind, NW_WS_ACK);
-    // U2 may not hear U1's chat.
-    send_sub(c, NW_WS_SUB, 2, NW_SUB_CHAT, G);
-    f = recv_frame(c, 2000, &m);
-    T_CHECK(f.kind == NW_WS_ACK && f.ref == 2 && f.why != 0);
-
-    // Publish from this thread (as a bot drive would): each hears its own topic.
-    const uint8_t cast[] = { 1, 2 };
-    rt_publish_cast(g_ctx.rt, U1, G, 7, cast, 2);
-    rt_publish_cast(g_ctx.rt, NULL, G, 7, cast, 1);
-    f = recv_frame(a, 2000, &m);
-    T_CHECK(f.kind == NW_WS_CAST && f.version == 7 && f.blob.len == 2);
-    f = recv_frame(b, 2000, &m);
-    T_CHECK(f.kind == NW_WS_CAST && f.version == 7 && f.blob.len == 1);
-    T_EQ_INT(recv_frame(c, 300, &m).kind, 0);   // nothing for another game
-    T_EQ_INT(recv_frame(a, 300, &m).kind, 0);   // and a's stream got only its own
-
-    // Frames sent back to back are answered in order (one job per connection at a time).
-    send_sub(a, NW_WS_SUB, 10, NW_SUB_CHAT, G);
-    send_ping(a);
-    send_sub(a, NW_WS_SUB, 11, NW_SUB_GAMES, "");
-    send_sub(a, NW_WS_UNSUB, 0, NW_SUB_GAME, G);
-    send_ping(a);
-    f = recv_frame(a, 2000, &m);
-    T_CHECK(f.kind == NW_WS_ACK && f.ref == 10);
-    T_EQ_INT(recv_frame(a, 2000, &m).kind, NW_WS_PONG);
-    f = recv_frame(a, 2000, &m);
-    T_CHECK(f.kind == NW_WS_ACK && f.ref == 11);
-    T_EQ_INT(recv_frame(a, 2000, &m).kind, NW_WS_PONG);   // UNSUB has no reply
-    // After the UNSUB, a hears no casts, but still its chat.
-    rt_publish_cast(g_ctx.rt, U1, G, 8, cast, 2);
-    cb_chat_row ch;
-    memset(&ch, 0, sizeof ch);
-    strcpy(ch.id, "m1");
-    strcpy(ch.game_id, G);
-    strcpy(ch.user_id, U2);
-    ch.message = "hello";
-    ch.created_at = 5;
-    rt_publish_chat(g_ctx.rt, G, &ch, NULL, 0);
-    f = recv_frame(a, 2000, &m);
-    T_CHECK(f.kind == NW_WS_CHAT && f.chat.message_len == 5 && memcmp(f.chat.message, "hello", 5) == 0);
-    T_EQ_INT(recv_frame(b, 300, &m).kind, 0);   // a spectator did not subscribe to the chat
-    // A spectator's UNSUB quiets the spectators' stream too.
-    send_sub(b, NW_WS_UNSUB, 0, NW_SUB_GAME, G);
-    send_ping(b);
-    T_EQ_INT(recv_frame(b, 2000, &m).kind, NW_WS_PONG);
-    rt_publish_cast(g_ctx.rt, NULL, G, 9, cast, 1);
-    T_EQ_INT(recv_frame(b, 300, &m).kind, 0);
-    close(a);
-    close(b);
-    close(c);
-    cb_buf_free(&m);
-}
-
-static void garbage_closes_the_socket(void) {
-    cb_buf m;
-    cb_buf_init(&m);
-    int a = open_ws();
-    T_EQ_INT(tc_ws_send(a, CB_WS_OP_BIN, "this is not a frame", 19), 0);
-    cb_buf_reset(&m);
-    T_EQ_INT(tc_ws_recv(a, 2000, &m), CB_WS_OP_CLOSE);
-    T_EQ_INT(m.len, 2);
-    T_EQ_INT((m.p[0] << 8) | m.p[1], 1003);
-    close(a);
-    // A socket that closes with a subscription still out on the pool does not take the server down.
-    for (int i = 0; i < 20; i++) {
-        int b = open_ws();
-        send_auth(b, U1);
-        send_sub(b, NW_WS_SUB, 1, NW_SUB_CHAT, G);
-        close(b);
-    }
-    int c = open_ws();
-    send_ping(c);
-    T_EQ_INT(recv_frame(c, 2000, &m).kind, NW_WS_PONG);
-    close(c);
-    cb_buf_free(&m);
-}
-
-// ---- MQTT on the same hub (stream_mqtt.h) ------------------------------------------------
+// ---- the hub (stream_mqtt.h) ------------------------------------------------
 
 static int open_mqtt(void) { return tc_ws_open(g_port, "/mqtt", "Sec-WebSocket-Protocol: mqtt\r\n"); }
 
@@ -274,23 +115,27 @@ static void mqtt_upgrade_route(void) {
     T_EQ_INT(tc_http(g_port, "GET", "/mqtt", NULL, NULL, 0, &r), 0);
     T_EQ_INT(r.status, 426);   // not a WebSocket upgrade at all
     tc_response_free(&r);
+    // The API Gateway stream's route and the facade's are not routed.
+    T_EQ_INT(tc_http(g_port, "GET", "/v1/stream?proto=nw1", NULL, NULL, 0, &r), 0);
+    T_EQ_INT(r.status, 404);
+    tc_response_free(&r);
+    T_EQ_INT(tc_http(g_port, "GET", "/realtime/v1/websocket?apikey=k&vsn=2.0.0", NULL, NULL, 0, &r), 0);
+    T_EQ_INT(r.status, 404);
+    tc_response_free(&r);
 }
 
 static void mqtt_publishes_reach_their_topics(void) {
     cb_buf m;
     cb_buf_init(&m);
     MqttPacket p;
-    // a: U1 over MQTT, everything of its own; b: U2 over MQTT, the spectators of G;
-    // c: U1 over nw1, its views. One hub, both protocols, one publish each.
+    // a: U1, everything of its own; b: U2, the spectators of G; c: U1 again,
+    // its views alone. One publish each.
     int a = mq_open_as(U1, &m);
     mq_subscribe(a, 1, "u/" U1 "/#", &m);
     int b = mq_open_as(U2, &m);
     mq_subscribe(b, 1, "s/" G, &m);
-    int c = open_ws();
-    send_auth(c, U1);
-    send_sub(c, NW_WS_SUB, 3, NW_SUB_GAMES, "");
-    NwFrame f = recv_frame(c, 2000, &m);
-    T_CHECK(f.kind == NW_WS_ACK && f.ref == 3 && f.why == 0);
+    int c = mq_open_as(U1, &m);
+    mq_subscribe(c, 3, "u/" U1 "/v", &m);
 
     cb_view_row v;
     memset(&v, 0, sizeof v);
@@ -306,8 +151,8 @@ static void mqtt_publishes_reach_their_topics(void) {
     NwFrame pf;
     T_EQ_INT(nw_frame_decode(p.payload, p.payload_len, &pf), NW_OK);   // the payload is the nw1 message
     T_CHECK(pf.kind == NW_WS_VIEW && pf.version == 4 && pf.blob.len == 2);
-    f = recv_frame(c, 2000, &m);
-    T_CHECK(f.kind == NW_WS_VIEW && f.version == 4);
+    T_EQ_INT(mq_recv(c, 2000, &m, &p), MQTT_PUBLISH);
+    T_EQ_MEM(p.topic, p.topic_len, "u/" U1 "/v", 2 + 36 + 2);
     T_EQ_INT(mq_recv(b, 300, &m, &p), 0);   // U2 hears nothing of U1's
 
     const uint8_t cast[] = { 7, 8, 9 };
@@ -318,6 +163,7 @@ static void mqtt_publishes_reach_their_topics(void) {
     T_EQ_INT(mq_recv(b, 2000, &m, &p), MQTT_PUBLISH);
     T_EQ_MEM(p.topic, p.topic_len, "s/" G, 2 + 6);
     T_EQ_INT(mq_recv(a, 300, &m, &p), 0);   // a holds no s/ subscription
+    T_EQ_INT(mq_recv(c, 300, &m, &p), 0);   // nor c any cast
 
     cb_chat_row ch;
     memset(&ch, 0, sizeof ch);
@@ -333,15 +179,15 @@ static void mqtt_publishes_reach_their_topics(void) {
     T_CHECK(pf.kind == NW_WS_CHAT && pf.chat.message_len == 2);
     T_EQ_INT(mq_recv(b, 300, &m, &p), 0);
 
-    // PINGREQ, then the account deleted: U1's sockets end, both protocols; U2's stays.
+    // PINGREQ, then the account deleted: both of U1's sockets end; U2's stays.
     uint8_t pk[8];
     mq_send(a, pk, mqtt_write_bare(pk, sizeof pk, MQTT_PINGREQ));
     T_EQ_INT(mq_recv(a, 2000, &m, &p), MQTT_PINGRESP);
-    cb_rt_forget_user(g_ctx.rt, U1, NULL, 0);
+    cb_rt_forget_user(g_ctx.rt, U1);
     T_EQ_INT(mq_recv(a, 2000, &m, &p), -1);
     T_EQ_INT(close_code(&m), 1008);
-    cb_buf_reset(&m);
-    T_EQ_INT(tc_ws_recv(c, 2000, &m), CB_WS_OP_CLOSE);
+    T_EQ_INT(mq_recv(c, 2000, &m, &p), -1);
+    T_EQ_INT(close_code(&m), 1008);
     mq_send(b, pk, mqtt_write_bare(pk, sizeof pk, MQTT_PINGREQ));
     T_EQ_INT(mq_recv(b, 2000, &m, &p), MQTT_PINGRESP);
     close(a);
@@ -404,6 +250,20 @@ static void mqtt_refusals_end_the_connection(void) {
     T_EQ_INT(mq_recv(a, 2000, &m, &p), -1);
     T_EQ_INT(close_code(&m), 1000);
     close(a);
+    // Sockets that close with their CONNECT and SUBSCRIBE still out on the
+    // pool do not take the server down.
+    for (int i = 0; i < 20; i++) {
+        a = open_mqtt();
+        int n = mqtt_write_connect(b, sizeof b, U1 "-z", 38, 60, "jwt", 3, (const uint8_t *)"tok-" U1, 40);
+        MqttTopic t = { "u/" U1 "/v", 40, 0 };
+        n += mqtt_write_subscribe(b + n, (int)sizeof b - n, 1, &t, 1);
+        mq_send(a, b, n);
+        close(a);
+    }
+    a = mq_open_as(U1, &m);
+    mq_send(a, b, mqtt_write_bare(b, sizeof b, MQTT_PINGREQ));
+    T_EQ_INT(mq_recv(a, 2000, &m, &p), MQTT_PINGRESP);
+    close(a);
     cb_buf_free(&m);
 }
 
@@ -417,14 +277,10 @@ static void stop(void) {
     cb_rt_free(g_ctx.rt);
     cb_router_free(g_ctx.router);
     cb_loop_free(g_ctx.loop);
-    rtf_reset();
 }
 
 int main(void) {
     start();
-    T_RUN(the_upgrade_route);
-    T_RUN(subscribe_publish_and_isolation);
-    T_RUN(garbage_closes_the_socket);
     T_RUN(mqtt_upgrade_route);
     T_RUN(mqtt_publishes_reach_their_topics);
     T_RUN(mqtt_refusals_end_the_connection);

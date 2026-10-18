@@ -1,7 +1,7 @@
 // fz_netwire.c - the binary surface's codec (kernel netwire.h), both ends:
-// what the server decodes from a client (requests, stream frames, the text
-// form of a frame) and what a client decodes from the server (the session,
-// a view, a replay, every list and its rows). The same functions run in
+// what the server decodes from a client (requests) and what a client decodes
+// from the server (a stream frame, the session, a view, a replay, every list
+// and its rows). The same functions run in
 // c_base, the web's wasm and the iOS app. Every decode that succeeds must
 // re-encode to the same bytes.
 #include "fz.h"
@@ -18,26 +18,22 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     uint8_t *out = malloc(BIG + 64);
     if (!out) abort();
     switch (which) {
-    case 0: {   // server side: a request body, a stream frame
+    case 0: {   // server side: a request body
         static NwRequest q;
         if (nw_request_decode(p, len, &q) == NW_OK) {
             FZ_CHECK(q.name_len <= NW_NAME_MAX && q.password_len <= NW_PASSWORD_MAX);
             FZ_CHECK(q.refresh_len <= NW_REFRESH_MAX && q.message_len <= NW_CHAT_MAX);
             FZ_CHECK(nw_request_encode(&q, out, BIG) == len && memcmp(out, p, (size_t)len) == 0);
         }
-        static NwFrame f;
-        if (nw_frame_decode(p, len, &f) == NW_OK) {
-            FZ_CHECK(f.gid_len <= NW_GID_MAX && f.token_len <= NW_ACCESS_MAX);
-            FZ_CHECK(!f.blob.len || (f.blob.p >= p && f.blob.p + f.blob.len <= p + len));
-            FZ_CHECK(nw_frame_encode(&f, out, BIG) == len && memcmp(out, p, (size_t)len) == 0);
-        }
         break;
     }
-    case 1: {   // the text form
-        int k = nw_text_decode((const char *)p, len, out, BIG);
-        if (k >= 0) {
-            static NwFrame f;
-            (void)nw_frame_decode(out, k, &f);
+    case 1: {   // client side: a stream frame (an MQTT PUBLISH's payload)
+        static NwFrame f;
+        if (nw_frame_decode(p, len, &f) == NW_OK) {
+            FZ_CHECK(f.kind == NW_WS_VIEW || f.kind == NW_WS_CAST || f.kind == NW_WS_CHAT);
+            FZ_CHECK(f.gid_len <= NW_GID_MAX);
+            FZ_CHECK(!f.blob.len || (f.blob.p >= p && f.blob.p + f.blob.len <= p + len));
+            FZ_CHECK(nw_frame_encode(&f, out, BIG) == len && memcmp(out, p, (size_t)len) == 0);
         }
         break;
     }

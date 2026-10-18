@@ -15,8 +15,8 @@
 //   * a game commit carries the version it read, and loses (CB_E_CONFLICT) if
 //     the row moved on; the caller reloads and re-runs (app/table_ops.h);
 //   * a bot drive holds a lease (lease_acquire/renew/release, 25 s TTL);
-//   * nothing else needs ordering: users, chat, snapshots and connections are
-//     single writes.
+//   * nothing else needs ordering: users, chat and snapshots are single
+//     writes.
 //
 // CONVENTIONS. Times are ms since the Unix epoch. Ids are canonical lowercase
 // UUID text (CB_UUID_LEN), game ids 12 hex characters (6 before). Byte fields are owned by
@@ -209,23 +209,6 @@ typedef struct {
 
 void cb_chat_row_free(cb_chat_row *c);
 
-// A realtime connection under API Gateway (realtime/rt_apigw.h): who it is and
-// what it has joined. serve keeps these in memory and never stores them.
-#define CB_CONN_TOPICS 16
-typedef struct {
-    char    conn_id[64];               // API Gateway connectionId
-    cb_uuid user_id;                   // "" until a frame presents a token
-    int     n_topics;
-    char    topics[CB_CONN_TOPICS][CB_TOPIC_MAX];   // bare topics ("gu-ab12cd-<uid>")
-    int64_t expires_at;                // TTL, ms like every time here, set once when the row is
-                                       // first stored (rt_apigw.c CONN_TTL_MS: past API Gateway's
-                                       // two-hour cap on a connection). DynamoDB keeps it as
-                                       // expires_at in SECONDS (its TTL unit) and the exact ms as
-                                       // expires_ms.
-    int64_t version;                   // the stored row's write count: conn_get fills it, conn_put
-                                       // expects it (0: no live row). See conn_put.
-} cb_conn_row;
-
 // What a snapshot query asks (PostgREST's game_snapshots shapes).
 typedef struct {
     const char *viewer_id;   // REQUIRED: only snapshots whose player_ids contain it
@@ -241,7 +224,6 @@ typedef bool (*cb_bot_fn)(const cb_bot_row *r, void *ud);
 typedef bool (*cb_rating_fn)(const cb_rating_row *r, void *ud);
 typedef bool (*cb_snapshot_fn)(const cb_snapshot_row *r, void *ud);
 typedef bool (*cb_chat_fn)(const cb_chat_row *r, void *ud);
-typedef bool (*cb_conn_fn)(const cb_conn_row *r, void *ud);
 typedef bool (*cb_name_fn)(const char *name, void *ud);   // a game id, a collection name
 typedef bool (*cb_user_fn)(const cb_user_row *r, void *ud);
 // The admin console's raw browse: one row as name/value text pairs.
@@ -404,33 +386,6 @@ typedef struct cb_store_ops {
     // Oldest first, the newest `limit` (0: all).
     int (*chat_list)(cb_store *s, const char *game_id, int limit, cb_chat_fn fn, void *ud);
 
-    // realtime connections (API Gateway only)
-    //
-    // conn_put is a compare-and-set on the row's version, because API Gateway
-    // runs a connection's frames as concurrent invocations: a page's frames
-    // arrive inside a few milliseconds, and a plain read-modify-write keeps
-    // only the last writer's topic. `was` is the row this caller read (conn_get,
-    // or a zeroed row with version 0 when there was none or it had expired) and
-    // `c` the row to store: it is written when the stored row is still at
-    // was->version, leaving it at was->version + 1, and CB_E_CONFLICT answers
-    // that another writer moved it first: the caller re-reads, redoes its change
-    // and puts again. Nothing is read here (the caller's read is the one).
-    //
-    // The topic index (conns_by_topic) follows the row: entries for the topics
-    // `c` adds are written BEFORE the compare-and-set and entries for the topics
-    // it drops AFTER it, so the index always holds at least the stored row's
-    // topics. A lost race can leave an entry the row does not list; it only
-    // ever names a topic some frame on this connection was allowed to hear, and
-    // it goes with the connection (conn_delete, a push's 410, or the TTL).
-    int (*conn_put)(cb_store *s, const cb_conn_row *was, const cb_conn_row *c);
-    int (*conn_get)(cb_store *s, const char *conn_id, cb_conn_row *out);
-    int (*conn_delete)(cb_store *s, const char *conn_id);
-    // Every live connection in `topic`'s index, past-expiry entries skipped:
-    // conn_id and expires_at are what a caller may rely on (DynamoDB's index
-    // entries carry nothing else). conn_get answers
-    // CB_E_NOT_FOUND for a row past expires_at.
-    int (*conns_by_topic)(cb_store *s, const char *topic, cb_conn_fn fn, void *ud);
-
     // admin console: list the collections, browse one in pages, and run one
     // read-only statement (SQL for SQLite, PartiQL for DynamoDB; writes only
     // with allow_write: CB_E_FORBIDDEN otherwise). Collections are SQLite's
@@ -537,7 +492,7 @@ void cb_store_throttles_get(cb_store_throttles *out);
 
 // The SQLite schema version this binary applies (store_sqlite.c), and the
 // embedded schema text (build/gen/schema_sql.c, from sql/schema.sql).
-#define CB_SCHEMA_VERSION 3
+#define CB_SCHEMA_VERSION 4
 extern const char cbase_schema_sql[];
 extern const unsigned long cbase_schema_sql_len;
 

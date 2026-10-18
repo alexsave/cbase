@@ -423,7 +423,7 @@ int cb_app_delete_account(cb_ctx *ctx, const char *user_id, int *refused_code, i
     if (rc == CB_E_NOT_FOUND) rc = CB_OK;
     // 5. Their open streams end: their seats keep the id, so a page left open
     //    would go on hearing those games (smoke_matrix.c).
-    if (rc == CB_OK) cb_rt_forget_user(ctx->rt, user_id, (const char (*)[CB_GAME_ID_MAX + 1])l.ids, l.n);
+    if (rc == CB_OK) cb_rt_forget_user(ctx->rt, user_id);
     free(l.ids);
     return rc;
 }

@@ -43,7 +43,6 @@ static bool on_bot(const cb_bot_row *b, void *ud) { return true; }
 static bool on_rating(const cb_rating_row *r, void *ud) { return true; }
 static bool on_snap(const cb_snapshot_row *s, void *ud) { FZ_CHECK(s->n_players >= 0 && s->n_players <= CB_MAX_SEATS); return true; }
 static bool on_chat(const cb_chat_row *c, void *ud) { return true; }
-static bool on_conn(const cb_conn_row *c, void *ud) { FZ_CHECK(c->n_topics >= 0 && c->n_topics <= CB_CONN_TOPICS); return true; }
 static bool on_row(int n, const char *const *names, const char *const *values, void *ud) { return true; }
 
 #define U1 "11111111-1111-4111-8111-111111111111"
@@ -69,7 +68,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     cb_store_set_deadline(0);
     for (int step = 0; step < 16 && fz_left(&prog); step++) {
         int op = fz_u8(&prog) % 24;
-        cb_user_row u; cb_game_row g; cb_refresh_row rr; cb_conn_row cn; cb_uuid tok;
+        cb_user_row u; cb_game_row g; cb_refresh_row rr; cb_uuid tok;
         memset(&g, 0, sizeof g);
         switch (op) {
         case 0: (void)CB_STORE_CALL(s, user_get, U1, &u); break;
@@ -85,8 +84,9 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         case 10: { const char *ids[2] = { U1, U2 }; int32_t out[2]; (void)CB_STORE_CALL(s, ratings_for, ids, 2, out); break; }
         case 11: { cb_snapshot_query q = { U1, NULL, NULL, 10, true }; (void)CB_STORE_CALL(s, snapshots_query, &q, on_snap, NULL); break; }
         case 12: (void)CB_STORE_CALL(s, chat_list, GID, 50, on_chat, NULL); break;
-        case 13: (void)CB_STORE_CALL(s, conn_get, "conn1", &cn); break;
-        case 14: (void)CB_STORE_CALL(s, conns_by_topic, "game-" GID, on_conn, NULL); break;
+        // The chat's members (the realtime publish's targets: one per member's own topic).
+        case 13: (void)CB_STORE_CALL(s, game_members, GID, on_name, NULL); break;
+        case 14: (void)CB_STORE_CALL(s, is_member, GID, U2); break;
         case 15: (void)CB_STORE_CALL(s, refresh_take, "00", 1000, 60000, &rr); break;
         case 16: (void)CB_STORE_CALL(s, users_list, "", 0, 10, on_user, NULL); break;
         case 17: (void)CB_STORE_CALL(s, admin_collections, on_name, NULL); break;

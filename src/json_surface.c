@@ -979,30 +979,6 @@ bool dw_item_signin_fails(cb_span it, int64_t now_ms, cb_signin_fails *f) {
     return true;
 }
 
-bool dw_item_conn(cb_span it, cb_conn_row *c) {
-    memset(c, 0, sizeof *c);
-    ix x;
-    ix_build(it, &x);
-    if (!ix_s(&x, "conn_id", c->conn_id, sizeof c->conn_id)) return false;
-    ix_s(&x, "user_id", c->user_id, sizeof c->user_id);
-    c->expires_at = ix_n_or(&x, "expires_ms", 0);
-    c->version = ix_n_or(&x, "ver", 0);   // a row written before versions: 0
-    cb_span list, e;
-    size_t pos = 0;
-    if (ix_get(&x, "topics", "L", &list))
-        while (c->n_topics < CB_CONN_TOPICS && dw_array_next(list, &pos, &e)) {
-            // {"S": topic}; a row written before 2026-10-17 has {"M": {"t": topic, "r": ref}}
-            // (it lives at most its two-hour TTL).
-            cb_span m, tok;
-            char *t = c->topics[c->n_topics];
-            bool ok = member(e, "M", &m) ? dw_get_s(m, "t", t, sizeof c->topics[0])
-                      : member(e, "S", &tok) && tok.n >= 2 && tok.p[0] == '"' && cb_json_unescape(tok, t, sizeof c->topics[0]) >= 0;
-            if (!ok) return false;
-            c->n_topics++;
-        }
-    return true;
-}
-
 bool dw_item_scan(cb_span it, char game_id[CB_GAME_ID_MAX + 1], int64_t *updated_at, int64_t *last_commit_at) {
     ix x;
     ix_build(it, &x);
@@ -1134,11 +1110,6 @@ void dw_get_member(dw_req *r, const char *table, const char *game, const char *u
     get_item(r, table, k(pk, sizeof pk, "GAME#", game), k(sk, sizeof sk, "MEMBER#", user));
 }
 
-void dw_get_conn(dw_req *r, const char *table, const char *conn_id) {
-    char pk[KB];
-    get_item(r, table, k(pk, sizeof pk, "CONN#", conn_id), "CONN");
-}
-
 // ---- queries ----------------------------------------------------------------------------------
 
 void dw_query(dw_req *r, const char *table, dw_query_kind kind, const char *arg, bool forward, int limit, cb_span start) {
@@ -1157,7 +1128,6 @@ void dw_query(dw_req *r, const char *table, dw_query_kind kind, const char *arg,
     case DWQ_PLAYER_SNAPSHOTS: index = GSI2; pfx = "PLAYER#"; fwd = forward; break;
     case DWQ_SNAPSHOT_ITEMS: pfx = "SNAP#"; break;
     case DWQ_CHAT: pfx = "CHAT#"; fwd = false; break;
-    case DWQ_TOPIC_CONNS: pfx = "TOPIC#"; break;
     case DWQ_SCAN: pfx = "SCAN"; arg = ""; break;
     case DWQ_BOTS: index = GSI2; pfx = "BOTS"; arg = ""; break;
     case DWQ_RATINGS: index = GSI2; pfx = "RATINGS"; arg = ""; break;
@@ -2252,127 +2222,6 @@ void dw_chat_put(dw_req *r, const char *table, const cb_chat_row *c) {
     txn_end(&w);
 }
 
-static void conn_attrs(cb_jw *w, const cb_conn_row *c) {
-    av_s(w, "conn_id", c->conn_id);
-    if (c->user_id[0]) av_s(w, "user_id", c->user_id);
-    cb_jw_key(w, "topics");
-    cb_jw_obj(w);
-    cb_jw_key(w, "L");
-    cb_jw_arr(w);
-    for (int i = 0; i < c->n_topics; i++) {
-        cb_jw_obj(w);
-        cb_jw_kstr(w, "S", c->topics[i]);
-        cb_jw_end(w);
-    }
-    cb_jw_end(w);
-    cb_jw_end(w);
-    av_n(w, "expires_ms", c->expires_at);
-    av_n(w, DW_TTL_ATTR, c->expires_at / 1000);   // the TTL attribute is in seconds
-    av_n(w, "ver", c->version);
-}
-
-// PutItem: the CONN item at was_version + 1, conditioned on the stored version
-// being was_version (0: there is no row, a row written before versions existed,
-// or one past its TTL that DynamoDB has not swept yet; `now_ms` decides).
-// Refused is a lost race (store.h conn_put). Not a transaction: one item, so a
-// plain conditional write at half a transaction's units.
-void dw_conn_put(dw_req *r, const char *table, const cb_conn_row *c, int64_t was_version, int64_t now_ms) {
-    char pk[KB];
-    cb_conn_row next = *c;
-    next.version = was_version + 1;
-    cb_jw w;
-    begin(r, &w, "PutItem");
-    cb_jw_kstr(&w, "TableName", table);
-    cb_jw_key(&w, "Item");
-    cb_jw_obj(&w);
-    av_s(&w, "pk", k(pk, sizeof pk, "CONN#", c->conn_id));
-    av_s(&w, "sk", "CONN");
-    conn_attrs(&w, &next);
-    cb_jw_end(&w);   // Item
-    cb_jw_kstr(&w, "ConditionExpression", was_version == 0 ? "attribute_not_exists(#ver) OR #expires_ms < :now"
-                                                            : "#ver = :ver");
-    cb_jw_key(&w, "ExpressionAttributeNames");
-    cb_jw_obj(&w);
-    cb_jw_kstr(&w, "#ver", "ver");
-    if (was_version == 0) cb_jw_kstr(&w, "#expires_ms", "expires_ms");
-    cb_jw_end(&w);
-    cb_jw_key(&w, "ExpressionAttributeValues");
-    cb_jw_obj(&w);
-    if (was_version == 0) av_n(&w, ":now", now_ms);
-    else av_n(&w, ":ver", was_version);
-    cb_jw_end(&w);
-    finish(&w);
-}
-
-void dw_conn_index(dw_req *r, const char *table, const char *conn_id, const char *const *topics, int n, bool put,
-                   int64_t expires_ms) {
-    char pk[KB], tpk[KB];
-    cb_jw w;
-    begin(r, &w, "BatchWriteItem");
-    cb_jw_key(&w, "RequestItems");
-    cb_jw_obj(&w);
-    cb_jw_key(&w, table);
-    cb_jw_arr(&w);
-    k(pk, sizeof pk, "CONN#", conn_id);
-    for (int i = 0; i < n; i++) {
-        bool dup = false;
-        for (int j = 0; j < i; j++) dup |= strcmp(topics[j], topics[i]) == 0;
-        if (dup) continue;
-        k(tpk, sizeof tpk, "TOPIC#", topics[i]);
-        cb_jw_obj(&w);
-        cb_jw_key(&w, put ? "PutRequest" : "DeleteRequest");
-        cb_jw_obj(&w);
-        if (put) {
-            cb_jw_key(&w, "Item");
-            cb_jw_obj(&w);
-            av_s(&w, "pk", tpk);
-            av_s(&w, "sk", pk);
-            av_s(&w, "conn_id", conn_id);
-            av_n(&w, "expires_ms", expires_ms);
-            av_n(&w, DW_TTL_ATTR, expires_ms / 1000);
-            cb_jw_end(&w);
-        } else {
-            key2(&w, tpk, pk);
-        }
-        cb_jw_end(&w);
-        cb_jw_end(&w);
-    }
-    cb_jw_end(&w);
-    cb_jw_end(&w);
-    finish(&w);
-}
-
-void dw_conn_delete(dw_req *r, const char *table, const cb_conn_row *c) {
-    char pk[KB], tpk[KB];
-    cb_jw w;
-    begin(r, &w, "BatchWriteItem");
-    cb_jw_key(&w, "RequestItems");
-    cb_jw_obj(&w);
-    cb_jw_key(&w, table);
-    cb_jw_arr(&w);
-    k(pk, sizeof pk, "CONN#", c->conn_id);
-    cb_jw_obj(&w);
-    cb_jw_key(&w, "DeleteRequest");
-    cb_jw_obj(&w);
-    key2(&w, pk, "CONN");
-    cb_jw_end(&w);
-    cb_jw_end(&w);
-    for (int i = 0; i < c->n_topics; i++) {
-        bool dup = false;
-        for (int j = 0; j < i; j++) dup |= strcmp(c->topics[j], c->topics[i]) == 0;
-        if (dup) continue;
-        cb_jw_obj(&w);
-        cb_jw_key(&w, "DeleteRequest");
-        cb_jw_obj(&w);
-        key2(&w, k(tpk, sizeof tpk, "TOPIC#", c->topics[i]), pk);
-        cb_jw_end(&w);
-        cb_jw_end(&w);
-    }
-    cb_jw_end(&w);
-    cb_jw_end(&w);
-    finish(&w);
-}
-
 void dw_batch_delete(dw_req *r, const char *table, const cb_buf *keys, int n) {
     cb_jw w;
     begin(r, &w, "BatchWriteItem");
@@ -2396,7 +2245,7 @@ void dw_batch_delete(dw_req *r, const char *table, const cb_buf *keys, int n) {
 
 // ---- admin -----------------------------------------------------------------------------------------------
 
-static const char *const FAMILIES[] = { "USER", "EMAIL", "REFRESH", "GAME", "BOT", "SNAP", "CHAT", "CONN", "TOPIC", "SCAN" };
+static const char *const FAMILIES[] = { "USER", "EMAIL", "REFRESH", "GAME", "BOT", "SNAP", "CHAT", "SCAN" };
 #define N_FAMILIES (int)(sizeof FAMILIES / sizeof FAMILIES[0])
 
 const char *dw_collection(int i) { return i >= 0 && i < N_FAMILIES ? FAMILIES[i] : NULL; }
@@ -2735,81 +2584,6 @@ static int decode_http(const char *json, size_t len, cb_event *ev) {
     return CB_OK;
 }
 
-// ---- WebSocket ---------------------------------------------------------------------
-
-static void url_encode(cb_buf *b, const char *s, size_t n) {
-    static const char H[] = "0123456789ABCDEF";
-    for (size_t i = 0; i < n; i++) {
-        unsigned char c = (unsigned char)s[i];
-        if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') cb_buf_putc(b, (char)c);
-        else { cb_buf_putc(b, '%'); cb_buf_putc(b, H[c >> 4]); cb_buf_putc(b, H[c & 15]); }
-    }
-}
-
-typedef struct {
-    cb_buf q;
-    bool   bad;
-} query_acc;
-
-static bool on_param(cb_span key, cb_span val, cb_json_type t, void *ud) {
-    query_acc *a = ud;
-    if (t != CB_JSON_STR) return true;
-    char k[1024], v[4096];
-    int kn = cb_json_unescape(key, k, sizeof k), vn = cb_json_unescape(val, v, sizeof v);
-    if (kn < 0 || vn < 0) { a->bad = true; return false; }
-    if (a->q.len) cb_buf_putc(&a->q, '&');
-    url_encode(&a->q, k, (size_t)kn);
-    cb_buf_putc(&a->q, '=');
-    url_encode(&a->q, v, (size_t)vn);
-    return true;
-}
-
-// $connect's X-Cbase-Origin, whatever case the name arrives in. A value too
-// long for the field is kept as absent (it cannot be the secret).
-static bool on_ws_header(cb_span key, cb_span val, cb_json_type t, void *ud) {
-    cb_ws_event *w = ud;
-    if (t != CB_JSON_STR) return true;
-    char k[32];
-    int kn = cb_json_unescape(key, k, sizeof k);
-    if (kn < 0 || (size_t)kn != strlen(CB_ORIGIN_HEADER) || strncasecmp(k, CB_ORIGIN_HEADER, (size_t)kn) != 0) return true;
-    int vn = cb_json_unescape(val, w->origin, sizeof w->origin);
-    w->has_origin = vn >= 0 && (size_t)vn == strlen(w->origin);
-    if (!w->has_origin) w->origin[0] = 0;
-    return false;
-}
-
-static int decode_ws(const char *json, size_t len, cb_event *ev) {
-    cb_ws_event *w = &ev->ws;
-    cb_buf *st = &ev->storage;
-    if (!cb_json_get_str(json, len, "requestContext.routeKey", w->route_key, sizeof w->route_key) ||
-        !cb_json_get_str(json, len, "requestContext.connectionId", w->connection_id, sizeof w->connection_id))
-        return CB_E_INVALID;
-    cb_json_get_str(json, len, "requestContext.domainName", w->domain, sizeof w->domain);
-    cb_json_get_str(json, len, "requestContext.stage", w->stage, sizeof w->stage);
-    cb_span hdrs;
-    if (cb_json_find(json, len, "headers", &hdrs) == CB_JSON_OBJ) walk(hdrs, on_ws_header, w);
-
-    query_acc qa;
-    cb_buf_init(&qa.q);
-    qa.bad = false;
-    cb_span obj;
-    if (cb_json_find(json, len, "queryStringParameters", &obj) == CB_JSON_OBJ && !walk(obj, on_param, &qa)) qa.bad = true;
-    long query = qa.bad ? -1 : put_bytes(st, qa.q.p ? qa.q.p : (const uint8_t *)"", qa.q.len);
-    cb_buf_free(&qa.q);
-    if (query < 0) return CB_E_INVALID;
-
-    long body;
-    size_t body_len;
-    int rc = put_body(st, json, len, &body, &body_len);
-    if (rc != CB_OK) return rc;
-    if (st->oom) return CB_E_NOMEM;
-    const char *base = (const char *)st->p;
-    w->query = base + query;
-    w->body = body >= 0 ? (const uint8_t *)base + body : (const uint8_t *)base + query + strlen(base + query);
-    w->body_len = body_len;
-    return CB_OK;
-}
-
 // ---- the IoT custom authorizer -------------------------------------------------------
 
 static bool on_iot_header(cb_span key, cb_span val, cb_json_type t, void *ud) {
@@ -2981,10 +2755,7 @@ int cb_event_decode(const char *json, size_t len, cb_event *out) {
     cb_buf_reserve(&out->storage, len + 256);
     int rc;
     char src[32];
-    if (cb_json_find(json, len, "requestContext.connectionId", NULL) == CB_JSON_STR) {
-        out->kind = CB_EVENT_WS;
-        rc = decode_ws(json, len, out);
-    } else if (cb_json_find(json, len, "requestContext.http.method", NULL) == CB_JSON_STR) {
+    if (cb_json_find(json, len, "requestContext.http.method", NULL) == CB_JSON_STR) {
         out->kind = CB_EVENT_HTTP;
         rc = decode_http(json, len, out);
     } else if (cb_json_find(json, len, "protocolData", NULL) == CB_JSON_OBJ) {
@@ -3108,21 +2879,6 @@ int cb_event_encode_http(const cb_http_res *res, cb_buf *out) {
         cb_jw_strn(&w, (const char *)body, n);
     }
     cb_jw_kbool(&w, "isBase64Encoded", b64);
-    cb_jw_end(&w);
-    return cb_jw_ok(&w) ? CB_OK : CB_E_NOMEM;
-}
-
-int cb_event_encode_ws(int status, const char *body, size_t body_len, cb_buf *out) {
-    cb_jw w;
-    cb_jw_init(&w, out);
-    cb_jw_obj(&w);
-    cb_jw_kint(&w, "statusCode", status);
-    // The route response's message (base64 text): API Gateway sends the body
-    // to the client as one text frame.
-    if (body && body_len) {
-        cb_jw_key(&w, "body");
-        cb_jw_strn(&w, body, body_len);
-    }
     cb_jw_end(&w);
     return cb_jw_ok(&w) ? CB_OK : CB_E_NOMEM;
 }

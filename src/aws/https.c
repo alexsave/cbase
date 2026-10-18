@@ -60,7 +60,7 @@ static _Atomic int64_t g_us[K_N];
 
 static int host_kind(const char *host, bool tls) {
     if (!tls || strncmp(host, "dynamodb.", 9) == 0) return K_DDB;
-    if (strstr(host, ".execute-api.") || strstr(host, ".iot.")) return K_PUSH;
+    if (strstr(host, ".iot.")) return K_PUSH;
     return K_OTHER;
 }
 

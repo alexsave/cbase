@@ -1,4 +1,4 @@
-GET /v1/games?since=3&proto=nw1 HTTP/1.1
+GET /v1/games?since=3 HTTP/1.1
 Host: x
 Authorization: Bearer abc.def.ghi
 

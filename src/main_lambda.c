@@ -8,7 +8,6 @@
 // not wait for (app/after.h: an HTTP request's pushes and bot kicks, and the
 // edge cache's invalidation):
 //   HTTP       cb_handle -> cb_event_encode_http
-//   WS         cb_rt_apigw_event -> cb_event_encode_ws
 //   IOT_AUTH   cb_iot_authorize (an MQTT CONNECT to IoT Core) -> its policy
 //   SCHEDULE   cb_bots_scan                                      -> {}
 //   BOT_DRIVE  cb_bots_drive, budgeted against ctx->deadline_ms
@@ -43,7 +42,6 @@
 #include "ctx.h"
 #include "handler.h"
 #include "json_surface.h"
-#include "realtime/rt_apigw.h"
 #include "realtime/rt_iot.h"
 #include "store/store.h"
 #include "util/clock.h"
@@ -95,16 +93,6 @@ static int dispatch(cb_ctx *ctx, const cb_invocation *inv, cb_buf *out, char *wh
         snprintf(what, what_cap, "http %s %.60s %d", ev.http.method, ev.http.path ? ev.http.path : "", res.status);
         cb_viewer_key(ctx, &ev.http, g_viewer, sizeof g_viewer);
         cb_res_free(&res);
-        break;
-    }
-    case CB_EVENT_WS: {
-        int status = 500;
-        cb_buf answer;
-        cb_buf_init(&answer);
-        cb_rt_apigw_event(ctx, &ev.ws, &status, &answer);
-        rc = cb_event_encode_ws(status, (const char *)answer.p, answer.len, out);
-        cb_buf_free(&answer);
-        snprintf(what, what_cap, "ws %s %d", ev.ws.route_key, status);
         break;
     }
     case CB_EVENT_IOT_AUTH: {

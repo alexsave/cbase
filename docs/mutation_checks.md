@@ -541,3 +541,18 @@ Run one mutant at a time from a script that deletes the mutated file's objects b
 - netclient.c: "u/<me>/vx" read as the views topic -> `what_is_not_the_brokers` BAD.
 - netclient.c: the stream due at once while waiting for a token -> `connect_waits_for_a_fresh_token` due == -1.
 - netclient.c: a first session wiping holds made before it -> `holds_made_before_the_session_are_kept` SUBSCRIBE sent.
+
+## MQTT on IoT Core, stage 3: API Gateway removed (2026-10-18)
+
+The entries above for `stream.c`, `rt_apigw.c`, `apigw_mgmt.c`, the connection rows and the stream's AUTH, SUB, SUB_AS, ACK, PONG, CATCHUP and BATCH frames record code that no longer exists.
+
+- rt_local.c: forget closing only the user's first socket -> `unit_rt_local` `mqtt_publishes_reach_their_topics` the second socket ends too.
+- realtime.c: a chat sent to an empty member slot -> `unit_stream` `publishes` g_cap.n == 8.
+- realtime.c: a chat sent to one more target than its members -> `unit_stream` `publishes` g_cap.n == 6.
+- netwire.c: a removed client frame kind (PING) decoded -> `unit_netwire` `frames` every gone kind is NW_E_WIRE.
+- store_sqlite.c: schema 3 to 4 keeping the connection tables -> `unit_store` `open_applies_schema_and_seeds_bots` no rt_conn table.
+- iot_data.c: AWS_ENDPOINT_URL_IOT_DATA_PLANE ignored -> `unit_aws_calls` `iot_publish` the override answers 200.
+- iot_data.c: a plain http:// override taken -> `unit_aws_calls` `iot_publish` CB_E_INVALID.
+- config.c: a ":port" in CBASE_IOT_ENDPOINT taken -> `unit_edges` `configuration_refusals`.
+- realtime.c: the views topic misnamed -> `smoke_lambda_after` the publish's path is `u/<uid>/v`.
+- stream_mqtt.c: any user's topics allowed -> `smoke_matrix` `stream_frames` another user's views closes the socket.

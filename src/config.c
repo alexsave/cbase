@@ -65,13 +65,6 @@ int cb_config_from_env(cb_config *c, char *err, size_t cap) {
     cb_strlcpy(c->store, store, sizeof c->store);
     if (!copy(c->db_path, sizeof c->db_path, "CBASE_DB", env("CBASE_DB", "./cbase.sqlite"), err, cap)) return CB_E_INVALID;
     if (!copy(c->table, sizeof c->table, "CBASE_TABLE", env("CBASE_TABLE", "cbase"), err, cap)) return CB_E_INVALID;
-    if (!copy(c->ws_endpoint, sizeof c->ws_endpoint, "CBASE_WS_ENDPOINT", env("CBASE_WS_ENDPOINT", ""), err, cap)) return CB_E_INVALID;
-    const char *rr = env("CBASE_WS_ROUTE_REPLY", "no");
-    if (strcmp(rr, "yes") != 0 && strcmp(rr, "no") != 0) {
-        snprintf(err, cap, "CBASE_WS_ROUTE_REPLY=%s is not yes or no", rr);
-        return CB_E_INVALID;
-    }
-    c->ws_route_reply = strcmp(rr, "yes") == 0;
     if (!copy(c->iot_endpoint, sizeof c->iot_endpoint, "CBASE_IOT_ENDPOINT", env("CBASE_IOT_ENDPOINT", ""), err, cap))
         return CB_E_INVALID;
     for (const char *h = c->iot_endpoint; *h; h++)
@@ -136,8 +129,6 @@ void cb_config_each(const cb_config *c, cb_config_fn fn, void *ud) {
     fn("CBASE_STORE", c->store[0] ? c->store : "(by mode)", false, ud);
     fn("CBASE_DB", c->db_path, false, ud);
     fn("CBASE_TABLE", c->table, false, ud);
-    fn("CBASE_WS_ENDPOINT", c->ws_endpoint, false, ud);
-    fn("CBASE_WS_ROUTE_REPLY", c->ws_route_reply ? "yes" : "no", false, ud);
     fn("CBASE_IOT_ENDPOINT", c->iot_endpoint, false, ud);
     fn("CBASE_CF_DISTRIBUTION", c->cf_distribution[0] ? c->cf_distribution : "(unset: no edge invalidation)", false, ud);
     fn("CBASE_JWT_SECRET", c->jwt_secret_generated ? "(unset: random per process)" : "(set)", true, ud);

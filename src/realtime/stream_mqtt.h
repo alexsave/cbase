@@ -27,7 +27,6 @@
 #include "ctx.h"
 #include "netwire.h"
 #include "store/store.h"
-#include "stream.h"
 
 #include "../../../shared/c/mqtt/mqtt.h"
 
@@ -45,6 +44,10 @@
 // with one of these (CB_MQTT_USER_PREFIX followed by the user id and '/').
 #define CB_MQTT_USER_PREFIX "u/"
 #define CB_MQTT_WATCH_PREFIX "s/"
+
+// Where a reply goes: one whole packet, which the transport sends as one
+// binary WebSocket message.
+typedef void (*cb_rt_send_fn)(void *ud, const char *frame, size_t len);
 
 typedef struct {
     cb_uuid user_id;

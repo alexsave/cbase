@@ -12,7 +12,7 @@ Everything is in the region **US East (N. Virginia) us-east-1**.
 
 ## What I set up for you already
 
-- `c_base/ops/cbase.yaml`: one CloudFormation template that creates the whole backend (DynamoDB table, Lambda function, Function URL, WebSocket API, the one-minute bot scan, CloudFront at your domain).
+- `c_base/ops/cbase.yaml`: one CloudFormation template that creates the whole backend (DynamoDB table, Lambda function, Function URL, the IoT Core authorizer for realtime, the one-minute bot scan, CloudFront at your domain).
   It passes `cfn-lint`, and it is the live stack's template.
 - `c_base/ops/deploy.sh`: the CLI path, end to end (it created the live stack on 2026-10-14, and a template change still goes through it).
 - `c_base/ops/package.sh`: builds `c_base/build/cbase-lambda.zip`, the static arm64 Lambda binary, and prints its sha256.
@@ -123,8 +123,8 @@ Then add the certificate ARNs (`aws acm list-certificates --region us-east-1`).
 
 ## Closing the origin, the concurrency ceiling and the alarms
 
-The Function URL and the WebSocket API each have a public AWS hostname.
-CloudFront adds `X-Cbase-Origin: <CBASE_ORIGIN_SECRET>` to everything it sends to either, and the function answers anything without it 403 before it reads the store or a password (`src/config.h`).
+The Function URL and IoT Core's endpoint each have a public AWS hostname.
+CloudFront adds `X-Cbase-Origin: <CBASE_ORIGIN_SECRET>` to everything it sends to either, and the function answers anything without it 403 before it reads the store or a password (`src/config.h`); at IoT Core it is the custom authorizer that refuses a CONNECT without it (`realtime/rt_iot.c`).
 Adding the secret to a stack, or rotating it, is two deploys, because the function changes at once and the distribution takes minutes:
 
 ```
@@ -148,6 +148,21 @@ Sessions (`src/auth/auth.c`) are one `SESSION#<id>` item each: a sign-in writes 
 Ending a session, all of a user's sessions, or every session but the caller's on a password change is one write, where it was one write per token ever issued.
 Token rows expire by TTL (a week after they are spent, or with their session), and a session ends 180 days after it began.
 
+## Realtime: AWS IoT Core
+
+Pushes go out as MQTT over WebSocket from AWS IoT Core, reached at `wss://api.foolish.cards/mqtt` through CloudFront (DESIGN.md "Module: realtime").
+`ops/deploy.sh` reads this account's endpoint itself (`aws iot describe-endpoint --endpoint-type iot:Data-ATS`) and passes it as `IotEndpoint`; nothing else is configured by hand.
+
+To check it end to end with throwaway accounts (all deleted at the end):
+
+```
+c_base/build/cbase-bench mqtt --url https://api.foolish.cards --n 20 --pushes 20 \
+    --iot "$(aws iot describe-endpoint --endpoint-type iot:Data-ATS --query endpointAddress --output text)"
+```
+
+It prints the authorization matrix (who may CONNECT, what one may SUBSCRIBE to, IoT's own host refused around the edge) and the connect and push latencies, and saves them under `c_base/bench/results`.
+A CONNECT that IoT refuses is a closed socket with no CONNACK; the authorizer's own decision is in the function's log as `iot connect allow` or `iot connect deny`.
+
 ## The console path (the fallback)
 
 The steps below do the same by hand, with no CLI.
@@ -158,7 +173,7 @@ The steps below do the same by hand, with no CLI.
 2. Open **Billing and Cost Management > Free Tier** and note which plan the account is on.
    An account opened on or after 2025-07-15 is on the credit-based Free plan: note the credit balance and the plan end date shown there.
    An older account shows the legacy 12-month free tier; note whether it has expired.
-3. Everything this stack uses is in an always-free allowance except the WebSocket API, which costs cents a month after its first free year.
+3. Everything this stack uses is in an always-free allowance except AWS IoT Core (realtime), which costs cents a month after its first free year.
    On the Free plan, some services are blocked until you upgrade; if a stack resource later fails with an error that mentions the plan, upgrade to the Paid plan (Billing > Free Tier > Upgrade plan), which keeps any remaining credits.
 4. Set a spending alarm: **Billing and Cost Management > Budgets > Create budget > Use a template > Zero spend budget**, with your email.
    Two budgets are free.
@@ -387,7 +402,7 @@ The web is the only switch that matters on day one, and it flips back in minutes
 
 Lambda (1M requests and 400,000 GB-seconds a month), DynamoDB (25 GB, and 25 write and 25 read units of provisioned capacity, which the table and its indexes use exactly), the Function URL, EventBridge Scheduler, CloudFront and ACM are inside their always-free allowances at foolish's volume.
 DynamoDB's point-in-time recovery is not: $0.20 per GB-month, about a tenth of a cent a month at our few MB.
-The WebSocket API is free for the first 12 months, then $1 per million messages and $0.25 per million connection-minutes: cents a month.
+AWS IoT Core has a 12-month free tier, then $0.08 per million connection-minutes and $1.00 per million messages in us-east-1: cents a month.
 The code zip in S3 is about 2 MB: well under a cent a month.
 CloudWatch Logs keeps 30 days (set in the template) inside its 5 GB free allowance.
 The ten alarms are CloudWatch's always-free ten alarm metrics, and the SNS email topic is inside SNS's free 1,000 emails a month.

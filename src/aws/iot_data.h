@@ -14,6 +14,8 @@
 // The HTTP status IoT answered, or CB_E_IO (no credentials, the connection
 // failed) / CB_E_INVALID (no endpoint or topic). The endpoint may carry a
 // ":port" (a test's stand-in for AWS); it is always reached over TLS.
+// AWS_ENDPOINT_URL_IOT_DATA_PLANE ("https://host[:port]", no path) replaces
+// it when set, as the AWS SDKs' override does.
 int cb_iot_publish(const char *endpoint, const char *topic, const void *data, size_t len);
 
 #endif

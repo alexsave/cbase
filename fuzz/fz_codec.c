@@ -1,10 +1,9 @@
 // fz_codec.c - the small text decoders every boundary leans on: base64 (both
 // alphabets), hex and Postgres's \x bytea, UUIDs, ISO-8601 times, URL
-// percent-decoding, and the kernel's netwire base64 (a text frame's form).
+// percent-decoding.
 // Each decode that succeeds must round-trip through its own encoder.
 #include "fz.h"
 
-#include "netwire.h"
 #include "util/b64.h"
 #include "util/clock.h"
 #include "util/hex.h"
@@ -13,7 +12,7 @@
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     if (size < 1) return 0;
-    int which = data[0] % 8;
+    int which = data[0] % 7;
     size_t n = size - 1;
     char *s = fz_cstr(data + 1, n);
     size_t cap = n + 8;
@@ -64,18 +63,6 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     case 5: case 6: {
         int k = cb_url_decode(s, n, txt, n + 1, which == 6);
         if (k >= 0) FZ_CHECK((size_t)k <= n && txt[k] == 0);
-        break;
-    }
-    case 7: {
-        int k = nw_text_decode(s, (int)n, out, (int)cap);
-        if (k >= 0) {
-            FZ_CHECK((size_t)k <= cap);
-            int e = nw_text_encode(out, k, txt, (int)(2 * cap + 16));
-            FZ_CHECK(e >= 0);
-            uint8_t *back = malloc((size_t)k + 1);
-            FZ_CHECK(nw_text_decode(txt, e, back, k + 1) == k && memcmp(back, out, (size_t)k) == 0);
-            free(back);
-        }
         break;
     }
     }

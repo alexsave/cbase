@@ -324,26 +324,6 @@ static bool ref_item_signin_fails(cb_span it, int64_t now_ms, cb_signin_fails *f
     return true;
 }
 
-static bool ref_item_conn(cb_span it, cb_conn_row *c) {
-    memset(c, 0, sizeof *c);
-    if (!ref_get_s(it, "conn_id", c->conn_id, sizeof c->conn_id)) return false;
-    ref_get_s(it, "user_id", c->user_id, sizeof c->user_id);
-    c->expires_at = ref_n_or(it, "expires_ms", 0);
-    c->version = ref_n_or(it, "ver", 0);
-    cb_span topics, list, e;
-    size_t pos = 0;
-    if (ref_member(it, "topics", &topics) && ref_member(topics, "L", &list))
-        while (c->n_topics < CB_CONN_TOPICS && ref_array_next(list, &pos, &e)) {
-            cb_span m, tok;
-            char *t = c->topics[c->n_topics];
-            bool ok = ref_member(e, "M", &m) ? ref_get_s(m, "t", t, sizeof c->topics[0])
-                      : ref_member(e, "S", &tok) && tok.n >= 2 && tok.p[0] == '"' && cb_json_unescape(tok, t, sizeof c->topics[0]) >= 0;
-            if (!ok) return false;
-            c->n_topics++;
-        }
-    return true;
-}
-
 static bool ref_item_scan(cb_span it, char game_id[CB_GAME_ID_MAX + 1], int64_t *updated_at, int64_t *last_commit_at) {
     *updated_at = ref_n_or(it, "updated_at", 0);
     *last_commit_at = ref_n_or(it, "last_commit_at", 0);
@@ -407,7 +387,6 @@ static void same_items(cb_span it) {
     { cb_bot_row a, b; FZ_CHECK(dw_item_bot(it, &a) == ref_item_bot(it, &b)); FZ_CHECK(!memcmp(&a, &b, sizeof a)); }
     { cb_rating_row a, b; FZ_CHECK(dw_item_rating(it, &a) == ref_item_rating(it, &b)); FZ_CHECK(!memcmp(&a, &b, sizeof a)); }
     { cb_signin_fails a, b; FZ_CHECK(dw_item_signin_fails(it, 1000, &a) == ref_item_signin_fails(it, 1000, &b)); FZ_CHECK(!memcmp(&a, &b, sizeof a)); }
-    { cb_conn_row a, b; FZ_CHECK(dw_item_conn(it, &a) == ref_item_conn(it, &b)); FZ_CHECK(!memcmp(&a, &b, sizeof a)); }
     {
         char ga[CB_GAME_ID_MAX + 1] = "", gb[CB_GAME_ID_MAX + 1] = "";
         int64_t ua, ub, la, lb;
@@ -507,7 +486,6 @@ static void items_of(cb_span item) {
     cb_chat_row c; memset(&c, 0, sizeof c);
     (void)dw_item_chat(item, &c);
     cb_chat_row_free(&c);
-    cb_conn_row cn; (void)dw_item_conn(item, &cn);
     char gid[CB_GAME_ID_MAX + 1]; int64_t a, z; (void)dw_item_scan(item, gid, &a, &z);
     (void)dw_item_email_user(item, id);
     cb_buf k; cb_buf_init(&k); (void)dw_item_key(item, &k); cb_buf_free(&k);

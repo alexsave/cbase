@@ -1,9 +1,9 @@
 // roundtrip.c - `cbase-bench roundtrip`: a real game, measured as a client sees it.
 //
 // Each worker (--concurrency of them, each its own pair of players and its own
-// connections) signs up two users, opens one stream socket per player
-// (/v1/stream, its frames as base64 text, which both `cbase serve` and API
-// Gateway take) subscribed to that player's games list, and plays two-human
+// connections) signs up two users, opens one MQTT stream socket per player
+// (/mqtt, which `cbase serve` and IoT Core behind the edge both serve)
+// subscribed to that player's views (u/<uid>/v), and plays two-human
 // games: create, join, both ready, then moves until the game ends, and a new
 // game after that. Per move it measures:
 //
@@ -30,8 +30,9 @@
 #include "legal.h"
 #include "table.h"
 #include "net/ws.h"
-#include "netclient.h"   // NC_RETRY_*: the browser client's retry schedule, one owner
+#include "netclient.h"   // NC_PING_MS: the browser client's keep-alive, one owner
 #include "netwire.h"
+#include "mqtt/mqtt.h"
 #include "util/uuid.h"
 
 #include <pthread.h>
@@ -50,7 +51,7 @@
 // ---- one stream socket and its reader thread ---------------------------------------
 
 typedef struct {
-    bn_ws          *ws;
+    bn_mq           mq;
     pthread_t       th;
     pthread_mutex_t mu;
     pthread_cond_t  cv;
@@ -66,23 +67,23 @@ static void *reader(void *arg) {
     cb_buf b;
     cb_buf_init(&b);
     NwFrame f;
+    MqttPacket p;
     int64_t last_ping = bn_now_us();
     while (!atomic_load(&l->stop)) {
-        // The clients' ping, so the server's idle sweep keeps the socket.
-        if (bn_now_us() - last_ping > 25000000) {
-            memset(&f, 0, sizeof f);
-            f.kind = NW_WS_PING;
-            bn_ws_send_frame(l->ws, &f);
+        // The clients' keep-alive: a PINGREQ every 30 s inside the 60 s CONNECT asked for.
+        if (bn_now_us() - last_ping > (int64_t)NC_PING_MS * 1000) {
+            bn_mq_ping(&l->mq);
             last_ping = bn_now_us();
         }
-        int op = bn_ws_recv(l->ws, 200, &b);
-        if (op == -2) break;
-        if (op < 0) continue;
-        int64_t t = bn_now_us();
-        if (!bn_ws_frame_of(op, &b, &f) || f.kind != NW_WS_VIEW || !f.blob.len) continue;
+        int t = bn_mq_next(&l->mq, 200, &p, &b);
+        if (t < 0) break;
+        if (t != MQTT_PUBLISH) continue;
+        int64_t ts = bn_now_us();
+        if (nw_frame_decode(p.payload, p.payload_len, &f) != NW_OK || f.kind != NW_WS_VIEW || !f.blob.len) continue;
+        int64_t t_us = ts;
         int64_t v = f.version;
         pthread_mutex_lock(&l->mu);
-        l->t_us[l->count % RING] = t;
+        l->t_us[l->count % RING] = t_us;
         l->ver[l->count % RING] = v;
         l->count++;
         pthread_cond_broadcast(&l->cv);
@@ -115,6 +116,7 @@ static bool wait_version(listener *l, int64_t version, int timeout_ms, int64_t *
 
 typedef struct {
     char token[NW_ACCESS_MAX + 1];
+    char uid[NW_ID_MAX + 1];
     char auth[NW_ACCESS_MAX + 64];   // the header every call carries
 } player;
 
@@ -162,6 +164,7 @@ static int signup(worker *w, player *p, int k) {
     bool ok = s == 200 && nw_session_decode(r.body.p, (int)r.body.len, &ses) == NW_OK;
     if (ok) {
         snprintf(p->token, sizeof p->token, "%.*s", (int)ses.access_len, ses.access);
+        snprintf(p->uid, sizeof p->uid, "%.*s", (int)ses.user_id_len, ses.user_id);
         snprintf(p->auth, sizeof p->auth, "Authorization: Bearer %s\r\n", p->token);
     } else {
         fprintf(stderr, "bench: signup answered %d\n", s);
@@ -170,49 +173,23 @@ static int signup(worker *w, player *p, int k) {
     return ok ? 0 : -1;
 }
 
-static int send_auth(bn_ws *ws, const char *token) {
-    NwFrame f;
-    memset(&f, 0, sizeof f);
-    f.kind = NW_WS_AUTH;
-    f.token_len = (uint16_t)strlen(token);
-    memcpy(f.token, token, f.token_len);
-    return bn_ws_send_frame(ws, &f);
-}
-
-// Subscribes to the games list as the browser's client does (netclient.c):
-// the token, then the subscription, and on a refusal for the token both again
-// after NC_RETRY_FIRST_MS, doubling. Behind API Gateway each frame is its own
-// Lambda invocation, so a subscription sent right behind the token can be
-// handled before the token is stored, and is refused for want of a user.
+// Subscribes to the player's views as the browser's client does (netclient.c):
+// CONNECT with the token, then the SUBSCRIBE of u/<uid>/v.
 static bool listen_games(worker *w, int k) {
     listener *l = &w->l[k];
-    l->ws = bn_ws_open(&w->u, "/v1/stream?proto=nw1", TIMEOUT_MS);
-    if (!l->ws) return false;
-    if (send_auth(l->ws, w->p[k].token) != 0) return false;
-    cb_buf b;
-    cb_buf_init(&b);
-    int why = -1;
-    for (int attempt = 0, backoff = NC_RETRY_FIRST_MS; attempt < 6; attempt++) {
-        NwFrame f;
-        memset(&f, 0, sizeof f);
-        f.kind = NW_WS_SUB;
-        f.ref = (uint16_t)(attempt + 1);
-        f.what = NW_SUB_GAMES;
-        if (bn_ws_send_frame(l->ws, &f) != 0) break;
-        why = -1;
-        for (int i = 0; i < 20 && why < 0; i++) {
-            int op = bn_ws_recv(l->ws, TIMEOUT_MS, &b);
-            if (op < 0) break;
-            if (bn_ws_frame_of(op, &b, &f) && f.kind == NW_WS_ACK && f.ref == attempt + 1) why = f.why;
-        }
-        if (why != ASK_WHY_AUTH) break;
-        struct timespec ts = { backoff / 1000, (long)(backoff % 1000) * 1000000L };
-        nanosleep(&ts, NULL);
-        backoff = backoff * 2 > NC_RETRY_MAX_MS ? NC_RETRY_MAX_MS : backoff * 2;
-        if (send_auth(l->ws, w->p[k].token) != 0) break;
+    cb_buf_init(&l->mq.in);
+    l->mq.ws = bn_mq_open(&w->u, NULL, TIMEOUT_MS);
+    if (!l->mq.ws) return false;
+    if (bn_mq_connect(&l->mq, w->p[k].uid, w->p[k].token, TIMEOUT_MS) != 1) {
+        fprintf(stderr, "bench: the stream's CONNECT was refused\n");
+        return false;
     }
-    cb_buf_free(&b);
-    if (why != 0) { fprintf(stderr, "bench: the games subscription was refused (why %d)\n", why); return false; }
+    char topic[NW_ID_MAX + 8];
+    snprintf(topic, sizeof topic, "u/%s/v", w->p[k].uid);
+    if (bn_mq_subscribe(&l->mq, 1, topic, TIMEOUT_MS) != 1) {
+        fprintf(stderr, "bench: the views subscription was refused\n");
+        return false;
+    }
     pthread_mutex_init(&l->mu, NULL);
     pthread_cond_init(&l->cv, NULL);
     atomic_store(&l->stop, false);
@@ -380,7 +357,7 @@ static void stop_listener(listener *l) {
         pthread_mutex_destroy(&l->mu);
         pthread_cond_destroy(&l->cv);
     }
-    bn_ws_close(l->ws);
+    bn_mq_close(&l->mq);
 }
 
 int bench_roundtrip(const bench_opts *o) {

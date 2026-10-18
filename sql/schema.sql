@@ -165,25 +165,6 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 );
 CREATE INDEX IF NOT EXISTS idx_chat_messages_game ON chat_messages(game_id, created_at);
 
--- Realtime connections under API Gateway (store.h cb_conn_row): `cbase serve`
--- keeps its sockets in memory and never writes these; they exist so the SQLite
--- backend answers every store call the DynamoDB one does. expires_at is the
--- TTL: a row past it reads as absent, and conn_put prunes expired rows. ver is
--- the row's write count, conn_put's compare-and-set (store.h).
-CREATE TABLE IF NOT EXISTS rt_conns (
-    conn_id    TEXT PRIMARY KEY,
-    user_id    TEXT NOT NULL DEFAULT '',
-    expires_at INTEGER NOT NULL,
-    ver        INTEGER NOT NULL DEFAULT 0
-);
-CREATE TABLE IF NOT EXISTS rt_conn_topics (
-    conn_id  TEXT NOT NULL REFERENCES rt_conns(conn_id) ON DELETE CASCADE,
-    ord      INTEGER NOT NULL,
-    topic    TEXT NOT NULL,
-    PRIMARY KEY (conn_id, ord)
-);
-CREATE INDEX IF NOT EXISTS idx_rt_conn_topics_topic ON rt_conn_topics(topic);
-
 -- THE BOTS: seven of every family, in ladder order, exactly the nicknames and
 -- strategy keys of the kernel's c/src/bot_roster.c (which the old Postgres
 -- seed carried too). That seed left the ids to uuid_generate_v4(), so they differ per database;

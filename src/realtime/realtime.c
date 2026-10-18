@@ -3,11 +3,10 @@
 #include "realtime.h"
 
 #include "rt_deps.h"
-#include "aws/apigw_mgmt.h"
 #include "aws/iot_data.h"
 #include "util/log.h"
 
-#include "stream.h"
+#include "util/str.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,9 +28,6 @@ static int live_verify(cb_ctx *ctx, const char *jwt, cb_user *out) {
 
 cb_rt_deps cb_rt_deps_g = {
     .verify_token = live_verify,
-    .table_view = cb_table_view,
-    .apigw_post = cb_apigw_post,
-    .apigw_delete = cb_apigw_delete,
     .iot_publish = cb_iot_publish,
 };
 
@@ -81,32 +77,10 @@ int cb_rt_topic(const cb_rt_to *to, char *out, size_t cap) {
     return -1;
 }
 
-int cb_rt_nw_topic(const cb_rt_to *to, char *out, size_t cap) {
-    if (!to || !out || !cap) return -1;
-    out[0] = 0;
-    switch (to->family) {
-    case CB_RT_VIEWS:
-        if (!level_ok(to->user_id)) return -1;
-        return printed(snprintf(out, cap, "pv-%s", to->user_id), cap);
-    case CB_RT_SEAT:
-        if (!level_ok(to->user_id) || !level_ok(to->game_id)) return -1;
-        return printed(snprintf(out, cap, "gu-%s-%s", to->game_id, to->user_id), cap);
-    case CB_RT_WATCH:
-        if (!level_ok(to->game_id)) return -1;
-        return printed(snprintf(out, cap, "game-%s", to->game_id), cap);
-    case CB_RT_CHAT:
-        if (to->user_id || !level_ok(to->game_id)) return -1;
-        return printed(snprintf(out, cap, "chat:%s", to->game_id), cap);
-    }
-    return -1;
-}
-
 // ---- publishing ----------------------------------------------------------------------------
 
-// One message to every transport.
 static void deliver(cb_rt *rt, const cb_rt_to *to, const uint8_t *frame, size_t len) {
-    for (cb_rt *r = rt; r; r = r->also)
-        if (r->t && r->t->deliver) t_failed += r->t->deliver(r, to, frame, len);
+    if (rt->t && rt->t->deliver) t_failed += rt->t->deliver(rt, to, frame, len);
 }
 
 // The frame, encoded once, to each of `to[0..n)`.
@@ -167,40 +141,34 @@ void rt_publish_chat(cb_rt *rt, const char *game_id, const cb_chat_row *row, con
     f.kind = NW_WS_CHAT;
     frame_gid(&f, game_id);
     cb_chat_to_nw(row, &f.chat);
-    // The nw1 topic once, then each member's own.
-    cb_rt_to to[1 + CB_MAX_SEATS];
+    // Each member's own topic.
+    cb_rt_to to[CB_MAX_SEATS];
     int k = 0;
-    to[k++] = (cb_rt_to){ CB_RT_CHAT, NULL, game_id };
     for (int i = 0; i < n && i < CB_MAX_SEATS; i++)
         if (members[i][0]) to[k++] = (cb_rt_to){ CB_RT_CHAT, members[i], game_id };
     publish(rt, to, k, &f);
 }
 
-void cb_rt_forget_user(cb_rt *rt, const char *user_id, const char (*game_ids)[CB_GAME_ID_MAX + 1], int n) {
-    if (!rt || !user_id || !*user_id) return;
-    // Every target the user could hear: their views, and per game their seat and the chat.
-    int cap = 1 + 3 * (n > 0 ? n : 0);
-    cb_rt_to *to = calloc((size_t)cap, sizeof *to);
-    int k = 0;
-    if (to) {
-        to[k++] = (cb_rt_to){ CB_RT_VIEWS, user_id, NULL };
-        for (int i = 0; i < n; i++) {
-            to[k++] = (cb_rt_to){ CB_RT_SEAT, user_id, game_ids[i] };
-            to[k++] = (cb_rt_to){ CB_RT_CHAT, user_id, game_ids[i] };
-            to[k++] = (cb_rt_to){ CB_RT_CHAT, NULL, game_ids[i] };
-        }
-    } else {
-        CB_ERROR("realtime", "forget %s: no memory for its targets; its connections are ended by user alone", user_id);
-    }
-    for (cb_rt *r = rt; r; r = r->also)
-        if (r->t && r->t->forget) r->t->forget(r, user_id, to, k);
-    free(to);
+void cb_rt_forget_user(cb_rt *rt, const char *user_id) {
+    if (rt && user_id && *user_id && rt->t && rt->t->forget) rt->t->forget(rt, user_id);
 }
 
 void cb_rt_free(cb_rt *rt) {
-    while (rt) {
-        cb_rt *next = rt->also;
-        if (rt->t && rt->t->free) rt->t->free(rt);
-        rt = next;
-    }
+    if (rt && rt->t && rt->t->free) rt->t->free(rt);
+}
+
+void cb_chat_to_nw(const cb_chat_row *r, NwChat *out) {
+    memset(out, 0, sizeof *out);
+    size_t n = strlen(r->id);
+    out->id_len = (uint8_t)(n <= NW_ID_MAX ? n : 0);
+    memcpy(out->id, r->id, out->id_len);
+    n = strlen(r->user_id);
+    out->user_id_len = (uint8_t)(n <= NW_ID_MAX ? n : 0);
+    memcpy(out->user_id, r->user_id, out->user_id_len);
+    out->created_ms = r->created_at > 0 ? (uint64_t)r->created_at : 0;
+    out->is_system = r->is_system ? 1 : 0;
+    n = r->message ? strlen(r->message) : 0;
+    if (n > NW_CHAT_MAX) n = NW_CHAT_MAX;   // the write path refuses longer; an imported row is cut
+    out->message_len = (uint16_t)n;
+    if (n) memcpy(out->message, r->message, n);
 }

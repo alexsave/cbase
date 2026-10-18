@@ -1,11 +1,11 @@
 // fz_query.c - query strings: every key=value pair decoded
 // (cb_http_query_each), one key looked up as a route does
-// (cb_http_query_get), and the stream's protocol pick (cb_nw_proto_of_query),
-// over the raw query a URL carries.
+// (cb_http_query_get), and the stream's token from the URL
+// (cb_mqtt_query_token), over the raw query a URL carries.
 #include "fz.h"
 
 #include "net/http.h"
-#include "realtime/stream.h"
+#include "realtime/stream_mqtt.h"
 
 static bool each(const char *k, const char *v, void *ud) {
     FZ_CHECK(strlen(k) <= 1023 && strlen(v) <= 1023);
@@ -24,8 +24,8 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     char out[64];
     if (cb_http_query_get(&r, "proto", out, sizeof out)) FZ_CHECK(strlen(out) < sizeof out);
     (void)cb_http_query_get(&r, "", out, sizeof out);
-    int p = cb_nw_proto_of_query(q);
-    FZ_CHECK(p == CB_VSN_NW || p < 0);
+    char tok[256];
+    if (cb_mqtt_query_token(q, tok, sizeof tok)) FZ_CHECK(strlen(tok) < sizeof tok);   // "" for none
     free(q);
     return 0;
 }

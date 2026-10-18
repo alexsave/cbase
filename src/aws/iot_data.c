@@ -7,18 +7,26 @@
 #include "util/log.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define IOT_TIMEOUT_MS 5000
 
 int cb_iot_publish(const char *endpoint, const char *topic, const void *data, size_t len) {
     if (!endpoint || !*endpoint || !topic || !*topic || strchr(endpoint, '/')) return CB_E_INVALID;
-    // "host" or "host:port" (a test's stand-in), always over TLS.
+    // "host" or "host:port", always over TLS; AWS_ENDPOINT_URL_IOT_DATA_PLANE
+    // (the AWS SDKs' own override, "https://host[:port]") replaces it, for a
+    // test's stand-in for AWS under the real bootstrap.
     char url[300], host[256], base[8];
     int port;
     bool tls;
-    snprintf(url, sizeof url, "https://%s", endpoint);
-    if (cb_aws_url_parse(url, host, sizeof host, &port, &tls, base, sizeof base) != CB_OK) return CB_E_INVALID;
+    const char *override = getenv("AWS_ENDPOINT_URL_IOT_DATA_PLANE");
+    if (override && *override) snprintf(url, sizeof url, "%s", override);
+    else snprintf(url, sizeof url, "https://%s", endpoint);
+    if (cb_aws_url_parse(url, host, sizeof host, &port, &tls, base, sizeof base) != CB_OK || !tls || base[0]) {
+        CB_ERROR("iot", "bad IoT endpoint \"%s\"", url);
+        return CB_E_INVALID;
+    }
     cb_buf path;
     cb_buf_init(&path);
     cb_buf_puts(&path, "/topics/");

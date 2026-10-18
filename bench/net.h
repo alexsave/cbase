@@ -78,10 +78,26 @@ int    bn_ws_send_text(bn_ws *w, const char *text, size_t len);
 int    bn_ws_recv(bn_ws *w, int timeout_ms, cb_buf *out);
 
 
-// One stream frame (netwire.h) sent as base64 text, as the clients send every
-// frame (API Gateway refuses a client's binary frame). 0 on success.
-int    bn_ws_send_frame(bn_ws *w, const void *nw_frame);
-// A frame as it arrived into *nw_frame (an NwFrame): binary from `cbase serve`,
-// base64 text from API Gateway. false for anything else.
-bool   bn_ws_frame_of(int op, const cb_buf *in, void *nw_frame);
+// ---- one MQTT connection (shared/c/mqtt), as the clients make it ----------------
+
+typedef struct {
+    bn_ws  *ws;
+    cb_buf  in;      // the broker's bytes not yet read as packets
+    int64_t t_open;  // the 101, us
+} bn_mq;
+
+// Opens /mqtt with the "mqtt" subprotocol, the token in the URL when
+// `query_token`. NULL when the upgrade is refused.
+bn_ws *bn_mq_open(const bn_url *u, const char *query_token, int timeout_ms);
+// The next whole packet from the broker into *p (an MqttPacket, its spans into
+// *scratch): its type, 0 on a timeout, -1 closed.
+int    bn_mq_next(bn_mq *c, int timeout_ms, void *p, cb_buf *scratch);
+// CONNECT as uid (a fresh client id "<uid>-bench<hex>") with the token as the
+// password (NULL: none): 1 on a CONNACK that accepts, else bn_mq_next's answer.
+int    bn_mq_connect(bn_mq *c, const char *uid, const char *token, int timeout_ms);
+// One SUBSCRIBE at QoS 0: 1 when granted, else bn_mq_next's answer.
+int    bn_mq_subscribe(bn_mq *c, uint16_t id, const char *filter, int timeout_ms);
+// A PINGREQ: 0 sent.
+int    bn_mq_ping(bn_mq *c);
+void   bn_mq_close(bn_mq *c);
 #endif

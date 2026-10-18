@@ -54,8 +54,6 @@ enum {
     ST_BOTS_ALL, ST_RATINGS_ALL, ST_RATINGS_TOP, ST_BOT_ELO, ST_USER_ELO, ST_RATING_SET_USERNAME,
     ST_SNAPSHOT_PUT, ST_SNAPSHOT_SET_EXTRAS, ST_SNAPSHOTS_ASC, ST_SNAPSHOTS_DESC,
     ST_CHAT_PUT, ST_CHAT_LIST,
-    ST_CONN_PRUNE, ST_CONN_UPSERT, ST_CONN_TOPICS_CLEAR, ST_CONN_TOPIC_INSERT, ST_CONN_GET, ST_CONN_TOPICS_OF,
-    ST_CONN_DELETE, ST_CONNS_BY_TOPIC,
     ST_COLLECTIONS,
     ST_USER_IMPORT, ST_RATING_IMPORT, ST_BOTS_CLEAR, ST_BOT_INSERT, ST_GAME_IMPORT,
     ST__COUNT
@@ -182,19 +180,6 @@ static const char *const SQL[ST__COUNT] = {
     [ST_CHAT_LIST] = "SELECT id, game_id, user_id, message, is_system, created_at FROM ("
                      "SELECT * FROM chat_messages WHERE game_id = ?1 ORDER BY created_at DESC, id DESC LIMIT ?2"
                      ") ORDER BY created_at, id",
-
-    [ST_CONN_PRUNE] = "DELETE FROM rt_conns WHERE expires_at <= ?1",
-    // ?5 is the version the caller read: a row at any other version is left alone (no change).
-    [ST_CONN_UPSERT] = "INSERT INTO rt_conns (conn_id, user_id, expires_at, ver) VALUES (?1, ?2, ?3, ?4 + 1) "
-                       "ON CONFLICT (conn_id) DO UPDATE SET user_id = excluded.user_id, "
-                       "expires_at = excluded.expires_at, ver = excluded.ver WHERE rt_conns.ver = ?4",
-    [ST_CONN_TOPICS_CLEAR] = "DELETE FROM rt_conn_topics WHERE conn_id = ?1",
-    [ST_CONN_TOPIC_INSERT] = "INSERT INTO rt_conn_topics (conn_id, ord, topic) VALUES (?1, ?2, ?3)",
-    [ST_CONN_GET] = "SELECT conn_id, user_id, expires_at, ver FROM rt_conns WHERE conn_id = ?1 AND expires_at > ?2",
-    [ST_CONN_TOPICS_OF] = "SELECT topic FROM rt_conn_topics WHERE conn_id = ?1 ORDER BY ord",
-    [ST_CONN_DELETE] = "DELETE FROM rt_conns WHERE conn_id = ?1",
-    [ST_CONNS_BY_TOPIC] = "SELECT DISTINCT c.conn_id FROM rt_conn_topics t JOIN rt_conns c ON c.conn_id = t.conn_id "
-                          "WHERE t.topic = ?1 AND c.expires_at > ?2 ORDER BY c.conn_id",
 
     [ST_COLLECTIONS] = "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
 
@@ -481,10 +466,10 @@ static int apply_schema(sq *q) {
     }
     int rc = begin(q);
     if (rc != CB_OK) return rc;
-    // 1 -> 2: rt_conns gained ver (conn_put's compare-and-set); 2 -> 3: they lost
-    // vsn and join_ref (the Phoenix facade's). Connections are transient (a
-    // client reconnects), so the old tables are dropped, not altered.
-    if (have >= 1 && have < 3 &&
+    // 3 -> 4: the API Gateway connection tables (rt_conns, rt_conn_topics) are
+    // gone with API Gateway; realtime is MQTT and keeps no rows. Earlier steps
+    // reshaped them and dropped them too, so every older database drops them.
+    if (have >= 1 && have < 4 &&
         (rc = exec(q, "DROP TABLE IF EXISTS rt_conn_topics; DROP TABLE IF EXISTS rt_conns;")) != CB_OK)
         goto out;
     // 2 -> 3: users gained session_gen and kept_session, refresh_tokens
@@ -1460,129 +1445,6 @@ static int sq_chat_list(cb_store *st, const char *game, int limit, cb_chat_fn fn
     return rc == CB_OK ? n : rc;
 }
 
-// ---- realtime connections --------------------------------------------------------------
-
-// One transaction: SQLite has no index to keep in step apart from the row.
-static int sq_conn_put(cb_store *st, const cb_conn_row *was, const cb_conn_row *c) {
-    if (c->n_topics < 0 || c->n_topics > CB_CONN_TOPICS || was->version < 0) return CB_E_INVALID;
-    sq *q = Q(st);
-    lock(q);
-    int rc = begin(q);
-    sqlite3_stmt *s;
-    if (rc == CB_OK) {   // TTL: what has expired goes, as DynamoDB's TTL sweeps it
-        s = stmt(q, ST_CONN_PRUNE);
-        if (s) b_i64(s, 1, cb_now_ms());
-        rc = step_write(q, s, "conn prune", false);
-    }
-    if (rc == CB_OK) {
-        s = stmt(q, ST_CONN_UPSERT);
-        if (s) {
-            b_text(s, 1, c->conn_id);
-            b_text(s, 2, c->user_id);
-            b_i64(s, 3, c->expires_at);
-            b_i64(s, 4, was->version);
-        }
-        rc = step_write(q, s, "conn put", false);
-        if (rc == CB_OK && sqlite3_changes(q->db) == 0) rc = CB_E_CONFLICT;   // another writer moved it
-    }
-    if (rc == CB_OK) {
-        s = stmt(q, ST_CONN_TOPICS_CLEAR);
-        if (s) b_text(s, 1, c->conn_id);
-        rc = step_write(q, s, "conn topics", false);
-    }
-    for (int i = 0; rc == CB_OK && i < c->n_topics; i++) {
-        s = stmt(q, ST_CONN_TOPIC_INSERT);
-        if (s) {
-            b_text(s, 1, c->conn_id);
-            b_i64(s, 2, i);
-            b_text(s, 3, c->topics[i]);
-        }
-        rc = step_write(q, s, "conn topic", false);
-    }
-    if (rc == CB_OK) rc = commit(q);
-    if (rc != CB_OK) rollback(q);
-    unlock(q);
-    return rc;
-}
-
-// Lock held.
-static int conn_read(sq *q, const char *id, int64_t now, cb_conn_row *out) {
-    memset(out, 0, sizeof *out);
-    sqlite3_stmt *s = stmt(q, ST_CONN_GET);
-    if (!s) return CB_E_DB;
-    b_text(s, 1, id);
-    b_i64(s, 2, now);
-    int r = sqlite3_step(s), rc = CB_OK;
-    if (r == SQLITE_ROW) {
-        c_text(s, 0, out->conn_id, sizeof out->conn_id);
-        c_text(s, 1, out->user_id, sizeof out->user_id);
-        out->expires_at = c_i64(s, 2);
-        out->version = c_i64(s, 3);
-    } else rc = r == SQLITE_DONE ? CB_E_NOT_FOUND : fail(q, "conn get", r);
-    done(s);
-    if (rc != CB_OK) return rc;
-    s = stmt(q, ST_CONN_TOPICS_OF);
-    if (!s) return CB_E_DB;
-    b_text(s, 1, id);
-    while ((r = sqlite3_step(s)) == SQLITE_ROW && out->n_topics < CB_CONN_TOPICS) {
-        c_text(s, 0, out->topics[out->n_topics], sizeof out->topics[0]);
-        out->n_topics++;
-    }
-    if (r != SQLITE_ROW && r != SQLITE_DONE) rc = fail(q, "conn topics", r);
-    done(s);
-    return rc;
-}
-
-static int sq_conn_get(cb_store *st, const char *id, cb_conn_row *out) {
-    sq *q = Q(st);
-    lock(q);
-    int rc = conn_read(q, id, cb_now_ms(), out);
-    unlock(q);
-    return rc;
-}
-
-static int sq_conn_delete(cb_store *st, const char *id) {
-    return write1(Q(st), ST_CONN_DELETE, "conn delete", false, id, NULL, NULL);
-}
-
-// Every live connection that has joined `topic`, each as its whole row.
-static int sq_conns_by_topic(cb_store *st, const char *topic, cb_conn_fn fn, void *ud) {
-    sq *q = Q(st);
-    namelist ids = { 0 };
-    vec v = { .size = sizeof(cb_conn_row) };
-    int64_t now = cb_now_ms();
-    int rc = CB_OK;
-    lock(q);
-    sqlite3_stmt *s = stmt(q, ST_CONNS_BY_TOPIC);
-    if (!s) rc = CB_E_DB;
-    else {
-        b_text(s, 1, topic);
-        b_i64(s, 2, now);
-        int r = SQLITE_DONE;
-        while (rc == CB_OK && (r = sqlite3_step(s)) == SQLITE_ROW)
-            if (!names_push(&ids, (const char *)sqlite3_column_text(s, 0))) rc = CB_E_NOMEM;
-        if (rc == CB_OK && r != SQLITE_DONE) rc = fail(q, "conns by topic", r);
-    }
-    done(s);
-    for (int i = 0; rc == CB_OK && i < ids.n; i++) {
-        cb_conn_row *c = vec_push(&v);
-        if (!c) rc = CB_E_NOMEM;
-        else if ((rc = conn_read(q, ids.names[i], now, c)) == CB_E_NOT_FOUND) {
-            v.n--;
-            rc = CB_OK;
-        }
-    }
-    unlock(q);
-    free(ids.names);
-    int n = 0;
-    for (int i = 0; rc == CB_OK && i < v.n; i++) {
-        n++;
-        if (!fn(&((cb_conn_row *)v.p)[i], ud)) break;
-    }
-    free(v.p);
-    return rc == CB_OK ? n : rc;
-}
-
 // ---- admin -----------------------------------------------------------------------------
 
 static int sq_admin_collections(cb_store *st, cb_name_fn fn, void *ud) {
@@ -1945,10 +1807,6 @@ static const cb_store_ops SQLITE_OPS = {
     .snapshot_set_extras = sq_snapshot_set_extras,
     .chat_put = sq_chat_put,
     .chat_list = sq_chat_list,
-    .conn_put = sq_conn_put,
-    .conn_get = sq_conn_get,
-    .conn_delete = sq_conn_delete,
-    .conns_by_topic = sq_conns_by_topic,
     .admin_collections = sq_admin_collections,
     .admin_browse = sq_admin_browse,
     .admin_query = sq_admin_query,

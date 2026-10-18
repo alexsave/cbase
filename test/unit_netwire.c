@@ -245,48 +245,6 @@ static void frames(void) {
     NwFrame f, g;
 
     memset(&f, 0, sizeof f);
-    f.kind = NW_WS_AUTH;
-    f.token_len = 3; memcpy(f.token, "jwt", 3);
-    const uint8_t auth[] = { 1, 40, 3, 0, 'j', 'w', 't' };
-    T_EQ_MEM(out, nw_frame_encode(&f, out, sizeof out), auth, sizeof auth);
-    T_EQ_INT(refused_everywhere(auth, sizeof auth, dec_frame), 0);
-
-    memset(&f, 0, sizeof f);
-    f.kind = NW_WS_SUB;
-    f.ref = 7;
-    f.what = NW_SUB_GAME;
-    f.gid_len = 2; memcpy(f.gid, "g1", 2);
-    f.version = 5;
-    const uint8_t sub[] = { 1, 41, 7, 0, 2, 2, 'g', '1', 5, 0, 0, 0 };
-    T_EQ_MEM(out, nw_frame_encode(&f, out, sizeof out), sub, sizeof sub);
-    T_EQ_INT(nw_frame_decode(sub, sizeof sub, &g), NW_OK);
-    T_CHECK(g.ref == 7 && g.what == NW_SUB_GAME && g.version == 5 && g.gid_len == 2);
-    T_EQ_INT(refused_everywhere(sub, sizeof sub, dec_frame), 0);
-    f.what = 9;
-    T_EQ_INT(nw_frame_encode(&f, out, sizeof out), NW_E_WIRE);
-
-    // The subscription that says who asks: the token, then a SUB's fields.
-    f.what = NW_SUB_GAME;
-    f.kind = NW_WS_SUB_AS;
-    f.token_len = 3; memcpy(f.token, "jwt", 3);
-    const uint8_t sub_as[] = { 1, 44, 3, 0, 'j', 'w', 't', 7, 0, 2, 2, 'g', '1', 5, 0, 0, 0 };
-    T_EQ_MEM(out, nw_frame_encode(&f, out, sizeof out), sub_as, sizeof sub_as);
-    T_EQ_INT(nw_frame_decode(sub_as, sizeof sub_as, &g), NW_OK);
-    T_CHECK(g.kind == NW_WS_SUB_AS && g.ref == 7 && g.what == NW_SUB_GAME && g.version == 5 && g.gid_len == 2);
-    T_EQ_MEM(g.token, g.token_len, "jwt", 3);
-    T_EQ_INT(refused_everywhere(sub_as, sizeof sub_as, dec_frame), 0);
-    f.what = 9;
-    T_EQ_INT(nw_frame_encode(&f, out, sizeof out), NW_E_WIRE);
-
-    memset(&f, 0, sizeof f);
-    f.kind = NW_WS_ACK;
-    f.ref = 7;
-    f.why = 9;
-    const uint8_t ack[] = { 1, 50, 7, 0, 9, 0 };
-    T_EQ_MEM(out, nw_frame_encode(&f, out, sizeof out), ack, sizeof ack);
-    T_EQ_INT(refused_everywhere(ack, sizeof ack, dec_frame), 0);
-
-    memset(&f, 0, sizeof f);
     f.kind = NW_WS_CAST;
     f.gid_len = 2; memcpy(f.gid, "g1", 2);
     f.version = 9;
@@ -298,13 +256,13 @@ static void frames(void) {
     T_CHECK(g.blob.p == cast + 13 && g.blob.len == 1 && g.version == 9);
     T_EQ_INT(refused_everywhere(cast, sizeof cast, dec_frame), 0);
 
-    // The catch-up: a VIEW's layout under its own kind.
-    f.kind = NW_WS_CATCHUP;
-    const uint8_t catchup[] = { 1, 55, 2, 'g', '1', 9, 0, 0, 0, 1, 0, 0, 0, 0x0c };
-    T_EQ_MEM(out, nw_frame_encode(&f, out, sizeof out), catchup, sizeof catchup);
-    T_EQ_INT(nw_frame_decode(catchup, sizeof catchup, &g), NW_OK);
-    T_CHECK(g.kind == NW_WS_CATCHUP && g.version == 9 && g.blob.len == 1);
-    T_EQ_INT(refused_everywhere(catchup, sizeof catchup, dec_frame), 0);
+    // A VIEW: the same layout under its own kind.
+    f.kind = NW_WS_VIEW;
+    const uint8_t view[] = { 1, 51, 2, 'g', '1', 9, 0, 0, 0, 1, 0, 0, 0, 0x0c };
+    T_EQ_MEM(out, nw_frame_encode(&f, out, sizeof out), view, sizeof view);
+    T_EQ_INT(nw_frame_decode(view, sizeof view, &g), NW_OK);
+    T_CHECK(g.kind == NW_WS_VIEW && g.version == 9 && g.blob.len == 1);
+    T_EQ_INT(refused_everywhere(view, sizeof view, dec_frame), 0);
 
     memset(&f, 0, sizeof f);
     f.kind = NW_WS_CHAT;
@@ -317,97 +275,17 @@ static void frames(void) {
     T_EQ_MEM(out, nw_frame_encode(&f, out, sizeof out), chat, sizeof chat);
     T_EQ_INT(refused_everywhere(chat, sizeof chat, dec_frame), 0);
 
-    const uint8_t ping[] = { 1, 43 }, pong[] = { 1, 54 };
-    T_EQ_INT(nw_frame_decode(ping, 2, &g), NW_OK);
-    T_EQ_INT(g.kind, NW_WS_PING);
-    T_EQ_INT(nw_frame_decode(pong, 2, &g), NW_OK);
-    const uint8_t not_frame[] = { 1, NW_SIGNIN };
-    T_EQ_INT(nw_frame_decode(not_frame, 2, &g), NW_E_WIRE);
-}
-
-// NW_WS_BATCH: a blob of entries, each a u32 length and one whole frame.
-static void batches(void) {
-    uint8_t out[128], entries[64];
-    const uint8_t ping[] = { 1, 43 }, ack[] = { 1, 50, 7, 0, 0, 1 };
-    int a = nw_batch_add(ping, 2, entries, sizeof entries);
-    T_EQ_INT(a, 6);
-    int b = nw_batch_add(ack, sizeof ack, entries + a, (int)sizeof entries - a);
-    T_EQ_INT(b, 10);
-    NwFrame f, g;
-    memset(&f, 0, sizeof f);
-    f.kind = NW_WS_BATCH;
-    f.blob.p = entries;
-    f.blob.len = (uint32_t)(a + b);
-    const uint8_t batch[] = { 1, 56, 16, 0, 0, 0, 2, 0, 0, 0, 1, 43, 6, 0, 0, 0, 1, 50, 7, 0, 0, 1 };
-    T_EQ_MEM(out, nw_frame_encode(&f, out, sizeof out), batch, sizeof batch);
-    T_EQ_INT(nw_frame_decode(batch, sizeof batch, &g), NW_OK);
-    T_EQ_INT(g.kind, NW_WS_BATCH);
-    T_EQ_INT(refused_everywhere(batch, sizeof batch, dec_frame), 0);
-    // The entries, in order, pointing into the body.
-    uint32_t pos = 0;
-    NwBlob one;
-    T_EQ_INT(nw_batch_next(g.blob, &pos, &one), 1);
-    T_EQ_MEM(one.p, one.len, ping, 2);
-    T_EQ_INT(nw_batch_next(g.blob, &pos, &one), 1);
-    T_EQ_MEM(one.p, one.len, ack, sizeof ack);
-    T_EQ_INT(nw_batch_next(g.blob, &pos, &one), 0);
-    // Not an entry: shorter than a head, another version, or a batch inside a batch.
-    T_EQ_INT(nw_batch_add(ping, 1, entries, sizeof entries), NW_E_WIRE);
-    const uint8_t v2[] = { 2, 43 }, inner[] = { 1, 56 };
-    T_EQ_INT(nw_batch_add(v2, 2, entries, sizeof entries), NW_E_WIRE);
-    T_EQ_INT(nw_batch_add(inner, 2, entries, sizeof entries), NW_E_WIRE);
-    T_EQ_INT(nw_batch_add(ping, 2, entries, 5), NW_E_CAP);
-    // Refused on the wire: empty, a nested batch, an entry past the end, a
-    // one-byte entry; and more than NW_BATCH_MAX entries.
-    const uint8_t empty[] = { 1, 56, 0, 0, 0, 0 };
-    const uint8_t nested[] = { 1, 56, 6, 0, 0, 0, 2, 0, 0, 0, 1, 56 };
-    const uint8_t past[] = { 1, 56, 6, 0, 0, 0, 3, 0, 0, 0, 1, 43 };
-    const uint8_t tiny[] = { 1, 56, 5, 0, 0, 0, 1, 0, 0, 0, 1 };
-    T_EQ_INT(nw_frame_decode(empty, sizeof empty, &g), NW_E_WIRE);
-    T_EQ_INT(nw_frame_decode(nested, sizeof nested, &g), NW_E_WIRE);
-    T_EQ_INT(nw_frame_decode(past, sizeof past, &g), NW_E_WIRE);
-    T_EQ_INT(nw_frame_decode(tiny, sizeof tiny, &g), NW_E_WIRE);
-    static uint8_t many[(NW_BATCH_MAX + 1) * 6], body[sizeof many + 16];
-    int at = 0;
-    for (int i = 0; i <= NW_BATCH_MAX; i++) at += nw_batch_add(ping, 2, many + at, (int)sizeof many - at);
-    f.blob.p = many;
-    f.blob.len = (uint32_t)(at - 6);   // NW_BATCH_MAX: fine
-    int n = nw_frame_encode(&f, body, sizeof body);
-    T_CHECK(n > 0);
-    T_EQ_INT(nw_frame_decode(body, n, &g), NW_OK);
-    f.blob.len = (uint32_t)at;          // one more: refused both ways
-    T_EQ_INT(nw_frame_encode(&f, body, sizeof body), NW_E_WIRE);
-    body[2] = (uint8_t)at;
-    memcpy(body + 6, many, (size_t)at);
-    T_EQ_INT(nw_frame_decode(body, 6 + at, &g), NW_E_WIRE);
-}
-
-static void text_form(void) {
-    // RFC 4648 section 10.
-    static const char *const in[] = { "", "f", "fo", "foo", "foob", "fooba", "foobar" };
-    static const char *const b64[] = { "", "Zg==", "Zm8=", "Zm9v", "Zm9vYg==", "Zm9vYmE=", "Zm9vYmFy" };
-    char t[16];
-    uint8_t b[16];
-    for (int i = 0; i < 7; i++) {
-        int n = nw_text_encode((const uint8_t *)in[i], (int)strlen(in[i]), t, sizeof t);
-        T_EQ_MEM(t, n, b64[i], strlen(b64[i]));
-        n = nw_text_decode(b64[i], (int)strlen(b64[i]), b, sizeof b);
-        T_EQ_MEM(b, n, in[i], strlen(in[i]));
+    // The API Gateway stream's own kinds are gone both ways (40-44 AUTH, SUB,
+    // UNSUB, PING, SUB_AS; 50 ACK; 54-56 PONG, CATCHUP, BATCH), as is any
+    // kind that is not a frame.
+    const uint8_t gone[] = { 40, 41, 42, 43, 44, 50, 54, 55, 56, NW_SIGNIN };
+    for (size_t i = 0; i < sizeof gone; i++) {
+        const uint8_t two[] = { 1, gone[i] };
+        T_EQ_INT(nw_frame_decode(two, 2, &g), NW_E_WIRE);
+        memset(&f, 0, sizeof f);
+        f.kind = gone[i];
+        T_EQ_INT(nw_frame_encode(&f, out, sizeof out), NW_E_WIRE);
     }
-    // Every byte value survives the trip.
-    uint8_t all[256], back[256];
-    char text[352];
-    for (int i = 0; i < 256; i++) all[i] = (uint8_t)i;
-    int n = nw_text_encode(all, 256, text, sizeof text);
-    T_EQ_INT(n, 344);
-    T_EQ_INT(nw_text_decode(text, n, back, sizeof back), 256);
-    T_EQ_MEM(back, 256, all, 256);
-    T_EQ_INT(nw_text_decode("Zg=", 3, b, sizeof b), NW_E_WIRE);
-    T_EQ_INT(nw_text_decode("Zg==Zg==", 8, b, sizeof b), NW_E_WIRE);
-    T_EQ_INT(nw_text_decode("Z!==", 4, b, sizeof b), NW_E_WIRE);
-    T_EQ_INT(nw_text_decode("Z=g=", 4, b, sizeof b), NW_E_WIRE);
-    T_EQ_INT(nw_text_decode("Zm9v", 4, b, 2), NW_E_CAP);
-    T_EQ_INT(nw_text_encode((const uint8_t *)"foo", 3, t, 3), NW_E_CAP);
 }
 
 int main(void) {
@@ -416,7 +294,5 @@ int main(void) {
     T_RUN(views_and_replays);
     T_RUN(lists);
     T_RUN(frames);
-    T_RUN(batches);
-    T_RUN(text_form);
     return T_DONE();
 }

@@ -40,7 +40,7 @@ The decisions here are settled; a builder who finds one impossible says so in th
 ## Why Lambda, and what it costs us
 
 Alex chose Lambda because it is free at this scale: 1M requests and 400k GB-seconds a month, DynamoDB's always-free 25 GB with 25 provisioned write and 25 read units (see "The free tier, provisioned" under Store), a free Function URL, CloudFront's free plan, free ACM certificates and a free EventBridge Scheduler.
-The only line that is not free after the first year is API Gateway's WebSocket API, at $1 per million messages and $0.25 per million connection-minutes, which at our volume is cents a month.
+The only line that is not free after the first year is AWS IoT Core (realtime since 2026-10-18): $0.08 per million connection-minutes and $1.00 per million messages in us-east-1, which at our volume is cents a month.
 Expected total: about $0 to $0.10 a month.
 
 What it costs is the thing the one-VM design would have deleted.
@@ -66,11 +66,11 @@ The semantics preserved lived in the Supabase adapter's `table_io.ts`, `bot_acti
 A builder who changes one of these behaviours writes down why.
 
 The other cost is JSON.
-The Lambda event envelope, the DynamoDB API, the API Gateway Management API and the Lambda Invoke API are JSON by AWS's design.
+The Lambda event envelope, the DynamoDB API, IoT Core's custom authorizer request and answer, and the Lambda Invoke API are JSON by AWS's design.
 That tax is confined: only `src/aws/` and `src/store/store_dynamo.c` read or write it, and nothing above `store.h` and `event.h` knows it exists.
 
 S3 with conditional writes (`If-Match` on an ETag) was the binary-bodied alternative for the store, at about $0.10 a month.
-It was not chosen because DynamoDB costs nothing and gives the query indexes (a user's games, a topic's connections, the bot scan) that S3 would have needed a second store for.
+It was not chosen because DynamoDB costs nothing and gives the query indexes (a user's games, a game's replays, the bot scan) that S3 would have needed a second store for.
 
 ## Two mains, one handler
 
@@ -84,9 +84,9 @@ It was not chosen because DynamoDB costs nothing and gives the query indexes (a 
                                                       | routes
              v1_http  functions_http  admin  unfurl  (rt_local's upgrade, serve only)
                                                       |
-              app/table_ops (load, kernel, CAS)  app/bots  app/fanout -> realtime (stream)
+              app/table_ops (load, kernel, CAS)  app/bots  app/fanout -> realtime (MQTT)
                                                       |
-                       store.h: store_sqlite | store_dynamo        realtime: rt_local | rt_apigw
+                       store.h: store_sqlite | store_dynamo        realtime: rt_local | rt_iot
 ```
 
 `ctx.h` holds the three seams: `ctx->store`, `ctx->rt` (with its transport), and `ctx->kick_bots`.
@@ -144,8 +144,6 @@ Items, by partition key and sort key:
 | `SNAP#<snapshot id>` | `SNAP` | a replay (gsi1 `GAMESNAPS#<game>`); it outlives its game, as `ON DELETE SET NULL` did |
 | `SNAP#<snapshot id>` | `PLAYER#<user>` | one copy per player, gsi2 `PLAYER#<user>`: "my replays" is one query |
 | `CHAT#<game id>` | `<created>#<id>` | a chat message |
-| `CONN#<connection id>` | `CONN` | a realtime connection: user, topics, ver (the compare-and-set), expires_at (TTL, seconds) and expires_ms |
-| `TOPIC#<topic>` | `CONN#<connection id>` | the reverse index fan-out queries: the connection id and the row's TTL only, in the base table so the read is strongly consistent and a push right after a join is not missed |
 | `SCAN` | `GAME#<id>` | present while a bot can act on the game (the kernel's `table_bots_due`; sparse, the heartbeat's scan reads one partition); carries the bot lease (lease_token, lease_until) and the row's version (row_version) |
 
 `game_commit` is one `TransactWriteItems`: the game update conditioned on the version, the membership puts and deletes, the rating updates, the SCAN marker.
@@ -231,7 +229,7 @@ What an action costs, measured over a whole smoke game (every request asks for `
 | sign-up | 1 PutItem + 1 TransactWriteItems | 0 | 9 |
 
 One 3-seat game of 171 commits cost 922 requests, 552 RCU and 2,756 WCU.
-Under Lambda add the fan-out: `rt_apigw` reads each pushed topic's connections, one Query per topic, 2 per seated human plus 1 per commit.
+Under Lambda the fan-out costs the table nothing: each push is one IoT publish per target (realtime moved to IoT Core on 2026-10-18; until then `rt_apigw` read each pushed topic's connections, one Query per topic, 2 per seated human plus 1 per commit).
 The write units go mostly to the game row: a transaction bills 2 WCU per KB of every item it writes, and the row (state, roster and the growing log, 4 to 8 KB) is rewritten on every commit along with every seat; the lease renew and the SCAN touch are an `UpdateItem` on that same row, billed by its whole size, every bot think cycle.
 Cheaper, if it matters: the lease on its own small item, one partition Query for the seats instead of two, and seats written only when they change.
 All three are built; the numbers after them are in "The free tier, provisioned" below.
@@ -443,81 +441,74 @@ Found here:
 ## Module: realtime
 
 Owner: `src/realtime/`.
-Headers: `realtime.h` (the publish calls, the targets and the transport interface), `stream.h` (the nw1 protocol and its topic policy), `stream_mqtt.h` (the MQTT protocol: who may connect and subscribe), `rt_local.h` (serve's in-process hub, both protocols), `rt_apigw.h` (API Gateway's WebSocket API and CONN rows), `rt_iot.h` (AWS IoT Core: the publish and the custom authorizer).
+Headers: `realtime.h` (the publish calls, the targets and the transport interface), `stream_mqtt.h` (the MQTT protocol: who may connect and subscribe, and the hub's side of a connection), `rt_local.h` (serve's in-process hub), `rt_iot.h` (AWS IoT Core: the publish and the custom authorizer).
 
-The protocol is "The push stream" under "Binary surface".
-Topics inside the server are strings with the policy of the `realtime.messages` policies they replaced: `pv-<uid>` only that user, `gu-<game>-<uid>` that user if a member, `game-<game>` any authenticated user, `chat:<game>` members.
-Under Lambda the client reaches API Gateway through CloudFront at the same domain, `/v1/stream` rewritten to the stage by a CloudFront Function.
+Realtime is MQTT 3.1.1 over WebSocket at QoS 0, at `/mqtt` with the subprotocol `mqtt`, under `cbase serve` and in production alike.
+Under Lambda the broker is AWS IoT Core, reached through CloudFront at the same domain; under serve it is `rt_local`'s hub.
+The kernel's client (`netclient.c`, "The push stream" under "Binary surface") is the same against both.
 
-### Moving to MQTT on AWS IoT Core (2026-10-17, stage 1 of 3)
+### Why IoT Core, and how it moved (2026-10-17 to 2026-10-18)
 
-Alex chose IoT Core for the push stream (the evaluation and the prototype's measurements are in the session's pubsub_eval.md): the broker owns connections, subscriptions and fan-out, so the CONN and TOPIC items, SUB_AS with its compare-and-set, the per-commit Queries and the per-socket POSTs all go, and privacy becomes one static policy decided at CONNECT.
-Three stages, each landed and deployed before the next, production never without realtime: (1) the server publishes to both, (2) the kernel's client speaks MQTT, (3) API Gateway's WebSocket API and everything that served only it is deleted.
+Until 2026-10-18 the stream was the kernel's own nw1 protocol over API Gateway's WebSocket API, and the function held the broker's state itself: a CONN item per connection and a TOPIC index item per subscription in the table, a compare-and-set on every subscription (API Gateway runs a connection's frames as concurrent invocations), one Query per pushed topic per commit, and one management-API POST per socket per push.
+Alex chose IoT Core (the evaluation and the prototype's measurements are in the session's pubsub_eval.md): the broker owns connections, subscriptions and fan-out, so all of that went, and privacy became one static policy decided at CONNECT.
+It moved in three stages, each landed and deployed before the next, production never without realtime: (1) the server published to both (PR #353), (2) the kernel's client spoke MQTT (PR #361), (3) the WebSocket API and everything that served only it was deleted: `rt_apigw.c`, `stream.c` (the nw1 protocol), `aws/apigw_mgmt.c`, the connection rows and their store operations in both backends (SQLite schema 4 drops `rt_conns` and `rt_conn_topics`; DynamoDB's CONN and TOPIC items expire by their TTL), the client's stream frames in `netwire.h` (AUTH, SUB, UNSUB, PING, SUB_AS, ACK, PONG, CATCHUP, BATCH, and the base64 text form), and the template's WebSocket API, path rewrite and `/v1/stream*` behaviour.
 
-A push now names a target (`cb_rt_to`: a family and the ids it is about), not a topic string, and each transport names it in its own protocol:
+### Targets and topics
 
-| family | ids | MQTT topic | nw1 topic |
-|---|---|---|---|
-| `CB_RT_VIEWS` | user | `u/<user>/v` | `pv-<user>` |
-| `CB_RT_SEAT` | user, game | `u/<user>/c/<game>` | `gu-<game>-<user>` |
-| `CB_RT_WATCH` | game | `s/<game>` | `game-<game>` |
-| `CB_RT_CHAT` | user, game | `u/<user>/m/<game>` | `chat:<game>` (the target with no user) |
+A push names a target (`cb_rt_to`: a family and the ids it is about), and `cb_rt_topic` names it:
 
-Every private MQTT topic starts with the user it is for, so the policy is static: a connection may subscribe under `u/<its user>/` and `s/`, and nothing else; no client may publish.
+| family | ids | topic |
+|---|---|---|
+| `CB_RT_VIEWS` | user | `u/<user>/v` |
+| `CB_RT_SEAT` | user, game | `u/<user>/c/<game>` |
+| `CB_RT_WATCH` | game | `s/<game>` |
+| `CB_RT_CHAT` | user, game | `u/<user>/m/<game>` |
+
+Every private topic starts with the user it is for, so the policy is static: a connection may subscribe under `u/<its user>/` and `s/`, and nothing else; no client may publish.
 A seat's casts and a game's chat are therefore published once per member, to the member's own topic: the chat POST reads the game's human members (store `game_members`, one consistent Query, read before the message is written so a failed read stores nothing) and doubles as its membership check.
-The payload of every PUBLISH is the nw1 message itself (`NW_WS_VIEW`, `NW_WS_CAST`, `NW_WS_CHAT`), at QoS 0.
+An id that could add a level or a wildcard to a topic is refused before a topic is written.
+The payload of every PUBLISH is one netwire.h message (`NW_WS_VIEW`, `NW_WS_CAST`, `NW_WS_CHAT`).
 
-The MQTT 3.1.1 subset both sides speak is `shared/c/mqtt/mqtt.{h,c}`, one owner of every packet's bytes: the client's writers and the broker's, and each side's reader refusing what the other side never sends (from the first byte), a remaining length past the reader's limit before a byte of its body arrives, and every malformed shape (`test/unit_mqtt.c`).
+The MQTT 3.1.1 subset both sides speak is `shared/c/mqtt/mqtt.{h,c}`, one owner of every packet's bytes: the client's writers and the broker's, and each side's reader refusing what the other side never sends (from the first byte), a remaining length past the reader's limit before a byte of its body arrives, a length written in more bytes than it needs, and every malformed shape (`test/unit_mqtt.c`).
 
-`stream_mqtt.c` holds the policy, answered two ways so a client behaves the same against both:
+### The policy, answered two ways
+
+`stream_mqtt.c` holds it, so a client behaves the same against the hub and IoT Core:
 
 - CONNECT: the token is the CONNECT's password, else the upgrade URL's `token=`; it must verify and name an account that still exists (`rt_deps.h` verify_token reads it), and the client id must be `<user>-<something>`.
   The connection ends when the token expires, no sooner than 300 s and no later than 86400 s after it opened (IoT's own floor and cap on `disconnectAfterInSeconds`).
-- Anything refused (a CONNECT, a SUBSCRIBE outside the policy, a PUBLISH, bytes that are not MQTT) ends the connection with no CONNACK and no SUBACK code: IoT Core does exactly that, so the hub does too, and a client has one rule ("closed before CONNACK: refresh, then reconnect").
-- `rt_local.c` serves `GET /mqtt` (WebSocket subprotocol `mqtt`, binary frames only) beside `GET /v1/stream`, on the same hub, connection list and request pool; a publish is built once as a PUBLISH and sent to every MQTT connection a filter of which matches (`mqtt_topic_match`), and once as the nw1 message to the nw1 sockets holding its topic.
-  Deleting an account closes its sockets of both kinds.
-- Under Lambda `rt_iot.c` publishes each target with one SigV4-signed `POST /topics/<topic>?qos=0` to the account's iot:Data-ATS endpoint (`aws/iot_data.c`, `CBASE_IOT_ENDPOINT`, kept alive by `https.c`'s pool, tallied as `push`), beside `rt_apigw` (`cb_rt.also`), and answers IoT's custom authorizer requests (`CB_EVENT_IOT_AUTH`, the same function, the same warm containers): `cb_iot_authorize` checks `X-Cbase-Origin` (CloudFront adds it on `/mqtt` too, so IoT's own host cannot be used to walk around the edge), runs `cb_mqtt_authorize`, and answers the policy (`json_surface.c` `cb_iot_auth_encode`: `iot:Connect` on `client/<user>-*`, `iot:Subscribe` on `topicfilter/u/<user>/*` and `topicfilter/s/*`, `iot:Receive` on `topic/u/<user>/*` and `topic/s/*`, no `iot:Publish`, every ARN under the function's own region and account, a user id that is not a canonical UUID or a region with a wildcard refused before a policy is written).
-  IoT names no connection we could end, so `forget` is NULL there: a deleted user's open MQTT connections end at their token's expiry, and hear nothing private meanwhile, because nothing is published to a deleted user's topics any more.
+- Anything refused (a CONNECT, a SUBSCRIBE outside the policy, a PUBLISH, a second CONNECT, bytes that are not MQTT) ends the connection with no CONNACK and no SUBACK code: IoT Core does exactly that, so the hub does too, and a client has one rule ("closed before CONNACK: refresh, then reconnect").
+- `rt_local.c` (serve) serves `GET /mqtt` (binary frames only; a text frame closes with 1003) on the loop thread; each message's packets run on the request pool, one message at a time per connection, so a connection's packets are answered in order.
+  A publish is built once as a PUBLISH and sent to every open connection a filter of which matches (`cb_mqtt_hears`, which answers nothing for a connection that is not open).
+  The server's idle sweep closes a WebSocket with no client traffic for 120 s, which the client's 30 s PINGREQ prevents.
+  Deleting an account closes the user's sockets (1008).
+- Under Lambda `rt_iot.c` publishes each target with one SigV4-signed `POST /topics/<topic>?qos=0` to the account's iot:Data-ATS endpoint (`aws/iot_data.c`, `CBASE_IOT_ENDPOINT`, kept alive by `https.c`'s pool, tallied as `push`), and answers IoT's custom authorizer requests (`CB_EVENT_IOT_AUTH`, the same function, the same warm containers, the JWT secret read from SSM at container start like every other request's): `cb_iot_authorize` checks `X-Cbase-Origin` (CloudFront adds it on `/mqtt` too, so IoT's own host cannot be used to walk around the edge), runs `cb_mqtt_authorize`, and answers the policy (`json_surface.c` `cb_iot_auth_encode`: `iot:Connect` on `client/<user>-*`, `iot:Subscribe` on `topicfilter/u/<user>/*` and `topicfilter/s/*`, `iot:Receive` on `topic/u/<user>/*` and `topic/s/*`, no `iot:Publish`, every ARN under the function's own region and account, a user id that is not a canonical UUID or a region with a wildcard refused before a policy is written).
+  IoT names no connection we could end, so `forget` is NULL there: a deleted user's open connections end at their token's expiry, and hear nothing private meanwhile, because nothing is published to a deleted user's topics any more.
 - `ops/cbase.yaml` (when `IotEndpoint` is set, which `ops/deploy.sh` reads with `aws iot describe-endpoint`): the authorizer (`<function>-stream`, signing off, since a browser cannot sign a WebSocket URL), the invoke permission for `iot.amazonaws.com`, `iot:Publish` on `topic/u/*` and `topic/s/*` for the function, and the `/mqtt*` behaviour at the edge to IoT, with a CloudFront Function adding `x-amz-customauthorizer-name` so no client knows the name.
 
-Tests: `unit_mqtt` (the codec), `unit_stream_mqtt` (the policy as an authz matrix, and the hub's side of a connection fed whole packets, packets split at every byte, several in one message, and every packet a client must not send), `unit_rt_iot` (publishes, the authorizer's decode and answer, only through the edge, the encoder's refusals, the endpoint setting), `unit_rt_local` (MQTT over a real loopback socket beside nw1: the upgrade, pushes reaching only their topics in both protocols, every refusal ending the connection), `unit_store` (`game_members` on SQLite and DynamoDB Local), `unit_ws` (the subprotocol upgrade), and `smoke_authz`'s MQTT rows against a real `cbase serve`.
-Fuzz targets (`fuzz/`): `fz_mqtt` (the codec both ways: every packet read lies in its input and writes back to one that reads the same; topic matching), `fz_mqtt_hub` (the hub's side fed any bytes as messages of any size: replies are whole server packets, the connection only ever holds filters the policy allows), `fz_iot_auth` (any bytes as IoT's request: the answer is valid JSON, an allowed one names exactly the token's user and never a publish or a wildcard user); `fz_sequence` checks that a member's own chat is only ever published to someone who sits there.
+### Pushes, after the answer
+
+`realtime.c` builds each push once, as the stream's message, and hands it to the transport with its targets.
+Under Lambda an HTTP invocation POSTs its response, then publishes its commits' pushes and kicks the bots before it asks for the next event (`src/app/after.{h,c}`), so a move's answer never waits for IoT.
+The work queues on the invocation's thread in call order and is drained in that order, each fan-out under the game's order lock; under Lambda that thread is the only committer, so a game's pushes still go out in commit order.
+A response can arrive before its own pushes (the clients gate every push on its version, as they must across containers).
+A queue copy that cannot be made publishes at once; a push that fails after the answer is logged at WARN with its game and version (`after: game <id> v<n>: <k> push(es) failed after the answer was sent`), since it can no longer fail the invocation.
+`cbase serve`, bot drives and the scan publish at once: a drive's pushes are paced and must not wait for its end.
+
+`rt_deps.h` is a table of the calls into auth and IoT that the unit tests swap for fakes; the production table is exercised end to end by the game smoke, where real JWTs and `rt_local` carry every push.
+
+### Tests
+
+`unit_mqtt` (the codec), `unit_stream_mqtt` (the policy as an authz matrix, and the hub's side of a connection fed whole packets, packets split at every byte, several in one message, and every packet a client must not send), `unit_rt_iot` (publishes, the authorizer's decode and answer, only through the edge, the encoder's refusals, the endpoint setting), `unit_rt_local` (a real loopback socket: the upgrade, pushes reaching only their topics, every refusal ending the connection, sockets closed with work still on the pool), `unit_stream` (the messages and topics a publish builds byte for byte, and the kernel's client against the hub over a real socket), `unit_store` (`game_members` on SQLite and DynamoDB Local; the schema 3 to 4 step), `smoke_lambda_after` (the real `bootstrap` answering first and publishing after, to a TLS stand-in for IoT), and against a real `cbase serve`: `smoke_authz`'s MQTT rows, `smoke_matrix`'s stream matrix (every bad token, another user's client id, every forbidden filter, a client PUBLISH, a second CONNECT, a deleted account's token) and hidden-card game, judged by topic, and the game smoke's three listeners through a whole game and a crash.
+Fuzz targets (`fuzz/`): `fz_mqtt` (the codec both ways: every packet read lies in its input and writes back to one that reads the same; topic matching), `fz_mqtt_hub` (the hub's side fed any bytes as messages of any size), `fz_iot_auth` (any bytes as IoT's request: the answer is valid JSON, an allowed one names exactly the token's user and never a publish or a wildcard user), and `fz_sequence`, whose connections are the hub's own state fed MQTT packets: a push reaches only open connections and only on their own user's topics or the spectators', every envelope and cast it carries is that topic's viewer's, a member's own chat is only ever published to someone who sits there, and a deleted account's token connects nothing.
 Their first runs found one defect, kept as `fuzz/corpus/mqtt/repro-nonminimal-length`: a remaining length written in more bytes than it needs read as a packet that wrote back differently; such lengths are now refused.
 
-As built (before the move):
-
-- `stream.c`: `cb_nw_on_frame` runs one client frame against the connection's row (its user and topics) and answers through a send callback, so both transports share it; `cb_rt_may_hear` is the policy.
-  A game subscription picks the caller's own seat's topic when they are a member and the spectators' otherwise, and is answered after its ACK with the caller's current view when it is newer than `since` (the catch-up).
-- `realtime.c` builds each push once, as the stream's message, and hands it to the transport.
-- `rt_local.c` (serve): `GET /v1/stream?proto=nw1` on the loop thread; each client frame runs on the request pool, one at a time per connection, so frames are answered in order; client frames may be binary or base64 text, and pushes go out binary.
-  The server's idle sweep closes a WebSocket with no client traffic for 120 s, which a client's 25 s ping prevents.
-- `rt_apigw.c` (Lambda): `$connect` requires `proto=nw1` and stores nothing, `$disconnect` deletes the row and its index entries, `$default` runs the message (base64 text: a frame, or several in one `NW_WS_BATCH`) after one read of the row, and writes the row back only when its user or topics changed; a ping reads nothing.
-  The row's TTL is set once, when it is first stored, past API Gateway's two-hour cap on a connection, so nothing pushes it forward.
-  With `CBASE_WS_ROUTE_REPLY=yes` (the template's `$default` route response) a message's last reply is the invocation's answer, so a pong or a batch's replies cost no POST; any reply before it, and every push, goes through the management API as base64 text, and 410 deletes the row.
-  API Gateway does not serialize a connection's frames: each is its own invocation, and a page subscribes to its games, a game and its chat within a few milliseconds.
-  So the row is written by compare-and-set on its version (`conn_put`), a frame that loses re-reads and runs again (up to 12 times), and its replies are held until the run that stored.
-  Found by the live browser acceptance of 2026-10-14 (then on Phoenix), where three joins each wrote back only their own topic and the page heard no pushes until it reloaded.
-  The client now sends a moment's subscriptions as one batch, so a page is one invocation and one write and does not race itself; the compare-and-set stays for clients that send them one by one.
-  The write is three plain writes, not a transaction: index entries for the topics gained, the row on its version, then deletes of the entries for the topics lost, so the index always holds at least the stored row's topics (store.h `conn_put` says why a stray entry is harmless).
-  Measured on production (2026-10-17, `cbase-bench page`): see c_base/bench/results for the page runs before and after.
-- Answer first (`src/app/after.{h,c}`): under Lambda an HTTP invocation POSTs its response, then publishes its commits' pushes and kicks the bots before it asks for the next event, so a move's answer no longer waits for the stream's connection Queries, the @connections POSTs and the async invoke.
-  The work queues on the invocation's thread in call order and is drained in that order, each fan-out under the game's order lock; under Lambda that thread is the only committer, so a game's pushes still go out in commit order.
-  A response can now arrive before its own pushes (the clients gate every push on its version, as they always had to across containers).
-  A queue copy that cannot be made publishes at once; a push that fails after the answer is logged at WARN with its game and version (`after: game <id> v<n>: <k> push(es) failed after the answer was sent`), since it can no longer fail the invocation.
-  `cbase serve`, bot drives and the scan publish at once, as before: a drive's pushes are paced and must not wait for its end.
-- `rt_deps.h` is a table of the calls into auth, table_ops and API Gateway that the unit tests swap for fakes: the API Gateway entries cannot be real without AWS, and the fakes pin edge cases (410, expired rows, a lost CONN row) deterministically.
-  The production table is exercised end to end by the game smoke, where real JWTs, the real table_ops and `rt_local` carry every push.
-- Until stage 4 the module also held the facade: `phoenix.c` (both Phoenix serializers), the Supabase Realtime payloads (`rt_rows.c`), and `postgrest.c` (the PostgREST reads and the chat insert); "Binary surface" says what replaced each.
-
-Tests: `test/unit_stream.c` (the protocol on the fake world, the frames a publish builds, and a loopback `cbase serve` socket driven by the kernel's client library), `test/unit_rt_apigw.c` (the three events, base64 both ways, the CAS race, 410 and expired rows), `test/unit_rt_local.c` (a real loopback server: the upgrade route, isolation between sockets, frames answered in order, garbage closing), and the game smoke, where three sockets hear a seat's casts, the spectators' casts and a user's views through a whole game and a crash.
-
-Untested: `rt_apigw` against real API Gateway before the stage 3 web deploy.
 Carried over on purpose: chat `is_system` settable by a client (the server ignores it now: `NW_CHAT_SEND` has no such field).
 
 ## Module: aws
 
 Owner: `src/aws/`.
-Headers: `runtime_api.h` (complete: the Lambda Runtime API client), `event.h` (the event envelope in, the response out), `sigv4.h` (signing and credentials), `https.h` (a TLS client on OpenSSL), `apigw_mgmt.h` (post to a connection), `lambda_invoke.h` (the async self-invoke).
+Headers: `runtime_api.h` (complete: the Lambda Runtime API client), `event.h` (the event envelope in, the response out), `sigv4.h` (signing and credentials), `https.h` (a TLS client on OpenSSL), `iot_data.h` (publish to IoT Core), `lambda_invoke.h` (the async self-invoke), `ssm.h` (the secrets).
 The stubs live together in `aws_stubs.c`; each builder file replaces its part and deletes it there.
 
 As built:
@@ -527,12 +518,12 @@ As built:
   Checked against seven cases of AWS's signing test suite.
 - `https.c`: a blocking HTTPS/1.1 client on OpenSSL, TLS 1.2+, peer and hostname verified, one deadline per exchange, Content-Length, chunked and read-to-close bodies, a small idle pool per host with one retry for a pooled connection that died before any byte.
   The CA bundle is found on provided.al2023 without configuration (`CBASE_CA_FILE` overrides).
-- `aws_call.c`: the one signed-request step (credentials, SigV4, HTTPS) under `apigw_mgmt.c`, `lambda_invoke.c` and the DynamoDB store.
+- `aws_call.c`: the one signed-request step (credentials, SigV4, HTTPS) under `iot_data.c`, `lambda_invoke.c`, `ssm.c`, `cloudfront.c` and the DynamoDB store.
   An endpoint URL that says `http://` (DynamoDB Local) is reached over plain TCP (`cb_http_plain_request`), signed the same way; plain HTTP is decided by the URL alone and refused for any `amazonaws.com` host.
 - The event section of `json_surface.c` (formerly `event.c`, which keeps only freeing and logging an event): Lambda events in, responses out; binary bodies are base64 both ways.
   The self-invoke and schedule payloads are the JSON string literals `"bot_drive:<id>"` and `"scan"` (the decision record), read by stripping the quotes; EventBridge's `"source":"aws.events"` is also a scan.
   `cb_event_bot_drive_payload` is the one writer of the literal.
-- `lambda_invoke.c` (`AWS_ENDPOINT_URL_LAMBDA` overrides the endpoint) and `apigw_mgmt.c` (410 reaches `rt_apigw` as `CB_APIGW_GONE`).
+- `lambda_invoke.c` (`AWS_ENDPOINT_URL_LAMBDA` overrides the endpoint) and `iot_data.c` (one `POST /topics/<topic>?qos=0`, service `iotdata`; a `host:port` endpoint is a test's stand-in, always over TLS).
 - `main_lambda.c` clears the deadline after each invocation and answers `{}` for a drive whose game is gone.
 
 Tests: `test/unit_sigv4.c`, `test/unit_https.c` and `test/unit_aws_calls.c` against a local TLS server, where each request's signature is recomputed from the bytes that arrived; `test/unit_event.c`; `test/smoke_lambda.c` (health, scan, a garbage event, a drive for a missing game).
@@ -573,7 +564,7 @@ The export holds password hashes: it lives under `migrate/out/`, is gitignored, 
 
 As built:
 
-- `ops/cbase.yaml`: the table, the function (arm64, provided.al2023, 256 MB, 60 s), its role, the Function URL, the WebSocket API with its three routes and stage, the one-minute scan schedule (input `"scan"`), CloudFront with a CloudFront Function that rewrites `/v1/stream` onto the stage. The GitHub Actions deploy role and OIDC provider are `ops/github_oidc.yaml`'s, a stack of their own (RUNBOOK.md step 13).
+- `ops/cbase.yaml`: the table, the function (arm64, provided.al2023, 256 MB, 60 s), its role, the Function URL, IoT Core's custom authorizer and the function's right to publish (since 2026-10-18; the WebSocket API before), the one-minute scan schedule (input `"scan"`), CloudFront with `/mqtt*` to IoT Core and a CloudFront Function naming the authorizer. The GitHub Actions deploy role and OIDC provider are `ops/github_oidc.yaml`'s, a stack of their own (RUNBOOK.md step 13).
   It passes `cfn-lint`; its index names, key types and TTL are held to the store's by `test/unit_dynamo.c`.
   The zip comes from an S3 bucket parameter, because CloudFormation's inline code works only for Node.js and Python.
 - `ops/package.sh` calls `make bootstrap` and checks the zip holds exactly one executable `bootstrap`.
@@ -620,6 +611,7 @@ Alex chose DynamoDB for the exact $0 after being shown three fully binary altern
    Expected: slower per call (S3 GET and PUT p50 roughly 15 to 40 ms against DynamoDB's 3 to 10 ms), about $0.10 to $0.20 a month, no JSON in the data path, XML only for admin listing; the indexes (a user's games, a topic's connections, the scan) would need a second mechanism.
 3. **Push: client polling of a binary endpoint** instead of API Gateway WebSocket and Phoenix.
    Expected: removes the CONN rows, the management API and the CloudFront path rewrite; adds up to one poll interval to a push; needs web and iOS client changes.
+   (Realtime moved to AWS IoT Core instead on 2026-10-18, which removed the same things without the poll: "Module: realtime".)
 
 The honest expectation, stated before any measurement: the binary options are not expected to be faster end to end, because the dominant cost is the network hop to the store, and S3 is slower than DynamoDB; what they buy is the removal of JSON from our code.
 
@@ -630,13 +622,13 @@ The honest expectation, stated before any measurement: the binary options are no
 `make -C c_base bench` builds `build/cbase-bench` (`make all` builds it too, so CI keeps it compiling); `bench/bench.h` lists the sub-commands and `bench/bench_stats.h` the run file.
 It is one C program, and the same client measures `cbase serve` and the deployed stack: `http://` is a kept-alive socket read by `https.c`'s own response parser, `https://` goes through `cb_https_request` itself, and the WebSocket (ws or wss) uses the frame codec of `net/ws.c`.
 
-- `roundtrip --url <base> [--n 500] [--concurrency 1|4]`: each worker signs up two players, opens a stream socket per player (`/v1/stream`, frames as base64 text, which both transports take) subscribed to its games list, and plays two-human games (create, join, both ready, moves until the end, then a new game).
-  Per move it times `view`, `GET /v1/games/<id>` for the mover (the move is then chosen on that envelope with the kernel's client table and legal moves, as the browser does), `action`, `POST /v1/action` from request to response, and `push_view`: the opponent's view push for the new version, its arrival on the opponent's socket minus the action response's arrival (a reader thread per socket stamps each frame, so a push that beats the response is negative, not lost).
+- `roundtrip --url <base> [--n 500] [--concurrency 1|4]`: each worker signs up two players, opens an MQTT stream socket per player (`/mqtt`, which `cbase serve` and IoT Core behind the edge both serve) subscribed to its views (`u/<user>/v`), and plays two-human games (create, join, both ready, moves until the end, then a new game).
+  Per move it times `view`, `GET /v1/games/<id>` for the mover (the move is then chosen on that envelope with the kernel's client table and legal moves, as the browser does), `action`, `POST /v1/action` from request to response, and `push_view`: the opponent's view push for the new version, its arrival on the opponent's socket minus the action response's arrival (a reader thread per socket stamps each PUBLISH, so a push that beats the response is negative, not lost).
   Bodies go through the kernel's pure codecs (`netwire.h`), because the client library keeps one session in statics and the workers are threads.
   Until stage 4 it measured the facade (`player_views` over PostgREST, `push_pv` over Phoenix); the baselines below are those runs.
   Setup is not timed; bytes are the mean HTTP head and body per request, each way.
 - `coldstart --url <base> [--idle S] [--repeat K] [--path /health] [--force-cmd CMD]`: per repeat it runs the forcing command, sleeps, then times the first GET on a fresh connection and the next one on the same connection.
-- `cpu`: no network; fixtures come from a game the kernel plays in-process (two humans, dealt, eight moves in), and each operation's median nanoseconds per call over batches of at least 2 ms is reported with its share of a 5 ms request: the Function URL event decode and response encode (`event.c` then, `json_surface.c` now), a GetItem answer read into a game row and the commit's TransactWriteItems built (`dynamo_wire.c` then, `json_surface.c` now), one player's view push (`view_push`: the stream's frame and its base64 text; it was the `pv-` Realtime JSON, `pv_push_json`, 2141 ns against 114 ns on the same Mac), base64 of a 2 KB envelope each way, a JWT verify, a bcrypt verify (cost 10, sign-in only, for scale), and the kernel section itself (`table_load`, `table_set_deal_seed`, `table_act`, `table_commit_products`).
+- `cpu`: no network; fixtures come from a game the kernel plays in-process (two humans, dealt, eight moves in), and each operation's median nanoseconds per call over batches of at least 2 ms is reported with its share of a 5 ms request: the Function URL event decode and response encode (`event.c` then, `json_surface.c` now), a GetItem answer read into a game row and the commit's TransactWriteItems built (`dynamo_wire.c` then, `json_surface.c` now), one player's view push (`view_push`: the stream's frame and the MQTT PUBLISH around it; it was the `pv-` Realtime JSON, `pv_push_json`, 2141 ns against 114 ns on the same Mac, then the frame's base64 text for API Gateway), base64 of a 2 KB envelope each way, a JWT verify, a bcrypt verify (cost 10, sign-in only, for scale), and the kernel section itself (`table_load`, `table_set_deal_seed`, `table_act`, `table_commit_products`).
 - `report [FILE...]`: the Markdown tables of saved runs (default: every `bench/results/*.txt`).
 - `direct --url <base> [--n 200] [--edge URL] [--burst K]`: the web's /v1 list reads (my games, leaderboard, match history, bots) and one dealt game through the stack, the same DynamoDB calls signed from this Mac with the environment's credentials (reads only), the unsigned GetItem DynamoDB's front door refuses (the network floor), a cached file on the CDN, and a burst of fresh connections for a cold start; docs/DIRECT_DYNAMO.md has the run and what it decides.
 
@@ -752,7 +744,7 @@ The kernel's bytes never become JSON, and no client speaks JSON to c_base: the c
 JSON appears only where something outside c_base sets the format and cannot be changed:
 
 1. AWS's APIs: the Lambda event and response envelope, the Runtime API's error body, DynamoDB, and the self-invoke payload Lambda Invoke carries.
-   API Gateway Management posts a stream message (base64 text) as its body and needs no JSON of its own.
+   IoT Core's custom authorizer request and its policy answer are JSON too; a publish carries the stream message itself as its body.
 2. The access token's header and claims, because a JWT is JSON by RFC 7519 (the clients never read it: the session states its expiry).
 3. The admin console's API, because it is a browser page we own and JSON is what `fetch` reads.
 
@@ -929,7 +921,7 @@ Rotation, reuse grace and revocation are auth.c's, unchanged.
 
 ### The push stream
 
-**Since stage 2 of the move to IoT Core (2026-10-18), the kernel's client speaks MQTT** (`netclient.c`, over `shared/c/mqtt`); what follows down to "The pump" is the nw1 protocol, which only API Gateway and `/v1/stream` still serve until stage 3 deletes them.
+The kernel's client speaks MQTT (`netclient.c`, over `shared/c/mqtt`) to IoT Core in production and to `cbase serve`'s hub locally ("Module: realtime"); every PUBLISH it hears carries one netwire.h message.
 The client's stream, as built:
 
 - The host opens `/mqtt` (`nc_req_stream`) with the WebSocket subprotocol `mqtt` and carries binary frames both ways; nothing else changed for a host (the web sends `streamNext()`'s bytes, iOS `.data`).
@@ -948,53 +940,13 @@ The client's stream, as built:
 
 Tests: `unit_netclient` against a fake broker made of the same codec (the CONNECT and its token, the refresh before it, a refusal's refresh and its rate, order and retries, the keep-alive, every packet that is not the broker's or not this user's, packets cut at every byte, the catch-up read, seat and spectators' casts through create, join, leave and removal); `unit_stream` drives the client against `cbase serve`'s hub over a real socket; `fz_netclient` feeds it broker packets built around the input and checks every message it sends is whole client packets.
 
-One WebSocket per client at `/v1/stream`, carrying the kernel's bytes.
-Under `cbase serve` it is `rt_local`'s upgrade; under Lambda it is the API Gateway stage, reached through CloudFront (a CloudFront Function rewrites the path onto the stage, and `$connect` requires `proto=nw1`).
-The connection row (`cb_conn_row`) keeps its user, topics, version and TTL; the protocol is `proto=nw1` on the connect URL, the only one since stage 4.
-
-Client to server:
-
-- `NW_WS_AUTH`: the access token (u16); it names the connection's user. A bare `NW_WS_SUB` before it, or a token that does not verify, is refused with AUTH. Today's clients send no AUTH frame: every subscription is a `NW_WS_SUB_AS`.
-- `NW_WS_SUB`: ref (u16), what (`NW_SUB_GAMES` the caller's views, `NW_SUB_GAME` one game's casts, `NW_SUB_CHAT` one game's chat), game id, and `since` (u32, the newest version the client holds, 0 for none).
-- `NW_WS_SUB_AS`: the access token (u16), then a `NW_WS_SUB`'s fields.
-  The subscription says who asks, so it never depends on an AUTH frame having been stored before it.
-  API Gateway invokes the function once per frame with no order per connection, and the connection row is written by compare-and-set, so an AUTH sent first can still be stored after the SUB that followed it was read; a bare SUB then finds nobody and is refused with AUTH until its retry.
-  A token that does not verify is refused with AUTH and changes nothing; another user's token ends the subscriptions made as the first one, as AUTH does.
-- `NW_WS_UNSUB`: what, game id.
-- `NW_WS_PING`.
-- `NW_WS_BATCH`: 1 to `NW_BATCH_MAX` (16) entries, each a u32 length and one whole frame of the kinds above, run in order on the one connection row.
-  An entry that is not a client frame refuses the whole batch (the socket is closed, nothing it carried is stored).
-  Behind API Gateway a batch is one invocation and at most one row write, where the same frames one by one were an invocation each, all at once, racing each other's compare-and-set.
-
-Server to client:
-
-- `NW_WS_ACK`: ref, why (0, or the `ASK_WHY_*` of the refusal: AUTH, FORBIDDEN), and for a game subscription whether the caller is seated.
-- `NW_WS_VIEW`: game id, version (u32), envelope; an empty envelope means the seat is gone. The `pv-` feed.
-- `NW_WS_CAST`: game id, version, the kernel's cast. A member hears its own seat's casts (`gu-<game>-<user>`), anyone else the spectators' (`game-<game>`); the server picks by membership when the subscription is made, and the ACK says which.
-- `NW_WS_CHAT`: game id and the message (id, user, created, is_system, text).
-- `NW_WS_PONG`.
-- `NW_WS_BATCH`: a batch's replies, in order (`cb_nw_send_batched`: at most 16 entries and about 64 KB a batch, a lone reply sent as itself). Only a client that sent a batch is sent one.
-- `NW_WS_CATCHUP`: a `NW_WS_VIEW`'s fields, sent right behind the ACK of a game subscription made with `NW_WS_SUB_AS`: the caller's view of the game when it is newer than the `since` the subscription named.
-  Its own kind because a client holding a game on its own stream takes no dashboard views of it (its casts animate it), so a catch-up sent as a plain view was dropped; a commit that landed between the client's read of the game and its subscription going live was then lost until the next push (seen on production: a join that never reached the creator's lobby, about 1 game in 50).
-  A bare `NW_WS_SUB` still gets a `NW_WS_VIEW`, which every older client reads.
-
-Topics inside the server stay the strings they were (`pv-`, `gu-`, `game-`, `chat:`), with the policy of the old `cb_phx_may_join` in one function, `cb_rt_may_hear`.
-The catch-up the Phoenix facade never had: a `NW_SUB_GAME` with `since` below the game's version is answered, after its ACK, with the caller's current `NW_WS_VIEW` of that game, so a client that reconnects asks for what it missed by version instead of refetching on a guess.
-Version gating is the client's, in C, over one book of games that the stream (`nc_stream_in`) and the answers (`nc_on_response`) both feed (netclient.h "what changed"): a stale push or answer is dropped, a cast that skips a version is dropped and the game refetched, a refused move refetches the game when no push catches up within `NC_RECONCILE_MS`, and a game subscription accepted again (a reconnect, a refusal before it) refetches the game.
-Subscriptions, their retries after a refusal (a member's join can race the membership write: 0.5 s doubling to 10 s), the 25 s ping and the reconnect delay are the client's too, and so are the subscription changes a create, a join or a leave makes: the host reports `open`, `frame` and `closed`, holds and lets go of what its screens show, and sends whatever `nc_stream_next` has.
+Version gating is the client's, in C, over one book of games that the stream (`nc_stream_in`) and the answers (`nc_on_response`) both feed (netclient.h "what changed"): a stale push or answer is dropped, a cast that skips a version is dropped and the game refetched, a refused move refetches the game when no push catches up within `NC_RECONCILE_MS`, and a game subscription granted again (a reconnect) refetches the game.
+Subscriptions, the 30 s PINGREQ and the reconnect delay are the client's too, and so are the subscription changes a create, a join or a leave makes: the host reports `open`, `frame` and `closed`, holds and lets go of what its screens show, and sends whatever `nc_stream_next` has.
 
 **The pump.**
 A host states intents (`NcIntent`: sign in, create, play, ask, open a game, the lists) with `nc_do` and gets a ticket; it sends every request `nc_next_request` names, hands each answer back with `nc_on_response(id, status, body)` (status 0: it never arrived), settles the ticket the answer finished, reads what the feed changed with `nc_event(i)`, and calls again when `nc_due_ms` says.
 Endpoints, tokens, refreshes, retries and the meaning of every answer are the client's; the web's loop is `src/common/backend.ts` and iOS's `ios/FoolishNet/Backend.swift`, each a transport and nothing else.
 A host that shows boards and never decodes a cast (iOS) says so with `nc_set_boards`, and every cast becomes a refetch of the game.
-
-**Frames on the two transports.**
-API Gateway does not accept binary frames from a client: "API Gateway WebSocket APIs don't currently support binary frames in incoming message payloads. If a client app sends a binary frame, API Gateway rejects it and disconnects the client with code 1003" ([Binary media types for WebSocket APIs](https://docs.aws.amazon.com/apigateway/latest/developerguide/websocket-api-develop-binary-media-types.html)).
-Its workaround is text that carries base64 (the same page: `contentHandlingStrategy` `CONVERT_TO_BINARY` on the integration), and AWS documents no opcode for what an `@connections` post is delivered as; a question on AWS re:Post, "API Gateway Websocket Binary Frames" (https://repost.aws/questions/QUtbrnTNl6RJeseAE6ZCzx9Q, which refused a direct read and is known here only through a search summary), reports those posts arriving as text frames, which a browser refuses to decode when the bytes are not UTF-8.
-Not verified against the live API: creating a throwaway WebSocket API to watch the opcode was refused by this session's permissions, so the design does not depend on the answer.
-So the stream is defined over messages, and each transport carries them in the frame it can: the client always sends a text frame holding the message in base64; `rt_local` answers with binary frames; `rt_apigw` posts the message in base64, which arrives as text whatever opcode API Gateway picks.
-The client accepts both (`nc_stream_in` takes the frame and whether it was text), so neither host branches on the transport, and a deployment that is shown to deliver binary from `@connections` changes one line in `rt_apigw.c`.
-The cost is a third more bytes on the Lambda path for frames of a few hundred bytes to a few KB; the JSON gate is untouched, because none of this is JSON.
 
 ### The client's surface (what structgen reads)
 
@@ -1008,6 +960,9 @@ Stage 4 deletes `auth_http.c`, `postgrest.c`, `phoenix.c`, `rt_rows.c`, the faca
 The hosts lose supabase-js, supabase-swift, `Connector.ts`, `privateChannel.ts`, the hex decoding of view rows, `PackedAction`'s hand-written envelope, `VersionGate.swift` and the client-side email derivation.
 
 ### As built (stage 1, 2026-10-14)
+
+History: the stream named here (`stream.c`, `/v1/stream`, `rt_apigw`, the connection rows) was replaced by MQTT on IoT Core on 2026-10-18 ("Module: realtime").
+
 
 - `foolish/c/src/netwire.{h,c}`: the codec, both directions, as above. The action request and response moved out of `table.c` into `table_wire.c` (same functions, same bytes), because `table.c` reaches every bot and the iOS core library and the client link neither.
   `ask.h` gained `ASK_WHY_ACCOUNT` (code an `NW_ACCOUNT_E_*`) and `ASK_WHY_FORBIDDEN`.

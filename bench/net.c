@@ -4,6 +4,7 @@
 #include "aws/https.h"
 #include "net/ws.h"
 #include "netwire.h"
+#include "mqtt/mqtt.h"
 #include "util/b64.h"
 #include "util/uuid.h"
 
@@ -386,19 +387,77 @@ int bn_ws_recv(bn_ws *w, int timeout_ms, cb_buf *out) {
     }
 }
 
-int bn_ws_send_frame(bn_ws *w, const void *nw_frame) {
-    uint8_t raw[NW_ACCESS_MAX + 128];
-    char text[2 * (NW_ACCESS_MAX + 128)];
-    int n = nw_frame_encode((const NwFrame *)nw_frame, raw, sizeof raw);
-    int t = n > 0 ? nw_text_encode(raw, n, text, sizeof text) : -1;
-    return t > 0 ? bn_ws_send_text(w, text, (size_t)t) : -1;
+// ---- one MQTT connection ------------------------------------------------------------
+
+bn_ws *bn_mq_open(const bn_url *u, const char *query_token, int timeout_ms) {
+    char path[NW_ACCESS_MAX + 128];
+    if (query_token) snprintf(path, sizeof path, "/mqtt?token=%s", query_token);
+    else snprintf(path, sizeof path, "/mqtt");
+    return bn_ws_open_with(u, path, "Sec-WebSocket-Protocol: mqtt\r\n", timeout_ms);
 }
 
-bool bn_ws_frame_of(int op, const cb_buf *in, void *nw_frame) {
-    static _Thread_local uint8_t raw[1 << 17];
-    NwFrame *f = nw_frame;
-    if (op == CB_WS_OP_BIN) return nw_frame_decode(in->p, (int)in->len, f) == NW_OK;
-    if (op != CB_WS_OP_TEXT || in->len > sizeof raw) return false;
-    int n = nw_text_decode((const char *)in->p, (int)in->len, raw, sizeof raw);
-    return n > 0 && nw_frame_decode(raw, n, f) == NW_OK;
+int bn_mq_next(bn_mq *c, int timeout_ms, void *pkt, cb_buf *scratch) {
+    MqttPacket *p = pkt;
+    for (;;) {
+        int k = c->in.len ? mqtt_parse(c->in.p, (int)c->in.len, 1 << 20, MQTT_FROM_SERVER, p) : 0;
+        if (k > 0) {
+            // The packet's spans move to scratch, then the buffer drops it.
+            cb_buf_reset(scratch);
+            cb_buf_append(scratch, c->in.p, (size_t)k);
+            mqtt_parse(scratch->p, k, 1 << 20, MQTT_FROM_SERVER, p);
+            cb_buf_consume(&c->in, (size_t)k);
+            return p->type;
+        }
+        if (k < 0) return -1;
+        cb_buf msg;
+        cb_buf_init(&msg);
+        int op = bn_ws_recv(c->ws, timeout_ms, &msg);
+        if (op == CB_WS_OP_BIN) cb_buf_append(&c->in, msg.p, msg.len);
+        cb_buf_free(&msg);
+        if (op == -1) return 0;
+        if (op < 0 || op == CB_WS_OP_CLOSE) return -1;
+    }
+}
+
+int bn_mq_connect(bn_mq *c, const char *uid, const char *token, int timeout_ms) {
+    uint8_t b[NW_ACCESS_MAX + 256];
+    char id[96];
+    uint8_t rnd[4];
+    cb_random_bytes(rnd, sizeof rnd);
+    snprintf(id, sizeof id, "%s-bench%02x%02x%02x%02x", uid, rnd[0], rnd[1], rnd[2], rnd[3]);
+    int n = mqtt_write_connect(b, sizeof b, id, (int)strlen(id), 60, token ? "token" : NULL, 5, (const uint8_t *)token,
+                               token ? (int)strlen(token) : 0);
+    if (n < 0 || bn_ws_send_bin(c->ws, b, (size_t)n) != 0) return -1;
+    MqttPacket p;
+    cb_buf s;
+    cb_buf_init(&s);
+    int t = bn_mq_next(c, timeout_ms, &p, &s);
+    cb_buf_free(&s);
+    return t == MQTT_CONNACK && p.return_code == 0 ? 1 : t;
+}
+
+int bn_mq_subscribe(bn_mq *c, uint16_t id, const char *filter, int timeout_ms) {
+    uint8_t b[512];
+    MqttTopic t = { filter, (int)strlen(filter), 0 };
+    int n = mqtt_write_subscribe(b, sizeof b, id, &t, 1);
+    if (n < 0 || bn_ws_send_bin(c->ws, b, (size_t)n) != 0) return -1;
+    MqttPacket p;
+    cb_buf s;
+    cb_buf_init(&s);
+    int r = bn_mq_next(c, timeout_ms, &p, &s);
+    int ok = r == MQTT_SUBACK && p.packet_id == id && p.n_items == 1 && p.items[0] == 0;
+    cb_buf_free(&s);
+    return ok ? 1 : r;
+}
+
+int bn_mq_ping(bn_mq *c) {
+    uint8_t b[2];
+    int n = mqtt_write_bare(b, sizeof b, MQTT_PINGREQ);
+    return n > 0 ? bn_ws_send_bin(c->ws, b, (size_t)n) : -1;
+}
+
+void bn_mq_close(bn_mq *c) {
+    if (c->ws) bn_ws_close(c->ws);
+    cb_buf_free(&c->in);
+    memset(c, 0, sizeof *c);
 }

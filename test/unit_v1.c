@@ -36,19 +36,18 @@ static int64_t g_now;
 // The server's clock is the client's: a test that moves time moves both.
 static int64_t test_now(void) { return g_now; }
 
-// What the realtime transport was handed: each target's topic (its MQTT one,
-// else its nw1 one) and the last message.
+// What the realtime transport was handed: each target's topic and the last
+// message.
 static struct { int n; char topic[8][128]; uint8_t nw[4096]; size_t nw_len; } g_pub;
 static int cap_deliver(cb_rt *rt, const cb_rt_to *to, const uint8_t *frame, size_t len) {
-    if (g_pub.n < 8 && cb_rt_topic(to, g_pub.topic[g_pub.n], sizeof g_pub.topic[0]) < 0)
-        cb_rt_nw_topic(to, g_pub.topic[g_pub.n], sizeof g_pub.topic[0]);
+    if (g_pub.n < 8) cb_rt_topic(to, g_pub.topic[g_pub.n], sizeof g_pub.topic[0]);
     g_pub.n++;
     g_pub.nw_len = len < sizeof g_pub.nw ? len : 0;
     memcpy(g_pub.nw, frame, g_pub.nw_len);
     return 0;
 }
 static const cb_rt_transport CAP_T = { .name = "cap", .deliver = cap_deliver };
-static cb_rt g_rt = { &CAP_T, &g_ctx, NULL, NULL };
+static cb_rt g_rt = { &CAP_T, &g_ctx, NULL };
 
 static void setup(void) {
     cb_log_init(CB_LOG_ERROR, 0);
@@ -387,14 +386,12 @@ static void games_views_and_chat(void) {
     as(dora, dn);
     g_pub.n = 0;
     T_EQ_INT(send_req(nc_req_chat_send(gid, (int)strlen(gid), "hello there", 11, g_now)), 204);
-    // Once for the nw1 stream's whole-game chat, once on each human member's
-    // own MQTT topic (the bot is not a member, and nobody else hears it).
-    T_EQ_INT(g_pub.n, 2);
+    // Once on each human member's own topic (the bot is not a member, and
+    // nobody else hears it).
+    T_EQ_INT(g_pub.n, 1);
     char want_topic[96];
-    snprintf(want_topic, sizeof want_topic, "chat:%s", gid);
-    T_EQ_STR(g_pub.topic[0], want_topic);
     snprintf(want_topic, sizeof want_topic, "u/%.36s/m/%s", dora_id, gid);
-    T_EQ_STR(g_pub.topic[1], want_topic);
+    T_EQ_STR(g_pub.topic[0], want_topic);
     NwFrame f;
     T_EQ_INT(nw_frame_decode(g_pub.nw, (int)g_pub.nw_len, &f), NW_OK);
     T_EQ_INT(f.kind, NW_WS_CHAT);

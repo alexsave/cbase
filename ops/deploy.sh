@@ -21,7 +21,7 @@
 #      new CodeKey and CloudFormation updates the function's code;
 #   5. a change set of ops/cbase.yaml, printed and refused when it replaces a
 #      resource (CBASE_ALLOW_REPLACE=1 to mean it), then executed and waited for;
-#   6. prints the stack's outputs (FunctionUrl, WebSocketUrl,
+#   6. prints the stack's outputs (FunctionUrl,
 #      DistributionDomain, TableName, PublicUrl);
 #   7. seeds the 49 bots into a table that has none (cbase-import --seed-bots),
 #      moves rating rows to the leaderboard's index key (--reindex-ratings),

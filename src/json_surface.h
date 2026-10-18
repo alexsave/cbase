@@ -60,8 +60,6 @@
 //   SNAP#<id>          PLAYER#<user>      the replay again, once per player (GSI1 as above,
 //                                         GSI2 PLAYER#<user> / <created>#<id>)
 //   CHAT#<game>        <created>#<id>     a chat message (GSI1 USERCHAT#<user> / <created>#<id>)
-//   CONN#<conn>        CONN               a realtime connection (TTL)
-//   TOPIC#<topic>      CONN#<conn>        the topic index: conn_id and the row's TTL
 //   SCAN               GAME#<id>          present while a bot can act (table_bots_due): the
 //                                         heartbeat's partition, the bot lease, row_version
 //
@@ -191,7 +189,6 @@ bool dw_item_bot(cb_span item, cb_bot_row *b);
 bool dw_item_rating(cb_span item, cb_rating_row *r);
 bool dw_item_snapshot(cb_span item, cb_snapshot_row *s);   // byte fields malloc'd
 bool dw_item_chat(cb_span item, cb_chat_row *c);           // message malloc'd
-bool dw_item_conn(cb_span item, cb_conn_row *c);
 bool dw_item_scan(cb_span item, char game_id[CB_GAME_ID_MAX + 1], int64_t *updated_at, int64_t *last_commit_at);
 // A SCAN marker's lease_until, or INT64_MIN when it carries none.
 int64_t dw_item_lease_until(cb_span item);
@@ -218,7 +215,6 @@ void dw_get_game(dw_req *r, const char *table, const char *id);
 void dw_get_member(dw_req *r, const char *table, const char *game, const char *user);
 // The game's SCAN marker (store.h lease_held), consistent.
 void dw_get_scan(dw_req *r, const char *table, const char *game);
-void dw_get_conn(dw_req *r, const char *table, const char *conn_id);
 
 // The access patterns the backend reads by, one Query each.
 typedef enum {
@@ -231,7 +227,6 @@ typedef enum {
     DWQ_PLAYER_SNAPSHOTS,  // arg user: GSI2 (forward chooses the order)
     DWQ_SNAPSHOT_ITEMS,    // arg snapshot id: SNAP#<id>, consistent
     DWQ_CHAT,              // arg game: newest first (consistent)
-    DWQ_TOPIC_CONNS,       // arg topic (consistent)
     DWQ_SCAN,              // arg unused: the SCAN partition (consistent)
     DWQ_BOTS,              // GSI2 BOTS
     DWQ_RATINGS,           // GSI2 RATINGS: every row the index holds, either layout
@@ -340,21 +335,11 @@ void dw_rating_reindex(dw_req *r, const char *table, const cb_rating_row *rt);
 // false past 100 items.
 bool dw_bots_replace(dw_req *r, const char *table, const cb_bot_row *rows, int n, const cb_uuid *stored, int n_stored);
 
-// Snapshots, chat, connections.
+// Snapshots and chat.
 void dw_snapshot_put(dw_req *r, const char *table, const cb_snapshot_row *s);
 // A transaction: the message (a reused id cancels item 0), and checks that its
 // game (item 1) and its author (item 2) exist, as the foreign keys did.
 void dw_chat_put(dw_req *r, const char *table, const cb_chat_row *c);
-// PutItem of the CONN item at was_version + 1, conditioned on the stored
-// version being was_version (0: no live row; `now_ms` decides "live"); refused
-// is a lost race (store.h conn_put).
-void dw_conn_put(dw_req *r, const char *table, const cb_conn_row *c, int64_t was_version, int64_t now_ms);
-// BatchWriteItem of the topic index (TOPIC#<topic> / CONN#<conn_id>): puts of
-// entries carrying only conn_id and the TTL, or deletes. 1..24 topics.
-void dw_conn_index(dw_req *r, const char *table, const char *conn_id, const char *const *topics, int n, bool put,
-                   int64_t expires_ms);
-// BatchWriteItem deletes of the CONN item and its index entries.
-void dw_conn_delete(dw_req *r, const char *table, const cb_conn_row *c);
 
 // BatchWriteItem deletes of up to 25 raw JSON keys.
 void dw_batch_delete(dw_req *r, const char *table, const cb_buf *keys, int n);
@@ -399,10 +384,6 @@ bool dw_statement_reads(const char *statement);
 //              (lowercase names; repeated values comma-joined), cookies (joined
 //              into one "cookie" header, "; " between), body, isBase64Encoded.
 //              Decoded into a cb_http_req for cb_handle.
-//   WS         an API Gateway WebSocket event: requestContext.routeKey
-//              ($connect | $disconnect | $default), connectionId, domainName,
-//              stage, queryStringParameters ($connect; re-encoded into `query`),
-//              body ($default; base64 when isBase64Encoded).
 //   SCHEDULE   the bot scan: an EventBridge event ("source":"aws.events"), or
 //              the JSON string literal "scan" (the Scheduler's configured input).
 //   BOT_DRIVE  our self-invoke: the JSON string literal "bot_drive:<game id>".
@@ -416,7 +397,6 @@ bool dw_statement_reads(const char *statement);
 // The HTTP response is {statusCode, headers:{..}, body, isBase64Encoded} plus
 // "cookies" for any Set-Cookie; a body goes base64 when its Content-Type is
 // application/octet-stream (every function answer) or it is not valid UTF-8.
-// A WS event is answered {statusCode}.
 //
 // Decoding validates the whole event as JSON first (cb_json_valid), then reads
 // only the fields above. Every string the request keeps is copied into
@@ -427,9 +407,6 @@ bool dw_statement_reads(const char *statement);
 int  cb_event_decode(const char *json, size_t len, cb_event *out);
 // The response JSON for an HTTP event.
 int  cb_event_encode_http(const cb_http_res *res, cb_buf *out);
-// The response JSON for a WebSocket event.
-// {"statusCode":N} and, when body_len, "body": the route response text.
-int  cb_event_encode_ws(int status, const char *body, size_t body_len, cb_buf *out);
 // The answer to an IoT authorizer request (realtime/rt_iot.c decides it):
 //   {"isAuthenticated":false} when !ok; else
 //   {"isAuthenticated":true,"principalId":"<user id, no dashes>",

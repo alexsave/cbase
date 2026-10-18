@@ -108,29 +108,8 @@ static void pushes_are_publishes(void) {
     rt_publish_cast(rt, "u/+", G, 5, cast, 2);
     T_EQ_INT(g_pub.n, before);
     // forget is not this transport's: IoT names no connection to end.
-    cb_rt_forget_user(rt, UA, NULL, 0);
+    cb_rt_forget_user(rt, UA);
     cb_rt_free(rt);
-}
-
-// Beside apigw: every push goes to both (cb_rt.also).
-static int g_first;
-static int first_deliver(cb_rt *rt, const cb_rt_to *to, const uint8_t *frame, size_t len) {
-    g_first++;
-    return 0;
-}
-static const cb_rt_transport FIRST_T = { .name = "first", .deliver = first_deliver };
-
-static void beside_another_transport(void) {
-    setup();
-    cb_strlcpy(g_cfg.iot_endpoint, "abc123-ats.iot.us-east-1.amazonaws.com", sizeof g_cfg.iot_endpoint);
-    cb_rt first = { &FIRST_T, &g_ctx, NULL, NULL };
-    T_EQ_INT(cb_rt_iot_new(&g_ctx, &first.also), CB_OK);
-    g_first = 0;
-    const uint8_t cast[] = { 1 };
-    rt_publish_cast(&first, UA, G, 1, cast, 1);
-    T_EQ_INT(g_first, 1);
-    T_EQ_INT(g_pub.n, 1);
-    cb_rt_free(first.also);
 }
 
 // ---- the authorizer --------------------------------------------------------------------------
@@ -323,7 +302,6 @@ static void the_endpoint_setting(void) {
 
 int main(void) {
     T_RUN(pushes_are_publishes);
-    T_RUN(beside_another_transport);
     T_RUN(decoded_events);
     T_RUN(the_policy);
     T_RUN(only_through_the_edge);

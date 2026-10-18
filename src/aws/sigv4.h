@@ -37,7 +37,7 @@ typedef struct {
                             // percent-encoded once); the canonical form encodes it
                             // again, as SigV4 wants for every service but S3
     const char *query;      // "" or NULL, or the query as sent ("b=2&a=1"; sorted here)
-    const char *service;    // "dynamodb", "execute-api", "lambda"
+    const char *service;    // "dynamodb", "iotdata", "lambda", "ssm"
     const char *const *headers;
     int n_headers;
     const void *payload;

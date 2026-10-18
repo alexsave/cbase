@@ -50,9 +50,9 @@ static void every_status_has_its_reason(void) {
 // ---- config.h ------------------------------------------------------------------------------
 
 static const char *const VARS[] = {
-    "CBASE_LISTEN", "CBASE_STORE", "CBASE_DB", "CBASE_TABLE", "CBASE_WS_ENDPOINT", "CBASE_CF_DISTRIBUTION",
+    "CBASE_LISTEN", "CBASE_STORE", "CBASE_DB", "CBASE_TABLE", "CBASE_IOT_ENDPOINT", "CBASE_CF_DISTRIBUTION",
     "CBASE_JWT_SECRET", "CBASE_ADMIN_TOKEN", "CBASE_ALLOWED_ORIGINS", "CBASE_PUBLIC_URL", "CBASE_REQ_WORKERS",
-    "CBASE_BOT_WORKERS", "CBASE_MAX_BODY", "CBASE_JWT_TTL", "CBASE_LOG_LEVEL", "CBASE_ORIGIN_SECRET", "CBASE_WS_ROUTE_REPLY",
+    "CBASE_BOT_WORKERS", "CBASE_MAX_BODY", "CBASE_JWT_TTL", "CBASE_LOG_LEVEL", "CBASE_ORIGIN_SECRET",
 };
 
 static void env_clear(void) {
@@ -98,10 +98,11 @@ static void configuration_refusals(void) {
     snprintf(longhost, sizeof longhost, "%.300s:80", longv);
     refused("CBASE_LISTEN", longhost, "host is too long");
     refused("CBASE_STORE", "postgres", "is not sqlite or dynamo");
-    refused("CBASE_WS_ROUTE_REPLY", "maybe", "is not yes or no");
     refused("CBASE_DB", longv, "CBASE_DB is longer than");
     refused("CBASE_TABLE", longv, "CBASE_TABLE is longer than");
-    refused("CBASE_WS_ENDPOINT", longv, "CBASE_WS_ENDPOINT is longer than");
+    refused("CBASE_IOT_ENDPOINT", longv, "CBASE_IOT_ENDPOINT is longer than");
+    refused("CBASE_IOT_ENDPOINT", "a/b.iot.amazonaws.com", "is not a host name");
+    refused("CBASE_IOT_ENDPOINT", "localhost:8443", "is not a host name");
     refused("CBASE_CF_DISTRIBUTION", longv, "CBASE_CF_DISTRIBUTION is longer than");
     refused("CBASE_CF_DISTRIBUTION", "E2abc", "is not a CloudFront distribution id");
     refused("CBASE_JWT_SECRET", "short", "at least 32 characters");
