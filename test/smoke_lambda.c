@@ -20,14 +20,11 @@
 
 #include "t.h"
 
+#include "lib_fake_runtime.h"
 #include "lib_proc.h"
-#include "net/loop.h"
-#include "net/router.h"
-#include "net/server.h"
 #include "util/err.h"
 #include "util/json.h"
 #include "util/log.h"
-#include "util/pool.h"
 
 #include <pthread.h>
 #include <stdatomic.h>
@@ -36,12 +33,6 @@
 #include <signal.h>
 #include <string.h>
 #include <unistd.h>
-
-static cb_ctx g_ctx;
-static cb_config g_cfg;
-static atomic_int g_nexts;
-static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
-static atomic_int g_init_error;
 
 static const char HEALTH[] =
     "{\"version\":\"2.0\",\"routeKey\":\"$default\",\"rawPath\":\"/health\",\"rawQueryString\":\"\","
@@ -59,57 +50,15 @@ static const char IOT_AUTH[] =
 
 #define N_EVENTS 5
 static const char *const EVENTS[N_EVENTS] = { HEALTH, "\"scan\"", "\"non-sense\"", "\"bot_drive:abc123\"", IOT_AUTH };
-static char g_posted_path[N_EVENTS][256];
-static cb_buf g_posted_body[N_EVENTS];
-
-static void h_next(cb_ctx *c, const cb_http_req *q, cb_http_res *s) {
-    int i = atomic_fetch_add(&g_nexts, 1);
-    if (i >= N_EVENTS) { cb_res_text(s, 500, "no more\n"); return; }
-    char id[16];
-    snprintf(id, sizeof id, "req-%d", i + 1);
-    cb_res_header(s, "Lambda-Runtime-Aws-Request-Id", id);
-    cb_res_header(s, "Lambda-Runtime-Deadline-Ms", "9999999999999");
-    cb_res_header(s, "Lambda-Runtime-Invoked-Function-Arn", "arn:aws:lambda:us-west-1:0:function:cbase");
-    cb_res_send(s, 200, "application/json", EVENTS[i], strlen(EVENTS[i]));
-}
-
-// /2018-06-01/runtime/invocation/req-<n>/{response,error}
-static void h_post(cb_ctx *c, const cb_http_req *q, cb_http_res *s) {
-    const char *r = strstr(q->path, "/req-");
-    int i = r ? atoi(r + 5) - 1 : -1;
-    if (i < 0 || i >= N_EVENTS) { cb_res_text(s, 400, "unknown request id\n"); return; }
-    pthread_mutex_lock(&g_lock);
-    snprintf(g_posted_path[i], sizeof g_posted_path[i], "%s", q->path);
-    cb_buf_reset(&g_posted_body[i]);
-    cb_buf_append(&g_posted_body[i], q->body, q->body_len);
-    pthread_mutex_unlock(&g_lock);
-    cb_res_text(s, 202, "");
-}
-
-static void h_init_error(cb_ctx *c, const cb_http_req *q, cb_http_res *s) {
-    atomic_store(&g_init_error, 1);
-    fprintf(stderr, "init/error: %.*s\n", (int)q->body_len, (const char *)q->body);
-    cb_res_text(s, 202, "");
-}
-
-static void *run(void *a) { cb_loop_run(g_ctx.loop); return NULL; }
-static void stop(cb_loop *l, void *ud) { cb_loop_stop(l); }
 
 static void one_invocation(const char *bin) {
     cb_log_init(CB_LOG_WARN, 0);
-    strcpy(g_cfg.allowed_origins, "*");
-    g_ctx.cfg = &g_cfg;
-    g_ctx.loop = cb_loop_new();
-    g_ctx.req_pool = cb_pool_new(2, "rt");
-    g_ctx.router = cb_router_new();
-    cb_router_add(g_ctx.router, "GET", "/2018-06-01/runtime/invocation/next", 0, h_next);
-    cb_router_add(g_ctx.router, "POST", "/2018-06-01/runtime/invocation/*", 0, h_post);
-    cb_router_add(g_ctx.router, "POST", "/2018-06-01/runtime/init/error", 0, h_init_error);
-    g_ctx.server = cb_server_new(&g_ctx, NULL);
     int port = 0;
-    T_EQ_INT(cb_server_listen(g_ctx.server, "127.0.0.1", 0, &port), CB_OK);
-    pthread_t th;
-    pthread_create(&th, NULL, run, NULL);
+    fr_runtime *fr = fr_start("arn:aws:lambda:us-west-1:0:function:cbase", &port);
+    T_CHECK(fr != NULL);
+    if (!fr) return;
+    for (int i = 0; i < N_EVENTS; i++) fr_queue(fr, EVENTS[i]);
+    fr_done(fr);   // then /next answers 500, and bootstrap's loop ends
 
     char api[64], db[256], envdb[300];
     snprintf(api, sizeof api, "AWS_LAMBDA_RUNTIME_API=127.0.0.1:%d", port);
@@ -135,14 +84,13 @@ static void one_invocation(const char *bin) {
     T_EQ_INT(tp_wait_line(&c, "invocation/next answered 500", 20000, NULL, 0), 0);
     T_EQ_INT(tp_stop(&c, 0, 10000), 0);   // and it exits 0 by itself
 
-    T_EQ_INT(atomic_load(&g_init_error), 0);
-    T_EQ_INT(atomic_load(&g_nexts), N_EVENTS + 1);
-    pthread_mutex_lock(&g_lock);
+    T_EQ_INT(fr_init_errors(fr), 0);
+    T_EQ_INT(fr_nexts(fr), N_EVENTS + 1);
 
     // req-1: the encoded HTTP response.
-    const char *body = cb_buf_cstr(&g_posted_body[0]);
-    size_t n = g_posted_body[0].len;
-    T_EQ_STR(g_posted_path[0], "/2018-06-01/runtime/invocation/req-1/response");
+    const char *body = cb_buf_cstr(fr_posted_body(fr, 0));
+    size_t n = fr_posted_body(fr, 0)->len;
+    T_EQ_STR(fr_posted_path(fr, 0), "/2018-06-01/runtime/invocation/req-1/response");
     T_CHECK(cb_json_valid(body, n));
     int64_t status = 0;
     bool b64 = true;
@@ -158,38 +106,31 @@ static void one_invocation(const char *bin) {
     T_EQ_STR(ctype, "text/plain; charset=utf-8");
 
     // req-2: the scan literal reached the app's schedule (cb_bots_scan), which answered {}.
-    body = cb_buf_cstr(&g_posted_body[1]);
-    T_EQ_STR(g_posted_path[1], "/2018-06-01/runtime/invocation/req-2/response");
+    body = cb_buf_cstr(fr_posted_body(fr, 1));
+    T_EQ_STR(fr_posted_path(fr, 1), "/2018-06-01/runtime/invocation/req-2/response");
     T_EQ_STR(body, "{}");
 
     // req-3: an event that does not decode is the invocation's error.
-    body = cb_buf_cstr(&g_posted_body[2]);
-    T_EQ_STR(g_posted_path[2], "/2018-06-01/runtime/invocation/req-3/error");
+    body = cb_buf_cstr(fr_posted_body(fr, 2));
+    T_EQ_STR(fr_posted_path(fr, 2), "/2018-06-01/runtime/invocation/req-3/error");
     T_EQ_STR(body, "{\"errorMessage\":\"event decode: CB_E_INVALID\",\"errorType\":\"Handler\"}");
 
     // req-4: a drive for a game that is gone answers {}, not an error, so
     // Lambda does not retry an async invoke that can never succeed.
-    body = cb_buf_cstr(&g_posted_body[3]);
-    T_EQ_STR(g_posted_path[3], "/2018-06-01/runtime/invocation/req-4/response");
+    body = cb_buf_cstr(fr_posted_body(fr, 3));
+    T_EQ_STR(fr_posted_path(fr, 3), "/2018-06-01/runtime/invocation/req-4/response");
     T_EQ_STR(body, "{}");
 
     // req-5: the authorizer refuses a token that does not verify, as an
     // answer (IoT then refuses the CONNECT), not an error.
-    body = cb_buf_cstr(&g_posted_body[4]);
-    T_EQ_STR(g_posted_path[4], "/2018-06-01/runtime/invocation/req-5/response");
+    body = cb_buf_cstr(fr_posted_body(fr, 4));
+    T_EQ_STR(fr_posted_path(fr, 4), "/2018-06-01/runtime/invocation/req-5/response");
     T_EQ_STR(body, "{\"isAuthenticated\":false}");
-    pthread_mutex_unlock(&g_lock);
     char cmd[300];
     snprintf(cmd, sizeof cmd, "rm -rf '%s'", db);
     T_EQ_INT(system(cmd), 0);
 
-    cb_loop_post(g_ctx.loop, stop, NULL);
-    pthread_join(th, NULL);
-    cb_pool_free(g_ctx.req_pool);
-    cb_server_free(g_ctx.server);
-    cb_router_free(g_ctx.router);
-    cb_loop_free(g_ctx.loop);
-    for (int i = 0; i < N_EVENTS; i++) cb_buf_free(&g_posted_body[i]);
+    fr_stop(fr);
 }
 
 static const char *g_bin;

@@ -2,6 +2,7 @@
 #include "rt_iot.h"
 
 #include "aws/iot_data.h"
+#include "core.h"
 #include "stream_mqtt.h"
 #include "json_surface.h"
 #include "util/err.h"
@@ -110,15 +111,13 @@ int cb_iot_authorize(cb_ctx *ctx, const cb_iot_auth_event *ev, const char *funct
     char region[40], account[40];
     cb_mqtt_grant g;
     int rc = CB_E_AUTH;
-    if (ctx->cfg && !cb_config_origin_proven(ctx->cfg, ev->has_origin ? ev->origin : NULL)) {
-        rc = CB_E_AUTH;   // not through the edge
-    } else if (!arn_parts(function_arn ? function_arn : "", region, sizeof region, account, sizeof account)) {
+    if (!arn_parts(function_arn ? function_arn : "", region, sizeof region, account, sizeof account)) {
         CB_ERROR("iot", "authorizer: the function ARN \"%s\" names no region and account", function_arn ? function_arn : "");
         rc = CB_E_STATE;
     } else {
         // No client id in the request: the policy's iot:Connect resource holds it to the user.
-        rc = cb_mqtt_authorize(ctx, ev->token, ev->token_len, ev->client_id[0] ? ev->client_id : NULL,
-                               strlen(ev->client_id), now_ms, &g);
+        rc = cb_core_connect(ctx, ev->token, ev->token_len, ev->client_id[0] ? ev->client_id : NULL,
+                             strlen(ev->client_id), ev->has_origin ? ev->origin : NULL, now_ms, &g);
     }
     if (rc != CB_OK && rc != CB_E_AUTH) return rc;
     int64_t life = rc == CB_OK ? g.expires_s - now_ms / 1000 : 0;

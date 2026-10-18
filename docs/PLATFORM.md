@@ -763,3 +763,9 @@ Stage 8 pays this list down, mutation-checked and recorded in `docs/mutation_che
 - `cb_after_defer`: refused with the window closed, the drop run after the step, order across deferred kinds.
 - `edge.c` over declared paths: `cb_edge_setup` with 0, 1 and `CB_EDGE_MAX` + 1 paths, a mark past the declared ones ignored, no purge clearing the marks, a purge's error returned.
 - `provider_aws.c` `aws_edge_purge` with no distribution (nothing sent).
+
+### Stage 4
+
+- `core.c`: `cb_core_http` counting a 5xx, `cb_core_connect` refusing a CONNECT without the origin proof before the token is read, `cb_core_job` turning `CB_E_NOT_FOUND` into `CB_OK`.
+- `cb_process_main` with a wrong argv (usage, exit 2) and an app with no schedules.
+- `lib_fake_runtime`: the ingress conformance scenario (HTTP, connect, job, schedule, deadline, after-window) through both mains (section 8.6 stage 4), built on it.

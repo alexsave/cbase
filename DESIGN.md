@@ -91,6 +91,8 @@ It was not chosen because DynamoDB costs nothing and gives the query indexes (a 
 
 `ctx.h` holds the three seams: `ctx->store`, `ctx->rt` (with its transport), and `ctx->job_start` (`src/jobs.h`: the app's jobs and schedules by name; the provider starts a job on its pool or by a self-invoke).
 Each main names its provider (`src/cbase/provider.h`: `cb_provider_aws` or `cb_provider_local`, which picks the store, the transport, the kick, the edge's viewer header and the admin's console links) and its app (`src/cbase/app.h`: `cb_foolish_app`, its route lists and its self-test); nothing else asks which main is running (docs/PLATFORM.md).
+The provider owns `main` and calls only core's entries (`src/core.h`: `cb_core_http`, `cb_core_connect` for IoT's authorizer, `cb_core_job`, `cb_core_schedule`, `cb_core_after`), so core never sees a Lambda event; `cbase serve`'s body is the process ingress (`src/ingress_process.c`, `cb_process_main`), which a Cloud Run provider would share, and `main_serve.c` is one line naming the local provider and foolish.
+The fake Runtime API that drives the real `bootstrap` in `smoke_lambda` and `smoke_lambda_after` is one library, `test/lib_fake_runtime.{h,c}`.
 `boot.c` brings a context up the same way for both mains, runs the app's self-test (foolish's kernel self-test) first, and leaves a module whose constructor answers `CB_E_NOTIMPL` as NULL with a warning, so the skeleton serves /health while modules are being built.
 Every handler answers 503 when a handle it needs is NULL.
 

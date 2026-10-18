@@ -14,15 +14,12 @@
 #include "t.h"
 
 #include "lib_aws_tls.h"
+#include "lib_fake_runtime.h"
 #include "lib_proc.h"
-#include "net/loop.h"
-#include "net/router.h"
-#include "net/server.h"
 #include "../../shared/c/b64/b64.h"
 #include "util/err.h"
 #include "util/json.h"
 #include "util/log.h"
-#include "util/pool.h"
 
 #include "ask.h"
 #include "netwire.h"
@@ -32,67 +29,17 @@
 #include <signal.h>
 #include <unistd.h>
 
-static cb_ctx g_ctx;
-static cb_config g_cfg;
+static fr_runtime *g_fr;
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t g_cv = PTHREAD_COND_INITIALIZER;
-
-// The next event to hand out ("" none yet), and what came back.
-static char g_event[8192];
-static int g_served, g_queued;
-static char g_arrivals[32][128];
-static int g_n_arrivals;
-static cb_buf g_response[8];
-static int g_n_responses;
 static int g_n_pushes;     // IoT publishes
 static char g_push_path[256];   // the first one's request line
 static uint8_t g_push_body[512];
 static size_t g_push_len;
-static bool g_done;
-
-static void arrive(const char *what) {
-    if (g_n_arrivals < 32) snprintf(g_arrivals[g_n_arrivals++], sizeof g_arrivals[0], "%s", what);
-}
-
-static void h_next(cb_ctx *c, const cb_http_req *q, cb_http_res *s) {
-    pthread_mutex_lock(&g_lock);
-    struct timespec until;
-    clock_gettime(CLOCK_REALTIME, &until);
-    until.tv_sec += 20;
-    while (g_served == g_queued && !g_done)
-        if (pthread_cond_timedwait(&g_cv, &g_lock, &until) != 0) break;
-    if (g_served == g_queued) { pthread_mutex_unlock(&g_lock); cb_res_text(s, 500, "no more\n"); return; }
-    g_served++;
-    char id[16];
-    snprintf(id, sizeof id, "req-%d", g_served);
-    char ev[8192];
-    snprintf(ev, sizeof ev, "%s", g_event);
-    pthread_mutex_unlock(&g_lock);
-    cb_res_header(s, "Lambda-Runtime-Aws-Request-Id", id);
-    cb_res_header(s, "Lambda-Runtime-Deadline-Ms", "9999999999999");
-    cb_res_header(s, "Lambda-Runtime-Invoked-Function-Arn", "arn:aws:lambda:us-east-1:0:function:cbase");
-    cb_res_send(s, 200, "application/json", ev, strlen(ev));
-}
-
-static void h_post(cb_ctx *c, const cb_http_req *q, cb_http_res *s) {
-    const char *r = strstr(q->path, "/req-");
-    pthread_mutex_lock(&g_lock);
-    char what[128];
-    snprintf(what, sizeof what, "%s req-%d", strstr(q->path, "/error") ? "error" : "response", r ? atoi(r + 5) : -1);
-    arrive(what);
-    if (g_n_responses < 8) {
-        cb_buf_init(&g_response[g_n_responses]);
-        cb_buf_append(&g_response[g_n_responses++], q->body, q->body_len);
-    }
-    pthread_cond_broadcast(&g_cv);
-    pthread_mutex_unlock(&g_lock);
-    cb_res_text(s, 202, "");
-}
 
 // IoT Core's publish: POST /topics/<topic>?qos=0, the message as the body.
 static tls_action h_publish(const cb_buf *req, cb_buf *resp, void *ud) {
+    fr_note(g_fr, "publish");
     pthread_mutex_lock(&g_lock);
-    arrive("publish");
     if (g_n_pushes++ == 0) {
         const char *r = (const char *)req->p, *eol = strstr(r, "\r\n"), *he = strstr(r, "\r\n\r\n");
         snprintf(g_push_path, sizeof g_push_path, "%.*s", eol ? (int)(eol - r) : 0, r);
@@ -100,30 +47,16 @@ static tls_action h_publish(const cb_buf *req, cb_buf *resp, void *ud) {
         g_push_len = req->len - hl < sizeof g_push_body ? req->len - hl : 0;
         memcpy(g_push_body, req->p + hl, g_push_len);
     }
-    pthread_cond_broadcast(&g_cv);
     pthread_mutex_unlock(&g_lock);
     cb_buf_puts(resp, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}");
     return TLS_KEEP;
 }
 
-static void *run(void *a) { cb_loop_run(g_ctx.loop); return NULL; }
-static void stop(cb_loop *l, void *ud) { cb_loop_stop(l); }
-
-// Hands bootstrap the next event and waits until its answer has arrived.
+// Hands bootstrap the next event and waits until its answer has arrived: its req index, or -1.
 static int give(const char *event) {
-    pthread_mutex_lock(&g_lock);
-    snprintf(g_event, sizeof g_event, "%s", event);
-    int want = g_n_responses + 1;
-    g_queued++;
-    pthread_cond_broadcast(&g_cv);
-    struct timespec until;
-    clock_gettime(CLOCK_REALTIME, &until);
-    until.tv_sec += 20;
-    while (g_n_responses < want)
-        if (pthread_cond_timedwait(&g_cv, &g_lock, &until) != 0) break;
-    int got = g_n_responses >= want ? want - 1 : -1;
-    pthread_mutex_unlock(&g_lock);
-    return got;
+    int want = fr_n_posted(g_fr) + 1;
+    fr_queue(g_fr, event);
+    return fr_wait_posted(g_fr, want, 20000) ? fr_posted_order(g_fr, want - 1) : -1;
 }
 
 static void url_event(char *out, size_t cap, const char *method, const char *path, const char *auth, const uint8_t *body, size_t n) {
@@ -142,27 +75,19 @@ static void url_event(char *out, size_t cap, const char *method, const char *pat
 // The HTTP response's body bytes (base64 in the encoded response), into out.
 static int response_body(int i, uint8_t *out, int cap) {
     char b64[8192];
-    if (!cb_json_get_str(cb_buf_cstr(&g_response[i]), g_response[i].len, "body", b64, sizeof b64)) return -1;
+    cb_buf *r = fr_posted_body(g_fr, i);
+    if (!cb_json_get_str(cb_buf_cstr(r), r->len, "body", b64, sizeof b64)) return -1;
     return b64_decode(b64, strlen(b64), out, (size_t)cap);
 }
 
 static void answers_then_pushes(const char *bin) {
-    g_served = g_queued = g_n_arrivals = g_n_responses = g_n_pushes = 0;
-    g_done = false;
+    g_n_pushes = 0;
     cb_log_init(CB_LOG_WARN, 0);
     signal(SIGPIPE, SIG_IGN);
-    strcpy(g_cfg.allowed_origins, "*");
-    g_ctx.cfg = &g_cfg;
-    g_ctx.loop = cb_loop_new();
-    g_ctx.req_pool = cb_pool_new(4, "rt");
-    g_ctx.router = cb_router_new();
-    cb_router_add(g_ctx.router, "GET", "/2018-06-01/runtime/invocation/next", 0, h_next);
-    cb_router_add(g_ctx.router, "POST", "/2018-06-01/runtime/invocation/*", 0, h_post);
-    g_ctx.server = cb_server_new(&g_ctx, NULL);
     int port = 0;
-    T_EQ_INT(cb_server_listen(g_ctx.server, "127.0.0.1", 0, &port), CB_OK);
-    pthread_t th;
-    pthread_create(&th, NULL, run, NULL);
+    g_fr = fr_start("arn:aws:lambda:us-east-1:0:function:cbase", &port);
+    T_CHECK(g_fr != NULL);
+    if (!g_fr) return;
     static tls_srv iot;
     T_EQ_INT(tls_srv_start(&iot, h_publish, NULL), 0);
 
@@ -211,23 +136,21 @@ static void answers_then_pushes(const char *bin) {
     // a host that is not *.iot.*, so the tally files it as other: aws/https.c host_kind).
     T_CHECK(strstr(timing, " other=1/") != NULL);
 
-    pthread_mutex_lock(&g_lock);
-    g_done = true;
-    pthread_cond_broadcast(&g_cv);
-    pthread_mutex_unlock(&g_lock);
+    fr_done(g_fr);
     T_EQ_INT(tp_stop(&c, 0, 20000), 0);
 
-    pthread_mutex_lock(&g_lock);
-    for (int i = 0; i < g_n_arrivals; i++) fprintf(stderr, "lambda-after: %s\n", g_arrivals[i]);
+    int n_arrivals = fr_n_arrivals(g_fr);
+    for (int i = 0; i < n_arrivals; i++) fprintf(stderr, "lambda-after: %s\n", fr_arrival(g_fr, i));
     int create_resp = -1, push_after = -1;
-    for (int i = 0; i < g_n_arrivals; i++) {
-        if (strcmp(g_arrivals[i], "response req-2") == 0) create_resp = i;
-        else if (strcmp(g_arrivals[i], "publish") == 0 && create_resp >= 0 && push_after < 0) push_after = i;
+    for (int i = 0; i < n_arrivals; i++) {
+        if (strcmp(fr_arrival(g_fr, i), "response req-2") == 0) create_resp = i;
+        else if (strcmp(fr_arrival(g_fr, i), "publish") == 0 && create_resp >= 0 && push_after < 0) push_after = i;
     }
+    pthread_mutex_lock(&g_lock);
     T_CHECK(create_resp >= 0);
     T_CHECK(push_after > create_resp);                // the view, once the answer was out
     T_EQ_INT(g_n_pushes, 1);
-    for (int i = 0; i < g_n_responses; i++) T_CHECK(strstr(cb_buf_cstr(&g_response[i]), "\"statusCode\":") != NULL);
+    for (int i = 0; i < fr_n_posted(g_fr); i++) T_CHECK(strstr(cb_buf_cstr(fr_posted_body(g_fr, i)), "\"statusCode\":") != NULL);
     // The user's own views topic, QoS 0, the nw1 view as the body.
     char want[200];
     snprintf(want, sizeof want, "POST /topics/u%%2F%s%%2Fv?qos=0 HTTP/1.1", uid);
@@ -237,17 +160,10 @@ static void answers_then_pushes(const char *bin) {
     T_EQ_INT(f.kind, NW_WS_VIEW);
     T_CHECK(f.blob.len > 0);
     pthread_mutex_unlock(&g_lock);
-    for (int i = 0; i < g_n_responses; i++) cb_buf_free(&g_response[i]);
 
     tls_srv_stop(&iot);
-    cb_loop_post(g_ctx.loop, stop, NULL);
-    pthread_join(th, NULL);
-    // Down in reverse, as main_serve.c does.
-    cb_pool_free(g_ctx.req_pool);
-    cb_server_free(g_ctx.server);
-    cb_router_free(g_ctx.router);
-    cb_loop_free(g_ctx.loop);
-    memset(&g_ctx, 0, sizeof g_ctx);
+    fr_stop(g_fr);
+    g_fr = NULL;
 }
 
 static const char *g_bin;

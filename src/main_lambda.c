@@ -32,7 +32,7 @@
 // is calls/ms/new connections (aws/https.h). rid is the invocation's Lambda
 // request id (Lambda-Runtime-Aws-Request-Id), the id Lambda's own REPORT line
 // carries, so Logs Insights can join the two (billed duration, memory, init).
-#include "jobs.h"
+#include "core.h"
 #include "app/after.h"
 #include "app/limits.h"
 #include "aws/event.h"
@@ -90,9 +90,7 @@ static int dispatch(cb_ctx *ctx, const cb_invocation *inv, cb_buf *out, char *wh
         cb_http_res res;
         cb_res_init(&res);
         cb_after_begin();   // the pushes and kicks wait for the answer (app/after.h)
-        cb_handle(ctx, &ev.http, &res);
-        atomic_fetch_add_explicit(&ctx->stats.requests, 1, memory_order_relaxed);
-        if (res.status >= 500) atomic_fetch_add_explicit(&ctx->stats.responses_5xx, 1, memory_order_relaxed);
+        cb_core_http(ctx, &ev.http, &res);
         rc = cb_event_encode_http(&res, out);
         snprintf(what, what_cap, "http %s %.60s %d", ev.http.method, ev.http.path ? ev.http.path : "", res.status);
         cb_viewer_key(ctx, &ev.http, g_viewer, sizeof g_viewer);
@@ -107,14 +105,12 @@ static int dispatch(cb_ctx *ctx, const cb_invocation *inv, cb_buf *out, char *wh
     }
     case CB_EVENT_SCHEDULE:
         snprintf(what, what_cap, "%s", ev.schedule[0] ? ev.schedule : "schedule");
-        rc = cb_schedule_run(ctx, ev.schedule, cb_now_ms());
+        rc = cb_core_schedule(ctx, ev.schedule, cb_now_ms());
         if (rc >= 0) rc = cb_event_encode_none(out);
         break;
     case CB_EVENT_JOB:
         snprintf(what, what_cap, "%s %s", ev.job, ev.key);
-        rc = cb_job_run(ctx, ev.job, ev.key);
-        // Nothing to do (a drive's game is gone, or no bot can act on it).
-        if (rc == CB_E_NOT_FOUND) { CB_INFO("lambda", "%s:%s: nothing to do", ev.job, ev.key); rc = CB_OK; }
+        rc = cb_core_job(ctx, ev.job, ev.key);
         if (rc >= 0) rc = cb_event_encode_none(out);
         break;
     default:
@@ -175,7 +171,7 @@ int main(void) {
         }
         const int64_t t_resp = mono_us();
         // After the response is out: the caller waits for none of this.
-        cb_after_run(&ctx);
+        cb_core_after(&ctx);
         log_timing(what, inv.request_id, t0, t_resp, mono_us());
         ctx.deadline_ms = 0;
         cb_store_set_deadline(0);
