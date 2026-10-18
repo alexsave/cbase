@@ -55,7 +55,7 @@ seeds() { mk fuzz-seeds FUZZ_ROOTS="$S/a $S/b" FUZZ_SEEDS_PROG="$S/seeds" FUZZ_S
 out="$(seeds)" || fail "fuzz-seeds over two scratch roots failed: $out"
 [ -f "$S/a/corpus/one/s1" ] || fail "one's seed is not in a/corpus/one, beside fz_one.c"
 [ -f "$S/b/corpus/two/s2" ] || fail "two's seed is not in b/corpus/two, beside fz_two.c"
-[ ! -e "$S/a/corpus/two" ] && [ ! -e "$S/b/corpus/one" ] || fail "a target's seeds landed beside the other root's target"
+if [ -e "$S/a/corpus/two" ] || [ -e "$S/b/corpus/one" ]; then fail "a target's seeds landed beside the other root's target"; fi
 
 rm -rf "$S/a/corpus" "$S/b/corpus"
 if out="$(STRAY=three seeds)"; then
@@ -63,7 +63,7 @@ if out="$(STRAY=three seeds)"; then
 else
   case "$out" in *"seeds for three, which is no target"*) ;; *) fail "stray seeds refused, but not for that: $out";; esac
 fi
-[ ! -e "$S/a/corpus" ] && [ ! -e "$S/b/corpus" ] || fail "seeds for no target were refused only after corpora were written"
+if [ -e "$S/a/corpus" ] || [ -e "$S/b/corpus" ]; then fail "seeds for no target were refused only after corpora were written"; fi
 # A stray name that a target's name contains is still no target.
 if out="$(STRAY=on seeds)"; then fail "seeds for on (a part of one) were taken"; fi
 
