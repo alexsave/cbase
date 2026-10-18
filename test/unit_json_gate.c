@@ -28,7 +28,7 @@
 #include <sys/stat.h>
 
 // The files allowed to speak JSON: the surface and the mechanism under it.
-static const char *const ALLOWED[] = { "providers/aws/src/aws_json.c", "core/src/util/json.c", "core/src/util/json.h" };
+static const char *const ALLOWED[] = { "core/src/core_json.c", "providers/aws/src/aws_json.c", "core/src/util/json.c", "core/src/util/json.h" };
 static const char *const ROOTS[] = { "core", "providers", "../foolish/server", "bench", "migrate" };
 
 static int  g_files, g_violations;

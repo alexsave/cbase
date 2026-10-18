@@ -37,7 +37,7 @@
 #include "app/table_ops.h"
 #include "cbase/provider.h"
 #include "handler.h"
-#include "aws_json.h"
+#include "core_json.h"
 #include "net/router.h"
 #include "roster.h"
 #include "store/store.h"

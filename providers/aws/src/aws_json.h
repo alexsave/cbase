@@ -1,17 +1,12 @@
-// json_surface.h - EVERY JSON SHAPE c_base speaks, and nothing else.
-//
-// JSON is tolerated in c_base only where something outside it sets the format
-// (DESIGN.md "Where JSON is tolerated"): AWS (the Lambda event and response
-// envelopes, the Runtime API's error body, DynamoDB, the API Gateway
-// Management API, Lambda Invoke), the access token's JWT header and claims,
-// and the admin console's API. The clients' surface is binary (the kernel's
-// netwire.h), so none of it is here. All of it is contained in ONE file,
-// json_surface.c: every key name, every shape, every call into the low-level
-// writer and reader (util/json.h, which nothing else includes). Everything
-// else in c_base hands this file structs and spans and gets bytes or structs
-// back. test/unit_json_gate.c fails the build when a JSON key literal, a
-// util/json.h include or a cb_jw_/cb_json_ call appears in any other file
-// under src/, bench/ or migrate/.
+// aws_json.h - every JSON shape the AWS provider speaks, and CloudFront's one
+// XML shape: the Lambda event and response envelopes, the Runtime API's error
+// body, DynamoDB (the item layer's spelling and the key-capture proof), the IoT
+// authorizer, Lambda Invoke, SSM, and the client's function URL event for the
+// bench. The core's JSON (the JWT, the admin console's API) is core_json.h.
+// These two files are the only ones that include util/json.h; everything else
+// hands them structs and spans and gets bytes or structs back.
+// test/unit_json_gate.c fails the build when a JSON key literal, a util/json.h
+// include or a cb_jw_/cb_json_ call appears in any other file.
 //
 // The functions are pure over buffers (no socket, no clock, no randomness: a
 // token or a time is an argument), so each shape is checked byte for byte
@@ -23,6 +18,7 @@
 #include "store/store.h"
 #include "aws/event.h"
 #include "auth/auth.h"
+#include "core_json.h"
 #include "app/table_ops.h"
 #include "roster.h"
 #include "util/str.h"
@@ -304,148 +300,6 @@ int  cb_event_redact(const char *json, size_t len, size_t max, cb_buf *out);
 // The Lambda Runtime API (runtime_api.c): the error body Lambda documents for an
 // invocation or init error, {"errorMessage": .., "errorType": ..}, into b.
 void cb_runtime_error_body(cb_buf *b, const char *type, const char *message);
-
-// =====================================================================================
-// JWT (jwt.c): the header and claims JSON of an access token. jwt.c does the
-// base64url, the HMAC and the time and UUID checks.
-
-// The header {"alg":"HS256","typ":"JWT"} and its length.
-const char *cb_js_jwt_header(size_t *n);
-// The header decodes to a JSON object whose alg is HS256.
-bool cb_js_jwt_header_ok(const char *json, size_t n);
-// GoTrue's claims for c, in jwt.h's order (iss only when issuer is not empty),
-// into out. CB_OK or CB_E_NOMEM.
-int  cb_js_jwt_claims(cb_buf *out, const cb_jwt_claims *c, const char *issuer);
-// The claims back: false unless the body is a valid JSON object with aud and
-// role "authenticated", an integer exp, string sub and session_id, and nbf
-// (when present, *has_nbf) an integer. iat defaults to 0, email and username
-// to "".
-bool cb_js_jwt_claims_decode(const char *json, size_t n, cb_jwt_claims *c, bool *has_nbf, int64_t *nbf);
-
-// =====================================================================================
-// The admin console's API (admin/admin.c; admin.h lists the calls). JSON
-// because the console is a browser page we own and JSON is what fetch reads.
-// Times are cb_iso8601's spelling, null for 0 or less.
-//
-// A list answer is written as it streams out of the store: a *_begin opens
-// the document (NULL when out of memory), the matching adds append one
-// element each, and *_end closes it, frees the stream and returns CB_OK, or
-// CB_E_NOMEM when the document did not encode. A stream is always ended,
-// even when the store failed and the document is thrown away.
-typedef struct cb_js_stream cb_js_stream;
-
-// The function's AWS console pages under Lambda; lambda NULL writes
-// "links": null (outside Lambda).
-typedef struct {
-    const char *lambda, *logs_insights, *dynamodb, *backups;
-} cb_js_admin_links;
-
-typedef struct {
-    const char *version, *mode, *store, *table, *public_url;
-    int64_t     uptime_s, started_ms, requests, errors_5xx;
-    bool        conns_known;             // serve: the process holds the sockets
-    int64_t     http_conns, ws_conns;
-    int64_t     games_needing_bots;      // < 0: null (the store could not say)
-    uint64_t    throttled, gave_up;      // store.h cb_store_throttles
-    bool        continuous_backup;       // DynamoDB: point-in-time recovery
-    int64_t     last_backup_ms;          // SQLite: the newest backup file, 0 for none
-    int64_t     pid, max_rss_kb, cpu_user_ms, cpu_sys_ms;
-    cb_js_admin_links links;
-} cb_js_admin_overview;
-int cb_js_admin_overview_write(cb_buf *out, const cb_js_admin_overview *o);
-
-// GET collections: {"store","collections":[name..]}.
-cb_js_stream *cb_js_admin_collections_begin(cb_buf *out, const char *store);
-void          cb_js_admin_collections_add(cb_js_stream *s, const char *name);
-int           cb_js_admin_collections_end(cb_js_stream *s);
-
-// One store row as an object of strings (a NULL name is "?", a NULL value
-// null): the element of browse's and query's "rows".
-void cb_js_admin_row(cb_js_stream *s, int n, const char *const *names, const char *const *values);
-// GET browse: {"collection","rows":[..],"next"}.
-cb_js_stream *cb_js_admin_browse_begin(cb_buf *out, const char *collection);
-int           cb_js_admin_browse_end(cb_js_stream *s, const char *next);
-// POST query: {"dialect","write_allowed","rows":[..],"truncated"}.
-cb_js_stream *cb_js_admin_query_begin(cb_buf *out, const char *dialect, bool write_allowed);
-int           cb_js_admin_query_end(cb_js_stream *s, bool truncated);
-// POST query's body {"statement","confirm"}: false when statement is missing,
-// not a string, or does not fit (stmt has room for the whole body); confirm
-// "" when absent or too long for its buffer.
-bool cb_js_admin_query_body(const char *body, size_t n, char *stmt, size_t stmt_cap, char *confirm, size_t confirm_cap);
-
-// GET users: {"users":[{id,email,username,created_at,last_sign_in_at}..],
-// "offset","next_offset"} (next_offset < 0: null).
-cb_js_stream *cb_js_admin_users_begin(cb_buf *out);
-void          cb_js_admin_users_add(cb_js_stream *s, const cb_user_row *u);
-int           cb_js_admin_users_end(cb_js_stream *s, int64_t offset, int64_t next_offset);
-// POST users/delete's body {"id"}: false when id is missing or does not fit.
-bool cb_js_admin_id_body(const char *body, size_t n, char *id, size_t cap);
-// {"deleted": id} and {"written": path}.
-int  cb_js_admin_deleted(cb_buf *out, const char *id);
-int  cb_js_admin_written(cb_buf *out, const char *path);
-
-// One game as the console shows it: its scalar columns and its seats, read
-// with the kernel's roster_decode by the caller (roster_rc not ROSTER_OK:
-// "seats": null and "roster_error").
-typedef struct {
-    const cb_game_row *g;
-    const char        *status_label;
-    const Roster      *roster;
-    int                roster_rc;
-} cb_js_admin_game;
-// GET games: {"games":[game..],"next"}.
-cb_js_stream *cb_js_admin_games_begin(cb_buf *out);
-void          cb_js_admin_games_add(cb_js_stream *s, const cb_js_admin_game *g);
-int           cb_js_admin_games_end(cb_js_stream *s, const char *next);
-// GET game: the game, its byte sizes, and the spectator envelope as hex
-// (view_ok false: envelope_hex null and envelope_error; envelope_hex NULL
-// with view_ok: null).
-typedef struct {
-    bool        view_ok;
-    const char *envelope_hex;
-    int64_t     envelope_version;
-    const char *envelope_error;
-} cb_js_admin_envelope;
-int cb_js_admin_game_write(cb_buf *out, const cb_js_admin_game *g, const cb_js_admin_envelope *e);
-
-// GET bots: {"bots":[{id,nickname,strategy_key,elo_rating,previous_elo (null
-// when < 0),games_played,updated_at}..]}.
-cb_js_stream *cb_js_admin_bots_begin(cb_buf *out);
-void          cb_js_admin_bots_add(cb_js_stream *s, const cb_bot_row *b);
-int           cb_js_admin_bots_end(cb_js_stream *s);
-
-// GET logs: {"last_seq","entries":[{seq,at,level,module,msg}..],"links"}.
-cb_js_stream *cb_js_admin_logs_begin(cb_buf *out, uint64_t last_seq);
-void          cb_js_admin_logs_add(cb_js_stream *s, uint64_t seq, int64_t at_ms, const char *level, const char *module,
-                                   const char *msg);
-int           cb_js_admin_logs_end(cb_js_stream *s, const cb_js_admin_links *links);
-
-// GET config: {"mode","store","table","allowed_origins","aws_region",
-// "function_name","settings":[{name,value,secret}..]}.
-typedef struct {
-    const char *mode, *store, *table, *allowed_origins, *aws_region, *function_name;
-} cb_js_admin_config;
-cb_js_stream *cb_js_admin_config_begin(cb_buf *out, const cb_js_admin_config *c);
-void          cb_js_admin_config_add(cb_js_stream *s, const char *name, const char *value, bool secret);
-int           cb_js_admin_config_end(cb_js_stream *s);
-
-// GET backups: SQLite's VACUUM INTO files ({"store","kind":"vacuum_into",
-// "dir","files":[{name,size,at}..],"links"}), or DynamoDB's point-in-time
-// recovery explained ({"store","kind":"pitr","explain","links"}).
-typedef struct {
-    const char *name;
-    int64_t     size, mtime_ms;
-} cb_js_admin_backup;
-typedef struct {
-    const char               *store;
-    bool                      sqlite;
-    const char               *dir;        // sqlite
-    const char               *explain;    // not sqlite
-    const cb_js_admin_backup *files;
-    int                       n_files;
-    cb_js_admin_links         links;
-} cb_js_admin_backups;
-int cb_js_admin_backups_write(cb_buf *out, const cb_js_admin_backups *b);
 
 // =====================================================================================
 // CloudFront (cf_): THE ONE XML SHAPE c_base speaks. CloudFront's API is XML,

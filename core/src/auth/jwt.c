@@ -10,7 +10,7 @@
 // exp. exp and nbf allow CB_JWT_SKEW_S of clock skew, as auth.ts did.
 #include "jwt.h"
 
-#include "aws_json.h"
+#include "core_json.h"
 #include "../../../shared/c/b64/b64.h"
 #include "util/err.h"
 #include "util/str.h"
