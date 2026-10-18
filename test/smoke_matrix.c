@@ -87,12 +87,13 @@ static int64_t mono_ms(void) {
 static void start_server(void) {
     char line[512];
     // Every wrong-token cell comes from 127.0.0.1: the console's per-address
-    // limit (app/limits.h, L7) is raised past the matrix's count of them.
+    // limit (app/limits.h, L7) is raised past the matrix's count of them, and
+    // its fresh accounts are rated at once (CBASE_RATED_MIN_AGE, M6): it reads the leaderboard.
     char *mem[] = { "CBASE_LISTEN=127.0.0.1:0", "CBASE_JWT_SECRET=" SECRET, "CBASE_ADMIN_TOKEN=" ADMIN,
-                    "CBASE_DB=:memory:", "CBASE_REQ_WORKERS=4", "CBASE_ADMIN_FAIL_LIMIT=100000", NULL };
+                    "CBASE_DB=:memory:", "CBASE_REQ_WORKERS=4", "CBASE_ADMIN_FAIL_LIMIT=100000", "CBASE_RATED_MIN_AGE=0", NULL };
     // Under dynamo the store and table come from the environment the lane exported.
     char *dyn[] = { "CBASE_LISTEN=127.0.0.1:0", "CBASE_JWT_SECRET=" SECRET, "CBASE_ADMIN_TOKEN=" ADMIN,
-                    "CBASE_REQ_WORKERS=4", "CBASE_ADMIN_FAIL_LIMIT=100000", NULL };
+                    "CBASE_REQ_WORKERS=4", "CBASE_ADMIN_FAIL_LIMIT=100000", "CBASE_RATED_MIN_AGE=0", NULL };
     char *argv[] = { (char *)g_bin, "serve", NULL };
     T_EQ_INT(tp_start(&g_child, argv, tsb_dynamo() ? dyn : mem), 0);
     T_EQ_INT(tp_wait_line(&g_child, "listening on", 20000, line, sizeof line), 0);
