@@ -243,13 +243,13 @@ typedef struct {
 // A legal move for the viewer on their envelope, as the browser would offer
 // one: the kernel's legal moves on the masked board, each judged again by
 // client_validate. Its wire length, or 0 when the viewer has none.
-static int choose_move(smoke_client *sc, const cb_buf *env, uint8_t *wire, int cap, uint32_t *rng) {
+static int choose_move(smoke_client *sc, const cb_buf *env, uint8_t *wire, int cap, uint64_t *rng) {
     client_init(&sc->c, &sc->slot);
     if (client_adopt_envelope(&sc->c, env->p, (int)env->len) < 0) return 0;
     int seat = sc->c.view.my_seat;
     if (seat < 0 || sc->c.view.status != GAME_STATUS_PLAYING) return 0;
     calculate_legal_moves(sc->c.g, seat, &sc->moves);
-    int start = sc->moves.n ? (int)((rng_lcg32(rng) >> 8) % (uint32_t)sc->moves.n) : 0;
+    int start = sc->moves.n ? (int)(rng_u32(rng) % (uint32_t)sc->moves.n) : 0;
     for (int k = 0; k < sc->moves.n; k++) {
         const LegalMove *m = &sc->moves.moves[(start + k) % sc->moves.n];
         if (m->type == MOVE_WAIT) continue;
@@ -425,7 +425,7 @@ static void an_idle_human_turn_is_never_kicked(void) {
     T_EQ_INT(ask(&D, ASK_START, gid, &env), 200);
     // Until D owes a move: the bot pool plays the bot's (the deal's pacing first).
     uint8_t wire[64];
-    uint32_t rng = 11;
+    uint64_t rng = 11;
     bool owes = false;
     const int64_t t0 = mono_ms();
     while (!owes && mono_ms() - t0 < 30000) {
@@ -513,7 +513,7 @@ static void game_scenario(void) {
     // stored version moving on proves the heartbeat, the lease expiry and the
     // reload from a crash.
     smoke_user *humans[2] = { &A, &B };
-    uint32_t rng = 7;
+    uint64_t rng = 7;
     int status = GAME_STATUS_PLAYING, moves = 0, crash_tries = 0;
     bool crashed = false;
     // The game ends when it ends: a long one (many pickups) plus the crash

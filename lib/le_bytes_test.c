@@ -12,7 +12,7 @@
 #include "rng.h"
 
 static uint64_t rng = 88172645463325252ull;
-static uint64_t next(void) { return rng_xorshift64(&rng); }
+static uint64_t next(void) { return rng_splitmix64(&rng); }
 
 int main(void)
 {

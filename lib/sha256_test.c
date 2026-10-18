@@ -12,7 +12,7 @@
 #include "rng.h"
 
 static uint64_t rng = 1234567;
-static uint32_t next(void) { return (uint32_t)rng_xorshift64(&rng); }
+static uint32_t next(void) { return rng_u32(&rng); }
 
 static void hex(const uint8_t *d, char *o)
 {

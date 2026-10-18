@@ -469,7 +469,7 @@ typedef struct { ClientSlot slot; ClientTable c; LegalMoves moves; } mover;
 static mover g_mv;
 
 // A legal move for the envelope's seat, judged again by client_validate; 0 when none.
-static int choose(const uint8_t *env, int len, uint8_t *wire, int cap, uint32_t *rng, int *status, uint32_t *version) {
+static int choose(const uint8_t *env, int len, uint8_t *wire, int cap, uint64_t *rng, int *status, uint32_t *version) {
     client_init(&g_mv.c, &g_mv.slot);
     if (client_adopt_envelope(&g_mv.c, env, len) < 0) return 0;
     *status = g_mv.c.view.status;
@@ -477,7 +477,7 @@ static int choose(const uint8_t *env, int len, uint8_t *wire, int cap, uint32_t 
     int seat = g_mv.c.view.my_seat;
     if (seat < 0 || g_mv.c.view.status != GAME_STATUS_PLAYING) return 0;
     calculate_legal_moves(g_mv.c.g, seat, &g_mv.moves);
-    int start = g_mv.moves.n ? (int)((rng_lcg32(rng) >> 8) % (uint32_t)g_mv.moves.n) : 0;
+    int start = g_mv.moves.n ? (int)(rng_u32(rng) % (uint32_t)g_mv.moves.n) : 0;
     for (int k = 0; k < g_mv.moves.n; k++) {
         const LegalMove *m = &g_mv.moves.moves[(start + k) % g_mv.moves.n];
         if (m->type == MOVE_WAIT) continue;
@@ -888,7 +888,7 @@ static void hidden_card_game(void) {
 
     user *who[3] = { &A, &B, &E };
     int seats[3] = { 0, 1, 2 };
-    uint32_t rng = 11;
+    uint64_t rng = 11;
     int status = GAME_STATUS_PLAYING, moves = 0, crosschecks = 0;
     const int64_t t0 = mono_ms();
     int64_t last_move = t0;

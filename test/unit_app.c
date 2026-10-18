@@ -256,8 +256,8 @@ static void create_game(char gid[CB_GAME_ID_MAX + 1], reply *r) {
 }
 
 // A legal move for `seat` on the stored board (WAIT excluded), as its action
-// wire, chosen by a seeded LCG. Its length, or 0 when the seat has none.
-static _Thread_local uint32_t g_lcg = 12345;
+// wire, chosen by a seeded rng.h stream. Its length, or 0 when the seat has none.
+static _Thread_local uint64_t g_rng = 12345;
 static int pick_move(const char *gid, int seat, uint8_t *wire, int cap) {
     cb_game_row row = stored(gid);
     Game *g = calloc(1, sizeof *g);
@@ -271,7 +271,7 @@ static int pick_move(const char *gid, int seat, uint8_t *wire, int cap) {
         int idx[MAX_LEGAL_MOVES], k = 0;
         for (int i = 0; i < moves->n; i++) if (moves->moves[i].type != MOVE_WAIT) idx[k++] = i;
         if (k > 0) {
-            const LegalMove *m = &moves->moves[idx[(rng_lcg32(&g_lcg) >> 8) % (uint32_t)k]];
+            const LegalMove *m = &moves->moves[idx[rng_u32(&g_rng) % (uint32_t)k]];
             AwireAction a;
             memset(&a, 0, sizeof a);
             a.kind = m->type;
@@ -1358,7 +1358,7 @@ static void a_stranger_changes_nothing(void) {
 typedef struct { const char *gid, *uid, *bearer; int applied; } hammer_arg;
 static void *hammer(void *p) {
     hammer_arg *a = p;
-    g_lcg = (uint32_t)(uintptr_t)a->uid;
+    g_rng = (uint64_t)(uintptr_t)a->uid;
     for (int i = 0; i < 150; i++) {
         int seat = seat_of(a->gid, a->uid);
         uint8_t wire[64];

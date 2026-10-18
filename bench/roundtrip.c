@@ -126,7 +126,7 @@ typedef struct {
     listener  l[2];
     char      gid[32];
     bool      have_game;
-    uint32_t  rng;
+    uint64_t  rng;
     ClientSlot  slot;
     ClientTable ct;
     LegalMoves  moves;
@@ -264,7 +264,7 @@ static int choose_move(worker *w, uint8_t *wire, int cap) {
     int seat = w->ct.view.my_seat;
     if (seat < 0 || w->ct.view.status != GAME_STATUS_PLAYING) return 0;
     calculate_legal_moves(w->ct.g, seat, &w->moves);
-    int start = w->moves.n ? (int)((rng_lcg32(&w->rng) >> 8) % (uint32_t)w->moves.n) : 0;
+    int start = w->moves.n ? (int)(rng_u32(&w->rng) % (uint32_t)w->moves.n) : 0;
     for (int k = 0; k < w->moves.n; k++) {
         const LegalMove *m = &w->moves.moves[(start + k) % w->moves.n];
         if (m->type == MOVE_WAIT) continue;

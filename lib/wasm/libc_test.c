@@ -70,8 +70,8 @@ long   wlibc_atol(const char *s);
 #undef atoi
 #undef atol
 
-static uint32_t rng = 0x9e3779b9u;
-static uint32_t next(void) { return rng_xorshift32(&rng); }
+static uint64_t rng = 0x9e3779b9u;
+static uint32_t next(void) { return rng_u32(&rng); }
 
 static int sign(int v) { return (v > 0) - (v < 0); }
 
