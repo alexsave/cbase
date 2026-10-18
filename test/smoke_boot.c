@@ -127,7 +127,12 @@ static void bootstrap_refuses(void) {
     char *bad_config[] = { "CBASE_STORE=postgres", NULL };
     // Before the log exists: said to Lambda only, which logs it as the init failure.
     T_CHECK(init_error(bad_config, "Config", "CBASE_STORE=postgres", false));
-    char *bad_boot[] = { "CBASE_STORE=sqlite", "CBASE_DB=/dev/null/cbase.sqlite", NULL };
+    // Under Lambda no JWT secret is no start (finding L8): a random one per
+    // container would sign users out at random.
+    char *no_secret[] = { "CBASE_STORE=sqlite", NULL };
+    T_CHECK(init_error(no_secret, "Config", "no CBASE_JWT_SECRET", false));
+    char *bad_boot[] = { "CBASE_STORE=sqlite", "CBASE_DB=/dev/null/cbase.sqlite",
+                         "CBASE_JWT_SECRET=boot-secret-boot-secret-boot-secret!", NULL };
     T_CHECK(init_error(bad_boot, "Boot", "store sqlite", true));
 }
 

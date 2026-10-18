@@ -107,6 +107,7 @@ static void configuration_refusals(void) {
     refused("CBASE_JWT_SECRET", "short", "at least 32 characters");
     refused("CBASE_JWT_SECRET", longv, "CBASE_JWT_SECRET is longer than");
     refused("CBASE_ADMIN_TOKEN", longv, "CBASE_ADMIN_TOKEN is longer than");
+    refused("CBASE_ADMIN_TOKEN", "console-token", "CBASE_ADMIN_TOKEN must be at least 32 characters");   // L7
     refused("CBASE_ORIGIN_SECRET", "short", "CBASE_ORIGIN_SECRET must be at least 32 characters");
     refused("CBASE_ORIGIN_SECRET", longv, "CBASE_ORIGIN_SECRET is longer than");
     refused("CBASE_ALLOWED_ORIGINS", longv, "CBASE_ALLOWED_ORIGINS is longer than");
@@ -124,7 +125,7 @@ static void configuration_refusals(void) {
     setenv("CBASE_STORE", "dynamo", 1);
     setenv("CBASE_CF_DISTRIBUTION", "E2ABC123", 1);
     setenv("CBASE_JWT_SECRET", "0123456789abcdef0123456789abcdef", 1);
-    setenv("CBASE_ADMIN_TOKEN", "console-token", 1);
+    setenv("CBASE_ADMIN_TOKEN", "console-token-0123456789-abcdefgh", 1);   // at least 32 (L7)
     setenv("CBASE_ORIGIN_SECRET", "edge-origin-0123456789abcdef0123456789", 1);
     setenv("CBASE_REQ_WORKERS", "8", 1);
     setenv("CBASE_BOT_WORKERS", "2", 1);
