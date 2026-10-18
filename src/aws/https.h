@@ -79,6 +79,10 @@ int cb_https_set_ca_file(const char *path);
 //        body filled (out's buffers are reset first), *keep_alive set
 //   0    not a whole response yet
 //   < 0  CB_E_IO (malformed, or a body over CB_HTTPS_MAX_BODY)
+// The times this process has set a socket's read and write timeouts (https.c
+// bound(): once per connection while its requests carry one timeout). For the tests.
+int64_t cb_https_timeout_sets(void);
+
 int cb_https_parse_response(const uint8_t *buf, size_t len, bool head_only, bool eof, cb_https_response *out,
                             bool *keep_alive);
 

@@ -104,6 +104,7 @@ static void serve_conn(tls_srv *s, SSL_CTX *ctx, int fd) {
             }
             break;
         }
+        if (a == TLS_LATE) poll(NULL, 0, 200);
         if (io_write(ssl, fd, out.p, (int)out.len) <= 0) break;
         if (a == TLS_CLOSE) { if (ssl) SSL_shutdown(ssl); break; }
         if (a == TLS_DROP) drop_next = true;

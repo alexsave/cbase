@@ -1,10 +1,11 @@
 // https.c - the HTTPS/1.1 client (https.h).
 //
 // Blocking sockets with per-call deadlines: the connect is non-blocking plus
-// poll(2), and every TLS read and write runs under SO_RCVTIMEO/SO_SNDTIMEO set
-// to the time left. Idle connections wait in a small pool keyed by host and
-// port; a caller takes one out (so two threads never share an SSL), and puts
-// it back only after a response that allows keep-alive.
+// poll(2), and every TLS read and write runs under SO_RCVTIMEO/SO_SNDTIMEO,
+// which hold the time left to within TIMEO_SLACK_MS (see bound()). Idle
+// connections wait in a small pool keyed by host and port; a caller takes one
+// out (so two threads never share an SSL), and puts it back only after a
+// response that allows keep-alive.
 #include "https.h"
 
 #include "util/clock.h"
@@ -42,6 +43,7 @@ typedef struct {
     char    host[256];
     int     port;
     int64_t idle_since;
+    int64_t timeo_ms;   // what SO_RCVTIMEO and SO_SNDTIMEO hold now, 0 for not set
 } conn;
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -300,11 +302,32 @@ static int64_t left(int64_t deadline) {
     return l > 0 ? l : 0;
 }
 
-static void set_timeouts(int fd, int64_t ms) {
+static _Atomic int64_t g_timeo_sets;
+
+int64_t cb_https_timeout_sets(void) { return atomic_load_explicit(&g_timeo_sets, memory_order_relaxed); }
+
+static void set_timeouts(conn *c, int64_t ms) {
     if (ms < 1) ms = 1;
     struct timeval tv = { (time_t)(ms / 1000), (suseconds_t)((ms % 1000) * 1000) };
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
-    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+    setsockopt(c->fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    setsockopt(c->fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+    c->timeo_ms = ms;
+    atomic_fetch_add_explicit(&g_timeo_sets, 1, memory_order_relaxed);
+}
+
+// Bounds the next blocking read or write by the time left. The socket's
+// timeouts are set again only when they are more than TIMEO_SLACK_MS from it:
+// a pooled connection whose requests all carry the same timeout keeps the
+// value it was given (two setsockopt calls per read and write were 3% of the
+// server's work), and a blocking call ends within TIMEO_SLACK_MS of the
+// deadline either way.
+#define TIMEO_SLACK_MS 100
+
+static void bound(conn *c, int64_t deadline) {
+    int64_t need = left(deadline);
+    if (need < 1) need = 1;
+    if (c->timeo_ms > 0 && c->timeo_ms <= need + TIMEO_SLACK_MS && c->timeo_ms >= need - TIMEO_SLACK_MS) return;
+    set_timeouts(c, need);
 }
 
 static int dial(const char *host, int port, int64_t deadline) {
@@ -361,7 +384,7 @@ static int conn_open(conn *c, const char *host, int port, bool tls, int64_t dead
     if (rc != CB_OK) return rc;
     c->fd = dial(host, port, deadline);
     if (c->fd < 0) { CB_WARN("https", "connect %s:%d failed", host, port); conn_close(c); return CB_E_IO; }
-    set_timeouts(c->fd, left(deadline));
+    bound(c, deadline);
     SSL_set_fd(c->ssl, c->fd);
     SSL_set_tlsext_host_name(c->ssl, host);   // SNI
     // The certificate must name the host. If the name cannot be set (finding
@@ -448,7 +471,7 @@ static int plain_read(conn *c, uint8_t *p, size_t cap) {
 // One exchange on c. CB_OK (and *ka), CB_E_IO, or 1 meaning "failed before
 // any response byte" (the caller may retry a reused connection).
 static int exchange(conn *c, const cb_buf *req, bool head, int64_t deadline, cb_https_response *out, bool *ka) {
-    set_timeouts(c->fd, left(deadline));
+    bound(c, deadline);
     if (write_all(c, req->p, req->len) != 0) { ERR_clear_error(); return 1; }
     cb_buf in;
     cb_buf_init(&in);
@@ -456,7 +479,7 @@ static int exchange(conn *c, const cb_buf *req, bool head, int64_t deadline, cb_
     for (;;) {
         if (left(deadline) <= 0) { CB_WARN("https", "%s: timed out", c->host); break; }
         if (!cb_buf_reserve(&in, 16384)) { rc = CB_E_NOMEM; break; }
-        set_timeouts(c->fd, left(deadline));
+        bound(c, deadline);
         bool eof = false;
         if (!c->ssl) {
             int r = plain_read(c, in.p + in.len, in.cap - in.len - 1);

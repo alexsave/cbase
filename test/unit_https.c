@@ -8,7 +8,9 @@
 #include "util/clock.h"
 #include "util/err.h"
 
+#include <arpa/inet.h>
 #include <netdb.h>
+#include <netinet/in.h>
 #include <stdlib.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -132,7 +134,12 @@ static void malformed(void) {
 static tls_action answer(const cb_buf *req, cb_buf *resp, void *ud) {
     const char *mode = ud;
     const char *q = (const char *)req->p;
-    if (strcmp(mode, "hang") == 0) return TLS_HANG;
+    if (strcmp(mode, "hang") == 0 || strncmp(q, "GET /hang ", 10) == 0) return TLS_HANG;
+    if (strncmp(q, "GET /short ", 11) == 0) {
+        // A body shorter than its length says, 200 ms late: the rest never comes.
+        cb_buf_puts(resp, "HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nfive!");
+        return TLS_LATE;
+    }
     if (strncmp(q, "GET /chunked ", 13) == 0) {
         cb_buf_puts(resp, CHUNKED);
         return TLS_KEEP;
@@ -175,9 +182,13 @@ static void verified_and_kept_alive(void) {
     free(last);
     cb_https_response_free(&r);
 
+    int64_t sets = cb_https_timeout_sets();
     T_EQ_INT(cb_https_request("localhost", s.port, "GET", "/chunked", NULL, NULL, 0, 3000, &r), CB_OK);
     T_EQ_STR(cb_buf_cstr(&r.body), "MozillaDeveloperNetwork");
     cb_https_response_free(&r);
+    // The pooled connection kept the timeouts its first request set: the
+    // same 3 s, so no setsockopt at all.
+    T_EQ_INT(cb_https_timeout_sets() - sets, 0);
     // Both requests rode one TLS connection.
     T_EQ_INT(atomic_load(&s.accepts) - before, 1);
     T_EQ_INT(atomic_load(&s.requests), 2);
@@ -212,6 +223,77 @@ static void dead_idle_connection_retried_as(const char *mode) {
 static void dead_idle_connection_retried(void) {
     dead_idle_connection_retried_as("drop");
     dead_idle_connection_retried_as("close");
+}
+
+// A request with a different timeout on a pooled connection sets it once, and
+// one with the first timeout again sets it back once.
+static void timeouts_follow_the_deadline(void) {
+    tls_srv s;
+    T_EQ_INT(tls_srv_start(&s, answer, "keep"), 0);
+    T_EQ_INT(cb_https_set_ca_file(s.ca_file), CB_OK);
+    cb_https_response r;
+    int before = atomic_load(&s.accepts);
+    int64_t sets = cb_https_timeout_sets();
+    T_EQ_INT(cb_https_request("localhost", s.port, "GET", "/a", NULL, NULL, 0, 5000, &r), CB_OK);
+    cb_https_response_free(&r);
+    T_EQ_INT(cb_https_timeout_sets() - sets, 1);   // the new connection's
+    sets = cb_https_timeout_sets();
+    T_EQ_INT(cb_https_request("localhost", s.port, "GET", "/b", NULL, NULL, 0, 1000, &r), CB_OK);
+    cb_https_response_free(&r);
+    T_EQ_INT(cb_https_timeout_sets() - sets, 1);   // lowered to the shorter deadline
+    sets = cb_https_timeout_sets();
+    T_EQ_INT(cb_https_request("localhost", s.port, "GET", "/c", NULL, NULL, 0, 5000, &r), CB_OK);
+    cb_https_response_free(&r);
+    T_EQ_INT(cb_https_timeout_sets() - sets, 1);   // raised again
+    sets = cb_https_timeout_sets();
+    T_EQ_INT(cb_https_request("localhost", s.port, "GET", "/d", NULL, NULL, 0, 5050, &r), CB_OK);
+    cb_https_response_free(&r);
+    T_EQ_INT(cb_https_timeout_sets() - sets, 0);   // within the slack: kept
+    T_EQ_INT(atomic_load(&s.accepts) - before, 1);
+    tls_srv_stop(&s);
+}
+
+// A server that answers nothing: the request ends at its deadline, give or
+// take the slack, on a new connection and on a pooled one whose timeouts were
+// set for a longer request.
+static void times_out_on_a_pooled_connection(void) {
+    tls_srv s;
+    T_EQ_INT(tls_srv_start(&s, answer, "keep"), 0);
+    T_EQ_INT(cb_https_set_ca_file(s.ca_file), CB_OK);
+    cb_https_response r;
+    T_EQ_INT(cb_https_request("localhost", s.port, "GET", "/a", NULL, NULL, 0, 5000, &r), CB_OK);
+    cb_https_response_free(&r);
+    int64_t t0 = cb_mono_ms();
+    T_EQ_INT(cb_https_request("localhost", s.port, "GET", "/hang", NULL, NULL, 0, 300, &r), CB_E_IO);
+    int64_t took = cb_mono_ms() - t0;
+    T_CHECK(took >= 190 && took < 600);
+    cb_https_response_free(&r);
+    // Part of an answer after 200 ms, then nothing: the read after it is
+    // bounded by the 100 ms left, not by the 300 the request started with.
+    t0 = cb_mono_ms();
+    T_EQ_INT(cb_https_request("localhost", s.port, "GET", "/short", NULL, NULL, 0, 300, &r), CB_E_IO);
+    took = cb_mono_ms() - t0;
+    T_CHECK(took >= 190 && took < 440);
+    cb_https_response_free(&r);
+    tls_srv_stop(&s);
+}
+
+// A listener that completes TCP's handshake (the kernel's backlog) and never
+// TLS's: the handshake is bounded by the deadline too.
+static void handshake_times_out(void) {
+    int lfd = socket(AF_INET, SOCK_STREAM, 0);
+    struct sockaddr_in a = { .sin_family = AF_INET, .sin_addr.s_addr = htonl(INADDR_LOOPBACK) };
+    socklen_t al = sizeof a;
+    T_EQ_INT(bind(lfd, (struct sockaddr *)&a, sizeof a), 0);
+    T_EQ_INT(listen(lfd, 4), 0);
+    T_EQ_INT(getsockname(lfd, (struct sockaddr *)&a, &al), 0);
+    cb_https_response r;
+    int64_t t0 = cb_mono_ms();
+    T_EQ_INT(cb_https_request("localhost", ntohs(a.sin_port), "GET", "/", NULL, NULL, 0, 300, &r), CB_E_IO);
+    int64_t took = cb_mono_ms() - t0;
+    T_CHECK(took >= 190 && took < 2000);
+    cb_https_response_free(&r);
+    close(lfd);
 }
 
 static void times_out(void) {
@@ -255,6 +337,9 @@ int main(void) {
     T_RUN(verified_and_kept_alive);
     T_RUN(dead_idle_connection_retried);
     T_RUN(times_out);
+    T_RUN(timeouts_follow_the_deadline);
+    T_RUN(times_out_on_a_pooled_connection);
+    T_RUN(handshake_times_out);
     T_RUN(example_com);
     return T_DONE();
 }
