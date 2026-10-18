@@ -461,6 +461,24 @@ static void builders_valid_json(void) {
 // ---- readers ---------------------------------------------------------------------------------
 
 // What a Put writes, a read gives back: every row type through its item.
+// A DynamoDB number attribute is digits: strtoll took " 5", "+5" and "5 ".
+static void numbers_are_digits(void) {
+    static const struct { const char *item; bool ok; int64_t v; } cases[] = {
+        { "{\"v\":{\"N\":\"5\"}}", true, 5 },
+        { "{\"v\":{\"N\":\"-9223372036854775808\"}}", true, INT64_MIN },
+        { "{\"v\":{\"N\":\" 5\"}}", false, 0 },
+        { "{\"v\":{\"N\":\"+5\"}}", false, 0 },
+        { "{\"v\":{\"N\":\"5 \"}}", false, 0 },
+        { "{\"v\":{\"N\":\"9223372036854775808\"}}", false, 0 },
+        { "{\"v\":{\"N\":\"\"}}", false, 0 },
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        int64_t v = 0;
+        T_EQ_INT(dw_get_n(cb_span_of(cases[i].item, strlen(cases[i].item)), "v", &v), cases[i].ok);
+        if (cases[i].ok) T_EQ_INT(v, cases[i].v);
+    }
+}
+
 static void items_round_trip(void) {
     dw_req r;
     dw_req_init(&r);
@@ -1954,6 +1972,7 @@ int main(void) {
     T_RUN(query_shapes);
     T_RUN(signup_transaction);
     T_RUN(builders_valid_json);
+    T_RUN(numbers_are_digits);
     T_RUN(items_round_trip);
     T_RUN(errors_classified);
     T_RUN(pages_and_batches);

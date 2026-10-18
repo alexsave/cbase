@@ -56,7 +56,7 @@ static void kernel_lobby(void) {
 }
 
 // A complete export in `dir`; `variant` breaks one thing.
-enum { CLEAN, BAD_HASH, BAD_GAME, BAD_COUNT, LOST_SEAT };
+enum { CLEAN, BAD_HASH, BAD_GAME, BAD_COUNT, LOST_SEAT, TEXT_COUNT };
 static void write_export(const char *dir, int variant) {
     char buf[16384];
     snprintf(buf, sizeof buf,
@@ -74,8 +74,9 @@ static void write_export(const char *dir, int variant) {
         "\"" U1 "\",\"Ann\",\"1033\",\"1020\",\"7\",\"3000\"\n");
     snprintf(buf, sizeof buf,
              "id,status,state,roster,needs_bots,game_seed,logs_packed,version,round_epoch,created_at,updated_at,last_commit_at\n"
-             "\"ab12cd\",\"waiting\",\"%s\",\"%s\",\"false\",,,\"3\",\"0\",\"1000\",\"4000\",\"3900\"\n",
-             variant == BAD_GAME ? "deadbeef" : g_state_hex, g_roster_hex);
+             "\"ab12cd\",\"waiting\",\"%s\",\"%s\",\"false\",,,\"3\",\"0\",\"1000\",\"4000\",\"%s\"\n",
+             variant == BAD_GAME ? "deadbeef" : g_state_hex, g_roster_hex,
+             variant == TEXT_COUNT ? " 3900" : "3900");   // strtoll read " 3900" as 3900
     put(dir, "games.csv", buf);
     // LOST_SEAT: a seat whose account is not in the export; the store skips
     // it (as it skips a deleted account's seat), so its own count is short.
@@ -92,6 +93,7 @@ static void write_export(const char *dir, int variant) {
         "\"" C1 "\",\"ab12cd\",\"" U1 "\",\"hi, \"\"you\"\"\nsecond line\",\"false\",\"4600\"\n");
     put(dir, "counts.txt",
         variant == BAD_COUNT ? "users 41\nbots 2\n"
+        : variant == TEXT_COUNT ? "users +2\nbots 2\n"   // sscanf's %lld read "+2" as 2
                              : variant == LOST_SEAT ? "users 2\nplayer_hands 2\n"
                              : "users 2\nbots 2\nuser_elo_ratings 1\ngames 1\nplayer_hands 1\nbot_hands 1\n"
                                "game_snapshots 1\nchat_messages 1\n");
@@ -206,6 +208,7 @@ static void failing_checks(void) {
         { BAD_GAME, "games through table_load: 0 of 1 load  FAILED" },
         { BAD_COUNT, "users                    41        2        2        0        0        2" },
         { LOST_SEAT, "player_hands              2        2        2        0        0        1" },
+        { TEXT_COUNT, "users                    -2        2        2        0        0        2" },
     };
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
         char dir[320], name[32], report[4096];
@@ -217,8 +220,15 @@ static void failing_checks(void) {
         T_EQ_INT(run_import(s, dir, report, sizeof report), 1);
         T_CHECK(strstr(report, cases[i].why) != NULL);
         T_CHECK(strstr(report, "cbase-import: FAILED") != NULL);
-        if (cases[i].variant == BAD_COUNT || cases[i].variant == LOST_SEAT) T_CHECK(strstr(report, "MISMATCH") != NULL);
+        if (cases[i].variant == BAD_COUNT || cases[i].variant == LOST_SEAT || cases[i].variant == TEXT_COUNT) T_CHECK(strstr(report, "MISMATCH") != NULL);
         if (!strstr(report, cases[i].why)) fprintf(stderr, "%s", report);
+        if (cases[i].variant == TEXT_COUNT) {
+            // A cell that is not a number is the column's none: last_commit_at's is updated_at.
+            cb_game_row g;
+            T_EQ_INT(CB_STORE_CALL(s, game_get, "ab12cd", &g), CB_OK);
+            T_EQ_INT(g.last_commit_at, 4000);
+            cb_game_row_free(&g);
+        }
         cb_store_close(s);
     }
     // A missing file is an I/O error, not a pass.

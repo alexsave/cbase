@@ -190,6 +190,16 @@ static void browse_pages_by_cursor(void) {
     T_EQ_INT(cb_json_array_len(B(), BN(), "rows"), 1);
     T_EQ_INT(call("GET", "/admin/api/browse", "c=users&limit=100000", ADMIN_TOKEN, NULL), 200);
     T_EQ_INT(g_rec->last_limit, 500);
+    // A limit is a number or the default: " 2" and "+2" are not numbers, and
+    // a number below the range is its floor.
+    T_EQ_INT(call("GET", "/admin/api/browse", "c=users&limit=%202", ADMIN_TOKEN, NULL), 200);
+    T_EQ_INT(g_rec->last_limit, 50);
+    T_EQ_INT(call("GET", "/admin/api/browse", "c=users&limit=%2B2", ADMIN_TOKEN, NULL), 200);
+    T_EQ_INT(g_rec->last_limit, 50);
+    T_EQ_INT(call("GET", "/admin/api/browse", "c=users&limit=-5", ADMIN_TOKEN, NULL), 200);
+    T_EQ_INT(g_rec->last_limit, 1);
+    T_EQ_INT(call("GET", "/admin/api/browse", "c=users&limit=2", ADMIN_TOKEN, NULL), 200);
+    T_EQ_INT(g_rec->last_limit, 2);
     // Errors: no collection, an unknown one.
     T_EQ_INT(call("GET", "/admin/api/browse", "", ADMIN_TOKEN, NULL), 400);
     T_EQ_INT(call("GET", "/admin/api/browse", "c=nope", ADMIN_TOKEN, NULL), 404);
@@ -269,6 +279,13 @@ static void logs_tail_after_a_seq_at_a_level(void) {
     T_EQ_INT(call("GET", "/admin/api/logs", q, ADMIN_TOKEN, NULL), 200);
     T_EQ_INT(cb_json_array_len(B(), BN(), "entries"), 0);
     T_EQ_INT(call("GET", "/admin/api/logs", "level=loud", ADMIN_TOKEN, NULL), 400);
+    // `after` is a sequence number: strtoull took "-1" as 2^64-1 and " 5" as 5.
+    T_EQ_INT(call("GET", "/admin/api/logs", "after=-1", ADMIN_TOKEN, NULL), 400);
+    T_EQ_INT(call("GET", "/admin/api/logs", "after=%205", ADMIN_TOKEN, NULL), 400);
+    T_EQ_INT(call("GET", "/admin/api/logs", "after=%2B5", ADMIN_TOKEN, NULL), 400);
+    T_EQ_INT(call("GET", "/admin/api/logs", "after=5x", ADMIN_TOKEN, NULL), 400);
+    T_EQ_INT(call("GET", "/admin/api/logs", "after=", ADMIN_TOKEN, NULL), 200);
+    T_EQ_INT(call("GET", "/admin/api/logs", "after=0", ADMIN_TOKEN, NULL), 200);
 }
 
 static void games_list_reads_each_row(void) {

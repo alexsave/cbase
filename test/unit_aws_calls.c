@@ -326,6 +326,10 @@ static void url_parse(void) {
     T_EQ_INT(cb_aws_url_parse("https://h", host, sizeof host, &port, &tls, base, sizeof base), CB_OK);
     T_EQ_STR(base, "");
     T_EQ_INT(cb_aws_url_parse("https://h:0/x", host, sizeof host, &port, &tls, base, sizeof base), CB_E_INVALID);
+    T_EQ_INT(cb_aws_url_parse("https://h:+443/x", host, sizeof host, &port, &tls, base, sizeof base), CB_E_INVALID);
+    T_EQ_INT(cb_aws_url_parse("https://h: 443/x", host, sizeof host, &port, &tls, base, sizeof base), CB_E_INVALID);
+    T_EQ_INT(cb_aws_url_parse("https://h:443x/x", host, sizeof host, &port, &tls, base, sizeof base), CB_E_INVALID);
+    T_EQ_INT(cb_aws_url_parse("https://h:/x", host, sizeof host, &port, &tls, base, sizeof base), CB_E_INVALID);
     T_EQ_INT(cb_aws_url_parse("https://:443/x", host, sizeof host, &port, &tls, base, sizeof base), CB_E_INVALID);
     T_EQ_INT(cb_aws_url_parse("h/x", host, sizeof host, &port, &tls, base, sizeof base), CB_E_INVALID);
     // http:// is a local stand-in: plain, port 80 unless given.

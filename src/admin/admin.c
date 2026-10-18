@@ -44,6 +44,7 @@
 #include "util/err.h"
 #include "util/hex.h"
 #include "util/log.h"
+#include "util/num.h"
 
 #include <ctype.h>
 #include <dirent.h>
@@ -142,9 +143,10 @@ static bool need_store(cb_ctx *ctx, cb_http_res *res) {
 static int q_int(const cb_http_req *req, const char *key, int dflt, int lo, int hi) {
     char v[32];
     if (!cb_http_query_get(req, key, v, sizeof v) || !v[0]) return dflt;
-    char *end = NULL;
-    long x = strtol(v, &end, 10);
-    if (*end) return dflt;
+    // Any number is taken and clamped to lo..hi ("-5" is lo); text that is
+    // not one is the default.
+    int64_t x;
+    if (!cb_parse_i64_cstr(v, INT64_MIN, INT64_MAX, &x)) return dflt;
     return x < lo ? lo : x > hi ? hi : (int)x;
 }
 
@@ -591,8 +593,11 @@ static void api_bots(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
 // GET /admin/api/logs?after=<seq>&level=<debug|info|warn|error>
 static void api_logs(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     char v[32];
-    uint64_t after = 0;
-    if (cb_http_query_get(req, "after", v, sizeof v)) after = strtoull(v, NULL, 10);
+    int64_t after = 0;
+    if (cb_http_query_get(req, "after", v, sizeof v) && v[0] && !cb_parse_i64_cstr(v, 0, INT64_MAX, &after)) {
+        cb_router_error(res, 400, "logs: after is a sequence number");
+        return;
+    }
     int level = CB_LOG_DEBUG;
     if (cb_http_query_get(req, "level", v, sizeof v) && v[0]) {
         level = cb_log_level_parse(v);
@@ -600,7 +605,7 @@ static void api_logs(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     }
     cb_log_entry *e = malloc(ADMIN_LOG_MAX * sizeof *e);
     if (!e) { cb_router_error(res, 500, "out of memory"); return; }
-    size_t n = cb_log_read(after, level, e, ADMIN_LOG_MAX);
+    size_t n = cb_log_read((uint64_t)after, level, e, ADMIN_LOG_MAX);
     cb_buf b;
     cb_buf_init(&b);
     // The newest seq overall, so the next poll asks only for what is new even

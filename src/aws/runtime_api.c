@@ -9,6 +9,7 @@
 #include "json_surface.h"
 #include "util/err.h"
 #include "util/log.h"
+#include "util/num.h"
 
 #include <errno.h>
 #include <netdb.h>
@@ -25,8 +26,10 @@ int cb_runtime_init(char *host, size_t cap, int *port) {
     const char *colon = strrchr(api, ':');
     if (!colon) { *port = 80; return cb_strlcpy(host, api, cap) < cap ? CB_OK : CB_E_INVALID; }
     if (!cb_strncpy0(host, cap, api, (size_t)(colon - api))) return CB_E_INVALID;
-    *port = atoi(colon + 1);
-    return *port > 0 ? CB_OK : CB_E_INVALID;
+    int64_t p;
+    if (!cb_parse_i64_cstr(colon + 1, 1, 65535, &p)) return CB_E_INVALID;
+    *port = (int)p;
+    return CB_OK;
 }
 
 static int dial(const char *host, int port) {
@@ -63,7 +66,9 @@ static void head_get(const char *head, const char *name, char *out, size_t cap) 
             s += nl + 1;
             while (*s == ' ') s++;
             const char *e = strstr(s, "\r\n");
-            cb_strncpy0(out, cap, s, e ? (size_t)(e - s) : strlen(s));
+            size_t n = e ? (size_t)(e - s) : strlen(s);
+            while (n && (s[n - 1] == ' ' || s[n - 1] == '\t')) n--;   // trailing OWS (RFC 9110 5.5)
+            cb_strncpy0(out, cap, s, n);
             return;
         }
     }
@@ -132,7 +137,12 @@ int cb_runtime_next(const char *host, int port, cb_invocation *out) {
     head_get(h, "lambda-runtime-deadline-ms", dl, sizeof dl);
     head_get(h, "lambda-runtime-invoked-function-arn", out->function_arn, sizeof out->function_arn);
     head_get(h, "lambda-runtime-trace-id", out->trace_id, sizeof out->trace_id);
-    out->deadline_ms = strtoll(dl, NULL, 10);
+    // Epoch ms. One that is missing or not a number is 0, "no deadline known",
+    // as it always was; the warning says the runtime broke its contract.
+    if (!cb_parse_i64_cstr(dl, 0, INT64_MAX, &out->deadline_ms)) {
+        if (dl[0]) CB_WARN("runtime", "lambda-runtime-deadline-ms is not a number: %s", dl);
+        out->deadline_ms = 0;
+    }
     cb_buf_free(&head);
     return out->request_id[0] ? CB_OK : CB_E_IO;
 }

@@ -180,6 +180,41 @@ static void seeds_query(void) {
     puts_("query", "bad", "a=%zz&b=%");
 }
 
+// cb_parse_i64: [mode][range for mode 3][text] (fuzz/fz_num.c).
+static void seeds_num(void) {
+    put1("num", "speedup", 0, "20", 2);
+    put1("num", "space", 0, " 20", 3);
+    put1("num", "plus", 0, "+20", 3);
+    put1("num", "trailing", 0, "20x", 3);
+    put1("num", "neg", 0, "-5", 2);
+    put1("num", "max", 0, "9223372036854775807", 19);
+    put1("num", "min", 0, "-9223372036854775808", 20);
+    put1("num", "max-plus-one", 0, "9223372036854775808", 19);
+    put1("num", "min-minus-one", 0, "-9223372036854775809", 20);
+    put1("num", "u64-max", 0, "18446744073709551615", 20);
+    put1("num", "zeros", 0, "0007", 4);
+    put1("num", "neg-zero", 0, "-0", 2);
+    put1("num", "empty", 0, "", 0);
+    put1("num", "dash", 0, "-", 1);
+    put1("num", "nul", 0, "12\0" "3", 4);
+    put1("num", "after-wrap", 1, "-1", 2);
+    put1("num", "cursor", 1, "42", 2);
+    put1("num", "port", 2, "8443", 4);
+    put1("num", "port-zero", 2, "0", 1);
+    put1("num", "port-over", 2, "65536", 5);
+    // Mode 3: the range from the input, little-endian lo then hi.
+    uint8_t r[18];
+    int64_t lo = -5, hi = 5;
+    memcpy(r, &lo, 8);
+    memcpy(r + 8, &hi, 8);
+    memcpy(r + 16, "-5", 2);
+    put1("num", "range", 3, r, 18);
+    memcpy(r, &hi, 8);
+    memcpy(r + 8, &lo, 8);
+    r[16] = '0';
+    put1("num", "range-reversed", 3, r, 17);
+}
+
 static void seeds_event(void) {
     puts_("event", "cloudfront", CLOUDFRONT_SIGNUP_EVENT);
     puts_("event", "fn-url-b64",
@@ -761,6 +796,7 @@ int main(int argc, char **argv) {
     seeds_ws();
     seeds_codec();
     seeds_query();
+    seeds_num();
     seeds_event();
     seeds_dynamo();
     seeds_jwt();

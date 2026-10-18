@@ -95,6 +95,9 @@ static void configuration_refusals(void) {
     refused("CBASE_LISTEN", "h:", "is not host:port");
     refused("CBASE_LISTEN", "h:70000", "has no valid port");
     refused("CBASE_LISTEN", "h:8x", "has no valid port");
+    refused("CBASE_LISTEN", "h: 80", "has no valid port");
+    refused("CBASE_LISTEN", "h:+80", "has no valid port");
+    refused("CBASE_LISTEN", "h:-0", "has no valid port");
     char longhost[400];
     snprintf(longhost, sizeof longhost, "%.300s:80", longv);
     refused("CBASE_LISTEN", longhost, "host is too long");
@@ -126,6 +129,9 @@ static void configuration_refusals(void) {
     refused("CBASE_BOT_SPEEDUP", "101", "is not a number in 1..100");
     refused("CBASE_BOT_SPEEDUP", "2.5", "is not a number in 1..100");
     refused("CBASE_BOT_SPEEDUP", "20x", "is not a number in 1..100");
+    refused("CBASE_BOT_SPEEDUP", " 20", "is not a number in 1..100");
+    refused("CBASE_BOT_SPEEDUP", "+20", "is not a number in 1..100");
+    refused("CBASE_BOT_SPEEDUP", "20 ", "is not a number in 1..100");
     refused("CBASE_BOT_SPEEDUP", "99999999999999999999", "is not a number in 1..100");
 
     // Everything set and in range: read as given, and listed with the secrets redacted.

@@ -579,3 +579,33 @@ Each mutation was applied, its object deleted and the test rebuilt, then restore
 - config.c: the default 2 -> `unit_config` `lambda_refuses_a_bot_speedup` default 1, and `unit_app`'s production pacing.
 - config.c: the value read but not stored -> `unit_edges` `configuration_refusals` bot_speedup == 100.
 - boot.c: the Lambda refusal removed, or made `> 20` -> `unit_config` `lambda_refuses_a_bot_speedup` the error names CBASE_BOT_SPEEDUP.
+
+## Numbers from text (2026-10-18: unit_num, unit_num_gate, fz_num and the call sites)
+
+`cb_parse_i64` (util/num.h) is the one decimal integer parser; DESIGN.md "Numbers from text".
+Each mutation was applied, its object deleted and the test rebuilt, then restored from a copy the same way.
+
+- num.c: leading blanks skipped -> `unit_num` `shapes_refused` " 20" and "\t20" refused; `unit_edges` `configuration_refusals` CBASE_BOT_SPEEDUP " 20".
+- num.c: a leading '+' taken -> `unit_num` `shapes_refused` "+20" and "+0"; `unit_edges` CBASE_BOT_SPEEDUP "+20"; `fz_num` m == p from the seed corpus, and from an empty corpus within 60 s.
+- num.c: the overflow check removed -> `unit_num` `int64_extremes` INT64_MAX + 1 and INT64_MIN - 1 refused.
+- num.c: the overflow check one past (`/ 10 + 1`) -> `fz_num` m == p from the seed corpus (seed-max-plus-one); an empty corpus did not find it in 60 s, which is what the seeds are for.
+- num.c: '-' taken when lo >= 0 -> `unit_num` `shapes_refused` "-0" refused in 0..100; `unit_edges` CBASE_LISTEN "h:-0".
+- num.c: a non-digit ends the number instead of refusing it -> `unit_num` `shapes_refused` "20 " and "20\n" (13 checks).
+- num.c: hi not checked -> `unit_num` `bounds` "101" in 1..100 refused.
+- num.c: a refusal writes *out -> `unit_num` `bounds` g_v == 7777.
+- num.c: a lone '-' taken -> `unit_num` `shapes_refused` "-" refused, and `with_a_length` "-12" cut to 1 byte.
+- num.c: INT64_MIN read as INT64_MIN + 1 -> `unit_num` `int64_extremes` "-9223372036854775808".
+- num.c: a `lo > hi` check was removed as equivalent (an empty range refuses every value at the range check); `bounds` keeps "5" in 6..5 refused.
+- admin.c: `after` takes a '-' -> `unit_admin` `logs_tail_after_a_seq_at_a_level` after=-1 == 400.
+- admin.c: a bad `after` read as 0 (strtoull's answer) -> `unit_admin` after=-1, " 5", "+5" and "5x" == 400.
+- admin.c: q_int refuses negatives (no clamp to lo) -> `unit_admin` `browse_pages_by_cursor` limit=-5 gives last_limit == 1.
+- store_sqlite.c: a bad cursor read as the first page -> `unit_store` `admin_reads` "3x", " 3", "+3", "x", "3 " and an overflow == CB_E_INVALID.
+- aws_call.c: the port read to the end of the string, not to the path -> `unit_aws_calls` `url_parse` "wss://h:8443/a/b//" == CB_OK.
+- runtime_api.c: port 0 taken -> `unit_runtime_api` `runtime_api_port` "127.0.0.1:0" == CB_E_INVALID.
+- runtime_api.c: a negative deadline taken -> `unit_runtime_api` `deadline_is_digits` " -1" == 0.
+- runtime_api.c: a header's trailing blanks kept -> `unit_runtime_api` `deadline_is_digits` " 1791998921003 \t" read.
+- store_import.c: a malformed counts.txt line skipped like a missing one (-1 for -2) -> `unit_import` `failing_checks` TEXT_COUNT returns 1 with "users -2" and MISMATCH.
+- store_import.c: a malformed cell read as 0, not the column's none -> `unit_import` `failing_checks` TEXT_COUNT last_commit_at == 4000.
+- config.c: CBASE_LISTEN's port range from -1 -> `unit_edges` `configuration_refusals` "h:-0" refused.
+- json_surface.c: a DynamoDB N only non-negative -> `unit_dynamo` `numbers_are_digits` INT64_MIN read.
+- unit_num_gate.c: a strtol, a strtod and an sscanf each planted at the end of src/util/log.c -> `only_cb_parse_i64_reads_numbers` violations == 0.

@@ -1193,6 +1193,13 @@ static void admin_reads(void) {
     } while (cur[0] && pages < 10);
     T_EQ_INT(total, 49);
     T_EQ_INT(pages, 3);
+    // SQLite's cursor is the rowid a page answered, nothing else: strtoll read
+    // "3x", " 3" and "+3" as 3, and "x" as the first page.
+    static const char *const bad_cursors[] = { "3x", " 3", "+3", "x", "3 ", "99999999999999999999" };
+    for (size_t i = 0; !tsb_dynamo() && i < sizeof bad_cursors / sizeof bad_cursors[0]; i++)
+        T_EQ_INT(CB_STORE_CALL(s, admin_browse, "bots", NULL, bad_cursors[i], 20, collect_row, &r, next, sizeof next),
+                 CB_E_INVALID);
+    if (!tsb_dynamo()) T_EQ_INT(CB_STORE_CALL(s, admin_browse, "bots", NULL, "-5", 20, collect_row, &r, next, sizeof next), 20);
     T_EQ_STR(r.col0, "id");
     T_EQ_INT(r.ncols, 8);
     // The eq filter, and a key prefix.

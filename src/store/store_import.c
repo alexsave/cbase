@@ -8,6 +8,7 @@
 #include "table.h"
 #include "util/err.h"
 #include "util/hex.h"
+#include "util/num.h"
 #include "util/str.h"
 #include "util/uuid.h"
 
@@ -147,10 +148,8 @@ static const char *cell(const csv *c, int row, int column) {
 static int64_t cell_i64(const csv *c, int row, int column, int64_t none) {
     const char *v = cell(c, row, column);
     if (!v) return none;
-    errno = 0;
-    char *end;
-    long long x = strtoll(v, &end, 10);
-    return errno || *end ? none : x;
+    int64_t x;
+    return cb_parse_i64_cstr(v, INT64_MIN, INT64_MAX, &x) ? x : none;
 }
 
 static bool cell_bool(const csv *c, int row, int column) {
@@ -476,11 +475,14 @@ static void count_item(const char *export_name, const char *id, void *ud) {
 }
 
 static bool count_cb(int n, const char *const *names, const char *const *values, void *ud) {
-    *(long long *)ud = n > 0 && values[0] ? atoll(values[0]) : -1;
+    int64_t x;
+    *(long long *)ud = n > 0 && cb_parse_i64_cstr(values[0], 0, INT64_MAX, &x) ? x : -1;
     return false;
 }
 
-// The export's count for `name` (counts.txt), or -1.
+// The export's count for `name` (counts.txt): -1 when it names no such
+// table, -2 when its line for the table holds something other than a count
+// (which no table's read count equals, so the check reports a mismatch).
 static long long export_count(const char *dir, const char *name) {
     char path[1024], line[256];
     snprintf(path, sizeof path, "%s/counts.txt", dir);
@@ -488,9 +490,13 @@ static long long export_count(const char *dir, const char *name) {
     if (!f) return -1;
     long long n = -1;
     while (fgets(line, sizeof line, f)) {
-        char k[64];
-        long long v;
-        if (sscanf(line, "%63s %lld", k, &v) == 2 && strcmp(k, name) == 0) n = v;
+        // "<name> <count>\n", as migrate/export.sh writes it.
+        size_t len = strcspn(line, "\r\n");
+        const char *sp = memchr(line, ' ', len);
+        size_t kn = strlen(name);
+        int64_t v;
+        if (sp && (size_t)(sp - line) == kn && memcmp(line, name, kn) == 0)
+            n =cb_parse_i64(sp + 1, len - kn - 1, 0, INT64_MAX, &v) ? v : -2;
     }
     fclose(f);
     return n;
@@ -598,7 +604,7 @@ int cb_import_dir(cb_store *s, const char *dir, FILE *out) {
         long long exp = export_count(dir, checks[i].export_name), stored = -1;
         if (sqlite) CB_STORE_CALL(s, admin_query, checks[i].sql, false, count_cb, &stored);
         if (dynamo) stored = scanned ? t->stored : -2;
-        bool row_ok = t->bad == 0 && t->written + t->already == t->read && (exp < 0 || exp == t->read) &&
+        bool row_ok = t->bad == 0 && t->written + t->already == t->read && (exp == -1 || exp == t->read) &&
                       (!(sqlite || dynamo) || stored == t->read);
         ok &= row_ok;
         char st[24] = "-", xt[24] = "-";

@@ -136,6 +136,48 @@ static void next_content_length(void) {
     cb_buf_free(&r);
 }
 
+// The deadline header: digits (trailing blanks are the header's, not the
+// value's), or 0 for "no deadline known", never strtoll's reading of "+5".
+static int64_t deadline_of(const char *value) {
+    cb_buf r;
+    cb_buf_init(&r);
+    cb_buf_puts(&r, "HTTP/1.1 200 OK\r\nLambda-Runtime-Aws-Request-Id: r1\r\nLambda-Runtime-Deadline-Ms:");
+    cb_buf_puts(&r, value);
+    cb_buf_puts(&r, "\r\nContent-Length: 2\r\n\r\n{}");
+    cb_invocation inv;
+    T_EQ_INT(next_from((const char *)r.p, r.len, &inv), CB_OK);
+    int64_t d = inv.deadline_ms;
+    cb_invocation_free(&inv);
+    cb_buf_free(&r);
+    return d;
+}
+
+static void deadline_is_digits(void) {
+    T_EQ_INT(deadline_of(" 1791998921003"), 1791998921003LL);
+    T_EQ_INT(deadline_of(" 1791998921003 \t"), 1791998921003LL);
+    T_EQ_INT(deadline_of(" +1791998921003"), 0);
+    T_EQ_INT(deadline_of(" 1791998921003ms"), 0);
+    T_EQ_INT(deadline_of(" -1"), 0);
+    T_EQ_INT(deadline_of(""), 0);
+}
+
+static void runtime_api_port(void) {
+    char host[64];
+    int port = 0;
+    setenv("AWS_LAMBDA_RUNTIME_API", "127.0.0.1:9001", 1);
+    T_EQ_INT(cb_runtime_init(host, sizeof host, &port), CB_OK);
+    T_EQ_STR(host, "127.0.0.1");
+    T_EQ_INT(port, 9001);
+    static const char *const bad[] = { "127.0.0.1:+9001", "127.0.0.1: 9001", "127.0.0.1:9001x", "127.0.0.1:0",
+                                       "127.0.0.1:65536", "127.0.0.1:", "127.0.0.1:-1" };
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        setenv("AWS_LAMBDA_RUNTIME_API", bad[i], 1);
+        port = 0;
+        T_EQ_INT(cb_runtime_init(host, sizeof host, &port), CB_E_INVALID);
+    }
+    unsetenv("AWS_LAMBDA_RUNTIME_API");
+}
+
 // A /next that is not a whole response is the runtime going away, not an event.
 static void next_truncated(void) {
     cb_buf r;
@@ -152,5 +194,7 @@ int main(void) {
     T_RUN(next_chunked);
     T_RUN(next_content_length);
     T_RUN(next_truncated);
+    T_RUN(deadline_is_digits);
+    T_RUN(runtime_api_port);
     return T_DONE();
 }

@@ -3,6 +3,7 @@
 #include "util/b64.h"
 #include "util/err.h"
 #include "util/log.h"
+#include "util/num.h"
 #include "util/str.h"
 #include "util/uuid.h"
 
@@ -27,13 +28,12 @@ static bool copy(char *dst, size_t cap, const char *name, const char *v, char *e
 static bool num(const char *name, long dflt, long lo, long hi, long *out, char *err, size_t ecap) {
     const char *v = getenv(name);
     if (!v || !*v) { *out = dflt; return true; }
-    char *end = NULL;
-    long x = strtol(v, &end, 10);
-    if (*end || x < lo || x > hi) {
+    int64_t x;
+    if (!cb_parse_i64_cstr(v, lo, hi, &x)) {
         snprintf(err, ecap, "%s=%s is not a number in %ld..%ld", name, v, lo, hi);
         return false;
     }
-    *out = x;
+    *out = (long)x;
     return true;
 }
 
@@ -49,9 +49,8 @@ int cb_config_from_env(cb_config *c, char *err, size_t cap) {
         snprintf(err, cap, "CBASE_LISTEN host is too long");
         return CB_E_INVALID;
     }
-    char *end = NULL;
-    long port = strtol(colon + 1, &end, 10);
-    if (*end || port < 0 || port > 65535) {
+    int64_t port;
+    if (!cb_parse_i64_cstr(colon + 1, 0, 65535, &port)) {
         snprintf(err, cap, "CBASE_LISTEN=%s has no valid port", listen);
         return CB_E_INVALID;
     }

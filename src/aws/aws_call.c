@@ -6,6 +6,7 @@
 #include "util/clock.h"
 #include "util/err.h"
 #include "util/log.h"
+#include "util/num.h"
 
 #include <ctype.h>
 #include <stdio.h>
@@ -40,9 +41,8 @@ int cb_aws_url_parse(const char *url, char *host, size_t host_cap, int *port, bo
     const char *colon = memchr(url, ':', (size_t)(hend - url));
     *port = *tls ? 443 : 80;
     if (colon) {
-        char *e;
-        long p = strtol(colon + 1, &e, 10);
-        if (e != hend || p <= 0 || p > 65535) return CB_E_INVALID;
+        int64_t p;
+        if (!cb_parse_i64(colon + 1, (size_t)(hend - colon - 1), 1, 65535, &p)) return CB_E_INVALID;
         *port = (int)p;
     } else {
         colon = hend;

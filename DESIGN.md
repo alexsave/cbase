@@ -817,6 +817,17 @@ It also fails a string literal that is XML: an `<?xml` prolog or an `xmlns` name
 It lexes rather than greps: comments may describe a shape, two literals around a ternary's colon are not a key, and adjacent literals are joined first, as the compiler joins them.
 Tests (`test/`) are not scanned: their recorded bodies are the oracle the shapes are checked against.
 
+## Numbers from text (2026-10-18)
+
+Every decimal integer c_base reads from text goes through one parser, `cb_parse_i64` (`util/num.h`): the `CBASE_*` settings and `CBASE_LISTEN`'s port, the admin API's query numbers and `after`, SQLite's browse cursor, a DynamoDB `N` attribute, an AWS endpoint's port, the Lambda runtime's port and deadline header, and the import's cells and `counts.txt`.
+It takes exactly `-?[0-9]+`, the `-` only when the range has negatives, and the value in the caller's range; overflow is seen digit by digit.
+The C library's parsers took a leading blank and `+`, `strtoull` wrapped `-1` to 2^64-1, and the call sites that ignored the end pointer took anything after the digits, so `CBASE_BOT_SPEEDUP=" 20"` was 20 and an admin cursor of `"3x"` was 3.
+Leading zeros are taken: base 10 is fixed, so `007` can only mean 7.
+
+`test/unit_num_gate.c` holds the rule: it lexes every C source under `src/` and fails on `strtol`, `strtoll`, `strtoul`, `strtoull`, `strtoimax`, `strtoumax`, `atoi`, `atol`, `atoll` or any `scanf`.
+`strtod` and its kin are allowed only in `json_surface.c`, for the one fractional number c_base reads (DynamoDB's `CapacityUnits`).
+`fuzz/fz_num.c` holds the parser against a model that accumulates in `__int128`.
+
 ## Edge cache (2026-10-17)
 
 Alex, approving it: "Bot list almost never changes and leaderboard requires a game to change. Go do it."
