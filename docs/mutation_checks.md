@@ -461,3 +461,6 @@ A mutation that would not compile (an unused variable under -Werror) was replace
 - store_dynamo.c: bots_idle's lost condition taken as done -> `bots_idle_deletes_the_marker`.
 - config.c (unit_edges): the origin secret listed in the clear and not flagged secret -> `configuration_refusals` (secrets == 3, leaked, wrong_secret); the listing is held by name, not by count, so a new setting does not break it.
 - store_dynamo.c: lease_held's last millisecond not counted as held -> `lease_held_reads_the_marker` (the gate named dy_lease_held as never called the day it landed).
+- stream.c: a batch's entries not checked for a client's kind -> smoke_matrix `stream_frames` "server frame in a batch" (an ACK inside ran nothing before; now the batch's SUB_AS was answered and the socket stayed).
+- rt_apigw.c: route replies taken when CBASE_WS_ROUTE_REPLY says no, and not when it says yes -> smoke_lambda_after: `the_answer_goes_first` (the SUB's ACK never POSTed) and `route_replies_ride_in_the_answer` (no body in the $default answer).
+- smoke.c's two deadlines (the transport's 10 s, "the version held 5 s"): each reproduced red by freezing the server with SIGSTOP (11-15 s, mid-game; 12 s, while the idle test waited for the bots), and green after with the same freeze.

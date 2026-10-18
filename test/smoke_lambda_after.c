@@ -27,6 +27,7 @@
 #include "util/log.h"
 #include "util/pool.h"
 
+#include "ask.h"
 #include "netwire.h"
 
 #include <pthread.h>
@@ -152,7 +153,12 @@ static int response_body(int i, uint8_t *out, int cap) {
     return cb_b64_decode(b64, strlen(b64), out, (size_t)cap);
 }
 
-static void answers_then_pushes(const char *bin) {
+// route: CBASE_WS_ROUTE_REPLY=yes, where a frame's replies ride back in the
+// $default invocation's own answer (rt_apigw.c), and step 3 is one batch: a
+// SUB_AS with a token that does not verify, a good one, and a ping.
+static void answers_then_pushes(const char *bin, bool route) {
+    g_served = g_queued = g_n_arrivals = g_n_responses = 0;
+    g_done = false;
     cb_log_init(CB_LOG_WARN, 0);
     signal(SIGPIPE, SIG_IGN);
     strcpy(g_cfg.allowed_origins, "*");
@@ -176,7 +182,8 @@ static void answers_then_pushes(const char *bin) {
     T_EQ_INT(tp_tempdir(db, sizeof db), 0);
     snprintf(envdb, sizeof envdb, "CBASE_DB=%s/cbase.sqlite", db);
     char *env[] = { api, "CBASE_STORE=sqlite", envdb, "CBASE_JWT_SECRET=after-secret-after-secret-after-secret", wsep,
-                    "AWS_ACCESS_KEY_ID=AKIDEXAMPLE", "AWS_SECRET_ACCESS_KEY=secret", "AWS_REGION=us-east-1", NULL };
+                    "AWS_ACCESS_KEY_ID=AKIDEXAMPLE", "AWS_SECRET_ACCESS_KEY=secret", "AWS_REGION=us-east-1",
+                    route ? "CBASE_WS_ROUTE_REPLY=yes" : "CBASE_WS_ROUTE_REPLY=no", NULL };
     char *argv[] = { (char *)bin, NULL };
     tp_child c;
     T_EQ_INT(tp_start(&c, argv, env), 0);
@@ -213,14 +220,63 @@ static void answers_then_pushes(const char *bin) {
     f.what = NW_SUB_GAMES;
     f.token_len = (uint16_t)strlen(token);
     memcpy(f.token, token, f.token_len);
-    uint8_t fb[NW_ACCESS_MAX + 64];
+    static uint8_t fb[3 * (NW_ACCESS_MAX + 96) + 64];
     int fn = nw_frame_encode(&f, fb, sizeof fb);
-    char text[4096];
+    if (route) {
+        // The batch: a forged token's SUB_AS, the good one, a ping.
+        static uint8_t list[3 * (NW_ACCESS_MAX + 96)], one[NW_ACCESS_MAX + 64];
+        int at = 0, n;
+        static NwFrame bad;
+        bad = f;
+        bad.ref = 9;
+        memcpy(bad.token, "not.a.token", 11);
+        bad.token_len = 11;
+        n = nw_frame_encode(&bad, one, sizeof one);
+        at += nw_batch_add(one, n, list + at, (int)sizeof list - at);
+        n = nw_frame_encode(&f, one, sizeof one);
+        at += nw_batch_add(one, n, list + at, (int)sizeof list - at);
+        static NwFrame ping;
+        memset(&ping, 0, sizeof ping);
+        ping.kind = NW_WS_PING;
+        n = nw_frame_encode(&ping, one, sizeof one);
+        at += nw_batch_add(one, n, list + at, (int)sizeof list - at);
+        static NwFrame b;
+        memset(&b, 0, sizeof b);
+        b.kind = NW_WS_BATCH;
+        b.blob.p = list;
+        b.blob.len = (uint32_t)at;
+        fn = nw_frame_encode(&b, fb, sizeof fb);
+    }
+    static char text[4 * sizeof fb / 3 + 8];
     int tn = nw_text_encode(fb, fn, text, sizeof text - 1);
     T_CHECK(tn > 0);
     text[tn > 0 ? tn : 0] = 0;
     ws_event(ev, sizeof ev, "$default", NULL, text);
     T_EQ_INT(give(ev), 2);
+    if (route) {
+        // The replies came back in the invocation's answer, as one batch: AUTH, accepted, PONG.
+        char b64[8192] = "";
+        T_CHECK(cb_json_get_str(cb_buf_cstr(&g_response[2]), g_response[2].len, "body", b64, sizeof b64));
+        static uint8_t msg[8192];
+        int mn = nw_text_decode(b64, (int)strlen(b64), msg, sizeof msg);
+        static NwFrame got;
+        T_CHECK(mn > 0 && nw_frame_decode(msg, mn, &got) == NW_OK && got.kind == NW_WS_BATCH);
+        NwBlob all = got.blob, e;
+        uint32_t pos = 0;
+        int kinds[4] = { 0 }, whys[4] = { -1, -1, -1, -1 }, k = 0;
+        static NwFrame ef;
+        while (k < 4 && nw_batch_next(all, &pos, &e) == 1 && nw_frame_decode(e.p, (int)e.len, &ef) == NW_OK) {
+            kinds[k] = ef.kind;
+            whys[k] = ef.why;
+            k++;
+        }
+        T_EQ_INT(k, 3);
+        T_EQ_INT(kinds[0], NW_WS_ACK);
+        T_EQ_INT(whys[0], ASK_WHY_AUTH);
+        T_EQ_INT(kinds[1], NW_WS_ACK);
+        T_EQ_INT(whys[1], 0);
+        T_EQ_INT(kinds[2], NW_WS_PONG);
+    }
 
     // 4. The create: its answer, then its push.
     url_event(ev, sizeof ev, "POST", "/v1/create", bearer, NULL, 0);
@@ -249,25 +305,35 @@ static void answers_then_pushes(const char *bin) {
         else if (strcmp(g_arrivals[i], "post C1%3D") == 0 && create_resp >= 0 && push_after < 0) push_after = i;
     }
     pthread_mutex_unlock(&g_lock);
-    T_CHECK(sub_ack >= 0 && sub_ack < create_resp);   // the ACK, inside its own invocation
+    if (route) {
+        // No POST for the replies: the first post is the create's push, after its answer.
+        T_CHECK(sub_ack > create_resp);
+        push_after = sub_ack;
+    } else {
+        T_CHECK(sub_ack >= 0 && sub_ack < create_resp);   // the ACK, inside its own invocation
+    }
     T_CHECK(create_resp >= 0);
     T_CHECK(push_after > create_resp);                // the view, once the answer was out
     for (int i = 0; i < g_n_responses; i++) T_CHECK(strstr(cb_buf_cstr(&g_response[i]), "\"statusCode\":") != NULL);
     // Two pushes reached C1: the ACK and the new game's view (a text frame of base64).
     int lines = 0;
     for (size_t i = 0; i < g_pushes.len; i++) lines += g_pushes.p[i] == '\n';
-    T_EQ_INT(lines, 2);
+    T_EQ_INT(lines, route ? 1 : 2);
+    cb_buf_free(&g_pushes);
+    for (int i = 0; i < g_n_responses; i++) cb_buf_free(&g_response[i]);
 
     cb_loop_post(g_ctx.loop, stop, NULL);
     pthread_join(th, NULL);
 }
 
 static const char *g_bin;
-static void the_answer_goes_first(void) { answers_then_pushes(g_bin); }
+static void the_answer_goes_first(void) { answers_then_pushes(g_bin, false); }
+static void route_replies_ride_in_the_answer(void) { answers_then_pushes(g_bin, true); }
 
 int main(int argc, char **argv) {
     if (argc != 2) { fprintf(stderr, "usage: smoke_lambda_after <path to bootstrap>\n"); return 2; }
     g_bin = argv[1];
     T_RUN(the_answer_goes_first);
+    T_RUN(route_replies_ride_in_the_answer);
     return T_DONE();
 }

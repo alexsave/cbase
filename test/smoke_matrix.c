@@ -352,6 +352,8 @@ typedef struct {
     bool leak;            // a frame it should never have had
     bool closed;          // the server closed it (a CLOSE frame)
     int  close_code;
+    int  n_batch, n_batched;   // NW_WS_BATCH messages, and the entries they held
+    int  whys[8], seateds[8];  // the first eight ACKs' why and seated, in order
     uint32_t last_cast_v;
 } sock;
 
@@ -373,11 +375,60 @@ static void ws_sub(sock *s, int kind, const char *token, int what, const char *g
     ws_frame(s, &f);
 }
 
+// Judges one server message; a batch (NW_WS_BATCH) is each of its entries
+// judged alike, and must hold none of its own kind.
+static void ws_judge(sock *s, const uint8_t *p, int len, bool in_batch) {
+    NwFrame *f = calloc(1, sizeof *f);
+    if (!f) return;
+    if (nw_frame_decode(p, len, f) != NW_OK) { s->leak = true; free(f); return; }
+    char gid[NW_GID_MAX + 1];
+    snprintf(gid, sizeof gid, "%.*s", (int)f->gid_len, f->gid);
+    char what[96];
+    snprintf(what, sizeof what, "%s's %s", s->who, f->kind == NW_WS_VIEW ? "view push" : "cast");
+    switch (f->kind) {
+    case NW_WS_BATCH: {
+        if (in_batch) { s->leak = true; break; }
+        s->n_batch++;
+        NwBlob all = f->blob, one;
+        uint32_t pos = 0;
+        int rc;
+        while ((rc = nw_batch_next(all, &pos, &one)) == 1) { s->n_batched++; ws_judge(s, one.p, (int)one.len, true); }
+        if (rc < 0) s->leak = true;
+        break;
+    }
+    case NW_WS_ACK:
+        s->n_ack++;
+        s->last_why = f->why;
+        s->last_seated = f->seated;
+        if (s->n_ack <= 8) { s->whys[s->n_ack - 1] = f->why; s->seateds[s->n_ack - 1] = f->seated; }
+        if (f->why) s->n_ack_refused++;
+        break;
+    case NW_WS_PONG: s->n_pong++; break;
+    case NW_WS_CATCHUP:   // a subscription's catch-up: the caller's view, as a VIEW is
+    case NW_WS_VIEW:
+        s->n_view++;
+        if (!s->gid[0] || strcmp(gid, s->gid) != 0) { s->n_other_game++; s->leak = true; break; }
+        if (f->blob.len && !envelope_hides(f->blob.p, (int)f->blob.len, s->seat, NULL, NULL, NULL, what)) s->leak = true;
+        break;
+    case NW_WS_CAST:
+        s->n_cast++;
+        if (!s->gid[0] || strcmp(gid, s->gid) != 0) { s->n_other_game++; s->leak = true; break; }
+        if (!cast_hides(f->blob.p, (int)f->blob.len, s->seat, what)) s->leak = true;
+        s->last_cast_v = f->version;
+        break;
+    case NW_WS_CHAT:
+        s->n_chat++;
+        if (!s->may_chat || strcmp(gid, s->gid) != 0) s->leak = true;
+        break;
+    default: s->leak = true; break;
+    }
+    free(f);
+}
+
 // Reads what arrives within timeout_ms (then 50 ms between frames), judging each.
 static void ws_pump(sock *s, int timeout_ms) {
     cb_buf b;
     cb_buf_init(&b);
-    static NwFrame f;
     int op;
     while (s->fd >= 0 && (op = tc_ws_recv(s->fd, timeout_ms, &b)) >= 0) {
         timeout_ms = 50;
@@ -386,37 +437,7 @@ static void ws_pump(sock *s, int timeout_ms) {
             s->close_code = b.len >= 2 ? (b.p[0] << 8 | b.p[1]) : 0;
             break;
         }
-        if (nw_frame_decode(b.p, (int)b.len, &f) != NW_OK) { s->leak = true; cb_buf_reset(&b); continue; }
-        char gid[NW_GID_MAX + 1];
-        snprintf(gid, sizeof gid, "%.*s", (int)f.gid_len, f.gid);
-        char what[96];
-        snprintf(what, sizeof what, "%s's %s", s->who, f.kind == NW_WS_VIEW ? "view push" : "cast");
-        switch (f.kind) {
-        case NW_WS_ACK:
-            s->n_ack++;
-            s->last_why = f.why;
-            s->last_seated = f.seated;
-            if (f.why) s->n_ack_refused++;
-            break;
-        case NW_WS_PONG: s->n_pong++; break;
-        case NW_WS_CATCHUP:   // a subscription's catch-up: the caller's view, as a VIEW is
-        case NW_WS_VIEW:
-            s->n_view++;
-            if (!s->gid[0] || strcmp(gid, s->gid) != 0) { s->n_other_game++; s->leak = true; break; }
-            if (f.blob.len && !envelope_hides(f.blob.p, (int)f.blob.len, s->seat, NULL, NULL, NULL, what)) s->leak = true;
-            break;
-        case NW_WS_CAST:
-            s->n_cast++;
-            if (!s->gid[0] || strcmp(gid, s->gid) != 0) { s->n_other_game++; s->leak = true; break; }
-            if (!cast_hides(f.blob.p, (int)f.blob.len, s->seat, what)) s->leak = true;
-            s->last_cast_v = f.version;
-            break;
-        case NW_WS_CHAT:
-            s->n_chat++;
-            if (!s->may_chat || strcmp(gid, s->gid) != 0) s->leak = true;
-            break;
-        default: s->leak = true; break;
-        }
+        ws_judge(s, b.p, (int)b.len, false);
         cb_buf_reset(&b);
     }
     cb_buf_free(&b);
@@ -766,6 +787,40 @@ static void console_takes_only_the_admin_token(void) {
 }
 
 // The stream: every frame kind, from every identity.
+// One NW_WS_BATCH of the n frames given, as a client sends a moment's
+// subscriptions: false when it does not encode (more than NW_BATCH_MAX).
+static bool ws_send_batch(sock *s, const NwFrame *fs, int n) {
+    static uint8_t entries[NW_BATCH_MAX * 2 + 4][NW_ACCESS_MAX + 96];
+    static uint8_t list[(NW_BATCH_MAX + 2) * (NW_ACCESS_MAX + 128)];
+    int at = 0;
+    for (int i = 0; i < n; i++) {
+        int fn = nw_frame_encode(&fs[i], entries[i], sizeof entries[i]);
+        int k = fn > 0 ? nw_batch_add(entries[i], fn, list + at, (int)sizeof list - at) : -1;
+        if (k < 0) return false;
+        at += k;
+    }
+    static NwFrame b;
+    memset(&b, 0, sizeof b);
+    b.kind = NW_WS_BATCH;
+    b.blob.p = list;
+    b.blob.len = (uint32_t)at;
+    static uint8_t raw[sizeof list + 64];
+    int rn = nw_frame_encode(&b, raw, sizeof raw);
+    if (rn <= 0) return false;
+    return tc_ws_send(s->fd, CB_WS_OP_BIN, raw, (size_t)rn) == 0;
+}
+
+static NwFrame sub_frame(int kind, const char *token, int what, const char *gid, uint16_t ref) {
+    NwFrame f;
+    memset(&f, 0, sizeof f);
+    f.kind = (uint8_t)kind;
+    f.ref = ref;
+    f.what = (uint8_t)what;
+    if (gid) { f.gid_len = (uint8_t)strlen(gid); memcpy(f.gid, gid, f.gid_len); }
+    if (token) { f.token_len = (uint16_t)strlen(token); memcpy(f.token, token, f.token_len); }
+    return f;
+}
+
 static void stream_frames(void) {
     sock s;
     // A bare SUB before any AUTH: refused AUTH.
@@ -836,6 +891,88 @@ static void stream_frames(void) {
     g_cells++;
     T_EQ_INT(s.n_ack + s.n_pong + s.n_view + s.n_cast + s.n_chat, 0);
     close(s.fd);
+    // NW_WS_BATCH: a moment's subscriptions in one message, answered as one
+    // batch of ACKs in order; every identity, every subscription kind.
+    {
+        static NwFrame fs[NW_BATCH_MAX + 1];
+        for (int i = 0; i < N_BAD; i++) {
+            const char *tok = g_bad[i][0] && strncmp(g_bad[i], "Bearer ", 7) == 0 ? g_bad[i] + 7 : g_bad[i];
+            ws_open(&s, BAD_NAMES[i], -1, "", false);
+            fs[0] = sub_frame(NW_WS_SUB_AS, tok, NW_SUB_GAMES, NULL, 1);
+            fs[1] = sub_frame(NW_WS_SUB_AS, tok, NW_SUB_GAME, G, 2);
+            fs[2] = sub_frame(NW_WS_SUB_AS, tok, NW_SUB_CHAT, G, 3);
+            T_CHECK(ws_send_batch(&s, fs, 3));
+            ws_pump(&s, 2000);
+            g_cells += 3;
+            T_EQ_INT(s.n_batch, 1);
+            T_EQ_INT(s.n_ack, 3);
+            for (int k = 0; k < 3; k++) T_EQ_INT(s.whys[k], ASK_WHY_AUTH);
+            T_CHECK(!s.leak);
+            close(s.fd);
+        }
+        struct { user *u; const char *who; bool member; } bids[] = {
+            { &A, "host", true }, { &B, "seated", true }, { &C, "spectator", false }, { &D, "another user", false },
+        };
+        for (size_t i = 0; i < sizeof bids / sizeof bids[0]; i++) {
+            const char *tok = bids[i].u->auth + 7;
+            ws_open(&s, bids[i].who, bids[i].member ? (bids[i].u == &A ? 0 : 1) : -1, G, bids[i].member);
+            fs[0] = sub_frame(NW_WS_SUB_AS, tok, NW_SUB_GAMES, NULL, 1);
+            fs[1] = sub_frame(NW_WS_SUB_AS, tok, NW_SUB_GAME, G, 2);
+            fs[2] = sub_frame(NW_WS_SUB_AS, tok, NW_SUB_CHAT, G, 3);
+            fs[3] = sub_frame(NW_WS_PING, NULL, 0, NULL, 0);
+            T_CHECK(ws_send_batch(&s, fs, 4));
+            ws_pump(&s, 2000);
+            g_cells += 4;
+            T_EQ_INT(s.n_ack, 3);
+            T_EQ_INT(s.whys[0], 0);
+            T_EQ_INT(s.whys[1], 0);
+            T_EQ_INT(s.seateds[1], bids[i].member ? 1 : 0);
+            T_EQ_INT(s.whys[2], bids[i].member ? 0 : ASK_WHY_FORBIDDEN);
+            T_EQ_INT(s.n_pong, 1);
+            T_CHECK(!s.leak);
+            close(s.fd);
+        }
+        // A batch holding a server's frame: none of it runs, the socket ends.
+        ws_open(&s, "server frame in a batch", -1, "", false);
+        fs[0] = sub_frame(NW_WS_SUB_AS, D.auth + 7, NW_SUB_GAMES, NULL, 1);
+        fs[1] = sub_frame(NW_WS_ACK, NULL, 0, NULL, 9);
+        T_CHECK(ws_send_batch(&s, fs, 2));
+        ws_pump(&s, 2000);
+        g_cells++;
+        T_EQ_INT(s.n_ack, 0);
+        T_CHECK(s.closed);
+        close(s.fd);
+        // More entries than NW_BATCH_MAX: the client library cannot make it, the server never takes it.
+        for (int k = 0; k <= NW_BATCH_MAX; k++) fs[k] = sub_frame(NW_WS_PING, NULL, 0, NULL, 0);
+        ws_open(&s, "an oversized batch", -1, "", false);
+        if (ws_send_batch(&s, fs, NW_BATCH_MAX + 1)) {
+            ws_pump(&s, 2000);
+            T_EQ_INT(s.n_pong, 0);
+        }
+        g_cells++;
+        close(s.fd);
+        // Another user's token inside a batch ends what the first one subscribed to.
+        ws_open(&s, "switch in a batch", 0, G, true);
+        fs[0] = sub_frame(NW_WS_SUB_AS, A.auth + 7, NW_SUB_CHAT, G, 1);
+        fs[1] = sub_frame(NW_WS_AUTH, D.auth + 7, 0, NULL, 0);
+        T_CHECK(ws_send_batch(&s, fs, 2));
+        ws_pump(&s, 1000);
+        T_EQ_INT(s.whys[0], 0);
+        NwRequest cq;
+        memset(&cq, 0, sizeof cq);
+        cq.kind = NW_CHAT_SEND;
+        cq.message_len = 7;
+        memcpy(cq.message, "batched", 7);
+        uint8_t cb[32];
+        int cn = nw_request_encode(&cq, cb, sizeof cb);
+        char cpath[48];
+        snprintf(cpath, sizeof cpath, "/v1/chat/%s", G);
+        T_EQ_INT(http("POST", cpath, B.auth, cb, (size_t)cn, OCTETS), 204);
+        ws_pump(&s, 1000);
+        g_cells++;
+        T_EQ_INT(s.n_chat, 0);
+        close(s.fd);
+    }
     // After AUTH as one user, another's token in AUTH ends the first's subscriptions.
     ws_open(&s, "switch", 0, G, true);
     ws_ask(&s, NW_WS_SUB_AS, A.auth + 7, NW_SUB_CHAT, G);
