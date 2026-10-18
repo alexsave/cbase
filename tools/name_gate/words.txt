@@ -1,0 +1,86 @@
+# words.txt - the names one side of the tree may not say about another.
+#
+# Two gates read this file:
+#   foolish/e2e/validation/shared_is_shared_validation.test.ts: nothing under
+#     shared/ hits a [products] pattern;
+#   c_base/core/test/unit_name_gate.c (c_base/docs/PLATFORM.md 8.4): c_base's
+#     core hits no pattern of any list, a provider no [products] or [domain]
+#     pattern, foolish/server/src no [providers] pattern, but for the lines of
+#     allow.txt beside this file.
+#
+# The format: a line "[<list>]" starts a list; every other line that is not
+# blank or a "#" comment is one pattern, written as a JavaScript regular
+# expression literal, /<source>/ or /<source>/i (case-insensitive), so the
+# TypeScript gate hands it to RegExp as it is. The C gate matches the subset
+# the patterns use: literal characters, "\" before a punctuation character
+# (a literal), "\b" (a word boundary), "\w" (a word character), and "?" and
+# "*" after any of those. One difference, on purpose: in the C gate "_" is
+# not a word character, because C joins words with it, so /\bbots?\b/i
+# finds cb_rows_bots_replace.
+
+[products]
+# The game nouns. `wolf` is matched on a word boundary so `werewolf` is one
+# hit rather than two, and so an ordinary English word is not one at all.
+/\bdurak\b/i
+/foolish/i
+/werewolf/i
+/\bwolf\b/i
+# The shedding game, in the folder name and in the title's spellings
+# ("Pick 'Em Up", "Pick Em Up", "pickemup").
+/pickemup/i
+/pick ?'?em ?up/i
+# Liar's Dice, in the folder name and the title ("Chui Niu", "chuiniu").
+/chui ?niu/i
+# The dice solitaire, in the folder name and the title's spellings
+# ("Tally Bones", "TallyBones", "tallybones"); unanchored, so its targets
+# (TallybonesKit, TallybonesMessages) are hits too. A bare "tally" is not:
+# it is an ordinary word a shared counter may well use.
+/tally ?bones/i
+# Bundle ids, App Groups and the reverse-DNS they are built from.
+/cards\.foolish/i
+/group\.cards/i
+# Schemes, targets and the Xcode/Swift names that follow a product around.
+/\bCFoolish\w*/
+/\bFoolish\w*/
+/\bCWerewolf\w*/
+/\.xcodeproj/
+/MessagesExtension/
+
+[providers]
+# PLATFORM.md 8.4's list: AWS, Google Cloud (the slot, not created) and the
+# local provider's database.
+/\baws\b/i
+/amazon/i
+/lambda/i
+/dynamo/i
+/apigw/i
+/api ?gateway/i
+/execute-api/i
+/cloudfront/i
+/sigv4/i
+/x-amz/i
+/iot ?core/i
+/mqtt authorizer/i
+/eventbridge/i
+/cloudformation/i
+/\bgcp\b/i
+/google/i
+/firestore/i
+/cloud ?run/i
+/pub\/sub/i
+/sqlite/i
+
+[domain]
+# foolish's own nouns, which the platform under it has no reason to know.
+# The u/ topic families (/c/, /m/) are held by the family test instead.
+/\bgames?\b/i
+/\bseats?\b/i
+/\bbots?\b/i
+/\brosters?\b/i
+/\bratings?\b/i
+/\belo\b/i
+/\breplays?\b/i
+/\bsnapshots?\b/i
+/\bleaderboards?\b/i
+/\bdeals?\b/i
+/\bcards?\b/i
