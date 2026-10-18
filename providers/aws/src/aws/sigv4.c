@@ -12,6 +12,7 @@
 #include "util/err.h"
 #include "../../../../../shared/c/hex/hex.h"
 
+#include <openssl/crypto.h>
 #include <openssl/evp.h>
 #include <openssl/opensslv.h>
 
@@ -82,7 +83,7 @@ static bool sha256_hex(const void *p, size_t n, char out[65]) {
 static bool hmac(const void *key, size_t klen, const void *msg, size_t mlen, uint8_t out[32]) {
     uint8_t k[64] = { 0 }, ipad[64], opad[64], inner[32];
     if (klen > sizeof k) {
-        if (!sha256_parts(&key, &klen, 1, k)) return false;
+        if (!sha256_parts(&key, &klen, 1, k)) { OPENSSL_cleanse(k, sizeof k); return false; }
     } else {
         memcpy(k, key, klen);
     }
@@ -92,7 +93,12 @@ static bool hmac(const void *key, size_t klen, const void *msg, size_t mlen, uin
     }
     const void *ip[2] = { ipad, msg }, *op[2] = { opad, inner };
     size_t in[2] = { 64, mlen }, on[2] = { 64, 32 };
-    return sha256_parts(ip, in, 2, inner) && sha256_parts(op, on, 2, out);
+    bool ok = sha256_parts(ip, in, 2, inner) && sha256_parts(op, on, 2, out);
+    OPENSSL_cleanse(k, sizeof k);
+    OPENSSL_cleanse(ipad, sizeof ipad);
+    OPENSSL_cleanse(opad, sizeof opad);
+    OPENSSL_cleanse(inner, sizeof inner);
+    return ok;
 }
 
 // ---- the signing key -------------------------------------------------------------
@@ -130,7 +136,10 @@ static bool derive(const char *secret, const char *date, const char *region, con
     uint8_t kd[32], kr[32], ks[32];
     bool ok = hmac(k0, 4 + sl, date, 8, kd) && hmac(kd, 32, region, strlen(region), kr) &&
               hmac(kr, 32, service, strlen(service), ks) && hmac(ks, 32, "aws4_request", 12, out);
-    memset(k0, 0, sizeof k0);
+    OPENSSL_cleanse(k0, sizeof k0);
+    OPENSSL_cleanse(kd, sizeof kd);
+    OPENSSL_cleanse(kr, sizeof kr);
+    OPENSSL_cleanse(ks, sizeof ks);
     t_derived++;
     return ok;
 }
@@ -152,7 +161,7 @@ static bool signing_key_for(const char *secret, const char *date, const char *re
     if (!derive(secret, date, region, service, out)) return false;
     signing_key *e = &t_keys[t_keys_next];
     t_keys_next = (t_keys_next + 1) % KEYS;
-    memset(e, 0, sizeof *e);
+    OPENSSL_cleanse(e, sizeof *e);   // the replaced entry held a secret and a key
     e->used = true;
     strcpy(e->secret, secret);
     memcpy(e->date, date, 8);
@@ -309,8 +318,10 @@ int cb_sigv4_debug(const cb_aws_creds *c, const cb_sigv4_req *r, cb_buf *canonic
 
     // The signing key and the signature.
     uint8_t kk[32], sg[32];
-    if (!signing_key_for(c->secret_key, date, c->region, r->service, kk) || !hmac(kk, 32, sts->p, sts->len, sg))
-        return CB_E_NOMEM;
+    bool signed_ok = signing_key_for(c->secret_key, date, c->region, r->service, kk) &&
+                     hmac(kk, 32, sts->p, sts->len, sg);
+    OPENSSL_cleanse(kk, sizeof kk);
+    if (!signed_ok) return CB_E_NOMEM;
     hex_encode(sg, 32, sig, 65);
     return CB_OK;
 }

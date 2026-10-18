@@ -54,6 +54,9 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <openssl/crypto.h>
+#include <openssl/sha.h>
+
 // build/gen/console_html.c, from core/src/admin/console.html (tools/embed.c).
 extern const char cbase_console_html[];
 extern const unsigned long cbase_console_html_len;
@@ -65,11 +68,17 @@ extern const unsigned long cbase_console_html_len;
 
 // ---- the gate --------------------------------------------------------------------
 
+// Both sides are hashed to fixed 32-byte digests and the digests compared
+// with CRYPTO_memcmp, so neither the content nor the length of the token
+// shows in the time taken.
 static bool const_eq(const char *a, const char *b) {
-    size_t an = strlen(a), bn = strlen(b);
-    unsigned char d = (unsigned char)(an != bn);
-    for (size_t i = 0; i < an; i++) d |= (unsigned char)(a[i] ^ b[i < bn ? i : 0]);
-    return d == 0;
+    unsigned char da[SHA256_DIGEST_LENGTH], db[SHA256_DIGEST_LENGTH];
+    SHA256((const unsigned char *)a, strlen(a), da);
+    SHA256((const unsigned char *)b, strlen(b), db);
+    bool eq = CRYPTO_memcmp(da, db, sizeof da) == 0;
+    OPENSSL_cleanse(da, sizeof da);
+    OPENSSL_cleanse(db, sizeof db);
+    return eq;
 }
 
 // The console exists only when CBASE_ADMIN_TOKEN is set; otherwise every
