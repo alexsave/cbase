@@ -43,7 +43,11 @@ typedef struct {
     int64_t     window_ms;
 } cb_limit_rule;
 
-extern const cb_limit_rule cb_limit_rules[CB_LIMIT_KINDS];
+// Read anywhere; written only by the setter below, once, at boot.
+extern cb_limit_rule cb_limit_rules[CB_LIMIT_KINDS];
+// The one burst a deploy sets (config.h CBASE_ADMIN_FAIL_LIMIT): the wrong
+// console tokens an address may send in the rule's window. Set at boot.
+void cb_limit_set_admin_fail_burst(int burst);
 
 // Takes one from `key`'s bucket of `kind` at now_ms: true when allowed. When
 // refused, *retry_s (if given) is the whole seconds until one is back.

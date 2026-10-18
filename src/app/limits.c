@@ -11,7 +11,7 @@
 #define MIN_MS (60LL * 1000)
 
 // The numbers. A person using the app is far below each one; a script is not.
-const cb_limit_rule cb_limit_rules[CB_LIMIT_KINDS] = {
+cb_limit_rule cb_limit_rules[CB_LIMIT_KINDS] = {
     [CB_LIMIT_SIGNIN_IP]     = { "signin per address", 20, 5 * MIN_MS },
     [CB_LIMIT_SIGNIN_NAME]   = { "signin per account", 10, 5 * MIN_MS },
     [CB_LIMIT_SIGNUP_IP]     = { "signup per address", 5, 60 * MIN_MS },
@@ -50,6 +50,10 @@ static uint64_t hash_of(cb_limit_kind kind, const char *key) {
 }
 
 static bool take_or_peek(cb_limit_kind kind, const char *key, int64_t now_ms, int *retry_s, bool take);
+
+void cb_limit_set_admin_fail_burst(int burst) {
+    if (burst > 0) cb_limit_rules[CB_LIMIT_ADMIN_FAIL_IP].burst = burst;
+}
 
 bool cb_limit_take(cb_limit_kind kind, const char *key, int64_t now_ms, int *retry_s) {
     return take_or_peek(kind, key, now_ms, retry_s, true);

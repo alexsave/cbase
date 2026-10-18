@@ -1,6 +1,7 @@
 #include "boot.h"
 
 #include "app/bots.h"
+#include "app/limits.h"
 #include "auth/auth.h"
 #include "handler.h"
 #include "net/router.h"
@@ -85,6 +86,7 @@ int cb_boot(cb_ctx *ctx, char *err, size_t cap) {
     rc = ctx->mode == CB_MODE_LAMBDA ? cb_rt_apigw_new(ctx, &ctx->rt) : cb_rt_local_new(ctx, &ctx->rt);
     if ((rc = soft("realtime", rc, err, cap)) != CB_OK) return rc;
     ctx->kick_bots = ctx->mode == CB_MODE_LAMBDA ? cb_bots_kick_lambda : cb_bots_kick_local;
+    cb_limit_set_admin_fail_burst(cfg->admin_fail_limit);
 
     ctx->router = cb_router_new();
     if (!ctx->router) { snprintf(err, cap, "out of memory"); return CB_E_NOMEM; }
