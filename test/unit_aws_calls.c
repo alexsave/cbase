@@ -187,7 +187,7 @@ static const char CF_BODY[] =
 
 static void cloudfront_invalidation(void) {
     // The bytes, pure.
-    const char *paths[2];
+    const char *paths[CB_EDGE_MAX];
     T_EQ_INT(cb_edge_paths(CB_EDGE_ALL, paths), 2);
     T_EQ_STR(paths[0], "/v1/leaderboard");
     T_EQ_STR(paths[1], "/v1/bots");
