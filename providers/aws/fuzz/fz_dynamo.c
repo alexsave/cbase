@@ -7,8 +7,8 @@
 #include "fz.h"
 
 #include "aws_json.h"
+#include "store/rows_auth.h"
 #include "store/rows_foolish.h"
-#include "store/store.h"
 #include "../../../../shared/c/b64/b64.h"
 #include "util/json.h"
 #include "../../../../shared/c/num_parse.h"

@@ -125,14 +125,15 @@ static int f_needing_bots(cb_store *s, int64_t stale_before, int64_t active_afte
 
 static const cb_store_ops OPS_SQLITE = {
     .name = "sqlite", .close = f_close, .admin_collections = f_collections, .admin_browse = f_browse,
-    .admin_query = f_query, .game_get = f_game_get, .users_list = f_users_list, .bots_list = f_bots_list,
-    .games_needing_bots = f_needing_bots, .user_get = f_user_get,
+    .admin_query = f_query, .users_list = f_users_list, .user_get = f_user_get,
 };
 static const cb_store_ops OPS_DYNAMO = {
     .name = "dynamo", .close = f_close, .admin_collections = f_collections, .admin_browse = f_browse,
-    .admin_query = f_query, .game_get = f_game_get, .users_list = f_users_list, .bots_list = f_bots_list,
-    .games_needing_bots = f_needing_bots, .user_get = f_user_get,
+    .admin_query = f_query, .users_list = f_users_list, .user_get = f_user_get,
 };
+
+static const cb_rows_ops ROWS = { .game_get = f_game_get, .bots_list = f_bots_list, .games_needing_bots = f_needing_bots };
+static const cb_store_app APP = { .rows = &ROWS };
 
 cb_store *fake_admin_store_new(const char *name, fake_admin_record **rec) {
     cb_store *s = calloc(1, sizeof *s);
@@ -140,6 +141,7 @@ cb_store *fake_admin_store_new(const char *name, fake_admin_record **rec) {
     if (!s || !f) { free(s); free(f); return NULL; }
     s->ops = strcmp(name, "dynamo") == 0 ? &OPS_DYNAMO : &OPS_SQLITE;
     s->impl = f;
+    s->app = &APP;
     if (rec) *rec = &f->rec;
     return s;
 }

@@ -39,8 +39,8 @@
 #include "aws/https.h"
 #include "aws/runtime_api.h"
 #include "aws/ssm.h"
-#include "app/foolish_app.h"
 #include "boot.h"
+#include "cbase/app.h"
 #include "cbase/provider.h"
 #include "config.h"
 #include "ctx.h"
@@ -144,7 +144,7 @@ int main(void) {
     static cb_ctx ctx;
     ctx.cfg = &cfg;
     ctx.prov = &cb_provider_aws;
-    ctx.app = &cb_foolish_app;
+    ctx.app = cb_main_app;
     if (cb_boot(&ctx, err, sizeof err) != CB_OK) {
         CB_ERROR("lambda", "%s", err);
         cb_runtime_init_error(host, port, "Boot", err);

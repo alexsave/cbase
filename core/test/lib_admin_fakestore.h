@@ -3,7 +3,7 @@
 #ifndef CB_LIB_ADMIN_FAKESTORE_H
 #define CB_LIB_ADMIN_FAKESTORE_H
 
-#include "store/store.h"
+#include "store/rows_foolish.h"
 
 #include <stdbool.h>
 

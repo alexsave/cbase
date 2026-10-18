@@ -11,12 +11,10 @@
 #include "store/store.h"
 #include "store/store_priv.h"
 #include "store/rows_auth.h"
-#include "store/rows_foolish.h"
 
 #include "aws/aws_call.h"
 #include "aws/sigv4.h"
 #include "aws_json.h"
-#include "table.h"
 #include "util/clock.h"
 #include "../../../../../shared/c/hex/hex.h"
 #include "util/log.h"
@@ -663,7 +661,6 @@ static const cb_store_ops DYNAMO_OPS = {
     .item_keys = dy_item_keys,
     .admin_query = dy_admin_query,
     CB_ROWS_AUTH_OPS
-    CB_ROWS_FOOLISH_OPS
 };
 
 int cb_store_open_dynamo_with(const char *table, cb_dynamo_send_fn send, void *ud, cb_store **out) {
@@ -681,8 +678,7 @@ int cb_store_open_dynamo_with(const char *table, cb_dynamo_send_fn send, void *u
     d->ud = ud ? ud : d;
     d->mono = cb_mono_ms;
     d->sleep = cb_sleep_ms;
-    s->ops = &DYNAMO_OPS;
-    s->impl = d;
+    cb_store_init(s, &DYNAMO_OPS, d);
     *out = s;
     return CB_OK;
 }

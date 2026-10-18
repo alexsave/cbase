@@ -1,7 +1,9 @@
 // cbase/app.h - what a product hands the platform: ONE const struct, mostly
-// data (docs/PLATFORM.md section 2). A main names the app it serves
-// (ctx->app); boot runs its self-test and registers its routes after the
-// platform's own (/health, /admin, the provider's).
+// data (docs/PLATFORM.md section 2). The product is chosen at link time, as
+// the provider is: it defines cb_main_app, which each provider's main serves
+// (ctx->app) and every store opened in the process carries (cb_app store);
+// boot runs its self-test and registers its routes after the platform's own
+// (/health, /admin, the provider's).
 //
 // It grows stage by stage (docs/PLATFORM.md 8.6): jobs and schedules, topic
 // families, cached paths, collections and admin panels join it as the code
@@ -66,6 +68,11 @@ struct cb_app {
     // (app/edge.h): bit i of a mark is cached_paths[i]. At most CB_EDGE_MAX.
     const char *const   *cached_paths;
     int                  n_cached_paths;
+    // Its rows and its part of an account, on every store (store/store.h).
+    const struct cb_store_app *store;
 };
+
+// The app this binary serves: the product defines it, one per link.
+extern const cb_app *const cb_main_app;
 
 #endif

@@ -18,9 +18,7 @@
 #include "store/store.h"
 #include "store/store_priv.h"
 #include "store/rows_auth.h"
-#include "store/rows_foolish.h"
 
-#include "table.h"
 #include "util/bytea.h"
 #include "util/clock.h"
 #include "util/log.h"
@@ -197,36 +195,9 @@ out:
     return rc;
 }
 
-static bool any_bot(const cb_item *it, void *ud) {
-    *(bool *)ud = true;
-    return false;
-}
-
-// A database with no BOT# items gets the schema's bot_seed rows as them, as
-// a deploy's `cbase-import --seed-bots` gives DynamoDB its bots.
-static int seed_bots(cb_store *s) {
-    sq *q = Q(s);
-    bool have = false;
-    cb_iquery bq = { .index = 2, .pk = "BOTS", .forward = true, .page = 1 };
-    int rc = s->ops->item_query(s, &bq, any_bot, &have);
-    if (rc != CB_OK || have) return rc;
-    cb_bot_row rows[64];
-    int n = 0;
-    sqlite3_stmt *st;
-    if (sqlite3_prepare_v2(q->db, "SELECT id, nickname, strategy_key FROM bot_seed ORDER BY rowid", -1, &st, NULL) != SQLITE_OK)
-        return fail(q, "bot seed", 0);
-    while (n < 64 && sqlite3_step(st) == SQLITE_ROW) {
-        cb_bot_row *b = &rows[n++];
-        memset(b, 0, sizeof *b);
-        cb_strlcpy(b->id, (const char *)sqlite3_column_text(st, 0), sizeof b->id);
-        cb_strlcpy(b->nickname, (const char *)sqlite3_column_text(st, 1), sizeof b->nickname);
-        cb_strlcpy(b->strategy_key, (const char *)sqlite3_column_text(st, 2), sizeof b->strategy_key);
-        b->elo_rating = TABLE_RATING_START;
-        b->previous_elo = -1;
-    }
-    sqlite3_finalize(st);
-    return n ? cb_rows_bots_replace(s, rows, n) : CB_OK;
-}
+// SQLite seeds itself: the product's seed data, written at open into a
+// database that has none (store.h cb_store_app seed).
+static int seed(cb_store *s) { return s->app && s->app->seed ? s->app->seed(s) : CB_OK; }
 
 int cb_store_open_sqlite(const char *path, cb_store **out) {
     *out = NULL;
@@ -238,8 +209,7 @@ int cb_store_open_sqlite(const char *path, cb_store **out) {
         return CB_E_NOMEM;
     }
     pthread_mutex_init(&q->mu, NULL);
-    s->ops = &SQLITE_OPS;
-    s->impl = q;
+    cb_store_init(s, &SQLITE_OPS, q);
     int rc = sqlite3_open_v2(path, &q->db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, NULL);
     if (rc != SQLITE_OK) {
         CB_ERROR(MOD, "open %s: %s", path, q->db ? sqlite3_errmsg(q->db) : sqlite3_errstr(rc));
@@ -250,7 +220,7 @@ int cb_store_open_sqlite(const char *path, cb_store **out) {
     sqlite3_busy_timeout(q->db, 5000);
     // journal_mode answers a row; exec ignores it. ":memory:" stays "memory".
     if ((rc = exec(q, "PRAGMA journal_mode = WAL")) != CB_OK || (rc = exec(q, "PRAGMA synchronous = NORMAL")) != CB_OK ||
-        (rc = apply_schema(q)) != CB_OK || (rc = seed_bots(s)) != CB_OK) {
+        (rc = apply_schema(q)) != CB_OK || (rc = seed(s)) < 0) {
         sq_close(s);
         return rc;
     }
@@ -804,5 +774,4 @@ static const cb_store_ops SQLITE_OPS = {
     .admin_browse = sq_admin_browse,
     .admin_query = sq_admin_query,
     CB_ROWS_AUTH_OPS
-    CB_ROWS_FOOLISH_OPS
 };

@@ -13,7 +13,7 @@
 // of one call of each (cb_store_tally_take).
 #include "lib_store_backend.h"
 
-#include "store/store.h"
+#include "store/rows_foolish.h"
 #include "util/err.h"
 #include "util/uuid.h"
 
@@ -70,7 +70,7 @@ int main(void) {
         cb_game_row g = { .state = state, .state_len = sizeof state, .roster = roster, .roster_len = sizeof roster,
                           .created_at = 10 + k, .updated_at = 10 + k, .last_commit_at = 10 + k };
         snprintf(g.id, sizeof g.id, "%s", gid);
-        if (CB_STORE_CALL(s, game_create, &g, a.id) != CB_OK) return 1;
+        if (CB_ROWS_CALL(s, game_create, &g, a.id) != CB_OK) return 1;
     }
     // The measured game: bn0000 with both humans and the bot seated.
     cb_game_row row = { .state = state, .state_len = sizeof state, .roster = roster, .roster_len = sizeof roster,
@@ -81,7 +81,7 @@ int main(void) {
     memcpy(c.humans[0], a.id, sizeof(cb_uuid));
     memcpy(c.humans[1], b.id, sizeof(cb_uuid));
     snprintf(c.bots[0], sizeof c.bots[0], "%s", bot);
-    if (CB_STORE_CALL(s, game_commit, &c) != CB_OK) return 1;
+    if (CB_ROWS_CALL(s, game_commit, &c) != CB_OK) return 1;
 
     static double ms[RUNS];
     cb_store_tally one;
@@ -89,7 +89,7 @@ int main(void) {
 
     for (int i = 0; i < WARM + RUNS; i++) {
         double t0 = now_ms();
-        if (CB_STORE_CALL(s, game_get, "bn0000", &got) != CB_OK) return 1;
+        if (CB_ROWS_CALL(s, game_get, "bn0000", &got) != CB_OK) return 1;
         if (i >= WARM) ms[i - WARM] = now_ms() - t0;
         cb_game_row_free(&got);
         cb_store_tally_take(&one);
@@ -101,7 +101,7 @@ int main(void) {
         row.version++;
         row.updated_at++;
         double t0 = now_ms();
-        if (CB_STORE_CALL(s, game_commit, &c) != CB_OK) return 1;
+        if (CB_ROWS_CALL(s, game_commit, &c) != CB_OK) return 1;
         if (i >= WARM) ms[i - WARM] = now_ms() - t0;
         cb_store_tally_take(&one);
     }
@@ -110,7 +110,7 @@ int main(void) {
     for (int i = 0; i < WARM + RUNS; i++) {
         int n = 0;
         double t0 = now_ms();
-        if (CB_STORE_CALL(s, games_of_user, a.id, 0, count_member, &n) != 20) return 1;
+        if (CB_ROWS_CALL(s, games_of_user, a.id, 0, count_member, &n) != 20) return 1;
         if (i >= WARM) ms[i - WARM] = now_ms() - t0;
         cb_store_tally_take(&one);
     }

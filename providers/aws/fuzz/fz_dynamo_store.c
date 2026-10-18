@@ -11,7 +11,7 @@
 // answers they consume in order: [status pick][u16 length][body].
 #include "fz.h"
 
-#include "store/store.h"
+#include "store/rows_foolish.h"
 #include "store/store_priv.h"
 #include "util/log.h"
 
@@ -73,20 +73,20 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         switch (op) {
         case 0: (void)CB_STORE_CALL(s, user_get, U1, &u); break;
         case 1: (void)CB_STORE_CALL(s, user_by_email, "a@b.io", &u); break;
-        case 2: if (CB_STORE_CALL(s, game_get, GID, &g) == 0) FZ_CHECK(!g.state_len || g.state); cb_game_row_free(&g); break;
-        case 3: (void)CB_STORE_CALL(s, games_of_user, U1, 20, on_member, NULL); break;
-        case 4: { const char *ids[2] = { GID, "ff00ee" }; (void)CB_STORE_CALL(s, games_get_views, ids, 2, on_game, NULL); break; }
-        case 5: (void)CB_STORE_CALL(s, is_member, GID, U1); break;
-        case 6: (void)CB_STORE_CALL(s, games_needing_bots, 0, 0, 10, on_name, NULL); break;
-        case 7: (void)CB_STORE_CALL(s, lease_acquire, GID, 1000, 25000, tok); break;
-        case 8: (void)CB_STORE_CALL(s, bots_list, on_bot, NULL); break;
-        case 9: (void)CB_STORE_CALL(s, ratings_top, 20, on_rating, NULL); break;
-        case 10: { const char *ids[2] = { U1, U2 }; int32_t out[2]; (void)CB_STORE_CALL(s, ratings_for, ids, 2, out); break; }
-        case 11: { cb_snapshot_query q = { U1, NULL, NULL, 10, true }; (void)CB_STORE_CALL(s, snapshots_query, &q, on_snap, NULL); break; }
-        case 12: (void)CB_STORE_CALL(s, chat_list, GID, 50, on_chat, NULL); break;
+        case 2: if (CB_ROWS_CALL(s, game_get, GID, &g) == 0) FZ_CHECK(!g.state_len || g.state); cb_game_row_free(&g); break;
+        case 3: (void)CB_ROWS_CALL(s, games_of_user, U1, 20, on_member, NULL); break;
+        case 4: { const char *ids[2] = { GID, "ff00ee" }; (void)CB_ROWS_CALL(s, games_get_views, ids, 2, on_game, NULL); break; }
+        case 5: (void)CB_ROWS_CALL(s, is_member, GID, U1); break;
+        case 6: (void)CB_ROWS_CALL(s, games_needing_bots, 0, 0, 10, on_name, NULL); break;
+        case 7: (void)CB_ROWS_CALL(s, lease_acquire, GID, 1000, 25000, tok); break;
+        case 8: (void)CB_ROWS_CALL(s, bots_list, on_bot, NULL); break;
+        case 9: (void)CB_ROWS_CALL(s, ratings_top, 20, on_rating, NULL); break;
+        case 10: { const char *ids[2] = { U1, U2 }; int32_t out[2]; (void)CB_ROWS_CALL(s, ratings_for, ids, 2, out); break; }
+        case 11: { cb_snapshot_query q = { U1, NULL, NULL, 10, true }; (void)CB_ROWS_CALL(s, snapshots_query, &q, on_snap, NULL); break; }
+        case 12: (void)CB_ROWS_CALL(s, chat_list, GID, 50, on_chat, NULL); break;
         // The chat's members (the realtime publish's targets: one per member's own topic).
-        case 13: (void)CB_STORE_CALL(s, game_members, GID, on_name, NULL); break;
-        case 14: (void)CB_STORE_CALL(s, is_member, GID, U2); break;
+        case 13: (void)CB_ROWS_CALL(s, game_members, GID, on_name, NULL); break;
+        case 14: (void)CB_ROWS_CALL(s, is_member, GID, U2); break;
         case 15: (void)CB_STORE_CALL(s, refresh_take, "00", 1000, 60000, &rr); break;
         case 16: (void)CB_STORE_CALL(s, users_list, "", 0, 10, on_user, NULL); break;
         case 17: (void)CB_STORE_CALL(s, admin_collections, on_name, NULL); break;
@@ -105,10 +105,10 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
             c.n_rated = fz_u8(&prog) & 1;
             snprintf(c.rated_ids[0], sizeof c.rated_ids[0], U1);
             c.rating_delta[0] = 12;
-            (void)CB_STORE_CALL(s, game_commit, &c);
+            (void)CB_ROWS_CALL(s, game_commit, &c);
             break;
         }
-        case 20: (void)CB_STORE_CALL(s, game_delete, GID, 3); break;
+        case 20: (void)CB_ROWS_CALL(s, game_delete, GID, 3); break;
         case 21: (void)CB_STORE_CALL(s, admin_query, "SELECT * FROM cbase", false, on_row, NULL); break;
         // The readers the security fixes added (H1's sign-in failures, M1's sessions).
         case 22: { cb_session_row se; (void)CB_STORE_CALL(s, session_get, "s1", 1000, &se); break; }

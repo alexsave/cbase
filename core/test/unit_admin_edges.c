@@ -9,7 +9,7 @@
 #include "admin/admin.h"
 #include "handler.h"
 #include "net/router.h"
-#include "store/store.h"
+#include "store/rows_foolish.h"
 #include "util/err.h"
 #include "util/json.h"
 #include "util/log.h"
@@ -65,12 +65,15 @@ static int f_game_get(cb_store *s, const char *id, cb_game_row *out) {
 static int f_needing(cb_store *s, int64_t a, int64_t b, int l, cb_name_fn fn, void *ud) { return g_rc; }
 
 static const cb_store_ops OPS = {
-    .name = "sqlite", .users_list = f_users_list, .user_get = f_user_get, .games_of_user = f_games_of_user,
-    .bots_list = f_bots_list, .admin_collections = f_collections, .admin_browse = f_browse, .admin_query = f_query,
-    .game_get = f_game_get, .games_needing_bots = f_needing,
+    .name = "sqlite", .users_list = f_users_list, .user_get = f_user_get, .admin_collections = f_collections,
+    .admin_browse = f_browse, .admin_query = f_query,
 };
+static const cb_rows_ops ROWS = {
+    .games_of_user = f_games_of_user, .bots_list = f_bots_list, .game_get = f_game_get, .games_needing_bots = f_needing,
+};
+static const cb_store_app APP = { .rows = &ROWS };
 static const cb_store_ops OPS_DYNAMO = { .name = "dynamo", .admin_query = f_query };
-static cb_store g_store = { .ops = &OPS };
+static cb_store g_store = { .ops = &OPS, .app = &APP };
 static cb_store g_store_dy = { .ops = &OPS_DYNAMO };
 
 static void setup(cb_store *store, const cb_provider *mode, const char *db_path) {

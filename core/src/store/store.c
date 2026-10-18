@@ -1,8 +1,9 @@
-// What both backends share: freeing rows, closing, and the list orders.
+// What every backend shares: opening with the product's rows, closing, the
+// busy mark, the side read, and the admin console's collections.
 #include "store.h"
 #include "store_priv.h"
 
-#include "bot_roster.h"
+#include "cbase/app.h"
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -15,24 +16,10 @@ int cb_store_open_named(const char *store, const char *fallback, const char *db_
     return name && strcmp(name, "dynamo") == 0 ? cb_store_open_dynamo(table, out) : cb_store_open_sqlite(db_path, out);
 }
 
-void cb_game_row_free(cb_game_row *g) {
-    free(g->state);
-    free(g->roster);
-    free(g->logs);
-    g->state = g->roster = g->logs = NULL;
-    g->state_len = g->roster_len = g->logs_len = 0;
-}
-
-void cb_snapshot_row_free(cb_snapshot_row *s) {
-    free(s->moves);
-    free(s->extras);
-    s->moves = s->extras = NULL;
-    s->moves_len = s->extras_len = 0;
-}
-
-void cb_chat_row_free(cb_chat_row *c) {
-    free(c->message);
-    c->message = NULL;
+void cb_store_init(cb_store *s, const cb_store_ops *ops, void *impl) {
+    s->ops = ops;
+    s->impl = impl;
+    s->app = cb_main_app ? cb_main_app->store : NULL;
 }
 
 // ---- busy: a throttle given up on (store.h CB_STORE_CALL) ----------------------
@@ -50,25 +37,6 @@ int cb_store_end_(int rc) {
 }
 
 void cb_store_mark_busy(void) { t_busy = true; }
-
-int cb_store_games_get_each(cb_store *s, const char *const *ids, int n, cb_game_fn fn, void *ud) {
-    int count = 0;
-    for (int i = 0; i < n; i++) {
-        cb_game_row row;
-        memset(&row, 0, sizeof row);
-        int rc = s->ops->game_get(s, ids[i], &row);
-        if (rc == CB_E_NOT_FOUND) continue;
-        if (rc != CB_OK) return rc;
-        free(row.logs);
-        row.logs = NULL;
-        row.logs_len = 0;
-        count++;
-        bool more = fn(&row, ud);
-        cb_game_row_free(&row);
-        if (!more) break;
-    }
-    return count;
-}
 
 static void *side_main(void *p) {
     cb_store_side *s = p;
@@ -94,37 +62,7 @@ void cb_store_close(cb_store *s) {
     if (s && s->ops->close) s->ops->close(s);
 }
 
-// ---- the orders both backends promise (store_priv.h) ---------------------------
-
-static int bot_tier(const char *key) {
-    int idx = bot_roster_find(key);
-    const BotRosterEntry *e = idx >= 0 ? bot_roster_at(idx) : NULL;
-    return e && e->tier ? e->tier : 1000;
-}
-
-int cb_store_bot_ladder_cmp(const cb_bot_row *a, const cb_bot_row *b) {
-    int ta = bot_tier(a->strategy_key), tb = bot_tier(b->strategy_key);
-    if (ta != tb) return ta < tb ? -1 : 1;
-    // "%Miami 7" before "%Miami 10": a shorter name of the same family sorts first.
-    size_t la = strlen(a->nickname), lb = strlen(b->nickname);
-    if (la != lb) return la < lb ? -1 : 1;
-    int c = strcmp(a->nickname, b->nickname);
-    return c ? c : strcmp(a->id, b->id);
-}
-
-static int bot_qcmp(const void *a, const void *b) { return cb_store_bot_ladder_cmp(a, b); }
-void cb_store_bots_sort(cb_bot_row *rows, int n) {
-    if (n > 1) qsort(rows, (size_t)n, sizeof *rows, bot_qcmp);
-}
-
-static int rating_qcmp(const void *pa, const void *pb) {
-    const cb_rating_row *a = pa, *b = pb;
-    if (a->elo_rating != b->elo_rating) return a->elo_rating > b->elo_rating ? -1 : 1;
-    return strcmp(a->user_id, b->user_id);
-}
-void cb_store_ratings_sort(cb_rating_row *rows, int n) {
-    if (n > 1) qsort(rows, (size_t)n, sizeof *rows, rating_qcmp);
-}
+// ---- users_list's search (store_priv.h) -------------------------------------------
 
 static bool contains_nocase(const char *hay, const char *needle) {
     size_t n = strlen(needle);

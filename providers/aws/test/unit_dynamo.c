@@ -170,7 +170,7 @@ static void flow_cas_lost(void) {
     uint8_t st[1] = { 1 };
     cb_game_row g;
     cb_game_commit c = mkcommit(&g, st);
-    T_EQ_INT(CB_STORE_CALL(s, game_commit, &c), CB_E_CONFLICT);
+    T_EQ_INT(CB_ROWS_CALL(s, game_commit, &c), CB_E_CONFLICT);
     T_EQ_INT(sc_.at, 2);
     cb_store_close(s);
 }
@@ -184,7 +184,7 @@ static void flow_commit_game_gone(void) {
     uint8_t st[1] = { 1 };
     cb_game_row g;
     cb_game_commit c = mkcommit(&g, st);
-    T_EQ_INT(CB_STORE_CALL(s, game_commit, &c), CB_E_NOT_FOUND);
+    T_EQ_INT(CB_ROWS_CALL(s, game_commit, &c), CB_E_NOT_FOUND);
     cb_store_close(s);
 }
 
@@ -215,7 +215,7 @@ static void flow_rating_moved(void) {
     snprintf(c.rated_ids[0], sizeof(cb_uuid), B1);
     c.rated_is_bot[0] = true;
     c.rating_delta[0] = 5;
-    T_EQ_INT(CB_STORE_CALL(s, game_commit, &c), CB_OK);
+    T_EQ_INT(CB_ROWS_CALL(s, game_commit, &c), CB_OK);
     T_EQ_INT(sc_.at, 6);
     // The seat query told the stored bot from a human: its seat is not put again.
     T_CHECK(strstr(sc_.bodies[5], "\"sk\":{\"S\":\"BOT#" B1 "\"}") == NULL);
@@ -237,7 +237,7 @@ static void flow_commit_drops_missing_account(void) {
     c.n_humans = 2;
     snprintf(c.humans[0], sizeof(cb_uuid), U1);
     snprintf(c.humans[1], sizeof(cb_uuid), U2);
-    T_EQ_INT(CB_STORE_CALL(s, game_commit, &c), CB_OK);
+    T_EQ_INT(CB_ROWS_CALL(s, game_commit, &c), CB_OK);
     T_CHECK(strstr(sc_.bodies[2], "MEMBER#" U2) == NULL);
     cb_store_close(s);
 }
@@ -264,7 +264,7 @@ static void flow_commit_seats_given(void) {
     snprintf(c.prev_humans[1], sizeof(cb_uuid), U3);
     c.n_prev_bots = 1;
     snprintf(c.prev_bots[0], sizeof(cb_uuid), B1);
-    T_EQ_INT(CB_STORE_CALL(s, game_commit, &c), CB_OK);
+    T_EQ_INT(CB_ROWS_CALL(s, game_commit, &c), CB_OK);
     T_EQ_INT(sc_.at, 2);
     const char *tx = sc_.bodies[1];
     T_CHECK(strstr(tx, "\"sk\":{\"S\":\"MEMBER#" U1 "\"}") == NULL);
@@ -289,7 +289,7 @@ static void flow_commit_seats_read(void) {
     snprintf(c.humans[0], sizeof(cb_uuid), U1);
     c.n_prev_humans = 1;   // given, but not vouched for: not used
     snprintf(c.prev_humans[0], sizeof(cb_uuid), U3);
-    T_EQ_INT(CB_STORE_CALL(s, game_commit, &c), CB_OK);
+    T_EQ_INT(CB_ROWS_CALL(s, game_commit, &c), CB_OK);
     T_EQ_INT(sc_.at, 2);
     T_CHECK(strstr(sc_.bodies[1], "MEMBER#" U3) == NULL);
     T_CHECK(strstr(sc_.bodies[1], "MEMBER#" U1) == NULL);   // stored and kept: not written
@@ -318,7 +318,7 @@ static void flow_commit_lone(void) {
     cb_game_commit c = mklone(&g, st);
     cb_store_tally t;
     cb_store_tally_take(&t);
-    T_EQ_INT(CB_STORE_CALL(s, game_commit, &c), CB_OK);
+    T_EQ_INT(CB_ROWS_CALL(s, game_commit, &c), CB_OK);
     T_EQ_INT(sc_.at, 1);
     cb_store_tally_take(&t);
     T_EQ_STR(t.detail, "UpdateItem 1");
@@ -337,7 +337,7 @@ static void flow_commit_lone_cas_lost(void) {
     uint8_t st[1] = { 1 };
     cb_game_row g;
     cb_game_commit c = mklone(&g, st);
-    T_EQ_INT(CB_STORE_CALL(s, game_commit, &c), CB_E_CONFLICT);
+    T_EQ_INT(CB_ROWS_CALL(s, game_commit, &c), CB_E_CONFLICT);
     T_EQ_INT(sc_.at, 1);
     cb_store_close(s);
 }
@@ -352,7 +352,7 @@ static void flow_commit_lone_game_gone(void) {
     uint8_t st[1] = { 1 };
     cb_game_row g;
     cb_game_commit c = mklone(&g, st);
-    T_EQ_INT(CB_STORE_CALL(s, game_commit, &c), CB_E_NOT_FOUND);
+    T_EQ_INT(CB_ROWS_CALL(s, game_commit, &c), CB_E_NOT_FOUND);
     T_EQ_INT(sc_.at, 1);
     cb_store_close(s);
 }
@@ -374,9 +374,9 @@ static void flow_commit_lone_retried(void) {
     uint8_t st[1] = { 1 };
     cb_game_row g;
     cb_game_commit c = mklone(&g, st);
-    T_EQ_INT(CB_STORE_CALL(s, game_commit, &c), CB_OK);
+    T_EQ_INT(CB_ROWS_CALL(s, game_commit, &c), CB_OK);
     T_EQ_INT(sc_.at, 2);
-    T_EQ_INT(CB_STORE_CALL(s, game_commit, &c), CB_E_DB);
+    T_EQ_INT(CB_ROWS_CALL(s, game_commit, &c), CB_E_DB);
     T_EQ_INT(sc_.at, 3);
     cb_store_close(s);
 }
@@ -391,7 +391,7 @@ static void flow_commit_after_bot_work(void) {
     cb_game_row g;
     cb_game_commit c = mklone(&g, st);
     c.prev_needs_bots = true;
-    T_EQ_INT(CB_STORE_CALL(s, game_commit, &c), CB_OK);
+    T_EQ_INT(CB_ROWS_CALL(s, game_commit, &c), CB_OK);
     T_EQ_INT(sc_.at, 1);
     cb_store_close(s);
 }
@@ -406,12 +406,12 @@ static void flow_lease(void) {
     };
     RUN(steps, s);
     cb_uuid tok;
-    T_EQ_INT(CB_STORE_CALL(s, lease_acquire, "ab12cd", 5000, 25000, tok), CB_E_CONFLICT);
-    T_EQ_INT(CB_STORE_CALL(s, lease_acquire, "nogame", 5000, 25000, tok), CB_E_NOT_FOUND);
-    T_EQ_INT(CB_STORE_CALL(s, lease_acquire, "ab12cd", 5000, 25000, tok), CB_OK);
+    T_EQ_INT(CB_ROWS_CALL(s, lease_acquire, "ab12cd", 5000, 25000, tok), CB_E_CONFLICT);
+    T_EQ_INT(CB_ROWS_CALL(s, lease_acquire, "nogame", 5000, 25000, tok), CB_E_NOT_FOUND);
+    T_EQ_INT(CB_ROWS_CALL(s, lease_acquire, "ab12cd", 5000, 25000, tok), CB_OK);
     T_CHECK(strstr(sc_.bodies[2], tok) != NULL);   // the token returned is the one written
-    T_EQ_INT(CB_STORE_CALL(s, lease_renew, "ab12cd", "00000000-0000-4000-8000-000000000000", 6000, 25000), CB_E_CONFLICT);
-    T_EQ_INT(CB_STORE_CALL(s, lease_release, "ab12cd", "00000000-0000-4000-8000-000000000000"), CB_OK);
+    T_EQ_INT(CB_ROWS_CALL(s, lease_renew, "ab12cd", "00000000-0000-4000-8000-000000000000", 6000, 25000), CB_E_CONFLICT);
+    T_EQ_INT(CB_ROWS_CALL(s, lease_release, "ab12cd", "00000000-0000-4000-8000-000000000000"), CB_OK);
     T_EQ_INT(sc_.at, 5);
     cb_store_close(s);
 }
@@ -431,12 +431,12 @@ static void flow_throttle_retry(void) {
     };
     RUN(steps, s);
     cb_game_row g = { 0 };
-    T_EQ_INT(CB_STORE_CALL(s, game_get, "ab12cd", &g), CB_OK);
+    T_EQ_INT(CB_ROWS_CALL(s, game_get, "ab12cd", &g), CB_OK);
     T_EQ_INT(g.version, 3);
     T_EQ_INT(g.state_len, 1);
     cb_game_row_free(&g);
-    T_EQ_INT(CB_STORE_CALL(s, game_get, "ab12cd", &g), CB_E_NOT_FOUND);
-    T_EQ_INT(CB_STORE_CALL(s, game_get, "ab12cd", &g), CB_E_DB);   // not retried
+    T_EQ_INT(CB_ROWS_CALL(s, game_get, "ab12cd", &g), CB_E_NOT_FOUND);
+    T_EQ_INT(CB_ROWS_CALL(s, game_get, "ab12cd", &g), CB_E_DB);   // not retried
     T_EQ_INT(sc_.at, 5);
     cb_store_close(s);
 }
@@ -488,7 +488,7 @@ static void flow_throttled_then_answered(void) {
     cb_store_throttles t0;
     cb_store_throttles_get(&t0);
     cb_game_row g = { 0 };
-    T_EQ_INT(CB_STORE_CALL(s, game_get, "ab12cd", &g), CB_E_NOT_FOUND);
+    T_EQ_INT(CB_ROWS_CALL(s, game_get, "ab12cd", &g), CB_E_NOT_FOUND);
     T_EQ_INT(sc_.at, 3);
     T_EQ_INT(throttled_since(&t0), 2);
     T_EQ_INT(gave_up_since(&t0), 0);
@@ -508,7 +508,7 @@ static void flow_throttled_past_the_deadline(void) {
     cb_store_set_deadline(cb_now_ms() + 200);
     int64_t t = cb_mono_ms();
     cb_game_row g = { 0 };
-    T_EQ_INT(CB_STORE_CALL(s, game_get, "ab12cd", &g), CB_E_BUSY);
+    T_EQ_INT(CB_ROWS_CALL(s, game_get, "ab12cd", &g), CB_E_BUSY);
     T_CHECK(cb_mono_ms() - t < 200);
     cb_store_set_deadline(0);
     T_EQ_INT(sc_.at, 1);
@@ -535,7 +535,7 @@ static void flow_throttled_to_the_wall(void) {
     cb_store_throttles_get(&t0);
     int64_t t = cb_mono_ms();
     cb_game_row g = { 0 };
-    T_EQ_INT(CB_STORE_CALL(s, game_get, "ab12cd", &g), CB_E_BUSY);
+    T_EQ_INT(CB_ROWS_CALL(s, game_get, "ab12cd", &g), CB_E_BUSY);
     int64_t took = cb_mono_ms() - t;
     T_CHECK(took <= CB_STORE_RETRY_WALL_MS + 500);
     T_CHECK(sc_.at >= 2 && sc_.at < 16);   // sent again, and stopped
@@ -578,7 +578,7 @@ static void flow_batch_unprocessed(void) {
     cb_store_throttles_get(&t0);
     const char *ids[1] = { B1 };
     int32_t elo[1] = { 0 };
-    T_EQ_INT(CB_STORE_CALL(s, ratings_for, ids, 1, elo), CB_OK);
+    T_EQ_INT(CB_ROWS_CALL(s, ratings_for, ids, 1, elo), CB_OK);
     T_EQ_INT(elo[0], 1234);
     T_EQ_INT(throttled_since(&t0), 1);
     cb_store_close(s);
@@ -650,7 +650,7 @@ static void flow_games_batched(void) {
     cb_store_throttles t0;
     cb_store_throttles_get(&t0);
     rows_seen seen = { 0 };
-    T_EQ_INT(CB_STORE_CALL(s, games_get_views, ids, GB_N, seen_row, &seen), GB_N - 1);
+    T_EQ_INT(CB_ROWS_CALL(s, games_get_views, ids, GB_N, seen_row, &seen), GB_N - 1);
     // 100 keys, then the two left unprocessed alone, then the last 30.
     T_EQ_INT(g.calls, 3);
     T_EQ_INT(g.keys[0], 100);
@@ -765,7 +765,7 @@ static void flow_scan_pages(void) {
     RUN(steps, s);
     ids_t got = { 0 };
     // stale_before 90000 (edge01 is exactly there: not yet), active_after 20000 (aband1 exactly: abandoned)
-    T_EQ_INT(CB_STORE_CALL(s, games_needing_bots, 90000, 20000, 100, collect_id, &got), 2);
+    T_EQ_INT(CB_ROWS_CALL(s, games_needing_bots, 90000, 20000, 100, collect_id, &got), 2);
     T_EQ_STR(got.ids[0], "due002");
     T_EQ_STR(got.ids[1], "due001");
     cb_store_close(s);
@@ -780,7 +780,7 @@ static void flow_scan_empty(void) {
     };
     RUN(steps, s);
     ids_t got = { 0 };
-    T_EQ_INT(CB_STORE_CALL(s, games_needing_bots, 90000, 20000, 100, collect_id, &got), 0);
+    T_EQ_INT(CB_ROWS_CALL(s, games_needing_bots, 90000, 20000, 100, collect_id, &got), 0);
     cb_store_close(s);
 }
 
@@ -844,7 +844,7 @@ static void flow_chat_order(void) {
     };
     RUN(steps, s);
     msgs_t m = { 0 };
-    T_EQ_INT(CB_STORE_CALL(s, chat_list, "ab12cd", 2, collect_msg, &m), 2);
+    T_EQ_INT(CB_ROWS_CALL(s, chat_list, "ab12cd", 2, collect_msg, &m), 2);
     T_EQ_STR(m.msg[0], "two");
     T_EQ_STR(m.msg[1], "three");
     T_EQ_INT(sc_.at, 1);   // the limit was met: no second page
@@ -882,7 +882,7 @@ static void flow_snapshot_set_extras(void) {
     };
     RUN(steps, s);
     const uint8_t ex[] = { 2, 1, 'X', 0 };
-    T_EQ_INT(CB_STORE_CALL(s, snapshot_set_extras, U2, ex, sizeof ex), CB_OK);
+    T_EQ_INT(CB_ROWS_CALL(s, snapshot_set_extras, U2, ex, sizeof ex), CB_OK);
     T_CHECK(strstr(sc_.bodies[0], "\"ConsistentRead\":true") != NULL);
     const char *main_upd =
         "{\"Update\":{\"TableName\":\"cbase\",\"Key\":{\"pk\":{\"S\":\"SNAP#" U2 "\"},\"sk\":{\"S\":\"SNAP\"}},"
@@ -890,11 +890,11 @@ static void flow_snapshot_set_extras(void) {
         "\"ExpressionAttributeNames\":{\"#extras\":\"extras\"},\"ExpressionAttributeValues\":{\":extras\":{\"B\":\"AgFYAA==\"}}}}";
     T_CHECK(strstr(sc_.bodies[1], main_upd) != NULL);
     T_CHECK(strstr(sc_.bodies[1], "\"sk\":{\"S\":\"PLAYER#" U1 "\"}") != NULL);
-    T_EQ_INT(CB_STORE_CALL(s, snapshot_set_extras, U2, ex, sizeof ex), CB_OK);   // a pointer: the replay alone
+    T_EQ_INT(CB_ROWS_CALL(s, snapshot_set_extras, U2, ex, sizeof ex), CB_OK);   // a pointer: the replay alone
     T_CHECK(strstr(sc_.bodies[3], "PLAYER#") == NULL);
-    T_EQ_INT(CB_STORE_CALL(s, snapshot_set_extras, U2, ex, sizeof ex), CB_E_NOT_FOUND);
-    T_EQ_INT(CB_STORE_CALL(s, snapshot_set_extras, U2, ex, sizeof ex), CB_E_NOT_FOUND);
-    T_EQ_INT(CB_STORE_CALL(s, snapshot_set_extras, U2, NULL, 0), CB_OK);
+    T_EQ_INT(CB_ROWS_CALL(s, snapshot_set_extras, U2, ex, sizeof ex), CB_E_NOT_FOUND);
+    T_EQ_INT(CB_ROWS_CALL(s, snapshot_set_extras, U2, ex, sizeof ex), CB_E_NOT_FOUND);
+    T_EQ_INT(CB_ROWS_CALL(s, snapshot_set_extras, U2, NULL, 0), CB_OK);
     T_EQ_INT(sc_.at, 10);
     cb_store_close(s);
 }
@@ -1085,7 +1085,7 @@ static void flow_bulk_throttle_waited_out(void) {
     cb_store_throttles t0;
     cb_store_throttles_get(&t0);
     cb_game_row g = { 0 };
-    T_EQ_INT(CB_STORE_CALL(s, game_get, "ab12cd", &g), CB_E_NOT_FOUND);
+    T_EQ_INT(CB_ROWS_CALL(s, game_get, "ab12cd", &g), CB_E_NOT_FOUND);
     T_EQ_INT(sc_.at, 18);
     T_EQ_INT(throttled_since(&t0), 16);
     T_EQ_INT(gave_up_since(&t0), 0);
@@ -1107,7 +1107,7 @@ static void flow_bulk_errors_bounded(void) {
     cb_store_dynamo_clock(s, fk_mono, fk_sleep);
     T_EQ_INT(cb_store_dynamo_bulk(s), CB_OK);
     cb_game_row g = { 0 };
-    T_EQ_INT(CB_STORE_CALL(s, game_get, "ab12cd", &g), CB_E_DB);
+    T_EQ_INT(CB_ROWS_CALL(s, game_get, "ab12cd", &g), CB_E_DB);
     T_EQ_INT(sc_.at, 11);   // DescribeTable and ten sends
     cb_store_close(s);
 }
@@ -1131,20 +1131,20 @@ static void flow_bulk_paced(void) {
     cb_store_dynamo_clock(s, fk_mono, fk_sleep);
     T_EQ_INT(cb_store_dynamo_bulk(s), CB_OK);
     cb_rating_row rt = { .user_id = U1, .username = "A", .elo_rating = 1000, .previous_elo = -1 };
-    T_EQ_INT(CB_STORE_CALL(s, rating_import, &rt), CB_OK);
+    T_EQ_INT(CB_ROWS_CALL(s, rating_import, &rt), CB_OK);
     T_EQ_INT(fk_n, 0);   // the first write: the bucket held a second's worth
     cb_game_row g = { 0 };
-    T_EQ_INT(CB_STORE_CALL(s, game_get, "ab12cd", &g), CB_E_NOT_FOUND);
+    T_EQ_INT(CB_ROWS_CALL(s, game_get, "ab12cd", &g), CB_E_NOT_FOUND);
     T_EQ_INT(fk_n, 0);   // a read: its own bucket
-    T_EQ_INT(CB_STORE_CALL(s, rating_import, &rt), CB_OK);
+    T_EQ_INT(CB_ROWS_CALL(s, rating_import, &rt), CB_OK);
     T_EQ_INT(fk_n, 1);
     T_CHECK(fk_slept[0] >= 600 && fk_slept[0] <= 601);
     // Ten idle seconds refill only one second's worth (5), not 50: the next
     // write goes at once and leaves the bucket 3 in debt again.
     fk_now += 10000;
-    T_EQ_INT(CB_STORE_CALL(s, rating_import, &rt), CB_OK);
+    T_EQ_INT(CB_ROWS_CALL(s, rating_import, &rt), CB_OK);
     T_EQ_INT(fk_n, 1);
-    T_EQ_INT(CB_STORE_CALL(s, rating_import, &rt), CB_OK);
+    T_EQ_INT(CB_ROWS_CALL(s, rating_import, &rt), CB_OK);
     T_EQ_INT(fk_n, 2);
     T_CHECK(fk_slept[1] >= 600 && fk_slept[1] <= 601);
     T_EQ_INT(sc_.at, 6);
@@ -1160,8 +1160,8 @@ static void flow_bulk_paced(void) {
     fk_reset();
     cb_store_dynamo_clock(s, fk_mono, fk_sleep);
     T_EQ_INT(cb_store_dynamo_bulk(s), CB_OK);
-    T_EQ_INT(CB_STORE_CALL(s, rating_import, &rt), CB_OK);
-    T_EQ_INT(CB_STORE_CALL(s, rating_import, &rt), CB_OK);
+    T_EQ_INT(CB_ROWS_CALL(s, rating_import, &rt), CB_OK);
+    T_EQ_INT(CB_ROWS_CALL(s, rating_import, &rt), CB_OK);
     T_EQ_INT(fk_n, 0);
     cb_store_close(s);
 }

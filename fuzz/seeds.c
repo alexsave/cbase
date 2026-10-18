@@ -15,7 +15,7 @@
 #include "aws_json.h"
 #include "store/store_priv.h"
 #include "net/ws.h"
-#include "store/store.h"
+#include "store/rows_foolish.h"
 #include "../../shared/c/b64/b64.h"
 
 #include "../../shared/c/mqtt/mqtt.h"
@@ -283,7 +283,7 @@ static void dynamo_items(void) {
     static uint8_t logs[4] = { 1, 2, 3, 4 };
     g.logs = logs; g.logs_len = 4;
     g.has_seed = true; g.version = 3; g.needs_bots = true; g.created_at = 1; g.updated_at = 2;
-    (void)CB_STORE_CALL(st, game_create, &g, U1);
+    (void)CB_ROWS_CALL(st, game_create, &g, U1);
     cb_snapshot_row sn;
     memset(&sn, 0, sizeof sn);
     snprintf(sn.id, sizeof sn.id, U2);
@@ -292,27 +292,27 @@ static void dynamo_items(void) {
     snprintf(sn.player_ids[0], sizeof sn.player_ids[0], U1);
     snprintf(sn.player_ids[1], sizeof sn.player_ids[1], U2);
     sn.moves = logs; sn.moves_len = 4;
-    (void)CB_STORE_CALL(st, snapshot_put, &sn);
+    (void)CB_ROWS_CALL(st, snapshot_put, &sn);
     cb_chat_row c;
     memset(&c, 0, sizeof c);
     snprintf(c.id, sizeof c.id, U2);
     snprintf(c.game_id, sizeof c.game_id, "ab12cd");
     snprintf(c.user_id, sizeof c.user_id, U1);
     c.message = "hi \"there\"";
-    (void)CB_STORE_CALL(st, chat_put, &c);
+    (void)CB_ROWS_CALL(st, chat_put, &c);
     cb_rating_row rt;
     memset(&rt, 0, sizeof rt);
     snprintf(rt.user_id, sizeof rt.user_id, U1);
     snprintf(rt.username, sizeof rt.username, "ANN");
     rt.elo_rating = 1033; rt.previous_elo = 1020; rt.games_played = 7;
-    (void)CB_STORE_CALL(st, rating_import, &rt);
+    (void)CB_ROWS_CALL(st, rating_import, &rt);
     cb_bot_row b;
     memset(&b, 0, sizeof b);
     snprintf(b.id, sizeof b.id, B1);
     snprintf(b.nickname, sizeof b.nickname, "%%Miami 1");
     snprintf(b.strategy_key, sizeof b.strategy_key, "random");
     b.elo_rating = 1010;
-    (void)CB_STORE_CALL(st, bots_replace, &b, 1);
+    (void)CB_ROWS_CALL(st, bots_replace, &b, 1);
     cb_store_close(st);
 }
 

@@ -58,7 +58,7 @@
 #include "aws/https.h"
 #include "aws/sigv4.h"
 #include "aws_json.h"
-#include "store/store.h"
+#include "store/rows_foolish.h"
 
 #include "ask.h"
 #include "netclient.h"

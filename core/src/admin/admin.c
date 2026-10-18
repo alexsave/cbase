@@ -260,7 +260,7 @@ static void api_overview(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) 
     // The heartbeat's own criteria (bots.h cb_bots_scan): untouched for 10 s,
     // active within the hour.
     int due = 0;
-    int rc = ctx->store ? CB_STORE_CALL(ctx->store, games_needing_bots, now - 10000, now - 3600000, 1000, count_name, &due)
+    int rc = ctx->store ? CB_ROWS_CALL(ctx->store, games_needing_bots, now - 10000, now - 3600000, 1000, count_name, &due)
                         : CB_E_STATE;
     o.games_needing_bots = rc < 0 ? -1 : due;
     // DynamoDB throttling (store.h cb_store_throttles_get): this process's
@@ -495,7 +495,7 @@ static void api_games(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     for (int i = 0; i < s->n; i++) {
         cb_game_row g;
         memset(&g, 0, sizeof g);
-        if (CB_STORE_CALL(ctx->store, game_get, s->ids[i], &g) != CB_OK) continue;   // deleted since the browse
+        if (CB_ROWS_CALL(ctx->store, game_get, s->ids[i], &g) != CB_OK) continue;   // deleted since the browse
         Roster r;
         cb_js_admin_game a = game_of(&g, &r);
         cb_js_admin_games_add(st, &a);
@@ -515,7 +515,7 @@ static void api_game(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     if (!id[0]) { cb_router_error(res, 400, "game: id is required"); return; }
     cb_game_row g;
     memset(&g, 0, sizeof g);
-    int rc = CB_STORE_CALL(ctx->store, game_get, id, &g);
+    int rc = CB_ROWS_CALL(ctx->store, game_get, id, &g);
     if (rc < 0) { store_error(ctx, res, "game", rc); return; }
     cb_view_row v;
     memset(&v, 0, sizeof v);
@@ -553,7 +553,7 @@ static void api_bots(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     cb_buf_init(&b);
     cb_js_stream *s = cb_js_admin_bots_begin(&b);
     if (!s) { cb_buf_free(&b); no_memory(res); return; }
-    int rc = CB_STORE_CALL(ctx->store, bots_list, put_bot, s);
+    int rc = CB_ROWS_CALL(ctx->store, bots_list, put_bot, s);
     int enc = cb_js_admin_bots_end(s);
     if (rc < 0) store_error(ctx, res, "bots", rc);
     else send_json(res, 200, &b, enc);

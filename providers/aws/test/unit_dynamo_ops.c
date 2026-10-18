@@ -260,16 +260,16 @@ static void game_create_delete(void) {
     RUN(steps, s);
     uint8_t st[2] = { 1, 2 };
     cb_game_row g = { .id = "ab12cd", .status = 0, .state = st, .state_len = 2, .roster = st, .roster_len = 2, .created_at = 1, .updated_at = 1 };
-    T_EQ_INT(CB_STORE_CALL(s, game_create, &g, U1), CB_OK);
-    T_EQ_INT(CB_STORE_CALL(s, game_create, &g, U1), CB_E_CONFLICT);
-    T_EQ_INT(CB_STORE_CALL(s, game_create, &g, U1), CB_E_DB);
-    T_EQ_INT(CB_STORE_CALL(s, game_create, &g, U1), CB_E_DB);
-    T_EQ_INT(CB_STORE_CALL(s, game_delete, "ab12cd", 4), CB_OK);
+    T_EQ_INT(CB_ROWS_CALL(s, game_create, &g, U1), CB_OK);
+    T_EQ_INT(CB_ROWS_CALL(s, game_create, &g, U1), CB_E_CONFLICT);
+    T_EQ_INT(CB_ROWS_CALL(s, game_create, &g, U1), CB_E_DB);
+    T_EQ_INT(CB_ROWS_CALL(s, game_create, &g, U1), CB_E_DB);
+    T_EQ_INT(CB_ROWS_CALL(s, game_delete, "ab12cd", 4), CB_OK);
     T_CHECK(strstr(sc_.bodies[5], "BOT#" B1) != NULL);
     T_CHECK(strstr(sc_.bodies[5], "\"N\":\"4\"") != NULL);   // the fence
-    T_EQ_INT(CB_STORE_CALL(s, game_delete, "ab12cd", 4), CB_E_CONFLICT);
-    T_EQ_INT(CB_STORE_CALL(s, game_delete, "ab12cd", 4), CB_E_NOT_FOUND);
-    T_EQ_INT(CB_STORE_CALL(s, game_delete, "ab12cd", 4), CB_E_DB);
+    T_EQ_INT(CB_ROWS_CALL(s, game_delete, "ab12cd", 4), CB_E_CONFLICT);
+    T_EQ_INT(CB_ROWS_CALL(s, game_delete, "ab12cd", 4), CB_E_NOT_FOUND);
+    T_EQ_INT(CB_ROWS_CALL(s, game_delete, "ab12cd", 4), CB_E_DB);
     T_EQ_INT(sc_.at, sc_.n);
     cb_store_close(s);
 }
@@ -295,15 +295,15 @@ static void games_of_user_and_membership(void) {
     };
     RUN(steps, s);
     games_seen w = { 0 };
-    T_EQ_INT(CB_STORE_CALL(s, games_of_user, U1, 0, see_member, &w), 2);
+    T_EQ_INT(CB_ROWS_CALL(s, games_of_user, U1, 0, see_member, &w), 2);
     T_EQ_STR(w.ids[0], "aaaaaa");
     T_EQ_STR(w.ids[1], "bbbbbb");
     memset(&w, 0, sizeof w);
-    T_EQ_INT(CB_STORE_CALL(s, games_of_user, U1, 1, see_member, &w), 1);
-    T_EQ_INT(CB_STORE_CALL(s, games_of_user, U1, 0, see_member, &w), CB_E_DB);
-    T_EQ_INT(CB_STORE_CALL(s, is_member, "aaaaaa", U1), 1);
-    T_EQ_INT(CB_STORE_CALL(s, is_member, "aaaaaa", U2), 0);
-    T_EQ_INT(CB_STORE_CALL(s, is_member, "aaaaaa", U2), CB_E_DB);
+    T_EQ_INT(CB_ROWS_CALL(s, games_of_user, U1, 1, see_member, &w), 1);
+    T_EQ_INT(CB_ROWS_CALL(s, games_of_user, U1, 0, see_member, &w), CB_E_DB);
+    T_EQ_INT(CB_ROWS_CALL(s, is_member, "aaaaaa", U1), 1);
+    T_EQ_INT(CB_ROWS_CALL(s, is_member, "aaaaaa", U2), 0);
+    T_EQ_INT(CB_ROWS_CALL(s, is_member, "aaaaaa", U2), CB_E_DB);
     T_EQ_INT(sc_.at, sc_.n);
     cb_store_close(s);
 }
@@ -332,15 +332,15 @@ static void game_members_are_the_human_seats(void) {
     };
     RUN(steps, s);
     ids_seen w = { 0 };
-    T_EQ_INT(CB_STORE_CALL(s, game_members, "aaaaaa", see_id, &w), 2);
+    T_EQ_INT(CB_ROWS_CALL(s, game_members, "aaaaaa", see_id, &w), 2);
     T_EQ_STR(w.ids[0], U1);
     T_EQ_STR(w.ids[1], U2);
     T_CHECK(strstr(sc_.bodies[0], "\"ConsistentRead\":true") != NULL);
     ids_seen one = { .stop_after = 1 };
-    T_EQ_INT(CB_STORE_CALL(s, game_members, "aaaaaa", see_id, &one), 1);
+    T_EQ_INT(CB_ROWS_CALL(s, game_members, "aaaaaa", see_id, &one), 1);
     ids_seen none = { 0 };
-    T_EQ_INT(CB_STORE_CALL(s, game_members, "aaaaaa", see_id, &none), 0);
-    T_EQ_INT(CB_STORE_CALL(s, game_members, "aaaaaa", see_id, &none), CB_E_DB);
+    T_EQ_INT(CB_ROWS_CALL(s, game_members, "aaaaaa", see_id, &none), 0);
+    T_EQ_INT(CB_ROWS_CALL(s, game_members, "aaaaaa", see_id, &none), CB_E_DB);
     T_EQ_INT(sc_.at, sc_.n);
     cb_store_close(s);
 }
@@ -354,10 +354,10 @@ static void bots_idle_deletes_the_marker(void) {
         { "DeleteItem", NULL, 400, VALIDATION },
     };
     RUN(steps, s);
-    T_EQ_INT(CB_STORE_CALL(s, bots_idle, "ab12cd", 7), CB_OK);
+    T_EQ_INT(CB_ROWS_CALL(s, bots_idle, "ab12cd", 7), CB_OK);
     T_CHECK(strstr(sc_.bodies[0], "\"N\":\"7\"") != NULL);
-    T_EQ_INT(CB_STORE_CALL(s, bots_idle, "ab12cd", 7), CB_E_CONFLICT);
-    T_EQ_INT(CB_STORE_CALL(s, bots_idle, "ab12cd", 7), CB_E_DB);
+    T_EQ_INT(CB_ROWS_CALL(s, bots_idle, "ab12cd", 7), CB_E_CONFLICT);
+    T_EQ_INT(CB_ROWS_CALL(s, bots_idle, "ab12cd", 7), CB_E_DB);
     T_EQ_INT(sc_.at, sc_.n);
     cb_store_close(s);
 }
@@ -373,11 +373,11 @@ static void lease_held_reads_the_marker(void) {
         { "GetItem", NULL, 400, VALIDATION },
     };
     RUN(steps, s);
-    T_EQ_INT(CB_STORE_CALL(s, lease_held, "ab12cd", 5000), 1);   // the last millisecond still holds
-    T_EQ_INT(CB_STORE_CALL(s, lease_held, "ab12cd", 5001), 0);
-    T_EQ_INT(CB_STORE_CALL(s, lease_held, "ab12cd", 1), 0);
-    T_EQ_INT(CB_STORE_CALL(s, lease_held, "ab12cd", 1), 0);
-    T_EQ_INT(CB_STORE_CALL(s, lease_held, "ab12cd", 1), CB_E_DB);
+    T_EQ_INT(CB_ROWS_CALL(s, lease_held, "ab12cd", 5000), 1);   // the last millisecond still holds
+    T_EQ_INT(CB_ROWS_CALL(s, lease_held, "ab12cd", 5001), 0);
+    T_EQ_INT(CB_ROWS_CALL(s, lease_held, "ab12cd", 1), 0);
+    T_EQ_INT(CB_ROWS_CALL(s, lease_held, "ab12cd", 1), 0);
+    T_EQ_INT(CB_ROWS_CALL(s, lease_held, "ab12cd", 1), CB_E_DB);
     T_EQ_INT(sc_.at, sc_.n);
     cb_store_close(s);
 }
@@ -426,29 +426,29 @@ static void bots_and_ratings(void) {
     RUN(steps, s);
     names_seen w = { 0 };
     // Ladder order: same tier, so by nickname.
-    T_EQ_INT(CB_STORE_CALL(s, bots_list, see_bot, &w), 2);
+    T_EQ_INT(CB_ROWS_CALL(s, bots_list, see_bot, &w), 2);
     T_EQ_STR(w.names[0], "%Ann");
     T_EQ_STR(w.names[1], "%Zed");
     memset(&w, 0, sizeof w);
     w.stop_after = 1;
-    T_EQ_INT(CB_STORE_CALL(s, bots_list, see_bot, &w), 1);
-    T_EQ_INT(CB_STORE_CALL(s, bots_list, see_bot, &w), CB_E_DB);
+    T_EQ_INT(CB_ROWS_CALL(s, bots_list, see_bot, &w), 1);
+    T_EQ_INT(CB_ROWS_CALL(s, bots_list, see_bot, &w), CB_E_DB);
     // Every rating row, highest first.
     memset(&w, 0, sizeof w);
-    T_EQ_INT(CB_STORE_CALL(s, ratings_list, see_rating, &w), 2);
+    T_EQ_INT(CB_ROWS_CALL(s, ratings_list, see_rating, &w), 2);
     T_EQ_STR(w.names[0], U1);
     T_EQ_INT(w.elo[0], 1200);
-    T_EQ_INT(CB_STORE_CALL(s, ratings_list, see_rating, &w), CB_E_DB);
+    T_EQ_INT(CB_ROWS_CALL(s, ratings_list, see_rating, &w), CB_E_DB);
     // The top: one bounded Query; a row never played is not on the board.
     memset(&w, 0, sizeof w);
-    T_EQ_INT(CB_STORE_CALL(s, ratings_top, 2, see_rating, &w), 1);
+    T_EQ_INT(CB_ROWS_CALL(s, ratings_top, 2, see_rating, &w), 1);
     T_EQ_STR(w.names[0], U1);
-    T_EQ_INT(CB_STORE_CALL(s, ratings_top, 0, see_rating, &w), 0);   // asks nothing
-    T_EQ_INT(CB_STORE_CALL(s, ratings_top, 2, see_rating, &w), CB_E_DB);
-    T_EQ_INT(CB_STORE_CALL(s, rating_set_username, U1, "NEW"), CB_OK);
-    T_EQ_INT(CB_STORE_CALL(s, rating_set_username, U1, NULL), CB_OK);
-    T_EQ_INT(CB_STORE_CALL(s, rating_set_username, U2, "X"), CB_OK);
-    T_EQ_INT(CB_STORE_CALL(s, rating_set_username, U2, "X"), CB_E_DB);
+    T_EQ_INT(CB_ROWS_CALL(s, ratings_top, 0, see_rating, &w), 0);   // asks nothing
+    T_EQ_INT(CB_ROWS_CALL(s, ratings_top, 2, see_rating, &w), CB_E_DB);
+    T_EQ_INT(CB_ROWS_CALL(s, rating_set_username, U1, "NEW"), CB_OK);
+    T_EQ_INT(CB_ROWS_CALL(s, rating_set_username, U1, NULL), CB_OK);
+    T_EQ_INT(CB_ROWS_CALL(s, rating_set_username, U2, "X"), CB_OK);
+    T_EQ_INT(CB_ROWS_CALL(s, rating_set_username, U2, "X"), CB_E_DB);
     T_EQ_INT(sc_.at, sc_.n);
     cb_store_close(s);
 }
@@ -503,34 +503,34 @@ static void snapshots_put_and_query(void) {
     cb_snapshot_row r = { .id = "s1", .game_id = "aaaaaa", .n_players = 2, .moves = mv, .moves_len = 2, .created_at = 3 };
     snprintf(r.player_ids[0], sizeof r.player_ids[0], U1);
     snprintf(r.player_ids[1], sizeof r.player_ids[1], U2);
-    T_EQ_INT(CB_STORE_CALL(s, snapshot_put, &r), CB_OK);
+    T_EQ_INT(CB_ROWS_CALL(s, snapshot_put, &r), CB_OK);
     // The replay and two pointers: only the replay holds the moves and the players.
     T_EQ_INT(count_of(sc_.bodies[0], "\"Put\""), 3);
     T_EQ_INT(count_of(sc_.bodies[0], "\"moves\""), 1);
     T_EQ_INT(count_of(sc_.bodies[0], "\"player_ids\""), 1);
-    T_EQ_INT(CB_STORE_CALL(s, snapshot_put, &r), CB_E_CONFLICT);
-    T_EQ_INT(CB_STORE_CALL(s, snapshot_put, &r), CB_E_DB);
+    T_EQ_INT(CB_ROWS_CALL(s, snapshot_put, &r), CB_E_CONFLICT);
+    T_EQ_INT(CB_ROWS_CALL(s, snapshot_put, &r), CB_E_DB);
     r.n_players = 9;
-    T_EQ_INT(CB_STORE_CALL(s, snapshot_put, &r), CB_E_INVALID);   // asked nothing
+    T_EQ_INT(CB_ROWS_CALL(s, snapshot_put, &r), CB_E_INVALID);   // asked nothing
     snaps_seen w = { 0 };
     cb_snapshot_query q = { .viewer_id = U1 };
-    T_EQ_INT(CB_STORE_CALL(s, snapshots_query, &q, see_snap, &w), 2);
+    T_EQ_INT(CB_ROWS_CALL(s, snapshots_query, &q, see_snap, &w), 2);
     T_EQ_STR(w.ids[0], "s1");   // the pointers' order, not the batch's
     T_EQ_STR(w.ids[1], "s2");
     T_EQ_INT(w.players, 2);
     memset(&w, 0, sizeof w);
     q.game_id = "bbbbbb";
-    T_EQ_INT(CB_STORE_CALL(s, snapshots_query, &q, see_snap, &w), 1);   // one game's
+    T_EQ_INT(CB_ROWS_CALL(s, snapshots_query, &q, see_snap, &w), 1);   // one game's
     T_EQ_STR(w.ids[0], "s2");
     memset(&w, 0, sizeof w);
     cb_snapshot_query q2 = { .viewer_id = U1, .id = "s1", .limit = 1, .newest_first = true };
-    T_EQ_INT(CB_STORE_CALL(s, snapshots_query, &q2, see_snap, &w), 1);
-    T_EQ_INT(CB_STORE_CALL(s, snapshots_query, &q2, see_snap, &w), CB_E_DB);
+    T_EQ_INT(CB_ROWS_CALL(s, snapshots_query, &q2, see_snap, &w), 1);
+    T_EQ_INT(CB_ROWS_CALL(s, snapshots_query, &q2, see_snap, &w), CB_E_DB);
     memset(&w, 0, sizeof w);
     q.game_id = "aaaaaa";
-    T_EQ_INT(CB_STORE_CALL(s, snapshots_query, &q, see_snap, &w), 0);
+    T_EQ_INT(CB_ROWS_CALL(s, snapshots_query, &q, see_snap, &w), 0);
     cb_snapshot_query none = { .viewer_id = "" };
-    T_EQ_INT(CB_STORE_CALL(s, snapshots_query, &none, see_snap, &w), CB_E_INVALID);
+    T_EQ_INT(CB_ROWS_CALL(s, snapshots_query, &none, see_snap, &w), CB_E_INVALID);
     T_EQ_INT(sc_.at, sc_.n);
     cb_store_close(s);
 }
@@ -545,11 +545,11 @@ static void chat_put_refusals(void) {
     };
     RUN(steps, s);
     cb_chat_row c = { .id = "c1", .game_id = "ab12cd", .user_id = U1, .message = "hi", .created_at = 4 };
-    T_EQ_INT(CB_STORE_CALL(s, chat_put, &c), CB_OK);
-    T_EQ_INT(CB_STORE_CALL(s, chat_put, &c), CB_E_CONFLICT);
-    T_EQ_INT(CB_STORE_CALL(s, chat_put, &c), CB_E_NOT_FOUND);
-    T_EQ_INT(CB_STORE_CALL(s, chat_put, &c), CB_E_DB);
-    T_EQ_INT(CB_STORE_CALL(s, chat_put, &c), CB_E_DB);
+    T_EQ_INT(CB_ROWS_CALL(s, chat_put, &c), CB_OK);
+    T_EQ_INT(CB_ROWS_CALL(s, chat_put, &c), CB_E_CONFLICT);
+    T_EQ_INT(CB_ROWS_CALL(s, chat_put, &c), CB_E_NOT_FOUND);
+    T_EQ_INT(CB_ROWS_CALL(s, chat_put, &c), CB_E_DB);
+    T_EQ_INT(CB_ROWS_CALL(s, chat_put, &c), CB_E_DB);
     T_EQ_INT(sc_.at, sc_.n);
     cb_store_close(s);
 }
@@ -611,20 +611,20 @@ static void import_writes(void) {
     T_EQ_INT(CB_STORE_CALL(s, user_import, &u), CB_E_DB);
     T_EQ_INT(CB_STORE_CALL(s, user_import, &u), CB_E_DB);
     cb_bot_row b = { .id = B1, .nickname = "%Bee", .strategy_key = "random", .elo_rating = 1000 };
-    T_EQ_INT(CB_STORE_CALL(s, bots_replace, &b, 1), CB_OK);
+    T_EQ_INT(CB_ROWS_CALL(s, bots_replace, &b, 1), CB_OK);
     T_CHECK(strstr(sc_.bodies[4], "BOT#" B1) != NULL);   // the new set in the same transaction
-    T_EQ_INT(CB_STORE_CALL(s, bots_replace, &b, 1), CB_E_DB);
-    T_EQ_INT(CB_STORE_CALL(s, bots_replace, &b, 1), CB_E_DB);
+    T_EQ_INT(CB_ROWS_CALL(s, bots_replace, &b, 1), CB_E_DB);
+    T_EQ_INT(CB_ROWS_CALL(s, bots_replace, &b, 1), CB_E_DB);
     uint8_t st[1] = { 1 };
     cb_game_row g = { .id = "ab12cd", .status = 1, .state = st, .state_len = 1, .roster = st, .roster_len = 1, .version = 3 };
     cb_uuid humans[1];
     snprintf(humans[0], sizeof humans[0], U1);
-    T_EQ_INT(CB_STORE_CALL(s, game_import, &g, humans, 1, NULL, 0), CB_OK);
+    T_EQ_INT(CB_ROWS_CALL(s, game_import, &g, humans, 1, NULL, 0), CB_OK);
     T_CHECK(strstr(sc_.bodies[10], "MEMBER#" U1) != NULL);
-    T_EQ_INT(CB_STORE_CALL(s, game_import, &g, humans, 9, NULL, 0), CB_E_INVALID);
-    T_EQ_INT(CB_STORE_CALL(s, rating_reindex, &ra), CB_OK);
-    T_EQ_INT(CB_STORE_CALL(s, rating_reindex, &ra), CB_E_CONFLICT);
-    T_EQ_INT(CB_STORE_CALL(s, rating_reindex, &ra), CB_E_DB);
+    T_EQ_INT(CB_ROWS_CALL(s, game_import, &g, humans, 9, NULL, 0), CB_E_INVALID);
+    T_EQ_INT(CB_ROWS_CALL(s, rating_reindex, &ra), CB_OK);
+    T_EQ_INT(CB_ROWS_CALL(s, rating_reindex, &ra), CB_E_CONFLICT);
+    T_EQ_INT(CB_ROWS_CALL(s, rating_reindex, &ra), CB_E_DB);
     T_EQ_INT(sc_.at, sc_.n);
     cb_store_close(s);
 }
