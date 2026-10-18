@@ -159,34 +159,49 @@ $(foreach s,smoke smoke_lambda smoke_lambda_after smoke_authz smoke_matrix smoke
 .PHONY: coverage all test smoke check check-asan test-asan smoke-asan check-dynamo bench-dynamo clean print-kernel-src bootstrap bench
 all: build/cbase build/bootstrap build/cbase-import build/cbase-bench
 
-# Every unit program runs even when an earlier one fails; the target fails if any did.
-define RUN_UNITS
-	@fail=0; for t in $(1); do $$t || fail=1; done; \
-	 if [ $$fail -ne 0 ]; then echo "UNIT TESTS FAILED"; exit 1; fi
+# THE TEST RUNS, in parallel. Every program is its own process with its own
+# server, port, temporary directory and database (the smokes start their own
+# `cbase serve` or `bootstrap`; DynamoDB tests each make their own table), so
+# none shares state with another. $(call RUN_ALL,<what>,<commands>): every
+# command (one quoted shell word each) runs, CHECK_JOBS at a time, each to its
+# own log under build/logs, printed whole when it finishes; every one runs even
+# when another fails, and the target fails, naming each command that did.
+# Longest first: the smokes are listed before the units. RUN_ALL_SH is the
+# same as one shell command, for a recipe line that sets an environment first.
+CHECK_JOBS ?= $(shell getconf _NPROCESSORS_ONLN)
+RUN_ALL_SH = mkdir -p build/logs && printf '%s\0' $(2) | xargs -0 -P $(CHECK_JOBS) -n 1 sh -c \
+  'log=build/logs/$$(echo "$$0" | tr " /=" "___").log; if eval "$$0" > $$log 2>&1; then cat $$log; else cat $$log; echo "FAILED: $$0"; exit 1; fi' \
+  || { echo "$(1) FAILED"; exit 1; }
+define RUN_ALL
+	@$(call RUN_ALL_SH,$(1),$(2))
 endef
-test: $(addprefix build/test/,$(UNITS)) build/test/unit_bench
-	$(call RUN_UNITS,$^)
-# Two lanes: `cbase serve` over real HTTP, and the real bootstrap binary
-# driven through a fake Lambda Runtime API (no AWS needed).
-smoke: build/cbase build/bootstrap build/test/smoke build/test/smoke_lambda build/test/smoke_lambda_after build/test/smoke_authz build/test/smoke_matrix build/test/smoke_boot
-	build/test/smoke build/cbase
-	build/test/smoke_authz build/cbase
-	build/test/smoke_matrix build/cbase
-	build/test/smoke_boot build/cbase build/bootstrap
-	build/test/smoke_lambda build/bootstrap
-	build/test/smoke_lambda_after build/bootstrap
-check: test smoke
 
-test-asan: $(addprefix build/asan/test/,$(UNITS)) build/asan/test/unit_bench
-	$(call RUN_UNITS,$^)
-smoke-asan: build/asan/cbase build/asan/bootstrap build/asan/test/smoke build/asan/test/smoke_lambda build/asan/test/smoke_lambda_after build/asan/test/smoke_authz build/asan/test/smoke_matrix build/asan/test/smoke_boot
-	build/asan/test/smoke build/asan/cbase
-	build/asan/test/smoke_authz build/asan/cbase
-	build/asan/test/smoke_matrix build/asan/cbase
-	build/asan/test/smoke_boot build/asan/cbase build/asan/bootstrap
-	build/asan/test/smoke_lambda build/asan/bootstrap
-	build/asan/test/smoke_lambda_after build/asan/bootstrap
-check-asan: test-asan smoke-asan
+# $(call UNIT_RUNS,<test dir>): every unit program.
+UNIT_RUNS = $(addprefix $(1)/,$(UNITS)) $(1)/unit_bench
+# $(call SMOKE_RUNS,<build dir>): `cbase serve` over real HTTP, and the real
+# bootstrap binary driven through a fake Lambda Runtime API (no AWS needed).
+SMOKE_RUNS = '$(1)/test/smoke $(1)/cbase' \
+             '$(1)/test/smoke_matrix $(1)/cbase' \
+             '$(1)/test/smoke_authz $(1)/cbase' \
+             '$(1)/test/smoke_boot $(1)/cbase $(1)/bootstrap' \
+             '$(1)/test/smoke_lambda $(1)/bootstrap' \
+             '$(1)/test/smoke_lambda_after $(1)/bootstrap'
+SMOKE_PROGS = $(1)/cbase $(1)/bootstrap $(addprefix $(1)/test/,smoke smoke_matrix smoke_authz smoke_boot smoke_lambda smoke_lambda_after)
+
+test: $(call UNIT_RUNS,build/test)
+	$(call RUN_ALL,UNIT TESTS,$(call UNIT_RUNS,build/test))
+smoke: $(call SMOKE_PROGS,build)
+	$(call RUN_ALL,SMOKE,$(call SMOKE_RUNS,build))
+# One pool for both, so the smokes and the units share the machine's cores.
+check: $(call UNIT_RUNS,build/test) $(call SMOKE_PROGS,build)
+	$(call RUN_ALL,CHECK,$(call SMOKE_RUNS,build) $(call UNIT_RUNS,build/test))
+
+test-asan: $(call UNIT_RUNS,build/asan/test)
+	$(call RUN_ALL,ASAN UNIT TESTS,$(call UNIT_RUNS,build/asan/test))
+smoke-asan: $(call SMOKE_PROGS,build/asan)
+	$(call RUN_ALL,ASAN SMOKE,$(call SMOKE_RUNS,build/asan))
+check-asan: $(call UNIT_RUNS,build/asan/test) $(call SMOKE_PROGS,build/asan)
+	$(call RUN_ALL,ASAN CHECK,$(call SMOKE_RUNS,build/asan) $(call UNIT_RUNS,build/asan/test))
 
 # The DynamoDB backend against Amazon's DynamoDB Local: the table made from
 # ops/cbase.yaml (dropped and made empty first), the schema's bots seeded as a
@@ -196,10 +211,7 @@ DYNAMO_UNITS := unit_store unit_admin unit_import unit_v1
 check-dynamo: $(addprefix build/test/,$(DYNAMO_UNITS)) build/cbase build/cbase-import build/test/smoke build/test/smoke_matrix
 	ops/dynamo_local.sh --reset > build/dynamo.env
 	. ./build/dynamo.env && build/cbase-import --seed-bots
-	. ./build/dynamo.env && fail=0; for t in $(addprefix build/test/,$(DYNAMO_UNITS)); do $$t || fail=1; done; \
-	 if [ $$fail -ne 0 ]; then echo "DYNAMO UNIT TESTS FAILED"; exit 1; fi
-	. ./build/dynamo.env && build/test/smoke build/cbase
-	. ./build/dynamo.env && build/test/smoke_matrix build/cbase
+	. ./build/dynamo.env && $(call RUN_ALL_SH,DYNAMO CHECK,'build/test/smoke build/cbase' 'build/test/smoke_matrix build/cbase' $(addprefix build/test/,$(DYNAMO_UNITS)))
 
 # Per-operation latency against DynamoDB Local (test/bench_dynamo.c), the
 # baseline DESIGN.md "Store" records. Not part of any check.
@@ -243,15 +255,14 @@ COV_FILTER := --filter 'src/' --filter '\.\./foolish/c/src/net(wire|client)\.c' 
 COV_EXCLUDE := --exclude 'build/' --exclude 'test/'
 # Every test program at once, each to its own log (the gcov runtime locks a
 # .gcda while it merges into it); a failed one prints its log and fails the
-# target. smoke's game is left out: its bots pace themselves like people, and
-# smoke_matrix plays a whole game without them (docs/COVERAGE.md).
-COV_RUNS := $(addprefix build/cov/test/,$(UNITS)) \
-            'CBASE_SMOKE_GAME=0 build/cov/test/smoke build/cov/cbase' \
+# target. The smokes go first, the longest runs.
+COV_RUNS := 'build/cov/test/smoke build/cov/cbase' \
             'build/cov/test/smoke_lambda build/cov/bootstrap' \
             'build/cov/test/smoke_lambda_after build/cov/bootstrap' \
             'build/cov/test/smoke_matrix build/cov/cbase' \
             'build/cov/test/smoke_boot build/cov/cbase build/cov/bootstrap' \
-            'build/cov/test/smoke_authz build/cov/cbase'
+            'build/cov/test/smoke_authz build/cov/cbase' \
+            $(addprefix build/cov/test/,$(UNITS))
 coverage: $(addprefix build/cov/test/,$(UNITS)) build/cov/cbase build/cov/bootstrap build/cov/test/smoke build/cov/test/smoke_lambda build/cov/test/smoke_matrix build/cov/test/smoke_authz build/cov/test/smoke_boot build/cov/test/smoke_lambda_after build/cov_gate
 	@find build/obj/cov build/obj/cov-kernel -name '*.gcda' -delete
 	@printf '%s\0' $(COV_RUNS) | xargs -0 -P $(COV_JOBS) -n 1 sh -c 'log=build/cov/$$(echo "$$0" | tr " /=" "___").log; eval "$$0" > $$log 2>&1 || { cat $$log; echo "coverage: FAILED: $$0"; exit 1; }'
