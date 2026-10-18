@@ -393,8 +393,13 @@ static bool attr(cb_span item, const char *name, const char *type, cb_span *tok)
 
 // ---- the key-capture proof (json_surface.h dw_shape) ------------------------------------------
 
-// One '#'-separated segment of a key value, normalized.
-static void shape_seg(cb_buf *o, const char *s, size_t n) {
+// One '#'-separated segment of a key value, normalized by its position and
+// fixed shapes only, never by what an id happens to look like: a game id is
+// random hex that may be all digits, or a test's own word. The first segment
+// may be the key's family (upper-case: kept); a segment of 10 or 15 digits is
+// one of the layout's fixed-width numbers (a rating's rank, a time); every
+// other segment is an id: {uuid}, {sha} (a token's hash), {email}, else {id}.
+static void shape_seg(cb_buf *o, const char *s, size_t n, bool first) {
     bool upper = n > 0, digits = n > 0, hex = n > 0, at = false;
     size_t dashes = 0;
     for (size_t i = 0; i < n; i++) {
@@ -405,15 +410,13 @@ static void shape_seg(cb_buf *o, const char *s, size_t n) {
         if (c == '-') dashes++;
         if (c == '@') at = true;
     }
-    bool uuid = n == 36 && dashes == 4;
     if (n == 0) return;
-    if (upper) cb_buf_append(o, s, n);
-    else if (uuid) cb_buf_puts(o, "{uuid}");
-    else if (digits) cb_buf_puts(o, "{n}");
-    else if (hex && (n == 6 || n == 12)) cb_buf_puts(o, "{gid}");
+    if (first && upper) cb_buf_append(o, s, n);
+    else if (digits && (n == 10 || n == 15)) cb_buf_puts(o, "{n}");
+    else if (n == 36 && dashes == 4) cb_buf_puts(o, "{uuid}");
     else if (hex && n == 64) cb_buf_puts(o, "{sha}");
     else if (at) cb_buf_puts(o, "{email}");
-    else cb_buf_puts(o, "{v}");
+    else cb_buf_puts(o, "{id}");
 }
 
 static void shape_value(cb_buf *o, cb_span tok) {
@@ -423,7 +426,7 @@ static void shape_value(cb_buf *o, cb_span tok) {
     size_t from = 0;
     for (size_t i = 0; i <= (size_t)n; i++)
         if (i == (size_t)n || v[i] == '#') {
-            shape_seg(o, v + from, i - from);
+            shape_seg(o, v + from, i - from, from == 0);
             if (i < (size_t)n) cb_buf_putc(o, '#');
             from = i + 1;
         }

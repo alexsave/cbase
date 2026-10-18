@@ -99,8 +99,8 @@ static void dynamo_txn_and_query(void) {
     cb_buf shape;
     cb_buf_init(&shape);
     dw_shape(g_target, cb_span_of((const char *)g_body.p, g_body.len), &shape);
-    T_CHECK(strstr(cb_buf_cstr(&shape), "Txn.Put item=b:BOOL,bytes:B,expires_at:N,expires_ms:N,gsi1pk:S=L#{v},pk:S=P#{n},sk:S=A\n") != NULL);
-    T_CHECK(strstr(cb_buf_cstr(&shape), "Txn.ConditionCheck key=pk:S=P#{n},sk:S=B\n") != NULL);
+    T_CHECK(strstr(cb_buf_cstr(&shape), "Txn.Put item=b:BOOL,bytes:B,expires_at:N,expires_ms:N,gsi1pk:S=L#{id},pk:S=P#{id},sk:S=A\n") != NULL);
+    T_CHECK(strstr(cb_buf_cstr(&shape), "Txn.ConditionCheck key=pk:S=P#{id},sk:S=B\n") != NULL);
     cb_buf_free(&shape);
     g_answer = "{\"Items\":[{\"pk\":{\"S\":\"P#1\"},\"sk\":{\"S\":\"A\"},\"n\":{\"N\":\"-3\"}}],\"Count\":1}";
     sks k = { 0 };
@@ -111,7 +111,7 @@ static void dynamo_txn_and_query(void) {
     T_CHECK(strstr(cb_buf_cstr(&g_body), "begins_with(#gsi1sk, :sk)") != NULL);
     cb_buf_init(&shape);
     dw_shape(g_target, cb_span_of((const char *)g_body.p, g_body.len), &shape);
-    T_EQ_STR(cb_buf_cstr(&shape), "Query index=gsi1 names=gsi1pk,gsi1sk vals=S:A,S:L#{v}\n");
+    T_EQ_STR(cb_buf_cstr(&shape), "Query index=gsi1 names=gsi1pk,gsi1sk vals=S:A,S:L#{id}\n");
     cb_buf_free(&shape);
     // A batch's shapes, one line an item, with an email and a hash normalized.
     cb_buf_init(&shape);
@@ -120,7 +120,7 @@ static void dynamo_txn_and_query(void) {
                          "\"sk\":{\"S\":\"FAILS\"}}}},{\"DeleteRequest\":{\"Key\":{\"pk\":{\"S\":\"GAME#ab12cd\"},\"sk\":{\"S\":\"ROW\"}}}}]}}"),
              &shape);
     T_EQ_STR(cb_buf_cstr(&shape), "Batch.DeleteRequest key=pk:S=AUTHFAIL#{email},sk:S=FAILS\n"
-                                  "Batch.DeleteRequest key=pk:S=GAME#{gid},sk:S=ROW\n");
+                                  "Batch.DeleteRequest key=pk:S=GAME#{id},sk:S=ROW\n");
     cb_buf_free(&shape);
     cb_buf_init(&shape);
     dw_shape("DynamoDB_20120810.BatchGetItem",
