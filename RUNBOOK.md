@@ -327,7 +327,7 @@ The web build bakes the backend's URL in at build time, and CI builds the site (
    Its `vercel pull` fetches the new values and the deploy ships them.
 6. Open https://foolish.cards, sign in with an existing account, and play a move against a bot.
 
-That was the cutover on Vercel; the site is on AWS now, where `web_aws.yml` sets `NEXT_PUBLIC_BACKEND_URL` to `https://api.foolish.cards` itself, and the Vercel value matters only to the rollback lane (W7).
+That was the cutover on Vercel; the site is on AWS now, where `web_aws.yml` sets `NEXT_PUBLIC_BACKEND_URL` to `https://api.foolish.cards` itself, and the Vercel value is gone with the projects (W9).
    The admin console's Logs panel shows the requests.
 
 ## 12. Move the iOS apps
@@ -371,12 +371,7 @@ aws cloudformation deploy --region us-east-1 --stack-name cbase-github \
 2. It may upload the Lambda zip and update the `cbase` stack's code, upload to the web bucket, invalidate the two distributions, rewrite the `cbase-web` page lists, and read both stacks; it holds none of the rights a template change needs, so `ops/deploy.sh` and `ops/web_deploy.sh stack` stay hand steps from this Mac.
 3. Repository secrets (Settings > Secrets and variables > Actions): `CBASE_AWS_ROLE_ARN` (the stack's `DeployRoleArn` output).
 
-The rollback lanes, workflow_dispatch only, kept until their deletion dates:
-
-- `web` (foolish on Vercel production, on `main`): until 2026-10-28, then W9.
-  It matters only with DNS pointed back at Vercel (W7).
-- `uttt-web` (uttt.live on Vercel production, on `main`): until 2026-10-28, then W9.
-  It matters only with the uttt.live DNS pointed back at Vercel (W7).
+The Vercel rollback lanes (`web.yml`, `uttt-web.yml`) were deleted on 2026-10-18 (W9).
 - There is no Supabase lane: `deploy.yml` was deleted on 2026-10-14, because the standalone iOS app never shipped and no client talks to Supabase (step 14).
 
 ## 14. Retire Supabase
@@ -392,10 +387,9 @@ The standalone iOS app never shipped, so no client talks to Supabase, and nothin
 
 The web is the only switch that matters on day one, and it flips back in minutes:
 
-1. The web's hosting: point the foolish.cards DNS back at Vercel; Vercel's Production `NEXT_PUBLIC_BACKEND_URL` is `https://api.foolish.cards` too, so either host talks to c_base.
-2. GitHub > **Actions** > **web** > the latest run on `main` > **Re-run all jobs**, so Vercel serves the current build.
-3. Anything players did on c_base since the switch stays in DynamoDB and is not copied back.
-4. A bad c_base build is rolled back separately: download an earlier `cbase-lambda` artifact (every CI run keeps one for 30 days) and run `c_base/ops/lambda_deploy.sh <its cbase-lambda.zip>` from a tree that contains main; it points the stack back at that zip.
+1. The web's hosting: Vercel is gone (W9), so a bad web deploy is rolled back on AWS (W7, last paragraph).
+2. Anything players did on c_base since the switch stays in DynamoDB and is not copied back.
+3. A bad c_base build is rolled back separately: download an earlier `cbase-lambda` artifact (every CI run keeps one for 30 days) and run `c_base/ops/lambda_deploy.sh <its cbase-lambda.zip>` from a tree that contains main; it points the stack back at that zip.
    Or point the stack straight at the earlier key, which is still in the code bucket: **CloudFormation > cbase > Update > Use existing template**, CodeKey = the old `cbase-lambda-<hash>.zip`.
 
 ## Costs, for reference
@@ -501,13 +495,12 @@ Not an apex-to-www forward: the iOS app's entitlement is `applinks:foolish.cards
 ### W6. Two weeks in parallel
 
 Since 2026-10-14 only `web_aws.yml` deploys on push (step 13).
-`web.yml` deploys foolish to Vercel only when run by hand on `main` (its build sets `VERCEL=1`, which keeps the server build), so after a DNS rollback (W7) run it once to bring Vercel up to the current commit.
-`uttt-web.yml` does the same for uttt.live: the apex is on CloudFront now, so it deploys to Vercel only when run by hand on `main`.
 Watch for two weeks; the c_base admin console's Logs panel shows the `/m` unfurl requests coming through the new distribution.
 
-### W7. Rollback
+### W7. Rollback (DNS part retired 2026-10-18)
 
-DNS only, and the 300-second TTL makes it minutes:
+The DNS rollback to Vercel existed until W9 and is gone; the records below are history.
+It was DNS only, and the 300-second TTL made it minutes:
 
 - foolish.cards: `@` back to an A record 216.198.79.193; `www` back to CNAME `d204b352f329121a.vercel-dns-017.com`.
 - uttt.live: `@` back to an A record 76.76.21.21; `www` back to CNAME `e0da883ddeb2a161.vercel-dns-017.com`.
@@ -523,7 +516,10 @@ A bad web deploy on AWS without a DNS rollback: re-run `web_aws` on the last goo
 4. Now and then, `c_base/ops/web_deploy.sh site foolish --prune-static` (and `uttt`) deletes hashed files no current page uses; a tab left open across two deploys reloads.
 5. The Infinite Oracle's Mode B headers: `CBASE_WEB_ISOLATION=yes c_base/ops/web_deploy.sh stack` (and `no` to undo).
 
-### W9. Retire Vercel, after the two weeks
+### W9. Retire Vercel - DONE 2026-10-18
+
+Done ahead of the 2026-10-28 date, with Alex's go-ahead: steps 1 and 2 are in the repo teardown PR (workflows, both `VERCEL` halves, the web_deploy_scope test), the repository secrets are deleted by hand after it merges, and Alex deletes the Vercel projects foolish, uttt and foolish-utils himself.
+The W7 rollback below no longer exists; the history is kept.
 
 1. Delete `.github/workflows/web.yml` (workflow_dispatch-only since 2026-10-14; its pull-request gate lives in `web_aws.yml`) and the `VERCEL` half of `foolish/next.config.mjs`.
    Delete `.github/workflows/uttt-web.yml` too (workflow_dispatch-only since its apex moved to CloudFront) and the `VERCEL` half of `uttt/web/next.config.mjs`.

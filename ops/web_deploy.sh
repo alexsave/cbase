@@ -135,7 +135,7 @@ deploy_site() {
     if [ "$site" = foolish ]; then
       [ -n "${NEXT_PUBLIC_BACKEND_URL:-}" ] || die "building foolish needs NEXT_PUBLIC_BACKEND_URL (the backend the bundle talks to)"
     fi
-    (cd "$app" && unset VERCEL && npm run build)
+    (cd "$app" && npm run build)
     out="$app/out"
   fi
   [ -f "$out/index.html" ] || die "$out is not a static export (no index.html)"
