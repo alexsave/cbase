@@ -216,6 +216,35 @@ static void shapes_ignore_what_an_id_looks_like(void) {
     cb_buf_free(&other);
 }
 
+// cb_av_same, the one value comparison (SQLite's conditions, the request's
+// shared placeholder), over every kind; the name is not compared. Written to
+// hold the coverage floor (docs/PLATFORM.md section 9, stage 7).
+static void values_compare_by_kind_and_value(void) {
+    const char *l1[] = { "a", "b" }, *l2[] = { "a", "c" }, *l3[] = { "a" };
+    const uint8_t b1[] = { 1, 2 }, b2[] = { 1, 3 };
+    cb_av s1 = CB_AVS("x", "v"), s2 = CB_AVS("y", "v"), s3 = CB_AVS("x", "w"), sn = CB_AVS("x", NULL), se = CB_AVS("x", "");
+    T_CHECK(cb_av_same(&s1, &s2));   // another name, the same value
+    T_CHECK(!cb_av_same(&s1, &s3));
+    T_CHECK(cb_av_same(&sn, &se));   // NULL reads as ""
+    cb_av n1 = CB_AVN("n", 5), n2 = CB_AVN("n", 5), n3 = CB_AVN("n", 6);
+    T_CHECK(cb_av_same(&n1, &n2));
+    T_CHECK(!cb_av_same(&n1, &n3));
+    T_CHECK(!cb_av_same(&n1, &s1));   // another kind
+    cb_av t1 = CB_AVBOOL("b", true), t2 = CB_AVBOOL("b", true), t3 = CB_AVBOOL("b", false);
+    T_CHECK(cb_av_same(&t1, &t2));
+    T_CHECK(!cb_av_same(&t1, &t3));
+    cb_av y1 = CB_AVB("y", b1, 2), y2 = CB_AVB("y", b1, 2), y3 = CB_AVB("y", b2, 2), y4 = CB_AVB("y", b1, 1),
+          y0 = CB_AVB("y", NULL, 0), y00 = CB_AVB("y", b2, 0);
+    T_CHECK(cb_av_same(&y1, &y2));
+    T_CHECK(!cb_av_same(&y1, &y3));
+    T_CHECK(!cb_av_same(&y1, &y4));
+    T_CHECK(cb_av_same(&y0, &y00));   // empty is empty, wherever it points
+    cb_av a1 = CB_AVSL("l", l1, 2), a2 = CB_AVSL("l", l1, 2), a3 = CB_AVSL("l", l2, 2), a4 = CB_AVSL("l", l3, 1);
+    T_CHECK(cb_av_same(&a1, &a2));
+    T_CHECK(!cb_av_same(&a1, &a3));
+    T_CHECK(!cb_av_same(&a1, &a4));
+}
+
 // THE PROOF'S CAPTURE (data safety: what `make check-dynamo` compares with
 // the golden): with CBASE_DYNAMO_CAPTURE set, every request the DynamoDB store
 // sends is appended to the file as its shape lines.
@@ -247,6 +276,7 @@ int main(void) {
     T_RUN(dynamo_txn_and_query);
     T_RUN(the_capture_records_every_request);
     T_RUN(records_and_reads);
+    T_RUN(values_compare_by_kind_and_value);
     T_RUN(shapes_ignore_what_an_id_looks_like);
     char cmd[300];
     snprintf(cmd, sizeof cmd, "rm -rf '%s'", g_dir);

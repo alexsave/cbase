@@ -636,3 +636,4 @@ The hand-minimised input is `fuzz/corpus/event/crash-40a6db73`.
 
 - store_dynamo.c capture: Query requests not recorded -> `unit_items` `the_capture_records_every_request` (queries == 1, got 0).
 - rows_foolish.c cb_rows_rating_reindex: a row with no games given a leaderboard key (`games_played >= 0`) -> `unit_store` `ratings_reindexed` (the unplayed row still holds gsi2pk).
+- items.c cb_av_same: two string lists of one length always the same -> `unit_items` `values_compare_by_kind_and_value` (`a1` and `a3` differ in their second string).
