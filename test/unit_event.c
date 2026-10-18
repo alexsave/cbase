@@ -169,13 +169,14 @@ static void schedule_and_bot_drive(void) {
     T_EQ_INT(ev.kind, CB_EVENT_SCHEDULE);
     cb_event_free(&ev);
     T_EQ_INT(decode("\"bot_drive:a1b2c3\"", &ev), CB_OK);
-    T_EQ_INT(ev.kind, CB_EVENT_BOT_DRIVE);
-    T_EQ_STR(ev.game_id, "a1b2c3");
+    T_EQ_INT(ev.kind, CB_EVENT_JOB);
+    T_EQ_STR(ev.job, "bot_drive");
+    T_EQ_STR(ev.key, "a1b2c3");
     cb_event_free(&ev);
 
     const char *bad[] = {
-        "\"bot_drive:\"", "\"bot_drive:a/b\"", "\"bot_drive:a1b2c3\\\"\"", "\"bot_drive:0123456789012345678901234567890123\"",
-        "\"scan2\"", "\"scan", "\"Scan\"", "{\"cbase\":\"bot_drive\",\"game\":\"a1b2c3\"}", "{\"source\":\"aws.s3\"}",
+        "\"bot_drive:\"", "\"bot_drive:a/b\"", "\"bot_drive:a1b2c3\\\"\"", "\"bot_drive:0123456789012345678901234567890123456789012345678901234567890123\"",
+        "\"scan-2\"", "\"bot_drive:a:b\"", "\":a1b2c3\"", "\"scan", "\"Scan\"", "{\"cbase\":\"bot_drive\",\"game\":\"a1b2c3\"}", "{\"source\":\"aws.s3\"}",
         "{}", "[]", "", "{\"rawPath\":\"/\",\"requestContext\":{\"http\":{\"method\":7}}}",
         "{\"rawPath\":\"/\",\"requestContext\":{\"http\":{\"method\":\"GET\"}},\"body\":\"!!\",\"isBase64Encoded\":true}",
         "{\"rawPath\":\"/\",\"requestContext\":{\"http\":{\"method\":\"GET\"}}", "{\"requestContext\":{\"http\":{\"method\":\"GET\"}}}",

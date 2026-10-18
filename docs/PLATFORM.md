@@ -746,3 +746,11 @@ Stage 8 pays this list down, mutation-checked and recorded in `docs/mutation_che
 ### Stage 1
 
 - The name gate (section 8.4): `unit_name_gate.c` over one word list file under `shared/tools/` (products, providers, foolish's domain words) with a shrinking allowlist, and `shared_is_shared_validation.test.ts` reading its product list from the same file.
+
+### Stage 2
+
+- `jobs.c`: `cb_job_name_ok` and `cb_job_key_ok` (lengths, every refused byte), `cb_job_start` (no starter, a bad name or key refused before the starter), `cb_job_run` (an undeclared job is `CB_E_NOT_FOUND`), `cb_schedule_run` (by name, "" runs every one, an error stops the rest).
+- The local job pool's one-waiting-per-key rule across two job names with the same key.
+- `cb_event_job_payload` and the literal decoder: a 63-byte key taken and a 64-byte one refused, `"a:b:c"` refused, a schedule name refused at 32 bytes; a fuzz seed for each.
+- serve's per-schedule timers with two declared schedules of different periods.
+- `cb_config_scaled_ms` at speedup 1, 7 and 100.

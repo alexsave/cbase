@@ -6,10 +6,12 @@
 // (127.0.0.1:8080). SIGTERM or SIGINT drains: in-flight requests finish,
 // WebSockets get 1001, then the process exits 0.
 //
-// THE HEARTBEAT. Under Lambda, EventBridge Scheduler invokes the bot scan every
-// minute; serve has no scheduler, so a loop timer submits cb_bots_scan to the
-// request pool every CB_BOT_SCAN_EVERY_MS (app/bots.h; divided, like every bot
-// timer, by CBASE_BOT_SPEEDUP), the store never touched on the loop thread. It catches a drive that a kick lost, as bot-heartbeat did.
+// THE SCHEDULES. Under Lambda, EventBridge Scheduler invokes each of the
+// app's schedules (cbase/app.h; foolish's bot scan every minute); serve has
+// no scheduler, so a loop timer per schedule submits it to the request pool
+// every every_ms (divided by CBASE_BOT_SPEEDUP), the store never touched on
+// the loop thread. Foolish's scan catches a drive that a kick lost, as
+// bot-heartbeat did.
 //
 // The startup line the smoke test waits for, on stderr:
 //   ... INFO  serve: listening on 127.0.0.1:<port>
@@ -20,7 +22,7 @@
 // (and the name, while that process is still alive to be named) says who: a
 // `pkill -f "build/cbase serve"` meant for one hand-started server reaches
 // every server whose command line matches, a smoke's among them.
-#include "app/bots.h"
+#include "cbase/app.h"
 #include "app/foolish_app.h"
 #include "boot.h"
 #include "cbase/provider.h"
@@ -87,15 +89,21 @@ static void on_sigpipe_readable(cb_loop *l, int fd, int ev, void *ud) {
     cb_server_drain(ctx->server, 10000);
 }
 
-static void scan_task(void *ud) {
-    cb_ctx *ctx = ud;
-    cb_bots_scan(ctx, cb_now_ms());   // it logs what it kicked
+// One timer per schedule: the context and which schedule.
+typedef struct {
+    cb_ctx            *ctx;
+    const cb_schedule *s;
+} sched_timer;
+
+static void sched_task(void *ud) {
+    sched_timer *t = ud;
+    t->s->run(t->ctx, cb_now_ms());   // it logs what it did
 }
 
-static void on_scan_timer(cb_loop *l, void *ud) {
-    cb_ctx *ctx = ud;
-    if (ctx->store) cb_pool_submit(ctx->req_pool, scan_task, ctx);
-    cb_loop_timer(l, cb_bots_ms(ctx, CB_BOT_SCAN_EVERY_MS), on_scan_timer, ctx);
+static void on_sched_timer(cb_loop *l, void *ud) {
+    sched_timer *t = ud;
+    if (t->ctx->store) cb_pool_submit(t->ctx->req_pool, sched_task, t);
+    cb_loop_timer(l, cb_config_scaled_ms(t->ctx->cfg, t->s->every_ms), on_sched_timer, t);
 }
 
 static void log_config(const char *name, const char *value, bool secret, void *ud) {
@@ -123,8 +131,8 @@ int main(int argc, char **argv) {
     signal(SIGPIPE, SIG_IGN);
     ctx.loop = cb_loop_new();
     ctx.req_pool = cb_pool_new(cfg.req_workers, "req");
-    ctx.bot_pool = cb_pool_new(cfg.bot_workers, "bot");
-    if (!ctx.loop || !ctx.req_pool || !ctx.bot_pool) { fprintf(stderr, "cbase: out of memory\n"); return 1; }
+    ctx.job_pool = cb_pool_new(cfg.bot_workers, "job");
+    if (!ctx.loop || !ctx.req_pool || !ctx.job_pool) { fprintf(stderr, "cbase: out of memory\n"); return 1; }
     if (cb_boot(&ctx, err, sizeof err) != CB_OK) { CB_ERROR("serve", "%s", err); return 1; }
 
     cb_server_opts o;
@@ -145,14 +153,18 @@ int main(int argc, char **argv) {
     sigaction(SIGTERM, &sa, NULL);
     sigaction(SIGINT, &sa, NULL);
 
-    cb_loop_timer(ctx.loop, cb_bots_ms(&ctx, CB_BOT_SCAN_EVERY_MS), on_scan_timer, &ctx);
+    static sched_timer timers[16];
+    for (int i = 0; ctx.app && i < ctx.app->n_schedules && i < 16; i++) {
+        timers[i] = (sched_timer){ &ctx, &ctx.app->schedules[i] };
+        cb_loop_timer(ctx.loop, cb_config_scaled_ms(&cfg, timers[i].s->every_ms), on_sched_timer, &timers[i]);
+    }
 
     CB_INFO("serve", "listening on %s:%d", cfg.listen_host, port);
     int rc = cb_loop_run(ctx.loop);
 
     // Down in reverse: no handler may run against a freed connection.
     cb_pool_free(ctx.req_pool);
-    cb_pool_free(ctx.bot_pool);
+    cb_pool_free(ctx.job_pool);
     cb_server_free(ctx.server);
     cb_unboot(&ctx);
     cb_loop_free(ctx.loop);

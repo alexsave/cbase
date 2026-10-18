@@ -137,7 +137,7 @@ static void lambda_self_invoke(void) {
     setenv("AWS_LAMBDA_FUNCTION_NAME", "cbase-Fn", 1);
 
     g_status = 202;
-    T_EQ_INT(cb_lambda_invoke_bot_drive("a1b2c3"), CB_OK);
+    T_EQ_INT(cb_lambda_invoke_job(NULL, "bot_drive", "a1b2c3"), CB_OK);
     char *req = tls_srv_last(&s);
     T_CHECK(cb_starts_with(req, "POST /2015-03-31/functions/cbase-Fn/invocations HTTP/1.1\r\n"));
     char v[512];
@@ -152,21 +152,22 @@ static void lambda_self_invoke(void) {
 
     // What it sends is what the decoder reads back.
     char payload[64];
-    T_EQ_INT(cb_event_bot_drive_payload("a1b2c3", payload, sizeof payload), 18);
+    T_EQ_INT(cb_event_job_payload("bot_drive", "a1b2c3", payload, sizeof payload), 18);
     cb_event ev;
     T_EQ_INT(cb_event_decode(payload, strlen(payload), &ev), CB_OK);
-    T_EQ_INT(ev.kind, CB_EVENT_BOT_DRIVE);
-    T_EQ_STR(ev.game_id, "a1b2c3");
+    T_EQ_INT(ev.kind, CB_EVENT_JOB);
+    T_EQ_STR(ev.job, "bot_drive");
+    T_EQ_STR(ev.key, "a1b2c3");
     cb_event_free(&ev);
 
     g_status = 500;
-    T_EQ_INT(cb_lambda_invoke_bot_drive("a1b2c3"), CB_E_IO);
+    T_EQ_INT(cb_lambda_invoke_job(NULL, "bot_drive", "a1b2c3"), CB_E_IO);
     int before = atomic_load(&s.requests);
-    T_EQ_INT(cb_lambda_invoke_bot_drive("a\"b"), CB_E_INVALID);
-    T_EQ_INT(cb_lambda_invoke_bot_drive(""), CB_E_INVALID);
+    T_EQ_INT(cb_lambda_invoke_job(NULL, "bot_drive", "a\"b"), CB_E_INVALID);
+    T_EQ_INT(cb_lambda_invoke_job(NULL, "bot_drive", ""), CB_E_INVALID);
     T_EQ_INT(atomic_load(&s.requests), before);   // refused before anything is sent
     unsetenv("AWS_LAMBDA_FUNCTION_NAME");
-    T_EQ_INT(cb_lambda_invoke_bot_drive("a1b2c3"), CB_E_IO);
+    T_EQ_INT(cb_lambda_invoke_job(NULL, "bot_drive", "a1b2c3"), CB_E_IO);
     tls_srv_stop(&s);
     unsetenv("AWS_ENDPOINT_URL_LAMBDA");
 }

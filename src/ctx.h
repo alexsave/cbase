@@ -32,11 +32,12 @@ typedef struct cb_ctx    cb_ctx;
 typedef struct cb_app    cb_app;      // cbase/app.h
 typedef struct cb_provider cb_provider;   // cbase/provider.h
 
-// How a bot drive is started for a game (app/bots.h). serve: submit
-// cb_bots_drive to the local bot pool. lambda: an async self-invoke
-// (aws/lambda_invoke.h) carrying the JSON string literal "bot_drive:<id>". Fire and
-// forget: a lost kick is caught by the scan (cb_bots_scan).
-typedef void (*cb_kick_fn)(cb_ctx *ctx, const char *game_id);
+// How a job is started (jobs.h): the app's job `job` for `key`, run
+// elsewhere and not waited for. serve: the job pool (provider_local.c).
+// lambda: an async self-invoke carrying the JSON string literal
+// "<job>:<key>" (aws/lambda_invoke.h). Fire and forget: CB_OK when it was
+// handed on; a lost job is the app's schedule's to catch (foolish's scan).
+typedef int (*cb_job_start_fn)(cb_ctx *ctx, const char *job, const char *key);
 
 // Counters for the admin Overview panel. Relaxed atomics, read for display only.
 // Under Lambda they count this container's invocations, not the function's.
@@ -57,11 +58,11 @@ struct cb_ctx {
     cb_store   *store;
     cb_auth    *auth;
     cb_rt      *rt;
-    cb_kick_fn  kick_bots;
+    cb_job_start_fn job_start;   // the provider's (cbase/provider.h), or a test's
     // serve only (NULL under Lambda)
     cb_loop    *loop;
     cb_pool    *req_pool;
-    cb_pool    *bot_pool;
+    cb_pool    *job_pool;     // the jobs (provider_local.c), CBASE_BOT_WORKERS threads
     cb_server  *server;
     // lambda only: the current invocation's deadline (Lambda-Runtime-Deadline-Ms,
     // epoch ms), 0 under serve. A bot drive budgets against it.

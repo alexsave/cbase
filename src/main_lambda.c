@@ -9,13 +9,15 @@
 // edge cache's invalidation):
 //   HTTP       cb_handle -> cb_event_encode_http
 //   IOT_AUTH   cb_iot_authorize (an MQTT CONNECT to IoT Core) -> its policy
-//   SCHEDULE   cb_bots_scan                                      -> {}
-//   BOT_DRIVE  cb_bots_drive, budgeted against ctx->deadline_ms
+//   SCHEDULE   cb_schedule_run, the app's schedule the literal names
+//              ("scan"; jobs.h)                                  -> {}
+//   JOB        cb_job_run, the app's job "<job>:<key>" names
+//              ("bot_drive:<id>"), budgeted against ctx->deadline_ms
 //              (Lambda-Runtime-Deadline-Ms)                     -> {}
 // An event that does not decode, or a handler that cannot answer, is POSTed
 // to the invocation's /error. Lambda retries a failed ASYNC invocation (the
-// self-invoke, the schedule) twice, so a drive for a game that no longer
-// exists answers {} rather than an error: retrying it cannot help. The process holds nothing between invocations
+// self-invoke, the schedule) twice, so a job with nothing to do (a drive
+// for a game that no longer exists: CB_E_NOT_FOUND) answers {} rather than an error: retrying it cannot help. The process holds nothing between invocations
 // but what a warm container may cache (app/table_ops.h).
 //
 // Every invocation ends with one INFO line, so latency is measured rather
@@ -30,7 +32,7 @@
 // is calls/ms/new connections (aws/https.h). rid is the invocation's Lambda
 // request id (Lambda-Runtime-Aws-Request-Id), the id Lambda's own REPORT line
 // carries, so Logs Insights can join the two (billed duration, memory, init).
-#include "app/bots.h"
+#include "jobs.h"
 #include "app/after.h"
 #include "app/limits.h"
 #include "aws/event.h"
@@ -104,15 +106,15 @@ static int dispatch(cb_ctx *ctx, const cb_invocation *inv, cb_buf *out, char *wh
         break;
     }
     case CB_EVENT_SCHEDULE:
-        snprintf(what, what_cap, "scan");
-        rc = cb_bots_scan(ctx, cb_now_ms());
+        snprintf(what, what_cap, "%s", ev.schedule[0] ? ev.schedule : "schedule");
+        rc = cb_schedule_run(ctx, ev.schedule, cb_now_ms());
         if (rc >= 0) rc = cb_event_encode_none(out);
         break;
-    case CB_EVENT_BOT_DRIVE:
-        snprintf(what, what_cap, "drive %s", ev.game_id);
-        rc = cb_bots_drive(ctx, ev.game_id);
-        // No lease to take: the game is gone, or no bot can act on it (it is out of the scan).
-        if (rc == CB_E_NOT_FOUND) { CB_INFO("lambda", "bot_drive:%s: nothing to drive", ev.game_id); rc = CB_OK; }
+    case CB_EVENT_JOB:
+        snprintf(what, what_cap, "%s %s", ev.job, ev.key);
+        rc = cb_job_run(ctx, ev.job, ev.key);
+        // Nothing to do (a drive's game is gone, or no bot can act on it).
+        if (rc == CB_E_NOT_FOUND) { CB_INFO("lambda", "%s:%s: nothing to do", ev.job, ev.key); rc = CB_OK; }
         if (rc >= 0) rc = cb_event_encode_none(out);
         break;
     default:

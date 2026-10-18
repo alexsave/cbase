@@ -1,6 +1,8 @@
 // json_surface.c - every JSON shape c_base speaks (json_surface.h says why
 // they are all here). The only file that includes util/json.h.
 #include "json_surface.h"
+
+#include "jobs.h"
 #include "config.h"
 
 #include "util/err.h"
@@ -2753,36 +2755,34 @@ int cb_iot_auth_encode(bool ok, const char *user_id, int64_t lifetime_s, const c
 
 // ---- the string literals ------------------------------------------------------------
 
-static bool game_id_ok(const char *s, size_t n, size_t cap) {
-    if (n == 0 || n >= cap) return false;
-    for (size_t i = 0; i < n; i++)
-        if (!isalnum((unsigned char)s[i]) && s[i] != '-' && s[i] != '_') return false;
-    return true;
-}
-
-// "scan" and "bot_drive:<id>": the quotes stripped, nothing else parsed.
+// "<schedule>" (EventBridge Scheduler's literal input: "scan") and
+// "<job>:<key>" (a self-invoke): the quotes stripped, nothing else parsed;
+// the names and the key as jobs.h allows them.
 static int decode_literal(const char *s, size_t n, cb_event *ev) {
     if (n < 2 || s[n - 1] != '"') return CB_E_INVALID;
     s++;
     n -= 2;
-    if (n == 4 && memcmp(s, "scan", 4) == 0) { ev->kind = CB_EVENT_SCHEDULE; return CB_OK; }
-    static const char P[] = "bot_drive:";
-    if (n > sizeof P - 1 && memcmp(s, P, sizeof P - 1) == 0) {
-        const char *id = s + sizeof P - 1;
-        size_t idn = n - (sizeof P - 1);
-        if (!game_id_ok(id, idn, sizeof ev->game_id)) return CB_E_INVALID;
-        memcpy(ev->game_id, id, idn);
-        ev->game_id[idn] = 0;
-        ev->kind = CB_EVENT_BOT_DRIVE;
+    const char *colon = memchr(s, ':', n);
+    if (!colon) {
+        if (!cb_job_name_ok(s, n)) return CB_E_INVALID;
+        memcpy(ev->schedule, s, n);
+        ev->schedule[n] = 0;
+        ev->kind = CB_EVENT_SCHEDULE;
         return CB_OK;
     }
-    return CB_E_INVALID;
+    size_t jn = (size_t)(colon - s), kn = n - jn - 1;
+    if (!cb_job_name_ok(s, jn) || !cb_job_key_ok(colon + 1, kn)) return CB_E_INVALID;
+    memcpy(ev->job, s, jn);
+    ev->job[jn] = 0;
+    memcpy(ev->key, colon + 1, kn);
+    ev->key[kn] = 0;
+    ev->kind = CB_EVENT_JOB;
+    return CB_OK;
 }
 
-int cb_event_bot_drive_payload(const char *game_id, char *out, size_t cap) {
-    size_t n = game_id ? strlen(game_id) : 0;
-    if (!game_id_ok(game_id, n, sizeof ((cb_event *)0)->game_id)) return CB_E_INVALID;
-    int k = snprintf(out, cap, "\"bot_drive:%s\"", game_id);
+int cb_event_job_payload(const char *job, const char *key, char *out, size_t cap) {
+    if (!job || !key || !cb_job_name_ok(job, strlen(job)) || !cb_job_key_ok(key, strlen(key))) return CB_E_INVALID;
+    int k = snprintf(out, cap, "\"%s:%s\"", job, key);
     return k > 0 && (size_t)k < cap ? k : CB_E_INVALID;
 }
 

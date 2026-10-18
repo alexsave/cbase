@@ -3,7 +3,7 @@
 // The semantics preserved are the TypeScript server's (its bot_actions.ts and
 // bot-heartbeat function, deleted once c_base served every client). There are no timers in a Lambda, so:
 //   * after a commit that leaves bot work, the request kicks a drive
-//     (ctx->kick_bots: an async self-invoke under Lambda, the bot pool under serve);
+//     (the job CB_BOTS_JOB, jobs.h: an async self-invoke under Lambda, the job pool under serve);
 //   * a drive takes the game's lease (store lease_acquire, CB_BOT_LEASE_MS) or
 //     returns at once when someone else holds it; then loops: load the row,
 //     table_set_deal_seed, table_set_session_log, table_bot_wait_ms (sleep that
@@ -71,15 +71,15 @@ extern void (*cb_bots_cycle_observer)(const char *game_id, int attempt, int logs
 int cb_bots_scan(cb_ctx *ctx, int64_t now_ms);
 
 // A kick as every caller makes one (a commit's, a bump's, the scan's): through
-// ctx->kick_bots, unless another drive holds the game's lease. That drive
+// the job CB_BOTS_JOB (jobs.h), unless another drive holds the game's lease. That drive
 // reloads before every cycle and looks once more after it lets go, so it
 // takes the move; a second drive would only find the lease taken.
 void cb_bots_kick(cb_ctx *ctx, const char *game_id);
 
-// serve's cb_kick_fn: submits cb_bots_drive to ctx->bot_pool.
-void cb_bots_kick_local(cb_ctx *ctx, const char *game_id);
-// Lambda's cb_kick_fn: an async self-invoke with the literal "bot_drive:<id>"
-// (aws/lambda_invoke.h).
-void cb_bots_kick_lambda(cb_ctx *ctx, const char *game_id);
+// The drive as the app's job (cbase/app.h): cb_bots_drive under this name,
+// so a kick is the payload "bot_drive:<id>" under Lambda (jobs.h).
+#define CB_BOTS_JOB "bot_drive"
+// The scan as the app's schedule, whose EventBridge input is this literal.
+#define CB_BOTS_SCHEDULE "scan"
 
 #endif

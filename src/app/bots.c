@@ -14,8 +14,7 @@
 #include "util/clock.h"
 #include "util/err.h"
 #include "util/log.h"
-#include "util/pool.h"
-#include "aws/lambda_invoke.h"
+#include "jobs.h"
 
 #include <pthread.h>
 #include <stdbool.h>
@@ -131,8 +130,7 @@ static int64_t speedup(const cb_ctx *ctx) {
 }
 
 int64_t cb_bots_ms(const cb_ctx *ctx, int64_t production_ms) {
-    const int64_t k = speedup(ctx);
-    return (production_ms + k - 1) / k;
+    return cb_config_scaled_ms(ctx ? ctx->cfg : NULL, production_ms);
 }
 
 int64_t cb_bots_board_now(const cb_ctx *ctx, int64_t created_at, int64_t now_ms) {
@@ -222,9 +220,10 @@ static int drive_round(cb_ctx *ctx, const char *game_id, cb_store_tally *stp, bo
         CB_DEBUG("store", "bot drive %s end: %d reads, %d writes, %g RCU, %g WCU (%s)", game_id, st.reads, st.writes,
                  st.rcu, st.wcu, st.detail);
     cb_section_free(s);
-    if (rekick && ctx->kick_bots) {
+    if (rekick && ctx->job_start) {
         CB_INFO("bots", "game %s: budget spent with bot work left, kicking a fresh drive", game_id);
-        ctx->kick_bots(ctx, game_id);
+        int r = cb_job_start(ctx, CB_BOTS_JOB, game_id);
+        if (r != CB_OK) CB_WARN("bots", "kick %s: not started (%s)", game_id, cb_strerror(r));
     }
     *stp = st;
     return rc;
@@ -299,44 +298,7 @@ int cb_bots_scan(cb_ctx *ctx, int64_t now_ms) {
     return rc;
 }
 
-// ---- the two kicks ------------------------------------------------------------------
-
-typedef struct {
-    cb_ctx *ctx;
-    char    game_id[CB_GAME_ID_MAX + 1];
-} kick_task;
-
-// The games with a drive queued and not yet started. A kick for one of them
-// is dropped: the queued drive reads the row when it starts, so it sees
-// whatever the later kick would have. Without this every bump during a long
-// drive queued one more drive (thousands in a game), each of which later took
-// the lease, read the row, found nothing and let go. The game leaves the set
-// when its drive STARTS, so a kick during a running drive still queues one.
-// Full (more games waiting than slots): kicks queue as they always did.
-#define KICK_PENDING_MAX 1024
-static pthread_mutex_t g_kick_mu = PTHREAD_MUTEX_INITIALIZER;
-static char g_kick_pending[KICK_PENDING_MAX][CB_GAME_ID_MAX + 1];
-static int g_kick_n;
-
-// true when `id` was not pending and now is (or the set is full).
-static bool kick_mark(const char *id) {
-    pthread_mutex_lock(&g_kick_mu);
-    bool add = true;
-    for (int i = 0; i < g_kick_n && add; i++) add = strcmp(g_kick_pending[i], id) != 0;
-    if (add && g_kick_n < KICK_PENDING_MAX) snprintf(g_kick_pending[g_kick_n++], sizeof g_kick_pending[0], "%s", id);
-    pthread_mutex_unlock(&g_kick_mu);
-    return add;
-}
-
-static void kick_unmark(const char *id) {
-    pthread_mutex_lock(&g_kick_mu);
-    for (int i = 0; i < g_kick_n; i++)
-        if (strcmp(g_kick_pending[i], id) == 0) {
-            memcpy(g_kick_pending[i], g_kick_pending[--g_kick_n], sizeof g_kick_pending[0]);
-            break;
-        }
-    pthread_mutex_unlock(&g_kick_mu);
-}
+// ---- the kick ------------------------------------------------------------------------
 
 // Whether a kick should start a drive: not while another drive holds the
 // game's lease. That drive reloads the row before every cycle, and looks once
@@ -355,32 +317,8 @@ static bool kick_wanted(cb_ctx *ctx, const char *game_id) {
 }
 
 void cb_bots_kick(cb_ctx *ctx, const char *game_id) {
-    if (ctx->kick_bots && kick_wanted(ctx, game_id)) ctx->kick_bots(ctx, game_id);
-}
-
-static void kick_run(void *ud) {
-    kick_task *k = ud;
-    kick_unmark(k->game_id);
-    cb_bots_drive(k->ctx, k->game_id);
-    free(k);
-}
-
-void cb_bots_kick_local(cb_ctx *ctx, const char *game_id) {
-    if (!ctx->bot_pool) { CB_WARN("bots", "kick %s: no bot pool", game_id); return; }
-    if (!kick_mark(game_id)) return;   // a drive for it is already waiting
-    kick_task *k = calloc(1, sizeof *k);
-    if (!k) { kick_unmark(game_id); return; }
-    k->ctx = ctx;
-    snprintf(k->game_id, sizeof k->game_id, "%s", game_id);
-    if (cb_pool_submit(ctx->bot_pool, kick_run, k) != CB_OK) {
-        CB_WARN("bots", "kick %s: the bot pool is stopping", game_id);
-        kick_unmark(game_id);
-        free(k);
-    }
-}
-
-void cb_bots_kick_lambda(cb_ctx *ctx, const char *game_id) {
-    int rc = cb_lambda_invoke_bot_drive(game_id);
+    if (!ctx->job_start || !kick_wanted(ctx, game_id)) return;
+    int rc = cb_job_start(ctx, CB_BOTS_JOB, game_id);
     // A lost kick is the scan's to catch, within a minute.
-    if (rc != CB_OK) CB_WARN("bots", "kick %s: self-invoke failed (%s)", game_id, cb_strerror(rc));
+    if (rc != CB_OK) CB_WARN("bots", "kick %s: not started (%s)", game_id, cb_strerror(rc));
 }

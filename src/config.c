@@ -196,3 +196,8 @@ bool cb_config_origin_allowed(const cb_config *c, const char *origin) {
     }
     return false;
 }
+
+int64_t cb_config_scaled_ms(const cb_config *cfg, int64_t ms) {
+    const int64_t k = cfg && cfg->bot_speedup > 1 ? cfg->bot_speedup : 1;
+    return (ms + k - 1) / k;
+}

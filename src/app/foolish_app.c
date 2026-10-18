@@ -2,6 +2,7 @@
 // and the kernel self-test every main runs before it serves.
 #include "foolish_app.h"
 
+#include "bots.h"
 #include "functions_http.h"
 #include "unfurl_http.h"
 #include "v1_http.h"
@@ -64,9 +65,18 @@ out:
 static const cb_route_list *const FOOLISH_ROUTES[] = { &cb_functions_route_list, &cb_v1_route_list,
                                                        &cb_unfurl_route_list };
 
+// The bot drive, started by a kick (bots.h cb_bots_kick), and the scan that
+// catches a lost one: EventBridge's literal "scan" under Lambda.
+static const cb_job FOOLISH_JOBS[] = { { CB_BOTS_JOB, cb_bots_drive } };
+static const cb_schedule FOOLISH_SCHEDULES[] = { { CB_BOTS_SCHEDULE, CB_BOT_SCAN_EVERY_MS, cb_bots_scan } };
+
 const cb_app cb_foolish_app = {
     .name = "foolish",
     .routes = FOOLISH_ROUTES,
     .n_route_lists = (int)(sizeof FOOLISH_ROUTES / sizeof FOOLISH_ROUTES[0]),
     .selftest = cb_kernel_selftest,
+    .jobs = FOOLISH_JOBS,
+    .n_jobs = 1,
+    .schedules = FOOLISH_SCHEDULES,
+    .n_schedules = 1,
 };

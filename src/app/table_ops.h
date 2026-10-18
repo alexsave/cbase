@@ -31,7 +31,7 @@
 //     a failure is logged and swallowed, as today;
 //   * TABLE_EMPTY deletes the game (store game_delete at the new version) and
 //     answers no envelope (out->envelope NULL): there is no board left;
-//   * needs_bots: ctx->kick_bots(ctx, id).
+//   * needs_bots: cb_bots_kick(ctx, id).
 #ifndef CB_TABLE_OPS_H
 #define CB_TABLE_OPS_H
 

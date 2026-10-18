@@ -15,9 +15,9 @@
 
 #define INVOKE_TIMEOUT_MS 5000
 
-int cb_lambda_invoke_bot_drive(const char *game_id) {
-    char payload[64];
-    int pn = cb_event_bot_drive_payload(game_id, payload, sizeof payload);
+int cb_lambda_invoke_job(cb_ctx *ctx, const char *job, const char *key) {
+    char payload[128];
+    int pn = cb_event_job_payload(job, key, payload, sizeof payload);
     if (pn < 0) return CB_E_INVALID;
     const char *fn = getenv("AWS_LAMBDA_FUNCTION_NAME");
     if (!fn || !*fn) { CB_ERROR("invoke", "AWS_LAMBDA_FUNCTION_NAME is not set"); return CB_E_IO; }
@@ -47,7 +47,7 @@ int cb_lambda_invoke_bot_drive(const char *game_id) {
     int rc = cb_aws_call("lambda", "POST", host, port, tls, cb_buf_cstr(&path), headers, 1, payload, (size_t)pn,
                          INVOKE_TIMEOUT_MS, &r);
     if (rc == CB_OK && r.status != 202) {
-        CB_WARN("invoke", "bot_drive:%s answered %d: %.200s", game_id, r.status, cb_buf_cstr(&r.body));
+        CB_WARN("invoke", "%s:%s answered %d: %.200s", job, key, r.status, cb_buf_cstr(&r.body));
         rc = CB_E_IO;
     } else if (rc != CB_OK) {
         rc = CB_E_IO;

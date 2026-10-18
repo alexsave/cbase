@@ -41,9 +41,8 @@ struct cb_provider {
     int (*rt_open)(cb_ctx *ctx, cb_rt **out);
     // Routes only this provider serves (the hub's /mqtt upgrade). NULL: none.
     int (*routes)(cb_ctx *ctx);
-    // How a bot drive is started (ctx.h cb_kick_fn). Stage 2 of
-    // docs/PLATFORM.md replaces it with a generic job start.
-    cb_kick_fn kick;
+    // How a job is started (ctx.h cb_job_start_fn).
+    cb_job_start_fn job_start;
     // The request header the edge vouches for the viewer's address in
     // (app/limits.h cb_viewer_key), or NULL: the socket's peer is the viewer.
     const char *viewer_header;

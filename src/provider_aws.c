@@ -5,7 +5,7 @@
 // admin console.
 #include "cbase/provider.h"
 
-#include "app/bots.h"
+#include "aws/lambda_invoke.h"
 #include "config.h"
 #include "realtime/rt_iot.h"
 #include "store/store.h"
@@ -66,7 +66,7 @@ const cb_provider cb_provider_aws = {
     .flags = CB_PROV_AFTER_WINDOW | CB_PROV_EDGE_PURGE,
     .store = "dynamo",
     .rt_open = aws_rt,
-    .kick = cb_bots_kick_lambda,
+    .job_start = cb_lambda_invoke_job,
     .viewer_header = "cloudfront-viewer-address",
     .console_links = aws_links,
 };

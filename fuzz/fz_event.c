@@ -37,11 +37,11 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
             FZ_CHECK(memchr(ev.iot.client_id, 0, sizeof ev.iot.client_id));
             FZ_CHECK(memchr(ev.iot.origin, 0, sizeof ev.iot.origin));
             break;
-        case CB_EVENT_BOT_DRIVE: {
-            FZ_CHECK(memchr(ev.game_id, 0, sizeof ev.game_id));
+        case CB_EVENT_JOB: {
+            FZ_CHECK(memchr(ev.job, 0, sizeof ev.job) && memchr(ev.key, 0, sizeof ev.key));
             // The writer of what was read gives the same literal back.
-            char lit[64];
-            FZ_CHECK(cb_event_bot_drive_payload(ev.game_id, lit, sizeof lit) > 0);
+            char lit[128];
+            FZ_CHECK(cb_event_job_payload(ev.job, ev.key, lit, sizeof lit) > 0);
             break;
         }
         default:

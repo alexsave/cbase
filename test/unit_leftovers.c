@@ -49,7 +49,7 @@ static void lambda_kick_self_invokes(void) {
     memset(&ctx, 0, sizeof ctx);
     ctx.prov = &cb_provider_aws;
     g_status = 202;
-    cb_bots_kick_lambda(&ctx, "a1b2c3");
+    cb_provider_aws.job_start(&ctx, "bot_drive", "a1b2c3");
     char *req = tls_srv_last(&s);
     T_CHECK(req && strstr(req, "POST /2015-03-31/functions/cbase-Fn/invocations") == req);
     T_CHECK(req && strstr(req, "\r\n\r\n\"bot_drive:a1b2c3\"") != NULL);
@@ -57,7 +57,7 @@ static void lambda_kick_self_invokes(void) {
     // A refused invoke is logged and left to the scan: nothing to return, nothing more sent.
     g_status = 500;
     int before = atomic_load(&s.requests);
-    cb_bots_kick_lambda(&ctx, "a1b2c3");
+    cb_provider_aws.job_start(&ctx, "bot_drive", "a1b2c3");
     T_EQ_INT(atomic_load(&s.requests), before + 1);
     tls_srv_stop(&s);
     unsetenv("AWS_ENDPOINT_URL_LAMBDA");

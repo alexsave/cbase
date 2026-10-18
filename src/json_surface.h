@@ -433,10 +433,10 @@ int  cb_iot_auth_encode(bool ok, const char *user_id, int64_t lifetime_s, const 
 // The response JSON for an event that answers nothing (the bot scan, a
 // self-invoke): {}. CB_OK or CB_E_NOMEM.
 int  cb_event_encode_none(cb_buf *out);
-// The self-invoke payload "bot_drive:<game id>" (with its quotes) into out,
-// the writer of what cb_event_decode reads. Returns its length, or
-// CB_E_INVALID for an id outside [A-Za-z0-9_-]{1,31} or a short cap.
-int  cb_event_bot_drive_payload(const char *game_id, char *out, size_t cap);
+// The self-invoke payload "<job>:<key>" (with its quotes) into out, the
+// writer of what cb_event_decode reads. Returns its length, or CB_E_INVALID
+// for a name or key jobs.h refuses, or a short cap.
+int  cb_event_job_payload(const char *job, const char *key, char *out, size_t cap);
 // The first `max` bytes of an event with every secret string cut to
 // "REDACTED <n>": the values of authorization, apikey, cookie(s), body,
 // password and token keys (any case), and the apikey and token parameters of

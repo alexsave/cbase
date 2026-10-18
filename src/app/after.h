@@ -45,7 +45,7 @@ bool cb_after_open(void);
 // cb_fanout_commit publishes it then.
 bool cb_after_fanout(const cb_fanout *f);
 
-// Wakes the game's bots (ctx->kick_bots): queued while the window is open.
+// Wakes the game's bots (a job, jobs.h): queued while the window is open.
 void cb_after_kick(cb_ctx *ctx, const char *game_id);
 
 // Does the queued work in order, closes the window, flushes the edge cache.

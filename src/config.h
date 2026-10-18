@@ -10,6 +10,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 typedef struct {
     // CBASE_LISTEN, "host:port", default 127.0.0.1:8080. Port 0 asks the OS for
@@ -90,6 +91,10 @@ void cb_config_each(const cb_config *cfg, cb_config_fn fn, void *ud);
 // random), and every secret that is set must be at least 32 characters.
 // CB_OK, or CB_E_INVALID with a sentence in err.
 int cb_config_check_secrets(const cb_config *cfg, bool lambda, char *err, size_t cap);
+
+// A timer of the platform's own (a schedule's period under serve) as this
+// process runs it: divided by CBASE_BOT_SPEEDUP, rounded up so never 0.
+int64_t cb_config_scaled_ms(const cb_config *cfg, int64_t ms);
 
 // The header CloudFront adds (CBASE_ORIGIN_SECRET above).
 #define CB_ORIGIN_HEADER "X-Cbase-Origin"

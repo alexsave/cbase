@@ -1,5 +1,5 @@
-// unit_bots_kick.c - serve's kick (app/bots.h cb_bots_kick_local) queues at
-// most one drive per game.
+// unit_bots_kick.c - serve's job start (provider_local.c, cb_provider_local's
+// job_start) queues at most one drive per game.
 //
 // Every bump and every commit that leaves bot work kicks a drive. While a long
 // drive holds the one bot worker, a game's kicks used to pile up in the queue,
@@ -12,6 +12,8 @@
 #include "t.h"
 
 #include "app/bots.h"
+#include "app/foolish_app.h"
+#include "cbase/provider.h"
 #include "store/store.h"
 #include "util/err.h"
 #include "util/pool.h"
@@ -50,29 +52,30 @@ static void one_queued_drive_per_game(void) {
     cb_ctx ctx;
     memset(&ctx, 0, sizeof ctx);
     ctx.store = &store;
-    ctx.bot_pool = cb_pool_new(1, "kick");
-    T_CHECK(ctx.bot_pool != NULL);
-    if (!ctx.bot_pool) return;
+    ctx.app = &cb_foolish_app;
+    ctx.job_pool = cb_pool_new(1, "kick");
+    T_CHECK(ctx.job_pool != NULL);
+    if (!ctx.job_pool) return;
 
     // The worker is busy (a long drive of another game): kicks queue.
     atomic_store(&g_block, 1);
     atomic_store(&g_hold_first, 1);
-    T_EQ_INT(cb_pool_submit(ctx.bot_pool, blocker, NULL), CB_OK);
+    T_EQ_INT(cb_pool_submit(ctx.job_pool, blocker, NULL), CB_OK);
     for (int i = 0; i < 2000 && !atomic_load(&g_blocking); i++) usleep(1000);
-    for (int i = 0; i < 500; i++) cb_bots_kick_local(&ctx, "aaaaaa");
-    cb_bots_kick_local(&ctx, "bbbbbb");
-    cb_bots_kick_local(&ctx, "bbbbbb");
-    T_EQ_INT(cb_pool_pending(ctx.bot_pool), 2);   // one per game
+    for (int i = 0; i < 500; i++) cb_provider_local.job_start(&ctx, "bot_drive", "aaaaaa");
+    cb_provider_local.job_start(&ctx, "bot_drive", "bbbbbb");
+    cb_provider_local.job_start(&ctx, "bot_drive", "bbbbbb");
+    T_EQ_INT(cb_pool_pending(ctx.job_pool), 2);   // one per game
     atomic_store(&g_block, 0);
 
     // aaaaaa's drive is now running (held inside its lease call): a kick now
     // must queue a second drive, not be dropped.
     for (int i = 0; i < 2000 && !atomic_load(&g_in_first); i++) usleep(1000);
     T_CHECK(atomic_load(&g_in_first));
-    cb_bots_kick_local(&ctx, "aaaaaa");
-    cb_bots_kick_local(&ctx, "aaaaaa");
+    cb_provider_local.job_start(&ctx, "bot_drive", "aaaaaa");
+    cb_provider_local.job_start(&ctx, "bot_drive", "aaaaaa");
     atomic_store(&g_hold_first, 0);
-    cb_pool_free(ctx.bot_pool);   // runs what is queued
+    cb_pool_free(ctx.job_pool);   // runs what is queued
     T_EQ_INT(atomic_load(&g_drives_a), 2);
     T_EQ_INT(atomic_load(&g_drives_b), 1);
 }

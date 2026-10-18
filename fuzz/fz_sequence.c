@@ -397,9 +397,10 @@ static int g_kicks;
 static bool g_scanning;
 static int g_scan_n;
 static char g_scan_kicked[64][CB_GAME_ID_MAX + 1];
-static void fz_kick(cb_ctx *ctx, const char *game_id) {
+static int fz_kick(cb_ctx *ctx, const char *job, const char *game_id) {
     g_kicks++;
     if (g_scanning && g_scan_n < 64) snprintf(g_scan_kicked[g_scan_n++], CB_GAME_ID_MAX + 1, "%s", game_id);
+    return 0;
 }
 
 // ---- requests -----------------------------------------------------------------------------
@@ -920,7 +921,7 @@ int LLVMFuzzerInitialize(int *argc, char ***argv) {
     if (g_real->bots_replace(g_store, bots, 2) != CB_OK) abort();
     if (cb_auth_new(&g_ctx, &g_ctx.auth) != CB_OK) abort();
     g_ctx.rt = &g_rt;
-    g_ctx.kick_bots = fz_kick;
+    g_ctx.job_start = fz_kick;
     g_ctx.router = cb_router_new();
     if (cb_functions_routes(&g_ctx) != CB_OK || cb_v1_routes(&g_ctx) != CB_OK) abort();
     cb_auth_now = fz_now;

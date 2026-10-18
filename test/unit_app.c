@@ -68,10 +68,11 @@ static void seq_note(int64_t v) {
     if (g_nseq < 64) g_seq[g_nseq++] = v;
 }
 
-static void kick_recorder(cb_ctx *ctx, const char *game_id) {
+static int kick_recorder(cb_ctx *ctx, const char *job, const char *game_id) {
     seq_note(-1);
     g_kicks++;
     snprintf(g_kicked, sizeof g_kicked, "%s", game_id);
+    return CB_OK;
 }
 
 typedef struct {
@@ -128,7 +129,7 @@ static void setup(int n_bots) {
     g_ctx.prov = &cb_provider_local;
     g_store = tm_store_new(n_bots, "random");
     g_ctx.store = g_store;
-    g_ctx.kick_bots = kick_recorder;
+    g_ctx.job_start = kick_recorder;
     g_ctx.router = cb_router_new();
     cb_functions_routes(&g_ctx);
     tm_add_user(g_store, UID_A, "ALICE");

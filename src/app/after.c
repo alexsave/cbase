@@ -81,7 +81,7 @@ bool cb_after_fanout(const cb_fanout *f) {
 }
 
 void cb_after_kick(cb_ctx *ctx, const char *game_id) {
-    if (!ctx->kick_bots) return;
+    if (!ctx->job_start) return;
     after_job *j = t_open ? calloc(1, sizeof *j) : NULL;
     if (!j) {
         cb_bots_kick(ctx, game_id);

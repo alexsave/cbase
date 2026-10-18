@@ -26,11 +26,12 @@ static void observe(const cb_fanout *f) {
     g_log.n++;
 }
 
-static void kick(cb_ctx *ctx, const char *game_id) {
-    if (g_log.n >= 16) return;
+static int kick(cb_ctx *ctx, const char *job, const char *game_id) {
+    if (g_log.n >= 16) return CB_OK;
     g_log.kind[g_log.n] = 'K';
     snprintf(g_log.game[g_log.n], 16, "%s", game_id);
     g_log.n++;
+    return CB_OK;
 }
 
 // A transport whose every delivery fails: the drain counts them.
@@ -47,7 +48,7 @@ static void setup(void) {
     memset(&g_ctx, 0, sizeof g_ctx);
     memset(&g_cfg, 0, sizeof g_cfg);
     g_ctx.cfg = &g_cfg;
-    g_ctx.kick_bots = kick;
+    g_ctx.job_start = kick;
     memset(&g_log, 0, sizeof g_log);
     cb_fanout_observer = observe;
 }
@@ -81,7 +82,7 @@ static void closed_window_acts_at_once(void) {
     T_EQ_INT(g_log.kind[0], 'P');
     T_EQ_INT(g_log.kind[1], 'K');
     // A context with nobody to kick: nothing, not a crash.
-    g_ctx.kick_bots = NULL;
+    g_ctx.job_start = NULL;
     cb_after_kick(&g_ctx, "aaaaaa");
     T_EQ_INT(g_log.n, 2);
     cb_after_run(&g_ctx);   // nothing queued, window closed: safe

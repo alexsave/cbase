@@ -1,10 +1,11 @@
 // event.h - the Lambda event, decoded: the kinds of event the one function
 // receives and the struct they decode into. The JSON both ways (the decoder,
-// the HTTP response encoder, the bot_drive payload, the redaction for
+// the HTTP response encoder, the job payload, the redaction for
 // the log) lives in json_surface.c and is declared in json_surface.h.
 #ifndef CB_EVENT_H
 #define CB_EVENT_H
 
+#include "jobs.h"
 #include "net/http.h"
 #include "util/str.h"
 
@@ -12,7 +13,7 @@ typedef enum {
     CB_EVENT_UNKNOWN = 0,
     CB_EVENT_HTTP,
     CB_EVENT_SCHEDULE,
-    CB_EVENT_BOT_DRIVE,
+    CB_EVENT_JOB,
     CB_EVENT_IOT_AUTH,
 } cb_event_kind;
 
@@ -38,7 +39,9 @@ typedef struct {
     cb_event_kind kind;
     cb_http_req   http;             // CB_EVENT_HTTP; strings point into `storage`
     cb_iot_auth_event iot;          // CB_EVENT_IOT_AUTH
-    char          game_id[32];      // CB_EVENT_BOT_DRIVE
+    char          job[CB_JOB_NAME_MAX + 1];   // CB_EVENT_JOB: the literal "<job>:<key>" (jobs.h)
+    char          key[CB_JOB_KEY_MAX + 1];    // CB_EVENT_JOB
+    char          schedule[CB_JOB_NAME_MAX + 1];   // CB_EVENT_SCHEDULE: the literal's name; "" for an EventBridge event (every schedule)
     cb_buf        storage;          // owns every string above
 } cb_event;
 

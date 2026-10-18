@@ -89,7 +89,7 @@ It was not chosen because DynamoDB costs nothing and gives the query indexes (a 
                        store.h: store_sqlite | store_dynamo        realtime: rt_local | rt_iot
 ```
 
-`ctx.h` holds the three seams: `ctx->store`, `ctx->rt` (with its transport), and `ctx->kick_bots`.
+`ctx.h` holds the three seams: `ctx->store`, `ctx->rt` (with its transport), and `ctx->job_start` (`src/jobs.h`: the app's jobs and schedules by name; the provider starts a job on its pool or by a self-invoke).
 Each main names its provider (`src/cbase/provider.h`: `cb_provider_aws` or `cb_provider_local`, which picks the store, the transport, the kick, the edge's viewer header and the admin's console links) and its app (`src/cbase/app.h`: `cb_foolish_app`, its route lists and its self-test); nothing else asks which main is running (docs/PLATFORM.md).
 `boot.c` brings a context up the same way for both mains, runs the app's self-test (foolish's kernel self-test) first, and leaves a module whose constructor answers `CB_E_NOTIMPL` as NULL with a warning, so the skeleton serves /health while modules are being built.
 Every handler answers 503 when a handle it needs is NULL.
@@ -556,10 +556,10 @@ As built:
 - `aws_call.c`: the one signed-request step (credentials, SigV4, HTTPS) under `iot_data.c`, `lambda_invoke.c`, `ssm.c`, `cloudfront.c` and the DynamoDB store.
   An endpoint URL that says `http://` (DynamoDB Local) is reached over plain TCP (`cb_http_plain_request`), signed the same way; plain HTTP is decided by the URL alone and refused for any `amazonaws.com` host.
 - The event section of `json_surface.c` (formerly `event.c`, which keeps only freeing and logging an event): Lambda events in, responses out; binary bodies are base64 both ways.
-  The self-invoke and schedule payloads are the JSON string literals `"bot_drive:<id>"` and `"scan"` (the decision record), read by stripping the quotes; EventBridge's `"source":"aws.events"` is also a scan.
-  `cb_event_bot_drive_payload` is the one writer of the literal.
+  The self-invoke and schedule payloads are the JSON string literals `"<job>:<key>"` and `"<schedule>"` (`src/jobs.h`; foolish's are `"bot_drive:<id>"` and `"scan"`, the decision record), read by stripping the quotes; EventBridge's `"source":"aws.events"` runs every schedule.
+  `cb_event_job_payload` is the one writer of the literal.
 - `lambda_invoke.c` (`AWS_ENDPOINT_URL_LAMBDA` overrides the endpoint) and `iot_data.c` (one `POST /topics/<topic>?qos=0`, service `iotdata`; a `host:port` endpoint is a test's stand-in, always over TLS).
-- `main_lambda.c` clears the deadline after each invocation and answers `{}` for a drive whose game is gone.
+- `main_lambda.c` clears the deadline after each invocation and answers `{}` for a job with nothing to do (`CB_E_NOT_FOUND`: a drive whose game is gone).
 
 Tests: `test/unit_sigv4.c`, `test/unit_https.c` and `test/unit_aws_calls.c` against a local TLS server, where each request's signature is recomputed from the bytes that arrived; `test/unit_event.c`; `test/smoke_lambda.c` (health, scan, a garbage event, a drive for a missing game).
 `make bootstrap` links a static aarch64 ELF; the unit tests pass in an Ubuntu 24.04 arm64 container.

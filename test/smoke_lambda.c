@@ -11,7 +11,7 @@
 //   req-1  a Function URL GET /health: answered on /response with the
 //          encoded HTTP response (statusCode 200, the health text, not base64)
 //   req-2  the schedule's string literal "scan": answered on /response with {}
-//   req-3  a literal no one sends ("nonsense"): answered on /error, as an
+//   req-3  a literal no one sends and no name spells ("non-sense"): answered on /error, as an
 //          event that does not decode
 //   req-4  a drive for a game that is gone: answered {}
 //   req-5  IoT Core's custom authorizer request with a token that does not
@@ -58,7 +58,7 @@ static const char IOT_AUTH[] =
     "\"connectionMetadata\":{\"id\":\"c1\"}}";
 
 #define N_EVENTS 5
-static const char *const EVENTS[N_EVENTS] = { HEALTH, "\"scan\"", "\"nonsense\"", "\"bot_drive:abc123\"", IOT_AUTH };
+static const char *const EVENTS[N_EVENTS] = { HEALTH, "\"scan\"", "\"non-sense\"", "\"bot_drive:abc123\"", IOT_AUTH };
 static char g_posted_path[N_EVENTS][256];
 static cb_buf g_posted_body[N_EVENTS];
 
@@ -127,7 +127,7 @@ static void one_invocation(const char *bin) {
     char line[512] = "";
     T_EQ_INT(tp_wait_line(&c, "inv: scan ms=", 20000, line, sizeof line), 0);
     T_CHECK(strstr(line, " rid=req-2") != NULL);
-    T_EQ_INT(tp_wait_line(&c, "inv: drive abc123 ms=", 20000, line, sizeof line), 0);
+    T_EQ_INT(tp_wait_line(&c, "inv: bot_drive abc123 ms=", 20000, line, sizeof line), 0);
     T_CHECK(strstr(line, " rid=req-4") != NULL);
     T_EQ_INT(tp_wait_line(&c, "inv: iot connect deny ms=", 20000, line, sizeof line), 0);
     T_CHECK(strstr(line, " rid=req-5") != NULL);
@@ -157,7 +157,7 @@ static void one_invocation(const char *bin) {
     T_CHECK(cb_json_get_str(body, n, "headers.Content-Type", ctype, sizeof ctype));
     T_EQ_STR(ctype, "text/plain; charset=utf-8");
 
-    // req-2: the scan literal reached cb_bots_scan, which answered {}.
+    // req-2: the scan literal reached the app's schedule (cb_bots_scan), which answered {}.
     body = cb_buf_cstr(&g_posted_body[1]);
     T_EQ_STR(g_posted_path[1], "/2018-06-01/runtime/invocation/req-2/response");
     T_EQ_STR(body, "{}");
