@@ -160,6 +160,11 @@ As built (store builder, then integration):
 - Membership follows every commit (the header's contract), where `commit_table` touched it only when the roster changed; a seat whose account is gone (delete-account keeps the id in the roster) is skipped in both backends instead of failing every later commit on the foreign key.
   DynamoDB writes only the seats that change (a human's MEMBER item when the seat is taken, never again on later commits), so its dashboard index orders by when the seat was taken; PostgREST sorts by the rows it loads, so nothing reads that order.
   The app relies on exactly this, since a redacted roster still names the deleted id; the store tests hold both backends to it (`cas_second_writer_loses` commits with a deleted seat on SQLite, `flow_commit_drops_missing_account` on DynamoDB).
+- DynamoDB's commit does not read the seats when the row it is fenced on vouches for them (`seats_exact`, 2026-10-18): the app hands it the seats of the roster it loaded (`cb_game_commit` `prev_known`), and the fence makes those the stored ones whenever the commit lands.
+  The seat items are written only in the transactions that move the version (create, commit, import) and only ever removed outside them (`user_delete`), so after a create or a commit they are within the row's roster: a commit then deletes the seats the roster drops (a no-op for an item already gone) and puts the ones it adds.
+  An imported row, and one written before the flag, does not vouch, so its next commit reads the seats as before (the export's seat tables need not match its rosters) and vouches from then on.
+  What it gives up: an item that went missing under a seat that stays (only `user_delete`, whose account then goes too) is no longer put back.
+  It took the keys-only Query out of every move, and out of the game's order lock (measured with two client processes against DynamoDB Local: 362 to 296 us of server CPU a move).
 - `last_commit_at` is stamped by the store from `row->updated_at` on every commit; `row->last_commit_at` is read only by the import.
 - The lease: acquire and renew move the scan's staleness clock (never `last_commit_at`); release clears `lease_until` and does not move it.
   SQLite keeps lease and clock on the game row; DynamoDB keeps both on the game's SCAN marker (see "The free tier, provisioned"), so there the row's `updated_at` is its last commit's.
@@ -233,7 +238,7 @@ All three are built; the numbers after them are in "The free tier, provisioned" 
 
 Unverified until AWS: real IAM (the role's policy against each call), throttling (the retry path is unit-tested against the documented bodies, see below), `TransactWriteItems` conflict behaviour under real concurrency (DynamoDB Local serializes, so `TransactionConflict` never occurs and `cas_under_threads` only proves the fence), GSI eventual consistency (Local's indexes are effectively synchronous: on AWS a dashboard, replay list or session revoke read through a GSI right after a write may miss it), TTL deletion (Local never deletes), point-in-time recovery (Local has none), and latency over the network.
 
-Open defects: DynamoDB `user_delete` and `game_delete` cascade in steps after the main delete, so a crash between them leaves unreachable orphans; `users_list`, `bots_list` and `ratings_list` read a whole index partition and sort in C (fine at 41 users, not at thousands); `game_commit` reads the seats on every commit (one keys-only Query on DynamoDB) where a `membership_changed` flag would skip it; `store_import.c` is linked into `cbase` and `bootstrap` too, unused there.
+Open defects: DynamoDB `user_delete` and `game_delete` cascade in steps after the main delete, so a crash between them leaves unreachable orphans; `users_list`, `bots_list` and `ratings_list` read a whole index partition and sort in C (fine at 41 users, not at thousands); `store_import.c` is linked into `cbase` and `bootstrap` too, unused there.
 
 ### The free tier, provisioned (2026-10-13)
 

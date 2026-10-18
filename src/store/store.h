@@ -117,6 +117,14 @@ typedef struct {
     int64_t  version;           // the CAS token; clients gate on it
     int64_t  round_epoch;
     int64_t  created_at, updated_at, last_commit_at;
+    // DynamoDB's: the game's seat items are known to be within this row's
+    // roster (written by the create or the commit that wrote the row; a seat
+    // whose account is gone may be missing, none is extra). A commit fenced on
+    // this row may then take the roster as the stored seats instead of reading
+    // them (cb_game_commit prev_known). game_create and game_commit leave it
+    // true; an imported row, a row written before 2026-10-18 and every SQLite
+    // row read as false.
+    bool     seats_exact;
 } cb_game_row;
 
 void cb_game_row_free(cb_game_row *g);   // frees the byte fields; the struct is the caller's
@@ -141,6 +149,16 @@ typedef struct {
     int32_t  rating_delta[CB_MAX_SEATS];
     // The names the leaderboard shows for the rated humans, by rated index.
     char     rated_names[CB_MAX_SEATS][CB_USERNAME_MAX + 1];
+    // The seats the row at expected_version holds (its roster's humans and
+    // bots), given when that row's seats_exact was true: the fence makes them
+    // the stored seats whenever the commit lands, and DynamoDB writes the
+    // difference without first reading them (one Query less, under the
+    // game's order lock). prev_known false: the store reads them.
+    bool     prev_known;
+    int      n_prev_humans;
+    cb_uuid  prev_humans[CB_MAX_SEATS];
+    int      n_prev_bots;
+    cb_uuid  prev_bots[CB_MAX_SEATS];
 } cb_game_commit;
 
 // A dashboard entry: a game a user sits at.

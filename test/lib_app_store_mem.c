@@ -182,6 +182,40 @@ static void apply_rating(tm_impl *m, const cb_game_commit *c, int i) {
     if (c->rated_names[i][0]) snprintf(u->rating.username, sizeof u->rating.username, "%s", c->rated_names[i]);
 }
 
+static bool listed_in(const cb_uuid *ids, int n, const char *id) {
+    for (int i = 0; i < n; i++)
+        if (strcmp(ids[i], id) == 0) return true;
+    return false;
+}
+
+// The prev seats a commit hands over (cb_game_commit prev_known) must hold
+// every seat stored: DynamoDB writes the difference from them without
+// reading, and a stored seat they miss would never be deleted.
+static bool stored_within_prev(const tm_game *g, const cb_game_commit *c) {
+    for (int i = 0; i < g->n_humans; i++)
+        if (!listed_in(c->prev_humans, c->n_prev_humans, g->humans[i])) return false;
+    for (int i = 0; i < g->n_bots; i++)
+        if (!listed_in(c->prev_bots, c->n_prev_bots, g->bots[i])) return false;
+    return true;
+}
+
+// The seats as DynamoDB writes them from prev: the ones prev has and the
+// commit does not are deleted, the ones the commit has and prev does not are
+// put, the rest are left as stored. A wrong prev leaves the membership wrong,
+// which the tests that read it see.
+static void apply_seat_diff(cb_uuid *ids, int *n, const cb_uuid *prev, int n_prev, const cb_uuid *now, int n_now) {
+    for (int i = 0; i < *n;)
+        if (listed_in(prev, n_prev, ids[i]) && !listed_in(now, n_now, ids[i])) {
+            memmove(&ids[i], &ids[i + 1], (size_t)(*n - i - 1) * sizeof ids[0]);
+            (*n)--;
+        } else {
+            i++;
+        }
+    for (int i = 0; i < n_now; i++)
+        if (!listed_in(prev, n_prev, now[i]) && !listed_in(ids, *n, now[i]) && *n < CB_MAX_SEATS)
+            memcpy(ids[(*n)++], now[i], sizeof(cb_uuid));
+}
+
 static int m_game_commit(cb_store *s, const cb_game_commit *c) {
     tm_impl *m = IMPL(s);
     int rc;
@@ -194,15 +228,22 @@ static int m_game_commit(cb_store *s, const cb_game_commit *c) {
     }
     if (!g) rc = CB_E_NOT_FOUND;
     else if (g->row.version != c->expected_version) { rc = CB_E_CONFLICT; m->hooks.conflicts++; }
+    else if (c->prev_known && !stored_within_prev(g, c)) { rc = CB_E_STATE; m->hooks.prev_wrong++; }
     else {
         cb_game_row_free(&g->row);
         row_copy(&g->row, c->row);
-        g->n_humans = c->n_humans;
-        g->n_bots = c->n_bots;
-        memcpy(g->humans, c->humans, sizeof g->humans);
-        memcpy(g->bots, c->bots, sizeof g->bots);
+        if (c->prev_known) {
+            apply_seat_diff(g->humans, &g->n_humans, c->prev_humans, c->n_prev_humans, c->humans, c->n_humans);
+            apply_seat_diff(g->bots, &g->n_bots, c->prev_bots, c->n_prev_bots, c->bots, c->n_bots);
+        } else {
+            g->n_humans = c->n_humans;
+            g->n_bots = c->n_bots;
+            memcpy(g->humans, c->humans, sizeof g->humans);
+            memcpy(g->bots, c->bots, sizeof g->bots);
+        }
         for (int i = 0; i < c->n_rated; i++) apply_rating(m, c, i);
         m->hooks.commits++;
+        if (c->prev_known) m->hooks.prev_given++;
         rc = CB_OK;
     }
     pthread_mutex_unlock(&m->mu);
@@ -551,6 +592,15 @@ int tm_hold_lease(cb_store *s, const char *game_id, int64_t until) {
     pthread_mutex_lock(&m->mu);
     tm_game *g = find_game(m, game_id);
     if (g) { snprintf(g->lease_token, sizeof g->lease_token, "00000000-0000-4000-8000-00000000dead"); g->lease_until = until; }
+    pthread_mutex_unlock(&m->mu);
+    return g ? CB_OK : CB_E_NOT_FOUND;
+}
+
+int tm_forget_seats(cb_store *s, const char *game_id) {
+    tm_impl *m = IMPL(s);
+    pthread_mutex_lock(&m->mu);
+    tm_game *g = find_game(m, game_id);
+    if (g) g->row.seats_exact = false;
     pthread_mutex_unlock(&m->mu);
     return g ? CB_OK : CB_E_NOT_FOUND;
 }

@@ -852,6 +852,52 @@ static void the_last_seat_leaving_deletes_the_game(void) {
     T_EQ_STR(g_fan.first_left, UID_A);
 }
 
+// Every commit hands the store the seats of the row it is fenced on (store.h
+// cb_game_commit prev_known), and the memory store writes the difference from
+// them as DynamoDB does: a join, a bot and an exit all land in the membership.
+// A row that does not vouch for its seats (imported, or written before the
+// flag) commits with them read, and vouches again after.
+static void commits_hand_over_their_seats(void) {
+    setup(3);
+    char gid[CB_GAME_ID_MAX + 1];
+    reply r;
+    create_game(gid, &r);
+    tm_hooks *h = tm_hooks_of(g_store);
+    cb_game_row row = stored(gid);
+    T_CHECK(row.seats_exact);   // the create vouches
+    cb_game_row_free(&row);
+    int given = h->prev_given, commits = h->commits;
+    meta("B", ASK_JOIN, gid, NULL, &r);
+    T_EQ_INT(r.status, 200);
+    meta("A", ASK_ADD_BOT, gid, NULL, &r);
+    T_EQ_INT(r.status, 200);
+    T_EQ_INT(h->commits - commits, 2);
+    T_EQ_INT(h->prev_given - given, 2);
+    T_EQ_INT(h->prev_wrong, 0);
+    T_EQ_INT(CB_STORE_CALL(g_store, is_member, gid, UID_B), 1);
+    meta("B", ASK_EXIT, gid, NULL, &r);
+    T_EQ_INT(r.status, 200);
+    T_EQ_INT(CB_STORE_CALL(g_store, is_member, gid, UID_B), 0);
+    T_EQ_INT(CB_STORE_CALL(g_store, is_member, gid, UID_A), 1);
+    T_EQ_INT(h->prev_given - given, 3);
+
+    T_EQ_INT(tm_forget_seats(g_store, gid), CB_OK);
+    given = h->prev_given;
+    commits = h->commits;
+    meta("B", ASK_JOIN, gid, NULL, &r);
+    T_EQ_INT(r.status, 200);
+    T_EQ_INT(h->commits - commits, 1);
+    T_EQ_INT(h->prev_given - given, 0);
+    T_EQ_INT(CB_STORE_CALL(g_store, is_member, gid, UID_B), 1);
+    row = stored(gid);
+    T_CHECK(row.seats_exact);   // the commit vouches again
+    cb_game_row_free(&row);
+    meta("B", ASK_EXIT, gid, NULL, &r);
+    T_EQ_INT(h->prev_given - given, 1);
+    T_EQ_INT(CB_STORE_CALL(g_store, is_member, gid, UID_B), 0);
+    T_EQ_INT(h->prev_wrong, 0);
+}
+
 static void delete_account_redacts(void) {
     setup(0);
     char gid[CB_GAME_ID_MAX + 1];
@@ -1954,6 +2000,7 @@ int main(void) {
     T_RUN(create_is_limited);
     T_RUN(the_wire_surface);
     T_RUN(the_last_seat_leaving_deletes_the_game);
+    T_RUN(commits_hand_over_their_seats);
     T_RUN(delete_account_redacts);
     T_RUN(delete_account_casts_the_rename_to_open_pages);
     T_RUN(delete_account_anonymizes_stored_replays);

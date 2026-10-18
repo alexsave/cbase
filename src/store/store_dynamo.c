@@ -5,9 +5,11 @@
 // operation sends and in what order; json_surface.c spells every one of them,
 // so no DynamoDB string appears here.
 //
-// THE CAS. game_commit reads the stored seats (and, for a rated commit, the
-// rating rows), then sends one TransactWriteItems whose item 0 is the game
-// update conditioned on version = expected. Item 0 refused is CB_E_CONFLICT
+// THE CAS. game_commit takes the stored seats from the caller when the row it
+// is fenced on vouches for them (cb_game_row seats_exact; else it reads them
+// with one Query), reads the rating rows of a rated commit, then sends one
+// TransactWriteItems whose item 0 is the game update conditioned on
+// version = expected. Item 0 refused is CB_E_CONFLICT
 // (or CB_E_NOT_FOUND when the refusal carries no item: the game is gone). Any
 // other item refused means something the commit read moved underneath it (a
 // rating another table changed, a seat's account deleted): it re-reads and
@@ -715,6 +717,19 @@ static int read_seats(dyn *d, const char *game, dw_seats *out) {
     return query_all(d, DWQ_GAME_SEATS, game, true, 0, seats_step, out);
 }
 
+// The seats the caller says the row at expected_version holds (cb_game_commit
+// prev_known), as read_seats would have answered when the commit lands: the
+// fence makes the stored row that one, and its items are within its roster
+// (seats_exact). Against the read, the commit may delete an item that is
+// already gone (a no-op), and does not put back the item of a seat that stays
+// when it went missing under it (only user_delete removes one, and only to
+// delete the account).
+static void seats_given(const cb_game_commit *c, dw_seats *out) {
+    memset(out, 0, sizeof *out);
+    for (int i = 0; i < c->n_prev_humans && i < CB_MAX_SEATS; i++) memcpy(out->humans[out->n_humans++], c->prev_humans[i], sizeof(cb_uuid));
+    for (int i = 0; i < c->n_prev_bots && i < CB_MAX_SEATS; i++) memcpy(out->bots[out->n_bots++], c->prev_bots[i], sizeof(cb_uuid));
+}
+
 // BatchGetItem of the rating rows (and, for humans, the accounts) of `ids`.
 static int read_ratings(dyn *d, const char *const *ids, const bool *is_bot, int n, bool both, dw_rating_read *out) {
     dw_req r;
@@ -785,7 +800,8 @@ static int commit_or_import(dyn *d, const cb_game_commit *c0, bool import) {
     for (int attempt = 0; attempt < ATTEMPTS; attempt++) {
         cb_game_commit c;
         dw_rating_read ratings[CB_MAX_SEATS];
-        if ((rc = read_seats(d, c0->row->id, stored)) != CB_OK) break;
+        if (!import && c0->prev_known) seats_given(c0, stored);
+        else if ((rc = read_seats(d, c0->row->id, stored)) != CB_OK) break;
         if ((rc = drop_missing_accounts(d, c0, stored, &c)) != CB_OK) break;
         if (c.n_rated) {
             const char *ids[CB_MAX_SEATS];

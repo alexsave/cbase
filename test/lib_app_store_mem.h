@@ -23,6 +23,8 @@ typedef struct {
     int conflicts;         // game_commit calls that lost the CAS
     int snapshots;         // snapshot_put calls
     int bots_idle;         // bots_idle calls that took a game out of the scan
+    int prev_given;        // commits that wrote with the prev seats given (no read)
+    int prev_wrong;        // commits refused: a stored seat was not in prev
 } tm_hooks;
 
 // A fresh store with `n_bots` bots seated in the bots table, each with
@@ -46,5 +48,8 @@ int tm_hold_lease(cb_store *s, const char *game_id, int64_t until);
 // lease: a move made there lands while the drive still holds it. NULL: none.
 extern void (*tm_on_release)(const char *game_id);
 int tm_set_scan(cb_store *s, const char *game_id, bool needs_bots, int64_t updated_at, int64_t last_commit_at);
+// The stored row stops vouching for its seats (cb_game_row seats_exact), as an
+// imported row or one written before the flag does not.
+int tm_forget_seats(cb_store *s, const char *game_id);
 
 #endif

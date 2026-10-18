@@ -874,6 +874,7 @@ bool dw_item_game(cb_span it, cb_game_row *g) {
     }
     free(seed);
     ix_bool(&x, "needs_bots", &g->needs_bots);
+    ix_bool(&x, "seats_exact", &g->seats_exact);
     g->round_epoch = ix_n_or(&x, "round_epoch", 0);
     g->created_at = ix_n_or(&x, "created_at", 0);
     g->updated_at = ix_n_or(&x, "updated_at", 0);
@@ -1267,6 +1268,7 @@ static void item_game(cb_jw *w, const cb_game_row *g) {
     av_n(w, "created_at", g->created_at);
     av_n(w, "updated_at", g->updated_at);
     av_n(w, "last_commit_at", g->last_commit_at);
+    if (g->seats_exact) av_bool(w, "seats_exact", true);
 }
 
 static void item_bot(cb_jw *w, const cb_bot_row *b) {
@@ -1776,6 +1778,9 @@ bool dw_game_commit(dw_req *r, const char *table, const cb_game_commit *c, const
         ux_set_n(&u, "round_epoch", g->round_epoch);
         ux_set_n(&u, "updated_at", g->updated_at);
         ux_set_n(&u, "last_commit_at", row.last_commit_at);
+        // The seats this transaction writes make the items the new roster's
+        // (cb_game_row seats_exact), whether they were read or given.
+        ux_set_bool(&u, "seats_exact", true);
         ux_val_n(&u, ":expected", c->expected_version);
         ux_emit(&w, &u, "#version = :expected");
         ux_free(&u);

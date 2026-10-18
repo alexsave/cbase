@@ -176,14 +176,16 @@ int cb_section_load(cb_section *s, const cb_game_row *row) {
     if (row->has_seed) cb_hex_encode(row->seed, CB_SEED_LEN, hex, sizeof hex);
     rc = table_set_deal_seed(&s->t, hex, (int)strlen(hex));
     if (rc < 0) return rc;
-    s->n_old = 0;
+    s->n_old = s->n_old_bots = 0;
     for (int i = 0; i < s->t.r.n; i++) {
         const RosterSeat *seat = &s->t.r.seats[i];
         // memcpy, not snprintf: the seat and the list live in the same struct,
         // and gcc's -Wrestrict (fortified, under ASan) cannot prove they do not overlap.
-        if (seat->brain_len == 0 && s->n_old < CB_MAX_SEATS) {
+        bool human = seat->brain_len == 0;
+        int *n_list = human ? &s->n_old : &s->n_old_bots;
+        if (*n_list < CB_MAX_SEATS) {
             size_t n = seat->id_len < CB_UUID_LEN ? (size_t)seat->id_len : CB_UUID_LEN;
-            cb_strncpy0(s->old_humans[s->n_old++], sizeof(cb_uuid), (const char *)seat->id, n);
+            cb_strncpy0((human ? s->old_humans : s->old_bots)[(*n_list)++], sizeof(cb_uuid), (const char *)seat->id, n);
         }
     }
     return TABLE_OK;
@@ -392,6 +394,7 @@ int cb_section_commit(cb_ctx *ctx, cb_section *s, const cb_game_row *row, const 
     nrow.created_at = row->created_at;
     nrow.updated_at = now;
     nrow.last_commit_at = now;
+    nrow.seats_exact = true;   // the commit writes the seats the new roster holds
     // The deal seed: none in a lobby; the fresh one when this operation dealt;
     // else the stored one.
     if (!waiting && c->dealt_now && dealt_seed) {
@@ -426,6 +429,13 @@ int cb_section_commit(cb_ctx *ctx, cb_section *s, const cb_game_row *row, const 
     memset(&gc, 0, sizeof gc);
     gc.row = &nrow;
     gc.expected_version = row->version;
+    // The loaded row's seats, when it vouches that they are the stored ones
+    // (store.h cb_game_commit prev_known): the store skips reading them.
+    gc.prev_known = row->seats_exact;
+    gc.n_prev_humans = s->n_old;
+    memcpy(gc.prev_humans, s->old_humans, sizeof gc.prev_humans);
+    gc.n_prev_bots = s->n_old_bots;
+    memcpy(gc.prev_bots, s->old_bots, sizeof gc.prev_bots);
     for (int i = 0; i < t->r.n; i++) {
         const RosterSeat *seat = &t->r.seats[i];
         if (seat_is_human(seat)) seat_id(seat, gc.humans[gc.n_humans++]);
@@ -697,6 +707,7 @@ int cb_table_create(cb_ctx *ctx, const cb_user *u, cb_table_result *out) {
         row.roster = s->arena + c->roster.off;
         row.roster_len = (size_t)c->roster.len;
         row.created_at = row.updated_at = row.last_commit_at = now;
+        row.seats_exact = true;   // the create writes the creator's seat, the only one
         // Stored BEFORE the answer: the envelope names the game id.
         ret = CB_STORE_CALL(ctx->store, game_create, &row, u->id);
         if (ret == CB_E_CONFLICT) {

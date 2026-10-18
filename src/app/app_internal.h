@@ -57,9 +57,12 @@ typedef struct cb_section {
     Table       t;
     TableCommit c;
     char        gid[CB_GAME_ID_MAX + 1];
-    // The humans the loaded roster seated before the operation (membership diff).
+    // The humans and bots the loaded roster seated before the operation (the
+    // membership diff, and the commit's prev seats).
     int         n_old;
     cb_uuid     old_humans[CB_MAX_SEATS];
+    int         n_old_bots;
+    cb_uuid     old_bots[CB_MAX_SEATS];
     uint8_t     arena[CB_ARENA_BYTES];
 } cb_section;
 

@@ -122,15 +122,17 @@ static void commit_transaction(void) {
              "{\"ReturnConsumedCapacity\":\"TOTAL\",\"TransactItems\":["
              "{\"Update\":{\"TableName\":\"cbase\",\"Key\":{\"pk\":{\"S\":\"GAME#ab12cd\"},\"sk\":{\"S\":\"ROW\"}},"
              "\"UpdateExpression\":\"SET #status = :status, #state = :state, #roster = :roster, #needs_bots = :needs_bots, "
-             "#version = :version, #round_epoch = :round_epoch, #updated_at = :updated_at, #last_commit_at = :last_commit_at "
+             "#version = :version, #round_epoch = :round_epoch, #updated_at = :updated_at, #last_commit_at = :last_commit_at, "
+             "#seats_exact = :seats_exact "
              "REMOVE #logs_packed, #game_seed\","
              "\"ConditionExpression\":\"#version = :expected\","
              "\"ExpressionAttributeNames\":{\"#status\":\"status\",\"#state\":\"state\",\"#roster\":\"roster\","
              "\"#logs_packed\":\"logs_packed\",\"#game_seed\":\"game_seed\",\"#needs_bots\":\"needs_bots\",\"#version\":\"version\","
-             "\"#round_epoch\":\"round_epoch\",\"#updated_at\":\"updated_at\",\"#last_commit_at\":\"last_commit_at\"},"
+             "\"#round_epoch\":\"round_epoch\",\"#updated_at\":\"updated_at\",\"#last_commit_at\":\"last_commit_at\","
+             "\"#seats_exact\":\"seats_exact\"},"
              "\"ExpressionAttributeValues\":{\":status\":{\"N\":\"1\"},\":state\":{\"B\":\"AQID\"},\":roster\":{\"B\":\"CQk=\"},"
              "\":needs_bots\":{\"BOOL\":true},\":version\":{\"N\":\"8\"},\":round_epoch\":{\"N\":\"5\"},\":updated_at\":{\"N\":\"2000\"},"
-             "\":last_commit_at\":{\"N\":\"2000\"},\":expected\":{\"N\":\"7\"}},"
+             "\":last_commit_at\":{\"N\":\"2000\"},\":seats_exact\":{\"BOOL\":true},\":expected\":{\"N\":\"7\"}},"
              "\"ReturnValuesOnConditionCheckFailure\":\"ALL_OLD\"}},"
              "{\"Update\":{\"TableName\":\"cbase\",\"Key\":{\"pk\":{\"S\":\"GAME#ab12cd\"},\"sk\":{\"S\":\"MEMBER#" U1 "\"}},"
              "\"UpdateExpression\":\"SET #game_id = :game_id, #user_id = :user_id, #updated_at = :updated_at, #gsi1pk = :gsi1pk, "
@@ -757,6 +759,61 @@ static void flow_commit_drops_missing_account(void) {
     snprintf(c.humans[1], sizeof(cb_uuid), U2);
     T_EQ_INT(CB_STORE_CALL(s, game_commit, &c), CB_OK);
     T_CHECK(strstr(sc_.bodies[2], "MEMBER#" U2) == NULL);
+    cb_store_close(s);
+}
+
+// The row the commit is fenced on vouched for its seats (prev_known): no Query.
+// The seat that stays is not written, the new one is put after its account is
+// checked, the one that left is deleted (whether or not its item is there).
+#define U3 "aaaaaaaa-0000-4000-8000-000000000003"
+static void flow_commit_seats_given(void) {
+    static const char BG[] = "{\"Responses\":{\"cbase\":[{\"pk\":{\"S\":\"USER#" U2 "\"},\"sk\":{\"S\":\"PROFILE\"}}]}}";
+    static const step steps[] = {
+        { "BatchGetItem", "USER#" U2, 200, BG },
+        { "TransactWriteItems", "#seats_exact = :seats_exact", 200, "{}" },
+    };
+    RUN(steps, s);
+    uint8_t st[1] = { 1 };
+    cb_game_row g;
+    cb_game_commit c = mkcommit(&g, st);
+    c.n_humans = 2;
+    snprintf(c.humans[0], sizeof(cb_uuid), U1);
+    snprintf(c.humans[1], sizeof(cb_uuid), U2);
+    c.prev_known = true;
+    c.n_prev_humans = 2;
+    snprintf(c.prev_humans[0], sizeof(cb_uuid), U1);
+    snprintf(c.prev_humans[1], sizeof(cb_uuid), U3);
+    c.n_prev_bots = 1;
+    snprintf(c.prev_bots[0], sizeof(cb_uuid), B1);
+    T_EQ_INT(CB_STORE_CALL(s, game_commit, &c), CB_OK);
+    T_EQ_INT(sc_.at, 2);
+    const char *tx = sc_.bodies[1];
+    T_CHECK(strstr(tx, "\"sk\":{\"S\":\"MEMBER#" U1 "\"}") == NULL);
+    T_CHECK(strstr(tx, "{\"Update\":{\"TableName\":\"cbase\",\"Key\":{\"pk\":{\"S\":\"GAME#ab12cd\"},\"sk\":{\"S\":\"MEMBER#" U2 "\"}}") != NULL);
+    T_CHECK(strstr(tx, "{\"Delete\":{\"TableName\":\"cbase\",\"Key\":{\"pk\":{\"S\":\"GAME#ab12cd\"},\"sk\":{\"S\":\"MEMBER#" U3 "\"}}") != NULL);
+    T_CHECK(strstr(tx, "{\"Delete\":{\"TableName\":\"cbase\",\"Key\":{\"pk\":{\"S\":\"GAME#ab12cd\"},\"sk\":{\"S\":\"BOT#" B1 "\"}}") != NULL);
+    cb_store_close(s);
+}
+
+// Without them the seats are read, as before: one Query, then the transaction.
+static void flow_commit_seats_read(void) {
+    static const char SEATS[] = "{\"Items\":[{\"pk\":{\"S\":\"GAME#ab12cd\"},\"sk\":{\"S\":\"MEMBER#" U1 "\"}}]}";
+    static const step steps[] = {
+        { "Query", "#sk < :sk", 200, SEATS },
+        { "TransactWriteItems", "#seats_exact = :seats_exact", 200, "{}" },
+    };
+    RUN(steps, s);
+    uint8_t st[1] = { 1 };
+    cb_game_row g;
+    cb_game_commit c = mkcommit(&g, st);
+    c.n_humans = 1;
+    snprintf(c.humans[0], sizeof(cb_uuid), U1);
+    c.n_prev_humans = 1;   // given, but not vouched for: not used
+    snprintf(c.prev_humans[0], sizeof(cb_uuid), U3);
+    T_EQ_INT(CB_STORE_CALL(s, game_commit, &c), CB_OK);
+    T_EQ_INT(sc_.at, 2);
+    T_CHECK(strstr(sc_.bodies[1], "MEMBER#" U3) == NULL);
+    T_CHECK(strstr(sc_.bodies[1], "MEMBER#" U1) == NULL);   // stored and kept: not written
     cb_store_close(s);
 }
 
@@ -1594,9 +1651,11 @@ static void game_item_one_pass(void) {
         "\"roster\":{\"B\":\"BAUG\"},\"sk\":{\"S\":\"ROW\"},\"logs_packed\":{\"B\":\"Bw==\"},"
         "\"status\":{\"N\":\"2\"},\"needs_bots\":{\"BOOL\":true},\"id\":{\"S\":\"ab12cd\"},"
         "\"game_seed\":{\"B\":\"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=\"},\"round_epoch\":{\"N\":\"5\"},"
-        "\"created_at\":{\"N\":\"100\"},\"updated_at\":{\"N\":\"200\"},\"last_commit_at\":{\"N\":\"150\"}}";
+        "\"created_at\":{\"N\":\"100\"},\"updated_at\":{\"N\":\"200\"},\"last_commit_at\":{\"N\":\"150\"},"
+        "\"seats_exact\":{\"BOOL\":true}}";
     cb_game_row g;
     T_CHECK(dw_item_game(lit_span(it), &g));
+    T_CHECK(g.seats_exact);
     T_EQ_STR(g.id, "ab12cd");
     T_EQ_INT(g.status, 2);
     T_EQ_INT(g.version, 7);
@@ -1613,6 +1672,23 @@ static void game_item_one_pass(void) {
     T_EQ_INT(g.updated_at, 200);
     T_EQ_INT(g.last_commit_at, 150);
     cb_game_row_free(&g);
+    // A row written before the flag, or imported, does not vouch.
+    T_CHECK(dw_item_game(lit_span("{\"id\":{\"S\":\"g\"},\"status\":{\"N\":\"1\"},\"version\":{\"N\":\"1\"}}"), &g));
+    T_CHECK(!g.seats_exact);
+    cb_game_row_free(&g);
+    // The create writes it when the row vouches, and only then.
+    dw_req r;
+    dw_req_init(&r);
+    uint8_t b[1] = { 1 };
+    cb_game_row row = { .id = "ab12cd", .status = 1, .state = b, .state_len = 1, .roster = b, .roster_len = 1, .seats_exact = true };
+    dw_game_create(&r, "cbase", &row, U1);
+    T_CHECK(strstr(cb_buf_cstr(&r.body), "\"seats_exact\":{\"BOOL\":true}") != NULL);
+    dw_req_free(&r);
+    dw_req_init(&r);
+    row.seats_exact = false;
+    dw_game_create(&r, "cbase", &row, U1);
+    T_CHECK(strstr(cb_buf_cstr(&r.body), "seats_exact") == NULL);
+    dw_req_free(&r);
 }
 
 // The index answers as a walk from the start would: the first attribute of a
@@ -1744,6 +1820,8 @@ int main(void) {
     T_RUN(flow_commit_game_gone);
     T_RUN(flow_rating_moved);
     T_RUN(flow_commit_drops_missing_account);
+    T_RUN(flow_commit_seats_given);
+    T_RUN(flow_commit_seats_read);
     T_RUN(flow_lease);
     T_RUN(flow_throttle_retry);
     T_RUN(flow_throttled_then_answered);
