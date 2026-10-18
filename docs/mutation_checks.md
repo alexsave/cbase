@@ -637,3 +637,31 @@ The hand-minimised input is `fuzz/corpus/event/crash-40a6db73`.
 - store_dynamo.c capture: Query requests not recorded -> `unit_items` `the_capture_records_every_request` (queries == 1, got 0).
 - rows_foolish.c cb_rows_rating_reindex: a row with no games given a leaderboard key (`games_played >= 0`) -> `unit_store` `ratings_reindexed` (the unplayed row still holds gsi2pk).
 - items.c cb_av_same: two string lists of one length always the same -> `unit_items` `values_compare_by_kind_and_value` (`a1` and `a3` differ in their second string).
+
+## The name gate, the compiler gate and fuzz.mk's bookkeeping (stage 8, 2026-10-18)
+
+The name gate (PLATFORM.md 8.4) is `core/test/unit_name_gate.c` over `shared/tools/name_gate/words.txt` (products, providers, foolish's domain words) and the shrinking allowlist `shared/tools/name_gate/allow.txt` (exact counts per file and pattern); `shared_is_shared_validation.test.ts` reads its product list from the same file.
+The compiler gate is `make compiler-gate` over one file per side under `<side>/test/gate/`.
+One bug found: `fuzz-seeds` copied every target's seeds before refusing a stray seed directory, leaving the tree half-seeded; the refusal now runs first.
+
+- unit_name_gate.c word_char: `_` counted as a word character -> `unit_name_gate` `the_matcher_sees_each_shape` (planted(L_DOMAIN, "cb_rows_bots_replace(s);") == 1).
+- unit_name_gate.c match_here: `\b` taken as `before || after` -> `unit_name_gate` `the_matcher_sees_each_shape` (planted(L_DOMAIN, "both robots") == 0).
+- unit_name_gate.c scan_tree: providers scanned without L_DOMAIN -> `unit_name_gate` `each_side_names_only_its_own` (stale == 0, got 19).
+- core/src/util/random.c: a planted "DynamoDB" comment -> `unit_name_gate` `each_side_names_only_its_own` (new_hits == 0).
+- foolish/server/src/app/admin_panels.c: a planted "SQLite" comment -> `unit_name_gate` `each_side_names_only_its_own` (new_hits == 0).
+- allow.txt: the app.h /eventbridge/i line deleted -> `unit_name_gate` `each_side_names_only_its_own` (new_hits == 0).
+- allow.txt: that count raised from 1 to 2 -> `unit_name_gate` `each_side_names_only_its_own` (stale == 0).
+- allow.txt: a line for a file with no hits -> `unit_name_gate` `each_side_names_only_its_own` (stale == 0).
+- allow.txt: a pattern not in words.txt -> `unit_name_gate` `each_side_names_only_its_own` (load_allow() == 0).
+- shared/c/b32.h: a planted "pick em up" comment -> `shared_is_shared_validation.test.ts` `no file under shared/ names a product` (deepEqual bad, []).
+- shared_is_shared_validation.test.ts SKIP_DIR: name_gate dropped -> the same test (bad lists name_gate/allow.txt).
+- words.txt: the /pick ?'?em ?up/i line removed -> the same test (PRODUCT.length >= 15).
+- Makefile PRODUCT_INC: -Iproviders/aws/src added -> `make compiler-gate` `product_includes_aws.c` (the include across the line got through).
+- Makefile side_inc_of: core mapped to ALL_INC -> `make compiler-gate` `core_includes_local.c` and `core_includes_product.c` (got through).
+- core/test/gate/core_includes_product.c: the include pointed at a missing header (and, separately, a syntax error) -> `make compiler-gate` (does not compile even with every root on its path).
+- Makefile GATE: the "file not found" grep text broken -> `make compiler-gate` (failed, but not on its include across the line).
+- fuzz.mk: the duplicate-name `$(error)` replaced by `$(info)` -> `fuzz/test/fuzz_mk_test.sh` ("two roots holding fz_one.c were taken").
+- fuzz.mk: providers/aws/fuzz dropped from FUZZ_ROOTS -> `fuzz_mk_test.sh` ("print-fuzz-targets lists [...]").
+- fuzz.mk: fz_corpus put under the first root -> `fuzz_mk_test.sh` ("two's seed is not in b/corpus/two").
+- fuzz.mk: the refusal's exact-word match loosened to a substring -> `fuzz_mk_test.sh` ("seeds for on (a part of one) were taken").
+- fuzz.mk: the refusal moved back after the copy -> `fuzz_mk_test.sh` ("seeds for no target were refused only after corpora were written").
