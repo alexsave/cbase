@@ -33,7 +33,7 @@ docker run --rm --platform linux/arm64 \
     mkdir -p /w
     cd /repo
     tar cf - --exclude="./c_base/build" --exclude="./c_base/dist" --exclude="./foolish/c/build" \
-      ./c_base ./foolish/c ./shared | tar xf - -C /w
+      ./c_base ./foolish/c ./foolish/server ./shared | tar xf - -C /w
     cd /w/c_base
     make -s -j"$(nproc)" STATIC=1 build/bootstrap
     strip -o /out/bootstrap build/bootstrap
