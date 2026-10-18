@@ -131,7 +131,7 @@ static const char *keep(strs *z, const char *v) {
 
 // ---- users ---------------------------------------------------------------------------------
 
-static bool user_of(const cb_item *it, cb_user_row *u) {
+bool cb_rows_user_of(const cb_item *it, cb_user_row *u) {
     memset(u, 0, sizeof *u);
     if (!s_of(it, "id", u->id, sizeof u->id) || !s_of(it, "email", u->email, sizeof u->email) ||
         !s_of(it, "password_hash", u->password_hash, sizeof u->password_hash))
@@ -194,7 +194,7 @@ int cb_rows_user_get(cb_store *s, const char *id, cb_user_row *out) {
     cb_item it;
     cb_item_init(&it);
     int rc = get_item(s, k(pk, sizeof pk, "USER#", id), "PROFILE", &it);
-    if (rc == CB_OK && !user_of(&it, out)) rc = CB_E_DB;
+    if (rc == CB_OK && !cb_rows_user_of(&it, out)) rc = CB_E_DB;
     cb_item_free(&it);
     return rc;
 }
@@ -349,7 +349,7 @@ typedef struct {
 static bool users_step(const cb_item *it, void *ud) {
     users_walk *w = ud;
     cb_user_row u;
-    if (!user_of(it, &u)) return true;
+    if (!cb_rows_user_of(it, &u)) return true;
     if (!cb_store_user_matches(&u, w->search)) return true;
     if (w->skip > 0) { w->skip--; return true; }
     w->n++;
@@ -1127,7 +1127,7 @@ int cb_rows_lease_held(cb_store *s, const char *game, int64_t now) {
 
 // ---- bots and ratings -----------------------------------------------------------------------
 
-static bool bot_of(const cb_item *it, cb_bot_row *b) {
+bool cb_rows_bot_of(const cb_item *it, cb_bot_row *b) {
     memset(b, 0, sizeof *b);
     if (!s_of(it, "id", b->id, sizeof b->id) || !s_of(it, "nickname", b->nickname, sizeof b->nickname) ||
         !s_of(it, "strategy_key", b->strategy_key, sizeof b->strategy_key))
@@ -1140,7 +1140,7 @@ static bool bot_of(const cb_item *it, cb_bot_row *b) {
     return true;
 }
 
-static bool rating_of(const cb_item *it, cb_rating_row *r) {
+bool cb_rows_rating_of(const cb_item *it, cb_rating_row *r) {
     memset(r, 0, sizeof *r);
     if (!s_of(it, "user_id", r->user_id, sizeof r->user_id)) return false;
     s_of(it, "username", r->username, sizeof r->username);
@@ -1173,13 +1173,13 @@ static bool row_step(const cb_item *it, void *ud) {
     vec *v = ud;
     if (v->bots) {
         cb_bot_row b;
-        if (!bot_of(it, &b)) return true;
+        if (!cb_rows_bot_of(it, &b)) return true;
         cb_bot_row *e = vec_push(v);
         if (e) *e = b;
         return e != NULL;
     }
     cb_rating_row r;
-    if (!rating_of(it, &r)) return true;
+    if (!cb_rows_rating_of(it, &r)) return true;
     cb_rating_row *e = vec_push(v);
     if (e) *e = r;
     return e != NULL && (v->limit <= 0 || v->n < v->limit);
@@ -1345,7 +1345,7 @@ int cb_rows_bots_replace(cb_store *s, const cb_bot_row *rows, int n) {
 
 // ---- snapshots and chat -------------------------------------------------------------------------
 
-static bool snapshot_of(const cb_item *it, cb_snapshot_row *s) {
+bool cb_rows_snapshot_of(const cb_item *it, cb_snapshot_row *s) {
     memset(s, 0, sizeof *s);
     if (!s_of(it, "id", s->id, sizeof s->id)) return false;
     s_of(it, "game_id", s->game_id, sizeof s->game_id);
@@ -1420,7 +1420,7 @@ typedef struct {
 static bool snaps_step(const cb_item *it, void *ud) {
     snaps_walk *w = ud;
     cb_snapshot_row sn;
-    if (!snapshot_of(it, &sn)) { w->bad = true; return true; }
+    if (!cb_rows_snapshot_of(it, &sn)) { w->bad = true; return true; }
     bool match = (!w->q->game_id || strcmp(sn.game_id, w->q->game_id) == 0) && (!w->q->id || strcmp(sn.id, w->q->id) == 0);
     bool more = true;
     if (match) {
@@ -1463,7 +1463,7 @@ int cb_rows_snapshot_set_extras(cb_store *s, const char *id, const uint8_t *extr
     return rc;
 }
 
-static bool chat_of(const cb_item *it, cb_chat_row *c) {
+bool cb_rows_chat_of(const cb_item *it, cb_chat_row *c) {
     memset(c, 0, sizeof *c);
     cb_av m;
     if (!s_of(it, "id", c->id, sizeof c->id) || !s_of(it, "game_id", c->game_id, sizeof c->game_id) ||
@@ -1505,7 +1505,7 @@ typedef struct {
 static bool chat_step(const cb_item *it, void *ud) {
     chats *v = ud;
     cb_chat_row c;
-    if (!chat_of(it, &c)) return true;
+    if (!cb_rows_chat_of(it, &c)) return true;
     if (v->n == v->cap) {
         int cap = v->cap ? v->cap * 2 : 32;
         cb_chat_row *p = realloc(v->rows, (size_t)cap * sizeof *p);

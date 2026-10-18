@@ -13,6 +13,7 @@
 #include "auth/bcrypt.h"
 #include "auth/jwt.h"
 #include "json_surface.h"
+#include "store/store_priv.h"
 #include "net/ws.h"
 #include "store/store.h"
 #include "../../shared/c/b64/b64.h"
@@ -243,15 +244,20 @@ static void harvest(cb_span v, int depth) {
         while (dw_array_next(v, &pos, &x)) harvest(x, depth + 1);
     }
 }
-static void take(dw_req *r) {
-    harvest(cb_span_of((const char *)r->body.p, r->body.len), 0);
-    dw_req_free(r);
-    dw_req_init(r);
+// The DynamoDB store itself, answering 200 "{}" to everything: every request
+// body it sends is harvested, so the items are exactly the ones its writes
+// put (the row codecs in store/rows_foolish.c and rows_auth.c).
+static int harvest_send(void *ud, const char *target, const uint8_t *body, size_t len, int *status, cb_buf *resp) {
+    (void)ud; (void)target;
+    harvest(cb_span_of((const char *)body, len), 0);
+    *status = 200;
+    cb_buf_puts(resp, "{}");
+    return CB_OK;
 }
 
 static void dynamo_items(void) {
-    dw_req r;
-    dw_req_init(&r);
+    cb_store *st = NULL;
+    if (cb_store_open_dynamo_with("cbase", harvest_send, NULL, &st) != CB_OK) abort();
     cb_user_row u;
     memset(&u, 0, sizeof u);
     snprintf(u.id, sizeof u.id, U1);
@@ -259,19 +265,16 @@ static void dynamo_items(void) {
     snprintf(u.password_hash, sizeof u.password_hash, "$2b$04$abcdefghijklmnopqrstuuABCDEFGHIJKLMNOPQRSTUVWXYZ01234");
     snprintf(u.username, sizeof u.username, "ANN");
     u.created_at = 1000;
-    dw_user_create(&r, "cbase", &u, 1000); take(&r);
-    dw_user_import(&r, "cbase", &u); take(&r);
-    {   // a refresh token's item, as store/rows_auth.c writes it
-        char hash[65];
-        memset(hash, 'a', 64);
-        hash[64] = 0;
-        const cb_av a[] = { CB_AVS("gsi1pk", "USERREFRESH#" U1), CB_AVS("gsi1sk", hash), CB_AVS("token_hash", hash),
-                            CB_AVS("user_id", U1), CB_AVS("session_id", U2), CB_AVN("created_at", 5), CB_AVBOOL("revoked", false) };
-        char pk[80];
-        snprintf(pk, sizeof pk, "REFRESH#%s", hash);
-        cb_iwrite w = { .op = CB_IW_PUT, .key = { pk, "TOKEN" }, .attrs = a, .n_attrs = 7, .ttl_ms = 9000, .cond = { CB_IF_ABSENT }, .n_cond = 1 };
-        if (dw_iwrite(&r, "cbase", &w, false)) take(&r);
-    }
+    (void)CB_STORE_CALL(st, user_create, &u);
+    (void)CB_STORE_CALL(st, user_import, &u);
+    cb_refresh_row rf;
+    memset(&rf, 0, sizeof rf);
+    memset(rf.token_hash, 'a', 64);
+    snprintf(rf.user_id, sizeof rf.user_id, U1);
+    snprintf(rf.session_id, sizeof rf.session_id, U2);
+    rf.created_at = 5;
+    rf.expires_at = 9000;
+    (void)CB_STORE_CALL(st, refresh_put, &rf);
     cb_game_row g;
     memset(&g, 0, sizeof g);
     snprintf(g.id, sizeof g.id, "ab12cd");
@@ -280,37 +283,37 @@ static void dynamo_items(void) {
     static uint8_t logs[4] = { 1, 2, 3, 4 };
     g.logs = logs; g.logs_len = 4;
     g.has_seed = true; g.version = 3; g.needs_bots = true; g.created_at = 1; g.updated_at = 2;
-    dw_game_create(&r, "cbase", &g, U1); take(&r);
-    cb_snapshot_row s;
-    memset(&s, 0, sizeof s);
-    snprintf(s.id, sizeof s.id, U2);
-    snprintf(s.game_id, sizeof s.game_id, "ab12cd");
-    s.n_players = 2;
-    snprintf(s.player_ids[0], sizeof s.player_ids[0], U1);
-    snprintf(s.player_ids[1], sizeof s.player_ids[1], U2);
-    s.moves = logs; s.moves_len = 4;
-    dw_snapshot_put(&r, "cbase", &s); take(&r);
+    (void)CB_STORE_CALL(st, game_create, &g, U1);
+    cb_snapshot_row sn;
+    memset(&sn, 0, sizeof sn);
+    snprintf(sn.id, sizeof sn.id, U2);
+    snprintf(sn.game_id, sizeof sn.game_id, "ab12cd");
+    sn.n_players = 2;
+    snprintf(sn.player_ids[0], sizeof sn.player_ids[0], U1);
+    snprintf(sn.player_ids[1], sizeof sn.player_ids[1], U2);
+    sn.moves = logs; sn.moves_len = 4;
+    (void)CB_STORE_CALL(st, snapshot_put, &sn);
     cb_chat_row c;
     memset(&c, 0, sizeof c);
     snprintf(c.id, sizeof c.id, U2);
     snprintf(c.game_id, sizeof c.game_id, "ab12cd");
     snprintf(c.user_id, sizeof c.user_id, U1);
     c.message = "hi \"there\"";
-    dw_chat_put(&r, "cbase", &c); take(&r);
+    (void)CB_STORE_CALL(st, chat_put, &c);
     cb_rating_row rt;
     memset(&rt, 0, sizeof rt);
     snprintf(rt.user_id, sizeof rt.user_id, U1);
     snprintf(rt.username, sizeof rt.username, "ANN");
     rt.elo_rating = 1033; rt.previous_elo = 1020; rt.games_played = 7;
-    dw_rating_import(&r, "cbase", &rt); take(&r);
+    (void)CB_STORE_CALL(st, rating_import, &rt);
     cb_bot_row b;
     memset(&b, 0, sizeof b);
     snprintf(b.id, sizeof b.id, B1);
     snprintf(b.nickname, sizeof b.nickname, "%%Miami 1");
     snprintf(b.strategy_key, sizeof b.strategy_key, "random");
     b.elo_rating = 1010;
-    (void)dw_bots_replace(&r, "cbase", &b, 1, NULL, 0); take(&r);
-    dw_req_free(&r);
+    (void)CB_STORE_CALL(st, bots_replace, &b, 1);
+    cb_store_close(st);
 }
 
 static void seeds_dynamo(void) {

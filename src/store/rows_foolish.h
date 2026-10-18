@@ -19,8 +19,15 @@ typedef struct {
 void cb_rows_cas_write(const cb_game_commit *c, int64_t last_commit_at, cb_rows_write *out);
 // The game row, put whole (as a create or an import writes it).
 void cb_rows_game_put_write(const cb_game_row *g, cb_rows_write *out);
-// A ROW item read into a game row (byte fields malloc'd). false: not one.
-bool cb_rows_game_of(const cb_item *it, cb_game_row *g);
+// An item read into its row (byte fields and a chat's message malloc'd):
+// false when it is not one (a required attribute missing or mistyped). The
+// store's reads use them; the fuzz targets reach them directly.
+bool cb_rows_game_of(const cb_item *it, cb_game_row *g);       // GAME#<id> ROW
+bool cb_rows_user_of(const cb_item *it, cb_user_row *u);       // USER#<id> PROFILE
+bool cb_rows_bot_of(const cb_item *it, cb_bot_row *b);         // BOT#<id> BOT
+bool cb_rows_rating_of(const cb_item *it, cb_rating_row *r);   // USER#<id> RATING
+bool cb_rows_snapshot_of(const cb_item *it, cb_snapshot_row *s);   // SNAP#<id> SNAP
+bool cb_rows_chat_of(const cb_item *it, cb_chat_row *c);       // CHAT#<game> <created>#<id>
 
 int cb_rows_user_get(cb_store *s, const char *id, cb_user_row *out);
 int cb_rows_user_by_email(cb_store *s, const char *email, cb_user_row *out);

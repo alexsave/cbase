@@ -7,6 +7,7 @@
 #include "fz.h"
 
 #include "json_surface.h"
+#include "store/rows_foolish.h"
 #include "store/store.h"
 #include "../../shared/c/b64/b64.h"
 #include "util/json.h"
@@ -146,15 +147,6 @@ static bool ref_get_n(cb_span item, const char *name, int64_t *out) {
     return num_parse_i64_cstr(t, INT64_MIN, INT64_MAX, out);
 }
 
-static bool ref_get_bool(cb_span item, const char *name, bool *out) {
-    cb_span tok;
-    if (!ref_attr(item, name, "BOOL", &tok)) return false;
-    if (tok.n == 4 && memcmp(tok.p, "true", 4) == 0) *out = true;
-    else if (tok.n == 5 && memcmp(tok.p, "false", 5) == 0) *out = false;
-    else return false;
-    return true;
-}
-
 static bool ref_get_b(cb_span item, const char *name, uint8_t **out, size_t *len) {
     *out = NULL;
     *len = 0;
@@ -174,129 +166,6 @@ static bool ref_get_b(cb_span item, const char *name, uint8_t **out, size_t *len
     *out = p;
     *len = (size_t)n;
     return true;
-}
-
-static int64_t ref_n_or(cb_span item, const char *name, int64_t none) {
-    int64_t v;
-    return ref_get_n(item, name, &v) ? v : none;
-}
-
-static bool ref_item_user(cb_span it, cb_user_row *u) {
-    memset(u, 0, sizeof *u);
-    if (!ref_get_s(it, "id", u->id, sizeof u->id) || !ref_get_s(it, "email", u->email, sizeof u->email) ||
-        !ref_get_s(it, "password_hash", u->password_hash, sizeof u->password_hash))
-        return false;
-    ref_get_s(it, "username", u->username, sizeof u->username);
-    u->created_at = ref_n_or(it, "created_at", 0);
-    u->last_sign_in_at = ref_n_or(it, "last_sign_in_at", 0);
-    u->session_gen = ref_n_or(it, "session_gen", 0);
-    ref_get_s(it, "kept_session", u->kept_session, sizeof u->kept_session);
-    return true;
-}
-
-
-
-static bool ref_item_game(cb_span it, cb_game_row *g) {
-    memset(g, 0, sizeof *g);
-    int64_t status, version;
-    if (!ref_get_s(it, "id", g->id, sizeof g->id) || !ref_get_n(it, "status", &status) ||
-        !ref_get_n(it, "version", &version))
-        return false;
-    g->status = (int)status;
-    g->version = version;
-    uint8_t *seed;
-    size_t seed_len;
-    if (!ref_get_b(it, "state", &g->state, &g->state_len) || !ref_get_b(it, "roster", &g->roster, &g->roster_len) ||
-        !ref_get_b(it, "logs_packed", &g->logs, &g->logs_len) || !ref_get_b(it, "game_seed", &seed, &seed_len)) {
-        cb_game_row_free(g);
-        return false;
-    }
-    if (seed && seed_len == CB_SEED_LEN) {
-        g->has_seed = true;
-        memcpy(g->seed, seed, CB_SEED_LEN);
-    }
-    free(seed);
-    ref_get_bool(it, "needs_bots", &g->needs_bots);
-    g->round_epoch = ref_n_or(it, "round_epoch", 0);
-    g->created_at = ref_n_or(it, "created_at", 0);
-    g->updated_at = ref_n_or(it, "updated_at", 0);
-    g->last_commit_at = ref_n_or(it, "last_commit_at", 0);
-    return true;
-}
-
-static bool ref_item_member(cb_span it, cb_member_row *m) {
-    memset(m, 0, sizeof *m);
-    m->updated_at = ref_n_or(it, "updated_at", 0);
-    return ref_get_s(it, "game_id", m->game_id, sizeof m->game_id);
-}
-
-static bool ref_item_bot(cb_span it, cb_bot_row *b) {
-    memset(b, 0, sizeof *b);
-    if (!ref_get_s(it, "id", b->id, sizeof b->id) || !ref_get_s(it, "nickname", b->nickname, sizeof b->nickname) ||
-        !ref_get_s(it, "strategy_key", b->strategy_key, sizeof b->strategy_key))
-        return false;
-    b->elo_rating = (int32_t)ref_n_or(it, "elo_rating", 1000);
-    b->previous_elo = (int32_t)ref_n_or(it, "previous_elo", -1);
-    b->games_played = (int32_t)ref_n_or(it, "games_played", 0);
-    b->created_at = ref_n_or(it, "created_at", 0);
-    b->updated_at = ref_n_or(it, "updated_at", 0);
-    return true;
-}
-
-static bool ref_item_rating(cb_span it, cb_rating_row *r) {
-    memset(r, 0, sizeof *r);
-    if (!ref_get_s(it, "user_id", r->user_id, sizeof r->user_id)) return false;
-    ref_get_s(it, "username", r->username, sizeof r->username);
-    r->elo_rating = (int32_t)ref_n_or(it, "elo_rating", 1000);
-    r->previous_elo = (int32_t)ref_n_or(it, "previous_elo", -1);
-    r->games_played = (int32_t)ref_n_or(it, "games_played", 0);
-    r->updated_at = ref_n_or(it, "updated_at", 0);
-    return true;
-}
-
-static bool ref_item_snapshot(cb_span it, cb_snapshot_row *s) {
-    memset(s, 0, sizeof *s);
-    if (!ref_get_s(it, "id", s->id, sizeof s->id)) return false;
-    ref_get_s(it, "game_id", s->game_id, sizeof s->game_id);
-    cb_span players, list, e;
-    size_t pos = 0;
-    if (ref_member(it, "player_ids", &players) && ref_member(players, "L", &list))
-        while (s->n_players < CB_MAX_SEATS && ref_array_next(list, &pos, &e)) {
-            cb_span tok;
-            if (!ref_member(e, "S", &tok) || cb_json_unescape(tok, s->player_ids[s->n_players], sizeof(cb_uuid)) < 0)
-                return false;
-            s->n_players++;
-        }
-    if (!ref_get_b(it, "moves", &s->moves, &s->moves_len) || !ref_get_b(it, "extras", &s->extras, &s->extras_len)) {
-        cb_snapshot_row_free(s);
-        return false;
-    }
-    s->created_at = ref_n_or(it, "created_at", 0);
-    return true;
-}
-
-static bool ref_item_chat(cb_span it, cb_chat_row *c) {
-    memset(c, 0, sizeof *c);
-    cb_span tok;
-    if (!ref_get_s(it, "id", c->id, sizeof c->id) || !ref_get_s(it, "game_id", c->game_id, sizeof c->game_id) ||
-        !ref_get_s(it, "user_id", c->user_id, sizeof c->user_id) || !ref_attr(it, "message", "S", &tok))
-        return false;
-    c->message = malloc(tok.n);
-    if (!c->message || cb_json_unescape(tok, c->message, tok.n) < 0) {
-        free(c->message);
-        c->message = NULL;
-        return false;
-    }
-    ref_get_bool(it, "is_system", &c->is_system);
-    c->created_at = ref_n_or(it, "created_at", 0);
-    return true;
-}
-
-
-static bool ref_item_scan(cb_span it, char game_id[CB_GAME_ID_MAX + 1], int64_t *updated_at, int64_t *last_commit_at) {
-    *updated_at = ref_n_or(it, "updated_at", 0);
-    *last_commit_at = ref_n_or(it, "last_commit_at", 0);
-    return ref_get_s(it, "game_id", game_id, CB_GAME_ID_MAX + 1);
 }
 
 // The response readers as they were: cb_json_find from the top.
@@ -345,54 +214,11 @@ static void same_walks(cb_span s) {
     }
 }
 
-// Every item decoder on one item against the old one: the same answer, and
-// the same struct (a partly filled one included).
+// The attribute readers on one item against the old ones: the same answer.
+// (The row decoders over JSON, which this held against their predecessors,
+// went in stage 6: rows are read from cb_item now, items_of below.)
 static void same_items(cb_span it) {
     same_walks(it);
-    { cb_user_row a, b; FZ_CHECK(dw_item_user(it, &a) == ref_item_user(it, &b)); FZ_CHECK(!memcmp(&a, &b, sizeof a)); }
-    { cb_member_row a, b; FZ_CHECK(dw_item_member(it, &a) == ref_item_member(it, &b)); FZ_CHECK(!memcmp(&a, &b, sizeof a)); }
-    { cb_bot_row a, b; FZ_CHECK(dw_item_bot(it, &a) == ref_item_bot(it, &b)); FZ_CHECK(!memcmp(&a, &b, sizeof a)); }
-    { cb_rating_row a, b; FZ_CHECK(dw_item_rating(it, &a) == ref_item_rating(it, &b)); FZ_CHECK(!memcmp(&a, &b, sizeof a)); }
-    {
-        char ga[CB_GAME_ID_MAX + 1] = "", gb[CB_GAME_ID_MAX + 1] = "";
-        int64_t ua, ub, la, lb;
-        FZ_CHECK(dw_item_scan(it, ga, &ua, &la) == ref_item_scan(it, gb, &ub, &lb));
-        FZ_CHECK(ua == ub && la == lb && !memcmp(ga, gb, sizeof ga));
-    }
-    {
-        cb_game_row a, b;
-        bool ra = dw_item_game(it, &a), rb = ref_item_game(it, &b);
-        FZ_CHECK(ra == rb);
-        FZ_CHECK(!strcmp(a.id, b.id) && a.status == b.status && a.version == b.version && a.has_seed == b.has_seed &&
-                 !memcmp(a.seed, b.seed, sizeof a.seed) && a.needs_bots == b.needs_bots && a.round_epoch == b.round_epoch &&
-                 a.created_at == b.created_at && a.updated_at == b.updated_at && a.last_commit_at == b.last_commit_at);
-        FZ_CHECK(same_bytes(a.state, a.state_len, b.state, b.state_len) &&
-                 same_bytes(a.roster, a.roster_len, b.roster, b.roster_len) &&
-                 same_bytes(a.logs, a.logs_len, b.logs, b.logs_len));
-        cb_game_row_free(&a);
-        cb_game_row_free(&b);
-    }
-    {
-        cb_snapshot_row a, b;
-        bool ra = dw_item_snapshot(it, &a), rb = ref_item_snapshot(it, &b);
-        FZ_CHECK(ra == rb);
-        FZ_CHECK(!strcmp(a.id, b.id) && !strcmp(a.game_id, b.game_id) && a.n_players == b.n_players &&
-                 !memcmp(a.player_ids, b.player_ids, sizeof a.player_ids) && a.created_at == b.created_at);
-        FZ_CHECK(same_bytes(a.moves, a.moves_len, b.moves, b.moves_len) &&
-                 same_bytes(a.extras, a.extras_len, b.extras, b.extras_len));
-        cb_snapshot_row_free(&a);
-        cb_snapshot_row_free(&b);
-    }
-    {
-        cb_chat_row a, b;
-        bool ra = dw_item_chat(it, &a), rb = ref_item_chat(it, &b);
-        FZ_CHECK(ra == rb);
-        FZ_CHECK(!strcmp(a.id, b.id) && !strcmp(a.game_id, b.game_id) && !strcmp(a.user_id, b.user_id) &&
-                 a.is_system == b.is_system && a.created_at == b.created_at);
-        FZ_CHECK((a.message == NULL) == (b.message == NULL) && (!a.message || !strcmp(a.message, b.message)));
-        cb_chat_row_free(&a);
-        cb_chat_row_free(&b);
-    }
     static const char *const names[] = { "pk", "sk", "id", "version", "state", "needs_bots", "message", "n", "" };
     for (size_t i = 0; i < sizeof names / sizeof names[0]; i++) {
         char sa[64], sb[64];
@@ -413,7 +239,6 @@ static void same_responses(const char *body, size_t n) {
     cb_span a, b;
     bool ha = dw_item(body, n, &a), hb = cb_json_find(body, n, "Item", &b) == CB_JSON_OBJ;
     FZ_CHECK(ha == hb && (!ha || same_span(a, b)));
-    FZ_CHECK(dw_cond_failed_has_item(body, n) == hb);
     ha = dw_attributes(body, n, &a), hb = cb_json_find(body, n, "Attributes", &b) == CB_JSON_OBJ;
     FZ_CHECK(ha == hb && (!ha || same_span(a, b)));
     a = dw_items(body, n);
@@ -434,44 +259,44 @@ static void same_responses(const char *body, size_t n) {
     FZ_CHECK(same_span(dw_batch_items(body, n, "cbase"), b));
 }
 
-// Every item decoder on one item.
+// Every reader on one item: the item layer's (any item, every attribute),
+// its record round trip, and every row decoder over what it read.
 static void items_of(cb_span item) {
     same_items(item);
-    cb_user_row u; (void)dw_item_user(item, &u);
-    // The item layer's reader (store/items.h): any item, every attribute.
-    {
-        cb_item ii;
-        cb_item_init(&ii);
-        if (dw_item_read(item, &ii)) {
-            cb_buf rec;
-            cb_buf_init(&rec);
-            // What SQLite would keep reads back as the same attributes.
-            if (cb_item_record_encode(&ii, &rec)) {
-                cb_item back;
-                cb_item_init(&back);
-                FZ_CHECK(cb_item_record_decode(rec.p, rec.len, &back) && back.n == ii.n);
-                cb_item_free(&back);
-            }
-            cb_buf_free(&rec);
+    cb_item ii;
+    cb_item_init(&ii);
+    if (dw_item_read(item, &ii)) {
+        cb_buf rec;
+        cb_buf_init(&rec);
+        // What SQLite would keep reads back as the same attributes.
+        if (cb_item_record_encode(&ii, &rec)) {
+            cb_item back;
+            cb_item_init(&back);
+            FZ_CHECK(cb_item_record_decode(rec.p, rec.len, &back) && back.n == ii.n);
+            cb_item_free(&back);
         }
-        cb_item_free(&ii);
+        cb_buf_free(&rec);
+        cb_user_row u; (void)cb_rows_user_of(&ii, &u);
+        cb_game_row g; memset(&g, 0, sizeof g);
+        if (cb_rows_game_of(&ii, &g)) FZ_CHECK(!g.state_len || g.state);
+        cb_game_row_free(&g);
+        cb_bot_row b; (void)cb_rows_bot_of(&ii, &b);
+        cb_rating_row rt; (void)cb_rows_rating_of(&ii, &rt);
+        cb_snapshot_row sn; memset(&sn, 0, sizeof sn);
+        if (cb_rows_snapshot_of(&ii, &sn)) FZ_CHECK(sn.n_players >= 0 && sn.n_players <= CB_MAX_SEATS);
+        cb_snapshot_row_free(&sn);
+        cb_chat_row c; memset(&c, 0, sizeof c);
+        (void)cb_rows_chat_of(&ii, &c);
+        cb_chat_row_free(&c);
+        cb_buf st; cb_buf_init(&st);
+        const char *nm[CB_ITEM_ATTRS], *vl[CB_ITEM_ATTRS];
+        int k = cb_item_text(&ii, &st, nm, vl, CB_ITEM_ATTRS);
+        for (int i = 0; i < k; i++) { (void)strlen(nm[i]); if (vl[i]) (void)strlen(vl[i]); }
+        cb_buf_free(&st);
     }
-    cb_game_row g; memset(&g, 0, sizeof g);
-    if (dw_item_game(item, &g)) FZ_CHECK(!g.state_len || g.state);
-    cb_game_row_free(&g);
-    cb_member_row m; (void)dw_item_member(item, &m);
-    cb_uuid id; bool bot; (void)dw_seat_key(item, id, &bot);
-    cb_bot_row b; (void)dw_item_bot(item, &b);
-    cb_rating_row rt; (void)dw_item_rating(item, &rt);
-    cb_snapshot_row s; memset(&s, 0, sizeof s);
-    (void)dw_item_snapshot(item, &s);
-    cb_snapshot_row_free(&s);
-    cb_chat_row c; memset(&c, 0, sizeof c);
-    (void)dw_item_chat(item, &c);
-    cb_chat_row_free(&c);
-    char gid[CB_GAME_ID_MAX + 1]; int64_t a, z; (void)dw_item_scan(item, gid, &a, &z);
-    (void)dw_item_email_user(item, id);
-    cb_buf k; cb_buf_init(&k); (void)dw_item_key(item, &k); cb_buf_free(&k);
+    cb_item_free(&ii);
+    char pk[CB_ITEM_KEY_MAX], sk[CB_ITEM_KEY_MAX];
+    (void)dw_item_keys(item, pk, sizeof pk, sk, sizeof sk);
     cb_buf st; cb_buf_init(&st);
     const char *names[64], *values[64];
     int n = dw_item_text(item, &st, names, values, 64);
@@ -482,7 +307,6 @@ static void items_of(cb_span item) {
     (void)dw_get_s(item, "pk", sv, sizeof sv);
     (void)dw_get_n(item, "version", &nv);
     if (dw_get_b(item, "state", &bp, &bl)) free(bp);
-    char exp[64]; (void)dw_export_kind(item, exp, sizeof exp);
 }
 
 static void walk(cb_span arr) {
@@ -505,7 +329,6 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     char text[256]; dw_error_text(body, n, text, sizeof text); FZ_CHECK(strlen(text) < sizeof text);
     bool has;
     for (int i = 0; i < 4; i++) (void)dw_cancel_reason(body, n, i, &has);
-    (void)dw_cond_failed_has_item(body, n);
     same_responses(body, n);
     same_walks(cb_span_of(body, n));
 
@@ -525,14 +348,13 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     for (int i = 0; i < 256 && dw_object_next(cb_span_of(body, n), &pos, &k, &v); i++)
         FZ_CHECK(v.p >= body && v.p + v.n <= body + n);
 
-    const char *ids[3] = { "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222", "ab12cd" };
-    const bool is_bot[3] = { false, true, false };
-    dw_rating_read rr[6];
-    dw_ratings_read(body, n, "cbase", ids, is_bot, 3, false, rr);
-    dw_ratings_read(body, n, "cbase", ids, is_bot, 3, true, rr);
-    const char *left[3];
-    int u = dw_unprocessed_games(body, n, "cbase", ids, 3, left);
+    // A BatchGetItem's unprocessed keys, by index into the keys asked for.
+    const cb_ikey keys[3] = { { "USER#11111111-1111-4111-8111-111111111111", "RATING" },
+                              { "BOT#22222222-2222-4222-8222-222222222222", "BOT" }, { "GAME#ab12cd", "ROW" } };
+    int left[3];
+    int u = dw_ibatch_unprocessed(body, n, "cbase", keys, 3, left);
     FZ_CHECK(u >= 0 && u <= 3);
+    for (int i = 0; i < u; i++) FZ_CHECK(left[i] >= 0 && left[i] < 3);
     free((void *)body);
     return 0;
 }

@@ -134,9 +134,12 @@ static int64_t stored_version(const char *gid) {
 static int watched_commit(cb_store *s, const cb_game_commit *c) {
     if (g_steal > 0) {
         g_steal--;
-        char sql[128];
-        snprintf(sql, sizeof sql, "UPDATE games SET version = version + 1 WHERE id = '%s'", c->row->id);
-        FZ_CHECK(g_real->admin_query(s, sql, true, NULL, NULL) >= 0);
+        char pk[64];
+        snprintf(pk, sizeof pk, "GAME#%s", c->row->id);
+        const cb_iset up[] = { { CB_AVN("version", 1), CB_SET_INCR } };
+        cb_iwrite w = { .op = CB_IW_UPDATE, .key = { pk, "ROW" }, .sets = up, .n_sets = 1, .cond = { CB_IF_EXISTS }, .n_cond = 1 };
+        int rc = g_real->item_write(s, &w, NULL);
+        FZ_CHECK(rc == CB_OK || rc == CB_E_CONFLICT);   // CONFLICT: no such game
     }
     int64_t before = stored_version(c->row->id);
     int rc = g_real->game_commit(s, c);
@@ -149,6 +152,26 @@ static int watched_commit(cb_store *s, const cb_game_commit *c) {
         FZ_CHECK(after == before);
     }
     return rc;
+}
+
+// The row says the bots are owed a move, and its SCAN marker is there (at
+// the row's version, stale): what a lagging marker or a commit racing a
+// drive's idle leaves. false: no such game.
+static bool plant_marker(const char *gid) {
+    cb_game_row g;
+    memset(&g, 0, sizeof g);
+    if (g_real->game_get(g_store, gid, &g) != CB_OK) { cb_game_row_free(&g); return false; }
+    char pk[64];
+    snprintf(pk, sizeof pk, "GAME#%s", gid);
+    const cb_iset up[] = { { CB_AVBOOL("needs_bots", true), CB_SET_TO } };
+    cb_iwrite row = { .op = CB_IW_UPDATE, .key = { pk, "ROW" }, .sets = up, .n_sets = 1 };
+    const cb_av a[] = { CB_AVS("game_id", gid), CB_AVN("updated_at", 0), CB_AVN("last_commit_at", g.last_commit_at),
+                        CB_AVN("row_version", g.version) };
+    cb_iwrite marker = { .op = CB_IW_PUT, .key = { "SCAN", pk }, .attrs = a, .n_attrs = 4 };
+    cb_game_row_free(&g);
+    FZ_CHECK(g_real->item_write(g_store, &row, NULL) == CB_OK);
+    FZ_CHECK(g_real->item_write(g_store, &marker, NULL) == CB_OK);
+    return true;
 }
 
 // ---- reading a stored game the way the oracle needs it ---------------------------------------
@@ -861,10 +884,7 @@ static void reset_world(uint64_t seed) {
     for (int i = 0; i < N_CONNS; i++) cb_mqtt_conn_init(&g_conn[i].mq);
     g_steal = 0;
     cb_row_cache_clear();
-    static const char *const EMPTY[] = {
-        "DELETE FROM chat_messages", "DELETE FROM game_snapshots", "DELETE FROM game_members", "DELETE FROM game_bots",
-        "DELETE FROM games",         "DELETE FROM ratings",        "DELETE FROM items", "DELETE FROM users",
-    };
+    static const char *const EMPTY[] = { "DELETE FROM items WHERE pk NOT LIKE 'BOT#%'" };   // every row but the bots
     for (size_t i = 0; i < sizeof EMPTY / sizeof EMPTY[0]; i++)
         FZ_CHECK(g_real->admin_query(g_store, EMPTY[i], true, collect_nothing, NULL) >= 0);
     for (int i = 0; i < N_USERS; i++) {
@@ -968,11 +988,9 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
             // a drive's idle, or DynamoDB's lagging marker, leaves. The next
             // drive must find nothing and take the game out.
             if ((b & 4) && g_n_games) {
-                char sql[128];
-                snprintf(sql, sizeof sql, "UPDATE games SET needs_bots = 1 WHERE id = '%s'", game_of(&in));
-                FZ_CHECK(g_real->admin_query(g_store, sql, true, NULL, NULL) >= 0);
-                int gi = game_index(sql + strlen(sql) - 7, 6);
-                if (gi >= 0) g_planted[gi] = stored_version(g_gid[gi]);
+                const char *gid = game_of(&in);
+                int gi = game_index(gid, strlen(gid));
+                if (gi >= 0 && plant_marker(gid)) g_planted[gi] = stored_version(g_gid[gi]);
             }
             break;
         }
