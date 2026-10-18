@@ -845,7 +845,7 @@ bool cb_bcrypt_parse(const char *hash) {
     if (hash[2] != 'a' && hash[2] != 'b' && hash[2] != 'y') return false;
     if (hash[4] < '0' || hash[4] > '9' || hash[5] < '0' || hash[5] > '9') return false;
     int cost = (hash[4] - '0') * 10 + (hash[5] - '0');
-    if (cost < 4 || cost > 31) return false;
+    if (cost < 4 || cost > CB_BCRYPT_COST_MAX) return false;
     for (int i = 7; i < CB_BCRYPT_HASH_LEN; i++) {
         unsigned char c = (unsigned char)hash[i];
         if (c < 0x20 || (size_t)(c - 0x20) >= sizeof BF_atoi64 || BF_atoi64[c - 0x20] > 63) return false;
@@ -855,7 +855,7 @@ bool cb_bcrypt_parse(const char *hash) {
 
 int cb_bcrypt_hash(const char *password, int cost, char out[CB_BCRYPT_HASH_LEN + 1]) {
     out[0] = 0;
-    if (cost < 4 || cost > 31) return CB_E_INVALID;
+    if (cost < 4 || cost > CB_BCRYPT_COST_MAX) return CB_E_INVALID;
     BF_word salt[4];
     cb_random_bytes(salt, sizeof salt);
     char setting[BCRYPT_SETTING_LEN + 1];

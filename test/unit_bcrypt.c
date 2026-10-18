@@ -53,6 +53,10 @@ static void refuses_what_is_not_bcrypt(void) {
         "$2x$05$/OK.fbVrR/bpIqNJ5ianF.CE5elHaaO4EbggVDjb8P19RukzXSM3e",   // the sign-extension bug
         "$2a$03$CCCCCCCCCCCCCCCCCCCCC.E5YPO9kmyuRGyh0XouQYb4YMJKvyOeW",   // cost under 4
         "$2a$32$CCCCCCCCCCCCCCCCCCCCC.E5YPO9kmyuRGyh0XouQYb4YMJKvyOeW",   // cost over 31
+        // Over the most a stored hash may ask (finding L6): a planted cost-31
+        // hash would spend a whole Lambda timeout on each sign-in to its name.
+        "$2a$15$CCCCCCCCCCCCCCCCCCCCC.E5YPO9kmyuRGyh0XouQYb4YMJKvyOeW",
+        "$2b$31$CCCCCCCCCCCCCCCCCCCCC.E5YPO9kmyuRGyh0XouQYb4YMJKvyOeW",
         "$2a$05$CCCCCCCCCCCCCCCCCCCCC.E5YPO9kmyuRGyh0XouQYb4YMJKvyOe",    // short
         "$2a$05$CCCCCCCCCCCCCCCCCCCCC.E5YPO9kmyuRGyh0XouQYb4YMJKvyOeWW",  // long
         "$2a$05$CCCCCCCCCCCCCCCCCCCCC.E5YPO9kmyuRGyh0XouQYb4YMJKvyOe!",   // outside the alphabet
@@ -63,6 +67,9 @@ static void refuses_what_is_not_bcrypt(void) {
         T_EQ_INT(cb_bcrypt_verify("U*U", bad[i]), CB_E_INVALID);
     }
     T_CHECK(!cb_bcrypt_parse(NULL));
+    // Refused before any work: verifying against cost 31 answers at once.
+    T_EQ_INT(cb_bcrypt_verify("x", "$2b$31$CCCCCCCCCCCCCCCCCCCCC.E5YPO9kmyuRGyh0XouQYb4YMJKvyOeW"), CB_E_INVALID);
+    T_CHECK(cb_bcrypt_parse("$2b$14$CCCCCCCCCCCCCCCCCCCCC.E5YPO9kmyuRGyh0XouQYb4YMJKvyOeW"));   // the most
 }
 
 static void hash_round_trip(void) {

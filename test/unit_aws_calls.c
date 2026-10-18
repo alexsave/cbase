@@ -340,6 +340,13 @@ static void url_parse(void) {
     // ... and never for AWS itself.
     T_EQ_INT(cb_aws_url_parse("http://dynamodb.us-east-1.amazonaws.com", host, sizeof host, &port, &tls, base, sizeof base), CB_E_INVALID);
     T_EQ_INT(cb_aws_url_parse("http://dynamodb.us-east-1.AmazonAWS.com:80", host, sizeof host, &port, &tls, base, sizeof base), CB_E_INVALID);
+    // Nor its other spellings (finding L12): a trailing dot, the China partition, the bare domain.
+    static const char *const aws[] = { "http://dynamodb.us-east-1.amazonaws.com.", "http://dynamodb.cn-north-1.amazonaws.com.cn",
+                                       "http://x.amazonaws.com.cn.:80", "http://amazonaws.com", "http://AMAZONAWS.COM." };
+    for (size_t i = 0; i < sizeof aws / sizeof aws[0]; i++)
+        T_EQ_INT(cb_aws_url_parse(aws[i], host, sizeof host, &port, &tls, base, sizeof base), CB_E_INVALID);
+    // A name that only contains it is not AWS.
+    T_EQ_INT(cb_aws_url_parse("http://notamazonaws.com", host, sizeof host, &port, &tls, base, sizeof base), CB_OK);
 }
 
 // AWS_ENDPOINT_URL_DYNAMODB=http://... (DynamoDB Local): the store speaks plain

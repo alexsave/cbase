@@ -13,6 +13,21 @@
 #include <string.h>
 #include <strings.h>
 
+// Is `host` AWS's, however spelled (finding L12): amazonaws.com or
+// amazonaws.com.cn, or a name under either, any case, with or without the
+// trailing dot DNS allows. Plain HTTP is never sent to one.
+static bool aws_host(const char *host) {
+    size_t hl = strlen(host);
+    if (hl && host[hl - 1] == '.') hl--;
+    static const char *const roots[] = { "amazonaws.com", "amazonaws.com.cn" };
+    for (size_t i = 0; i < sizeof roots / sizeof roots[0]; i++) {
+        size_t rl = strlen(roots[i]);
+        if (hl < rl || strncasecmp(host + hl - rl, roots[i], rl) != 0) continue;
+        if (hl == rl || host[hl - rl - 1] == '.') return true;
+    }
+    return false;
+}
+
 int cb_aws_url_parse(const char *url, char *host, size_t host_cap, int *port, bool *tls, char *base, size_t base_cap) {
     if (!url) return CB_E_INVALID;
     *tls = true;
@@ -33,9 +48,7 @@ int cb_aws_url_parse(const char *url, char *host, size_t host_cap, int *port, bo
         colon = hend;
     }
     if (colon == url || !cb_strncpy0(host, host_cap, url, (size_t)(colon - url))) return CB_E_INVALID;
-    size_t hl = strlen(host);
-    static const char AWS[] = ".amazonaws.com";
-    if (!*tls && hl >= sizeof AWS - 1 && strcasecmp(host + hl - (sizeof AWS - 1), AWS) == 0) return CB_E_INVALID;
+    if (!*tls && aws_host(host)) return CB_E_INVALID;
     size_t bl = slash ? strlen(slash) : 0;
     while (bl > 0 && slash[bl - 1] == '/') bl--;
     if (!cb_strncpy0(base, base_cap, slash ? slash : "", bl)) return CB_E_INVALID;

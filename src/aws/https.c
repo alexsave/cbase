@@ -364,7 +364,15 @@ static int conn_open(conn *c, const char *host, int port, bool tls, int64_t dead
     set_timeouts(c->fd, left(deadline));
     SSL_set_fd(c->ssl, c->fd);
     SSL_set_tlsext_host_name(c->ssl, host);   // SNI
-    SSL_set1_host(c->ssl, host);              // the certificate must name it
+    // The certificate must name the host. If the name cannot be set (finding
+    // L10: SSL_set1_host's answer was ignored), no connection is made at all,
+    // rather than one whose certificate is checked against nothing.
+    if (SSL_set1_host(c->ssl, host) != 1) {
+        CB_WARN("https", "TLS to %s:%d: the host name to verify could not be set", host, port);
+        ERR_clear_error();
+        conn_close(c);
+        return CB_E_IO;
+    }
     if (SSL_connect(c->ssl) != 1) {
         long vr = SSL_get_verify_result(c->ssl);
         char e[256];
