@@ -225,6 +225,16 @@ static void seeds_event(void) {
     puts_("event", "scan", "\"scan\"");
     puts_("event", "bot-drive", "\"bot_drive:ab12cd\"");
     puts_("event", "eventbridge", "{\"source\":\"aws.events\",\"detail-type\":\"Scheduled Event\",\"detail\":{}}");
+    // The literals at the edges of jobs.h: a 63-byte key taken and a 64-byte
+    // one refused, a second colon, a schedule name of 31 and 32 bytes.
+    char lit[128];
+    snprintf(lit, sizeof lit, "\"drive:%.63s\"", "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_");
+    puts_("event", "job-key-63", lit);
+    snprintf(lit, sizeof lit, "\"drive:%.64s\"", "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_x");
+    puts_("event", "job-key-64", lit);
+    puts_("event", "job-two-colons", "\"a:b:c\"");
+    puts_("event", "schedule-31", "\"abcdefghijklmnopqrstuvwxyz_0123\"");
+    puts_("event", "schedule-32", "\"abcdefghijklmnopqrstuvwxyz_01234\"");
 }
 
 // Every object under an "Item" key, anywhere in a request body: the item
