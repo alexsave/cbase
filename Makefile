@@ -3,7 +3,8 @@
 #   make            build/cbase (`cbase serve`), build/bootstrap (the Lambda
 #                   runtime, native, for the fake-runtime smoke) and build/cbase-import
 #   make bootstrap  dist/bootstrap.zip: the static Linux arm64 Lambda binary
-#   make test       every unit test (<side>/test/unit_*.c), each its own program
+#   make test       every unit test (<side>/test/unit_*.c), each its own program, and
+#                   compiler-gate (each <side>/test/gate/*.c, an include across the line, refused)
 #   make smoke      the end-to-end smoke test against a real build/cbase
 #   make check      test + smoke
 #   make check-asan the same, every object rebuilt under ASan + UBSan
@@ -109,8 +110,9 @@ LOCAL_INC   := $(CORE_INC) -Iproviders/local/src
 AWS_INC     := $(CORE_INC) -Iproviders/aws/src
 PRODUCT_INC := $(CORE_INC) -I$(C_ROOT)/foolish/server/src -I$(KDIR)/src
 ALL_INC     := -Icore/include $(addprefix -I,$(SRC_ROOTS)) $(addprefix -I,$(TEST_ROOTS)) -Ibench -I$(KDIR)/src $(SHARED_INC)
-side_inc = $(if $(filter core/src/%,$*),$(CORE_INC),$(if $(filter providers/local/src/%,$*),$(LOCAL_INC),$(if \
-             $(filter providers/aws/src/%,$*),$(AWS_INC),$(if $(filter foolish/server/src/%,$*),$(PRODUCT_INC),$(ALL_INC)))))
+side_inc_of = $(if $(filter core/src/%,$(1)),$(CORE_INC),$(if $(filter providers/local/src/%,$(1)),$(LOCAL_INC),$(if \
+                $(filter providers/aws/src/%,$(1)),$(AWS_INC),$(if $(filter foolish/server/src/%,$(1)),$(PRODUCT_INC),$(ALL_INC)))))
+side_inc = $(call side_inc_of,$*)
 SIDE_STAMP := core: $(CORE_INC) local: $(LOCAL_INC) aws: $(AWS_INC) product: $(PRODUCT_INC) rest: $(ALL_INC)
 CB_CFLAGS = -std=gnu11 -D_GNU_SOURCE -O2 -g -Wall -Wextra -Werror -Wno-unused-parameter -Wshadow -Wvla \
             $(side_inc) $(OPENSSL_CFLAGS) -pthread $(KERNEL_CAPS)
@@ -238,12 +240,37 @@ include $(C_ROOT)/shared/tools/shared_tests.mk
 $(call SHARED_TESTS_IN,,build/obj/cbase,CC,CB_CFLAGS)
 $(call SHARED_TESTS_IN,asan_,build/obj/asan,CC,ASAN_CB_CFLAGS)
 
-test: shared-tests $(call UNIT_RUNS,build/test)
+# THE COMPILER GATE AS A TEST (docs/PLATFORM.md 9, stage 7): each <side>/test/gate/*.c
+# includes one header from across that side's line (core a provider's or the
+# product's, one provider the other's, the product a provider's). Each is
+# compiled twice, -fsyntax-only: in CB_CFLAGS as a source of that side gets them
+# (side_inc_of the same path under the side's src/), where it must FAIL, and on
+# that header not being found; and with every root on the path, where it must
+# compile, so the header is real and the failure is the line's. test and check
+# run it first.
+GATE_SRC := $(sort $(foreach r,$(TEST_ROOTS),$(wildcard $(r)/gate/*.c)))
+gate_side = $(patsubst $(C_ROOT)/%,%,$(subst /test/gate/,/src/,$(1)))
+.PHONY: compiler-gate $(addprefix compiler-gate/,$(notdir $(GATE_SRC)))
+compiler-gate: $(addprefix compiler-gate/,$(notdir $(GATE_SRC)))
+	@echo "compiler gate: $(words $(GATE_SRC)) includes across a side's line refused"
+define GATE
+compiler-gate/$(notdir $(1)): side_inc = $$(call side_inc_of,$(call gate_side,$(1)))
+compiler-gate/$(notdir $(1)): $(1)
+	@mkdir -p build/gate
+	@$$(CC) $$(CB_CFLAGS) $$(ALL_INC) -fsyntax-only $(1) || { echo "compiler gate: $(1) does not compile even with every root on its path"; exit 1; }
+	@if $$(CC) $$(CB_CFLAGS) -fsyntax-only $(1) 2> build/gate/$(notdir $(1)).err; then \
+	  echo "compiler gate: $(1) compiled in $(call gate_side,$(1))'s flags: the include across the line got through"; exit 1; fi
+	@h=$$$$(sed -n 's/^#include "\(.*\)"$$$$/\1/p' $(1)); grep -q "$$$$h.*\(file not found\|No such file\)" build/gate/$(notdir $(1)).err \
+	  || { cat build/gate/$(notdir $(1)).err; echo "compiler gate: $(1) failed, but not on its include across the line"; exit 1; }
+endef
+$(foreach g,$(GATE_SRC),$(eval $(call GATE,$(g))))
+
+test: compiler-gate shared-tests $(call UNIT_RUNS,build/test)
 	$(call RUN_ALL,UNIT TESTS,$(call UNIT_RUNS,build/test))
 smoke: $(call SMOKE_PROGS,build)
 	$(call RUN_ALL,SMOKE,$(call SMOKE_RUNS,build))
 # One pool for both, so the smokes and the units share the machine's cores.
-check: shared-tests $(call UNIT_RUNS,build/test) $(call SMOKE_PROGS,build)
+check: compiler-gate shared-tests $(call UNIT_RUNS,build/test) $(call SMOKE_PROGS,build)
 	$(call RUN_ALL,CHECK,$(call SMOKE_RUNS,build) $(call UNIT_RUNS,build/test))
 
 test-asan: shared-tests-asan $(call UNIT_RUNS,build/asan/test)
