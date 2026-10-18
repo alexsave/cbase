@@ -1,0 +1,1 @@
+€{"__type":"com.amazonaws.dynamodb.v20120810#TransactionCanceledException","message":"Transaction cancelled","CancellationReasons":[{"Code":"None"},{"Code":"ConditionalCheckFailed","Item":{"pk":{"S":"x"}}},{"Code":"ThrottlingError"}]}

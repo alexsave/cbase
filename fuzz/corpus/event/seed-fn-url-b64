@@ -1,0 +1,1 @@
+{"version":"2.0","rawPath":"/v1/action","rawQueryString":"a=1","cookies":["s=1","t=2"],"headers":{"authorization":"Bearer x.y.z","content-type":"application/octet-stream"},"requestContext":{"http":{"method":"POST","path":"/v1/action"}},"body":"AQIDBA==","isBase64Encoded":true}

@@ -1,0 +1,1 @@
+{"requestContext":{"routeKey":"$connect","connectionId":"abc=","domainName":"x.execute-api.us-east-1.amazonaws.com","stage":"prod"},"queryStringParameters":{"proto":"nw1"},"isBase64Encoded":false}

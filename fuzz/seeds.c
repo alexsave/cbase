@@ -675,6 +675,10 @@ static void seeds_sequence(void) {
     p[n++] = OP(1, 1); p[n++] = 1; p[n++] = 0; p[n++] = 0;  // user1 START
     p[n++] = OP(2, 7); p[n++] = 2; p[n++] = 4; p[n++] = 2; p[n++] = 1; p[n++] = 0; p[n++] = 0; p[n++] = 1; p[n++] = 0; p[n++] = 0; // conn2 SUB_AS user2 game (spectator)
     p[n++] = OP(1, 7); p[n++] = 1; p[n++] = 4; p[n++] = 1; p[n++] = 1; p[n++] = 0; p[n++] = 0; p[n++] = 0; p[n++] = 1; p[n++] = 0;          // conn1 SUB_AS user1 games
+    // conn3, a batch of two: user1's SUB_AS of the game (seat stream), a ping
+    p[n++] = OP(1, 7); p[n++] = 3; p[n++] = 6; p[n++] = 1;
+    p[n++] = 4; p[n++] = 1; p[n++] = 1; p[n++] = 7; p[n++] = 0; p[n++] = 1; p[n++] = 0; p[n++] = 0;
+    p[n++] = 3; p[n++] = 1; p[n++] = 1;
     p[n++] = OP(0, 10); p[n++] = 1;                         // a racing writer
     for (int i = 0; i < 40; i++) {
         p[n++] = OP(i & 1, 3); p[n++] = 0; p[n++] = 0; p[n++] = (uint8_t)(i * 3); p[n++] = 0;

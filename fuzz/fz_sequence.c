@@ -298,6 +298,16 @@ static conn g_conn[N_CONNS];
 static void conn_hears(conn *c, const uint8_t *msg, size_t len, const char *topic) {
     NwFrame *f = calloc(1, sizeof *f);
     FZ_CHECK(nw_frame_decode(msg, (int)len, f) == NW_OK);
+    if (f->kind == NW_WS_BATCH) {   // a batch's replies: each entry is heard in order
+        FZ_CHECK(topic == NULL);   // the server batches replies, never pushes
+        uint32_t pos = 0;
+        NwBlob one;
+        int r;
+        while ((r = nw_batch_next(f->blob, &pos, &one)) == 1) conn_hears(c, one.p, one.len, NULL);
+        FZ_CHECK(r == 0);
+        free(f);
+        return;
+    }
     const char *uid = c->row.user_id[0] ? c->row.user_id : NULL;
     for (int u = 0; uid && u < N_USERS; u++) FZ_CHECK(!(g_deleted[u] && strcmp(uid, UID[u]) == 0));
     if (f->kind == NW_WS_VIEW || f->kind == NW_WS_CATCHUP || f->kind == NW_WS_CAST || f->kind == NW_WS_CHAT) {
@@ -698,10 +708,10 @@ static void step_raw(fz_in *in, int user) {
     if (g_status == 200 && (k == 0 || k == 2)) check_envelope(UID[user], g_body, g_len, NULL);
 }
 
-static void step_stream(fz_in *in) {
-    conn *c = &g_conn[fz_u8(in) % N_CONNS];
+// One client frame of `kind` (0 AUTH, 1 SUB, 2 UNSUB, 3 PING, 4 SUB_AS,
+// 5 raw bytes), encoded into buf: its length, or -1.
+static int build_frame(fz_in *in, int kind, uint8_t *buf, int cap) {
     NwFrame *f = calloc(1, sizeof *f);
-    uint8_t kind = fz_u8(in) % 6;
     int user = fz_u8(in) % N_USERS;
     bool good = fz_u8(in) % 4 != 0;
     switch (kind) {
@@ -733,17 +743,44 @@ static void step_stream(fz_in *in) {
     }
     case 3: f->kind = NW_WS_PING; break;
     }
-    uint8_t buf[4096];
     int n;
     if (kind == 5) {
         size_t got;
         const uint8_t *b = fz_bytes(in, fz_u8(in), &got);
+        if ((int)got > cap) got = (size_t)cap;
         memcpy(buf, b, got);
         n = (int)got;
     } else {
-        n = nw_frame_encode(f, buf, sizeof buf);
+        n = nw_frame_encode(f, buf, cap);
     }
     free(f);
+    return n < 0 ? -1 : n;
+}
+
+static void step_stream(fz_in *in) {
+    conn *c = &g_conn[fz_u8(in) % N_CONNS];
+    uint8_t kind = fz_u8(in) % 7;
+    static uint8_t buf[NW_BATCH_MAX * 4200 + 64];
+    int n;
+    if (kind < 6) {
+        n = build_frame(in, kind, buf, 4096);
+    } else {
+        // A page's subscriptions of one moment as one NW_WS_BATCH (#341).
+        static uint8_t entries[NW_BATCH_MAX * 4200], one[4096];
+        int k = 1 + fz_u8(in) % 5, at = 0;
+        for (int i = 0; i < k; i++) {
+            int m = build_frame(in, fz_u8(in) % 6, one, sizeof one);
+            if (m < 0) continue;
+            int w = nw_batch_add(one, m, entries + at, (int)sizeof entries - at);
+            if (w > 0) at += w;
+        }
+        NwFrame *f = calloc(1, sizeof *f);
+        f->kind = NW_WS_BATCH;
+        f->blob.p = entries;
+        f->blob.len = (uint32_t)at;
+        n = nw_frame_encode(f, buf, sizeof buf);
+        free(f);
+    }
     if (n < 0) return;
     uint8_t *exact = fz_dup(buf, (size_t)n);
     cb_conn_row before = c->row;
