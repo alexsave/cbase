@@ -160,8 +160,13 @@ LIB_SRC  := $(sort $(filter-out $(MAIN_SERVE) $(MAIN_LAMBDA),$(foreach r,$(SRC_R
             build/gen/schema_sql.c build/gen/console_html.c
 IMPORT_SRC := $(C_ROOT)/foolish/server/migrate/import.c
 EXPORT_SRC := $(C_ROOT)/foolish/server/migrate/export.c
-TEST_SRC := $(sort $(foreach r,$(TEST_ROOTS),$(wildcard $(r)/*.c)))
-TLIB_SRC := $(sort $(foreach r,$(TEST_ROOTS),$(wildcard $(r)/lib_*.c)))
+# THE CONFORMANCE SUITES (docs/PLATFORM.md 8.7 decision 2): core/test/conformance/
+# holds one library per provider interface (store, push, ingress, job), each
+# linked into every test program like a lib_*.c, and each provider's lane runs
+# them from a unit test of its own.
+CONF_SRC := $(sort $(wildcard core/test/conformance/*.c))
+TEST_SRC := $(sort $(foreach r,$(TEST_ROOTS),$(wildcard $(r)/*.c))) $(CONF_SRC)
+TLIB_SRC := $(sort $(foreach r,$(TEST_ROOTS),$(wildcard $(r)/lib_*.c))) $(CONF_SRC)
 UNIT_SRC := $(sort $(foreach r,$(TEST_ROOTS),$(wildcard $(r)/unit_*.c)))
 UNITS    := $(sort $(basename $(notdir $(UNIT_SRC))))
 # The one file a test program is named after, wherever its side keeps it.
