@@ -12,6 +12,7 @@
 #include "net/loop.h"
 #include "net/router.h"
 #include "net/server.h"
+#include "app/pushes.h"
 #include "realtime/realtime.h"
 #include "realtime/rt_local.h"
 #include "realtime/stream_mqtt.h"

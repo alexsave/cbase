@@ -1,11 +1,12 @@
-// realtime.c - the publish calls (realtime.h): each builds its stream message
-// (netwire.h) once and hands it to the live transport.
+// realtime.c - the push stream's publish side (realtime.h): a target's topic
+// from its family's pattern, the batch, and delivery through the transport.
 #include "realtime.h"
 
 #include "rt_deps.h"
-#include "aws/iot_data.h"
+#include "stream_mqtt.h"
+#include "store/store.h"
+#include "util/err.h"
 #include "util/log.h"
-
 #include "util/str.h"
 
 #include <stdio.h>
@@ -28,12 +29,13 @@ static int live_verify(cb_ctx *ctx, const char *jwt, cb_user *out) {
 
 cb_rt_deps cb_rt_deps_g = {
     .verify_token = live_verify,
-    .iot_publish = cb_iot_publish,
 };
 
 // ---- publishing ------------------------------------------------------------------------
 
 static _Thread_local int t_failed;
+
+void cb_rt_failures_add(int n) { t_failed += n; }
 
 int cb_rt_failures_take(void) {
     int n = t_failed;
@@ -55,26 +57,52 @@ static bool level_ok(const char *id) {
     return n <= 64;
 }
 
-static int printed(int n, size_t cap) { return n > 0 && (size_t)n < cap ? n : -1; }
 
 int cb_rt_topic(const cb_rt_to *to, char *out, size_t cap) {
     if (!to || !out || !cap) return -1;
     out[0] = 0;
-    switch (to->family) {
-    case CB_RT_VIEWS:
-        if (!level_ok(to->user_id)) return -1;
-        return printed(snprintf(out, cap, "u/%s/v", to->user_id), cap);
-    case CB_RT_SEAT:
-        if (!level_ok(to->user_id) || !level_ok(to->game_id)) return -1;
-        return printed(snprintf(out, cap, "u/%s/c/%s", to->user_id, to->game_id), cap);
-    case CB_RT_WATCH:
-        if (!level_ok(to->game_id)) return -1;
-        return printed(snprintf(out, cap, "s/%s", to->game_id), cap);
-    case CB_RT_CHAT:
-        if (!level_ok(to->user_id) || !level_ok(to->game_id)) return -1;
-        return printed(snprintf(out, cap, "u/%s/m/%s", to->user_id, to->game_id), cap);
+    if (!to->family || !to->family->pattern) return -1;
+    size_t n = 0;
+    for (const char *p = to->family->pattern; *p;) {
+        const char *put;
+        size_t k;
+        if (strncmp(p, "{user}", 6) == 0 || strncmp(p, "{doc}", 5) == 0) {
+            bool user = p[1] == 'u';
+            put = user ? to->user_id : to->doc_id;
+            if (!level_ok(put)) { out[0] = 0; return -1; }
+            k = strlen(put);
+            p += user ? 6 : 5;
+        } else {
+            put = p++;
+            k = 1;
+        }
+        if (n + k >= cap) { out[0] = 0; return -1; }
+        memcpy(out + n, put, k);
+        n += k;
     }
-    return -1;
+    out[n] = 0;
+    return n ? (int)n : -1;
+}
+
+int cb_rt_families_check(const cb_topic_family *const *f, int n, char *err, size_t cap) {
+    static const char USER[] = CB_MQTT_USER_PREFIX "{user}/";
+    for (int i = 0; i < n; i++) {
+        const char *p = f[i] && f[i]->pattern ? f[i]->pattern : "";
+        bool ok = strncmp(p, USER, sizeof USER - 1) == 0 || strncmp(p, CB_MQTT_WATCH_PREFIX, 2) == 0;
+        for (const char *q = p; ok && *q; q++) {
+            if (*q == '+' || *q == '#' || *q == '}') ok = false;
+            else if (*q == '{') {
+                ok = strncmp(q, "{user}", 6) == 0 || strncmp(q, "{doc}", 5) == 0;
+                q += q[1] == 'u' ? 5 : 4;
+            }
+        }
+        if (!ok) {
+            snprintf(err, cap, "topic family %s: \"%s\" is not under \"%s\" or \"%s\", or names more than {user} and {doc}",
+                     f[i] && f[i]->name ? f[i]->name : "?", p, USER, CB_MQTT_WATCH_PREFIX);
+            return CB_E_INVALID;
+        }
+    }
+    return CB_OK;
 }
 
 // ---- publishing ----------------------------------------------------------------------------
@@ -85,9 +113,9 @@ int cb_rt_topic(const cb_rt_to *to, char *out, size_t cap) {
 #define RT_ID_MAX    64   // level_ok's longest id: a longer one is never a topic
 
 typedef struct {
-    cb_rt_family family;
-    bool         has_user, has_game;
-    char         user[RT_ID_MAX + 1], game[RT_ID_MAX + 1];
+    const cb_topic_family *family;
+    bool         has_user, has_doc;
+    char         user[RT_ID_MAX + 1], doc[RT_ID_MAX + 1];
     uint8_t     *frame;
     size_t       len;
 } rt_held;
@@ -113,7 +141,7 @@ static bool copy_id(char *out, const char *id, bool *has) {
 static bool hold(const cb_rt_to *to, const uint8_t *frame, size_t len) {
     if (t_batch.n >= RT_BATCH_MAX) return false;
     rt_held *h = &t_batch.items[t_batch.n];
-    if (!copy_id(h->user, to->user_id, &h->has_user) || !copy_id(h->game, to->game_id, &h->has_game)) return false;
+    if (!copy_id(h->user, to->user_id, &h->has_user) || !copy_id(h->doc, to->doc_id, &h->has_doc)) return false;
     h->frame = malloc(len ? len : 1);
     if (!h->frame) return false;
     if (len) memcpy(h->frame, frame, len);
@@ -141,7 +169,7 @@ void cb_rt_batch_end(cb_rt *rt) {
     const char *lane_user[RT_BATCH_MAX] = { 0 };   // NULL: the spectators' lane
     for (int i = 0; i < n; i++) {
         rt_held *h = &t_batch.items[i];
-        to[i] = (cb_rt_to){ h->family, h->has_user ? h->user : NULL, h->has_game ? h->game : NULL };
+        to[i] = (cb_rt_to){ h->family, h->has_user ? h->user : NULL, h->has_doc ? h->doc : NULL };
         frames[i] = h->frame;
         lens[i] = h->len;
         int l = 0;
@@ -162,72 +190,11 @@ static void deliver(cb_rt *rt, const cb_rt_to *to, const uint8_t *frame, size_t 
     if (rt->t && rt->t->deliver) t_failed += rt->t->deliver(rt, to, frame, len);
 }
 
-// The frame, encoded once, to each of `to[0..n)`.
-static void publish(cb_rt *rt, const cb_rt_to *to, int n, const NwFrame *f) {
+void cb_rt_publish(cb_rt *rt, const cb_rt_to *to, int n, const uint8_t *frame, size_t len) {
     if (!rt || !rt->t) return;
-    size_t cap = 96 + (size_t)f->blob.len + (f->kind == NW_WS_CHAT ? NW_CHAT_MAX + 2 * NW_ID_MAX : 0);
-    cb_buf b;
-    cb_buf_init(&b);
-    int len = cb_buf_reserve(&b, cap) ? nw_frame_encode(f, b.p, (int)cap) : -1;
-    if (len < 0) {
-        CB_ERROR("realtime", "a push of kind %d for game %.*s was not written (%d)", f->kind, (int)f->gid_len, f->gid, len);
-        t_failed += n;
-    } else {
-        if (n > 1) cb_rt_batch_begin(rt);   // a chat's members hear it at once
-        for (int i = 0; i < n; i++) deliver(rt, &to[i], b.p, (size_t)len);
-        if (n > 1) cb_rt_batch_end(rt);
-    }
-    cb_buf_free(&b);
-}
-
-static void frame_gid(NwFrame *f, const char *game_id) {
-    size_t n = strlen(game_id);
-    if (n > NW_GID_MAX) n = 0;   // never: game ids are a few bytes
-    f->gid_len = (uint8_t)n;
-    memcpy(f->gid, game_id, n);
-}
-
-void rt_publish_view(cb_rt *rt, const char *user_id, const cb_view_row *row, bool gone) {
-    if (!rt || !row || !user_id) return;
-    static _Thread_local NwFrame f;
-    memset(&f, 0, sizeof f);
-    f.kind = NW_WS_VIEW;
-    frame_gid(&f, row->game_id);
-    if (!gone) {
-        f.version = (uint32_t)row->version;
-        f.blob.p = row->view;
-        f.blob.len = (uint32_t)row->view_len;
-    }
-    cb_rt_to to = { CB_RT_VIEWS, user_id, NULL };
-    publish(rt, &to, 1, &f);
-}
-
-void rt_publish_cast(cb_rt *rt, const char *user_id, const char *game_id, int64_t version, const uint8_t *cast, size_t len) {
-    if (!rt || !game_id) return;
-    static _Thread_local NwFrame f;
-    memset(&f, 0, sizeof f);
-    f.kind = NW_WS_CAST;
-    frame_gid(&f, game_id);
-    f.version = (uint32_t)version;
-    f.blob.p = cast;
-    f.blob.len = (uint32_t)len;
-    cb_rt_to to = { user_id ? CB_RT_SEAT : CB_RT_WATCH, user_id, game_id };
-    publish(rt, &to, 1, &f);
-}
-
-void rt_publish_chat(cb_rt *rt, const char *game_id, const cb_chat_row *row, const cb_uuid *members, int n) {
-    if (!rt || !game_id || !row) return;
-    static _Thread_local NwFrame f;
-    memset(&f, 0, sizeof f);
-    f.kind = NW_WS_CHAT;
-    frame_gid(&f, game_id);
-    cb_chat_to_nw(row, &f.chat);
-    // Each member's own topic.
-    cb_rt_to to[CB_MAX_SEATS];
-    int k = 0;
-    for (int i = 0; i < n && i < CB_MAX_SEATS; i++)
-        if (members[i][0]) to[k++] = (cb_rt_to){ CB_RT_CHAT, members[i], game_id };
-    publish(rt, to, k, &f);
+    if (n > 1) cb_rt_batch_begin(rt);   // the targets hear it at once
+    for (int i = 0; i < n; i++) deliver(rt, &to[i], frame, len);
+    if (n > 1) cb_rt_batch_end(rt);
 }
 
 void cb_rt_forget_user(cb_rt *rt, const char *user_id) {
@@ -236,20 +203,4 @@ void cb_rt_forget_user(cb_rt *rt, const char *user_id) {
 
 void cb_rt_free(cb_rt *rt) {
     if (rt && rt->t && rt->t->free) rt->t->free(rt);
-}
-
-void cb_chat_to_nw(const cb_chat_row *r, NwChat *out) {
-    memset(out, 0, sizeof *out);
-    size_t n = strlen(r->id);
-    out->id_len = (uint8_t)(n <= NW_ID_MAX ? n : 0);
-    memcpy(out->id, r->id, out->id_len);
-    n = strlen(r->user_id);
-    out->user_id_len = (uint8_t)(n <= NW_ID_MAX ? n : 0);
-    memcpy(out->user_id, r->user_id, out->user_id_len);
-    out->created_ms = r->created_at > 0 ? (uint64_t)r->created_at : 0;
-    out->is_system = r->is_system ? 1 : 0;
-    n = r->message ? strlen(r->message) : 0;
-    if (n > NW_CHAT_MAX) n = NW_CHAT_MAX;   // the write path refuses longer; an imported row is cut
-    out->message_len = (uint16_t)n;
-    if (n) memcpy(out->message, r->message, n);
 }

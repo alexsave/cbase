@@ -1,7 +1,7 @@
 // rt_iot.c - realtime under Lambda: AWS IoT Core (rt_iot.h).
 #include "rt_iot.h"
 
-#include "rt_deps.h"
+#include "aws/iot_data.h"
 #include "stream_mqtt.h"
 #include "json_surface.h"
 #include "util/err.h"
@@ -15,12 +15,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+int (*cb_rt_iot_publish)(const char *endpoint, const char *topic, const void *data, size_t len) = cb_iot_publish;
+
 static int iot_deliver(cb_rt *rt, const cb_rt_to *to, const uint8_t *frame, size_t len) {
     const cb_config *cfg = rt->ctx->cfg;
     if (!cfg || !cfg->iot_endpoint[0]) return 0;
     char topic[MQTT_TOPIC_MAX + 1];
-    if (cb_rt_topic(to, topic, sizeof topic) <= 0) return 0;   // not an MQTT target (nw1's whole-game chat)
-    int st = cb_rt_deps_g.iot_publish(cfg->iot_endpoint, topic, frame, len);
+    if (cb_rt_topic(to, topic, sizeof topic) <= 0) return 0;   // no topic: an id the pattern needs is missing
+    int st = cb_rt_iot_publish(cfg->iot_endpoint, topic, frame, len);
     if (st == 200) return 0;
     CB_WARN("realtime", "push %s: IoT answered %d", topic, st);
     return 1;

@@ -5,11 +5,15 @@
 // admin console.
 #include "cbase/provider.h"
 
+#include "aws/cloudfront.h"
 #include "aws/lambda_invoke.h"
 #include "config.h"
 #include "realtime/rt_iot.h"
 #include "store/store.h"
+#include "util/clock.h"
 #include "util/err.h"
+#include "util/log.h"
+#include "util/uuid.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -60,6 +64,24 @@ static void aws_links(const cb_ctx *ctx, cb_buf u[4]) {
                   region, ctx->cfg->table);
 }
 
+// CloudFront's CreateInvalidation for the paths (app/edge.h), on the
+// distribution in front of the API (CBASE_CF_DISTRIBUTION; none: nothing to
+// purge, CB_OK).
+static int aws_edge_purge(const cb_config *cfg, const char *const *paths, int n) {
+    if (!cfg || !cfg->cf_distribution[0]) return CB_OK;
+    // Unique per purge: CloudFront answers a repeated reference with the first
+    // batch (or refuses it for other paths), so a reused one would invalidate nothing.
+    char id[CB_UUID_LEN + 1];
+    cb_uuid_v4(id);
+    char ref[96];
+    snprintf(ref, sizeof ref, "cbase-%lld-%s", (long long)cb_now_ms(), id);
+    int64_t t0 = cb_mono_ms();
+    int rc = cb_cloudfront_invalidate(cfg->cf_distribution, paths, n, ref);
+    if (rc == CB_OK) CB_INFO("edge", "invalidated %s%s%s (%lld ms)", paths[0], n > 1 ? " " : "", n > 1 ? paths[1] : "",
+                             (long long)(cb_mono_ms() - t0));
+    return rc;
+}
+
 const cb_provider cb_provider_aws = {
     .name = "aws",
     .mode = "lambda",
@@ -69,4 +91,5 @@ const cb_provider cb_provider_aws = {
     .job_start = cb_lambda_invoke_job,
     .viewer_header = "cloudfront-viewer-address",
     .console_links = aws_links,
+    .edge_purge = aws_edge_purge,
 };

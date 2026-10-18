@@ -50,6 +50,9 @@ struct cb_provider {
     // u[0..3] (the function, its logs, the store, the store's backups), each
     // left empty when there is none. NULL: none at all.
     void (*console_links)(const cb_ctx *ctx, cb_buf u[4]);
+    // Purges paths from the provider's edge cache (app/edge.h
+    // cb_edge_purge_fn). NULL: no edge (s-maxage alone bounds staleness).
+    int (*edge_purge)(const cb_config *cfg, const char *const *paths, int n);
 };
 
 extern const cb_provider cb_provider_local;

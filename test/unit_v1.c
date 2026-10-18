@@ -15,6 +15,7 @@
 #include "handler.h"
 #include "lib_store_backend.h"
 #include "net/router.h"
+#include "app/pushes.h"
 #include "realtime/realtime.h"
 #include "util/clock.h"
 #include "util/log.h"

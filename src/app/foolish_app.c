@@ -3,6 +3,7 @@
 #include "foolish_app.h"
 
 #include "bots.h"
+#include "pushes.h"
 #include "functions_http.h"
 #include "unfurl_http.h"
 #include "v1_http.h"
@@ -70,6 +71,8 @@ static const cb_route_list *const FOOLISH_ROUTES[] = { &cb_functions_route_list,
 static const cb_job FOOLISH_JOBS[] = { { CB_BOTS_JOB, cb_bots_drive } };
 static const cb_schedule FOOLISH_SCHEDULES[] = { { CB_BOTS_SCHEDULE, CB_BOT_SCAN_EVERY_MS, cb_bots_scan } };
 
+const char *const cb_foolish_cached_paths[2] = { "/v1/leaderboard", "/v1/bots" };
+
 const cb_app cb_foolish_app = {
     .name = "foolish",
     .routes = FOOLISH_ROUTES,
@@ -79,4 +82,8 @@ const cb_app cb_foolish_app = {
     .n_jobs = 1,
     .schedules = FOOLISH_SCHEDULES,
     .n_schedules = 1,
+    .topics = cb_foolish_topics,
+    .n_topics = 4,
+    .cached_paths = cb_foolish_cached_paths,
+    .n_cached_paths = 2,
 };

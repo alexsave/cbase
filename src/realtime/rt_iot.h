@@ -5,8 +5,8 @@
 // stream_mqtt.h has the policy), which topics each may hear. So this
 // transport keeps nothing: deliver() is one HTTPS publish per target, to the
 // target's MQTT topic (realtime.h cb_rt_topic), at QoS 0, with the message as
-// the payload (aws/iot_data.h), and IoT fans it out. A CHAT target with no
-// user (nw1's whole-game chat) has no MQTT topic and is not sent. forget is
+// the payload (aws/iot_data.h), and IoT fans it out. A target missing an id
+// its pattern needs has no topic and is not sent. forget is
 // NULL: IoT names no connection we could end, and a deleted user's open
 // connections end at their token's expiry (realtime.h cb_rt_forget_user).
 // The endpoint is CBASE_IOT_ENDPOINT; boot.c makes this transport only when it
@@ -18,6 +18,10 @@
 #include "realtime.h"
 
 int cb_rt_iot_new(cb_ctx *ctx, cb_rt **out);
+
+// The publish this transport makes (aws/iot_data.h cb_iot_publish): the
+// tests' seam, never changed in production.
+extern int (*cb_rt_iot_publish)(const char *endpoint, const char *topic, const void *data, size_t len);
 
 // THE CUSTOM AUTHORIZER: IoT Core's request at an MQTT CONNECT (aws/event.h
 // cb_iot_auth_event), answered into `out` (json_surface.h cb_iot_auth_encode):

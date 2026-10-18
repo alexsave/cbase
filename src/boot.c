@@ -1,5 +1,6 @@
 #include "boot.h"
 
+#include "app/edge.h"
 #include "app/limits.h"
 #include "auth/auth.h"
 #include "cbase/app.h"
@@ -37,6 +38,8 @@ int cb_boot(cb_ctx *ctx, char *err, size_t cap) {
     }
     int rc = ctx->app && ctx->app->selftest ? ctx->app->selftest(err, cap) : CB_OK;
     if (rc != CB_OK) return rc;
+    if (ctx->app && (rc = cb_rt_families_check(ctx->app->topics, ctx->app->n_topics, err, cap)) != CB_OK) return rc;
+    cb_edge_setup(ctx->app ? ctx->app->cached_paths : NULL, ctx->app ? ctx->app->n_cached_paths : 0, prov->edge_purge);
 
     const char *store = cfg->store[0] ? cfg->store : prov->store;
     rc = cb_store_open_named(store, prov->store, cfg->db_path, cfg->table, &ctx->store);

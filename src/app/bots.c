@@ -14,6 +14,7 @@
 #include "util/clock.h"
 #include "util/err.h"
 #include "util/log.h"
+#include "after.h"
 #include "jobs.h"
 
 #include <pthread.h>
@@ -314,6 +315,24 @@ static bool kick_wanted(cb_ctx *ctx, const char *game_id) {
         return false;
     }
     return true;
+}
+
+typedef struct {
+    char game_id[CB_GAME_ID_MAX + 1];
+} held_kick;
+
+// After the commit, so its lease check sees any drive.
+static void held_kick_run(cb_ctx *ctx, void *arg) { cb_bots_kick(ctx, ((held_kick *)arg)->game_id); }
+
+void cb_after_kick(cb_ctx *ctx, const char *game_id) {
+    if (!ctx->job_start) return;
+    held_kick *k = cb_after_open() ? calloc(1, sizeof *k) : NULL;
+    if (k) {
+        snprintf(k->game_id, sizeof k->game_id, "%s", game_id);
+        if (cb_after_defer(held_kick_run, free, k)) return;
+        free(k);
+    }
+    cb_bots_kick(ctx, game_id);
 }
 
 void cb_bots_kick(cb_ctx *ctx, const char *game_id) {

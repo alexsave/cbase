@@ -48,6 +48,7 @@
 #include "auth/jwt.h"
 #include "handler.h"
 #include "net/router.h"
+#include "app/pushes.h"
 #include "realtime/realtime.h"
 #include "realtime/stream_mqtt.h"
 #include "store/store.h"
@@ -358,25 +359,21 @@ static int fz_deliver(cb_rt *rt, const cb_rt_to *to, const uint8_t *frame, size_
     FZ_CHECK(nw_frame_decode(frame, (int)len, f) == NW_OK);
     char gid[CB_GAME_ID_MAX + 1];
     snprintf(gid, sizeof gid, "%.*s", (int)f->gid_len, f->gid);
-    switch (to->family) {
-    case CB_RT_VIEWS:
+    if (to->family == CB_RT_VIEWS) {
         FZ_CHECK(f->kind == NW_WS_VIEW && to->user_id);
         check_envelope(to->user_id, f->blob.p, f->blob.len, gid);
-        break;
-    case CB_RT_SEAT:
-        FZ_CHECK(f->kind == NW_WS_CAST && to->user_id && strcmp(to->game_id, gid) == 0);
+    } else if (to->family == CB_RT_SEAT) {
+        FZ_CHECK(f->kind == NW_WS_CAST && to->user_id && strcmp(to->doc_id, gid) == 0);
         check_cast(to->user_id, gid, f->blob.p, f->blob.len);
-        break;
-    case CB_RT_WATCH:
-        FZ_CHECK(f->kind == NW_WS_CAST && !to->user_id && strcmp(to->game_id, gid) == 0);
+    } else if (to->family == CB_RT_WATCH) {
+        FZ_CHECK(f->kind == NW_WS_CAST && !to->user_id && strcmp(to->doc_id, gid) == 0);
         check_cast(NULL, gid, f->blob.p, f->blob.len);
-        break;
-    case CB_RT_CHAT:
+    } else if (to->family == CB_RT_CHAT) {
         // A chat goes to a member's own topic, only ever someone who sits there.
-        FZ_CHECK(f->kind == NW_WS_CHAT && to->user_id && strcmp(to->game_id, gid) == 0);
+        FZ_CHECK(f->kind == NW_WS_CHAT && to->user_id && strcmp(to->doc_id, gid) == 0);
         FZ_CHECK(g_real->is_member(g_store, gid, to->user_id) == 1);
-        break;
-    default: FZ_CHECK(0);
+    } else {
+        FZ_CHECK(0);
     }
     free(f);
     for (int i = 0; i < N_CONNS; i++)

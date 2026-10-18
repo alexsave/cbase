@@ -27,6 +27,8 @@
 #include "store/store_import.h"
 #include "store/store_priv.h"
 #include "app/edge.h"
+#include "app/foolish_app.h"
+#include "cbase/provider.h"
 #include "util/err.h"
 #include "util/log.h"
 
@@ -61,6 +63,8 @@ int main(int argc, char **argv) {
     cb_config cfg;   // only CBASE_CF_DISTRIBUTION is read: the edge flush's
     memset(&cfg, 0, sizeof cfg);
     snprintf(cfg.cf_distribution, sizeof cfg.cf_distribution, "%s", env_or("CBASE_CF_DISTRIBUTION", ""));
+    // Foolish's cached paths, purged as the deployed function purges them.
+    cb_edge_setup(cb_foolish_app.cached_paths, cb_foolish_app.n_cached_paths, cb_provider_aws.edge_purge);
     if (strcmp(argv[1], "--seed-bots") == 0) {
         rc = cb_import_seed_bots(s);
         cb_store_close(s);

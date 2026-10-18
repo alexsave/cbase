@@ -475,14 +475,16 @@ It moved in three stages, each landed and deployed before the next, production n
 
 ### Targets and topics
 
-A push names a target (`cb_rt_to`: a family and the ids it is about), and `cb_rt_topic` names it:
+A push names a target (`cb_rt_to`: one of the app's topic families and the ids it is about), and `cb_rt_topic` fills the family's pattern.
+The families are data the app declares (`cbase/app.h` `cb_topic_family`, docs/PLATFORM.md 2.3); boot refuses one whose pattern is not under `u/{user}/` or `s/` (`cb_rt_families_check`).
+Foolish's, in `src/app/pushes.{h,c}` with the frames it writes:
 
-| family | ids | topic |
+| family | ids | pattern |
 |---|---|---|
-| `CB_RT_VIEWS` | user | `u/<user>/v` |
-| `CB_RT_SEAT` | user, game | `u/<user>/c/<game>` |
-| `CB_RT_WATCH` | game | `s/<game>` |
-| `CB_RT_CHAT` | user, game | `u/<user>/m/<game>` |
+| `CB_RT_VIEWS` | user | `u/{user}/v` |
+| `CB_RT_SEAT` | user, game | `u/{user}/c/{doc}` |
+| `CB_RT_WATCH` | game | `s/{doc}` |
+| `CB_RT_CHAT` | user, game | `u/{user}/m/{doc}` |
 
 Every private topic starts with the user it is for, so the policy is static: a connection may subscribe under `u/<its user>/` and `s/`, and nothing else; no client may publish.
 A seat's casts and a game's chat are therefore published once per member, to the member's own topic: the chat POST reads the game's human members (store `game_members`, one consistent Query, read before the message is written so a failed read stores nothing) and doubles as its membership check.
@@ -508,8 +510,8 @@ The MQTT 3.1.1 subset both sides speak is `shared/c/mqtt/mqtt.{h,c}`, one owner 
 
 ### Pushes, after the answer
 
-`realtime.c` builds each push once, as the stream's message, and hands it to the transport with its targets.
-Under Lambda an HTTP invocation POSTs its response, then publishes its commits' pushes and kicks the bots before it asks for the next event (`src/app/after.{h,c}`), so a move's answer never waits for IoT.
+`app/pushes.c` builds each push once, as the stream's message, and `realtime.c` (`cb_rt_publish`) hands it to the transport with its targets.
+Under Lambda an HTTP invocation POSTs its response, then runs what the app deferred (`src/app/after.{h,c}`: a generic queue of steps; foolish's are each commit's pushes, `fanout.c`, and its bot kicks, `bots.c`) before it asks for the next event, so a move's answer never waits for IoT.
 The work queues on the invocation's thread in call order and is drained in that order, each fan-out under the game's order lock; under Lambda that thread is the only committer, so a game's pushes still go out in commit order.
 A response can arrive before its own pushes (the clients gate every push on its version, as they must across containers).
 A queue copy that cannot be made publishes at once; a push that fails after the answer is logged at WARN with its game and version (`after: game <id> v<n>: <k> push(es) failed after the answer was sent`), since it can no longer fail the invocation.
@@ -530,7 +532,7 @@ A batch nests (the outermost end sends), belongs to the transport it was opened 
 `rt_local` has no lanes: a push there is a copy posted to the loop, so both calls do nothing under `cbase serve`.
 The response still goes first: the batch runs inside the after-phase, under the game's order lock, so one game's fan-outs still go out in commit order.
 
-`rt_deps.h` is a table of the calls into auth and IoT that the unit tests swap for fakes; the production table is exercised end to end by the game smoke, where real JWTs and `rt_local` carry every push.
+`rt_deps.h` is a table of the calls into auth that the unit tests swap for fakes (IoT's publish is `rt_iot.h`'s own seam, `cb_rt_iot_publish`); the production table is exercised end to end by the game smoke, where real JWTs and `rt_local` carry every push.
 
 ### Tests
 
@@ -859,13 +861,13 @@ The web's `fetch` and iOS's `URLRequest` add nothing that splits the key: no que
 
 ### Freshness by event: invalidations
 
-`src/app/edge.{h,c}` owns it.
+`src/app/edge.{h,c}` owns the marks; the paths are the app's declared `cached_paths` (`cbase/app.h`; bit i is path i) and the purge is the provider's `edge_purge` (`cbase/provider.h`: CloudFront under AWS, none under serve), both handed to `cb_edge_setup` at boot.
 Whatever changes one of the two answers marks its path stale, a bit in a process-wide mask (never blocking, never failing what marked it):
 
 - the leaderboard: the commit that applied ratings (`cb_section_commit`, when `gc.n_rated > 0`, after the store accepted it; a human's game or a game the bots ended alike), an account deleted (`cb_app_delete_account`, the user's own or the admin console's), an admin write query, an import, and a ratings reindex that rewrote anything;
 - the bots: a seed that wrote bots, an import, an admin write query.
 
-`cb_edge_flush` sends one CreateInvalidation for every path marked since the last flush.
+`cb_edge_flush` sends one purge (under AWS, one CreateInvalidation, `provider_aws.c`) for every path marked since the last flush.
 The Lambda main calls it after it has POSTed the invocation's response (`cb_after_run`, last, after the pushes), so no caller waits for CloudFront (an HTTP request, a bot drive or the scan alike); `cbase-import` calls it before it exits.
 A failed flush is logged and dropped: the `s-maxage` bounds how stale the edge can get.
 The request (`aws/cloudfront.c`) is signed for `cloudfront` in us-east-1 from any region (`cb_aws_call_region`), and only 201 is success; its XML body is `json_surface.c`'s, checked byte for byte against the API reference's request in `test/unit_aws_calls.c`.

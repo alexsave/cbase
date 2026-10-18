@@ -754,3 +754,12 @@ Stage 8 pays this list down, mutation-checked and recorded in `docs/mutation_che
 - `cb_event_job_payload` and the literal decoder: a 63-byte key taken and a 64-byte one refused, `"a:b:c"` refused, a schedule name refused at 32 bytes; a fuzz seed for each.
 - serve's per-schedule timers with two declared schedules of different periods.
 - `cb_config_scaled_ms` at speedup 1, 7 and 100.
+
+### Stage 3
+
+- `cb_rt_topic` over patterns: a literal-only pattern, `{user}` and `{doc}` each missing, a cap one short of the topic, an id one byte past `RT_ID_MAX`.
+- `cb_rt_families_check`: a pattern outside `u/{user}/` and `s/`, with `+`, `#`, an unknown `{name}` and a stray `}`, and boot refusing to serve with one.
+- `cb_rt_publish` with n of 0, 1 and several (a batch), and `cb_rt_failures_add`.
+- `cb_after_defer`: refused with the window closed, the drop run after the step, order across deferred kinds.
+- `edge.c` over declared paths: `cb_edge_setup` with 0, 1 and `CB_EDGE_MAX` + 1 paths, a mark past the declared ones ignored, no purge clearing the marks, a purge's error returned.
+- `provider_aws.c` `aws_edge_purge` with no distribution (nothing sent).

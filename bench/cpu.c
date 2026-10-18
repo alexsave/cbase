@@ -31,6 +31,7 @@
 #include "auth/bcrypt.h"
 #include "auth/jwt.h"
 #include "json_surface.h"
+#include "app/pushes.h"
 #include "realtime/realtime.h"
 #include "../../shared/c/b64/b64.h"
 #include "../../shared/c/hex/hex.h"

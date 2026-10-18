@@ -6,6 +6,10 @@
 // Host it was sent to, the exact path and body. A client that signed one thing
 // and sent another fails here, which no AWS test vector can show.
 #include "t.h"
+#include "app/foolish_app.h"
+#include "app/bots.h"
+#include "app/fanout.h"
+#include "cbase/provider.h"
 
 #include "app/edge.h"
 #include "aws/aws_call.h"
@@ -459,6 +463,8 @@ static void ssm_secrets(void) {
 }
 
 int main(void) {
+    // Foolish's cached paths, as boot sets them up (app/edge.h).
+    cb_edge_setup(cb_foolish_app.cached_paths, cb_foolish_app.n_cached_paths, cb_provider_aws.edge_purge);
     T_RUN(url_parse);
     T_RUN(iot_publish);
     T_RUN(lambda_self_invoke);

@@ -3,6 +3,10 @@
 // copies of their own bytes, and cb_after_run does them in call order, closes
 // the window, counts the pushes that failed and flushes the edge cache.
 #include "t.h"
+#include "app/foolish_app.h"
+#include "app/bots.h"
+#include "app/fanout.h"
+#include "cbase/provider.h"
 
 #include "app/after.h"
 #include "app/edge.h"
@@ -145,6 +149,8 @@ static void failed_pushes_are_counted_not_fatal(void) {
 }
 
 int main(void) {
+    // Foolish's cached paths, as boot sets them up (app/edge.h).
+    cb_edge_setup(cb_foolish_app.cached_paths, cb_foolish_app.n_cached_paths, NULL);
     T_RUN(closed_window_acts_at_once);
     T_RUN(open_window_waits_and_keeps_order);
     T_RUN(failed_pushes_are_counted_not_fatal);

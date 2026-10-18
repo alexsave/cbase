@@ -11,6 +11,7 @@
 #include "net/router.h"
 #include "net/server.h"
 #include "net/ws.h"
+#include "app/pushes.h"
 #include "realtime/realtime.h"
 #include "realtime/rt_local.h"
 #include "util/clock.h"
@@ -126,7 +127,7 @@ static void targets_name_topics(void) {
     }
     cb_rt_to none = { CB_RT_SEAT, NULL, G };
     T_EQ_INT(cb_rt_topic(&none, t, sizeof t), -1);
-    cb_rt_to odd = { (cb_rt_family)99, U1, G };
+    cb_rt_to odd = { NULL, U1, G };   // no family
     T_EQ_INT(cb_rt_topic(&odd, t, sizeof t), -1);
     // Too small a buffer is a refusal, not a cut topic.
     cb_rt_to seat = { CB_RT_SEAT, U1, G };

@@ -6,6 +6,10 @@
 // kernel's pacing costs no wall time; every fan-out is recorded through the
 // cb_fanout_observer seam.
 #include "t.h"
+#include "app/foolish_app.h"
+#include "app/bots.h"
+#include "app/fanout.h"
+#include "cbase/provider.h"
 #include "cbase/provider.h"
 #include "app/limits.h"
 
@@ -24,6 +28,7 @@
 #include "handler.h"
 #include "legal.h"
 #include "net/router.h"
+#include "app/pushes.h"
 #include "realtime/realtime.h"
 #include "replay_extras.h"
 #include "auth/auth.h"
@@ -2279,6 +2284,8 @@ static void a_move_made_while_the_lease_is_held_is_driven(void) {
 }
 
 int main(void) {
+    // Foolish's cached paths, as boot sets them up (app/edge.h).
+    cb_edge_setup(cb_foolish_app.cached_paths, cb_foolish_app.n_cached_paths, NULL);
     T_RUN(create_answers_the_seat_0_envelope);
     T_RUN(the_answer_goes_before_its_pushes);
     T_RUN(a_push_that_fails_after_the_answer_is_logged);

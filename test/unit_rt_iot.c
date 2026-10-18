@@ -12,6 +12,7 @@
 #include "aws/event.h"
 #include "config.h"
 #include "json_surface.h"
+#include "app/pushes.h"
 #include "realtime/realtime.h"
 #include "realtime/rt_deps.h"
 #include "realtime/rt_iot.h"
@@ -96,7 +97,7 @@ static void setup(void) {
     g_ctx.cfg = &g_cfg;
     g_ctx.prov = &cb_provider_aws;
     cb_rt_deps_g.verify_token = fake_verify;
-    cb_rt_deps_g.iot_publish = fake_publish;
+    cb_rt_iot_publish = fake_publish;
 }
 
 static void pushes_are_publishes(void) {

@@ -9,6 +9,7 @@
 #include "app_internal.h"
 #include "bots.h"
 #include "edge.h"
+#include "foolish_app.h"
 #include "fanout.h"
 
 #include "util/clock.h"

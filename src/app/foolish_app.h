@@ -9,6 +9,11 @@
 
 extern const cb_app cb_foolish_app;
 
+// Foolish's cached paths (cbase/app.h cached_paths), as edge.h marks them.
+#define CB_EDGE_BOARD 1u   // /v1/leaderboard
+#define CB_EDGE_BOTS  2u   // /v1/bots
+extern const char *const cb_foolish_cached_paths[2];
+
 // THE STARTUP SELF-TEST (docs/ARCHITECTURE_AS_A_PATTERN.md: "a self-test that
 // runs at startup is worth its weight"): a lobby created, committed, loaded
 // back and enveloped through the kernel this binary linked, and the fixed wire

@@ -10,52 +10,55 @@
 //                  subscriptions; a push is one HTTPS publish to the topic, and
 //                  the custom authorizer answers IoT's CONNECTs.
 //
-// WHO HEARS A PUSH is a target (cb_rt_to), named as an MQTT topic by
-// cb_rt_topic:
-//   CB_RT_VIEWS  user        u/<user>/v          the user's views of every game they sit at
-//   CB_RT_SEAT   user, game  u/<user>/c/<game>   one seat's casts
-//   CB_RT_WATCH  game        s/<game>            the spectators' casts
-//   CB_RT_CHAT   user, game  u/<user>/m/<game>   a game's chat as one member hears it
+// WHO HEARS A PUSH is a target (cb_rt_to): one of the app's TOPIC FAMILIES
+// (cbase/app.h cb_topic_family), with its {user} and {doc} filled in by
+// cb_rt_topic. Foolish's (app/pushes.h):
+//   views  u/{user}/v          the user's views of every game they sit at
+//   seat   u/{user}/c/{doc}    one seat's casts
+//   watch  s/{doc}             the spectators' casts
+//   chat   u/{user}/m/{doc}    a game's chat as one member hears it
 // Every private topic starts with the user it is for, so who may hear it is
 // decided once, at CONNECT, by a static policy (stream_mqtt.h): a connection
-// may subscribe under u/<its user>/ and s/, and nothing else. A seat's casts
-// and a game's chat are therefore published once per member, to that member's
-// own topic.
+// may subscribe under u/<its user>/ and s/, and nothing else. A family's
+// pattern must therefore start with one of those two (cb_rt_families_check),
+// and a product publishes a member's copy to each member's own topic.
 //
 // PUBLISH from any thread (a request handler, a bot drive). Under serve the
 // call copies the frame and posts it to the loop; under Lambda it publishes to
-// IoT before returning. Nothing is retried: a client takes a game whole again
-// when its subscription goes live (netclient.h). The payload is the push as
-// netwire.h writes it (NW_WS_VIEW, NW_WS_CAST, NW_WS_CHAT).
+// IoT before returning. Nothing is retried: a client takes its state whole
+// again when its subscription goes live. The payload is opaque bytes: the
+// product's own frame (foolish's are netwire.h's NW_WS_VIEW, NW_WS_CAST,
+// NW_WS_CHAT, written in app/pushes.c).
 #ifndef CB_REALTIME_H
 #define CB_REALTIME_H
 
-#include "app/table_ops.h"
+#include "cbase/app.h"
 #include "ctx.h"
-#include "store/store.h"
-
-#include "netwire.h"
 
 #include <stddef.h>
 #include <stdint.h>
 
-typedef enum {
-    CB_RT_VIEWS = 1,
-    CB_RT_SEAT,
-    CB_RT_WATCH,
-    CB_RT_CHAT,
-} cb_rt_family;
-
 typedef struct {
-    cb_rt_family family;
-    const char  *user_id;   // VIEWS, SEAT, CHAT
-    const char  *game_id;   // SEAT, WATCH, CHAT
+    const cb_topic_family *family;
+    const char            *user_id;   // {user}, when the pattern has it
+    const char            *doc_id;    // {doc}, when the pattern has it
 } cb_rt_to;
 
-// The MQTT topic of a target into out: its length, or -1 when an id is
-// missing, or holds a byte a topic level cannot (only A-Z a-z 0-9 '-' '_'
-// pass, so no id can add a level or a wildcard).
+// The MQTT topic of a target into out (its family's pattern, {user} and
+// {doc} filled in): its length, or -1 when the family or an id the pattern
+// needs is missing, or an id holds a byte a topic level cannot (only A-Z a-z
+// 0-9 '-' '_' pass, so no id can add a level or a wildcard).
 int cb_rt_topic(const cb_rt_to *to, char *out, size_t cap);
+
+// The app's families as the policy needs them: each pattern starts "u/{user}/"
+// or "s/", holds no '+' or '#', and names nothing but {user} and {doc}.
+// CB_OK, or CB_E_INVALID with the family in err (boot refuses to serve).
+int cb_rt_families_check(const cb_topic_family *const *f, int n, char *err, size_t cap);
+
+// Delivers one message, as it is, to each of to[0..n) through rt's transport
+// (in a batch when n > 1, so the targets hear it at once). Nothing when rt is
+// NULL. The failures count toward cb_rt_failures_take.
+void cb_rt_publish(cb_rt *rt, const cb_rt_to *to, int n, const uint8_t *frame, size_t len);
 
 // The transport: deliver one encoded message to every connection that hears
 // `to`. Returns how many deliveries failed (a publish refused: 1), having
@@ -81,21 +84,12 @@ struct cb_rt {
     void *impl;
 };
 
-// CB_RT_VIEWS: NW_WS_VIEW {game, version, envelope}; `gone` sends the view
-// with no envelope (the seat is no longer the user's).
-void rt_publish_view(cb_rt *rt, const char *user_id, const cb_view_row *row, bool gone);
-// CB_RT_SEAT for user_id, or CB_RT_WATCH when it is NULL: NW_WS_CAST {game, version, cast}.
-void rt_publish_cast(cb_rt *rt, const char *user_id, const char *game_id, int64_t version, const uint8_t *cast, size_t len);
-// CB_RT_CHAT: NW_WS_CHAT {game, the message}, to each of the game's human
-// members (`members`, n of them) on their own topic.
-void rt_publish_chat(cb_rt *rt, const char *game_id, const cb_chat_row *row, const cb_uuid *members, int n);
-
 // A BATCH: the publishes this thread makes between begin and end are held
 // (each message copied) and handed to the transport at end, all at once, when
 // it can (deliver_lanes): one lane per user and one for the spectators, so a
 // user hears its pushes in the order they were published (a view before the
 // cast of the same version, which a host showing boards relies on:
-// netclient.c NW_WS_CAST) while different users' pushes overlap. Under IoT
+// app/pushes.c) while different users' pushes overlap. Under IoT
 // that is one publish's time for a commit's fan-out instead of the sum of
 // them. Batches nest; the outermost end sends. A publish the batch cannot
 // hold (full, or no memory) is delivered at once. Not for a transport
@@ -106,6 +100,8 @@ void cb_rt_batch_end(cb_rt *rt);
 // The failed deliveries this thread's publishes counted since the last take
 // (app/after.c logs those that happened after an answer was sent).
 int cb_rt_failures_take(void);
+// Counts n failed deliveries on this thread (a message that could not even be written).
+void cb_rt_failures_add(int n);
 
 // Account deletion: every connection the user holds is ended, so a page left
 // open hears nothing more of the games it sat at (their seats keep the id:
@@ -119,8 +115,5 @@ int cb_rt_failures_take(void);
 void cb_rt_forget_user(cb_rt *rt, const char *user_id);
 
 void cb_rt_free(cb_rt *rt);
-
-// A stored chat row as the stream and GET /v1/chat/<id> carry it.
-void cb_chat_to_nw(const cb_chat_row *r, NwChat *out);
 
 #endif

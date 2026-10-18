@@ -47,6 +47,11 @@ void cb_fanout_commit(cb_ctx *ctx, const cb_fanout *f);
 // The publishing itself (after.c's drain; cb_fanout_commit's when no window).
 void cb_fanout_publish(cb_ctx *ctx, const cb_fanout *f);
 
+// Queues a copy of f when the invocation's window is open (after.h): true,
+// and it is published once the answer is out; else false (cb_fanout_commit
+// publishes it then).
+bool cb_after_fanout(const cb_fanout *f);
+
 // TEST SEAM: when set, called with every fan-out as it is published, so the
 // app's unit tests can see who would hear what without a realtime transport.
 extern void (*cb_fanout_observer)(const cb_fanout *f);

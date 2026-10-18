@@ -12,9 +12,11 @@
 #include "functions_http.h"
 
 #include "after.h"
+#include "bots.h"
 
 #include "app_internal.h"
 #include "edge.h"
+#include "foolish_app.h"
 #include "limits.h"
 #include "v1_http.h"
 #include "auth/auth.h"

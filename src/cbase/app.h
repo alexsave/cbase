@@ -40,6 +40,15 @@ typedef struct {
     int (*run)(cb_ctx *ctx, int64_t now_ms);
 } cb_schedule;
 
+// A TOPIC FAMILY: a set of push topics (realtime.h), as a pattern over
+// {user} and {doc}. It must start "u/{user}/" (the user's own: only that
+// user may subscribe) or "s/" (anyone signed in), the stream's one policy
+// (stream_mqtt.h); boot checks it (cb_rt_families_check).
+typedef struct {
+    const char *name;      // for the logs: "views"
+    const char *pattern;   // "u/{user}/v", "s/{doc}"
+} cb_topic_family;
+
 struct cb_app {
     const char          *name;            // "foolish": the log tag, later the stack and the key namespace
     const cb_route_list *const *routes;   // n_route_lists of them
@@ -51,6 +60,12 @@ struct cb_app {
     int                  n_jobs;
     const cb_schedule   *schedules;
     int                  n_schedules;
+    const cb_topic_family *const *topics;   // what the app publishes to (realtime.h)
+    int                  n_topics;
+    // The public reads an edge may cache, whose answers the app marks stale
+    // (app/edge.h): bit i of a mark is cached_paths[i]. At most CB_EDGE_MAX.
+    const char *const   *cached_paths;
+    int                  n_cached_paths;
 };
 
 #endif

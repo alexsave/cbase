@@ -75,6 +75,9 @@ int cb_bots_scan(cb_ctx *ctx, int64_t now_ms);
 // reloads before every cycle and looks once more after it lets go, so it
 // takes the move; a second drive would only find the lease taken.
 void cb_bots_kick(cb_ctx *ctx, const char *game_id);
+// The same, once the answer is out when the invocation's window is open
+// (after.h), else at once.
+void cb_after_kick(cb_ctx *ctx, const char *game_id);
 
 // The drive as the app's job (cbase/app.h): cb_bots_drive under this name,
 // so a kick is the payload "bot_drive:<id>" under Lambda (jobs.h).
