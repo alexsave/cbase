@@ -425,7 +425,7 @@ It replaces the Next app's only server code, `foolish/src/app/m/[payload]/layout
 As built:
 
 - The payload is percent-decoded as `decodeURIComponent` does (a bad escape, or escapes that are not UTF-8, give the generic tags) and trimmed with JavaScript's whitespace set.
-  A `1` payload goes through the same kernel C the wasm wraps: `replay_b32_decode` (case-blind, stops at a share link's `-`), `msg_decode`, then `msg_replay` into a `Game`, because a header that lies about its chain decodes and only the replay refuses it.
+  A `1` payload goes through the same kernel C the wasm wraps: `b32_decode` (shared/c/b32.c; case-blind, stops at a share link's `-`), `msg_decode`, then `msg_replay` into a `Game`, because a header that lies about its chain decodes and only the replay refuses it.
   Names are decoded as TextDecoder decodes them (WHATWG: each bad subpart one U+FFFD, a leading BOM dropped), empty names are dropped before the count, and the title is "A vs B - turn N", "- a finished Durak game" (phase 3) or "- a rematch, waiting to start" (phase 0 with a carry key), or "N players" when fewer than two seats are named.
 - The page: title, description, robots `noindex, follow`, og:title, og:description, og:site_name Foolish, og:type website, twitter:card summary, twitter:title, twitter:description, escaped as React escapes (`& < > " '`, the apostrophe as `&#x27;`), then `<meta http-equiv="refresh" content="0;url=https://foolish.cards/">` and a plain link to the same place.
   No script: page.tsx's `router.replace('/')` becomes the refresh.

@@ -6,7 +6,7 @@
 // must be in the page the server answers. The payload is the game: percent-
 // decoded, trimmed (JavaScript's whitespace set), and when it starts with '1'
 // (the text-level format version) the rest goes through the kernel, the same C
-// the wasm wraps: replay_b32_decode, msg_decode, then msg_replay, because a
+// the wasm wraps: b32_decode, msg_decode, then msg_replay, because a
 // header that lies about its chain decodes fine and only the replay refuses it.
 //
 // The title names the seats ("A vs B", or "N players" when fewer than two are

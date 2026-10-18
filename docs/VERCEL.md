@@ -61,7 +61,7 @@ Today the TS route percent-decodes and trims the payload, and if it starts with 
 
 | TS call | wasm export | kernel C |
 |---|---|---|
-| `kernelB32Decode(text.slice(1))` | `wasm_replay_b32_decode` (`foolish/c/wasm/wasm_msg_api.c`) | `replay_b32_decode` (`c/src/replay.h`), which stops at `-` |
+| `kernelB32Decode(text.slice(1))` | `wasm_replay_b32_decode` (`foolish/c/wasm/wasm_msg_api.c`) | `b32_decode` (`shared/c/b32.h`), which stops at `-` |
 | `kernelMsgDecode(bytes)` | `wasm_msg_decode` (`foolish/c/wasm/wasm_api.c`) | `msg_decode` then `msg_replay` into a `Game` (`c/src/msg_wire.h`) |
 | reads `env.joins[].name`, `nPlayers`, `phase`, `carryKey`, `turn` | `wasm_msg_header_ptr` | the `MsgEnvelope` fields `joins`, `n_players`, `phase`, `carry_key`, `turn` |
 

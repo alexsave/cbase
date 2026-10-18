@@ -132,7 +132,7 @@ static bool game_title(const char *text, cb_buf *title) {
     pthread_mutex_lock(&g_lock);
     bool ok = false;
     MsgEnvelope e;
-    int n = replay_b32_decode(text, g_bytes, (int)sizeof g_bytes);
+    int n = b32_decode(text, g_bytes, (int)sizeof g_bytes);
     if (n >= 0 && msg_decode(g_bytes, n, &e) == MSG_EOK && msg_replay(&e, &g_game) == MSG_EOK) {
         cb_buf who, name;
         cb_buf_init(&who);

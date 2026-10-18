@@ -4,7 +4,7 @@
 // (foolish/e2e/msg_wire.test.ts, foolish/c/tests/msg_wire_test.c) is decoded with
 // msg_decode, its roster edited where a case needs other names, encoded again
 // with msg_encode and checked with msg_replay, then written as base32 with
-// replay_b32_encode. No byte of an envelope is laid out here.
+// b32_encode. No byte of an envelope is laid out here.
 //
 // Output: one "label<TAB>payload" line per case, the payload exactly as it
 // goes after /m/ in the URL (already percent-encoded where a case needs it).
@@ -72,7 +72,7 @@ static const char *make(const char *hex, void (*edit)(MsgEnvelope *), int must_r
         fprintf(stderr, "case meant to decode and then fail its replay did not\n");
         exit(1);
     }
-    if (replay_b32_encode(g_out, m, g_b32, sizeof g_b32) < 0) { fprintf(stderr, "b32\n"); exit(1); }
+    if (b32_encode(g_out, m, g_b32, sizeof g_b32) < 0) { fprintf(stderr, "b32\n"); exit(1); }
     return g_b32;
 }
 
@@ -134,7 +134,7 @@ int main(void) {
     printf("names_bad_utf8\t1%s\n", make(LIVE2, edit_bad_utf8, 1));
     printf("names_one_empty\t1%s\n", make(LIVE2, edit_one_empty, 1));
     char *share = strdup(make(LIVE2, NULL, 1));
-    // A share link's extras suffix: replay_b32_decode stops at the dash.
+    // A share link's extras suffix: b32_decode stops at the dash.
     printf("share_suffix\t1%s-ABCDEFGH\n", share);
     // Base32 is case-blind in the kernel's decoder.
     for (char *p = share; *p; p++) if (*p >= 'A' && *p <= 'Z') *p = (char)(*p - 'A' + 'a');
