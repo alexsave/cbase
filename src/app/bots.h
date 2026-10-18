@@ -44,13 +44,21 @@
 // configured speedup (rounded up, so never 0). production_ms itself at speedup
 // 1 and with no config.
 int64_t cb_bots_ms(const cb_ctx *ctx, int64_t production_ms);
-// The bot's pace at the configured speedup: the kernel's wait
-// (table_bot_wait_ms) asked on a clock that runs `speedup` times faster since
-// the board was last shown (shown_ms), so the whole wait (the animation's
-// settle and the pace) shrinks by that factor and the next ask, on the same
-// board, answers 0. The real ms to wait. At speedup 1 it is the kernel's
-// answer at now_ms, unchanged. Exposed for unit_app.
-int64_t cb_bots_wait_ms(const cb_ctx *ctx, const Table *t, int64_t now_ms);
+// THE BOARD'S TIME, the now every kernel call about one game is handed (the
+// commit's, which stamps the board clock the bots pace by, and the bots' wait
+// question): at the configured speedup k it runs k times faster than the wall
+// clock from the game's creation (created_at, the row's, so a restarted
+// process keeps the same time for the same game), and at k 1 it is now_ms.
+// Every animation a commit queues and every pace then plays k times faster,
+// a queue of human moves included. Only the kernel sees it: the row's
+// updated_at and last_commit_at, the lease and the scan stay on the wall clock
+// (their windows are the cb_bots_ms ones).
+int64_t cb_bots_board_now(const cb_ctx *ctx, int64_t created_at, int64_t now_ms);
+// The real ms a drive waits before it acts on the loaded board: the kernel's
+// wait (table_bot_wait_ms) asked at the board's time, over k and rounded up,
+// so the ask after the sleep, on the same board, answers 0. At k 1 the
+// kernel's answer at now_ms, unchanged.
+int64_t cb_bots_wait_ms(const cb_ctx *ctx, const Table *t, int64_t created_at, int64_t now_ms);
 
 // Drives one game's bots until done or out of budget (see above). Blocks.
 // CB_OK (including "someone else holds the lease"), CB_E_NOT_FOUND, CB_E_DB.

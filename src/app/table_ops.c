@@ -7,6 +7,7 @@
 // kernel's; what is here is which row to read, which results commit, the CAS
 // loop, and the new row's bookkeeping columns.
 #include "app_internal.h"
+#include "bots.h"
 #include "edge.h"
 #include "fanout.h"
 
@@ -363,15 +364,16 @@ int cb_section_commit(cb_ctx *ctx, cb_section *s, const cb_game_row *row, const 
     TableCommit *c = &s->c;
     const int gid_len = (int)strlen(s->gid);
     const int64_t now = cb_app_now();
+    const int64_t board_now = cb_bots_board_now(ctx, row->created_at, now);   // the kernel's (bots.h)
     const uint32_t next = (uint32_t)(row->version + 1);
-    int rc = table_commit_products(t, s->gid, gid_len, next, now, c, s->arena, sizeof s->arena);
+    int rc = table_commit_products(t, s->gid, gid_len, next, board_now, c, s->arena, sizeof s->arena);
     if (rc >= 0 && c->wants_ratings) {
         // The kernel rates the game inside the section that ends it. Its products
         // are const, so the C host rates and asks for them again: no re-run.
         if (!*have_ratings) *have_ratings = read_ratings(ctx, t, ratings);
         if (*have_ratings) {
             table_rate(t, ratings, t->r.n);
-            rc = table_commit_products(t, s->gid, gid_len, next, now, c, s->arena, sizeof s->arena);
+            rc = table_commit_products(t, s->gid, gid_len, next, board_now, c, s->arena, sizeof s->arena);
         }
     }
     if (rc < 0) {

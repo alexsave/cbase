@@ -15,7 +15,7 @@
 // views, C, who never sits, on the game's spectator casts. The humans play legal moves (chosen on their own masked
 // envelope with the kernel's client table, as the browser does) while the bot
 // pool drives the bot. Once mid-game, when only the bots owe a move, the
-// server is killed and restarted with nobody bumping: the 10 s heartbeat must
+// server is killed and restarted with nobody bumping: the heartbeat must
 // resume the bot after the dead process's lease runs out. At the end: game
 // over, every push stream strictly increasing in version (B's last view push
 // is B's stored view), the ratings changed (the leaderboard), one replay
@@ -25,6 +25,12 @@
 // Every module is real here: auth (real JWTs), the SQLite store, the /v1
 // routes, realtime (rt_local + stream_mqtt, through rt_deps' production table),
 // the app.
+//
+// THE BOTS' TIME RUNS SMOKE_SPEEDUP TIMES FASTER (CBASE_BOT_SPEEDUP, config.h):
+// the pace, the lease, the scan's staleness window and serve's scan period are
+// each production's over SMOKE_SPEEDUP, so every ratio between them holds and
+// the game, the crash's lease expiry and the idle human's rest each take
+// seconds. unit_app holds production's values and the division itself.
 #include "t.h"
 #include "lib_store_backend.h"
 
@@ -39,6 +45,7 @@
 #include "table.h"
 #include "net/ws.h"
 #include "util/clock.h"
+#include "app/bots.h"
 
 #include "ask.h"
 #include "netclient.h"
@@ -55,6 +62,7 @@
 #include <unistd.h>
 #include "../../shared/c/rng.h"
 
+#define SMOKE_SPEEDUP 20
 static const char *g_bin;
 static tp_child g_child;
 static int g_port;
@@ -65,8 +73,10 @@ static void start_server(void) {
     static char envdb[512];
     snprintf(envdb, sizeof envdb, "CBASE_DB=%s/cbase.sqlite", g_dbdir);
     // Fresh accounts, rated at once (CBASE_RATED_MIN_AGE, table_ops.c): the scenario checks the leaderboard moves.
+    static char speedup[48];
+    snprintf(speedup, sizeof speedup, "CBASE_BOT_SPEEDUP=%d", SMOKE_SPEEDUP);
     char *env[] = { "CBASE_LISTEN=127.0.0.1:0", envdb, "CBASE_JWT_SECRET=smoke-secret-smoke-secret-smoke-secret",
-                    "CBASE_RATED_MIN_AGE=0", NULL };
+                    "CBASE_RATED_MIN_AGE=0", speedup, NULL };
     char *argv[] = { (char *)g_bin, "serve", NULL };
     g_port = 0;
     T_EQ_INT(tp_start(&g_child, argv, env), 0);
@@ -333,9 +343,11 @@ static void hear(listener *l, const uint8_t *p, size_t n, int *suback) {
     }
 }
 
-// Reads every message that arrives within timeout_ms (then 50 ms between them).
-// Like the clients, pings every 30 s inside its 60 s keep-alive.
-static void drain_ws(listener *l, int timeout_ms) {
+// Reads every message that arrives within timeout_ms, then each next one that
+// arrives within gap_ms of the last. The game loop takes only what is already
+// there (0, 0): what is still in flight is read on the next turn. Like the
+// clients, pings every 30 s inside its 60 s keep-alive.
+static void drain_ws(listener *l, int timeout_ms, int gap_ms) {
     if (l->fd >= 0 && mono_ms() - l->last_ping > NC_PING_MS) {
         uint8_t b[2];
         mq_send(l, b, mqtt_write_bare(b, sizeof b, MQTT_PINGREQ));
@@ -348,7 +360,7 @@ static void drain_ws(listener *l, int timeout_ms) {
         if (op == CB_WS_OP_CLOSE) { l->refused++; break; }
         hear(l, f.p, f.len, NULL);
         cb_buf_reset(&f);
-        timeout_ms = 50;
+        timeout_ms = gap_ms;
     }
     cb_buf_free(&f);
 }
@@ -443,9 +455,10 @@ static int64_t db_scan_clock(const char *gid) {
 // THE IDLE HUMAN (production, 2026-10-17: 1,037 of 1,149 bot cycles in a week
 // drove nothing). One human against one bot; the human owes the move and walks
 // away. No bot can act, so the stored row must not say the bots are owed one,
-// and serve's heartbeat (a scan every 10 s, a game stale after 10 s) must
-// never start a drive for it: no lease is taken (SQLite's lease acquire moves
-// the row's updated_at) and nothing is committed, across two scans.
+// and serve's heartbeat (a scan every CB_BOT_SCAN_EVERY_MS, a game stale after
+// CB_BOT_STALE_MS, both over SMOKE_SPEEDUP) must never start a drive for it: no
+// lease is taken (SQLite's lease acquire moves the row's updated_at) and
+// nothing is committed, across two scans past the staleness window.
 static void an_idle_human_turn_is_never_kicked(void) {
     smoke_user D;
     if (signup(&D, "SMOKED") != 0) { T_CHECK(0); return; }
@@ -475,7 +488,7 @@ static void an_idle_human_turn_is_never_kicked(void) {
     }
     T_CHECK(owes);
     // While D deliberates a bot may still act (an attacker throws in or says
-    // good), paced 3 s a move: the bots are done when the stored row says no
+    // good), paced: the bots are done when the stored row says no
     // bot owes a move (needs_bots). Not "the version held for longer than a
     // pace": a starved bot pool holds the version too (it failed once that
     // way with the server frozen for 12 s, a bot's move still to come).
@@ -487,13 +500,14 @@ static void an_idle_human_turn_is_never_kicked(void) {
     T_CHECK(db_game(gid, &nb, &v0));
     T_EQ_INT(nb, 0);
     const int64_t clock0 = db_scan_clock(gid);
-    struct timespec idle = { 22, 0 };   // two scans past the staleness window
-    nanosleep(&idle, NULL);
+    // Two scans past the staleness window, and a fifth of one more (production's 22 s).
+    const int64_t rest = (CB_BOT_STALE_MS + 2 * CB_BOT_SCAN_EVERY_MS + 2000) / SMOKE_SPEEDUP;
+    cb_sleep_ms(rest);
     T_CHECK(db_game(gid, &nb, &v1));
     T_EQ_INT(v1, v0);
     T_EQ_INT(db_scan_clock(gid), clock0);
-    fprintf(stderr, "smoke: an idle human's turn rested 22 s at version %lld, scan clock %lld -> %lld\n", (long long)v0,
-            (long long)clock0, (long long)db_scan_clock(gid));
+    fprintf(stderr, "smoke: an idle human's turn rested %lld ms at version %lld, scan clock %lld -> %lld\n", (long long)rest,
+            (long long)v0, (long long)clock0, (long long)db_scan_clock(gid));
     cb_buf_free(&env);
     free(sc);
 }
@@ -547,8 +561,8 @@ static void game_scenario(void) {
     //
     // Once, when neither human has a move and the stored row says the bots owe
     // one, the server is KILLED (no drain) and started again on the same file,
-    // and nobody moves: only serve's heartbeat (the 10 s scan) can restart the
-    // drive, and only once the dead process's 25 s lease has run out. The
+    // and nobody moves: only serve's heartbeat (the scan) can restart the
+    // drive, and only once the dead process's lease has run out. The
     // stored version moving on proves the heartbeat, the lease expiry and the
     // reload from a crash.
     smoke_user *humans[2] = { &A, &B };
@@ -606,9 +620,9 @@ static void game_scenario(void) {
             moved = true;
             moves++;
         }
-        drain_ws(LA, 0);
-        drain_ws(LB, 0);
-        drain_ws(LC, 0);
+        drain_ws(LA, 0, 0);
+        drain_ws(LB, 0, 0);
+        drain_ws(LC, 0, 0);
         if (!answered) break;   // the server stopped answering: the asserts below say so
         int64_t nb = 0, ver = 0;
         if (!moved && !crashed && moves >= 4 && crash_tries < 5 && status == GAME_STATUS_PLAYING
@@ -659,9 +673,9 @@ static void game_scenario(void) {
 
     // Pushes, each stream strictly increasing in version: A's own casts, the
     // spectators' casts, B's views.
-    drain_ws(LA, 1000);
-    drain_ws(LB, 1000);
-    drain_ws(LC, 1000);
+    drain_ws(LA, 1000, 50);
+    drain_ws(LB, 1000, 50);
+    drain_ws(LC, 1000, 50);
     fprintf(stderr, "smoke: heard %d seat casts, %d spectator casts, %d views\n", LA->n_cast, LC->n_cast, LB->n_view);
     T_CHECK(LA->n_cast > 0);
     T_CHECK(LC->n_cast > 0);

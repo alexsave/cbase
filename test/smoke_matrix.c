@@ -427,13 +427,14 @@ static void judge(sock *s, const uint8_t *p, int len) {
     if (at != len) s->leak = true;   // a message that is not whole packets
 }
 
-// Reads what arrives within timeout_ms (then 50 ms between messages), judging each.
-static void ws_pump(sock *s, int timeout_ms) {
+// Reads what arrives within timeout_ms, then each next message that arrives
+// within gap_ms of the last, judging each.
+static void ws_pump_gap(sock *s, int timeout_ms, int gap_ms) {
     cb_buf b;
     cb_buf_init(&b);
     int op;
     while (s->fd >= 0 && !s->closed && (op = tc_ws_recv(s->fd, timeout_ms, &b)) >= 0) {
-        timeout_ms = 50;
+        timeout_ms = gap_ms;
         if (op == CB_WS_OP_CLOSE) {
             s->closed = true;
             s->close_code = b.len >= 2 ? (b.p[0] << 8 | b.p[1]) : 0;
@@ -445,6 +446,12 @@ static void ws_pump(sock *s, int timeout_ms) {
     }
     cb_buf_free(&b);
 }
+
+static void ws_pump(sock *s, int timeout_ms) { ws_pump_gap(s, timeout_ms, 50); }
+
+// What has already arrived, and nothing more: the game loop's turn (what is
+// still in flight is read on the next turn, and the end of the game waits).
+static void ws_take(sock *s) { ws_pump_gap(s, 0, 0); }
 
 static void ws_open(sock *s, const char *who, int seat, const char *gid, bool may_chat) {
     memset(s, 0, sizeof *s);
@@ -1052,7 +1059,7 @@ static void hidden_card_game(void) {
             for (int y = 0; y < 3; y++)
                 for (int i = 0; i < own[y].n; i++) T_CHECK(!cardset_has(&spec_seen, own[y].ids[i]));
         }
-        ws_pump(&sA, 0); ws_pump(&sB, 0); ws_pump(&sE, 0); ws_pump(&sC, 0); ws_pump(&sD, 0);
+        ws_take(&sA); ws_take(&sB); ws_take(&sE); ws_take(&sC); ws_take(&sD);
         if (!moved) { struct timespec ts = { 0, 20 * 1000000 }; nanosleep(&ts, NULL); }
     }
     ws_pump(&sA, 1000); ws_pump(&sB, 300); ws_pump(&sE, 300); ws_pump(&sC, 300); ws_pump(&sD, 300);

@@ -38,7 +38,11 @@ int tc_http(int port, const char *method, const char *path, const char *headers,
 int tc_ws_open(int port, const char *path, const char *headers);
 int tc_ws_send(int fd, int opcode, const void *data, size_t len);
 // Reads one frame (answering nothing for it). Returns the opcode and fills
-// out, or -1 on timeout / close / error.
+// out, or -1 on timeout / close / error. timeout_ms bounds the wait for the
+// frame's first byte; once a frame has begun, the rest gets TC_WS_REST_MS, so
+// a caller that only takes what is already there (timeout 0) never drops half
+// a frame the server sent in two segments.
+#define TC_WS_REST_MS 10000
 int tc_ws_recv(int fd, int timeout_ms, cb_buf *out);
 
 #endif

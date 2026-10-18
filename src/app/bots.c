@@ -77,7 +77,7 @@ static int run_cycle(cb_ctx *ctx, cb_section *s, const char *game_id, int cycle,
             cb_game_row_free(&row);
             return CYCLE_DONE;
         }
-        int64_t wait = cb_bots_wait_ms(ctx, &s->t, cb_app_now());
+        int64_t wait = cb_bots_wait_ms(ctx, &s->t, row.created_at, cb_app_now());
         if (wait > 0) { cb_game_row_free(&row); *delay_ms = wait; return CYCLE_AGAIN; }
         const int log_len = (int)row.logs_len;
         kr = table_set_session_log(&s->t, row.logs, log_len);
@@ -135,14 +135,15 @@ int64_t cb_bots_ms(const cb_ctx *ctx, int64_t production_ms) {
     return (production_ms + k - 1) / k;
 }
 
-// The board's clock is the kernel's (shown_ms is the instant of the commit the
-// viewers last saw), so the faster clock is anchored there: the same board asks
-// the same question on it however often a drive asks, and one wait covers it.
-int64_t cb_bots_wait_ms(const cb_ctx *ctx, const Table *t, int64_t now_ms) {
-    const int64_t k = speedup(ctx), shown = t->clock.shown_ms;
-    int64_t ask = now_ms;
-    if (k > 1 && shown > 0 && now_ms > shown) ask = shown + (now_ms - shown) * k;
-    const int64_t wait = table_bot_wait_ms(t, ask);
+int64_t cb_bots_board_now(const cb_ctx *ctx, int64_t created_at, int64_t now_ms) {
+    const int64_t k = speedup(ctx);
+    if (k == 1 || created_at <= 0 || now_ms <= created_at) return now_ms;
+    return created_at + (now_ms - created_at) * k;
+}
+
+int64_t cb_bots_wait_ms(const cb_ctx *ctx, const Table *t, int64_t created_at, int64_t now_ms) {
+    const int64_t k = speedup(ctx);
+    const int64_t wait = table_bot_wait_ms(t, cb_bots_board_now(ctx, created_at, now_ms));
     return wait > 0 ? (wait + k - 1) / k : 0;
 }
 

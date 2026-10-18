@@ -185,7 +185,7 @@ int tc_ws_recv(int fd, int timeout_ms, cb_buf *out) {
             return f.opcode;
         }
         struct pollfd p = { fd, POLLIN, 0 };
-        if (poll(&p, 1, timeout_ms) <= 0) { cb_buf_free(&in); return -1; }
+        if (poll(&p, 1, in.len ? TC_WS_REST_MS : timeout_ms) <= 0) { cb_buf_free(&in); return -1; }
         uint8_t b;
         ssize_t r = recv(fd, &b, 1, 0);
         if (r <= 0) { cb_buf_free(&in); return -1; }

@@ -1860,8 +1860,14 @@ static void paced_game_at(int k) {
         int n = pick_move(gid, 0, wire, sizeof wire);
         if (n > 0) { action("A", gid, wire, n, (uint32_t)version_of(gid), &r); continue; }
         cb_game_row row = stored(gid);
-        int wait = cb_section_load(s, &row) >= 0 ? table_bot_wait_ms(&s->t, g_now) : -1;
-        T_EQ_INT(cb_bots_wait_ms(&g_ctx, &s->t, g_now), wait > 0 ? (wait + k - 1) / k : 0);
+        // The kernel's wait at the board's time (k times faster since the game began).
+        const int64_t board_now = cb_bots_board_now(&g_ctx, row.created_at, g_now);
+        T_EQ_INT(board_now, k == 1 ? g_now : row.created_at + (g_now - row.created_at) * k);
+        int wait = cb_section_load(s, &row) >= 0 ? table_bot_wait_ms(&s->t, board_now) : -1;
+        T_EQ_INT(cb_bots_wait_ms(&g_ctx, &s->t, row.created_at, g_now), wait > 0 ? (wait + k - 1) / k : 0);
+        // The board's clock was stamped on the board's time: the last commit's
+        // shown_ms is the board's time at that commit (g_now is still it).
+        T_EQ_INT(s->t.clock.shown_ms, board_now);
         int64_t v = row.version, t_last = g_now;
         cb_game_row_free(&row);
         int before = g_pace.n;
@@ -1982,6 +1988,23 @@ static void the_scan_windows_follow_the_speedup(void) {
     T_EQ_INT(cb_bots_scan(&g_ctx, now), 0);
     tm_set_scan(g_store, g1, true, now - CB_BOT_STALE_MS - 1, now - abandon);
     T_EQ_INT(cb_bots_scan(&g_ctx, now), 1);
+}
+
+// The board's time: k times the wall clock's speed from the game's creation,
+// the wall clock itself at k 1, and for a row with no creation time or one
+// from the future (another host's clock).
+static void the_boards_time(void) {
+    setup(0);
+    const int64_t c = 1760000000000LL;
+    T_EQ_INT(cb_bots_board_now(&g_ctx, c, c + 1234), c + 1234);
+    T_EQ_INT(cb_bots_board_now(NULL, c, c + 1234), c + 1234);
+    g_cfg.bot_speedup = 20;
+    T_EQ_INT(cb_bots_board_now(&g_ctx, c, c), c);
+    T_EQ_INT(cb_bots_board_now(&g_ctx, c, c + 1234), c + 1234 * 20);
+    T_EQ_INT(cb_bots_board_now(&g_ctx, 0, c + 1234), c + 1234);
+    T_EQ_INT(cb_bots_board_now(&g_ctx, -5, c + 1234), c + 1234);
+    T_EQ_INT(cb_bots_board_now(&g_ctx, c, c - 50), c - 50);
+    g_cfg.bot_speedup = 1;
 }
 
 // Production's bot timers, as they were before the speedup existed: a change
@@ -2288,6 +2311,7 @@ int main(void) {
     T_RUN(every_bot_cycle_gets_the_whole_log_and_its_choices_back);
     T_RUN(bot_moves_wait_for_the_table_to_settle);
     T_RUN(production_bot_timers);
+    T_RUN(the_boards_time);
     T_RUN(bots_pace_at_production_speed_and_at_a_speedup);
     T_RUN(a_drive_takes_its_lease_over_the_speedup);
     T_RUN(the_scan_windows_follow_the_speedup);
