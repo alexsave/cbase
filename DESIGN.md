@@ -654,6 +654,11 @@ The honest expectation, stated before any measurement: the binary options are no
 
 `store.h` and the handler split already let an S3 backend and the adapter mode be added as variants without touching the app layer.
 
+A fourth option was measured on 2026-10-18: the same server as `cbase serve` on SQLite on one small VM behind the same CloudFront, projected at about 23 ms a move against Lambda + DynamoDB's 57 (docs/BENCH_VM_VS_DYNAMO.md).
+Alex decided the same day to stay on Lambda + DynamoDB for now and parked the VM.
+Three wins on the Lambda path followed (PR #372): the lone `UpdateItem` commit ("Module: store"), the push lanes ("Pushes, after the answer"), and the edge's `Server-Timing`, which showed the remaining slow mode is CloudFront opening a new connection to the Function URL, with no $0 setting that prevents it.
+The function now answers a move 13.7 ms sooner at p50 and bills 24 ms for it instead of 61; the report's last section has the numbers, adjusted for the client network having changed between the runs.
+
 ### The bench: `c_base/bench/` (built 2026-10-13)
 
 `make -C c_base bench` builds `build/cbase-bench` (`make all` builds it too, so CI keeps it compiling); `bench/bench.h` lists the sub-commands and `bench/bench_stats.h` the run file.
