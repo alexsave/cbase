@@ -1,0 +1,129 @@
+Batch.DeleteRequest key=pk:S=CHAT#{v},sk:S={n}#{uuid}
+Batch.DeleteRequest key=pk:S=GAME#{gid},sk:S=MEMBER#{uuid}
+Batch.DeleteRequest key=pk:S=GAME#{v},sk:S=MEMBER#{uuid}
+Batch.DeleteRequest key=pk:S=REFRESH#{sha},sk:S=TOKEN
+Batch.DeleteRequest key=pk:S=REFRESH#{v},sk:S=TOKEN
+BatchGet key=pk:S=BOT#{uuid},sk:S=BOT
+BatchGet key=pk:S=GAME#{gid},sk:S=ROW
+BatchGet key=pk:S=GAME#{v},sk:S=ROW
+BatchGet key=pk:S=USER#{uuid},sk:S=PROFILE
+BatchGet key=pk:S=USER#{uuid},sk:S=RATING
+DeleteItem key=pk:S=AUTHFAIL#{email},sk:S=FAILS
+DeleteItem key=pk:S=SCAN,sk:S=GAME#{v} names=row_version vals=N
+DescribeTable
+ExecuteStatement
+GetItem key=pk:S=AUTHFAIL#{email},sk:S=FAILS
+GetItem key=pk:S=EMAIL#{email},sk:S=USER
+GetItem key=pk:S=GAME#{gid},sk:S=MEMBER#{uuid}
+GetItem key=pk:S=GAME#{gid},sk:S=ROW
+GetItem key=pk:S=GAME#{n},sk:S=ROW
+GetItem key=pk:S=GAME#{v},sk:S=MEMBER#{uuid}
+GetItem key=pk:S=GAME#{v},sk:S=ROW
+GetItem key=pk:S=SCAN,sk:S=GAME#{gid}
+GetItem key=pk:S=SCAN,sk:S=GAME#{v}
+GetItem key=pk:S=SESSION#{uuid},sk:S=SESSION
+GetItem key=pk:S=USER#{uuid},sk:S=PROFILE
+GetItem key=pk:S=USER#{v},sk:S=PROFILE
+PutItem item=created_at:N,expires_at:N,expires_ms:N,gen:N,id:S,pk:S=SESSION#{uuid},revoked:BOOL,sk:S=SESSION,user_id:S
+PutItem item=created_at:N,expires_at:N,expires_ms:N,gsi1pk:S=USERREFRESH#{uuid},gsi1sk:S={sha},pk:S=REFRESH#{sha},revoked:BOOL,session_id:S,sk:S=TOKEN,token_hash:S,user_id:S
+PutItem item=created_at:N,expires_at:N,expires_ms:N,gsi1pk:S=USERREFRESH#{uuid},gsi1sk:S={v},pk:S=REFRESH#{v},revoked:BOOL,session_id:S,sk:S=TOKEN,token_hash:S,user_id:S
+PutItem item=created_at:N,gsi1pk:S=USERREFRESH#{uuid},gsi1sk:S={v},pk:S=REFRESH#{v},revoked:BOOL,session_id:S,sk:S=TOKEN,token_hash:S,user_id:S
+PutItem item=elo_rating:N,games_played:N,gsi2pk:S=RATINGS,gsi2sk:S=E#{n}#{uuid},pk:S=USER#{uuid},previous_elo:N,sk:S=RATING,updated_at:N,user_id:S,username:S
+PutItem item=elo_rating:N,games_played:N,gsi2pk:S=RATINGS,gsi2sk:S=E#{n}#{uuid},pk:S=USER#{uuid},sk:S=RATING,updated_at:N,user_id:S,username:S
+PutItem item=expires_at:N,expires_ms:N,last_at:N,locked_until:N,n:N,pk:S=AUTHFAIL#{email},sk:S=FAILS
+Query index=gsi1 names=gsi1pk vals=S:USERGAMES#{uuid}
+Query index=gsi1 names=gsi1pk,pk,sk vals=S:GAMESNAPS#{v}
+Query index=gsi1 names=gsi1pk,pk,sk vals=S:USERCHAT#{uuid}
+Query index=gsi1 names=gsi1pk,pk,sk vals=S:USERREFRESH#{uuid}
+Query index=gsi2 names=gsi2pk vals=S:BOTS
+Query index=gsi2 names=gsi2pk vals=S:PLAYER#{uuid}
+Query index=gsi2 names=gsi2pk vals=S:RATINGS
+Query index=gsi2 names=gsi2pk vals=S:USERS
+Query index=gsi2 names=gsi2pk,gsi2sk vals=S:E#,S:RATINGS
+Query names=pk vals=S:CHAT#{gid}
+Query names=pk vals=S:CHAT#{v}
+Query names=pk vals=S:SCAN
+Query names=pk vals=S:SNAP#{uuid}
+Query names=pk,sk vals=S:GAME#{gid},S:ROW
+Query names=pk,sk vals=S:GAME#{v},S:ROW
+Scan names=pk vals=S:BOT#
+Scan names=pk vals=S:BOT#{v}
+Scan names=pk vals=S:CHAT#
+Scan names=pk vals=S:EMAIL#
+Scan names=pk vals=S:GAME#
+Scan names=pk vals=S:REFRESH#
+Scan names=pk vals=S:SCAN
+Scan names=pk vals=S:SNAP#
+Scan names=pk vals=S:USER#
+Scan names=pk,sk
+Txn.ConditionCheck key=pk:S=GAME#{gid},sk:S=ROW
+Txn.ConditionCheck key=pk:S=GAME#{v},sk:S=ROW
+Txn.ConditionCheck key=pk:S=USER#{uuid},sk:S=PROFILE
+Txn.Delete key=pk:S=BOT#{uuid},sk:S=BOT
+Txn.Delete key=pk:S=EMAIL#{email},sk:S=USER
+Txn.Delete key=pk:S=GAME#{v},sk:S=BOT#{uuid}
+Txn.Delete key=pk:S=GAME#{v},sk:S=MEMBER#{uuid}
+Txn.Delete key=pk:S=GAME#{v},sk:S=ROW names=version vals=N
+Txn.Delete key=pk:S=SCAN,sk:S=GAME#{gid}
+Txn.Delete key=pk:S=SCAN,sk:S=GAME#{v}
+Txn.Delete key=pk:S=USER#{uuid},sk:S=PROFILE
+Txn.Delete key=pk:S=USER#{uuid},sk:S=RATING
+Txn.Put item=bot_id:S,game_id:S,pk:S=GAME#{gid},sk:S=BOT#{uuid}
+Txn.Put item=bot_id:S,game_id:S,pk:S=GAME#{v},sk:S=BOT#{uuid}
+Txn.Put item=created_at:N,elo_rating:N,games_played:N,gsi2pk:S=BOTS,gsi2sk:S={uuid},id:S,nickname:S,pk:S=BOT#{uuid},previous_elo:N,sk:S=BOT,strategy_key:S,updated_at:N
+Txn.Put item=created_at:N,elo_rating:N,games_played:N,gsi2pk:S=BOTS,gsi2sk:S={uuid},id:S,nickname:S,pk:S=BOT#{uuid},sk:S=BOT,strategy_key:S,updated_at:N
+Txn.Put item=created_at:N,email:S,gsi2pk:S=USERS,gsi2sk:S={n}#{uuid},id:S,last_sign_in_at:N,password_hash:S,pk:S=USER#{uuid},sk:S=PROFILE,username:S
+Txn.Put item=created_at:N,email:S,gsi2pk:S=USERS,gsi2sk:S={n}#{uuid},id:S,password_hash:S,pk:S=USER#{uuid},sk:S=PROFILE
+Txn.Put item=created_at:N,email:S,gsi2pk:S=USERS,gsi2sk:S={n}#{uuid},id:S,password_hash:S,pk:S=USER#{uuid},sk:S=PROFILE,username:S
+Txn.Put item=created_at:N,extras:B,game_id:S,gsi1pk:S=GAMESNAPS#{gid},gsi1sk:S={n}#{uuid},gsi2pk:S=PLAYER#{uuid},gsi2sk:S={n}#{uuid},id:S,moves:B,pk:S=SNAP#{uuid},player_ids:L,sk:S=PLAYER#{uuid}
+Txn.Put item=created_at:N,extras:B,game_id:S,gsi1pk:S=GAMESNAPS#{gid},gsi1sk:S={n}#{uuid},id:S,moves:B,pk:S=SNAP#{uuid},player_ids:L,sk:S=SNAP
+Txn.Put item=created_at:N,extras:B,game_id:S,gsi1pk:S=GAMESNAPS#{v},gsi1sk:S={n}#{uuid},gsi2pk:S=PLAYER#{uuid},gsi2sk:S={n}#{uuid},id:S,moves:B,pk:S=SNAP#{uuid},player_ids:L,sk:S=PLAYER#{uuid}
+Txn.Put item=created_at:N,extras:B,game_id:S,gsi1pk:S=GAMESNAPS#{v},gsi1sk:S={n}#{uuid},id:S,moves:B,pk:S=SNAP#{uuid},player_ids:L,sk:S=SNAP
+Txn.Put item=created_at:N,extras:B,game_id:S,gsi2pk:S=PLAYER#{uuid},gsi2sk:S={n}#{uuid},id:S,moves:B,pk:S=SNAP#{uuid},player_ids:L,sk:S=PLAYER#{uuid}
+Txn.Put item=created_at:N,extras:B,game_id:S,id:S,moves:B,pk:S=SNAP#{uuid},player_ids:L,sk:S=SNAP
+Txn.Put item=created_at:N,game_id:S,gsi1pk:S=GAMESNAPS#{gid},gsi1sk:S={n}#{uuid},gsi2pk:S=PLAYER#{uuid},gsi2sk:S={n}#{uuid},id:S,moves:B,pk:S=SNAP#{uuid},player_ids:L,sk:S=PLAYER#{uuid}
+Txn.Put item=created_at:N,game_id:S,gsi1pk:S=GAMESNAPS#{gid},gsi1sk:S={n}#{uuid},id:S,moves:B,pk:S=SNAP#{uuid},player_ids:L,sk:S=SNAP
+Txn.Put item=created_at:N,game_id:S,gsi1pk:S=GAMESNAPS#{v},gsi1sk:S={n}#{uuid},gsi2pk:S=PLAYER#{uuid},gsi2sk:S={n}#{uuid},id:S,moves:B,pk:S=SNAP#{uuid},player_ids:L,sk:S=PLAYER#{uuid}
+Txn.Put item=created_at:N,game_id:S,gsi1pk:S=GAMESNAPS#{v},gsi1sk:S={n}#{uuid},id:S,moves:B,pk:S=SNAP#{uuid},player_ids:L,sk:S=SNAP
+Txn.Put item=created_at:N,game_id:S,gsi1pk:S=USERCHAT#{uuid},gsi1sk:S={n}#{uuid},id:S,is_system:BOOL,message:S,pk:S=CHAT#{gid},sk:S={n}#{uuid},user_id:S
+Txn.Put item=created_at:N,game_id:S,gsi1pk:S=USERCHAT#{uuid},gsi1sk:S={n}#{uuid},id:S,is_system:BOOL,message:S,pk:S=CHAT#{v},sk:S={n}#{uuid},user_id:S
+Txn.Put item=created_at:N,game_id:S,gsi2pk:S=PLAYER#{uuid},gsi2sk:S={n}#{uuid},id:S,moves:B,pk:S=SNAP#{uuid},player_ids:L,sk:S=PLAYER#{uuid}
+Txn.Put item=created_at:N,game_id:S,id:S,moves:B,pk:S=SNAP#{uuid},player_ids:L,sk:S=SNAP
+Txn.Put item=created_at:N,id:S,last_commit_at:N,needs_bots:BOOL,pk:S=GAME#{gid},roster:B,round_epoch:N,seats_exact:BOOL,sk:S=ROW,state:B,status:N,updated_at:N,version:N
+Txn.Put item=created_at:N,id:S,last_commit_at:N,needs_bots:BOOL,pk:S=GAME#{gid},roster:B,round_epoch:N,sk:S=ROW,state:B,status:N,updated_at:N,version:N
+Txn.Put item=created_at:N,id:S,last_commit_at:N,needs_bots:BOOL,pk:S=GAME#{v},roster:B,round_epoch:N,sk:S=ROW,state:B,status:N,updated_at:N,version:N
+Txn.Put item=elo_rating:N,games_played:N,gsi2pk:S=RATINGS,gsi2sk:S=E#{n}#{uuid},pk:S=USER#{uuid},previous_elo:N,sk:S=RATING,updated_at:N,user_id:S,username:S
+Txn.Put item=elo_rating:N,games_played:N,pk:S=USER#{uuid},previous_elo:N,sk:S=RATING,updated_at:N,user_id:S
+Txn.Put item=elo_rating:N,games_played:N,pk:S=USER#{uuid},previous_elo:N,sk:S=RATING,updated_at:N,user_id:S,username:S
+Txn.Put item=game_id:S,last_commit_at:N,pk:S=SCAN,row_version:N,sk:S=GAME#{v},updated_at:N
+Txn.Put item=pk:S=EMAIL#{email},sk:S=USER,user_id:S
+Txn.Update key=pk:S=BOT#{uuid},sk:S=BOT names=elo_rating,games_played,previous_elo,updated_at vals=N
+Txn.Update key=pk:S=GAME#{gid},sk:S=MEMBER#{uuid} names=game_id,gsi1pk,gsi1sk,joined_at,updated_at,user_id vals=N,S:USERGAMES#{uuid},S:{gid},S:{n}#{gid},S:{uuid}
+Txn.Update key=pk:S=GAME#{gid},sk:S=ROW names=game_seed,last_commit_at,logs_packed,needs_bots,roster,round_epoch,seats_exact,state,status,updated_at,version vals=B,BOOL,N
+Txn.Update key=pk:S=GAME#{v},sk:S=MEMBER#{uuid} names=game_id,gsi1pk,gsi1sk,joined_at,updated_at,user_id vals=N,S:USERGAMES#{uuid},S:{n}#{v},S:{uuid},S:{v}
+Txn.Update key=pk:S=GAME#{v},sk:S=ROW names=game_seed,last_commit_at,logs_packed,needs_bots,roster,round_epoch,seats_exact,state,status,updated_at,version vals=B,BOOL,N
+Txn.Update key=pk:S=SCAN,sk:S=GAME#{gid} names=game_id,last_commit_at,row_version,updated_at vals=N,S:{gid}
+Txn.Update key=pk:S=SCAN,sk:S=GAME#{v} names=game_id,last_commit_at,row_version,updated_at vals=N,S:{v}
+Txn.Update key=pk:S=SNAP#{uuid},sk:S=PLAYER#{uuid} names=extras
+Txn.Update key=pk:S=SNAP#{uuid},sk:S=PLAYER#{uuid} names=extras vals=B
+Txn.Update key=pk:S=SNAP#{uuid},sk:S=SNAP names=extras
+Txn.Update key=pk:S=SNAP#{uuid},sk:S=SNAP names=extras vals=B
+Txn.Update key=pk:S=USER#{uuid},sk:S=RATING names=elo_rating,games_played,gsi2pk,gsi2sk,previous_elo,updated_at vals=N,S:E#{n}#{uuid},S:RATINGS
+UpdateItem key=pk:S=GAME#{gid},sk:S=ROW names=game_seed,last_commit_at,logs_packed,needs_bots,roster,round_epoch,seats_exact,state,status,updated_at,version vals=B,BOOL,N
+UpdateItem key=pk:S=GAME#{v},sk:S=ROW names=game_seed,last_commit_at,logs_packed,needs_bots,roster,round_epoch,seats_exact,state,status,updated_at,version vals=B,BOOL,N
+UpdateItem key=pk:S=REFRESH#{sha},sk:S=TOKEN names=expires_at,expires_ms,revoked,revoked_at vals=BOOL,N
+UpdateItem key=pk:S=REFRESH#{v},sk:S=TOKEN names=expires_at,expires_ms,revoked,revoked_at vals=BOOL,N
+UpdateItem key=pk:S=SCAN,sk:S=GAME#{gid} names=lease_token,lease_until vals=S:{uuid}
+UpdateItem key=pk:S=SCAN,sk:S=GAME#{gid} names=lease_token,lease_until,updated_at vals=N,S:{uuid}
+UpdateItem key=pk:S=SCAN,sk:S=GAME#{v} names=lease_token,lease_until vals=S:{uuid}
+UpdateItem key=pk:S=SCAN,sk:S=GAME#{v} names=lease_token,lease_until,updated_at vals=N,S:{uuid}
+UpdateItem key=pk:S=SESSION#{uuid},sk:S=SESSION names=expires_at,expires_ms,id,revoked,user_id vals=BOOL,N,S:{uuid}
+UpdateItem key=pk:S=SNAP#{uuid},sk:S=PLAYER#{uuid} names=game_id,gsi1pk,gsi1sk vals=S:
+UpdateItem key=pk:S=SNAP#{uuid},sk:S=SNAP names=game_id,gsi1pk,gsi1sk vals=S:
+UpdateItem key=pk:S=USER#{uuid},sk:S=PROFILE names=kept_session,password_hash,session_gen vals=N,S:,S:{v}
+UpdateItem key=pk:S=USER#{uuid},sk:S=PROFILE names=kept_session,password_hash,session_gen vals=N,S:{uuid},S:{v}
+UpdateItem key=pk:S=USER#{uuid},sk:S=PROFILE names=kept_session,password_hash,session_gen vals=N,S:{v}
+UpdateItem key=pk:S=USER#{uuid},sk:S=PROFILE names=kept_session,session_gen vals=N,S:
+UpdateItem key=pk:S=USER#{uuid},sk:S=PROFILE names=last_sign_in_at vals=N
+UpdateItem key=pk:S=USER#{uuid},sk:S=RATING names=elo_rating,games_played,gsi2pk,gsi2sk vals=N,S:E#{n}#{uuid},S:RATINGS
+UpdateItem key=pk:S=USER#{uuid},sk:S=RATING names=username

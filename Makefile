@@ -221,10 +221,27 @@ check-asan: shared-tests-asan $(call UNIT_RUNS,build/asan/test) $(call SMOKE_PRO
 # deploy seeds them, then the unit tests that touch a real store (each on its
 # own fresh table) and the whole game smoke, every one with CBASE_STORE=dynamo.
 DYNAMO_UNITS := unit_store unit_admin unit_import unit_v1
+#
+# THE KEY-CAPTURE PROOF (docs/PLATFORM.md stages 5 and 6): every request the
+# lane sends is reduced to its shape (json_surface.h dw_shape: the keys and
+# index keys it touches, normalized, and every attribute name), and the set of
+# shapes must equal test/golden/dynamo_shapes.txt. A change that moves a key
+# or renames an attribute fails here; `make dynamo-shapes` rewrites the golden
+# file, for a change that means to.
+DYNAMO_SHAPES := $(CURDIR)/build/dynamo_shapes.raw
 check-dynamo: $(addprefix build/test/,$(DYNAMO_UNITS)) build/cbase build/cbase-import build/test/smoke build/test/smoke_matrix
 	ops/dynamo_local.sh --reset > build/dynamo.env
-	. ./build/dynamo.env && build/cbase-import --seed-bots
-	. ./build/dynamo.env && $(call RUN_ALL_SH,DYNAMO CHECK,'build/test/smoke build/cbase' 'build/test/smoke_matrix build/cbase' $(addprefix build/test/,$(DYNAMO_UNITS)))
+	rm -f $(DYNAMO_SHAPES)
+	. ./build/dynamo.env && CBASE_DYNAMO_CAPTURE=$(DYNAMO_SHAPES) build/cbase-import --seed-bots
+	. ./build/dynamo.env && export CBASE_DYNAMO_CAPTURE=$(DYNAMO_SHAPES) && $(call RUN_ALL_SH,DYNAMO CHECK,'build/test/smoke build/cbase' 'build/test/smoke_matrix build/cbase' $(addprefix build/test/,$(DYNAMO_UNITS)))
+	LC_ALL=C sort -u $(DYNAMO_SHAPES) > build/dynamo_shapes.txt
+	@diff -u test/golden/dynamo_shapes.txt build/dynamo_shapes.txt || { echo "check-dynamo: the store's DynamoDB keys or attributes changed (above); make dynamo-shapes if that is meant"; exit 1; }
+	@echo "check-dynamo: $$(wc -l < build/dynamo_shapes.txt) request shapes, as recorded"
+dynamo-shapes: check-dynamo-shapes-run
+	cp build/dynamo_shapes.txt test/golden/dynamo_shapes.txt
+.PHONY: dynamo-shapes check-dynamo-shapes-run
+check-dynamo-shapes-run:
+	$(MAKE) check-dynamo || test -s build/dynamo_shapes.txt
 
 # Per-operation latency against DynamoDB Local (test/bench_dynamo.c), the
 # baseline DESIGN.md "Store" records. Not part of any check.

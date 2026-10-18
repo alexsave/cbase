@@ -128,6 +128,15 @@ bool dw_cond_failed_has_item(const char *body, size_t n);
 
 // Walks the elements of a JSON array value: *pos starts at 0. false at the end
 // or on malformed input.
+// THE KEY-CAPTURE PROOF (docs/PLATFORM.md stages 5 and 6): the shape of one
+// request as lines appended to out, each "<Op> <what>", with every key value
+// normalized (uuid, game id, number, email: placeholders; upper-case words
+// kept), every attribute name and type, and the expression names and values
+// as sorted sets, so two requests that touch the same keys and attributes
+// read the same however their expressions are spelled. A transaction or a
+// batch is one line per item. Test only (store_dynamo.c writes them where
+// CBASE_DYNAMO_CAPTURE says).
+void dw_shape(const char *target, cb_span body, cb_buf *out);
 bool dw_array_next(cb_span arr, size_t *pos, cb_span *elem);
 // Walks the members of a JSON object value: key (a string token, quotes
 // included) and value.

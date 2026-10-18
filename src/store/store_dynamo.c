@@ -41,11 +41,13 @@
 #include "util/uuid.h"
 #include "../../../shared/c/rng.h"
 
+#include <fcntl.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #define MOD "dynamo"
 #define ATTEMPTS 5
@@ -215,6 +217,36 @@ static void pace(dyn *d, int k) {
     }
 }
 
+// ---- the key-capture proof (json_surface.h dw_shape) ---------------------------------
+//
+// With CBASE_DYNAMO_CAPTURE naming a file, every request's shape is appended
+// to it (one write per request: lines below PIPE_BUF stay whole across the
+// processes of a test lane). `make check-dynamo` sets it and compares the
+// set of shapes with test/golden/dynamo_shapes.txt: every key, index key and
+// attribute name the store writes or reads, held unchanged (stages 5 and 6).
+static int g_capture_fd = -2;   // -2: not looked at yet; -1: off
+
+static void capture(const dw_req *r) {
+    if (g_capture_fd == -2) {
+        const char *path = getenv("CBASE_DYNAMO_CAPTURE");
+        g_capture_fd = path && *path ? open(path, O_WRONLY | O_APPEND | O_CREAT, 0644) : -1;
+    }
+    if (g_capture_fd < 0) return;
+    cb_buf b;
+    cb_buf_init(&b);
+    dw_shape(r->target, cb_span_of((const char *)r->body.p, r->body.len), &b);
+    // One line at a time: each stays whole.
+    const char *p = cb_buf_cstr(&b), *end = p + b.len;
+    while (p < end) {
+        const char *nl = memchr(p, '\n', (size_t)(end - p));
+        size_t n = nl ? (size_t)(nl - p) + 1 : (size_t)(end - p);
+        ssize_t w = write(g_capture_fd, p, n);
+        (void)w;
+        p += n;
+    }
+    cb_buf_free(&b);
+}
+
 // Sends `r`, again after a pause while DynamoDB says to (throttled, a 5xx, a
 // lost connection), as long as the backoff allows. The answer is in *resp,
 // and its top level, walked once, in *top (json_surface.h dw_top): valid
@@ -227,6 +259,7 @@ static dw_status call_top(dyn *d, const dw_req *r, cb_buf *resp, dw_top *top) {
     top->body = cb_span_of("", 0);
     backoff b;
     backoff_start(d, &b);
+    capture(r);
     for (;;) {
         int status = 0;
         cb_buf_reset(resp);

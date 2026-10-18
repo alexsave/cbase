@@ -391,6 +391,188 @@ static bool attr(cb_span item, const char *name, const char *type, cb_span *tok)
     return member(item, name, &v) && member(v, type, tok);
 }
 
+// ---- the key-capture proof (json_surface.h dw_shape) ------------------------------------------
+
+// One '#'-separated segment of a key value, normalized.
+static void shape_seg(cb_buf *o, const char *s, size_t n) {
+    bool upper = n > 0, digits = n > 0, hex = n > 0, at = false;
+    size_t dashes = 0;
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)s[i];
+        if (!((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9' && i > 0) || c == '_')) upper = false;
+        if (!(c >= '0' && c <= '9')) digits = false;
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) hex = false;
+        if (c == '-') dashes++;
+        if (c == '@') at = true;
+    }
+    bool uuid = n == 36 && dashes == 4;
+    if (n == 0) return;
+    if (upper) cb_buf_append(o, s, n);
+    else if (uuid) cb_buf_puts(o, "{uuid}");
+    else if (digits) cb_buf_puts(o, "{n}");
+    else if (hex && (n == 6 || n == 12)) cb_buf_puts(o, "{gid}");
+    else if (hex && n == 64) cb_buf_puts(o, "{sha}");
+    else if (at) cb_buf_puts(o, "{email}");
+    else cb_buf_puts(o, "{v}");
+}
+
+static void shape_value(cb_buf *o, cb_span tok) {
+    char v[1024];
+    int n = cb_json_unescape(tok, v, sizeof v);
+    if (n < 0) { cb_buf_puts(o, "{long}"); return; }
+    size_t from = 0;
+    for (size_t i = 0; i <= (size_t)n; i++)
+        if (i == (size_t)n || v[i] == '#') {
+            shape_seg(o, v + from, i - from);
+            if (i < (size_t)n) cb_buf_putc(o, '#');
+            from = i + 1;
+        }
+}
+
+// A sorted, de-duplicated set of short strings, joined by ','.
+typedef struct {
+    char s[64][160];
+    int  n;
+} shape_set;
+
+static void set_add(shape_set *z, const char *v, size_t n) {
+    if (n >= sizeof z->s[0]) n = sizeof z->s[0] - 1;
+    char t[160];
+    memcpy(t, v, n);
+    t[n] = 0;
+    for (int i = 0; i < z->n; i++)
+        if (strcmp(z->s[i], t) == 0) return;
+    if (z->n < 64) memcpy(z->s[z->n++], t, n + 1);
+}
+
+static int set_cmp(const void *a, const void *b) { return strcmp(a, b); }
+
+static void set_put(cb_buf *o, const char *label, shape_set *z) {
+    qsort(z->s, (size_t)z->n, sizeof z->s[0], set_cmp);
+    cb_buf_printf(o, " %s=", label);
+    for (int i = 0; i < z->n; i++) cb_buf_printf(o, "%s%s", i ? "," : "", z->s[i]);
+}
+
+static bool key_attr(cb_span name) {
+    static const char *const K[] = { "pk", "sk", "gsi1pk", "gsi1sk", "gsi2pk", "gsi2sk" };
+    for (size_t i = 0; i < sizeof K / sizeof K[0]; i++)
+        if (key_is(name, K[i])) return true;
+    return false;
+}
+
+// An item's attributes ({"name":{"T":v},...}): name:type, and for a key
+// attribute its normalized value.
+static void shape_item(shape_set *z, cb_span item) {
+    size_t pos = 0;
+    cb_span k, v;
+    while (dw_object_next(item, &pos, &k, &v)) {
+        size_t tp = 0;
+        cb_span tk, tv;
+        if (!dw_object_next(v, &tp, &tk, &tv)) continue;
+        cb_buf e;
+        cb_buf_init(&e);
+        cb_buf_printf(&e, "%.*s:%.*s", (int)k.n - 2, k.p + 1, (int)tk.n - 2, tk.p + 1);
+        if (key_attr(k) && key_is(tk, "S")) {
+            cb_buf_putc(&e, '=');
+            shape_value(&e, tv);
+        }
+        set_add(z, cb_buf_cstr(&e), e.len);
+        cb_buf_free(&e);
+    }
+}
+
+// The expression names (their values) and values (type:normalized for S).
+static void shape_exprs(shape_set *names, shape_set *vals, cb_span req) {
+    cb_span m, k, v;
+    size_t pos = 0;
+    if (member(req, "ExpressionAttributeNames", &m))
+        while (dw_object_next(m, &pos, &k, &v)) set_add(names, v.p + 1, v.n - 2);
+    pos = 0;
+    if (member(req, "ExpressionAttributeValues", &m))
+        while (dw_object_next(m, &pos, &k, &v)) {
+            size_t tp = 0;
+            cb_span tk, tv;
+            if (!dw_object_next(v, &tp, &tk, &tv)) continue;
+            cb_buf e;
+            cb_buf_init(&e);
+            cb_buf_printf(&e, "%.*s", (int)tk.n - 2, tk.p + 1);
+            if (key_is(tk, "S")) {
+                cb_buf_putc(&e, ':');
+                shape_value(&e, tv);
+            }
+            set_add(vals, cb_buf_cstr(&e), e.len);
+            cb_buf_free(&e);
+        }
+}
+
+// One request (or one item of a transaction or batch) as one line.
+static void shape_one(cb_buf *out, const char *op, cb_span req) {
+    shape_set *key = calloc(1, sizeof *key), *item = calloc(1, sizeof *item), *names = calloc(1, sizeof *names),
+              *vals = calloc(1, sizeof *vals);
+    if (key && item && names && vals) {
+        cb_span v;
+        cb_buf_puts(out, op);
+        if (member(req, "IndexName", &v)) cb_buf_printf(out, " index=%.*s", (int)v.n - 2, v.p + 1);
+        if (member(req, "Key", &v)) shape_item(key, v);
+        if (member(req, "Item", &v)) shape_item(item, v);
+        shape_exprs(names, vals, req);
+        if (key->n) set_put(out, "key", key);
+        if (item->n) set_put(out, "item", item);
+        if (names->n) set_put(out, "names", names);
+        if (vals->n) set_put(out, "vals", vals);
+        cb_buf_putc(out, '\n');
+    }
+    free(key);
+    free(item);
+    free(names);
+    free(vals);
+}
+
+void dw_shape(const char *target, cb_span body, cb_buf *out) {
+    const char *op = strchr(target, '.');
+    op = op ? op + 1 : target;
+    cb_span m, e, k, v;
+    size_t pos = 0;
+    if (strcmp(op, "TransactWriteItems") == 0 && member(body, "TransactItems", &m)) {
+        while (dw_array_next(m, &pos, &e)) {
+            size_t ip = 0;
+            if (!dw_object_next(e, &ip, &k, &v)) continue;
+            char sub[64];
+            snprintf(sub, sizeof sub, "Txn.%.*s", (int)k.n - 2, k.p + 1);
+            shape_one(out, sub, v);
+        }
+    } else if ((strcmp(op, "BatchWriteItem") == 0 || strcmp(op, "BatchGetItem") == 0) && member(body, "RequestItems", &m)) {
+        size_t tp = 0;
+        cb_span tk, tv;
+        while (dw_object_next(m, &tp, &tk, &tv)) {
+            if (strcmp(op, "BatchGetItem") == 0) {
+                cb_span keys;
+                if (!member(tv, "Keys", &keys)) continue;
+                while (dw_array_next(keys, &pos, &e)) {
+                    cb_buf w;
+                    cb_buf_init(&w);
+                    cb_buf_puts(&w, "{\"Key\":");
+                    cb_buf_append(&w, e.p, e.n);
+                    cb_buf_putc(&w, '}');
+                    shape_one(out, "BatchGet", cb_span_of((const char *)w.p, w.len));
+                    cb_buf_free(&w);
+                }
+            } else {
+                while (dw_array_next(tv, &pos, &e)) {
+                    size_t ip = 0;
+                    if (!dw_object_next(e, &ip, &k, &v)) continue;
+                    char sub[64];
+                    snprintf(sub, sizeof sub, "Batch.%.*s", (int)k.n - 2, k.p + 1);
+                    shape_one(out, sub, v);
+                }
+            }
+            pos = 0;
+        }
+    } else {
+        shape_one(out, op, body);
+    }
+}
+
 // ---- one pass over an item ------------------------------------------------------------------
 //
 // An item decoder reads ten or more attributes, and `attr` finds each one by
