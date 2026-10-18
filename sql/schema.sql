@@ -33,7 +33,10 @@ CREATE TABLE IF NOT EXISTS items (
 CREATE INDEX IF NOT EXISTS idx_items_gsi1 ON items(gsi1pk, gsi1sk) WHERE gsi1pk IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_items_gsi2 ON items(gsi2pk, gsi2sk) WHERE gsi2pk IS NOT NULL;
 
--- The tables of schemas 1 to 5, children first.
+-- The tables of schemas 1 to 5, children first (rt_conns and rt_conn_topics:
+-- schema 3's API Gateway connections, gone since realtime moved to IoT Core).
+DROP TABLE IF EXISTS rt_conn_topics;
+DROP TABLE IF EXISTS rt_conns;
 DROP TABLE IF EXISTS chat_messages;
 DROP TABLE IF EXISTS game_snapshots;
 DROP TABLE IF EXISTS game_members;

@@ -231,15 +231,10 @@ const char *dw_collection(int i);   // NULL past the last
 bool dw_collection_valid(const char *c);
 // A page of a Scan over one family, pk beginning with family#prefix.
 void dw_scan_family(dw_req *r, const char *table, const char *family, const char *prefix, int limit, cb_span start);
-// The import's check (store_import.c): a page of a consistent Scan over the
+// The item layer's key walk (item_keys): a page of a consistent Scan over the
 // whole table, keys only (Limit caps the items a page reads, so the pages stay
-// small enough to pace), and which export table ("users", "bots",
-// "user_elo_ratings", "games", "player_hands", "bot_hands", "game_snapshots",
-// "chat_messages") an item became, with the id after its pk's family (a game,
-// user, bot, replay, or for chat the game): NULL for an item no export table
-// becomes.
-void        dw_scan_keys(dw_req *r, const char *table, int limit, cb_span start);
-const char *dw_export_kind(cb_span item, char *id, size_t cap);
+// small enough to pace).
+void dw_scan_keys(dw_req *r, const char *table, int limit, cb_span start);
 // The table's provisioned capacity (the import paces itself to it): the
 // smallest read and write units of the table and its indexes, a write to the
 // table also being a write to every index it lands in. 0 for on-demand.

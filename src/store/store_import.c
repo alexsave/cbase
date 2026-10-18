@@ -212,11 +212,11 @@ typedef struct {
     // sorted: what the stored check tells the export's items from others.
     key_id *ids;
     int     n_ids;
-    int     stored, extra;   // DynamoDB: items of the export's ids, and not
+    int     stored, extra;   // items of the export's ids in the store, and not
 } tally;
 
 // The column holding the id an export row's items are keyed by: a seat's
-// and a chat message's is its game's (dw_export_kind gives the same id back).
+// and a chat message's is its game's (cb_import_export_kind gives the same id back).
 static const struct { const char *file, *column; } KEY_COLUMN[] = {
     { "users", "id" },          { "bots", "id" },          { "user_elo_ratings", "user_id" },
     { "games", "id" },          { "player_hands", "game_id" }, { "bot_hands", "game_id" },
@@ -458,8 +458,36 @@ typedef struct {
     FILE   *out;
 } extras;
 
-static void count_item(const char *export_name, const char *id, void *ud) {
+// Each export table, as the items it was written to: pk family, sk exact or
+// (ending in '#', or empty) a prefix.
+static const struct { const char *export_name, *pk, *sk; } COUNTS[] = {
+    { "users", "USER#", "PROFILE" },
+    { "bots", "BOT#", "BOT" },
+    { "user_elo_ratings", "USER#", "RATING" },
+    { "games", "GAME#", "ROW" },
+    { "player_hands", "GAME#", "MEMBER#" },
+    { "bot_hands", "GAME#", "BOT#" },
+    { "game_snapshots", "SNAP#", "SNAP" },
+    { "chat_messages", "CHAT#", "" },
+};
+
+const char *cb_import_export_kind(const char *pk, const char *sk, char *id, size_t cap) {
+    for (size_t i = 0; i < sizeof COUNTS / sizeof COUNTS[0]; i++) {
+        size_t pl = strlen(COUNTS[i].pk), sl = strlen(COUNTS[i].sk);
+        bool prefix = sl == 0 || COUNTS[i].sk[sl - 1] == '#';
+        if (strncmp(pk, COUNTS[i].pk, pl) != 0) continue;
+        if (prefix ? strncmp(sk, COUNTS[i].sk, sl) != 0 : strcmp(sk, COUNTS[i].sk) != 0) continue;
+        snprintf(id, cap, "%s", pk + pl);
+        return COUNTS[i].export_name;
+    }
+    return NULL;
+}
+
+static bool count_item(const char *pk, const char *sk, void *ud) {
     extras *x = ud;
+    char id[CB_ITEM_KEY_MAX];
+    const char *export_name = cb_import_export_kind(pk, sk, id, sizeof id);
+    if (!export_name) return true;
     for (int i = 0; i < x->n; i++) {
         tally *t = x->tallies[i];
         if (!t->name || strcmp(t->name, export_name) != 0) continue;
@@ -471,14 +499,9 @@ static void count_item(const char *export_name, const char *id, void *ud) {
             t->extra++;
             fprintf(x->out, "extra (not in the export): %s %s\n", export_name, id);
         }
-        return;
+        return true;
     }
-}
-
-static bool count_cb(int n, const char *const *names, const char *const *values, void *ud) {
-    int64_t x;
-    *(long long *)ud = n > 0 && num_parse_i64_cstr(values[0], 0, INT64_MAX, &x) ? x : -1;
-    return false;
+    return true;
 }
 
 // The export's count for `name` (counts.txt): -1 when it names no such
@@ -578,41 +601,28 @@ int cb_import_dir(cb_store *s, const char *dir, FILE *out) {
     }
     bool ok = true;
 
-    // What the store now holds, by its own count (SQLite: one SELECT each;
-    // DynamoDB: a counting Scan over the items each table became).
-    static const struct { const char *export_name, *sql; } checks[] = {
-        { "users", "SELECT count(*) FROM users" },
-        { "bots", "SELECT count(*) FROM bots" },
-        { "user_elo_ratings", "SELECT count(*) FROM ratings" },
-        { "games", "SELECT count(*) FROM games" },
-        { "player_hands", "SELECT count(*) FROM game_members" },
-        { "bot_hands", "SELECT count(*) FROM game_bots" },
-        { "game_snapshots", "SELECT count(*) FROM game_snapshots" },
-        { "chat_messages", "SELECT count(*) FROM chat_messages" },
-    };
+    // What the store now holds, by its own count: one walk of every item's
+    // keys (DynamoDB: a keys-only Scan, paced in bulk mode), each item counted
+    // against the export's ids. An item of an id the export does not have (a
+    // game played on the new stack before the import, a bench leftover) is an
+    // extra, listed and not a mismatch.
+    static const char *const names[] = { "users", "bots", "user_elo_ratings", "games",
+                                         "player_hands", "bot_hands", "game_snapshots", "chat_messages" };
     tally *tallies[] = { &users, &bots, &ratings, &games, &hands, &bhands, &snaps, &chat };
-    bool sqlite = strcmp(s->ops->name, "sqlite") == 0, dynamo = strcmp(s->ops->name, "dynamo") == 0;
-    // DynamoDB: one keys-only Scan of the whole table (paced in bulk mode),
-    // each item counted against the export's ids. An item of an id the export
-    // does not have (a game played on the new stack before the import, a
-    // bench leftover) is an extra, listed and not a mismatch.
     extras ex = { .tallies = tallies, .n = 8, .out = out };
-    bool scanned = dynamo && cb_store_dynamo_export_items(s, count_item, &ex) == CB_OK;
+    bool scanned = s->ops->item_keys && s->ops->item_keys(s, count_item, &ex) == CB_OK;
     fprintf(out, "%-18s %8s %8s %8s %8s %8s %8s %8s\n", "table", "export", "read", "written", "present", "failed", "stored",
             "extra");
     for (int i = 0; i < 8; i++) {
         tally *t = tallies[i];
-        long long exp = export_count(dir, checks[i].export_name), stored = -1;
-        if (sqlite) CB_STORE_CALL(s, admin_query, checks[i].sql, false, count_cb, &stored);
-        if (dynamo) stored = scanned ? t->stored : -2;
-        bool row_ok = t->bad == 0 && t->written + t->already == t->read && (exp == -1 || exp == t->read) &&
-                      (!(sqlite || dynamo) || stored == t->read);
+        long long exp = export_count(dir, names[i]), stored = scanned ? t->stored : -2;
+        bool row_ok = t->bad == 0 && t->written + t->already == t->read && (exp == -1 || exp == t->read) && stored == t->read;
         ok &= row_ok;
-        char st[24] = "-", xt[24] = "-";
-        if (sqlite || dynamo) snprintf(st, sizeof st, "%lld", stored);
+        char st[24], xt[24] = "-";
+        snprintf(st, sizeof st, "%lld", stored);
         if (scanned) snprintf(xt, sizeof xt, "%d", t->extra);
-        fprintf(out, "%-18s %8lld %8d %8d %8d %8d %8s %8s %s\n", checks[i].export_name, exp, t->read, t->written,
-                t->already, t->bad, st, xt, row_ok ? "ok" : "MISMATCH");
+        fprintf(out, "%-18s %8lld %8d %8d %8d %8d %8s %8s %s\n", names[i], exp, t->read, t->written, t->already, t->bad, st, xt,
+                row_ok ? "ok" : "MISMATCH");
     }
     for (int i = 0; i < 8; i++) free(tallies[i]->ids);
     fprintf(out, "bcrypt hashes: %d of %d parse%s\n", users.read - bad_hashes, users.read, bad_hashes ? "  FAILED" : "");

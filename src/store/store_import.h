@@ -24,6 +24,13 @@
 // CB_E_* when a file could not be read.
 int cb_import_dir(cb_store *s, const char *dir, FILE *out);
 
+// Which export table ("users", "bots", "user_elo_ratings", "games",
+// "player_hands", "bot_hands", "game_snapshots", "chat_messages") the item at
+// pk/sk became, with the id after its pk's family into id (a game, user, bot,
+// replay, or for chat and seats the game); NULL for an item no export table
+// becomes (a SCAN marker, a refresh token).
+const char *cb_import_export_kind(const char *pk, const char *sk, char *id, size_t cap);
+
 // The 49 bots sql/schema.sql seeds (fixed ids, ladder order), written into a
 // store that has no bots yet: a fresh DynamoDB table, which nothing else
 // seeds (SQLite seeds them at open from the same schema). Read from an

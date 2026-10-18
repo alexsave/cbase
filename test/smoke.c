@@ -53,7 +53,6 @@
 #include "mqtt/mqtt.h"
 
 #include <signal.h>
-#include <sqlite3.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -406,49 +405,44 @@ static void ws_for(listener *l, smoke_user *u, const char *topic) {
 
 // The game's row as the server stored it: from the database file itself, or
 // (CBASE_STORE=dynamo, `make check-dynamo`) from the server's DynamoDB table.
-static bool db_game(const char *gid, int64_t *needs_bots, int64_t *version) {
+// The store the server under test writes, opened beside it (the same
+// DynamoDB table, or the same SQLite file in WAL mode). Kept open.
+static cb_store *db_store(void) {
+    static cb_store *st;
+    if (st) return st;
     if (tsb_dynamo()) {
-        static cb_store *dy;
         const char *t = getenv("CBASE_TABLE");
-        if (!dy && cb_store_open_dynamo(t && *t ? t : "cbase", &dy) != CB_OK) return false;
-        cb_game_row g;
-        if (CB_STORE_CALL(dy, game_get, gid, &g) != CB_OK) return false;
-        *needs_bots = g.needs_bots;
-        *version = g.version;
-        cb_game_row_free(&g);
-        return true;
+        if (cb_store_open_dynamo(t && *t ? t : "cbase", &st) != CB_OK) st = NULL;
+    } else {
+        char path[512];
+        snprintf(path, sizeof path, "%s/cbase.sqlite", g_dbdir);
+        if (cb_store_open_sqlite(path, &st) != CB_OK) st = NULL;
     }
-    char path[512];
-    snprintf(path, sizeof path, "%s/cbase.sqlite", g_dbdir);
-    sqlite3 *db = NULL;
-    sqlite3_stmt *st = NULL;
-    bool ok = sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL) == SQLITE_OK
-              && sqlite3_prepare_v2(db, "SELECT needs_bots, version FROM games WHERE id = ?1", -1, &st, NULL) == SQLITE_OK
-              && sqlite3_bind_text(st, 1, gid, -1, SQLITE_STATIC) == SQLITE_OK && sqlite3_step(st) == SQLITE_ROW;
-    if (ok) {
-        *needs_bots = sqlite3_column_int64(st, 0);
-        *version = sqlite3_column_int64(st, 1);
-    }
-    sqlite3_finalize(st);
-    sqlite3_close(db);
-    return ok;
+    return st;
 }
 
-// The scan's staleness clock (SQLite: the row's updated_at, which every lease
-// acquire moves); -1 under DynamoDB, where it lives on the SCAN marker.
+static bool db_game(const char *gid, int64_t *needs_bots, int64_t *version) {
+    cb_store *st = db_store();
+    cb_game_row g;
+    if (!st || CB_STORE_CALL(st, game_get, gid, &g) != CB_OK) return false;
+    *needs_bots = g.needs_bots;
+    *version = g.version;
+    cb_game_row_free(&g);
+    return true;
+}
+
+// The scan's staleness clock: the SCAN marker's updated_at, which every lease
+// acquire moves; -2 when there is no marker (a game no bot can act on has
+// none, so no scan can lease it).
 static int64_t db_scan_clock(const char *gid) {
-    if (tsb_dynamo()) return -1;
-    char path[512];
-    snprintf(path, sizeof path, "%s/cbase.sqlite", g_dbdir);
-    sqlite3 *db = NULL;
-    sqlite3_stmt *st = NULL;
+    cb_store *st = db_store();
+    char sk[96];
+    snprintf(sk, sizeof sk, "GAME#%s", gid);
+    cb_item it;
+    cb_item_init(&it);
     int64_t at = -2;
-    if (sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL) == SQLITE_OK
-        && sqlite3_prepare_v2(db, "SELECT updated_at FROM games WHERE id = ?1", -1, &st, NULL) == SQLITE_OK
-        && sqlite3_bind_text(st, 1, gid, -1, SQLITE_STATIC) == SQLITE_OK && sqlite3_step(st) == SQLITE_ROW)
-        at = sqlite3_column_int64(st, 0);
-    sqlite3_finalize(st);
-    sqlite3_close(db);
+    if (st && st->ops->item_get(st, (cb_ikey){ "SCAN", sk }, true, &it) == CB_OK) at = cb_item_n_or(&it, "updated_at", -1);
+    cb_item_free(&it);
     return at;
 }
 
@@ -457,7 +451,7 @@ static int64_t db_scan_clock(const char *gid) {
 // away. No bot can act, so the stored row must not say the bots are owed one,
 // and serve's heartbeat (a scan every CB_BOT_SCAN_EVERY_MS, a game stale after
 // CB_BOT_STALE_MS, both over SMOKE_SPEEDUP) must never start a drive for it: no
-// lease is taken (SQLite's lease acquire moves the row's updated_at) and
+// lease is taken (a lease acquire moves the SCAN marker's updated_at) and
 // nothing is committed, across two scans past the staleness window.
 static void an_idle_human_turn_is_never_kicked(void) {
     smoke_user D;

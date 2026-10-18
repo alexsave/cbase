@@ -440,6 +440,10 @@ typedef struct cb_store_ops {
     // The items at keys[0..n) deleted, unconditionally and not atomically
     // (DynamoDB: BatchWriteItem, 25 a request, again while some are left).
     int (*item_batch_delete)(cb_store *s, const cb_ikey *keys, int n);
+    // Every item's pk and sk, consistently, in no set order: an export walk
+    // (DynamoDB: a keys-only Scan in pages of 100, paced in bulk mode). fn
+    // answers false to stop; it may call the store.
+    int (*item_keys)(cb_store *s, cb_ikey_fn fn, void *ud);
 } cb_store_ops;
 
 struct cb_store {

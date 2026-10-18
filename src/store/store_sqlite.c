@@ -43,7 +43,7 @@ extern const char cbase_schema_sql[];
 enum {
     ST_ITEM_GET, ST_ITEM_PUT, ST_ITEM_DELETE,
     ST_ITEM_Q0A, ST_ITEM_Q0D, ST_ITEM_Q1A, ST_ITEM_Q1D, ST_ITEM_Q2A, ST_ITEM_Q2D,
-    ST_BROWSE,
+    ST_BROWSE, ST_KEYS,
     ST__COUNT
 };
 
@@ -66,6 +66,7 @@ static const char *const SQL[ST__COUNT] = {
     [ST_ITEM_Q2D] = ITEM_Q("gsi2pk", "gsi2sk", "DESC"),
     // A page of one collection (store_priv.h cb_store_collection_pk), in rowid order.
     [ST_BROWSE] = "SELECT rowid, attrs FROM items WHERE substr(pk, 1, length(?1)) = ?1 AND rowid > ?2 ORDER BY rowid LIMIT ?3",
+    [ST_KEYS] = "SELECT pk, sk FROM items",
 };
 
 typedef struct {
@@ -476,6 +477,35 @@ static int sq_item_batch_delete(cb_store *st, const cb_ikey *keys, int n) {
     return rc;
 }
 
+// Every item's keys, read whole under the lock and handed out after it, so
+// fn may call the store.
+static int sq_item_keys(cb_store *st, cb_ikey_fn fn, void *ud) {
+    sq *q = Q(st);
+    cb_buf keys;   // pk NUL sk NUL, for every item
+    cb_buf_init(&keys);
+    lock(q);
+    sqlite3_stmt *s = stmt(q, ST_KEYS);
+    int rc = s ? CB_OK : CB_E_DB, r = SQLITE_DONE;
+    while (s && (r = sqlite3_step(s)) == SQLITE_ROW) {
+        cb_buf_puts(&keys, (const char *)sqlite3_column_text(s, 0));
+        cb_buf_putc(&keys, 0);
+        cb_buf_puts(&keys, (const char *)sqlite3_column_text(s, 1));
+        cb_buf_putc(&keys, 0);
+    }
+    if (s && r != SQLITE_DONE) rc = fail(q, "keys", r);
+    done(s);
+    unlock(q);
+    if (keys.oom) rc = CB_E_NOMEM;
+    for (size_t off = 0; rc == CB_OK && off < keys.len;) {
+        const char *pk = (const char *)keys.p + off;
+        const char *sk = pk + strlen(pk) + 1;
+        off = (size_t)(sk + strlen(sk) + 1 - (const char *)keys.p);
+        if (!fn(pk, sk, ud)) break;
+    }
+    cb_buf_free(&keys);
+    return rc;
+}
+
 static int sq_item_get(cb_store *st, cb_ikey key, bool consistent, cb_item *out) {
     sq *q = Q(st);
     lock(q);
@@ -586,7 +616,7 @@ static int sq_admin_browse(cb_store *st, const char *collection, const char *pre
                            cb_admin_row_fn fn, void *ud, char *next_cursor, size_t next_cap) {
     if (next_cursor && next_cap) next_cursor[0] = '\0';
     char pk[CB_ITEM_KEY_MAX];
-    if (!cb_store_collection_pk(collection, prefix, pk, sizeof pk)) return CB_E_NOT_FOUND;
+    if (!cb_store_collection_pk(collection, prefix, pk, sizeof pk)) return CB_E_INVALID;   // as DynamoDB answers
     if (limit <= 0 || limit > 1000) limit = 100;
     int64_t after = 0;
     if (cursor && *cursor && (!num_parse_i64_cstr(cursor, 0, INT64_MAX, &after))) return CB_E_INVALID;
@@ -785,6 +815,7 @@ static const cb_store_ops SQLITE_OPS = {
     .item_query = sq_item_query,
     .item_batch_get = sq_item_batch_get,
     .item_batch_delete = sq_item_batch_delete,
+    .item_keys = sq_item_keys,
     .admin_collections = sq_admin_collections,
     .admin_browse = sq_admin_browse,
     .admin_query = sq_admin_query,

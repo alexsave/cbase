@@ -607,8 +607,9 @@ void cb_store_dynamo_clock(cb_store *s, int64_t (*mono)(void), void (*sleep)(int
     D(s)->sleep = sleep;
 }
 
-int cb_store_dynamo_export_items(cb_store *s, cb_dynamo_item_fn fn, void *ud) {
-    if (!s || strcmp(s->ops->name, "dynamo") != 0) return CB_E_INVALID;
+// Every item's keys: a keys-only consistent Scan in pages of 100 (paced in
+// bulk mode, like every call).
+static int dy_item_keys(cb_store *s, cb_ikey_fn fn, void *ud) {
     dyn *d = D(s);
     cb_buf resp, start;
     cb_buf_init(&resp);
@@ -616,15 +617,15 @@ int cb_store_dynamo_export_items(cb_store *s, cb_dynamo_item_fn fn, void *ud) {
     dw_req r;
     dw_req_init(&r);
     int rc = CB_OK;
-    for (;;) {
+    bool more = true;
+    while (more) {
         dw_scan_keys(&r, d->table, 100, cb_span_of((const char *)start.p, start.len));
         if (call(d, &r, &resp) != DW_OK) { rc = CB_E_DB; break; }
         cb_span items = dw_items(cb_buf_cstr(&resp), resp.len), it;
         size_t pos = 0;
-        while (dw_array_next(items, &pos, &it)) {
-            char id[256];
-            const char *kind = dw_export_kind(it, id, sizeof id);
-            if (kind) fn(kind, id, ud);
+        while (more && dw_array_next(items, &pos, &it)) {
+            char pk[CB_ITEM_KEY_MAX], sk[CB_ITEM_KEY_MAX];
+            if (dw_get_s(it, "pk", pk, sizeof pk) && dw_get_s(it, "sk", sk, sizeof sk)) more = fn(pk, sk, ud);
         }
         cb_span last = dw_last_key(cb_buf_cstr(&resp), resp.len);
         if (!last.n) break;
@@ -655,6 +656,7 @@ static const cb_store_ops DYNAMO_OPS = {
     .item_batch_delete = dy_item_batch_delete,
     .admin_collections = dy_admin_collections,
     .admin_browse = dy_admin_browse,
+    .item_keys = dy_item_keys,
     .admin_query = dy_admin_query,
     CB_ROWS_AUTH_OPS
     CB_ROWS_FOOLISH_OPS

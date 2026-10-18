@@ -109,29 +109,6 @@ int cb_rows_refresh_take(cb_store *s, const char *hash, int64_t now_ms, int64_t 
     return rc;
 }
 
-typedef struct {
-    cb_store *s;
-    int       rc;
-} forget;
-
-static bool forget_one(const cb_item *it, void *ud) {
-    forget *f = ud;
-    char pk[KEY_MAX], sk[64];
-    if (!cb_item_s(it, CB_ITEM_PK, pk, sizeof pk) || !cb_item_s(it, CB_ITEM_SK, sk, sizeof sk)) return true;
-    cb_iwrite w = { .op = CB_IW_DELETE, .key = { pk, sk } };
-    int rc = f->s->ops->item_write(f->s, &w, NULL);
-    if (rc != CB_OK) f->rc = rc;
-    return rc == CB_OK;
-}
-
-int cb_rows_refresh_forget_user(cb_store *s, const char *user_id) {
-    char g1[KEY_MAX];
-    forget f = { s, CB_OK };
-    cb_iquery q = { .index = 1, .pk = key(g1, sizeof g1, "USERREFRESH#", user_id), .forward = true };
-    int rc = s->ops->item_query(s, &q, forget_one, &f);
-    return rc != CB_OK ? rc : f.rc;
-}
-
 // ---- failed sign-ins ------------------------------------------------------------------------
 
 int cb_rows_signin_fails_get(cb_store *s, const char *email, int64_t now_ms, cb_signin_fails *out) {

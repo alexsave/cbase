@@ -13,6 +13,7 @@
 #include "t.h"
 
 #include "json_surface.h"
+#include "store/store_import.h"
 #include "store/store_priv.h"
 #include "table.h"
 #include "util/clock.h"
@@ -974,12 +975,15 @@ static void the_template_stays_free(void) {
 // export table it became and the id in its pk; items no export table becomes
 // (a SCAN marker, a refresh token) are not told at all.
 typedef struct { int n; char kinds[8][24], ids[8][48]; } told_t;
-static void tell(const char *kind, const char *id, void *ud) {
+static bool tell(const char *pk, const char *sk, void *ud) {
     told_t *t = ud;
-    if (t->n < 8) {
+    char id[64];
+    const char *kind = cb_import_export_kind(pk, sk, id, sizeof id);
+    if (kind && t->n < 8) {
         snprintf(t->kinds[t->n], sizeof t->kinds[0], "%s", kind);
         snprintf(t->ids[t->n++], sizeof t->ids[0], "%s", id);
     }
+    return true;
 }
 
 static void flow_export_items(void) {
@@ -1001,7 +1005,7 @@ static void flow_export_items(void) {
     };
     RUN(steps, s);
     told_t t = { 0 };
-    T_EQ_INT(cb_store_dynamo_export_items(s, tell, &t), CB_OK);
+    T_EQ_INT(s->ops->item_keys(s, tell, &t), CB_OK);
     T_EQ_INT(sc_.at, 2);
     T_EQ_INT(t.n, 4);
     T_EQ_STR(t.kinds[0], "player_hands");

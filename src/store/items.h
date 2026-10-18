@@ -198,5 +198,6 @@ typedef struct {
 //           attribute) or the attributes wanted, pk and sk always among them.
 typedef bool (*cb_item_fn)(const cb_item *it, void *ud);
 typedef bool (*cb_item_at_fn)(int i, const cb_item *it, void *ud);
+typedef bool (*cb_ikey_fn)(const char *pk, const char *sk, void *ud);
 
 #endif

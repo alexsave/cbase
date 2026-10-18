@@ -1005,20 +1005,40 @@ static bool ux_iset(ux *u, const cb_av *v, cb_set_how how) {
     return true;
 }
 
+// Is a the same value as b (a scalar; a list is never shared)?
+static bool same_av(const cb_av *a, const cb_av *b) {
+    if (a->kind != b->kind || strcmp(a->name, b->name) != 0) return false;
+    switch (a->kind) {
+    case CB_AV_S: return strcmp(a->s ? a->s : "", b->s ? b->s : "") == 0;
+    case CB_AV_N: return a->n == b->n;
+    case CB_AV_BOOL: return a->b == b->b;
+    case CB_AV_B: return a->len == b->len && (a->len == 0 || memcmp(a->bytes, b->bytes, a->len) == 0);
+    default: return false;
+    }
+}
+
 // The condition, its names and values registered in u, into out. false on a
-// clause that cannot be spelled.
+// clause that cannot be spelled. A clause comparing an attribute with the
+// very value an update sets it to reuses the set's ":<attribute>" (a rating's
+// reindex: "#gsi2sk <> :gsi2sk"), so the request has one value, not two.
 static bool icond(ux *u, const cb_iwrite *x, cb_buf *out) {
     for (int i = 0; i < x->n_cond; i++) {
         const cb_iclause *c = &x->cond[i];
-        char vn[16], a[40];
+        char vn[48], a[40];
         snprintf(vn, sizeof vn, ":c%d", i);
+        bool shared = false;
+        for (int j = 0; x->op == CB_IW_UPDATE && c->v.name && j < x->n_sets && !shared; j++)
+            if (x->sets[j].how == CB_SET_TO && same_av(&x->sets[j].v, &c->v)) {
+                snprintf(vn, sizeof vn, ":%s", c->v.name);
+                shared = true;
+            }
         if (out->len) cb_buf_puts(out, " AND ");
         if (c->check == CB_C_EXISTS) { cb_buf_puts(out, "attribute_exists(pk)"); continue; }
         if (c->check == CB_C_ABSENT) { cb_buf_puts(out, "attribute_not_exists(pk)"); continue; }
         if (!c->v.name || strlen(c->v.name) > 30) return false;
         ux_name(u, c->v.name);
         snprintf(a, sizeof a, "#%s", c->v.name);
-        if (c->check != CB_C_ATTR_EXISTS) ux_val_any(u, vn, &c->v);
+        if (c->check != CB_C_ATTR_EXISTS && !shared) ux_val_any(u, vn, &c->v);
         switch (c->check) {
         case CB_C_EQ: cb_buf_printf(out, "%s = %s", a, vn); break;
         case CB_C_NE: cb_buf_printf(out, "%s <> %s", a, vn); break;
@@ -1350,19 +1370,6 @@ void dw_scan_family(dw_req *r, const char *table, const char *family, const char
     finish(&w);
 }
 
-// Each export table, as the items it was written to: pk family, sk exact or
-// (ending in '#', or empty) a prefix.
-static const struct { const char *export_name, *pk, *sk; } COUNTS[] = {
-    { "users", "USER#", "PROFILE" },
-    { "bots", "BOT#", "BOT" },
-    { "user_elo_ratings", "USER#", "RATING" },
-    { "games", "GAME#", "ROW" },
-    { "player_hands", "GAME#", "MEMBER#" },
-    { "bot_hands", "GAME#", "BOT#" },
-    { "game_snapshots", "SNAP#", "SNAP" },
-    { "chat_messages", "CHAT#", "" },
-};
-
 void dw_scan_keys(dw_req *r, const char *table, int limit, cb_span start) {
     cb_jw w;
     begin(r, &w, "Scan");
@@ -1381,20 +1388,6 @@ void dw_scan_keys(dw_req *r, const char *table, int limit, cb_span start) {
         cb_jw_raw(&w, start.p, start.n);
     }
     finish(&w);
-}
-
-const char *dw_export_kind(cb_span item, char *id, size_t cap) {
-    char pk[KB], sk[KB];
-    if (!dw_get_s(item, "pk", pk, sizeof pk) || !dw_get_s(item, "sk", sk, sizeof sk)) return NULL;
-    for (size_t i = 0; i < sizeof COUNTS / sizeof COUNTS[0]; i++) {
-        size_t pl = strlen(COUNTS[i].pk), sl = strlen(COUNTS[i].sk);
-        bool prefix = sl == 0 || COUNTS[i].sk[sl - 1] == '#';
-        if (strncmp(pk, COUNTS[i].pk, pl) != 0) continue;
-        if (prefix ? strncmp(sk, COUNTS[i].sk, sl) != 0 : strcmp(sk, COUNTS[i].sk) != 0) continue;
-        snprintf(id, cap, "%s", pk + pl);
-        return COUNTS[i].export_name;
-    }
-    return NULL;
 }
 
 void dw_describe_table(dw_req *r, const char *table) {

@@ -193,7 +193,8 @@ static void shape_of_game(const char *gid, cb_buf *out) {
     cb_iwrite p = { .op = CB_IW_PUT, .key = { chat, gsk }, .attrs = a, .n_attrs = 1 };
     T_CHECK(dw_iwrite(&r, "cbase", &p, false));
     dw_shape(r.target, cb_span_of((const char *)r.body.p, r.body.len), out);
-    dw_iquery(&r, "cbase", 0, pk, "MEMBER#", true, 0, cb_span_of("", 0));
+    const cb_iquery q = { .index = 0, .pk = pk, .sk_prefix = "MEMBER#", .forward = true };
+    dw_iquery(&r, "cbase", &q, cb_span_of("", 0));
     dw_shape(r.target, cb_span_of((const char *)r.body.p, r.body.len), out);
     dw_req_free(&r);
 }

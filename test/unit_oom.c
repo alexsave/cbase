@@ -359,7 +359,7 @@ static void routes_fail_cleanly(void) {
     snprintf(q.path, sizeof q.path, "/admin/api/query");
     snprintf(q.auth, sizeof q.auth, "Bearer " ADMIN);
     q.ctype = "application/json";
-    const char *stmt = "{\"statement\":\"SELECT id, status FROM games\"}";
+    const char *stmt = "{\"statement\":\"SELECT pk, sk FROM items\"}";
     memcpy(q.body, stmt, strlen(stmt));
     q.body_len = strlen(stmt);
     sweep("POST /admin/api/query", &q, 200, NULL);

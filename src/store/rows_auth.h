@@ -23,11 +23,7 @@ int cb_rows_refresh_take(cb_store *s, const char *hash, int64_t now_ms, int64_t 
 int cb_rows_signin_fails_get(cb_store *s, const char *email, int64_t now_ms, cb_signin_fails *out);
 int cb_rows_signin_fails_put(cb_store *s, const char *email, const cb_signin_fails *f, int64_t now_ms);
 int cb_rows_signin_fails_clear(cb_store *s, const char *email);
-// Every refresh token of the user deleted (account deletion; DynamoDB's
-// user_delete finds them on gsi1 itself).
-int cb_rows_refresh_forget_user(cb_store *s, const char *user_id);
-
-// Every operation above but forget_user, for a backend's cb_store_ops.
+// Every operation above, for a backend's cb_store_ops.
 #define CB_ROWS_AUTH_OPS \
     .session_put = cb_rows_session_put, \
     .session_get = cb_rows_session_get, \
