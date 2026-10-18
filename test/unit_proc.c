@@ -15,6 +15,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -38,6 +40,15 @@ static int chatty(void) {
 }
 
 static void a_chatty_child_never_blocks(void) {
+    // What the pump echoes to our stderr goes to a file meanwhile, to be measured.
+    char echo_path[256];
+    T_EQ_INT(tp_tempdir(echo_path, sizeof echo_path - 16), 0);
+    strcat(echo_path, "/echo");
+    fflush(stderr);
+    int saved = dup(2), ef = open(echo_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    T_CHECK(saved >= 0 && ef >= 0);
+    dup2(ef, 2);
+    close(ef);
     // This binary as the child (tp_start runs only binaries of ours: lib_proc.h).
     char *argv[] = { (char *)g_self, "--chatty", NULL };
     tp_child c;
@@ -61,6 +72,18 @@ static void a_chatty_child_never_blocks(void) {
     T_EQ_INT(tp_wait_line(&c, "LAST", 5000, NULL, 0), 0);
     c.pid = w == c.pid ? 0 : c.pid;   // reaped: tp_stop must not wait for it again
     tp_stop(&c, 0, 1000);
+    fflush(stderr);
+    dup2(saved, 2);
+    close(saved);
+    // The 4 MB line was echoed cut (lib_proc.c TP_ECHO_MAX), not whole: a
+    // child cannot flood a test's log.
+    struct stat st;
+    T_EQ_INT(stat(echo_path, &st), 0);
+    if (st.st_size >= 4096) fprintf(stderr, "     the pump echoed %lld bytes\n", (long long)st.st_size);
+    T_CHECK(st.st_size < 4096);
+    unlink(echo_path);
+    *strrchr(echo_path, '/') = 0;
+    rmdir(echo_path);
 }
 
 // ---- a child nothing outside the test can name ----------------------------------

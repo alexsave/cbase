@@ -25,7 +25,27 @@ struct tp_pump {
     size_t          len, cap, seen;   // seen: the offset after the last matched line
     bool            eof;
     int             fd;
+    size_t          echo_long;   // bytes of the line being cut, 0 when none is
 };
+
+// The longest line echoed whole; a longer one (a child's binary garbage, or
+// unit_proc's 4 MB of 'x') is echoed as its first TP_ECHO_MAX bytes and one
+// count when it ends, so no child can flood a test's log. Every byte still
+// reaches the log tp_wait_line reads.
+#define TP_ECHO_MAX 400
+
+static void echo(tp_pump *p, const char *s, size_t n, bool ends) {
+    if (p->echo_long == 0 && n <= TP_ECHO_MAX && ends) {
+        fprintf(stderr, "  | %.*s", (int)n, s);
+        return;
+    }
+    if (p->echo_long == 0) fprintf(stderr, "  | %.*s ...\n", (int)(n < TP_ECHO_MAX ? n : TP_ECHO_MAX), s);
+    p->echo_long += n;
+    if (ends) {
+        fprintf(stderr, "  | ... (a line of %zu bytes, cut to its first %d)\n", p->echo_long, TP_ECHO_MAX);
+        p->echo_long = 0;
+    }
+}
 
 static void *pump_run(void *arg) {
     tp_pump *p = arg;
@@ -42,7 +62,7 @@ static void *pump_run(void *arg) {
         size_t used = 0;
         while ((nl = memchr(part + used, '\n', n - used)) || n == sizeof part) {
             size_t ll = nl ? (size_t)(nl - (part + used)) + 1 : n - used;
-            fprintf(stderr, "  | %.*s%s", (int)ll, part + used, nl ? "" : "\n");
+            echo(p, part + used, ll, nl != NULL);
             pthread_mutex_lock(&p->mu);
             if (p->len + ll + 1 > p->cap) {
                 size_t cap = (p->cap ? p->cap * 2 : 65536) + ll;
