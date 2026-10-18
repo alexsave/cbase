@@ -1,6 +1,7 @@
 // fz_netclient.c - the client library every host runs (kernel netclient.h),
 // fed what a hostile or broken server could send it: any status and body for
-// any request it makes, any stream frame (binary or base64 text), any saved
+// any request it makes, any bytes on the stream (MQTT packets built around the
+// input as a broker sends them, or raw bytes, binary or text), any saved
 // session blob, in any order, with time moving. The library is a state
 // machine (the session, the tickets, the subscriptions, the version gates), so
 // the input is a program of steps, not one body.
@@ -10,6 +11,8 @@
 
 #include "netclient.h"
 #include "table.h"
+
+#include "../../shared/c/mqtt/mqtt.h"
 
 static int64_t g_now;
 
@@ -99,9 +102,31 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
             free(exact);
             break;
         }
-        case 2: {   // a stream frame
+        case 2: {   // bytes on the stream: what a broker sends, built around the input, or raw
             int is_text = fz_u8(&in) & 1;
-            int n = body_of(&in, body, sizeof body);
+            int n = 0;
+            uint8_t shape = fz_u8(&in) % 4;
+            if (shape == 1) {   // a PUBLISH on one of the user's topics or a spectators' one, its payload the input
+                static const char *const topics[] = { "u/11111111-1111-4111-8111-111111111111/v",
+                                                      "u/11111111-1111-4111-8111-111111111111/c/ab12cd",
+                                                      "u/11111111-1111-4111-8111-111111111111/m/ab12cd", "s/ab12cd",
+                                                      "u/22222222-2222-4222-8222-222222222222/v" };
+                const char *t = topics[fz_u8(&in) % 5];
+                int bn = body_of(&in, body + 600, (int)sizeof body - 600);
+                static uint8_t tmp[NC_FRAME_MAX + 64];
+                memcpy(tmp, body + 600, (size_t)bn);
+                n = mqtt_write_publish(body, (int)sizeof body, t, (int)strlen(t), tmp, bn);
+                if (n < 0) n = 0;
+            } else if (shape == 2) {   // a CONNACK, a SUBACK or a PINGRESP
+                uint8_t codes[2] = { fz_u8(&in), fz_u8(&in) };
+                int k = fz_u8(&in) % 3;
+                n = k == 0 ? mqtt_write_connack(body, 8, 0, fz_u8(&in) % 6)
+                  : k == 1 ? mqtt_write_suback(body, 16, (uint16_t)(1 + fz_u8(&in) % 8), codes[0] <= 2 || codes[0] == 0x80 ? codes : (uint8_t[]){ 0, 0 }, 1 + (fz_u8(&in) & 1))
+                           : mqtt_write_bare(body, 8, MQTT_PINGRESP);
+                if (n < 0) n = 0;
+            } else {
+                n = body_of(&in, body, sizeof body);
+            }
             uint8_t *exact = fz_dup(body, (size_t)n);
             int k = nc_stream_in(exact, n, is_text, g_now);
             FZ_CHECK(k >= 0 && k <= NC_EVENTS_MAX);
@@ -111,7 +136,17 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         }
         case 3: {
             const NcOut *o;
-            for (int i = 0; i < 64 && (o = nc_stream_next(g_now)); i++) FZ_CHECK(o->len <= NC_TEXT_MAX);
+            for (int i = 0; i < 64 && (o = nc_stream_next(g_now)); i++) {
+                // Every message is whole client packets the broker reads.
+                FZ_CHECK(o->len > 0 && o->len <= NC_OUT_MAX);
+                for (int at = 0; at < o->len;) {
+                    MqttPacket p;
+                    int k = mqtt_parse(o->bytes + at, o->len - at, NC_OUT_MAX, MQTT_FROM_CLIENT, &p);
+                    FZ_CHECK(k > 0);
+                    FZ_CHECK(p.type == MQTT_CONNECT || p.type == MQTT_SUBSCRIBE || p.type == MQTT_UNSUBSCRIBE || p.type == MQTT_PINGREQ);
+                    at += k;
+                }
+            }
             for (int i = 0; i < 64 && nc_next_done(); i++) {}
             break;
         }

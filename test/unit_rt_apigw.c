@@ -3,6 +3,8 @@
 // text both ways, replies as POSTs or as the route response, batches, and
 // publishing through the management API with a 410 cleaning up.
 #include "t.h"
+
+#define APIGW_TEXT_MAX 2900   // a frame as base64 text, as API Gateway carries it
 #include "app/limits.h"
 
 #include "lib_rt_fakestore.h"
@@ -26,7 +28,7 @@ static cb_buf g_answer;   // the last event's route response text
 // The body is copied: a frame's text comes from a static buffer, and an event
 // run inside another (the race below) must not rewrite the outer one's body.
 static int ev(const char *route, const char *conn, const char *query, const char *text) {
-    char body[NC_TEXT_MAX + 1];
+    char body[APIGW_TEXT_MAX + 1];
     if (text) cb_strlcpy(body, text, sizeof body);
     cb_ws_event e;
     memset(&e, 0, sizeof e);
@@ -45,10 +47,10 @@ static int ev(const char *route, const char *conn, const char *query, const char
 
 // A frame as the client sends it to API Gateway: base64 text.
 static const char *as_text(const NwFrame *f) {
-    static char text[NC_TEXT_MAX + 1];
+    static char text[APIGW_TEXT_MAX + 1];
     uint8_t raw[NW_ACCESS_MAX + 64];
     int n = nw_frame_encode(f, raw, sizeof raw);
-    int t = nw_text_encode(raw, n, text, NC_TEXT_MAX);
+    int t = nw_text_encode(raw, n, text, APIGW_TEXT_MAX);
     text[t > 0 ? t : 0] = 0;
     return text;
 }
@@ -134,7 +136,7 @@ static int answered(NwFrame *out, int cap) {
 // Several frames in one NW_WS_BATCH, as base64 text.
 static const char *batch_text(const char *const *texts, int n) {
     static uint8_t entries[8192], raw[8192 + 64];
-    static char text[NC_TEXT_MAX + 1];
+    static char text[APIGW_TEXT_MAX + 1];
     int at = 0;
     for (int i = 0; i < n; i++) {
         uint8_t one[NW_ACCESS_MAX + 64];
@@ -151,7 +153,7 @@ static const char *batch_text(const char *const *texts, int n) {
     f.blob.len = (uint32_t)at;
     int n2 = nw_frame_encode(&f, raw, sizeof raw);
     T_CHECK(n2 > 0);
-    int t = nw_text_encode(raw, n2, text, NC_TEXT_MAX);
+    int t = nw_text_encode(raw, n2, text, APIGW_TEXT_MAX);
     text[t > 0 ? t : 0] = 0;
     return text;
 }
@@ -334,7 +336,7 @@ static void a_batch_is_one_read_one_write_one_answer(void) {
     rtf_member(G, U1);
     const uint8_t env[] = { 9 };
     rtf_add_view(G, U1, "playing", 3, 1, env, sizeof env);
-    char t0[NC_TEXT_MAX + 1], t1[NC_TEXT_MAX + 1], t2[NC_TEXT_MAX + 1];
+    char t0[APIGW_TEXT_MAX + 1], t1[APIGW_TEXT_MAX + 1], t2[APIGW_TEXT_MAX + 1];
     cb_strlcpy(t0, sub_as_text("tok-" U1, 1, NW_SUB_GAMES, ""), sizeof t0);
     cb_strlcpy(t1, sub_as_text("tok-" U1, 2, NW_SUB_GAME, G), sizeof t1);
     cb_strlcpy(t2, sub_as_text("tok-" U1, 3, NW_SUB_CHAT, G), sizeof t2);

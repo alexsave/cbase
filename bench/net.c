@@ -286,7 +286,9 @@ static int ws_fill(bn_ws *w, int timeout_ms) {
     }
 }
 
-bn_ws *bn_ws_open(const bn_url *u, const char *path, int timeout_ms) {
+bn_ws *bn_ws_open(const bn_url *u, const char *path, int timeout_ms) { return bn_ws_open_with(u, path, NULL, timeout_ms); }
+
+bn_ws *bn_ws_open_with(const bn_url *u, const char *path, const char *headers, int timeout_ms) {
     bn_ws *w = calloc(1, sizeof *w);
     if (!w) return NULL;
     cb_buf_init(&w->in);
@@ -313,8 +315,8 @@ bn_ws *bn_ws_open(const bn_url *u, const char *path, int timeout_ms) {
     cb_buf_init(&req);
     cb_buf_printf(&req,
                   "GET %s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
-                  "Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: %s\r\n\r\n",
-                  path, u->host, key);
+                  "Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: %s\r\n%s\r\n",
+                  path, u->host, key, headers ? headers : "");
     int rc = ws_write(w, req.p, req.len);
     cb_buf_free(&req);
     if (rc != 0) { bn_ws_close(w); return NULL; }
@@ -355,6 +357,7 @@ static int ws_send(bn_ws *w, int opcode, const void *data, size_t len) {
 }
 
 int bn_ws_send_text(bn_ws *w, const char *text, size_t len) { return ws_send(w, CB_WS_OP_TEXT, text, len); }
+int bn_ws_send_bin(bn_ws *w, const void *data, size_t len) { return ws_send(w, CB_WS_OP_BIN, data, len); }
 
 int bn_ws_recv(bn_ws *w, int timeout_ms, cb_buf *out) {
     int64_t deadline = bn_now_us() + (int64_t)timeout_ms * 1000;

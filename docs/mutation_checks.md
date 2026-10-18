@@ -525,3 +525,19 @@ Run one mutant at a time from a script that deletes the mutated file's objects b
 - store_dynamo.c: game_members handing out a bot -> `membership_follows_commits` who.n == 2 (DynamoDB Local).
 - realtime.c: the account not read on the token check -> `smoke_authz` a deleted account's token connects.
 - mqtt.c: a non-minimal remaining length accepted -> `fz_mqtt` replay of `repro-nonminimal-length`, FZ_CHECK w == k.
+
+## MQTT on IoT Core, stage 2: the kernel's client (2026-10-18: unit_netclient)
+
+- netclient.c: spectators' casts taken while seated -> `seat_and_spectator_casts` casts == 1, == 4.
+- netclient.c: a spectators' cast applied while the seat is unknown -> `seat_and_spectator_casts` casts == 0.
+- netclient.c: a message whose game is not its topic's taken -> `what_is_not_the_brokers` BAD.
+- netclient.c: a text frame taken -> `what_is_not_the_brokers` PINGRESP as text is BAD.
+- netclient.c: a CONNACK not awaited taken -> `connect_carries_the_token` second CONNACK is BAD.
+- netclient.c: CONNECT sent with a token about to expire -> `connect_carries_the_token`, `connect_waits_for_a_fresh_token`.
+- netclient.c: every refused CONNECT forces a refresh -> `closed_before_connack_refreshes` no second refresh in the window.
+- netclient.c: no catch-up read on SUBACK -> `suback_takes_the_game_whole`, `an_unanswered_subscription_is_asked_again`.
+- netclient.c: the keep-alive one tick late -> `stream_order_and_retries` PINGREQ at NC_PING_MS.
+- netclient.c: client id from the clock alone -> `connect_carries_the_token` two connections in one millisecond differ.
+- netclient.c: "u/<me>/vx" read as the views topic -> `what_is_not_the_brokers` BAD.
+- netclient.c: the stream due at once while waiting for a token -> `connect_waits_for_a_fresh_token` due == -1.
+- netclient.c: a first session wiping holds made before it -> `holds_made_before_the_session_are_kept` SUBSCRIBE sent.

@@ -228,6 +228,20 @@ static void when_to_call_again(void) {
     nc_reset();
     T_EQ_INT(nc_due_ms(1000), -1);   // nothing queued, no stream
     nc_stream_opened(1000);
+    T_EQ_INT(nc_due_ms(1000), -1);   // signed out: nobody to connect as
+    // Signed in, connected: the stream's keep-alive is what waits.
+    NwSession s;
+    memset(&s, 0, sizeof s);
+    s.access_len = 1; s.access[0] = 't';
+    s.refresh_len = 1; s.refresh[0] = 'r';
+    s.expires_at_ms = 1000 + 3600000;
+    s.user_id_len = 1; s.user_id[0] = 'u';
+    uint8_t blob[64];
+    T_EQ_INT(nc_session_load(blob, nw_session_encode(&s, blob, sizeof blob)), NW_OK);
+    T_EQ_INT(nc_due_ms(1000), 0);   // the CONNECT
+    T_CHECK(nc_stream_next(1000) != NULL);
+    const uint8_t connack[] = { 0x20, 2, 0, 0 };
+    nc_stream_in(connack, 4, 0, 1000);
     T_EQ_INT(nc_due_ms(1000), NC_PING_MS);   // the stream's ping
     NcIntent in;
     memset(&in, 0, sizeof in);

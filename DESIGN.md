@@ -929,6 +929,25 @@ Rotation, reuse grace and revocation are auth.c's, unchanged.
 
 ### The push stream
 
+**Since stage 2 of the move to IoT Core (2026-10-18), the kernel's client speaks MQTT** (`netclient.c`, over `shared/c/mqtt`); what follows down to "The pump" is the nw1 protocol, which only API Gateway and `/v1/stream` still serve until stage 3 deletes them.
+The client's stream, as built:
+
+- The host opens `/mqtt` (`nc_req_stream`) with the WebSocket subprotocol `mqtt` and carries binary frames both ways; nothing else changed for a host (the web sends `streamNext()`'s bytes, iOS `.data`).
+- `nc_stream_opened` queues a CONNECT: clean session, keep-alive 60 s, client id `<user>-<8 base-36 digits>` (the clock and a counter, so two tabs never share one), the access token as the password.
+  A token within `NC_REFRESH_EARLY_MS` of expiring is refreshed first: the pump sends the refresh itself (`nc_next_request`), and the CONNECT goes with the new token.
+- Nothing else goes before the CONNACK; then one SUBSCRIBE per subscription (all due ones in one WebSocket message), QoS 0: `NW_SUB_GAMES` is `u/<user>/v`, `NW_SUB_CHAT` `u/<user>/m/<game>`, and `NW_SUB_GAME` both `u/<user>/c/<game>` and `s/<game>`.
+  A SUBACK of a game takes the game whole once (`refetch_queue` with "unless version top + 1 is applied first"), which replaces CATCHUP: a commit between the host's read and the subscription going live is not lost, and a next contiguous push makes the read moot.
+- Which casts a game takes is the book's: a seat's cast says the user sits there; a spectators' cast is taken only while the last envelope said "not seated" (`EnvHeader.seat`), dropped while seated, and read as a refetch while unknown (a seated user hears the same version as its own cast, which a spectators' board must not overwrite).
+  A join's or leave's answer says it, an empty dashboard view says the seat is gone, so nothing is subscribed again on a seat change.
+- Every PUBLISH must come on one of this user's topics or a spectators' one, and its message must name the topic's game; anything else, a text frame, a CONNACK not awaited, and bytes that do not parse are `NC_EV_BAD`.
+  Packets cut across WebSocket messages are reassembled (`NC_MQ_IN_MAX`); several in one message each make their events, payloads read in place until the next feed.
+- A PINGREQ when nothing went out for `NC_PING_MS` (30 s).
+  A socket closed before its CONNACK is the broker's refusal (IoT sends no code): the token is refreshed before the next CONNECT, at most once every `NC_FORCE_REFRESH_MS` (10 minutes), so a broker that is down does not cost a refresh per reconnect.
+- Found on the way, in every host before this: a page holds its streams before its kept session is restored (the web's providers know the user without the kernel), and loading that session wiped the book as another user's, so a reloaded dashboard or game page subscribed to nothing.
+  A book that was nobody's (`nc_reset` makes it so) is now the first user's; another user's session still starts it over (`unit_netclient` `holds_made_before_the_session_are_kept`).
+
+Tests: `unit_netclient` against a fake broker made of the same codec (the CONNECT and its token, the refresh before it, a refusal's refresh and its rate, order and retries, the keep-alive, every packet that is not the broker's or not this user's, packets cut at every byte, the catch-up read, seat and spectators' casts through create, join, leave and removal); `unit_stream` drives the client against `cbase serve`'s hub over a real socket; `fz_netclient` feeds it broker packets built around the input and checks every message it sends is whole client packets.
+
 One WebSocket per client at `/v1/stream`, carrying the kernel's bytes.
 Under `cbase serve` it is `rt_local`'s upgrade; under Lambda it is the API Gateway stage, reached through CloudFront (a CloudFront Function rewrites the path onto the stage, and `$connect` requires `proto=nw1`).
 The connection row (`cb_conn_row`) keeps its user, topics, version and TTL; the protocol is `proto=nw1` on the connect URL, the only one since stage 4.

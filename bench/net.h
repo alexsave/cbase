@@ -67,6 +67,10 @@ typedef struct bn_ws bn_ws;
 // Opens `path` (with its query) on the URL's host: ws:// for http://, wss://
 // for https://. NULL on failure.
 bn_ws *bn_ws_open(const bn_url *u, const char *path, int timeout_ms);
+// The same with extra request headers ("Name: value\r\n" lines: a
+// subprotocol, the edge's origin header), NULL for none.
+bn_ws *bn_ws_open_with(const bn_url *u, const char *path, const char *headers, int timeout_ms);
+int    bn_ws_send_bin(bn_ws *w, const void *data, size_t len);
 void   bn_ws_close(bn_ws *w);
 int    bn_ws_send_text(bn_ws *w, const char *text, size_t len);
 // One frame's payload into out: its opcode, or -1 on a timeout, -2 when the

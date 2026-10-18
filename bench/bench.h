@@ -6,6 +6,7 @@
 //   cbase-bench direct --url <base> [--n 200] [--table cbase] [--region us-east-1] [--edge URL] [--burst K]
 //   cbase-bench subscribe --url <base> [--n 30] [--as 1]
 //   cbase-bench page --url <base> [--n 5] [--batch 0|1] [--pushes 20] [--gap MS]
+//   cbase-bench mqtt --url <base> [--n 20] [--pushes 20] [--gap MS] [--iot HOST]
 //   cbase-bench spaced --url <base> [--path P] [--n 30] [--gap MS] [--games K]
 //   cbase-bench report [FILE...]        (default: every bench/results/*.txt)
 //
@@ -38,7 +39,8 @@ typedef struct {
     int         gap_ms;      // spaced, roundtrip: quiet before each timed request
     int         games;       // spaced: a throwaway account with this many games
     bool        batch;       // page: subscribe with one NW_WS_BATCH
-    int         pushes;      // page: chat pushes timed after the page loads
+    int         pushes;      // page, mqtt: chat pushes timed after the page loads
+    const char *iot;         // mqtt: IoT Core's own host, to check it refuses a connection around the edge
 } bench_opts;
 
 int bench_roundtrip(const bench_opts *o);
@@ -48,6 +50,7 @@ int bench_direct(const bench_opts *o);
 int bench_subscribe(const bench_opts *o);
 int bench_spaced(const bench_opts *o);
 int bench_page(const bench_opts *o);
+int bench_mqtt(const bench_opts *o);
 
 // "2026-10-13T14:02:11Z" now.
 void bench_date(char *out, size_t cap);

@@ -436,9 +436,9 @@ static void long_replies_split(void) {
 static void *loop_run(void *arg) { cb_loop_run(g_ctx.loop); return NULL; }
 static void drain_post(cb_loop *l, void *ud) { cb_server_drain(g_ctx.server, 2000); }
 
-// Sends every frame the client has due, as text.
+// Sends every message the client has due, as binary (MQTT packets).
 static void flush(int fd, int64_t now) {
-    for (const NcOut *o; (o = nc_stream_next(now));) T_EQ_INT(tc_ws_send(fd, CB_WS_OP_TEXT, o->text, o->len), 0);
+    for (const NcOut *o; (o = nc_stream_next(now));) T_EQ_INT(tc_ws_send(fd, CB_WS_OP_BIN, o->bytes, o->len), 0);
 }
 
 // The next event the server's frames make, skipping NC_EV_NONE and the
@@ -499,33 +499,31 @@ static void serve_end_to_end(void) {
     T_EQ_INT(r.status, 400);
     tc_response_free(&r);
 
+    // The kernel's client over MQTT to the hub, as against IoT Core.
     nc_reset();
     session_for(U1);
     T_EQ_INT(nc_stream_sub(NW_SUB_GAMES, NULL, 0), NW_OK);
     T_EQ_INT(nc_stream_sub(NW_SUB_GAME, G, 6), NW_OK);
-    T_EQ_INT(nc_stream_sub(NW_SUB_CHAT, G2, 6), NW_OK);   // not a member: refused, retried
+    T_EQ_INT(nc_stream_sub(NW_SUB_CHAT, G2, 6), NW_OK);
     const NcRequest *q = nc_req_stream();
     char path[NC_PATH_MAX + 1];
     memcpy(path, q->path, q->path_len);
     path[q->path_len] = 0;
-    int fd = tc_ws_open(g_port, path, NULL);
+    T_EQ_STR(path, "/mqtt");
+    int fd = tc_ws_open(g_port, path, "Sec-WebSocket-Protocol: mqtt\r\n");
     T_CHECK(fd >= 0);
     int64_t t0 = cb_now_ms();
     nc_stream_opened(t0);
-    flush(fd, t0);
+    flush(fd, t0);   // the CONNECT
     cb_buf m;
     cb_buf_init(&m);
+    cb_buf_reset(&m);
+    T_EQ_INT(tc_ws_recv(fd, 2000, &m), CB_WS_OP_BIN);   // the CONNACK
+    nc_stream_in(m.p, (int)m.len, 0, t0);
+    flush(fd, t0);   // the three SUBSCRIBEs, in one message
     const NcEvent *e = next_event(fd, 2000, &m);
-    T_CHECK(e->kind == NC_EV_SEATED && e->seated == 1 && e->gid_len == 6);
-    e = next_event(fd, 2000, &m);
-    T_CHECK(e->kind == NC_EV_REFUSED && e->why == ASK_WHY_FORBIDDEN && e->what == NW_SUB_CHAT);
-    // The refusal is retried after NC_RETRY_FIRST_MS, not before.
-    T_CHECK(nc_stream_next(t0 + 100) == NULL);
-    int due = nc_stream_due_ms(t0 + 100);
-    T_CHECK(due > 0 && due <= NC_RETRY_FIRST_MS);
-    rtf_member(G2, U1);
-    flush(fd, cb_now_ms() + NC_RETRY_FIRST_MS);
-    // Its ACK makes no event; next_event below reads past it.
+    T_CHECK(e->kind == NC_EV_SEATED && e->gid_len == 6);
+    T_CHECK(nc_stream_next(t0 + 100) == NULL);   // all answered or waiting: nothing to send
 
     // Pushes: a cast and a view, each once; the same version again is stale.
     const uint8_t cast[] = { 0xca, 0x57 };
@@ -546,23 +544,34 @@ static void serve_end_to_end(void) {
     // A game held on its own stream is given no dashboard views (its casts
     // animate it): let it go, and the view of it is handed out.
     T_EQ_INT(nc_stream_unsub(NW_SUB_GAME, G, 6), NW_OK);
+    flush(fd, t0);   // the UNSUBSCRIBE
     rt_publish_view(g_ctx.rt, U1, &v, false);
     e = next_event(fd, 2000, &m);   // the stale cast made no event: this is the view
     T_CHECK(e->kind == NC_EV_VIEW && e->version == 11 && e->what == NW_SUB_GAMES);
     T_EQ_MEM(nc_event_payload(g_ev), e->payload_len, env, 2);
-    // A client frame sent as binary is taken too (rt_local is not API Gateway).
-    uint8_t ping[] = { NW_V1, NW_WS_PING };
-    T_EQ_INT(tc_ws_send(fd, CB_WS_OP_BIN, ping, 2), 0);
-    // The retried chat subscription's ACK runs on the pool while the pushes
-    // above went straight to the loop, so it may arrive only now: skip it.
+    // The chat of a game, published to its member's own topic.
+    cb_chat_row ch;
+    memset(&ch, 0, sizeof ch);
+    strcpy(ch.id, "m1");
+    strcpy(ch.game_id, G2);
+    strcpy(ch.user_id, U1);
+    ch.message = "hey";
+    cb_uuid members[1] = { U1 };
+    rt_publish_chat(g_ctx.rt, G2, &ch, members, 1);
+    e = next_event(fd, 2000, &m);
+    T_CHECK(e->kind == NC_EV_CHAT && e->chat.message_len == 3 && e->gid_len == 6);
+    // The keep-alive.
+    flush(fd, cb_now_ms() + NC_PING_MS);
+    // The UNSUBACK runs on the pool while pushes go straight to the loop, so it
+    // may arrive only now: skip it.
     int op;
     do {
         cb_buf_reset(&m);
         op = tc_ws_recv(fd, 2000, &m);
-    } while (op == CB_WS_OP_BIN && m.len >= 2 && m.p[1] == NW_WS_ACK);
+    } while (op == CB_WS_OP_BIN && m.len >= 1 && m.p[0] == 0xB0);
     T_EQ_INT(op, CB_WS_OP_BIN);
-    T_EQ_MEM(m.p, m.len, ((const uint8_t[]){ NW_V1, NW_WS_PONG }), 2);
-    // Garbage closes the socket.
+    T_EQ_MEM(m.p, m.len, ((const uint8_t[]){ 0xD0, 0 }), 2);   // PINGRESP
+    // A text frame closes the socket.
     T_EQ_INT(tc_ws_send(fd, CB_WS_OP_TEXT, "!!!!", 4), 0);
     cb_buf_reset(&m);
     T_EQ_INT(tc_ws_recv(fd, 2000, &m), CB_WS_OP_CLOSE);
