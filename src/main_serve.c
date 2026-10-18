@@ -8,8 +8,8 @@
 //
 // THE HEARTBEAT. Under Lambda, EventBridge Scheduler invokes the bot scan every
 // minute; serve has no scheduler, so a loop timer submits cb_bots_scan to the
-// request pool every SCAN_EVERY_MS (the store is never touched on the loop
-// thread). It catches a drive that a kick lost, as bot-heartbeat did.
+// request pool every CB_BOT_SCAN_EVERY_MS (app/bots.h; divided, like every bot
+// timer, by CBASE_BOT_SPEEDUP), the store never touched on the loop thread. It catches a drive that a kick lost, as bot-heartbeat did.
 //
 // The startup line the smoke test waits for, on stderr:
 //   ... INFO  serve: listening on 127.0.0.1:<port>
@@ -85,8 +85,6 @@ static void on_sigpipe_readable(cb_loop *l, int fd, int ev, void *ud) {
     cb_server_drain(ctx->server, 10000);
 }
 
-#define SCAN_EVERY_MS 10000
-
 static void scan_task(void *ud) {
     cb_ctx *ctx = ud;
     cb_bots_scan(ctx, cb_now_ms());   // it logs what it kicked
@@ -95,7 +93,7 @@ static void scan_task(void *ud) {
 static void on_scan_timer(cb_loop *l, void *ud) {
     cb_ctx *ctx = ud;
     if (ctx->store) cb_pool_submit(ctx->req_pool, scan_task, ctx);
-    cb_loop_timer(l, SCAN_EVERY_MS, on_scan_timer, ctx);
+    cb_loop_timer(l, cb_bots_ms(ctx, CB_BOT_SCAN_EVERY_MS), on_scan_timer, ctx);
 }
 
 static void log_config(const char *name, const char *value, bool secret, void *ud) {
@@ -144,7 +142,7 @@ int main(int argc, char **argv) {
     sigaction(SIGTERM, &sa, NULL);
     sigaction(SIGINT, &sa, NULL);
 
-    cb_loop_timer(ctx.loop, SCAN_EVERY_MS, on_scan_timer, &ctx);
+    cb_loop_timer(ctx.loop, cb_bots_ms(&ctx, CB_BOT_SCAN_EVERY_MS), on_scan_timer, &ctx);
 
     CB_INFO("serve", "listening on %s:%d", cfg.listen_host, port);
     int rc = cb_loop_run(ctx.loop);

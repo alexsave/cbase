@@ -53,6 +53,7 @@ static const char *const VARS[] = {
     "CBASE_LISTEN", "CBASE_STORE", "CBASE_DB", "CBASE_TABLE", "CBASE_IOT_ENDPOINT", "CBASE_CF_DISTRIBUTION",
     "CBASE_JWT_SECRET", "CBASE_ADMIN_TOKEN", "CBASE_ALLOWED_ORIGINS", "CBASE_PUBLIC_URL", "CBASE_REQ_WORKERS",
     "CBASE_BOT_WORKERS", "CBASE_MAX_BODY", "CBASE_JWT_TTL", "CBASE_LOG_LEVEL", "CBASE_ORIGIN_SECRET",
+    "CBASE_BOT_SPEEDUP",
 };
 
 static void env_clear(void) {
@@ -119,6 +120,13 @@ static void configuration_refusals(void) {
     refused("CBASE_MAX_BODY", "10", "is not a number in 1024..");
     refused("CBASE_JWT_TTL", "59", "is not a number in 60..");
     refused("CBASE_LOG_LEVEL", "loud", "is not debug, info, warn or error");
+    // The test knob: a whole number of times faster, 1 (production's pace) to 100.
+    refused("CBASE_BOT_SPEEDUP", "0", "CBASE_BOT_SPEEDUP=0 is not a number in 1..100");
+    refused("CBASE_BOT_SPEEDUP", "-5", "is not a number in 1..100");
+    refused("CBASE_BOT_SPEEDUP", "101", "is not a number in 1..100");
+    refused("CBASE_BOT_SPEEDUP", "2.5", "is not a number in 1..100");
+    refused("CBASE_BOT_SPEEDUP", "20x", "is not a number in 1..100");
+    refused("CBASE_BOT_SPEEDUP", "99999999999999999999", "is not a number in 1..100");
 
     // Everything set and in range: read as given, and listed with the secrets redacted.
     env_clear();
@@ -133,6 +141,7 @@ static void configuration_refusals(void) {
     setenv("CBASE_MAX_BODY", "2048", 1);
     setenv("CBASE_JWT_TTL", "600", 1);
     setenv("CBASE_LOG_LEVEL", "warn", 1);
+    setenv("CBASE_BOT_SPEEDUP", "100", 1);
     setenv("CBASE_ALLOWED_ORIGINS", " https://a.example , https://b.example ", 1);
     cb_config c;
     char err[256] = "";
@@ -145,6 +154,7 @@ static void configuration_refusals(void) {
     T_EQ_INT(c.max_body, 2048);
     T_EQ_INT(c.jwt_ttl_s, 600);
     T_EQ_INT(c.log_level, CB_LOG_WARN);
+    T_EQ_INT(c.bot_speedup, 100);
     T_CHECK(!c.jwt_secret_generated);
     T_EQ_STR(c.public_url, "http://0.0.0.0:9000");
     seen s = { 0 };

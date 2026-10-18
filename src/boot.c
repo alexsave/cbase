@@ -75,6 +75,12 @@ int cb_boot(cb_ctx *ctx, char *err, size_t cap) {
     const cb_config *cfg = ctx->cfg;
     ctx->version = CB_VERSION;
     ctx->started_ms = cb_now_ms();
+    // A test knob production never runs with (config.h CBASE_BOT_SPEEDUP).
+    if (ctx->mode == CB_MODE_LAMBDA && cfg->bot_speedup != 1) {
+        snprintf(err, cap, "CBASE_BOT_SPEEDUP=%d is for cbase serve's tests: Lambda runs the bots at their own pace",
+                 cfg->bot_speedup);
+        return CB_E_INVALID;
+    }
     int rc = cb_kernel_selftest(err, cap);
     if (rc != CB_OK) return rc;
 

@@ -111,6 +111,8 @@ int cb_config_from_env(cb_config *c, char *err, size_t cap) {
     c->admin_fail_limit = (int)v;
     if (!num("CBASE_RATED_MIN_AGE", 72 * 3600, 0, 30 * 86400, &v, err, cap)) return CB_E_INVALID;
     c->rated_min_age_s = (int)v;
+    if (!num("CBASE_BOT_SPEEDUP", 1, 1, 100, &v, err, cap)) return CB_E_INVALID;
+    c->bot_speedup = (int)v;
     const char *lvl = env("CBASE_LOG_LEVEL", "info");
     c->log_level = cb_log_level_parse(lvl);
     if (c->log_level < 0) {
@@ -150,6 +152,8 @@ void cb_config_each(const cb_config *c, cb_config_fn fn, void *ud) {
     snprintf(b, sizeof b, "%d", c->rated_min_age_s);
     fn("CBASE_RATED_MIN_AGE", b, false, ud);
     fn("CBASE_LOG_LEVEL", cb_log_level_name(c->log_level), false, ud);
+    snprintf(b, sizeof b, "%d", c->bot_speedup);
+    fn("CBASE_BOT_SPEEDUP", b, false, ud);
 }
 
 int cb_config_check_secrets(const cb_config *c, bool lambda, char *err, size_t cap) {

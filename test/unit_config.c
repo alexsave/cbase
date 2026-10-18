@@ -3,7 +3,9 @@
 // that the console's view of the settings never shows a secret.
 #include "t.h"
 
+#include "boot.h"
 #include "config.h"
+#include "ctx.h"
 #include "util/err.h"
 #include "util/str.h"
 
@@ -69,8 +71,32 @@ static void secrets_never_shown(void) {
     clear_env();
 }
 
+// CBASE_BOT_SPEEDUP is a test knob: Lambda refuses to boot with anything but
+// production's pace, before it touches a store, whatever else is set.
+static void lambda_refuses_a_bot_speedup(void) {
+    clear_env();
+    cb_config c;
+    char err[256] = "";
+    T_EQ_INT(cb_config_from_env(&c, err, sizeof err), CB_OK);
+    T_EQ_INT(c.bot_speedup, 1);
+    const int bad[] = { 2, 20, 100 };
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        c.bot_speedup = bad[i];
+        static cb_ctx ctx;
+        memset(&ctx, 0, sizeof ctx);
+        ctx.cfg = &c;
+        ctx.mode = CB_MODE_LAMBDA;
+        err[0] = 0;
+        T_EQ_INT(cb_boot(&ctx, err, sizeof err), CB_E_INVALID);
+        T_CHECK(strstr(err, "CBASE_BOT_SPEEDUP") != NULL);
+        T_CHECK(ctx.store == NULL && ctx.router == NULL);
+    }
+    clear_env();
+}
+
 int main(void) {
     T_RUN(secrets_rule);
+    T_RUN(lambda_refuses_a_bot_speedup);
     T_RUN(secrets_never_shown);
     return T_DONE();
 }

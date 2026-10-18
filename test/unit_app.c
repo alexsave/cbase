@@ -1824,6 +1824,194 @@ static void bot_moves_wait_for_the_table_to_settle(void) {
     T_EQ_INT((int)(cb_edge_marks(CB_EDGE_BOARD) - board0), 1);
 }
 
+// CBASE_BOT_SPEEDUP (config.h): the same game against a bot, every bot timer
+// divided by k. Each drive's first commit lands EXACTLY the kernel's wait
+// after the commit before it, divided by k and rounded up: at k 1 the wait is
+// production's to the millisecond, and at k 10 one sleep covers it, the ask
+// after it on the same board answering 0 (the faster clock is anchored on the
+// board's shown_ms, so a second ask does not start a second, shorter wait).
+// The lease each cycle holds is the production lease over k.
+static struct { int n; int64_t lease_left[256]; } g_lease_seen;
+static char g_lease_gid[CB_GAME_ID_MAX + 1];
+static void lease_observer(const char *game_id, int attempt, int logs_len, int prefs_len) {
+    char token[CB_UUID_LEN + 1];
+    int64_t until = 0;
+    if (strcmp(game_id, g_lease_gid) == 0 && tm_lease(g_store, game_id, token, &until) == CB_OK && g_lease_seen.n < 256)
+        g_lease_seen.lease_left[g_lease_seen.n++] = until - g_now;
+}
+
+static void paced_game_at(int k) {
+    setup(1);
+    g_cfg.bot_speedup = k;
+    char gid[CB_GAME_ID_MAX + 1];
+    reply r;
+    create_game(gid, &r);
+    meta("A", ASK_ADD_BOT, gid, NULL, &r);
+    memset(&g_pace, 0, sizeof g_pace);
+    memset(&g_lease_seen, 0, sizeof g_lease_seen);
+    snprintf(g_lease_gid, sizeof g_lease_gid, "%s", gid);
+    cb_fanout_observer = pace_observer;
+    cb_bots_cycle_observer = lease_observer;
+    meta("A", ASK_START, gid, NULL, &r);
+    cb_section *s = cb_section_new();
+    int drives = 0, exact = 0, waited = 0;
+    for (int i = 0; i < 3000 && status_of(gid) == GAME_STATUS_PLAYING; i++) {
+        uint8_t wire[64];
+        int n = pick_move(gid, 0, wire, sizeof wire);
+        if (n > 0) { action("A", gid, wire, n, (uint32_t)version_of(gid), &r); continue; }
+        cb_game_row row = stored(gid);
+        int wait = cb_section_load(s, &row) >= 0 ? table_bot_wait_ms(&s->t, g_now) : -1;
+        T_EQ_INT(cb_bots_wait_ms(&g_ctx, &s->t, g_now), wait > 0 ? (wait + k - 1) / k : 0);
+        int64_t v = row.version, t_last = g_now;
+        cb_game_row_free(&row);
+        int before = g_pace.n;
+        T_EQ_INT(cb_bots_drive(&g_ctx, gid), CB_OK);
+        drives++;
+        for (int j = before; j < g_pace.n; j++) {
+            if (g_pace.version[j] != v + 1) continue;
+            const int64_t want = t_last + (wait > 0 ? (wait + k - 1) / k : 0);
+            if (g_pace.at[j] != want)
+                fprintf(stderr, "     k %d: v%lld landed at +%lld, want +%lld (wait %d)\n", k, (long long)(v + 1),
+                        (long long)(g_pace.at[j] - t_last), (long long)(want - t_last), wait);
+            exact += g_pace.at[j] == want;
+            T_EQ_INT(g_pace.at[j], want);
+            if (wait >= BOT_PACE_MS_WITH_HUMANS) waited++;
+            break;
+        }
+    }
+    cb_section_free(s);
+    cb_fanout_observer = fan_observer;
+    cb_bots_cycle_observer = NULL;
+    T_CHECK(drives > 0);
+    T_CHECK(exact > 0);
+    T_CHECK(waited > 0);
+    T_EQ_INT(status_of(gid), GAME_STATUS_GAME_OVER);
+    // Every cycle held the lease a drive takes, over k (the fake clock stands
+    // still between the acquire or renew and the cycle).
+    T_CHECK(g_lease_seen.n > 0);
+    for (int i = 0; i < g_lease_seen.n; i++) T_EQ_INT(g_lease_seen.lease_left[i], (CB_BOT_LEASE_MS + k - 1) / k);
+    g_cfg.bot_speedup = 1;
+}
+
+static void bots_pace_at_production_speed_and_at_a_speedup(void) {
+    paced_game_at(1);
+    paced_game_at(10);
+}
+
+// The lease a drive TAKES is over k too (the paced game only ever looks after
+// a wait, so after a renew): a bot due on a board whose wait has passed acts
+// in the drive's first cycle, under the lease the acquire wrote.
+static void a_drive_takes_its_lease_over_the_speedup(void) {
+    const int ks[] = { 1, 10 };
+    for (int i = 0; i < 2; i++) {
+        setup(1);
+        g_cfg.bot_speedup = ks[i];
+        char gid[CB_GAME_ID_MAX + 1];
+        reply r;
+        create_game(gid, &r);
+        meta("A", ASK_ADD_BOT, gid, NULL, &r);
+        meta("A", ASK_START, gid, NULL, &r);
+        T_CHECK(until_a_bot_is_due(gid));
+        g_now += 60000;   // past any wait the kernel could ask for
+        memset(&g_lease_seen, 0, sizeof g_lease_seen);
+        snprintf(g_lease_gid, sizeof g_lease_gid, "%s", gid);
+        cb_bots_cycle_observer = lease_observer;
+        T_EQ_INT(cb_bots_drive(&g_ctx, gid), CB_OK);
+        cb_bots_cycle_observer = NULL;
+        T_CHECK(g_lease_seen.n > 0);
+        if (g_lease_seen.n > 0) T_EQ_INT(g_lease_seen.lease_left[0], CB_BOT_LEASE_MS / ks[i]);
+    }
+    g_cfg.bot_speedup = 1;
+}
+
+// The drive's wall ceiling over k: a drive whose wait ran 13 s past what it
+// asked for (a starved host) is past a tenth of the 120 s ceiling, so at k 10
+// it hands the game to a fresh drive (the rekick) without acting; at k 1 the
+// same drive is well inside the ceiling and the bot moves.
+static void slow_sleep(int64_t ms) { g_now += ms + 13000; }
+
+static void the_wall_ceiling_follows_the_speedup(void) {
+    const int ks[] = { 10, 1 };
+    for (int i = 0; i < 2; i++) {
+        setup(1);
+        g_cfg.bot_speedup = ks[i];
+        char gid[CB_GAME_ID_MAX + 1];
+        reply r;
+        create_game(gid, &r);
+        meta("A", ASK_ADD_BOT, gid, NULL, &r);
+        meta("A", ASK_START, gid, NULL, &r);
+        T_CHECK(until_a_bot_is_due(gid));
+        const int64_t v = version_of(gid);
+        cb_app_sleep = slow_sleep;
+        g_kicks = 0;
+        T_EQ_INT(cb_bots_drive(&g_ctx, gid), CB_OK);
+        cb_app_sleep = fake_sleep;
+        if (ks[i] == 10) {
+            T_EQ_INT(version_of(gid), v);
+            T_EQ_INT(g_kicks, 1);
+            T_EQ_STR(g_kicked, gid);
+        } else {
+            T_CHECK(version_of(gid) > v);
+            T_EQ_INT(g_kicks, 0);
+        }
+    }
+    g_cfg.bot_speedup = 1;
+}
+
+// The scan's windows over k: stale after CB_BOT_STALE_MS / k, abandoned after
+// CB_BOT_ABANDON_MS / k, each boundary to the millisecond.
+static void the_scan_windows_follow_the_speedup(void) {
+    setup(0);
+    g_cfg.bot_speedup = 10;
+    char g1[CB_GAME_ID_MAX + 1];
+    reply r;
+    create_game_by("A", UID_A, g1, &r);
+    const int64_t now = g_now + 1;
+    const int64_t stale = CB_BOT_STALE_MS / 10, abandon = CB_BOT_ABANDON_MS / 10;
+    tm_set_scan(g_store, g1, true, now - stale, now - 1000);   // touched exactly the window ago: not yet stale
+    T_EQ_INT(cb_bots_scan(&g_ctx, now), 0);
+    tm_set_scan(g_store, g1, true, now - stale - 1, now - 1000);
+    T_EQ_INT(cb_bots_scan(&g_ctx, now), 1);
+    tm_set_scan(g_store, g1, true, now - stale - 1, now - abandon + 1);   // a commit inside the window: active
+    T_EQ_INT(cb_bots_scan(&g_ctx, now), 1);
+    tm_set_scan(g_store, g1, true, now - stale - 1, now - abandon);   // exactly the window ago: abandoned
+    T_EQ_INT(cb_bots_scan(&g_ctx, now), 0);
+    // At production's speed the first row is fresh, and the last active.
+    g_cfg.bot_speedup = 1;
+    tm_set_scan(g_store, g1, true, now - stale - 1, now - 1000);
+    T_EQ_INT(cb_bots_scan(&g_ctx, now), 0);
+    tm_set_scan(g_store, g1, true, now - CB_BOT_STALE_MS - 1, now - abandon);
+    T_EQ_INT(cb_bots_scan(&g_ctx, now), 1);
+}
+
+// Production's bot timers, as they were before the speedup existed: a change
+// to any of them is a change to how production plays, not a test's business.
+static void production_bot_timers(void) {
+    T_EQ_INT(CB_BOT_LEASE_MS, 25000);
+    T_EQ_INT(CB_BOT_STALE_MS, 10000);
+    T_EQ_INT(CB_BOT_ABANDON_MS, 3600000);
+    T_EQ_INT(CB_BOT_WALL_MS, 120000);
+    T_EQ_INT(CB_BOT_SCAN_EVERY_MS, 10000);
+    T_EQ_INT(CB_BOT_SCAN_MAX, 100);
+    // The knob's default is production's pace: every timer as written.
+    unsetenv("CBASE_BOT_SPEEDUP");
+    setup(0);
+    T_EQ_INT(g_cfg.bot_speedup, 1);
+    const int64_t timers[] = { CB_BOT_LEASE_MS, CB_BOT_STALE_MS, CB_BOT_ABANDON_MS, CB_BOT_WALL_MS, CB_BOT_SCAN_EVERY_MS, 1, 7 };
+    for (size_t i = 0; i < sizeof timers / sizeof timers[0]; i++) {
+        T_EQ_INT(cb_bots_ms(&g_ctx, timers[i]), timers[i]);
+        T_EQ_INT(cb_bots_ms(NULL, timers[i]), timers[i]);
+    }
+    // Over k, rounded up: never a 0 ms timer.
+    g_cfg.bot_speedup = 10;
+    T_EQ_INT(cb_bots_ms(&g_ctx, CB_BOT_LEASE_MS), 2500);
+    T_EQ_INT(cb_bots_ms(&g_ctx, 15), 2);
+    T_EQ_INT(cb_bots_ms(&g_ctx, 1), 1);
+    g_cfg.bot_speedup = 100;
+    T_EQ_INT(cb_bots_ms(&g_ctx, CB_BOT_SCAN_EVERY_MS), 100);
+    g_cfg.bot_speedup = 1;
+}
+
 // ---- bots --------------------------------------------------------------------------------------
 
 static void the_bot_loop_drives_until_a_human_owes_a_move(void) {
@@ -2099,6 +2287,11 @@ int main(void) {
     T_RUN(every_view_goes_to_its_own_seat);
     T_RUN(every_bot_cycle_gets_the_whole_log_and_its_choices_back);
     T_RUN(bot_moves_wait_for_the_table_to_settle);
+    T_RUN(production_bot_timers);
+    T_RUN(bots_pace_at_production_speed_and_at_a_speedup);
+    T_RUN(a_drive_takes_its_lease_over_the_speedup);
+    T_RUN(the_scan_windows_follow_the_speedup);
+    T_RUN(the_wall_ceiling_follows_the_speedup);
     cb_row_cache_clear();
     cb_router_free(g_ctx.router);
     cb_store_close(g_store);

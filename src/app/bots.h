@@ -26,14 +26,31 @@
 #define CB_BOTS_H
 
 #include "ctx.h"
+#include "table.h"   // the kernel's Table
 
 #include <stdint.h>
 
-#define CB_BOT_LEASE_MS    25000      // BOT_LEASE_TTL_MS
-#define CB_BOT_STALE_MS    10000      // STALE_MS
-#define CB_BOT_ABANDON_MS  3600000    // ABANDON_MS: a game idle an hour gets no bots until a kick
-#define CB_BOT_WALL_MS     120000     // the drive's wall ceiling
-#define CB_BOT_SCAN_MAX    100        // MAX_GAMES
+// Production's timers. Each is used through cb_bots_ms, which divides it by
+// CBASE_BOT_SPEEDUP (config.h; 1 in production, refused under Lambda), and
+// unit_app's production_bot_timers pins every value here.
+#define CB_BOT_LEASE_MS      25000      // BOT_LEASE_TTL_MS
+#define CB_BOT_STALE_MS      10000      // STALE_MS
+#define CB_BOT_ABANDON_MS    3600000    // ABANDON_MS: a game idle an hour gets no bots until a kick
+#define CB_BOT_WALL_MS       120000     // the drive's wall ceiling
+#define CB_BOT_SCAN_EVERY_MS 10000      // serve's heartbeat (main_serve.c); EventBridge's minute under Lambda
+#define CB_BOT_SCAN_MAX      100        // MAX_GAMES
+
+// A bot-loop timer as this process runs it: `production_ms` divided by the
+// configured speedup (rounded up, so never 0). production_ms itself at speedup
+// 1 and with no config.
+int64_t cb_bots_ms(const cb_ctx *ctx, int64_t production_ms);
+// The bot's pace at the configured speedup: the kernel's wait
+// (table_bot_wait_ms) asked on a clock that runs `speedup` times faster since
+// the board was last shown (shown_ms), so the whole wait (the animation's
+// settle and the pace) shrinks by that factor and the next ask, on the same
+// board, answers 0. The real ms to wait. At speedup 1 it is the kernel's
+// answer at now_ms, unchanged. Exposed for unit_app.
+int64_t cb_bots_wait_ms(const cb_ctx *ctx, const Table *t, int64_t now_ms);
 
 // Drives one game's bots until done or out of budget (see above). Blocks.
 // CB_OK (including "someone else holds the lease"), CB_E_NOT_FOUND, CB_E_DB.

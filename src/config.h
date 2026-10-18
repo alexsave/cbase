@@ -66,6 +66,14 @@ typedef struct {
     int  admin_fail_limit;// CBASE_ADMIN_FAIL_LIMIT 10: wrong console tokens per address an hour (app/limits.h)
     int  rated_min_age_s; // CBASE_RATED_MIN_AGE 259200 (72 h): a game with a younger account ends unrated (M6)
     int  log_level;       // CBASE_LOG_LEVEL info: debug|info|warn|error
+    // CBASE_BOT_SPEEDUP 1 (1..100): every timer of the bot loop (app/bots.h:
+    // the pace a bot waits before it acts, the lease, the scan's staleness and
+    // abandon windows, the drive's wall ceiling, serve's scan period) divided
+    // by this. For the smoke tests, so a game against a bot and a crash's
+    // lease expiry play out in seconds with every ratio between the timers
+    // kept. `cbase serve` only: cb_boot refuses any other value under Lambda,
+    // so a stray variable cannot make production's bots hurry.
+    int  bot_speedup;
 } cb_config;
 
 // Reads the environment into cfg. CB_OK, or CB_E_INVALID with a sentence in err.

@@ -77,7 +77,7 @@ static int run_cycle(cb_ctx *ctx, cb_section *s, const char *game_id, int cycle,
             cb_game_row_free(&row);
             return CYCLE_DONE;
         }
-        int wait = table_bot_wait_ms(&s->t, cb_app_now());
+        int64_t wait = cb_bots_wait_ms(ctx, &s->t, cb_app_now());
         if (wait > 0) { cb_game_row_free(&row); *delay_ms = wait; return CYCLE_AGAIN; }
         const int log_len = (int)row.logs_len;
         kr = table_set_session_log(&s->t, row.logs, log_len);
@@ -124,6 +124,28 @@ static int run_cycle(cb_ctx *ctx, cb_section *s, const char *game_id, int cycle,
     return CYCLE_ERROR;
 }
 
+// ---- the speedup (config.h CBASE_BOT_SPEEDUP) ----------------------------------------
+
+static int64_t speedup(const cb_ctx *ctx) {
+    return ctx && ctx->cfg && ctx->cfg->bot_speedup > 1 ? ctx->cfg->bot_speedup : 1;
+}
+
+int64_t cb_bots_ms(const cb_ctx *ctx, int64_t production_ms) {
+    const int64_t k = speedup(ctx);
+    return (production_ms + k - 1) / k;
+}
+
+// The board's clock is the kernel's (shown_ms is the instant of the commit the
+// viewers last saw), so the faster clock is anchored there: the same board asks
+// the same question on it however often a drive asks, and one wait covers it.
+int64_t cb_bots_wait_ms(const cb_ctx *ctx, const Table *t, int64_t now_ms) {
+    const int64_t k = speedup(ctx), shown = t->clock.shown_ms;
+    int64_t ask = now_ms;
+    if (k > 1 && shown > 0 && now_ms > shown) ask = shown + (now_ms - shown) * k;
+    const int64_t wait = table_bot_wait_ms(t, ask);
+    return wait > 0 ? (wait + k - 1) / k : 0;
+}
+
 // ms left before this drive must stop, or INT64_MAX under serve (no deadline).
 static int64_t budget_left(const cb_ctx *ctx) {
     if (ctx->deadline_ms <= 0) return INT64_MAX;
@@ -138,7 +160,7 @@ static int drive_round(cb_ctx *ctx, const char *game_id, cb_store_tally *stp, bo
     cb_store_tally st = *stp;
     *settled = false;
     cb_uuid lease;
-    int rc = CB_STORE_CALL(ctx->store, lease_acquire, game_id, cb_app_now(), CB_BOT_LEASE_MS, lease);
+    int rc = CB_STORE_CALL(ctx->store, lease_acquire, game_id, cb_app_now(), cb_bots_ms(ctx, CB_BOT_LEASE_MS), lease);
     if (rc == CB_E_CONFLICT) {
         CB_INFO("bots", "game %s: bot lease held by another drive, skipping", game_id);
         return CB_OK;
@@ -159,14 +181,14 @@ static int drive_round(cb_ctx *ctx, const char *game_id, cb_store_tally *stp, bo
     rc = CB_OK;
     for (int cycle = 0;; cycle++) {
         if (cycle > 0) {
-            if (cb_app_now() - started > CB_BOT_WALL_MS) { rekick = true; break; }
+            if (cb_app_now() - started > cb_bots_ms(ctx, CB_BOT_WALL_MS)) { rekick = true; break; }
             if (cpu.cycles > 0) {
                 double avg = cpu.compute_ms / cpu.cycles;
                 double predicted = avg * BOT_PREDICT_FACTOR;
                 if (predicted < (double)cpu.max_ms) predicted = (double)cpu.max_ms;
                 if (predicted > (double)budget_left(ctx)) { rekick = true; break; }
             }
-            int r = CB_STORE_CALL(ctx->store, lease_renew, game_id, lease, cb_app_now(), CB_BOT_LEASE_MS);
+            int r = CB_STORE_CALL(ctx->store, lease_renew, game_id, lease, cb_app_now(), cb_bots_ms(ctx, CB_BOT_LEASE_MS));
             // Another drive took the lease over; a store failure keeps going (renewBotLease).
             if (r == CB_E_CONFLICT) break;
             if (r != CB_OK) CB_ERROR("bots", "game %s: lease renewal failed (%s), driving on", game_id, cb_strerror(r));
@@ -259,7 +281,8 @@ int cb_bots_scan(cb_ctx *ctx, int64_t now_ms) {
     // Stale on updated_at (a drive in flight has just touched the row), active
     // on last_commit_at (only a commit moves it, so the scan's own leases never
     // refresh the abandon guard).
-    int rc = CB_STORE_CALL(ctx->store, games_needing_bots, now_ms - CB_BOT_STALE_MS, now_ms - CB_BOT_ABANDON_MS,
+    int rc = CB_STORE_CALL(ctx->store, games_needing_bots, now_ms - cb_bots_ms(ctx, CB_BOT_STALE_MS),
+                           now_ms - cb_bots_ms(ctx, CB_BOT_ABANDON_MS),
                            CB_BOT_SCAN_MAX, scan_collect, l);
     if (rc < 0) {
         CB_ERROR("bots", "heartbeat scan failed (%s)", cb_strerror(rc));
