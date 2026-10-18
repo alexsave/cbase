@@ -25,7 +25,7 @@ Description: >-
 #     (c_base/ops/web_deploy.sh site);
 #   * read both stacks.
 # It cannot change a template: UpdateStack is allowed, but CloudFormation would
-# need IAM, DynamoDB, API Gateway, CloudFront distribution and Scheduler rights
+# need IAM, DynamoDB, API Gateway, IoT, CloudFront distribution and Scheduler rights
 # to apply any template change, and the role has none of them. A template
 # change is deployed by hand (ops/deploy.sh, ops/web_deploy.sh stack).
 
@@ -45,6 +45,9 @@ Parameters:
     Type: String
     Default: cbase
   FunctionName:
+    Type: String
+    Default: cbase
+  TableName:
     Type: String
     Default: cbase
   CodeBucket:
@@ -151,6 +154,28 @@ Resources:
                 Effect: Allow
                 Action: cloudfront:GetDistribution
                 Resource: !Sub "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${ApiDistributionId}"
+              # The same reads for the rest of what cbase.yaml takes an attribute
+              # of (ops/role_covers_template.sh holds this list to the template):
+              # the IoT authorizer (IotAuthorizer.Arn, which the authorizer's invoke
+              # permission names; missing, it failed every code deploy after the
+              # stage 1 template of 2026-10-18 and rolled them back), the table, and
+              # the stack's two CloudFront Functions. All read-only.
+              - Sid: StackAuthorizer
+                Effect: Allow
+                # CloudFormation's read of an authorizer is both (measured: without
+                # ListTagsForResource it fails "Unauthorized tagging operation").
+                Action: [iot:DescribeAuthorizer, iot:ListTagsForResource]
+                Resource: !Sub "arn:${AWS::Partition}:iot:${AWS::Region}:${AWS::AccountId}:authorizer/${FunctionName}-stream"
+              - Sid: StackTable
+                Effect: Allow
+                Action: dynamodb:DescribeTable
+                Resource: !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TableName}"
+              - Sid: StackEdgeFunctions
+                Effect: Allow
+                Action: cloudfront:DescribeFunction
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:function/${FunctionName}-ws-path"
+                  - !Sub "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:function/${FunctionName}-mqtt-authorizer"
 
               # ---- the web ----
               - Sid: WebFiles
