@@ -1432,7 +1432,7 @@ typedef struct {
 
 static bool pointer_step(const cb_item *it, void *ud) {
     pointers *p = ud;
-    char id[KB], gid[CB_GAME_ID_MAX + 1] = "";
+    char id[sizeof(cb_uuid) + 8], gid[CB_GAME_ID_MAX + 1] = "";   // a snapshot id is a uuid; a longer one is not one of ours
     if (!s_of(it, "id", id, sizeof id)) return true;
     s_of(it, "game_id", gid, sizeof gid);
     if ((p->q->id && strcmp(id, p->q->id) != 0) || (p->q->game_id && strcmp(gid, p->q->game_id) != 0)) return true;
