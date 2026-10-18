@@ -51,7 +51,7 @@ bool cb_rows_user_of(const cb_item *it, cb_user_row *u) {
 // creation). The strings they point at live in `a`.
 typedef struct {
     char  pk[2][KEY_MAX], gsk[KEY_MAX];
-    cb_av email[1], profile[8];
+    cb_av email[1], profile[10];
 } acct_items;
 
 static void acct_writes(cb_iwrite w[2], acct_items *a, const cb_user_row *u, bool fresh) {
@@ -67,6 +67,8 @@ static void acct_writes(cb_iwrite w[2], acct_items *a, const cb_user_row *u, boo
     if (u->username[0]) a->profile[n++] = CB_AVS("username", u->username);
     a->profile[n++] = CB_AVN("created_at", u->created_at);
     if (u->last_sign_in_at) a->profile[n++] = CB_AVN("last_sign_in_at", u->last_sign_in_at);
+    if (u->session_gen) a->profile[n++] = CB_AVN("session_gen", u->session_gen);
+    if (u->kept_session[0]) a->profile[n++] = CB_AVS("kept_session", u->kept_session);
     w[1] = (cb_iwrite){ .op = CB_IW_PUT, .key = { key(a->pk[1], KEY_MAX, "USER#", u->id), "PROFILE" }, .attrs = a->profile,
                         .n_attrs = n };
     if (fresh) {
@@ -111,11 +113,23 @@ int cb_rows_user_create(cb_store *s, const cb_user_row *u) {
     return rc == CB_E_CONFLICT ? (failed == 0 || failed == 1 ? CB_E_CONFLICT : CB_E_DB) : rc;
 }
 
-int cb_rows_user_import(cb_store *s, const cb_user_row *u) {
+// The profile is replaced whole, so an existing user's session_gen and
+// kept_session are carried over: re-importing must not turn a global sign-out
+// back into live sessions (a lower generation passes the check again). The
+// larger of the stored and the imported generation wins (an import never
+// lowers it; a row exported after more sign-outs raises it), and kept_session
+// goes with the generation that won. Read then write, not atomic: the import
+// is a one-shot admin tool run against a quiet store.
+int cb_rows_user_import(cb_store *s, const cb_user_row *u_in) {
+    cb_user_row u = *u_in, old;
+    if (cb_rows_user_get(s, u.id, &old) == CB_OK && old.session_gen >= u.session_gen) {
+        u.session_gen = old.session_gen;
+        memcpy(u.kept_session, old.kept_session, sizeof u.kept_session);
+    }
     cb_iwrite w[2];
     acct_items *a = calloc(1, sizeof *a);
     if (!a) return CB_E_NOMEM;
-    acct_writes(w, a, u, false);
+    acct_writes(w, a, &u, false);
     int rc = s->ops->item_txn(s, w, 2, NULL, NULL);
     free(a);
     return rc == CB_E_CONFLICT ? CB_E_DB : rc;
