@@ -50,6 +50,12 @@ typedef struct {
 // CB_OK, or CB_E_INVALID (a header without ':', more than 32 headers).
 int cb_sigv4_sign(const cb_aws_creds *c, const cb_sigv4_req *r, cb_buf *out);
 
+// RFC 3986 percent-encoding as SigV4 canonicalises it: every byte but the
+// unreserved A-Z a-z 0-9 - _ . ~ (and '/' when keep_slash) becomes %XX in
+// upper-case hex. The one encoder for a canonical path and for a path segment
+// a caller builds (aws_call.h cb_aws_path_segment), so the two cannot differ.
+void cb_sigv4_uri_encode(cb_buf *b, const char *s, size_t n, bool keep_slash);
+
 // The signing keys this thread has derived (sigv4.c "the signing key": each
 // is kept and reused until the date, region, service or secret changes). For
 // the tests.

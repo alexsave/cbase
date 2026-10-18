@@ -10,7 +10,7 @@
 #include "sigv4.h"
 
 #include "util/err.h"
-#include "util/hex.h"
+#include "../../../shared/c/hex/hex.h"
 
 #include <openssl/evp.h>
 #include <openssl/opensslv.h>
@@ -75,7 +75,7 @@ static bool sha256_parts(const void *const *p, const size_t *n, int k, uint8_t o
 static bool sha256_hex(const void *p, size_t n, char out[65]) {
     uint8_t d[32];
     if (!sha256_parts(&p, &n, 1, d)) return false;
-    cb_hex_encode(d, sizeof d, out, 65);
+    hex_encode(d, sizeof d, out, 65);
     return true;
 }
 
@@ -166,13 +166,11 @@ static bool unreserved(unsigned char c) {
     return isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~';
 }
 
-// Percent-encodes every byte but the unreserved ones and (when keep_slash) '/'.
-static void uri_encode(cb_buf *b, const char *s, size_t n, bool keep_slash) {
-    static const char H[] = "0123456789ABCDEF";
+void cb_sigv4_uri_encode(cb_buf *b, const char *s, size_t n, bool keep_slash) {
     for (size_t i = 0; i < n; i++) {
         unsigned char c = (unsigned char)s[i];
         if (unreserved(c) || (keep_slash && c == '/')) cb_buf_putc(b, (char)c);
-        else { cb_buf_putc(b, '%'); cb_buf_putc(b, H[c >> 4]); cb_buf_putc(b, H[c & 15]); }
+        else { cb_buf_putc(b, '%'); cb_buf_putc(b, hex_digit_upper(c >> 4)); cb_buf_putc(b, hex_digit_upper(c)); }
     }
 }
 
@@ -262,7 +260,7 @@ int cb_sigv4_debug(const cb_aws_creds *c, const cb_sigv4_req *r, cb_buf *canonic
     cb_buf_puts(canonical, r->method);
     cb_buf_putc(canonical, '\n');
     const char *path = r->path && *r->path ? r->path : "/";
-    uri_encode(canonical, path, strlen(path), true);
+    cb_sigv4_uri_encode(canonical, path, strlen(path), true);
     cb_buf_putc(canonical, '\n');
     const char *q = r->query ? r->query : "";
     if (*q) {
@@ -313,7 +311,7 @@ int cb_sigv4_debug(const cb_aws_creds *c, const cb_sigv4_req *r, cb_buf *canonic
     uint8_t kk[32], sg[32];
     if (!signing_key_for(c->secret_key, date, c->region, r->service, kk) || !hmac(kk, 32, sts->p, sts->len, sg))
         return CB_E_NOMEM;
-    cb_hex_encode(sg, 32, sig, 65);
+    hex_encode(sg, 32, sig, 65);
     return CB_OK;
 }
 

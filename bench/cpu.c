@@ -32,8 +32,8 @@
 #include "auth/jwt.h"
 #include "json_surface.h"
 #include "realtime/realtime.h"
-#include "util/b64.h"
-#include "util/hex.h"
+#include "../../shared/c/b64/b64.h"
+#include "../../shared/c/hex/hex.h"
 #include "util/uuid.h"
 
 #include "awire.h"
@@ -149,7 +149,7 @@ static bool play_in(int moves) {
     g_snaps = calloc(1, sizeof *g_snaps);
     g_arena = malloc(ARENA_BYTES);
     for (int i = 0; i < FOOLISH_SEED_LEN; i++) g_seed[i] = (uint8_t)(i * 37 + 11);
-    cb_hex_encode(g_seed, FOOLISH_SEED_LEN, g_seed_hex, sizeof g_seed_hex);
+    hex_encode(g_seed, FOOLISH_SEED_LEN, g_seed_hex, sizeof g_seed_hex);
     table_init(&g_t, g_game, g_snaps);
     if (table_create(&g_t, UA, 36, "alice", 5) < 0 || commit() < 0) return false;
     if (load() < 0 || table_join(&g_t, UB, 36, "bob", 3) < 0 || commit() < 0) return false;
@@ -229,8 +229,8 @@ static void op_view_push(void) {
     g_sink += t;
 }
 
-static void op_b64_encode(void) { g_sink += cb_b64_encode(g_env2k, sizeof g_env2k, g_b64, sizeof g_b64); }
-static void op_b64_decode(void) { g_sink += cb_b64_decode(g_b64, strlen(g_b64), g_back, sizeof g_back); }
+static void op_b64_encode(void) { g_sink += b64_encode(g_env2k, sizeof g_env2k, g_b64, sizeof g_b64); }
+static void op_b64_decode(void) { g_sink += b64_decode(g_b64, strlen(g_b64), g_back, sizeof g_back); }
 
 static void op_jwt_verify(void) {
     cb_jwt_claims c;
@@ -267,7 +267,7 @@ static bool fixtures(void) {
     memcpy(body + 6, g_wire, (size_t)g_wire_len);
     int bn = table_request_encode(body, sizeof body, 6, g_wire_len, true, g_version);
     char b64body[256];
-    cb_b64_encode(body, (size_t)bn, b64body, sizeof b64body);
+    b64_encode(body, (size_t)bn, b64body, sizeof b64body);
     cb_buf_init(&g_event);
     cb_js_client_function_url_event(&g_event, g_token, bn, b64body);
     cb_event ev;
@@ -341,7 +341,7 @@ static bool fixtures(void) {
     g_view.updated_at = 1760000999000;
 
     for (size_t i = 0; i < sizeof g_env2k; i++) g_env2k[i] = (uint8_t)(i * 131 + 7);
-    cb_b64_encode(g_env2k, sizeof g_env2k, g_b64, sizeof g_b64);
+    b64_encode(g_env2k, sizeof g_env2k, g_b64, sizeof g_b64);
     if (cb_bcrypt_hash("bench-pass-123", CB_BCRYPT_COST, g_hash) != 0) return false;
     fprintf(stderr,
             "bench: fixtures: event %zu B, GetItem %zu B (state %d, logs %d), envelope %d B\n", g_event.len,

@@ -12,7 +12,7 @@
 #include "fz.h"
 
 #include "auth/jwt.h"
-#include "util/b64.h"
+#include "../../shared/c/b64/b64.h"
 
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
@@ -21,7 +21,7 @@
 #define NOW_S  1790000000
 
 static size_t part(const uint8_t *p, size_t n, char *out, size_t cap) {
-    int k = cb_b64url_encode(p, n, out, cap);
+    int k = b64url_encode(p, n, out, cap);
     return k < 0 ? 0 : (size_t)k;
 }
 

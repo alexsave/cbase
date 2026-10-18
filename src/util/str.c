@@ -1,5 +1,7 @@
 #include "str.h"
 
+#include "../../../shared/c/hex/hex.h"
+
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -99,20 +101,13 @@ bool cb_strncpy0(char *dst, size_t cap, const char *src, size_t n) {
 
 bool cb_starts_with(const char *s, const char *prefix) { return strncmp(s, prefix, strlen(prefix)) == 0; }
 
-static int hexval(int c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    return -1;
-}
-
 int cb_url_decode(const char *in, size_t n, char *out, size_t cap, bool plus_is_space) {
     size_t o = 0;
     for (size_t i = 0; i < n; i++) {
         char c = in[i];
         if (c == '%') {
             if (i + 2 >= n) return -1;
-            int hi = hexval((unsigned char)in[i + 1]), lo = hexval((unsigned char)in[i + 2]);
+            int hi = hex_nibble((unsigned char)in[i + 1]), lo = hex_nibble((unsigned char)in[i + 2]);
             if (hi < 0 || lo < 0) return -1;
             c = (char)(hi * 16 + lo);
             i += 2;

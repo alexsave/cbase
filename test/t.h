@@ -5,7 +5,7 @@
 // kernel:
 //
 //     #include "t.h"
-//     static void round_trip(void) { T_EQ_INT(cb_hex_decode("0a", 2, b, 1), 1); }
+//     static void round_trip(void) { T_EQ_INT(cb_bytea_decode("0a", 2, b, 1), 1); }
 //     int main(void) { T_RUN(round_trip); return T_DONE(); }
 //
 // A failed check prints file:line, the expression and both values, and the

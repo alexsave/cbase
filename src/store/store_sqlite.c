@@ -22,7 +22,7 @@
 
 #include "table.h"
 #include "util/clock.h"
-#include "util/hex.h"
+#include "util/bytea.h"
 #include "util/log.h"
 #include "../../../shared/c/num_parse.h"
 #include "util/str.h"

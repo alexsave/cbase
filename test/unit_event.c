@@ -9,7 +9,7 @@
 #include "aws/event.h"
 #include "fixture_cloudfront_event.h"
 #include "json_surface.h"
-#include "util/b64.h"
+#include "../../shared/c/b64/b64.h"
 #include "util/err.h"
 #include "util/json.h"
 
@@ -245,7 +245,7 @@ static void encode_binary(void) {
     char body[64];
     uint8_t back[64];
     T_CHECK(cb_json_get_str((const char *)out.p, out.len, "body", body, sizeof body));
-    T_EQ_INT(cb_b64_decode(body, strlen(body), back, sizeof back), (long long)sizeof bytes);
+    T_EQ_INT(b64_decode(body, strlen(body), back, sizeof back), (long long)sizeof bytes);
     T_EQ_MEM(back, sizeof bytes, bytes, sizeof bytes);
     cb_res_free(&res);
 

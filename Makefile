@@ -122,7 +122,12 @@ build/gen/console_html.c: admin/console.html build/embed
 	@mkdir -p $(@D)
 	build/embed $< cbase_console_html > $@.new && mv $@.new $@
 
-LIB_SRC  := $(sort $(filter-out src/main_%.c,$(wildcard src/*.c src/*/*.c))) build/gen/schema_sql.c build/gen/console_html.c
+# shared/c's codecs c_base speaks on its edges (base64 for tokens, JWTs and
+# broadcasts; hex for ids, digests and cursors). Each has its own test there,
+# which this build runs (SHARED_TESTS below).
+SHARED_SRC := $(C_ROOT)/shared/c/b64/b64.c $(C_ROOT)/shared/c/hex/hex.c
+LIB_SRC  := $(sort $(filter-out src/main_%.c,$(wildcard src/*.c src/*/*.c))) $(SHARED_SRC) \
+            build/gen/schema_sql.c build/gen/console_html.c
 IMPORT_SRC := migrate/import.c
 TLIB_SRC := $(sort $(wildcard test/lib_*.c))
 UNIT_SRC := $(sort $(wildcard test/unit_*.c))
@@ -189,19 +194,26 @@ SMOKE_RUNS = '$(1)/test/smoke $(1)/cbase' \
              '$(1)/test/smoke_lambda_after $(1)/bootstrap'
 SMOKE_PROGS = $(1)/cbase $(1)/bootstrap $(addprefix $(1)/test/,smoke smoke_matrix smoke_authz smoke_boot smoke_lambda smoke_lambda_after)
 
-test: $(call UNIT_RUNS,build/test)
+# shared/c's tests of what c_base links from there (shared/tools/shared_tests.mk),
+# in c_base's own flags and sanitized variant.
+SHARED_TESTS := b64_test hex_test
+include $(C_ROOT)/shared/tools/shared_tests.mk
+$(call SHARED_TESTS_IN,,build/obj/cbase,CC,CB_CFLAGS)
+$(call SHARED_TESTS_IN,asan_,build/obj/asan,CC,ASAN_CB_CFLAGS)
+
+test: shared-tests $(call UNIT_RUNS,build/test)
 	$(call RUN_ALL,UNIT TESTS,$(call UNIT_RUNS,build/test))
 smoke: $(call SMOKE_PROGS,build)
 	$(call RUN_ALL,SMOKE,$(call SMOKE_RUNS,build))
 # One pool for both, so the smokes and the units share the machine's cores.
-check: $(call UNIT_RUNS,build/test) $(call SMOKE_PROGS,build)
+check: shared-tests $(call UNIT_RUNS,build/test) $(call SMOKE_PROGS,build)
 	$(call RUN_ALL,CHECK,$(call SMOKE_RUNS,build) $(call UNIT_RUNS,build/test))
 
-test-asan: $(call UNIT_RUNS,build/asan/test)
+test-asan: shared-tests-asan $(call UNIT_RUNS,build/asan/test)
 	$(call RUN_ALL,ASAN UNIT TESTS,$(call UNIT_RUNS,build/asan/test))
 smoke-asan: $(call SMOKE_PROGS,build/asan)
 	$(call RUN_ALL,ASAN SMOKE,$(call SMOKE_RUNS,build/asan))
-check-asan: $(call UNIT_RUNS,build/asan/test) $(call SMOKE_PROGS,build/asan)
+check-asan: shared-tests-asan $(call UNIT_RUNS,build/asan/test) $(call SMOKE_PROGS,build/asan)
 	$(call RUN_ALL,ASAN CHECK,$(call SMOKE_RUNS,build/asan) $(call UNIT_RUNS,build/asan/test))
 
 # The DynamoDB backend against Amazon's DynamoDB Local: the table made from
@@ -252,7 +264,8 @@ build/cov_gate: tools/cov_gate.c
 	@mkdir -p $(@D)
 	$(CC) -std=gnu11 -O2 -Wall -Wextra -Werror $< -o $@
 
-COV_FILTER := --filter 'src/' --filter '\.\./foolish/c/src/net(wire|client)\.c' --filter '\.\./shared/c/mqtt/mqtt\.c'
+COV_FILTER := --filter 'src/' --filter '\.\./foolish/c/src/net(wire|client)\.c' --filter '\.\./shared/c/mqtt/mqtt\.c' \
+              --filter '\.\./shared/c/(b64|hex)/(b64|hex)\.c'
 COV_EXCLUDE := --exclude 'build/' --exclude 'test/'
 # Every test program at once, each to its own log (the gcov runtime locks a
 # .gcda while it merges into it); a failed one prints its log and fails the

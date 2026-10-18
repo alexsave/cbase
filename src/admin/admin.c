@@ -42,7 +42,7 @@
 #include "store/store.h"
 #include "util/clock.h"
 #include "util/err.h"
-#include "util/hex.h"
+#include "../../../shared/c/hex/hex.h"
 #include "util/log.h"
 #include "../../../shared/c/num_parse.h"
 
@@ -552,7 +552,7 @@ static void api_game(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     char *hex = NULL;
     if (vrc == CB_OK) {
         hex = malloc(v.view_len * 2 + 1);
-        if (hex && cb_hex_encode(v.view, v.view_len, hex, v.view_len * 2 + 1) >= 0) e.envelope_hex = hex;
+        if (hex && hex_encode(v.view, v.view_len, hex, v.view_len * 2 + 1) >= 0) e.envelope_hex = hex;
         e.envelope_version = v.version;
         cb_view_row_free(&v);
     } else {

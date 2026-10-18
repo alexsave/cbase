@@ -3,7 +3,7 @@
 #include "t.h"
 
 #include "auth/jwt.h"
-#include "util/b64.h"
+#include "../../shared/c/b64/b64.h"
 #include "util/err.h"
 #include "util/json.h"
 
@@ -18,14 +18,14 @@ static const char SID[] = "7c9e6679-7425-40de-944b-e07fc1f90ae7";
 // A token over arbitrary header and claims JSON, signed with `secret`
 // independently of jwt.c (so a refusal is the verifier's, not the minter's).
 static void forge(const char *secret, const char *head, const char *body, char *out, size_t cap) {
-    int n = cb_b64url_encode((const uint8_t *)head, strlen(head), out, cap);
+    int n = b64url_encode((const uint8_t *)head, strlen(head), out, cap);
     out[n++] = '.';
-    n += cb_b64url_encode((const uint8_t *)body, strlen(body), out + n, cap - (size_t)n);
+    n += b64url_encode((const uint8_t *)body, strlen(body), out + n, cap - (size_t)n);
     unsigned char mac[32];
     unsigned int ml = 0;
     HMAC(EVP_sha256(), secret, (int)strlen(secret), (const unsigned char *)out, (size_t)n, mac, &ml);
     out[n++] = '.';
-    cb_b64url_encode(mac, ml, out + n, cap - (size_t)n);
+    b64url_encode(mac, ml, out + n, cap - (size_t)n);
 }
 
 static const char HS256[] = "{\"alg\":\"HS256\",\"typ\":\"JWT\"}";
@@ -67,7 +67,7 @@ static void round_trip(void) {
     // The claims GoTrue's tokens carry, which the SDKs decode.
     const char *d1 = strchr(tok, '.'), *d2 = strrchr(tok, '.');
     char body[1024];
-    int bn = cb_b64_decode(d1 + 1, (size_t)(d2 - d1 - 1), (uint8_t *)body, sizeof body - 1);
+    int bn = b64_decode(d1 + 1, (size_t)(d2 - d1 - 1), (uint8_t *)body, sizeof body - 1);
     T_CHECK(bn > 0);
     body[bn > 0 ? bn : 0] = 0;
     char v[128];
@@ -79,7 +79,7 @@ static void round_trip(void) {
     bool anon = true;
     T_CHECK(cb_json_get_bool(body, (size_t)bn, "is_anonymous", &anon) && !anon);
     char head[128];
-    int hn = cb_b64_decode(tok, (size_t)(d1 - tok), (uint8_t *)head, sizeof head - 1);
+    int hn = b64_decode(tok, (size_t)(d1 - tok), (uint8_t *)head, sizeof head - 1);
     T_EQ_MEM(head, hn, HS256, strlen(HS256));
 
     // Too small a buffer.

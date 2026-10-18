@@ -5,7 +5,7 @@
 #include "net/ws.h"
 #include "netwire.h"
 #include "mqtt/mqtt.h"
-#include "util/b64.h"
+#include "../../shared/c/b64/b64.h"
 #include "util/uuid.h"
 
 #include <openssl/err.h>
@@ -311,7 +311,7 @@ bn_ws *bn_ws_open_with(const bn_url *u, const char *path, const char *headers, i
     uint8_t nonce[16];
     char key[32];
     cb_random_bytes(nonce, sizeof nonce);
-    cb_b64_encode(nonce, sizeof nonce, key, sizeof key);
+    b64_encode(nonce, sizeof nonce, key, sizeof key);
     cb_buf req;
     cb_buf_init(&req);
     cb_buf_printf(&req,

@@ -15,10 +15,10 @@
 #include "json_surface.h"
 #include "net/ws.h"
 #include "store/store.h"
-#include "util/b64.h"
+#include "../../shared/c/b64/b64.h"
 
 #include "../../shared/c/mqtt/mqtt.h"
-#include "util/hex.h"
+#include "../../shared/c/hex/hex.h"
 #include "util/str.h"
 
 #include "fixture_cloudfront_event.h"
@@ -548,8 +548,8 @@ static void seeds_unfurl(void) {
 
 static void seeds_import(void) {
     char sh[2 * sizeof g_state + 1], rh[2 * ROSTER_BYTES + 1];
-    cb_hex_encode(g_state, (size_t)g_state_len, sh, sizeof sh);
-    cb_hex_encode(g_roster, sizeof g_roster, rh, sizeof rh);
+    hex_encode(g_state, (size_t)g_state_len, sh, sizeof sh);
+    hex_encode(g_roster, sizeof g_roster, rh, sizeof rh);
     char hash[CB_BCRYPT_HASH_LEN + 1];
     cb_bcrypt_hash("password", 4, hash);
     cb_buf b;
@@ -772,7 +772,7 @@ static void seeds_mqtt(void) {
     put("mqtt_hub", "session", all, (size_t)at);
     // The authorizer: the request IoT documents, the token as the MQTT password.
     char pw64[128], ev[1024];
-    cb_b64_encode((const uint8_t *)tok, strlen(tok), pw64, sizeof pw64);
+    b64_encode((const uint8_t *)tok, strlen(tok), pw64, sizeof pw64);
     snprintf(ev, sizeof ev,
              "{\"token\":\"\",\"signatureVerified\":false,\"protocols\":[\"tls\",\"http\",\"mqtt\"],"
              "\"protocolData\":{\"tls\":{\"serverName\":\"api.foolish.cards\"},\"http\":{\"headers\":"

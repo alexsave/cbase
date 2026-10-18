@@ -4,9 +4,10 @@
 // Each decode that succeeds must round-trip through its own encoder.
 #include "fz.h"
 
-#include "util/b64.h"
+#include "../../shared/c/b64/b64.h"
 #include "util/clock.h"
-#include "util/hex.h"
+#include "../../shared/c/hex/hex.h"
+#include "util/bytea.h"
 #include "util/str.h"
 #include "util/uuid.h"
 
@@ -22,25 +23,25 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     switch (which) {
     case 0: case 1: {
         size_t c = which ? n : n / 2;   // a short cap too
-        int k = cb_b64_decode(s, n, out, c);
+        int k = b64_decode(s, n, out, c);
         if (k >= 0) {
             FZ_CHECK((size_t)k <= c);
-            int e = cb_b64url_encode(out, (size_t)k, txt, 2 * cap + 16);
+            int e = b64url_encode(out, (size_t)k, txt, 2 * cap + 16);
             FZ_CHECK(e >= 0);
             uint8_t *back = malloc((size_t)k + 1);
-            int k2 = cb_b64_decode(txt, (size_t)e, back, (size_t)k + 1);
+            int k2 = b64_decode(txt, (size_t)e, back, (size_t)k + 1);
             FZ_CHECK(k2 == k && memcmp(back, out, (size_t)k) == 0);
             free(back);
         }
         break;
     }
     case 2: {
-        int k = cb_hex_decode(s, n, out, cap);
+        int k = cb_bytea_decode(s, n, out, cap);
         if (k >= 0) {
             int e = cb_bytea_encode(out, (size_t)k, txt, 2 * cap + 16);
             FZ_CHECK(e == 2 + 2 * k);
             uint8_t *back = malloc((size_t)k + 1);
-            FZ_CHECK(cb_hex_decode(txt, (size_t)e, back, (size_t)k + 1) == k && memcmp(back, out, (size_t)k) == 0);
+            FZ_CHECK(cb_bytea_decode(txt, (size_t)e, back, (size_t)k + 1) == k && memcmp(back, out, (size_t)k) == 0);
             free(back);
         }
         break;

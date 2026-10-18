@@ -7,8 +7,9 @@
 #include "bot_roster.h"
 #include "table.h"
 #include "util/err.h"
-#include "util/hex.h"
+#include "../../../shared/c/hex/hex.h"
 #include "../../../shared/c/num_parse.h"
+#include "util/bytea.h"
 #include "util/str.h"
 #include "util/uuid.h"
 
@@ -166,7 +167,7 @@ static bool cell_hex(const csv *c, int row, int column, uint8_t **out, size_t *l
     size_t n = strlen(v);
     if (!n) return true;
     *out = malloc(n / 2 + 1);
-    int k = *out ? cb_hex_decode(v, n, *out, n / 2 + 1) : -1;
+    int k = *out ? cb_bytea_decode(v, n, *out, n / 2 + 1) : -1;
     if (k < 0) {
         free(*out);
         *out = NULL;
@@ -367,7 +368,7 @@ static bool import_games(cb_store *s, const char *dir, tally *t, tally *th, tall
                   cell_hex(&c, r, ros, &g.roster, &g.roster_len) && cell_hex(&c, r, logs, &g.logs, &g.logs_len);
         if (ok && sh) {   // games.game_seed is TEXT: 64 hex characters
             g.has_seed = true;
-            ok = strlen(sh) == 2 * CB_SEED_LEN && cb_hex_decode(sh, strlen(sh), g.seed, CB_SEED_LEN) == CB_SEED_LEN;
+            ok = strlen(sh) == 2 * CB_SEED_LEN && hex_decode(sh, strlen(sh), g.seed, CB_SEED_LEN) == CB_SEED_LEN;
         }
         if (!ok) {
             fprintf(stderr, "cbase-import: game %s: a column does not parse\n", g.id);

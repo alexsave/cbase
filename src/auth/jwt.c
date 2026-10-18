@@ -11,7 +11,7 @@
 #include "jwt.h"
 
 #include "json_surface.h"
-#include "util/b64.h"
+#include "../../../shared/c/b64/b64.h"
 #include "util/err.h"
 #include "util/str.h"
 
@@ -29,7 +29,7 @@ static bool sign(const char *secret, const char *msg, size_t n, char out[SIG_B64
     unsigned int mac_len = 0;
     if (!HMAC(EVP_sha256(), secret, (int)strlen(secret), (const unsigned char *)msg, n, mac, &mac_len) || mac_len != 32)
         return false;
-    bool ok = cb_b64url_encode(mac, 32, out, SIG_B64_LEN + 1) == SIG_B64_LEN;
+    bool ok = b64url_encode(mac, 32, out, SIG_B64_LEN + 1) == SIG_B64_LEN;
     OPENSSL_cleanse(mac, sizeof mac);
     return ok;
 }
@@ -42,12 +42,12 @@ int cb_jwt_mint(const char *secret, const cb_jwt_claims *c, const char *issuer, 
     cb_buf_init(&claims);
     if (cb_js_jwt_claims(&claims, c, issuer) != CB_OK) { cb_buf_free(&claims); return CB_E_NOMEM; }
 
-    size_t hn = cb_b64url_len(hl), pn = cb_b64url_len(claims.len);
+    size_t hn = b64url_len(hl), pn = b64url_len(claims.len);
     size_t total = hn + 1 + pn + 1 + SIG_B64_LEN;
     if (total + 1 > cap) { cb_buf_free(&claims); return CB_E_FULL; }
-    cb_b64url_encode((const uint8_t *)header, hl, out, cap);
+    b64url_encode((const uint8_t *)header, hl, out, cap);
     out[hn] = '.';
-    cb_b64url_encode(claims.p, claims.len, out + hn + 1, cap - hn - 1);
+    b64url_encode(claims.p, claims.len, out + hn + 1, cap - hn - 1);
     out[hn + 1 + pn] = '.';
     cb_buf_free(&claims);
     if (!sign(secret, out, hn + 1 + pn, out + hn + 1 + pn + 1)) return CB_E_STATE;
@@ -69,7 +69,7 @@ static bool b64url_part(const char *p, size_t n) {
 // the JSON it must be).
 static bool decode_part(const char *p, size_t n, char *out, size_t cap, size_t *len) {
     if (!b64url_part(p, n)) return false;
-    int k = cb_b64_decode(p, n, (uint8_t *)out, cap - 1);
+    int k = b64_decode(p, n, (uint8_t *)out, cap - 1);
     if (k <= 0) return false;
     out[k] = 0;
     *len = (size_t)k;

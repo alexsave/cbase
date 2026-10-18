@@ -8,7 +8,7 @@
 #include "fz.h"
 
 #include "json_surface.h"
-#include "util/b64.h"
+#include "../../shared/c/b64/b64.h"
 #include "util/json.h"
 
 static const char *const PATHS[] = {
@@ -61,7 +61,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         cb_jw_end(&wa);
         size_t cap = (size + 2) / 3 * 4 + 1;
         char *enc = malloc(cap);
-        FZ_CHECK(enc && cb_b64_encode(data, size, enc, cap) >= 0);
+        FZ_CHECK(enc && b64_encode(data, size, enc, cap) >= 0);
         cb_jw_obj(&wb);
         cb_jw_kstr(&wb, "B", enc);
         cb_jw_end(&wb);
@@ -71,7 +71,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         cb_span tok;
         FZ_CHECK(cb_json_find((const char *)ja.p, ja.len, "B", &tok) == CB_JSON_STR);
         uint8_t *back = malloc(size + 3);
-        FZ_CHECK(back && cb_b64_decode(tok.p + 1, tok.n - 2, back, size + 3) == (int)size);
+        FZ_CHECK(back && b64_decode(tok.p + 1, tok.n - 2, back, size + 3) == (int)size);
         FZ_CHECK(size == 0 || memcmp(back, data, size) == 0);
         free(back);
         free(enc);

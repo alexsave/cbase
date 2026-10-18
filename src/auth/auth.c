@@ -26,10 +26,10 @@
 
 #include "bcrypt.h"
 #include "names.h"
-#include "util/b64.h"
+#include "../../../shared/c/b64/b64.h"
 #include "util/clock.h"
 #include "util/err.h"
-#include "util/hex.h"
+#include "../../../shared/c/hex/hex.h"
 #include "util/log.h"
 #include "util/str.h"
 #include "util/uuid.h"
@@ -144,7 +144,7 @@ static int check_username(const char *u) { return u ? cb_name_check(u, strlen(u)
 static void token_hash(const char *token, char out[65]) {
     unsigned char d[SHA256_DIGEST_LENGTH];
     SHA256((const unsigned char *)token, strlen(token), d);
-    cb_hex_encode(d, sizeof d, out, 65);
+    hex_encode(d, sizeof d, out, 65);
 }
 
 // ---- sessions --------------------------------------------------------------------
@@ -168,7 +168,7 @@ static int issue(cb_auth *a, const cb_user_row *u, const cb_session_row *sess, c
 
     uint8_t raw[REFRESH_RAW];
     cb_random_bytes(raw, sizeof raw);
-    cb_b64url_encode(raw, sizeof raw, out->refresh_token, sizeof out->refresh_token);
+    b64url_encode(raw, sizeof raw, out->refresh_token, sizeof out->refresh_token);
     OPENSSL_cleanse(raw, sizeof raw);
     cb_refresh_row r;
     memset(&r, 0, sizeof r);

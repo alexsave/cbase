@@ -48,7 +48,7 @@ FUZZ_TARGETS := $(patsubst fuzz/fz_%.c,%,$(FUZZ_SRC))
 FUZZ_LIB     := $(sort $(wildcard fuzz/lib_*.c))
 # Program sources a target replaces with its own (FUZZ_EXCLUDE_<target>):
 # the sequence target makes the process's randomness a function of the input.
-FUZZ_EXCLUDE_sequence := src/util/uuid.c
+FUZZ_EXCLUDE_sequence := src/util/random.c
 fuzz_lib = $(filter-out $(FUZZ_EXCLUDE_$(1)),$(LIB_SRC))
 
 define FUZZ_PROG

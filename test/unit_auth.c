@@ -11,7 +11,7 @@
 #include <openssl/sha.h>
 #include <stdlib.h>
 
-#include "util/hex.h"
+#include "../../shared/c/hex/hex.h"
 
 static cb_config cfg;
 static cb_ctx ctx;
@@ -293,7 +293,7 @@ static void a_session_from_before_sessions(void) {
     memset(&r, 0, sizeof r);
     unsigned char d[32];
     SHA256((const unsigned char *)"OLDTOKEN0000000000000000000000000000000000x", 43, d);
-    cb_hex_encode(d, 32, r.token_hash, sizeof r.token_hash);
+    hex_encode(d, 32, r.token_hash, sizeof r.token_hash);
     cb_strlcpy(r.user_id, s0.user.id, sizeof r.user_id);
     cb_strlcpy(r.session_id, "99999999-9999-4999-8999-999999999999", sizeof r.session_id);
     r.created_at = cb_now_ms() - 1000;
@@ -311,7 +311,7 @@ static void a_session_from_before_sessions(void) {
     // An old token whose session would have ended by now (it carries no end
     // of its own): refused, and no session is made for it.
     SHA256((const unsigned char *)"OLDTOKEN1111111111111111111111111111111111x", 43, d);
-    cb_hex_encode(d, 32, r.token_hash, sizeof r.token_hash);
+    hex_encode(d, 32, r.token_hash, sizeof r.token_hash);
     cb_strlcpy(r.session_id, "88888888-8888-4888-8888-888888888888", sizeof r.session_id);
     r.created_at = cb_now_ms() - CB_AUTH_SESSION_MS - 1;
     T_EQ_INT(CB_STORE_CALL(ctx.store, refresh_put, &r), CB_OK);

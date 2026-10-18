@@ -45,9 +45,9 @@
 
 #include "auth/jwt.h"
 #include "net/ws.h"
-#include "util/b64.h"
+#include "../../shared/c/b64/b64.h"
 #include "util/clock.h"
-#include "util/hex.h"
+#include "../../shared/c/hex/hex.h"
 #include "util/json.h"
 
 #include "ask.h"
@@ -231,7 +231,7 @@ static void make_bad(const user *victim, const user *other) {
     const char *dot1 = strchr(tok, '.'), *dot2 = dot1 ? strchr(dot1 + 1, '.') : NULL;
     static const char none_hdr[] = "{\"alg\":\"none\",\"typ\":\"JWT\"}";
     char h64[128];
-    cb_b64url_encode((const uint8_t *)none_hdr, strlen(none_hdr), h64, sizeof h64);
+    b64url_encode((const uint8_t *)none_hdr, strlen(none_hdr), h64, sizeof h64);
     if (dot1 && dot2) snprintf(g_bad[BAD_ALG_NONE], sizeof g_bad[0], "Bearer %s.%.*s.", h64, (int)(dot2 - dot1 - 1), dot1 + 1);
     // Swapped: the other user's payload under the victim's header and signature.
     const char *ot = other->auth + 7;
@@ -1106,12 +1106,12 @@ static void forms_of(const char *name, forms *f) {
     size_t n = strlen(name);
     f->n = 0;
     snprintf(f->form[f->n++], sizeof f->form[0], "%s", name);
-    cb_hex_encode((const uint8_t *)name, n, f->form[f->n++], sizeof f->form[0]);
+    hex_encode((const uint8_t *)name, n, f->form[f->n++], sizeof f->form[0]);
     for (int k = 0; k < 3; k++) {
         uint8_t in[128] = { 0 };
         memcpy(in + k, name, n);
         char b64[200];
-        cb_b64_encode(in, n + (size_t)k, b64, sizeof b64);
+        b64_encode(in, n + (size_t)k, b64, sizeof b64);
         int i0 = (8 * k + 5) / 6, i1 = (int)(8 * (k + n)) / 6;   // the characters only the name's bits make
         snprintf(f->form[f->n++], sizeof f->form[0], "%.*s", i1 - i0, b64 + i0);
     }

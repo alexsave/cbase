@@ -11,7 +11,7 @@
 
 #define CB_UUID_LEN 36   // characters, without the NUL
 
-// n bytes from the CSPRNG. Aborts the process if OpenSSL cannot supply them.
+// n bytes from the CSPRNG (random.c). Aborts the process if OpenSSL cannot supply them.
 void cb_random_bytes(void *out, size_t n);
 // A random (version 4, variant 1) UUID in canonical lowercase form, NUL-terminated.
 void cb_uuid_v4(char out[CB_UUID_LEN + 1]);

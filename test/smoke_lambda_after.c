@@ -18,7 +18,7 @@
 #include "net/loop.h"
 #include "net/router.h"
 #include "net/server.h"
-#include "util/b64.h"
+#include "../../shared/c/b64/b64.h"
 #include "util/err.h"
 #include "util/json.h"
 #include "util/log.h"
@@ -128,7 +128,7 @@ static int give(const char *event) {
 
 static void url_event(char *out, size_t cap, const char *method, const char *path, const char *auth, const uint8_t *body, size_t n) {
     char b64[4096] = "";
-    if (n) cb_b64_encode(body, n, b64, sizeof b64);
+    if (n) b64_encode(body, n, b64, sizeof b64);
     char hdr[2400] = "";
     if (auth) snprintf(hdr, sizeof hdr, ",\"authorization\":\"%s\"", auth);
     snprintf(out, cap,
@@ -143,7 +143,7 @@ static void url_event(char *out, size_t cap, const char *method, const char *pat
 static int response_body(int i, uint8_t *out, int cap) {
     char b64[8192];
     if (!cb_json_get_str(cb_buf_cstr(&g_response[i]), g_response[i].len, "body", b64, sizeof b64)) return -1;
-    return cb_b64_decode(b64, strlen(b64), out, (size_t)cap);
+    return b64_decode(b64, strlen(b64), out, (size_t)cap);
 }
 
 static void answers_then_pushes(const char *bin) {

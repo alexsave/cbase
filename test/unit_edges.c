@@ -8,7 +8,7 @@
 #include "aws/sigv4.h"
 #include "config.h"
 #include "net/http.h"
-#include "util/b64.h"
+#include "../../shared/c/b64/b64.h"
 #include "util/err.h"
 #include "util/json.h"
 #include "util/log.h"
@@ -420,7 +420,7 @@ static void signed_parts_must_be_base64url(void) {
         unsigned int ml = 0;
         HMAC(EVP_sha256(), SECRET, (int)strlen(SECRET), (const unsigned char *)msg, (size_t)mn, mac, &ml);
         char s64[64];
-        cb_b64url_encode(mac, 32, s64, sizeof s64);
+        b64url_encode(mac, 32, s64, sizeof s64);
         snprintf(out, sizeof out, "%s.%s", msg, s64);
         T_EQ_INT(cb_jwt_verify(SECRET, out, 2000, &got), CB_E_AUTH);
     }
@@ -429,7 +429,7 @@ static void signed_parts_must_be_base64url(void) {
     {
         static const char hj[] = "{\"alg\":\"HS256\",\"typ\":\"JWT\",\"k\":\"?>?>?>\"}";
         char h64[128];
-        cb_b64_encode((const uint8_t *)hj, strlen(hj), h64, sizeof h64);
+        b64_encode((const uint8_t *)hj, strlen(hj), h64, sizeof h64);
         char *eq = strchr(h64, '=');
         if (eq) *eq = 0;
         T_CHECK(strpbrk(h64, "+/") != NULL);   // the case is the one meant
@@ -439,7 +439,7 @@ static void signed_parts_must_be_base64url(void) {
         unsigned int ml2 = 0;
         HMAC(EVP_sha256(), SECRET, (int)strlen(SECRET), (const unsigned char *)m2, (size_t)n2, mac2, &ml2);
         char sig2[64];
-        cb_b64url_encode(mac2, 32, sig2, sizeof sig2);
+        b64url_encode(mac2, 32, sig2, sizeof sig2);
         snprintf(o2, sizeof o2, "%s.%s", m2, sig2);
         T_EQ_INT(cb_jwt_verify(SECRET, o2, 2000, &got), CB_E_AUTH);
     }
@@ -450,7 +450,7 @@ static void signed_parts_must_be_base64url(void) {
     unsigned int ml = 0;
     HMAC(EVP_sha256(), SECRET, (int)strlen(SECRET), (const unsigned char *)msg, (size_t)mn, mac, &ml);
     char s64[64];
-    cb_b64url_encode(mac, 32, s64, sizeof s64);
+    b64url_encode(mac, 32, s64, sizeof s64);
     snprintf(out, sizeof out, "%s.%s", msg, s64);
     T_EQ_INT(cb_jwt_verify(SECRET, out, 2000, &got), CB_E_AUTH);
     // An empty secret signs nothing.

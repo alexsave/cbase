@@ -10,7 +10,7 @@
 #include "json_surface.h"
 #include "lib_aws_tls.h"
 #include "store/store.h"
-#include "util/b64.h"
+#include "../../shared/c/b64/b64.h"
 #include "util/err.h"
 #include "util/json.h"
 #include "util/log.h"

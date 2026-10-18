@@ -1,7 +1,7 @@
 #include "json.h"
 
-#include "b64.h"
-#include "hex.h"
+#include "../../../shared/c/b64/b64.h"
+#include "../../../shared/c/hex/hex.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -107,11 +107,11 @@ void cb_jw_str(cb_jw *w, const char *s) {
 // pass of cb_json_escape over it.
 void cb_jw_b64(cb_jw *w, const uint8_t *p, size_t n) {
     if (!value_start(w)) return;
-    size_t k = cb_b64_len(n);
+    size_t k = b64_len(n);
     if (k < n || !cb_buf_reserve(w->b, k + 2)) { w->err = true; return; }
     char *o = (char *)w->b->p + w->b->len;
     o[0] = '"';
-    cb_b64_encode(p, n, o + 1, k + 1);   // k + 1 is exactly what it needs, the NUL included
+    b64_encode(p, n, o + 1, k + 1);   // k + 1 is exactly what it needs, the NUL included
     o[1 + k] = '"';
     w->b->len += k + 2;
     w->b->p[w->b->len] = 0;
@@ -336,11 +336,9 @@ static int hex4(const char *p) {
     int v = 0;
     for (int k = 0; k < 4; k++) {
         char h = p[k];
-        v <<= 4;
-        if (h >= '0' && h <= '9') v |= h - '0';
-        else if (h >= 'a' && h <= 'f') v |= h - 'a' + 10;
-        else if (h >= 'A' && h <= 'F') v |= h - 'A' + 10;
-        else return -1;
+        int d = hex_nibble((unsigned char)h);
+        if (d < 0) return -1;
+        v = v << 4 | d;
     }
     return v;
 }

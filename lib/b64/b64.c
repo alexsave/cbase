@@ -3,11 +3,11 @@
 static const char STD[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 static const char URL[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
-size_t cb_b64_len(size_t n) { return (n + 2) / 3 * 4; }
-size_t cb_b64url_len(size_t n) { return n / 3 * 4 + (n % 3 ? n % 3 + 1 : 0); }
+size_t b64_len(size_t n) { return (n + 2) / 3 * 4; }
+size_t b64url_len(size_t n) { return n / 3 * 4 + (n % 3 ? n % 3 + 1 : 0); }
 
 static int encode(const uint8_t *in, size_t n, char *out, size_t cap, const char *tbl, int pad) {
-    size_t need = pad ? cb_b64_len(n) : cb_b64url_len(n);
+    size_t need = pad ? b64_len(n) : b64url_len(n);
     if (cap < need + 1) return -1;
     size_t o = 0, i = 0;
     for (; i + 3 <= n; i += 3) {
@@ -30,8 +30,8 @@ static int encode(const uint8_t *in, size_t n, char *out, size_t cap, const char
     return (int)o;
 }
 
-int cb_b64_encode(const uint8_t *in, size_t n, char *out, size_t cap) { return encode(in, n, out, cap, STD, 1); }
-int cb_b64url_encode(const uint8_t *in, size_t n, char *out, size_t cap) { return encode(in, n, out, cap, URL, 0); }
+int b64_encode(const uint8_t *in, size_t n, char *out, size_t cap) { return encode(in, n, out, cap, STD, 1); }
+int b64url_encode(const uint8_t *in, size_t n, char *out, size_t cap) { return encode(in, n, out, cap, URL, 0); }
 
 static int val(unsigned char c) {
     if (c >= 'A' && c <= 'Z') return c - 'A';
@@ -42,7 +42,7 @@ static int val(unsigned char c) {
     return -1;
 }
 
-int cb_b64_decode(const char *in, size_t n, uint8_t *out, size_t cap) {
+int b64_decode(const char *in, size_t n, uint8_t *out, size_t cap) {
     // Trailing padding (at most two) is read as absent.
     size_t pads = 0;
     while (n > 0 && in[n - 1] == '=' && pads < 2) { n--; pads++; }

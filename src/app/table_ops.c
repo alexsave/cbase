@@ -13,7 +13,7 @@
 
 #include "util/clock.h"
 #include "util/err.h"
-#include "util/hex.h"
+#include "../../../shared/c/hex/hex.h"
 #include "util/log.h"
 #include "util/str.h"
 #include "util/uuid.h"
@@ -37,12 +37,7 @@ void (*cb_app_sleep)(int64_t ms) = cb_sleep_ms;
 void cb_game_id_random(char out[CB_GAME_ID_MAX + 1]) {
     uint8_t raw[CB_GAME_ID_HEX / 2];
     cb_random_bytes(raw, sizeof raw);
-    static const char hex[] = "0123456789abcdef";
-    for (size_t i = 0; i < sizeof raw; i++) {
-        out[2 * i] = hex[raw[i] >> 4];
-        out[2 * i + 1] = hex[raw[i] & 15];
-    }
-    out[CB_GAME_ID_HEX] = 0;
+    hex_encode(raw, sizeof raw, out, CB_GAME_ID_MAX + 1);
 }
 void (*cb_app_game_id)(char out[CB_GAME_ID_MAX + 1]) = cb_game_id_random;
 
@@ -175,7 +170,7 @@ int cb_section_load(cb_section *s, const cb_game_row *row) {
     // Every mid-game draw and every bot decision is seeded from this game's
     // deal seed, as its hex text exactly as table_io.ts's bareHex wrote it.
     char hex[2 * CB_SEED_LEN + 1] = "";
-    if (row->has_seed) cb_hex_encode(row->seed, CB_SEED_LEN, hex, sizeof hex);
+    if (row->has_seed) hex_encode(row->seed, CB_SEED_LEN, hex, sizeof hex);
     rc = table_set_deal_seed(&s->t, hex, (int)strlen(hex));
     if (rc < 0) return rc;
     s->n_old = s->n_old_bots = 0;

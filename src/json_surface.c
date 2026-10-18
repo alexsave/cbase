@@ -9,9 +9,9 @@
 #include "util/clock.h"
 #include "realtime/realtime.h"
 #include "realtime/stream_mqtt.h"
-#include "util/b64.h"
+#include "../../shared/c/b64/b64.h"
 #include "net/http.h"
-#include "util/hex.h"
+#include "util/bytea.h"
 #include "util/json.h"
 
 #include <ctype.h>
@@ -542,7 +542,7 @@ static bool tok_b(cb_span tok, uint8_t **out, size_t *len) {
     }
     size_t cap = (size_t)tn / 4 * 3 + 3;
     uint8_t *p = malloc(cap);
-    int n = p ? cb_b64_decode(text, (size_t)tn, p, cap) : -1;
+    int n = p ? b64_decode(text, (size_t)tn, p, cap) : -1;
     free(copy);
     if (n < 0) { free(p); return false; }
     if (n == 0) { free(p); return true; }
@@ -2509,7 +2509,7 @@ static int put_body(cb_buf *st, const char *json, size_t len, long *off, size_t 
     size_t tn = strlen((const char *)st->p + o);
     if (b64) {
         // Decoded in place: base64 never grows.
-        int k = cb_b64_decode((const char *)st->p + o, tn, st->p + o, tn + 1);
+        int k = b64_decode((const char *)st->p + o, tn, st->p + o, tn + 1);
         if (k < 0) return CB_E_INVALID;
         st->len = (size_t)o + (size_t)k;
         cb_buf_putc(st, 0);
@@ -2650,7 +2650,7 @@ static int decode_iot_auth(const char *json, size_t len, cb_event *ev) {
     // a refusal, and a cut one would be a different string.
     char pw64[sizeof a->token * 4 / 3 + 8];
     if (cb_json_get_str(json, len, "protocolData.mqtt.password", pw64, sizeof pw64)) {
-        int n = cb_b64_decode(pw64, strlen(pw64), (uint8_t *)a->token, sizeof a->token - 1);
+        int n = b64_decode(pw64, strlen(pw64), (uint8_t *)a->token, sizeof a->token - 1);
         if (n > 0 && !memchr(a->token, 0, (size_t)n)) {
             a->token[n] = 0;
             a->token_len = (size_t)n;

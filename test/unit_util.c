@@ -1,10 +1,11 @@
-// unit_util.c - the util layer: b64, hex, uuid, clock, str, json, log, pool.
+// unit_util.c - the util layer: bytea, uuid, clock, str, json, log, pool.
 #include "t.h"
 
-#include "util/b64.h"
+#include "../../shared/c/b64/b64.h"
 #include "util/clock.h"
 #include "util/err.h"
-#include "util/hex.h"
+#include "../../shared/c/hex/hex.h"
+#include "util/bytea.h"
 #include "util/json.h"
 #include "util/log.h"
 #include "util/pool.h"
@@ -15,69 +16,22 @@
 #include <stdatomic.h>
 #include <stdlib.h>
 
-// RFC 4648 section 10 test vectors, both directions.
-static void b64_rfc4648_vectors(void) {
-    static const char *in[]  = { "", "f", "fo", "foo", "foob", "fooba", "foobar" };
-    static const char *std[] = { "", "Zg==", "Zm8=", "Zm9v", "Zm9vYg==", "Zm9vYmE=", "Zm9vYmFy" };
-    static const char *url[] = { "", "Zg", "Zm8", "Zm9v", "Zm9vYg", "Zm9vYmE", "Zm9vYmFy" };
-    for (int i = 0; i < 7; i++) {
-        char out[32];
-        uint8_t back[32];
-        size_t n = strlen(in[i]);
-        T_EQ_INT(cb_b64_encode((const uint8_t *)in[i], n, out, sizeof out), (long long)strlen(std[i]));
-        T_EQ_STR(out, std[i]);
-        T_EQ_INT(cb_b64url_encode((const uint8_t *)in[i], n, out, sizeof out), (long long)strlen(url[i]));
-        T_EQ_STR(out, url[i]);
-        T_EQ_INT(cb_b64_decode(std[i], strlen(std[i]), back, sizeof back), (long long)n);
-        T_EQ_MEM(back, n, in[i], n);
-        T_EQ_INT(cb_b64_decode(url[i], strlen(url[i]), back, sizeof back), (long long)n);
-        T_EQ_MEM(back, n, in[i], n);
-    }
-}
+// base64 and hex are shared/c's, tested there (b64_test.c, hex_test.c).
 
-static void b64_round_trip_all_bytes(void) {
-    uint8_t raw[256], back[256];
-    char enc[400];
-    for (int i = 0; i < 256; i++) raw[i] = (uint8_t)(255 - i);
-    for (size_t n = 0; n <= 256; n += 17) {
-        int k = cb_b64_encode(raw, n, enc, sizeof enc);
-        T_EQ_INT(k, (long long)cb_b64_len(n));
-        T_EQ_INT(cb_b64_decode(enc, (size_t)k, back, sizeof back), (long long)n);
-        T_EQ_MEM(back, n, raw, n);
-        k = cb_b64url_encode(raw, n, enc, sizeof enc);
-        T_EQ_INT(k, (long long)cb_b64url_len(n));
-        T_CHECK(strchr(enc, '+') == NULL && strchr(enc, '/') == NULL && strchr(enc, '=') == NULL);
-        T_EQ_INT(cb_b64_decode(enc, (size_t)k, back, sizeof back), (long long)n);
-        T_EQ_MEM(back, n, raw, n);
-    }
-}
-
-static void b64_refusals(void) {
-    uint8_t out[16];
-    char small[4];
-    T_EQ_INT(cb_b64_decode("Zm9v!", 5, out, sizeof out), -1);      // not in either alphabet
-    T_EQ_INT(cb_b64_decode("Z", 1, out, sizeof out), -1);          // no encoding is 1 mod 4
-    T_EQ_INT(cb_b64_decode("Zg=a", 4, out, sizeof out), -1);       // padding in the middle
-    T_EQ_INT(cb_b64_decode("Zh==", 4, out, sizeof out), -1);       // non-zero leftover bits
-    T_EQ_INT(cb_b64_decode("Zm9vYmFy", 8, out, 5), -1);            // does not fit
-    T_EQ_INT(cb_b64_encode((const uint8_t *)"foo", 3, small, sizeof small), -1);   // no room for the NUL
-}
-
-static void hex_and_bytea(void) {
+// The hex itself is shared/c/hex's, tested there (hex_test.c); this is the
+// Postgres prefix around it.
+static void bytea(void) {
     const uint8_t raw[] = { 0x00, 0x01, 0xab, 0xff, 0x10 };
     char out[32];
     uint8_t back[8];
-    T_EQ_INT(cb_hex_encode(raw, 5, out, sizeof out), 10);
-    T_EQ_STR(out, "0001abff10");
     T_EQ_INT(cb_bytea_encode(raw, 5, out, sizeof out), 12);
     T_EQ_STR(out, "\\x0001abff10");
-    T_EQ_INT(cb_hex_decode(out, 12, back, sizeof back), 5);
+    T_EQ_INT(cb_bytea_decode(out, 12, back, sizeof back), 5);
     T_EQ_MEM(back, 5, raw, 5);
-    T_EQ_INT(cb_hex_decode("0001ABFF10", 10, back, sizeof back), 5);
+    T_EQ_INT(cb_bytea_decode("0001ABFF10", 10, back, sizeof back), 5);   // the prefix is optional
     T_EQ_MEM(back, 5, raw, 5);
-    T_EQ_INT(cb_hex_decode("abc", 3, back, sizeof back), -1);
-    T_EQ_INT(cb_hex_decode("zz", 2, back, sizeof back), -1);
-    T_EQ_INT(cb_hex_encode(raw, 5, out, 10), -1);
+    T_EQ_INT(cb_bytea_decode("\\xabc", 5, back, sizeof back), -1);
+    T_EQ_INT(cb_bytea_encode(raw, 5, out, 12), -1);
 }
 
 static void uuid_shape(void) {
@@ -194,7 +148,7 @@ static void json_writer_b64(void) {
         cb_jw_kint(&wa, "after", 1);
         cb_jw_end(&wa);
         char enc[512];
-        T_CHECK(cb_b64_encode(bytes, n, enc, sizeof enc) >= 0);
+        T_CHECK(b64_encode(bytes, n, enc, sizeof enc) >= 0);
         cb_jw_obj(&wb);
         cb_jw_kstr(&wb, "B", enc);
         cb_jw_kint(&wb, "after", 1);
@@ -292,10 +246,7 @@ static void pool_runs_everything(void) {
 }
 
 int main(void) {
-    T_RUN(b64_rfc4648_vectors);
-    T_RUN(b64_round_trip_all_bytes);
-    T_RUN(b64_refusals);
-    T_RUN(hex_and_bytea);
+    T_RUN(bytea);
     T_RUN(uuid_shape);
     T_RUN(iso8601);
     T_RUN(strings);

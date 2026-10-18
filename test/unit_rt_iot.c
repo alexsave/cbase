@@ -15,7 +15,7 @@
 #include "realtime/rt_deps.h"
 #include "realtime/rt_iot.h"
 #include "realtime/stream_mqtt.h"
-#include "util/b64.h"
+#include "../../shared/c/b64/b64.h"
 #include "util/err.h"
 #include "util/json.h"
 #include "app/fanout.h"
@@ -314,7 +314,7 @@ static void a_batch_nests(void) {
 static int event_of(cb_event *ev, const char *password, const char *token, const char *query, const char *client_id,
                     const char *origin_header) {
     char pw64[256] = "";
-    if (password) cb_b64_encode((const uint8_t *)password, strlen(password), pw64, sizeof pw64);
+    if (password) b64_encode((const uint8_t *)password, strlen(password), pw64, sizeof pw64);
     char json[4096];
     int n = snprintf(json, sizeof json,
         "{%s%s%s\"signatureVerified\":false,\"protocols\":[\"tls\",\"http\",\"mqtt\"],"

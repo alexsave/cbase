@@ -1,6 +1,6 @@
 #include "config.h"
 
-#include "util/b64.h"
+#include "../../shared/c/b64/b64.h"
 #include "util/err.h"
 #include "util/log.h"
 #include "../../shared/c/num_parse.h"
@@ -84,7 +84,7 @@ int cb_config_from_env(cb_config *c, char *err, size_t cap) {
     } else {
         uint8_t raw[32];
         cb_random_bytes(raw, sizeof raw);
-        cb_b64url_encode(raw, sizeof raw, c->jwt_secret, sizeof c->jwt_secret);
+        b64url_encode(raw, sizeof raw, c->jwt_secret, sizeof c->jwt_secret);
         c->jwt_secret_generated = true;
     }
     if (!copy(c->admin_token, sizeof c->admin_token, "CBASE_ADMIN_TOKEN", env("CBASE_ADMIN_TOKEN", ""), err, cap)) return CB_E_INVALID;

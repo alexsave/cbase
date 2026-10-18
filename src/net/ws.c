@@ -11,7 +11,7 @@
 // rather than a second hand-written copy, since cbase links libcrypto anyway.
 #include "ws.h"
 
-#include "util/b64.h"
+#include "../../../shared/c/b64/b64.h"
 #include "util/err.h"
 
 #include <openssl/sha.h>
@@ -80,13 +80,13 @@ int cb_ws_accept_key(const char *client_key, char out[29]) {
     static const char GUID[] = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
     size_t kn = strlen(client_key);
     uint8_t raw[18];
-    if (kn != 24 || cb_b64_decode(client_key, kn, raw, sizeof raw) != 16) return CB_E_INVALID;
+    if (kn != 24 || b64_decode(client_key, kn, raw, sizeof raw) != 16) return CB_E_INVALID;
     char buf[24 + sizeof GUID];
     memcpy(buf, client_key, 24);
     memcpy(buf + 24, GUID, sizeof GUID - 1);
     uint8_t digest[SHA_DIGEST_LENGTH];
     SHA1((const unsigned char *)buf, 24 + sizeof GUID - 1, digest);
-    return cb_b64_encode(digest, sizeof digest, out, 29) == 28 ? CB_OK : CB_E_INVALID;
+    return b64_encode(digest, sizeof digest, out, 29) == 28 ? CB_OK : CB_E_INVALID;
 }
 
 static bool has_token(const char *v, const char *tok) {

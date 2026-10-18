@@ -36,7 +36,7 @@
 #include "json_surface.h"
 #include "table.h"
 #include "util/clock.h"
-#include "util/hex.h"
+#include "../../../shared/c/hex/hex.h"
 #include "util/log.h"
 #include "util/uuid.h"
 #include "../../../shared/c/rng.h"
@@ -1353,7 +1353,7 @@ static int dy_admin_browse(cb_store *s, const char *collection, const char *pref
     dyn *d = D(s);
     size_t clen = cursor ? strlen(cursor) : 0;
     uint8_t *start = clen ? malloc(clen / 2 + 1) : NULL;
-    int sn = clen ? cb_hex_decode(cursor, clen, start, clen / 2 + 1) : 0;
+    int sn = clen ? hex_decode(cursor, clen, start, clen / 2 + 1) : 0;
     if (sn < 0) { free(start); return CB_E_INVALID; }
     dw_req r;
     dw_req_init(&r);
@@ -1368,7 +1368,7 @@ static int dy_admin_browse(cb_store *s, const char *collection, const char *pref
         n = emit_items(dw_items(cb_buf_cstr(&resp), resp.len), fn, ud, &more);
         cb_span last = dw_last_key(cb_buf_cstr(&resp), resp.len);
         if (last.n && next_cursor && next_cap > 2 * last.n)
-            cb_hex_encode((const uint8_t *)last.p, last.n, next_cursor, next_cap);
+            hex_encode((const uint8_t *)last.p, last.n, next_cursor, next_cap);
     }
     cb_buf_free(&resp);
     dw_req_free(&r);

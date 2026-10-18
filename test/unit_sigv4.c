@@ -11,7 +11,7 @@
 
 #include "aws/sigv4.h"
 #include "util/err.h"
-#include "util/hex.h"
+#include "../../shared/c/hex/hex.h"
 
 #include <openssl/hmac.h>
 
@@ -315,7 +315,7 @@ static void reference_sig(const char *secret, const char *date8, const char *reg
     HMAC(EVP_sha256(), b, 32, (const uint8_t *)service, strlen(service), a, &len);
     HMAC(EVP_sha256(), a, 32, (const uint8_t *)"aws4_request", 12, b, &len);
     HMAC(EVP_sha256(), b, 32, (const uint8_t *)sts, strlen(sts), a, &len);
-    cb_hex_encode(a, 32, out, 65);
+    hex_encode(a, 32, out, 65);
 }
 
 // Signs get-vanilla with these inputs and checks the signature against the

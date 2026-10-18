@@ -10,7 +10,7 @@
 #include "store/store_import.h"
 #include "table.h"
 #include "util/clock.h"
-#include "util/hex.h"
+#include "../../shared/c/hex/hex.h"
 
 #include <stdlib.h>
 #include <sys/stat.h>
@@ -48,8 +48,8 @@ static void kernel_lobby(void) {
     table_init(&t, g, snaps);
     T_EQ_INT(table_create(&t, U1, (int)strlen(U1), "Ann", 3), TABLE_OK);
     T_CHECK(table_commit_products(&t, "ab12cd", 6, 3, 1000, &c, arena, ARENA) >= 0);
-    cb_hex_encode(arena + c.state.off, (size_t)c.state.len, g_state_hex, sizeof g_state_hex);
-    cb_hex_encode(arena + c.roster.off, (size_t)c.roster.len, g_roster_hex, sizeof g_roster_hex);
+    hex_encode(arena + c.state.off, (size_t)c.state.len, g_state_hex, sizeof g_state_hex);
+    hex_encode(arena + c.roster.off, (size_t)c.roster.len, g_roster_hex, sizeof g_roster_hex);
     free(g);
     free(snaps);
     free(arena);

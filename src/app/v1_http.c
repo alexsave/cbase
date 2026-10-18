@@ -19,6 +19,7 @@
 #include "ask.h"
 #include "netwire.h"
 #include "../../../shared/c/sha256.h"
+#include "../../../shared/c/hex/hex.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,11 +34,7 @@
 void cb_v1_email_of(const char *name, size_t len, char out[CB_V1_EMAIL_BYTES]) {
     uint8_t d[SHA256_DIGEST_LEN];
     sha256(name, len, d);
-    static const char hex[] = "0123456789abcdef";
-    for (int i = 0; i < 8; i++) {
-        out[2 * i] = hex[d[i] >> 4];
-        out[2 * i + 1] = hex[d[i] & 15];
-    }
+    hex_encode(d, 8, out, CB_V1_EMAIL_BYTES);
     snprintf(out + 16, CB_V1_EMAIL_BYTES - 16, "@%s", ACCOUNT_DOMAIN);
 }
 

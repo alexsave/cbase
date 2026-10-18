@@ -8,7 +8,6 @@
 #include "util/log.h"
 #include "../../../shared/c/num_parse.h"
 
-#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -55,14 +54,7 @@ int cb_aws_url_parse(const char *url, char *host, size_t host_cap, int *port, bo
     return CB_OK;
 }
 
-void cb_aws_path_segment(cb_buf *b, const char *s) {
-    static const char H[] = "0123456789ABCDEF";
-    for (; *s; s++) {
-        unsigned char c = (unsigned char)*s;
-        if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') cb_buf_putc(b, (char)c);
-        else { cb_buf_putc(b, '%'); cb_buf_putc(b, H[c >> 4]); cb_buf_putc(b, H[c & 15]); }
-    }
-}
+void cb_aws_path_segment(cb_buf *b, const char *s) { cb_sigv4_uri_encode(b, s, strlen(s), false); }
 
 int cb_aws_call(const char *service, const char *method, const char *host, int port, bool tls, const char *path,
                 const char *const *headers, int n_headers, const void *body, size_t body_len, int timeout_ms,

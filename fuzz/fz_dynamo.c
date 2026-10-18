@@ -8,7 +8,7 @@
 
 #include "json_surface.h"
 #include "store/store.h"
-#include "util/b64.h"
+#include "../../shared/c/b64/b64.h"
 #include "util/json.h"
 #include "../../shared/c/num_parse.h"
 
@@ -167,7 +167,7 @@ static bool ref_get_b(cb_span item, const char *name, uint8_t **out, size_t *len
     if (tn < 0) { free(text); return false; }
     size_t cap = (size_t)tn / 4 * 3 + 3;
     uint8_t *p = malloc(cap);
-    int n = p ? cb_b64_decode(text, (size_t)tn, p, cap) : -1;
+    int n = p ? b64_decode(text, (size_t)tn, p, cap) : -1;
     free(text);
     if (n < 0) { free(p); return false; }
     if (n == 0) { free(p); return true; }
