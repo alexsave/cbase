@@ -15,6 +15,8 @@
 
 #include "../../shared/c/mqtt/mqtt.h"
 
+#include <stdlib.h>
+
 #define T0 1700000000000LL
 
 static void pending_drop(void);
@@ -859,10 +861,12 @@ static void pump_retries_reads_not_writes(void) {
     T_CHECK(d && d->ticket == t && d->why == ASK_WHY_INTERNAL);
     T_CHECK(nc_next_request(now + NC_RETRY_MAX_MS) == NULL);
 
-    // At most NC_PUMP_MAX wait at once.
+    // At most NC_PUMP_MAX wait at once: one more is refused at once as busy
+    // (no status: it never left), not as a server failure.
     for (int i = 0; i < NC_PUMP_MAX; i++) T_CHECK(nc_do(&games, now) != 0);
     T_EQ_INT(nc_do(&games, now), 0);
-    T_EQ_INT(nc_error()->why, ASK_WHY_INTERNAL);
+    T_EQ_INT(nc_error()->why, ASK_WHY_BUSY);
+    T_EQ_INT(nc_error()->status, 0);
 }
 
 static void pump_signs_out(void) {
@@ -1333,7 +1337,7 @@ static void waiting_intents_keep_their_bytes(void) {
     T_CHECK(nc_do(&move, T0) != 0);
     T_CHECK(nc_do(&chat[1], T0) != 0);
     T_EQ_INT(nc_do(&chat[2], T0), 0);   // 2,002 bytes wait; 1,000 more do not fit
-    T_EQ_INT(nc_error()->why, ASK_WHY_INTERNAL);
+    T_EQ_INT(nc_error()->why, ASK_WHY_BUSY);
     // Each request carries its own bytes (the chat's: [v][kind][u16 len][message]).
     const NcRequest *q = nc_next_request(T0);
     T_CHECK(path_is(q, "/v1/chat/g1") && q->body_len == 1004 && q->body[4] == 'a' && q->body[1003] == 'a');
@@ -1418,7 +1422,136 @@ static void a_busy_read_goes_again_a_write_does_not(void) {
 }
 
 
+// ---- the pump's own work never crowds out the host's ------------------------------------
 
+// A move refused over version 9 of `gid`, its answer read: the reconcile is queued.
+static void refused_at_9(const char *gid, int64_t now) {
+    uint8_t r[TABLE_RESP_BYTES];
+    NcIntent play = intent(NC_DO_PLAY, gid);
+    play.bytes_len = 2; play.bytes[0] = 3; play.bytes[1] = 0;
+    play.intent = 5;
+    uint32_t t = nc_do(&play, now);
+    T_CHECK(t != 0);   // a host intent: never refused while only the pump's own work waits
+    const NcRequest *q = nc_next_request(now);
+    T_CHECK(path_is(q, "/v1/action"));
+    T_EQ_INT(table_action_response(TABLE_REJECTED, 4, 9, r, sizeof r), TABLE_RESP_BYTES);
+    const NcDone *d = nc_on_response(q ? q->id : 0, 200, r, sizeof r, now);
+    T_CHECK(d && d->ticket == t && d->action_status == TABLE_STATUS_REJECTED);
+}
+
+// Games played back to back faster than NC_RECONCILE_MS, every move refused
+// over a newer version (the p3client harness at zero think time): the
+// reconciles they queue never refuse the host's next intent, and once they are
+// done with, the pump is as it was: NC_PUMP_MAX tickets and the whole arena.
+static void fast_games_leave_the_pump_as_it_was(void) {
+    signed_in(T0 + 3600000);
+    live(T0);
+    host_t h;
+    memset(&h, 0, sizeof h);
+    const uint8_t v5[] = { 0x55 }, c9[] = { 0xc9 };
+    char gid[8];
+    int64_t now = T0;
+    for (int k = 0; k < 40; k++, now += 20) {
+        snprintf(gid, sizeof gid, "g%d", k);
+        host_push(&h, NW_WS_VIEW, gid, 5, v5, 1, now);
+        refused_at_9(gid, now);
+        // Every other game's pushes catch up; the rest never come.
+        if (k % 2 == 0) host_push(&h, NW_WS_CAST, gid, 9, c9, 1, now + 5);
+    }
+    // Only the pump's own reconciles wait: the host still has every ticket.
+    NcIntent games = intent(NC_DO_GAMES, NULL);
+    for (int i = 0; i < NC_PUMP_MAX; i++) T_CHECK(nc_do(&games, now) != 0);
+    T_EQ_INT(nc_do(&games, now), 0);
+    T_EQ_INT(nc_error()->why, ASK_WHY_BUSY);
+    // Everything waiting is sent and answered (a refusal will do): no
+    // reconcile for a game that caught up goes out.
+    now += NC_RECONCILE_MS;
+    int sent = 0, refetches = 0;
+    for (const NcRequest *q; (q = nc_next_request(now)); sent++) {
+        if (q->path_len > 11 && memcmp(q->path, "/v1/games/g", 11) == 0) {
+            refetches++;
+            T_CHECK((atoi(q->path + 11) % 2) == 1);
+        }
+        nc_on_response(q->id, 500, NULL, 0, now);
+    }
+    T_EQ_INT(sent, NC_PUMP_MAX + refetches);
+    T_CHECK(refetches > 0);
+    while (nc_next_done()) {}
+    T_EQ_INT(nc_pump_due_ms(now), -1);
+    // Baseline: the whole arena (exactly NC_ARENA_BYTES, 2,560) and every ticket.
+    NcIntent chat = intent(NC_DO_SEND_CHAT, "g1");
+    chat.bytes_len = 1000;
+    memset(chat.bytes, 'a', 1000);
+    T_CHECK(nc_do(&chat, now) != 0);
+    T_CHECK(nc_do(&chat, now) != 0);
+    chat.bytes_len = 560;
+    T_CHECK(nc_do(&chat, now) != 0);
+    for (int i = 3; i < NC_PUMP_MAX; i++) T_CHECK(nc_do(&games, now) != 0);
+    T_EQ_INT(nc_do(&games, now), 0);
+}
+
+// A reconcile is let go the moment the game reaches the version it waits for,
+// whatever brings it there (the seat's cast, the dashboard's view, an answered
+// read), not when its time comes; a step short of it does not.
+static void a_reconcile_lets_go_once_caught_up(void) {
+    const uint8_t v5[] = { 0x55 }, c6[] = { 0xc6 }, c9[] = { 0xc9 }, v9[] = { 0x99 }, e9[] = { 0xe9 };
+    for (int how = 0; how < 3; how++) {
+        signed_in(T0 + 3600000);
+        live(T0);
+        host_t h;
+        memset(&h, 0, sizeof h);
+        host_push(&h, NW_WS_VIEW, "g1", 5, v5, 1, T0);
+        refused_at_9("g1", T0);
+        T_EQ_INT(nc_pump_due_ms(T0), NC_RECONCILE_MS);
+        host_push(&h, NW_WS_CAST, "g1", 6, c6, 1, T0 + 10);
+        T_EQ_INT(nc_pump_due_ms(T0 + 10), NC_RECONCILE_MS - 10);   // 6 is not 9: still waiting
+        if (how == 0) {
+            host_push(&h, NW_WS_CAST, "g1", 7, c6, 1, T0 + 20);
+            host_push(&h, NW_WS_CAST, "g1", 8, c6, 1, T0 + 20);
+            host_push(&h, NW_WS_CAST, "g1", 9, c9, 1, T0 + 20);
+        } else if (how == 1) {
+            host_push(&h, NW_WS_VIEW, "g1", 9, v9, 1, T0 + 20);
+        } else {
+            NcIntent open = intent(NC_DO_OPEN_GAME, "g1");
+            T_CHECK(nc_do(&open, T0 + 20) != 0);
+            const NcRequest *q = nc_next_request(T0 + 20);
+            T_CHECK(path_is(q, "/v1/games/g1"));
+            host_answer(&h, q->id, 9, e9, 1, T0 + 20);
+            T_EQ_INT(h.table_v, 9);
+        }
+        T_EQ_INT(nc_pump_due_ms(T0 + 20), -1);
+        T_CHECK(nc_next_request(T0 + NC_RECONCILE_MS) == NULL);
+    }
+}
+
+// A reconcile is let go when the host lets go of the game's subscription (its
+// last hold), and only that game's.
+static void a_reconcile_lets_go_with_the_subscription(void) {
+    signed_in(T0 + 3600000);
+    T_EQ_INT(nc_stream_sub(NW_SUB_GAME, "g1", 2), NW_OK);
+    T_EQ_INT(nc_stream_sub(NW_SUB_GAME, "g1", 2), NW_OK);
+    live(T0);
+    cpkt s = next_pkt(T0);
+    T_CHECK(s.what == NW_SUB_GAME);
+    suback(s.pid, 0, 2, T0);
+    const NcRequest *q = nc_next_request(T0);
+    T_CHECK(path_is(q, "/v1/games/g1"));
+    host_t h;
+    memset(&h, 0, sizeof h);
+    const uint8_t e5[] = { 0xe5 }, v5[] = { 0x55 };
+    host_answer(&h, q->id, 5, e5, 1, T0);
+    host_push(&h, NW_WS_VIEW, "g2", 5, v5, 1, T0);
+    refused_at_9("g1", T0);
+    refused_at_9("g2", T0 + 100);
+    T_EQ_INT(nc_pump_due_ms(T0 + 200), NC_RECONCILE_MS - 200);
+    T_EQ_INT(nc_stream_unsub(NW_SUB_GAME, "g1", 2), NW_OK);   // one hold left: still wanted
+    T_EQ_INT(nc_pump_due_ms(T0 + 200), NC_RECONCILE_MS - 200);
+    T_EQ_INT(nc_stream_unsub(NW_SUB_GAME, "g1", 2), NW_OK);   // the last: g1's goes, g2's stays
+    T_EQ_INT(nc_pump_due_ms(T0 + 200), NC_RECONCILE_MS - 100);
+    q = nc_next_request(T0 + 100 + NC_RECONCILE_MS);
+    T_CHECK(path_is(q, "/v1/games/g2"));
+    T_CHECK(nc_next_request(T0 + 100 + NC_RECONCILE_MS) == NULL);
+}
 
 int main(void) {
     T_RUN(session_blob);
@@ -1447,5 +1580,8 @@ int main(void) {
     T_RUN(waiting_intents_keep_their_bytes);
     T_RUN(a_host_of_boards_gets_boards);
     T_RUN(a_busy_read_goes_again_a_write_does_not);
+    T_RUN(fast_games_leave_the_pump_as_it_was);
+    T_RUN(a_reconcile_lets_go_once_caught_up);
+    T_RUN(a_reconcile_lets_go_with_the_subscription);
     return T_DONE();
 }
