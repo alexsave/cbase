@@ -381,6 +381,25 @@ static void signing_key_kept(void) {
     T_EQ_INT(d, 1);
 }
 
+// hmac()'s key handling at its edges: "AWS4"+secret is 64 bytes at a 60-char
+// secret (used as is, zero-padded to the block) and 65 at 61 (hashed first,
+// RFC 2104); the longest secret the struct holds is 127. Each signature is
+// held against libcrypto's HMAC, and each key is signed twice so the kept
+// copy (the cache, after the buffers were wiped) is checked too.
+static void hmac_long_key_boundaries(void) {
+    static const int lens[] = { 1, 59, 60, 61, 62, 100, 127 };
+    for (size_t i = 0; i < sizeof lens / sizeof *lens; i++) {
+        char secret[128];
+        for (int k = 0; k < lens[i]; k++) secret[k] = (char)('A' + (k * 7 + lens[i]) % 26);
+        secret[lens[i]] = 0;
+        uint64_t d;
+        sign_one(secret, "us-east-1", "dynamodb", T_2015_08_30_123600, &d);
+        T_EQ_INT(d, 1);
+        sign_one(secret, "us-east-1", "dynamodb", T_2015_08_30_123600 + 1000, &d);
+        T_EQ_INT(d, 0);
+    }
+}
+
 // The keys are per thread: a thread that signs derives its own.
 static void *sign_on_thread(void *arg) {
     uint64_t *d = arg;
@@ -405,6 +424,7 @@ int main(void) {
     T_RUN(bad_headers_refused);
     T_RUN(creds_from_env);
     T_RUN(signing_key_kept);
+    T_RUN(hmac_long_key_boundaries);
     T_RUN(signing_key_per_thread);
     return T_DONE();
 }
