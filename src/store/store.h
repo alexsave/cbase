@@ -154,7 +154,12 @@ typedef struct {
     // the stored seats whenever the commit lands, and DynamoDB writes the
     // difference without first reading them (one Query less, under the
     // game's order lock). prev_known false: the store reads them.
+    // prev_needs_bots is that row's needs_bots, read only with prev_known:
+    // false there means the game has no SCAN marker, so on DynamoDB a commit
+    // that writes no seat, no rating and needs_bots false is one conditional
+    // UpdateItem instead of a transaction (store_dynamo.c, DESIGN.md "Store").
     bool     prev_known;
+    bool     prev_needs_bots;
     int      n_prev_humans;
     cb_uuid  prev_humans[CB_MAX_SEATS];
     int      n_prev_bots;

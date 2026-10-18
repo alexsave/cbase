@@ -147,6 +147,7 @@ Items, by partition key and sort key:
 | `SCAN` | `GAME#<id>` | present while a bot can act on the game (the kernel's `table_bots_due`; sparse, the heartbeat's scan reads one partition); carries the bot lease (lease_token, lease_until) and the row's version (row_version) |
 
 `game_commit` is one `TransactWriteItems`: the game update conditioned on the version, the membership puts and deletes, the rating updates, the SCAN marker.
+When the row is all it would write (a move between humans), it is that update alone, one conditional `UpdateItem` (see "The commit that writes the row alone" below).
 
 The 49 bots: `sql/schema.sql` seeds the nicknames and strategy keys of `seed.sql` with FIXED ids (UUIDv5 of the nickname), because `seed.sql` leaves bot ids to `uuid_generate_v4()` and so they differ per database.
 A migrated store replaces them with the hosted rows, since the hosted rosters name the hosted ids.
@@ -163,6 +164,24 @@ As built (store builder, then integration):
   An imported row, and one written before the flag, does not vouch, so its next commit reads the seats as before (the export's seat tables need not match its rosters) and vouches from then on.
   What it gives up: an item that went missing under a seat that stays (only `user_delete`, whose account then goes too) is no longer put back.
   It took the keys-only Query out of every move, and out of the game's order lock (measured with two client processes against DynamoDB Local: 362 to 296 us of server CPU a move).
+- The commit that writes the row alone (2026-10-18).
+  A transaction cost 15 to 17 ms at p50 inside DynamoDB where a conditional `UpdateItem` cost 2.4 (CloudWatch, 7 days; c_base/docs/BENCH_VM_VS_DYNAMO.md), and it was nearly all of a move's DynamoDB time.
+  So a commit whose transaction would hold item 0 and nothing else is sent as item 0's own update: the same expression, the same `#version = :expected` condition, the same `ReturnValuesOnConditionCheckFailure: ALL_OLD`, read the same way (refused with the item: `CB_E_CONFLICT`; refused without: `CB_E_NOT_FOUND`, and the condition is never met on an absent row, so nothing is created).
+  `json_surface.c` `dw_commit_is_lone` decides: not the import; no seat item to put or delete against the stored seats; no rating; and no SCAN marker to write, which needs the new row's `needs_bots` false and the fenced row's false too (`cb_game_commit` `prev_needs_bots`, read only with `prev_known`).
+  Create, join, leave, a bot seated or removed, the rated end of a game, every commit of a game with bot work before or after it, and the first commit of a row that does not vouch for its seats stay transactions.
+  Why the CAS still holds, re-verified for each item the lone commit leaves out:
+  - The row: it is the same conditional write. A version moves only by a write conditioned on the version before it, so two commits from one version cannot both land, transaction or not.
+    DynamoDB refuses a single-item write to an item a pending transaction holds (`TransactionConflictException`), which `call` sends again after a pause like any transient refusal, so a lone commit never interleaves with a transaction's half-applied items.
+  - The seat items: they change only inside version-moving transactions and by `user_delete` (above), and the lone commit is taken only when the seats it would write against the fenced row's seats are none, so the items stay within the new row's roster (the roster's seat set is unchanged), and `seats_exact` stays true.
+  - The SCAN marker: its invariant is "a row whose `needs_bots` is false has no marker".
+    A marker is created only inside create, commit and import transactions that write the row with `needs_bots` true (`scan_marker`); every such transaction that writes `needs_bots` false deletes it; the lease writes are conditioned on the marker existing (acquire `attribute_exists(pk)`, renew and release `#lease_token = :token`), so they never create one; `bots_idle` and `game_delete` only delete it.
+    That has held since the backend's first commit (2ee6c6bf5; the lease moved onto the marker in e4a045cd3 with the same conditions).
+    The row's own `needs_bots` changes only with its version on DynamoDB (`bots_idle` leaves it to the next commit), so the row the app loaded at version v, cached or read, says what the stored row at v says, and the fence makes that the stored row when the commit lands.
+    The lone commit writes `needs_bots` false only on a row that already said false: no marker before, none created since, none after; the invariant is kept.
+    A stray marker is the failure the rule guards against (the scan would kick the game every minute, and `bots_idle`, fenced on the marker's older `row_version`, could not take it away), so a `prev_needs_bots` claimed false wrongly is what the app's memory store refuses (`test/lib_app_store_mem.c`, every app test).
+  - Ratings: a rated commit is a transaction, so its ratings and its row stay one write.
+  A transport loss after DynamoDB applied the write reads, on the retry, as a lost CAS: the same as a transaction sent without a client request token, which c_base never sends.
+  Tests: `unit_dynamo` (the request byte for byte, every condition that sends the transaction instead, the lost CAS, the gone game, a transaction conflict retried, any other refusal `CB_E_DB`), `unit_store` on DynamoDB Local (`lone_commit_cas`: one `UpdateItem` per move by the tally, the second writer losing and writing nothing, a gone game not created, the marker taken by the commit after bot work and not brought back; `lone_cas_under_threads`: four threads racing lone commits, no lost update), and the game smoke under `make check-dynamo`.
 - `last_commit_at` is stamped by the store from `row->updated_at` on every commit; `row->last_commit_at` is read only by the import.
 - The lease: acquire and renew move the scan's staleness clock (never `last_commit_at`); release clears `lease_until` and does not move it.
   SQLite keeps lease and clock on the game row; DynamoDB keeps both on the game's SCAN marker (see "The free tier, provisioned"), so there the row's `updated_at` is its last commit's.

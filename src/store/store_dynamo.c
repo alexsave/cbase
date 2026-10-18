@@ -13,7 +13,10 @@
 // (or CB_E_NOT_FOUND when the refusal carries no item: the game is gone). Any
 // other item refused means something the commit read moved underneath it (a
 // rating another table changed, a seat's account deleted): it re-reads and
-// sends again, up to five times.
+// sends again, up to five times. A commit whose only item would be the row
+// (json_surface.h dw_commit_is_lone: most moves of a game between humans) is
+// that update alone, one UpdateItem with the same condition, read the same
+// way: about 2.4 ms at p50 against the transaction's 17 (DESIGN.md "Store").
 //
 // THE LEASE is a conditional UpdateItem on the game's SCAN marker (see
 // json_surface.c lease_update), as the plpgsql functions were on the row: one
@@ -811,6 +814,15 @@ static int commit_or_import(dyn *d, const cb_game_commit *c0, bool import) {
         if (!dw_game_commit(&r, d->table, &c, stored, c.n_rated ? ratings : NULL, import)) {
             CB_ERROR(MOD, "commit %s: more than DynamoDB's 100 items in one transaction", c.row->id);
             rc = CB_E_FULL;
+            break;
+        }
+        if (!dw_req_is_txn(&r)) {
+            // The row alone (dw_commit_is_lone): its condition is the fence,
+            // and a refusal brings the stored item back unless the game is gone.
+            dw_status st = call(d, &r, &resp);
+            rc = st == DW_OK ? CB_OK
+               : st == DW_COND_FAILED ? (dw_cond_failed_has_item(cb_buf_cstr(&resp), resp.len) ? CB_E_CONFLICT : CB_E_NOT_FOUND)
+                                      : CB_E_DB;
             break;
         }
         dw_status st = txn(d, &r, &resp);

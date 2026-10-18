@@ -24,7 +24,7 @@ typedef struct {
     int snapshots;         // snapshot_put calls
     int bots_idle;         // bots_idle calls that took a game out of the scan
     int prev_given;        // commits that wrote with the prev seats given (no read)
-    int prev_wrong;        // commits refused: a stored seat was not in prev
+    int prev_wrong;        // commits refused: a stored seat was not in prev, or prev said no bot work where there was
 } tm_hooks;
 
 // A fresh store with `n_bots` bots seated in the bots table, each with

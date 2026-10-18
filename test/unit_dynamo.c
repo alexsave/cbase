@@ -24,6 +24,7 @@
 #define U1 "aaaaaaaa-0000-4000-8000-000000000001"
 #define U2 "aaaaaaaa-0000-4000-8000-000000000002"
 #define B1 "bbbbbbbb-0000-4000-8000-000000000001"
+#define U3 "aaaaaaaa-0000-4000-8000-000000000003"
 
 static bool valid(const dw_req *r) { return cb_json_valid((const char *)r->body.p, r->body.len); }
 static cb_span body(const dw_req *r) { return cb_span_of((const char *)r->body.p, r->body.len); }
@@ -201,6 +202,106 @@ static void commit_transaction(void) {
     // The import writes every seat (nothing is stored to compare with).
     T_CHECK(dw_game_commit(&r, "cbase", &c, NULL, NULL, true));
     T_CHECK(strstr(cb_buf_cstr(&r.body), "MEMBER#" U1) != NULL);
+    dw_req_free(&r);
+}
+
+// A commit that changes the row alone (a move between humans: the seats
+// stay, nothing is rated, no bot work before or after) is item 0 by itself,
+// one UpdateItem with the transaction's own fence and refusal shape. Every
+// other item there could be sends the transaction as before.
+static void commit_lone(void) {
+    uint8_t st[3] = { 1, 2, 3 }, ro[2] = { 9, 9 };
+    cb_game_row g = { .id = "ab12cd", .status = 1, .state = st, .state_len = 3, .roster = ro, .roster_len = 2,
+                      .version = 8, .round_epoch = 5, .created_at = 100, .updated_at = 2000 };
+    cb_game_commit c = { .row = &g, .expected_version = 7, .n_humans = 2, .n_bots = 1, .prev_known = true };
+    snprintf(c.humans[0], sizeof(cb_uuid), U1);
+    snprintf(c.humans[1], sizeof(cb_uuid), U2);
+    snprintf(c.bots[0], sizeof(cb_uuid), B1);
+    dw_seats s = { .n_humans = 2, .n_bots = 1 };
+    snprintf(s.humans[0], sizeof(cb_uuid), U2);   // the same seats, in another order
+    snprintf(s.humans[1], sizeof(cb_uuid), U1);
+    snprintf(s.bots[0], sizeof(cb_uuid), B1);
+    dw_req r;
+    dw_req_init(&r);
+    T_CHECK(dw_commit_is_lone(&c, &s, NULL, false));
+    T_CHECK(dw_game_commit(&r, "cbase", &c, &s, NULL, false));
+    T_EQ_STR(r.target, "DynamoDB_20120810.UpdateItem");
+    T_CHECK(!dw_req_is_txn(&r));
+    T_EQ_STR(cb_buf_cstr(&r.body),
+             "{\"ReturnConsumedCapacity\":\"TOTAL\",\"TableName\":\"cbase\",\"Key\":{\"pk\":{\"S\":\"GAME#ab12cd\"},\"sk\":{\"S\":\"ROW\"}},"
+             "\"UpdateExpression\":\"SET #status = :status, #state = :state, #roster = :roster, #needs_bots = :needs_bots, "
+             "#version = :version, #round_epoch = :round_epoch, #updated_at = :updated_at, #last_commit_at = :last_commit_at, "
+             "#seats_exact = :seats_exact "
+             "REMOVE #logs_packed, #game_seed\","
+             "\"ConditionExpression\":\"#version = :expected\","
+             "\"ExpressionAttributeNames\":{\"#status\":\"status\",\"#state\":\"state\",\"#roster\":\"roster\","
+             "\"#logs_packed\":\"logs_packed\",\"#game_seed\":\"game_seed\",\"#needs_bots\":\"needs_bots\",\"#version\":\"version\","
+             "\"#round_epoch\":\"round_epoch\",\"#updated_at\":\"updated_at\",\"#last_commit_at\":\"last_commit_at\","
+             "\"#seats_exact\":\"seats_exact\"},"
+             "\"ExpressionAttributeValues\":{\":status\":{\"N\":\"1\"},\":state\":{\"B\":\"AQID\"},\":roster\":{\"B\":\"CQk=\"},"
+             "\":needs_bots\":{\"BOOL\":false},\":version\":{\"N\":\"8\"},\":round_epoch\":{\"N\":\"5\"},\":updated_at\":{\"N\":\"2000\"},"
+             "\":last_commit_at\":{\"N\":\"2000\"},\":seats_exact\":{\"BOOL\":true},\":expected\":{\"N\":\"7\"}},"
+             "\"ReturnValuesOnConditionCheckFailure\":\"ALL_OLD\"}");
+
+    // Each thing that needs a second item sends the transaction instead, its
+    // item 0 the same update.
+#define TXN_AGAIN(why)                                                                                 \
+    do {                                                                                               \
+        T_CHECK(!dw_commit_is_lone(&c, &s, rd_, imp_));                                               \
+        T_CHECK(dw_game_commit(&r, "cbase", &c, imp_ ? NULL : &s, rd_, imp_));                       \
+        T_CHECK(dw_req_is_txn(&r));                                                                    \
+        T_EQ_STR(r.target, "DynamoDB_20120810.TransactWriteItems");                                     \
+        T_CHECK(valid(&r));                                                                            \
+        if (!imp_) T_CHECK(strstr(cb_buf_cstr(&r.body), "\"ConditionExpression\":\"#version = :expected\"") != NULL); \
+        (void)(why);                                                                                   \
+    } while (0)
+    const dw_rating_read *rd_ = NULL;
+    bool imp_ = false;
+    // The game had bot work at version 7: its SCAN marker may be there, and goes.
+    c.prev_needs_bots = true;
+    TXN_AGAIN("the marker is deleted");
+    T_CHECK(strstr(cb_buf_cstr(&r.body), "{\"Delete\":{\"TableName\":\"cbase\",\"Key\":{\"pk\":{\"S\":\"SCAN\"}") != NULL);
+    c.prev_needs_bots = false;
+    // The row says nothing of version 7 (not vouched for): the marker is deleted all the same.
+    c.prev_known = false;
+    TXN_AGAIN("not vouched for");
+    T_CHECK(strstr(cb_buf_cstr(&r.body), "\"pk\":{\"S\":\"SCAN\"}") != NULL);
+    c.prev_known = true;
+    // Bot work after: the marker is written.
+    g.needs_bots = true;
+    TXN_AGAIN("the marker is put");
+    T_CHECK(strstr(cb_buf_cstr(&r.body), "{\"Update\":{\"TableName\":\"cbase\",\"Key\":{\"pk\":{\"S\":\"SCAN\"}") != NULL);
+    g.needs_bots = false;
+    // A human seated, a human gone, a bot seated, a bot gone.
+    snprintf(c.humans[1], sizeof(cb_uuid), U3);
+    TXN_AGAIN("a seat taken and one left");
+    T_CHECK(strstr(cb_buf_cstr(&r.body), "MEMBER#" U3) != NULL);
+    snprintf(c.humans[1], sizeof(cb_uuid), U2);
+    c.n_humans = 1;
+    TXN_AGAIN("a human left");
+    c.n_humans = 2;
+    c.n_bots = 0;
+    TXN_AGAIN("a bot left");
+    c.n_bots = 1;
+    snprintf(s.bots[0], sizeof(cb_uuid), U3);
+    TXN_AGAIN("a bot seated in another's place");
+    snprintf(s.bots[0], sizeof(cb_uuid), B1);
+    // A rated commit (the end of a game).
+    dw_rating_read rd[1] = { { .exists = true, .elo = 1000 } };
+    c.n_rated = 1;
+    snprintf(c.rated_ids[0], sizeof(cb_uuid), U1);
+    rd_ = rd;
+    TXN_AGAIN("rated");
+    c.n_rated = 0;
+    rd_ = NULL;
+    // The import: a Put, never alone.
+    imp_ = true;
+    TXN_AGAIN("the import");
+    imp_ = false;
+#undef TXN_AGAIN
+    // And back where it started: alone again.
+    T_CHECK(dw_game_commit(&r, "cbase", &c, &s, NULL, false));
+    T_CHECK(!dw_req_is_txn(&r));
     dw_req_free(&r);
 }
 
@@ -707,7 +808,6 @@ static void flow_commit_drops_missing_account(void) {
 // The row the commit is fenced on vouched for its seats (prev_known): no Query.
 // The seat that stays is not written, the new one is put after its account is
 // checked, the one that left is deleted (whether or not its item is there).
-#define U3 "aaaaaaaa-0000-4000-8000-000000000003"
 static void flow_commit_seats_given(void) {
     static const char BG[] = "{\"Responses\":{\"cbase\":[{\"pk\":{\"S\":\"USER#" U2 "\"},\"sk\":{\"S\":\"PROFILE\"}}]}}";
     static const step steps[] = {
@@ -756,6 +856,106 @@ static void flow_commit_seats_read(void) {
     T_EQ_INT(sc_.at, 2);
     T_CHECK(strstr(sc_.bodies[1], "MEMBER#" U3) == NULL);
     T_CHECK(strstr(sc_.bodies[1], "MEMBER#" U1) == NULL);   // stored and kept: not written
+    cb_store_close(s);
+}
+
+// A move between humans: the row vouches for its seats and had no bot work,
+// so the commit is one conditional UpdateItem: no Query, no transaction.
+static cb_game_commit mklone(cb_game_row *g, uint8_t *st) {
+    cb_game_commit c = mkcommit(g, st);
+    c.n_humans = 1;
+    snprintf(c.humans[0], sizeof(cb_uuid), U1);
+    c.prev_known = true;
+    c.n_prev_humans = 1;
+    snprintf(c.prev_humans[0], sizeof(cb_uuid), U1);
+    return c;
+}
+
+static void flow_commit_lone(void) {
+    static const step steps[] = {
+        { "UpdateItem", "\"ConditionExpression\":\"#version = :expected\"", 200, "{}" },
+    };
+    RUN(steps, s);
+    uint8_t st[1] = { 1 };
+    cb_game_row g;
+    cb_game_commit c = mklone(&g, st);
+    cb_store_tally t;
+    cb_store_tally_take(&t);
+    T_EQ_INT(CB_STORE_CALL(s, game_commit, &c), CB_OK);
+    T_EQ_INT(sc_.at, 1);
+    cb_store_tally_take(&t);
+    T_EQ_STR(t.detail, "UpdateItem 1");
+    T_CHECK(strstr(sc_.bodies[0], "\":expected\":{\"N\":\"7\"}") != NULL);
+    T_CHECK(strstr(sc_.bodies[0], "\":version\":{\"N\":\"8\"}") != NULL);
+    cb_store_close(s);
+}
+
+// The lone commit loses the CAS: the refusal carries the stored row, so it is
+// CB_E_CONFLICT at once, sent once (the app reloads, as for the transaction).
+static void flow_commit_lone_cas_lost(void) {
+    static const step steps[] = {
+        { "UpdateItem", "\":expected\":{\"N\":\"7\"}", 400, COND_WITH_ITEM },
+    };
+    RUN(steps, s);
+    uint8_t st[1] = { 1 };
+    cb_game_row g;
+    cb_game_commit c = mklone(&g, st);
+    T_EQ_INT(CB_STORE_CALL(s, game_commit, &c), CB_E_CONFLICT);
+    T_EQ_INT(sc_.at, 1);
+    cb_store_close(s);
+}
+
+// Refused with no item: the game is gone (the condition is never met on an
+// absent row, so the update creates nothing).
+static void flow_commit_lone_game_gone(void) {
+    static const step steps[] = {
+        { "UpdateItem", NULL, 400, COND_NO_ITEM },
+    };
+    RUN(steps, s);
+    uint8_t st[1] = { 1 };
+    cb_game_row g;
+    cb_game_commit c = mklone(&g, st);
+    T_EQ_INT(CB_STORE_CALL(s, game_commit, &c), CB_E_NOT_FOUND);
+    T_EQ_INT(sc_.at, 1);
+    cb_store_close(s);
+}
+
+// Another transaction holds the row for a moment (a create or a rated commit
+// in flight): DynamoDB refuses a lone write with TransactionConflictException,
+// and the update is sent again after a pause and wins; a refusal that is not
+// a condition or a transient one is CB_E_DB.
+static const char LONE_CONFLICT[] =
+    "{\"__type\":\"com.amazonaws.dynamodb.v20120810#TransactionConflictException\","
+    "\"message\":\"Transaction is ongoing for the item\"}";
+static void flow_commit_lone_retried(void) {
+    static const step steps[] = {
+        { "UpdateItem", NULL, 400, LONE_CONFLICT },
+        { "UpdateItem", NULL, 200, "{}" },
+        { "UpdateItem", NULL, 400, VALIDATION },
+    };
+    RUN(steps, s);
+    uint8_t st[1] = { 1 };
+    cb_game_row g;
+    cb_game_commit c = mklone(&g, st);
+    T_EQ_INT(CB_STORE_CALL(s, game_commit, &c), CB_OK);
+    T_EQ_INT(sc_.at, 2);
+    T_EQ_INT(CB_STORE_CALL(s, game_commit, &c), CB_E_DB);
+    T_EQ_INT(sc_.at, 3);
+    cb_store_close(s);
+}
+
+// The row had bot work: the transaction, which deletes the marker.
+static void flow_commit_after_bot_work(void) {
+    static const step steps[] = {
+        { "TransactWriteItems", "{\"Delete\":{\"TableName\":\"cbase\",\"Key\":{\"pk\":{\"S\":\"SCAN\"}", 200, "{}" },
+    };
+    RUN(steps, s);
+    uint8_t st[1] = { 1 };
+    cb_game_row g;
+    cb_game_commit c = mklone(&g, st);
+    c.prev_needs_bots = true;
+    T_EQ_INT(CB_STORE_CALL(s, game_commit, &c), CB_OK);
+    T_EQ_INT(sc_.at, 1);
     cb_store_close(s);
 }
 
@@ -1750,6 +1950,7 @@ int main(void) {
     T_RUN(get_item_shape);
     T_RUN(lease_requests);
     T_RUN(commit_transaction);
+    T_RUN(commit_lone);
     T_RUN(query_shapes);
     T_RUN(signup_transaction);
     T_RUN(builders_valid_json);
@@ -1764,6 +1965,11 @@ int main(void) {
     T_RUN(flow_commit_drops_missing_account);
     T_RUN(flow_commit_seats_given);
     T_RUN(flow_commit_seats_read);
+    T_RUN(flow_commit_lone);
+    T_RUN(flow_commit_lone_cas_lost);
+    T_RUN(flow_commit_lone_game_gone);
+    T_RUN(flow_commit_lone_retried);
+    T_RUN(flow_commit_after_bot_work);
     T_RUN(flow_lease);
     T_RUN(flow_throttle_retry);
     T_RUN(flow_throttled_then_answered);

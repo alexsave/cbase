@@ -190,8 +190,13 @@ static bool listed_in(const cb_uuid *ids, int n, const char *id) {
 
 // The prev seats a commit hands over (cb_game_commit prev_known) must hold
 // every seat stored: DynamoDB writes the difference from them without
-// reading, and a stored seat they miss would never be deleted.
+// reading, and a stored seat they miss would never be deleted. And its
+// prev_needs_bots may say "no bot work" only when there is none stored
+// (row.needs_bots here stands for DynamoDB's SCAN marker, which bots_idle
+// takes away as m_bots_idle clears it): DynamoDB writes such a commit
+// without touching the marker, and a marker it missed would stay.
 static bool stored_within_prev(const tm_game *g, const cb_game_commit *c) {
+    if (!c->prev_needs_bots && g->row.needs_bots) return false;
     for (int i = 0; i < g->n_humans; i++)
         if (!listed_in(c->prev_humans, c->n_prev_humans, g->humans[i])) return false;
     for (int i = 0; i < g->n_bots; i++)

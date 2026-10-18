@@ -1712,71 +1712,104 @@ static int rating_write(cb_jw *w, const char *table, const cb_game_commit *c, in
     return 1;
 }
 
-bool dw_game_commit(dw_req *r, const char *table, const cb_game_commit *c, const dw_seats *stored,
-                    const dw_rating_read *ratings, bool import) {
+// THE CAS: every scalar and blob of the row, fenced on the version read.
+// `wrapped`: as a transaction's {"Update":..} item, else the body of a lone
+// UpdateItem (the caller has its object open).
+static void row_cas(cb_jw *w, const char *table, const cb_game_commit *c, int64_t last_commit_at, bool wrapped) {
     const cb_game_row *g = c->row;
-    cb_game_row row = *g;
-    row.last_commit_at = import ? g->last_commit_at : g->updated_at;   // a commit's time is its last commit
-    int items = 0;
-    cb_jw w;
-    txn_begin(r, &w);
+    char pk[KB];
+    update_open(w, table, k(pk, sizeof pk, "GAME#", g->id), "ROW", wrapped);
+    ux u;
+    ux_init(&u);
+    ux_set_n(&u, "status", g->status);
+    ux_set_b(&u, "state", g->state, g->state_len);
+    ux_set_b(&u, "roster", g->roster, g->roster_len);
+    if (g->logs_len) ux_set_b(&u, "logs_packed", g->logs, g->logs_len);
+    else ux_remove(&u, "logs_packed");
+    if (g->has_seed) ux_set_b(&u, "game_seed", g->seed, CB_SEED_LEN);
+    else ux_remove(&u, "game_seed");
+    ux_set_bool(&u, "needs_bots", g->needs_bots);
+    ux_set_n(&u, "version", g->version);
+    ux_set_n(&u, "round_epoch", g->round_epoch);
+    ux_set_n(&u, "updated_at", g->updated_at);
+    ux_set_n(&u, "last_commit_at", last_commit_at);
+    // The seats this commit writes make the items the new roster's
+    // (cb_game_row seats_exact), whether they were read or given.
+    ux_set_bool(&u, "seats_exact", true);
+    ux_val_n(&u, ":expected", c->expected_version);
+    ux_emit(w, &u, "#version = :expected");
+    ux_free(&u);
+    cb_jw_kstr(w, "ReturnValuesOnConditionCheckFailure", "ALL_OLD");
+    update_close(w, wrapped);
+}
+
+// The seat items a commit writes: the humans and bots it seats that are not
+// stored, and the stored ones it no longer seats (all of them for the import,
+// which has nothing stored to compare with: stored NULL).
+static int seat_writes(cb_jw *w, const char *table, const cb_game_commit *c, const dw_seats *stored) {
+    const cb_game_row *g = c->row;
     char pk[KB], sk[KB];
     k(pk, sizeof pk, "GAME#", g->id);
-    if (import) {
-        put_begin(&w, table, "Put");
-        item_game(&w, &row);
-        put_end(&w, NULL, true);
-    } else {
-        // Item 0, THE CAS: every scalar and blob, fenced on the version read.
-        update_open(&w, table, pk, "ROW", true);
-        ux u;
-        ux_init(&u);
-        ux_set_n(&u, "status", g->status);
-        ux_set_b(&u, "state", g->state, g->state_len);
-        ux_set_b(&u, "roster", g->roster, g->roster_len);
-        if (g->logs_len) ux_set_b(&u, "logs_packed", g->logs, g->logs_len);
-        else ux_remove(&u, "logs_packed");
-        if (g->has_seed) ux_set_b(&u, "game_seed", g->seed, CB_SEED_LEN);
-        else ux_remove(&u, "game_seed");
-        ux_set_bool(&u, "needs_bots", g->needs_bots);
-        ux_set_n(&u, "version", g->version);
-        ux_set_n(&u, "round_epoch", g->round_epoch);
-        ux_set_n(&u, "updated_at", g->updated_at);
-        ux_set_n(&u, "last_commit_at", row.last_commit_at);
-        // The seats this transaction writes make the items the new roster's
-        // (cb_game_row seats_exact), whether they were read or given.
-        ux_set_bool(&u, "seats_exact", true);
-        ux_val_n(&u, ":expected", c->expected_version);
-        ux_emit(&w, &u, "#version = :expected");
-        ux_free(&u);
-        cb_jw_kstr(&w, "ReturnValuesOnConditionCheckFailure", "ALL_OLD");
-        update_close(&w, true);
-    }
-    items++;
+    int items = 0;
     // A seat is written when it is taken, not on every commit: a human's
     // seat is a transactional write (2 WCU) plus its GSI1 entry moving (2
     // more), every commit, for the dashboard's order alone, which nothing
     // reads (PostgREST sorts player_views by the row it loads).
     for (int i = 0; i < c->n_humans; i++)
         if (!stored || !listed(stored->humans, stored->n_humans, c->humans[i])) {
-            member_update(&w, table, g->id, c->humans[i], g->updated_at);
+            if (w) member_update(w, table, g->id, c->humans[i], g->updated_at);
             items++;
         }
     for (int i = 0; stored && i < stored->n_humans; i++)
         if (!listed(c->humans, c->n_humans, stored->humans[i])) {
-            txn_delete(&w, table, pk, k(sk, sizeof sk, "MEMBER#", stored->humans[i]));
+            if (w) txn_delete(w, table, pk, k(sk, sizeof sk, "MEMBER#", stored->humans[i]));
             items++;
         }
     for (int i = 0; i < c->n_bots; i++)
         if (!stored || !listed(stored->bots, stored->n_bots, c->bots[i])) {
-            bot_seat_put(&w, table, g->id, c->bots[i]);
+            if (w) bot_seat_put(w, table, g->id, c->bots[i]);
             items++;
         }
     for (int i = 0; stored && i < stored->n_bots; i++)
         if (!listed(c->bots, c->n_bots, stored->bots[i])) {
-            txn_delete(&w, table, pk, k(sk, sizeof sk, "BOT#", stored->bots[i]));
+            if (w) txn_delete(w, table, pk, k(sk, sizeof sk, "BOT#", stored->bots[i]));
             items++;
         }
+    return items;
+}
+
+bool dw_commit_is_lone(const cb_game_commit *c, const dw_seats *stored, const dw_rating_read *ratings, bool import) {
+    // The SCAN marker: none to write when the commit leaves the game without
+    // bot work and the row it is fenced on had none (prev_known, so the caller
+    // describes that row): no marker exists then (DESIGN.md "Store").
+    bool no_marker = c->prev_known && !c->prev_needs_bots && !c->row->needs_bots;
+    return !import && stored && no_marker && !(ratings && c->n_rated > 0) && seat_writes(NULL, NULL, c, stored) == 0;
+}
+
+bool dw_game_commit(dw_req *r, const char *table, const cb_game_commit *c, const dw_seats *stored,
+                    const dw_rating_read *ratings, bool import) {
+    const cb_game_row *g = c->row;
+    cb_game_row row = *g;
+    row.last_commit_at = import ? g->last_commit_at : g->updated_at;   // a commit's time is its last commit
+    cb_jw w;
+    if (dw_commit_is_lone(c, stored, ratings, import)) {
+        // Only the row changes: one conditional UpdateItem, the same fence.
+        begin(r, &w, "UpdateItem");
+        row_cas(&w, table, c, row.last_commit_at, false);
+        finish(&w);
+        return cb_jw_ok(&w);
+    }
+    int items = 0;
+    txn_begin(r, &w);
+    if (import) {
+        put_begin(&w, table, "Put");
+        item_game(&w, &row);
+        put_end(&w, NULL, true);
+    } else {
+        row_cas(&w, table, c, row.last_commit_at, true);   // item 0
+    }
+    items++;
+    items += seat_writes(&w, table, c, stored);
     for (int i = 0; ratings && i < c->n_rated; i++) {
         bool dup = false;   // one write per item: a repeated id is rated once
         for (int j = 0; j < i; j++) dup |= strcmp(c->rated_ids[j], c->rated_ids[i]) == 0;
@@ -1786,6 +1819,11 @@ bool dw_game_commit(dw_req *r, const char *table, const cb_game_commit *c, const
     items++;
     txn_end(&w);
     return items <= 100 && cb_jw_ok(&w);
+}
+
+bool dw_req_is_txn(const dw_req *r) {
+    const char *op = strchr(r->target, '.');
+    return strcmp(op ? op + 1 : r->target, "TransactWriteItems") == 0;
 }
 
 void dw_ratings_get(dw_req *r, const char *table, const char *const *ids, const bool *is_bot, int n, bool both) {

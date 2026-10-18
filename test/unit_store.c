@@ -494,6 +494,126 @@ static void cas_second_writer_loses(void) {
     cb_store_close(s);
 }
 
+// A move between humans: the row the commit is fenced on vouches for its
+// seats and had no bot work, and the commit seats the same players with no
+// bot work after, so DynamoDB writes it as one conditional UpdateItem. The
+// fence is the same: a second writer from the same version loses and writes
+// nothing, a game that is gone is NOT_FOUND and not created, and a commit
+// after bot work still takes the SCAN marker away (the transaction).
+static void lone_commit_cas(void) {
+    cb_store *s = open_fresh();
+    cb_user_row a = mkuser("a@x.io", "A", 1), b = mkuser("b@x.io", "B", 1);
+    CB_STORE_CALL(s, user_create, &a);
+    CB_STORE_CALL(s, user_create, &b);
+    const int64_t NOW = 10000000, STALE = NOW - 10000, ACTIVE = NOW - 3600000;
+    cb_game_row g = mkgame("lone01", NOW - 20000);
+    T_EQ_INT(CB_STORE_CALL(s, game_create, &g, a.id), CB_OK);
+    // b sits down (a roster change: the transaction).
+    cb_game_row j = mkgame("lone01", NOW - 20000);
+    j.version = 1;
+    cb_game_commit cj = { .row = &j, .expected_version = 0, .n_humans = 2, .prev_known = true, .n_prev_humans = 1 };
+    memcpy(cj.humans[0], a.id, sizeof(cb_uuid));
+    memcpy(cj.humans[1], b.id, sizeof(cb_uuid));
+    memcpy(cj.prev_humans[0], a.id, sizeof(cb_uuid));
+    cb_store_tally t;
+    cb_store_tally_take(&t);
+    T_EQ_INT(CB_STORE_CALL(s, game_commit, &cj), CB_OK);
+    cb_store_tally_take(&t);
+    if (tsb_dynamo()) T_EQ_STR(t.detail, "BatchGetItem 1 TransactWriteItems 1");   // b's account read, then seated
+
+    // Two writers read version 1 and move.
+    cb_game_row w1 = mkgame("lone01", NOW - 20000), w2 = mkgame("lone01", NOW - 20000);
+    uint8_t s1[1] = { 0x11 }, s2[1] = { 0x22 };
+    w1.state = s1, w1.state_len = 1, w1.version = 2, w1.updated_at = NOW - 19000;
+    w2.state = s2, w2.state_len = 1, w2.version = 2, w2.updated_at = NOW - 18000;
+    cb_game_commit c1 = { .row = &w1, .expected_version = 1, .n_humans = 2, .prev_known = true, .n_prev_humans = 2 };
+    memcpy(c1.humans, cj.humans, sizeof c1.humans);
+    memcpy(c1.prev_humans[0], b.id, sizeof(cb_uuid));   // the stored seats, in any order
+    memcpy(c1.prev_humans[1], a.id, sizeof(cb_uuid));
+    cb_game_commit c2 = c1;
+    c2.row = &w2;
+    T_EQ_INT(CB_STORE_CALL(s, game_commit, &c1), CB_OK);
+    cb_store_tally_take(&t);
+    if (tsb_dynamo()) T_EQ_STR(t.detail, "UpdateItem 1");
+    T_EQ_INT(CB_STORE_CALL(s, game_commit, &c2), CB_E_CONFLICT);
+    cb_store_tally_take(&t);
+    if (tsb_dynamo()) T_EQ_STR(t.detail, "UpdateItem 1");   // refused once, not sent again
+    cb_game_row got;
+    T_EQ_INT(CB_STORE_CALL(s, game_get, "lone01", &got), CB_OK);
+    T_EQ_INT(got.version, 2);
+    T_EQ_MEM(got.state, got.state_len, s1, 1);
+    T_EQ_INT(got.updated_at, NOW - 19000);
+    T_EQ_INT(got.last_commit_at, NOW - 19000);
+    T_CHECK(!got.needs_bots);
+    if (tsb_dynamo()) T_CHECK(got.seats_exact);
+    cb_game_row_free(&got);
+    T_EQ_INT(CB_STORE_CALL(s, is_member, "lone01", a.id), 1);
+    T_EQ_INT(CB_STORE_CALL(s, is_member, "lone01", b.id), 1);
+    names_t nm = { 0 };
+    T_EQ_INT(CB_STORE_CALL(s, games_of_user, b.id, 10, collect_member, &nm), 1);
+
+    // Reloaded at version 2, the second writer wins, alone again.
+    c2.expected_version = 2;
+    w2.version = 3;
+    cb_store_tally_take(&t);
+    T_EQ_INT(CB_STORE_CALL(s, game_commit, &c2), CB_OK);
+    cb_store_tally_take(&t);
+    if (tsb_dynamo()) T_EQ_STR(t.detail, "UpdateItem 1");
+    T_EQ_INT(CB_STORE_CALL(s, game_get, "lone01", &got), CB_OK);
+    T_EQ_INT(got.version, 3);
+    T_EQ_MEM(got.state, got.state_len, s2, 1);
+    cb_game_row_free(&got);
+
+    // A game that is gone: NOT_FOUND, and the update made no row of it.
+    cb_game_row x = mkgame("nolone", 1);
+    x.version = 1;
+    cb_game_commit cx = c1;
+    cx.row = &x;
+    cx.expected_version = 0;
+    T_EQ_INT(CB_STORE_CALL(s, game_commit, &cx), CB_E_NOT_FOUND);
+    T_EQ_INT(CB_STORE_CALL(s, game_get, "nolone", &got), CB_E_NOT_FOUND);
+
+    // Bot work at version 4 (the transaction puts the marker) ...
+    cb_game_row w4 = mkgame("lone01", NOW - 20000);
+    w4.version = 4;
+    w4.needs_bots = true;
+    cb_game_commit c4 = c1;
+    c4.row = &w4;
+    c4.expected_version = 3;
+    T_EQ_INT(CB_STORE_CALL(s, game_commit, &c4), CB_OK);
+    nm.n = 0;
+    T_EQ_INT(CB_STORE_CALL(s, games_needing_bots, STALE, ACTIVE, 100, collect_name, &nm), 1);
+    // ... and none at 5: fenced on a row that had bot work, it is the
+    // transaction, and the marker goes.
+    cb_game_row w5 = mkgame("lone01", NOW - 20000);
+    w5.version = 5;
+    cb_game_commit c5 = c1;
+    c5.row = &w5;
+    c5.expected_version = 4;
+    c5.prev_needs_bots = true;
+    cb_store_tally_take(&t);
+    T_EQ_INT(CB_STORE_CALL(s, game_commit, &c5), CB_OK);
+    cb_store_tally_take(&t);
+    if (tsb_dynamo()) T_EQ_STR(t.detail, "TransactWriteItems 1");
+    nm.n = 0;
+    T_EQ_INT(CB_STORE_CALL(s, games_needing_bots, STALE, ACTIVE, 100, collect_name, &nm), 0);
+    cb_uuid tok;
+    T_EQ_INT(CB_STORE_CALL(s, lease_acquire, "lone01", NOW, 25000, tok), CB_E_NOT_FOUND);
+    // Then alone again, and still no marker.
+    cb_game_row w6 = mkgame("lone01", NOW - 20000);
+    w6.version = 6;
+    cb_game_commit c6 = c1;
+    c6.row = &w6;
+    c6.expected_version = 5;
+    cb_store_tally_take(&t);
+    T_EQ_INT(CB_STORE_CALL(s, game_commit, &c6), CB_OK);
+    cb_store_tally_take(&t);
+    if (tsb_dynamo()) T_EQ_STR(t.detail, "UpdateItem 1");
+    nm.n = 0;
+    T_EQ_INT(CB_STORE_CALL(s, games_needing_bots, STALE, ACTIVE, 100, collect_name, &nm), 0);
+    cb_store_close(s);
+}
+
 static bool first_value(int n, const char *const *names, const char *const *values, void *ud) {
     char *out = ud;
     snprintf(out, 64, "%s", n > 0 && values[0] ? values[0] : "(null)");
@@ -1382,7 +1502,7 @@ static void signin_fails_round_trip(void) {
 
 // ---- concurrency: the CAS under threads ----------------------------------------------------
 
-typedef struct { cb_store *s; int wins, losses; } racer;
+typedef struct { cb_store *s; int wins, losses; bool lone; cb_uuid user; } racer;
 
 static void *race(void *ud) {
     racer *r = ud;
@@ -1393,6 +1513,13 @@ static void *race(void *ud) {
         g.version = v + 1;
         g.updated_at = v + 1;
         cb_game_commit c = { .row = &g, .expected_version = v };
+        if (r->lone) {   // the seats as the row vouches for them: the lone UpdateItem on DynamoDB
+            c.n_humans = c.n_prev_humans = 1;
+            memcpy(c.humans[0], r->user, sizeof(cb_uuid));
+            memcpy(c.prev_humans[0], r->user, sizeof(cb_uuid));
+            c.prev_known = g.seats_exact;
+            c.prev_needs_bots = g.needs_bots;
+        }
         int rc = CB_STORE_CALL(r->s, game_commit, &c);
         if (rc == CB_OK) r->wins++;
         else if (rc == CB_E_CONFLICT) r->losses++;
@@ -1403,8 +1530,10 @@ static void *race(void *ud) {
 
 // Four threads race read-modify-commit on one game: every win is one version,
 // so the final version is exactly the number of wins (no lost update), and no
-// commit fails for any reason but the fence.
-static void cas_under_threads(void) {
+// commit fails for any reason but the fence. `lone`: every commit keeps the
+// creator's seat as the row vouches for it, so on DynamoDB each is the lone
+// conditional UpdateItem.
+static void race_on(bool lone) {
     cb_store *s = open_fresh();
     cb_user_row a = mkuser("a@x.io", "A", 1);
     CB_STORE_CALL(s, user_create, &a);
@@ -1413,7 +1542,8 @@ static void cas_under_threads(void) {
     racer r[4];
     pthread_t th[4];
     for (int i = 0; i < 4; i++) {
-        r[i] = (racer){ .s = s };
+        r[i] = (racer){ .s = s, .lone = lone };
+        memcpy(r[i].user, a.id, sizeof(cb_uuid));
         pthread_create(&th[i], NULL, race, &r[i]);
     }
     int wins = 0, total = 0;
@@ -1428,8 +1558,12 @@ static void cas_under_threads(void) {
     T_EQ_INT(total, 200);
     T_CHECK(wins >= 50);
     cb_game_row_free(&got);
+    if (lone) T_EQ_INT(CB_STORE_CALL(s, is_member, "race01", a.id), 1);
     cb_store_close(s);
 }
+
+static void cas_under_threads(void) { race_on(false); }
+static void lone_cas_under_threads(void) { race_on(true); }
 
 int main(void) {
     snprintf(g_dir, sizeof g_dir, "/tmp/cbase-unit-store-XXXXXX");
@@ -1441,6 +1575,7 @@ int main(void) {
     T_RUN(sessions_round_trip);
     T_RUN(game_round_trip);
     T_RUN(cas_second_writer_loses);
+    T_RUN(lone_commit_cas);
     T_RUN(membership_follows_commits);
     T_RUN(game_delete_cascades);
     T_RUN(user_delete_cascades);
@@ -1457,6 +1592,7 @@ int main(void) {
     T_RUN(import_writes);
     T_RUN(big_items_and_pages);
     T_RUN(cas_under_threads);
+    T_RUN(lone_cas_under_threads);
     char cmd[300];
     snprintf(cmd, sizeof cmd, "rm -rf '%s'", g_dir);
     if (system(cmd) != 0) fprintf(stderr, "could not remove %s\n", g_dir);

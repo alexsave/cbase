@@ -435,6 +435,7 @@ int cb_section_commit(cb_ctx *ctx, cb_section *s, const cb_game_row *row, const 
     // The loaded row's seats, when it vouches that they are the stored ones
     // (store.h cb_game_commit prev_known): the store skips reading them.
     gc.prev_known = row->seats_exact;
+    gc.prev_needs_bots = row->needs_bots;
     gc.n_prev_humans = s->n_old;
     memcpy(gc.prev_humans, s->old_humans, sizeof gc.prev_humans);
     gc.n_prev_bots = s->n_old_bots;

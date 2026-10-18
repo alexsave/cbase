@@ -282,9 +282,19 @@ typedef struct {
 // version = expected (or, `import`, a Put with no condition). Then the
 // member and bot seat puts and deletes, the rating updates (each fenced on the
 // rating it read), and the SCAN marker. ratings may be NULL when c->n_rated is 0.
+// When item 0 would be the only item (dw_commit_is_lone) it is instead the
+// body of one UpdateItem with the same condition (dw_req_is_txn tells which).
 // false when the transaction would exceed DynamoDB's 100 items.
 bool dw_game_commit(dw_req *r, const char *table, const cb_game_commit *c, const dw_seats *stored,
                     const dw_rating_read *ratings, bool import);
+// The commit changes the row alone: not the import, no seat to put or delete
+// against `stored`, no rating, and no SCAN marker to write (the game had no
+// bot work at expected_version, c->prev_known vouching for it, and has none
+// after).
+bool dw_commit_is_lone(const cb_game_commit *c, const dw_seats *stored, const dw_rating_read *ratings, bool import);
+// The request is a TransactWriteItems (refusals in CancellationReasons), not
+// a single-item write (a refusal is DW_COND_FAILED).
+bool dw_req_is_txn(const dw_req *r);
 // The rows a commit's ratings live in (BatchGetItem, consistent): for each
 // rated seat its RATING (a human, plus the PROFILE) or BOT item. Also used by
 // ratings_for (every id as both a bot and a human).
