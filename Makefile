@@ -64,7 +64,7 @@ endif
 #     test program. `make LTO=1` turns it on (the deployed build uses it; the
 #     kernel measures ~1.5x faster cordite decisions with it).
 # -DCD_PASS_PROBE is a test counter of the kernel's own suite and is left out.
-KERNEL_CFLAGS := -O3 -ffast-math -Wall -Wextra -Wno-unused-parameter -Wno-deprecated-declarations \
+KERNEL_CFLAGS := -O3 -ffp-contract=off -fno-math-errno -Wall -Wextra -Wno-unused-parameter -Wno-deprecated-declarations \
                  -I$(KDIR)/src -I$(C_ROOT)/shared/c -DACCELERATE_NEW_LAPACK -DCD_LEAFBOOK $(KERNEL_CAPS)
 ifeq ($(LTO),1)
   KERNEL_CFLAGS += -flto
@@ -99,7 +99,7 @@ SAN := -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-fr
 # The kernel's own sanitized build turns object-size off (foolish/c/Makefile):
 # replay.c's DealSlot is a Game cut deliberately short, and a finished game's
 # replay code walks through it.
-ASAN_KERNEL_CFLAGS := $(filter-out -O3 -ffast-math -flto,$(KERNEL_CFLAGS)) -O1 -g $(SAN) -fno-sanitize=object-size
+ASAN_KERNEL_CFLAGS := $(filter-out -O3 -flto,$(KERNEL_CFLAGS)) -O1 -g $(SAN) -fno-sanitize=object-size
 # CB_INSTRUMENTED: this build's timings are not the shipped binary's, so a test
 # that holds a CPU budget (unit_bcrypt) skips the bound. Coverage defines it too.
 ASAN_CB_CFLAGS := $(filter-out -O2,$(CB_CFLAGS)) -O1 $(SAN) -DCB_INSTRUMENTED

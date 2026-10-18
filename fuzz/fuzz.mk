@@ -33,7 +33,7 @@ FUZZ_TIME ?= 30
 FUZZ_JOBS ?= 1
 
 FUZZ_SAN := -fsanitize=address,undefined,fuzzer-no-link -fno-sanitize-recover=undefined -fno-omit-frame-pointer
-FUZZ_KERNEL_CFLAGS := $(filter-out -O3 -ffast-math -flto,$(KERNEL_CFLAGS)) -O1 -g $(FUZZ_SAN) -fno-sanitize=object-size
+FUZZ_KERNEL_CFLAGS := $(filter-out -O3 -flto,$(KERNEL_CFLAGS)) -O1 -g $(FUZZ_SAN) -fno-sanitize=object-size
 FUZZ_CB_CFLAGS := $(filter-out -O2,$(CB_CFLAGS)) -O1 $(FUZZ_SAN) -Ifuzz
 # The replay build (no libFuzzer): the asan variant's objects, the harness too.
 FUZZ_REPLAY_CFLAGS := $(ASAN_CB_CFLAGS) -Ifuzz
