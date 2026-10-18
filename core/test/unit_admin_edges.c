@@ -4,6 +4,7 @@
 // bytes do not load, the AWS console links (and CloudWatch's own escaping),
 // the backups listed newest first, and a backup directory that cannot be made.
 #include "t.h"
+#include "cbase/app.h"
 #include "cbase/provider.h"
 
 #include "admin/admin.h"
@@ -86,6 +87,7 @@ static void setup(cb_store *store, const cb_provider *mode, const char *db_path)
     snprintf(g_cfg.allowed_origins, sizeof g_cfg.allowed_origins, "*");
     g_ctx.cfg = &g_cfg;
     g_ctx.prov = mode;
+    g_ctx.app = cb_main_app;   // the linked product's panels (foolish's games, game, bots)
     g_ctx.version = "test";
     g_ctx.router = cb_router_new();
     g_ctx.store = store;

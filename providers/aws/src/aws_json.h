@@ -19,8 +19,6 @@
 #include "aws/event.h"
 #include "auth/auth.h"
 #include "core_json.h"
-#include "app/table_ops.h"
-#include "roster.h"
 #include "util/str.h"
 
 #include <stdbool.h>

@@ -25,8 +25,8 @@ bool cb_mqtt_user_ok(const char *u) {
 int cb_mqtt_authorize(cb_ctx *ctx, const char *token, size_t token_len, const char *client_id, size_t id_len,
                       int64_t now_ms, cb_mqtt_grant *out) {
     memset(out, 0, sizeof *out);
-    if (!token || token_len == 0 || token_len > NW_ACCESS_MAX) return CB_E_AUTH;
-    char tok[NW_ACCESS_MAX + 1];
+    if (!token || token_len == 0 || token_len > CB_RT_TOKEN_MAX) return CB_E_AUTH;
+    char tok[CB_RT_TOKEN_MAX + 1];
     memcpy(tok, token, token_len);
     tok[token_len] = 0;
     if (memchr(tok, 0, token_len)) return CB_E_AUTH;

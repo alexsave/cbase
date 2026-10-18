@@ -99,10 +99,10 @@ static void connect_policy(void) {
     T_EQ_INT(cb_mqtt_authorize(&g_ctx, "tok-u+", 6, NULL, 0, NOW_MS, &g), CB_E_AUTH);
     // A NUL inside the token, a token longer than the wire carries.
     T_EQ_INT(cb_mqtt_authorize(&g_ctx, "tok-" UA "\0junk", 45, NULL, 0, NOW_MS, &g), CB_E_AUTH);
-    static char huge[NW_ACCESS_MAX + 2];
+    static char huge[CB_RT_TOKEN_MAX + 2];
     memset(huge, 'a', sizeof huge - 1);
     int before = g_verifies;
-    T_EQ_INT(cb_mqtt_authorize(&g_ctx, huge, NW_ACCESS_MAX + 1, NULL, 0, NOW_MS, &g), CB_E_AUTH);
+    T_EQ_INT(cb_mqtt_authorize(&g_ctx, huge, CB_RT_TOKEN_MAX + 1, NULL, 0, NOW_MS, &g), CB_E_AUTH);
     T_EQ_INT(g_verifies, before);   // refused before the token is checked
     // The check could not run: not a refusal, the server's failure.
     T_EQ_INT(cb_mqtt_authorize(&g_ctx, "tok-db", 6, NULL, 0, NOW_MS, &g), CB_E_DB);
@@ -330,7 +330,7 @@ static void packets_across_messages(void) {
 // The token may ride in the upgrade URL instead of CONNECT's password.
 static void the_query_token(void) {
     setup();
-    char t[NW_ACCESS_MAX + 1];
+    char t[CB_RT_TOKEN_MAX + 1];
     T_CHECK(cb_mqtt_query_token("token=tok-" UA, t, sizeof t));
     T_EQ_STR(t, "tok-" UA);
     T_CHECK(cb_mqtt_query_token("x-amz-customauthorizer-name=cbase-stream&token=abc%2Edef", t, sizeof t));

@@ -44,7 +44,7 @@ typedef struct {
 #define CB_AUTH_E_SAME_PASSWORD (-107)  // change password: the new one is the old one ("same_password")
 #define CB_AUTH_E_BAD_EMAIL     (-108)  // signup: not an address ("email_address_invalid")
 #define CB_AUTH_E_LONG_PASSWORD (-109)  // over 72 bytes, which bcrypt would silently cut ("validation_failed")
-#define CB_AUTH_E_TOO_MANY      (-110)  // signin: the account is locked for failed attempts, or a rate limit (limits.h)
+#define CB_AUTH_E_TOO_MANY      (-110)  // signin: the account is locked for failed attempts, or a rate limit (rate_limits.h)
 
 // Passwords (sign-up and a change; sign-in takes any password, so an account
 // made under an older rule still signs in): at least CB_AUTH_PASSWORD_MIN

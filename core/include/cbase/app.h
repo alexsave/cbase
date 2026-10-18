@@ -51,6 +51,15 @@ typedef struct {
     const char *pattern;   // "u/{user}/v", "s/{doc}"
 } cb_topic_family;
 
+// An ADMIN PANEL's call: /admin/api/<name>, behind the console's token
+// (admin/admin.h), answered through admin.h's helpers and core_json.h's
+// admin shapes.
+typedef struct {
+    const char *method;
+    const char *name;   // the path after /admin/api/
+    cb_handler  fn;
+} cb_admin_call;
+
 struct cb_app {
     const char          *name;            // "foolish": the log tag, later the stack and the key namespace
     const cb_route_list *const *routes;   // n_route_lists of them
@@ -70,6 +79,15 @@ struct cb_app {
     int                  n_cached_paths;
     // Its rows and its part of an account, on every store (store/store.h).
     const struct cb_store_app *store;
+    // Delete-account (docs/PLATFORM.md 2.5): the one implementation, which
+    // the console's users/delete runs. CB_OK; a refusal's kernel code and
+    // detail in *code and *detail. NULL: accounts are not deleted.
+    int (*delete_account)(cb_ctx *ctx, const char *user_id, int *code, int *detail);
+    // The console: the app's panels after the platform's, and the overview's
+    // one counter line (>= 0, or < 0 when the store could not say).
+    const cb_admin_call *admin_calls;
+    int                  n_admin_calls;
+    int (*admin_count)(cb_ctx *ctx, int64_t now_ms);
 };
 
 // The app this binary serves: the product defines it, one per link.

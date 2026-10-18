@@ -24,7 +24,7 @@
 // than estimated (CloudWatch Logs Insights reads it with `parse`):
 //   inv: http GET /v1/leaderboard 200 ms=8.4 after=0.0 store=2/7.9/0 push=0/0.0/0 other=0/0.0/0 rid=<request id> ip=<viewer>
 // ip is the viewer's address an HTTP request came from (CloudFront's
-// CloudFront-Viewer-Address, app/limits.h cb_viewer_key): with it this line is
+// CloudFront-Viewer-Address, rate_limits.h cb_viewer_key): with it this line is
 // the API's access log, at no cost past the line it already was (finding M9;
 // CloudFront's own standard logs are a delivery to set up and pay for).
 // ms is decode to response posted, after is the work done once the response
@@ -34,7 +34,7 @@
 // carries, so Logs Insights can join the two (billed duration, memory, init).
 #include "core.h"
 #include "after.h"
-#include "app/limits.h"
+#include "rate_limits.h"
 #include "aws/event.h"
 #include "aws/https.h"
 #include "aws/runtime_api.h"

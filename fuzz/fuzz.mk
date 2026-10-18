@@ -38,13 +38,13 @@ FUZZ_JOBS ?= 1
 
 FUZZ_SAN := -fsanitize=address,undefined,fuzzer-no-link -fno-sanitize-recover=undefined -fno-omit-frame-pointer
 FUZZ_KERNEL_CFLAGS := $(filter-out -O3 -flto,$(KERNEL_CFLAGS)) -O1 -g $(FUZZ_SAN) -fno-sanitize=object-size
-FUZZ_CB_CFLAGS := $(filter-out -O2,$(CB_CFLAGS)) -O1 $(FUZZ_SAN) -Ifuzz
+FUZZ_CB_CFLAGS = $(filter-out -O2,$(CB_CFLAGS)) -O1 $(FUZZ_SAN) -Ifuzz
 # The replay build (no libFuzzer): the asan variant's objects, the harness too.
-FUZZ_REPLAY_CFLAGS := $(ASAN_CB_CFLAGS) -Ifuzz
+FUZZ_REPLAY_CFLAGS = $(ASAN_CB_CFLAGS) -Ifuzz
 
-$(eval $(call C_VARIANT,build/obj/fuzz,FUZZ_CC,FUZZ_CB_CFLAGS))
+$(eval $(call C_VARIANT,build/obj/fuzz,FUZZ_CC,FUZZ_CB_CFLAGS,,$(SIDE_STAMP)))
 $(eval $(call C_VARIANT,build/obj/fuzz-kernel,FUZZ_CC,FUZZ_KERNEL_CFLAGS))
-$(eval $(call C_VARIANT,build/obj/fuzz-replay,CC,FUZZ_REPLAY_CFLAGS))
+$(eval $(call C_VARIANT,build/obj/fuzz-replay,CC,FUZZ_REPLAY_CFLAGS,,$(SIDE_STAMP)))
 
 FUZZ_ROOTS   := core/fuzz providers/local/fuzz providers/aws/fuzz $(C_ROOT)/foolish/server/fuzz
 FUZZ_SRC     := $(sort $(foreach r,$(FUZZ_ROOTS),$(wildcard $(r)/fz_*.c)))

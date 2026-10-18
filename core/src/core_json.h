@@ -10,7 +10,6 @@
 
 #include "auth/auth.h"
 #include "store/store.h"
-#include "app/table_ops.h"
 #include "util/str.h"
 
 #include <stdbool.h>
@@ -96,14 +95,30 @@ bool cb_js_admin_id_body(const char *body, size_t n, char *id, size_t cap);
 int  cb_js_admin_deleted(cb_buf *out, const char *id);
 int  cb_js_admin_written(cb_buf *out, const char *path);
 
-// One game as the console shows it: its scalar columns and its seats, read
-// with the kernel's roster_decode by the caller (roster_rc not ROSTER_OK:
-// "seats": null and "roster_error").
+// One game as the console shows it (a product's admin call fills it: foolish
+// reads its row and decodes its seats with the kernel's roster_decode):
+// its scalar columns and its seats (seats_ok false: "seats": null and
+// "roster_error"), and for the one-game call its byte sizes.
 typedef struct {
-    const cb_game_row *g;
-    const char        *status_label;
-    const Roster      *roster;
-    int                roster_rc;
+    const char *name, *id;
+    size_t      name_len, id_len;
+    bool        bot;
+} cb_js_admin_seat;
+typedef struct {
+    const char             *id;
+    int                     status;
+    const char             *status_label;
+    int64_t                 version, round_epoch;
+    bool                    needs_bots;
+    int64_t                 created_at, updated_at, last_commit_at;
+    bool                    seats_ok;
+    int                     roster_error;
+    const cb_js_admin_seat *seats;
+    int                     n_seats;
+    const char             *title;
+    size_t                  title_len;
+    int64_t                 state_len, roster_len, logs_len;   // the game call's
+    bool                    has_seed;
 } cb_js_admin_game;
 // GET games: {"games":[game..],"next"}.
 cb_js_stream *cb_js_admin_games_begin(cb_buf *out);
@@ -123,7 +138,11 @@ int cb_js_admin_game_write(cb_buf *out, const cb_js_admin_game *g, const cb_js_a
 // GET bots: {"bots":[{id,nickname,strategy_key,elo_rating,previous_elo (null
 // when < 0),games_played,updated_at}..]}.
 cb_js_stream *cb_js_admin_bots_begin(cb_buf *out);
-void          cb_js_admin_bots_add(cb_js_stream *s, const cb_bot_row *b);
+typedef struct {
+    const char *id, *nickname, *strategy_key;
+    int64_t     elo_rating, previous_elo, games_played, updated_at;   // previous_elo < 0: null
+} cb_js_admin_bot;
+void          cb_js_admin_bots_add(cb_js_stream *s, const cb_js_admin_bot *b);
 int           cb_js_admin_bots_end(cb_js_stream *s);
 
 // GET logs: {"last_seq","entries":[{seq,at,level,module,msg}..],"links"}.

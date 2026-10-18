@@ -140,7 +140,7 @@ The function's reserved concurrency (30, `cbase.yaml`) is the ceiling on what a 
 Ten CloudWatch alarms (the always-free ten) mail `CBASE_ALARM_EMAIL` through the SNS topic `cbase-alarms`: Lambda throttles, errors, concurrency of 20 or more, Function URL 5xx, more than 6000 invocations in 5 minutes, the table's read and write units and each index's write units past 80%, and refused writes.
 A new address gets a confirmation email from AWS first; nothing is sent to it until the link in it is clicked.
 
-Rate limits (`src/app/limits.h`) are held in each warm container's memory and cost nothing.
+Rate limits (`src/rate_limits.h`) are held in each warm container's memory and cost nothing.
 The one counted in the table is failed sign-ins per account (`AUTHFAIL#<email>`, `src/auth/auth.h`): a wrong password costs one more read (1 RCU) and one write (1 WCU) than before, a sign-in while the account is locked costs one read and no write or bcrypt, and a success after failures costs one delete (1 WCU).
 A name with no account is never counted, so guessing names writes nothing.
 

@@ -29,21 +29,18 @@
 // answer's shape is written in json_surface.c; this file gathers the values.
 #include "admin.h"
 
-#include "app/limits.h"
+#include "rate_limits.h"
 #include "util/clock.h"
 
 #include "edge.h"
-#include "app/functions_http.h"
-#include "app/table_ops.h"
+#include "cbase/app.h"
 #include "cbase/provider.h"
 #include "handler.h"
 #include "core_json.h"
 #include "net/router.h"
-#include "roster.h"
 #include "store/store.h"
 #include "util/clock.h"
 #include "util/err.h"
-#include "../../../../shared/c/hex/hex.h"
 #include "util/log.h"
 #include "../../../../shared/c/num_parse.h"
 
@@ -85,7 +82,7 @@ static bool console_on(const cb_ctx *ctx, cb_http_res *res) {
 
 // true when an API request may proceed; otherwise res holds the refusal.
 // One bearer guards the whole console, so guessing it is limited (finding
-// L7): an address's wrong tokens are counted (limits.h, in memory), each is
+// L7): an address's wrong tokens are counted (rate_limits.h, in memory), each is
 // logged, and an address past the limit is refused before its token is even
 // compared, the right one included.
 static bool admin_gate(const cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
@@ -110,7 +107,7 @@ static bool admin_gate(const cb_ctx *ctx, const cb_http_req *req, cb_http_res *r
 // ---- answers ---------------------------------------------------------------------
 
 // Sends a document json_surface.c wrote (rc its CB_OK or CB_E_NOMEM).
-static void send_json(cb_http_res *res, int status, cb_buf *b, int rc) {
+void cb_admin_send_json(cb_http_res *res, int status, cb_buf *b, int rc) {
     if (rc != CB_OK) {
         cb_router_error(res, 500, "admin: response did not encode");
         return;
@@ -119,10 +116,10 @@ static void send_json(cb_http_res *res, int status, cb_buf *b, int rc) {
     cb_res_header(res, "Cache-Control", "no-store");
 }
 
-static void no_memory(cb_http_res *res) { cb_router_error(res, 500, "out of memory"); }
+void cb_admin_no_memory(cb_http_res *res) { cb_router_error(res, 500, "out of memory"); }
 
 // A store refusal as an HTTP answer.
-static void store_error(cb_ctx *ctx, cb_http_res *res, const char *what, int rc) {
+void cb_admin_store_error(cb_ctx *ctx, cb_http_res *res, const char *what, int rc) {
     char m[256];
     int status;
     switch (rc) {
@@ -135,13 +132,13 @@ static void store_error(cb_ctx *ctx, cb_http_res *res, const char *what, int rc)
     cb_router_error(res, status, m);
 }
 
-static bool need_store(cb_ctx *ctx, cb_http_res *res) {
+bool cb_admin_need_store(cb_ctx *ctx, cb_http_res *res) {
     if (ctx->store) return true;
     cb_router_error(res, 503, "store not available");
     return false;
 }
 
-static int q_int(const cb_http_req *req, const char *key, int dflt, int lo, int hi) {
+int cb_admin_q_int(const cb_http_req *req, const char *key, int dflt, int lo, int hi) {
     char v[32];
     if (!cb_http_query_get(req, key, v, sizeof v) || !v[0]) return dflt;
     // Any number is taken and clamped to lo..hi ("-5" is lo); text that is
@@ -151,7 +148,7 @@ static int q_int(const cb_http_req *req, const char *key, int dflt, int lo, int 
     return x < lo ? lo : x > hi ? hi : (int)x;
 }
 
-static void q_str(const cb_http_req *req, const char *key, char *out, size_t cap) {
+void cb_admin_q_str(const cb_http_req *req, const char *key, char *out, size_t cap) {
     if (!cb_http_query_get(req, key, out, cap)) out[0] = 0;
 }
 
@@ -236,8 +233,6 @@ static int list_backups(const cb_ctx *ctx, backup_file *out, int cap) {
 
 // ---- GET /admin/api/overview ------------------------------------------------------
 
-static bool count_name(const char *name, void *ud) { (*(int *)ud)++; return true; }
-
 static void api_overview(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     int64_t now = cb_now_ms();
     cb_js_admin_overview o;
@@ -257,12 +252,8 @@ static void api_overview(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) 
         o.http_conns = atomic_load_explicit(&ctx->stats.http_conns, memory_order_relaxed);
         o.ws_conns = atomic_load_explicit(&ctx->stats.ws_conns, memory_order_relaxed);
     }
-    // The heartbeat's own criteria (bots.h cb_bots_scan): untouched for 10 s,
-    // active within the hour.
-    int due = 0;
-    int rc = ctx->store ? CB_ROWS_CALL(ctx->store, games_needing_bots, now - 10000, now - 3600000, 1000, count_name, &due)
-                        : CB_E_STATE;
-    o.games_needing_bots = rc < 0 ? -1 : due;
+    // The app's one counter line (foolish: the games needing bots).
+    o.games_needing_bots = ctx->app && ctx->app->admin_count && ctx->store ? ctx->app->admin_count(ctx, now) : -1;
     // DynamoDB throttling (store.h cb_store_throttles_get): this process's
     // throttled responses, and the requests that failed still throttled.
     // Nonzero means the provisioned capacity is too small for the load.
@@ -290,7 +281,7 @@ static void api_overview(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) 
     links_of(ctx, u, &o.links);
     cb_buf b;
     cb_buf_init(&b);
-    send_json(res, 200, &b, cb_js_admin_overview_write(&b, &o));
+    cb_admin_send_json(res, 200, &b, cb_js_admin_overview_write(&b, &o));
     cb_buf_free(&b);
     links_free(u);
 }
@@ -300,15 +291,15 @@ static void api_overview(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) 
 static bool put_name(const char *name, void *ud) { cb_js_admin_collections_add(ud, name); return true; }
 
 static void api_collections(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
-    if (!need_store(ctx, res)) return;
+    if (!cb_admin_need_store(ctx, res)) return;
     cb_buf b;
     cb_buf_init(&b);
     cb_js_stream *s = cb_js_admin_collections_begin(&b, store_name(ctx));
-    if (!s) { cb_buf_free(&b); no_memory(res); return; }
+    if (!s) { cb_buf_free(&b); cb_admin_no_memory(res); return; }
     int rc = CB_STORE_CALL(ctx->store, admin_collections, put_name, s);
     int enc = cb_js_admin_collections_end(s);
-    if (rc < 0) store_error(ctx, res, "collections", rc);
-    else send_json(res, 200, &b, enc);
+    if (rc < 0) cb_admin_store_error(ctx, res, "collections", rc);
+    else cb_admin_send_json(res, 200, &b, enc);
     cb_buf_free(&b);
 }
 
@@ -330,28 +321,28 @@ static bool put_row(int n, const char *const *names, const char *const *values, 
 
 // GET /admin/api/browse?c=<collection>&prefix=&cursor=&limit=
 static void api_browse(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
-    if (!need_store(ctx, res)) return;
+    if (!cb_admin_need_store(ctx, res)) return;
     char coll[128], prefix[256], cursor[512], next[512] = "";
-    q_str(req, "c", coll, sizeof coll);
-    q_str(req, "prefix", prefix, sizeof prefix);
-    q_str(req, "cursor", cursor, sizeof cursor);
-    int limit = q_int(req, "limit", 50, 1, ADMIN_PAGE_MAX);
+    cb_admin_q_str(req, "c", coll, sizeof coll);
+    cb_admin_q_str(req, "prefix", prefix, sizeof prefix);
+    cb_admin_q_str(req, "cursor", cursor, sizeof cursor);
+    int limit = cb_admin_q_int(req, "limit", 50, 1, ADMIN_PAGE_MAX);
     if (!coll[0]) { cb_router_error(res, 400, "browse: c (the collection) is required"); return; }
     cb_buf b;
     cb_buf_init(&b);
     row_sink s = { cb_js_admin_browse_begin(&b, coll), 0, limit, false };
-    if (!s.s) { cb_buf_free(&b); no_memory(res); return; }
+    if (!s.s) { cb_buf_free(&b); cb_admin_no_memory(res); return; }
     int rc = CB_STORE_CALL(ctx->store, admin_browse, coll, prefix, cursor[0] ? cursor : NULL, limit, put_row, &s, next,
                            sizeof next);
     int enc = cb_js_admin_browse_end(s.s, next);
-    if (rc < 0) store_error(ctx, res, "browse", rc);
-    else send_json(res, 200, &b, enc);
+    if (rc < 0) cb_admin_store_error(ctx, res, "browse", rc);
+    else cb_admin_send_json(res, 200, &b, enc);
     cb_buf_free(&b);
 }
 
 // POST /admin/api/query  {"statement": "...", "confirm": "WRITE"?}
 static void api_query(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
-    if (!need_store(ctx, res)) return;
+    if (!cb_admin_need_store(ctx, res)) return;
     const char *body = (const char *)req->body;
     size_t n = req->body_len;
     char *stmt = malloc(n + 1);
@@ -367,13 +358,13 @@ static void api_query(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     cb_buf b;
     cb_buf_init(&b);
     row_sink s = { cb_js_admin_query_begin(&b, is_sqlite(ctx) ? "sql" : "partiql", allow_write), 0, ADMIN_QUERY_ROWS, false };
-    if (!s.s) { cb_buf_free(&b); free(stmt); no_memory(res); return; }
+    if (!s.s) { cb_buf_free(&b); free(stmt); cb_admin_no_memory(res); return; }
     int rc = CB_STORE_CALL(ctx->store, admin_query, stmt, allow_write, put_row, &s);
     // A hand edit may have touched a rating or a bot: both edge copies go (app/edge.h).
     if (allow_write) cb_edge_stale(CB_EDGE_ALL);
     int enc = cb_js_admin_query_end(s.s, s.truncated);
-    if (rc < 0) store_error(ctx, res, "query", rc);
-    else send_json(res, 200, &b, enc);
+    if (rc < 0) cb_admin_store_error(ctx, res, "query", rc);
+    else cb_admin_send_json(res, 200, &b, enc);
     cb_buf_free(&b);
     free(stmt);
 }
@@ -394,27 +385,27 @@ static bool put_user(const cb_user_row *u, void *ud) {
 
 // GET /admin/api/users?search=&offset=&limit=
 static void api_users(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
-    if (!need_store(ctx, res)) return;
+    if (!cb_admin_need_store(ctx, res)) return;
     char search[128];
-    q_str(req, "search", search, sizeof search);
-    int offset = q_int(req, "offset", 0, 0, 1 << 30);
-    int limit = q_int(req, "limit", 50, 1, ADMIN_PAGE_MAX);
+    cb_admin_q_str(req, "search", search, sizeof search);
+    int offset = cb_admin_q_int(req, "offset", 0, 0, 1 << 30);
+    int limit = cb_admin_q_int(req, "limit", 50, 1, ADMIN_PAGE_MAX);
     cb_buf b;
     cb_buf_init(&b);
     user_sink s = { cb_js_admin_users_begin(&b), 0 };
-    if (!s.s) { cb_buf_free(&b); no_memory(res); return; }
+    if (!s.s) { cb_buf_free(&b); cb_admin_no_memory(res); return; }
     int rc = CB_STORE_CALL(ctx->store, users_list, search, offset, limit, put_user, &s);
     // A full page means there may be more.
     int enc = cb_js_admin_users_end(s.s, offset, s.n == limit ? (int64_t)offset + limit : -1);
-    if (rc < 0) store_error(ctx, res, "users", rc);
-    else send_json(res, 200, &b, enc);
+    if (rc < 0) cb_admin_store_error(ctx, res, "users", rc);
+    else cb_admin_send_json(res, 200, &b, enc);
     cb_buf_free(&b);
 }
 
-// POST /admin/api/users/delete  {"id": "<uuid>"}: cb_app_delete_account, the
-// one implementation delete-account runs (see the header comment).
+// POST /admin/api/users/delete  {"id": "<uuid>"}: the app's delete_account,
+// the one implementation delete-account runs (see the header comment).
 static void api_user_delete(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
-    if (!need_store(ctx, res)) return;
+    if (!cb_admin_need_store(ctx, res)) return;
     char id[CB_UUID_LEN + 1];
     if (!cb_js_admin_id_body((const char *)req->body, req->body_len, id, sizeof id) || !id[0]) {
         cb_router_error(res, 400, "delete: a JSON body with \"id\" is required");
@@ -422,9 +413,10 @@ static void api_user_delete(cb_ctx *ctx, const cb_http_req *req, cb_http_res *re
     }
     cb_user_row u;
     int rc = CB_STORE_CALL(ctx->store, user_get, id, &u);
-    if (rc < 0) { store_error(ctx, res, "delete: user", rc); return; }
+    if (rc < 0) { cb_admin_store_error(ctx, res, "delete: user", rc); return; }
+    if (!ctx->app || !ctx->app->delete_account) { cb_router_error(res, 501, "delete: this app deletes no accounts"); return; }
     int code = 0, detail = 0;
-    rc = cb_app_delete_account(ctx, id, &code, &detail);
+    rc = ctx->app->delete_account(ctx, id, &code, &detail);
     CB_WARN("admin", "delete-account for user %s: %s", id, cb_strerror(rc));
     if (rc != CB_OK) {
         char m[160];
@@ -435,128 +427,7 @@ static void api_user_delete(cb_ctx *ctx, const cb_http_req *req, cb_http_res *re
     }
     cb_buf b;
     cb_buf_init(&b);
-    send_json(res, 200, &b, cb_js_admin_deleted(&b, id));
-    cb_buf_free(&b);
-}
-
-// ---- games ----------------------------------------------------------------------------
-
-// One game as the console shows it: the row, and its seats read with the
-// kernel's own decoder (no byte layout here). *r is the decoder's output.
-static cb_js_admin_game game_of(const cb_game_row *g, Roster *r) {
-    cb_js_admin_game a = { g, cb_table_status_label(g->status), r, ROSTER_E_LENGTH };
-    a.roster_rc = g->roster ? roster_decode(r, g->roster, (int)g->roster_len) : ROSTER_E_LENGTH;
-    return a;
-}
-
-#define GAMES_PAGE_MAX 100
-
-typedef struct {
-    char ids[GAMES_PAGE_MAX][CB_GAME_ID_MAX + 1];
-    int  n, cap;
-} id_sink;
-
-static const char *col(int n, const char *const *names, const char *const *values, const char *want) {
-    for (int i = 0; i < n; i++)
-        if (names[i] && strcmp(names[i], want) == 0) return values[i];
-    return NULL;
-}
-
-// A browse row of the "games" collection names a game: SQLite's games.id, or
-// DynamoDB's pk "GAME#<id>" on the sk "ROW" item (MEMBER and BOT items under
-// the same pk are skipped).
-static bool take_game_id(int n, const char *const *names, const char *const *values, void *ud) {
-    id_sink *s = ud;
-    const char *id = col(n, names, values, "id");
-    if (!id) {
-        const char *pk = col(n, names, values, "pk"), *sk = col(n, names, values, "sk");
-        if (pk && cb_starts_with(pk, "GAME#") && (!sk || strcmp(sk, "ROW") == 0)) id = pk + 5;
-    }
-    if (id && s->n < s->cap && strlen(id) <= CB_GAME_ID_MAX) cb_strlcpy(s->ids[s->n++], id, sizeof s->ids[0]);
-    return s->n < s->cap;
-}
-
-// GET /admin/api/games?cursor=&limit=&prefix=
-static void api_games(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
-    if (!need_store(ctx, res)) return;
-    char prefix[64], cursor[512], next[512] = "";
-    q_str(req, "prefix", prefix, sizeof prefix);
-    q_str(req, "cursor", cursor, sizeof cursor);
-    id_sink *s = calloc(1, sizeof *s);
-    if (!s) { cb_router_error(res, 500, "out of memory"); return; }
-    s->cap = q_int(req, "limit", 25, 1, GAMES_PAGE_MAX);
-    int rc = CB_STORE_CALL(ctx->store, admin_browse, CB_ADMIN_GAMES, prefix, cursor[0] ? cursor : NULL, s->cap, take_game_id, s,
-                           next, sizeof next);
-    if (rc < 0) { free(s); store_error(ctx, res, "games", rc); return; }
-    cb_buf b;
-    cb_buf_init(&b);
-    cb_js_stream *st = cb_js_admin_games_begin(&b);
-    if (!st) { cb_buf_free(&b); free(s); no_memory(res); return; }
-    for (int i = 0; i < s->n; i++) {
-        cb_game_row g;
-        memset(&g, 0, sizeof g);
-        if (CB_ROWS_CALL(ctx->store, game_get, s->ids[i], &g) != CB_OK) continue;   // deleted since the browse
-        Roster r;
-        cb_js_admin_game a = game_of(&g, &r);
-        cb_js_admin_games_add(st, &a);
-        cb_game_row_free(&g);
-    }
-    send_json(res, 200, &b, cb_js_admin_games_end(st, next));
-    cb_buf_free(&b);
-    free(s);
-}
-
-// GET /admin/api/game?id=: the row, its byte sizes, and the spectator envelope
-// (app/table_ops.h cb_table_view, the same bytes spectator_views answers) as hex.
-static void api_game(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
-    if (!need_store(ctx, res)) return;
-    char id[CB_GAME_ID_MAX + 1];
-    q_str(req, "id", id, sizeof id);
-    if (!id[0]) { cb_router_error(res, 400, "game: id is required"); return; }
-    cb_game_row g;
-    memset(&g, 0, sizeof g);
-    int rc = CB_ROWS_CALL(ctx->store, game_get, id, &g);
-    if (rc < 0) { store_error(ctx, res, "game", rc); return; }
-    cb_view_row v;
-    memset(&v, 0, sizeof v);
-    int vrc = cb_table_view(ctx, id, NULL, &v);
-    cb_js_admin_envelope e = { vrc == CB_OK, NULL, 0, NULL };
-    char *hex = NULL;
-    if (vrc == CB_OK) {
-        hex = malloc(v.view_len * 2 + 1);
-        if (hex && hex_encode(v.view, v.view_len, hex, v.view_len * 2 + 1) >= 0) e.envelope_hex = hex;
-        e.envelope_version = v.version;
-        cb_view_row_free(&v);
-    } else {
-        e.envelope_error = cb_strerror(vrc);
-    }
-    Roster r;
-    cb_js_admin_game a = game_of(&g, &r);
-    cb_buf b;
-    cb_buf_init(&b);
-    send_json(res, 200, &b, cb_js_admin_game_write(&b, &a, &e));
-    cb_buf_free(&b);
-    free(hex);
-    cb_game_row_free(&g);
-}
-
-// ---- bots -----------------------------------------------------------------------------
-
-static bool put_bot(const cb_bot_row *r, void *ud) {
-    cb_js_admin_bots_add(ud, r);
-    return true;
-}
-
-static void api_bots(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
-    if (!need_store(ctx, res)) return;
-    cb_buf b;
-    cb_buf_init(&b);
-    cb_js_stream *s = cb_js_admin_bots_begin(&b);
-    if (!s) { cb_buf_free(&b); no_memory(res); return; }
-    int rc = CB_ROWS_CALL(ctx->store, bots_list, put_bot, s);
-    int enc = cb_js_admin_bots_end(s);
-    if (rc < 0) store_error(ctx, res, "bots", rc);
-    else send_json(res, 200, &b, enc);
+    cb_admin_send_json(res, 200, &b, cb_js_admin_deleted(&b, id));
     cb_buf_free(&b);
 }
 
@@ -583,7 +454,7 @@ static void api_logs(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     // The newest seq overall, so the next poll asks only for what is new even
     // when every line in between was below the level.
     cb_js_stream *s = cb_js_admin_logs_begin(&b, cb_log_last_seq());
-    if (!s) { cb_buf_free(&b); free(e); no_memory(res); return; }
+    if (!s) { cb_buf_free(&b); free(e); cb_admin_no_memory(res); return; }
     for (size_t i = 0; i < n; i++) {
         // Lowercase, the spelling the level= filter takes.
         char lv[8];
@@ -594,7 +465,7 @@ static void api_logs(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     cb_buf u[4];
     cb_js_admin_links links;
     links_of(ctx, u, &links);
-    send_json(res, 200, &b, cb_js_admin_logs_end(s, &links));
+    cb_admin_send_json(res, 200, &b, cb_js_admin_logs_end(s, &links));
     links_free(u);
     cb_buf_free(&b);
     free(e);
@@ -618,9 +489,9 @@ static void api_config(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     cb_buf b;
     cb_buf_init(&b);
     cb_js_stream *s = cb_js_admin_config_begin(&b, &c);
-    if (!s) { cb_buf_free(&b); no_memory(res); return; }
+    if (!s) { cb_buf_free(&b); cb_admin_no_memory(res); return; }
     cb_config_each(ctx->cfg, put_setting, s);
-    send_json(res, 200, &b, cb_js_admin_config_end(s));
+    cb_admin_send_json(res, 200, &b, cb_js_admin_config_end(s));
     cb_buf_free(&b);
 }
 
@@ -650,7 +521,7 @@ static void api_backups(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     links_of(ctx, u, &bk.links);
     cb_buf b;
     cb_buf_init(&b);
-    send_json(res, 200, &b, cb_js_admin_backups_write(&b, &bk));
+    cb_admin_send_json(res, 200, &b, cb_js_admin_backups_write(&b, &bk));
     cb_buf_free(&b);
     links_free(u);
 }
@@ -659,7 +530,7 @@ static bool ignore_row(int n, const char *const *names, const char *const *value
 
 // POST /admin/api/backups: SQLite's VACUUM INTO <dir>/cbase-<UTC stamp>.sqlite.
 static void api_backup_now(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
-    if (!need_store(ctx, res)) return;
+    if (!cb_admin_need_store(ctx, res)) return;
     if (!is_sqlite(ctx)) {
         cb_router_error(res, 409, "this store backs itself up continuously (point-in-time recovery); nothing to trigger");
         return;
@@ -686,32 +557,23 @@ static void api_backup_now(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res
     cb_buf_putc(&sql, '\'');
     int rc = CB_STORE_CALL(ctx->store, admin_query, cb_buf_cstr(&sql), true, ignore_row, NULL);
     cb_buf_free(&sql);
-    if (rc < 0) { store_error(ctx, res, "backup", rc); return; }
+    if (rc < 0) { cb_admin_store_error(ctx, res, "backup", rc); return; }
     CB_INFO("admin", "backup written: %s", path);
     cb_buf b;
     cb_buf_init(&b);
-    send_json(res, 200, &b, cb_js_admin_written(&b, path));
+    cb_admin_send_json(res, 200, &b, cb_js_admin_written(&b, path));
     cb_buf_free(&b);
 }
 
 // ---- dispatch -------------------------------------------------------------------------
 
-typedef struct {
-    const char *method;
-    const char *name;   // the path after /admin/api/
-    cb_handler  fn;
-} api_route;
-
-static const api_route API[] = {
+static const cb_admin_call API[] = {
     { "GET", "overview", api_overview },
     { "GET", "collections", api_collections },
     { "GET", "browse", api_browse },
     { "POST", "query", api_query },
     { "GET", "users", api_users },
     { "POST", "users/delete", api_user_delete },
-    { "GET", "games", api_games },
-    { "GET", "game", api_game },
-    { "GET", "bots", api_bots },
     { "GET", "logs", api_logs },
     { "GET", "config", api_config },
     { "GET", "backups", api_backups },
@@ -722,10 +584,15 @@ static void h_api(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     if (!admin_gate(ctx, req, res)) return;
     const char *name = req->path + strlen("/admin/api/");
     bool known = false;
-    for (size_t i = 0; i < sizeof API / sizeof API[0]; i++) {
-        if (strcmp(API[i].name, name) != 0) continue;
-        known = true;
-        if (strcmp(API[i].method, req->method) == 0) { API[i].fn(ctx, req, res); return; }
+    // The platform's calls, then the app's panels (cbase/app.h admin_calls).
+    for (int t = 0; t < 2; t++) {
+        const cb_admin_call *calls = t == 0 ? API : ctx->app ? ctx->app->admin_calls : NULL;
+        int n = t == 0 ? (int)(sizeof API / sizeof API[0]) : ctx->app ? ctx->app->n_admin_calls : 0;
+        for (int i = 0; calls && i < n; i++) {
+            if (strcmp(calls[i].name, name) != 0) continue;
+            known = true;
+            if (strcmp(calls[i].method, req->method) == 0) { calls[i].fn(ctx, req, res); return; }
+        }
     }
     cb_router_error(res, known ? 405 : 404, known ? "method not allowed" : "no such admin call");
 }

@@ -44,7 +44,7 @@ struct cb_provider {
     // How a job is started (ctx.h cb_job_start_fn).
     cb_job_start_fn job_start;
     // The request header the edge vouches for the viewer's address in
-    // (app/limits.h cb_viewer_key), or NULL: the socket's peer is the viewer.
+    // (rate_limits.h cb_viewer_key), or NULL: the socket's peer is the viewer.
     const char *viewer_header;
     // The admin console's links into the provider's own console, written into
     // u[0..3] (the function, its logs, the store, the store's backups), each

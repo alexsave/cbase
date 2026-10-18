@@ -64,7 +64,7 @@ typedef struct {
     int  bot_workers;     // CBASE_BOT_WORKERS 1: serve's bot pool; see DESIGN.md "Kernel thread safety"
     long max_body;        // CBASE_MAX_BODY 1048576: request body bytes
     int  jwt_ttl_s;       // CBASE_JWT_TTL 3600: access token lifetime
-    int  admin_fail_limit;// CBASE_ADMIN_FAIL_LIMIT 10: wrong console tokens per address an hour (app/limits.h)
+    int  admin_fail_limit;// CBASE_ADMIN_FAIL_LIMIT 10: wrong console tokens per address an hour (rate_limits.h)
     int  rated_min_age_s; // CBASE_RATED_MIN_AGE 259200 (72 h): a game with a younger account ends unrated (M6)
     int  log_level;       // CBASE_LOG_LEVEL info: debug|info|warn|error
     // CBASE_BOT_SPEEDUP 1 (1..100): every timer of the bot loop (app/bots.h:

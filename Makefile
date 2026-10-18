@@ -87,17 +87,33 @@ endif
 # clang does not (client_table.c maybe-uninitialized), and they are the
 # kernel's to fix, not a reason this build fails on Linux.
 # THE SOURCE ROOTS (docs/PLATFORM.md 8.4): the core, which names no product
-# and no provider; each provider; the product. Every root is on every
-# compile's include path for now (stage 7 step a); the per-side include gate
-# comes with the store split.
+# and no provider; each provider; the product.
 SRC_ROOTS := core/src providers/local/src providers/aws/src $(C_ROOT)/foolish/server/src
 # Each side's tests (core's, each provider's, the product's), and every test
 # program reaches every one of them: a test may assemble a mixed lane.
 TEST_ROOTS := core/test providers/local/test providers/aws/test $(C_ROOT)/foolish/server/test
 MAIN_SERVE  := providers/local/src/main_serve.c
 MAIN_LAMBDA := providers/aws/src/main_lambda.c
-CB_CFLAGS := -std=gnu11 -D_GNU_SOURCE -O2 -g -Wall -Wextra -Werror -Wno-unused-parameter -Wshadow -Wvla \
-             -Icore/include $(addprefix -I,$(SRC_ROOTS)) $(addprefix -I,$(TEST_ROOTS)) -Ibench -I$(KDIR)/src -I$(C_ROOT)/shared/c $(OPENSSL_CFLAGS) -pthread $(KERNEL_CAPS)
+# THE COMPILER GATE (docs/PLATFORM.md 8.4): each side's sources see only the
+# headers that side may use, so an include across the line does not compile.
+# core: its own headers and shared/c. A provider: core's and its own, never
+# another provider's. The product: core's (core/include and the headers in
+# core/src, not yet promoted), its own, and the kernel; never a provider's.
+# Everything else (the tests, fuzz targets, benches, tools and the import,
+# which assemble mixed lanes) sees every root. The side is the source's path
+# ($* in a compile: shared/tools/c_rules.mk A FLAG FOR ONE OBJECT), and the
+# lists are in the variants' flag stamps, so a change to one rebuilds.
+SHARED_INC  := -I$(C_ROOT)/shared/c
+CORE_INC    := -Icore/include -Icore/src $(SHARED_INC)
+LOCAL_INC   := $(CORE_INC) -Iproviders/local/src
+AWS_INC     := $(CORE_INC) -Iproviders/aws/src
+PRODUCT_INC := $(CORE_INC) -I$(C_ROOT)/foolish/server/src -I$(KDIR)/src
+ALL_INC     := -Icore/include $(addprefix -I,$(SRC_ROOTS)) $(addprefix -I,$(TEST_ROOTS)) -Ibench -I$(KDIR)/src $(SHARED_INC)
+side_inc = $(if $(filter core/src/%,$*),$(CORE_INC),$(if $(filter providers/local/src/%,$*),$(LOCAL_INC),$(if \
+             $(filter providers/aws/src/%,$*),$(AWS_INC),$(if $(filter foolish/server/src/%,$*),$(PRODUCT_INC),$(ALL_INC)))))
+SIDE_STAMP := core: $(CORE_INC) local: $(LOCAL_INC) aws: $(AWS_INC) product: $(PRODUCT_INC) rest: $(ALL_INC)
+CB_CFLAGS = -std=gnu11 -D_GNU_SOURCE -O2 -g -Wall -Wextra -Werror -Wno-unused-parameter -Wshadow -Wvla \
+            $(side_inc) $(OPENSSL_CFLAGS) -pthread $(KERNEL_CAPS)
 LDLIBS := $(OPENSSL_LDFLAGS) -lsqlite3 -lssl -lcrypto -lpthread -lm $(PLATFORM_LDLIBS) $(LTO_LDFLAGS)
 # STATIC=1: a fully static link (the Lambda bootstrap, built on musl by
 # providers/aws/ops/build_bootstrap.sh). Not meaningful on macOS.
@@ -114,13 +130,13 @@ SAN := -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-fr
 ASAN_KERNEL_CFLAGS := $(filter-out -O3 -flto,$(KERNEL_CFLAGS)) -O1 -g $(SAN) -fno-sanitize=object-size
 # CB_INSTRUMENTED: this build's timings are not the shipped binary's, so a test
 # that holds a CPU budget (unit_bcrypt) skips the bound. Coverage defines it too.
-ASAN_CB_CFLAGS := $(filter-out -O2,$(CB_CFLAGS)) -O1 $(SAN) -DCB_INSTRUMENTED
+ASAN_CB_CFLAGS = $(filter-out -O2,$(CB_CFLAGS)) -O1 $(SAN) -DCB_INSTRUMENTED
 
 include $(C_ROOT)/shared/tools/c_rules.mk
 $(eval $(call C_VARIANT,build/obj/kernel,CC,KERNEL_CFLAGS))
-$(eval $(call C_VARIANT,build/obj/cbase,CC,CB_CFLAGS))
+$(eval $(call C_VARIANT,build/obj/cbase,CC,CB_CFLAGS,,$(SIDE_STAMP)))
 $(eval $(call C_VARIANT,build/obj/asan-kernel,CC,ASAN_KERNEL_CFLAGS))
-$(eval $(call C_VARIANT,build/obj/asan,CC,ASAN_CB_CFLAGS))
+$(eval $(call C_VARIANT,build/obj/asan,CC,ASAN_CB_CFLAGS,,$(SIDE_STAMP)))
 
 # The schema and the admin console, embedded so the binary needs no file beside
 # it at run time.
@@ -293,7 +309,7 @@ COVK_foolish/c/src/netwire := $(COV_FLAGS)
 COVK_foolish/c/src/netclient := $(COV_FLAGS)
 COVK_shared/c/mqtt/mqtt := $(COV_FLAGS)
 COV_KERNEL_CFLAGS = $(KERNEL_CFLAGS) $(COVK_$*)
-$(eval $(call C_VARIANT,build/obj/cov,CC,COV_CB_CFLAGS))
+$(eval $(call C_VARIANT,build/obj/cov,CC,COV_CB_CFLAGS,,$(SIDE_STAMP)))
 $(eval $(call C_VARIANT,build/obj/cov-kernel,CC,COV_KERNEL_CFLAGS,,netwire+netclient+mqtt:$(COV_FLAGS)))
 $(call prog,build/cov,build/obj/cov,build/obj/cov-kernel,cbase,$(MAIN_SERVE),COV_CB_CFLAGS)
 $(call prog,build/cov,build/obj/cov,build/obj/cov-kernel,bootstrap,$(MAIN_LAMBDA),COV_CB_CFLAGS)

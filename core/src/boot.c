@@ -1,7 +1,7 @@
 #include "boot.h"
 
 #include "edge.h"
-#include "app/limits.h"
+#include "rate_limits.h"
 #include "auth/auth.h"
 #include "cbase/app.h"
 #include "cbase/provider.h"

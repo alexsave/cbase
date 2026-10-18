@@ -24,8 +24,11 @@
 #ifndef CB_STREAM_MQTT_H
 #define CB_STREAM_MQTT_H
 
+// The longest access token (a JWT) a connection may present, bytes: the
+// clients' own cap (foolish's netwire.h NW_ACCESS_MAX, held equal there).
+#define CB_RT_TOKEN_MAX 2048
+
 #include "ctx.h"
-#include "netwire.h"
 #include "store/store.h"
 
 #include "../../../../shared/c/mqtt/mqtt.h"
@@ -85,7 +88,7 @@ typedef struct {
     uint16_t keepalive_s;
     int      n_subs;
     char     subs[CB_MQTT_SUBS][MQTT_TOPIC_MAX + 1];
-    char     query_token[NW_ACCESS_MAX + 1];   // the upgrade URL's token=, "" for none (set by the transport)
+    char     query_token[CB_RT_TOKEN_MAX + 1];   // the upgrade URL's token=, "" for none (set by the transport)
     int      in_len;             // a packet begun in one WebSocket message and not yet ended
     uint8_t  in[CB_MQTT_PACKET_MAX];
 } cb_mqtt_conn;

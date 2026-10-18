@@ -282,11 +282,10 @@ int cb_js_admin_deleted(cb_buf *out, const char *id) { return adm_one(out, "dele
 int cb_js_admin_written(cb_buf *out, const char *path) { return adm_one(out, "written", path); }
 
 // One game's scalar columns and its seats, into an open object.
-static void adm_game(cb_jw *w, const cb_js_admin_game *a) {
-    const cb_game_row *g = a->g;
+static void adm_game(cb_jw *w, const cb_js_admin_game *g) {
     cb_jw_kstr(w, "id", g->id);
     cb_jw_kint(w, "status", g->status);
-    cb_jw_kstr(w, "status_label", a->status_label);
+    cb_jw_kstr(w, "status_label", g->status_label);
     cb_jw_kint(w, "version", g->version);
     cb_jw_kint(w, "round_epoch", g->round_epoch);
     cb_jw_kbool(w, "needs_bots", g->needs_bots);
@@ -294,25 +293,24 @@ static void adm_game(cb_jw *w, const cb_js_admin_game *a) {
     adm_kiso(w, "updated_at", g->updated_at);
     adm_kiso(w, "last_commit_at", g->last_commit_at);
     cb_jw_key(w, "seats");
-    if (a->roster_rc != ROSTER_OK) {
+    if (!g->seats_ok) {
         cb_jw_null(w);
-        cb_jw_kint(w, "roster_error", a->roster_rc);
+        cb_jw_kint(w, "roster_error", g->roster_error);
         return;
     }
-    const Roster *r = a->roster;
     cb_jw_arr(w);
-    for (int i = 0; i < r->n; i++) {
+    for (int i = 0; i < g->n_seats; i++) {
         cb_jw_obj(w);
         cb_jw_key(w, "name");
-        cb_jw_strn(w, r->seats[i].name, r->seats[i].name_len);
+        cb_jw_strn(w, g->seats[i].name, g->seats[i].name_len);
         cb_jw_key(w, "id");
-        cb_jw_strn(w, r->seats[i].id, r->seats[i].id_len);
-        cb_jw_kbool(w, "bot", r->seats[i].brain_len > 0);
+        cb_jw_strn(w, g->seats[i].id, g->seats[i].id_len);
+        cb_jw_kbool(w, "bot", g->seats[i].bot);
         cb_jw_end(w);
     }
     cb_jw_end(w);
     cb_jw_key(w, "title");
-    cb_jw_strn(w, r->title, r->title_len);
+    cb_jw_strn(w, g->title, g->title_len);
 }
 
 cb_js_stream *cb_js_admin_games_begin(cb_buf *out) {
@@ -337,15 +335,14 @@ int cb_js_admin_games_end(cb_js_stream *s, const char *next) {
     return adm_close(s);
 }
 
-int cb_js_admin_game_write(cb_buf *out, const cb_js_admin_game *a, const cb_js_admin_envelope *e) {
-    const cb_game_row *g = a->g;
+int cb_js_admin_game_write(cb_buf *out, const cb_js_admin_game *g, const cb_js_admin_envelope *e) {
     cb_jw w;
     cb_jw_init(&w, out);
     cb_jw_obj(&w);
-    adm_game(&w, a);
-    cb_jw_kint(&w, "state_len", (int64_t)g->state_len);
-    cb_jw_kint(&w, "roster_len", (int64_t)g->roster_len);
-    cb_jw_kint(&w, "logs_len", (int64_t)g->logs_len);
+    adm_game(&w, g);
+    cb_jw_kint(&w, "state_len", g->state_len);
+    cb_jw_kint(&w, "roster_len", g->roster_len);
+    cb_jw_kint(&w, "logs_len", g->logs_len);
     cb_jw_kbool(&w, "has_seed", g->has_seed);
     if (e->view_ok) {
         if (e->envelope_hex) cb_jw_kstr(&w, "envelope_hex", e->envelope_hex);
@@ -367,7 +364,7 @@ cb_js_stream *cb_js_admin_bots_begin(cb_buf *out) {
     return s;
 }
 
-void cb_js_admin_bots_add(cb_js_stream *s, const cb_bot_row *r) {
+void cb_js_admin_bots_add(cb_js_stream *s, const cb_js_admin_bot *r) {
     cb_jw *w = &s->w;
     cb_jw_obj(w);
     cb_jw_kstr(w, "id", r->id);
