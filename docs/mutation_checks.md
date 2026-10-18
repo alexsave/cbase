@@ -620,3 +620,9 @@ The hand-minimised input is `fuzz/corpus/event/crash-40a6db73`.
 - json_surface.c: the old token path (`cb_json_get_str` then `strlen`), json.c fixed -> `unit_rt_iot` `decoded_events` the `\u0000` token: token_len == 0 and token == "".
 - json.c: no clear on failure, json_surface.c fixed -> `unit_util` `json_reader` s == "" after a too-long value, a lone surrogate and a missing key.
 - both reverted -> `unit_rt_iot` the lone-surrogate token == "", and `fz_event` replay of crash-40a6db73 fails its FZ_CHECK.
+
+## The key-capture proof's classes are positional (2026-10-18)
+
+- json_surface.c shape_value: a value whose first character is a digit printed as {n} instead of its template -> `unit_items` `shapes_ignore_what_an_id_looks_like` (the seat's dashboard key `{}#{}` for a game id `ab12cd`; and every all-digit game id's shape differs from it).
+- json_surface.c fits: a variable slot refusing a 10- or 15-character value that starts with '0' (the old width rule, narrowed so only the new ids trip it) -> `unit_items` `shapes_ignore_what_an_id_looks_like` (the game ids `0000000000` and `000000000000000` shape differently from `ab12cd`).
+- Proof against main: origin/main dcc186a8b's store code with this classifier and golden gives the same 99 shapes, md5 c75fcd08f8a4aa9830aaadd0a39b4559, over two runs.

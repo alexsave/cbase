@@ -393,43 +393,89 @@ static bool attr(cb_span item, const char *name, const char *type, cb_span *tok)
 
 // ---- the key-capture proof (json_surface.h dw_shape) ------------------------------------------
 
-// One '#'-separated segment of a key value, normalized by its position and
-// fixed shapes only, never by what an id happens to look like: a game id is
-// random hex that may be all digits, or a test's own word. The first segment
-// may be the key's family (upper-case: kept); a segment of 10 or 15 digits is
-// one of the layout's fixed-width numbers (a rating's rank, a time); every
-// other segment is an id: {uuid}, {sha} (a token's hash), {email}, else {id}.
-static void shape_seg(cb_buf *o, const char *s, size_t n, bool first) {
-    bool upper = n > 0, digits = n > 0, hex = n > 0, at = false;
-    size_t dashes = 0;
-    for (size_t i = 0; i < n; i++) {
-        unsigned char c = (unsigned char)s[i];
-        if (!((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9' && i > 0) || c == '_')) upper = false;
-        if (!(c >= '0' && c <= '9')) digits = false;
-        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) hex = false;
-        if (c == '-') dashes++;
-        if (c == '@') at = true;
-    }
-    if (n == 0) return;
-    if (first && upper) cb_buf_append(o, s, n);
-    else if (digits && (n == 10 || n == 15)) cb_buf_puts(o, "{n}");
-    else if (n == 36 && dashes == 4) cb_buf_puts(o, "{uuid}");
-    else if (hex && n == 64) cb_buf_puts(o, "{sha}");
-    else if (at) cb_buf_puts(o, "{email}");
-    else cb_buf_puts(o, "{id}");
+// THE TEMPLATES each key attribute's values are written from (the item
+// layout, "THE ITEM LAYOUT" in json_surface.h): '#'-separated slots, each a
+// literal word or "{}" for a value the row supplies. A value is normalized to
+// the template whose literal slots it matches, its other slots printed as
+// "{}" without ever being looked at: a game id is a short code that may be
+// all digits, all letters, or a word (FOOLISH.CARDS/ABC123), so no class may
+// come from what an id looks like. Several templates may share a shape
+// ("{}#{}": a chat's sort key, a seat's dashboard key); they read the same.
+static const char *const KEY_TEMPLATES[][16] = {
+    /* pk */     { "USER#{}", "EMAIL#{}", "REFRESH#{}", "SESSION#{}", "AUTHFAIL#{}", "GAME#{}", "BOT#{}", "SNAP#{}", "CHAT#{}", "SCAN" },
+    /* sk */     { "PROFILE", "RATING", "USER", "TOKEN", "SESSION", "FAILS", "ROW", "BOT", "SNAP", "MEMBER#{}", "BOT#{}", "PLAYER#{}", "GAME#{}", "{}#{}" },
+    /* gsi1pk */ { "USERGAMES#{}", "USERCHAT#{}", "USERREFRESH#{}", "GAMESNAPS#{}" },
+    /* gsi1sk */ { "{}#{}", "{}" },
+    /* gsi2pk */ { "RATINGS", "BOTS", "USERS", "PLAYER#{}" },
+    /* gsi2sk */ { "E#{}#{}", "{}#{}", "{}" },
+};
+static const char *const KEY_ATTRS[] = { "pk", "sk", "gsi1pk", "gsi1sk", "gsi2pk", "gsi2sk" };
+#define N_KEY_ATTRS 6
+
+// Which key attribute (an index into KEY_ATTRS) a name is, or -1.
+static int key_attr_of(const char *name, size_t n) {
+    for (int i = 0; i < N_KEY_ATTRS; i++)
+        if (strlen(KEY_ATTRS[i]) == n && memcmp(KEY_ATTRS[i], name, n) == 0) return i;
+    return -1;
 }
 
-static void shape_value(cb_buf *o, cb_span tok) {
+// Does value v[0..n) fill template tp, slot by slot? `prefix`: v may stop
+// part way (a begins_with), its last slot cut short.
+static bool fits(const char *tp, const char *v, size_t n, bool prefix) {
+    size_t vi = 0;
+    while (*tp) {
+        const char *te = strchr(tp, '#');
+        size_t tl = te ? (size_t)(te - tp) : strlen(tp);
+        const char *ve = memchr(v + vi, '#', n - vi);
+        size_t vl = ve ? (size_t)(ve - (v + vi)) : n - vi;
+        bool last_v = !ve;
+        bool var = tl == 2 && tp[0] == '{';
+        if (!var) {
+            if (prefix && last_v) { if (vl > tl || memcmp(tp, v + vi, vl) != 0) return false; }
+            else if (vl != tl || memcmp(tp, v + vi, tl) != 0) return false;
+        }
+        if (last_v) return prefix || !te;   // the value ends: so must the template, unless it is a prefix
+        if (!te) return false;              // the template ends, the value goes on
+        vi += vl + 1;
+        tp = te + 1;
+    }
+    return false;
+}
+
+static int literals(const char *tp) {
+    int n = 0;
+    for (const char *s = tp; *s;) {
+        const char *e = strchr(s, '#');
+        size_t l = e ? (size_t)(e - s) : strlen(s);
+        n += !(l == 2 && s[0] == '{');
+        s = e ? e + 1 : s + l;
+    }
+    return n;
+}
+
+// The template a key attribute's value fills, into o ("?" when none does: a
+// key the layout does not know, which the proof then shows). With `prefix`
+// (a begins_with or a bound) the value may stop part way. Of several that
+// fit, the one with the most literal slots: "E#" begins a rating's rank key,
+// not a two-slot "{}#{}".
+static void shape_value(cb_buf *o, int attr, cb_span tok, bool prefix) {
     char v[1024];
     int n = cb_json_unescape(tok, v, sizeof v);
-    if (n < 0) { cb_buf_puts(o, "{long}"); return; }
-    size_t from = 0;
-    for (size_t i = 0; i <= (size_t)n; i++)
-        if (i == (size_t)n || v[i] == '#') {
-            shape_seg(o, v + from, i - from, from == 0);
-            if (i < (size_t)n) cb_buf_putc(o, '#');
-            from = i + 1;
+    if (n < 0 || attr < 0) { cb_buf_puts(o, "?"); return; }
+    int best = -1, best_lit = -1;
+    bool best_part = false;
+    for (int i = 0; i < 16 && KEY_TEMPLATES[attr][i]; i++) {
+        const char *tp = KEY_TEMPLATES[attr][i];
+        bool whole = fits(tp, v, (size_t)n, false), part = !whole && prefix && fits(tp, v, (size_t)n, true);
+        int lit = literals(tp);
+        if ((whole || part) && lit > best_lit) {
+            best = i;
+            best_lit = lit;
+            best_part = part;
         }
+    }
+    if (best < 0) cb_buf_puts(o, "?");
+    else cb_buf_printf(o, "%s%s", KEY_TEMPLATES[attr][best], best_part ? "(prefix)" : "");
 }
 
 // A sorted, de-duplicated set of short strings, joined by ','.
@@ -456,15 +502,8 @@ static void set_put(cb_buf *o, const char *label, shape_set *z) {
     for (int i = 0; i < z->n; i++) cb_buf_printf(o, "%s%s", i ? "," : "", z->s[i]);
 }
 
-static bool key_attr(cb_span name) {
-    static const char *const K[] = { "pk", "sk", "gsi1pk", "gsi1sk", "gsi2pk", "gsi2sk" };
-    for (size_t i = 0; i < sizeof K / sizeof K[0]; i++)
-        if (key_is(name, K[i])) return true;
-    return false;
-}
-
 // An item's attributes ({"name":{"T":v},...}): name:type, and for a key
-// attribute its normalized value.
+// attribute the template its value fills.
 static void shape_item(shape_set *z, cb_span item) {
     size_t pos = 0;
     cb_span k, v;
@@ -475,22 +514,29 @@ static void shape_item(shape_set *z, cb_span item) {
         cb_buf e;
         cb_buf_init(&e);
         cb_buf_printf(&e, "%.*s:%.*s", (int)k.n - 2, k.p + 1, (int)tk.n - 2, tk.p + 1);
-        if (key_attr(k) && key_is(tk, "S")) {
+        int attr = key_attr_of(k.p + 1, k.n - 2);
+        if (attr >= 0 && key_is(tk, "S")) {
             cb_buf_putc(&e, '=');
-            shape_value(&e, tv);
+            shape_value(&e, attr, tv, false);
         }
         set_add(z, cb_buf_cstr(&e), e.len);
         cb_buf_free(&e);
     }
 }
 
-// The expression names (their values) and values (type:normalized for S).
-static void shape_exprs(shape_set *names, shape_set *vals, cb_span req) {
+// The expression names (their values) and values: each value's type, and
+// for one that holds a key attribute its template. Which attribute a value
+// holds is read from its placeholder: ":<attribute>" for a set (both the
+// item layer and the builders before it name a set's value after its
+// attribute), ":pk" and ":sk" for a Query's key condition (the index's pair),
+// ":p" for a Scan's pk prefix; any other value is its type alone.
+static void shape_exprs(shape_set *names, shape_set *vals, cb_span req, int index) {
     cb_span m, k, v;
     size_t pos = 0;
     if (member(req, "ExpressionAttributeNames", &m))
         while (dw_object_next(m, &pos, &k, &v)) set_add(names, v.p + 1, v.n - 2);
     pos = 0;
+    bool query = member(req, "KeyConditionExpression", &m);
     if (member(req, "ExpressionAttributeValues", &m))
         while (dw_object_next(m, &pos, &k, &v)) {
             size_t tp = 0;
@@ -499,9 +545,17 @@ static void shape_exprs(shape_set *names, shape_set *vals, cb_span req) {
             cb_buf e;
             cb_buf_init(&e);
             cb_buf_printf(&e, "%.*s", (int)tk.n - 2, tk.p + 1);
-            if (key_is(tk, "S")) {
+            const char *ph = k.p + 2;   // past the quote and the ':'
+            size_t phn = k.n >= 3 ? k.n - 3 : 0;
+            int attr = -1;
+            bool prefix = false;
+            if (query && phn == 2 && memcmp(ph, "pk", 2) == 0) attr = index == 1 ? 2 : index == 2 ? 4 : 0;
+            else if (query && phn == 2 && memcmp(ph, "sk", 2) == 0) attr = index == 1 ? 3 : index == 2 ? 5 : 1, prefix = true;
+            else if (!query && phn == 1 && ph[0] == 'p') attr = 0, prefix = true;
+            else attr = key_attr_of(ph, phn);
+            if (attr >= 0 && key_is(tk, "S")) {
                 cb_buf_putc(&e, ':');
-                shape_value(&e, tv);
+                shape_value(&e, attr, tv, prefix);
             }
             set_add(vals, cb_buf_cstr(&e), e.len);
             cb_buf_free(&e);
@@ -515,10 +569,14 @@ static void shape_one(cb_buf *out, const char *op, cb_span req) {
     if (key && item && names && vals) {
         cb_span v;
         cb_buf_puts(out, op);
-        if (member(req, "IndexName", &v)) cb_buf_printf(out, " index=%.*s", (int)v.n - 2, v.p + 1);
+        int index = 0;
+        if (member(req, "IndexName", &v)) {
+            cb_buf_printf(out, " index=%.*s", (int)v.n - 2, v.p + 1);
+            index = v.n >= 3 && v.p[v.n - 2] == '1' ? 1 : 2;
+        }
         if (member(req, "Key", &v)) shape_item(key, v);
         if (member(req, "Item", &v)) shape_item(item, v);
-        shape_exprs(names, vals, req);
+        shape_exprs(names, vals, req, index);
         if (key->n) set_put(out, "key", key);
         if (item->n) set_put(out, "item", item);
         if (names->n) set_put(out, "names", names);

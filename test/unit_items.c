@@ -99,8 +99,8 @@ static void dynamo_txn_and_query(void) {
     cb_buf shape;
     cb_buf_init(&shape);
     dw_shape(g_target, cb_span_of((const char *)g_body.p, g_body.len), &shape);
-    T_CHECK(strstr(cb_buf_cstr(&shape), "Txn.Put item=b:BOOL,bytes:B,expires_at:N,expires_ms:N,gsi1pk:S=L#{id},pk:S=P#{id},sk:S=A\n") != NULL);
-    T_CHECK(strstr(cb_buf_cstr(&shape), "Txn.ConditionCheck key=pk:S=P#{id},sk:S=B\n") != NULL);
+    T_CHECK(strstr(cb_buf_cstr(&shape), "Txn.Put item=b:BOOL,bytes:B,expires_at:N,expires_ms:N,gsi1pk:S=?,pk:S=?,sk:S=?\n") != NULL);
+    T_CHECK(strstr(cb_buf_cstr(&shape), "Txn.ConditionCheck key=pk:S=?,sk:S=?\n") != NULL);
     cb_buf_free(&shape);
     g_answer = "{\"Items\":[{\"pk\":{\"S\":\"P#1\"},\"sk\":{\"S\":\"A\"},\"n\":{\"N\":\"-3\"}}],\"Count\":1}";
     sks k = { 0 };
@@ -111,7 +111,7 @@ static void dynamo_txn_and_query(void) {
     T_CHECK(strstr(cb_buf_cstr(&g_body), "begins_with(#gsi1sk, :sk)") != NULL);
     cb_buf_init(&shape);
     dw_shape(g_target, cb_span_of((const char *)g_body.p, g_body.len), &shape);
-    T_EQ_STR(cb_buf_cstr(&shape), "Query index=gsi1 names=gsi1pk,gsi1sk vals=S:A,S:L#{id}\n");
+    T_EQ_STR(cb_buf_cstr(&shape), "Query index=gsi1 names=gsi1pk,gsi1sk vals=S:?,S:{}#{}(prefix)\n");
     cb_buf_free(&shape);
     // A batch's shapes, one line an item, with an email and a hash normalized.
     cb_buf_init(&shape);
@@ -119,15 +119,15 @@ static void dynamo_txn_and_query(void) {
              CB_SPAN_LIT("{\"RequestItems\":{\"cbase\":[{\"DeleteRequest\":{\"Key\":{\"pk\":{\"S\":\"AUTHFAIL#a@x.io\"},"
                          "\"sk\":{\"S\":\"FAILS\"}}}},{\"DeleteRequest\":{\"Key\":{\"pk\":{\"S\":\"GAME#ab12cd\"},\"sk\":{\"S\":\"ROW\"}}}}]}}"),
              &shape);
-    T_EQ_STR(cb_buf_cstr(&shape), "Batch.DeleteRequest key=pk:S=AUTHFAIL#{email},sk:S=FAILS\n"
-                                  "Batch.DeleteRequest key=pk:S=GAME#{id},sk:S=ROW\n");
+    T_EQ_STR(cb_buf_cstr(&shape), "Batch.DeleteRequest key=pk:S=AUTHFAIL#{},sk:S=FAILS\n"
+                                  "Batch.DeleteRequest key=pk:S=GAME#{},sk:S=ROW\n");
     cb_buf_free(&shape);
     cb_buf_init(&shape);
     dw_shape("DynamoDB_20120810.BatchGetItem",
              CB_SPAN_LIT("{\"RequestItems\":{\"cbase\":{\"Keys\":[{\"pk\":{\"S\":\"USER#aaaaaaaa-0000-4000-8000-000000000001\"},"
                          "\"sk\":{\"S\":\"PROFILE\"}}]}}}"),
              &shape);
-    T_EQ_STR(cb_buf_cstr(&shape), "BatchGet key=pk:S=USER#{uuid},sk:S=PROFILE\n");
+    T_EQ_STR(cb_buf_cstr(&shape), "BatchGet key=pk:S=USER#{},sk:S=PROFILE\n");
     cb_buf_free(&shape);
     cb_store_close(s);
     cb_buf_free(&g_body);
@@ -169,11 +169,55 @@ static void records_and_reads(void) {
     cb_item_free(&back);
 }
 
+// THE KEY-CAPTURE PROOF'S CLASSES ARE POSITIONAL (data safety: the proof
+// holds the production keys). A game id is a short code that may be all
+// digits of any length, all letters, or a word the layout also uses; the
+// shape of a request must not change with it.
+static void shape_of_game(const char *gid, cb_buf *out) {
+    char pk[64], gsk[64], chat[64];
+    snprintf(pk, sizeof pk, "GAME#%s", gid);
+    snprintf(gsk, sizeof gsk, "001760000000000#%s", gid);
+    snprintf(chat, sizeof chat, "CHAT#%s", gid);
+    cb_buf_reset(out);
+    const cb_iset st[] = { { CB_AVS("game_id", gid), CB_SET_TO }, { CB_AVS("gsi1pk", "USERGAMES#aaaaaaaa-0000-4000-8000-000000000001"), CB_SET_TO },
+                           { CB_AVS("gsi1sk", gsk), CB_SET_TO } };
+    cb_iwrite w = { .op = CB_IW_UPDATE, .key = { pk, "MEMBER#aaaaaaaa-0000-4000-8000-000000000001" }, .sets = st, .n_sets = 3 };
+    dw_req r;
+    dw_req_init(&r);
+    T_CHECK(dw_iwrite(&r, "cbase", &w, false));
+    dw_shape(r.target, cb_span_of((const char *)r.body.p, r.body.len), out);
+    const cb_av a[] = { CB_AVS("game_id", gid) };
+    cb_iwrite p = { .op = CB_IW_PUT, .key = { chat, gsk }, .attrs = a, .n_attrs = 1 };
+    T_CHECK(dw_iwrite(&r, "cbase", &p, false));
+    dw_shape(r.target, cb_span_of((const char *)r.body.p, r.body.len), out);
+    dw_iquery(&r, "cbase", 0, pk, "MEMBER#", true, 0, cb_span_of("", 0));
+    dw_shape(r.target, cb_span_of((const char *)r.body.p, r.body.len), out);
+    dw_req_free(&r);
+}
+
+static void shapes_ignore_what_an_id_looks_like(void) {
+    static const char *const IDS[] = { "1234567890", "123456789012345", "0000000000", "000000000000000", "7", "123456", "123456789012", "ABC123", "ROW", "SCAN",
+                                       "a1b2c3d4e5f6", "aaaaaaaa-0000-4000-8000-000000000001" };
+    cb_buf first, other;
+    cb_buf_init(&first);
+    cb_buf_init(&other);
+    shape_of_game("ab12cd", &first);
+    T_CHECK(strstr(cb_buf_cstr(&first), "pk:S=GAME#{}") != NULL);
+    T_CHECK(strstr(cb_buf_cstr(&first), "sk:S={}#{}") != NULL);
+    for (size_t i = 0; i < sizeof IDS / sizeof IDS[0]; i++) {
+        shape_of_game(IDS[i], &other);
+        T_EQ_STR(cb_buf_cstr(&other), cb_buf_cstr(&first));
+    }
+    cb_buf_free(&first);
+    cb_buf_free(&other);
+}
+
 int main(void) {
     if (tp_tempdir(g_dir, sizeof g_dir) != 0) return 1;
     T_RUN(sqlite_txn_and_query);
     T_RUN(dynamo_txn_and_query);
     T_RUN(records_and_reads);
+    T_RUN(shapes_ignore_what_an_id_looks_like);
     char cmd[300];
     snprintf(cmd, sizeof cmd, "rm -rf '%s'", g_dir);
     if (system(cmd) != 0) return 1;
