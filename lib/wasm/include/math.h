@@ -21,11 +21,13 @@
 
 double sin(double x);
 double cos(double x);
+void   sincos(double x, double *s, double *c);
 double exp(double x);
 double log(double x);
 double log2(double x);
 float  sinf(float x);
 float  cosf(float x);
+void   sincosf(float x, float *s, float *c);
 float  acosf(float x);
 float  powf(float x, float y);
 float  logf(float x);
