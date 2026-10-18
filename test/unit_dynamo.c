@@ -401,7 +401,6 @@ static void builders_valid_json(void) {
     cb_uuid stored[2];
     snprintf(stored[0], sizeof stored[0], B1);
     snprintf(stored[1], sizeof stored[1], U2);
-    cb_refresh_row rt = { .token_hash = "ff", .user_id = U1, .session_id = "s1", .created_at = 3 };
     cb_rating_row rr = { .user_id = U1, .username = "A", .elo_rating = 1200, .previous_elo = -1, .games_played = 4 };
     cb_buf key;
     cb_buf_init(&key);
@@ -415,13 +414,6 @@ static void builders_valid_json(void) {
     dw_user_end_sessions(&r, "cbase", U1);           T_CHECK(valid(&r));
     dw_user_touch(&r, "cbase", U1, 5);               T_CHECK(valid(&r));
     dw_user_delete_txn(&r, "cbase", &u);             T_CHECK(valid(&r));
-    dw_refresh_put(&r, "cbase", &rt);                T_CHECK(valid(&r));
-    dw_refresh_take(&r, "cbase", "ff", 9, 1000);     T_CHECK(valid(&r));
-    T_CHECK(strstr(cb_buf_cstr(&r.body), "if_not_exists(#revoked_at, :now)") != NULL);
-    cb_session_row se = { .id = "s1", .user_id = U1, .created_at = 1, .expires_at = 2000 };
-    dw_session_put(&r, "cbase", &se);                T_CHECK(valid(&r));
-    dw_session_revoke(&r, "cbase", "s1", U1, 2000);  T_CHECK(valid(&r));
-    dw_get_session(&r, "cbase", "s1");               T_CHECK(valid(&r));
     dw_snapshot_put(&r, "cbase", &sn);               T_CHECK(valid(&r));
     T_CHECK(strstr(cb_buf_cstr(&r.body), "\"moves\":{\"B\":\"AAECA/8=\"}") != NULL);
     {   // the main item and ONE copy for the repeated player
@@ -1319,7 +1311,7 @@ static void flow_sessions(void) {
         { "GetItem", "\"ConsistentRead\":true", 200, LIVE },
         { "GetItem", NULL, 200, LIVE },
         { "GetItem", NULL, 200, "{}" },
-        { "UpdateItem", "if_not_exists(#expires_ms, :exp)", 200, "{}" },
+        { "UpdateItem", "if_not_exists(#expires_ms, :expires_ms)", 200, "{}" },
         { "PutItem", NULL, 400, VALIDATION },
     };
     RUN(steps, s);
@@ -1400,8 +1392,8 @@ static void flow_signup_and_tokens(void) {
         { "TransactWriteItems", "EMAIL#ann@x.io", 400, TAKEN },
         { "TransactWriteItems", "EMAIL#bob@x.io", 400, TXN_CONFLICT },   // transient: sent again
         { "TransactWriteItems", "EMAIL#bob@x.io", 200, "{}" },
-        { "UpdateItem", "\":now\":{\"N\":\"100\"}", 200, OLD },
-        { "UpdateItem", "if_not_exists(#revoked_at, :now)", 200, OLD_TAKEN },
+        { "UpdateItem", "\":revoked_at\":{\"N\":\"100\"}", 200, OLD },
+        { "UpdateItem", "if_not_exists(#revoked_at, :revoked_at)", 200, OLD_TAKEN },
         { "UpdateItem", NULL, 400, COND_NO_ITEM },
         // end_sessions: one write to the user, nothing listed
         { "UpdateItem", "if_not_exists(#session_gen, :gen0) + :gen1", 200, "{}" },

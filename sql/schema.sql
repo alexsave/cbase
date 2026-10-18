@@ -32,44 +32,32 @@ CREATE TABLE IF NOT EXISTS users (
     kept_session    TEXT
 );
 
--- Sessions (store.h cb_session_row): ended by one write, read by every refresh.
-CREATE TABLE IF NOT EXISTS sessions (
-    id         TEXT PRIMARY KEY,
-    user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    created_at INTEGER NOT NULL,
-    expires_at INTEGER NOT NULL,
-    gen        INTEGER NOT NULL DEFAULT 0,
-    revoked    INTEGER NOT NULL DEFAULT 0
+-- THE ITEM LAYER (src/store/items.h): DynamoDB's model, so the rows written
+-- once above it (src/store/rows_auth.c: sessions, refresh tokens, failed
+-- sign-ins) behave alike on both backends. An item is its pk and sk, the
+-- index keys it is listed under, its TTL in ms, and every attribute in one
+-- binary record (items.h cb_item_record_*). An item past expires_ms stays
+-- until it is overwritten or deleted, as DynamoDB's TTL may keep one for days:
+-- a reader treats it as gone (the tightest of the two, docs/PLATFORM.md 8.3.2).
+CREATE TABLE IF NOT EXISTS items (
+    pk         TEXT NOT NULL,
+    sk         TEXT NOT NULL,
+    gsi1pk     TEXT,
+    gsi1sk     TEXT,
+    gsi2pk     TEXT,
+    gsi2sk     TEXT,
+    expires_ms INTEGER,
+    attrs      BLOB NOT NULL,
+    PRIMARY KEY (pk, sk)
 );
-CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
+CREATE INDEX IF NOT EXISTS idx_items_gsi1 ON items(gsi1pk, gsi1sk) WHERE gsi1pk IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_items_gsi2 ON items(gsi2pk, gsi2sk) WHERE gsi2pk IS NOT NULL;
 
--- One row per refresh token issued and not yet expired. token_hash is the
--- lowercase hex SHA-256 of the token: the token itself is never stored. A use
--- revokes it (rotation), stamps revoked_at once, for the 10 s reuse grace, and
--- moves expires_at to a week on; a row past expires_at reads as none and goes
--- at the next refresh_put.
-CREATE TABLE IF NOT EXISTS refresh_tokens (
-    token_hash TEXT PRIMARY KEY,
-    user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    session_id TEXT NOT NULL,
-    created_at INTEGER NOT NULL,
-    revoked    INTEGER NOT NULL DEFAULT 0,
-    revoked_at INTEGER,
-    expires_at INTEGER
-);
-CREATE INDEX IF NOT EXISTS idx_refresh_tokens_expires ON refresh_tokens(expires_at);
-CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user ON refresh_tokens(user_id);
-CREATE INDEX IF NOT EXISTS idx_refresh_tokens_session ON refresh_tokens(session_id);
-
--- Failed sign-ins per account (auth.h CB_AUTH_FAIL_*), by the normalized
--- email. A row past expires_at (an hour after its last write) reads as none.
-CREATE TABLE IF NOT EXISTS signin_fails (
-    email        TEXT PRIMARY KEY,
-    n            INTEGER NOT NULL,
-    last_at     INTEGER NOT NULL,
-    locked_until INTEGER NOT NULL,
-    expires_at   INTEGER NOT NULL
-);
+-- Schema 4's tables for the rows that are items now (schema 5). SQLite holds
+-- no production data, so what a development database had in them goes.
+DROP TABLE IF EXISTS sessions;
+DROP TABLE IF EXISTS refresh_tokens;
+DROP TABLE IF EXISTS signin_fails;
 
 -- The bots, seeded below. Not a foreign-key target of games: a roster names a
 -- bot by id inside the kernel's roster blob, and game_bots is the index.

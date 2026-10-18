@@ -30,6 +30,7 @@
 // reach (a chat partition of a deleted game, a membership of a deleted user).
 #include "store.h"
 #include "store_priv.h"
+#include "rows_auth.h"
 
 #include "aws/aws_call.h"
 #include "aws/sigv4.h"
@@ -419,6 +420,100 @@ static int batch_delete(dyn *d, const keylist *l) {
     return rc;
 }
 
+// ---- the item layer (items.h) ---------------------------------------------------------
+
+static int dy_item_get(cb_store *s, cb_ikey key, bool consistent, cb_item *out) {
+    dyn *d = D(s);
+    dw_req r;
+    dw_req_init(&r);
+    dw_iget(&r, d->table, key, consistent);
+    cb_buf resp;
+    cb_buf_init(&resp);
+    cb_item_reset(out);
+    int rc = CB_E_DB;
+    dw_top top;
+    if (call_top(d, &r, &resp, &top) == DW_OK) {
+        cb_span it;
+        rc = !dw_top_item(&top, &it) ? CB_E_NOT_FOUND : dw_item_read(it, out) ? CB_OK : CB_E_DB;
+    }
+    cb_buf_free(&resp);
+    dw_req_free(&r);
+    return rc;
+}
+
+static int dy_item_write(cb_store *s, const cb_iwrite *w, cb_item *old) {
+    dyn *d = D(s);
+    dw_req r;
+    dw_req_init(&r);
+    if (old) cb_item_reset(old);
+    if (!dw_iwrite(&r, d->table, w, old != NULL)) { dw_req_free(&r); return CB_E_INVALID; }
+    cb_buf resp;
+    cb_buf_init(&resp);
+    int rc = simple(d, &r, CB_E_CONFLICT, &resp);
+    cb_span it;
+    if (rc == CB_OK && old && dw_attributes(cb_buf_cstr(&resp), resp.len, &it) && !dw_item_read(it, old)) rc = CB_E_DB;
+    cb_buf_free(&resp);
+    dw_req_free(&r);
+    return rc;
+}
+
+static int dy_item_txn(cb_store *s, const cb_iwrite *w, int n, int *failed) {
+    dyn *d = D(s);
+    if (failed) *failed = -1;
+    dw_req r;
+    dw_req_init(&r);
+    if (!dw_itxn(&r, d->table, w, n)) { dw_req_free(&r); return CB_E_INVALID; }
+    cb_buf resp;
+    cb_buf_init(&resp);
+    dw_status st = txn(d, &r, &resp);
+    int rc = st == DW_OK ? CB_OK : CB_E_DB;
+    if (st == DW_TXN_CANCELED) {
+        bool item;
+        for (int i = 0; i < n && rc != CB_E_CONFLICT; i++)
+            if (refused(&resp, i, &item)) {
+                rc = CB_E_CONFLICT;
+                if (failed) *failed = i;
+            }
+    }
+    cb_buf_free(&resp);
+    dw_req_free(&r);
+    return rc;
+}
+
+static int dy_item_query(cb_store *s, int index, const char *pk, const char *sk_prefix, bool forward, int page,
+                         cb_item_fn fn, void *ud) {
+    dyn *d = D(s);
+    cb_buf resp, start;
+    cb_buf_init(&resp);
+    cb_buf_init(&start);
+    dw_req r;
+    dw_req_init(&r);
+    cb_item it;
+    cb_item_init(&it);
+    int rc = CB_OK;
+    for (bool more = true; more;) {
+        dw_iquery(&r, d->table, index, pk, sk_prefix, forward, page, cb_span_of((const char *)start.p, start.len));
+        dw_top top;
+        if (call_top(d, &r, &resp, &top) != DW_OK) { rc = CB_E_DB; break; }
+        cb_span items = dw_top_items(&top), e;
+        size_t pos = 0;
+        while (more && dw_array_next(items, &pos, &e)) {
+            cb_item_reset(&it);
+            if (!dw_item_read(e, &it)) { rc = CB_E_DB; more = false; break; }
+            more = fn(&it, ud);
+        }
+        cb_span last = dw_top_last_key(&top);
+        if (!more || !last.n) break;
+        cb_buf_reset(&start);
+        cb_buf_append(&start, last.p, last.n);
+    }
+    cb_item_free(&it);
+    dw_req_free(&r);
+    cb_buf_free(&resp);
+    cb_buf_free(&start);
+    return rc;
+}
+
 // ---- users -----------------------------------------------------------------------------
 
 static int dy_user_get(cb_store *s, const char *id, cb_user_row *out) {
@@ -458,38 +553,8 @@ static int dy_user_by_email(cb_store *s, const char *email, cb_user_row *out) {
     return rc == CB_OK ? dy_user_get(s, id, out) : rc;
 }
 
-static int dy_signin_fails_get(cb_store *s, const char *email, int64_t now_ms, cb_signin_fails *out) {
-    dyn *d = D(s);
-    dw_req r;
-    dw_req_init(&r);
-    dw_get_signin_fails(&r, d->table, email);
-    cb_buf resp;
-    cb_buf_init(&resp);
-    int rc = CB_E_DB;
-    memset(out, 0, sizeof *out);
-    dw_top top;
-    if (call_top(d, &r, &resp, &top) == DW_OK) {
-        cb_span it;
-        rc = dw_top_item(&top, &it) && dw_item_signin_fails(it, now_ms, out) ? CB_OK : CB_E_NOT_FOUND;
-    }
-    cb_buf_free(&resp);
-    dw_req_free(&r);
-    return rc;
-}
 
-static int dy_signin_fails_put(cb_store *s, const char *email, const cb_signin_fails *f, int64_t now_ms) {
-    dw_req r;
-    dw_req_init(&r);
-    dw_signin_fails_put(&r, D(s)->table, email, f, now_ms);
-    return simple1(D(s), &r, CB_E_DB);
-}
 
-static int dy_signin_fails_clear(cb_store *s, const char *email) {
-    dw_req r;
-    dw_req_init(&r);
-    dw_signin_fails_delete(&r, D(s)->table, email);
-    return simple1(D(s), &r, CB_E_DB);
-}
 
 static int dy_user_create(cb_store *s, const cb_user_row *u) {
     dyn *d = D(s);
@@ -579,68 +644,6 @@ static int dy_users_list(cb_store *s, const char *search, int offset, int limit,
     return rc == CB_OK ? w.n : rc;
 }
 
-// ---- refresh tokens -------------------------------------------------------------------
-
-static int dy_refresh_put(cb_store *s, const cb_refresh_row *t) {
-    dw_req r;
-    dw_req_init(&r);
-    dw_refresh_put(&r, D(s)->table, t);
-    return simple1(D(s), &r, CB_E_CONFLICT);
-}
-
-static int dy_refresh_take(cb_store *s, const char *hash, int64_t now_ms, int64_t spent_ms, cb_refresh_row *out) {
-    dyn *d = D(s);
-    dw_req r;
-    dw_req_init(&r);
-    dw_refresh_take(&r, d->table, hash, now_ms, spent_ms);
-    cb_buf resp;
-    cb_buf_init(&resp);
-    int rc = simple(d, &r, CB_E_NOT_FOUND, &resp);
-    if (rc == CB_OK) {
-        cb_span it;
-        rc = dw_attributes(cb_buf_cstr(&resp), resp.len, &it) && dw_item_refresh(it, out) ? CB_OK : CB_E_DB;
-        // Past its time but not yet swept by the TTL: as good as gone.
-        if (rc == CB_OK && out->expires_at > 0 && out->expires_at <= now_ms) rc = CB_E_NOT_FOUND;
-    }
-    cb_buf_free(&resp);
-    dw_req_free(&r);
-    return rc;
-}
-
-// ---- sessions --------------------------------------------------------------------------
-
-static int dy_session_put(cb_store *s, const cb_session_row *row) {
-    dw_req r;
-    dw_req_init(&r);
-    dw_session_put(&r, D(s)->table, row);
-    return simple1(D(s), &r, CB_E_DB);
-}
-
-static int dy_session_get(cb_store *s, const char *id, int64_t now_ms, cb_session_row *out) {
-    dyn *d = D(s);
-    dw_req r;
-    dw_req_init(&r);
-    dw_get_session(&r, d->table, id);   // ConsistentRead: a revoke just written is seen
-    cb_buf resp;
-    cb_buf_init(&resp);
-    int rc = CB_E_DB;
-    memset(out, 0, sizeof *out);
-    dw_top top;
-    if (call_top(d, &r, &resp, &top) == DW_OK) {
-        cb_span it;
-        rc = dw_top_item(&top, &it) && dw_item_session(it, now_ms, out) ? CB_OK : CB_E_NOT_FOUND;
-    }
-    cb_buf_free(&resp);
-    dw_req_free(&r);
-    return rc;
-}
-
-static int dy_session_revoke(cb_store *s, const char *id, const char *user_id, int64_t expires_at) {
-    dw_req r;
-    dw_req_init(&r);
-    dw_session_revoke(&r, D(s)->table, id, user_id, expires_at);
-    return simple1(D(s), &r, CB_E_DB);
-}
 
 // ---- games -----------------------------------------------------------------------------
 
@@ -1569,6 +1572,10 @@ static void dy_close(cb_store *s) {
 }
 
 static const cb_store_ops DYNAMO_OPS = {
+    .item_get = dy_item_get,
+    .item_write = dy_item_write,
+    .item_txn = dy_item_txn,
+    .item_query = dy_item_query,
     .name = "dynamo",
     .close = dy_close,
     .user_get = dy_user_get,
@@ -1576,16 +1583,16 @@ static const cb_store_ops DYNAMO_OPS = {
     .user_create = dy_user_create,
     .user_set_password = dy_user_set_password,
     .user_touch_sign_in = dy_user_touch_sign_in,
-    .signin_fails_get = dy_signin_fails_get,
-    .signin_fails_put = dy_signin_fails_put,
-    .signin_fails_clear = dy_signin_fails_clear,
+    .signin_fails_get = cb_rows_signin_fails_get,
+    .signin_fails_put = cb_rows_signin_fails_put,
+    .signin_fails_clear = cb_rows_signin_fails_clear,
     .user_delete = dy_user_delete,
     .users_list = dy_users_list,
-    .refresh_put = dy_refresh_put,
-    .refresh_take = dy_refresh_take,
-    .session_put = dy_session_put,
-    .session_get = dy_session_get,
-    .session_revoke = dy_session_revoke,
+    .refresh_put = cb_rows_refresh_put,
+    .refresh_take = cb_rows_refresh_take,
+    .session_put = cb_rows_session_put,
+    .session_get = cb_rows_session_get,
+    .session_revoke = cb_rows_session_revoke,
     .user_end_sessions = dy_user_end_sessions,
     .game_get = dy_game_get,
     .game_create = dy_game_create,

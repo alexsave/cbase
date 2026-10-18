@@ -129,6 +129,11 @@ Backends: `store_sqlite.c` (local, tests, import rehearsal) and `store_dynamo.c`
 SQLite: one file, WAL, foreign keys on, `sql/schema.sql` (embedded into the binary at build time) applied in one transaction at every open, `PRAGMA user_version` set to `CB_SCHEMA_VERSION`, and a database newer than the binary refused.
 `game_commit` is one `BEGIN IMMEDIATE` transaction whose `UPDATE games ... WHERE version = ?` is the CAS.
 
+THE ITEM LAYER (`src/store/items.h`, docs/PLATFORM.md stage 5): DynamoDB's model on both backends, four operations in `cb_store_ops` (`item_get`, `item_write`, `item_txn`, `item_query`): a string pk and sk, typed attributes, the two overloaded indexes, a write conditioned on the item existing or not, sets that are plain, if-absent or an increment, transactions, and TTL as the `expires_ms`/`expires_at` pair.
+DynamoDB spells it in `json_surface.c` (`dw_iget`, `dw_iwrite`, `dw_itxn`, `dw_iquery`, `dw_item_read`); SQLite keeps one `items` table (schema 5), the keys in columns and every attribute in one binary record (`cb_item_record_*`, no JSON), and never deletes an expired item, so readers check `expires_ms` on both.
+Rows written once above it (`src/store/rows_auth.c`): sessions, refresh tokens and failed sign-ins, the same items and attributes DynamoDB held before; users, email and every foolish row move in stage 6.
+`make check-dynamo` holds the keys: every request its lane sends is reduced to its shape (`dw_shape`: the keys and index keys, normalized, and every attribute name), and the set must equal `test/golden/dynamo_shapes.txt`; the move of these rows changed none of the 129.
+
 DynamoDB: one table `cbase`, PROVISIONED at 15 RCU and 15 WCU with 5 and 5 on each index (the always-free 25 a side; see "The free tier, provisioned" below), point-in-time recovery on, TTL on `expires_at` (epoch seconds).
 Two indexes, `gsi1` (`gsi1pk`, `gsi1sk`) and `gsi2` (`gsi2pk`, `gsi2sk`), all four keys String, both projecting ALL.
 `src/json_surface.h` owns these names (`DW_GSI1`, `DW_GSI2`, `DW_TTL_ATTR`), and `test/unit_dynamo.c` reads `ops/cbase.yaml` and fails when the template disagrees.
@@ -139,7 +144,9 @@ Items, by partition key and sort key:
 | `USER#<id>` | `PROFILE` | email, bcrypt hash, username, created, last sign-in |
 | `USER#<id>` | `RATING` | elo_rating, previous_elo, games_played, username (the leaderboard row) |
 | `EMAIL#<lowercase email>` | `USER` | the user id (signup's uniqueness is a conditional put on this) |
-| `REFRESH#<sha256 hex>` | `TOKEN` | user, session, created, revoked, revoked_at; gsi1 `USERREFRESH#<user>`, gsi2 `SESSION#<session>` |
+| `REFRESH#<sha256 hex>` | `TOKEN` | user, session, created, revoked, revoked_at; gsi1 `USERREFRESH#<user>` |
+| `SESSION#<id>` | `SESSION` | user, created, gen, revoked; TTL its end |
+| `AUTHFAIL#<email>` | `FAILS` | n, last_at, locked_until; TTL an hour after the last write |
 | `GAME#<id>` | `ROW` | state, roster, logs_packed, seed (Binary); version, round_epoch, status, needs_bots, created/updated/last_commit |
 | `GAME#<id>` | `MEMBER#<user>` | a seated human; gsi1 `USERGAMES#<user>` / `<updated_at, 15 digits>#<game>` gives the dashboard |
 | `GAME#<id>` | `BOT#<bot id>` | a seated bot |

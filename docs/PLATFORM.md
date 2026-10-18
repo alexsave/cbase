@@ -518,6 +518,12 @@ typedef struct cb_provider {
 } cb_provider;
 ```
 
+THE CLIENT PROTOCOL IS FIXED; PROVIDERS ADAPT TO IT (Alex, 2026-10-18).
+A client must not be able to tell which provider serves it: the same HTTP routes and bodies, the same netwire bytes, and push delivered as MQTT 3.1.1 over WebSocket at the same topics, on every provider.
+A provider never asks a client to change; it brings whatever it needs to speak the protocol.
+Local already proves this with its own MQTT hub (`rt_local.c`), and aws does it with IoT Core and the custom authorizer.
+A future gcp provider must therefore serve MQTT itself (the hub in the process, with a relay between instances), since Google Cloud IoT Core was retired in 2023 and Google offers no managed MQTT broker to stand in for it.
+
 #### 8.3.1 Runtime and ingress
 
 The provider owns `main` and calls only core entries, so core never sees an event envelope:
@@ -697,6 +703,12 @@ Section 5's stage 10 is gone (Alex: one stack and one table per product).
    The item API has a conditional update of one item beside the transaction, because a mid-game commit is one conditional UpdateItem (section 0.1).
 6. **Foolish's rows onto items** (section 5 stage 5, unchanged, including the key-capture proof).
    The single-UpdateItem mid-game commit and the transactions for create, join, finish and a marker change are kept exactly, and the captured requests show it.
+   Users and email move here too (stage 5 left them per backend: `user_create` writes foolish's rating row in its transaction, and `user_delete` cascades over foolish's collections and, on SQLite, foreign keys that stage 6 removes).
+   Codecs stay hand-written per collection (Alex, 2026-10-18: database facts do not belong in structgen or datagen).
+   What the codecs must keep: snapshots' `player_ids` is a DynamoDB list today, so the item layer gains a list of strings or the codec encodes it another way while still reading the live list; the attribute renames between the row structs and the items (`expires_at` -> `expires_ms`, `logs` -> `logs_packed`, `seed` -> `game_seed`); and the non-zero defaults (elo 1000, previous_elo -1).
+   SLIMMER REPLAY COPIES (Alex, 2026-10-18): the `SNAP#<id>`/`SNAP` main item becomes the only item holding the replay code and extras; each `SNAP#<id>`/`PLAYER#<user>` copy becomes a pointer with the snapshot id and only the summary "my replays" reads, so the list stays one Query and opening a replay is one GetItem on the main item.
+   Account deletion's redaction then rewrites the main item's extras only, and the copies' summaries must not carry the deleted user's name (or are redacted in the same transaction).
+   This is the one intended change of item shape in the stage, listed in the key-capture golden file as such; old fat copies are read compatibly or migrated, decided there, and production replays must keep opening.
 7. **The physical move, both axes at once** (about 12,000 moved, net 0).
    `core/`, `providers/local/`, `providers/aws/` (with `ops/site/` for the static-site stacks) and `foolish/server/` in one `git mv` so no file moves twice; `json_surface.c` splits into `core_json.c` and `aws_json.c`, each the only JSON file on its side; the include paths and all three name gates go strict; CI paths add `foolish/server/**`.
    No AWS change.
@@ -769,3 +781,12 @@ Stage 8 pays this list down, mutation-checked and recorded in `docs/mutation_che
 - `core.c`: `cb_core_http` counting a 5xx, `cb_core_connect` refusing a CONNECT without the origin proof before the token is read, `cb_core_job` turning `CB_E_NOT_FOUND` into `CB_OK`.
 - `cb_process_main` with a wrong argv (usage, exit 2) and an app with no schedules.
 - `lib_fake_runtime`: the ingress conformance scenario (HTTP, connect, job, schedule, deadline, after-window) through both mains (section 8.6 stage 4), built on it.
+
+### Stage 5
+
+- `items.c`: `cb_item_add` past `CB_ITEM_ATTRS`, `cb_item_s` with a short cap, the record codec round trip for every kind, and a record cut at every byte refused.
+- `dw_iget`, `dw_iwrite`, `dw_itxn`, `dw_iquery` byte for byte (each condition, each set kind, ALL_OLD, a CHECK alone refused, 101 writes refused), and `dw_item_read` over every type and a bad N or B; `fz_dynamo` now round-trips `dw_item_read` through the record, and wants seeds of its own.
+- The SQLite item ops: a condition failing (nothing written), an update keeping what it does not set, `CB_SET_INCR` on a missing and a present number, a transaction rolled back at its third write with `*failed` 2, a query by each index with and without a prefix, both orders, and a callback that deletes.
+- The STORE CONFORMANCE SUITE (section 8.6 stage 5) against the item API on SQLite and DynamoDB Local, written here first in the plan and deferred by the 2026-10-18 rule.
+- `rows_auth.c` over a fake item store: a session past its end, a revoke of an unknown session, a refresh token past its time taken (NOT_FOUND, yet spent), `cb_rows_refresh_forget_user`.
+- Written to hold the coverage floor (lines fell to 96.2% without it): `test/unit_items.c`, a transaction and a query on SQLite, a transaction, a query and `dw_shape` over a recorded DynamoDB answer, the record and `dw_item_read`. Not mutation-checked yet: stage 8 does that with the rest.

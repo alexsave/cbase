@@ -261,12 +261,17 @@ static void dynamo_items(void) {
     u.created_at = 1000;
     dw_user_create(&r, "cbase", &u, 1000); take(&r);
     dw_user_import(&r, "cbase", &u); take(&r);
-    cb_refresh_row rr;
-    memset(&rr, 0, sizeof rr);
-    memset(rr.token_hash, 'a', 64);
-    snprintf(rr.user_id, sizeof rr.user_id, U1);
-    snprintf(rr.session_id, sizeof rr.session_id, U2);
-    dw_refresh_put(&r, "cbase", &rr); take(&r);
+    {   // a refresh token's item, as store/rows_auth.c writes it
+        char hash[65];
+        memset(hash, 'a', 64);
+        hash[64] = 0;
+        const cb_av a[] = { CB_AVS("gsi1pk", "USERREFRESH#" U1), CB_AVS("gsi1sk", hash), CB_AVS("token_hash", hash),
+                            CB_AVS("user_id", U1), CB_AVS("session_id", U2), CB_AVN("created_at", 5), CB_AVBOOL("revoked", false) };
+        char pk[80];
+        snprintf(pk, sizeof pk, "REFRESH#%s", hash);
+        cb_iwrite w = { .op = CB_IW_PUT, .key = { pk, "TOKEN" }, .attrs = a, .n_attrs = 7, .ttl_ms = 9000, .cond = CB_IF_ABSENT };
+        if (dw_iwrite(&r, "cbase", &w, false)) take(&r);
+    }
     cb_game_row g;
     memset(&g, 0, sizeof g);
     snprintf(g.id, sizeof g.id, "ab12cd");

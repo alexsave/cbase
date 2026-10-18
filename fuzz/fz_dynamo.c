@@ -194,29 +194,7 @@ static bool ref_item_user(cb_span it, cb_user_row *u) {
     return true;
 }
 
-static bool ref_item_session(cb_span it, int64_t now_ms, cb_session_row *s) {
-    memset(s, 0, sizeof *s);
-    if (!ref_get_s(it, "id", s->id, sizeof s->id)) return false;
-    ref_get_s(it, "user_id", s->user_id, sizeof s->user_id);
-    s->created_at = ref_n_or(it, "created_at", 0);
-    s->expires_at = ref_n_or(it, "expires_ms", 0);
-    s->gen = ref_n_or(it, "gen", 0);
-    ref_get_bool(it, "revoked", &s->revoked);
-    return s->expires_at > now_ms;
-}
 
-static bool ref_item_refresh(cb_span it, cb_refresh_row *r) {
-    memset(r, 0, sizeof *r);
-    if (!ref_get_s(it, "token_hash", r->token_hash, sizeof r->token_hash) ||
-        !ref_get_s(it, "user_id", r->user_id, sizeof r->user_id))
-        return false;
-    ref_get_s(it, "session_id", r->session_id, sizeof r->session_id);
-    r->created_at = ref_n_or(it, "created_at", 0);
-    ref_get_bool(it, "revoked", &r->revoked);
-    r->revoked_at = ref_n_or(it, "revoked_at", 0);
-    r->expires_at = ref_n_or(it, "expires_ms", 0);
-    return true;
-}
 
 static bool ref_item_game(cb_span it, cb_game_row *g) {
     memset(g, 0, sizeof *g);
@@ -314,15 +292,6 @@ static bool ref_item_chat(cb_span it, cb_chat_row *c) {
     return true;
 }
 
-static bool ref_item_signin_fails(cb_span it, int64_t now_ms, cb_signin_fails *f) {
-    memset(f, 0, sizeof f[0]);
-    int64_t n, expires;
-    if (!ref_get_n(it, "n", &n) || !ref_get_n(it, "expires_ms", &expires) || expires <= now_ms) return false;
-    f->n = n < 0 ? 0 : n > INT32_MAX ? INT32_MAX : (int32_t)n;
-    f->last_at = ref_n_or(it, "last_at", 0);
-    f->locked_until = ref_n_or(it, "locked_until", 0);
-    return true;
-}
 
 static bool ref_item_scan(cb_span it, char game_id[CB_GAME_ID_MAX + 1], int64_t *updated_at, int64_t *last_commit_at) {
     *updated_at = ref_n_or(it, "updated_at", 0);
@@ -381,12 +350,9 @@ static void same_walks(cb_span s) {
 static void same_items(cb_span it) {
     same_walks(it);
     { cb_user_row a, b; FZ_CHECK(dw_item_user(it, &a) == ref_item_user(it, &b)); FZ_CHECK(!memcmp(&a, &b, sizeof a)); }
-    { cb_session_row a, b; FZ_CHECK(dw_item_session(it, 1000, &a) == ref_item_session(it, 1000, &b)); FZ_CHECK(!memcmp(&a, &b, sizeof a)); }
-    { cb_refresh_row a, b; FZ_CHECK(dw_item_refresh(it, &a) == ref_item_refresh(it, &b)); FZ_CHECK(!memcmp(&a, &b, sizeof a)); }
     { cb_member_row a, b; FZ_CHECK(dw_item_member(it, &a) == ref_item_member(it, &b)); FZ_CHECK(!memcmp(&a, &b, sizeof a)); }
     { cb_bot_row a, b; FZ_CHECK(dw_item_bot(it, &a) == ref_item_bot(it, &b)); FZ_CHECK(!memcmp(&a, &b, sizeof a)); }
     { cb_rating_row a, b; FZ_CHECK(dw_item_rating(it, &a) == ref_item_rating(it, &b)); FZ_CHECK(!memcmp(&a, &b, sizeof a)); }
-    { cb_signin_fails a, b; FZ_CHECK(dw_item_signin_fails(it, 1000, &a) == ref_item_signin_fails(it, 1000, &b)); FZ_CHECK(!memcmp(&a, &b, sizeof a)); }
     {
         char ga[CB_GAME_ID_MAX + 1] = "", gb[CB_GAME_ID_MAX + 1] = "";
         int64_t ua, ub, la, lb;
@@ -472,7 +438,24 @@ static void same_responses(const char *body, size_t n) {
 static void items_of(cb_span item) {
     same_items(item);
     cb_user_row u; (void)dw_item_user(item, &u);
-    cb_refresh_row rr; (void)dw_item_refresh(item, &rr);
+    // The item layer's reader (store/items.h): any item, every attribute.
+    {
+        cb_item ii;
+        cb_item_init(&ii);
+        if (dw_item_read(item, &ii)) {
+            cb_buf rec;
+            cb_buf_init(&rec);
+            // What SQLite would keep reads back as the same attributes.
+            if (cb_item_record_encode(&ii, &rec)) {
+                cb_item back;
+                cb_item_init(&back);
+                FZ_CHECK(cb_item_record_decode(rec.p, rec.len, &back) && back.n == ii.n);
+                cb_item_free(&back);
+            }
+            cb_buf_free(&rec);
+        }
+        cb_item_free(&ii);
+    }
     cb_game_row g; memset(&g, 0, sizeof g);
     if (dw_item_game(item, &g)) FZ_CHECK(!g.state_len || g.state);
     cb_game_row_free(&g);

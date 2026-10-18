@@ -51,7 +51,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     if (!s && cb_store_open_sqlite(":memory:", &s) != 0) abort();
     static const char *const EMPTY[] = {
         "DELETE FROM chat_messages", "DELETE FROM game_snapshots", "DELETE FROM game_members", "DELETE FROM game_bots",
-        "DELETE FROM games", "DELETE FROM ratings", "DELETE FROM refresh_tokens", "DELETE FROM users", "DELETE FROM bots",
+        "DELETE FROM games", "DELETE FROM ratings", "DELETE FROM items", "DELETE FROM users", "DELETE FROM bots",
     };
     for (size_t i = 0; i < sizeof EMPTY / sizeof EMPTY[0]; i++)
         FZ_CHECK(CB_STORE_CALL(s, admin_query, EMPTY[i], true, NULL, NULL) >= 0);

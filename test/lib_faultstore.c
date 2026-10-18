@@ -232,6 +232,23 @@ static int w_game_import(cb_store *s, const cb_game_row *g, const cb_uuid *human
     return IN(s)->ops->game_import ? IN(s)->ops->game_import(IN(s), g, humans, n_humans, bots, n_bots) : CB_E_NOTIMPL;
 }
 
+static int w_item_get(cb_store *s, cb_ikey key, bool consistent, cb_item *out) {
+    if (take()) return atomic_load(&g_rc);
+    return IN(s)->ops->item_get ? IN(s)->ops->item_get(IN(s), key, consistent, out) : CB_E_NOTIMPL;
+}
+static int w_item_write(cb_store *s, const cb_iwrite *w, cb_item *old) {
+    if (take()) return atomic_load(&g_rc);
+    return IN(s)->ops->item_write ? IN(s)->ops->item_write(IN(s), w, old) : CB_E_NOTIMPL;
+}
+static int w_item_txn(cb_store *s, const cb_iwrite *w, int n, int *failed) {
+    if (take()) return atomic_load(&g_rc);
+    return IN(s)->ops->item_txn ? IN(s)->ops->item_txn(IN(s), w, n, failed) : CB_E_NOTIMPL;
+}
+static int w_item_query(cb_store *s, int index, const char *pk, const char *sk_prefix, bool forward, int page, cb_item_fn fn, void *ud) {
+    if (take()) return atomic_load(&g_rc);
+    return IN(s)->ops->item_query ? IN(s)->ops->item_query(IN(s), index, pk, sk_prefix, forward, page, fn, ud) : CB_E_NOTIMPL;
+}
+
 static void w_close(cb_store *s) {
     cb_store_close(IN(s));
     free(s);
@@ -288,12 +305,16 @@ static const cb_store_ops FAULT_OPS = {
     .rating_reindex = w_rating_reindex,
     .bots_replace = w_bots_replace,
     .game_import = w_game_import,
+    .item_get = w_item_get,
+    .item_write = w_item_write,
+    .item_txn = w_item_txn,
+    .item_query = w_item_query,
 };
 
 // Every operation of store.h is wrapped above. An operation added there and
 // not here would be left NULL (CB_E_NOTIMPL to whatever calls it through this
-// store), so the table's size is held to the count: the name, close, and 49 - 1.
-_Static_assert(sizeof(cb_store_ops) == (size_t)(49 + 1) * sizeof(void *),
+// store), so the table's size is held to the count: the name, close, and 53 - 1.
+_Static_assert(sizeof(cb_store_ops) == (size_t)(53 + 1) * sizeof(void *),
                "store.h has an operation lib_faultstore.c does not wrap: add its w_ wrapper and its line in FAULT_OPS");
 
 cb_store *fs_wrap(cb_store *inner) {

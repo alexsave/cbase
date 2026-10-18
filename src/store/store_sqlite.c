@@ -19,6 +19,7 @@
 // as commit_table did (seed.sql 611-753).
 #include "store.h"
 #include "store_priv.h"
+#include "rows_auth.h"
 
 #include "table.h"
 #include "util/clock.h"
@@ -43,9 +44,7 @@
 enum {
     ST_USER_GET, ST_USER_BY_EMAIL, ST_USER_INSERT, ST_RATING_FOR_NEW_USER, ST_USER_SET_PASSWORD, ST_USER_TOUCH,
     ST_USER_DELETE, ST_USERS_ALL,
-    ST_FAILS_GET, ST_FAILS_PUT, ST_FAILS_CLEAR, ST_USER_END_SESSIONS,
-    ST_SESSION_PUT, ST_SESSION_GET, ST_SESSION_REVOKE, ST_SESSIONS_PRUNE, ST_REFRESH_PRUNE,
-    ST_REFRESH_PUT, ST_REFRESH_GET, ST_REFRESH_REVOKE,
+    ST_USER_END_SESSIONS,
     ST_GAME_GET, ST_GAME_INSERT, ST_GAME_UPDATE_CAS, ST_GAME_EXISTS, ST_GAME_DELETE_CAS,
     ST_MEMBER_INSERT, ST_MEMBERS_OF_GAME, ST_MEMBER_DELETE, ST_MEMBERS_CLEAR,
     ST_BOTSEAT_INSERT, ST_BOTSEATS_OF_GAME, ST_BOTSEAT_DELETE, ST_BOTSEATS_CLEAR,
@@ -57,6 +56,8 @@ enum {
     ST_CHAT_PUT, ST_CHAT_LIST,
     ST_COLLECTIONS,
     ST_USER_IMPORT, ST_RATING_IMPORT, ST_BOTS_CLEAR, ST_BOT_INSERT, ST_GAME_IMPORT,
+    ST_ITEM_GET, ST_ITEM_PUT, ST_ITEM_DELETE,
+    ST_ITEM_Q0A, ST_ITEM_Q0D, ST_ITEM_Q1A, ST_ITEM_Q1D, ST_ITEM_Q2A, ST_ITEM_Q2D,
     ST__COUNT
 };
 
@@ -67,7 +68,23 @@ enum {
 #define BOT_COLS "id, nickname, strategy_key, elo_rating, previous_elo, games_played, created_at, updated_at"
 #define SNAP_COLS "id, game_id, player_ids, moves, extras, created_at"
 
+// The item layer's (items.h): the attributes in one binary record, the keys
+// it is found by in columns. ?2 of a query is a sort key prefix, or NULL.
+#define ITEM_Q(pkc, skc, dir) "SELECT attrs FROM items WHERE " pkc " = ?1 AND (?2 IS NULL OR substr(" skc ", 1, length(?2)) = ?2) " \
+                              "ORDER BY " skc " " dir
+
 static const char *const SQL[ST__COUNT] = {
+    [ST_ITEM_GET] = "SELECT attrs FROM items WHERE pk = ?1 AND sk = ?2",
+    [ST_ITEM_PUT] = "INSERT INTO items (pk, sk, gsi1pk, gsi1sk, gsi2pk, gsi2sk, expires_ms, attrs) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) "
+                    "ON CONFLICT (pk, sk) DO UPDATE SET gsi1pk = excluded.gsi1pk, gsi1sk = excluded.gsi1sk, "
+                    "gsi2pk = excluded.gsi2pk, gsi2sk = excluded.gsi2sk, expires_ms = excluded.expires_ms, attrs = excluded.attrs",
+    [ST_ITEM_DELETE] = "DELETE FROM items WHERE pk = ?1 AND sk = ?2",
+    [ST_ITEM_Q0A] = ITEM_Q("pk", "sk", "ASC"),
+    [ST_ITEM_Q0D] = ITEM_Q("pk", "sk", "DESC"),
+    [ST_ITEM_Q1A] = ITEM_Q("gsi1pk", "gsi1sk", "ASC"),
+    [ST_ITEM_Q1D] = ITEM_Q("gsi1pk", "gsi1sk", "DESC"),
+    [ST_ITEM_Q2A] = ITEM_Q("gsi2pk", "gsi2sk", "ASC"),
+    [ST_ITEM_Q2D] = ITEM_Q("gsi2pk", "gsi2sk", "DESC"),
     [ST_USER_GET] = "SELECT " USER_READ_COLS " FROM users WHERE id = ?1",
     [ST_USER_BY_EMAIL] = "SELECT " USER_READ_COLS " FROM users WHERE email = ?1",
     [ST_USER_INSERT] = "INSERT INTO users (" USER_COLS ") VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -78,32 +95,9 @@ static const char *const SQL[ST__COUNT] = {
         "VALUES (?1, ?2, ?3, ?3, 0, ?4) ON CONFLICT (user_id) DO UPDATE SET username = excluded.username",
     [ST_USER_SET_PASSWORD] = "UPDATE users SET password_hash = ?2, session_gen = session_gen + 1, kept_session = ?3 WHERE id = ?1",
     [ST_USER_END_SESSIONS] = "UPDATE users SET session_gen = session_gen + 1, kept_session = NULL WHERE id = ?1",
-    [ST_SESSION_PUT] = "INSERT INTO sessions (id, user_id, created_at, expires_at, revoked, gen) VALUES (?1, ?2, ?3, ?4, ?5, ?6) "
-                       "ON CONFLICT(id) DO UPDATE SET user_id = excluded.user_id, created_at = excluded.created_at, "
-                       "expires_at = excluded.expires_at, revoked = excluded.revoked, gen = excluded.gen",
-    [ST_SESSION_GET] = "SELECT id, user_id, created_at, expires_at, revoked, gen FROM sessions WHERE id = ?1 AND expires_at > ?2",
-    [ST_SESSION_REVOKE] = "INSERT INTO sessions (id, user_id, created_at, expires_at, revoked) VALUES (?1, ?2, 0, ?3, 1) "
-                          "ON CONFLICT(id) DO UPDATE SET revoked = 1",
-    [ST_SESSIONS_PRUNE] = "DELETE FROM sessions WHERE expires_at <= ?1",
-    [ST_REFRESH_PRUNE] = "DELETE FROM refresh_tokens WHERE expires_at IS NOT NULL AND expires_at <= ?1",
     [ST_USER_TOUCH] = "UPDATE users SET last_sign_in_at = ?2 WHERE id = ?1",
-    [ST_FAILS_GET] = "SELECT n, last_at, locked_until FROM signin_fails WHERE email = ?1 AND expires_at > ?2",
-    [ST_FAILS_PUT] = "INSERT INTO signin_fails (email, n, last_at, locked_until, expires_at) VALUES (?1, ?2, ?3, ?4, ?5) "
-                     "ON CONFLICT(email) DO UPDATE SET n = excluded.n, last_at = excluded.last_at, "
-                     "locked_until = excluded.locked_until, expires_at = excluded.expires_at",
-    [ST_FAILS_CLEAR] = "DELETE FROM signin_fails WHERE email = ?1",
     [ST_USER_DELETE] = "DELETE FROM users WHERE id = ?1",
     [ST_USERS_ALL] = "SELECT " USER_READ_COLS " FROM users ORDER BY created_at DESC, id",
-
-    [ST_REFRESH_PUT] = "INSERT INTO refresh_tokens (token_hash, user_id, session_id, created_at, revoked, expires_at) "
-                       "VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-    [ST_REFRESH_GET] = "SELECT token_hash, user_id, session_id, created_at, revoked, revoked_at, expires_at FROM refresh_tokens "
-                       "WHERE token_hash = ?1 AND (expires_at IS NULL OR expires_at > ?2)",
-    // The first take stamps revoked_at; a later one keeps it, so a retry
-    // storm cannot stretch the grace window. A spent token is kept ?3 longer.
-    [ST_REFRESH_REVOKE] = "UPDATE refresh_tokens SET revoked = 1, revoked_at = COALESCE(revoked_at, ?2), expires_at = ?3 "
-                          "WHERE token_hash = ?1",
-
     [ST_GAME_GET] = "SELECT " GAME_COLS " FROM games WHERE id = ?1",
     [ST_GAME_INSERT] = "INSERT INTO games (" GAME_COLS ") VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
     [ST_GAME_UPDATE_CAS] =
@@ -467,6 +461,8 @@ static int apply_schema(sq *q) {
     }
     int rc = begin(q);
     if (rc != CB_OK) return rc;
+    // 4 -> 5: sessions, refresh tokens and failed sign-ins are items
+    // (store/items.h, rows_auth.c); the schema below drops their tables.
     // 3 -> 4: the API Gateway connection tables (rt_conns, rt_conn_topics) are
     // gone with API Gateway; realtime is MQTT and keeps no rows. Earlier steps
     // reshaped them and dropped them too, so every older database drops them.
@@ -615,54 +611,19 @@ static int sq_user_touch_sign_in(cb_store *st, const char *id, int64_t at) {
 }
 // ---- failed sign-ins ----------------------------------------------------------------------
 
-#define FAILS_TTL_MS (3600LL * 1000)   // store.h: an hour after the last write
 
-static int sq_signin_fails_get(cb_store *st, const char *email, int64_t now_ms, cb_signin_fails *out) {
-    sq *q = Q(st);
-    memset(out, 0, sizeof *out);
-    lock(q);
-    sqlite3_stmt *s = stmt(q, ST_FAILS_GET);
-    int rc = CB_E_DB;
-    if (s) {
-        b_text(s, 1, email);
-        b_i64(s, 2, now_ms);
-        int r = sqlite3_step(s);
-        if (r == SQLITE_ROW) {
-            out->n = (int32_t)c_i64(s, 0);
-            out->last_at = c_i64(s, 1);
-            out->locked_until = c_i64(s, 2);
-            rc = CB_OK;
-        } else rc = r == SQLITE_DONE ? CB_E_NOT_FOUND : fail(q, "signin fails get", r);
-    }
-    done(s);
-    unlock(q);
-    return rc;
-}
 
-static int sq_signin_fails_put(cb_store *st, const char *email, const cb_signin_fails *f, int64_t now_ms) {
-    sq *q = Q(st);
-    lock(q);
-    sqlite3_stmt *s = stmt(q, ST_FAILS_PUT);
-    if (s) {
-        b_text(s, 1, email);
-        b_i64(s, 2, f->n);
-        b_i64(s, 3, f->last_at);
-        b_i64(s, 4, f->locked_until);
-        b_i64(s, 5, now_ms + FAILS_TTL_MS);
-    }
-    int rc = step_write(q, s, "signin fails put", false);
-    unlock(q);
-    return rc;
-}
 
-static int sq_signin_fails_clear(cb_store *st, const char *email) {
-    return write1(Q(st), ST_FAILS_CLEAR, "signin fails clear", false, email, NULL, NULL);
-}
 
-// The cascade does the rest: refresh_tokens, game_members, ratings and
-// chat_messages reference users ON DELETE CASCADE.
+// The cascade does the rest: game_members, ratings and chat_messages
+// reference users ON DELETE CASCADE. The refresh tokens are items
+// (rows_auth.c), deleted first, as DynamoDB's user_delete does; sessions are
+// left to their TTL, as there.
 static int sq_user_delete(cb_store *st, const char *id) {
-    return write1(Q(st), ST_USER_DELETE, "user delete", true, id, NULL, NULL);
+    cb_user_row u;
+    int rc = sq_user_get(st, id, &u);
+    if (rc == CB_OK) rc = cb_rows_refresh_forget_user(st, id);
+    return rc == CB_OK ? write1(Q(st), ST_USER_DELETE, "user delete", true, id, NULL, NULL) : rc;
 }
 
 static int sq_users_list(cb_store *st, const char *search, int offset, int limit, cb_user_fn fn, void *ud) {
@@ -694,64 +655,151 @@ static int sq_users_list(cb_store *st, const char *search, int offset, int limit
     return rc == CB_OK ? n : rc;
 }
 
-// ---- refresh tokens --------------------------------------------------------------------
+// ---- the item layer (items.h) ------------------------------------------------------------
 
-static int sq_refresh_put(cb_store *st, const cb_refresh_row *r) {
+// The item stored at key into it (reset first): CB_OK, CB_E_NOT_FOUND, CB_E_DB. Under the lock.
+static int item_load(sq *q, cb_ikey key, cb_item *it) {
+    cb_item_reset(it);
+    sqlite3_stmt *s = stmt(q, ST_ITEM_GET);
+    if (!s) return CB_E_DB;
+    b_text(s, 1, key.pk);
+    b_text(s, 2, key.sk);
+    int r = sqlite3_step(s), rc;
+    if (r == SQLITE_ROW)
+        rc = cb_item_record_decode(sqlite3_column_blob(s, 0), (size_t)sqlite3_column_bytes(s, 0), it) ? CB_OK : CB_E_DB;
+    else rc = r == SQLITE_DONE ? CB_E_NOT_FOUND : fail(q, "item get", r);
+    done(s);
+    return rc;
+}
+
+static const char *s_of(const cb_item *it, const char *name) {
+    cb_av v;
+    return cb_item_get(it, name, &v) && v.kind == CB_AV_S ? v.s : NULL;
+}
+
+// Writes the whole item (its keys and TTL from its own attributes). Under the lock.
+static int item_store(sq *q, const cb_item *it) {
+    cb_buf rec;
+    cb_buf_init(&rec);
+    if (!cb_item_record_encode(it, &rec)) { cb_buf_free(&rec); return CB_E_NOMEM; }
+    sqlite3_stmt *s = stmt(q, ST_ITEM_PUT);
+    if (s) {
+        static const char *const COLS[6] = { CB_ITEM_PK, CB_ITEM_SK, CB_ITEM_GSI1PK, CB_ITEM_GSI1SK, CB_ITEM_GSI2PK, CB_ITEM_GSI2SK };
+        for (int i = 0; i < 6; i++) b_text_null(s, i + 1, s_of(it, COLS[i]));
+        int64_t ttl;
+        if (cb_item_n(it, CB_ITEM_TTL_MS, &ttl)) b_i64(s, 7, ttl);
+        else sqlite3_bind_null(s, 7);
+        b_blob_nn(s, 8, rec.p, rec.len);
+    }
+    int rc = step_write(q, s, "item put", false);
+    cb_buf_free(&rec);
+    return rc;
+}
+
+static bool set_named(const cb_item *it, const char *name) {
+    cb_av v;
+    return cb_item_get(it, name, &v);
+}
+
+// One write against the stored item, under the lock and inside a
+// transaction. old (may be NULL) gets the item as it was.
+static int item_apply(sq *q, const cb_iwrite *w, cb_item *old) {
+    cb_item cur, next;
+    cb_item_init(&cur);
+    cb_item_init(&next);
+    int rc = item_load(q, w->key, &cur);
+    bool exists = rc == CB_OK;
+    if (rc == CB_E_NOT_FOUND) rc = CB_OK;
+    if (rc == CB_OK && ((w->cond == CB_IF_EXISTS && !exists) || (w->cond == CB_IF_ABSENT && exists))) rc = CB_E_CONFLICT;
+    if (rc == CB_OK && old) {
+        cb_item_reset(old);
+        for (int i = 0; i < cur.n && rc == CB_OK; i++) {
+            cb_av v;
+            cb_item_at(&cur, i, &v);
+            if (!cb_item_add(old, &v)) rc = CB_E_NOMEM;
+        }
+    }
+    if (rc == CB_OK && w->op == CB_IW_DELETE) {
+        sqlite3_stmt *s = stmt(q, ST_ITEM_DELETE);
+        if (s) {
+            b_text(s, 1, w->key.pk);
+            b_text(s, 2, w->key.sk);
+        }
+        rc = step_write(q, s, "item delete", false);
+    }
+    if (rc == CB_OK && (w->op == CB_IW_PUT || w->op == CB_IW_UPDATE)) {
+        cb_av ttl_ms = CB_AVN(CB_ITEM_TTL_MS, w->ttl_ms), ttl_s = CB_AVN(CB_ITEM_TTL_S, w->ttl_ms / 1000);
+        // What this write sets, in order, and how.
+        cb_iset sets[CB_ITEM_ATTRS + 4];
+        int n = 0;
+        sets[n++] = (cb_iset){ CB_AVS(CB_ITEM_PK, w->key.pk), CB_SET_TO };
+        sets[n++] = (cb_iset){ CB_AVS(CB_ITEM_SK, w->key.sk), CB_SET_TO };
+        if (w->op == CB_IW_PUT)
+            for (int i = 0; i < w->n_attrs && n < CB_ITEM_ATTRS; i++) sets[n++] = (cb_iset){ w->attrs[i], CB_SET_TO };
+        else
+            for (int i = 0; i < w->n_sets && n < CB_ITEM_ATTRS; i++) sets[n++] = w->sets[i];
+        if (w->ttl_ms > 0) {
+            cb_set_how how = w->op == CB_IW_PUT ? CB_SET_TO : w->ttl_how;
+            sets[n++] = (cb_iset){ ttl_ms, how };
+            sets[n++] = (cb_iset){ ttl_s, how };
+        }
+        // An update keeps what it does not set; a put keeps nothing.
+        if (w->op == CB_IW_UPDATE)
+            for (int i = 0; i < cur.n && rc == CB_OK; i++) {
+                cb_av v;
+                cb_item_at(&cur, i, &v);
+                bool replaced = false;
+                for (int j = 0; j < n && !replaced; j++) replaced = strcmp(sets[j].v.name, v.name) == 0;
+                if (!replaced && !cb_item_add(&next, &v)) rc = CB_E_NOMEM;
+            }
+        for (int j = 0; j < n && rc == CB_OK; j++) {
+            cb_av v = sets[j].v, have;
+            bool had = cb_item_get(&cur, v.name, &have);
+            if (sets[j].how == CB_SET_IF_ABSENT && had) v = have;
+            else if (sets[j].how == CB_SET_INCR) {
+                if (v.kind != CB_AV_N || (had && have.kind != CB_AV_N)) { rc = CB_E_INVALID; break; }
+                v.n += had ? have.n : 0;
+            }
+            if (set_named(&next, v.name)) continue;   // never: each name is set once
+            if (!cb_item_add(&next, &v)) rc = CB_E_NOMEM;
+        }
+        if (rc == CB_OK) rc = item_store(q, &next);
+    }
+    cb_item_free(&cur);
+    cb_item_free(&next);
+    return rc;
+}
+
+static int sq_item_get(cb_store *st, cb_ikey key, bool consistent, cb_item *out) {
     sq *q = Q(st);
     lock(q);
-    // Rows past their time go here, so the table holds only live ones.
-    sqlite3_stmt *s = stmt(q, ST_REFRESH_PRUNE);
-    if (s) b_i64(s, 1, r->created_at);
-    int rc = step_write(q, s, "refresh prune", false);
-    if (rc == CB_OK) {
-        s = stmt(q, ST_REFRESH_PUT);
-        if (s) {
-            b_text(s, 1, r->token_hash);
-            b_text(s, 2, r->user_id);
-            b_text(s, 3, r->session_id);
-            b_i64(s, 4, r->created_at);
-            b_i64(s, 5, r->revoked);
-            if (r->expires_at) b_i64(s, 6, r->expires_at);
-            else sqlite3_bind_null(s, 6);
-        }
-        rc = step_write(q, s, "refresh put", false);
-    }
+    int rc = item_load(q, key, out);
     unlock(q);
     return rc;
 }
 
-static int sq_refresh_take(cb_store *st, const char *hash, int64_t now_ms, int64_t spent_ms, cb_refresh_row *out) {
+static int sq_item_write(cb_store *st, const cb_iwrite *w, cb_item *old) {
     sq *q = Q(st);
+    if (w->op == CB_IW_CHECK) return CB_E_INVALID;
+    if (old) cb_item_reset(old);
     lock(q);
     int rc = begin(q);
-    if (rc == CB_OK) {
-        sqlite3_stmt *s = stmt(q, ST_REFRESH_GET);
-        if (!s) rc = CB_E_DB;
-        else {
-            b_text(s, 1, hash);
-            b_i64(s, 2, now_ms);
-            int r = sqlite3_step(s);
-            if (r == SQLITE_ROW) {
-                memset(out, 0, sizeof *out);
-                c_text(s, 0, out->token_hash, sizeof out->token_hash);
-                c_text(s, 1, out->user_id, sizeof out->user_id);
-                c_text(s, 2, out->session_id, sizeof out->session_id);
-                out->created_at = c_i64(s, 3);
-                out->revoked = c_i64(s, 4) != 0;
-                out->revoked_at = c_i64(s, 5);
-                out->expires_at = c_i64(s, 6);
-            } else rc = r == SQLITE_DONE ? CB_E_NOT_FOUND : fail(q, "refresh get", r);
-            done(s);
-        }
-    }
-    if (rc == CB_OK) {
-        sqlite3_stmt *s = stmt(q, ST_REFRESH_REVOKE);
-        if (s) {
-            b_text(s, 1, hash);
-            b_i64(s, 2, now_ms);
-            b_i64(s, 3, now_ms + spent_ms);
-        }
-        rc = step_write(q, s, "refresh revoke", false);
+    if (rc == CB_OK) rc = item_apply(q, w, old);
+    if (rc == CB_OK) rc = commit(q);
+    if (rc != CB_OK) rollback(q);
+    unlock(q);
+    return rc;
+}
+
+static int sq_item_txn(cb_store *st, const cb_iwrite *w, int n, int *failed) {
+    sq *q = Q(st);
+    if (failed) *failed = -1;
+    if (n < 1 || n > CB_ITEM_TXN_MAX) return CB_E_INVALID;
+    lock(q);
+    int rc = begin(q);
+    for (int i = 0; rc == CB_OK && i < n; i++) {
+        rc = item_apply(q, &w[i], NULL);
+        if (rc == CB_E_CONFLICT && failed) *failed = i;
     }
     if (rc == CB_OK) rc = commit(q);
     if (rc != CB_OK) rollback(q);
@@ -759,68 +807,51 @@ static int sq_refresh_take(cb_store *st, const char *hash, int64_t now_ms, int64
     return rc;
 }
 
-// ---- sessions --------------------------------------------------------------------------
-
-static int sq_session_put(cb_store *st, const cb_session_row *r) {
+// The matching items are read under the lock and handed out after it, so fn
+// may write (a delete of each, as an account's cascade does).
+static int sq_item_query(cb_store *st, int index, const char *pk, const char *sk_prefix, bool forward, int page,
+                         cb_item_fn fn, void *ud) {
     sq *q = Q(st);
+    static const int ST[3][2] = { { ST_ITEM_Q0D, ST_ITEM_Q0A }, { ST_ITEM_Q1D, ST_ITEM_Q1A }, { ST_ITEM_Q2D, ST_ITEM_Q2A } };
+    if (index < 0 || index > 2) return CB_E_INVALID;
+    cb_buf recs;   // each record as u32 length, then its bytes
+    cb_buf_init(&recs);
     lock(q);
-    sqlite3_stmt *s = stmt(q, ST_SESSIONS_PRUNE);
-    if (s) b_i64(s, 1, r->created_at);
-    int rc = step_write(q, s, "sessions prune", false);
-    if (rc == CB_OK) {
-        s = stmt(q, ST_SESSION_PUT);
-        if (s) {
-            b_text(s, 1, r->id);
-            b_text(s, 2, r->user_id);
-            b_i64(s, 3, r->created_at);
-            b_i64(s, 4, r->expires_at);
-            b_i64(s, 5, r->revoked);
-            b_i64(s, 6, r->gen);
-        }
-        rc = step_write(q, s, "session put", false);
-    }
-    unlock(q);
-    return rc;
-}
-
-static int sq_session_get(cb_store *st, const char *id, int64_t now_ms, cb_session_row *out) {
-    sq *q = Q(st);
-    memset(out, 0, sizeof *out);
-    lock(q);
-    sqlite3_stmt *s = stmt(q, ST_SESSION_GET);
-    int rc = CB_E_DB;
+    sqlite3_stmt *s = stmt(q, ST[index][forward ? 1 : 0]);
+    int rc = s ? CB_OK : CB_E_DB, r = SQLITE_DONE;
     if (s) {
-        b_text(s, 1, id);
-        b_i64(s, 2, now_ms);
-        int r = sqlite3_step(s);
-        if (r == SQLITE_ROW) {
-            c_text(s, 0, out->id, sizeof out->id);
-            c_text(s, 1, out->user_id, sizeof out->user_id);
-            out->created_at = c_i64(s, 2);
-            out->expires_at = c_i64(s, 3);
-            out->revoked = c_i64(s, 4) != 0;
-            out->gen = c_i64(s, 5);
-            rc = CB_OK;
-        } else rc = r == SQLITE_DONE ? CB_E_NOT_FOUND : fail(q, "session get", r);
+        b_text(s, 1, pk);
+        b_text_null(s, 2, sk_prefix);
+        while ((r = sqlite3_step(s)) == SQLITE_ROW) {
+            uint32_t len = (uint32_t)sqlite3_column_bytes(s, 0);
+            cb_buf_append(&recs, &len, sizeof len);
+            cb_buf_append(&recs, sqlite3_column_blob(s, 0), len);
+        }
+        if (r != SQLITE_DONE) rc = fail(q, "item query", r);
     }
     done(s);
     unlock(q);
+    if (recs.oom) rc = CB_E_NOMEM;
+    cb_item it;
+    cb_item_init(&it);
+    for (size_t off = 0; rc == CB_OK && off < recs.len;) {
+        uint32_t len;
+        memcpy(&len, recs.p + off, sizeof len);
+        off += sizeof len;
+        cb_item_reset(&it);
+        if (!cb_item_record_decode(recs.p + off, len, &it)) rc = CB_E_DB;
+        else if (!fn(&it, ud)) break;
+        off += len;
+    }
+    cb_item_free(&it);
+    cb_buf_free(&recs);
     return rc;
 }
 
-static int sq_session_revoke(cb_store *st, const char *id, const char *user_id, int64_t expires_at) {
-    sq *q = Q(st);
-    lock(q);
-    sqlite3_stmt *s = stmt(q, ST_SESSION_REVOKE);
-    if (s) {
-        b_text(s, 1, id);
-        b_text(s, 2, user_id);
-        b_i64(s, 3, expires_at);
-    }
-    int rc = step_write(q, s, "session revoke", false);
-    unlock(q);
-    return rc;
-}
+
+
+
+
 
 // ---- games -----------------------------------------------------------------------------
 
@@ -1767,6 +1798,10 @@ static int sq_game_import(cb_store *st, const cb_game_row *g, const cb_uuid *hum
 }
 
 static const cb_store_ops SQLITE_OPS = {
+    .item_get = sq_item_get,
+    .item_write = sq_item_write,
+    .item_txn = sq_item_txn,
+    .item_query = sq_item_query,
     .name = "sqlite",
     .close = sq_close,
     .user_get = sq_user_get,
@@ -1774,16 +1809,16 @@ static const cb_store_ops SQLITE_OPS = {
     .user_create = sq_user_create,
     .user_set_password = sq_user_set_password,
     .user_touch_sign_in = sq_user_touch_sign_in,
-    .signin_fails_get = sq_signin_fails_get,
-    .signin_fails_put = sq_signin_fails_put,
-    .signin_fails_clear = sq_signin_fails_clear,
+    .signin_fails_get = cb_rows_signin_fails_get,
+    .signin_fails_put = cb_rows_signin_fails_put,
+    .signin_fails_clear = cb_rows_signin_fails_clear,
     .user_delete = sq_user_delete,
     .users_list = sq_users_list,
-    .refresh_put = sq_refresh_put,
-    .refresh_take = sq_refresh_take,
-    .session_put = sq_session_put,
-    .session_get = sq_session_get,
-    .session_revoke = sq_session_revoke,
+    .refresh_put = cb_rows_refresh_put,
+    .refresh_take = cb_rows_refresh_take,
+    .session_put = cb_rows_session_put,
+    .session_get = cb_rows_session_get,
+    .session_revoke = cb_rows_session_revoke,
     .user_end_sessions = sq_user_end_sessions,
     .game_get = sq_game_get,
     .game_create = sq_game_create,

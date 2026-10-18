@@ -863,7 +863,7 @@ static void reset_world(uint64_t seed) {
     cb_row_cache_clear();
     static const char *const EMPTY[] = {
         "DELETE FROM chat_messages", "DELETE FROM game_snapshots", "DELETE FROM game_members", "DELETE FROM game_bots",
-        "DELETE FROM games",         "DELETE FROM ratings",        "DELETE FROM refresh_tokens", "DELETE FROM users",
+        "DELETE FROM games",         "DELETE FROM ratings",        "DELETE FROM items", "DELETE FROM users",
     };
     for (size_t i = 0; i < sizeof EMPTY / sizeof EMPTY[0]; i++)
         FZ_CHECK(g_real->admin_query(g_store, EMPTY[i], true, collect_nothing, NULL) >= 0);

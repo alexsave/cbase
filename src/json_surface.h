@@ -19,6 +19,7 @@
 #ifndef CB_JSON_SURFACE_H
 #define CB_JSON_SURFACE_H
 
+#include "store/items.h"
 #include "store/store.h"
 #include "aws/event.h"
 #include "auth/auth.h"
@@ -48,6 +49,7 @@
 //   USER#<id>          RATING             the leaderboard row (GSI2 RATINGS / E#<rank>#<id>, only
 //                                         once games_played > 0: a sparse, rating-ordered key)
 //   EMAIL#<email>      USER               the user id; signup's uniqueness
+//   (the next three are store/rows_auth.c's, through the item layer)
 //   AUTHFAIL#<email>   FAILS              failed sign-ins at the account (auth.h CB_AUTH_FAIL_*; TTL an hour)
 //   REFRESH#<hash>     TOKEN              a refresh token (GSI1 USERREFRESH#<user>; TTL its session's
 //                                         end, a week once spent; rows before sessions also GSI2 SESSION#)
@@ -186,9 +188,7 @@ bool dw_get_b(cb_span item, const char *name, uint8_t **out, size_t *len);
 
 // Items as rows. Each returns false when a required attribute is missing.
 bool dw_item_user(cb_span item, cb_user_row *u);
-bool dw_item_refresh(cb_span item, cb_refresh_row *r);
 // A SESSION item; false when it is not one or has ended by now_ms.
-bool dw_item_session(cb_span item, int64_t now_ms, cb_session_row *s);
 bool dw_item_game(cb_span item, cb_game_row *g);       // byte fields malloc'd
 bool dw_item_member(cb_span item, cb_member_row *m);   // a MEMBER item (or its GSI1 copy)
 // A DWQ_GAME_SEATS item's seat: the id after MEMBER# (a human, *bot false)
@@ -202,8 +202,6 @@ bool dw_item_scan(cb_span item, char game_id[CB_GAME_ID_MAX + 1], int64_t *updat
 // A SCAN marker's lease_until, or INT64_MIN when it carries none.
 int64_t dw_item_lease_until(cb_span item);
 bool dw_item_email_user(cb_span item, cb_uuid id);
-// An AUTHFAIL item; false when it is not one or has expired by now_ms.
-bool dw_item_signin_fails(cb_span item, int64_t now_ms, cb_signin_fails *f);
 // The item's keys as raw JSON ({"pk":..,"sk":..}), for a delete or an update.
 bool dw_item_key(cb_span item, cb_buf *out);
 // The item rendered for the admin console: each attribute as name and text
@@ -218,8 +216,6 @@ int dw_item_text(cb_span item, cb_buf *storage, const char **names, const char *
 // Point reads (ConsistentRead).
 void dw_get_user(dw_req *r, const char *table, const char *id);
 void dw_get_email(dw_req *r, const char *table, const char *email);
-void dw_get_signin_fails(dw_req *r, const char *table, const char *email);
-void dw_get_session(dw_req *r, const char *table, const char *id);
 void dw_get_game(dw_req *r, const char *table, const char *id);
 void dw_get_member(dw_req *r, const char *table, const char *game, const char *user);
 // The game's SCAN marker (store.h lease_held), consistent.
@@ -246,6 +242,24 @@ typedef enum {
 // `start` is the previous page's dw_last_key (empty for the first).
 void dw_query(dw_req *r, const char *table, dw_query_kind k, const char *arg, bool forward, int limit, cb_span start);
 
+// THE ITEM LAYER (store/items.h), spelled for DynamoDB: one request each.
+// GetItem of a key (ConsistentRead when asked).
+void dw_iget(dw_req *r, const char *table, cb_ikey key, bool consistent);
+// One write: PutItem, UpdateItem or DeleteItem, its condition, and
+// ReturnValues ALL_OLD when old is wanted (UPDATE and DELETE). false when it
+// cannot be written (a CHECK alone, too many attributes).
+bool dw_iwrite(dw_req *r, const char *table, const cb_iwrite *w, bool old);
+// TransactWriteItems of n writes.
+bool dw_itxn(dw_req *r, const char *table, const cb_iwrite *w, int n);
+// Query on the table (index 0) or gsi1/gsi2 by its partition key, with an
+// optional begins_with on its sort key; page 0: DynamoDB's own; start: the
+// previous page's dw_top_last_key (empty for the first).
+void dw_iquery(dw_req *r, const char *table, int index, const char *pk, const char *sk_prefix, bool forward, int page,
+               cb_span start);
+// A DynamoDB item ({"name":{"S":..},..}) as a cb_item (added to it). false on
+// a value of another type, or one that does not decode.
+bool dw_item_read(cb_span item, cb_item *out);
+
 // Users.
 // signup: EMAIL (absent), PROFILE (absent) and the RATING row at `start`.
 void dw_user_create(dw_req *r, const char *table, const cb_user_row *u, int32_t start);
@@ -255,19 +269,8 @@ void dw_user_import(dw_req *r, const char *table, const cb_user_row *u);
 void dw_user_set_password(dw_req *r, const char *table, const char *id, const char *hash, const char *keep);
 void dw_user_end_sessions(dw_req *r, const char *table, const char *id);
 void dw_user_touch(dw_req *r, const char *table, const char *id, int64_t at);
-// The AUTHFAIL item replaced (PutItem), expiring an hour after now_ms; and deleted.
-void dw_signin_fails_put(dw_req *r, const char *table, const char *email, const cb_signin_fails *f, int64_t now_ms);
-void dw_signin_fails_delete(dw_req *r, const char *table, const char *email);
 // Deletes the PROFILE, RATING and EMAIL items (the caller deletes the rest).
 void dw_user_delete_txn(dw_req *r, const char *table, const cb_user_row *u);
-
-// Refresh tokens.
-void dw_refresh_put(dw_req *r, const char *table, const cb_refresh_row *t);
-// revoked = true and revoked_at = now_ms unless already set, the old item
-// returned; ConditionalCheckFailed when unknown.
-void dw_refresh_take(dw_req *r, const char *table, const char *hash, int64_t now_ms, int64_t spent_ms);
-void dw_session_put(dw_req *r, const char *table, const cb_session_row *s);
-void dw_session_revoke(dw_req *r, const char *table, const char *id, const char *user_id, int64_t expires_at);
 
 // Games.
 void dw_game_create(dw_req *r, const char *table, const cb_game_row *g, const char *creator);

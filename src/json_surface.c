@@ -1000,33 +1000,7 @@ bool dw_item_user(cb_span it, cb_user_row *u) {
     return true;
 }
 
-bool dw_item_session(cb_span it, int64_t now_ms, cb_session_row *s) {
-    memset(s, 0, sizeof *s);
-    ix x;
-    ix_build(it, &x);
-    if (!ix_s(&x, "id", s->id, sizeof s->id)) return false;
-    ix_s(&x, "user_id", s->user_id, sizeof s->user_id);
-    s->created_at = ix_n_or(&x, "created_at", 0);
-    s->expires_at = ix_n_or(&x, "expires_ms", 0);
-    s->gen = ix_n_or(&x, "gen", 0);
-    ix_bool(&x, "revoked", &s->revoked);
-    return s->expires_at > now_ms;   // TTL deletion lags by up to days
-}
 
-bool dw_item_refresh(cb_span it, cb_refresh_row *r) {
-    memset(r, 0, sizeof *r);
-    ix x;
-    ix_build(it, &x);
-    if (!ix_s(&x, "token_hash", r->token_hash, sizeof r->token_hash) ||
-        !ix_s(&x, "user_id", r->user_id, sizeof r->user_id))
-        return false;
-    ix_s(&x, "session_id", r->session_id, sizeof r->session_id);
-    r->created_at = ix_n_or(&x, "created_at", 0);
-    ix_bool(&x, "revoked", &r->revoked);
-    r->revoked_at = ix_n_or(&x, "revoked_at", 0);
-    r->expires_at = ix_n_or(&x, "expires_ms", 0);
-    return true;
-}
 
 bool dw_item_game(cb_span it, cb_game_row *g) {
     memset(g, 0, sizeof *g);
@@ -1147,18 +1121,6 @@ bool dw_item_chat(cb_span it, cb_chat_row *c) {
     return true;
 }
 
-bool dw_item_signin_fails(cb_span it, int64_t now_ms, cb_signin_fails *f) {
-    memset(f, 0, sizeof f[0]);
-    ix x;
-    ix_build(it, &x);
-    int64_t n, expires;
-    // TTL deletion lags by up to days: a row past its time reads as none.
-    if (!ix_n(&x, "n", &n) || !ix_n(&x, "expires_ms", &expires) || expires <= now_ms) return false;
-    f->n = n < 0 ? 0 : n > INT32_MAX ? INT32_MAX : (int32_t)n;
-    f->last_at = ix_n_or(&x, "last_at", 0);
-    f->locked_until = ix_n_or(&x, "locked_until", 0);
-    return true;
-}
 
 bool dw_item_scan(cb_span it, char game_id[CB_GAME_ID_MAX + 1], int64_t *updated_at, int64_t *last_commit_at) {
     ix x;
@@ -1266,15 +1228,7 @@ void dw_get_email(dw_req *r, const char *table, const char *email) {
     get_item(r, table, k(pk, sizeof pk, "EMAIL#", email), "USER");
 }
 
-void dw_get_signin_fails(dw_req *r, const char *table, const char *email) {
-    char pk[KB];
-    get_item(r, table, k(pk, sizeof pk, "AUTHFAIL#", email), "FAILS");
-}
 
-void dw_get_session(dw_req *r, const char *table, const char *id) {
-    char pk[KB];
-    get_item(r, table, k(pk, sizeof pk, "SESSION#", id), "SESSION");
-}
 
 void dw_get_game(dw_req *r, const char *table, const char *id) {
     char pk[KB];
@@ -1356,6 +1310,205 @@ void dw_query(dw_req *r, const char *table, dw_query_kind kind, const char *arg,
         cb_jw_raw(&w, start.p, start.n);
     }
     finish(&w);
+}
+
+// ---- the item layer (json_surface.h dw_iget ..., store/items.h) ------------------------------
+
+static void txn_begin(dw_req *r, cb_jw *w);
+static void txn_end(cb_jw *w);
+
+void dw_iget(dw_req *r, const char *table, cb_ikey key, bool consistent) {
+    cb_jw w;
+    begin(r, &w, "GetItem");
+    cb_jw_kstr(&w, "TableName", table);
+    key2(&w, key.pk, key.sk);
+    if (consistent) cb_jw_kbool(&w, "ConsistentRead", true);
+    finish(&w);
+}
+
+static void av_any(cb_jw *w, const cb_av *v) {
+    switch (v->kind) {
+    case CB_AV_S: av_s(w, v->name, v->s); break;
+    case CB_AV_N: av_n(w, v->name, v->n); break;
+    case CB_AV_BOOL: av_bool(w, v->name, v->b); break;
+    case CB_AV_B: av_b(w, v->name, v->bytes, v->len); break;
+    }
+}
+
+static const char *icond(cb_icond c) {
+    return c == CB_IF_EXISTS ? "attribute_exists(pk)" : c == CB_IF_ABSENT ? "attribute_not_exists(pk)" : NULL;
+}
+
+// One set of an update, as a SET clause with its value.
+static bool ux_iset(ux *u, const cb_av *v, cb_set_how how) {
+    char vn[48], v0[48], clause[160];
+    if (strlen(v->name) > 30) return false;
+    snprintf(vn, sizeof vn, ":%s", v->name);
+    ux_name(u, v->name);
+    switch (v->kind) {
+    case CB_AV_S: ux_val_s(u, vn, v->s); break;
+    case CB_AV_N: ux_val_n(u, vn, v->n); break;
+    case CB_AV_BOOL: ux_val_bool(u, vn, v->b); break;
+    case CB_AV_B: ux_val_b(u, vn, v->bytes, v->len); break;
+    }
+    if (how == CB_SET_TO) snprintf(clause, sizeof clause, "#%s = %s", v->name, vn);
+    else if (how == CB_SET_IF_ABSENT) snprintf(clause, sizeof clause, "#%s = if_not_exists(#%s, %s)", v->name, v->name, vn);
+    else {
+        if (v->kind != CB_AV_N) return false;
+        snprintf(v0, sizeof v0, ":%s0", v->name);
+        ux_val_n(u, v0, 0);
+        snprintf(clause, sizeof clause, "#%s = if_not_exists(#%s, %s) + %s", v->name, v->name, v0, vn);
+    }
+    ux_set_raw(u, clause);
+    return true;
+}
+
+// The body of one write (the caller has its object open).
+static bool iwrite_body(cb_jw *w, const char *table, const cb_iwrite *x) {
+    cb_jw_kstr(w, "TableName", table);
+    if (x->op == CB_IW_PUT) {
+        cb_jw_key(w, "Item");
+        cb_jw_obj(w);
+        av_s(w, "pk", x->key.pk);
+        av_s(w, "sk", x->key.sk);
+        for (int i = 0; i < x->n_attrs; i++) av_any(w, &x->attrs[i]);
+        if (x->ttl_ms > 0) {
+            av_n(w, CB_ITEM_TTL_MS, x->ttl_ms);
+            av_n(w, CB_ITEM_TTL_S, x->ttl_ms / 1000);   // the TTL attribute is in seconds
+        }
+        cb_jw_end(w);
+        const char *c = icond(x->cond);
+        if (c) cb_jw_kstr(w, "ConditionExpression", c);
+        return true;
+    }
+    key2(w, x->key.pk, x->key.sk);
+    if (x->op == CB_IW_UPDATE) {
+        ux u;
+        ux_init(&u);
+        bool ok = true;
+        for (int i = 0; ok && i < x->n_sets; i++) ok = ux_iset(&u, &x->sets[i].v, x->sets[i].how);
+        if (ok && x->ttl_ms > 0) {
+            cb_av ms = CB_AVN(CB_ITEM_TTL_MS, x->ttl_ms), s = CB_AVN(CB_ITEM_TTL_S, x->ttl_ms / 1000);
+            ok = ux_iset(&u, &ms, x->ttl_how) && ux_iset(&u, &s, x->ttl_how);
+        }
+        if (ok) ux_emit(w, &u, icond(x->cond));
+        ux_free(&u);
+        return ok;
+    }
+    const char *c = icond(x->cond);
+    if (c) cb_jw_kstr(w, "ConditionExpression", c);
+    return true;
+}
+
+bool dw_iwrite(dw_req *r, const char *table, const cb_iwrite *x, bool old) {
+    const char *op = x->op == CB_IW_PUT ? "PutItem" : x->op == CB_IW_UPDATE ? "UpdateItem" : x->op == CB_IW_DELETE ? "DeleteItem" : NULL;
+    if (!op) return false;
+    cb_jw w;
+    begin(r, &w, op);
+    bool ok = iwrite_body(&w, table, x);
+    if (old && x->op != CB_IW_PUT) cb_jw_kstr(&w, "ReturnValues", "ALL_OLD");
+    finish(&w);
+    return ok && cb_jw_ok(&w);
+}
+
+bool dw_itxn(dw_req *r, const char *table, const cb_iwrite *x, int n) {
+    if (n < 1 || n > CB_ITEM_TXN_MAX) return false;
+    cb_jw w;
+    txn_begin(r, &w);
+    bool ok = true;
+    for (int i = 0; ok && i < n; i++) {
+        static const char *const OPS[] = { "", "Put", "Update", "Delete", "ConditionCheck" };
+        if (x[i].op < CB_IW_PUT || x[i].op > CB_IW_CHECK) return false;
+        if (x[i].op == CB_IW_CHECK && x[i].cond == CB_IF_ANY) return false;
+        cb_jw_obj(&w);
+        cb_jw_key(&w, OPS[x[i].op]);
+        cb_jw_obj(&w);
+        ok = iwrite_body(&w, table, &x[i]);
+        cb_jw_end(&w);
+        cb_jw_end(&w);
+    }
+    txn_end(&w);
+    return ok && cb_jw_ok(&w);
+}
+
+void dw_iquery(dw_req *r, const char *table, int index, const char *pk, const char *sk_prefix, bool forward, int page,
+               cb_span start) {
+    const char *pkattr = index == 1 ? "gsi1pk" : index == 2 ? "gsi2pk" : "pk";
+    const char *skattr = index == 1 ? "gsi1sk" : index == 2 ? "gsi2sk" : "sk";
+    cb_jw w;
+    begin(r, &w, "Query");
+    cb_jw_kstr(&w, "TableName", table);
+    if (index) cb_jw_kstr(&w, "IndexName", index == 1 ? GSI1 : GSI2);
+    ux u;
+    ux_init(&u);
+    ux_name(&u, pkattr);
+    ux_val_s(&u, ":pk", pk);
+    char kc[160];
+    if (sk_prefix) {
+        ux_name(&u, skattr);
+        ux_val_s(&u, ":sk", sk_prefix);
+        snprintf(kc, sizeof kc, "#%s = :pk AND begins_with(#%s, :sk)", pkattr, skattr);
+    } else snprintf(kc, sizeof kc, "#%s = :pk", pkattr);
+    cb_jw_kstr(&w, "KeyConditionExpression", kc);
+    ux_emit(&w, &u, NULL);
+    ux_free(&u);
+    if (!forward) cb_jw_kbool(&w, "ScanIndexForward", false);
+    if (page > 0) cb_jw_kint(&w, "Limit", page);
+    if (!index) cb_jw_kbool(&w, "ConsistentRead", true);   // a GSI is eventually consistent; asking otherwise is an error
+    if (start.n) {
+        cb_jw_key(&w, "ExclusiveStartKey");
+        cb_jw_raw(&w, start.p, start.n);
+    }
+    finish(&w);
+}
+
+bool dw_item_read(cb_span item, cb_item *out) {
+    size_t pos = 0;
+    cb_span k, v;
+    char name[256];
+    while (dw_object_next(item, &pos, &k, &v)) {
+        if (cb_json_unescape(k, name, sizeof name) < 1) return false;
+        size_t tp = 0;
+        cb_span tk, tv;
+        if (!dw_object_next(v, &tp, &tk, &tv)) return false;
+        cb_av a = { .name = name };
+        bool ok = true;
+        char *text = NULL;
+        uint8_t *bytes = NULL;
+        if (key_is(tk, "S")) {
+            text = malloc(tv.n);
+            int n = text ? cb_json_unescape(tv, text, tv.n) : -1;
+            ok = n >= 0 && (size_t)n == strlen(text);
+            a.kind = CB_AV_S;
+            a.s = text;
+        } else if (key_is(tk, "N")) {
+            char num[32];
+            int n = cb_json_unescape(tv, num, sizeof num);
+            ok = n > 0 && num_parse_i64_cstr(num, INT64_MIN, INT64_MAX, &a.n);
+            a.kind = CB_AV_N;
+        } else if (key_is(tk, "BOOL")) {
+            a.kind = CB_AV_BOOL;
+            ok = (tv.n == 4 && memcmp(tv.p, "true", 4) == 0) || (tv.n == 5 && memcmp(tv.p, "false", 5) == 0);
+            a.b = tv.n == 4;
+        } else if (key_is(tk, "B")) {
+            a.kind = CB_AV_B;
+            char *b64 = malloc(tv.n);
+            int n = b64 ? cb_json_unescape(tv, b64, tv.n) : -1;
+            bytes = n >= 0 ? malloc((size_t)n + 1) : NULL;
+            int m = bytes ? b64_decode(b64, (size_t)n, bytes, (size_t)n + 1) : -1;
+            free(b64);
+            ok = m >= 0;
+            a.bytes = bytes;
+            a.len = ok ? (size_t)m : 0;
+        } else {
+            ok = false;
+        }
+        ok = ok && cb_item_add(out, &a);
+        free(text);
+        free(bytes);
+        if (!ok) return false;
+    }
+    return true;
 }
 
 // ---- items --------------------------------------------------------------------------------
@@ -1606,34 +1759,7 @@ void dw_user_touch(dw_req *r, const char *table, const char *id, int64_t at) {
     user_update(r, table, id, "last_sign_in_at", NULL, at);
 }
 
-#define SIGNIN_FAILS_TTL_MS (3600LL * 1000)   // store.h: an hour after the last write
 
-void dw_signin_fails_put(dw_req *r, const char *table, const char *email, const cb_signin_fails *f, int64_t now_ms) {
-    char pk[KB];
-    cb_jw w;
-    begin(r, &w, "PutItem");
-    cb_jw_kstr(&w, "TableName", table);
-    cb_jw_key(&w, "Item");
-    cb_jw_obj(&w);
-    av_s(&w, "pk", k(pk, sizeof pk, "AUTHFAIL#", email));
-    av_s(&w, "sk", "FAILS");
-    av_n(&w, "n", f->n);
-    av_n(&w, "last_at", f->last_at);
-    av_n(&w, "locked_until", f->locked_until);
-    av_n(&w, "expires_ms", now_ms + SIGNIN_FAILS_TTL_MS);
-    av_n(&w, DW_TTL_ATTR, (now_ms + SIGNIN_FAILS_TTL_MS) / 1000);   // the TTL attribute is in seconds
-    cb_jw_end(&w);
-    finish(&w);
-}
-
-void dw_signin_fails_delete(dw_req *r, const char *table, const char *email) {
-    char pk[KB];
-    cb_jw w;
-    begin(r, &w, "DeleteItem");
-    cb_jw_kstr(&w, "TableName", table);
-    key2(&w, k(pk, sizeof pk, "AUTHFAIL#", email), "FAILS");
-    finish(&w);
-}
 
 void dw_user_delete_txn(dw_req *r, const char *table, const cb_user_row *u) {
     char pk[KB], epk[KB];
@@ -1648,105 +1774,12 @@ void dw_user_delete_txn(dw_req *r, const char *table, const cb_user_row *u) {
 
 // ---- refresh tokens -----------------------------------------------------------------------------
 
-// A token row: GSI1 lists a user's (account deletion removes them), and its
-// TTL is its session's end (store.h cb_refresh_row).
-void dw_refresh_put(dw_req *r, const char *table, const cb_refresh_row *t) {
-    char pk[KB], g1[KB];
-    cb_jw w;
-    begin(r, &w, "PutItem");
-    cb_jw_kstr(&w, "TableName", table);
-    cb_jw_key(&w, "Item");
-    cb_jw_obj(&w);
-    av_s(&w, "pk", k(pk, sizeof pk, "REFRESH#", t->token_hash));
-    av_s(&w, "sk", "TOKEN");
-    av_s(&w, "gsi1pk", k(g1, sizeof g1, "USERREFRESH#", t->user_id));
-    av_s(&w, "gsi1sk", t->token_hash);
-    av_s(&w, "token_hash", t->token_hash);
-    av_s(&w, "user_id", t->user_id);
-    av_s(&w, "session_id", t->session_id);
-    av_n(&w, "created_at", t->created_at);
-    av_bool(&w, "revoked", t->revoked);
-    if (t->expires_at > 0) {
-        av_n(&w, "expires_ms", t->expires_at);
-        av_n(&w, DW_TTL_ATTR, t->expires_at / 1000);   // the TTL attribute is in seconds
-    }
-    cb_jw_end(&w);
-    cb_jw_kstr(&w, "ConditionExpression", "attribute_not_exists(pk)");
-    finish(&w);
-}
 
-void dw_refresh_take(dw_req *r, const char *table, const char *hash, int64_t now_ms, int64_t spent_ms) {
-    char pk[KB];
-    cb_jw w;
-    begin(r, &w, "UpdateItem");
-    update_open(&w, table, k(pk, sizeof pk, "REFRESH#", hash), "TOKEN", false);
-    ux u;
-    ux_init(&u);
-    ux_set_bool(&u, "revoked", true);
-    // The first take stamps revoked_at; a later one keeps it.
-    ux_name(&u, "revoked_at");
-    ux_set_raw(&u, "#revoked_at = if_not_exists(#revoked_at, :now)");
-    ux_val_n(&u, ":now", now_ms);
-    // A spent token is kept spent_ms more, for reuse detection, then the TTL takes it.
-    ux_set_n(&u, "expires_ms", now_ms + spent_ms);
-    ux_set_n(&u, DW_TTL_ATTR, (now_ms + spent_ms) / 1000);
-    ux_emit(&w, &u, "attribute_exists(pk)");
-    ux_free(&u);
-    cb_jw_kstr(&w, "ReturnValues", "ALL_OLD");
-    finish(&w);
-}
 
 // ---- sessions ----------------------------------------------------------------------------------
 
-static void session_attrs(cb_jw *w, const cb_session_row *s) {
-    av_s(w, "id", s->id);
-    av_s(w, "user_id", s->user_id);
-    av_n(w, "created_at", s->created_at);
-    av_bool(w, "revoked", s->revoked);
-    av_n(w, "gen", s->gen);
-    av_n(w, "expires_ms", s->expires_at);
-    av_n(w, DW_TTL_ATTR, s->expires_at / 1000);   // the TTL attribute is in seconds
-}
 
-void dw_session_put(dw_req *r, const char *table, const cb_session_row *s) {
-    char pk[KB];
-    cb_jw w;
-    begin(r, &w, "PutItem");
-    cb_jw_kstr(&w, "TableName", table);
-    cb_jw_key(&w, "Item");
-    cb_jw_obj(&w);
-    av_s(&w, "pk", k(pk, sizeof pk, "SESSION#", s->id));
-    av_s(&w, "sk", "SESSION");
-    session_attrs(&w, s);
-    cb_jw_end(&w);
-    finish(&w);
-}
 
-// Ended in one write; a session with no item yet gets one (store.h session_revoke).
-void dw_session_revoke(dw_req *r, const char *table, const char *id, const char *user_id, int64_t expires_at) {
-    char pk[KB];
-    cb_jw w;
-    begin(r, &w, "UpdateItem");
-    update_open(&w, table, k(pk, sizeof pk, "SESSION#", id), "SESSION", false);
-    ux u;
-    ux_init(&u);
-    ux_set_bool(&u, "revoked", true);
-    ux_name(&u, "id");
-    ux_set_raw(&u, "#id = if_not_exists(#id, :id)");
-    ux_val_s(&u, ":id", id);
-    ux_name(&u, "user_id");
-    ux_set_raw(&u, "#user_id = if_not_exists(#user_id, :uid)");
-    ux_val_s(&u, ":uid", user_id);
-    ux_name(&u, "expires_ms");
-    ux_set_raw(&u, "#expires_ms = if_not_exists(#expires_ms, :exp)");
-    ux_val_n(&u, ":exp", expires_at);
-    ux_name(&u, DW_TTL_ATTR);
-    ux_set_raw(&u, "#" DW_TTL_ATTR " = if_not_exists(#" DW_TTL_ATTR ", :exps)");
-    ux_val_n(&u, ":exps", expires_at / 1000);
-    ux_emit(&w, &u, NULL);
-    ux_free(&u);
-    finish(&w);
-}
 
 // ---- games ----------------------------------------------------------------------------------------
 

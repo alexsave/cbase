@@ -29,6 +29,7 @@
 #ifndef CB_STORE_H
 #define CB_STORE_H
 
+#include "items.h"
 #include "util/err.h"
 #include "util/uuid.h"
 
@@ -427,6 +428,14 @@ typedef struct cb_store_ops {
     // replace. The lease is left free.
     int (*game_import)(cb_store *s, const cb_game_row *g, const cb_uuid *humans, int n_humans, const cb_uuid *bots,
                        int n_bots);
+
+    // THE ITEM LAYER (items.h): what rows written once above it use
+    // (rows_auth.c), on both backends.
+    int (*item_get)(cb_store *s, cb_ikey key, bool consistent, cb_item *out);
+    int (*item_write)(cb_store *s, const cb_iwrite *w, cb_item *old);
+    int (*item_txn)(cb_store *s, const cb_iwrite *w, int n, int *failed);
+    int (*item_query)(cb_store *s, int index, const char *pk, const char *sk_prefix, bool forward, int page,
+                      cb_item_fn fn, void *ud);
 } cb_store_ops;
 
 struct cb_store {
@@ -501,7 +510,7 @@ void cb_store_throttles_get(cb_store_throttles *out);
 
 // The SQLite schema version this binary applies (store_sqlite.c), and the
 // embedded schema text (build/gen/schema_sql.c, from sql/schema.sql).
-#define CB_SCHEMA_VERSION 4
+#define CB_SCHEMA_VERSION 5
 extern const char cbase_schema_sql[];
 extern const unsigned long cbase_schema_sql_len;
 

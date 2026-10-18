@@ -179,8 +179,9 @@ static void open_applies_schema_and_seeds_bots(void) {
     T_EQ_INT(CB_STORE_CALL(s, user_by_email, "old@x.io", &old_user), CB_OK);
     T_EQ_INT(old_user.session_gen, 0);
     cb_refresh_row old_tok;
-    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "oldtok", 10, 1000, &old_tok), CB_OK);   // no expiry: a pre-3 token
-    T_EQ_STR(old_tok.session_id, "s-old");
+    // Schema 5 keeps refresh tokens as items (store/rows_auth.c) and drops the
+    // old table: a development database's tokens go, and their sessions sign in again.
+    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "oldtok", 10, 1000, &old_tok), CB_E_NOT_FOUND);
     T_EQ_INT(CB_STORE_CALL(s, user_end_sessions, old_user.id), CB_OK);
     cb_session_row sr = { .id = "s-old", .created_at = 1, .expires_at = cb_now_ms() + 60000 };
     memcpy(sr.user_id, old_user.id, sizeof sr.user_id);
@@ -1175,7 +1176,7 @@ static bool collect_row(int n, const char *const *names, const char *const *valu
 static void admin_reads(void) {
     cb_store *s = open_fresh();
     names_t n = { 0 };
-    T_CHECK(CB_STORE_CALL(s, admin_collections, collect_name, &n) >= 10);
+    T_CHECK(CB_STORE_CALL(s, admin_collections, collect_name, &n) >= 9);   // SQLite: nine tables, the items one among them
     bool has_games = false;
     for (int i = 0; i < n.n; i++) has_games |= strcmp(n.ids[i], "games") == 0;
     T_CHECK(has_games);
