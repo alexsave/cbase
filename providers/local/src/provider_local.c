@@ -4,6 +4,7 @@
 #include "cbase/provider.h"
 
 #include "config.h"
+#include "core.h"
 #include "jobs.h"
 #include "realtime/rt_local.h"
 #include "store/store.h"
@@ -60,11 +61,13 @@ static void pending_unmark(const char *id) {
     pthread_mutex_unlock(&g_pending_mu);
 }
 
+// The job arrives as every provider's does, through cb_core_job, which owns
+// what "nothing to do" (CB_E_NOT_FOUND) means.
 static void job_run(void *ud) {
     job_task *j = ud;
     pending_unmark(j->id);
-    int rc = cb_job_run(j->ctx, j->job, j->key);
-    if (rc < 0 && rc != CB_E_NOT_FOUND) CB_WARN("jobs", "%s: %s", j->id, cb_strerror(rc));
+    int rc = cb_core_job(j->ctx, j->job, j->key);
+    if (rc < 0) CB_WARN("jobs", "%s: %s", j->id, cb_strerror(rc));
     free(j);
 }
 
