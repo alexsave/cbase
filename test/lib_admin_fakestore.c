@@ -3,7 +3,7 @@
 // cb_handle without a real backend.
 #include "lib_admin_fakestore.h"
 
-#include "util/num.h"
+#include "../../shared/c/num_parse.h"
 #include "util/str.h"
 
 #include <stdio.h>
@@ -39,7 +39,7 @@ static int f_browse(cb_store *s, const char *collection, const char *prefix, con
     else if (strcmp(collection, "games") == 0) total = 2;
     else return CB_E_NOT_FOUND;
     int64_t at = 0;
-    if (cursor && *cursor && !cb_parse_i64_cstr(cursor, 0, INT32_MAX, &at)) return CB_E_INVALID;
+    if (cursor && *cursor && !num_parse_i64_cstr(cursor, 0, INT32_MAX, &at)) return CB_E_INVALID;
     int i = (int)at, sent = 0;
     for (; i < total && sent < limit; i++) {
         char id[16], email[32];

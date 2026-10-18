@@ -1,4 +1,4 @@
-// fz_num.c - cb_parse_i64 (util/num.h) against a reference model: the same
+// fz_num.c - num_parse_i64 (shared/c/num_parse.h) against a reference model: the same
 // grammar checked by a plain scan and the value accumulated in __int128, so
 // the model has no overflow to get wrong.
 //
@@ -7,7 +7,7 @@
 // int64s from the input (either order; lo > hi must be refused).
 #include "fz.h"
 
-#include "util/num.h"
+#include "../../shared/c/num_parse.h"
 
 static int64_t i64_at(const uint8_t *p) {
     uint64_t u = 0;
@@ -55,7 +55,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
 
     int64_t want = 0, got = 12345;
     bool m = model(s, n, lo, hi, &want);
-    bool p = cb_parse_i64((const char *)s, n, lo, hi, &got);
+    bool p = num_parse_i64((const char *)s, n, lo, hi, &got);
     FZ_CHECK(m == p);
     if (p) FZ_CHECK(got == want && got >= lo && got <= hi);
     else FZ_CHECK(got == 12345);   // a refusal leaves *out alone
@@ -64,7 +64,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     // length form over that prefix.
     char *c = fz_cstr(s, n);
     int64_t got_c = 12345, want_c = 0;
-    bool pc = cb_parse_i64_cstr(c, lo, hi, &got_c);
+    bool pc = num_parse_i64_cstr(c, lo, hi, &got_c);
     FZ_CHECK(pc == model(s, strlen(c), lo, hi, &want_c));
     if (pc) FZ_CHECK(got_c == want_c);
     free(c);

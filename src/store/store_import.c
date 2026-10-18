@@ -8,7 +8,7 @@
 #include "table.h"
 #include "util/err.h"
 #include "util/hex.h"
-#include "util/num.h"
+#include "../../../shared/c/num_parse.h"
 #include "util/str.h"
 #include "util/uuid.h"
 
@@ -149,7 +149,7 @@ static int64_t cell_i64(const csv *c, int row, int column, int64_t none) {
     const char *v = cell(c, row, column);
     if (!v) return none;
     int64_t x;
-    return cb_parse_i64_cstr(v, INT64_MIN, INT64_MAX, &x) ? x : none;
+    return num_parse_i64_cstr(v, INT64_MIN, INT64_MAX, &x) ? x : none;
 }
 
 static bool cell_bool(const csv *c, int row, int column) {
@@ -476,7 +476,7 @@ static void count_item(const char *export_name, const char *id, void *ud) {
 
 static bool count_cb(int n, const char *const *names, const char *const *values, void *ud) {
     int64_t x;
-    *(long long *)ud = n > 0 && cb_parse_i64_cstr(values[0], 0, INT64_MAX, &x) ? x : -1;
+    *(long long *)ud = n > 0 && num_parse_i64_cstr(values[0], 0, INT64_MAX, &x) ? x : -1;
     return false;
 }
 
@@ -496,7 +496,7 @@ static long long export_count(const char *dir, const char *name) {
         size_t kn = strlen(name);
         int64_t v;
         if (sp && (size_t)(sp - line) == kn && memcmp(line, name, kn) == 0)
-            n =cb_parse_i64(sp + 1, len - kn - 1, 0, INT64_MAX, &v) ? v : -2;
+            n =num_parse_i64(sp + 1, len - kn - 1, 0, INT64_MAX, &v) ? v : -2;
     }
     fclose(f);
     return n;

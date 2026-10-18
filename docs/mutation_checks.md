@@ -582,20 +582,21 @@ Each mutation was applied, its object deleted and the test rebuilt, then restore
 
 ## Numbers from text (2026-10-18: unit_num, unit_num_gate, fz_num and the call sites)
 
-`cb_parse_i64` (util/num.h) is the one decimal integer parser; DESIGN.md "Numbers from text".
+`num_parse_i64` (shared/c/num_parse.h) is the one decimal integer parser; DESIGN.md "Numbers from text".
 Each mutation was applied, its object deleted and the test rebuilt, then restored from a copy the same way.
+The parser was written as c_base/src/util/num.c and moved, unchanged, into shared/c/num_parse.h (header only) before the PR landed; the mutations below were made on those same lines.
 
-- num.c: leading blanks skipped -> `unit_num` `shapes_refused` " 20" and "\t20" refused; `unit_edges` `configuration_refusals` CBASE_BOT_SPEEDUP " 20".
-- num.c: a leading '+' taken -> `unit_num` `shapes_refused` "+20" and "+0"; `unit_edges` CBASE_BOT_SPEEDUP "+20"; `fz_num` m == p from the seed corpus, and from an empty corpus within 60 s.
-- num.c: the overflow check removed -> `unit_num` `int64_extremes` INT64_MAX + 1 and INT64_MIN - 1 refused.
-- num.c: the overflow check one past (`/ 10 + 1`) -> `fz_num` m == p from the seed corpus (seed-max-plus-one); an empty corpus did not find it in 60 s, which is what the seeds are for.
-- num.c: '-' taken when lo >= 0 -> `unit_num` `shapes_refused` "-0" refused in 0..100; `unit_edges` CBASE_LISTEN "h:-0".
-- num.c: a non-digit ends the number instead of refusing it -> `unit_num` `shapes_refused` "20 " and "20\n" (13 checks).
-- num.c: hi not checked -> `unit_num` `bounds` "101" in 1..100 refused.
-- num.c: a refusal writes *out -> `unit_num` `bounds` g_v == 7777.
-- num.c: a lone '-' taken -> `unit_num` `shapes_refused` "-" refused, and `with_a_length` "-12" cut to 1 byte.
-- num.c: INT64_MIN read as INT64_MIN + 1 -> `unit_num` `int64_extremes` "-9223372036854775808".
-- num.c: a `lo > hi` check was removed as equivalent (an empty range refuses every value at the range check); `bounds` keeps "5" in 6..5 refused.
+- num_parse.h: leading blanks skipped -> `unit_num` `shapes_refused` " 20" and "\t20" refused; `unit_edges` `configuration_refusals` CBASE_BOT_SPEEDUP " 20".
+- num_parse.h: a leading '+' taken -> `unit_num` `shapes_refused` "+20" and "+0"; `unit_edges` CBASE_BOT_SPEEDUP "+20"; `fz_num` m == p from the seed corpus, and from an empty corpus within 60 s.
+- num_parse.h: the overflow check removed -> `unit_num` `int64_extremes` INT64_MAX + 1 and INT64_MIN - 1 refused.
+- num_parse.h: the overflow check one past (`/ 10 + 1`) -> `fz_num` m == p from the seed corpus (seed-max-plus-one); an empty corpus did not find it in 60 s, which is what the seeds are for.
+- num_parse.h: '-' taken when lo >= 0 -> `unit_num` `shapes_refused` "-0" refused in 0..100; `unit_edges` CBASE_LISTEN "h:-0".
+- num_parse.h: a non-digit ends the number instead of refusing it -> `unit_num` `shapes_refused` "20 " and "20\n" (13 checks).
+- num_parse.h: hi not checked -> `unit_num` `bounds` "101" in 1..100 refused.
+- num_parse.h: a refusal writes *out -> `unit_num` `bounds` g_v == 7777.
+- num_parse.h: a lone '-' taken -> `unit_num` `shapes_refused` "-" refused, and `with_a_length` "-12" cut to 1 byte.
+- num_parse.h: INT64_MIN read as INT64_MIN + 1 -> `unit_num` `int64_extremes` "-9223372036854775808".
+- num_parse.h: a `lo > hi` check was removed as equivalent (an empty range refuses every value at the range check); `bounds` keeps "5" in 6..5 refused.
 - admin.c: `after` takes a '-' -> `unit_admin` `logs_tail_after_a_seq_at_a_level` after=-1 == 400.
 - admin.c: a bad `after` read as 0 (strtoull's answer) -> `unit_admin` after=-1, " 5", "+5" and "5x" == 400.
 - admin.c: q_int refuses negatives (no clamp to lo) -> `unit_admin` `browse_pages_by_cursor` limit=-5 gives last_limit == 1.
@@ -608,4 +609,4 @@ Each mutation was applied, its object deleted and the test rebuilt, then restore
 - store_import.c: a malformed cell read as 0, not the column's none -> `unit_import` `failing_checks` TEXT_COUNT last_commit_at == 4000.
 - config.c: CBASE_LISTEN's port range from -1 -> `unit_edges` `configuration_refusals` "h:-0" refused.
 - json_surface.c: a DynamoDB N only non-negative -> `unit_dynamo` `numbers_are_digits` INT64_MIN read.
-- unit_num_gate.c: a strtol, a strtod and an sscanf each planted at the end of src/util/log.c -> `only_cb_parse_i64_reads_numbers` violations == 0.
+- unit_num_gate.c: a strtol, a strtod and an sscanf each planted at the end of src/util/log.c -> `only_num_parse_i64_reads_numbers` violations == 0.

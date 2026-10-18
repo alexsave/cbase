@@ -24,7 +24,7 @@
 #include "util/clock.h"
 #include "util/hex.h"
 #include "util/log.h"
-#include "util/num.h"
+#include "../../../shared/c/num_parse.h"
 #include "util/str.h"
 #include "util/uuid.h"
 
@@ -1595,7 +1595,7 @@ static int sq_admin_browse(cb_store *st, const char *collection, const char *pre
         value = eq + 1;
     } else if (prefix && *prefix) value = prefix;
     int64_t after = 0;
-    if (cursor && *cursor && !cb_parse_i64_cstr(cursor, INT64_MIN, INT64_MAX, &after)) return CB_E_INVALID;
+    if (cursor && *cursor && !num_parse_i64_cstr(cursor, INT64_MIN, INT64_MAX, &after)) return CB_E_INVALID;
 
     textrows rows = { 0 };
     int64_t last = 0;

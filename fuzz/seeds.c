@@ -180,7 +180,7 @@ static void seeds_query(void) {
     puts_("query", "bad", "a=%zz&b=%");
 }
 
-// cb_parse_i64: [mode][range for mode 3][text] (fuzz/fz_num.c).
+// num_parse_i64: [mode][range for mode 3][text] (fuzz/fz_num.c).
 static void seeds_num(void) {
     put1("num", "speedup", 0, "20", 2);
     put1("num", "space", 0, " 20", 3);

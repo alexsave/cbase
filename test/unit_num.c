@@ -1,7 +1,7 @@
-// unit_num.c - cb_parse_i64 (util/num.h), the one decimal integer parser.
+// unit_num.c - num_parse_i64 (shared/c/num_parse.h), the one decimal integer parser.
 #include "t.h"
 
-#include "util/num.h"
+#include "../../shared/c/num_parse.h"
 
 #include <stdint.h>
 
@@ -9,7 +9,7 @@
 static int64_t g_v;
 static int ok(const char *s, int64_t lo, int64_t hi) {
     g_v = 7777;
-    return cb_parse_i64_cstr(s, lo, hi, &g_v);
+    return num_parse_i64_cstr(s, lo, hi, &g_v);
 }
 
 static void bounds(void) {
@@ -58,8 +58,8 @@ static void shapes_refused(void) {
     T_CHECK(!ok("1e3", 1, 10000));
     T_CHECK(!ok("0x10", 0, 100));
     T_CHECK(!ok("\xd9\xa3", 0, 100));   // ARABIC-INDIC DIGIT THREE is not a digit here
-    T_CHECK(!cb_parse_i64_cstr(NULL, 0, 1, &g_v));
-    T_CHECK(!cb_parse_i64(NULL, 0, 0, 1, &g_v));
+    T_CHECK(!num_parse_i64_cstr(NULL, 0, 1, &g_v));
+    T_CHECK(!num_parse_i64(NULL, 0, 0, 1, &g_v));
     // A '-' only where the range has negatives: strtoull's wrap of "-1" is gone.
     T_CHECK(!ok("-1", 0, INT64_MAX));
     T_CHECK(!ok("-0", 0, 100));
@@ -78,13 +78,13 @@ static void zeros(void) {
 // With a length: the bytes given, not the C string.
 static void with_a_length(void) {
     int64_t v = 0;
-    T_CHECK(cb_parse_i64("443/path", 3, 1, 65535, &v) && v == 443);
-    T_CHECK(!cb_parse_i64("443/path", 4, 1, 65535, &v));
-    T_CHECK(!cb_parse_i64("12\0" "3", 4, 0, 10000, &v));   // an embedded NUL is not a digit
-    T_CHECK(!cb_parse_i64("12\0", 3, 0, 10000, &v));
-    T_CHECK(!cb_parse_i64("12", 0, 0, 10000, &v));
-    T_CHECK(cb_parse_i64("-12", 3, -12, 0, &v) && v == -12);
-    T_CHECK(!cb_parse_i64("-12", 1, -12, 0, &v));
+    T_CHECK(num_parse_i64("443/path", 3, 1, 65535, &v) && v == 443);
+    T_CHECK(!num_parse_i64("443/path", 4, 1, 65535, &v));
+    T_CHECK(!num_parse_i64("12\0" "3", 4, 0, 10000, &v));   // an embedded NUL is not a digit
+    T_CHECK(!num_parse_i64("12\0", 3, 0, 10000, &v));
+    T_CHECK(!num_parse_i64("12", 0, 0, 10000, &v));
+    T_CHECK(num_parse_i64("-12", 3, -12, 0, &v) && v == -12);
+    T_CHECK(!num_parse_i64("-12", 1, -12, 0, &v));
 }
 
 int main(void) {

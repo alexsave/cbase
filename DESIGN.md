@@ -819,7 +819,7 @@ Tests (`test/`) are not scanned: their recorded bodies are the oracle the shapes
 
 ## Numbers from text (2026-10-18)
 
-Every decimal integer c_base reads from text goes through one parser, `cb_parse_i64` (`util/num.h`): the `CBASE_*` settings and `CBASE_LISTEN`'s port, the admin API's query numbers and `after`, SQLite's browse cursor, a DynamoDB `N` attribute, an AWS endpoint's port, the Lambda runtime's port and deadline header, and the import's cells and `counts.txt`.
+Every decimal integer c_base reads from text goes through one parser, `num_parse_i64` (`shared/c/num_parse.h`, header only, one owner for the whole repository): the `CBASE_*` settings and `CBASE_LISTEN`'s port, the admin API's query numbers and `after`, SQLite's browse cursor, a DynamoDB `N` attribute, an AWS endpoint's port, the Lambda runtime's port and deadline header, and the import's cells and `counts.txt`.
 It takes exactly `-?[0-9]+`, the `-` only when the range has negatives, and the value in the caller's range; overflow is seen digit by digit.
 The C library's parsers took a leading blank and `+`, `strtoull` wrapped `-1` to 2^64-1, and the call sites that ignored the end pointer took anything after the digits, so `CBASE_BOT_SPEEDUP=" 20"` was 20 and an admin cursor of `"3x"` was 3.
 Leading zeros are taken: base 10 is fixed, so `007` can only mean 7.

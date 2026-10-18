@@ -44,7 +44,7 @@
 #include "util/err.h"
 #include "util/hex.h"
 #include "util/log.h"
-#include "util/num.h"
+#include "../../../shared/c/num_parse.h"
 
 #include <ctype.h>
 #include <dirent.h>
@@ -146,7 +146,7 @@ static int q_int(const cb_http_req *req, const char *key, int dflt, int lo, int 
     // Any number is taken and clamped to lo..hi ("-5" is lo); text that is
     // not one is the default.
     int64_t x;
-    if (!cb_parse_i64_cstr(v, INT64_MIN, INT64_MAX, &x)) return dflt;
+    if (!num_parse_i64_cstr(v, INT64_MIN, INT64_MAX, &x)) return dflt;
     return x < lo ? lo : x > hi ? hi : (int)x;
 }
 
@@ -594,7 +594,7 @@ static void api_bots(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
 static void api_logs(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     char v[32];
     int64_t after = 0;
-    if (cb_http_query_get(req, "after", v, sizeof v) && v[0] && !cb_parse_i64_cstr(v, 0, INT64_MAX, &after)) {
+    if (cb_http_query_get(req, "after", v, sizeof v) && v[0] && !num_parse_i64_cstr(v, 0, INT64_MAX, &after)) {
         cb_router_error(res, 400, "logs: after is a sequence number");
         return;
     }

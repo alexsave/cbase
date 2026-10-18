@@ -6,7 +6,7 @@
 #include "util/clock.h"
 #include "util/err.h"
 #include "util/log.h"
-#include "util/num.h"
+#include "../../../shared/c/num_parse.h"
 
 #include <ctype.h>
 #include <stdio.h>
@@ -42,7 +42,7 @@ int cb_aws_url_parse(const char *url, char *host, size_t host_cap, int *port, bo
     *port = *tls ? 443 : 80;
     if (colon) {
         int64_t p;
-        if (!cb_parse_i64(colon + 1, (size_t)(hend - colon - 1), 1, 65535, &p)) return CB_E_INVALID;
+        if (!num_parse_i64(colon + 1, (size_t)(hend - colon - 1), 1, 65535, &p)) return CB_E_INVALID;
         *port = (int)p;
     } else {
         colon = hend;

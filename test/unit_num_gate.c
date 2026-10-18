@@ -1,5 +1,5 @@
-// unit_num_gate.c - the number-parsing gate (util/num.h): every decimal
-// integer c_base reads from text goes through cb_parse_i64. This test reads
+// unit_num_gate.c - the number-parsing gate (shared/c/num_parse.h): every decimal
+// integer c_base reads from text goes through num_parse_i64. This test reads
 // every C source under src/ and fails, naming the file and line, when one
 // names a C library integer parser:
 //
@@ -43,7 +43,7 @@ static bool in(const char *const *names, size_t k, const char *s, size_t n) {
 static void violation(const char *path, int line, const char *s, size_t n) {
     g_violations++;
     if (!g_quiet)
-        fprintf(stderr, "num gate: %s:%d: %.*s (use cb_parse_i64, util/num.h)\n", path, line, (int)n, s);
+        fprintf(stderr, "num gate: %s:%d: %.*s (use num_parse_i64, shared/c/num_parse.h)\n", path, line, (int)n, s);
 }
 
 static bool ident_char(char c) { return isalnum((unsigned char)c) || c == '_'; }
@@ -122,9 +122,9 @@ static void scan_dir(const char *dir) {
 }
 
 // The gate itself: the tree as it is.
-static void only_cb_parse_i64_reads_numbers(void) {
+static void only_num_parse_i64_reads_numbers(void) {
     struct stat st;
-    T_CHECK(stat("src/util/num.c", &st) == 0);   // run from c_base/, or nothing is scanned
+    T_CHECK(stat("src/config.c", &st) == 0);   // run from c_base/, or nothing is scanned
     T_CHECK(stat(FLOAT_HOME, &st) == 0);         // the float exemption names a real file
     scan_dir("src");
     T_CHECK(g_files >= 50);   // a gate that read nothing proves nothing
@@ -155,11 +155,11 @@ static void the_scanner_sees_each_kind(void) {
     // Not a parser: comments, literals, longer names, a number's suffix.
     T_EQ_INT(planted("(planted)", "// strtol(v) described in a comment\n/* atoi */\n"), 0);
     T_EQ_INT(planted("(planted)", "const char *m = \"strtol and atoi\"; char q = '\"'; int k = sscanf_count;\n"), 0);
-    T_EQ_INT(planted("(planted)", "cb_parse_i64(s, n, 0, 9, &v); my_atoi(x); long l = 10l;\n"), 0);
+    T_EQ_INT(planted("(planted)", "num_parse_i64(s, n, 0, 9, &v); my_atoi(x); long l = 10l;\n"), 0);
 }
 
 int main(void) {
     T_RUN(the_scanner_sees_each_kind);
-    T_RUN(only_cb_parse_i64_reads_numbers);
+    T_RUN(only_num_parse_i64_reads_numbers);
     return T_DONE();
 }

@@ -3,7 +3,7 @@
 #include "util/b64.h"
 #include "util/err.h"
 #include "util/log.h"
-#include "util/num.h"
+#include "../../shared/c/num_parse.h"
 #include "util/str.h"
 #include "util/uuid.h"
 
@@ -29,7 +29,7 @@ static bool num(const char *name, long dflt, long lo, long hi, long *out, char *
     const char *v = getenv(name);
     if (!v || !*v) { *out = dflt; return true; }
     int64_t x;
-    if (!cb_parse_i64_cstr(v, lo, hi, &x)) {
+    if (!num_parse_i64_cstr(v, lo, hi, &x)) {
         snprintf(err, ecap, "%s=%s is not a number in %ld..%ld", name, v, lo, hi);
         return false;
     }
@@ -50,7 +50,7 @@ int cb_config_from_env(cb_config *c, char *err, size_t cap) {
         return CB_E_INVALID;
     }
     int64_t port;
-    if (!cb_parse_i64_cstr(colon + 1, 0, 65535, &port)) {
+    if (!num_parse_i64_cstr(colon + 1, 0, 65535, &port)) {
         snprintf(err, cap, "CBASE_LISTEN=%s has no valid port", listen);
         return CB_E_INVALID;
     }

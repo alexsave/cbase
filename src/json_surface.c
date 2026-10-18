@@ -5,7 +5,7 @@
 
 #include "util/err.h"
 #include "util/log.h"
-#include "util/num.h"
+#include "../../shared/c/num_parse.h"
 #include "util/clock.h"
 #include "realtime/realtime.h"
 #include "realtime/stream_mqtt.h"
@@ -511,7 +511,7 @@ static bool tok_s(cb_span tok, char *out, size_t cap) {
 static bool tok_n(cb_span tok, int64_t *out) {
     char t[32];
     if (cb_json_unescape(tok, t, sizeof t) < 1) return false;
-    return cb_parse_i64_cstr(t, INT64_MIN, INT64_MAX, out);
+    return num_parse_i64_cstr(t, INT64_MIN, INT64_MAX, out);
 }
 
 static bool tok_bool(cb_span tok, bool *out) {
