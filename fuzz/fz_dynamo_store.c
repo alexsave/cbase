@@ -87,7 +87,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         case 12: (void)CB_STORE_CALL(s, chat_list, GID, 50, on_chat, NULL); break;
         case 13: (void)CB_STORE_CALL(s, conn_get, "conn1", &cn); break;
         case 14: (void)CB_STORE_CALL(s, conns_by_topic, "game-" GID, on_conn, NULL); break;
-        case 15: (void)CB_STORE_CALL(s, refresh_take, "00", 1000, &rr); break;
+        case 15: (void)CB_STORE_CALL(s, refresh_take, "00", 1000, 60000, &rr); break;
         case 16: (void)CB_STORE_CALL(s, users_list, "", 0, 10, on_user, NULL); break;
         case 17: (void)CB_STORE_CALL(s, admin_collections, on_name, NULL); break;
         case 18: { char next[256]; (void)CB_STORE_CALL(s, admin_browse, "games", "", "", 10, on_row, NULL, next, sizeof next); break; }
