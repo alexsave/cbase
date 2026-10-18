@@ -11,7 +11,7 @@
 --
 -- TIMES are INTEGER milliseconds since the Unix epoch, the unit every kernel
 -- call takes (now_ms). The facade prints them as ISO-8601 text.
--- IDS are canonical lowercase UUID text, except games.id (6 hex characters).
+-- IDS are canonical lowercase UUID text, except games.id (12 hex characters; 6 for games made before).
 -- BYTES are BLOBs: the kernel's state blob, roster, session log, replay code.
 --
 -- There are NO player_views or spectator_views tables: a view is computed on

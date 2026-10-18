@@ -117,7 +117,7 @@ static void setup_world(void) {
     client_init(&c, &slot);
     T_CHECK(client_adopt_envelope(&c, env.p, (int)env.len) >= 0);
     snprintf(g_gid, sizeof g_gid, "%.*s", (int)c.gid_len, c.gid);
-    T_EQ_INT(strlen(g_gid), 6);
+    T_EQ_INT(strlen(g_gid), 12);   // app_internal.h CB_GAME_ID_HEX (finding L3)
     cb_buf_free(&env);
 }
 

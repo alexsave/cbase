@@ -130,7 +130,7 @@ static void setup(int n_bots) {
     tm_add_user(g_store, UID_B, "BOB");
     tm_add_user(g_store, UID_C, "CAROL");
     tm_add_user(g_store, UID_D, "DAVE");
-    cb_app_game_uuid = cb_uuid_v4;
+    cb_app_game_id = cb_game_id_random;
     cb_bots_cycle_observer = NULL;
     cb_row_cache_clear();
     cb_app_now = fake_now;
@@ -360,7 +360,7 @@ static void create_answers_the_seat_0_envelope(void) {
     create_game(gid, &r);
     T_EQ_INT(r.status, 200);
     T_EQ_STR(r.ctype, OCT);
-    T_EQ_INT(strlen(gid), 6);
+    T_EQ_INT(strlen(gid), 12);   // app_internal.h CB_GAME_ID_HEX (finding L3)
     EnvHeader h;
     T_CHECK(env_header_read(r.body, (int)r.len, &h));
     T_EQ_INT(h.seat, 0);
@@ -1033,14 +1033,46 @@ static void pushes_go_out_in_commit_order(void) {
 
 // ---- ported from the TypeScript e2e (stage 4) ----------------------------------------------
 
-// create_game_id.test.ts: create never hands out a game it did not store. The
-// id is six characters of a UUID (24 bits), so a draw can name a stored game:
-// the store refuses it, and create draws again, CB_TABLE_ID_DRAWS times.
+// create_game_id.test.ts: create never hands out a game it did not store. A
+// draw can name a stored game: the store refuses it, and create draws again,
+// CB_TABLE_ID_DRAWS times.
 static char g_taken[CB_GAME_ID_MAX + 1];
 static int g_taken_draws, g_draws;
-static void colliding_uuid(char out[CB_UUID_LEN + 1]) {
-    if (g_draws++ < g_taken_draws) snprintf(out, CB_UUID_LEN + 1, "%.6s00-0000-4000-8000-000000000000", g_taken);
-    else snprintf(out, CB_UUID_LEN + 1, "fedcba00-0000-4000-8000-000000000000");
+static void colliding_id(char out[CB_GAME_ID_MAX + 1]) {
+    if (g_draws++ < g_taken_draws) snprintf(out, CB_GAME_ID_MAX + 1, "%s", g_taken);
+    else snprintf(out, CB_GAME_ID_MAX + 1, "fedcba987654");
+}
+
+// A game id is CB_GAME_ID_HEX lowercase hex (48 bits, finding L3), fresh
+// every draw; a six-character id from before still names its game.
+static void game_ids_are_wide_and_old_ones_work(void) {
+    setup(0);
+    char seen[64][CB_GAME_ID_MAX + 1];
+    for (int i = 0; i < 64; i++) {
+        cb_game_id_random(seen[i]);
+        T_EQ_INT(strlen(seen[i]), CB_GAME_ID_HEX);
+        for (const char *p = seen[i]; *p; p++) T_CHECK((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f'));
+        for (int j = 0; j < i; j++) T_CHECK(strcmp(seen[i], seen[j]) != 0);
+    }
+    reply r;
+    char gid[CB_GAME_ID_MAX + 1];
+    create_game(gid, &r);
+    T_EQ_INT(r.status, 200);
+    T_EQ_INT(strlen(gid), CB_GAME_ID_HEX);
+    // An old six-character game: made under the old width, it still loads and takes asks.
+    g_draws = 0;
+    g_taken_draws = 0;
+    cb_app_game_id = colliding_id;
+    snprintf(g_taken, sizeof g_taken, "abc123");
+    g_taken_draws = 1;
+    call("POST", "create", "C", NULL, NULL, 0, &r);
+    T_EQ_INT(r.status, 200);
+    cb_view_row v;
+    T_EQ_INT(cb_table_view(&g_ctx, "abc123", UID_C, &v), CB_OK);
+    cb_view_row_free(&v);
+    meta("D", ASK_JOIN, "abc123", NULL, &r);
+    T_EQ_INT(r.status, 200);
+    cb_app_game_id = cb_game_id_random;
 }
 
 static int games_of(const char *uid) {
@@ -1054,7 +1086,7 @@ static void a_taken_game_id_is_drawn_again(void) {
     create_game(g_taken, &r);
     T_EQ_INT(r.status, 200);
     // Two draws name A's game, the third is free: B gets the free one.
-    cb_app_game_uuid = colliding_uuid;
+    cb_app_game_id = colliding_id;
     g_draws = 0;
     g_taken_draws = 2;
     call("POST", "create", "B", NULL, NULL, 0, &r);
@@ -1062,10 +1094,10 @@ static void a_taken_game_id_is_drawn_again(void) {
     T_EQ_INT(g_draws, 3);
     char gid[CB_GAME_ID_MAX + 1];
     cb_table_views_of_user(&g_ctx, UID_B, 1, first_game, gid);
-    T_EQ_STR(gid, "fedcba");
+    T_EQ_STR(gid, "fedcba987654");
     // The answer names the stored game, and A's game is untouched.
     cb_view_row v;
-    T_EQ_INT(cb_table_view(&g_ctx, "fedcba", UID_B, &v), CB_OK);
+    T_EQ_INT(cb_table_view(&g_ctx, "fedcba987654", UID_B, &v), CB_OK);
     T_EQ_MEM(r.body, r.len, v.view, v.view_len);
     cb_view_row_free(&v);
     T_EQ_INT(CB_STORE_CALL(g_store, is_member, g_taken, UID_B), 0);
@@ -1808,6 +1840,7 @@ int main(void) {
     T_RUN(a_kick_leaves_the_move_to_the_drive_holding_the_lease);
     T_RUN(a_move_made_while_the_lease_is_held_is_driven);
     T_RUN(a_taken_game_id_is_drawn_again);
+    T_RUN(game_ids_are_wide_and_old_ones_work);
     T_RUN(a_goods_only_commit_is_broadcast);
     T_RUN(a_bump_wakes_the_bots);
     T_RUN(continue_returns_a_clean_lobby);

@@ -19,7 +19,7 @@
 //     single writes.
 //
 // CONVENTIONS. Times are ms since the Unix epoch. Ids are canonical lowercase
-// UUID text (CB_UUID_LEN), game ids 6 hex characters. Byte fields are owned by
+// UUID text (CB_UUID_LEN), game ids 12 hex characters (6 before). Byte fields are owned by
 // the row struct that holds them (malloc'd by the store, freed by the matching
 // *_free). A list function calls `fn` once per row, in the documented order,
 // with a row the callee may read but not keep (copy what you keep); fn returns
@@ -37,7 +37,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CB_GAME_ID_MAX   16    // games.id is 6 hex today; room for growth
+#define CB_GAME_ID_MAX   16    // games.id is 12 hex (app_internal.h CB_GAME_ID_HEX), 6 for older games
 #define CB_EMAIL_MAX     320
 #define CB_USERNAME_MAX  64    // == kernel ROSTER_NAME_MAX
 #define CB_HASH_MAX      128   // a bcrypt hash is 60

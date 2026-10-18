@@ -482,7 +482,7 @@ static void game_scenario(void) {
     T_CHECK(client_adopt_envelope(&sc->c, g_body, g_len) >= 0);
     char gid[32];
     snprintf(gid, sizeof gid, "%.*s", (int)sc->c.gid_len, sc->c.gid);
-    T_EQ_INT(strlen(gid), 6);
+    T_EQ_INT(strlen(gid), 12);   // app_internal.h CB_GAME_ID_HEX (finding L3)
 
     // A hears its own seat's casts, B its views (the games list), C the
     // spectators' casts. Together they cover fanout.c's three pushes.

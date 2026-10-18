@@ -32,7 +32,17 @@ _Static_assert(MAX_LOG_PAIRS >= MAX_DECK,
 
 int64_t (*cb_app_now)(void) = cb_now_ms;
 void (*cb_app_sleep)(int64_t ms) = cb_sleep_ms;
-void (*cb_app_game_uuid)(char out[CB_UUID_LEN + 1]) = cb_uuid_v4;
+void cb_game_id_random(char out[CB_GAME_ID_MAX + 1]) {
+    uint8_t raw[CB_GAME_ID_HEX / 2];
+    cb_random_bytes(raw, sizeof raw);
+    static const char hex[] = "0123456789abcdef";
+    for (size_t i = 0; i < sizeof raw; i++) {
+        out[2 * i] = hex[raw[i] >> 4];
+        out[2 * i + 1] = hex[raw[i] & 15];
+    }
+    out[CB_GAME_ID_HEX] = 0;
+}
+void (*cb_app_game_id)(char out[CB_GAME_ID_MAX + 1]) = cb_game_id_random;
 
 // ---- byte helpers ------------------------------------------------------------------
 
@@ -626,11 +636,9 @@ int cb_table_create(cb_ctx *ctx, const cb_user *u, cb_table_result *out) {
     if (!s) return CB_E_NOMEM;
     int ret = CB_E_CONFLICT;
     for (int draw = 1; draw <= CB_TABLE_ID_DRAWS; draw++) {
-        // Six characters of a random UUID: 24 bits, so a draw can name a game
-        // that exists; the store refuses it and we draw again.
-        cb_uuid id;
-        cb_app_game_uuid(id);
-        snprintf(s->gid, sizeof s->gid, "%.6s", id);
+        // A fresh random id (app_internal.h CB_GAME_ID_HEX); a draw that names
+        // a game that exists is refused by the store, and we draw again.
+        cb_app_game_id(s->gid);
         table_init(&s->t, &s->g, &s->snaps);
         int rc = table_create(&s->t, u->id, (int)strlen(u->id), u->username, (int)strlen(u->username));
         if (rc < 0) {
