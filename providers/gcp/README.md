@@ -103,13 +103,14 @@ A gcp-only client branch or a gcp-only route is a bug in the provider, not a fea
 
 ## Build checklist
 
-Mirror providers/aws's shape.
+Mirror providers/aws's shape (src/ for the C, ops/ for deploy), one file per aws counterpart.
 
-- `providers/gcp/store.c`: Firestore REST/gRPC client, doc-id codec, updateTime CAS, transactions, cursor.
-- `providers/gcp/push.c`: hub wiring plus the Pub/Sub relay behind a build flag.
-- `providers/gcp/ingress.c`: Cloud Run entry, calling core's process ingress.
-- `providers/gcp/job.c`: Cloud Tasks and Scheduler client, `scan` and `bot_drive:<id>` names.
-- `providers/gcp/secrets.c`: Secret Manager binding.
+- `src/main_cloudrun.c` (aws: `src/main_lambda.c`): the Cloud Run entry, calling core's process ingress.
+- `src/provider_gcp.c` (aws: `src/provider_aws.c`): the provider descriptor, naming the store, push and job backends.
+- `src/store/store_firestore.c` (aws: `src/store/store_dynamo.c`): Firestore client, doc-id codec for pk+sk, updateTime CAS, transactions, cursor.
+- `src/realtime/rt_pubsub.c` (aws: `src/realtime/rt_iot.c`): core's MQTT hub in-process, plus the Pub/Sub relay past one instance.
+- `src/gcp/` (aws: `src/aws/`): the HTTPS client, Google auth (metadata-server tokens, the analogue of SigV4), Cloud Tasks and Scheduler (jobs `scan` and `bot_drive:<id>`, aws: `lambda_invoke.c`), Secret Manager (aws: `ssm.c`), Cloud CDN purge if used (aws: `cloudfront.c`).
+- `src/gcp_json.c` (aws: `src/aws_json.c`): every JSON shape the Google APIs force, contained in this one file under the same gate.
 - `providers/gcp/Makefile` or `.mk`: link-time selection, same variable as aws and local.
 - `providers/gcp/terraform/`: Firestore database, composite indexes, TTL policy, Cloud Run service, Scheduler job, Tasks queue, Secret Manager, Workload Identity pool, plus a CI step that fails on any replace or delete in `terraform plan`.
 - `providers/gcp/Dockerfile` for the Cloud Run image.
