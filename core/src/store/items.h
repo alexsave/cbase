@@ -27,9 +27,17 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CB_ITEM_ATTRS   48    // attributes one item may hold
-#define CB_ITEM_KEY_MAX 1024  // DynamoDB's sort key limit (its pk allows 2048)
-#define CB_ITEM_TXN_MAX 100   // DynamoDB's TransactWriteItems limit
+// THE LIMITS, the tightest of every provider (docs/PLATFORM.md 8.7 decision
+// 1): every backend refuses a write past one the same way, CB_E_INVALID with
+// nothing sent or written (cb_iwrite_check), so a product that works on
+// local works everywhere.
+#define CB_ITEM_ATTRS        48                 // attributes one item may hold, pk and sk among them
+#define CB_ITEM_KEY_MAX      1024               // bytes of pk, sk and each index key (DynamoDB's sort key limit; its pk allows 2048)
+#define CB_ITEM_NAME_MAX     30                 // bytes of an attribute's name (the DynamoDB spelling aliases each as #name)
+#define CB_ITEM_UPDATE_NAMES 32                 // attributes one update names: its sets, its TTL's two, its clauses'
+#define CB_ITEM_SIZE_MAX     (400 * 1024)       // an item's bytes as DynamoDB counts them (cb_av_size)
+#define CB_ITEM_TXN_MAX      100                // DynamoDB's TransactWriteItems limit
+#define CB_ITEM_TXN_SIZE_MAX (4 * 1024 * 1024)  // and its limit on the writes' bytes in all
 
 typedef enum { CB_AV_S = 1, CB_AV_N, CB_AV_BOOL, CB_AV_B, CB_AV_SL } cb_av_kind;   // SL: a list of strings
 
@@ -182,11 +190,38 @@ typedef struct {
     const char *sk_prefix;   // NULL, or the sort key begins with it
     const char *sk_below;    // NULL, or the sort key sorts below it
     bool        forward;     // ascending sort key
-    bool        keys_only;   // pk and sk only (and the index's keys)
+    bool        keys_only;   // pk and sk only, on every index
     int         page;        // items a page (0: the backend's own)
 } cb_iquery;
 
-// What the backends implement (store.h cb_store_ops item_*), each CB_OK or:
+// THE LIMITS' ONE OWNER (the CB_ITEM_* limits above), which every backend
+// calls before it sends or writes anything, so all refuse alike:
+//   cb_av_size     an attribute's bytes as DynamoDB counts them: its name, and
+//                  S its bytes, B its bytes, N 21 (the most a number takes),
+//                  BOOL 1, SL 3 and each string's bytes and 1
+//   cb_item_size   the sum over an item's attributes
+//   cb_ikey_check  pk and sk each 1 to CB_ITEM_KEY_MAX bytes
+//   cb_iwrite_check  w[0..n): item_write's one write (txn false: no CHECK),
+//                  or item_txn's 1 to CB_ITEM_TXN_MAX (no item twice, the
+//                  bytes in all at most CB_ITEM_TXN_SIZE_MAX). Each write: a
+//                  known op, its key, at most CB_ICOND_MAX clauses (a CHECK at
+//                  least one), every name 1 to CB_ITEM_NAME_MAX bytes and
+//                  none twice (a set's, the TTL's, an attribute's), pk and sk
+//                  never among them, an index key a string of a key's length,
+//                  a PUT's item at most CB_ITEM_ATTRS and CB_ITEM_SIZE_MAX, an
+//                  UPDATE naming at most CB_ITEM_UPDATE_NAMES.
+// Each answers CB_OK or CB_E_INVALID. What an update makes of a stored item
+// is the backend's to check (SQLite refuses it; DynamoDB answers an error).
+size_t cb_av_size(const cb_av *v);
+size_t cb_item_size(const cb_item *it);
+int cb_ikey_check(cb_ikey k);
+int cb_iwrite_check(const cb_iwrite *w, int n, bool txn);
+// A query: an index 0 to 2, its pk a key's, a prefix or bound NULL or 1 to
+// CB_ITEM_KEY_MAX bytes.
+int cb_iquery_check(const cb_iquery *q);
+
+// What the backends implement (store.h cb_store_ops item_*), each CB_OK or
+// CB_E_INVALID past a limit (the checks above, nothing sent), or:
 //   get     CB_E_NOT_FOUND; consistent asks for a strongly consistent read
 //   write   CB_E_CONFLICT when the condition fails; old (may be NULL) gets the
 //           item as it was before (empty when it was absent), on success

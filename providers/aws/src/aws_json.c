@@ -58,7 +58,7 @@ static void finish(cb_jw *w) { cb_jw_end(w); }
 
 // ---- keys -------------------------------------------------------------------------------
 
-#define KB 400   // room for any key we build (a topic is at most 128)
+#define KB (CB_ITEM_KEY_MAX + 1)   // room for any key (items.h: the layer refuses a longer one)
 
 // ---- attribute values ------------------------------------------------------------------
 
@@ -112,7 +112,7 @@ typedef struct {
     cb_buf set, rem, names_b, vals_b;
     cb_jw  names, vals;
     int    n_names, n_vals;
-    char   used[32][32];
+    char   used[CB_ITEM_UPDATE_NAMES][CB_ITEM_NAME_MAX + 1];
 } ux;
 
 static void ux_init(ux *u) {
@@ -138,7 +138,7 @@ static void ux_free(ux *u) {
 static void ux_name(ux *u, const char *attr) {
     for (int i = 0; i < u->n_names; i++)
         if (strcmp(u->used[i], attr) == 0) return;
-    if (u->n_names == 32) { u->names.err = true; return; }
+    if (u->n_names == CB_ITEM_UPDATE_NAMES) { u->names.err = true; return; }
     snprintf(u->used[u->n_names++], sizeof u->used[0], "%s", attr);
     char a[40];
     snprintf(a, sizeof a, "#%s", attr);
@@ -915,7 +915,7 @@ static void ux_val_any(ux *u, const char *vn, const cb_av *v) {
 // One set of an update, as a SET or REMOVE clause with its value.
 static bool ux_iset(ux *u, const cb_av *v, cb_set_how how) {
     char vn[48], v0[48], clause[160];
-    if (!v->name || strlen(v->name) > 30) return false;
+    if (!v->name || strlen(v->name) > CB_ITEM_NAME_MAX) return false;
     if (how == CB_SET_REMOVE) {
         ux_remove(u, v->name);
         return true;
@@ -953,7 +953,7 @@ static bool icond(ux *u, const cb_iwrite *x, cb_buf *out) {
         if (out->len) cb_buf_puts(out, " AND ");
         if (c->check == CB_C_EXISTS) { cb_buf_puts(out, "attribute_exists(pk)"); continue; }
         if (c->check == CB_C_ABSENT) { cb_buf_puts(out, "attribute_not_exists(pk)"); continue; }
-        if (!c->v.name || strlen(c->v.name) > 30) return false;
+        if (!c->v.name || strlen(c->v.name) > CB_ITEM_NAME_MAX) return false;
         ux_name(u, c->v.name);
         snprintf(a, sizeof a, "#%s", c->v.name);
         if (c->check != CB_C_ATTR_EXISTS && !shared) ux_val_any(u, vn, &c->v);

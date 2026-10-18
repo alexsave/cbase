@@ -269,11 +269,6 @@ static int item_store(sq *q, const cb_item *it) {
     return rc;
 }
 
-static bool set_named(const cb_item *it, const char *name) {
-    cb_av v;
-    return cb_item_get(it, name, &v);
-}
-
 // Every clause of the write's condition, against the stored item (DynamoDB's
 // semantics: a comparison with an absent attribute is false).
 static bool cond_holds(const cb_item *cur, bool exists, const cb_iwrite *w) {
@@ -331,20 +326,23 @@ static int item_apply(sq *q, const cb_iwrite *w, cb_item *old) {
     if (rc == CB_OK && (w->op == CB_IW_PUT || w->op == CB_IW_UPDATE)) {
         cb_av ttl_ms = CB_AVN(CB_ITEM_TTL_MS, w->ttl_ms), ttl_s = CB_AVN(CB_ITEM_TTL_S, w->ttl_ms / 1000);
         // What this write sets, in order, and how.
+        // cb_iwrite_check bounds a put's attributes by CB_ITEM_ATTRS and an
+        // update's sets by CB_ITEM_UPDATE_NAMES, its TTL's two among them.
         cb_iset sets[CB_ITEM_ATTRS + 4];
         int n = 0;
         sets[n++] = (cb_iset){ CB_AVS(CB_ITEM_PK, w->key.pk), CB_SET_TO };
         sets[n++] = (cb_iset){ CB_AVS(CB_ITEM_SK, w->key.sk), CB_SET_TO };
         if (w->op == CB_IW_PUT)
-            for (int i = 0; i < w->n_attrs && n < CB_ITEM_ATTRS; i++) sets[n++] = (cb_iset){ w->attrs[i], CB_SET_TO };
+            for (int i = 0; i < w->n_attrs; i++) sets[n++] = (cb_iset){ w->attrs[i], CB_SET_TO };
         else
-            for (int i = 0; i < w->n_sets && n < CB_ITEM_ATTRS; i++) sets[n++] = w->sets[i];
+            for (int i = 0; i < w->n_sets; i++) sets[n++] = w->sets[i];
         if (w->ttl_ms > 0) {
             cb_set_how how = w->op == CB_IW_PUT ? CB_SET_TO : w->ttl_how;
             sets[n++] = (cb_iset){ ttl_ms, how };
             sets[n++] = (cb_iset){ ttl_s, how };
         }
-        // An update keeps what it does not set; a put keeps nothing.
+        // An update keeps what it does not set; a put keeps nothing. Each
+        // name is set once (cb_iwrite_check), so nothing is added twice.
         if (w->op == CB_IW_UPDATE)
             for (int i = 0; i < cur.n && rc == CB_OK; i++) {
                 cb_av v;
@@ -362,9 +360,11 @@ static int item_apply(sq *q, const cb_iwrite *w, cb_item *old) {
                 if (v.kind != CB_AV_N || (had && have.kind != CB_AV_N)) { rc = CB_E_INVALID; break; }
                 v.n += had ? have.n : 0;
             }
-            if (set_named(&next, v.name)) continue;   // never: each name is set once
-            if (!cb_item_add(&next, &v)) rc = CB_E_NOMEM;
+            if (next.n >= CB_ITEM_ATTRS) rc = CB_E_INVALID;   // the update would grow the item past what one holds
+            else if (!cb_item_add(&next, &v)) rc = CB_E_NOMEM;
         }
+        // What the update makes, past the item limit: refused, as DynamoDB refuses it.
+        if (rc == CB_OK && cb_item_size(&next) > CB_ITEM_SIZE_MAX) rc = CB_E_INVALID;
         if (rc == CB_OK) rc = item_store(q, &next);
     }
     cb_item_free(&cur);
@@ -377,6 +377,8 @@ static int item_apply(sq *q, const cb_iwrite *w, cb_item *old) {
 static int sq_item_batch_get(cb_store *st, const cb_ikey *keys, int n, const char *const *proj, int n_proj,
                              cb_item_at_fn fn, void *ud) {
     sq *q = Q(st);
+    for (int i = 0; i < n; i++)
+        if (cb_ikey_check(keys[i]) != CB_OK) return CB_E_INVALID;
     cb_item *got = calloc((size_t)(n > 0 ? n : 1), sizeof *got);
     bool *have = calloc((size_t)(n > 0 ? n : 1), sizeof *have);
     if (!got || !have) { free(got); free(have); return CB_E_NOMEM; }
@@ -415,6 +417,8 @@ static int sq_item_batch_get(cb_store *st, const cb_ikey *keys, int n, const cha
 
 static int sq_item_batch_delete(cb_store *st, const cb_ikey *keys, int n) {
     sq *q = Q(st);
+    for (int i = 0; i < n; i++)
+        if (cb_ikey_check(keys[i]) != CB_OK) return CB_E_INVALID;
     lock(q);
     int rc = begin(q);
     for (int i = 0; rc == CB_OK && i < n; i++) {
@@ -462,6 +466,8 @@ static int sq_item_keys(cb_store *st, cb_ikey_fn fn, void *ud) {
 
 static int sq_item_get(cb_store *st, cb_ikey key, bool consistent, cb_item *out) {
     sq *q = Q(st);
+    cb_item_reset(out);
+    if (cb_ikey_check(key) != CB_OK) return CB_E_INVALID;
     lock(q);
     int rc = item_load(q, key, out);
     unlock(q);
@@ -470,8 +476,8 @@ static int sq_item_get(cb_store *st, cb_ikey key, bool consistent, cb_item *out)
 
 static int sq_item_write(cb_store *st, const cb_iwrite *w, cb_item *old) {
     sq *q = Q(st);
-    if (w->op == CB_IW_CHECK) return CB_E_INVALID;
     if (old) cb_item_reset(old);
+    if (cb_iwrite_check(w, 1, false) != CB_OK) return CB_E_INVALID;
     lock(q);
     int rc = begin(q);
     if (rc == CB_OK) rc = item_apply(q, w, old);
@@ -485,9 +491,9 @@ static int sq_item_txn(cb_store *st, const cb_iwrite *w, int n, int *failed, boo
     sq *q = Q(st);
     if (failed) *failed = -1;
     if (failed_had_item) *failed_had_item = false;
+    if (cb_iwrite_check(w, n, true) != CB_OK) return CB_E_INVALID;
     cb_item probe;
     cb_item_init(&probe);
-    if (n < 1 || n > CB_ITEM_TXN_MAX) return CB_E_INVALID;
     lock(q);
     int rc = begin(q);
     for (int i = 0; rc == CB_OK && i < n; i++) {
@@ -504,12 +510,26 @@ static int sq_item_txn(cb_store *st, const cb_iwrite *w, int n, int *failed, boo
     return rc;
 }
 
+// The item cut down to its pk and sk, as DynamoDB's keys-only projection
+// answers it (a reader of a keys-only query can depend on nothing more).
+static bool keys_only(cb_item *it) {
+    cb_item k;
+    cb_item_init(&k);
+    cb_av v;
+    bool ok = cb_item_get(it, CB_ITEM_PK, &v) && cb_item_add(&k, &v) && cb_item_get(it, CB_ITEM_SK, &v) && cb_item_add(&k, &v);
+    if (ok) {
+        cb_item_free(it);
+        *it = k;
+    } else cb_item_free(&k);
+    return ok;
+}
+
 // The matching items are read under the lock and handed out after it, so fn
 // may write (a delete of each, as an account's cascade does).
 static int sq_item_query(cb_store *st, const cb_iquery *iq, cb_item_fn fn, void *ud) {
     sq *q = Q(st);
     static const int ST[3][2] = { { ST_ITEM_Q0D, ST_ITEM_Q0A }, { ST_ITEM_Q1D, ST_ITEM_Q1A }, { ST_ITEM_Q2D, ST_ITEM_Q2A } };
-    if (iq->index < 0 || iq->index > 2) return CB_E_INVALID;
+    if (cb_iquery_check(iq) != CB_OK) return CB_E_INVALID;
     cb_buf recs;   // each record as u32 length, then its bytes
     cb_buf_init(&recs);
     lock(q);
@@ -537,6 +557,7 @@ static int sq_item_query(cb_store *st, const cb_iquery *iq, cb_item_fn fn, void 
         off += sizeof len;
         cb_item_reset(&it);
         if (!cb_item_record_decode(recs.p + off, len, &it)) rc = CB_E_DB;
+        else if (iq->keys_only && !keys_only(&it)) rc = CB_E_NOMEM;
         else if (!fn(&it, ud)) break;
         off += len;
     }

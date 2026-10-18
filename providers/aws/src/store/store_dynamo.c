@@ -308,12 +308,13 @@ static bool refused(const cb_buf *resp, int i, bool *has_item) {
 
 static int dy_item_get(cb_store *s, cb_ikey key, bool consistent, cb_item *out) {
     dyn *d = D(s);
+    cb_item_reset(out);
+    if (cb_ikey_check(key) != CB_OK) return CB_E_INVALID;
     dw_req r;
     dw_req_init(&r);
     dw_iget(&r, d->table, key, consistent);
     cb_buf resp;
     cb_buf_init(&resp);
-    cb_item_reset(out);
     int rc = CB_E_DB;
     dw_top top;
     if (call_top(d, &r, &resp, &top) == DW_OK) {
@@ -330,7 +331,7 @@ static int dy_item_write(cb_store *s, const cb_iwrite *w, cb_item *old) {
     dw_req r;
     dw_req_init(&r);
     if (old) cb_item_reset(old);
-    if (!dw_iwrite(&r, d->table, w, old != NULL)) { dw_req_free(&r); return CB_E_INVALID; }
+    if (cb_iwrite_check(w, 1, false) != CB_OK || !dw_iwrite(&r, d->table, w, old != NULL)) { dw_req_free(&r); return CB_E_INVALID; }
     cb_buf resp;
     cb_buf_init(&resp);
     dw_status st = call(d, &r, &resp);
@@ -352,7 +353,7 @@ static int dy_item_txn(cb_store *s, const cb_iwrite *w, int n, int *failed, bool
     if (failed_had_item) *failed_had_item = false;
     dw_req r;
     dw_req_init(&r);
-    if (!dw_itxn(&r, d->table, w, n)) { dw_req_free(&r); return CB_E_INVALID; }
+    if (cb_iwrite_check(w, n, true) != CB_OK || !dw_itxn(&r, d->table, w, n)) { dw_req_free(&r); return CB_E_INVALID; }
     cb_buf resp;
     cb_buf_init(&resp);
     dw_status st = txn(d, &r, &resp);
@@ -373,6 +374,7 @@ static int dy_item_txn(cb_store *s, const cb_iwrite *w, int n, int *failed, bool
 
 static int dy_item_query(cb_store *s, const cb_iquery *q, cb_item_fn fn, void *ud) {
     dyn *d = D(s);
+    if (cb_iquery_check(q) != CB_OK) return CB_E_INVALID;
     cb_buf resp, start;
     cb_buf_init(&resp);
     cb_buf_init(&start);
@@ -408,6 +410,8 @@ static int dy_item_query(cb_store *s, const cb_iquery *q, cb_item_fn fn, void *u
 // undone (deletes are idempotent: the whole batch is sent again).
 static int dy_item_batch_delete(cb_store *s, const cb_ikey *keys, int n) {
     dyn *d = D(s);
+    for (int i = 0; i < n; i++)
+        if (cb_ikey_check(keys[i]) != CB_OK) return CB_E_INVALID;
     cb_buf resp;
     cb_buf_init(&resp);
     dw_req r;
@@ -434,6 +438,8 @@ static int dy_item_batch_delete(cb_store *s, const cb_ikey *keys, int n) {
 static int dy_item_batch_get(cb_store *s, const cb_ikey *keys, int n, const char *const *proj, int n_proj,
                              cb_item_at_fn fn, void *ud) {
     dyn *d = D(s);
+    for (int i = 0; i < n; i++)
+        if (cb_ikey_check(keys[i]) != CB_OK) return CB_E_INVALID;
     int rc = CB_OK;
     int *pend = malloc((size_t)(n > 0 ? n : 1) * sizeof *pend), *un = malloc((size_t)(n > 0 ? n : 1) * sizeof *un);
     bool *seen = calloc((size_t)(n > 0 ? n : 1), sizeof *seen);
@@ -456,7 +462,7 @@ static int dy_item_batch_get(cb_store *s, const cb_ikey *keys, int n, const char
             cb_span items = dw_batch_items(cb_buf_cstr(&resp), resp.len, d->table), e;
             size_t pos = 0;
             while (more && dw_array_next(items, &pos, &e)) {
-                char pk[CB_ITEM_KEY_MAX], sk[CB_ITEM_KEY_MAX];
+                char pk[CB_ITEM_KEY_MAX + 1], sk[CB_ITEM_KEY_MAX + 1];
                 if (!dw_item_keys(e, pk, sizeof pk, sk, sizeof sk)) continue;
                 cb_item_reset(&it);
                 if (!dw_item_read(e, &it)) { rc = CB_E_DB; break; }
@@ -626,7 +632,7 @@ static int dy_item_keys(cb_store *s, cb_ikey_fn fn, void *ud) {
         cb_span items = dw_items(cb_buf_cstr(&resp), resp.len), it;
         size_t pos = 0;
         while (more && dw_array_next(items, &pos, &it)) {
-            char pk[CB_ITEM_KEY_MAX], sk[CB_ITEM_KEY_MAX];
+            char pk[CB_ITEM_KEY_MAX + 1], sk[CB_ITEM_KEY_MAX + 1];
             if (dw_get_s(it, "pk", pk, sizeof pk) && dw_get_s(it, "sk", sk, sizeof sk)) more = fn(pk, sk, ud);
         }
         cb_span last = dw_last_key(cb_buf_cstr(&resp), resp.len);
