@@ -433,9 +433,10 @@ typedef struct cb_store_ops {
     // (rows_auth.c), on both backends.
     int (*item_get)(cb_store *s, cb_ikey key, bool consistent, cb_item *out);
     int (*item_write)(cb_store *s, const cb_iwrite *w, cb_item *old);
-    int (*item_txn)(cb_store *s, const cb_iwrite *w, int n, int *failed);
-    int (*item_query)(cb_store *s, int index, const char *pk, const char *sk_prefix, bool forward, int page,
-                      cb_item_fn fn, void *ud);
+    int (*item_txn)(cb_store *s, const cb_iwrite *w, int n, int *failed, bool *failed_had_item);
+    int (*item_query)(cb_store *s, const cb_iquery *q, cb_item_fn fn, void *ud);
+    int (*item_batch_get)(cb_store *s, const cb_ikey *keys, int n, const char *const *proj, int n_proj,
+                          cb_item_at_fn fn, void *ud);
 } cb_store_ops;
 
 struct cb_store {

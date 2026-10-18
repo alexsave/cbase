@@ -269,7 +269,7 @@ static void dynamo_items(void) {
                             CB_AVS("user_id", U1), CB_AVS("session_id", U2), CB_AVN("created_at", 5), CB_AVBOOL("revoked", false) };
         char pk[80];
         snprintf(pk, sizeof pk, "REFRESH#%s", hash);
-        cb_iwrite w = { .op = CB_IW_PUT, .key = { pk, "TOKEN" }, .attrs = a, .n_attrs = 7, .ttl_ms = 9000, .cond = CB_IF_ABSENT };
+        cb_iwrite w = { .op = CB_IW_PUT, .key = { pk, "TOKEN" }, .attrs = a, .n_attrs = 7, .ttl_ms = 9000, .cond = { CB_IF_ABSENT }, .n_cond = 1 };
         if (dw_iwrite(&r, "cbase", &w, false)) take(&r);
     }
     cb_game_row g;

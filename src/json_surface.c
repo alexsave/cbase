@@ -1387,31 +1387,54 @@ void dw_iget(dw_req *r, const char *table, cb_ikey key, bool consistent) {
     finish(&w);
 }
 
+static void av_list(cb_jw *w, const char *const *list, int n) {
+    cb_jw_obj(w);
+    cb_jw_key(w, "L");
+    cb_jw_arr(w);
+    for (int i = 0; i < n; i++) {
+        cb_jw_obj(w);
+        cb_jw_kstr(w, "S", list[i] ? list[i] : "");
+        cb_jw_end(w);
+    }
+    cb_jw_end(w);
+    cb_jw_end(w);
+}
+
 static void av_any(cb_jw *w, const cb_av *v) {
     switch (v->kind) {
     case CB_AV_S: av_s(w, v->name, v->s); break;
     case CB_AV_N: av_n(w, v->name, v->n); break;
     case CB_AV_BOOL: av_bool(w, v->name, v->b); break;
     case CB_AV_B: av_b(w, v->name, v->bytes, v->len); break;
+    case CB_AV_SL:
+        cb_jw_key(w, v->name);
+        av_list(w, v->list, v->n_list);
+        break;
     }
 }
 
-static const char *icond(cb_icond c) {
-    return c == CB_IF_EXISTS ? "attribute_exists(pk)" : c == CB_IF_ABSENT ? "attribute_not_exists(pk)" : NULL;
-}
-
-// One set of an update, as a SET clause with its value.
-static bool ux_iset(ux *u, const cb_av *v, cb_set_how how) {
-    char vn[48], v0[48], clause[160];
-    if (strlen(v->name) > 30) return false;
-    snprintf(vn, sizeof vn, ":%s", v->name);
-    ux_name(u, v->name);
+// The value v under the placeholder `vn`.
+static void ux_val_any(ux *u, const char *vn, const cb_av *v) {
     switch (v->kind) {
     case CB_AV_S: ux_val_s(u, vn, v->s); break;
     case CB_AV_N: ux_val_n(u, vn, v->n); break;
     case CB_AV_BOOL: ux_val_bool(u, vn, v->b); break;
     case CB_AV_B: ux_val_b(u, vn, v->bytes, v->len); break;
+    case CB_AV_SL: av_list(ux_val(u, vn), v->list, v->n_list); break;
     }
+}
+
+// One set of an update, as a SET or REMOVE clause with its value.
+static bool ux_iset(ux *u, const cb_av *v, cb_set_how how) {
+    char vn[48], v0[48], clause[160];
+    if (!v->name || strlen(v->name) > 30) return false;
+    if (how == CB_SET_REMOVE) {
+        ux_remove(u, v->name);
+        return true;
+    }
+    snprintf(vn, sizeof vn, ":%s", v->name);
+    ux_name(u, v->name);
+    ux_val_any(u, vn, v);
     if (how == CB_SET_TO) snprintf(clause, sizeof clause, "#%s = %s", v->name, vn);
     else if (how == CB_SET_IF_ABSENT) snprintf(clause, sizeof clause, "#%s = if_not_exists(#%s, %s)", v->name, v->name, vn);
     else {
@@ -1424,9 +1447,40 @@ static bool ux_iset(ux *u, const cb_av *v, cb_set_how how) {
     return true;
 }
 
+// The condition, its names and values registered in u, into out. false on a
+// clause that cannot be spelled.
+static bool icond(ux *u, const cb_iwrite *x, cb_buf *out) {
+    for (int i = 0; i < x->n_cond; i++) {
+        const cb_iclause *c = &x->cond[i];
+        char vn[16], a[40];
+        snprintf(vn, sizeof vn, ":c%d", i);
+        if (out->len) cb_buf_puts(out, " AND ");
+        if (c->check == CB_C_EXISTS) { cb_buf_puts(out, "attribute_exists(pk)"); continue; }
+        if (c->check == CB_C_ABSENT) { cb_buf_puts(out, "attribute_not_exists(pk)"); continue; }
+        if (!c->v.name || strlen(c->v.name) > 30) return false;
+        ux_name(u, c->v.name);
+        snprintf(a, sizeof a, "#%s", c->v.name);
+        if (c->check != CB_C_ATTR_EXISTS) ux_val_any(u, vn, &c->v);
+        switch (c->check) {
+        case CB_C_EQ: cb_buf_printf(out, "%s = %s", a, vn); break;
+        case CB_C_NE: cb_buf_printf(out, "%s <> %s", a, vn); break;
+        case CB_C_LT: cb_buf_printf(out, "%s < %s", a, vn); break;
+        case CB_C_ATTR_EXISTS: cb_buf_printf(out, "attribute_exists(%s)", a); break;
+        case CB_C_ABSENT_OR_EQ: cb_buf_printf(out, "(attribute_not_exists(%s) OR %s = %s)", a, a, vn); break;
+        case CB_C_ABSENT_OR_LT: cb_buf_printf(out, "(attribute_not_exists(%s) OR %s < %s)", a, a, vn); break;
+        default: return false;
+        }
+    }
+    return true;
+}
+
 // The body of one write (the caller has its object open).
-static bool iwrite_body(cb_jw *w, const char *table, const cb_iwrite *x) {
+static bool iwrite_body(cb_jw *w, const char *table, const cb_iwrite *x, bool old) {
     cb_jw_kstr(w, "TableName", table);
+    if (x->n_cond < 0 || x->n_cond > CB_ICOND_MAX) return false;
+    ux u;
+    ux_init(&u);
+    bool ok = true;
     if (x->op == CB_IW_PUT) {
         cb_jw_key(w, "Item");
         cb_jw_obj(w);
@@ -1438,27 +1492,24 @@ static bool iwrite_body(cb_jw *w, const char *table, const cb_iwrite *x) {
             av_n(w, CB_ITEM_TTL_S, x->ttl_ms / 1000);   // the TTL attribute is in seconds
         }
         cb_jw_end(w);
-        const char *c = icond(x->cond);
-        if (c) cb_jw_kstr(w, "ConditionExpression", c);
-        return true;
+    } else {
+        key2(w, x->key.pk, x->key.sk);
     }
-    key2(w, x->key.pk, x->key.sk);
     if (x->op == CB_IW_UPDATE) {
-        ux u;
-        ux_init(&u);
-        bool ok = true;
         for (int i = 0; ok && i < x->n_sets; i++) ok = ux_iset(&u, &x->sets[i].v, x->sets[i].how);
         if (ok && x->ttl_ms > 0) {
             cb_av ms = CB_AVN(CB_ITEM_TTL_MS, x->ttl_ms), s = CB_AVN(CB_ITEM_TTL_S, x->ttl_ms / 1000);
             ok = ux_iset(&u, &ms, x->ttl_how) && ux_iset(&u, &s, x->ttl_how);
         }
-        if (ok) ux_emit(w, &u, icond(x->cond));
-        ux_free(&u);
-        return ok;
     }
-    const char *c = icond(x->cond);
-    if (c) cb_jw_kstr(w, "ConditionExpression", c);
-    return true;
+    cb_buf cond;
+    cb_buf_init(&cond);
+    ok = ok && icond(&u, x, &cond);
+    if (ok) ux_emit(w, &u, cond.len ? cb_buf_cstr(&cond) : NULL);
+    cb_buf_free(&cond);
+    ux_free(&u);
+    if (ok && old && x->n_cond > 0) cb_jw_kstr(w, "ReturnValuesOnConditionCheckFailure", "ALL_OLD");
+    return ok;
 }
 
 bool dw_iwrite(dw_req *r, const char *table, const cb_iwrite *x, bool old) {
@@ -1466,7 +1517,7 @@ bool dw_iwrite(dw_req *r, const char *table, const cb_iwrite *x, bool old) {
     if (!op) return false;
     cb_jw w;
     begin(r, &w, op);
-    bool ok = iwrite_body(&w, table, x);
+    bool ok = iwrite_body(&w, table, x, old);
     if (old && x->op != CB_IW_PUT) cb_jw_kstr(&w, "ReturnValues", "ALL_OLD");
     finish(&w);
     return ok && cb_jw_ok(&w);
@@ -1480,11 +1531,11 @@ bool dw_itxn(dw_req *r, const char *table, const cb_iwrite *x, int n) {
     for (int i = 0; ok && i < n; i++) {
         static const char *const OPS[] = { "", "Put", "Update", "Delete", "ConditionCheck" };
         if (x[i].op < CB_IW_PUT || x[i].op > CB_IW_CHECK) return false;
-        if (x[i].op == CB_IW_CHECK && x[i].cond == CB_IF_ANY) return false;
+        if (x[i].op == CB_IW_CHECK && x[i].n_cond == 0) return false;
         cb_jw_obj(&w);
         cb_jw_key(&w, OPS[x[i].op]);
         cb_jw_obj(&w);
-        ok = iwrite_body(&w, table, &x[i]);
+        ok = iwrite_body(&w, table, &x[i], x[i].old_on_fail);
         cb_jw_end(&w);
         cb_jw_end(&w);
     }
@@ -1492,35 +1543,111 @@ bool dw_itxn(dw_req *r, const char *table, const cb_iwrite *x, int n) {
     return ok && cb_jw_ok(&w);
 }
 
-void dw_iquery(dw_req *r, const char *table, int index, const char *pk, const char *sk_prefix, bool forward, int page,
-               cb_span start) {
-    const char *pkattr = index == 1 ? "gsi1pk" : index == 2 ? "gsi2pk" : "pk";
-    const char *skattr = index == 1 ? "gsi1sk" : index == 2 ? "gsi2sk" : "sk";
+void dw_iquery(dw_req *r, const char *table, const cb_iquery *q, cb_span start) {
+    const char *pkattr = q->index == 1 ? "gsi1pk" : q->index == 2 ? "gsi2pk" : "pk";
+    const char *skattr = q->index == 1 ? "gsi1sk" : q->index == 2 ? "gsi2sk" : "sk";
     cb_jw w;
     begin(r, &w, "Query");
     cb_jw_kstr(&w, "TableName", table);
-    if (index) cb_jw_kstr(&w, "IndexName", index == 1 ? GSI1 : GSI2);
+    if (q->index) cb_jw_kstr(&w, "IndexName", q->index == 1 ? GSI1 : GSI2);
     ux u;
     ux_init(&u);
     ux_name(&u, pkattr);
-    ux_val_s(&u, ":pk", pk);
+    ux_val_s(&u, ":pk", q->pk);
     char kc[160];
-    if (sk_prefix) {
+    if (q->sk_prefix || q->sk_below) {
         ux_name(&u, skattr);
-        ux_val_s(&u, ":sk", sk_prefix);
-        snprintf(kc, sizeof kc, "#%s = :pk AND begins_with(#%s, :sk)", pkattr, skattr);
+        ux_val_s(&u, ":sk", q->sk_prefix ? q->sk_prefix : q->sk_below);
+        snprintf(kc, sizeof kc, q->sk_prefix ? "#%s = :pk AND begins_with(#%s, :sk)" : "#%s = :pk AND #%s < :sk", pkattr,
+                 skattr);
     } else snprintf(kc, sizeof kc, "#%s = :pk", pkattr);
     cb_jw_kstr(&w, "KeyConditionExpression", kc);
+    if (q->keys_only) {
+        ux_name(&u, "pk");
+        ux_name(&u, "sk");
+        cb_jw_kstr(&w, "ProjectionExpression", "#pk, #sk");
+    }
     ux_emit(&w, &u, NULL);
     ux_free(&u);
-    if (!forward) cb_jw_kbool(&w, "ScanIndexForward", false);
-    if (page > 0) cb_jw_kint(&w, "Limit", page);
-    if (!index) cb_jw_kbool(&w, "ConsistentRead", true);   // a GSI is eventually consistent; asking otherwise is an error
+    if (!q->forward) cb_jw_kbool(&w, "ScanIndexForward", false);
+    if (q->page > 0) cb_jw_kint(&w, "Limit", q->page);
+    if (!q->index) cb_jw_kbool(&w, "ConsistentRead", true);   // a GSI is eventually consistent; asking otherwise is an error
     if (start.n) {
         cb_jw_key(&w, "ExclusiveStartKey");
         cb_jw_raw(&w, start.p, start.n);
     }
     finish(&w);
+}
+
+bool dw_ibatch(dw_req *r, const char *table, const cb_ikey *keys, const int *which, int n, const char *const *proj,
+               int n_proj) {
+    if (n < 1 || n > 100 || n_proj < 0 || n_proj > 32) return false;
+    cb_jw w;
+    begin(r, &w, "BatchGetItem");
+    cb_jw_key(&w, "RequestItems");
+    cb_jw_obj(&w);
+    cb_jw_key(&w, table);
+    cb_jw_obj(&w);
+    cb_jw_key(&w, "Keys");
+    cb_jw_arr(&w);
+    for (int i = 0; i < n; i++) {
+        const cb_ikey *k1 = &keys[which[i]];
+        bool dup = false;   // BatchGetItem refuses a repeated key
+        for (int j = 0; j < i && !dup; j++)
+            dup = strcmp(keys[which[j]].pk, k1->pk) == 0 && strcmp(keys[which[j]].sk, k1->sk) == 0;
+        if (dup) continue;
+        cb_jw_obj(&w);
+        av_s(&w, "pk", k1->pk);
+        av_s(&w, "sk", k1->sk);
+        cb_jw_end(&w);
+    }
+    cb_jw_end(&w);
+    cb_jw_kbool(&w, "ConsistentRead", true);
+    if (proj && n_proj) {
+        // Every name aliased: status and state are reserved words.
+        char pe[1024] = "";
+        size_t off = 0;
+        for (int i = 0; i < n_proj && off < sizeof pe; i++)
+            off += (size_t)snprintf(pe + off, sizeof pe - off, "%s#p%d", i ? ", " : "", i);
+        cb_jw_kstr(&w, "ProjectionExpression", pe);
+        cb_jw_key(&w, "ExpressionAttributeNames");
+        cb_jw_obj(&w);
+        for (int i = 0; i < n_proj; i++) {
+            char nm[16];
+            snprintf(nm, sizeof nm, "#p%d", i);
+            cb_jw_kstr(&w, nm, proj[i]);
+        }
+        cb_jw_end(&w);
+    }
+    cb_jw_end(&w);
+    cb_jw_end(&w);
+    finish(&w);
+    return cb_jw_ok(&w);
+}
+
+int dw_ibatch_unprocessed(const char *body, size_t n, const char *table, const cb_ikey *keys, int count, int *out) {
+    cb_span un, key, val, ks, it;
+    size_t pos = 0;
+    int m = 0;
+    if (cb_json_find(body, n, "UnprocessedKeys", &un) != CB_JSON_OBJ) return 0;
+    while (dw_object_next(un, &pos, &key, &val)) {
+        if (!key_is(key, table) || cb_json_find(val.p, val.n, "Keys", &ks) != CB_JSON_ARR) continue;
+        size_t kp = 0;
+        while (dw_array_next(ks, &kp, &it)) {
+            char pk[KB], sk[KB];
+            if (!dw_get_s(it, "pk", pk, sizeof pk) || !dw_get_s(it, "sk", sk, sizeof sk)) continue;
+            for (int i = 0; i < count; i++)
+                if (strcmp(keys[i].pk, pk) == 0 && strcmp(keys[i].sk, sk) == 0) {
+                    out[m++] = i;   // the first with this key: the one that was asked
+                    break;
+                }
+        }
+    }
+    return m;
+}
+
+bool dw_item_keys(cb_span item, char *pk, size_t pk_cap, char *sk, size_t sk_cap) {
+    return dw_get_s(item, "pk", pk, pk_cap) && dw_get_s(item, "sk", sk, sk_cap);
 }
 
 bool dw_item_read(cb_span item, cb_item *out) {
@@ -1536,6 +1663,8 @@ bool dw_item_read(cb_span item, cb_item *out) {
         bool ok = true;
         char *text = NULL;
         uint8_t *bytes = NULL;
+        char list_s[CB_ITEM_LIST_MAX][64];
+        const char *list_p[CB_ITEM_LIST_MAX];
         if (key_is(tk, "S")) {
             text = malloc(tv.n);
             int n = text ? cb_json_unescape(tv, text, tv.n) : -1;
@@ -1561,6 +1690,20 @@ bool dw_item_read(cb_span item, cb_item *out) {
             ok = m >= 0;
             a.bytes = bytes;
             a.len = ok ? (size_t)m : 0;
+        } else if (key_is(tk, "L")) {
+            // A list of strings (snapshots' player_ids); anything else in it is refused.
+            a.kind = CB_AV_SL;
+            size_t lp = 0;
+            cb_span e, et;
+            while (ok && dw_array_next(tv, &lp, &e)) {
+                ok = a.n_list < CB_ITEM_LIST_MAX && member(e, "S", &et) &&
+                     cb_json_unescape(et, list_s[a.n_list], sizeof list_s[0]) >= 0;
+                if (ok) {
+                    list_p[a.n_list] = list_s[a.n_list];
+                    a.n_list++;
+                }
+            }
+            a.list = list_p;
         } else {
             ok = false;
         }

@@ -245,20 +245,28 @@ void dw_query(dw_req *r, const char *table, dw_query_kind k, const char *arg, bo
 // THE ITEM LAYER (store/items.h), spelled for DynamoDB: one request each.
 // GetItem of a key (ConsistentRead when asked).
 void dw_iget(dw_req *r, const char *table, cb_ikey key, bool consistent);
-// One write: PutItem, UpdateItem or DeleteItem, its condition, and
-// ReturnValues ALL_OLD when old is wanted (UPDATE and DELETE). false when it
-// cannot be written (a CHECK alone, too many attributes).
+// One write: PutItem, UpdateItem or DeleteItem, its condition, and, with
+// old, ReturnValues ALL_OLD (UPDATE, DELETE) and
+// ReturnValuesOnConditionCheckFailure ALL_OLD. false when it cannot be
+// written (a CHECK alone, a malformed set or clause).
 bool dw_iwrite(dw_req *r, const char *table, const cb_iwrite *w, bool old);
-// TransactWriteItems of n writes.
+// TransactWriteItems of n writes (each its own old_on_fail).
 bool dw_itxn(dw_req *r, const char *table, const cb_iwrite *w, int n);
-// Query on the table (index 0) or gsi1/gsi2 by its partition key, with an
-// optional begins_with on its sort key; page 0: DynamoDB's own; start: the
-// previous page's dw_top_last_key (empty for the first).
-void dw_iquery(dw_req *r, const char *table, int index, const char *pk, const char *sk_prefix, bool forward, int page,
-               cb_span start);
+// Query of q; start: the previous page's dw_top_last_key (empty for the first).
+void dw_iquery(dw_req *r, const char *table, const cb_iquery *q, cb_span start);
+// BatchGetItem of the keys whose index is in which[0..n) (each asked once:
+// a repeated key is the first's), consistent, projected to proj when given.
+// false past 100 keys.
+bool dw_ibatch(dw_req *r, const char *table, const cb_ikey *keys, const int *which, int n, const char *const *proj,
+               int n_proj);
+// The indexes (into keys[0..count)) of the keys a BatchGetItem answer left
+// unprocessed, into out: how many.
+int dw_ibatch_unprocessed(const char *body, size_t n, const char *table, const cb_ikey *keys, int count, int *out);
 // A DynamoDB item ({"name":{"S":..},..}) as a cb_item (added to it). false on
 // a value of another type, or one that does not decode.
 bool dw_item_read(cb_span item, cb_item *out);
+// An item's pk and sk (into the caller's buffers): false when it has none.
+bool dw_item_keys(cb_span item, char *pk, size_t pk_cap, char *sk, size_t sk_cap);
 
 // Users.
 // signup: EMAIL (absent), PROFILE (absent) and the RATING row at `start`.

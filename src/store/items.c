@@ -41,6 +41,11 @@ bool cb_item_add(cb_item *it, const cb_av *v) {
     } else if (v->kind == CB_AV_B) {
         it->a[i].off = put_str(&it->store, v->bytes, v->len);
         it->a[i].len = v->len;
+    } else if (v->kind == CB_AV_SL) {
+        if (v->n_list < 0 || v->n_list > CB_ITEM_LIST_MAX) return false;
+        it->a[i].off = it->store.len;
+        it->a[i].len = (size_t)v->n_list;
+        for (int k = 0; k < v->n_list; k++) put_str(&it->store, v->list[k] ? v->list[k] : "", v->list[k] ? strlen(v->list[k]) : 0);
     }
     if (it->store.oom) return false;
     it->n++;
@@ -58,6 +63,19 @@ void cb_item_at(const cb_item *it, int i, cb_av *out) {
     if (out->kind == CB_AV_B) {
         out->bytes = (const uint8_t *)base + it->a[i].off;
         out->len = it->a[i].len;
+    }
+    if (out->kind == CB_AV_SL) {
+        // The strings lie one after another; the item keeps their pointers
+        // (a cache, which is why the cast: valid until the next SL is got).
+        cb_item *m = (cb_item *)it;
+        const char *p = base + it->a[i].off;
+        int n = (int)it->a[i].len;
+        for (int k = 0; k < n && k < CB_ITEM_LIST_MAX; k++) {
+            m->list[k] = p;
+            p += strlen(p) + 1;
+        }
+        out->list = m->list;
+        out->n_list = n;
     }
 }
 
@@ -133,6 +151,17 @@ bool cb_item_record_encode(const cb_item *it, cb_buf *out) {
             break;
         }
         case CB_AV_BOOL: cb_buf_putc(out, it->a[i].b ? 1 : 0); break;
+        case CB_AV_SL: {
+            put_u32(out, (uint32_t)it->a[i].len);
+            const char *p = base + it->a[i].off;
+            for (size_t k = 0; k < it->a[i].len; k++) {
+                size_t sl = strlen(p);
+                put_u32(out, (uint32_t)sl);
+                cb_buf_append(out, p, sl);
+                p += sl + 1;
+            }
+            break;
+        }
         default: return false;
         }
     }
@@ -181,6 +210,27 @@ bool cb_item_record_decode(const uint8_t *p, size_t n, cb_item *it) {
             if (n - i < 1 || p[i] > 1) return false;
             v.b = p[i++] == 1;
             break;
+        case CB_AV_SL: {
+            if (n - i < 4) return false;
+            uint32_t count = get_u32(p + i);
+            i += 4;
+            if (count > CB_ITEM_LIST_MAX) return false;
+            static _Thread_local char strs[CB_ITEM_LIST_MAX][256];
+            static _Thread_local const char *ptrs[CB_ITEM_LIST_MAX];
+            for (uint32_t k = 0; k < count; k++) {
+                if (n - i < 4) return false;
+                uint32_t sl = get_u32(p + i);
+                i += 4;
+                if (sl > n - i || sl >= sizeof strs[0] || memchr(p + i, 0, sl)) return false;
+                memcpy(strs[k], p + i, sl);
+                strs[k][sl] = 0;
+                ptrs[k] = strs[k];
+                i += sl;
+            }
+            v.list = ptrs;
+            v.n_list = (int)count;
+            break;
+        }
         default: return false;
         }
         bool ok = cb_item_add(it, &v);

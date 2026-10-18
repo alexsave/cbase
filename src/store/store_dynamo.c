@@ -449,17 +449,23 @@ static int dy_item_write(cb_store *s, const cb_iwrite *w, cb_item *old) {
     if (!dw_iwrite(&r, d->table, w, old != NULL)) { dw_req_free(&r); return CB_E_INVALID; }
     cb_buf resp;
     cb_buf_init(&resp);
-    int rc = simple(d, &r, CB_E_CONFLICT, &resp);
+    dw_status st = call(d, &r, &resp);
+    int rc = st == DW_OK ? CB_OK : st == DW_COND_FAILED ? CB_E_CONFLICT : CB_E_DB;
     cb_span it;
-    if (rc == CB_OK && old && dw_attributes(cb_buf_cstr(&resp), resp.len, &it) && !dw_item_read(it, old)) rc = CB_E_DB;
+    // The item as it was: on success (ReturnValues), and on a refusal (the
+    // condition's ALL_OLD, absent when there was no item).
+    if (old && (rc == CB_OK ? dw_attributes(cb_buf_cstr(&resp), resp.len, &it) : rc == CB_E_CONFLICT && dw_item(cb_buf_cstr(&resp), resp.len, &it)) &&
+        !dw_item_read(it, old))
+        rc = CB_E_DB;
     cb_buf_free(&resp);
     dw_req_free(&r);
     return rc;
 }
 
-static int dy_item_txn(cb_store *s, const cb_iwrite *w, int n, int *failed) {
+static int dy_item_txn(cb_store *s, const cb_iwrite *w, int n, int *failed, bool *failed_had_item) {
     dyn *d = D(s);
     if (failed) *failed = -1;
+    if (failed_had_item) *failed_had_item = false;
     dw_req r;
     dw_req_init(&r);
     if (!dw_itxn(&r, d->table, w, n)) { dw_req_free(&r); return CB_E_INVALID; }
@@ -473,6 +479,7 @@ static int dy_item_txn(cb_store *s, const cb_iwrite *w, int n, int *failed) {
             if (refused(&resp, i, &item)) {
                 rc = CB_E_CONFLICT;
                 if (failed) *failed = i;
+                if (failed_had_item) *failed_had_item = item;
             }
     }
     cb_buf_free(&resp);
@@ -480,8 +487,7 @@ static int dy_item_txn(cb_store *s, const cb_iwrite *w, int n, int *failed) {
     return rc;
 }
 
-static int dy_item_query(cb_store *s, int index, const char *pk, const char *sk_prefix, bool forward, int page,
-                         cb_item_fn fn, void *ud) {
+static int dy_item_query(cb_store *s, const cb_iquery *q, cb_item_fn fn, void *ud) {
     dyn *d = D(s);
     cb_buf resp, start;
     cb_buf_init(&resp);
@@ -492,7 +498,7 @@ static int dy_item_query(cb_store *s, int index, const char *pk, const char *sk_
     cb_item_init(&it);
     int rc = CB_OK;
     for (bool more = true; more;) {
-        dw_iquery(&r, d->table, index, pk, sk_prefix, forward, page, cb_span_of((const char *)start.p, start.len));
+        dw_iquery(&r, d->table, q, cb_span_of((const char *)start.p, start.len));
         dw_top top;
         if (call_top(d, &r, &resp, &top) != DW_OK) { rc = CB_E_DB; break; }
         cb_span items = dw_top_items(&top), e;
@@ -511,6 +517,62 @@ static int dy_item_query(cb_store *s, int index, const char *pk, const char *sk_
     dw_req_free(&r);
     cb_buf_free(&resp);
     cb_buf_free(&start);
+    return rc;
+}
+
+// BatchGetItem, 100 keys a request, sending again only the keys DynamoDB
+// left unprocessed, with the throttle's pauses.
+static int dy_item_batch_get(cb_store *s, const cb_ikey *keys, int n, const char *const *proj, int n_proj,
+                             cb_item_at_fn fn, void *ud) {
+    dyn *d = D(s);
+    int rc = CB_OK;
+    int *pend = malloc((size_t)(n > 0 ? n : 1) * sizeof *pend), *un = malloc((size_t)(n > 0 ? n : 1) * sizeof *un);
+    bool *seen = calloc((size_t)(n > 0 ? n : 1), sizeof *seen);
+    if (!pend || !un || !seen) rc = CB_E_NOMEM;
+    dw_req r;
+    dw_req_init(&r);
+    cb_buf resp;
+    cb_buf_init(&resp);
+    cb_item it;
+    cb_item_init(&it);
+    bool more = true;
+    for (int base = 0; rc == CB_OK && more && base < n; base += 100) {
+        int np = n - base < 100 ? n - base : 100;
+        for (int i = 0; i < np; i++) pend[i] = base + i;
+        backoff b;
+        backoff_start(d, &b);
+        while (rc == CB_OK && more && np > 0) {
+            if (!dw_ibatch(&r, d->table, keys, pend, np, proj, n_proj)) { rc = CB_E_INVALID; break; }
+            if (call(d, &r, &resp) != DW_OK) { rc = CB_E_DB; break; }
+            cb_span items = dw_batch_items(cb_buf_cstr(&resp), resp.len, d->table), e;
+            size_t pos = 0;
+            while (more && dw_array_next(items, &pos, &e)) {
+                char pk[CB_ITEM_KEY_MAX], sk[CB_ITEM_KEY_MAX];
+                if (!dw_item_keys(e, pk, sizeof pk, sk, sizeof sk)) continue;
+                cb_item_reset(&it);
+                if (!dw_item_read(e, &it)) { rc = CB_E_DB; break; }
+                for (int i = 0; i < np && more; i++) {
+                    int k = pend[i];
+                    if (seen[k] || strcmp(keys[k].pk, pk) != 0 || strcmp(keys[k].sk, sk) != 0) continue;
+                    seen[k] = true;
+                    more = fn(k, &it, ud);
+                    break;
+                }
+            }
+            if (rc != CB_OK || !more) break;
+            int m = dw_ibatch_unprocessed(cb_buf_cstr(&resp), resp.len, d->table, keys, n, un);
+            np = 0;
+            for (int i = 0; i < m; i++)
+                if (!seen[un[i]]) pend[np++] = un[i];
+            if (np > 0 && !backoff_pause(&b, true, r.target)) rc = CB_E_DB;
+        }
+    }
+    cb_item_free(&it);
+    cb_buf_free(&resp);
+    dw_req_free(&r);
+    free(pend);
+    free(un);
+    free(seen);
     return rc;
 }
 
@@ -1576,6 +1638,7 @@ static const cb_store_ops DYNAMO_OPS = {
     .item_write = dy_item_write,
     .item_txn = dy_item_txn,
     .item_query = dy_item_query,
+    .item_batch_get = dy_item_batch_get,
     .name = "dynamo",
     .close = dy_close,
     .user_get = dy_user_get,

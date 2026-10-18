@@ -71,7 +71,7 @@ enum {
 // The item layer's (items.h): the attributes in one binary record, the keys
 // it is found by in columns. ?2 of a query is a sort key prefix, or NULL.
 #define ITEM_Q(pkc, skc, dir) "SELECT attrs FROM items WHERE " pkc " = ?1 AND (?2 IS NULL OR substr(" skc ", 1, length(?2)) = ?2) " \
-                              "ORDER BY " skc " " dir
+                              "AND (?3 IS NULL OR " skc " < ?3) ORDER BY " skc " " dir
 
 static const char *const SQL[ST__COUNT] = {
     [ST_ITEM_GET] = "SELECT attrs FROM items WHERE pk = ?1 AND sk = ?2",
@@ -701,8 +701,49 @@ static bool set_named(const cb_item *it, const char *name) {
     return cb_item_get(it, name, &v);
 }
 
+static bool av_equal(const cb_av *a, const cb_av *b) {
+    if (a->kind != b->kind) return false;
+    switch (a->kind) {
+    case CB_AV_S: return strcmp(a->s ? a->s : "", b->s ? b->s : "") == 0;
+    case CB_AV_N: return a->n == b->n;
+    case CB_AV_BOOL: return a->b == b->b;
+    case CB_AV_B: return a->len == b->len && (!a->len || memcmp(a->bytes, b->bytes, a->len) == 0);
+    case CB_AV_SL:
+        if (a->n_list != b->n_list) return false;
+        for (int i = 0; i < a->n_list; i++)
+            if (strcmp(a->list[i], b->list[i]) != 0) return false;
+        return true;
+    }
+    return false;
+}
+
+// Every clause of the write's condition, against the stored item (DynamoDB's
+// semantics: a comparison with an absent attribute is false).
+static bool cond_holds(const cb_item *cur, bool exists, const cb_iwrite *w) {
+    for (int i = 0; i < w->n_cond; i++) {
+        const cb_iclause *c = &w->cond[i];
+        cb_av have;
+        bool has = exists && c->v.name && cb_item_get(cur, c->v.name, &have);
+        bool ok;
+        switch (c->check) {
+        case CB_C_EXISTS: ok = exists; break;
+        case CB_C_ABSENT: ok = !exists; break;
+        case CB_C_EQ: ok = has && av_equal(&have, &c->v); break;
+        case CB_C_NE: ok = has && !av_equal(&have, &c->v); break;
+        case CB_C_LT: ok = has && have.kind == CB_AV_N && c->v.kind == CB_AV_N && have.n < c->v.n; break;
+        case CB_C_ATTR_EXISTS: ok = has; break;
+        case CB_C_ABSENT_OR_EQ: ok = !has || av_equal(&have, &c->v); break;
+        case CB_C_ABSENT_OR_LT: ok = !has || (have.kind == CB_AV_N && c->v.kind == CB_AV_N && have.n < c->v.n); break;
+        default: ok = false;
+        }
+        if (!ok) return false;
+    }
+    return true;
+}
+
 // One write against the stored item, under the lock and inside a
-// transaction. old (may be NULL) gets the item as it was.
+// transaction. old (may be NULL) gets the item as it was, whether the write
+// went through or its condition refused it.
 static int item_apply(sq *q, const cb_iwrite *w, cb_item *old) {
     cb_item cur, next;
     cb_item_init(&cur);
@@ -710,14 +751,17 @@ static int item_apply(sq *q, const cb_iwrite *w, cb_item *old) {
     int rc = item_load(q, w->key, &cur);
     bool exists = rc == CB_OK;
     if (rc == CB_E_NOT_FOUND) rc = CB_OK;
-    if (rc == CB_OK && ((w->cond == CB_IF_EXISTS && !exists) || (w->cond == CB_IF_ABSENT && exists))) rc = CB_E_CONFLICT;
-    if (rc == CB_OK && old) {
+    if (rc == CB_OK && !cond_holds(&cur, exists, w)) rc = CB_E_CONFLICT;
+    if ((rc == CB_OK || rc == CB_E_CONFLICT) && old) {
+        int keep = rc;
+        rc = CB_OK;
         cb_item_reset(old);
         for (int i = 0; i < cur.n && rc == CB_OK; i++) {
             cb_av v;
             cb_item_at(&cur, i, &v);
             if (!cb_item_add(old, &v)) rc = CB_E_NOMEM;
         }
+        if (rc == CB_OK) rc = keep;
     }
     if (rc == CB_OK && w->op == CB_IW_DELETE) {
         sqlite3_stmt *s = stmt(q, ST_ITEM_DELETE);
@@ -755,6 +799,7 @@ static int item_apply(sq *q, const cb_iwrite *w, cb_item *old) {
         for (int j = 0; j < n && rc == CB_OK; j++) {
             cb_av v = sets[j].v, have;
             bool had = cb_item_get(&cur, v.name, &have);
+            if (sets[j].how == CB_SET_REMOVE) continue;   // not carried over above, not set here
             if (sets[j].how == CB_SET_IF_ABSENT && had) v = have;
             else if (sets[j].how == CB_SET_INCR) {
                 if (v.kind != CB_AV_N || (had && have.kind != CB_AV_N)) { rc = CB_E_INVALID; break; }
@@ -767,6 +812,47 @@ static int item_apply(sq *q, const cb_iwrite *w, cb_item *old) {
     }
     cb_item_free(&cur);
     cb_item_free(&next);
+    return rc;
+}
+
+// Each key read in turn under the lock (a repeated one once), projected as
+// DynamoDB would, and handed out after it.
+static int sq_item_batch_get(cb_store *st, const cb_ikey *keys, int n, const char *const *proj, int n_proj,
+                             cb_item_at_fn fn, void *ud) {
+    sq *q = Q(st);
+    cb_item *got = calloc((size_t)(n > 0 ? n : 1), sizeof *got);
+    bool *have = calloc((size_t)(n > 0 ? n : 1), sizeof *have);
+    if (!got || !have) { free(got); free(have); return CB_E_NOMEM; }
+    int rc = CB_OK;
+    cb_item full;
+    cb_item_init(&full);
+    lock(q);
+    for (int i = 0; rc == CB_OK && i < n; i++) {
+        cb_item_init(&got[i]);
+        bool dup = false;
+        for (int j = 0; j < i && !dup; j++) dup = strcmp(keys[j].pk, keys[i].pk) == 0 && strcmp(keys[j].sk, keys[i].sk) == 0;
+        if (dup) continue;
+        int r = item_load(q, keys[i], &full);
+        if (r == CB_E_NOT_FOUND) continue;
+        if (r != CB_OK) { rc = r; break; }
+        for (int a = 0; a < full.n && rc == CB_OK; a++) {
+            cb_av v;
+            cb_item_at(&full, a, &v);
+            bool want = !proj || n_proj == 0 || strcmp(v.name, CB_ITEM_PK) == 0 || strcmp(v.name, CB_ITEM_SK) == 0;
+            for (int p = 0; !want && p < n_proj; p++) want = strcmp(proj[p], v.name) == 0;
+            if (want && !cb_item_add(&got[i], &v)) rc = CB_E_NOMEM;
+        }
+        have[i] = true;
+    }
+    unlock(q);
+    bool more = true;
+    for (int i = 0; i < n; i++) {
+        if (rc == CB_OK && more && have[i]) more = fn(i, &got[i], ud);
+        cb_item_free(&got[i]);
+    }
+    cb_item_free(&full);
+    free(got);
+    free(have);
     return rc;
 }
 
@@ -791,16 +877,23 @@ static int sq_item_write(cb_store *st, const cb_iwrite *w, cb_item *old) {
     return rc;
 }
 
-static int sq_item_txn(cb_store *st, const cb_iwrite *w, int n, int *failed) {
+static int sq_item_txn(cb_store *st, const cb_iwrite *w, int n, int *failed, bool *failed_had_item) {
     sq *q = Q(st);
     if (failed) *failed = -1;
+    if (failed_had_item) *failed_had_item = false;
+    cb_item probe;
+    cb_item_init(&probe);
     if (n < 1 || n > CB_ITEM_TXN_MAX) return CB_E_INVALID;
     lock(q);
     int rc = begin(q);
     for (int i = 0; rc == CB_OK && i < n; i++) {
-        rc = item_apply(q, &w[i], NULL);
-        if (rc == CB_E_CONFLICT && failed) *failed = i;
+        rc = item_apply(q, &w[i], w[i].old_on_fail ? &probe : NULL);
+        if (rc == CB_E_CONFLICT) {
+            if (failed) *failed = i;
+            if (failed_had_item) *failed_had_item = probe.n > 0;
+        }
     }
+    cb_item_free(&probe);
     if (rc == CB_OK) rc = commit(q);
     if (rc != CB_OK) rollback(q);
     unlock(q);
@@ -809,19 +902,19 @@ static int sq_item_txn(cb_store *st, const cb_iwrite *w, int n, int *failed) {
 
 // The matching items are read under the lock and handed out after it, so fn
 // may write (a delete of each, as an account's cascade does).
-static int sq_item_query(cb_store *st, int index, const char *pk, const char *sk_prefix, bool forward, int page,
-                         cb_item_fn fn, void *ud) {
+static int sq_item_query(cb_store *st, const cb_iquery *iq, cb_item_fn fn, void *ud) {
     sq *q = Q(st);
     static const int ST[3][2] = { { ST_ITEM_Q0D, ST_ITEM_Q0A }, { ST_ITEM_Q1D, ST_ITEM_Q1A }, { ST_ITEM_Q2D, ST_ITEM_Q2A } };
-    if (index < 0 || index > 2) return CB_E_INVALID;
+    if (iq->index < 0 || iq->index > 2) return CB_E_INVALID;
     cb_buf recs;   // each record as u32 length, then its bytes
     cb_buf_init(&recs);
     lock(q);
-    sqlite3_stmt *s = stmt(q, ST[index][forward ? 1 : 0]);
+    sqlite3_stmt *s = stmt(q, ST[iq->index][iq->forward ? 1 : 0]);
     int rc = s ? CB_OK : CB_E_DB, r = SQLITE_DONE;
     if (s) {
-        b_text(s, 1, pk);
-        b_text_null(s, 2, sk_prefix);
+        b_text(s, 1, iq->pk);
+        b_text_null(s, 2, iq->sk_prefix);
+        b_text_null(s, 3, iq->sk_below);
         while ((r = sqlite3_step(s)) == SQLITE_ROW) {
             uint32_t len = (uint32_t)sqlite3_column_bytes(s, 0);
             cb_buf_append(&recs, &len, sizeof len);
@@ -1802,6 +1895,7 @@ static const cb_store_ops SQLITE_OPS = {
     .item_write = sq_item_write,
     .item_txn = sq_item_txn,
     .item_query = sq_item_query,
+    .item_batch_get = sq_item_batch_get,
     .name = "sqlite",
     .close = sq_close,
     .user_get = sq_user_get,

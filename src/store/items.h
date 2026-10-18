@@ -31,7 +31,7 @@
 #define CB_ITEM_KEY_MAX 1024  // DynamoDB's sort key limit (its pk allows 2048)
 #define CB_ITEM_TXN_MAX 100   // DynamoDB's TransactWriteItems limit
 
-typedef enum { CB_AV_S = 1, CB_AV_N, CB_AV_BOOL, CB_AV_B } cb_av_kind;
+typedef enum { CB_AV_S = 1, CB_AV_N, CB_AV_BOOL, CB_AV_B, CB_AV_SL } cb_av_kind;   // SL: a list of strings
 
 // One attribute value, the strings and bytes the caller's.
 typedef struct {
@@ -42,12 +42,15 @@ typedef struct {
     bool           b;        // CB_AV_BOOL
     const uint8_t *bytes;    // CB_AV_B
     size_t         len;      // CB_AV_B
+    const char *const *list; // CB_AV_SL
+    int            n_list;   // CB_AV_SL
 } cb_av;
 
 #define CB_AVS(nm, v)    ((cb_av){ .name = (nm), .kind = CB_AV_S, .s = (v) })
 #define CB_AVN(nm, v)    ((cb_av){ .name = (nm), .kind = CB_AV_N, .n = (v) })
 #define CB_AVBOOL(nm, v) ((cb_av){ .name = (nm), .kind = CB_AV_BOOL, .b = (v) })
 #define CB_AVB(nm, p, l) ((cb_av){ .name = (nm), .kind = CB_AV_B, .bytes = (p), .len = (l) })
+#define CB_AVSL(nm, l, n) ((cb_av){ .name = (nm), .kind = CB_AV_SL, .list = (l), .n_list = (n) })
 
 // The attributes the layer itself names.
 #define CB_ITEM_PK      "pk"
@@ -65,16 +68,20 @@ typedef struct {
 
 // ---- an item as read ----------------------------------------------------------------
 
+#define CB_ITEM_LIST_MAX 16   // strings one list attribute holds
+
 typedef struct {
     int    n;
     struct {
         size_t     name;     // offsets into store
         cb_av_kind kind;
-        size_t     off, len; // S: text (NUL-terminated), B: bytes
+        size_t     off, len; // S: text (NUL-terminated), B: bytes, SL: len strings, NUL-terminated, one after another
         int64_t    n;
         bool       b;
     } a[CB_ITEM_ATTRS];
     cb_buf store;
+    // cb_item_get's list for an SL attribute (valid until the next get of one).
+    const char *list[CB_ITEM_LIST_MAX];
 } cb_item;
 
 void cb_item_init(cb_item *it);
@@ -97,6 +104,7 @@ int64_t cb_item_n_or(const cb_item *it, const char *name, int64_t def);
 // attribute, u8 name length, the name, u8 kind, then S/B: u32 length and the
 // bytes, N: 8 bytes little-endian, BOOL: one byte. Encoded from an item into
 // out (appended); decoded into an item (added). false on a malformed record.
+// SL: u32 count, then each string as an S.
 bool cb_item_record_encode(const cb_item *it, cb_buf *out);
 bool cb_item_record_decode(const uint8_t *p, size_t n, cb_item *it);
 
@@ -109,16 +117,33 @@ typedef enum {
     CB_IW_CHECK,     // a condition only (in a transaction)
 } cb_iw_op;
 
+// A CONDITION is up to CB_ICOND_MAX clauses, all of which must hold.
 typedef enum {
-    CB_IF_ANY = 0,
-    CB_IF_EXISTS,    // the item exists
-    CB_IF_ABSENT,    // the item does not exist
-} cb_icond;
+    CB_C_EXISTS = 1,     // the item exists
+    CB_C_ABSENT,         // the item does not exist
+    CB_C_EQ,             // the attribute v.name equals v (an absent one does not)
+    CB_C_NE,             // the attribute is present and differs from v
+    CB_C_LT,             // the attribute is a number below v.n
+    CB_C_ATTR_EXISTS,    // the attribute v.name is present
+    CB_C_ABSENT_OR_EQ,   // the attribute is absent or equals v
+    CB_C_ABSENT_OR_LT,   // the attribute is absent or a number below v.n
+} cb_ccheck;
+
+typedef struct {
+    cb_ccheck check;
+    cb_av     v;   // the attribute's name and the value it is held to (unused by EXISTS, ABSENT)
+} cb_iclause;
+
+#define CB_ICOND_MAX 4
+// The common ones.
+#define CB_IF_EXISTS ((cb_iclause){ .check = CB_C_EXISTS })
+#define CB_IF_ABSENT ((cb_iclause){ .check = CB_C_ABSENT })
 
 typedef enum {
     CB_SET_TO = 0,     // name = value
     CB_SET_IF_ABSENT,  // name = value only when the item has no name yet
     CB_SET_INCR,       // name = (name, or 0 when absent) + value (a number)
+    CB_SET_REMOVE,     // name removed (its value unused)
 } cb_set_how;
 
 typedef struct {
@@ -133,19 +158,39 @@ typedef struct {
     const cb_iset *sets;   int n_sets;    // UPDATE
     int64_t        ttl_ms;                // > 0: expires_ms and expires_at (PUT, UPDATE)
     cb_set_how     ttl_how;               // UPDATE: how the TTL is set
-    cb_icond       cond;
+    cb_iclause     cond[CB_ICOND_MAX];    // all must hold
+    int            n_cond;
+    // In a transaction: a refusal of this write brings the item back
+    // (cb_store_ops item_txn *failed_had_item). item_write asks it whenever it
+    // is handed `old`.
+    bool           old_on_fail;
 } cb_iwrite;
+
+// A QUERY of one partition of the table or of an index.
+typedef struct {
+    int         index;       // 0 the table (pk), 1 gsi1 (gsi1pk), 2 gsi2 (gsi2pk)
+    const char *pk;
+    const char *sk_prefix;   // NULL, or the sort key begins with it
+    const char *sk_below;    // NULL, or the sort key sorts below it
+    bool        forward;     // ascending sort key
+    bool        keys_only;   // pk and sk only (and the index's keys)
+    int         page;        // items a page (0: the backend's own)
+} cb_iquery;
 
 // What the backends implement (store.h cb_store_ops item_*), each CB_OK or:
 //   get     CB_E_NOT_FOUND; consistent asks for a strongly consistent read
 //   write   CB_E_CONFLICT when the condition fails; old (may be NULL) gets the
-//           item as it was before (empty when it was absent)
+//           item as it was before (empty when it was absent), on success
+//           (UPDATE, DELETE) and on a refusal alike
 //   txn     CB_E_CONFLICT when any condition fails (nothing written), with
-//           *failed the index of the first that did (-1: unknown)
-//   query   index 0 (the table: pk), 1 (gsi1pk) or 2 (gsi2pk); sk_prefix
-//           NULL or a begins_with on the matching sort key; forward is
-//           ascending sort key; page asks for that many items a page (0: the
-//           backend's own); fn returns false to stop. CB_E_DB on a failure.
+//           *failed the index of the first that did (-1: unknown) and
+//           *failed_had_item whether that item existed (asked by old_on_fail)
+//   query   the items of a cb_iquery, in its order; fn returns false to stop.
+//           CB_E_DB on a failure.
+//   batch   the items at keys[0..n) (a repeated key read once), each handed
+//           to fn with its key's index; an absent one is not. proj NULL (every
+//           attribute) or the attributes wanted, pk and sk always among them.
 typedef bool (*cb_item_fn)(const cb_item *it, void *ud);
+typedef bool (*cb_item_at_fn)(int i, const cb_item *it, void *ud);
 
 #endif

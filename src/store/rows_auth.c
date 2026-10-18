@@ -12,8 +12,9 @@ static const char *key(char *out, size_t cap, const char *prefix, const char *id
     return out;
 }
 
-static int put(cb_store *s, cb_ikey k, const cb_av *a, int n, int64_t ttl_ms, cb_icond cond) {
-    cb_iwrite w = { .op = CB_IW_PUT, .key = k, .attrs = a, .n_attrs = n, .ttl_ms = ttl_ms, .cond = cond };
+static int put(cb_store *s, cb_ikey k, const cb_av *a, int n, int64_t ttl_ms, bool absent) {
+    cb_iwrite w = { .op = CB_IW_PUT, .key = k, .attrs = a, .n_attrs = n, .ttl_ms = ttl_ms };
+    if (absent) w.cond[w.n_cond++] = CB_IF_ABSENT;
     return s->ops->item_write(s, &w, NULL);
 }
 
@@ -25,7 +26,7 @@ int cb_rows_session_put(cb_store *s, const cb_session_row *r) {
         CB_AVS("id", r->id), CB_AVS("user_id", r->user_id), CB_AVN("created_at", r->created_at),
         CB_AVBOOL("revoked", r->revoked), CB_AVN("gen", r->gen),
     };
-    return put(s, (cb_ikey){ key(pk, sizeof pk, "SESSION#", r->id), "SESSION" }, a, 5, r->expires_at, CB_IF_ANY);
+    return put(s, (cb_ikey){ key(pk, sizeof pk, "SESSION#", r->id), "SESSION" }, a, 5, r->expires_at, false);
 }
 
 int cb_rows_session_get(cb_store *s, const char *id, int64_t now_ms, cb_session_row *out) {
@@ -73,7 +74,7 @@ int cb_rows_refresh_put(cb_store *s, const cb_refresh_row *r) {
         CB_AVN("created_at", r->created_at), CB_AVBOOL("revoked", r->revoked),
     };
     return put(s, (cb_ikey){ key(pk, sizeof pk, "REFRESH#", r->token_hash), "TOKEN" }, a, 7,
-               r->expires_at > 0 ? r->expires_at : 0, CB_IF_ABSENT);
+               r->expires_at > 0 ? r->expires_at : 0, true);
 }
 
 int cb_rows_refresh_take(cb_store *s, const char *hash, int64_t now_ms, int64_t spent_ms, cb_refresh_row *out) {
@@ -87,7 +88,7 @@ int cb_rows_refresh_take(cb_store *s, const char *hash, int64_t now_ms, int64_t 
         { CB_AVN("revoked_at", now_ms), CB_SET_IF_ABSENT },
     };
     cb_iwrite w = { .op = CB_IW_UPDATE, .key = { key(pk, sizeof pk, "REFRESH#", hash), "TOKEN" }, .sets = sets,
-                    .n_sets = 2, .ttl_ms = now_ms + spent_ms, .ttl_how = CB_SET_TO, .cond = CB_IF_EXISTS };
+                    .n_sets = 2, .ttl_ms = now_ms + spent_ms, .ttl_how = CB_SET_TO, .cond = { CB_IF_EXISTS }, .n_cond = 1 };
     cb_item old;
     cb_item_init(&old);
     int rc = s->ops->item_write(s, &w, &old);
@@ -126,7 +127,8 @@ static bool forget_one(const cb_item *it, void *ud) {
 int cb_rows_refresh_forget_user(cb_store *s, const char *user_id) {
     char g1[KEY_MAX];
     forget f = { s, CB_OK };
-    int rc = s->ops->item_query(s, 1, key(g1, sizeof g1, "USERREFRESH#", user_id), NULL, true, 0, forget_one, &f);
+    cb_iquery q = { .index = 1, .pk = key(g1, sizeof g1, "USERREFRESH#", user_id), .forward = true };
+    int rc = s->ops->item_query(s, &q, forget_one, &f);
     return rc != CB_OK ? rc : f.rc;
 }
 
@@ -154,7 +156,7 @@ int cb_rows_signin_fails_get(cb_store *s, const char *email, int64_t now_ms, cb_
 int cb_rows_signin_fails_put(cb_store *s, const char *email, const cb_signin_fails *f, int64_t now_ms) {
     char pk[KEY_MAX];
     const cb_av a[] = { CB_AVN("n", f->n), CB_AVN("last_at", f->last_at), CB_AVN("locked_until", f->locked_until) };
-    int rc = put(s, (cb_ikey){ key(pk, sizeof pk, "AUTHFAIL#", email), "FAILS" }, a, 3, now_ms + FAILS_TTL_MS, CB_IF_ANY);
+    int rc = put(s, (cb_ikey){ key(pk, sizeof pk, "AUTHFAIL#", email), "FAILS" }, a, 3, now_ms + FAILS_TTL_MS, false);
     return rc == CB_E_CONFLICT ? CB_E_DB : rc;
 }
 

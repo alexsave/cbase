@@ -38,25 +38,27 @@ static void sqlite_txn_and_query(void) {
     const cb_av a1[] = { CB_AVS("gsi1pk", "L#x"), CB_AVS("gsi1sk", "1"), CB_AVN("n", 1) };
     const cb_av a2[] = { CB_AVS("gsi1pk", "L#x"), CB_AVS("gsi1sk", "2"), CB_AVN("n", 2) };
     cb_iwrite w[2] = {
-        { .op = CB_IW_PUT, .key = { "P#1", "A" }, .attrs = a1, .n_attrs = 3, .cond = CB_IF_ABSENT },
-        { .op = CB_IW_PUT, .key = { "P#1", "B" }, .attrs = a2, .n_attrs = 3, .cond = CB_IF_ABSENT },
+        { .op = CB_IW_PUT, .key = { "P#1", "A" }, .attrs = a1, .n_attrs = 3, .cond = { CB_IF_ABSENT }, .n_cond = 1 },
+        { .op = CB_IW_PUT, .key = { "P#1", "B" }, .attrs = a2, .n_attrs = 3, .cond = { CB_IF_ABSENT }, .n_cond = 1 },
     };
     int failed = 9;
-    T_EQ_INT(CB_STORE_CALL(s, item_txn, w, 2, &failed), CB_OK);
+    T_EQ_INT(CB_STORE_CALL(s, item_txn, w, 2, &failed, NULL), CB_OK);
     T_EQ_INT(failed, -1);
     // Again: the first put's condition fails, and nothing is written.
     cb_iwrite again[2] = { { .op = CB_IW_DELETE, .key = { "P#1", "B" } }, w[0] };
-    T_EQ_INT(CB_STORE_CALL(s, item_txn, again, 2, &failed), CB_E_CONFLICT);
+    T_EQ_INT(CB_STORE_CALL(s, item_txn, again, 2, &failed, NULL), CB_E_CONFLICT);
     T_EQ_INT(failed, 1);
     sks k = { 0 };
-    T_EQ_INT(CB_STORE_CALL(s, item_query, 1, "L#x", NULL, false, 0, collect, &k), CB_OK);
+    cb_iquery q1 = { .index = 1, .pk = "L#x" };
+    T_EQ_INT(CB_STORE_CALL(s, item_query, &q1, collect, &k), CB_OK);
     T_EQ_INT(k.n, 2);
     T_EQ_STR(k.sk[0], "B");   // still there: the transaction rolled back
     memset(&k, 0, sizeof k);
-    T_EQ_INT(CB_STORE_CALL(s, item_query, 0, "P#1", "A", true, 0, collect, &k), CB_OK);
+    cb_iquery q0 = { .index = 0, .pk = "P#1", .sk_prefix = "A", .forward = true };
+    T_EQ_INT(CB_STORE_CALL(s, item_query, &q0, collect, &k), CB_OK);
     T_EQ_INT(k.n, 1);
     cb_iset inc = { CB_AVN("n", 5), CB_SET_INCR };
-    cb_iwrite up = { .op = CB_IW_UPDATE, .key = { "P#1", "A" }, .sets = &inc, .n_sets = 1, .cond = CB_IF_EXISTS };
+    cb_iwrite up = { .op = CB_IW_UPDATE, .key = { "P#1", "A" }, .sets = &inc, .n_sets = 1, .cond = { CB_IF_EXISTS }, .n_cond = 1 };
     cb_item old;
     cb_item_init(&old);
     T_EQ_INT(CB_STORE_CALL(s, item_write, &up, &old), CB_OK);
@@ -88,11 +90,11 @@ static void dynamo_txn_and_query(void) {
     if (!s) return;
     const cb_av a[] = { CB_AVS("gsi1pk", "L#x"), CB_AVBOOL("b", true), CB_AVB("bytes", (const uint8_t *)"\1\2", 2) };
     cb_iwrite w[2] = {
-        { .op = CB_IW_PUT, .key = { "P#1", "A" }, .attrs = a, .n_attrs = 3, .ttl_ms = 5000, .cond = CB_IF_ABSENT },
-        { .op = CB_IW_CHECK, .key = { "P#2", "B" }, .cond = CB_IF_EXISTS },
+        { .op = CB_IW_PUT, .key = { "P#1", "A" }, .attrs = a, .n_attrs = 3, .ttl_ms = 5000, .cond = { CB_IF_ABSENT }, .n_cond = 1 },
+        { .op = CB_IW_CHECK, .key = { "P#2", "B" }, .cond = { CB_IF_EXISTS }, .n_cond = 1 },
     };
     g_answer = "{}";
-    T_EQ_INT(CB_STORE_CALL(s, item_txn, w, 2, NULL), CB_OK);
+    T_EQ_INT(CB_STORE_CALL(s, item_txn, w, 2, NULL, NULL), CB_OK);
     T_EQ_STR(g_target, "DynamoDB_20120810.TransactWriteItems");
     T_CHECK(strstr(cb_buf_cstr(&g_body), "\"ConditionCheck\"") != NULL);
     // And its shape: one line an item, the keys normalized.
@@ -104,7 +106,8 @@ static void dynamo_txn_and_query(void) {
     cb_buf_free(&shape);
     g_answer = "{\"Items\":[{\"pk\":{\"S\":\"P#1\"},\"sk\":{\"S\":\"A\"},\"n\":{\"N\":\"-3\"}}],\"Count\":1}";
     sks k = { 0 };
-    T_EQ_INT(CB_STORE_CALL(s, item_query, 1, "L#x", "A", false, 10, collect, &k), CB_OK);
+    cb_iquery qd = { .index = 1, .pk = "L#x", .sk_prefix = "A", .page = 10 };
+    T_EQ_INT(CB_STORE_CALL(s, item_query, &qd, collect, &k), CB_OK);
     T_EQ_INT(k.n, 1);
     T_EQ_STR(k.sk[0], "A");
     T_CHECK(strstr(cb_buf_cstr(&g_body), "\"IndexName\":\"gsi1\"") != NULL);
@@ -162,7 +165,7 @@ static void records_and_reads(void) {
     T_CHECK(dw_item_read(CB_SPAN_LIT("{\"a\":{\"S\":\"x\"},\"b\":{\"BOOL\":false},\"c\":{\"B\":\"AAE=\"},\"d\":{\"N\":\"12\"}}"), &back));
     T_EQ_INT(back.n, 4);
     cb_item_reset(&back);
-    T_CHECK(!dw_item_read(CB_SPAN_LIT("{\"a\":{\"L\":[]}}"), &back));
+    T_CHECK(!dw_item_read(CB_SPAN_LIT("{\"a\":{\"L\":[{\"N\":\"1\"}]}}"), &back));   // a list holds strings only
     T_CHECK(!dw_item_read(CB_SPAN_LIT("{\"a\":{\"N\":\"1.5\"}}"), &back));
     T_CHECK(!dw_item_read(CB_SPAN_LIT("{\"a\":{\"B\":\"!!\"}}"), &back));
     cb_item_free(&it);
