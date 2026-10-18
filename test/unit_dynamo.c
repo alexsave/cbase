@@ -1085,6 +1085,33 @@ static void flow_signin_fails(void) {
     T_EQ_INT(CB_STORE_CALL(s, signin_fails_put, "a@x.io", &w, 1000), CB_OK);
     T_EQ_INT(CB_STORE_CALL(s, signin_fails_put, "a@x.io", &w, 1000), CB_E_DB);
     T_EQ_INT(CB_STORE_CALL(s, signin_fails_clear, "a@x.io"), CB_OK);
+// Sessions (store.h cb_session_row) over the scripted transport: a put with
+// its generation and TTL, a consistent read, a read past the session's end
+// (TTL deletion lags), none, a revoke that keeps what it finds, a failure.
+static void flow_sessions(void) {
+    static const char LIVE[] =
+        "{\"Item\":{\"pk\":{\"S\":\"SESSION#s1\"},\"sk\":{\"S\":\"SESSION\"},\"id\":{\"S\":\"s1\"},"
+        "\"user_id\":{\"S\":\"" U1 "\"},\"created_at\":{\"N\":\"10\"},\"gen\":{\"N\":\"2\"},"
+        "\"revoked\":{\"BOOL\":true},\"expires_ms\":{\"N\":\"5000\"}}}";
+    static const step steps[] = {
+        { "PutItem", "\"expires_at\":{\"N\":\"5\"}", 200, "{}" },
+        { "GetItem", "\"ConsistentRead\":true", 200, LIVE },
+        { "GetItem", NULL, 200, LIVE },
+        { "GetItem", NULL, 200, "{}" },
+        { "UpdateItem", "if_not_exists(#expires_ms, :exp)", 200, "{}" },
+        { "PutItem", NULL, 400, VALIDATION },
+    };
+    RUN(steps, s);
+    cb_session_row r = { .id = "s1", .user_id = U1, .created_at = 10, .expires_at = 5000, .gen = 2 }, got;
+    T_EQ_INT(CB_STORE_CALL(s, session_put, &r), CB_OK);
+    T_CHECK(strstr(sc_.bodies[0], "\"gen\":{\"N\":\"2\"}") != NULL);
+    T_EQ_INT(CB_STORE_CALL(s, session_get, "s1", 1000, &got), CB_OK);
+    T_CHECK(got.revoked && got.gen == 2 && got.created_at == 10 && got.expires_at == 5000);
+    T_EQ_STR(got.user_id, U1);
+    T_EQ_INT(CB_STORE_CALL(s, session_get, "s1", 5000, &got), CB_E_NOT_FOUND);
+    T_EQ_INT(CB_STORE_CALL(s, session_get, "s9", 1000, &got), CB_E_NOT_FOUND);
+    T_EQ_INT(CB_STORE_CALL(s, session_revoke, "s1", U1, 9000), CB_OK);
+    T_EQ_INT(CB_STORE_CALL(s, session_put, &r), CB_E_DB);
     T_EQ_INT(sc_.at, 6);
     cb_store_close(s);
 }
@@ -1534,6 +1561,7 @@ int main(void) {
     T_RUN(errors_classified);
     T_RUN(pages_and_batches);
     T_RUN(flow_signin_fails);
+    T_RUN(flow_sessions);
     T_RUN(flow_cas_lost);
     T_RUN(flow_commit_game_gone);
     T_RUN(flow_rating_moved);
