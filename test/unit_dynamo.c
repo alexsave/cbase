@@ -1085,6 +1085,10 @@ static void flow_signin_fails(void) {
     T_EQ_INT(CB_STORE_CALL(s, signin_fails_put, "a@x.io", &w, 1000), CB_OK);
     T_EQ_INT(CB_STORE_CALL(s, signin_fails_put, "a@x.io", &w, 1000), CB_E_DB);
     T_EQ_INT(CB_STORE_CALL(s, signin_fails_clear, "a@x.io"), CB_OK);
+    T_EQ_INT(sc_.at, 6);
+    cb_store_close(s);
+}
+
 // Sessions (store.h cb_session_row) over the scripted transport: a put with
 // its generation and TTL, a consistent read, a read past the session's end
 // (TTL deletion lags), none, a revoke that keeps what it finds, a failure.

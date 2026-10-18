@@ -113,8 +113,8 @@ static void users_by_email_password_touch(void) {
     T_EQ_INT(CB_STORE_CALL(s, user_by_email, "nobody@x.io", &u), CB_E_NOT_FOUND);
     T_EQ_INT(CB_STORE_CALL(s, user_by_email, "bad@x.io", &u), CB_E_DB);
     T_EQ_INT(CB_STORE_CALL(s, user_by_email, "err@x.io", &u), CB_E_DB);
-    T_EQ_INT(CB_STORE_CALL(s, user_set_password, U1, "$2b$10$y"), CB_OK);
-    T_EQ_INT(CB_STORE_CALL(s, user_set_password, U2, "$2b$10$y"), CB_E_NOT_FOUND);
+    T_EQ_INT(CB_STORE_CALL(s, user_set_password, U1, "$2b$10$y", ""), CB_OK);
+    T_EQ_INT(CB_STORE_CALL(s, user_set_password, U2, "$2b$10$y", ""), CB_E_NOT_FOUND);
     T_EQ_INT(CB_STORE_CALL(s, user_touch_sign_in, U1, 77), CB_OK);
     T_CHECK(strstr(sc_.bodies[7], "\"N\":\"77\"") != NULL);
     T_EQ_INT(CB_STORE_CALL(s, user_touch_sign_in, U2, 77), CB_E_NOT_FOUND);
@@ -214,22 +214,21 @@ static void users_list_pages(void) {
 
 // ---- refresh tokens -----------------------------------------------------------------------------
 
+// A token row carries its TTL (store.h cb_refresh_row, finding M2), and a
+// session ends in one write to its own item (M3): nothing is listed.
 static void refresh_put_and_revoke_session(void) {
     static const step steps[] = {
-        { "PutItem", "REFRESH#h1", 200, "{}" },
+        { "PutItem", "\"expires_at\":{\"N\":\"5\"}", 200, "{}" },
         { "PutItem", "REFRESH#h1", 400, COND_NO_ITEM },   // the hash is taken
-        { "Query", "SESSION#s1", 200, "{\"Items\":[{\"pk\":{\"S\":\"REFRESH#h1\"},\"sk\":{\"S\":\"TOKEN\"}},"
-                                      "{\"pk\":{\"S\":\"REFRESH#h2\"},\"sk\":{\"S\":\"TOKEN\"}}]}" },
-        { "UpdateItem", "REFRESH#h1", 200, "{}" },
-        { "UpdateItem", "REFRESH#h2", 400, COND_NO_ITEM },   // deleted meanwhile: nothing to revoke
-        { "Query", "SESSION#s2", 400, VALIDATION },
+        { "UpdateItem", "SESSION#s1", 200, "{}" },
+        { "UpdateItem", "SESSION#s2", 400, VALIDATION },
     };
     RUN(steps, s);
-    cb_refresh_row r = { .token_hash = "h1", .user_id = U1, .session_id = "s1", .created_at = 9 };
+    cb_refresh_row r = { .token_hash = "h1", .user_id = U1, .session_id = "s1", .created_at = 9, .expires_at = 5000 };
     T_EQ_INT(CB_STORE_CALL(s, refresh_put, &r), CB_OK);
     T_EQ_INT(CB_STORE_CALL(s, refresh_put, &r), CB_E_CONFLICT);
-    T_EQ_INT(CB_STORE_CALL(s, refresh_revoke_session, "s1"), CB_OK);
-    T_EQ_INT(CB_STORE_CALL(s, refresh_revoke_session, "s2"), CB_E_DB);
+    T_EQ_INT(CB_STORE_CALL(s, session_revoke, "s1", U1, 9000), CB_OK);
+    T_EQ_INT(CB_STORE_CALL(s, session_revoke, "s2", U1, 9000), CB_E_DB);
     T_EQ_INT(sc_.at, sc_.n);
     cb_store_close(s);
 }
