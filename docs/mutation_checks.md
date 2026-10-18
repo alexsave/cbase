@@ -556,3 +556,26 @@ The entries above for `stream.c`, `rt_apigw.c`, `apigw_mgmt.c`, the connection r
 - config.c: a ":port" in CBASE_IOT_ENDPOINT taken -> `unit_edges` `configuration_refusals`.
 - realtime.c: the views topic misnamed -> `smoke_lambda_after` the publish's path is `u/<uid>/v`.
 - stream_mqtt.c: any user's topics allowed -> `smoke_matrix` `stream_frames` another user's views closes the socket.
+
+## The bot speedup (2026-10-18: unit_app, unit_edges, unit_config)
+
+`CBASE_BOT_SPEEDUP` (config.h) divides every bot timer for the smoke tests.
+Each mutation was applied, its object deleted and the test rebuilt, then restored the same way.
+
+- bots.c: the wait asked at the wall clock, not the board's time -> `bots_pace_at_production_speed_and_at_a_speedup` cb_bots_wait_ms and the first commit's landing time.
+- bots.c: the kernel's wait not divided by k -> `bots_pace_at_production_speed_and_at_a_speedup` cb_bots_wait_ms == ceil(wait / k).
+- bots.c: the lease acquired for production's 25 s -> `a_drive_takes_its_lease_over_the_speedup` lease_left == 2500.
+- bots.c: the lease renewed for production's 25 s -> `bots_pace_at_production_speed_and_at_a_speedup` every cycle's lease_left.
+- bots.c: the scan's stale window not divided -> `the_scan_windows_follow_the_speedup` kicked == 1.
+- bots.c: the scan's abandon window not divided -> `the_scan_windows_follow_the_speedup` kicked == 0.
+- bots.c: the wall ceiling not divided -> `the_wall_ceiling_follows_the_speedup` version unchanged, one rekick.
+- bots.c: cb_bots_ms rounding down -> `production_bot_timers` 15 ms over 10 == 2, 1 ms == 1.
+- bots.c: the board's time for a row with no creation time -> `the_boards_time` created_at 0 and -5 give now.
+- bots.c: the board's time for a creation in the future -> `the_boards_time` now - 50.
+- table_ops.c: the commit stamped on the wall clock -> `bots_pace_at_production_speed_and_at_a_speedup` shown_ms == the board's time.
+- table_ops.c: the rating commit stamped on the wall clock -> `bots_pace_at_production_speed_and_at_a_speedup` the finished board's shown_ms.
+- bots.h: CB_BOT_STALE_MS 5000, CB_BOT_SCAN_EVERY_MS 60000 -> `production_bot_timers` each pinned value.
+- config.c: the range 1..1000 or 0..100 -> `unit_edges` `configuration_refusals` 101 and 0 refused.
+- config.c: the default 2 -> `unit_config` `lambda_refuses_a_bot_speedup` default 1, and `unit_app`'s production pacing.
+- config.c: the value read but not stored -> `unit_edges` `configuration_refusals` bot_speedup == 100.
+- boot.c: the Lambda refusal removed, or made `> 20` -> `unit_config` `lambda_refuses_a_bot_speedup` the error names CBASE_BOT_SPEEDUP.
