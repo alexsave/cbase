@@ -68,7 +68,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     cb_store_dynamo_clock(s, fake_mono, fake_sleep);
     cb_store_set_deadline(0);
     for (int step = 0; step < 16 && fz_left(&prog); step++) {
-        int op = fz_u8(&prog) % 22;
+        int op = fz_u8(&prog) % 24;
         cb_user_row u; cb_game_row g; cb_refresh_row rr; cb_conn_row cn; cb_uuid tok;
         memset(&g, 0, sizeof g);
         switch (op) {
@@ -110,6 +110,9 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         }
         case 20: (void)CB_STORE_CALL(s, game_delete, GID, 3); break;
         case 21: (void)CB_STORE_CALL(s, admin_query, "SELECT * FROM cbase", false, on_row, NULL); break;
+        // The readers the security fixes added (H1's sign-in failures, M1's sessions).
+        case 22: { cb_session_row se; (void)CB_STORE_CALL(s, session_get, "s1", 1000, &se); break; }
+        case 23: { cb_signin_fails sf; (void)CB_STORE_CALL(s, signin_fails_get, "a@b.io", 1000, &sf); break; }
         }
     }
     cb_store_close(s);
