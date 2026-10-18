@@ -97,9 +97,22 @@ static int64_t cpu_ms(void) {
     return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
-// GoTrue's cost on this machine: one hash and one verify each well under 100 ms
-// of CPU. The best of three, on a performance core where the OS offers one: a
-// thread moved to an efficiency core mid-hash costs more CPU for the same work.
+// What cost 10 protects is two things, held apart.
+//
+// SECURITY: a hash is never cheaper than GoTrue's. That is the cost the code
+// asks for (the static assert) and the cost the hash carries (its "$2b$10$"
+// prefix). That the work done IS cost 10 is proven by the published vectors,
+// which an independent build wrote at cost 10 and which verify only when
+// exactly 2^10 rounds run. None of it reads a clock, so it holds in every build.
+//
+// LATENCY: one hash and one verify each stay under 100 ms of this thread's CPU,
+// so a sign-in on the Lambda is not slow. Only the shipped flags can say that:
+// a build with -DCB_INSTRUMENTED (coverage, ASan; c_base/Makefile) is several
+// times slower for reasons that are not bcrypt's, and skips the bound. The best
+// of three, on a performance core where the OS offers one: a thread moved to an
+// efficiency core mid-hash costs more CPU for the same work.
+_Static_assert(CB_BCRYPT_COST == 10, "the hash cost is GoTrue's: never cheaper, and every stored hash verifies at it");
+
 static void cost_ten_budget(void) {
 #ifdef __APPLE__
     pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
@@ -116,17 +129,12 @@ static void cost_ten_budget(void) {
         if (t2 - t1 < verify_ms) verify_ms = t2 - t1;
     }
     T_CHECK(strncmp(h, "$2b$10$", 7) == 0);
+#ifdef CB_INSTRUMENTED
+    printf("     bcrypt cost %d: hash %lld ms, verify %lld ms of CPU (best of 3; instrumented build, no budget)\n",
+           CB_BCRYPT_COST, (long long)hash_ms, (long long)verify_ms);
+#else
     printf("     bcrypt cost %d: hash %lld ms, verify %lld ms of CPU (best of 3)\n", CB_BCRYPT_COST, (long long)hash_ms,
            (long long)verify_ms);
-#if defined(__SANITIZE_ADDRESS__)
-#define CB_SANITIZED 1
-#elif defined(__has_feature)
-#if __has_feature(address_sanitizer)
-#define CB_SANITIZED 1
-#endif
-#endif
-#ifndef CB_SANITIZED
-    // The sanitized build is several times slower; the budget is the shipped one.
     T_CHECK(hash_ms < 100);
     T_CHECK(verify_ms < 100);
 #endif

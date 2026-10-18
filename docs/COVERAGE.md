@@ -8,7 +8,7 @@ CI runs it as the `coverage` job of `.github/workflows/c_base.yml`.
 Every source in `c_base/src`, and of the kernel the files the binary surface is made of, `foolish/c/src/netwire.c` and `netclient.c`, and the stream's MQTT codec `shared/c/mqtt/mqtt.c` (its tests are c_base's, `test/unit_mqtt.c`).
 The rest of the kernel is measured by foolish/c's own coverage job.
 The objects are built a third way, beside the normal and the sanitized ones: `build/obj/cov` at `-O0 --coverage`, and `build/obj/cov-kernel`, where only `netwire.c` and `netclient.c` are instrumented, so the bots in the tests play at the kernel's own speed.
-`bcrypt.c` keeps `-O2`, because `unit_bcrypt` holds cost 10 to GoTrue's CPU budget and `-O0` misses it.
+Every c_base object in it, `bcrypt.c` included, is built with `-DCB_INSTRUMENTED`, so `unit_bcrypt` checks the cost but not its CPU budget there: an instrumented build's timings are not the shipped binary's (`bcrypt.c` at `-O2` with `--coverage` measured 120 ms and at `-O0` 699 ms, against about 60 ms shipped).
 
 The runs are every unit test (in parallel), `smoke` without its game (`CBASE_SMOKE_GAME=0`), `smoke_lambda`, `smoke_lambda_after`, `smoke_authz`, `smoke_matrix` and `smoke_boot`.
 The smoke game is left out because it is slow by design (the bots pace themselves like people) and covers nothing the other runs do not: measured on 2026-10-17, leaving it out cost 9 lines of 12,761.

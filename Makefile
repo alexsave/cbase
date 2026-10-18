@@ -99,7 +99,9 @@ SAN := -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-fr
 # replay.c's DealSlot is a Game cut deliberately short, and a finished game's
 # replay code walks through it.
 ASAN_KERNEL_CFLAGS := $(filter-out -O3 -ffast-math -flto,$(KERNEL_CFLAGS)) -O1 -g $(SAN) -fno-sanitize=object-size
-ASAN_CB_CFLAGS := $(filter-out -O2,$(CB_CFLAGS)) -O1 $(SAN)
+# CB_INSTRUMENTED: this build's timings are not the shipped binary's, so a test
+# that holds a CPU budget (unit_bcrypt) skips the bound. Coverage defines it too.
+ASAN_CB_CFLAGS := $(filter-out -O2,$(CB_CFLAGS)) -O1 $(SAN) -DCB_INSTRUMENTED
 
 include $(C_ROOT)/shared/tools/c_rules.mk
 $(eval $(call C_VARIANT,build/obj/kernel,CC,KERNEL_CFLAGS))
@@ -222,14 +224,12 @@ bench: build/cbase-bench
 # kernel's other files are measured by foolish/c's own coverage job.
 COV_GCOV ?= $(if $(filter Darwin,$(UNAME)),xcrun llvm-cov gcov,gcov)
 COV_FLAGS := -O0 --coverage
-# bcrypt keeps -O2: unit_bcrypt holds cost 10 to GoTrue's CPU budget, which -O0 misses.
-COV_CB_CFLAGS = $(filter-out -O2,$(CB_CFLAGS)) $(COV_FLAGS) $(COVO_$*)
-COVO_src/auth/bcrypt := -O2
+COV_CB_CFLAGS = $(filter-out -O2,$(CB_CFLAGS)) $(COV_FLAGS) -DCB_INSTRUMENTED
 COVK_foolish/c/src/netwire := $(COV_FLAGS)
 COVK_foolish/c/src/netclient := $(COV_FLAGS)
 COVK_shared/c/mqtt/mqtt := $(COV_FLAGS)
 COV_KERNEL_CFLAGS = $(KERNEL_CFLAGS) $(COVK_$*)
-$(eval $(call C_VARIANT,build/obj/cov,CC,COV_CB_CFLAGS,,bcrypt:-O2))
+$(eval $(call C_VARIANT,build/obj/cov,CC,COV_CB_CFLAGS))
 $(eval $(call C_VARIANT,build/obj/cov-kernel,CC,COV_KERNEL_CFLAGS,,netwire+netclient+mqtt:$(COV_FLAGS)))
 $(call prog,build/cov,build/obj/cov,build/obj/cov-kernel,cbase,src/main_serve.c,COV_CB_CFLAGS)
 $(call prog,build/cov,build/obj/cov,build/obj/cov-kernel,bootstrap,src/main_lambda.c,COV_CB_CFLAGS)
