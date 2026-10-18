@@ -10,6 +10,7 @@
 set -euo pipefail
 
 ops="$(cd "$(dirname "$0")/.." && pwd)"
+aws_ops="$ops/../providers/aws/ops"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
@@ -31,8 +32,10 @@ g() { git -c user.name=t -c user.email=t@t -c init.defaultBranch=main "$@"; }
 # origin with main at A; a clone at A; then main moves to B on origin.
 g init -q --bare "$tmp/origin.git"
 g clone -q "$tmp/origin.git" "$tmp/seed" 2>/dev/null
-mkdir -p "$tmp/seed/c_base/ops"
-cp "$ops/web_deploy.sh" "$ops/lambda_deploy.sh" "$ops/require_main.sh" "$ops/ops_env.sh" "$tmp/seed/c_base/ops/"
+mkdir -p "$tmp/seed/c_base/ops" "$tmp/seed/c_base/providers/aws/ops/site"
+cp "$ops/require_main.sh" "$ops/ops_env.sh" "$tmp/seed/c_base/ops/"
+cp "$aws_ops/lambda_deploy.sh" "$tmp/seed/c_base/providers/aws/ops/"
+cp "$aws_ops/site/web_deploy.sh" "$tmp/seed/c_base/providers/aws/ops/site/"
 g -C "$tmp/seed" add -A
 g -C "$tmp/seed" commit -q -m A
 g -C "$tmp/seed" push -q origin HEAD:main
@@ -46,12 +49,12 @@ run() {
   # NEXT_PUBLIC_BACKEND_URL unset on purpose: a tree the gate lets through then
   # stops at deploy_site's first check, still before any AWS call.
   env -u NEXT_PUBLIC_BACKEND_URL \
-    bash "$tmp/work/c_base/ops/web_deploy.sh" site foolish > "$tmp/out" 2>&1 && return 0 || return $?
+    bash "$tmp/work/c_base/providers/aws/ops/site/web_deploy.sh" site foolish > "$tmp/out" 2>&1 && return 0 || return $?
 }
 
 run_lambda() {
   echo zip > "$tmp/fake.zip"
-  bash "$tmp/work/c_base/ops/lambda_deploy.sh" "$tmp/fake.zip" > "$tmp/out" 2>&1 && return 0 || return $?
+  bash "$tmp/work/c_base/providers/aws/ops/lambda_deploy.sh" "$tmp/fake.zip" > "$tmp/out" 2>&1 && return 0 || return $?
 }
 
 # 1. Behind main: refused, by the gate, with no AWS call.
@@ -134,7 +137,7 @@ rm -f "$tmp/aws_calls"
 g clone -q --depth 1 --branch feature "file://$tmp/origin.git" "$tmp/shallow" 2>/dev/null
 [ "$(git -C "$tmp/shallow" rev-parse --is-shallow-repository)" = true ] || fail "the test clone is not shallow"
 echo zip > "$tmp/fake.zip"
-if bash "$tmp/shallow/c_base/ops/lambda_deploy.sh" "$tmp/fake.zip" > "$tmp/out" 2>&1; then fail "shallow: expected the stub aws to stop the deploy"; fi
+if bash "$tmp/shallow/c_base/providers/aws/ops/lambda_deploy.sh" "$tmp/fake.zip" > "$tmp/out" 2>&1; then fail "shallow: expected the stub aws to stop the deploy"; fi
 if grep -q 'does not contain origin/main' "$tmp/out"; then cat "$tmp/out" >&2; fail "shallow: a shallow clone of a branch containing main was refused"; fi
 grep -q '^aws cloudformation describe-stacks' "$tmp/aws_calls" 2>/dev/null || { cat "$tmp/out" >&2; fail "shallow: never reached the stack"; }
 echo "ok - a shallow clone of a branch containing origin/main gets past the gate"

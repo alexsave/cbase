@@ -3,17 +3,17 @@
 #   make            build/cbase (`cbase serve`), build/bootstrap (the Lambda
 #                   runtime, native, for the fake-runtime smoke) and build/cbase-import
 #   make bootstrap  dist/bootstrap.zip: the static Linux arm64 Lambda binary
-#   make test       every unit test (test/unit_*.c), each its own program
+#   make test       every unit test (<side>/test/unit_*.c), each its own program
 #   make smoke      the end-to-end smoke test against a real build/cbase
 #   make check      test + smoke
 #   make check-asan the same, every object rebuilt under ASan + UBSan
 #   make check-dynamo  the store, admin, import and binary-surface tests and the game smoke
-#                   against DynamoDB Local (ops/dynamo_local.sh; needs Docker
+#                   against DynamoDB Local (providers/aws/ops/dynamo_local.sh; needs Docker
 #                   or a DynamoDB Local already on port 8000)
 #   make bench-dynamo  the store's per-operation latency against DynamoDB Local
 #   make bench      build/cbase-bench, the latency and CPU bench (bench/bench.h)
 #   make fuzz, fuzz-smoke, fuzz-nightly, fuzz-replay, fuzz-merge, fuzz-seeds
-#                   the libFuzzer targets (fuzz/fuzz.mk says what each does)
+#                   the libFuzzer targets (<side>/fuzz/fz_*.c; fuzz/fuzz.mk says what each does)
 #   make clean
 #
 # Builds on macOS (clang, Homebrew openssl@3, the SDK's sqlite3) and on Ubuntu
@@ -21,9 +21,9 @@
 #
 # NO FILE LISTS TO EDIT. Every .c under a source root (SRC_ROOTS: the core,
 # each provider, and the product in ../foolish/server) is part of the program,
-# but for the mains; every test/unit_*.c is a unit test, and every test/lib_*.c
-# is linked into every test program. A builder adding a file in its own
-# directory never touches this one.
+# but for the mains; every unit_*.c under a test root (TEST_ROOTS: each side's
+# test/) is a unit test, and every lib_*.c there is linked into every test
+# program. A builder adding a file in its own directory never touches this one.
 
 C_ROOT := ..
 KDIR   := $(C_ROOT)/foolish/c
@@ -91,13 +91,16 @@ endif
 # compile's include path for now (stage 7 step a); the per-side include gate
 # comes with the store split.
 SRC_ROOTS := core/src providers/local/src providers/aws/src $(C_ROOT)/foolish/server/src
+# Each side's tests (core's, each provider's, the product's), and every test
+# program reaches every one of them: a test may assemble a mixed lane.
+TEST_ROOTS := core/test providers/local/test providers/aws/test $(C_ROOT)/foolish/server/test
 MAIN_SERVE  := providers/local/src/main_serve.c
 MAIN_LAMBDA := providers/aws/src/main_lambda.c
 CB_CFLAGS := -std=gnu11 -D_GNU_SOURCE -O2 -g -Wall -Wextra -Werror -Wno-unused-parameter -Wshadow -Wvla \
-             -Icore/include $(addprefix -I,$(SRC_ROOTS)) -Itest -I$(KDIR)/src -I$(C_ROOT)/shared/c $(OPENSSL_CFLAGS) -pthread $(KERNEL_CAPS)
+             -Icore/include $(addprefix -I,$(SRC_ROOTS)) $(addprefix -I,$(TEST_ROOTS)) -I$(KDIR)/src -I$(C_ROOT)/shared/c $(OPENSSL_CFLAGS) -pthread $(KERNEL_CAPS)
 LDLIBS := $(OPENSSL_LDFLAGS) -lsqlite3 -lssl -lcrypto -lpthread -lm $(PLATFORM_LDLIBS) $(LTO_LDFLAGS)
 # STATIC=1: a fully static link (the Lambda bootstrap, built on musl by
-# tools/build_bootstrap.sh). Not meaningful on macOS.
+# providers/aws/ops/build_bootstrap.sh). Not meaningful on macOS.
 ifeq ($(STATIC),1)
   LDLIBS += -static
 endif
@@ -124,10 +127,10 @@ $(eval $(call C_VARIANT,build/obj/asan,CC,ASAN_CB_CFLAGS))
 build/embed: tools/embed.c
 	@mkdir -p $(@D)
 	$(CC) -O2 -Wall -Wextra -Werror $< -o $@
-build/gen/schema_sql.c: sql/schema.sql build/embed
+build/gen/schema_sql.c: providers/local/sql/schema.sql build/embed
 	@mkdir -p $(@D)
 	build/embed $< cbase_schema_sql > $@.new && mv $@.new $@
-build/gen/console_html.c: admin/console.html build/embed
+build/gen/console_html.c: core/src/admin/console.html build/embed
 	@mkdir -p $(@D)
 	build/embed $< cbase_console_html > $@.new && mv $@.new $@
 
@@ -137,10 +140,17 @@ build/gen/console_html.c: admin/console.html build/embed
 SHARED_SRC := $(C_ROOT)/shared/c/b64/b64.c $(C_ROOT)/shared/c/hex/hex.c
 LIB_SRC  := $(sort $(filter-out $(MAIN_SERVE) $(MAIN_LAMBDA),$(foreach r,$(SRC_ROOTS),$(wildcard $(r)/*.c $(r)/*/*.c)))) $(SHARED_SRC) \
             build/gen/schema_sql.c build/gen/console_html.c
-IMPORT_SRC := migrate/import.c
-TLIB_SRC := $(sort $(wildcard test/lib_*.c))
-UNIT_SRC := $(sort $(wildcard test/unit_*.c))
-UNITS    := $(patsubst test/%.c,%,$(UNIT_SRC))
+IMPORT_SRC := $(C_ROOT)/foolish/server/migrate/import.c
+TEST_SRC := $(sort $(foreach r,$(TEST_ROOTS),$(wildcard $(r)/*.c)))
+TLIB_SRC := $(sort $(foreach r,$(TEST_ROOTS),$(wildcard $(r)/lib_*.c)))
+UNIT_SRC := $(sort $(foreach r,$(TEST_ROOTS),$(wildcard $(r)/unit_*.c)))
+UNITS    := $(sort $(basename $(notdir $(UNIT_SRC))))
+# The one file a test program is named after, wherever its side keeps it.
+tsrc = $(filter %/$(1).c,$(TEST_SRC) $(BENCH_DYNAMO))
+BENCH_DYNAMO := providers/aws/bench/bench_dynamo.c
+ifneq ($(words $(UNITS)),$(words $(UNIT_SRC)))
+  $(error two test roots hold a unit test of the same name)
+endif
 
 # $(call prog,<outdir>,<cb variant>,<kernel variant>,<name>,<sources>,<flags var>)
 define PROG
@@ -154,22 +164,24 @@ prog = $(eval $(call PROG,$(1),$(2),$(3),$(4),$(5),$(6)))
 $(call prog,build,build/obj/cbase,build/obj/kernel,cbase,$(MAIN_SERVE),CB_CFLAGS)
 $(call prog,build,build/obj/cbase,build/obj/kernel,bootstrap,$(MAIN_LAMBDA),CB_CFLAGS)
 $(call prog,build,build/obj/cbase,build/obj/kernel,cbase-import,$(IMPORT_SRC),CB_CFLAGS)
-# The /m/<payload> cases test/fixture_unfurl.h holds, made by the kernel
-# (tools/unfurl_payloads.c). Not part of any check: it is run by hand when the
-# goldens are regenerated.
-$(call prog,build,build/obj/cbase,build/obj/kernel,unfurl-payloads,tools/unfurl_payloads.c,CB_CFLAGS)
+# The /m/<payload> cases foolish/server/test/fixture_unfurl.h holds, made by the kernel
+# ($(C_ROOT)/foolish/server/tools/unfurl_payloads.c). Not part of any check: it
+# is run by hand when the goldens are regenerated.
+$(call prog,build,build/obj/cbase,build/obj/kernel,unfurl-payloads,$(C_ROOT)/foolish/server/tools/unfurl_payloads.c,CB_CFLAGS)
 $(call prog,build/asan,build/obj/asan,build/obj/asan-kernel,cbase,$(MAIN_SERVE),ASAN_CB_CFLAGS)
 $(call prog,build/asan,build/obj/asan,build/obj/asan-kernel,bootstrap,$(MAIN_LAMBDA),ASAN_CB_CFLAGS)
-$(foreach u,$(UNITS),$(call prog,build/test,build/obj/cbase,build/obj/kernel,$(u),test/$(u).c $(TLIB_SRC),CB_CFLAGS))
-$(foreach u,$(UNITS),$(call prog,build/asan/test,build/obj/asan,build/obj/asan-kernel,$(u),test/$(u).c $(TLIB_SRC),ASAN_CB_CFLAGS))
-$(foreach s,smoke smoke_lambda smoke_lambda_after smoke_authz smoke_matrix smoke_boot bench_dynamo,$(call prog,build/test,build/obj/cbase,build/obj/kernel,$(s),test/$(s).c $(TLIB_SRC),CB_CFLAGS))
-# The bench (bench/): its own program, and a unit test of its statistics and
-# report that runs with the others.
-BENCH_SRC := $(filter-out bench/unit_%.c,$(sort $(wildcard bench/*.c)))
+$(foreach u,$(UNITS),$(call prog,build/test,build/obj/cbase,build/obj/kernel,$(u),$(call tsrc,$(u)) $(TLIB_SRC),CB_CFLAGS))
+$(foreach u,$(UNITS),$(call prog,build/asan/test,build/obj/asan,build/obj/asan-kernel,$(u),$(call tsrc,$(u)) $(TLIB_SRC),ASAN_CB_CFLAGS))
+$(foreach s,smoke smoke_lambda smoke_lambda_after smoke_authz smoke_matrix smoke_boot bench_dynamo,$(call prog,build/test,build/obj/cbase,build/obj/kernel,$(s),$(call tsrc,$(s)) $(TLIB_SRC),CB_CFLAGS))
+# The bench (bench/, the harness and its statistics, and each side's
+# bench/): its own program, and a unit test of its statistics and report that
+# runs with the others. bench_dynamo is a program of its own (bench-dynamo).
+BENCH_ROOTS := bench providers/aws/bench $(C_ROOT)/foolish/server/bench
+BENCH_SRC := $(filter-out bench/unit_%.c $(BENCH_DYNAMO),$(sort $(foreach r,$(BENCH_ROOTS),$(wildcard $(r)/*.c))))
 $(call prog,build,build/obj/cbase,build/obj/kernel,cbase-bench,$(BENCH_SRC),CB_CFLAGS)
 $(call prog,build/test,build/obj/cbase,build/obj/kernel,unit_bench,bench/unit_bench.c bench/bench_stats.c,CB_CFLAGS)
 $(call prog,build/asan/test,build/obj/asan,build/obj/asan-kernel,unit_bench,bench/unit_bench.c bench/bench_stats.c,ASAN_CB_CFLAGS)
-$(foreach s,smoke smoke_lambda smoke_lambda_after smoke_authz smoke_matrix smoke_boot,$(call prog,build/asan/test,build/obj/asan,build/obj/asan-kernel,$(s),test/$(s).c $(TLIB_SRC),ASAN_CB_CFLAGS))
+$(foreach s,smoke smoke_lambda smoke_lambda_after smoke_authz smoke_matrix smoke_boot,$(call prog,build/asan/test,build/obj/asan,build/obj/asan-kernel,$(s),$(call tsrc,$(s)) $(TLIB_SRC),ASAN_CB_CFLAGS))
 
 .PHONY: coverage all test smoke check check-asan test-asan smoke-asan check-dynamo bench-dynamo clean print-kernel-src bootstrap bench
 all: build/cbase build/bootstrap build/cbase-import build/cbase-bench
@@ -226,7 +238,7 @@ check-asan: shared-tests-asan $(call UNIT_RUNS,build/asan/test) $(call SMOKE_PRO
 	$(call RUN_ALL,ASAN CHECK,$(call SMOKE_RUNS,build/asan) $(call UNIT_RUNS,build/asan/test))
 
 # The DynamoDB backend against Amazon's DynamoDB Local: the table made from
-# ops/cbase.yaml (dropped and made empty first), the schema's bots seeded as a
+# providers/aws/ops/cbase.yaml (dropped and made empty first), the schema's bots seeded as a
 # deploy seeds them, then the unit tests that touch a real store (each on its
 # own fresh table) and the whole game smoke, every one with CBASE_STORE=dynamo.
 DYNAMO_UNITS := unit_store unit_admin unit_import unit_v1
@@ -234,34 +246,35 @@ DYNAMO_UNITS := unit_store unit_admin unit_import unit_v1
 # THE KEY-CAPTURE PROOF (docs/PLATFORM.md stages 5 and 6): every request the
 # lane sends is reduced to its shape (json_surface.h dw_shape: the keys and
 # index keys it touches, normalized, and every attribute name), and the set of
-# shapes must equal test/golden/dynamo_shapes.txt. A change that moves a key
+# shapes must equal providers/aws/test/golden/dynamo_shapes.txt. A change that moves a key
 # or renames an attribute fails here; `make dynamo-shapes` rewrites the golden
 # file, for a change that means to.
 DYNAMO_SHAPES := $(CURDIR)/build/dynamo_shapes.raw
+DYNAMO_GOLDEN := providers/aws/test/golden/dynamo_shapes.txt
 check-dynamo: $(addprefix build/test/,$(DYNAMO_UNITS)) build/cbase build/cbase-import build/test/smoke build/test/smoke_matrix
-	ops/dynamo_local.sh --reset > build/dynamo.env
+	providers/aws/ops/dynamo_local.sh --reset > build/dynamo.env
 	rm -f $(DYNAMO_SHAPES)
 	. ./build/dynamo.env && CBASE_DYNAMO_CAPTURE=$(DYNAMO_SHAPES) build/cbase-import --seed-bots
 	. ./build/dynamo.env && export CBASE_DYNAMO_CAPTURE=$(DYNAMO_SHAPES) && $(call RUN_ALL_SH,DYNAMO CHECK,'build/test/smoke build/cbase' 'build/test/smoke_matrix build/cbase' $(addprefix build/test/,$(DYNAMO_UNITS)))
 	LC_ALL=C sort -u $(DYNAMO_SHAPES) > build/dynamo_shapes.txt
-	@diff -u test/golden/dynamo_shapes.txt build/dynamo_shapes.txt || { echo "check-dynamo: the store's DynamoDB keys or attributes changed (above); make dynamo-shapes if that is meant"; exit 1; }
+	@diff -u $(DYNAMO_GOLDEN) build/dynamo_shapes.txt || { echo "check-dynamo: the store's DynamoDB keys or attributes changed (above); make dynamo-shapes if that is meant"; exit 1; }
 	@echo "check-dynamo: $$(wc -l < build/dynamo_shapes.txt) request shapes, as recorded"
 dynamo-shapes: check-dynamo-shapes-run
-	cp build/dynamo_shapes.txt test/golden/dynamo_shapes.txt
+	cp build/dynamo_shapes.txt $(DYNAMO_GOLDEN)
 .PHONY: dynamo-shapes check-dynamo-shapes-run
 check-dynamo-shapes-run:
 	$(MAKE) check-dynamo || test -s build/dynamo_shapes.txt
 
-# Per-operation latency against DynamoDB Local (test/bench_dynamo.c), the
+# Per-operation latency against DynamoDB Local (providers/aws/bench/bench_dynamo.c), the
 # baseline DESIGN.md "Store" records. Not part of any check.
 bench-dynamo: build/test/bench_dynamo
-	ops/dynamo_local.sh > build/dynamo.env
+	providers/aws/ops/dynamo_local.sh > build/dynamo.env
 	. ./build/dynamo.env && build/test/bench_dynamo
 
 # The Lambda artifact: dist/bootstrap and dist/bootstrap.zip, static Linux
-# arm64, built in a pinned arm64 Alpine container (tools/build_bootstrap.sh).
+# arm64, built in a pinned arm64 Alpine container (providers/aws/ops/build_bootstrap.sh).
 bootstrap:
-	tools/build_bootstrap.sh
+	providers/aws/ops/build_bootstrap.sh
 
 bench: build/cbase-bench
 
@@ -284,8 +297,8 @@ $(eval $(call C_VARIANT,build/obj/cov,CC,COV_CB_CFLAGS))
 $(eval $(call C_VARIANT,build/obj/cov-kernel,CC,COV_KERNEL_CFLAGS,,netwire+netclient+mqtt:$(COV_FLAGS)))
 $(call prog,build/cov,build/obj/cov,build/obj/cov-kernel,cbase,$(MAIN_SERVE),COV_CB_CFLAGS)
 $(call prog,build/cov,build/obj/cov,build/obj/cov-kernel,bootstrap,$(MAIN_LAMBDA),COV_CB_CFLAGS)
-$(foreach u,$(UNITS),$(call prog,build/cov/test,build/obj/cov,build/obj/cov-kernel,$(u),test/$(u).c $(TLIB_SRC),COV_CB_CFLAGS))
-$(foreach s,smoke smoke_lambda smoke_lambda_after smoke_authz smoke_matrix smoke_boot,$(call prog,build/cov/test,build/obj/cov,build/obj/cov-kernel,$(s),test/$(s).c $(TLIB_SRC),COV_CB_CFLAGS))
+$(foreach u,$(UNITS),$(call prog,build/cov/test,build/obj/cov,build/obj/cov-kernel,$(u),$(call tsrc,$(u)) $(TLIB_SRC),COV_CB_CFLAGS))
+$(foreach s,smoke smoke_lambda smoke_lambda_after smoke_authz smoke_matrix smoke_boot,$(call prog,build/cov/test,build/obj/cov,build/obj/cov-kernel,$(s),$(call tsrc,$(s)) $(TLIB_SRC),COV_CB_CFLAGS))
 build/cov_gate: tools/cov_gate.c
 	@mkdir -p $(@D)
 	$(CC) -std=gnu11 -O2 -Wall -Wextra -Werror $< -o $@
@@ -313,7 +326,7 @@ coverage: $(addprefix build/cov/test/,$(UNITS)) build/cov/cbase build/cov/bootst
 	@tail -4 build/cov/report.txt
 COV_JOBS ?= $(shell getconf _NPROCESSORS_ONLN)
 
-# The fuzz targets: every fuzz/fz_*.c (fuzz/fuzz.mk).
+# The fuzz targets: every <side>/fuzz/fz_*.c (fuzz/fuzz.mk).
 include fuzz/fuzz.mk
 
 print-kernel-src:
