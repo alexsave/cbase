@@ -12,6 +12,8 @@
 #include "roster.h"
 #include "table.h"
 #include "view.h"
+#include "evwire.h"
+#include "game.h"
 
 #include "../../shared/c/mqtt/mqtt.h"
 
@@ -1557,6 +1559,255 @@ static void a_reconcile_lets_go_with_the_subscription(void) {
     T_CHECK(nc_next_request(T0 + 100 + NC_RECONCILE_MS) == NULL);
 }
 
+// ---- the quiet game ----------------------------------------------------------------------
+//
+// The stream is at most once: a lost LAST cast has no later one to show its
+// gap, so a live game that hears nothing for NC_QUIET_MS (plus a jitter) is read.
+
+// An envelope of `gid` at `v` for `viewer` whose board's status is `status`
+// (one byte of state: GAME_STATUS_*, as view.c's state_put opens).
+static int envelope_status(const char *gid, uint32_t v, int viewer, int status, uint8_t *out, int cap) {
+    int at = env_header_write(out, cap, viewer, v, NULL);
+    T_CHECK(at > 0);
+    env_header_set_view_len(out, at, 3);
+    out[at + 2] = (uint8_t)status;
+    static Roster r;
+    memset(&r, 0, sizeof r);
+    T_EQ_INT(roster_seat_add(&r, "u1", 2, "ANA", 3, NULL, 0), 0);
+    int t = roster_trailer_write(&r, gid, (int)strlen(gid), status, 0, 1,
+                                 out + at + 3, cap - at - 3);
+    T_CHECK(t > 0);
+    return at + 3 + t;
+}
+
+// A cast at `v` whose sequence (no events) ends on a board of `status`.
+static int cast_status(uint32_t v, int status, uint8_t *out, int cap) {
+    int at = evwire_cast_header_put(v, out, cap);
+    T_EQ_INT(at, EVW_CAST_HEADER_BYTES);
+    const uint8_t seq[] = { EVWIRE_FORMAT_VERSION, 0, EVW_SEAT_NONE, 0, 1, 0, (uint8_t)status, 0 };
+    memcpy(out + at, seq, sizeof seq);
+    return at + (int)sizeof seq;
+}
+
+static void quiet_answer(host_t *h, uint32_t id, uint32_t v, const uint8_t *env, int n, int64_t now) {
+    static uint8_t b[1024];
+    NwBlob eb = { env, (uint32_t)n };
+    int len = nw_view_encode(v, eb, b, sizeof b);
+    T_CHECK(len > 0);
+    const NcDone *d = nc_on_response(id, 200, b, len, now);
+    host_events(h);
+    host_done(h, d, b);
+}
+
+// A game subscription made live at `now`, its catch-up read answered with `env` at `v`.
+static void quiet_live(host_t *h, const char *gid, uint32_t v, const uint8_t *env, int n, int64_t now) {
+    T_EQ_INT(nc_stream_sub(NW_SUB_GAME, gid, (int)strlen(gid)), NW_OK);
+    cpkt s;
+    while ((s = next_pkt(now)).type && !(s.what == NW_SUB_GAME && strcmp(s.gid, gid) == 0)) {}
+    T_EQ_INT(s.type, MQTT_SUBSCRIBE);
+    T_EQ_INT(suback(s.pid, 0, 2, now)->kind, NC_EV_SEATED);
+    const NcRequest *q = nc_next_request(now);
+    char path[32];
+    snprintf(path, sizeof path, "/v1/games/%s", gid);
+    T_CHECK(path_is(q, path));
+    quiet_answer(h, id_of(q), v, env, n, now);
+}
+
+// The host's loop from `now` until `until`: every wake does what a host does
+// (requests, then the stream's frames) and sleeps nc_due_ms. Returns the time
+// the first read of `gid` went out (its request in *out), or -1 for none.
+static int64_t quiet_run(const char *gid, int64_t now, int64_t until, uint32_t *out) {
+    char path[32];
+    int pl = snprintf(path, sizeof path, "/v1/games/%s", gid);
+    for (int wakes = 0; now <= until && wakes < 100000; wakes++) {
+        for (const NcRequest *q; (q = nc_next_request(now));) {
+            if (q->path_len == pl && memcmp(q->path, path, (size_t)pl) == 0) { *out = id_of(q); return now; }
+            nc_on_response(id_of(q), 500, NULL, 0, now);
+        }
+        while (next_pkt(now).type) {}
+        int d = nc_due_ms(now);
+        if (d < 0) break;
+        now += d ? d : 1;
+    }
+    return -1;
+}
+
+// The lost last cast: after NC_QUIET_MS and the jitter of silence, exactly one
+// read, at that moment (the host's loop woke for it), and the board is current.
+// No read while the pushes keep coming, nor before the deadline.
+static void a_lost_last_cast_is_read_once_after_the_quiet(void) {
+    signed_in(T0 + 360000000);
+    live(T0);
+    host_t h;
+    memset(&h, 0, sizeof h);
+    uint8_t env[256], c[64];
+    quiet_live(&h, "g1", 5, env, envelope_status("g1", 5, 0, GAME_STATUS_PLAYING, env, sizeof env), T0);
+    T_EQ_INT(h.table_v, 5);
+    // The pushes keep coming every 20 s for ten minutes: never a read.
+    int64_t t = T0;
+    uint32_t v = 5, id = 0;
+    for (int k = 0; k < 30; k++) {
+        T_EQ_INT((int)quiet_run("g1", t, t + 20000 - 1, &id), -1);
+        t += 20000;
+        v++;
+        host_push(&h, NW_WS_CAST, "g1", v, c, (uint32_t)cast_status(v, GAME_STATUS_PLAYING, c, sizeof c), t);
+    }
+    T_EQ_INT(h.table_v, 35);
+    // 36 is committed and its cast lost. Nothing is heard from here on.
+    int64_t heard = t;
+    int64_t at = quiet_run("g1", heard, heard + 10 * NC_QUIET_MS, &id);
+    T_CHECK(at >= heard + NC_QUIET_MS);
+    T_CHECK(at < heard + NC_QUIET_MS + NC_QUIET_JITTER_MS);
+    T_CHECK(nc_next_request(at) == NULL);   // exactly one
+    T_EQ_INT(nc_pump_due_ms(at), -1);
+    T_CHECK(nc_stream_due_ms(at) > 0);      // and the wait starts over: no wake at once
+    int64_t ans = at + 20000;               // a slow answer
+    quiet_answer(&h, id, 36, env, envelope_status("g1", 36, 0, GAME_STATUS_PLAYING, env, sizeof env), ans);
+    T_EQ_INT(h.table_v, 36);
+    T_EQ_INT(h.refetched, 2);   // the catch-up and this one
+    // The answer is heard too: the next read is a whole quiet after it.
+    uint32_t id2 = 0;
+    int64_t again = quiet_run("g1", ans, ans + 10 * NC_QUIET_MS, &id2);
+    T_CHECK(again >= ans + NC_QUIET_MS && again < ans + NC_QUIET_MS + NC_QUIET_JITTER_MS);
+    // An answer that shows nothing newer leaves the board as it is.
+    quiet_answer(&h, id2, 36, env, envelope_status("g1", 36, 0, GAME_STATUS_PLAYING, env, sizeof env), again);
+    T_EQ_INT(h.table_v, 36);
+    T_EQ_INT(h.refetched, 2);   // a stale answer of its own read: nothing handed out
+}
+
+// A stale cast is heard as well as a new one: the game's pushes arrive.
+static void a_stale_cast_is_heard_too(void) {
+    signed_in(T0 + 360000000);
+    live(T0);
+    host_t h;
+    memset(&h, 0, sizeof h);
+    uint8_t env[256], c[64];
+    quiet_live(&h, "g1", 5, env, envelope_status("g1", 5, 0, GAME_STATUS_PLAYING, env, sizeof env), T0);
+    // A stale cast (4) at T0 + 50 s puts the quiet off by as much.
+    host_push(&h, NW_WS_CAST, "g1", 4, c, (uint32_t)cast_status(4, GAME_STATUS_PLAYING, c, sizeof c), T0 + 50000);
+    T_EQ_INT(h.casts, 0);
+    uint32_t id = 0;
+    T_EQ_INT((int)quiet_run("g1", T0 + 50000, T0 + 50000 + NC_QUIET_MS - 1, &id), -1);
+    int64_t at = quiet_run("g1", T0 + 50000, T0 + 200000, &id);
+    T_CHECK(at >= T0 + 50000 + NC_QUIET_MS && at < T0 + 50000 + NC_QUIET_MS + NC_QUIET_JITTER_MS);
+}
+
+// A finished game is never read: its terminal board came as a cast (a host
+// that decodes casts) or as an answered envelope (a host of boards). A rematch
+// at the same table (a board that is not over) is watched again.
+static void a_finished_game_is_not_read(void) {
+    uint8_t env[256], c[64];
+    uint32_t id = 0;
+    for (int how = 0; how < 2; how++) {
+        signed_in(T0 + 360000000);
+        live(T0);
+        host_t h;
+        memset(&h, 0, sizeof h);
+        quiet_live(&h, "g1", 5, env, envelope_status("g1", 5, 0, GAME_STATUS_PLAYING, env, sizeof env), T0);
+        if (how == 0) {
+            host_push(&h, NW_WS_CAST, "g1", 6, c, (uint32_t)cast_status(6, GAME_STATUS_GAME_OVER, c, sizeof c), T0 + 10);
+            T_EQ_INT(h.casts, 1);
+        } else {
+            NcIntent open = intent(NC_DO_OPEN_GAME, "g1");
+            T_CHECK(nc_do(&open, T0 + 10) != 0);
+            const NcRequest *q = nc_next_request(T0 + 10);
+            T_CHECK(path_is(q, "/v1/games/g1"));
+            quiet_answer(&h, id_of(q), 6, env, envelope_status("g1", 6, 0, GAME_STATUS_GAME_OVER, env, sizeof env), T0 + 10);
+            T_EQ_INT(h.table_v, 6);
+        }
+        T_EQ_INT((int)quiet_run("g1", T0 + 10, T0 + 30 * NC_QUIET_MS, &id), -1);
+        // The table starts over: watched again.
+        int64_t t = T0 + 30 * NC_QUIET_MS;
+        host_push(&h, NW_WS_CAST, "g1", 7, c, (uint32_t)cast_status(7, GAME_STATUS_WAITING, c, sizeof c), t);
+        T_EQ_INT(h.table_v, 7);
+        int64_t at = quiet_run("g1", t, t + 10 * NC_QUIET_MS, &id);
+        T_CHECK(at >= t + NC_QUIET_MS && at < t + NC_QUIET_MS + NC_QUIET_JITTER_MS);
+    }
+}
+
+// Nothing is read for a game whose subscription the host let go, nor while
+// the socket is down (the reconnect's catch-up owns that).
+static void a_released_game_is_not_read(void) {
+    signed_in(T0 + 360000000);
+    live(T0);
+    host_t h;
+    memset(&h, 0, sizeof h);
+    uint8_t env[256];
+    uint32_t id = 0;
+    quiet_live(&h, "g1", 5, env, envelope_status("g1", 5, 0, GAME_STATUS_PLAYING, env, sizeof env), T0);
+    T_EQ_INT(nc_stream_unsub(NW_SUB_GAME, "g1", 2), NW_OK);
+    T_EQ_INT((int)quiet_run("g1", T0, T0 + 30 * NC_QUIET_MS, &id), -1);
+    // Held again and live: watched; then the socket closes: not.
+    int64_t t = T0 + 30 * NC_QUIET_MS;
+    quiet_live(&h, "g1", 5, env, envelope_status("g1", 5, 0, GAME_STATUS_PLAYING, env, sizeof env), t);
+    nc_stream_closed(t + 1000);
+    T_EQ_INT(nc_stream_due_ms(t + 1000), -1);
+    for (int64_t k = t + 1000; k < t + 30 * NC_QUIET_MS; k += 1000) T_CHECK(nc_next_request(k) == NULL);
+}
+
+// A catch-up that failed is no reason to read at once: the quiet starts when
+// the subscription goes live.
+static void a_failed_catch_up_waits_the_quiet(void) {
+    signed_in(T0 + 360000000);
+    live(T0);
+    T_EQ_INT(nc_stream_sub(NW_SUB_GAME, "g1", 2), NW_OK);
+    cpkt s = next_pkt(T0);
+    T_EQ_INT(s.what, NW_SUB_GAME);
+    suback(s.pid, 0, 2, T0);
+    const NcRequest *q = nc_next_request(T0);
+    T_CHECK(path_is(q, "/v1/games/g1"));
+    nc_on_response(id_of(q), 500, NULL, 0, T0);
+    uint32_t id = 0;
+    int64_t at = quiet_run("g1", T0, T0 + 10 * NC_QUIET_MS, &id);
+    T_CHECK(at >= T0 + NC_QUIET_MS && at < T0 + NC_QUIET_MS + NC_QUIET_JITTER_MS);
+}
+
+// A spectator's game is watched alike: the spectators' casts, then silence.
+static void a_spectators_game_is_read_after_the_quiet(void) {
+    signed_in(T0 + 360000000);
+    live(T0);
+    host_t h;
+    memset(&h, 0, sizeof h);
+    uint8_t env[256], c[64];
+    uint32_t id = 0;
+    quiet_live(&h, "g2", 7, env, envelope_status("g2", 7, -1, GAME_STATUS_PLAYING, env, sizeof env), T0);
+    host_push_on(&h, NW_WS_CAST, "g2", 8, c, (uint32_t)cast_status(8, GAME_STATUS_PLAYING, c, sizeof c), 1, T0 + 5000);
+    T_EQ_INT(h.casts, 1);
+    T_EQ_INT(h.table_v, 8);
+    int64_t at = quiet_run("g2", T0 + 5000, T0 + 10 * NC_QUIET_MS, &id);
+    T_CHECK(at >= T0 + 5000 + NC_QUIET_MS && at < T0 + 5000 + NC_QUIET_MS + NC_QUIET_JITTER_MS);
+    quiet_answer(&h, id, 9, env, envelope_status("g2", 9, -1, GAME_STATUS_PLAYING, env, sizeof env), at);
+    T_EQ_INT(h.table_v, 9);
+}
+
+// The jitter of every wait is below NC_QUIET_JITTER_MS, and it varies.
+static void the_quiet_jitter_is_bounded(void) {
+    signed_in(T0 + 360000000);
+    live(T0);
+    host_t h;
+    memset(&h, 0, sizeof h);
+    uint8_t env[256], c[64];
+    quiet_live(&h, "g1", 1, env, envelope_status("g1", 1, 0, GAME_STATUS_PLAYING, env, sizeof env), T0);
+    int lo = NC_QUIET_JITTER_MS, hi = -1, seen[64] = { 0 }, kinds = 0;
+    int64_t t = T0;
+    for (uint32_t v = 2; v < 402; v++) {
+        t += 1000 + (v * 37) % 1000;
+        host_push(&h, NW_WS_CAST, "g1", v, c, (uint32_t)cast_status(v, GAME_STATUS_PLAYING, c, sizeof c), t);
+        // At the quiet's own end, with the keep-alive just sent, the stream's
+        // wake is the jitter itself.
+        while (next_pkt(t + NC_QUIET_MS).type) {}
+        int j = nc_stream_due_ms(t + NC_QUIET_MS);
+        T_CHECK(j >= 0 && j < NC_QUIET_JITTER_MS);
+        if (j < lo) lo = j;
+        if (j > hi) hi = j;
+        int b = j * 64 / NC_QUIET_JITTER_MS;
+        if (b >= 0 && b < 64 && !seen[b]++) kinds++;
+        t += NC_QUIET_MS;
+    }
+    T_CHECK(hi - lo > NC_QUIET_JITTER_MS / 2);
+    T_CHECK(kinds > 32);   // spread over the range, not one value
+}
+
 int main(void) {
     T_RUN(session_blob);
     T_RUN(requests);
@@ -1587,5 +1838,12 @@ int main(void) {
     T_RUN(fast_games_leave_the_pump_as_it_was);
     T_RUN(a_reconcile_lets_go_once_caught_up);
     T_RUN(a_reconcile_lets_go_with_the_subscription);
+    T_RUN(a_lost_last_cast_is_read_once_after_the_quiet);
+    T_RUN(a_stale_cast_is_heard_too);
+    T_RUN(a_finished_game_is_not_read);
+    T_RUN(a_released_game_is_not_read);
+    T_RUN(a_failed_catch_up_waits_the_quiet);
+    T_RUN(a_spectators_game_is_read_after_the_quiet);
+    T_RUN(the_quiet_jitter_is_bounded);
     return T_DONE();
 }
