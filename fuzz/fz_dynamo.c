@@ -10,6 +10,7 @@
 #include "store/store.h"
 #include "util/b64.h"
 #include "util/json.h"
+#include "../../shared/c/num_parse.h"
 
 #include <ctype.h>
 
@@ -139,11 +140,10 @@ static bool ref_get_n(cb_span item, const char *name, int64_t *out) {
     char t[32];
     cb_span tok;
     if (!ref_attr(item, name, "N", &tok) || cb_json_unescape(tok, t, sizeof t) < 1) return false;
-    char *end;
-    long long v = strtoll(t, &end, 10);
-    if (*end) return false;
-    *out = v;
-    return true;
+    // The number rule itself is num_parse_i64's (strtoll's leniency went on
+    // 2026-10-18), and fz_num holds that against its own model; this oracle
+    // is about finding the attribute.
+    return num_parse_i64_cstr(t, INT64_MIN, INT64_MAX, out);
 }
 
 static bool ref_get_bool(cb_span item, const char *name, bool *out) {
