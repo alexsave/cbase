@@ -1453,7 +1453,7 @@ static void fast_games_leave_the_pump_as_it_was(void) {
     host_t h;
     memset(&h, 0, sizeof h);
     const uint8_t v5[] = { 0x55 }, c9[] = { 0xc9 };
-    char gid[8];
+    char gid[16];   // "g" and any int: gcc checks the bound, not the loop
     int64_t now = T0;
     for (int k = 0; k < 40; k++, now += 20) {
         snprintf(gid, sizeof gid, "g%d", k);
