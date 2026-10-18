@@ -985,7 +985,7 @@ static void the_template_stays_free(void) {
 typedef struct { int n; char kinds[8][24], ids[8][48]; } told_t;
 static bool tell(const char *pk, const char *sk, void *ud) {
     told_t *t = ud;
-    char id[64];
+    char id[sizeof t->ids[0]];
     const char *kind = cb_import_export_kind(pk, sk, id, sizeof id);
     if (kind && t->n < 8) {
         snprintf(t->kinds[t->n], sizeof t->kinds[0], "%s", kind);
