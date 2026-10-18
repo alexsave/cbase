@@ -1165,8 +1165,10 @@ bool dw_ibatch(dw_req *r, const char *table, const cb_ikey *keys, const int *whi
         // Every name aliased: status and state are reserved words.
         char pe[1024] = "";
         size_t off = 0;
+        // The keys always: the answer is matched back to the keys asked by them.
+        off += (size_t)snprintf(pe, sizeof pe, "pk, sk");
         for (int i = 0; i < n_proj && off < sizeof pe; i++)
-            off += (size_t)snprintf(pe + off, sizeof pe - off, "%s#p%d", i ? ", " : "", i);
+            off += (size_t)snprintf(pe + off, sizeof pe - off, ", #p%d", i);
         cb_jw_kstr(&w, "ProjectionExpression", pe);
         cb_jw_key(&w, "ExpressionAttributeNames");
         cb_jw_obj(&w);
