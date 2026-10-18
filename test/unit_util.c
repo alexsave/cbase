@@ -206,6 +206,16 @@ static void json_reader(void) {
     T_EQ_STR(s, "player_id=eq.x");
     T_EQ_INT(cb_json_find(doc, n, "config.postgres_changes.2", NULL), CB_JSON_MISSING);
     T_CHECK(!cb_json_get_str(doc, n, "email", s, 3));   // too long for the buffer
+    T_EQ_STR(s, "");                                     // and none of it is left behind
+    {
+        const char lone[] = "{\"t\":\"r\\udae7\"}";   // the 'r' unescapes, the lone surrogate does not
+        strcpy(s, "stale");
+        T_CHECK(!cb_json_get_str(lone, sizeof lone - 1, "t", s, sizeof s));
+        T_EQ_STR(s, "");
+        strcpy(s, "stale");
+        T_CHECK(!cb_json_get_str(lone, sizeof lone - 1, "missing", s, sizeof s));
+        T_EQ_STR(s, "");
+    }
     // Malformed documents.
     T_CHECK(!cb_json_valid("{\"a\":}", 6));
     T_CHECK(!cb_json_valid("[1,]", 4));

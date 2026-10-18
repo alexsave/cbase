@@ -2658,7 +2658,15 @@ static int decode_iot_auth(const char *json, size_t len, cb_event *ev) {
             a->token[0] = 0;
         }
     }
-    if (!a->token_len && cb_json_get_str(json, len, "token", a->token, sizeof a->token)) a->token_len = strlen(a->token);
+    // IoT's copy of a query parameter. Kept only when it unescapes whole and
+    // holds no NUL: a failed unescape may have written part of it, and a
+    // \u0000 would cut it short, so either leaves no token at all.
+    if (!a->token_len) {
+        cb_span v;
+        int n = cb_json_find(json, len, "token", &v) == CB_JSON_STR ? cb_json_unescape(v, a->token, sizeof a->token) : -1;
+        if (n > 0 && (size_t)n == strlen(a->token)) a->token_len = (size_t)n;
+        else a->token[0] = 0;
+    }
     if (!a->token_len) {
         char qs[4096];
         if (cb_json_get_str(json, len, "protocolData.http.queryString", qs, sizeof qs))

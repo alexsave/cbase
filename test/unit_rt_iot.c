@@ -371,6 +371,26 @@ static void decoded_events(void) {
     T_EQ_INT(cb_event_decode(nul, strlen(nul), &ev), CB_OK);
     T_EQ_INT(ev.iot.token_len, 0);
     cb_event_free(&ev);
+    // IoT's "token" that does not unescape (a lone surrogate after a byte that
+    // did): no token, and nothing of it left in the buffer (fuzz/corpus/event
+    // crash-03e40c70, which had a password that did not decode either).
+    const char *lone = "{\"token\":\"r\\udae7\\ueae1\",\"protocolData\":{\"mqtt\":{\"password\":\"***\"}}}";
+    T_EQ_INT(cb_event_decode(lone, strlen(lone), &ev), CB_OK);
+    T_EQ_INT(ev.iot.token_len, 0);
+    T_EQ_STR(ev.iot.token, "");
+    cb_event_free(&ev);
+    // A "token" holding \u0000 is no token, never the part before the NUL.
+    const char *cut = "{\"token\":\"tok\\u0000x\",\"protocolData\":{}}";
+    T_EQ_INT(cb_event_decode(cut, strlen(cut), &ev), CB_OK);
+    T_EQ_INT(ev.iot.token_len, 0);
+    T_EQ_STR(ev.iot.token, "");
+    cb_event_free(&ev);
+    // A whole one is the token.
+    const char *whole = "{\"token\":\"tok-\\u0041\",\"protocolData\":{}}";
+    T_EQ_INT(cb_event_decode(whole, strlen(whole), &ev), CB_OK);
+    T_EQ_INT(ev.iot.token_len, 5);
+    T_EQ_STR(ev.iot.token, "tok-A");
+    cb_event_free(&ev);
 }
 
 // The answer for one event: allowed, and the answer's JSON in *out.

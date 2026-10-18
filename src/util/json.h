@@ -88,7 +88,8 @@ typedef enum {
 cb_json_type cb_json_find(const char *json, size_t n, const char *path, cb_span *out);
 
 // A string value, unescaped (\uXXXX and surrogate pairs become UTF-8), into
-// out with a NUL. false when missing, not a string, malformed, or longer than cap-1.
+// out with a NUL. false when missing, not a string, malformed, or longer than
+// cap-1, and then out is "" (never a part of the string).
 bool cb_json_get_str(const char *json, size_t n, const char *path, char *out, size_t cap);
 // An integer value (no fraction or exponent; fits int64). false otherwise.
 bool cb_json_get_i64(const char *json, size_t n, const char *path, int64_t *out);

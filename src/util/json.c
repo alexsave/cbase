@@ -408,8 +408,10 @@ int cb_json_unescape(cb_span tok, char *out, size_t cap) {
 
 bool cb_json_get_str(const char *json, size_t n, const char *path, char *out, size_t cap) {
     cb_span v;
-    if (cb_json_find(json, n, path, &v) != CB_JSON_STR) return false;
-    return cb_json_unescape(v, out, cap) >= 0;
+    bool ok = cb_json_find(json, n, path, &v) == CB_JSON_STR && cb_json_unescape(v, out, cap) >= 0;
+    // A failed unescape may have written part of the string: leave none.
+    if (!ok && out && cap) out[0] = 0;
+    return ok;
 }
 
 bool cb_json_get_i64(const char *json, size_t n, const char *path, int64_t *out) {

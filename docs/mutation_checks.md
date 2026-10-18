@@ -610,3 +610,13 @@ The parser was written as c_base/src/util/num.c and moved, unchanged, into share
 - config.c: CBASE_LISTEN's port range from -1 -> `unit_edges` `configuration_refusals` "h:-0" refused.
 - json_surface.c: a DynamoDB N only non-negative -> `unit_dynamo` `numbers_are_digits` INT64_MIN read.
 - unit_num_gate.c: a strtol, a strtod and an sscanf each planted at the end of src/util/log.c -> `only_num_parse_i64_reads_numbers` violations == 0.
+
+## The IoT authorizer's token, unescaped whole or not at all (2026-10-18)
+
+The fuzz-smoke run on main at 56a9fe87c found `fz_event`'s invariant broken: an IoT authorizer event whose `"token"` unescaped one byte (`r`) and then failed on a lone surrogate left `ev.iot.token` holding `r` with `token_len` 0.
+Two fixes, for two vectors, each held by its own test: `cb_json_get_str` leaves `out` empty on any failure (every caller), and `decode_iot_auth` reads `"token"` by `cb_json_unescape` and keeps it only when it is whole and holds no NUL (a `\u0000` would have cut it short, which `cb_json_get_str` cannot see).
+The hand-minimised input is `fuzz/corpus/event/crash-40a6db73`.
+
+- json_surface.c: the old token path (`cb_json_get_str` then `strlen`), json.c fixed -> `unit_rt_iot` `decoded_events` the `\u0000` token: token_len == 0 and token == "".
+- json.c: no clear on failure, json_surface.c fixed -> `unit_util` `json_reader` s == "" after a too-long value, a lone surrogate and a missing key.
+- both reverted -> `unit_rt_iot` the lone-surrogate token == "", and `fz_event` replay of crash-40a6db73 fails its FZ_CHECK.
