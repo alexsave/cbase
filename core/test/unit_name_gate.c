@@ -200,7 +200,7 @@ static void scan_dir(const char *dir, int forbidden) {
     while ((e = readdir(d)) != NULL) {
         if (e->d_name[0] == '.') continue;
         char p[512];
-        snprintf(p, sizeof p, "%s/%s", dir, e->d_name);
+        if (snprintf(p, sizeof p, "%s/%s", dir, e->d_name) >= (int)sizeof p) continue;   // no path is that long
         struct stat st;
         if (stat(p, &st) != 0) continue;
         if (S_ISDIR(st.st_mode)) { scan_dir(p, forbidden); continue; }
@@ -226,7 +226,7 @@ static void scan_tree(void) {
     while (d && (e = readdir(d)) != NULL) {
         if (e->d_name[0] == '.') continue;
         char p[300];
-        snprintf(p, sizeof p, "providers/%s/src", e->d_name);
+        if (snprintf(p, sizeof p, "providers/%s/src", e->d_name) >= (int)sizeof p) continue;
         scan_dir(p, L_PRODUCTS | L_DOMAIN);
     }
     if (d) closedir(d);
