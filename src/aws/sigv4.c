@@ -12,13 +12,18 @@
 #include "util/err.h"
 #include "util/hex.h"
 
-#include <openssl/hmac.h>
-#include <openssl/sha.h>
+#include <openssl/evp.h>
+#include <openssl/opensslv.h>
 
 #include <ctype.h>
+#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+#if OPENSSL_VERSION_MAJOR < 3
+#error "sigv4.c fetches SHA-256 once through OpenSSL 3's EVP_MD_fetch"
+#endif
 
 #define MAX_SIGNED 32
 
@@ -38,15 +43,123 @@ int cb_aws_creds_from_env(cb_aws_creds *out) {
     return CB_OK;
 }
 
-static void sha256_hex(const void *p, size_t n, char out[65]) {
-    uint8_t d[SHA256_DIGEST_LENGTH];
-    SHA256(p, n, d);
-    cb_hex_encode(d, sizeof d, out, 65);
+// ---- SHA-256 and HMAC-SHA256 ---------------------------------------------------
+//
+// OpenSSL 3's one-shot SHA256() and HMAC() fetch their algorithm by name on
+// every call (evp_generic_fetch), which was a fifth of the signer's time. The
+// digest is fetched once per process, and HMAC (RFC 2104) is written over it:
+// two digests, the key padded to SHA-256's 64-byte block.
+
+static EVP_MD *g_sha256;
+static pthread_once_t g_sha256_once = PTHREAD_ONCE_INIT;
+
+static void sha256_fetch(void) { g_sha256 = EVP_MD_fetch(NULL, "SHA256", NULL); }
+
+static const EVP_MD *sha256_md(void) {
+    pthread_once(&g_sha256_once, sha256_fetch);
+    return g_sha256;
 }
 
-static void hmac(const void *key, size_t klen, const void *msg, size_t mlen, uint8_t out[32]) {
-    unsigned int len = 32;
-    HMAC(EVP_sha256(), key, (int)klen, msg, mlen, out, &len);
+// The digest of the parts in order. false: no memory, or no SHA-256 in libcrypto.
+static bool sha256_parts(const void *const *p, const size_t *n, int k, uint8_t out[32]) {
+    const EVP_MD *md = sha256_md();
+    EVP_MD_CTX *c = md ? EVP_MD_CTX_new() : NULL;
+    bool ok = c && EVP_DigestInit_ex(c, md, NULL) == 1;
+    for (int i = 0; ok && i < k; i++) ok = EVP_DigestUpdate(c, p[i], n[i]) == 1;
+    unsigned int len = 0;
+    ok = ok && EVP_DigestFinal_ex(c, out, &len) == 1 && len == 32;
+    EVP_MD_CTX_free(c);
+    return ok;
+}
+
+static bool sha256_hex(const void *p, size_t n, char out[65]) {
+    uint8_t d[32];
+    if (!sha256_parts(&p, &n, 1, d)) return false;
+    cb_hex_encode(d, sizeof d, out, 65);
+    return true;
+}
+
+static bool hmac(const void *key, size_t klen, const void *msg, size_t mlen, uint8_t out[32]) {
+    uint8_t k[64] = { 0 }, ipad[64], opad[64], inner[32];
+    if (klen > sizeof k) {
+        if (!sha256_parts(&key, &klen, 1, k)) return false;
+    } else {
+        memcpy(k, key, klen);
+    }
+    for (int i = 0; i < 64; i++) {
+        ipad[i] = k[i] ^ 0x36;
+        opad[i] = k[i] ^ 0x5c;
+    }
+    const void *ip[2] = { ipad, msg }, *op[2] = { opad, inner };
+    size_t in[2] = { 64, mlen }, on[2] = { 64, 32 };
+    return sha256_parts(ip, in, 2, inner) && sha256_parts(op, on, 2, out);
+}
+
+// ---- the signing key -------------------------------------------------------------
+//
+// The key is the HMAC chain "AWS4"+secret -> date -> region -> service ->
+// "aws4_request": four HMACs that only change with the day, the region, the
+// service or the credentials. Each thread keeps the last few it derived,
+// keyed by all four inputs, so a request signs with one HMAC. A secret that
+// changes (Lambda's session credentials rotate under a warm container) or a
+// date that rolls over is a different key: it is derived, and the oldest
+// entry gives way.
+
+#define KEYS 4
+
+typedef struct {
+    bool    used;
+    char    secret[sizeof(((cb_aws_creds *)0)->secret_key)];
+    char    date[9];
+    char    region[sizeof(((cb_aws_creds *)0)->region)];
+    char    service[32];
+    uint8_t key[32];
+} signing_key;
+
+static _Thread_local signing_key t_keys[KEYS];
+static _Thread_local int t_keys_next;
+static _Thread_local uint64_t t_derived;
+
+uint64_t cb_sigv4_keys_derived(void) { return t_derived; }
+
+static bool derive(const char *secret, const char *date, const char *region, const char *service, uint8_t out[32]) {
+    char k0[4 + sizeof(((cb_aws_creds *)0)->secret_key)];
+    size_t sl = strlen(secret);
+    memcpy(k0, "AWS4", 4);
+    memcpy(k0 + 4, secret, sl);
+    uint8_t kd[32], kr[32], ks[32];
+    bool ok = hmac(k0, 4 + sl, date, 8, kd) && hmac(kd, 32, region, strlen(region), kr) &&
+              hmac(kr, 32, service, strlen(service), ks) && hmac(ks, 32, "aws4_request", 12, out);
+    memset(k0, 0, sizeof k0);
+    t_derived++;
+    return ok;
+}
+
+// The key for (secret, the date's first 8 characters, region, service).
+static bool signing_key_for(const char *secret, const char *date, const char *region, const char *service,
+                            uint8_t out[32]) {
+    if (strlen(secret) >= sizeof t_keys[0].secret || strlen(region) >= sizeof t_keys[0].region ||
+        strlen(service) >= sizeof t_keys[0].service)
+        return derive(secret, date, region, service, out);   // too long to keep: derived each time
+    for (int i = 0; i < KEYS; i++) {
+        const signing_key *e = &t_keys[i];
+        if (e->used && memcmp(e->date, date, 8) == 0 && strcmp(e->secret, secret) == 0 &&
+            strcmp(e->region, region) == 0 && strcmp(e->service, service) == 0) {
+            memcpy(out, e->key, 32);
+            return true;
+        }
+    }
+    if (!derive(secret, date, region, service, out)) return false;
+    signing_key *e = &t_keys[t_keys_next];
+    t_keys_next = (t_keys_next + 1) % KEYS;
+    memset(e, 0, sizeof *e);
+    e->used = true;
+    strcpy(e->secret, secret);
+    memcpy(e->date, date, 8);
+    strcpy(e->region, region);
+    strcpy(e->service, service);
+    memcpy(e->key, out, 32);
+    return true;
 }
 
 static bool unreserved(unsigned char c) {
@@ -185,28 +298,21 @@ int cb_sigv4_debug(const cb_aws_creds *c, const cb_sigv4_req *r, cb_buf *canonic
     }
     cb_buf_putc(canonical, '\n');
     char ph[65];
-    sha256_hex(r->payload ? r->payload : "", r->payload ? r->payload_len : 0, ph);
+    if (!sha256_hex(r->payload ? r->payload : "", r->payload ? r->payload_len : 0, ph)) return CB_E_NOMEM;
     cb_buf_puts(canonical, ph);
     if (canonical->oom) return CB_E_NOMEM;
 
     // The string to sign.
     char ch[65];
-    sha256_hex(canonical->p, canonical->len, ch);
+    if (!sha256_hex(canonical->p, canonical->len, ch)) return CB_E_NOMEM;
     cb_buf_reset(sts);
     cb_buf_printf(sts, "AWS4-HMAC-SHA256\n%s\n%.8s/%s/%s/aws4_request\n%s", date, date, c->region, r->service, ch);
     if (sts->oom) return CB_E_NOMEM;
 
     // The signing key and the signature.
-    char k0[4 + sizeof c->secret_key];
-    size_t sl = strlen(c->secret_key);
-    memcpy(k0, "AWS4", 4);
-    memcpy(k0 + 4, c->secret_key, sl);
-    uint8_t kd[32], kr[32], ks[32], kk[32], sg[32];
-    hmac(k0, 4 + sl, date, 8, kd);
-    hmac(kd, 32, c->region, strlen(c->region), kr);
-    hmac(kr, 32, r->service, strlen(r->service), ks);
-    hmac(ks, 32, "aws4_request", 12, kk);
-    hmac(kk, 32, sts->p, sts->len, sg);
+    uint8_t kk[32], sg[32];
+    if (!signing_key_for(c->secret_key, date, c->region, r->service, kk) || !hmac(kk, 32, sts->p, sts->len, sg))
+        return CB_E_NOMEM;
     cb_hex_encode(sg, 32, sig, 65);
     return CB_OK;
 }

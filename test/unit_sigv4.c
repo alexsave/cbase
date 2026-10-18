@@ -11,8 +11,12 @@
 
 #include "aws/sigv4.h"
 #include "util/err.h"
+#include "util/hex.h"
+
+#include <openssl/hmac.h>
 
 #include <stdlib.h>
+#include <pthread.h>
 
 typedef struct {
     const char *name, *method, *host, *path, *query;
@@ -296,11 +300,111 @@ static void creds_from_env(void) {
     T_EQ_INT(cb_aws_creds_from_env(&c), CB_E_INVALID);
 }
 
+// ---- the signing key, kept --------------------------------------------------------
+//
+// The signature as AWS defines it, from libcrypto's own HMAC (not the
+// signer's): the chain from "AWS4"+secret, then the string to sign.
+static void reference_sig(const char *secret, const char *date8, const char *region, const char *service,
+                          const char *sts, char out[65]) {
+    char k0[300];
+    snprintf(k0, sizeof k0, "AWS4%s", secret);
+    uint8_t a[32], b[32];
+    unsigned int len = 32;
+    HMAC(EVP_sha256(), k0, (int)strlen(k0), (const uint8_t *)date8, 8, a, &len);
+    HMAC(EVP_sha256(), a, 32, (const uint8_t *)region, strlen(region), b, &len);
+    HMAC(EVP_sha256(), b, 32, (const uint8_t *)service, strlen(service), a, &len);
+    HMAC(EVP_sha256(), a, 32, (const uint8_t *)"aws4_request", 12, b, &len);
+    HMAC(EVP_sha256(), b, 32, (const uint8_t *)sts, strlen(sts), a, &len);
+    cb_hex_encode(a, 32, out, 65);
+}
+
+// Signs get-vanilla with these inputs and checks the signature against the
+// reference; *derived is how many keys the signer derived for it.
+static void sign_one(const char *secret, const char *region, const char *service, int64_t now_ms, uint64_t *derived) {
+    cb_aws_creds c = example_creds("");
+    cb_strlcpy(c.secret_key, secret, sizeof c.secret_key);
+    cb_strlcpy(c.region, region, sizeof c.region);
+    cb_sigv4_req r = req_of(&VECS[0]);
+    r.service = service;
+    r.now_ms = now_ms;
+    cb_buf canon, sts;
+    cb_buf_init(&canon);
+    cb_buf_init(&sts);
+    char sig[65], want[65];
+    uint64_t before = cb_sigv4_keys_derived();
+    T_EQ_INT(cb_sigv4_debug(&c, &r, &canon, &sts, sig), CB_OK);
+    *derived = cb_sigv4_keys_derived() - before;
+    char date8[9];
+    memcpy(date8, cb_buf_cstr(&sts) + 17, 8);   // "AWS4-HMAC-SHA256\n" then the date
+    date8[8] = 0;
+    reference_sig(secret, date8, region, service, cb_buf_cstr(&sts), want);
+    T_EQ_STR(sig, want);
+    cb_buf_free(&canon);
+    cb_buf_free(&sts);
+}
+
+// A key is derived once per (secret, date, region, service) and reused; any
+// of the four changing is a new key, and a rotated secret never signs with the
+// old one's key.
+static void signing_key_kept(void) {
+    const int64_t day = 86400000;
+    uint64_t d;
+    sign_one("secret-one", "us-east-1", "dynamodb", T_2015_08_30_123600, &d);
+    T_EQ_INT(d, 1);
+    sign_one("secret-one", "us-east-1", "dynamodb", T_2015_08_30_123600 + 1000, &d);   // same day: kept
+    T_EQ_INT(d, 0);
+    sign_one("secret-two", "us-east-1", "dynamodb", T_2015_08_30_123600, &d);          // rotated
+    T_EQ_INT(d, 1);
+    sign_one("secret-one", "us-east-1", "dynamodb", T_2015_08_30_123600, &d);          // both kept
+    T_EQ_INT(d, 0);
+    sign_one("secret-one", "us-east-1", "dynamodb", T_2015_08_30_123600 + day, &d);    // the next day
+    T_EQ_INT(d, 1);
+    sign_one("secret-one", "eu-west-1", "dynamodb", T_2015_08_30_123600, &d);          // another region
+    T_EQ_INT(d, 1);
+    sign_one("secret-one", "us-east-1", "execute-api", T_2015_08_30_123600, &d);       // another service
+    T_EQ_INT(d, 1);
+    // Four kept at most: the oldest went when the fifth came, the newest stay.
+    sign_one("secret-one", "us-east-1", "execute-api", T_2015_08_30_123600, &d);
+    T_EQ_INT(d, 0);
+    sign_one("secret-one", "us-east-1", "dynamodb", T_2015_08_30_123600, &d);
+    T_EQ_INT(d, 1);
+    // A service name too long to keep is derived every time, and still right.
+    const char *longsvc = "a-service-name-of-forty-characters-long!";
+    sign_one("secret-one", "us-east-1", longsvc, T_2015_08_30_123600, &d);
+    T_EQ_INT(d, 1);
+    sign_one("secret-one", "us-east-1", longsvc, T_2015_08_30_123600, &d);
+    T_EQ_INT(d, 1);
+    // A secret long enough that "AWS4"+secret is more than HMAC's 64-byte
+    // block (the key is hashed first, RFC 2104).
+    sign_one("0123456789012345678901234567890123456789012345678901234567890123456789", "us-east-1", "dynamodb",
+             T_2015_08_30_123600, &d);
+    T_EQ_INT(d, 1);
+}
+
+// The keys are per thread: a thread that signs derives its own.
+static void *sign_on_thread(void *arg) {
+    uint64_t *d = arg;
+    sign_one("secret-one", "us-east-1", "dynamodb", T_2015_08_30_123600 + 2000, d);
+    return NULL;
+}
+
+static void signing_key_per_thread(void) {
+    uint64_t d;
+    sign_one("secret-one", "us-east-1", "dynamodb", T_2015_08_30_123600, &d);
+    pthread_t th;
+    uint64_t other = 99;
+    T_EQ_INT(pthread_create(&th, NULL, sign_on_thread, &other), 0);
+    pthread_join(th, NULL);
+    T_EQ_INT(other, 1);
+}
+
 int main(void) {
     T_RUN(aws_test_suite);
     T_RUN(signed_header_lines);
     T_RUN(path_double_encoded);
     T_RUN(bad_headers_refused);
     T_RUN(creds_from_env);
+    T_RUN(signing_key_kept);
+    T_RUN(signing_key_per_thread);
     return T_DONE();
 }

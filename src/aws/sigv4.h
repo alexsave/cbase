@@ -50,6 +50,11 @@ typedef struct {
 // CB_OK, or CB_E_INVALID (a header without ':', more than 32 headers).
 int cb_sigv4_sign(const cb_aws_creds *c, const cb_sigv4_req *r, cb_buf *out);
 
+// The signing keys this thread has derived (sigv4.c "the signing key": each
+// is kept and reused until the date, region, service or secret changes). For
+// the tests.
+uint64_t cb_sigv4_keys_derived(void);
+
 // The pieces cb_sigv4_sign computes, exposed for the test suite vectors:
 // the canonical request, the string to sign and the hex signature.
 int cb_sigv4_debug(const cb_aws_creds *c, const cb_sigv4_req *r, cb_buf *canonical, cb_buf *string_to_sign,
