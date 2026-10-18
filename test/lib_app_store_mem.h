@@ -7,7 +7,7 @@
 // fixed capacities, linear scans.
 //
 // Hooks a test drives:
-//   steal_commits  the next N game_commit calls find the stored version moved
+//   steal_commits  the next N game_commit or game_delete calls find the stored version moved
 //                  on by "another writer" (the stored version is bumped first),
 //                  so the CAS loses exactly as a real race would.
 //   fail_ratings   ratings_for answers CB_E_DB.

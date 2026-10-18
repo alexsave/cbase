@@ -16,6 +16,7 @@
 #include "util/log.h"
 #include "util/str.h"
 #include "util/uuid.h"
+#include "../../../shared/c/rng.h"
 
 #include <pthread.h>
 #include <stdio.h>
@@ -568,6 +569,19 @@ static bool fresh_only(int rc) {
     return rc == TABLE_STALE_ROUND || rc == TABLE_REJECTED;
 }
 
+// The pause before attempt `attempt` after the last one lost to another
+// writer (table_ops.h CB_TABLE_BACKOFF_MS): none before the second, then full
+// jitter under a ceiling that doubles, so writers that keep colliding drift
+// apart instead of reloading in step. rng.h, one stream a thread: a jitter,
+// not a secret.
+static int64_t contention_pause(int attempt) {
+    if (attempt < 3) return 0;
+    static _Thread_local uint64_t rng;
+    if (!rng) rng = rng_seed64((uint64_t)cb_mono_ms() ^ (uint64_t)(uintptr_t)&rng);
+    int64_t cap = (int64_t)CB_TABLE_BACKOFF_MS << (attempt - 3);
+    return (int64_t)(rng_splitmix64(&rng) % (uint64_t)(cap + 1));
+}
+
 int cb_table_run(cb_ctx *ctx, const cb_table_op *op, cb_table_result *out) {
     memset(out, 0, sizeof *out);
     if (!ctx->store) return CB_E_STATE;
@@ -578,7 +592,15 @@ int cb_table_run(cb_ctx *ctx, const cb_table_op *op, cb_table_result *out) {
     bool have_ratings = false;
     int ret = CB_E_CONFLICT;
 
+    // An attempt lost to another writer. Only the first attempt can come from
+    // the cache (and go again for that), so every attempt after a loss
+    // follows one.
+    bool contended = false;
     for (int attempt = 1; attempt <= CB_TABLE_ATTEMPTS; attempt++) {
+        if (contended) {
+            int64_t pause = contention_pause(attempt);
+            if (pause > 0) cb_app_sleep(pause);
+        }
         cb_game_row row;
         bool cached = false;
         int rc = cb_row_load(ctx, op->game_id, !op->fresh && attempt == 1, &row, &cached);
@@ -620,6 +642,7 @@ int cb_table_run(cb_ctx *ctx, const cb_table_op *op, cb_table_result *out) {
             cb_row_cache_drop(op->game_id);
             if (ret == CB_E_CONFLICT) {
                 cb_game_row_free(&row);
+                contended = true;
                 continue;
             }
             if (ret == CB_OK) {
@@ -652,7 +675,7 @@ int cb_table_run(cb_ctx *ctx, const cb_table_op *op, cb_table_result *out) {
         ret = cb_section_commit(ctx, s, &row, seed, actor, ratings, &have_ratings, &co);
         cb_game_row_free(&row);
         if (ret != CB_OK) break;
-        if (co.lost) { ret = CB_E_CONFLICT; continue; }
+        if (co.lost) { ret = CB_E_CONFLICT; contended = true; continue; }
         out->committed = true;
         out->version = co.version;
         out->needs_bots = co.needs_bots;

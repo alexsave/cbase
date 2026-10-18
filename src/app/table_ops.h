@@ -45,6 +45,10 @@
 #include <stdint.h>
 
 #define CB_TABLE_ATTEMPTS 5
+// A lost CAS reloads and runs again at once (the winner has written by then);
+// from the third attempt on, each waits a uniform pause of up to
+// CB_TABLE_BACKOFF_MS << (attempt - 3): 10, 20 and 40 ms, 70 at most in all.
+#define CB_TABLE_BACKOFF_MS 10
 #define CB_TABLE_ID_DRAWS 5      // create: game ids tried before giving up (MAX_ID_DRAWS)
 #define CB_ENVELOPE_MAX   16384  // one envelope or cast, with room to spare
 

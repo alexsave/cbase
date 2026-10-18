@@ -255,8 +255,13 @@ static int m_game_delete(cb_store *s, const char *id, int64_t expected) {
     int rc;
     pthread_mutex_lock(&m->mu);
     tm_game *g = find_game(m, id);
+    if (g && m->hooks.steal_commits > 0) {
+        // Another writer committed first.
+        m->hooks.steal_commits--;
+        g->row.version++;
+    }
     if (!g) rc = CB_E_NOT_FOUND;
-    else if (g->row.version != expected) rc = CB_E_CONFLICT;
+    else if (g->row.version != expected) { rc = CB_E_CONFLICT; m->hooks.conflicts++; }
     else { cb_game_row_free(&g->row); memset(g, 0, sizeof *g); rc = CB_OK; }
     for (int i = 0; rc == CB_OK && i < m->n_snaps; i++)
         if (strcmp(m->snaps[i].game_id, id) == 0) m->snaps[i].game_id[0] = 0;

@@ -48,7 +48,13 @@ static cb_store *g_store;
 
 static int64_t g_now = 1760000000000LL;
 static int64_t fake_now(void) { return g_now; }
-static void fake_sleep(int64_t ms) { g_now += ms; }
+// Every pause taken, in order (the table's contention backoff among them).
+static int64_t g_slept[64];
+static int     g_nslept;
+static void fake_sleep(int64_t ms) {
+    g_now += ms;
+    if (g_nslept < 64) g_slept[g_nslept++] = ms;
+}
 
 // ---- recorders -------------------------------------------------------------------------
 
@@ -599,6 +605,74 @@ static void a_lost_cas_reloads_and_wins(void) {
     T_EQ_INT(r.status, 500);
     T_EQ_INT(refusal_why(&r, NULL), ASK_WHY_INTERNAL);
     T_EQ_INT(h->commits, commits + 1);
+}
+
+// A lost CAS reloads at once; a second loss in a row and later ones wait a
+// jittered pause under a doubling ceiling (table_ops.h CB_TABLE_BACKOFF_MS).
+static void contention_backs_off_with_jitter(void) {
+    setup(0);
+    char gid[CB_GAME_ID_MAX + 1];
+    two_humans_dealt(gid);
+    tm_hooks *h = tm_hooks_of(g_store);
+    reply r;
+    // One loss: the reload is immediate.
+    h->steal_commits = 1;
+    g_nslept = 0;
+    T_CHECK(any_human_move(gid, &r));
+    T_EQ_INT(r.status, 200);
+    T_EQ_INT(g_nslept, 0);
+    // Every attempt lost, many times over: pauses before attempts 3, 4 and 5
+    // only, each within its ceiling, and not the same pause every time.
+    int64_t max_seen[3] = { 0 }, min_seen[3] = { 1000, 1000, 1000 };
+    for (int run = 0; run < 40; run++) {
+        h->steal_commits = CB_TABLE_ATTEMPTS;
+        g_nslept = 0;
+        T_CHECK(any_human_move(gid, &r));
+        T_EQ_INT(r.status, 500);
+        T_CHECK(g_nslept <= 3);
+        int64_t total = 0;
+        for (int i = 0; i < g_nslept; i++) total += g_slept[i];
+        T_CHECK(total <= 70);
+        // A pause of 0 is not taken, so the pauses are matched to their
+        // attempts by ceiling only: none may pass the largest one's.
+        for (int i = 0; i < g_nslept; i++) T_CHECK(g_slept[i] >= 1 && g_slept[i] <= 40);
+        if (g_nslept == 3)
+            for (int i = 0; i < 3; i++) {
+                T_CHECK(g_slept[i] <= (int64_t)CB_TABLE_BACKOFF_MS << i);
+                if (g_slept[i] > max_seen[i]) max_seen[i] = g_slept[i];
+                if (g_slept[i] < min_seen[i]) min_seen[i] = g_slept[i];
+            }
+    }
+    // Jitter: across the runs each ceiling saw spread, and the longest pause
+    // came near its ceiling.
+    T_CHECK(max_seen[2] > min_seen[2]);
+    T_CHECK(max_seen[2] >= 20);
+    T_CHECK(max_seen[0] > min_seen[0]);
+}
+
+// The last seat leaving deletes the game fenced on the version like a commit,
+// and a delete that loses backs off the same way.
+static void a_lost_delete_backs_off(void) {
+    setup(0);
+    char gid[CB_GAME_ID_MAX + 1];
+    reply r;
+    create_game(gid, &r);
+    tm_hooks *h = tm_hooks_of(g_store);
+    h->steal_commits = CB_TABLE_ATTEMPTS;
+    g_nslept = 0;
+    meta("A", ASK_EXIT, gid, NULL, &r);
+    T_EQ_INT(r.status, 500);
+    T_CHECK(g_nslept >= 1 && g_nslept <= 3);
+    for (int i = 0; i < g_nslept; i++) T_CHECK(g_slept[i] >= 1 && g_slept[i] <= 40);
+    cb_game_row row;
+    T_EQ_INT(CB_STORE_CALL(g_store, game_get, gid, &row), CB_OK);   // still there
+    cb_game_row_free(&row);
+    h->steal_commits = 1;
+    g_nslept = 0;
+    meta("A", ASK_EXIT, gid, NULL, &r);
+    T_EQ_INT(r.status, 200);
+    T_EQ_INT(g_nslept, 0);
+    T_EQ_INT(CB_STORE_CALL(g_store, game_get, gid, &row), CB_E_NOT_FOUND);
 }
 
 typedef struct { int n; size_t moves; } snap_seen;
@@ -1992,6 +2066,8 @@ int main(void) {
     T_RUN(an_illegal_action_is_rejected_and_commits_nothing);
     T_RUN(a_stale_intent_is_stale_round);
     T_RUN(a_lost_cas_reloads_and_wins);
+    T_RUN(contention_backs_off_with_jitter);
+    T_RUN(a_lost_delete_backs_off);
     T_RUN(a_refusal_from_a_stale_cache_is_rechecked_fresh);
     T_RUN(a_finished_game_writes_a_snapshot_and_ratings);
     T_RUN(a_new_account_plays_unrated);
