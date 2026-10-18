@@ -1,6 +1,8 @@
 // limits.c - in-memory rate limits (limits.h).
 #include "limits.h"
 
+#include "cbase/provider.h"
+
 #include "util/str.h"
 
 #include <arpa/inet.h>
@@ -135,7 +137,7 @@ static void address_key(const char *in, char *out, size_t cap) {
 void cb_viewer_key(const cb_ctx *ctx, const cb_http_req *req, char *out, size_t cap) {
     if (cap) out[0] = 0;
     const char *v = NULL;
-    if (ctx->mode == CB_MODE_LAMBDA) v = cb_http_header_get(req, "cloudfront-viewer-address");
+    if (ctx->prov && ctx->prov->viewer_header) v = cb_http_header_get(req, ctx->prov->viewer_header);
     if (!v || !*v) v = req->peer;
     if (v && *v) address_key(v, out, cap);
 }

@@ -25,8 +25,11 @@
 #define CB_FUNCTIONS_HTTP_H
 
 #include "auth/auth.h"
+#include "cbase/app.h"
 #include "ctx.h"
 
+// The same routes as a list, for the app (app/foolish_app.c).
+extern const cb_route_list cb_functions_route_list;
 int cb_functions_routes(cb_ctx *ctx);
 
 // delete-account's work after the bearer is verified, for the admin console's

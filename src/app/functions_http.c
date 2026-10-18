@@ -449,19 +449,18 @@ static void h_delete_account(cb_ctx *ctx, const cb_http_req *req, cb_http_res *r
 
 // ---- routes --------------------------------------------------------------------------------
 
+// Every method reaches the handler, as it reached the edge function: the
+// method rules are the functions' own (delete-account's 405), and the
+// router answers OPTIONS (DESIGN.md "Binary surface").
+static const cb_route FUNCTION_ROUTES[] = {
+    { "*", "/v1/create", CB_ROUTE_POOL, h_create },
+    { "*", "/v1/action", CB_ROUTE_POOL, h_action },
+    { "*", "/v1/meta", CB_ROUTE_POOL, h_meta },
+    { "*", "/v1/account/delete", CB_ROUTE_POOL, h_delete_account },
+};
+const cb_route_list cb_functions_route_list = { FUNCTION_ROUTES,
+                                                (int)(sizeof FUNCTION_ROUTES / sizeof FUNCTION_ROUTES[0]) };
+
 int cb_functions_routes(cb_ctx *ctx) {
-    // Every method reaches the handler, as it reached the edge function: the
-    // method rules are the functions' own (delete-account's 405), and the
-    // router answers OPTIONS (DESIGN.md "Binary surface").
-    static const struct { const char *path; cb_handler fn; } routes[] = {
-        { "/v1/create", h_create },
-        { "/v1/action", h_action },
-        { "/v1/meta", h_meta },
-        { "/v1/account/delete", h_delete_account },
-    };
-    for (size_t i = 0; i < sizeof routes / sizeof routes[0]; i++) {
-        int rc = cb_router_add(ctx->router, "*", routes[i].path, CB_ROUTE_POOL, routes[i].fn);
-        if (rc != CB_OK) return rc;
-    }
-    return CB_OK;
+    return cb_router_add_all(ctx->router, FUNCTION_ROUTES, cb_functions_route_list.n);
 }

@@ -1,6 +1,8 @@
 // unit_unfurl.c - GET /m/<payload> (app/unfurl_http.h) against the TypeScript
 // route's goldens (fixture_unfurl.h), and the router's HEAD (net/router.h).
 #include "t.h"
+#include "app/foolish_app.h"
+#include "cbase/provider.h"
 
 #include "app/unfurl_http.h"
 #include "config.h"
@@ -130,7 +132,8 @@ static void setup(bool unfurl_only) {
     cb_config_from_env(&g_cfg, err, sizeof err);
     memset(&g_ctx, 0, sizeof g_ctx);
     g_ctx.cfg = &g_cfg;
-    g_ctx.mode = CB_MODE_SERVE;
+    g_ctx.prov = &cb_provider_local;
+    g_ctx.app = &cb_foolish_app;
     g_ctx.router = cb_router_new();
     if (unfurl_only) T_EQ_INT(cb_unfurl_routes(&g_ctx), CB_OK);
     else T_EQ_INT(cb_routes_register(&g_ctx), CB_OK);

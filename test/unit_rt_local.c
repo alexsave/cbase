@@ -4,6 +4,7 @@
 // sockets, and every refusal closing.
 // unit_stream.c drives the same server with the kernel's client library.
 #include "t.h"
+#include "cbase/provider.h"
 
 #include "handler.h"
 #include "lib_client.h"
@@ -42,7 +43,7 @@ static void start(void) {
     memset(&g_cfg, 0, sizeof g_cfg);
     strcpy(g_cfg.allowed_origins, "*");
     g_ctx.cfg = &g_cfg;
-    g_ctx.mode = CB_MODE_SERVE;
+    g_ctx.prov = &cb_provider_local;
     g_ctx.loop = cb_loop_new();
     g_ctx.req_pool = cb_pool_new(3, "trt");
     g_ctx.router = cb_router_new();

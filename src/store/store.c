@@ -9,6 +9,11 @@
 #include <string.h>
 #include <strings.h>
 
+int cb_store_open_named(const char *store, const char *fallback, const char *db_path, const char *table, cb_store **out) {
+    const char *name = store && *store ? store : fallback;
+    return name && strcmp(name, "dynamo") == 0 ? cb_store_open_dynamo(table, out) : cb_store_open_sqlite(db_path, out);
+}
+
 void cb_game_row_free(cb_game_row *g) {
     free(g->state);
     free(g->roster);

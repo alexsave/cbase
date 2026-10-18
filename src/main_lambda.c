@@ -20,13 +20,13 @@
 //
 // Every invocation ends with one INFO line, so latency is measured rather
 // than estimated (CloudWatch Logs Insights reads it with `parse`):
-//   inv: http GET /v1/leaderboard 200 ms=8.4 after=0.0 ddb=2/7.9/0 push=0/0.0/0 other=0/0.0/0 rid=<request id> ip=<viewer>
+//   inv: http GET /v1/leaderboard 200 ms=8.4 after=0.0 store=2/7.9/0 push=0/0.0/0 other=0/0.0/0 rid=<request id> ip=<viewer>
 // ip is the viewer's address an HTTP request came from (CloudFront's
 // CloudFront-Viewer-Address, app/limits.h cb_viewer_key): with it this line is
 // the API's access log, at no cost past the line it already was (finding M9;
 // CloudFront's own standard logs are a delivery to set up and pay for).
 // ms is decode to response posted, after is the work done once the response
-// is out (app/after.h: the pushes, the kicks, the edge invalidation), and each ddb|push|other
+// is out (app/after.h: the pushes, the kicks, the edge invalidation), and each store|push|other
 // is calls/ms/new connections (aws/https.h). rid is the invocation's Lambda
 // request id (Lambda-Runtime-Aws-Request-Id), the id Lambda's own REPORT line
 // carries, so Logs Insights can join the two (billed duration, memory, init).
@@ -37,7 +37,9 @@
 #include "aws/https.h"
 #include "aws/runtime_api.h"
 #include "aws/ssm.h"
+#include "app/foolish_app.h"
 #include "boot.h"
+#include "cbase/provider.h"
 #include "config.h"
 #include "ctx.h"
 #include "handler.h"
@@ -65,9 +67,9 @@ static char g_viewer[96];
 static void log_timing(const char *what, const char *request_id, int64_t t0, int64_t t_resp, int64_t t_end) {
     cb_https_tally t;
     cb_https_tally_take(&t);
-    CB_INFO("inv", "%s ms=%.1f after=%.1f ddb=%d/%.1f/%d push=%d/%.1f/%d other=%d/%.1f/%d rid=%s ip=%s", what,
-            (double)(t_resp - t0) / 1000.0, (double)(t_end - t_resp) / 1000.0, t.ddb.calls, (double)t.ddb.us / 1000.0,
-            t.ddb.dials, t.push.calls, (double)t.push.us / 1000.0, t.push.dials, t.other.calls,
+    CB_INFO("inv", "%s ms=%.1f after=%.1f store=%d/%.1f/%d push=%d/%.1f/%d other=%d/%.1f/%d rid=%s ip=%s", what,
+            (double)(t_resp - t0) / 1000.0, (double)(t_end - t_resp) / 1000.0, t.store.calls, (double)t.store.us / 1000.0,
+            t.store.dials, t.push.calls, (double)t.push.us / 1000.0, t.push.dials, t.other.calls,
             (double)t.other.us / 1000.0, t.other.dials, request_id, g_viewer[0] ? g_viewer : "-");
 }
 
@@ -143,7 +145,8 @@ int main(void) {
     cb_log_init(cfg.log_level, 0);
     static cb_ctx ctx;
     ctx.cfg = &cfg;
-    ctx.mode = CB_MODE_LAMBDA;
+    ctx.prov = &cb_provider_aws;
+    ctx.app = &cb_foolish_app;
     if (cb_boot(&ctx, err, sizeof err) != CB_OK) {
         CB_ERROR("lambda", "%s", err);
         cb_runtime_init_error(host, port, "Boot", err);

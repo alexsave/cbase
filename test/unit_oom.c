@@ -13,6 +13,8 @@
 // The operations are the routes a client calls, through cb_handle on a whole
 // booted context (the in-RAM store), and boot itself.
 #include "oom.h"
+#include "app/foolish_app.h"
+#include "cbase/provider.h"
 #include "t.h"
 #include "app/limits.h"
 
@@ -55,7 +57,8 @@ static int boot(void) {
     g_cfg.jwt_ttl_s = 3600;
     g_cfg.max_body = 1 << 20;
     g_ctx.cfg = &g_cfg;
-    g_ctx.mode = CB_MODE_SERVE;
+    g_ctx.prov = &cb_provider_local;
+    g_ctx.app = &cb_foolish_app;
     char err[256];
     return cb_boot(&g_ctx, err, sizeof err);
 }

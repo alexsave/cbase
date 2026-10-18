@@ -4,6 +4,7 @@
 // bytes do not load, the AWS console links (and CloudWatch's own escaping),
 // the backups listed newest first, and a backup directory that cannot be made.
 #include "t.h"
+#include "cbase/provider.h"
 
 #include "admin/admin.h"
 #include "handler.h"
@@ -72,7 +73,7 @@ static const cb_store_ops OPS_DYNAMO = { .name = "dynamo", .admin_query = f_quer
 static cb_store g_store = { .ops = &OPS };
 static cb_store g_store_dy = { .ops = &OPS_DYNAMO };
 
-static void setup(cb_store *store, int mode, const char *db_path) {
+static void setup(cb_store *store, const cb_provider *mode, const char *db_path) {
     if (g_ctx.router) cb_router_free(g_ctx.router);
     memset(&g_ctx, 0, sizeof g_ctx);
     memset(&g_cfg, 0, sizeof g_cfg);
@@ -81,7 +82,7 @@ static void setup(cb_store *store, int mode, const char *db_path) {
     snprintf(g_cfg.db_path, sizeof g_cfg.db_path, "%s", db_path);
     snprintf(g_cfg.allowed_origins, sizeof g_cfg.allowed_origins, "*");
     g_ctx.cfg = &g_cfg;
-    g_ctx.mode = mode;
+    g_ctx.prov = mode;
     g_ctx.version = "test";
     g_ctx.router = cb_router_new();
     g_ctx.store = store;
@@ -111,7 +112,7 @@ static bool says(const char *text) { return strstr(cb_buf_cstr(&g_body), text) !
 
 // Each store refusal is its own status, on every call that reads the store.
 static void store_errors_map_to_statuses(void) {
-    setup(&g_store, CB_MODE_SERVE, "/nonexistent-cbase/cbase.sqlite");
+    setup(&g_store, &cb_provider_local, "/nonexistent-cbase/cbase.sqlite");
     static const struct { int rc, status; const char *says; } M[] = {
         { CB_E_NOTIMPL, 501, "not implemented by the sqlite store" },
         { CB_E_NOT_FOUND, 404, "not found" },
@@ -148,7 +149,7 @@ static void store_errors_map_to_statuses(void) {
     snprintf(dir, sizeof dir, "%s/cbase-admin-edges-b-%d", tmp && *tmp ? tmp : "/tmp", (int)getpid());
     mkdir(dir, 0700);
     snprintf(path, sizeof path, "%s/cbase.sqlite", dir);
-    setup(&g_store, CB_MODE_SERVE, path);
+    setup(&g_store, &cb_provider_local, path);
     for (size_t m = 0; m < sizeof M / sizeof M[0]; m++) {
         g_rc = M[m].rc;
         T_EQ_INT(call("POST", "/admin/api/backups", NULL, NULL), M[m].status);
@@ -160,7 +161,7 @@ static void store_errors_map_to_statuses(void) {
 
 // No store: 503 from every call that needs one; the ones that do not still answer.
 static void no_store_is_503(void) {
-    setup(NULL, CB_MODE_SERVE, "/nonexistent-cbase/cbase.sqlite");
+    setup(NULL, &cb_provider_local, "/nonexistent-cbase/cbase.sqlite");
     const char *needs[] = { "/admin/api/users", "/admin/api/collections", "/admin/api/bots", "/admin/api/games", "/admin/api/browse" };
     for (size_t i = 0; i < sizeof needs / sizeof needs[0]; i++) {
         T_EQ_INT(call("GET", needs[i], "c=games&id=x", NULL), 503);
@@ -177,7 +178,7 @@ static void no_store_is_503(void) {
 
 // The bodies and queries each call needs, refused when they are not there.
 static void malformed_asks(void) {
-    setup(&g_store, CB_MODE_SERVE, "/nonexistent-cbase/cbase.sqlite");
+    setup(&g_store, &cb_provider_local, "/nonexistent-cbase/cbase.sqlite");
     g_rc = CB_OK;
     T_EQ_INT(call("GET", "/admin/api/browse", "", NULL), 400);
     T_EQ_INT(call("POST", "/admin/api/query", NULL, "not json"), 400);
@@ -193,7 +194,7 @@ static void malformed_asks(void) {
 // delete-account behind the console: an account that is there, but whose
 // deletion fails part way (its games cannot be listed), or with no auth.
 static void delete_that_cannot_finish(void) {
-    setup(&g_store, CB_MODE_SERVE, "/nonexistent-cbase/cbase.sqlite");
+    setup(&g_store, &cb_provider_local, "/nonexistent-cbase/cbase.sqlite");
     g_rc = CB_OK;
     T_EQ_INT(call("POST", "/admin/api/users/delete", NULL, "{\"id\":\"u1\"}"), 500);
     T_CHECK(says("delete: CB_E_DB"));
@@ -202,7 +203,7 @@ static void delete_that_cannot_finish(void) {
 // A game row whose bytes the kernel will not load: the console still shows
 // the row, with the envelope's error in place of the envelope.
 static void a_game_that_does_not_load(void) {
-    setup(&g_store, CB_MODE_SERVE, "/nonexistent-cbase/cbase.sqlite");
+    setup(&g_store, &cb_provider_local, "/nonexistent-cbase/cbase.sqlite");
     g_rc = CB_OK;
     memset(&g_game, 0, sizeof g_game);
     snprintf(g_game.id, sizeof g_game.id, "ab12cd");
@@ -220,7 +221,7 @@ static void a_game_that_does_not_load(void) {
 // Under Lambda the console links to the function's AWS pages; CloudWatch's
 // queryDetail wants every byte but [A-Za-z0-9_.-] as '*' and two hex digits.
 static void lambda_links(void) {
-    setup(&g_store, CB_MODE_LAMBDA, "/nonexistent-cbase/cbase.sqlite");
+    setup(&g_store, &cb_provider_aws, "/nonexistent-cbase/cbase.sqlite");
     g_rc = CB_OK;
     setenv("AWS_REGION", "us-east-1", 1);
     setenv("AWS_LAMBDA_FUNCTION_NAME", "cbase-Fn", 1);
@@ -245,7 +246,7 @@ static void lambda_links(void) {
     T_CHECK(!says("console.aws.amazon.com"));
     unsetenv("AWS_REGION");
     // The dynamo store's backups: nothing to trigger.
-    setup(&g_store_dy, CB_MODE_LAMBDA, "x");
+    setup(&g_store_dy, &cb_provider_aws, "x");
     T_EQ_INT(call("POST", "/admin/api/backups", NULL, NULL), 409);
     T_EQ_INT(call("GET", "/admin/api/backups", NULL, NULL), 200);
     T_CHECK(says("point-in-time recovery"));
@@ -268,7 +269,7 @@ static void backups_newest_first(void) {
         if (f) { fputs("x", f); fclose(f); }
     }
     snprintf(path, sizeof path, "%s/cbase.sqlite", dir);
-    setup(&g_store, CB_MODE_SERVE, path);
+    setup(&g_store, &cb_provider_local, path);
     T_EQ_INT(call("GET", "/admin/api/backups", NULL, NULL), 200);
     char n0[64] = "", n1[64] = "", n2[64] = "";
     cb_json_get_str(cb_buf_cstr(&g_body), g_body.len, "files.0.name", n0, sizeof n0);
@@ -285,7 +286,7 @@ static void backups_newest_first(void) {
     snprintf(cmd, sizeof cmd, "rm -rf '%s'", dir);
     T_EQ_INT(system(cmd), 0);
     // A database under a file: the backups directory cannot be made.
-    setup(&g_store, CB_MODE_SERVE, "/dev/null/cbase.sqlite");
+    setup(&g_store, &cb_provider_local, "/dev/null/cbase.sqlite");
     g_rc = CB_OK;
     T_EQ_INT(call("POST", "/admin/api/backups", NULL, NULL), 500);
     T_CHECK(says("cannot create the backups directory"));

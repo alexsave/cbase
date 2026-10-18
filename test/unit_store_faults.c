@@ -8,6 +8,8 @@
 // signs a user out, a 404 says their game is gone, a 200 claims a write that
 // did not happen). The unfailed run must answer as it always does.
 #include "t.h"
+#include "app/foolish_app.h"
+#include "cbase/provider.h"
 #include "app/limits.h"
 
 #include "app/app_internal.h"
@@ -42,7 +44,8 @@ static void boot(void) {
     snprintf(g_cfg.table, sizeof g_cfg.table, "cbase");
     g_cfg.jwt_ttl_s = 3600;
     g_ctx.cfg = &g_cfg;
-    g_ctx.mode = CB_MODE_SERVE;
+    g_ctx.prov = &cb_provider_local;
+    g_ctx.app = &cb_foolish_app;
     char err[256];
     T_EQ_INT(cb_boot(&g_ctx, err, sizeof err), CB_OK);
     // The same store, behind the wrapper: every call the routes make goes through it.

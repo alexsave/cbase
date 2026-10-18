@@ -2,6 +2,7 @@
 // and refill, keys and kinds kept apart, the table's fixed memory under a
 // flood of keys, and the viewer address a limit is keyed on.
 #include "t.h"
+#include "cbase/provider.h"
 
 #include "app/limits.h"
 
@@ -53,10 +54,10 @@ static void a_flood_of_keys_stays_bounded(void) {
     T_CHECK(!cb_limit_take(CB_LIMIT_CHAT_USER, "victim", 200, NULL));
 }
 
-static void viewer_key(const char *mode_header, int mode, const char *peer, const char *want) {
+static void viewer_key(const char *mode_header, const cb_provider *mode, const char *peer, const char *want) {
     cb_ctx ctx;
     memset(&ctx, 0, sizeof ctx);
-    ctx.mode = mode;
+    ctx.prov = mode;
     cb_http_req req;
     memset(&req, 0, sizeof req);
     if (mode_header) req.headers[req.n_headers++] = (cb_http_header){ "CloudFront-Viewer-Address", mode_header };
@@ -68,19 +69,19 @@ static void viewer_key(const char *mode_header, int mode, const char *peer, cons
 
 static void the_viewer_address(void) {
     // Under Lambda: CloudFront's header, without its port.
-    viewer_key("203.0.113.7:50238", CB_MODE_LAMBDA, "130.176.0.1", "203.0.113.7");
+    viewer_key("203.0.113.7:50238", &cb_provider_aws, "130.176.0.1", "203.0.113.7");
     // IPv6: cut to the /64, with or without brackets, with or without a port.
-    viewer_key("2001:db8:1:2:3:4:5:6:443", CB_MODE_LAMBDA, NULL, "2001:db8:1:2::/64");
-    viewer_key("[2001:db8:1:2::9]:443", CB_MODE_LAMBDA, NULL, "2001:db8:1:2::/64");
-    viewer_key("2001:db8:1:2:ffff::1", CB_MODE_LAMBDA, NULL, "2001:db8:1:2::/64");
+    viewer_key("2001:db8:1:2:3:4:5:6:443", &cb_provider_aws, NULL, "2001:db8:1:2::/64");
+    viewer_key("[2001:db8:1:2::9]:443", &cb_provider_aws, NULL, "2001:db8:1:2::/64");
+    viewer_key("2001:db8:1:2:ffff::1", &cb_provider_aws, NULL, "2001:db8:1:2::/64");
     // No header: the source address.
-    viewer_key(NULL, CB_MODE_LAMBDA, "198.51.100.9", "198.51.100.9");
+    viewer_key(NULL, &cb_provider_aws, "198.51.100.9", "198.51.100.9");
     // Under serve the socket's peer, whatever a client puts in the header.
-    viewer_key("203.0.113.7:1", CB_MODE_SERVE, "127.0.0.1", "127.0.0.1");
+    viewer_key("203.0.113.7:1", &cb_provider_local, "127.0.0.1", "127.0.0.1");
     // Nothing known: "" (not limited).
-    viewer_key(NULL, CB_MODE_SERVE, NULL, "");
+    viewer_key(NULL, &cb_provider_local, NULL, "");
     // Text that is no address is still a key, as sent.
-    viewer_key("not-an-address", CB_MODE_LAMBDA, NULL, "not-an-address");
+    viewer_key("not-an-address", &cb_provider_aws, NULL, "not-an-address");
 }
 
 int main(void) {

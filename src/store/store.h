@@ -440,6 +440,10 @@ int cb_store_open_sqlite(const char *path, cb_store **out);
 // Opens the DynamoDB table `table` in the region and with the credentials the
 // Lambda environment provides (aws/sigv4.h cb_aws_creds_from_env).
 int cb_store_open_dynamo(const char *table, cb_store **out);
+// The store CBASE_STORE names ("dynamo", else SQLite), or `fallback` when it
+// names none: what each provider's store_open is (cbase/provider.h). The
+// return of the opener it picked.
+int cb_store_open_named(const char *store, const char *fallback, const char *db_path, const char *table, cb_store **out);
 void cb_store_close(cb_store *s);
 
 // What the calling thread has sent DynamoDB since its last take: every request

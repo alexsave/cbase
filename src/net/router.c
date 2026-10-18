@@ -40,6 +40,14 @@ int cb_router_add(cb_router *r, const char *method, const char *pattern, unsigne
     return CB_OK;
 }
 
+int cb_router_add_all(cb_router *r, const cb_route *routes, int n) {
+    for (int i = 0; i < n; i++) {
+        int rc = cb_router_add(r, routes[i].method, routes[i].pattern, routes[i].flags, routes[i].fn);
+        if (rc != CB_OK) return rc;
+    }
+    return CB_OK;
+}
+
 // How well `pattern` matches `path`: -1 not at all, else a score where longer
 // wins and exact beats prefix.
 static long score(const char *pattern, const char *path) {

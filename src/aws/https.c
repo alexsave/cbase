@@ -56,12 +56,12 @@ static int g_npool;
 
 // ---- the tally (https.h) ----------------------------------------------------------
 
-enum { K_DDB, K_PUSH, K_OTHER, K_N };
+enum { K_STORE, K_PUSH, K_OTHER, K_N };
 static _Atomic int     g_calls[K_N], g_dials[K_N];
 static _Atomic int64_t g_us[K_N];
 
 static int host_kind(const char *host, bool tls) {
-    if (!tls || strncmp(host, "dynamodb.", 9) == 0) return K_DDB;
+    if (!tls || strncmp(host, "dynamodb.", 9) == 0) return K_STORE;
     if (strstr(host, ".iot.")) return K_PUSH;
     return K_OTHER;
 }
@@ -73,7 +73,7 @@ static int64_t mono_us(void) {
 }
 
 void cb_https_tally_take(cb_https_tally *out) {
-    cb_https_count *rows[K_N] = { &out->ddb, &out->push, &out->other };
+    cb_https_count *rows[K_N] = { &out->store, &out->push, &out->other };
     for (int k = 0; k < K_N; k++) {
         rows[k]->calls = atomic_exchange_explicit(&g_calls[k], 0, memory_order_relaxed);
         rows[k]->dials = atomic_exchange_explicit(&g_dials[k], 0, memory_order_relaxed);

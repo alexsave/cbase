@@ -90,7 +90,8 @@ It was not chosen because DynamoDB costs nothing and gives the query indexes (a 
 ```
 
 `ctx.h` holds the three seams: `ctx->store`, `ctx->rt` (with its transport), and `ctx->kick_bots`.
-`boot.c` brings a context up the same way for both mains, runs the kernel self-test first, and leaves a module whose constructor answers `CB_E_NOTIMPL` as NULL with a warning, so the skeleton serves /health while modules are being built.
+Each main names its provider (`src/cbase/provider.h`: `cb_provider_aws` or `cb_provider_local`, which picks the store, the transport, the kick, the edge's viewer header and the admin's console links) and its app (`src/cbase/app.h`: `cb_foolish_app`, its route lists and its self-test); nothing else asks which main is running (docs/PLATFORM.md).
+`boot.c` brings a context up the same way for both mains, runs the app's self-test (foolish's kernel self-test) first, and leaves a module whose constructor answers `CB_E_NOTIMPL` as NULL with a warning, so the skeleton serves /health while modules are being built.
 Every handler answers 503 when a handle it needs is NULL.
 
 Under serve, `cb_handle` runs on a request pool for every route but the ones flagged `CB_ROUTE_LOOP` (the WebSocket upgrade, /health), so SQLite and bcrypt never block the network loop.

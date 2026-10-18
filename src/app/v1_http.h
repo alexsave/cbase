@@ -23,10 +23,13 @@
 #ifndef CB_V1_HTTP_H
 #define CB_V1_HTTP_H
 
+#include "cbase/app.h"
 #include "ctx.h"
 
 #include <stddef.h>
 
+// The same routes as a list, for the app (app/foolish_app.c).
+extern const cb_route_list cb_v1_route_list;
 int cb_v1_routes(cb_ctx *ctx);
 
 // The account email a username names: hex(SHA-256(name))[:16] "@foolish.cards",

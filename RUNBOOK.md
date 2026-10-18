@@ -163,6 +163,21 @@ c_base/build/cbase-bench mqtt --url https://api.foolish.cards --n 20 --pushes 20
 It prints the authorization matrix (who may CONNECT, what one may SUBSCRIBE to, IoT's own host refused around the edge) and the connect and push latencies, and saves them under `c_base/bench/results`.
 A CONNECT that IoT refuses is a closed socket with no CONNACK; the authorizer's own decision is in the function's log as `iot connect allow` or `iot connect deny`.
 
+## Reading the invocation log
+
+Every invocation ends with one `inv:` line (src/main_lambda.c).
+Its keys name a role, not an AWS service: `store=` is the store's calls (DynamoDB), `push=` the stream's publishes (IoT Core), `other=` the rest (Lambda invoke, CloudFront, SSM), each as calls/ms/new connections.
+Until 2026-10-18 the store's key was `ddb=`; a query over older lines asks for both.
+In CloudWatch Logs Insights, on the function's log group:
+
+```
+fields @timestamp, @message
+| filter @message like /inv: http/
+| parse @message /inv: http (?<method>\S+) (?<path>\S+) (?<status>\d+) ms=(?<ms>[\d.]+) after=(?<after>[\d.]+) (?:store|ddb)=(?<store_calls>\d+)\/(?<store_ms>[\d.]+)\/(?<store_dials>\d+) push=(?<push_calls>\d+)\/(?<push_ms>[\d.]+)/
+| stats count(*) as n, pct(ms, 50) as p50, pct(ms, 95) as p95, avg(store_calls) as store_calls, pct(store_ms, 50) as store_p50 by method, path
+| sort n desc
+```
+
 ## The console path (the fallback)
 
 The steps below do the same by hand, with no CLI.

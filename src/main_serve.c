@@ -21,7 +21,9 @@
 // `pkill -f "build/cbase serve"` meant for one hand-started server reaches
 // every server whose command line matches, a smoke's among them.
 #include "app/bots.h"
+#include "app/foolish_app.h"
 #include "boot.h"
+#include "cbase/provider.h"
 #include "config.h"
 #include "ctx.h"
 #include "net/loop.h"
@@ -116,7 +118,8 @@ int main(int argc, char **argv) {
 
     static cb_ctx ctx;
     ctx.cfg = &cfg;
-    ctx.mode = CB_MODE_SERVE;
+    ctx.prov = &cb_provider_local;
+    ctx.app = &cb_foolish_app;
     signal(SIGPIPE, SIG_IGN);
     ctx.loop = cb_loop_new();
     ctx.req_pool = cb_pool_new(cfg.req_workers, "req");

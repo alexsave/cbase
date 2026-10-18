@@ -3,6 +3,7 @@
 // DynamoDB host a region names, the bench's two fixtures, and the client
 // library's one list reader and its one "when next" (netclient.h).
 #include "t.h"
+#include "cbase/provider.h"
 
 #include "app/bots.h"
 #include "aws/https.h"
@@ -46,7 +47,7 @@ static void lambda_kick_self_invokes(void) {
     setenv("AWS_LAMBDA_FUNCTION_NAME", "cbase-Fn", 1);
     cb_ctx ctx;
     memset(&ctx, 0, sizeof ctx);
-    ctx.mode = CB_MODE_LAMBDA;
+    ctx.prov = &cb_provider_aws;
     g_status = 202;
     cb_bots_kick_lambda(&ctx, "a1b2c3");
     char *req = tls_srv_last(&s);

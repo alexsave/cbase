@@ -36,6 +36,7 @@
 // acting seat on the stored board, an ask is built from parts, a stream packet
 // is a real MQTT packet; and raw bytes in every one of those places too.
 #include "fz.h"
+#include "cbase/provider.h"
 
 #include "app/app_internal.h"
 #include "app/bots.h"
@@ -898,7 +899,7 @@ int LLVMFuzzerInitialize(int *argc, char ***argv) {
     snprintf(g_cfg.public_url, sizeof g_cfg.public_url, "http://127.0.0.1:8080");
     g_cfg.jwt_ttl_s = 3600;
     g_ctx.cfg = &g_cfg;
-    g_ctx.mode = CB_MODE_SERVE;
+    g_ctx.prov = &cb_provider_local;
     g_ctx.version = "fuzz";
     if (cb_store_open_sqlite(":memory:", &g_store) != CB_OK) abort();
     g_real = g_store->ops;

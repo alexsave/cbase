@@ -4,6 +4,7 @@
 // store (SQLite, or DynamoDB Local under CBASE_STORE=dynamo) and real auth,
 // every request through cb_handle.
 #include "t.h"
+#include "cbase/provider.h"
 #include "app/limits.h"
 
 #include "app/fanout.h"
@@ -58,7 +59,7 @@ static void setup(void) {
     cb_strlcpy(g_cfg.public_url, "http://127.0.0.1:8080", sizeof g_cfg.public_url);
     g_cfg.jwt_ttl_s = 3600;
     g_ctx.cfg = &g_cfg;
-    g_ctx.mode = CB_MODE_SERVE;
+    g_ctx.prov = &cb_provider_local;
     g_ctx.version = "test";
     const char *tmp = getenv("TMPDIR");
     snprintf(g_db, sizeof g_db, "%s/cbase-v1-%d.sqlite", tmp && *tmp ? tmp : "/tmp", (int)getpid());

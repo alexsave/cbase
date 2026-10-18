@@ -1,6 +1,7 @@
 // unit_auth.c - accounts and sessions (auth/auth.h) against an in-RAM store
 // (lib_auth_fakestore.c). The routes over them are unit_v1.c's.
 #include "t.h"
+#include "cbase/provider.h"
 
 #include "auth/auth.h"
 #include "auth/bcrypt.h"
@@ -24,7 +25,7 @@ static void setup(void) {
     cfg.jwt_ttl_s = 3600;
     memset(&ctx, 0, sizeof ctx);
     ctx.cfg = &cfg;
-    ctx.mode = CB_MODE_SERVE;
+    ctx.prov = &cb_provider_local;
     ctx.store = auth_fakestore_new();
     T_EQ_INT(cb_auth_new(&ctx, &ctx.auth), CB_OK);
 }

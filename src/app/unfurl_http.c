@@ -261,7 +261,10 @@ static void h_unfurl(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     cb_buf_free(&html);
 }
 
+// On the request pool: msg_replay re-deals and replays the whole chain.
+static const cb_route UNFURL_ROUTES[] = { { "GET", "/m/*", CB_ROUTE_POOL, h_unfurl } };
+const cb_route_list cb_unfurl_route_list = { UNFURL_ROUTES, 1 };
+
 int cb_unfurl_routes(cb_ctx *ctx) {
-    // On the request pool: msg_replay re-deals and replays the whole chain.
-    return cb_router_add(ctx->router, "GET", "/m/*", CB_ROUTE_POOL, h_unfurl);
+    return cb_router_add_all(ctx->router, UNFURL_ROUTES, cb_unfurl_route_list.n);
 }

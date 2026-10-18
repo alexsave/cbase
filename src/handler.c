@@ -1,11 +1,9 @@
 #include "handler.h"
 
 #include "admin/admin.h"
-#include "app/functions_http.h"
-#include "app/unfurl_http.h"
-#include "app/v1_http.h"
 #include "net/router.h"
-#include "realtime/rt_local.h"
+#include "cbase/app.h"
+#include "cbase/provider.h"
 #include "store/store.h"
 #include "util/clock.h"
 #include "util/err.h"
@@ -51,7 +49,7 @@ bool cb_handle_on_loop(const cb_ctx *ctx, const cb_http_req *req) {
 static void h_health(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     char b[256];
     snprintf(b, sizeof b, "ok cbase %s mode=%s uptime_s=%lld\n", ctx->version,
-             ctx->mode == CB_MODE_LAMBDA ? "lambda" : "serve",
+             ctx->prov ? ctx->prov->mode : "none",
              (long long)((cb_now_ms() - ctx->started_ms) / 1000));
     cb_res_text(res, 200, b);
     cb_res_header(res, "Cache-Control", "no-store");
@@ -67,10 +65,11 @@ static int reg(const char *what, int rc) {
 
 int cb_routes_register(cb_ctx *ctx) {
     int rc = cb_router_add(ctx->router, "GET", "/health", CB_ROUTE_LOOP, h_health);
-    if (rc == CB_OK) rc = reg("functions", cb_functions_routes(ctx));
-    if (rc == CB_OK) rc = reg("v1", cb_v1_routes(ctx));
     if (rc == CB_OK) rc = reg("admin", cb_admin_routes(ctx));
-    if (rc == CB_OK) rc = reg("unfurl", cb_unfurl_routes(ctx));
-    if (rc == CB_OK && ctx->mode == CB_MODE_SERVE) rc = reg("realtime", cb_rt_local_routes(ctx));
+    if (rc == CB_OK && ctx->prov && ctx->prov->routes) rc = reg(ctx->prov->name, ctx->prov->routes(ctx));
+    // Then the app's, every list in order (cbase/app.h).
+    const cb_app *app = ctx->app;
+    for (int l = 0; rc == CB_OK && app && l < app->n_route_lists; l++)
+        rc = reg(app->name, cb_router_add_all(ctx->router, app->routes[l]->routes, app->routes[l]->n));
     return rc;
 }

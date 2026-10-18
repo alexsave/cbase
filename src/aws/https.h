@@ -49,9 +49,9 @@ int cb_https_request(const char *host, int port, const char *method, const char 
 int cb_http_plain_request(const char *host, int port, const char *method, const char *path, const char *headers,
                           const void *body, size_t body_len, int timeout_ms, cb_https_response *out);
 
-// What this process's requests cost since the last take, by kind of host:
-// DynamoDB (and a plain-HTTP stand-in for it), API Gateway's management API
-// (the pushes), anything else (Lambda invoke, CloudFront). `dials` counts new
+// What this process's requests cost since the last take, by role: the store
+// (DynamoDB, and a plain-HTTP stand-in for it), the pushes (IoT Core), and
+// anything else (Lambda invoke, CloudFront, SSM). `dials` counts new
 // connections (TCP, plus TLS on https), the requests that found no warm one.
 // Process-wide and lock-free; main_lambda.c takes it once per invocation for
 // its timing line, where one invocation runs at a time.
@@ -61,7 +61,7 @@ typedef struct {
     int64_t us;      // wall time inside the requests, connects included
 } cb_https_count;
 typedef struct {
-    cb_https_count ddb, push, other;
+    cb_https_count store, push, other;
 } cb_https_tally;
 void cb_https_tally_take(cb_https_tally *out);
 

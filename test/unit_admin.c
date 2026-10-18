@@ -2,6 +2,7 @@
 // fake store (test/lib_admin_fakestore.c): the gate, paging, the write
 // confirmation, redaction, the log tail and the games list.
 #include "t.h"
+#include "cbase/provider.h"
 #include "app/limits.h"
 
 #include "admin/admin.h"
@@ -42,7 +43,7 @@ static void setup(const char *admin_token, const char *store_name) {
     cb_strlcpy(g_cfg.public_url, "http://127.0.0.1:8080", sizeof g_cfg.public_url);
     g_cfg.log_level = CB_LOG_INFO;
     g_ctx.cfg = &g_cfg;
-    g_ctx.mode = CB_MODE_SERVE;
+    g_ctx.prov = &cb_provider_local;
     g_ctx.version = CB_VERSION;
     g_ctx.started_ms = 1;
     g_ctx.router = cb_router_new();

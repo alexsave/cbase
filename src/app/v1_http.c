@@ -627,25 +627,21 @@ static void h_replay(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
 
 // ---- routes -----------------------------------------------------------------------------
 
-int cb_v1_routes(cb_ctx *ctx) {
-    static const struct { const char *method, *path; cb_handler fn; } routes[] = {
-        { "POST", "/v1/auth/signup", h_signup },
-        { "POST", "/v1/auth/signin", h_signin },
-        { "POST", "/v1/auth/refresh", h_refresh },
-        { "POST", "/v1/auth/signout", h_signout },
-        { "POST", "/v1/auth/password", h_password },
-        { "GET", "/v1/games", h_games },
-        { "GET", "/v1/games/*", h_game },
-        { "GET", "/v1/chat/*", h_chat_get },
-        { "POST", "/v1/chat/*", h_chat_post },
-        { "GET", "/v1/bots", h_bots },
-        { "GET", "/v1/leaderboard", h_board },
-        { "GET", "/v1/history", h_history },
-        { "GET", "/v1/replay/*", h_replay },
-    };
-    for (size_t i = 0; i < sizeof routes / sizeof routes[0]; i++) {
-        int rc = cb_router_add(ctx->router, routes[i].method, routes[i].path, CB_ROUTE_POOL, routes[i].fn);
-        if (rc != CB_OK) return rc;
-    }
-    return CB_OK;
-}
+static const cb_route V1_ROUTES[] = {
+    { "POST", "/v1/auth/signup", CB_ROUTE_POOL, h_signup },
+    { "POST", "/v1/auth/signin", CB_ROUTE_POOL, h_signin },
+    { "POST", "/v1/auth/refresh", CB_ROUTE_POOL, h_refresh },
+    { "POST", "/v1/auth/signout", CB_ROUTE_POOL, h_signout },
+    { "POST", "/v1/auth/password", CB_ROUTE_POOL, h_password },
+    { "GET", "/v1/games", CB_ROUTE_POOL, h_games },
+    { "GET", "/v1/games/*", CB_ROUTE_POOL, h_game },
+    { "GET", "/v1/chat/*", CB_ROUTE_POOL, h_chat_get },
+    { "POST", "/v1/chat/*", CB_ROUTE_POOL, h_chat_post },
+    { "GET", "/v1/bots", CB_ROUTE_POOL, h_bots },
+    { "GET", "/v1/leaderboard", CB_ROUTE_POOL, h_board },
+    { "GET", "/v1/history", CB_ROUTE_POOL, h_history },
+    { "GET", "/v1/replay/*", CB_ROUTE_POOL, h_replay },
+};
+const cb_route_list cb_v1_route_list = { V1_ROUTES, (int)(sizeof V1_ROUTES / sizeof V1_ROUTES[0]) };
+
+int cb_v1_routes(cb_ctx *ctx) { return cb_router_add_all(ctx->router, V1_ROUTES, cb_v1_route_list.n); }

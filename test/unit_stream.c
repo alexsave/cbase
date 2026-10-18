@@ -3,6 +3,7 @@
 // end to end by the kernel's client library (netclient.h). IoT Core's
 // transport is unit_rt_iot.c's, the hub's packets unit_stream_mqtt.c's.
 #include "t.h"
+#include "cbase/provider.h"
 
 #include "lib_client.h"
 #include "lib_rt_token.h"
@@ -186,7 +187,7 @@ static void session_for(const char *uid) {
 
 static void serve_end_to_end(void) {
     setup_world();
-    g_ctx.mode = CB_MODE_SERVE;
+    g_ctx.prov = &cb_provider_local;
     g_ctx.loop = cb_loop_new();
     g_ctx.req_pool = cb_pool_new(2, "tst");
     g_ctx.router = cb_router_new();

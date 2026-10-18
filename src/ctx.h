@@ -5,10 +5,11 @@
 //     state between invocations but a warm container's cache;
 //   * `cbase serve`, a local HTTP + WebSocket server for development and tests.
 // Both build one cb_ctx (src/boot.c) and hand every request to the same
-// handler (src/handler.h). What differs is only behind three seams in here:
-// the store backend (SQLite or DynamoDB), the realtime transport (an
-// in-process WebSocket or API Gateway's management API), and how a bot drive
-// is started (a local worker pool or an async self-invoke).
+// handler (src/handler.h). What differs is the PROVIDER (cbase/provider.h:
+// the store backend, the realtime transport, how a bot drive is started, the
+// edge's viewer header), which each main names, and what is served is the APP
+// (cbase/app.h: its routes and its self-test), which each main names too
+// (docs/PLATFORM.md).
 //
 // A module whose constructor returns CB_E_NOTIMPL leaves its handle NULL, and
 // every handler answers 503 rather than dereference a NULL handle.
@@ -28,6 +29,8 @@ typedef struct cb_store  cb_store;    // store/store.h
 typedef struct cb_auth   cb_auth;     // auth/auth.h
 typedef struct cb_rt     cb_rt;       // realtime/realtime.h
 typedef struct cb_ctx    cb_ctx;
+typedef struct cb_app    cb_app;      // cbase/app.h
+typedef struct cb_provider cb_provider;   // cbase/provider.h
 
 // How a bot drive is started for a game (app/bots.h). serve: submit
 // cb_bots_drive to the local bot pool. lambda: an async self-invoke
@@ -44,11 +47,10 @@ typedef struct {
     atomic_int    ws_conns;        // serve: open WebSockets
 } cb_stats;
 
-typedef enum { CB_MODE_SERVE = 1, CB_MODE_LAMBDA = 2 } cb_mode;
-
 struct cb_ctx {
     const cb_config *cfg;
-    cb_mode     mode;
+    const cb_provider *prov;  // which runtime this is (cbase/provider.h); never NULL once booted
+    const cb_app *app;        // what it serves (cbase/app.h); NULL serves the platform's routes alone
     const char *version;      // CB_VERSION
     int64_t     started_ms;   // cb_now_ms() at start (container start, under Lambda)
     cb_router  *router;       // every route, both modes (handler.h)

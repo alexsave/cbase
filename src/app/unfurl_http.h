@@ -25,11 +25,14 @@
 #ifndef CB_UNFURL_HTTP_H
 #define CB_UNFURL_HTTP_H
 
+#include "cbase/app.h"
 #include "ctx.h"
 #include "util/str.h"
 
 #include <stddef.h>
 
+// The same routes as a list, for the app (app/foolish_app.c).
+extern const cb_route_list cb_unfurl_route_list;
 int cb_unfurl_routes(cb_ctx *ctx);
 
 // The pure part, for the unit test: the title and description (UTF-8, not

@@ -35,6 +35,7 @@
 #include "app/edge.h"
 #include "app/functions_http.h"
 #include "app/table_ops.h"
+#include "cbase/provider.h"
 #include "handler.h"
 #include "json_surface.h"
 #include "net/router.h"
@@ -154,6 +155,7 @@ static void q_str(const cb_http_req *req, const char *key, char *out, size_t cap
     if (!cb_http_query_get(req, key, out, cap)) out[0] = 0;
 }
 
+static const char *mode_label(const cb_ctx *ctx) { return ctx->prov ? ctx->prov->mode : "none"; }
 static const char *store_name(const cb_ctx *ctx) { return ctx->store ? ctx->store->ops->name : "none"; }
 static bool is_sqlite(const cb_ctx *ctx) { return ctx->store && strcmp(ctx->store->ops->name, "sqlite") == 0; }
 
@@ -162,48 +164,18 @@ static const char *getenv0(const char *k) {
     return v ? v : "";
 }
 
-// ---- links into the AWS console (lambda mode) -------------------------------------
+// ---- links into the provider's console ---------------------------------------------
 
-// The CloudWatch console's own escaping inside a queryDetail: every byte but
-// [A-Za-z0-9_.-] as '*' and two lowercase hex digits.
-static void aws_star_escape(cb_buf *b, const char *s) {
-    for (; *s; s++) {
-        unsigned char c = (unsigned char)*s;
-        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '.' || c == '-')
-            cb_buf_putc(b, (char)c);
-        else
-            cb_buf_printf(b, "*%02x", c);
-    }
-}
-
-// The function's AWS console pages, or lambda NULL outside Lambda. The URLs
-// live in u[4], which the caller frees (links_free).
+// The provider's console pages (cbase/provider.h console_links), each NULL
+// when it has none. The URLs live in u[4], which the caller frees (links_free).
 static void links_of(const cb_ctx *ctx, cb_buf u[4], cb_js_admin_links *out) {
     memset(out, 0, sizeof *out);
     for (int i = 0; i < 4; i++) cb_buf_init(&u[i]);
-    const char *region = getenv0("AWS_REGION");
-    const char *fn = getenv0("AWS_LAMBDA_FUNCTION_NAME");
-    const char *group = getenv0("AWS_LAMBDA_LOG_GROUP_NAME");
-    if (ctx->mode != CB_MODE_LAMBDA || !region[0] || !fn[0]) return;
-    cb_buf_printf(&u[0], "https://%s.console.aws.amazon.com/lambda/home?region=%s#/functions/%s", region, region, fn);
-    char lg[300];
-    snprintf(lg, sizeof lg, "%s", group[0] ? group : "");
-    if (!lg[0]) snprintf(lg, sizeof lg, "/aws/lambda/%s", fn);
-    cb_buf_printf(&u[1], "https://%s.console.aws.amazon.com/cloudwatch/home?region=%s#logsV2:logs-insights"
-                         "$3FqueryDetail$3D~(end~0~start~-3600~timeType~'RELATIVE~unit~'seconds~editorString~'",
-                  region, region);
-    aws_star_escape(&u[1], "fields @timestamp, @message\n| sort @timestamp desc\n| limit 200");
-    cb_buf_puts(&u[1], "~source~(~'");
-    aws_star_escape(&u[1], lg);
-    cb_buf_puts(&u[1], "))");
-    cb_buf_printf(&u[2], "https://%s.console.aws.amazon.com/dynamodbv2/home?region=%s#table?name=%s", region, region,
-                  ctx->cfg->table);
-    cb_buf_printf(&u[3], "https://%s.console.aws.amazon.com/dynamodbv2/home?region=%s#table?name=%s&tab=backups", region,
-                  region, ctx->cfg->table);
-    out->lambda = cb_buf_cstr(&u[0]);
-    out->logs_insights = cb_buf_cstr(&u[1]);
-    out->dynamodb = cb_buf_cstr(&u[2]);
-    out->backups = cb_buf_cstr(&u[3]);
+    if (!ctx->prov || !ctx->prov->console_links) return;
+    ctx->prov->console_links(ctx, u);
+    const char **slot[4] = { &out->lambda, &out->logs_insights, &out->dynamodb, &out->backups };
+    for (int i = 0; i < 4; i++)
+        if (u[i].len) *slot[i] = cb_buf_cstr(&u[i]);
 }
 
 static void links_free(cb_buf u[4]) {
@@ -271,7 +243,7 @@ static void api_overview(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) 
     cb_js_admin_overview o;
     memset(&o, 0, sizeof o);
     o.version = ctx->version;
-    o.mode = ctx->mode == CB_MODE_LAMBDA ? "lambda" : "serve";
+    o.mode = mode_label(ctx);
     o.uptime_s = (now - ctx->started_ms) / 1000;
     o.started_ms = ctx->started_ms;
     o.store = store_name(ctx);
@@ -279,8 +251,8 @@ static void api_overview(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) 
     o.public_url = ctx->cfg->public_url;
     o.requests = (int64_t)atomic_load_explicit(&ctx->stats.requests, memory_order_relaxed);
     o.errors_5xx = (int64_t)atomic_load_explicit(&ctx->stats.responses_5xx, memory_order_relaxed);
-    // Under Lambda, API Gateway holds the sockets; this container sees none of them.
-    o.conns_known = ctx->mode == CB_MODE_SERVE;
+    // Under a broker (IoT Core) this process holds none of the stream's connections.
+    o.conns_known = ctx->prov && (ctx->prov->flags & CB_PROV_HELD_SOCKETS);
     if (o.conns_known) {
         o.http_conns = atomic_load_explicit(&ctx->stats.http_conns, memory_order_relaxed);
         o.ws_conns = atomic_load_explicit(&ctx->stats.ws_conns, memory_order_relaxed);
@@ -636,7 +608,7 @@ static void put_setting(const char *name, const char *value, bool secret, void *
 
 static void api_config(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     cb_js_admin_config c = {
-        .mode = ctx->mode == CB_MODE_LAMBDA ? "lambda" : "serve",
+        .mode = mode_label(ctx),
         .store = store_name(ctx),
         .table = ctx->cfg->table,
         .allowed_origins = ctx->cfg->allowed_origins,

@@ -7,6 +7,7 @@
 // come through the edge are refused; the policy names only the user's own
 // topics and the spectators', and never iot:Publish.
 #include "t.h"
+#include "cbase/provider.h"
 
 #include "aws/event.h"
 #include "config.h"
@@ -93,7 +94,7 @@ static void setup(void) {
     memset(&g_pub, 0, sizeof g_pub);
     g_pub.status = 200;
     g_ctx.cfg = &g_cfg;
-    g_ctx.mode = CB_MODE_LAMBDA;
+    g_ctx.prov = &cb_provider_aws;
     cb_rt_deps_g.verify_token = fake_verify;
     cb_rt_deps_g.iot_publish = fake_publish;
 }

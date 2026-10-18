@@ -48,6 +48,9 @@ void cb_router_free(cb_router *r);
 // CB_E_CONFLICT for the same method and pattern twice, CB_E_INVALID for a
 // pattern that does not start with '/'.
 int cb_router_add(cb_router *r, const char *method, const char *pattern, unsigned flags, cb_handler fn);
+// Adds routes[0..n) in order: CB_OK, or the first refusal (the routes before
+// it stay added).
+int cb_router_add_all(cb_router *r, const cb_route *routes, int n);
 
 // The route for method + path, or NULL. When NULL, *path_known says whether
 // the path matched a route under another method (405 rather than 404).

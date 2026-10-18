@@ -2,6 +2,7 @@
 // rule (cb_config_check_secrets: findings L7, L8, M5), the origin proof, and
 // that the console's view of the settings never shows a secret.
 #include "t.h"
+#include "cbase/provider.h"
 
 #include "boot.h"
 #include "config.h"
@@ -85,7 +86,7 @@ static void lambda_refuses_a_bot_speedup(void) {
         static cb_ctx ctx;
         memset(&ctx, 0, sizeof ctx);
         ctx.cfg = &c;
-        ctx.mode = CB_MODE_LAMBDA;
+        ctx.prov = &cb_provider_aws;
         err[0] = 0;
         T_EQ_INT(cb_boot(&ctx, err, sizeof err), CB_E_INVALID);
         T_CHECK(strstr(err, "CBASE_BOT_SPEEDUP") != NULL);

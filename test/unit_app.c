@@ -6,6 +6,7 @@
 // kernel's pacing costs no wall time; every fan-out is recorded through the
 // cb_fanout_observer seam.
 #include "t.h"
+#include "cbase/provider.h"
 #include "app/limits.h"
 
 #include <pthread.h>
@@ -124,7 +125,7 @@ static void setup(int n_bots) {
     if (g_store) cb_store_close(g_store);
     memset(&g_ctx, 0, sizeof g_ctx);
     g_ctx.cfg = &g_cfg;
-    g_ctx.mode = CB_MODE_SERVE;
+    g_ctx.prov = &cb_provider_local;
     g_store = tm_store_new(n_bots, "random");
     g_ctx.store = g_store;
     g_ctx.kick_bots = kick_recorder;

@@ -203,7 +203,7 @@ static void verified_and_kept_alive(void) {
     T_EQ_INT(tally.other.calls, 2);
     T_EQ_INT(tally.other.dials, 1);
     T_CHECK(tally.other.us > 0);
-    T_EQ_INT(tally.ddb.calls + tally.push.calls, 0);
+    T_EQ_INT(tally.store.calls + tally.push.calls, 0);
     tls_srv_stop(&s);
 }
 
