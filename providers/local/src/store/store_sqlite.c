@@ -398,6 +398,14 @@ static int pragma_int(sqlite3 *db, const char *sql, int64_t *out) {
     return rc == SQLITE_ROW ? CB_OK : CB_E_DB;
 }
 
+// The tables of schemas 1 to 5, children first.
+static const char LEGACY_DROP[] =
+    "DROP TABLE IF EXISTS rt_conn_topics; DROP TABLE IF EXISTS rt_conns; DROP TABLE IF EXISTS chat_messages; "
+    "DROP TABLE IF EXISTS game_snapshots; DROP TABLE IF EXISTS game_members; DROP TABLE IF EXISTS game_bots; "
+    "DROP TABLE IF EXISTS ratings; DROP TABLE IF EXISTS games; DROP TABLE IF EXISTS sessions; "
+    "DROP TABLE IF EXISTS refresh_tokens; DROP TABLE IF EXISTS signin_fails; DROP TABLE IF EXISTS users; "
+    "DROP TABLE IF EXISTS bots; DROP TABLE IF EXISTS bot_seed;";
+
 // The schema (the platform's, then the product's), applied in one transaction, then the version stamp.
 // Steps for a future CB_SCHEMA_VERSION that are not idempotent go here, each guarded by the user_version
 // it upgrades from.
@@ -411,9 +419,10 @@ static int apply_schema(sq *q, const cb_store_app *app) {
     }
     int rc = begin(q);
     if (rc != CB_OK) return rc;
-    // Every step from schema 1 to 7 is in the schema itself: 7 drops the
-    // `items` table of 6 (SQLite held no production data), so an older
-    // database needs nothing first.
+    // Schemas 1 to 5 had tables of the names 7 uses, in other shapes, which a CREATE ... IF NOT EXISTS
+    // would keep: they go first, with what a development database had in them (SQLite held no production
+    // data). Schema 6 had dropped them already; 7 drops its `items` table in the schema itself.
+    if (have > 0 && have < 6 && (rc = exec(q, LEGACY_DROP)) != CB_OK) goto out;
     if ((rc = exec(q, cbase_schema_sql)) != CB_OK) goto out;
     if (app && app->sql_schema && (rc = exec(q, app->sql_schema)) != CB_OK) goto out;
     char v[64];
@@ -864,9 +873,10 @@ typedef struct {
 
 static int session_put_step(sq *q, void *ud) {
     sess_op *o = ud;
-    // The user's sessions past their end go first (TTL deletion, as DynamoDB's).
+    // The user's sessions past their end go first (TTL deletion, as DynamoDB's), by the caller's clock:
+    // the new session's start.
     sqlite3_stmt *s = stmt(q, ST_SESSION_SWEEP);
-    if (s) { cb_sql_bind_uuid(s, 1, o->r->user_id); b_i64(s, 2, o->now); }
+    if (s) { cb_sql_bind_uuid(s, 1, o->r->user_id); b_i64(s, 2, o->r->created_at); }
     int rc = run(q, s, "session sweep");
     if (rc != CB_OK) return rc;
     if (!(s = stmt(q, ST_SESSION_PUT))) return CB_E_DB;
@@ -882,7 +892,7 @@ static int session_put_step(sq *q, void *ud) {
 static int sq_session_put(cb_store *st, const cb_session_row *r) {
     unsigned char b[CB_UUID_BYTES];
     if (!cb_uuid_pack(r->id, b) || !cb_uuid_pack(r->user_id, b)) return CB_E_INVALID;
-    sess_op o = { .r = r, .now = cb_now_ms() };
+    sess_op o = { .r = r };
     return cb_sql_write(st, session_put_step, &o);
 }
 
@@ -936,8 +946,9 @@ typedef struct {
 
 static int refresh_put_step(sq *q, void *ud) {
     refresh_op *o = ud;
-    sqlite3_stmt *s = stmt(q, ST_REFRESH_SWEEP);   // the user's tokens past their time go first
-    if (s) { cb_sql_bind_uuid(s, 1, o->r->user_id); b_i64(s, 2, o->now); }
+    // The user's tokens past their time go first, by the caller's clock: the new token's minting.
+    sqlite3_stmt *s = stmt(q, ST_REFRESH_SWEEP);
+    if (s) { cb_sql_bind_uuid(s, 1, o->r->user_id); b_i64(s, 2, o->r->created_at); }
     int rc = run(q, s, "refresh sweep");
     if (rc != CB_OK) return rc;
     if (!(s = stmt(q, ST_REFRESH_PUT))) return CB_E_DB;
@@ -956,7 +967,7 @@ static int sq_refresh_put(cb_store *st, const cb_refresh_row *r) {
     uint8_t h[HASH_BYTES];
     if (!hash_raw(r->token_hash, h) || !cb_uuid_pack(r->user_id, b))
         return CB_E_INVALID;
-    refresh_op o = { .r = r, .now = cb_now_ms() };
+    refresh_op o = { .r = r };
     return cb_sql_write(st, refresh_put_step, &o);
 }
 
