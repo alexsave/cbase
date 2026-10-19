@@ -58,14 +58,7 @@ static int kt_reserved(const char *s) {
     return 0;
 }
 // A field's Kotlin property name: camelCase, in backticks when that is a keyword.
-static const char *kt_name(const char *field) {
-    static char buf[4][260];
-    static int k;
-    char *b = buf[k++ % 4];
-    const char *c = camel(field);
-    if (kt_reserved(c)) snprintf(b, sizeof buf[0], "`%s`", c); else snprintf(b, sizeof buf[0], "%s", c);
-    return b;
-}
+static const char *kt_name(const char *field) { return backtick_name(field, kt_reserved); }
 
 // A reader's local for an array field: the field's own name, because that is
 // what makes the generated line readable - unless it is one of the names the

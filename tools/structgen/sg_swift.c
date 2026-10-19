@@ -27,14 +27,7 @@ static int swift_reserved(const char *s) {
     return 0;
 }
 // A field's Swift member name: camelCase, in backticks when that is a keyword.
-static const char *swift_name(const char *field) {
-    static char buf[4][260];
-    static int k;
-    char *b = buf[k++ % 4];
-    const char *c = camel(field);
-    if (swift_reserved(c)) snprintf(b, sizeof buf[0], "`%s`", c); else snprintf(b, sizeof buf[0], "%s", c);
-    return b;
-}
+static const char *swift_name(const char *field) { return backtick_name(field, swift_reserved); }
 
 // A scalar's Swift type. Integers WIDEN to Int, as the TS side widens to
 // `number`: a snapshot is read and compared, not stored back into the same

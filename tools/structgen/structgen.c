@@ -223,6 +223,15 @@ const char *camel(const char *s) {
     return b;
 }
 
+const char *backtick_name(const char *field, int (*reserved)(const char *)) {
+    static char buf[4][260];
+    static int k;
+    char *b = buf[k++ % 4];
+    const char *c = camel(field);
+    if (reserved(c)) snprintf(b, sizeof buf[0], "`%s`", c); else snprintf(b, sizeof buf[0], "%s", c);
+    return b;
+}
+
 static int cmp_str(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
 void check_unique_names(const Buf *ts, const char *decl, const char *stop) {   // generated names are joined with '_' and could collide
     char **names = NULL; int n = 0, cap = 0;

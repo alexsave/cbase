@@ -30,6 +30,11 @@
 
 // snake_case -> camelCase, into a static buffer.
 const char *camel(const char *s);
+
+// A field's member name in a language with backtick-quoted keywords (Kotlin,
+// Swift): camelCase, wrapped in backticks when `reserved` says it is a keyword.
+// Ring of four static buffers, like camel.
+const char *backtick_name(const char *field, int (*reserved)(const char *));
 // generated names are joined with '_' and could collide
 void check_unique_names(const Buf *ts, const char *decl, const char *stop);
 
