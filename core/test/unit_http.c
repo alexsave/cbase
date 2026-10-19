@@ -158,6 +158,39 @@ static void routing(void) {
     cb_router_free(r);
 }
 
+// The table is sorted at add: whatever order routes arrive in, the best match wins.
+static void routing_priority(void) {
+    const int GET = cb_http_method_id("GET"), POST = cb_http_method_id("POST"), HEAD = cb_http_method_id("HEAD");
+    cb_router *r = cb_router_new();
+    // prefix first, then the longer prefix, then the exact: the worst order for a first-fit scan
+    T_EQ_INT(cb_router_add(r, "GET", "/v1/*", 0, h_a), CB_OK);
+    T_EQ_INT(cb_router_add(r, "GET", "/v1/games/*", 0, h_b), CB_OK);
+    T_EQ_INT(cb_router_add(r, "GET", "/v1/games", 0, h_c), CB_OK);
+    T_EQ_INT(cb_router_add(r, "POST", "/v1/games/new", 0, h_a), CB_OK);
+    bool known = false;
+    const cb_route *m = cb_router_match(r, GET, "/v1/games", &known);
+    T_CHECK(m && m->fn == h_c);   // exact beats the prefixes
+    m = cb_router_match(r, GET, "/v1/games/7", &known);
+    T_CHECK(m && m->fn == h_b);   // the longer prefix beats the shorter
+    m = cb_router_match(r, GET, "/v1/gamesx", &known);
+    T_CHECK(m && m->fn == h_a);   // "/v1/games" is exact, "/v1/games/" is not its prefix
+    m = cb_router_match(r, GET, "/v1/", &known);
+    T_CHECK(m && m->fn == h_a);
+    m = cb_router_match(r, GET, "/v1", &known);
+    T_CHECK(!m && !known);        // 404: shorter than every stem, and "/v1/*" needs the slash
+    m = cb_router_match(r, POST, "/v1/games/new", &known);
+    T_CHECK(m && m->fn == h_a);
+    m = cb_router_match(r, GET, "/v1/games/new", &known);
+    T_CHECK(m && m->fn == h_b);   // the exact POST route does not fit a GET: falls to the prefix
+    m = cb_router_match(r, POST, "/v1/games/7", &known);
+    T_CHECK(!m && known);         // 405
+    m = cb_router_match(r, HEAD, "/v1/games", &known);
+    T_CHECK(m && m->fn == h_c);   // HEAD answers through GET
+    m = cb_router_match(r, HEAD, "/nowhere", &known);
+    T_CHECK(!m && !known);
+    cb_router_free(r);
+}
+
 static void cors(void) {
     cb_config cfg;
     memset(&cfg, 0, sizeof cfg);
@@ -194,6 +227,7 @@ int main(void) {
     T_RUN(query_iteration);
     T_RUN(responses);
     T_RUN(routing);
+    T_RUN(routing_priority);
     T_RUN(cors);
     return T_DONE();
 }

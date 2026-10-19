@@ -7,7 +7,9 @@
 
 // A route with its method as an int (http.h CB_M_*), named once at add. `route`
 // is first, so the entry's address is the route's.
-typedef struct { cb_route route; uint8_t mid; } entry;
+// The pattern is measured once too: `len` is its length, `stem` the bytes a path
+// must start with when it is a prefix route ("/a/*" -> "/a/"), `prefix` says which.
+typedef struct { cb_route route; uint8_t mid; bool prefix; size_t len, stem; long score; } entry;
 
 struct cb_router {
     entry *r;
@@ -40,7 +42,17 @@ int cb_router_add(cb_router *r, const char *method, const char *pattern, unsigne
         r->r = x;
         r->cap = cap;
     }
-    r->r[r->n++] = (entry){ { method, pattern, flags, fn }, (uint8_t)cb_http_method_id(method) };
+    entry e = { { method, pattern, flags, fn }, (uint8_t)cb_http_method_id(method), false, strlen(pattern), 0, 0 };
+    e.prefix = is_prefix(pattern, &e.stem);
+    // How well the pattern matches a path it matches: longer wins, exact beats
+    // prefix at the same length.
+    e.score = e.prefix ? (long)e.stem * 2 : (long)e.stem * 2 + 1;
+    // The table is kept sorted by score, best first, ties in the order added: the
+    // first route that fits a request is the best one.
+    int at = r->n;
+    while (at > 0 && r->r[at - 1].score < e.score) { r->r[at] = r->r[at - 1]; at--; }
+    r->r[at] = e;
+    r->n++;
     return CB_OK;
 }
 
@@ -52,24 +64,22 @@ int cb_router_add_all(cb_router *r, const cb_route *routes, int n) {
     return CB_OK;
 }
 
-// How well `pattern` matches `path`: -1 not at all, else a score where longer
-// wins and exact beats prefix.
-static long score(const char *pattern, const char *path) {
-    size_t stem;
-    if (is_prefix(pattern, &stem)) return strncmp(path, pattern, stem) == 0 ? (long)stem * 2 : -1;
-    return strcmp(path, pattern) == 0 ? (long)stem * 2 + 1 : -1;
-}
-
+// The first route (best score first) whose pattern matches the path and whose
+// method fits. *path_known is whether any pattern matched the path under any
+// method (405 rather than 404).
 static const cb_route *match(const cb_router *r, int method, const char *path, bool *path_known) {
-    const cb_route *best = NULL;
-    long best_score = -1;
+    const size_t plen = strlen(path);
     bool known = false;
+    const cb_route *best = NULL;
     for (int i = 0; i < r->n; i++) {
-        long s = score(r->r[i].route.pattern, path);
-        if (s < 0) continue;
+        const entry *e = &r->r[i];
+        if (e->prefix ? (plen < e->stem || memcmp(path, e->route.pattern, e->stem) != 0)
+                      : (plen != e->len || memcmp(path, e->route.pattern, plen) != 0))
+            continue;
         known = true;
-        if (r->r[i].mid != CB_M_ANY && r->r[i].mid != method) continue;
-        if (s > best_score) { best = &r->r[i].route; best_score = s; }
+        if (e->mid != CB_M_ANY && e->mid != method) continue;
+        best = &e->route;
+        break;
     }
     if (path_known) *path_known = known;
     return best;
