@@ -1,5 +1,33 @@
 # cbase-vm runbook
 
+## Resume (2026-10-19: written offline, nothing deployed yet)
+
+The AWS session expired before anything was created, so the stack does not exist yet.
+The template passes `cfn-lint` and the scripts pass `bash -n` and `shellcheck`; none of it has met AWS.
+The binary built for it is `c_base/bench/nano/bin/serve-vm1` from commit `b7dd1ace0`, sha256 `07be1f2dc5ae85cf0a92b297563eaf423c014ec80e0db6080177ec0fed2e08c3`.
+Once `aws sts get-caller-identity` works, run, in order:
+
+```sh
+aws sts get-caller-identity
+aws ec2 describe-managed-prefix-lists --filters Name=prefix-list-name,Values=com.amazonaws.global.ipv6.cloudfront.origin-facing
+CBASE_VM_VERSION=b7dd1ace0 c_base/providers/local/ops/vm_deploy.sh   # upload, make the secrets, deploy the stack
+c_base/providers/local/ops/vm_deploy.sh --verify                     # after about 3 minutes
+```
+
+To deploy a newer server instead, rebuild first (`c_base/bench/nano/build.sh vm1` under the docker lock) and drop `CBASE_VM_VERSION`.
+Then check each item in "To verify once deployed" below, and fall back to dual-stack if one fails.
+
+## To verify once deployed
+
+- The auto-scaling group accepts a launch template that names a fixed IPv6 address (`::10`); if it refuses, use `Ipv6AddressCount: 1` and give step 3 another way to find the address.
+- cloud-init fetches the user-data over IMDS IPv6 on the minimal AMI, and the AMI has `python3` and a `curl` with `--aws-sigv4`.
+- The SSM agent registers over IPv6 (`aws ssm describe-instance-information` lists the instance as Online).
+- S3 dual-stack and `ssm.<region>.api.aws` answer from the instance (the boot log `/var/log/cbase-vm-boot.log` says "fetched").
+- The two alarms see data under the `AutoScalingGroupName` dimension; if not, they need per-instance dimensions or detailed monitoring.
+- The 2 GB root volume fits the minimal AMI's snapshot (the launch fails at once if the snapshot is larger).
+
+If IPv6-only fails on SSM, S3 or IMDS, switch to dual-stack: give the subnet a 10.77.0.0/24 block with `MapPublicIpOnLaunch` and a `0.0.0.0/0` route, add the IPv4 prefix list rule, and accept about $3.60 a month for the public IPv4 address.
+
 The `cbase-vm` stack runs `cbase serve` (local provider: SQLite plus its own MQTT hub) on one EC2 t4g.nano.
 It is separate from the live `cbase` stack and takes no production traffic until a CloudFront origin points at it (step 3).
 The files: `vm.yaml` (CloudFormation), `vm_deploy.sh` (deploy, restart, verify), `vm_boot.sh` (the user-data), `cbase.service` (the systemd unit).
@@ -32,7 +60,7 @@ Its log is `journalctl -u cbase`; the boot script's log is `/var/log/cbase-vm-bo
 ## Why IPv6-only
 
 An IPv6-only subnet has no public IPv4 address, which saves about $3.60 a month and leaves nothing to scan on IPv4.
-Every dependency was checked before relying on it:
+Every dependency was checked offline (DNS, release notes, AWS docs) before relying on it; "To verify once deployed" lists what only a live instance can prove:
 
 - SSM: `ssm.us-east-1.api.aws` and `ssmmessages.us-east-1.api.aws` have AAAA records, and SSM Agent 3.3.3270.0 added `UseDualStackEndpoint` (its release notes).
 - `ec2messages` has no dual-stack name, but agents since 3.3.40.0 use `ssmmessages` in its place.

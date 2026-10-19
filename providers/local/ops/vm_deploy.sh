@@ -39,6 +39,7 @@ bucket="${CBASE_CODE_BUCKET:-cbase-code-$account-$region}"
 
 run_on_vm() {   # run_on_vm COMMAND...: SSM send-command to the group's instance, print its output
   local id cmd
+  # shellcheck disable=SC2016 # the backticks are a JMESPath literal
   id="$(aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$stack" \
         --query 'AutoScalingGroups[0].Instances[?LifecycleState==`InService`].InstanceId | [0]' --output text)"
   [ -n "$id" ] && [ "$id" != None ] || die "no InService instance in $stack"

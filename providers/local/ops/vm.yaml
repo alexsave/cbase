@@ -261,7 +261,7 @@ Resources:
             # ::10 of the subnet, so a replaced instance keeps the address the
             # origin's AAAA record names (the old one is gone first: ASG of 1).
             Ipv6Addresses:
-              - Ipv6Address: !Select [0, !Split ["/", !Select [16, !Cidr [!Select [0, !GetAtt Subnet.Ipv6CidrBlocks], 32, 0]]]]
+              - Ipv6Address: !Select [0, !Split ["/", !Select [1, !Cidr [!Select [0, !GetAtt Subnet.Ipv6CidrBlocks], 2, 4]]]]
             DeleteOnTermination: true
         PrivateDnsNameOptions:
           HostnameType: resource-name
@@ -331,7 +331,7 @@ Outputs:
     Value: !Ref Asg
   OriginIpv6:
     Description: the instance's fixed IPv6 address (step 3 needs an AAAA record for it)
-    Value: !Select [0, !Split ["/", !Select [16, !Cidr [!Select [0, !GetAtt Subnet.Ipv6CidrBlocks], 32, 0]]]]
+    Value: !Select [0, !Split ["/", !Select [1, !Cidr [!Select [0, !GetAtt Subnet.Ipv6CidrBlocks], 2, 4]]]]
   BackupBucket:
     Value: !Ref BackupBucket
   AlarmTopic:
