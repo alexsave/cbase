@@ -1,5 +1,6 @@
 // bench_stats.c - percentiles, the run file and the Markdown report (bench_stats.h).
 #include "bench_stats.h"
+#include "../../shared/c/stats/percentile.h"
 
 #include <inttypes.h>
 #include <math.h>
@@ -7,17 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-int64_t bs_percentile(const int64_t *sorted, int n, double p) {
-    if (n <= 0) return 0;
-    if (p <= 0) return sorted[0];
-    // ceil(p/100 * n) in integers where p is whole, so 95% of 100 is rank 95
-    // and not 96 from a rounding error in the product.
-    double r = p / 100.0 * n;
-    long rank = (long)ceil(r - 1e-9);
-    if (rank < 1) rank = 1;
-    if (rank > n) rank = n;
-    return sorted[rank - 1];
-}
+int64_t bs_percentile(const int64_t *sorted, int n, double p) { return stat_pct_i64(sorted, n, p); }
 
 static int cmp_i64(const void *a, const void *b) {
     int64_t x = *(const int64_t *)a, y = *(const int64_t *)b;

@@ -22,18 +22,14 @@
 #include <string.h>
 #include <time.h>
 #include "../../../../shared/c/clock.h"
+#include "../../../../shared/c/stats/percentile.h"
 
 enum { WARM = 10, RUNS = 200 };
 
-static int cmp_d(const void *a, const void *b) {
-    double x = *(const double *)a, y = *(const double *)b;
-    return x < y ? -1 : x > y;
-}
-
 static void report(const char *what, double *ms, const cb_store_tally *one) {
-    qsort(ms, RUNS, sizeof *ms, cmp_d);
+    qsort(ms, RUNS, sizeof *ms, stat_cmp_f64);
     printf("%-14s median %6.2f ms  p90 %6.2f ms  max %6.2f ms   per call: %d reads %d writes, %g RCU %g WCU (%s)\n", what,
-           ms[RUNS / 2], ms[RUNS * 9 / 10], ms[RUNS - 1], one->reads, one->writes, one->rcu, one->wcu, one->detail);
+           stat_pct_f64(ms, RUNS, 50), stat_pct_f64(ms, RUNS, 90), stat_pct_f64(ms, RUNS, 100), one->reads, one->writes, one->rcu, one->wcu, one->detail);
 }
 
 static double now_ms(void) {
