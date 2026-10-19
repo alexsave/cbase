@@ -7,27 +7,35 @@ Description: >-
 # "GitHub deploys"):
 #
 #   aws cloudformation deploy --region us-east-1 --stack-name cbase-github \
-#     --template-file c_base/ops/github_oidc.yaml --capabilities CAPABILITY_NAMED_IAM
+#     --template-file c_base/providers/aws/ops/github_oidc.yaml --capabilities CAPABILITY_NAMED_IAM
 #
 # Its DeployRoleArn output is the repository secret CBASE_AWS_ROLE_ARN, which
 # both deploy workflows read. One role, one owner: cbase.yaml and web.yaml
 # carry no GitHub resources.
 #
 # What the role may do, and nothing else:
-#   * the Lambda: upload a zip to the code bucket and point the cbase stack's
-#     CodeKey at it (c_base/ops/lambda_deploy.sh). CloudFormation applies that
-#     update with the caller's credentials, so the role also holds what the
-#     Lambda::Function update calls (UpdateFunctionCode and its reads, and
-#     s3:GetObject on the zip, which Lambda fetches as the caller);
+#   * the API server: upload a `cbase serve` binary under the code bucket's
+#     vm/ prefix, point /cbase-vm/release/serve at it, and run a shell command
+#     on the cbase-vm group's instance through SSM (its boot script, which
+#     fetches, checks and restarts; then the health checks) and read the result
+#     (c_base/providers/local/ops/vm_release.sh; role_covers_release.sh holds
+#     the script's calls to this list). It reads and writes no other parameter
+#     (the VM's secrets are SecureStrings under /cbase-vm/env/, out of reach);
 #   * the web: upload to and delete from the web bucket, invalidate the two
 #     distributions, and update the cbase-web stack's page-list parameters on
 #     its previous template, which republishes the two router Functions
-#     (c_base/ops/web_deploy.sh site);
-#   * read both stacks.
-# It cannot change a template: UpdateStack is allowed, but CloudFormation would
-# need IAM, DynamoDB, API Gateway, IoT, CloudFront distribution and Scheduler rights
-# to apply any template change, and the role has none of them. A template
-# change is deployed by hand (ops/deploy.sh, ops/web_deploy.sh stack).
+#     (c_base/providers/aws/ops/site/web_deploy.sh site);
+#   * read the web stack.
+# It cannot change a template: UpdateStack is allowed on cbase-web, but
+# CloudFormation would need IAM, S3 bucket and CloudFront distribution rights to
+# apply any template change, and the role has none of them. A template change
+# is deployed by hand (local/ops/vm_deploy.sh, aws/ops/site/web_deploy.sh stack).
+#
+# Until 2026-10-19 the role also shipped the Lambda (lambda_deploy.sh: the zip,
+# the cbase stack's CodeKey, and the reads CloudFormation re-resolves). Those
+# rights were removed when the VM took production's traffic and the Lambda was
+# frozen at reserved concurrency 0; a Lambda rollback is lambda_deploy.sh by
+# hand with an operator's credentials (c_base/RUNBOOK.md).
 
 Parameters:
   GitHubRepo:
@@ -41,21 +49,13 @@ Parameters:
       One more OIDC subject to trust, for proving a workflow change from its
       branch before it reaches main (repo:owner/name:ref:refs/heads/<branch>).
       Leave empty: set it for the proof, then redeploy with it empty.
-  ApiStack:
-    Type: String
-    Default: cbase
-  FunctionName:
-    Type: String
-    Default: cbase
-  TableName:
-    Type: String
-    Default: cbase
   CodeBucket:
     Type: String
     Default: cbase-code-487337210065-us-east-1
-  ApiDistributionId:
+  VmGroup:
     Type: String
-    Default: EUSADBN5SXTDP
+    Default: cbase-vm
+    Description: the cbase-vm auto-scaling group, whose instance the role may run commands on.
   WebStack:
     Type: String
     Default: cbase-web
@@ -109,73 +109,42 @@ Resources:
                 Action:
                   - cloudformation:DescribeStacks
                   - cloudformation:DescribeStackEvents
-                Resource:
-                  - !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${ApiStack}/*"
-                  - !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${WebStack}/*"
+                Resource: !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${WebStack}/*"
               - Sid: UpdateStacks
                 Effect: Allow
                 Action: cloudformation:UpdateStack
-                Resource:
-                  - !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${ApiStack}/*"
-                  - !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${WebStack}/*"
+                Resource: !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${WebStack}/*"
 
-              # ---- the Lambda ----
-              - Sid: CodeUpload
+              # ---- the API server (cbase-vm) ----
+              - Sid: VmRelease
                 Effect: Allow
                 Action: [s3:PutObject, s3:GetObject]
-                Resource: !Sub "arn:${AWS::Partition}:s3:::${CodeBucket}/cbase-lambda-*.zip"
-              - Sid: FunctionCode
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${CodeBucket}/vm/cbase-serve-*"
+              - Sid: VmReleasePointer
+                Effect: Allow
+                Action: ssm:PutParameter
+                Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cbase-vm/release/serve"
+              # SendCommand authorizes the document and each instance: the
+              # instance only when it carries the group's tag (Auto Scaling
+              # tags every instance it launches with aws:autoscaling:groupName).
+              - Sid: VmCommandDocument
+                Effect: Allow
+                Action: ssm:SendCommand
+                Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}::document/AWS-RunShellScript"
+              - Sid: VmCommandInstance
+                Effect: Allow
+                Action: ssm:SendCommand
+                Resource: !Sub "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*"
+                Condition:
+                  StringEquals:
+                    "ssm:resourceTag/aws:autoscaling:groupName": !Ref VmGroup
+              # Neither has a resource type: Resource "*" is the only form.
+              - Sid: VmCommandResult
                 Effect: Allow
                 Action:
-                  - lambda:UpdateFunctionCode
-                  # CloudFormation's update calls GetFunction as this role (CloudTrail,
-                  # 2026-10-17), which returns the function's environment: so no
-                  # secret is in it (the JWT secret and admin token are in SSM,
-                  # where this role has no access; cbase.yaml SecretsPrefix).
-                  # GetFunctionConfiguration is not needed and not granted.
-                  - lambda:GetFunction
-                  - lambda:GetFunctionUrlConfig
-                  - lambda:GetFunctionCodeSigningConfig
-                  - lambda:GetFunctionRecursionConfig
-                  - lambda:GetRuntimeManagementConfig
-                  - lambda:ListTags
-                Resource: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${FunctionName}"
-              # CloudFormation applies the update with the caller's credentials,
-              # and re-resolves every GetAtt the function and the Outputs name:
-              # FunctionRole.Arn (iam:GetRole), FunctionUrl.FunctionUrl
-              # (lambda:GetFunctionUrlConfig above) and Distribution.DomainName
-              # (cloudfront:GetDistribution). Measured: each one missing failed
-              # the update and rolled it back. All read-only.
-              - Sid: StackRoles
-                Effect: Allow
-                Action: iam:GetRole
-                Resource: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${ApiStack}-*"
-              - Sid: StackDistribution
-                Effect: Allow
-                Action: cloudfront:GetDistribution
-                Resource: !Sub "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${ApiDistributionId}"
-              # The same reads for the rest of what cbase.yaml takes an attribute
-              # of (ops/role_covers_template.sh holds this list to the template):
-              # the IoT authorizer (IotAuthorizer.Arn, which the authorizer's invoke
-              # permission names; missing, it failed every code deploy after the
-              # stage 1 template of 2026-10-18 and rolled them back), the table, and
-              # the stack's two CloudFront Functions. All read-only.
-              - Sid: StackAuthorizer
-                Effect: Allow
-                # CloudFormation's read of an authorizer is both (measured: without
-                # ListTagsForResource it fails "Unauthorized tagging operation").
-                Action: [iot:DescribeAuthorizer, iot:ListTagsForResource]
-                Resource: !Sub "arn:${AWS::Partition}:iot:${AWS::Region}:${AWS::AccountId}:authorizer/${FunctionName}-stream"
-              - Sid: StackTable
-                Effect: Allow
-                Action: dynamodb:DescribeTable
-                Resource: !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TableName}"
-              - Sid: StackEdgeFunctions
-                Effect: Allow
-                Action: cloudfront:DescribeFunction
-                Resource:
-                  - !Sub "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:function/${FunctionName}-ws-path"
-                  - !Sub "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:function/${FunctionName}-mqtt-authorizer"
+                  - ssm:GetCommandInvocation
+                  - autoscaling:DescribeAutoScalingGroups
+                Resource: "*"
 
               # ---- the web ----
               - Sid: WebFiles

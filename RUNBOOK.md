@@ -363,7 +363,7 @@ Since 2026-10-14 every push to `main` deploys what is live, to AWS, with no hand
 
 | What changed on `main` | Workflow, job | What it does |
 |---|---|---|
-| `c_base/**`, `foolish/c/**`, `shared/c/**`, `shared/tools/**` | `c_base`, `deploy to Lambda` | after every test job passes, `providers/aws/ops/lambda_deploy.sh`: the CI-built zip to the code bucket, the `cbase` stack's `CodeKey` pointed at it (previous template, every other parameter kept), then CodeSha256 and `https://api.foolish.cards/health` checked |
+| `c_base/**`, `foolish/c/**`, `foolish/server/**`, `shared/c/**`, `shared/tools/**` | `c_base`, `deploy to cbase-vm` | after every test job passes, `providers/local/ops/vm_release.sh`: the CI-built static `cbase serve` binary to the code bucket's `vm/`, `/cbase-vm/release/serve` pointed at it, the instance restarted through SSM, then the binary's sha256, the instance's `/health` and `/ready`, and `https://api.foolish.cards/health` checked (providers/local/ops/VM_RUNBOOK.md, "Upgrade the server"). Until 2026-10-19 this job was `deploy to Lambda` (`lambda_deploy.sh`) |
 | `foolish/**`, `shared/**`, `uttt/c/**`, `uttt/web/**` | `web_aws`, `deploy` | `providers/aws/ops/site/web_deploy.sh site foolish`, then `site uttt`: upload, page lists, invalidation, then `www.foolish.cards` and `www.uttt.live` must answer 200 (both apexes are on CloudFront too) |
 
 Both refuse a tree that does not contain `origin/main` (`ops/require_main.sh`), so a branch behind main, or a re-run of an old run by hand, deploys nothing.
@@ -383,7 +383,9 @@ aws cloudformation deploy --region us-east-1 --stack-name cbase-github \
 
 1. It trusts only `repo:alexsave/foolish:ref:refs/heads/main`.
    To prove a workflow change from its branch before merging, deploy the stack once with `--parameter-overrides ExtraSubject=repo:alexsave/foolish:ref:refs/heads/<branch>` (and let the workflow's `if:` accept that ref on the branch), then deploy it again with `ExtraSubject=` empty.
-2. It may upload the Lambda zip and update the `cbase` stack's code, upload to the web bucket, invalidate the two distributions, rewrite the `cbase-web` page lists, and read both stacks; it holds none of the rights a template change needs, so `providers/aws/ops/deploy.sh` and `providers/aws/ops/site/web_deploy.sh stack` stay hand steps from this Mac.
+2. It may upload a serve binary under the code bucket's `vm/cbase-serve-*`, write `/cbase-vm/release/serve`, run commands through SSM on the `cbase-vm` group's instance and read their results, upload to the web bucket, invalidate the two distributions, rewrite the `cbase-web` page lists, and read that stack; it holds none of the rights a template change needs, so `providers/local/ops/vm_deploy.sh` and `providers/aws/ops/site/web_deploy.sh stack` stay hand steps from this Mac.
+   `providers/aws/ops/role_covers_release.sh` (in CI) fails when `vm_release.sh` makes an AWS call the role does not grant.
+   The Lambda deploy rights were removed on 2026-10-19 when the VM took production; the frozen `cbase` Lambda is redeployed only by hand (`lambda_deploy.sh` with an operator's credentials) if it is ever rolled back to.
 3. Repository secrets (Settings > Secrets and variables > Actions): `CBASE_AWS_ROLE_ARN` (the stack's `DeployRoleArn` output).
 
 The Vercel rollback lanes (`web.yml`, `uttt-web.yml`) were deleted on 2026-10-18 (W9).

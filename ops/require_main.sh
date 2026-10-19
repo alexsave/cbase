@@ -1,8 +1,8 @@
 # shellcheck shell=bash
 # Sourced, not run: require_main TREE refuses (exits 1) unless TREE contains
 # origin/main, or is the first attempt of a CI run of a commit of main (QUEUED
-# below). web_deploy.sh and lambda_deploy.sh call it before their first AWS
-# call; test/web_deploy_gate_test.sh proves it for both.
+# below). web_deploy.sh, vm_release.sh and lambda_deploy.sh call it before
+# their first AWS call; test/web_deploy_gate_test.sh proves it for each.
 #
 # WHY. On 2026-10-14 foolish.cards was deployed by hand from claude/c_base,
 # which had branched before PR #287 (the kernel fix for "anim_build_plan error

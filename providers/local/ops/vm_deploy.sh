@@ -1,12 +1,17 @@
 #!/bin/bash
 # Deploys the cbase-vm stack (vm.yaml): `cbase serve` on one t4g.nano.
 #
-#   c_base/providers/local/ops/vm_deploy.sh [BIN]   # upload BIN as a release, create or update the stack
-#   c_base/providers/local/ops/vm_deploy.sh --restart   # the running instance re-reads SSM, refetches, restarts
-#   c_base/providers/local/ops/vm_deploy.sh --verify    # is-active, a local /health probe, the journal tail
+#   c_base/providers/local/ops/vm_deploy.sh [BIN]   # create or update the stack (and upload BIN as its release)
+#   c_base/providers/local/ops/vm_deploy.sh --restart   # vm_release.sh --restart
+#   c_base/providers/local/ops/vm_deploy.sh --verify    # vm_release.sh --verify
 #
-# BIN defaults to c_base/bench/nano/bin/serve-vm1 (c_base/bench/nano/build.sh vm1:
-# static musl arm64). Its version is the short git SHA (CBASE_VM_VERSION overrides).
+# A new server binary is vm_release.sh's (CI runs it on every push to main): it
+# moves /cbase-vm/release/serve and restarts the instance, with no stack update.
+# So with no BIN this keeps the release that parameter names, and a template
+# change never rolls the server back. With BIN (a static musl arm64 build, e.g.
+# c_base/bench/nano/build.sh vm1 or build_bootstrap.sh serve) it uploads BIN as
+# vm/cbase-serve-<short sha> (CBASE_VM_VERSION overrides) and the stack points
+# the parameter at it; run --restart after to swap the binary.
 #
 # What it does, in order:
 #   1. credentials and region (aws sts; region from AWS_REGION or aws configure);
@@ -28,6 +33,11 @@ set -euo pipefail
 ops="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(git -C "$ops" rev-parse --show-toplevel)"
 die() { echo "vm_deploy.sh: $*" >&2; exit 1; }
+case "${1:-}" in
+  --restart|--verify) exec "$ops/vm_release.sh" "$1" ;;
+  -h|--help) sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'; exit ;;
+  -*) die "unknown argument $1" ;;
+esac
 for tool in aws openssl gzip base64 shasum curl; do command -v "$tool" >/dev/null || die "$tool is not installed"; done
 
 account="$(aws sts get-caller-identity --query Account --output text 2>/dev/null)" || die "no AWS credentials (aws login)"
@@ -37,39 +47,13 @@ export AWS_REGION="$region"
 stack="${CBASE_VM_STACK:-cbase-vm}"
 bucket="${CBASE_CODE_BUCKET:-cbase-code-$account-$region}"
 
-run_on_vm() {   # run_on_vm COMMAND...: SSM send-command to the group's instance, print its output
-  local id cmd
-  # shellcheck disable=SC2016 # the backticks are a JMESPath literal
-  id="$(aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$stack" \
-        --query 'AutoScalingGroups[0].Instances[?LifecycleState==`InService`].InstanceId | [0]' --output text)"
-  [ -n "$id" ] && [ "$id" != None ] || die "no InService instance in $stack"
-  local params
-  params="$(printf '%s\n' "$@" | python3 -c 'import json,sys; print(json.dumps({"commands": sys.stdin.read().splitlines()}))')"
-  cmd="$(aws ssm send-command --instance-ids "$id" --document-name AWS-RunShellScript \
-        --parameters "$params" --query Command.CommandId --output text)"
-  aws ssm wait command-executed --command-id "$cmd" --instance-id "$id" 2>/dev/null || true
-  echo "instance $id:"
-  aws ssm get-command-invocation --command-id "$cmd" --instance-id "$id" \
-    --query '[Status,StandardOutputContent,StandardErrorContent]' --output text
-}
-
-case "${1:-}" in
-  --restart) run_on_vm "/usr/local/sbin/cbase-vm-boot >/dev/null 2>&1; systemctl is-active cbase; tail -3 /var/log/cbase-vm-boot.log"; exit ;;
-  --verify)
-    run_on_vm "systemctl is-active cbase" \
-              "curl -s -o /dev/null -w 'GET /health -> %{http_code}\n' http://127.0.0.1:8080/health" \
-              "curl -s -o /dev/null -w 'GET /ready  -> %{http_code}\n' http://127.0.0.1:8080/ready" \
-              "journalctl -u cbase --no-pager | tail -n 8"
-    exit ;;
-  -h|--help) sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; exit ;;
-  -*) die "unknown argument $1" ;;
-esac
-
 # ---- 2. the releases --------------------------------------------------------------
-bin="${1:-$repo/c_base/bench/nano/bin/serve-vm1}"
-[ -f "$bin" ] || die "no binary at $bin (c_base/bench/nano/build.sh vm1)"
-file "$bin" | grep -Eq 'ARM aarch64.*(statically|static-pie) linked' || die "$bin is not a static arm64 binary"
-version="${CBASE_VM_VERSION:-$(git -C "$repo" rev-parse --short HEAD)}"
+bin="${1:-}"
+if [ -n "$bin" ]; then
+  [ -f "$bin" ] || die "no binary at $bin"
+  file "$bin" | grep -Eq 'ARM aarch64.*(statically|static-pie) linked' || die "$bin is not a static arm64 binary"
+fi
+version="${CBASE_VM_VERSION:-$(git -C "$repo" rev-parse --short=9 HEAD)}"
 aws s3api head-bucket --bucket "$bucket" 2>/dev/null || die "no bucket $bucket (providers/aws/ops/deploy.sh makes it)"
 
 upload() {   # upload FILE KEY: puts FILE and KEY.sha256 unless KEY is there; prints "<bucket> <key> <sha256>"
@@ -85,7 +69,13 @@ upload() {   # upload FILE KEY: puts FILE and KEY.sha256 unless KEY is there; pr
   fi
   printf '%s %s %s\n' "$bucket" "$2" "$sum"
 }
-serve_release="$(upload "$bin" "vm/cbase-serve-$version")"
+if [ -n "$bin" ]; then
+  serve_release="$(upload "$bin" "vm/cbase-serve-$version")"
+else
+  serve_release="$(aws ssm get-parameter --name /cbase-vm/release/serve --query Parameter.Value --output text 2>/dev/null || true)"
+  [ -n "$serve_release" ] && [ "$serve_release" != None ] || die "no BIN and no /cbase-vm/release/serve to keep: name a binary for a first deploy"
+  echo "keeping the live release"
+fi
 echo "serve release: $serve_release"
 
 tmp="$(mktemp -d)"

@@ -1,7 +1,10 @@
 #!/bin/bash
 # Ships a built Lambda zip to the cbase stack: the code only, never the
-# template. .github/workflows/c_base.yml runs it on every push to main, as the
-# role providers/aws/ops/github_oidc.yaml makes; it runs the same from this Mac.
+# template. By hand only, with an operator's credentials: until 2026-10-19
+# .github/workflows/c_base.yml ran it on every push to main; since the cutover
+# the cbase-vm instance serves production (providers/local/ops/vm_release.sh),
+# the Lambda is frozen at reserved concurrency 0 for a rollback, and the GitHub
+# role holds no Lambda rights.
 #
 #   c_base/providers/aws/ops/lambda_deploy.sh c_base/build/cbase-lambda.zip
 #

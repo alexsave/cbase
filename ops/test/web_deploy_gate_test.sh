@@ -1,5 +1,5 @@
 #!/bin/bash
-# web_deploy.sh and lambda_deploy.sh refuse to deploy from a tree behind
+# web_deploy.sh, vm_release.sh and lambda_deploy.sh refuse to deploy from a tree behind
 # origin/main (require_main.sh), and let a tree that contains main through. In
 # CI, the first attempt of a run of an older commit of main deploys (the newer
 # push's run is queued behind it), and a re-run of one is refused. No
@@ -32,10 +32,11 @@ g() { git -c user.name=t -c user.email=t@t -c init.defaultBranch=main "$@"; }
 # origin with main at A; a clone at A; then main moves to B on origin.
 g init -q --bare "$tmp/origin.git"
 g clone -q "$tmp/origin.git" "$tmp/seed" 2>/dev/null
-mkdir -p "$tmp/seed/c_base/ops" "$tmp/seed/c_base/providers/aws/ops/site"
+mkdir -p "$tmp/seed/c_base/ops" "$tmp/seed/c_base/providers/aws/ops/site" "$tmp/seed/c_base/providers/local/ops"
 cp "$ops/require_main.sh" "$ops/ops_env.sh" "$tmp/seed/c_base/ops/"
 cp "$aws_ops/lambda_deploy.sh" "$tmp/seed/c_base/providers/aws/ops/"
 cp "$aws_ops/site/web_deploy.sh" "$tmp/seed/c_base/providers/aws/ops/site/"
+cp "$ops/../providers/local/ops/vm_release.sh" "$tmp/seed/c_base/providers/local/ops/"
 g -C "$tmp/seed" add -A
 g -C "$tmp/seed" commit -q -m A
 g -C "$tmp/seed" push -q origin HEAD:main
@@ -57,6 +58,11 @@ run_lambda() {
   bash "$tmp/work/c_base/providers/aws/ops/lambda_deploy.sh" "$tmp/fake.zip" > "$tmp/out" 2>&1 && return 0 || return $?
 }
 
+run_vm() {
+  echo bin > "$tmp/fake.bin"
+  bash "$tmp/work/c_base/providers/local/ops/vm_release.sh" "$tmp/fake.bin" > "$tmp/out" 2>&1 && return 0 || return $?
+}
+
 # 1. Behind main: refused, by the gate, with no AWS call.
 if run; then fail "a tree behind origin/main deployed"; fi
 grep -q 'does not contain origin/main' "$tmp/out" || { cat "$tmp/out" >&2; fail "behind main: refused, but not by require_main"; }
@@ -67,6 +73,11 @@ if run_lambda; then fail "lambda: a tree behind origin/main deployed"; fi
 grep -q 'does not contain origin/main' "$tmp/out" || { cat "$tmp/out" >&2; fail "lambda, behind main: refused, but not by require_main"; }
 [ ! -e "$tmp/aws_calls" ] || fail "lambda, behind main: aws was called before the refusal: $(cat "$tmp/aws_calls")"
 echo "ok - lambda: a tree behind origin/main is refused before any AWS call"
+
+if run_vm; then fail "vm: a tree behind origin/main deployed"; fi
+grep -q 'does not contain origin/main' "$tmp/out" || { cat "$tmp/out" >&2; fail "vm, behind main: refused, but not by require_main"; }
+[ ! -e "$tmp/aws_calls" ] || fail "vm, behind main: aws was called before the refusal: $(cat "$tmp/aws_calls")"
+echo "ok - vm: a tree behind origin/main is refused before any AWS call"
 
 # 1b. In CI, on the first attempt of a run on main, the same tree is an older
 #     commit OF main whose newer push's run is queued behind this one (the

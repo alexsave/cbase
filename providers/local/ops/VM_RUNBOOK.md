@@ -69,20 +69,27 @@ The fixed `::10` address is what keeps that record valid across instance replace
 
 ## Deploy
 
+A stack change (vm.yaml, the boot script, the unit) is a hand step:
+
 ```sh
-c_base/bench/nano/build.sh vm1                       # static musl arm64 -> c_base/bench/nano/bin/serve-vm1
-c_base/providers/local/ops/vm_deploy.sh              # upload as vm/cbase-serve-<short sha>, create or update the stack
-c_base/providers/local/ops/vm_deploy.sh --verify     # systemctl is-active, local /health and /ready, journal tail
+c_base/providers/local/ops/vm_deploy.sh              # create or update the stack, keeping the live release
+c_base/providers/local/ops/vm_deploy.sh BIN          # the first deploy: upload BIN as vm/cbase-serve-<short sha> too
+c_base/providers/local/ops/vm_deploy.sh --verify     # = vm_release.sh --verify
 ```
 
 The first boot takes about two minutes after the instance launches.
 `--verify` uses SSM Run Command, so it works with no inbound port at all.
+A boot script or unit change reaches the running instance only through a new instance (it is the launch template's user-data); `--restart` reruns the copy the instance installed at boot.
 
 ## Upgrade the server
 
-Build a new binary, commit (the version is the short git SHA), and run `vm_deploy.sh` to upload it and move `/cbase-vm/release/serve`.
-Then run `vm_deploy.sh --restart`: the instance re-reads SSM, fetches and checks the new binary, and restarts `cbase`.
+Every push to main that changes the server deploys it: the `c_base` workflow's `deploy to cbase-vm` job builds the static binary (`build_bootstrap.sh serve`) and runs `vm_release.sh` on it, as the GitHub role (c_base/RUNBOOK.md, "GitHub deploys").
+`vm_release.sh BIN` uploads BIN as `vm/cbase-serve-<short sha>` with its `.sha256`, points `/cbase-vm/release/serve` at it, runs the instance's boot script through SSM (it fetches and checks the binary named there and restarts `cbase`), then checks that `cbase` is active, that `/usr/local/bin/cbase` has BIN's sha256, that the instance's own `/health` and `/ready` answer 200, and that `https://api.foolish.cards/health` answers `ok cbase`.
+It refuses a tree that does not contain `origin/main` (`c_base/ops/require_main.sh`).
+By hand, the same command runs from this Mac; `vm_release.sh --restart` restarts on the release already named, and `--verify` runs only the checks.
+The stack's `ServeRelease` parameter is what the stack first set; after that `/cbase-vm/release/serve` is owned by `vm_release.sh`, and `vm_deploy.sh` with no BIN keeps its value, so a template change never rolls the server back.
 A restart drops open WebSockets; clients reconnect.
+To roll back the server, run `vm_release.sh` on an older build of main's tree, or point the parameter back at an older `vm/cbase-serve-*` key and run `--restart`.
 
 ## Upgrade the OS
 
