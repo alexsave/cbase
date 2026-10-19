@@ -18,6 +18,7 @@
 #include "realtime/realtime.h"
 #include "realtime/rt_local.h"
 #include "../../../../shared/c/stream_frame.h"
+#include "util/clock.h"
 #include "util/log.h"
 #include "util/pool.h"
 
@@ -49,6 +50,17 @@ static void h_who(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     cb_res_send(res, 200, "application/octet-stream", b, (size_t)n);
 }
 
+// A route that parks until the test sets the flag and wakes key "k" (http.h park_ms).
+static atomic_int g_flag;
+static int g_park_ms = 5000;
+static void h_park(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
+    if (atomic_load(&g_flag)) { cb_res_text(res, 200, "go"); return; }
+    if (req->park_expired) { cb_res_status(res, 204); return; }
+    res->park_ms = g_park_ms;
+    snprintf(res->park_key, sizeof res->park_key, "k");
+}
+static void h_ping(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) { cb_res_text(res, 200, "pong"); }
+
 static void start(void) {
     cb_log_init(CB_LOG_ERROR, 0);
     rtt_install();
@@ -62,6 +74,8 @@ static void start(void) {
     T_EQ_INT(cb_rt_local_new(&g_ctx, &g_ctx.rt), CB_OK);
     T_EQ_INT(cb_rt_local_routes(&g_ctx), CB_OK);
     T_EQ_INT(cb_router_add(g_ctx.router, "*", "/t/who", CB_ROUTE_POOL, h_who), CB_OK);
+    T_EQ_INT(cb_router_add(g_ctx.router, "GET", "/t/park", CB_ROUTE_POOL, h_park), CB_OK);
+    T_EQ_INT(cb_router_add(g_ctx.router, "GET", "/t/ping", CB_ROUTE_POOL, h_ping), CB_OK);
     T_EQ_INT(cb_router_add(g_ctx.router, "*", "/t/loop", CB_ROUTE_LOOP, h_who), CB_OK);
     cb_server_opts o;
     cb_server_opts_default(&o);
@@ -128,6 +142,55 @@ static int req(int fd, uint32_t id, int meth, const char *path, const char *body
     T_EQ_INT(sf_parse(m->p, m->len, f), 0);
     T_EQ_INT(f->id, id);
     return f->status;
+}
+
+// ---- the long poll's server half: a parked request holds no thread ----------------------------
+
+static atomic_int g_parked_done;
+static int g_parked_status[8];
+static void *park_client(void *arg) {
+    int i = (int)(intptr_t)arg;
+    tc_response r;
+    g_parked_status[i] = tc_http(g_port, "GET", "/t/park", NULL, NULL, 0, &r) == 0 ? r.status : -1;
+    if (g_parked_status[i] >= 0) tc_response_free(&r);
+    atomic_fetch_add(&g_parked_done, 1);
+    return NULL;
+}
+static void wake_k(cb_loop *l, void *ud) { cb_server_wake(g_ctx.server, "k"); }
+
+static void parked_requests_hold_no_thread(void) {
+    enum { N = 6 };   // more than the pool's 3 workers
+    pthread_t th[N];
+    atomic_store(&g_flag, 0);
+    atomic_store(&g_parked_done, 0);
+    g_park_ms = 5000;
+    for (int i = 0; i < N; i++) pthread_create(&th[i], NULL, park_client, (void *)(intptr_t)i);
+    usleep(400000);
+    T_EQ_INT(atomic_load(&g_parked_done), 0);   // all wait
+    tc_response r;
+    T_EQ_INT(tc_http(g_port, "GET", "/t/ping", NULL, NULL, 0, &r), 0);   // and the pool still serves
+    T_EQ_INT(r.status, 200);
+    tc_response_free(&r);
+    atomic_store(&g_flag, 1);
+    T_EQ_INT(cb_loop_post(g_ctx.loop, wake_k, NULL), CB_OK);
+    for (int i = 0; i < N; i++) { pthread_join(th[i], NULL); T_EQ_INT(g_parked_status[i], 200); }
+    // Time running out answers by itself: the handler runs once more with park_expired.
+    atomic_store(&g_flag, 0);
+    g_park_ms = 400;
+    int64_t t0 = cb_now_ms();
+    park_client((void *)(intptr_t)0);
+    T_EQ_INT(g_parked_status[0], 204);
+    T_CHECK(cb_now_ms() - t0 >= 350);
+    // A wake with nothing to say parks it again until its time is up.
+    atomic_store(&g_parked_done, 0);
+    g_park_ms = 1500;
+    pthread_create(&th[0], NULL, park_client, (void *)(intptr_t)0);
+    usleep(300000);
+    T_EQ_INT(cb_loop_post(g_ctx.loop, wake_k, NULL), CB_OK);
+    usleep(300000);
+    T_EQ_INT(atomic_load(&g_parked_done), 0);
+    pthread_join(th[0], NULL);
+    T_EQ_INT(g_parked_status[0], 204);
 }
 
 static void ws_upgrade_route(void) {
@@ -369,6 +432,7 @@ static void stop(void) {
 int main(void) {
     start();
     T_RUN(ws_upgrade_route);
+    T_RUN(parked_requests_hold_no_thread);
     T_RUN(pushes_reach_their_hearers);
     T_RUN(many_sockets_hear_once);
     T_RUN(req_runs_a_route_as_the_user);

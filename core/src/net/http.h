@@ -56,6 +56,9 @@ typedef struct cb_http_req {
     // answers with instead of reading a token. NULL for anything cb_http_parse
     // built, so no header can set it.
     const void *auth_user;
+    // A parked request run again (http.h cb_http_res park_ms): true when it was woken by its time
+    // running out, so the handler answers now whatever it finds.
+    bool        park_expired;
 } cb_http_req;
 
 // The header's value, or NULL. First match, case-insensitive name.
@@ -92,6 +95,12 @@ typedef struct cb_http_res {
     cb_buf headers;    // "Name: value\r\n" lines (Content-Length is added on write)
     cb_buf body;
     bool   close;      // close the connection after this response
+    // PARK (loop-served only): a handler that has nothing to answer yet sets park_ms (> 0) and
+    // park_key, and returns. The connection waits, holding no thread, until cb_server_wake(key) or
+    // park_ms from the first park, and the SAME request then runs the handler again (park_expired
+    // set once the time is up); the handler may park again until then. Ignored on a loop route.
+    int64_t park_ms;
+    char   park_key[48];
     // The answer to a HEAD (cb_handle sets it): serialized with the body's
     // Content-Length but without the body. The Lambda encoder still sends the
     // body; the function URL front end drops it (and says Content-Length: 0).

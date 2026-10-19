@@ -52,6 +52,8 @@ void cb_server_free(cb_server *s);
 void cb_server_inline_stats(const cb_server *s, int64_t *ran, int64_t *tripped);
 
 // Calls fn for every open WebSocket. fn may send, and may close the one it is given.
+// Loop thread: wakes every request parked under `key` (http.h park_ms): each runs its handler again.
+void cb_server_wake(cb_server *s, const char *key);
 void cb_server_ws_each(cb_server *s, void (*fn)(cb_ws *ws, void *ud), void *ud);
 
 #endif

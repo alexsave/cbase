@@ -52,6 +52,10 @@ struct cb_ws {
     cb_buf msg;          // a fragmented message being assembled
     int msg_op;          // its opcode, -1 when none
     struct cb_ws *next, *prev;   // every connection, for sweeps and shutdown
+    struct cb_ws *park_next;     // the server's parked requests
+    bool parked;                 // its request waits for cb_server_wake or its deadline (no thread holds it)
+    char park_key[48];
+    int64_t park_deadline;       // loop ms, set by the first park of a request
 };
 typedef struct cb_ws conn;
 
@@ -88,6 +92,8 @@ struct cb_server {
     bool draining;
     int64_t drain_deadline;
     uint64_t sweep_timer;
+    conn *parked;                // requests waiting on a key (cb_server_wake)
+    uint64_t wake_seq;           // bumped by every cb_server_wake: a handler that read before it must not park
 };
 
 static void conn_close(conn *c);
@@ -183,6 +189,7 @@ typedef struct job {
     cb_server *srv;
     conn *c;
     cb_http_req req;
+    uint64_t wake_seq;           // s->wake_seq when the handler last started
 } job;
 
 #define JOB_CHUNK 32   // blocks allocated at once, and preallocated at start
@@ -238,6 +245,43 @@ static void finish(conn *c) {
 }
 
 
+static void job_run(void *ud);
+
+// The parked (or just woken) request's handler goes to the pool again.
+static void resubmit(conn *c, job *j) {
+    cb_server *s = j->srv;
+    cb_res_free(&c->res);
+    cb_res_init(&c->res);
+    c->parked = false;
+    c->state = C_BUSY;
+    s->busy++;
+    j->wake_seq = s->wake_seq;
+    if (!s->ctx->req_pool || cb_pool_submit(s->ctx->req_pool, job_run, j) != CB_OK) {
+        s->busy--;
+        c->state = C_HTTP;
+        c->park_deadline = 0;
+        cb_router_error(&c->res, 503, "server is shutting down");
+        finish(c);
+    }
+}
+
+static void wake_conn(cb_server *s, conn *c, int64_t now) {
+    for (conn **pp = &s->parked; *pp; pp = &(*pp)->park_next)
+        if (*pp == c) { *pp = c->park_next; break; }
+    c->park_next = NULL;
+    if (now >= c->park_deadline) c->req->park_expired = true;
+    resubmit(c, c->job);
+}
+
+void cb_server_wake(cb_server *s, const char *key) {
+    s->wake_seq++;
+    int64_t now = cb_loop_now(s->ctx->loop);
+    for (conn *c = s->parked, *next; c; c = next) {
+        next = c->park_next;
+        if (strcmp(c->park_key, key) == 0) wake_conn(s, c, now);
+    }
+}
+
 static void job_done(cb_loop *l, void *ud) {
     job *j = ud;
     cb_server *s = j->srv;
@@ -245,6 +289,25 @@ static void job_done(cb_loop *l, void *ud) {
     s->busy--;
     c->state = C_HTTP;
     if (c->dead) { conn_close(c); return; }
+    if (c->res.park_ms > 0 && c->res.park_key[0] && !c->req->park_expired) {
+        int64_t now = cb_loop_now(l);
+        if (!c->park_deadline) c->park_deadline = now + c->res.park_ms;
+        if (now < c->park_deadline) {
+            if (s->wake_seq != j->wake_seq) { resubmit(c, j); return; }   // woken since it read: look again
+            snprintf(c->park_key, sizeof c->park_key, "%s", c->res.park_key);
+            cb_res_free(&c->res);
+            cb_res_init(&c->res);
+            c->parked = true;
+            c->park_next = s->parked;
+            s->parked = c;
+            c->state = C_BUSY;   // reads stay paused; the request and job stay as they are
+            return;
+        }
+        c->req->park_expired = true;   // time is up: the handler answers now
+        resubmit(c, j);
+        return;
+    }
+    c->park_deadline = 0;
     finish(c);
 }
 
@@ -308,6 +371,8 @@ static void dispatch(conn *c) {
     c->req = &j->req;
     c->job = j;
     j->srv = s; j->c = c;
+    j->wake_seq = s->wake_seq;
+    c->park_deadline = 0;
     c->state = C_BUSY;
     s->busy++;
     want(c);
@@ -632,6 +697,10 @@ static void on_accept(cb_loop *l, int lfd, int ev, void *ud) {
 static void sweep(cb_loop *l, void *ud) {
     cb_server *s = ud;
     int64_t now = cb_loop_now(l);
+    for (conn *c = s->parked, *next; c; c = next) {   // a parked request whose time is up runs once more and answers
+        next = c->park_next;
+        if (now >= c->park_deadline) wake_conn(s, c, now);
+    }
     for (conn *c = s->all, *next; c; c = next) {
         next = c->next;
         if (c->state == C_BUSY || c->dead) continue;

@@ -605,6 +605,8 @@ static void send_all(local *L, const uint64_t *ids, size_t n, const uint8_t *fra
 static void pub_on_loop(cb_loop *l, void *ud) {
     pub *p = ud;
     local *L = p->rt->impl;
+    // A request parked on this user (or room) by the long poll looks again (net/server.h cb_server_wake).
+    if (L->ctx->server) cb_server_wake(L->ctx->server, p->key);
     uint64_t stack[32];
     uint64_t *ids = stack;
     size_t n = 0, cap = sizeof stack / sizeof *stack;
