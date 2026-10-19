@@ -76,10 +76,51 @@ static bool decode_part(const char *p, size_t n, char *out, size_t cap, size_t *
     return true;
 }
 
+// A per-thread cache of tokens already verified. A signed token is a pure
+// function of its bytes and the secret, so a hit (the exact token text and the
+// exact secret) skips the HMAC, both base64 decodes and the claims JSON parse;
+// exp and nbf are still checked against `now_s` on every call, so an expired
+// token never survives in here. A client sends the same token on every request
+// for up to an hour, which is why this is most of the per-request auth cost.
+#define VCACHE_N 32
+#define VCACHE_TOKEN_MAX 768
+#define VCACHE_SECRET_MAX 128
+typedef struct {
+    uint32_t       tlen, slen;                  // 0: empty
+    char           token[VCACHE_TOKEN_MAX], secret[VCACHE_SECRET_MAX];
+    cb_jwt_claims  c;
+    bool           has_nbf;
+    int64_t        nbf;
+} vcache_ent;
+static _Thread_local vcache_ent t_vcache[VCACHE_N];
+
+static vcache_ent *vcache_slot(const char *token, size_t tn) {
+    uint32_t h = 2166136261u;
+    for (size_t i = 0; i < tn; i++) h = (h ^ (uint8_t)token[i]) * 16777619u;
+    return &t_vcache[h % VCACHE_N];
+}
+
+static int times_ok(const cb_jwt_claims *c, bool has_nbf, int64_t nbf, int64_t now_s) {
+    // The skew moves our clock, never the token's numbers: exp and nbf are any
+    // int64 a signed body says, and adding to one can overflow.
+    if (now_s - CB_JWT_SKEW_S > c->exp) return CB_E_AUTH;
+    if (has_nbf && now_s + CB_JWT_SKEW_S < nbf) return CB_E_AUTH;
+    return CB_OK;
+}
+
 int cb_jwt_verify(const char *secret, const char *token, int64_t now_s, cb_jwt_claims *out) {
     if (!secret || !secret[0] || !token) return CB_E_AUTH;
     size_t tn = strlen(token);
     if (tn >= CB_JWT_MAX) return CB_E_AUTH;
+    size_t sl = strlen(secret);
+    bool cacheable = tn < VCACHE_TOKEN_MAX && sl < VCACHE_SECRET_MAX;
+    vcache_ent *ce = cacheable ? vcache_slot(token, tn) : NULL;
+    if (ce && ce->tlen == tn && ce->slen == sl && memcmp(ce->token, token, tn) == 0 &&
+        memcmp(ce->secret, secret, sl) == 0) {
+        int rc = times_ok(&ce->c, ce->has_nbf, ce->nbf, now_s);
+        if (rc == CB_OK) *out = ce->c;
+        return rc;
+    }
     const char *d1 = memchr(token, '.', tn);
     if (!d1) return CB_E_AUTH;
     const char *d2 = memchr(d1 + 1, '.', tn - (size_t)(d1 + 1 - token));
@@ -103,11 +144,17 @@ int cb_jwt_verify(const char *secret, const char *token, int64_t now_s, cb_jwt_c
     bool has_nbf;
     int64_t nbf;
     if (!cb_js_jwt_claims_decode(body, bl, &c, &has_nbf, &nbf)) return CB_E_AUTH;
-    // The skew moves our clock, never the token's numbers: exp and nbf are any
-    // int64 a signed body says, and adding to one can overflow.
-    if (now_s - CB_JWT_SKEW_S > c.exp) return CB_E_AUTH;
-    if (has_nbf && now_s + CB_JWT_SKEW_S < nbf) return CB_E_AUTH;
+    if (times_ok(&c, has_nbf, nbf, now_s) != CB_OK) return CB_E_AUTH;
     if (!cb_uuid_valid(c.sub, strlen(c.sub)) || !cb_uuid_valid(c.session_id, strlen(c.session_id))) return CB_E_AUTH;
     *out = c;
+    if (ce) {
+        ce->tlen = (uint32_t)tn;
+        ce->slen = (uint32_t)sl;
+        memcpy(ce->token, token, tn);
+        memcpy(ce->secret, secret, sl);
+        ce->c = c;
+        ce->has_nbf = has_nbf;
+        ce->nbf = nbf;
+    }
     return CB_OK;
 }

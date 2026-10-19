@@ -105,6 +105,24 @@ static void a_token_node_signed(void) {
     T_EQ_INT(cb_jwt_verify("node-secreT", tok, NOW, &got), CB_E_AUTH);
 }
 
+// The per-thread verified-token cache answers a repeat exactly as a fresh
+// verification would: same claims, the clock still checked, another secret
+// still refused (a hit must not skip any of that).
+static void repeat_verify_matches_fresh(void) {
+    cb_jwt_claims c = sample(), a, b;
+    char tok[CB_JWT_MAX];
+    cb_jwt_mint(SECRET, &c, NULL, tok, sizeof tok);
+    T_EQ_INT(cb_jwt_verify(SECRET, tok, NOW, &a), CB_OK);
+    T_EQ_INT(cb_jwt_verify(SECRET, tok, NOW, &b), CB_OK);
+    T_CHECK(memcmp(&a, &b, sizeof a) == 0);
+    char other[64];
+    snprintf(other, sizeof other, "%s", SECRET);
+    other[strlen(other) - 1] ^= 1;                                  // same length, one bit off
+    T_EQ_INT(cb_jwt_verify(other, tok, NOW, &b), CB_E_AUTH);
+    T_EQ_INT(cb_jwt_verify(SECRET, tok, NOW + 3600 + 31, &b), CB_E_AUTH);
+    T_EQ_INT(cb_jwt_verify(SECRET, tok, NOW, &b), CB_OK);
+}
+
 static void expiry_and_skew(void) {
     cb_jwt_claims c = sample(), got;
     char tok[CB_JWT_MAX];
@@ -201,6 +219,7 @@ static void refusals(void) {
 int main(void) {
     T_RUN(round_trip);
     T_RUN(a_token_node_signed);
+    T_RUN(repeat_verify_matches_fresh);
     T_RUN(expiry_and_skew);
     T_RUN(refusals);
     return T_DONE();
