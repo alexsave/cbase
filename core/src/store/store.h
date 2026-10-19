@@ -235,7 +235,7 @@ int cb_store_open_sqlite(const char *path, cb_store **out);
 // Gives back what the calling thread's local store keeps between requests (write-scratch items) and
 // what the process-wide block pools hold. Nothing is needed for correctness; a leak-counting test
 // calls it after a request, and a process may at exit.
-void cb_store_sqlite_drain(void);
+void cb_store_local_drain(void);
 // Opens the DynamoDB table `table` in the region and with the credentials the
 // Lambda environment provides (aws/sigv4.h cb_aws_creds_from_env).
 int cb_store_open_dynamo(const char *table, cb_store **out);

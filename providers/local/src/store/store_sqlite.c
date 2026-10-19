@@ -435,7 +435,7 @@ static void scratch_done(cb_item *it) {
     else cb_item_reset(it);
 }
 
-void cb_store_sqlite_drain(void) {
+void cb_store_local_drain(void) {
     if (t_scratch_ready) {
         cb_item_free(&t_cur);
         cb_item_free(&t_next);
