@@ -1318,7 +1318,8 @@ static bool textrow_read(sqlite3_stmt *s, int first, textrow *t) {
             bool idcol = strcmp(t->names[i], "id") == 0 || strcmp(t->names[i], "kept_session") == 0 ||
                          (nl > 3 && strcmp(t->names[i] + nl - 3, "_id") == 0);
             if ((idcol && len == CB_UUID_BYTES) || (strcmp(t->names[i], "token_hash") == 0 && len == HASH_BYTES)) {
-                t->values[i] = malloc(2 * len + 1);
+                // A UUID's text (36 + NUL) is longer than its 16 bytes in hex (32 + NUL).
+                t->values[i] = malloc(len == CB_UUID_BYTES ? CB_UUID_LEN + 1 : 2 * len + 1);
                 if (!t->values[i]) return false;
                 if (len == CB_UUID_BYTES) cb_uuid_unpack(sqlite3_column_blob(s, c), t->values[i]);
                 else hex_encode(sqlite3_column_blob(s, c), len, t->values[i], 2 * len + 1);

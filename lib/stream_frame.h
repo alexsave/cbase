@@ -1,6 +1,6 @@
 // stream_frame.h - the frames of the push socket that are not a push: what a
 // client says to the server and what the server answers. One header, written
-// once, read by both ends (c_base's hub and foolish's netclient).
+// once, read by both ends (the server's hub and the client's socket).
 //
 // The socket is a plain binary WebSocket (no subprotocol): ONE WebSocket
 // MESSAGE IS ONE FRAME. Little-endian. Every frame starts [SF_V][kind].
