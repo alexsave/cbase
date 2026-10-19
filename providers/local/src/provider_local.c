@@ -10,6 +10,7 @@
 #include "store/store.h"
 #include "util/err.h"
 #include "util/log.h"
+#include "net/loop.h"
 #include "util/pool.h"
 
 #include <pthread.h>
@@ -89,6 +90,47 @@ static int local_job_start(cb_ctx *ctx, const char *job, const char *key) {
     return CB_OK;
 }
 
+// ---- a start after a delay: a loop timer, no thread held ---------------------------
+// Any thread may ask; the timer is armed on the loop thread (cb_loop_post) and
+// fires there into local_job_start, which queues the job as any start does (and
+// drops it when one is already queued). The wait costs one heap entry.
+
+typedef struct {
+    cb_ctx *ctx;
+    int64_t delay_ms;
+    char    job[CB_JOB_NAME_MAX + 1];
+    char    key[CB_JOB_KEY_MAX + 1];
+} later_task;
+
+static void later_fire(cb_loop *l, void *ud) {
+    (void)l;
+    later_task *t = ud;
+    int rc = local_job_start(t->ctx, t->job, t->key);
+    if (rc != CB_OK) CB_WARN("jobs", "%s:%s: delayed start failed (%s)", t->job, t->key, cb_strerror(rc));
+    free(t);
+}
+
+static void later_arm(cb_loop *l, void *ud) {
+    later_task *t = ud;
+    if (!cb_loop_timer(l, t->delay_ms, later_fire, t)) {
+        CB_WARN("jobs", "%s:%s: no timer for a delayed start", t->job, t->key);
+        free(t);
+    }
+}
+
+static int local_job_start_after(cb_ctx *ctx, const char *job, const char *key, int64_t delay_ms) {
+    if (!ctx->loop) return CB_E_STATE;
+    later_task *t = calloc(1, sizeof *t);
+    if (!t) return CB_E_NOMEM;
+    t->ctx = ctx;
+    t->delay_ms = delay_ms;
+    snprintf(t->job, sizeof t->job, "%s", job);
+    snprintf(t->key, sizeof t->key, "%s", key);
+    int rc = cb_loop_post(ctx->loop, later_arm, t);
+    if (rc != CB_OK) free(t);
+    return rc;
+}
+
 const cb_provider cb_provider_local = {
     .name = "local",
     .mode = "serve",
@@ -97,4 +139,5 @@ const cb_provider cb_provider_local = {
     .rt_open = cb_rt_local_new,
     .routes = cb_rt_local_routes,
     .job_start = local_job_start,
+    .job_start_after = local_job_start_after,
 };

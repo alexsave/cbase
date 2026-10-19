@@ -39,6 +39,11 @@ typedef struct cb_provider cb_provider;   // cbase/provider.h
 // handed on; a lost job is the app's schedule's to catch (foolish's scan).
 typedef int (*cb_job_start_fn)(cb_ctx *ctx, const char *job, const char *key);
 
+// The same, started after delay_ms without holding a thread meanwhile (serve:
+// a loop timer). A provider without one (lambda: one invocation per drive)
+// leaves it NULL and the caller waits in place.
+typedef int (*cb_job_start_after_fn)(cb_ctx *ctx, const char *job, const char *key, int64_t delay_ms);
+
 // Counters for the admin Overview panel. Relaxed atomics, read for display only.
 // Under Lambda they count this container's invocations, not the function's.
 typedef struct {
@@ -59,6 +64,7 @@ struct cb_ctx {
     cb_auth    *auth;
     cb_rt      *rt;
     cb_job_start_fn job_start;   // the provider's (cbase/provider.h), or a test's
+    cb_job_start_after_fn job_start_after;   // NULL: the caller sleeps in place
     // serve only (NULL under Lambda)
     cb_loop    *loop;
     cb_pool    *req_pool;

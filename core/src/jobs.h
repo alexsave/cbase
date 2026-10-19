@@ -30,6 +30,10 @@ bool cb_job_key_ok(const char *s, size_t n);
 // else the starter's error.
 int cb_job_start(cb_ctx *ctx, const char *job, const char *key);
 
+// The same after delay_ms, without holding a thread meanwhile. CB_E_STATE when
+// the provider has no such start: the caller then waits in place.
+int cb_job_start_after(cb_ctx *ctx, const char *job, const char *key, int64_t delay_ms);
+
 // Runs the app's job `job` for `key` here, now. Its answer, with
 // CB_E_NOT_FOUND also for a job the app does not declare.
 int cb_job_run(cb_ctx *ctx, const char *job, const char *key);

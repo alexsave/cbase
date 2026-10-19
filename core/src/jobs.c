@@ -29,6 +29,12 @@ int cb_job_start(cb_ctx *ctx, const char *job, const char *key) {
     return ctx->job_start(ctx, job, key);
 }
 
+int cb_job_start_after(cb_ctx *ctx, const char *job, const char *key, int64_t delay_ms) {
+    if (!job || !key || !cb_job_name_ok(job, strlen(job)) || !cb_job_key_ok(key, strlen(key))) return CB_E_INVALID;
+    if (!ctx->job_start_after) return CB_E_STATE;
+    return ctx->job_start_after(ctx, job, key, delay_ms);
+}
+
 int cb_job_run(cb_ctx *ctx, const char *job, const char *key) {
     const cb_app *app = ctx->app;
     for (int i = 0; app && job && i < app->n_jobs; i++)

@@ -43,6 +43,8 @@ struct cb_provider {
     int (*routes)(cb_ctx *ctx);
     // How a job is started (ctx.h cb_job_start_fn).
     cb_job_start_fn job_start;
+    // Optional: a start after a delay that holds no thread (ctx.h cb_job_start_after_fn).
+    cb_job_start_after_fn job_start_after;
     // The request header the edge vouches for the viewer's address in
     // (rate_limits.h cb_viewer_key), or NULL: the socket's peer is the viewer.
     const char *viewer_header;

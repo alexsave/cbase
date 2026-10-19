@@ -218,6 +218,28 @@ static void timers_run_in_order_and_cancel(void) {
     cb_loop_free(l);
 }
 
+// Cancel is a lookup and a sift whatever the heap holds: cancel half of 2000 timers (the
+// ids of cancelled ones are stale after, and a reused slot must not honour them), and
+// exactly the other half run.
+static int g_fired;
+static void count_fire(cb_loop *l, void *ud) { (void)l; (void)ud; g_fired++; }
+static void many_timers_cancel_exactly_the_cancelled(void) {
+    enum { N = 2000 };
+    cb_loop *l = cb_loop_new();
+    static uint64_t ids[N];
+    g_fired = 0;
+    for (int i = 0; i < N; i++) ids[i] = cb_loop_timer(l, 1 + (i * 7919) % 40, count_fire, NULL);
+    for (int i = 1; i < N; i += 2) T_CHECK(cb_loop_cancel(l, ids[i]));
+    for (int i = 1; i < N; i += 2) T_CHECK(!cb_loop_cancel(l, ids[i]));
+    for (int i = 1; i < N; i += 2) cb_loop_timer(l, 1000, count_fire, NULL);   // reuse the freed slots
+    for (int i = 1; i < N; i += 2) T_CHECK(!cb_loop_cancel(l, ids[i]));       // the old ids still miss
+    cb_loop_timer(l, 120, stop_cb, NULL);
+    cb_loop_run(l);
+    T_EQ_INT(g_fired, N / 2);
+    T_CHECK(!cb_loop_cancel(l, 0));
+    cb_loop_free(l);
+}
+
 // Posts from many threads share wake-ups (one byte per drained batch): none may be lost,
 // and an idle loop must still wake for a post made after a drain.
 #include <stdatomic.h>
@@ -253,6 +275,7 @@ int main(void) {
     T_RUN(interest_changes_and_hangup);
     T_RUN(a_post_from_another_thread_wakes_an_idle_loop);
     T_RUN(timers_run_in_order_and_cancel);
+    T_RUN(many_timers_cancel_exactly_the_cancelled);
     T_RUN(posts_sharing_a_wakeup_are_never_lost);
     return T_DONE();
 }

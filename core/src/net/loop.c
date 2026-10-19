@@ -48,6 +48,8 @@ struct cb_loop {
 
     timer *heap;       // min-heap on (at, id)
     int nt, capt;
+    int *pos;          // slot -> heap index (see the timers)
+    int *freel, nfree, npos;   // free slots, and slots ever handed out
     uint64_t next_timer_id;
 
     pthread_mutex_t post_lock;
@@ -121,6 +123,8 @@ void cb_loop_free(cb_loop *l) {
     free(l->w);
     free(l->slot_of_fd);
     free(l->heap);
+    free(l->pos);
+    free(l->freel);
     free(l);
 }
 
@@ -177,51 +181,82 @@ void cb_loop_remove(cb_loop *l, int fd) {
 }
 
 // ---- timers: a binary min-heap on (at, id) ----
+// An id is (sequence << TIMER_SLOT_BITS) | slot, so the order on ids is the
+// order of creation, and the slot is where pos[] keeps the timer's heap
+// index: a cancel is a lookup and a sift, O(log n), however many timers wait
+// (one per bot game under serve). A stale id finds a slot that is free or
+// reused, and its id there differs.
+
+#define TIMER_SLOT_BITS 20
+#define TIMER_SLOT_MASK ((1u << TIMER_SLOT_BITS) - 1)
 
 static bool before(const timer *a, const timer *b) { return a->at < b->at || (a->at == b->at && a->id < b->id); }
 
-static void heap_up(timer *h, int i) {
+static void place(cb_loop *l, int i) { l->pos[l->heap[i].id & TIMER_SLOT_MASK] = i; }
+
+static void heap_up(cb_loop *l, int i) {
+    timer *h = l->heap;
     while (i > 0) {
         int p = (i - 1) / 2;
         if (!before(&h[i], &h[p])) break;
         timer t = h[i]; h[i] = h[p]; h[p] = t;
+        place(l, i);
         i = p;
     }
+    place(l, i);
 }
 
-static void heap_down(timer *h, int n, int i) {
+static void heap_down(cb_loop *l, int i) {
+    timer *h = l->heap;
+    int n = l->nt;
     for (;;) {
         int a = 2 * i + 1, b = a + 1, m = i;
         if (a < n && before(&h[a], &h[m])) m = a;
         if (b < n && before(&h[b], &h[m])) m = b;
-        if (m == i) return;
+        if (m == i) break;
         timer t = h[i]; h[i] = h[m]; h[m] = t;
+        place(l, i);
         i = m;
     }
+    if (i < n) place(l, i);
+}
+
+// Takes heap[i] out and returns its slot to the free list.
+static void heap_remove(cb_loop *l, int i) {
+    l->freel[l->nfree++] = (int)(l->heap[i].id & TIMER_SLOT_MASK);
+    l->heap[i] = l->heap[--l->nt];
+    if (i < l->nt) { heap_down(l, i); heap_up(l, i); }
 }
 
 uint64_t cb_loop_timer(cb_loop *l, int64_t delay_ms, cb_timer_fn fn, void *ud) {
     if (l->nt == l->capt) {
         int cap = l->capt ? l->capt * 2 : 32;
+        if ((unsigned)cap > TIMER_SLOT_MASK + 1) return 0;
         timer *h = realloc(l->heap, (size_t)cap * sizeof *h);
         if (!h) return 0;
         l->heap = h;
+        int *pos = realloc(l->pos, (size_t)cap * sizeof *pos);
+        if (!pos) return 0;
+        l->pos = pos;
+        int *fl = realloc(l->freel, (size_t)cap * sizeof *fl);
+        if (!fl) return 0;
+        l->freel = fl;
         l->capt = cap;
     }
-    timer t = { cb_mono_ms() + (delay_ms > 0 ? delay_ms : 0), l->next_timer_id++, fn, ud };
+    int slot = l->nfree > 0 ? l->freel[--l->nfree] : l->npos++;
+    timer t = { cb_mono_ms() + (delay_ms > 0 ? delay_ms : 0), (l->next_timer_id++ << TIMER_SLOT_BITS) | (uint64_t)slot, fn, ud };
     l->heap[l->nt] = t;
-    heap_up(l->heap, l->nt++);
+    heap_up(l, l->nt++);
     return t.id;
 }
 
 bool cb_loop_cancel(cb_loop *l, uint64_t id) {
-    for (int i = 0; i < l->nt; i++) {
-        if (l->heap[i].id != id) continue;
-        l->heap[i] = l->heap[--l->nt];
-        if (i < l->nt) { heap_down(l->heap, l->nt, i); heap_up(l->heap, i); }
-        return true;
-    }
-    return false;
+    unsigned slot = (unsigned)(id & TIMER_SLOT_MASK);
+    if (id == 0 || (int)slot >= l->npos) return false;
+    int i = l->pos[slot];
+    if (i >= l->nt || l->heap[i].id != id) return false;
+    heap_remove(l, i);
+    return true;
 }
 
 // ---- posts: the only way in from another thread ----
@@ -279,8 +314,7 @@ static void run_timers(cb_loop *l) {
     int budget = l->nt;
     while (budget-- > 0 && l->nt > 0 && l->heap[0].at <= now) {
         timer t = l->heap[0];
-        l->heap[0] = l->heap[--l->nt];
-        heap_down(l->heap, l->nt, 0);
+        heap_remove(l, 0);
         t.fn(l, t.ud);
     }
 }

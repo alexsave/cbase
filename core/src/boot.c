@@ -49,6 +49,7 @@ int cb_boot(cb_ctx *ctx, char *err, size_t cap) {
     if ((rc = soft("auth", cb_auth_new(ctx, &ctx->auth), err, cap)) != CB_OK) return rc;
     if ((rc = soft("realtime", prov->rt_open ? prov->rt_open(ctx, &ctx->rt) : CB_OK, err, cap)) != CB_OK) return rc;
     ctx->job_start = prov->job_start;
+    ctx->job_start_after = prov->job_start_after;
     cb_limits_configure(cfg);
 
     ctx->router = cb_router_new();
