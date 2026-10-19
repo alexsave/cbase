@@ -1,42 +1,29 @@
 # cbase-vm runbook
 
-## Resume (2026-10-19: written offline, nothing deployed yet)
+## State (2026-10-19)
 
-The AWS session expired before anything was created, so the stack does not exist yet.
-The template passes `cfn-lint` and the scripts pass `bash -n` and `shellcheck`; none of it has met AWS.
-The binary built for it is `c_base/bench/nano/bin/serve-vm1` from commit `b7dd1ace0`, sha256 `07be1f2dc5ae85cf0a92b297563eaf423c014ec80e0db6080177ec0fed2e08c3`.
-Once `aws sts get-caller-identity` works, run, in order:
+The stack `cbase-vm` is live in us-east-1 (us-east-1a), running `cbase serve` from commit `b7dd1ace0` (sha256 `07be1f2d...e08c3`).
+It takes no production traffic: no CloudFront distribution or DNS record points at it.
+Verified live through SSM Run Command:
 
-```sh
-aws sts get-caller-identity
-aws ec2 describe-managed-prefix-lists --filters Name=prefix-list-name,Values=com.amazonaws.global.ipv6.cloudfront.origin-facing
-CBASE_VM_VERSION=b7dd1ace0 c_base/providers/local/ops/vm_deploy.sh   # upload, make the secrets, deploy the stack
-c_base/providers/local/ops/vm_deploy.sh --verify                     # after about 3 minutes
-```
+- `systemctl is-active cbase` is `active`, and the local `GET /health` and `GET /ready` answer 200.
+- A request to `http://[<OriginIpv6>]:8080/v1/bots` without `X-Cbase-Origin` from a non-loopback address gets 403.
+- The instance has no IPv4 address; the SSM agent is Online over IPv6 and S3 dual-stack and `ssm.<region>.api.aws` served the boot.
+- The instance holds the fixed `OriginIpv6` (`::10`) and the alarms and group are as in vm.yaml.
 
-To deploy a newer server instead, rebuild first (`c_base/bench/nano/build.sh vm1` under the docker lock) and drop `CBASE_VM_VERSION`.
-Then check each item in "To verify once deployed" below, and fall back to dual-stack if one fails.
+What the offline plan got wrong, and the fix:
 
-## To verify once deployed
+- Auto Scaling refuses a launch template that names an address (`Ipv6Addresses`), so `vm_boot.sh` claims `::10` itself with `ec2:AssignIpv6Addresses`, retrying while EC2 frees it from a replaced instance.
+- `UseDualStackEndpoint` alone left the agent's credential check on `ssm.<region>.amazonaws.com` (IPv4 only), so the agent config names the `api.aws` endpoints.
+- `ec2messages` has no IPv6 name, so the agent logs `MDSInteractor ... GetMessages Error` every few minutes; Run Command and sessions go through `ssmmessages` and work. The errors are noise.
 
-- The auto-scaling group accepts a launch template that names a fixed IPv6 address (`::10`); if it refuses, use `Ipv6AddressCount: 1` and give step 3 another way to find the address.
-- cloud-init fetches the user-data over IMDS IPv6 on the minimal AMI, and the AMI has `python3` and a `curl` with `--aws-sigv4`.
-- The SSM agent registers over IPv6 (`aws ssm describe-instance-information` lists the instance as Online).
-- S3 dual-stack and `ssm.<region>.api.aws` answer from the instance (the boot log `/var/log/cbase-vm-boot.log` says "fetched").
-- The two alarms see data under the `AutoScalingGroupName` dimension; if not, they need per-instance dimensions or detailed monitoring.
-- The 2 GB root volume fits the minimal AMI's snapshot (the launch fails at once if the snapshot is larger).
-
-If IPv6-only fails on SSM, S3 or IMDS, switch to dual-stack: give the subnet a 10.77.0.0/24 block with `MapPublicIpOnLaunch` and a `0.0.0.0/0` route, add the IPv4 prefix list rule, and accept about $3.60 a month for the public IPv4 address.
-
-The `cbase-vm` stack runs `cbase serve` (local provider: SQLite plus its own MQTT hub) on one EC2 t4g.nano.
-It is separate from the live `cbase` stack and takes no production traffic until a CloudFront origin points at it (step 3).
-The files: `vm.yaml` (CloudFormation), `vm_deploy.sh` (deploy, restart, verify), `vm_boot.sh` (the user-data), `cbase.service` (the systemd unit).
+Step 3 blocker: `foolish.cards` is served by Google Cloud DNS (`ns-cloud-d1.googledomains.com`), not Route 53, so the AAAA record for the origin must be added there.
 
 ## What runs where
 
 - One VPC with an Amazon-provided IPv6 /56 and one IPv6-only subnet, an internet gateway and a `::/0` route.
 - An auto-scaling group of exactly one instance (AL2023 minimal arm64, t4g.nano, 2 GB gp3, IMDSv2 over IPv6).
-- The instance always gets the subnet's `::10` address (launch template), so a replacement keeps the address an AAAA record will name.
+- The instance claims the subnet's `::10` address at boot (`vm_boot.sh`), so a replacement keeps the address an AAAA record will name.
 - A security group that admits the serve port (8080) only from CloudFront's IPv6 origin-facing prefix list; there is no SSH.
 - The instance role: `AmazonSSMManagedInstanceCore`, `s3:GetObject` on `<CodeBucket>/vm/*`, read/write on the backup bucket, read on `/cbase-vm/*` parameters.
 - SSM parameters under `/cbase-vm/`: `release/serve` and `release/agent` (`<bucket> <key> <sha256>`), and `env/CBASE_*` (the server's environment).
@@ -60,7 +47,7 @@ Its log is `journalctl -u cbase`; the boot script's log is `/var/log/cbase-vm-bo
 ## Why IPv6-only
 
 An IPv6-only subnet has no public IPv4 address, which saves about $3.60 a month and leaves nothing to scan on IPv4.
-Every dependency was checked offline (DNS, release notes, AWS docs) before relying on it; "To verify once deployed" lists what only a live instance can prove:
+Every dependency was checked offline (DNS, release notes, AWS docs) before relying on it, and the live instance confirmed it (see "State"):
 
 - SSM: `ssm.us-east-1.api.aws` and `ssmmessages.us-east-1.api.aws` have AAAA records, and SSM Agent 3.3.3270.0 added `UseDualStackEndpoint` (its release notes).
 - `ec2messages` has no dual-stack name, but agents since 3.3.40.0 use `ssmmessages` in its place.
