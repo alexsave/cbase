@@ -5,8 +5,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+// A route with its method as an int (http.h CB_M_*), named once at add. `route`
+// is first, so the entry's address is the route's.
+typedef struct { cb_route route; uint8_t mid; } entry;
+
 struct cb_router {
-    cb_route *r;
+    entry *r;
     int n, cap;
 };
 
@@ -28,15 +32,15 @@ static bool is_prefix(const char *pattern, size_t *stem) {
 int cb_router_add(cb_router *r, const char *method, const char *pattern, unsigned flags, cb_handler fn) {
     if (!pattern || pattern[0] != '/' || !method || !fn) return CB_E_INVALID;
     for (int i = 0; i < r->n; i++)
-        if (strcmp(r->r[i].method, method) == 0 && strcmp(r->r[i].pattern, pattern) == 0) return CB_E_CONFLICT;
+        if (strcmp(r->r[i].route.method, method) == 0 && strcmp(r->r[i].route.pattern, pattern) == 0) return CB_E_CONFLICT;
     if (r->n == r->cap) {
         int cap = r->cap ? r->cap * 2 : 16;
-        cb_route *x = realloc(r->r, (size_t)cap * sizeof *x);
+        entry *x = realloc(r->r, (size_t)cap * sizeof *x);
         if (!x) return CB_E_NOMEM;
         r->r = x;
         r->cap = cap;
     }
-    r->r[r->n++] = (cb_route){ method, pattern, flags, fn };
+    r->r[r->n++] = (entry){ { method, pattern, flags, fn }, (uint8_t)cb_http_method_id(method) };
     return CB_OK;
 }
 
@@ -56,26 +60,26 @@ static long score(const char *pattern, const char *path) {
     return strcmp(path, pattern) == 0 ? (long)stem * 2 + 1 : -1;
 }
 
-static const cb_route *match(const cb_router *r, const char *method, const char *path, bool *path_known) {
+static const cb_route *match(const cb_router *r, int method, const char *path, bool *path_known) {
     const cb_route *best = NULL;
     long best_score = -1;
     bool known = false;
     for (int i = 0; i < r->n; i++) {
-        long s = score(r->r[i].pattern, path);
+        long s = score(r->r[i].route.pattern, path);
         if (s < 0) continue;
         known = true;
-        if (strcmp(r->r[i].method, "*") != 0 && strcmp(r->r[i].method, method) != 0) continue;
-        if (s > best_score) { best = &r->r[i]; best_score = s; }
+        if (r->r[i].mid != CB_M_ANY && r->r[i].mid != method) continue;
+        if (s > best_score) { best = &r->r[i].route; best_score = s; }
     }
     if (path_known) *path_known = known;
     return best;
 }
 
-const cb_route *cb_router_match(const cb_router *r, const char *method, const char *path, bool *path_known) {
+const cb_route *cb_router_match(const cb_router *r, int method, const char *path, bool *path_known) {
     const cb_route *best = match(r, method, path, path_known);
     // HEAD is GET without the body (RFC 9110 9.3.2): a path with no HEAD route
     // of its own answers through its GET route, and handler.c drops the body.
-    if (!best && strcmp(method, "HEAD") == 0) best = match(r, "GET", path, NULL);
+    if (!best && method == CB_M_HEAD) best = match(r, CB_M_GET, path, NULL);
     return best;
 }
 

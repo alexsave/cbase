@@ -24,6 +24,7 @@ static void a_whole_request(void) {
     char *b;
     T_EQ_INT(parse(t, 1024, &r, &b), (long long)strlen(t) - 4);
     T_EQ_STR(r.method, "POST");
+    T_EQ_INT(r.meth, CB_M_POST);   // named once, at parse
     T_EQ_STR(r.path, "/functions/v1/action");
     T_EQ_STR(r.query, "x=1&y=a%20b");
     T_EQ_INT(r.minor, 1);
@@ -142,17 +143,17 @@ static void routing(void) {
     T_EQ_INT(cb_router_add(r, "GET", "/rest/v1/*", 0, h_b), CB_E_CONFLICT);
     T_EQ_INT(cb_router_add(r, "GET", "nope", 0, h_b), CB_E_INVALID);
     bool known = false;
-    const cb_route *m = cb_router_match(r, "GET", "/rest/v1/player_views", &known);
+    const cb_route *m = cb_router_match(r, cb_http_method_id("GET"), "/rest/v1/player_views", &known);
     T_CHECK(m && m->fn == h_a);
-    m = cb_router_match(r, "POST", "/rest/v1/chat_messages", &known);
+    m = cb_router_match(r, cb_http_method_id("POST"), "/rest/v1/chat_messages", &known);
     T_CHECK(m && m->fn == h_b);
-    m = cb_router_match(r, "DELETE", "/rest/v1/chat_messages", &known);
+    m = cb_router_match(r, cb_http_method_id("DELETE"), "/rest/v1/chat_messages", &known);
     T_CHECK(!m && known);   // 405, not 404
-    m = cb_router_match(r, "HEAD", "/health", &known);
+    m = cb_router_match(r, cb_http_method_id("HEAD"), "/health", &known);
     T_CHECK(m && m->fn == h_c);
-    m = cb_router_match(r, "GET", "/rest/v2", &known);
+    m = cb_router_match(r, cb_http_method_id("GET"), "/rest/v2", &known);
     T_CHECK(!m && !known);
-    m = cb_router_match(r, "GET", "/healthz", &known);
+    m = cb_router_match(r, cb_http_method_id("GET"), "/healthz", &known);
     T_CHECK(!m && !known);   // an exact pattern is not a prefix
     cb_router_free(r);
 }

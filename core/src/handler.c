@@ -13,6 +13,10 @@
 #include <stdio.h>
 #include <string.h>
 
+// The parser sets the request's method id; a request built by hand (a test, the
+// lambda event) has only the text, and is named here, once per handler entry.
+static int meth_of(const cb_http_req *req) { return req->meth ? req->meth : cb_http_method_id(req->method); }
+
 // A liveness or readiness probe from the machine itself (systemd, a local
 // curl, a watchdog): GET or HEAD /health or /ready whose socket peer is
 // loopback. The peer is the socket's, not a header, so it cannot be claimed
@@ -20,7 +24,8 @@
 // needs the origin proof. (A reverse proxy on the same box would make
 // outside probes look local: they could then read only these two bodies.)
 static bool is_local_probe(const cb_http_req *req) {
-    if (strcmp(req->method, "GET") != 0 && strcmp(req->method, "HEAD") != 0) return false;
+    const int m = meth_of(req);
+    if (m != CB_M_GET && m != CB_M_HEAD) return false;
     if (strcmp(req->path, "/health") != 0 && strcmp(req->path, "/ready") != 0) return false;
     return strcmp(req->peer, "127.0.0.1") == 0 || strcmp(req->peer, "::1") == 0 ||
            strcmp(req->peer, "::ffff:127.0.0.1") == 0;
@@ -29,19 +34,20 @@ static bool is_local_probe(const cb_http_req *req) {
 void cb_handle(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     cb_store_tally st;
     cb_store_tally_take(&st);   // this request's count starts here
-    res->head = strcmp(req->method, "HEAD") == 0;
+    const int m = meth_of(req);
+    res->head = m == CB_M_HEAD;
     if (ctx->cfg && !is_local_probe(req) && !cb_config_origin_proven(ctx->cfg, cb_http_header_get(req, CB_ORIGIN_HEADER))) {
         // Not through the edge (config.h CBASE_ORIGIN_SECRET): nothing else runs.
         cb_router_error(res, 403, "forbidden");
         return;
-    } else if (strcmp(req->method, "OPTIONS") == 0) {
+    } else if (m == CB_M_OPTIONS) {
         bool known = false;
-        cb_router_match(ctx->router, "*", req->path, &known);
+        cb_router_match(ctx->router, CB_M_ANY, req->path, &known);
         if (known) cb_router_preflight(ctx, req, res);
         else cb_router_error(res, 404, "not found");
     } else {
         bool known = false;
-        const cb_route *r = cb_router_match(ctx->router, req->method, req->path, &known);
+        const cb_route *r = cb_router_match(ctx->router, m, req->path, &known);
         if (!r) cb_router_error(res, known ? 405 : 404, known ? "method not allowed" : "not found");
         else r->fn(ctx, req, res);
     }
@@ -53,8 +59,9 @@ void cb_handle(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
 }
 
 bool cb_handle_on_loop(const cb_ctx *ctx, const cb_http_req *req) {
-    if (strcmp(req->method, "OPTIONS") == 0) return true;
-    const cb_route *r = cb_router_match(ctx->router, req->method, req->path, NULL);
+    const int m = meth_of(req);
+    if (m == CB_M_OPTIONS) return true;
+    const cb_route *r = cb_router_match(ctx->router, m, req->path, NULL);
     return !r || (r->flags & CB_ROUTE_LOOP);
 }
 

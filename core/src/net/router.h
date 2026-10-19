@@ -54,7 +54,7 @@ int cb_router_add_all(cb_router *r, const cb_route *routes, int n);
 
 // The route for method + path, or NULL. When NULL, *path_known says whether
 // the path matched a route under another method (405 rather than 404).
-const cb_route *cb_router_match(const cb_router *r, const char *method, const char *path, bool *path_known);
+const cb_route *cb_router_match(const cb_router *r, int method, const char *path, bool *path_known);   // method: CB_M_*
 
 // The router's own answers, used by handler.c around the handler. Exposed so a
 // test can drive them without sockets.

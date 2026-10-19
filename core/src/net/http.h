@@ -30,8 +30,17 @@ typedef struct {
     const char *value;   // leading and trailing blanks trimmed
 } cb_http_header;
 
+// The method as an int: parsed once (cb_http_parse), compared as ints after.
+// 0 is "not set" (a request built by hand: cb_http_method_of fills it in).
+// CB_M_OTHER is any method the server has no name for; it matches only "*".
+enum { CB_M_NONE = 0, CB_M_ANY, CB_M_GET, CB_M_HEAD, CB_M_POST, CB_M_PUT, CB_M_DELETE, CB_M_PATCH, CB_M_OPTIONS, CB_M_OTHER };
+
+// "GET" -> CB_M_GET, "*" -> CB_M_ANY, anything else CB_M_OTHER.
+int cb_http_method_id(const char *name);
+
 typedef struct cb_http_req {
-    char        method[16];       // "GET", "POST", ...
+    char        method[16];       // "GET", "POST", ...: the text; compare meth, not this
+    uint8_t     meth;             // CB_M_*, set with `method` by cb_http_parse; CB_M_NONE for a hand-built one
     const char *path;             // "/rest/v1/player_views": raw (not percent-decoded), no query
     const char *query;            // "select=view&game_id=eq.abc": raw, "" when none
     int         minor;            // HTTP/1.<minor>

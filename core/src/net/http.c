@@ -136,6 +136,16 @@ static int scan_head(const char *buf, size_t len, size_t max_body, size_t *head_
     return 1;
 }
 
+int cb_http_method_id(const char *n) {
+    static const struct { const char *name; int id; } t[] = {
+        { "GET", CB_M_GET }, { "HEAD", CB_M_HEAD }, { "POST", CB_M_POST }, { "PUT", CB_M_PUT },
+        { "DELETE", CB_M_DELETE }, { "PATCH", CB_M_PATCH }, { "OPTIONS", CB_M_OPTIONS }, { "*", CB_M_ANY },
+    };
+    for (size_t k = 0; k < sizeof t / sizeof t[0]; k++)
+        if (strcmp(n, t[k].name) == 0) return t[k].id;
+    return CB_M_OTHER;
+}
+
 int cb_http_parse(char *buf, size_t len, size_t max_body, cb_http_req *out) {
     size_t he = 0, bl = 0;
     int rc = scan_head(buf, len, max_body, &he, &bl);
@@ -149,6 +159,7 @@ int cb_http_parse(char *buf, size_t len, size_t max_body, cb_http_req *out) {
     while (p < end && is_tchar((unsigned char)*p)) p++;
     if (p == s || p >= end || *p != ' ' || (size_t)(p - s) >= sizeof out->method) return -400;
     memcpy(out->method, s, (size_t)(p - s));
+    out->meth = (uint8_t)cb_http_method_id(out->method);
     p++;
     char *target = p;
     while (p < end && *p != ' ' && *p != '\r') p++;
