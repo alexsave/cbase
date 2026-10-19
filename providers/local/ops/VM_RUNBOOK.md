@@ -97,6 +97,52 @@ aws autoscaling start-instance-refresh --auto-scaling-group-name cbase-vm \
 `MinHealthyPercentage` must be 0: the old instance holds `::10` and has to go before the new one can take it.
 The SQLite data lives on the instance's root volume, so a replacement starts with an empty database until backups exist.
 
+## Data migration
+
+`cbase-export` copies the production DynamoDB table into the SQLite file `cbase serve` opens.
+It works on items, not rows, so it is product-agnostic: every attribute of every item is copied, the gsi1 and gsi2 keys and the TTL pair among them, through the same `item_write` the server uses.
+It only reads DynamoDB (Scan, BatchGetItem, DescribeTable) and never writes it.
+
+The command, from `c_base/` after `make -s build/cbase-export`:
+
+```
+eval "$(aws configure export-credentials --format env)"
+export AWS_REGION=us-east-1 CBASE_TABLE=cbase
+build/cbase-export --rate 25 /path/to/cbase.sqlite
+```
+
+Credentials and region come from the environment, as for the Lambda, and are never printed.
+The output file must not exist (or be empty), or the tool refuses; `--into-existing` is the only way to put over a file.
+The copy is built as `cbase.sqlite.partial` and renamed to `cbase.sqlite` only when every check passed, so the file is never half an export.
+A failed run leaves the `.partial` to look at, and the next run refuses until it is removed.
+
+Pacing: the table is provisioned at 15 RCU, and the tool reads DescribeTable and holds itself to `--rate` percent of that (default 25, so 3.75 RCU/s).
+A token bucket takes each response's consumed capacity, throttling is waited out with a jittered backoff, and without a DescribeTable answer the tool refuses to scan.
+Scan and BatchGetItem pages are consistent reads of at most 100 items.
+The whole run reads the table about four times (key scan, item reads, verification key scan, second item read), roughly 1,100 RCU for 1.1 MB, so about five minutes at the default.
+Leave the live game its 11 spare RCU: never raise `--rate` while the app is serving.
+
+Verification, all part of the run (`--no-verify` skips the last three):
+
+1. Each item is read back from the file right after its put and compared attribute by attribute (kind and value) with what DynamoDB answered.
+2. The table's keys and the file's keys are listed again and diffed (MISSING and EXTRA are reported).
+3. The pk families (USER, GAME, ...) are counted on both sides and printed.
+4. Every item's gsi1 and gsi2 keys are queried in the file, and each query must list its item.
+5. Every item is read from the table a second time and compared with the file (CHANGED means it was written in the table after it was copied).
+
+Exit 0 means all of it held.
+Exit 1 means a difference (the report names the keys), and exit 2 a usage, credential or I/O error.
+On a dry run against the live table, CHANGED and EXTRA items are expected because the game keeps writing; at the cutover, with writes frozen, there must be none.
+
+Cutover order:
+
+1. Freeze writes: switch the Lambda route off or to a maintenance answer, so nothing writes to DynamoDB.
+2. Export with the command above and read the report to the end.
+3. Run `sqlite3 cbase.sqlite 'PRAGMA integrity_check'` and expect `ok`.
+4. Upload the file to the VM as `/var/lib/cbase/cbase.sqlite` (owner `cbase`), with the service stopped, then start the service and check `/health`.
+5. Flip the routes (the CloudFront origin) to the VM.
+6. Keep the DynamoDB table untouched for the rollback window, and flip the routes back if the VM misbehaves.
+
 ## Backups (not built yet)
 
 The backup bucket exists and the role can read and write it, but the server does not use it yet.
