@@ -235,8 +235,94 @@ out:
 // database that has none (store.h cb_store_app seed).
 static int seed(cb_store *s) { return s->app && s->app->seed ? s->app->seed(s) : CB_OK; }
 
+// ---- SQLite's allocator ---------------------------------------------------------------------
+// SQLite's row buffers (a stored game row is several KB: VdbeMemGrow for the
+// record being written, the blob being read) took an 8 KB musl malloc group
+// that was mmap'ed and munmap'ed on nearly every request, because mallocng
+// unmaps a group when its last slot is freed (perf: 2 mmap + 2 munmap a move,
+// tlb_flush, the page faults after). Blocks of 4 KB to 64 KB come from per-class
+// free lists here instead, kept up to POOL_KEEP each and never given back to
+// malloc until then; everything else is plain malloc. A 16-byte header holds the
+// block's usable size (xSize). One lock: SQLite already serialises the callers.
+#define POOL_MIN_SHIFT 12
+#define POOL_CLASSES   5   // 4K 8K 16K 32K 64K
+#define POOL_KEEP      8
+#define POOL_HDR       16
+typedef struct pblock { struct pblock *next; } pblock;
+static pthread_mutex_t g_pool_mu = PTHREAD_MUTEX_INITIALIZER;
+static pblock *g_pool[POOL_CLASSES];
+static int g_pool_n[POOL_CLASSES];
+
+static int pool_class(size_t n) {   // n usable bytes -> class or -1
+    for (int c = 0; c < POOL_CLASSES; c++)
+        if (n <= ((size_t)1 << (POOL_MIN_SHIFT + c))) return c;
+    return -1;
+}
+static void *pm_malloc(int n) {
+    if (n <= 0) return NULL;
+    size_t want = (size_t)n;
+    int c = want > ((size_t)1 << (POOL_MIN_SHIFT - 1)) ? pool_class(want) : -1;   // only blocks over 2 KB
+    size_t usable = c >= 0 ? ((size_t)1 << (POOL_MIN_SHIFT + c)) : (want + 7) & ~(size_t)7;
+    unsigned char *b = NULL;
+    if (c >= 0) {
+        pthread_mutex_lock(&g_pool_mu);
+        pblock *p = g_pool[c];
+        if (p) { g_pool[c] = p->next; g_pool_n[c]--; b = (unsigned char *)p; }
+        pthread_mutex_unlock(&g_pool_mu);
+        if (b) return b;
+    }
+    b = malloc(usable + POOL_HDR);
+    if (!b) return NULL;
+    *(size_t *)b = usable;
+    return b + POOL_HDR;
+}
+static void pm_free(void *v) {
+    if (!v) return;
+    unsigned char *b = (unsigned char *)v - POOL_HDR;
+    size_t usable = *(size_t *)b;
+    int c = usable > ((size_t)1 << (POOL_MIN_SHIFT - 1)) ? pool_class(usable) : -1;
+    if (c >= 0 && usable == ((size_t)1 << (POOL_MIN_SHIFT + c))) {
+        pthread_mutex_lock(&g_pool_mu);
+        if (g_pool_n[c] < POOL_KEEP) {
+            pblock *p = v;
+            p->next = g_pool[c];
+            g_pool[c] = p;
+            g_pool_n[c]++;
+            pthread_mutex_unlock(&g_pool_mu);
+            return;
+        }
+        pthread_mutex_unlock(&g_pool_mu);
+    }
+    free(b);
+}
+static int pm_size(void *v) { return v ? (int)*(size_t *)((unsigned char *)v - POOL_HDR) : 0; }
+static void *pm_realloc(void *v, int n) {
+    if (!v) return pm_malloc(n);
+    if (n <= 0) { pm_free(v); return NULL; }
+    if ((size_t)n <= *(size_t *)((unsigned char *)v - POOL_HDR)) return v;
+    void *nv = pm_malloc(n);
+    if (!nv) return NULL;
+    memcpy(nv, v, *(size_t *)((unsigned char *)v - POOL_HDR));
+    pm_free(v);
+    return nv;
+}
+static int pm_roundup(int n) {
+    if (n <= 0) return 0;
+    int c = (size_t)n > ((size_t)1 << (POOL_MIN_SHIFT - 1)) ? pool_class((size_t)n) : -1;
+    return c >= 0 ? (int)((size_t)1 << (POOL_MIN_SHIFT + c)) : (n + 7) & ~7;
+}
+static int pm_init(void *u) { (void)u; return SQLITE_OK; }
+static void pm_shutdown(void *u) { (void)u; }
+static const sqlite3_mem_methods POOL_MEM = { pm_malloc, pm_free, pm_realloc, pm_size, pm_roundup, pm_init, pm_shutdown, NULL };
+
+static pthread_once_t g_sqlite_cfg_once = PTHREAD_ONCE_INIT;
+// Before SQLite's first use; a later open in the same process (tests) finds it
+// configured or initialised and carries on.
+static void sqlite_configure(void) { (void)sqlite3_config(SQLITE_CONFIG_MALLOC, &POOL_MEM); }
+
 int cb_store_open_sqlite(const char *path, cb_store **out) {
     *out = NULL;
+    pthread_once(&g_sqlite_cfg_once, sqlite_configure);
     cb_store *s = calloc(1, sizeof *s);
     sq *q = calloc(1, sizeof *q);
     if (!s || !q) {
@@ -334,10 +420,30 @@ static bool cond_holds(const cb_item *cur, bool exists, const cb_iwrite *w) {
 // One write against the stored item, under the lock and inside a
 // transaction. old (may be NULL) gets the item as it was, whether the write
 // went through or its condition refused it.
+// The two items one write works on (the stored one, the one it becomes) are the
+// calling thread's, kept between writes: a stored game row is several KB, and a
+// fresh buffer grown by realloc every write was an 8 KB musl malloc group
+// mmap'ed and munmap'ed per write (mallocng unmaps a group when its last slot is
+// freed; perf showed 2 mmap + 2 munmap a move). item_apply never nests. A buffer
+// that grew past SCRATCH_KEEP_MAX is let go so one huge item does not stay.
+#define SCRATCH_KEEP_MAX (256u * 1024)
+static _Thread_local cb_item t_cur, t_next;
+static _Thread_local bool t_scratch_ready;
+
+static void scratch_done(cb_item *it) {
+    if (it->store.cap > SCRATCH_KEEP_MAX) cb_item_free(it);
+    else cb_item_reset(it);
+}
+
 static int item_apply(sq *q, const cb_iwrite *w, cb_item *old) {
-    cb_item cur, next;
-    cb_item_init(&cur);
-    cb_item_init(&next);
+    if (!t_scratch_ready) {
+        cb_item_init(&t_cur);
+        cb_item_init(&t_next);
+        t_scratch_ready = true;
+    }
+    cb_item *const cur_p = &t_cur, *const next_p = &t_next;
+#define cur (*cur_p)
+#define next (*next_p)
     int rc = item_load(q, w->key, &cur);
     bool exists = rc == CB_OK;
     if (rc == CB_E_NOT_FOUND) rc = CB_OK;
@@ -405,8 +511,10 @@ static int item_apply(sq *q, const cb_iwrite *w, cb_item *old) {
         if (rc == CB_OK && cb_item_size(&next) > CB_ITEM_SIZE_MAX) rc = CB_E_INVALID;
         if (rc == CB_OK) rc = item_store(q, &next);
     }
-    cb_item_free(&cur);
-    cb_item_free(&next);
+    scratch_done(&cur);
+    scratch_done(&next);
+#undef cur
+#undef next
     return rc;
 }
 
