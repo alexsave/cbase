@@ -37,8 +37,10 @@
 #ifndef CB_TEST_OOM_H
 #define CB_TEST_OOM_H
 
+#include <dlfcn.h>
 #include <pthread.h>
 #include <stdatomic.h>
+#include <stdio.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -60,6 +62,7 @@ static inline void oom_off(void) {}
 static inline long oom_count(void) { return 0; }
 static inline bool oom_failed(void) { return false; }
 static inline long oom_live(void) { return 0; }
+static inline void oom_dump_live(FILE *f) { (void)f; }
 static inline void oom_everywhere(bool on) { (void)on; }
 #else
 #  define OOM_AVAILABLE 1
@@ -102,12 +105,13 @@ static long oom_left_, oom_seen_, oom_live_;
 static bool oom_hit_;
 #define OOM_SET (1 << 16)
 static void *oom_set_[OOM_SET];
+static void *oom_site_[OOM_SET];   // who allocated each remembered block (oom_dump_live)
 
 static inline size_t oom_slot_(void *p) { return ((uintptr_t)p >> 4) * 2654435761u % OOM_SET; }
-static void oom_remember_(void *p) {
+static void oom_remember_(void *p, void *site) {
     if (!p) return;
     for (size_t i = oom_slot_(p), k = 0; k < OOM_SET; k++, i = (i + 1) % OOM_SET)
-        if (!oom_set_[i] || oom_set_[i] == (void *)1) { oom_set_[i] = p; oom_live_++; return; }
+        if (!oom_set_[i] || oom_set_[i] == (void *)1) { oom_set_[i] = p; oom_site_[i] = site; oom_live_++; return; }
 }
 static void oom_forget_(void *p) {
     if (!p) return;
@@ -127,6 +131,17 @@ static inline void oom_off(void) { atomic_store(&oom_armed_, false); }
 static inline long oom_count(void) { return oom_seen_; }
 static inline bool oom_failed(void) { return oom_hit_; }
 static inline long oom_live(void) { return oom_live_; }
+// Names the code that allocated each block still live (for a leak report): the caller's symbol.
+static void oom_dump_live(FILE *f) {
+    for (size_t i = 0; i < OOM_SET; i++) {
+        if (!oom_set_[i] || oom_set_[i] == (void *)1) continue;
+        Dl_info d;
+        if (dladdr(oom_site_[i], &d) && d.dli_sname)
+            fprintf(f, "       live block from %s+0x%lx\n", d.dli_sname, (unsigned long)((char *)oom_site_[i] - (char *)d.dli_saddr));
+        else
+            fprintf(f, "       live block from %p\n", oom_site_[i]);
+    }
+}
 
 static bool oom_everywhere_;
 static inline void oom_everywhere(bool on) { oom_everywhere_ = on; }
@@ -154,21 +169,21 @@ void *malloc(size_t n) {
     if (!oom_mine_()) return OOM_REAL_MALLOC(n);
     if (oom_take_()) return NULL;
     void *p = OOM_REAL_MALLOC(n);
-    oom_remember_(p);
+    oom_remember_(p, __builtin_return_address(0));
     return p;
 }
 void *calloc(size_t c, size_t n) {
     if (!oom_mine_()) return OOM_REAL_CALLOC(c, n);
     if (oom_take_()) return NULL;
     void *p = OOM_REAL_CALLOC(c, n);
-    oom_remember_(p);
+    oom_remember_(p, __builtin_return_address(0));
     return p;
 }
 void *realloc(void *p, size_t n) {
     if (!oom_mine_()) return OOM_REAL_REALLOC(p, n);
     if (oom_take_()) return NULL;
     void *q = OOM_REAL_REALLOC(p, n);
-    if (q) { oom_forget_(p); oom_remember_(q); }
+    if (q) { oom_forget_(p); oom_remember_(q, __builtin_return_address(0)); }
     return q;
 }
 void free(void *p) {
