@@ -671,7 +671,7 @@ static void batch_get(void) {
 static void batch_delete(void) {
     const char *pk = P("bd");
     enum { N = 60 };
-    char sk[N + 2][8];
+    char sk[N + 2][12];   // (an int's worst case, so gcc's truncation check has nothing to say)
     cb_ikey keys[N + 2];
     cb_iwrite w[N];
     for (int i = 0; i < N + 2; i++) {
