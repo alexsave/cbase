@@ -41,7 +41,7 @@ while :; do
   sleep 0.2; t=\$((t+1)); [ \$t -gt 3000 ] && break
 done
 : > all_ready
-while [ ! -f release ]; do sleep 0.1; done
+for _w in $(seq 1500); do [ -f release ] && break; sleep 0.1; done
 date +%s.%N > t_go
 for d in rdv*; do : > \$d/go; done
 while :; do
@@ -58,10 +58,10 @@ CL
 chmod +x "$out/clients.sh"
 echo $(( $(cat $R/vbase 2>/dev/null || echo 0) + pairs )) > $R/vbase
 if [ "$mode" = mac ]; then
-  ( while [ ! -f "$out/all_ready" ]; do sleep 0.2; done; : > "$out/release" ) &
+  ( for _w in $(seq 450); do [ -f "$out/all_ready" ] && break; sleep 0.2; done; : > "$out/release" ) &
   (cd "$out" && sed -e "s#cd /out#cd $out#" clients.sh > clients_mac.sh && chmod +x clients_mac.sh && set -a && . $R/client.env && set +a && BIN=$R/bin/p3load-mac PORT=18081 ./clients_mac.sh)
 else
-  ( while [ ! -f "$out/all_ready" ]; do sleep 0.2; done
+  ( for _w in $(seq 450); do [ -f "$out/all_ready" ] && break; sleep 0.2; done
     if [ -n "${PLAY_CPUS:-}" ]; then docker update --cpus=$PLAY_CPUS nano-perf-srv >/dev/null; fi
     if [ -n "${LOAD_PLAY_CPUS:-}" ]; then docker update --cpus=$LOAD_PLAY_CPUS nano-perf-load >/dev/null; fi
     docker exec nano-perf-srv sh -c 'cat /sys/fs/cgroup/cpu.stat' > "$out/srv_go.txt"
