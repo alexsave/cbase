@@ -665,3 +665,103 @@ One bug found: `fuzz-seeds` copied every target's seeds before refusing a stray 
 - fuzz.mk: fz_corpus put under the first root -> `fuzz_mk_test.sh` ("two's seed is not in b/corpus/two").
 - fuzz.mk: the refusal's exact-word match loosened to a substring -> `fuzz_mk_test.sh` ("seeds for on (a part of one) were taken").
 - fuzz.mk: the refusal moved back after the copy -> `fuzz_mk_test.sh` ("seeds for no target were refused only after corpora were written").
+
+## Queue batch: netclient dead-socket watch and view hint (foolish/c/src/netclient.c, unit_netclient.c)
+
+- netclient.c: the dead test `>=` made `>` (and `+ 1`) -> `a_half_open_socket_is_closed_after_the_pong_wait` o != NULL && o->len == 0 at exactly NC_PONG_MS.
+- netclient.c: the dead test `NC_PONG_MS - 1` -> the same test, nc_stream_next(t + NC_PONG_MS - 1) == NULL.
+- netclient.c: `g_ping_at = 0` dropped from take_packet -> `a_live_socket_is_never_closed` (a len-0 frame after a PINGRESP), and every quiet-pump test.
+- netclient.c: `g_ping_at = now_ms` dropped on PINGREQ -> `a_half_open_socket_is_closed_after_the_pong_wait` nc_stream_due_ms(t) == NC_PONG_MS (got 30000).
+- netclient.c: g_ping_at + NC_PONG_MS dropped from nc_stream_due_ms -> the same assertion.
+- netclient.c: `g_dead = 0` dropped from nc_stream_opened -> `a_half_open_socket_is_closed_after_the_pong_wait` (the reopened socket never SUBSCRIBEs: s.type == MQTT_SUBSCRIBE).
+- netclient.c: `g_ping_at = 0` dropped from nc_stream_opened -> SURVIVES, equivalent: the first packet of the new connection (its CONNACK) clears it and the dead test only runs on a live socket. Kept as the connection's explicit start state (the reset in nc_stream_closed was the redundant one and is deleted: opened owns both, and removing the g_dead one is caught above).
+- netclient.c: a newer dashboard view of a held game queues no read -> `a_newer_view_of_a_held_game_queues_one_read` path_is(q, "/v1/games/g1").
+- netclient.c: that read queued for `now_ms` instead of `now_ms + NC_RECONCILE_MS` -> the same test, nc_next_request(... NC_RECONCILE_MS - 1) == NULL.
+- netclient.c: the held game's view applied (the `return` dropped) -> `gates` (feed ... kind == NC_EV_NONE) and the same test h.views == 0.
+- netclient.c: `>` made `>=` in the view hint -> SURVIVES, equivalent: own_settle drops a queued read whose min_version is already reached at the end of the same feed.
+
+## Queue batch: history summary on the pointers (rows_foolish.c, unit_dynamo_ops.c)
+
+- rows_foolish.c: the pointer's rank, seat or dur attribute not written -> `history_pointers_carry_the_summary` (the per-attribute counts).
+- rows_foolish.c: rank written as `i + 1` instead of cb_snapshot_rank -> the same test, `"seat":{"N":"0"},"rank":{"N":"2"}` (a first draft counted only the ranks, which a permutation passes: the mutant survived until the assertion pinned seat to rank).
+- rows_foolish.c: the summary attributes written for a pointer with no summary -> the same test, count of "rank" in the second put == 0.
+- rows_foolish.c: the replay batch always projected whole -> the same test, count of "moves" in the projected BatchGetItem == 0.
+- rows_foolish.c: a pointer without a summary not marking the replay needed -> the same test, the batch carries "moves" and "player_ids".
+- rows_foolish.c: cb_snapshot_query.ref ignoring the replay id / ignoring the game id / matching everything -> `snapshot_ref_matches_the_replay_or_its_game` (ids[0], counts, and a request past the script's end).
+
+## Queue batch: cb_table_snap_summary and the stored pointer (table_ops.c, unit_app.c)
+
+- table_ops.c: the duration rounding `+ 0.5` dropped -> `a_finished_game_writes_a_snapshot_and_ratings` timed.duration_s == want (3.9 s).
+- table_ops.c: the no-times duration -1 made 0 -> the same test, m.duration_s == -1.
+- table_ops.c: the elimination order not copied / the fool not copied / `has` not set -> the same test (m.elim[i], m.fool, m.has).
+- table_ops.c: `x.n_gaps > 0` made `>= 0` -> the same test, a names-only blob must give -1 (got 0).
+- rows_foolish.h: cb_snapshot_rank returning `i + 2` -> `history_pointers_carry_the_summary` (seat 0 rank 2 pinned) (unit_app's two-player rank check runs through the mem store's own rank).
+
+## Queue batch: the history rows over a real replay (v1_http.c, table_ops.c, unit_v1.c)
+
+A REAL BUG came out of the first run of these tests: history_fn and cb_table_snap_summary read the STORED extras (the encoded version-2 bytes) with replay_extras_unpack, which reads the decoder's ANSWER blob, so every stored blob was refused: no row ever had names or a duration. Both now read through cb_table_extras_read (replay_extras_decode with the seat and move counts, then unpack), the one reader.
+
+- v1_http.c: the names read through the old replay_extras_unpack -> `history_rows_from_a_real_replay` hr->n_names == 2.
+- table_ops.c: the duration read through the old replay_extras_unpack -> the same test (hr->duration_s == 0) and `a_finished_game_writes_a_snapshot_and_ratings` (m.duration_s == 0).
+- v1_http.c: no cut for a pointer without a summary -> `history_rows_from_a_real_replay` hr->rank == rank_of_fay.
+- v1_http.c: the pre-summary rank not computed from the viewer's seat -> the same assertion.
+- v1_http.c: /v1/replay/<id> id length capped at a game id's (path_id) -> `bots_board_history_replay` call(b_replay, s.id) == 200 (found by this test run: a history row's id, a uuid, was a 404).
+- v1_http.c: `x.n_names == s->n_players` and `<= MAX_PLAYERS` -> deleted, not mutated: the decode reads exactly n_players names, so both were redundant guards (the mutant survived).
+- smoke_matrix.c `account_deletion`: the list's names read through the old unpack -> `history_holds(&A, &name) == 1` (the positive control: the list shows E's name before the delete; after it, no history body names E).
+- smoke.c: the history body holds no moves (a row has no moves field: the shape enforces it; the test pins that the first 16 bytes of the replay are not in the body) and a row's id opens the replay (a uuid) as the game id does.
+
+## Queue batch: the store conformance suite (core/test/conformance/store.c, unit_conf_store_local.c, unit_conf_store_dynamo.c)
+
+Cherry-picked from origin/stage8-owed-tests (2bf3960ce with f316ad639's Makefile line); the dynamo runner is on `make check-dynamo` outside the key capture (its keys are the suite's own).
+- core/src/store/items.c: `n_cond > CB_ICOND_MAX` unchecked (the old cond[4] read past the array on n_cond 5) -> `four_clauses_all_must_hold` write_once == CB_E_INVALID (got -3).
+- store_sqlite.c: cond_holds stops at the third clause -> `four_clauses_all_must_hold` "one failing clause of four refuses".
+- store_sqlite.c: a keys-only query answers every attribute -> `query_the_table` it->n == 2 (got 4).
+- store_dynamo.c: the batch-get key buffers 400 bytes (a 1024-byte pk dropped) -> `key_limits` b.calls == 1 (DynamoDB Local).
+- store_dynamo.c: the key walk's buffers 400 bytes -> `key_limits` k.wanted == 1 (DynamoDB Local).
+
+## Queue batch: jobs, schedules and the job pool (cherry-picked from origin/stage8-owed-tests: unit_jobs.c, unit_job_pool.c, unit_event_literal.c, unit_core.c)
+
+- jobs.c: a job name allowing A-Z / the name max + 1 / an empty key allowed -> `names_and_keys` (name_bad == 0, !cb_job_name_ok(.., MAX + 1), !cb_job_key_ok(s, 0)).
+- jobs.c: cb_job_start with no starter answering CB_E_INVALID instead of CB_E_STATE -> `job_start_checks_before_the_starter`.
+- jobs.c: an unknown job answering CB_OK / the schedule total not summed -> `job_run_by_name` (== CB_E_NOT_FOUND), `schedule_run_by_name` (== 9).
+- config.c: cb_config_scaled_ms rounding down -> `scaled_periods` (== 8572). The `bot_speedup > 0` variant SURVIVES, equivalent: a speedup of 1 divides by 1 either way and 0 is mapped to 1 in both.
+- provider_local.c: the pending set never marking / unmarking after the run / no pool answering CB_OK -> `one_waiting_per_job_and_key`, `a_start_while_one_runs_queues_one_more`, `no_pool_is_a_state_error`.
+- provider_local.c: no unmark when the pool refuses a submit -> SURVIVES, not reachable: cb_pool_submit refuses only while cb_pool_free is stopping the pool (a race with the caller), so no deterministic test can make it. cb_core_job replaced by cb_job_run in job_run -> SURVIVES, equivalent from outside (only a log line differs: cb_core_job turns a NOT_FOUND into a quiet success).
+- jobs.c / aws_json.c: the job key and name caps + 1, the schedule name unchecked, the key unchecked, the closing quote unchecked, cb_event_job_payload unchecked -> `a_job_literal_at_the_edges`, `a_schedule_literal_at_the_edges`, `the_payload_is_what_the_decoder_reads`.
+- core.c: a NOT_FOUND job left an error / every error swallowed / 5xx counted from 400 / the origin check dropped / the schedule entry ignoring its name -> `job_with_nothing_to_do_is_done`, `http_counts_requests_and_5xx`, `connect_checks_the_origin_before_the_token`.
+
+## Queue batch: import keeps a session generation (rows_auth.c, unit_store.c import_never_lowers_a_session_generation)
+
+- rows_auth.c: the import not reading the stored profile ("write session_gen 0 again") -> `import_never_lowers_a_session_generation` got.session_gen == 4 (a sign-out's generation lost).
+- rows_auth.c: `>=` made `>` -> the same test, got.kept_session == "" (an equal generation must keep the stored kept session).
+- rows_auth.c: the kept session not carried / the stored generation always winning / acct_writes not writing session_gen -> the same test (got.kept_session, got.session_gen == 9, got.session_gen == 3).
+- sigv4.c: the key hashed from 64 bytes up (`>=`) -> `hmac_long_key_boundaries` sig == want (a 64-byte key is used as is); hashed from 66 up -> the test crashes (a 65-byte key overruns the 64-byte block: killed by the trap).
+
+## Queue batch: the viewer address (net/viewer_addr.c, unit_viewer_addr.c, fz_viewer_addr.c, fz_viewer_key.c)
+
+- viewer_addr.c: the port top 65536 / the port low bound 0 / a port of more than 5 digits allowed / a bracket holding IPv4 / IPv6 refused / the bracket needing no colon after it / the first colon splitting the port / the output not cleared on entry -> `unit_viewer_addr` (what_it_refuses `!ok`, what_it_takes `ok`, `out[0] == 0`).
+- viewer_addr.c: three guards DELETED because their mutants survived (each was redundant with the next check): `close == s + 1` (an empty bracket: inet_pton refuses ""), `close + 1 >= s + n` (close[1] is the NUL of the string), `pn == 0` (num_parse refuses an empty port), and the final `out[0] = 0` (the entry clears it).
+- viewer_addr.c: the 63-byte cap is unobservable from outside (no valid address is longer than 51 bytes; it only sizes the local buffer): not mutation-checkable.
+- fz_viewer_addr: the port top 65536 -> the corpus seed port-65536 aborts (FZ_CHECK port_ok).
+- fz_viewer_key: the origin-secret test dropped from cb_viewer_key -> the seed serve-no-secret aborts; X-Forwarded-For read as a fallback -> the seed xff-only aborts. 20 s of libFuzzer on each target found nothing.
+
+## Queue batch: the read share (store_dynamo.c cb_store_dynamo_read_share, unit_dynamo.c flow_bulk_read_share)
+
+- store_dynamo.c: the share not applied to the rate -> `flow_bulk_read_share` fk_n == 1 (the fourth 1-unit read waits 200 ms at 2.5 RCU/s).
+- store_dynamo.c: a share past 1 allowed / a share of 0 allowed / allowed outside bulk mode -> the same test's CB_E_INVALID assertions.
+- store_dynamo.c: the explicit clamp of the balance to the new rate DELETED, not mutated: its mutant survived because the pacing's own refill caps the balance at the rate before every call.
+
+## Queue batch: cbase-export (foolish/server/migrate/export.c, foolish/server/test/unit_export.c on `make check-dynamo`)
+
+A REAL BUG came out of the first run: a file made new by the export is opened with the schema's 49 bots, so the "already holds items" refusal fired on every new file (exit 2 at the first run), and a bot the table did not have would have been left in the file as an EXTRA. A file absent or empty before the run is now cleared of its seed first; a file that held something before is still refused without --into-existing.
+The test is a 1051-item table (all five attribute kinds, the index keys, the TTL pair, a 1024-byte pk, a 300 KB item, the schema's bots), run through the real build/cbase-export, every item read back out of the SQLite file and compared attribute by attribute with the table's. The table is made on demand (the export paces itself to a provisioned table's reads, 5 RCU/s here: four minutes for the same run).
+
+- export.c: put without the index attributes -> `the_export_end_to_end` r.code == 0 and the per-item comparison.
+- export.c: a value dropped on put (the BOOL attribute) -> the same assertions (the read-back compare reports it: exit 1).
+- export.c: the verify pass without the sort -> r.code == 0 and "0 missing, 0 extra" (false MISSING/EXTRA).
+- export.c: the verify pass skipping the EXTRA side -> r.code == 1 and "EXTRA in the file:     EXP#EXTRA / X".
+- export.c: a non-empty file accepted without --into-existing -> r.code == 2 and "already holds".
+- export.c: --rate range (0 to 1000) -> the usage assertions for 0, 101, x and -5 (on a path that does not exist: a first draft used the existing file, whose refusal also exits 2, and the mutant survived).
+- export.c: the new file's seed not cleared -> the third export (a bot retired from the table) r.code == 0 and "0 missing, 0 extra".
+- export.c: same_in_file always true -> SURVIVES alone: it is observable only with a store that stores wrong, and the put-side mutants above are caught by the per-item comparison and by exit codes before it matters.
+- Not tested: a key vanishing between the scan and the read (it needs a delete between two calls inside one process): the code counts it ("keys were gone"), unexercised.
