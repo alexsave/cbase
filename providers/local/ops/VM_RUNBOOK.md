@@ -95,7 +95,7 @@ aws autoscaling start-instance-refresh --auto-scaling-group-name cbase-vm \
 ```
 
 `MinHealthyPercentage` must be 0: the old instance holds `::10` and has to go before the new one can take it.
-The SQLite data lives on the instance's root volume, so a replacement starts with an empty database until backups exist.
+The SQLite data lives on the instance's root volume; a replacement restores the newest backup from the bucket at start (see Backups).
 
 ## Data migration
 
@@ -143,11 +143,33 @@ Cutover order:
 5. Flip the routes (the CloudFront origin) to the VM.
 6. Keep the DynamoDB table untouched for the rollback window, and flip the routes back if the VM misbehaves.
 
-## Backups (not built yet)
+## Backups
 
-The backup bucket exists and the role can read and write it, but the server does not use it yet.
-The plan is a C job in `cbase serve`: `VACUUM INTO` a snapshot, upload it to the bucket when it changed, and restore the newest one at boot.
-Until that lands, instance replacement loses the data, so do not refresh or terminate an instance that holds data anyone needs.
+`cbase serve` backs the database up to the stack's backup bucket.
+The boot script copies the SSM parameters `/cbase-vm/env/CBASE_BACKUP_BUCKET` and `CBASE_BACKUP_REGION` (written by the stack) into the server's environment.
+Without a bucket the server makes no backups.
+Optional: `CBASE_BACKUP_KEY` (default `cbase/latest.sqlite`) and `CBASE_BACKUP_INTERVAL_S` (default 60).
+
+- Every interval a loop timer checks whether the store committed anything since the last upload.
+  If it did, a job-pool thread (never the loop) runs `VACUUM INTO` on a separate read connection and uploads the copy with `PUT` to the one key.
+  A running backup makes the next tick skip; a failed one is logged (`backup failed`) and retried at the next tick.
+- The bucket is versioned, so the one key keeps its history (noncurrent versions expire after 30 days).
+- Credentials are the instance role's, fetched with IMDSv2 from the IPv6 endpoint (`fd00:ec2::254`, IPv4 as a fallback) and refreshed five minutes before they expire.
+- RPO is the interval: about 1 minute of writes are lost when the instance is replaced.
+  Nothing else is lost: the file is a consistent copy.
+- At start, when `CBASE_DB` does not exist, the server downloads the key, checks that it opens and passes `PRAGMA integrity_check`, moves it into place and serves.
+  With no object stored it starts empty and logs `starting empty`.
+  A failed download or a file that fails its check stops the start (`not starting` in the journal) rather than starting empty: an empty database would be uploaded over the last good backup.
+  systemd retries; a transient S3 error clears itself.
+
+To restore by hand (a bad latest object, or going back in time):
+
+1. `aws s3api list-object-versions --bucket <BackupBucket> --prefix cbase/latest.sqlite` and pick a version.
+2. `aws s3api get-object --bucket <BackupBucket> --key cbase/latest.sqlite --version-id <id> cbase.sqlite`
+3. `sqlite3 cbase.sqlite 'PRAGMA integrity_check'` and expect `ok`.
+4. On the VM (Session Manager): stop `cbase`, move the file to `/var/lib/cbase/cbase.sqlite` (owner `cbase`), remove any `-wal` and `-shm` beside it, start `cbase`, check `/health`.
+
+The logs to watch: `backed up to ... in N ms` after each upload, and `backup failed` (also an alarm candidate: no `backed up` line for 10 minutes while the database changes).
 
 ## Shell access
 

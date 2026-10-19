@@ -45,6 +45,10 @@ struct cb_provider {
     cb_job_start_fn job_start;
     // Optional: a start after a delay that holds no thread (ctx.h cb_job_start_after_fn).
     cb_job_start_after_fn job_start_after;
+    // Optional, `serve` only: before the store opens (a non-OK answer stops the start), and once the
+    // server listens (a provider arms its own timers on ctx->loop).
+    int  (*serve_prepare)(const cb_config *cfg);
+    void (*serve_start)(cb_ctx *ctx);
     // The request header the edge vouches for the viewer's address in
     // (rate_limits.h cb_viewer_key), or NULL: the socket's peer is the viewer.
     const char *viewer_header;

@@ -211,6 +211,18 @@ Resources:
       Name: /cbase-vm/env/CBASE_ALLOWED_ORIGINS
       Type: String
       Value: !Ref AllowedOrigins
+  EnvBackupBucket:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /cbase-vm/env/CBASE_BACKUP_BUCKET
+      Type: String
+      Value: !Ref BackupBucket
+  EnvBackupRegion:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /cbase-vm/env/CBASE_BACKUP_REGION
+      Type: String
+      Value: !Ref AWS::Region
 
   Role:
     Type: AWS::IAM::Role

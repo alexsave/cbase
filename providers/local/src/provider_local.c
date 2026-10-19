@@ -17,6 +17,8 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "store/backup.h"
+
 #include <string.h>
 
 // ---- the job pool --------------------------------------------------------------------
@@ -140,4 +142,6 @@ const cb_provider cb_provider_local = {
     .routes = cb_rt_local_routes,
     .job_start = local_job_start,
     .job_start_after = local_job_start_after,
+    .serve_prepare = cb_backup_serve_prepare,
+    .serve_start = cb_backup_serve_start,
 };

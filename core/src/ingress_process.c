@@ -136,6 +136,7 @@ int cb_process_main(const cb_provider *prov, const cb_app *app, int argc, char *
     ctx.req_pool = cb_pool_new(cfg.req_workers, "req");
     ctx.job_pool = cb_pool_new(cfg.bot_workers, "job");
     if (!ctx.loop || !ctx.req_pool || !ctx.job_pool) { fprintf(stderr, "cbase: out of memory\n"); return 1; }
+    if (prov->serve_prepare && prov->serve_prepare(&cfg) != CB_OK) return 1;
     if (cb_boot(&ctx, err, sizeof err) != CB_OK) { CB_ERROR("serve", "%s", err); return 1; }
 
     cb_server_opts o;
@@ -178,6 +179,7 @@ int cb_process_main(const cb_provider *prov, const cb_app *app, int argc, char *
         cb_loop_timer(ctx.loop, cb_config_scaled_ms(&cfg, timers[i].s->every_ms), on_sched_timer, &timers[i]);
     }
 
+    if (prov->serve_start) prov->serve_start(&ctx);
     CB_INFO("serve", "listening on %s:%d", cfg.listen_host, port);
     int rc = cb_loop_run(ctx.loop);
 
