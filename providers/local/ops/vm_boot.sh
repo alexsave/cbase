@@ -15,7 +15,8 @@
 #      0600 EnvironmentFile and the systemd unit, and (re)starts cbase.
 # It never prints a parameter value.
 set -euo pipefail
-exec > >(tee -a /var/log/cbase-vm-boot.log | logger -t cbase-vm-boot) 2>&1
+exec > >(tee -a /var/log/cbase-vm-boot.log /dev/console | logger -t cbase-vm-boot) 2>&1
+trap 'echo "cbase-vm-boot: failed at line $LINENO"' ERR
 umask 077
 
 IMDS='http://[fd00:ec2::254]'
