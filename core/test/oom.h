@@ -38,6 +38,7 @@
 #define CB_TEST_OOM_H
 
 #include <dlfcn.h>
+#include <execinfo.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -63,6 +64,7 @@ static inline long oom_count(void) { return 0; }
 static inline bool oom_failed(void) { return false; }
 static inline long oom_live(void) { return 0; }
 static inline void oom_dump_live(FILE *f) { (void)f; }
+static inline void oom_trace(bool on) { (void)on; }
 static inline void oom_everywhere(bool on) { (void)on; }
 #else
 #  define OOM_AVAILABLE 1
@@ -106,12 +108,28 @@ static bool oom_hit_;
 #define OOM_SET (1 << 16)
 static void *oom_set_[OOM_SET];
 static void *oom_site_[OOM_SET];   // who allocated each remembered block (oom_dump_live)
+// oom_trace(true): also each block's call stack (backtrace(3)), for a leak whose direct caller is an
+// allocator wrapper (SQLite's pm_malloc). Off by default: it costs a stack walk per allocation.
+#define OOM_FRAMES 8
+static bool oom_trace_, oom_in_trace_;
+static void *oom_bt_[OOM_SET][OOM_FRAMES];
 
 static inline size_t oom_slot_(void *p) { return ((uintptr_t)p >> 4) * 2654435761u % OOM_SET; }
 static void oom_remember_(void *p, void *site) {
     if (!p) return;
     for (size_t i = oom_slot_(p), k = 0; k < OOM_SET; k++, i = (i + 1) % OOM_SET)
-        if (!oom_set_[i] || oom_set_[i] == (void *)1) { oom_set_[i] = p; oom_site_[i] = site; oom_live_++; return; }
+        if (!oom_set_[i] || oom_set_[i] == (void *)1) {
+            oom_set_[i] = p;
+            oom_site_[i] = site;
+            memset(oom_bt_[i], 0, sizeof oom_bt_[i]);
+            if (oom_trace_ && !oom_in_trace_) {
+                oom_in_trace_ = true;
+                backtrace(oom_bt_[i], OOM_FRAMES);
+                oom_in_trace_ = false;
+            }
+            oom_live_++;
+            return;
+        }
 }
 static void oom_forget_(void *p) {
     if (!p) return;
@@ -132,14 +150,19 @@ static inline long oom_count(void) { return oom_seen_; }
 static inline bool oom_failed(void) { return oom_hit_; }
 static inline long oom_live(void) { return oom_live_; }
 // Names the code that allocated each block still live (for a leak report): the caller's symbol.
+static inline void oom_trace(bool on) { oom_trace_ = on; }
+static void oom_name_(FILE *f, const char *pre, void *a) {
+    Dl_info d;
+    if (dladdr(a, &d) && d.dli_sname)
+        fprintf(f, "%s%s+0x%lx\n", pre, d.dli_sname, (unsigned long)((char *)a - (char *)d.dli_saddr));
+    else
+        fprintf(f, "%s%p\n", pre, a);
+}
 static void oom_dump_live(FILE *f) {
     for (size_t i = 0; i < OOM_SET; i++) {
         if (!oom_set_[i] || oom_set_[i] == (void *)1) continue;
-        Dl_info d;
-        if (dladdr(oom_site_[i], &d) && d.dli_sname)
-            fprintf(f, "       live block from %s+0x%lx\n", d.dli_sname, (unsigned long)((char *)oom_site_[i] - (char *)d.dli_saddr));
-        else
-            fprintf(f, "       live block from %p\n", oom_site_[i]);
+        oom_name_(f, "       live block from ", oom_site_[i]);
+        for (int k = 1; k < OOM_FRAMES && oom_bt_[i][k]; k++) oom_name_(f, "         <- ", oom_bt_[i][k]);
     }
 }
 

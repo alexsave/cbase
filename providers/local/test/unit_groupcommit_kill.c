@@ -102,10 +102,17 @@ static void a_kill_loses_no_acknowledged_write_and_shows_no_partial_group(void) 
         }
         close(p[1]);
         fcntl(p[0], F_SETFL, O_NONBLOCK);
-        // Let it run: a random 40 to 160 ms, reading the acknowledgements as they come.
+        // Let it run: a random 40 to 160 ms from its first acknowledgement (a slow start, an ASan
+        // build on a busy runner, must not eat the window), reading the acknowledgements as they come.
         ack *acks = malloc(sizeof *acks * 4000000);
         size_t n_acks = 0;
         struct timespec t0;
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        for (int waited = 0; n_acks == 0 && waited < 50000; waited++) {   // 10 s at most
+            ssize_t r = read(p[0], acks, sizeof(ack) * 4096);
+            if (r > 0) n_acks += (size_t)r / sizeof(ack);
+            else usleep(200);
+        }
         clock_gettime(CLOCK_MONOTONIC, &t0);
         long run_ms = 40 + rand() % 120;
         for (;;) {
