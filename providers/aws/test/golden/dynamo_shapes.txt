@@ -85,6 +85,7 @@ Txn.Put item=pk:S=EMAIL#{},sk:S=USER,user_id:S
 Txn.Update key=pk:S=BOT#{},sk:S=BOT names=elo_rating,games_played,previous_elo,updated_at vals=N
 Txn.Update key=pk:S=GAME#{},sk:S=MEMBER#{} names=game_id,gsi1pk,gsi1sk,joined_at,updated_at,user_id vals=N,S,S:USERGAMES#{},S:{}#{}
 Txn.Update key=pk:S=GAME#{},sk:S=ROW names=game_seed,last_commit_at,logs_packed,needs_bots,roster,round_epoch,seats_exact,state,status,updated_at,version vals=B,BOOL,N
+Txn.Update key=pk:S=GAME#{},sk:S=ROW names=game_seed,last_commit_at,needs_bots,roster,round_epoch,seats_exact,state,status,updated_at,version vals=B,BOOL,N
 Txn.Update key=pk:S=SCAN,sk:S=GAME#{} names=game_id,last_commit_at,row_version,updated_at vals=N,S
 Txn.Update key=pk:S=SNAP#{},sk:S=PLAYER#{} names=extras,gsi1pk,gsi1sk,moves,player_ids
 Txn.Update key=pk:S=SNAP#{},sk:S=SNAP names=extras vals=B
