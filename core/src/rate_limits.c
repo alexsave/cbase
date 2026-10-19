@@ -104,9 +104,10 @@ void cb_limits_reset(void) {
     pthread_mutex_unlock(&g_mu);
 }
 
-// "1.2.3.4:5678" -> "1.2.3.4"; "2001:db8::1:5678" or "[2001:db8::1]:5678" ->
-// the /64 "2001:db8::/64". Anything that does not parse is kept as it came
-// (still a key: whoever sent it keeps sending the same text).
+// "1.2.3.4" -> itself; "2001:db8::1" -> the /64 "2001:db8::/64". Text that does
+// not parse is kept as it came (still a key: whoever sent it keeps sending the
+// same text). The input is a socket peer or an address cb_viewer_addr_parse has
+// already accepted, never a raw header.
 static bool canonical(const char *host, char *out, size_t cap) {
     struct in_addr v4;
     struct in6_addr v6;
@@ -137,21 +138,22 @@ static void address_key(const char *in, char *out, size_t cap) {
 
 void cb_viewer_key(const cb_ctx *ctx, const cb_http_req *req, char *out, size_t cap) {
     if (cap) out[0] = 0;
-    const char *v = NULL;
-    if (ctx->prov && ctx->prov->viewer_header) v = cb_http_header_get(req, ctx->prov->viewer_header);
+    // The address CloudFront vouches for, if this request came through it: the
+    // provider names the header (Lambda: everything arrives through the edge), or,
+    // under the process ingress, the request must carry the origin secret (with
+    // no secret set anyone can send the header). Either way the one strict
+    // parser reads it (net/viewer_addr.h), so a header that is not "ip:port" is
+    // no key and the socket's peer stands. X-Forwarded-For is never read.
+    const char *h = NULL;
+    if (ctx->prov && ctx->prov->viewer_header) h = cb_http_header_get(req, ctx->prov->viewer_header);
     else if (ctx->cfg && ctx->cfg->origin_secret[0] &&
-             cb_config_origin_proven(ctx->cfg, cb_http_header_get(req, CB_ORIGIN_HEADER))) {
-        // The process ingress behind CloudFront: the address in the header counts
-        // only on a request that carried the origin secret (with no secret set,
-        // anyone can send the header), and only when it parses strictly. X-Forwarded-For
-        // is never read. Anything else is the socket's peer.
-        char ip[64];
-        const char *h = cb_http_header_get(req, CB_VIEWER_HEADER);
-        if (h && cb_viewer_addr_parse(h, ip, sizeof ip)) {
-            address_key(ip, out, cap);
-            return;
-        }
+             cb_config_origin_proven(ctx->cfg, cb_http_header_get(req, CB_ORIGIN_HEADER)))
+        h = cb_http_header_get(req, CB_VIEWER_HEADER);
+    char ip[64];
+    if (h && cb_viewer_addr_parse(h, ip, sizeof ip)) {
+        address_key(ip, out, cap);
+        return;
     }
-    if (!v || !*v) v = req->peer;
+    const char *v = req->peer;
     if (v && *v) address_key(v, out, cap);
 }

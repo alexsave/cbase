@@ -63,8 +63,8 @@ void cb_limits_reset(void);
 // Lambda it is CloudFront's CloudFront-Viewer-Address (the request came
 // through the edge: config.h CBASE_ORIGIN_SECRET), without its port; under
 // serve, the socket's peer, except behind CloudFront: with CBASE_ORIGIN_SECRET
-// set and the request carrying it, the same header, parsed strictly
-// (net/viewer_addr.h; a malformed one falls back to the peer). An IPv6 address is cut to its /64, the block one
+// set and the request carrying it, the same header. Both read it through the
+// one strict parser (net/viewer_addr.h); a malformed one falls back to the peer. An IPv6 address is cut to its /64, the block one
 // subscriber holds, so one viewer cannot walk the addresses of its block.
 void cb_viewer_key(const cb_ctx *ctx, const cb_http_req *req, char *out, size_t cap);
 
