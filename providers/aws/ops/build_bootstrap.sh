@@ -29,7 +29,7 @@ case "$what" in
   *) echo "usage: build_bootstrap.sh [bootstrap|serve]" >&2; exit 2 ;;
 esac
 
-IMAGE="alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc"
+IMAGE="alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6"
 here="$(cd "$(dirname "$0")/../../.." && pwd)"   # c_base/
 root="$(cd "$here/.." && pwd)"
 mkdir -p "$here/dist"
@@ -42,6 +42,9 @@ fi
 docker run --rm --platform linux/arm64 -e TARGET="$target" -e WHAT="$what" \
   -v "$root":/repo:ro -v "$here/dist":/out \
   "$IMAGE" sh -euc '
+    apk upgrade --no-cache >/dev/null
+    pending="$(apk version -l "<" | grep -v "^Installed:" || true)"
+    if [ -n "$pending" ]; then echo "packages with pending upgrades after apk upgrade:" >&2; echo "$pending" >&2; exit 1; fi
     apk add --no-cache build-base openssl-dev openssl-libs-static sqlite-dev sqlite-static linux-headers zip >/dev/null
     mkdir -p /w
     cd /repo

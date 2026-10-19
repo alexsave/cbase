@@ -4,7 +4,10 @@ set -euo pipefail
 W=${NANO_REPO:-$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)}
 R=${NANO_RIG:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}
 docker rm -f nano-perf-build >/dev/null 2>&1 || true
-docker run --rm --cpus=2 --name nano-perf-build --platform linux/arm64 -v "$W":/repo:ro -v "$R/bin":/out -e UT=${UT:-} -e MK="${MK:-}" alpine:3.20 sh -euc '
+docker run --rm --cpus=2 --name nano-perf-build --platform linux/arm64 -v "$W":/repo:ro -v "$R/bin":/out -e UT=${UT:-} -e MK="${MK:-}" alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6 sh -euc '
+  apk upgrade --no-cache >/dev/null
+  pending="$(apk version -l "<" | grep -v "^Installed:" || true)"
+  if [ -n "$pending" ]; then echo "packages with pending upgrades after apk upgrade:" >&2; echo "$pending" >&2; exit 1; fi
   apk add --no-cache build-base openssl-dev openssl-libs-static sqlite-dev sqlite-static linux-headers zip >/dev/null
   mkdir -p /w; cd /repo
   tar cf - --exclude="./c_base/build" --exclude="./c_base/dist" --exclude="./foolish/c/build" ./c_base ./foolish/c ./foolish/server ./shared | tar xf - -C /w
