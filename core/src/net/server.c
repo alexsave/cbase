@@ -89,7 +89,7 @@ void cb_server_opts_default(cb_server_opts *o) {
     o->idle_ms = 60000;
     o->head_ms = 15000;
     o->ws_idle_ms = 120000;
-    o->max_conns = 4096;
+    o->max_conns = 16384;
     o->backlog = 512;
 }
 

@@ -56,7 +56,7 @@ static void secrets_rule(void) {
     unsetenv("CBASE_PUBLIC_URL");
     // The limits and the connection cap are settings with today's values as defaults, and bounds.
     T_EQ_INT(cb_config_from_env(&c, err, sizeof err), CB_OK);
-    T_EQ_INT(c.max_conns, 4096);
+    T_EQ_INT(c.max_conns, 16384);
     T_EQ_INT(c.listen_backlog, 512);
     T_EQ_INT(c.limit_burst[2], 0);
     setenv("CBASE_LIMIT_SIGNUP_ALL", "600", 1);

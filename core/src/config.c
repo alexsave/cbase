@@ -154,7 +154,7 @@ int cb_config_from_env(cb_config *c, char *err, size_t cap) {
     c->rated_min_age_s = (int)v;
     if (!num("CBASE_BOT_SPEEDUP", 1, 1, 100, &v, err, cap)) return CB_E_INVALID;
     c->bot_speedup = (int)v;
-    if (!num("CBASE_MAX_CONNS", 4096, 1, 1000000, &v, err, cap)) return CB_E_INVALID;
+    if (!num("CBASE_MAX_CONNS", 16384, 1, 1000000, &v, err, cap)) return CB_E_INVALID;
     c->max_conns = (int)v;
     if (!num("CBASE_LISTEN_BACKLOG", 512, 1, 65535, &v, err, cap)) return CB_E_INVALID;
     c->listen_backlog = (int)v;

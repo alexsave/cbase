@@ -40,6 +40,7 @@
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <unistd.h>
 #ifdef __APPLE__
 #include <libproc.h>
@@ -141,6 +142,19 @@ int cb_process_main(const cb_provider *prov, const cb_app *app, int argc, char *
     cb_server_opts_default(&o);
     o.max_body = cfg.max_body;
     o.max_conns = cfg.max_conns;
+    // A connection is one fd (a WebSocket is the same fd), plus the store, the
+    // listener and the wake channel: lift the soft limit to what the cap needs
+    // when the hard limit allows, so the cap is the limit and not a default 1024.
+    {
+        struct rlimit rl;
+        rlim_t want = (rlim_t)cfg.max_conns + 64;
+        if (getrlimit(RLIMIT_NOFILE, &rl) == 0 && rl.rlim_cur < want) {
+            rl.rlim_cur = want < rl.rlim_max ? want : rl.rlim_max;
+            if (setrlimit(RLIMIT_NOFILE, &rl) != 0) rl.rlim_cur = 0;
+        }
+        if (getrlimit(RLIMIT_NOFILE, &rl) == 0 && rl.rlim_cur < want)
+            CB_WARN("serve", "fd limit %llu is below CBASE_MAX_CONNS+64: the process runs out of fds before the cap", (unsigned long long)rl.rlim_cur);
+    }
     o.backlog = cfg.listen_backlog;
     ctx.server = cb_server_new(&ctx, &o);
     int port = 0;
