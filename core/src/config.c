@@ -34,10 +34,19 @@ static long default_req_workers(void) {
     double cpus = 0;
     FILE *f = fopen("/sys/fs/cgroup/cpu.max", "r");
     if (f) {
-        char q[32] = {0};
-        long period = 0;
-        if (fscanf(f, "%31s %ld", q, &period) == 2 && strcmp(q, "max") != 0 && period > 0)
-            cpus = (double)atol(q) / (double)period;
+        char line[64] = {0};
+        if (fgets(line, sizeof line, f)) {
+            // "<quota> <period>", or "max <period>" when no quota is set.
+            char *sp = strchr(line, ' ');
+            char *nl = strchr(line, '\n');
+            if (nl) *nl = 0;
+            int64_t q, period;
+            if (sp && strncmp(line, "max", 3) != 0) {
+                *sp = 0;
+                if (num_parse_i64_cstr(line, 1, INT64_MAX, &q) && num_parse_i64_cstr(sp + 1, 1, INT64_MAX, &period))
+                    cpus = (double)q / (double)period;
+            }
+        }
         fclose(f);
     }
     if (cpus <= 0) {
