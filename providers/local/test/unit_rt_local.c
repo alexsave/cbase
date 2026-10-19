@@ -21,6 +21,7 @@
 
 #include "netwire.h"
 
+#include <stdatomic.h>
 #include <pthread.h>
 #include <unistd.h>
 
@@ -126,6 +127,9 @@ static void mqtt_upgrade_route(void) {
     tc_response_free(&r);
 }
 
+static atomic_int g_hold;
+static void hold_worker(void *ud) { while (atomic_load(&g_hold)) usleep(1000); }
+
 static void mqtt_publishes_reach_their_topics(void) {
     cb_buf m;
     cb_buf_init(&m);
@@ -192,6 +196,13 @@ static void mqtt_publishes_reach_their_topics(void) {
     T_EQ_INT(close_code(&m), 1008);
     mq_send(b, pk, mqtt_write_bare(pk, sizeof pk, MQTT_PINGREQ));
     T_EQ_INT(mq_recv(b, 2000, &m, &p), MQTT_PINGRESP);
+    // The loop answers a PINGREQ itself: with every pool worker held, the PINGRESP still comes.
+    atomic_store(&g_hold, 1);
+    for (int i = 0; i < 3; i++) T_EQ_INT(cb_pool_submit(g_ctx.req_pool, hold_worker, NULL), CB_OK);
+    usleep(50000);
+    mq_send(b, pk, mqtt_write_bare(pk, sizeof pk, MQTT_PINGREQ));
+    T_EQ_INT(mq_recv(b, 500, &m, &p), MQTT_PINGRESP);
+    atomic_store(&g_hold, 0);
     close(a);
     close(b);
     close(c);

@@ -386,6 +386,16 @@ static void on_message(cb_ws *ws, int opcode, const uint8_t *data, size_t len, v
     if (c->in_bytes + len > INBOX_MAX) { cb_ws_close(ws, 1008); return; }
     // MQTT over WebSocket is binary only (MQTT 3.1.1, 6.0).
     if (opcode == CB_WS_OP_TEXT) { cb_ws_close(ws, 1003); return; }
+    // A keepalive is answered right here: PINGREQ is two bytes and changes no state, so it needs no
+    // copy of the connection, no pool hand-off and no allocation. Only when nothing is queued or in
+    // flight for this connection (the PINGRESP must not overtake a reply still being computed), the
+    // connection is open, and its token has not run out (the pooled path closes it then).
+    if (len == 2 && data[0] == 0xC0 && data[1] == 0x00 && !c->busy && !c->in_head && c->mq->state == CB_MQTT_OPEN &&
+        cb_now_ms() / 1000 < c->mq->expires_s) {
+        static const char pingresp[2] = { (char)0xD0, 0x00 };
+        cb_ws_send(ws, CB_WS_OP_BIN, pingresp, sizeof pingresp);
+        return;
+    }
     msg *m = msg_new((const char *)data, len);
     if (!m) return;
     if (c->in_tail) c->in_tail->next = m;
