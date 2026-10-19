@@ -128,6 +128,9 @@ if [ -z "$az" ] || [ "$az" = None ]; then
   az="$(aws ec2 describe-instance-type-offerings --location-type availability-zone \
         --filters Name=instance-type,Values=t4g.nano --query 'InstanceTypeOfferings[].Location' --output text | tr '\t' '\n' | sort | head -1)"
 fi
+# The VM's own origin secret, for the staging distribution's header (never printed).
+origin_secret="$(aws ssm get-parameter --name /cbase-vm/env/CBASE_ORIGIN_SECRET --with-decryption --query Parameter.Value --output text)"
+[ "${#origin_secret}" -ge 32 ] || die "no /cbase-vm/env/CBASE_ORIGIN_SECRET"
 echo "stack $stack in $region ($az), prefix list $pl"
 aws cloudformation deploy \
   --stack-name "$stack" \
@@ -142,5 +145,6 @@ aws cloudformation deploy \
     "ServeRelease=$serve_release" \
     "AgentRelease=$agent_release" \
     "UserDataGz=$user_data" \
-    "CloudFrontPrefixList=$pl"
+    "CloudFrontPrefixList=$pl" \
+    "OriginSecret=$origin_secret"
 aws cloudformation describe-stacks --stack-name "$stack" --query 'Stacks[0].Outputs[].[OutputKey,OutputValue]' --output text

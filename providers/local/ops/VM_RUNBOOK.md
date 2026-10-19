@@ -17,7 +17,15 @@ What the offline plan got wrong, and the fix:
 - `UseDualStackEndpoint` alone left the agent's credential check on `ssm.<region>.amazonaws.com` (IPv4 only), so the agent config names the `api.aws` endpoints.
 - `ec2messages` has no IPv6 name, so the agent logs `MDSInteractor ... GetMessages Error` every few minutes; Run Command and sessions go through `ssmmessages` and work. The errors are noise.
 
-Step 3 blocker: `foolish.cards` is served by Google Cloud DNS (`ns-cloud-d1.googledomains.com`), not Route 53, so the AAAA record for the origin must be added there.
+## Staging edge (step 3, safe form)
+
+The stack's own CloudFront distribution, output `StagingUrl` (https://d2lhcwjimgi6sb.cloudfront.net), is the VM's only way in.
+It mirrors production's edge: nothing cached, every viewer header but Host forwarded, and `X-Cbase-Origin` set from this VM's own `/cbase-vm/env/CBASE_ORIGIN_SECRET`, which `vm_deploy.sh` passes as a NoEcho parameter.
+Its origin is `vm-origin.foolish.cards`, an AAAA record for `OriginIpv6` kept at the domain's DNS host (Squarespace), reached over IPv6 (`IpAddressType: ipv6`) on port 8080 over plain HTTP.
+Production (`cbase` stack, api.foolish.cards) does not use it.
+Checked on 2026-10-19: `roundtrip --n 50 --concurrency 1` through it played 50 moves with 0 errors, 0 lost pushes, action p50 24 ms and p95 28 ms from the Mac.
+`/mqtt` upgrades (101, subprotocol mqtt), and a request to the origin without the header gets 403.
+The security group drops anything not from CloudFront's IPv6 origin-facing prefix list.
 
 ## What runs where
 
