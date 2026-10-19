@@ -226,6 +226,9 @@ all: build/cbase build/bootstrap build/cbase-import build/cbase-export build/cba
 # when another fails, and the target fails, naming each command that did.
 # Longest first: the smokes are listed before the units. RUN_ALL_SH is the
 # same as one shell command, for a recipe line that sets an environment first.
+# Every test lane fills Game.logs with 0xAA when a pooled section is reset (table_ops.c), so a read
+# past num_logs fails a test; shipped builds do not set it.
+export CBASE_POISON_LOGS := 1
 CHECK_JOBS ?= $(shell getconf _NPROCESSORS_ONLN)
 RUN_ALL_SH = mkdir -p build/logs && printf '%s\0' $(2) | xargs -0 -P $(CHECK_JOBS) -n 1 sh -c \
   'log=build/logs/$$(echo "$$0" | tr " /=" "___").log; if eval "$$0" > $$log 2>&1; then cat $$log; else cat $$log; echo "FAILED: $$0"; exit 1; fi' \
