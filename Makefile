@@ -78,6 +78,7 @@ endif
 ifeq ($(LTO),1)
   KERNEL_CFLAGS += -flto
   LTO_LDFLAGS := -flto
+  CB_LTO := -flto
 endif
 
 # ---- c_base's own code ----------------------------------------------------------
@@ -121,7 +122,7 @@ side_inc_of = $(if $(filter core/src/%,$(1)),$(CORE_INC),$(if $(filter providers
 side_inc = $(call side_inc_of,$*)
 SIDE_STAMP := core: $(CORE_INC) local: $(LOCAL_INC) aws: $(AWS_INC) product: $(PRODUCT_INC) rest: $(ALL_INC)
 CB_CFLAGS = -std=gnu11 -D_GNU_SOURCE -O2 -g -Wall -Wextra -Werror -Wno-unused-parameter -Wshadow -Wvla \
-            $(side_inc) $(OPENSSL_CFLAGS) -pthread $(CPU_CFLAGS) $(KERNEL_CAPS)
+            $(side_inc) $(OPENSSL_CFLAGS) -pthread $(CPU_CFLAGS) $(KERNEL_CAPS) $(CB_LTO)
 LDLIBS := $(OPENSSL_LDFLAGS) -lsqlite3 -lssl -lcrypto -lpthread -lm $(PLATFORM_LDLIBS) $(LTO_LDFLAGS)
 # STATIC=1: a fully static link (the Lambda bootstrap, built on musl by
 # providers/aws/ops/build_bootstrap.sh). Not meaningful on macOS.

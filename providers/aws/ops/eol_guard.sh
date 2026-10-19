@@ -14,7 +14,9 @@ today="${GUARD_TODAY:-$(date -u +%F)}"
 
 # End of support, inclusive: the last day the line is supported.
 ALPINE_EOL="3.19=2025-11-01 3.20=2026-04-01 3.21=2026-11-01 3.22=2027-05-01 3.23=2027-11-01 3.24=2028-06-01"
-OPENSSL_EOL="3.0=2026-09-07 3.3=2026-04-09 3.4=2026-10-22 3.5=2030-04-08 3.6=2026-11-01 4.0=2027-05-14"
+# 3.0 and 3.3 are deliberately absent: the page says 3.0 is no longer supported and does not list 3.3,
+# and a line missing from the table fails.
+OPENSSL_EOL="3.4=2026-10-22 3.5=2030-04-08 3.6=2026-11-01 4.0=2027-05-14"
 
 eol_of() {   # eol_of KEY TABLE
   local kv
