@@ -1,14 +1,15 @@
 // unit_groupcommit_kill.c - the group commit survives a SIGKILL mid-group.
 // A child process opens the SQLite store and runs four writer threads. Each write is a transaction
-// of two items (an A row and a B row, both holding the same number), and a thread reports the
+// (cb_sql_write) of two rows (an A row and a B row of signin_fails, both holding the same number), and
+// a thread reports the
 // write to the parent over a pipe only AFTER the store call returned success. The parent kills the
 // child with SIGKILL at a random moment, reopens the file and holds two things:
 //   - every write whose caller got success is there, both rows (a caller returns only after COMMIT);
 //   - no write is half there: the A row and the B row of one write exist together or not at all
 //     (no partial group is visible).
 // Several rounds, each on the previous round's file, so recovery of a WAL left by a kill is exercised.
-#include "store/items.h"
 #include "store/store.h"
+#include "store/store_sql.h"
 #include "t.h"
 #include "util/err.h"
 
@@ -29,22 +30,31 @@ static char g_path[256];
 static int g_wfd;
 static int g_round;
 
+// One write: rows "<key>A" and "<key>B", n = i, never expiring.
+typedef struct {
+    char key[48];
+    int  i;
+} pair;
+
+static int put_pair(cb_sql *x, void *ud) {
+    pair *p = ud;
+    char sql[400];
+    snprintf(sql, sizeof sql,
+             "INSERT INTO signin_fails VALUES ('%sA', %d, 0, 0, 9223372036854775807);"
+             "INSERT INTO signin_fails VALUES ('%sB', %d, 0, 0, 9223372036854775807);",
+             p->key, p->i, p->key, p->i);
+    return cb_sql_exec(x, sql);
+}
+
+static void key_of(char *out, size_t cap, int round, int t, int i) { snprintf(out, cap, "kill-%d-%d-%d-", round, t, i); }
+
 static void *writer(void *arg) {
     cb_store *st = ((void **)arg)[0];
     int t = (int)(intptr_t)((void **)arg)[1];
     for (int i = 0;; i++) {
-        char pk[48];
-        snprintf(pk, sizeof pk, "KILL#%d#%d#%d", g_round, t, i);
-        cb_av attr = CB_AVN("n", i);
-        cb_iwrite w[2];
-        memset(w, 0, sizeof w);
-        for (int k = 0; k < 2; k++) {
-            w[k].op = CB_IW_PUT;
-            w[k].key = (cb_ikey){ pk, k ? "B" : "A" };
-            w[k].attrs = &attr;
-            w[k].n_attrs = 1;
-        }
-        if (st->ops->item_txn(st, w, 2, NULL, NULL) != CB_OK) _exit(3);
+        pair p = { .i = i };
+        key_of(p.key, sizeof p.key, g_round, t, i);
+        if (cb_sql_write(st, put_pair, &p) != CB_OK) _exit(3);
         ack a = { t, i };
         if (write(g_wfd, &a, sizeof a) != (ssize_t)sizeof a) _exit(4);   // <= PIPE_BUF: atomic
     }
@@ -64,14 +74,12 @@ static void child(void) {
     for (;;) pause();
 }
 
-static bool has(cb_store *st, const char *pk, const char *sk, int64_t *n) {
-    cb_item it;
-    cb_item_init(&it);
-    int rc = st->ops->item_get(st, (cb_ikey){ pk, sk }, true, &it);
-    cb_av v;
-    bool ok = rc == CB_OK && it.n > 0;
-    if (ok && n) *n = cb_item_get(&it, "n", &v) ? v.n : -1;
-    cb_item_free(&it);
+static bool has(cb_store *st, const char *key, const char *side, int64_t *n) {
+    char email[64];
+    snprintf(email, sizeof email, "%s%s", key, side);
+    cb_signin_fails f;
+    bool ok = CB_STORE_CALL(st, signin_fails_get, email, 0, &f) == CB_OK;
+    if (ok && n) *n = f.n;
     return ok;
 }
 
@@ -121,7 +129,7 @@ static void a_kill_loses_no_acknowledged_write_and_shows_no_partial_group(void) 
         int lost = 0, torn = 0, wrong = 0;
         for (size_t k = 0; k < n_acks; k++) {
             char pk[48];
-            snprintf(pk, sizeof pk, "KILL#%d#%d#%d", g_round, acks[k].t, acks[k].i);
+            key_of(pk, sizeof pk, g_round, acks[k].t, acks[k].i);
             int64_t a = -1, b = -1;
             bool ha = has(st, pk, "A", &a), hb = has(st, pk, "B", &b);
             if (!ha || !hb) lost++;
@@ -133,7 +141,7 @@ static void a_kill_loses_no_acknowledged_write_and_shows_no_partial_group(void) 
             for (size_t k = 0; k < n_acks; k++) if (acks[k].t == t && acks[k].i > last) last = acks[k].i;
             for (int i = last + 1; i <= last + 2; i++) {
                 char pk[48];
-                snprintf(pk, sizeof pk, "KILL#%d#%d#%d", g_round, t, i);
+                key_of(pk, sizeof pk, g_round, t, i);
                 if (has(st, pk, "A", NULL) != has(st, pk, "B", NULL)) torn++;
             }
         }

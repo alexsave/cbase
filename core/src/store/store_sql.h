@@ -45,6 +45,8 @@ struct sqlite3_stmt *cb_sql_stmt(cb_sql *x, int id);
 int cb_sql_run(cb_sql *x, struct sqlite3_stmt *st, const char *what);
 // SQLite's answer `rc` to `what` as a store code (as cb_sql_run maps it).
 int cb_sql_fail(cb_sql *x, const char *what, int rc);
+// Runs `sql` (one or more statements, nothing bound) as it is: CB_OK, or the store's code.
+int cb_sql_exec(cb_sql *x, const char *sql);
 // Rows the last statement changed.
 int cb_sql_changes(cb_sql *x);
 

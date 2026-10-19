@@ -250,7 +250,6 @@ static void game_create_delete(void) {
         { "BatchWriteItem", "CHAT#ab12cd", 200, "{}" },
         { "Query", "GAMESNAPS#ab12cd", 200, "{\"Items\":[{\"pk\":{\"S\":\"SNAP#s1\"},\"sk\":{\"S\":\"SNAP\"}}]}" },
         { "UpdateItem", "SNAP#s1", 400, VALIDATION },          // logged, the delete still stands
-        { "Query", "LOG#ab12cd", 200, EMPTY },                 // its session log items
         // moved on, gone, failed
         { "Query", NULL, 200, EMPTY },
         { "TransactWriteItems", NULL, 400, CANCEL_0_ITEM },

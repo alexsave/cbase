@@ -1,4 +1,4 @@
-// unit_items.c - the item layer (store/items.h) on both backends, and the
+// unit_items.c - the item layer (store/items.h) on DynamoDB (SQLite keeps plain tables), and the
 // key-capture proof's shapes (aws_json.h dw_shape): just enough to hold
 // the coverage floors through stage 5 (docs/PLATFORM.md section 9 lists the
 // full suite owed by stage 8).
@@ -29,46 +29,6 @@ static bool collect(const cb_item *it, void *ud) {
 }
 
 // A transaction applies whole or not at all, and a query lists by an index.
-static void sqlite_txn_and_query(void) {
-    char path[320];
-    snprintf(path, sizeof path, "%s/items.sqlite", g_dir);
-    cb_store *s = tsb_open_fresh(path);
-    T_CHECK(s != NULL);
-    if (!s) return;
-    const cb_av a1[] = { CB_AVS("gsi1pk", "L#x"), CB_AVS("gsi1sk", "1"), CB_AVN("n", 1) };
-    const cb_av a2[] = { CB_AVS("gsi1pk", "L#x"), CB_AVS("gsi1sk", "2"), CB_AVN("n", 2) };
-    cb_iwrite w[2] = {
-        { .op = CB_IW_PUT, .key = { "P#1", "A" }, .attrs = a1, .n_attrs = 3, .cond = { CB_IF_ABSENT }, .n_cond = 1 },
-        { .op = CB_IW_PUT, .key = { "P#1", "B" }, .attrs = a2, .n_attrs = 3, .cond = { CB_IF_ABSENT }, .n_cond = 1 },
-    };
-    int failed = 9;
-    T_EQ_INT(CB_STORE_CALL(s, item_txn, w, 2, &failed, NULL), CB_OK);
-    T_EQ_INT(failed, -1);
-    // Again: the first put's condition fails, and nothing is written.
-    cb_iwrite again[2] = { { .op = CB_IW_DELETE, .key = { "P#1", "B" } }, w[0] };
-    T_EQ_INT(CB_STORE_CALL(s, item_txn, again, 2, &failed, NULL), CB_E_CONFLICT);
-    T_EQ_INT(failed, 1);
-    sks k = { 0 };
-    cb_iquery q1 = { .index = 1, .pk = "L#x" };
-    T_EQ_INT(CB_STORE_CALL(s, item_query, &q1, collect, &k), CB_OK);
-    T_EQ_INT(k.n, 2);
-    T_EQ_STR(k.sk[0], "B");   // still there: the transaction rolled back
-    memset(&k, 0, sizeof k);
-    cb_iquery q0 = { .index = 0, .pk = "P#1", .sk_prefix = "A", .forward = true };
-    T_EQ_INT(CB_STORE_CALL(s, item_query, &q0, collect, &k), CB_OK);
-    T_EQ_INT(k.n, 1);
-    cb_iset inc = { CB_AVN("n", 5), CB_SET_INCR };
-    cb_iwrite up = { .op = CB_IW_UPDATE, .key = { "P#1", "A" }, .sets = &inc, .n_sets = 1, .cond = { CB_IF_EXISTS }, .n_cond = 1 };
-    cb_item old;
-    cb_item_init(&old);
-    T_EQ_INT(CB_STORE_CALL(s, item_write, &up, &old), CB_OK);
-    T_EQ_INT(cb_item_n_or(&old, "n", 0), 1);
-    T_EQ_INT(CB_STORE_CALL(s, item_get, (cb_ikey){ "P#1", "A" }, true, &old), CB_OK);
-    T_EQ_INT(cb_item_n_or(&old, "n", 0), 6);
-    cb_item_free(&old);
-    cb_store_close(s);
-}
-
 // The DynamoDB spelling of a transaction and a query, over a recorded answer.
 static const char *g_answer;
 static char g_target[64];
@@ -272,7 +232,6 @@ int main(void) {
     // Set before the first DynamoDB request (the store reads it once).
     snprintf(g_capture, sizeof g_capture, "%s/capture.txt", g_dir);
     setenv("CBASE_DYNAMO_CAPTURE", g_capture, 1);
-    T_RUN(sqlite_txn_and_query);
     T_RUN(dynamo_txn_and_query);
     T_RUN(the_capture_records_every_request);
     T_RUN(records_and_reads);

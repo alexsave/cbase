@@ -171,9 +171,9 @@
 4 c_base/core/src/store/store.h /foolish/i
 2 c_base/core/src/store/store.h /\baws\b/i
 4 c_base/core/src/store/store.h /lambda/i
-17 c_base/core/src/store/store.h /dynamo/i
+20 c_base/core/src/store/store.h /dynamo/i
 1 c_base/core/src/store/store.h /sigv4/i
-12 c_base/core/src/store/store.h /sqlite/i
+17 c_base/core/src/store/store.h /sqlite/i
 6 c_base/core/src/store/store.h /\bgames?\b/i
 1 c_base/core/src/store/store.h /\brosters?\b/i
 2 c_base/core/src/store/store_priv.h /\baws\b/i
@@ -182,6 +182,7 @@
 1 c_base/core/src/store/store_priv.h /x-amz/i
 1 c_base/core/src/store/store_priv.h /sqlite/i
 2 c_base/core/src/store/store_priv.h /\bgames?\b/i
+13 c_base/core/src/store/store_sql.h /sqlite/i
 1 c_base/core/src/util/bytea.h /\breplays?\b/i
 1 c_base/core/src/util/err.h /sqlite/i
 2 c_base/core/src/util/err.h /\bgames?\b/i
@@ -215,7 +216,6 @@
 1 c_base/providers/aws/src/store/store_dynamo.c /foolish/i
 1 c_base/providers/local/src/provider_local.c /\bgames?\b/i
 1 c_base/providers/local/src/provider_local.c /\bbots?\b/i
-1 c_base/providers/local/src/store/store_sqlite.c /foolish/i
 1 foolish/server/src/app/admin_panels.c /dynamo/i
 1 foolish/server/src/app/admin_panels.c /sqlite/i
 2 foolish/server/src/app/bots.c /lambda/i
@@ -231,11 +231,12 @@
 1 foolish/server/src/store/bot_seed.c /dynamo/i
 1 foolish/server/src/store/bot_seed.c /sqlite/i
 1 foolish/server/src/store/rows_foolish.c /\baws\b/i
-3 foolish/server/src/store/rows_foolish.c /dynamo/i
+4 foolish/server/src/store/rows_foolish.c /dynamo/i
 1 foolish/server/src/store/rows_foolish.h /\baws\b/i
 1 foolish/server/src/store/rows_foolish.h /lambda/i
-10 foolish/server/src/store/rows_foolish.h /dynamo/i
+11 foolish/server/src/store/rows_foolish.h /dynamo/i
 6 foolish/server/src/store/rows_foolish.h /sqlite/i
+63 foolish/server/src/store/rows_sql.c /sqlite/i
 2 foolish/server/src/store/store_import.c /dynamo/i
 1 foolish/server/src/store/store_import.h /\baws\b/i
 1 foolish/server/src/store/store_import.h /dynamo/i

@@ -242,6 +242,10 @@ sqlite3_stmt *cb_sql_stmt(cb_sql *x, int id) {
 int cb_sql_run(cb_sql *x, sqlite3_stmt *st, const char *what) { return run(x, st, what); }
 int cb_sql_fail(cb_sql *x, const char *what, int rc) { return fail(x, what, rc); }
 int cb_sql_changes(cb_sql *x) { return sqlite3_changes(x->db); }
+int cb_sql_exec(cb_sql *x, const char *sql) {
+    int rc = sqlite3_exec(x->db, sql, NULL, NULL, NULL);
+    return rc == SQLITE_OK ? CB_OK : fail(x, "exec", rc);
+}
 
 bool cb_sql_bind_uuid(sqlite3_stmt *st, int i, const char *id) {
     unsigned char b[CB_UUID_BYTES];
@@ -535,6 +539,18 @@ static pthread_once_t g_sqlite_cfg_once = PTHREAD_ONCE_INIT;
 // configured or initialised and carries on.
 static void sqlite_configure(void) { (void)sqlite3_config(SQLITE_CONFIG_MALLOC, &POOL_MEM); }
 
+// Every statement, the platform's and the product's, prepared once at open: a statement that does not
+// compile fails the open instead of its first request, and what SQLite computes and keeps for the life
+// of the schema the first time a plan reads an index (its column affinities) is in place before any
+// request runs.
+static int prepare_all(sq *q) {
+    for (int i = 0; i < ST__COUNT; i++)
+        if (!stmt(q, i)) return CB_E_DB;
+    for (int i = 0; i < q->n_app; i++)
+        if (q->app_sql[i] && !cb_sql_stmt(q, i)) return CB_E_DB;
+    return CB_OK;
+}
+
 int cb_store_open_sqlite(const char *path, cb_store **out) {
     *out = NULL;
     pthread_once(&g_sqlite_cfg_once, sqlite_configure);
@@ -568,7 +584,7 @@ int cb_store_open_sqlite(const char *path, cb_store **out) {
     sqlite3_busy_timeout(q->db, 5000);
     // journal_mode answers a row; exec ignores it. ":memory:" stays "memory".
     if ((rc = exec(q, "PRAGMA journal_mode = WAL")) != CB_OK || (rc = exec(q, "PRAGMA synchronous = NORMAL")) != CB_OK ||
-        (rc = apply_schema(q, s->app)) != CB_OK || (rc = seed(s)) < 0) {
+        (rc = apply_schema(q, s->app)) != CB_OK || (rc = seed(s)) < 0 || (rc = prepare_all(q)) != CB_OK) {
         sq_close(s);
         return rc;
     }
@@ -1241,13 +1257,19 @@ typedef struct {
     textrows    rows;
 } browse_op;
 
-// Is `name` one of the tables (never text spliced into SQL otherwise)?
-static bool is_table(sq *q, const char *name) {
+// Is `name` one of the tables (never text spliced into SQL otherwise)? 1 yes, 0 no, or a CB_E_*.
+static int is_table(sq *q, const char *name) {
     sqlite3_stmt *s = stmt(q, ST_TABLES);
-    bool yes = false;
-    while (s && !yes && sqlite3_step(s) == SQLITE_ROW) yes = strcmp((const char *)sqlite3_column_text(s, 0), name) == 0;
+    if (!s) return CB_E_DB;
+    int r, yes = 0;
+    while (!yes && (r = sqlite3_step(s)) == SQLITE_ROW) {
+        const unsigned char *t = sqlite3_column_text(s, 0);
+        if (!t) { r = SQLITE_NOMEM; break; }
+        yes = strcmp((const char *)t, name) == 0;
+    }
+    int rc = yes ? 1 : r == SQLITE_DONE ? 0 : fail(q, "tables", r);
     done(s);
-    return yes;
+    return rc;
 }
 
 // A value for a BLOB column: a UUID's bytes, else hex's, else the text's own.
@@ -1262,7 +1284,8 @@ static void bind_blob_value(sqlite3_stmt *s, int i, const char *v) {
 
 static int browse_step(sq *q, void *ud) {
     browse_op *o = ud;
-    if (!is_table(q, o->table)) return CB_E_INVALID;
+    int t = is_table(q, o->table);
+    if (t <= 0) return t == 0 ? CB_E_INVALID : t;
     // The table's columns (names and declared types), from an empty select.
     char sql[512];
     snprintf(sql, sizeof sql, "SELECT * FROM \"%s\" LIMIT 0", o->table);

@@ -2,7 +2,6 @@
 // No real object store: a cb_blob that keeps files in a directory, with failures on demand.
 #include "store/backup.h"
 #include "store/store.h"
-#include "store/items.h"
 #include "t.h"
 #include "util/err.h"
 #include "util/log.h"
@@ -75,8 +74,8 @@ static int count_rows(const char *path, const char *sql) {
 }
 
 static void put_item(cb_store *st, const char *pk) {
-    cb_iwrite w = { .op = CB_IW_PUT, .key = { pk, "sk" } };
-    T_EQ_INT(st->ops->item_write(st, &w, NULL), CB_OK);
+    cb_signin_fails f = { .n = 1 };
+    T_EQ_INT(CB_STORE_CALL(st, signin_fails_put, pk, &f, 0), CB_OK);
 }
 
 static void the_copy_is_a_valid_database_with_the_same_rows(void) {
@@ -88,7 +87,7 @@ static void the_copy_is_a_valid_database_with_the_same_rows(void) {
     T_EQ_INT(cb_store_open_sqlite(db, &st), CB_OK);
     for (int i = 0; i < 5; i++) { char pk[16]; snprintf(pk, sizeof pk, "p%d", i); put_item(st, pk); }
     T_EQ_INT(cb_backup_copy(db, snap), CB_OK);   // the store is still open and has written
-    T_EQ_INT(count_rows(snap, "SELECT count(*) FROM items WHERE pk LIKE 'p%'"), 5);
+    T_EQ_INT(count_rows(snap, "SELECT count(*) FROM signin_fails WHERE email LIKE 'p%'"), 5);
     T_EQ_INT(count_rows(snap, "SELECT count(*) FROM pragma_integrity_check WHERE integrity_check = 'ok'"), 1);
     T_EQ_INT(cb_backup_copy(db, snap), CB_OK);   // a second one replaces the first
     cb_store_close(st);
@@ -122,7 +121,7 @@ static void only_a_change_sends_and_a_failed_upload_retries(void) {
     T_EQ_INT(g_puts, 2);
     char o[300];
     obj_path(o, sizeof o);
-    T_EQ_INT(count_rows(o, "SELECT count(*) FROM items WHERE pk = 'a'"), 1);
+    T_EQ_INT(count_rows(o, "SELECT count(*) FROM signin_fails WHERE email = 'a'"), 1);
     long ok, failed;
     cb_backup_counts(b, &ok, &failed);
     T_EQ_INT((int)ok, 1);
@@ -155,7 +154,7 @@ static void restore_puts_a_sound_backup_in_place_and_refuses_the_rest(void) {
     g_fail_get = 0;
     // a good one
     T_EQ_INT(cb_backup_restore(&blob, "k", db), CB_OK);
-    T_EQ_INT(count_rows(db, "SELECT count(*) FROM items WHERE pk = 'kept'"), 1);
+    T_EQ_INT(count_rows(db, "SELECT count(*) FROM signin_fails WHERE email = 'kept'"), 1);
     // an existing database is never touched
     int gets = g_gets;
     T_EQ_INT(cb_backup_restore(&blob, "k", db), CB_OK);
