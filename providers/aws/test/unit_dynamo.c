@@ -1042,13 +1042,16 @@ static void fk_reset(void) {
 
 // DescribeTable as the live table answered it (aws dynamodb describe-table on
 // cbase, 2026-10-14, cut to the fields read): 15/15 on the table, 5/5 on each
-// GSI, so the import paces both buckets to 5 units a second.
+// GSI: reads (of the table only) go at 15 a second, writes (copied into each GSI) at 5.
 static const char DESCRIBE_LIVE[] =
     "{\"Table\":{\"TableName\":\"cbase\",\"TableStatus\":\"ACTIVE\",\"ProvisionedThroughput\":{\"NumberOfDecreasesToday\":0,"
     "\"ReadCapacityUnits\":15,\"WriteCapacityUnits\":15},\"GlobalSecondaryIndexes\":[{\"IndexName\":\"gsi1\","
     "\"IndexStatus\":\"ACTIVE\",\"ProvisionedThroughput\":{\"NumberOfDecreasesToday\":0,\"ReadCapacityUnits\":5,"
     "\"WriteCapacityUnits\":5}},{\"IndexName\":\"gsi2\",\"IndexStatus\":\"ACTIVE\",\"ProvisionedThroughput\":"
     "{\"NumberOfDecreasesToday\":0,\"ReadCapacityUnits\":5,\"WriteCapacityUnits\":5}}]}}";
+// A table of 5 read units (the read share's arithmetic below).
+static const char DESCRIBE_FIVE[] =
+    "{\"Table\":{\"TableName\":\"cbase\",\"ProvisionedThroughput\":{\"ReadCapacityUnits\":5,\"WriteCapacityUnits\":5}}}";
 static const char DESCRIBE_ON_DEMAND[] =
     "{\"Table\":{\"TableName\":\"cbase\",\"ProvisionedThroughput\":{\"NumberOfDecreasesToday\":0,"
     "\"ReadCapacityUnits\":0,\"WriteCapacityUnits\":0},\"BillingModeSummary\":{\"BillingMode\":\"PAY_PER_REQUEST\"}}}";
@@ -1056,7 +1059,7 @@ static const char DESCRIBE_ON_DEMAND[] =
 static void provisioned_read(void) {
     int64_t r, w;
     T_CHECK(dw_provisioned(DESCRIBE_LIVE, strlen(DESCRIBE_LIVE), &r, &w));
-    T_EQ_INT(r, 5);
+    T_EQ_INT(r, 15);
     T_EQ_INT(w, 5);
     T_CHECK(dw_provisioned(DESCRIBE_ON_DEMAND, strlen(DESCRIBE_ON_DEMAND), &r, &w));
     T_EQ_INT(r, 0);
@@ -1168,7 +1171,7 @@ static void flow_bulk_paced(void) {
 static void flow_bulk_read_share(void) {
     static const char GOT[] = "{\"ConsumedCapacity\":{\"TableName\":\"cbase\",\"CapacityUnits\":1.0}}";
     static const step steps[] = {
-        { "DescribeTable", NULL, 200, DESCRIBE_LIVE },
+        { "DescribeTable", NULL, 200, DESCRIBE_FIVE },
         { "GetItem", NULL, 200, GOT }, { "GetItem", NULL, 200, GOT }, { "GetItem", NULL, 200, GOT },
         { "GetItem", NULL, 200, GOT },
     };
@@ -1194,7 +1197,7 @@ static void flow_bulk_read_share(void) {
 
     // The whole table: 1.0 changes nothing (the same five reads before the wait).
     static const step full[] = {
-        { "DescribeTable", NULL, 200, DESCRIBE_LIVE },
+        { "DescribeTable", NULL, 200, DESCRIBE_FIVE },
         { "GetItem", NULL, 200, GOT }, { "GetItem", NULL, 200, GOT }, { "GetItem", NULL, 200, GOT },
         { "GetItem", NULL, 200, GOT }, { "GetItem", NULL, 200, GOT }, { "GetItem", NULL, 200, GOT },
         { "GetItem", NULL, 200, GOT },

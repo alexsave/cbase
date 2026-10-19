@@ -20,6 +20,7 @@
 #include "store/store_priv.h"
 #include "store/store_sql.h"
 
+#include "auth/names.h"
 #include "util/bytea.h"
 #include "util/clock.h"
 #include "util/log.h"
@@ -70,18 +71,20 @@ enum {
 #define U_SIGNED_IN   6
 #define U_SESSION_GEN 7
 #define U_KEPT        8
+#define U_KEY         9   // written, never read back: the key is the store's (names.h cb_name_key)
+#define USER_WCOLS USER_COLS ", username_key"
 #define USER_VALS P(U_ID) ", " P(U_EMAIL) ", " P(U_HASH) ", " P(U_USERNAME) ", " P(U_CREATED_AT) ", " P(U_SIGNED_IN) ", " \
-                  P(U_SESSION_GEN) ", " P(U_KEPT)
+                  P(U_SESSION_GEN) ", " P(U_KEPT) ", " P(U_KEY)
 
 static const char *const SQL[ST__COUNT] = {
     [ST_USER_GET] = "SELECT " USER_COLS " FROM users WHERE id = ?1",
     [ST_USER_BY_EMAIL] = "SELECT " USER_COLS " FROM users WHERE email = ?1",
-    [ST_USER_INSERT] = "INSERT INTO users (" USER_COLS ") VALUES (" USER_VALS ")",
+    [ST_USER_INSERT] = "INSERT INTO users (" USER_WCOLS ") VALUES (" USER_VALS ")",
     // Replaced whole, but the larger session generation wins and kept_session goes with it: re-importing must
     // not turn a global sign-out back into live sessions. (SET's right-hand sides read the row as it was.)
-    [ST_USER_IMPORT] = "INSERT INTO users (" USER_COLS ") VALUES (" USER_VALS ") "
+    [ST_USER_IMPORT] = "INSERT INTO users (" USER_WCOLS ") VALUES (" USER_VALS ") "
                        "ON CONFLICT (id) DO UPDATE SET email = excluded.email, password_hash = excluded.password_hash, "
-                       "username = excluded.username, created_at = excluded.created_at, "
+                       "username = excluded.username, username_key = excluded.username_key, created_at = excluded.created_at, "
                        "last_sign_in_at = excluded.last_sign_in_at, "
                        "kept_session = CASE WHEN users.session_gen >= excluded.session_gen THEN users.kept_session ELSE excluded.kept_session END, "
                        "session_gen = max(users.session_gen, excluded.session_gen)",
@@ -576,6 +579,11 @@ static int apply_schema(sq *q, const cb_store_app *app) {
     // would keep: they go first, with what a development database had in them (SQLite held no production
     // data). Schema 6 had dropped them already; 7 drops its `items` table in the schema itself.
     if (have > 0 && have < 6 && (rc = exec(q, LEGACY_DROP)) != CB_OK) goto out;
+    // 7 -> 8: the name shown and the name compared part (schema.sql users). Schema 7 held only names in
+    // their canonical form (signup cased them, the import refused others), so a 7 name is its own key.
+    if (have == 7 && (rc = exec(q, "ALTER TABLE users ADD COLUMN username_key TEXT; UPDATE users SET username_key = username; "
+                                   "DROP INDEX IF EXISTS users_username;")) != CB_OK)
+        goto out;
     if ((rc = exec(q, cbase_schema_sql)) != CB_OK) goto out;
     if (app && app->sql_schema && (rc = exec(q, app->sql_schema)) != CB_OK) goto out;
     char v[64];
@@ -841,6 +849,10 @@ static void user_bind(sqlite3_stmt *s, const cb_user_row *u) {
     b_i64(s, U_SIGNED_IN, u->last_sign_in_at);
     b_i64(s, U_SESSION_GEN, u->session_gen);
     cb_sql_bind_uuid(s, U_KEPT, u->kept_session);
+    char key[4 * CB_USERNAME_MAX + 8];   // a case step can lengthen a character's bytes
+    if (!u->username[0]) sqlite3_bind_null(s, U_KEY);
+    else if (cb_name_key(u->username, strlen(u->username), key, sizeof key) >= 0) b_text(s, U_KEY, key);
+    else sqlite3_bind_null(s, U_KEY);   // cannot happen for a stored name (it fits); never a wrong key
 }
 
 // One row of statement `id` with its ?1 bound to `key` by bind, into out by of: CB_OK, CB_E_NOT_FOUND.

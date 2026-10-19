@@ -325,7 +325,7 @@ void cb_store_throttles_get(cb_store_throttles *out);
 
 // The SQLite schema version this binary applies (store_sqlite.c), and the
 // embedded schema text (build/gen/schema_sql.c, from providers/local/sql/schema.sql).
-#define CB_SCHEMA_VERSION 7
+#define CB_SCHEMA_VERSION 8
 extern const char cbase_schema_sql[];
 extern const unsigned long cbase_schema_sql_len;
 

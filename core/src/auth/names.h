@@ -35,6 +35,13 @@
 // -1 when it is not valid UTF-8 or does not fit (cap - 1 bytes).
 int cb_name_case(const char *in, size_t n, char *out, size_t cap);
 
+// The key two names compare by (the store's unique username_key): the name's
+// cb_name_case form, or its bytes as they are when it has none (not UTF-8). A
+// name is displayed as it was stored; only the key is canonical, so a name made
+// before the rule (lower case) keeps its look and still blocks "ALICE" beside
+// "alice". The length, or -1 when it does not fit (cap - 1 bytes).
+int cb_name_key(const char *name, size_t n, char *out, size_t cap);
+
 // CB_OK, or CB_AUTH_E_BAD_USERNAME (auth.h). `name` is as cb_name_case left it.
 int cb_name_check(const char *name, size_t n);
 

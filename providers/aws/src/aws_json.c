@@ -1358,11 +1358,14 @@ static bool lower_to(const char *body, size_t n, const char *path, const char *w
 bool dw_provisioned(const char *body, size_t n, int64_t *rcu, int64_t *wcu) {
     *rcu = *wcu = 0;
     if (!lower_to(body, n, "Table", "Read", rcu) || !lower_to(body, n, "Table", "Write", wcu)) return false;
+    // A write to the table is written to every index too, so writes go at the slowest one's pace. A
+    // Scan or GetItem of the table consumes the table's read units only (an index's are spent by a
+    // Query of that index, which the bulk reads never make): reads go at the table's pace. Pacing
+    // them to an index's 5 units made the cutover export three times slower than the table allows.
     for (int i = 0; i < 64; i++) {
         char path[64];
         snprintf(path, sizeof path, "Table.GlobalSecondaryIndexes.%d", i);
-        if (!lower_to(body, n, path, "Read", rcu)) break;
-        lower_to(body, n, path, "Write", wcu);
+        if (!lower_to(body, n, path, "Write", wcu)) break;
     }
     return true;
 }

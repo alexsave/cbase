@@ -123,3 +123,11 @@ int cb_name_check(const char *name, size_t n) {
     if (scripts & (scripts - 1)) return CB_AUTH_E_BAD_USERNAME;
     return CB_OK;
 }
+
+int cb_name_key(const char *name, size_t n, char *out, size_t cap) {
+    int k = cb_name_case(name, n, out, cap);
+    if (k >= 0 || !name || !out || n + 1 > cap) return k;
+    memcpy(out, name, n);
+    out[n] = 0;
+    return (int)n;
+}
