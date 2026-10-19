@@ -17,7 +17,7 @@ bool cb_viewer_addr_parse(const char *s, char *out, size_t cap) {
     bool bracket = s[0] == '[';
     if (bracket) {
         const char *close = memchr(s, ']', n);
-        if (!close || close == s + 1 || close + 1 >= s + n || close[1] != ':') return false;
+        if (!close || close[1] != ':') return false;   // (s is NUL-terminated: close[1] is readable)
         host = s + 1;
         memcpy(h, host, (size_t)(close - host));
         h[close - host] = 0;
@@ -31,12 +31,11 @@ bool cb_viewer_addr_parse(const char *s, char *out, size_t cap) {
     }
     size_t pn = strlen(port);
     int64_t p;
-    if (pn == 0 || pn > 5 || !num_parse_i64(port, pn, 1, 65535, &p)) return false;
+    if (pn > 5 || !num_parse_i64(port, pn, 1, 65535, &p)) return false;   // (num_parse refuses an empty port)
     struct in_addr v4;
     struct in6_addr v6;
     // A bracket holds IPv6 only; unbracketed text is IPv4 unless it has a colon left.
     if (!bracket && inet_pton(AF_INET, h, &v4) == 1) return inet_ntop(AF_INET, &v4, out, (socklen_t)cap) != NULL;
     if (inet_pton(AF_INET6, h, &v6) == 1) return inet_ntop(AF_INET6, &v6, out, (socklen_t)cap) != NULL;
-    if (cap) out[0] = 0;
-    return false;
+    return false;   // (out was emptied on entry)
 }

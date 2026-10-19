@@ -181,6 +181,35 @@ static void seeds_query(void) {
     puts_("query", "bad", "a=%zz&b=%");
 }
 
+// cb_viewer_addr_parse: [cap][text] (core/fuzz/fz_viewer_addr.c); cb_viewer_key: [mode][cap][header NUL xff NUL peer]
+// (core/fuzz/fz_viewer_key.c).
+#define PUT1L(t, n, sel, lit) put1(t, n, sel, lit, sizeof(lit) - 1)
+static void seeds_viewer(void) {
+    PUT1L("viewer_addr", "v4", 64, "203.0.113.7:50238");
+    PUT1L("viewer_addr", "v4-port-1", 64, "203.0.113.7:1");
+    PUT1L("viewer_addr", "v4-port-65535", 64, "203.0.113.7:65535");
+    PUT1L("viewer_addr", "v4-port-0", 64, "203.0.113.7:0");
+    PUT1L("viewer_addr", "v4-port-65536", 64, "203.0.113.7:65536");
+    PUT1L("viewer_addr", "v4-no-port", 64, "203.0.113.7");
+    PUT1L("viewer_addr", "v6-bare", 64, "2001:db8:1:2::9:50238");
+    PUT1L("viewer_addr", "v6-bracket", 64, "[2001:db8:1:2::9]:50238");
+    PUT1L("viewer_addr", "v6-bracket-v4", 64, "[203.0.113.7]:80");
+    PUT1L("viewer_addr", "v6-unclosed", 64, "[2001:db8::1:80");
+    PUT1L("viewer_addr", "v6-loopback", 64, "[::1]:80");
+    PUT1L("viewer_addr", "blank", 64, "203.0.113.7:80 ");
+    PUT1L("viewer_addr", "x63", 64, "1111111111111111111111111111111111111111111111111111111111111:1");
+    PUT1L("viewer_addr", "x64", 64, "11111111111111111111111111111111111111111111111111111111111111:1");
+    PUT1L("viewer_addr", "cap-0", 0, "203.0.113.7:80");
+    PUT1L("viewer_addr", "cap-8", 8, "[2001:db8:1:2::9]:443");
+    PUT1L("viewer_addr", "cap-exact", 8, "1.2.3.4:1");
+    PUT1L("viewer_key", "serve-proven", 3, "\x40" "203.0.113.7:50238\0" "203.0.113.99:80\0" "130.176.0.1");
+    PUT1L("viewer_key", "serve-unproven", 1, "\x40" "203.0.113.7:50238\0\0" "130.176.0.1");
+    PUT1L("viewer_key", "serve-no-secret", 0, "\x40" "203.0.113.7:50238\0\0" "130.176.0.1");
+    PUT1L("viewer_key", "edge", 4, "\x40" "[2001:db8:1:2::9]:443\0\0" "130.176.0.1");
+    PUT1L("viewer_key", "xff-only", 3, "\x40\0" "203.0.113.99:80\0" "130.176.0.1");
+    PUT1L("viewer_key", "small-cap", 3, "\x08" "203.0.113.7:50238\0\0" "130.176.0.1");
+}
+
 // num_parse_i64: [mode][range for mode 3][text] (core/fuzz/fz_num.c).
 static void seeds_num(void) {
     put1("num", "speedup", 0, "20", 2);
@@ -815,6 +844,7 @@ int main(int argc, char **argv) {
     seeds_codec();
     seeds_query();
     seeds_num();
+    seeds_viewer();
     seeds_event();
     seeds_dynamo();
     seeds_jwt();
