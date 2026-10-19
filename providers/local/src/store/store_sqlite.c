@@ -29,6 +29,7 @@
 #include "../../../../../shared/c/num_parse.h"
 
 #include <ctype.h>
+#include <limits.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <sqlite3.h>
@@ -764,6 +765,10 @@ int cb_store_open_sqlite(const char *path, cb_store **out) {
 }
 
 void cb_store_local_drain(void) {
+    // SQLite's own process-wide caches first: Apple's SQLite keeps page-cache pages in a global
+    // purgeable cache that can outlive the connection (macOS 15's, after a failed allocation while
+    // reading the schema: unit_oom's boot sweep on the CI runner), and they are blocks of this pool.
+    (void)sqlite3_release_memory(INT_MAX);
     pthread_mutex_lock(&g_pool_mu);
     for (int c = 0; c < POOL_CLASSES; c++) {
         while (g_pool[c]) {
