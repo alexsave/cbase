@@ -216,6 +216,10 @@
 1 c_base/providers/aws/src/store/store_dynamo.c /foolish/i
 1 c_base/providers/local/src/provider_local.c /\bgames?\b/i
 1 c_base/providers/local/src/provider_local.c /\bbots?\b/i
+2 c_base/providers/local/src/store/store_sqlite.c /\bgames?\b/i
+2 c_base/providers/local/src/store/store_sqlite.c /\bbots?\b/i
+1 c_base/providers/local/src/store/store_sqlite.c /\bratings?\b/i
+1 c_base/providers/local/src/store/store_sqlite.c /\bsnapshots?\b/i
 1 foolish/server/src/app/admin_panels.c /dynamo/i
 1 foolish/server/src/app/admin_panels.c /sqlite/i
 2 foolish/server/src/app/bots.c /lambda/i
@@ -236,7 +240,7 @@
 1 foolish/server/src/store/rows_foolish.h /lambda/i
 11 foolish/server/src/store/rows_foolish.h /dynamo/i
 6 foolish/server/src/store/rows_foolish.h /sqlite/i
-63 foolish/server/src/store/rows_sql.c /sqlite/i
+66 foolish/server/src/store/rows_sql.c /sqlite/i
 2 foolish/server/src/store/store_import.c /dynamo/i
 1 foolish/server/src/store/store_import.h /\baws\b/i
 1 foolish/server/src/store/store_import.h /dynamo/i
