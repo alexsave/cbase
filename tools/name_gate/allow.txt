@@ -72,7 +72,7 @@
 1 c_base/core/src/config.h /amazon/i
 8 c_base/core/src/config.h /lambda/i
 2 c_base/core/src/config.h /dynamo/i
-3 c_base/core/src/config.h /cloudfront/i
+5 c_base/core/src/config.h /cloudfront/i
 2 c_base/core/src/config.h /iot ?core/i
 1 c_base/core/src/config.h /cloudformation/i
 2 c_base/core/src/config.h /sqlite/i
@@ -142,10 +142,13 @@
 1 c_base/core/src/net/router.h /sqlite/i
 3 c_base/core/src/net/router.h /\bgames?\b/i
 1 c_base/core/src/net/server.h /\bbots?\b/i
+2 c_base/core/src/net/viewer_addr.h /cloudfront/i
 1 c_base/core/src/net/ws.c /foolish/i
+1 c_base/core/src/rate_limits.c /lambda/i
+1 c_base/core/src/rate_limits.c /cloudfront/i
 1 c_base/core/src/rate_limits.h /\baws\b/i
 3 c_base/core/src/rate_limits.h /lambda/i
-1 c_base/core/src/rate_limits.h /cloudfront/i
+2 c_base/core/src/rate_limits.h /cloudfront/i
 3 c_base/core/src/rate_limits.h /\bgames?\b/i
 1 c_base/core/src/rate_limits.h /\bbots?\b/i
 1 c_base/core/src/realtime/realtime.c /\bseats?\b/i
@@ -162,8 +165,8 @@
 4 c_base/core/src/realtime/stream_mqtt.h /iot ?core/i
 1 c_base/core/src/store/items.c /sqlite/i
 1 c_base/core/src/store/items.h /\baws\b/i
-8 c_base/core/src/store/items.h /dynamo/i
-4 c_base/core/src/store/items.h /sqlite/i
+12 c_base/core/src/store/items.h /dynamo/i
+5 c_base/core/src/store/items.h /sqlite/i
 1 c_base/core/src/store/rows_auth.h /\baws\b/i
 1 c_base/core/src/store/store.c /dynamo/i
 1 c_base/core/src/store/store.c /sqlite/i
@@ -179,7 +182,7 @@
 1 c_base/core/src/store/store.h /\bbots?\b/i
 1 c_base/core/src/store/store.h /\brosters?\b/i
 2 c_base/core/src/store/store_priv.h /\baws\b/i
-8 c_base/core/src/store/store_priv.h /dynamo/i
+10 c_base/core/src/store/store_priv.h /dynamo/i
 1 c_base/core/src/store/store_priv.h /sigv4/i
 1 c_base/core/src/store/store_priv.h /x-amz/i
 1 c_base/core/src/store/store_priv.h /sqlite/i

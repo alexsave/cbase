@@ -511,8 +511,8 @@ static void seeds_netwire(void) {
     static NwHistoryRow h;
     memset(&h, 0, sizeof h);
     h.id_len = 36; memcpy(h.id, U2, 36); h.n_players = 2;
-    h.player_len[0] = 36; memcpy(h.player[0], U1, 36); h.player_len[1] = 36; memcpy(h.player[1], U2, 36);
-    h.moves = m; h.extras = m;
+    h.seat = 1; h.rank = 2; h.fool = 0; h.duration_s = 61;
+    h.n_names = 2; h.name_len[0] = 3; memcpy(h.name[0], "Ann", 3); h.name_len[1] = 3; memcpy(h.name[1], "Bob", 3);
     at = nw_history_head(1, 1033, 1, out, sizeof out);
     at += nw_put_history(&h, out + at, (int)sizeof out - at);
     put1("netwire", "history", 3, out, (size_t)at);

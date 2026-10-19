@@ -82,7 +82,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         case 8: (void)CB_ROWS_CALL(s, bots_list, on_bot, NULL); break;
         case 9: (void)CB_ROWS_CALL(s, ratings_top, 20, on_rating, NULL); break;
         case 10: { const char *ids[2] = { U1, U2 }; int32_t out[2]; (void)CB_ROWS_CALL(s, ratings_for, ids, 2, out); break; }
-        case 11: { cb_snapshot_query q = { U1, NULL, NULL, 10, true }; (void)CB_ROWS_CALL(s, snapshots_query, &q, on_snap, NULL); break; }
+        case 11: { cb_snapshot_query q = { .viewer_id = U1, .limit = 10, .newest_first = true }; (void)CB_ROWS_CALL(s, snapshots_query, &q, on_snap, NULL); break; }
         case 12: (void)CB_ROWS_CALL(s, chat_list, GID, 50, on_chat, NULL); break;
         // The chat's members (the realtime publish's targets: one per member's own topic).
         case 13: (void)CB_ROWS_CALL(s, game_members, GID, on_name, NULL); break;

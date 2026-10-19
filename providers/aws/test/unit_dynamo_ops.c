@@ -586,8 +586,12 @@ static void import_writes(void) {
     static const char HAVE_BOTS[] = "{\"Items\":[{\"pk\":{\"S\":\"BOT#old\"},\"sk\":{\"S\":\"BOT\"},\"id\":{\"S\":\"old\"},"
                                     "\"nickname\":{\"S\":\"%Old\"},\"strategy_key\":{\"S\":\"random\"}}]}";
     static const step steps[] = {
+        // user_import: the stored profile read first (its session_gen is never lowered), then the account's transaction
+        { "GetItem", "\"USER#" U1 "\"", 200, NOITEM },
         { "TransactWriteItems", "EMAIL#ann@x.io", 200, "{}" },
+        { "GetItem", "\"USER#" U1 "\"", 200, "{\"Item\":" USER_ITEM(U1, "ann@x.io") "}" },
         { "TransactWriteItems", NULL, 400, CANCEL_0 },
+        { "GetItem", "\"USER#" U1 "\"", 200, NOITEM },
         { "TransactWriteItems", NULL, 400, VALIDATION },
         // bots_replace: the current set read, then one transaction deletes it and writes the new
         { "Query", "BOT", 200, HAVE_BOTS },
@@ -612,7 +616,7 @@ static void import_writes(void) {
     T_EQ_INT(CB_STORE_CALL(s, user_import, &u), CB_E_DB);
     cb_bot_row b = { .id = B1, .nickname = "%Bee", .strategy_key = "random", .elo_rating = 1000 };
     T_EQ_INT(CB_ROWS_CALL(s, bots_replace, &b, 1), CB_OK);
-    T_CHECK(strstr(sc_.bodies[4], "BOT#" B1) != NULL);   // the new set in the same transaction
+    T_CHECK(strstr(sc_.bodies[7], "BOT#" B1) != NULL);   // the new set in the same transaction
     T_EQ_INT(CB_ROWS_CALL(s, bots_replace, &b, 1), CB_E_DB);
     T_EQ_INT(CB_ROWS_CALL(s, bots_replace, &b, 1), CB_E_DB);
     uint8_t st[1] = { 1 };
@@ -620,7 +624,7 @@ static void import_writes(void) {
     cb_uuid humans[1];
     snprintf(humans[0], sizeof humans[0], U1);
     T_EQ_INT(CB_ROWS_CALL(s, game_import, &g, humans, 1, NULL, 0), CB_OK);
-    T_CHECK(strstr(sc_.bodies[10], "MEMBER#" U1) != NULL);
+    T_CHECK(strstr(sc_.bodies[13], "MEMBER#" U1) != NULL);
     T_EQ_INT(CB_ROWS_CALL(s, game_import, &g, humans, 9, NULL, 0), CB_E_INVALID);
     T_EQ_INT(CB_ROWS_CALL(s, rating_reindex, &ra), CB_OK);
     T_EQ_INT(CB_ROWS_CALL(s, rating_reindex, &ra), CB_E_CONFLICT);
@@ -690,6 +694,7 @@ static void import_counts_by_scan(void) {
                                 "\"LastEvaluatedKey\":{\"pk\":{\"S\":\"USER#" U1 "\"},\"sk\":{\"S\":\"PROFILE\"}}}";
     static const char PAGE2[] = "{\"Items\":[{\"pk\":{\"S\":\"GAME#zz99zz\"},\"sk\":{\"S\":\"ROW\"}}]}";
     static const step steps[] = {
+        { "GetItem", "\"USER#" U1 "\"", 200, NOITEM },
         { "TransactWriteItems", "EMAIL#ann@x.io", 200, "{}" },
         { "Scan", "\"Limit\":100", 200, PAGE1 },
         { "Scan", "ExclusiveStartKey", 200, PAGE2 },
