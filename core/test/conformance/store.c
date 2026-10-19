@@ -360,7 +360,7 @@ static void the_old_item_comes_back(void) {
     w.cond[0] = (cb_iclause){ CB_C_EQ, CB_AVN("n", 9) };
     T_EQ_INT(write_once(&w, &old), CB_E_CONFLICT);
     T_EQ_INT(cb_item_n_or(&old, "n", 0), 2);
-    char s[8];
+    char s[12];
     T_CHECK(cb_item_s(&old, "s", s, sizeof s) && strcmp(s, "a") == 0);
     // Refused on an absent item: empty.
     cb_iwrite x = w;
@@ -476,7 +476,7 @@ static void txn_whole_or_nothing(void) {
 static void txn_limits(void) {
     const char *pk = P("txnmax");
     cb_iwrite *w = calloc(CB_ITEM_TXN_MAX + 1, sizeof *w);
-    char (*sk)[8] = calloc(CB_ITEM_TXN_MAX + 1, sizeof *sk);
+    char (*sk)[12] = calloc(CB_ITEM_TXN_MAX + 1, sizeof *sk);
     if (!w || !sk) { T_CHECK(false); free(w); free(sk); return; }
     for (int i = 0; i <= CB_ITEM_TXN_MAX; i++) {
         snprintf(sk[i], sizeof sk[0], "%03d", i);
@@ -522,7 +522,7 @@ static void query_the_table(void) {
 static void query_pages_stops_and_writes(void) {
     const char *pk = P("qp");
     for (int i = 0; i < 7; i++) {
-        char sk[8];
+        char sk[12];
         snprintf(sk, sizeof sk, "%d", i);
         T_EQ_INT(put(pk, sk, NULL, 0), CB_OK);
     }
@@ -616,7 +616,7 @@ static bool on_batch(int i, const cb_item *it, void *ud) {
 static void batch_get(void) {
     const char *pk = P("bg");
     enum { N = 150 };
-    char (*sk)[8] = calloc(N + 4, sizeof *sk);
+    char (*sk)[12] = calloc(N + 4, sizeof *sk);
     cb_ikey *keys = calloc(N + 4, sizeof *keys);
     cb_iwrite *w = calloc(N, sizeof *w);
     if (!sk || !keys || !w) { T_CHECK(false); free(sk); free(keys); free(w); return; }
@@ -711,7 +711,7 @@ static bool on_key(const char *pk, const char *sk, void *ud) {
 static void item_keys_walk(void) {
     const char *pk = P("kw");
     for (int i = 0; i < 3; i++) {
-        char sk[4];
+        char sk[12];
         snprintf(sk, sizeof sk, "%d", i);
         T_EQ_INT(put(pk, sk, NULL, 0), CB_OK);
     }
@@ -838,7 +838,7 @@ static void item_size_limits(void) {
     // A transaction past its size in all, each write under the item limit.
     enum { K = CB_ITEM_TXN_SIZE_MAX / (CB_ITEM_SIZE_MAX - 1024) + 1 };
     cb_iwrite w[K];
-    char sk[K][8];
+    char sk[K][16];
     cb_av each = CB_AVB("b", big, CB_ITEM_SIZE_MAX - 1024);
     for (int i = 0; i < K; i++) {
         snprintf(sk[i], sizeof sk[0], "T%d", i);
@@ -874,7 +874,7 @@ static void attribute_limits(void) {
     T_EQ_INT(put(pk, "B", &empty, 1), CB_E_INVALID);
     // As many attributes as an item holds (pk and sk among them), and one more.
     cb_av many[CB_ITEM_ATTRS];
-    char names[CB_ITEM_ATTRS][8];
+    char names[CB_ITEM_ATTRS][16];
     for (int i = 0; i < CB_ITEM_ATTRS; i++) {
         snprintf(names[i], sizeof names[0], "a%d", i);
         many[i] = CB_AVN(names[i], i);

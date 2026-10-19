@@ -64,7 +64,9 @@ Txn.Put item=bot_id:S,game_id:S,pk:S=GAME#{},sk:S=BOT#{}
 Txn.Put item=created_at:N,dur:N,fool:N,game_id:S,gsi2pk:S=PLAYER#{},gsi2sk:S={}#{},id:S,n_players:N,pk:S=SNAP#{},rank:N,seat:N,sk:S=PLAYER#{}
 Txn.Put item=created_at:N,elo_rating:N,games_played:N,gsi2pk:S=BOTS,gsi2sk:S={},id:S,nickname:S,pk:S=BOT#{},previous_elo:N,sk:S=BOT,strategy_key:S,updated_at:N
 Txn.Put item=created_at:N,elo_rating:N,games_played:N,gsi2pk:S=BOTS,gsi2sk:S={},id:S,nickname:S,pk:S=BOT#{},sk:S=BOT,strategy_key:S,updated_at:N
+Txn.Put item=created_at:N,email:S,gsi2pk:S=USERS,gsi2sk:S={}#{},id:S,kept_session:S,password_hash:S,pk:S=USER#{},session_gen:N,sk:S=PROFILE,username:S
 Txn.Put item=created_at:N,email:S,gsi2pk:S=USERS,gsi2sk:S={}#{},id:S,last_sign_in_at:N,password_hash:S,pk:S=USER#{},sk:S=PROFILE,username:S
+Txn.Put item=created_at:N,email:S,gsi2pk:S=USERS,gsi2sk:S={}#{},id:S,password_hash:S,pk:S=USER#{},session_gen:N,sk:S=PROFILE,username:S
 Txn.Put item=created_at:N,email:S,gsi2pk:S=USERS,gsi2sk:S={}#{},id:S,password_hash:S,pk:S=USER#{},sk:S=PROFILE
 Txn.Put item=created_at:N,email:S,gsi2pk:S=USERS,gsi2sk:S={}#{},id:S,password_hash:S,pk:S=USER#{},sk:S=PROFILE,username:S
 Txn.Put item=created_at:N,extras:B,game_id:S,gsi1pk:S=GAMESNAPS#{},gsi1sk:S={}#{},id:S,moves:B,pk:S=SNAP#{},player_ids:L,sk:S=SNAP
