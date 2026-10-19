@@ -98,7 +98,7 @@ static const char *const SQL[ST__COUNT] = {
     [ST_SESSION_REVOKE] = "INSERT INTO sessions (id, user_id, created_at, expires_at, gen, revoked) VALUES (?1, ?2, 0, ?3, 0, 1) "
                           "ON CONFLICT (id) DO UPDATE SET revoked = 1",
     [ST_REFRESH_PUT] = "INSERT INTO refresh_tokens (token_hash, user_id, session_id, created_at, revoked, revoked_at, expires_at) "
-                       "VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6)",
+                       "VALUES (?1, ?2, ?3, ?4, ?5, ?7, ?6)",
     [ST_REFRESH_SWEEP] = "DELETE FROM refresh_tokens WHERE user_id = ?1 AND expires_at > 0 AND expires_at <= ?2",
     [ST_REFRESH_GET] = "SELECT token_hash, user_id, session_id, created_at, revoked, revoked_at, expires_at "
                        "FROM refresh_tokens WHERE token_hash = ?1",
@@ -958,6 +958,7 @@ static int refresh_put_step(sq *q, void *ud) {
     b_i64(s, 4, o->r->created_at);
     b_i64(s, 5, o->r->revoked);
     b_i64(s, 6, o->r->expires_at > 0 ? o->r->expires_at : 0);
+    b_i64(s, 7, o->r->revoked_at);   // 0 for a new token; a migrated spent one keeps its first take
     return run(q, s, "refresh put");
 }
 
