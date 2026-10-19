@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 static const char *env(const char *name, const char *dflt) {
     const char *v = getenv(name);
@@ -23,6 +24,28 @@ static bool copy(char *dst, size_t cap, const char *name, const char *v, char *e
         return false;
     }
     return true;
+}
+
+// The request-worker default follows the CPU the process may actually use:
+// the cgroup quota (v2 cpu.max) when one is set, else the online CPUs, rounded
+// up and capped at 4. More workers than CPUs only add malloc and store lock
+// contention (measured: 1 worker at a 1 CPU quota moves 2.1x the games of 4).
+static long default_req_workers(void) {
+    double cpus = 0;
+    FILE *f = fopen("/sys/fs/cgroup/cpu.max", "r");
+    if (f) {
+        char q[32] = {0};
+        long period = 0;
+        if (fscanf(f, "%31s %ld", q, &period) == 2 && strcmp(q, "max") != 0 && period > 0)
+            cpus = (double)atol(q) / (double)period;
+        fclose(f);
+    }
+    if (cpus <= 0) {
+        long n = sysconf(_SC_NPROCESSORS_ONLN);
+        cpus = n > 0 ? (double)n : 1;
+    }
+    long w = (long)(cpus + 0.999);
+    return w < 1 ? 1 : w > 4 ? 4 : w;
 }
 
 static bool num(const char *name, long dflt, long lo, long hi, long *out, char *err, size_t ecap) {
@@ -117,7 +140,7 @@ int cb_config_from_env(cb_config *c, char *err, size_t cap) {
     if (!copy(c->public_url, sizeof c->public_url, "CBASE_PUBLIC_URL", env("CBASE_PUBLIC_URL", dflt_url), err, cap)) return CB_E_INVALID;
 
     long v;
-    if (!num("CBASE_REQ_WORKERS", 4, 1, 256, &v, err, cap)) return CB_E_INVALID;
+    if (!num("CBASE_REQ_WORKERS", default_req_workers(), 1, 256, &v, err, cap)) return CB_E_INVALID;
     c->req_workers = (int)v;
     if (!num("CBASE_BOT_WORKERS", 1, 1, 64, &v, err, cap)) return CB_E_INVALID;
     c->bot_workers = (int)v;
