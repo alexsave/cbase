@@ -15,16 +15,12 @@
 
 // ---- the live dependencies (rt_deps.h) ----------------------------------------------
 
-// The token, and the account it names: a deleted account's token is still
-// signed and unexpired for up to its TTL, and must not open a subscription
-// (cb_rt_forget_user ends the ones it had).
+// The token, its session and its account (auth.c cb_auth_verify_token reads
+// all three): a deleted account's or a signed-out session's token is signed
+// and unexpired for up to its TTL, and must not open a connection.
 static int live_verify(cb_ctx *ctx, const char *jwt, cb_user *out) {
     if (!ctx->auth) return CB_E_STATE;
-    int rc = cb_auth_verify_token(ctx->auth, jwt, out);
-    if (rc != CB_OK || !ctx->store) return rc;
-    cb_user_row row;
-    rc = CB_STORE_CALL(ctx->store, user_get, out->id, &row);
-    return rc == CB_E_NOT_FOUND ? CB_E_AUTH : rc;
+    return cb_auth_verify_token(ctx->auth, jwt, out);
 }
 
 cb_rt_deps cb_rt_deps_g = {
@@ -197,9 +193,11 @@ void cb_rt_publish(cb_rt *rt, const cb_rt_to *to, int n, const uint8_t *frame, s
     if (n > 1) cb_rt_batch_end(rt);
 }
 
-void cb_rt_forget_user(cb_rt *rt, const char *user_id) {
-    if (rt && user_id && *user_id && rt->t && rt->t->forget) rt->t->forget(rt, user_id);
+void cb_rt_end_sessions(cb_rt *rt, const char *user_id, const char *session_id, const char *keep_session) {
+    if (rt && user_id && *user_id && rt->t && rt->t->forget) rt->t->forget(rt, user_id, session_id, keep_session);
 }
+
+void cb_rt_forget_user(cb_rt *rt, const char *user_id) { cb_rt_end_sessions(rt, user_id, NULL, NULL); }
 
 void cb_rt_free(cb_rt *rt) {
     if (rt && rt->t && rt->t->free) rt->t->free(rt);

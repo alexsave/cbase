@@ -76,10 +76,16 @@ void cb_auth_free(cb_auth *a);
 
 // The user a request's "Authorization: Bearer <jwt>" names. CB_OK, CB_E_AUTH
 // (no token, a bad signature, expired), or CB_E_NOMEM when the check itself
-// could not run (jwt.h): a 5xx, never "signed out". Never touches the store:
-// a verified token is trusted until it expires, as GoTrue's were.
+// could not run (jwt.h): a 5xx, never "signed out". The token's session and
+// user are read (two point reads): a token of a session that ended (signed
+// out, revoked, a password changed elsewhere, past its end) or of a deleted
+// account is CB_E_AUTH at once, not at its expiry. Without a store only the
+// signature and expiry are checked.
 int cb_auth_verify_bearer(cb_auth *a, const cb_http_req *req, cb_user *out);
 int cb_auth_verify_token(cb_auth *a, const char *jwt, cb_user *out);
+// Does the session (and account) of a verified user still stand? CB_OK, CB_E_AUTH
+// (ended, revoked, past its end, or the account is gone), or the store's failure.
+int cb_auth_session_live(cb_auth *a, const cb_user *u);
 
 int cb_auth_signup(cb_auth *a, const char *email, const char *password, const char *username, cb_session *out);
 int cb_auth_signin(cb_auth *a, const char *email, const char *password, cb_session *out);
@@ -96,8 +102,8 @@ int cb_auth_refresh(cb_auth *a, const char *refresh_token, cb_session *out);
 // The clock auth reads (cb_now_ms); a test seam.
 extern int64_t (*cb_auth_now)(void);
 // Logout (NW_SIGNOUT's scope): LOCAL ends this session, GLOBAL every session
-// of the user, each in one write that every refresh reads consistently. Access tokens live until they expire, as
-// GoTrue's did.
+// of the user, each in one write that every refresh reads consistently. The
+// session's access tokens stop verifying at once and its open sockets are closed.
 typedef enum { CB_LOGOUT_LOCAL, CB_LOGOUT_GLOBAL } cb_logout_scope;
 int cb_auth_logout(cb_auth *a, const cb_user *u, cb_logout_scope scope);
 // A password change: the current password must be right (counted as a

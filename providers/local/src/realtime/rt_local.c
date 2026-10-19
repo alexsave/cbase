@@ -1,32 +1,55 @@
-// rt_local.c - realtime for `cbase serve` (rt_local.h): the MQTT hub.
+// rt_local.c - realtime for `cbase serve` (rt_local.h): the socket hub.
 //
-// THREADS. Every socket and the connection list belong to the loop thread.
-// A client message is handled on the REQUEST POOL, because a CONNECT reads the
-// account from the store and the loop must never block on SQLite: the loop copies the
-// connection's protocol state into a job, the pool runs the protocol on the
-// copy and collects the replies, and the loop takes the new state back and
-// sends them. One job per connection at a time, so a connection's messages are
-// handled in the order they arrived; messages that come meanwhile wait in its
-// inbox. A publish from any thread copies its message and posts it to the
-// loop, which sends it to each connection that hears it as a binary frame.
+// GET /ws upgrades to a plain binary WebSocket. One WebSocket message is one
+// frame (shared/c/stream_frame.h): the client says HELLO (its access token),
+// SUB and UNSUB (a game to watch), REQ (an HTTP route's request) and PING; the
+// server answers READY, REPLY and PONG and pushes the product's own frames.
 //
-// GET /mqtt, subprotocol "mqtt" (stream_mqtt.h): binary frames only, as MQTT
-// over WebSocket requires; a push is a PUBLISH at QoS 0 whose payload is the
-// message, on the target's topic (realtime.h cb_rt_topic). Whatever
-// stream_mqtt.c refuses ends the connection, as IoT Core ends it.
+// WHO HEARS A PUSH. No topics. A target (realtime.h cb_rt_to) is either a USER
+// (its family's pattern names {user}: views, a seat's casts, chat), delivered
+// to every open connection of that user, or a GAME's SPECTATORS (the pattern
+// names only {doc}), delivered to the connections that sent SUB for that game.
+// The hub keeps two maps and nothing per subscription: user -> connections
+// (the connections chain through their user's hash bucket) and game ->
+// spectators.
+//
+// THREADS. Every socket and both maps belong to the loop thread. A HELLO and a
+// REQ run on the REQUEST POOL, because they read the store and run the same
+// handler an HTTP request does, and the loop must never block on SQLite: one
+// job per connection at a time, so a connection's frames are handled in the
+// order they arrived; frames that come meanwhile wait in its inbox. A publish
+// from any thread copies its frame and posts it to the loop.
+//
+// A REQ IS AN HTTP REQUEST. It names a route (method and path) and carries the
+// body; the route's handler runs exactly as for HTTP, with the connection's
+// user in place of the bearer (http.h auth_user), and its status and body come
+// back in the REPLY. Routes that run on the loop and /v1/auth/* (a session is
+// made and ended over HTTP) are refused.
+//
+// A SOCKET NEVER OUTLIVES ITS LOGIN. HELLO verifies the token with its session
+// (auth.h cb_auth_verify_token), and the connection ends when the token does.
+// cb_rt_end_sessions (sign-out, revocation, a password change, a deleted
+// account) closes the sockets it names; and because that is posted to the
+// loop, every REQ also compares the hub's end counter with the one its
+// connection was last checked at and, when it moved, reads the session again
+// before the handler runs.
 #include "rt_local.h"
 
+#include "auth/auth.h"
 #include "net/loop.h"
 #include "net/router.h"
 #include "net/server.h"
 #include "net/ws.h"
-#include "realtime/stream_mqtt.h"
+#include "realtime/rt_deps.h"
 #include "util/clock.h"
 #include "util/err.h"
 #include "util/log.h"
 #include "util/pool.h"
 
+#include "../../../../../shared/c/stream_frame.h"
+
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -38,50 +61,51 @@ typedef struct msg {
     char text[];
 } msg;
 
+#define WATCH_MAX 32   // games one connection may watch; one more is refused (429)
+
 typedef struct lconn {
-    struct lconn *prev, *next;
-    struct lconn *hnext;    // the by-id table's chain
-    struct lconn *wprev, *wnext;   // the wildcard list (only while in_wild)
-    bool in_wild;
-    int nix;                // exact filters this connection is indexed under
-    char *ix[CB_MQTT_SUBS];
+    struct lconn *prev, *next;     // every connection
+    struct lconn *hnext;           // the by-id table's chain
+    struct lconn *unext;           // the by-user table's chain (open connections only)
     cb_ws *ws;
     uint64_t ws_id;
-    cb_mqtt_conn *mq;       // the state as of the last finished job, owned
-    bool busy;              // a job is out on the pool
-    msg *in_head, *in_tail; // frames not handled yet
+    bool hello_seen;               // the first frame came, and was a HELLO
+    bool open;                     // HELLO taken: user is set
+    bool busy;                     // a job is out on the pool
+    cb_user *user;                 // once open, owned
+    int64_t expires_s;             // once open: the connection ends then (the token's exp)
+    uint64_t checked_gen;          // the end counter the session was last known live at
+    msg *in_head, *in_tail;        // frames not handled yet
     size_t in_bytes;
+    uint8_t nwatch;
+    char **watch;                  // the games watched, malloc'd [0..nwatch)
 } lconn;
 
-// One topic's subscribers: the exact filters (no + or #) of the open
-// connections, found by hash, so a publish touches its subscribers and not
-// every connection. Filters with a wildcard are rare (the policy allows them
-// under s/ and u/<uid>/) and live in a short list scanned per publish.
-typedef struct tent {
-    struct tent *next;
+// One game's spectators.
+typedef struct gent {
+    struct gent *next;
     uint64_t h;
-    char *topic;
-    uint64_t *ids;          // ws ids
+    char *gid;
+    uint64_t *ids;                 // ws ids
     uint32_t n, cap;
-} tent;
+} gent;
 
 typedef struct {
     cb_ctx *ctx;
-    lconn *head;            // loop thread only
-    lconn **byid;           // ws id -> lconn, chained on hnext
+    lconn *head;                   // loop thread only
+    lconn **byid;                  // ws id -> lconn, chained on hnext
+    lconn **byuser;                // user id -> its open connections, chained on unext (same size)
     size_t nbyid, nconn;
-    tent **topics;          // topic -> subscribers, chained
-    size_t ntopics, nent;
-    lconn *wild;            // connections holding a wildcard filter
+    gent **games;                  // game -> spectators, chained
+    size_t ngames, nent;
+    _Atomic uint64_t end_gen;      // bumped (any thread) whenever sessions were ended
 } local;
 
 #define INBOX_MAX (1u << 20)   // a client this far ahead of us is not a stream client
 
 static const cb_rt_transport LOCAL_T;
 
-// A message of n bytes copied from p, or n uninitialised bytes when p is NULL
-// (the caller decodes into them).
-static msg *msg_new(const char *p, size_t n) {
+static msg *msg_new(const void *p, size_t n) {
     msg *m = malloc(sizeof *m + n + 1);
     if (!m) return NULL;
     m->next = NULL;
@@ -95,9 +119,16 @@ static void msgs_free(msg *m) {
     while (m) { msg *n = m->next; free(m); m = n; }
 }
 
-// ---- the indexes (loop thread only) ------------------------------------------------
+static uint64_t str_hash(const char *t) {
+    uint64_t h = 1469598103934665603ull;
+    for (; *t; t++) h = (h ^ (uint8_t)*t) * 1099511628211ull;
+    return h;
+}
+
+// ---- the maps (loop thread only) ---------------------------------------------------
 
 static size_t id_slot(uint64_t id, size_t nb) { return (size_t)((id * 0x9E3779B97F4A7C15ull) >> 20) & (nb - 1); }
+static size_t user_slot(const char *user, size_t nb) { return (size_t)(str_hash(user) & (nb - 1)); }
 
 static lconn *find(local *L, uint64_t ws_id) {
     if (!L->nbyid) return NULL;
@@ -106,18 +137,25 @@ static lconn *find(local *L, uint64_t ws_id) {
     return NULL;
 }
 
-static bool byid_add(local *L, lconn *c) {
+static bool maps_add(local *L, lconn *c) {
     if (L->nconn + 1 > L->nbyid) {
         size_t nb = L->nbyid ? L->nbyid * 2 : 256;
-        lconn **t = calloc(nb, sizeof *t);
-        if (!t) return false;
+        lconn **t = calloc(nb, sizeof *t), **u = calloc(nb, sizeof *u);
+        if (!t || !u) { free(t); free(u); return false; }
         for (lconn *x = L->head; x; x = x->next) {   // c is not on the list yet
             size_t i = id_slot(x->ws_id, nb);
             x->hnext = t[i];
             t[i] = x;
+            if (x->open) {
+                size_t k = user_slot(x->user->id, nb);
+                x->unext = u[k];
+                u[k] = x;
+            }
         }
         free(L->byid);
+        free(L->byuser);
         L->byid = t;
+        L->byuser = u;
         L->nbyid = nb;
     }
     size_t i = id_slot(c->ws_id, L->nbyid);
@@ -127,50 +165,52 @@ static bool byid_add(local *L, lconn *c) {
     return true;
 }
 
-static void byid_del(local *L, lconn *c) {
-    lconn **pp = &L->byid[id_slot(c->ws_id, L->nbyid)];
-    while (*pp && *pp != c) pp = &(*pp)->hnext;
-    if (*pp) { *pp = c->hnext; L->nconn--; }
+static void user_add(local *L, lconn *c) {
+    size_t k = user_slot(c->user->id, L->nbyid);
+    c->unext = L->byuser[k];
+    L->byuser[k] = c;
 }
 
-static uint64_t topic_hash(const char *t) {
-    uint64_t h = 1469598103934665603ull;
-    for (; *t; t++) h = (h ^ (uint8_t)*t) * 1099511628211ull;
-    return h;
+static void user_del(local *L, lconn *c) {
+    if (!c->open) return;
+    lconn **pp = &L->byuser[user_slot(c->user->id, L->nbyid)];
+    while (*pp && *pp != c) pp = &(*pp)->unext;
+    if (*pp) *pp = c->unext;
+    c->unext = NULL;
 }
 
-static tent *topic_find(local *L, const char *t, uint64_t h) {
-    if (!L->ntopics) return NULL;
-    for (tent *e = L->topics[h & (L->ntopics - 1)]; e; e = e->next)
-        if (e->h == h && strcmp(e->topic, t) == 0) return e;
+static gent *game_find(local *L, const char *gid, uint64_t h) {
+    if (!L->ngames) return NULL;
+    for (gent *e = L->games[h & (L->ngames - 1)]; e; e = e->next)
+        if (e->h == h && strcmp(e->gid, gid) == 0) return e;
     return NULL;
 }
 
-static bool topic_add(local *L, const char *t, uint64_t id) {
-    uint64_t h = topic_hash(t);
-    tent *e = topic_find(L, t, h);
+static bool game_add(local *L, const char *gid, uint64_t id) {
+    uint64_t h = str_hash(gid);
+    gent *e = game_find(L, gid, h);
     if (!e) {
-        if (L->nent + 1 > L->ntopics) {
-            size_t nb = L->ntopics ? L->ntopics * 2 : 256;
-            tent **tb = calloc(nb, sizeof *tb);
+        if (L->nent + 1 > L->ngames) {
+            size_t nb = L->ngames ? L->ngames * 2 : 64;
+            gent **tb = calloc(nb, sizeof *tb);
             if (!tb) return false;
-            for (size_t i = 0; i < L->ntopics; i++)
-                for (tent *x = L->topics[i], *nx; x; x = nx) {
+            for (size_t i = 0; i < L->ngames; i++)
+                for (gent *x = L->games[i], *nx; x; x = nx) {
                     nx = x->next;
                     x->next = tb[x->h & (nb - 1)];
                     tb[x->h & (nb - 1)] = x;
                 }
-            free(L->topics);
-            L->topics = tb;
-            L->ntopics = nb;
+            free(L->games);
+            L->games = tb;
+            L->ngames = nb;
         }
         e = calloc(1, sizeof *e);
         if (!e) return false;
-        e->topic = strdup(t);
-        if (!e->topic) { free(e); return false; }
+        e->gid = strdup(gid);
+        if (!e->gid) { free(e); return false; }
         e->h = h;
-        e->next = L->topics[h & (L->ntopics - 1)];
-        L->topics[h & (L->ntopics - 1)] = e;
+        e->next = L->games[h & (L->ngames - 1)];
+        L->games[h & (L->ngames - 1)] = e;
         L->nent++;
     }
     if (e->n == e->cap) {
@@ -184,74 +224,48 @@ static bool topic_add(local *L, const char *t, uint64_t id) {
     return true;
 }
 
-static void topic_del(local *L, const char *t, uint64_t id) {
-    uint64_t h = topic_hash(t);
-    tent *e = topic_find(L, t, h);
+static void game_del(local *L, const char *gid, uint64_t id) {
+    uint64_t h = str_hash(gid);
+    gent *e = game_find(L, gid, h);
     if (!e) return;
     for (uint32_t i = 0; i < e->n; i++)
         if (e->ids[i] == id) { e->ids[i] = e->ids[--e->n]; break; }
     if (e->n) return;
-    tent **pp = &L->topics[h & (L->ntopics - 1)];
+    gent **pp = &L->games[h & (L->ngames - 1)];
     while (*pp != e) pp = &(*pp)->next;
     *pp = e->next;
     L->nent--;
     free(e->ids);
-    free(e->topic);
+    free(e->gid);
     free(e);
 }
 
-static bool is_wild(const char *f) { return strchr(f, '+') || strchr(f, '#'); }
-
-static void wild_set(local *L, lconn *c, bool on) {
-    if (on == c->in_wild) return;
-    if (on) {
-        c->wprev = NULL;
-        c->wnext = L->wild;
-        if (L->wild) L->wild->wprev = c;
-        L->wild = c;
-    } else {
-        if (c->wprev) c->wprev->wnext = c->wnext;
-        else L->wild = c->wnext;
-        if (c->wnext) c->wnext->wprev = c->wprev;
-        c->wprev = c->wnext = NULL;
-    }
-    c->in_wild = on;
+static int watch_index(const lconn *c, const char *gid) {
+    for (int i = 0; i < c->nwatch; i++)
+        if (strcmp(c->watch[i], gid) == 0) return i;
+    return -1;
 }
 
-// Brings the indexes to what the connection's state says it hears: the
-// filters of an OPEN connection, nothing for any other state. Called wherever
-// c->mq is replaced or changed, so the indexes are never ahead of or behind
-// what cb_mqtt_hears would answer.
-static void reindex(local *L, lconn *c) {
-    const cb_mqtt_conn *m = c->mq;
-    bool open = m->state == CB_MQTT_OPEN;
-    bool wild = false;
-    for (int i = 0; i < c->nix;) {   // drop what is no longer subscribed
-        bool keep = false;
-        for (int k = 0; open && k < m->n_subs && !keep; k++) keep = strcmp(m->subs[k], c->ix[i]) == 0;
-        if (keep) { i++; continue; }
-        topic_del(L, c->ix[i], c->ws_id);
-        free(c->ix[i]);
-        c->ix[i] = c->ix[--c->nix];
-    }
-    for (int k = 0; open && k < m->n_subs; k++) {
-        if (is_wild(m->subs[k])) { wild = true; continue; }
-        bool have = false;
-        for (int i = 0; i < c->nix && !have; i++) have = strcmp(m->subs[k], c->ix[i]) == 0;
-        if (have || c->nix >= CB_MQTT_SUBS) continue;
-        char *copy = strdup(m->subs[k]);
-        if (!copy) continue;
-        if (!topic_add(L, copy, c->ws_id)) { free(copy); continue; }
-        c->ix[c->nix++] = copy;
-    }
-    wild_set(L, c, wild);
+// ---- sending (loop thread) ---------------------------------------------------------
+
+// Sends one frame to the connection with that id as a binary message. false
+// when it is gone (closed before, or by this send: a failed send closes the
+// socket, and on_close frees the lconn, so the caller must look it up again).
+static bool send_to(local *L, uint64_t ws_id, const void *bytes, size_t len) {
+    lconn *c = find(L, ws_id);
+    if (!c) return false;
+    cb_ws_send(c->ws, CB_WS_OP_BIN, bytes, len);
+    return find(L, ws_id) != NULL;
 }
 
-static void unindex(local *L, lconn *c) {
-    for (int i = 0; i < c->nix; i++) { topic_del(L, c->ix[i], c->ws_id); free(c->ix[i]); }
-    c->nix = 0;
-    wild_set(L, c, false);
-    byid_del(L, c);
+static void reply_to(local *L, uint64_t ws_id, uint32_t id, uint16_t status, const void *body, size_t n) {
+    uint8_t stack[256];
+    uint8_t *o = n + 8 <= sizeof stack ? stack : malloc(n + 8);
+    if (!o) return;
+    int h = sf_put_reply_head(o, n + 8, id, status);
+    if (n) memcpy(o + h, body, n);
+    send_to(L, ws_id, o, n + (size_t)h);
+    if (o != stack) free(o);
 }
 
 // ---- one frame on the pool -------------------------------------------------------
@@ -259,43 +273,97 @@ static void unindex(local *L, lconn *c) {
 typedef struct {
     local *L;
     uint64_t ws_id;
-    cb_mqtt_conn *mq;       // the job's copy, owned
     msg *frame;
-    msg *out_head, *out_tail;
-    int rc;
+    cb_user user;            // the connection's, for a REQ
+    bool has_user;
+    uint64_t gen;            // the end counter the connection was checked at
+    int rc;                  // CB_OK, or why the connection ends
+    // a HELLO's grant
+    cb_user *granted;
+    int64_t expires_s;
+    // a REQ's reply
+    uint32_t req_id;
+    uint16_t status;
+    cb_buf body;
 } job;
-
-static void collect(void *ud, const char *frame, size_t len) {
-    job *j = ud;
-    msg *m = msg_new(frame, len);
-    if (!m) return;   // a lost reply; the client times out and rejoins
-    if (j->out_tail) j->out_tail->next = m;
-    else j->out_head = m;
-    j->out_tail = m;
-}
 
 static void job_free(job *j) {
     msgs_free(j->frame);
-    msgs_free(j->out_head);
-    if (j->mq) cb_mqtt_conn_free(j->mq);
-    free(j->mq);
+    free(j->granted);
+    cb_buf_free(&j->body);
     free(j);
 }
 
 static void pump(local *L, lconn *c);
 
-// Sends one message to the connection with that id, as a binary frame. false
-// when it is gone (closed before, or by this send: a failed send closes the
-// socket, and on_close frees the lconn, so the caller must look it up again).
-static bool send_to(local *L, uint64_t ws_id, const char *bytes, size_t len) {
-    lconn *c = find(L, ws_id);
-    if (!c) return false;
-    cb_ws_send(c->ws, CB_WS_OP_BIN, bytes, len);
-    return find(L, ws_id) != NULL;
+// Runs the route the frame names, as an HTTP request of the connection's user.
+static void run_req(job *j, const sf_frame *f) {
+    cb_ctx *ctx = j->L->ctx;
+    j->req_id = f->id;
+    char path[SF_PATH_MAX + 1];
+    memcpy(path, f->path, f->path_len);
+    path[f->path_len] = 0;
+    cb_http_req req;
+    memset(&req, 0, sizeof req);
+    req.meth = f->meth == SF_METH_GET ? CB_M_GET : CB_M_POST;
+    cb_strlcpy(req.method, f->meth == SF_METH_GET ? "GET" : "POST", sizeof req.method);
+    req.path = path;
+    req.query = "";
+    req.minor = 1;
+    req.keep_alive = true;
+    cb_strlcpy(req.peer, "ws", sizeof req.peer);
+    req.conn_id = j->ws_id;
+    req.body = f->body_len ? f->body : NULL;
+    req.body_len = f->body_len;
+    req.auth_user = &j->user;
+    if (f->meth == SF_METH_POST) {
+        req.headers[0] = (cb_http_header){ "Content-Type", "application/octet-stream" };
+        req.n_headers = 1;
+    }
+    bool known = false;
+    const cb_route *r = ctx->router ? cb_router_match(ctx->router, req.meth, path, &known) : NULL;
+    cb_http_res res;
+    cb_res_init(&res);
+    if (strncmp(path, "/v1/auth/", 9) == 0) j->status = 403;   // a session is made and ended over HTTP
+    else if (!r || (r->flags & CB_ROUTE_LOOP)) j->status = known ? 405 : 404;
+    else {
+        r->fn(ctx, &req, &res);
+        j->status = (uint16_t)(res.status ? res.status : 200);
+        if (res.body.len) {
+            cb_buf_append(&j->body, res.body.p, res.body.len);
+            if (j->body.oom) { j->status = 500; cb_buf_free(&j->body); }
+        }
+    }
+    cb_res_free(&res);
 }
 
 static void job_run_frame(job *j) {
-    j->rc = cb_mqtt_on_bytes(j->L->ctx, j->mq, (const uint8_t *)j->frame->text, j->frame->len, cb_now_ms(), collect, j);
+    sf_frame f;
+    if (sf_parse((const uint8_t *)j->frame->text, j->frame->len, &f) != 0) { j->rc = CB_E_INVALID; return; }
+    local *L = j->L;
+    cb_ctx *ctx = L->ctx;
+    if (f.kind == SF_HELLO) {
+        char tok[SF_TOKEN_MAX + 1];
+        memcpy(tok, f.tok, f.tok_len);
+        tok[f.tok_len] = 0;
+        cb_user *u = calloc(1, sizeof *u);
+        if (!u) { j->rc = CB_E_NOMEM; return; }
+        // The token, its session and its account (rt_deps.h): a refusal ends the connection, with no reason on the wire.
+        j->rc = cb_rt_deps_g.verify_token(ctx, tok, u);
+        if (j->rc != CB_OK) { free(u); return; }
+        j->granted = u;
+        j->expires_s = u->expires_at;
+        return;
+    }
+    if (f.kind != SF_REQ || !j->has_user) { j->rc = CB_E_INVALID; return; }
+    // Sessions were ended since this connection was last checked (cb_rt_end_sessions): is it still live?
+    uint64_t now_gen = atomic_load(&L->end_gen);
+    if (now_gen != j->gen) {
+        j->rc = ctx->auth ? cb_auth_session_live(ctx->auth, &j->user) : CB_E_STATE;
+        if (j->rc != CB_OK) return;
+        j->gen = now_gen;
+    }
+    run_req(j, &f);
 }
 
 static void job_done(cb_loop *l, void *ud) {
@@ -305,18 +373,27 @@ static void job_done(cb_loop *l, void *ud) {
     lconn *c = find(L, id);
     if (c) {
         c->busy = false;
-        // The state first, then the replies: a SUBSCRIBE is live before its SUBACK leaves.
-        cb_mqtt_conn_free(c->mq);
-        free(c->mq);
-        c->mq = j->mq;
-        j->mq = NULL;
-        reindex(L, c);
-        for (msg *m = j->out_head; m && send_to(L, id, m->text, m->len); m = m->next) {}
+        if (j->rc == CB_OK && j->granted) {
+            // A session ended while the HELLO was out may have been this one's: it connects again.
+            if (atomic_load(&L->end_gen) != j->gen) j->rc = CB_E_AUTH;
+            else {
+                c->user = j->granted;
+                j->granted = NULL;
+                c->open = true;
+                c->expires_s = j->expires_s;
+                c->checked_gen = j->gen;
+                user_add(L, c);
+                static const uint8_t ready[2] = { SF_V, SF_READY };
+                send_to(L, id, ready, sizeof ready);
+            }
+        } else if (j->rc == CB_OK) {
+            c->checked_gen = j->gen;
+            reply_to(L, id, j->req_id, j->status, j->body.p, j->body.len);
+        }
         c = find(L, id);
         if (c && j->rc != CB_OK) {
-            // stream_mqtt.h: whatever it refuses ends the connection, with no reason on the wire.
-            if (j->rc != CB_E_STATE) CB_DEBUG("realtime", "mqtt %llu closed: %s", (unsigned long long)id, cb_strerror(j->rc));
-            cb_ws_close(c->ws, j->rc == CB_E_STATE ? 1000 : 1008);
+            CB_DEBUG("realtime", "socket %llu closed: %s", (unsigned long long)id, cb_strerror(j->rc));
+            cb_ws_close(c->ws, 1008);
         } else if (c) {
             pump(L, c);
         }
@@ -330,52 +407,102 @@ static void job_run(void *ud) {
     if (cb_loop_post(j->L->ctx->loop, job_done, j) != CB_OK) job_free(j);   // the loop has stopped
 }
 
-// Starts the next frame of `c` if none is in flight.
+// SUB and UNSUB change the hub's maps, so they run here on the loop. Only a
+// game's casts need a registration: the user's own views, seat casts and chat
+// reach every connection of theirs, and their reply is all a client waits for.
+static void do_sub(local *L, lconn *c, const sf_frame *f) {
+    uint16_t status = 200;
+    char gid[SF_GID_MAX + 1];
+    memcpy(gid, f->gid, f->gid_len);
+    gid[f->gid_len] = 0;
+    if (f->what == 2 && f->gid_len == 0) status = 400;
+    else if (f->what == 2) {
+        int at = watch_index(c, gid);
+        if (f->kind == SF_UNSUB) {
+            if (at >= 0) {
+                game_del(L, gid, c->ws_id);
+                free(c->watch[at]);
+                c->watch[at] = c->watch[--c->nwatch];
+            }
+        } else if (at < 0) {
+            if (c->nwatch >= WATCH_MAX) status = 429;
+            else {
+                char **nw = realloc(c->watch, ((size_t)c->nwatch + 1) * sizeof *nw);
+                char *copy = nw ? strdup(gid) : NULL;
+                if (!nw || !copy) { if (nw) c->watch = nw; free(copy); status = 503; }
+                else {
+                    c->watch = nw;
+                    if (!game_add(L, gid, c->ws_id)) { free(copy); status = 503; }
+                    else c->watch[c->nwatch++] = copy;
+                }
+            }
+        }
+    }
+    reply_to(L, c->ws_id, f->id, status, NULL, 0);
+}
+
+// Handles the connection's queued frames in order: SUB, UNSUB and PING here,
+// the first HELLO or REQ as a job (and then stops until it is done).
 static void pump(local *L, lconn *c) {
-    if (c->busy || !c->in_head) return;
-    job *j = calloc(1, sizeof *j);
-    if (!j) return;   // try again on the next frame
-    j->L = L;
-    j->ws_id = c->ws_id;
-    j->mq = calloc(1, sizeof *j->mq);
-    if (!j->mq) { free(j); return; }
-    if (cb_mqtt_conn_clone(j->mq, c->mq) != CB_OK) { free(j->mq); free(j); return; }
-    j->frame = c->in_head;
-    c->in_head = c->in_head->next;
-    if (!c->in_head) c->in_tail = NULL;
-    c->in_bytes -= j->frame->len;
-    j->frame->next = NULL;
-    cb_pool *pool = L->ctx->req_pool;
-    c->busy = true;
-    if (pool && cb_pool_submit(pool, job_run, j) == CB_OK) return;
-    // No pool (or it is stopping): handle it here. Only the tests run without one.
-    job_run_frame(j);
-    job_done(L->ctx->loop, j);
+    uint64_t id = c->ws_id;
+    while (c && !c->busy && c->in_head) {
+        msg *m = c->in_head;
+        c->in_head = m->next;
+        if (!c->in_head) c->in_tail = NULL;
+        c->in_bytes -= m->len;
+        m->next = NULL;
+        sf_frame f;
+        if (sf_parse((const uint8_t *)m->text, m->len, &f) != 0 || (!c->open && f.kind != SF_HELLO) ||
+            (c->open && f.kind == SF_HELLO)) {
+            free(m);
+            cb_ws_close(c->ws, 1008);
+            return;
+        }
+        if (c->open && cb_now_ms() / 1000 >= c->expires_s) {   // the token ran out: reconnect with a fresh one
+            free(m);
+            cb_ws_close(c->ws, 1008);
+            return;
+        }
+        if (f.kind == SF_SUB || f.kind == SF_UNSUB) {
+            do_sub(L, c, &f);
+            free(m);
+        } else if (f.kind == SF_PING) {
+            static const uint8_t pong[2] = { SF_V, SF_PONG };
+            send_to(L, id, pong, sizeof pong);
+            free(m);
+        } else {
+            job *j = calloc(1, sizeof *j);
+            if (!j) { free(m); cb_ws_close(c->ws, 1011); return; }
+            j->L = L;
+            j->ws_id = id;
+            j->frame = m;
+            j->gen = c->open ? c->checked_gen : atomic_load(&L->end_gen);
+            if (c->open) { j->user = *c->user; j->has_user = true; }
+            cb_pool *pool = L->ctx->req_pool;
+            c->busy = true;
+            if (pool && cb_pool_submit(pool, job_run, j) == CB_OK) return;
+            // No pool (or it is stopping): handle it here. Only the tests run without one.
+            job_run_frame(j);
+            job_done(L->ctx->loop, j);
+            return;
+        }
+        c = find(L, id);   // a send may have closed it
+    }
 }
 
 // ---- the socket ----------------------------------------------------------------------
 
-static lconn *conn_open(cb_ws *ws, local *L) {
+static void on_open(cb_ws *ws, void *ud) {
+    cb_rt *rt = ud;
+    local *L = rt->impl;
     lconn *c = calloc(1, sizeof *c);
-    if (!c) return NULL;
+    if (!c) { cb_ws_close(ws, 1011); return; }
     c->ws = ws;
     c->ws_id = cb_ws_id(ws);
-    c->mq = calloc(1, sizeof *c->mq);
-    if (!c->mq) { free(c); return NULL; }
-    if (!byid_add(L, c)) { free(c->mq); free(c); return NULL; }
-    // The token may ride in the upgrade URL (token=) instead of CONNECT's password.
-    char qt[CB_RT_TOKEN_MAX + 1];
-    cb_mqtt_query_token(cb_ws_query(ws), qt, sizeof qt);
-    if (!cb_mqtt_conn_set_token(c->mq, qt)) { byid_del(L, c); free(c->mq); free(c); return NULL; }
+    if (!maps_add(L, c)) { free(c); cb_ws_close(ws, 1011); return; }
     c->next = L->head;
     if (L->head) L->head->prev = c;
     L->head = c;
-    return c;
-}
-
-static void on_open(cb_ws *ws, void *ud) {
-    cb_rt *rt = ud;
-    if (!conn_open(ws, rt->impl)) cb_ws_close(ws, 1011);
 }
 
 static void on_message(cb_ws *ws, int opcode, const uint8_t *data, size_t len, void *ud) {
@@ -383,20 +510,14 @@ static void on_message(cb_ws *ws, int opcode, const uint8_t *data, size_t len, v
     local *L = rt->impl;
     lconn *c = find(L, cb_ws_id(ws));
     if (!c) return;
+    if (opcode == CB_WS_OP_TEXT) { cb_ws_close(ws, 1003); return; }   // frames are binary
     if (c->in_bytes + len > INBOX_MAX) { cb_ws_close(ws, 1008); return; }
-    // MQTT over WebSocket is binary only (MQTT 3.1.1, 6.0).
-    if (opcode == CB_WS_OP_TEXT) { cb_ws_close(ws, 1003); return; }
-    // A keepalive is answered right here: PINGREQ is two bytes and changes no state, so it needs no
-    // copy of the connection, no pool hand-off and no allocation. Only when nothing is queued or in
-    // flight for this connection (the PINGRESP must not overtake a reply still being computed), the
-    // connection is open, and its token has not run out (the pooled path closes it then).
-    if (len == 2 && data[0] == 0xC0 && data[1] == 0x00 && !c->busy && !c->in_head && c->mq->state == CB_MQTT_OPEN &&
-        cb_now_ms() / 1000 < c->mq->expires_s) {
-        static const char pingresp[2] = { (char)0xD0, 0x00 };
-        cb_ws_send(ws, CB_WS_OP_BIN, pingresp, sizeof pingresp);
-        return;
+    // The first frame is the HELLO and the only one: anything else first, or a second HELLO, ends it.
+    if (!c->hello_seen) {
+        if (len < 2 || data[0] != SF_V || data[1] != SF_HELLO) { cb_ws_close(ws, 1008); return; }
+        c->hello_seen = true;
     }
-    msg *m = msg_new((const char *)data, len);
+    msg *m = msg_new(data, len);
     if (!m) return;
     if (c->in_tail) c->in_tail->next = m;
     else c->in_head = m;
@@ -409,10 +530,14 @@ static void lconn_free(local *L, lconn *c) {
     if (c->prev) c->prev->next = c->next;
     else L->head = c->next;
     if (c->next) c->next->prev = c->prev;
-    unindex(L, c);
+    user_del(L, c);
+    for (int i = 0; i < c->nwatch; i++) { game_del(L, c->watch[i], c->ws_id); free(c->watch[i]); }
+    free(c->watch);
+    lconn **pp = &L->byid[id_slot(c->ws_id, L->nbyid)];
+    while (*pp && *pp != c) pp = &(*pp)->hnext;
+    if (*pp) { *pp = c->hnext; L->nconn--; }
     msgs_free(c->in_head);
-    cb_mqtt_conn_free(c->mq);
-    free(c->mq);
+    free(c->user);
     free(c);
 }
 
@@ -423,21 +548,25 @@ static void on_close(cb_ws *ws, void *ud) {
     if (c) lconn_free(L, c);   // a job still out finds nothing and frees itself
 }
 
-static const cb_ws_handlers WS_MQTT = { on_open, on_message, on_close };
+static const cb_ws_handlers WS_HUB = { on_open, on_message, on_close };
 
 // ---- publishing ------------------------------------------------------------------------
 
+#define PUB_USER 1
+#define PUB_GAME 2
+
 typedef struct pub {
     cb_rt *rt;
-    char topic[MQTT_TOPIC_MAX + 1];
-    size_t packet_len, packet_cap;
-    char *packet;                     // the PUBLISH carrying the message
+    int scope;                        // PUB_USER, PUB_GAME
+    char key[48];                     // the user id, or the game id
+    size_t len, cap;
+    uint8_t *frame;                   // the push, as it goes out
     struct pub *next;                 // on the free list
 } pub;
 
 // A delivery is allocated on a request thread (or the loop, for an inline request) and freed on the loop.
 // musl's allocator unmaps a group when its last slot is freed, so a steady one-in, one-out stream of
-// these cost an mmap and a munmap each. Up to PUB_KEEP of them, packet buffer included, wait on a
+// these cost an mmap and a munmap each. Up to PUB_KEEP of them, frame buffer included, wait on a
 // free list instead; the lock is held for a pointer swap.
 #define PUB_KEEP 64
 static pthread_mutex_t g_pub_mu = PTHREAD_MUTEX_INITIALIZER;
@@ -463,66 +592,74 @@ static void pub_free(pub *p) {
         return;
     }
     pthread_mutex_unlock(&g_pub_mu);
-    free(p->packet);
+    free(p->frame);
     free(p);
 }
 
+// Sends the frame to each id (a send can close a socket and free its lconn, so
+// the ids are collected first and looked up again).
+static void send_all(local *L, const uint64_t *ids, size_t n, const uint8_t *frame, size_t len) {
+    for (size_t i = 0; i < n; i++) send_to(L, ids[i], frame, len);
+}
 
 static void pub_on_loop(cb_loop *l, void *ud) {
     pub *p = ud;
     local *L = p->rt->impl;
-    // Collect the ids first: a send can close a socket and free its lconn.
-    size_t n = 0, cap = 0;
-    uint64_t *ids = NULL;
-    int tl = (int)strlen(p->topic);
-    tent *e = topic_find(L, p->topic, topic_hash(p->topic));
-    if (e && e->n) {
-        ids = malloc(e->n * sizeof *ids);
-        if (ids) { memcpy(ids, e->ids, e->n * sizeof *ids); n = cap = e->n; }
-    }
-    // A wildcard holder is added once, even when it also holds the exact filter.
-    for (lconn *c = L->wild; c; c = c->wnext) {
-        if (!cb_mqtt_hears(c->mq, p->topic, tl)) continue;
-        bool dup = false;
-        for (size_t i = 0; i < n && !dup; i++) dup = ids[i] == c->ws_id;
-        if (dup) continue;
-        if (n == cap) {
-            size_t nc = cap ? cap * 2 : 16;
-            uint64_t *ni = realloc(ids, nc * sizeof *ids);
-            if (!ni) break;
-            ids = ni;
-            cap = nc;
+    uint64_t stack[32];
+    uint64_t *ids = stack;
+    size_t n = 0, cap = sizeof stack / sizeof *stack;
+    if (p->scope == PUB_USER && L->nbyid) {
+        for (lconn *c = L->byuser[user_slot(p->key, L->nbyid)]; c; c = c->unext) {
+            if (strcmp(c->user->id, p->key) != 0) continue;
+            if (n == cap) {
+                uint64_t *ni = malloc(cap * 2 * sizeof *ni);
+                if (!ni) break;
+                memcpy(ni, ids, n * sizeof *ni);
+                if (ids != stack) free(ids);
+                ids = ni;
+                cap *= 2;
+            }
+            ids[n++] = c->ws_id;
         }
-        ids[n++] = c->ws_id;
+    } else if (p->scope == PUB_GAME) {
+        gent *e = game_find(L, p->key, str_hash(p->key));
+        if (e) {
+            if (e->n > cap) {
+                ids = malloc(e->n * sizeof *ids);
+                if (!ids) { ids = stack; }
+                else cap = e->n;
+            }
+            for (uint32_t i = 0; i < e->n && n < cap; i++) ids[n++] = e->ids[i];
+        }
     }
-    for (size_t i = 0; i < n; i++) {
-        lconn *c = find(L, ids[i]);
-        if (!c) continue;
-        send_to(L, ids[i], p->packet, p->packet_len);
-    }
-    free(ids);
+    send_all(L, ids, n, p->frame, p->len);
+    if (ids != stack) free(ids);
     pub_free(p);
 }
 
-// Posted to the loop, which writes each subscriber's socket: a failure to hand
-// it over counts as one; what the loop's writes do later is the socket's.
+// Posted to the loop, which writes each hearer's socket: a failure to hand it
+// over counts as one; what the loop's writes do later is the socket's.
 static int local_deliver(cb_rt *rt, const cb_rt_to *to, const uint8_t *frame, size_t len) {
     cb_loop *loop = rt->ctx->loop;
-    if (!loop) return 0;
+    if (!loop || !to->family) return 0;
+    // A family that names {user} is the user's own, to all their connections; one that names
+    // only {doc} is the game's spectators'.
+    bool user = strstr(to->family->pattern, "{user}") != NULL;
+    const char *key = user ? to->user_id : to->doc_id;
+    if (!key || !*key || strlen(key) >= sizeof ((pub *)0)->key) return 1;
     pub *p = pub_get();
     if (!p) return 1;
     p->rt = rt;
-    int tl = cb_rt_topic(to, p->topic, sizeof p->topic);
-    if (tl <= 0) { pub_free(p); return 1; }
-    int pl = len <= (size_t)INT32_MAX ? mqtt_publish_len(tl, (int)len) : -1;
-    if (pl > 0 && p->packet_cap < (size_t)pl) {
-        free(p->packet);
-        p->packet = malloc((size_t)pl);
-        p->packet_cap = p->packet ? (size_t)pl : 0;
+    p->scope = user ? PUB_USER : PUB_GAME;
+    cb_strlcpy(p->key, key, sizeof p->key);
+    if (p->cap < len) {
+        free(p->frame);
+        p->frame = malloc(len);
+        p->cap = p->frame ? len : 0;
     }
-    int w = pl > 0 && p->packet ? mqtt_write_publish((uint8_t *)p->packet, pl, p->topic, tl, frame, (int)len) : -1;
-    if (w < 0) { pub_free(p); return 1; }
-    p->packet_len = (size_t)w;
+    if (!p->frame) { pub_free(p); return 1; }
+    memcpy(p->frame, frame, len);
+    p->len = len;
     if (cb_loop_post(loop, pub_on_loop, p) != CB_OK) { pub_free(p); return 1; }
     return 0;
 }
@@ -531,40 +668,62 @@ static void local_free(cb_rt *rt) {
     local *L = rt->impl;
     while (L->head) lconn_free(L, L->head);
     free(L->byid);
-    free(L->topics);
+    free(L->byuser);
+    free(L->games);
     free(L);
     free(rt);
 }
 
-// Every socket of the user is closed (1008): on the loop, which owns them.
+// The user's sockets of an ended session are closed (1008), on the loop, which owns them.
 typedef struct {
     cb_rt  *rt;
     cb_uuid user;
-} forget_job;
+    cb_uuid session, keep;
+    bool has_session, has_keep;
+} end_job;
 
-static void forget_on_loop(cb_loop *l, void *ud) {
-    forget_job *f = ud;
-    local *L = f->rt->impl;
-    for (lconn *c = L->head, *next; c; c = next) {
-        next = c->next;
-        if (strcmp(c->mq->user_id, f->user) != 0) continue;
-        // A packet still out on the pool comes back to a closed connection.
-        c->mq->state = CB_MQTT_CLOSED;
-        reindex(L, c);   // not open: it hears nothing
-        cb_mqtt_conn_free(c->mq);
-        c->mq->state = CB_MQTT_CLOSED;
-        cb_ws_close(c->ws, 1008);
+static void end_on_loop(cb_loop *l, void *ud) {
+    end_job *e = ud;
+    local *L = e->rt->impl;
+    uint64_t stack[16];
+    uint64_t *ids = stack;
+    size_t n = 0, cap = sizeof stack / sizeof *stack;
+    if (L->nbyid) {
+        for (lconn *c = L->byuser[user_slot(e->user, L->nbyid)]; c; c = c->unext) {
+            if (strcmp(c->user->id, e->user) != 0) continue;
+            if (e->has_session && strcmp(c->user->session_id, e->session) != 0) continue;
+            if (e->has_keep && strcmp(c->user->session_id, e->keep) == 0) continue;
+            if (n == cap) {
+                uint64_t *ni = malloc(cap * 2 * sizeof *ni);
+                if (!ni) break;
+                memcpy(ni, ids, n * sizeof *ni);
+                if (ids != stack) free(ids);
+                ids = ni;
+                cap *= 2;
+            }
+            ids[n++] = c->ws_id;
+        }
     }
-    free(f);
+    for (size_t i = 0; i < n; i++) {
+        lconn *c = find(L, ids[i]);
+        if (c) cb_ws_close(c->ws, 1008);   // its queued frames go with it (on_close)
+    }
+    if (ids != stack) free(ids);
+    free(e);
 }
 
-static void local_forget(cb_rt *rt, const char *user_id) {
+static void local_forget(cb_rt *rt, const char *user_id, const char *session_id, const char *keep_session) {
+    local *L = rt->impl;
+    // At once, on this thread: a REQ that starts from here on reads its session again (job_run_frame).
+    atomic_fetch_add(&L->end_gen, 1);
     cb_loop *loop = rt->ctx->loop;
-    forget_job *f = loop ? calloc(1, sizeof *f) : NULL;
-    if (!f) return;
-    f->rt = rt;
-    cb_strlcpy(f->user, user_id, sizeof f->user);
-    if (cb_loop_post(loop, forget_on_loop, f) != CB_OK) free(f);
+    end_job *e = loop ? calloc(1, sizeof *e) : NULL;
+    if (!e) return;
+    e->rt = rt;
+    cb_strlcpy(e->user, user_id, sizeof e->user);
+    if (session_id) { cb_strlcpy(e->session, session_id, sizeof e->session); e->has_session = true; }
+    if (keep_session) { cb_strlcpy(e->keep, keep_session, sizeof e->keep); e->has_keep = true; }
+    if (cb_loop_post(loop, end_on_loop, e) != CB_OK) free(e);
 }
 
 // No deliver_lanes: a push is a copy posted to the loop, so a batch has nothing to overlap.
@@ -585,12 +744,10 @@ int cb_rt_local_new(cb_ctx *ctx, cb_rt **out) {
 
 // ---- the upgrade route -----------------------------------------------------------------
 
-// GET /mqtt, subprotocol "mqtt" (stream_mqtt.h): the path and protocol AWS IoT
-// Core serves MQTT over WebSocket on, so a client is the same against either.
-// The CONNECT names the user.
-static void h_mqtt(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
+// GET /ws: a plain binary WebSocket, no subprotocol. The HELLO names the user.
+static void h_ws(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     if (!ctx->rt || ctx->rt->t != &LOCAL_T) { cb_router_error(res, 503, "realtime is not running"); return; }
-    cb_ws_upgrade_protocol(req, res, &WS_MQTT, ctx->rt, "mqtt");
+    cb_ws_upgrade(req, res, &WS_HUB, ctx->rt);
 }
 
-int cb_rt_local_routes(cb_ctx *ctx) { return cb_router_add(ctx->router, "GET", "/mqtt", CB_ROUTE_LOOP, h_mqtt); }
+int cb_rt_local_routes(cb_ctx *ctx) { return cb_router_add(ctx->router, "GET", "/ws", CB_ROUTE_LOOP, h_ws); }

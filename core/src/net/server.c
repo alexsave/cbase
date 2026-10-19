@@ -34,6 +34,7 @@ struct cb_ws {
     bool close_after;    // close once `out` is written
     bool upgrade_after;  // become a WebSocket once `out` is written
     bool closing;        // a WebSocket CLOSE has been queued
+    bool ping_sent;      // a WebSocket PING went out since the peer last sent anything
     bool buried;         // closed and on the server's grave list
     bool dirty;          // on the server's dirty list: frames queued, flushed at the end of the loop iteration
     cb_buf in, out;
@@ -98,6 +99,7 @@ void cb_server_opts_default(cb_server_opts *o) {
     o->idle_ms = 60000;
     o->head_ms = 15000;
     o->ws_idle_ms = 120000;
+    o->ws_ping_ms = 30000;
     o->max_conns = 16384;
     o->backlog = 512;
     o->inline_budget_us = 2000;
@@ -551,6 +553,7 @@ static void conn_io(cb_loop *l, int fd, int ev, void *ud) {
                 if (c->in.oom) { conn_close(c); return; }
                 c->in.p[c->in.len] = 0;
                 c->last_active = cb_loop_now(l);
+                c->ping_sent = false;   // whatever the peer sent (a PONG, a frame) shows it is there
                 size_t limit = c->state == C_WS ? CB_WS_MAX_MESSAGE + 64 : CB_HTTP_MAX_HEAD + (size_t)c->srv->o.max_body;
                 if (c->in.len > limit) {
                     if (c->state == C_WS) { cb_ws_close(c, 1009); return; }
@@ -633,7 +636,15 @@ static void sweep(cb_loop *l, void *ud) {
         next = c->next;
         if (c->state == C_BUSY || c->dead) continue;
         if (c->state == C_WS) {
+            // Liveness is the WebSocket's own: a PING to a peer that has said nothing for
+            // ws_ping_ms (a browser answers with a PONG by itself), and the close of one
+            // that said nothing for ws_idle_ms, a PONG included.
             if (now - c->last_active > s->o.ws_idle_ms) cb_ws_close(c, 1001);
+            else if (!c->ping_sent && !c->closing && now - c->last_active > s->o.ws_ping_ms) {
+                c->ping_sent = true;
+                queue_frame(c, CB_WS_OP_PING, "", 0);
+                flush(c);
+            }
         } else if (c->started && now - c->started > s->o.head_ms) {
             respond_now(c, 408, "Request Timeout");
             flush(c);

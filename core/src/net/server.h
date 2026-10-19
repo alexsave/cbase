@@ -22,7 +22,8 @@ typedef struct {
     long    max_body;      // request body bytes (CBASE_MAX_BODY)
     int64_t idle_ms;       // an HTTP connection with nothing in flight (default 60 s)
     int64_t head_ms;       // a request that has started but not finished arriving (default 15 s)
-    int64_t ws_idle_ms;    // a WebSocket that has sent nothing (default 120 s; the stream pings every 25 s)
+    int64_t ws_idle_ms;    // a WebSocket that has sent nothing, a PONG included (default 120 s)
+    int64_t ws_ping_ms;    // a WebSocket silent this long is sent a PING (default 30 s)
     int     max_conns;     // refused past this (default 4096; CBASE_MAX_CONNS), each refusal counted and logged once a minute
     int     backlog;       // listen(2)'s queue (default 512; CBASE_LISTEN_BACKLOG)
     int     inline_budget_us;   // CB_ROUTE_INLINE requests may run on the loop thread; one slower than this

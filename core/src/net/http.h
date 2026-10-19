@@ -51,6 +51,11 @@ typedef struct cb_http_req {
     bool        keep_alive;       // what the client asked for (1.1 default, Connection: close)
     char        peer[64];         // remote address as the socket saw it (Caddy, in production)
     uint64_t    conn_id;          // the connection it came on (server.h)
+    // A request that arrived on an authenticated WebSocket (realtime/rt_local.c):
+    // the connection's verified cb_user (auth.h), which cb_auth_verify_bearer
+    // answers with instead of reading a token. NULL for anything cb_http_parse
+    // built, so no header can set it.
+    const void *auth_user;
 } cb_http_req;
 
 // The header's value, or NULL. First match, case-insensitive name.

@@ -67,9 +67,9 @@ typedef struct cb_rt_transport {
     const char *name;   // "local", "iot"
     int (*deliver)(cb_rt *rt, const cb_rt_to *to, const uint8_t *frame, size_t len);
     void (*free)(cb_rt *rt);
-    // Ends every connection whose user is `user_id` (cb_rt_forget_user).
-    // NULL: the transport keeps no connections it can name.
-    void (*forget)(cb_rt *rt, const char *user_id);
+    // Ends the connections of `user_id` (cb_rt_end_sessions). NULL: the
+    // transport keeps no connections it can name.
+    void (*forget)(cb_rt *rt, const char *user_id, const char *session_id, const char *keep_session);
     // A batch's deliveries at once (cb_rt_batch_end): n messages, each in
     // lane lane[i]; the lanes run concurrently and each lane in the order
     // given. Returns how many failed. NULL: the transport delivers each
@@ -113,6 +113,14 @@ void cb_rt_failures_add(int n);
 // hear nothing private, because nothing is published to a deleted user's
 // topics any more.
 void cb_rt_forget_user(cb_rt *rt, const char *user_id);
+
+// A session ended (auth.c: sign-out, revocation, a password changed elsewhere):
+// the user's open connections of that session are closed, so a socket never
+// outlives the login that opened it. session_id NULL: every session of the
+// user; keep_session non-NULL: all but that one (a password change keeps the
+// caller). Under serve the sockets close on the loop, soon, and nothing a
+// closed connection still had queued is handled.
+void cb_rt_end_sessions(cb_rt *rt, const char *user_id, const char *session_id, const char *keep_session);
 
 void cb_rt_free(cb_rt *rt);
 

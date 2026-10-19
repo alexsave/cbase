@@ -21,7 +21,11 @@
 // M3). Each session has an absolute end (CB_AUTH_SESSION_MS), and each token
 // row a TTL: the session's end while live, CB_AUTH_SPENT_TOKEN_MS once spent.
 //
-// Access tokens are verified locally and never against the store (jwt.h).
+// An access token is verified against its signature and then against its
+// session (cb_auth_verify_token): a signed-out, revoked or password-changed
+// session's token stops working at once, not at its expiry, and its open
+// sockets are closed (realtime.h cb_rt_end_sessions) by the same calls that
+// end the session.
 #include "auth.h"
 
 #include "bcrypt.h"
@@ -33,6 +37,7 @@
 #include "util/log.h"
 #include "util/str.h"
 #include "util/uuid.h"
+#include "realtime/realtime.h"
 
 #include <openssl/crypto.h>
 #include <openssl/sha.h>
@@ -47,6 +52,7 @@
 int64_t (*cb_auth_now)(void) = cb_now_ms;
 
 struct cb_auth {
+    cb_ctx *ctx;        // for ctx->rt: ending a session closes its sockets
     cb_store *store;    // NULL while the store is not built: only verification works
     char secret[sizeof ((cb_config *)0)->jwt_secret];
     int  ttl_s;
@@ -58,6 +64,7 @@ int cb_auth_new(cb_ctx *ctx, cb_auth **out) {
     if (!cfg->jwt_secret[0]) return CB_E_INVALID;
     cb_auth *a = calloc(1, sizeof *a);
     if (!a) return CB_E_NOMEM;
+    a->ctx = ctx;
     a->store = ctx->store;
     cb_strlcpy(a->secret, cfg->jwt_secret, sizeof a->secret);
     a->ttl_s = cfg->jwt_ttl_s > 0 ? cfg->jwt_ttl_s : 3600;
@@ -73,6 +80,8 @@ void cb_auth_free(cb_auth *a) {
 
 // ---- verification ----------------------------------------------------------------
 
+static bool session_over(const cb_session_row *s, const cb_user_row *u);
+
 int cb_auth_verify_token(cb_auth *a, const char *jwt, cb_user *out) {
     if (!a || !jwt) return CB_E_AUTH;
     cb_jwt_claims c;
@@ -84,10 +93,31 @@ int cb_auth_verify_token(cb_auth *a, const char *jwt, cb_user *out) {
     memcpy(out->username, c.username, sizeof out->username);
     memcpy(out->session_id, c.session_id, sizeof out->session_id);
     out->expires_at = c.exp;
-    return CB_OK;
+    return cb_auth_session_live(a, out);
+}
+
+int cb_auth_session_live(cb_auth *a, const cb_user *u) {
+    if (!a->store) return CB_OK;   // only verification works (cb_auth_new before the store)
+    // The token names a session and a user: both must still stand. The session
+    // row is gone when it ended (past its end session_get answers none), the
+    // user row when the account was deleted, and session_over is a revocation
+    // or a generation moved on by a global sign-out or a password change.
+    cb_session_row sess;
+    int rc = CB_STORE_CALL(a->store, session_get, u->session_id, cb_auth_now(), &sess);
+    if (rc == CB_E_NOT_FOUND) return CB_E_AUTH;
+    if (rc != CB_OK) return rc;
+    cb_user_row row;
+    rc = CB_STORE_CALL(a->store, user_get, u->id, &row);
+    if (rc == CB_E_NOT_FOUND) return CB_E_AUTH;
+    if (rc != CB_OK) return rc;
+    return session_over(&sess, &row) ? CB_E_AUTH : CB_OK;
 }
 
 int cb_auth_verify_bearer(cb_auth *a, const cb_http_req *req, cb_user *out) {
+    if (req->auth_user) {   // a socket's request: authenticated at HELLO, ended with its session
+        *out = *(const cb_user *)req->auth_user;
+        return CB_OK;
+    }
     const char *tok = cb_http_bearer(req);
     if (!tok || !tok[0]) return CB_E_AUTH;
     return cb_auth_verify_token(a, tok, out);
@@ -332,6 +362,7 @@ int cb_auth_refresh(cb_auth *a, const char *refresh_token, cb_session *out) {
         // holder are both signed out. One write.
         CB_WARN("auth", "session %s: a consumed refresh token was presented; session revoked", r.session_id);
         rc = CB_STORE_CALL(a->store, session_revoke, r.session_id, r.user_id, sess.expires_at);
+        if (rc == CB_OK) cb_rt_end_sessions(a->ctx->rt, r.user_id, r.session_id, NULL);
         return rc == CB_OK ? CB_AUTH_E_REFRESH_USED : rc;
     }
     return issue(a, &u, &sess, out);
@@ -339,8 +370,11 @@ int cb_auth_refresh(cb_auth *a, const char *refresh_token, cb_session *out) {
 
 int cb_auth_logout(cb_auth *a, const cb_user *u, cb_logout_scope scope) {
     if (!a->store) return CB_E_STATE;
-    if (scope == CB_LOGOUT_GLOBAL) return CB_STORE_CALL(a->store, user_end_sessions, u->id);
-    return CB_STORE_CALL(a->store, session_revoke, u->session_id, u->id, cb_auth_now() + CB_AUTH_SESSION_MS);
+    int rc;
+    if (scope == CB_LOGOUT_GLOBAL) rc = CB_STORE_CALL(a->store, user_end_sessions, u->id);
+    else rc = CB_STORE_CALL(a->store, session_revoke, u->session_id, u->id, cb_auth_now() + CB_AUTH_SESSION_MS);
+    if (rc == CB_OK) cb_rt_end_sessions(a->ctx->rt, u->id, scope == CB_LOGOUT_GLOBAL ? NULL : u->session_id, NULL);
+    return rc;
 }
 
 int cb_auth_change_password(cb_auth *a, const cb_user *u, const char *current, const char *new_password) {
@@ -359,12 +393,16 @@ int cb_auth_change_password(cb_auth *a, const cb_user *u, const char *current, c
     if ((rc = cb_bcrypt_hash(new_password, CB_BCRYPT_COST, hash)) != CB_OK) return rc;
     // The new hash and the end of every other session, in one write: whoever
     // held a stolen session is out, the caller stays in.
-    return CB_STORE_CALL(a->store, user_set_password, u->id, hash, u->session_id);
+    rc = CB_STORE_CALL(a->store, user_set_password, u->id, hash, u->session_id);
+    if (rc == CB_OK) cb_rt_end_sessions(a->ctx->rt, u->id, NULL, u->session_id);   // every other session's sockets
+    return rc;
 }
 
 int cb_auth_delete_user(cb_auth *a, const char *user_id) {
     if (!a->store) return CB_E_STATE;
-    return CB_STORE_CALL(a->store, user_delete, user_id);
+    int rc = CB_STORE_CALL(a->store, user_delete, user_id);
+    if (rc == CB_OK) cb_rt_end_sessions(a->ctx->rt, user_id, NULL, NULL);
+    return rc;
 }
 
 int cb_auth_user_row(cb_auth *a, const char *user_id, cb_user_row *out) {
