@@ -259,12 +259,12 @@ static int seed(cb_store *s) { return s->app && s->app->seed ? s->app->seed(s) :
 // record being written, the blob being read) took an 8 KB musl malloc group
 // that was mmap'ed and munmap'ed on nearly every request, because mallocng
 // unmaps a group when its last slot is freed (perf: 2 mmap + 2 munmap a move,
-// tlb_flush, the page faults after). Blocks of 4 KB to 64 KB come from per-class
+// tlb_flush, the page faults after). Blocks of 1 KB to 64 KB come from per-class
 // free lists here instead, kept up to POOL_KEEP each and never given back to
 // malloc until then; everything else is plain malloc. A 16-byte header holds the
 // block's usable size (xSize). One lock: SQLite already serialises the callers.
-#define POOL_MIN_SHIFT 12
-#define POOL_CLASSES   5   // 4K 8K 16K 32K 64K
+#define POOL_MIN_SHIFT 11
+#define POOL_CLASSES   6   // 2K 4K 8K 16K 32K 64K
 #define POOL_KEEP      8
 #define POOL_HDR       16
 typedef struct pblock { struct pblock *next; } pblock;
@@ -304,7 +304,7 @@ static int pool_class(size_t n) {   // n usable bytes -> class or -1
 static void *pm_malloc(int n) {
     if (n <= 0) return NULL;
     size_t want = (size_t)n;
-    int c = want > ((size_t)1 << (POOL_MIN_SHIFT - 1)) ? pool_class(want) : -1;   // only blocks over 2 KB
+    int c = want > ((size_t)1 << (POOL_MIN_SHIFT - 1)) ? pool_class(want) : -1;   // only blocks over 1 KB
     size_t usable = c >= 0 ? ((size_t)1 << (POOL_MIN_SHIFT + c)) : (want + 7) & ~(size_t)7;
     unsigned char *b = NULL;
     if (c >= 0) {

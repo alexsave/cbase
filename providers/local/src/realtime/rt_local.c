@@ -26,6 +26,7 @@
 #include "util/log.h"
 #include "util/pool.h"
 
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -416,14 +417,42 @@ static const cb_ws_handlers WS_MQTT = { on_open, on_message, on_close };
 
 // ---- publishing ------------------------------------------------------------------------
 
-typedef struct {
+typedef struct pub {
     cb_rt *rt;
     char topic[MQTT_TOPIC_MAX + 1];
-    size_t packet_len;
+    size_t packet_len, packet_cap;
     char *packet;                     // the PUBLISH carrying the message
+    struct pub *next;                 // on the free list
 } pub;
 
+// A delivery is allocated on a request thread (or the loop, for an inline request) and freed on the loop.
+// musl's allocator unmaps a group when its last slot is freed, so a steady one-in, one-out stream of
+// these cost an mmap and a munmap each. Up to PUB_KEEP of them, packet buffer included, wait on a
+// free list instead; the lock is held for a pointer swap.
+#define PUB_KEEP 64
+static pthread_mutex_t g_pub_mu = PTHREAD_MUTEX_INITIALIZER;
+static pub *g_pub_free;
+static int g_pub_n;
+
+static pub *pub_get(void) {
+    pthread_mutex_lock(&g_pub_mu);
+    pub *p = g_pub_free;
+    if (p) { g_pub_free = p->next; g_pub_n--; }
+    pthread_mutex_unlock(&g_pub_mu);
+    if (p) { p->next = NULL; return p; }
+    return calloc(1, sizeof *p);
+}
+
 static void pub_free(pub *p) {
+    pthread_mutex_lock(&g_pub_mu);
+    if (g_pub_n < PUB_KEEP) {
+        p->next = g_pub_free;
+        g_pub_free = p;
+        g_pub_n++;
+        pthread_mutex_unlock(&g_pub_mu);
+        return;
+    }
+    pthread_mutex_unlock(&g_pub_mu);
     free(p->packet);
     free(p);
 }
@@ -470,14 +499,18 @@ static void pub_on_loop(cb_loop *l, void *ud) {
 static int local_deliver(cb_rt *rt, const cb_rt_to *to, const uint8_t *frame, size_t len) {
     cb_loop *loop = rt->ctx->loop;
     if (!loop) return 0;
-    pub *p = calloc(1, sizeof *p);
+    pub *p = pub_get();
     if (!p) return 1;
     p->rt = rt;
     int tl = cb_rt_topic(to, p->topic, sizeof p->topic);
     if (tl <= 0) { pub_free(p); return 1; }
     int pl = len <= (size_t)INT32_MAX ? mqtt_publish_len(tl, (int)len) : -1;
-    p->packet = pl > 0 ? malloc((size_t)pl) : NULL;
-    int w = p->packet ? mqtt_write_publish((uint8_t *)p->packet, pl, p->topic, tl, frame, (int)len) : -1;
+    if (pl > 0 && p->packet_cap < (size_t)pl) {
+        free(p->packet);
+        p->packet = malloc((size_t)pl);
+        p->packet_cap = p->packet ? (size_t)pl : 0;
+    }
+    int w = pl > 0 && p->packet ? mqtt_write_publish((uint8_t *)p->packet, pl, p->topic, tl, frame, (int)len) : -1;
     if (w < 0) { pub_free(p); return 1; }
     p->packet_len = (size_t)w;
     if (cb_loop_post(loop, pub_on_loop, p) != CB_OK) { pub_free(p); return 1; }
