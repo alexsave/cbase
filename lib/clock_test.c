@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <time.h>
 #include "clock.h"
+#include "rng.h"
 #include "test/check.h"
 
 int main(void)
@@ -40,7 +41,7 @@ int main(void)
     const int64_t c0 = host_process_cpu_ns(), t0 = host_thread_cpu_ms();
     volatile uint64_t x = 1;
     const int64_t until = host_mono_ns() + 20000000;
-    while (host_mono_ns() < until) x = x * 6364136223846793005ull + 1;
+    while (host_mono_ns() < until) x = rng_splitmix64_at(x);
     const int64_t c1 = host_process_cpu_ns();
     CHECK(c1 - c0 >= 10000000 && c1 - c0 < 2000000000, "process cpu advanced %lld ns over 20 ms of spinning", (long long)(c1 - c0));
     CHECK(host_thread_cpu_ms() - t0 >= 10 && host_thread_cpu_ms() - t0 < 2000, "thread cpu ms advanced");

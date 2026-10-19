@@ -295,6 +295,8 @@ DYNAMO_UNITS := unit_store unit_admin unit_import unit_v1
 # The store conformance suite runs against DynamoDB Local too, but outside the key capture: its keys are
 # the suite's own (core/test/conformance/store.c), not the product's, and would fill the golden with them.
 DYNAMO_CONFORMANCE := unit_conf_store_dynamo
+# cbase-export end to end (foolish/server/test/unit_export.c), outside the capture too; it takes the binary's path.
+DYNAMO_EXPORT := unit_export
 #
 # THE KEY-CAPTURE PROOF (docs/PLATFORM.md stages 5 and 6): every request the
 # lane sends is reduced to its shape (aws_json.h dw_shape: the keys and
@@ -304,11 +306,11 @@ DYNAMO_CONFORMANCE := unit_conf_store_dynamo
 # file, for a change that means to.
 DYNAMO_SHAPES := $(CURDIR)/build/dynamo_shapes.raw
 DYNAMO_GOLDEN := providers/aws/test/golden/dynamo_shapes.txt
-check-dynamo: $(addprefix build/test/,$(DYNAMO_UNITS) $(DYNAMO_CONFORMANCE)) build/cbase build/cbase-import build/test/smoke build/test/smoke_matrix
+check-dynamo: $(addprefix build/test/,$(DYNAMO_UNITS) $(DYNAMO_CONFORMANCE) $(DYNAMO_EXPORT)) build/cbase build/cbase-import build/cbase-export build/test/smoke build/test/smoke_matrix
 	providers/aws/ops/dynamo_local.sh --reset > build/dynamo.env
 	rm -f $(DYNAMO_SHAPES)
 	. ./build/dynamo.env && CBASE_DYNAMO_CAPTURE=$(DYNAMO_SHAPES) build/cbase-import --seed-bots
-	. ./build/dynamo.env && export CBASE_DYNAMO_CAPTURE=$(DYNAMO_SHAPES) && $(call RUN_ALL_SH,DYNAMO CHECK,'build/test/smoke build/cbase' 'build/test/smoke_matrix build/cbase' $(addprefix build/test/,$(DYNAMO_UNITS)) $(addprefix 'env -u CBASE_DYNAMO_CAPTURE build/test/,$(addsuffix ',$(DYNAMO_CONFORMANCE))))
+	. ./build/dynamo.env && export CBASE_DYNAMO_CAPTURE=$(DYNAMO_SHAPES) && $(call RUN_ALL_SH,DYNAMO CHECK,'build/test/smoke build/cbase' 'build/test/smoke_matrix build/cbase' $(addprefix build/test/,$(DYNAMO_UNITS)) $(addprefix 'env -u CBASE_DYNAMO_CAPTURE build/test/,$(addsuffix ',$(DYNAMO_CONFORMANCE))) 'env -u CBASE_DYNAMO_CAPTURE build/test/unit_export build/cbase-export')
 	LC_ALL=C sort -u $(DYNAMO_SHAPES) > build/dynamo_shapes.txt
 	@diff -u $(DYNAMO_GOLDEN) build/dynamo_shapes.txt || { echo "check-dynamo: the store's DynamoDB keys or attributes changed (above); make dynamo-shapes if that is meant"; exit 1; }
 	@echo "check-dynamo: $$(wc -l < build/dynamo_shapes.txt) request shapes, as recorded"

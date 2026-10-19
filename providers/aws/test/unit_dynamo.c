@@ -1166,6 +1166,57 @@ static void flow_bulk_paced(void) {
     cb_store_close(s);
 }
 
+// cb_store_dynamo_read_share (cbase-export --rate): the read bucket held to a share of the provisioned reads.
+// 5 RCU/s provisioned, half of it is 2.5: three 1-unit reads leave the bucket 0.5 in debt, so the fourth
+// waits 0.5 / 2.5 = 200 ms, where the full 5 would have waited for none until the seventh.
+static void flow_bulk_read_share(void) {
+    static const char GOT[] = "{\"ConsumedCapacity\":{\"TableName\":\"cbase\",\"CapacityUnits\":1.0}}";
+    static const step steps[] = {
+        { "DescribeTable", NULL, 200, DESCRIBE_LIVE },
+        { "GetItem", NULL, 200, GOT }, { "GetItem", NULL, 200, GOT }, { "GetItem", NULL, 200, GOT },
+        { "GetItem", NULL, 200, GOT },
+    };
+    RUN(steps, s);
+    fk_reset();
+    cb_store_dynamo_clock(s, fk_mono, fk_sleep);
+    // Refused outside bulk mode, for a share that is 0, negative or past 1, and for no store at all.
+    T_EQ_INT(cb_store_dynamo_read_share(s, 0.5), CB_E_INVALID);
+    T_EQ_INT(cb_store_dynamo_bulk(s), CB_OK);
+    T_EQ_INT(cb_store_dynamo_read_share(s, 0.0), CB_E_INVALID);
+    T_EQ_INT(cb_store_dynamo_read_share(s, -0.5), CB_E_INVALID);
+    T_EQ_INT(cb_store_dynamo_read_share(s, 1.01), CB_E_INVALID);
+    T_EQ_INT(cb_store_dynamo_read_share(NULL, 0.5), CB_E_INVALID);
+    T_EQ_INT(cb_store_dynamo_read_share(s, 0.5), CB_OK);
+    cb_game_row g = { 0 };
+    for (int i = 0; i < 3; i++) T_EQ_INT(CB_ROWS_CALL(s, game_get, "ab12cd", &g), CB_E_NOT_FOUND);
+    T_EQ_INT(fk_n, 0);
+    T_EQ_INT(CB_ROWS_CALL(s, game_get, "ab12cd", &g), CB_E_NOT_FOUND);
+    T_EQ_INT(fk_n, 1);
+    T_CHECK(fk_slept[0] >= 199 && fk_slept[0] <= 201);
+    T_EQ_INT(sc_.at, 5);
+    cb_store_close(s);
+
+    // The whole table: 1.0 changes nothing (the same five reads before the wait).
+    static const step full[] = {
+        { "DescribeTable", NULL, 200, DESCRIBE_LIVE },
+        { "GetItem", NULL, 200, GOT }, { "GetItem", NULL, 200, GOT }, { "GetItem", NULL, 200, GOT },
+        { "GetItem", NULL, 200, GOT }, { "GetItem", NULL, 200, GOT }, { "GetItem", NULL, 200, GOT },
+        { "GetItem", NULL, 200, GOT },
+    };
+    script sc2 = { .steps = full, .n = 8 };
+    T_EQ_INT(cb_store_open_dynamo_with("cbase", fake_send, &sc2, &s), CB_OK);
+    fk_reset();
+    cb_store_dynamo_clock(s, fk_mono, fk_sleep);
+    T_EQ_INT(cb_store_dynamo_bulk(s), CB_OK);
+    T_EQ_INT(cb_store_dynamo_read_share(s, 1.0), CB_OK);
+    for (int i = 0; i < 6; i++) T_EQ_INT(CB_ROWS_CALL(s, game_get, "ab12cd", &g), CB_E_NOT_FOUND);
+    T_EQ_INT(fk_n, 0);    // five units, then one in debt: none waited yet
+    T_EQ_INT(CB_ROWS_CALL(s, game_get, "ab12cd", &g), CB_E_NOT_FOUND);
+    T_EQ_INT(fk_n, 1);    // the seventh waits 1 / 5 = 200 ms
+    T_CHECK(fk_slept[0] >= 199 && fk_slept[0] <= 201);
+    cb_store_close(s);
+}
+
 // ConsumedCapacity comes back as an object (one table) or, for the batch and
 // transaction calls, a one-entry array; capacity is fractional for an
 // eventually consistent read.
@@ -1298,6 +1349,7 @@ int main(void) {
     T_RUN(flow_export_items);
     T_RUN(provisioned_read);
     T_RUN(flow_bulk_throttle_waited_out);
+    T_RUN(flow_bulk_read_share);
     T_RUN(flow_bulk_errors_bounded);
     T_RUN(flow_bulk_paced);
     T_RUN(consumed_capacity_read);

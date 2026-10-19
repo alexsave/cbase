@@ -615,8 +615,7 @@ int cb_store_dynamo_read_share(cb_store *s, double share) {
     dyn *d = D(s);
     if (!d->bulk) return CB_E_INVALID;
     if (d->rate[0] > 0) {
-        d->rate[0] *= share;
-        if (d->bal[0] > d->rate[0]) d->bal[0] = d->rate[0];
+        d->rate[0] *= share;   // (the pacing's refill caps the balance at the rate: the lower one holds from the next call)
         CB_INFO(MOD, "bulk: reads held to %g RCU/s (%g%% of provisioned)", d->rate[0], share * 100.0);
     }
     return CB_OK;
