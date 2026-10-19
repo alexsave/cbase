@@ -43,7 +43,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     cb_mqtt_conn_init(&c);
     fz_in in = fz_in_of(data, size);
     // A query token sometimes, as the upgrade URL's.
-    if (fz_u8(&in) & 1) cb_strlcpy(c.query_token, "tok-" UA, sizeof c.query_token);
+    if (fz_u8(&in) & 1) FZ_CHECK(cb_mqtt_conn_set_token(&c, "tok-" UA));
     int64_t now = 1700000000000LL;
     int closed = 0;
     while (fz_left(&in)) {

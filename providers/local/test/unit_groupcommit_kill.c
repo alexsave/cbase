@@ -85,7 +85,7 @@ static bool has(cb_store *st, const char *key, const char *side, int64_t *n) {
 
 static void a_kill_loses_no_acknowledged_write_and_shows_no_partial_group(void) {
     snprintf(g_path, sizeof g_path, "/tmp/unit_gck_%d.db", (int)getpid());
-    char rm[300];
+    char rm[3 * sizeof g_path + 32];
     snprintf(rm, sizeof rm, "rm -f %s %s-wal %s-shm", g_path, g_path, g_path);
     T_CHECK(system(rm) == 0);
     srand((unsigned)time(NULL));

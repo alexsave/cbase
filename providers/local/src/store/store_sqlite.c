@@ -1407,7 +1407,9 @@ static int sq_admin_query(cb_store *st, const char *statement, bool allow_write,
     sqlite3_stmt *s = NULL;
     const char *tail = NULL;
     int rc = CB_OK;
-    if (sqlite3_prepare_v2(q->db, statement, -1, &s, &tail) != SQLITE_OK) {
+    int pr = sqlite3_prepare_v2(q->db, statement, -1, &s, &tail);
+    if (pr == SQLITE_NOMEM) rc = CB_E_NOMEM;   // the server's trouble, not a bad statement
+    else if (pr != SQLITE_OK) {
         CB_WARN(MOD, "admin query: %s", sqlite3_errmsg(q->db));
         rc = CB_E_INVALID;
     } else if (!s) rc = CB_E_INVALID;   // only whitespace or comments
