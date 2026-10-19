@@ -1,11 +1,13 @@
 // unit_rt_local.c - realtime under `cbase serve` (realtime/rt_local.h), the
-// MQTT hub, over a real loopback server: the upgrade route, packets handled on
-// the request pool, publishes from another thread reaching only their topic's
-// sockets, and every refusal closing.
+// socket hub, over a real loopback server: the upgrade route, frames handled on
+// the request pool, publishes from another thread reaching only the user's own
+// connections and a game's spectators, REQ running a route as the connection's
+// user, sessions that end closing their sockets, and every refusal closing.
 // unit_stream.c drives the same server with the kernel's client library.
 #include "t.h"
 #include "cbase/provider.h"
 
+#include "auth/auth.h"
 #include "handler.h"
 #include "lib_client.h"
 #include "lib_rt_token.h"
@@ -15,7 +17,7 @@
 #include "app/pushes.h"
 #include "realtime/realtime.h"
 #include "realtime/rt_local.h"
-#include "realtime/stream_mqtt.h"
+#include "../../../../shared/c/stream_frame.h"
 #include "util/log.h"
 #include "util/pool.h"
 
@@ -39,6 +41,14 @@ static void *run(void *arg) {
     return NULL;
 }
 
+// A route that answers "<the caller's user>:<session>:<body>": what a handler sees of a socket's request.
+static void h_who(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
+    const cb_user *u = req->auth_user;
+    char b[256];
+    int n = u ? snprintf(b, sizeof b, "%s:%s:%.*s", u->id, u->session_id, (int)req->body_len, req->body ? (const char *)req->body : "") : snprintf(b, sizeof b, "anon");
+    cb_res_send(res, 200, "application/octet-stream", b, (size_t)n);
+}
+
 static void start(void) {
     cb_log_init(CB_LOG_ERROR, 0);
     rtt_install();
@@ -51,6 +61,8 @@ static void start(void) {
     g_ctx.router = cb_router_new();
     T_EQ_INT(cb_rt_local_new(&g_ctx, &g_ctx.rt), CB_OK);
     T_EQ_INT(cb_rt_local_routes(&g_ctx), CB_OK);
+    T_EQ_INT(cb_router_add(g_ctx.router, "*", "/t/who", CB_ROUTE_POOL, h_who), CB_OK);
+    T_EQ_INT(cb_router_add(g_ctx.router, "*", "/t/loop", CB_ROUTE_LOOP, h_who), CB_OK);
     cb_server_opts o;
     cb_server_opts_default(&o);
     g_ctx.server = cb_server_new(&g_ctx, &o);
@@ -58,118 +70,127 @@ static void start(void) {
     pthread_create(&g_thread, NULL, run, NULL);
 }
 
-// ---- the hub (stream_mqtt.h) ------------------------------------------------
+// ---- the hub (stream_frame.h) -----------------------------------------------
 
-static int open_mqtt(void) { return tc_ws_open(g_port, "/mqtt", "Sec-WebSocket-Protocol: mqtt\r\n"); }
+static int open_ws(void) { return tc_ws_open(g_port, "/ws", NULL); }
 
-static void mq_send(int fd, const uint8_t *b, int n) {
+static void fr_send(int fd, const uint8_t *b, int n) {
     T_CHECK(n > 0);
     T_EQ_INT(tc_ws_send(fd, CB_WS_OP_BIN, b, (size_t)n), 0);
 }
 
-// The next packet the hub sent, read into *p (its spans into m); type 0 on a
-// timeout, -1 when the socket closed (m then holds the close code).
-static int mq_recv(int fd, int timeout_ms, cb_buf *m, MqttPacket *p) {
-    memset(p, 0, sizeof *p);
+// The next frame the hub sent, into m: its first-byte kind, 0 on a timeout, -1 when the socket closed (m holds the close code).
+static int fr_recv(int fd, int timeout_ms, cb_buf *m) {
     cb_buf_reset(m);
     int op = tc_ws_recv(fd, timeout_ms, m);
     if (op == CB_WS_OP_CLOSE) return -1;
     if (op != CB_WS_OP_BIN) return 0;
-    T_EQ_INT(mqtt_parse(m->p, (int)m->len, 1 << 20, MQTT_FROM_SERVER, p), (int)m->len);
-    return p->type;
+    T_CHECK(m->len >= 2 && m->p[0] == SF_V);
+    return m->p[1];
 }
 
 static int close_code(const cb_buf *m) { return m->len == 2 ? (m->p[0] << 8) | m->p[1] : -1; }
 
-// CONNECT as `uid` (token in the password), and its CONNACK.
-static int mq_open_as(const char *uid, cb_buf *m) {
-    int fd = open_mqtt();
-    T_CHECK(fd >= 0);
+static void send_hello(int fd, const char *tok) {
     uint8_t b[512];
-    char id[64], tok[64];
-    snprintf(id, sizeof id, "%s-test", uid);
-    snprintf(tok, sizeof tok, "tok-%s", uid);
-    mq_send(fd, b, mqtt_write_connect(b, sizeof b, id, (int)strlen(id), 60, "jwt", 3, (const uint8_t *)tok, (int)strlen(tok)));
-    MqttPacket p;
-    T_EQ_INT(mq_recv(fd, 2000, m, &p), MQTT_CONNACK);
-    T_EQ_INT(p.return_code, 0);
+    fr_send(fd, b, sf_put_hello(b, sizeof b, tok, strlen(tok)));
+}
+
+// HELLO as `uid` in session `sess` (NULL: the default), and its READY.
+static int open_as(const char *uid, const char *sess, cb_buf *m) {
+    int fd = open_ws();
+    T_CHECK(fd >= 0);
+    char tok[96];
+    if (sess) snprintf(tok, sizeof tok, "tok-%s@%s", uid, sess);
+    else snprintf(tok, sizeof tok, "tok-%s", uid);
+    send_hello(fd, tok);
+    T_EQ_INT(fr_recv(fd, 2000, m), SF_READY);
     return fd;
 }
 
-static void mq_subscribe(int fd, uint16_t id, const char *filter, cb_buf *m) {
-    uint8_t b[512];
-    MqttTopic t = { filter, (int)strlen(filter), 0 };
-    mq_send(fd, b, mqtt_write_subscribe(b, sizeof b, id, &t, 1));
-    MqttPacket p;
-    T_EQ_INT(mq_recv(fd, 2000, m, &p), MQTT_SUBACK);
-    T_EQ_INT(p.packet_id, id);
-    T_EQ_INT(p.n_items, 1);
-    if (p.n_items) T_EQ_INT(p.items[0], 0);
+// SUB or UNSUB `what` of `gid`, and its REPLY.
+static void sub(int fd, uint8_t kind, uint32_t id, int what, const char *gid, int want_status, cb_buf *m) {
+    uint8_t b[128];
+    fr_send(fd, b, sf_put_sub(b, sizeof b, kind, id, (uint8_t)what, gid, strlen(gid)));
+    T_EQ_INT(fr_recv(fd, 2000, m), SF_REPLY);
+    sf_frame f;
+    T_EQ_INT(sf_parse(m->p, m->len, &f), 0);
+    T_EQ_INT(f.id, id);
+    T_EQ_INT(f.status, want_status);
 }
 
-static void mqtt_upgrade_route(void) {
-    // No subprotocol offered: refused, so a client that does not speak MQTT never gets a socket.
-    int fd = tc_ws_open(g_port, "/mqtt", NULL);
-    T_EQ_INT(fd, -1);
-    fd = tc_ws_open(g_port, "/mqtt", "Sec-WebSocket-Protocol: wamp, mqtt\r\n");
-    T_CHECK(fd >= 0);
-    close(fd);
+// A REQ and its REPLY: the status, the body into m.
+static int req(int fd, uint32_t id, int meth, const char *path, const char *body, cb_buf *m, sf_frame *f) {
+    uint8_t b[512];
+    fr_send(fd, b, sf_put_req(b, sizeof b, id, (uint8_t)meth, path, strlen(path), (const uint8_t *)body, strlen(body)));
+    int k = fr_recv(fd, 2000, m);
+    if (k != SF_REPLY) return -k - 1000;
+    T_EQ_INT(sf_parse(m->p, m->len, f), 0);
+    T_EQ_INT(f->id, id);
+    return f->status;
+}
+
+static void ws_upgrade_route(void) {
     tc_response r;
-    T_EQ_INT(tc_http(g_port, "GET", "/mqtt", NULL, NULL, 0, &r), 0);
+    T_EQ_INT(tc_http(g_port, "GET", "/ws", NULL, NULL, 0, &r), 0);
     T_EQ_INT(r.status, 426);   // not a WebSocket upgrade at all
     tc_response_free(&r);
-    // The API Gateway stream's route and the facade's are not routed.
-    T_EQ_INT(tc_http(g_port, "GET", "/v1/stream?proto=nw1", NULL, NULL, 0, &r), 0);
-    T_EQ_INT(r.status, 404);
+    T_EQ_INT(tc_http(g_port, "GET", "/mqtt", NULL, NULL, 0, &r), 0);
+    T_EQ_INT(r.status, 404);   // MQTT is gone from this path
     tc_response_free(&r);
-    T_EQ_INT(tc_http(g_port, "GET", "/realtime/v1/websocket?apikey=k&vsn=2.0.0", NULL, NULL, 0, &r), 0);
-    T_EQ_INT(r.status, 404);
-    tc_response_free(&r);
+    int fd = open_ws();
+    T_CHECK(fd >= 0);
+    close(fd);
 }
 
-static atomic_int g_hold;
-static void hold_worker(void *ud) { while (atomic_load(&g_hold)) usleep(1000); }
-
-static void mqtt_publishes_reach_their_topics(void) {
-    cb_buf m;
-    cb_buf_init(&m);
-    MqttPacket p;
-    // a: U1, everything of its own; b: U2, the spectators of G; c: U1 again,
-    // its views alone. One publish each.
-    int a = mq_open_as(U1, &m);
-    mq_subscribe(a, 1, "u/" U1 "/#", &m);
-    int b = mq_open_as(U2, &m);
-    mq_subscribe(b, 1, "s/" G, &m);
-    int c = mq_open_as(U1, &m);
-    mq_subscribe(c, 3, "u/" U1 "/v", &m);
-
+static void publish_view(uint32_t version) {
     cb_view_row v;
     memset(&v, 0, sizeof v);
     strcpy(v.game_id, G);
     uint8_t env[] = { 0xee, 0xff };
     v.view = env;
     v.view_len = 2;
-    v.version = 4;
+    v.version = version;
     rt_publish_view(g_ctx.rt, U1, &v, false);
-    T_EQ_INT(mq_recv(a, 2000, &m, &p), MQTT_PUBLISH);
-    T_EQ_INT(p.qos, 0);
-    T_EQ_MEM(p.topic, p.topic_len, "u/" U1 "/v", 2 + 36 + 2);
+}
+
+static atomic_int g_hold;
+static void hold_worker(void *ud) { while (atomic_load(&g_hold)) usleep(1000); }
+
+static void pushes_reach_their_hearers(void) {
+    cb_buf m;
+    cb_buf_init(&m);
     NwFrame pf;
-    T_EQ_INT(nw_frame_decode(p.payload, p.payload_len, &pf), NW_OK);   // the payload is the nw1 message
-    T_CHECK(pf.kind == NW_WS_VIEW && pf.version == 4 && pf.blob.len == 2);
-    T_EQ_INT(mq_recv(c, 2000, &m, &p), MQTT_PUBLISH);
-    T_EQ_MEM(p.topic, p.topic_len, "u/" U1 "/v", 2 + 36 + 2);
-    T_EQ_INT(mq_recv(b, 300, &m, &p), 0);   // U2 hears nothing of U1's
+    // a, c: U1's two connections; b: U2, watching G.
+    int a = open_as(U1, NULL, &m);
+    int b = open_as(U2, NULL, &m);
+    int c = open_as(U1, NULL, &m);
+    sub(b, SF_SUB, 0x80000001u, NW_SUB_GAME, G, 200, &m);
+
+    publish_view(4);
+    for (int fd = a; fd != -1; fd = fd == a ? c : -1) {   // every connection of the user hears it
+        T_EQ_INT(fr_recv(fd, 2000, &m), NW_WS_VIEW);
+        T_EQ_INT(nw_frame_decode(m.p, (int)m.len, &pf), NW_OK);
+        T_CHECK(pf.version == 4 && pf.blob.len == 2);
+    }
+    T_EQ_INT(fr_recv(b, 300, &m), 0);   // U2 hears nothing of U1's
 
     const uint8_t cast[] = { 7, 8, 9 };
-    rt_publish_cast(g_ctx.rt, U1, G, 5, cast, 3);
-    T_EQ_INT(mq_recv(a, 2000, &m, &p), MQTT_PUBLISH);
-    T_EQ_MEM(p.topic, p.topic_len, "u/" U1 "/c/" G, 2 + 36 + 3 + 6);
-    rt_publish_cast(g_ctx.rt, NULL, G, 5, cast, 1);
-    T_EQ_INT(mq_recv(b, 2000, &m, &p), MQTT_PUBLISH);
-    T_EQ_MEM(p.topic, p.topic_len, "s/" G, 2 + 6);
-    T_EQ_INT(mq_recv(a, 300, &m, &p), 0);   // a holds no s/ subscription
-    T_EQ_INT(mq_recv(c, 300, &m, &p), 0);   // nor c any cast
+    rt_publish_cast(g_ctx.rt, U1, G, 5, cast, 3);   // the seat's
+    T_EQ_INT(fr_recv(a, 2000, &m), NW_WS_CAST);
+    T_EQ_INT(fr_recv(c, 2000, &m), NW_WS_CAST);
+    T_EQ_INT(fr_recv(b, 300, &m), 0);
+    rt_publish_cast(g_ctx.rt, NULL, G, 5, cast, 1);   // the spectators'
+    T_EQ_INT(fr_recv(b, 2000, &m), NW_WS_SPECT);
+    T_EQ_INT(fr_recv(a, 300, &m), 0);   // a watches nothing
+    // UNSUB: the game's spectators lose it; SUB again gets it back.
+    sub(b, SF_UNSUB, 0x80000002u, NW_SUB_GAME, G, 200, &m);
+    rt_publish_cast(g_ctx.rt, NULL, G, 6, cast, 1);
+    T_EQ_INT(fr_recv(b, 300, &m), 0);
+    sub(b, SF_SUB, 0x80000003u, NW_SUB_GAME, G, 200, &m);
+    rt_publish_cast(g_ctx.rt, NULL, G, 7, cast, 1);
+    T_EQ_INT(fr_recv(b, 2000, &m), NW_WS_SPECT);
+    sub(b, SF_SUB, 0x80000004u, NW_SUB_GAME, "", 400, &m);   // a game with no id
 
     cb_chat_row ch;
     memset(&ch, 0, sizeof ch);
@@ -179,29 +200,28 @@ static void mqtt_publishes_reach_their_topics(void) {
     ch.message = "hi";
     cb_uuid members[1] = { U1 };
     rt_publish_chat(g_ctx.rt, G, &ch, members, 1);
-    T_EQ_INT(mq_recv(a, 2000, &m, &p), MQTT_PUBLISH);
-    T_EQ_MEM(p.topic, p.topic_len, "u/" U1 "/m/" G, 2 + 36 + 3 + 6);
-    T_EQ_INT(nw_frame_decode(p.payload, p.payload_len, &pf), NW_OK);
-    T_CHECK(pf.kind == NW_WS_CHAT && pf.chat.message_len == 2);
-    T_EQ_INT(mq_recv(b, 300, &m, &p), 0);
+    T_EQ_INT(fr_recv(a, 2000, &m), NW_WS_CHAT);
+    T_EQ_INT(nw_frame_decode(m.p, (int)m.len, &pf), NW_OK);
+    T_CHECK(pf.chat.message_len == 2);
+    T_EQ_INT(fr_recv(c, 2000, &m), NW_WS_CHAT);
+    T_EQ_INT(fr_recv(b, 300, &m), 0);
 
-    // PINGREQ, then the account deleted: both of U1's sockets end; U2's stays.
+    // PING is answered; the account deleted ends both of U1's sockets and not U2's.
     uint8_t pk[8];
-    mq_send(a, pk, mqtt_write_bare(pk, sizeof pk, MQTT_PINGREQ));
-    T_EQ_INT(mq_recv(a, 2000, &m, &p), MQTT_PINGRESP);
+    fr_send(a, pk, sf_put_bare(pk, sizeof pk, SF_PING));
+    T_EQ_INT(fr_recv(a, 2000, &m), SF_PONG);
     cb_rt_forget_user(g_ctx.rt, U1);
-    T_EQ_INT(mq_recv(a, 2000, &m, &p), -1);
+    T_EQ_INT(fr_recv(a, 2000, &m), -1);
     T_EQ_INT(close_code(&m), 1008);
-    T_EQ_INT(mq_recv(c, 2000, &m, &p), -1);
-    T_EQ_INT(close_code(&m), 1008);
-    mq_send(b, pk, mqtt_write_bare(pk, sizeof pk, MQTT_PINGREQ));
-    T_EQ_INT(mq_recv(b, 2000, &m, &p), MQTT_PINGRESP);
-    // The loop answers a PINGREQ itself: with every pool worker held, the PINGRESP still comes.
+    T_EQ_INT(fr_recv(c, 2000, &m), -1);
+    fr_send(b, pk, sf_put_bare(pk, sizeof pk, SF_PING));
+    T_EQ_INT(fr_recv(b, 2000, &m), SF_PONG);
+    // The loop answers a PING itself: with every pool worker held, the PONG still comes.
     atomic_store(&g_hold, 1);
     for (int i = 0; i < 3; i++) T_EQ_INT(cb_pool_submit(g_ctx.req_pool, hold_worker, NULL), CB_OK);
     usleep(50000);
-    mq_send(b, pk, mqtt_write_bare(pk, sizeof pk, MQTT_PINGREQ));
-    T_EQ_INT(mq_recv(b, 500, &m, &p), MQTT_PINGRESP);
+    fr_send(b, pk, sf_put_bare(pk, sizeof pk, SF_PING));
+    T_EQ_INT(fr_recv(b, 500, &m), SF_PONG);
     atomic_store(&g_hold, 0);
     close(a);
     close(b);
@@ -209,138 +229,127 @@ static void mqtt_publishes_reach_their_topics(void) {
     cb_buf_free(&m);
 }
 
-// The topic index follows subscribe, unsubscribe, a wildcard that also
-// matches an exact filter (heard once), a disconnect, and many sockets.
-static void mq_unsubscribe(int fd, uint16_t id, const char *filter, cb_buf *m) {
-    uint8_t b[512];
-    MqttTopic t = { filter, (int)strlen(filter), 0 };
-    mq_send(fd, b, mqtt_write_unsubscribe(b, sizeof b, id, &t, 1));
-    MqttPacket p;
-    T_EQ_INT(mq_recv(fd, 2000, m, &p), MQTT_UNSUBACK);
-}
-
-static void publish_view(void) {
-    cb_view_row v;
-    memset(&v, 0, sizeof v);
-    strcpy(v.game_id, G);
-    uint8_t env[] = { 1 };
-    v.view = env;
-    v.view_len = 1;
-    v.version = 9;
-    rt_publish_view(g_ctx.rt, U1, &v, false);
-}
-
-static void mqtt_index_follows_subscriptions(void) {
+// 150 sockets of the user hear one view once each; the ones that hang up
+// do not take the others down; a new socket is found by the user map.
+static void many_sockets_hear_once(void) {
     cb_buf m;
     cb_buf_init(&m);
-    MqttPacket p;
-    int a = mq_open_as(U1, &m);
-    mq_subscribe(a, 1, "u/" U1 "/v", &m);
-    mq_subscribe(a, 2, "u/" U1 "/+", &m);     // also matches: still one message
-    publish_view();
-    T_EQ_INT(mq_recv(a, 2000, &m, &p), MQTT_PUBLISH);
-    T_EQ_INT(mq_recv(a, 300, &m, &p), 0);
-    mq_unsubscribe(a, 3, "u/" U1 "/+", &m);   // exact one remains
-    publish_view();
-    T_EQ_INT(mq_recv(a, 2000, &m, &p), MQTT_PUBLISH);
-    mq_unsubscribe(a, 4, "u/" U1 "/v", &m);   // nothing remains
-    publish_view();
-    T_EQ_INT(mq_recv(a, 300, &m, &p), 0);
-    mq_subscribe(a, 5, "u/" U1 "/v", &m);     // and back again
-    publish_view();
-    T_EQ_INT(mq_recv(a, 2000, &m, &p), MQTT_PUBLISH);
-    // 150 sockets on the topic, 150 on another: each subscriber hears once, the rest nothing.
     enum { N = 150 };
-    int on[N], off[N];
-    for (int i = 0; i < N; i++) {
-        on[i] = mq_open_as(U1, &m);
-        mq_subscribe(on[i], 1, "u/" U1 "/v", &m);
-        off[i] = mq_open_as(U1, &m);
-        mq_subscribe(off[i], 1, "u/" U1 "/c/" G, &m);
-    }
-    publish_view();
-    for (int i = 0; i < N; i++) {
-        T_EQ_INT(mq_recv(on[i], 2000, &m, &p), MQTT_PUBLISH);
-        T_EQ_INT(mq_recv(off[i], 0, &m, &p), 0);
-    }
-    T_EQ_INT(mq_recv(a, 2000, &m, &p), MQTT_PUBLISH);
-    // Half of them hang up; the others still hear, nobody crashes.
-    for (int i = 0; i < N; i += 2) { close(on[i]); close(off[i]); on[i] = off[i] = -1; }
+    int on[N];
+    for (int i = 0; i < N; i++) on[i] = open_as(i % 2 ? U1 : U2, NULL, &m);
+    publish_view(9);
+    for (int i = 1; i < N; i += 2) T_EQ_INT(fr_recv(on[i], 2000, &m), NW_WS_VIEW);
+    for (int i = 0; i < N; i += 2) T_EQ_INT(fr_recv(on[i], 0, &m), 0);
+    for (int i = 0; i < N; i += 4) { close(on[i]); on[i] = -1; }
+    for (int i = 1; i < N; i += 4) { close(on[i]); on[i] = -1; }
     usleep(100000);
-    publish_view();
-    for (int i = 1; i < N; i += 2) T_EQ_INT(mq_recv(on[i], 2000, &m, &p), MQTT_PUBLISH);
-    for (int i = 1; i < N; i += 2) { close(on[i]); close(off[i]); }
+    publish_view(10);
+    for (int i = 3; i < N; i += 4) T_EQ_INT(fr_recv(on[i], 2000, &m), NW_WS_VIEW);
+    for (int i = 0; i < N; i++) if (on[i] >= 0) close(on[i]);
+    cb_buf_free(&m);
+}
+
+static void req_runs_a_route_as_the_user(void) {
+    cb_buf m;
+    cb_buf_init(&m);
+    sf_frame f;
+    int a = open_as(U1, "sess-a", &m);
+    T_EQ_INT(req(a, 7, SF_METH_POST, "/t/who", "hello", &m, &f), 200);
+    T_EQ_MEM(f.body, f.body_len, U1 ":sess-a:hello", 36 + 1 + 6 + 1 + 5);
+    T_EQ_INT(req(a, 8, SF_METH_GET, "/t/nothing", "", &m, &f), 404);
+    T_EQ_INT(req(a, 9, SF_METH_GET, "/t/loop", "", &m, &f), 405);   // a loop route is not for a socket
+    T_EQ_INT(req(a, 10, SF_METH_POST, "/v1/auth/signin", "", &m, &f), 403);
+    // Replies come back in request order, ids echoed, even pipelined.
+    uint8_t b[256];
+    T_EQ_INT(tc_ws_send(a, CB_WS_OP_BIN, b, (size_t)sf_put_req(b, sizeof b, 11, SF_METH_POST, "/t/who", 6, (const uint8_t *)"x", 1)), 0);
+    T_EQ_INT(tc_ws_send(a, CB_WS_OP_BIN, b, (size_t)sf_put_req(b, sizeof b, 12, SF_METH_POST, "/t/who", 6, (const uint8_t *)"y", 1)), 0);
+    T_EQ_INT(fr_recv(a, 2000, &m), SF_REPLY);
+    T_EQ_INT(sf_parse(m.p, m.len, &f), 0);
+    T_EQ_INT(f.id, 11);
+    T_EQ_INT(fr_recv(a, 2000, &m), SF_REPLY);
+    T_EQ_INT(sf_parse(m.p, m.len, &f), 0);
+    T_EQ_INT(f.id, 12);
     close(a);
     cb_buf_free(&m);
 }
 
-// THE AUTHZ MATRIX over a real socket: each refusal ends the connection with
-// no CONNACK or SUBACK, as IoT Core does.
-static void mqtt_refusals_end_the_connection(void) {
+// A SESSION THAT ENDS CLOSES ITS SOCKETS (auth.c calls cb_rt_end_sessions).
+static void ended_sessions_close_their_sockets(void) {
     cb_buf m;
     cb_buf_init(&m);
-    MqttPacket p;
+    sf_frame f;
+    int s1 = open_as(U1, "s-one", &m), s2 = open_as(U1, "s-two", &m), o = open_as(U2, "s-one", &m);
+    // Sign-out of one session: that socket closes with 1008, the user's other session and another user's stay.
+    cb_rt_end_sessions(g_ctx.rt, U1, "s-one", NULL);
+    T_EQ_INT(fr_recv(s1, 2000, &m), -1);
+    T_EQ_INT(close_code(&m), 1008);
+    T_EQ_INT(req(s2, 1, SF_METH_POST, "/t/who", "", &m, &f), 200);
+    T_EQ_INT(req(o, 1, SF_METH_POST, "/t/who", "", &m, &f), 200);
+    // A password change keeps the caller's session and ends every other.
+    int s3 = open_as(U1, "s-three", &m);
+    cb_rt_end_sessions(g_ctx.rt, U1, NULL, "s-two");
+    T_EQ_INT(fr_recv(s3, 2000, &m), -1);
+    T_EQ_INT(req(s2, 2, SF_METH_POST, "/t/who", "", &m, &f), 200);
+    T_EQ_INT(fr_recv(o, 100, &m), 0);   // the other user's socket stayed
+    // A global sign-out ends them all.
+    cb_rt_end_sessions(g_ctx.rt, U1, NULL, NULL);
+    T_EQ_INT(fr_recv(s2, 2000, &m), -1);
+    // A socket cannot be opened on an ended session either: the token check refuses it (the real
+    // check reads the session, auth.c).
+    // A REQ that starts after the session ended but before the loop closed the socket is refused:
+    // the hub's end counter moved, so the session is read again (rt_deps.h session_live).
+    int s4 = open_as(U1, "s-four", &m);
+    T_EQ_INT(req(s4, 1, SF_METH_POST, "/t/who", "", &m, &f), 200);
+    strcpy(rtt_revoked, "s-four");
+    cb_rt_end_sessions(g_ctx.rt, "00000000-0000-4000-8000-000000000000", NULL, NULL);   // anybody's: the counter moves
+    uint8_t b[128];
+    fr_send(s4, b, sf_put_req(b, sizeof b, 2, SF_METH_POST, "/t/who", 6, (const uint8_t *)"z", 1));
+    T_EQ_INT(fr_recv(s4, 2000, &m), -1);   // closed, no reply
+    rtt_revoked[0] = 0;
+    close(o);
+    cb_buf_free(&m);
+}
+
+// Every refusal ends the connection, with no READY or REPLY.
+static void refusals_end_the_connection(void) {
+    cb_buf m;
+    cb_buf_init(&m);
     uint8_t b[512];
-    // A token that does not verify: closed, no CONNACK.
-    int a = open_mqtt();
-    mq_send(a, b, mqtt_write_connect(b, sizeof b, U1 "-x", 38, 60, "jwt", 3, (const uint8_t *)"forged", 6));
-    T_EQ_INT(mq_recv(a, 2000, &m, &p), -1);
+    int a = open_ws();
+    send_hello(a, "forged");   // a token that does not verify
+    T_EQ_INT(fr_recv(a, 2000, &m), -1);
     T_EQ_INT(close_code(&m), 1008);
     close(a);
-    // Another user's client id.
-    a = open_mqtt();
-    mq_send(a, b, mqtt_write_connect(b, sizeof b, U2 "-x", 38, 60, "jwt", 3, (const uint8_t *)"tok-" U1, 40));
-    T_EQ_INT(mq_recv(a, 2000, &m, &p), -1);
+    a = open_ws();
+    fr_send(a, b, sf_put_bare(b, sizeof b, SF_PING));   // the first frame must be the HELLO
+    T_EQ_INT(fr_recv(a, 2000, &m), -1);
     close(a);
-    // The token in the URL instead of the password.
-    a = tc_ws_open(g_port, "/mqtt?token=tok-" U1, "Sec-WebSocket-Protocol: mqtt\r\n");
-    mq_send(a, b, mqtt_write_connect(b, sizeof b, U1 "-q", 38, 60, NULL, 0, NULL, 0));
-    T_EQ_INT(mq_recv(a, 2000, &m, &p), MQTT_CONNACK);
+    a = open_as(U1, NULL, &m);
+    send_hello(a, "tok-" U1);   // a second HELLO
+    T_EQ_INT(fr_recv(a, 2000, &m), -1);
     close(a);
-    // Another user's topics, a wildcard over every user, everything.
-    const char *forbidden[] = { "u/" U2 "/v", "u/+/v", "#" };
-    for (int i = 0; i < 3; i++) {
-        a = mq_open_as(U1, &m);
-        MqttTopic t = { forbidden[i], (int)strlen(forbidden[i]), 0 };
-        mq_send(a, b, mqtt_write_subscribe(b, sizeof b, 1, &t, 1));
-        T_EQ_INT(mq_recv(a, 2000, &m, &p), -1);
-        T_EQ_INT(close_code(&m), 1008);
-        close(a);
-    }
-    // A client that publishes.
-    a = mq_open_as(U1, &m);
-    mq_send(a, b, mqtt_write_publish(b, sizeof b, "u/" U1 "/v", 40, (const uint8_t *)"x", 1));
-    T_EQ_INT(mq_recv(a, 2000, &m, &p), -1);
-    close(a);
-    // A text frame (MQTT over WebSocket is binary), and bytes that are not MQTT.
-    a = mq_open_as(U1, &m);
-    T_EQ_INT(tc_ws_send(a, CB_WS_OP_TEXT, "wAA=", 4), 0);   // a PINGREQ, as the base64 text nw1 takes
-    T_EQ_INT(mq_recv(a, 2000, &m, &p), -1);
+    a = open_as(U1, NULL, &m);
+    T_EQ_INT(tc_ws_send(a, CB_WS_OP_TEXT, "wAA=", 4), 0);   // frames are binary
+    T_EQ_INT(fr_recv(a, 2000, &m), -1);
     T_EQ_INT(close_code(&m), 1003);
     close(a);
-    a = open_mqtt();
-    T_EQ_INT(tc_ws_send(a, CB_WS_OP_BIN, "\x01\x05xx", 4), 0);
-    T_EQ_INT(mq_recv(a, 2000, &m, &p), -1);
+    a = open_as(U1, NULL, &m);
+    T_EQ_INT(tc_ws_send(a, CB_WS_OP_BIN, "\x01\x05xx", 4), 0);   // not a socket frame
+    T_EQ_INT(fr_recv(a, 2000, &m), -1);
     close(a);
-    // DISCONNECT closes normally.
-    a = mq_open_as(U1, &m);
-    mq_send(a, b, mqtt_write_bare(b, sizeof b, MQTT_DISCONNECT));
-    T_EQ_INT(mq_recv(a, 2000, &m, &p), -1);
-    T_EQ_INT(close_code(&m), 1000);
+    a = open_as(U1, NULL, &m);
+    fr_send(a, b, sf_put_bare(b, sizeof b, SF_READY));   // a server's frame
+    T_EQ_INT(fr_recv(a, 2000, &m), -1);
     close(a);
-    // Sockets that close with their CONNECT and SUBSCRIBE still out on the
-    // pool do not take the server down.
+    // Sockets that close with their HELLO and REQ still out on the pool do not take the server down.
     for (int i = 0; i < 20; i++) {
-        a = open_mqtt();
-        int n = mqtt_write_connect(b, sizeof b, U1 "-z", 38, 60, "jwt", 3, (const uint8_t *)"tok-" U1, 40);
-        MqttTopic t = { "u/" U1 "/v", 40, 0 };
-        n += mqtt_write_subscribe(b + n, (int)sizeof b - n, 1, &t, 1);
-        mq_send(a, b, n);
+        a = open_ws();
+        T_EQ_INT(tc_ws_send(a, CB_WS_OP_BIN, b, (size_t)sf_put_hello(b, sizeof b, "tok-" U1, 40)), 0);
         close(a);
     }
-    a = mq_open_as(U1, &m);
-    mq_send(a, b, mqtt_write_bare(b, sizeof b, MQTT_PINGREQ));
-    T_EQ_INT(mq_recv(a, 2000, &m, &p), MQTT_PINGRESP);
+    a = open_as(U1, NULL, &m);
+    fr_send(a, b, sf_put_bare(b, sizeof b, SF_PING));
+    T_EQ_INT(fr_recv(a, 2000, &m), SF_PONG);
     close(a);
     cb_buf_free(&m);
 }
@@ -359,10 +368,12 @@ static void stop(void) {
 
 int main(void) {
     start();
-    T_RUN(mqtt_upgrade_route);
-    T_RUN(mqtt_publishes_reach_their_topics);
-    T_RUN(mqtt_index_follows_subscriptions);
-    T_RUN(mqtt_refusals_end_the_connection);
+    T_RUN(ws_upgrade_route);
+    T_RUN(pushes_reach_their_hearers);
+    T_RUN(many_sockets_hear_once);
+    T_RUN(req_runs_a_route_as_the_user);
+    T_RUN(ended_sessions_close_their_sockets);
+    T_RUN(refusals_end_the_connection);
     stop();
     return T_DONE();
 }

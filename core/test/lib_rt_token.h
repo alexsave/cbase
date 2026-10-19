@@ -6,5 +6,7 @@
 #define CB_TEST_RT_TOKEN_H
 
 void rtt_install(void);
+// "tok-<uid>@<session>" names the session; a session named here is one session_live refuses.
+extern char rtt_revoked[];
 
 #endif

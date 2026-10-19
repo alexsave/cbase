@@ -359,7 +359,7 @@ static void job_run_frame(job *j) {
     // Sessions were ended since this connection was last checked (cb_rt_end_sessions): is it still live?
     uint64_t now_gen = atomic_load(&L->end_gen);
     if (now_gen != j->gen) {
-        j->rc = ctx->auth ? cb_auth_session_live(ctx->auth, &j->user) : CB_E_STATE;
+        j->rc = cb_rt_deps_g.session_live(ctx, &j->user);
         if (j->rc != CB_OK) return;
         j->gen = now_gen;
     }

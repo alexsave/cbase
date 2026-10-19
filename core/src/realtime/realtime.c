@@ -23,8 +23,13 @@ static int live_verify(cb_ctx *ctx, const char *jwt, cb_user *out) {
     return cb_auth_verify_token(ctx->auth, jwt, out);
 }
 
+static int live_session(cb_ctx *ctx, const cb_user *u) {
+    return ctx->auth ? cb_auth_session_live(ctx->auth, u) : CB_E_STATE;
+}
+
 cb_rt_deps cb_rt_deps_g = {
     .verify_token = live_verify,
+    .session_live = live_session,
 };
 
 // ---- publishing ------------------------------------------------------------------------

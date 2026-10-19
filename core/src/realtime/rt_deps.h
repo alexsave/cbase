@@ -18,6 +18,8 @@
 typedef struct {
     // A JWT to a user: CB_OK, CB_E_AUTH, or CB_E_STATE when ctx->auth is NULL.
     int (*verify_token)(cb_ctx *ctx, const char *jwt, cb_user *out);
+    // Does a verified user's session still stand (auth.h cb_auth_session_live): CB_OK, CB_E_AUTH, or the check's failure.
+    int (*session_live)(cb_ctx *ctx, const cb_user *u);
 } cb_rt_deps;
 
 extern cb_rt_deps cb_rt_deps_g;
