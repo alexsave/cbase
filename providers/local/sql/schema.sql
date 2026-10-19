@@ -18,7 +18,10 @@
 
 DROP TABLE IF EXISTS items;
 
--- An account. email is lowercase and unique (signup's uniqueness).
+-- An account. email is lowercase and unique (the sign-in lookup). username is unique: it is stored in
+-- its canonical form (core/src/auth/names.h cb_name_case, the one owner of how names compare), so two
+-- spellings of one name are the same bytes and the index refuses the second, a race included (signup
+-- answers "name taken"). NULL (no name) may repeat.
 -- kept_session: the one session a session_gen bump spared (NULL: none).
 CREATE TABLE IF NOT EXISTS users (
     id              BLOB PRIMARY KEY,
@@ -30,6 +33,7 @@ CREATE TABLE IF NOT EXISTS users (
     session_gen     INTEGER NOT NULL DEFAULT 0,
     kept_session    BLOB
 ) WITHOUT ROWID;
+CREATE UNIQUE INDEX IF NOT EXISTS users_username ON users(username);
 
 -- A session; read by id on every refresh. Rows of a user are deleted with the
 -- account and, once expired, by the next session_put of the same user.
