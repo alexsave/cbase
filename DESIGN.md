@@ -123,33 +123,46 @@ Tests: `unit_ws.c` (the native frame test, ported), `unit_http.c`, `unit_net.c` 
 
 ## The VM path: what `cbase serve` does per request (2026-10-19)
 
-Owner: `core/src/net/`, `providers/local/`, `foolish/server/src/app/`.
-These are the structures that took a move from 1550 us of server CPU to about 260 us at human pace, and the rule each one keeps.
+Owner: `core/src/net/`, `core/src/auth/`, `providers/local/`, `foolish/server/src/app/`.
+`cbase serve` is one process on one VM (an autoscaling group of one) over one SQLite file.
+It does not imitate Lambda: what it holds in memory is the authority, and the rules below are the ones each structure keeps.
 
+- One instance: boot takes an exclusive `flock` on `<db>.serve-lock` before the store opens, and a second `cbase serve` on the same file refuses to start (`boot.c`, `unit_config`).
+  The provider says it with `CB_PROV_ONE_PROCESS`.
+- Store, schema 8: plain tables (`providers/local/sql/schema.sql`, `foolish/server/sql/schema.sql`), every statement prepared at open, UUIDs as 16-byte BLOBs.
+  A move writes the fixed-size `games` row and one `game_moves` row in one transaction, whatever the game's length.
+  `users.username` is the name as shown, exactly as stored; `users.username_key` (`auth/names.h` `cb_name_key`) is the unique column names compare by.
+- Store, group commit: writes queue, and the thread that finds no group running leads one transaction (BEGIN, a SAVEPOINT per request when the group holds more than one, COMMIT) and hands each caller its own result.
+  A move is acknowledged only after its COMMIT.
+  WAL with `synchronous=NORMAL`: a COMMIT is in the WAL before the answer, and the WAL is synced at checkpoints.
+- Store, checkpoints: never inside a commit.
+  The writer's automatic checkpoint is off (a WAL hook replaces it and counts the frames), and a thread with its own connection runs a PASSIVE pass every 1000 frames.
+  At 8192 frames the next group waits, before it takes the connection, for a pass that starts after it stopped, so that pass copies every frame and the group's write rewinds the WAL; that is the WAL's bound and the only checkpoint work a request waits for (`unit_checkpoint`, on a VFS with slow syncs).
+  Before this, SQLite's own checkpoint ran inside one commit in 1000-frame steps with two fsyncs, and every request queued behind it (p99 10 ms at saturation; 0.9 ms after).
+- Games: a game's lock is its own (`cb_table_lock`: one mutex per game id in flight, made by the first taker and freed by the last), held from the row read to the last push of a commit, so a game's pushes go out in commit order and unrelated games never wait on each other.
+  A bot computes its move from a row read without the lock and takes the lock only to commit; the store's version fence validates it, and a human who committed meanwhile makes the bot drive again.
+- Sessions: a session a token check found live is held in memory (`auth.c`, `cb_auth_hold_sessions`), so the next check reads nothing (5.7 to 1.3 us per HTTP request).
+  Every write that ends a session (logout, global logout, password change, refresh reuse, account delete) takes it out first-hand and closes its sockets; an epoch refuses a check's answer read before such a write; an admin SQL write forgets the table.
+- The stream: `GET /ws`, a plain binary WebSocket with no subprotocol, one frame per message, `[1][kind]...` little-endian (`shared/c/stream_frame.h`, both ends).
+  Client to server: HELLO (the token, first and once), SUB and UNSUB (a game's views, its cast, its chat), REQ (an HTTP request carried on the socket, answered by REPLY with its status and body), PING.
+  Server to client: READY, REPLY, PONG, and the pushes as netwire frames (view, cast, chat, spectators' cast).
+  A socket is authenticated once at HELLO; its requests run the same handlers as HTTP with that user; it ends at its token's expiry or when its session ends.
+  The hub keeps user to connections and game to spectators (`providers/local/src/realtime/rt_local.c`).
+- HTTP stays first-class (the actions too, for clients with no socket), with a long poll at `GET /v1/wait/<game>[?v=N]` that parks on the loop and holds no thread.
 - Connections: an idle connection owns no buffers.
   The loop reads into one loop-owned 16 KB scratch, and only an unfinished request is copied into a connection buffer that starts at 4 KB and shrinks back.
-  The cap (`CBASE_MAX_CONNS`, default 16384) reserves nothing, because a connection is allocated on demand; the real limits are `RLIMIT_NOFILE`, which startup lifts, and memory.
-- Requests: a pooled request is one block (job plus the copy of the request the worker reads) from a free list that only the loop thread touches, so the list has no lock.
-  Routes are measured and sorted once when added, and the HTTP method is parsed once into an enum.
-- Inline dispatch: a route marked `CB_ROUTE_INLINE` (GET `/v1/games/*`, `/v1/action`) runs on the loop thread when the request pool is idle and the request is the last event ready in this loop pass.
-  A request over `CBASE_INLINE_BUDGET_US` (2000) switches inline off for 5 s, so a slow handler cannot stall the loop for long.
-  `unit_inline` holds the idle gate, the last-ready gate and the trip.
-- Workers: the default follows the usable CPU (the cgroup `cpu.max` quota, else the online CPUs, rounded up, at most 4), because workers share one malloc lock and a preempted holder makes the others futex-wait.
-- Sends: `cb_ws_send` queues, and the loop flushes each marked connection once per iteration (`cb_loop_after`), so a burst of pushes to one socket is one write.
-- Timers: a bot pause holds no thread under serve; the provider starts the drive again after the wait from a loop timer, and the heartbeat scan runs on a loop timer too.
-- Tokens: the access token is a fixed binary layout (version, ids, iat, exp, email, username) with an HMAC-SHA256, owned by `auth/jwt.c`, and each thread keeps a 32-slot cache of tokens it has verified.
-- Store, group commit: item writes queue, and the thread that finds no group running leads one transaction (BEGIN, a SAVEPOINT per request when the group holds more than one, COMMIT) and hands each caller its own result.
-  A caller returns only after the COMMIT.
-  BEGIN, COMMIT and the savepoint statements are prepared once and reused; a lone write skips the savepoint.
-- Store, memory: SQLite allocates through free lists for blocks of 1 KB to 64 KB, because musl unmaps a malloc group when its last slot is freed and the row buffers did exactly that on every move.
-  The local realtime delivery record and its packet buffer wait on a free list for the same reason.
-  The kernel section and the commit batch are per worker thread: reset by zeroing only what was written (the log is poisoned, not zeroed, in sanitized builds), and drained explicitly where a test counts allocations.
-  SQLite's own blocks are tallied apart from the failing-allocator seam in the OOM test.
-- Realtime: the local hub looks subscribers up in a topic hash plus a short wildcard list.
-  An MQTT PINGREQ is answered on the loop with two bytes and no allocation or pool hand-off when nothing is queued for that connection and its token is live.
-- Backups: `cbase serve` copies the database to the VM's backup bucket when it changed, and restores the newest copy at start when the file is missing (`providers/local/src/store/backup.c`).
-  It has not yet run against real S3.
-- Rig: `bench/nano/` is the 0.1-CPU, 512 MB rehearsal (Alpine static build, Amazon Linux 2023 image), with scripts for saturation, human pace, syscalls per move and mmap callers.
+  The cap (`CBASE_MAX_CONNS`, default 16384) reserves nothing; the real limits are `RLIMIT_NOFILE`, which startup lifts, and memory.
+- Requests: a pooled request is one block from a free list that only the loop thread touches.
+  Routes are sorted once when added, and the HTTP method is parsed once into an enum.
+- Inline dispatch: a route marked `CB_ROUTE_INLINE` runs on the loop thread when the request pool is idle and the request is the last event ready in this loop pass; a request over `CBASE_INLINE_BUDGET_US` (2000) switches inline off for 5 s.
+- Workers: the default follows the usable CPU (the cgroup `cpu.max` quota, else the online CPUs, rounded up, at most 4), because workers share one malloc lock.
+- Sends: `cb_ws_send` queues, and the loop flushes each marked connection once per iteration.
+- Timers: a bot pause holds no thread; the provider starts the drive again from a loop timer, and the bot lease is a set in memory.
+- Tokens: the access token is a fixed binary layout with an HMAC-SHA256 (`auth/jwt.c`), and each thread caches the tokens it verified.
+- Memory: SQLite allocates through free lists for blocks of 1 KB to 64 KB, because musl unmaps a malloc group when its last slot is freed; the kernel section and the commit batch are per worker thread.
+- Backups: the database is copied to the VM's backup bucket (dualstack S3 host) when it changed, and the newest copy is restored at start when the file is missing (`providers/local/src/store/backup.c`).
+- Rig: `bench/nano/` is the 0.1-CPU, 512 MB rehearsal; `sat.sh` (saturation, `WAL=1` for the WAL meter), `run.sh` (human pace), `prof_off.sh` (time inside syscalls), `botg.sh` (bot tables).
+  Measured on the final build: saturation 18.3k moves/s at p99 1.1 ms on a quiet host (16.76k at p99 10 ms before the checkpointer), and 9.8 KB of WAL per move (2.4 frames: the games row's page and the game_moves page).
 
 ## Module: store
 
