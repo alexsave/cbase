@@ -14,7 +14,7 @@
 #   3. fetches the static `cbase serve` binary, checks its sha256, writes the
 #      0600 EnvironmentFile and the systemd unit, and (re)starts cbase.
 # It never prints a parameter value.
-set -euo pipefail
+set -eEuo pipefail
 exec > >(tee -a /var/log/cbase-vm-boot.log /dev/console | logger -t cbase-vm-boot) 2>&1
 trap 'echo "cbase-vm-boot: failed at line $LINENO"' ERR
 umask 077
@@ -58,7 +58,7 @@ for p in d["Parameters"]:
 
 fetch() {   # fetch RELEASE_PARAM DEST: the pinned object, sha256-checked, moved into place
   local bucket key sum
-  read -r bucket key sum < "$P/release/$1"
+  read -r bucket key sum < "$P/release/$1" || [ -n "${sum:-}" ]   # SSM values end without a newline
   aws_curl s3 "https://$bucket.s3.dualstack.$region.amazonaws.com/$key" -o "$2.new"
   echo "$sum  $2.new" | sha256sum -c --quiet || { rm -f "$2.new"; echo "sha256 mismatch: $key"; exit 1; }
   echo "fetched $key"
@@ -89,7 +89,7 @@ if ! systemctl is-active --quiet amazon-ssm-agent; then
   rpm -i --nodigest --nosignature /root/amazon-ssm-agent.rpm.new 2>/dev/null || rpm -q amazon-ssm-agent
   rm -f /root/amazon-ssm-agent.rpm.new
   cat > /etc/amazon/ssm/amazon-ssm-agent.json <<EOF
-{"Agent":{"Region":"$region","UseDualStackEndpoint":true}}
+{"Agent":{"Region":"$region","UseDualStackEndpoint":true},"Ssm":{"Endpoint":"ssm.$region.api.aws"},"Mgs":{"Region":"$region","Endpoint":"ssmmessages.$region.api.aws"},"S3":{"Region":"$region","Endpoint":"s3.dualstack.$region.amazonaws.com"}}
 EOF
   mkdir -p /etc/systemd/system/amazon-ssm-agent.service.d
   printf '[Service]\nEnvironment=AWS_EC2_METADATA_SERVICE_ENDPOINT_MODE=IPv6\nEnvironment=AWS_USE_DUALSTACK_ENDPOINT=true\n' \
@@ -116,3 +116,5 @@ systemctl daemon-reload
 systemctl enable cbase
 systemctl restart cbase
 echo "cbase: $(systemctl is-active cbase)"
+sleep 30
+tail -n 3 /var/log/amazon/ssm/amazon-ssm-agent.log 2>/dev/null | cut -c1-300 || true
