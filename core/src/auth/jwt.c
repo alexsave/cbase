@@ -35,29 +35,6 @@ static bool mac_of(const char *secret, const uint8_t *msg, size_t n, uint8_t out
     return true;
 }
 
-// A canonical lowercase UUID text <-> its 16 bytes.
-static int hexv(char c) { return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : -1; }
-static bool uuid_pack(const char *u, uint8_t out[16]) {
-    int k = 0;
-    for (size_t i = 0; i < 36; i++) {
-        if (i == 8 || i == 13 || i == 18 || i == 23) { if (u[i] != '-') return false; continue; }
-        int hi = hexv(u[i]), lo = hexv(u[i + 1]);
-        if (hi < 0 || lo < 0) return false;
-        out[k++] = (uint8_t)(hi << 4 | lo);
-        i++;
-    }
-    return k == 16 && u[36] == 0;
-}
-static void uuid_unpack(const uint8_t in[16], char out[37]) {
-    static const char hx[] = "0123456789abcdef";
-    int o = 0;
-    for (int i = 0; i < 16; i++) {
-        if (i == 4 || i == 6 || i == 8 || i == 10) out[o++] = '-';
-        out[o++] = hx[in[i] >> 4];
-        out[o++] = hx[in[i] & 15];
-    }
-    out[o] = 0;
-}
 static void put_i64(uint8_t *p, int64_t v) { for (int i = 0; i < 8; i++) p[i] = (uint8_t)((uint64_t)v >> (56 - 8 * i)); }
 static int64_t get_i64(const uint8_t *p) { uint64_t v = 0; for (int i = 0; i < 8; i++) v = v << 8 | p[i]; return (int64_t)v; }
 
@@ -68,9 +45,9 @@ int cb_jwt_mint(const char *secret, const cb_jwt_claims *c, char *out, size_t ca
     uint8_t raw[FIXED_LEN + 255 + 255 + MAC_LEN];
     size_t n = 0;
     raw[n++] = JWT_VERSION;
-    if (!uuid_pack(c->sub, raw + n)) return CB_E_INVALID;
+    if (!cb_uuid_pack(c->sub, raw + n)) return CB_E_INVALID;
     n += 16;
-    if (!uuid_pack(c->session_id, raw + n)) return CB_E_INVALID;
+    if (!cb_uuid_pack(c->session_id, raw + n)) return CB_E_INVALID;
     n += 16;
     put_i64(raw + n, c->iat); n += 8;
     put_i64(raw + n, c->exp); n += 8;
@@ -142,8 +119,8 @@ int cb_jwt_verify(const char *secret, const char *token, int64_t now_s, cb_jwt_c
     cb_jwt_claims c;
     memset(&c, 0, sizeof c);
     size_t o = 1;
-    uuid_unpack(raw + o, c.sub); o += 16;
-    uuid_unpack(raw + o, c.session_id); o += 16;
+    cb_uuid_unpack(raw + o, c.sub); o += 16;
+    cb_uuid_unpack(raw + o, c.session_id); o += 16;
     c.iat = get_i64(raw + o); o += 8;
     c.exp = get_i64(raw + o); o += 8;
     size_t el = raw[o++];

@@ -1,14 +1,15 @@
 // store.h - the platform's store, behind one interface with a backend per
 // provider (providers/local: SQLite; providers/aws: DynamoDB).
 //
-// The interface is a table of function pointers (cb_store_ops): the item
-// layer (items.h) each backend implements, the accounts and the auth rows
-// written once above it (rows_auth.h), and the admin console's reads. A
-// product's own rows are its own table over the same items, installed on
-// every store at open (cb_store_app below); foolish's is
-// foolish/server/src/store/rows_foolish.h. Callers use the wrappers. Every
-// function is safe to call from several threads at once (serve runs handlers
-// on a pool).
+// The interface is a table of function pointers (cb_store_ops): the accounts
+// and the auth rows, and the admin console's reads. SQLite keeps them in
+// plain tables (providers/local/sql/schema.sql, store_sqlite.c); DynamoDB in
+// items (items.h, the item layer only that backend implements) written by
+// rows_auth.c. A product's own rows are its own table (cb_store_app below):
+// on SQLite its SQL tables (store_sql.h), on DynamoDB its items; foolish's
+// are foolish/server/src/store/rows_sql.c and rows_foolish.c. Callers use the
+// wrappers. Every function is safe to call from several threads at once
+// (serve runs handlers on a pool).
 //
 // CONVENTIONS. Times are ms since the Unix epoch. Ids are canonical lowercase
 // UUID text (CB_UUID_LEN). A list function calls `fn` once per row, in the documented order,
@@ -101,10 +102,13 @@ typedef bool (*cb_admin_row_fn)(int n, const char *const *names, const char *con
 // ---- the interface ------------------------------------------------------------------
 
 typedef struct cb_store cb_store;
+struct cb_sql;
 
 typedef struct cb_store_ops {
     const char *name;   // "sqlite", "dynamo"
     void (*close)(cb_store *s);
+    // Readiness (GET /ready): one point read that touches the database. CB_OK when it answered.
+    int (*ready)(cb_store *s);
 
     // users
     int (*user_get)(cb_store *s, const char *id, cb_user_row *out);
@@ -174,8 +178,8 @@ typedef struct cb_store_ops {
     // or replace, with no side effects: unlike user_create, no product items.
     int (*user_import)(cb_store *s, const cb_user_row *u);
 
-    // THE ITEM LAYER (items.h): what rows written once above it use
-    // (rows_auth.c), on both backends.
+    // THE ITEM LAYER (items.h): DynamoDB's only (rows_auth.c, the product's
+    // item rows, and cbase-export's walk of a table). NULL on SQLite.
     int (*item_get)(cb_store *s, cb_ikey key, bool consistent, cb_item *out);
     int (*item_write)(cb_store *s, const cb_iwrite *w, cb_item *old);
     int (*item_txn)(cb_store *s, const cb_iwrite *w, int n, int *failed, bool *failed_had_item);
@@ -218,6 +222,20 @@ typedef struct cb_store_app {
     // backend that seeds itself (SQLite), and by a deploy's import tool
     // (DynamoDB). The number written, 0 when there was some, or a CB_E_*.
     int (*seed)(cb_store *s);
+
+    // ON THE SQL STORE (store_sql.h): the product's rows table there (what
+    // cb_rows_of answers for a SQLite store), its tables (applied after the
+    // platform's, in the same transaction, at every open), and its prepared
+    // statements by index (cb_sql_stmt).
+    const void         *sql_rows;
+    const char         *sql_schema;
+    const char *const  *sql_stmts;
+    int                 n_sql_stmts;
+    // Signup: the product's rows of a new account, in the account's
+    // transaction (an error rolls the account back). Delete: every row of the
+    // product's that hangs off the user, in the delete's transaction.
+    int (*sql_signup)(struct cb_sql *x, const cb_user_row *u);
+    int (*sql_delete)(struct cb_sql *x, const char *user_id);
 } cb_store_app;
 
 struct cb_store {
@@ -304,7 +322,7 @@ void cb_store_throttles_get(cb_store_throttles *out);
 
 // The SQLite schema version this binary applies (store_sqlite.c), and the
 // embedded schema text (build/gen/schema_sql.c, from providers/local/sql/schema.sql).
-#define CB_SCHEMA_VERSION 6
+#define CB_SCHEMA_VERSION 7
 extern const char cbase_schema_sql[];
 extern const unsigned long cbase_schema_sql_len;
 

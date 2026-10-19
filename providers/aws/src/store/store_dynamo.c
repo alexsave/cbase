@@ -679,9 +679,19 @@ static void dy_close(cb_store *s) {
     free(s);
 }
 
+// Readiness: a point read of a key that is never written (CB_E_NOT_FOUND is the healthy answer).
+static int dy_ready(cb_store *s) {
+    cb_item it;
+    cb_item_init(&it);
+    int rc = dy_item_get(s, (cb_ikey){ "READY#probe", "PROBE" }, true, &it);
+    cb_item_free(&it);
+    return rc == CB_E_NOT_FOUND ? CB_OK : rc;
+}
+
 static const cb_store_ops DYNAMO_OPS = {
     .name = "dynamo",
     .close = dy_close,
+    .ready = dy_ready,
     .item_get = dy_item_get,
     .item_write = dy_item_write,
     .item_txn = dy_item_txn,

@@ -5,50 +5,62 @@
 -- idempotent (IF NOT EXISTS, DROP ... IF EXISTS), and the database's PRAGMA
 -- user_version is then set to CB_SCHEMA_VERSION (core/src/store/store.h). A database whose user_version is
 -- NEWER than the binary's is refused: an old binary must not write to a
--- schema it does not know.
+-- schema it does not know. The product's own tables follow in the same
+-- transaction (store.h cb_store_app sql_schema; foolish: foolish/server/sql/schema.sql).
 --
--- EVERY ROW IS AN ITEM (schema 6): the store's item layer (core/src/store/items.h)
--- is DynamoDB's model on both backends, and the rows above it are written
--- once (core/src/store/rows_auth.c, the product's own: foolish/server/src/store/rows_foolish.c)
--- with the keys and attributes aws_json.h "THE ITEM LAYOUT" lists. SQLite holds no production data,
--- so the tables of schemas 1 to 5 are dropped with what a development
--- database had in them.
+-- PLAIN TABLES (schema 7). Every row is a row: no item records, no key
+-- strings. A UUID is its 16 bytes (BLOB); the text form exists only where a
+-- person or a client sees it. A table whose primary key is how it is read is
+-- WITHOUT ROWID, and an index exists only for a query the code runs. Schema 6
+-- kept every row as a DynamoDB-shaped item in one `items` table; SQLite then
+-- held no production data, so it is dropped with what a development database
+-- had in it (production arrives through cbase-export).
 
--- An item is its pk and sk, the index keys it is listed under, its TTL in ms,
--- and every attribute in one binary record (items.h cb_item_record_*). An item
--- past expires_ms stays until it is overwritten or deleted, as DynamoDB's TTL
--- may keep one for days: a reader treats it as gone (the tightest of the two,
--- docs/PLATFORM.md 8.3.2).
-CREATE TABLE IF NOT EXISTS items (
-    pk         TEXT NOT NULL,
-    sk         TEXT NOT NULL,
-    gsi1pk     TEXT,
-    gsi1sk     TEXT,
-    gsi2pk     TEXT,
-    gsi2sk     TEXT,
-    expires_ms INTEGER,
-    attrs      BLOB NOT NULL,
-    PRIMARY KEY (pk, sk)
-);
-CREATE INDEX IF NOT EXISTS idx_items_gsi1 ON items(gsi1pk, gsi1sk) WHERE gsi1pk IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_items_gsi2 ON items(gsi2pk, gsi2sk) WHERE gsi2pk IS NOT NULL;
+DROP TABLE IF EXISTS items;
 
--- The tables of schemas 1 to 5, children first (rt_conns and rt_conn_topics:
--- schema 3's API Gateway connections, gone since realtime moved to IoT Core).
-DROP TABLE IF EXISTS rt_conn_topics;
-DROP TABLE IF EXISTS rt_conns;
-DROP TABLE IF EXISTS chat_messages;
-DROP TABLE IF EXISTS game_snapshots;
-DROP TABLE IF EXISTS game_members;
-DROP TABLE IF EXISTS game_bots;
-DROP TABLE IF EXISTS ratings;
-DROP TABLE IF EXISTS games;
-DROP TABLE IF EXISTS sessions;
-DROP TABLE IF EXISTS refresh_tokens;
-DROP TABLE IF EXISTS signin_fails;
-DROP TABLE IF EXISTS users;
-DROP TABLE IF EXISTS bots;
+-- An account. email is lowercase and unique (signup's uniqueness).
+-- kept_session: the one session a session_gen bump spared (NULL: none).
+CREATE TABLE IF NOT EXISTS users (
+    id              BLOB PRIMARY KEY,
+    email           TEXT NOT NULL UNIQUE,
+    password_hash   TEXT NOT NULL,
+    username        TEXT,
+    created_at      INTEGER NOT NULL,
+    last_sign_in_at INTEGER NOT NULL DEFAULT 0,
+    session_gen     INTEGER NOT NULL DEFAULT 0,
+    kept_session    BLOB
+) WITHOUT ROWID;
 
--- The bots' seed table of schemas 1 to 6: the seed is foolish's own now
--- (foolish/server/src/store/bot_seed.c), written as BOT# items at open.
-DROP TABLE IF EXISTS bot_seed;
+-- A session; read by id on every refresh. Rows of a user are deleted with the
+-- account and, once expired, by the next session_put of the same user.
+CREATE TABLE IF NOT EXISTS sessions (
+    id         BLOB PRIMARY KEY,
+    user_id    BLOB NOT NULL,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    gen        INTEGER NOT NULL,
+    revoked    INTEGER NOT NULL
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id);
+
+-- A refresh token by its SHA-256 (32 bytes). expires_at 0: none.
+CREATE TABLE IF NOT EXISTS refresh_tokens (
+    token_hash BLOB PRIMARY KEY,
+    user_id    BLOB NOT NULL,
+    session_id BLOB,
+    created_at INTEGER NOT NULL,
+    revoked    INTEGER NOT NULL,
+    revoked_at INTEGER NOT NULL DEFAULT 0,
+    expires_at INTEGER NOT NULL
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS refresh_tokens_user ON refresh_tokens(user_id);
+
+-- Failed sign-ins at one email; gone (read as none) at expires_at, an hour
+-- after the last write.
+CREATE TABLE IF NOT EXISTS signin_fails (
+    email        TEXT PRIMARY KEY,
+    n            INTEGER NOT NULL,
+    last_at      INTEGER NOT NULL,
+    locked_until INTEGER NOT NULL,
+    expires_at   INTEGER NOT NULL
+) WITHOUT ROWID;

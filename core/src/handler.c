@@ -76,8 +76,7 @@ static void h_health(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
 }
 
 // GET /ready: readiness. /health says the process answers; this says the
-// store does too: one item read (a point read) of a key
-// that is never written, so CB_E_NOT_FOUND is the healthy answer. A full disk,
+// store does too: one point read (store.h ready). A full disk,
 // a corrupt or locked database or a dead table answers 503. Runs on the
 // request pool, not the loop: the read may wait (the store's busy timeout).
 static void h_ready(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
@@ -85,11 +84,7 @@ static void h_ready(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     char b[256];
     int rc = ctx->store ? CB_OK : CB_E_NOTIMPL;
     if (ctx->store) {
-        cb_item it;
-        cb_item_init(&it);
-        rc = ctx->store->ops->item_get(ctx->store, (cb_ikey){ "READY#probe", "PROBE" }, true, &it);
-        cb_item_free(&it);
-        if (rc == CB_E_NOT_FOUND) rc = CB_OK;
+        rc = ctx->store->ops->ready ? ctx->store->ops->ready(ctx->store) : CB_E_NOTIMPL;
     }
     if (rc == CB_OK) snprintf(b, sizeof b, "ready cbase %s mode=%s store=%s\n", ctx->version,
                               ctx->prov ? ctx->prov->mode : "none", ctx->store->ops->name);

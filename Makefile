@@ -155,6 +155,9 @@ build/embed: tools/embed.c
 build/gen/schema_sql.c: providers/local/sql/schema.sql build/embed
 	@mkdir -p $(@D)
 	build/embed $< cbase_schema_sql > $@.new && mv $@.new $@
+build/gen/foolish_schema_sql.c: $(C_ROOT)/foolish/server/sql/schema.sql build/embed
+	@mkdir -p $(@D)
+	build/embed $< cb_foolish_schema_sql > $@.new && mv $@.new $@
 build/gen/console_html.c: core/src/admin/console.html build/embed
 	@mkdir -p $(@D)
 	build/embed $< cbase_console_html > $@.new && mv $@.new $@
@@ -164,7 +167,7 @@ build/gen/console_html.c: core/src/admin/console.html build/embed
 # which this build runs (SHARED_TESTS below).
 SHARED_SRC := $(C_ROOT)/shared/c/b64/b64.c $(C_ROOT)/shared/c/hex/hex.c
 LIB_SRC  := $(sort $(filter-out $(MAIN_SERVE) $(MAIN_LAMBDA),$(foreach r,$(SRC_ROOTS),$(wildcard $(r)/*.c $(r)/*/*.c)))) $(SHARED_SRC) \
-            build/gen/schema_sql.c build/gen/console_html.c
+            build/gen/schema_sql.c build/gen/foolish_schema_sql.c build/gen/console_html.c
 IMPORT_SRC := $(C_ROOT)/foolish/server/migrate/import.c
 EXPORT_SRC := $(C_ROOT)/foolish/server/migrate/export.c
 # THE CONFORMANCE SUITES (docs/PLATFORM.md 8.7 decision 2): core/test/conformance/
