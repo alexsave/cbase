@@ -7,6 +7,7 @@
 #include "util/clock.h"
 #include "util/err.h"
 #include "util/log.h"
+#include "../../../../../shared/c/hex/hex.h"
 #include "../../../../../shared/c/num_parse.h"
 #include "../../../../../shared/c/sha256.h"
 
@@ -137,10 +138,6 @@ typedef struct {
     char bucket[64], region[32];
 } s3_ctx;
 
-static void hex(const uint8_t *d, size_t n, char *out) {
-    for (size_t i = 0; i < n; i++) sprintf(out + 2 * i, "%02x", d[i]);
-}
-
 static int s3_call(s3_ctx *c, const char *method, const char *key, const void *body, size_t n, cb_https_response *res) {
     cb_aws_creds creds;
     int rc = cb_aws_creds_get(&creds);
@@ -151,7 +148,7 @@ static int s3_call(s3_ctx *c, const char *method, const char *key, const void *b
     snprintf(path, sizeof path, "/%s", key);
     uint8_t d[SHA256_DIGEST_LEN];
     sha256(body, n, d);
-    hex(d, sizeof d, sum);
+    hex_encode(d, sizeof d, sum, sizeof sum);
     snprintf(h1, sizeof h1, "x-amz-content-sha256:%s", sum);
     const char *hdrs[] = { h1 };
     cb_sigv4_req r = { .method = method, .host = host, .path = path, .query = "", .service = "s3", .headers = hdrs,
