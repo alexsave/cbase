@@ -64,8 +64,9 @@ endif
 #     and the kernel's per-thread scratch (engine_snap_hook, the table's capture
 #     slot, the solvers' scratch) must stay per thread.
 #   * no -flto by default: an LTO link re-optimises the whole kernel for every
-#     test program. `make LTO=1` turns it on (the deployed build uses it; the
-#     kernel measures ~1.5x faster cordite decisions with it).
+#     test program. `make LTO=1` turns it on for the kernel. The shipped static
+#     builds do NOT use it: on the nano rig (2026-10-19, 8 two-seat games, 1 CPU) LTO=1 gave 10.93k and
+#     11.09k moves/s against 11.02k and 11.48k without, for a binary 4% smaller, so it stays off.
 # -DCD_PASS_PROBE is a test counter of the kernel's own suite and is left out.
 KERNEL_CFLAGS := -O3 -ffp-contract=off -fno-math-errno -Wall -Wextra -Wno-unused-parameter -Wno-deprecated-declarations \
                  -I$(KDIR)/src -I$(C_ROOT)/shared/c -DACCELERATE_NEW_LAPACK -DCD_LEAFBOOK $(KERNEL_CAPS)

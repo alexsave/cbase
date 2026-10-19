@@ -39,7 +39,10 @@ if ! command -v docker >/dev/null 2>&1; then
   exit 1
 fi
 
-docker run --rm --platform linux/arm64 -e TARGET="$target" -e WHAT="$what" \
+# The container is capped (BUILD_CPUS, default 2) so a local build leaves the Mac its other cores; make
+# runs that many jobs, not the host core count nproc would report.
+cpus="${BUILD_CPUS:-2}"
+docker run --rm --platform linux/arm64 --cpus="$cpus" -e JOBS="$cpus" -e TARGET="$target" -e WHAT="$what" \
   -v "$root":/repo:ro -v "$here/dist":/out \
   "$IMAGE" sh -euc '
     apk upgrade --no-cache >/dev/null
@@ -51,7 +54,7 @@ docker run --rm --platform linux/arm64 -e TARGET="$target" -e WHAT="$what" \
     tar cf - --exclude="./c_base/build" --exclude="./c_base/dist" --exclude="./foolish/c/build" \
       ./c_base ./foolish/c ./foolish/server ./shared | tar xf - -C /w
     cd /w/c_base
-    make -s -j"$(nproc)" STATIC=1 "$TARGET"
+    make -s -j"$JOBS" STATIC=1 "$TARGET"
     if [ "$WHAT" = serve ]; then
       strip -o /out/cbase-serve-linux-arm64 "$TARGET"
       exit 0
