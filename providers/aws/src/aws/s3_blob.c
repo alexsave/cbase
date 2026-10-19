@@ -147,7 +147,7 @@ static int s3_call(s3_ctx *c, const char *method, const char *key, const void *b
     if (rc != CB_OK) return CB_E_IO;
     snprintf(creds.region, sizeof creds.region, "%s", c->region);
     char host[160], path[300], sum[65], h1[100];
-    snprintf(host, sizeof host, "%s.s3.%s.amazonaws.com", c->bucket, c->region);
+    snprintf(host, sizeof host, "%s.s3.dualstack.%s.amazonaws.com", c->bucket, c->region);
     snprintf(path, sizeof path, "/%s", key);
     uint8_t d[SHA256_DIGEST_LEN];
     sha256(body, n, d);

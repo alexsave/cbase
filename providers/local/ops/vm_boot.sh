@@ -5,7 +5,7 @@
 #
 # No dnf: everything comes from S3 and SSM over IPv6, signed by curl
 # (--aws-sigv4) with the instance role's credentials from IMDSv2.
-#   1. reads every parameter under /cbase-vm/ (one GetParametersByPath):
+#   1. reads every parameter under /cbase-vm/ (GetParametersByPath, page by page):
 #        release/serve, release/agent   "<bucket> <key> <sha256>" (vm.yaml)
 #        env/CBASE_*                    the server's environment (secrets are
 #                                       SecureStrings, made by vm_deploy.sh)
@@ -40,21 +40,32 @@ aws_curl() {   # aws_curl SERVICE URL [curl args...]
 }
 
 # 1. the parameters, into a private directory: one file per name (never echoed).
+# GetParametersByPath answers at most 10 per page: follow NextToken until there is none.
 P="$(mktemp -d)"
 trap 'rm -rf "$P"' EXIT
-aws_curl ssm "https://ssm.$region.api.aws/" \
-  -H 'Content-Type: application/x-amz-json-1.1' -H 'X-Amz-Target: AmazonSSM.GetParametersByPath' \
-  --data '{"Path":"/cbase-vm/","Recursive":true,"WithDecryption":true,"MaxResults":10}' |
-  python3 -c '
+next=""
+for _ in $(seq 1 50); do
+  body="$(python3 -c '
+import json, sys
+b = {"Path": "/cbase-vm/", "Recursive": True, "WithDecryption": True, "MaxResults": 10}
+if sys.argv[1]: b["NextToken"] = sys.argv[1]
+print(json.dumps(b))' "$next")"
+  next="$(aws_curl ssm "https://ssm.$region.api.aws/" \
+    -H 'Content-Type: application/x-amz-json-1.1' -H 'X-Amz-Target: AmazonSSM.GetParametersByPath' \
+    --data "$body" |
+    python3 -c '
 import json, os, sys
 d = json.load(sys.stdin)
-if d.get("NextToken"): sys.exit("more than 10 parameters under /cbase-vm/: page them")
 for p in d["Parameters"]:
     n = p["Name"][len("/cbase-vm/"):]
     if "/" not in n or ".." in n: continue
     os.makedirs(os.path.join(sys.argv[1], os.path.dirname(n)), exist_ok=True)
     with open(os.path.join(sys.argv[1], n), "w") as f: f.write(p["Value"])
-' "$P"
+print(d.get("NextToken", ""))
+' "$P")"
+  [ -n "$next" ] || break
+done
+[ -z "$next" ] || { echo "more than 50 pages of parameters under /cbase-vm/"; exit 1; }
 
 fetch() {   # fetch RELEASE_PARAM DEST: the pinned object, sha256-checked, moved into place
   local bucket key sum

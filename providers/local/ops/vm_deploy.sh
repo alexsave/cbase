@@ -68,7 +68,7 @@ esac
 # ---- 2. the releases --------------------------------------------------------------
 bin="${1:-$repo/c_base/bench/nano/bin/serve-vm1}"
 [ -f "$bin" ] || die "no binary at $bin (c_base/bench/nano/build.sh vm1)"
-file "$bin" | grep -q 'ARM aarch64.*statically linked' || die "$bin is not a static arm64 binary"
+file "$bin" | grep -Eq 'ARM aarch64.*(statically|static-pie) linked' || die "$bin is not a static arm64 binary"
 version="${CBASE_VM_VERSION:-$(git -C "$repo" rev-parse --short HEAD)}"
 aws s3api head-bucket --bucket "$bucket" 2>/dev/null || die "no bucket $bucket (providers/aws/ops/deploy.sh makes it)"
 
