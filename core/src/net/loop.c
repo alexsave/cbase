@@ -1,12 +1,12 @@
 #include "loop.h"
 
+#include "poller.h"
 #include "util/clock.h"
 #include "util/err.h"
 #include "util/log.h"
 
 #include <errno.h>
 #include <fcntl.h>
-#include <poll.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdatomic.h>
@@ -19,7 +19,7 @@ typedef struct {
     int events;
     cb_io_fn fn;
     void *ud;
-    uint64_t gen;     // bumped on every add, so a stale poll result is ignored
+    uint64_t gen;     // bumped on every add, so a stale readiness result is ignored
 } watch;
 
 typedef struct {
@@ -38,6 +38,7 @@ typedef struct post {
 struct cb_loop {
     watch *w;          // dense array of watches
     int nw, capw;
+    cb_poller *pl;     // the OS queue; its registrations always equal w[].events
     int *slot_of_fd;   // fd -> index in w, or -1
     int cap_fd;
     uint64_t gen;
@@ -71,6 +72,14 @@ cb_loop *cb_loop_new(void) {
         free(l);
         return NULL;
     }
+    l->pl = cb_poller_new();
+    if (!l->pl || cb_poller_set(l->pl, l->wake[0], -1, CB_EV_READ, 0) != 0) {
+        cb_poller_free(l->pl);
+        close(l->wake[0]);
+        close(l->wake[1]);
+        free(l);
+        return NULL;
+    }
     pthread_mutex_init(&l->post_lock, NULL);
     l->now = cb_mono_ms();
     l->next_timer_id = 1;
@@ -84,6 +93,7 @@ void cb_loop_free(cb_loop *l) {
     close(l->wake[0]);
     close(l->wake[1]);
     pthread_mutex_destroy(&l->post_lock);
+    cb_poller_free(l->pl);
     free(l->w);
     free(l->slot_of_fd);
     free(l->heap);
@@ -113,6 +123,7 @@ int cb_loop_add(cb_loop *l, int fd, int events, cb_io_fn fn, void *ud) {
         l->w = w;
         l->capw = cap;
     }
+    if (cb_poller_set(l->pl, fd, -1, events, (uint32_t)(l->gen + 1)) != 0) return errno == ENOMEM ? CB_E_NOMEM : CB_E_IO;
     watch *x = &l->w[l->nw];
     x->fd = fd; x->events = events; x->fn = fn; x->ud = ud; x->gen = ++l->gen;
     l->slot_of_fd[fd] = l->nw++;
@@ -121,13 +132,17 @@ int cb_loop_add(cb_loop *l, int fd, int events, cb_io_fn fn, void *ud) {
 
 int cb_loop_set(cb_loop *l, int fd, int events) {
     if (fd < 0 || fd >= l->cap_fd || l->slot_of_fd[fd] < 0) return CB_E_NOT_FOUND;
-    l->w[l->slot_of_fd[fd]].events = events;
+    watch *w = &l->w[l->slot_of_fd[fd]];
+    if (w->events == events) return CB_OK;
+    if (cb_poller_set(l->pl, fd, w->events, events, (uint32_t)w->gen) != 0) return CB_E_IO;
+    w->events = events;
     return CB_OK;
 }
 
 void cb_loop_remove(cb_loop *l, int fd) {
     if (fd < 0 || fd >= l->cap_fd || l->slot_of_fd[fd] < 0) return;
     int i = l->slot_of_fd[fd];
+    cb_poller_del(l->pl, fd, l->w[i].events);
     l->slot_of_fd[fd] = -1;
     // Keep the array dense: the last watch moves into the hole.
     l->nw--;
@@ -242,38 +257,16 @@ static void run_timers(cb_loop *l) {
 int cb_loop_run(cb_loop *l) {
     l->thread = pthread_self();
     atomic_store(&l->running, true);
-    struct pollfd *pfd = NULL;
-    uint64_t *gens = NULL;
-    int cap = 0;
+    cb_poll_ev ev[256];
     int rc = CB_OK;
     while (!atomic_load(&l->stopping)) {
         l->now = cb_mono_ms();
-        int n = l->nw + 1;
-        if (n > cap) {
-            int c = cap ? cap : 64;
-            while (c < n) c *= 2;
-            struct pollfd *p2 = realloc(pfd, (size_t)c * sizeof *p2);
-            if (!p2) { rc = CB_E_NOMEM; break; }
-            pfd = p2;
-            uint64_t *g2 = realloc(gens, (size_t)c * sizeof *g2);
-            if (!g2) { rc = CB_E_NOMEM; break; }
-            gens = g2;
-            cap = c;
-        }
-        pfd[0].fd = l->wake[0]; pfd[0].events = POLLIN; pfd[0].revents = 0;
-        for (int i = 0; i < l->nw; i++) {
-            pfd[i + 1].fd = l->w[i].fd;
-            pfd[i + 1].events = (short)((l->w[i].events & CB_EV_READ ? POLLIN : 0) |
-                                        (l->w[i].events & CB_EV_WRITE ? POLLOUT : 0));
-            pfd[i + 1].revents = 0;
-            gens[i + 1] = l->w[i].gen;
-        }
         int timeout = -1;
         if (l->nt > 0) {
             int64_t d = l->heap[0].at - cb_mono_ms();
             timeout = d <= 0 ? 0 : d > 60000 ? 60000 : (int)d;
         }
-        int r = poll(pfd, (nfds_t)n, timeout);
+        int r = cb_poller_wait(l->pl, ev, (int)(sizeof ev / sizeof ev[0]), timeout);
         if (r < 0) {
             if (errno == EINTR) continue;
             CB_ERROR("loop", "poll failed: %s", strerror(errno));
@@ -281,22 +274,19 @@ int cb_loop_run(cb_loop *l) {
             break;
         }
         l->now = cb_mono_ms();
-        if (pfd[0].revents) drain_posts(l);
-        for (int i = 1; i < n && r > 0; i++) {
-            if (!pfd[i].revents) continue;
-            int fd = pfd[i].fd;
+        for (int i = 0; i < r; i++) {
+            int fd = ev[i].fd;
+            if (fd == l->wake[0]) { drain_posts(l); continue; }
             // The watch may have been removed, or the fd reused, by an earlier callback.
             if (fd >= l->cap_fd || l->slot_of_fd[fd] < 0) continue;
+            
             watch *w = &l->w[l->slot_of_fd[fd]];
-            if (w->gen != gens[i]) continue;
-            int ev = (pfd[i].revents & POLLIN ? CB_EV_READ : 0) | (pfd[i].revents & POLLOUT ? CB_EV_WRITE : 0) |
-                     (pfd[i].revents & (POLLERR | POLLHUP | POLLNVAL) ? CB_EV_ERR : 0);
-            w->fn(l, fd, ev, w->ud);
+            if ((uint32_t)w->gen != ev[i].tag) continue;
+            
+            w->fn(l, fd, ev[i].events, w->ud);
         }
         run_timers(l);
     }
-    free(pfd);
-    free(gens);
     // Posts that raced the stop are run, so their owners can free what they carry.
     drain_posts(l);
     pthread_mutex_lock(&l->post_lock);
