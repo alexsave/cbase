@@ -32,8 +32,6 @@ static bool is_local_probe(const cb_http_req *req) {
 }
 
 void cb_handle(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
-    cb_store_tally st;
-    cb_store_tally_take(&st);   // this request's count starts here
     const int m = meth_of(req);
     res->head = m == CB_M_HEAD;
     if (ctx->cfg && !is_local_probe(req) && !cb_config_origin_proven(ctx->cfg, cb_http_header_get(req, CB_ORIGIN_HEADER))) {
@@ -52,10 +50,6 @@ void cb_handle(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
         else r->fn(ctx, req, res);
     }
     cb_router_cors(ctx, req, res);
-    cb_store_tally_take(&st);
-    if (st.reads || st.writes)
-        CB_DEBUG("store", "%s %s %d: %d reads, %d writes, %g RCU, %g WCU (%s)", req->method, req->path, res->status,
-                 st.reads, st.writes, st.rcu, st.wcu, st.detail);
 }
 
 bool cb_handle_on_loop(const cb_ctx *ctx, const cb_http_req *req) {

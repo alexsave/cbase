@@ -171,11 +171,10 @@
 4 c_base/core/src/store/store.h /foolish/i
 2 c_base/core/src/store/store.h /\baws\b/i
 4 c_base/core/src/store/store.h /lambda/i
-21 c_base/core/src/store/store.h /dynamo/i
+17 c_base/core/src/store/store.h /dynamo/i
 1 c_base/core/src/store/store.h /sigv4/i
-13 c_base/core/src/store/store.h /sqlite/i
+12 c_base/core/src/store/store.h /sqlite/i
 6 c_base/core/src/store/store.h /\bgames?\b/i
-1 c_base/core/src/store/store.h /\bbots?\b/i
 1 c_base/core/src/store/store.h /\brosters?\b/i
 2 c_base/core/src/store/store_priv.h /\baws\b/i
 11 c_base/core/src/store/store_priv.h /dynamo/i

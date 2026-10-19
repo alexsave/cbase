@@ -262,19 +262,6 @@ int cb_store_open_dynamo(const char *table, cb_store **out);
 int cb_store_open_named(const char *store, const char *fallback, const char *db_path, const char *table, cb_store **out);
 void cb_store_close(cb_store *s);
 
-// What the calling thread has sent DynamoDB since its last take: every request
-// (each attempt of a retried one, as DynamoDB bills it), reads and writes, and
-// "GetItem 1 Query 3 TransactWriteItems 1" in `detail`, and the read and
-// write capacity units DynamoDB says they consumed. The handler and the
-// bot drive log it per request and per cycle at debug level, the measure of
-// what an action costs in requests. Zero on SQLite. Resets the tally.
-typedef struct {
-    int    reads, writes;
-    double rcu, wcu;   // the capacity units DynamoDB reported (ReturnConsumedCapacity)
-    char   detail[192];
-} cb_store_tally;
-void cb_store_tally_take(cb_store_tally *out);
-
 // Throttling (DynamoDB; DESIGN.md "The free tier, provisioned"). The table's
 // capacity is provisioned, so a burst past it is throttled rather than
 // billed: a request answered ProvisionedThroughputExceededException,

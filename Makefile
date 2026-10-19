@@ -11,7 +11,6 @@
 #   make check-dynamo  the store, admin, import and binary-surface tests and the game smoke
 #                   against DynamoDB Local (providers/aws/ops/dynamo_local.sh; needs Docker
 #                   or a DynamoDB Local already on port 8000)
-#   make bench-dynamo  the store's per-operation latency against DynamoDB Local
 #   make bench      build/cbase-bench, the latency and CPU bench (bench/bench.h)
 #   make fuzz, fuzz-smoke, fuzz-nightly, fuzz-replay, fuzz-merge, fuzz-seeds
 #                   the libFuzzer targets (<side>/fuzz/fz_*.c; fuzz/fuzz.mk says what each does)
@@ -178,8 +177,7 @@ TLIB_SRC := $(sort $(foreach r,$(TEST_ROOTS),$(wildcard $(r)/lib_*.c))) $(CONF_S
 UNIT_SRC := $(sort $(foreach r,$(TEST_ROOTS),$(wildcard $(r)/unit_*.c)))
 UNITS    := $(sort $(basename $(notdir $(UNIT_SRC))))
 # The one file a test program is named after, wherever its side keeps it.
-tsrc = $(filter %/$(1).c,$(TEST_SRC) $(BENCH_DYNAMO))
-BENCH_DYNAMO := providers/aws/bench/bench_dynamo.c
+tsrc = $(filter %/$(1).c,$(TEST_SRC))
 ifneq ($(words $(UNITS)),$(words $(UNIT_SRC)))
   $(error two test roots hold a unit test of the same name)
 endif
@@ -205,10 +203,10 @@ $(call prog,build/asan,build/obj/asan,build/obj/asan-kernel,cbase,$(MAIN_SERVE),
 $(call prog,build/asan,build/obj/asan,build/obj/asan-kernel,bootstrap,$(MAIN_LAMBDA),ASAN_CB_CFLAGS)
 $(foreach u,$(UNITS),$(call prog,build/test,build/obj/cbase,build/obj/kernel,$(u),$(call tsrc,$(u)) $(TLIB_SRC),CB_CFLAGS))
 $(foreach u,$(UNITS),$(call prog,build/asan/test,build/obj/asan,build/obj/asan-kernel,$(u),$(call tsrc,$(u)) $(TLIB_SRC),ASAN_CB_CFLAGS))
-$(foreach s,smoke smoke_lambda smoke_lambda_after smoke_authz smoke_matrix smoke_boot bench_dynamo,$(call prog,build/test,build/obj/cbase,build/obj/kernel,$(s),$(call tsrc,$(s)) $(TLIB_SRC),CB_CFLAGS))
+$(foreach s,smoke smoke_lambda smoke_lambda_after smoke_authz smoke_matrix smoke_boot,$(call prog,build/test,build/obj/cbase,build/obj/kernel,$(s),$(call tsrc,$(s)) $(TLIB_SRC),CB_CFLAGS))
 # The bench (bench/, the harness and its statistics, and each side's
 # bench/): its own program, and a unit test of its statistics and report that
-# runs with the others. bench_dynamo is a program of its own (bench-dynamo).
+# runs with the others.
 BENCH_ROOTS := bench providers/aws/bench $(C_ROOT)/foolish/server/bench
 BENCH_SRC := $(filter-out bench/unit_%.c $(BENCH_DYNAMO),$(sort $(foreach r,$(BENCH_ROOTS),$(wildcard $(r)/*.c))))
 $(call prog,build,build/obj/cbase,build/obj/kernel,cbase-bench,$(BENCH_SRC),CB_CFLAGS)
@@ -216,7 +214,7 @@ $(call prog,build/test,build/obj/cbase,build/obj/kernel,unit_bench,bench/unit_be
 $(call prog,build/asan/test,build/obj/asan,build/obj/asan-kernel,unit_bench,bench/unit_bench.c bench/bench_stats.c,ASAN_CB_CFLAGS)
 $(foreach s,smoke smoke_lambda smoke_lambda_after smoke_authz smoke_matrix smoke_boot,$(call prog,build/asan/test,build/obj/asan,build/obj/asan-kernel,$(s),$(call tsrc,$(s)) $(TLIB_SRC),ASAN_CB_CFLAGS))
 
-.PHONY: coverage all test smoke check check-asan test-asan smoke-asan check-dynamo bench-dynamo clean print-kernel-src bootstrap bench
+.PHONY: coverage all test smoke check check-asan test-asan smoke-asan check-dynamo clean print-kernel-src bootstrap bench
 all: build/cbase build/bootstrap build/cbase-import build/cbase-export build/cbase-bench
 
 # THE TEST RUNS, in parallel. Every program is its own process with its own
@@ -330,12 +328,6 @@ dynamo-shapes: check-dynamo-shapes-run
 .PHONY: dynamo-shapes check-dynamo-shapes-run
 check-dynamo-shapes-run:
 	$(MAKE) check-dynamo || test -s build/dynamo_shapes.txt
-
-# Per-operation latency against DynamoDB Local (providers/aws/bench/bench_dynamo.c), the
-# baseline DESIGN.md "Store" records. Not part of any check.
-bench-dynamo: build/test/bench_dynamo
-	providers/aws/ops/dynamo_local.sh > build/dynamo.env
-	. ./build/dynamo.env && build/test/bench_dynamo
 
 # The Lambda artifact: dist/bootstrap and dist/bootstrap.zip, static Linux
 # arm64, built in a pinned arm64 Alpine container (providers/aws/ops/build_bootstrap.sh).

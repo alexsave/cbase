@@ -73,38 +73,13 @@ static int https_send(void *ud, const char *target, const uint8_t *body, size_t 
     return resp->oom ? CB_E_NOMEM : CB_OK;
 }
 
-// ---- the per-thread tally (store.h cb_store_tally_take) --------------------------
-
-static const char *const TALLY_OPS[] = { "GetItem", "Query", "Scan", "BatchGetItem", "ExecuteStatement",   // reads
-                                         "PutItem", "UpdateItem", "DeleteItem", "BatchWriteItem", "TransactWriteItems" };
-#define TALLY_N     (int)(sizeof TALLY_OPS / sizeof TALLY_OPS[0])
-#define TALLY_READS 5
-static _Thread_local int t_tally[TALLY_N + 1];   // the last slot: a target not listed
-static _Thread_local double t_rcu, t_wcu;
-
-static int tally_index(const char *target) {
+// Whether a target is a read (the pacing's two buckets).
+static bool tally_is_read(const char *target) {
     const char *op = strchr(target, '.');
     op = op ? op + 1 : target;
-    int i = 0;
-    while (i < TALLY_N && strcmp(TALLY_OPS[i], op) != 0) i++;
-    return i;
-}
-
-void cb_store_tally_take(cb_store_tally *out) {
-    memset(out, 0, sizeof *out);
-    out->rcu = t_rcu;
-    out->wcu = t_wcu;
-    t_rcu = t_wcu = 0;
-    size_t off = 0;
-    for (int i = 0; i <= TALLY_N; i++) {
-        if (!t_tally[i]) continue;
-        if (i < TALLY_READS) out->reads += t_tally[i];
-        else out->writes += t_tally[i];
-        int k = snprintf(out->detail + off, sizeof out->detail - off, "%s%s %d", off ? " " : "",
-                         i < TALLY_N ? TALLY_OPS[i] : "other", t_tally[i]);
-        if (k > 0 && (size_t)k < sizeof out->detail - off) off += (size_t)k;
-        t_tally[i] = 0;
-    }
+    static const char *const READS[] = { "GetItem", "Query", "Scan", "BatchGetItem", "ExecuteStatement" };
+    for (size_t i = 0; i < sizeof READS / sizeof READS[0]; i++) if (strcmp(READS[i], op) == 0) return true;
+    return false;
 }
 
 // ---- throttling (store.h cb_store_set_deadline) -------------------------------------
@@ -275,14 +250,12 @@ static dw_status call_top(dyn *d, const dw_req *r, cb_buf *resp, dw_top *top) {
         int status = 0;
         cb_buf_reset(resp);
         if (r->body.oom) return DW_FAILED;
-        int ti = tally_index(r->target), k = ti < TALLY_READS ? 0 : 1;
-        t_tally[ti]++;
+        int k = tally_is_read(r->target) ? 0 : 1;
         pace(d, k);
         int rc = d->send(d->ud, r->target, r->body.p, r->body.len, &status, resp);
         if (rc == CB_OK) {
             dw_top_scan(cb_buf_cstr(resp), resp->len, top);
             double used = dw_top_consumed(top);
-            *(k == 0 ? &t_rcu : &t_wcu) += used;
             d->bal[k] -= used;
         }
         if (rc == CB_OK && d->creds_cmd[0] && refreshes < 3 && dw_creds_expired(status, cb_buf_cstr(resp), resp->len)) {

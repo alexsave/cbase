@@ -316,12 +316,8 @@ static void flow_commit_lone(void) {
     uint8_t st[1] = { 1 };
     cb_game_row g;
     cb_game_commit c = mklone(&g, st);
-    cb_store_tally t;
-    cb_store_tally_take(&t);
     T_EQ_INT(CB_ROWS_CALL(s, game_commit, &c), CB_OK);
     T_EQ_INT(sc_.at, 1);
-    cb_store_tally_take(&t);
-    T_EQ_STR(t.detail, "UpdateItem 1");
     T_CHECK(strstr(sc_.bodies[0], "\":c0\":{\"N\":\"7\"}") != NULL);
     T_CHECK(strstr(sc_.bodies[0], "\":version\":{\"N\":\"8\"}") != NULL);
     cb_store_close(s);
