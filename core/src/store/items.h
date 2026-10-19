@@ -82,6 +82,7 @@ typedef struct {
     int    n;
     struct {
         size_t     name;     // offsets into store
+        size_t     nlen;     // the name's length (cb_item_size reads it, not strlen)
         cb_av_kind kind;
         size_t     off, len; // S: text (NUL-terminated), B: bytes, SL: len strings, NUL-terminated, one after another
         int64_t    n;

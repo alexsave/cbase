@@ -20,8 +20,8 @@ AWSTemplateFormatVersion: "2010-09-09"
 #   * the release pointers /cbase-vm/release/{serve,agent} and the plain
 #     settings /cbase-vm/env/CBASE_PUBLIC_URL, ..._ALLOWED_ORIGINS;
 #   * a launch template (AL2023 minimal arm64, t4g.nano, gp3 2 GB, IMDSv2 over
-#     IPv6, one fixed IPv6 address so a replacement keeps the origin's
-#     address) and an auto-scaling group of exactly one;
+#     IPv6) and an auto-scaling group of exactly one; the instance claims the
+#     subnet's ::10 at boot, so a replacement keeps the origin's address;
 #   * alarms on the status check and the CPU credit balance, to an SNS topic
 #     with no subscription.
 
@@ -185,6 +185,12 @@ Resources:
       Name: /cbase-vm/release/agent
       Type: String
       Value: !Ref AgentRelease
+  OriginIpv6:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /cbase-vm/net/origin_ipv6
+      Type: String
+      Value: !Select [0, !Split ["/", !Select [1, !Cidr [!Select [0, !GetAtt Subnet.Ipv6CidrBlocks], 2, 4]]]]
   EnvPublicUrl:
     Type: AWS::SSM::Parameter
     Properties:
@@ -226,6 +232,13 @@ Resources:
                 Effect: Allow
                 Action: [s3:GetObject, s3:PutObject]
                 Resource: !Sub "${BackupBucket.Arn}/*"
+              - Sid: FixedAddress
+                Effect: Allow
+                Action: ec2:AssignIpv6Addresses
+                Resource: !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/*
+                Condition:
+                  ArnEquals:
+                    ec2:Subnet: !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:subnet/${Subnet}
               - Sid: OwnParameters
                 Effect: Allow
                 Action: [ssm:GetParametersByPath, ssm:GetParameters, ssm:GetParameter]
@@ -258,10 +271,11 @@ Resources:
         NetworkInterfaces:
           - DeviceIndex: 0   # the subnet comes from the group's VPCZoneIdentifier
             Groups: [!Ref ServeSg]
-            # ::10 of the subnet, so a replaced instance keeps the address the
-            # origin's AAAA record names (the old one is gone first: ASG of 1).
-            Ipv6Addresses:
-              - Ipv6Address: !Select [0, !Split ["/", !Select [1, !Cidr [!Select [0, !GetAtt Subnet.Ipv6CidrBlocks], 2, 4]]]]
+            # Auto Scaling refuses a template that names an address
+            # (Ipv6Addresses), so the instance gets a random one here and
+            # vm_boot.sh assigns the fixed ::10 (/cbase-vm/net/origin_ipv6) to
+            # its own interface; the old instance is gone first (ASG of 1).
+            Ipv6AddressCount: 1
             DeleteOnTermination: true
         PrivateDnsNameOptions:
           HostnameType: resource-name
@@ -274,7 +288,7 @@ Resources:
             Tags: [{ Key: Name, Value: cbase-vm }]
   Asg:
     Type: AWS::AutoScaling::AutoScalingGroup
-    DependsOn: [DefaultRoute6, SubnetRoutes, ReleaseServe, ReleaseAgent, EnvPublicUrl, EnvAllowedOrigins]
+    DependsOn: [DefaultRoute6, SubnetRoutes, OriginIpv6, ReleaseServe, ReleaseAgent, EnvPublicUrl, EnvAllowedOrigins]
     Properties:
       AutoScalingGroupName: cbase-vm
       MinSize: !Ref DesiredCapacity
@@ -331,7 +345,7 @@ Outputs:
     Value: !Ref Asg
   OriginIpv6:
     Description: the instance's fixed IPv6 address (step 3 needs an AAAA record for it)
-    Value: !Select [0, !Split ["/", !Select [1, !Cidr [!Select [0, !GetAtt Subnet.Ipv6CidrBlocks], 2, 4]]]]
+    Value: !GetAtt OriginIpv6.Value
   BackupBucket:
     Value: !Ref BackupBucket
   AlarmTopic:

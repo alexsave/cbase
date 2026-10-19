@@ -63,6 +63,25 @@ fetch() {   # fetch RELEASE_PARAM DEST: the pinned object, sha256-checked, moved
   echo "fetched $key"
 }
 
+# 1b. the fixed address (/cbase-vm/net/origin_ipv6) on this instance's interface.
+# A replacement may boot before EC2 has freed it from the old one: retry.
+want="$(cat "$P/net/origin_ipv6")"
+mac="$(md meta-data/mac)"
+eni="$(md "meta-data/network/interfaces/macs/$mac/interface-id")"
+have() { md "meta-data/network/interfaces/macs/$mac/ipv6s" | python3 -c '
+import ipaddress, sys
+w = ipaddress.ip_address(sys.argv[1]); sys.exit(0 if any(ipaddress.ip_address(l.strip()) == w for l in sys.stdin if l.strip()) else 1)' "$want"; }
+for _ in $(seq 1 30); do
+  have && break
+  aws_curl ec2 "https://ec2.$region.api.aws/" --retry 0 -o /dev/null \
+    --data "Action=AssignIpv6Addresses&Version=2016-11-15&NetworkInterfaceId=$eni&Ipv6Addresses.1=$want" || true
+  sleep 10
+done
+have || { echo "could not claim $want"; exit 1; }
+dev="$(ip -o link | awk -F': ' -v m="$mac" '$0 ~ m { print $2; exit }')"
+ip -6 addr replace "$want/128" dev "$dev"
+echo "address $want on $dev"
+
 # 2. the SSM agent, once per instance.
 if ! systemctl is-active --quiet amazon-ssm-agent; then
   fetch agent /root/amazon-ssm-agent.rpm

@@ -49,7 +49,9 @@ bool cb_av_same(const cb_av *a, const cb_av *b) {
 bool cb_item_add(cb_item *it, const cb_av *v) {
     if (it->n >= CB_ITEM_ATTRS || !v->name) return false;
     int i = it->n;
-    it->a[i].name = put_str(&it->store, v->name, strlen(v->name));
+    const size_t nl = strlen(v->name);
+    it->a[i].name = put_str(&it->store, v->name, nl);
+    it->a[i].nlen = nl;
     it->a[i].kind = v->kind;
     it->a[i].n = v->n;
     it->a[i].b = v->b;
@@ -194,9 +196,20 @@ size_t cb_av_size(const cb_av *v) {
 size_t cb_item_size(const cb_item *it) {
     size_t n = 0;
     for (int i = 0; i < it->n; i++) {
-        cb_av v;
-        cb_item_at(it, i, &v);
-        n += cb_av_size(&v);
+        // cb_av_size's rule from the lengths the item already carries; a list
+        // still walks its strings.
+        const size_t nl = it->a[i].nlen;
+        switch (it->a[i].kind) {
+        case CB_AV_S:    n += nl + it->a[i].len; break;
+        case CB_AV_N:    n += nl + 21; break;
+        case CB_AV_BOOL: n += nl + 1; break;
+        case CB_AV_B:    n += nl + it->a[i].len; break;
+        default: {
+            cb_av v;
+            cb_item_at(it, i, &v);
+            n += cb_av_size(&v);
+        }
+        }
     }
     return n;
 }
