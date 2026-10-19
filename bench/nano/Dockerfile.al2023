@@ -1,0 +1,11 @@
+# The rig's server image (nano-perf:al2023) and its perf variant (nano-perf:perf).
+# AL2023 locks its repos to the base image's release, so a stale base installs
+# stale packages: upgrade to the latest release first, before anything else.
+# Build with ./build_images.sh (it pulls a fresh amazonlinux:2023).
+FROM amazonlinux:2023 AS base
+RUN dnf upgrade -y --releasever=latest \
+ && dnf install -y --releasever=latest e2fsprogs util-linux procps-ng bash \
+ && dnf clean all && command -v mkfs.ext4 mount
+
+FROM base AS perf
+RUN dnf install -y --releasever=latest perf && dnf clean all && command -v perf

@@ -146,6 +146,14 @@ The backup bucket is retained on purpose; empty and delete it by hand when it is
 The SecureStrings were made outside the stack, so delete them too: `aws ssm delete-parameters --names /cbase-vm/env/CBASE_JWT_SECRET /cbase-vm/env/CBASE_ADMIN_TOKEN /cbase-vm/env/CBASE_ORIGIN_SECRET`.
 The releases under `s3://<CodeBucket>/vm/` stay until removed.
 
+## OS updates
+
+The VM picks up OS fixes only through new AMIs, because the boot script runs no `dnf` and AL2023 repos are locked to the AMI's release.
+The procedure is a monthly ASG instance refresh, which replaces the instance with one launched from the latest AL2023 AMI.
+Schedule: the first Monday of each month, and at once when a security advisory names a package on the VM.
+This is a schedule note only; no AWS resource carries it.
+The rig image is rebuilt the same way: `c_base/bench/nano/build_images.sh` pulls a fresh amazonlinux:2023 and upgrades with `--releasever=latest`.
+
 ## Cost
 
 About $3.07 a month for the t4g.nano on demand, plus $0.16 for the 2 GB gp3 volume.
