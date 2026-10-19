@@ -236,7 +236,7 @@ out:
 static int seed(cb_store *s) { return s->app && s->app->seed ? s->app->seed(s) : CB_OK; }
 
 // ---- SQLite's allocator ---------------------------------------------------------------------
-// SQLite's row buffers (a stored game row is several KB: VdbeMemGrow for the
+// SQLite's row buffers (a stored row is several KB: VdbeMemGrow for the
 // record being written, the blob being read) took an 8 KB musl malloc group
 // that was mmap'ed and munmap'ed on nearly every request, because mallocng
 // unmaps a group when its last slot is freed (perf: 2 mmap + 2 munmap a move,
@@ -421,7 +421,7 @@ static bool cond_holds(const cb_item *cur, bool exists, const cb_iwrite *w) {
 // transaction. old (may be NULL) gets the item as it was, whether the write
 // went through or its condition refused it.
 // The two items one write works on (the stored one, the one it becomes) are the
-// calling thread's, kept between writes: a stored game row is several KB, and a
+// calling thread's, kept between writes: a stored row is several KB, and a
 // fresh buffer grown by realloc every write was an 8 KB musl malloc group
 // mmap'ed and munmap'ed per write (mallocng unmaps a group when its last slot is
 // freed; perf showed 2 mmap + 2 munmap a move). item_apply never nests. A buffer

@@ -1,6 +1,6 @@
 // store_copy.h - copying items from one store into another, and checking the copy.
 //
-// The body of cbase-export (foolish/server/migrate/export.c: a DynamoDB table into the SQLite file
+// The body of cbase-export (a product's export tool: a remote table into the file
 // `cbase serve` opens), kept here so a test can run it without a table. It works on the item layer
 // (items.h), so it is the same for any product's rows and loses nothing: an item is its pk and sk and
 // every attribute it holds, the index keys (gsi1pk .. gsi2sk) and the TTL pair among them.

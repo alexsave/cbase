@@ -187,7 +187,7 @@ void cb_loop_remove(cb_loop *l, int fd) {
 // An id is (sequence << TIMER_SLOT_BITS) | slot, so the order on ids is the
 // order of creation, and the slot is where pos[] keeps the timer's heap
 // index: a cancel is a lookup and a sift, O(log n), however many timers wait
-// (one per bot game under serve). A stale id finds a slot that is free or
+// (one per waiting job under serve). A stale id finds a slot that is free or
 // reused, and its id there differs.
 
 #define TIMER_SLOT_BITS 20

@@ -2,10 +2,10 @@
 // timers, and a way in from other threads.
 //
 // The loop thread owns every socket. It never blocks on anything but the wait:
-// handlers that touch SQLite, bcrypt or a game's lock run on the request pool
+// handlers that touch the store, bcrypt or a lock run on the request pool
 // (router.h CB_ROUTE_POOL) and hand their result back with cb_loop_post. A wake
 // costs the fds that are ready, not the fds that are registered (poll(2) was
-// 15% of a nano's CPU at 64 games and 62% at 512).
+// 15% of a nano's CPU at 64 clients and 62% at 512).
 //
 // THREADING. Everything here is loop-thread-only EXCEPT cb_loop_post and
 // cb_loop_stop, which any thread may call, and cb_loop_stop is also safe inside

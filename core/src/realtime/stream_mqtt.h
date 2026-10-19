@@ -82,7 +82,7 @@ bool cb_mqtt_user_ok(const char *user_id);
 enum { CB_MQTT_AWAIT_CONNECT = 0, CB_MQTT_OPEN, CB_MQTT_CLOSED };
 
 // The connection is small (about 300 bytes) and owns its variable parts on the
-// heap: the filters it holds (a game holds a handful, 50 bytes each), the
+// heap: the filters it holds (a client holds a handful, 50 bytes each), the
 // upgrade URL's token until CONNECT, and the unfinished packet when a message
 // ends inside one. The 4 KB packet buffer is a per-thread scratch of
 // cb_mqtt_on_bytes, not a field, and the old fixed arrays (subs[32][257], the

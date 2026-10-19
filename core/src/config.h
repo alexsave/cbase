@@ -115,7 +115,7 @@ void cb_config_each(const cb_config *cfg, cb_config_fn fn, void *ud);
 // The secrets as they must be to serve, once every source has been read
 // (the environment, then SSM under Lambda): the JWT secret must have been
 // given (a random one per process would sign users out at every restart),
-// under Lambda always and under serve unless CBASE_DEV=1; and every secret that is set must be at least 32 characters.
+// on the one-shot platform always and under serve unless CBASE_DEV=1; and every secret that is set must be at least 32 characters.
 // CB_OK, or CB_E_INVALID with a sentence in err.
 int cb_config_check_secrets(const cb_config *cfg, bool lambda, char *err, size_t cap);
 

@@ -13,8 +13,8 @@
 #include <stdio.h>
 #include <string.h>
 
-// The parser sets the request's method id; a request built by hand (a test, the
-// lambda event) has only the text, and is named here, once per handler entry.
+// The parser sets the request's method id; a request built by hand (a test, a platform
+// event) has only the text, and is named here, once per handler entry.
 static int meth_of(const cb_http_req *req) { return req->meth ? req->meth : cb_http_method_id(req->method); }
 
 // A liveness or readiness probe from the machine itself (systemd, a local
@@ -82,10 +82,10 @@ static void h_health(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
 }
 
 // GET /ready: readiness. /health says the process answers; this says the
-// store does too: one item read (a SQLite SELECT, a DynamoDB GetItem) of a key
+// store does too: one item read (a point read) of a key
 // that is never written, so CB_E_NOT_FOUND is the healthy answer. A full disk,
 // a corrupt or locked database or a dead table answers 503. Runs on the
-// request pool, not the loop: the read may wait (SQLite's busy timeout).
+// request pool, not the loop: the read may wait (the store's busy timeout).
 static void h_ready(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     (void)req;
     char b[256];

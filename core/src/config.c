@@ -29,7 +29,7 @@ static bool copy(char *dst, size_t cap, const char *name, const char *v, char *e
 // The request-worker default follows the CPU the process may actually use:
 // the cgroup quota (v2 cpu.max) when one is set, else the online CPUs, rounded
 // up and capped at 4. More workers than CPUs only add malloc and store lock
-// contention (measured: 1 worker at a 1 CPU quota moves 2.1x the games of 4).
+// contention (measured: 1 worker at a 1 CPU quota moves 2.1x the requests of 4).
 static long default_req_workers(void) {
     double cpus = 0;
     FILE *f = fopen("/sys/fs/cgroup/cpu.max", "r");
@@ -179,8 +179,8 @@ int cb_config_from_env(cb_config *c, char *err, size_t cap) {
         snprintf(err, cap, "CBASE_LOG_LEVEL=%s is not debug, info, warn or error", lvl);
         return CB_E_INVALID;
     }
-    // The lengths of what the environment gave (SSM's are checked again
-    // once read, main_lambda.c); whether the JWT secret had to be given is
+    // The lengths of what the environment gave (the platform parameter store's are
+    // checked again once read); whether the JWT secret had to be given is
     // the caller's (cb_config_check_secrets, cb_config_check_serve).
     return check_lengths(c, err, cap);
 }

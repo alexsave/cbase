@@ -52,8 +52,6 @@
 1 c_base/core/src/auth/auth.h /\bbots?\b/i
 1 c_base/core/src/auth/auth.h /\bcards?\b/i
 1 c_base/core/src/auth/bcrypt.h /lambda/i
-2 c_base/core/src/auth/jwt.c /\baws\b/i
-1 c_base/core/src/auth/jwt.h /\baws\b/i
 1 c_base/core/src/auth/names.h /\bbots?\b/i
 1 c_base/core/src/auth/names.h /\brosters?\b/i
 1 c_base/core/src/auth/names.h /\bleaderboards?\b/i
@@ -136,8 +134,6 @@
 1 c_base/core/src/net/http.c /foolish/i
 1 c_base/core/src/net/http.h /lambda/i
 1 c_base/core/src/net/http.h /\bgames?\b/i
-1 c_base/core/src/net/loop.h /sqlite/i
-1 c_base/core/src/net/loop.h /\bgames?\b/i
 1 c_base/core/src/net/router.h /cloudfront/i
 1 c_base/core/src/net/router.h /sqlite/i
 3 c_base/core/src/net/router.h /\bgames?\b/i

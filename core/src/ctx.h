@@ -40,7 +40,7 @@ typedef struct cb_provider cb_provider;   // cbase/provider.h
 typedef int (*cb_job_start_fn)(cb_ctx *ctx, const char *job, const char *key);
 
 // The same, started after delay_ms without holding a thread meanwhile (serve:
-// a loop timer). A provider without one (lambda: one invocation per drive)
+// a loop timer). A provider without one (a one-shot platform: one invocation per drive)
 // leaves it NULL and the caller waits in place.
 typedef int (*cb_job_start_after_fn)(cb_ctx *ctx, const char *job, const char *key, int64_t delay_ms);
 
