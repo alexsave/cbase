@@ -232,9 +232,9 @@ void cb_store_init(cb_store *s, const cb_store_ops *ops, void *impl);
 // Opens SQLite at `path`, applying providers/local/sql/schema.sql (embedded) under a
 // PRAGMA user_version check. CB_OK and *out, or a CB_E_*.
 int cb_store_open_sqlite(const char *path, cb_store **out);
-// Gives back what the calling thread's SQLite store keeps between requests (its two write-scratch
-// items) and what the process-wide block pools hold (store_sqlite.c "SQLite's allocator"). Nothing
-// is needed for correctness; a leak-counting test calls it after a request, and a process may at exit.
+// Gives back what the calling thread's local store keeps between requests (write-scratch items) and
+// what the process-wide block pools hold. Nothing is needed for correctness; a leak-counting test
+// calls it after a request, and a process may at exit.
 void cb_store_sqlite_drain(void);
 // Opens the DynamoDB table `table` in the region and with the credentials the
 // Lambda environment provides (aws/sigv4.h cb_aws_creds_from_env).
