@@ -55,7 +55,7 @@ static int fake_get(void *ud, const char *key, const char *path) {
 
 static void fresh(void) {
     snprintf(g_dir, sizeof g_dir, "/tmp/unit_backup_%d", (int)getpid());
-    char cmd[400];
+    char cmd[2 * sizeof g_dir + 32];
     snprintf(cmd, sizeof cmd, "rm -rf %s && mkdir -p %s", g_dir, g_dir);
     T_CHECK(system(cmd) == 0);
     g_puts = g_gets = g_fail_put = g_fail_get = g_corrupt_get = g_empty_get = 0;

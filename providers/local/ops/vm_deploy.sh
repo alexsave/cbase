@@ -73,7 +73,7 @@ if [ -n "$bin" ]; then
   serve_release="$(upload "$bin" "vm/cbase-serve-$version")"
 else
   serve_release="$(aws ssm get-parameter --name /cbase-vm/release/serve --query Parameter.Value --output text 2>/dev/null || true)"
-  [ -n "$serve_release" ] && [ "$serve_release" != None ] || die "no BIN and no /cbase-vm/release/serve to keep: name a binary for a first deploy"
+  if [ -z "$serve_release" ] || [ "$serve_release" = None ]; then die "no BIN and no /cbase-vm/release/serve to keep: name a binary for a first deploy"; fi
   echo "keeping the live release"
 fi
 echo "serve release: $serve_release"

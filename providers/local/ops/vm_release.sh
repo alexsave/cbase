@@ -71,7 +71,7 @@ run_on_vm() {
   # shellcheck disable=SC2016 # the backticks are a JMESPath literal
   id="$(aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$stack" \
         --query 'AutoScalingGroups[0].Instances[?LifecycleState==`InService`].InstanceId | [0]' --output text)"
-  [ -n "$id" ] && [ "$id" != None ] || die "no InService instance in $stack"
+  if [ -z "$id" ] || [ "$id" = None ]; then die "no InService instance in $stack"; fi
   params="$(printf '%s\n' "$@" | python3 -c 'import json,sys; print(json.dumps({"commands": sys.stdin.read().splitlines()}))')"
   cmd="$(aws ssm send-command --instance-ids "$id" --document-name AWS-RunShellScript \
         --timeout-seconds 600 --parameters "$params" --query Command.CommandId --output text)"
