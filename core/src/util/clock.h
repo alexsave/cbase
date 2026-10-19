@@ -15,6 +15,7 @@
 
 int64_t cb_now_ms(void);    // CLOCK_REALTIME, ms since 1970-01-01T00:00:00Z
 int64_t cb_mono_ms(void);   // CLOCK_MONOTONIC, ms since an arbitrary start
+int64_t cb_mono_us(void);   // CLOCK_MONOTONIC, microseconds
 void    cb_sleep_ms(int64_t ms);
 
 // "2026-10-13T12:34:56.789000+00:00": UTC, microsecond precision, the way

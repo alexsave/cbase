@@ -142,6 +142,7 @@ int cb_process_main(const cb_provider *prov, const cb_app *app, int argc, char *
     cb_server_opts_default(&o);
     o.max_body = cfg.max_body;
     o.max_conns = cfg.max_conns;
+    o.inline_budget_us = cfg.inline_budget_us;
     // A connection is one fd (a WebSocket is the same fd), plus the store, the
     // listener and the wake channel: lift the soft limit to what the cap needs
     // when the hard limit allows, so the cap is the limit and not a default 1024.

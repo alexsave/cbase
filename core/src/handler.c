@@ -65,6 +65,11 @@ bool cb_handle_on_loop(const cb_ctx *ctx, const cb_http_req *req) {
     return !r || (r->flags & CB_ROUTE_LOOP);
 }
 
+bool cb_handle_inline_ok(const cb_ctx *ctx, const cb_http_req *req) {
+    const cb_route *r = cb_router_match(ctx->router, meth_of(req), req->path, NULL);
+    return r && (r->flags & CB_ROUTE_INLINE);
+}
+
 // GET /health: liveness for the load balancer, the smoke tests and the deploy
 // check. Plain text, never JSON: it is read by people and by `grep`.
 static void h_health(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {

@@ -8,6 +8,7 @@
 #ifndef CB_POOL_H
 #define CB_POOL_H
 
+#include <stdbool.h>
 #include <stddef.h>
 
 typedef struct cb_pool cb_pool;
@@ -19,6 +20,9 @@ cb_pool *cb_pool_new(int threads, const char *name);
 // Queues fn(ud). CB_OK, or CB_E_STATE once the pool is stopping (fn is not run
 // and ud is the caller's to free).
 int cb_pool_submit(cb_pool *p, cb_task_fn fn, void *ud);
+// true when no task is queued or running: one atomic load, no lock. A
+// caller that acts on it must tolerate the answer going stale at once.
+bool cb_pool_idle(cb_pool *p);
 // Tasks queued and not yet started.
 size_t cb_pool_pending(cb_pool *p);
 // Stops taking tasks, runs every task already queued, joins the workers and

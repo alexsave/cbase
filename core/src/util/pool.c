@@ -4,6 +4,7 @@
 #include "str.h"
 
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,6 +20,7 @@ struct cb_pool {
     pthread_cond_t  cv;
     task *head, *tail;
     size_t pending;
+    atomic_size_t outstanding;   // queued + running: what cb_pool_idle reads
     bool stopping;
     int n;
     pthread_t *threads;
@@ -51,6 +53,7 @@ static void *worker(void *arg) {
         pthread_mutex_unlock(&p->lock);
         t->fn(t->ud);
         free(t);
+        atomic_fetch_sub_explicit(&p->outstanding, 1, memory_order_release);
     }
 }
 
@@ -86,10 +89,13 @@ int cb_pool_submit(cb_pool *p, cb_task_fn fn, void *ud) {
     if (p->tail) p->tail->next = t; else p->head = t;
     p->tail = t;
     p->pending++;
+    atomic_fetch_add_explicit(&p->outstanding, 1, memory_order_relaxed);
     pthread_cond_signal(&p->cv);
     pthread_mutex_unlock(&p->lock);
     return CB_OK;
 }
+
+bool cb_pool_idle(cb_pool *p) { return atomic_load_explicit(&p->outstanding, memory_order_acquire) == 0; }
 
 size_t cb_pool_pending(cb_pool *p) {
     pthread_mutex_lock(&p->lock);

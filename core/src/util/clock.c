@@ -11,6 +11,8 @@ int64_t cb_now_ms(void) { return host_real_ms(); }
 
 int64_t cb_mono_ms(void) { return host_mono_ms(); }
 
+int64_t cb_mono_us(void) { return host_mono_us(); }
+
 void cb_sleep_ms(int64_t ms) { host_sleep_ms(ms); }
 
 // Days since 1970-01-01 for a proleptic Gregorian date (Howard Hinnant's

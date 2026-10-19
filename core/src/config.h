@@ -90,6 +90,11 @@ typedef struct {
     // connections (a new one past it is refused, and logged), CBASE_LISTEN_BACKLOG 512.
     int  max_conns;
     int  listen_backlog;
+    // Inline dispatch (net/server.h): a CB_ROUTE_INLINE request runs on the loop
+    // thread when the request pool is idle and nothing else is ready; a request
+    // that takes longer than this many microseconds switches inline off for 5 s.
+    // CBASE_INLINE_BUDGET_US, default 2000; 0 turns inline dispatch off.
+    int  inline_budget_us;
     // The bursts of the rate limits (rate_limits.h), per window, indexed by
     // cb_limit_kind (0 = the rule's own default). Set by CBASE_LIMIT_<KIND>:
     // SIGNIN_IP 20/5min, SIGNIN_NAME 10/5min, SIGNUP_IP 5/h, SIGNUP_ALL 60/h,

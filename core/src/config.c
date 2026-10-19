@@ -158,6 +158,8 @@ int cb_config_from_env(cb_config *c, char *err, size_t cap) {
     c->max_conns = (int)v;
     if (!num("CBASE_LISTEN_BACKLOG", 512, 1, 65535, &v, err, cap)) return CB_E_INVALID;
     c->listen_backlog = (int)v;
+    if (!num("CBASE_INLINE_BUDGET_US", 2000, 0, 1000000, &v, err, cap)) return CB_E_INVALID;
+    c->inline_budget_us = (int)v;
     for (int i = 0; i < CB_CONFIG_LIMITS; i++) {
         if (!num(cb_config_limit_names[i], 0, 1, 1000000, &v, err, cap)) return CB_E_INVALID;
         c->limit_burst[i] = (int)v;
@@ -209,6 +211,8 @@ void cb_config_each(const cb_config *c, cb_config_fn fn, void *ud) {
     fn("CBASE_MAX_CONNS", b, false, ud);
     snprintf(b, sizeof b, "%d", c->listen_backlog);
     fn("CBASE_LISTEN_BACKLOG", b, false, ud);
+    snprintf(b, sizeof b, "%d", c->inline_budget_us);
+    fn("CBASE_INLINE_BUDGET_US", b, false, ud);
     for (int i = 0; i < CB_CONFIG_LIMITS; i++) {
         if (c->limit_burst[i]) snprintf(b, sizeof b, "%d", c->limit_burst[i]);
         else snprintf(b, sizeof b, "(default)");

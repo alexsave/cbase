@@ -50,6 +50,7 @@ struct cb_loop {
     int nt, capt;
     cb_after_fn after;
     void *after_ud;
+    int ev_n, ev_i;   // this poll returned ev_n events; ev_i of them are dispatched or being dispatched
     int *pos;          // slot -> heap index (see the timers)
     int *freel, nfree, npos;   // free slots, and slots ever handed out
     uint64_t next_timer_id;
@@ -343,7 +344,9 @@ int cb_loop_run(cb_loop *l) {
             break;
         }
         l->now = cb_mono_ms();
+        l->ev_n = r;
         for (int i = 0; i < r; i++) {
+            l->ev_i = i + 1;
             int fd = ev[i].fd;
             if (fd == l->wake[0]) { drain_posts(l); continue; }
             // The watch may have been removed, or the fd reused, by an earlier callback.
@@ -354,6 +357,7 @@ int cb_loop_run(cb_loop *l) {
             
             w->fn(l, fd, ev[i].events, w->ud);
         }
+        l->ev_n = l->ev_i = 0;
         run_timers(l);
         if (l->after) l->after(l, l->after_ud);
     }
@@ -367,6 +371,8 @@ int cb_loop_run(cb_loop *l) {
 }
 
 int64_t cb_loop_now(const cb_loop *l) { return l->now; }
+
+int cb_loop_ready_left(const cb_loop *l) { return l->ev_n - l->ev_i; }
 
 bool cb_loop_on_thread(const cb_loop *l) {
     return atomic_load(&((cb_loop *)l)->running) && pthread_equal(pthread_self(), l->thread);
