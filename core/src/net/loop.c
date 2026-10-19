@@ -48,6 +48,8 @@ struct cb_loop {
 
     timer *heap;       // min-heap on (at, id)
     int nt, capt;
+    cb_after_fn after;
+    void *after_ud;
     int *pos;          // slot -> heap index (see the timers)
     int *freel, nfree, npos;   // free slots, and slots ever handed out
     uint64_t next_timer_id;
@@ -228,6 +230,8 @@ static void heap_remove(cb_loop *l, int i) {
     if (i < l->nt) { heap_down(l, i); heap_up(l, i); }
 }
 
+void cb_loop_after(cb_loop *l, cb_after_fn fn, void *ud) { l->after = fn; l->after_ud = ud; }
+
 uint64_t cb_loop_timer(cb_loop *l, int64_t delay_ms, cb_timer_fn fn, void *ud) {
     if (l->nt == l->capt) {
         int cap = l->capt ? l->capt * 2 : 32;
@@ -351,6 +355,7 @@ int cb_loop_run(cb_loop *l) {
             w->fn(l, fd, ev[i].events, w->ud);
         }
         run_timers(l);
+        if (l->after) l->after(l, l->after_ud);
     }
     // Posts that raced the stop are run, so their owners can free what they carry.
     drain_posts(l);

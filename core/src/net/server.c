@@ -35,6 +35,7 @@ struct cb_ws {
     bool upgrade_after;  // become a WebSocket once `out` is written
     bool closing;        // a WebSocket CLOSE has been queued
     bool buried;         // closed and on the server's grave list
+    bool dirty;          // on the server's dirty list: frames queued, flushed at the end of the loop iteration
     cb_buf in, out;
     cb_http_req *req;    // in flight only: &g_req for a handler that runs on the loop, the pool job's copy otherwise
     struct job *job;     // the pool job holding that copy (server free list), NULL when req is &g_req
@@ -69,6 +70,8 @@ struct cb_server {
     int lfd;
     uint64_t next_id;
     conn *all;
+    conn **dirty;                // connections with frames queued by cb_ws_send this iteration
+    int ndirty, capdirty;
     struct job *free_jobs;       // loop thread only: jobs not in flight
     struct job_chunk *job_chunks;
     // Closed connections wait here until the next loop pass, so a callback
@@ -316,6 +319,8 @@ static int queue_frame(conn *c, int opcode, const void *data, size_t len) {
     return c->out.oom ? CB_E_NOMEM : CB_OK;
 }
 
+static void mark_dirty(conn *c);
+
 int cb_ws_send(cb_ws *c, int opcode, const void *data, size_t len) {
     if (c->state != C_WS || c->closing || c->dead) return CB_E_STATE;
     if (c->out.len + len > CB_WS_MAX_QUEUED) {
@@ -324,7 +329,7 @@ int cb_ws_send(cb_ws *c, int opcode, const void *data, size_t len) {
         return CB_E_FULL;
     }
     int rc = queue_frame(c, opcode, data, len);
-    if (rc == CB_OK) flush(c);
+    if (rc == CB_OK) mark_dirty(c);
     return rc;
 }
 
@@ -402,7 +407,42 @@ static bool ws_frames(conn *c) {
 
 // ---- I/O and lifetime -------------------------------------------------------------
 
+// cb_ws_send queues and marks; the loop's end-of-iteration hook writes each
+// marked connection once. A commit's view and cast pushes to one player, and
+// every push of a drain that reaches the same socket, leave in one send().
+static void mark_dirty(conn *c) {
+    cb_server *s = c->srv;
+    if (c->dirty) return;
+    if (s->ndirty == s->capdirty) {
+        int cap = s->capdirty ? s->capdirty * 2 : 64;
+        conn **d = realloc(s->dirty, (size_t)cap * sizeof *d);
+        if (!d) { flush(c); return; }
+        s->dirty = d;
+        s->capdirty = cap;
+    }
+    s->dirty[s->ndirty++] = c;
+    c->dirty = true;
+}
+
+static void flush_dirty(cb_loop *l, void *ud) {
+    (void)l;
+    cb_server *s = ud;
+    // flush can close connections (the one it writes, never another), so the
+    // list is walked by index and entries a free nulled are skipped.
+    for (int i = 0; i < s->ndirty; i++) {
+        conn *c = s->dirty[i];
+        if (!c) continue;
+        c->dirty = false;
+        if (!c->dead && !c->buried) flush(c);
+    }
+    s->ndirty = 0;
+}
+
 static void conn_free(conn *c) {
+    if (c->dirty) {
+        cb_server *s = c->srv;
+        for (int i = 0; i < s->ndirty; i++) if (s->dirty[i] == c) s->dirty[i] = NULL;
+    }
     cb_buf_free(&c->in);
     cb_buf_free(&c->out);
     cb_buf_free(&c->msg);
@@ -611,6 +651,7 @@ int cb_server_listen(cb_server *s, const char *host, int port, int *bound_port) 
     int bound = ntohs(sa.ss_family == AF_INET6 ? ((struct sockaddr_in6 *)&sa)->sin6_port : ((struct sockaddr_in *)&sa)->sin_port);
     if (bound_port) *bound_port = bound;
     if (cb_loop_add(s->ctx->loop, fd, CB_EV_READ, on_accept, s) != CB_OK) { close(fd); return CB_E_IO; }
+    cb_loop_after(s->ctx->loop, flush_dirty, s);
     s->lfd = fd;
     s->sweep_timer = cb_loop_timer(s->ctx->loop, 1000, sweep, s);
     return CB_OK;
@@ -641,6 +682,7 @@ void cb_server_free(cb_server *s) {
     if (s->sweep_timer) cb_loop_cancel(s->ctx->loop, s->sweep_timer);
     reap(s->ctx->loop, s);
     if (s->lfd >= 0) close(s->lfd);
+    free(s->dirty);
     while (s->job_chunks) { job_chunk *k = s->job_chunks; s->job_chunks = k->next; free(k); }
     free(s);
 }

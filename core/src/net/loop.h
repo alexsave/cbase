@@ -46,6 +46,11 @@ void cb_loop_remove(cb_loop *l, int fd);
 uint64_t cb_loop_timer(cb_loop *l, int64_t delay_ms, cb_timer_fn fn, void *ud);
 // true when the timer was pending and will not run.
 bool cb_loop_cancel(cb_loop *l, uint64_t id);
+// Runs fn at the end of every loop iteration (after its events, posts and due
+// timers, before the next wait): where a server flushes what the iteration
+// queued, one write per connection however many frames it was given.
+typedef void (*cb_after_fn)(cb_loop *l, void *ud);
+void cb_loop_after(cb_loop *l, cb_after_fn fn, void *ud);
 
 // ANY THREAD: runs fn(ud) on the loop thread soon, in post order.
 // CB_OK, CB_E_NOMEM, or CB_E_STATE once the loop has stopped.
