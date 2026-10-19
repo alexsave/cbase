@@ -67,7 +67,7 @@ else
     docker exec nano-perf-srv sh -c 'cat /sys/fs/cgroup/cpu.stat' > "$out/srv_go.txt"
     : > "$out/release" ) &
   docker run --rm --name nano-perf-load --platform linux/arm64 --cpus=$ccpu --network container:nano-perf-srv \
-    --env-file $R/client.env -e BIN=/nano/bin/${P3BIN:-p3load2-linux} -e P3BOTIDS=${P3BOTIDS:-} -e PORT=8080 -e P3HOST=127.0.0.1 \
+    --env-file $R/client.env -e BIN=/nano/bin/${P3BIN:-p3load2-linux} -e P3BOTIDS=${P3BOTIDS:-} ${P3DEBUG:+-e P3DEBUG=1} -e PORT=8080 -e P3HOST=127.0.0.1 \
     -v $R:/nano:ro -v "$out":/out nano-perf:al2023 sh -c '/out/clients.sh; cat /sys/fs/cgroup/cpu.stat > /out/load_cpu.txt'
 fi
 docker exec nano-perf-srv sh -c 'cat /sys/fs/cgroup/cpu.stat; echo; wc -c < /data/server.log; du -sk /data/cbase; cat /sys/fs/cgroup/memory.peak' > "$out/srv_after.txt"

@@ -180,6 +180,7 @@ static void submit_ask(int kind) {
 static void decide(void) {
     if (!g_have) return;
     int st = g_c.view.status;
+    if (getenv("P3DEBUG")) fprintf(stderr, "%s decide st %d np %d seat %d v %u played_v %u\n", g_name, st, g_c.view.num_players, g_c.view.my_seat, g_c.view.version, g_played_v);
     if (st == GAME_STATUS_GAME_OVER) { g_game_over = 1; return; }
     if (st != GAME_STATUS_PLAYING) {   // the lobby
         static int bot_asked = -1;
@@ -197,7 +198,7 @@ static void decide(void) {
             int n = ask_encode(&a, body, sizeof body);
             submit(NC_DO_ASK, body, n, -1);
         }
-        if (!g_ready_sent && g_c.view.num_players >= g_seats && g_creator) { g_ready_sent = 1; submit_ask(ASK_START); }
+        if (!g_ready_sent && g_c.view.num_players >= g_seats && (g_creator || g_seats > 2)) { g_ready_sent = 1; submit_ask(ASK_START); }
         return;
     }
     if (g_play_pending || g_think_due >= 0) return;
@@ -219,7 +220,9 @@ static void apply_cast(const uint8_t *p, int n) {
     static uint8_t ident[4096];
     int il = client_identity(&g_c, ident, sizeof ident);
     if (il < 0) il = 0;
-    if (client_cast_open(&g_c, p, n, ident, il) < 0) return;
+    int cor = client_cast_open(&g_c, p, n, ident, il);
+    if (getenv("P3DEBUG")) fprintf(stderr, "%s cast n %d open %d\n", g_name, n, cor);
+    if (cor < 0) return;
     while (client_push_next(&g_c) == 1) {}
     client_push_final(&g_c);
     g_n_casts++;
@@ -244,6 +247,7 @@ static void on_done(const NcDone *d, const uint8_t *body) {
         snprintf(g_gid, sizeof g_gid, "%.*s", (int)d->gid_len, d->gid);
         break;
     case NC_DO_ASK:
+        if (getenv("P3DEBUG")) fprintf(stderr, "%s: ask done why %d code %d status %d v %u\n", g_name, d->why, d->code, d->status, d->version);
         if (d->why) fprintf(stderr, "%s: ask refused why %d code %d\n", g_name, d->why, d->code);
         if (!g_creator) g_joined = 1;
         break;
