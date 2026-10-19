@@ -181,6 +181,10 @@ static void logout_password_delete(void) {
     T_EQ_INT(cb_auth_signin(ctx.auth, "l@foolish.cards", "secret-11", &d2), CB_OK);
     T_EQ_INT(cb_auth_refresh(ctx.auth, d2.refresh_token, &d2b), CB_OK);
     T_EQ_INT(cb_auth_logout(ctx.auth, &u, CB_LOGOUT_LOCAL), CB_OK);
+    // The ended session's access token stops verifying at once, not at its expiry; the other session's goes on.
+    cb_user chk;
+    T_EQ_INT(cb_auth_verify_token(ctx.auth, s.access_token, &chk), CB_E_AUTH);
+    T_EQ_INT(cb_auth_verify_token(ctx.auth, d2.access_token, &chk), CB_OK);
     T_EQ_INT(cb_auth_refresh(ctx.auth, s.refresh_token, &x), CB_AUTH_E_REFRESH_USED);
     T_EQ_INT(cb_auth_refresh(ctx.auth, d2b.refresh_token, &d2c), CB_OK);
     // d2b was rotated a moment ago, but the session's end decides first: a
@@ -188,8 +192,9 @@ static void logout_password_delete(void) {
     T_EQ_INT(cb_auth_logout(ctx.auth, &u, CB_LOGOUT_GLOBAL), CB_OK);
     T_EQ_INT(cb_auth_refresh(ctx.auth, d2c.refresh_token, &x), CB_AUTH_E_REFRESH_USED);
     T_EQ_INT(cb_auth_refresh(ctx.auth, d2b.refresh_token, &x), CB_AUTH_E_REFRESH_USED);
-    // The access token lives until it expires, as GoTrue's did.
-    T_EQ_INT(cb_auth_verify_token(ctx.auth, s.access_token, &u), CB_OK);
+    // Every session's access token is over with the global sign-out.
+    T_EQ_INT(cb_auth_verify_token(ctx.auth, d2.access_token, &chk), CB_E_AUTH);
+    T_EQ_INT(cb_auth_verify_token(ctx.auth, d2c.access_token, &chk), CB_E_AUTH);
 
     T_EQ_INT(cb_auth_change_password(ctx.auth, &u, "secret-11", "secret-11"), CB_AUTH_E_SAME_PASSWORD);
     T_EQ_INT(cb_auth_change_password(ctx.auth, &u, "secret-11", "short"), CB_AUTH_E_WEAK_PASSWORD);
@@ -228,6 +233,10 @@ static void password_change_needs_the_current_one_and_ends_the_rest(void) {
     g_fake_now += 1000;
     T_EQ_INT(cb_auth_verify_token(ctx.auth, mine.access_token, &u), CB_OK);
     T_EQ_INT(cb_auth_change_password(ctx.auth, &u, "first-pass-1", "second-pass-2"), CB_OK);
+    // The change ended every other session at once: the thief's access token is over, the caller's goes on.
+    cb_user chk2;
+    T_EQ_INT(cb_auth_verify_token(ctx.auth, thief.access_token, &chk2), CB_E_AUTH);
+    T_EQ_INT(cb_auth_verify_token(ctx.auth, mine.access_token, &chk2), CB_OK);
     // The other session is over; the caller's refreshes on.
     T_EQ_INT(cb_auth_refresh(ctx.auth, thief.refresh_token, &x), CB_AUTH_E_REFRESH_USED);
     cb_session mine2;

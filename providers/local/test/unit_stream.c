@@ -20,6 +20,7 @@
 
 #include "ask.h"
 #include "netclient.h"
+#include "../../../../shared/c/stream_frame.h"
 #include "netwire.h"
 
 #include <pthread.h>
@@ -143,7 +144,7 @@ static pthread_t g_thread;
 static void *loop_run(void *arg) { cb_loop_run(g_ctx.loop); return NULL; }
 static void drain_post(cb_loop *l, void *ud) { cb_server_drain(g_ctx.server, 2000); }
 
-// Sends every message the client has due, as binary (MQTT packets).
+// Sends every frame the client has due, one binary message each.
 static void flush(int fd, int64_t now) {
     for (const NcOut *o; (o = nc_stream_next(now));) T_EQ_INT(tc_ws_send(fd, CB_WS_OP_BIN, o->bytes, o->len), 0);
 }
@@ -206,7 +207,7 @@ static void serve_end_to_end(void) {
     T_EQ_INT(r.status, 404);
     tc_response_free(&r);
 
-    // The kernel's client over MQTT to the hub, as against IoT Core.
+    // The kernel's client over the socket to the hub.
     nc_reset();
     session_for(U1);
     T_EQ_INT(nc_stream_sub(NW_SUB_GAMES, NULL, 0), NW_OK);
@@ -216,18 +217,18 @@ static void serve_end_to_end(void) {
     char path[NC_PATH_MAX + 1];
     memcpy(path, q->path, q->path_len);
     path[q->path_len] = 0;
-    T_EQ_STR(path, "/mqtt");
-    int fd = tc_ws_open(g_port, path, "Sec-WebSocket-Protocol: mqtt\r\n");
+    T_EQ_STR(path, "/ws");
+    int fd = tc_ws_open(g_port, path, NULL);
     T_CHECK(fd >= 0);
     int64_t t0 = cb_now_ms();
     nc_stream_opened(t0);
-    flush(fd, t0);   // the CONNECT
+    flush(fd, t0);   // the HELLO
     cb_buf m;
     cb_buf_init(&m);
     cb_buf_reset(&m);
-    T_EQ_INT(tc_ws_recv(fd, 2000, &m), CB_WS_OP_BIN);   // the CONNACK
+    T_EQ_INT(tc_ws_recv(fd, 2000, &m), CB_WS_OP_BIN);   // the READY
     nc_stream_in(m.p, (int)m.len, 0, t0);
-    flush(fd, t0);   // the three SUBSCRIBEs, in one message
+    flush(fd, t0);   // the three SUBs
     const NcEvent *e = next_event(fd, 2000, &m);
     T_CHECK(e->kind == NC_EV_SEATED && e->gid_len == 6);
     T_CHECK(nc_stream_next(t0 + 100) == NULL);   // all answered or waiting: nothing to send
@@ -251,7 +252,7 @@ static void serve_end_to_end(void) {
     // A game held on its own stream is given no dashboard views (its casts
     // animate it): let it go, and the view of it is handed out.
     T_EQ_INT(nc_stream_unsub(NW_SUB_GAME, G, 6), NW_OK);
-    flush(fd, t0);   // the UNSUBSCRIBE
+    flush(fd, t0);   // the UNSUB
     rt_publish_view(g_ctx.rt, U1, &v, false);
     e = next_event(fd, 2000, &m);   // the stale cast made no event: this is the view
     T_CHECK(e->kind == NC_EV_VIEW && e->version == 11 && e->what == NW_SUB_GAMES);
@@ -267,17 +268,17 @@ static void serve_end_to_end(void) {
     rt_publish_chat(g_ctx.rt, G2, &ch, members, 1);
     e = next_event(fd, 2000, &m);
     T_CHECK(e->kind == NC_EV_CHAT && e->chat.message_len == 3 && e->gid_len == 6);
-    // The keep-alive.
+    // The client's ping.
     flush(fd, cb_now_ms() + NC_PING_MS);
-    // The UNSUBACK runs on the pool while pushes go straight to the loop, so it
-    // may arrive only now: skip it.
+    // Frames the hub answers inline arrive in order, but the UNSUB's REPLY may
+    // trail the pushes: skip it.
     int op;
     do {
         cb_buf_reset(&m);
         op = tc_ws_recv(fd, 2000, &m);
-    } while (op == CB_WS_OP_BIN && m.len >= 1 && m.p[0] == 0xB0);
+    } while (op == CB_WS_OP_BIN && m.len >= 1 && m.p[1] == SF_REPLY);
     T_EQ_INT(op, CB_WS_OP_BIN);
-    T_EQ_MEM(m.p, m.len, ((const uint8_t[]){ 0xD0, 0 }), 2);   // PINGRESP
+    T_EQ_MEM(m.p, m.len, ((const uint8_t[]){ SF_V, SF_PONG }), 2);
     // A text frame closes the socket.
     T_EQ_INT(tc_ws_send(fd, CB_WS_OP_TEXT, "!!!!", 4), 0);
     cb_buf_reset(&m);

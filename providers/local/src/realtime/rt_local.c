@@ -2,15 +2,15 @@
 //
 // GET /ws upgrades to a plain binary WebSocket. One WebSocket message is one
 // frame (shared/c/stream_frame.h): the client says HELLO (its access token),
-// SUB and UNSUB (a game to watch), REQ (an HTTP route's request) and PING; the
+// SUB and UNSUB (a room to watch), REQ (an HTTP route's request) and PING; the
 // server answers READY, REPLY and PONG and pushes the product's own frames.
 //
 // WHO HEARS A PUSH. No topics. A target (realtime.h cb_rt_to) is either a USER
-// (its family's pattern names {user}: views, a seat's casts, chat), delivered
-// to every open connection of that user, or a GAME's SPECTATORS (the pattern
-// names only {doc}), delivered to the connections that sent SUB for that game.
+// (its family's pattern names {user}: views, a own casts, chat), delivered
+// to every open connection of that user, or a room's SPECTATORS (the pattern
+// names only {doc}), delivered to the connections that sent SUB for that room.
 // The hub keeps two maps and nothing per subscription: user -> connections
-// (the connections chain through their user's hash bucket) and game ->
+// (the connections chain through their user's hash bucket) and room ->
 // spectators.
 //
 // THREADS. Every socket and both maps belong to the loop thread. A HELLO and a
@@ -61,7 +61,7 @@ typedef struct msg {
     char text[];
 } msg;
 
-#define WATCH_MAX 32   // games one connection may watch; one more is refused (429)
+#define WATCH_MAX 32   // rooms one connection may watch; one more is refused (429)
 
 typedef struct lconn {
     struct lconn *prev, *next;     // every connection
@@ -78,10 +78,10 @@ typedef struct lconn {
     msg *in_head, *in_tail;        // frames not handled yet
     size_t in_bytes;
     uint8_t nwatch;
-    char **watch;                  // the games watched, malloc'd [0..nwatch)
+    char **watch;                  // the rooms watched, malloc'd [0..nwatch)
 } lconn;
 
-// One game's spectators.
+// One room's spectators.
 typedef struct gent {
     struct gent *next;
     uint64_t h;
@@ -96,7 +96,7 @@ typedef struct {
     lconn **byid;                  // ws id -> lconn, chained on hnext
     lconn **byuser;                // user id -> its open connections, chained on unext (same size)
     size_t nbyid, nconn;
-    gent **games;                  // game -> spectators, chained
+    gent **rooms;                  // room -> spectators, chained
     size_t ngames, nent;
     _Atomic uint64_t end_gen;      // bumped (any thread) whenever sessions were ended
 } local;
@@ -179,29 +179,29 @@ static void user_del(local *L, lconn *c) {
     c->unext = NULL;
 }
 
-static gent *game_find(local *L, const char *gid, uint64_t h) {
+static gent *room_find(local *L, const char *gid, uint64_t h) {
     if (!L->ngames) return NULL;
-    for (gent *e = L->games[h & (L->ngames - 1)]; e; e = e->next)
+    for (gent *e = L->rooms[h & (L->ngames - 1)]; e; e = e->next)
         if (e->h == h && strcmp(e->gid, gid) == 0) return e;
     return NULL;
 }
 
-static bool game_add(local *L, const char *gid, uint64_t id) {
+static bool room_add(local *L, const char *gid, uint64_t id) {
     uint64_t h = str_hash(gid);
-    gent *e = game_find(L, gid, h);
+    gent *e = room_find(L, gid, h);
     if (!e) {
         if (L->nent + 1 > L->ngames) {
             size_t nb = L->ngames ? L->ngames * 2 : 64;
             gent **tb = calloc(nb, sizeof *tb);
             if (!tb) return false;
             for (size_t i = 0; i < L->ngames; i++)
-                for (gent *x = L->games[i], *nx; x; x = nx) {
+                for (gent *x = L->rooms[i], *nx; x; x = nx) {
                     nx = x->next;
                     x->next = tb[x->h & (nb - 1)];
                     tb[x->h & (nb - 1)] = x;
                 }
-            free(L->games);
-            L->games = tb;
+            free(L->rooms);
+            L->rooms = tb;
             L->ngames = nb;
         }
         e = calloc(1, sizeof *e);
@@ -209,8 +209,8 @@ static bool game_add(local *L, const char *gid, uint64_t id) {
         e->gid = strdup(gid);
         if (!e->gid) { free(e); return false; }
         e->h = h;
-        e->next = L->games[h & (L->ngames - 1)];
-        L->games[h & (L->ngames - 1)] = e;
+        e->next = L->rooms[h & (L->ngames - 1)];
+        L->rooms[h & (L->ngames - 1)] = e;
         L->nent++;
     }
     if (e->n == e->cap) {
@@ -224,14 +224,14 @@ static bool game_add(local *L, const char *gid, uint64_t id) {
     return true;
 }
 
-static void game_del(local *L, const char *gid, uint64_t id) {
+static void room_del(local *L, const char *gid, uint64_t id) {
     uint64_t h = str_hash(gid);
-    gent *e = game_find(L, gid, h);
+    gent *e = room_find(L, gid, h);
     if (!e) return;
     for (uint32_t i = 0; i < e->n; i++)
         if (e->ids[i] == id) { e->ids[i] = e->ids[--e->n]; break; }
     if (e->n) return;
-    gent **pp = &L->games[h & (L->ngames - 1)];
+    gent **pp = &L->rooms[h & (L->ngames - 1)];
     while (*pp != e) pp = &(*pp)->next;
     *pp = e->next;
     L->nent--;
@@ -408,7 +408,7 @@ static void job_run(void *ud) {
 }
 
 // SUB and UNSUB change the hub's maps, so they run here on the loop. Only a
-// game's casts need a registration: the user's own views, seat casts and chat
+// room's casts need a registration: the user's own views, own casts and chat
 // reach every connection of theirs, and their reply is all a client waits for.
 static void do_sub(local *L, lconn *c, const sf_frame *f) {
     uint16_t status = 200;
@@ -420,7 +420,7 @@ static void do_sub(local *L, lconn *c, const sf_frame *f) {
         int at = watch_index(c, gid);
         if (f->kind == SF_UNSUB) {
             if (at >= 0) {
-                game_del(L, gid, c->ws_id);
+                room_del(L, gid, c->ws_id);
                 free(c->watch[at]);
                 c->watch[at] = c->watch[--c->nwatch];
             }
@@ -432,7 +432,7 @@ static void do_sub(local *L, lconn *c, const sf_frame *f) {
                 if (!nw || !copy) { if (nw) c->watch = nw; free(copy); status = 503; }
                 else {
                     c->watch = nw;
-                    if (!game_add(L, gid, c->ws_id)) { free(copy); status = 503; }
+                    if (!room_add(L, gid, c->ws_id)) { free(copy); status = 503; }
                     else c->watch[c->nwatch++] = copy;
                 }
             }
@@ -531,7 +531,7 @@ static void lconn_free(local *L, lconn *c) {
     else L->head = c->next;
     if (c->next) c->next->prev = c->prev;
     user_del(L, c);
-    for (int i = 0; i < c->nwatch; i++) { game_del(L, c->watch[i], c->ws_id); free(c->watch[i]); }
+    for (int i = 0; i < c->nwatch; i++) { room_del(L, c->watch[i], c->ws_id); free(c->watch[i]); }
     free(c->watch);
     lconn **pp = &L->byid[id_slot(c->ws_id, L->nbyid)];
     while (*pp && *pp != c) pp = &(*pp)->hnext;
@@ -553,12 +553,12 @@ static const cb_ws_handlers WS_HUB = { on_open, on_message, on_close };
 // ---- publishing ------------------------------------------------------------------------
 
 #define PUB_USER 1
-#define PUB_GAME 2
+#define PUB_ROOM 2
 
 typedef struct pub {
     cb_rt *rt;
-    int scope;                        // PUB_USER, PUB_GAME
-    char key[48];                     // the user id, or the game id
+    int scope;                        // PUB_USER, PUB_ROOM
+    char key[48];                     // the user id, or the room id
     size_t len, cap;
     uint8_t *frame;                   // the push, as it goes out
     struct pub *next;                 // on the free list
@@ -621,8 +621,8 @@ static void pub_on_loop(cb_loop *l, void *ud) {
             }
             ids[n++] = c->ws_id;
         }
-    } else if (p->scope == PUB_GAME) {
-        gent *e = game_find(L, p->key, str_hash(p->key));
+    } else if (p->scope == PUB_ROOM) {
+        gent *e = room_find(L, p->key, str_hash(p->key));
         if (e) {
             if (e->n > cap) {
                 ids = malloc(e->n * sizeof *ids);
@@ -643,14 +643,14 @@ static int local_deliver(cb_rt *rt, const cb_rt_to *to, const uint8_t *frame, si
     cb_loop *loop = rt->ctx->loop;
     if (!loop || !to->family) return 0;
     // A family that names {user} is the user's own, to all their connections; one that names
-    // only {doc} is the game's spectators'.
+    // only {doc} is the room's spectators'.
     bool user = strstr(to->family->pattern, "{user}") != NULL;
     const char *key = user ? to->user_id : to->doc_id;
     if (!key || !*key || strlen(key) >= sizeof ((pub *)0)->key) return 1;
     pub *p = pub_get();
     if (!p) return 1;
     p->rt = rt;
-    p->scope = user ? PUB_USER : PUB_GAME;
+    p->scope = user ? PUB_USER : PUB_ROOM;
     cb_strlcpy(p->key, key, sizeof p->key);
     if (p->cap < len) {
         free(p->frame);
@@ -669,7 +669,7 @@ static void local_free(cb_rt *rt) {
     while (L->head) lconn_free(L, L->head);
     free(L->byid);
     free(L->byuser);
-    free(L->games);
+    free(L->rooms);
     free(L);
     free(rt);
 }
