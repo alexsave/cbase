@@ -138,6 +138,18 @@ struct cb_sql {
     pthread_cond_t  cv;
     wreq           *qhead, *qtail;
     bool            leader;     // a thread is running a group
+    // The checkpointer (below). wal_n is the WAL's length in frames after the last commit, written by the
+    // WAL hook (under mu); wal_frames is the meter (frames appended); ck_waits counts the groups that
+    // waited for a pass.
+    atomic_int      wal_n;
+    atomic_ulong    wal_frames, ck_waits;
+    unsigned        page_size;
+    pthread_t       ck_th;
+    bool            ck_on, ck_want, ck_stop, ck_idle;
+    unsigned long   ck_pass;    // passes finished (under ck_mu)
+    pthread_mutex_t ck_mu;
+    pthread_cond_t  ck_cv;      // the checkpointer waits here for work
+    pthread_cond_t  ck_done;    // a writer held back by a full WAL waits here for a pass under mu
 };
 typedef struct cb_sql sq;
 
@@ -293,6 +305,11 @@ int cb_sql_read(cb_store *s, cb_sql_fn fn, void *ud) {
     return rc;
 }
 
+// The checkpointer's thresholds ("the checkpointer", below).
+#define CK_KICK 1000   // frames between passes: SQLite's own automatic checkpoint interval
+#define CK_CAP  8192   // frames (32 MB at 4 KB pages) at which a group waits for a pass that lets the WAL rewind
+static void ck_wait(sq *q);
+
 // ---- group commit ---------------------------------------------------------------------------
 //
 // Writes (a move's commit and its rows) queue instead of each taking the
@@ -349,6 +366,8 @@ int cb_sql_write(cb_store *s, cb_sql_fn fn, void *ud) {
     q->qhead = q->qtail = NULL;
     pthread_mutex_unlock(&q->qmu);
 
+    if (q->ck_on && atomic_load(&q->wal_n) >= CK_CAP) ck_wait(q);
+
     lock(q);
     run_group(q, list);
     unlock(q);
@@ -363,6 +382,139 @@ int cb_sql_write(cb_store *s, cb_sql_fn fn, void *ud) {
     pthread_mutex_unlock(&q->qmu);
     return r->rc;
 }
+
+// ---- the checkpointer ---------------------------------------------------------------------
+//
+// SQLite's own automatic checkpoint runs inside the COMMIT that crosses 1000 frames, on the writer's
+// connection with `mu` held, and syncs the WAL and the database there: every request queued behind that
+// group waited for two fsyncs (perf trace at saturation: 354 fsyncs in 12 s, 4.1 ms each, up to 42 ms,
+// while the one request worker sat in them and the server idled at 0.74 of a core).
+// Here the writer's automatic checkpoint is off (the WAL hook replaces it) and a thread with its own
+// connection does the work:
+// - every CK_KICK frames the hook wakes it and it runs a PASSIVE checkpoint without `mu`: the copy and
+//   both fsyncs happen while writers keep committing;
+// - a PASSIVE checkpoint never catches a WAL that keeps growing, and SQLite rewinds the WAL to its start
+//   only when a write begins with every frame copied back. So once the WAL holds CK_CAP frames the next
+//   group waits, before it takes `mu`, for a pass that starts after it stopped (the groups behind it
+//   queue behind it, reads go on): that pass copies every frame, and the group's write rewinds the WAL.
+//   It is the only checkpoint work a request waits for, and the WAL's bound.
+// Durability is unchanged: synchronous=NORMAL puts a COMMIT in the WAL before it is acknowledged and
+// syncs at checkpoints, wherever they run. A store without a WAL (":memory:") keeps SQLite's default.
+static int pragma_int(sqlite3 *db, const char *sql, int64_t *out);
+
+
+// Runs inside every COMMIT, with `mu` held: the meter, and a wake when the WAL crossed a CK_KICK multiple.
+static int wal_hook(void *ud, sqlite3 *db, const char *name, int n) {
+    (void)db;
+    (void)name;
+    sq *q = ud;
+    int prev = atomic_load_explicit(&q->wal_n, memory_order_relaxed);
+    atomic_store_explicit(&q->wal_n, n, memory_order_relaxed);
+    atomic_fetch_add_explicit(&q->wal_frames, (unsigned long)(n > prev ? n - prev : n), memory_order_relaxed);
+    if (n / CK_KICK != (n > prev ? prev : 0) / CK_KICK) {
+        pthread_mutex_lock(&q->ck_mu);
+        q->ck_want = true;
+        pthread_cond_signal(&q->ck_cv);
+        pthread_mutex_unlock(&q->ck_mu);
+    }
+    return SQLITE_OK;
+}
+
+static void *ck_main(void *arg) {
+    sq *q = arg;
+    sqlite3 *db = NULL;
+    // A connection learns the file is in WAL mode at its first read; until then a checkpoint is a no-op
+    // that answers -1 frames.
+    if (sqlite3_open_v2(sqlite3_db_filename(q->db, "main"), &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_NOMUTEX, NULL) != SQLITE_OK ||
+        sqlite3_exec(db, "SELECT count(*) FROM sqlite_schema", NULL, NULL, NULL) != SQLITE_OK) {
+        CB_ERROR(MOD, "checkpointer: open: %s", db ? sqlite3_errmsg(db) : "no memory");
+        sqlite3_close(db);
+        // The writer checkpoints again, inside its commits, as SQLite does by default.
+        lock(q);
+        sqlite3_wal_autocheckpoint(q->db, CK_KICK);
+        unlock(q);
+        return NULL;
+    }
+    pthread_mutex_lock(&q->ck_mu);
+    for (;;) {
+        q->ck_idle = true;
+        while (!q->ck_want && !q->ck_stop) pthread_cond_wait(&q->ck_cv, &q->ck_mu);
+        q->ck_idle = false;
+        if (q->ck_stop) break;
+        q->ck_want = false;
+        pthread_mutex_unlock(&q->ck_mu);
+        int log = 0, done = 0;
+        if (sqlite3_wal_checkpoint_v2(db, NULL, SQLITE_CHECKPOINT_PASSIVE, &log, &done) != SQLITE_OK)
+            CB_WARN(MOD, "checkpoint: %s", sqlite3_errmsg(db));
+        pthread_mutex_lock(&q->ck_mu);
+        // Every pass releases a waiting group, a failed one too: it writes on (the WAL grows) rather than
+        // wait for a pass that may never succeed.
+        q->ck_pass++;
+        pthread_cond_broadcast(&q->ck_done);
+    }
+    pthread_mutex_unlock(&q->ck_mu);
+    sqlite3_close(db);
+    return NULL;
+}
+
+// For a database file in WAL mode: the hook replaces the writer's automatic checkpoint, the thread starts.
+static void ck_start(sq *q) {
+    const char *path = sqlite3_db_filename(q->db, "main");
+    int64_t ps = 0;
+    if (!path || !*path || !sqlite3_get_autocommit(q->db)) return;
+    sqlite3_stmt *st = NULL;
+    bool wal = sqlite3_prepare_v2(q->db, "PRAGMA journal_mode", -1, &st, NULL) == SQLITE_OK && sqlite3_step(st) == SQLITE_ROW &&
+               strcmp((const char *)sqlite3_column_text(st, 0), "wal") == 0;
+    sqlite3_finalize(st);
+    if (!wal || pragma_int(q->db, "PRAGMA page_size", &ps) != CB_OK) return;
+    q->page_size = (unsigned)ps;
+    pthread_mutex_init(&q->ck_mu, NULL);
+    pthread_cond_init(&q->ck_cv, NULL);
+    pthread_cond_init(&q->ck_done, NULL);
+    sqlite3_wal_hook(q->db, wal_hook, q);
+    if (pthread_create(&q->ck_th, NULL, ck_main, q) == 0) {
+        q->ck_on = true;
+        return;
+    }
+    CB_ERROR(MOD, "checkpointer: no thread; the writer checkpoints");
+    sqlite3_wal_autocheckpoint(q->db, CK_KICK);
+    pthread_mutex_destroy(&q->ck_mu);
+    pthread_cond_destroy(&q->ck_cv);
+    pthread_cond_destroy(&q->ck_done);
+}
+
+// A group that found the WAL at CK_CAP, before it takes `mu`: wait for a pass that starts after this
+// group stopped. Nothing writes meanwhile, so the pass copies every frame and this group's write
+// rewinds the WAL.
+static void ck_wait(sq *q) {
+    atomic_fetch_add_explicit(&q->ck_waits, 1, memory_order_relaxed);
+    pthread_mutex_lock(&q->ck_mu);
+    // A pass running now may have read the WAL short of the cap: then wait for the one after it.
+    unsigned long want = q->ck_pass + (q->ck_idle ? 1 : 2);
+    q->ck_want = true;
+    pthread_cond_signal(&q->ck_cv);
+    while (q->ck_pass < want && !q->ck_stop) pthread_cond_wait(&q->ck_done, &q->ck_mu);
+    pthread_mutex_unlock(&q->ck_mu);
+}
+
+static void ck_stop(sq *q) {
+    if (!q->ck_on) return;
+    pthread_mutex_lock(&q->ck_mu);
+    q->ck_stop = true;
+    pthread_cond_signal(&q->ck_cv);
+    pthread_cond_broadcast(&q->ck_done);
+    pthread_mutex_unlock(&q->ck_mu);
+    pthread_join(q->ck_th, NULL);
+    pthread_mutex_destroy(&q->ck_mu);
+    pthread_cond_destroy(&q->ck_cv);
+    pthread_cond_destroy(&q->ck_done);
+    q->ck_on = false;
+    unsigned long f = atomic_load(&q->wal_frames), c = atomic_load(&q->changes);
+    CB_INFO(MOD, "wal: %lu frames (%llu bytes) over %lu commits; %lu passes, %lu waited for", f,
+            (unsigned long long)f * (q->page_size + 24), c, q->ck_pass, atomic_load(&q->ck_waits));
+}
+
+unsigned long cb_store_local_wal_frames(cb_store *s) { return cb_store_is_sql(s) ? atomic_load(&Q(s)->wal_frames) : 0; }
 
 // ---- open and close --------------------------------------------------------------------
 
@@ -379,6 +531,7 @@ static void finalize_all(sq *q) {
 
 static void sq_close(cb_store *s) {
     sq *q = Q(s);
+    ck_stop(q);
     finalize_all(q);
     sqlite3_close(q->db);
     pthread_mutex_destroy(&q->mu);
@@ -597,6 +750,7 @@ int cb_store_open_sqlite(const char *path, cb_store **out) {
         sq_close(s);
         return rc;
     }
+    ck_start(q);
     *out = s;
     return CB_OK;
 }

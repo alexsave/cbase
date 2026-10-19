@@ -270,6 +270,9 @@ void cb_store_local_mark(void);
 // Transactions the local store has committed since it opened (0 for another backend): a backup compares two
 // readings to know whether anything changed.
 unsigned long cb_store_local_changes(cb_store *s);
+// WAL frames (a page and a 24-byte header each) the local store has appended since it opened (0 for another
+// backend or a database without a WAL): the bytes a write costs on disk before any checkpoint.
+unsigned long cb_store_local_wal_frames(cb_store *s);
 long cb_store_local_blocks(long *fresh);
 // Opens the DynamoDB table `table` in the region and with the credentials the
 // Lambda environment provides (aws/sigv4.h cb_aws_creds_from_env).
