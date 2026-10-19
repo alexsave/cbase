@@ -41,7 +41,7 @@ while :; do
   sleep 0.2; t=\$((t+1)); [ \$t -gt 3000 ] && break
 done
 : > all_ready
-for _w in $(seq 1500); do [ -f release ] && break; sleep 0.1; done
+for _w in \$(seq 1500); do [ -f release ] && break; sleep 0.1; done
 date +%s.%N > t_go
 for d in rdv*; do : > \$d/go; done
 while :; do
