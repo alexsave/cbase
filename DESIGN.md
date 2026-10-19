@@ -116,9 +116,40 @@ Used by `cbase serve`, by the fake Runtime API in `providers/aws/test/smoke_lamb
 As built: lifted from `foolish/server/impls/native`.
 `httpd.c`'s one-pass header scan and `ws.c`/`shard.c`'s frame codec were made pure functions over a buffer.
 Changed on the way: the native Content-Length scan overflowed an int on a long digit string and now stops at the body limit; a second differing Content-Length, any Transfer-Encoding, and a bare CR or LF in a header line are refused; the WebSocket 8-byte length's top bit and the reserved bits are rejected outright; SHA-1 comes from libcrypto.
-The loop is poll(2), the same code on macOS and Linux.
+The loop waits on epoll (Linux) or kqueue (macOS, BSD) behind `poller.h`, not on poll(2) over every descriptor; cost per wake no longer grows with the connection count.
+The wake channel is an eventfd on Linux and a pipe elsewhere, and a post that finds a wake pending writes nothing, so one wake covers a drained batch of posts.
 A closed connection is freed on the next loop pass, so a callback further up the stack never touches freed memory.
 Tests: `unit_ws.c` (the native frame test, ported), `unit_http.c`, `unit_net.c` (a real server over loopback).
+
+## The VM path: what `cbase serve` does per request (2026-10-19)
+
+Owner: `core/src/net/`, `providers/local/`, `foolish/server/src/app/`.
+These are the structures that took a move from 1550 us of server CPU to about 260 us at human pace, and the rule each one keeps.
+
+- Connections: an idle connection owns no buffers.
+  The loop reads into one loop-owned 16 KB scratch, and only an unfinished request is copied into a connection buffer that starts at 4 KB and shrinks back.
+  The cap (`CBASE_MAX_CONNS`, default 16384) reserves nothing, because a connection is allocated on demand; the real limits are `RLIMIT_NOFILE`, which startup lifts, and memory.
+- Requests: a pooled request is one block (job plus the copy of the request the worker reads) from a free list that only the loop thread touches, so the list has no lock.
+  Routes are measured and sorted once when added, and the HTTP method is parsed once into an enum.
+- Inline dispatch: a route marked `CB_ROUTE_INLINE` (GET `/v1/games/*`, `/v1/action`) runs on the loop thread when the request pool is idle and the request is the last event ready in this loop pass.
+  A request over `CBASE_INLINE_BUDGET_US` (2000) switches inline off for 5 s, so a slow handler cannot stall the loop for long.
+  `unit_inline` holds the idle gate, the last-ready gate and the trip.
+- Workers: the default follows the usable CPU (the cgroup `cpu.max` quota, else the online CPUs, rounded up, at most 4), because workers share one malloc lock and a preempted holder makes the others futex-wait.
+- Sends: `cb_ws_send` queues, and the loop flushes each marked connection once per iteration (`cb_loop_after`), so a burst of pushes to one socket is one write.
+- Timers: a bot pause holds no thread under serve; the provider starts the drive again after the wait from a loop timer, and the heartbeat scan runs on a loop timer too.
+- Tokens: the access token is a fixed binary layout (version, ids, iat, exp, email, username) with an HMAC-SHA256, owned by `auth/jwt.c`, and each thread keeps a 32-slot cache of tokens it has verified.
+- Store, group commit: item writes queue, and the thread that finds no group running leads one transaction (BEGIN, a SAVEPOINT per request when the group holds more than one, COMMIT) and hands each caller its own result.
+  A caller returns only after the COMMIT.
+  BEGIN, COMMIT and the savepoint statements are prepared once and reused; a lone write skips the savepoint.
+- Store, memory: SQLite allocates through free lists for blocks of 1 KB to 64 KB, because musl unmaps a malloc group when its last slot is freed and the row buffers did exactly that on every move.
+  The local realtime delivery record and its packet buffer wait on a free list for the same reason.
+  The kernel section and the commit batch are per worker thread: reset by zeroing only what was written (the log is poisoned, not zeroed, in sanitized builds), and drained explicitly where a test counts allocations.
+  SQLite's own blocks are tallied apart from the failing-allocator seam in the OOM test.
+- Realtime: the local hub looks subscribers up in a topic hash plus a short wildcard list.
+  An MQTT PINGREQ is answered on the loop with two bytes and no allocation or pool hand-off when nothing is queued for that connection and its token is live.
+- Backups: `cbase serve` copies the database to the VM's backup bucket when it changed, and restores the newest copy at start when the file is missing (`providers/local/src/store/backup.c`).
+  It has not yet run against real S3.
+- Rig: `bench/nano/` is the 0.1-CPU, 512 MB rehearsal (Alpine static build, Amazon Linux 2023 image), with scripts for saturation, human pace, syscalls per move and mmap callers.
 
 ## Module: store
 
