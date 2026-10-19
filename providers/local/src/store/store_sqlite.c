@@ -42,6 +42,7 @@ enum {
     ST_ITEM_GET, ST_ITEM_PUT, ST_ITEM_DELETE,
     ST_ITEM_Q0A, ST_ITEM_Q0D, ST_ITEM_Q1A, ST_ITEM_Q1D, ST_ITEM_Q2A, ST_ITEM_Q2D,
     ST_BROWSE, ST_KEYS,
+    ST_BEGIN, ST_COMMIT, ST_ROLLBACK, ST_SAVEPOINT, ST_RELEASE, ST_ROLLBACK_TO,   // transaction control, prepared once
     ST__COUNT
 };
 
@@ -65,12 +66,35 @@ static const char *const SQL[ST__COUNT] = {
     // A page of one collection (store_priv.h cb_store_collection_pk), in rowid order.
     [ST_BROWSE] = "SELECT rowid, attrs FROM items WHERE substr(pk, 1, length(?1)) = ?1 AND rowid > ?2 ORDER BY rowid LIMIT ?3",
     [ST_KEYS] = "SELECT pk, sk FROM items",
+    [ST_BEGIN] = "BEGIN IMMEDIATE",
+    [ST_COMMIT] = "COMMIT",
+    [ST_ROLLBACK] = "ROLLBACK",
+    [ST_SAVEPOINT] = "SAVEPOINT g",
+    [ST_RELEASE] = "RELEASE g",
+    [ST_ROLLBACK_TO] = "ROLLBACK TO g",
 };
+
+// A write waiting for its group (see "group commit" below).
+typedef struct wreq {
+    struct wreq     *next;
+    const cb_iwrite *w;
+    int              n;
+    bool             txn;       // item_txn (all-or-nothing list, failed/had reported) or one item_write
+    cb_item         *old;       // item_write: the stored item on a refused condition
+    int             *failed;
+    bool            *had;
+    int              rc;
+    bool             done;      // under qmu
+} wreq;
 
 typedef struct {
     sqlite3        *db;
-    pthread_mutex_t mu;
+    pthread_mutex_t mu;         // the connection: held from a transaction's first statement to its last
     sqlite3_stmt   *st[ST__COUNT];
+    pthread_mutex_t qmu;        // the write queue only; never held across SQLite
+    pthread_cond_t  cv;
+    wreq           *qhead, *qtail;
+    bool            leader;     // a thread is running a group
 } sq;
 
 #define Q(s) ((sq *)(s)->impl)
@@ -116,10 +140,20 @@ static int exec(sq *q, const char *sql) {
     return CB_OK;
 }
 
-static int begin(sq *q) { return exec(q, "BEGIN IMMEDIATE"); }
-static int commit(sq *q) { return exec(q, "COMMIT"); }
+// A prepared control statement (BEGIN, COMMIT, ...): no parse per transaction.
+static int ctl(sq *q, int id) {
+    sqlite3_stmt *s = stmt(q, id);
+    if (!s) return CB_E_DB;
+    int r = sqlite3_step(s);
+    int rc = r == SQLITE_DONE ? CB_OK : fail(q, SQL[id], r);
+    done(s);
+    return rc;
+}
+
+static int begin(sq *q) { return ctl(q, ST_BEGIN); }
+static int commit(sq *q) { return ctl(q, ST_COMMIT); }
 static void rollback(sq *q) {
-    if (!sqlite3_get_autocommit(q->db)) exec(q, "ROLLBACK");
+    if (!sqlite3_get_autocommit(q->db)) ctl(q, ST_ROLLBACK);
 }
 
 static void lock(sq *q) { pthread_mutex_lock(&q->mu); }
@@ -156,6 +190,8 @@ static void sq_close(cb_store *s) {
     for (int i = 0; i < ST__COUNT; i++) sqlite3_finalize(q->st[i]);
     sqlite3_close(q->db);
     pthread_mutex_destroy(&q->mu);
+    pthread_mutex_destroy(&q->qmu);
+    pthread_cond_destroy(&q->cv);
     free(q);
     free(s);
 }
@@ -209,6 +245,8 @@ int cb_store_open_sqlite(const char *path, cb_store **out) {
         return CB_E_NOMEM;
     }
     pthread_mutex_init(&q->mu, NULL);
+    pthread_mutex_init(&q->qmu, NULL);
+    pthread_cond_init(&q->cv, NULL);
     cb_store_init(s, &SQLITE_OPS, q);
     int rc = sqlite3_open_v2(path, &q->db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, NULL);
     if (rc != SQLITE_OK) {
@@ -474,17 +512,97 @@ static int sq_item_get(cb_store *st, cb_ikey key, bool consistent, cb_item *out)
     return rc;
 }
 
+// ---- group commit ---------------------------------------------------------------------------
+//
+// Item writes (a move's CAS and its rows) queue instead of each taking the
+// connection for a transaction of its own. The first thread to find no group
+// running becomes the leader: it takes everything queued at that moment, runs
+// it as ONE transaction (BEGIN, a SAVEPOINT per request so a refused condition
+// undoes only that request, COMMIT) and hands each caller its own result. A
+// caller returns only after the COMMIT, so a move the player saw accepted is in
+// the WAL; and the connection stays locked from BEGIN to COMMIT, so a reader
+// never sees rows of a group that has not committed. A lone request runs as
+// the plain transaction it always was (no savepoint). If the COMMIT fails,
+// every request of the group that had succeeded reports the failure.
+// There is no dedicated thread: under no contention a write costs what it did
+// (no hand-off), and under contention the waiters' transactions merge.
+
+static int apply_req(sq *q, wreq *r) {
+    if (!r->txn) return item_apply(q, r->w, r->old);
+    cb_item probe;
+    cb_item_init(&probe);
+    int rc = CB_OK;
+    for (int i = 0; rc == CB_OK && i < r->n; i++) {
+        rc = item_apply(q, &r->w[i], r->w[i].old_on_fail ? &probe : NULL);
+        if (rc == CB_E_CONFLICT) {
+            if (r->failed) *r->failed = i;
+            if (r->had) *r->had = probe.n > 0;
+        }
+    }
+    cb_item_free(&probe);
+    return rc;
+}
+
+// Called with `mu` held.
+static void run_group(sq *q, wreq *list) {
+    int rc = begin(q);
+    if (rc != CB_OK) {
+        for (wreq *r = list; r; r = r->next) r->rc = rc;
+        return;
+    }
+    bool single = list->next == NULL;
+    for (wreq *r = list; r; r = r->next) {
+        if (!single && (r->rc = ctl(q, ST_SAVEPOINT)) != CB_OK) continue;
+        r->rc = apply_req(q, r);
+        if (single) break;
+        if (r->rc != CB_OK) ctl(q, ST_ROLLBACK_TO);
+        ctl(q, ST_RELEASE);
+    }
+    if (single && list->rc != CB_OK) { rollback(q); return; }
+    rc = commit(q);
+    if (rc != CB_OK) {
+        rollback(q);
+        for (wreq *r = list; r; r = r->next)
+            if (r->rc == CB_OK) r->rc = rc;
+    }
+}
+
+static int submit(sq *q, wreq *r) {
+    pthread_mutex_lock(&q->qmu);
+    if (q->qtail) q->qtail->next = r;
+    else q->qhead = r;
+    q->qtail = r;
+    while (!r->done && q->leader) pthread_cond_wait(&q->cv, &q->qmu);
+    if (r->done) {
+        pthread_mutex_unlock(&q->qmu);
+        return r->rc;
+    }
+    q->leader = true;   // this thread's request is still queued: it runs in the group it leads
+    wreq *list = q->qhead;
+    q->qhead = q->qtail = NULL;
+    pthread_mutex_unlock(&q->qmu);
+
+    lock(q);
+    run_group(q, list);
+    unlock(q);
+
+    pthread_mutex_lock(&q->qmu);
+    for (wreq *x = list, *next; x; x = next) {
+        next = x->next;   // before done: a woken caller returns and its request is gone
+        x->done = true;
+    }
+    q->leader = false;
+    pthread_cond_broadcast(&q->cv);
+    pthread_mutex_unlock(&q->qmu);
+    return r->rc;
+}
+
 static int sq_item_write(cb_store *st, const cb_iwrite *w, cb_item *old) {
     sq *q = Q(st);
     if (old) cb_item_reset(old);
     if (cb_iwrite_check(w, 1, false) != CB_OK) return CB_E_INVALID;
-    lock(q);
-    int rc = begin(q);
-    if (rc == CB_OK) rc = item_apply(q, w, old);
-    if (rc == CB_OK) rc = commit(q);
-    if (rc != CB_OK) rollback(q);
-    unlock(q);
-    return rc;
+    wreq r = { .w = w, .n = 1, .old = old };
+    return submit(q, &r);
 }
 
 static int sq_item_txn(cb_store *st, const cb_iwrite *w, int n, int *failed, bool *failed_had_item) {
@@ -492,22 +610,8 @@ static int sq_item_txn(cb_store *st, const cb_iwrite *w, int n, int *failed, boo
     if (failed) *failed = -1;
     if (failed_had_item) *failed_had_item = false;
     if (cb_iwrite_check(w, n, true) != CB_OK) return CB_E_INVALID;
-    cb_item probe;
-    cb_item_init(&probe);
-    lock(q);
-    int rc = begin(q);
-    for (int i = 0; rc == CB_OK && i < n; i++) {
-        rc = item_apply(q, &w[i], w[i].old_on_fail ? &probe : NULL);
-        if (rc == CB_E_CONFLICT) {
-            if (failed) *failed = i;
-            if (failed_had_item) *failed_had_item = probe.n > 0;
-        }
-    }
-    cb_item_free(&probe);
-    if (rc == CB_OK) rc = commit(q);
-    if (rc != CB_OK) rollback(q);
-    unlock(q);
-    return rc;
+    wreq r = { .w = w, .n = n, .txn = true, .failed = failed, .had = failed_had_item };
+    return submit(q, &r);
 }
 
 // The item cut down to its pk and sk, as DynamoDB's keys-only projection
