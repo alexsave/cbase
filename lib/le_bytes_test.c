@@ -9,6 +9,7 @@
 #include <string.h>
 #include "test/check.h"
 #include "le_bytes.h"
+#include "be_bytes.h"
 #include "rng.h"
 
 static uint64_t rng = 88172645463325252ull;
@@ -64,7 +65,29 @@ int main(void)
         CHECK(le_get_u32(b) == (uint32_t)v, "u32 %x", (unsigned)(uint32_t)v);
         le_put_u48(b, v);
         CHECK(le_get_u48(b) == (v & LE_U48_MAX), "u48 %llx", (unsigned long long)v);
+        le_put_u64(b, v);
+        CHECK(le_get_u64(b) == v, "u64 %llx", (unsigned long long)v);
+        be_put_u16(b, (uint16_t)v);
+        CHECK(be_get_u16(b) == (uint16_t)v, "be u16 %x", (unsigned)(uint16_t)v);
+        be_put_u32(b, (uint32_t)v);
+        CHECK(be_get_u32(b) == (uint32_t)v, "be u32 %x", (unsigned)(uint32_t)v);
     }
+
+    TEST("le_bytes: u64 and the big-endian half against literal bytes");
+    static const unsigned char u64[] = { 0xf0, 0xde, 0xbc, 0x9a, 0x78, 0x56, 0x34, 0x12 };
+    static const unsigned char b16[] = { 0x12, 0x34 };
+    static const unsigned char b32[] = { 0x12, 0x34, 0x56, 0x78 };
+    memset(b, 0xee, sizeof b);
+    le_put_u64(b, 0x123456789abcdef0ull);
+    CHECK(!memcmp(b, u64, 8), "u64 low byte first");
+    CHECK(le_get_u64(u64) == 0x123456789abcdef0ull, "get u64");
+    memset(b, 0xee, sizeof b);
+    be_put_u16(b, 0x1234);
+    CHECK(!memcmp(b, b16, 2) && b[2] == 0xee, "be u16 high byte first");
+    memset(b, 0xee, sizeof b);
+    be_put_u32(b, 0x12345678u);
+    CHECK(!memcmp(b, b32, 4) && b[4] == 0xee, "be u32 high byte first");
+    CHECK(be_get_u16(b16) == 0x1234 && be_get_u32(b32) == 0x12345678u, "be gets");
 
     return report("le_bytes_test");
 }

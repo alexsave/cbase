@@ -1,5 +1,5 @@
-/* le_bytes.h - fixed-width little-endian integers in a byte buffer: u16, u32
- * and u48, read and written at a pointer with no alignment assumed.
+/* le_bytes.h - fixed-width little-endian integers in a byte buffer: u16, u32,
+ * u48 and u64, read and written at a pointer with no alignment assumed.
  *
  * WHY U48 AND NOT U64. A clock in a row's bytes is u48 little-endian epoch ms
  * because the session log already stores its record timestamps that way, and
@@ -38,6 +38,11 @@ static inline void le_put_u48(unsigned char *p, uint64_t v) {
     le_put_u16(p + 4, (uint16_t)((v >> 32) & 0xffff));
 }
 
+static inline void le_put_u64(unsigned char *p, uint64_t v) {
+    le_put_u32(p, (uint32_t)(v & 0xffffffffu));
+    le_put_u32(p + 4, (uint32_t)(v >> 32));
+}
+
 static inline uint16_t le_get_u16(const unsigned char *p) {
     return (uint16_t)(p[0] | (p[1] << 8));
 }
@@ -48,6 +53,10 @@ static inline uint32_t le_get_u32(const unsigned char *p) {
 
 static inline uint64_t le_get_u48(const unsigned char *p) {
     return (uint64_t)le_get_u32(p) | ((uint64_t)le_get_u16(p + 4) << 32);
+}
+
+static inline uint64_t le_get_u64(const unsigned char *p) {
+    return (uint64_t)le_get_u32(p) | ((uint64_t)le_get_u32(p + 4) << 32);
 }
 
 #endif

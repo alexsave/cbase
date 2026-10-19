@@ -1,12 +1,11 @@
 // mqtt.c - the MQTT 3.1.1 subset of a subscribe-only push stream (mqtt.h).
 #include "mqtt.h"
+#include "../be_bytes.h"
 
 #include <string.h>
 
 // ---- small pieces ----------------------------------------------------------------
 
-static int get16(const uint8_t *p) { return (p[0] << 8) | p[1]; }
-static void put16(uint8_t *p, int v) { p[0] = (uint8_t)(v >> 8); p[1] = (uint8_t)v; }
 
 static int printable(const uint8_t *s, int n) {
     for (int i = 0; i < n; i++)
@@ -58,7 +57,7 @@ int mqtt_topic_match(const char *f, int fn, const char *t, int tn) {
 // A u16-length string at v[*at], within rem: 1 and the span, else 0.
 static int str_at(const uint8_t *v, int rem, int *at, const uint8_t **s, uint16_t *len) {
     if (rem - *at < 2) return 0;
-    int n = get16(v + *at);
+    int n = be_get_u16(v + *at);
     if (rem - *at - 2 < n) return 0;
     *s = v + *at + 2;
     *len = (uint16_t)n;
@@ -75,7 +74,7 @@ static int parse_connect(const uint8_t *v, int rem, MqttPacket *p) {
     int has_user = (fl >> 7) & 1, has_pass = (fl >> 6) & 1;
     if (has_pass && !has_user) return -1;
     p->clean_session = (fl >> 1) & 1;
-    p->keepalive_s = (uint16_t)get16(v + 8);
+    p->keepalive_s = (uint16_t)be_get_u16(v + 8);
     int at = 10;
     if (!str_at(v, rem, &at, &p->client_id, &p->client_id_len)) return -1;
     if (p->client_id_len < 1 || p->client_id_len > MQTT_ID_MAX || !printable(p->client_id, p->client_id_len)) return -1;
@@ -100,7 +99,7 @@ static int parse_publish(const uint8_t *v, int rem, int flags, MqttPacket *p) {
     if (!mqtt_topic_ok((const char *)p->topic, p->topic_len, 0)) return -1;
     if (p->qos) {
         if (rem - at < 2) return -1;
-        p->packet_id = (uint16_t)get16(v + at);
+        p->packet_id = (uint16_t)be_get_u16(v + at);
         if (p->packet_id == 0) return -1;
         at += 2;
     }
@@ -112,7 +111,7 @@ static int parse_publish(const uint8_t *v, int rem, int flags, MqttPacket *p) {
 // SUBSCRIBE (with_qos) or UNSUBSCRIBE: a packet id, then 1 to MQTT_ITEMS_MAX filters.
 static int parse_filters(const uint8_t *v, int rem, int with_qos, MqttPacket *p) {
     if (rem < 2) return -1;
-    p->packet_id = (uint16_t)get16(v);
+    p->packet_id = (uint16_t)be_get_u16(v);
     if (p->packet_id == 0) return -1;
     p->items = v + 2;
     p->items_len = rem - 2;
@@ -181,7 +180,7 @@ int mqtt_parse(const uint8_t *buf, int n, int max, int from, MqttPacket *p) {
     case MQTT_PUBACK:
     case MQTT_UNSUBACK:
         if (flags == 0 && rem == 2 && (type == MQTT_PUBACK || server)) {
-            p->packet_id = (uint16_t)get16(v);
+            p->packet_id = (uint16_t)be_get_u16(v);
             ok = p->packet_id ? 0 : -1;
         }
         break;
@@ -193,7 +192,7 @@ int mqtt_parse(const uint8_t *buf, int n, int max, int from, MqttPacket *p) {
         break;
     case MQTT_SUBACK:
         if (server && flags == 0 && rem >= 3 && rem - 2 <= MQTT_ITEMS_MAX) {
-            p->packet_id = (uint16_t)get16(v);
+            p->packet_id = (uint16_t)be_get_u16(v);
             p->items = v + 2;
             p->items_len = rem - 2;
             p->n_items = (uint8_t)(rem - 2);
@@ -249,7 +248,7 @@ static int head(uint8_t *out, int cap, int type, int flags, int rem) {
 static int fits(int h, int rem, int cap) { return h >= 0 && rem <= cap - h; }
 
 static int put_str(uint8_t *p, const void *s, int n) {
-    put16(p, n);
+    be_put_u16(p, n);
     if (n) memcpy(p + 2, s, (size_t)n);
     return 2 + n;
 }
@@ -267,7 +266,7 @@ int mqtt_write_connect(uint8_t *out, int cap, const char *client_id, int id_len,
     static const uint8_t vh[] = { 0, 4, 'M', 'Q', 'T', 'T', 4 };
     memcpy(p, vh, sizeof vh);
     p[7] = (uint8_t)(0x02 | (username ? 0x80 : 0) | (password ? 0x40 : 0));   // clean session
-    put16(p + 8, keepalive_s);
+    be_put_u16(p + 8, keepalive_s);
     int at = 10;
     at += put_str(p + at, client_id, id_len);
     if (username) at += put_str(p + at, username, username_len);
@@ -286,7 +285,7 @@ static int write_filters(uint8_t *out, int cap, int type, uint16_t packet_id, co
     int h = head(out, cap, type, 0x2, rem);
     if (!fits(h, rem, cap)) return -1;
     uint8_t *p = out + h;
-    put16(p, packet_id);
+    be_put_u16(p, packet_id);
     int at = 2;
     for (int k = 0; k < n; k++) {
         at += put_str(p + at, t[k].p, t[k].len);
@@ -307,7 +306,7 @@ static int write_id(uint8_t *out, int cap, int type, uint16_t packet_id) {
     if (!out || cap < 4 || packet_id == 0) return -1;
     out[0] = (uint8_t)(type << 4);
     out[1] = 2;
-    put16(out + 2, packet_id);
+    be_put_u16(out + 2, packet_id);
     return 4;
 }
 
@@ -339,7 +338,7 @@ int mqtt_write_suback(uint8_t *out, int cap, uint16_t packet_id, const uint8_t *
     int rem = 2 + n;
     int h = head(out, cap, MQTT_SUBACK, 0, rem);
     if (!fits(h, rem, cap)) return -1;
-    put16(out + h, packet_id);
+    be_put_u16(out + h, packet_id);
     memcpy(out + h + 2, codes, (size_t)n);
     return h + rem;
 }

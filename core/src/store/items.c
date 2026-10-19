@@ -3,6 +3,7 @@
 
 #include "util/bytea.h"
 #include "util/err.h"
+#include "../../../../shared/c/le_bytes.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -308,12 +309,9 @@ int cb_iquery_check(const cb_iquery *q) {
 // ---- the record --------------------------------------------------------------------------
 
 static void put_u32(cb_buf *b, uint32_t v) {
-    uint8_t t[4] = { (uint8_t)v, (uint8_t)(v >> 8), (uint8_t)(v >> 16), (uint8_t)(v >> 24) };
+    uint8_t t[4];
+    le_put_u32(t, v);
     cb_buf_append(b, t, 4);
-}
-
-static uint32_t get_u32(const uint8_t *p) {
-    return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
 }
 
 bool cb_item_record_encode(const cb_item *it, cb_buf *out) {
@@ -372,7 +370,7 @@ bool cb_item_record_decode(const uint8_t *p, size_t n, cb_item *it) {
         case CB_AV_S:
         case CB_AV_B: {
             if (n - i < 4) return false;
-            uint32_t len = get_u32(p + i);
+            uint32_t len = le_get_u32(p + i);
             i += 4;
             if (len > n - i) return false;
             if (v.kind == CB_AV_B) {
@@ -391,7 +389,7 @@ bool cb_item_record_decode(const uint8_t *p, size_t n, cb_item *it) {
         }
         case CB_AV_N:
             if (n - i < 8) return false;
-            v.n = (int64_t)((uint64_t)get_u32(p + i) | (uint64_t)get_u32(p + i + 4) << 32);
+            v.n = (int64_t)((uint64_t)le_get_u32(p + i) | (uint64_t)le_get_u32(p + i + 4) << 32);
             i += 8;
             break;
         case CB_AV_BOOL:
@@ -400,14 +398,14 @@ bool cb_item_record_decode(const uint8_t *p, size_t n, cb_item *it) {
             break;
         case CB_AV_SL: {
             if (n - i < 4) return false;
-            uint32_t count = get_u32(p + i);
+            uint32_t count = le_get_u32(p + i);
             i += 4;
             if (count > CB_ITEM_LIST_MAX) return false;
             static _Thread_local char strs[CB_ITEM_LIST_MAX][256];
             static _Thread_local const char *ptrs[CB_ITEM_LIST_MAX];
             for (uint32_t k = 0; k < count; k++) {
                 if (n - i < 4) return false;
-                uint32_t sl = get_u32(p + i);
+                uint32_t sl = le_get_u32(p + i);
                 i += 4;
                 if (sl > n - i || sl >= sizeof strs[0] || memchr(p + i, 0, sl)) return false;
                 memcpy(strs[k], p + i, sl);
