@@ -27,6 +27,7 @@
 
 #include <ctype.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <sqlite3.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -89,6 +90,7 @@ typedef struct wreq {
 
 typedef struct {
     sqlite3        *db;
+    atomic_ulong    changes;    // transactions committed: the backup job's "did anything change"
     pthread_mutex_t mu;         // the connection: held from a transaction's first statement to its last
     sqlite3_stmt   *st[ST__COUNT];
     pthread_mutex_t qmu;        // the write queue only; never held across SQLite
@@ -150,8 +152,25 @@ static int ctl(sq *q, int id) {
     return rc;
 }
 
-static int begin(sq *q) { return ctl(q, ST_BEGIN); }
-static int commit(sq *q) { return ctl(q, ST_COMMIT); }
+// BEGIN, and with it the statements that must run for a transaction to end: ROLLBACK, and the
+// savepoint pair of a group. They are prepared lazily and re-prepared after a release, so under memory
+// pressure the prepare could fail only once the transaction was open, leaving it open for good (every
+// later BEGIN answered "within a transaction"). Preparing them here fails the whole transaction
+// before it has changed anything.
+static int begin(sq *q) {
+    int rc = ctl(q, ST_BEGIN);
+    if (rc != CB_OK) return rc;
+    if (!stmt(q, ST_ROLLBACK) || !stmt(q, ST_ROLLBACK_TO) || !stmt(q, ST_RELEASE)) {
+        if (!sqlite3_get_autocommit(q->db)) sqlite3_exec(q->db, "ROLLBACK", NULL, NULL, NULL);
+        return CB_E_NOMEM;
+    }
+    return CB_OK;
+}
+static int commit(sq *q) {
+    int rc = ctl(q, ST_COMMIT);
+    if (rc == CB_OK) atomic_fetch_add_explicit(&q->changes, 1, memory_order_relaxed);
+    return rc;
+}
 static void rollback(sq *q) {
     if (!sqlite3_get_autocommit(q->db)) ctl(q, ST_ROLLBACK);
 }
@@ -252,6 +271,30 @@ typedef struct pblock { struct pblock *next; } pblock;
 static pthread_mutex_t g_pool_mu = PTHREAD_MUTEX_INITIALIZER;
 static pblock *g_pool[POOL_CLASSES];
 static int g_pool_n[POOL_CLASSES];
+// Leak accounting for the tests (cb_store_local_blocks): the blocks SQLite holds, and of them the ones
+// handed out since the last cb_store_local_mark. The header's second word is the epoch a block was
+// handed out in. Three relaxed counters; nothing reads them in a running server.
+static atomic_long g_pm_out, g_pm_fresh;
+static atomic_ulong g_pm_epoch;
+static void pm_take(unsigned char *user, size_t usable) {
+    *(size_t *)(user - POOL_HDR) = usable;
+    *(unsigned long *)(user - POOL_HDR + sizeof(size_t)) = atomic_load_explicit(&g_pm_epoch, memory_order_relaxed);
+    atomic_fetch_add_explicit(&g_pm_out, 1, memory_order_relaxed);
+    atomic_fetch_add_explicit(&g_pm_fresh, 1, memory_order_relaxed);
+}
+static void pm_give(unsigned char *user) {
+    atomic_fetch_sub_explicit(&g_pm_out, 1, memory_order_relaxed);
+    if (*(unsigned long *)(user - POOL_HDR + sizeof(size_t)) == atomic_load_explicit(&g_pm_epoch, memory_order_relaxed))
+        atomic_fetch_sub_explicit(&g_pm_fresh, 1, memory_order_relaxed);
+}
+void cb_store_local_mark(void) {
+    atomic_fetch_add(&g_pm_epoch, 1);
+    atomic_store(&g_pm_fresh, 0);
+}
+long cb_store_local_blocks(long *fresh) {
+    if (fresh) *fresh = atomic_load(&g_pm_fresh);
+    return atomic_load(&g_pm_out);
+}
 
 static int pool_class(size_t n) {   // n usable bytes -> class or -1
     for (int c = 0; c < POOL_CLASSES; c++)
@@ -269,17 +312,18 @@ static void *pm_malloc(int n) {
         pblock *p = g_pool[c];
         if (p) { g_pool[c] = p->next; g_pool_n[c]--; b = (unsigned char *)p; }
         pthread_mutex_unlock(&g_pool_mu);
-        if (b) return b;
+        if (b) { pm_take(b, usable); return b; }
     }
     b = malloc(usable + POOL_HDR);
     if (!b) return NULL;
-    *(size_t *)b = usable;
+    pm_take(b + POOL_HDR, usable);
     return b + POOL_HDR;
 }
 static void pm_free(void *v) {
     if (!v) return;
     unsigned char *b = (unsigned char *)v - POOL_HDR;
     size_t usable = *(size_t *)b;
+    pm_give(v);
     int c = usable > ((size_t)1 << (POOL_MIN_SHIFT - 1)) ? pool_class(usable) : -1;
     if (c >= 0 && usable == ((size_t)1 << (POOL_MIN_SHIFT + c))) {
         pthread_mutex_lock(&g_pool_mu);
@@ -451,6 +495,32 @@ void cb_store_local_drain(void) {
         g_pool_n[c] = 0;
     }
     pthread_mutex_unlock(&g_pool_mu);
+}
+
+void cb_store_local_release(cb_store *s) {
+    if (!s || s->ops != &SQLITE_OPS) return;
+    sq *q = Q(s);
+    lock(q);
+    for (int i = 0; i < ST__COUNT; i++) {
+        sqlite3_finalize(q->st[i]);
+        q->st[i] = NULL;
+    }
+    sqlite3_db_release_memory(q->db);
+    unlock(q);
+}
+
+unsigned long cb_store_local_changes(cb_store *s) {
+    return s && s->ops == &SQLITE_OPS ? atomic_load(&Q(s)->changes) : 0;
+}
+
+long cb_store_local_cache_bytes(cb_store *s) {
+    if (!s || s->ops != &SQLITE_OPS) return 0;
+    sq *q = Q(s);
+    int cur = 0, hi = 0;
+    lock(q);
+    (void)sqlite3_db_status(q->db, SQLITE_DBSTATUS_CACHE_USED, &cur, &hi, 0);
+    unlock(q);
+    return (long)cur;
 }
 
 static int item_apply(sq *q, const cb_iwrite *w, cb_item *old) {

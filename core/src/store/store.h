@@ -236,6 +236,23 @@ int cb_store_open_sqlite(const char *path, cb_store **out);
 // what the process-wide block pools hold. Nothing is needed for correctness; a leak-counting test
 // calls it after a request, and a process may at exit.
 void cb_store_local_drain(void);
+// Finalizes the prepared statements a local store keeps (they are re-prepared on first use) and has
+// the library give back its cached memory. A statement holds its compiled program and the library re-compiles a
+// cached one whenever a bound value changes its plan, so what it keeps is neither a leak nor a
+// constant: a leak-counting test calls this after a request. No-op for another backend.
+void cb_store_local_release(cb_store *s);
+// The bytes of page cache the local store's database holds (0 for another backend). A row written may
+// take a new page, which the library allocates and keeps for as long as the data lives: a leak-counting test
+// allows the blocks that growth explains (a page and its header), and not one more.
+long cb_store_local_cache_bytes(cb_store *s);
+// The blocks the local store's database library holds now, and in *fresh the ones handed out since the last
+// cb_store_local_mark. A test marks when it arms the failing allocator: the allocator's own count then
+// splits into the library's (page cache churn included) and the code under test's.
+void cb_store_local_mark(void);
+// Transactions the local store has committed since it opened (0 for another backend): a backup compares two
+// readings to know whether anything changed.
+unsigned long cb_store_local_changes(cb_store *s);
+long cb_store_local_blocks(long *fresh);
 // Opens the DynamoDB table `table` in the region and with the credentials the
 // Lambda environment provides (aws/sigv4.h cb_aws_creds_from_env).
 int cb_store_open_dynamo(const char *table, cb_store **out);
