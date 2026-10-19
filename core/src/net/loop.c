@@ -13,6 +13,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#ifdef __linux__
+#include <sys/eventfd.h>
+#endif
 
 typedef struct {
     int fd;           // -1: free slot
@@ -66,18 +69,37 @@ static int set_nonblock(int fd) {
     return 0;
 }
 
+// The wake channel: an eventfd on Linux (one fd, a counter, no pipe buffer to
+// allocate and copy through on every post), a self-pipe elsewhere.
+static int wake_open(int w[2]) {
+#ifdef __linux__
+    int fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    if (fd < 0) return -1;
+    w[0] = w[1] = fd;
+    return 0;
+#else
+    if (pipe(w) != 0) return -1;
+    if (set_nonblock(w[0]) || set_nonblock(w[1])) { close(w[0]); close(w[1]); return -1; }
+    return 0;
+#endif
+}
+
+static void wake_close(int w[2]) {
+    close(w[0]);
+    if (w[1] != w[0]) close(w[1]);
+}
+
 cb_loop *cb_loop_new(void) {
     cb_loop *l = calloc(1, sizeof *l);
     if (!l) return NULL;
-    if (pipe(l->wake) != 0 || set_nonblock(l->wake[0]) || set_nonblock(l->wake[1])) {
+    if (wake_open(l->wake) != 0) {
         free(l);
         return NULL;
     }
     l->pl = cb_poller_new();
     if (!l->pl || cb_poller_set(l->pl, l->wake[0], -1, CB_EV_READ, 0) != 0) {
         cb_poller_free(l->pl);
-        close(l->wake[0]);
-        close(l->wake[1]);
+        wake_close(l->wake);
         free(l);
         return NULL;
     }
@@ -91,8 +113,7 @@ void cb_loop_free(cb_loop *l) {
     if (!l) return;
     post *p = l->post_head;
     while (p) { post *n = p->next; free(p); p = n; }
-    close(l->wake[0]);
-    close(l->wake[1]);
+    wake_close(l->wake);
     pthread_mutex_destroy(&l->post_lock);
     cb_poller_free(l->pl);
     free(l->w);
@@ -204,9 +225,9 @@ bool cb_loop_cancel(cb_loop *l, uint64_t id) {
 // ---- posts: the only way in from another thread ----
 
 static void wake(cb_loop *l) {
-    char b = 1;
-    // A full pipe already guarantees a wake-up; EAGAIN is fine.
-    ssize_t r = write(l->wake[1], &b, 1);
+    // A full pipe (or a saturated counter) already guarantees a wake-up; EAGAIN is fine.
+    uint64_t b = 1;
+    ssize_t r = write(l->wake[1], &b, l->wake[0] == l->wake[1] ? sizeof b : 1);
     (void)r;
 }
 
@@ -233,7 +254,8 @@ void cb_loop_stop(cb_loop *l) {
 
 static void drain_posts(cb_loop *l) {
     char buf[256];
-    while (read(l->wake[0], buf, sizeof buf) > 0) {}
+    // An eventfd's read returns and resets the whole counter at once; a pipe is read dry.
+    while (read(l->wake[0], buf, sizeof buf) > 0 && l->wake[0] != l->wake[1]) {}
     // After the bytes are read and BEFORE the list is taken: a post that saw the flag set was queued before
     // this clear, so the take below has it; one after the clear writes a byte of its own.
     atomic_store(&l->wake_pending, false);
