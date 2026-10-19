@@ -30,6 +30,7 @@ SHARED_C := $(C_ROOT)/shared/c
 # The header-only ones (check, collapse, msg_stage, le_bytes, rng) and libc_test,
 # which includes the libc it tests, are one file each.
 SHARED_TEST_SRC_check_test            := test/check_test.c
+SHARED_TEST_SRC_check_ok_test         := test/check_ok_test.c
 SHARED_TEST_SRC_collapse_test         := collapse/collapse_test.c
 SHARED_TEST_SRC_msg_stage_test        := msg_stage/msg_stage_test.c
 SHARED_TEST_SRC_le_bytes_test         := le_bytes_test.c
@@ -56,7 +57,7 @@ SHARED_TEST_SRC_msg_whole_test        := msg_whole/msg_whole.c msg_whole/msg_who
                                          wire_check/wire_check.c msg_seat_tag/msg_seat_tag.c \
                                          msg_lobby_roster/msg_lobby_roster.c
 
-SHARED_TEST_NAMES := check_test collapse_test msg_stage_test le_bytes_test rng_test fnv_test ease_test libc_test \
+SHARED_TEST_NAMES := check_test check_ok_test collapse_test msg_stage_test le_bytes_test rng_test fnv_test ease_test libc_test \
                      libm_test util_test clock_test percentile_test \
                      b32_test mixrad_test sha256_test deal_rng_test text_util_test \
                      wire_check_test msg_seat_tag_test msg_lobby_roster_test stats_test \
