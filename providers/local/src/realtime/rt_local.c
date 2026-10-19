@@ -39,6 +39,11 @@ typedef struct msg {
 
 typedef struct lconn {
     struct lconn *prev, *next;
+    struct lconn *hnext;    // the by-id table's chain
+    struct lconn *wprev, *wnext;   // the wildcard list (only while in_wild)
+    bool in_wild;
+    int nix;                // exact filters this connection is indexed under
+    char *ix[CB_MQTT_SUBS];
     cb_ws *ws;
     uint64_t ws_id;
     cb_mqtt_conn *mq;       // the state as of the last finished job, owned
@@ -47,9 +52,26 @@ typedef struct lconn {
     size_t in_bytes;
 } lconn;
 
+// One topic's subscribers: the exact filters (no + or #) of the open
+// connections, found by hash, so a publish touches its subscribers and not
+// every connection. Filters with a wildcard are rare (the policy allows them
+// under s/ and u/<uid>/) and live in a short list scanned per publish.
+typedef struct tent {
+    struct tent *next;
+    uint64_t h;
+    char *topic;
+    uint64_t *ids;          // ws ids
+    uint32_t n, cap;
+} tent;
+
 typedef struct {
     cb_ctx *ctx;
     lconn *head;            // loop thread only
+    lconn **byid;           // ws id -> lconn, chained on hnext
+    size_t nbyid, nconn;
+    tent **topics;          // topic -> subscribers, chained
+    size_t ntopics, nent;
+    lconn *wild;            // connections holding a wildcard filter
 } local;
 
 #define INBOX_MAX (1u << 20)   // a client this far ahead of us is not a stream client
@@ -72,10 +94,163 @@ static void msgs_free(msg *m) {
     while (m) { msg *n = m->next; free(m); m = n; }
 }
 
+// ---- the indexes (loop thread only) ------------------------------------------------
+
+static size_t id_slot(uint64_t id, size_t nb) { return (size_t)((id * 0x9E3779B97F4A7C15ull) >> 20) & (nb - 1); }
+
 static lconn *find(local *L, uint64_t ws_id) {
-    for (lconn *c = L->head; c; c = c->next)
+    if (!L->nbyid) return NULL;
+    for (lconn *c = L->byid[id_slot(ws_id, L->nbyid)]; c; c = c->hnext)
         if (c->ws_id == ws_id) return c;
     return NULL;
+}
+
+static bool byid_add(local *L, lconn *c) {
+    if (L->nconn + 1 > L->nbyid) {
+        size_t nb = L->nbyid ? L->nbyid * 2 : 256;
+        lconn **t = calloc(nb, sizeof *t);
+        if (!t) return false;
+        for (lconn *x = L->head; x; x = x->next) {   // c is not on the list yet
+            size_t i = id_slot(x->ws_id, nb);
+            x->hnext = t[i];
+            t[i] = x;
+        }
+        free(L->byid);
+        L->byid = t;
+        L->nbyid = nb;
+    }
+    size_t i = id_slot(c->ws_id, L->nbyid);
+    c->hnext = L->byid[i];
+    L->byid[i] = c;
+    L->nconn++;
+    return true;
+}
+
+static void byid_del(local *L, lconn *c) {
+    lconn **pp = &L->byid[id_slot(c->ws_id, L->nbyid)];
+    while (*pp && *pp != c) pp = &(*pp)->hnext;
+    if (*pp) { *pp = c->hnext; L->nconn--; }
+}
+
+static uint64_t topic_hash(const char *t) {
+    uint64_t h = 1469598103934665603ull;
+    for (; *t; t++) h = (h ^ (uint8_t)*t) * 1099511628211ull;
+    return h;
+}
+
+static tent *topic_find(local *L, const char *t, uint64_t h) {
+    if (!L->ntopics) return NULL;
+    for (tent *e = L->topics[h & (L->ntopics - 1)]; e; e = e->next)
+        if (e->h == h && strcmp(e->topic, t) == 0) return e;
+    return NULL;
+}
+
+static bool topic_add(local *L, const char *t, uint64_t id) {
+    uint64_t h = topic_hash(t);
+    tent *e = topic_find(L, t, h);
+    if (!e) {
+        if (L->nent + 1 > L->ntopics) {
+            size_t nb = L->ntopics ? L->ntopics * 2 : 256;
+            tent **tb = calloc(nb, sizeof *tb);
+            if (!tb) return false;
+            for (size_t i = 0; i < L->ntopics; i++)
+                for (tent *x = L->topics[i], *nx; x; x = nx) {
+                    nx = x->next;
+                    x->next = tb[x->h & (nb - 1)];
+                    tb[x->h & (nb - 1)] = x;
+                }
+            free(L->topics);
+            L->topics = tb;
+            L->ntopics = nb;
+        }
+        e = calloc(1, sizeof *e);
+        if (!e) return false;
+        e->topic = strdup(t);
+        if (!e->topic) { free(e); return false; }
+        e->h = h;
+        e->next = L->topics[h & (L->ntopics - 1)];
+        L->topics[h & (L->ntopics - 1)] = e;
+        L->nent++;
+    }
+    if (e->n == e->cap) {
+        uint32_t nc = e->cap ? e->cap * 2 : 4;
+        uint64_t *ni = realloc(e->ids, nc * sizeof *ni);
+        if (!ni) return false;
+        e->ids = ni;
+        e->cap = nc;
+    }
+    e->ids[e->n++] = id;
+    return true;
+}
+
+static void topic_del(local *L, const char *t, uint64_t id) {
+    uint64_t h = topic_hash(t);
+    tent *e = topic_find(L, t, h);
+    if (!e) return;
+    for (uint32_t i = 0; i < e->n; i++)
+        if (e->ids[i] == id) { e->ids[i] = e->ids[--e->n]; break; }
+    if (e->n) return;
+    tent **pp = &L->topics[h & (L->ntopics - 1)];
+    while (*pp != e) pp = &(*pp)->next;
+    *pp = e->next;
+    L->nent--;
+    free(e->ids);
+    free(e->topic);
+    free(e);
+}
+
+static bool is_wild(const char *f) { return strchr(f, '+') || strchr(f, '#'); }
+
+static void wild_set(local *L, lconn *c, bool on) {
+    if (on == c->in_wild) return;
+    if (on) {
+        c->wprev = NULL;
+        c->wnext = L->wild;
+        if (L->wild) L->wild->wprev = c;
+        L->wild = c;
+    } else {
+        if (c->wprev) c->wprev->wnext = c->wnext;
+        else L->wild = c->wnext;
+        if (c->wnext) c->wnext->wprev = c->wprev;
+        c->wprev = c->wnext = NULL;
+    }
+    c->in_wild = on;
+}
+
+// Brings the indexes to what the connection's state says it hears: the
+// filters of an OPEN connection, nothing for any other state. Called wherever
+// c->mq is replaced or changed, so the indexes are never ahead of or behind
+// what cb_mqtt_hears would answer.
+static void reindex(local *L, lconn *c) {
+    const cb_mqtt_conn *m = c->mq;
+    bool open = m->state == CB_MQTT_OPEN;
+    bool wild = false;
+    for (int i = 0; i < c->nix;) {   // drop what is no longer subscribed
+        bool keep = false;
+        for (int k = 0; open && k < m->n_subs && !keep; k++) keep = strcmp(m->subs[k], c->ix[i]) == 0;
+        if (keep) { i++; continue; }
+        topic_del(L, c->ix[i], c->ws_id);
+        free(c->ix[i]);
+        c->ix[i] = c->ix[--c->nix];
+    }
+    for (int k = 0; open && k < m->n_subs; k++) {
+        if (is_wild(m->subs[k])) { wild = true; continue; }
+        bool have = false;
+        for (int i = 0; i < c->nix && !have; i++) have = strcmp(m->subs[k], c->ix[i]) == 0;
+        if (have || c->nix >= CB_MQTT_SUBS) continue;
+        char *copy = strdup(m->subs[k]);
+        if (!copy) continue;
+        if (!topic_add(L, copy, c->ws_id)) { free(copy); continue; }
+        c->ix[c->nix++] = copy;
+    }
+    wild_set(L, c, wild);
+}
+
+static void unindex(local *L, lconn *c) {
+    for (int i = 0; i < c->nix; i++) { topic_del(L, c->ix[i], c->ws_id); free(c->ix[i]); }
+    c->nix = 0;
+    wild_set(L, c, false);
+    byid_del(L, c);
 }
 
 // ---- one frame on the pool -------------------------------------------------------
@@ -132,6 +307,7 @@ static void job_done(cb_loop *l, void *ud) {
         free(c->mq);
         c->mq = j->mq;
         j->mq = NULL;
+        reindex(L, c);
         for (msg *m = j->out_head; m && send_to(L, id, m->text, m->len); m = m->next) {}
         c = find(L, id);
         if (c && j->rc != CB_OK) {
@@ -184,6 +360,7 @@ static lconn *conn_open(cb_ws *ws, local *L) {
     c->mq = malloc(sizeof *c->mq);
     if (!c->mq) { free(c); return NULL; }
     cb_mqtt_conn_init(c->mq);
+    if (!byid_add(L, c)) { free(c->mq); free(c); return NULL; }
     // The token may ride in the upgrade URL (token=) instead of CONNECT's password.
     cb_mqtt_query_token(cb_ws_query(ws), c->mq->query_token, sizeof c->mq->query_token);
     c->next = L->head;
@@ -218,6 +395,7 @@ static void lconn_free(local *L, lconn *c) {
     if (c->prev) c->prev->next = c->next;
     else L->head = c->next;
     if (c->next) c->next->prev = c->prev;
+    unindex(L, c);
     msgs_free(c->in_head);
     free(c->mq);
     free(c);
@@ -246,7 +424,6 @@ static void pub_free(pub *p) {
     free(p);
 }
 
-static bool hears(const lconn *c, const pub *p) { return cb_mqtt_hears(c->mq, p->topic, (int)strlen(p->topic)); }
 
 static void pub_on_loop(cb_loop *l, void *ud) {
     pub *p = ud;
@@ -254,8 +431,18 @@ static void pub_on_loop(cb_loop *l, void *ud) {
     // Collect the ids first: a send can close a socket and free its lconn.
     size_t n = 0, cap = 0;
     uint64_t *ids = NULL;
-    for (lconn *c = L->head; c; c = c->next) {
-        if (!hears(c, p)) continue;
+    int tl = (int)strlen(p->topic);
+    tent *e = topic_find(L, p->topic, topic_hash(p->topic));
+    if (e && e->n) {
+        ids = malloc(e->n * sizeof *ids);
+        if (ids) { memcpy(ids, e->ids, e->n * sizeof *ids); n = cap = e->n; }
+    }
+    // A wildcard holder is added once, even when it also holds the exact filter.
+    for (lconn *c = L->wild; c; c = c->wnext) {
+        if (!cb_mqtt_hears(c->mq, p->topic, tl)) continue;
+        bool dup = false;
+        for (size_t i = 0; i < n && !dup; i++) dup = ids[i] == c->ws_id;
+        if (dup) continue;
         if (n == cap) {
             size_t nc = cap ? cap * 2 : 16;
             uint64_t *ni = realloc(ids, nc * sizeof *ids);
@@ -296,6 +483,8 @@ static int local_deliver(cb_rt *rt, const cb_rt_to *to, const uint8_t *frame, si
 static void local_free(cb_rt *rt) {
     local *L = rt->impl;
     while (L->head) lconn_free(L, L->head);
+    free(L->byid);
+    free(L->topics);
     free(L);
     free(rt);
 }
@@ -315,6 +504,7 @@ static void forget_on_loop(cb_loop *l, void *ud) {
         // A packet still out on the pool comes back to a closed connection.
         c->mq->state = CB_MQTT_CLOSED;
         c->mq->n_subs = 0;
+        reindex(L, c);
         cb_ws_close(c->ws, 1008);
     }
     free(f);

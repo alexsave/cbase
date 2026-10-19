@@ -198,6 +198,71 @@ static void mqtt_publishes_reach_their_topics(void) {
     cb_buf_free(&m);
 }
 
+// The topic index follows subscribe, unsubscribe, a wildcard that also
+// matches an exact filter (heard once), a disconnect, and many sockets.
+static void mq_unsubscribe(int fd, uint16_t id, const char *filter, cb_buf *m) {
+    uint8_t b[512];
+    MqttTopic t = { filter, (int)strlen(filter), 0 };
+    mq_send(fd, b, mqtt_write_unsubscribe(b, sizeof b, id, &t, 1));
+    MqttPacket p;
+    T_EQ_INT(mq_recv(fd, 2000, m, &p), MQTT_UNSUBACK);
+}
+
+static void publish_view(void) {
+    cb_view_row v;
+    memset(&v, 0, sizeof v);
+    strcpy(v.game_id, G);
+    uint8_t env[] = { 1 };
+    v.view = env;
+    v.view_len = 1;
+    v.version = 9;
+    rt_publish_view(g_ctx.rt, U1, &v, false);
+}
+
+static void mqtt_index_follows_subscriptions(void) {
+    cb_buf m;
+    cb_buf_init(&m);
+    MqttPacket p;
+    int a = mq_open_as(U1, &m);
+    mq_subscribe(a, 1, "u/" U1 "/v", &m);
+    mq_subscribe(a, 2, "u/" U1 "/+", &m);     // also matches: still one message
+    publish_view();
+    T_EQ_INT(mq_recv(a, 2000, &m, &p), MQTT_PUBLISH);
+    T_EQ_INT(mq_recv(a, 300, &m, &p), 0);
+    mq_unsubscribe(a, 3, "u/" U1 "/+", &m);   // exact one remains
+    publish_view();
+    T_EQ_INT(mq_recv(a, 2000, &m, &p), MQTT_PUBLISH);
+    mq_unsubscribe(a, 4, "u/" U1 "/v", &m);   // nothing remains
+    publish_view();
+    T_EQ_INT(mq_recv(a, 300, &m, &p), 0);
+    mq_subscribe(a, 5, "u/" U1 "/v", &m);     // and back again
+    publish_view();
+    T_EQ_INT(mq_recv(a, 2000, &m, &p), MQTT_PUBLISH);
+    // 150 sockets on the topic, 150 on another: each subscriber hears once, the rest nothing.
+    enum { N = 150 };
+    int on[N], off[N];
+    for (int i = 0; i < N; i++) {
+        on[i] = mq_open_as(U1, &m);
+        mq_subscribe(on[i], 1, "u/" U1 "/v", &m);
+        off[i] = mq_open_as(U1, &m);
+        mq_subscribe(off[i], 1, "u/" U1 "/c/" G, &m);
+    }
+    publish_view();
+    for (int i = 0; i < N; i++) {
+        T_EQ_INT(mq_recv(on[i], 2000, &m, &p), MQTT_PUBLISH);
+        T_EQ_INT(mq_recv(off[i], 0, &m, &p), 0);
+    }
+    T_EQ_INT(mq_recv(a, 2000, &m, &p), MQTT_PUBLISH);
+    // Half of them hang up; the others still hear, nobody crashes.
+    for (int i = 0; i < N; i += 2) { close(on[i]); close(off[i]); on[i] = off[i] = -1; }
+    usleep(100000);
+    publish_view();
+    for (int i = 1; i < N; i += 2) T_EQ_INT(mq_recv(on[i], 2000, &m, &p), MQTT_PUBLISH);
+    for (int i = 1; i < N; i += 2) { close(on[i]); close(off[i]); }
+    close(a);
+    cb_buf_free(&m);
+}
+
 // THE AUTHZ MATRIX over a real socket: each refusal ends the connection with
 // no CONNACK or SUBACK, as IoT Core does.
 static void mqtt_refusals_end_the_connection(void) {
@@ -285,6 +350,7 @@ int main(void) {
     start();
     T_RUN(mqtt_upgrade_route);
     T_RUN(mqtt_publishes_reach_their_topics);
+    T_RUN(mqtt_index_follows_subscriptions);
     T_RUN(mqtt_refusals_end_the_connection);
     stop();
     return T_DONE();
