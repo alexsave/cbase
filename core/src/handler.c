@@ -5,6 +5,7 @@
 #include "cbase/app.h"
 #include "cbase/provider.h"
 #include "store/store.h"
+#include "store/items.h"
 #include "util/clock.h"
 #include "util/err.h"
 #include "util/log.h"
@@ -12,11 +13,24 @@
 #include <stdio.h>
 #include <string.h>
 
+// A liveness or readiness probe from the machine itself (systemd, a local
+// curl, a watchdog): GET or HEAD /health or /ready whose socket peer is
+// loopback. The peer is the socket's, not a header, so it cannot be claimed
+// from outside; every other request, and these from any other address, still
+// needs the origin proof. (A reverse proxy on the same box would make
+// outside probes look local: they could then read only these two bodies.)
+static bool is_local_probe(const cb_http_req *req) {
+    if (strcmp(req->method, "GET") != 0 && strcmp(req->method, "HEAD") != 0) return false;
+    if (strcmp(req->path, "/health") != 0 && strcmp(req->path, "/ready") != 0) return false;
+    return strcmp(req->peer, "127.0.0.1") == 0 || strcmp(req->peer, "::1") == 0 ||
+           strcmp(req->peer, "::ffff:127.0.0.1") == 0;
+}
+
 void cb_handle(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     cb_store_tally st;
     cb_store_tally_take(&st);   // this request's count starts here
     res->head = strcmp(req->method, "HEAD") == 0;
-    if (ctx->cfg && !cb_config_origin_proven(ctx->cfg, cb_http_header_get(req, CB_ORIGIN_HEADER))) {
+    if (ctx->cfg && !is_local_probe(req) && !cb_config_origin_proven(ctx->cfg, cb_http_header_get(req, CB_ORIGIN_HEADER))) {
         // Not through the edge (config.h CBASE_ORIGIN_SECRET): nothing else runs.
         cb_router_error(res, 403, "forbidden");
         return;
@@ -55,6 +69,29 @@ static void h_health(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     cb_res_header(res, "Cache-Control", "no-store");
 }
 
+// GET /ready: readiness. /health says the process answers; this says the
+// store does too: one item read (a SQLite SELECT, a DynamoDB GetItem) of a key
+// that is never written, so CB_E_NOT_FOUND is the healthy answer. A full disk,
+// a corrupt or locked database or a dead table answers 503. Runs on the
+// request pool, not the loop: the read may wait (SQLite's busy timeout).
+static void h_ready(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
+    (void)req;
+    char b[256];
+    int rc = ctx->store ? CB_OK : CB_E_NOTIMPL;
+    if (ctx->store) {
+        cb_item it;
+        cb_item_init(&it);
+        rc = ctx->store->ops->item_get(ctx->store, (cb_ikey){ "READY#probe", "PROBE" }, true, &it);
+        cb_item_free(&it);
+        if (rc == CB_E_NOT_FOUND) rc = CB_OK;
+    }
+    if (rc == CB_OK) snprintf(b, sizeof b, "ready cbase %s mode=%s store=%s\n", ctx->version,
+                              ctx->prov ? ctx->prov->mode : "none", ctx->store->ops->name);
+    else snprintf(b, sizeof b, "not ready: store %s\n", ctx->store ? cb_strerror(rc) : "missing");
+    cb_res_text(res, rc == CB_OK ? 200 : 503, b);
+    cb_res_header(res, "Cache-Control", "no-store");
+}
+
 // A module that is not built yet answers its registration with CB_E_NOTIMPL;
 // that is logged and skipped, so the skeleton starts and serves /health.
 static int reg(const char *what, int rc) {
@@ -65,6 +102,7 @@ static int reg(const char *what, int rc) {
 
 int cb_routes_register(cb_ctx *ctx) {
     int rc = cb_router_add(ctx->router, "GET", "/health", CB_ROUTE_LOOP, h_health);
+    if (rc == CB_OK) rc = cb_router_add(ctx->router, "GET", "/ready", CB_ROUTE_POOL, h_ready);
     if (rc == CB_OK) rc = reg("admin", cb_admin_routes(ctx));
     if (rc == CB_OK && ctx->prov && ctx->prov->routes) rc = reg(ctx->prov->name, ctx->prov->routes(ctx));
     // Then the app's, every list in order (cbase/app.h).
