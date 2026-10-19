@@ -145,7 +145,7 @@ static int sched_b(cb_ctx *ctx, int64_t now_ms) { return sched(ctx, now_ms, 1, "
 static int sched_c(cb_ctx *ctx, int64_t now_ms) { return sched(ctx, now_ms, 2, "c"); }
 
 static const cb_job JOBS[] = { { "one", job_one }, { "two", job_two } };
-static const cb_schedule SCHEDULES[] = { { "a", 1000, sched_a }, { "b", 2000, sched_b }, { "c", 3000, sched_c } };
+static const cb_schedule SCHEDULES[] = { { "a", 1000, sched_a, false }, { "b", 2000, sched_b, false }, { "c", 3000, sched_c, false } };
 static const cb_app APP = {
     .name = "jobs_test",
     .jobs = JOBS,

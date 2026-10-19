@@ -127,7 +127,7 @@ static int probe_schedule(cb_ctx *ctx, int64_t now_ms) {
     return 5;
 }
 static const cb_job JOBS[] = { { "probe", probe_job } };
-static const cb_schedule SCHEDULES[] = { { "tick", 1000, probe_schedule } };
+static const cb_schedule SCHEDULES[] = { { "tick", 1000, probe_schedule, false } };
 static const cb_app APP = { .name = "core_test", .jobs = JOBS, .n_jobs = 1, .schedules = SCHEDULES, .n_schedules = 1 };
 
 static void job_with_nothing_to_do_is_done(void) {

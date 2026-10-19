@@ -105,6 +105,7 @@ static void sched_task(void *ud) {
 static void on_sched_timer(cb_loop *l, void *ud) {
     sched_timer *t = ud;
     if (t->ctx->store) cb_pool_submit(t->ctx->req_pool, sched_task, t);
+    if (t->s->serve_once) return;
     cb_loop_timer(l, cb_config_scaled_ms(t->ctx->cfg, t->s->every_ms), on_sched_timer, t);
 }
 

@@ -40,6 +40,7 @@ typedef struct {
     const char *name;      // [a-z0-9_], at most CB_JOB_NAME_MAX: "scan"
     int64_t     every_ms;  // serve's period (divided by CBASE_BOT_SPEEDUP); AWS's is the template's
     int (*run)(cb_ctx *ctx, int64_t now_ms);
+    bool        serve_once; // serve runs it once, every_ms after start, and never again
 } cb_schedule;
 
 // A TOPIC FAMILY: a set of push topics (realtime.h), as a pattern over
