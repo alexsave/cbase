@@ -391,7 +391,8 @@ Open: access tokens outlive logout and account deletion until they expire (up to
 Owner: `foolish/server/src/app/`.
 Headers: `table_ops.h` (one operation per request: load, kernel section, CAS commit with retries, finalize, views on demand), `bots.h` (drive, scan, the two kick functions), `fanout.h` (after a winning commit, who hears), `functions_http.h` (create, action, meta, delete-account, byte for byte).
 
-The kernel section uses per-thread scratch (a `Game` of about 37 KB and `TableSnaps` of about 46 KB).
+The kernel section (`cb_section`, 217 KB: a `Game` of about 37 KB, `TableSnaps` of about 46 KB, the commit and a 128 KB arena) is per-thread scratch: one per worker thread, zeroed when an operation frees it so the next sees what a calloc gave (a nested operation gets a private one).
+The store's commit batch (`batch` in rows_foolish.c, about 1 MB sized for DynamoDB's 100-item transaction) is the same: one per worker thread, and a commit resets only the counters of the slots it claimed.
 `table_commit_products` takes a const table, so when its products ask for ratings the C host reads them, calls `table_rate` and commits again without re-running the operation.
 Views (player_views, spectator_views) are computed from the stored row on demand, never stored.
 
@@ -423,7 +424,7 @@ As built:
 
 Tests: `foolish/server/test/unit_app.c` (16 tests through `cb_handle` over an in-RAM store with a CAS-stealing hook), and the game smoke (`foolish/server/test/smoke.c`), which plays whole games over HTTP and WebSocket, crashes the server mid-game and proves the heartbeat resumes the bots.
 
-Untested: the Lambda deadline budget and the Lambda re-kick (no Lambda yet); create's id redraw on a collision.
+Untested: the Lambda deadline budget and the Lambda re-kick (the Lambda runs this same code, but those two paths have no test); create's id redraw on a collision.
 
 Found here:
 
