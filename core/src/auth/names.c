@@ -3,32 +3,15 @@
 
 #include "auth.h"
 #include "util/err.h"
+#include "../../../../shared/c/text_util/utf8.h"
 
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
 
-// One code point from p (at most `left` bytes): its length, or -1 for bytes
-// that are not shortest-form UTF-8 of a scalar value (no overlong, no
-// surrogate, nothing past U+10FFFF).
+// One code point from p (at most `left` bytes): strict, shared/c/text_util/utf8.h.
 static int utf8_next(const unsigned char *p, size_t left, uint32_t *cp) {
-    if (left == 0) return -1;
-    unsigned c = p[0];
-    if (c < 0x80) { *cp = c; return 1; }
-    int len;
-    uint32_t v, min;
-    if ((c & 0xE0) == 0xC0) { len = 2; v = c & 0x1F; min = 0x80; }
-    else if ((c & 0xF0) == 0xE0) { len = 3; v = c & 0x0F; min = 0x800; }
-    else if ((c & 0xF8) == 0xF0) { len = 4; v = c & 0x07; min = 0x10000; }
-    else return -1;
-    if ((size_t)len > left) return -1;
-    for (int i = 1; i < len; i++) {
-        if ((p[i] & 0xC0) != 0x80) return -1;
-        v = (v << 6) | (p[i] & 0x3F);
-    }
-    if (v < min || v > 0x10FFFF || (v >= 0xD800 && v <= 0xDFFF)) return -1;
-    *cp = v;
-    return len;
+    return text_utf8_next(p, left, cp);
 }
 
 static int utf8_put(uint32_t cp, char *out, size_t cap, size_t at) {

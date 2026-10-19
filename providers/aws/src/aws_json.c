@@ -14,6 +14,7 @@
 #include "realtime/stream_mqtt.h"
 #include "../../../../shared/c/b64/b64.h"
 #include "net/http.h"
+#include "../../../../shared/c/text_util/utf8.h"
 #include "util/json.h"
 
 #include <ctype.h>
@@ -1758,27 +1759,7 @@ int cb_event_decode(const char *json, size_t len, cb_event *out) {
 // ---- responses ----------------------------------------------------------------------
 
 static bool utf8_valid(const uint8_t *p, size_t n) {
-    size_t i = 0;
-    while (i < n) {
-        uint8_t c = p[i];
-        size_t k;
-        uint32_t cp;
-        if (c < 0x80) { i++; continue; }
-        if ((c & 0xE0) == 0xC0) { k = 1; cp = c & 0x1F; }
-        else if ((c & 0xF0) == 0xE0) { k = 2; cp = c & 0x0F; }
-        else if ((c & 0xF8) == 0xF0) { k = 3; cp = c & 0x07; }
-        else return false;
-        for (size_t j = 1; j <= k; j++) {
-            if (i + j >= n || (p[i + j] & 0xC0) != 0x80) return false;
-            cp = cp << 6 | (p[i + j] & 0x3F);
-        }
-        // Overlong forms, surrogates and values past U+10FFFF.
-        if ((k == 1 && cp < 0x80) || (k == 2 && cp < 0x800) || (k == 3 && cp < 0x10000) || cp > 0x10FFFF ||
-            (cp >= 0xD800 && cp <= 0xDFFF))
-            return false;
-        i += k + 1;
-    }
-    return true;
+    return text_utf8_scan(p, n, 0, NULL, NULL) == 0;
 }
 
 typedef struct {
