@@ -37,6 +37,10 @@ SHARED_TEST_SRC_rng_test              := rng_test.c
 SHARED_TEST_SRC_fnv_test              := fnv_test.c
 SHARED_TEST_SRC_ease_test             := ease_test.c
 SHARED_TEST_SRC_libc_test             := wasm/libc_test.c
+SHARED_TEST_SRC_libm_test             := wasm/libm_test.c
+SHARED_TEST_SRC_util_test             := util_test.c
+SHARED_TEST_SRC_clock_test            := clock_test.c
+SHARED_TEST_SRC_percentile_test       := stats/percentile_test.c
 SHARED_TEST_SRC_b32_test              := b32_test.c b32.c
 SHARED_TEST_SRC_mixrad_test           := mixrad_test.c mixrad.c
 SHARED_TEST_SRC_sha256_test           := sha256_test.c sha256.c
@@ -53,6 +57,7 @@ SHARED_TEST_SRC_msg_whole_test        := msg_whole/msg_whole.c msg_whole/msg_who
                                          msg_lobby_roster/msg_lobby_roster.c
 
 SHARED_TEST_NAMES := check_test collapse_test msg_stage_test le_bytes_test rng_test fnv_test ease_test libc_test \
+                     libm_test util_test clock_test percentile_test \
                      b32_test mixrad_test sha256_test deal_rng_test text_util_test \
                      wire_check_test msg_seat_tag_test msg_lobby_roster_test stats_test \
                      msg_whole_test b64_test hex_test
