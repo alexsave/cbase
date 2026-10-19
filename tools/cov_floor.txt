@@ -58,3 +58,4 @@ zero foolish/server/src/store/migrate_rows.c cb_mig_allow_name_collisions TEMPOR
 zero foolish/server/src/store/migrate_rows.c cb_mig_name_collisions TEMPORARY: untested on the VM branch, the coverage-tests PR covers it
 zero foolish/server/src/store/rows_foolish.c cb_rows_game_logs TEMPORARY: untested on the VM branch, the coverage-tests PR covers it
 zero foolish/server/src/store/rows_foolish.c full_log TEMPORARY: untested on the VM branch, the coverage-tests PR covers it
+zero foolish/server/src/app/bots.c mem_lease_live TEMPORARY: reached only when a test thread races a lease (run to run); the coverage-tests PR pins it
