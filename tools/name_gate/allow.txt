@@ -233,6 +233,7 @@
 1 foolish/server/src/app/v1_http.c /cloudfront/i
 1 foolish/server/src/store/bot_seed.c /dynamo/i
 1 foolish/server/src/store/bot_seed.c /sqlite/i
+90 foolish/server/src/store/migrate_merge.c /sqlite/i
 1 foolish/server/src/store/migrate_rows.c /dynamo/i
 1 foolish/server/src/store/migrate_rows.h /dynamo/i
 1 foolish/server/src/store/rows_foolish.c /\baws\b/i
