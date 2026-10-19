@@ -54,6 +54,14 @@ static uint64_t hash_of(cb_limit_kind kind, const char *key) {
 
 static bool take_or_peek(cb_limit_kind kind, const char *key, int64_t now_ms, int *retry_s, bool take);
 
+_Static_assert(CB_CONFIG_LIMITS == CB_LIMIT_ADMIN_FAIL_IP, "config.h: one CBASE_LIMIT_ setting per rule before the admin one");
+
+void cb_limits_configure(const cb_config *cfg) {
+    for (int i = 0; i < CB_CONFIG_LIMITS; i++)
+        if (cfg->limit_burst[i] > 0) cb_limit_rules[i].burst = cfg->limit_burst[i];
+    cb_limit_set_admin_fail_burst(cfg->admin_fail_limit);
+}
+
 void cb_limit_set_admin_fail_burst(int burst) {
     if (burst > 0) cb_limit_rules[CB_LIMIT_ADMIN_FAIL_IP].burst = burst;
 }

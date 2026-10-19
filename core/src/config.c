@@ -37,6 +37,16 @@ static bool num(const char *name, long dflt, long lo, long hi, long *out, char *
     return true;
 }
 
+static int check_lengths(const cb_config *c, char *err, size_t cap);
+
+// The rate limits' bursts, one setting each, in cb_limit_kind order
+// (rate_limits.h; rate_limits.c asserts the count). 0 in cfg: the rule's own.
+const char *const cb_config_limit_names[CB_CONFIG_LIMITS] = {
+    "CBASE_LIMIT_SIGNIN_IP", "CBASE_LIMIT_SIGNIN_NAME", "CBASE_LIMIT_SIGNUP_IP", "CBASE_LIMIT_SIGNUP_ALL",
+    "CBASE_LIMIT_REFRESH_IP", "CBASE_LIMIT_PASSWORD_USER", "CBASE_LIMIT_CREATE_USER", "CBASE_LIMIT_CHAT_USER",
+    "CBASE_LIMIT_SUB_USER", "CBASE_LIMIT_BUMP_USER",
+};
+
 int cb_config_from_env(cb_config *c, char *err, size_t cap) {
     memset(c, 0, sizeof *c);
     const char *listen = env("CBASE_LISTEN", "127.0.0.1:8080");
@@ -93,6 +103,15 @@ int cb_config_from_env(cb_config *c, char *err, size_t cap) {
         return CB_E_INVALID;
     if (!copy(c->allowed_origins, sizeof c->allowed_origins, "CBASE_ALLOWED_ORIGINS", env("CBASE_ALLOWED_ORIGINS", "*"), err, cap))
         return CB_E_INVALID;
+    {
+        const char *dev = getenv("CBASE_DEV");
+        if (dev && *dev && strcmp(dev, "1") != 0 && strcmp(dev, "0") != 0) {
+            snprintf(err, cap, "CBASE_DEV=%s is not 1 or 0", dev);
+            return CB_E_INVALID;
+        }
+        c->dev = dev && strcmp(dev, "1") == 0;
+    }
+    c->public_url_given = getenv("CBASE_PUBLIC_URL") && *getenv("CBASE_PUBLIC_URL");
     char dflt_url[128];
     snprintf(dflt_url, sizeof dflt_url, "http://%s", listen);
     if (!copy(c->public_url, sizeof c->public_url, "CBASE_PUBLIC_URL", env("CBASE_PUBLIC_URL", dflt_url), err, cap)) return CB_E_INVALID;
@@ -112,6 +131,14 @@ int cb_config_from_env(cb_config *c, char *err, size_t cap) {
     c->rated_min_age_s = (int)v;
     if (!num("CBASE_BOT_SPEEDUP", 1, 1, 100, &v, err, cap)) return CB_E_INVALID;
     c->bot_speedup = (int)v;
+    if (!num("CBASE_MAX_CONNS", 4096, 1, 1000000, &v, err, cap)) return CB_E_INVALID;
+    c->max_conns = (int)v;
+    if (!num("CBASE_LISTEN_BACKLOG", 512, 1, 65535, &v, err, cap)) return CB_E_INVALID;
+    c->listen_backlog = (int)v;
+    for (int i = 0; i < CB_CONFIG_LIMITS; i++) {
+        if (!num(cb_config_limit_names[i], 0, 1, 1000000, &v, err, cap)) return CB_E_INVALID;
+        c->limit_burst[i] = (int)v;
+    }
     const char *lvl = env("CBASE_LOG_LEVEL", "info");
     c->log_level = cb_log_level_parse(lvl);
     if (c->log_level < 0) {
@@ -119,8 +146,9 @@ int cb_config_from_env(cb_config *c, char *err, size_t cap) {
         return CB_E_INVALID;
     }
     // The lengths of what the environment gave (SSM's are checked again
-    // once read, main_lambda.c): one rule, cb_config_check_secrets.
-    return cb_config_check_secrets(c, false, err, cap);
+    // once read, main_lambda.c); whether the JWT secret had to be given is
+    // the caller's (cb_config_check_secrets, cb_config_check_serve).
+    return check_lengths(c, err, cap);
 }
 
 void cb_config_each(const cb_config *c, cb_config_fn fn, void *ud) {
@@ -153,13 +181,19 @@ void cb_config_each(const cb_config *c, cb_config_fn fn, void *ud) {
     fn("CBASE_LOG_LEVEL", cb_log_level_name(c->log_level), false, ud);
     snprintf(b, sizeof b, "%d", c->bot_speedup);
     fn("CBASE_BOT_SPEEDUP", b, false, ud);
+    fn("CBASE_DEV", c->dev ? "1" : "0", false, ud);
+    snprintf(b, sizeof b, "%d", c->max_conns);
+    fn("CBASE_MAX_CONNS", b, false, ud);
+    snprintf(b, sizeof b, "%d", c->listen_backlog);
+    fn("CBASE_LISTEN_BACKLOG", b, false, ud);
+    for (int i = 0; i < CB_CONFIG_LIMITS; i++) {
+        if (c->limit_burst[i]) snprintf(b, sizeof b, "%d", c->limit_burst[i]);
+        else snprintf(b, sizeof b, "(default)");
+        fn(cb_config_limit_names[i], b, false, ud);
+    }
 }
 
-int cb_config_check_secrets(const cb_config *c, bool lambda, char *err, size_t cap) {
-    if (lambda && c->jwt_secret_generated) {
-        snprintf(err, cap, "no CBASE_JWT_SECRET (environment or SSM): refusing to start with a random one");
-        return CB_E_INVALID;
-    }
+static int check_lengths(const cb_config *c, char *err, size_t cap) {
     struct { const char *name; const char *v; } s[] = {
         { "CBASE_JWT_SECRET", c->jwt_secret },
         { "CBASE_ADMIN_TOKEN", c->admin_token },
@@ -170,6 +204,32 @@ int cb_config_check_secrets(const cb_config *c, bool lambda, char *err, size_t c
             snprintf(err, cap, "%s must be at least 32 characters", s[i].name);
             return CB_E_INVALID;
         }
+    return CB_OK;
+}
+
+int cb_config_check_secrets(const cb_config *c, bool lambda, char *err, size_t cap) {
+    if (c->jwt_secret_generated && (lambda || !c->dev)) {
+        snprintf(err, cap, "no CBASE_JWT_SECRET (environment or SSM): refusing to start with a random one%s",
+                 lambda ? "" : " (CBASE_DEV=1 allows it for development and tests)");
+        return CB_E_INVALID;
+    }
+    return check_lengths(c, err, cap);
+}
+
+int cb_config_check_serve(const cb_config *c, char *err, size_t cap) {
+    int rc = cb_config_check_secrets(c, false, err, cap);
+    if (rc != CB_OK || c->dev) return rc;
+    if (!c->public_url_given) {
+        snprintf(err, cap, "no CBASE_PUBLIC_URL: it is the token issuer, and the default (http://%s:%d) is no one's address "
+                 "(CBASE_DEV=1 allows it)", c->listen_host, c->listen_port);
+        return CB_E_INVALID;
+    }
+    const char *h = strstr(c->public_url, "://");
+    h = h ? h + 3 : c->public_url;
+    if (strncmp(h, "0.0.0.0", 7) == 0 || strncmp(h, "[::]", 4) == 0) {
+        snprintf(err, cap, "CBASE_PUBLIC_URL=%s names the wildcard address, not the address clients use", c->public_url);
+        return CB_E_INVALID;
+    }
     return CB_OK;
 }
 

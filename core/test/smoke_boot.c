@@ -44,7 +44,13 @@ static void cbase_refuses(void) {
     T_CHECK(exits(g_cbase, "nonsense", none, 2, "usage: cbase serve"));
     char *bad_listen[] = { "CBASE_LISTEN=nowhere", NULL };
     T_CHECK(exits(g_cbase, "serve", bad_listen, 2, "CBASE_LISTEN=nowhere is not host:port"));
-    char *bad_db[] = { "CBASE_LISTEN=127.0.0.1:0", "CBASE_STORE=sqlite", "CBASE_DB=/dev/null/cbase.sqlite", NULL };
+    // Without CBASE_DEV=1 serve wants the JWT secret and the public URL before it does anything.
+    char *no_secret[] = { "CBASE_LISTEN=127.0.0.1:0", "CBASE_STORE=sqlite", "CBASE_DB=:memory:", NULL };
+    T_CHECK(exits(g_cbase, "serve", no_secret, 2, "no CBASE_JWT_SECRET"));
+    char *no_url[] = { "CBASE_LISTEN=127.0.0.1:0", "CBASE_STORE=sqlite", "CBASE_DB=:memory:",
+                       "CBASE_JWT_SECRET=boot-secret-boot-secret-boot-secret!", NULL };
+    T_CHECK(exits(g_cbase, "serve", no_url, 2, "no CBASE_PUBLIC_URL"));
+    char *bad_db[] = { "CBASE_LISTEN=127.0.0.1:0", "CBASE_STORE=sqlite", "CBASE_DB=/dev/null/cbase.sqlite", "CBASE_DEV=1", NULL };
     T_CHECK(exits(g_cbase, "serve", bad_db, 1, "store sqlite"));
     // A port someone else holds.
     int fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -58,7 +64,7 @@ static void cbase_refuses(void) {
     T_EQ_INT(getsockname(fd, (struct sockaddr *)&a, &al), 0);
     char listen_env[64];
     snprintf(listen_env, sizeof listen_env, "CBASE_LISTEN=127.0.0.1:%d", ntohs(a.sin_port));
-    char *busy[] = { listen_env, "CBASE_STORE=sqlite", "CBASE_DB=:memory:", NULL };
+    char *busy[] = { listen_env, "CBASE_STORE=sqlite", "CBASE_DB=:memory:", "CBASE_DEV=1", NULL };
     T_CHECK(exits(g_cbase, "serve", busy, 1, "listen"));
     close(fd);
 }

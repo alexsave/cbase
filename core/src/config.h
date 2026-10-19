@@ -12,6 +12,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#define CB_CONFIG_LIMITS 10   // the settable rate limits (rate_limits.h, all but the admin one)
+extern const char *const cb_config_limit_names[CB_CONFIG_LIMITS];
+
 typedef struct {
     // CBASE_LISTEN, "host:port", default 127.0.0.1:8080. Port 0 asks the OS for
     // a free one (the smoke test reads the bound port from the log line).
@@ -59,6 +62,14 @@ typedef struct {
     // CBASE_PUBLIC_URL: the URL clients use (https://api.foolish.cards), for
     // logs and the admin console. Default http://<listen>.
     char public_url[512];
+    // CBASE_PUBLIC_URL was given (not defaulted from CBASE_LISTEN): `cbase
+    // serve` outside dev mode refuses to start without it, because it is the
+    // JWT issuer (auth.c) and http://0.0.0.0:8080 is no one's address.
+    bool public_url_given;
+    // CBASE_DEV=1: the explicit development and test mode of `cbase serve`.
+    // Only here may the JWT secret be a random one per process and the public
+    // URL be defaulted from the listen address. Production gives both.
+    bool dev;
     // Tunables, each CBASE_<NAME> with these defaults:
     int  req_workers;     // CBASE_REQ_WORKERS 4: serve's request pool
     int  bot_workers;     // CBASE_BOT_WORKERS 1: serve's bot pool; see DESIGN.md "Kernel thread safety"
@@ -75,6 +86,17 @@ typedef struct {
     // kept. `cbase serve` only: cb_boot refuses any other value under Lambda,
     // so a stray variable cannot make production's bots hurry.
     int  bot_speedup;
+    // Serve's connection limits (net/server.h): CBASE_MAX_CONNS 4096 open
+    // connections (a new one past it is refused, and logged), CBASE_LISTEN_BACKLOG 512.
+    int  max_conns;
+    int  listen_backlog;
+    // The bursts of the rate limits (rate_limits.h), per window, indexed by
+    // cb_limit_kind (0 = the rule's own default). Set by CBASE_LIMIT_<KIND>:
+    // SIGNIN_IP 20/5min, SIGNIN_NAME 10/5min, SIGNUP_IP 5/h, SIGNUP_ALL 60/h,
+    // REFRESH_IP 60/5min, PASSWORD_USER 5/h, CREATE_USER 20/10min,
+    // CHAT_USER 30/min, SUB_USER 120/min, BUMP_USER 30/min. The admin one is
+    // CBASE_ADMIN_FAIL_LIMIT above.
+    int  limit_burst[CB_CONFIG_LIMITS];
 } cb_config;
 
 // Reads the environment into cfg. CB_OK, or CB_E_INVALID with a sentence in err.
@@ -86,11 +108,17 @@ typedef void (*cb_config_fn)(const char *name, const char *value, bool secret, v
 void cb_config_each(const cb_config *cfg, cb_config_fn fn, void *ud);
 
 // The secrets as they must be to serve, once every source has been read
-// (the environment, then SSM under Lambda): under Lambda the JWT secret must
-// have been given (a random one per container would sign users out at
-// random), and every secret that is set must be at least 32 characters.
+// (the environment, then SSM under Lambda): the JWT secret must have been
+// given (a random one per process would sign users out at every restart),
+// under Lambda always and under serve unless CBASE_DEV=1; and every secret that is set must be at least 32 characters.
 // CB_OK, or CB_E_INVALID with a sentence in err.
 int cb_config_check_secrets(const cb_config *cfg, bool lambda, char *err, size_t cap);
+
+// What `cbase serve` must have before it listens: cb_config_check_secrets
+// (the JWT secret given unless CBASE_DEV=1) and, outside dev mode, an explicit
+// CBASE_PUBLIC_URL that does not name 0.0.0.0. CB_OK, or CB_E_INVALID with a
+// sentence in err.
+int cb_config_check_serve(const cb_config *cfg, char *err, size_t cap);
 
 // A timer of the platform's own (a schedule's period under serve) as this
 // process runs it: divided by CBASE_BOT_SPEEDUP, rounded up so never 0.

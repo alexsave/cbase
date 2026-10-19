@@ -24,16 +24,51 @@ static void secrets_rule(void) {
     cb_config c;
     char err[256];
     clear_env();
-    // No JWT secret: serve makes a random one (and says so); Lambda refuses to start.
+    // No JWT secret: only CBASE_DEV=1 lets serve make a random one; serve otherwise and Lambda always refuse to start.
     T_EQ_INT(cb_config_from_env(&c, err, sizeof err), CB_OK);
-    T_CHECK(c.jwt_secret_generated);
-    T_EQ_INT(cb_config_check_secrets(&c, false, err, sizeof err), CB_OK);
+    T_CHECK(c.jwt_secret_generated && !c.dev);
+    T_EQ_INT(cb_config_check_secrets(&c, false, err, sizeof err), CB_E_INVALID);
+    T_CHECK(strstr(err, "CBASE_JWT_SECRET") != NULL && strstr(err, "CBASE_DEV=1") != NULL);
     T_EQ_INT(cb_config_check_secrets(&c, true, err, sizeof err), CB_E_INVALID);
     T_CHECK(strstr(err, "CBASE_JWT_SECRET") != NULL);
+    setenv("CBASE_DEV", "1", 1);
+    T_EQ_INT(cb_config_from_env(&c, err, sizeof err), CB_OK);
+    T_CHECK(c.dev && c.jwt_secret_generated);
+    T_EQ_INT(cb_config_check_secrets(&c, false, err, sizeof err), CB_OK);
+    T_EQ_INT(cb_config_check_serve(&c, err, sizeof err), CB_OK);
+    T_EQ_INT(cb_config_check_secrets(&c, true, err, sizeof err), CB_E_INVALID);   // dev mode is not a Lambda thing
+    unsetenv("CBASE_DEV");
+    T_EQ_INT(cb_config_from_env(&c, err, sizeof err), CB_OK);
     // Given (as SSM would fill it): Lambda starts.
     cb_strlcpy(c.jwt_secret, S32, sizeof c.jwt_secret);
     c.jwt_secret_generated = false;
     T_EQ_INT(cb_config_check_secrets(&c, true, err, sizeof err), CB_OK);
+    // Serve outside dev mode also wants CBASE_PUBLIC_URL, and not the wildcard address.
+    T_EQ_INT(cb_config_check_serve(&c, err, sizeof err), CB_E_INVALID);
+    T_CHECK(strstr(err, "CBASE_PUBLIC_URL") != NULL);
+    setenv("CBASE_JWT_SECRET", S32, 1);
+    setenv("CBASE_PUBLIC_URL", "http://0.0.0.0:8080", 1);
+    T_EQ_INT(cb_config_from_env(&c, err, sizeof err), CB_OK);
+    T_EQ_INT(cb_config_check_serve(&c, err, sizeof err), CB_E_INVALID);
+    setenv("CBASE_PUBLIC_URL", "https://api.example.org", 1);
+    T_EQ_INT(cb_config_from_env(&c, err, sizeof err), CB_OK);
+    T_EQ_INT(cb_config_check_serve(&c, err, sizeof err), CB_OK);
+    unsetenv("CBASE_PUBLIC_URL");
+    // The limits and the connection cap are settings with today's values as defaults, and bounds.
+    T_EQ_INT(cb_config_from_env(&c, err, sizeof err), CB_OK);
+    T_EQ_INT(c.max_conns, 4096);
+    T_EQ_INT(c.listen_backlog, 512);
+    T_EQ_INT(c.limit_burst[2], 0);
+    setenv("CBASE_LIMIT_SIGNUP_ALL", "600", 1);
+    setenv("CBASE_MAX_CONNS", "100", 1);
+    T_EQ_INT(cb_config_from_env(&c, err, sizeof err), CB_OK);
+    T_EQ_INT(c.limit_burst[3], 600);
+    T_EQ_INT(c.max_conns, 100);
+    setenv("CBASE_LIMIT_SIGNUP_ALL", "0", 1);
+    T_EQ_INT(cb_config_from_env(&c, err, sizeof err), CB_E_INVALID);
+    unsetenv("CBASE_LIMIT_SIGNUP_ALL");
+    unsetenv("CBASE_MAX_CONNS");
+    unsetenv("CBASE_JWT_SECRET");
     // Every secret set is at least 32 characters, wherever it came from.
     static const char *const names[] = { "CBASE_JWT_SECRET", "CBASE_ADMIN_TOKEN", "CBASE_ORIGIN_SECRET" };
     for (size_t i = 0; i < 3; i++) {

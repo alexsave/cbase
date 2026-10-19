@@ -121,9 +121,10 @@ int cb_process_main(const cb_provider *prov, const cb_app *app, int argc, char *
     cb_config cfg;
     char err[512];
     if (cb_config_from_env(&cfg, err, sizeof err) != CB_OK) { fprintf(stderr, "cbase: %s\n", err); return 2; }
+    if (cb_config_check_serve(&cfg, err, sizeof err) != CB_OK) { fprintf(stderr, "cbase: %s\n", err); return 2; }
     cb_log_init(cfg.log_level, 0);
     cb_config_each(&cfg, log_config, NULL);
-    if (cfg.jwt_secret_generated) CB_WARN("config", "CBASE_JWT_SECRET is unset: sessions die when this process does");
+    if (cfg.jwt_secret_generated) CB_WARN("config", "CBASE_JWT_SECRET is unset (CBASE_DEV=1): sessions die when this process does");
 
     static cb_ctx ctx;
     ctx.cfg = &cfg;
@@ -139,6 +140,8 @@ int cb_process_main(const cb_provider *prov, const cb_app *app, int argc, char *
     cb_server_opts o;
     cb_server_opts_default(&o);
     o.max_body = cfg.max_body;
+    o.max_conns = cfg.max_conns;
+    o.backlog = cfg.listen_backlog;
     ctx.server = cb_server_new(&ctx, &o);
     int port = 0;
     if (!ctx.server || cb_server_listen(ctx.server, cfg.listen_host, cfg.listen_port, &port) != CB_OK) return 1;
