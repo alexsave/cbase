@@ -218,11 +218,41 @@ static void timers_run_in_order_and_cancel(void) {
     cb_loop_free(l);
 }
 
+// Posts from many threads share wake-ups (one byte per drained batch): none may be lost,
+// and an idle loop must still wake for a post made after a drain.
+#include <stdatomic.h>
+static atomic_int g_ran;
+static atomic_int g_timed_out;
+static void timeout_cb(cb_loop *l, void *ud) { (void)ud; atomic_store(&g_timed_out, 1); cb_loop_stop(l); }
+static void count_post(cb_loop *l, void *ud) { (void)ud; if (atomic_fetch_add(&g_ran, 1) + 1 == 4 * 2000) cb_loop_stop(l); }
+static void *spammer(void *ud) {
+    for (int i = 0; i < 2000; i++) {
+        cb_loop_post((cb_loop *)ud, count_post, NULL);
+        if (i % 500 == 0) usleep(2000);   // let the loop go idle between bursts
+    }
+    return NULL;
+}
+
+static void posts_sharing_a_wakeup_are_never_lost(void) {
+    cb_loop *l = cb_loop_new();
+    atomic_store(&g_ran, 0);
+    pthread_t th[4];
+    for (int i = 0; i < 4; i++) pthread_create(&th[i], NULL, spammer, l);
+    atomic_store(&g_timed_out, 0);
+    cb_loop_timer(l, 3000, timeout_cb, NULL);   // a lost wake-up would sit here until the timer: fail below
+    cb_loop_run(l);
+    for (int i = 0; i < 4; i++) pthread_join(th[i], NULL);
+    T_EQ_INT(atomic_load(&g_timed_out), 0);
+    T_EQ_INT(atomic_load(&g_ran), 4 * 2000);
+    cb_loop_free(l);
+}
+
 int main(void) {
     T_RUN(many_fds_only_the_ready_ones_wake);
     T_RUN(a_removed_fd_and_its_reused_number_get_no_stale_event);
     T_RUN(interest_changes_and_hangup);
     T_RUN(a_post_from_another_thread_wakes_an_idle_loop);
     T_RUN(timers_run_in_order_and_cancel);
+    T_RUN(posts_sharing_a_wakeup_are_never_lost);
     return T_DONE();
 }

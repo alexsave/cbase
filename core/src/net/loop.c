@@ -51,6 +51,7 @@ struct cb_loop {
     post *post_head, *post_tail;
     int wake[2];       // self-pipe: posts and stop write one byte
     atomic_bool stopping;
+    atomic_bool wake_pending;   // a wake byte is in the pipe (or about to be) that no drain has cleared
     bool stopped;      // after run returned: posts are refused
 
     int64_t now;
@@ -218,7 +219,10 @@ int cb_loop_post(cb_loop *l, cb_post_fn fn, void *ud) {
     if (l->post_tail) l->post_tail->next = p; else l->post_head = p;
     l->post_tail = p;
     pthread_mutex_unlock(&l->post_lock);
-    wake(l);
+    // One wake per batch: the byte already in the pipe wakes the loop for this post too, because
+    // drain_posts clears the flag after it reads the pipe and BEFORE it takes the list (a post that saw the flag set was queued
+    // before the clear, so the take that follows includes it).
+    if (!atomic_exchange(&l->wake_pending, true)) wake(l);
     return CB_OK;
 }
 
@@ -230,6 +234,9 @@ void cb_loop_stop(cb_loop *l) {
 static void drain_posts(cb_loop *l) {
     char buf[256];
     while (read(l->wake[0], buf, sizeof buf) > 0) {}
+    // After the bytes are read and BEFORE the list is taken: a post that saw the flag set was queued before
+    // this clear, so the take below has it; one after the clear writes a byte of its own.
+    atomic_store(&l->wake_pending, false);
     pthread_mutex_lock(&l->post_lock);
     post *p = l->post_head;
     l->post_head = l->post_tail = NULL;
