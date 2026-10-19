@@ -178,7 +178,7 @@
 1 c_base/core/src/store/store.h /\bbots?\b/i
 1 c_base/core/src/store/store.h /\brosters?\b/i
 2 c_base/core/src/store/store_priv.h /\baws\b/i
-10 c_base/core/src/store/store_priv.h /dynamo/i
+11 c_base/core/src/store/store_priv.h /dynamo/i
 1 c_base/core/src/store/store_priv.h /sigv4/i
 1 c_base/core/src/store/store_priv.h /x-amz/i
 1 c_base/core/src/store/store_priv.h /sqlite/i
