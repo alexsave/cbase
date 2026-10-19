@@ -276,6 +276,7 @@ static void collect(void *ud, const char *frame, size_t len) {
 static void job_free(job *j) {
     msgs_free(j->frame);
     msgs_free(j->out_head);
+    if (j->mq) cb_mqtt_conn_free(j->mq);
     free(j->mq);
     free(j);
 }
@@ -304,6 +305,7 @@ static void job_done(cb_loop *l, void *ud) {
     if (c) {
         c->busy = false;
         // The state first, then the replies: a SUBSCRIBE is live before its SUBACK leaves.
+        cb_mqtt_conn_free(c->mq);
         free(c->mq);
         c->mq = j->mq;
         j->mq = NULL;
@@ -334,9 +336,9 @@ static void pump(local *L, lconn *c) {
     if (!j) return;   // try again on the next frame
     j->L = L;
     j->ws_id = c->ws_id;
-    j->mq = malloc(sizeof *j->mq);
+    j->mq = calloc(1, sizeof *j->mq);
     if (!j->mq) { free(j); return; }
-    memcpy(j->mq, c->mq, sizeof *j->mq);
+    if (cb_mqtt_conn_clone(j->mq, c->mq) != CB_OK) { free(j->mq); free(j); return; }
     j->frame = c->in_head;
     c->in_head = c->in_head->next;
     if (!c->in_head) c->in_tail = NULL;
@@ -357,12 +359,13 @@ static lconn *conn_open(cb_ws *ws, local *L) {
     if (!c) return NULL;
     c->ws = ws;
     c->ws_id = cb_ws_id(ws);
-    c->mq = malloc(sizeof *c->mq);
+    c->mq = calloc(1, sizeof *c->mq);
     if (!c->mq) { free(c); return NULL; }
-    cb_mqtt_conn_init(c->mq);
     if (!byid_add(L, c)) { free(c->mq); free(c); return NULL; }
     // The token may ride in the upgrade URL (token=) instead of CONNECT's password.
-    cb_mqtt_query_token(cb_ws_query(ws), c->mq->query_token, sizeof c->mq->query_token);
+    char qt[CB_RT_TOKEN_MAX + 1];
+    cb_mqtt_query_token(cb_ws_query(ws), qt, sizeof qt);
+    if (!cb_mqtt_conn_set_token(c->mq, qt)) { byid_del(L, c); free(c->mq); free(c); return NULL; }
     c->next = L->head;
     if (L->head) L->head->prev = c;
     L->head = c;
@@ -397,6 +400,7 @@ static void lconn_free(local *L, lconn *c) {
     if (c->next) c->next->prev = c->prev;
     unindex(L, c);
     msgs_free(c->in_head);
+    cb_mqtt_conn_free(c->mq);
     free(c->mq);
     free(c);
 }
@@ -503,8 +507,9 @@ static void forget_on_loop(cb_loop *l, void *ud) {
         if (strcmp(c->mq->user_id, f->user) != 0) continue;
         // A packet still out on the pool comes back to a closed connection.
         c->mq->state = CB_MQTT_CLOSED;
-        c->mq->n_subs = 0;
-        reindex(L, c);
+        reindex(L, c);   // not open: it hears nothing
+        cb_mqtt_conn_free(c->mq);
+        c->mq->state = CB_MQTT_CLOSED;
         cb_ws_close(c->ws, 1008);
     }
     free(f);

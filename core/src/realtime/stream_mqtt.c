@@ -8,6 +8,7 @@
 #include "util/str.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 // ---- the policy --------------------------------------------------------------------------
@@ -59,7 +60,46 @@ int cb_mqtt_may_subscribe(const char *user_id, const char *f, int n) {
 
 // ---- one connection -----------------------------------------------------------------------
 
-void cb_mqtt_conn_init(cb_mqtt_conn *c) { memset(c, 0, sizeof *c); }
+void cb_mqtt_conn_free(cb_mqtt_conn *c) {
+    for (int i = 0; i < CB_MQTT_SUBS; i++) free(c->subs[i]);
+    free(c->query_token);
+    free(c->carry);
+    memset(c, 0, sizeof *c);
+}
+
+void cb_mqtt_conn_init(cb_mqtt_conn *c) { cb_mqtt_conn_free(c); }
+
+static char *dup_str(const char *s) {
+    size_t n = strlen(s) + 1;
+    char *p = malloc(n);
+    if (p) memcpy(p, s, n);
+    return p;
+}
+
+int cb_mqtt_conn_clone(cb_mqtt_conn *dst, const cb_mqtt_conn *src) {
+    *dst = *src;
+    memset(dst->subs, 0, sizeof dst->subs);
+    dst->query_token = NULL;
+    dst->carry = NULL;
+    bool ok = true;
+    for (int i = 0; ok && i < src->n_subs; i++) ok = (dst->subs[i] = dup_str(src->subs[i])) != NULL;
+    if (ok && src->query_token) ok = (dst->query_token = dup_str(src->query_token)) != NULL;
+    if (ok && src->carry && src->in_len > 0) {
+        dst->carry = malloc((size_t)src->in_len);
+        ok = dst->carry != NULL;
+        if (ok) memcpy(dst->carry, src->carry, (size_t)src->in_len);
+    }
+    if (!ok) { cb_mqtt_conn_free(dst); return CB_E_NOMEM; }
+    return CB_OK;
+}
+
+bool cb_mqtt_conn_set_token(cb_mqtt_conn *c, const char *token) {
+    free(c->query_token);
+    c->query_token = NULL;
+    if (!token || !*token) return true;
+    c->query_token = dup_str(token);
+    return c->query_token != NULL;
+}
 
 bool cb_mqtt_hears(const cb_mqtt_conn *c, const char *t, int n) {
     if (c->state != CB_MQTT_OPEN) return false;
@@ -81,8 +121,9 @@ static void reply(cb_rt_send_fn send, void *ud, const uint8_t *b, int n) {
 static int on_connect(cb_ctx *ctx, cb_mqtt_conn *c, const MqttPacket *p, int64_t now_ms, cb_rt_send_fn send, void *ud) {
     if (c->state != CB_MQTT_AWAIT_CONNECT) return CB_E_INVALID;   // a second CONNECT (3.1.0-2)
     if (p->keepalive_s > CB_MQTT_KEEPALIVE_MAX) return CB_E_INVALID;
-    const char *tok = p->has_password ? (const char *)p->password : c->query_token;
-    size_t tl = p->has_password ? p->password_len : strlen(c->query_token);
+    const char *qt = c->query_token ? c->query_token : "";
+    const char *tok = p->has_password ? (const char *)p->password : qt;
+    size_t tl = p->has_password ? p->password_len : strlen(qt);
     cb_mqtt_grant g;
     int rc = cb_mqtt_authorize(ctx, tok, tl, (const char *)p->client_id, p->client_id_len, now_ms, &g);
     if (rc != CB_OK) {
@@ -90,6 +131,8 @@ static int on_connect(cb_ctx *ctx, cb_mqtt_conn *c, const MqttPacket *p, int64_t
         return rc;
     }
     c->state = CB_MQTT_OPEN;
+    free(c->query_token);   // spent
+    c->query_token = NULL;
     memcpy(c->user_id, g.user_id, sizeof c->user_id);
     c->expires_s = g.expires_s;
     c->keepalive_s = p->keepalive_s;
@@ -99,6 +142,7 @@ static int on_connect(cb_ctx *ctx, cb_mqtt_conn *c, const MqttPacket *p, int64_t
 }
 
 static int on_subscribe(cb_mqtt_conn *c, const MqttPacket *p, cb_rt_send_fn send, void *ud) {
+    int n_before = c->n_subs;
     // Every filter is checked before any is taken: one outside the policy ends
     // the connection, as IoT ends it, and nothing it asked for is kept.
     int pos = 0, fresh = 0;
@@ -115,9 +159,14 @@ static int on_subscribe(cb_mqtt_conn *c, const MqttPacket *p, cb_rt_send_fn send
     pos = 0;
     while (mqtt_next_filter(p, &pos, &f, &fl, &qos)) {
         if (sub_index(c, f, fl) >= 0) continue;   // the same filter again replaces itself (3.8.4)
-        memcpy(c->subs[c->n_subs], f, fl);
-        c->subs[c->n_subs][fl] = 0;
-        c->n_subs++;
+        char *copy = malloc((size_t)fl + 1);
+        if (!copy) {   // keep none of this SUBSCRIBE
+            while (c->n_subs > n_before) { free(c->subs[--c->n_subs]); c->subs[c->n_subs] = NULL; }
+            return CB_E_NOMEM;
+        }
+        memcpy(copy, f, fl);
+        copy[fl] = 0;
+        c->subs[c->n_subs++] = copy;
     }
     uint8_t out[4 + MQTT_ITEMS_MAX];
     reply(send, ud, out, mqtt_write_suback(out, sizeof out, p->packet_id, codes, k));
@@ -132,9 +181,10 @@ static void on_unsubscribe(cb_mqtt_conn *c, const MqttPacket *p, cb_rt_send_fn s
     while (mqtt_next_filter(p, &pos, &f, &fl, &qos)) {
         int i = sub_index(c, f, fl);
         if (i < 0) continue;
-        if (i + 1 < c->n_subs) memmove(c->subs[i], c->subs[i + 1], (size_t)(c->n_subs - i - 1) * sizeof c->subs[0]);
+        free(c->subs[i]);
+        if (i + 1 < c->n_subs) memmove(&c->subs[i], &c->subs[i + 1], (size_t)(c->n_subs - i - 1) * sizeof c->subs[0]);
         c->n_subs--;
-        memset(c->subs[c->n_subs], 0, sizeof c->subs[0]);
+        c->subs[c->n_subs] = NULL;
     }
     uint8_t out[4];
     reply(send, ud, out, mqtt_write_unsuback(out, sizeof out, p->packet_id));
@@ -165,36 +215,58 @@ static int on_packet(cb_ctx *ctx, cb_mqtt_conn *c, const MqttPacket *p, int64_t 
 int cb_mqtt_on_bytes(cb_ctx *ctx, cb_mqtt_conn *c, const uint8_t *bytes, size_t len, int64_t now_ms,
                      cb_rt_send_fn send, void *ud) {
     if (c->state == CB_MQTT_CLOSED) return CB_E_STATE;
+    // The packet being assembled lives in a per-thread scratch for this call;
+    // only a packet a message ends inside of is kept (c->carry).
+    static _Thread_local uint8_t in[CB_MQTT_PACKET_MAX];
+    int in_len = c->in_len;
+    if (in_len > 0 && c->carry) memcpy(in, c->carry, (size_t)in_len);
+    else in_len = 0;
     size_t at = 0;
+    int ret;
     for (;;) {
         // Top the carried bytes up from the message, one packet's worth at most.
-        size_t room = sizeof c->in - (size_t)c->in_len, take = len - at < room ? len - at : room;
-        memcpy(c->in + c->in_len, bytes + at, take);
-        c->in_len += (int)take;
+        size_t room = sizeof in - (size_t)in_len, take = len - at < room ? len - at : room;
+        memcpy(in + in_len, bytes + at, take);
+        in_len += (int)take;
         at += take;
         MqttPacket p;
-        int k = mqtt_parse(c->in, c->in_len, CB_MQTT_PACKET_MAX, MQTT_FROM_CLIENT, &p);
+        int k = mqtt_parse(in, in_len, CB_MQTT_PACKET_MAX, MQTT_FROM_CLIENT, &p);
         if (k < 0) {
             // Malformed, or announcing more than CB_MQTT_PACKET_MAX.
             c->state = CB_MQTT_CLOSED;
-            return c->in_len >= 2 && mqtt_parse(c->in, c->in_len, 1 << 28, MQTT_FROM_CLIENT, &p) >= 0 ? CB_E_FULL : CB_E_INVALID;
+            ret = in_len >= 2 && mqtt_parse(in, in_len, 1 << 28, MQTT_FROM_CLIENT, &p) >= 0 ? CB_E_FULL : CB_E_INVALID;
+            break;
         }
         if (k == 0) {
             if (at < len) {   // the buffer is full and still no packet: past the limit
                 c->state = CB_MQTT_CLOSED;
-                return CB_E_FULL;
+                ret = CB_E_FULL;
+            } else {
+                ret = CB_OK;  // the rest comes in a later message
             }
-            return CB_OK;     // the rest comes in a later message
+            break;
         }
         int rc = on_packet(ctx, c, &p, now_ms, send, ud);
-        memmove(c->in, c->in + k, (size_t)(c->in_len - k));
-        c->in_len -= k;
+        memmove(in, in + k, (size_t)(in_len - k));
+        in_len -= k;
         if (rc != CB_OK) {
             c->state = CB_MQTT_CLOSED;
-            return rc;
+            ret = rc;
+            break;
         }
-        if (at == len && c->in_len == 0) return CB_OK;
+        if (at == len && in_len == 0) { ret = CB_OK; break; }
     }
+    // Keep a begun packet, or nothing.
+    free(c->carry);
+    c->carry = NULL;
+    c->in_len = 0;
+    if (ret == CB_OK && in_len > 0) {
+        c->carry = malloc((size_t)in_len);
+        if (!c->carry) return CB_E_NOMEM;
+        memcpy(c->carry, in, (size_t)in_len);
+        c->in_len = in_len;
+    }
+    return ret;
 }
 
 // ---- the upgrade's token ------------------------------------------------------------------

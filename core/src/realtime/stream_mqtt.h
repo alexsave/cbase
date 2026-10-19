@@ -81,19 +81,33 @@ bool cb_mqtt_user_ok(const char *user_id);
 
 enum { CB_MQTT_AWAIT_CONNECT = 0, CB_MQTT_OPEN, CB_MQTT_CLOSED };
 
+// The connection is small (about 300 bytes) and owns its variable parts on the
+// heap: the filters it holds (a game holds a handful, 50 bytes each), the
+// upgrade URL's token until CONNECT, and the unfinished packet when a message
+// ends inside one. The 4 KB packet buffer is a per-thread scratch of
+// cb_mqtt_on_bytes, not a field, and the old fixed arrays (subs[32][257], the
+// 2 KB token, the packet buffer) were 14 KB per connection, copied per frame.
 typedef struct {
     uint8_t  state;              // CB_MQTT_*
     cb_uuid  user_id;            // once open
     int64_t  expires_s;          // once open: the connection ends then
     uint16_t keepalive_s;
     int      n_subs;
-    char     subs[CB_MQTT_SUBS][MQTT_TOPIC_MAX + 1];
-    char     query_token[CB_RT_TOKEN_MAX + 1];   // the upgrade URL's token=, "" for none (set by the transport)
+    char    *subs[CB_MQTT_SUBS]; // malloc'd, NUL-terminated; [0..n_subs)
+    char    *query_token;        // the upgrade URL's token=, NULL for none (cb_mqtt_conn_set_token)
     int      in_len;             // a packet begun in one WebSocket message and not yet ended
-    uint8_t  in[CB_MQTT_PACKET_MAX];
+    uint8_t *carry;              // those in_len bytes, malloc'd
 } cb_mqtt_conn;
 
+// c must be zeroed memory (calloc) or a connection from before: what the old
+// one owned is released, then c is a fresh AWAIT_CONNECT connection.
 void cb_mqtt_conn_init(cb_mqtt_conn *c);
+// Releases what c owns; c is then a fresh connection again.
+void cb_mqtt_conn_free(cb_mqtt_conn *c);
+// dst (zeroed memory) becomes a deep copy of src. CB_OK or CB_E_NOMEM (dst is then freed).
+int  cb_mqtt_conn_clone(cb_mqtt_conn *dst, const cb_mqtt_conn *src);
+// Keeps a copy of the upgrade URL's token ("" for none). false when out of memory.
+bool cb_mqtt_conn_set_token(cb_mqtt_conn *c, const char *token);
 
 // The bytes one WebSocket message carried (part of a packet, one, or several,
 // as MQTT over WebSocket allows), handled in order, each reply (CONNACK,

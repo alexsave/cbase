@@ -160,7 +160,7 @@ static void open_conn(cb_mqtt_conn *c) {
 
 static void a_connection_lives(void) {
     setup();
-    cb_mqtt_conn *c = malloc(sizeof *c);
+    cb_mqtt_conn *c = calloc(1, sizeof *c);
     open_conn(c);
     T_EQ_STR(c->user_id, UA);
     T_EQ_INT(c->keepalive_s, 60);
@@ -202,13 +202,14 @@ static void a_connection_lives(void) {
     T_EQ_INT(c->state, CB_MQTT_CLOSED);
     T_CHECK(!cb_mqtt_hears(c, "u/" UA "/v", 2 + 36 + 2));
     T_EQ_INT(feed(c, b, mqtt_write_bare(b, sizeof b, MQTT_PINGREQ), NOW_MS), CB_E_STATE);
+    cb_mqtt_conn_free(c);
     free(c);
 }
 
 // The ways a connection ends, each with no reply (as IoT ends it).
 static void a_connection_ends(void) {
     setup();
-    cb_mqtt_conn *c = malloc(sizeof *c);
+    cb_mqtt_conn *c = calloc(1, sizeof *c);
     uint8_t b[2048];
     struct { const char *why; const char *id, *tok; uint16_t ka; int want; } refused[] = {
         { "forged token", UA "-t", "forged", 60, CB_E_AUTH },
@@ -280,13 +281,14 @@ static void a_connection_ends(void) {
     }
     T_EQ_INT(feed(c, b, sub_pkt(b, 99, "s/g0"), NOW_MS), CB_OK);   // held already: no new slot
     T_EQ_INT(feed(c, b, sub_pkt(b, 100, "s/one-more"), NOW_MS), CB_E_FULL);
+    cb_mqtt_conn_free(c);
     free(c);
 }
 
 // MQTT over WebSocket: a message may hold part of a packet, or several.
 static void packets_across_messages(void) {
     setup();
-    cb_mqtt_conn *c = malloc(sizeof *c);
+    cb_mqtt_conn *c = calloc(1, sizeof *c);
     uint8_t b[4096];
     int n = connect_pkt(b, UA "-t", "tok-" UA, 60);
     int s = sub_pkt(b + n, 5, "u/" UA "/c/g1");
@@ -324,6 +326,7 @@ static void packets_across_messages(void) {
     T_EQ_INT(feed(c, b, k, NOW_MS), CB_E_FORBIDDEN);
     T_EQ_INT(g_out.n, 1);   // the CONNACK only
     T_EQ_INT(c->n_subs, 0);
+    cb_mqtt_conn_free(c);
     free(c);
 }
 
@@ -341,17 +344,18 @@ static void the_query_token(void) {
     T_CHECK(!cb_mqtt_query_token("token=0123456789", t, 5));   // does not fit: none at all
     T_EQ_STR(t, "");
 
-    cb_mqtt_conn *c = malloc(sizeof *c);
+    cb_mqtt_conn *c = calloc(1, sizeof *c);
     cb_mqtt_conn_init(c);
-    cb_strlcpy(c->query_token, "tok-" UA, sizeof c->query_token);
+    T_CHECK(cb_mqtt_conn_set_token(c, "tok-" UA));
     uint8_t b[2048];
     memset(&g_out, 0, sizeof g_out);
     T_EQ_INT(feed(c, b, connect_pkt(b, UA "-q", NULL, 60), NOW_MS), CB_OK);
     T_EQ_INT(out_type(0), MQTT_CONNACK);
     // The password wins over the query: a bad password is refused whatever the URL held.
     cb_mqtt_conn_init(c);
-    cb_strlcpy(c->query_token, "tok-" UA, sizeof c->query_token);
+    T_CHECK(cb_mqtt_conn_set_token(c, "tok-" UA));
     T_EQ_INT(feed(c, b, connect_pkt(b, UA "-q", "forged", 60), NOW_MS), CB_E_AUTH);
+    cb_mqtt_conn_free(c);
     free(c);
 }
 
