@@ -169,6 +169,9 @@ static void finish(conn *c) {
     cb_res_init(&c->res);
     cb_buf_consume(&c->in, c->req_len);
     c->req_len = 0;
+    // An idle keep-alive connection holds no read buffer: one that grew for a big request is released
+    // (bytes of a pipelined next request keep it).
+    if (c->in.len == 0 && c->in.cap > 8192) cb_buf_free(&c->in);
     c->started = c->in.len ? cb_loop_now(loop_of(c)) : 0;
     c->state = C_HTTP;
     c->last_active = cb_loop_now(loop_of(c));
@@ -411,7 +414,7 @@ static void conn_io(cb_loop *l, int fd, int ev, void *ud) {
             return;
         }
         for (;;) {
-            if (!cb_buf_reserve(&c->in, 16384)) { conn_close(c); return; }
+            if (!cb_buf_reserve(&c->in, 4096)) { conn_close(c); return; }
             ssize_t r = recv(fd, c->in.p + c->in.len, c->in.cap - c->in.len - 1, 0);
             if (r > 0) {
                 c->in.len += (size_t)r;
