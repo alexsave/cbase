@@ -155,10 +155,10 @@ static int boot_in_child(const char *db) {
 }
 
 static void one_instance_per_database(void) {
-    char db[200], rm[600];
+    char db[200], rm[4 * sizeof db + 64];
     snprintf(db, sizeof db, "/tmp/unit_cfg_one_%d.db", (int)getpid());
     snprintf(rm, sizeof rm, "rm -f %s %s-wal %s-shm %s.serve-lock", db, db, db, db);
-    (void)system(rm);
+    T_CHECK(system(rm) == 0);
     cb_config c;
     char err[256] = "";
     T_EQ_INT(cb_config_from_env(&c, err, sizeof err), CB_OK);
@@ -173,7 +173,7 @@ static void one_instance_per_database(void) {
     T_EQ_INT(boot_in_child(db), 1);   // refused while this one runs
     cb_unboot(&ctx);
     T_EQ_INT(boot_in_child(db), 0);   // free again
-    (void)system(rm);
+    T_CHECK(system(rm) == 0);
 }
 
 int main(void) {

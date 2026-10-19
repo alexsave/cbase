@@ -129,7 +129,7 @@ static void a_busy_writer_on_a_slow_disk_keeps_the_wal_bounded(void) {
     snprintf(path, sizeof path, "/tmp/unit_ck_%d.db", (int)getpid());
     snprintf(wal, sizeof wal, "%s-wal", path);
     snprintf(rm, sizeof rm, "rm -f %s %s-wal %s-shm", path, path, path);
-    (void)system(rm);
+    T_CHECK(system(rm) == 0);
     slow_disk(true);
     cb_store *st = NULL;
     T_EQ_INT(cb_store_open_sqlite(path, &st), CB_OK);
