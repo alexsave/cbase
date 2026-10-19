@@ -465,7 +465,12 @@ static int dy_item_batch_get(cb_store *s, const cb_ikey *keys, int n, const char
                 char pk[CB_ITEM_KEY_MAX + 1], sk[CB_ITEM_KEY_MAX + 1];
                 if (!dw_item_keys(e, pk, sizeof pk, sk, sizeof sk)) continue;
                 cb_item_reset(&it);
-                if (!dw_item_read(e, &it)) { rc = CB_E_DB; break; }
+                char why[160];
+                if (!dw_item_read_why(e, &it, why, sizeof why)) {
+                    CB_ERROR(MOD, "BatchGetItem: item %s / %s: %s", pk, sk, why);
+                    rc = CB_E_DB;
+                    break;
+                }
                 for (int i = 0; i < np && more; i++) {
                     int k = pend[i];
                     if (seen[k] || strcmp(keys[k].pk, pk) != 0 || strcmp(keys[k].sk, sk) != 0) continue;

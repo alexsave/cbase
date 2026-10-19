@@ -188,10 +188,36 @@ static void a_pk_family_is_the_text_before_the_first_hash(void) {
     T_EQ_STR(fam, "LONGFAM");
 }
 
+// What a failed decode says: the attribute and its type, never the value (the log must not hold user data).
+static void an_item_that_does_not_decode_says_which_attribute_and_never_its_value(void) {
+    const char *bad[] = {
+        "{\"pk\":{\"S\":\"X#1\"},\"sk\":{\"S\":\"A\"},\"score\":{\"N\":\"1523.75\"}}",   // a fraction
+        "{\"pk\":{\"S\":\"X#1\"},\"sk\":{\"S\":\"A\"},\"score\":{\"M\":{\"secret\":{\"S\":\"hunter2\"}}}}",   // a map
+    };
+    const char *want_type[] = { "type N", "type M" };
+    for (int i = 0; i < 2; i++) {
+        cb_item it;
+        cb_item_init(&it);
+        char why[160] = "";
+        T_CHECK(!dw_item_read(cb_span_of(bad[i], strlen(bad[i])), &it));
+        cb_item_reset(&it);
+        T_CHECK(!dw_item_read_why(cb_span_of(bad[i], strlen(bad[i])), &it, why, sizeof why));
+        T_CHECK(strstr(why, "\"score\"") != NULL && strstr(why, want_type[i]) != NULL);
+        T_CHECK(strstr(why, "1523") == NULL && strstr(why, "hunter2") == NULL);
+        cb_item_free(&it);
+    }
+    cb_item ok;
+    cb_item_init(&ok);
+    const char *good = "{\"pk\":{\"S\":\"X#1\"},\"n\":{\"N\":\"7\"}}";
+    T_CHECK(dw_item_read_why(cb_span_of(good, strlen(good)), &ok, NULL, 0));
+    cb_item_free(&ok);
+}
+
 int main(void) {
     if (tp_tempdir(g_dir, sizeof g_dir) != 0) return 1;
     T_RUN(the_copy_writes_what_the_store_writes);
     T_RUN(every_index_key_round_trips_and_a_broken_one_is_caught);
+    T_RUN(an_item_that_does_not_decode_says_which_attribute_and_never_its_value);
     T_RUN(a_pk_family_is_the_text_before_the_first_hash);
     char cmd[300];
     snprintf(cmd, sizeof cmd, "rm -rf '%s'", g_dir);

@@ -1171,7 +1171,7 @@ bool dw_item_keys(cb_span item, char *pk, size_t pk_cap, char *sk, size_t sk_cap
     return dw_get_s(item, "pk", pk, pk_cap) && dw_get_s(item, "sk", sk, sk_cap);
 }
 
-bool dw_item_read(cb_span item, cb_item *out) {
+static bool item_read(cb_span item, cb_item *out, char *why, size_t why_cap) {
     size_t pos = 0;
     cb_span k, v;
     char name[256];
@@ -1225,10 +1225,24 @@ bool dw_item_read(cb_span item, cb_item *out) {
         ok = ok && cb_item_add(out, &a);
         free(text);
         free(bytes);
-        if (!ok) return false;
+        if (!ok) {
+            if (why && why_cap) {
+                char ty[16] = "?";
+                size_t n = tk.n >= 2 ? tk.n - 2 : 0;   // the key's span holds its quotes
+                if (n > sizeof ty - 1) n = sizeof ty - 1;
+                memcpy(ty, tk.p + 1, n);
+                ty[n] = 0;
+                snprintf(why, why_cap, "attribute \"%.40s\" (type %s, %zu value bytes) does not decode", name, ty, tv.n);
+            }
+            return false;
+        }
     }
     return true;
 }
+
+bool dw_item_read(cb_span item, cb_item *out) { return item_read(item, out, NULL, 0); }
+
+bool dw_item_read_why(cb_span item, cb_item *out, char *why, size_t cap) { return item_read(item, out, why, cap); }
 
 // ---- transactions ------------------------------------------------------------------------------
 

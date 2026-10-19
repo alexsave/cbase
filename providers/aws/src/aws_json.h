@@ -203,6 +203,9 @@ int dw_ibatch_unprocessed(const char *body, size_t n, const char *table, const c
 // A DynamoDB item ({"name":{"S":..},..}) as a cb_item (added to it). false on
 // a value of another type, or one that does not decode.
 bool dw_item_read(cb_span item, cb_item *out);
+// The same, and on false the reason into why: the attribute's name, its DynamoDB type and the size of its
+// value, never the value (a log line must not hold a user's data).
+bool dw_item_read_why(cb_span item, cb_item *out, char *why, size_t cap);
 // An item's pk and sk (into the caller's buffers): false when it has none.
 bool dw_item_keys(cb_span item, char *pk, size_t pk_cap, char *sk, size_t sk_cap);
 
