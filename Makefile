@@ -159,6 +159,7 @@ SHARED_SRC := $(C_ROOT)/shared/c/b64/b64.c $(C_ROOT)/shared/c/hex/hex.c
 LIB_SRC  := $(sort $(filter-out $(MAIN_SERVE) $(MAIN_LAMBDA),$(foreach r,$(SRC_ROOTS),$(wildcard $(r)/*.c $(r)/*/*.c)))) $(SHARED_SRC) \
             build/gen/schema_sql.c build/gen/console_html.c
 IMPORT_SRC := $(C_ROOT)/foolish/server/migrate/import.c
+EXPORT_SRC := $(C_ROOT)/foolish/server/migrate/export.c
 TEST_SRC := $(sort $(foreach r,$(TEST_ROOTS),$(wildcard $(r)/*.c)))
 TLIB_SRC := $(sort $(foreach r,$(TEST_ROOTS),$(wildcard $(r)/lib_*.c)))
 UNIT_SRC := $(sort $(foreach r,$(TEST_ROOTS),$(wildcard $(r)/unit_*.c)))
@@ -182,6 +183,7 @@ prog = $(eval $(call PROG,$(1),$(2),$(3),$(4),$(5),$(6)))
 $(call prog,build,build/obj/cbase,build/obj/kernel,cbase,$(MAIN_SERVE),CB_CFLAGS)
 $(call prog,build,build/obj/cbase,build/obj/kernel,bootstrap,$(MAIN_LAMBDA),CB_CFLAGS)
 $(call prog,build,build/obj/cbase,build/obj/kernel,cbase-import,$(IMPORT_SRC),CB_CFLAGS)
+$(call prog,build,build/obj/cbase,build/obj/kernel,cbase-export,$(EXPORT_SRC),CB_CFLAGS)
 # The /m/<payload> cases foolish/server/test/fixture_unfurl.h holds, made by the kernel
 # ($(C_ROOT)/foolish/server/tools/unfurl_payloads.c). Not part of any check: it
 # is run by hand when the goldens are regenerated.
@@ -202,7 +204,7 @@ $(call prog,build/asan/test,build/obj/asan,build/obj/asan-kernel,unit_bench,benc
 $(foreach s,smoke smoke_lambda smoke_lambda_after smoke_authz smoke_matrix smoke_boot,$(call prog,build/asan/test,build/obj/asan,build/obj/asan-kernel,$(s),$(call tsrc,$(s)) $(TLIB_SRC),ASAN_CB_CFLAGS))
 
 .PHONY: coverage all test smoke check check-asan test-asan smoke-asan check-dynamo bench-dynamo clean print-kernel-src bootstrap bench
-all: build/cbase build/bootstrap build/cbase-import build/cbase-bench
+all: build/cbase build/bootstrap build/cbase-import build/cbase-export build/cbase-bench
 
 # THE TEST RUNS, in parallel. Every program is its own process with its own
 # server, port, temporary directory and database (the smokes start their own

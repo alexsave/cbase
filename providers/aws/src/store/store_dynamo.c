@@ -610,6 +610,18 @@ int cb_store_dynamo_bulk(cb_store *s) {
     return rc;
 }
 
+int cb_store_dynamo_read_share(cb_store *s, double share) {
+    if (!s || strcmp(s->ops->name, "dynamo") != 0 || !(share > 0.0) || share > 1.0) return CB_E_INVALID;
+    dyn *d = D(s);
+    if (!d->bulk) return CB_E_INVALID;
+    if (d->rate[0] > 0) {
+        d->rate[0] *= share;
+        if (d->bal[0] > d->rate[0]) d->bal[0] = d->rate[0];
+        CB_INFO(MOD, "bulk: reads held to %g RCU/s (%g%% of provisioned)", d->rate[0], share * 100.0);
+    }
+    return CB_OK;
+}
+
 void cb_store_dynamo_clock(cb_store *s, int64_t (*mono)(void), void (*sleep)(int64_t ms)) {
     D(s)->mono = mono;
     D(s)->sleep = sleep;

@@ -35,6 +35,11 @@ int cb_store_open_dynamo_with(const char *table, cb_dynamo_send_fn send, void *u
 // request path never turns it on. CB_OK, or CB_E_DB when DescribeTable failed
 // (bulk retrying is on, unpaced), CB_E_INVALID for a store that is not DynamoDB.
 int cb_store_dynamo_bulk(cb_store *s);
+// After cb_store_dynamo_bulk: holds the READ pacing to `share` (> 0, at most 1)
+// of the provisioned read capacity, so an export can leave the rest to the
+// live traffic. Writes keep their pace. CB_E_INVALID outside bulk mode; on an
+// on-demand table (unpaced) it changes nothing.
+int cb_store_dynamo_read_share(cb_store *s, double share);
 // The clock the pauses and the pacing use (tests: a fake one).
 void cb_store_dynamo_clock(cb_store *s, int64_t (*mono)(void), void (*sleep)(int64_t ms));
 
