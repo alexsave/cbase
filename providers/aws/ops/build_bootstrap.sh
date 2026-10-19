@@ -14,7 +14,20 @@
 # REPRODUCIBLE: the image is pinned by digest below, the copy has no build
 # directories in it, paths inside the container are fixed (/w), and the zip
 # entry gets a fixed timestamp. Two runs give the same bootstrap.zip.
+#
+# `build_bootstrap.sh serve` builds the other binary of the same tree the same
+# way, dist/cbase-serve-linux-arm64 and its .sha256: `cbase serve` (the local
+# provider, SQLite and its own MQTT hub), static on musl, for a plain Linux
+# arm64 host (an EC2 t4g.nano). CI publishes it (.github/workflows/c_base.yml,
+# the serve_binary job).
 set -euo pipefail
+
+what="${1:-bootstrap}"
+case "$what" in
+  bootstrap) target=build/bootstrap ;;
+  serve) target=build/cbase ;;
+  *) echo "usage: build_bootstrap.sh [bootstrap|serve]" >&2; exit 2 ;;
+esac
 
 IMAGE="alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc"
 here="$(cd "$(dirname "$0")/../../.." && pwd)"   # c_base/
@@ -26,7 +39,7 @@ if ! command -v docker >/dev/null 2>&1; then
   exit 1
 fi
 
-docker run --rm --platform linux/arm64 \
+docker run --rm --platform linux/arm64 -e TARGET="$target" -e WHAT="$what" \
   -v "$root":/repo:ro -v "$here/dist":/out \
   "$IMAGE" sh -euc '
     apk add --no-cache build-base openssl-dev openssl-libs-static sqlite-dev sqlite-static linux-headers zip >/dev/null
@@ -35,13 +48,27 @@ docker run --rm --platform linux/arm64 \
     tar cf - --exclude="./c_base/build" --exclude="./c_base/dist" --exclude="./foolish/c/build" \
       ./c_base ./foolish/c ./foolish/server ./shared | tar xf - -C /w
     cd /w/c_base
-    make -s -j"$(nproc)" STATIC=1 build/bootstrap
+    make -s -j"$(nproc)" STATIC=1 "$TARGET"
+    if [ "$WHAT" = serve ]; then
+      strip -o /out/cbase-serve-linux-arm64 "$TARGET"
+      exit 0
+    fi
     strip -o /out/bootstrap build/bootstrap
     cd /out
     touch -t 202601010000 bootstrap
     rm -f bootstrap.zip
     TZ=UTC zip -q -X bootstrap.zip bootstrap
   '
+if [ "$what" = serve ]; then
+  bin="$here/dist/cbase-serve-linux-arm64"
+  if command -v sha256sum >/dev/null 2>&1; then sum="$(sha256sum "$bin" | awk '{print $1}')"
+  else sum="$(shasum -a 256 "$bin" | awk '{print $1}')"; fi
+  echo "$sum  cbase-serve-linux-arm64" > "$bin.sha256"
+  file "$bin" 2>/dev/null || true
+  ls -l "$bin"
+  cat "$bin.sha256"
+  exit 0
+fi
 file "$here/dist/bootstrap" 2>/dev/null || true
 ls -l "$here/dist/bootstrap" "$here/dist/bootstrap.zip"
 shasum -a 256 "$here/dist/bootstrap.zip"
