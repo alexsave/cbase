@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "../../../../shared/c/clock.h"
 
 enum { WARM = 10, RUNS = 200 };
 
@@ -36,9 +37,7 @@ static void report(const char *what, double *ms, const cb_store_tally *one) {
 }
 
 static double now_ms(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1e6;
+    return host_mono_ms_f();
 }
 
 static bool count_member(const cb_member_row *m, void *ud) { (*(int *)ud)++; return true; }

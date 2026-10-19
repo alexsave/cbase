@@ -9,6 +9,7 @@
 #include <time.h>
 #ifdef __APPLE__
 #include <pthread/qos.h>
+#include "../../../shared/c/clock.h"
 #endif
 
 // crypt_blowfish's and OpenBSD's published vectors (wrapper.c / regress).
@@ -92,9 +93,7 @@ static void hash_round_trip(void) {
 // machine took to schedule it (wall time made this test fail under
 // `make -j8 check` beside a busy machine: verify 121 ms against a 65 ms norm).
 static int64_t cpu_ms(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
-    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+    return host_thread_cpu_ms();
 }
 
 // What cost 10 protects is two things, held apart.

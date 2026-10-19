@@ -14,6 +14,7 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+#include "../../../shared/c/clock.h"
 
 extern char **environ;
 
@@ -178,10 +179,7 @@ int tp_wait_line(tp_child *c, const char *needle, int timeout_ms, char *out, siz
         int64_t left = end - cb_mono_ms();
         if (left <= 0) break;
         struct timespec ts;
-        clock_gettime(CLOCK_REALTIME, &ts);
-        int64_t ns = ts.tv_nsec + (left > 100 ? 100 : left) * 1000000;
-        ts.tv_sec += ns / 1000000000;
-        ts.tv_nsec = ns % 1000000000;
+        host_deadline_after_ms(&ts, left > 100 ? 100 : left);
         pthread_cond_timedwait(&p->cv, &p->mu, &ts);
     }
     pthread_mutex_unlock(&p->mu);

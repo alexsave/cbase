@@ -55,11 +55,10 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include "../../../../shared/c/clock.h"
 
 static int64_t mono_us(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+    return host_mono_us();
 }
 
 // The invocation's timing line (above). `what` names it: kind, route, status.

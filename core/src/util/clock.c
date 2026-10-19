@@ -1,28 +1,17 @@
 #include "clock.h"
 
 #include "err.h"
+#include "../../../../shared/c/clock.h"
 
 #include <errno.h>
 #include <stdio.h>
 #include <time.h>
 
-int64_t cb_now_ms(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
-}
+int64_t cb_now_ms(void) { return host_real_ms(); }
 
-int64_t cb_mono_ms(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
-}
+int64_t cb_mono_ms(void) { return host_mono_ms(); }
 
-void cb_sleep_ms(int64_t ms) {
-    if (ms <= 0) return;
-    struct timespec ts = { (time_t)(ms / 1000), (long)(ms % 1000) * 1000000L };
-    while (nanosleep(&ts, &ts) != 0 && errno == EINTR) {}
-}
+void cb_sleep_ms(int64_t ms) { host_sleep_ms(ms); }
 
 // Days since 1970-01-01 for a proleptic Gregorian date (Howard Hinnant's
 // days_from_civil), and its inverse. No time zone database, no timegm().

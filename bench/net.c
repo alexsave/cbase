@@ -25,11 +25,10 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
+#include "../../shared/c/clock.h"
 
 int64_t bn_now_us(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+    return host_mono_us();
 }
 
 bool bn_url_parse(const char *s, bn_url *out) {

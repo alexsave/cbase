@@ -32,6 +32,7 @@
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
+#include "../../../../../shared/c/clock.h"
 
 // Idle connections kept, every host together: DynamoDB's one or two, and IoT's
 // one per lane of a commit's fan-out (realtime/rt_iot.c, up to 9 at 8 humans).
@@ -67,9 +68,7 @@ static int host_kind(const char *host, bool tls) {
 }
 
 static int64_t mono_us(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+    return host_mono_us();
 }
 
 void cb_https_tally_take(cb_https_tally *out) {

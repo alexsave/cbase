@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "../../../../shared/c/clock.h"
 
 struct fr_runtime {
     cb_ctx          ctx;
@@ -39,10 +40,7 @@ static void arrive_locked(fr_runtime *fr, const char *what) {
 }
 
 static void deadline_in(struct timespec *t, int ms) {
-    clock_gettime(CLOCK_REALTIME, t);
-    t->tv_sec += ms / 1000;
-    t->tv_nsec += (long)(ms % 1000) * 1000000L;
-    if (t->tv_nsec >= 1000000000L) { t->tv_sec++; t->tv_nsec -= 1000000000L; }
+    host_deadline_after_ms(t, ms);
 }
 
 static void h_next(cb_ctx *c, const cb_http_req *q, cb_http_res *s) {
