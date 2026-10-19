@@ -230,7 +230,6 @@
 2 foolish/server/src/app/functions_http.c /lambda/i
 1 foolish/server/src/app/functions_http.c /dynamo/i
 1 foolish/server/src/app/functions_http.c /sqlite/i
-1 foolish/server/src/app/table_ops.c /lambda/i
 1 foolish/server/src/app/v1_http.c /cloudfront/i
 1 foolish/server/src/store/bot_seed.c /dynamo/i
 1 foolish/server/src/store/bot_seed.c /sqlite/i
