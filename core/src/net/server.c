@@ -35,7 +35,7 @@ struct cb_ws {
     bool closing;        // a WebSocket CLOSE has been queued
     bool buried;         // closed and on the server's grave list
     cb_buf in, out;
-    cb_http_req req;
+    cb_http_req *req;    // in flight only: &g_req for a handler that runs on the loop, a heap copy for the pool
     cb_http_res res;
     size_t req_len;      // bytes of `in` the current request occupies
     int64_t last_active;
@@ -50,6 +50,16 @@ struct cb_ws {
     struct cb_ws *next, *prev;   // every connection, for sweeps and shutdown
 };
 typedef struct cb_ws conn;
+
+// The loop thread parses every request into this, and runs the loop-side handlers on it; a request that
+// goes to the pool gets a heap copy for the time it is in flight (a connection no longer embeds 1.2 KB of it).
+static cb_http_req g_req;
+// recv lands here, on the loop thread, and only what a request has not finished is copied into the
+// connection: an idle connection owns no read or write buffer at all.
+static char g_rd[16384];
+
+// An empty buffer is given back, not kept.
+static void buf_idle(cb_buf *b) { if (b->len == 0) cb_buf_free(b); }
 
 struct cb_server {
     cb_ctx *ctx;
@@ -123,6 +133,7 @@ static bool flush(conn *c) {
         }
         cb_buf_consume(&c->out, (size_t)w);
     }
+    buf_idle(&c->out);
     if (c->out.len == 0) {
         if (c->close_after) { conn_close(c); return false; }
         if (c->upgrade_after) {
@@ -152,7 +163,7 @@ static void respond_now(conn *c, int status, const char *text) {
 // The handler has filled c->res: write it, and get ready for the next request.
 static void finish(conn *c) {
     cb_ctx *ctx = c->srv->ctx;
-    bool keep = c->req.keep_alive && !c->res.close && !c->srv->draining;
+    bool keep = c->req->keep_alive && !c->res.close && !c->srv->draining;
     if (c->res.upgrade) keep = true;
     cb_res_serialize(&c->res, keep, &c->out);
     atomic_fetch_add_explicit(&ctx->stats.requests, 1, memory_order_relaxed);
@@ -161,17 +172,17 @@ static void finish(conn *c) {
         c->upgrade_after = true;
         c->h = c->res.ws_handlers;
         c->ud = c->res.ws_ud;
-        c->query = strdup(c->req.query);
+        c->query = strdup(c->req->query);
     } else if (!keep) {
         c->close_after = true;
     }
     cb_res_free(&c->res);
     cb_res_init(&c->res);
+    if (c->req != &g_req) free(c->req);
+    c->req = NULL;
     cb_buf_consume(&c->in, c->req_len);
     c->req_len = 0;
-    // An idle keep-alive connection holds no read buffer: one that grew for a big request is released
-    // (bytes of a pipelined next request keep it).
-    if (c->in.len == 0 && c->in.cap > 8192) cb_buf_free(&c->in);
+    buf_idle(&c->in);   // bytes of a pipelined next request keep it
     c->started = c->in.len ? cb_loop_now(loop_of(c)) : 0;
     c->state = C_HTTP;
     c->last_active = cb_loop_now(loop_of(c));
@@ -198,7 +209,7 @@ static void job_done(cb_loop *l, void *ud) {
 static void job_run(void *ud) {
     job *j = ud;
     conn *c = j->c;
-    cb_handle(j->srv->ctx, &c->req, &c->res);
+    cb_handle(j->srv->ctx, c->req, &c->res);
     // The loop frees the connection only after this post runs, so `c` is stable.
     if (cb_loop_post(j->srv->ctx->loop, job_done, j) != CB_OK) {
         // The loop has stopped (shutdown). cb_server_free reclaims the connection.
@@ -210,13 +221,17 @@ static void dispatch(conn *c) {
     cb_server *s = c->srv;
     cb_ctx *ctx = s->ctx;
     cb_res_init(&c->res);
-    if (cb_handle_on_loop(ctx, &c->req)) {
-        cb_handle(ctx, &c->req, &c->res);
+    c->req = &g_req;
+    if (cb_handle_on_loop(ctx, c->req)) {
+        cb_handle(ctx, c->req, &c->res);
         finish(c);
         return;
     }
     job *j = malloc(sizeof *j);
-    if (!j) { cb_router_error(&c->res, 503, "out of memory"); finish(c); return; }
+    cb_http_req *own = j ? malloc(sizeof *own) : NULL;
+    if (!own) { free(j); cb_router_error(&c->res, 503, "out of memory"); finish(c); return; }
+    *own = g_req;
+    c->req = own;
     j->srv = s; j->c = c; j->id = c->id;
     c->state = C_BUSY;
     s->busy++;
@@ -233,7 +248,7 @@ static void dispatch(conn *c) {
 static void conn_try_parse(conn *c) {
     if (c->state != C_HTTP || c->close_after || c->upgrade_after || c->in.len == 0) return;
     // cb_http_parse wants a NUL-safe buffer; cb_buf always has one past len.
-    int r = cb_http_parse((char *)c->in.p, c->in.len, (size_t)c->srv->o.max_body, &c->req);
+    int r = cb_http_parse((char *)c->in.p, c->in.len, (size_t)c->srv->o.max_body, &g_req);
     if (r == CB_HTTP_MORE) {
         if (!c->started) c->started = cb_loop_now(loop_of(c));
         return;
@@ -244,8 +259,8 @@ static void conn_try_parse(conn *c) {
         return;
     }
     c->req_len = (size_t)r;
-    cb_strlcpy(c->req.peer, c->peer, sizeof c->req.peer);
-    c->req.conn_id = c->id;
+    cb_strlcpy(g_req.peer, c->peer, sizeof g_req.peer);
+    g_req.conn_id = c->id;
     dispatch(c);
 }
 
@@ -258,6 +273,8 @@ static void become_ws(conn *c) {
     atomic_fetch_sub_explicit(&c->srv->ctx->stats.http_conns, 1, memory_order_relaxed);
     atomic_fetch_add_explicit(&c->srv->ctx->stats.ws_conns, 1, memory_order_relaxed);
     if (c->h && c->h->on_open) c->h->on_open(c, c->ud);
+    free(c->query);   // read once, by on_open (cb_ws_query)
+    c->query = NULL;
 }
 
 static int queue_frame(conn *c, int opcode, const void *data, size_t len) {
@@ -336,7 +353,7 @@ static bool ws_frames(conn *c) {
                 cb_buf_append(&c->msg, payload, (size_t)f.len);
                 if (f.fin) {
                     if (!c->closing && c->h && c->h->on_message) c->h->on_message(c, c->msg_op, c->msg.p, c->msg.len, c->ud);
-                    cb_buf_reset(&c->msg);
+                    cb_buf_free(&c->msg);
                     c->msg_op = -1;
                 }
             }
@@ -345,6 +362,10 @@ static bool ws_frames(conn *c) {
         // until the next loop pass, but must not be read further.
         if (c->dead) return false;
         cb_buf_consume(&c->in, (size_t)n);
+        if (c->in.len == 0) {
+            cb_buf_free(&c->in);
+            return c->out.len ? flush(c) : true;
+        }
     }
 }
 
@@ -355,6 +376,7 @@ static void conn_free(conn *c) {
     cb_buf_free(&c->out);
     cb_buf_free(&c->msg);
     cb_res_free(&c->res);
+    if (c->req != &g_req) free(c->req);
     free(c->query);
     free(c);
 }
@@ -414,10 +436,10 @@ static void conn_io(cb_loop *l, int fd, int ev, void *ud) {
             return;
         }
         for (;;) {
-            if (!cb_buf_reserve(&c->in, 4096)) { conn_close(c); return; }
-            ssize_t r = recv(fd, c->in.p + c->in.len, c->in.cap - c->in.len - 1, 0);
+            ssize_t r = recv(fd, g_rd, sizeof g_rd, 0);
             if (r > 0) {
-                c->in.len += (size_t)r;
+                cb_buf_append(&c->in, g_rd, (size_t)r);
+                if (c->in.oom) { conn_close(c); return; }
                 c->in.p[c->in.len] = 0;
                 c->last_active = cb_loop_now(l);
                 size_t limit = c->state == C_WS ? CB_WS_MAX_MESSAGE + 64 : CB_HTTP_MAX_HEAD + (size_t)c->srv->o.max_body;
@@ -427,7 +449,7 @@ static void conn_io(cb_loop *l, int fd, int ev, void *ud) {
                     flush(c);
                     return;
                 }
-                if ((size_t)r < c->in.cap - c->in.len) break;   // drained the socket
+                if ((size_t)r < sizeof g_rd) break;   // drained the socket
                 continue;
             }
             if (r == 0) { conn_close(c); return; }
