@@ -24,6 +24,7 @@
 enum { C_HTTP, C_BUSY, C_WS };
 
 // A connection. A WebSocket is a connection in state C_WS, so cb_ws is this struct.
+struct job;
 struct cb_ws {
     cb_server *srv;
     int fd;
@@ -35,7 +36,8 @@ struct cb_ws {
     bool closing;        // a WebSocket CLOSE has been queued
     bool buried;         // closed and on the server's grave list
     cb_buf in, out;
-    cb_http_req *req;    // in flight only: &g_req for a handler that runs on the loop, a heap copy for the pool
+    cb_http_req *req;    // in flight only: &g_req for a handler that runs on the loop, the pool job's copy otherwise
+    struct job *job;     // the pool job holding that copy (server free list), NULL when req is &g_req
     cb_http_res res;
     size_t req_len;      // bytes of `in` the current request occupies
     int64_t last_active;
@@ -67,6 +69,8 @@ struct cb_server {
     int lfd;
     uint64_t next_id;
     conn *all;
+    struct job *free_jobs;       // loop thread only: jobs not in flight
+    struct job_chunk *job_chunks;
     // Closed connections wait here until the next loop pass, so a callback
     // further up the stack that still holds one never touches freed memory.
     conn *grave;
@@ -161,6 +165,41 @@ static void respond_now(conn *c, int status, const char *text) {
 }
 
 // The handler has filled c->res: write it, and get ready for the next request.
+// A pooled request: the job and the copy of the request the worker reads
+// (~1.2 KB) are one block from a free list. Both ends run on the loop thread
+// (dispatch takes one, finish and conn_free give it back), so the list has no
+// lock; a block stays out of it from dispatch until the request is finished.
+typedef struct job {
+    struct job *next;
+    cb_server *srv;
+    conn *c;
+    cb_http_req req;
+} job;
+
+#define JOB_CHUNK 32   // blocks allocated at once, and preallocated at start
+typedef struct job_chunk {
+    struct job_chunk *next;
+    job j[JOB_CHUNK];
+} job_chunk;
+
+static bool jobs_grow(cb_server *s) {
+    job_chunk *k = malloc(sizeof *k);
+    if (!k) return false;
+    k->next = s->job_chunks;
+    s->job_chunks = k;
+    for (int i = 0; i < JOB_CHUNK; i++) { k->j[i].next = s->free_jobs; s->free_jobs = &k->j[i]; }
+    return true;
+}
+
+static job *job_get(cb_server *s) {
+    if (!s->free_jobs && !jobs_grow(s)) return NULL;
+    job *j = s->free_jobs;
+    s->free_jobs = j->next;
+    return j;
+}
+
+static void job_put(cb_server *s, job *j) { j->next = s->free_jobs; s->free_jobs = j; }
+
 static void finish(conn *c) {
     cb_ctx *ctx = c->srv->ctx;
     bool keep = c->req->keep_alive && !c->res.close && !c->srv->draining;
@@ -178,7 +217,7 @@ static void finish(conn *c) {
     }
     cb_res_free(&c->res);
     cb_res_init(&c->res);
-    if (c->req != &g_req) free(c->req);
+    if (c->job) { job_put(c->srv, c->job); c->job = NULL; }
     c->req = NULL;
     cb_buf_consume(&c->in, c->req_len);
     c->req_len = 0;
@@ -189,17 +228,11 @@ static void finish(conn *c) {
     if (flush(c) && c->state == C_HTTP && !c->close_after && !c->upgrade_after && c->in.len) conn_try_parse(c);
 }
 
-typedef struct {
-    cb_server *srv;
-    conn *c;
-    uint64_t id;
-} job;
 
 static void job_done(cb_loop *l, void *ud) {
     job *j = ud;
     cb_server *s = j->srv;
     conn *c = j->c;
-    free(j);
     s->busy--;
     c->state = C_HTTP;
     if (c->dead) { conn_close(c); return; }
@@ -211,10 +244,9 @@ static void job_run(void *ud) {
     conn *c = j->c;
     cb_handle(j->srv->ctx, c->req, &c->res);
     // The loop frees the connection only after this post runs, so `c` is stable.
-    if (cb_loop_post(j->srv->ctx->loop, job_done, j) != CB_OK) {
-        // The loop has stopped (shutdown). cb_server_free reclaims the connection.
-        free(j);
-    }
+    // If the loop has stopped (shutdown), cb_server_free reclaims the connection
+    // and with it the job.
+    (void)cb_loop_post(j->srv->ctx->loop, job_done, j);
 }
 
 static void dispatch(conn *c) {
@@ -227,17 +259,16 @@ static void dispatch(conn *c) {
         finish(c);
         return;
     }
-    job *j = malloc(sizeof *j);
-    cb_http_req *own = j ? malloc(sizeof *own) : NULL;
-    if (!own) { free(j); cb_router_error(&c->res, 503, "out of memory"); finish(c); return; }
-    *own = g_req;
-    c->req = own;
-    j->srv = s; j->c = c; j->id = c->id;
+    job *j = job_get(s);
+    if (!j) { cb_router_error(&c->res, 503, "out of memory"); finish(c); return; }
+    j->req = g_req;
+    c->req = &j->req;
+    c->job = j;
+    j->srv = s; j->c = c;
     c->state = C_BUSY;
     s->busy++;
     want(c);
     if (!ctx->req_pool || cb_pool_submit(ctx->req_pool, job_run, j) != CB_OK) {
-        free(j);
         s->busy--;
         c->state = C_HTTP;
         cb_router_error(&c->res, 503, "server is shutting down");
@@ -376,7 +407,7 @@ static void conn_free(conn *c) {
     cb_buf_free(&c->out);
     cb_buf_free(&c->msg);
     cb_res_free(&c->res);
-    if (c->req != &g_req) free(c->req);
+    if (c->job) job_put(c->srv, c->job);
     free(c->query);
     free(c);
 }
@@ -610,6 +641,7 @@ void cb_server_free(cb_server *s) {
     if (s->sweep_timer) cb_loop_cancel(s->ctx->loop, s->sweep_timer);
     reap(s->ctx->loop, s);
     if (s->lfd >= 0) close(s->lfd);
+    while (s->job_chunks) { job_chunk *k = s->job_chunks; s->job_chunks = k->next; free(k); }
     free(s);
 }
 
