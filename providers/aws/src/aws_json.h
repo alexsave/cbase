@@ -203,6 +203,16 @@ int dw_ibatch_unprocessed(const char *body, size_t n, const char *table, const c
 // A DynamoDB item ({"name":{"S":..},..}) as a cb_item (added to it). false on
 // a value of another type, or one that does not decode.
 bool dw_item_read(cb_span item, cb_item *out);
+
+// CREDENTIALS THAT RAN OUT. The answer (status, body) says the request's temporary credentials expired or
+// are not known any more (ExpiredToken, ExpiredTokenException, UnrecognizedClientException, 400/403): a
+// new set can be fetched and the request sent again.
+bool dw_creds_expired(int status, const char *body, size_t n);
+// The output of a credential_process (the AWS CLI's `configure export-credentials --format process`:
+// Version, AccessKeyId, SecretAccessKey, SessionToken, Expiration) into the caller's buffers. false when
+// the key or the secret is missing. token is empty for long-lived keys.
+bool dw_creds_process_parse(const char *json, size_t n, char *key, size_t key_cap, char *secret, size_t secret_cap,
+                            char *token, size_t token_cap);
 // The same, and on false the reason into why: the attribute's name, its DynamoDB type and the size of its
 // value, never the value (a log line must not hold a user's data).
 bool dw_item_read_why(cb_span item, cb_item *out, char *why, size_t cap);

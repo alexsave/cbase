@@ -213,11 +213,71 @@ static void an_item_that_does_not_decode_says_which_attribute_and_never_its_valu
     cb_item_free(&ok);
 }
 
+// ---- credentials that run out ---------------------------------------------------------------
+
+static int g_sends, g_expired_sent;
+
+// A DynamoDB that answers GetItem only to the session token T2: the first token the test sets is stale.
+static int fake_send(void *ud, const char *target, const uint8_t *body, size_t len, int *status, cb_buf *resp) {
+    g_sends++;
+    const char *tok = getenv("AWS_SESSION_TOKEN");
+    if (!tok || strcmp(tok, "T2") != 0) {
+        g_expired_sent++;
+        *status = 400;
+        cb_buf_puts(resp, "{\"__type\":\"com.amazon.coral.service#ExpiredTokenException\",\"message\":\"The security token included in the request is expired\"}");
+        return CB_OK;
+    }
+    *status = 200;
+    cb_buf_puts(resp, "{\"Item\":{\"pk\":{\"S\":\"X#1\"},\"sk\":{\"S\":\"A\"},\"n\":{\"N\":\"7\"}}}");
+    return CB_OK;
+}
+
+static void expired_credentials_are_fetched_again_and_the_request_goes_on(void) {
+    setenv("AWS_ACCESS_KEY_ID", "AK1", 1);
+    setenv("AWS_SECRET_ACCESS_KEY", "SK1", 1);
+    setenv("AWS_SESSION_TOKEN", "T1", 1);
+    // Without a credential command the expiry is a failure.
+    cb_store *s = NULL;
+    T_EQ_INT(cb_store_open_dynamo_with("t", fake_send, NULL, &s), CB_OK);
+    cb_item it;
+    cb_item_init(&it);
+    g_sends = g_expired_sent = 0;
+    T_EQ_INT(s->ops->item_get(s, (cb_ikey){ "X#1", "A" }, true, &it), CB_E_DB);
+    T_EQ_INT(g_sends, 1);
+    // With one: the command runs once, the environment holds its keys, the request is sent again and succeeds.
+    T_EQ_INT(cb_store_dynamo_creds_process(s, "printf '{\"Version\":1,\"AccessKeyId\":\"AK2\",\"SecretAccessKey\":\"SK2\",\"SessionToken\":\"T2\"}'"), CB_OK);
+    g_sends = g_expired_sent = 0;
+    T_EQ_INT(s->ops->item_get(s, (cb_ikey){ "X#1", "A" }, true, &it), CB_OK);
+    T_EQ_INT(g_sends, 2);
+    T_EQ_INT(g_expired_sent, 1);
+    T_EQ_STR(getenv("AWS_ACCESS_KEY_ID"), "AK2");
+    T_EQ_INT(it.n, 3);
+    // A command that fails does not loop: the expiry is the answer.
+    setenv("AWS_SESSION_TOKEN", "T1", 1);
+    T_EQ_INT(cb_store_dynamo_creds_process(s, "false"), CB_OK);
+    g_sends = g_expired_sent = 0;
+    T_EQ_INT(s->ops->item_get(s, (cb_ikey){ "X#1", "A" }, true, &it), CB_E_DB);
+    T_CHECK(g_sends <= 4);
+    cb_item_free(&it);
+    cb_store_close(s);
+    // The classifier and the parser.
+    const char *exp = "{\"__type\":\"com.amazon.coral.service#ExpiredTokenException\"}";
+    T_CHECK(dw_creds_expired(400, exp, strlen(exp)));
+    T_CHECK(!dw_creds_expired(200, exp, strlen(exp)));
+    const char *thr = "{\"__type\":\"com.amazonaws.dynamodb.v20120810#ThrottlingException\"}";
+    T_CHECK(!dw_creds_expired(400, thr, strlen(thr)));
+    char k[32], sec[32], tok[32];
+    const char *pj = "{\"AccessKeyId\":\"A\",\"SecretAccessKey\":\"B\"}";
+    T_CHECK(dw_creds_process_parse(pj, strlen(pj), k, sizeof k, sec, sizeof sec, tok, sizeof tok) && tok[0] == 0);
+    T_CHECK(!dw_creds_process_parse("{}", 2, k, sizeof k, sec, sizeof sec, tok, sizeof tok));
+}
+
 int main(void) {
     if (tp_tempdir(g_dir, sizeof g_dir) != 0) return 1;
     T_RUN(the_copy_writes_what_the_store_writes);
     T_RUN(every_index_key_round_trips_and_a_broken_one_is_caught);
     T_RUN(an_item_that_does_not_decode_says_which_attribute_and_never_its_value);
+    T_RUN(expired_credentials_are_fetched_again_and_the_request_goes_on);
     T_RUN(a_pk_family_is_the_text_before_the_first_hash);
     char cmd[300];
     snprintf(cmd, sizeof cmd, "rm -rf '%s'", g_dir);

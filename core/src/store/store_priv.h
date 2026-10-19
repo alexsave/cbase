@@ -35,6 +35,12 @@ int cb_store_open_dynamo_with(const char *table, cb_dynamo_send_fn send, void *u
 // request path never turns it on. CB_OK, or CB_E_DB when DescribeTable failed
 // (bulk retrying is on, unpaced), CB_E_INVALID for a store that is not DynamoDB.
 int cb_store_dynamo_bulk(cb_store *s);
+// Temporary credentials run out (`aws login` exports last 15 minutes). With a command set, a request
+// answered ExpiredToken / UnrecognizedClient runs it (a credential_process: it prints
+// {"AccessKeyId","SecretAccessKey","SessionToken"} on stdout), puts the result in AWS_ACCESS_KEY_ID,
+// AWS_SECRET_ACCESS_KEY and AWS_SESSION_TOKEN, and sends the request again, at most 3 times a request.
+// CB_E_INVALID for a store that is not DynamoDB.
+int cb_store_dynamo_creds_process(cb_store *s, const char *command);
 // After cb_store_dynamo_bulk: holds the READ pacing to `share` (> 0, at most 1)
 // of the provisioned read capacity, so an export can leave the rest to the
 // live traffic. Writes keep their pace. CB_E_INVALID outside bulk mode; on an

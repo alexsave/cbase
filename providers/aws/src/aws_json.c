@@ -694,6 +694,23 @@ dw_status dw_classify(int status, const char *body, size_t n) {
     return DW_FAILED;
 }
 
+bool dw_creds_expired(int status, const char *body, size_t n) {
+    if (status != 400 && status != 403) return false;
+    char t[128];
+    error_type(body, n, t, sizeof t);
+    return strcmp(t, "ExpiredTokenException") == 0 || strcmp(t, "ExpiredToken") == 0 ||
+           strcmp(t, "UnrecognizedClientException") == 0;
+}
+
+bool dw_creds_process_parse(const char *json, size_t n, char *key, size_t key_cap, char *secret, size_t secret_cap,
+                            char *token, size_t token_cap) {
+    if (token_cap) token[0] = 0;
+    if (!cb_json_get_str(json, n, "AccessKeyId", key, key_cap) || !key[0]) return false;
+    if (!cb_json_get_str(json, n, "SecretAccessKey", secret, secret_cap) || !secret[0]) return false;
+    if (token_cap && !cb_json_get_str(json, n, "SessionToken", token, token_cap)) token[0] = 0;
+    return true;
+}
+
 bool dw_throttled(const char *body, size_t n) {
     char t[128];
     error_type(body, n, t, sizeof t);

@@ -44,6 +44,7 @@ typedef struct {
     // waits for its bucket ([0] reads, [1] writes) to come back to zero.
     // One thread: the import is single-threaded.
     bool    bulk;
+    char    creds_cmd[512];   // cb_store_dynamo_creds_process: "" off
     double  rate[2];   // capacity units per second, 0: unpaced
     double  bal[2];    // units left; the consumed units of a response are taken after it
     int64_t at[2];     // when bal was last refilled (mono ms)
@@ -231,6 +232,35 @@ static void capture(const dw_req *r) {
 // lost connection), as long as the backoff allows. The answer is in *resp,
 // and its top level, walked once, in *top (aws_json.h dw_top): valid
 // while *resp is not changed. top may be NULL.
+// Runs the credential command and puts what it printed in the environment the signer reads. The secrets
+// are never logged. false: the command failed or printed no keys.
+static bool refresh_creds(dyn *d) {
+    FILE *f = popen(d->creds_cmd, "r");
+    if (!f) return false;
+    char out[4096];
+    size_t n = fread(out, 1, sizeof out - 1, f);
+    int st = pclose(f);
+    out[n] = 0;
+    char key[128], secret[256], token[4096];
+    bool ok = st == 0 && dw_creds_process_parse(out, n, key, sizeof key, secret, sizeof secret, token, sizeof token);
+    if (ok) {
+        setenv("AWS_ACCESS_KEY_ID", key, 1);
+        setenv("AWS_SECRET_ACCESS_KEY", secret, 1);
+        if (token[0]) setenv("AWS_SESSION_TOKEN", token, 1);
+        else unsetenv("AWS_SESSION_TOKEN");
+    }
+    memset(out, 0, sizeof out);
+    memset(secret, 0, sizeof secret);
+    memset(token, 0, sizeof token);
+    return ok;
+}
+
+int cb_store_dynamo_creds_process(cb_store *s, const char *command) {
+    if (!s || strcmp(s->ops->name, "dynamo") != 0 || !command || strlen(command) >= sizeof D(s)->creds_cmd) return CB_E_INVALID;
+    snprintf(D(s)->creds_cmd, sizeof D(s)->creds_cmd, "%s", command);
+    return CB_OK;
+}
+
 static dw_status call_top(dyn *d, const dw_req *r, cb_buf *resp, dw_top *top) {
     dw_top own;
     if (!top) top = &own;
@@ -240,6 +270,7 @@ static dw_status call_top(dyn *d, const dw_req *r, cb_buf *resp, dw_top *top) {
     backoff b;
     backoff_start(d, &b);
     capture(r);
+    int refreshes = 0;
     for (;;) {
         int status = 0;
         cb_buf_reset(resp);
@@ -253,6 +284,12 @@ static dw_status call_top(dyn *d, const dw_req *r, cb_buf *resp, dw_top *top) {
             double used = dw_top_consumed(top);
             *(k == 0 ? &t_rcu : &t_wcu) += used;
             d->bal[k] -= used;
+        }
+        if (rc == CB_OK && d->creds_cmd[0] && refreshes < 3 && dw_creds_expired(status, cb_buf_cstr(resp), resp->len)) {
+            refreshes++;
+            CB_WARN(MOD, "%s: HTTP %d, the credentials are expired; fetching new ones (%d)", r->target, status, refreshes);
+            if (refresh_creds(d)) continue;
+            CB_ERROR(MOD, "the credential command failed or printed no keys");
         }
         dw_status st = rc != CB_OK ? DW_RETRY : dw_classify(status, cb_buf_cstr(resp), resp->len);
         if (st == DW_RETRY && backoff_pause(&b, rc == CB_OK && dw_throttled(cb_buf_cstr(resp), resp->len), r->target))
