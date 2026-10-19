@@ -2,6 +2,8 @@
 #include "rate_limits.h"
 
 #include "cbase/provider.h"
+#include "config.h"
+#include "net/viewer_addr.h"
 
 #include "util/str.h"
 
@@ -137,6 +139,19 @@ void cb_viewer_key(const cb_ctx *ctx, const cb_http_req *req, char *out, size_t 
     if (cap) out[0] = 0;
     const char *v = NULL;
     if (ctx->prov && ctx->prov->viewer_header) v = cb_http_header_get(req, ctx->prov->viewer_header);
+    else if (ctx->cfg && ctx->cfg->origin_secret[0] &&
+             cb_config_origin_proven(ctx->cfg, cb_http_header_get(req, CB_ORIGIN_HEADER))) {
+        // The process ingress behind CloudFront: the address in the header counts
+        // only on a request that carried the origin secret (with no secret set,
+        // anyone can send the header), and only when it parses strictly. X-Forwarded-For
+        // is never read. Anything else is the socket's peer.
+        char ip[64];
+        const char *h = cb_http_header_get(req, CB_VIEWER_HEADER);
+        if (h && cb_viewer_addr_parse(h, ip, sizeof ip)) {
+            address_key(ip, out, cap);
+            return;
+        }
+    }
     if (!v || !*v) v = req->peer;
     if (v && *v) address_key(v, out, cap);
 }

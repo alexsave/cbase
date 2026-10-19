@@ -98,6 +98,8 @@ int64_t cb_config_scaled_ms(const cb_config *cfg, int64_t ms);
 
 // The header CloudFront adds (CBASE_ORIGIN_SECRET above).
 #define CB_ORIGIN_HEADER "X-Cbase-Origin"
+// The header CloudFront puts the viewer's "ip:port" in (net/viewer_addr.h).
+#define CB_VIEWER_HEADER "CloudFront-Viewer-Address"
 // Did the request come through the edge? True when no secret is configured;
 // else only for `value` equal to it (constant time). NULL is a missing header.
 bool cb_config_origin_proven(const cb_config *cfg, const char *value);
