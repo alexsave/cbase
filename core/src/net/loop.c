@@ -62,12 +62,14 @@ struct cb_loop {
     atomic_bool running;
 };
 
+#ifndef __linux__
 static int set_nonblock(int fd) {
     int fl = fcntl(fd, F_GETFL, 0);
     if (fl < 0 || fcntl(fd, F_SETFL, fl | O_NONBLOCK) < 0) return -1;
     fcntl(fd, F_SETFD, FD_CLOEXEC);
     return 0;
 }
+#endif
 
 // The wake channel: an eventfd on Linux (one fd, a counter, no pipe buffer to
 // allocate and copy through on every post), a self-pipe elsewhere.
