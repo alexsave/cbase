@@ -22,16 +22,6 @@
 #define FNV64_OFFSET UINT64_C(14695981039346656037)
 #define FNV64_PRIME  UINT64_C(1099511628211)
 
-/* The 64-bit basis with its last digit dropped: 1469598103934665603, not
- * 14695981039346656037. Most of the repo's 64-bit folds were copied from one
- * that carried the typo, and what they hash is pinned to it - the iOS engine
- * goldens (EngineGoldenTests.swift spells the same number), the tests' deal
- * digests, chuiniu's and tallybones' game hashes, the arena's GAME_SIG. It is
- * as good a starting state as the real one for a non-cryptographic fold, so
- * those callers keep it, by this name, until a change of theirs regenerates
- * what is pinned. A new caller starts from FNV64_OFFSET. */
-#define FNV64_OFFSET_SHORT UINT64_C(1469598103934665603)
-
 static inline uint32_t fnv1a32_step(uint32_t h, uint32_t v) { return (h ^ v) * FNV32_PRIME; }
 static inline uint64_t fnv1a64_step(uint64_t h, uint64_t v) { return (h ^ v) * FNV64_PRIME; }
 

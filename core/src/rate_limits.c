@@ -46,7 +46,7 @@ static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 
 // FNV-1a over the kind and the key; never 0 (0 marks an empty slot).
 static uint64_t hash_of(cb_limit_kind kind, const char *key) {
-    uint64_t h = fnv1a64_str(fnv1a64_step(FNV64_OFFSET_SHORT, (uint64_t)(kind + 1)), key);
+    uint64_t h = fnv1a64_str(fnv1a64_step(FNV64_OFFSET, (uint64_t)(kind + 1)), key);
     return h ? h : 1;
 }
 
