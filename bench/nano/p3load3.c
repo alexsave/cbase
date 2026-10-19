@@ -198,7 +198,8 @@ static void decide(void) {
             int n = ask_encode(&a, body, sizeof body);
             submit(NC_DO_ASK, body, n, -1);
         }
-        if (!g_ready_sent && g_c.view.num_players >= g_seats && (g_creator || g_seats > 2)) { g_ready_sent = 1; submit_ask(ASK_START); }
+        // Every human seat readies a full lobby (2 seats too): the table deals only when all seats are ready.
+        if (!g_ready_sent && g_c.view.num_players >= g_seats) { g_ready_sent = 1; submit_ask(ASK_START); }
         return;
     }
     if (g_play_pending || g_think_due >= 0) return;
