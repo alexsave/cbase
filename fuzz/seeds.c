@@ -438,24 +438,8 @@ static void seeds_jwt(void) {
     c.exp = 1790003600;
     char tok[CB_JWT_MAX + 1];
     tok[0] = 0;
-    int n = cb_jwt_mint("fuzz-secret-fuzz-secret-fuzz-secret!", &c, "https://fuzz", tok + 1, sizeof tok - 1);
+    int n = cb_jwt_mint("fuzz-secret-fuzz-secret-fuzz-secret!", &c, tok + 1, sizeof tok - 1);
     put("jwt", "minted", tok, (size_t)n + 1);
-    cb_buf claims;
-    cb_buf_init(&claims);
-    cb_js_jwt_claims(&claims, &c, "https://fuzz");
-    size_t hl;
-    const char *h = cb_js_jwt_header(&hl);
-    cb_buf b;
-    cb_buf_init(&b);
-    cb_buf_putc(&b, 1);
-    cb_buf_append(&b, h, hl);
-    cb_buf_putc(&b, (char)0xff);
-    cb_buf_append(&b, claims.p, claims.len);
-    put("jwt", "parts", b.p, b.len);
-    put1("json", "claims", 0, claims.p, claims.len);
-    put1("json", "header", 0, h, hl);
-    cb_buf_free(&b);
-    cb_buf_free(&claims);
     puts_("json", "admin-query", "\x00{\"statement\":\"SELECT 1\",\"confirm\":\"yes \\u00e9\"}");
     puts_("json", "admin-id", "\x00{\"id\":\"" U1 "\"}");
 }

@@ -49,7 +49,6 @@ int64_t (*cb_auth_now)(void) = cb_now_ms;
 struct cb_auth {
     cb_store *store;    // NULL while the store is not built: only verification works
     char secret[sizeof ((cb_config *)0)->jwt_secret];
-    char issuer[600];
     int  ttl_s;
 };
 
@@ -61,12 +60,6 @@ int cb_auth_new(cb_ctx *ctx, cb_auth **out) {
     if (!a) return CB_E_NOMEM;
     a->store = ctx->store;
     cb_strlcpy(a->secret, cfg->jwt_secret, sizeof a->secret);
-    if (cfg->public_url[0]) {
-        size_t n = cb_strlcpy(a->issuer, cfg->public_url, sizeof a->issuer - 9);
-        if (n >= sizeof a->issuer - 9) n = sizeof a->issuer - 10;
-        while (n > 0 && a->issuer[n - 1] == '/') a->issuer[--n] = 0;
-        cb_strlcpy(a->issuer + n, "/auth/v1", sizeof a->issuer - n);
-    }
     a->ttl_s = cfg->jwt_ttl_s > 0 ? cfg->jwt_ttl_s : 3600;
     *out = a;
     return CB_OK;
@@ -163,7 +156,7 @@ static int issue(cb_auth *a, const cb_user_row *u, const cb_session_row *sess, c
     cb_strlcpy(c.session_id, session_id, sizeof c.session_id);
     c.iat = now_s;
     c.exp = now_s + a->ttl_s;
-    int n = cb_jwt_mint(a->secret, &c, a->issuer, out->access_token, sizeof out->access_token);
+    int n = cb_jwt_mint(a->secret, &c, out->access_token, sizeof out->access_token);
     if (n < 0) return n;
 
     uint8_t raw[REFRESH_RAW];

@@ -393,71 +393,6 @@ static void sigv4_query_order(void) {
     cb_buf_free(&sts);
 }
 
-// ---- jwt: a correctly signed token whose parts are not base64url --------------------------------
-
-#define SECRET "edges-secret-edges-secret-edges-secret!!"
-
-static void signed_parts_must_be_base64url(void) {
-    cb_jwt_claims c;
-    memset(&c, 0, sizeof c);
-    snprintf(c.sub, sizeof c.sub, "aaaaaaaa-0000-4000-8000-000000000001");
-    snprintf(c.session_id, sizeof c.session_id, "aaaaaaaa-0000-4000-8000-000000000002");
-    c.iat = 1000;
-    c.exp = 5000;
-    char tok[CB_JWT_MAX];
-    T_CHECK(cb_jwt_mint(SECRET, &c, "x", tok, sizeof tok) > 0);
-    cb_jwt_claims got;
-    T_EQ_INT(cb_jwt_verify(SECRET, tok, 2000, &got), CB_OK);
-    // Respell the header with the standard alphabet's padding, or empty it,
-    // and sign what results with the real secret: the signature holds, the
-    // part is still refused.
-    const char *d1 = strchr(tok, '.'), *d2 = strchr(d1 + 1, '.');
-    const char *heads[] = { "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9==", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9+", "" };
-    for (size_t i = 0; i < sizeof heads / sizeof heads[0]; i++) {
-        char msg[CB_JWT_MAX], out[CB_JWT_MAX + 64];
-        int mn = snprintf(msg, sizeof msg, "%s.%.*s", heads[i], (int)(d2 - d1 - 1), d1 + 1);
-        unsigned char mac[32];
-        unsigned int ml = 0;
-        HMAC(EVP_sha256(), SECRET, (int)strlen(SECRET), (const unsigned char *)msg, (size_t)mn, mac, &ml);
-        char s64[64];
-        b64url_encode(mac, 32, s64, sizeof s64);
-        snprintf(out, sizeof out, "%s.%s", msg, s64);
-        T_EQ_INT(cb_jwt_verify(SECRET, out, 2000, &got), CB_E_AUTH);
-    }
-    // A header that is valid JSON, encoded in the STANDARD alphabet: only the
-    // base64url check can refuse it (the decoder takes both alphabets).
-    {
-        static const char hj[] = "{\"alg\":\"HS256\",\"typ\":\"JWT\",\"k\":\"?>?>?>\"}";
-        char h64[128];
-        b64_encode((const uint8_t *)hj, strlen(hj), h64, sizeof h64);
-        char *eq = strchr(h64, '=');
-        if (eq) *eq = 0;
-        T_CHECK(strpbrk(h64, "+/") != NULL);   // the case is the one meant
-        char m2[CB_JWT_MAX], o2[CB_JWT_MAX + 64];
-        int n2 = snprintf(m2, sizeof m2, "%s.%.*s", h64, (int)(d2 - d1 - 1), d1 + 1);
-        unsigned char mac2[32];
-        unsigned int ml2 = 0;
-        HMAC(EVP_sha256(), SECRET, (int)strlen(SECRET), (const unsigned char *)m2, (size_t)n2, mac2, &ml2);
-        char sig2[64];
-        b64url_encode(mac2, 32, sig2, sizeof sig2);
-        snprintf(o2, sizeof o2, "%s.%s", m2, sig2);
-        T_EQ_INT(cb_jwt_verify(SECRET, o2, 2000, &got), CB_E_AUTH);
-    }
-    // The same for the payload: padded, then the standard alphabet.
-    char msg[CB_JWT_MAX], out[CB_JWT_MAX + 64];
-    int mn = snprintf(msg, sizeof msg, "%.*s.%.*s=", (int)(d1 - tok), tok, (int)(d2 - d1 - 1), d1 + 1);
-    unsigned char mac[32];
-    unsigned int ml = 0;
-    HMAC(EVP_sha256(), SECRET, (int)strlen(SECRET), (const unsigned char *)msg, (size_t)mn, mac, &ml);
-    char s64[64];
-    b64url_encode(mac, 32, s64, sizeof s64);
-    snprintf(out, sizeof out, "%s.%s", msg, s64);
-    T_EQ_INT(cb_jwt_verify(SECRET, out, 2000, &got), CB_E_AUTH);
-    // An empty secret signs nothing.
-    T_EQ_INT(cb_jwt_mint("", &c, "x", tok, sizeof tok), CB_E_INVALID);
-    T_EQ_INT(cb_jwt_verify("", tok, 2000, &got), CB_E_AUTH);
-}
-
 // ---- str and log ------------------------------------------------------------------------------
 
 static void url_decode_and_levels(void) {
@@ -495,7 +430,6 @@ int main(void) {
     T_RUN(json_paths);
     T_RUN(json_writer_escapes);
     T_RUN(sigv4_query_order);
-    T_RUN(signed_parts_must_be_base64url);
     T_RUN(url_decode_and_levels);
     return T_DONE();
 }

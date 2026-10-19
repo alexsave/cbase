@@ -38,10 +38,6 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     (void)cb_json_get_bool(json, n, path, &b);
     (void)cb_json_array_len(json, n, path);
 
-    (void)cb_js_jwt_header_ok(json, n);
-    cb_jwt_claims c; bool has_nbf; int64_t nbf;
-    if (cb_js_jwt_claims_decode(json, n, &c, &has_nbf, &nbf))
-        FZ_CHECK(memchr(c.sub, 0, sizeof c.sub) && memchr(c.email, 0, sizeof c.email));
     char stmt[256], confirm[64], id[64];
     if (cb_js_admin_query_body(json, n, stmt, sizeof stmt, confirm, sizeof confirm))
         FZ_CHECK(strlen(stmt) < sizeof stmt && strlen(confirm) < sizeof confirm);

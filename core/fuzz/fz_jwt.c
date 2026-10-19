@@ -4,10 +4,10 @@
 // Two shapes of input, by the first byte:
 //   even  the token text as is: what an attacker can send. Nothing past the
 //         signature check should matter, and nothing before it may crash.
-//   odd   a header and a claims JSON (split at the first 0xff), signed here
-//         with the server's secret: the token a server minted, or one a
-//         leaked secret could mint. This is the only way to reach the header
-//         and claims decoders (core_json.c or aws_json.c) behind the HMAC.
+//   odd   a payload (the input after the first byte) MAC'd here with the
+//         server's secret: the token a server minted, or one a leaked secret
+//         could mint. This is the only way to reach the layout parser behind
+//         the HMAC.
 // A token that verifies must mint back to one that verifies to the same claims.
 #include "fz.h"
 
@@ -31,22 +31,16 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     if (!(data[0] & 1)) {
         tok = fz_cstr(data + 1, size - 1);
     } else {
-        const uint8_t *h = data + 1, *sep = memchr(h, 0xff, size - 1);
-        size_t hn = sep ? (size_t)(sep - h) : 0;
-        const uint8_t *c = sep ? sep + 1 : h;
-        size_t cn = (size_t)(data + size - c);
+        size_t pn = size - 1;
         size_t cap = 2 * size + 128;
+        uint8_t *raw = malloc(pn + EVP_MAX_MD_SIZE);
         tok = malloc(cap);
-        if (!tok) abort();
-        size_t at = part(h, hn, tok, cap);
-        tok[at++] = '.';
-        at += part(c, cn, tok + at, cap - at);
-        unsigned char mac[EVP_MAX_MD_SIZE];
+        if (!raw || !tok) abort();
+        memcpy(raw, data + 1, pn);
         unsigned int ml = 0;
-        HMAC(EVP_sha256(), SECRET, (int)strlen(SECRET), (const unsigned char *)tok, at, mac, &ml);
-        tok[at++] = '.';
-        at += part(mac, ml, tok + at, cap - at);
-        tok[at] = 0;
+        HMAC(EVP_sha256(), SECRET, (int)strlen(SECRET), raw, pn, raw + pn, &ml);
+        tok[part(raw, pn + ml, tok, cap)] = 0;
+        free(raw);
     }
     cb_jwt_claims cl;
     memset(&cl, 0, sizeof cl);
@@ -54,7 +48,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         FZ_CHECK(memchr(cl.email, 0, sizeof cl.email) && memchr(cl.username, 0, sizeof cl.username));
         FZ_CHECK(cb_uuid_valid(cl.sub, strlen(cl.sub)) && cb_uuid_valid(cl.session_id, strlen(cl.session_id)));
         char again[CB_JWT_MAX];
-        if (cb_jwt_mint(SECRET, &cl, "https://fuzz", again, sizeof again) > 0) {
+        if (cb_jwt_mint(SECRET, &cl, again, sizeof again) > 0) {
             cb_jwt_claims back;
             memset(&back, 0, sizeof back);
             FZ_CHECK(cb_jwt_verify(SECRET, again, NOW_S, &back) == 0);

@@ -1,14 +1,7 @@
-// jwt.h - access tokens: HS256 JWTs in GoTrue's claim shape.
-//
-// The claims are GoTrue's, as the accounts' first tokens were (no client reads
-// them any more: the session states its expiry, netwire.h NW_SESSION):
-//   {"aud":"authenticated","exp":..,"iat":..,"iss":"<public url>/auth/v1",
-//    "sub":"<user id>","email":"..","role":"authenticated","session_id":"..",
-//    "user_metadata":{"username":".."},"app_metadata":{"provider":"email","providers":["email"]},
-//    "is_anonymous":false}
-// Signed HMAC-SHA256 with CBASE_JWT_SECRET (libcrypto HMAC). The header is
-// {"alg":"HS256","typ":"JWT"}; verification accepts only alg HS256. The JSON
-// of both is written and read in core_json.c or aws_json.c.
+// jwt.h - access tokens: a fixed binary layout (jwt.c owns it), HMAC-SHA256,
+// base64url. Not JSON and not a JWT any more: no client reads the token (the
+// session states its expiry, netwire.h NW_SESSION). Signed with
+// CBASE_JWT_SECRET (libcrypto HMAC).
 #ifndef CB_JWT_H
 #define CB_JWT_H
 
@@ -27,10 +20,11 @@ typedef struct {
     int64_t iat, exp;                         // seconds since the epoch
 } cb_jwt_claims;
 
-// Writes the signed token and a NUL. Its length, or CB_E_FULL.
-int cb_jwt_mint(const char *secret, const cb_jwt_claims *c, const char *issuer, char *out, size_t cap);
-// Checks the signature (constant time), alg HS256, aud "authenticated", and
-// exp against now_s with 30 s of skew. CB_OK and *out, CB_E_AUTH, or CB_E_NOMEM
+// Writes the signed token and a NUL. Its length, CB_E_FULL, or CB_E_INVALID for
+// no secret, an id that is not a lowercase UUID or a string over 255 bytes.
+int cb_jwt_mint(const char *secret, const cb_jwt_claims *c, char *out, size_t cap);
+// Checks the signature (constant time), the version, the exact length, and exp
+// against now_s with 30 s of skew. CB_OK and *out, CB_E_AUTH, or CB_E_NOMEM
 // when the HMAC itself could not be computed: the server's failure, not the
 // token's, which a caller must not answer as a bad token (that signs a user out).
 int cb_jwt_verify(const char *secret, const char *token, int64_t now_s, cb_jwt_claims *out);

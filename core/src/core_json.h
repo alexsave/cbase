@@ -17,23 +17,6 @@
 #include <stdint.h>
 
 // =====================================================================================
-// JWT (jwt.c): the header and claims JSON of an access token. jwt.c does the
-// base64url, the HMAC and the time and UUID checks.
-
-// The header {"alg":"HS256","typ":"JWT"} and its length.
-const char *cb_js_jwt_header(size_t *n);
-// The header decodes to a JSON object whose alg is HS256.
-bool cb_js_jwt_header_ok(const char *json, size_t n);
-// GoTrue's claims for c, in jwt.h's order (iss only when issuer is not empty),
-// into out. CB_OK or CB_E_NOMEM.
-int  cb_js_jwt_claims(cb_buf *out, const cb_jwt_claims *c, const char *issuer);
-// The claims back: false unless the body is a valid JSON object with aud and
-// role "authenticated", an integer exp, string sub and session_id, and nbf
-// (when present, *has_nbf) an integer. iat defaults to 0, email and username
-// to "".
-bool cb_js_jwt_claims_decode(const char *json, size_t n, cb_jwt_claims *c, bool *has_nbf, int64_t *nbf);
-
-// =====================================================================================
 // The admin console's API (admin/admin.c; admin.h lists the calls). JSON
 // because the console is a browser page we own and JSON is what fetch reads.
 // Times are cb_iso8601's spelling, null for 0 or less.

@@ -345,11 +345,11 @@ static void verify_bearer_and_expiry(void) {
     c.iat = cb_now_ms() / 1000 - 7200;
     c.exp = c.iat + 3600;
     char tok[CB_JWT_MAX];
-    T_CHECK(cb_jwt_mint(cfg.jwt_secret, &c, NULL, tok, sizeof tok) > 0);
+    T_CHECK(cb_jwt_mint(cfg.jwt_secret, &c, tok, sizeof tok) > 0);
     T_EQ_INT(cb_auth_verify_token(ctx.auth, tok, &u), CB_E_AUTH);
     // The same claims signed by another secret.
     c.exp = c.iat + 100000;
-    T_CHECK(cb_jwt_mint("not-the-secret", &c, NULL, tok, sizeof tok) > 0);
+    T_CHECK(cb_jwt_mint("not-the-secret", &c, tok, sizeof tok) > 0);
     T_EQ_INT(cb_auth_verify_token(ctx.auth, tok, &u), CB_E_AUTH);
     teardown();
 }
