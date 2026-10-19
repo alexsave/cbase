@@ -112,7 +112,7 @@ static void stream_open(void) {
     char path[NC_PATH_MAX + 1];
     memcpy(path, q->path, q->path_len);
     path[q->path_len] = 0;
-    char wh[400]; snprintf(wh, sizeof wh, "Sec-WebSocket-Protocol: mqtt\r\n%s", g_edge);
+    char wh[400]; snprintf(wh, sizeof wh, "%s", g_edge);
     g_ws = tc_ws_open(g_port, path, wh);
     for (int tries = 0; g_ws < 0 && getenv("P3RETRY") && tries < 600; tries++) {   // a server restart: keep trying for 60 s
         nap(100); g_ws = tc_ws_open(g_port, path, wh);
@@ -299,6 +299,7 @@ static void stream_read(void) {
         else if (f.opcode == CB_WS_OP_TEXT || f.opcode == CB_WS_OP_BIN) {
             nc_stream_in(pl, (int)f.len, f.opcode == CB_WS_OP_TEXT, cb_now_ms());
             read_events();
+            for (const NcDone *d; (d = nc_next_done());) on_done(d, NULL);   // an action answered on the socket
         }
         off += (size_t)n;
     }
