@@ -1,0 +1,340 @@
+AWSTemplateFormatVersion: "2010-09-09"
+# cbase-vm: `cbase serve` (local provider: SQLite + its own MQTT hub) on one
+# EC2 t4g.nano. A separate stack from `cbase` (providers/aws/ops/cbase.yaml);
+# it takes no production traffic until a CloudFront origin points at it.
+#
+# Deploy with c_base/providers/local/ops/vm_deploy.sh (it uploads the binary,
+# makes the SecureStrings and fills in the parameters below); see
+# c_base/providers/local/ops/VM_RUNBOOK.md.
+#
+# What it makes:
+#   * a VPC with an Amazon-provided IPv6 /56 and one IPv6-only subnet, an
+#     internet gateway and a ::/0 route (no IPv4 address, no NAT: SSM, S3,
+#     IMDS and CloudFront all speak IPv6; VM_RUNBOOK.md "Why IPv6-only");
+#   * a security group: the serve port from CloudFront's IPv6 origin-facing
+#     prefix list only, no SSH (SSM Session Manager instead), all egress;
+#   * the instance role: SSM core, read on <CodeBucket>/vm/*, read/write on
+#     the backup bucket, read on /cbase-vm/* parameters;
+#   * the backup bucket (versioned, private, encrypted, noncurrent versions
+#     expire after 30 days); the server does not write to it yet;
+#   * the release pointers /cbase-vm/release/{serve,agent} and the plain
+#     settings /cbase-vm/env/CBASE_PUBLIC_URL, ..._ALLOWED_ORIGINS;
+#   * a launch template (AL2023 minimal arm64, t4g.nano, gp3 2 GB, IMDSv2 over
+#     IPv6, one fixed IPv6 address so a replacement keeps the origin's
+#     address) and an auto-scaling group of exactly one;
+#   * alarms on the status check and the CPU credit balance, to an SNS topic
+#     with no subscription.
+
+Parameters:
+  ImageId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-minimal-kernel-default-arm64
+  InstanceType:
+    Type: String
+    Default: t4g.nano
+  AvailabilityZone:
+    Type: String
+    Description: an AZ that offers the instance type (vm_deploy.sh picks one)
+  DesiredCapacity:
+    Type: Number
+    Default: 1
+    AllowedValues: [0, 1]
+  Port:
+    Type: Number
+    Default: 8080
+  CodeBucket:
+    Type: String
+    Description: the ops bucket (cbase-code-<account>-<region>); releases live under vm/
+  ServeRelease:
+    Type: String
+    Description: '"<bucket> <key> <sha256>" of the cbase serve binary'
+  AgentRelease:
+    Type: String
+    Description: '"<bucket> <key> <sha256>" of the pinned SSM agent rpm'
+  UserDataGz:
+    Type: String
+    Description: base64 of the gzipped vm_boot.sh (cloud-init unzips it)
+  CloudFrontPrefixList:
+    Type: String
+    Description: id of com.amazonaws.global.ipv6.cloudfront.origin-facing
+  PublicUrl:
+    Type: String
+    Default: https://api.foolish.cards
+  AllowedOrigins:
+    Type: String
+    Default: "*"
+
+Resources:
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.77.0.0/24   # required by EC2; no subnet uses it
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags: [{ Key: Name, Value: cbase-vm }]
+  VpcIpv6:
+    Type: AWS::EC2::VPCCidrBlock
+    Properties:
+      VpcId: !Ref Vpc
+      AmazonProvidedIpv6CidrBlock: true
+  Igw:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags: [{ Key: Name, Value: cbase-vm }]
+  IgwAttach:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref Igw
+  Subnet:
+    Type: AWS::EC2::Subnet
+    DependsOn: VpcIpv6
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Ref AvailabilityZone
+      Ipv6Native: true
+      Ipv6CidrBlock: !Select [0, !Cidr [!Select [0, !GetAtt Vpc.Ipv6CidrBlocks], 1, 64]]
+      AssignIpv6AddressOnCreation: true
+      EnableDns64: false
+      PrivateDnsNameOptionsOnLaunch:
+        HostnameType: resource-name
+        EnableResourceNameDnsAAAARecord: true
+      Tags: [{ Key: Name, Value: cbase-vm }]
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags: [{ Key: Name, Value: cbase-vm }]
+  DefaultRoute6:
+    Type: AWS::EC2::Route
+    DependsOn: IgwAttach
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationIpv6CidrBlock: ::/0
+      GatewayId: !Ref Igw
+  SubnetRoutes:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref Subnet
+      RouteTableId: !Ref RouteTable
+
+  ServeSg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: cbase-vm serve port from CloudFront origin-facing (IPv6) only; no SSH
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !Ref Port
+          ToPort: !Ref Port
+          SourcePrefixListId: !Ref CloudFrontPrefixList
+          Description: CloudFront origin-facing
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIpv6: ::/0
+          Description: all egress (IPv6)
+      Tags: [{ Key: Name, Value: cbase-vm }]
+
+  BackupBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      VersioningConfiguration: { Status: Enabled }
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules: [{ ObjectOwnership: BucketOwnerEnforced }]
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+            BucketKeyEnabled: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: noncurrent-30d
+            Status: Enabled
+            NoncurrentVersionExpiration: { NoncurrentDays: 30 }
+            AbortIncompleteMultipartUpload: { DaysAfterInitiation: 7 }
+      Tags: [{ Key: Name, Value: cbase-vm-backups }]
+  BackupBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref BackupBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: TlsOnly
+            Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource: [!GetAtt BackupBucket.Arn, !Sub "${BackupBucket.Arn}/*"]
+            Condition: { Bool: { aws:SecureTransport: "false" } }
+
+  ReleaseServe:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /cbase-vm/release/serve
+      Type: String
+      Value: !Ref ServeRelease
+  ReleaseAgent:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /cbase-vm/release/agent
+      Type: String
+      Value: !Ref AgentRelease
+  EnvPublicUrl:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /cbase-vm/env/CBASE_PUBLIC_URL
+      Type: String
+      Value: !Ref PublicUrl
+  EnvAllowedOrigins:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /cbase-vm/env/CBASE_ALLOWED_ORIGINS
+      Type: String
+      Value: !Ref AllowedOrigins
+
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ec2.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: cbase-vm
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: Releases
+                Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub arn:${AWS::Partition}:s3:::${CodeBucket}/vm/*
+              - Sid: BackupList
+                Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt BackupBucket.Arn
+              - Sid: BackupObjects
+                Effect: Allow
+                Action: [s3:GetObject, s3:PutObject]
+                Resource: !Sub "${BackupBucket.Arn}/*"
+              - Sid: OwnParameters
+                Effect: Allow
+                Action: [ssm:GetParametersByPath, ssm:GetParameters, ssm:GetParameter]
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cbase-vm
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cbase-vm/*
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref Role]
+
+  LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: cbase-vm
+      LaunchTemplateData:
+        ImageId: !Ref ImageId
+        InstanceType: !Ref InstanceType
+        IamInstanceProfile: { Arn: !GetAtt InstanceProfile.Arn }
+        CreditSpecification: { CpuCredits: standard }   # no surplus-credit bill; the alarm says when it bites
+        MetadataOptions:
+          HttpEndpoint: enabled
+          HttpProtocolIpv6: enabled
+          HttpTokens: required
+          HttpPutResponseHopLimit: 1
+          InstanceMetadataTags: disabled
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs: { VolumeType: gp3, VolumeSize: 2, Encrypted: true, DeleteOnTermination: true }
+        NetworkInterfaces:
+          - DeviceIndex: 0   # the subnet comes from the group's VPCZoneIdentifier
+            Groups: [!Ref ServeSg]
+            # ::10 of the subnet, so a replaced instance keeps the address the
+            # origin's AAAA record names (the old one is gone first: ASG of 1).
+            Ipv6Addresses:
+              - Ipv6Address: !Select [0, !Split ["/", !Select [16, !Cidr [!Select [0, !GetAtt Subnet.Ipv6CidrBlocks], 32, 0]]]]
+            DeleteOnTermination: true
+        PrivateDnsNameOptions:
+          HostnameType: resource-name
+          EnableResourceNameDnsAAAARecord: true
+        UserData: !Ref UserDataGz
+        TagSpecifications:
+          - ResourceType: instance
+            Tags: [{ Key: Name, Value: cbase-vm }]
+          - ResourceType: volume
+            Tags: [{ Key: Name, Value: cbase-vm }]
+  Asg:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    DependsOn: [DefaultRoute6, SubnetRoutes, ReleaseServe, ReleaseAgent, EnvPublicUrl, EnvAllowedOrigins]
+    Properties:
+      AutoScalingGroupName: cbase-vm
+      MinSize: !Ref DesiredCapacity
+      MaxSize: !Ref DesiredCapacity
+      DesiredCapacity: !Ref DesiredCapacity
+      HealthCheckType: EC2
+      HealthCheckGracePeriod: 300
+      VPCZoneIdentifier: [!Ref Subnet]
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+        Version: !GetAtt LaunchTemplate.LatestVersionNumber
+      Tags:
+        - { Key: Name, Value: cbase-vm, PropagateAtLaunch: true }
+
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: cbase-vm-alarms
+  StatusCheckAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: cbase-vm-status-check
+      AlarmDescription: the cbase-vm instance failed an EC2 status check
+      Namespace: AWS/EC2
+      MetricName: StatusCheckFailed
+      Dimensions: [{ Name: AutoScalingGroupName, Value: !Ref Asg }]
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+      OKActions: [!Ref AlarmTopic]
+  CpuCreditAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: cbase-vm-cpu-credits-low
+      AlarmDescription: the t4g.nano is close to its 5% CPU baseline (standard credits)
+      Namespace: AWS/EC2
+      MetricName: CPUCreditBalance
+      Dimensions: [{ Name: AutoScalingGroupName, Value: !Ref Asg }]
+      Statistic: Minimum
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 20
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+      OKActions: [!Ref AlarmTopic]
+
+Outputs:
+  AsgName:
+    Value: !Ref Asg
+  OriginIpv6:
+    Description: the instance's fixed IPv6 address (step 3 needs an AAAA record for it)
+    Value: !Select [0, !Split ["/", !Select [16, !Cidr [!Select [0, !GetAtt Subnet.Ipv6CidrBlocks], 32, 0]]]]
+  BackupBucket:
+    Value: !Ref BackupBucket
+  AlarmTopic:
+    Value: !Ref AlarmTopic
+  SubnetIpv6:
+    Value: !Select [0, !GetAtt Subnet.Ipv6CidrBlocks]

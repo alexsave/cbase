@@ -1,0 +1,56 @@
+[Unit]
+Description=cbase serve (c_base, local provider: SQLite + its own MQTT hub)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=cbase
+Group=cbase
+# The secrets and settings (vm_boot.sh writes it from SSM, root-owned 0600;
+# systemd reads it before dropping to the cbase user).
+EnvironmentFile=/etc/cbase/cbase.env
+Environment=CBASE_STORE=sqlite
+Environment=CBASE_DB=/var/lib/cbase/cbase.sqlite
+# "::" (no brackets: config.c splits host:port at the last colon) is a
+# dual-stack socket, so a local probe from 127.0.0.1 or ::1 both reach it.
+Environment=CBASE_LISTEN=:::8080
+Environment=SSL_CERT_FILE=/etc/pki/tls/certs/ca-bundle.crt
+ExecStart=/usr/local/bin/cbase serve
+Restart=always
+RestartSec=1
+# SIGTERM drains (ingress_process.c); give open games time to settle.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+LimitNOFILE=65536
+StateDirectory=cbase
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/cbase
+UMask=0077
+
+# Hardening. Writable: only /var/lib/cbase (StateDirectory).
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target
