@@ -23,7 +23,8 @@ typedef struct {
     int64_t idle_ms;       // an HTTP connection with nothing in flight (default 60 s)
     int64_t head_ms;       // a request that has started but not finished arriving (default 15 s)
     int64_t ws_idle_ms;    // a WebSocket that has sent nothing (default 120 s; the stream pings every 25 s)
-    int     max_conns;     // refused past this (default 4096)
+    int     max_conns;     // refused past this (default 4096; CBASE_MAX_CONNS), each refusal counted and logged once a minute
+    int     backlog;       // listen(2)'s queue (default 512; CBASE_LISTEN_BACKLOG)
 } cb_server_opts;
 
 void cb_server_opts_default(cb_server_opts *o);

@@ -4,6 +4,7 @@
 #include "loop.h"
 #include "router.h"
 #include "handler.h"
+#include "util/clock.h"
 #include "util/err.h"
 #include "util/log.h"
 #include "util/pool.h"
@@ -62,6 +63,8 @@ struct cb_server {
     uint64_t reap_timer;
     int n;
     int busy;
+    int64_t refused;        // connections the cap turned away since the last log line
+    int64_t refused_log_ms; // when that line was last written
     bool draining;
     int64_t drain_deadline;
     uint64_t sweep_timer;
@@ -77,6 +80,7 @@ void cb_server_opts_default(cb_server_opts *o) {
     o->head_ms = 15000;
     o->ws_idle_ms = 120000;
     o->max_conns = 4096;
+    o->backlog = 512;
 }
 
 static int set_nonblock(int fd) {
@@ -445,7 +449,20 @@ static void on_accept(cb_loop *l, int lfd, int ev, void *ud) {
             if (errno != EAGAIN && errno != EWOULDBLOCK) CB_WARN("net", "accept: %s", strerror(errno));
             return;
         }
-        if (s->n >= s->o.max_conns || s->draining || set_nonblock(fd)) { close(fd); continue; }
+        if (s->n >= s->o.max_conns && !s->draining) {
+            // The cap, said out loud: at most one line a minute, with how many were turned away since the last.
+            s->refused++;
+            int64_t now = cb_now_ms();
+            if (now - s->refused_log_ms >= 60000) {
+                CB_WARN("net", "connection cap %d reached: %lld refused since the last report (CBASE_MAX_CONNS)",
+                        s->o.max_conns, (long long)s->refused);
+                s->refused = 0;
+                s->refused_log_ms = now;
+            }
+            close(fd);
+            continue;
+        }
+        if (s->draining || set_nonblock(fd)) { close(fd); continue; }
         int one = 1;
         setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
 #ifdef SO_NOSIGPIPE
@@ -525,7 +542,7 @@ int cb_server_listen(cb_server *s, const char *host, int port, int *bound_port) 
     int fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
     int one = 1;
     if (fd < 0 || setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one) < 0 ||
-        bind(fd, ai->ai_addr, ai->ai_addrlen) < 0 || listen(fd, 512) < 0 || set_nonblock(fd)) {
+        bind(fd, ai->ai_addr, ai->ai_addrlen) < 0 || listen(fd, s->o.backlog > 0 ? s->o.backlog : 512) < 0 || set_nonblock(fd)) {
         CB_ERROR("net", "listen %s:%d: %s", host, port, strerror(errno));
         if (fd >= 0) close(fd);
         freeaddrinfo(ai);
