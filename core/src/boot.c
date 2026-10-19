@@ -13,15 +13,46 @@
 #include "util/err.h"
 #include "util/log.h"
 
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
+#include <unistd.h>
 
 // CB_E_NOTIMPL from a module under construction is a warning, not a failure.
 static int soft(const char *what, int rc, char *err, size_t cap) {
     if (rc == CB_E_NOTIMPL) { CB_WARN("boot", "%s: not implemented yet, running without it", what); return CB_OK; }
     if (rc != CB_OK) snprintf(err, cap, "%s: %s", what, cb_strerror(rc));
     return rc;
+}
+
+// ONE INSTANCE. A provider whose process makes every write (CB_PROV_ONE_PROCESS: the app's state, its
+// locks and the sessions are authoritative in its memory) must be the only one on its database: a
+// second `cbase serve` on the same file would commit beside it unseen. "<db>.serve-lock" is held with
+// an exclusive flock(2) for the life of the boot, taken before the store opens; the second instance
+// refuses to start. (The database library's own locks are fcntl locks: a flock is a separate lock,
+// so cbase-import and cbase-export beside a running serve are unaffected.)
+static int g_instance_fd = -1;
+
+static int claim_instance(const char *db, char *err, size_t cap) {
+    if (!db || !db[0] || strcmp(db, ":memory:") == 0) return CB_OK;
+    char path[1100];
+    snprintf(path, sizeof path, "%s.serve-lock", db);
+    int fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    if (fd < 0) return CB_OK;   // no file can be made there: the store's open says why, in its words
+    if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+        close(fd);
+        snprintf(err, cap, "another cbase serve holds %s (one instance per database)", db);
+        return CB_E_STATE;
+    }
+    g_instance_fd = fd;
+    return CB_OK;
+}
+
+static void release_instance(void) {
+    if (g_instance_fd >= 0) close(g_instance_fd);   // the flock goes with the descriptor
+    g_instance_fd = -1;
 }
 
 int cb_boot(cb_ctx *ctx, char *err, size_t cap) {
@@ -42,6 +73,7 @@ int cb_boot(cb_ctx *ctx, char *err, size_t cap) {
     cb_edge_setup(ctx->app ? ctx->app->cached_paths : NULL, ctx->app ? ctx->app->n_cached_paths : 0, prov->edge_purge);
 
     const char *store = cfg->store[0] ? cfg->store : prov->store;
+    if ((prov->flags & CB_PROV_ONE_PROCESS) && (rc = claim_instance(cfg->db_path, err, cap)) != CB_OK) return rc;
     rc = cb_store_open_named(store, prov->store, cfg->db_path, cfg->table, &ctx->store);
     char what[40];
     snprintf(what, sizeof what, "store %s", store);
@@ -69,4 +101,5 @@ void cb_unboot(cb_ctx *ctx) {
     ctx->auth = NULL;
     cb_store_close(ctx->store);
     ctx->store = NULL;
+    release_instance();
 }

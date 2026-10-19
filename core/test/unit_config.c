@@ -2,6 +2,8 @@
 // rule (cb_config_check_secrets: findings L7, L8, M5), the origin proof, and
 // that the console's view of the settings never shows a secret.
 #include "t.h"
+#include <sys/wait.h>
+#include <unistd.h>
 #include "cbase/provider.h"
 
 #include "boot.h"
@@ -130,9 +132,54 @@ static void lambda_refuses_a_bot_speedup(void) {
     clear_env();
 }
 
+// One `cbase serve` per database: a second boot on the same file refuses (boot.c ONE INSTANCE), and the
+// lock goes with the first one's unboot.
+static int boot_in_child(const char *db) {
+    pid_t pid = fork();
+    if (pid == 0) {
+        cb_config c;
+        char err[256] = "";
+        if (cb_config_from_env(&c, err, sizeof err) != CB_OK) _exit(3);
+        strcpy(c.jwt_secret, "a-unit-test-secret-with-enough-bytes");
+        strcpy(c.store, "sqlite");
+        snprintf(c.db_path, sizeof c.db_path, "%s", db);
+        static cb_ctx ctx;
+        ctx.cfg = &c;
+        ctx.prov = &cb_provider_local;
+        int rc = cb_boot(&ctx, err, sizeof err);
+        _exit(rc == CB_OK ? 0 : rc == CB_E_STATE && strstr(err, "another cbase serve") ? 1 : 2);
+    }
+    int st = 0;
+    waitpid(pid, &st, 0);
+    return WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+}
+
+static void one_instance_per_database(void) {
+    char db[200], rm[600];
+    snprintf(db, sizeof db, "/tmp/unit_cfg_one_%d.db", (int)getpid());
+    snprintf(rm, sizeof rm, "rm -f %s %s-wal %s-shm %s.serve-lock", db, db, db, db);
+    (void)system(rm);
+    cb_config c;
+    char err[256] = "";
+    T_EQ_INT(cb_config_from_env(&c, err, sizeof err), CB_OK);
+    strcpy(c.jwt_secret, "a-unit-test-secret-with-enough-bytes");
+    strcpy(c.store, "sqlite");
+    snprintf(c.db_path, sizeof c.db_path, "%s", db);
+    static cb_ctx ctx;
+    memset(&ctx, 0, sizeof ctx);
+    ctx.cfg = &c;
+    ctx.prov = &cb_provider_local;
+    T_EQ_INT(cb_boot(&ctx, err, sizeof err), CB_OK);
+    T_EQ_INT(boot_in_child(db), 1);   // refused while this one runs
+    cb_unboot(&ctx);
+    T_EQ_INT(boot_in_child(db), 0);   // free again
+    (void)system(rm);
+}
+
 int main(void) {
     T_RUN(secrets_rule);
     T_RUN(lambda_refuses_a_bot_speedup);
     T_RUN(secrets_never_shown);
+    T_RUN(one_instance_per_database);
     return T_DONE();
 }
