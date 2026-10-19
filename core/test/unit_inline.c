@@ -24,6 +24,7 @@ static cb_config g_cfg;
 static int g_port;
 static pthread_t g_thread;
 static pthread_t g_loop_thread;
+static pthread_t g_tx, g_ty;        // the threads /fx and /fy ran on
 static pthread_t g_last;            // the thread the last /fast, /slow or /plain ran on
 static atomic_int g_entered, g_release;
 
@@ -32,6 +33,9 @@ static void h_loopid(cb_ctx *c, const cb_http_req *q, cb_http_res *s) {
     cb_res_send(s, 200, "text/plain", "ok", 2);
 }
 static void h_fast(cb_ctx *c, const cb_http_req *q, cb_http_res *s) { g_last = pthread_self(); cb_res_send(s, 200, "text/plain", "ok", 2); }
+static void h_fx(cb_ctx *c, const cb_http_req *q, cb_http_res *s) { g_tx = pthread_self(); cb_res_send(s, 200, "text/plain", "ok", 2); }
+static void h_fy(cb_ctx *c, const cb_http_req *q, cb_http_res *s) { g_ty = pthread_self(); cb_res_send(s, 200, "text/plain", "ok", 2); }
+static void h_stall(cb_ctx *c, const cb_http_req *q, cb_http_res *s) { usleep(150000); cb_res_send(s, 200, "text/plain", "ok", 2); }
 static void h_slow(cb_ctx *c, const cb_http_req *q, cb_http_res *s) { g_last = pthread_self(); usleep(6000); cb_res_send(s, 200, "text/plain", "ok", 2); }
 static void h_block(cb_ctx *c, const cb_http_req *q, cb_http_res *s) {
     atomic_store(&g_entered, 1);
@@ -50,6 +54,9 @@ static void start(void) {
     g_ctx.router = cb_router_new();
     cb_router_add(g_ctx.router, "GET", "/loopid", CB_ROUTE_LOOP, h_loopid);
     cb_router_add(g_ctx.router, "POST", "/fast", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_fast);
+    cb_router_add(g_ctx.router, "POST", "/fx", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_fx);
+    cb_router_add(g_ctx.router, "POST", "/fy", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_fy);
+    cb_router_add(g_ctx.router, "POST", "/stall", CB_ROUTE_LOOP, h_stall);
     cb_router_add(g_ctx.router, "POST", "/slow", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_slow);
     cb_router_add(g_ctx.router, "POST", "/plain", CB_ROUTE_POOL, h_fast);
     cb_router_add(g_ctx.router, "POST", "/block", CB_ROUTE_POOL, h_block);
@@ -109,6 +116,39 @@ static void inline_dispatch(void) {
     for (int i = 0; i < 2000 && !cb_pool_idle(g_ctx.req_pool); i++) usleep(1000);
 }
 
+// Two requests that become ready in the same loop pass (the loop is held in a stalled handler while
+// both arrive): the pool is idle at the first, but only the LAST ready event may run inline - the
+// first has someone waiting behind it (cb_loop_ready_left != 0), so it goes to the pool.
+static void last_ready(void) {
+    int64_t ran0, ran1, tripped;
+    int a = tc_connect(g_port), b = tc_connect(g_port), c = tc_connect(g_port);
+    usleep(50000);   // all three accepted
+    const char *rs = "POST /stall HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\n\r\nx";
+    const char *rx = "POST /fx HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\n\r\nx";
+    const char *ry = "POST /fy HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\n\r\nx";
+    cb_server_inline_stats(g_ctx.server, &ran0, &tripped);
+    T_CHECK(write(c, rs, strlen(rs)) == (ssize_t)strlen(rs));
+    usleep(40000);   // the loop is inside /stall now
+    T_CHECK(write(a, rx, strlen(rx)) == (ssize_t)strlen(rx));
+    T_CHECK(write(b, ry, strlen(ry)) == (ssize_t)strlen(ry));
+    char buf[256];
+    int fds[3] = { c, a, b };
+    for (int i = 0; i < 3; i++) {
+        struct pollfd p = { fds[i], POLLIN, 0 };
+        T_CHECK(poll(&p, 1, 3000) == 1);
+        T_CHECK(recv(fds[i], buf, sizeof buf, 0) > 0);
+    }
+    close(a); close(b); close(c);
+    cb_server_inline_stats(g_ctx.server, &ran1, &tripped);
+    bool xl = pthread_equal(g_tx, g_loop_thread), yl = pthread_equal(g_ty, g_loop_thread);
+    // The first event goes to the pool, which is then busy for the second: at most one runs inline
+    // (without the ready_left gate both would, the pool being idle at the first).
+    T_CHECK(!(xl && yl));
+    T_CHECK(ran1 - ran0 <= 1);
+    T_CHECK(!xl || ran1 - ran0 == 1);
+    for (int i = 0; i < 2000 && !cb_pool_idle(g_ctx.req_pool); i++) usleep(1000);
+}
+
 static void valve(void) {
     int64_t ran, tripped;
     // Over budget: it still answers, the valve trips, and the next request goes to the pool.
@@ -131,6 +171,7 @@ static void drain_post(cb_loop *l, void *ud) { cb_server_drain(g_ctx.server, 200
 int main(void) {
     start();
     T_RUN(inline_dispatch);
+    T_RUN(last_ready);
     T_RUN(valve);
     cb_loop_post(g_ctx.loop, drain_post, NULL);
     pthread_join(g_thread, NULL);
