@@ -136,7 +136,7 @@ static int local_job_start_after(cb_ctx *ctx, const char *job, const char *key, 
 const cb_provider cb_provider_local = {
     .name = "local",
     .mode = "serve",
-    .flags = CB_PROV_HELD_SOCKETS | CB_PROV_TEST_CLOCK,
+    .flags = CB_PROV_HELD_SOCKETS | CB_PROV_TEST_CLOCK | CB_PROV_ONE_PROCESS,
     .store = "sqlite",
     .rt_open = cb_rt_local_new,
     .routes = cb_rt_local_routes,

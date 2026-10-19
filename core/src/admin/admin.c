@@ -371,6 +371,8 @@ static void api_query(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     int rc = CB_STORE_CALL(ctx->store, admin_query, stmt, allow_write, put_row, &s);
     // A hand edit may have touched a rating or a bot: both edge copies go (app/edge.h).
     if (allow_write) cb_edge_stale(CB_EDGE_ALL);
+    // ... or a session or an account: the sessions held in memory are read again (auth.h).
+    if (allow_write) cb_auth_forget_sessions(ctx->auth);
     int enc = cb_js_admin_query_end(s.s, s.truncated);
     if (rc < 0) cb_admin_store_error(ctx, res, "query", rc);
     else cb_admin_send_json(res, 200, &b, enc);

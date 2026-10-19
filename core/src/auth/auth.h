@@ -79,13 +79,21 @@ void cb_auth_free(cb_auth *a);
 // could not run (jwt.h): a 5xx, never "signed out". The token's session and
 // user are read (two point reads): a token of a session that ended (signed
 // out, revoked, a password changed elsewhere, past its end) or of a deleted
-// account is CB_E_AUTH at once, not at its expiry. Without a store only the
+// account is CB_E_AUTH at once, not at its expiry. Under cb_auth_hold_sessions
+// a session already found live reads nothing. Without a store only the
 // signature and expiry are checked.
 int cb_auth_verify_bearer(cb_auth *a, const cb_http_req *req, cb_user *out);
 int cb_auth_verify_token(cb_auth *a, const char *jwt, cb_user *out);
 // Does the session (and account) of a verified user still stand? CB_OK, CB_E_AUTH
 // (ended, revoked, past its end, or the account is gone), or the store's failure.
 int cb_auth_session_live(cb_auth *a, const cb_user *u);
+// Where one process makes every write to the sessions and accounts (cbase serve), a session a check
+// found live is held in memory and the next check of it reads nothing; every write here that ends a
+// session takes it out first-hand, so revocation stays instant. boot.c turns it on for such a provider
+// (provider.h CB_PROV_ONE_PROCESS). A write made around this module (an admin SQL write) calls
+// cb_auth_forget_sessions, after which each session is read once again.
+void cb_auth_hold_sessions(cb_auth *a);
+void cb_auth_forget_sessions(cb_auth *a);
 
 int cb_auth_signup(cb_auth *a, const char *email, const char *password, const char *username, cb_session *out);
 int cb_auth_signin(cb_auth *a, const char *email, const char *password, cb_session *out);

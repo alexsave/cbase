@@ -30,6 +30,8 @@ static void setup(void) {
     T_EQ_INT(cb_auth_new(&ctx, &ctx.auth), CB_OK);
 }
 
+static void setup_maybe_held(void);
+
 static void teardown(void) {
     cb_auth_free(ctx.auth);
     auth_fakestore_free(ctx.store);
@@ -171,7 +173,7 @@ static void refresh_rotates_and_reuse_revokes(void) {
 }
 
 static void logout_password_delete(void) {
-    setup();
+    setup_maybe_held();
     cb_session s, s2, x;
     cb_user u;
     T_EQ_INT(cb_auth_signup(ctx.auth, "l@foolish.cards", "secret-11", "L", &s), CB_OK);
@@ -218,7 +220,7 @@ static void logout_password_delete(void) {
 // counted as a sign-in is, so a stolen access token cannot guess it), and
 // every OTHER session ends in the same write; the caller's goes on.
 static void password_change_needs_the_current_one_and_ends_the_rest(void) {
-    setup();
+    setup_maybe_held();
     g_fake_now = 1700000000000LL;
     cb_auth_now = fake_now;
     cb_session mine, thief, x;
@@ -423,12 +425,78 @@ static void signin_lockout(void) {
     teardown();
 }
 
+// ---- the live sessions held in memory (cb_auth_hold_sessions, cbase serve) -----------------
+
+// The fake store's operations with session_get counted, and a write slipped in right after it reads.
+static cb_store_ops g_held_ops;
+static const cb_store_ops *g_real_ops;
+static int g_session_reads;
+static cb_user g_revoke_after_read;
+static bool g_revoke_armed;
+static int counted_session_get(cb_store *st, const char *id, int64_t now, cb_session_row *out) {
+    g_session_reads++;
+    int rc = g_real_ops->session_get(st, id, now, out);
+    if (g_revoke_armed) {   // a logout lands between this check's read and its answer
+        g_revoke_armed = false;
+        cb_auth_logout(ctx.auth, &g_revoke_after_read, CB_LOGOUT_LOCAL);
+    }
+    return rc;
+}
+
+static bool g_held;
+static void setup_maybe_held(void) {
+    setup();
+    if (!g_held) return;
+    cb_auth_hold_sessions(ctx.auth);
+    g_real_ops = ctx.store->ops;
+    g_held_ops = *g_real_ops;
+    g_held_ops.session_get = counted_session_get;
+    ctx.store->ops = &g_held_ops;
+    g_session_reads = 0;
+}
+
+static void a_held_session_reads_nothing_and_ends_at_once(void) {
+    g_held = true;
+    setup_maybe_held();
+    cb_session s, d;
+    cb_user u, chk;
+    T_EQ_INT(cb_auth_signup(ctx.auth, "h@foolish.cards", "secret-11", "H", &s), CB_OK);
+    T_EQ_INT(cb_auth_signin(ctx.auth, "h@foolish.cards", "secret-11", &d), CB_OK);
+    T_EQ_INT(cb_auth_verify_token(ctx.auth, s.access_token, &u), CB_OK);
+    int reads = g_session_reads;
+    for (int i = 0; i < 10; i++) T_EQ_INT(cb_auth_verify_token(ctx.auth, s.access_token, &chk), CB_OK);
+    T_EQ_INT(g_session_reads, reads);   // held: no store read
+    // A logout ends it at once; the other device's session goes on.
+    T_EQ_INT(cb_auth_verify_token(ctx.auth, d.access_token, &chk), CB_OK);
+    T_EQ_INT(cb_auth_logout(ctx.auth, &u, CB_LOGOUT_LOCAL), CB_OK);
+    T_EQ_INT(cb_auth_verify_token(ctx.auth, s.access_token, &chk), CB_E_AUTH);
+    T_EQ_INT(cb_auth_verify_token(ctx.auth, d.access_token, &chk), CB_OK);
+    // A logout that lands while a check is reading: the check's "live" is not kept.
+    cb_session e;
+    T_EQ_INT(cb_auth_signin(ctx.auth, "h@foolish.cards", "secret-11", &e), CB_OK);
+    T_EQ_INT(cb_auth_verify_token(ctx.auth, e.access_token, &g_revoke_after_read), CB_OK);   // held now
+    cb_auth_forget_sessions(ctx.auth);   // so the next check reads again
+    g_revoke_armed = true;
+    (void)cb_auth_verify_token(ctx.auth, e.access_token, &chk);   // reads live, then the logout lands
+    T_EQ_INT(cb_auth_verify_token(ctx.auth, e.access_token, &chk), CB_E_AUTH);
+    // A global sign-out ends the other device's too.
+    T_EQ_INT(cb_auth_logout(ctx.auth, &u, CB_LOGOUT_GLOBAL), CB_OK);
+    T_EQ_INT(cb_auth_verify_token(ctx.auth, d.access_token, &chk), CB_E_AUTH);
+    teardown();
+    g_held = false;
+}
+
 int main(void) {
     T_RUN(signup_then_signin);
     T_RUN(signup_refusals);
     T_RUN(signin_lockout);
     T_RUN(refresh_rotates_and_reuse_revokes);
     T_RUN(logout_password_delete);
+    T_RUN(a_held_session_reads_nothing_and_ends_at_once);
+    g_held = true;   // the revocation tests again, with the sessions held in memory
+    T_RUN(logout_password_delete);
+    T_RUN(password_change_needs_the_current_one_and_ends_the_rest);
+    g_held = false;
     T_RUN(password_change_needs_the_current_one_and_ends_the_rest);
     T_RUN(sessions_and_tokens_expire);
     T_RUN(a_session_from_before_sessions);

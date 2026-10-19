@@ -40,6 +40,7 @@
 #include "realtime/realtime.h"
 
 #include <openssl/crypto.h>
+#include <pthread.h>
 #include <openssl/sha.h>
 #include <stdlib.h>
 #include <string.h>
@@ -51,11 +52,30 @@
 
 int64_t (*cb_auth_now)(void) = cb_now_ms;
 
+// The live sessions (cb_auth_hold_sessions): a session found live by a token check, with its user and
+// its end. Under serve one process makes every write to the sessions and the accounts, so this table is
+// the authority between two writes: a check that finds the session here reads nothing. Every write that
+// ends a session or an account (logout, global logout, password change, reuse, delete, an admin write)
+// takes its entries out first-hand, and bumps `epoch`, so a check that read the store before that
+// write and adds its answer after it is refused (the stale "live" never lands).
+#define LIVE_BUCKETS 1024
+#define LIVE_MAX     (64 * 1024)   // past it the table starts over (each entry is refilled by one read)
+typedef struct live_sess {
+    struct live_sess *next;
+    int64_t           ends_ms;   // the session's end (session row expires_at)
+    cb_uuid           id, user_id;
+} live_sess;
+
 struct cb_auth {
     cb_ctx *ctx;        // for ctx->rt: ending a session closes its sockets
     cb_store *store;    // NULL while the store is not built: only verification works
     char secret[sizeof ((cb_config *)0)->jwt_secret];
     int  ttl_s;
+    bool            hold;       // cb_auth_hold_sessions
+    pthread_mutex_t live_mu;
+    live_sess      *live[LIVE_BUCKETS];
+    int             n_live;
+    uint64_t        epoch;      // under live_mu: bumped by every write that ends a session
 };
 
 int cb_auth_new(cb_ctx *ctx, cb_auth **out) {
@@ -68,14 +88,113 @@ int cb_auth_new(cb_ctx *ctx, cb_auth **out) {
     a->store = ctx->store;
     cb_strlcpy(a->secret, cfg->jwt_secret, sizeof a->secret);
     a->ttl_s = cfg->jwt_ttl_s > 0 ? cfg->jwt_ttl_s : 3600;
+    pthread_mutex_init(&a->live_mu, NULL);
     *out = a;
     return CB_OK;
 }
 
+static void live_clear_locked(cb_auth *a) {
+    for (int b = 0; b < LIVE_BUCKETS; b++) {
+        for (live_sess *e = a->live[b], *next; e; e = next) {
+            next = e->next;
+            free(e);
+        }
+        a->live[b] = NULL;
+    }
+    a->n_live = 0;
+}
+
 void cb_auth_free(cb_auth *a) {
     if (!a) return;
+    live_clear_locked(a);
+    pthread_mutex_destroy(&a->live_mu);
     OPENSSL_cleanse(a->secret, sizeof a->secret);
     free(a);
+}
+
+// ---- the live sessions -----------------------------------------------------------
+
+void cb_auth_hold_sessions(cb_auth *a) { a->hold = true; }
+
+static unsigned live_bucket(const char *id) {
+    unsigned h = 2166136261u;
+    for (const char *p = id; *p; p++) h = (h ^ (unsigned char)*p) * 16777619u;
+    return h % LIVE_BUCKETS;
+}
+
+// Is session `id` of `user_id` held live? An entry past its session's end goes.
+static bool live_find(cb_auth *a, const char *id, const char *user_id, int64_t now) {
+    bool ok = false;
+    pthread_mutex_lock(&a->live_mu);
+    for (live_sess **pp = &a->live[live_bucket(id)]; *pp; pp = &(*pp)->next) {
+        live_sess *e = *pp;
+        if (strcmp(e->id, id) != 0) continue;
+        if (e->ends_ms <= now) {
+            *pp = e->next;
+            free(e);
+            a->n_live--;
+        } else {
+            ok = strcmp(e->user_id, user_id) == 0;
+        }
+        break;
+    }
+    pthread_mutex_unlock(&a->live_mu);
+    return ok;
+}
+
+// Adds what a check read, unless a write ended something since it began (epoch moved).
+static void live_add(cb_auth *a, const char *id, const char *user_id, int64_t ends_ms, uint64_t epoch) {
+    pthread_mutex_lock(&a->live_mu);
+    if (a->epoch == epoch) {
+        if (a->n_live >= LIVE_MAX) live_clear_locked(a);
+        live_sess *e = calloc(1, sizeof *e);
+        if (e) {
+            unsigned b = live_bucket(id);
+            cb_strlcpy(e->id, id, sizeof e->id);
+            cb_strlcpy(e->user_id, user_id, sizeof e->user_id);
+            e->ends_ms = ends_ms;
+            e->next = a->live[b];
+            a->live[b] = e;
+            a->n_live++;
+        }
+    }
+    pthread_mutex_unlock(&a->live_mu);
+}
+
+// Takes out session `id` (NULL: every session) of `user_id` (NULL: of every user), but `keep`.
+static void live_end(cb_auth *a, const char *user_id, const char *id, const char *keep) {
+    pthread_mutex_lock(&a->live_mu);
+    a->epoch++;
+    for (int b = 0; b < LIVE_BUCKETS; b++) {
+        for (live_sess **pp = &a->live[b]; *pp;) {
+            live_sess *e = *pp;
+            bool end = (!user_id || strcmp(e->user_id, user_id) == 0) && (!id || strcmp(e->id, id) == 0) &&
+                       !(keep && strcmp(e->id, keep) == 0);
+            if (end) {
+                *pp = e->next;
+                free(e);
+                a->n_live--;
+            } else {
+                pp = &e->next;
+            }
+        }
+    }
+    pthread_mutex_unlock(&a->live_mu);
+}
+
+void cb_auth_forget_sessions(cb_auth *a) {
+    if (!a) return;
+    pthread_mutex_lock(&a->live_mu);
+    a->epoch++;
+    live_clear_locked(a);
+    pthread_mutex_unlock(&a->live_mu);
+}
+
+// Ends sessions in the table and closes their sockets: the one place a write that ended sessions
+// reports it.
+static void ended(cb_auth *a, const char *user_id, const char *id, const char *keep) {
+    live_end(a, user_id, id, keep);
+    cb_rt_end_sessions(a->ctx->rt, user_id, id, keep);
 }
 
 // ---- verification ----------------------------------------------------------------
@@ -102,15 +221,25 @@ int cb_auth_session_live(cb_auth *a, const cb_user *u) {
     // row is gone when it ended (past its end session_get answers none), the
     // user row when the account was deleted, and session_over is a revocation
     // or a generation moved on by a global sign-out or a password change.
+    int64_t now = cb_auth_now();
+    if (a->hold && live_find(a, u->session_id, u->id, now)) return CB_OK;
+    uint64_t epoch = 0;
+    if (a->hold) {
+        pthread_mutex_lock(&a->live_mu);
+        epoch = a->epoch;
+        pthread_mutex_unlock(&a->live_mu);
+    }
     cb_session_row sess;
-    int rc = CB_STORE_CALL(a->store, session_get, u->session_id, cb_auth_now(), &sess);
+    int rc = CB_STORE_CALL(a->store, session_get, u->session_id, now, &sess);
     if (rc == CB_E_NOT_FOUND) return CB_E_AUTH;
     if (rc != CB_OK) return rc;
     cb_user_row row;
     rc = CB_STORE_CALL(a->store, user_get, u->id, &row);
     if (rc == CB_E_NOT_FOUND) return CB_E_AUTH;
     if (rc != CB_OK) return rc;
-    return session_over(&sess, &row) ? CB_E_AUTH : CB_OK;
+    if (session_over(&sess, &row) || strcmp(sess.user_id, u->id) != 0) return CB_E_AUTH;
+    if (a->hold) live_add(a, sess.id, u->id, sess.expires_at, epoch);
+    return CB_OK;
 }
 
 int cb_auth_verify_bearer(cb_auth *a, const cb_http_req *req, cb_user *out) {
@@ -362,7 +491,7 @@ int cb_auth_refresh(cb_auth *a, const char *refresh_token, cb_session *out) {
         // holder are both signed out. One write.
         CB_WARN("auth", "session %s: a consumed refresh token was presented; session revoked", r.session_id);
         rc = CB_STORE_CALL(a->store, session_revoke, r.session_id, r.user_id, sess.expires_at);
-        if (rc == CB_OK) cb_rt_end_sessions(a->ctx->rt, r.user_id, r.session_id, NULL);
+        if (rc == CB_OK) ended(a, r.user_id, r.session_id, NULL);
         return rc == CB_OK ? CB_AUTH_E_REFRESH_USED : rc;
     }
     return issue(a, &u, &sess, out);
@@ -373,7 +502,7 @@ int cb_auth_logout(cb_auth *a, const cb_user *u, cb_logout_scope scope) {
     int rc;
     if (scope == CB_LOGOUT_GLOBAL) rc = CB_STORE_CALL(a->store, user_end_sessions, u->id);
     else rc = CB_STORE_CALL(a->store, session_revoke, u->session_id, u->id, cb_auth_now() + CB_AUTH_SESSION_MS);
-    if (rc == CB_OK) cb_rt_end_sessions(a->ctx->rt, u->id, scope == CB_LOGOUT_GLOBAL ? NULL : u->session_id, NULL);
+    if (rc == CB_OK) ended(a, u->id, scope == CB_LOGOUT_GLOBAL ? NULL : u->session_id, NULL);
     return rc;
 }
 
@@ -394,14 +523,14 @@ int cb_auth_change_password(cb_auth *a, const cb_user *u, const char *current, c
     // The new hash and the end of every other session, in one write: whoever
     // held a stolen session is out, the caller stays in.
     rc = CB_STORE_CALL(a->store, user_set_password, u->id, hash, u->session_id);
-    if (rc == CB_OK) cb_rt_end_sessions(a->ctx->rt, u->id, NULL, u->session_id);   // every other session's sockets
+    if (rc == CB_OK) ended(a, u->id, NULL, u->session_id);   // every other session, and its sockets
     return rc;
 }
 
 int cb_auth_delete_user(cb_auth *a, const char *user_id) {
     if (!a->store) return CB_E_STATE;
     int rc = CB_STORE_CALL(a->store, user_delete, user_id);
-    if (rc == CB_OK) cb_rt_end_sessions(a->ctx->rt, user_id, NULL, NULL);
+    if (rc == CB_OK) ended(a, user_id, NULL, NULL);
     return rc;
 }
 
