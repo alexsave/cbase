@@ -535,6 +535,129 @@ static void snapshots_put_and_query(void) {
     cb_store_close(s);
 }
 
+// ---- the history summary on the pointers -------------------------------------------------------------
+
+typedef struct {
+    int n, seat[4], rank[4], n_players[4], fool[4], dur[4], has[4], moves_null, ids_ok;
+    size_t extras_len[4];
+} sum_seen;
+static bool see_sum(const cb_snapshot_row *r, void *ud) {
+    sum_seen *w = ud;
+    if (w->n < 4) {
+        w->seat[w->n] = r->seat;
+        w->rank[w->n] = r->rank;
+        w->n_players[w->n] = r->n_players;
+        w->fool[w->n] = r->sum.fool;
+        w->dur[w->n] = r->sum.duration_s;
+        w->has[w->n] = r->sum.has;
+        w->extras_len[w->n] = r->extras_len;
+        if (r->moves != NULL) w->moves_null++;   // counts the rows that DO hold moves
+    }
+    w->n++;
+    return true;
+}
+
+// A pointer written with a summary carries the numbers (never a name, never the moves); a
+// pointer written without one carries none; the history query is ONE Query of the pointers and
+// ONE BatchGetItem of the replays projected to the extras (the moves and the player ids only
+// when some pointer holds no summary), and it reads rank, seat, fool and duration off the pointer.
+static void history_pointers_carry_the_summary(void) {
+#define SUM_POINTER(id, seat, rank) \
+    "{\"pk\":{\"S\":\"SNAP#" id "\"},\"sk\":{\"S\":\"PLAYER#" U1 "\"},\"id\":{\"S\":\"" id "\"}," \
+    "\"game_id\":{\"S\":\"aaaaaa\"},\"created_at\":{\"N\":\"3\"},\"n_players\":{\"N\":\"3\"}," \
+    "\"seat\":{\"N\":\"" seat "\"},\"rank\":{\"N\":\"" rank "\"},\"fool\":{\"N\":\"2\"},\"dur\":{\"N\":\"95\"}}"
+#define EXTRAS_MAIN(id) \
+    "{\"pk\":{\"S\":\"SNAP#" id "\"},\"sk\":{\"S\":\"SNAP\"},\"id\":{\"S\":\"" id "\"},\"extras\":{\"B\":\"AQI=\"}}"
+    static const char WITH[] = "{\"Items\":[" SUM_POINTER("s2", "1", "1") "," SUM_POINTER("s1", "2", "3") "]}";
+    static const char OLD[] = "{\"Items\":[" SNAP_POINTER("s1", "aaaaaa") "," SUM_POINTER("s2", "1", "1") "]}";
+    static const step steps[] = {
+        { "TransactWriteItems", "PLAYER#" U1, 200, "{}" },
+        { "TransactWriteItems", "PLAYER#" U1, 200, "{}" },
+        { "Query", "PLAYER#" U1, 200, WITH },
+        { "BatchGetItem", "SNAP#s2", 200, SNAP_BATCH(EXTRAS_MAIN("s2") "," EXTRAS_MAIN("s1")) },
+        { "Query", "PLAYER#" U1, 200, OLD },
+        { "BatchGetItem", "SNAP#s1", 200, SNAP_BATCH(SNAP_MAIN("s1", "aaaaaa") "," EXTRAS_MAIN("s2")) },
+    };
+    RUN(steps, s);
+    uint8_t mv[2] = { 1, 2 };
+    cb_snapshot_row r = { .id = "s1", .game_id = "aaaaaa", .n_players = 3, .moves = mv, .moves_len = 2, .created_at = 3 };
+    snprintf(r.player_ids[0], sizeof r.player_ids[0], U1);
+    snprintf(r.player_ids[1], sizeof r.player_ids[1], U2);
+    snprintf(r.player_ids[2], sizeof r.player_ids[2], "%s", "55555555-5555-4555-8555-555555555555");
+    r.sum = (cb_snap_summary){ .has = true, .fool = 2, .n_elim = 2, .elim = { 1, 0 }, .duration_s = 95 };
+    T_EQ_INT(CB_ROWS_CALL(s, snapshot_put, &r), CB_OK);
+    // Three pointers: each its own seat and rank (seat 1 went out first, seat 0 second, seat 2 is the fool).
+    T_EQ_INT(count_of(sc_.bodies[0], "\"n_players\""), 3);
+    T_EQ_INT(count_of(sc_.bodies[0], "\"seat\""), 3);
+    T_EQ_INT(count_of(sc_.bodies[0], "\"dur\""), 3);
+    T_EQ_INT(count_of(sc_.bodies[0], "\"fool\""), 3);
+    T_EQ_INT(count_of(sc_.bodies[0], "\"seat\":{\"N\":\"0\"},\"rank\":{\"N\":\"2\"}"), 1);
+    T_EQ_INT(count_of(sc_.bodies[0], "\"seat\":{\"N\":\"1\"},\"rank\":{\"N\":\"1\"}"), 1);
+    T_EQ_INT(count_of(sc_.bodies[0], "\"seat\":{\"N\":\"2\"},\"rank\":{\"N\":\"3\"}"), 1);   // the fool
+    T_EQ_INT(count_of(sc_.bodies[0], "\"moves\""), 1);                // only the replay holds the moves
+    // Without a summary the pointer holds none of it.
+    r.sum.has = false;
+    cb_uuid_v4(r.id);
+    T_EQ_INT(CB_ROWS_CALL(s, snapshot_put, &r), CB_OK);
+    T_EQ_INT(count_of(sc_.bodies[1], "\"rank\""), 0);
+    T_EQ_INT(count_of(sc_.bodies[1], "\"dur\""), 0);
+    T_EQ_INT(count_of(sc_.bodies[1], "\"seat\""), 0);
+
+    sum_seen w = { 0 };
+    cb_snapshot_query q = { .viewer_id = U1, .summary_only = true };
+    T_EQ_INT(CB_ROWS_CALL(s, snapshots_query, &q, see_sum, &w), 2);
+    T_EQ_INT(w.moves_null, 0);                       // no row holds the moves
+    T_EQ_INT(w.rank[0], 1);
+    T_EQ_INT(w.seat[0], 1);
+    T_EQ_INT(w.rank[1], 3);                          // rank n = the fool
+    T_EQ_INT(w.seat[1], 2);
+    T_EQ_INT(w.n_players[0], 3);
+    T_EQ_INT(w.fool[0], 2);
+    T_EQ_INT(w.dur[0], 95);
+    T_CHECK(w.has[0] && w.has[1]);
+    T_EQ_INT((int)w.extras_len[0], 2);               // the names ride in the extras
+    // ONE BatchGetItem, projected to the extras: not the moves, not the player ids.
+    T_EQ_INT(count_of(sc_.bodies[3], "ProjectionExpression"), 1);
+    T_EQ_INT(count_of(sc_.bodies[3], "\"moves\""), 0);
+    T_EQ_INT(count_of(sc_.bodies[3], "\"player_ids\""), 0);
+    T_CHECK(strstr(sc_.bodies[3], "\"extras\"") != NULL);
+    // A pointer from before the summary: no rank, and the replay is read whole enough to cut one.
+    memset(&w, 0, sizeof w);
+    T_EQ_INT(CB_ROWS_CALL(s, snapshots_query, &q, see_sum, &w), 2);
+    T_CHECK(!w.has[0]);
+    T_EQ_INT(w.rank[0], 0);
+    T_CHECK(w.has[1]);
+    T_CHECK(strstr(sc_.bodies[5], "\"moves\"") != NULL && strstr(sc_.bodies[5], "\"player_ids\"") != NULL);
+    T_EQ_INT(sc_.at, sc_.n);
+    cb_store_close(s);
+#undef SUM_POINTER
+#undef EXTRAS_MAIN
+}
+
+// The query's `ref` is the game id OR the replay's own id, and nothing else.
+static void snapshot_ref_matches_the_replay_or_its_game(void) {
+    static const char POINTERS[] = "{\"Items\":[" SNAP_POINTER("s1", "aaaaaa") "," SNAP_POINTER("s2", "bbbbbb") "]}";
+    static const step steps[] = {
+        { "Query", "PLAYER#" U1, 200, POINTERS }, { "BatchGetItem", "SNAP#s1", 200, SNAP_BATCH(SNAP_MAIN("s1", "aaaaaa")) },
+        { "Query", "PLAYER#" U1, 200, POINTERS }, { "BatchGetItem", "SNAP#s2", 200, SNAP_BATCH(SNAP_MAIN("s2", "bbbbbb")) },
+        { "Query", "PLAYER#" U1, 200, POINTERS },
+    };
+    RUN(steps, s);
+    snaps_seen w = { 0 };
+    cb_snapshot_query q = { .viewer_id = U1, .ref = "aaaaaa" };   // a game id
+    T_EQ_INT(CB_ROWS_CALL(s, snapshots_query, &q, see_snap, &w), 1);
+    T_EQ_STR(w.ids[0], "s1");
+    memset(&w, 0, sizeof w);
+    q.ref = "s2";                                                  // a replay id, as the history row gives it
+    T_EQ_INT(CB_ROWS_CALL(s, snapshots_query, &q, see_snap, &w), 1);
+    T_EQ_STR(w.ids[0], "s2");
+    memset(&w, 0, sizeof w);
+    q.ref = "s";                                                   // a prefix is neither
+    T_EQ_INT(CB_ROWS_CALL(s, snapshots_query, &q, see_snap, &w), 0);
+    T_EQ_INT(sc_.at, sc_.n);
+    cb_store_close(s);
+}
+
 static void chat_put_refusals(void) {
     static const step steps[] = {
         { "TransactWriteItems", "CHAT#ab12cd", 200, "{}" },
@@ -730,6 +853,8 @@ int main(void) {
     T_RUN(game_members_are_the_human_seats);
     T_RUN(bots_and_ratings);
     T_RUN(snapshots_put_and_query);
+    T_RUN(history_pointers_carry_the_summary);
+    T_RUN(snapshot_ref_matches_the_replay_or_its_game);
     T_RUN(chat_put_refusals);
     T_RUN(admin_collections_are_the_families);
     T_RUN(import_writes);
