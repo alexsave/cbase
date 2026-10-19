@@ -435,6 +435,24 @@ static void scratch_done(cb_item *it) {
     else cb_item_reset(it);
 }
 
+void cb_store_sqlite_drain(void) {
+    if (t_scratch_ready) {
+        cb_item_free(&t_cur);
+        cb_item_free(&t_next);
+        t_scratch_ready = false;
+    }
+    pthread_mutex_lock(&g_pool_mu);
+    for (int c = 0; c < POOL_CLASSES; c++) {
+        while (g_pool[c]) {
+            pblock *p = g_pool[c];
+            g_pool[c] = p->next;
+            free((unsigned char *)p - POOL_HDR);
+        }
+        g_pool_n[c] = 0;
+    }
+    pthread_mutex_unlock(&g_pool_mu);
+}
+
 static int item_apply(sq *q, const cb_iwrite *w, cb_item *old) {
     if (!t_scratch_ready) {
         cb_item_init(&t_cur);
