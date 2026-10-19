@@ -91,6 +91,7 @@ Txn.Update key=pk:S=SNAP#{},sk:S=PLAYER#{} names=extras,gsi1pk,gsi1sk,moves,play
 Txn.Update key=pk:S=SNAP#{},sk:S=SNAP names=extras vals=B
 Txn.Update key=pk:S=USER#{},sk:S=RATING names=elo_rating,games_played,gsi2pk,gsi2sk,previous_elo,updated_at vals=N,S:E#{}#{},S:RATINGS
 UpdateItem key=pk:S=GAME#{},sk:S=ROW names=game_seed,last_commit_at,logs_packed,needs_bots,roster,round_epoch,seats_exact,state,status,updated_at,version vals=B,BOOL,N
+UpdateItem key=pk:S=GAME#{},sk:S=ROW names=game_seed,last_commit_at,needs_bots,roster,round_epoch,seats_exact,state,status,updated_at,version vals=B,BOOL,N
 UpdateItem key=pk:S=REFRESH#{},sk:S=TOKEN names=expires_at,expires_ms,revoked,revoked_at vals=BOOL,N
 UpdateItem key=pk:S=SCAN,sk:S=GAME#{} names=lease_token,lease_until vals=S
 UpdateItem key=pk:S=SCAN,sk:S=GAME#{} names=lease_token,lease_until,updated_at vals=N,S

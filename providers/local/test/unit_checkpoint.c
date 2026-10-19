@@ -23,6 +23,7 @@
 #include <unistd.h>
 
 #define CAP_FRAMES  8192               // store_sqlite.c CK_CAP
+#define CK_KICK_FRAMES 1000            // store_sqlite.c CK_KICK
 #define FRAME       (4096 + 24)        // a page and its frame header
 #define ROWS        64
 #define SYNC_US     20000
@@ -134,19 +135,36 @@ static void a_busy_writer_on_a_slow_disk_keeps_the_wal_bounded(void) {
     cb_store *st = NULL;
     T_EQ_INT(cb_store_open_sqlite(path, &st), CB_OK);
     T_EQ_INT(cb_sql_write(st, make_table, NULL), CB_OK);
+    g_writer = pthread_self();
+    // A kick alone starts a pass: past CK_KICK frames, far below the cap (so no group waits), the
+    // checkpointer syncs on its own thread. Polled, not timed: a slow runner only takes longer.
+    {
+        unsigned long from = cb_store_local_wal_frames(st);
+        int own0 = __atomic_load_n(&g_syncs, __ATOMIC_RELAXED) - __atomic_load_n(&g_writer_syncs, __ATOMIC_RELAXED);
+        int k = 0;
+        while (cb_store_local_wal_frames(st) - from < CK_KICK_FRAMES + 50) {
+            T_EQ_INT(cb_sql_write(st, put, &k), CB_OK);
+            k++;
+        }
+        T_CHECK(cb_store_local_wal_frames(st) - from < CAP_FRAMES / 2);
+        int own = 0;
+        for (int i = 0; i < 1000 && own <= 0; i++) {
+            usleep(10000);
+            own = __atomic_load_n(&g_syncs, __ATOMIC_RELAXED) - __atomic_load_n(&g_writer_syncs, __ATOMIC_RELAXED) - own0;
+        }
+        T_CHECK(own > 0);
+    }
     unsigned long before = cb_store_local_wal_frames(st);
     // Four times the cap, written with no pause.
     int commits = 0;
     long max_wal = 0;
-    int syncs0 = __atomic_load_n(&g_syncs, __ATOMIC_RELAXED);
-    g_writer = pthread_self();
+    int writer_syncs0 = __atomic_load_n(&g_writer_syncs, __ATOMIC_RELAXED);
     while (cb_store_local_wal_frames(st) - before < 4UL * CAP_FRAMES && commits < 4 * CAP_FRAMES / 5 * 2) {
         T_EQ_INT(cb_sql_write(st, put, &commits), CB_OK);
         commits++;
         long sz = file_size(wal);
         if (sz > max_wal) max_wal = sz;
     }
-    int syncs = __atomic_load_n(&g_syncs, __ATOMIC_RELAXED) - syncs0;
     unsigned long frames = cb_store_local_wal_frames(st) - before;
     T_CHECK(frames >= 4UL * CAP_FRAMES);
     T_CHECK(frames >= (unsigned long)commits * 6);   // each commit: its leaf, four overflow pages and the header page, at least
@@ -154,11 +172,9 @@ static void a_busy_writer_on_a_slow_disk_keeps_the_wal_bounded(void) {
     T_CHECK(max_wal > 0);
     T_CHECK(max_wal < (CAP_FRAMES + 64L) * FRAME);   // the cap where a group waits, and one group past it
     // The writer syncs once per rewind (SQLite syncs a new WAL header), nothing else.
-    T_CHECK(__atomic_load_n(&g_writer_syncs, __ATOMIC_RELAXED) <= (int)(frames / CAP_FRAMES) + 1);
-    // Passes ran between the waits too (one per CK_KICK frames while the checkpointer keeps up), not only
-    // the one each wait asks for (one per CK_CAP frames, three syncs each: 12 here without the others,
-    // about 24 with them).
-    T_CHECK(syncs > 4 * (int)(frames / CAP_FRAMES));
+    T_CHECK(__atomic_load_n(&g_writer_syncs, __ATOMIC_RELAXED) - writer_syncs0 <= (int)(frames / CAP_FRAMES) + 1);
+    // That passes also run between the waits (on a kick, not only when a group waits at the cap) is the
+    // polled check above: counting them here depended on how fast the runner's writer was.
     cb_store_close(st);
     slow_disk(false);
     g_writer = (pthread_t){0};
