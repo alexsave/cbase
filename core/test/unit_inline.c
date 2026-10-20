@@ -51,6 +51,7 @@ static void h_slow(cb_ctx *c, const cb_http_req *q, cb_http_res *s) { g_last = p
 // 3 ms of wall clock and almost no CPU: what a 20 us handler looks like when the hypervisor parks
 // its vCPU mid-run.
 static void h_nap(cb_ctx *c, const cb_http_req *q, cb_http_res *s) { g_last = pthread_self(); usleep(3000); cb_res_send(s, 200, "text/plain", "ok", 2); }
+static void h_nap6(cb_ctx *c, const cb_http_req *q, cb_http_res *s) { usleep(6000); h_fx(c, q, s); }
 static void h_block(cb_ctx *c, const cb_http_req *q, cb_http_res *s) {
     atomic_store(&g_entered, 1);
     while (!atomic_load(&g_release)) usleep(1000);
@@ -82,8 +83,9 @@ static void start(void) {
     static const cb_route own[] = {
         { "POST", "/f5", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_f5, 500000 },
         { "POST", "/slowok", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_slow, 500000 },
+        { "POST", "/nap6", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_nap6, 5000 },
     };
-    T_EQ_INT(cb_router_add_all(g_ctx.router, own, 2), CB_OK);
+    T_EQ_INT(cb_router_add_all(g_ctx.router, own, 3), CB_OK);
     cb_server_opts o;
     cb_server_opts_default(&o);
     o.inline_budget_us = 2000;
@@ -206,6 +208,41 @@ static void the_pass_budget_sends_the_rest_to_the_pool(void) {
     for (int i = 0; i < 2000 && !cb_pool_idle(g_ctx.req_pool); i++) usleep(1000);
 }
 
+// A run that only looks slow (6 ms of wall clock, its own budget 5 ms, no CPU: a hole) costs the
+// pass nothing until a run measured by CPU says otherwise: the two requests ready behind it in the
+// same pass run inline too, where a hole charged at its budget would have spent the pass's 4 ms.
+static void a_hole_costs_the_pass_nothing(void) {
+    cb_inline_stats s0, s1;
+    int a = tc_connect(g_port), b = tc_connect(g_port), c = tc_connect(g_port), d = tc_connect(g_port);
+    usleep(50000);
+    const char *rs = "POST /stall HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\n\r\nx";
+    const char *rx = "POST /nap6 HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\n\r\nx";
+    const char *ry = "POST /fy HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\n\r\nx";
+    const char *rz = "POST /fz HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\n\r\nx";
+    cb_server_inline_stats(g_ctx.server, &s0);
+    T_CHECK(write(d, rs, strlen(rs)) == (ssize_t)strlen(rs));
+    usleep(40000);   // the loop is inside /stall now: the three below are ready in its next pass, in this order
+    T_CHECK(write(a, rx, strlen(rx)) == (ssize_t)strlen(rx));
+    usleep(5000);
+    T_CHECK(write(b, ry, strlen(ry)) == (ssize_t)strlen(ry));
+    usleep(5000);
+    T_CHECK(write(c, rz, strlen(rz)) == (ssize_t)strlen(rz));
+    char buf[256];
+    int fds[4] = { d, a, b, c };
+    for (int i = 0; i < 4; i++) {
+        struct pollfd p = { fds[i], POLLIN, 0 };
+        T_CHECK(poll(&p, 1, 3000) == 1);
+        T_CHECK(recv(fds[i], buf, sizeof buf, 0) > 0);
+    }
+    close(a); close(b); close(c); close(d);
+    cb_server_inline_stats(g_ctx.server, &s1);
+    T_CHECK(pthread_equal(g_tx, g_loop_thread) && pthread_equal(g_ty, g_loop_thread) && pthread_equal(g_tz, g_loop_thread));
+    T_EQ_INT((int)(s1.ran - s0.ran), 3);
+    T_EQ_INT((int)(s1.over - s0.over), 0);
+    T_EQ_INT(post("/fast"), 200);   // (the suspect it left measured away)
+    for (int i = 0; i < 2000 && !cb_pool_idle(g_ctx.req_pool); i++) usleep(1000);
+}
+
 static void valve(void) {
     cb_inline_stats st;
     usleep(1100000);   // nothing over budget in the window behind us
@@ -311,6 +348,7 @@ int main(void) {
     T_RUN(inline_dispatch);
     T_RUN(a_pass_runs_its_ready_requests_inline);
     T_RUN(the_pass_budget_sends_the_rest_to_the_pool);
+    T_RUN(a_hole_costs_the_pass_nothing);
     T_RUN(valve);
     T_RUN(pipelined_answers_share_one_send);
     cb_loop_post(g_ctx.loop, drain_post, NULL);

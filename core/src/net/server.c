@@ -478,8 +478,8 @@ cb_inline_mark cb_server_inline_begin(cb_server *s) {
 // inline_trip_window_ms (a held lock, a disk stall that persists: the handler's own CPU) turn
 // inline dispatch off for inline_off_ms for every route but a CB_ROUTE_HOME one. One slow run alone
 // does not: it is a hiccup, and the pass budget already bounds what a burst of them costs the
-// other sockets. The pass budget counts a run's CPU when it was measured, else its wall time up
-// to its route's budget (a hole costs a pass at most that).
+// other sockets. The pass budget counts a run's CPU when it was measured, else its wall time when
+// it was within its budget, and nothing for a suspect (a hole costs the pass nothing).
 void cb_server_inline_to_pool(cb_server *s) { s->inline_to_pool++; }
 
 void cb_server_inline_done(cb_server *s, const cb_route *r, cb_inline_mark m) {
@@ -488,7 +488,10 @@ void cb_server_inline_done(cb_server *s, const cb_route *r, cb_inline_mark m) {
     s->inline_cpu_timed += cpu_us >= 0;
     const int budget = r && r->inline_us > 0 ? r->inline_us : s->o.inline_budget_us;
     s->inline_ran++;
-    s->inline_pass_used += cpu_us >= 0 ? cpu_us : wall_us < budget ? wall_us : budget;
+    // The pass budget: a measured run's CPU, a run within its budget its wall time, and a suspect
+    // nothing until the next run confirms it (a hole charged against the pass sent the rest of the
+    // pass to the pool: the rig's sat2 move p99 rose from 21 to 37 ms when it was charged).
+    s->inline_pass_used += cpu_us >= 0 ? cpu_us : wall_us <= budget ? wall_us : 0;
     // A suspect by the wall clock: the next run is measured by CPU as well. A run measured by CPU
     // and over its budget stays one (a slow handler is confirmed run after run).
     s->inline_confirm = cpu_us >= 0 ? cpu_us > budget : wall_us > budget;
