@@ -5,7 +5,9 @@ set -euo pipefail
 D=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 mkdir -p "$D/bin"
 docker rm -f calib-build >/dev/null 2>&1 || true
-docker run --rm --cpus=2 --name calib-build --platform linux/arm64 -v "$D":/cal alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6 sh -euc '
+# shared/ is mounted at /shared (read-only): calbench.c includes ../../../shared/c/rng.h, which from /cal is /shared.
+R=$(cd "$D/../../.." && pwd)
+docker run --rm --cpus=2 --name calib-build --platform linux/arm64 -v "$D":/cal -v "$R/shared":/shared:ro alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6 sh -euc '
   for i in 1 2 3 4 5 6; do apk add --no-cache build-base openssl-dev openssl-libs-static sqlite-dev sqlite-static linux-headers >/dev/null && break; [ $i = 6 ] && exit 1; sleep 5; done
   cd /cal
   # every libc entry point sqlite_group.inc counts goes through its __wrap_ counter

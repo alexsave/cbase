@@ -91,10 +91,14 @@ Five passes on a c6g.large and a t4g.nano (unlimited), both Graviton2 (Neoverse 
 
 - t4g.nano equals c6g.large: the p50 ratio is 1.00 over the 316 comparable rows (pass 3, the groups env, clock, core, kernel, mem, net, stream, wake).
   `compare.py` on the same files counts 338 rows with a ratio (it keeps the contended and ping-pong rows below), 276 of them within 10%, median 1.000.
-- The exceptions are cross-vCPU wake-ups at 2-7x (worse the longer the idle: 0 ms 2x, 10 ms 5x, 100 ms 7x), a contended mutex at 51 us on the nano against 0.11 us on the c6g in pass 3, and `pwrite+fdatasync` overwrite at 2.5-2.9x.
+- The exceptions are what crosses the two vCPUs (five-pass medians, analysis_2026-10-20/NANO_MODEL.md 2.1 and 2.2).
+  A cross-vCPU futex wake-up takes 9.4 / 12.0 / 23.2 / 38.7 us after 0 / 1 / 10 / 100 ms of idle on the nano against 4.55 / 5.08 / 5.84 / 6.49 us on the c6g: 2.1x, 2.4x, 4.0x and 6.0x (through epoll and an eventfd: 1.9x to 5.9x).
+  A contended mutex costs 3.5 us per lock+unlock on the nano (p50; p99 43 us) against 0.14 us, and a contended atomic add 1.2 us against 41 ns.
+- `pwrite+fdatasync` is not a nano penalty: a 4 KiB overwrite and its fdatasync take 0.90 ms (p50) on both boxes over the five passes.
+  The "2.5-2.9x slower" of the first note compared pass 1 with the c6g's occasional 0.35 ms mode (two of its five passes), which the nano never showed.
 - Both boxes sustain 2.48-2.50 GHz (the 256-add chain: 102.4 ns per 256 adds).
 - There is no steal in unlimited mode.
-- Same-core ping-pong round trips are faster on the nano (0.4-0.6x), and the contended atomic of pass 3 on the c6g is an outlier (8 ms); treat both as noise-bound until a rerun.
+- Same-core ping-pong round trips and wake-ups look faster on the nano (0.4-0.6x), but that is the c6g's measurement: its measuring thread held five hardware perf events, and every switch of it traps the PMU accesses to the hypervisor (NANO_MODEL.md 2.4); the nano's PMU reads failed, so it paid none. The contended atomic of pass 3 on the c6g is an outlier (8 ms).
   The full five-pass data adds 1746 rows; many of the malloc two-thread rows differ between boxes there, so use the medians in `compare.py` rather than one pass.
 
 ## The sqlite group (2026-10-20, results_2026-10-20_sqlite/)

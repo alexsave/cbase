@@ -44,6 +44,7 @@
 #include <openssl/hmac.h>
 #include <openssl/sha.h>
 #include <sqlite3.h>
+#include "../../../shared/c/rng.h"
 
 #define NS(ts) ((int64_t)(ts).tv_sec * 1000000000LL + (ts).tv_nsec)
 static inline int64_t now_ns(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return NS(t); }
@@ -154,7 +155,7 @@ static void pin(int cpu) { cpu_set_t s; CPU_ZERO(&s); CPU_SET(cpu, &s); sched_se
 static int g_ncpu = 0;
 static int ncpu(void) { if (!g_ncpu) g_ncpu = (int)sysconf(_SC_NPROCESSORS_ONLN); return g_ncpu; }
 static uint64_t rng = 88172645463325252ULL;
-static inline uint64_t xr(void) { rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17; return rng; }
+static inline uint64_t xr(void) { return rng_splitmix64(&rng); }   // the one generator (shared/c/rng.h)
 static char P[64];
 #define PRM(...) (snprintf(P, sizeof P, __VA_ARGS__), P)
 
