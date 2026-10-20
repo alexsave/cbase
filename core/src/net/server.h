@@ -61,9 +61,12 @@ void cb_server_free(cb_server *s);
 // which feeds the pass budget and the valve.
 bool cb_server_inline_ok(cb_server *s);
 void cb_server_inline_done(cb_server *s, const cb_route *r, int64_t took_us);
+// A handler run inline answered "to the pool" (http.h cb_http_res.to_pool): counted.
+void cb_server_inline_to_pool(cb_server *s);
 // Inline dispatch counters (loop thread, or after it has stopped): requests
-// run on the loop thread, runs over their budget, and times the valve tripped.
-typedef struct { int64_t ran, over, tripped; } cb_inline_stats;
+// run on the loop thread, of them sent on to the pool, runs over their
+// budget, and times the valve tripped.
+typedef struct { int64_t ran, to_pool, over, tripped; } cb_inline_stats;
 void cb_server_inline_stats(const cb_server *s, cb_inline_stats *out);
 // ANY THREAD: send() calls made so far (a socket's answer and pushes of one pass share one).
 int64_t cb_server_sends(const cb_server *s);

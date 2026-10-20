@@ -78,8 +78,8 @@ static void h_health(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     if (ctx->server) {
         cb_inline_stats st;
         cb_server_inline_stats(ctx->server, &st);
-        n += snprintf(b + n, sizeof b - (size_t)n, " inline=%lld over=%lld tripped=%lld", (long long)st.ran,
-                      (long long)st.over, (long long)st.tripped);
+        n += snprintf(b + n, sizeof b - (size_t)n, " inline=%lld to_pool=%lld over=%lld tripped=%lld", (long long)st.ran,
+                      (long long)st.to_pool, (long long)st.over, (long long)st.tripped);
     }
     snprintf(b + n, sizeof b - (size_t)n, "\n");
     cb_res_text(res, 200, b);

@@ -101,6 +101,11 @@ typedef struct cb_http_res {
     // set once the time is up); the handler may park again until then. Ignored on a loop route.
     int64_t park_ms;
     char   park_key[48];
+    // TO THE POOL (a CB_ROUTE_INLINE handler run on the loop thread, router.h): the handler found
+    // that its next step would wait (a lock another thread holds, a read or write of the
+    // store) and returned having done nothing (util/err.h CB_E_WOULD_BLOCK). The same request runs
+    // again on the request pool; nothing of this response is sent.
+    bool   to_pool;
     // The answer to a HEAD (cb_handle sets it): serialized with the body's
     // Content-Length but without the body. The Lambda encoder still sends the
     // body; the function URL front end drops it (and says Content-Length: 0).

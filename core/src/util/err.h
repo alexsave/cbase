@@ -20,6 +20,8 @@
 #define CB_E_DB       (-10)   // SQLite said no; the log says why
 #define CB_E_STATE    (-11)   // called in the wrong state (closed, stopped, not loaded)
 #define CB_E_BUSY     (-12)   // the store stayed throttled past its backoff: try again shortly
+#define CB_E_WOULD_BLOCK (-13) // on the loop thread, the next step would wait (a lock, the store):
+                               // nothing was done, and the caller runs it again on the pool
 
 // A short constant name for logs ("CB_E_NOT_FOUND"), never NULL.
 const char *cb_strerror(int code);

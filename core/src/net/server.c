@@ -91,7 +91,7 @@ struct cb_server {
     int n;
     int busy;
     int64_t inline_off_until;   // loop ms: no inline dispatch before this (the valve tripped)
-    int64_t inline_ran, inline_over, inline_tripped;
+    int64_t inline_ran, inline_over, inline_tripped, inline_to_pool;
     int64_t inline_over_at[8];  // loop ms of the last runs over budget (a ring, inline_trips of it used)
     uint64_t inline_pass;       // the loop pass inline_pass_used counts
     int64_t inline_pass_used;   // us of inline handlers in that pass
@@ -391,6 +391,8 @@ bool cb_server_inline_ok(cb_server *s) {
 // inline_trip_window_ms (a held lock, a fsync, a disk stall that persists) turn inline dispatch
 // off for inline_off_ms. One slow run alone does not: it is a hiccup, and the pass budget already
 // bounds what a burst of them costs the other sockets.
+void cb_server_inline_to_pool(cb_server *s) { s->inline_to_pool++; }
+
 void cb_server_inline_done(cb_server *s, const cb_route *r, int64_t took_us) {
     s->inline_ran++;
     s->inline_pass_used += took_us;
@@ -416,6 +418,7 @@ void cb_server_inline_stats(const cb_server *s, cb_inline_stats *out) {
     out->ran = s->inline_ran;
     out->over = s->inline_over;
     out->tripped = s->inline_tripped;
+    out->to_pool = s->inline_to_pool;
 }
 
 static void dispatch(conn *c) {
@@ -434,8 +437,14 @@ static void dispatch(conn *c) {
         int64_t t0 = cb_mono_us();
         cb_handle(ctx, c->req, &c->res);
         cb_server_inline_done(s, ir, cb_mono_us() - t0);
-        finish(c);
-        return;
+        if (!c->res.to_pool) {
+            finish(c);
+            return;
+        }
+        // It would have waited (http.h to_pool): it did nothing, and runs again on the pool.
+        s->inline_to_pool++;
+        cb_res_free(&c->res);
+        cb_res_init(&c->res);
     }
     job *j = job_get(s);
     if (!j) { cb_router_error(&c->res, 503, "out of memory"); finish(c); return; }
@@ -864,8 +873,8 @@ void cb_server_drain(cb_server *s, int64_t timeout_ms) {
 void cb_server_free(cb_server *s) {
     if (!s) return;
     if (s->inline_ran)
-        CB_INFO("net", "inline dispatch: %lld requests on the loop thread, %lld over budget, valve tripped %lld times",
-                (long long)s->inline_ran, (long long)s->inline_over, (long long)s->inline_tripped);
+        CB_INFO("net", "inline dispatch: %lld requests on the loop thread (%lld sent on to the pool), %lld over budget, valve tripped %lld times",
+                (long long)s->inline_ran, (long long)s->inline_to_pool, (long long)s->inline_over, (long long)s->inline_tripped);
     while (s->all) {
         conn *c = s->all;
         if (c->state == C_BUSY) c->state = C_HTTP;   // the pool is gone: nothing runs against it

@@ -316,6 +316,7 @@ typedef struct job {
     bool route_known;        // no route, but the path is routed under another method (405)
     uint32_t req_id;
     uint16_t status;
+    bool to_pool;            // run inline, it would have waited (http.h to_pool): it runs again on the pool
     cb_buf body;
     cb_buf hdrs;             // the handler's headers (a socket's reply has none): a buffer kept with the job
 } job;
@@ -398,6 +399,7 @@ static void run_req(job *j, const sf_frame *f) {
         r->fn(ctx, &req, &res);
         j->status = (uint16_t)(res.status ? res.status : 200);
         if (res.body.oom) j->status = 500;
+        j->to_pool = res.to_pool;
     }
     if (!res.body.oom) { j->body = res.body; cb_buf_init(&res.body); }   // the reply, and the buffer kept
     if (!res.headers.oom) { j->hdrs = res.headers; cb_buf_init(&res.headers); }
@@ -581,13 +583,27 @@ static void pump(local *L, lconn *c) {
                 int64_t t0 = cb_mono_us();
                 job_run_frame(j);
                 cb_server_inline_done(L->ctx->server, j->route, cb_mono_us() - t0);
-                c = job_settle(L, j);
-                continue;
+                if (!j->to_pool) {
+                    c = job_settle(L, j);
+                    continue;
+                }
+                // It would have waited (http.h to_pool) and did nothing: the same frame runs again
+                // on the pool, its answer not sent.
+                cb_server_inline_to_pool(L->ctx->server);
+                j->to_pool = false;
+                j->status = 0;
+                cb_buf_reset(&j->body);
+                cb_buf_reset(&j->hdrs);
             }
             cb_pool *pool = L->ctx->req_pool;
             if (pool && cb_pool_submit(pool, job_run, j) == CB_OK) return;
-            // No pool (or it is stopping): handle it here. Only the tests run without one.
+            // No pool (or it is stopping): handle it here. Only the tests run without one. One that
+            // would wait has nowhere to go.
             job_run_frame(j);
+            if (j->to_pool) {
+                j->status = 503;
+                cb_buf_reset(&j->body);
+            }
             c = job_settle(L, j);
             continue;
         }

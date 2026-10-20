@@ -63,6 +63,7 @@ static void h_ping(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) { cb_r
 
 static void h_pub_on_loop(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res);
 static void h_act(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res);
+static void h_would_wait(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res);
 
 static void start(void) {
     cb_log_init(CB_LOG_ERROR, 0);
@@ -82,6 +83,7 @@ static void start(void) {
     T_EQ_INT(cb_router_add(g_ctx.router, "*", "/t/loop", CB_ROUTE_LOOP, h_who), CB_OK);
     T_EQ_INT(cb_router_add(g_ctx.router, "GET", "/t/publoop", CB_ROUTE_LOOP, h_pub_on_loop), CB_OK);
     T_EQ_INT(cb_router_add(g_ctx.router, "POST", "/t/act", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_act), CB_OK);
+    T_EQ_INT(cb_router_add(g_ctx.router, "POST", "/t/wait", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_would_wait), CB_OK);
     cb_server_opts o;
     cb_server_opts_default(&o);
     g_ctx.server = cb_server_new(&g_ctx, &o);
@@ -310,6 +312,37 @@ static void an_inline_req_answers_with_its_pushes(void) {
     cb_buf_free(&m);
 }
 
+// An inline route whose next step would wait when it runs on the loop (http.h to_pool): there it
+// queues a push and answers "to the pool", and on the pool it answers for real.
+static atomic_int g_wait_runs;
+static void h_would_wait(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
+    atomic_fetch_add(&g_wait_runs, 1);
+    g_act_thr = pthread_self();
+    if (cb_loop_on_thread(ctx->loop)) {
+        cb_res_text(res, 200, "not this");
+        res->to_pool = true;
+        return;
+    }
+    cb_res_text(res, 201, "pooled");
+}
+
+// A REQ whose handler, run inline, would wait: nothing of that run is sent, and the same frame runs
+// again on the pool, whose answer is the REPLY.
+static void a_req_that_would_wait_runs_again_on_the_pool(void) {
+    cb_buf m;
+    cb_buf_init(&m);
+    sf_frame f;
+    int a = open_as(U1, NULL, &m);
+    atomic_store(&g_wait_runs, 0);
+    T_EQ_INT(req(a, 21, SF_METH_POST, "/t/wait", "x", &m, &f), 201);
+    T_EQ_MEM(f.body, f.body_len, "pooled", 6);
+    T_EQ_INT(atomic_load(&g_wait_runs), 2);
+    T_CHECK(!pthread_equal(g_act_thr, g_loop_thr));
+    T_EQ_INT(fr_recv(a, 200, &m), 0);   // and nothing else came
+    close(a);
+    cb_buf_free(&m);
+}
+
 static atomic_int g_hold;
 static void hold_worker(void *ud) { while (atomic_load(&g_hold)) usleep(1000); }
 
@@ -530,6 +563,7 @@ int main(void) {
     T_RUN(many_sockets_hear_once);
     T_RUN(a_push_on_the_loop_is_not_posted);
     T_RUN(an_inline_req_answers_with_its_pushes);
+    T_RUN(a_req_that_would_wait_runs_again_on_the_pool);
     T_RUN(req_runs_a_route_as_the_user);
     T_RUN(ended_sessions_close_their_sockets);
     T_RUN(refusals_end_the_connection);
