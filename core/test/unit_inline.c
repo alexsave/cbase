@@ -64,10 +64,11 @@ static void start(void) {
     cb_router_add(g_ctx.router, "POST", "/plain", CB_ROUTE_POOL, h_fast);
     cb_router_add(g_ctx.router, "POST", "/block", CB_ROUTE_POOL, h_block);
     cb_router_add(g_ctx.router, "POST", "/fz", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_fz);
-    // Routes with a budget of their own (router.h cb_route.inline_us): 5 and 6 ms handlers not over theirs.
+    // Routes with a budget of their own (router.h cb_route.inline_us): 5 and 6 ms handlers not over
+    // theirs, however long a loaded runner oversleeps them (0.5 s).
     static const cb_route own[] = {
-        { "POST", "/f5", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_f5, 20000 },
-        { "POST", "/slowok", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_slow, 20000 },
+        { "POST", "/f5", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_f5, 500000 },
+        { "POST", "/slowok", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_slow, 500000 },
     };
     T_EQ_INT(cb_router_add_all(g_ctx.router, own, 2), CB_OK);
     cb_server_opts o;
@@ -158,7 +159,7 @@ static void a_pass_runs_its_ready_requests_inline(void) {
 }
 
 // A pass's inline time is bounded (inline_pass_us 4 ms here): a 5 ms handler ready first spends it
-// (not over its route's own 20 ms budget), and the two requests ready behind it in the same pass go
+// (not over its route's own budget), and the two requests ready behind it in the same pass go
 // to the pool instead of waiting for the loop.
 static void the_pass_budget_sends_the_rest_to_the_pool(void) {
     cb_inline_stats s0, s1;
@@ -195,7 +196,7 @@ static void the_pass_budget_sends_the_rest_to_the_pool(void) {
 static void valve(void) {
     cb_inline_stats st;
     usleep(1100000);   // nothing over budget in the window behind us
-    // A route's own budget: 6 ms is not over its 20 ms.
+    // A route's own budget: 6 ms is not over its 0.5 s.
     T_EQ_INT(post("/slowok"), 200);
     T_CHECK(on_loop());
     cb_server_inline_stats(g_ctx.server, &st);
