@@ -72,7 +72,7 @@ void cb_server_inline_to_pool(cb_server *s);
 // Inline dispatch counters (loop thread, or after it has stopped): requests
 // run on the loop thread, of them sent on to the pool, runs over their
 // budget, times the valve tripped, and runs timed by the thread's CPU clock
-// (two system calls each: after a suspect, and each run after a pass's first).
+// (two system calls each: after a suspect, and each run after a pass's second).
 typedef struct { int64_t ran, to_pool, over, tripped, cpu_timed; } cb_inline_stats;
 void cb_server_inline_stats(const cb_server *s, cb_inline_stats *out);
 // ANY THREAD: send() calls made so far (a socket's answer and pushes of one pass share one).

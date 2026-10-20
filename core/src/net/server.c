@@ -477,15 +477,16 @@ bool cb_server_inline_ok(cb_server *s, const cb_route *r) {
 // read only after a suspect, so a human-pace move costs no system call for the valve.
 //
 // THE PASS BUDGET is the handlers' own CPU, never their wall time and never the loop's other work:
-// a pass's first run costs its wall time within its budget (nothing as a suspect), and every run
-// after it in the same pass is timed by the CPU clock too. A pass of one run - human pace - reads
-// no CPU clock; a busy pass reads it twice a run after its first. (Measured on the rig at sat2:
+// a pass's first two runs cost their wall time within their budget (nothing as a suspect), and
+// every run after them in the same pass is timed by the CPU clock too. A pass of one or two runs
+// - human pace, where two players' moves sometimes share a pass - reads no CPU clock; a busy pass
+// reads it twice a run after its second. (Measured on the rig at sat2:
 // handler CPU sends 64 to 277 requests a run to the pool for want of pass time, move p99 20 ms;
 // handler wall time 15 thousand, p99 30 ms; the loop's CPU since the second run 40 thousand, p99
 // 32 ms.)
 cb_inline_mark cb_server_inline_begin(cb_server *s) {
     const bool cpu = s->inline_confirm ||
-                     (s->inline_pass == cb_loop_pass(s->ctx->loop) && s->inline_pass_runs > 0);
+                     (s->inline_pass == cb_loop_pass(s->ctx->loop) && s->inline_pass_runs > 1);
     return (cb_inline_mark){ cb_mono_us(), cpu ? cb_thread_cpu_us() : -1 };
 }
 

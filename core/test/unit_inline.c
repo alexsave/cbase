@@ -274,6 +274,7 @@ static void a_pass_counts_cpu_not_wall(void) {
     cb_server_inline_stats(g_ctx.server, &s1);
     T_EQ_INT((int)(s1.ran - s0.ran), 7);
     T_CHECK(pthread_equal(g_tz, g_loop_thread));
+    T_EQ_INT((int)(s1.cpu_timed - s0.cpu_timed), 5);   // the runs after the pass's second, and only they
     for (int i = 0; i < 2000 && !cb_pool_idle(g_ctx.req_pool); i++) usleep(1000);
 }
 
