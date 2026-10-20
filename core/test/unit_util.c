@@ -259,6 +259,10 @@ static void log_level_first(void) {
     CB_INFO("t", "kept %d", formatted());
     T_EQ_INT(g_formatted, 1);
     T_EQ_INT(cb_log_last_seq(), start + 1);
+    cb_log_init(CB_LOG_WARN, 4);   // an INFO line dropped: cb_log returns before it formats or keeps it
+    CB_INFO("t", "dropped %d", 1);
+    T_EQ_INT(cb_log_last_seq(), start + 1);
+    cb_log_init(CB_LOG_INFO, 4);
     T_CHECK(!cb_log_enabled(CB_LOG_DEBUG));
     T_CHECK(cb_log_enabled(CB_LOG_ERROR + 1));   // above ERROR counts as ERROR
 }

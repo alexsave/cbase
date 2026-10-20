@@ -66,7 +66,7 @@ The tests follow the source: about 3,400 platform, 5,700 foolish and 5,900 mixed
 
 ### 1.3 Foolish (product in substance)
 
-- `src/app/{table_ops,bots,fanout,functions_http,unfurl_http}.[ch]`, `src/app/app_internal.h` (the kernel section, CAS runner, row cache, bot lease/drive/scan, fan-out, create/action/meta/account-delete routes, the `/m` unfurl).
+- `src/app/{table_ops,bots,fanout,functions_http,unfurl_http}.[ch]`, `src/app/app_internal.h` (the kernel section, CAS runner over the journal's resident game, bot lease/drive/scan, fan-out, create/action/meta/account-delete routes, the `/m` unfurl).
 - `src/store/store_import.[ch]` (the Supabase CSV import), `migrate/*`, `tools/unfurl_payloads.c`.
 - `ops/web.yaml`, `ops/web_deploy.sh`, `ops/test/web_*` (the foolish.cards and uttt.live static sites; general in mechanism, but every value is a product's).
 - `bench/{cpu,direct,roundtrip,subscribe}.c` and `bench/results/`.
@@ -163,7 +163,7 @@ static const cb_collection FOOLISH[] = {
 The templates spell today's keys exactly, which is how live data stays where it is.
 Keys, index keys, the CAS attribute, TTL and the `owner` field (what the account cascade deletes) are data; the typed row to attribute mapping is a small per-collection codec the product writes against the platform's attribute API (never JSON: the item becomes JSON inside `json_surface.c` only).
 The foolish operations (`game_commit` as one transaction with seats, ratings and the SCAN marker, the lease on the marker, the ladder order, the leaderboard's sparse `E#<rank>` key) are written once above the item layer in the product, instead of twice today (once per backend).
-The platform offers the one pattern every kernel product needs as a helper: `cb_doc_run(collection, key, step)`, load, run a step, commit on the version, retry five times, with the striped order lock and the warm row cache; `step` is a callback because it runs the kernel.
+The platform offers the one pattern every kernel product needs as a helper: `cb_doc_run(collection, key, step)`, load, run a step, commit on the version, retry five times, with the striped order lock and, under serve, the journal's resident copy of the document; `step` is a callback because it runs the kernel.
 
 ### 2.3 Topics, subscriptions and authorization, as data
 
