@@ -202,6 +202,18 @@ static int s3_get(void *ud, const char *key, const char *file) {
     return rc;
 }
 
+static int s3_del(void *ud, const char *key) {
+    cb_https_response res;
+    memset(&res, 0, sizeof res);
+    int rc = s3_call(ud, "DELETE", key, "", 0, &res);
+    if (rc == CB_OK && res.status != 204 && res.status != 200 && res.status != 404) {
+        CB_ERROR(MOD, "DELETE %s: status %d", key, res.status);
+        rc = CB_E_IO;
+    }
+    cb_https_response_free(&res);
+    return rc;
+}
+
 int cb_blob_open_s3(const char *bucket, const char *region, cb_blob *out) {
     s3_ctx *c = calloc(1, sizeof *c);
     if (!c) return CB_E_NOMEM;
@@ -210,6 +222,6 @@ int cb_blob_open_s3(const char *bucket, const char *region, cb_blob *out) {
         free(c);
         return CB_E_INVALID;
     }
-    *out = (cb_blob){ .put = s3_put, .get = s3_get, .ud = c };
+    *out = (cb_blob){ .put = s3_put, .get = s3_get, .ud = c, .del = s3_del };
     return CB_OK;
 }

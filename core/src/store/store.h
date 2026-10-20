@@ -238,6 +238,19 @@ typedef struct cb_store_app {
     int (*sql_delete)(struct cb_sql *x, const char *user_id);
 } cb_store_app;
 
+// A file a write-behind layer keeps beside the store's file: its path is the database's
+// path followed by `suffix` (the backup uploads it under its key followed by the same).
+typedef struct {
+    char    suffix[64];
+    int64_t size;
+} cb_store_file;
+
+// The marker a restore leaves beside the database it put in place (the database's path
+// followed by this): a write-behind layer replaying its files onto that copy may find a
+// row the copy holds at an older version than its files continue from (a write made
+// between the copy and the files' end that went to the database), and skips it then.
+#define CB_STORE_RESTORED_SUFFIX "-restored"
+
 struct cb_store {
     const cb_store_ops *ops;
     void *impl;
@@ -247,12 +260,30 @@ struct cb_store {
     // acknowledged readable from the store's own file (cb_store_settle). NULL: none.
     void *app_state;
     int (*app_settle)(struct cb_store *s);
+    // The backup's view of that layer (store/backup.c); NULL: none.
+    // backup_mark: the mark of what a copy of the store's file taken from now on needs
+    //   beside it to hold every acknowledged write. The first call pins the layer's files:
+    //   from then on none at or after the last released mark is deleted.
+    // backup_files: the layer's files from `mark` on, oldest first (*out malloc'd).
+    // backup_release: a copy and the files from `mark` on are uploaded; older ones may go.
+    int (*app_backup_mark)(struct cb_store *s, uint64_t *mark);
+    int (*app_backup_files)(struct cb_store *s, uint64_t mark, cb_store_file **out, int *n);
+    void (*app_backup_release)(struct cb_store *s, uint64_t mark);
+    // Runs fn with every write the layer acknowledged in the store's file and none
+    // acknowledged until fn returned, and forgets what the layer held (fn may have changed
+    // any of it): an admin's write (cb_store_admin_query). NULL: fn runs as it is.
+    int (*app_exclusive)(struct cb_store *s, int (*fn)(void *ud), void *ud);
 };
 
 // Every write acknowledged so far is in the store's file: what a copy of the file
 // (a backup) and a reader of the file behind the product's back (the admin's SQL)
 // must call first. CB_OK when nothing holds writes in front of the store.
 int cb_store_settle(cb_store *s);
+
+// The admin console's statement: a read settles first; a write runs inside the
+// write-behind layer's exclusive section, so nothing the layer held before it can later
+// overwrite what it wrote. THE ADMIN RULE's one owner.
+int cb_store_admin_query(cb_store *s, const char *statement, bool allow_write, cb_admin_row_fn fn, void *ud);
 
 // A backend's open: ops and impl, and the linked product's cb_store_app.
 void cb_store_init(cb_store *s, const cb_store_ops *ops, void *impl);

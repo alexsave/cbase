@@ -24,6 +24,27 @@ void cb_store_init(cb_store *s, const cb_store_ops *ops, void *impl) {
 
 int cb_store_settle(cb_store *s) { return s && s->app_settle ? s->app_settle(s) : CB_OK; }
 
+typedef struct {
+    cb_store       *s;
+    const char     *stmt;
+    cb_admin_row_fn fn;
+    void           *ud;
+} admin_write;
+
+static int admin_write_run(void *ud) {
+    admin_write *w = ud;
+    return CB_STORE_CALL(w->s, admin_query, w->stmt, true, w->fn, w->ud);
+}
+
+int cb_store_admin_query(cb_store *s, const char *statement, bool allow_write, cb_admin_row_fn fn, void *ud) {
+    if (!allow_write) {
+        (void)cb_store_settle(s);   // a write-behind layer's writes are in the file first
+        return CB_STORE_CALL(s, admin_query, statement, false, fn, ud);
+    }
+    admin_write w = { s, statement, fn, ud };
+    return s->app_exclusive ? s->app_exclusive(s, admin_write_run, &w) : admin_write_run(&w);
+}
+
 // ---- busy: a throttle given up on (store.h CB_STORE_CALL) ----------------------
 
 static _Thread_local int  t_depth;

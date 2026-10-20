@@ -250,7 +250,7 @@ Resources:
                 Resource: !GetAtt BackupBucket.Arn
               - Sid: BackupObjects
                 Effect: Allow
-                Action: [s3:GetObject, s3:PutObject]
+                Action: [s3:GetObject, s3:PutObject, s3:DeleteObject]
                 Resource: !Sub "${BackupBucket.Arn}/*"
               - Sid: FixedAddress
                 Effect: Allow

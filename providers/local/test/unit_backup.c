@@ -24,24 +24,31 @@ static void cp(const char *a, const char *b) {
     if (o) fclose(o);
 }
 
-static void obj_path(char *out, size_t cap) { snprintf(out, cap, "%s/object", g_dir); }
+// One file per key (a key's '/' as '_').
+static void key_path(const char *key, char *out, size_t cap) {
+    snprintf(out, cap, "%s/obj_", g_dir);
+    size_t n = strlen(out);
+    for (size_t i = 0; key[i] && n + 1 < cap; i++) out[n++] = key[i] == '/' ? '_' : key[i];
+    out[n] = 0;
+}
+static void obj_path(char *out, size_t cap) { key_path("k", out, cap); }
 
 static int fake_put(void *ud, const char *key, const char *path) {
-    (void)ud; (void)key;
+    (void)ud;
     g_puts++;
     if (g_fail_put) return CB_E_IO;
-    char o[300];
-    obj_path(o, sizeof o);
+    char o[600];
+    key_path(key, o, sizeof o);
     cp(path, o);
     return CB_OK;
 }
 
 static int fake_get(void *ud, const char *key, const char *path) {
-    (void)ud; (void)key;
+    (void)ud;
     g_gets++;
     if (g_fail_get) return CB_E_IO;
-    char o[300];
-    obj_path(o, sizeof o);
+    char o[600];
+    key_path(key, o, sizeof o);
     if (g_empty_get || access(o, F_OK) != 0) return CB_E_NOT_FOUND;
     if (g_corrupt_get) {
         FILE *f = fopen(path, "wb");
@@ -106,25 +113,26 @@ static void only_a_change_sends_and_a_failed_upload_retries(void) {
     memset(&ctx, 0, sizeof ctx);
     ctx.cfg = &cfg;
     ctx.store = st;
-    cb_blob blob = { fake_put, fake_get, NULL };
+    cb_blob blob = { fake_put, fake_get, NULL, NULL };
     cb_backup *b = cb_backup_start(&ctx, &blob, "k", 0);
     T_CHECK(b != NULL);
-    T_EQ_INT(cb_backup_once(b), 0);   // nothing changed since the start
-    T_EQ_INT(g_puts, 0);
+    T_EQ_INT(cb_backup_once(b), 1);   // the first tick sends a copy whatever it finds
+    T_EQ_INT(cb_backup_once(b), 0);   // nothing changed since
+    T_EQ_INT(g_puts, 1);
     put_item(st, "a");
     g_fail_put = 1;
     T_CHECK(cb_backup_once(b) < 0);   // the upload fails: nothing is marked sent, the process is alive
     g_fail_put = 0;
     T_EQ_INT(cb_backup_once(b), 1);   // the next tick sends it
-    T_EQ_INT(g_puts, 2);
+    T_EQ_INT(g_puts, 3);
     T_EQ_INT(cb_backup_once(b), 0);   // and an unchanged store sends nothing more
-    T_EQ_INT(g_puts, 2);
+    T_EQ_INT(g_puts, 3);
     char o[300];
     obj_path(o, sizeof o);
     T_EQ_INT(count_rows(o, "SELECT count(*) FROM signin_fails WHERE email = 'a'"), 1);
     long ok, failed;
     cb_backup_counts(b, &ok, &failed);
-    T_EQ_INT((int)ok, 1);
+    T_EQ_INT((int)ok, 2);
     T_EQ_INT((int)failed, 1);
     cb_backup_stop(b);
     cb_store_close(st);
@@ -141,7 +149,7 @@ static void restore_puts_a_sound_backup_in_place_and_refuses_the_rest(void) {
     put_item(st, "kept");
     cb_store_close(st);
     T_EQ_INT(cb_backup_copy(src, o), CB_OK);
-    cb_blob blob = { fake_put, fake_get, NULL };
+    cb_blob blob = { fake_put, fake_get, NULL, NULL };
     // corrupt download: refused, nothing in place
     g_corrupt_get = 1;
     T_EQ_INT(cb_backup_restore(&blob, "k", db), CB_E_DB);

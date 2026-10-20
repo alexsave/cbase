@@ -369,8 +369,7 @@ static void api_query(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     cb_buf_init(&b);
     row_sink s = { cb_js_admin_query_begin(&b, is_sqlite(ctx) ? "sql" : "partiql", allow_write), 0, ADMIN_QUERY_ROWS, false };
     if (!s.s) { cb_buf_free(&b); free(stmt); cb_admin_no_memory(res); return; }
-    (void)cb_store_settle(ctx->store);
-    int rc = CB_STORE_CALL(ctx->store, admin_query, stmt, allow_write, put_row, &s);
+    int rc = cb_store_admin_query(ctx->store, stmt, allow_write, put_row, &s);
     // A hand edit may have touched a rating or a bot: both edge copies go (app/edge.h).
     if (allow_write) cb_edge_stale(CB_EDGE_ALL);
     // ... or a session or an account: the sessions held in memory are read again (auth.h).
