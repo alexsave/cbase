@@ -341,6 +341,7 @@ static void api_browse(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     cb_buf_init(&b);
     row_sink s = { cb_js_admin_browse_begin(&b, coll), 0, limit, false };
     if (!s.s) { cb_buf_free(&b); cb_admin_no_memory(res); return; }
+    (void)cb_store_settle(ctx->store);   // a write-behind layer's writes are in the file first (store.h)
     int rc = CB_STORE_CALL(ctx->store, admin_browse, coll, prefix, cursor[0] ? cursor : NULL, limit, put_row, &s, next,
                            sizeof next);
     int enc = cb_js_admin_browse_end(s.s, next);
@@ -368,6 +369,7 @@ static void api_query(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     cb_buf_init(&b);
     row_sink s = { cb_js_admin_query_begin(&b, is_sqlite(ctx) ? "sql" : "partiql", allow_write), 0, ADMIN_QUERY_ROWS, false };
     if (!s.s) { cb_buf_free(&b); free(stmt); cb_admin_no_memory(res); return; }
+    (void)cb_store_settle(ctx->store);
     int rc = CB_STORE_CALL(ctx->store, admin_query, stmt, allow_write, put_row, &s);
     // A hand edit may have touched a rating or a bot: both edge copies go (app/edge.h).
     if (allow_write) cb_edge_stale(CB_EDGE_ALL);
