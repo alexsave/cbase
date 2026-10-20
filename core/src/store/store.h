@@ -242,7 +242,17 @@ struct cb_store {
     const cb_store_ops *ops;
     void *impl;
     const cb_store_app *app;   // the product's (cb_store_init), NULL for none
+    // A product layer that holds acknowledged writes in front of the store (a product's
+    // move journal under `cbase serve`): its state, and how to make every write it
+    // acknowledged readable from the store's own file (cb_store_settle). NULL: none.
+    void *app_state;
+    int (*app_settle)(struct cb_store *s);
 };
+
+// Every write acknowledged so far is in the store's file: what a copy of the file
+// (a backup) and a reader of the file behind the product's back (the admin's SQL)
+// must call first. CB_OK when nothing holds writes in front of the store.
+int cb_store_settle(cb_store *s);
 
 // A backend's open: ops and impl, and the linked product's cb_store_app.
 void cb_store_init(cb_store *s, const cb_store_ops *ops, void *impl);

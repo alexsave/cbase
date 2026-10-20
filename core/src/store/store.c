@@ -22,6 +22,8 @@ void cb_store_init(cb_store *s, const cb_store_ops *ops, void *impl) {
     s->app = cb_main_app ? cb_main_app->store : NULL;
 }
 
+int cb_store_settle(cb_store *s) { return s && s->app_settle ? s->app_settle(s) : CB_OK; }
+
 // ---- busy: a throttle given up on (store.h CB_STORE_CALL) ----------------------
 
 static _Thread_local int  t_depth;

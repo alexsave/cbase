@@ -89,6 +89,12 @@ struct cb_app {
     const cb_admin_call *admin_calls;
     int                  n_admin_calls;
     int (*admin_count)(cb_ctx *ctx, int64_t now_ms);
+    // Under a provider that is the one process on its store (CB_PROV_ONE_PROCESS):
+    // called once the store is open and before anything is served (a product recovers
+    // a write-behind journal here), and once nothing runs any more, before the store
+    // closes. NULL: none.
+    int (*serve_open)(cb_ctx *ctx, char *err, size_t cap);
+    void (*serve_close)(cb_ctx *ctx);
 };
 
 // The app this binary serves: the product defines it, one per link.

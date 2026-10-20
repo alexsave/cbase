@@ -102,6 +102,14 @@ int cb_backup_restore(const cb_blob *blob, const char *key, const char *db_path)
 // ---- upload --------------------------------------------------------------------------------
 
 int cb_backup_once(cb_backup *b) {
+    // A move the journal acknowledged is in the file before the file is copied, so a
+    // backup holds every move acknowledged before it started (DESIGN.md "The move journal").
+    int src = cb_store_settle(b->ctx->store);
+    if (src != CB_OK) {
+        atomic_fetch_add(&b->failed, 1);
+        CB_ERROR(MOD, "backup skipped: the journal could not be settled (%s)", cb_strerror(src));
+        return src < 0 ? src : CB_E_IO;
+    }
     unsigned long seen = cb_store_local_changes(b->ctx->store);
     if (seen == b->synced) return 0;
     int64_t t0 = cb_mono_us();
@@ -128,7 +136,8 @@ static void backup_job(void *ud) {
 void cb_backup_tick(cb_backup *b) {
     bool expect = false;
     if (!atomic_compare_exchange_strong(&b->running, &expect, true)) return;   // one is still running
-    if (cb_store_local_changes(b->ctx->store) == b->synced) { atomic_store(&b->running, false); return; }
+    // (No early "unchanged" check here: moves the journal holds are not changes of the file yet;
+    // cb_backup_once settles them first and then compares.)
     if (!b->ctx->job_pool || cb_pool_submit(b->ctx->job_pool, backup_job, b) != CB_OK) atomic_store(&b->running, false);
 }
 

@@ -78,6 +78,9 @@ int cb_boot(cb_ctx *ctx, char *err, size_t cap) {
     char what[40];
     snprintf(what, sizeof what, "store %s", store);
     if ((rc = soft(what, rc, err, cap)) != CB_OK) return rc;
+    if ((prov->flags & CB_PROV_ONE_PROCESS) && ctx->app && ctx->app->serve_open &&
+        (rc = ctx->app->serve_open(ctx, err, cap)) != CB_OK)
+        return rc;
     if ((rc = soft("auth", cb_auth_new(ctx, &ctx->auth), err, cap)) != CB_OK) return rc;
     if (ctx->auth && (prov->flags & CB_PROV_ONE_PROCESS)) cb_auth_hold_sessions(ctx->auth);
     if ((rc = soft("realtime", prov->rt_open ? prov->rt_open(ctx, &ctx->rt) : CB_OK, err, cap)) != CB_OK) return rc;
@@ -99,6 +102,8 @@ void cb_unboot(cb_ctx *ctx) {
     ctx->rt = NULL;
     cb_auth_free(ctx->auth);
     ctx->auth = NULL;
+    if (ctx->store && ctx->prov && (ctx->prov->flags & CB_PROV_ONE_PROCESS) && ctx->app && ctx->app->serve_close)
+        ctx->app->serve_close(ctx);
     cb_store_close(ctx->store);
     ctx->store = NULL;
     release_instance();
