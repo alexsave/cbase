@@ -1,0 +1,27 @@
+#cols	group	name	param	k	n	min_ns	max_ns	mean_ns	std_ns	p50_ns	p99_ns	cyc	insn	brmiss	l1dmiss	llcmiss	cpu	pass
+stream	stream_copy	1MB_per_array_ns_per_elem_16B	131072	40	0.81	0.88	0.83	0.01	0.83	0.88	-1.000	-1.000	-1.0000	-1.0000	-1.0000	1	5
+# stream_copy 1MB best 19.69 GB/s
+stream	stream_scale	1MB_per_array_ns_per_elem_16B	131072	40	0.63	0.69	0.64	0.01	0.64	0.69	-1.000	-1.000	-1.0000	-1.0000	-1.0000	1	5
+# stream_scale 1MB best 25.60 GB/s
+stream	stream_add	1MB_per_array_ns_per_elem_24B	131072	40	0.80	2.08	0.86	0.20	0.83	2.08	-1.000	-1.000	-1.0000	-1.0000	-1.0000	1	5
+# stream_add 1MB best 30.14 GB/s
+stream	stream_triad	1MB_per_array_ns_per_elem_24B	131072	40	0.81	0.86	0.82	0.01	0.82	0.86	-1.000	-1.000	-1.0000	-1.0000	-1.0000	1	5
+# stream_triad 1MB best 29.50 GB/s
+stream	stream_copy	8MB_per_array_ns_per_elem_16B	1048576	40	0.83	0.85	0.83	0.01	0.83	0.85	-1.000	-1.000	-1.0000	-1.0000	-1.0000	1	5
+# stream_copy 8MB best 19.38 GB/s
+stream	stream_scale	8MB_per_array_ns_per_elem_16B	1048576	40	0.63	0.65	0.64	0.00	0.64	0.65	-1.000	-1.000	-1.0000	-1.0000	-1.0000	1	5
+# stream_scale 8MB best 25.22 GB/s
+stream	stream_add	8MB_per_array_ns_per_elem_24B	1048576	40	0.90	0.93	0.91	0.01	0.91	0.93	-1.000	-1.000	-1.0000	-1.0000	-1.0000	1	5
+# stream_add 8MB best 26.78 GB/s
+stream	stream_triad	8MB_per_array_ns_per_elem_24B	1048576	40	0.90	0.93	0.91	0.01	0.91	0.93	-1.000	-1.000	-1.0000	-1.0000	-1.0000	1	5
+# stream_triad 8MB best 26.67 GB/s
+stream	stream_copy	32MB_per_array_ns_per_elem_16B	4194304	12	0.83	0.84	0.83	0.00	0.83	0.84	-1.000	-1.000	-1.0000	-1.0000	-1.0000	1	5
+# stream_copy 32MB best 19.25 GB/s
+stream	stream_scale	32MB_per_array_ns_per_elem_16B	4194304	12	0.63	0.64	0.63	0.00	0.63	0.64	-1.000	-1.000	-1.0000	-1.0000	-1.0000	1	5
+# stream_scale 32MB best 25.49 GB/s
+stream	stream_add	32MB_per_array_ns_per_elem_24B	4194304	12	0.93	0.96	0.93	0.01	0.93	0.96	-1.000	-1.000	-1.0000	-1.0000	-1.0000	1	5
+# stream_add 32MB best 25.89 GB/s
+stream	stream_triad	32MB_per_array_ns_per_elem_24B	4194304	12	0.93	0.94	0.93	0.00	0.93	0.94	-1.000	-1.000	-1.0000	-1.0000	-1.0000	1	5
+# stream_triad 32MB best 25.79 GB/s
+# stream skip 64MB per array
+# stream skip 128MB per array

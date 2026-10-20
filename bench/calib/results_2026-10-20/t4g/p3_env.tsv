@@ -1,0 +1,36 @@
+#cols	group	name	param	k	n	min_ns	max_ns	mean_ns	std_ns	p50_ns	p99_ns	cyc	insn	brmiss	l1dmiss	llcmiss	cpu	pass
+# uname: Linux 6.18.54-121.166.amzn2023.aarch64 #2 SMP Tue Oct  6 23:12:04 UTC 2026 aarch64
+# ncpu: 2 pmu: 1 sqlite: 3.53.4 openssl: OpenSSL 3.5.9 29 Sep 2026
+# cntfrq_hz: 121875000
+# /proc/cpuinfo: processor	: 0
+# /proc/cpuinfo: BogoMIPS	: 243.75
+# /proc/cpuinfo: Features	: fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm lrcpc dcpop asimddp
+# /proc/cpuinfo: CPU implementer	: 0x41
+# /proc/cpuinfo: CPU architecture: 8
+# /proc/cpuinfo: CPU variant	: 0x3
+# /proc/cpuinfo: CPU part	: 0xd0c
+# /proc/cpuinfo: CPU revision	: 1
+# /proc/cpuinfo: 
+# /proc/cpuinfo: processor	: 1
+# /proc/cpuinfo: BogoMIPS	: 243.75
+# /proc/cpuinfo: Features	: fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm lrcpc dcpop asimddp
+# /proc/cpuinfo: CPU implementer	: 0x41
+# /proc/cpuinfo: CPU architecture: 8
+# /proc/cpuinfo: CPU variant	: 0x3
+# /proc/cpuinfo: CPU part	: 0xd0c
+# /proc/cpuinfo: CPU revision	: 1
+# /proc/cpuinfo: 
+# /proc/meminfo: MemTotal:         422188 kB
+# /proc/meminfo: MemFree:          189612 kB
+# /proc/meminfo: MemAvailable:     294748 kB
+# /sys/kernel/mm/transparent_hugepage/enabled: always madvise [never]
+# /sys/devices/system/clocksource/clocksource0/current_clocksource: arch_sys_counter
+# /proc/sys/kernel/perf_event_paranoid: 2
+# /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq: n/a
+# /sys/devices/system/cpu/cpu0/regs/identification/midr_el1: 0x00000000413fd0c1
+# /sys/devices/system/cpu/vulnerabilities/spectre_v2: Mitigation: CSV2, BHB
+# /sys/devices/system/cpu/vulnerabilities/spec_store_bypass: Mitigation: Speculative Store Bypass disabled via prctl
+# /proc/cmdline: BOOT_IMAGE=(hd0,gpt1)/boot/vmlinuz-6.18.54-121.166.amzn2023.aarch64 root=UUID=5d27868f-ee91-45c2-800f-b6123d65bf87 ro console=tty0 console=ttyS0,115200n8 nvme_core.io_timeout=4294967295 rd.emergency=poweroff rd.shell=0 selinux=1 security=selinux quiet numa_cma=1:64M
+# /sys/devices/system/cpu/cpuidle/current_driver: none
+# /sys/devices/system/cpu/cpu0/cpu_capacity: 1024
+# /sys/devices/system/cpu/cpu1/cpu_capacity: 1024

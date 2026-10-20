@@ -1,0 +1,194 @@
+== role c6g iid i-REDACTED
+Tue Oct 20 12:28:06 UTC 2026
+Linux i-REDACTED.ec2.internal 6.18.54-121.166.amzn2023.aarch64 #2 SMP Tue Oct  6 23:12:04 UTC 2026 aarch64 aarch64 aarch64 GNU/Linux
+Architecture:                            aarch64
+CPU op-mode(s):                          32-bit, 64-bit
+Byte Order:                              Little Endian
+CPU(s):                                  2
+On-line CPU(s) list:                     0,1
+Vendor ID:                               ARM
+BIOS Vendor ID:                          AWS
+Model name:                              Neoverse-N1
+BIOS Model name:                         AWS Graviton2
+Model:                                   1
+Thread(s) per core:                      1
+Core(s) per socket:                      2
+Socket(s):                               1
+Stepping:                                r3p1
+BogoMIPS:                                243.75
+Flags:                                   fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm lrcpc dcpop asimddp
+L1d cache:                               128 KiB (2 instances)
+L1i cache:                               128 KiB (2 instances)
+L2 cache:                                2 MiB (2 instances)
+L3 cache:                                32 MiB (1 instance)
+NUMA node(s):                            1
+NUMA node0 CPU(s):                       0,1
+Vulnerability Gather data sampling:      Not affected
+Vulnerability Ghostwrite:                Not affected
+Vulnerability Indirect target selection: Not affected
+Vulnerability Itlb multihit:             Not affected
+Vulnerability L1tf:                      Not affected
+Vulnerability Mds:                       Not affected
+Vulnerability Meltdown:                  Not affected
+Vulnerability Mmio stale data:           Not affected
+Vulnerability Old microcode:             Not affected
+Vulnerability Reg file data sampling:    Not affected
+Vulnerability Retbleed:                  Not affected
+Vulnerability Spec rstack overflow:      Not affected
+Vulnerability Spec store bypass:         Mitigation; Speculative Store Bypass disabled via prctl
+Vulnerability Spectre v1:                Mitigation; __user pointer sanitization
+Vulnerability Spectre v2:                Mitigation; CSV2, BHB
+Vulnerability Srbds:                     Not affected
+Vulnerability Tsa:                       Not affected
+Vulnerability Tsx async abort:           Not affected
+Vulnerability Vmscape:                   Not affected
+
+processor	: 0
+BogoMIPS	: 243.75
+Features	: fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm lrcpc dcpop asimddp
+CPU implementer	: 0x41
+CPU architecture: 8
+CPU variant	: 0x3
+CPU part	: 0xd0c
+CPU revision	: 1
+
+processor	: 1
+BogoMIPS	: 243.75
+Features	: fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm lrcpc dcpop asimddp
+CPU implementer	: 0x41
+CPU architecture: 8
+CPU variant	: 0x3
+CPU part	: 0xd0c
+CPU revision	: 1
+
+
+/sys/devices/system/cpu/cpu0/cache/index0 level=1 type=Data size=64K line=64 ways=4 sets=256 shared=0
+/sys/devices/system/cpu/cpu0/cache/index1 level=1 type=Instruction size=64K line=64 ways=4 sets=256 shared=0
+/sys/devices/system/cpu/cpu0/cache/index2 level=2 type=Unified size=1024K line=64 ways=8 sets=2048 shared=0
+/sys/devices/system/cpu/cpu0/cache/index3 level=3 type=Unified size=32768K line=64 ways=16 sets=32768 shared=0-1
+/sys/devices/system/cpu/vulnerabilities/gather_data_sampling:Not affected
+/sys/devices/system/cpu/vulnerabilities/ghostwrite:Not affected
+/sys/devices/system/cpu/vulnerabilities/indirect_target_selection:Not affected
+/sys/devices/system/cpu/vulnerabilities/itlb_multihit:Not affected
+/sys/devices/system/cpu/vulnerabilities/l1tf:Not affected
+/sys/devices/system/cpu/vulnerabilities/mds:Not affected
+/sys/devices/system/cpu/vulnerabilities/meltdown:Not affected
+/sys/devices/system/cpu/vulnerabilities/mmio_stale_data:Not affected
+/sys/devices/system/cpu/vulnerabilities/old_microcode:Not affected
+/sys/devices/system/cpu/vulnerabilities/reg_file_data_sampling:Not affected
+/sys/devices/system/cpu/vulnerabilities/retbleed:Not affected
+/sys/devices/system/cpu/vulnerabilities/spec_rstack_overflow:Not affected
+/sys/devices/system/cpu/vulnerabilities/spec_store_bypass:Mitigation: Speculative Store Bypass disabled via prctl
+/sys/devices/system/cpu/vulnerabilities/spectre_v1:Mitigation: __user pointer sanitization
+/sys/devices/system/cpu/vulnerabilities/spectre_v2:Mitigation: CSV2, BHB
+/sys/devices/system/cpu/vulnerabilities/srbds:Not affected
+/sys/devices/system/cpu/vulnerabilities/tsa:Not affected
+/sys/devices/system/cpu/vulnerabilities/tsx_async_abort:Not affected
+/sys/devices/system/cpu/vulnerabilities/vmscape:Not affected
+
+0x00000000413fd0c1
+               total        used        free      shared  buff/cache   available
+Mem:            3805         208        3456           0         140        3458
+Swap:              0           0           0
+MemTotal:        3897240 kB
+MemFree:         3539528 kB
+MemAvailable:    3541492 kB
+Buffers:            2168 kB
+Cached:           129360 kB
+SwapCached:            0 kB
+Active:            40360 kB
+Inactive:         162316 kB
+Active(anon):        296 kB
+Inactive(anon):    71216 kB
+Active(file):      40064 kB
+Inactive(file):    91100 kB
+Unevictable:           0 kB
+Mlocked:               0 kB
+SwapTotal:             0 kB
+SwapFree:              0 kB
+Zswap:                 0 kB
+Zswapped:              0 kB
+Dirty:             13180 kB
+Writeback:             0 kB
+AnonPages:         71152 kB
+Mapped:            43092 kB
+Shmem:               404 kB
+KReclaimable:      12796 kB
+Slab:              43916 kB
+SReclaimable:      12796 kB
+SUnreclaim:        31120 kB
+KernelStack:        2456 kB
+PageTables:         5236 kB
+SecPageTables:         0 kB
+NFS_Unstable:          0 kB
+Bounce:                0 kB
+WritebackTmp:          0 kB
+CommitLimit:     1948620 kB
+Committed_AS:     246704 kB
+VmallocTotal:   135288315904 kB
+VmallocUsed:        9836 kB
+VmallocChunk:          0 kB
+Percpu:              680 kB
+HardwareCorrupted:     0 kB
+AnonHugePages:         0 kB
+ShmemHugePages:        0 kB
+ShmemPmdMapped:        0 kB
+FileHugePages:         0 kB
+FilePmdMapped:         0 kB
+CmaTotal:          65536 kB
+CmaFree:           63920 kB
+Balloon:               0 kB
+HugePages_Total:       0
+HugePages_Free:        0
+HugePages_Rsvd:        0
+HugePages_Surp:        0
+Hugepagesize:       2048 kB
+Hugetlb:               0 kB
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/nvme0n1p1  8.0G  1.7G  6.3G  21% /
+NAME          SIZE MODEL
+nvme0n1         8G Amazon Elastic Block Store
+├─nvme0n1p1     8G 
+└─nvme0n1p128  10M 
+BOOT_IMAGE=(hd0,gpt1)/boot/vmlinuz-6.18.54-121.166.amzn2023.aarch64 root=UUID=5d27868f-ee91-45c2-800f-b6123d65bf87 ro console=tty0 console=ttyS0,115200n8 nvme_core.io_timeout=4294967295 rd.emergency=poweroff rd.shell=0 selinux=1 security=selinux quiet numa_cma=1:64M
+always [madvise] never
+arch_sys_counter
+available_governors
+current_driver
+current_governor
+current_governor_ro
+none
+1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 state UNKNOWN qlen 1000
+    inet6 ::1/128 scope host noprefixroute 
+       valid_lft forever preferred_lft forever
+2: ens5: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 9001 state UP qlen 1000
+    inet6 IPV6-REDACTED/128 scope global dynamic noprefixroute 
+       valid_lft 441sec preferred_lft 131sec
+    inet6 LINKLOCAL-REDACTED/64 scope link proto kernel_ll 
+       valid_lft forever preferred_lft forever
+  UNIT                       LOAD   ACTIVE SUB     DESCRIPTION
+  acpid.service              loaded active running ACPI Event Daemon
+  amazon-ssm-agent.service   loaded active running amazon-ssm-agent
+  atd.service                loaded active running Deferred execution scheduler
+  auditd.service             loaded active running Security Auditing Service
+  cal-runner.service         loaded active running /bin/bash /var/tmp/cal/runner.sh BUCKET-REDACTED c6g
+  chronyd.service            loaded active running NTP client/server
+  dbus-broker.service        loaded active running D-Bus System Message Bus
+  getty@tty1.service         loaded active running Getty on tty1
+  gssproxy.service           loaded active running GSSAPI Proxy Daemon
+  irqbalance.service         loaded active running irqbalance daemon
+  libstoragemgmt.service     loaded active running libstoragemgmt plug-in server daemon
+  serial-getty@ttyS0.service loaded active running Serial Getty on ttyS0
+  sshd.service               loaded active running OpenSSH server daemon
+  systemd-homed.service      loaded active running Home Area Manager
+  systemd-hostnamed.service  loaded active running Hostname Service
+  systemd-journald.service   loaded active running Journal Service
+  systemd-logind.service     loaded active running User Login Management
+  systemd-networkd.service   loaded active running Network Configuration
+  systemd-resolved.service   loaded active running Network Name Resolution
+  systemd-udevd.service      loaded active running Rule-based Manager for Device Events and Files
+
+LOAD   = Reflects whether the unit definition was properly loaded.
+ACTIVE = The high-level unit activation state, i.e. generalization of SUB.
+SUB    = The low-level unit activation state, values depend on unit type.
+20 loaded units listed.
