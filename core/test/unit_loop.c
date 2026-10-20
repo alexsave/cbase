@@ -290,9 +290,16 @@ static void posts_sharing_a_wakeup_are_never_lost(void) {
 }
 
 // THE ALARM (net/poller.h): fifty wakes by posts while one far timer is pending set the poller's
-// kernel timer once, not once a wait, and the timer still runs when due.
+// kernel timer once, not once a wait; then a near timer, armed by the fiftieth wake, moves the
+// alarm and runs when due. Nothing here races a clock: the pings end when the pinger is done.
 static atomic_int g_pinged;
-static void ping_cb(cb_loop *l, void *ud) { (void)l; (void)ud; atomic_fetch_add(&g_pinged, 1); }
+static int64_t g_near_at;
+static void ping_cb(cb_loop *l, void *ud) {
+    (void)ud;
+    if (atomic_fetch_add(&g_pinged, 1) + 1 < 50) return;
+    g_near_at = cb_mono_ms();
+    cb_loop_timer(l, 50, stop_cb, NULL);
+}
 static void *pinger(void *ud) {
     for (int i = 0; i < 50; i++) {
         cb_loop_post((cb_loop *)ud, ping_cb, NULL);
@@ -303,20 +310,19 @@ static void *pinger(void *ud) {
 static void a_pending_timer_is_armed_once(void) {
     cb_loop *l = cb_loop_new();
     atomic_store(&g_pinged, 0);
-    g_posted = 0;
     const uint64_t a0 = cb_loop_alarms(l);
-    const int64_t t0 = cb_mono_ms();
-    cb_loop_timer(l, 400, stop_cb, NULL);
+    cb_loop_timer(l, 600000, stop_cb, NULL);   // far: pending through every wake below, never due
     pthread_t th;
     pthread_create(&th, NULL, pinger, l);
     cb_loop_run(l);
     pthread_join(th, NULL);
-    const int64_t took = cb_mono_ms() - t0;
+    const int64_t took = cb_mono_ms() - g_near_at;
     T_EQ_INT(atomic_load(&g_pinged), 50);
-    T_CHECK(took >= 390 && took < 3000);
-    // io_uring takes the deadline as each enter's timeout and sets no alarm.
-    T_CHECK(cb_loop_alarms(l) - a0 <= 2);
-    if (strcmp(cb_loop_backend(l), "io_uring") != 0) T_CHECK(cb_loop_alarms(l) - a0 >= 1);
+    T_CHECK(took >= 45 && took < 5000);
+    // The far deadline set once, the near one once: two, however many waits. io_uring takes the
+    // deadline as each enter's timeout and sets no alarm.
+    if (strcmp(cb_loop_backend(l), "io_uring") == 0) T_EQ_INT((int)(cb_loop_alarms(l) - a0), 0);
+    else T_EQ_INT((int)(cb_loop_alarms(l) - a0), 2);
     cb_loop_free(l);
 }
 
