@@ -32,6 +32,11 @@ static pthread_t g_thread;
 static atomic_int g_flood_rc;
 
 static void h_echo(cb_ctx *c, const cb_http_req *q, cb_http_res *s) { cb_res_send(s, 200, "text/plain", q->body, q->body_len); }
+static void h_big(cb_ctx *c, const cb_http_req *q, cb_http_res *s) {
+    static char big[4 << 20];
+    memset(big, 'z', sizeof big);
+    cb_res_send(s, 200, "application/octet-stream", big, sizeof big);
+}
 static atomic_int g_slow_done;
 static void h_slow(cb_ctx *c, const cb_http_req *q, cb_http_res *s) {
     usleep(250000);
@@ -68,6 +73,7 @@ static void start(void) {
     g_ctx.router = cb_router_new();
     cb_router_add(g_ctx.router, "POST", "/echo", CB_ROUTE_POOL, h_echo);
     cb_router_add(g_ctx.router, "POST", "/slow", CB_ROUTE_POOL, h_slow);
+    cb_router_add(g_ctx.router, "GET", "/big", CB_ROUTE_POOL, h_big);
     cb_router_add(g_ctx.router, "GET", "/ws", CB_ROUTE_LOOP, h_ws);
     cb_server_opts o;
     cb_server_opts_default(&o);
@@ -172,6 +178,28 @@ static void a_client_gone_mid_request(void) {
         while (atomic_load(&g_ctx.stats.http_conns) != open0 && cb_mono_ms() - t0 < 250) usleep(2000);
         T_EQ_INT((int)atomic_load(&g_ctx.stats.http_conns), (int)open0);
     }
+    tc_response r;
+    T_EQ_INT(tc_http(g_port, "POST", "/echo", NULL, "hi", 2, &r), 0);
+    T_EQ_INT(r.status, 200);
+    tc_response_free(&r);
+}
+
+// A client that resets its connection while a big answer is still being written: the next write
+// fails, the connection is closed and freed at once, and the server goes on serving.
+static void a_reset_mid_answer(void) {
+    const long open0 = atomic_load(&g_ctx.stats.http_conns);
+    int fd = tc_connect(g_port);
+    const char *rq = "GET /big HTTP/1.1\r\nHost: x\r\n\r\n";
+    T_CHECK(write(fd, rq, strlen(rq)) == (ssize_t)strlen(rq));
+    char b[4096];
+    struct pollfd p = { fd, POLLIN, 0 };
+    T_CHECK(poll(&p, 1, 3000) == 1 && recv(fd, b, sizeof b, 0) > 0);   // it is being written
+    struct linger lg = { 1, 0 };
+    setsockopt(fd, SOL_SOCKET, SO_LINGER, &lg, sizeof lg);
+    close(fd);   // a reset, not a close
+    int64_t t0 = cb_mono_ms();
+    while (atomic_load(&g_ctx.stats.http_conns) != open0 && cb_mono_ms() - t0 < 2000) usleep(2000);
+    T_EQ_INT((int)atomic_load(&g_ctx.stats.http_conns), (int)open0);
     tc_response r;
     T_EQ_INT(tc_http(g_port, "POST", "/echo", NULL, "hi", 2, &r), 0);
     T_EQ_INT(r.status, 200);
@@ -346,6 +374,7 @@ int main(void) {
     T_RUN(http_defences);
     T_RUN(a_head_past_every_cap);
     T_RUN(a_client_gone_mid_request);
+    T_RUN(a_reset_mid_answer);
     T_RUN(a_silent_websocket_is_pinged_then_closed);
     T_RUN(one_connection_too_many);
     T_RUN(websocket_rules);

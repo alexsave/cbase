@@ -147,6 +147,49 @@ static void batched_sends_report_what_send_would(void) {
     cb_loop_use_uring(false);
 }
 
+// A send to a peer that is gone answers -EPIPE (as send(2) with MSG_NOSIGNAL); more sends in one pass
+// than the submission queue holds are refused past it (cb_loop_send answers 0: the caller sends
+// another way).
+static int g_queued, g_refused;
+static sendlog g_gone;
+static void queue_flood(cb_loop *l, void *ud) {
+    int *fd = ud;
+    static const char x = 'x';
+    for (int i = 0; i < 5000; i++) {
+        if (cb_loop_send(l, *fd, &x, 1, NULL, NULL)) g_queued++;
+        else g_refused++;
+    }
+    T_CHECK(cb_loop_send(l, g_gone.fd, "late", 4, logged, &g_gone) == 0);   // still full
+}
+static void send_to_gone(cb_loop *l, void *ud) {
+    T_CHECK(cb_loop_send(l, g_gone.fd, "gone", 4, logged, &g_gone) != 0);
+}
+
+static void a_gone_peer_and_a_full_queue(void) {
+    if (!g_uring) return;
+    cb_loop_use_uring(true);
+    cb_loop *l = cb_loop_new();
+    int a[2], b[2];
+    T_EQ_INT(socketpair(AF_UNIX, SOCK_STREAM, 0, a), 0);
+    T_EQ_INT(socketpair(AF_UNIX, SOCK_STREAM, 0, b), 0);
+    fcntl(a[0], F_SETFL, O_NONBLOCK);
+    fcntl(b[0], F_SETFL, O_NONBLOCK);
+    close(b[1]);   // b's peer is gone
+    memset(&g_gone, 0, sizeof g_gone);
+    g_gone.fd = b[0];
+    g_queued = g_refused = 0;
+    cb_loop_timer(l, 0, send_to_gone, NULL);
+    cb_loop_timer(l, 30, queue_flood, &a[0]);
+    cb_loop_timer(l, 80, giveup, NULL);
+    cb_loop_run(l);
+    T_EQ_INT(g_gone.n, 1);
+    T_EQ_INT((int)g_gone.res[0], -EPIPE);
+    T_CHECK(g_queued > 0 && g_queued < 5000 && g_refused > 0);
+    close(a[0]); close(a[1]); close(b[0]);
+    cb_loop_free(l);
+    cb_loop_use_uring(false);
+}
+
 // ---- more watches than the ring holds ----------------------------------------------------------
 
 // 4200 readable fds armed in one wait: more polls than the submission queue's 4096 entries, so the
@@ -191,6 +234,7 @@ int main(void) {
     T_RUN(backend_is_said);
     T_RUN(readiness_is_level_triggered);
     T_RUN(batched_sends_report_what_send_would);
+    T_RUN(a_gone_peer_and_a_full_queue);
     T_RUN(more_watches_than_the_ring_holds);
     return T_DONE();
 }
