@@ -105,10 +105,12 @@ struct cb_server {
     uint8_t *spare[SPARE_KEEP];
     size_t   spare_cap[SPARE_KEEP];
     uint64_t wake_seq;           // bumped by every cb_server_wake: a handler that read before it must not park
+    _Atomic int64_t sends;       // send() calls made (cb_server_sends)
 };
 
 static void conn_close(conn *c);
 static void conn_try_parse(conn *c);
+static void mark_dirty(conn *c);
 
 static void buf_give(cb_server *s, cb_buf *b) {
     if (b->p && !b->oom && b->cap <= SPARE_MAX_CAP && s->n_spare < SPARE_KEEP) {
@@ -176,6 +178,7 @@ static bool flush(conn *c) {
                          0
 #endif
         );
+        atomic_fetch_add_explicit(&c->srv->sends, 1, memory_order_relaxed);
         if (w < 0) {
             if (errno == EINTR) continue;
             if (errno == EAGAIN || errno == EWOULDBLOCK) break;
@@ -274,7 +277,14 @@ static void finish(conn *c) {
     c->started = c->in.len ? cb_loop_now(loop_of(c)) : 0;
     c->state = C_HTTP;
     c->last_active = cb_loop_now(loop_of(c));
-    if (flush(c) && c->state == C_HTTP && !c->close_after && !c->upgrade_after && c->in.len) conn_try_parse(c);
+    // The answer goes out at the end of this loop pass (flush_dirty), with every push the pass
+    // queued for the same socket: one send. It never leaves before the handler returned, so a
+    // move's answer follows its journal record (written inside the handler). A close or an
+    // upgrade changes the connection once `out` is written: those flush now.
+    if (c->close_after || c->upgrade_after) { flush(c); return; }
+    mark_dirty(c);
+    want(c);   // reads again (a pooled request had paused them)
+    if (c->in.len) conn_try_parse(c);   // a pipelined next request
 }
 
 
@@ -365,6 +375,8 @@ static bool inline_ok(cb_server *s, const cb_http_req *req) {
     if (!cb_pool_idle(ctx->req_pool) || cb_loop_ready_left(ctx->loop) != 0) return false;
     return cb_handle_inline_ok(ctx, req);
 }
+
+int64_t cb_server_sends(const cb_server *s) { return atomic_load_explicit(&((cb_server *)s)->sends, memory_order_relaxed); }
 
 void cb_server_inline_stats(const cb_server *s, int64_t *ran, int64_t *tripped) {
     if (ran) *ran = s->inline_ran;
@@ -457,8 +469,6 @@ static int queue_frame(conn *c, int opcode, const void *data, size_t len) {
     cb_buf_append(&c->out, data, len);
     return c->out.oom ? CB_E_NOMEM : CB_OK;
 }
-
-static void mark_dirty(conn *c);
 
 int cb_ws_send(cb_ws *c, int opcode, const void *data, size_t len) {
     if (c->state != C_WS || c->closing || c->dead) return CB_E_STATE;

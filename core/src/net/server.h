@@ -50,6 +50,8 @@ void cb_server_free(cb_server *s);
 // Inline dispatch counters (loop thread, or after it has stopped): requests
 // run on the loop thread, and times the budget valve tripped.
 void cb_server_inline_stats(const cb_server *s, int64_t *ran, int64_t *tripped);
+// ANY THREAD: send() calls made so far (a socket's answer and pushes of one pass share one).
+int64_t cb_server_sends(const cb_server *s);
 
 // Calls fn for every open WebSocket. fn may send, and may close the one it is given.
 // Loop thread: wakes every request parked under `key` (http.h park_ms): each runs its handler again.

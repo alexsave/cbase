@@ -166,6 +166,37 @@ static void valve(void) {
     T_CHECK(on_loop());
 }
 
+// Two requests in one write, both inline: the first answer waits for the end of the loop pass
+// (net/server.c finish), the pipelined second runs behind it, and both leave in ONE send, in order.
+static void pipelined_answers_share_one_send(void) {
+    int fd = tc_connect(g_port);
+    usleep(20000);
+    const char *two = "POST /fx HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\n\r\nx"
+                      "POST /fy HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\n\r\ny";
+    int64_t s0 = cb_server_sends(g_ctx.server), ran0, ran1, tripped;
+    cb_server_inline_stats(g_ctx.server, &ran0, &tripped);
+    T_CHECK(write(fd, two, strlen(two)) == (ssize_t)strlen(two));
+    char buf[1024];
+    size_t got = 0;
+    int answers = 0;
+    while (answers < 2) {
+        struct pollfd p = { fd, POLLIN, 0 };
+        if (poll(&p, 1, 3000) != 1) break;
+        ssize_t r = recv(fd, buf + got, sizeof buf - 1 - got, 0);
+        if (r <= 0) break;
+        got += (size_t)r;
+        buf[got] = 0;
+        answers = 0;
+        for (const char *q = buf; (q = strstr(q, "HTTP/1.1 200")) != NULL; q++) answers++;
+    }
+    T_EQ_INT(answers, 2);
+    cb_server_inline_stats(g_ctx.server, &ran1, &tripped);
+    T_EQ_INT((int)(ran1 - ran0), 2);
+    T_CHECK(pthread_equal(g_tx, g_loop_thread) && pthread_equal(g_ty, g_loop_thread));
+    T_EQ_INT((int)(cb_server_sends(g_ctx.server) - s0), 1);
+    close(fd);
+}
+
 static void drain_post(cb_loop *l, void *ud) { cb_server_drain(g_ctx.server, 2000); }
 
 int main(void) {
@@ -173,6 +204,7 @@ int main(void) {
     T_RUN(inline_dispatch);
     T_RUN(last_ready);
     T_RUN(valve);
+    T_RUN(pipelined_answers_share_one_send);
     cb_loop_post(g_ctx.loop, drain_post, NULL);
     pthread_join(g_thread, NULL);
     cb_pool_free(g_ctx.req_pool);
