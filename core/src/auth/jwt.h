@@ -29,4 +29,9 @@ int cb_jwt_mint(const char *secret, const cb_jwt_claims *c, char *out, size_t ca
 // token's, which a caller must not answer as a bad token (that signs a user out).
 int cb_jwt_verify(const char *secret, const char *token, int64_t now_s, cb_jwt_claims *out);
 
+// The calling thread's verified-token cache (jwt.c): freed (a leak-counting test), and the HMACs
+// this thread's verifications computed (a test of the cache's hits).
+void     cb_jwt_vcache_drain(void);
+uint64_t cb_jwt_macs(void);
+
 #endif

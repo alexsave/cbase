@@ -92,6 +92,32 @@ static void repeat_verify_matches_fresh(void) {
     T_EQ_INT(cb_jwt_verify(SECRET, tok, NOW, &b), CB_OK);
 }
 
+// Every client a busy worker serves stays in its cache: 200 distinct tokens verified twice
+// compute the HMAC about once each (the old 32 direct-mapped entries missed nearly every one).
+static void many_tokens_stay_cached(void) {
+    static char toks[200][CB_JWT_MAX];
+    cb_jwt_claims c = sample(), got;
+    for (int i = 0; i < 200; i++) {
+        snprintf(c.username, sizeof c.username, "user-%03d", i);
+        T_CHECK(cb_jwt_mint(SECRET, &c, toks[i], sizeof toks[i]) > 0);
+    }
+    const uint64_t m0 = cb_jwt_macs();
+    for (int i = 0; i < 200; i++) T_EQ_INT(cb_jwt_verify(SECRET, toks[i], NOW, &got), CB_OK);
+    const uint64_t m1 = cb_jwt_macs();
+    for (int i = 0; i < 200; i++) {
+        T_EQ_INT(cb_jwt_verify(SECRET, toks[i], NOW, &got), CB_OK);
+        snprintf(c.username, sizeof c.username, "user-%03d", i);
+        T_EQ_STR(got.username, c.username);
+    }
+    const uint64_t m2 = cb_jwt_macs();
+    T_EQ_INT((int)(m1 - m0), 200);
+    T_CHECK(m2 - m1 <= 20);
+    // A hit still checks the clock, and another secret still finds nothing.
+    T_EQ_INT(cb_jwt_verify(SECRET, toks[7], NOW + 3600 + 31, &got), CB_E_AUTH);
+    T_EQ_INT(cb_jwt_verify("another secret", toks[7], NOW, &got), CB_E_AUTH);
+    cb_jwt_vcache_drain();
+}
+
 static void expiry_and_skew(void) {
     cb_jwt_claims c = sample(), got;
     char tok[CB_JWT_MAX];
@@ -175,6 +201,7 @@ static void refusals(void) {
 int main(void) {
     T_RUN(round_trip);
     T_RUN(repeat_verify_matches_fresh);
+    T_RUN(many_tokens_stay_cached);
     T_RUN(expiry_and_skew);
     T_RUN(refusals);
     return T_DONE();
