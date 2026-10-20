@@ -703,6 +703,11 @@ static void the_family_rule(void) {
     T_CHECK(cb_rt_family_user(&views) && cb_rt_family_user(&seat));
     T_CHECK(!cb_rt_family_user(&watch));
     T_CHECK(!cb_rt_family_user(NULL));
+    // A pattern shorter than the user prefix is read only to its end (ASan: a memcmp of the
+    // prefix's length read past "s/{doc}" in pushes.c).
+    static const char tiny_pattern[] = "s/x";
+    static const cb_topic_family tiny = { "tiny", tiny_pattern };
+    T_CHECK(!cb_rt_family_user(&tiny));
 }
 
 int main(void) {

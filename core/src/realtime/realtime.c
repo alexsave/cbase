@@ -88,7 +88,8 @@ int cb_rt_topic(const cb_rt_to *to, char *out, size_t cap) {
 static const char FAMILY_USER[] = CB_MQTT_USER_PREFIX "{user}/";
 
 bool cb_rt_family_user(const cb_topic_family *f) {
-    return f && f->pattern && memcmp(f->pattern, FAMILY_USER, sizeof FAMILY_USER - 1) == 0;
+    // strncmp, not memcmp: a pattern shorter than the prefix ends at its NUL.
+    return f && f->pattern && strncmp(f->pattern, FAMILY_USER, sizeof FAMILY_USER - 1) == 0;
 }
 
 int cb_rt_families_check(const cb_topic_family *const *f, int n, char *err, size_t cap) {
