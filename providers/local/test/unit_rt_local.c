@@ -86,6 +86,7 @@ static void start(void) {
     T_EQ_INT(cb_router_add(g_ctx.router, "POST", "/t/act", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_act), CB_OK);
     T_EQ_INT(cb_router_add(g_ctx.router, "POST", "/t/wait", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_would_wait), CB_OK);
     T_EQ_INT(cb_router_add(g_ctx.router, "GET", "/t/order", CB_ROUTE_LOOP, h_order), CB_OK);
+    T_EQ_INT(cb_router_add(g_ctx.router, "POST", "/v1/auth/t", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_act), CB_OK);
     cb_server_opts o;
     cb_server_opts_default(&o);
     g_ctx.server = cb_server_new(&g_ctx, &o);
@@ -341,6 +342,11 @@ static void a_req_that_would_wait_runs_again_on_the_pool(void) {
     T_EQ_INT(atomic_load(&g_wait_runs), 2);
     T_CHECK(!pthread_equal(g_act_thr, g_loop_thr));
     T_EQ_INT(fr_recv(a, 200, &m), 0);   // and nothing else came
+    // A route under /v1/auth/ is refused over the socket (sessions are made and ended over HTTP),
+    // inline flag or not: its handler never runs.
+    g_act_thr = pthread_self();
+    T_EQ_INT(req(a, 22, SF_METH_POST, "/v1/auth/t", "x", &m, &f), 403);
+    T_CHECK(pthread_equal(g_act_thr, pthread_self()));   // its handler never ran
     close(a);
     cb_buf_free(&m);
 }
@@ -591,6 +597,11 @@ static void drain_post(cb_loop *l, void *ud) { cb_server_drain(g_ctx.server, 200
 static void stop(void) {
     T_EQ_INT(cb_loop_post(g_ctx.loop, drain_post, NULL), CB_OK);
     pthread_join(g_thread, NULL);
+    // A push from another thread once the loop has stopped: nothing will deliver it, and it says so
+    // (counted a failure); the copy it queued is freed with the hub (local_free).
+    cb_rt_failures_take();
+    publish_view(99);
+    T_EQ_INT(cb_rt_failures_take(), 1);
     cb_pool_free(g_ctx.req_pool);
     cb_server_free(g_ctx.server);
     cb_rt_free(g_ctx.rt);

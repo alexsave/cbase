@@ -534,8 +534,7 @@ static void do_sub(local *L, lconn *c, const sf_frame *f) {
 static bool req_inline(local *L, const lconn *c, const job *j, const sf_frame *f) {
     if (f->kind != SF_REQ || !c->open || !L->ctx->server) return false;
     if (j->gen != atomic_load(&L->end_gen)) return false;
-    if (!j->route || !(j->route->flags & CB_ROUTE_INLINE) || (f->path_len >= 9 && memcmp(f->path, "/v1/auth/", 9) == 0))
-        return false;
+    if (!j->route || !(j->route->flags & CB_ROUTE_INLINE)) return false;   // (a /v1/auth/ path: run_req refuses it, no handler runs)
     return cb_server_inline_ok(L->ctx->server);
 }
 

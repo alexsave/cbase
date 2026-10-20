@@ -32,6 +32,12 @@ static pthread_t g_thread;
 static atomic_int g_flood_rc;
 
 static void h_echo(cb_ctx *c, const cb_http_req *q, cb_http_res *s) { cb_res_send(s, 200, "text/plain", q->body, q->body_len); }
+static atomic_int g_slow_done;
+static void h_slow(cb_ctx *c, const cb_http_req *q, cb_http_res *s) {
+    usleep(250000);
+    cb_res_send(s, 200, "text/plain", "slow", 4);
+    atomic_fetch_add(&g_slow_done, 1);
+}
 
 static void ws_msg(cb_ws *ws, int op, const uint8_t *d, size_t n, void *ud) {
     if (n == 5 && memcmp(d, "flood", 5) == 0) {
@@ -61,6 +67,7 @@ static void start(void) {
     g_ctx.req_pool = cb_pool_new(2, "tedge");
     g_ctx.router = cb_router_new();
     cb_router_add(g_ctx.router, "POST", "/echo", CB_ROUTE_POOL, h_echo);
+    cb_router_add(g_ctx.router, "POST", "/slow", CB_ROUTE_POOL, h_slow);
     cb_router_add(g_ctx.router, "GET", "/ws", CB_ROUTE_LOOP, h_ws);
     cb_server_opts o;
     cb_server_opts_default(&o);
@@ -68,6 +75,7 @@ static void start(void) {
     o.idle_ms = 300;
     o.head_ms = 300;
     o.ws_idle_ms = 2500;
+    o.ws_ping_ms = 1500;
     o.max_conns = 6;
     g_ctx.server = cb_server_new(&g_ctx, &o);
     T_EQ_INT(cb_server_listen(g_ctx.server, "127.0.0.1", 0, &g_port), CB_OK);
@@ -124,6 +132,63 @@ static void http_defences(void) {
     T_EQ_INT(in.len, 0);
     close(fd);
     cb_buf_free(&in);
+}
+
+static int close_code(int fd);
+
+// A head that never ends, past the head's cap and the body's: refused before it is parsed (413),
+// or by the parser once the head alone is too long (431), and closed either way.
+static void a_head_past_every_cap(void) {
+    static char big[20000];
+    memset(big, 'a', sizeof big);
+    int fd = tc_connect(g_port);
+    T_CHECK(write(fd, big, sizeof big) == (ssize_t)sizeof big);
+    cb_buf in;
+    cb_buf_init(&in);
+    bool closed;
+    read_until_closed(fd, &in, 3000, &closed);
+    T_CHECK(cb_starts_with(cb_buf_cstr(&in), "HTTP/1.1 413 ") || cb_starts_with(cb_buf_cstr(&in), "HTTP/1.1 431 "));
+    T_CHECK(closed);
+    close(fd);
+    cb_buf_free(&in);
+}
+
+// A client that leaves while its request runs on the pool: the connection is freed when the handler
+// is done (nothing is written to it), and the server goes on serving. More times than the cap on
+// connections (6): one never freed would leave no room for the next.
+static void a_client_gone_mid_request(void) {
+    for (int k = 0; k < 7; k++) {
+        atomic_store(&g_slow_done, 0);
+        const long open0 = atomic_load(&g_ctx.stats.http_conns);
+        int fd = tc_connect(g_port);
+        const char *rq = "POST /slow HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\n\r\nx";
+        T_CHECK(write(fd, rq, strlen(rq)) == (ssize_t)strlen(rq));
+        usleep(50000);   // on the pool now
+        close(fd);
+        for (int i = 0; i < 300 && !atomic_load(&g_slow_done); i++) usleep(10000);
+        T_EQ_INT(atomic_load(&g_slow_done), 1);
+        // Freed at once, not left to the idle sweep (idle_ms 300, every second).
+        int64_t t0 = cb_mono_ms();
+        while (atomic_load(&g_ctx.stats.http_conns) != open0 && cb_mono_ms() - t0 < 150) usleep(2000);
+        T_EQ_INT((int)atomic_load(&g_ctx.stats.http_conns), (int)open0);
+    }
+    tc_response r;
+    T_EQ_INT(tc_http(g_port, "POST", "/echo", NULL, "hi", 2, &r), 0);
+    T_EQ_INT(r.status, 200);
+    tc_response_free(&r);
+}
+
+// A WebSocket that says nothing is sent a PING once ws_ping_ms has gone (a browser answers one by
+// itself), and closed (1001) once ws_idle_ms has: a PING it was sent is not news from it.
+static void a_silent_websocket_is_pinged_then_closed(void) {
+    int fd = tc_ws_open(g_port, "/ws", NULL);
+    T_CHECK(fd >= 0);
+    cb_buf m;
+    cb_buf_init(&m);
+    T_EQ_INT(tc_ws_recv(fd, 3000, &m), CB_WS_OP_PING);
+    T_EQ_INT(close_code(fd), 1001);
+    cb_buf_free(&m);
+    close(fd);
 }
 
 static void one_connection_too_many(void) {
@@ -235,13 +300,40 @@ static void websocket_rules(void) {
 
 static void drain_post(cb_loop *l, void *ud) { cb_server_drain(g_ctx.server, 2000); }
 
-// A drain answers what is open, closes every WebSocket with 1001 and stops.
+// A drain answers what is open, closes every WebSocket with 1001 and stops: an idle keep-alive
+// connection is closed with nothing sent, and a request on the pool is answered (and its connection
+// closed) before the loop stops.
 static void drain_closes_sockets(void) {
     int fd = tc_ws_open(g_port, "/ws", NULL);
     T_CHECK(fd >= 0);
+    int kfd = tc_connect(g_port);
+    tc_response r;
+    T_EQ_INT(tc_request(kfd, "POST", "/echo", NULL, "k", 1, 3000, &r), 0);   // answered, kept alive
+    T_EQ_INT(r.status, 200);
+    tc_response_free(&r);
+    int sfd = tc_connect(g_port);
+    const char *rq = "POST /slow HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\n\r\nx";
+    T_CHECK(write(sfd, rq, strlen(rq)) == (ssize_t)strlen(rq));
+    usleep(50000);   // on the pool now
+    const int64_t t0 = cb_mono_ms();
     T_EQ_INT(cb_loop_post(g_ctx.loop, drain_post, NULL), CB_OK);
     T_EQ_INT(close_code(fd), 1001);
     close(fd);
+    cb_buf in;
+    bool closed;
+    cb_buf_init(&in);
+    read_until_closed(kfd, &in, 3000, &closed);
+    T_CHECK(closed);
+    T_CHECK(cb_mono_ms() - t0 < 200);   // by the drain itself, not by the idle sweep (idle_ms 300)
+    T_EQ_INT(in.len, 0);
+    close(kfd);
+    cb_buf_reset(&in);
+    read_until_closed(sfd, &in, 3000, &closed);
+    T_CHECK(cb_starts_with(cb_buf_cstr(&in), "HTTP/1.1 200 "));
+    T_CHECK(strstr(cb_buf_cstr(&in), "Connection: close") != NULL);
+    T_CHECK(closed);
+    close(sfd);
+    cb_buf_free(&in);
     pthread_join(g_thread, NULL);
     cb_pool_free(g_ctx.req_pool);
     cb_server_free(g_ctx.server);
@@ -252,6 +344,9 @@ static void drain_closes_sockets(void) {
 int main(void) {
     start();
     T_RUN(http_defences);
+    T_RUN(a_head_past_every_cap);
+    T_RUN(a_client_gone_mid_request);
+    T_RUN(a_silent_websocket_is_pinged_then_closed);
     T_RUN(one_connection_too_many);
     T_RUN(websocket_rules);
     T_RUN(drain_closes_sockets);
