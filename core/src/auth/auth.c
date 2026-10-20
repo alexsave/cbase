@@ -27,6 +27,7 @@
 // sockets are closed (realtime.h cb_rt_end_sessions) by the same calls that
 // end the session.
 #include "auth.h"
+#include "net/loop.h"
 
 #include "bcrypt.h"
 #include "names.h"
@@ -223,6 +224,10 @@ int cb_auth_session_live(cb_auth *a, const cb_user *u) {
     // or a generation moved on by a global sign-out or a password change.
     int64_t now = cb_auth_now();
     if (a->hold && live_find(a, u->session_id, u->id, now)) return CB_OK;
+    // On the network loop's thread (an inline request, net/server.h) the store is not read: the
+    // request runs again on the pool (CB_E_WOULD_BLOCK, http.h to_pool), whose read holds the
+    // session live for the next one.
+    if (a->ctx && a->ctx->loop && cb_loop_on_thread(a->ctx->loop)) return CB_E_WOULD_BLOCK;
     uint64_t epoch = 0;
     if (a->hold) {
         pthread_mutex_lock(&a->live_mu);
