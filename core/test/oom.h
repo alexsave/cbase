@@ -158,7 +158,7 @@ static void oom_name_(FILE *f, const char *pre, void *a) {
     else
         fprintf(f, "%s%p\n", pre, a);
 }
-static void oom_dump_live(FILE *f) {
+static inline void oom_dump_live(FILE *f) {
     for (size_t i = 0; i < OOM_SET; i++) {
         if (!oom_set_[i] || oom_set_[i] == (void *)1) continue;
         oom_name_(f, "       live block from ", oom_site_[i]);
