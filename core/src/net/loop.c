@@ -59,6 +59,7 @@ struct cb_loop {
     post *post_head, *post_tail;
     post *post_free;          // posts drained and kept for the next cb_loop_post (post_lock): no malloc per post
     int   n_post_free;
+    uint64_t n_posts;         // posts ever queued (post_lock): cb_loop_posts
     int wake[2];       // self-pipe: posts and stop write one byte
     atomic_bool stopping;
     atomic_bool wake_pending;   // a wake byte is in the pipe (or about to be) that no drain has cleared
@@ -287,6 +288,7 @@ int cb_loop_post(cb_loop *l, cb_post_fn fn, void *ud) {
     if (p) { l->post_free = p->next; l->n_post_free--; }
     else if (!(p = malloc(sizeof *p))) { pthread_mutex_unlock(&l->post_lock); return CB_E_NOMEM; }
     p->fn = fn; p->ud = ud; p->next = NULL;
+    l->n_posts++;
     if (l->post_tail) l->post_tail->next = p; else l->post_head = p;
     l->post_tail = p;
     pthread_mutex_unlock(&l->post_lock);
@@ -392,6 +394,13 @@ int cb_loop_run(cb_loop *l) {
 int64_t cb_loop_now(const cb_loop *l) { return l->now; }
 
 int cb_loop_ready_left(const cb_loop *l) { return l->ev_n - l->ev_i; }
+
+uint64_t cb_loop_posts(cb_loop *l) {
+    pthread_mutex_lock(&l->post_lock);
+    uint64_t n = l->n_posts;
+    pthread_mutex_unlock(&l->post_lock);
+    return n;
+}
 
 bool cb_loop_on_thread(const cb_loop *l) {
     return atomic_load(&((cb_loop *)l)->running) && pthread_equal(pthread_self(), l->thread);

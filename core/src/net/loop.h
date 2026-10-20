@@ -67,5 +67,8 @@ int cb_loop_ready_left(const cb_loop *l);
 int64_t cb_loop_now(const cb_loop *l);
 // true on the thread inside cb_loop_run.
 bool cb_loop_on_thread(const cb_loop *l);
+// ANY THREAD: how many posts were ever queued (cb_loop_post): what a hand-off to the loop cost,
+// for the tests that hold work on the loop thread to none.
+uint64_t cb_loop_posts(cb_loop *l);
 
 #endif

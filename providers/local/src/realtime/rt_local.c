@@ -18,7 +18,8 @@
 // handler an HTTP request does, and the loop must never block on SQLite: one
 // job per connection at a time, so a connection's frames are handled in the
 // order they arrived; frames that come meanwhile wait in its inbox. A publish
-// from any thread copies its frame and posts it to the loop.
+// from any other thread copies its frame and posts it to the loop; one on the loop
+// thread is delivered at once (local_deliver).
 //
 // A REQ IS AN HTTP REQUEST. It names a route (method and path) and carries the
 // body; the route's handler runs exactly as for HTTP, with the connection's
@@ -627,7 +628,7 @@ typedef struct pub {
     struct pub *next;                 // on the free list
 } pub;
 
-// A delivery is allocated on a request thread (or the loop, for an inline request) and freed on the loop.
+// A delivery from another thread is allocated there and freed on the loop (one on the loop is not copied).
 // musl's allocator unmaps a group when its last slot is freed, so a steady one-in, one-out stream of
 // these cost an mmap and a munmap each. Up to PUB_KEEP of them, frame buffer included, wait on a
 // free list instead; the lock is held for a pointer swap.
@@ -665,9 +666,9 @@ static void send_all(local *L, const uint64_t *ids, size_t n, const uint8_t *fra
     for (size_t i = 0; i < n; i++) send_to(L, ids[i], frame, len);
 }
 
-static void pub_on_loop(cb_loop *l, void *ud) {
-    pub *p = ud;
-    local *L = p->rt->impl;
+// Sends the push to every connection that hears it (loop thread). Reads p's frame only before it
+// returns (cb_ws_send copies it into each socket's out buffer), so the frame may be borrowed.
+static void pub_deliver(local *L, const pub *p) {
     // A request parked on this user (or room) by the long poll looks again (net/server.h cb_server_wake).
     if (L->ctx->server) cb_server_wake(L->ctx->server, p->key);
     uint64_t stack[32];
@@ -699,11 +700,20 @@ static void pub_on_loop(cb_loop *l, void *ud) {
     }
     send_all(L, ids, n, p->frame, p->len);
     if (ids != stack) free(ids);
+}
+
+// A push another thread posted (local_deliver): delivered, and its copy given back.
+static void pub_on_loop(cb_loop *l, void *ud) {
+    pub *p = ud;
+    pub_deliver(p->rt->impl, p);
     pub_free(p);
 }
 
-// Posted to the loop, which writes each hearer's socket: a failure to hand it
-// over counts as one; what the loop's writes do later is the socket's.
+// ON THE LOOP THREAD (a request inline on the loop, a SUB, a timer): delivered at once, the
+// caller's frame borrowed - no copy, no post, no wake; the push is in each hearer's out buffer
+// in the same pass as the answer, and flush_dirty writes each socket once. FROM ANY OTHER THREAD
+// (a pooled request, a job): a copy posted to the loop, which owns the sockets. A failure to
+// hand it over counts as one; what the loop's writes do later is the socket's.
 static int local_deliver(cb_rt *rt, const cb_rt_to *to, const uint8_t *frame, size_t len) {
     cb_loop *loop = rt->ctx->loop;
     if (!loop || !to->family) return 0;
@@ -712,6 +722,12 @@ static int local_deliver(cb_rt *rt, const cb_rt_to *to, const uint8_t *frame, si
     bool user = strstr(to->family->pattern, "{user}") != NULL;
     const char *key = user ? to->user_id : to->doc_id;
     if (!key || !*key || strlen(key) >= sizeof ((pub *)0)->key) return 1;
+    if (cb_loop_on_thread(loop)) {
+        pub b = { .rt = rt, .scope = user ? PUB_USER : PUB_ROOM, .len = len, .frame = (uint8_t *)frame };
+        cb_strlcpy(b.key, key, sizeof b.key);
+        pub_deliver(rt->impl, &b);
+        return 0;
+    }
     pub *p = pub_get();
     if (!p) return 1;
     p->rt = rt;
@@ -793,7 +809,8 @@ static void local_forget(cb_rt *rt, const char *user_id, const char *session_id,
     if (cb_loop_post(loop, end_on_loop, e) != CB_OK) free(e);
 }
 
-// No deliver_lanes: a push is a copy posted to the loop, so a batch has nothing to overlap.
+// No deliver_lanes: a push is written into its sockets' buffers (on the loop) or a copy posted to
+// the loop, so a batch has nothing to overlap.
 static const cb_rt_transport LOCAL_T = { "local", local_deliver, local_free, local_forget, NULL };
 
 int cb_rt_local_new(cb_ctx *ctx, cb_rt **out) {

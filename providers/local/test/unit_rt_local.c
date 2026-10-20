@@ -61,6 +61,8 @@ static void h_park(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
 }
 static void h_ping(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) { cb_res_text(res, 200, "pong"); }
 
+static void h_pub_on_loop(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res);
+
 static void start(void) {
     cb_log_init(CB_LOG_ERROR, 0);
     rtt_install();
@@ -77,6 +79,7 @@ static void start(void) {
     T_EQ_INT(cb_router_add(g_ctx.router, "GET", "/t/park", CB_ROUTE_POOL, h_park), CB_OK);
     T_EQ_INT(cb_router_add(g_ctx.router, "GET", "/t/ping", CB_ROUTE_POOL, h_ping), CB_OK);
     T_EQ_INT(cb_router_add(g_ctx.router, "*", "/t/loop", CB_ROUTE_LOOP, h_who), CB_OK);
+    T_EQ_INT(cb_router_add(g_ctx.router, "GET", "/t/publoop", CB_ROUTE_LOOP, h_pub_on_loop), CB_OK);
     cb_server_opts o;
     cb_server_opts_default(&o);
     g_ctx.server = cb_server_new(&g_ctx, &o);
@@ -215,6 +218,44 @@ static void publish_view(uint32_t version) {
     v.view_len = 2;
     v.version = version;
     rt_publish_view(g_ctx.rt, U1, &v, false);
+}
+
+// A route on the loop thread that publishes U1's view: what an inline request's pushes do.
+static uint64_t g_posts_before, g_posts_after;
+static void h_pub_on_loop(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
+    g_posts_before = cb_loop_posts(ctx->loop);
+    publish_view(9);
+    g_posts_after = cb_loop_posts(ctx->loop);
+    cb_res_text(res, 200, "ok");
+}
+
+// A push published ON the loop thread goes straight into its hearers' sockets: no copy posted to
+// the loop (no post, no wake), and it reaches every connection of the user as one from another
+// thread does (rt_local.c local_deliver).
+static void a_push_on_the_loop_is_not_posted(void) {
+    cb_buf m;
+    cb_buf_init(&m);
+    NwFrame pf;
+    int a = open_as(U1, NULL, &m);
+    int c = open_as(U1, NULL, &m);
+    tc_response r;
+    T_EQ_INT(tc_http(g_port, "GET", "/t/publoop", NULL, NULL, 0, &r), 0);
+    T_EQ_INT(r.status, 200);
+    tc_response_free(&r);
+    T_CHECK(g_posts_after == g_posts_before);
+    for (int fd = a; fd != -1; fd = fd == a ? c : -1) {
+        T_EQ_INT(fr_recv(fd, 2000, &m), NW_WS_VIEW);
+        T_EQ_INT(nw_frame_decode(m.p, (int)m.len, &pf), NW_OK);
+        T_CHECK(pf.version == 9 && pf.blob.len == 2);
+    }
+    // From another thread it is still posted (this thread is not the loop's).
+    uint64_t p0 = cb_loop_posts(g_ctx.loop);
+    publish_view(10);
+    T_CHECK(cb_loop_posts(g_ctx.loop) == p0 + 1);
+    T_EQ_INT(fr_recv(a, 2000, &m), NW_WS_VIEW);
+    close(a);
+    close(c);
+    cb_buf_free(&m);
 }
 
 static atomic_int g_hold;
@@ -435,6 +476,7 @@ int main(void) {
     T_RUN(parked_requests_hold_no_thread);
     T_RUN(pushes_reach_their_hearers);
     T_RUN(many_sockets_hear_once);
+    T_RUN(a_push_on_the_loop_is_not_posted);
     T_RUN(req_runs_a_route_as_the_user);
     T_RUN(ended_sessions_close_their_sockets);
     T_RUN(refusals_end_the_connection);
