@@ -221,7 +221,7 @@ static void apply_cast(const uint8_t *p, int n) {
     static uint8_t ident[4096];
     int il = client_identity(&g_c, ident, sizeof ident);
     if (il < 0) il = 0;
-    int cor = client_cast_open(&g_c, p, n, ident, il);
+    int cor = client_cast_open(&g_c, p, n, ident, il, NULL, 0);
     if (getenv("P3DEBUG")) fprintf(stderr, "%s cast n %d open %d\n", g_name, n, cor);
     if (cor < 0) return;
     while (client_push_next(&g_c) == 1) {}
