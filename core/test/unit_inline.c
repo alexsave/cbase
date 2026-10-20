@@ -79,15 +79,16 @@ static void start(void) {
     cb_router_add(g_ctx.router, "POST", "/fz", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_fz);
     cb_router_add(g_ctx.router, "POST", "/nap", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_nap);
     cb_router_add(g_ctx.router, "POST", "/home", CB_ROUTE_POOL | CB_ROUTE_INLINE | CB_ROUTE_HOME, h_fast);
-    cb_router_add(g_ctx.router, "POST", "/nap1", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_nap1);
     // Routes with a budget of their own (router.h cb_route.inline_us): 5 and 6 ms handlers not over
     // theirs, however long a loaded runner oversleeps them (0.5 s).
     static const cb_route own[] = {
         { "POST", "/f5", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_f5, 500000 },
         { "POST", "/slowok", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_slow, 500000 },
         { "POST", "/nap6", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_nap6, 5000 },
+        // Never a suspect however slow a sanitizer makes its 1 ms nap.
+        { "POST", "/nap1", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_nap1, 50000 },
     };
-    T_EQ_INT(cb_router_add_all(g_ctx.router, own, 3), CB_OK);
+    T_EQ_INT(cb_router_add_all(g_ctx.router, own, 4), CB_OK);
     cb_server_opts o;
     cb_server_opts_default(&o);
     o.inline_budget_us = 2000;
@@ -245,7 +246,7 @@ static void a_hole_costs_the_pass_nothing(void) {
     for (int i = 0; i < 2000 && !cb_pool_idle(g_ctx.req_pool); i++) usleep(1000);
 }
 
-// The pass budget is CPU: six runs of a 1 ms nap each (within the 2 ms budget, so no suspect) and
+// The pass budget is CPU: six runs of a 1 ms nap each (within their 50 ms budget, so no suspect) and
 // no CPU spend over 6 ms of the pass's wall but nothing of its 4 ms: the seventh, ready behind
 // them in the same pass, runs inline too.
 static void a_pass_counts_cpu_not_wall(void) {
