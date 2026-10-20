@@ -112,8 +112,11 @@ static void responses(void) {
     cb_res_init(&res);
     cb_res_send(&res, 415, "application/octet-stream", "\x01\x02", 2);
     cb_res_header(&res, "X-Bad", "a\r\nInjected: yes");   // refused
+    cb_res_header(&res, "X-Bad: x\r\nY", "v");             // a name that splits the head: refused
+    cb_res_header(&res, "X-Colon:", "v");
     T_CHECK(cb_res_has_header(&res, "content-type"));
     T_CHECK(!cb_res_has_header(&res, "X-Bad"));
+    T_CHECK(!cb_res_has_header(&res, "X-Colon"));
     cb_buf out;
     cb_buf_init(&out);
     cb_res_serialize(&res, true, &out);

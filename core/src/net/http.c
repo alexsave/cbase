@@ -228,8 +228,14 @@ void cb_res_free(cb_http_res *res) {
 void cb_res_status(cb_http_res *res, int status) { res->status = status; }
 
 void cb_res_header(cb_http_res *res, const char *name, const char *value) {
-    if (strpbrk(name, "\r\n:") || strpbrk(value, "\r\n")) return;
-    cb_buf_printf(&res->headers, "%s: %s\r\n", name, value);
+    // A name with a CR, LF or colon, or a value with a CR or LF, would split the head: dropped.
+    // Length-known appends: this runs on every answer, a socket's REPLY included.
+    const size_t nl = strcspn(name, "\r\n:"), vl = strcspn(value, "\r\n");
+    if (name[nl] || value[vl]) return;
+    cb_buf_append(&res->headers, name, nl);
+    cb_buf_append(&res->headers, ": ", 2);
+    cb_buf_append(&res->headers, value, vl);
+    cb_buf_append(&res->headers, "\r\n", 2);
 }
 
 bool cb_res_has_header(const cb_http_res *res, const char *name) {
