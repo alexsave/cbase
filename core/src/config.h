@@ -71,7 +71,7 @@ typedef struct {
     // URL be defaulted from the listen address. Production gives both.
     bool dev;
     // Tunables, each CBASE_<NAME> with these defaults:
-    int  req_workers;     // CBASE_REQ_WORKERS 4: serve's request pool
+    int  req_workers;     // CBASE_REQ_WORKERS 1: serve's request pool (config.c THE THREADS)
     int  bot_workers;     // CBASE_BOT_WORKERS 1: serve's bot pool; see DESIGN.md "Kernel thread safety"
     long max_body;        // CBASE_MAX_BODY 1048576: request body bytes
     int  jwt_ttl_s;       // CBASE_JWT_TTL 3600: access token lifetime

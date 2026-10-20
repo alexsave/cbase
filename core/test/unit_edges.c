@@ -134,6 +134,17 @@ static void configuration_refusals(void) {
     refused("CBASE_BOT_SPEEDUP", "20 ", "is not a number in 1..100");
     refused("CBASE_BOT_SPEEDUP", "99999999999999999999", "is not a number in 1..100");
 
+    // Nothing set: three threads beside the journal's and the store's own (config.c THE THREADS),
+    // whatever the CPUs.
+    {
+        env_clear();
+        cb_config d;
+        char e[256] = "";
+        T_EQ_INT(cb_config_from_env(&d, e, sizeof e), CB_OK);
+        T_EQ_INT(d.req_workers, 1);
+        T_EQ_INT(d.bot_workers, 1);
+    }
+
     // Everything set and in range: read as given, and listed with the secrets redacted.
     env_clear();
     setenv("CBASE_LISTEN", "0.0.0.0:9000", 1);

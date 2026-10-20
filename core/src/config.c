@@ -26,36 +26,13 @@ static bool copy(char *dst, size_t cap, const char *name, const char *v, char *e
     return true;
 }
 
-// The request-worker default follows the CPU the process may actually use:
-// the cgroup quota (v2 cpu.max) when one is set, else the online CPUs, rounded
-// up and capped at 4. More workers than CPUs only add malloc and store lock
-// contention (measured: 1 worker at a 1 CPU quota moves 2.1x the requests of 4).
-static long default_req_workers(void) {
-    double cpus = 0;
-    FILE *f = fopen("/sys/fs/cgroup/cpu.max", "r");
-    if (f) {
-        char line[64] = {0};
-        if (fgets(line, sizeof line, f)) {
-            // "<quota> <period>", or "max <period>" when no quota is set.
-            char *sp = strchr(line, ' ');
-            char *nl = strchr(line, '\n');
-            if (nl) *nl = 0;
-            int64_t q, period;
-            if (sp && strncmp(line, "max", 3) != 0) {
-                *sp = 0;
-                if (num_parse_i64_cstr(line, 1, INT64_MAX, &q) && num_parse_i64_cstr(sp + 1, 1, INT64_MAX, &period))
-                    cpus = (double)q / (double)period;
-            }
-        }
-        fclose(f);
-    }
-    if (cpus <= 0) {
-        long n = sysconf(_SC_NPROCESSORS_ONLN);
-        cpus = n > 0 ? (double)n : 1;
-    }
-    long w = (long)(cpus + 0.999);
-    return w < 1 ? 1 : w > 4 ? 4 : w;
-}
+// THE THREADS (OPTIMIZED_DESIGN.md step 10): serve is the loop, ONE request worker and one job
+// worker by default. A move runs on the loop; the request worker is the tables' thread (what would
+// block the loop: a read or write of the tables, a sign-in's hash, a move whose game is locked),
+// and the job worker the compute thread (the bots' drives and the finished games' replays). A
+// second request worker only contended for the store's one writer and the allocator; a box that
+// wants more says so (CBASE_REQ_WORKERS), and nothing is sized from the CPUs the process sees.
+#define REQ_WORKERS_DEFAULT 1
 
 static bool num(const char *name, long dflt, long lo, long hi, long *out, char *err, size_t ecap) {
     const char *v = getenv(name);
@@ -149,7 +126,7 @@ int cb_config_from_env(cb_config *c, char *err, size_t cap) {
     if (!copy(c->public_url, sizeof c->public_url, "CBASE_PUBLIC_URL", env("CBASE_PUBLIC_URL", dflt_url), err, cap)) return CB_E_INVALID;
 
     long v;
-    if (!num("CBASE_REQ_WORKERS", default_req_workers(), 1, 256, &v, err, cap)) return CB_E_INVALID;
+    if (!num("CBASE_REQ_WORKERS", REQ_WORKERS_DEFAULT, 1, 256, &v, err, cap)) return CB_E_INVALID;
     c->req_workers = (int)v;
     if (!num("CBASE_BOT_WORKERS", 1, 1, 64, &v, err, cap)) return CB_E_INVALID;
     c->bot_workers = (int)v;
