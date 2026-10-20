@@ -115,6 +115,7 @@ struct cb_server {
     size_t   spare_cap[SPARE_KEEP];
     uint64_t wake_seq;           // bumped by every cb_server_wake: a handler that read before it must not park
     _Atomic int64_t sends;       // send() calls made (cb_server_sends)
+    _Atomic int64_t sweeps;      // sweeps run (cb_server_sweeps)
 };
 
 static void conn_close(conn *c);
@@ -142,6 +143,7 @@ static void buf_take(conn *c, cb_buf *b) {
     b->p[0] = 0;
 }
 static void conn_io(cb_loop *l, int fd, int ev, void *ud);
+static void sweep(cb_loop *l, void *ud);
 
 void cb_server_opts_default(cb_server_opts *o) {
     o->max_body = CB_HTTP_DEFAULT_BODY;
@@ -524,6 +526,8 @@ void cb_server_inline_done(cb_server *s, const cb_route *r, cb_inline_mark m) {
                 k, s->o.inline_trip_window_ms, (long long)took_us, budget, s->o.inline_off_ms);
 }
 
+int64_t cb_server_sweeps(const cb_server *s) { return atomic_load_explicit(&((cb_server *)s)->sweeps, memory_order_relaxed); }
+
 int64_t cb_server_sends(const cb_server *s) { return atomic_load_explicit(&((cb_server *)s)->sends, memory_order_relaxed); }
 
 void cb_server_inline_stats(const cb_server *s, cb_inline_stats *out) {
@@ -894,12 +898,18 @@ static void on_accept(cb_loop *l, int lfd, int ev, void *ud) {
         s->all = c;
         s->n++;
         atomic_fetch_add_explicit(&s->ctx->stats.http_conns, 1, memory_order_relaxed);
+        if (!s->sweep_timer) s->sweep_timer = cb_loop_timer(l, 1000, sweep, s);   // the first connection: sweeps again
     }
 }
 
+// THE SWEEP runs once a second while a connection is open (every deadline it keeps is a
+// connection's: a parked request's, a head's, an idle socket's, a WebSocket's PING) and not at
+// all when none is: an idle box wakes nobody for it (OPTIMIZED_DESIGN.md 4.3 E4). The accept of a
+// connection arms it again.
 static void sweep(cb_loop *l, void *ud) {
     cb_server *s = ud;
     int64_t now = cb_loop_now(l);
+    atomic_fetch_add_explicit(&s->sweeps, 1, memory_order_relaxed);
     for (conn *c = s->parked, *next; c; c = next) {   // a parked request whose time is up runs once more and answers
         next = c->park_next;
         if (now >= c->park_deadline) wake_conn(s, c, now);
@@ -934,7 +944,7 @@ static void sweep(cb_loop *l, void *ud) {
         s->sweep_timer = cb_loop_timer(l, 50, sweep, s);
         return;
     }
-    s->sweep_timer = cb_loop_timer(l, 1000, sweep, s);
+    s->sweep_timer = s->all ? cb_loop_timer(l, 1000, sweep, s) : 0;
 }
 
 cb_server *cb_server_new(cb_ctx *ctx, const cb_server_opts *opts) {
@@ -973,8 +983,7 @@ int cb_server_listen(cb_server *s, const char *host, int port, int *bound_port) 
     if (bound_port) *bound_port = bound;
     if (cb_loop_add(s->ctx->loop, fd, CB_EV_READ, on_accept, s) != CB_OK) { close(fd); return CB_E_IO; }
     cb_loop_after(s->ctx->loop, flush_dirty, s);
-    s->lfd = fd;
-    s->sweep_timer = cb_loop_timer(s->ctx->loop, 1000, sweep, s);
+    s->lfd = fd;   // (the sweep starts with the first connection)
     return CB_OK;
 }
 

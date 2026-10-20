@@ -370,6 +370,20 @@ static void drain_closes_sockets(void) {
     cb_loop_free(g_ctx.loop);
 }
 
+// THE SWEEP runs only while a connection is open: none in 1.5 s with none, and its deadlines kept
+// with one (a silent WebSocket is pinged: a_silent_websocket_is_pinged_then_closed).
+static void no_connection_no_sweep(void) {
+    usleep(1300000);   // the connections of the tests before have gone, and the sweep with them
+    const int64_t s0 = cb_server_sweeps(g_ctx.server);
+    usleep(1500000);
+    T_EQ_INT((int)(cb_server_sweeps(g_ctx.server) - s0), 0);
+    int fd = tc_connect(g_port);
+    T_CHECK(fd >= 0);
+    usleep(1500000);
+    T_CHECK(cb_server_sweeps(g_ctx.server) - s0 >= 1);
+    close(fd);
+}
+
 int main(void) {
     start();
     T_RUN(http_defences);
@@ -379,6 +393,7 @@ int main(void) {
     T_RUN(a_silent_websocket_is_pinged_then_closed);
     T_RUN(one_connection_too_many);
     T_RUN(websocket_rules);
+    T_RUN(no_connection_no_sweep);
     T_RUN(drain_closes_sockets);
     return T_DONE();
 }
