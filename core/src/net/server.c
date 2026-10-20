@@ -367,13 +367,26 @@ static void job_run(void *ud) {
 // A CB_ROUTE_INLINE request runs on the loop thread only when ALL hold: inline is enabled and the
 // valve is not tripped, the request pool has nothing queued or running (so the request cannot
 // reorder behind work already handed off, and no worker is about to need the CPU), and this
-// is the last event ready in this loop pass (nobody else is waiting for the loop).
-static bool inline_ok(cb_server *s, const cb_http_req *req) {
+// is the last event ready in this loop pass (nobody else is waiting for the loop). The route's
+// own flag is the caller's to check (dispatch for HTTP, rt_local's pump for a socket's REQ).
+bool cb_server_inline_ok(cb_server *s) {
     cb_ctx *ctx = s->ctx;
     if (s->o.inline_budget_us <= 0 || !ctx->req_pool) return false;
     if (cb_loop_now(ctx->loop) < s->inline_off_until) return false;
-    if (!cb_pool_idle(ctx->req_pool) || cb_loop_ready_left(ctx->loop) != 0) return false;
-    return cb_handle_inline_ok(ctx, req);
+    return cb_pool_idle(ctx->req_pool) && cb_loop_ready_left(ctx->loop) == 0;
+}
+
+// The valve: a handler that ran inline for longer than the budget (a held lock, a fsync, a disk
+// stall) turns inline dispatch off for inline_off_ms.
+void cb_server_inline_done(cb_server *s, int64_t took_us) {
+    s->inline_ran++;
+    if (took_us > s->o.inline_budget_us) {
+        s->inline_tripped++;
+        s->inline_off_until = cb_loop_now(s->ctx->loop) + s->o.inline_off_ms;
+        if (s->inline_tripped == 1)
+            CB_WARN("net", "inline request took %lld us (budget %d): inline dispatch is off for %d ms",
+                    (long long)took_us, s->o.inline_budget_us, s->o.inline_off_ms);
+    }
 }
 
 int64_t cb_server_sends(const cb_server *s) { return atomic_load_explicit(&((cb_server *)s)->sends, memory_order_relaxed); }
@@ -393,20 +406,11 @@ static void dispatch(conn *c) {
         finish(c);
         return;
     }
-    if (inline_ok(s, c->req)) {
-        // Fast and the loop is free: no hand-off, no wake, no second post. The budget valve
-        // turns this off when a handler turns out slow (a held lock, a fsync, a disk stall).
+    if (cb_handle_inline_ok(ctx, c->req) && cb_server_inline_ok(s)) {
+        // Fast and the loop is free: no hand-off, no wake, no second post.
         int64_t t0 = cb_mono_us();
         cb_handle(ctx, c->req, &c->res);
-        int64_t took = cb_mono_us() - t0;
-        s->inline_ran++;
-        if (took > s->o.inline_budget_us) {
-            s->inline_tripped++;
-            s->inline_off_until = cb_loop_now(ctx->loop) + s->o.inline_off_ms;
-            if (s->inline_tripped == 1)
-                CB_WARN("net", "inline request took %lld us (budget %d): inline dispatch is off for %d ms",
-                        (long long)took, s->o.inline_budget_us, s->o.inline_off_ms);
-        }
+        cb_server_inline_done(s, cb_mono_us() - t0);
         finish(c);
         return;
     }

@@ -62,6 +62,7 @@ static void h_park(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
 static void h_ping(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) { cb_res_text(res, 200, "pong"); }
 
 static void h_pub_on_loop(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res);
+static void h_act(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res);
 
 static void start(void) {
     cb_log_init(CB_LOG_ERROR, 0);
@@ -80,6 +81,7 @@ static void start(void) {
     T_EQ_INT(cb_router_add(g_ctx.router, "GET", "/t/ping", CB_ROUTE_POOL, h_ping), CB_OK);
     T_EQ_INT(cb_router_add(g_ctx.router, "*", "/t/loop", CB_ROUTE_LOOP, h_who), CB_OK);
     T_EQ_INT(cb_router_add(g_ctx.router, "GET", "/t/publoop", CB_ROUTE_LOOP, h_pub_on_loop), CB_OK);
+    T_EQ_INT(cb_router_add(g_ctx.router, "POST", "/t/act", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_act), CB_OK);
     cb_server_opts o;
     cb_server_opts_default(&o);
     g_ctx.server = cb_server_new(&g_ctx, &o);
@@ -222,7 +224,9 @@ static void publish_view(uint32_t version) {
 
 // A route on the loop thread that publishes U1's view: what an inline request's pushes do.
 static uint64_t g_posts_before, g_posts_after;
+static pthread_t g_loop_thr, g_act_thr;
 static void h_pub_on_loop(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
+    g_loop_thr = pthread_self();
     g_posts_before = cb_loop_posts(ctx->loop);
     publish_view(9);
     g_posts_after = cb_loop_posts(ctx->loop);
@@ -255,6 +259,54 @@ static void a_push_on_the_loop_is_not_posted(void) {
     T_EQ_INT(fr_recv(a, 2000, &m), NW_WS_VIEW);
     close(a);
     close(c);
+    cb_buf_free(&m);
+}
+
+// A move's shape: an inline route that pushes the caller's own view, then answers.
+static void h_act(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
+    g_act_thr = pthread_self();
+    publish_view(11);
+    cb_res_text(res, 200, "done");
+}
+
+// A REQ to a CB_ROUTE_INLINE route runs on the loop thread (rt_local.c req_inline): no job posted
+// back, and the handler's push to the caller and the REPLY leave in ONE send. A REQ whose session
+// must be read again (sessions were ended since it was checked) goes to the pool, which may read
+// the store.
+static void an_inline_req_answers_with_its_pushes(void) {
+    cb_buf m;
+    cb_buf_init(&m);
+    sf_frame f;
+    NwFrame pf;
+    int a = open_as(U1, NULL, &m);
+    tc_response r;
+    T_EQ_INT(tc_http(g_port, "GET", "/t/publoop", NULL, NULL, 0, &r), 0);   // the loop's thread, learned
+    tc_response_free(&r);
+    T_EQ_INT(fr_recv(a, 2000, &m), NW_WS_VIEW);
+    usleep(20000);
+    const uint64_t p0 = cb_loop_posts(g_ctx.loop);
+    const int64_t s0 = cb_server_sends(g_ctx.server);
+    uint8_t b[128];
+    fr_send(a, b, sf_put_req(b, sizeof b, 7, SF_METH_POST, "/t/act", 6, (const uint8_t *)"x", 1));
+    T_EQ_INT(fr_recv(a, 2000, &m), NW_WS_VIEW);   // the push the handler queued, then its answer
+    T_EQ_INT(nw_frame_decode(m.p, (int)m.len, &pf), NW_OK);
+    T_EQ_INT((int)pf.version, 11);
+    T_EQ_INT(fr_recv(a, 2000, &m), SF_REPLY);
+    T_EQ_INT(sf_parse(m.p, m.len, &f), 0);
+    T_CHECK(f.id == 7 && f.status == 200);
+    T_CHECK(pthread_equal(g_act_thr, g_loop_thr));
+    T_CHECK(cb_loop_posts(g_ctx.loop) == p0);
+    T_EQ_INT((int)(cb_server_sends(g_ctx.server) - s0), 1);
+    // Sessions were ended (anybody's): the next REQ reads its own again, on the pool.
+    cb_rt_end_sessions(g_ctx.rt, "00000000-0000-4000-8000-000000000000", NULL, NULL);
+    T_EQ_INT(req(a, 8, SF_METH_POST, "/t/act", "x", &m, &f), -1000 - NW_WS_VIEW);
+    T_EQ_INT(fr_recv(a, 2000, &m), SF_REPLY);
+    T_CHECK(!pthread_equal(g_act_thr, g_loop_thr));
+    // Checked again, the one after runs inline.
+    T_EQ_INT(req(a, 9, SF_METH_POST, "/t/act", "x", &m, &f), -1000 - NW_WS_VIEW);
+    T_EQ_INT(fr_recv(a, 2000, &m), SF_REPLY);
+    T_CHECK(pthread_equal(g_act_thr, g_loop_thr));
+    close(a);
     cb_buf_free(&m);
 }
 
@@ -477,6 +529,7 @@ int main(void) {
     T_RUN(pushes_reach_their_hearers);
     T_RUN(many_sockets_hear_once);
     T_RUN(a_push_on_the_loop_is_not_posted);
+    T_RUN(an_inline_req_answers_with_its_pushes);
     T_RUN(req_runs_a_route_as_the_user);
     T_RUN(ended_sessions_close_their_sockets);
     T_RUN(refusals_end_the_connection);

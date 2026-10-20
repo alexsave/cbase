@@ -17,7 +17,9 @@
 // REQ run on the REQUEST POOL, because they read the store and run the same
 // handler an HTTP request does, and the loop must never block on SQLite: one
 // job per connection at a time, so a connection's frames are handled in the
-// order they arrived; frames that come meanwhile wait in its inbox. A publish
+// order they arrived; frames that come meanwhile wait in its inbox. A REQ for a
+// CB_ROUTE_INLINE route runs on the loop instead when the server's gate is open
+// (req_inline), exactly as an HTTP request to it would. A publish
 // from any other thread copies its frame and posts it to the loop; one on the loop
 // thread is delivered at once (local_deliver).
 //
@@ -309,7 +311,9 @@ typedef struct job {
     // a HELLO's grant
     cb_user *granted;
     int64_t expires_s;
-    // a REQ's reply
+    // a REQ: its route (matched on the loop, once) and its reply
+    const cb_route *route;
+    bool route_known;        // no route, but the path is routed under another method (405)
     uint32_t req_id;
     uint16_t status;
     cb_buf body;
@@ -356,7 +360,7 @@ static job *job_new(local *L) {
 
 static void pump(local *L, lconn *c);
 
-// Runs the route the frame names, as an HTTP request of the connection's user.
+// Runs the route the frame names (j->route, matched by pump), as an HTTP request of the connection's user.
 static void run_req(job *j, const sf_frame *f) {
     cb_ctx *ctx = j->L->ctx;
     j->req_id = f->id;
@@ -380,8 +384,7 @@ static void run_req(job *j, const sf_frame *f) {
         req.headers[0] = (cb_http_header){ "Content-Type", "application/octet-stream" };
         req.n_headers = 1;
     }
-    bool known = false;
-    const cb_route *r = ctx->router ? cb_router_match(ctx->router, req.meth, path, &known) : NULL;
+    const cb_route *r = j->route;
     cb_http_res res;
     cb_res_init(&res);
     // The handler writes its body straight into the job's buffer (kept with the job): no copy.
@@ -390,7 +393,7 @@ static void run_req(job *j, const sf_frame *f) {
     cb_buf_init(&j->body);
     cb_buf_init(&j->hdrs);
     if (strncmp(path, "/v1/auth/", 9) == 0) j->status = 403;   // a session is made and ended over HTTP
-    else if (!r || (r->flags & CB_ROUTE_LOOP)) j->status = known ? 405 : 404;
+    else if (!r || (r->flags & CB_ROUTE_LOOP)) j->status = j->route_known ? 405 : 404;
     else {
         r->fn(ctx, &req, &res);
         j->status = (uint16_t)(res.status ? res.status : 200);
@@ -430,9 +433,9 @@ static void job_run_frame(job *j) {
     run_req(j, &f);
 }
 
-static void job_done(cb_loop *l, void *ud) {
-    job *j = ud;
-    local *L = j->L;
+// A handled frame's outcome (loop thread): the READY or the REPLY sent, or the connection closed.
+// Returns the connection when it is still open (and free for its next frame), else NULL.
+static lconn *job_settle(local *L, job *j) {
     uint64_t id = j->ws_id;
     lconn *c = find(L, id);
     if (c) {
@@ -458,11 +461,19 @@ static void job_done(cb_loop *l, void *ud) {
         if (c && j->rc != CB_OK) {
             CB_DEBUG("realtime", "socket %llu closed: %s", (unsigned long long)id, cb_strerror(j->rc));
             cb_ws_close(c->ws, 1008);
-        } else if (c) {
-            pump(L, c);
+            c = NULL;
         }
     }
     job_done_free(L, j);
+    return c;
+}
+
+// A pooled job back on the loop: settled, and the connection's next frames handled.
+static void job_done(cb_loop *l, void *ud) {
+    job *j = ud;
+    local *L = j->L;
+    lconn *c = job_settle(L, j);
+    if (c) pump(L, c);
 }
 
 static void job_run(void *ud) {
@@ -505,8 +516,23 @@ static void do_sub(local *L, lconn *c, const sf_frame *f) {
     reply_to(L, c->ws_id, f->id, status, NULL, 0);
 }
 
-// Handles the connection's queued frames in order: SUB, UNSUB and PING here,
-// the first HELLO or REQ as a job (and then stops until it is done).
+// Whether a REQ runs here on the loop thread instead of the pool (rt_local's half of inline
+// dispatch, net/server.h cb_server_inline_ok). Everything else goes to the pool, because it may
+// block: a HELLO (it reads the token's session from the store); a REQ whose connection's session
+// must be read again (sessions were ended since it was checked, job_run_frame); a route not
+// marked CB_ROUTE_INLINE; and any REQ while the server's gate is shut (the valve tripped, work
+// queued on the pool, other sockets ready this pass).
+static bool req_inline(local *L, const lconn *c, const job *j, const sf_frame *f) {
+    if (f->kind != SF_REQ || !c->open || !L->ctx->server) return false;
+    if (j->gen != atomic_load(&L->end_gen)) return false;
+    if (!j->route || !(j->route->flags & CB_ROUTE_INLINE) || (f->path_len >= 9 && memcmp(f->path, "/v1/auth/", 9) == 0))
+        return false;
+    return cb_server_inline_ok(L->ctx->server);
+}
+
+// Handles the connection's queued frames in order: SUB, UNSUB and PING here, a REQ here too when
+// it may run inline (req_inline), and the first other HELLO or REQ as a job on the pool (and then
+// stops until it is done).
 static void pump(local *L, lconn *c) {
     uint64_t id = c->ws_id;
     while (c && !c->busy && c->in_head) {
@@ -542,13 +568,28 @@ static void pump(local *L, lconn *c) {
             j->frame = m;
             j->gen = c->open ? c->checked_gen : atomic_load(&L->end_gen);
             if (c->open) { j->user = *c->user; j->has_user = true; }
-            cb_pool *pool = L->ctx->req_pool;
+            if (f.kind == SF_REQ && L->ctx->router) {
+                char path[SF_PATH_MAX + 1];
+                memcpy(path, f.path, f.path_len);
+                path[f.path_len] = 0;
+                j->route = cb_router_match(L->ctx->router, f.meth == SF_METH_GET ? CB_M_GET : CB_M_POST, path, &j->route_known);
+            }
             c->busy = true;
+            if (req_inline(L, c, j, &f)) {
+                // On the loop: no hand-off, and the reply joins the pushes the handler queued for
+                // this socket in one send (flush_dirty). The valve times it as it times HTTP.
+                int64_t t0 = cb_mono_us();
+                job_run_frame(j);
+                cb_server_inline_done(L->ctx->server, cb_mono_us() - t0);
+                c = job_settle(L, j);
+                continue;
+            }
+            cb_pool *pool = L->ctx->req_pool;
             if (pool && cb_pool_submit(pool, job_run, j) == CB_OK) return;
             // No pool (or it is stopping): handle it here. Only the tests run without one.
             job_run_frame(j);
-            job_done(L->ctx->loop, j);
-            return;
+            c = job_settle(L, j);
+            continue;
         }
         c = find(L, id);   // a send may have closed it
     }

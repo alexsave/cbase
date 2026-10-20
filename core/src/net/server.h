@@ -47,6 +47,12 @@ void cb_server_drain(cb_server *s, int64_t timeout_ms);
 // still running against a connection.
 void cb_server_free(cb_server *s);
 
+// INLINE DISPATCH (loop thread). A CB_ROUTE_INLINE handler may run on the loop thread instead of
+// the pool when cb_server_inline_ok says so now; whoever runs it there (dispatch for HTTP,
+// realtime's socket hub for a REQ frame) times it and reports it with cb_server_inline_done,
+// which feeds the valve.
+bool cb_server_inline_ok(cb_server *s);
+void cb_server_inline_done(cb_server *s, int64_t took_us);
 // Inline dispatch counters (loop thread, or after it has stopped): requests
 // run on the loop thread, and times the budget valve tripped.
 void cb_server_inline_stats(const cb_server *s, int64_t *ran, int64_t *tripped);
