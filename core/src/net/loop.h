@@ -41,7 +41,8 @@ int  cb_loop_add(cb_loop *l, int fd, int events, cb_io_fn fn, void *ud);
 int  cb_loop_set(cb_loop *l, int fd, int events);
 void cb_loop_remove(cb_loop *l, int fd);
 
-// Runs fn(ud) once, `delay_ms` from now (0: on the next iteration). Returns a
+// Runs fn(ud) once, `delay_ms` from now (0: on the next iteration), up to 10 ms
+// late (loop.c TIMER_FLOOR_MS: timers due together share a wake). Returns a
 // non-zero id, or 0 on allocation failure.
 uint64_t cb_loop_timer(cb_loop *l, int64_t delay_ms, cb_timer_fn fn, void *ud);
 // true when the timer was pending and will not run.

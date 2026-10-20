@@ -345,6 +345,11 @@ static void run_timers(cb_loop *l) {
     }
 }
 
+// The loop's timers are coarse (a connection sweep, a reap, a job's delayed start, a backup
+// interval): none is owed better than this, so a timer may run up to this late, and a 0 ms one
+// ("the next iteration") at the next wake or within it.
+#define TIMER_FLOOR_MS 10
+
 int cb_loop_run(cb_loop *l) {
     l->thread = pthread_self();
     atomic_store(&l->running, true);
@@ -352,10 +357,12 @@ int cb_loop_run(cb_loop *l) {
     int rc = CB_OK;
     while (!atomic_load(&l->stopping)) {
         l->now = cb_mono_ms();
+        // A wait that ends for a timer is at least TIMER_FLOOR_MS: the timers due within it run in
+        // one wake, not one wake (and one armed and cancelled kernel timer) each.
         int timeout = -1;
         if (l->nt > 0) {
             int64_t d = l->heap[0].at - cb_mono_ms();
-            timeout = d <= 0 ? 0 : d > 60000 ? 60000 : (int)d;
+            timeout = d < TIMER_FLOOR_MS ? TIMER_FLOOR_MS : d > 60000 ? 60000 : (int)d;
         }
         int r = cb_poller_wait(l->pl, ev, (int)(sizeof ev / sizeof ev[0]), timeout);
         if (r < 0) {

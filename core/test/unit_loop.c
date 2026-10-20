@@ -4,6 +4,7 @@
 #include "t.h"
 
 #include "net/loop.h"
+#include "util/clock.h"
 #include "util/err.h"
 
 #include <fcntl.h>
@@ -218,6 +219,25 @@ static void timers_run_in_order_and_cancel(void) {
     cb_loop_free(l);
 }
 
+// Timers due close together share a wake (loop.c TIMER_FLOOR_MS): five due 1 to 9 ms from now run
+// in one pass, in order, not one pass each.
+static int g_seq[6], g_nseq;
+static void seq_fire(cb_loop *l, void *ud) { g_seq[g_nseq++] = (int)(intptr_t)ud; if (g_nseq == 5) cb_loop_stop(l); }
+static void close_timers_share_a_wake(void) {
+    cb_loop *l = cb_loop_new();
+    g_nseq = 0;
+    for (int i = 4; i >= 0; i--) cb_loop_timer(l, 1 + 2 * i, seq_fire, (void *)(intptr_t)i);
+    cb_loop_timer(l, 3000, stop_cb, NULL);   // a lost timer would end it here instead
+    const uint64_t p0 = cb_loop_pass(l);
+    int64_t t0 = cb_mono_ms();
+    cb_loop_run(l);
+    T_EQ_INT(g_nseq, 5);
+    for (int i = 0; i < 5; i++) T_EQ_INT(g_seq[i], i);
+    T_EQ_INT((int)(cb_loop_pass(l) - p0), 1);
+    T_CHECK(cb_mono_ms() - t0 < 1000);
+    cb_loop_free(l);
+}
+
 // Cancel is a lookup and a sift whatever the heap holds: cancel half of 2000 timers (the
 // ids of cancelled ones are stale after, and a reused slot must not honour them), and
 // exactly the other half run.
@@ -275,6 +295,7 @@ int main(void) {
     T_RUN(interest_changes_and_hangup);
     T_RUN(a_post_from_another_thread_wakes_an_idle_loop);
     T_RUN(timers_run_in_order_and_cancel);
+    T_RUN(close_timers_share_a_wake);
     T_RUN(many_timers_cancel_exactly_the_cancelled);
     T_RUN(posts_sharing_a_wakeup_are_never_lost);
     return T_DONE();
