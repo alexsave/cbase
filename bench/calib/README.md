@@ -97,6 +97,110 @@ Five passes on a c6g.large and a t4g.nano (unlimited), both Graviton2 (Neoverse 
 - Same-core ping-pong round trips are faster on the nano (0.4-0.6x), and the contended atomic of pass 3 on the c6g is an outlier (8 ms); treat both as noise-bound until a rerun.
   The full five-pass data adds 1746 rows; many of the malloc two-thread rows differ between boxes there, so use the medians in `compare.py` rather than one pass.
 
+## The sqlite group (2026-10-20, results_2026-10-20_sqlite/)
+
+### What it runs
+
+`calbench sqlite PASS` (sqlite_group.inc) uses the SQLite that serve links (alpine 3.24's sqlite-static, 3.53.4, built in the same pinned image) with the store's settings from store_sqlite.c.
+Those are `SQLITE_OPEN_FULLMUTEX`, busy_timeout 5000, WAL, synchronous=NORMAL, the default page_size (4096) and cache_size (-2000, so 2 MB), mmap_size 0, the store's pooled allocator, and prepared `BEGIN IMMEDIATE` / `COMMIT`.
+The writer's automatic checkpoint is replaced by a PASSIVE checkpoint every 1000 WAL frames, as the store's checkpointer does; here it runs untimed between samples, so the transaction rows carry no checkpoint, and the checkpoint is its own row.
+The table is foolish's `games` (random 16-hex `id TEXT PRIMARY KEY`, so every row also writes the autoindex), filled with 20000 rows of 1500 B state before the timed rows, on the root EBS volume (gp3, XFS) under /var/tmp.
+
+- Syscalls on scratch files of the same filesystem: fcntl F_SETLK lock+unlock pairs on SQLite's byte ranges (the 510-byte SHARED range, the WAL write lock byte, a read mark), F_GETLK, each uncontended and with another process holding the locks a reading connection holds, and an F_SETLK that conflicts (EAGAIN); getpid; fstat; pwrite into a WAL-shaped file at 24 B (frame header), 4096 B and 4120 B; pread of a page from the page cache and cold (POSIX_FADV_DONTNEED before each sample); pwrite+fdatasync and pwrite+fsync of a frame; the -shm header read and a seq-cst store into it; mapping a 32 KB -shm region.
+- Transactions: one-row INSERT (128, 600, 1200, 1500 B state) and UPDATE (1200, 1500 B); INSERT of N rows in one transaction (N 1, 10, 100, 1000 or 2000; 128, 600 and 1500 B); SELECT by primary key warm (50 hot rows), SQLite-cache miss (any of 20000 rows; the OS page cache holds the file) and cold (SQLite's cache released and the file dropped from the page cache); PASSIVE checkpoint of 1, 10, 100 and 1000 pages.
+- The same INSERT, UPDATE and SELECT with another process holding an open read transaction on the WAL.
+
+Every transaction row is k = 1 (one transaction per sample), so p50 and p99 are true per-transaction numbers.
+
+### How syscalls are counted
+
+Two independent ways, and they agree.
+
+- In calbench: build.sh links with `-Wl,--wrap=` for every libc entry point SQLite's unix VFS uses (fcntl split by command and lock type, pread, pwrite, fsync, fdatasync, getpid, fstat, mmap and the rest), so each call passes a counter that is on only while a sample runs.
+  Each such call is one syscall in musl.
+  The `#sys` comment line after each row gives the mean per transaction, with /proc/self/io `syscr`/`syscw` beside it as a kernel-side check (they match the pread and pwrite counts exactly).
+  It does not see musl's own internal syscalls (malloc's mmap).
+- strace: after the last pass the runner installs strace and runs `calbench sqlitecount OP N` under `strace -f -c` with N = 0 and N = 500 (strace_<op>_n<N>.txt); the difference over 500 is every syscall per transaction, malloc and the amortised checkpoints included.
+  It shows no mmap, munmap, brk or getpid per transaction (the pooled allocator does its job; SQLite calls getpid 5 times at open and never per transaction) and that musl issues pwrite as `pwritev2`.
+
+### Results (t4g.nano, unlimited, 5 passes 3 minutes apart; medians over passes of each row's p50)
+
+| operation | p50 | p99 | syscalls per op (wrap; strace) |
+|---|---|---|---|
+| fcntl F_SETLK lock+unlock pair | 0.88 us (0.44 per call) | 1.0 us | 2 |
+| same, another process holds the locks | 0.88-0.89 us | 1.0 us | 2 |
+| fcntl F_GETLK | 0.28 us (0.29 held) | 0.30 us | 1 |
+| fcntl F_SETLK conflicting (EAGAIN) | 0.40 us | 0.43 us | 1 |
+| getpid | 0.11 us | 0.12 us | 1 (SQLite: 0 per transaction) |
+| fstat | 0.24 us | 0.24 us | 1 |
+| pwrite to the WAL, 24 B / 4096 B / 4120 B | 0.68 / 1.27 / 1.17 us | 1.0 / 1.5 / 1.3 us | 1 |
+| pread of a page, page cache | 1.22 us | 1.6 us | 1 |
+| pread of a page, cold (EBS) | 0.20 ms (passes 1-2) and 0.57 ms (passes 3-5) | 0.64 ms | 1 |
+| pwrite+fdatasync / pwrite+fsync of a frame | 0.92 / 0.94 ms (0.43-0.47 in one pass) | 1.0 / 2.0 ms | 2 |
+| -shm header read (2 x 48 B and compare) | 0.05 us | 0.05 us | 0 |
+| -shm map 32 KB + touch + unmap (once per connection) | 6.3 us | 9.5 us | 2 |
+| INSERT 1 row, 128 / 600 B | 15.9 / 16.2 us | 41 / 42 us | 11.0 / 11.7 |
+| INSERT 1 row, 1200 / 1500 B | 21.5 / 24.3 us | 65 / 50 us | 12.2 / 12.9 (strace 14.1 with amortised checkpoints) |
+| UPDATE 1 row, 1200 / 1500 B | 14.7 / 14.4 us | 26 / 23 us | 9.1 / 9.1 (strace 9.3) |
+| INSERT 10 rows (128 / 600 / 1500 B) | 90 / 101 / 95 us | 1.8 / 1.8 / 2.0 ms | 39 / 46 / 43 (strace 59 at 1500 B) |
+| INSERT 100 rows (128 / 600 / 1500 B) | 0.72 / 0.85 / 0.79 ms | 2.6 / 2.7 / 2.9 ms | 268 / 333 / 292 (strace 503 at 1500 B) |
+| INSERT 1000 rows (128 / 600 B) | 7.2 / 9.0 ms | 9.2 / 11.1 ms | 2940 / 4201 |
+| INSERT 2000 rows, 1500 B | 18.2 ms | 20.0 ms | 6589 |
+| SELECT by pk, warm | 3.9 us | 8.7 us | 2.2 (strace 2.1) |
+| SELECT by pk, SQLite-cache miss | 8.0 us | 15.9 us | 3.6 (strace 3.3) |
+| SELECT by pk, cold | 0.95-1.8 ms (by pass, as the cold pread) | 2.5 ms | 9 (7 preads) |
+| PASSIVE checkpoint, 1 / 10 / 100 / 1000 pages | 2.9 / 3.4 / 7.8 / 13.2 ms | 4.0 / 4.6 / 9.2 / 14.1 ms | 12 / 30 / 210 / 2009 |
+
+What the syscalls are:
+
+- Every write transaction takes 6 fcntl F_SETLK calls (1 F_RDLCK, 2 F_WRLCK, 3 F_UNLCK, across the db file and the -shm locks), every autocommit SELECT 2 (F_RDLCK and F_UNLCK).
+  A second process holding locks does not change the count or the price.
+- Every WAL frame is 2 pwrites (the 24-byte header, then the page).
+  A one-row INSERT writes about 3.4 frames (the table leaf, the random index leaf, and a split now and then), a one-row UPDATE 1 frame.
+- pread is a page SQLite's 2 MB cache does not hold: 0.04 to 1 per small transaction, and 1 per row once a transaction touches more than about 500 pages (1000 rows and up), when it also starts spilling dirty pages to the WAL mid-transaction.
+- A checkpoint is exactly 10 + 2 x pages syscalls: a pread and a pwrite per page, 2 fsyncs, 1 fstat, 1 ftruncate and 6 fcntl.
+- In the transaction rows syscalls are about 40% of the time: a 1500 B INSERT spends 2.6 us in fcntl and 6.7 us in pwrite of its 24.3 us, an UPDATE 5.9 of 14.4 us.
+
+### The formula
+
+For an INSERT transaction of N rows of B bytes into a table like `games` (random text key, so one index leaf per row), with the page cache warm:
+
+    T(N, B) = 9 + 8.2 x N us                 (N >= 10, B 128 to 1500: within 15% of every row; B moves it no more than that)
+    T(1, B) = 16 us (B <= 600), 21.5 us (B 1200), 24.3 us (B 1500)
+    S(N)    = 6 + 3 x N syscalls             (N <= 100: 6 fcntl, 2 pwrites per frame at about 1.4 frames per row, a few preads)
+    S(N)    = 6 + 3.3 x N syscalls           (N >= 1000: plus a pread per row once the transaction outgrows the 2 MB cache)
+    UPDATE of one row: 14.5 us, 9 syscalls (6 fcntl, 2 pwrite, 1 pread)
+
+and, off the request path, every 1000 WAL frames the checkpointer spends about 13 ms of wall time (2009 syscalls, 2 fsyncs; it is waiting on EBS, not CPU, for most of it).
+
+To price SQLite's syscalls one by one (all hitting the page cache):
+
+    t_sys = 0.44 x n_fcntl + 0.68 x n_frames + 1.27 x n_frames + 1.22 x n_pread  us
+          = about 0.7 us per syscall in SQLite's mix (INSERT 9.3 us / 12.9, UPDATE 5.9 us / 9.05)
+
+### How it plugs into NANO_MODEL.md
+
+The transform in NANO_MODEL.md section 3 builds the nano's cycles per move from the rig's compute C, which has its syscalls taken out, and prices sends, hand-offs, wake-ups and fsyncs, but not SQLite's other syscalls.
+Add the term
+
+    + 0.7 us x n_sql     (n_sql: SQLite syscalls per move, from the `#sys` counts above or strace)
+
+or, where the mix is known, `0.44 x n_fcntl + 1.95 x n_frames + 1.22 x n_pread`.
+For BASE sat8 and its 48 SQLite syscalls per move this adds 34 us: 155 + 34 = 189 us against 187.2 measured, so the -17% becomes +1%.
+NOW does not touch SQLite on the move path, so its predictions are unchanged.
+For a flush or a game end, use T(N, B) and S(N) per transaction instead of the per-syscall price: they carry SQLite's own CPU as well.
+The nano and the c6g price syscalls the same (see First findings), so these numbers stand for a c6g too.
+
+### Caveats
+
+- With another process holding an open read transaction, the INSERT and SELECT rows barely move (37 against 24 us, 4.0 against 3.9 us), but a one-row UPDATE goes from 14 to 406 us p50 with 0.8 more preads per transaction at disk latency, in both runs, and a 100-row INSERT from 0.79 to 1.75 ms.
+  It is not lock waiting (the fcntl count is unchanged) and the first run's cold page cache was ruled out (the second run warms the file first and saw the same).
+  The cause is not identified; production meets it only while a second process (cbase-import, a backup) has the database open.
+- Pass 1 ran right after `dnf install strace` on a box with 250 MB available, and its SQLite-cache-miss SELECT (and in the first run its UPDATEs) read from disk at about 0.35-0.4 ms; passes 2-5 do not, and the medians above are not affected.
+- EBS latency is bimodal from pass to pass (a cold page read 0.2 or 0.57 ms, a frame's fsync 0.45 or 0.95 ms), so the cold and fsync rows are ranges, not one number.
+- results_2026-10-20_sqlite/t4g_run1/ is the first run on another nano: every row agrees with the second run except the reader rows, which read a file the cold-SELECT row had just dropped from the page cache (fixed: the group now warms the file before the transaction rows).
+- The `--wrap` counters sit in front of every libc call in the binary, so the other groups' pwrite and fcntl rows now pay one predictable branch (under a nanosecond) more than the 2026-10-20 run did.
+
 ## Known bugs and gaps
 
 - The first run's PMU columns on the c6g are wrong: five events were opened un-grouped and the multiplexing was not scaled (add_chain256 showed about 104 instructions per 256-add iteration).
