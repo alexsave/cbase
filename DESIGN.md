@@ -130,7 +130,7 @@ It does not imitate Lambda: what it holds in memory is the authority, and the ru
 - One instance: boot takes an exclusive `flock` on `<db>.serve-lock` before the store opens, and a second `cbase serve` on the same file refuses to start (`boot.c`, `unit_config`).
   The provider says it with `CB_PROV_ONE_PROCESS`.
 - Store, schema 8: plain tables (`providers/local/sql/schema.sql`, `foolish/server/sql/schema.sql`), every statement prepared at open, UUIDs as 16-byte BLOBs.
-  A move writes the fixed-size `games` row and one `game_moves` row in one transaction, whatever the game's length.
+  A commit writes the fixed-size `games` row and one `game_moves` row in one transaction, whatever the game's length (a plain move goes to the move journal first, below).
   `users.username` is the name as shown, exactly as stored; `users.username_key` (`auth/names.h` `cb_name_key`) is the unique column names compare by.
 - Store, group commit: writes queue, and the thread that finds no group running leads one transaction (BEGIN, a SAVEPOINT per request when the group holds more than one, COMMIT) and hands each caller its own result.
   A move is acknowledged only after its COMMIT.
