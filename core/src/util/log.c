@@ -4,6 +4,7 @@
 #include "str.h"
 
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,13 +15,13 @@ static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static cb_log_entry *g_ring;
 static size_t g_cap;
 static uint64_t g_seq;
-static int g_min = CB_LOG_INFO;
+static atomic_int g_min = CB_LOG_INFO;   // written under g_lock, read without it
 
 static const char *NAMES[] = { "DEBUG", "INFO", "WARN", "ERROR" };
 
 void cb_log_init(int min_level, size_t ring) {
     pthread_mutex_lock(&g_lock);
-    g_min = min_level;
+    atomic_store_explicit(&g_min, min_level, memory_order_relaxed);
     if (!g_ring) {
         g_cap = ring ? ring : 2048;
         g_ring = calloc(g_cap, sizeof *g_ring);
@@ -36,9 +37,16 @@ int cb_log_level_parse(const char *s) {
 
 const char *cb_log_level_name(int level) { return level >= 0 && level < 4 ? NAMES[level] : "?"; }
 
+int cb_log_enabled(int level) {
+    if (level > CB_LOG_ERROR) level = CB_LOG_ERROR;
+    return level >= atomic_load_explicit(&g_min, memory_order_relaxed);
+}
+
 void cb_log(int level, const char *module, const char *fmt, ...) {
     if (level < CB_LOG_DEBUG) level = CB_LOG_DEBUG;
     if (level > CB_LOG_ERROR) level = CB_LOG_ERROR;
+    // The level first: a dropped line is not formatted, timestamped or locked for.
+    if (!cb_log_enabled(level)) return;
     cb_log_entry e;
     e.ms = cb_now_ms();
     e.level = level;
@@ -51,7 +59,6 @@ void cb_log(int level, const char *module, const char *fmt, ...) {
     cb_iso8601(e.ms, ts, sizeof ts);
 
     pthread_mutex_lock(&g_lock);
-    if (level < g_min) { pthread_mutex_unlock(&g_lock); return; }
     e.seq = ++g_seq;
     if (g_cap) g_ring[(e.seq - 1) % g_cap] = e;
     // Under the lock, so two threads' lines never interleave mid-line.

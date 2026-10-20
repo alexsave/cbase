@@ -34,11 +34,15 @@ int  cb_log_level_parse(const char *s);
 const char *cb_log_level_name(int level);
 
 void cb_log(int level, const char *module, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
+// Whether a line at `level` is kept (cb_log_init's min_level): one relaxed load, no lock. The
+// macros below ask it first, so a dropped line costs neither its arguments nor its format.
+int  cb_log_enabled(int level);
 
-#define CB_DEBUG(mod, ...) cb_log(CB_LOG_DEBUG, (mod), __VA_ARGS__)
-#define CB_INFO(mod, ...)  cb_log(CB_LOG_INFO, (mod), __VA_ARGS__)
-#define CB_WARN(mod, ...)  cb_log(CB_LOG_WARN, (mod), __VA_ARGS__)
-#define CB_ERROR(mod, ...) cb_log(CB_LOG_ERROR, (mod), __VA_ARGS__)
+#define CB_LOG_AT_(lvl, mod, ...) (cb_log_enabled(lvl) ? cb_log((lvl), (mod), __VA_ARGS__) : (void)0)
+#define CB_DEBUG(mod, ...) CB_LOG_AT_(CB_LOG_DEBUG, (mod), __VA_ARGS__)
+#define CB_INFO(mod, ...)  CB_LOG_AT_(CB_LOG_INFO, (mod), __VA_ARGS__)
+#define CB_WARN(mod, ...)  CB_LOG_AT_(CB_LOG_WARN, (mod), __VA_ARGS__)
+#define CB_ERROR(mod, ...) CB_LOG_AT_(CB_LOG_ERROR, (mod), __VA_ARGS__)
 
 // Copies the retained entries with seq > after_seq and level >= min_level,
 // oldest first, at most `cap` of them. Returns how many were copied. An entry

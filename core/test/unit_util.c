@@ -244,6 +244,25 @@ static void log_ring(void) {
     T_EQ_INT(cb_log_read(cb_log_last_seq(), CB_LOG_DEBUG, e, 8), 0);
 }
 
+static int g_formatted;
+static int formatted(void) { return ++g_formatted; }
+
+// A line below the level is dropped before its arguments are evaluated or its format run
+// (log.h cb_log_enabled): a hot path's debug line costs one load.
+static void log_level_first(void) {
+    cb_log_init(CB_LOG_INFO, 4);
+    const uint64_t start = cb_log_last_seq();
+    g_formatted = 0;
+    CB_DEBUG("t", "never %d", formatted());
+    T_EQ_INT(g_formatted, 0);
+    T_EQ_INT(cb_log_last_seq(), start);
+    CB_INFO("t", "kept %d", formatted());
+    T_EQ_INT(g_formatted, 1);
+    T_EQ_INT(cb_log_last_seq(), start + 1);
+    T_CHECK(!cb_log_enabled(CB_LOG_DEBUG));
+    T_CHECK(cb_log_enabled(CB_LOG_ERROR + 1));   // above ERROR counts as ERROR
+}
+
 static atomic_int g_ran;
 static void bump(void *ud) { (void)ud; atomic_fetch_add(&g_ran, 1); }
 
@@ -264,6 +283,7 @@ int main(void) {
     T_RUN(json_writer_b64);
     T_RUN(json_reader);
     T_RUN(log_ring);
+    T_RUN(log_level_first);
     T_RUN(pool_runs_everything);
     return T_DONE();
 }
