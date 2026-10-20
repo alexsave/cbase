@@ -1,7 +1,8 @@
 /* calbench.c : CPU calibration suite for Graviton2 (c6g / t4g.nano) and the Docker arm64 rig.
  *
  * One static arm64 binary, built with cbase serve's flags (-std=gnu11 -D_GNU_SOURCE -O2 -g -pthread -static, musl).
- * Usage: calbench GROUP PASS   (GROUP: env clock core kernel net wake real str malloc mem stream ebs steal)
+ * Usage: calbench GROUP PASS   (GROUP: env clock core kernel net wake real str malloc mem stream ebs steal sqlite)
+ *        calbench sqlitecount OP N   (the sqlite group's setup, then OP N times; for strace -c, see sqlite_group.inc)
  * Output: TSV on stdout, one row per measurement:
  *   group name param k n min max mean std p50 p99 cyc insn brmiss l1dmiss llcmiss cpu pass
  * ns columns are ns per op; each of the n samples times k back-to-back ops and divides by k
@@ -34,6 +35,9 @@
 #include <sys/syscall.h>
 #include <sys/uio.h>
 #include <sys/utsname.h>
+#include <sys/wait.h>
+#include <signal.h>
+#include <stdarg.h>
 #include <time.h>
 #include <unistd.h>
 #include <openssl/evp.h>
@@ -833,8 +837,12 @@ static void g_env(void) {
   for (int c = 0; c < ncpu() && c < 8; c++) { char p[128]; snprintf(p, sizeof p, "/sys/devices/system/cpu/cpu%d/cpu_capacity", c); cat(p, 1); }
 }
 
+#include "sqlite_group.inc"
+
 int main(int argc, char **argv) {
   if (argc < 2) { fprintf(stderr, "usage: calbench GROUP [PASS]\n"); return 2; }
+  if (argc == 4 && (!strcmp(argv[1], "__hold") || !strcmp(argv[1], "__sqlreader"))) return child_main(argv[1], argv[2], atoi(argv[3]));
+  if (argc == 4 && !strcmp(argv[1], "sqlitecount")) return sqlitecount_main(argv[2], atoi(argv[3]));
   g_pass = argc > 2 ? atoi(argv[2]) : 0;
   ncpu();
   if (getenv("CAL_CPU")) g_cpu = atoi(getenv("CAL_CPU"));
@@ -860,5 +868,6 @@ int main(int argc, char **argv) {
   RUN("stream", g_stream);
   RUN("ebs", g_ebs);
   RUN("steal", g_steal);
+  RUN("sqlite", g_sqlite);
   return 0;
 }
