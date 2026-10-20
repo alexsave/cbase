@@ -64,6 +64,7 @@ static void h_ping(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) { cb_r
 static void h_pub_on_loop(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res);
 static void h_act(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res);
 static void h_would_wait(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res);
+static void h_order(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res);
 
 static void start(void) {
     cb_log_init(CB_LOG_ERROR, 0);
@@ -84,6 +85,7 @@ static void start(void) {
     T_EQ_INT(cb_router_add(g_ctx.router, "GET", "/t/publoop", CB_ROUTE_LOOP, h_pub_on_loop), CB_OK);
     T_EQ_INT(cb_router_add(g_ctx.router, "POST", "/t/act", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_act), CB_OK);
     T_EQ_INT(cb_router_add(g_ctx.router, "POST", "/t/wait", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_would_wait), CB_OK);
+    T_EQ_INT(cb_router_add(g_ctx.router, "GET", "/t/order", CB_ROUTE_LOOP, h_order), CB_OK);
     cb_server_opts o;
     cb_server_opts_default(&o);
     g_ctx.server = cb_server_new(&g_ctx, &o);
@@ -343,6 +345,47 @@ static void a_req_that_would_wait_runs_again_on_the_pool(void) {
     cb_buf_free(&m);
 }
 
+// A loop route that publishes U1's view 31 once the test has published view 30 from its own
+// thread: that push is queued for the loop, which is in here and has not delivered it yet.
+static atomic_int g_order_in, g_order_go;
+static void h_order(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
+    atomic_store(&g_order_in, 1);
+    for (int i = 0; i < 2000 && !atomic_load(&g_order_go); i++) usleep(1000);
+    publish_view(31);
+    cb_res_text(res, 200, "ok");
+}
+static void *get_order(void *ud) {
+    tc_response r;
+    if (tc_http(g_port, "GET", "/t/order", NULL, NULL, 0, &r) == 0) tc_response_free(&r);
+    return NULL;
+}
+
+// A push from another thread, still queued for the loop, is heard before one the loop publishes
+// after it: a game's pushes reach each hearer in its commit order, whichever thread committed.
+static void pushes_keep_their_order_across_threads(void) {
+    cb_buf m;
+    cb_buf_init(&m);
+    NwFrame pf;
+    int a = open_as(U1, NULL, &m);
+    atomic_store(&g_order_in, 0);
+    atomic_store(&g_order_go, 0);
+    pthread_t th;
+    pthread_create(&th, NULL, get_order, NULL);
+    for (int i = 0; i < 2000 && !atomic_load(&g_order_in); i++) usleep(1000);
+    T_CHECK(atomic_load(&g_order_in));
+    publish_view(30);   // queued: the loop is busy in /t/order
+    atomic_store(&g_order_go, 1);
+    pthread_join(th, NULL);
+    T_EQ_INT(fr_recv(a, 2000, &m), NW_WS_VIEW);
+    T_EQ_INT(nw_frame_decode(m.p, (int)m.len, &pf), NW_OK);
+    T_EQ_INT((int)pf.version, 30);
+    T_EQ_INT(fr_recv(a, 2000, &m), NW_WS_VIEW);
+    T_EQ_INT(nw_frame_decode(m.p, (int)m.len, &pf), NW_OK);
+    T_EQ_INT((int)pf.version, 31);
+    close(a);
+    cb_buf_free(&m);
+}
+
 static atomic_int g_hold;
 static void hold_worker(void *ud) { while (atomic_load(&g_hold)) usleep(1000); }
 
@@ -564,6 +607,7 @@ int main(void) {
     T_RUN(a_push_on_the_loop_is_not_posted);
     T_RUN(an_inline_req_answers_with_its_pushes);
     T_RUN(a_req_that_would_wait_runs_again_on_the_pool);
+    T_RUN(pushes_keep_their_order_across_threads);
     T_RUN(req_runs_a_route_as_the_user);
     T_RUN(ended_sessions_close_their_sockets);
     T_RUN(refusals_end_the_connection);

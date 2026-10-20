@@ -20,8 +20,8 @@
 // order they arrived; frames that come meanwhile wait in its inbox. A REQ for a
 // CB_ROUTE_INLINE route runs on the loop instead when the server's gate is open
 // (req_inline), exactly as an HTTP request to it would. A publish
-// from any other thread copies its frame and posts it to the loop; one on the loop
-// thread is delivered at once (local_deliver).
+// from any other thread copies its frame and queues it for the loop; one on the loop
+// thread is delivered at once, after any queued before it (local_deliver).
 //
 // A REQ IS AN HTTP REQUEST. It names a route (method and path) and carries the
 // body; the route's handler runs exactly as for HTTP, with the connection's
@@ -107,6 +107,13 @@ typedef struct {
     struct msg *spare_msgs;
     struct job *spare_jobs;
     int n_spare_msgs, n_spare_jobs;
+    // Pushes published off the loop, in publish order, not delivered yet (pq_mu); one post at a time
+    // asks the loop to deliver them (pq_posted), and a push published on the loop delivers them
+    // first (local_deliver), so every hearer gets a document's pushes in its commit order.
+    pthread_mutex_t pq_mu;
+    struct pub *pq_head, *pq_tail;
+    bool pq_posted;
+    atomic_int pq_n;
 } local;
 
 #define INBOX_MAX (1u << 20)   // a client this far ahead of us is not a stream client
@@ -759,30 +766,47 @@ static void pub_deliver(local *L, const pub *p) {
     if (ids != stack) free(ids);
 }
 
-// A push another thread posted (local_deliver): delivered, and its copy given back.
-static void pub_on_loop(cb_loop *l, void *ud) {
-    pub *p = ud;
-    pub_deliver(p->rt->impl, p);
-    pub_free(p);
+// The pushes other threads queued (loop thread), in their order: delivered, their copies given back.
+static void pq_deliver(local *L) {
+    pthread_mutex_lock(&L->pq_mu);
+    pub *p = L->pq_head;
+    L->pq_head = L->pq_tail = NULL;
+    L->pq_posted = false;
+    atomic_store(&L->pq_n, 0);
+    pthread_mutex_unlock(&L->pq_mu);
+    while (p) {
+        pub *n = p->next;
+        p->next = NULL;
+        pub_deliver(L, p);
+        pub_free(p);
+        p = n;
+    }
 }
+
+static void pq_on_loop(cb_loop *l, void *ud) { (void)l; pq_deliver(ud); }
 
 // ON THE LOOP THREAD (a request inline on the loop, a SUB, a timer): delivered at once, the
 // caller's frame borrowed - no copy, no post, no wake; the push is in each hearer's out buffer
-// in the same pass as the answer, and flush_dirty writes each socket once. FROM ANY OTHER THREAD
-// (a pooled request, a job): a copy posted to the loop, which owns the sockets. A failure to
-// hand it over counts as one; what the loop's writes do later is the socket's.
+// in the same pass as the answer, and flush_dirty writes each socket once. Pushes other threads
+// queued before it go first: the app orders a document's commits (its lock), and one committed on the
+// pool or by a job (its push queued) may precede this one, whose hearers must hear it first.
+// FROM ANY OTHER THREAD (a pooled request, a job): a copy queued for the loop, which owns the
+// sockets, and the loop told once per batch of them. A failure to hand it over counts as one;
+// what the loop's writes do later is the socket's.
 static int local_deliver(cb_rt *rt, const cb_rt_to *to, const uint8_t *frame, size_t len) {
     cb_loop *loop = rt->ctx->loop;
     if (!loop || !to->family) return 0;
+    local *L = rt->impl;
     // A family that names {user} is the user's own, to all their connections; one that names
     // only {doc} is the room's spectators'.
     bool user = strstr(to->family->pattern, "{user}") != NULL;
     const char *key = user ? to->user_id : to->doc_id;
     if (!key || !*key || strlen(key) >= sizeof ((pub *)0)->key) return 1;
     if (cb_loop_on_thread(loop)) {
+        if (atomic_load(&L->pq_n)) pq_deliver(L);
         pub b = { .rt = rt, .scope = user ? PUB_USER : PUB_ROOM, .len = len, .frame = (uint8_t *)frame };
         cb_strlcpy(b.key, key, sizeof b.key);
-        pub_deliver(rt->impl, &b);
+        pub_deliver(L, &b);
         return 0;
     }
     pub *p = pub_get();
@@ -798,13 +822,29 @@ static int local_deliver(cb_rt *rt, const cb_rt_to *to, const uint8_t *frame, si
     if (!p->frame) { pub_free(p); return 1; }
     memcpy(p->frame, frame, len);
     p->len = len;
-    if (cb_loop_post(loop, pub_on_loop, p) != CB_OK) { pub_free(p); return 1; }
+    pthread_mutex_lock(&L->pq_mu);
+    if (L->pq_tail) L->pq_tail->next = p;
+    else L->pq_head = p;
+    L->pq_tail = p;
+    atomic_fetch_add(&L->pq_n, 1);
+    const bool tell = !L->pq_posted;
+    L->pq_posted = true;
+    pthread_mutex_unlock(&L->pq_mu);
+    if (tell && cb_loop_post(loop, pq_on_loop, L) != CB_OK) {
+        // The loop has stopped: nothing will deliver it (local_free frees what is queued).
+        pthread_mutex_lock(&L->pq_mu);
+        L->pq_posted = false;
+        pthread_mutex_unlock(&L->pq_mu);
+        return 1;
+    }
     return 0;
 }
 
 static void local_free(cb_rt *rt) {
     local *L = rt->impl;
     while (L->head) lconn_free(L, L->head);
+    for (pub *p = L->pq_head, *n; p; p = n) { n = p->next; free(p->frame); free(p); }
+    pthread_mutex_destroy(&L->pq_mu);
     msgs_free(L->spare_msgs);
     while (L->spare_jobs) { job *j = L->spare_jobs; L->spare_jobs = (job *)j->frame; j->frame = NULL; job_free(j); }
     free(L->byid);
@@ -866,7 +906,7 @@ static void local_forget(cb_rt *rt, const char *user_id, const char *session_id,
     if (cb_loop_post(loop, end_on_loop, e) != CB_OK) free(e);
 }
 
-// No deliver_lanes: a push is written into its sockets' buffers (on the loop) or a copy posted to
+// No deliver_lanes: a push is written into its sockets' buffers (on the loop) or a copy queued for
 // the loop, so a batch has nothing to overlap.
 static const cb_rt_transport LOCAL_T = { "local", local_deliver, local_free, local_forget, NULL };
 
@@ -876,6 +916,7 @@ int cb_rt_local_new(cb_ctx *ctx, cb_rt **out) {
     local *L = calloc(1, sizeof *L);
     if (!rt || !L) { free(rt); free(L); return CB_E_NOMEM; }
     L->ctx = ctx;
+    pthread_mutex_init(&L->pq_mu, NULL);
     rt->t = &LOCAL_T;
     rt->ctx = ctx;
     rt->impl = L;
