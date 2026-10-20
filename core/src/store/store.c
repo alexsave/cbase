@@ -33,7 +33,9 @@ typedef struct {
 
 static int admin_write_run(void *ud) {
     admin_write *w = ud;
-    return CB_STORE_CALL(w->s, admin_query, w->stmt, true, w->fn, w->ud);
+    int rc = CB_STORE_CALL(w->s, admin_query, w->stmt, true, w->fn, w->ud);
+    if (cb_main_app && cb_main_app->store_forget) cb_main_app->store_forget();
+    return rc;
 }
 
 int cb_store_admin_query(cb_store *s, const char *statement, bool allow_write, cb_admin_row_fn fn, void *ud) {
