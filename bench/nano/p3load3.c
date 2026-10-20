@@ -133,7 +133,7 @@ static int g_have;          // the table holds this game
 static int g_game_over, g_ready_sent, g_joined, g_play_pending;
 static int64_t g_think_due = -1;
 static uint32_t g_played_v;
-static long g_n_moves, g_n_refused, g_n_casts, g_n_views;
+static long g_n_moves, g_n_refused, g_n_casts, g_n_views, g_cast_bytes, g_n_deltas, g_n_cast_refused;
 
 static int legal_wire(uint8_t *wire, int cap) {
     if (!g_have) return 0;
@@ -229,7 +229,9 @@ static void apply_cast(const uint8_t *p, int n) {
     if (bl < 0) bl = 0;
     int cor = client_cast_open(&g_c, p, n, ident, il, board, bl);
     if (getenv("P3DEBUG")) fprintf(stderr, "%s cast n %d open %d\n", g_name, n, cor);
-    if (cor < 0) return;
+    g_cast_bytes += n;
+    if (n > 0 && p[0] == EVW_CAST_DELTA) g_n_deltas++;
+    if (cor < 0) { g_n_cast_refused++; return; }
     while (client_push_next(&g_c) == 1) {}
     client_push_final(&g_c);
     g_n_casts++;
@@ -445,8 +447,8 @@ int main(int argc, char **argv) {
     nap(1500); pump();
     fprintf(stderr, "%s: refused_at_once=%ld; pump after 1.5 s idle:\n", g_name, g_n_refused_at_once);
     
-    printf("%s: games=%d wall_ms=%lld my_moves=%ld refused=%ld refetch=%ld http=%ld frames=%ld casts=%ld views=%ld moves_per_s=%.2f\n", g_name, g_games,
-           (long long)wall, g_n_moves, g_n_refused, g_n_refetch, g_n_http, g_n_frames, g_n_casts, g_n_views, wall > 0 ? g_n_moves * 1000.0 / (double)wall : 0);
+    printf("%s: games=%d wall_ms=%lld my_moves=%ld refused=%ld refetch=%ld http=%ld frames=%ld casts=%ld views=%ld cast_bytes=%ld deltas=%ld cast_refused=%ld moves_per_s=%.2f\n", g_name, g_games,
+           (long long)wall, g_n_moves, g_n_refused, g_n_refetch, g_n_http, g_n_frames, g_n_casts, g_n_views, g_cast_bytes, g_n_deltas, g_n_cast_refused, wall > 0 ? g_n_moves * 1000.0 / (double)wall : 0);
     qsort(g_lat, (size_t)g_nlat, sizeof *g_lat, dcmp);
     long whys = 0; for (int i = 0; i < 256; i++) whys += g_n_why[i];
     printf("%s: lat_n=%ld p50_ms=%.2f p95_ms=%.2f p99_ms=%.2f max_ms=%.2f http_err=%ld refused_why=%ld\n", g_name, g_nlat, pct(0.5), pct(0.95), pct(0.99), g_nlat ? g_lat[g_nlat-1] : 0, g_n_http_err, whys);
