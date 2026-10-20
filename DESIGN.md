@@ -169,11 +169,13 @@ It does not imitate Lambda: what it holds in memory is the authority, and the ru
 - Timers: a bot pause holds no thread; the provider starts the drive again from a loop timer, and the bot lease is a set in memory.
 - Tokens: the access token is a fixed binary layout with an HMAC-SHA256 (`auth/jwt.c`), and each thread caches the tokens it verified.
 - Memory: SQLite allocates through free lists for blocks of 1 KB to 64 KB, because musl unmaps a malloc group when its last slot is freed; the kernel section and the commit batch are per worker thread.
-- The move journal (`foolish/server/src/store/journal.c`, `foolish/c/src/replay_move.c`): a plain move does not write SQLite.
-  A commit that is one human move or one bot cycle and nothing else (the roster, the status and the seed unchanged, no rating, no new session log) is coded as its index in the kernel's legal menu at the board it was played on (with the menu's size, so a record decodes without the board), on the v10 replay codec's rANS coder, and appended to a segment `<db>-journal.<seq>` with every record queued meanwhile (group commit).
+- The move journal (`foolish/server/src/store/journal.c`): a plain move does not write SQLite.
+  A commit that is one human move or one bot cycle and nothing else (the roster, the status and the seed unchanged, no rating, no new session log) is written as a fixed record: its flags, its game's slot, its time, and the kernel's move list (`Table.moves`: each move's seat and awire bytes, the same list a delta cast carries, written by `evwire_moves_put` and read by `evwire_moves_read`), appended to a segment `<db>-journal.<seq>` with every record queued meanwhile (group commit).
   The move is acknowledged once its batch's commit marker is stored: the pages are the kernel's page cache, the durability the WAL at synchronous=NORMAL gave (`CBASE_JOURNAL_SYNC=1` adds an msync per batch).
-  A batch is its own coder integer behind an 8-byte header (magic, format, length, FNV-1a 32), so a torn or corrupt tail loses only that unacknowledged batch.
-  A game is named by its slot in the segment's table (uniform over N + 1, N meaning a new game whose code follows once).
+  A batch has an 8-byte header (magic, format, length, CRC-32C), so a torn or corrupt tail loses only that unacknowledged batch.
+  A game is named by its slot in the segment's table (a u16, or a new game's id once).
+  Recovery acts a human's move again on the board the record follows, and hands a bot cycle's moves to the drive as its preferred moves, which must apply exactly them.
+  A segment of another format refuses the start: a deploy stops the old server first, and its close flushes every move and deletes its segments.
   The new row and its moves are held in memory; the store's game reads (`game_get`, `game_logs`, the dashboard's `games_get_views`, `is_member`, `game_members`) see them first, and so do the two scans of the games table: the dashboard list (`games_of_user`: the tables' newest, then every held game the user sits at, sorted and cut) and the bot scan (the tables' games the overlay does not hold, then the held ones that match), neither of which flushes.
   ONE OWNER: the overlay is the only copy of a game in the process (there is no row cache beside it).
   It holds each game DECODED, as the kernel's `TableResident` (the Game up to its log array, the roster, clock, rating stamp and RNG base, about 2.1 KB, made canonical: exactly the board a load of its own row gives), and encodes the row only when something reads it (a view, the flush).

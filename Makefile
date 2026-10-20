@@ -163,9 +163,9 @@ build/gen/console_html.c: core/src/admin/console.html build/embed
 	build/embed $< cbase_console_html > $@.new && mv $@.new $@
 
 # shared/c's codecs c_base speaks on its edges (base64 for tokens, JWTs and
-# broadcasts; hex for ids, digests and cursors). Each has its own test there,
-# which this build runs (SHARED_TESTS below).
-SHARED_SRC := $(C_ROOT)/shared/c/b64/b64.c $(C_ROOT)/shared/c/hex/hex.c
+# broadcasts; hex for ids, digests and cursors) and the journal's checksum
+# (CRC-32C). Each has its own test there, which this build runs (SHARED_TESTS below).
+SHARED_SRC := $(C_ROOT)/shared/c/b64/b64.c $(C_ROOT)/shared/c/hex/hex.c $(C_ROOT)/shared/c/crc32c/crc32c.c
 LIB_SRC  := $(sort $(filter-out $(MAIN_SERVE) $(MAIN_LAMBDA),$(foreach r,$(SRC_ROOTS),$(wildcard $(r)/*.c $(r)/*/*.c)))) $(SHARED_SRC) \
             build/gen/schema_sql.c build/gen/foolish_schema_sql.c build/gen/console_html.c
 IMPORT_SRC := $(C_ROOT)/foolish/server/migrate/import.c
@@ -256,7 +256,7 @@ SMOKE_PROGS = $(1)/cbase $(1)/bootstrap $(addprefix $(1)/test/,smoke smoke_matri
 
 # shared/c's tests of what c_base links from there (shared/tools/shared_tests.mk),
 # in c_base's own flags and sanitized variant.
-SHARED_TESTS := b64_test hex_test
+SHARED_TESTS := b64_test hex_test crc32c_test
 include $(C_ROOT)/shared/tools/shared_tests.mk
 $(call SHARED_TESTS_IN,,build/obj/cbase,CC,CB_CFLAGS)
 $(call SHARED_TESTS_IN,asan_,build/obj/asan,CC,ASAN_CB_CFLAGS)
