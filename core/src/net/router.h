@@ -35,14 +35,16 @@ typedef void (*cb_handler)(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res
 #define CB_ROUTE_POOL   0x0   // run on the request pool (the default)
 #define CB_ROUTE_LOOP   0x1   // run on the loop thread; must not block
 #define CB_ROUTE_INLINE 0x2   // a pool route that may run on the loop thread instead, when the
-                              // pool is idle and nothing else is ready (net/server.c inline_ok);
-                              // it must be short, and it must never wait on the pool or the loop
+                              // server's gate is open (net/server.h cb_server_inline_ok); it must
+                              // be short, and it must never wait on the pool or the loop
 
-typedef struct {
+typedef struct cb_route_s {
     const char *method;    // "GET", "POST", ..., or "*"
     const char *pattern;   // "/exact" or "/prefix/*"
     unsigned    flags;     // CB_ROUTE_*
     cb_handler  fn;
+    int         inline_us; // CB_ROUTE_INLINE: the longest a run on the loop should take (0: the
+                           // server's inline_budget_us); longer counts toward the valve
 } cb_route;
 
 cb_router *cb_router_new(void);
@@ -51,8 +53,8 @@ void cb_router_free(cb_router *r);
 // CB_E_CONFLICT for the same method and pattern twice, CB_E_INVALID for a
 // pattern that does not start with '/'.
 int cb_router_add(cb_router *r, const char *method, const char *pattern, unsigned flags, cb_handler fn);
-// Adds routes[0..n) in order: CB_OK, or the first refusal (the routes before
-// it stay added).
+// Adds routes[0..n) in order, each with its inline budget: CB_OK, or the first
+// refusal (the routes before it stay added).
 int cb_router_add_all(cb_router *r, const cb_route *routes, int n);
 
 // The route for method + path, or NULL. When NULL, *path_known says whether

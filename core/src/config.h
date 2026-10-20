@@ -91,8 +91,9 @@ typedef struct {
     int  max_conns;
     int  listen_backlog;
     // Inline dispatch (net/server.h): a CB_ROUTE_INLINE request runs on the loop
-    // thread when the request pool is idle and nothing else is ready; a request
-    // that takes longer than this many microseconds switches inline off for 5 s.
+    // thread when the request pool is idle and the loop pass has inline time
+    // left; a run longer than this many microseconds (or its route's own budget)
+    // is over budget, and three of them within a second switch inline off for 5 s.
     // CBASE_INLINE_BUDGET_US, default 2000; 0 turns inline dispatch off.
     int  inline_budget_us;
     // The bursts of the rate limits (rate_limits.h), per window, indexed by

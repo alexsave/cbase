@@ -13,6 +13,7 @@
 #define CB_SERVER_H
 
 #include "ctx.h"
+#include "router.h"
 #include "ws.h"
 
 #include <stdbool.h>
@@ -26,9 +27,16 @@ typedef struct {
     int64_t ws_ping_ms;    // a WebSocket silent this long is sent a PING (default 30 s)
     int     max_conns;     // refused past this (default 4096; CBASE_MAX_CONNS), each refusal counted and logged once a minute
     int     backlog;       // listen(2)'s queue (default 512; CBASE_LISTEN_BACKLOG)
-    int     inline_budget_us;   // CB_ROUTE_INLINE requests may run on the loop thread; one slower than this
-                                // switches that off for inline_off_ms (default 2000; 0 = never inline; CBASE_INLINE_BUDGET_US)
-    int     inline_off_ms;      // how long the tripped valve stays open (default 5000)
+    // INLINE DISPATCH: a CB_ROUTE_INLINE request may run on the loop thread (cb_server_inline_ok).
+    int     inline_budget_us;   // a run longer than its route's budget (router.h cb_route.inline_us) or, for a
+                                // route with none, than this, is over budget (default 2000; 0 = never
+                                // inline; CBASE_INLINE_BUDGET_US)
+    int     inline_trips;       // this many runs over budget within inline_trip_window_ms trip the valve
+    int     inline_trip_window_ms;   // (default 3 in 1000 ms): one slow run is a hiccup, not a trend
+    int     inline_off_ms;      // how long the tripped valve keeps inline dispatch off (default 5000)
+    int     inline_pass_us;     // inline handler time one loop pass may spend; past it the rest of the
+                                // pass's requests go to the pool, so a burst cannot starve the other
+                                // sockets (default 4000)
 } cb_server_opts;
 
 void cb_server_opts_default(cb_server_opts *o);
@@ -50,12 +58,13 @@ void cb_server_free(cb_server *s);
 // INLINE DISPATCH (loop thread). A CB_ROUTE_INLINE handler may run on the loop thread instead of
 // the pool when cb_server_inline_ok says so now; whoever runs it there (dispatch for HTTP,
 // realtime's socket hub for a REQ frame) times it and reports it with cb_server_inline_done,
-// which feeds the valve.
+// which feeds the pass budget and the valve.
 bool cb_server_inline_ok(cb_server *s);
-void cb_server_inline_done(cb_server *s, int64_t took_us);
+void cb_server_inline_done(cb_server *s, const cb_route *r, int64_t took_us);
 // Inline dispatch counters (loop thread, or after it has stopped): requests
-// run on the loop thread, and times the budget valve tripped.
-void cb_server_inline_stats(const cb_server *s, int64_t *ran, int64_t *tripped);
+// run on the loop thread, runs over their budget, and times the valve tripped.
+typedef struct { int64_t ran, over, tripped; } cb_inline_stats;
+void cb_server_inline_stats(const cb_server *s, cb_inline_stats *out);
 // ANY THREAD: send() calls made so far (a socket's answer and pushes of one pass share one).
 int64_t cb_server_sends(const cb_server *s);
 

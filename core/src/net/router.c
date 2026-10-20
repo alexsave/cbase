@@ -31,8 +31,9 @@ static bool is_prefix(const char *pattern, size_t *stem) {
     return false;
 }
 
-int cb_router_add(cb_router *r, const char *method, const char *pattern, unsigned flags, cb_handler fn) {
-    if (!pattern || pattern[0] != '/' || !method || !fn) return CB_E_INVALID;
+static int add(cb_router *r, const cb_route *rt) {
+    const char *method = rt->method, *pattern = rt->pattern;
+    if (!pattern || pattern[0] != '/' || !method || !rt->fn) return CB_E_INVALID;
     for (int i = 0; i < r->n; i++)
         if (strcmp(r->r[i].route.method, method) == 0 && strcmp(r->r[i].route.pattern, pattern) == 0) return CB_E_CONFLICT;
     if (r->n == r->cap) {
@@ -42,7 +43,7 @@ int cb_router_add(cb_router *r, const char *method, const char *pattern, unsigne
         r->r = x;
         r->cap = cap;
     }
-    entry e = { { method, pattern, flags, fn }, (uint8_t)cb_http_method_id(method), false, strlen(pattern), 0, 0 };
+    entry e = { *rt, (uint8_t)cb_http_method_id(method), false, strlen(pattern), 0, 0 };
     e.prefix = is_prefix(pattern, &e.stem);
     // How well the pattern matches a path it matches: longer wins, exact beats
     // prefix at the same length.
@@ -56,9 +57,14 @@ int cb_router_add(cb_router *r, const char *method, const char *pattern, unsigne
     return CB_OK;
 }
 
+int cb_router_add(cb_router *r, const char *method, const char *pattern, unsigned flags, cb_handler fn) {
+    const cb_route rt = { method, pattern, flags, fn, 0 };
+    return add(r, &rt);
+}
+
 int cb_router_add_all(cb_router *r, const cb_route *routes, int n) {
     for (int i = 0; i < n; i++) {
-        int rc = cb_router_add(r, routes[i].method, routes[i].pattern, routes[i].flags, routes[i].fn);
+        int rc = add(r, &routes[i]);
         if (rc != CB_OK) return rc;
     }
     return CB_OK;

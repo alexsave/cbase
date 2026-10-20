@@ -91,7 +91,10 @@ struct cb_server {
     int n;
     int busy;
     int64_t inline_off_until;   // loop ms: no inline dispatch before this (the valve tripped)
-    int64_t inline_ran, inline_tripped;
+    int64_t inline_ran, inline_over, inline_tripped;
+    int64_t inline_over_at[8];  // loop ms of the last runs over budget (a ring, inline_trips of it used)
+    uint64_t inline_pass;       // the loop pass inline_pass_used counts
+    int64_t inline_pass_used;   // us of inline handlers in that pass
     int64_t refused;        // connections the cap turned away since the last log line
     int64_t refused_log_ms; // when that line was last written
     bool draining;
@@ -143,7 +146,10 @@ void cb_server_opts_default(cb_server_opts *o) {
     o->max_conns = 16384;
     o->backlog = 512;
     o->inline_budget_us = 2000;
+    o->inline_trips = 3;
+    o->inline_trip_window_ms = 1000;
     o->inline_off_ms = 5000;
+    o->inline_pass_us = 4000;
 }
 
 static int set_nonblock(int fd) {
@@ -365,35 +371,51 @@ static void job_run(void *ud) {
 }
 
 // A CB_ROUTE_INLINE request runs on the loop thread only when ALL hold: inline is enabled and the
-// valve is not tripped, the request pool has nothing queued or running (so the request cannot
-// reorder behind work already handed off, and no worker is about to need the CPU), and this
-// is the last event ready in this loop pass (nobody else is waiting for the loop). The route's
-// own flag is the caller's to check (dispatch for HTTP, rt_local's pump for a socket's REQ).
+// valve is not tripped; the request pool has nothing queued or running (so the request cannot
+// reorder behind work already handed off, and cannot wait on a lock or the journal's writer a
+// pooled request holds); and this loop pass has inline time left (inline_pass_us), so a burst of
+// ready requests runs inline until the pass's budget is spent and the rest of it goes to the pool
+// instead of starving the other sockets. The route's own flag is the caller's to check (dispatch
+// for HTTP, rt_local's pump for a socket's REQ).
 bool cb_server_inline_ok(cb_server *s) {
     cb_ctx *ctx = s->ctx;
     if (s->o.inline_budget_us <= 0 || !ctx->req_pool) return false;
     if (cb_loop_now(ctx->loop) < s->inline_off_until) return false;
-    return cb_pool_idle(ctx->req_pool) && cb_loop_ready_left(ctx->loop) == 0;
+    if (!cb_pool_idle(ctx->req_pool)) return false;
+    const uint64_t pass = cb_loop_pass(ctx->loop);
+    if (pass != s->inline_pass) { s->inline_pass = pass; s->inline_pass_used = 0; }
+    return s->inline_pass_used < s->o.inline_pass_us;
 }
 
-// The valve: a handler that ran inline for longer than the budget (a held lock, a fsync, a disk
-// stall) turns inline dispatch off for inline_off_ms.
-void cb_server_inline_done(cb_server *s, int64_t took_us) {
+// The valve: a run longer than its route's budget is over; inline_trips of them within
+// inline_trip_window_ms (a held lock, a fsync, a disk stall that persists) turn inline dispatch
+// off for inline_off_ms. One slow run alone does not: it is a hiccup, and the pass budget already
+// bounds what a burst of them costs the other sockets.
+void cb_server_inline_done(cb_server *s, const cb_route *r, int64_t took_us) {
     s->inline_ran++;
-    if (took_us > s->o.inline_budget_us) {
-        s->inline_tripped++;
-        s->inline_off_until = cb_loop_now(s->ctx->loop) + s->o.inline_off_ms;
-        if (s->inline_tripped == 1)
-            CB_WARN("net", "inline request took %lld us (budget %d): inline dispatch is off for %d ms",
-                    (long long)took_us, s->o.inline_budget_us, s->o.inline_off_ms);
-    }
+    s->inline_pass_used += took_us;
+    const int budget = r && r->inline_us > 0 ? r->inline_us : s->o.inline_budget_us;
+    if (took_us <= budget) return;
+    const int64_t now = cb_loop_now(s->ctx->loop);
+    int k = s->o.inline_trips;
+    if (k < 1) k = 1;
+    if (k > (int)(sizeof s->inline_over_at / sizeof s->inline_over_at[0])) k = (int)(sizeof s->inline_over_at / sizeof s->inline_over_at[0]);
+    s->inline_over_at[s->inline_over++ % k] = now;
+    // The k-th run over budget before this one is the oldest in the ring: within the window, they trip.
+    if (s->inline_over < k || now - s->inline_over_at[s->inline_over % k] > s->o.inline_trip_window_ms) return;
+    s->inline_tripped++;
+    s->inline_off_until = now + s->o.inline_off_ms;
+    if (s->inline_tripped == 1)
+        CB_WARN("net", "%d inline requests over budget within %d ms (the last %lld us, budget %d): inline dispatch is off for %d ms",
+                k, s->o.inline_trip_window_ms, (long long)took_us, budget, s->o.inline_off_ms);
 }
 
 int64_t cb_server_sends(const cb_server *s) { return atomic_load_explicit(&((cb_server *)s)->sends, memory_order_relaxed); }
 
-void cb_server_inline_stats(const cb_server *s, int64_t *ran, int64_t *tripped) {
-    if (ran) *ran = s->inline_ran;
-    if (tripped) *tripped = s->inline_tripped;
+void cb_server_inline_stats(const cb_server *s, cb_inline_stats *out) {
+    out->ran = s->inline_ran;
+    out->over = s->inline_over;
+    out->tripped = s->inline_tripped;
 }
 
 static void dispatch(conn *c) {
@@ -406,11 +428,12 @@ static void dispatch(conn *c) {
         finish(c);
         return;
     }
-    if (cb_handle_inline_ok(ctx, c->req) && cb_server_inline_ok(s)) {
+    const cb_route *ir = cb_handle_inline_route(ctx, c->req);
+    if (ir && cb_server_inline_ok(s)) {
         // Fast and the loop is free: no hand-off, no wake, no second post.
         int64_t t0 = cb_mono_us();
         cb_handle(ctx, c->req, &c->res);
-        cb_server_inline_done(s, cb_mono_us() - t0);
+        cb_server_inline_done(s, ir, cb_mono_us() - t0);
         finish(c);
         return;
     }
@@ -840,7 +863,9 @@ void cb_server_drain(cb_server *s, int64_t timeout_ms) {
 
 void cb_server_free(cb_server *s) {
     if (!s) return;
-    if (s->inline_ran) CB_INFO("net", "inline dispatch: %lld requests on the loop thread, valve tripped %lld times", (long long)s->inline_ran, (long long)s->inline_tripped);
+    if (s->inline_ran)
+        CB_INFO("net", "inline dispatch: %lld requests on the loop thread, %lld over budget, valve tripped %lld times",
+                (long long)s->inline_ran, (long long)s->inline_over, (long long)s->inline_tripped);
     while (s->all) {
         conn *c = s->all;
         if (c->state == C_BUSY) c->state = C_HTTP;   // the pool is gone: nothing runs against it

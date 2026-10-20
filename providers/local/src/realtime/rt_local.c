@@ -580,7 +580,7 @@ static void pump(local *L, lconn *c) {
                 // this socket in one send (flush_dirty). The valve times it as it times HTTP.
                 int64_t t0 = cb_mono_us();
                 job_run_frame(j);
-                cb_server_inline_done(L->ctx->server, cb_mono_us() - t0);
+                cb_server_inline_done(L->ctx->server, j->route, cb_mono_us() - t0);
                 c = job_settle(L, j);
                 continue;
             }

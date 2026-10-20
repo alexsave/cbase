@@ -61,10 +61,9 @@ void cb_loop_stop(cb_loop *l);
 // Runs until cb_loop_stop. Returns CB_OK, or CB_E_IO if the wait fails for good.
 int  cb_loop_run(cb_loop *l);
 // Monotonic ms (clock.h cb_mono_ms), as of the start of this iteration.
-// Events the last poll returned that have not been dispatched yet (loop thread,
-// inside a callback): 0 means this callback is the last thing ready this pass.
-int cb_loop_ready_left(const cb_loop *l);
 int64_t cb_loop_now(const cb_loop *l);
+// The iteration this is (loop thread): it changes once per wait, so work can be budgeted per pass.
+uint64_t cb_loop_pass(const cb_loop *l);
 // true on the thread inside cb_loop_run.
 bool cb_loop_on_thread(const cb_loop *l);
 // ANY THREAD: how many posts were ever queued (cb_loop_post): what a hand-off to the loop cost,

@@ -25,8 +25,8 @@ void cb_handle(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res);
 // (a CB_ROUTE_LOOP route, such as the WebSocket upgrade) or costs nothing (a
 // preflight, a 404); false sends it to the request pool.
 bool cb_handle_on_loop(const cb_ctx *ctx, const cb_http_req *req);
-// true when the route is a pool route marked CB_ROUTE_INLINE.
-bool cb_handle_inline_ok(const cb_ctx *ctx, const cb_http_req *req);
+// The request's route when it is a pool route marked CB_ROUTE_INLINE, else NULL.
+const struct cb_route_s *cb_handle_inline_route(const cb_ctx *ctx, const cb_http_req *req);
 
 // Builds ctx->router: GET /health here, then every module's routes
 // (v1_http.h, functions_http.h, admin.h, unfurl_http.h, and under serve

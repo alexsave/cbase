@@ -2,6 +2,7 @@
 
 #include "admin/admin.h"
 #include "net/router.h"
+#include "net/server.h"
 #include "cbase/app.h"
 #include "cbase/provider.h"
 #include "store/store.h"
@@ -59,18 +60,28 @@ bool cb_handle_on_loop(const cb_ctx *ctx, const cb_http_req *req) {
     return !r || (r->flags & CB_ROUTE_LOOP);
 }
 
-bool cb_handle_inline_ok(const cb_ctx *ctx, const cb_http_req *req) {
+const cb_route *cb_handle_inline_route(const cb_ctx *ctx, const cb_http_req *req) {
     const cb_route *r = cb_router_match(ctx->router, meth_of(req), req->path, NULL);
-    return r && (r->flags & CB_ROUTE_INLINE);
+    return r && (r->flags & CB_ROUTE_INLINE) ? r : NULL;
 }
 
 // GET /health: liveness for the load balancer, the smoke tests and the deploy
 // check. Plain text, never JSON: it is read by people and by `grep`.
 static void h_health(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     char b[256];
-    snprintf(b, sizeof b, "ok cbase %s mode=%s uptime_s=%lld\n", ctx->version,
-             ctx->prov ? ctx->prov->mode : "none",
-             (long long)((cb_now_ms() - ctx->started_ms) / 1000));
+    int n = snprintf(b, sizeof b, "ok cbase %s mode=%s uptime_s=%lld", ctx->version,
+                     ctx->prov ? ctx->prov->mode : "none",
+                     (long long)((cb_now_ms() - ctx->started_ms) / 1000));
+    // Under serve (this runs on the loop thread, which owns the counters): requests run inline,
+    // runs over their budget, and trips of the valve (net/server.h); a trip is a handler that
+    // keeps stalling the loop, which no normal play should cause.
+    if (ctx->server) {
+        cb_inline_stats st;
+        cb_server_inline_stats(ctx->server, &st);
+        n += snprintf(b + n, sizeof b - (size_t)n, " inline=%lld over=%lld tripped=%lld", (long long)st.ran,
+                      (long long)st.over, (long long)st.tripped);
+    }
+    snprintf(b + n, sizeof b - (size_t)n, "\n");
     cb_res_text(res, 200, b);
     cb_res_header(res, "Cache-Control", "no-store");
 }
