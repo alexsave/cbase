@@ -95,10 +95,6 @@ struct cb_app {
     // closes. NULL: none.
     int (*serve_open)(cb_ctx *ctx, char *err, size_t cap);
     void (*serve_close)(cb_ctx *ctx);
-    // An admin's SQL write just ran (inside the store's exclusive section, store.h
-    // cb_store_admin_query): every copy of a stored row the app holds is dropped, so
-    // nothing read before the write is committed after it from memory. NULL: none held.
-    void (*store_forget)(void);
 };
 
 // The app this binary serves: the product defines it, one per link.

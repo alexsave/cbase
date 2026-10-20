@@ -81,7 +81,6 @@ This file collects the six builders' records and the integration's; DESIGN.md sa
 - Empty table not deleted: the_last_seat_leaving `game_get == CB_E_NOT_FOUND`.
 - View always spectator: create_answers `r.body == v.view`.
 - Deal seed not stored: join_add_bot_and_start `row.has_seed`.
-- PLAYING rows not cached: a_legal_action `cb_row_cache_size() == 1`.
 - No broadcast: join_add_bot_and_start `g_fan.broadcast`.
 - Joined not detected: join_add_bot_and_start `g_fan.joined == 1`.
 - functions_http.c no 415: the_wire_surface `r.status == 415`.
