@@ -95,10 +95,11 @@ struct cb_server {
     int n;
     int busy;
     int64_t inline_off_until;   // loop ms: no inline dispatch before this (the valve tripped)
-    int64_t inline_ran, inline_over, inline_tripped, inline_to_pool;
+    int64_t inline_ran, inline_over, inline_tripped, inline_to_pool, inline_cpu_timed;
     int64_t inline_over_at[8];  // loop ms of the last runs over budget (a ring, inline_trips of it used)
     uint64_t inline_pass;       // the loop pass inline_pass_used counts
     int64_t inline_pass_used;   // us of inline handlers in that pass
+    bool inline_confirm;        // the last run looked over its budget by the wall clock: time the next by CPU too
     int64_t refused;        // connections the cap turned away since the last log line
     int64_t refused_log_ms; // when that line was last written
     bool draining;
@@ -460,25 +461,39 @@ bool cb_server_inline_ok(cb_server *s, const cb_route *r) {
     return s->inline_pass_used < s->o.inline_pass_us;
 }
 
-// THE VALVE'S CLOCK: the loop thread's CPU time. On a burstable instance the hypervisor takes a
-// vCPU away for milliseconds when both are busy; by the wall clock a 20 us handler then reads as
-// 2.7 ms, three such holes in a second tripped the valve, and every move went to the pool for 5 s
-// (bench/analysis_2026-10-20/OPTIMIZED_DESIGN.md 4.2). CPU time stops while the vCPU is away.
-int64_t cb_server_inline_clock(void) { return cb_thread_cpu_us(); }
+// THE VALVE'S CLOCKS. A run is timed by the monotonic clock (the vDSO: 30 ns, no system call).
+// On a burstable instance the hypervisor takes a vCPU away for milliseconds when both are busy,
+// and by that clock a 20 us handler then reads as 2.7 ms: three such holes in a second once
+// tripped the valve and sent every move to the pool for 5 s (bench/analysis_2026-10-20/
+// OPTIMIZED_DESIGN.md 4.2). So a run over its budget by the wall clock is only a suspect: the
+// next inline run is also timed by the thread's CPU clock (a real system call, 0.25 us), which
+// stops while the vCPU is away, and only a run over its budget in CPU counts toward the valve. A
+// handler that is truly slow is slow again on the next run; a hole is not. The thread CPU clock is
+// read only after a suspect, so a human-pace move costs no system call for the valve.
+cb_inline_mark cb_server_inline_begin(cb_server *s) {
+    return (cb_inline_mark){ cb_mono_us(), s->inline_confirm ? cb_thread_cpu_us() : -1 };
+}
 
-// The valve: a run longer than its route's budget is over; inline_trips of them within
+// The valve: a run over its route's budget in CPU is over; inline_trips of them within
 // inline_trip_window_ms (a held lock, a disk stall that persists: the handler's own CPU) turn
 // inline dispatch off for inline_off_ms for every route but a CB_ROUTE_HOME one. One slow run alone
 // does not: it is a hiccup, and the pass budget already bounds what a burst of them costs the
-// other sockets.
+// other sockets. The pass budget counts a run's CPU when it was measured, else its wall time up
+// to its route's budget (a hole costs a pass at most that).
 void cb_server_inline_to_pool(cb_server *s) { s->inline_to_pool++; }
 
-void cb_server_inline_done(cb_server *s, const cb_route *r, int64_t started) {
-    const int64_t took_us = cb_server_inline_clock() - started;
-    s->inline_ran++;
-    s->inline_pass_used += took_us;
+void cb_server_inline_done(cb_server *s, const cb_route *r, cb_inline_mark m) {
+    const int64_t wall_us = cb_mono_us() - m.wall;
+    const int64_t cpu_us = m.cpu >= 0 ? cb_thread_cpu_us() - m.cpu : -1;
+    s->inline_cpu_timed += cpu_us >= 0;
     const int budget = r && r->inline_us > 0 ? r->inline_us : s->o.inline_budget_us;
-    if (took_us <= budget) return;
+    s->inline_ran++;
+    s->inline_pass_used += cpu_us >= 0 ? cpu_us : wall_us < budget ? wall_us : budget;
+    // A suspect by the wall clock: the next run is measured by CPU as well. A run measured by CPU
+    // and over its budget stays one (a slow handler is confirmed run after run).
+    s->inline_confirm = cpu_us >= 0 ? cpu_us > budget : wall_us > budget;
+    if (cpu_us <= budget) return;
+    const int64_t took_us = cpu_us;
     const int64_t now = cb_loop_now(s->ctx->loop);
     int k = s->o.inline_trips;
     if (k < 1) k = 1;
@@ -500,6 +515,7 @@ void cb_server_inline_stats(const cb_server *s, cb_inline_stats *out) {
     out->over = s->inline_over;
     out->tripped = s->inline_tripped;
     out->to_pool = s->inline_to_pool;
+    out->cpu_timed = s->inline_cpu_timed;
 }
 
 static void dispatch(conn *c) {
@@ -515,7 +531,7 @@ static void dispatch(conn *c) {
     const cb_route *ir = cb_handle_inline_route(ctx, c->req);
     if (ir && cb_server_inline_ok(s, ir)) {
         // Fast and the loop is free: no hand-off, no wake, no second post.
-        const int64_t t0 = cb_server_inline_clock();
+        const cb_inline_mark t0 = cb_server_inline_begin(s);
         cb_handle(ctx, c->req, &c->res);
         cb_server_inline_done(s, ir, t0);
         if (!c->res.to_pool) {

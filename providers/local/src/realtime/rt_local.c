@@ -586,7 +586,7 @@ static void pump(local *L, lconn *c) {
             if (req_inline(L, c, j, &f)) {
                 // On the loop: no hand-off, and the reply joins the pushes the handler queued for
                 // this socket in one send (flush_dirty). The valve times it as it times HTTP.
-                const int64_t t0 = cb_server_inline_clock();
+                const cb_inline_mark t0 = cb_server_inline_begin(L->ctx->server);
                 job_run_frame(j);
                 cb_server_inline_done(L->ctx->server, j->route, t0);
                 if (!j->to_pool) {

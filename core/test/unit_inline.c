@@ -2,8 +2,9 @@
 // runs on the loop thread when the request pool is idle and the loop pass has inline time left, goes
 // to the pool when it is busy or the pass's time is spent, and runs over their route's budget, enough
 // of them close together, switch inline off until the window has passed, for every route but one
-// whose home is the loop (CB_ROUTE_HOME). Every budget is the loop thread's CPU time: the slow
-// handlers here burn CPU, and one that only waits (a descheduled vCPU's hole) is not slow.
+// whose home is the loop (CB_ROUTE_HOME). A run counts toward the valve only by the loop thread's
+// CPU time: the slow handlers here burn CPU, and one that only waits (a descheduled vCPU's hole) is
+// not slow.
 #include "t.h"
 
 #include "lib_client.h"
@@ -222,16 +223,31 @@ static void valve(void) {
     cb_server_inline_stats(g_ctx.server, &st);
     T_EQ_INT((int)st.over, 0);
     T_EQ_INT((int)st.tripped, 0);
-    // Over the server's 2 ms: each answers on the loop and counts, and only the third within the
-    // window trips the valve (inline_trips 3).
-    T_EQ_INT(post("/slow"), 200);
+    // Over the server's 2 ms by its CPU. The first of a run of them is only a suspect (the wall
+    // clock said so: net/server.c THE VALVE'S CLOCKS), each after it is measured by CPU and counts,
+    // and only the third counted within the window trips the valve (inline_trips 3).
+    T_EQ_INT(post("/fast"), 200);   // (no suspect pending from the naps)
     T_CHECK(on_loop());
-    T_EQ_INT(post("/slow"), 200);
-    T_CHECK(on_loop());
+    // A fast run after a fast one reads no CPU clock: a human-pace move costs no system call for the valve.
+    cb_inline_stats f0;
+    cb_server_inline_stats(g_ctx.server, &f0);
+    for (int i = 0; i < 3; i++) {
+        T_EQ_INT(post("/fast"), 200);
+        T_CHECK(on_loop());
+    }
+    cb_server_inline_stats(g_ctx.server, &st);
+    T_EQ_INT((int)(st.ran - f0.ran), 3);
+    T_EQ_INT((int)(st.cpu_timed - f0.cpu_timed), 0);
+    for (int i = 0; i < 3; i++) {
+        T_EQ_INT(post("/slow"), 200);
+        T_CHECK(on_loop());
+    }
     cb_server_inline_stats(g_ctx.server, &st);
     T_CHECK(st.over == 2 && st.tripped == 0);
     T_EQ_INT(post("/fast"), 200);
     T_CHECK(on_loop());   // two are a hiccup: still inline
+    T_EQ_INT(post("/slow"), 200);   // a suspect again, after the fast run
+    T_CHECK(on_loop());
     T_EQ_INT(post("/slow"), 200);
     T_CHECK(on_loop());
     cb_server_inline_stats(g_ctx.server, &st);
@@ -253,7 +269,7 @@ static void valve(void) {
         usleep(600000);
     }
     cb_server_inline_stats(g_ctx.server, &st);
-    T_CHECK(st.over == 7 && st.tripped == 1);
+    T_CHECK(st.over == 6 && st.tripped == 1);
 }
 
 // Two requests in one write, both inline: the first answer waits for the end of the loop pass

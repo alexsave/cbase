@@ -28,8 +28,9 @@ typedef struct {
     int     max_conns;     // refused past this (default 4096; CBASE_MAX_CONNS), each refusal counted and logged once a minute
     int     backlog;       // listen(2)'s queue (default 512; CBASE_LISTEN_BACKLOG)
     // INLINE DISPATCH: a CB_ROUTE_INLINE request may run on the loop thread (cb_server_inline_ok).
-    // Every time here is the loop thread's CPU time (cb_server_inline_clock), never the wall clock: a
-    // vCPU the hypervisor took away for milliseconds mid-handler did not make the handler slow.
+    // A run counts toward the valve only when the loop thread's CPU time says it was over (net/server.c
+    // THE VALVE'S CLOCKS): a vCPU the hypervisor took away for milliseconds mid-handler did not make the
+    // handler slow.
     int     inline_budget_us;   // a run longer than its route's budget (router.h cb_route.inline_us) or, for a
                                 // route with none, than this, is over budget (default 2000; 0 = never
                                 // inline; CBASE_INLINE_BUDGET_US)
@@ -59,18 +60,20 @@ void cb_server_free(cb_server *s);
 
 // INLINE DISPATCH (loop thread). A CB_ROUTE_INLINE handler `r` may run on the loop thread instead
 // of the pool when cb_server_inline_ok says so now; whoever runs it there (dispatch for HTTP,
-// realtime's socket hub for a REQ frame) reads cb_server_inline_clock before it and reports it
-// with cb_server_inline_done after, which feeds the pass budget and the valve. The clock is the
-// calling thread's CPU time in us, and this is its one reader.
+// realtime's socket hub for a REQ frame) takes cb_server_inline_begin's mark before it and reports
+// it with cb_server_inline_done after, which feeds the pass budget and the valve. Which clocks the
+// mark reads is the server's alone (net/server.c THE VALVE'S CLOCKS).
 bool cb_server_inline_ok(cb_server *s, const cb_route *r);
-int64_t cb_server_inline_clock(void);
-void cb_server_inline_done(cb_server *s, const cb_route *r, int64_t started);
+typedef struct { int64_t wall, cpu; } cb_inline_mark;   // us; cpu -1: not read
+cb_inline_mark cb_server_inline_begin(cb_server *s);
+void cb_server_inline_done(cb_server *s, const cb_route *r, cb_inline_mark m);
 // A handler run inline answered "to the pool" (http.h cb_http_res.to_pool): counted.
 void cb_server_inline_to_pool(cb_server *s);
 // Inline dispatch counters (loop thread, or after it has stopped): requests
 // run on the loop thread, of them sent on to the pool, runs over their
-// budget, and times the valve tripped.
-typedef struct { int64_t ran, to_pool, over, tripped; } cb_inline_stats;
+// budget, times the valve tripped, and runs timed by the thread's CPU clock
+// (only after a suspect: a system call each).
+typedef struct { int64_t ran, to_pool, over, tripped, cpu_timed; } cb_inline_stats;
 void cb_server_inline_stats(const cb_server *s, cb_inline_stats *out);
 // ANY THREAD: send() calls made so far (a socket's answer and pushes of one pass share one).
 int64_t cb_server_sends(const cb_server *s);
