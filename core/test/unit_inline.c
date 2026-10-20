@@ -46,7 +46,15 @@ static void burn_us(int64_t us) {
     while (cb_thread_cpu_us() - t0 < us) {}
 }
 static void h_f5(cb_ctx *c, const cb_http_req *q, cb_http_res *s) { burn_us(5000); h_fx(c, q, s); }
-static void h_stall(cb_ctx *c, const cb_http_req *q, cb_http_res *s) { usleep(150000); cb_res_send(s, 200, "text/plain", "ok", 2); }
+// THE STALL: holds the loop until the test has written every request it wants ready in the loop's
+// next pass (stall_enter, stall_leave). A stall of a fixed time lost the race on a slow runner: the
+// writes behind it took longer than the stall, and some landed in a later pass.
+static atomic_int g_stall_in, g_stall_go;
+static void h_stall(cb_ctx *c, const cb_http_req *q, cb_http_res *s) {
+    atomic_store(&g_stall_in, 1);
+    for (int i = 0; i < 10000 && !atomic_load(&g_stall_go); i++) usleep(1000);
+    cb_res_send(s, 200, "text/plain", "ok", 2);
+}
 static void h_slow(cb_ctx *c, const cb_http_req *q, cb_http_res *s) { g_last = pthread_self(); burn_us(6000); cb_res_send(s, 200, "text/plain", "ok", 2); }
 // 3 ms of wall clock and almost no CPU: what a 20 us handler looks like when the hypervisor parks
 // its vCPU mid-run.
@@ -57,6 +65,22 @@ static void h_block(cb_ctx *c, const cb_http_req *q, cb_http_res *s) {
     atomic_store(&g_entered, 1);
     while (!atomic_load(&g_release)) usleep(1000);
     cb_res_send(s, 200, "text/plain", "ok", 2);
+}
+
+static const char STALL_REQ[] = "POST /stall HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\n\r\nx";
+// /stall on fd, returning once the loop is inside it.
+static void stall_enter(int fd) {
+    atomic_store(&g_stall_in, 0);
+    atomic_store(&g_stall_go, 0);
+    T_CHECK(write(fd, STALL_REQ, strlen(STALL_REQ)) == (ssize_t)strlen(STALL_REQ));
+    for (int i = 0; i < 10000 && !atomic_load(&g_stall_in); i++) usleep(1000);
+    T_CHECK(atomic_load(&g_stall_in));
+}
+// The loop goes on: everything written since stall_enter is ready in its next pass (after 20 ms,
+// as macOS hands loopback segments to its input thread rather than to the socket at once).
+static void stall_leave(void) {
+    usleep(20000);
+    atomic_store(&g_stall_go, 1);
 }
 static void *run(void *arg) { cb_loop_run(g_ctx.loop); return NULL; }
 
@@ -154,16 +178,15 @@ static void a_pass_runs_its_ready_requests_inline(void) {
     cb_inline_stats s0, s1;
     int a = tc_connect(g_port), b = tc_connect(g_port), c = tc_connect(g_port), d = tc_connect(g_port);
     usleep(50000);   // all accepted
-    const char *rs = "POST /stall HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\n\r\nx";
     const char *rx = "POST /fx HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\n\r\nx";
     const char *ry = "POST /fy HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\n\r\nx";
     const char *rz = "POST /fz HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\n\r\nx";
     cb_server_inline_stats(g_ctx.server, &s0);
-    T_CHECK(write(d, rs, strlen(rs)) == (ssize_t)strlen(rs));
-    usleep(40000);   // the loop is inside /stall now
+    stall_enter(d);   // the loop is inside /stall: the rest are ready in its next pass, in this order
     T_CHECK(write(a, rx, strlen(rx)) == (ssize_t)strlen(rx));
     T_CHECK(write(b, ry, strlen(ry)) == (ssize_t)strlen(ry));
     T_CHECK(write(c, rz, strlen(rz)) == (ssize_t)strlen(rz));
+    stall_leave();
     char buf[256];
     int fds[4] = { d, a, b, c };
     for (int i = 0; i < 4; i++) {
@@ -185,18 +208,17 @@ static void the_pass_budget_sends_the_rest_to_the_pool(void) {
     cb_inline_stats s0, s1;
     int a = tc_connect(g_port), b = tc_connect(g_port), c = tc_connect(g_port), d = tc_connect(g_port);
     usleep(50000);
-    const char *rs = "POST /stall HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\n\r\nx";
     const char *rx = "POST /f5 HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\n\r\nx";
     const char *ry = "POST /fy HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\n\r\nx";
     const char *rz = "POST /fz HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\n\r\nx";
     cb_server_inline_stats(g_ctx.server, &s0);
-    T_CHECK(write(d, rs, strlen(rs)) == (ssize_t)strlen(rs));
-    usleep(40000);   // the loop is inside /stall now: the three below are ready in its next pass, in this order
+    stall_enter(d);   // the loop is inside /stall: the rest are ready in its next pass, in this order
     T_CHECK(write(a, rx, strlen(rx)) == (ssize_t)strlen(rx));
     usleep(5000);
     T_CHECK(write(b, ry, strlen(ry)) == (ssize_t)strlen(ry));
     usleep(5000);
     T_CHECK(write(c, rz, strlen(rz)) == (ssize_t)strlen(rz));
+    stall_leave();
     char buf[256];
     int fds[4] = { d, a, b, c };
     for (int i = 0; i < 4; i++) {
@@ -220,18 +242,17 @@ static void a_hole_costs_the_pass_nothing(void) {
     cb_inline_stats s0, s1;
     int a = tc_connect(g_port), b = tc_connect(g_port), c = tc_connect(g_port), d = tc_connect(g_port);
     usleep(50000);
-    const char *rs = "POST /stall HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\n\r\nx";
     const char *rx = "POST /nap6 HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\n\r\nx";
     const char *ry = "POST /fy HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\n\r\nx";
     const char *rz = "POST /fz HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\n\r\nx";
     cb_server_inline_stats(g_ctx.server, &s0);
-    T_CHECK(write(d, rs, strlen(rs)) == (ssize_t)strlen(rs));
-    usleep(40000);   // the loop is inside /stall now: the three below are ready in its next pass, in this order
+    stall_enter(d);   // the loop is inside /stall: the rest are ready in its next pass, in this order
     T_CHECK(write(a, rx, strlen(rx)) == (ssize_t)strlen(rx));
     usleep(5000);
     T_CHECK(write(b, ry, strlen(ry)) == (ssize_t)strlen(ry));
     usleep(5000);
     T_CHECK(write(c, rz, strlen(rz)) == (ssize_t)strlen(rz));
+    stall_leave();
     char buf[256];
     int fds[4] = { d, a, b, c };
     for (int i = 0; i < 4; i++) {
@@ -259,14 +280,12 @@ static void a_pass_counts_cpu_not_wall(void) {
     int fd[N];
     for (int i = 0; i < N; i++) fd[i] = tc_connect(g_port);
     usleep(50000);
-    const char *rs = "POST /stall HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\n\r\nx";
     const char *rx = "POST /fx50 HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\n\r\nx";
     const char *ry = "POST /fy50 HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\n\r\nx";
     const char *rn = "POST /nap1 HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\n\r\nx";
     const char *rz = "POST /fz HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\n\r\nx";
     cb_server_inline_stats(g_ctx.server, &s0);
-    T_CHECK(write(fd[0], rs, strlen(rs)) == (ssize_t)strlen(rs));
-    usleep(40000);   // the loop is inside /stall: the rest are ready in its next pass, in this order
+    stall_enter(fd[0]);   // the loop is inside /stall: the rest are ready in its next pass, in this order
     T_CHECK(write(fd[1], rx, strlen(rx)) == (ssize_t)strlen(rx));
     usleep(2000);
     T_CHECK(write(fd[2], ry, strlen(ry)) == (ssize_t)strlen(ry));
@@ -276,6 +295,7 @@ static void a_pass_counts_cpu_not_wall(void) {
     }
     usleep(2000);
     T_CHECK(write(fd[N - 1], rz, strlen(rz)) == (ssize_t)strlen(rz));
+    stall_leave();
     char buf[256];
     for (int i = 0; i < N; i++) {
         struct pollfd p = { fd[i], POLLIN, 0 };
