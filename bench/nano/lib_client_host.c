@@ -40,14 +40,26 @@ const char *tc_header(const tc_response *r, const char *name, char *out, size_t 
 }
 
 int tc_connect(int port) {
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    // P3HOST: the server's IPv4 or IPv6 address (another box's), else loopback.
+    const char *h = getenv("P3HOST");
+    struct sockaddr_storage ss;
+    socklen_t sl;
+    memset(&ss, 0, sizeof ss);
+    struct sockaddr_in6 *s6 = (struct sockaddr_in6 *)&ss;
+    struct sockaddr_in *s4 = (struct sockaddr_in *)&ss;
+    if (h && strchr(h, ':') && inet_pton(AF_INET6, h, &s6->sin6_addr) == 1) {
+        s6->sin6_family = AF_INET6;
+        s6->sin6_port = htons((uint16_t)port);
+        sl = sizeof *s6;
+    } else {
+        s4->sin_family = AF_INET;
+        s4->sin_port = htons((uint16_t)port);
+        if (!h || inet_pton(AF_INET, h, &s4->sin_addr) != 1) s4->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        sl = sizeof *s4;
+    }
+    int fd = socket(ss.ss_family, SOCK_STREAM, 0);
     if (fd < 0) return -1;
-    struct sockaddr_in sa;
-    memset(&sa, 0, sizeof sa);
-    sa.sin_family = AF_INET;
-    sa.sin_port = htons((uint16_t)port);
-    { const char *h = getenv("P3HOST"); if (!h || inet_pton(AF_INET, h, &sa.sin_addr) != 1) sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK); }
-    if (connect(fd, (struct sockaddr *)&sa, sizeof sa) != 0) { close(fd); return -1; }
+    if (connect(fd, (struct sockaddr *)&ss, sl) != 0) { close(fd); return -1; }
     int one = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
 #ifdef SO_NOSIGPIPE

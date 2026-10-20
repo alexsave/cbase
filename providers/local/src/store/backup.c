@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #define MOD "backup"
@@ -199,6 +200,27 @@ int cb_backup_restore(const cb_blob *blob, const char *key, const char *db_path)
 
 // ---- upload --------------------------------------------------------------------------------
 
+// The first `size` bytes of `path` under `key`: a write-behind layer's file may be longer on
+// disk than what it holds (a segment made at its full size and mapped).
+static int put_prefix(cb_backup *b, const char *key, const char *path, int64_t size) {
+    struct stat st;
+    if (stat(path, &st) != 0) return CB_E_IO;
+    if (st.st_size <= size) return b->blob.put(b->blob.ud, key, path);
+    FILE *in = fopen(path, "rb"), *out = fopen(b->tmp, "wb");
+    int rc = in && out ? CB_OK : CB_E_IO;
+    uint8_t buf[65536];
+    for (int64_t left = size; rc == CB_OK && left > 0;) {
+        size_t k = left < (int64_t)sizeof buf ? (size_t)left : sizeof buf;
+        if (fread(buf, 1, k, in) != k || fwrite(buf, 1, k, out) != k) rc = CB_E_IO;
+        left -= (int64_t)k;
+    }
+    if (in) fclose(in);
+    if (out && fclose(out) != 0) rc = CB_E_IO;
+    if (rc == CB_OK) rc = b->blob.put(b->blob.ud, key, b->tmp);
+    (void)unlink(b->tmp);
+    return rc;
+}
+
 static const cb_store_file *find_file(const cb_store_file *f, int n, const char *suffix) {
     for (int i = 0; i < n; i++) if (strcmp(f[i].suffix, suffix) == 0) return &f[i];
     return NULL;
@@ -247,7 +269,7 @@ int cb_backup_once(cb_backup *b) {
         if (u && u->size == f[i].size) continue;
         snprintf(key, sizeof key, "%s%s", b->key, f[i].suffix);
         snprintf(path, sizeof path, "%s%s", b->ctx->cfg->db_path, f[i].suffix);
-        rc = b->blob.put(b->blob.ud, key, path);
+        rc = put_prefix(b, key, path, f[i].size);
         named = true;
     }
     if (rc == CB_OK && wb && !named) named = n != b->n_up;
