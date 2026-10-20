@@ -8,8 +8,10 @@
 #   CAL_PROFILE  name of an instance profile whose role may reach SSM; the bucket policy grants that role put/get
 # Optional env:
 #   AWS_DEFAULT_REGION (default us-east-1), CAL_AMI (default: latest AL2023 arm64 from the public SSM parameter),
-#   CAL_ROLES (default "c6g t4g"), CAL_PASSES (5), CAL_GAP_S (900), CAL_SWAP (1: a 1 GB swapfile for dnf; the
-#   2026-10-20 run had none)
+#   CAL_ROLES (default "c6g t4g"; "t4g" for the nano alone), CAL_PASSES (5), CAL_GAP_S (900), CAL_SWAP (1: a 1 GB
+#   swapfile for dnf; the 2026-10-20 run had none), CAL_GROUPS (default: every group but sqlite; e.g. "sqlite"),
+#   CAL_MAX_MIN (185: the box shuts down, and so terminates, after this many minutes whatever the runner is doing;
+#   60 is plenty for a sqlite-only run)
 # Everything created is named cbase-perf-temp-cal-*; the ids go to state/<run>.env, which collect.sh and cleanup.sh read
 # and which they are the only way to name resources by.
 set -euo pipefail
@@ -18,6 +20,9 @@ D=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 export AWS_PAGER= AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
 REGION=$AWS_DEFAULT_REGION
 ROLES=${CAL_ROLES:-"c6g t4g"}
+MAXM=${CAL_MAX_MIN:-185}
+[[ $MAXM =~ ^[0-9]+$ ]] && [ "$MAXM" -ge 20 ] && [ "$MAXM" -le 185 ] || { echo "CAL_MAX_MIN must be 20..185" >&2; exit 1; }
+[[ ${CAL_GROUPS:-} =~ ^[a-z\ ]*$ ]] || { echo "CAL_GROUPS: group names only" >&2; exit 1; }
 [ -x "$D/bin/calbench" ] || { echo "no bin/calbench: run ./build.sh first" >&2; exit 1; }
 aws sts get-caller-identity --query Arn --output text
 
@@ -70,8 +75,8 @@ for role in $ROLES; do
   {
     echo '#!/bin/bash'
     # two independent kill switches (the box also terminates on shutdown, and the runner powers off at the end)
-    echo 'shutdown -h +185'
-    echo 'systemd-run --unit cal-killswitch --on-active=11400 /usr/sbin/poweroff'
+    echo "shutdown -h +$MAXM"
+    echo "systemd-run --unit cal-killswitch --on-active=$(( (MAXM + 5) * 60 )) /usr/sbin/poweroff"
     if [ "${CAL_SWAP:-1}" = 1 ]; then
       echo 'fallocate -l 1G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile'
     fi
@@ -82,7 +87,7 @@ for role in $ROLES; do
     echo 'mkdir -p /var/tmp/cal && cd /var/tmp/cal'
     echo "for i in 1 2 3 4 5 6 7 8 9 10; do curl -fsS -o pkg.tgz \"$URL\" && break; sleep 5; done"
     echo 'tar xzf pkg.tgz'
-    echo "systemd-run --unit cal-runner --working-directory=/var/tmp/cal -p LimitNOFILE=65536 -E CAL_PASSES=${CAL_PASSES:-5} -E CAL_GAP_S=${CAL_GAP_S:-900} /bin/bash /var/tmp/cal/runner.sh $B $role"
+    echo "systemd-run --unit cal-runner --working-directory=/var/tmp/cal -p LimitNOFILE=65536 -E CAL_PASSES=${CAL_PASSES:-5} -E CAL_GAP_S=${CAL_GAP_S:-900} -E \"CAL_GROUPS=${CAL_GROUPS:-}\" /bin/bash /var/tmp/cal/runner.sh $B $role"
   } > "$UD"
   ID=$(aws ec2 run-instances --image-id "$AMI" --instance-type "$TYPE" --subnet-id "$SUBNET" --security-group-ids "$SG" \
     --ipv6-address-count 1 --iam-instance-profile "Name=$CAL_PROFILE" --instance-initiated-shutdown-behavior terminate "${CR[@]}" \

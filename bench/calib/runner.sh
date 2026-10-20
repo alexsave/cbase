@@ -1,7 +1,10 @@
 #!/bin/bash
 # runner.sh BUCKET ROLE : the calibration passes on one box, uploading after each group, then power off.
 # On the box only (run_aws.sh ships it with calbench in pkg.tgz, under systemd-run). CAL_PASSES (default 5) and
-# CAL_GAP_S (default 900) set the pass count and the idle gap between passes.
+# CAL_GAP_S (default 900) set the pass count and the idle gap between passes. CAL_GROUPS (default: every group but
+# sqlite, with steal on the first and last pass) runs only the groups it names, e.g. CAL_GROUPS=sqlite. When sqlite is
+# among them, the runner installs strace before the first pass and, after the last, runs `calbench sqlitecount OP N`
+# under strace -f -c with N = 0 and 500 for each op (strace_<op>_n<N>.txt): every syscall per op, musl's own included.
 set -u
 B=$1; ROLE=$2
 export AWS_USE_DUALSTACK_ENDPOINT=true AWS_DEFAULT_REGION=us-east-1 CAL_CPU=1 CAL_DIR=/var/tmp/cal
@@ -23,9 +26,15 @@ stat_line() { echo "$(date -u +%FT%TZ) $1 $(head -1 /proc/stat)" >> stat.txt; }
 } > spec_$ROLE.txt 2>&1
 up spec_$ROLE.txt
 NP=${CAL_PASSES:-5}
+case " ${CAL_GROUPS:-} " in *" sqlite "*) SQ=1;; *) SQ=0;; esac
+if [ $SQ = 1 ] && ! command -v strace >/dev/null; then
+  for i in 1 2 3; do dnf install -y -q strace >> runner.log 2>&1 && break; sleep 10; done
+fi
 for pass in $(seq 1 $NP); do
-  GROUPS_THIS="env clock core kernel net wake real str malloc mem stream ebs"
-  [ $pass = 1 ] || [ $pass = $NP ] && GROUPS_THIS="$GROUPS_THIS steal"
+  if [ -n "${CAL_GROUPS:-}" ]; then GROUPS_THIS=$CAL_GROUPS; else
+    GROUPS_THIS="env clock core kernel net wake real str malloc mem stream ebs"
+    [ $pass = 1 ] || [ $pass = $NP ] && GROUPS_THIS="$GROUPS_THIS steal"
+  fi
   for g in $GROUPS_THIS; do
     stat_line "pass$pass-$g-start"
     s=$(date +%s)
@@ -37,6 +46,15 @@ for pass in $(seq 1 $NP); do
   done
   [ $pass = $NP ] || sleep ${CAL_GAP_S:-900}
 done
+if [ $SQ = 1 ] && command -v strace >/dev/null; then
+  for op in ins1500 upd1500 txn10x1500 txn100x1500 selwarm selcache_miss; do
+    for n in 0 500; do
+      strace -f -c -o strace_${op}_n$n.txt ./calbench sqlitecount $op $n >/dev/null 2>> runner.log
+      up strace_${op}_n$n.txt
+    done
+  done
+  echo "$(date -u +%FT%TZ) strace pass done" >> runner.log
+elif [ $SQ = 1 ]; then echo "$(date -u +%FT%TZ) no strace: the wrap counts stand alone" >> runner.log; fi
 echo "$(date -u +%FT%TZ) ALLDONE" >> runner.log; up runner.log
 tar czf all_$ROLE.tgz *.tsv *.txt runner.log; up all_$ROLE.tgz
 sync; shutdown -h now
