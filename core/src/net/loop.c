@@ -68,7 +68,17 @@ struct cb_loop {
     int64_t now;
     pthread_t thread;
     atomic_bool running;
+
+    // Batched sends (io_uring: cb_loop_send): what to call with each one's result, by cookie.
+    struct lsend { cb_sent_fn done; void *ud; } *sends;
+    uint32_t *free_sends;
+    int n_sends, cap_sends, n_free_sends;
 };
+
+// The backend loops are made with (cb_loop_use_uring): io_uring on Linux when asked for and allowed.
+static atomic_bool g_use_uring;
+
+void cb_loop_use_uring(bool on) { atomic_store(&g_use_uring, on); }
 
 #ifndef __linux__
 static int set_nonblock(int fd) {
@@ -106,7 +116,11 @@ cb_loop *cb_loop_new(void) {
         free(l);
         return NULL;
     }
-    l->pl = cb_poller_new();
+    char why[200] = "";
+    const bool uring = atomic_load(&g_use_uring);
+    l->pl = cb_poller_new(uring, why, sizeof why);
+    if (l->pl && uring && !cb_poller_sends(l->pl))
+        CB_WARN("loop", "io_uring asked for and not used (%s): %s", why, cb_poller_backend(l->pl));
     if (!l->pl || cb_poller_set(l->pl, l->wake[0], -1, CB_EV_READ, 0) != 0) {
         cb_poller_free(l->pl);
         wake_close(l->wake);
@@ -127,6 +141,8 @@ void cb_loop_free(cb_loop *l) {
     wake_close(l->wake);
     pthread_mutex_destroy(&l->post_lock);
     cb_poller_free(l->pl);
+    free(l->sends);
+    free(l->free_sends);
     free(l->w);
     free(l->slot_of_fd);
     free(l->heap);
@@ -350,6 +366,46 @@ static void run_timers(cb_loop *l) {
 // ("the next iteration") at the next wake or within it.
 #define TIMER_FLOOR_MS 10
 
+// ---- batched sends (io_uring) ----
+
+bool cb_loop_batches_sends(const cb_loop *l) { return cb_poller_sends(l->pl); }
+const char *cb_loop_backend(const cb_loop *l) { return cb_poller_backend(l->pl); }
+
+uint32_t cb_loop_send(cb_loop *l, int fd, const void *p, size_t n, cb_sent_fn done, void *ud) {
+    uint32_t i;
+    if (l->n_free_sends) i = l->free_sends[--l->n_free_sends];
+    else {
+        if (l->n_sends == l->cap_sends) {
+            int cap = l->cap_sends ? l->cap_sends * 2 : 64;
+            struct lsend *s = realloc(l->sends, (size_t)cap * sizeof *s);
+            if (!s) return 0;
+            l->sends = s;
+            uint32_t *f = realloc(l->free_sends, (size_t)cap * sizeof *f);
+            if (!f) return 0;
+            l->free_sends = f;
+            l->cap_sends = cap;
+        }
+        i = (uint32_t)l->n_sends++;
+    }
+    if (!cb_poller_send(l->pl, fd, p, n, i + 1)) {
+        l->free_sends[l->n_free_sends++] = i;
+        return 0;
+    }
+    l->sends[i] = (struct lsend){ done, ud };
+    return i + 1;
+}
+
+void cb_loop_send_drop(cb_loop *l, uint32_t token) {
+    if (token && (int)token <= l->n_sends) l->sends[token - 1].done = NULL;
+}
+
+static void send_done(cb_loop *l, uint32_t cookie, int32_t res) {
+    if (!cookie || (int)cookie > l->n_sends) return;
+    struct lsend s = l->sends[cookie - 1];
+    l->free_sends[l->n_free_sends++] = cookie - 1;
+    if (s.done) s.done(l, s.ud, (long)res);
+}
+
 int cb_loop_run(cb_loop *l) {
     l->thread = pthread_self();
     atomic_store(&l->running, true);
@@ -373,6 +429,14 @@ int cb_loop_run(cb_loop *l) {
         }
         l->now = cb_mono_ms();
         l->pass++;
+        // The sends this wait handed to the kernel are done: their results first, before any event
+        // can touch what they sent.
+        if (l->n_sends) {
+            cb_sent_ev sv[64];
+            int k;
+            while ((k = cb_poller_sent(l->pl, sv, 64)) > 0)
+                for (int i = 0; i < k; i++) send_done(l, sv[i].cookie, sv[i].res);
+        }
         for (int i = 0; i < r; i++) {
             int fd = ev[i].fd;
             if (fd == l->wake[0]) { drain_posts(l); continue; }
@@ -394,6 +458,19 @@ int cb_loop_run(cb_loop *l) {
     l->stopped = true;
     pthread_mutex_unlock(&l->post_lock);
     drain_posts(l);
+    if (l->after) l->after(l, l->after_ud);   // what the last posts queued, written
+    // What the last passes queued for the kernel (io_uring: a drain's closing frames, a last answer,
+    // the removal that releases a closed socket) is handed over and its results taken, as the next
+    // wait would have.
+    for (int round = 0; round < 8 && cb_poller_queued(l->pl); round++) {
+        cb_poll_ev skip[256];
+        if (cb_poller_wait(l->pl, skip, 256, 0) < 0 && errno != EINTR) break;
+        cb_sent_ev sv[64];
+        int k;
+        while ((k = cb_poller_sent(l->pl, sv, 64)) > 0)
+            for (int i = 0; i < k; i++) send_done(l, sv[i].cookie, sv[i].res);
+        if (l->after) l->after(l, l->after_ud);   // what those results queued (a close, the rest of a send)
+    }
     atomic_store(&l->running, false);
     return rc;
 }

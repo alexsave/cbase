@@ -95,6 +95,10 @@ typedef struct {
     // is over budget, and three of them within a second switch inline off for 5 s.
     // CBASE_INLINE_BUDGET_US, default 2000; 0 turns inline dispatch off.
     int  inline_budget_us;
+    // CBASE_IO_URING=1: the network loop waits on io_uring and hands a pass's sends to the kernel in
+    // the same system call (net/loop.h), where Linux allows it; elsewhere, or where the kernel or a
+    // seccomp filter refuses it, epoll as before (said in the log). Default 0: epoll.
+    bool io_uring;
     // The bursts of the rate limits (rate_limits.h), per window, indexed by
     // cb_limit_kind (0 = the rule's own default). Set by CBASE_LIMIT_<KIND>:
     // SIGNIN_IP 20/5min, SIGNIN_NAME 10/5min, SIGNUP_IP 5/h, SIGNUP_ALL 60/h,

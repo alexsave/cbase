@@ -217,6 +217,8 @@ $(call prog,build/test,build/obj/cbase,build/obj/kernel,unit_bench,bench/unit_be
 $(call prog,build/asan/test,build/obj/asan,build/obj/asan-kernel,unit_bench,bench/unit_bench.c bench/bench_stats.c,ASAN_CB_CFLAGS)
 $(foreach s,smoke smoke_lambda smoke_lambda_after smoke_authz smoke_matrix smoke_boot,$(call prog,build/asan/test,build/obj/asan,build/obj/asan-kernel,$(s),$(call tsrc,$(s)) $(TLIB_SRC),ASAN_CB_CFLAGS))
 
+
+.PHONY: test-uring
 .PHONY: coverage all test smoke check check-asan test-asan smoke-asan check-dynamo clean print-kernel-src bootstrap bench
 all: build/cbase build/bootstrap build/cbase-import build/cbase-export build/cbase-bench
 
@@ -286,6 +288,13 @@ $(foreach g,$(GATE_SRC),$(eval $(call GATE,$(g))))
 
 test: compiler-gate shared-tests $(call UNIT_RUNS,build/test)
 	$(call RUN_ALL,UNIT TESTS,$(call UNIT_RUNS,build/test))
+# Every unit test and the smokes again with every loop on io_uring (Linux; where the kernel or a
+# seccomp filter refuses it the loops fall back to epoll, said in their logs): CBASE_IO_URING, which
+# the test programs read (lib_client.c) and the servers the smokes start inherit.
+test-uring: export CBASE_IO_URING = 1
+test-uring: $(call UNIT_RUNS,build/test) $(call SMOKE_PROGS,build)
+	$(call RUN_ALL,CHECK ON IO_URING,$(call SMOKE_RUNS,build) $(call UNIT_RUNS,build/test))
+
 smoke: $(call SMOKE_PROGS,build)
 	$(call RUN_ALL,SMOKE,$(call SMOKE_RUNS,build))
 # One pool for both, so the smokes and the units share the machine's cores.
@@ -370,12 +379,16 @@ COV_EXCLUDE := --exclude 'build/' --exclude 'test/'
 # Every test program at once, each to its own log (the gcov runtime locks a
 # .gcda while it merges into it); a failed one prints its log and fails the
 # target. The smokes go first, the longest runs.
+# The programs the coverage run repeats with every loop on io_uring (where the runner allows it).
+URING_COV_UNITS := unit_net unit_server_edges unit_inline unit_rt_local unit_inline_moves unit_loop unit_ws
 COV_RUNS := 'build/cov/test/smoke build/cov/cbase' \
             'build/cov/test/smoke_lambda build/cov/bootstrap' \
             'build/cov/test/smoke_lambda_after build/cov/bootstrap' \
             'build/cov/test/smoke_matrix build/cov/cbase' \
             'build/cov/test/smoke_boot build/cov/cbase build/cov/bootstrap' \
             'build/cov/test/smoke_authz build/cov/cbase' \
+            'CBASE_IO_URING=1 build/cov/test/smoke build/cov/cbase' \
+            $(addprefix 'CBASE_IO_URING=1 build/cov/test/,$(addsuffix ',$(URING_COV_UNITS))) \
             $(addprefix build/cov/test/,$(UNITS))
 coverage: $(addprefix build/cov/test/,$(UNITS)) build/cov/cbase build/cov/bootstrap build/cov/test/smoke build/cov/test/smoke_lambda build/cov/test/smoke_matrix build/cov/test/smoke_authz build/cov/test/smoke_boot build/cov/test/smoke_lambda_after build/cov_gate
 	@find build/obj/cov build/obj/cov-kernel -name '*.gcda' -delete

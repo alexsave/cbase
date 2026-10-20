@@ -1,5 +1,6 @@
 #include "lib_client.h"
 
+#include "net/loop.h"
 #include "net/ws.h"
 #include "util/uuid.h"
 
@@ -14,6 +15,13 @@
 #include <strings.h>
 #include <sys/socket.h>
 #include <unistd.h>
+
+// CBASE_IO_URING=1 (make test-uring): every loop a test program makes waits on io_uring where Linux
+// allows it (net/loop.h cb_loop_use_uring), as serve's does; a server a smoke starts inherits it.
+__attribute__((constructor)) static void io_uring_from_env(void) {
+    const char *v = getenv("CBASE_IO_URING");
+    if (v && strcmp(v, "1") == 0) cb_loop_use_uring(true);
+}
 
 void tc_response_free(tc_response *r) {
     cb_buf_free(&r->head);

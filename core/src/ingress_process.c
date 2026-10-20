@@ -133,6 +133,7 @@ int cb_process_main(const cb_provider *prov, const cb_app *app, int argc, char *
     ctx.prov = prov;
     ctx.app = app;
     signal(SIGPIPE, SIG_IGN);
+    cb_loop_use_uring(cfg.io_uring);
     ctx.loop = cb_loop_new();
     ctx.req_pool = cb_pool_new(cfg.req_workers, "req");
     ctx.job_pool = cb_pool_new(cfg.bot_workers, "job");
@@ -181,7 +182,7 @@ int cb_process_main(const cb_provider *prov, const cb_app *app, int argc, char *
     }
 
     if (prov->serve_start) prov->serve_start(&ctx);
-    CB_INFO("serve", "listening on %s:%d", cfg.listen_host, port);
+    CB_INFO("serve", "listening on %s:%d (%s)", cfg.listen_host, port, cb_loop_backend(ctx.loop));
     int rc = cb_loop_run(ctx.loop);
 
     // Down in reverse: no handler may run against a freed connection.

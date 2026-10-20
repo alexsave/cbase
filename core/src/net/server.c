@@ -37,7 +37,11 @@ struct cb_ws {
     bool ping_sent;      // a WebSocket PING went out since the peer last sent anything
     bool buried;         // closed and on the server's grave list
     bool dirty;          // on the server's dirty list: frames queued, flushed at the end of the loop iteration
+    bool sending;        // batched (io_uring): wbuf is with the kernel until sent() runs
+    bool wblocked;       // batched: the socket was full; sent again once it is writable
+    uint32_t send_tok;   // batched: the loop's token for the send in flight
     cb_buf in, out;
+    cb_buf wbuf;         // batched: the bytes of the send in flight (out goes on taking new frames)
     cb_http_req *req;    // in flight only: &g_req for a handler that runs on the loop, the pool job's copy otherwise
     struct job *job;     // the pool job holding that copy (server free list), NULL when req is &g_req
     cb_http_res res;
@@ -163,10 +167,18 @@ static cb_loop *loop_of(conn *c) { return c->srv->ctx->loop; }
 
 // ---- writing -------------------------------------------------------------------
 
+// BATCHED SENDS (a loop on io_uring, loop.h cb_loop_batches_sends): a connection's bytes are not
+// written by send(2) where they are queued; flush only marks it dirty, and flush_dirty, last in the
+// loop pass, hands every dirty connection's bytes to the loop, which gives them all to the kernel in
+// the one system call of its next wait. The bytes in flight are the connection's wbuf (out is moved
+// there), so a frame queued meanwhile never moves them; sent() takes the result back first thing
+// after that wait. Without it (epoll, kqueue), flush writes at once.
+static bool batching(conn *c) { return cb_loop_batches_sends(c->srv->ctx->loop); }
+
 static void want(conn *c) {
     if (c->dead) return;
     int ev = 0;
-    if (c->out.len) ev |= CB_EV_WRITE;
+    if (c->out.len && (!batching(c) || c->wblocked)) ev |= CB_EV_WRITE;
     if (c->state != C_BUSY && !c->close_after && !c->upgrade_after) ev |= CB_EV_READ;
     cb_loop_set(loop_of(c), c->fd, ev);
 }
@@ -174,8 +186,24 @@ static void want(conn *c) {
 static void become_ws(conn *c);
 static bool ws_frames(conn *c);
 
-// Writes what it can. Returns false when the connection was closed.
-static bool flush(conn *c) {
+// `out` written as far as it goes: what the connection does next. false when it was closed.
+static bool written(conn *c) {
+    buf_idle(c, &c->out);
+    if (c->out.len == 0) {
+        if (c->close_after) { conn_close(c); return false; }
+        if (c->upgrade_after) {
+            become_ws(c);
+            // Frames that arrived right behind the handshake.
+            if (!c->dead && c->in.len && !ws_frames(c)) return false;
+            if (c->dead) return false;
+        }
+    }
+    want(c);
+    return true;
+}
+
+// Writes what it can with send(2). Returns false when the connection was closed.
+static bool flush_now(conn *c) {
     while (c->out.len) {
         // Counted before the call: a peer that has read what it sent may look at the count at once.
         atomic_fetch_add_explicit(&c->srv->sends, 1, memory_order_relaxed);
@@ -194,18 +222,61 @@ static bool flush(conn *c) {
         }
         cb_buf_consume(&c->out, (size_t)w);
     }
-    buf_idle(c, &c->out);
-    if (c->out.len == 0) {
-        if (c->close_after) { conn_close(c); return false; }
-        if (c->upgrade_after) {
-            become_ws(c);
-            // Frames that arrived right behind the handshake.
-            if (!c->dead && c->in.len && !ws_frames(c)) return false;
-            if (c->dead) return false;
-        }
-    }
-    want(c);
+    return written(c);
+}
+
+// Writes what is queued: at once, or (batched) with the loop's next wait. Returns false when the
+// connection was closed.
+static bool flush(conn *c) {
+    if (!batching(c)) return flush_now(c);
+    mark_dirty(c);
     return true;
+}
+
+static void sent(cb_loop *l, void *ud, long res);
+
+// Batched: the connection's queued bytes to the loop (flush_dirty, last in the pass).
+static void send_queued(conn *c) {
+    if (c->sending) return;   // its result comes first after the wait, and marks it dirty again if needed
+    if (c->wblocked) { want(c); return; }   // the socket is full: once it is writable (conn_io)
+    if (!c->out.len) { written(c); return; }
+    atomic_fetch_add_explicit(&c->srv->sends, 1, memory_order_relaxed);
+    c->wbuf = c->out;
+    cb_buf_init(&c->out);
+    c->send_tok = cb_loop_send(loop_of(c), c->fd, c->wbuf.p, c->wbuf.len, sent, c);
+    if (c->send_tok) { c->sending = true; return; }
+    c->out = c->wbuf;   // the loop could not take it: send(2), now
+    cb_buf_init(&c->wbuf);
+    flush_now(c);
+}
+
+// Batched: a send's result, first thing after the wait that made it. The bytes not sent go back in
+// front of whatever was queued since.
+static void sent(cb_loop *l, void *ud, long res) {
+    (void)l;
+    conn *c = ud;
+    c->sending = false;
+    c->send_tok = 0;
+    if (res < 0 && res != -EAGAIN && res != -EWOULDBLOCK && res != -EINTR) {
+        buf_give(c->srv, &c->wbuf);
+        if (!c->dead && !c->buried) conn_close(c);
+        return;
+    }
+    if (res > 0) cb_buf_consume(&c->wbuf, (size_t)res);
+    if (c->wbuf.len) {
+        if (c->out.len) cb_buf_append(&c->wbuf, c->out.p, c->out.len);
+        buf_give(c->srv, &c->out);
+        c->out = c->wbuf;
+        cb_buf_init(&c->wbuf);
+        c->wblocked = true;
+        if (c->out.oom) { conn_close(c); return; }
+        want(c);
+        return;
+    }
+    buf_give(c->srv, &c->wbuf);
+    if (c->dead || c->buried) return;
+    if (c->out.len) mark_dirty(c);   // queued while this was in flight: with this pass's sends
+    else written(c);
 }
 
 // ---- HTTP ----------------------------------------------------------------------
@@ -508,7 +579,7 @@ static int queue_frame(conn *c, int opcode, const void *data, size_t len) {
 
 int cb_ws_send(cb_ws *c, int opcode, const void *data, size_t len) {
     if (c->state != C_WS || c->closing || c->dead) return CB_E_STATE;
-    if (c->out.len + len > CB_WS_MAX_QUEUED) {
+    if (c->out.len + c->wbuf.len + len > CB_WS_MAX_QUEUED) {
         CB_WARN("ws", "conn %llu owes %zu bytes: closing it", (unsigned long long)c->id, c->out.len);
         cb_ws_close(c, 1008);
         return CB_E_FULL;
@@ -601,7 +672,7 @@ static void mark_dirty(conn *c) {
     if (s->ndirty == s->capdirty) {
         int cap = s->capdirty ? s->capdirty * 2 : 64;
         conn **d = realloc(s->dirty, (size_t)cap * sizeof *d);
-        if (!d) { flush(c); return; }
+        if (!d) { flush_now(c); return; }
         s->dirty = d;
         s->capdirty = cap;
     }
@@ -614,11 +685,14 @@ static void flush_dirty(cb_loop *l, void *ud) {
     cb_server *s = ud;
     // flush can close connections (the one it writes, never another), so the
     // list is walked by index and entries a free nulled are skipped.
+    const bool batch = cb_loop_batches_sends(s->ctx->loop);
     for (int i = 0; i < s->ndirty; i++) {
         conn *c = s->dirty[i];
         if (!c) continue;
         c->dirty = false;
-        if (!c->dead && !c->buried) flush(c);
+        if (c->dead || c->buried) continue;
+        if (batch) send_queued(c);
+        else flush_now(c);
     }
     s->ndirty = 0;
 }
@@ -628,8 +702,10 @@ static void conn_free(conn *c) {
         cb_server *s = c->srv;
         for (int i = 0; i < s->ndirty; i++) if (s->dirty[i] == c) s->dirty[i] = NULL;
     }
+    if (c->sending) cb_loop_send_drop(loop_of(c), c->send_tok);
     buf_give(c->srv, &c->in);
     buf_give(c->srv, &c->out);
+    buf_give(c->srv, &c->wbuf);
     cb_buf_free(&c->msg);
     cb_res_free(&c->res);
     if (c->job) job_put(c->srv, c->job);
@@ -684,7 +760,10 @@ static void conn_close(conn *c) {
 
 static void conn_io(cb_loop *l, int fd, int ev, void *ud) {
     conn *c = ud;
-    if (ev & CB_EV_WRITE) { if (!flush(c)) return; }
+    if (ev & CB_EV_WRITE) {
+        c->wblocked = false;   // (batched) room again: flush_dirty sends what waited
+        if (!flush(c)) return;
+    }
     if (ev & (CB_EV_READ | CB_EV_ERR)) {
         if (c->state == C_BUSY) {
             // Paused for reads; only an error can be reported here.
@@ -760,6 +839,7 @@ static void on_accept(cb_loop *l, int lfd, int ev, void *ud) {
         c->last_active = cb_loop_now(l);
         cb_buf_init(&c->in);
         cb_buf_init(&c->out);
+        cb_buf_init(&c->wbuf);
         cb_buf_init(&c->msg);
         cb_res_init(&c->res);
         char host[INET6_ADDRSTRLEN] = "?";
@@ -798,7 +878,7 @@ static void sweep(cb_loop *l, void *ud) {
         } else if (c->started && now - c->started > s->o.head_ms) {
             respond_now(c, 408, "Request Timeout");
             flush(c);
-        } else if (!c->started && !c->out.len && now - c->last_active > s->o.idle_ms) {
+        } else if (!c->started && !c->out.len && !c->sending && now - c->last_active > s->o.idle_ms) {
             conn_close(c);
         }
     }
@@ -864,7 +944,7 @@ void cb_server_drain(cb_server *s, int64_t timeout_ms) {
     for (conn *c = s->all, *next; c; c = next) {
         next = c->next;
         if (c->state == C_WS) cb_ws_close(c, 1001);
-        else if (c->state == C_HTTP && !c->out.len && !c->req_len) conn_close(c);
+        else if (c->state == C_HTTP && !c->out.len && !c->sending && !c->req_len) conn_close(c);
     }
     if (s->sweep_timer) cb_loop_cancel(s->ctx->loop, s->sweep_timer);
     s->sweep_timer = cb_loop_timer(s->ctx->loop, 0, sweep, s);

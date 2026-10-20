@@ -14,6 +14,7 @@
 #define CB_LOOP_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 typedef struct cb_loop cb_loop;
@@ -69,6 +70,23 @@ uint64_t cb_loop_pass(const cb_loop *l);
 bool cb_loop_on_thread(const cb_loop *l);
 // ANY THREAD: true from the start of cb_loop_run until it returns (a post then is run by it).
 bool cb_loop_running(const cb_loop *l);
+// THE BACKEND. Loops made after cb_loop_use_uring(true) wait on io_uring where Linux allows it (else
+// epoll, said once in the log); cb_loop_backend names what a loop uses ("io_uring", "epoll", "kqueue").
+void cb_loop_use_uring(bool on);
+const char *cb_loop_backend(const cb_loop *l);
+
+// BATCHED SENDS (io_uring: cb_loop_batches_sends). cb_loop_send queues a send of [p, p+n) to fd,
+// handed to the kernel at the start of the next wait with every other send queued since, in the
+// one system call of that wait; it never waits for room there. done(l, ud, res) runs on the loop
+// thread first thing after that wait, before any event of it, with what send(2) would have answered
+// (the bytes sent, or -errno: -EAGAIN when the socket buffer is full). The bytes must not change
+// until done runs. Returns a token (0: not queued, send another way); cb_loop_send_drop(token) keeps
+// done from running (its owner is going away).
+typedef void (*cb_sent_fn)(cb_loop *l, void *ud, long res);
+bool cb_loop_batches_sends(const cb_loop *l);
+uint32_t cb_loop_send(cb_loop *l, int fd, const void *p, size_t n, cb_sent_fn done, void *ud);
+void cb_loop_send_drop(cb_loop *l, uint32_t token);
+
 // ANY THREAD: how many posts were ever queued (cb_loop_post): what a hand-off to the loop cost,
 // for the tests that hold work on the loop thread to none.
 uint64_t cb_loop_posts(cb_loop *l);
