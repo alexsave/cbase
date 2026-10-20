@@ -138,7 +138,7 @@ static bool db_is_sound(const char *path) {
 
 int cb_backup_restore(const cb_blob *blob, const char *key, const char *db_path) {
     if (access(db_path, F_OK) == 0) return CB_OK;
-    char tmp[1100], mkey[300], mtmp[1100], fkey[400], fpath[1200], ftmp[1300];
+    char tmp[1100], mkey[300], mtmp[1200], fkey[400], fpath[1200], ftmp[1300];
     snprintf(tmp, sizeof tmp, "%s.restore", db_path);
     (void)unlink(tmp);
     int rc = blob->get(blob->ud, key, tmp);
