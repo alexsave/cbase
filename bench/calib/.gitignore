@@ -1,0 +1,5 @@
+bin/
+state/
+.state
+*.tgz
+results_rig_*/
