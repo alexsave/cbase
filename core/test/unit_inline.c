@@ -106,26 +106,23 @@ static void inline_dispatch(void) {
     T_EQ_INT(post("/plain"), 200);
     T_CHECK(!on_loop());
 
-    // A busy pool: the request is handed off, behind the running one.
+    // A busy pool does not hold it back: with the only worker stuck in /block, /fast is answered on
+    // the loop at once (a handler run there never waits on the pool's work).
     int a = tc_connect(g_port);
     const char *req = "POST /block HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\n\r\nx";
     T_CHECK(write(a, req, strlen(req)) == (ssize_t)strlen(req));
     for (int i = 0; i < 2000 && !atomic_load(&g_entered); i++) usleep(1000);
     T_CHECK(atomic_load(&g_entered));
-    int b = tc_connect(g_port);
-    const char *req2 = "POST /fast HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\n\r\nx";
-    T_CHECK(write(b, req2, strlen(req2)) == (ssize_t)strlen(req2));
-    usleep(50000);
+    T_EQ_INT(post("/fast"), 200);
+    T_CHECK(on_loop());
     atomic_store(&g_release, 1);
     char buf[256];
-    struct pollfd p = { b, POLLIN, 0 };
+    struct pollfd p = { a, POLLIN, 0 };
     T_CHECK(poll(&p, 1, 3000) == 1);
-    T_CHECK(recv(b, buf, sizeof buf, 0) > 0);
-    T_CHECK(!on_loop());
+    T_CHECK(recv(a, buf, sizeof buf, 0) > 0);
     close(a);
-    close(b);
     cb_server_inline_stats(g_ctx.server, &st);
-    T_CHECK(st.ran == 1);
+    T_CHECK(st.ran == 2);
     for (int i = 0; i < 2000 && !cb_pool_idle(g_ctx.req_pool); i++) usleep(1000);
 }
 

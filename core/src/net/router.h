@@ -36,7 +36,8 @@ typedef void (*cb_handler)(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res
 #define CB_ROUTE_LOOP   0x1   // run on the loop thread; must not block
 #define CB_ROUTE_INLINE 0x2   // a pool route that may run on the loop thread instead, when the
                               // server's gate is open (net/server.h cb_server_inline_ok); it must
-                              // be short, and it must never wait on the pool or the loop
+                              // be short, and never wait: one that would (a lock, the store)
+                              // answers to the pool instead (http.h cb_http_res.to_pool)
 
 typedef struct cb_route_s {
     const char *method;    // "GET", "POST", ..., or "*"

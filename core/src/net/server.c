@@ -371,17 +371,16 @@ static void job_run(void *ud) {
 }
 
 // A CB_ROUTE_INLINE request runs on the loop thread only when ALL hold: inline is enabled and the
-// valve is not tripped; the request pool has nothing queued or running (so the request cannot
-// reorder behind work already handed off, and cannot wait on a lock or the journal's writer a
-// pooled request holds); and this loop pass has inline time left (inline_pass_us), so a burst of
+// valve is not tripped; and this loop pass has inline time left (inline_pass_us), so a burst of
 // ready requests runs inline until the pass's budget is spent and the rest of it goes to the pool
-// instead of starving the other sockets. The route's own flag is the caller's to check (dispatch
-// for HTTP, rt_local's pump for a socket's REQ).
+// instead of starving the other sockets. Work on the pool does not stop it: a handler never waits
+// on the loop thread (router.h CB_ROUTE_INLINE; one that would answers to_pool), a connection has
+// one request in flight at a time, and the app orders its own commits (a lock per document). The route's
+// own flag is the caller's to check (dispatch for HTTP, rt_local's pump for a socket's REQ).
 bool cb_server_inline_ok(cb_server *s) {
     cb_ctx *ctx = s->ctx;
     if (s->o.inline_budget_us <= 0 || !ctx->req_pool) return false;
     if (cb_loop_now(ctx->loop) < s->inline_off_until) return false;
-    if (!cb_pool_idle(ctx->req_pool)) return false;
     const uint64_t pass = cb_loop_pass(ctx->loop);
     if (pass != s->inline_pass) { s->inline_pass = pass; s->inline_pass_used = 0; }
     return s->inline_pass_used < s->o.inline_pass_us;
