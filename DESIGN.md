@@ -97,6 +97,7 @@ The fake Runtime API that drives the real `bootstrap` in `smoke_lambda` and `smo
 Every handler answers 503 when a handle it needs is NULL.
 
 Under serve, `cb_handle` runs on a request pool for every route but the ones flagged `CB_ROUTE_LOOP` (the WebSocket upgrade, /health), so SQLite and bcrypt never block the network loop.
+A route flagged `CB_ROUTE_INLINE` (a move, a game's read) may run on the loop thread instead; a step there that would wait answers `to_pool` (`http.h`), and the same request runs again on the pool.
 Under Lambda one invocation is one request.
 
 ## Module: util (foundation, complete)
@@ -154,7 +155,12 @@ It does not imitate Lambda: what it holds in memory is the authority, and the ru
   The cap (`CBASE_MAX_CONNS`, default 16384) reserves nothing; the real limits are `RLIMIT_NOFILE`, which startup lifts, and memory.
 - Requests: a pooled request is one block from a free list that only the loop thread touches.
   Routes are sorted once when added, and the HTTP method is parsed once into an enum.
-- Inline dispatch: a route marked `CB_ROUTE_INLINE` runs on the loop thread when the request pool is idle and the request is the last event ready in this loop pass; a request over `CBASE_INLINE_BUDGET_US` (2000) switches inline off for 5 s.
+- Inline dispatch: a route marked `CB_ROUTE_INLINE` runs on the loop thread, an HTTP request and a socket's REQ alike, while the loop pass has inline time left (`inline_pass_us`, 4 ms); the rest of the pass goes to the pool.
+  A run over its route's budget (`cb_route.inline_us`, a move's 5 ms; else `CBASE_INLINE_BUDGET_US`, 2000 us) counts, and three of them within a second switch inline off for 5 s.
+- Nothing waits on the loop: a game's lock is tried, not taken; a lock another thread holds, a game the journal does not hold, a commit that rates, a write around the journal, a session not held live and a journal writer held by the flush answer `CB_E_WOULD_BLOCK`, and the request runs again on the pool.
+- The loop is the journal's only writer while it runs: a bot drive's record is handed to it and written there, and the loop never makes a segment file (the flush thread makes them ahead).
+- A finished game's replay is a job on the job pool; a read of it, a player's history and the next operation on the game make it first if it is still queued.
+- Pushes: one published on the loop goes straight into its hearers' buffers, after any that other threads queued; an answer and the pushes its pass queued for the same socket leave in one send.
 - Workers: the default follows the usable CPU (the cgroup `cpu.max` quota, else the online CPUs, rounded up, at most 4), because workers share one malloc lock.
 - Sends: `cb_ws_send` queues, and the loop flushes each marked connection once per iteration.
 - Timers: a bot pause holds no thread; the provider starts the drive again from a loop timer, and the bot lease is a set in memory.
