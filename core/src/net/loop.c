@@ -57,6 +57,8 @@ struct cb_loop {
 
     pthread_mutex_t post_lock;
     post *post_head, *post_tail;
+    post *post_free;          // posts drained and kept for the next cb_loop_post (post_lock): no malloc per post
+    int   n_post_free;
     int wake[2];       // self-pipe: posts and stop write one byte
     atomic_bool stopping;
     atomic_bool wake_pending;   // a wake byte is in the pipe (or about to be) that no drain has cleared
@@ -120,6 +122,7 @@ void cb_loop_free(cb_loop *l) {
     if (!l) return;
     post *p = l->post_head;
     while (p) { post *n = p->next; free(p); p = n; }
+    for (p = l->post_free; p;) { post *n = p->next; free(p); p = n; }
     wake_close(l->wake);
     pthread_mutex_destroy(&l->post_lock);
     cb_poller_free(l->pl);
@@ -273,12 +276,17 @@ static void wake(cb_loop *l) {
     (void)r;
 }
 
+// Drained posts wait on post_free for the next cb_loop_post (a steady stream of pushes made a
+// malloc and a free per push, through the allocator's lock); up to POST_KEEP of them.
+#define POST_KEEP 256
+
 int cb_loop_post(cb_loop *l, cb_post_fn fn, void *ud) {
-    post *p = malloc(sizeof *p);
-    if (!p) return CB_E_NOMEM;
-    p->fn = fn; p->ud = ud; p->next = NULL;
     pthread_mutex_lock(&l->post_lock);
-    if (l->stopped) { pthread_mutex_unlock(&l->post_lock); free(p); return CB_E_STATE; }
+    if (l->stopped) { pthread_mutex_unlock(&l->post_lock); return CB_E_STATE; }
+    post *p = l->post_free;
+    if (p) { l->post_free = p->next; l->n_post_free--; }
+    else if (!(p = malloc(sizeof *p))) { pthread_mutex_unlock(&l->post_lock); return CB_E_NOMEM; }
+    p->fn = fn; p->ud = ud; p->next = NULL;
     if (l->post_tail) l->post_tail->next = p; else l->post_head = p;
     l->post_tail = p;
     pthread_mutex_unlock(&l->post_lock);
@@ -305,12 +313,23 @@ static void drain_posts(cb_loop *l) {
     post *p = l->post_head;
     l->post_head = l->post_tail = NULL;
     pthread_mutex_unlock(&l->post_lock);
-    while (p) {
-        post *n = p->next;
+    post *done = p, *last = NULL;
+    for (; p; p = p->next) {
         p->fn(l, p->ud);
-        free(p);
-        p = n;
+        last = p;
     }
+    if (!done) return;
+    pthread_mutex_lock(&l->post_lock);
+    if (l->n_post_free < POST_KEEP) {
+        int n = 0;
+        for (post *q = done; q; q = q->next) n++;
+        last->next = l->post_free;
+        l->post_free = done;
+        l->n_post_free += n;
+        done = NULL;
+    }
+    pthread_mutex_unlock(&l->post_lock);
+    while (done) { post *n = done->next; free(done); done = n; }
 }
 
 static void run_timers(cb_loop *l) {

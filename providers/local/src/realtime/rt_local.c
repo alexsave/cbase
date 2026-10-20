@@ -57,7 +57,7 @@
 // A frame waiting to be handled, or a reply waiting to be sent.
 typedef struct msg {
     struct msg *next;
-    size_t len;
+    size_t len, cap;               // cap: the text's room (a spare is reused for a frame that fits)
     char text[];
 } msg;
 
@@ -99,15 +99,31 @@ typedef struct {
     gent **rooms;                  // room -> spectators, chained
     size_t ngames, nent;
     _Atomic uint64_t end_gen;      // bumped (any thread) whenever sessions were ended
+    // Handled frames and finished jobs, kept for the next ones (loop thread only): a request
+    // over the socket used to malloc its frame and calloc its job, and free both, every time.
+    struct msg *spare_msgs;
+    struct job *spare_jobs;
+    int n_spare_msgs, n_spare_jobs;
 } local;
 
 #define INBOX_MAX (1u << 20)   // a client this far ahead of us is not a stream client
 
 static const cb_rt_transport LOCAL_T;
 
-static msg *msg_new(const void *p, size_t n) {
-    msg *m = malloc(sizeof *m + n + 1);
-    if (!m) return NULL;
+#define SPARE_MSGS 64            // frames kept
+#define SPARE_MSG_CAP 1024        // a frame's room when made: most requests fit, so most are reused
+#define SPARE_JOBS 64             // jobs kept
+
+static msg *msg_new(local *L, const void *p, size_t n) {
+    msg *m = L->spare_msgs;
+    if (m && m->cap >= n) {
+        L->spare_msgs = m->next;
+        L->n_spare_msgs--;
+    } else {
+        size_t cap = n < SPARE_MSG_CAP ? SPARE_MSG_CAP : n;
+        if (!(m = malloc(sizeof *m + cap + 1))) return NULL;
+        m->cap = cap;
+    }
     m->next = NULL;
     m->len = n;
     if (p && n) memcpy(m->text, p, n);
@@ -117,6 +133,17 @@ static msg *msg_new(const void *p, size_t n) {
 
 static void msgs_free(msg *m) {
     while (m) { msg *n = m->next; free(m); m = n; }
+}
+
+// A handled frame back to the spares (loop thread).
+static void msg_done(local *L, msg *m) {
+    if (m && m->cap == SPARE_MSG_CAP && L->n_spare_msgs < SPARE_MSGS) {
+        m->next = L->spare_msgs;
+        L->spare_msgs = m;
+        L->n_spare_msgs++;
+    } else {
+        msgs_free(m);
+    }
 }
 
 static uint64_t str_hash(const char *t) {
@@ -270,7 +297,7 @@ static void reply_to(local *L, uint64_t ws_id, uint32_t id, uint16_t status, con
 
 // ---- one frame on the pool -------------------------------------------------------
 
-typedef struct {
+typedef struct job {
     local *L;
     uint64_t ws_id;
     msg *frame;
@@ -285,13 +312,45 @@ typedef struct {
     uint32_t req_id;
     uint16_t status;
     cb_buf body;
+    cb_buf hdrs;             // the handler's headers (a socket's reply has none): a buffer kept with the job
 } job;
 
 static void job_free(job *j) {
     msgs_free(j->frame);
     free(j->granted);
     cb_buf_free(&j->body);
+    cb_buf_free(&j->hdrs);
     free(j);
+}
+
+// A finished job (loop thread): its frame and the job itself, reply buffer and all, to the spares.
+static void job_done_free(local *L, job *j) {
+    if (L->n_spare_jobs >= SPARE_JOBS) { job_free(j); return; }
+    msg_done(L, j->frame);
+    j->frame = NULL;
+    free(j->granted);
+    j->granted = NULL;
+    cb_buf body = j->body, hdrs = j->hdrs;
+    if (body.oom) cb_buf_free(&body);
+    if (hdrs.oom) cb_buf_free(&hdrs);
+    memset(j, 0, sizeof *j);
+    cb_buf_reset(&body);
+    cb_buf_reset(&hdrs);
+    j->body = body;
+    j->hdrs = hdrs;
+    // the job's link while spare: its frame slot (no field of a spare job is read)
+    j->frame = (msg *)L->spare_jobs;
+    L->spare_jobs = j;
+    L->n_spare_jobs++;
+}
+
+static job *job_new(local *L) {
+    job *j = L->spare_jobs;
+    if (!j) return calloc(1, sizeof *j);
+    L->spare_jobs = (job *)j->frame;
+    L->n_spare_jobs--;
+    j->frame = NULL;
+    return j;
 }
 
 static void pump(local *L, lconn *c);
@@ -324,16 +383,20 @@ static void run_req(job *j, const sf_frame *f) {
     const cb_route *r = ctx->router ? cb_router_match(ctx->router, req.meth, path, &known) : NULL;
     cb_http_res res;
     cb_res_init(&res);
+    // The handler writes its body straight into the job's buffer (kept with the job): no copy.
+    res.body = j->body;
+    res.headers = j->hdrs;
+    cb_buf_init(&j->body);
+    cb_buf_init(&j->hdrs);
     if (strncmp(path, "/v1/auth/", 9) == 0) j->status = 403;   // a session is made and ended over HTTP
     else if (!r || (r->flags & CB_ROUTE_LOOP)) j->status = known ? 405 : 404;
     else {
         r->fn(ctx, &req, &res);
         j->status = (uint16_t)(res.status ? res.status : 200);
-        if (res.body.len) {
-            cb_buf_append(&j->body, res.body.p, res.body.len);
-            if (j->body.oom) { j->status = 500; cb_buf_free(&j->body); }
-        }
+        if (res.body.oom) j->status = 500;
     }
+    if (!res.body.oom) { j->body = res.body; cb_buf_init(&res.body); }   // the reply, and the buffer kept
+    if (!res.headers.oom) { j->hdrs = res.headers; cb_buf_init(&res.headers); }
     cb_res_free(&res);
 }
 
@@ -398,7 +461,7 @@ static void job_done(cb_loop *l, void *ud) {
             pump(L, c);
         }
     }
-    job_free(j);
+    job_done_free(L, j);
 }
 
 static void job_run(void *ud) {
@@ -465,13 +528,13 @@ static void pump(local *L, lconn *c) {
         }
         if (f.kind == SF_SUB || f.kind == SF_UNSUB) {
             do_sub(L, c, &f);
-            free(m);
+            msg_done(L, m);
         } else if (f.kind == SF_PING) {
             static const uint8_t pong[2] = { SF_V, SF_PONG };
             send_to(L, id, pong, sizeof pong);
-            free(m);
+            msg_done(L, m);
         } else {
-            job *j = calloc(1, sizeof *j);
+            job *j = job_new(L);
             if (!j) { free(m); cb_ws_close(c->ws, 1011); return; }
             j->L = L;
             j->ws_id = id;
@@ -517,7 +580,7 @@ static void on_message(cb_ws *ws, int opcode, const uint8_t *data, size_t len, v
         if (len < 2 || data[0] != SF_V || data[1] != SF_HELLO) { cb_ws_close(ws, 1008); return; }
         c->hello_seen = true;
     }
-    msg *m = msg_new(data, len);
+    msg *m = msg_new(L, data, len);
     if (!m) return;
     if (c->in_tail) c->in_tail->next = m;
     else c->in_head = m;
@@ -669,6 +732,8 @@ static int local_deliver(cb_rt *rt, const cb_rt_to *to, const uint8_t *frame, si
 static void local_free(cb_rt *rt) {
     local *L = rt->impl;
     while (L->head) lconn_free(L, L->head);
+    msgs_free(L->spare_msgs);
+    while (L->spare_jobs) { job *j = L->spare_jobs; L->spare_jobs = (job *)j->frame; j->frame = NULL; job_free(j); }
     free(L->byid);
     free(L->byuser);
     free(L->rooms);

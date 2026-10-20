@@ -66,8 +66,13 @@ static cb_http_req g_req;
 // connection: an idle connection owns no read or write buffer at all.
 static char g_rd[16384];
 
-// An empty buffer is given back, not kept.
-static void buf_idle(cb_buf *b) { if (b->len == 0) cb_buf_free(b); }
+// An empty buffer is given back, not kept by its connection: to the server's spares (below).
+static void buf_idle(conn *c, cb_buf *b);
+// A buffer about to be written takes a spare when it has none.
+static void buf_take(conn *c, cb_buf *b);
+
+#define SPARE_KEEP 128              // spare buffers the server keeps
+#define SPARE_MAX_CAP (32 * 1024)   // and the largest one it keeps
 
 struct cb_server {
     cb_ctx *ctx;
@@ -93,11 +98,38 @@ struct cb_server {
     int64_t drain_deadline;
     uint64_t sweep_timer;
     conn *parked;                // requests waiting on a key (cb_server_wake)
+    // Read and write buffers an idle connection gave back (loop thread only), for the next one
+    // that reads or writes: an idle connection still owns no buffer, and a request or a push does
+    // not malloc one and grow it from 64 bytes by reallocs each time.
+    int      n_spare;
+    uint8_t *spare[SPARE_KEEP];
+    size_t   spare_cap[SPARE_KEEP];
     uint64_t wake_seq;           // bumped by every cb_server_wake: a handler that read before it must not park
 };
 
 static void conn_close(conn *c);
 static void conn_try_parse(conn *c);
+
+static void buf_give(cb_server *s, cb_buf *b) {
+    if (b->p && !b->oom && b->cap <= SPARE_MAX_CAP && s->n_spare < SPARE_KEEP) {
+        s->spare[s->n_spare] = b->p;
+        s->spare_cap[s->n_spare++] = b->cap;
+        cb_buf_init(b);
+    } else {
+        cb_buf_free(b);
+    }
+}
+
+static void buf_idle(conn *c, cb_buf *b) { if (b->len == 0) buf_give(c->srv, b); }
+
+static void buf_take(conn *c, cb_buf *b) {
+    cb_server *s = c->srv;
+    if (b->p || b->oom || s->n_spare == 0) return;
+    b->p = s->spare[--s->n_spare];
+    b->cap = s->spare_cap[s->n_spare];
+    b->len = 0;
+    b->p[0] = 0;
+}
 static void conn_io(cb_loop *l, int fd, int ev, void *ud);
 
 void cb_server_opts_default(cb_server_opts *o) {
@@ -152,7 +184,7 @@ static bool flush(conn *c) {
         }
         cb_buf_consume(&c->out, (size_t)w);
     }
-    buf_idle(&c->out);
+    buf_idle(c, &c->out);
     if (c->out.len == 0) {
         if (c->close_after) { conn_close(c); return false; }
         if (c->upgrade_after) {
@@ -220,6 +252,7 @@ static void finish(conn *c) {
     cb_ctx *ctx = c->srv->ctx;
     bool keep = c->req->keep_alive && !c->res.close && !c->srv->draining;
     if (c->res.upgrade) keep = true;
+    buf_take(c, &c->out);
     cb_res_serialize(&c->res, keep, &c->out);
     atomic_fetch_add_explicit(&ctx->stats.requests, 1, memory_order_relaxed);
     if (c->res.status >= 500) atomic_fetch_add_explicit(&ctx->stats.responses_5xx, 1, memory_order_relaxed);
@@ -237,7 +270,7 @@ static void finish(conn *c) {
     c->req = NULL;
     cb_buf_consume(&c->in, c->req_len);
     c->req_len = 0;
-    buf_idle(&c->in);   // bytes of a pipelined next request keep it
+    buf_idle(c, &c->in);   // bytes of a pipelined next request keep it
     c->started = c->in.len ? cb_loop_now(loop_of(c)) : 0;
     c->state = C_HTTP;
     c->last_active = cb_loop_now(loop_of(c));
@@ -419,6 +452,7 @@ static void become_ws(conn *c) {
 static int queue_frame(conn *c, int opcode, const void *data, size_t len) {
     uint8_t hdr[14];
     size_t hn = cb_ws_frame_header(hdr, true, opcode, len, NULL);
+    buf_take(c, &c->out);
     cb_buf_append(&c->out, hdr, hn);
     cb_buf_append(&c->out, data, len);
     return c->out.oom ? CB_E_NOMEM : CB_OK;
@@ -504,7 +538,7 @@ static bool ws_frames(conn *c) {
         if (c->dead) return false;
         cb_buf_consume(&c->in, (size_t)n);
         if (c->in.len == 0) {
-            cb_buf_free(&c->in);
+            buf_give(c->srv, &c->in);
             return c->out.len ? flush(c) : true;
         }
     }
@@ -548,8 +582,8 @@ static void conn_free(conn *c) {
         cb_server *s = c->srv;
         for (int i = 0; i < s->ndirty; i++) if (s->dirty[i] == c) s->dirty[i] = NULL;
     }
-    cb_buf_free(&c->in);
-    cb_buf_free(&c->out);
+    buf_give(c->srv, &c->in);
+    buf_give(c->srv, &c->out);
     cb_buf_free(&c->msg);
     cb_res_free(&c->res);
     if (c->job) job_put(c->srv, c->job);
@@ -614,6 +648,7 @@ static void conn_io(cb_loop *l, int fd, int ev, void *ud) {
         for (;;) {
             ssize_t r = recv(fd, g_rd, sizeof g_rd, 0);
             if (r > 0) {
+                buf_take(c, &c->in);
                 cb_buf_append(&c->in, g_rd, (size_t)r);
                 if (c->in.oom) { conn_close(c); return; }
                 c->in.p[c->in.len] = 0;
@@ -803,6 +838,7 @@ void cb_server_free(cb_server *s) {
     if (s->lfd >= 0) close(s->lfd);
     free(s->dirty);
     while (s->job_chunks) { job_chunk *k = s->job_chunks; s->job_chunks = k->next; free(k); }
+    while (s->n_spare) free(s->spare[--s->n_spare]);
     free(s);
 }
 

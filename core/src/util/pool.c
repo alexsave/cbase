@@ -19,6 +19,8 @@ struct cb_pool {
     pthread_mutex_t lock;
     pthread_cond_t  cv;
     task *head, *tail;
+    task *spare;                 // run tasks kept for the next submit (lock held): no malloc per task
+    int   n_spare;
     size_t pending;
     atomic_size_t outstanding;   // queued + running: what cb_pool_idle reads
     bool stopping;
@@ -26,6 +28,9 @@ struct cb_pool {
     pthread_t *threads;
     char name[16];
 };
+
+// A run task waits on the spare list for the next submit, up to TASK_KEEP of them.
+#define TASK_KEEP 256
 
 typedef struct { cb_pool *p; int i; } start_arg;
 
@@ -42,8 +47,14 @@ static void *worker(void *arg) {
     snprintf(nm, sizeof nm, "%.10s-%d", p->name, a.i);
     pthread_setname_np(pthread_self(), nm);
 #endif
+    task *ran = NULL;   // the task this worker last ran: kept under the lock it takes anyway
     for (;;) {
         pthread_mutex_lock(&p->lock);
+        if (ran) {
+            if (p->n_spare < TASK_KEEP) { ran->next = p->spare; p->spare = ran; p->n_spare++; }
+            else free(ran);
+            ran = NULL;
+        }
         while (!p->head && !p->stopping) pthread_cond_wait(&p->cv, &p->lock);
         task *t = p->head;
         if (!t) { pthread_mutex_unlock(&p->lock); return NULL; }   // stopping and drained
@@ -52,7 +63,7 @@ static void *worker(void *arg) {
         p->pending--;
         pthread_mutex_unlock(&p->lock);
         t->fn(t->ud);
-        free(t);
+        ran = t;
         atomic_fetch_sub_explicit(&p->outstanding, 1, memory_order_release);
     }
 }
@@ -81,11 +92,12 @@ cb_pool *cb_pool_new(int threads, const char *name) {
 }
 
 int cb_pool_submit(cb_pool *p, cb_task_fn fn, void *ud) {
-    task *t = malloc(sizeof *t);
-    if (!t) return CB_E_NOMEM;
-    t->fn = fn; t->ud = ud; t->next = NULL;
     pthread_mutex_lock(&p->lock);
-    if (p->stopping) { pthread_mutex_unlock(&p->lock); free(t); return CB_E_STATE; }
+    if (p->stopping) { pthread_mutex_unlock(&p->lock); return CB_E_STATE; }
+    task *t = p->spare;
+    if (t) { p->spare = t->next; p->n_spare--; }
+    else if (!(t = malloc(sizeof *t))) { pthread_mutex_unlock(&p->lock); return CB_E_NOMEM; }
+    t->fn = fn; t->ud = ud; t->next = NULL;
     if (p->tail) p->tail->next = t; else p->head = t;
     p->tail = t;
     p->pending++;
@@ -111,6 +123,7 @@ void cb_pool_free(cb_pool *p) {
     pthread_cond_broadcast(&p->cv);
     pthread_mutex_unlock(&p->lock);
     for (int i = 0; i < p->n; i++) pthread_join(p->threads[i], NULL);
+    while (p->spare) { task *t = p->spare; p->spare = t->next; free(t); }
     pthread_mutex_destroy(&p->lock);
     pthread_cond_destroy(&p->cv);
     free(p->threads);
