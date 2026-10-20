@@ -211,7 +211,9 @@ static void decide(void) {
 }
 
 static void adopt_env(const uint8_t *p, int n) {
+    static ClientDelta delta;
     client_init(&g_c, &g_slot);
+    client_delta_attach(&g_c, &delta);
     if (client_adopt_envelope(&g_c, p, n) < 0) return;
     g_have = 1;
     g_n_views++;
@@ -221,7 +223,11 @@ static void apply_cast(const uint8_t *p, int n) {
     static uint8_t ident[4096];
     int il = client_identity(&g_c, ident, sizeof ident);
     if (il < 0) il = 0;
-    int cor = client_cast_open(&g_c, p, n, ident, il, NULL, 0);
+    // The board the slot's last read left: what a delta cast is rebuilt on.
+    static uint8_t board[CLIENT_BOARD_KEEP_MAX];
+    int bl = client_board_keep(&g_c, board, sizeof board);
+    if (bl < 0) bl = 0;
+    int cor = client_cast_open(&g_c, p, n, ident, il, board, bl);
     if (getenv("P3DEBUG")) fprintf(stderr, "%s cast n %d open %d\n", g_name, n, cor);
     if (cor < 0) return;
     while (client_push_next(&g_c) == 1) {}

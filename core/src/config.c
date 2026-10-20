@@ -171,6 +171,8 @@ int cb_config_from_env(cb_config *c, char *err, size_t cap) {
     c->inline_budget_us = (int)v;
     if (!num("CBASE_IO_URING", 0, 0, 1, &v, err, cap)) return CB_E_INVALID;
     c->io_uring = v == 1;
+    if (!num("CBASE_CAST_DELTA", 0, 0, 1, &v, err, cap)) return CB_E_INVALID;
+    c->cast_delta = v == 1;
     for (int i = 0; i < CB_CONFIG_LIMITS; i++) {
         if (!num(cb_config_limit_names[i], 0, 1, 1000000, &v, err, cap)) return CB_E_INVALID;
         c->limit_burst[i] = (int)v;
@@ -225,6 +227,7 @@ void cb_config_each(const cb_config *c, cb_config_fn fn, void *ud) {
     snprintf(b, sizeof b, "%d", c->inline_budget_us);
     fn("CBASE_INLINE_BUDGET_US", b, false, ud);
     fn("CBASE_IO_URING", c->io_uring ? "1" : "0", false, ud);
+    fn("CBASE_CAST_DELTA", c->cast_delta ? "1" : "0", false, ud);
     for (int i = 0; i < CB_CONFIG_LIMITS; i++) {
         if (c->limit_burst[i]) snprintf(b, sizeof b, "%d", c->limit_burst[i]);
         else snprintf(b, sizeof b, "(default)");

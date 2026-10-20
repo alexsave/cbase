@@ -100,6 +100,13 @@ typedef struct {
     // the same system call (net/loop.h), where Linux allows it; elsewhere, or where the kernel or a
     // seccomp filter refuses it, epoll as before (said in the log). Default 0: epoll.
     bool io_uring;
+    // CBASE_CAST_DELTA=1: a commit that only moved is cast to its viewers as a
+    // delta (foolish/c/src/evwire.h EVW_CAST_DELTA: the moves, the viewer's own
+    // draws and a board check, about a tenth of the bytes), which a client
+    // kernel that reads deltas rebuilds into the board cast. Default 0: every
+    // commit is the board cast, as before. Turned on once the deployed web reads
+    // deltas; a page with an older kernel refetches each move until it reloads.
+    bool cast_delta;
     // The bursts of the rate limits (rate_limits.h), per window, indexed by
     // cb_limit_kind (0 = the rule's own default). Set by CBASE_LIMIT_<KIND>:
     // SIGNIN_IP 20/5min, SIGNIN_NAME 10/5min, SIGNUP_IP 5/h, SIGNUP_ALL 60/h,
