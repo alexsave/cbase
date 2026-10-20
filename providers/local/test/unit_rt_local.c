@@ -609,8 +609,28 @@ static void stop(void) {
     cb_loop_free(g_ctx.loop);
 }
 
+// THE FAMILY RULE (realtime.h): a family is a user's own when its pattern is under u/{user}/, a
+// room's under s/ naming {doc} alone; the check refuses a room's that names {user}, so the scope a
+// push goes to is its prefix (cb_rt_family_user), never a search of the pattern.
+static void the_family_rule(void) {
+    static const cb_topic_family views = { "views", "u/{user}/v" }, seat = { "seat", "u/{user}/c/{doc}" },
+                                 watch = { "watch", "s/{doc}" }, bad = { "bad", "s/{doc}/{user}" },
+                                 out = { "out", "x/{user}" };
+    const cb_topic_family *good[3] = { &views, &seat, &watch };
+    char err[256];
+    T_EQ_INT(cb_rt_families_check(good, 3, err, sizeof err), CB_OK);
+    const cb_topic_family *one[1] = { &bad };
+    T_EQ_INT(cb_rt_families_check(one, 1, err, sizeof err), CB_E_INVALID);
+    one[0] = &out;
+    T_EQ_INT(cb_rt_families_check(one, 1, err, sizeof err), CB_E_INVALID);
+    T_CHECK(cb_rt_family_user(&views) && cb_rt_family_user(&seat));
+    T_CHECK(!cb_rt_family_user(&watch));
+    T_CHECK(!cb_rt_family_user(NULL));
+}
+
 int main(void) {
     start();
+    T_RUN(the_family_rule);
     T_RUN(ws_upgrade_route);
     T_RUN(parked_requests_hold_no_thread);
     T_RUN(pushes_reach_their_hearers);

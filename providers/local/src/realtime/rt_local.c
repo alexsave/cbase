@@ -796,9 +796,8 @@ static int local_deliver(cb_rt *rt, const cb_rt_to *to, const uint8_t *frame, si
     cb_loop *loop = rt->ctx->loop;
     if (!loop || !to->family) return 0;
     local *L = rt->impl;
-    // A family that names {user} is the user's own, to all their connections; one that names
-    // only {doc} is the room's spectators'.
-    bool user = strstr(to->family->pattern, "{user}") != NULL;
+    // A user's own family goes to all their connections; a room's to its spectators.
+    const bool user = cb_rt_family_user(to->family);
     const char *key = user ? to->user_id : to->doc_id;
     if (!key || !*key || strlen(key) >= sizeof ((pub *)0)->key) return 1;
     if (cb_loop_on_thread(loop)) {

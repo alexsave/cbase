@@ -85,21 +85,29 @@ int cb_rt_topic(const cb_rt_to *to, char *out, size_t cap) {
     return n ? (int)n : -1;
 }
 
+static const char FAMILY_USER[] = CB_MQTT_USER_PREFIX "{user}/";
+
+bool cb_rt_family_user(const cb_topic_family *f) {
+    return f && f->pattern && memcmp(f->pattern, FAMILY_USER, sizeof FAMILY_USER - 1) == 0;
+}
+
 int cb_rt_families_check(const cb_topic_family *const *f, int n, char *err, size_t cap) {
-    static const char USER[] = CB_MQTT_USER_PREFIX "{user}/";
     for (int i = 0; i < n; i++) {
         const char *p = f[i] && f[i]->pattern ? f[i]->pattern : "";
-        bool ok = strncmp(p, USER, sizeof USER - 1) == 0 || strncmp(p, CB_MQTT_WATCH_PREFIX, 2) == 0;
+        const bool user = strncmp(p, FAMILY_USER, sizeof FAMILY_USER - 1) == 0;
+        bool ok = user || strncmp(p, CB_MQTT_WATCH_PREFIX, 2) == 0;
         for (const char *q = p; ok && *q; q++) {
             if (*q == '+' || *q == '#' || *q == '}') ok = false;
             else if (*q == '{') {
-                ok = strncmp(q, "{user}", 6) == 0 || strncmp(q, "{doc}", 5) == 0;
+                // {user} only in a user's own family: a room's names its doc alone, so whether a
+                // family is a user's is its prefix (cb_rt_family_user), read once per push.
+                ok = (user && strncmp(q, "{user}", 6) == 0) || strncmp(q, "{doc}", 5) == 0;
                 q += q[1] == 'u' ? 5 : 4;
             }
         }
         if (!ok) {
-            snprintf(err, cap, "topic family %s: \"%s\" is not under \"%s\" or \"%s\", or names more than {user} and {doc}",
-                     f[i] && f[i]->name ? f[i]->name : "?", p, USER, CB_MQTT_WATCH_PREFIX);
+            snprintf(err, cap, "topic family %s: \"%s\" is not under \"%s\" or \"%s\", or names more than {user} and {doc} (a room's no {user})",
+                     f[i] && f[i]->name ? f[i]->name : "?", p, FAMILY_USER, CB_MQTT_WATCH_PREFIX);
             return CB_E_INVALID;
         }
     }

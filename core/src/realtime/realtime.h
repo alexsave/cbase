@@ -54,6 +54,9 @@ int cb_rt_topic(const cb_rt_to *to, char *out, size_t cap);
 // or "s/", holds no '+' or '#', and names nothing but {user} and {doc}.
 // CB_OK, or CB_E_INVALID with the family in err (boot refuses to serve).
 int cb_rt_families_check(const cb_topic_family *const *f, int n, char *err, size_t cap);
+// Whether a (checked) family is a user's own, its pattern under u/{user}/, rather than a room's
+// (under s/, naming {doc} alone): a compare of the prefix, no search of the pattern.
+bool cb_rt_family_user(const cb_topic_family *f);
 
 // Delivers one message, as it is, to each of to[0..n) through rt's transport
 // (in a batch when n > 1, so the targets hear it at once). Nothing when rt is
