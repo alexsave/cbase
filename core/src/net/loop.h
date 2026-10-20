@@ -29,9 +29,9 @@ typedef void (*cb_timer_fn)(cb_loop *l, void *ud);
 typedef void (*cb_post_fn)(cb_loop *l, void *ud);
 
 cb_loop *cb_loop_new(void);
-// Frees the loop. Registered fds are not closed. Posts queued before
-// cb_loop_run returned have run; a post after that is refused (CB_E_STATE),
-// so its caller still owns what it carried.
+// Frees the loop. Registered fds are not closed. Every post cb_loop_post
+// accepted has run by the time cb_loop_run returns; one after the stop began
+// is refused (CB_E_STATE), so its caller still owns what it carried.
 void cb_loop_free(cb_loop *l);
 
 // Watches fd (made non-blocking by the caller) for `events`. CB_E_CONFLICT if
@@ -66,6 +66,8 @@ int64_t cb_loop_now(const cb_loop *l);
 uint64_t cb_loop_pass(const cb_loop *l);
 // true on the thread inside cb_loop_run.
 bool cb_loop_on_thread(const cb_loop *l);
+// ANY THREAD: true from the start of cb_loop_run until it returns (a post then is run by it).
+bool cb_loop_running(const cb_loop *l);
 // ANY THREAD: how many posts were ever queued (cb_loop_post): what a hand-off to the loop cost,
 // for the tests that hold work on the loop thread to none.
 uint64_t cb_loop_posts(cb_loop *l);

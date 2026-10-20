@@ -380,11 +380,13 @@ int cb_loop_run(cb_loop *l) {
         run_timers(l);
         if (l->after) l->after(l, l->after_ud);
     }
-    // Posts that raced the stop are run, so their owners can free what they carry.
-    drain_posts(l);
+    // Posts that raced the stop are run, so their owners can free what they carry. Refused from
+    // here on first, then drained: a post is either refused (its owner still holds what it
+    // carries) or run - none is queued after the last drain and left there.
     pthread_mutex_lock(&l->post_lock);
     l->stopped = true;
     pthread_mutex_unlock(&l->post_lock);
+    drain_posts(l);
     atomic_store(&l->running, false);
     return rc;
 }
@@ -392,6 +394,8 @@ int cb_loop_run(cb_loop *l) {
 int64_t cb_loop_now(const cb_loop *l) { return l->now; }
 
 uint64_t cb_loop_pass(const cb_loop *l) { return l->pass; }
+
+bool cb_loop_running(const cb_loop *l) { return atomic_load(&((cb_loop *)l)->running); }
 
 uint64_t cb_loop_posts(cb_loop *l) {
     pthread_mutex_lock(&l->post_lock);
