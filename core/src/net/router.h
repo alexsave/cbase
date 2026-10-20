@@ -38,14 +38,18 @@ typedef void (*cb_handler)(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res
                               // server's gate is open (net/server.h cb_server_inline_ok); it must
                               // be short, and never wait: one that would (a lock, the store)
                               // answers to the pool instead (http.h cb_http_res.to_pool)
+#define CB_ROUTE_HOME   0x4   // with CB_ROUTE_INLINE: the loop is the route's home, not an
+                              // optimization, so the valve never sends it to the pool (there it is
+                              // slower for everyone: a hand-off in, a wait for the loop's journal,
+                              // a post out). Only the pass budget and its own to_pool do
 
 typedef struct cb_route_s {
     const char *method;    // "GET", "POST", ..., or "*"
     const char *pattern;   // "/exact" or "/prefix/*"
     unsigned    flags;     // CB_ROUTE_*
     cb_handler  fn;
-    int         inline_us; // CB_ROUTE_INLINE: the longest a run on the loop should take (0: the
-                           // server's inline_budget_us); longer counts toward the valve
+    int         inline_us; // CB_ROUTE_INLINE: the most thread CPU time a run on the loop should take
+                           // (0: the server's inline_budget_us); more counts toward the valve
 } cb_route;
 
 cb_router *cb_router_new(void);

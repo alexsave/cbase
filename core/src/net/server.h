@@ -28,6 +28,8 @@ typedef struct {
     int     max_conns;     // refused past this (default 4096; CBASE_MAX_CONNS), each refusal counted and logged once a minute
     int     backlog;       // listen(2)'s queue (default 512; CBASE_LISTEN_BACKLOG)
     // INLINE DISPATCH: a CB_ROUTE_INLINE request may run on the loop thread (cb_server_inline_ok).
+    // Every time here is the loop thread's CPU time (cb_server_inline_clock), never the wall clock: a
+    // vCPU the hypervisor took away for milliseconds mid-handler did not make the handler slow.
     int     inline_budget_us;   // a run longer than its route's budget (router.h cb_route.inline_us) or, for a
                                 // route with none, than this, is over budget (default 2000; 0 = never
                                 // inline; CBASE_INLINE_BUDGET_US)
@@ -55,12 +57,14 @@ void cb_server_drain(cb_server *s, int64_t timeout_ms);
 // still running against a connection.
 void cb_server_free(cb_server *s);
 
-// INLINE DISPATCH (loop thread). A CB_ROUTE_INLINE handler may run on the loop thread instead of
-// the pool when cb_server_inline_ok says so now; whoever runs it there (dispatch for HTTP,
-// realtime's socket hub for a REQ frame) times it and reports it with cb_server_inline_done,
-// which feeds the pass budget and the valve.
-bool cb_server_inline_ok(cb_server *s);
-void cb_server_inline_done(cb_server *s, const cb_route *r, int64_t took_us);
+// INLINE DISPATCH (loop thread). A CB_ROUTE_INLINE handler `r` may run on the loop thread instead
+// of the pool when cb_server_inline_ok says so now; whoever runs it there (dispatch for HTTP,
+// realtime's socket hub for a REQ frame) reads cb_server_inline_clock before it and reports it
+// with cb_server_inline_done after, which feeds the pass budget and the valve. The clock is the
+// calling thread's CPU time in us, and this is its one reader.
+bool cb_server_inline_ok(cb_server *s, const cb_route *r);
+int64_t cb_server_inline_clock(void);
+void cb_server_inline_done(cb_server *s, const cb_route *r, int64_t started);
 // A handler run inline answered "to the pool" (http.h cb_http_res.to_pool): counted.
 void cb_server_inline_to_pool(cb_server *s);
 // Inline dispatch counters (loop thread, or after it has stopped): requests

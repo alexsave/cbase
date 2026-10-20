@@ -38,17 +38,20 @@ int main(void)
     CHECK(d2 > -2000 && d2 < 2000, "and agrees with clock_gettime (%lld)", (long long)d2);
 
     TEST("clock: cpu time counts work, not sleeping");
-    const int64_t c0 = host_process_cpu_ns(), t0 = host_thread_cpu_ms();
+    const int64_t c0 = host_process_cpu_ns(), t0 = host_thread_cpu_ms(), tu0 = host_thread_cpu_us();
     volatile uint64_t x = 1;
     const int64_t until = host_mono_ns() + 20000000;
     while (host_mono_ns() < until) x = rng_splitmix64_at(x);
     const int64_t c1 = host_process_cpu_ns();
     CHECK(c1 - c0 >= 10000000 && c1 - c0 < 2000000000, "process cpu advanced %lld ns over 20 ms of spinning", (long long)(c1 - c0));
     CHECK(host_thread_cpu_ms() - t0 >= 10 && host_thread_cpu_ms() - t0 < 2000, "thread cpu ms advanced");
+    CHECK(host_thread_cpu_us() - tu0 >= 10000 && host_thread_cpu_us() - tu0 < 2000000, "thread cpu us advanced");
     CHECK(host_process_cpu_s() * 1e9 >= (double)c1 - 1000 && host_thread_cpu_ms_f() >= (double)t0 - 1, "the seconds and float forms follow");
     const int64_t p = host_process_cpu_ns();
+    const int64_t u1 = host_thread_cpu_us();
     host_sleep_ms(30);
     CHECK(host_process_cpu_ns() - p < 25000000, "30 ms of sleeping is not 25 ms of cpu");
+    CHECK(host_thread_cpu_us() - u1 < 25000, "nor 25 ms of this thread's");
 
     TEST("clock: the monotonic clock moved forward");
     CHECK(host_mono_ns() > n0 && host_mono_s() > s0 && host_mono_ms() >= m0 + 30, "after the sleeps");

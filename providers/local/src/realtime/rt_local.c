@@ -535,7 +535,7 @@ static bool req_inline(local *L, const lconn *c, const job *j, const sf_frame *f
     if (f->kind != SF_REQ || !c->open || !L->ctx->server) return false;
     if (j->gen != atomic_load(&L->end_gen)) return false;
     if (!j->route || !(j->route->flags & CB_ROUTE_INLINE)) return false;   // (a /v1/auth/ path: run_req refuses it, no handler runs)
-    return cb_server_inline_ok(L->ctx->server);
+    return cb_server_inline_ok(L->ctx->server, j->route);
 }
 
 // Handles the connection's queued frames in order: SUB, UNSUB and PING here, a REQ here too when
@@ -586,9 +586,9 @@ static void pump(local *L, lconn *c) {
             if (req_inline(L, c, j, &f)) {
                 // On the loop: no hand-off, and the reply joins the pushes the handler queued for
                 // this socket in one send (flush_dirty). The valve times it as it times HTTP.
-                int64_t t0 = cb_mono_us();
+                const int64_t t0 = cb_server_inline_clock();
                 job_run_frame(j);
-                cb_server_inline_done(L->ctx->server, j->route, cb_mono_us() - t0);
+                cb_server_inline_done(L->ctx->server, j->route, t0);
                 if (!j->to_pool) {
                     c = job_settle(L, j);
                     continue;

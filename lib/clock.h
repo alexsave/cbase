@@ -35,6 +35,7 @@ static inline double  host_mono_ms_f(void) { return (double)host_mono_ns() * 1e-
 static inline int64_t host_real_ms(void) { return host_clock_ns(CLOCK_REALTIME) / 1000000; }
 
 /* CPU time of the calling thread, and of the whole process. */
+static inline int64_t host_thread_cpu_us(void) { return host_clock_ns(CLOCK_THREAD_CPUTIME_ID) / 1000; }
 static inline int64_t host_thread_cpu_ms(void) { return host_clock_ns(CLOCK_THREAD_CPUTIME_ID) / 1000000; }
 static inline double  host_thread_cpu_ms_f(void) { return (double)host_clock_ns(CLOCK_THREAD_CPUTIME_ID) * 1e-6; }
 static inline int64_t host_process_cpu_ns(void) { return host_clock_ns(CLOCK_PROCESS_CPUTIME_ID); }

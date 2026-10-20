@@ -91,8 +91,9 @@ typedef struct {
     int  max_conns;
     int  listen_backlog;
     // Inline dispatch (net/server.h): a CB_ROUTE_INLINE request runs on the loop
-    // thread when the loop pass has inline time left; a run longer than this many microseconds (or its route's own budget)
-    // is over budget, and three of them within a second switch inline off for 5 s.
+    // thread when the loop pass has inline time left; a run longer than this many microseconds of the loop thread's CPU
+    // (or its route's own budget) is over budget, and three of them within a second switch inline off for 5 s for
+    // every route whose home is not the loop (router.h CB_ROUTE_HOME).
     // CBASE_INLINE_BUDGET_US, default 2000; 0 turns inline dispatch off.
     int  inline_budget_us;
     // CBASE_IO_URING=1: the network loop waits on io_uring and hands a pass's sends to the kernel in

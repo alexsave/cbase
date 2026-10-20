@@ -442,29 +442,39 @@ static void job_run(void *ud) {
     (void)cb_loop_post(j->srv->ctx->loop, job_done, j);
 }
 
-// A CB_ROUTE_INLINE request runs on the loop thread only when ALL hold: inline is enabled and the
-// valve is not tripped; and this loop pass has inline time left (inline_pass_us), so a burst of
-// ready requests runs inline until the pass's budget is spent and the rest of it goes to the pool
+// A CB_ROUTE_INLINE request runs on the loop thread only when ALL hold: inline is enabled; the
+// valve is not tripped, or the route's home is the loop (CB_ROUTE_HOME: the valve guards the loop
+// from routes that are inline only as an optimization, and a move sent to the pool is slower for
+// everyone); and this loop pass has inline time left (inline_pass_us), so a burst of ready
+// requests runs inline until the pass's budget is spent and the rest of it goes to the pool
 // instead of starving the other sockets. Work on the pool does not stop it: a handler never waits
 // on the loop thread (router.h CB_ROUTE_INLINE; one that would answers to_pool), a connection has
 // one request in flight at a time, and the app orders its own commits (a lock per document). The route's
 // own flag is the caller's to check (dispatch for HTTP, rt_local's pump for a socket's REQ).
-bool cb_server_inline_ok(cb_server *s) {
+bool cb_server_inline_ok(cb_server *s, const cb_route *r) {
     cb_ctx *ctx = s->ctx;
     if (s->o.inline_budget_us <= 0 || !ctx->req_pool) return false;
-    if (cb_loop_now(ctx->loop) < s->inline_off_until) return false;
+    if (!(r && (r->flags & CB_ROUTE_HOME)) && cb_loop_now(ctx->loop) < s->inline_off_until) return false;
     const uint64_t pass = cb_loop_pass(ctx->loop);
     if (pass != s->inline_pass) { s->inline_pass = pass; s->inline_pass_used = 0; }
     return s->inline_pass_used < s->o.inline_pass_us;
 }
 
+// THE VALVE'S CLOCK: the loop thread's CPU time. On a burstable instance the hypervisor takes a
+// vCPU away for milliseconds when both are busy; by the wall clock a 20 us handler then reads as
+// 2.7 ms, three such holes in a second tripped the valve, and every move went to the pool for 5 s
+// (bench/analysis_2026-10-20/OPTIMIZED_DESIGN.md 4.2). CPU time stops while the vCPU is away.
+int64_t cb_server_inline_clock(void) { return cb_thread_cpu_us(); }
+
 // The valve: a run longer than its route's budget is over; inline_trips of them within
-// inline_trip_window_ms (a held lock, a fsync, a disk stall that persists) turn inline dispatch
-// off for inline_off_ms. One slow run alone does not: it is a hiccup, and the pass budget already
-// bounds what a burst of them costs the other sockets.
+// inline_trip_window_ms (a held lock, a disk stall that persists: the handler's own CPU) turn
+// inline dispatch off for inline_off_ms for every route but a CB_ROUTE_HOME one. One slow run alone
+// does not: it is a hiccup, and the pass budget already bounds what a burst of them costs the
+// other sockets.
 void cb_server_inline_to_pool(cb_server *s) { s->inline_to_pool++; }
 
-void cb_server_inline_done(cb_server *s, const cb_route *r, int64_t took_us) {
+void cb_server_inline_done(cb_server *s, const cb_route *r, int64_t started) {
+    const int64_t took_us = cb_server_inline_clock() - started;
     s->inline_ran++;
     s->inline_pass_used += took_us;
     const int budget = r && r->inline_us > 0 ? r->inline_us : s->o.inline_budget_us;
@@ -479,7 +489,7 @@ void cb_server_inline_done(cb_server *s, const cb_route *r, int64_t took_us) {
     s->inline_tripped++;
     s->inline_off_until = now + s->o.inline_off_ms;
     if (s->inline_tripped == 1)
-        CB_WARN("net", "%d inline requests over budget within %d ms (the last %lld us, budget %d): inline dispatch is off for %d ms",
+        CB_WARN("net", "%d inline requests over budget within %d ms (the last %lld us of CPU, budget %d): inline dispatch is off for %d ms",
                 k, s->o.inline_trip_window_ms, (long long)took_us, budget, s->o.inline_off_ms);
 }
 
@@ -503,11 +513,11 @@ static void dispatch(conn *c) {
         return;
     }
     const cb_route *ir = cb_handle_inline_route(ctx, c->req);
-    if (ir && cb_server_inline_ok(s)) {
+    if (ir && cb_server_inline_ok(s, ir)) {
         // Fast and the loop is free: no hand-off, no wake, no second post.
-        int64_t t0 = cb_mono_us();
+        const int64_t t0 = cb_server_inline_clock();
         cb_handle(ctx, c->req, &c->res);
-        cb_server_inline_done(s, ir, cb_mono_us() - t0);
+        cb_server_inline_done(s, ir, t0);
         if (!c->res.to_pool) {
             finish(c);
             return;

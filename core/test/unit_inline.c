@@ -1,7 +1,9 @@
 // unit_inline.c - hybrid inline dispatch (net/server.c cb_server_inline_ok): a CB_ROUTE_INLINE request
 // runs on the loop thread when the request pool is idle and the loop pass has inline time left, goes
 // to the pool when it is busy or the pass's time is spent, and runs over their route's budget, enough
-// of them close together, switch inline off until the window has passed.
+// of them close together, switch inline off until the window has passed, for every route but one
+// whose home is the loop (CB_ROUTE_HOME). Every budget is the loop thread's CPU time: the slow
+// handlers here burn CPU, and one that only waits (a descheduled vCPU's hole) is not slow.
 #include "t.h"
 
 #include "lib_client.h"
@@ -37,9 +39,17 @@ static void h_fast(cb_ctx *c, const cb_http_req *q, cb_http_res *s) { g_last = p
 static void h_fx(cb_ctx *c, const cb_http_req *q, cb_http_res *s) { g_tx = pthread_self(); cb_res_send(s, 200, "text/plain", "ok", 2); }
 static void h_fy(cb_ctx *c, const cb_http_req *q, cb_http_res *s) { g_ty = pthread_self(); cb_res_send(s, 200, "text/plain", "ok", 2); }
 static void h_fz(cb_ctx *c, const cb_http_req *q, cb_http_res *s) { g_tz = pthread_self(); cb_res_send(s, 200, "text/plain", "ok", 2); }
-static void h_f5(cb_ctx *c, const cb_http_req *q, cb_http_res *s) { usleep(5000); h_fx(c, q, s); }
+// us of this thread's CPU, spinning.
+static void burn_us(int64_t us) {
+    const int64_t t0 = cb_thread_cpu_us();
+    while (cb_thread_cpu_us() - t0 < us) {}
+}
+static void h_f5(cb_ctx *c, const cb_http_req *q, cb_http_res *s) { burn_us(5000); h_fx(c, q, s); }
 static void h_stall(cb_ctx *c, const cb_http_req *q, cb_http_res *s) { usleep(150000); cb_res_send(s, 200, "text/plain", "ok", 2); }
-static void h_slow(cb_ctx *c, const cb_http_req *q, cb_http_res *s) { g_last = pthread_self(); usleep(6000); cb_res_send(s, 200, "text/plain", "ok", 2); }
+static void h_slow(cb_ctx *c, const cb_http_req *q, cb_http_res *s) { g_last = pthread_self(); burn_us(6000); cb_res_send(s, 200, "text/plain", "ok", 2); }
+// 3 ms of wall clock and almost no CPU: what a 20 us handler looks like when the hypervisor parks
+// its vCPU mid-run.
+static void h_nap(cb_ctx *c, const cb_http_req *q, cb_http_res *s) { g_last = pthread_self(); usleep(3000); cb_res_send(s, 200, "text/plain", "ok", 2); }
 static void h_block(cb_ctx *c, const cb_http_req *q, cb_http_res *s) {
     atomic_store(&g_entered, 1);
     while (!atomic_load(&g_release)) usleep(1000);
@@ -64,6 +74,8 @@ static void start(void) {
     cb_router_add(g_ctx.router, "POST", "/plain", CB_ROUTE_POOL, h_fast);
     cb_router_add(g_ctx.router, "POST", "/block", CB_ROUTE_POOL, h_block);
     cb_router_add(g_ctx.router, "POST", "/fz", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_fz);
+    cb_router_add(g_ctx.router, "POST", "/nap", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_nap);
+    cb_router_add(g_ctx.router, "POST", "/home", CB_ROUTE_POOL | CB_ROUTE_INLINE | CB_ROUTE_HOME, h_fast);
     // Routes with a budget of their own (router.h cb_route.inline_us): 5 and 6 ms handlers not over
     // theirs, however long a loaded runner oversleeps them (0.5 s).
     static const cb_route own[] = {
@@ -201,6 +213,15 @@ static void valve(void) {
     T_CHECK(on_loop());
     cb_server_inline_stats(g_ctx.server, &st);
     T_EQ_INT((int)st.over, 0);
+    // Three runs of 3 ms of wall clock each within the window, but microseconds of CPU: none is over
+    // the 2 ms budget, and the valve stays shut.
+    for (int i = 0; i < 3; i++) {
+        T_EQ_INT(post("/nap"), 200);
+        T_CHECK(on_loop());
+    }
+    cb_server_inline_stats(g_ctx.server, &st);
+    T_EQ_INT((int)st.over, 0);
+    T_EQ_INT((int)st.tripped, 0);
     // Over the server's 2 ms: each answers on the loop and counts, and only the third within the
     // window trips the valve (inline_trips 3).
     T_EQ_INT(post("/slow"), 200);
@@ -217,6 +238,9 @@ static void valve(void) {
     T_CHECK(st.over == 3 && st.tripped == 1);
     T_EQ_INT(post("/fast"), 200);
     T_CHECK(!on_loop());
+    // A route whose home is the loop stays there while the valve is open.
+    T_EQ_INT(post("/home"), 200);
+    T_CHECK(on_loop());
     // It re-arms once the window has passed.
     usleep(600000);
     T_EQ_INT(post("/fast"), 200);
