@@ -175,8 +175,9 @@ static void a_client_gone_mid_request(void) {
         T_EQ_INT(atomic_load(&g_slow_done), 1);
         // Freed at once, not left to the idle sweep (idle_ms 300, every second).
         int64_t t0 = cb_mono_ms();
-        while (atomic_load(&g_ctx.stats.http_conns) != open0 && cb_mono_ms() - t0 < 250) usleep(2000);
-        T_EQ_INT((int)atomic_load(&g_ctx.stats.http_conns), (int)open0);
+        // (Not above where it was: an idle connection an earlier test left may be reaped meanwhile.)
+        while (atomic_load(&g_ctx.stats.http_conns) > open0 && cb_mono_ms() - t0 < 250) usleep(2000);
+        T_CHECK(atomic_load(&g_ctx.stats.http_conns) <= open0);
     }
     tc_response r;
     T_EQ_INT(tc_http(g_port, "POST", "/echo", NULL, "hi", 2, &r), 0);
@@ -198,8 +199,8 @@ static void a_reset_mid_answer(void) {
     setsockopt(fd, SOL_SOCKET, SO_LINGER, &lg, sizeof lg);
     close(fd);   // a reset, not a close
     int64_t t0 = cb_mono_ms();
-    while (atomic_load(&g_ctx.stats.http_conns) != open0 && cb_mono_ms() - t0 < 2000) usleep(2000);
-    T_EQ_INT((int)atomic_load(&g_ctx.stats.http_conns), (int)open0);
+    while (atomic_load(&g_ctx.stats.http_conns) > open0 && cb_mono_ms() - t0 < 2000) usleep(2000);
+    T_CHECK(atomic_load(&g_ctx.stats.http_conns) <= open0);
     tc_response r;
     T_EQ_INT(tc_http(g_port, "POST", "/echo", NULL, "hi", 2, &r), 0);
     T_EQ_INT(r.status, 200);
