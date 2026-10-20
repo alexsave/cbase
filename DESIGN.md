@@ -160,6 +160,18 @@ It does not imitate Lambda: what it holds in memory is the authority, and the ru
 - Timers: a bot pause holds no thread; the provider starts the drive again from a loop timer, and the bot lease is a set in memory.
 - Tokens: the access token is a fixed binary layout with an HMAC-SHA256 (`auth/jwt.c`), and each thread caches the tokens it verified.
 - Memory: SQLite allocates through free lists for blocks of 1 KB to 64 KB, because musl unmaps a malloc group when its last slot is freed; the kernel section and the commit batch are per worker thread.
+- The move journal (`foolish/server/src/store/journal.c`, `foolish/c/src/replay_move.c`): a plain move does not write SQLite.
+  A commit that is one human move or one bot cycle and nothing else (the roster, the status and the seed unchanged, no rating, no new session log) is coded as its index in the kernel's legal menu at the board it was played on (with the menu's size, so a record decodes without the board), on the v10 replay codec's rANS coder, and appended to a segment `<db>-journal.<seq>` in one write() with every record queued meanwhile (group commit).
+  The move is acknowledged once that write returned: the durability the WAL at synchronous=NORMAL gave (`CBASE_JOURNAL_SYNC=1` adds an fdatasync per batch).
+  A batch is its own coder integer behind an 8-byte header (magic, format, length, FNV-1a 32), so a torn or corrupt tail loses only that unacknowledged batch.
+  A game is named by its slot in the segment's table (uniform over N + 1, N meaning a new game whose code follows once).
+  The new row and its moves are held in memory; the store's game reads (`game_get`, `game_logs`, the dashboard's `games_get_views`) see them first, and a scan of the games table (the bot scan, the dashboard list, an import, the admin console) flushes first (`journal_scan`, its one owner).
+  Every 2 s (`CBASE_JOURNAL_FLUSH_MS`) or at 4096 waiting moves, one transaction writes every waiting game (the games row fenced on the version the table holds, and its game_moves rows), and the segments before it are deleted.
+  Any other write of a game (a deal, a seat, the end of a game, a delete) writes that game's waiting moves first, in its own transaction.
+  At start the segments are replayed through the kernel before anything is served (a human's move with `table_act`, a bot cycle with `table_bot_drive` given its moves as prefs, each checked against the menu), written to the tables, and deleted; a record that does not fit its board refuses the start.
+  Backups settle the journal before `VACUUM INTO`, so a backup holds every move acknowledged before it started (the journal lives on the same disk as the database, so a restore after losing the disk has neither).
+  `CBASE_JOURNAL=0` turns it off.
+  Measured on the rig (8 games, 1 CPU, saturation): 14.7 B of journal and about 1.05 KB of WAL per move (the end-of-game and flush writes) against 9.8 KB of WAL before, 11.6 syscalls per move against 19.6, 19.9k moves/s at p99 0.8 ms against 19.1k at p99 1.0 ms.
 - Backups: the database is copied to the VM's backup bucket (dualstack S3 host) when it changed, and the newest copy is restored at start when the file is missing (`providers/local/src/store/backup.c`).
 - Rig: `bench/nano/` is the 0.1-CPU, 512 MB rehearsal; `sat.sh` (saturation, `WAL=1` for the WAL meter), `run.sh` (human pace), `prof_off.sh` (time inside syscalls), `botg.sh` (bot tables).
   Measured on the final build: saturation 18.3k moves/s at p99 1.1 ms on a quiet host (16.76k at p99 10 ms before the checkpointer), and 9.8 KB of WAL per move (2.4 frames: the games row's page and the game_moves page).
