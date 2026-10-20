@@ -21,6 +21,7 @@ zero providers/aws/src/aws/s3_blob.c cb_aws_creds_get TEMPORARY: untested on the
 zero providers/aws/src/aws/s3_blob.c s3_call TEMPORARY: untested on the VM branch, the coverage-tests PR covers it
 zero providers/aws/src/aws/s3_blob.c s3_put TEMPORARY: untested on the VM branch, the coverage-tests PR covers it
 zero providers/aws/src/aws/s3_blob.c s3_get TEMPORARY: untested on the VM branch, the coverage-tests PR covers it
+zero providers/aws/src/aws/s3_blob.c s3_del TEMPORARY: the journal trim's S3 delete (move-journal), untested like s3_put and s3_get; the coverage-tests PR covers it
 zero providers/aws/src/aws/s3_blob.c cb_blob_open_s3 TEMPORARY: untested on the VM branch, the coverage-tests PR covers it
 zero providers/aws/src/aws_json.c dw_creds_expired TEMPORARY: untested on the VM branch, the coverage-tests PR covers it
 zero providers/aws/src/aws_json.c dw_creds_process_parse TEMPORARY: untested on the VM branch, the coverage-tests PR covers it
