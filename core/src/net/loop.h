@@ -66,6 +66,9 @@ int  cb_loop_run(cb_loop *l);
 int64_t cb_loop_now(const cb_loop *l);
 // The iteration this is (loop thread): it changes once per wait, so work can be budgeted per pass.
 uint64_t cb_loop_pass(const cb_loop *l);
+// Times the poller's alarm was set to a new deadline (net/poller.h THE ALARM): a wait until the
+// same next timer as the last sets nothing.
+uint64_t cb_loop_alarms(const cb_loop *l);
 // true on the thread inside cb_loop_run.
 bool cb_loop_on_thread(const cb_loop *l);
 // ANY THREAD: true from the start of cb_loop_run until it returns (a post then is run by it).

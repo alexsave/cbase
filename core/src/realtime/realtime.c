@@ -160,6 +160,10 @@ static bool hold(const cb_rt_to *to, const uint8_t *frame, size_t len) {
     return true;
 }
 
+bool cb_rt_room_heard(cb_rt *rt, const char *doc) {
+    return !rt || !rt->t || !rt->t->room_heard || !doc || rt->t->room_heard(rt, doc);
+}
+
 void cb_rt_batch_begin(cb_rt *rt) {
     if (!rt || !rt->t || !rt->t->deliver_lanes) return;
     if (t_batch.depth > 0 && t_batch.rt != rt) return;   // another transport's batch is open: this one is not held

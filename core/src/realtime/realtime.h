@@ -79,6 +79,9 @@ typedef struct cb_rt_transport {
     // message as it is published (deliver), and a batch changes nothing.
     int (*deliver_lanes)(cb_rt *rt, const cb_rt_to *to, const uint8_t *const *frames, const size_t *lens,
                          const int *lane, int n);
+    // Whether anyone watches the room of `doc` now, when the transport can tell on this thread
+    // (cb_rt_room_heard). NULL: it cannot, and every room may be watched.
+    bool (*room_heard)(cb_rt *rt, const char *doc);
 } cb_rt_transport;
 
 struct cb_rt {
@@ -98,6 +101,10 @@ struct cb_rt {
 // hold (full, or no memory) is delivered at once. Not for a transport
 // without deliver_lanes, where both calls do nothing.
 void cb_rt_batch_begin(cb_rt *rt);
+// Whether a push to the room of `doc` (a family under s/) may reach anyone: false only when the
+// transport knows the room has no watcher now (the local hub, on its loop thread), so the caller
+// need not build the push. True with no transport, or one that cannot tell.
+bool cb_rt_room_heard(cb_rt *rt, const char *doc);
 void cb_rt_batch_end(cb_rt *rt);
 
 // The failed deliveries this thread's publishes counted since the last take

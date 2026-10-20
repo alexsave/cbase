@@ -62,6 +62,8 @@ static void h_park(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
 static void h_ping(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) { cb_res_text(res, 200, "pong"); }
 
 static void h_pub_on_loop(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res);
+static void h_pub_twice(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res);
+static void h_heard(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res);
 static void h_act(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res);
 static void h_would_wait(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res);
 static void h_order(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res);
@@ -83,6 +85,8 @@ static void start(void) {
     T_EQ_INT(cb_router_add(g_ctx.router, "GET", "/t/ping", CB_ROUTE_POOL, h_ping), CB_OK);
     T_EQ_INT(cb_router_add(g_ctx.router, "*", "/t/loop", CB_ROUTE_LOOP, h_who), CB_OK);
     T_EQ_INT(cb_router_add(g_ctx.router, "GET", "/t/publoop", CB_ROUTE_LOOP, h_pub_on_loop), CB_OK);
+    T_EQ_INT(cb_router_add(g_ctx.router, "GET", "/t/pubtwice", CB_ROUTE_LOOP, h_pub_twice), CB_OK);
+    T_EQ_INT(cb_router_add(g_ctx.router, "GET", "/t/heard", CB_ROUTE_LOOP, h_heard), CB_OK);
     T_EQ_INT(cb_router_add(g_ctx.router, "POST", "/t/act", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_act), CB_OK);
     T_EQ_INT(cb_router_add(g_ctx.router, "POST", "/t/wait", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_would_wait), CB_OK);
     T_EQ_INT(cb_router_add(g_ctx.router, "GET", "/t/order", CB_ROUTE_LOOP, h_order), CB_OK);
@@ -264,6 +268,79 @@ static void a_push_on_the_loop_is_not_posted(void) {
     T_EQ_INT(fr_recv(a, 2000, &m), NW_WS_VIEW);
     close(a);
     close(c);
+    cb_buf_free(&m);
+}
+
+// A commit's shape on the loop: one user's view and then its cast, one after the other.
+static void h_pub_twice(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
+    publish_view(12);
+    publish_view(13);
+    cb_res_text(res, 200, "done");
+}
+
+// ONE WALK PER HEARER: a user's two pushes in one loop pass find the user's connections once
+// (rt_local.c THE LAST USER'S HEARERS), and both reach every one of them; a push in a later pass
+// walks again.
+static void a_users_pushes_in_a_pass_walk_once(void) {
+    cb_buf m;
+    cb_buf_init(&m);
+    NwFrame pf;
+    int a = open_as(U1, NULL, &m);
+    int c = open_as(U1, NULL, &m);
+    const long w0 = cb_rt_local_user_walks(g_ctx.rt);
+    tc_response r;
+    T_EQ_INT(tc_http(g_port, "GET", "/t/pubtwice", NULL, NULL, 0, &r), 0);
+    T_EQ_INT(r.status, 200);
+    tc_response_free(&r);
+    for (int fd = a; fd != -1; fd = fd == a ? c : -1)
+        for (uint32_t v = 12; v <= 13; v++) {
+            T_EQ_INT(fr_recv(fd, 2000, &m), NW_WS_VIEW);
+            T_EQ_INT(nw_frame_decode(m.p, (int)m.len, &pf), NW_OK);
+            T_EQ_INT((int)pf.version, (int)v);
+        }
+    T_EQ_INT(cb_rt_local_user_walks(g_ctx.rt) - w0, 1);
+    T_EQ_INT(tc_http(g_port, "GET", "/t/publoop", NULL, NULL, 0, &r), 0);
+    tc_response_free(&r);
+    T_EQ_INT(fr_recv(a, 2000, &m), NW_WS_VIEW);
+    T_EQ_INT(cb_rt_local_user_walks(g_ctx.rt) - w0, 2);
+    close(a);
+    close(c);
+    cb_buf_free(&m);
+}
+
+// Whether the hub knows anyone watches G, asked on the loop: "1" or "0".
+static void h_heard(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
+    cb_res_text(res, 200, cb_rt_room_heard(ctx->rt, G) ? "1" : "0");
+}
+
+static bool heard_on_loop(void) {
+    tc_response r;
+    T_EQ_INT(tc_http(g_port, "GET", "/t/heard", NULL, NULL, 0, &r), 0);
+    T_EQ_INT(r.status, 200);
+    const bool heard = r.body.len == 1 && r.body.p[0] == '1';
+    tc_response_free(&r);
+    return heard;
+}
+
+// WHO WATCHES A ROOM (realtime.h cb_rt_room_heard): on the loop the hub answers from its rooms, so
+// a commit nobody watches builds no spectators' cast; off the loop it cannot tell and says yes.
+static void a_room_is_heard_only_while_watched(void) {
+    cb_buf m;
+    cb_buf_init(&m);
+    int b = open_as(U2, NULL, &m);
+    T_CHECK(!heard_on_loop());                             // no one in G's room
+    T_CHECK(cb_rt_room_heard(g_ctx.rt, G));                 // this thread is not the loop's
+    sub(b, SF_SUB, 0x80000011u, NW_SUB_GAME, G, 200, &m);
+    T_CHECK(heard_on_loop());
+    sub(b, SF_UNSUB, 0x80000012u, NW_SUB_GAME, G, 200, &m);
+    T_CHECK(!heard_on_loop());
+    sub(b, SF_SUB, 0x80000013u, NW_SUB_GAME, G, 200, &m);
+    T_CHECK(heard_on_loop());
+    close(b);                                               // the watcher's socket goes
+    int n = 0;
+    while (heard_on_loop() && n++ < 200) usleep(5000);
+    T_CHECK(!heard_on_loop());
+    T_CHECK(cb_rt_room_heard(NULL, G));                     // no transport: every room may be heard
     cb_buf_free(&m);
 }
 
@@ -636,6 +713,8 @@ int main(void) {
     T_RUN(pushes_reach_their_hearers);
     T_RUN(many_sockets_hear_once);
     T_RUN(a_push_on_the_loop_is_not_posted);
+    T_RUN(a_users_pushes_in_a_pass_walk_once);
+    T_RUN(a_room_is_heard_only_while_watched);
     T_RUN(an_inline_req_answers_with_its_pushes);
     T_RUN(a_req_that_would_wait_runs_again_on_the_pool);
     T_RUN(pushes_keep_their_order_across_threads);

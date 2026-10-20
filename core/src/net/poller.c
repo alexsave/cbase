@@ -6,7 +6,21 @@
 #include <fcntl.h>
 #include <stdbool.h>
 #include <stdlib.h>
+#include <time.h>
 #include <unistd.h>
+
+static int64_t mono_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+// A deadline as the wait's timeout: -1 forever, else the ms left (0 when past).
+static int timeout_of(int64_t until_ms) {
+    if (until_ms < 0) return -1;
+    const int64_t d = until_ms - mono_ms();
+    return d <= 0 ? 0 : d > 0x7fffffff ? 0x7fffffff : (int)d;
+}
 
 #if defined(__linux__)
 
@@ -16,6 +30,9 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/epoll.h>
+#include <sys/timerfd.h>
+
+#define ALARM_TAG 0xffffffffu   // the alarm timerfd's epoll tag: never a loop generation the caller sees
 
 // ---- io_uring's state (unused under epoll) ----------------------------------------------------
 
@@ -49,6 +66,9 @@ struct cb_poller {
     int n_ready, cap_ready, at_ready;
     cb_sent_ev *sent;             // sends' results, not yet returned
     int n_sent, cap_sent, at_sent;
+    int alarm_fd;                 // epoll: the alarm (a timerfd), -1 until the first deadline
+    int64_t alarm_at;             // the deadline it is set to; -1: none
+    uint64_t alarms;              // times it was set (cb_poller_alarms)
 };
 
 #define URING_ENTRIES 4096
@@ -57,6 +77,8 @@ cb_poller *cb_poller_new(bool uring, char *why, size_t cap) {
     cb_poller *p = calloc(1, sizeof *p);
     if (!p) return NULL;
     p->ep = -1;
+    p->alarm_fd = -1;
+    p->alarm_at = -1;
     if (uring) {
         char w[160] = "";
         p->ur = cb_uring_new(URING_ENTRIES, w, sizeof w);
@@ -70,6 +92,7 @@ cb_poller *cb_poller_new(bool uring, char *why, size_t cap) {
 
 void cb_poller_free(cb_poller *p) {
     if (!p) return;
+    if (p->alarm_fd >= 0) close(p->alarm_fd);
     if (p->ep >= 0) close(p->ep);
     cb_uring_free(p->ur);
     free(p->fds);
@@ -236,14 +259,50 @@ int cb_poller_wait(cb_poller *p, cb_poll_ev *out, int max, int timeout_ms) {
     struct epoll_event ev[256];
     if (max > 256) max = 256;
     int n = epoll_wait(p->ep, ev, max, timeout_ms);
+    int m = 0;
     for (int i = 0; i < n; i++) {
-        out[i].fd = (int)(uint32_t)ev[i].data.u64;
-        out[i].tag = (uint32_t)(ev[i].data.u64 >> 32);
-        out[i].events = (ev[i].events & EPOLLIN ? CB_EV_READ : 0) | (ev[i].events & EPOLLOUT ? CB_EV_WRITE : 0) |
+        if ((uint32_t)(ev[i].data.u64 >> 32) == ALARM_TAG) {   // the alarm rang: read, and none is set now
+            uint64_t x;
+            if (read(p->alarm_fd, &x, sizeof x) < 0) {}
+            p->alarm_at = -1;
+            continue;
+        }
+        out[m].fd = (int)(uint32_t)ev[i].data.u64;
+        out[m].tag = (uint32_t)(ev[i].data.u64 >> 32);
+        out[m].events = (ev[i].events & EPOLLIN ? CB_EV_READ : 0) | (ev[i].events & EPOLLOUT ? CB_EV_WRITE : 0) |
                         (ev[i].events & (EPOLLERR | EPOLLHUP) ? CB_EV_ERR : 0);
+        m++;
     }
-    return n;
+    return n < 0 ? -1 : m;
 }
+
+int cb_poller_wait_until(cb_poller *p, cb_poll_ev *out, int max, int64_t until_ms) {
+    if (p->ur) return ur_wait(p, out, max, timeout_of(until_ms));
+    if (until_ms != p->alarm_at) {
+        if (p->alarm_fd < 0) {
+            p->alarm_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+            struct epoll_event e = { .events = EPOLLIN, .data.u64 = (uint64_t)ALARM_TAG << 32 | (uint32_t)p->alarm_fd };
+            if (p->alarm_fd < 0 || epoll_ctl(p->ep, EPOLL_CTL_ADD, p->alarm_fd, &e) < 0) {
+                if (p->alarm_fd >= 0) close(p->alarm_fd);
+                p->alarm_fd = -1;
+                return cb_poller_wait(p, out, max, timeout_of(until_ms));   // no timerfd: the wait's own timeout
+            }
+        }
+        struct itimerspec its;
+        memset(&its, 0, sizeof its);   // zero: disarmed
+        if (until_ms >= 0) {
+            its.it_value.tv_sec = until_ms / 1000;
+            its.it_value.tv_nsec = (long)(until_ms % 1000) * 1000000L;
+            if (!its.it_value.tv_sec && !its.it_value.tv_nsec) its.it_value.tv_nsec = 1;
+        }
+        if (timerfd_settime(p->alarm_fd, TFD_TIMER_ABSTIME, &its, NULL) < 0) return cb_poller_wait(p, out, max, timeout_of(until_ms));
+        p->alarm_at = until_ms;
+        p->alarms++;
+    }
+    return cb_poller_wait(p, out, max, -1);
+}
+
+uint64_t cb_poller_alarms(const cb_poller *p) { return p->alarms; }
 
 #elif defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__) || defined(__DragonFly__)
 
@@ -254,7 +313,11 @@ int cb_poller_wait(cb_poller *p, cb_poll_ev *out, int max, int timeout_ms) {
 
 struct cb_poller {
     int kq;
+    int64_t alarm_at;   // the deadline the EVFILT_TIMER is set to; -1: none
+    uint64_t alarms;    // times it was set (cb_poller_alarms)
 };
+
+#define ALARM_IDENT ((uintptr_t)-2)   // the alarm's timer: an ident no fd has
 
 cb_poller *cb_poller_new(bool uring, char *why, size_t cap) {
     if (uring && why) snprintf(why, cap, "io_uring is Linux's");
@@ -262,6 +325,7 @@ cb_poller *cb_poller_new(bool uring, char *why, size_t cap) {
     if (!p) return NULL;
     p->kq = kqueue();
     if (p->kq < 0) { free(p); return NULL; }
+    p->alarm_at = -1;
     fcntl(p->kq, F_SETFD, FD_CLOEXEC);
     return p;
 }
@@ -319,6 +383,7 @@ int cb_poller_wait(cb_poller *p, cb_poll_ev *out, int max, int timeout_ms) {
     // A fd can have both filters ready: kqueue reports two events, the loop wants one.
     int m = 0;
     for (int i = 0; i < n; i++) {
+        if (ev[i].filter == EVFILT_TIMER) { p->alarm_at = -1; continue; }   // the alarm rang (one-shot)
         int fd = (int)ev[i].ident;
         int e = ev[i].filter == EVFILT_READ ? CB_EV_READ : ev[i].filter == EVFILT_WRITE ? CB_EV_WRITE : 0;
         if (ev[i].flags & EV_ERROR) e = CB_EV_ERR;
@@ -333,6 +398,25 @@ int cb_poller_wait(cb_poller *p, cb_poll_ev *out, int max, int timeout_ms) {
     }
     return n < 0 ? -1 : m;
 }
+
+int cb_poller_wait_until(cb_poller *p, cb_poll_ev *out, int max, int64_t until_ms) {
+    if (until_ms != p->alarm_at) {
+        struct kevent k;
+        if (until_ms < 0) {
+            EV_SET(&k, ALARM_IDENT, EVFILT_TIMER, EV_DELETE, 0, 0, NULL);
+            (void)kevent(p->kq, &k, 1, NULL, 0, NULL);   // (ENOENT: it had rung)
+        } else {
+            const int64_t in = until_ms - mono_ms();
+            EV_SET(&k, ALARM_IDENT, EVFILT_TIMER, EV_ADD | EV_ENABLE | EV_ONESHOT, 0, in > 0 ? in : 0, NULL);
+            if (kevent(p->kq, &k, 1, NULL, 0, NULL) < 0) return cb_poller_wait(p, out, max, timeout_of(until_ms));
+        }
+        p->alarm_at = until_ms;
+        p->alarms++;
+    }
+    return cb_poller_wait(p, out, max, -1);
+}
+
+uint64_t cb_poller_alarms(const cb_poller *p) { return p->alarms; }
 
 #else
 #error "c_base's event loop needs epoll (Linux) or kqueue (macOS, BSD); there is no poll(2) fallback"

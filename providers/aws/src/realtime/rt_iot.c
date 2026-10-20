@@ -80,7 +80,7 @@ static int iot_deliver_lanes(cb_rt *rt, const cb_rt_to *to, const uint8_t *const
 
 static void iot_free(cb_rt *rt) { free(rt); }
 
-static const cb_rt_transport IOT_T = { "iot", iot_deliver, iot_free, NULL, iot_deliver_lanes };
+static const cb_rt_transport IOT_T = { "iot", iot_deliver, iot_free, NULL, iot_deliver_lanes, NULL };
 
 int cb_rt_iot_new(cb_ctx *ctx, cb_rt **out) {
     *out = NULL;

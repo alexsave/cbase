@@ -415,12 +415,14 @@ int cb_loop_run(cb_loop *l) {
         l->now = cb_mono_ms();
         // A wait that ends for a timer is at least TIMER_FLOOR_MS: the timers due within it run in
         // one wake, not one wake (and one armed and cancelled kernel timer) each.
-        int timeout = -1;
+        // The wait's deadline is the next timer's, kept in the poller's own alarm (set only when
+        // it changes: a wait until the same deadline arms no kernel timer of its own).
+        int64_t until = -1;
         if (l->nt > 0) {
-            int64_t d = l->heap[0].at - cb_mono_ms();
-            timeout = d < TIMER_FLOOR_MS ? TIMER_FLOOR_MS : d > 60000 ? 60000 : (int)d;
+            until = l->heap[0].at;
+            if (until < l->now + TIMER_FLOOR_MS) until = l->now + TIMER_FLOOR_MS;
         }
-        int r = cb_poller_wait(l->pl, ev, (int)(sizeof ev / sizeof ev[0]), timeout);
+        int r = cb_poller_wait_until(l->pl, ev, (int)(sizeof ev / sizeof ev[0]), until);
         if (r < 0) {
             if (errno == EINTR) continue;
             CB_ERROR("loop", "poll failed: %s", strerror(errno));
@@ -478,6 +480,8 @@ int cb_loop_run(cb_loop *l) {
 int64_t cb_loop_now(const cb_loop *l) { return l->now; }
 
 uint64_t cb_loop_pass(const cb_loop *l) { return l->pass; }
+
+uint64_t cb_loop_alarms(const cb_loop *l) { return cb_poller_alarms(l->pl); }
 
 bool cb_loop_running(const cb_loop *l) { return atomic_load(&((cb_loop *)l)->running); }
 

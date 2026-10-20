@@ -102,6 +102,18 @@ typedef struct {
     gent **rooms;                  // room -> spectators, chained
     size_t ngames, nent;
     _Atomic uint64_t end_gen;      // bumped (any thread) whenever sessions were ended
+    // THE LAST USER'S HEARERS (loop thread): a commit pushes each user its view and then its cast
+    // (fanout.c), so the second push of a user reuses the first's walk of the by-user table, in
+    // the same loop pass and while no connection joined or left that table (user_gen).
+    uint64_t user_gen;
+    struct {
+        bool     valid;
+        uint64_t gen, pass;
+        char     key[64];
+        size_t   n;
+        uint64_t ids[8];
+    } last;
+    _Atomic long user_walks;       // the by-user table's walks (cb_rt_local_user_walks)
     // Handled frames and finished jobs, kept for the next ones (loop thread only): a request
     // over the socket used to malloc its frame and calloc its job, and free both, every time.
     struct msg *spare_msgs;
@@ -193,6 +205,7 @@ static bool maps_add(local *L, lconn *c) {
         free(L->byuser);
         L->byid = t;
         L->byuser = u;
+        L->user_gen++;
         L->nbyid = nb;
     }
     size_t i = id_slot(c->ws_id, L->nbyid);
@@ -203,6 +216,7 @@ static bool maps_add(local *L, lconn *c) {
 }
 
 static void user_add(local *L, lconn *c) {
+    L->user_gen++;
     size_t k = user_slot(c->user->id, L->nbyid);
     c->unext = L->byuser[k];
     L->byuser[k] = c;
@@ -210,6 +224,7 @@ static void user_add(local *L, lconn *c) {
 
 static void user_del(local *L, lconn *c) {
     if (!c->open) return;
+    L->user_gen++;
     lconn **pp = &L->byuser[user_slot(c->user->id, L->nbyid)];
     while (*pp && *pp != c) pp = &(*pp)->unext;
     if (*pp) *pp = c->unext;
@@ -737,7 +752,13 @@ static void pub_deliver(local *L, const pub *p) {
     uint64_t stack[32];
     uint64_t *ids = stack;
     size_t n = 0, cap = sizeof stack / sizeof *stack;
-    if (p->scope == PUB_USER && L->nbyid) {
+    const uint64_t pass = cb_loop_pass(L->ctx->loop);
+    if (p->scope == PUB_USER && L->last.valid && L->last.gen == L->user_gen && L->last.pass == pass &&
+        strcmp(L->last.key, p->key) == 0) {
+        memcpy(ids, L->last.ids, L->last.n * sizeof *ids);   // the same user's hearers, this pass: no walk
+        n = L->last.n;
+    } else if (p->scope == PUB_USER && L->nbyid) {
+        atomic_fetch_add_explicit(&L->user_walks, 1, memory_order_relaxed);
         for (lconn *c = L->byuser[user_slot(p->key, L->nbyid)]; c; c = c->unext) {
             if (strcmp(c->user->id, p->key) != 0) continue;
             if (n == cap) {
@@ -749,6 +770,14 @@ static void pub_deliver(local *L, const pub *p) {
                 cap *= 2;
             }
             ids[n++] = c->ws_id;
+        }
+        L->last.valid = n <= sizeof L->last.ids / sizeof L->last.ids[0] && strlen(p->key) < sizeof L->last.key;
+        if (L->last.valid) {
+            L->last.gen = L->user_gen;
+            L->last.pass = pass;
+            L->last.n = n;
+            memcpy(L->last.ids, ids, n * sizeof *ids);
+            cb_strlcpy(L->last.key, p->key, sizeof L->last.key);
         }
     } else if (p->scope == PUB_ROOM) {
         gent *e = room_find(L, p->key, str_hash(p->key));
@@ -906,7 +935,20 @@ static void local_forget(cb_rt *rt, const char *user_id, const char *session_id,
 
 // No deliver_lanes: a push is written into its sockets' buffers (on the loop) or a copy queued for
 // the loop, so a batch has nothing to overlap.
-static const cb_rt_transport LOCAL_T = { "local", local_deliver, local_free, local_forget, NULL };
+// The hub's rooms are the loop's: there it knows whether one has a watcher; elsewhere it cannot say.
+static bool local_room_heard(cb_rt *rt, const char *doc) {
+    local *L = rt->impl;
+    if (!rt->ctx->loop || !cb_loop_on_thread(rt->ctx->loop)) return true;
+    const gent *e = room_find(L, doc, str_hash(doc));
+    return e && e->n > 0;
+}
+
+static const cb_rt_transport LOCAL_T = { "local", local_deliver, local_free, local_forget, NULL, local_room_heard };
+
+long cb_rt_local_user_walks(const cb_rt *rt) {
+    const local *L = rt->impl;
+    return atomic_load_explicit(&((local *)L)->user_walks, memory_order_relaxed);
+}
 
 int cb_rt_local_new(cb_ctx *ctx, cb_rt **out) {
     *out = NULL;

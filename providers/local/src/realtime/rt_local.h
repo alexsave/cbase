@@ -11,5 +11,7 @@
 
 int cb_rt_local_new(cb_ctx *ctx, cb_rt **out);
 int cb_rt_local_routes(cb_ctx *ctx);
+// Walks of the by-user table so far (a user's second push in a loop pass reuses the first's).
+long cb_rt_local_user_walks(const cb_rt *rt);
 
 #endif

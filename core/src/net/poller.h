@@ -45,6 +45,13 @@ void cb_poller_del(cb_poller *p, int fd, int have);
 // Waits up to timeout_ms (-1: forever) for at most `max` ready fds. Returns
 // the count (0 on timeout), or -1 with errno (EINTR included).
 int cb_poller_wait(cb_poller *p, cb_poll_ev *out, int max, int timeout_ms);
+// THE ALARM: waits for ready fds until the CLOCK_MONOTONIC ms `until_ms` (-1: forever), as
+// cb_poller_wait. epoll and kqueue keep the deadline in a kernel timer of their own (a timerfd, an
+// EVFILT_TIMER) set only when it changes, so a wait arms no timer of its own: a wait until the
+// same deadline as the last costs no timer work in the kernel. io_uring takes it as the enter's
+// timeout. cb_poller_alarms: how many times the timer was set.
+int cb_poller_wait_until(cb_poller *p, cb_poll_ev *out, int max, int64_t until_ms);
+uint64_t cb_poller_alarms(const cb_poller *p);
 
 // BATCHED SENDS (io_uring only: cb_poller_sends). A send of [p, p+n) on fd, handed to the kernel
 // with the next wait and never waiting for room there (a full socket buffer answers -EAGAIN): all of

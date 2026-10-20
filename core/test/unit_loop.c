@@ -289,6 +289,37 @@ static void posts_sharing_a_wakeup_are_never_lost(void) {
     cb_loop_free(l);
 }
 
+// THE ALARM (net/poller.h): fifty wakes by posts while one far timer is pending set the poller's
+// kernel timer once, not once a wait, and the timer still runs when due.
+static atomic_int g_pinged;
+static void ping_cb(cb_loop *l, void *ud) { (void)l; (void)ud; atomic_fetch_add(&g_pinged, 1); }
+static void *pinger(void *ud) {
+    for (int i = 0; i < 50; i++) {
+        cb_loop_post((cb_loop *)ud, ping_cb, NULL);
+        usleep(2000);
+    }
+    return NULL;
+}
+static void a_pending_timer_is_armed_once(void) {
+    cb_loop *l = cb_loop_new();
+    atomic_store(&g_pinged, 0);
+    g_posted = 0;
+    const uint64_t a0 = cb_loop_alarms(l);
+    const int64_t t0 = cb_mono_ms();
+    cb_loop_timer(l, 400, stop_cb, NULL);
+    pthread_t th;
+    pthread_create(&th, NULL, pinger, l);
+    cb_loop_run(l);
+    pthread_join(th, NULL);
+    const int64_t took = cb_mono_ms() - t0;
+    T_EQ_INT(atomic_load(&g_pinged), 50);
+    T_CHECK(took >= 390 && took < 3000);
+    // io_uring takes the deadline as each enter's timeout and sets no alarm.
+    T_CHECK(cb_loop_alarms(l) - a0 <= 2);
+    if (strcmp(cb_loop_backend(l), "io_uring") != 0) T_CHECK(cb_loop_alarms(l) - a0 >= 1);
+    cb_loop_free(l);
+}
+
 int main(void) {
     T_RUN(many_fds_only_the_ready_ones_wake);
     T_RUN(a_removed_fd_and_its_reused_number_get_no_stale_event);
@@ -298,5 +329,6 @@ int main(void) {
     T_RUN(close_timers_share_a_wake);
     T_RUN(many_timers_cancel_exactly_the_cancelled);
     T_RUN(posts_sharing_a_wakeup_are_never_lost);
+    T_RUN(a_pending_timer_is_armed_once);
     return T_DONE();
 }
