@@ -171,7 +171,7 @@ int cb_config_from_env(cb_config *c, char *err, size_t cap) {
     c->inline_budget_us = (int)v;
     if (!num("CBASE_IO_URING", 0, 0, 1, &v, err, cap)) return CB_E_INVALID;
     c->io_uring = v == 1;
-    if (!num("CBASE_CAST_DELTA", 0, 0, 1, &v, err, cap)) return CB_E_INVALID;
+    if (!num("CBASE_CAST_DELTA", 1, 0, 1, &v, err, cap)) return CB_E_INVALID;
     c->cast_delta = v == 1;
     for (int i = 0; i < CB_CONFIG_LIMITS; i++) {
         if (!num(cb_config_limit_names[i], 0, 1, 1000000, &v, err, cap)) return CB_E_INVALID;
