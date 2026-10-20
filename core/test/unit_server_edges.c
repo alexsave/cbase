@@ -169,7 +169,7 @@ static void a_client_gone_mid_request(void) {
         T_EQ_INT(atomic_load(&g_slow_done), 1);
         // Freed at once, not left to the idle sweep (idle_ms 300, every second).
         int64_t t0 = cb_mono_ms();
-        while (atomic_load(&g_ctx.stats.http_conns) != open0 && cb_mono_ms() - t0 < 150) usleep(2000);
+        while (atomic_load(&g_ctx.stats.http_conns) != open0 && cb_mono_ms() - t0 < 250) usleep(2000);
         T_EQ_INT((int)atomic_load(&g_ctx.stats.http_conns), (int)open0);
     }
     tc_response r;

@@ -177,6 +177,8 @@ static bool ws_frames(conn *c);
 // Writes what it can. Returns false when the connection was closed.
 static bool flush(conn *c) {
     while (c->out.len) {
+        // Counted before the call: a peer that has read what it sent may look at the count at once.
+        atomic_fetch_add_explicit(&c->srv->sends, 1, memory_order_relaxed);
         ssize_t w = send(c->fd, c->out.p, c->out.len,
 #ifdef MSG_NOSIGNAL
                          MSG_NOSIGNAL
@@ -184,7 +186,6 @@ static bool flush(conn *c) {
                          0
 #endif
         );
-        atomic_fetch_add_explicit(&c->srv->sends, 1, memory_order_relaxed);
         if (w < 0) {
             if (errno == EINTR) continue;
             if (errno == EAGAIN || errno == EWOULDBLOCK) break;
