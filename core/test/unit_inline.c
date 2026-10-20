@@ -87,8 +87,10 @@ static void start(void) {
         { "POST", "/nap6", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_nap6, 5000 },
         // Never a suspect however slow a sanitizer makes its 1 ms nap.
         { "POST", "/nap1", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_nap1, 50000 },
+        { "POST", "/fx50", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_fx, 50000 },
+        { "POST", "/fy50", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_fy, 50000 },
     };
-    T_EQ_INT(cb_router_add_all(g_ctx.router, own, 4), CB_OK);
+    T_EQ_INT(cb_router_add_all(g_ctx.router, own, 6), CB_OK);
     cb_server_opts o;
     cb_server_opts_default(&o);
     o.inline_budget_us = 2000;
@@ -246,7 +248,8 @@ static void a_hole_costs_the_pass_nothing(void) {
     for (int i = 0; i < 2000 && !cb_pool_idle(g_ctx.req_pool); i++) usleep(1000);
 }
 
-// The pass budget is CPU: a pass's first two runs cost their wall time (here two instant ones),
+// The pass budget is CPU: a pass's first two runs cost their wall time (here two instant ones, with
+// a 50 ms budget so that no runner's stall makes either a suspect),
 // and the eight 0.5 ms naps after them (4 to 18 ms of wall with a timer's slack, each within its
 // 50 ms budget, so no suspect) are timed by the CPU clock and cost next to nothing: the request
 // ready behind them in the same pass runs inline too, and only the naps and it read the clock.
@@ -257,8 +260,8 @@ static void a_pass_counts_cpu_not_wall(void) {
     for (int i = 0; i < N; i++) fd[i] = tc_connect(g_port);
     usleep(50000);
     const char *rs = "POST /stall HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\n\r\nx";
-    const char *rx = "POST /fx HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\n\r\nx";
-    const char *ry = "POST /fy HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\n\r\nx";
+    const char *rx = "POST /fx50 HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\n\r\nx";
+    const char *ry = "POST /fy50 HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\n\r\nx";
     const char *rn = "POST /nap1 HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\n\r\nx";
     const char *rz = "POST /fz HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\n\r\nx";
     cb_server_inline_stats(g_ctx.server, &s0);
