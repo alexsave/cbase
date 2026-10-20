@@ -97,10 +97,9 @@ struct cb_server {
     int64_t inline_off_until;   // loop ms: no inline dispatch before this (the valve tripped)
     int64_t inline_ran, inline_over, inline_tripped, inline_to_pool, inline_cpu_timed;
     int64_t inline_over_at[8];  // loop ms of the last runs over budget (a ring, inline_trips of it used)
-    uint64_t inline_pass;       // the loop pass the next three count
+    uint64_t inline_pass;       // the loop pass the next two count
     int inline_pass_runs;       // inline runs begun in it
-    int64_t inline_pass_first;  // us the first one cost (THE PASS BUDGET)
-    int64_t inline_pass_cpu0;   // the thread's CPU clock when the second began; -1: not read
+    int64_t inline_pass_used;   // us its runs cost (THE PASS BUDGET)
     bool inline_confirm;        // the last run looked over its budget by the wall clock: time the next by CPU too
     int64_t refused;        // connections the cap turned away since the last log line
     int64_t refused_log_ms; // when that line was last written
@@ -462,19 +461,9 @@ bool cb_server_inline_ok(cb_server *s, const cb_route *r) {
     if (pass != s->inline_pass) {
         s->inline_pass = pass;
         s->inline_pass_runs = 0;
-        s->inline_pass_first = 0;
-        s->inline_pass_cpu0 = -1;
+        s->inline_pass_used = 0;
     }
-    // THE PASS BUDGET, in the loop thread's CPU time: the first run's cost (cb_server_inline_done),
-    // then the CPU clock from the second run's start on. A pass of one run (human pace) reads no
-    // CPU clock; a busy one reads it once a run after its first. Wall time would charge the pass
-    // for a stalled vCPU and send the rest of it to the pool (the rig's sat2 p99: 21 ms by CPU,
-    // 31 to 43 ms by the wall clock).
-    if (s->inline_pass_runs == 0) return true;
-    const int64_t cpu = cb_thread_cpu_us();
-    s->inline_cpu_timed++;
-    if (s->inline_pass_cpu0 < 0) s->inline_pass_cpu0 = cpu;
-    return s->inline_pass_first + (cpu - s->inline_pass_cpu0) < s->o.inline_pass_us;
+    return s->inline_pass_used < s->o.inline_pass_us;
 }
 
 // THE VALVE'S CLOCKS. A run is timed by the monotonic clock (the vDSO: 30 ns, no system call).
@@ -486,8 +475,18 @@ bool cb_server_inline_ok(cb_server *s, const cb_route *r) {
 // stops while the vCPU is away, and only a run over its budget in CPU counts toward the valve. A
 // handler that is truly slow is slow again on the next run; a hole is not. The thread CPU clock is
 // read only after a suspect, so a human-pace move costs no system call for the valve.
+//
+// THE PASS BUDGET is the handlers' own CPU, never their wall time and never the loop's other work:
+// a pass's first run costs its wall time within its budget (nothing as a suspect), and every run
+// after it in the same pass is timed by the CPU clock too. A pass of one run - human pace - reads
+// no CPU clock; a busy pass reads it twice a run after its first. (Measured on the rig at sat2:
+// handler CPU sends 64 to 277 requests a run to the pool for want of pass time, move p99 20 ms;
+// handler wall time 15 thousand, p99 30 ms; the loop's CPU since the second run 40 thousand, p99
+// 32 ms.)
 cb_inline_mark cb_server_inline_begin(cb_server *s) {
-    return (cb_inline_mark){ cb_mono_us(), s->inline_confirm ? cb_thread_cpu_us() : -1 };
+    const bool cpu = s->inline_confirm ||
+                     (s->inline_pass == cb_loop_pass(s->ctx->loop) && s->inline_pass_runs > 0);
+    return (cb_inline_mark){ cb_mono_us(), cpu ? cb_thread_cpu_us() : -1 };
 }
 
 // The valve: a run over its route's budget in CPU is over; inline_trips of them within
@@ -503,9 +502,8 @@ void cb_server_inline_done(cb_server *s, const cb_route *r, cb_inline_mark m) {
     s->inline_cpu_timed += cpu_us >= 0;
     const int budget = r && r->inline_us > 0 ? r->inline_us : s->o.inline_budget_us;
     s->inline_ran++;
-    // The pass's first run: its CPU when measured, its wall time within its budget, nothing for a
-    // suspect (a hole costs the pass nothing; the next run confirms or clears it).
-    if (s->inline_pass_runs++ == 0) s->inline_pass_first = cpu_us >= 0 ? cpu_us : wall_us <= budget ? wall_us : 0;
+    s->inline_pass_runs++;
+    s->inline_pass_used += cpu_us >= 0 ? cpu_us : wall_us <= budget ? wall_us : 0;
     // A suspect by the wall clock: the next run is measured by CPU as well. A run measured by CPU
     // and over its budget stays one (a slow handler is confirmed run after run).
     s->inline_confirm = cpu_us >= 0 ? cpu_us > budget : wall_us > budget;
