@@ -161,6 +161,9 @@ It does not imitate Lambda: what it holds in memory is the authority, and the ru
 - The loop is the journal's only writer while it runs: a bot drive's record is handed to it and written there, and the loop never makes a segment file (the flush thread makes them ahead).
 - A finished game's replay is a job on the job pool; a read of it, a player's history and the next operation on the game make it first if it is still queued.
 - Pushes: one published on the loop goes straight into its hearers' buffers, after any that other threads queued; an answer and the pushes its pass queued for the same socket leave in one send.
+- io_uring (`CBASE_IO_URING=1`, default 0): the loop waits on io_uring where Linux allows it (else epoll, said in the log), and a pass's sends go to the kernel in the same `io_uring_enter` as its wait, so a pass costs one system call besides the `recv` of each ready socket.
+  A watch is a one-shot poll armed again while it is wanted, so readiness stays level-triggered; sends never wait for room (`MSG_DONTWAIT`), so they have all completed when the wait returns.
+  On the rig it halves the system calls per move and saves about 4% of the CPU at saturation; it stays off until a Graviton measurement says to turn it on.
 - Workers: the default follows the usable CPU (the cgroup `cpu.max` quota, else the online CPUs, rounded up, at most 4), because workers share one malloc lock.
 - Sends: `cb_ws_send` queues, and the loop flushes each marked connection once per iteration.
 - Timers: a bot pause holds no thread; the provider starts the drive again from a loop timer, and the bot lease is a set in memory.

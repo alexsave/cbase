@@ -46,9 +46,17 @@ cb_uring *cb_uring_new(unsigned entries, char *why, size_t cap) {
     if (!u) { snprintf(why, cap, "out of memory"); return NULL; }
     struct io_uring_params p;
     memset(&p, 0, sizeof p);
-    p.flags = IORING_SETUP_CQSIZE;
+    // The kernel's completion work runs when the loop next enters (5.19+), not by interrupting it
+    // for each completion; an older kernel refuses the flag: without it.
+    p.flags = IORING_SETUP_CQSIZE | IORING_SETUP_COOP_TASKRUN;
     p.cq_entries = entries * 4;
     u->fd = sys_setup(entries, &p);
+    if (u->fd < 0 && errno == EINVAL) {
+        memset(&p, 0, sizeof p);
+        p.flags = IORING_SETUP_CQSIZE;
+        p.cq_entries = entries * 4;
+        u->fd = sys_setup(entries, &p);
+    }
     if (u->fd < 0) {
         snprintf(why, cap, "io_uring_setup: %s", strerror(errno));
         free(u);
