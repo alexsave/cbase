@@ -1,0 +1,92 @@
+#cols	group	name	param	k	n	min_ns	max_ns	mean_ns	std_ns	p50_ns	p99_ns	cyc	insn	brmiss	l1dmiss	llcmiss	cpu	pass
+# sqlite 3.53.4 (2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc)
+# sqlite compile_options: ATOMIC_INTRINSICS=1 COMPILER=gcc-15.2.0 DEFAULT_AUTOVACUUM DEFAULT_CACHE_SIZE=-2000 DEFAULT_FILE_FORMAT=4 DEFAULT_JOURNAL_SIZE_LIMIT=-1 DEFAULT_MMAP_SIZE=0 DEFAULT_PAGE_SIZE=4096 DEFAULT_PCACHE_INITSZ=20 DEFAULT_RECURSIVE_TRIGGERS DEFAULT_SECTOR_SIZE=4096 DEFAULT_SYNCHRONOUS=2 DEFAULT_WAL_AUTOCHECKPOINT=1000 DEFAULT_WAL_SYNCHRONOUS=2 DEFAULT_WORKER_THREADS=0 DIRECT_OVERFLOW_READ ENABLE_COLUMN_METADATA ENABLE_DBSTAT_VTAB ENABLE_FTS3 ENABLE_FTS3_PARENTHESIS ENABLE_FTS4 ENABLE_FTS5 ENABLE_GEOPOLY ENABLE_MATH_FUNCTIONS ENABLE_PERCENTILE ENABLE_PREUPDATE_HOOK ENABLE_RTREE ENABLE_SESSION ENABLE_UNLOCK_NOTIFY MALLOC_SOFT_LIMIT=1024 MAX_ATTACHED=10 MAX_COLUMN=2000 MAX_COMPOUND_SELECT=500 MAX_DEFAULT_PAGE_SIZE=8192 MAX_EXPR_DEPTH=1000 MAX_FUNCTION_ARG=1000 MAX_LENGTH=1000000000 MAX_LIKE_PATTERN_LENGTH=50000 MAX_MMAP_SIZE=0x7fff0000 MAX_PAGE_COUNT=0xfffffffe MAX_PAGE_SIZE=65536 MAX_SQL_LENGTH=1000000000 MAX_TRIGGER_DEPTH=1000 MAX_VARIABLE_NUMBER=250000 MAX_VDBE_OP=250000000 MAX_WORKER_THREADS=8 MUTEX_PTHREADS SECURE_DELETE SOUNDEX SYSTEM_MALLOC TEMP_STORE=1 THREADSAFE=1 USE_URI
+# pragma page_size = 4096
+# pragma cache_size = -2000
+# pragma journal_mode = wal
+# pragma synchronous = 1
+# pragma mmap_size = 0
+# pragma wal_autocheckpoint = 0
+# pragma locking_mode = normal
+# db file 45699072 bytes after the fill (20000 game rows of 1500 B state, 1000 ck rows of 3000 B)
+sqlite	fcntl_setlk_shared_rd+un	uncontended	30	300	963.57	1515.83	972.36	44.18	967.40	1042.97	2284.361	-1.000	-1.0000	-1.0000	-1.0000	1	1
+sqlite	fcntl_setlk_shm_wr+un	uncontended	30	300	965.33	1315.27	973.86	31.52	970.10	1066.97	2287.993	-1.000	-1.0000	-1.0000	-1.0000	1	1
+sqlite	fcntl_setlk_shm_readmark_rd+un	uncontended	31	300	962.84	7785.77	993.74	394.10	969.74	1050.90	2286.647	-1.000	-1.0000	-1.0000	-1.0000	1	1
+sqlite	fcntl_getlk	uncontended	97	300	306.62	1091.96	311.04	45.56	308.18	342.63	725.879	-1.000	-1.0000	-1.0000	-1.0000	1	1
+sqlite	fcntl_setlk_shared_rd+un	other_process_holds	30	300	967.70	1761.17	976.39	48.18	971.83	983.97	2294.553	-1.000	-1.0000	-1.0000	-1.0000	1	1
+sqlite	fcntl_setlk_shm_wr+un	other_process_holds	30	300	972.73	1349.63	983.17	27.88	976.90	1070.23	2311.631	-1.000	-1.0000	-1.0000	-1.0000	1	1
+sqlite	fcntl_setlk_shm_readmark_rd+un	other_process_holds	30	300	971.53	3591.10	986.29	151.26	975.10	984.30	2304.440	-1.000	-1.0000	-1.0000	-1.0000	1	1
+sqlite	fcntl_getlk	other_process_holds	93	300	322.29	456.77	323.31	8.20	322.58	326.22	759.728	-1.000	-1.0000	-1.0000	-1.0000	1	1
+sqlite	fcntl_setlk_wr_conflict_eagain	other_process_holds	68	300	435.81	1295.29	442.58	49.59	438.96	443.53	1036.336	-1.000	-1.0000	-1.0000	-1.0000	1	1
+sqlite	syscall_getpid	-	161	300	123.73	241.38	124.28	6.98	123.78	124.28	295.183	-1.000	-1.0000	-1.0000	-1.0000	1	1
+sqlite	fstat_db	-	76	300	261.51	551.24	263.16	17.56	261.63	264.21	621.555	-1.000	-1.0000	-1.0000	-1.0000	1	1
+sqlite	pwrite_wal_overwrite	len24	25	150	699.76	3659.72	835.62	291.18	728.88	1254.40	1953.127	-1.000	-1.0000	-1.0000	-1.0000	1	1
+sqlite	pwrite_wal_overwrite	len4096	21	150	1379.48	1772.29	1461.45	44.69	1452.71	1583.10	3441.231	-1.000	-1.0000	-1.0000	-1.0000	1	1
+sqlite	pwrite_wal_overwrite	len4120	21	150	1404.00	233379.05	3556.56	19327.89	1528.90	47652.43	3728.123	-1.000	-1.0000	-1.0000	-1.0000	1	1
+sqlite	pread_page_pagecache	len4096	16	150	1172.81	6933.31	1541.80	497.12	1470.00	3470.00	3600.568	-1.000	-1.0000	-1.0000	-1.0000	1	1
+sqlite	pread_page_cold	len4096	1	100	187128.00	22928920.00	2744001.30	5434518.35	231697.00	18904545.00	-1.000	-1.000	-1.0000	-1.0000	-1.0000	1	1
+#sys	pread_page_cold	len4096	samples=100	libc_total=1.00	syscr=1.00	syscw=0.00	pread=1.00
+sqlite	wal_frame_pwrite+fdatasync	len4120	1	60	345013.00	592639.00	462834.30	59504.09	453111.00	589119.00	-1.000	-1.000	-1.0000	-1.0000	-1.0000	1	1
+#sys	wal_frame_pwrite+fdatasync	len4120	samples=60	libc_total=2.00	syscr=0.00	syscw=1.00	pwrite=1.00	fdatasync=1.00
+sqlite	wal_frame_pwrite+fsync	len4120	1	60	374337.00	1060424.00	484732.92	141275.08	446213.00	1044309.00	-1.000	-1.000	-1.0000	-1.0000	-1.0000	1	1
+#sys	wal_frame_pwrite+fsync	len4120	samples=60	libc_total=2.00	syscr=0.00	syscw=1.00	pwrite=1.00	fsync=1.00
+sqlite	shm_hdr_read	-	369	300	53.79	128.32	54.99	4.94	54.05	65.91	129.258	-1.000	-1.0000	-1.0000	-1.0000	1	1
+sqlite	shm_word_store_seqcst	-	30067	300	0.66	1.01	0.67	0.03	0.66	0.76	1.589	-1.000	-1.0000	-1.0000	-1.0000	1	1
+sqlite	shm_mmap_touch_munmap	32KB	1	100	6711.00	13324.00	7687.50	1113.62	7307.00	11466.00	19133.730	-1.000	-1.0000	-1.0000	-1.0000	1	1
+sqlite	sqlite_insert_txn	rows1_blob1200	1	300	16818.00	40381743.00	2568426.78	6164197.16	34373.00	23586679.00	-1.000	-1.000	-1.0000	-1.0000	-1.0000	1	1
+#sys	sqlite_insert_txn	rows1_blob1200	samples=300	libc_total=12.19	syscr=0.39	syscw=5.80	pread=0.39	pwrite=5.80	fcntl_setlk_rd=1.00	fcntl_setlk_wr=2.00	fcntl_setlk_un=3.00
+sqlite	sqlite_insert_txn	rows1_blob1500	1	300	14880.00	13926909.00	247507.54	1624862.39	27982.00	12519543.00	-1.000	-1.000	-1.0000	-1.0000	-1.0000	1	1
+#sys	sqlite_insert_txn	rows1_blob1500	samples=300	libc_total=12.90	syscr=0.04	syscw=6.86	pread=0.04	pwrite=6.86	fsync=0.00	fcntl_setlk_rd=1.00	fcntl_setlk_wr=2.00	fcntl_setlk_un=3.00
+sqlite	sqlite_update_txn	rows1_blob1200	1	300	17202.00	19457955.00	916524.65	2682614.15	406853.00	14446981.00	-1.000	-1.000	-1.0000	-1.0000	-1.0000	1	1
+#sys	sqlite_update_txn	rows1_blob1200	samples=300	libc_total=9.09	syscr=1.08	syscw=2.00	pread=1.08	pwrite=2.00	fsync=0.00	fcntl_setlk_rd=1.00	fcntl_setlk_wr=2.00	fcntl_setlk_un=3.00
+sqlite	sqlite_update_txn	rows1_blob1500	1	300	15372.00	12614046.00	425398.02	998001.05	391120.00	1315630.00	-1.000	-1.000	-1.0000	-1.0000	-1.0000	1	1
+#sys	sqlite_update_txn	rows1_blob1500	samples=300	libc_total=9.02	syscr=1.02	syscw=2.00	pread=1.02	pwrite=2.00	fcntl_setlk_rd=1.00	fcntl_setlk_wr=2.00	fcntl_setlk_un=3.00
+sqlite	sqlite_insert_txn	rows10_blob1500	1	300	78887.00	1317255.00	118112.05	139449.84	96785.00	1121428.00	-1.000	-1.000	-1.0000	-1.0000	-1.0000	1	1
+#sys	sqlite_insert_txn	rows10_blob1500	samples=300	libc_total=43.08	syscr=0.12	syscw=36.90	pread=0.12	pwrite=36.90	fsync=0.02	fcntl_setlk_rd=1.02	fcntl_setlk_wr=2.00	fcntl_setlk_un=3.02
+sqlite	sqlite_insert_txn	rows100_blob1500	1	100	725378.00	2369787.00	981053.51	449346.89	808325.00	2254734.00	-1.000	-1.000	-1.0000	-1.0000	-1.0000	1	1
+#sys	sqlite_insert_txn	rows100_blob1500	samples=100	libc_total=292.14	syscr=3.72	syscw=282.00	pread=3.72	pwrite=282.00	fsync=0.14	fcntl_setlk_rd=1.14	fcntl_setlk_wr=2.00	fcntl_setlk_un=3.14
+sqlite	sqlite_insert_txn	rows2000_blob1500	1	20	15599464.00	36962356.00	18885790.00	4492534.22	17571579.00	36962356.00	-1.000	-1.000	-1.0000	-1.0000	-1.0000	1	1
+#sys	sqlite_insert_txn	rows2000_blob1500	samples=20	libc_total=6589.25	syscr=2009.85	syscw=4570.40	pread=2009.85	pwrite=4570.40	fsync=1.00	fcntl_setlk_rd=2.00	fcntl_setlk_wr=2.00	fcntl_setlk_un=4.00
+sqlite	sqlite_select_pk_warm	rows1_blob0	1	300	3602.00	389202.00	8262.59	35425.33	3922.00	49280.00	-1.000	-1.000	-1.0000	-1.0000	-1.0000	1	1
+#sys	sqlite_select_pk_warm	rows1_blob0	samples=300	libc_total=2.17	syscr=0.17	syscw=0.00	pread=0.17	fcntl_setlk_rd=1.00	fcntl_setlk_un=1.00
+sqlite	sqlite_select_pk_cachemiss	rows1_blob0	1	300	9214.00	24240211.00	861166.87	2639980.53	411544.00	13975943.00	-1.000	-1.000	-1.0000	-1.0000	-1.0000	1	1
+#sys	sqlite_select_pk_cachemiss	rows1_blob0	samples=300	libc_total=3.63	syscr=1.63	syscw=0.00	pread=1.63	fcntl_setlk_rd=1.00	fcntl_setlk_un=1.00
+sqlite	sqlite_insert_txn	rows1_blob128	1	300	13432.00	78695.00	17580.91	6242.33	16214.00	45391.00	-1.000	-1.000	-1.0000	-1.0000	-1.0000	1	1
+#sys	sqlite_insert_txn	rows1_blob128	samples=300	libc_total=11.02	syscr=0.56	syscw=4.46	pread=0.56	pwrite=4.46	fcntl_setlk_rd=1.00	fcntl_setlk_wr=2.00	fcntl_setlk_un=3.00
+sqlite	sqlite_insert_txn	rows10_blob128	1	300	63729.00	2756163.00	123046.54	232262.20	92127.00	1204823.00	-1.000	-1.000	-1.0000	-1.0000	-1.0000	1	1
+#sys	sqlite_insert_txn	rows10_blob128	samples=300	libc_total=38.87	syscr=2.14	syscw=30.68	pread=2.14	pwrite=30.68	fsync=0.02	fcntl_setlk_rd=1.02	fcntl_setlk_wr=2.00	fcntl_setlk_un=3.02
+sqlite	sqlite_insert_txn	rows100_blob128	1	100	634822.00	2253945.00	876156.58	380413.28	752237.00	2009055.00	-1.000	-1.000	-1.0000	-1.0000	-1.0000	1	1
+#sys	sqlite_insert_txn	rows100_blob128	samples=100	libc_total=268.08	syscr=25.66	syscw=236.09	pread=25.66	pwrite=236.09	fsync=0.11	fcntl_setlk_rd=1.11	fcntl_setlk_wr=2.00	fcntl_setlk_un=3.11
+sqlite	sqlite_insert_txn	rows1000_blob128	1	20	6374996.00	25366610.00	8735594.10	4023964.54	7784314.00	25366610.00	-1.000	-1.000	-1.0000	-1.0000	-1.0000	1	1
+#sys	sqlite_insert_txn	rows1000_blob128	samples=20	libc_total=2939.95	syscr=1012.90	syscw=1919.55	pread=1012.90	pwrite=1919.55	fsync=0.50	fcntl_setlk_rd=1.50	fcntl_setlk_wr=2.00	fcntl_setlk_un=3.50
+sqlite	sqlite_insert_txn	rows1_blob600	1	300	14178.00	62827.00	19005.27	6656.52	16377.00	44004.00	-1.000	-1.000	-1.0000	-1.0000	-1.0000	1	1
+#sys	sqlite_insert_txn	rows1_blob600	samples=300	libc_total=11.73	syscr=0.52	syscw=5.21	pread=0.52	pwrite=5.21	fcntl_setlk_rd=1.00	fcntl_setlk_wr=2.00	fcntl_setlk_un=3.00
+sqlite	sqlite_insert_txn	rows10_blob600	1	300	80607.00	1810844.00	132262.22	210907.03	102736.00	1742545.00	-1.000	-1.000	-1.0000	-1.0000	-1.0000	1	1
+#sys	sqlite_insert_txn	rows10_blob600	samples=300	libc_total=45.59	syscr=5.49	syscw=34.05	pread=5.49	pwrite=34.05	fsync=0.02	fcntl_setlk_rd=1.02	fcntl_setlk_wr=2.00	fcntl_setlk_un=3.02
+sqlite	sqlite_insert_txn	rows100_blob600	1	100	752590.00	3091375.00	1150183.78	657784.40	900200.00	2934870.00	-1.000	-1.000	-1.0000	-1.0000	-1.0000	1	1
+#sys	sqlite_insert_txn	rows100_blob600	samples=100	libc_total=333.20	syscr=57.94	syscw=268.87	pread=57.94	pwrite=268.87	fsync=0.13	fcntl_setlk_rd=1.13	fcntl_setlk_wr=2.00	fcntl_setlk_un=3.13
+sqlite	sqlite_insert_txn	rows1000_blob600	1	20	9083244.00	14790086.00	10574671.55	1528524.34	10094428.00	14790086.00	-1.000	-1.000	-1.0000	-1.0000	-1.0000	1	1
+#sys	sqlite_insert_txn	rows1000_blob600	samples=20	libc_total=4200.85	syscr=1501.60	syscw=2691.75	pread=1501.60	pwrite=2691.75	fsync=0.50	fcntl_setlk_rd=1.50	fcntl_setlk_wr=2.00	fcntl_setlk_un=3.50
+sqlite	sqlite_select_pk_cold	rows1	1	100	843759.00	16178806.00	1164997.16	1522353.71	976492.00	1746996.00	-1.000	-1.000	-1.0000	-1.0000	-1.0000	1	1
+#sys	sqlite_select_pk_cold	rows1	samples=100	libc_total=9.00	syscr=7.00	syscw=0.00	pread=7.00	fcntl_setlk_rd=1.00	fcntl_setlk_un=1.00
+sqlite	sqlite_checkpoint_passive	pages1	1	30	1216868.00	1987946.00	1551093.00	202875.64	1560520.00	1987946.00	-1.000	-1.000	-1.0000	-1.0000	-1.0000	1	1
+#sys	sqlite_checkpoint_passive	pages1	samples=30	libc_total=12.00	syscr=1.00	syscw=1.00	fstat=1.00	ftruncate=1.00	pread=1.00	pwrite=1.00	fsync=2.00	fcntl_setlk_wr=3.00	fcntl_setlk_un=3.00
+#ckpt	pages1	wal_frames=1.0	backfilled=1.0
+sqlite	sqlite_checkpoint_passive	pages10	1	30	1459097.00	1956003.00	1716559.87	115319.82	1691498.00	1956003.00	-1.000	-1.000	-1.0000	-1.0000	-1.0000	1	1
+#sys	sqlite_checkpoint_passive	pages10	samples=30	libc_total=30.00	syscr=10.00	syscw=10.00	fstat=1.00	ftruncate=1.00	pread=10.00	pwrite=10.00	fsync=2.00	fcntl_setlk_wr=3.00	fcntl_setlk_un=3.00
+#ckpt	pages10	wal_frames=10.0	backfilled=10.0
+sqlite	sqlite_checkpoint_passive	pages100	1	30	3415683.00	5388056.00	4025719.60	495837.58	3826970.00	5388056.00	-1.000	-1.000	-1.0000	-1.0000	-1.0000	1	1
+#sys	sqlite_checkpoint_passive	pages100	samples=30	libc_total=210.00	syscr=100.00	syscw=100.00	fstat=1.00	ftruncate=1.00	pread=100.00	pwrite=100.00	fsync=2.00	fcntl_setlk_wr=3.00	fcntl_setlk_un=3.00
+#ckpt	pages100	wal_frames=100.0	backfilled=100.0
+sqlite	sqlite_checkpoint_passive	pages1000	1	10	13733215.00	35487710.00	22232979.20	7714972.87	19801955.00	35487710.00	-1.000	-1.000	-1.0000	-1.0000	-1.0000	1	1
+#sys	sqlite_checkpoint_passive	pages1000	samples=10	libc_total=2009.00	syscr=999.50	syscw=999.50	fstat=1.00	ftruncate=1.00	pread=999.50	pwrite=999.50	fsync=2.00	fcntl_setlk_wr=3.00	fcntl_setlk_un=3.00
+#ckpt	pages1000	wal_frames=999.5	backfilled=999.5
+# untimed checkpoints between samples so far: 97
+sqlite	sqlite_insert_txn	rows1_blob1500_reader	1	200	18502.00	12216757.00	150375.30	875835.38	34346.00	1202131.00	-1.000	-1.000	-1.0000	-1.0000	-1.0000	1	1
+#sys	sqlite_insert_txn	rows1_blob1500_reader	samples=200	libc_total=13.56	syscr=1.06	syscw=6.50	pread=1.06	pwrite=6.50	fcntl_setlk_rd=1.00	fcntl_setlk_wr=2.00	fcntl_setlk_un=3.00
+sqlite	sqlite_update_txn	rows1_blob1500_reader	1	200	24008.00	12289970.00	561952.05	858415.51	420912.00	1255842.00	-1.000	-1.000	-1.0000	-1.0000	-1.0000	1	1
+#sys	sqlite_update_txn	rows1_blob1500_reader	samples=200	libc_total=9.89	syscr=1.90	syscw=2.00	pread=1.90	pwrite=2.00	fcntl_setlk_rd=1.00	fcntl_setlk_wr=2.00	fcntl_setlk_un=3.00
+sqlite	sqlite_insert_txn	rows100_blob1500_reader	1	50	1085914.00	20027601.00	3180936.62	3857243.30	1960697.00	20027601.00	-1.000	-1.000	-1.0000	-1.0000	-1.0000	1	1
+#sys	sqlite_insert_txn	rows100_blob1500_reader	samples=50	libc_total=420.20	syscr=77.64	syscw=336.56	pread=77.64	pwrite=336.56	fcntl_setlk_rd=1.00	fcntl_setlk_wr=2.00	fcntl_setlk_un=3.00
+sqlite	sqlite_select_pk_warm	rows1_blob0_reader	1	200	3701.00	13838864.00	132189.65	988629.39	5046.00	784921.00	-1.000	-1.000	-1.0000	-1.0000	-1.0000	1	1
+#sys	sqlite_select_pk_warm	rows1_blob0_reader	samples=200	libc_total=2.30	syscr=0.30	syscw=0.00	pread=0.30	fcntl_setlk_rd=1.00	fcntl_setlk_un=1.00

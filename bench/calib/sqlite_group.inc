@@ -259,6 +259,10 @@ static void bt_ckprep(void) {   /* a clean WAL, then ck_pages rows (one page eac
   sq_step(s_commit, SQLITE_DONE);
 }
 static void op_ckpt(void *c) { int lg = 0, ck = 0; sqlite3_wal_checkpoint_v2(sdb, 0, SQLITE_CHECKPOINT_PASSIVE, &lg, &ck); ck_log += lg; ck_frames += ck; ck_calls++; }
+static void sq_warm(void) {   /* the db file into the page cache: the cold rows drop it, and a small box may have evicted it */
+  static char b[65536]; off_t o = 0; ssize_t n;
+  while ((n = pread(sq_rofd, b, sizeof b, o)) > 0) o += n;
+}
 static void bt_cold(void) {   /* SQLite's page cache and the OS page cache of the db and the WAL dropped */
   sqlite3_db_release_memory(sdb);
   posix_fadvise(sq_rofd, 0, 0, POSIX_FADV_DONTNEED);
@@ -424,6 +428,7 @@ static void g_sqlite(void) {
   munmap(shm, 32768);
 
   /* B. transactions on the live database, uncontended */
+  sq_warm();
   for (unsigned i = 0; i < sizeof SQOPS / sizeof *SQOPS; i++) {
     txc v = SQOPS[i].c;
     char pm[48]; snprintf(pm, sizeof pm, "rows%d_blob%d", v.n, v.blob);
@@ -448,6 +453,7 @@ static void g_sqlite(void) {
 
   /* C. the same with another process: POSIX locks held on the scratch files (above), and a reader on the live WAL */
   sqlite3_wal_checkpoint_v2(sdb, 0, SQLITE_CHECKPOINT_TRUNCATE, 0, 0);
+  sq_warm();   /* select_pk_cold and the checkpoints above left it cold: without this, C measured disk reads */
   child_start("__sqlreader", sq_path);
   { const char *ops[] = {"ins1500", "upd1500", "txn100x1500", "selwarm"};
     for (unsigned j = 0; j < 4; j++) for (unsigned i = 0; i < sizeof SQOPS / sizeof *SQOPS; i++) if (!strcmp(SQOPS[i].name, ops[j])) {

@@ -1,0 +1,7 @@
+2026-10-20T15:26:44Z pass 1 group sqlite rc=0 secs=18
+2026-10-20T15:30:03Z pass 2 group sqlite rc=0 secs=16
+2026-10-20T15:33:22Z pass 3 group sqlite rc=0 secs=17
+2026-10-20T15:36:40Z pass 4 group sqlite rc=0 secs=16
+2026-10-20T15:39:59Z pass 5 group sqlite rc=0 secs=17
+2026-10-20T15:40:57Z strace pass done
+2026-10-20T15:40:57Z ALLDONE

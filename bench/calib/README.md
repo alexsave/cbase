@@ -20,6 +20,8 @@ Run as `calbench GROUP PASS`; one group per run, TSV on stdout.
 - `mem`: dependent pointer chase from 4 KB to 256 MB, THP default and off.
 - `stream`: copy, scale, add and triad.
 - `ebs`: O_DIRECT queue-depth-1 latency, io_uring QD4/16/32 IOPS, 1 MB sequential.
+- `sqlite`: the syscalls SQLite makes and what a transaction costs, with production's store settings (see "The sqlite group" below).
+  It is not in the default run; select it with `CAL_GROUPS=sqlite`.
 - `steal`: every 250 ms a 2 ms add-chain sample (frequency) and the /proc/stat steal delta, 30 s idle then 90 s with the other vCPU busy.
   Its rows are a time series: `mean_ns` is ns per cycle, `cyc` is GHz and `llcmiss` is the steal fraction over the last 250 ms.
 
@@ -60,8 +62,9 @@ CAL_SUBNET=subnet-... CAL_PROFILE=<instance profile name> ./run_aws.sh
 - The profile's role needs SSM; the script gives that role put and get on the run's own bucket and nothing else.
 - Everything it makes is named `cbase-perf-temp-cal-*` with a random suffix: the bucket, the security group and the instance and volume Names.
   Ids and names go to `state/<run>.env` (git-ignored), and `collect.sh` and `cleanup.sh` act only on what that file records, never on a wildcard or a tag search.
-- Safety: `InstanceInitiatedShutdownBehavior=terminate`, `shutdown -h +185`, a systemd `poweroff` timer at 190 minutes, the runner's own `shutdown -h now`, and unlimited credits on t4g (a throttled box would measure the credit bucket).
-- Optional env: `AWS_DEFAULT_REGION` (us-east-1), `CAL_AMI` (the latest AL2023 arm64), `CAL_ROLES` ("c6g t4g"), `CAL_PASSES` (5), `CAL_GAP_S` (900), `CAL_SWAP` (1: a 1 GB swapfile so dnf fits on the nano; the 2026-10-20 run had none).
+- Safety: `InstanceInitiatedShutdownBehavior=terminate`, `shutdown -h +185` (`CAL_MAX_MIN`), a systemd `poweroff` timer 5 minutes later, the runner's own `shutdown -h now`, and unlimited credits on t4g (a throttled box would measure the credit bucket).
+- Optional env: `AWS_DEFAULT_REGION` (us-east-1), `CAL_AMI` (the latest AL2023 arm64), `CAL_ROLES` ("c6g t4g"; "t4g" for the nano alone), `CAL_PASSES` (5), `CAL_GAP_S` (900), `CAL_SWAP` (1: a 1 GB swapfile so dnf fits on the nano; the 2026-10-20 run had none), `CAL_GROUPS` (every group but sqlite, with steal on the first and last pass; a list runs only those groups in every pass), `CAL_MAX_MIN` (185: the `shutdown -h` timer in minutes, with the systemd `poweroff` 5 minutes later).
+- The sqlite run of 2026-10-20 was `CAL_ROLES=t4g CAL_GROUPS=sqlite CAL_PASSES=5 CAL_GAP_S=180 CAL_MAX_MIN=60`.
 - The user data embeds a 6 hour presigned URL, so it is built in a temp file and removed; it is never stored in the repo.
 
 ### On the Docker rig
