@@ -16,8 +16,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#if defined(__linux__)
+#include <sys/eventfd.h>
+#endif
 
 static bool g_uring;   // this machine's loops get io_uring when asked
 
@@ -143,9 +147,50 @@ static void batched_sends_report_what_send_would(void) {
     cb_loop_use_uring(false);
 }
 
+// ---- more watches than the ring holds ----------------------------------------------------------
+
+// 4200 readable fds armed in one wait: more polls than the submission queue's 4096 entries, so the
+// arming hands a full queue to the kernel and goes on; every one is told.
+#if defined(__linux__)
+enum { MANY = 4200 };
+static int g_many_fds[MANY], g_told;
+static void told_once(cb_loop *l, int fd, int ev, void *ud) {
+    uint64_t v;
+    if (read(fd, &v, sizeof v) == (ssize_t)sizeof v) g_told++;
+    cb_loop_remove(l, fd);
+    if (g_told == MANY) cb_loop_stop(l);
+}
+#endif
+
+static void more_watches_than_the_ring_holds(void) {
+#if defined(__linux__)
+    if (!g_uring) return;
+    struct rlimit rl;
+    getrlimit(RLIMIT_NOFILE, &rl);
+    if (rl.rlim_cur < MANY + 64 && rl.rlim_max >= MANY + 64) { rl.rlim_cur = MANY + 64; setrlimit(RLIMIT_NOFILE, &rl); }
+    getrlimit(RLIMIT_NOFILE, &rl);
+    if (rl.rlim_cur < MANY + 64) { fprintf(stderr, "unit_uring: fd limit %llu: skipped\n", (unsigned long long)rl.rlim_cur); return; }
+    cb_loop_use_uring(true);
+    cb_loop *l = cb_loop_new();
+    g_told = 0;
+    for (int i = 0; i < MANY; i++) {
+        g_many_fds[i] = eventfd(1, EFD_NONBLOCK | EFD_CLOEXEC);
+        T_CHECK(g_many_fds[i] >= 0);
+        T_EQ_INT(cb_loop_add(l, g_many_fds[i], CB_EV_READ, told_once, NULL), CB_OK);
+    }
+    cb_loop_timer(l, 5000, giveup, NULL);
+    cb_loop_run(l);
+    T_EQ_INT(g_told, MANY);
+    for (int i = 0; i < MANY; i++) close(g_many_fds[i]);
+    cb_loop_free(l);
+    cb_loop_use_uring(false);
+#endif
+}
+
 int main(void) {
     T_RUN(backend_is_said);
     T_RUN(readiness_is_level_triggered);
     T_RUN(batched_sends_report_what_send_would);
+    T_RUN(more_watches_than_the_ring_holds);
     return T_DONE();
 }
