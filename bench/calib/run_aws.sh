@@ -54,7 +54,7 @@ SG=$(aws ec2 create-security-group --group-name "cbase-perf-temp-cal-sg-$SUF" --
 rec SG "$SG"
 # (a VPC with an IPv6 block may already give a new SG this rule: then the call answers InvalidPermission.Duplicate)
 aws ec2 authorize-security-group-egress --group-id "$SG" --ip-permissions 'IpProtocol=-1,Ipv6Ranges=[{CidrIpv6=::/0}]' >/dev/null 2>&1 || \
-  aws ec2 describe-security-groups --group-ids "$SG" --query 'SecurityGroups[0].IpPermissionsEgress[?IpProtocol==`-1`].Ipv6Ranges[].CidrIpv6' --output text | grep -qx '::/0'
+  aws ec2 describe-security-groups --group-ids "$SG" --query "SecurityGroups[0].IpPermissionsEgress[?IpProtocol=='-1'].Ipv6Ranges[].CidrIpv6" --output text | grep -qx '::/0'
 # a new SG carries an allow-all IPv4 egress rule; the subnet has no IPv4 route, but drop it anyway
 aws ec2 revoke-security-group-egress --group-id "$SG" --ip-permissions 'IpProtocol=-1,IpRanges=[{CidrIp=0.0.0.0/0}]' >/dev/null || true
 aws ec2 create-tags --resources "$SG" --tags "Key=Name,Value=cbase-perf-temp-cal-sg-$SUF"
