@@ -99,7 +99,7 @@ Five passes on a c6g.large and a t4g.nano (unlimited), both Graviton2 (Neoverse 
 - The first run's PMU columns on the c6g are wrong: five events were opened un-grouped and the multiplexing was not scaled (add_chain256 showed about 104 instructions per 256-add iteration).
   `calbench.c` here is fixed (one cycles+instructions group plus single events, all scaled by time_enabled/time_running), but the stored results predate the fix, so ignore `cyc..llcmiss` in `results_2026-10-20/`.
 - The t4g.nano reports pmu=1 but every counter reads -1: it has no PMU, and that is expected.
-- The fix is compile-checked only; it has not been rerun on a c6g.
+- The fix compiles in the alpine container and runs there (the Docker VM has no PMU, so the columns read -1); the scaled counters have not been checked on a c6g.
 - The foolish kernel functions (state encode/decode, evwire) are not in the suite yet.
 - `run_rig.sh` is untested.
 - The raw results were trimmed to text: instance ids, the IPv6 address and the MAC in the spec files are redacted, and the tarballs are dropped.
