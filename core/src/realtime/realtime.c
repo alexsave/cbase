@@ -183,7 +183,7 @@ void cb_rt_batch_end(cb_rt *rt) {
     const char *lane_user[RT_BATCH_MAX] = { 0 };   // NULL: the spectators' lane
     for (int i = 0; i < n; i++) {
         rt_held *h = &t_batch.items[i];
-        to[i] = (cb_rt_to){ h->family, h->has_user ? h->user : NULL, h->has_doc ? h->doc : NULL };
+        to[i] = (cb_rt_to){ h->family, h->has_user ? h->user : NULL, h->has_doc ? h->doc : NULL, NULL };   // its transport cannot tell rooms (realtime.h quiet_room)
         frames[i] = h->frame;
         lens[i] = h->len;
         int l = 0;

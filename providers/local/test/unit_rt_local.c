@@ -344,6 +344,56 @@ static void a_room_is_heard_only_while_watched(void) {
     cb_buf_free(&m);
 }
 
+// THE QUIET ROOM (realtime.h cb_rt_to.quiet_room): a game's view does not go to the user's
+// connection in the game's room (the page, which follows the game by its casts), and still goes to
+// the user's other connections; the seat's cast reaches both; a view of another game, and a seat's
+// last view (gone), reach the room's connection too.
+static void a_view_skips_the_users_connection_in_its_room(void) {
+    cb_buf m;
+    cb_buf_init(&m);
+    NwFrame pf;
+    int page = open_as(U1, NULL, &m), dash = open_as(U1, NULL, &m);
+    sub(page, SF_SUB, 0x80000021u, NW_SUB_GAME, G, 200, &m);
+    const long q0 = cb_rt_local_quiet_skips(g_ctx.rt);
+    publish_view(31);
+    T_EQ_INT(fr_recv(dash, 2000, &m), NW_WS_VIEW);
+    T_EQ_INT(fr_recv(page, 300, &m), 0);                     // the page in G's room: no view of G
+    T_EQ_INT(cb_rt_local_quiet_skips(g_ctx.rt) - q0, 1);
+    tc_response r;
+    T_EQ_INT(tc_http(g_port, "GET", "/t/publoop", NULL, NULL, 0, &r), 0);   // the same, published on the loop
+    tc_response_free(&r);
+    T_EQ_INT(fr_recv(dash, 2000, &m), NW_WS_VIEW);
+    T_EQ_INT(fr_recv(page, 300, &m), 0);
+    T_EQ_INT(cb_rt_local_quiet_skips(g_ctx.rt) - q0, 2);
+    const uint8_t cast[] = { 7, 8, 9 };
+    rt_publish_cast(g_ctx.rt, U1, G, 31, cast, 3);           // the seat's cast: every connection
+    T_EQ_INT(fr_recv(page, 2000, &m), NW_WS_CAST);
+    T_EQ_INT(fr_recv(dash, 2000, &m), NW_WS_CAST);
+    cb_view_row v;
+    memset(&v, 0, sizeof v);
+    strcpy(v.game_id, "othergame001");
+    uint8_t env[] = { 0xee };
+    v.view = env;
+    v.view_len = 1;
+    v.version = 3;
+    rt_publish_view(g_ctx.rt, U1, &v, false);                // another game's view: the page hears it
+    T_EQ_INT(fr_recv(page, 2000, &m), NW_WS_VIEW);
+    T_EQ_INT(fr_recv(dash, 2000, &m), NW_WS_VIEW);
+    strcpy(v.game_id, G);
+    rt_publish_view(g_ctx.rt, U1, &v, true);                 // the seat gone: every connection
+    T_EQ_INT(fr_recv(page, 2000, &m), NW_WS_VIEW);
+    T_EQ_INT(nw_frame_decode(m.p, (int)m.len, &pf), NW_OK);
+    T_EQ_INT((int)pf.blob.len, 0);
+    T_EQ_INT(fr_recv(dash, 2000, &m), NW_WS_VIEW);
+    sub(page, SF_UNSUB, 0x80000022u, NW_SUB_GAME, G, 200, &m);   // out of the room: views again
+    publish_view(32);
+    T_EQ_INT(fr_recv(page, 2000, &m), NW_WS_VIEW);
+    T_EQ_INT(fr_recv(dash, 2000, &m), NW_WS_VIEW);
+    close(page);
+    close(dash);
+    cb_buf_free(&m);
+}
+
 // A move's shape: an inline route that pushes the caller's own view, then answers.
 static void h_act(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     g_act_thr = pthread_self();
@@ -720,6 +770,7 @@ int main(void) {
     T_RUN(a_push_on_the_loop_is_not_posted);
     T_RUN(a_users_pushes_in_a_pass_walk_once);
     T_RUN(a_room_is_heard_only_while_watched);
+    T_RUN(a_view_skips_the_users_connection_in_its_room);
     T_RUN(an_inline_req_answers_with_its_pushes);
     T_RUN(a_req_that_would_wait_runs_again_on_the_pool);
     T_RUN(pushes_keep_their_order_across_threads);

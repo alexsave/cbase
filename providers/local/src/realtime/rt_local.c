@@ -114,6 +114,7 @@ typedef struct {
         uint64_t ids[8];
     } last;
     _Atomic long user_walks;       // the by-user table's walks (cb_rt_local_user_walks)
+    _Atomic long quiet_skips;      // user pushes not sent to a connection in their quiet room
     // Handled frames and finished jobs, kept for the next ones (loop thread only): a request
     // over the socket used to malloc its frame and calloc its job, and free both, every time.
     struct msg *spare_msgs;
@@ -701,6 +702,7 @@ typedef struct pub {
     cb_rt *rt;
     int scope;                        // PUB_USER, PUB_ROOM
     char key[48];                     // the user id, or the room id
+    char quiet[48];                   // (PUB_USER) the room whose watchers do not hear it ("" none)
     size_t len, cap;
     uint8_t *frame;                   // the push, as it goes out
     struct pub *next;                 // on the free list
@@ -790,6 +792,17 @@ static void pub_deliver(local *L, const pub *p) {
             for (uint32_t i = 0; i < e->n && n < cap; i++) ids[n++] = e->ids[i];
         }
     }
+    // A user's push its connections in the quiet room do not hear (cb_rt_to.quiet_room): they are
+    // dropped from the hearers here, after the walk (which the user's next push reuses unfiltered).
+    if (p->scope == PUB_USER && p->quiet[0]) {
+        size_t k = 0;
+        for (size_t i = 0; i < n; i++) {
+            const lconn *c = find(L, ids[i]);
+            if (c && watch_index(c, p->quiet) >= 0) { atomic_fetch_add_explicit(&L->quiet_skips, 1, memory_order_relaxed); continue; }
+            ids[k++] = ids[i];
+        }
+        n = k;
+    }
     send_all(L, ids, n, p->frame, p->len);
     if (ids != stack) free(ids);
 }
@@ -829,10 +842,12 @@ static int local_deliver(cb_rt *rt, const cb_rt_to *to, const uint8_t *frame, si
     const bool user = cb_rt_family_user(to->family);
     const char *key = user ? to->user_id : to->doc_id;
     if (!key || !*key || strlen(key) >= sizeof ((pub *)0)->key) return 1;
+    const char *quiet = user && to->quiet_room && strlen(to->quiet_room) < sizeof ((pub *)0)->quiet ? to->quiet_room : "";
     if (cb_loop_on_thread(loop)) {
         if (atomic_load(&L->pq_n)) pq_deliver(L);
         pub b = { .rt = rt, .scope = user ? PUB_USER : PUB_ROOM, .len = len, .frame = (uint8_t *)frame };
         cb_strlcpy(b.key, key, sizeof b.key);
+        cb_strlcpy(b.quiet, quiet, sizeof b.quiet);
         pub_deliver(L, &b);
         return 0;
     }
@@ -841,6 +856,7 @@ static int local_deliver(cb_rt *rt, const cb_rt_to *to, const uint8_t *frame, si
     p->rt = rt;
     p->scope = user ? PUB_USER : PUB_ROOM;
     cb_strlcpy(p->key, key, sizeof p->key);
+    cb_strlcpy(p->quiet, quiet, sizeof p->quiet);
     if (p->cap < len) {
         free(p->frame);
         p->frame = malloc(len);
@@ -944,6 +960,11 @@ static bool local_room_heard(cb_rt *rt, const char *doc) {
 }
 
 static const cb_rt_transport LOCAL_T = { "local", local_deliver, local_free, local_forget, NULL, local_room_heard };
+
+long cb_rt_local_quiet_skips(const cb_rt *rt) {
+    const local *L = rt->impl;
+    return atomic_load_explicit(&((local *)L)->quiet_skips, memory_order_relaxed);
+}
 
 long cb_rt_local_user_walks(const cb_rt *rt) {
     const local *L = rt->impl;

@@ -13,5 +13,7 @@ int cb_rt_local_new(cb_ctx *ctx, cb_rt **out);
 int cb_rt_local_routes(cb_ctx *ctx);
 // Walks of the by-user table so far (a user's second push in a loop pass reuses the first's).
 long cb_rt_local_user_walks(const cb_rt *rt);
+// User pushes not sent to a connection in their quiet room (realtime.h cb_rt_to.quiet_room).
+long cb_rt_local_quiet_skips(const cb_rt *rt);
 
 #endif

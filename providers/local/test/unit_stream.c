@@ -113,25 +113,25 @@ static void publishes(void) {
 // can add a level or a wildcard to an MQTT topic.
 static void targets_name_topics(void) {
     char t[128];
-    cb_rt_to views = { CB_RT_VIEWS, U1, NULL };
+    cb_rt_to views = { CB_RT_VIEWS, U1, NULL, NULL };
     T_EQ_INT(cb_rt_topic(&views, t, sizeof t), 2 + 36 + 2);
     T_EQ_STR(t, "u/" U1 "/v");
-    cb_rt_to chat_all = { CB_RT_CHAT, NULL, G };
+    cb_rt_to chat_all = { CB_RT_CHAT, NULL, G, NULL };
     T_EQ_INT(cb_rt_topic(&chat_all, t, sizeof t), -1);
     const char *bad[] = { "", "a/b", "a+", "#", "a b", "a.b", "a\n",
                           "x0123456789012345678901234567890123456789012345678901234567890123" };   // 65 bytes
     for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
-        cb_rt_to a = { CB_RT_SEAT, bad[i], G }, b = { CB_RT_SEAT, U1, bad[i] }, w = { CB_RT_WATCH, NULL, bad[i] };
+        cb_rt_to a = { CB_RT_SEAT, bad[i], G, NULL }, b = { CB_RT_SEAT, U1, bad[i], NULL }, w = { CB_RT_WATCH, NULL, bad[i], NULL };
         T_EQ_INT(cb_rt_topic(&a, t, sizeof t), -1);
         T_EQ_INT(cb_rt_topic(&b, t, sizeof t), -1);
         T_EQ_INT(cb_rt_topic(&w, t, sizeof t), -1);
     }
-    cb_rt_to none = { CB_RT_SEAT, NULL, G };
+    cb_rt_to none = { CB_RT_SEAT, NULL, G, NULL };
     T_EQ_INT(cb_rt_topic(&none, t, sizeof t), -1);
-    cb_rt_to odd = { NULL, U1, G };   // no family
+    cb_rt_to odd = { NULL, U1, G, NULL };   // no family
     T_EQ_INT(cb_rt_topic(&odd, t, sizeof t), -1);
     // Too small a buffer is a refusal, not a cut topic.
-    cb_rt_to seat = { CB_RT_SEAT, U1, G };
+    cb_rt_to seat = { CB_RT_SEAT, U1, G, NULL };
     T_EQ_INT(cb_rt_topic(&seat, t, 10), -1);
     T_EQ_INT(cb_rt_topic(&seat, t, 2 + 36 + 3 + 6 + 1), 2 + 36 + 3 + 6);
 }
@@ -253,6 +253,16 @@ static void serve_end_to_end(void) {
     // animate it): let it go, and the view of it is handed out.
     T_EQ_INT(nc_stream_unsub(NW_SUB_GAME, G, 6), NW_OK);
     flush(fd, t0);   // the UNSUB
+    // Its REPLY first: until the hub has the UNSUB, this connection is in G's room, and a view of
+    // G is not sent to a connection in G's room (realtime.h quiet_room). The frames before it (the
+    // stale cast) go to the client as ever.
+    for (int i = 0; i < 20; i++) {
+        cb_buf_reset(&m);
+        T_EQ_INT(tc_ws_recv(fd, 2000, &m), CB_WS_OP_BIN);
+        g_ev_n = nc_stream_in(m.p, (int)m.len, 0, cb_now_ms());
+        g_ev = -1;
+        if (m.len >= 2 && m.p[1] == SF_REPLY) break;
+    }
     rt_publish_view(g_ctx.rt, U1, &v, false);
     e = next_event(fd, 2000, &m);   // the stale cast made no event: this is the view
     T_CHECK(e->kind == NC_EV_VIEW && e->version == 11 && e->what == NW_SUB_GAMES);
@@ -270,8 +280,7 @@ static void serve_end_to_end(void) {
     T_CHECK(e->kind == NC_EV_CHAT && e->chat.message_len == 3 && e->gid_len == 6);
     // The client's ping.
     flush(fd, cb_now_ms() + NC_PING_MS);
-    // Frames the hub answers inline arrive in order, but the UNSUB's REPLY may
-    // trail the pushes: skip it.
+    // Frames the hub answers inline arrive in order (the UNSUB's REPLY was read above).
     int op;
     do {
         cb_buf_reset(&m);

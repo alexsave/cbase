@@ -42,6 +42,10 @@ typedef struct {
     const cb_topic_family *family;
     const char            *user_id;   // {user}, when the pattern has it
     const char            *doc_id;    // {doc}, when the pattern has it
+    // A user's push that the user's connections watching this room do not get: they follow the
+    // room's own pushes (NULL: every connection of the user hears it). A transport that cannot tell
+    // who watches a room (the IoT broker) drops it, and every connection hears the push.
+    const char            *quiet_room;
 } cb_rt_to;
 
 // The MQTT topic of a target into out (its family's pattern, {user} and
