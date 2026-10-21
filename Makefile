@@ -211,9 +211,6 @@ $(call prog,build,build/obj/cbase,build/obj/kernel,cbase,$(MAIN_SERVE),CB_CFLAGS
 $(call prog,build,build/obj/cbase,build/obj/kernel,bootstrap,$(MAIN_LAMBDA),CB_CFLAGS)
 $(call prog,build,build/obj/cbase,build/obj/kernel,cbase-import,$(IMPORT_SRC),CB_CFLAGS)
 $(call prog,build,build/obj/cbase,build/obj/kernel,cbase-export,$(EXPORT_SRC),CB_CFLAGS)
-# THROWAWAY: the one-time transcode of stored replays from format 10 to 11
-# (foolish/server/migrate/replay_v11.c). Deleted with it after the production run.
-$(call prog,build,build/obj/cbase,build/obj/kernel,cbase-replay-v11,$(C_ROOT)/foolish/server/migrate/replay_v11.c,CB_CFLAGS)
 # The /m/<payload> cases foolish/server/test/fixture_unfurl.h holds, made by the kernel
 # ($(C_ROOT)/foolish/server/tools/unfurl_payloads.c). Not part of any check: it
 # is run by hand when the goldens are regenerated.
@@ -236,7 +233,7 @@ $(foreach s,smoke smoke_lambda smoke_lambda_after smoke_authz smoke_matrix smoke
 
 .PHONY: test-uring
 .PHONY: coverage all test smoke check check-asan test-asan smoke-asan check-dynamo clean print-kernel-src bootstrap bench
-all: build/cbase build/bootstrap build/cbase-import build/cbase-export build/cbase-replay-v11 build/cbase-bench
+all: build/cbase build/bootstrap build/cbase-import build/cbase-export build/cbase-bench
 
 # THE TEST RUNS, in parallel. Every program is its own process with its own
 # server, port, temporary directory and database (the smokes start their own
