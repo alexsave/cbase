@@ -37,6 +37,10 @@ int tc_http(int port, const char *method, const char *path, const char *headers,
 // Opens a WebSocket at `path` (with its query). The socket, or -1.
 int tc_ws_open(int port, const char *path, const char *headers);
 int tc_ws_send(int fd, int opcode, const void *data, size_t len);
+// A burst in one write: the frame `first` (NULL: none), then n binary frames of `len` zero bytes,
+// as a flooding client sends them. 0 when all of it went, 1 when the server closed it part way
+// (ignore SIGPIPE first), -1 out of memory.
+int tc_ws_send_burst(int fd, const void *first, size_t first_len, int n, size_t len);
 // Reads one frame (answering nothing for it). Returns the opcode and fills
 // out, or -1 on timeout / close / error. timeout_ms bounds the wait for the
 // frame's first byte; once a frame has begun, the rest gets TC_WS_REST_MS, so

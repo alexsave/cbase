@@ -178,6 +178,30 @@ int tc_ws_send(int fd, int opcode, const void *data, size_t len) {
     return rc;
 }
 
+int tc_ws_send_burst(int fd, const void *first, size_t first_len, int n, size_t len) {
+    static const uint8_t zero_mask[4] = { 0, 0, 0, 0 };   // a zero mask: the payload stays zeros
+    uint8_t hdr[14];
+    size_t fh = first ? cb_ws_frame_header(hdr, true, CB_WS_OP_BIN, first_len, zero_mask) : 0;
+    size_t hn = cb_ws_frame_header(hdr, true, CB_WS_OP_BIN, len, zero_mask);
+    size_t one = hn + len, head = first ? fh + first_len : 0, total = head + one * (size_t)n;
+    uint8_t *b = calloc(1, total ? total : 1);
+    if (!b) return -1;
+    if (first) {
+        cb_ws_frame_header(b, true, CB_WS_OP_BIN, first_len, zero_mask);
+        memcpy(b + fh, first, first_len);
+    }
+    for (int i = 0; i < n; i++) memcpy(b + head + one * (size_t)i, hdr, hn);
+    int rc = 0;
+    for (size_t off = 0; off < total;) {
+        ssize_t w = send(fd, b + off, total - off, 0);
+        if (w < 0 && errno == EINTR) continue;
+        if (w <= 0) { rc = 1; break; }   // the server closed it: the rest has nowhere to go
+        off += (size_t)w;
+    }
+    free(b);
+    return rc;
+}
+
 int tc_ws_recv(int fd, int timeout_ms, cb_buf *out) {
     // Byte-at-a-time framing is fine for tests: read until one frame parses.
     cb_buf in;

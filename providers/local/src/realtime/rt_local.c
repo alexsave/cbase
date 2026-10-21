@@ -79,7 +79,8 @@ typedef struct lconn {
     int64_t expires_s;             // once open: the connection ends then (the token's exp)
     uint64_t checked_gen;          // the end counter the session was last known live at
     msg *in_head, *in_tail;        // frames not handled yet
-    size_t in_bytes;
+    size_t in_bytes;               // their heap, charged per frame (msg_cost), against INBOX_MAX
+    uint32_t in_frames;            // how many, against INBOX_FRAMES_MAX
     uint8_t nwatch;
     char **watch;                  // the rooms watched, malloc'd [0..nwatch)
 } lconn;
@@ -115,6 +116,7 @@ typedef struct {
     } last;
     _Atomic long user_walks;       // the by-user table's walks (cb_rt_local_user_walks)
     _Atomic long quiet_skips;      // user pushes not sent to a connection in their quiet room
+    _Atomic size_t inbox_peak;     // the most heap one connection's inbox has held (cb_rt_local_inbox_peak)
     // Handled frames and finished jobs, kept for the next ones (loop thread only): a request
     // over the socket used to malloc its frame and calloc its job, and free both, every time.
     struct msg *spare_msgs;
@@ -129,13 +131,20 @@ typedef struct {
     atomic_int pq_n;
 } local;
 
-#define INBOX_MAX (1u << 20)   // a client this far ahead of us is not a stream client
-
 static const cb_rt_transport LOCAL_T;
 
 #define SPARE_MSGS 64            // frames kept
 #define SPARE_MSG_CAP 1024        // a frame's room when made: most requests fit, so most are reused
 #define SPARE_JOBS 64             // jobs kept
+
+// THE INBOX (rt_local.h CB_RT_INBOX_MAX, CB_RT_INBOX_FRAMES_MAX). Each waiting frame is charged what
+// it really costs the heap (msg_cost: the header and its room, never under SPARE_MSG_CAP), not its
+// payload, so an empty frame is not free; and the frames are counted.
+#define INBOX_MAX        CB_RT_INBOX_MAX
+#define INBOX_FRAMES_MAX CB_RT_INBOX_FRAMES_MAX
+
+// What a frame of n bytes costs the heap while it waits (msg_new: a spare's room is SPARE_MSG_CAP).
+static size_t msg_cost(size_t n) { return sizeof(msg) + (n < SPARE_MSG_CAP ? SPARE_MSG_CAP : n) + 1; }
 
 static msg *msg_new(local *L, const void *p, size_t n) {
     msg *m = L->spare_msgs;
@@ -563,7 +572,8 @@ static void pump(local *L, lconn *c) {
         msg *m = c->in_head;
         c->in_head = m->next;
         if (!c->in_head) c->in_tail = NULL;
-        c->in_bytes -= m->len;
+        c->in_bytes -= msg_cost(m->len);
+        c->in_frames--;
         m->next = NULL;
         sf_frame f;
         if (sf_parse((const uint8_t *)m->text, m->len, &f) != 0 || (!c->open && f.kind != SF_HELLO) ||
@@ -654,18 +664,27 @@ static void on_message(cb_ws *ws, int opcode, const uint8_t *data, size_t len, v
     lconn *c = find(L, cb_ws_id(ws));
     if (!c) return;
     if (opcode == CB_WS_OP_TEXT) { cb_ws_close(ws, 1003); return; }   // frames are binary
-    if (c->in_bytes + len > INBOX_MAX) { cb_ws_close(ws, 1008); return; }
+    // A client this far ahead of us is not a stream client (INBOX_MAX): it ends, nobody else waits.
+    const size_t cost = msg_cost(len);
+    if (c->in_frames >= INBOX_FRAMES_MAX || c->in_bytes + cost > INBOX_MAX) {
+        CB_DEBUG("realtime", "socket %llu closed: %u frames, %zu bytes waiting", (unsigned long long)c->ws_id, c->in_frames, c->in_bytes);
+        cb_ws_close(ws, 1008);
+        return;
+    }
     // The first frame is the HELLO and the only one: anything else first, or a second HELLO, ends it.
     if (!c->hello_seen) {
         if (len < 2 || data[0] != SF_V || data[1] != SF_HELLO) { cb_ws_close(ws, 1008); return; }
         c->hello_seen = true;
     }
     msg *m = msg_new(L, data, len);
-    if (!m) return;
+    if (!m) { cb_ws_close(ws, 1011); return; }   // a frame dropped would answer the wrong REQ: end it instead
     if (c->in_tail) c->in_tail->next = m;
     else c->in_head = m;
     c->in_tail = m;
-    c->in_bytes += len;
+    c->in_bytes += cost;
+    c->in_frames++;
+    if (c->in_bytes > atomic_load_explicit(&L->inbox_peak, memory_order_relaxed))
+        atomic_store_explicit(&L->inbox_peak, c->in_bytes, memory_order_relaxed);
     pump(L, c);
 }
 
@@ -964,6 +983,11 @@ static const cb_rt_transport LOCAL_T = { "local", local_deliver, local_free, loc
 long cb_rt_local_quiet_skips(const cb_rt *rt) {
     const local *L = rt->impl;
     return atomic_load_explicit(&((local *)L)->quiet_skips, memory_order_relaxed);
+}
+
+size_t cb_rt_local_inbox_peak(const cb_rt *rt) {
+    const local *L = rt->impl;
+    return atomic_load_explicit(&((local *)L)->inbox_peak, memory_order_relaxed);
 }
 
 long cb_rt_local_user_walks(const cb_rt *rt) {

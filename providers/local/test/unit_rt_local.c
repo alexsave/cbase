@@ -26,6 +26,7 @@
 
 #include <stdatomic.h>
 #include <pthread.h>
+#include <signal.h>
 #include <unistd.h>
 
 #define U1 "11111111-1111-4111-8111-111111111111"
@@ -719,6 +720,76 @@ static void refusals_end_the_connection(void) {
     cb_buf_free(&m);
 }
 
+// ---- the inbox (rt_local.h CB_RT_INBOX_MAX, CB_RT_INBOX_FRAMES_MAX) ---------------------------
+//
+// While a connection's REQ waits on the pool its next frames queue. An empty frame used to cost
+// nothing against the cap (it counted payload bytes) yet a whole frame of heap, so a burst of them
+// grew the heap without bound while a job held the one worker. Every pool worker is held here, so
+// the REQ cannot run: the close comes from the inbox caps or not at all.
+
+// Holds every pool worker and puts a REQ on the pool behind them: the connection is busy.
+static void hold_and_req(int fd) {
+    atomic_store(&g_hold, 1);
+    for (int i = 0; i < 3; i++) T_EQ_INT(cb_pool_submit(g_ctx.req_pool, hold_worker, NULL), CB_OK);
+    uint8_t b[128];
+    fr_send(fd, b, sf_put_req(b, sizeof b, 1, SF_METH_POST, "/t/who", 6, (const uint8_t *)"x", 1));
+}
+
+static void a_flood_while_busy_ends_only_that_socket(void) {
+    signal(SIGPIPE, SIG_IGN);
+    cb_buf m;
+    cb_buf_init(&m);
+    const size_t empty_cost = 1024;   // an empty frame's room (rt_local.c SPARE_MSG_CAP), at the least
+    // A few empty frames while busy are charged their heap, not their zero payload, and do not end it.
+    int a = open_as(U1, NULL, &m);
+    hold_and_req(a);
+    T_EQ_INT(tc_ws_send_burst(a, NULL, 0, 100, 0), 0);
+    usleep(100000);
+    T_EQ_INT(fr_recv(a, 100, &m), 0);
+    T_CHECK(cb_rt_local_inbox_peak(g_ctx.rt) >= 100 * empty_cost);
+    atomic_store(&g_hold, 0);
+    close(a);
+    usleep(50000);
+
+    // A burst of empty frames while busy: closed at CB_RT_INBOX_FRAMES_MAX, while the job still waits.
+    a = open_as(U1, NULL, &m);
+    int b = open_as(U2, NULL, &m);
+    hold_and_req(a);
+    tc_ws_send_burst(a, NULL, 0, 1000, 0);
+    T_EQ_INT(fr_recv(a, 2000, &m), -1);
+    T_EQ_INT(close_code(&m), 1008);
+    T_CHECK(cb_rt_local_inbox_peak(g_ctx.rt) <= CB_RT_INBOX_FRAMES_MAX * (empty_cost + 64));
+    // Everyone else is still served: b's PING is answered on the loop while the pool is held,
+    // and its REQ once the pool is free.
+    uint8_t pk[8];
+    fr_send(b, pk, sf_put_bare(pk, sizeof pk, SF_PING));
+    T_EQ_INT(fr_recv(b, 2000, &m), SF_PONG);
+    atomic_store(&g_hold, 0);
+    sf_frame f;
+    T_EQ_INT(req(b, 2, SF_METH_POST, "/t/who", "y", &m, &f), 200);
+    close(a);
+
+    // Big frames while busy: closed once their heap passes CB_RT_INBOX_MAX, frame by frame, before the
+    // frame count is anywhere near its cap.
+    a = open_as(U1, NULL, &m);
+    hold_and_req(a);
+    const size_t big = 128 * 1024;
+    int sent = 0;
+    while (sent < 16) {
+        tc_ws_send_burst(a, NULL, 0, 1, big);
+        sent++;
+        if (fr_recv(a, 100, &m) == -1) break;
+    }
+    T_EQ_INT(close_code(&m), 1008);
+    T_EQ_INT(sent, (int)(CB_RT_INBOX_MAX / (big + 64)) + 1);
+    T_CHECK(cb_rt_local_inbox_peak(g_ctx.rt) <= CB_RT_INBOX_MAX);
+    atomic_store(&g_hold, 0);
+    T_EQ_INT(req(b, 3, SF_METH_POST, "/t/who", "z", &m, &f), 200);
+    close(a);
+    close(b);
+    cb_buf_free(&m);
+}
+
 static void drain_post(cb_loop *l, void *ud) { cb_server_drain(g_ctx.server, 2000); }
 
 static void stop(void) {
@@ -777,6 +848,7 @@ int main(void) {
     T_RUN(req_runs_a_route_as_the_user);
     T_RUN(ended_sessions_close_their_sockets);
     T_RUN(refusals_end_the_connection);
+    T_RUN(a_flood_while_busy_ends_only_that_socket);
     stop();
     return T_DONE();
 }
