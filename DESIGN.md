@@ -99,6 +99,9 @@ Every handler answers 503 when a handle it needs is NULL.
 Under serve, `cb_handle` runs on a request pool for every route but the ones flagged `CB_ROUTE_LOOP` (the WebSocket upgrade, /health), so SQLite and bcrypt never block the network loop.
 A route flagged `CB_ROUTE_INLINE` (a move, a game's read) may run on the loop thread instead; a step there that would wait answers `to_pool` (`http.h`), and the same request runs again on the pool.
 Serve's threads are the loop, one request worker (the tables' thread: what would block the loop) and one job worker (the compute thread: the bots' drives and the finished games' replays), plus the journal's flush thread and SQLite's checkpointer, which sleep until there is work (`CBASE_REQ_WORKERS` and `CBASE_BOT_WORKERS` default to 1, and no pool is sized from the CPUs the process sees).
+The saturation knob pins them (util/affinity.h, Linux only): `CBASE_LOOP_CPU` puts the loop on one CPU and `CBASE_BG_CPU` every other thread on another.
+Both are unset by default, and production leaves them so: at human pace it changes nothing.
+The unit never carries `CPUAffinity=`, so a box that wants the knob sets the two variables and nothing else.
 Under Lambda one invocation is one request.
 
 ## Module: util (foundation, complete)

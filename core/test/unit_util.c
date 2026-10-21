@@ -9,6 +9,7 @@
 #include "util/json.h"
 #include "util/log.h"
 #include "util/pool.h"
+#include "util/affinity.h"
 #include "util/str.h"
 #include "util/uuid.h"
 
@@ -278,6 +279,50 @@ static void pool_runs_everything(void) {
     T_EQ_INT(atomic_load(&g_ran), 500);
 }
 
+// THE SATURATION KNOB (util/affinity.h): a pinned thread runs on its CPU, a thread it starts
+// afterwards starts there too (how serve's pools and the flush thread land on CBASE_BG_CPU), and
+// pin(-1) gives the thread its mask back. Where it cannot pin, it says so and changes nothing.
+#if defined(__linux__)
+#include <sched.h>
+static atomic_int g_child_cpu, g_child_count;
+static void *child_where(void *ud) {
+    (void)ud;
+    atomic_store(&g_child_cpu, sched_getcpu());
+    atomic_store(&g_child_count, cb_affinity_count());
+    return NULL;
+}
+#endif
+static void affinity_pins_and_unpins(void) {
+    char err[128] = "";
+    if (!cb_affinity_supported()) {
+        T_EQ_INT(cb_affinity_pin(0, err, sizeof err), CB_E_NOTIMPL);
+        T_CHECK(strstr(err, "needs Linux") != NULL);
+        T_EQ_INT(cb_affinity_count(), -1);
+        return;
+    }
+#if defined(__linux__)
+    const int all = cb_affinity_count();
+    T_CHECK(all >= 1);
+    int cpu = -1;
+    cpu_set_t m;
+    T_EQ_INT(pthread_getaffinity_np(pthread_self(), sizeof m, &m), 0);
+    for (int i = CPU_SETSIZE - 1; i >= 0; i--) if (CPU_ISSET(i, &m)) { cpu = i; break; }   // the highest allowed: not always 0
+    T_EQ_INT(cb_affinity_pin(cpu, err, sizeof err), CB_OK);
+    T_EQ_INT(cb_affinity_count(), 1);
+    sched_yield();
+    T_EQ_INT(sched_getcpu(), cpu);
+    pthread_t th;
+    pthread_create(&th, NULL, child_where, NULL);
+    pthread_join(th, NULL);
+    T_EQ_INT(atomic_load(&g_child_cpu), cpu);
+    T_EQ_INT(atomic_load(&g_child_count), 1);
+    T_EQ_INT(cb_affinity_pin(CPU_SETSIZE + 5, err, sizeof err), CB_E_INVALID);   // no such CPU: refused, nothing moved
+    T_EQ_INT(cb_affinity_count(), 1);
+    T_EQ_INT(cb_affinity_pin(-1, err, sizeof err), CB_OK);
+    T_EQ_INT(cb_affinity_count(), all);
+#endif
+}
+
 int main(void) {
     T_RUN(bytea);
     T_RUN(uuid_shape);
@@ -289,5 +334,6 @@ int main(void) {
     T_RUN(log_ring);
     T_RUN(log_level_first);
     T_RUN(pool_runs_everything);
+    T_RUN(affinity_pins_and_unpins);
     return T_DONE();
 }

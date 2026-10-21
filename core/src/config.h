@@ -73,6 +73,8 @@ typedef struct {
     // Tunables, each CBASE_<NAME> with these defaults:
     int  req_workers;     // CBASE_REQ_WORKERS 1: serve's request pool (config.c THE THREADS)
     int  bot_workers;     // CBASE_BOT_WORKERS 1: serve's bot pool; see DESIGN.md "Kernel thread safety"
+    int  loop_cpu;        // CBASE_LOOP_CPU unset (-1): the CPU serve's loop is pinned to (util/affinity.h)
+    int  bg_cpu;          // CBASE_BG_CPU unset (-1): the CPU every other serve thread is pinned to
     long max_body;        // CBASE_MAX_BODY 1048576: request body bytes
     int  jwt_ttl_s;       // CBASE_JWT_TTL 3600: access token lifetime
     int  admin_fail_limit;// CBASE_ADMIN_FAIL_LIMIT 10: wrong console tokens per address an hour (rate_limits.h)

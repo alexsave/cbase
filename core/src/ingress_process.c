@@ -35,6 +35,7 @@
 #include "util/err.h"
 #include "util/log.h"
 #include "util/pool.h"
+#include "util/affinity.h"
 
 #include <fcntl.h>
 #include <signal.h>
@@ -133,6 +134,13 @@ int cb_process_main(const cb_provider *prov, const cb_app *app, int argc, char *
     ctx.prov = prov;
     ctx.app = app;
     signal(SIGPIPE, SIG_IGN);
+    // THE SATURATION KNOB (util/affinity.h): this thread takes the background CPU before it starts
+    // any other, so every pool worker, the journal's flush thread and the store's checkpointer
+    // start there; it takes the loop's CPU (or its own mask back) just before it becomes the loop.
+    if (cfg.bg_cpu >= 0 && cb_affinity_pin(cfg.bg_cpu, err, sizeof err) != CB_OK) {
+        fprintf(stderr, "cbase: CBASE_BG_CPU: %s\n", err);
+        return 2;
+    }
     cb_loop_use_uring(cfg.io_uring);
     ctx.loop = cb_loop_new();
     ctx.req_pool = cb_pool_new(cfg.req_workers, "req");
@@ -182,6 +190,16 @@ int cb_process_main(const cb_provider *prov, const cb_app *app, int argc, char *
     }
 
     if (prov->serve_start) prov->serve_start(&ctx);
+    if ((cfg.loop_cpu >= 0 || cfg.bg_cpu >= 0) && cb_affinity_pin(cfg.loop_cpu, err, sizeof err) != CB_OK) {
+        CB_ERROR("serve", "CBASE_LOOP_CPU: %s", err);
+        return 2;
+    }
+    if (cfg.loop_cpu >= 0 || cfg.bg_cpu >= 0) {
+        char lc[16] = "any CPU", bc[16] = "any CPU";
+        if (cfg.loop_cpu >= 0) snprintf(lc, sizeof lc, "CPU %d", cfg.loop_cpu);
+        if (cfg.bg_cpu >= 0) snprintf(bc, sizeof bc, "CPU %d", cfg.bg_cpu);
+        CB_INFO("serve", "pinned: the loop to %s, every other thread to %s", lc, bc);
+    }
     CB_INFO("serve", "listening on %s:%d (%s)", cfg.listen_host, port, cb_loop_backend(ctx.loop));
     int rc = cb_loop_run(ctx.loop);
 

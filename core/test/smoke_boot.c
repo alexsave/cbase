@@ -69,6 +69,63 @@ static void cbase_refuses(void) {
     close(fd);
 }
 
+// THE SATURATION KNOB (util/affinity.h): where threads can be pinned, serve pins its loop and
+// every other thread, says so, serves and stops as ever, and refuses a CPU it may not use;
+// elsewhere it refuses the knob before it starts anything.
+#if defined(__linux__)
+#include <dirent.h>
+// Each of the child's threads' allowed CPUs (/proc/<pid>/task/<tid>/status Cpus_allowed_list):
+// how many threads say exactly `want`, and how many in all; the main thread (the loop) apart.
+static void threads_on(pid_t pid, const char *loop_want, const char *bg_want, int *loop_ok, int *bg_ok, int *bg_all) {
+    char dir[64], path[384], line[256];
+    snprintf(dir, sizeof dir, "/proc/%d/task", (int)pid);
+    *loop_ok = *bg_ok = *bg_all = 0;
+    DIR *d = opendir(dir);
+    for (struct dirent *e; d && (e = readdir(d));) {
+        if (e->d_name[0] == '.') continue;
+        snprintf(path, sizeof path, "%s/%s/status", dir, e->d_name);
+        FILE *f = fopen(path, "r");
+        char cpus[64] = "";
+        while (f && fgets(line, sizeof line, f))
+            if (sscanf(line, "Cpus_allowed_list: %63s", cpus) == 1) break;
+        if (f) fclose(f);
+        if (atoi(e->d_name) == (int)pid) *loop_ok = strcmp(cpus, loop_want) == 0;
+        else (*bg_all)++, *bg_ok += strcmp(cpus, bg_want) == 0;
+    }
+    if (d) closedir(d);
+}
+#endif
+
+static void the_cpu_knob_boots_or_refuses(void) {
+#if defined(__linux__)
+    // Two CPUs where the box has them (the loop on 0, the rest on 1), else both on 0.
+    const int bg = sysconf(_SC_NPROCESSORS_ONLN) >= 2 ? 1 : 0;
+    char bg_env[32], bg_list[8], says[96];
+    snprintf(bg_env, sizeof bg_env, "CBASE_BG_CPU=%d", bg);
+    snprintf(bg_list, sizeof bg_list, "%d", bg);
+    snprintf(says, sizeof says, "pinned: the loop to CPU 0, every other thread to CPU %d", bg);
+    char *pinned[] = { "CBASE_LISTEN=127.0.0.1:0", "CBASE_STORE=sqlite", "CBASE_DB=:memory:", "CBASE_DEV=1",
+                       "CBASE_LOOP_CPU=0", bg_env, NULL };
+    tp_child c;
+    char *argv[] = { (char *)g_cbase, "serve", NULL };
+    T_EQ_INT(tp_start(&c, argv, pinned), 0);
+    T_EQ_INT(tp_wait_line(&c, says, 15000, NULL, 0), 0);
+    T_EQ_INT(tp_wait_line(&c, "listening on", 15000, NULL, 0), 0);
+    int loop_ok, bg_ok, bg_all;
+    threads_on(c.pid, "0", bg_list, &loop_ok, &bg_ok, &bg_all);
+    T_CHECK(loop_ok);                       // the loop (the main thread) on its CPU
+    T_CHECK(bg_all >= 2 && bg_ok == bg_all);   // the pools' workers and the rest on theirs
+    T_EQ_INT(tp_stop(&c, SIGTERM, 15000), 0);
+    char *no_cpu[] = { "CBASE_LISTEN=127.0.0.1:0", "CBASE_STORE=sqlite", "CBASE_DB=:memory:", "CBASE_DEV=1",
+                       "CBASE_BG_CPU=1023", NULL };
+    T_CHECK(exits(g_cbase, "serve", no_cpu, 2, "CBASE_BG_CPU: CPU 1023 is not one this process may use"));
+#else
+    char *pinned[] = { "CBASE_LISTEN=127.0.0.1:0", "CBASE_STORE=sqlite", "CBASE_DB=:memory:", "CBASE_DEV=1",
+                       "CBASE_LOOP_CPU=0", NULL };
+    T_CHECK(exits(g_cbase, "serve", pinned, 2, "needs Linux"));
+#endif
+}
+
 // One request to the fake Runtime API, recorded, answered 202.
 typedef struct { int fd; char req[4096]; } one_req;
 static void *take_one(void *ud) {
@@ -148,6 +205,7 @@ int main(int argc, char **argv) {
     g_bootstrap = argv[2];
     signal(SIGPIPE, SIG_IGN);
     T_RUN(cbase_refuses);
+    T_RUN(the_cpu_knob_boots_or_refuses);
     T_RUN(bootstrap_refuses);
     return T_DONE();
 }

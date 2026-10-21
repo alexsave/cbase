@@ -10,6 +10,7 @@
 #include "config.h"
 #include "ctx.h"
 #include "util/err.h"
+#include "util/affinity.h"
 #include "util/str.h"
 
 #include <stdlib.h>
@@ -176,10 +177,44 @@ static void one_instance_per_database(void) {
     T_CHECK(system(rm) == 0);
 }
 
+// THE SATURATION KNOB: unset by default (nothing pinned), a CPU number when set, refused out of
+// range, and refused by serve where threads cannot be pinned.
+static void the_cpu_knob(void) {
+    cb_config c;
+    char err[256];
+    clear_env();
+    unsetenv("CBASE_LOOP_CPU");
+    unsetenv("CBASE_BG_CPU");
+    setenv("CBASE_DEV", "1", 1);
+    T_EQ_INT(cb_config_from_env(&c, err, sizeof err), CB_OK);
+    T_EQ_INT(c.loop_cpu, -1);
+    T_EQ_INT(c.bg_cpu, -1);
+    T_EQ_INT(cb_config_check_serve(&c, err, sizeof err), CB_OK);
+    setenv("CBASE_LOOP_CPU", "0", 1);
+    setenv("CBASE_BG_CPU", "1", 1);
+    T_EQ_INT(cb_config_from_env(&c, err, sizeof err), CB_OK);
+    T_EQ_INT(c.loop_cpu, 0);
+    T_EQ_INT(c.bg_cpu, 1);
+    if (cb_affinity_supported()) T_EQ_INT(cb_config_check_serve(&c, err, sizeof err), CB_OK);
+    else {
+        T_EQ_INT(cb_config_check_serve(&c, err, sizeof err), CB_E_INVALID);
+        T_CHECK(strstr(err, "needs Linux") != NULL);
+    }
+    setenv("CBASE_BG_CPU", "1024", 1);
+    T_EQ_INT(cb_config_from_env(&c, err, sizeof err), CB_E_INVALID);
+    T_CHECK(strstr(err, "CBASE_BG_CPU") != NULL);
+    setenv("CBASE_BG_CPU", "-1", 1);
+    T_EQ_INT(cb_config_from_env(&c, err, sizeof err), CB_E_INVALID);
+    unsetenv("CBASE_LOOP_CPU");
+    unsetenv("CBASE_BG_CPU");
+    unsetenv("CBASE_DEV");
+}
+
 int main(void) {
     T_RUN(secrets_rule);
     T_RUN(lambda_refuses_a_bot_speedup);
     T_RUN(secrets_never_shown);
+    T_RUN(the_cpu_knob);
     T_RUN(one_instance_per_database);
     return T_DONE();
 }

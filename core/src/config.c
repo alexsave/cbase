@@ -4,6 +4,7 @@
 #include "util/err.h"
 #include "util/log.h"
 #include "../../../shared/c/num_parse.h"
+#include "util/affinity.h"
 #include "util/str.h"
 #include "util/uuid.h"
 
@@ -130,6 +131,11 @@ int cb_config_from_env(cb_config *c, char *err, size_t cap) {
     c->req_workers = (int)v;
     if (!num("CBASE_BOT_WORKERS", 1, 1, 64, &v, err, cap)) return CB_E_INVALID;
     c->bot_workers = (int)v;
+    // THE SATURATION KNOB (util/affinity.h): unset by default, and then nothing is pinned.
+    if (!num("CBASE_LOOP_CPU", -1, 0, 1023, &v, err, cap)) return CB_E_INVALID;
+    c->loop_cpu = (int)v;
+    if (!num("CBASE_BG_CPU", -1, 0, 1023, &v, err, cap)) return CB_E_INVALID;
+    c->bg_cpu = (int)v;
     if (!num("CBASE_MAX_BODY", 1L << 20, 1024, 64L << 20, &v, err, cap)) return CB_E_INVALID;
     c->max_body = v;
     if (!num("CBASE_JWT_TTL", 3600, 60, 86400 * 7, &v, err, cap)) return CB_E_INVALID;
@@ -185,6 +191,11 @@ void cb_config_each(const cb_config *c, cb_config_fn fn, void *ud) {
     fn("CBASE_REQ_WORKERS", b, false, ud);
     snprintf(b, sizeof b, "%d", c->bot_workers);
     fn("CBASE_BOT_WORKERS", b, false, ud);
+    snprintf(b, sizeof b, "%d", c->loop_cpu);
+    fn("CBASE_LOOP_CPU", c->loop_cpu < 0 ? "(unset: not pinned)" : b, false, ud);
+    char bg[16];
+    snprintf(bg, sizeof bg, "%d", c->bg_cpu);
+    fn("CBASE_BG_CPU", c->bg_cpu < 0 ? "(unset: not pinned)" : bg, false, ud);
     snprintf(b, sizeof b, "%ld", c->max_body);
     fn("CBASE_MAX_BODY", b, false, ud);
     snprintf(b, sizeof b, "%d", c->jwt_ttl_s);
@@ -237,7 +248,12 @@ int cb_config_check_secrets(const cb_config *c, bool lambda, char *err, size_t c
 
 int cb_config_check_serve(const cb_config *c, char *err, size_t cap) {
     int rc = cb_config_check_secrets(c, false, err, cap);
-    if (rc != CB_OK || c->dev) return rc;
+    if (rc != CB_OK) return rc;
+    if ((c->loop_cpu >= 0 || c->bg_cpu >= 0) && !cb_affinity_supported()) {
+        snprintf(err, cap, "CBASE_LOOP_CPU and CBASE_BG_CPU pin threads, which needs Linux");
+        return CB_E_INVALID;
+    }
+    if (c->dev) return rc;
     if (!c->public_url_given) {
         snprintf(err, cap, "no CBASE_PUBLIC_URL: it is the token issuer, and the default (http://%s:%d) is no one's address "
                  "(CBASE_DEV=1 allows it)", c->listen_host, c->listen_port);
