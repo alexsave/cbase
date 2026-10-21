@@ -17,7 +17,7 @@ make -C c_base bootstrap   # dist/bootstrap.zip: static Linux arm64 for Lambda (
 make -C c_base bench       # build/cbase-bench: latency and CPU numbers (DESIGN.md, "The bench")
 ```
 
-macOS needs Xcode's clang and `brew install openssl@3`; Ubuntu 24.04 needs `build-essential libssl-dev libsqlite3-dev`.
+macOS needs Xcode's clang and `brew install openssl@3 sqlite` (Homebrew's sqlite, never Apple's: see the Makefile); Ubuntu 24.04 needs `build-essential libssl-dev libsqlite3-dev`.
 The kernel is built from `../foolish/c` with its own source list; nothing is copied.
 `CBASE_SMOKE_GAME=0 make -C c_base smoke` skips the game scenario when only the plumbing is of interest.
 The game smoke runs its server with `CBASE_BOT_SPEEDUP=20` (config.h): every bot timer, and the board's time the kernel paces by, 20 times faster, so the game, the crash's lease expiry and the idle human's rest take seconds; Lambda refuses to start with it set.

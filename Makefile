@@ -16,7 +16,7 @@
 #                   the libFuzzer targets (<side>/fuzz/fz_*.c; fuzz/fuzz.mk says what each does)
 #   make clean
 #
-# Builds on macOS (clang, Homebrew openssl@3, the SDK's sqlite3) and on Ubuntu
+# Builds on macOS (clang, Homebrew openssl@3 and sqlite) and on Ubuntu
 # 24.04 (gcc, libssl-dev, libsqlite3-dev). Nothing else is needed.
 #
 # NO FILE LISTS TO EDIT. Every .c under a source root (SRC_ROOTS: the core,
@@ -82,13 +82,26 @@ ifeq ($(LTO),1)
 endif
 
 # ---- c_base's own code ----------------------------------------------------------
+# SQLITE IS UPSTREAM'S ON EVERY PLATFORM: the one production runs (Alpine's, static) is upstream's,
+# and so is Ubuntu's. Apple's /usr/lib/libsqlite3 is not: it carries Apple's own code (a purgeable
+# page cache, purgeableCacheFetch) that changes between macOS releases, so a test of this program's
+# allocations (unit_oom) measured the OS. On macOS the build links Homebrew's sqlite and refuses to
+# fall back to Apple's.
 ifeq ($(UNAME),Darwin)
   OPENSSL_PREFIX ?= $(shell brew --prefix openssl@3 2>/dev/null)
+  SQLITE_PREFIX ?= $(shell brew --prefix sqlite 2>/dev/null)
+  ifeq ($(wildcard $(SQLITE_PREFIX)/include/sqlite3.h),)
+    $(error no Homebrew sqlite (SQLITE_PREFIX='$(SQLITE_PREFIX)'): brew install sqlite)
+  endif
   PLATFORM_LDLIBS := -framework Accelerate
 endif
 ifneq ($(strip $(OPENSSL_PREFIX)),)
   OPENSSL_CFLAGS := -I$(OPENSSL_PREFIX)/include
   OPENSSL_LDFLAGS := -L$(OPENSSL_PREFIX)/lib
+endif
+ifneq ($(strip $(SQLITE_PREFIX)),)
+  SQLITE_CFLAGS := -I$(SQLITE_PREFIX)/include
+  SQLITE_LDFLAGS := -L$(SQLITE_PREFIX)/lib
 endif
 
 # -Werror on c_base's sources only: the kernel has warnings gcc reports and
@@ -122,8 +135,8 @@ side_inc_of = $(if $(filter core/src/%,$(1)),$(CORE_INC),$(if $(filter providers
 side_inc = $(call side_inc_of,$*)
 SIDE_STAMP := core: $(CORE_INC) local: $(LOCAL_INC) aws: $(AWS_INC) product: $(PRODUCT_INC) rest: $(ALL_INC)
 CB_CFLAGS = -std=gnu11 -D_GNU_SOURCE -O2 -g -Wall -Wextra -Werror -Wno-unused-parameter -Wshadow -Wvla \
-            $(side_inc) $(OPENSSL_CFLAGS) -pthread $(CPU_CFLAGS) $(KERNEL_CAPS) $(CB_LTO)
-LDLIBS := $(OPENSSL_LDFLAGS) -lsqlite3 -lssl -lcrypto -lpthread -lm $(PLATFORM_LDLIBS) $(LTO_LDFLAGS)
+            $(side_inc) $(SQLITE_CFLAGS) $(OPENSSL_CFLAGS) -pthread $(CPU_CFLAGS) $(KERNEL_CAPS) $(CB_LTO)
+LDLIBS := $(SQLITE_LDFLAGS) $(OPENSSL_LDFLAGS) -lsqlite3 -lssl -lcrypto -lpthread -lm $(PLATFORM_LDLIBS) $(LTO_LDFLAGS)
 # STATIC=1: a fully static link (the Lambda bootstrap, built on musl by
 # providers/aws/ops/build_bootstrap.sh). Not meaningful on macOS.
 ifeq ($(STATIC),1)
