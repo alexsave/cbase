@@ -51,7 +51,11 @@ static int fake_verify(cb_ctx *ctx, const char *jwt, cb_user *out) {
 // The publishes as IoT would take them. A batch's lanes call this from
 // several threads at once: everything is under the lock but the wait, which
 // stands for IoT's answer time (wait_ms), so concurrent publishes overlap.
+// With `gather` set, each publish first waits (5 s at most, once) until that many are
+// in flight at once: the lanes' concurrency is a count, not a wall-clock bound a
+// loaded machine breaks.
 static pthread_mutex_t g_pub_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_pub_cv = PTHREAD_COND_INITIALIZER;
 static struct {
     int n;
     char endpoint[256], topic[48][128];
@@ -62,11 +66,26 @@ static struct {
     const char *fail_topic;   // this topic answers 500
     int64_t start_ms[48], end_ms[48];
     pthread_t thread[48];
+    int gather, inflight, peak;   // publishes in flight at once, and the most there were
 } g_pub;
 static int fake_publish(const char *endpoint, const char *topic, const void *data, size_t len) {
     int64_t t0 = cb_mono_ms();
+    pthread_mutex_lock(&g_pub_mu);
+    if (++g_pub.inflight > g_pub.peak) g_pub.peak = g_pub.inflight;
+    pthread_cond_broadcast(&g_pub_cv);
+    const int64_t until = cb_mono_ms() + 5000;
+    while (g_pub.peak < g_pub.gather && cb_mono_ms() < until) {
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        ts.tv_nsec += 10 * 1000000;
+        if (ts.tv_nsec >= 1000000000) { ts.tv_sec++; ts.tv_nsec -= 1000000000; }
+        pthread_cond_timedwait(&g_pub_cv, &g_pub_mu, &ts);
+    }
+    if (g_pub.peak < g_pub.gather) g_pub.gather = 0;   // never gathered: the rest go at once (peak says so)
+    pthread_mutex_unlock(&g_pub_mu);
     if (g_pub.wait_ms) poll(NULL, 0, g_pub.wait_ms);
     pthread_mutex_lock(&g_pub_mu);
+    g_pub.inflight--;
     int i = g_pub.n++;
     if (i < 48) {
         cb_strlcpy(g_pub.topic[i], topic, sizeof g_pub.topic[0]);
@@ -177,6 +196,7 @@ static void a_fanout_overlaps(void) {
     f.spectator_cast = spec;
     f.spectator_cast_len = sizeof spec;
     g_pub.wait_ms = WAIT;
+    g_pub.gather = 3;
     int64_t t0 = cb_mono_ms();
     cb_fanout_publish(&g_ctx, &f);
     int64_t took = cb_mono_ms() - t0;
@@ -189,9 +209,9 @@ static void a_fanout_overlaps(void) {
     T_CHECK(g_pub.end_ms[va] <= g_pub.start_ms[ca]);
     T_CHECK(g_pub.end_ms[vb] <= g_pub.start_ms[cb]);
     T_CHECK(pthread_equal(g_pub.thread[va], g_pub.thread[ca]));
-    // Three lanes at once: two publishes' time and some, never five.
+    // Three lanes at once (never more): each lane's two publishes in turn, so two publishes' time at least.
     T_CHECK(took >= 2 * WAIT);
-    T_CHECK(took < 4 * WAIT);
+    T_EQ_INT(g_pub.peak, 3);
     T_CHECK(!pthread_equal(g_pub.thread[va], g_pub.thread[vb]));
     T_CHECK(!pthread_equal(g_pub.thread[sp], g_pub.thread[va]) && !pthread_equal(g_pub.thread[sp], g_pub.thread[vb]));
 
@@ -219,12 +239,11 @@ static void a_fanout_overlaps(void) {
     }
     f.n_left = CB_MAX_SEATS;
     g_pub.wait_ms = 20;
-    t0 = cb_mono_ms();
+    g_pub.gather = 2 * CB_MAX_SEATS + 1;
     cb_fanout_publish(&g_ctx, &f);
-    took = cb_mono_ms() - t0;
     T_EQ_INT(g_pub.n, 3 * CB_MAX_SEATS + 1);
     T_EQ_INT(cb_rt_failures_take(), 0);
-    T_CHECK(took < 6 * 20);   // 17 lanes at once: a view and a cast each at most
+    T_EQ_INT(g_pub.peak, 2 * CB_MAX_SEATS + 1);   // 17 lanes at once: a view and a cast each at most
     char t[128];
     snprintf(t, sizeof t, "u/%s/v", ids[CB_MAX_SEATS]);
     T_CHECK(published_at(t) >= 0);
