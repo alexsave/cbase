@@ -27,11 +27,11 @@ static bool copy(char *dst, size_t cap, const char *name, const char *v, char *e
 }
 
 // THE THREADS (OPTIMIZED_DESIGN.md step 10): serve is the loop, ONE request worker and one job
-// worker by default. A move runs on the loop; the request worker is the tables' thread (what would
-// block the loop: a read or write of the tables, a sign-in's hash, a move whose game is locked),
-// and the job worker the compute thread (the bots' drives and the finished games' replays). A
-// second request worker only contended for the store's one writer and the allocator; a box that
-// wants more says so (CBASE_REQ_WORKERS), and nothing is sized from the CPUs the process sees.
+// worker by default. An inline route runs on the loop; the request worker is the tables' thread
+// (what would block the loop: a read or write of the store, a password's hash, a document whose lock
+// another thread holds), and the job worker the compute thread (the app's jobs). A second request
+// worker only contended for the store's one writer and the allocator; a box that wants more says
+// so (CBASE_REQ_WORKERS), and nothing is sized from the CPUs the process sees.
 #define REQ_WORKERS_DEFAULT 1
 
 static bool num(const char *name, long dflt, long lo, long hi, long *out, char *err, size_t ecap) {
