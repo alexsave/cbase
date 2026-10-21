@@ -920,9 +920,12 @@ static void sweep(cb_loop *l, void *ud) {
         if (c->state == C_WS) {
             // Liveness is the WebSocket's own: a PING to a peer that has said nothing for
             // ws_ping_ms (a browser answers with a PONG by itself), and the close of one
-            // that said nothing for ws_idle_ms, a PONG included.
-            if (now - c->last_active > s->o.ws_idle_ms) cb_ws_close(c, 1001);
-            else if (!c->ping_sent && !c->closing && now - c->last_active > s->o.ws_ping_ms) {
+            // that said nothing for ws_idle_ms, a PONG included. NEVER A CLOSE BEFORE A PING: a
+            // sweep that came late (the loop held up past ws_idle_ms) pings first, and the close
+            // waits for the next sweep, so a peer that would have answered is asked.
+            const int64_t quiet = now - c->last_active;
+            if (quiet > s->o.ws_idle_ms && (c->ping_sent || c->closing)) cb_ws_close(c, 1001);
+            else if (!c->ping_sent && !c->closing && (quiet > s->o.ws_ping_ms || quiet > s->o.ws_idle_ms)) {
                 c->ping_sent = true;
                 queue_frame(c, CB_WS_OP_PING, "", 0);
                 flush(c);

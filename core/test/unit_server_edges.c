@@ -45,6 +45,10 @@ static void h_slow(cb_ctx *c, const cb_http_req *q, cb_http_res *s) {
 }
 
 static void ws_msg(cb_ws *ws, int op, const uint8_t *d, size_t n, void *ud) {
+    if (n == 5 && memcmp(d, "stall", 5) == 0) {   // the loop held up past ws_idle_ms
+        usleep(3200000);
+        return;
+    }
     if (n == 5 && memcmp(d, "flood", 5) == 0) {
         // Past what a reader may owe: the server drops it rather than buffer forever.
         static uint8_t chunk[256 * 1024];
@@ -141,6 +145,7 @@ static void http_defences(void) {
 }
 
 static int close_code(int fd);
+static void frame(int fd, bool fin, int op, const void *data, size_t len);
 
 // A head that never ends, past the head's cap and the body's: refused before it is parsed (413),
 // or by the parser once the head alone is too long (431), and closed either way.
@@ -218,6 +223,21 @@ static void a_silent_websocket_is_pinged_then_closed(void) {
     T_EQ_INT(close_code(fd), 1001);
     cb_buf_free(&m);
     close(fd);
+}
+
+// A sweep that comes late - the loop was held up past ws_idle_ms - still pings a silent
+// WebSocket before it closes it: the close waits for the next sweep.
+static void a_late_sweep_pings_before_it_closes(void) {
+    int quiet = tc_ws_open(g_port, "/ws", NULL), staller = tc_ws_open(g_port, "/ws", NULL);
+    T_CHECK(quiet >= 0 && staller >= 0);
+    frame(staller, true, CB_WS_OP_TEXT, "stall", 5);
+    cb_buf m;
+    cb_buf_init(&m);
+    T_EQ_INT(tc_ws_recv(quiet, 6000, &m), CB_WS_OP_PING);
+    T_EQ_INT(close_code(quiet), 1001);
+    cb_buf_free(&m);
+    close(quiet);
+    close(staller);
 }
 
 static void one_connection_too_many(void) {
@@ -391,6 +411,7 @@ int main(void) {
     T_RUN(a_client_gone_mid_request);
     T_RUN(a_reset_mid_answer);
     T_RUN(a_silent_websocket_is_pinged_then_closed);
+    T_RUN(a_late_sweep_pings_before_it_closes);
     T_RUN(one_connection_too_many);
     T_RUN(websocket_rules);
     T_RUN(no_connection_no_sweep);
