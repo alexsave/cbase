@@ -128,29 +128,31 @@ static void boots_with(char *const env[], const char *says, const char *loop_wan
 
 static void the_cpu_knob_boots_or_refuses(void) {
 #if defined(__linux__)
-    // Two CPUs where the box has them (the loop on 0, the rest on 1), else both on 0.
-    const int bg = sysconf(_SC_NPROCESSORS_ONLN) >= 2 ? 1 : 0;
-    char bg_env[32], bg_list[8], says[128];
-    snprintf(bg_env, sizeof bg_env, "CBASE_BG_CPU=%d", bg);
-    snprintf(bg_list, sizeof bg_list, "%d", bg);
-    snprintf(says, sizeof says, "pinned: the loop to CPU 0, every other thread to CPU %d", bg);
-    char *pinned[] = { "CBASE_LISTEN=127.0.0.1:0", "CBASE_STORE=sqlite", "CBASE_DB=:memory:", "CBASE_DEV=1",
-                       "CBASE_LOOP_CPU=0", bg_env, NULL };
-    boots_with(pinned, says, "0", bg_list);
-    char *no_cpu[] = { "CBASE_LISTEN=127.0.0.1:0", "CBASE_STORE=sqlite", "CBASE_DB=:memory:", "CBASE_DEV=1",
-                       "CBASE_BG_CPU=1023", NULL };
-    T_CHECK(exits(g_cbase, "serve", no_cpu, 2, "CBASE_BG_CPU: CPU 1023 is not one this process may use"));
-
-    // Auto, on the CPUs this test may use: the lowest two, or nothing pinned with one.
-    char *autov[] = { "CBASE_LISTEN=127.0.0.1:0", "CBASE_STORE=sqlite", "CBASE_DB=:memory:", "CBASE_DEV=1", NULL };
+    // The CPUs this test may use (a cpuset need not hold CPU 0 or 1): the lowest two.
     cpu_set_t all, one;
     T_EQ_INT(sched_getaffinity(0, sizeof all, &all), 0);
     int low[2] = { -1, -1 }, n = 0;
     for (int i = 0; i < CPU_SETSIZE && n < 2; i++) if (CPU_ISSET(i, &all)) low[n++] = i;
-    char mine[64], lo0[8], lo1[8];
+    if (n < 2) low[1] = low[0];
+    char mine[64], lo0[8], lo1[8], says[128];
     own_cpus(mine, sizeof mine);
     snprintf(lo0, sizeof lo0, "%d", low[0]);
     snprintf(lo1, sizeof lo1, "%d", low[1]);
+
+    // By hand: the loop on the lowest, the rest on the next (both on the one there is).
+    char loop_env[32], bg_env[32];
+    snprintf(loop_env, sizeof loop_env, "CBASE_LOOP_CPU=%d", low[0]);
+    snprintf(bg_env, sizeof bg_env, "CBASE_BG_CPU=%d", low[1]);
+    snprintf(says, sizeof says, "pinned: the loop to CPU %d, every other thread to CPU %d", low[0], low[1]);
+    char *pinned[] = { "CBASE_LISTEN=127.0.0.1:0", "CBASE_STORE=sqlite", "CBASE_DB=:memory:", "CBASE_DEV=1",
+                       loop_env, bg_env, NULL };
+    boots_with(pinned, says, lo0, lo1);
+    char *no_cpu[] = { "CBASE_LISTEN=127.0.0.1:0", "CBASE_STORE=sqlite", "CBASE_DB=:memory:", "CBASE_DEV=1",
+                       "CBASE_BG_CPU=1023", NULL };
+    T_CHECK(exits(g_cbase, "serve", no_cpu, 2, "CBASE_BG_CPU: CPU 1023 is not one this process may use"));
+
+    // Auto: the lowest two, or nothing pinned with one.
+    char *autov[] = { "CBASE_LISTEN=127.0.0.1:0", "CBASE_STORE=sqlite", "CBASE_DB=:memory:", "CBASE_DEV=1", NULL };
     if (n >= 2) {
         snprintf(says, sizeof says, "pinned: the loop to CPU %d, every other thread to CPU %d (auto)", low[0], low[1]);
         boots_with(autov, says, lo0, lo1);
