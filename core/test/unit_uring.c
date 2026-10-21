@@ -7,6 +7,7 @@
 #include "t.h"
 
 #include "net/loop.h"
+#include "util/clock.h"
 #include "util/err.h"
 #include "util/log.h"
 
@@ -147,6 +148,32 @@ static void batched_sends_report_what_send_would(void) {
     cb_loop_use_uring(false);
 }
 
+// A send's result is the loop's at once: a pass that queued sends waits for their completions and
+// no more, so what the result asks for next (a close after a last answer, the rest of a partial
+// send) does not wait for the next event or timer. Here none comes for two seconds.
+static int64_t g_sent_at;
+static void sent_at(cb_loop *l, void *ud, long res) { g_sent_at = cb_mono_ms(); }
+static void queue_one(cb_loop *l, void *ud) { T_CHECK(cb_loop_send(l, *(int *)ud, "x", 1, sent_at, NULL) != 0); }
+static void a_send_result_does_not_wait_for_another_event(void) {
+    if (!g_uring) return;
+    cb_loop_use_uring(true);
+    cb_loop *l = cb_loop_new();
+    int sv[2];
+    T_EQ_INT(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
+    fcntl(sv[0], F_SETFL, O_NONBLOCK);
+    g_sent_at = 0;
+    const int64_t t0 = cb_mono_ms();
+    cb_loop_timer(l, 0, queue_one, &sv[0]);
+    cb_loop_timer(l, 2000, giveup, NULL);
+    cb_loop_run(l);
+    T_CHECK(g_sent_at > 0);
+    T_CHECK(g_sent_at - t0 < 1000);   // not at the two seconds' timer
+    close(sv[0]);
+    close(sv[1]);
+    cb_loop_free(l);
+    cb_loop_use_uring(false);
+}
+
 // A send to a peer that is gone answers -EPIPE (as send(2) with MSG_NOSIGNAL); more sends in one pass
 // than the submission queue holds are refused past it (cb_loop_send answers 0: the caller sends
 // another way).
@@ -234,6 +261,7 @@ int main(void) {
     T_RUN(backend_is_said);
     T_RUN(readiness_is_level_triggered);
     T_RUN(batched_sends_report_what_send_would);
+    T_RUN(a_send_result_does_not_wait_for_another_event);
     T_RUN(a_gone_peer_and_a_full_queue);
     T_RUN(more_watches_than_the_ring_holds);
     return T_DONE();

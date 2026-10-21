@@ -233,14 +233,17 @@ static int ur_wait(cb_poller *p, cb_poll_ev *out, int max, int timeout_ms) {
         e->armed = true;
     }
     p->n_to_arm = 0;
-    // One enter: this pass's sends and arms handed over, and a wait for one event beyond the sends'
-    // own completions (they never wait for room, so they are all in by then). Nothing waits while
-    // events read before are still to be returned.
+    // One enter: this pass's sends and arms handed over. A pass that queued sends waits for their
+    // completions and no more: what a send's result asks for next (a close after a last answer, the
+    // rest of a partial send, a WebSocket upgrade) is the loop's to do now, and waiting for one more
+    // event besides would hold it until the next event or timer came, a second away when the peer
+    // has nothing more to say. A pass with no sends waits for one event. Nothing waits while events
+    // read before are still to be returned.
     const unsigned sends = p->sends_queued;
     p->sends_out += sends;
     p->sends_queued = 0;
     const bool have = p->at_ready < p->n_ready;
-    if (cb_uring_enter(p->ur, have ? 0 : sends + 1, have ? 0 : timeout_ms) < 0) return -1;
+    if (cb_uring_enter(p->ur, have ? 0 : sends ? sends : 1, have ? 0 : timeout_ms) < 0) return -1;
     ur_reap(p);
     // A send the kernel did not finish within the enter (none should: they never wait) is waited
     // for here, so no sent buffer is in the kernel's hands when the caller moves on.
