@@ -20,13 +20,18 @@
 # provider, SQLite and its own MQTT hub), static on musl, for a plain Linux
 # arm64 host (an EC2 t4g.nano). CI publishes it (.github/workflows/c_base.yml,
 # the serve_binary job).
+#
+# `build_bootstrap.sh replay-v11` builds dist/cbase-replay-v11-linux-arm64 the
+# same way: the one-time replay transcode (foolish/server/migrate/replay_v11.c)
+# for the cbase-vm instance. THROWAWAY, deleted with the tool.
 set -euo pipefail
 
 what="${1:-bootstrap}"
 case "$what" in
   bootstrap) target=build/bootstrap ;;
   serve) target=build/cbase ;;
-  *) echo "usage: build_bootstrap.sh [bootstrap|serve]" >&2; exit 2 ;;
+  replay-v11) target=build/cbase-replay-v11 ;;
+  *) echo "usage: build_bootstrap.sh [bootstrap|serve|replay-v11]" >&2; exit 2 ;;
 esac
 
 IMAGE="alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6"
@@ -59,17 +64,23 @@ docker run --rm --platform linux/arm64 --cpus="$cpus" -e JOBS="$cpus" -e TARGET=
       strip -o /out/cbase-serve-linux-arm64 "$TARGET"
       exit 0
     fi
+    if [ "$WHAT" = replay-v11 ]; then
+      strip -o /out/cbase-replay-v11-linux-arm64 "$TARGET"
+      exit 0
+    fi
     strip -o /out/bootstrap build/bootstrap
     cd /out
     touch -t 202601010000 bootstrap
     rm -f bootstrap.zip
     TZ=UTC zip -q -X bootstrap.zip bootstrap
   '
-if [ "$what" = serve ]; then
-  bin="$here/dist/cbase-serve-linux-arm64"
+if [ "$what" = serve ] || [ "$what" = replay-v11 ]; then
+  name="cbase-serve-linux-arm64"
+  [ "$what" = replay-v11 ] && name="cbase-replay-v11-linux-arm64"
+  bin="$here/dist/$name"
   if command -v sha256sum >/dev/null 2>&1; then sum="$(sha256sum "$bin" | awk '{print $1}')"
   else sum="$(shasum -a 256 "$bin" | awk '{print $1}')"; fi
-  echo "$sum  cbase-serve-linux-arm64" > "$bin.sha256"
+  echo "$sum  $name" > "$bin.sha256"
   file "$bin" 2>/dev/null || true
   ls -l "$bin"
   cat "$bin.sha256"
