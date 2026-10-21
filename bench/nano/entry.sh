@@ -6,6 +6,12 @@ mkdir -p /data; mountpoint -q /data || mount -o loop /data.img /data
 mkdir -p /data/cbase
 export CBASE_STORE=sqlite CBASE_DB=/data/cbase/cbase.sqlite CBASE_LISTEN=0.0.0.0:8080 CBASE_LOG_LEVEL=${CBASE_LOG_LEVEL:-info}
 cp -f /nano/bin/${CBASE_BIN:-cbase-serve-linux-arm64} /usr/local/bin/cbase
+# The rig runs unpinned unless XENV pins (-e CBASE_LOOP_CPU=0 -e CBASE_BG_CPU=1), so its numbers
+# compare with every pass before the CPU knob defaulted to auto. A binary from before that is
+# unpinned when unset and refuses `off`, so only a binary that knows auto is given `off`.
+if grep -qa 'auto, picked at start' /usr/local/bin/cbase; then
+  export CBASE_LOOP_CPU=${CBASE_LOOP_CPU:-off} CBASE_BG_CPU=${CBASE_BG_CPU:-off}
+fi
 while :; do
 echo "boot $(date -u +%FT%TZ.%N)" >> /data/boots.log
 LD_PRELOAD=${CBASE_PRELOAD:-} /usr/local/bin/cbase serve >> /data/server.log 2>&1 &

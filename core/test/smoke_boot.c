@@ -70,10 +70,13 @@ static void cbase_refuses(void) {
 }
 
 // THE SATURATION KNOB (util/affinity.h): where threads can be pinned, serve pins its loop and
-// every other thread, says so, serves and stops as ever, and refuses a CPU it may not use;
-// elsewhere it refuses the knob before it starts anything.
+// every other thread, says so, serves and stops as ever, and refuses a CPU it may not use. Unset,
+// the knob is auto: with two CPUs or more the loop takes the lowest and every other thread the
+// next; with one it pins nothing and still boots; `off` pins nothing. Elsewhere serve refuses a
+// CPU given by number before it starts anything, and auto or `off` boot unpinned.
 #if defined(__linux__)
 #include <dirent.h>
+#include <sched.h>
 // Each of the child's threads' allowed CPUs (/proc/<pid>/task/<tid>/status Cpus_allowed_list):
 // how many threads say exactly `want`, and how many in all; the main thread (the loop) apart.
 static void threads_on(pid_t pid, const char *loop_want, const char *bg_want, int *loop_ok, int *bg_ok, int *bg_all) {
@@ -94,35 +97,95 @@ static void threads_on(pid_t pid, const char *loop_want, const char *bg_want, in
     }
     if (d) closedir(d);
 }
+
+// This thread's own Cpus_allowed_list ("0-3"): what an unpinned child's threads all show.
+static void own_cpus(char *out, size_t cap) {
+    char line[256];
+    FILE *f = fopen("/proc/thread-self/status", "r");
+    out[0] = 0;
+    while (f && fgets(line, sizeof line, f))
+        if (sscanf(line, "Cpus_allowed_list: %63s", out) == 1) break;
+    if (f) fclose(f);
+}
+
+// Starts serve with `env`, waits for `says` and then for it to listen, and checks every thread:
+// the loop on `loop_want`, the two or more others on `bg_want`. Stops it with SIGTERM, cleanly.
+static void boots_with(char *const env[], const char *says, const char *loop_want, const char *bg_want) {
+    tp_child c;
+    char *argv[] = { (char *)g_cbase, "serve", NULL };
+    T_EQ_INT(tp_start(&c, argv, env), 0);
+    T_EQ_INT(tp_wait_line(&c, says, 15000, NULL, 0), 0);
+    T_EQ_INT(tp_wait_line(&c, "listening on", 15000, NULL, 0), 0);
+    int loop_ok, bg_ok, bg_all;
+    threads_on(c.pid, loop_want, bg_want, &loop_ok, &bg_ok, &bg_all);
+    if (!loop_ok || bg_ok != bg_all) fprintf(stderr, "     want the loop on %s and %d threads on %s: loop %s, %d of them\n",
+                                             loop_want, bg_all, bg_want, loop_ok ? "yes" : "no", bg_ok);
+    T_CHECK(loop_ok);                          // the loop (the main thread) on its CPU
+    T_CHECK(bg_all >= 2 && bg_ok == bg_all);   // the pools' workers and the rest on theirs
+    T_EQ_INT(tp_stop(&c, SIGTERM, 15000), 0);
+}
 #endif
 
 static void the_cpu_knob_boots_or_refuses(void) {
 #if defined(__linux__)
     // Two CPUs where the box has them (the loop on 0, the rest on 1), else both on 0.
     const int bg = sysconf(_SC_NPROCESSORS_ONLN) >= 2 ? 1 : 0;
-    char bg_env[32], bg_list[8], says[96];
+    char bg_env[32], bg_list[8], says[128];
     snprintf(bg_env, sizeof bg_env, "CBASE_BG_CPU=%d", bg);
     snprintf(bg_list, sizeof bg_list, "%d", bg);
     snprintf(says, sizeof says, "pinned: the loop to CPU 0, every other thread to CPU %d", bg);
     char *pinned[] = { "CBASE_LISTEN=127.0.0.1:0", "CBASE_STORE=sqlite", "CBASE_DB=:memory:", "CBASE_DEV=1",
                        "CBASE_LOOP_CPU=0", bg_env, NULL };
-    tp_child c;
-    char *argv[] = { (char *)g_cbase, "serve", NULL };
-    T_EQ_INT(tp_start(&c, argv, pinned), 0);
-    T_EQ_INT(tp_wait_line(&c, says, 15000, NULL, 0), 0);
-    T_EQ_INT(tp_wait_line(&c, "listening on", 15000, NULL, 0), 0);
-    int loop_ok, bg_ok, bg_all;
-    threads_on(c.pid, "0", bg_list, &loop_ok, &bg_ok, &bg_all);
-    T_CHECK(loop_ok);                       // the loop (the main thread) on its CPU
-    T_CHECK(bg_all >= 2 && bg_ok == bg_all);   // the pools' workers and the rest on theirs
-    T_EQ_INT(tp_stop(&c, SIGTERM, 15000), 0);
+    boots_with(pinned, says, "0", bg_list);
     char *no_cpu[] = { "CBASE_LISTEN=127.0.0.1:0", "CBASE_STORE=sqlite", "CBASE_DB=:memory:", "CBASE_DEV=1",
                        "CBASE_BG_CPU=1023", NULL };
     T_CHECK(exits(g_cbase, "serve", no_cpu, 2, "CBASE_BG_CPU: CPU 1023 is not one this process may use"));
+
+    // Auto, on the CPUs this test may use: the lowest two, or nothing pinned with one.
+    char *autov[] = { "CBASE_LISTEN=127.0.0.1:0", "CBASE_STORE=sqlite", "CBASE_DB=:memory:", "CBASE_DEV=1", NULL };
+    cpu_set_t all, one;
+    T_EQ_INT(sched_getaffinity(0, sizeof all, &all), 0);
+    int low[2] = { -1, -1 }, n = 0;
+    for (int i = 0; i < CPU_SETSIZE && n < 2; i++) if (CPU_ISSET(i, &all)) low[n++] = i;
+    char mine[64], lo0[8], lo1[8];
+    own_cpus(mine, sizeof mine);
+    snprintf(lo0, sizeof lo0, "%d", low[0]);
+    snprintf(lo1, sizeof lo1, "%d", low[1]);
+    if (n >= 2) {
+        snprintf(says, sizeof says, "pinned: the loop to CPU %d, every other thread to CPU %d (auto)", low[0], low[1]);
+        boots_with(autov, says, lo0, lo1);
+    } else {
+        boots_with(autov, "CPU knob auto: this process may use 1 CPU, so nothing is pinned", mine, mine);
+    }
+    // Auto with one CPU (as `taskset -c <lowest>` starts it; the child inherits this thread's mask):
+    // nothing to pin, and it boots.
+    CPU_ZERO(&one);
+    CPU_SET(low[0], &one);
+    T_EQ_INT(sched_setaffinity(0, sizeof one, &one), 0);
+    boots_with(autov, "CPU knob auto: this process may use 1 CPU, so nothing is pinned", lo0, lo0);
+    T_EQ_INT(sched_setaffinity(0, sizeof all, &all), 0);
+    // Off: nothing pinned, every thread on every CPU this test may use.
+    char *off[] = { "CBASE_LISTEN=127.0.0.1:0", "CBASE_STORE=sqlite", "CBASE_DB=:memory:", "CBASE_DEV=1",
+                    "CBASE_LOOP_CPU=off", "CBASE_BG_CPU=off", NULL };
+    boots_with(off, "CBASE_BG_CPU=off (not pinned)", mine, mine);
 #else
     char *pinned[] = { "CBASE_LISTEN=127.0.0.1:0", "CBASE_STORE=sqlite", "CBASE_DB=:memory:", "CBASE_DEV=1",
                        "CBASE_LOOP_CPU=0", NULL };
     T_CHECK(exits(g_cbase, "serve", pinned, 2, "needs Linux"));
+    // Auto and off cost no start here: auto says once why nothing is pinned, and both serve.
+    char *argv[] = { (char *)g_cbase, "serve", NULL };
+    char *autov[] = { "CBASE_LISTEN=127.0.0.1:0", "CBASE_STORE=sqlite", "CBASE_DB=:memory:", "CBASE_DEV=1", NULL };
+    char *off[] = { "CBASE_LISTEN=127.0.0.1:0", "CBASE_STORE=sqlite", "CBASE_DB=:memory:", "CBASE_DEV=1",
+                    "CBASE_LOOP_CPU=off", "CBASE_BG_CPU=off", NULL };
+    tp_child c;
+    T_EQ_INT(tp_start(&c, argv, autov), 0);
+    T_EQ_INT(tp_wait_line(&c, "CPU knob auto: picking CPUs needs Linux, so nothing is pinned", 15000, NULL, 0), 0);
+    T_EQ_INT(tp_wait_line(&c, "listening on", 15000, NULL, 0), 0);
+    T_EQ_INT(tp_stop(&c, SIGTERM, 15000), 0);
+    T_EQ_INT(tp_start(&c, argv, off), 0);
+    T_EQ_INT(tp_wait_line(&c, "CBASE_LOOP_CPU=off (not pinned)", 15000, NULL, 0), 0);
+    T_EQ_INT(tp_wait_line(&c, "listening on", 15000, NULL, 0), 0);
+    T_EQ_INT(tp_stop(&c, SIGTERM, 15000), 0);
 #endif
 }
 

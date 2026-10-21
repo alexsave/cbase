@@ -47,6 +47,25 @@ int cb_affinity_count(void) {
     return pthread_getaffinity_np(pthread_self(), sizeof m, &m) == 0 ? CPU_COUNT(&m) : -1;
 }
 
+int cb_affinity_pick(int *loop_cpu, int *bg_cpu, char *err, size_t cap) {
+    *loop_cpu = *bg_cpu = -1;
+    cpu_set_t m;
+    if (pthread_getaffinity_np(pthread_self(), sizeof m, &m) != 0) {
+        snprintf(err, cap, "the thread's CPUs cannot be read");
+        return CB_E_INVALID;
+    }
+    int got[2], n = 0;
+    for (int i = 0; i < CPU_SETSIZE && n < 2; i++)
+        if (CPU_ISSET(i, &m)) got[n++] = i;
+    if (n < 2) {
+        snprintf(err, cap, "this process may use %d CPU", n);
+        return CB_E_INVALID;
+    }
+    *loop_cpu = got[0];
+    *bg_cpu = got[1];
+    return CB_OK;
+}
+
 #else
 
 bool cb_affinity_supported(void) { return false; }
@@ -57,5 +76,11 @@ int cb_affinity_pin(int cpu, char *err, size_t cap) {
 }
 
 int cb_affinity_count(void) { return -1; }
+
+int cb_affinity_pick(int *loop_cpu, int *bg_cpu, char *err, size_t cap) {
+    *loop_cpu = *bg_cpu = -1;
+    snprintf(err, cap, "picking CPUs needs Linux");
+    return CB_E_NOTIMPL;
+}
 
 #endif

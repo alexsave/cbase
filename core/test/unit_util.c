@@ -294,21 +294,45 @@ static void *child_where(void *ud) {
 #endif
 static void affinity_pins_and_unpins(void) {
     char err[128] = "";
+    int lc = 7, bc = 7;
     if (!cb_affinity_supported()) {
         T_EQ_INT(cb_affinity_pin(0, err, sizeof err), CB_E_NOTIMPL);
         T_CHECK(strstr(err, "needs Linux") != NULL);
         T_EQ_INT(cb_affinity_count(), -1);
+        err[0] = 0;
+        T_EQ_INT(cb_affinity_pick(&lc, &bc, err, sizeof err), CB_E_NOTIMPL);
+        T_CHECK(strstr(err, "needs Linux") != NULL);
+        T_EQ_INT(lc, -1);
+        T_EQ_INT(bc, -1);
         return;
     }
 #if defined(__linux__)
     const int all = cb_affinity_count();
     T_CHECK(all >= 1);
-    int cpu = -1;
+    int cpu = -1, lowest[2] = { -1, -1 }, nl = 0;
     cpu_set_t m;
     T_EQ_INT(pthread_getaffinity_np(pthread_self(), sizeof m, &m), 0);
     for (int i = CPU_SETSIZE - 1; i >= 0; i--) if (CPU_ISSET(i, &m)) { cpu = i; break; }   // the highest allowed: not always 0
+    for (int i = 0; i < CPU_SETSIZE && nl < 2; i++) if (CPU_ISSET(i, &m)) lowest[nl++] = i;
+    // The automatic choice on the whole mask: its two lowest CPUs, the loop's first; with one, none.
+    if (all >= 2) {
+        T_EQ_INT(cb_affinity_pick(&lc, &bc, err, sizeof err), CB_OK);
+        T_EQ_INT(lc, lowest[0]);
+        T_EQ_INT(bc, lowest[1]);
+    } else {
+        T_EQ_INT(cb_affinity_pick(&lc, &bc, err, sizeof err), CB_E_INVALID);
+        T_EQ_INT(lc, -1);
+    }
+    T_EQ_INT(cb_affinity_count(), all);   // picking pins nothing
     T_EQ_INT(cb_affinity_pin(cpu, err, sizeof err), CB_OK);
     T_EQ_INT(cb_affinity_count(), 1);
+    // One CPU left to this thread: nothing to pick, and it says so.
+    lc = bc = 7;
+    err[0] = 0;
+    T_EQ_INT(cb_affinity_pick(&lc, &bc, err, sizeof err), CB_E_INVALID);
+    T_EQ_STR(err, "this process may use 1 CPU");
+    T_EQ_INT(lc, -1);
+    T_EQ_INT(bc, -1);
     sched_yield();
     T_EQ_INT(sched_getcpu(), cpu);
     pthread_t th;

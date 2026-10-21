@@ -47,6 +47,21 @@ static bool num(const char *name, long dflt, long lo, long hi, long *out, char *
     return true;
 }
 
+// One of the saturation knob's two variables: unset is CB_CPU_AUTO, `off` CB_CPU_OFF, else a CPU
+// number (a negative one is refused: -1 spells nothing, `off` does).
+static bool cpu(const char *name, int *out, char *err, size_t ecap) {
+    const char *v = getenv(name);
+    if (!v || !*v) { *out = CB_CPU_AUTO; return true; }
+    if (strcmp(v, "off") == 0) { *out = CB_CPU_OFF; return true; }
+    int64_t x;
+    if (!num_parse_i64_cstr(v, 0, 1023, &x)) {
+        snprintf(err, ecap, "%s=%s is not off or a CPU number in 0..1023", name, v);
+        return false;
+    }
+    *out = (int)x;
+    return true;
+}
+
 static int check_lengths(const cb_config *c, char *err, size_t cap);
 
 // The rate limits' bursts, one setting each, in cb_limit_kind order
@@ -131,11 +146,14 @@ int cb_config_from_env(cb_config *c, char *err, size_t cap) {
     c->req_workers = (int)v;
     if (!num("CBASE_BOT_WORKERS", 1, 1, 64, &v, err, cap)) return CB_E_INVALID;
     c->bot_workers = (int)v;
-    // THE SATURATION KNOB (util/affinity.h): unset by default, and then nothing is pinned.
-    if (!num("CBASE_LOOP_CPU", -1, 0, 1023, &v, err, cap)) return CB_E_INVALID;
-    c->loop_cpu = (int)v;
-    if (!num("CBASE_BG_CPU", -1, 0, 1023, &v, err, cap)) return CB_E_INVALID;
-    c->bg_cpu = (int)v;
+    // THE SATURATION KNOB (util/affinity.h): automatic by default (both unset), by hand once either
+    // is given, and then the other, unset, is not pinned (config.h loop_cpu).
+    if (!cpu("CBASE_LOOP_CPU", &c->loop_cpu, err, cap)) return CB_E_INVALID;
+    if (!cpu("CBASE_BG_CPU", &c->bg_cpu, err, cap)) return CB_E_INVALID;
+    if ((c->loop_cpu == CB_CPU_AUTO) != (c->bg_cpu == CB_CPU_AUTO)) {
+        if (c->loop_cpu == CB_CPU_AUTO) c->loop_cpu = CB_CPU_OFF;
+        else c->bg_cpu = CB_CPU_OFF;
+    }
     if (!num("CBASE_MAX_BODY", 1L << 20, 1024, 64L << 20, &v, err, cap)) return CB_E_INVALID;
     c->max_body = v;
     if (!num("CBASE_JWT_TTL", 3600, 60, 86400 * 7, &v, err, cap)) return CB_E_INVALID;
@@ -172,6 +190,13 @@ int cb_config_from_env(cb_config *c, char *err, size_t cap) {
     return check_lengths(c, err, cap);
 }
 
+// How cb_config_each shows one of the knob's CPUs: `number` is its value printed.
+static const char *cpu_shown(int v, const char *number) {
+    if (v == CB_CPU_AUTO) return "(unset: auto, picked at start)";
+    if (v == CB_CPU_OFF) return "off (not pinned)";
+    return number;
+}
+
 void cb_config_each(const cb_config *c, cb_config_fn fn, void *ud) {
     char b[96];
     snprintf(b, sizeof b, "%s:%d", c->listen_host, c->listen_port);
@@ -192,10 +217,9 @@ void cb_config_each(const cb_config *c, cb_config_fn fn, void *ud) {
     snprintf(b, sizeof b, "%d", c->bot_workers);
     fn("CBASE_BOT_WORKERS", b, false, ud);
     snprintf(b, sizeof b, "%d", c->loop_cpu);
-    fn("CBASE_LOOP_CPU", c->loop_cpu < 0 ? "(unset: not pinned)" : b, false, ud);
-    char bg[16];
-    snprintf(bg, sizeof bg, "%d", c->bg_cpu);
-    fn("CBASE_BG_CPU", c->bg_cpu < 0 ? "(unset: not pinned)" : bg, false, ud);
+    fn("CBASE_LOOP_CPU", cpu_shown(c->loop_cpu, b), false, ud);
+    snprintf(b, sizeof b, "%d", c->bg_cpu);
+    fn("CBASE_BG_CPU", cpu_shown(c->bg_cpu, b), false, ud);
     snprintf(b, sizeof b, "%ld", c->max_body);
     fn("CBASE_MAX_BODY", b, false, ud);
     snprintf(b, sizeof b, "%d", c->jwt_ttl_s);
@@ -249,6 +273,7 @@ int cb_config_check_secrets(const cb_config *c, bool lambda, char *err, size_t c
 int cb_config_check_serve(const cb_config *c, char *err, size_t cap) {
     int rc = cb_config_check_secrets(c, false, err, cap);
     if (rc != CB_OK) return rc;
+    // Only a CPU given by number is refused where threads cannot be pinned; auto pins nothing there.
     if ((c->loop_cpu >= 0 || c->bg_cpu >= 0) && !cb_affinity_supported()) {
         snprintf(err, cap, "CBASE_LOOP_CPU and CBASE_BG_CPU pin threads, which needs Linux");
         return CB_E_INVALID;

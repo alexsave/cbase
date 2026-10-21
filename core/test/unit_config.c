@@ -177,8 +177,25 @@ static void one_instance_per_database(void) {
     T_CHECK(system(rm) == 0);
 }
 
-// THE SATURATION KNOB: unset by default (nothing pinned), a CPU number when set, refused out of
-// range, and refused by serve where threads cannot be pinned.
+// cb_config_each's line for `name`.
+typedef struct { const char *name; char value[64]; } shown_one;
+static void show_one(const char *name, const char *value, bool secret, void *ud) {
+    (void)secret;
+    shown_one *s = ud;
+    if (strcmp(name, s->name) == 0) snprintf(s->value, sizeof s->value, "%s", value);
+}
+static const char *shown(const cb_config *c, const char *name) {
+    static shown_one s;
+    s.name = name;
+    s.value[0] = 0;
+    cb_config_each(c, show_one, &s);
+    return s.value;
+}
+
+// THE SATURATION KNOB, three spellings: unset is auto (serve picks at start, and it is never
+// refused, Linux or not), `off` is not pinned, a CPU number pins by hand and is refused out of range
+// and by serve where threads cannot be pinned. Either given takes the knob by hand, so the other,
+// unset, is off.
 static void the_cpu_knob(void) {
     cb_config c;
     char err[256];
@@ -187,9 +204,35 @@ static void the_cpu_knob(void) {
     unsetenv("CBASE_BG_CPU");
     setenv("CBASE_DEV", "1", 1);
     T_EQ_INT(cb_config_from_env(&c, err, sizeof err), CB_OK);
-    T_EQ_INT(c.loop_cpu, -1);
-    T_EQ_INT(c.bg_cpu, -1);
+    T_EQ_INT(c.loop_cpu, CB_CPU_AUTO);
+    T_EQ_INT(c.bg_cpu, CB_CPU_AUTO);
     T_EQ_INT(cb_config_check_serve(&c, err, sizeof err), CB_OK);
+    T_EQ_STR(shown(&c, "CBASE_LOOP_CPU"), "(unset: auto, picked at start)");
+    T_EQ_STR(shown(&c, "CBASE_BG_CPU"), "(unset: auto, picked at start)");
+    setenv("CBASE_LOOP_CPU", "", 1);   // empty is unset, as for every variable
+    T_EQ_INT(cb_config_from_env(&c, err, sizeof err), CB_OK);
+    T_EQ_INT(c.loop_cpu, CB_CPU_AUTO);
+    setenv("CBASE_LOOP_CPU", "off", 1);
+    setenv("CBASE_BG_CPU", "off", 1);
+    T_EQ_INT(cb_config_from_env(&c, err, sizeof err), CB_OK);
+    T_EQ_INT(c.loop_cpu, CB_CPU_OFF);
+    T_EQ_INT(c.bg_cpu, CB_CPU_OFF);
+    T_EQ_INT(cb_config_check_serve(&c, err, sizeof err), CB_OK);
+    T_EQ_STR(shown(&c, "CBASE_LOOP_CPU"), "off (not pinned)");
+    T_EQ_STR(shown(&c, "CBASE_BG_CPU"), "off (not pinned)");
+    unsetenv("CBASE_BG_CPU");          // one given: the other, unset, is off, not auto
+    T_EQ_INT(cb_config_from_env(&c, err, sizeof err), CB_OK);
+    T_EQ_INT(c.loop_cpu, CB_CPU_OFF);
+    T_EQ_INT(c.bg_cpu, CB_CPU_OFF);
+    unsetenv("CBASE_LOOP_CPU");
+    setenv("CBASE_BG_CPU", "3", 1);
+    T_EQ_INT(cb_config_from_env(&c, err, sizeof err), CB_OK);
+    T_EQ_INT(c.loop_cpu, CB_CPU_OFF);
+    T_EQ_INT(c.bg_cpu, 3);
+    T_EQ_STR(shown(&c, "CBASE_BG_CPU"), "3");
+    setenv("CBASE_LOOP_CPU", "OFF", 1);   // the one word, exactly
+    T_EQ_INT(cb_config_from_env(&c, err, sizeof err), CB_E_INVALID);
+    T_CHECK(strstr(err, "CBASE_LOOP_CPU=OFF is not off or a CPU number") != NULL);
     setenv("CBASE_LOOP_CPU", "0", 1);
     setenv("CBASE_BG_CPU", "1", 1);
     T_EQ_INT(cb_config_from_env(&c, err, sizeof err), CB_OK);

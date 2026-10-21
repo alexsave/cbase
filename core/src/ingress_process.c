@@ -137,9 +137,19 @@ int cb_process_main(const cb_provider *prov, const cb_app *app, int argc, char *
     // THE SATURATION KNOB (util/affinity.h): this thread takes the background CPU before it starts
     // any other, so every pool worker, the journal's flush thread and the store's checkpointer
     // start there; it takes the loop's CPU (or its own mask back) just before it becomes the loop.
-    if (cfg.bg_cpu >= 0 && cb_affinity_pin(cfg.bg_cpu, err, sizeof err) != CB_OK) {
-        fprintf(stderr, "cbase: CBASE_BG_CPU: %s\n", err);
-        return 2;
+    // Auto (both unset) picks the two CPUs first, and never costs a start: where it cannot pick or
+    // pin, it says so once and nothing is pinned. A CPU given by number that cannot be had exits 2.
+    const bool cpu_auto = cfg.loop_cpu == CB_CPU_AUTO;   // config.c: both auto or neither
+    int loop_cpu = cfg.loop_cpu, bg_cpu = cfg.bg_cpu;
+    if (cpu_auto && cb_affinity_pick(&loop_cpu, &bg_cpu, err, sizeof err) != CB_OK)
+        CB_INFO("serve", "CPU knob auto: %s, so nothing is pinned", err);
+    if (bg_cpu >= 0 && cb_affinity_pin(bg_cpu, err, sizeof err) != CB_OK) {
+        if (!cpu_auto) {
+            fprintf(stderr, "cbase: CBASE_BG_CPU: %s\n", err);
+            return 2;
+        }
+        CB_WARN("serve", "CPU knob auto: %s, so nothing is pinned", err);
+        loop_cpu = bg_cpu = CB_CPU_OFF;
     }
     cb_loop_use_uring(cfg.io_uring);
     ctx.loop = cb_loop_new();
@@ -190,15 +200,20 @@ int cb_process_main(const cb_provider *prov, const cb_app *app, int argc, char *
     }
 
     if (prov->serve_start) prov->serve_start(&ctx);
-    if ((cfg.loop_cpu >= 0 || cfg.bg_cpu >= 0) && cb_affinity_pin(cfg.loop_cpu, err, sizeof err) != CB_OK) {
-        CB_ERROR("serve", "CBASE_LOOP_CPU: %s", err);
-        return 2;
+    if ((loop_cpu >= 0 || bg_cpu >= 0) && cb_affinity_pin(loop_cpu, err, sizeof err) != CB_OK) {
+        if (!cpu_auto) {
+            CB_ERROR("serve", "CBASE_LOOP_CPU: %s", err);
+            return 2;
+        }
+        // Picked from this thread's own mask a moment ago, so not expected; the loop stays put.
+        CB_WARN("serve", "CPU knob auto: the loop: %s, so it shares CPU %d", err, bg_cpu);
+        loop_cpu = bg_cpu;
     }
-    if (cfg.loop_cpu >= 0 || cfg.bg_cpu >= 0) {
+    if (loop_cpu >= 0 || bg_cpu >= 0) {
         char lc[16] = "any CPU", bc[16] = "any CPU";
-        if (cfg.loop_cpu >= 0) snprintf(lc, sizeof lc, "CPU %d", cfg.loop_cpu);
-        if (cfg.bg_cpu >= 0) snprintf(bc, sizeof bc, "CPU %d", cfg.bg_cpu);
-        CB_INFO("serve", "pinned: the loop to %s, every other thread to %s", lc, bc);
+        if (loop_cpu >= 0) snprintf(lc, sizeof lc, "CPU %d", loop_cpu);
+        if (bg_cpu >= 0) snprintf(bc, sizeof bc, "CPU %d", bg_cpu);
+        CB_INFO("serve", "pinned: the loop to %s, every other thread to %s%s", lc, bc, cpu_auto ? " (auto)" : "");
     }
     CB_INFO("serve", "listening on %s:%d (%s)", cfg.listen_host, port, cb_loop_backend(ctx.loop));
     int rc = cb_loop_run(ctx.loop);

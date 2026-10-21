@@ -133,6 +133,15 @@ static void configuration_refusals(void) {
     refused("CBASE_BOT_SPEEDUP", "+20", "is not a number in 1..100");
     refused("CBASE_BOT_SPEEDUP", "20 ", "is not a number in 1..100");
     refused("CBASE_BOT_SPEEDUP", "99999999999999999999", "is not a number in 1..100");
+    // The saturation knob: off, a CPU number, or unset (auto); nothing else is a spelling of either.
+    refused("CBASE_LOOP_CPU", "-1", "CBASE_LOOP_CPU=-1 is not off or a CPU number in 0..1023");
+    refused("CBASE_LOOP_CPU", "-2", "is not off or a CPU number");
+    refused("CBASE_BG_CPU", "1024", "CBASE_BG_CPU=1024 is not off or a CPU number in 0..1023");
+    refused("CBASE_BG_CPU", "auto", "is not off or a CPU number");
+    refused("CBASE_BG_CPU", "off ", "is not off or a CPU number");
+    refused("CBASE_LOOP_CPU", "of", "is not off or a CPU number");
+    refused("CBASE_LOOP_CPU", "offf", "is not off or a CPU number");
+    refused("CBASE_LOOP_CPU", "0x1", "is not off or a CPU number");
 
     // Nothing set: three threads beside the journal's and the store's own (config.c THE THREADS),
     // whatever the CPUs.

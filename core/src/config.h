@@ -15,6 +15,10 @@
 #define CB_CONFIG_LIMITS 10   // the settable rate limits (rate_limits.h, all but the admin one)
 extern const char *const cb_config_limit_names[CB_CONFIG_LIMITS];
 
+// The saturation knob's two values that are not a CPU (cb_config.loop_cpu and bg_cpu).
+#define CB_CPU_OFF  (-1)   // not pinned
+#define CB_CPU_AUTO (-2)   // serve picks the CPU at start (cb_affinity_pick)
+
 typedef struct {
     // CBASE_LISTEN, "host:port", default 127.0.0.1:8080. Port 0 asks the OS for
     // a free one (the smoke test reads the bound port from the log line).
@@ -73,8 +77,13 @@ typedef struct {
     // Tunables, each CBASE_<NAME> with these defaults:
     int  req_workers;     // CBASE_REQ_WORKERS 1: serve's request pool (config.c THE THREADS)
     int  bot_workers;     // CBASE_BOT_WORKERS 1: serve's bot pool; see DESIGN.md "Kernel thread safety"
-    int  loop_cpu;        // CBASE_LOOP_CPU unset (-1): the CPU serve's loop is pinned to (util/affinity.h)
-    int  bg_cpu;          // CBASE_BG_CPU unset (-1): the CPU every other serve thread is pinned to
+    // THE SATURATION KNOB (util/affinity.h): CBASE_LOOP_CPU, the CPU serve's loop is pinned to, and
+    // CBASE_BG_CPU, the CPU every other serve thread is pinned to. Each is a CPU number, `off`
+    // (CB_CPU_OFF) or unset. Both unset is CB_CPU_AUTO in both: serve picks the two lowest CPUs it
+    // may use when it starts, and pins nothing where it has fewer than two or cannot pin. Either one
+    // given takes the knob by hand, and the other, if unset, is then CB_CPU_OFF.
+    int  loop_cpu;
+    int  bg_cpu;
     long max_body;        // CBASE_MAX_BODY 1048576: request body bytes
     int  jwt_ttl_s;       // CBASE_JWT_TTL 3600: access token lifetime
     int  admin_fail_limit;// CBASE_ADMIN_FAIL_LIMIT 10: wrong console tokens per address an hour (rate_limits.h)
