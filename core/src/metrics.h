@@ -1,7 +1,8 @@
 // metrics.h - THE METRICS REGISTRY: an app declares, as one static table, what it counts (a
 // name and a kind each), and the platform owns the storage, the updates, the once-a-second
-// report and the route that serves it. The machinery itself (the histogram, the rate ring,
-// the counter, the process readers) is util/metrics.h; nothing of it is copied per app.
+// report and the route that serves it. The machinery itself is shared/c's (stats/hist.h: the
+// histogram and the rate ring; proc.h: the process readers), as any helper both the apps and
+// the platform use is; nothing of it is copied per app.
 //
 //   the table      cb_metric_def defs[] = { { "act_cpu", CB_METRIC_HIST }, { "uploads", CB_METRIC_RATE }, ... }
 //                  in cb_app.metrics / n_metrics (cbase/app.h); boot makes ctx->metrics from it.
@@ -82,7 +83,7 @@ typedef struct {
     uint16_t pad;
     uint32_t index;        // its index in its table (the platform's, or the app's)
     uint64_t total;        // counter, gauge: the value; rate: events ever; hist: samples ever
-    float    per_s;        // rate: over the last whole seconds (util/metrics.h cb_rate_per_s)
+    float    per_s;        // rate: over the last whole seconds (stats/hist.h stat_rate_per_s)
     uint32_t p50, p90, p99;   // hist: bucket floors
     uint64_t max;          // hist
     char     name[CB_METRIC_NAME];   // NUL-terminated

@@ -5,7 +5,8 @@
 #include "net/router.h"
 #include "util/clock.h"
 #include "util/err.h"
-#include "util/metrics.h"
+#include "../../../shared/c/proc.h"
+#include "../../../shared/c/stats/hist.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -13,10 +14,15 @@
 
 // One metric's storage: the union of the three shapes (a counter and a gauge are one word).
 typedef union {
-    cb_counter c;
-    cb_rate    r;
-    cb_hist    h;
+    atomic_ullong c;
+    StatRate      r;
+    StatHist      h;
 } slot;
+
+static inline void     counter_add(atomic_ullong *c, uint64_t n) { atomic_fetch_add_explicit(c, n, memory_order_relaxed); }
+static inline void     counter_sub(atomic_ullong *c, uint64_t n) { atomic_fetch_sub_explicit(c, n, memory_order_relaxed); }
+static inline void     counter_set(atomic_ullong *c, uint64_t v) { atomic_store_explicit(c, v, memory_order_relaxed); }
+static inline uint64_t counter_get(const atomic_ullong *c) { return atomic_load_explicit((atomic_ullong *)c, memory_order_relaxed); }
 
 struct cb_metrics {
     const cb_metric_def *defs;
@@ -68,24 +74,24 @@ static slot *of(cb_metrics *m, int i, int k1, int k2) {
     return k == k1 || k == k2 ? &m->s[i] : NULL;
 }
 
-void cb_metrics_add(cb_metrics *m, int i, uint64_t n) { slot *s = of(m, i, CB_METRIC_COUNTER, CB_METRIC_GAUGE); if (s) cb_counter_add(&s->c, n); }
-void cb_metrics_sub(cb_metrics *m, int i, uint64_t n) { slot *s = of(m, i, CB_METRIC_GAUGE, CB_METRIC_GAUGE); if (s) cb_counter_sub(&s->c, n); }
-void cb_metrics_set(cb_metrics *m, int i, uint64_t v) { slot *s = of(m, i, CB_METRIC_GAUGE, CB_METRIC_GAUGE); if (s) cb_counter_set(&s->c, v); }
-void cb_metrics_rate(cb_metrics *m, int i, int64_t now_ms, uint64_t n) { slot *s = of(m, i, CB_METRIC_RATE, CB_METRIC_RATE); if (s) cb_rate_add(&s->r, now_ms, n); }
-void cb_metrics_observe(cb_metrics *m, int i, uint64_t v) { slot *s = of(m, i, CB_METRIC_HIST, CB_METRIC_HIST); if (s) cb_hist_add(&s->h, v); }
+void cb_metrics_add(cb_metrics *m, int i, uint64_t n) { slot *s = of(m, i, CB_METRIC_COUNTER, CB_METRIC_GAUGE); if (s) counter_add(&s->c, n); }
+void cb_metrics_sub(cb_metrics *m, int i, uint64_t n) { slot *s = of(m, i, CB_METRIC_GAUGE, CB_METRIC_GAUGE); if (s) counter_sub(&s->c, n); }
+void cb_metrics_set(cb_metrics *m, int i, uint64_t v) { slot *s = of(m, i, CB_METRIC_GAUGE, CB_METRIC_GAUGE); if (s) counter_set(&s->c, v); }
+void cb_metrics_rate(cb_metrics *m, int i, int64_t now_ms, uint64_t n) { slot *s = of(m, i, CB_METRIC_RATE, CB_METRIC_RATE); if (s) stat_rate_add(&s->r, now_ms, n); }
+void cb_metrics_observe(cb_metrics *m, int i, uint64_t v) { slot *s = of(m, i, CB_METRIC_HIST, CB_METRIC_HIST); if (s) stat_hist_add(&s->h, v); }
 
 uint64_t cb_metrics_get(const cb_metrics *m, int i) {
     if (!m || i < 0 || i >= m->n) return 0;
     const slot *s = &m->s[i];
     switch (m->defs[i].kind) {
-    case CB_METRIC_COUNTER: case CB_METRIC_GAUGE: return cb_counter_get(&s->c);
-    case CB_METRIC_RATE: return cb_rate_total(&s->r);
-    default: return cb_hist_count(&s->h);
+    case CB_METRIC_COUNTER: case CB_METRIC_GAUGE: return counter_get(&s->c);
+    case CB_METRIC_RATE: return stat_rate_total(&s->r);
+    default: return stat_hist_count(&s->h);
     }
 }
-uint32_t cb_metrics_pct(const cb_metrics *m, int i, double pct) { slot *s = of((cb_metrics *)m, i, CB_METRIC_HIST, CB_METRIC_HIST); return s ? cb_hist_pct(&s->h, pct) : 0; }
-uint64_t cb_metrics_max(const cb_metrics *m, int i) { slot *s = of((cb_metrics *)m, i, CB_METRIC_HIST, CB_METRIC_HIST); return s ? cb_hist_max(&s->h) : 0; }
-float cb_metrics_per_s(const cb_metrics *m, int i, int64_t now_ms) { slot *s = of((cb_metrics *)m, i, CB_METRIC_RATE, CB_METRIC_RATE); return s ? cb_rate_per_s(&s->r, now_ms) : 0; }
+uint32_t cb_metrics_pct(const cb_metrics *m, int i, double pct) { slot *s = of((cb_metrics *)m, i, CB_METRIC_HIST, CB_METRIC_HIST); return s ? stat_hist_pct(&s->h, pct) : 0; }
+uint64_t cb_metrics_max(const cb_metrics *m, int i) { slot *s = of((cb_metrics *)m, i, CB_METRIC_HIST, CB_METRIC_HIST); return s ? stat_hist_max(&s->h) : 0; }
+float cb_metrics_per_s(const cb_metrics *m, int i, int64_t now_ms) { slot *s = of((cb_metrics *)m, i, CB_METRIC_RATE, CB_METRIC_RATE); return s ? stat_rate_per_s(&s->r, now_ms) : 0; }
 
 // ---- the report -----------------------------------------------------------------------------
 
@@ -120,8 +126,8 @@ size_t cb_metrics_report(const cb_metrics *m, const cb_ctx *ctx, int64_t now_ms,
     h.row_size = sizeof(cb_metric_row);
     h.at_ms = now_ms;
     h.uptime_s = ctx && now_ms > ctx->started_ms ? (uint32_t)((now_ms - ctx->started_ms) / 1000) : 0;
-    h.rss_mb = cb_rss_mb(0);
-    h.cpu_us = cb_cpu_us(0);
+    h.rss_mb = proc_rss_mb(0);
+    h.cpu_us = proc_cpu_us(0);
     h.pid = (uint32_t)getpid();
     uint8_t *p = out;
     memcpy(p, &h, sizeof h);
@@ -151,18 +157,18 @@ size_t cb_metrics_report(const cb_metrics *m, const cb_ctx *ctx, int64_t now_ms,
         row_name(&r, d->name);
         switch (d->kind) {
         case CB_METRIC_COUNTER: case CB_METRIC_GAUGE:
-            r.total = cb_counter_get(&s->c);
+            r.total = counter_get(&s->c);
             break;
         case CB_METRIC_RATE:
-            r.total = cb_rate_total(&s->r);
-            r.per_s = cb_rate_per_s(&s->r, now_ms);
+            r.total = stat_rate_total(&s->r);
+            r.per_s = stat_rate_per_s(&s->r, now_ms);
             break;
         default:
-            r.total = cb_hist_count(&s->h);
-            r.p50 = cb_hist_pct(&s->h, 50);
-            r.p90 = cb_hist_pct(&s->h, 90);
-            r.p99 = cb_hist_pct(&s->h, 99);
-            r.max = cb_hist_max(&s->h);
+            r.total = stat_hist_count(&s->h);
+            r.p50 = stat_hist_pct(&s->h, 50);
+            r.p90 = stat_hist_pct(&s->h, 90);
+            r.p99 = stat_hist_pct(&s->h, 99);
+            r.max = stat_hist_max(&s->h);
             break;
         }
         memcpy(p, &r, sizeof r);

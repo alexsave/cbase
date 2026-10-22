@@ -1,4 +1,4 @@
-// fz_metrics.c - the metrics registry (core/src/metrics.h) and its machinery (util/metrics.h)
+// fz_metrics.c - the metrics registry (core/src/metrics.h) and its machinery (shared/c stats/hist.h)
 // under an arbitrary table and an arbitrary run of updates, against the invariants a reader
 // relies on: a table is accepted exactly when every name and kind is right and no name repeats;
 // an update by a bad index or of the wrong kind changes nothing; a report fits exactly its
@@ -11,7 +11,7 @@
 
 #include "metrics.h"
 #include "util/err.h"
-#include "util/metrics.h"
+#include "../../../shared/c/stats/hist.h"
 
 static bool name_model(const char *s) {
     size_t n = strlen(s);
@@ -84,14 +84,14 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         case CB_METRIC_RATE:
             FZ_CHECK(cb_metrics_get(m, i) == rtotal[i]);
             // The last whole seconds hold at most everything ever counted.
-            FZ_CHECK(cb_metrics_per_s(m, i, last_ms + 1000) * (CB_RATE_SLOTS - 1) <= (float)rtotal[i] + 1);
+            FZ_CHECK(cb_metrics_per_s(m, i, last_ms + 1000) * (STAT_RATE_SLOTS - 1) <= (float)rtotal[i] + 1);
             break;
         default:
             FZ_CHECK(cb_metrics_get(m, i) == hn[i]);
             FZ_CHECK(cb_metrics_max(m, i) == hmax[i]);
             uint32_t p50 = cb_metrics_pct(m, i, 50), p90 = cb_metrics_pct(m, i, 90), p99 = cb_metrics_pct(m, i, 99);
             FZ_CHECK(p50 <= p90 && p90 <= p99 && p99 <= hmax[i]);
-            if (hn[i]) FZ_CHECK(cb_hist_floor(cb_hist_bucket(hmax[i])) == cb_metrics_pct(m, i, 100));
+            if (hn[i]) FZ_CHECK(stat_hist_floor(stat_hist_bucket(hmax[i])) == cb_metrics_pct(m, i, 100));
             break;
         }
     }

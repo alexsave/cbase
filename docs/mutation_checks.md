@@ -767,16 +767,9 @@ The test is a 1051-item table (all five attribute kinds, the index keys, the TTL
 
 ## Metrics registry (2026-10-22, unit_metrics.c, fz_metrics.c)
 
-The machinery two apps had each written for themselves (a log-scale histogram, a per-second rate ring, counters, RSS and CPU readers) lifted into util/metrics.h, and the registry over it (metrics.h: an app's static table of named metrics, the fixed-layout report, GET /metrics).
+The registry (metrics.h: an app's static table of named metrics, the fixed-layout report, GET /metrics) over the machinery two apps had each written for themselves, now shared/c's stats/hist.h and proc.h (their mutations are in shared/c/MUTATION_CHECKS.md).
 Each line: file, mutation, the assertion that went red. The test binary was deleted along with the object before each build: make 3.81 with `.SECONDARY` does not relink a program whose intermediate object is merely missing, and a first run of this loop reported the previous mutation's result for every one after the first.
 
-- util/metrics.c: bucket fraction `* 4` made `* 2` -> `hist_buckets` cb_hist_bucket(3) == 6.
-- util/metrics.c: pct answers the next bucket's floor -> `hist_percentiles` cb_hist_pct(&h, 50) == 48.
-- util/metrics.c: the max CAS removed -> `hist_percentiles` cb_hist_max(&h) == 100.
-- util/metrics.c: bucket 0's floor 1 (the fuzzer's find: a p99 of 1 over nothing but zeros, corpus/metrics/repro-hist-zero-floor) -> `hist_buckets` cb_hist_floor(0) == 0.
-- util/metrics.c: per_s counts a slot whose second is not the one asked -> `rate_ring` cb_rate_per_s(&r, 125000) == 0.
-- util/metrics.c: a slot taken over by a new second not reset -> `rate_ring` cb_rate_per_s(&r, 120000) == 5/9.
-- util/metrics.c: slot_of made a plain `%` (the fuzzer's find: second -2 indexes before the array, corpus/metrics/repro-rate-negative-second) -> `rate_ring` atomic_load(&r.count[8]) == 4 (the out-of-bounds write lands in count[8], which reads -2; the per_s assertions alone SURVIVE this one, since the wrong slot reads back consistently, so the slot is checked by name).
 - metrics.c: the kind check in `of` dropped -> `registry_updates` cb_metrics_get(m, M_TILES) == 7 (an observe on a counter clobbers it).
 - metrics.c: a name may hold upper case -> `registry_refusals` cb_metrics_new(bad_name, 1, &m) == CB_E_INVALID.
 - metrics.c: n_platform written as 0 -> `registry_report` h.n_platform == CB_METRICS_N_PLATFORM.
