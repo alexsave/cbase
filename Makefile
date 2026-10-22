@@ -272,7 +272,7 @@ SMOKE_PROGS = $(1)/cbase $(1)/bootstrap $(addprefix $(1)/test/,smoke smoke_matri
 
 # shared/c's tests of what c_base links from there (shared/tools/shared_tests.mk),
 # in c_base's own flags and sanitized variant.
-SHARED_TESTS := b64_test hex_test crc32c_test hist_test proc_test
+SHARED_TESTS := b64_test hex_test crc32c_test hist_test proc_test stream_frame_test
 include $(C_ROOT)/shared/tools/shared_tests.mk
 $(call SHARED_TESTS_IN,,build/obj/cbase,CC,CB_CFLAGS)
 $(call SHARED_TESTS_IN,asan_,build/obj/asan,CC,ASAN_CB_CFLAGS)

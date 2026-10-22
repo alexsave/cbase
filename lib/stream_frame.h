@@ -112,6 +112,24 @@ static inline int sf_parse(const uint8_t *p, size_t n, sf_frame *f) {
     }
 }
 
+// THE SAME FRAMES AS STRUCTS, for a host that reads and writes them through code generated from
+// this header (shared/tools/structgen: a TypeScript page with no wasm module) instead of the
+// inline functions below: each is a frame's fixed head, packed, exactly the bytes the writers put
+// and the parser reads (stream_frame_test.c holds them to each other); the variable tail (a
+// token, a room id, a body, a push's record) follows the head, sf_*_SIZE bytes in. A host writes a
+// head and appends the tail; it reads a head and takes the tail from there.
+#define SF_PACKED __attribute__((packed))
+typedef struct SF_PACKED { uint8_t v, kind; } sf_bare_hdr;                               // READY, PING, PONG; a push's first two bytes
+typedef struct SF_PACKED { uint8_t v, kind; uint16_t n; } sf_hello_hdr;                  // then n bytes of token
+typedef struct SF_PACKED { uint8_t v, kind; uint32_t id; uint8_t what, n; } sf_sub_hdr;  // SUB and UNSUB: then n bytes of gid
+typedef struct SF_PACKED { uint8_t v, kind; uint32_t id; uint8_t meth; uint16_t n; } sf_req_hdr;   // then n bytes of path, then the body
+typedef struct SF_PACKED { uint8_t v, kind; uint32_t id; uint16_t status; } sf_reply_hdr;          // then the body
+_Static_assert(sizeof(sf_bare_hdr) == 2 && sizeof(sf_hello_hdr) == 4 && sizeof(sf_sub_hdr) == 8 && sizeof(sf_req_hdr) == 9 &&
+               sizeof(sf_reply_hdr) == 8, "the heads are the frames' bytes");
+// What a SUB asks to hear (`what`): a room on the hub. The hub (c_base rt_local.c) knows the one
+// value it registers; a product's netwire.h names the rest.
+#define SF_WHAT_ROOM 2
+
 // A push, as opposed to a frame of this file: the product's own kinds.
 static inline int sf_is_push(const uint8_t *p, size_t n) { return n >= 2 && p[0] == SF_V && (p[1] < SF_HELLO || p[1] > SF_PONG); }
 
