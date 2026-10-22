@@ -13,6 +13,7 @@
 
 #include "net/router.h"
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -47,9 +48,17 @@ typedef struct {
 // {user} and {doc}. It must start "u/{user}/" (the user's own: only that
 // user may subscribe) or "s/" (anyone signed in), the stream's one policy
 // (stream_mqtt.h); boot checks it (cb_rt_families_check).
+//
+// ANONYMOUS, default off, is a room family's ("s/") alone: its rooms may also be heard by a
+// socket that never signed in (under serve, GET /ws/public: an empty HELLO, then SUB of rooms
+// and PING, and nothing else; rt_local.c). Because the hub knows a room by its doc alone, an app
+// that declares one anonymous family must declare every room family anonymous, or boot refuses
+// (cb_rt_families_check); a user's own family never is. The IoT authorizer under Lambda admits no
+// anonymous connection, so there an anonymous family is heard by the signed-in alone.
 typedef struct {
     const char *name;      // for the logs: "views"
     const char *pattern;   // "u/{user}/v", "s/{doc}"
+    bool        anonymous; // anyone may hear its rooms, signed in or not
 } cb_topic_family;
 
 // An ADMIN PANEL's call: /admin/api/<name>, behind the console's token

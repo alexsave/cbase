@@ -811,9 +811,9 @@ static void stop(void) {
 // room's under s/ naming {doc} alone; the check refuses a room's that names {user}, so the scope a
 // push goes to is its prefix (cb_rt_family_user), never a search of the pattern.
 static void the_family_rule(void) {
-    static const cb_topic_family views = { "views", "u/{user}/v" }, seat = { "seat", "u/{user}/c/{doc}" },
-                                 watch = { "watch", "s/{doc}" }, bad = { "bad", "s/{doc}/{user}" },
-                                 out = { "out", "x/{user}" };
+    static const cb_topic_family views = { .name = "views", .pattern = "u/{user}/v" }, seat = { .name = "seat", .pattern = "u/{user}/c/{doc}" },
+                                 watch = { .name = "watch", .pattern = "s/{doc}" }, bad = { .name = "bad", .pattern = "s/{doc}/{user}" },
+                                 out = { .name = "out", .pattern = "x/{user}" };
     const cb_topic_family *good[3] = { &views, &seat, &watch };
     char err[256];
     T_EQ_INT(cb_rt_families_check(good, 3, err, sizeof err), CB_OK);
@@ -827,7 +827,7 @@ static void the_family_rule(void) {
     // A pattern shorter than the user prefix is read only to its end (ASan: a memcmp of the
     // prefix's length read past "s/{doc}" in pushes.c).
     static const char tiny_pattern[] = "s/x";
-    static const cb_topic_family tiny = { "tiny", tiny_pattern };
+    static const cb_topic_family tiny = { .name = "tiny", .pattern = tiny_pattern };
     T_CHECK(!cb_rt_family_user(&tiny));
 }
 

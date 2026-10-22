@@ -4,6 +4,8 @@
 // frame (shared/c/stream_frame.h): the client says HELLO (its access token),
 // SUB and UNSUB (a room to watch), REQ (an HTTP route's request) and PING; the
 // server answers READY, REPLY and PONG and pushes the product's own frames.
+// GET /ws/public is the same socket for a client that never signed in, served
+// only for an app with an anonymous family (THE ANONYMOUS SOCKET, below).
 //
 // WHO HEARS A PUSH. No topics. A target (realtime.h cb_rt_to) is either a USER
 // (its family's pattern names {user}: views, a own casts, chat), delivered
@@ -309,6 +311,7 @@ static int watch_index(const lconn *c, const char *gid) {
 }
 
 // ---- sending (loop thread) ---------------------------------------------------------
+
 
 // Sends one frame to the connection with that id as a binary message. false
 // when it is gone (closed before, or by this send: a failed send closes the
@@ -712,6 +715,52 @@ static void on_close(cb_ws *ws, void *ud) {
 
 static const cb_ws_handlers WS_HUB = { on_open, on_message, on_close };
 
+// ---- the anonymous socket (GET /ws/public) ------------------------------------------------
+//
+// Served only when the app declares a family anyone may hear (cbase/app.h, anonymous; boot made
+// every room family one, so any room's doc names a public room). ITS OWN ROUTE AND MESSAGE
+// HANDLER, which decides what such a socket may say and hands what it may to the signed-in
+// socket's handler (on_message, pump, do_sub) unchanged, so that path's code is the same as it
+// was (c_base/tools/hotpath_proof.sh compares it instruction by instruction):
+//   - the first frame is a HELLO with an EMPTY token (any token at all ends it: a client that
+//     has one signs in at /ws), answered READY here, with no job and no store;
+//   - then SUB and UNSUB of a ROOM (SF_WHAT_ROOM) and PING, handed to on_message; a SUB or UNSUB
+//     of anything else is answered 403 here and changes nothing;
+//   - a REQ, a second HELLO, a text message or a frame that does not parse ends it (1008), here:
+//     no job is ever made for it.
+// Past its HELLO it is "open" as the hub counts it (pump handles SUB and PING only for an open
+// connection) with a user of the EMPTY id, which no account has and no push can name
+// (local_deliver refuses an empty key), and it never expires; so it hears exactly the rooms it
+// watches, through the same room map, pub_deliver and send_to as a signed-in spectator.
+static void anon_message(cb_ws *ws, int opcode, const uint8_t *data, size_t len, void *ud) {
+    cb_rt *rt = ud;
+    local *L = rt->impl;
+    lconn *c = find(L, cb_ws_id(ws));
+    if (!c) return;
+    sf_frame f;
+    if (opcode != CB_WS_OP_BIN || sf_parse(data, len, &f) != 0) { cb_ws_close(ws, 1008); return; }
+    if (!c->hello_seen) {
+        if (f.kind != SF_HELLO || f.tok_len != 0 || !(c->user = calloc(1, sizeof *c->user))) { cb_ws_close(ws, 1008); return; }
+        c->hello_seen = true;
+        c->open = true;
+        c->expires_s = INT64_MAX;
+        static const uint8_t ready[2] = { SF_V, SF_READY };
+        cb_ws_send(ws, CB_WS_OP_BIN, ready, sizeof ready);
+        return;
+    }
+    if ((f.kind == SF_SUB || f.kind == SF_UNSUB) && f.what != SF_WHAT_ROOM) {
+        uint8_t o[8];
+        int n = sf_put_reply_head(o, sizeof o, f.id, 403);
+        cb_ws_send(ws, CB_WS_OP_BIN, o, (size_t)n);
+    } else if (f.kind == SF_SUB || f.kind == SF_UNSUB || f.kind == SF_PING) {
+        on_message(ws, opcode, data, len, ud);
+    } else {
+        cb_ws_close(ws, 1008);
+    }
+}
+
+static const cb_ws_handlers WS_ANON = { on_open, anon_message, on_close };
+
 // ---- publishing ------------------------------------------------------------------------
 
 #define PUB_USER 1
@@ -978,7 +1027,15 @@ static bool local_room_heard(cb_rt *rt, const char *doc) {
     return e && e->n > 0;
 }
 
-static const cb_rt_transport LOCAL_T = { "local", local_deliver, local_free, local_forget, NULL, local_room_heard };
+static int local_room_watchers(cb_rt *rt, const char *doc) {
+    local *L = rt->impl;
+    if (!rt->ctx->loop || !cb_loop_on_thread(rt->ctx->loop)) return -1;
+    const gent *e = room_find(L, doc, str_hash(doc));
+    return e ? (int)e->n : 0;
+}
+
+static const cb_rt_transport LOCAL_T = { .name = "local", .deliver = local_deliver, .free = local_free, .forget = local_forget,
+                                         .room_heard = local_room_heard, .room_watchers = local_room_watchers };
 
 long cb_rt_local_quiet_skips(const cb_rt *rt) {
     const local *L = rt->impl;
@@ -1017,4 +1074,15 @@ static void h_ws(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     cb_ws_upgrade(req, res, &WS_HUB, ctx->rt);
 }
 
-int cb_rt_local_routes(cb_ctx *ctx) { return cb_router_add(ctx->router, "GET", "/ws", CB_ROUTE_LOOP, h_ws); }
+// GET /ws/public: the anonymous socket (above), when the app has a family anyone may hear.
+static void h_ws_anon(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
+    if (!ctx->rt || ctx->rt->t != &LOCAL_T) { cb_router_error(res, 503, "realtime is not running"); return; }
+    cb_ws_upgrade(req, res, &WS_ANON, ctx->rt);
+}
+
+int cb_rt_local_routes(cb_ctx *ctx) {
+    int rc = cb_router_add(ctx->router, "GET", "/ws", CB_ROUTE_LOOP, h_ws);
+    if (rc == CB_OK && ctx->app && cb_rt_families_anonymous(ctx->app->topics, ctx->app->n_topics))
+        rc = cb_router_add(ctx->router, "GET", "/ws/public", CB_ROUTE_LOOP, h_ws_anon);
+    return rc;
+}

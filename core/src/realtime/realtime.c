@@ -112,7 +112,34 @@ int cb_rt_families_check(const cb_topic_family *const *f, int n, char *err, size
             return CB_E_INVALID;
         }
     }
+    // ANONYMOUS (cbase/app.h): a room family's alone, and then every room family's, because the
+    // hub under serve knows a room by its doc and nothing else: with one private room family
+    // beside an anonymous one, an anonymous socket could name a private room's doc.
+    int anon = -1, private_room = -1;
+    for (int i = 0; i < n; i++) {
+        if (!f[i]->anonymous) {
+            if (!cb_rt_family_user(f[i]) && private_room < 0) private_room = i;
+            continue;
+        }
+        if (cb_rt_family_user(f[i])) {
+            snprintf(err, cap, "topic family %s: a user's own family (\"%s\") cannot be anonymous", f[i]->name ? f[i]->name : "?",
+                     f[i]->pattern);
+            return CB_E_INVALID;
+        }
+        if (anon < 0) anon = i;
+    }
+    if (anon >= 0 && private_room >= 0) {
+        snprintf(err, cap, "topic families %s and %s: one room family is anonymous and the other is not (the hub knows a room by its doc alone)",
+                 f[anon]->name ? f[anon]->name : "?", f[private_room]->name ? f[private_room]->name : "?");
+        return CB_E_INVALID;
+    }
     return CB_OK;
+}
+
+bool cb_rt_families_anonymous(const cb_topic_family *const *f, int n) {
+    for (int i = 0; i < n; i++)
+        if (f[i] && f[i]->anonymous) return true;
+    return false;
 }
 
 // ---- publishing ----------------------------------------------------------------------------
@@ -163,6 +190,10 @@ static bool hold(const cb_rt_to *to, const uint8_t *frame, size_t len) {
 
 bool cb_rt_room_heard(cb_rt *rt, const char *doc) {
     return !rt || !rt->t || !rt->t->room_heard || !doc || rt->t->room_heard(rt, doc);
+}
+
+int cb_rt_room_watchers(cb_rt *rt, const char *doc) {
+    return rt && rt->t && rt->t->room_watchers && doc ? rt->t->room_watchers(rt, doc) : -1;
 }
 
 void cb_rt_batch_begin(cb_rt *rt) {

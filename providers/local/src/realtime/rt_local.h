@@ -1,9 +1,11 @@
-// rt_local.h - realtime for `cbase serve`: the in-process MQTT hub.
+// rt_local.h - realtime for `cbase serve`: the in-process socket hub (rt_local.c).
 //
-// GET /mqtt (CB_ROUTE_LOOP, subprotocol "mqtt") upgrades (net/ws.h) and keeps a
-// connection's MQTT state (stream_mqtt.h) per socket on the loop thread.
-// deliver() posts the PUBLISH to the loop (loop.h cb_loop_post), which sends it
-// to every connection a filter of which matches the topic.
+// GET /ws (CB_ROUTE_LOOP, no subprotocol) upgrades (net/ws.h) to a binary WebSocket that speaks
+// shared/c/stream_frame.h's frames: HELLO with a token, SUB a room, REQ a route, PING. GET
+// /ws/public, served only when the app has an anonymous family (cbase/app.h), is the same socket
+// without a login: an empty HELLO, SUB of rooms, PING. There is no MQTT here (that is IoT's
+// transport under Lambda, rt_iot.c): deliver() hands the push to the loop (loop.h cb_loop_post),
+// which sends it to the user's connections or to the room's watchers.
 #ifndef CB_RT_LOCAL_H
 #define CB_RT_LOCAL_H
 

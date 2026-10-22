@@ -59,6 +59,9 @@ int cb_rt_topic(const cb_rt_to *to, char *out, size_t cap);
 // or "s/", holds no '+' or '#', and names nothing but {user} and {doc}.
 // CB_OK, or CB_E_INVALID with the family in err (boot refuses to serve).
 int cb_rt_families_check(const cb_topic_family *const *f, int n, char *err, size_t cap);
+// Whether any of the app's (checked) families may be heard anonymously (cbase/app.h): the local
+// hub serves GET /ws/public only then.
+bool cb_rt_families_anonymous(const cb_topic_family *const *f, int n);
 // Whether a (checked) family is a user's own, its pattern under u/{user}/, rather than a room's
 // (under s/, naming {doc} alone): a compare of the prefix, no search of the pattern.
 bool cb_rt_family_user(const cb_topic_family *f);
@@ -87,6 +90,9 @@ typedef struct cb_rt_transport {
     // Whether anyone watches the room of `doc` now, when the transport can tell on this thread
     // (cb_rt_room_heard). NULL: it cannot, and every room may be watched.
     bool (*room_heard)(cb_rt *rt, const char *doc);
+    // How many connections watch the room of `doc` now, when the transport can tell on this
+    // thread (cb_rt_room_watchers); -1 when it cannot. NULL: it never can.
+    int (*room_watchers)(cb_rt *rt, const char *doc);
 } cb_rt_transport;
 
 struct cb_rt {
@@ -110,6 +116,9 @@ void cb_rt_batch_begin(cb_rt *rt);
 // transport knows the room has no watcher now (the local hub, on its loop thread), so the caller
 // need not build the push. True with no transport, or one that cannot tell.
 bool cb_rt_room_heard(cb_rt *rt, const char *doc);
+// How many connections watch the room of `doc` (a family under s/) now: the local hub answers on
+// its loop thread (a loop timer of the app's, for a display); -1 anywhere it cannot tell.
+int cb_rt_room_watchers(cb_rt *rt, const char *doc);
 void cb_rt_batch_end(cb_rt *rt);
 
 // The failed deliveries this thread's publishes counted since the last take

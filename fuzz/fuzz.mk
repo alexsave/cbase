@@ -64,13 +64,16 @@ FUZZ_LIB     := $(sort $(wildcard fuzz/lib_*.c))
 # the sequence target makes the process's randomness a function of the input.
 FUZZ_EXCLUDE_sequence := core/src/util/random.c
 fuzz_lib = $(filter-out $(FUZZ_EXCLUDE_$(1)),$(LIB_SRC))
+# Sources a target links beside the program's (FUZZ_EXTRA_<target>): the anonymous socket's target
+# talks to a real server over loopback with the tests' client.
+FUZZ_EXTRA_rt_anon := core/test/lib_client.c
 
 define FUZZ_PROG
-build/fuzz/$(1): $$(call c_objs,build/obj/fuzz,$$(call fz_src,$(1)) $$(FUZZ_LIB) $$(call fuzz_lib,$(1))) $$(call c_objs,build/obj/fuzz-kernel,$$(KERNEL_SRC))
+build/fuzz/$(1): $$(call c_objs,build/obj/fuzz,$$(call fz_src,$(1)) $$(FUZZ_LIB) $$(FUZZ_EXTRA_$(1)) $$(call fuzz_lib,$(1))) $$(call c_objs,build/obj/fuzz-kernel,$$(KERNEL_SRC))
 	@mkdir -p $$(@D)
 	@echo "  LINK $$@"
 	@$$(FUZZ_CC) $$(FUZZ_CB_CFLAGS) -fsanitize=fuzzer $$^ -o $$@ $$(LDLIBS)
-build/asan/fuzz/$(1): $$(call c_objs,build/obj/fuzz-replay,$$(call fz_src,$(1)) fuzz/replay_main.c $$(FUZZ_LIB)) $$(call c_objs,build/obj/asan,$$(call fuzz_lib,$(1))) $$(call c_objs,build/obj/asan-kernel,$$(KERNEL_SRC))
+build/asan/fuzz/$(1): $$(call c_objs,build/obj/fuzz-replay,$$(call fz_src,$(1)) fuzz/replay_main.c $$(FUZZ_LIB) $$(FUZZ_EXTRA_$(1))) $$(call c_objs,build/obj/asan,$$(call fuzz_lib,$(1))) $$(call c_objs,build/obj/asan-kernel,$$(KERNEL_SRC))
 	@mkdir -p $$(@D)
 	@echo "  LINK $$@"
 	@$$(CC) $$(ASAN_CB_CFLAGS) $$^ -o $$@ $$(LDLIBS)
