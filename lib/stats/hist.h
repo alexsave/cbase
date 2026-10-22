@@ -41,7 +41,8 @@ int      stat_hist_bucket(uint64_t v);
 uint32_t stat_hist_floor(int bucket);
 /* The value at the given percentile (0..100; clamped), estimated from the bucket the pct-th
  * sample falls in: the sample's rank within the bucket placed linearly across the bucket's
- * width (the k-th of c samples at (k - 0.5)/c of the way), and never above the max seen. THE
+ * width (the k-th of c samples at (k - 0.5)/c of the way; the bucket holding the max ends at the
+ * max), and never above the max seen. THE
  * ERROR IS BOUNDED BY THE BUCKET: a bucket spans a factor of 2^(1/8), so the estimate is within
  * 9.05% of the true (nearest-rank) value whatever the distribution, and much closer when the
  * samples spread across the bucket (hist_test.c pins 1% on a uniform spread). p100 is the max

@@ -56,6 +56,9 @@ uint32_t stat_hist_pct(const StatHist *h, double pct)
          * max seen (the top bucket's width is a guess the max corrects). */
         uint64_t k = want - acc;
         double lo = (double)floor64(b), hi = (double)floor64(b + 1);
+        /* The bucket holding the max ends at the max, not at its own top: the samples cannot
+         * spread past it, and a bucket a tenth full would otherwise read almost a bucket high. */
+        if ((double)max + 1 < hi) hi = (double)max + 1;
         double v = lo + (hi - lo) * ((double)k - 0.5) / (double)c;
         if (v > (double)max) v = (double)max;
         if (v < lo) v = lo;
