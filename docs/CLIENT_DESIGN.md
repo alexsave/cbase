@@ -1,0 +1,419 @@
+# The c_base client: design
+
+Status: design only, for Alex's OK.
+No code has been written.
+Written from origin/main at 7264b94ee, with read-only reads of the branches foolish-birdseye, c-chess, adventurer, lichess-ws and cbase-app-lifts (PR #429).
+
+## 0. The answer in one paragraph
+
+Very little of foolish's website moves.
+Of the 23,781 lines in `foolish/src`, about 490 lines of session, socket and route-guard code move, which is 2%.
+The rest of `src` is the game: the table, the animations, the oracle, the replays and the styles, and it stays.
+What moves is the plumbing under the website.
+That is the generic half of the C client (`netclient.c`, `netwire.c`), the TypeScript that loads wasm and moves bytes (`sdk/ts/wasm`, `sdk/ts/net`, most of `src/common/backend.ts`), and the iOS socket shell (`ios/FoolishNet/Stream.swift`, `Backend.swift`).
+In lines: about 1,360 of C, 1,250 of TypeScript and 410 of Swift move from `foolish/` into `c_base/client/`.
+Foolish keeps about 970 lines of `netclient.c` (its endpoints, row readers, version gates and seat logic) and gains about 120 lines of forwarders and a route table.
+The `nc_*` names that the web and iOS hosts call stay the same, so the hosts gain no lines.
+Foolish moves last, behind a differential proof that every byte the client sends and every event it raises is unchanged.
+
+## 1. Inventory
+
+### 1.1 What each app has today
+
+A note on the five apps:
+- **foolish** has the only complete client.
+- **c_chess** has the best structure: a context struct, no I/O, no allocation, one client per bot.
+- **birdseye** and **adventurer** each hand-wrote a TypeScript socket loop.
+- **lichess_ws** speaks lichess's JSON protocol, so its only reusable client piece is the load generator's socket code.
+- uttt, chuiniu, pickemup, tallybones and werewolf have no realtime client.
+
+| Piece | foolish (main) | c_chess | birdseye | adventurer | lichess_ws |
+|---|---|---|---|---|---|
+| Client core | `foolish/c/src/netclient.c` 1822 + `.h` 411, C, sans-IO, one per process (file statics, netclient.c:48-99) | `c_chess/c/src/client.c` 426 + `.h` 132, C, sans-IO, caller-owned `cc_client` struct | `birdseye/web/src/api.ts:214-336` (123 lines, TS); `birdseye/server/src/client.c` 210 + `.h` 73, C, blocking, for the sim | `adventurer/web/src/api.ts:267-344` (78 lines, TS) | none (JSON protocol) |
+| Connection, auth, session | HELLO with token; signup/signin/refresh/signout/password/delete in C (netclient.c:144-333); blob in localStorage `foolish.session` (backend.ts:45-89); cross-tab `storage` sync | HELLO with token from `POST /c/auth` and `/c/refresh` (client.c:97-138); guest account in localStorage as JSON (net.ts:146-159) | `POST /be/session`, a dev-only fixed account (routes.c:94-133), fetched again on every connect | anonymous `GET /ws/public`, empty HELLO (api.ts:253-257) | `lila2` cookie |
+| Frame codec | `shared/c/stream_frame.h` in C (netclient.c:1643-1811) | `stream_frame.h` in C | `birdseye/server/wasm/sf_wasm.c` 69 lines, 1,299 B wasm | structgen TS from the packed heads of PR #429 (`gen/stream_frame.ts` 103) | JSON text |
+| Request/reply correlation | tickets, 8 host slots + 16 own slots, ids with top bit for SUB (netclient.c:567-833, 1062-1140) | 64-entry table indexed `id % 64` that overwrites and never times out (client.c:49-73) | none in web (SUB REPLY ignored); 8-entry table in sim client.c:109-154 | one SUB id | none |
+| Subscribe, resubscribe | ref-counted holds, 16 subs, resubscribed by C on READY, unanswered SUB re-sent after 10 s (netclient.c:1174-1272) | host re-issues `lobby()`/`open()` in `onopen` (net.ts:171-203) | one room, implicit | one room, implicit | n/a |
+| Reconnect, backoff | 500 ms doubling to 10 s, reset on READY, no jitter (netclient.c:1313-1315) | 250 ms doubling to 5 s; 50 ms after a pre-READY close (net.ts:52, 190, 201) | 1 s doubling to 15 s, reset on READY (api.ts:220, 229); sim: fixed 2 s | 1 s doubling to 15 s, reset on SUB REPLY 200 (api.ts:274, 302, 327) | none (wsbench: a closed client stays closed) |
+| Ping, liveness | PING after 30 s silent out; half-open after 10 s without any frame; host closes on an empty frame (netclient.h:52-53, netclient.c:1755-1777) | none | PING every 30 s, no pong deadline | none (server's own WS ping only) | text `"p"` every 2 s |
+| Token refresh | 60 s before expiry; forced on a pre-READY close at most every 10 min; 401 re-sent once (netclient.c:264-274, 1085-1092, 1304) | `renew()` only after a pre-READY close | new session per connect | n/a | none |
+| HTTP retries | GET only: lost read 3 retries (500, 1000, 2000); 503 busy 3 tries (250, 500, 1000); writes never (netclient.c:410-415, 781-785) | none | `LIST_RETRY_MS` 2000 in App.tsx | `LIST_RETRY_MS` 2000 | n/a |
+| Optimistic apply, correction | `client_table.c` 1392 (optimistic apply 699, push settle 1097, revert 1256); TS `state/optimistic*.ts` | `cc_client_move` + `take_state` resync on gap (client.c:199-328) | none (viewer) | none (viewer) | n/a |
+| State mirror | `ServerContext.tsx` 895, version gates 64-room LRU (netclient.c:1142-1172), quiet-room refetch at 60 s + 6 s jitter | `cc_client.g` mirror, `useSyncExternalStore` (use.ts) | snapshot + stream merged by version (App.tsx:97-253) | refetch on push, debounced | n/a |
+| Wasm build and load | `web.wasm.gz` (67 KB raw, 31 KB gz per c/Makefile:1463), sync instantiate after vendored gunzip (`sdk/ts/wasm/*` 531 lines) | `chess.wasm` 24,764 B, 10,481 B gz, `instantiateStreaming` (kernel.ts 122) | `sf.wasm` 1,299 B (api.ts:177-212) | none | none |
+| Generated bindings | structgen `net_layout.bots.ts`, `kernel.ios.swift`; Kotlin `Kernel.kt` without the net structs | `web_layout.ts` 168 | `wire.ts` 204, `metrics.ts` 114, `sf_wasm.ts` 23 | `wire.ts` 637, `stream_frame.ts` 103 | none |
+| Static site serving | `next build` export to S3 + CloudFront (`c_base/providers/aws/ops/site/web.yaml` 454, `web_deploy.sh` 232) | `c_chess/server/src/web.c` 142: reads `CC_WEB_DIR` into the heap at boot, gzip twins, linear lookup, `GET /*` INLINE+HOME | `next start` on its own port | `next dev` | n/a |
+| Ops panel | none (c_base admin console only) | none | `Ops.tsx` 135 over c_base `GET /metrics` (generic) | `Ops.tsx` 98 over its own `/adv/ops` | stdout report |
+| Load generator | `server/bench/roundtrip.c` 474, codecs only (the client is a singleton) | `server/tools/chessbench.c` 514, one `cc_client` per bot | load comes from in-process `sim.c` 1005 + `league.c` 990 over `lib_client` | `server/gen` 397 + its own `httpc.c` 216, HTTP only | `server/tools/wsbench.c` 603, own non-blocking WS client on `cb_loop` (77-284) |
+| Tests of the client | `unit_netclient.c` 1996 (42 tests), `fz_netclient.c` 208 with a 1,548-file corpus, `e2e/stream_dead_socket.test.ts` 86 | `server/test/smoke.c` 475 drives `cc_client` | smoke only | `smoke.c:113-131` opens `/ws/public` | `smoke.c` 345 |
+
+### 1.2 Generic against app-specific
+
+Generic in every app: the frame codec, HELLO and READY, SUB and UNSUB with retries, REQ and REPLY correlation, PING and the pong deadline, the reconnect delay, the token's lifetime, the HTTP pump with read-only retries, the session blob, the event list, the wasm loader with its layout-hash check, the host's socket shell, the metrics reader, and the load generator's socket and pacing code.
+
+App-specific in every app: the push kinds and their bodies, the endpoints and their answers, which subscription needs which catch-up read, the mirror and its optimistic rules, and the UI.
+
+Two pieces are generic in mechanism and app-specific in content, and the design splits them that way:
+- The per-room version gate (foolish's 64-room LRU): the LRU is generic, and the app says what a version is.
+- The quiet-room refetch (foolish's 60 s + jitter): the timer is generic, and the app says when a room is quiet.
+
+### 1.3 Behavioural differences, and which is best
+
+Foolish's behaviour is the best on every axis but one, and the shared client starts from it.
+- Half-open sockets: only foolish detects them in a browser (PING plus a 10 s deadline on any frame).
+  adventurer and c_chess never notice a dead socket behind a NAT until the OS gives up.
+- Resubscribe: foolish's is in C and counted; c_chess and the two TS clients rebuild it in the host.
+- Token refresh: foolish refreshes before expiry and once on a refusal; c_chess only after a refusal; birdseye signs in again on every connect.
+- Correlation: c_chess's table overwrites a live slot after 64 requests and never times one out; birdseye's web ignores the SUB's REPLY.
+- Write retries: only foolish refuses to resend a write that may have landed.
+- **Jitter: no app jitters its reconnect.**
+  After a server restart every foolish client reconnects at the same 500 ms, then the same 1 s, and so on.
+  That is the one place foolish is not the best, and it is open question 2.
+
+## 2. What of foolish moves, file by file
+
+Line counts are `wc -l` at origin/main.
+"Moves" means the lines leave `foolish/` and land in `c_base/client/`, rewritten from file statics to a context struct, with the same logic.
+
+### 2.1 C
+
+| File | Lines | Moves | Stays | What moves |
+|---|---|---|---|---|
+| `foolish/c/src/netclient.c` | 1822 | ~850 | ~970 | session 144-215, request builder 216-275, the auth endpoints of 283-333, `nc_retry_ms` 410-415, pump state and core 567-833 (mechanism, not the kind tables), `nc_next_request` 883-929, `refresh_answered` 931-944, `answered` and the pump exits 1062-1140, the gate LRU 1142-1172, subscriptions 1174-1272, socket lifecycle 1274-1322, events 1324-1359, the quiet timer of 1434-1497, `take_suback` 1606-1641, frames in 1643-1693, frames out 1695-1811 |
+| `foolish/c/src/netclient.h` | 411 | ~200 | ~210 | the timing constants, `NcRequest`, `NcOut`, `NcSessionInfo`, `NcError`, the session and stream API, the pump loop's contract |
+| `foolish/c/src/netwire.c` | 481 | ~145 | ~336 | str8/str16/blob/u48 1-77, the session codec 144-172, the auth request codec of 78-143 |
+| `foolish/c/src/netwire.h` | 235 | ~70 | ~165 | `[NW_V1][kind]`, the platform kinds 1-5 and 20, the session layout, the refusal layout (PLATFORM.md 2.6 already fixed this split by range) |
+| `foolish/c/wasm/wasm_net_api.c` | 87 | ~70 | ~17 | the inbox and the one-line wasm wrappers |
+| `foolish/c/ios/ios_api_net.c` | 33 | ~25 | ~8 | the `fio_net_*` one-liners |
+| **C total** | | **~1,360** | | |
+
+Foolish gains about 120 lines of C: the `nc_*` forwarders over one static `cbc` (about 80) and its route table as data (about 40).
+`c_base/client` gains about 1,420 (the moved lines plus about 60 of context plumbing and static asserts).
+Net change in C across the repo: about +180, which matches PLATFORM.md's estimate of +200 for stage 9.
+The tests split as well: about 1,100 of the 1,996 lines of `unit_netclient.c` test generic behaviour and move with it, and `fz_netclient.c` stays in foolish and keeps driving the whole stack.
+
+### 2.2 TypeScript
+
+| File | Lines | Moves | Stays | What moves |
+|---|---|---|---|---|
+| `foolish/src/common/backend.ts` | 319 | ~240 | ~79 | session restore and cross-tab sync 45-89, pump/send/settle 93-153, `class Stream` 235-319 |
+| `foolish/sdk/ts/net/net_client.ts` | 182 | ~150 | ~32 | the call-and-copy wrapper; foolish keeps `NetIntent`, its result types and `ROW_READERS` (26-53) |
+| `foolish/sdk/ts/wasm/wasm_asset.ts` | 87 | 87 | 0 | the loader, with the asset URL as an argument |
+| `foolish/sdk/ts/wasm/gunzip.ts` | 22 | 22 | 0 | |
+| `foolish/sdk/ts/wasm/tiny_inflate.mjs` | 380 | 380 | 0 | vendored inflate |
+| `foolish/sdk/ts/wasm/layout_hash.ts` | 42 | 42 | 0 | |
+| `foolish/sdk/ts/wire/bytes.ts` | 22 | 22 | 0 | base64 of the session blob |
+| `foolish/sdk/ts/wasm/bots.ts` | 647 | ~34 | ~613 | the instantiate path 44-77 |
+| `foolish/src/common/session.ts` | 46 | 46 | 0 | the signed-in mirror, with the storage key as an argument |
+| `foolish/src/contexts/AuthContext.tsx` | 60 | 60 | 0 | |
+| `foolish/src/components/KernelGate.tsx` | 56 | 56 | 0 | |
+| `foolish/src/components/ProtectedRoute.tsx`, `UnprotectedRoute.tsx` | 52 + 56 | 108 | 0 | with the redirect paths as props |
+| **TS total** | | **~1,250** | | |
+
+Foolish gains about 40 lines of TypeScript: the call that configures the client with foolish's storage key, asset URL and listener kinds.
+Net change in TypeScript across the repo: about +40 for foolish alone, and negative once a second app adopts it.
+The test kit `e2e/helpers/fake_backend.ts` (107) and `e2e/stream_dead_socket.test.ts` (86) move with it as the client's own tests.
+
+### 2.3 Swift
+
+| File | Lines | Moves | Stays |
+|---|---|---|---|
+| `foolish/ios/FoolishNet/Stream.swift` | 104 | 104 | 0 |
+| `foolish/ios/FoolishNet/Backend.swift` | 156 | ~140 | ~16 (the boards flag) |
+| `foolish/sdk/swift/NetClient.swift` | 117 | ~90 | ~27 (row readers) |
+| `foolish/ios/FoolishNet/AuthService.swift`, `AccountService.swift` | 62 + 18 | 80 | 0 |
+| **Swift total** | | **~410** | |
+
+Net change in Swift: about +20.
+The iMessage app never links FoolishNet, and the main iOS app is not a priority, so this step can wait for the next iOS build.
+
+### 2.4 Kotlin
+
+Nothing moves and nothing is written: foolish has no Android client, and `sdk/kotlin/gen/Kernel.kt` does not include `netclient.h`.
+structgen already emits Kotlin, so the generated surface comes free when an Android host exists.
+
+### 2.5 What stays in foolish
+
+Everything that knows a card, a seat, a game or a bot:
+- The endpoints and answers: `NC_DO_*`, the row readers, `nc_req_action` and the action-over-socket hook.
+- The book of games: the cast-skip refetch, the reconcile after a refused move, `nc_set_boards`, the seat learning from the roster trailer, and the quiet predicates that read `GAME_STATUS_GAME_OVER`.
+- `client_table.c`, `evwire.c`, `awire.c`, `table_wire.c` and `ask.c`, which are the mirror and its optimistic rules.
+- The whole website above `backend.ts`: `ServerContext.tsx`, `state/*`, `AnimationContext.tsx`, the oracle, the replays, the components and the styles.
+- The static site stays on S3 and CloudFront (open question 3).
+
+### 2.6 How zero behaviour change is proven
+
+1. **A differential trace over recorded and fuzzed sessions.**
+   A new test tool, `nc_trace`, reads a step program (an intent, an answer, stream bytes, opened, closed, a session blob, each with its `now`) and prints every `NcRequest`, `NcOut`, `NcEvent` and `NcDone` byte for byte.
+   It is built twice: once against origin/main's objects and once against the branch.
+   It replays the 1,548 programs of `foolish/server/fuzz/corpus/netclient/` and a set of sessions recorded from the e2e suite at the `wasm_net_*` boundary (a recorder compiled only into a test build, so no shipped code grows).
+   The two outputs must be identical.
+   The client is a pure function of its inputs: time comes in as `now`, and the only randomness is the quiet jitter, which mixes `now`, the user id and the gid.
+2. **The 42 tests of `unit_netclient.c` stay green.**
+   They are not edited, except to call the moved ones from their new place, and each new test is mutation-checked.
+3. **The generated bindings are byte-identical.**
+   `net_layout.bots.ts` and `kernel.ios.swift` from structgen must not change, and the layout hash must not change.
+   `Nc*` keep their names and layouts in `netclient.h` as foolish's names for the moved structs, and a static assert pins every size and offset.
+4. **web.wasm keeps its export list.**
+   The list is diffed, and its size is reported; growth over 512 bytes needs a reason.
+5. **No c_base server code changes in the client steps.**
+   Any step that does touch the server (static serving, section 3.5) runs `c_base/tools/hotpath_proof.sh` with its default hot-path list, and every function on it must be identical.
+6. **The full `npm run test:e2e` pass, the live smoke and one played game** run at the end, after the targeted gates above, as the defer-full-e2e rule says.
+
+## 3. The proposed interface
+
+### 3.1 The rules it follows
+
+- **Sans-IO.** The host owns the socket, the HTTP client and the timer, and passes in bytes and `now`.
+  This is both foolish's and c_chess's shape, and it is why one C file runs in a browser, in iOS and in a load generator.
+- **A context struct, not statics.**
+  The caller allocates `cbc`, as c_chess does, so a load generator holds thousands per process.
+  Foolish keeps one static instance behind its `nc_*` names.
+- **No allocation, no clock, no randomness the caller does not pass in.**
+- **No function-pointer interface.**
+  The app's knowledge comes in as data (a route table) and goes out as events the app's own C reads after each call, the way the shared lifts so far have done it.
+- **The output buffer is the caller's.**
+  The client state stays small (budget: 6 KB per `cbc`, pinned by a static assert), and a load generator shares one scratch buffer.
+
+### 3.2 The C header, sketched
+
+```c
+// c_base/client/include/cbase/client.h - the c_base client: the other half of `cbase serve`'s
+// /ws and /v1/auth. Sans-IO: the host owns sockets and timers and passes bytes and now_ms.
+#include "stream_frame.h"   // shared/c
+
+typedef struct {
+    uint32_t ping_ms;          // 30000: a PING when nothing went out this long
+    uint32_t pong_ms;          // 10000: no frame of any kind this long after a PING: half-open
+    uint32_t ack_wait_ms;      // 10000: an unanswered SUB is asked again
+    uint32_t retry_first_ms;   // 500: every doubling backoff starts here
+    uint32_t retry_max_ms;     // 10000: and stops here
+    uint32_t refresh_early_ms; // 60000: refresh the token this long before it expires
+    uint32_t force_refresh_ms; // 600000: a pre-READY close refreshes at most this often
+    uint8_t  jitter;           // 0: the exact schedule (foolish today); 1: full jitter (open question 2)
+    uint8_t  anonymous;        // 1: GET /ws/public with an empty HELLO, no session
+} cbc_cfg;
+
+// One endpoint, as data (PLATFORM.md 2.6: no product switch in the pump).
+#define CBC_R_AUTH  0x1   // carries the bearer; waits for a refresh when it is due
+#define CBC_R_READ  0x2   // idempotent: a lost answer or a 503 busy is sent again
+#define CBC_R_WIRE  0x4   // may ride the live socket as SF_REQ instead of HTTP
+typedef struct {
+    uint8_t     method;    // SF_METH_GET, SF_METH_POST
+    uint8_t     flags;     // CBC_R_*
+    uint8_t     answer;    // the app's answer kind, handed back in cbc_done
+    const char *path;      // "/v1/games/{gid}": {gid} is the call's room id
+} cbc_route;
+
+typedef struct { uint32_t ticket; uint16_t route; uint8_t gid_len; char gid[SF_GID_MAX];
+                 uint16_t body_len; const uint8_t *body; } cbc_call;
+
+typedef struct { uint32_t id; uint8_t method; uint8_t is_refresh;
+                 uint8_t path_len; char path[160]; uint16_t auth_len; char auth[2055];
+                 uint16_t body_len; const uint8_t *body; } cbc_request;
+
+typedef struct { uint32_t ticket; uint16_t route; uint8_t answer; uint8_t why;
+                 int32_t code, detail, status; uint32_t body_off, body_len; } cbc_done;
+
+enum { CBC_EV_READY = 1, CBC_EV_PUSH, CBC_EV_SUB_LIVE, CBC_EV_SUB_REFUSED,
+       CBC_EV_SESSION, CBC_EV_ROOM_QUIET, CBC_EV_BAD };
+typedef struct { uint8_t kind; uint8_t what; uint8_t push_kind; uint8_t why;
+                 uint8_t gid_len; char gid[SF_GID_MAX];
+                 uint32_t body_off, body_len; } cbc_event;   // spans into the frame passed in
+
+typedef struct cbc cbc;   // the whole client; its size is CBC_SIZE, static-asserted <= 6 KB
+
+void cbc_init(cbc *c, const cbc_cfg *cfg, const cbc_route *routes, int n_routes);
+
+// The session (the platform's /v1/auth: signup, signin, refresh, signout, password, delete).
+int  cbc_session_save(const cbc *c, uint8_t *out, size_t cap);
+int  cbc_session_load(cbc *c, const uint8_t *p, size_t n);
+const cbc_user *cbc_user_of(const cbc *c);
+uint32_t cbc_auth(cbc *c, int op, const char *name, size_t nn, const char *pw, size_t pn, int64_t now);
+
+// The HTTP pump.
+uint32_t cbc_call_start(cbc *c, const cbc_call *call, int64_t now);   // a ticket, or 0 (cbc_error)
+const cbc_request *cbc_next_request(cbc *c, int64_t now);
+const cbc_done *cbc_on_response(cbc *c, uint32_t id, int status, const uint8_t *body, size_t n, int64_t now);
+const cbc_done *cbc_next_done(cbc *c);
+
+// The stream.
+const char *cbc_stream_path(const cbc *c);                 // "/ws" or "/ws/public"
+int  cbc_sub(cbc *c, uint8_t what, const char *gid, size_t n);    // counted holds
+int  cbc_unsub(cbc *c, uint8_t what, const char *gid, size_t n);
+void cbc_opened(cbc *c, int64_t now);
+uint32_t cbc_closed(cbc *c, int64_t now);                  // ms to wait before reopening
+int  cbc_in(cbc *c, const uint8_t *frame, size_t n, int64_t now);   // events raised, or -1
+int  cbc_next_out(cbc *c, uint8_t *out, size_t cap, int64_t now);   // a frame's length; 0 none; -1 close it
+
+// Events of the last call, and the one timer.
+const cbc_event *cbc_event_at(const cbc *c, int i);
+int  cbc_due_ms(const cbc *c, int64_t now);                // -1: nothing waits
+
+// Mirror helpers the app may use: the per-room version gate and the quiet timer.
+int  cbc_gate_pass(cbc *c, const char *gid, size_t n, uint32_t version);  // 1 newer, 0 stale
+void cbc_gate_reset(cbc *c, const char *gid, size_t n);
+void cbc_quiet_arm(cbc *c, const char *gid, size_t n, uint32_t after_ms, int64_t now);
+```
+
+### 3.3 How an app plugs in its bodies
+
+The app's C is a thin layer over `cbc`, and it is where the app's knowledge lives.
+- **Pushes.** The app declares its push kinds below `SF_HELLO` in its own wire header (as `foolish/server/src/app/pushes.c:20-23` already asserts).
+  `cbc_in` raises `CBC_EV_PUSH` with the push kind and a span of the body, and the app's layer reads the body through its structgen-generated readers.
+- **Answers.** Each route names an answer kind; `cbc_done` hands it back with a span of the body, and the app reads it.
+- **Catch-up.** `CBC_EV_SUB_LIVE` tells the app a room just went live, so it starts its own refetch call (foolish: read the game whole).
+- **Optimistic apply and correction** stay the app's: foolish's `client_table.c`, chess's `take_state`.
+  What the platform gives them is the version gate and the quiet timer.
+- For foolish, `netclient.c` keeps its `nc_*` API and becomes this layer over one static `cbc`.
+
+### 3.4 The generated surfaces, per language
+
+structgen reads `cbase/client.h` exactly as it reads `netclient.h` today, and it writes:
+- **TypeScript:** `client_layout.ts` (the readers of `cbc_request`, `cbc_done`, `cbc_event`, `cbc_user`, and the `cbc_cfg` writer), `client_exports.ts` (`--exports-ts --check-wasm`, as birdseye does), and the layout hash.
+- **Swift:** the same readers with the iOS triple, and the hash baked into the xcframework.
+- **Kotlin:** the same, written only when an Android host exists.
+
+The hand-written host shim is the one part per language that cannot be C, and it holds only I/O:
+- `c_base/client/ts/socket.ts` (about 200 lines): a WebSocket, `fetch`, one `setTimeout`, `localStorage` for the blob, and the cross-tab `storage` listener.
+  It replaces foolish's `backend.ts` core, c_chess's `net.ts`, birdseye's `openStream` and adventurer's `openFeed`.
+- `c_base/client/ts/wasm.ts`: the loader (foolish's `wasm_asset.ts`, `gunzip.ts`, `tiny_inflate.mjs`, `layout_hash.ts`), with the asset URL and the expected hash as arguments.
+- `c_base/client/ts/react/`: `useClient` over `useSyncExternalStore` (c_chess's pattern), `AuthProvider`, `KernelGate` and the route guards, all moved from foolish.
+- `c_base/client/swift/`: `CbSocket.swift` and `CbBackend.swift` (URLSession, Keychain blob), from foolish's `Stream.swift` and `Backend.swift`.
+- No hand-written byte offsets anywhere: every byte is read by C or by a structgen reader.
+  The one exception today, the gzip header in `gunzip.ts:12-18`, is the gzip format, not ours.
+
+### 3.5 Wasm packaging and its size budget
+
+Two packagings, the same objects:
+- **Linked into the app's own module** for apps with C on the client (foolish's `web.wasm`, c_chess's `chess.wasm`).
+  `c_base/client/client.mk` lists the sources and the exports, as `shared/tools/gen_tools.mk` does for structgen.
+- **A prebuilt `cbase_client.wasm`** for apps with no C of their own on the client (birdseye, adventurer).
+  It replaces birdseye's 1,299-byte `sf.wasm` with a client that also correlates, retries and pings.
+
+Budget, measured by a CI gate that prints the number and fails past it:
+- `cbase_client.wasm` at `-Oz`: at most 10 KB raw and 5 KB gzipped.
+- Foolish's `web.wasm`: grows by at most 512 bytes (the context pointer replaces file statics).
+- c_chess's `chess.wasm`: no larger than today's 24,764 bytes, since its own correlation code goes away.
+
+### 3.6 Static-site serving
+
+For apps that do not sit behind a CDN, c_base serves the app's static export itself, from memory, in the app's own process.
+- **Build.** `c_base/tools/embed_site.c` (C, like `embed.c`) walks the `next build` export, writes a gzip `-9` twin when it is smaller, and emits `site_gen.c`.
+  That file holds a sorted path table and the bodies in `.rodata`, with each response's headers precomputed (Content-Type, Content-Length, Content-Encoding, Vary, Cache-Control `immutable` for `/_next/static/` and `no-cache` otherwise, and an ETag from `shared/c/fnv.h`).
+  A deploy stays one file.
+- **Runtime.** `c_base/core/src/site/site.c` (about 150 lines, lifted from c_chess's `web.c`).
+  The app names its table in `cb_app.site`, and boot registers `GET /*` with `CB_ROUTE_INLINE | CB_ROUTE_HOME` after every other route, so the longest match keeps every API route and `/ws` ahead of it.
+  Lookup is a binary search, `If-None-Match` answers 304, and fallbacks (Next's `404.html`, a `/{id}` page such as foolish's `[game_id]`) are rows of data in the table.
+  The body is sent from `.rodata` without a copy, which needs a borrowed-body flag on `cb_http_res`, because `cb_res_body` copies today (http.h:67).
+- **Each app is its own process.** The table is linked into that app's binary; no process serves two apps.
+- **The proof that it does not slow the hot path:**
+  - `hotpath_proof.sh` with its default list (`on_message`, `pump`, `cb_rt_publish`, `send_all`, `cb_ws_send`, `flush` and the rest) shows identical machine code.
+    The borrowed-body flag touches `cb_res_serialize`, which is not on that list, so that function's diff is read and named in the PR.
+  - An A/B run of the app's load generator with the site linked and not linked gives the same p50 and p99 for a push round trip, and the same server CPU per message.
+  - A microbench reports the cost of one static hit in nanoseconds on the loop thread.
+  - The site's bytes are counted in RSS, since `.rodata` pages in on first touch.
+
+### 3.7 The ops panel
+
+- **One metrics source.** Every app reports through PR #429's registry (`c_base/core/src/metrics.h`) and `GET /metrics`.
+  adventurer's `/adv/ops` record becomes registry rows.
+- **One reader.** structgen's `metrics.ts` from `metrics.h`, with birdseye's `readMetrics`, moves to `c_base/client/ts/ops/`.
+- **One component.** `CbOps` (from birdseye's `Ops.tsx`, 135 lines): the platform's rows first, the app's after, rates as sparklines, histograms as p50/p90/p99.
+  An app puts it on a page in one line.
+- The admin console that c_base already serves (`core/src/admin/console.html`) gets the same view, so an app with no website still has one.
+
+### 3.8 The load-test harness
+
+`cbase-load` is a C library in `c_base/client/load/`, built natively on the same `cbc`.
+- **Transport:** a non-blocking WebSocket and HTTP client on `cb_loop`, lifted from `wsbench.c:77-284` and `chessbench.c:107-304`.
+  The upgrade key is random per connection instead of fixed.
+- **Many clients per process:** one `cbc` per virtual user, which the context struct makes possible and the foolish singleton never did (`roundtrip.c:20-22` had to use the codecs alone for that reason).
+- **Pacing and accounts:** connect rate per tick, account workers, and the session cache file, from chessbench.
+- **Measurement:** percentiles from `shared/c/stats/hist.h`, server CPU and RSS from `shared/c/proc.h` and from the server's own `GET /metrics`, and a report in a fixed binary layout plus a text summary.
+- **The app's part:** its own `main`, which loops `cbl_poll(L, now)` and reacts to each `(user, cbc_event)` pair, so there are no callbacks here either.
+- lichess_ws uses only the transport and pacing, in a text-frame mode, because its protocol is lichess's JSON by contract.
+  JSON stays in that test tool and never in a shipped path.
+
+## 4. Where each piece lives, and the name
+
+The name is **the c_base client**: C prefix `cbc_`, header `cbase/client.h`, TS package `@cbase/client`, load library `cbase-load`.
+
+| Piece | Where |
+|---|---|
+| The C client (`conn.c`, `session.c`, `pump.c`, `gate.c`) | `c_base/client/src/`, header `c_base/client/include/cbase/client.h` |
+| The platform's auth wire (`cbase/wire.h`, from `netwire.[ch]`'s platform range) | `c_base/client/include/cbase/wire.h`, read by the server too |
+| The frame codec | `shared/c/stream_frame.h` (stays) |
+| The wasm libc | `shared/c/wasm/libc.c` (stays) |
+| The wasm exports and `cbase_client.wasm` | `c_base/client/wasm/` |
+| The TS host shim, loader, React hooks, ops component | `c_base/client/ts/` |
+| The Swift host shim | `c_base/client/swift/` |
+| The load harness | `c_base/client/load/` |
+| Static serving | `c_base/core/src/site/` and `c_base/tools/embed_site.c` |
+| Histograms, process readers | `shared/c/stats/hist.h`, `shared/c/proc.h` (stay, from PR #429) |
+| structgen, datagen | `shared/tools/` (stay) |
+| Tests | `c_base/client/test/` (unit, fuzz with a corpus, and the `nc_trace` differential tool) |
+
+`c_base/client` sits beside `c_base/core` because it is the other half of c_base's own protocol, not a helper that apps and c_base both happen to use.
+It falls under the same product-name gate as the rest of `c_base/`.
+Open question 1 asks Alex to confirm the split.
+
+## 5. Migration order
+
+Each step lands as its own PR with its own proof.
+PR #429 (the packed frame heads, `/ws/public`, the metrics registry) merges first, since steps 2 to 5 use it.
+
+1. **The library, used by nothing.**
+   `c_base/client` with `cbc`, `cbase/wire.h`, the TS shim, the wasm build, unit tests mutation-checked, a fuzz target with its corpus, and the size gate.
+   Proof: its own tests, and the product-name gate.
+   Deletes nothing.
+2. **adventurer**, a read-only anonymous viewer with no wasm today.
+   It moves to `cbase_client.wasm` in anonymous mode, `socket.ts`, `CbOps`, and the metrics registry.
+   Proof: its smoke's `/ws/public` test, and a browser check that the feed and the ops panel render.
+   Deletes: `web/src/api.ts:247-344` (the socket, about 100 lines), `gen/stream_frame.ts` (103, generated), `Ops.tsx` (98), the `/adv/ops` route.
+   It gains a client PING and half-open detection.
+3. **birdseye**, a read-only viewer plus an in-process simulator.
+   The web moves to `cbase_client.wasm`, the dev-only `/be/session` route goes away in favour of `/ws/public`, and `sim.c` and `league.c` run on `cbc` through the load transport.
+   Proof: its smoke, the hot-path proof, and the same resync count in the simulator before and after.
+   Deletes: `server/wasm/sf_wasm.c` (69), `api.ts:177-336` (about 160), `server/src/client.{c,h}` (283), `Ops.tsx` (135, replaced by `CbOps`), `routes.c:94-133`.
+4. **lichess_ws**, only the load transport.
+   Proof: `wsbench` reports the same moves per second within noise.
+   Deletes: `wsbench.c:77-284` (about 200).
+5. **c_chess**, a full client with an optimistic mirror and static serving.
+   `client.c` keeps its chess half on top of `cbc`, `net.ts` and `kernel.ts` go to the shim, `web.c` goes to c_base's site serving, and `chessbench` goes to `cbase-load`.
+   Its auth moves to the platform's `/v1/auth` and session blob (open question 4).
+   Proof: `smoke.c` (475 lines) unchanged and green, `chessbench` at or above 89,593 moves per second (DESIGN.md's configuration C), and the hot-path proof for the site step.
+   Deletes: about 150 lines of `client.c`, about 180 of `net.ts`, about 70 of `kernel.ts`, `web.c` (142), and about 300 of `chessbench.c`.
+   It gains PING, a pending-request timeout, resubscribe in C and write no-retry, which are intended changes to an app that is not live.
+6. **foolish C**, the stage-9 split of PLATFORM.md.
+   `netclient.c` becomes foolish's layer over one static `cbc`, and the `nc_*` names stay.
+   Proof: everything in section 2.6.
+   Deletes: the roughly 1,360 lines of section 2.1.
+7. **foolish TS**: `backend.ts`, `sdk/ts/wasm`, `sdk/ts/net`, the session and the route guards go to `@cbase/client`.
+   Proof: the e2e suite, `stream_dead_socket.test.ts` from its new home, the export-list diff, and one live game on a deploy preview.
+   Deletes: the roughly 1,250 lines of section 2.2.
+8. **foolish Swift**, with the next iOS build, after an OK on timing.
+   Proof: `NetTests.swift`, and a live game on a device.
+   Deletes: the roughly 410 lines of section 2.3.
+
+## 6. Risks and open questions for Alex
+
+1. **Where does the client live: `c_base/client/` or `shared/c/`?**
+   The rule puts helpers that both apps and c_base use in `shared/c`.
+   The client is not a helper but the other half of c_base's own protocol (`/ws`, `/v1/auth`, the session blob), the way the hub is the server half.
+   *Recommendation:* `c_base/client/`, under the product-name gate, with every helper it uses (`stream_frame.h`, `hist.h`, `proc.h`, the wasm libc) staying in `shared/c`.
+2. **Reconnect jitter.**
+   No app jitters its reconnect, so after a deploy every foolish client comes back on the same 500 ms schedule.
+   Adding it changes foolish's behaviour, which the move must not do.
+   *Recommendation:* the move ships with `jitter = 0` and the differential proof, then a separate, flag-guarded PR turns on full jitter (a delay drawn from [0.5, 1.0] of the doubling schedule, seeded by the host's `now` and the user id, so tests stay deterministic).
+3. **Should c_base serve foolish's website?**
+   Foolish's export sits on S3 behind CloudFront today, with a viewer-request function for its rewrites and the `[game_id]` fallback.
+   *Recommendation:* no, foolish stays on CloudFront, which caches at the edge and costs nothing.
+   c_base's site serving is for the apps without a CDN (c_chess, birdseye, adventurer), and foolish can opt in later by moving its rewrites into the site table as rows.
+4. **One auth contract for every app.**
+   Today foolish uses `/v1/auth`, c_chess uses `/c/auth` with a JSON guest in localStorage, birdseye has a dev-only fixed account, and adventurer is anonymous.
+   *Recommendation:* the client speaks only the platform's `/v1/auth` and the anonymous `/ws/public`.
+   c_chess moves to them in step 5, and its guest becomes a platform signup whose name and password live in the session blob, not in JSON.
+5. **Swift now, Kotlin later.**
+   The iMessage app never links FoolishNet, and the main iOS app is not a priority, so the Swift step only pays off with the next iOS build.
+   *Recommendation:* do steps 1 to 7 now, step 8 with the next iOS build, and no Kotlin until an Android host exists; structgen will write its bindings on that day.
