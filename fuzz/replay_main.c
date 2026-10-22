@@ -58,7 +58,7 @@ int main(int argc, char **argv) {
             snprintf(names[n++], len, "%s/%s", argv[i], e->d_name);
         }
         closedir(d);
-        qsort(names, (size_t)n, sizeof *names, by_name);   // the same order on every machine
+        if (n) qsort(names, (size_t)n, sizeof *names, by_name);   // the same order on every machine (an empty corpus has no array to sort)
         for (int k = 0; k < n; k++) { bad += run_file(names[k]); files++; free(names[k]); }
         free(names);
     }

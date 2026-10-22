@@ -38,18 +38,18 @@ void stat_hist_add(StatHist *h, uint64_t v)
 
 uint32_t stat_hist_pct(const StatHist *h, double pct)
 {
-    uint64_t n = atomic_load_explicit((atomic_ullong *)&h->n, memory_order_relaxed);
+    uint64_t n = atomic_load_explicit((_Atomic uint64_t *)&h->n, memory_order_relaxed);
     if (!n) return 0;
     if (pct < 0) pct = 0;
     if (pct > 100) pct = 100;
     /* The pct-th sample, 1-based, rounded up: p50 of 3 samples is the 2nd, p99 of 100 the 99th. */
     uint64_t want = (uint64_t)((n * pct + 99.999999) / 100.0);
     if (want < 1) want = 1;
-    uint64_t max = atomic_load_explicit((atomic_ullong *)&h->max, memory_order_relaxed);
+    uint64_t max = atomic_load_explicit((_Atomic uint64_t *)&h->max, memory_order_relaxed);
     if (want >= n) return max > UINT32_MAX ? UINT32_MAX : (uint32_t)max;   /* p100: the max itself */
     uint64_t acc = 0;
     for (int b = 0; b < STAT_HIST_BUCKETS; b++) {
-        uint64_t c = atomic_load_explicit((atomic_ullong *)&h->b[b], memory_order_relaxed);
+        uint64_t c = atomic_load_explicit((_Atomic uint64_t *)&h->b[b], memory_order_relaxed);
         if (acc + c < want) { acc += c; continue; }
         /* The want-th sample is the k-th of this bucket's c: place it across the bucket's width
          * by rank, (k - 0.5) / c of the way from the floor to the next floor, and never past the
@@ -67,12 +67,12 @@ uint32_t stat_hist_pct(const StatHist *h, double pct)
     return max > UINT32_MAX ? UINT32_MAX : (uint32_t)max;
 }
 
-uint64_t stat_hist_max(const StatHist *h) { return atomic_load_explicit((atomic_ullong *)&h->max, memory_order_relaxed); }
-uint64_t stat_hist_count(const StatHist *h) { return atomic_load_explicit((atomic_ullong *)&h->n, memory_order_relaxed); }
+uint64_t stat_hist_max(const StatHist *h) { return atomic_load_explicit((_Atomic uint64_t *)&h->max, memory_order_relaxed); }
+uint64_t stat_hist_count(const StatHist *h) { return atomic_load_explicit((_Atomic uint64_t *)&h->n, memory_order_relaxed); }
 
 void stat_hist_read(const StatHist *h, uint64_t out[STAT_HIST_BUCKETS], uint64_t *n, uint64_t *max)
 {
-    for (int b = 0; b < STAT_HIST_BUCKETS; b++) out[b] = atomic_load_explicit((atomic_ullong *)&h->b[b], memory_order_relaxed);
+    for (int b = 0; b < STAT_HIST_BUCKETS; b++) out[b] = atomic_load_explicit((_Atomic uint64_t *)&h->b[b], memory_order_relaxed);
     if (n) *n = stat_hist_count(h);
     if (max) *max = stat_hist_max(h);
 }
@@ -107,10 +107,10 @@ float stat_rate_per_s(const StatRate *r, int64_t now_ms)
     for (int k = 1; k < STAT_RATE_SLOTS; k++) {
         int64_t want = s - k;
         int i = slot_of(want);
-        if (atomic_load_explicit((atomic_llong *)&r->sec[i], memory_order_relaxed) == want)
-            total += atomic_load_explicit((atomic_ullong *)&r->count[i], memory_order_relaxed);
+        if (atomic_load_explicit((_Atomic int64_t *)&r->sec[i], memory_order_relaxed) == want)
+            total += atomic_load_explicit((_Atomic uint64_t *)&r->count[i], memory_order_relaxed);
     }
     return (float)total / (float)(STAT_RATE_SLOTS - 1);
 }
 
-uint64_t stat_rate_total(const StatRate *r) { return atomic_load_explicit((atomic_ullong *)&r->total, memory_order_relaxed); }
+uint64_t stat_rate_total(const StatRate *r) { return atomic_load_explicit((_Atomic uint64_t *)&r->total, memory_order_relaxed); }

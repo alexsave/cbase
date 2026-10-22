@@ -29,9 +29,9 @@
 #define STAT_HIST_BUCKETS (32 * STAT_HIST_PER_OCTAVE)
 
 typedef struct {
-    atomic_ullong b[STAT_HIST_BUCKETS];
-    atomic_ullong n;     /* samples ever */
-    atomic_ullong max;   /* the largest sample ever */
+    _Atomic uint64_t b[STAT_HIST_BUCKETS];
+    _Atomic uint64_t n;  /* samples ever */
+    _Atomic uint64_t max; /* the largest sample ever */
 } StatHist;
 
 void     stat_hist_add(StatHist *h, uint64_t v);
@@ -58,9 +58,9 @@ void     stat_hist_read(const StatHist *h, uint64_t out[STAT_HIST_BUCKETS], uint
 #define STAT_RATE_SLOTS 10   /* seconds the ring remembers: this one, and the nine before it */
 
 typedef struct {
-    atomic_ullong count[STAT_RATE_SLOTS];
-    atomic_llong  sec[STAT_RATE_SLOTS];   /* the second (now_ms / 1000) each slot counts; 0 never written */
-    atomic_ullong total;                  /* events ever */
+    _Atomic uint64_t count[STAT_RATE_SLOTS];
+    _Atomic int64_t  sec[STAT_RATE_SLOTS];  /* the second (now_ms / 1000) each slot counts; 0 never written */
+    _Atomic uint64_t total;               /* events ever */
 } StatRate;
 
 /* Counts n events at now_ms. A slot whose second has passed is taken over by the first writer

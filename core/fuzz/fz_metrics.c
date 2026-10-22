@@ -26,7 +26,7 @@ static bool name_model(const char *s) {
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     fz_in in = fz_in_of(data, size);
     int n = fz_u8(&in) % 12;   // small tables: the shapes, not the count, are the point
-    cb_metric_def defs[12];
+    cb_metric_def defs[12] = { 0 };   // (GCC cannot see that only the n written are read)
     char *names[12];
     bool ok = true;
     for (int i = 0; i < n; i++) {
