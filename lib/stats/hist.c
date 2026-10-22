@@ -1,22 +1,30 @@
 /* hist.c - hist.h. */
 #include "hist.h"
 
+#define PER STAT_HIST_PER_OCTAVE   /* 8: a power of two, so the arithmetic below is shifts */
+
 int stat_hist_bucket(uint64_t v)
 {
     if (v < 2) return 0;
-    int lg = 63 - __builtin_clzll(v);                      /* floor(log2 v) */
-    uint64_t frac = (v - (1ull << lg)) * 4 / (1ull << lg); /* 0..3 within the octave */
-    int b = lg * 4 + (int)frac;
+    int lg = 63 - __builtin_clzll(v);                        /* floor(log2 v) */
+    uint64_t frac = (v - (1ull << lg)) * PER / (1ull << lg); /* 0..PER-1 within the octave */
+    int b = lg * PER + (int)frac;
     return b >= STAT_HIST_BUCKETS ? STAT_HIST_BUCKETS - 1 : b;
+}
+
+/* The floor of bucket b as a 64-bit value (the last bucket's top is 2^32): 2^lg * (1 + frac/PER)
+ * = 2^(lg-3) * (PER + frac), exact in integers from lg 3 up. */
+static uint64_t floor64(int b)
+{
+    if (b <= 0) return 0;   /* bucket 0 holds 0 and 1: its floor is 0 (a p99 over nothing but zeros is 0, not 1) */
+    if (b >= STAT_HIST_BUCKETS) return 1ull << 32;
+    int lg = b / PER, frac = b % PER;
+    return lg >= 3 ? ((uint64_t)(PER + frac) << (lg - 3)) : ((uint64_t)(PER + frac) >> (3 - lg));
 }
 
 uint32_t stat_hist_floor(int b)
 {
-    if (b <= 0) return 0;   /* bucket 0 holds 0 and 1: its floor is 0 (a p99 over nothing but zeros is 0, not 1) */
-    if (b >= STAT_HIST_BUCKETS) b = STAT_HIST_BUCKETS - 1;
-    int lg = b / 4, frac = b % 4;
-    /* 2^lg * (1 + frac/4) = 2^(lg-2) * (4 + frac), exact in integers from lg 2 up. */
-    uint64_t v = lg >= 2 ? ((uint64_t)(4 + frac) << (lg - 2)) : ((uint64_t)(4 + frac) >> (2 - lg));
+    uint64_t v = floor64(b);
     return v > UINT32_MAX ? UINT32_MAX : (uint32_t)v;
 }
 
@@ -37,13 +45,23 @@ uint32_t stat_hist_pct(const StatHist *h, double pct)
     /* The pct-th sample, 1-based, rounded up: p50 of 3 samples is the 2nd, p99 of 100 the 99th. */
     uint64_t want = (uint64_t)((n * pct + 99.999999) / 100.0);
     if (want < 1) want = 1;
-    if (want > n) want = n;
+    uint64_t max = atomic_load_explicit((atomic_ullong *)&h->max, memory_order_relaxed);
+    if (want >= n) return max > UINT32_MAX ? UINT32_MAX : (uint32_t)max;   /* p100: the max itself */
     uint64_t acc = 0;
     for (int b = 0; b < STAT_HIST_BUCKETS; b++) {
-        acc += atomic_load_explicit((atomic_ullong *)&h->b[b], memory_order_relaxed);
-        if (acc >= want) return stat_hist_floor(b);
+        uint64_t c = atomic_load_explicit((atomic_ullong *)&h->b[b], memory_order_relaxed);
+        if (acc + c < want) { acc += c; continue; }
+        /* The want-th sample is the k-th of this bucket's c: place it across the bucket's width
+         * by rank, (k - 0.5) / c of the way from the floor to the next floor, and never past the
+         * max seen (the top bucket's width is a guess the max corrects). */
+        uint64_t k = want - acc;
+        double lo = (double)floor64(b), hi = (double)floor64(b + 1);
+        double v = lo + (hi - lo) * ((double)k - 0.5) / (double)c;
+        if (v > (double)max) v = (double)max;
+        if (v < lo) v = lo;
+        return v > 4294967295.0 ? UINT32_MAX : (uint32_t)(v + 0.5);
     }
-    return stat_hist_floor(STAT_HIST_BUCKETS - 1);
+    return max > UINT32_MAX ? UINT32_MAX : (uint32_t)max;
 }
 
 uint64_t stat_hist_max(const StatHist *h) { return atomic_load_explicit((atomic_ullong *)&h->max, memory_order_relaxed); }

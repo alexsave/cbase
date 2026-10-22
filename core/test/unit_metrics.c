@@ -72,7 +72,7 @@ static void registry_updates(void) {
     T_CHECK(cb_metrics_def(m, M_UPLOADS) == &DEFS[M_UPLOADS]);
     for (uint64_t v = 1; v <= 100; v++) cb_metrics_observe(m, M_ACT, v);
     T_EQ_INT(cb_metrics_get(m, M_ACT), 100);
-    T_EQ_INT(cb_metrics_pct(m, M_ACT, 50), 48);
+    T_EQ_INT(cb_metrics_pct(m, M_ACT, 50), 51);   // 1..100: the 50th, placed by rank in [48, 54) (hist_test.c)
     T_EQ_INT(cb_metrics_max(m, M_ACT), 100);
     cb_metrics_rate(m, M_UPLOADS, 5000, 9);
     cb_metrics_rate(m, M_UPLOADS, 6000, 9);
@@ -141,9 +141,9 @@ static void registry_report(void) {
     T_EQ_STR(r->name, "act_cpu");
     T_EQ_INT(r->name_len, 7);
     T_EQ_INT(r->total, 100);
-    T_EQ_INT(r->p50, 48);
-    T_EQ_INT(r->p90, 80);
-    T_EQ_INT(r->p99, 96);
+    T_EQ_INT(r->p50, 51);
+    T_EQ_INT(r->p90, 91);
+    T_EQ_INT(r->p99, 100);
     T_EQ_INT(r->max, 100);
     r = row_at(buf, M_UPLOADS);
     T_EQ_INT(r->kind, CB_METRIC_RATE);

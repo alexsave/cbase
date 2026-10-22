@@ -12,40 +12,56 @@
 
 static void buckets(void)
 {
-    TEST("hist: four buckets per octave");
-    /* 1 (and 0), then 2, 2.5, 3, 3.5, 4, 5, 6, 7, 8, ... */
+    TEST("hist: eight buckets per octave");
+    /* 1 (and 0), then 2, 2.25, ..., 4, 4.5, ..., 8, 9, 10, ... */
     CHECK(stat_hist_bucket(0) == 0, "0");
     CHECK(stat_hist_bucket(1) == 0, "1");
-    CHECK(stat_hist_bucket(2) == 4, "2");
-    CHECK(stat_hist_bucket(3) == 6, "3");
-    CHECK(stat_hist_bucket(4) == 8, "4");
-    CHECK(stat_hist_bucket(5) == 9, "5");
-    CHECK(stat_hist_bucket(7) == 11, "7");
-    CHECK(stat_hist_bucket(8) == 12, "8");
-    CHECK(stat_hist_bucket(1000) == 39, "1000 (2^9 * 1.75 = 896 <= 1000 < 1024)");
-    CHECK(stat_hist_bucket(1ull << 31) == 124, "2^31");
+    CHECK(stat_hist_bucket(2) == 8, "2");
+    CHECK(stat_hist_bucket(3) == 12, "3");
+    CHECK(stat_hist_bucket(4) == 16, "4");
+    CHECK(stat_hist_bucket(5) == 18, "5");
+    CHECK(stat_hist_bucket(7) == 22, "7");
+    CHECK(stat_hist_bucket(8) == 24, "8");
+    CHECK(stat_hist_bucket(9) == 25, "9");
+    CHECK(stat_hist_bucket(1000) == 79, "1000 (2^9 * 1.875 = 960 <= 1000 < 1024)");
+    CHECK(stat_hist_bucket(1ull << 31) == 248, "2^31");
     CHECK(stat_hist_bucket(UINT64_MAX) == STAT_HIST_BUCKETS - 1, "the largest value lands in the last bucket");
     TEST("hist: floors");
     CHECK(stat_hist_floor(0) == 0, "bucket 0 holds 0 and 1: its floor is 0");
     CHECK(stat_hist_floor(1) == 1, "bucket 1");
-    CHECK(stat_hist_floor(4) == 2, "bucket 4");
-    CHECK(stat_hist_floor(8) == 4, "bucket 8");
-    CHECK(stat_hist_floor(9) == 5, "bucket 9");
-    CHECK(stat_hist_floor(39) == 896, "bucket 39");
-    CHECK(stat_hist_floor(STAT_HIST_BUCKETS - 1) == 3758096384u, "the last bucket: 2^31 * 1.75");
+    CHECK(stat_hist_floor(8) == 2, "bucket 8");
+    CHECK(stat_hist_floor(16) == 4, "bucket 16");
+    CHECK(stat_hist_floor(18) == 5, "bucket 18");
+    CHECK(stat_hist_floor(79) == 960, "bucket 79");
+    CHECK(stat_hist_floor(STAT_HIST_BUCKETS - 1) == 4026531840u, "the last bucket: 2^31 * 1.875");
     CHECK(stat_hist_floor(-5) == 0, "a bucket below 0 reads as 0");
-    CHECK(stat_hist_floor(999) == 3758096384u, "a bucket past the end reads as the last");
-    /* From 4 up every bucket's floor is an integer that lands in that bucket, and the floors
-     * rise; below 4 the quarter steps round down (1.25 -> 1, 2.5 -> 2) and only never fall. */
+    CHECK(stat_hist_floor(999) == UINT32_MAX, "a bucket past the end reads as the top");
+    /* From 8 up every bucket's floor is an integer that lands in that bucket, and the floors
+     * rise; below 8 the eighth steps round down and only never fall. */
     for (int b = 0; b < STAT_HIST_BUCKETS; b++) {
         uint32_t f = stat_hist_floor(b);
-        if (b >= 8) {
+        if (b >= 24) {
             CHECK(stat_hist_bucket(f) == b, "a floor lands in its bucket");
             CHECK(f > stat_hist_floor(b - 1), "floors rise");
         } else if (b > 0) {
             CHECK(f >= stat_hist_floor(b - 1), "floors never fall");
         }
     }
+}
+
+/* The nearest-rank percentile of sorted v[0..n): the truth the estimate is held to. */
+static uint64_t true_pct(const uint64_t *v, uint64_t n, double pct)
+{
+    uint64_t want = (uint64_t)((n * pct + 99.999999) / 100.0);
+    if (want < 1) want = 1;
+    if (want > n) want = n;
+    return v[want - 1];
+}
+
+static int cmp_u64(const void *a, const void *b)
+{
+    uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
+    return x < y ? -1 : x > y;
 }
 
 static void percentiles(void)
@@ -56,24 +72,23 @@ static void percentiles(void)
     CHECK(stat_hist_pct(&h, 50) == 0, "empty: p50 0");
     CHECK(stat_hist_max(&h) == 0, "empty: max 0");
     CHECK(stat_hist_count(&h) == 0, "empty: count 0");
-    /* 1..100 once each: p50 is the 50th sample (50, in bucket [48, 56)), p99 the 99th (99 in
-     * [96, 112)), p100 the 100th, p0 the first. */
+    /* 1..100 once each: the pct-th sample is pct itself (nearest rank), and the estimate places
+     * it inside its bucket by rank: p50 = 50 in [48, 54): the 3rd of the 6 there, 48 + 6 * 2.5/6 = 50.5. */
     for (uint64_t v = 1; v <= 100; v++) stat_hist_add(&h, v);
     CHECK(stat_hist_count(&h) == 100, "100 samples");
     CHECK(stat_hist_max(&h) == 100, "max 100");
-    CHECK(stat_hist_pct(&h, 50) == 48, "p50 of 1..100 is bucket [48, 56)");
-    CHECK(stat_hist_pct(&h, 99) == 96, "p99 of 1..100 is bucket [96, 112)");
-    CHECK(stat_hist_pct(&h, 100) == 96, "p100 too");
-    CHECK(stat_hist_pct(&h, 0) == 0, "p0: the first sample, 1, in bucket 0");
-    CHECK(stat_hist_pct(&h, 1) == 0, "p1 too");
-    CHECK(stat_hist_pct(&h, 2) == 2, "p2: the 2nd sample");
-    CHECK(stat_hist_pct(&h, 150) == 96, "pct over 100 is clamped");
-    CHECK(stat_hist_pct(&h, -1) == 0, "pct under 0 is clamped");
+    CHECK(stat_hist_pct(&h, 50) == 51, "p50 of 1..100 reads 51 (50.5 rounded)");
+    CHECK(stat_hist_pct(&h, 99) == 100, "p99 of 1..100 reads 100 (99 is the 4th of the 5 in [96, 104): 101.6, clamped to the max)");
+    CHECK(stat_hist_pct(&h, 100) == 100, "p100 is the max exactly");
+    CHECK(stat_hist_pct(&h, 0) == 1, "p0: the first sample, 1, alone in bucket 0 (floor 0, width 1): 0.5, rounded");
+    CHECK(stat_hist_pct(&h, 2) == 2, "p2: the 2nd sample, 2, alone in its bucket");
+    CHECK(stat_hist_pct(&h, 150) == 100, "pct over 100 is clamped to the max");
+    CHECK(stat_hist_pct(&h, -1) == 1, "pct under 0 is clamped");
     /* One huge outlier moves the max and the p100, not the p99. */
     stat_hist_add(&h, 5000000);
     CHECK(stat_hist_max(&h) == 5000000, "the outlier is the max");
-    CHECK(stat_hist_pct(&h, 100) == stat_hist_floor(stat_hist_bucket(5000000)), "p100 is the outlier's bucket");
-    CHECK(stat_hist_pct(&h, 99) == 96, "p99 unmoved");
+    CHECK(stat_hist_pct(&h, 100) == 5000000, "p100 is the outlier");
+    CHECK(stat_hist_pct(&h, 99) == 103, "p99 moved a little: the 100th of 101 samples, 100, is the 5th of the 5 in [96, 104): 96 + 8 * 4.5/5 = 103.2, no max to clamp it now");
     /* A smaller sample never lowers the max. */
     stat_hist_add(&h, 3);
     CHECK(stat_hist_max(&h) == 5000000, "max stays");
@@ -82,7 +97,7 @@ static void percentiles(void)
     CHECK(n == 102 && max == 5000000, "read: n and max");
     for (int b = 0; b < STAT_HIST_BUCKETS; b++) sum += counts[b];
     CHECK(sum == 102, "read: the counts sum to n");
-    CHECK(counts[6] == 2, "3 twice, in bucket 6");
+    CHECK(counts[12] == 2, "3 twice, in bucket 12");
     stat_hist_read(&h, counts, NULL, NULL);
     TEST("hist: nothing but zeros reads 0");
     StatHist z;
@@ -91,6 +106,47 @@ static void percentiles(void)
     stat_hist_add(&z, 0);
     CHECK(stat_hist_pct(&z, 99) == 0, "p99 of zeros is 0, not bucket 0's old floor of 1");
     CHECK(stat_hist_max(&z) == 0, "max 0");
+    TEST("hist: the estimate is within the bucket of the truth, and the max bounds it");
+    /* THE ERROR BOUND. Whatever the distribution, the estimate lies in the true sample's bucket,
+     * [floor, floor * 2^(1/8)), and under the max: within 9.05% of the truth. A nasty shape: a
+     * spike at one value with a long tail, and values crowding a bucket's top. */
+    static uint64_t v[20000];
+    uint64_t rng = 88172645463325252ull;
+    uint64_t m = 0;
+    StatHist w;
+    memset(&w, 0, sizeof w);
+    for (int i = 0; i < 20000; i++) {
+        rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17;
+        uint64_t x;
+        if (i % 3 == 0) x = 777;                              /* the spike */
+        else if (i % 3 == 1) x = 1000 + (rng % 4000000);       /* the tail, a value with a wide range */
+        else x = 2047 - (rng % 4);                             /* the top of [1920, 2048) */
+        v[m++] = x;
+        stat_hist_add(&w, x);
+    }
+    qsort(v, m, sizeof *v, cmp_u64);
+    double worst = 0;
+    for (int p = 0; p <= 100; p++) {
+        uint64_t truth = true_pct(v, m, p), est = stat_hist_pct(&w, p);
+        uint64_t diff = est > truth ? est - truth : truth - est;
+        double err = truth ? (double)diff / (double)truth : 0;
+        if (err > worst) worst = err;
+        CHECK(est <= stat_hist_max(&w), "never above the max");
+        CHECK((double)diff <= 0.0906 * (double)truth + 1, "within 9.05%% of the nearest-rank truth (plus a half unit of rounding)");
+    }
+    CHECK(worst > 0.001, "the bound is exercised (some percentile is off by more than 0.1%%)");
+    CHECK(stat_hist_pct(&w, 100) == v[m - 1], "p100 is the max");
+    TEST("hist: a uniform spread is read to 1%");
+    /* Values spread evenly across each bucket: the rank interpolation lands on the truth. */
+    StatHist u;
+    memset(&u, 0, sizeof u);
+    m = 0;
+    for (uint64_t x = 1000; x < 200000; x += 7) { v[m++] = x; stat_hist_add(&u, x); }
+    for (int p = 1; p <= 100; p++) {
+        uint64_t truth = true_pct(v, m, p), est = stat_hist_pct(&u, p);
+        double err = (est > truth ? (double)(est - truth) : (double)(truth - est)) / (double)truth;
+        CHECK(err <= 0.01, "within 1%% of the nearest-rank truth on a uniform spread");
+    }
 }
 
 typedef struct { StatHist *h; } job;

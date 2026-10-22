@@ -21,11 +21,12 @@
 #include <stdatomic.h>
 #include <stdint.h>
 
-/* Bucket b holds the values in [2^(b/4) * (1 + (b%4)/4), the next bucket's floor): 1, 1.25,
- * 1.5, 1.75, 2, 2.5, 3, 3.5, 4, ... (0 and 1 share bucket 0, whose floor reads as 0; integers
- * under 4 land exactly). 128 buckets reach 2^32: a value past 2^32 - 1 is counted in the last
- * one. */
-#define STAT_HIST_BUCKETS 128
+/* Bucket b holds the values in [2^(b/8) * (1 + (b%8)/8), the next bucket's floor): eight per
+ * octave, 1, 1.125, 1.25, ..., 2, 2.25, ..., 4, 4.5, ... (0 and 1 share bucket 0, whose floor
+ * reads as 0; integers under 8 land exactly). 256 buckets reach 2^32: a value past 2^32 - 1 is
+ * counted in the last one. */
+#define STAT_HIST_PER_OCTAVE 8
+#define STAT_HIST_BUCKETS (32 * STAT_HIST_PER_OCTAVE)
 
 typedef struct {
     atomic_ullong b[STAT_HIST_BUCKETS];
@@ -38,9 +39,13 @@ void     stat_hist_add(StatHist *h, uint64_t v);
  * of the same table, for a reader that wants the bands themselves. */
 int      stat_hist_bucket(uint64_t v);
 uint32_t stat_hist_floor(int bucket);
-/* The value at the given percentile (0..100; clamped): the floor of the bucket the pct-th
- * sample falls in (so a p99 reads a little under the true value, never over its bucket's top).
- * 0 for an empty histogram. */
+/* The value at the given percentile (0..100; clamped), estimated from the bucket the pct-th
+ * sample falls in: the sample's rank within the bucket placed linearly across the bucket's
+ * width (the k-th of c samples at (k - 0.5)/c of the way), and never above the max seen. THE
+ * ERROR IS BOUNDED BY THE BUCKET: a bucket spans a factor of 2^(1/8), so the estimate is within
+ * 9.05% of the true (nearest-rank) value whatever the distribution, and much closer when the
+ * samples spread across the bucket (hist_test.c pins 1% on a uniform spread). p100 is the max
+ * exactly. 0 for an empty histogram. */
 uint32_t stat_hist_pct(const StatHist *h, double pct);
 uint64_t stat_hist_max(const StatHist *h);
 uint64_t stat_hist_count(const StatHist *h);

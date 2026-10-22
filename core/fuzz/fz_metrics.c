@@ -91,7 +91,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
             FZ_CHECK(cb_metrics_max(m, i) == hmax[i]);
             uint32_t p50 = cb_metrics_pct(m, i, 50), p90 = cb_metrics_pct(m, i, 90), p99 = cb_metrics_pct(m, i, 99);
             FZ_CHECK(p50 <= p90 && p90 <= p99 && p99 <= hmax[i]);
-            if (hn[i]) FZ_CHECK(stat_hist_floor(stat_hist_bucket(hmax[i])) == cb_metrics_pct(m, i, 100));
+            if (hn[i]) FZ_CHECK(cb_metrics_pct(m, i, 100) == hmax[i]);   // p100 is the max
             break;
         }
     }
