@@ -110,7 +110,7 @@ static void percentiles(void)
     /* THE ERROR BOUND. Whatever the distribution, the estimate lies in the true sample's bucket,
      * [floor, floor * 2^(1/8)), and under the max: within 9.05% of the truth. A nasty shape: a
      * spike at one value with a long tail, and values crowding a bucket's top. */
-    static uint64_t v[20000];
+    static uint64_t v[32000];   /* the spike-and-tail sample (20000) and the uniform spread (28429) */
     uint64_t rng = 88172645463325252ull;
     uint64_t m = 0;
     StatHist w;
