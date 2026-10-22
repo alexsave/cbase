@@ -63,17 +63,17 @@ static void heads(void)
 {
     TEST("stream_frame: the heads are the writers' bytes");
     uint8_t o[64];
-    sf_hello_hdr h = { SF_V, SF_HELLO, 6 };
+    sf_hello_hdr h = { .v = SF_V, .kind = SF_HELLO, .n = 6 };   /* designated: a field order swapped in the header must show */
     CHECK(sf_put_hello(o, sizeof o, "tok-en", 6) == 10 && memcmp(o, &h, sizeof h) == 0 && memcmp(o + sizeof h, "tok-en", 6) == 0, "HELLO: head then token");
-    sf_sub_hdr s = { SF_V, SF_SUB, 0x01020304u, SF_WHAT_ROOM, 6 };
+    sf_sub_hdr s = { .v = SF_V, .kind = SF_SUB, .id = 0x01020304u, .what = SF_WHAT_ROOM, .n = 6 };
     CHECK(sf_put_sub(o, sizeof o, SF_SUB, 0x01020304u, SF_WHAT_ROOM, "room-1", 6) == 14 && memcmp(o, &s, sizeof s) == 0 &&
           memcmp(o + sizeof s, "room-1", 6) == 0, "SUB: head then room id");
-    sf_req_hdr q = { SF_V, SF_REQ, 42, SF_METH_POST, 5 };
+    sf_req_hdr q = { .v = SF_V, .kind = SF_REQ, .id = 42, .meth = SF_METH_POST, .n = 5 };
     CHECK(sf_put_req(o, sizeof o, 42, SF_METH_POST, "/v1/x", 5, (const uint8_t *)"abc", 3) == 17 && memcmp(o, &q, sizeof q) == 0 &&
           memcmp(o + sizeof q, "/v1/x", 5) == 0 && memcmp(o + sizeof q + 5, "abc", 3) == 0, "REQ: head, path, body");
-    sf_reply_hdr r = { SF_V, SF_REPLY, 5, 404 };
+    sf_reply_hdr r = { .v = SF_V, .kind = SF_REPLY, .id = 5, .status = 404 };
     CHECK(sf_put_reply_head(o, sizeof o, 5, 404) == 8 && memcmp(o, &r, sizeof r) == 0, "REPLY: the head");
-    sf_bare_hdr b = { SF_V, SF_PONG };
+    sf_bare_hdr b = { .v = SF_V, .kind = SF_PONG };
     CHECK(sf_put_bare(o, sizeof o, SF_PONG) == 2 && memcmp(o, &b, sizeof b) == 0, "PONG: the head alone");
     /* ...and the parser reads a head written as a struct. */
     sf_frame f;
