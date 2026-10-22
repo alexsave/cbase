@@ -12,8 +12,9 @@
 //   HTTP     send each request cbc_next_request writes, answer it with cbc_on_response
 //            (status 0: it never arrived)
 //   timer    wake after cbc_due_ms and call cbc_tick, then drain both outputs again
-//   events   after every call that takes now, read cbc_n_events / cbc_event_at; they hold
-//            until the next such call. A span (off, len) is into the bytes passed to that call.
+//   events   cbc_in, cbc_on_response, cbc_closed and cbc_tick raise events: read them with
+//            cbc_n_events / cbc_event_at after each, before calling any of the four again. A span
+//            (off, len) is into the bytes passed to the call that raised it.
 //
 // ONE AUTHENTICATION PER SOCKET (CLIENT_DESIGN.md 6.4). A session is made over HTTP
 // (cbc_sign_in, and the refresh this file sends itself), the socket says HELLO with its token once,
@@ -232,8 +233,8 @@ int  cbc_on_response(cbc *c, uint32_t id, int status, const uint8_t *body, size_
 int  cbc_stream_wanted(const cbc *c);      // 1: keep a socket open
 const char *cbc_stream_path(const cbc *c); // "/ws", or "/ws/public" for an anonymous client
 
-// Hold or release a room (counted: the SUB goes once, the UNSUB when the last hold goes). 0, or
-// CBC_E_ARG, CBC_E_FULL.
+// Hold or release a room (counted: the SUB goes once, the UNSUB when the last hold goes; an
+// anonymous client's socket closes instead when its last room goes). 0, or CBC_E_ARG, CBC_E_FULL.
 int  cbc_sub(cbc *c, int what, const char *room, size_t room_len);
 int  cbc_unsub(cbc *c, int what, const char *room, size_t room_len);
 

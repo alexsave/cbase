@@ -1,7 +1,7 @@
 // unit_name_gate.c - the name gate (docs/PLATFORM.md 8.4): each side of the tree
 // names nothing on the far side of its line.
 //
-//   * core (core/src, core/include) hits no pattern of any list: no product,
+//   * core (core/src, core/include) and the client (client/src, include, wasm, ts) hit no pattern of any list: no product,
 //     no provider, no foolish domain word;
 //   * a provider (providers/<p>/src) hits no product and no domain word;
 //   * the product (../foolish/server/src) hits no provider word.
@@ -221,6 +221,11 @@ static void scan_dir(const char *dir, int forbidden) {
 static void scan_tree(void) {
     scan_dir("core/src", L_PRODUCTS | L_PROVIDERS | L_DOMAIN);
     scan_dir("core/include", L_PRODUCTS | L_PROVIDERS | L_DOMAIN);
+    // The client (client/) is the other half of the platform, held to core's rule.
+    scan_dir("client/include", L_PRODUCTS | L_PROVIDERS | L_DOMAIN);
+    scan_dir("client/src", L_PRODUCTS | L_PROVIDERS | L_DOMAIN);
+    scan_dir("client/wasm", L_PRODUCTS | L_PROVIDERS | L_DOMAIN);
+    scan_dir("client/ts", L_PRODUCTS | L_PROVIDERS | L_DOMAIN);
     DIR *d = opendir("providers");
     struct dirent *e;
     while (d && (e = readdir(d)) != NULL) {

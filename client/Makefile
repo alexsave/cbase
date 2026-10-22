@@ -18,9 +18,9 @@ CC     ?= cc
 
 WARN    := -Wall -Wextra -Werror -Wshadow -Wvla -Wstrict-prototypes
 INC     := -Iinclude -I$(C_ROOT)/shared/c
-CFLAGS  := -std=c11 -O2 -g $(WARN) $(INC)
+CFLAGS  := -std=gnu11 -O2 -g $(WARN) $(INC)
 SAN     := -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer
-ASAN_CFLAGS := -std=c11 -O1 -g $(WARN) $(INC) $(SAN)
+ASAN_CFLAGS := -std=gnu11 -O1 -g $(WARN) $(INC) $(SAN)
 
 SRC      := src/client.c
 TEST_INC := -I$(C_ROOT)/c_base/core/test
@@ -60,7 +60,7 @@ else
 endif
 FUZZ_TIME ?= 30
 FUZZ_HARNESS := $(C_ROOT)/c_base/fuzz
-FUZZ_CFLAGS  := -std=c11 -O1 -g $(WARN) $(INC) -I$(FUZZ_HARNESS) -fsanitize=address,undefined,fuzzer -fno-sanitize-recover=undefined
+FUZZ_CFLAGS  := -std=gnu11 -O1 -g $(WARN) $(INC) -I$(FUZZ_HARNESS) -fsanitize=address,undefined,fuzzer -fno-sanitize-recover=undefined
 build/fuzz/client: fuzz/fz_client.c $(SRC) $(wildcard include/cbase/*.h) $(C_ROOT)/shared/c/stream_frame.h
 	@mkdir -p $(@D)
 	$(FUZZ_CC) $(FUZZ_CFLAGS) fuzz/fz_client.c $(SRC) -o $@
@@ -135,7 +135,7 @@ ts: wasm build/gen/client_exports.ts
 	  cmp -s $$f $(TS_OUT)/$$(basename $$f) || { cp $$f $(TS_OUT)/$$(basename $$f); echo "wrote $(TS_OUT)/$$(basename $$f)"; }; done
 	@mkdir -p $(dir $(WASM_OUT)) && { cmp -s build/wasm/cbase_client.wasm $(WASM_OUT) || { cp build/wasm/cbase_client.wasm $(WASM_OUT); echo "wrote $(WASM_OUT)"; }; }
 ts-test: ts
-	node --test test/ts/*.test.ts
+	node --test --test-timeout=20000 test/ts/*.test.ts
 
 .PHONY: clean
 clean:

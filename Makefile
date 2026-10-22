@@ -234,6 +234,13 @@ $(call prog,build/asan/test,build/obj/asan,build/obj/asan-kernel,unit_bench,benc
 $(foreach s,smoke smoke_lambda smoke_lambda_after smoke_authz smoke_matrix smoke_boot,$(call prog,build/asan/test,build/obj/asan,build/obj/asan-kernel,$(s),$(call tsrc,$(s)) $(TLIB_SRC),ASAN_CB_CFLAGS))
 
 
+# THE CLIENT (client/, CLIENT_DESIGN.md): its own small build, its unit tests natively and under
+# the sanitizers, and its fuzz corpus replayed. Its wasm module, size gate and TypeScript tests need
+# the pinned LLVM and node, and run in c_base.yml's client job.
+.PHONY: client-check
+client-check:
+	$(MAKE) -C client check
+
 .PHONY: test-uring
 .PHONY: coverage all test smoke check check-asan test-asan smoke-asan check-dynamo clean print-kernel-src bootstrap bench
 all: build/cbase build/bootstrap build/cbase-import build/cbase-export build/cbase-bench
@@ -314,7 +321,7 @@ test-uring: $(call UNIT_RUNS,build/test) $(call SMOKE_PROGS,build)
 smoke: $(call SMOKE_PROGS,build)
 	$(call RUN_ALL,SMOKE,$(call SMOKE_RUNS,build))
 # One pool for both, so the smokes and the units share the machine's cores.
-check: compiler-gate shared-tests $(call UNIT_RUNS,build/test) $(call SMOKE_PROGS,build)
+check: compiler-gate shared-tests $(call UNIT_RUNS,build/test) $(call SMOKE_PROGS,build) client-check
 	$(call RUN_ALL,CHECK,$(call SMOKE_RUNS,build) $(call UNIT_RUNS,build/test))
 
 test-asan: shared-tests-asan $(call UNIT_RUNS,build/asan/test)

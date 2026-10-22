@@ -1,9 +1,9 @@
 // cbase/auth_wire.h - the platform's sessions on the wire: the bodies of /v1/auth/* and the
-// refusal every route answers with. These are the bytes foolish's netwire.h numbered 1-5 and 20
-// and its ask.h AskRefusal (PLATFORM.md 2.6 split them by range), stated here for every app; when
-// /v1/auth moves into c_base/core (CLIENT_DESIGN.md step 4b) the server reads this file too, and
-// foolish's netwire.h static-asserts its numbers against it. Little-endian; a str8 is a u8 length
-// then bytes, a str16 a u16 length; a time is u48 epoch ms.
+// refusal every route answers with. They are the bytes the first app's wire already numbers 1-5
+// and 20, and its 10-byte refusal (PLATFORM.md 2.6 split that wire by range), stated here for every
+// app; when /v1/auth moves into c_base/core (CLIENT_DESIGN.md step 4b) the server reads this file
+// too, and the app's own wire header static-asserts its numbers against it. Little-endian; a str8
+// is a u8 length then bytes, a str16 a u16 length; a time is u48 epoch ms.
 //
 //   POST /v1/auth/signup, /v1/auth/signin   [CBW_V][CBW_SIGNUP | CBW_SIGNIN] str8 name, str8 password
 //   POST /v1/auth/refresh                   [CBW_V][CBW_REFRESH] str8 refresh token

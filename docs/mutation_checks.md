@@ -778,3 +778,50 @@ Each line: file, mutation, the assertion that went red. The test binary was dele
 - metrics.c: a short cap not refused -> `registry_report` cb_metrics_report(m, NULL, 7000, buf, need_app - 1) == 0.
 - metrics.c: errors_5xx row written as 0 -> `registry_report` row_at(buf, 1)->total == 5.
 - fz_metrics.c found two defects before any mutation was tried (both above, both kept as repro seeds): 4 M runs clean after the fixes.
+
+## The client (2026-10-22)
+
+c_base/client/test/mutate.sh runs every mutant in c_base/client/test/mutants.py and fails when one survives; these are its results.
+The C mutants run unit_client with the object deleted first; the TS mutants run the shim's node tests against the copy they import.
+The fuzz target was checked by hand: a push span one byte long made the corpus replay fail its span check (fz_client.c).
+
+- client.c: jitter: no randomness -> `reconnect_is_decorrelated_jitter`.
+- client.c: jitter: no floor -> `reconnect_is_decorrelated_jitter`.
+- client.c: READY keeps the last wait -> `reconnect_is_decorrelated_jitter`.
+- client.c: ping one ms late -> `ping_then_half_open`.
+- client.c: no half-open close -> `ping_then_half_open`.
+- client.c: a frame does not clear the probe -> `ping_then_half_open`.
+- client.c: refusal backoff does not double -> `sub_refused_backs_off`.
+- client.c: unanswered SUB never asked again -> `unanswered_sub_is_asked_again`.
+- client.c: holds not counted -> `counted_holds`.
+- client.c: no roll -> `a_refresh_rolls_the_socket`.
+- client.c: roll ignores socket calls -> `a_roll_waits_for_socket_calls`.
+- client.c: roll close backs off -> `a_refresh_rolls_the_socket`.
+- client.c: forced refresh not rate-limited -> `a_refused_hello_forces_one_refresh`.
+- client.c: a used refresh does not sign out -> `a_dead_refresh_signs_out`.
+- client.c: a failed refresh goes again at once -> `a_failing_refresh_backs_off`.
+- client.c: calls never ride the socket -> `a_roll_waits_for_socket_calls`.
+- client.c: a lost read is not sent again -> `a_socket_loss`.
+- client.c: one try more -> `anonymous_reads_go_by_http`.
+- client.c: no socket-call timeout -> `an_unanswered_socket_call`.
+- client.c: busy waits do not double (HTTP) -> `a_busy_read_goes_again`.
+- client.c: no 401 refresh -> `a_401_refreshes_and_goes_once_more`.
+- client.c: sign-out keeps the session on a refusal -> `sign_in_then_out`.
+- client.c: a session a byte over is taken -> `the_session_blob`.
+- client.c: HELLO with a stale token -> `hello_waits_for_the_refresh`.
+- client.c: HELLO waits forever -> `hello_unanswered_is_closed`.
+- client.c: arena offsets not moved -> `the_arena_keeps_each_call_whole`.
+- client.c: due_ms forgets the PING -> `ping_then_half_open`.
+- client.c: push span short -> `pushes_and_garbage`.
+- client.c: no bearer over HTTP -> `a_401_refreshes_and_goes_once_more`.
+- client.c: refresh not first -> `hello_waits_for_the_refresh`.
+- client.c: anonymous socket last hold keeps it -> `anonymous_hello_then_sub`.
+- client.c: reply span off by one -> `calls_ride_the_socket`.
+- client.c: a dead refresh keeps waiting calls -> `a_dead_refresh_signs_out`.
+- client.c: second READY accepted -> `pushes_and_garbage`.
+- socket.ts: scheme always ws -> `a dropped socket reopens after the jittered wait and holds its rooms again`.
+- socket.ts: reopen at once -> `a dropped socket reopens after the jittered wait and holds its rooms again`.
+- socket.ts: push bytes cut -> `anonymous: /ws/public, an empty HELLO, the SUB after READY, then pushes`.
+- socket.ts: no refusal body handed in -> `an anonymous read goes over HTTP; a busy one goes again; a refusal is a CbError`.
+- socket.ts: frames not sent -> `anonymous: /ws/public, an empty HELLO, the SUB after READY, then pushes`.
+- socket.ts: no close on -1 -> `anonymous: /ws/public, an empty HELLO, the SUB after READY, then pushes`.
