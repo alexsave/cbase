@@ -9,6 +9,7 @@
 #include <string.h>
 #include "../test/check.h"
 #include "hist.h"
+#include "../rng.h"
 
 static void buckets(void)
 {
@@ -111,16 +112,15 @@ static void percentiles(void)
      * [floor, floor * 2^(1/8)), and under the max: within 9.05% of the truth. A nasty shape: a
      * spike at one value with a long tail, and values crowding a bucket's top. */
     static uint64_t v[32000];   /* the spike-and-tail sample (20000) and the uniform spread (28429) */
-    uint64_t rng = 88172645463325252ull;
+    uint64_t rng = rng_seed64(7);   /* the one generator (shared/c/rng.h) */
     uint64_t m = 0;
     StatHist w;
     memset(&w, 0, sizeof w);
     for (int i = 0; i < 20000; i++) {
-        rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17;
-        uint64_t x;
+        uint64_t r = rng_splitmix64(&rng), x;
         if (i % 3 == 0) x = 777;                              /* the spike */
-        else if (i % 3 == 1) x = 1000 + (rng % 4000000);       /* the tail, a value with a wide range */
-        else x = 2047 - (rng % 4);                             /* the top of [1920, 2048) */
+        else if (i % 3 == 1) x = 1000 + (r % 4000000);         /* the tail, a value with a wide range */
+        else x = 2047 - (r % 4);                               /* the top of [1920, 2048) */
         v[m++] = x;
         stat_hist_add(&w, x);
     }
