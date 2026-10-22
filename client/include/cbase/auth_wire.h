@@ -1,13 +1,14 @@
 // cbase/auth_wire.h - the platform's sessions on the wire: the bodies of /v1/auth/* and the
 // refusal every route answers with. They are the bytes the first app's wire already numbers 1-5
 // and 20, and its 10-byte refusal (PLATFORM.md 2.6 split that wire by range), stated here for every
-// app; when /v1/auth moves into c_base/core (CLIENT_DESIGN.md step 4b) the server reads this file
-// too, and the app's own wire header static-asserts its numbers against it. Little-endian; a str8
+// app. The server reads this file too (c_base/core/src/auth/auth_http.c, the platform's /v1/auth),
+// and the app's own wire header static-asserts its numbers against it. Little-endian; a str8
 // is a u8 length then bytes, a str16 a u16 length; a time is u48 epoch ms.
 //
 //   POST /v1/auth/signup, /v1/auth/signin   [CBW_V][CBW_SIGNUP | CBW_SIGNIN] str8 name, str8 password
 //   POST /v1/auth/refresh                   [CBW_V][CBW_REFRESH] str8 refresh token
 //   POST /v1/auth/signout (bearer)          [CBW_V][CBW_SIGNOUT] u8 scope
+//   POST /v1/auth/password (bearer)         [CBW_V][CBW_PASSWORD] str8 current password, str8 new password
 //   the answer to the first three           [CBW_V][CBW_SESSION] str16 access token, str8 refresh
 //                                           token, u48 expires_at, str8 user id, str8 username
 //   a refusal (any route, any non-2xx)      u8 CBW_REFUSAL_FORMAT, u8 why, i32 code, i32 detail
@@ -19,6 +20,7 @@
 #define CBW_SIGNIN   2
 #define CBW_REFRESH  3
 #define CBW_SIGNOUT  4
+#define CBW_PASSWORD 5
 #define CBW_SESSION  20
 
 #define CBW_SCOPE_LOCAL  0

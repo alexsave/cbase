@@ -125,11 +125,11 @@ MAIN_LAMBDA := providers/aws/src/main_lambda.c
 # ($* in a compile: shared/tools/c_rules.mk A FLAG FOR ONE OBJECT), and the
 # lists are in the variants' flag stamps, so a change to one rebuilds.
 SHARED_INC  := -I$(C_ROOT)/shared/c
-CORE_INC    := -Icore/include -Icore/src $(SHARED_INC)
+CORE_INC    := -Icore/include -Iclient/include -Icore/src $(SHARED_INC)
 LOCAL_INC   := $(CORE_INC) -Iproviders/local/src
 AWS_INC     := $(CORE_INC) -Iproviders/aws/src
 PRODUCT_INC := $(CORE_INC) -I$(C_ROOT)/foolish/server/src -I$(KDIR)/src
-ALL_INC     := -Icore/include $(addprefix -I,$(SRC_ROOTS)) $(addprefix -I,$(TEST_ROOTS)) -Ibench -I$(KDIR)/src $(SHARED_INC)
+ALL_INC     := -Icore/include -Iclient/include $(addprefix -I,$(SRC_ROOTS)) $(addprefix -I,$(TEST_ROOTS)) -Ibench -I$(KDIR)/src $(SHARED_INC)
 side_inc_of = $(if $(filter core/src/%,$(1)),$(CORE_INC),$(if $(filter providers/local/src/%,$(1)),$(LOCAL_INC),$(if \
                 $(filter providers/aws/src/%,$(1)),$(AWS_INC),$(if $(filter foolish/server/src/%,$(1)),$(PRODUCT_INC),$(ALL_INC)))))
 side_inc = $(call side_inc_of,$*)
@@ -223,6 +223,9 @@ $(call prog,build/asan,build/obj/asan,build/obj/asan-kernel,bootstrap,$(MAIN_LAM
 $(foreach u,$(UNITS),$(call prog,build/test,build/obj/cbase,build/obj/kernel,$(u),$(call tsrc,$(u)) $(TLIB_SRC),CB_CFLAGS))
 $(foreach u,$(UNITS),$(call prog,build/asan/test,build/obj/asan,build/obj/asan-kernel,$(u),$(call tsrc,$(u)) $(TLIB_SRC),ASAN_CB_CFLAGS))
 $(foreach s,smoke smoke_lambda smoke_lambda_after smoke_authz smoke_matrix smoke_boot,$(call prog,build/test,build/obj/cbase,build/obj/kernel,$(s),$(call tsrc,$(s)) $(TLIB_SRC),CB_CFLAGS))
+# The session routes' differential proof (core/test/auth_diff.c): run by tools/auth_route_diff.sh
+# against a base binary, never by check (it needs a second build).
+$(call prog,build/test,build/obj/cbase,build/obj/kernel,auth_diff,core/test/auth_diff.c $(TLIB_SRC),CB_CFLAGS)
 # The bench (bench/, the harness and its statistics, and each side's
 # bench/): its own program, and a unit test of its statistics and report that
 # runs with the others.

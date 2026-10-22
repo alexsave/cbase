@@ -1,8 +1,8 @@
 // names.h - a username's canonical form (security finding M4: look-alike
 // names on the leaderboard, in rosters and in chat).
 //
-// An account is found by the email its name derives (v1_http.h
-// cb_v1_email_of: SHA-256 of the name's bytes), so two names that read the
+// An account is found by the email its name derives (auth_http.h
+// cb_auth_name_email: SHA-256 of the name's bytes), so two names that read the
 // same must be the same bytes, and a name no one can see whole must not be one.
 // The clients have always upper-cased the name before sending it (JavaScript's
 // toUpperCase, Swift's uppercased()); the server never checked, so a request

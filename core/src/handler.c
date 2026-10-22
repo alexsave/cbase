@@ -3,6 +3,7 @@
 #include "metrics.h"
 
 #include "admin/admin.h"
+#include "auth/auth_http.h"
 #include "net/router.h"
 #include "net/server.h"
 #include "cbase/app.h"
@@ -117,6 +118,7 @@ static int reg(const char *what, int rc) {
 int cb_routes_register(cb_ctx *ctx) {
     int rc = cb_router_add(ctx->router, "GET", "/health", CB_ROUTE_LOOP, h_health);
     if (rc == CB_OK) rc = cb_router_add(ctx->router, "GET", "/ready", CB_ROUTE_POOL, h_ready);
+    if (rc == CB_OK) rc = reg("auth", cb_auth_routes(ctx));
     if (rc == CB_OK) rc = reg("admin", cb_admin_routes(ctx));
     if (rc == CB_OK) rc = reg("metrics", cb_metrics_routes(ctx));
     if (rc == CB_OK && ctx->prov && ctx->prov->routes) rc = reg(ctx->prov->name, ctx->prov->routes(ctx));

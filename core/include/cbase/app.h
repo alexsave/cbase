@@ -109,6 +109,10 @@ struct cb_app {
     // them and serves GET /metrics. NULL / 0: none, and no such route.
     const struct cb_metric_def_s *metrics;
     int                  n_metrics;
+    // The domain of the account emails a username derives (auth/auth_http.h, "A name is an
+    // account"): hex(SHA-256(name))[:16] "@" it. Fixed for the life of the app's store, since every
+    // account is found by it. NULL: no accounts by name (the name routes answer 503).
+    const char          *account_domain;
 };
 
 // The app this binary serves: the product defines it, one per link.
