@@ -102,6 +102,11 @@ int cb_boot(cb_ctx *ctx, char *err, size_t cap) {
 }
 
 void cb_unboot(cb_ctx *ctx) {
+    // The app closes FIRST, with everything it was opened with still there: an app's own threads
+    // (a load simulator's players) count into ctx->metrics and publish through ctx->rt until its
+    // serve_close joins them (unit_config.c serve_close_runs_first).
+    if (ctx->store && ctx->prov && (ctx->prov->flags & CB_PROV_ONE_PROCESS) && ctx->app && ctx->app->serve_close)
+        ctx->app->serve_close(ctx);
     cb_router_free(ctx->router);
     ctx->router = NULL;
     cb_metrics_free(ctx->metrics);
@@ -110,8 +115,6 @@ void cb_unboot(cb_ctx *ctx) {
     ctx->rt = NULL;
     cb_auth_free(ctx->auth);
     ctx->auth = NULL;
-    if (ctx->store && ctx->prov && (ctx->prov->flags & CB_PROV_ONE_PROCESS) && ctx->app && ctx->app->serve_close)
-        ctx->app->serve_close(ctx);
     cb_store_close(ctx->store);
     ctx->store = NULL;
     release_instance();

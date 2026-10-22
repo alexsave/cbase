@@ -7,6 +7,8 @@
 #include "cbase/provider.h"
 
 #include "boot.h"
+#include "cbase/app.h"
+#include "metrics.h"
 #include "config.h"
 #include "ctx.h"
 #include "util/err.h"
@@ -177,6 +179,53 @@ static void one_instance_per_database(void) {
     T_CHECK(system(rm) == 0);
 }
 
+// THE APP CLOSES FIRST: serve_close runs while everything the app was opened with is still there.
+// An app's own threads (birdseye's players and league, which count into ctx->metrics and publish
+// through ctx->rt) run until serve_close joins them; freeing the registry before it was a crash
+// whenever a SIGTERM landed while such a thread was mid-request (birdseye's league, 2026-10-22).
+static bool g_closed, g_close_saw_metrics, g_close_saw_rt;
+static const cb_metric_def CLOSE_DEFS[1] = { { "x", CB_METRIC_COUNTER } };
+static int close_app_open(cb_ctx *ctx, char *err, size_t cap) {
+    (void)ctx;
+    (void)err;
+    (void)cap;
+    return CB_OK;
+}
+static void close_app_close(cb_ctx *ctx) {
+    g_closed = true;
+    g_close_saw_metrics = ctx->metrics != NULL;
+    g_close_saw_rt = ctx->rt != NULL;
+    cb_metrics_add(ctx->metrics, 0, 1);   // what a joined thread's last count does
+}
+static const cb_app CLOSE_APP = { .name = "close-order", .metrics = CLOSE_DEFS, .n_metrics = 1, .serve_open = close_app_open,
+                                  .serve_close = close_app_close };
+
+static void serve_close_runs_first(void) {
+    char db[200], rm[4 * sizeof db + 64];
+    snprintf(db, sizeof db, "/tmp/unit_cfg_close_%d.db", (int)getpid());
+    snprintf(rm, sizeof rm, "rm -f %s %s-wal %s-shm %s.serve-lock", db, db, db, db);
+    T_CHECK(system(rm) == 0);
+    cb_config c;
+    char err[256] = "";
+    T_EQ_INT(cb_config_from_env(&c, err, sizeof err), CB_OK);
+    strcpy(c.jwt_secret, "a-unit-test-secret-with-enough-bytes");
+    strcpy(c.store, "sqlite");
+    snprintf(c.db_path, sizeof c.db_path, "%s", db);
+    static cb_ctx ctx;
+    memset(&ctx, 0, sizeof ctx);
+    ctx.cfg = &c;
+    ctx.prov = &cb_provider_local;
+    ctx.app = &CLOSE_APP;
+    T_EQ_INT(cb_boot(&ctx, err, sizeof err), CB_OK);
+    bool had_rt = ctx.rt != NULL;
+    cb_unboot(&ctx);
+    T_CHECK(g_closed);
+    T_CHECK(g_close_saw_metrics);
+    T_EQ_INT(g_close_saw_rt, had_rt);
+    T_CHECK(ctx.metrics == NULL && ctx.rt == NULL);
+    T_CHECK(system(rm) == 0);
+}
+
 // cb_config_each's line for `name`.
 typedef struct { const char *name; char value[64]; } shown_one;
 static void show_one(const char *name, const char *value, bool secret, void *ud) {
@@ -259,5 +308,6 @@ int main(void) {
     T_RUN(secrets_never_shown);
     T_RUN(the_cpu_knob);
     T_RUN(one_instance_per_database);
+    T_RUN(serve_close_runs_first);
     return T_DONE();
 }
