@@ -113,6 +113,8 @@ static bool admin_gate(const cb_ctx *ctx, const cb_http_req *req, cb_http_res *r
     return true;
 }
 
+bool cb_admin_authorized(const cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) { return admin_gate(ctx, req, res); }
+
 // ---- answers ---------------------------------------------------------------------
 
 // Sends a document core_json.c or aws_json.c wrote (rc its CB_OK or CB_E_NOMEM).

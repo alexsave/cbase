@@ -38,6 +38,10 @@
 #include <stddef.h>
 
 int cb_admin_routes(cb_ctx *ctx);
+// The console's gate for a route that lives outside /admin/api (an app's dev-only route):
+// true when the request carries the admin token, else the refusal is written into res
+// (404 when no token is configured, 429 past the wrong-token limit, 401 otherwise).
+bool cb_admin_authorized(const cb_ctx *ctx, const cb_http_req *req, cb_http_res *res);
 
 // What an app's panel answers with (the platform's own calls use them too):
 // a document core_json.c wrote (rc its CB_OK or CB_E_NOMEM) with
