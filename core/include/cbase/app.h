@@ -95,6 +95,10 @@ struct cb_app {
     // closes. NULL: none.
     int (*serve_open)(cb_ctx *ctx, char *err, size_t cap);
     void (*serve_close)(cb_ctx *ctx);
+    // What the app counts (metrics.h): one row per metric, by name and kind; the platform keeps
+    // them and serves GET /metrics. NULL / 0: none, and no such route.
+    const struct cb_metric_def_s *metrics;
+    int                  n_metrics;
 };
 
 // The app this binary serves: the product defines it, one per link.

@@ -1,14 +1,15 @@
 // realtime.h - the push stream's publish side: who hears a push, and the
-// transport that carries it. The stream is MQTT 3.1.1 over WebSocket
-// (shared/c/mqtt), QoS 0, at /mqtt:
+// transport that carries it. Two transports speak it:
 //
-//   stream_mqtt.c  the policy (who may connect and subscribe) and the hub's
-//                  side of a connection, for the hub and the IoT authorizer alike.
-//   rt_local.c     `cbase serve`: the in-process hub holding the WebSockets;
-//                  subscriptions live in memory.
+//   rt_local.c     `cbase serve`: the in-process hub holding the WebSockets at
+//                  GET /ws (shared/c/stream_frame.h frames: HELLO with a token,
+//                  SUB a room, REQ a route, PING); subscriptions live in memory.
 //   rt_iot.c       Lambda: AWS IoT Core holds the connections and the
-//                  subscriptions; a push is one HTTPS publish to the topic, and
-//                  the custom authorizer answers IoT's CONNECTs.
+//                  subscriptions over MQTT 3.1.1 (shared/c/mqtt); a push is one
+//                  HTTPS publish to the topic, and the custom authorizer answers
+//                  IoT's CONNECTs with stream_mqtt.c's policy (who may connect
+//                  and subscribe). The hub under serve enforces the same rules
+//                  at HELLO and SUB; /mqtt is not served there.
 //
 // WHO HEARS A PUSH is a target (cb_rt_to): one of the app's TOPIC FAMILIES
 // (cbase/app.h cb_topic_family), with its {user} and {doc} filled in by

@@ -30,6 +30,7 @@ typedef struct cb_auth   cb_auth;     // auth/auth.h
 typedef struct cb_rt     cb_rt;       // realtime/realtime.h
 typedef struct cb_ctx    cb_ctx;
 typedef struct cb_app    cb_app;      // cbase/app.h
+typedef struct cb_metrics cb_metrics; // metrics.h
 typedef struct cb_provider cb_provider;   // cbase/provider.h
 
 // How a job is started (jobs.h): the app's job `job` for `key`, run
@@ -74,6 +75,9 @@ struct cb_ctx {
     // epoch ms), 0 under serve. A bot drive budgets against it.
     int64_t     deadline_ms;
     cb_stats    stats;
+    // The app's metrics registry (metrics.h), from cb_app.metrics; NULL when it declares none.
+    // Last, after stats: nothing before it moved when it was added.
+    cb_metrics *metrics;
 };
 
 #define CB_VERSION "0.1.0"

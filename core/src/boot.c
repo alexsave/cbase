@@ -1,5 +1,7 @@
 #include "boot.h"
 
+#include "metrics.h"
+
 #include "edge.h"
 #include "rate_limits.h"
 #include "auth/auth.h"
@@ -70,6 +72,10 @@ int cb_boot(cb_ctx *ctx, char *err, size_t cap) {
     int rc = ctx->app && ctx->app->selftest ? ctx->app->selftest(err, cap) : CB_OK;
     if (rc != CB_OK) return rc;
     if (ctx->app && (rc = cb_rt_families_check(ctx->app->topics, ctx->app->n_topics, err, cap)) != CB_OK) return rc;
+    if (ctx->app && ctx->app->n_metrics > 0 && (rc = cb_metrics_new(ctx->app->metrics, ctx->app->n_metrics, &ctx->metrics)) != CB_OK) {
+        snprintf(err, cap, "the app's metrics table: %s", cb_strerror(rc));
+        return rc;
+    }
     cb_edge_setup(ctx->app ? ctx->app->cached_paths : NULL, ctx->app ? ctx->app->n_cached_paths : 0, prov->edge_purge);
 
     const char *store = cfg->store[0] ? cfg->store : prov->store;
@@ -98,6 +104,8 @@ int cb_boot(cb_ctx *ctx, char *err, size_t cap) {
 void cb_unboot(cb_ctx *ctx) {
     cb_router_free(ctx->router);
     ctx->router = NULL;
+    cb_metrics_free(ctx->metrics);
+    ctx->metrics = NULL;
     cb_rt_free(ctx->rt);
     ctx->rt = NULL;
     cb_auth_free(ctx->auth);

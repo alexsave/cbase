@@ -22,7 +22,7 @@ This file collects the six builders' records and the integration's; DESIGN.md sa
 - store_sqlite.c: conn TTL ignored -> `conns_round_trip` conn_get == CB_E_NOT_FOUND.
 - store_sqlite.c: refresh_take does not revoke -> `refresh_tokens_rotate` got.revoked.
 - store_sqlite.c: admin write guard removed -> `admin_reads` DELETE == CB_E_FORBIDDEN.
-- store_sqlite.c: snapshot ACL removed -> `snapshots_query_shapes` non-player count == 0.
+- store_sqlite.c: report ACL removed -> `reports_query_shapes` non-player count == 0.
 - store_sqlite.c: chat order flipped -> `chat_newest_oldest_first` first message == "three".
 - store.c: ladder tier ignored -> `open_applies_schema_and_seeds_bots` last bot == "%Moscow 7".
 - dynamo_wire.c: CAS condition dropped -> `commit_transaction` body byte-equal.
@@ -43,7 +43,7 @@ This file collects the six builders' records and the integration's; DESIGN.md sa
 - store_import.c: export count ignored -> `failing_checks` BAD_COUNT returns 1.
 - store_import.c: store count ignored -> `failing_checks` LOST_SEAT returns 1.
 - store_import.c: bcrypt cost bound removed -> `bcrypt_shapes` cost 03 refused.
-- store_import.c: player_ids split on ',' -> `clean_export_imports_everything` snapshot players.
+- store_import.c: player_ids split on ',' -> `clean_export_imports_everything` report players.
 
 ## Auth
 
@@ -75,9 +75,9 @@ This file collects the six builders' records and the integration's; DESIGN.md sa
 - MOOT commits: a_finished_game `version_of(gid) == v`.
 - No fresh re-check of a cached refusal: a_refusal_from_a_stale_cache `resp.status == TABLE_STATUS_APPLIED`.
 - Lost CAS not retried: a_lost_cas `resp.status == TABLE_STATUS_APPLIED`.
-- finalize skipped: a_finished_game `snapshots == 1`.
+- finalize skipped: a_finished_game `reports == 1`.
 - table_rate skipped: a_finished_game `ra.games_played == 1`.
-- Old log dropped on append: a_finished_game `snapshots == 1`.
+- Old log dropped on append: a_finished_game `reports == 1`.
 - Empty table not deleted: the_last_seat_leaving `game_get == CB_E_NOT_FOUND`.
 - View always spectator: create_answers `r.body == v.view`.
 - Deal seed not stored: join_add_bot_and_start `row.has_seed`.
@@ -127,7 +127,7 @@ Mutation checks (file, mutation, what failed):
 - postgrest.c, insert user_id check removed: chat_insert_refusals.
 - postgrest.c, apikey-equal bearer not anon: player_views_dashboard_and_resync.
 - postgrest.c, spectator_views without game_id allowed: spectator_views.
-- postgrest.c, anon snapshots: snapshots_are_their_players_only.
+- postgrest.c, anon reports: reports_are_their_players_only.
 - postgrest.c, chat broadcast removed: chat_insert.
 - postgrest.c, partial insert written: chat_insert_refusals.
 - postgrest.c, text ordering broken: leaderboard_and_lobby.
@@ -380,7 +380,7 @@ Each mutation rewritten in, its one test binary rebuilt with the touched object 
 - json_surface.c: Quantity off by one -> `cloudfront_invalidation` body == CF_BODY; `&` not escaped -> the escape assertion.
 - cloudfront.c: signed for AWS_REGION instead of us-east-1 -> `cloudfront_invalidation` Authorization names us-east-1/cloudfront; any 2xx accepted -> a 200 == CB_E_IO.
 - edge.c: flush does not clear the marks -> `cloudfront_invalidation` pending == 0; the bots path never named -> cb_edge_paths(ALL) == 2.
-- table_ops.c: a rated commit not marked -> `a_finished_game_writes_a_snapshot_and_ratings` marks == 1; every commit marked -> the same assertion.
+- table_ops.c: a rated commit not marked -> `a_finished_game_writes_a_report_and_ratings` marks == 1; every commit marked -> the same assertion.
 - functions_http.c: an account deleted not marked -> `delete_account_redacts` marks == 1.
 - unit_json_gate.c: `xmlns` not seen -> `the_scanner_sees_each_kind` planted namespace == 1; an XML literal planted in cloudfront.c -> `only_json_surface_speaks_json` violations == 0.
 - json_surface.c: the reindex rewrites a row already keyed -> `query_shapes` body (and, on DynamoDB Local, `ratings_applied_by_commit` reindex == CB_E_CONFLICT).
@@ -450,7 +450,7 @@ A mutation that would not compile (an unused variable under -Werror) was replace
 - sigv4.c: a shorter key sorted after a longer one -> `sigv4_query_order`.
 - jwt.c: '+' and '/' accepted in a part -> `signed_parts_must_be_base64url` (the standard-alphabet header; padded and empty parts were already refused by the decoder and the JSON check, so a first mutant allowing '=' survived and the case was added).
 - str.c: cb_url_decode's room for the NUL dropped -> `url_decode_and_levels`.
-- store_dynamo.c (unit_dynamo_ops): an email not found answered CB_E_DB -> `users_by_email_password_touch`; a batch left partly undone not sent again -> `user_delete_cascade`; the offset ignored -> `users_list_pages`; a taken refresh hash not a conflict -> `refresh_put_and_revoke_session`; a delete's fence item and gone swapped -> `game_create_delete`; the games-of-user limit ignored -> `games_of_user_and_membership`; an unplayed row put on the leaderboard -> `bots_and_ratings`; a snapshot query's game filter ignored -> `snapshots_put_and_query`; a chat put to a gone game not NOT_FOUND -> `chat_put_refusals`; a put that leaves the lost topic's index entry -> `conns_put_get_delete_by_topic` (rewritten for #328's three-write conn_put); the collections callback's stop ignored -> `admin_collections_are_the_families`; a reindex already done counted -> `import_writes`.
+- store_dynamo.c (unit_dynamo_ops): an email not found answered CB_E_DB -> `users_by_email_password_touch`; a batch left partly undone not sent again -> `user_delete_cascade`; the offset ignored -> `users_list_pages`; a taken refresh hash not a conflict -> `refresh_put_and_revoke_session`; a delete's fence item and gone swapped -> `game_create_delete`; the games-of-user limit ignored -> `games_of_user_and_membership`; an unplayed row put on the leaderboard -> `bots_and_ratings`; a report query's game filter ignored -> `reports_put_and_query`; a chat put to a gone game not NOT_FOUND -> `chat_put_refusals`; a put that leaves the lost topic's index entry -> `conns_put_get_delete_by_topic` (rewritten for #328's three-write conn_put); the collections callback's stop ignored -> `admin_collections_are_the_families`; a reindex already done counted -> `import_writes`.
 - store_import.c: bots seeded over existing ones -> `import_seed_and_reindex`; an extra item counted as stored -> `import_counts_by_scan`.
 - admin.c (unit_admin_edges): FORBIDDEN answered 409 -> `store_errors_map_to_statuses`; no store answered 500 -> `no_store_is_503`; browse without c accepted -> `malformed_asks`; '/' left unescaped in CloudWatch's queryDetail -> `lambda_links`; backups oldest first -> `backups_newest_first`; a seat item listed as a game -> `a_game_that_does_not_load`.
 - bots.c: Lambda's kick sends nothing -> `lambda_kick_self_invokes`; runtime_api.c: init errors posted to /runtime/error -> `runtime_init_error_posts`; json_surface.c: the DynamoDB host without its region -> `dynamo_host_from_region`, the create answer read from the wrong item -> `bench_fixtures`; netclient.c: nc_row's bots case dropped -> `the_list_reader_by_kind`, nc_due_ms the later of the two -> `when_to_call_again`.
@@ -628,8 +628,8 @@ The hand-minimised input is `fuzz/corpus/event/crash-40a6db73`.
 
 ## A replay's copies hold no names (stage 6, 2026-10-18)
 
-- rows_foolish.c cb_rows_snapshot_put: a player's copy written with the whole replay (snapshot_attrs) -> `unit_store` `replay_copies_hold_no_names` (the PLAYER# copies hold extras, moves, player_ids and gsi1pk).
-- rows_foolish.c fat_step: no copy found fat (redaction leaves a legacy copy as it was) -> `unit_store` `replay_copies_hold_no_names` (after snapshot_set_extras the legacy copy still holds extras and moves).
+- rows_foolish.c cb_rows_report_put: a player's copy written with the whole replay (report_attrs) -> `unit_store` `replay_copies_hold_no_names` (the PLAYER# copies hold extras, moves, player_ids and gsi1pk).
+- rows_foolish.c fat_step: no copy found fat (redaction leaves a legacy copy as it was) -> `unit_store` `replay_copies_hold_no_names` (after report_set_extras the legacy copy still holds extras and moves).
 
 ## Held to the coverage floor in stage 6 (2026-10-18)
 
@@ -682,26 +682,26 @@ One bug found: `fuzz-seeds` copied every target's seeds before refusing a stray 
 ## Queue batch: history summary on the pointers (rows_foolish.c, unit_dynamo_ops.c)
 
 - rows_foolish.c: the pointer's rank, seat or dur attribute not written -> `history_pointers_carry_the_summary` (the per-attribute counts).
-- rows_foolish.c: rank written as `i + 1` instead of cb_snapshot_rank -> the same test, `"seat":{"N":"0"},"rank":{"N":"2"}` (a first draft counted only the ranks, which a permutation passes: the mutant survived until the assertion pinned seat to rank).
+- rows_foolish.c: rank written as `i + 1` instead of cb_report_rank -> the same test, `"seat":{"N":"0"},"rank":{"N":"2"}` (a first draft counted only the ranks, which a permutation passes: the mutant survived until the assertion pinned seat to rank).
 - rows_foolish.c: the summary attributes written for a pointer with no summary -> the same test, count of "rank" in the second put == 0.
 - rows_foolish.c: the replay batch always projected whole -> the same test, count of "moves" in the projected BatchGetItem == 0.
 - rows_foolish.c: a pointer without a summary not marking the replay needed -> the same test, the batch carries "moves" and "player_ids".
-- rows_foolish.c: cb_snapshot_query.ref ignoring the replay id / ignoring the game id / matching everything -> `snapshot_ref_matches_the_replay_or_its_game` (ids[0], counts, and a request past the script's end).
+- rows_foolish.c: cb_report_query.ref ignoring the replay id / ignoring the game id / matching everything -> `report_ref_matches_the_replay_or_its_game` (ids[0], counts, and a request past the script's end).
 
 ## Queue batch: cb_table_snap_summary and the stored pointer (table_ops.c, unit_app.c)
 
-- table_ops.c: the duration rounding `+ 0.5` dropped -> `a_finished_game_writes_a_snapshot_and_ratings` timed.duration_s == want (3.9 s).
+- table_ops.c: the duration rounding `+ 0.5` dropped -> `a_finished_game_writes_a_report_and_ratings` timed.duration_s == want (3.9 s).
 - table_ops.c: the no-times duration -1 made 0 -> the same test, m.duration_s == -1.
 - table_ops.c: the elimination order not copied / the fool not copied / `has` not set -> the same test (m.elim[i], m.fool, m.has).
 - table_ops.c: `x.n_gaps > 0` made `>= 0` -> the same test, a names-only blob must give -1 (got 0).
-- rows_foolish.h: cb_snapshot_rank returning `i + 2` -> `history_pointers_carry_the_summary` (seat 0 rank 2 pinned) (unit_app's two-player rank check runs through the mem store's own rank).
+- rows_foolish.h: cb_report_rank returning `i + 2` -> `history_pointers_carry_the_summary` (seat 0 rank 2 pinned) (unit_app's two-player rank check runs through the mem store's own rank).
 
 ## Queue batch: the history rows over a real replay (v1_http.c, table_ops.c, unit_v1.c)
 
 A REAL BUG came out of the first run of these tests: history_fn and cb_table_snap_summary read the STORED extras (the encoded version-2 bytes) with replay_extras_unpack, which reads the decoder's ANSWER blob, so every stored blob was refused: no row ever had names or a duration. Both now read through cb_table_extras_read (replay_extras_decode with the seat and move counts, then unpack), the one reader.
 
 - v1_http.c: the names read through the old replay_extras_unpack -> `history_rows_from_a_real_replay` hr->n_names == 2.
-- table_ops.c: the duration read through the old replay_extras_unpack -> the same test (hr->duration_s == 0) and `a_finished_game_writes_a_snapshot_and_ratings` (m.duration_s == 0).
+- table_ops.c: the duration read through the old replay_extras_unpack -> the same test (hr->duration_s == 0) and `a_finished_game_writes_a_report_and_ratings` (m.duration_s == 0).
 - v1_http.c: no cut for a pointer without a summary -> `history_rows_from_a_real_replay` hr->rank == rank_of_fay.
 - v1_http.c: the pre-summary rank not computed from the viewer's seat -> the same assertion.
 - v1_http.c: /v1/replay/<id> id length capped at a game id's (path_id) -> `bots_board_history_replay` call(b_replay, s.id) == 200 (found by this test run: a history row's id, a uuid, was a 404).
@@ -764,3 +764,24 @@ The test is a 1051-item table (all five attribute kinds, the index keys, the TTL
 - export.c: the new file's seed not cleared -> the third export (a bot retired from the table) r.code == 0 and "0 missing, 0 extra".
 - export.c: same_in_file always true -> SURVIVES alone: it is observable only with a store that stores wrong, and the put-side mutants above are caught by the per-item comparison and by exit codes before it matters.
 - Not tested: a key vanishing between the scan and the read (it needs a delete between two calls inside one process): the code counts it ("keys were gone"), unexercised.
+
+## Metrics registry (2026-10-22, unit_metrics.c, fz_metrics.c)
+
+The machinery two apps had each written for themselves (a log-scale histogram, a per-second rate ring, counters, RSS and CPU readers) lifted into util/metrics.h, and the registry over it (metrics.h: an app's static table of named metrics, the fixed-layout report, GET /metrics).
+Each line: file, mutation, the assertion that went red. The test binary was deleted along with the object before each build: make 3.81 with `.SECONDARY` does not relink a program whose intermediate object is merely missing, and a first run of this loop reported the previous mutation's result for every one after the first.
+
+- util/metrics.c: bucket fraction `* 4` made `* 2` -> `hist_buckets` cb_hist_bucket(3) == 6.
+- util/metrics.c: pct answers the next bucket's floor -> `hist_percentiles` cb_hist_pct(&h, 50) == 48.
+- util/metrics.c: the max CAS removed -> `hist_percentiles` cb_hist_max(&h) == 100.
+- util/metrics.c: bucket 0's floor 1 (the fuzzer's find: a p99 of 1 over nothing but zeros, corpus/metrics/repro-hist-zero-floor) -> `hist_buckets` cb_hist_floor(0) == 0.
+- util/metrics.c: per_s counts a slot whose second is not the one asked -> `rate_ring` cb_rate_per_s(&r, 125000) == 0.
+- util/metrics.c: a slot taken over by a new second not reset -> `rate_ring` cb_rate_per_s(&r, 120000) == 5/9.
+- util/metrics.c: slot_of made a plain `%` (the fuzzer's find: second -2 indexes before the array, corpus/metrics/repro-rate-negative-second) -> `rate_ring` atomic_load(&r.count[8]) == 4 (the out-of-bounds write lands in count[8], which reads -2; the per_s assertions alone SURVIVE this one, since the wrong slot reads back consistently, so the slot is checked by name).
+- metrics.c: the kind check in `of` dropped -> `registry_updates` cb_metrics_get(m, M_TILES) == 7 (an observe on a counter clobbers it).
+- metrics.c: a name may hold upper case -> `registry_refusals` cb_metrics_new(bad_name, 1, &m) == CB_E_INVALID.
+- metrics.c: n_platform written as 0 -> `registry_report` h.n_platform == CB_METRICS_N_PLATFORM.
+- metrics.c: p99 column filled from p90 -> `registry_report` r->p99 == 96.
+- metrics.c: the route registered with no registry -> `metrics_route` r.status == 404.
+- metrics.c: a short cap not refused -> `registry_report` cb_metrics_report(m, NULL, 7000, buf, need_app - 1) == 0.
+- metrics.c: errors_5xx row written as 0 -> `registry_report` row_at(buf, 1)->total == 5.
+- fz_metrics.c found two defects before any mutation was tried (both above, both kept as repro seeds): 4 M runs clean after the fixes.
