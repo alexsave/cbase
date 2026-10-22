@@ -297,6 +297,38 @@ static void backups_newest_first(void) {
     T_CHECK(says("cannot create the backups directory"));
 }
 
+// THE EXPORTED GATE (admin.h cb_admin_authorized): an app's own dev route asks the console's
+// gate itself; the right bearer passes, a wrong or missing one is 401 and counted toward the
+// address's limit, and with no console token configured the route is 404, as if not routed.
+static bool gate_with(const char *auth, int *status) {
+    cb_http_req q;
+    memset(&q, 0, sizeof q);
+    snprintf(q.method, sizeof q.method, "GET");
+    q.path = "/dev/thing";
+    q.query = "";
+    q.minor = 1;
+    if (auth) q.headers[q.n_headers++] = (cb_http_header){ "Authorization", auth };
+    cb_http_res r;
+    cb_res_init(&r);
+    bool ok = cb_admin_authorized(&g_ctx, &q, &r);
+    *status = r.status;
+    cb_res_free(&r);
+    return ok;
+}
+
+static void the_exported_gate(void) {
+    setup(&g_store, &cb_provider_local, "/nonexistent-cbase/cbase.sqlite");
+    int st = 0;
+    T_CHECK(gate_with("Bearer " ADMIN, &st));
+    T_CHECK(!gate_with("Bearer wrong", &st));
+    T_EQ_INT(st, 401);
+    T_CHECK(!gate_with(NULL, &st));
+    T_EQ_INT(st, 401);
+    g_cfg.admin_token[0] = 0;
+    T_CHECK(!gate_with("Bearer " ADMIN, &st));
+    T_EQ_INT(st, 404);
+}
+
 int main(void) {
     cb_log_init(CB_LOG_ERROR + 1, 0);
     T_RUN(store_errors_map_to_statuses);
@@ -306,6 +338,7 @@ int main(void) {
     T_RUN(a_game_that_does_not_load);
     T_RUN(lambda_links);
     T_RUN(backups_newest_first);
+    T_RUN(the_exported_gate);
     cb_router_free(g_ctx.router);
     cb_buf_free(&g_body);
     return T_DONE();
