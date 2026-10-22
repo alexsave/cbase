@@ -37,7 +37,7 @@ import {
   type cbc_event_Snap,
 } from './client_layout.ts';
 
-export { CBC_C_AUTH, CBC_C_HTTP, CBC_C_READ } from './client_layout.ts';
+export { CBC_C_AUTH, CBC_C_HTTP, CBC_C_READ, CBC_ROOM } from './client_layout.ts';
 
 export type CbState = 'connecting' | 'open' | 'closed';
 

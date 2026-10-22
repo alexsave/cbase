@@ -233,6 +233,9 @@ int  cbc_on_response(cbc *c, uint32_t id, int status, const uint8_t *body, size_
 int  cbc_stream_wanted(const cbc *c);      // 1: keep a socket open
 const char *cbc_stream_path(const cbc *c); // "/ws", or "/ws/public" for an anonymous client
 
+// A room's kind for the platform's room families ("s/{doc}"), as SUB says it: == SF_WHAT_ROOM.
+#define CBC_ROOM 2
+
 // Hold or release a room (counted: the SUB goes once, the UNSUB when the last hold goes; an
 // anonymous client's socket closes instead when its last room goes). 0, or CBC_E_ARG, CBC_E_FULL.
 int  cbc_sub(cbc *c, int what, const char *room, size_t room_len);

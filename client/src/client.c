@@ -11,6 +11,7 @@
 #include <string.h>
 
 _Static_assert(CBC_PATH_MAX == SF_PATH_MAX, "a call's path is an SF_REQ's");
+_Static_assert(CBC_ROOM == SF_WHAT_ROOM, "a room's kind is the hub's");
 _Static_assert(CBC_ROOM_MAX == SF_GID_MAX, "a room is an SF_SUB's gid");
 _Static_assert(CBC_GET == SF_METH_GET && CBC_POST == SF_METH_POST, "a call's method is an SF_REQ's");
 _Static_assert(CBW_ACCESS_MAX <= SF_TOKEN_MAX, "a HELLO carries the whole access token");

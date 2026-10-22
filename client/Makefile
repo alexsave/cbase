@@ -101,7 +101,7 @@ WASM_SRC     := wasm/cbc_wasm.c $(SRC) $(C_ROOT)/shared/c/wasm/libc.c
 SG_ROOTS := cbc_event cbc_req_hdr cbc_user cbc_cfg
 SG_ARGS  := --header include/cbase/client.h $(foreach r,$(SG_ROOTS),--root $(r) --snapshot $(r)) --writer cbc_cfg \
             --count cbc_event.room=room_len --count cbc_user.user_id=user_id_len --count cbc_user.name=name_len \
-            --const CBC_EV_ --const CBC_WHY_ --const CBC_C_ --const CBC_RQ_ --const CBC_E_ --const CBW_ --const CBC_GET --const CBC_POST
+            --const CBC_EV_ --const CBC_WHY_ --const CBC_C_ --const CBC_RQ_ --const CBC_E_ --const CBW_ --const CBC_GET --const CBC_POST --const CBC_ROOM
 build/layout.hash: $(STRUCTGEN) FORCE
 	@mkdir -p build/gen
 	@$(STRUCTGEN) --cwd . $(SG_ARGS) --build 'cbc=$(strip $(INC) -isystem $(C_ROOT)/shared/c/wasm/include -ffreestanding)' \
