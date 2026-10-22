@@ -1,7 +1,7 @@
 # The c_base client: design
 
-Status: design only, for Alex's OK.
-No code has been written.
+Status: approved by Alex on 2026-10-22, with the decisions of section 6.
+Step 1 (the library) and step 2 (adventurer) are being built.
 Written from origin/main at 7264b94ee, with read-only reads of the branches foolish-birdseye, c-chess, adventurer, lichess-ws and cbase-app-lifts (PR #429).
 
 ## 0. The answer in one paragraph
@@ -68,7 +68,7 @@ Foolish's behaviour is the best on every axis but one, and the shared client sta
 - Write retries: only foolish refuses to resend a write that may have landed.
 - **Jitter: no app jitters its reconnect.**
   After a server restart every foolish client reconnects at the same 500 ms, then the same 1 s, and so on.
-  That is the one place foolish is not the best, and it is open question 2.
+  That is the one place foolish is not the best, and the shared client jitters from the start (section 6.2).
 
 ## 2. What of foolish moves, file by file
 
@@ -139,7 +139,7 @@ Everything that knows a card, a seat, a game or a bot:
 - The book of games: the cast-skip refetch, the reconcile after a refused move, `nc_set_boards`, the seat learning from the roster trailer, and the quiet predicates that read `GAME_STATUS_GAME_OVER`.
 - `client_table.c`, `evwire.c`, `awire.c`, `table_wire.c` and `ask.c`, which are the mirror and its optimistic rules.
 - The whole website above `backend.ts`: `ServerContext.tsx`, `state/*`, `AnimationContext.tsx`, the oracle, the replays, the components and the styles.
-- The static site stays on S3 and CloudFront (open question 3).
+- The static site stays on S3 and CloudFront (section 6.3).
 
 ### 2.6 How zero behaviour change is proven
 
@@ -147,7 +147,7 @@ Everything that knows a card, a seat, a game or a bot:
    A new test tool, `nc_trace`, reads a step program (an intent, an answer, stream bytes, opened, closed, a session blob, each with its `now`) and prints every `NcRequest`, `NcOut`, `NcEvent` and `NcDone` byte for byte.
    It is built twice: once against origin/main's objects and once against the branch.
    It replays the 1,548 programs of `foolish/server/fuzz/corpus/netclient/` and a set of sessions recorded from the e2e suite at the `wasm_net_*` boundary (a recorder compiled only into a test build, so no shipped code grows).
-   The two outputs must be identical.
+   The two outputs must be identical, except the reconnect delays, which are jittered and are asserted to lie within their bounds instead (section 6.2).
    The client is a pure function of its inputs: time comes in as `now`, and the only randomness is the quiet jitter, which mixes `now`, the user id and the gid.
 2. **The 42 tests of `unit_netclient.c` stay green.**
    They are not edited, except to call the moved ones from their new place, and each new test is mutation-checked.
@@ -190,7 +190,7 @@ typedef struct {
     uint32_t retry_max_ms;     // 10000: and stops here
     uint32_t refresh_early_ms; // 60000: refresh the token this long before it expires
     uint32_t force_refresh_ms; // 600000: a pre-READY close refreshes at most this often
-    uint8_t  jitter;           // 0: the exact schedule (foolish today); 1: full jitter (open question 2)
+    uint64_t seed;             // the reconnect jitter's generator, per client (section 6.2)
     uint8_t  anonymous;        // 1: GET /ws/public with an empty HELLO, no session
 } cbc_cfg;
 
@@ -298,12 +298,13 @@ Budget, measured by a CI gate that prints the number and fails past it:
 
 ### 3.6 Static-site serving
 
-For apps that do not sit behind a CDN, c_base serves the app's static export itself, from memory, in the app's own process.
+Each app chooses, explicitly, between a CDN and this (section 6.3).
+For an app that chooses SERVE, c_base serves the app's static export itself, from memory, in the app's own process.
 - **Build.** `c_base/tools/embed_site.c` (C, like `embed.c`) walks the `next build` export, writes a gzip `-9` twin when it is smaller, and emits `site_gen.c`.
   That file holds a sorted path table and the bodies in `.rodata`, with each response's headers precomputed (Content-Type, Content-Length, Content-Encoding, Vary, Cache-Control `immutable` for `/_next/static/` and `no-cache` otherwise, and an ETag from `shared/c/fnv.h`).
   A deploy stays one file.
 - **Runtime.** `c_base/core/src/site/site.c` (about 150 lines, lifted from c_chess's `web.c`).
-  The app names its table in `cb_app.site`, and boot registers `GET /*` with `CB_ROUTE_INLINE | CB_ROUTE_HOME` after every other route, so the longest match keeps every API route and `/ws` ahead of it.
+  The app names its mode and its table in `cb_app.site`, and boot registers `GET /*` with `CB_ROUTE_INLINE | CB_ROUTE_HOME` after every other route, so the longest match keeps every API route and `/ws` ahead of it.
   Lookup is a binary search, `If-None-Match` answers 304, and fallbacks (Next's `404.html`, a `/{id}` page such as foolish's `[game_id]`) are rows of data in the table.
   The body is sent from `.rodata` without a copy, which needs a borrowed-body flag on `cb_http_res`, because `cb_res_body` copies today (http.h:67).
 - **Each app is its own process.** The table is linked into that app's binary; no process serves two apps.
@@ -356,7 +357,7 @@ The name is **the c_base client**: C prefix `cbc_`, header `cbase/client.h`, TS 
 
 `c_base/client` sits beside `c_base/core` because it is the other half of c_base's own protocol, not a helper that apps and c_base both happen to use.
 It falls under the same product-name gate as the rest of `c_base/`.
-Open question 1 asks Alex to confirm the split.
+Alex confirmed the split (section 6.1).
 
 ## 5. Migration order
 
@@ -379,9 +380,12 @@ PR #429 (the packed frame heads, `/ws/public`, the metrics registry) merges firs
 4. **lichess_ws**, only the load transport.
    Proof: `wsbench` reports the same moves per second within noise.
    Deletes: `wsbench.c:77-284` (about 200).
+4b. **`/v1/auth` into the platform.**
+   The four routes and their wire move from `foolish/server/src/app/v1_http.c` into `c_base/core`, byte for byte.
+   Proof: foolish's smokes and `unit_v1` unchanged and green, and `hotpath_proof.sh`.
 5. **c_chess**, a full client with an optimistic mirror and static serving.
    `client.c` keeps its chess half on top of `cbc`, `net.ts` and `kernel.ts` go to the shim, `web.c` goes to c_base's site serving, and `chessbench` goes to `cbase-load`.
-   Its auth moves to the platform's `/v1/auth` and session blob (open question 4).
+   Its auth moves to the platform's `/v1/auth` and session blob (section 6.4).
    Proof: `smoke.c` (475 lines) unchanged and green, `chessbench` at or above 89,593 moves per second (DESIGN.md's configuration C), and the hot-path proof for the site step.
    Deletes: about 150 lines of `client.c`, about 180 of `net.ts`, about 70 of `kernel.ts`, `web.c` (142), and about 300 of `chessbench.c`.
    It gains PING, a pending-request timeout, resubscribe in C and write no-retry, which are intended changes to an app that is not live.
@@ -396,24 +400,84 @@ PR #429 (the packed frame heads, `/ws/public`, the metrics registry) merges firs
    Proof: `NetTests.swift`, and a live game on a device.
    Deletes: the roughly 410 lines of section 2.3.
 
-## 6. Risks and open questions for Alex
+## 6. Decisions (Alex, 2026-10-22)
 
-1. **Where does the client live: `c_base/client/` or `shared/c/`?**
-   The rule puts helpers that both apps and c_base use in `shared/c`.
-   The client is not a helper but the other half of c_base's own protocol (`/ws`, `/v1/auth`, the session blob), the way the hub is the server half.
-   *Recommendation:* `c_base/client/`, under the product-name gate, with every helper it uses (`stream_frame.h`, `hist.h`, `proc.h`, the wasm libc) staying in `shared/c`.
-2. **Reconnect jitter.**
-   No app jitters its reconnect, so after a deploy every foolish client comes back on the same 500 ms schedule.
-   Adding it changes foolish's behaviour, which the move must not do.
-   *Recommendation:* the move ships with `jitter = 0` and the differential proof, then a separate, flag-guarded PR turns on full jitter (a delay drawn from [0.5, 1.0] of the doubling schedule, seeded by the host's `now` and the user id, so tests stay deterministic).
-3. **Should c_base serve foolish's website?**
-   Foolish's export sits on S3 behind CloudFront today, with a viewer-request function for its rewrites and the `[game_id]` fallback.
-   *Recommendation:* no, foolish stays on CloudFront, which caches at the edge and costs nothing.
-   c_base's site serving is for the apps without a CDN (c_chess, birdseye, adventurer), and foolish can opt in later by moving its rewrites into the site table as rows.
-4. **One auth contract for every app.**
-   Today foolish uses `/v1/auth`, c_chess uses `/c/auth` with a JSON guest in localStorage, birdseye has a dev-only fixed account, and adventurer is anonymous.
-   *Recommendation:* the client speaks only the platform's `/v1/auth` and the anonymous `/ws/public`.
-   c_chess moves to them in step 5, and its guest becomes a platform signup whose name and password live in the session blob, not in JSON.
-5. **Swift now, Kotlin later.**
-   The iMessage app never links FoolishNet, and the main iOS app is not a priority, so the Swift step only pays off with the next iOS build.
-   *Recommendation:* do steps 1 to 7 now, step 8 with the next iOS build, and no Kotlin until an Android host exists; structgen will write its bindings on that day.
+The five open questions of the first draft are answered, and two rules were added.
+
+### 6.1 Where it lives
+
+`c_base/client/`, as proposed, under the product-name gate; the helpers it uses stay in `shared/c`.
+
+### 6.2 Reconnect jitter: on from the start
+
+Every reconnect delay is jittered, in every app, foolish included, from the first commit; there is no flag that turns it off.
+The schedule is **decorrelated jitter**: the next delay is drawn uniformly from `[retry_first_ms, 3 x the previous delay]` and capped at `retry_max_ms`, starting from `retry_first_ms` and starting over at every READY.
+Why decorrelated and not full jitter:
+- Full jitter draws from `[0, window]`, so a share of clients reconnect at once, at 0 ms, into a server that is just coming back; decorrelated jitter never goes below the floor (500 ms).
+- It spreads a crowd as well as full jitter does: both were measured within a few percent of each other in total work and time to finish in AWS's study of backoff with contention, and both are far ahead of no jitter, which is what every app has today.
+- It needs no attempt counter, only the previous delay, which the client already keeps.
+
+The generator is `shared/c/rng.h`'s splitmix64, its state a field of the client, seeded per client by the host (`cbc_cfg.seed`).
+The browser shim seeds it from `crypto.getRandomValues`, a native host from its own entropy, and every test with a constant, so a test's schedule is exact.
+Only the reconnect delay is jittered; a refused subscription and a lost read keep their doubling schedule, since they are one client's retries and not a crowd's.
+
+**The zero-change proof for foolish changes accordingly** (section 2.6, item 1): the differential trace compares every request, frame, event and finished call byte for byte, except the reconnect delay `cbc_closed` returns.
+For each of those, the trace asserts instead that it lies in `[retry_first_ms, min(retry_max_ms, 3 x the previous delay)]`, with the previous delay the trace's own last one (or the floor after a READY).
+Because a delay moves the time the next step happens, the trace program feeds both builds the same `now` values, taken from the program, never from the delay.
+
+### 6.3 Site serving is a choice each app makes, explicitly
+
+Each app declares one of two modes, and there is no default:
+- **CDN.** The site is built and deployed on its own (foolish: `next build`, `web_deploy.sh`, S3 and CloudFront, which caches at the edge), and the app's process serves no site.
+- **Serve.** The app's process serves its built site from memory (section 3.6).
+
+The choice is written twice, and the two must agree:
+- **In the app declaration.** `cb_app.site` is `{ .mode = CB_SITE_CDN }` or `{ .mode = CB_SITE_SERVE, .table = &app_site }`.
+  Boot refuses an app whose mode is unset (0), a SERVE app with no table, and a CDN app with one.
+- **In the ops and deploy config.** The app's deploy file names `SITE=cdn` or `SITE=serve`.
+  For `cdn`, the deploy runs the site's own deploy (foolish's `web_deploy.sh`) and the binary is built without a site table; for `serve`, the build runs `embed_site` and links the table, and no site deploy runs.
+  `cbase describe` prints the mode the binary was built with, and the deploy refuses to continue when it is not the one the config names.
+
+Foolish declares CDN and stays on CloudFront.
+c_chess, birdseye and adventurer declare SERVE when they move to it.
+
+### 6.4 One login for every app, and one authentication per socket
+
+Every app signs in through the platform's `/v1/auth` and listens anonymously through `/ws/public`.
+c_chess's `/c/auth` and its JSON guest, and birdseye's dev-only `/be/session`, go away when those apps move.
+One fact the first draft missed: `/v1/auth/*` is still served by foolish (`foolish/server/src/app/v1_http.c:690-693`), not by the platform.
+Lifting those routes into `c_base/core`, byte for byte, is therefore a step of its own before the first signed-in app other than foolish moves (step 4b in section 5).
+
+**Authenticate once per socket.**
+This is the client's default model:
+- A session is made over HTTP (`/v1/auth/signup`, `signin`, `refresh`): it has to exist before a socket can say who it is, and the hub refuses `/v1/auth/*` over the socket (`rt_local.c:431`).
+- The socket authenticates once, with HELLO.
+- Every call after that rides the socket as `SF_REQ`, answered by `SF_REPLY`, and carries no token: the hub runs the route with the connection's user.
+- A call made while the socket is down waits for the next READY. It does not fall back to HTTP, so nothing re-authenticates per request.
+- A socket never outlives its token (`rt_local.c`, "A SOCKET NEVER OUTLIVES ITS LOGIN").
+  So the client refreshes over HTTP `refresh_early_ms` before expiry, and once no socket call is in flight it rolls the socket: it asks the host to close it and reopens at once with the new token, with no backoff and no jitter, since it is planned.
+
+**What stays HTTP**, and why each does:
+- `/v1/auth/*`, for the reason above.
+- An anonymous client's reads: `/ws/public` carries HELLO, SUB and PING and nothing else, and these reads are public GETs that a CDN or the edge can cache.
+  adventurer's lists are this case.
+- Bytes that are not calls: the site, map tiles, a replay file.
+- A route an app flags `CBC_R_HTTP`, which the client then sends over HTTP with the bearer.
+  It exists for foolish's zero-change move (foolish sends its reads over HTTP today), and a later foolish PR clears the flag route by route.
+
+### 6.5 TLS
+
+The client is transport-agnostic: it reads and writes frames, and the host's socket may be `ws` or `wss`.
+The browser shim takes the scheme from the server URL, which defaults to the page's own origin, so a page on `https` opens `wss` and a page on `http` opens `ws`; an explicit `http(s)` server URL maps the same way.
+TLS termination in c_base is the c_chess agent's work; the native load harness uses it once it lands.
+
+### 6.6 Swift and Kotlin
+
+Swift with the next iOS build (step 8), Kotlin when an Android host exists.
+
+## 7. Later
+
+**Sign in with Apple, Google and other OAuth/OIDC providers, as platform auth.**
+They belong to the platform, not to each app: a route such as `/v1/auth/oidc/<provider>` verifies the provider's ID token (the provider's published keys, fetched and cached by the platform) and answers the same session as signin, so the socket, the refresh and the client do not change.
+The client gains one sign-in op that carries the provider's token; an app's config names only which providers it offers and its client ids.
+Linking a provider to an existing account, and an account that has only a provider and no password, are the questions to settle then.
