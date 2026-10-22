@@ -53,8 +53,9 @@ typedef struct {
 // socket that never signed in (under serve, GET /ws/public: an empty HELLO, then SUB of rooms
 // and PING, and nothing else; rt_local.c). Because the hub knows a room by its doc alone, an app
 // that declares one anonymous family must declare every room family anonymous, or boot refuses
-// (cb_rt_families_check); a user's own family never is. The IoT authorizer under Lambda admits no
-// anonymous connection, so there an anonymous family is heard by the signed-in alone.
+// (cb_rt_families_check); a user's own family never is. A transport whose broker authorizes every
+// connection by its token admits no anonymous one, so there an anonymous family is heard by the
+// signed-in alone.
 typedef struct {
     const char *name;      // for the logs: "views"
     const char *pattern;   // "u/{user}/v", "s/{doc}"

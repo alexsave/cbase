@@ -235,12 +235,13 @@ static void two_workers(void) {
 // free has begun is refused with CB_E_STATE. The plug's run waits, inside the worker, until a put
 // says the lanes are stopping, so the free has begun before any queued item could be taken.
 static cb_lanes *g_freeing;
-static atomic_int g_free_runs, g_state_seen;
+static atomic_int g_free_runs, g_state_seen, g_probe;
 static void run_until_stopping(void *ud, int lane, const uint8_t *bytes, size_t len, uint64_t seq, int64_t put_us) {
     (void)ud; (void)lane; (void)bytes; (void)len; (void)put_us;
     atomic_fetch_add(&g_free_runs, 1);
     if (seq != 1) return;
     atomic_fetch_add(&g_entered, 1);
+    while (!atomic_load(&g_probe)) usleep(1000);   // until the test has filled lane 1
     const uint8_t one = 1;
     for (int k = 0; k < 5000; k++) {   // lane 1 is full: CB_E_FULL until the free, CB_E_STATE after
         int rc = cb_lanes_put(g_freeing, 1, &one, 1, NULL);
@@ -253,6 +254,7 @@ static void run_until_stopping(void *ud, int lane, const uint8_t *bytes, size_t 
 static void free_with_queue(void) {
     reset();
     atomic_store(&g_free_runs, 0);
+    atomic_store(&g_probe, 0);
     cb_lanes *l = NULL;
     size_t caps[2] = { 0, 1 };
     cb_lanes_opts o = opts(1, 2, caps, run_until_stopping, NULL);
@@ -265,6 +267,7 @@ static void free_with_queue(void) {
     T_EQ_INT(cb_lanes_put(l, 1, b, 1, NULL), CB_OK);   // lane 1 now full
     T_EQ_INT(cb_lanes_depth(l, 0), 4);
     T_EQ_INT(cb_lanes_depth(l, 1), 1);
+    atomic_store(&g_probe, 1);
     cb_lanes_free(l);
     T_EQ_INT(atomic_load(&g_state_seen), 1);
     T_EQ_INT(atomic_load(&g_free_runs), 1);   // the plug alone; the five queued were dropped

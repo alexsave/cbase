@@ -296,6 +296,9 @@ static void anon_refusals_that_end(void) {
     a = open_anon(&m);
     ends_on(a, (const uint8_t *)"hi", 2, CB_WS_OP_TEXT, &m);
     a = open_anon(&m);
+    n = sf_put_bare(b, sizeof b, SF_PING);   // a frame that parses, sent as text: still text
+    ends_on(a, b, (size_t)n, CB_WS_OP_TEXT, &m);
+    a = open_anon(&m);
     static const uint8_t junk[3] = { 9, 9, 9 };
     ends_on(a, junk, sizeof junk, CB_WS_OP_BIN, &m);
     a = open_anon(&m);

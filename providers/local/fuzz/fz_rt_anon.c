@@ -5,7 +5,7 @@
 // status for a SUB or UNSUB (403 for anything but a room, 400 for an empty room id, 429 past the
 // watch cap, else 200), PONG for a PING, and a close with 1008 for anything else, after which
 // nothing more is sent. A user's push published each input never reaches the socket (it would
-// arrive in place of an answer), and the server still answers HTTP after every input.
+// arrive in place of an answer), and the server still answers HTTP (every 64th input asks).
 //
 // Input: frames of [ctl][len][len bytes]: ctl bit 0 sends it as a text message; bit 1 builds a
 // frame from the bytes (kind from the first byte: HELLO, SUB, UNSUB, PING, REQ) instead of
@@ -23,11 +23,15 @@
 #include "realtime/realtime.h"
 #include "realtime/rt_local.h"
 #include "../../../../shared/c/stream_frame.h"
+#include "util/err.h"
+#include "util/clock.h"
 #include "util/log.h"
 #include "util/pool.h"
 
 #include <pthread.h>
 #include <signal.h>
+#include <sys/socket.h>
+#include <stdlib.h>
 #include <unistd.h>
 
 #define U1 "11111111-1111-4111-8111-111111111111"
@@ -77,7 +81,7 @@ static void start_once(void) {
 static int next_frame(int fd, cb_buf *m) {
     for (;;) {
         cb_buf_reset(m);
-        int op = tc_ws_recv(fd, 3000, m);
+        int op = tc_ws_recv(fd, 15000, m);   // generous: the machine is shared, and a slow answer is not a wrong one
         if (op == CB_WS_OP_PING || op == CB_WS_OP_PONG) continue;
         if (op == CB_WS_OP_CLOSE) return -1;
         if (op != CB_WS_OP_BIN) return 0;
@@ -147,6 +151,14 @@ static size_t build(const uint8_t *in, size_t n, uint8_t *out, size_t cap) {
     return w > 0 ? (size_t)w : 0;
 }
 
+// Closes with a reset, not a FIN: the client side then keeps no TIME_WAIT, which a run of tens of
+// thousands of inputs would otherwise pile up until no ephemeral port is left to connect from.
+static void close_now(int fd) {
+    struct linger l = { 1, 0 };
+    setsockopt(fd, SOL_SOCKET, SO_LINGER, &l, sizeof l);
+    close(fd);
+}
+
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     start_once();
     fz_in in = fz_in_of(data, size);
@@ -177,7 +189,12 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         if (len == 0 && opcode == CB_WS_OP_BIN) { static const uint8_t z = 0; msg = &z; len = 0; }
         FZ_CHECK(tc_ws_send(fd, opcode, msg, len) == 0);
         const int want_k = expect(&md, opcode, msg, len);
+        const int64_t t0 = cb_mono_ms();
         const int k = next_frame(fd, &m);
+        if (cb_mono_ms() - t0 > 1000) fprintf(stderr, "slow answer: %lld ms (frame %d, want %d, got %d)\n", (long long)(cb_mono_ms() - t0), frames, want_k, k);
+        const bool ok_k = want_k == -1 ? (k == -1 && m.len == 2 && ((m.p[0] << 8) | m.p[1]) == 1008) : want_k >= 1000 ? k == SF_REPLY : k == want_k;
+        if (!ok_k || getenv("FZ_TRACE")) fprintf(stderr, "frame %d: opcode %d len %zu kind %d -> want %d got %d (len %zu, %02x %02x)\n", frames, opcode, len,
+                                         len > 1 ? msg[1] : -1, want_k, k, m.len, m.len > 0 ? m.p[0] : 0, m.len > 1 ? m.p[1] : 0);
         if (want_k == -1) {
             FZ_CHECK(k == -1 && m.len == 2 && ((m.p[0] << 8) | m.p[1]) == 1008);
             open = false;
@@ -188,11 +205,17 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
             FZ_CHECK(k == want_k && m.len == 2);
         }
     }
-    close(fd);
+    close_now(fd);
     cb_buf_free(&m);
-    // The server still serves.
-    tc_response r;
-    FZ_CHECK(tc_http(g_port, "GET", "/t/ok", NULL, NULL, 0, &r) == 0 && r.status == 200);
-    tc_response_free(&r);
+    // A connection per input: past about 500 a second the loopback's closed connections (held
+    // 30 s each, on whichever side closed) use up the ephemeral ports. 2 ms an input stays under.
+    usleep(2000);
+    // The server still serves (asked every 64 inputs: each ask is a connection of its own).
+    static unsigned runs;
+    if (runs++ % 64 == 0) {
+        tc_response r;
+        FZ_CHECK(tc_http(g_port, "GET", "/t/ok", NULL, NULL, 0, &r) == 0 && r.status == 200);
+        tc_response_free(&r);
+    }
     return 0;
 }
