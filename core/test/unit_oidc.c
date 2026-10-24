@@ -696,7 +696,26 @@ static void new_identity_asks_a_name_then_signs_in(void) {
     T_CHECK(read_session(&s2));
     T_EQ_STR(s2.user_id, s.user_id);
     T_EQ_INT(g_f.token_calls - calls, 0);
-    // The account has no password: a password sign-in by its name refuses, whatever is sent.
+    // The sign-in is the account's last; the provider's new email is the identity's.
+    cb_user_row ur;
+    T_EQ_INT(cb_auth_user_row(g_ctx.auth, s.user_id, &ur), CB_OK);
+    T_EQ_INT(ur.last_sign_in_at, g_now);
+    fi_claims moved = good("apple.sub.1");
+    moved.email = "ada@example.com";
+    moved.is_private_email = "false";
+    g_now += 1000;
+    moved.iat = now_s();
+    T_EQ_INT(oidc(NULL, CBW_IDP_APPLE, 0, fi_mint(&g_f, 0, NULL, NULL, &moved), NONCE, NULL, NULL), 200);
+    T_EQ_INT(identity_of("apple.sub.1", &r), CB_OK);
+    T_EQ_STR(r.email, "ada@example.com");
+    T_CHECK(!r.private_email);
+    // The account has no password: a password sign-in by its name refuses, whatever is sent, and
+    // counts nothing (no guess can be right), so it never locks.
+    for (int i = 0; i < 8; i++) {
+        cb_limits_reset();
+        T_EQ_INT(password_route("/v1/auth/signin", CBW_SIGNIN, "ADA", "guess-guess-1"), 400);
+    }
+    T_CHECK(refused(CBW_WHY_ACCOUNT, CBW_ACCOUNT_E_BAD_LOGIN));
     T_EQ_INT(password_route("/v1/auth/signin", CBW_SIGNIN, "ADA", ""), 400);
     T_CHECK(refused(CBW_WHY_ACCOUNT, CBW_ACCOUNT_E_BAD_LOGIN));
     T_EQ_INT(password_route("/v1/auth/signin", CBW_SIGNIN, "ADA", "anything"), 400);
@@ -768,6 +787,49 @@ static void link_rules(void) {
     c.is_private_email = "false";
     T_EQ_INT(oidc(NULL, CBW_IDP_APPLE, 0, fi_mint(&g_f, 0, NULL, NULL, &c), NONCE, NULL, NULL), 400);
     T_CHECK(refused(CBW_WHY_ACCOUNT, CBW_ACCOUNT_E_NEEDS_NAME));
+    teardown();
+}
+
+// The races the store settles: an identity made between this request's read and its write.
+static int g_hide_gets;
+static const cb_store_ops *g_real;
+static int hiding_get(cb_store *st, int idp, const char *sub, cb_identity_row *out) {
+    if (g_hide_gets > 0) { g_hide_gets--; memset(out, 0, sizeof *out); return CB_E_NOT_FOUND; }
+    return g_real->identity_get(st, idp, sub, out);
+}
+static void races(void) {
+    setup(true);
+    T_EQ_INT(signup("KAY"), 200);
+    session kay;
+    T_CHECK(read_session(&kay));
+    T_EQ_INT(signup("LEO"), 200);
+    session leo;
+    T_CHECK(read_session(&leo));
+    T_EQ_INT(oidc(kay.access, CBW_IDP_APPLE, CBW_OIDC_LINK, tok_for("apple.sub.r"), NONCE, NULL, NULL), 204);
+    cb_store_ops ops = *g_ctx.store->ops;
+    g_real = g_ctx.store->ops;
+    ops.identity_get = hiding_get;
+    g_ctx.store->ops = &ops;
+    // Leo's link reads no identity, then its write finds Kay's: refused as another account's.
+    g_hide_gets = 1;
+    T_EQ_INT(oidc(leo.access, CBW_IDP_APPLE, CBW_OIDC_LINK, tok_for("apple.sub.r"), NONCE, NULL, NULL), 409);
+    T_CHECK(refused(CBW_WHY_ACCOUNT, CBW_ACCOUNT_E_LINKED));
+    // Kay's own, the same way: it is hers, so it is done.
+    g_hide_gets = 1;
+    T_EQ_INT(oidc(kay.access, CBW_IDP_APPLE, CBW_OIDC_LINK, tok_for("apple.sub.r"), NONCE, NULL, NULL), 204);
+    // A sign-in that read no identity and made one that is there: that account's session.
+    g_hide_gets = 1;
+    T_EQ_INT(oidc(NULL, CBW_IDP_APPLE, 0, tok_for("apple.sub.r"), NONCE, NULL, "Mae"), 200);
+    session s;
+    T_CHECK(read_session(&s));
+    T_EQ_STR(s.user_id, kay.user_id);
+    g_ctx.store->ops = g_real;
+    // The API's own: an empty name is no name.
+    cb_oidc_ask q = { .idp = CBW_IDP_APPLE, .nonce = NONCE, .nonce_len = strlen(NONCE), .name = "", .email = "x@accounts.example" };
+    q.id_token = tok_for("apple.sub.q");
+    q.id_token_len = strlen(q.id_token);
+    cb_session out;
+    T_EQ_INT(cb_auth_oidc(g_ctx.auth, &q, &out), CB_AUTH_E_NEEDS_NAME);
     teardown();
 }
 
@@ -874,6 +936,7 @@ int main(void) {
     T_RUN(new_identity_asks_a_name_then_signs_in);
     T_RUN(a_failed_exchange_does_not_fail_the_sign_in);
     T_RUN(link_rules);
+    T_RUN(races);
     T_RUN(delete_revokes_at_apple);
     T_RUN(route_refusals);
     fi_stop(&g_f);

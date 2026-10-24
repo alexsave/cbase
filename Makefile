@@ -226,6 +226,9 @@ $(foreach s,smoke smoke_lambda smoke_lambda_after smoke_authz smoke_matrix smoke
 # The session routes' differential proof (core/test/auth_diff.c): run by tools/auth_route_diff.sh
 # against a base binary, never by check (it needs a second build).
 $(call prog,build/test,build/obj/cbase,build/obj/kernel,auth_diff,core/test/auth_diff.c $(TLIB_SRC),CB_CFLAGS)
+# A stand-in Apple for trying Sign in with Apple in a browser or the simulator (core/test/fake_apple.c,
+# docs/AUTH_APPLE.md): never part of a server, never part of check.
+$(call prog,build/test,build/obj/cbase,build/obj/kernel,fake_apple,core/test/fake_apple.c $(TLIB_SRC),CB_CFLAGS)
 # The bench (bench/, the harness and its statistics, and each side's
 # bench/): its own program, and a unit test of its statistics and report that
 # runs with the others.

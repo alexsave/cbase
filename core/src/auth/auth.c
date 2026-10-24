@@ -611,7 +611,7 @@ int cb_auth_delete_user(cb_auth *a, const char *user_id) {
 // The ask's token verified: CB_OK and *id, or the refusal as auth.h says.
 static int oidc_verified(cb_auth *a, const cb_oidc_ask *q, cb_oidc_identity *id) {
     if (!a->store) return CB_E_STATE;
-    if (!q || !cb_oidc_on(a->oidc, q->idp)) return CB_AUTH_E_NO_PROVIDER;
+    if (!q) return CB_AUTH_E_NO_PROVIDER;   // a provider that is off is the verifier's CB_E_NOT_FOUND
     int rc = cb_oidc_verify(a->oidc, q->idp, q->id_token, q->id_token_len, q->nonce, q->nonce_len, cb_auth_now(), id);
     if (rc == CB_E_NOT_FOUND) return CB_AUTH_E_NO_PROVIDER;
     if (rc == CB_E_AUTH) return CB_AUTH_E_BAD_IDENTITY;

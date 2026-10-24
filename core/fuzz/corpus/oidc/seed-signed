@@ -1,0 +1,1 @@
+{"iss": "https://idp.example", "aud": "com.example.app", "sub": "001.a.b", "iat": 1790000000, "exp": 1790000600, "nonce": "3e1d8fd2a7f0e9b6d1e8b2a6c9f2a3c4b5d6e7f8091a2b3c4d5e6f708192a3b4"}

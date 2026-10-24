@@ -1,0 +1,1 @@
+{"iss": "https://idp.example", "aud": "com.example.app", "sub": "001.a.b", "iat": 1790000000, "exp": 1790000600, "nonce": "ab", "email": "x@privaterelay.appleid.com", "email_verified": "true", "is_private_email": true}
