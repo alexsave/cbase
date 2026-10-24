@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in with Apple</title>
+<style>
+  :root { --bg: #f5f5f7; --card: #ffffff; --ink: #1d1d1f; --muted: #6e6e73; --line: #d2d2d7; --err: #b3261e; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #000000; --card: #1c1c1e; --ink: #f5f5f7; --muted: #98989d; --line: #38383a; --err: #ff6961; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 15px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Helvetica, Arial, sans-serif; }
+  main { max-width: 420px; margin: 0 auto; padding: 56px 16px; }
+  header { margin-bottom: 20px; }
+  .mark { font-weight: 700; font-size: 22px; letter-spacing: -0.02em; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 24px; display: grid; gap: 14px; }
+  h2 { margin: 0; font-size: 20px; letter-spacing: -0.01em; }
+  p { margin: 0; }
+  .muted { color: var(--muted); }
+  .small { font-size: 13px; }
+  .mono { font: 12.5px/1.4 ui-monospace, "SF Mono", Menlo, monospace; word-break: break-all; }
+  dl { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; }
+  dt { color: var(--muted); }
+  dd { margin: 0; }
+  input { font: inherit; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+  .row { display: flex; gap: 10px; }
+  button.plain, button.ghost { font: inherit; padding: 9px 16px; border-radius: 8px; cursor: pointer; }
+  button.plain { background: var(--ink); color: var(--bg); border: 1px solid var(--ink); }
+  button.ghost { background: transparent; color: var(--ink); border: 1px solid var(--line); justify-self: start; }
+  .error { color: var(--err); margin-top: 14px; }
+</style>
+<script src="config.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="module" src="demo.js"></script>
+</body>
+</html>

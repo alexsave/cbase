@@ -160,8 +160,28 @@ ts: wasm build/gen/client_exports.ts build/gen/client_exports_oidc.ts
 	  cmp -s $$f $(TS_OUT)/$$(basename $$f) || { cp $$f $(TS_OUT)/$$(basename $$f); echo "wrote $(TS_OUT)/$$(basename $$f)"; }; done
 	@mkdir -p $(dir $(WASM_OUT)) && { cmp -s build/wasm/cbase_client.wasm $(WASM_OUT) || { cp build/wasm/cbase_client.wasm $(WASM_OUT); echo "wrote $(WASM_OUT)"; }; }
 	@o=$(dir $(WASM_OUT))cbase_client_oidc.wasm; cmp -s build/wasm/cbase_client_oidc.wasm $$o || { cp build/wasm/cbase_client_oidc.wasm $$o; echo "wrote $$o"; }
+	@mkdir -p $(TS_OUT)/react && for f in ts/react/*.tsx; do cmp -s $$f $(TS_OUT)/react/$$(basename $$f) || { cp $$f $(TS_OUT)/react/; echo "wrote $(TS_OUT)/react/$$(basename $$f)"; }; done
 ts-test: ts
 	node --test --test-timeout=20000 test/ts/*.test.ts
+
+# THE SIGN IN WITH APPLE DEMO (ts/demo): the button on a page of its own, bundled with esbuild and
+# React from the repository's node_modules (ESBUILD, NODE_MODULES), served by ts/demo/serve.mjs
+# against the fake Apple and a real `cbase serve` (both built in c_base first). Not part of check.
+NODE_MODULES ?= $(C_ROOT)/foolish/node_modules
+ESBUILD      ?= $(NODE_MODULES)/.bin/esbuild
+DEMO_OUT     := build/demo
+DEMO_PORT    ?= 8941
+.PHONY: demo demo-build
+demo-build: ts
+	@mkdir -p $(DEMO_OUT) $(TS_OUT)/demo
+	@cp ts/demo/demo.tsx $(TS_OUT)/demo/demo.tsx
+	NODE_PATH=$(NODE_MODULES) $(ESBUILD) $(TS_OUT)/demo/demo.tsx --bundle --format=esm --jsx=automatic --minify \
+	  --define:process.env.NODE_ENV='"production"' --outfile=$(DEMO_OUT)/demo.js --log-level=warning
+	@cp ts/demo/index.html $(DEMO_OUT)/index.html
+	@cp build/wasm/cbase_client_oidc.wasm $(DEMO_OUT)/cbase_client_oidc.wasm
+demo: demo-build
+	$(MAKE) -C .. build/cbase build/test/fake_apple
+	node ts/demo/serve.mjs $(abspath ..) $(abspath $(DEMO_OUT)) $(DEMO_PORT)
 
 .PHONY: clean
 clean:

@@ -39,6 +39,21 @@ export const APPLE_JS = 'https://appleid.cdn-apple.com/appleauth/static/jsapi/ap
 
 export type AppleButtonStyle = 'black' | 'white' | 'white-outline';
 
+// Apple's rule for the style: black on a light background, white on a dark one. With no look given
+// the button follows the page's color scheme as it changes.
+function useSchemeLook(given: AppleButtonStyle | undefined): AppleButtonStyle {
+  const query = '(prefers-color-scheme: dark)';
+  const [dark, setDark] = useState(() => typeof window !== 'undefined' && !!window.matchMedia?.(query).matches);
+  useEffect(() => {
+    if (given || !window.matchMedia) return;
+    const m = window.matchMedia(query);
+    const on = () => setDark(m.matches);
+    m.addEventListener('change', on);
+    return () => m.removeEventListener('change', on);
+  }, [given]);
+  return given ?? (dark ? 'white' : 'black');
+}
+
 export interface SignInWithAppleProps {
   client: CbClient;
   // The web's Services ID, and the return URL registered for it (Apple asks for it in popup mode too).
@@ -52,7 +67,7 @@ export interface SignInWithAppleProps {
   // Add the identity to the signed-in account instead of signing in (no session changes).
   link?: boolean;
   scope?: string;
-  look?: AppleButtonStyle;
+  look?: AppleButtonStyle;   // none: black on a light page, white on a dark one
   height?: number;
   label?: string;
   // Where Apple's SDK is loaded from: Apple's by default; a test serves its own.
@@ -112,6 +127,7 @@ export function SignInWithApple(p: SignInWithAppleProps): ReactElement {
   const [busy, setBusy] = useState(false);
   const [ready, setReady] = useState(false);
   const live = useRef(true);
+  const scheme = useSchemeLook(p.look);
   const src = p.scriptSrc ?? APPLE_JS;
   useEffect(() => {
     live.current = true;
@@ -155,7 +171,7 @@ export function SignInWithApple(p: SignInWithAppleProps): ReactElement {
     }
   }, [busy, p]);
 
-  const look = LOOKS[p.look ?? 'black'];
+  const look = LOOKS[scheme];
   const h = p.height ?? 44;
   const style: CSSProperties = {
     display: 'inline-flex',
