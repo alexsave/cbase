@@ -173,9 +173,18 @@ Everything that knows a card, a seat, a game or a bot:
 - **No function-pointer interface.**
   The app's knowledge comes in as data (a route table) and goes out as events the app's own C reads after each call, the way the shared lifts so far have done it.
 - **The output buffer is the caller's.**
-  The client state stays small (budget: 6 KB per `cbc`, pinned by a static assert), and a load generator shares one scratch buffer.
+  The client state stays small, and a load generator shares one scratch buffer.
+  Built: 10,240 bytes per `cbc`, under a budget of 12,288 that a static assert pins; the access token's 2 KB and the 4 KB arena for waiting calls are most of it.
 
 ### 3.2 The C header, sketched
+
+**Built (step 1):** `c_base/client/include/cbase/client.h` is the contract, and it differs from this sketch in four ways, each found while building it.
+- **One door for everything the host reads.** `cbc_in`, `cbc_on_response`, `cbc_closed` and `cbc_tick` raise events, a finished call among them (`CBC_EV_DONE`), so there is no `cbc_next_done`.
+- **No pointers in what other languages read.** A request is written into the caller's buffer as a `cbc_req_hdr` followed by its path, its Authorization value and its body, as a frame is, so structgen's readers reach every byte.
+- **A call names its method, path and flags itself** (`CBC_C_READ`, `CBC_C_AUTH`, `CBC_C_HTTP`); a route table is the app layer's data, from which its forwarders build calls.
+- **The mirror helpers (the version gate, the quiet timer) are not built yet.** They come with step 6, whose foolish layer is their first user.
+
+The sketch as it was drafted:
 
 ```c
 // c_base/client/include/cbase/client.h - the c_base client: the other half of `cbase serve`'s
@@ -221,7 +230,7 @@ typedef struct { uint8_t kind; uint8_t what; uint8_t push_kind; uint8_t why;
                  uint8_t gid_len; char gid[SF_GID_MAX];
                  uint32_t body_off, body_len; } cbc_event;   // spans into the frame passed in
 
-typedef struct cbc cbc;   // the whole client; its size is CBC_SIZE, static-asserted <= 6 KB
+typedef struct cbc cbc;   // the whole client; its size is CBC_SIZE, static-asserted <= CBC_SIZE_BUDGET
 
 void cbc_init(cbc *c, const cbc_cfg *cfg, const cbc_route *routes, int n_routes);
 
@@ -364,11 +373,11 @@ Alex confirmed the split (section 6.1).
 Each step lands as its own PR with its own proof.
 PR #429 (the packed frame heads, `/ws/public`, the metrics registry) merges first, since steps 2 to 5 use it.
 
-1. **The library, used by nothing.**
+1. **The library, used by nothing.** Done (2026-10-22): see the status below.
    `c_base/client` with `cbc`, `cbase/wire.h`, the TS shim, the wasm build, unit tests mutation-checked, a fuzz target with its corpus, and the size gate.
    Proof: its own tests, and the product-name gate.
    Deletes nothing.
-2. **adventurer**, a read-only anonymous viewer with no wasm today.
+2. **adventurer**, a read-only anonymous viewer with no wasm today. Done (2026-10-24): see the status below.
    It moves to `cbase_client.wasm` in anonymous mode, `socket.ts`, `CbOps`, and the metrics registry.
    Proof: its smoke's `/ws/public` test, and a browser check that the feed and the ops panel render.
    Deletes: `web/src/api.ts:247-344` (the socket, about 100 lines), `gen/stream_frame.ts` (103, generated), `Ops.tsx` (98), the `/adv/ops` route.
@@ -399,6 +408,20 @@ PR #429 (the packed frame heads, `/ws/public`, the metrics registry) merges firs
 8. **foolish Swift**, with the next iOS build, after an OK on timing.
    Proof: `NetTests.swift`, and a live game on a device.
    Deletes: the roughly 410 lines of section 2.3.
+
+### 5.1 Status
+
+**Step 1, the library (branch `cbase-client`).**
+- C: `c_base/client/include/cbase/client.h` and `auth_wire.h`, `src/client.c`; the wasm doors in `wasm/cbc_wasm.c`; the page shim in `ts/socket.ts`.
+- The module is 9,819 bytes raw and 4,980 gzipped, under the 10,240 and 5,120 the size gate holds (`make -C c_base/client wasm`), and byte-identical when built on macOS (Homebrew clang 22.1.8) and on Linux (apt.llvm.org clang 22.1.8).
+- Proof: 27 unit tests (456 checks) natively and under ASan and UBSan; a step-program fuzz target whose 1,035-input corpus replays in `make check` and which ran 2.2 million inputs on macOS and 709,458 in a 30-second smoke on Linux with no failure; three node tests of the shim over the real module; 40 mutants (34 in C, 6 in the shim), every one caught (`test/mutate.sh`, recorded in `mutation_checks.md`).
+- Wiring: c_base's `make check` runs the client's check, the name gate holds `client/` to core's rule, and `c_base.yml` has a `client` job for the module, its size gate and the shim's tests.
+- The full `make -C c_base check` and `check-asan` passed on macOS, and `check`, `check-asan` and `fuzz-replay` passed in the Linux CI image.
+
+**Step 2, adventurer (branch `adventurer`).**
+- The page's feed and its reads run on the client: the hand-written socket loop and its frame writers left `web/src/api.ts` (425 lines to 386), and the generated `stream_frame.ts` (103) is no longer made.
+- The feed gained what it lacked: a client PING with the half-open close, jittered reconnects, and the platform's retries on its reads.
+- Proof: `tsc --noEmit` under the page's strict settings, and the live page at 1440x900 (the feed, the ops pushes and every read), then a server killed and restarted under one open page, which came back live with the room held again on the new socket.
 
 ## 6. Decisions (Alex, 2026-10-22)
 
