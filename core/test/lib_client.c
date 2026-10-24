@@ -2,6 +2,7 @@
 
 #include "net/loop.h"
 #include "net/ws.h"
+#include "util/clock.h"
 #include "util/uuid.h"
 
 #include <arpa/inet.h>
@@ -47,6 +48,29 @@ const char *tc_header(const tc_response *r, const char *name, char *out, size_t 
     return NULL;
 }
 
+// EVERY BLOCKING CALL HERE SURVIVES A SIGNAL. A test or fuzz target that runs under a timer
+// (libFuzzer's -timeout is a SIGALRM every second) sees poll, recv, send and connect return EINTR,
+// more often the busier the machine; a client that read EINTR as the server's failure made
+// fz_rt_anon fail at random on a loaded CI runner. poll keeps its deadline across the retries.
+static int poll_in(int fd, int timeout_ms) {
+    int64_t end = cb_mono_ms() + timeout_ms;
+    for (;;) {
+        struct pollfd p = { fd, POLLIN, 0 };
+        int left = (int)(end - cb_mono_ms());
+        int r = poll(&p, 1, left < 0 ? 0 : left);
+        if (r < 0 && errno == EINTR) continue;
+        return r;
+    }
+}
+
+static ssize_t recv_some(int fd, void *b, size_t n) {
+    for (;;) {
+        ssize_t r = recv(fd, b, n, 0);
+        if (r < 0 && errno == EINTR) continue;
+        return r;
+    }
+}
+
 int tc_connect(int port) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) return -1;
@@ -55,7 +79,17 @@ int tc_connect(int port) {
     sa.sin_family = AF_INET;
     sa.sin_port = htons((uint16_t)port);
     sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    if (connect(fd, (struct sockaddr *)&sa, sizeof sa) != 0) { close(fd); return -1; }
+    if (connect(fd, (struct sockaddr *)&sa, sizeof sa) != 0) {
+        // Interrupted, the connect goes on in the kernel: wait for it and read how it ended.
+        int err = errno, so = 0;
+        socklen_t sl = sizeof so;
+        struct pollfd p = { fd, POLLOUT, 0 };
+        int r = -1;
+        if (err == EINTR) {
+            while ((r = poll(&p, 1, 5000)) < 0 && errno == EINTR) {}
+        }
+        if (err != EINTR || r <= 0 || getsockopt(fd, SOL_SOCKET, SO_ERROR, &so, &sl) != 0 || so != 0) { close(fd); return -1; }
+    }
     int one = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
 #ifdef SO_NOSIGPIPE
@@ -77,12 +111,10 @@ static int write_all(int fd, const void *p, size_t n) {
 
 // Reads at least one more byte into `in` within timeout_ms. 1, 0 on close, -1.
 static int read_more(int fd, cb_buf *in, int timeout_ms) {
-    struct pollfd p = { fd, POLLIN, 0 };
-    int r = poll(&p, 1, timeout_ms);
-    if (r <= 0) return -1;
+    if (poll_in(fd, timeout_ms) <= 0) return -1;
     if (!cb_buf_reserve(in, 8192)) return -1;
-    ssize_t n = recv(fd, in->p + in->len, in->cap - in->len - 1, 0);
-    if (n < 0) return errno == EINTR ? read_more(fd, in, timeout_ms) : -1;
+    ssize_t n = recv_some(fd, in->p + in->len, in->cap - in->len - 1);
+    if (n < 0) return -1;
     if (n == 0) return 0;
     in->len += (size_t)n;
     in->p[in->len] = 0;
@@ -146,9 +178,8 @@ int tc_ws_open(int port, const char *path, const char *headers) {
     cb_buf head;
     cb_buf_init(&head);
     while (!strstr(cb_buf_cstr(&head), "\r\n\r\n")) {
-        struct pollfd p = { fd, POLLIN, 0 };
         uint8_t b;
-        if (poll(&p, 1, 5000) <= 0 || recv(fd, &b, 1, 0) != 1) { cb_buf_free(&head); close(fd); return -1; }
+        if (poll_in(fd, 5000) <= 0 || recv_some(fd, &b, 1) != 1) { cb_buf_free(&head); close(fd); return -1; }
         cb_buf_append(&head, &b, 1);
     }
     tc_response r;
@@ -216,10 +247,9 @@ int tc_ws_recv(int fd, int timeout_ms, cb_buf *out) {
             cb_buf_free(&in);
             return f.opcode;
         }
-        struct pollfd p = { fd, POLLIN, 0 };
-        if (poll(&p, 1, in.len ? TC_WS_REST_MS : timeout_ms) <= 0) { cb_buf_free(&in); return -1; }
+        if (poll_in(fd, in.len ? TC_WS_REST_MS : timeout_ms) <= 0) { cb_buf_free(&in); return -1; }
         uint8_t b;
-        ssize_t r = recv(fd, &b, 1, 0);
+        ssize_t r = recv_some(fd, &b, 1);
         if (r <= 0) { cb_buf_free(&in); return -1; }
         cb_buf_append(&in, &b, 1);
     }

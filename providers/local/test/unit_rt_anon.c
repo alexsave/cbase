@@ -22,6 +22,8 @@
 #include "util/pool.h"
 
 #include <pthread.h>
+#include <signal.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <unistd.h>
 
@@ -366,6 +368,60 @@ static void the_anonymous_rule(void) {
     T_EQ_INT(cb_rt_families_check(mixed2, 2, err, sizeof err), CB_E_INVALID);
 }
 
+// A CLIENT UNDER SIGNALS: lib_client's calls survive EINTR. Another thread signals this one
+// every 200 us (a handler installed without SA_RESTART, as libFuzzer's -timeout alarm is) while it
+// opens anonymous sockets, says HELLO, SUBs and PINGs, and asks HTTP; every call must succeed.
+// fz_rt_anon failed at random on a loaded CI runner because poll and recv returned EINTR and the
+// client took that for the server's refusal.
+static volatile sig_atomic_t g_hits;
+static void on_usr1(int sig) { (void)sig; g_hits++; }
+static atomic_int g_storm;
+static pthread_t g_target;
+static void *storm(void *arg) {
+    (void)arg;
+    while (atomic_load(&g_storm)) {
+        pthread_kill(g_target, SIGUSR1);
+        usleep(200);
+    }
+    return NULL;
+}
+
+static void a_client_under_signals(void) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = on_usr1;   // no SA_RESTART: every blocking call the signal lands in returns EINTR
+    sigemptyset(&sa.sa_mask);
+    T_CHECK(sigaction(SIGUSR1, &sa, NULL) == 0);
+    g_target = pthread_self();
+    atomic_store(&g_storm, 1);
+    pthread_t th;
+    pthread_create(&th, NULL, storm, NULL);
+    cb_buf m;
+    cb_buf_init(&m);
+    int opened = 0, answered = 0;
+    for (int i = 0; i < 200; i++) {
+        int a = tc_ws_open(g.port, "/ws/public", NULL);
+        if (a < 0) continue;
+        opened++;
+        hello(a, "");
+        if (fr_recv(a, 2000, &m) == SF_READY && sub(a, SF_SUB, 1, SF_WHAT_ROOM, "feed", &m) == 200) answered++;
+        close(a);
+        tc_response r;
+        if (tc_http(g.port, "GET", "/t/who", NULL, NULL, 0, &r) == 0 && r.status == 200) answered++;
+        tc_response_free(&r);
+    }
+    atomic_store(&g_storm, 0);
+    pthread_join(th, NULL);
+    signal(SIGUSR1, SIG_DFL);
+    T_CHECK(g_hits > 100);   // the storm really landed
+    T_EQ_INT(opened, 200);
+    T_EQ_INT(answered, 400);
+    // And the server holds none of them now.
+    for (int k = 0; k < 200 && atomic_load(&g.ctx.stats.ws_conns); k++) usleep(5000);
+    T_EQ_INT(atomic_load(&g.ctx.stats.ws_conns), 0);
+    cb_buf_free(&m);
+}
+
 int main(void) {
     cb_log_init(CB_LOG_ERROR, 0);
     rtt_install();
@@ -376,6 +432,7 @@ int main(void) {
     T_RUN(anon_refusals_that_answer);
     T_RUN(anon_refusals_that_end);
     T_RUN(watchers_are_counted);
+    T_RUN(a_client_under_signals);
     stop(&g);
     T_RUN(no_route_without_an_anonymous_family);
     return T_DONE();
