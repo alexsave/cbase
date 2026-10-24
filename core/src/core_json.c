@@ -396,3 +396,110 @@ int cb_js_admin_backups_write(cb_buf *out, const cb_js_admin_backups *b) {
     cb_jw_end(&w);
     return adm_done(&w);
 }
+
+// =====================================================================================
+// OpenID Connect (core_json.h).
+
+bool cb_js_oidc_header(const char *json, size_t n, char *alg, size_t alg_cap, char *kid, size_t kid_cap) {
+    if (!json || !cb_json_valid(json, n) || cb_json_find(json, n, "", NULL) != CB_JSON_OBJ) return false;
+    return cb_json_get_str(json, n, "alg", alg, alg_cap) && cb_json_get_str(json, n, "kid", kid, kid_cap);
+}
+
+// A claim that is true or the string "true" (a provider has sent both).
+static bool oidc_true(const char *json, size_t n, const char *path) {
+    bool b = false;
+    if (cb_json_get_bool(json, n, path, &b)) return b;
+    char s[8];
+    return cb_json_get_str(json, n, path, s, sizeof s) && strcmp(s, "true") == 0;
+}
+
+// An optional string: absent is "", present must be a string that fits.
+static bool oidc_opt_str(const char *json, size_t n, const char *path, char *out, size_t cap) {
+    out[0] = 0;
+    cb_json_type t = cb_json_find(json, n, path, NULL);
+    if (t == CB_JSON_MISSING || t == CB_JSON_NULL) return true;
+    return t == CB_JSON_STR && cb_json_get_str(json, n, path, out, cap);
+}
+
+bool cb_js_oidc_claims(const char *json, size_t n, cb_oidc_claims *out) {
+    memset(out, 0, sizeof *out);
+    if (!json || !cb_json_valid(json, n) || cb_json_find(json, n, "", NULL) != CB_JSON_OBJ) return false;
+    bool ok = cb_json_get_str(json, n, "iss", out->iss, sizeof out->iss) &&
+              cb_json_get_str(json, n, "sub", out->sub, sizeof out->sub) && out->sub[0] &&
+              cb_json_get_i64(json, n, "exp", &out->exp) && cb_json_get_i64(json, n, "iat", &out->iat) &&
+              oidc_opt_str(json, n, "nonce", out->nonce, sizeof out->nonce) &&
+              oidc_opt_str(json, n, "email", out->email, sizeof out->email);
+    cb_json_type at = ok ? cb_json_find(json, n, "aud", NULL) : CB_JSON_ERR;
+    if (at == CB_JSON_STR) {
+        ok = cb_json_get_str(json, n, "aud", out->aud[0], sizeof out->aud[0]);
+        out->n_aud = ok ? 1 : 0;
+    } else if (at == CB_JSON_ARR) {
+        int len = cb_json_array_len(json, n, "aud");
+        for (int i = 0; ok && i < len && out->n_aud < CB_OIDC_AUD_MAX; i++) {
+            char path[16];
+            snprintf(path, sizeof path, "aud.%d", i);
+            ok = cb_json_get_str(json, n, path, out->aud[out->n_aud], sizeof out->aud[0]);
+            if (ok) out->n_aud++;
+        }
+        ok = ok && out->n_aud > 0;
+    } else {
+        ok = false;
+    }
+    if (ok) {
+        out->email_verified = oidc_true(json, n, "email_verified");
+        out->private_email = oidc_true(json, n, "is_private_email");
+    } else {
+        memset(out, 0, sizeof *out);
+    }
+    return ok;
+}
+
+int cb_js_jwks_each(const char *json, size_t n, cb_jwks_fn fn, void *ud) {
+    if (!json || !cb_json_valid(json, n)) return -1;
+    int len = cb_json_array_len(json, n, "keys");
+    if (len < 0) return -1;
+    int handed = 0;
+    for (int i = 0; i < len; i++) {
+        char path[48], kty[16], use[16], alg[16], kid[CB_JWKS_KID_MAX + 1], nb[CB_JWKS_N_MAX + 1], eb[16];
+#define JWK_FIELD(name, buf) (snprintf(path, sizeof path, "keys.%d." name, i), cb_json_get_str(json, n, path, buf, sizeof buf))
+        if (!JWK_FIELD("kty", kty) || strcmp(kty, "RSA") != 0) continue;
+        if (!JWK_FIELD("kid", kid) || !JWK_FIELD("n", nb) || !JWK_FIELD("e", eb)) continue;
+        if (JWK_FIELD("use", use) && strcmp(use, "sig") != 0) continue;
+        if (JWK_FIELD("alg", alg) && strcmp(alg, "RS256") != 0) continue;
+#undef JWK_FIELD
+        handed++;
+        if (!fn(kid, nb, eb, ud)) break;
+    }
+    return handed;
+}
+
+bool cb_js_oidc_token_reply(const char *json, size_t n, char *refresh, size_t refresh_cap, char *id_token, size_t id_cap,
+                            char *error, size_t error_cap) {
+    refresh[0] = id_token[0] = error[0] = 0;
+    if (!json || !cb_json_valid(json, n) || cb_json_find(json, n, "", NULL) != CB_JSON_OBJ) return false;
+    return oidc_opt_str(json, n, "refresh_token", refresh, refresh_cap) && oidc_opt_str(json, n, "id_token", id_token, id_cap) &&
+           oidc_opt_str(json, n, "error", error, error_cap);
+}
+
+int cb_js_es256_header(cb_buf *out, const char *kid) {
+    cb_jw w;
+    cb_jw_init(&w, out);
+    cb_jw_obj(&w);
+    cb_jw_kstr(&w, "alg", "ES256");
+    cb_jw_kstr(&w, "kid", kid);
+    cb_jw_end(&w);
+    return adm_done(&w);
+}
+
+int cb_js_client_secret_claims(cb_buf *out, const char *iss, int64_t iat, int64_t exp, const char *aud, const char *sub) {
+    cb_jw w;
+    cb_jw_init(&w, out);
+    cb_jw_obj(&w);
+    cb_jw_kstr(&w, "iss", iss);
+    cb_jw_kint(&w, "iat", iat);
+    cb_jw_kint(&w, "exp", exp);
+    cb_jw_kstr(&w, "aud", aud);
+    cb_jw_kstr(&w, "sub", sub);
+    cb_jw_end(&w);
+    return adm_done(&w);
+}

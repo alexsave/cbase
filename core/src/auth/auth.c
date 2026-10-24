@@ -29,6 +29,9 @@
 #include "auth.h"
 #include "net/loop.h"
 
+#include "oidc.h"
+#include "cbase/auth_wire.h"
+
 #include "bcrypt.h"
 #include "names.h"
 #include "../../../../shared/c/b64/b64.h"
@@ -77,6 +80,7 @@ struct cb_auth {
     live_sess      *live[LIVE_BUCKETS];
     int             n_live;
     uint64_t        epoch;      // under live_mu: bumped by every write that ends a session
+    cb_oidc        *oidc;       // the identity providers (oidc.h); never NULL once made
 };
 
 int cb_auth_new(cb_ctx *ctx, cb_auth **out) {
@@ -90,9 +94,20 @@ int cb_auth_new(cb_ctx *ctx, cb_auth **out) {
     cb_strlcpy(a->secret, cfg->jwt_secret, sizeof a->secret);
     a->ttl_s = cfg->jwt_ttl_s > 0 ? cfg->jwt_ttl_s : 3600;
     pthread_mutex_init(&a->live_mu, NULL);
+    char err[256];
+    int rc = cb_oidc_new(cfg, &a->oidc, err, sizeof err);
+    if (rc != CB_OK) {
+        CB_ERROR("auth", "identity providers: %s", rc == CB_E_INVALID ? err : cb_strerror(rc));
+        pthread_mutex_destroy(&a->live_mu);
+        OPENSSL_cleanse(a->secret, sizeof a->secret);
+        free(a);
+        return rc;
+    }
     *out = a;
     return CB_OK;
 }
+
+struct cb_oidc *cb_auth_oidc_of(cb_auth *a) { return a ? a->oidc : NULL; }
 
 static void live_clear_locked(cb_auth *a) {
     for (int b = 0; b < LIVE_BUCKETS; b++) {
@@ -109,6 +124,7 @@ void cb_auth_free(cb_auth *a) {
     if (!a) return;
     live_clear_locked(a);
     pthread_mutex_destroy(&a->live_mu);
+    cb_oidc_free(a->oidc);
     OPENSSL_cleanse(a->secret, sizeof a->secret);
     free(a);
 }
@@ -411,6 +427,12 @@ static int verify_counted(cb_auth *a, const cb_user_row *u, const char *password
     if (rc != CB_OK && rc != CB_E_NOT_FOUND) return rc;
     bool counted = rc == CB_OK && f.n > 0;
     if (counted && f.locked_until > now) return CB_AUTH_E_TOO_MANY;   // no bcrypt, no write
+    if (!u->password_hash[0]) {
+        // An account made by an identity provider has no password: no guess can be right, so none
+        // is counted, and the bcrypt is spent anyway so the answer takes a wrong password's time.
+        (void)cb_bcrypt_verify(password, DUMMY_HASH);
+        return CB_AUTH_E_BAD_LOGIN;
+    }
     int ok = cb_bcrypt_verify(password, u->password_hash);
     if (ok < 0) CB_WARN("auth", "user %s: stored hash does not parse as bcrypt", u->id);
     if (ok != 1) {
@@ -532,10 +554,218 @@ int cb_auth_change_password(cb_auth *a, const cb_user *u, const char *current, c
     return rc;
 }
 
+// ---- the account's delete, and its providers' grants ----------------------------------------
+
+static _Atomic int64_t g_revoke_failures;
+int64_t cb_auth_revoke_failures(void) { return g_revoke_failures; }
+
+#define GRANTS_MAX 16
+typedef struct {
+    struct { int idp; char client_id[CB_IDENTITY_CLIENT_MAX + 1]; char grant[CB_IDENTITY_GRANT_MAX]; } g[GRANTS_MAX];
+    int n;
+} grants;
+
+static bool grant_of(const cb_identity_row *r, void *ud) {
+    grants *gs = ud;
+    if (!r->grant[0]) return true;
+    gs->g[gs->n].idp = r->idp;
+    cb_strlcpy(gs->g[gs->n].client_id, r->client_id, sizeof gs->g[0].client_id);
+    cb_strlcpy(gs->g[gs->n].grant, r->grant, sizeof gs->g[0].grant);
+    return ++gs->n < GRANTS_MAX;
+}
+
+// Every grant of user_id's identities revoked at its provider (auth.h cb_auth_delete_user).
+static void revoke_grants(cb_auth *a, const char *user_id) {
+    grants *gs = calloc(1, sizeof *gs);
+    if (!gs) { g_revoke_failures++; CB_ERROR("auth", "user %s: out of memory reading the grants to revoke", user_id); return; }
+    int rc = CB_STORE_CALL(a->store, identities_of, user_id, grant_of, gs);
+    if (rc < 0 && rc != CB_E_NOTIMPL) {
+        g_revoke_failures++;
+        CB_ERROR("auth", "user %s: the identities could not be read (%s): no grant revoked", user_id, cb_strerror(rc));
+    }
+    for (int i = 0; i < gs->n; i++) {
+        char refresh[CB_OIDC_REFRESH_MAX + 1];
+        int r = cb_oidc_open(a->oidc, gs->g[i].grant, refresh, sizeof refresh) < 0 ? CB_E_AUTH : CB_E_IO;
+        for (int t = 0; r == CB_E_IO && t < 2; t++) r = cb_oidc_revoke(a->oidc, gs->g[i].idp, gs->g[i].client_id, refresh, cb_auth_now());
+        OPENSSL_cleanse(refresh, sizeof refresh);
+        if (r != CB_OK) {
+            g_revoke_failures++;
+            CB_ERROR("auth", "user %s: the grant at provider %d was not revoked (%s); the account is deleted all the same",
+                     user_id, gs->g[i].idp, r == CB_E_AUTH ? "refused, or it does not open" : cb_strerror(r));
+        }
+    }
+    OPENSSL_cleanse(gs, sizeof *gs);
+    free(gs);
+}
+
 int cb_auth_delete_user(cb_auth *a, const char *user_id) {
     if (!a->store) return CB_E_STATE;
+    revoke_grants(a, user_id);
     int rc = CB_STORE_CALL(a->store, user_delete, user_id);
     if (rc == CB_OK) ended(a, user_id, NULL, NULL);
+    return rc;
+}
+
+// ---- sign-in with an identity provider (auth.h) ---------------------------------------------
+
+// The ask's token verified: CB_OK and *id, or the refusal as auth.h says.
+static int oidc_verified(cb_auth *a, const cb_oidc_ask *q, cb_oidc_identity *id) {
+    if (!a->store) return CB_E_STATE;
+    if (!q || !cb_oidc_on(a->oidc, q->idp)) return CB_AUTH_E_NO_PROVIDER;
+    int rc = cb_oidc_verify(a->oidc, q->idp, q->id_token, q->id_token_len, q->nonce, q->nonce_len, cb_auth_now(), id);
+    if (rc == CB_E_NOT_FOUND) return CB_AUTH_E_NO_PROVIDER;
+    if (rc == CB_E_AUTH) return CB_AUTH_E_BAD_IDENTITY;
+    if (rc == CB_E_IO) return CB_E_BUSY;   // the provider's keys: a moment's outage, sent again
+    return rc;
+}
+
+// The token's one use (auth.h): CB_OK, CB_AUTH_E_BAD_IDENTITY for a second, or the store's failure.
+static int oidc_claim(cb_auth *a, const cb_oidc_identity *id) {
+    int64_t until = (id->exp + CB_OIDC_SKEW_S) * 1000 + 1000;
+    int rc = CB_STORE_CALL(a->store, once_claim, id->key, until, cb_auth_now());
+    if (rc == CB_E_CONFLICT) {
+        CB_WARN("auth", "an identity token was presented a second time (subject %.8s...)", id->sub);
+        return CB_AUTH_E_BAD_IDENTITY;
+    }
+    return rc;
+}
+
+// The grant for an identity that holds none, sealed into out ("" when there is no code, no key, or
+// the exchange failed: logged, the sign-in goes on).
+static void oidc_grant(cb_auth *a, const cb_oidc_ask *q, const cb_oidc_identity *id, char out[CB_IDENTITY_GRANT_MAX]) {
+    out[0] = 0;
+    if (!q->code || !q->code_len || !cb_oidc_can_exchange(a->oidc, q->idp)) return;
+    char refresh[CB_OIDC_REFRESH_MAX + 1];
+    int rc = cb_oidc_exchange(a->oidc, q->idp, id->client_id, id->sub, q->code, q->code_len, cb_auth_now(), refresh, sizeof refresh);
+    if (rc == CB_OK && cb_oidc_seal(a->oidc, refresh, out, CB_IDENTITY_GRANT_MAX) < 0) {
+        out[0] = 0;
+        rc = CB_E_NOMEM;
+    }
+    OPENSSL_cleanse(refresh, sizeof refresh);
+    if (rc != CB_OK) CB_WARN("auth", "provider %d: the code was not exchanged (%s); the identity holds no grant yet", q->idp, cb_strerror(rc));
+}
+
+// The identity row a verified token makes, for user_id.
+static void identity_from(cb_identity_row *r, const cb_oidc_ask *q, const cb_oidc_identity *id, const char *user_id, int64_t now) {
+    memset(r, 0, sizeof *r);
+    r->idp = q->idp;
+    cb_strlcpy(r->subject, id->sub, sizeof r->subject);
+    cb_strlcpy(r->user_id, user_id, sizeof r->user_id);
+    cb_strlcpy(r->client_id, id->client_id, sizeof r->client_id);
+    cb_strlcpy(r->email, id->email, sizeof r->email);
+    r->email_verified = id->email_verified;
+    r->private_email = id->private_email;
+    r->created_at = r->updated_at = now;
+}
+
+// A known identity, kept up to date: the provider's email when it says one (it may change: a relay
+// address turned off), and a grant when it holds none and a code came. Its write failing is logged
+// only: the sign-in it rides on is not the identity's bookkeeping.
+static void identity_refresh(cb_auth *a, cb_identity_row *r, const cb_oidc_ask *q, const cb_oidc_identity *id) {
+    bool changed = false;
+    if (id->email[0] && (strcmp(r->email, id->email) != 0 || r->email_verified != id->email_verified ||
+                         r->private_email != id->private_email)) {
+        cb_strlcpy(r->email, id->email, sizeof r->email);
+        r->email_verified = id->email_verified;
+        r->private_email = id->private_email;
+        changed = true;
+    }
+    if (!r->grant[0]) {
+        oidc_grant(a, q, id, r->grant);
+        if (r->grant[0]) {
+            cb_strlcpy(r->client_id, id->client_id, sizeof r->client_id);
+            changed = true;
+        }
+    }
+    if (!changed) return;
+    r->updated_at = cb_auth_now();
+    int rc = CB_STORE_CALL(a->store, identity_put, r, false);
+    if (rc != CB_OK) CB_WARN("auth", "user %s: the identity was not updated: %s", r->user_id, cb_strerror(rc));
+}
+
+// A session for the account behind identity r.
+static int identity_session(cb_auth *a, cb_identity_row *r, const cb_oidc_ask *q, const cb_oidc_identity *id, cb_session *out) {
+    cb_user_row u;
+    int rc = CB_STORE_CALL(a->store, user_get, r->user_id, &u);
+    if (rc == CB_E_NOT_FOUND) {
+        // An identity whose account is gone (a delete is not atomic across its writes on every
+        // store): it names no one now.
+        CB_WARN("auth", "identity of a deleted account %s presented", r->user_id);
+        return CB_AUTH_E_BAD_IDENTITY;
+    }
+    if (rc != CB_OK) return rc;
+    identity_refresh(a, r, q, id);
+    int64_t now = cb_auth_now();
+    if ((rc = CB_STORE_CALL(a->store, user_touch_sign_in, u.id, now)) != CB_OK) return rc;
+    u.last_sign_in_at = now;
+    return begin_session(a, &u, out);
+}
+
+int cb_auth_oidc(cb_auth *a, const cb_oidc_ask *q, cb_session *out) {
+    cb_oidc_identity id;
+    int rc = oidc_verified(a, q, &id);
+    if (rc != CB_OK) return rc;
+    cb_identity_row r;
+    rc = CB_STORE_CALL(a->store, identity_get, q->idp, id.sub, &r);
+    if (rc == CB_OK) {
+        if ((rc = oidc_claim(a, &id)) != CB_OK) return rc;
+        return identity_session(a, &r, q, &id, out);
+    }
+    if (rc != CB_E_NOT_FOUND) return rc;
+    // A new account: its name first (spending nothing without one: the client asks and sends again).
+    if (!q->name || !q->name[0]) return CB_AUTH_E_NEEDS_NAME;
+    cb_user_row u;
+    memset(&u, 0, sizeof u);
+    if ((rc = check_username(q->name)) != CB_OK) return rc;
+    if (!q->email) return CB_AUTH_E_BAD_EMAIL;
+    if ((rc = normalize_email(q->email, u.email)) != CB_OK) return rc;
+    // A name already taken is refused before the token is spent, so the client asks for another
+    // and sends the same token again (a race lost after this read is CB_AUTH_E_EXISTS spent).
+    cb_user_row taken;
+    rc = CB_STORE_CALL(a->store, user_by_email, u.email, &taken);
+    if (rc == CB_OK) return CB_AUTH_E_EXISTS;
+    if (rc != CB_E_NOT_FOUND) return rc;
+    if ((rc = oidc_claim(a, &id)) != CB_OK) return rc;
+    cb_strlcpy(u.username, q->name, sizeof u.username);
+    cb_uuid_v4(u.id);
+    u.created_at = u.last_sign_in_at = cb_auth_now();   // no password_hash: none can sign in by password
+    identity_from(&r, q, &id, u.id, u.created_at);
+    oidc_grant(a, q, &id, r.grant);
+    rc = CB_STORE_CALL(a->store, user_create_identity, &u, &r);
+    if (rc == CB_E_CONFLICT) {
+        // The name is taken, or the same identity was made a moment ago (a second tap): that account.
+        cb_identity_row now;
+        int got = CB_STORE_CALL(a->store, identity_get, q->idp, id.sub, &now);
+        if (got == CB_OK) return identity_session(a, &now, q, &id, out);
+        return CB_AUTH_E_EXISTS;
+    }
+    if (rc != CB_OK) return rc;
+    return begin_session(a, &u, out);
+}
+
+int cb_auth_oidc_link(cb_auth *a, const cb_user *u, const cb_oidc_ask *q) {
+    cb_oidc_identity id;
+    int rc = oidc_verified(a, q, &id);
+    if (rc != CB_OK) return rc;
+    cb_identity_row r;
+    rc = CB_STORE_CALL(a->store, identity_get, q->idp, id.sub, &r);
+    if (rc == CB_OK) {
+        if (strcmp(r.user_id, u->id) != 0) return CB_AUTH_E_LINKED;
+        if ((rc = oidc_claim(a, &id)) != CB_OK) return rc;
+        identity_refresh(a, &r, q, &id);   // linked already: a grant it lacked, an email that moved
+        return CB_OK;
+    }
+    if (rc != CB_E_NOT_FOUND) return rc;
+    if ((rc = oidc_claim(a, &id)) != CB_OK) return rc;
+    identity_from(&r, q, &id, u->id, cb_auth_now());
+    oidc_grant(a, q, &id, r.grant);
+    rc = CB_STORE_CALL(a->store, identity_put, &r, true);
+    if (rc == CB_E_CONFLICT) {
+        cb_identity_row now;
+        int got = CB_STORE_CALL(a->store, identity_get, q->idp, id.sub, &now);
+        if (got != CB_OK) return got;
+        return strcmp(now.user_id, u->id) == 0 ? CB_OK : CB_AUTH_E_LINKED;
+    }
     return rc;
 }
 

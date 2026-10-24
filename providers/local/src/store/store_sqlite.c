@@ -29,6 +29,7 @@
 #include "../../../../../shared/c/num_parse.h"
 
 #include <ctype.h>
+#include <openssl/crypto.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <sqlite3.h>
@@ -50,6 +51,7 @@ enum {
     ST_SESSION_PUT, ST_SESSION_SWEEP, ST_SESSION_GET, ST_SESSION_REVOKE,
     ST_REFRESH_PUT, ST_REFRESH_SWEEP, ST_REFRESH_GET, ST_REFRESH_TAKE,
     ST_FAILS_GET, ST_FAILS_PUT, ST_FAILS_CLEAR,
+    ST_IDENT_GET, ST_IDENT_INSERT, ST_IDENT_REPLACE, ST_IDENT_OF, ST_USER_DEL_IDENT, ST_ONCE_SWEEP, ST_ONCE_CLAIM,
     ST_READY, ST_TABLES,
     ST_BEGIN, ST_COMMIT, ST_ROLLBACK, ST_SAVEPOINT, ST_RELEASE, ST_ROLLBACK_TO,   // transaction control, prepared once
     ST__COUNT
@@ -75,6 +77,9 @@ enum {
 #define USER_WCOLS USER_COLS ", username_key"
 #define USER_VALS P(U_ID) ", " P(U_EMAIL) ", " P(U_HASH) ", " P(U_USERNAME) ", " P(U_CREATED_AT) ", " P(U_SIGNED_IN) ", " \
                   P(U_SESSION_GEN) ", " P(U_KEPT) ", " P(U_KEY)
+
+#define IDENT_COLS "idp, subject, user_id, client_id, email, email_verified, private_email, grant_sealed, created_at, updated_at"
+#define IDENT_VALS "?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10"
 
 static const char *const SQL[ST__COUNT] = {
     [ST_USER_GET] = "SELECT " USER_COLS " FROM users WHERE id = ?1",
@@ -110,6 +115,13 @@ static const char *const SQL[ST__COUNT] = {
     [ST_FAILS_GET] = "SELECT n, last_at, locked_until, expires_at FROM signin_fails WHERE email = ?1",
     [ST_FAILS_PUT] = "INSERT OR REPLACE INTO signin_fails (email, n, last_at, locked_until, expires_at) VALUES (?1, ?2, ?3, ?4, ?5)",
     [ST_FAILS_CLEAR] = "DELETE FROM signin_fails WHERE email = ?1",
+    [ST_IDENT_GET] = "SELECT " IDENT_COLS " FROM identities WHERE idp = ?1 AND subject = ?2",
+    [ST_IDENT_INSERT] = "INSERT INTO identities (" IDENT_COLS ") VALUES (" IDENT_VALS ")",
+    [ST_IDENT_REPLACE] = "INSERT OR REPLACE INTO identities (" IDENT_COLS ") VALUES (" IDENT_VALS ")",
+    [ST_IDENT_OF] = "SELECT " IDENT_COLS " FROM identities WHERE user_id = ?1",
+    [ST_USER_DEL_IDENT] = "DELETE FROM identities WHERE user_id = ?1",
+    [ST_ONCE_SWEEP] = "DELETE FROM once_claims WHERE expires_at <= ?1",
+    [ST_ONCE_CLAIM] = "INSERT INTO once_claims (key, expires_at) VALUES (?1, ?2)",
     [ST_READY] = "SELECT 1 FROM users WHERE id = zeroblob(" XS(CB_UUID_BYTES) ")",
     [ST_TABLES] = "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
     [ST_BEGIN] = "BEGIN IMMEDIATE",
@@ -961,9 +973,9 @@ typedef struct {
 
 static int user_del_step(sq *q, void *ud) {
     user_del *d = ud;
-    static const int IDS[] = { ST_USER_DEL_REFRESH, ST_USER_DEL_SESSIONS };
+    static const int IDS[] = { ST_USER_DEL_REFRESH, ST_USER_DEL_SESSIONS, ST_USER_DEL_IDENT };
     int rc = CB_OK;
-    for (int i = 0; rc == CB_OK && i < 2; i++) {
+    for (int i = 0; rc == CB_OK && i < 3; i++) {
         sqlite3_stmt *s = stmt(q, IDS[i]);
         if (s) cb_sql_bind_uuid(s, 1, d->id);
         rc = run(q, s, SQL[IDS[i]]);
@@ -978,11 +990,165 @@ static int user_del_step(sq *q, void *ud) {
     return rc;
 }
 
-// The cascade auth.admin.deleteUser had: the account, its sessions and refresh tokens, and every row of
+// The cascade auth.admin.deleteUser had: the account, its sessions, refresh tokens and identities, and every row of
 // the product's that hangs off it (cb_store_app sql_delete), in ONE transaction.
 static int sq_user_delete(cb_store *st, const char *id) {
     user_del d = { st, id };
     return cb_sql_write(st, user_del_step, &d);
+}
+
+// ---- identities (store.h cb_identity_row) -----------------------------------------------------
+
+static void ident_bind(sqlite3_stmt *s, const cb_identity_row *r) {
+    b_i64(s, 1, r->idp);
+    b_text(s, 2, r->subject);
+    cb_sql_bind_uuid(s, 3, r->user_id);
+    b_text(s, 4, r->client_id);
+    b_text(s, 5, r->email);
+    b_i64(s, 6, r->email_verified);
+    b_i64(s, 7, r->private_email);
+    b_text(s, 8, r->grant);
+    b_i64(s, 9, r->created_at);
+    b_i64(s, 10, r->updated_at);
+}
+
+static void ident_of(sqlite3_stmt *s, cb_identity_row *r) {
+    memset(r, 0, sizeof *r);
+    r->idp = (int)sqlite3_column_int64(s, 0);
+    cb_sql_col_text(s, 1, r->subject, sizeof r->subject);
+    cb_sql_col_uuid(s, 2, r->user_id);
+    cb_sql_col_text(s, 3, r->client_id, sizeof r->client_id);
+    cb_sql_col_text(s, 4, r->email, sizeof r->email);
+    r->email_verified = sqlite3_column_int64(s, 5) != 0;
+    r->private_email = sqlite3_column_int64(s, 6) != 0;
+    cb_sql_col_text(s, 7, r->grant, sizeof r->grant);
+    r->created_at = sqlite3_column_int64(s, 8);
+    r->updated_at = sqlite3_column_int64(s, 9);
+}
+
+static bool ident_ok(const cb_identity_row *r) {
+    unsigned char b[CB_UUID_BYTES];
+    return r && r->subject[0] && cb_uuid_pack(r->user_id, b);
+}
+
+typedef struct {
+    int                    idp;
+    const char            *subject;
+    cb_identity_row       *out;
+} ident_read;
+
+static int ident_get_step(sq *q, void *ud) {
+    ident_read *r = ud;
+    sqlite3_stmt *s = stmt(q, ST_IDENT_GET);
+    if (!s) return CB_E_DB;
+    b_i64(s, 1, r->idp);
+    b_text(s, 2, r->subject);
+    int st = sqlite3_step(s), rc;
+    if (st == SQLITE_ROW) { ident_of(s, r->out); rc = CB_OK; }
+    else rc = st == SQLITE_DONE ? CB_E_NOT_FOUND : fail(q, "identity get", st);
+    done(s);
+    return rc;
+}
+
+static int sq_identity_get(cb_store *st, int idp, const char *subject, cb_identity_row *out) {
+    memset(out, 0, sizeof *out);
+    if (!subject || !subject[0]) return CB_E_NOT_FOUND;
+    ident_read r = { idp, subject, out };
+    return cb_sql_read(st, ident_get_step, &r);
+}
+
+typedef struct {
+    const cb_identity_row *r;
+    bool                   fresh;
+    cb_store              *s;
+    const cb_user_row     *u;   // user_create_identity: the account first
+} ident_write;
+
+static int ident_put_step(sq *q, void *ud) {
+    ident_write *w = ud;
+    sqlite3_stmt *s = stmt(q, w->fresh ? ST_IDENT_INSERT : ST_IDENT_REPLACE);
+    if (!s) return CB_E_DB;
+    ident_bind(s, w->r);
+    return run(q, s, "identity put");
+}
+
+static int sq_identity_put(cb_store *st, const cb_identity_row *r, bool fresh) {
+    if (!ident_ok(r)) return CB_E_INVALID;
+    ident_write w = { r, fresh, st, NULL };
+    return cb_sql_write(st, ident_put_step, &w);
+}
+
+// The account, its product rows and the identity, in the one transaction cb_sql_write opens.
+static int user_ident_step(sq *q, void *ud) {
+    ident_write *w = ud;
+    user_put p = { w->s, w->u, false };
+    int rc = user_put_step(q, &p);
+    return rc == CB_OK ? ident_put_step(q, w) : rc;
+}
+
+static int sq_user_create_identity(cb_store *st, const cb_user_row *u, const cb_identity_row *r) {
+    unsigned char b[CB_UUID_BYTES];
+    if (!cb_uuid_pack(u->id, b) || !ident_ok(r) || strcmp(r->user_id, u->id) != 0) return CB_E_INVALID;
+    ident_write w = { r, true, st, u };
+    return cb_sql_write(st, user_ident_step, &w);
+}
+
+#define IDENT_OF_MAX 16   // a user's identities read at once (one per provider, a few providers)
+typedef struct {
+    const char      *user_id;
+    cb_identity_row *rows;
+    int              n;
+} ident_list;
+
+static int ident_of_step(sq *q, void *ud) {
+    ident_list *l = ud;
+    sqlite3_stmt *s = stmt(q, ST_IDENT_OF);
+    if (!s) return CB_E_DB;
+    cb_sql_bind_uuid(s, 1, l->user_id);
+    int st, rc = CB_OK;
+    while ((st = sqlite3_step(s)) == SQLITE_ROW && l->n < IDENT_OF_MAX) ident_of(s, &l->rows[l->n++]);
+    if (st != SQLITE_ROW && st != SQLITE_DONE) rc = fail(q, "identities of", st);
+    done(s);
+    return rc;
+}
+
+static int sq_identities_of(cb_store *st, const char *user_id, cb_identity_fn fn, void *ud) {
+    unsigned char b[CB_UUID_BYTES];
+    if (!user_id || !cb_uuid_pack(user_id, b)) return CB_E_INVALID;
+    cb_identity_row *rows = calloc(IDENT_OF_MAX, sizeof *rows);
+    if (!rows) return CB_E_NOMEM;
+    ident_list l = { user_id, rows, 0 };
+    int rc = cb_sql_read(st, ident_of_step, &l);
+    for (int i = 0; rc == CB_OK && i < l.n; i++)
+        if (fn && !fn(&rows[i], ud)) break;
+    OPENSSL_cleanse(rows, IDENT_OF_MAX * sizeof *rows);   // sealed grants, but still the grants
+    free(rows);
+    return rc == CB_OK ? l.n : rc;
+}
+
+typedef struct {
+    const char *key;
+    int64_t     expires_at, now;
+} once_op;
+
+static int once_step(sq *q, void *ud) {
+    once_op *o = ud;
+    sqlite3_stmt *s = stmt(q, ST_ONCE_SWEEP);
+    if (!s) return CB_E_DB;
+    b_i64(s, 1, o->now);
+    int rc = run(q, s, "once sweep");
+    if (rc != CB_OK) return rc;
+    if (!(s = stmt(q, ST_ONCE_CLAIM))) return CB_E_DB;
+    b_hash(s, 1, o->key);
+    b_i64(s, 2, o->expires_at);
+    return run(q, s, "once claim");
+}
+
+static int sq_once_claim(cb_store *st, const char *key, int64_t expires_at, int64_t now_ms) {
+    uint8_t raw[HASH_BYTES];
+    if (!hash_raw(key, raw)) return CB_E_INVALID;
+    once_op o = { key, expires_at, now_ms };
+    return cb_sql_write(st, once_step, &o);
 }
 
 typedef struct {
@@ -1555,4 +1721,9 @@ static const cb_store_ops SQLITE_OPS = {
     .admin_browse = sq_admin_browse,
     .admin_query = sq_admin_query,
     .user_import = sq_user_import,
+    .identity_get = sq_identity_get,
+    .identity_put = sq_identity_put,
+    .identities_of = sq_identities_of,
+    .user_create_identity = sq_user_create_identity,
+    .once_claim = sq_once_claim,
 };

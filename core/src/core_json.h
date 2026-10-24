@@ -1,5 +1,7 @@
-// core_json.h - the JSON the core speaks: the access token's JWT header and
-// claims, and the admin console's API. The one JSON file of the core; the
+// core_json.h - the JSON the core speaks: the admin console's API, and an
+// identity provider's (OpenID Connect: an ID token's header and claims, its
+// published keys, its token endpoint's answer, and the client secret the
+// platform signs for it). The one JSON file of the core; the
 // other is the AWS provider's aws_json.c (DynamoDB, the Lambda envelope, the
 // IoT authorizer, the client's function URL event; and CloudFront's one XML
 // shape). Both sit on the one low-level writer and reader (util/json.h), and
@@ -160,5 +162,56 @@ typedef struct {
     cb_js_admin_links         links;
 } cb_js_admin_backups;
 int cb_js_admin_backups_write(cb_buf *out, const cb_js_admin_backups *b);
+
+// =====================================================================================
+// OpenID Connect (auth/oidc.h): the provider sets these shapes. Every reader is
+// strict in what it returns and bounded by its caller's buffers: a field that
+// is missing, of another type, or longer than its buffer is a refusal, never a
+// truncation.
+
+// An ID token's header: {"alg","kid"} (both strings). false when either is
+// missing or does not fit.
+bool cb_js_oidc_header(const char *json, size_t n, char *alg, size_t alg_cap, char *kid, size_t kid_cap);
+
+#define CB_OIDC_AUD_MAX   4     // audiences read from an "aud" array
+#define CB_OIDC_SUB_MAX   255   // a subject's bytes
+#define CB_OIDC_STR_MAX   255   // a client id, an issuer, a hashed nonce
+typedef struct {
+    char    iss[CB_OIDC_STR_MAX + 1];
+    char    sub[CB_OIDC_SUB_MAX + 1];
+    char    aud[CB_OIDC_AUD_MAX][CB_OIDC_STR_MAX + 1];   // "aud" a string (one) or an array (its first four)
+    int     n_aud;
+    int64_t exp, iat;                                  // seconds since the epoch
+    char    nonce[CB_OIDC_STR_MAX + 1];                // "" when absent
+    char    email[CB_EMAIL_MAX + 1];                   // "" when absent
+    bool    email_verified;                            // true, or the string "true"
+    bool    private_email;                             // "is_private_email": true or "true"
+} cb_oidc_claims;
+// An ID token's claims. iss, sub, aud, exp and iat must be there and of their
+// type (exp and iat integers); nonce and email are optional strings. false
+// otherwise, or when a field does not fit.
+bool cb_js_oidc_claims(const char *json, size_t n, cb_oidc_claims *out);
+
+// A provider's key set ({"keys":[{kty,kid,use,alg,n,e},..]}): fn is called once
+// per key of kty "RSA" whose use (when given) is "sig" and alg (when given)
+// "RS256", with its kid and its modulus and exponent as base64url text; a key
+// any of those does not fit is skipped. The keys handed on, or -1 when the
+// document is not a key set. fn answers false to stop.
+#define CB_JWKS_KID_MAX 128
+#define CB_JWKS_N_MAX   1400   // base64url of a 8192-bit modulus is 1366
+typedef bool (*cb_jwks_fn)(const char *kid, const char *n_b64, const char *e_b64, void *ud);
+int cb_js_jwks_each(const char *json, size_t n, cb_jwks_fn fn, void *ud);
+
+// The token endpoint's answer: {"refresh_token","id_token",..} on success, or
+// {"error"} (copied into error, "" when absent). refresh and id_token are ""
+// when absent. false when the document is not an object or a field does not fit.
+bool cb_js_oidc_token_reply(const char *json, size_t n, char *refresh, size_t refresh_cap, char *id_token, size_t id_cap,
+                            char *error, size_t error_cap);
+
+// A client secret's two JSON parts, as the provider asks for them: the header
+// {"alg":"ES256","kid"} and the claims {"iss","iat","exp","aud","sub"}. CB_OK,
+// or CB_E_NOMEM.
+int cb_js_es256_header(cb_buf *out, const char *kid);
+int cb_js_client_secret_claims(cb_buf *out, const char *iss, int64_t iat, int64_t exp, const char *aud, const char *sub);
 
 #endif

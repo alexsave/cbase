@@ -23,6 +23,18 @@ typedef struct {
 // Reads a body of exactly `kind`. 0, or -1 (and *out zeroed).
 int cb_aw_request_decode(const uint8_t *p, size_t len, uint8_t kind, cb_aw_request *out);
 
+// A CBW_OIDC body (cbase/auth_wire.h). Lengths in bytes; the strings are not NUL-terminated.
+typedef struct {
+    uint8_t  idp;     // CBW_IDP_*, as sent (the route decides whether it is one)
+    uint8_t  flags;   // CBW_OIDC_*; a bit this file does not know is malformed
+    uint16_t token_len;  char token[CBW_ID_TOKEN_MAX];
+    uint8_t  nonce_len;  char nonce[CBW_NONCE_MAX];
+    uint16_t code_len;   char code[CBW_CODE_MAX];
+    uint8_t  name_len;   char name[CBW_NAME_MAX];
+} cb_aw_oidc;
+// 0, or -1 (and *out zeroed).
+int cb_aw_oidc_decode(const uint8_t *p, size_t len, cb_aw_oidc *out);
+
 // The CBW_SESSION answer into out: its length, or -1 for a field past its bound (an access token
 // over CBW_ACCESS_MAX, a refresh token over CBW_REFRESH_MAX, a user id over CBW_ID_MAX, a name over
 // CBW_NAME_MAX, an expiry past u48) or an out shorter than the answer.

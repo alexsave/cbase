@@ -45,6 +45,10 @@ typedef struct {
 #define CB_AUTH_E_BAD_EMAIL     (-108)  // signup: not an address ("email_address_invalid")
 #define CB_AUTH_E_LONG_PASSWORD (-109)  // over 72 bytes, which bcrypt would silently cut ("validation_failed")
 #define CB_AUTH_E_TOO_MANY      (-110)  // signin: the account is locked for failed attempts, or a rate limit (rate_limits.h)
+#define CB_AUTH_E_BAD_IDENTITY  (-111)  // oidc: the provider's token did not verify, or was used already
+#define CB_AUTH_E_NEEDS_NAME    (-112)  // oidc: no account has the identity, and no name came to make one
+#define CB_AUTH_E_LINKED        (-113)  // oidc link: the identity is another account's
+#define CB_AUTH_E_NO_PROVIDER   (-114)  // oidc: the provider is not configured
 
 // Passwords (sign-up and a change; sign-in takes any password, so an account
 // made under an older rule still signs in): at least CB_AUTH_PASSWORD_MIN
@@ -119,8 +123,55 @@ int cb_auth_logout(cb_auth *a, const cb_user *u, cb_logout_scope scope);
 // and every OTHER session ends in the same write (security finding M1).
 int cb_auth_change_password(cb_auth *a, const cb_user *u, const char *current, const char *new_password);
 // Deletes the account (store user_delete). delete-account calls this AFTER the
-// app layer has redacted the user from every game (functions_http.h).
+// app layer has redacted the user from every product row (cbase/app.h delete_account).
+// First every grant the account's identities hold at their providers is revoked
+// (oidc.h cb_oidc_revoke; the App Store's rule for Sign in with Apple), each tried
+// twice; one that still fails is logged as an ERROR and counted
+// (cb_auth_revoke_failures), and the account is deleted all the same: whoever asked
+// for their account to go gets that, and the grant lapses at the provider unused.
 int cb_auth_delete_user(cb_auth *a, const char *user_id);
+// Revocations that failed since the process started (above).
+int64_t cb_auth_revoke_failures(void);
+
+// SIGN-IN WITH AN IDENTITY PROVIDER (oidc.h): the provider's ID token, the raw
+// nonce it was asked for, the authorization code when the client has one, and,
+// for an identity no account has yet, the name a new account takes (as
+// cb_name_case left it) with the email it derives (auth_http.h
+// cb_auth_name_email). The rules:
+//   * an identity is an account's by (provider, subject) alone, the identities
+//     table's; an email never links one, verified or not (a private relay
+//     address is the provider's to give, and is kept as given);
+//   * a known identity signs in to its account; an unknown one with a name
+//     makes the account and the identity in one write (store.h
+//     user_create_identity), with no password, so the name's password sign-in
+//     refuses as any wrong password does; without a name it is
+//     CB_AUTH_E_NEEDS_NAME, which spends nothing, so the client asks for a
+//     name and sends the same token again;
+//   * the token is used once (store.h once_claim of its hash, held until it
+//     expires): a second use is CB_AUTH_E_BAD_IDENTITY;
+//   * the grant (the code exchanged for the provider's refresh token, sealed)
+//     is taken when the identity holds none and a code came, and kept for the
+//     account's delete; a failed exchange is logged and does not fail the
+//     sign-in (the next sign-in's code tries again).
+typedef struct {
+    int         idp;   // cbase/auth_wire.h CBW_IDP_*
+    const char *id_token;
+    size_t      id_token_len;
+    const char *nonce;
+    size_t      nonce_len;
+    const char *code;   // "" or NULL: none
+    size_t      code_len;
+    const char *name;   // a new account's name, NULL or "" for none
+    const char *email;  // that name's email
+} cb_oidc_ask;
+// The identity's account signed in (or made). CB_OK and *out, CB_AUTH_E_*, or the store's failure;
+// CB_E_BUSY when the provider's keys could not be had (the client may send it again).
+int cb_auth_oidc(cb_auth *a, const cb_oidc_ask *q, cb_session *out);
+// The identity added to u's account (no session is made). CB_OK (also when it is u's already),
+// CB_AUTH_E_LINKED, CB_AUTH_E_BAD_IDENTITY, CB_AUTH_E_NO_PROVIDER, CB_E_BUSY, or the store's failure.
+int cb_auth_oidc_link(cb_auth *a, const cb_user *u, const cb_oidc_ask *q);
+// The provider module (oidc.h) auth made from the configuration; NULL before cb_auth_new.
+struct cb_oidc *cb_auth_oidc_of(cb_auth *a);
 // The stored account behind a verified user (GET /user answers from it, so a
 // deleted account stops answering while its token lives). CB_E_NOT_FOUND.
 int cb_auth_user_row(cb_auth *a, const char *user_id, cb_user_row *out);

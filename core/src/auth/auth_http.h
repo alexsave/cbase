@@ -6,6 +6,9 @@
 //   POST /v1/auth/refresh    CBW_REFRESH -> 200 CBW_SESSION
 //   POST /v1/auth/signout    (bearer) CBW_SIGNOUT -> 204
 //   POST /v1/auth/password   (bearer) CBW_PASSWORD (current, new) -> 204; every other session ends
+//   POST /v1/auth/oidc       CBW_OIDC -> 200 CBW_SESSION: a provider's identity signed in, or made
+//                            into an account with the name it carries (auth.h cb_auth_oidc);
+//                            with CBW_OIDC_LINK (bearer) -> 204: linked to the bearer's account
 //
 // A refusal is the platform's (net/refuse.h): an account refusal is CBW_WHY_ACCOUNT with a
 // CBW_ACCOUNT_E_* code (409 for a taken name, 429 for too many attempts, else 400), a missing or
@@ -18,7 +21,10 @@
 // app with no account domain answers these name routes 503: it has no accounts by name.
 //
 // The rate limits come before any work (rate_limits.h): sign-up by address and by the whole
-// process, sign-in by address and by account, refresh by address, a password change by account.
+// process, sign-in by address and by account, refresh by address, a password change by account;
+// a provider's sign-in by address as a sign-in, and when it carries a new account's name, as a
+// sign-up too. An identity refusal is CBW_ACCOUNT_E_BAD_IDENTITY, NEEDS_NAME or NO_PROVIDER (400),
+// LINKED (409); a provider whose keys cannot be had for a moment is 503 CBW_WHY_BUSY.
 #ifndef CB_AUTH_HTTP_H
 #define CB_AUTH_HTTP_H
 

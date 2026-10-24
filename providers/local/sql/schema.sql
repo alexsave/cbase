@@ -70,3 +70,29 @@ CREATE TABLE IF NOT EXISTS signin_fails (
     locked_until INTEGER NOT NULL,
     expires_at   INTEGER NOT NULL
 ) WITHOUT ROWID;
+
+-- An identity at a provider (core/src/store/store.h cb_identity_row; schema 9): unique by (idp,
+-- subject), read so at every provider sign-in, and by user_id when its account is deleted (with it).
+-- grant_sealed: the provider's refresh token sealed by the server (core/src/auth/oidc.h), "" none.
+CREATE TABLE IF NOT EXISTS identities (
+    idp            INTEGER NOT NULL,
+    subject        TEXT NOT NULL,
+    user_id        BLOB NOT NULL,
+    client_id      TEXT NOT NULL,
+    email          TEXT NOT NULL,
+    email_verified INTEGER NOT NULL,
+    private_email  INTEGER NOT NULL,
+    grant_sealed   TEXT NOT NULL,
+    created_at     INTEGER NOT NULL,
+    updated_at     INTEGER NOT NULL,
+    PRIMARY KEY (idp, subject)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS identities_user ON identities(user_id);
+
+-- A one-time key's claim (store.h once_claim; schema 9): a provider token's hash, held until the
+-- token could no longer be used. Each claim first sweeps the claims past their time.
+CREATE TABLE IF NOT EXISTS once_claims (
+    key        BLOB PRIMARY KEY,
+    expires_at INTEGER NOT NULL
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS once_claims_expiry ON once_claims(expires_at);

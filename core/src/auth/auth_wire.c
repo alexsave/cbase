@@ -62,6 +62,36 @@ int cb_aw_request_decode(const uint8_t *p, size_t len, uint8_t kind, cb_aw_reque
     return 0;
 }
 
+// A str16 into a field of `cap` bytes; longer is malformed.
+static void str16(rd *r, char *dst, size_t cap, uint16_t *len_out) {
+    const uint8_t *h = take(r, 2);
+    if (!h) return;
+    uint16_t n = le_get_u16(h);
+    if (n > cap) { r->bad = 1; return; }
+    const uint8_t *q = take(r, n);
+    if (!q) return;
+    memcpy(dst, q, n);
+    *len_out = n;
+}
+
+int cb_aw_oidc_decode(const uint8_t *p, size_t len, cb_aw_oidc *out) {
+    memset(out, 0, sizeof *out);
+    rd r = { p, p ? len : 0, 0, 0 };
+    if (u8(&r) != CBW_V || u8(&r) != CBW_OIDC) r.bad = 1;
+    out->idp = u8(&r);
+    out->flags = u8(&r);
+    if (out->flags & ~CBW_OIDC_LINK) r.bad = 1;
+    str16(&r, out->token, sizeof out->token, &out->token_len);
+    str8(&r, out->nonce, sizeof out->nonce, &out->nonce_len);
+    str16(&r, out->code, sizeof out->code, &out->code_len);
+    str8(&r, out->name, sizeof out->name, &out->name_len);
+    if (r.bad || r.at != r.len) {
+        memset(out, 0, sizeof *out);
+        return -1;
+    }
+    return 0;
+}
+
 typedef struct {
     uint8_t *p;
     size_t   cap, n;

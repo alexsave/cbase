@@ -72,6 +72,48 @@ const char *const cb_config_limit_names[CB_CONFIG_LIMITS] = {
     "CBASE_LIMIT_SUB_USER", "CBASE_LIMIT_BUMP_USER",
 };
 
+// Ten upper-case letters and digits: an Apple team or key id.
+static bool apple_id_ok(const char *s) {
+    size_t n = strlen(s);
+    for (size_t i = 0; i < n; i++)
+        if (!((s[i] >= 'A' && s[i] <= 'Z') || (s[i] >= '0' && s[i] <= '9'))) return false;
+    return n == 10;
+}
+
+// CBASE_APPLE_* (config.h SIGN IN WITH APPLE).
+static int apple_from_env(cb_config *c, char *err, size_t cap) {
+    if (!copy(c->apple_client_ids, sizeof c->apple_client_ids, "CBASE_APPLE_CLIENT_IDS", env("CBASE_APPLE_CLIENT_IDS", ""), err, cap) ||
+        !copy(c->apple_team_id, sizeof c->apple_team_id, "CBASE_APPLE_TEAM_ID", env("CBASE_APPLE_TEAM_ID", ""), err, cap) ||
+        !copy(c->apple_key_id, sizeof c->apple_key_id, "CBASE_APPLE_KEY_ID", env("CBASE_APPLE_KEY_ID", ""), err, cap) ||
+        !copy(c->apple_private_key, sizeof c->apple_private_key, "CBASE_APPLE_PRIVATE_KEY", env("CBASE_APPLE_PRIVATE_KEY", ""), err, cap) ||
+        !copy(c->apple_redirect_uri, sizeof c->apple_redirect_uri, "CBASE_APPLE_REDIRECT_URI", env("CBASE_APPLE_REDIRECT_URI", ""), err, cap) ||
+        !copy(c->apple_issuer, sizeof c->apple_issuer, "CBASE_APPLE_ISSUER", env("CBASE_APPLE_ISSUER", "https://appleid.apple.com"), err, cap))
+        return CB_E_INVALID;
+    if (strncmp(c->apple_issuer, "https://", 8) != 0 || !c->apple_issuer[8] || strchr(c->apple_issuer + 8, '/')) {
+        snprintf(err, cap, "CBASE_APPLE_ISSUER=%s is not https://<host>[:port]", c->apple_issuer);
+        return CB_E_INVALID;
+    }
+    for (const char *p = c->apple_client_ids; *p; p++)
+        if ((unsigned char)*p <= ' ' || *p == '"' || *p == '\\') {
+            snprintf(err, cap, "CBASE_APPLE_CLIENT_IDS holds a blank or a quote: a comma list of ids, nothing else");
+            return CB_E_INVALID;
+        }
+    bool any = c->apple_team_id[0] || c->apple_key_id[0] || c->apple_private_key[0];
+    if (any && !(apple_id_ok(c->apple_team_id) && apple_id_ok(c->apple_key_id) && c->apple_private_key[0])) {
+        snprintf(err, cap, "CBASE_APPLE_TEAM_ID, CBASE_APPLE_KEY_ID (each 10 letters and digits) and CBASE_APPLE_PRIVATE_KEY go together");
+        return CB_E_INVALID;
+    }
+    if (any && !c->apple_client_ids[0]) {
+        snprintf(err, cap, "CBASE_APPLE_PRIVATE_KEY is set but CBASE_APPLE_CLIENT_IDS names no client");
+        return CB_E_INVALID;
+    }
+    if (c->apple_redirect_uri[0] && strncmp(c->apple_redirect_uri, "https://", 8) != 0) {
+        snprintf(err, cap, "CBASE_APPLE_REDIRECT_URI must be an https URL");
+        return CB_E_INVALID;
+    }
+    return CB_OK;
+}
+
 int cb_config_from_env(cb_config *c, char *err, size_t cap) {
     memset(c, 0, sizeof *c);
     const char *listen = env("CBASE_LISTEN", "127.0.0.1:8080");
@@ -128,6 +170,7 @@ int cb_config_from_env(cb_config *c, char *err, size_t cap) {
         return CB_E_INVALID;
     if (!copy(c->allowed_origins, sizeof c->allowed_origins, "CBASE_ALLOWED_ORIGINS", env("CBASE_ALLOWED_ORIGINS", "*"), err, cap))
         return CB_E_INVALID;
+    if (apple_from_env(c, err, cap) != CB_OK) return CB_E_INVALID;
     {
         const char *dev = getenv("CBASE_DEV");
         if (dev && *dev && strcmp(dev, "1") != 0 && strcmp(dev, "0") != 0) {
@@ -240,6 +283,12 @@ void cb_config_each(const cb_config *c, cb_config_fn fn, void *ud) {
     fn("CBASE_INLINE_BUDGET_US", b, false, ud);
     fn("CBASE_IO_URING", c->io_uring ? "1" : "0", false, ud);
     fn("CBASE_CAST_DELTA", c->cast_delta ? "1" : "0", false, ud);
+    fn("CBASE_APPLE_CLIENT_IDS", c->apple_client_ids[0] ? c->apple_client_ids : "(unset: no Sign in with Apple)", false, ud);
+    fn("CBASE_APPLE_TEAM_ID", c->apple_team_id, false, ud);
+    fn("CBASE_APPLE_KEY_ID", c->apple_key_id, false, ud);
+    fn("CBASE_APPLE_PRIVATE_KEY", c->apple_private_key[0] ? "(set)" : "(unset: no code exchange, no revocation)", true, ud);
+    fn("CBASE_APPLE_REDIRECT_URI", c->apple_redirect_uri, false, ud);
+    fn("CBASE_APPLE_ISSUER", c->apple_issuer, false, ud);
     for (int i = 0; i < CB_CONFIG_LIMITS; i++) {
         if (c->limit_burst[i]) snprintf(b, sizeof b, "%d", c->limit_burst[i]);
         else snprintf(b, sizeof b, "(default)");

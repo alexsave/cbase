@@ -189,7 +189,7 @@ static bool collect_key(const cb_item *it, void *ud) {
 }
 
 // The cascade auth.admin.deleteUser had, by hand: what the product hangs off
-// the account and the account's refresh tokens (found through GSI1), in one
+// the account and the account's refresh tokens and identities (found through GSI1), in one
 // batch delete; then the account itself with the product's own account
 // items, in one transaction. Not atomic across the two: a crash between
 // them leaves orphans no reader can reach, and a retry finishes the job.
@@ -202,6 +202,10 @@ int cb_rows_user_delete(cb_store *s, const char *id) {
     if (s->app && s->app->delete_keys) rc = s->app->delete_keys(s, id, collect_key, &keys);
     if (rc == CB_OK) {
         cb_iquery q = { .index = 1, .pk = key(g1, sizeof g1, "USERREFRESH#", id), .forward = true, .keys_only = true };
+        rc = s->ops->item_query(s, &q, collect_key, &keys);
+    }
+    if (rc == CB_OK) {
+        cb_iquery q = { .index = 1, .pk = key(g1, sizeof g1, "USERIDENT#", id), .forward = true, .keys_only = true };
         rc = s->ops->item_query(s, &q, collect_key, &keys);
     }
     if (rc == CB_OK && keys.oom) rc = CB_E_NOMEM;
@@ -373,4 +377,129 @@ int cb_rows_signin_fails_clear(cb_store *s, const char *email) {
     cb_iwrite w = { .op = CB_IW_DELETE, .key = { key(pk, sizeof pk, "AUTHFAIL#", email), "FAILS" } };
     int rc = s->ops->item_write(s, &w, NULL);
     return rc == CB_E_CONFLICT ? CB_E_DB : rc;
+}
+
+// ---- identities ------------------------------------------------------------------------------
+
+// IDENT#<idp>#<subject> IDENT, on GSI1 as USERIDENT#<user> / <idp>#<subject>.
+typedef struct {
+    char  pk[KEY_MAX], g1[KEY_MAX], g1sk[KEY_MAX];
+    cb_av a[12];
+    int   n;
+} ident_item;
+
+static void ident_attrs(ident_item *x, const cb_identity_row *r) {
+    snprintf(x->pk, sizeof x->pk, "IDENT#%d#%s", r->idp, r->subject);
+    key(x->g1, sizeof x->g1, "USERIDENT#", r->user_id);
+    snprintf(x->g1sk, sizeof x->g1sk, "%d#%s", r->idp, r->subject);
+    int n = 0;
+    x->a[n++] = CB_AVS(CB_ITEM_GSI1PK, x->g1);
+    x->a[n++] = CB_AVS(CB_ITEM_GSI1SK, x->g1sk);
+    x->a[n++] = CB_AVN("idp", r->idp);
+    x->a[n++] = CB_AVS("subject", r->subject);
+    x->a[n++] = CB_AVS("user_id", r->user_id);
+    x->a[n++] = CB_AVS("client_id", r->client_id);
+    x->a[n++] = CB_AVS("email", r->email);
+    x->a[n++] = CB_AVBOOL("email_verified", r->email_verified);
+    x->a[n++] = CB_AVBOOL("private_email", r->private_email);
+    x->a[n++] = CB_AVS("grant", r->grant);
+    x->a[n++] = CB_AVN("created_at", r->created_at);
+    x->a[n++] = CB_AVN("updated_at", r->updated_at);
+    x->n = n;
+}
+
+static bool ident_of(const cb_item *it, cb_identity_row *r) {
+    memset(r, 0, sizeof *r);
+    int64_t idp = 0;
+    if (!cb_item_n(it, "idp", &idp) || !cb_item_s(it, "subject", r->subject, sizeof r->subject) ||
+        !cb_item_s(it, "user_id", r->user_id, sizeof r->user_id))
+        return false;
+    r->idp = (int)idp;
+    cb_item_s(it, "client_id", r->client_id, sizeof r->client_id);
+    cb_item_s(it, "email", r->email, sizeof r->email);
+    cb_item_bool(it, "email_verified", &r->email_verified);
+    cb_item_bool(it, "private_email", &r->private_email);
+    cb_item_s(it, "grant", r->grant, sizeof r->grant);
+    r->created_at = cb_item_n_or(it, "created_at", 0);
+    r->updated_at = cb_item_n_or(it, "updated_at", 0);
+    return true;
+}
+
+int cb_rows_identity_get(cb_store *s, int idp, const char *subject, cb_identity_row *out) {
+    memset(out, 0, sizeof *out);
+    if (!subject || !subject[0]) return CB_E_NOT_FOUND;
+    char pk[KEY_MAX];
+    snprintf(pk, sizeof pk, "IDENT#%d#%s", idp, subject);
+    cb_item it;
+    cb_item_init(&it);
+    int rc = s->ops->item_get(s, (cb_ikey){ pk, "IDENT" }, true, &it);
+    if (rc == CB_OK && !ident_of(&it, out)) rc = CB_E_DB;
+    cb_item_free(&it);
+    return rc;
+}
+
+int cb_rows_identity_put(cb_store *s, const cb_identity_row *r, bool fresh) {
+    if (!r || !r->subject[0] || !cb_uuid_valid(r->user_id, strlen(r->user_id))) return CB_E_INVALID;
+    ident_item *x = calloc(1, sizeof *x);
+    if (!x) return CB_E_NOMEM;
+    ident_attrs(x, r);
+    int rc = put(s, (cb_ikey){ x->pk, "IDENT" }, x->a, x->n, 0, fresh);
+    free(x);
+    return rc;
+}
+
+// One transaction: the account's two items, the identity (absent), and the product's after them.
+int cb_rows_user_create_identity(cb_store *s, const cb_user_row *u, const cb_identity_row *r) {
+    if (!r || !r->subject[0] || strcmp(r->user_id, u->id) != 0) return CB_E_INVALID;
+    cb_iwrite w[3];
+    acct_items *a = calloc(1, sizeof *a);
+    ident_item *x = calloc(1, sizeof *x);
+    if (!a || !x) { free(a); free(x); return CB_E_NOMEM; }
+    acct_writes(w, a, u, true);
+    ident_attrs(x, r);
+    w[2] = (cb_iwrite){ .op = CB_IW_PUT, .key = { x->pk, "IDENT" }, .attrs = x->a, .n_attrs = x->n };
+    w[2].cond[w[2].n_cond++] = CB_IF_ABSENT;
+    int failed = -1;
+    int rc = s->app && s->app->signup_txn ? s->app->signup_txn(s, u, w, 3, &failed) : s->ops->item_txn(s, w, 3, &failed, NULL);
+    free(a);
+    free(x);
+    return rc == CB_E_CONFLICT ? (failed >= 0 && failed <= 2 ? CB_E_CONFLICT : CB_E_DB) : rc;
+}
+
+typedef struct {
+    cb_identity_fn fn;
+    void          *ud;
+    int            n;
+    bool           stopped;
+} ident_walk;
+
+static bool ident_step(const cb_item *it, void *ud) {
+    ident_walk *w = ud;
+    cb_identity_row r;
+    if (!ident_of(it, &r)) return true;
+    w->n++;
+    bool go = !w->fn || w->fn(&r, w->ud);
+    memset(&r, 0, sizeof r);
+    return go;
+}
+
+int cb_rows_identities_of(cb_store *s, const char *user_id, cb_identity_fn fn, void *ud) {
+    if (!user_id || !cb_uuid_valid(user_id, strlen(user_id))) return CB_E_INVALID;
+    char g1[KEY_MAX];
+    ident_walk w = { fn, ud, 0, false };
+    // GSI1 is eventually consistent; a link this request just wrote is not looked for by a reader of it.
+    cb_iquery q = { .index = 1, .pk = key(g1, sizeof g1, "USERIDENT#", user_id), .forward = true };
+    int rc = s->ops->item_query(s, &q, ident_step, &w);
+    return rc == CB_OK ? w.n : rc;
+}
+
+// ONCE#<key> ONCE, its TTL the claim's end: a claim past it is taken over (the condition says so).
+int cb_rows_once_claim(cb_store *s, const char *k, int64_t expires_at, int64_t now_ms) {
+    if (!k || strlen(k) != 64) return CB_E_INVALID;
+    char pk[KEY_MAX];
+    const cb_av a[] = { CB_AVS("key", k) };
+    cb_iwrite w = { .op = CB_IW_PUT, .key = { key(pk, sizeof pk, "ONCE#", k), "ONCE" }, .attrs = a, .n_attrs = 1,
+                    .ttl_ms = expires_at };
+    w.cond[w.n_cond++] = (cb_iclause){ .check = CB_C_ABSENT_OR_LT, .v = CB_AVN(CB_ITEM_TTL_MS, now_ms + 1) };
+    return s->ops->item_write(s, &w, NULL);
 }

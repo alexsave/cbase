@@ -9,7 +9,12 @@
 //   POST /v1/auth/refresh                   [CBW_V][CBW_REFRESH] str8 refresh token
 //   POST /v1/auth/signout (bearer)          [CBW_V][CBW_SIGNOUT] u8 scope
 //   POST /v1/auth/password (bearer)         [CBW_V][CBW_PASSWORD] str8 current password, str8 new password
-//   the answer to the first three           [CBW_V][CBW_SESSION] str16 access token, str8 refresh
+//   POST /v1/auth/oidc                      [CBW_V][CBW_OIDC] u8 idp (CBW_IDP_*), u8 flags (CBW_OIDC_*),
+//                                           str16 the provider's ID token, str8 the raw nonce the
+//                                           token's nonce hashes, str16 the authorization code ("" for
+//                                           none), str8 the name a new account takes ("" for none)
+//                                           -> CBW_SESSION; with CBW_OIDC_LINK (bearer) -> 204
+//   the answer to signup, signin, refresh, oidc [CBW_V][CBW_SESSION] str16 access token, str8 refresh
 //                                           token, u48 expires_at, str8 user id, str8 username
 //   a refusal (any route, any non-2xx)      u8 CBW_REFUSAL_FORMAT, u8 why, i32 code, i32 detail
 #ifndef CBASE_AUTH_WIRE_H
@@ -21,6 +26,7 @@
 #define CBW_REFRESH  3
 #define CBW_SIGNOUT  4
 #define CBW_PASSWORD 5
+#define CBW_OIDC     7    // 6 is an app's (the first product's own first kind): the platform skips it
 #define CBW_SESSION  20
 
 #define CBW_SCOPE_LOCAL  0
@@ -31,6 +37,14 @@
 #define CBW_ID_MAX       36     // a user id (a canonical UUID)
 #define CBW_NAME_MAX     64     // a username, bytes of UTF-8
 #define CBW_PASSWORD_MAX 72     // bcrypt's limit
+#define CBW_ID_TOKEN_MAX 8192   // a provider's ID token
+#define CBW_NONCE_MAX    128    // the raw nonce (at least 16 bytes)
+#define CBW_CODE_MAX     1024   // an authorization code
+
+// The identity providers (CBW_OIDC's idp). Append-only.
+#define CBW_IDP_APPLE 1
+// CBW_OIDC's flags.
+#define CBW_OIDC_LINK 0x1   // add this identity to the bearer's account (no session is made)
 
 #define CBW_REFUSAL_FORMAT 1
 #define CBW_REFUSAL_BYTES  10
@@ -55,5 +69,10 @@
 #define CBW_ACCOUNT_E_REFRESH_USED  7   // used or revoked: the session is over
 #define CBW_ACCOUNT_E_SAME_PASSWORD 8
 #define CBW_ACCOUNT_E_TOO_MANY      9
+#define CBW_ACCOUNT_E_BAD_IDENTITY  10  // the provider's token did not verify (forged, expired, another
+                                        // client's or nonce's) or was used already: sign in again
+#define CBW_ACCOUNT_E_NEEDS_NAME    11  // no account has this identity: send it again with a name
+#define CBW_ACCOUNT_E_LINKED        12  // the identity is another account's (a link, 409)
+#define CBW_ACCOUNT_E_NO_PROVIDER   13  // this server does not offer that provider
 
 #endif

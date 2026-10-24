@@ -125,6 +125,24 @@ typedef struct {
     // CHAT_USER 30/min, SUB_USER 120/min, BUMP_USER 30/min. The admin one is
     // CBASE_ADMIN_FAIL_LIMIT above.
     int  limit_burst[CB_CONFIG_LIMITS];
+    // SIGN IN WITH APPLE (auth/oidc.h; docs/AUTH_APPLE.md is the checklist). Off unless
+    // CBASE_APPLE_CLIENT_IDS names at least one client.
+    //   CBASE_APPLE_CLIENT_IDS    comma list of the audiences an identity token may carry: the iOS
+    //                             app's bundle id, the web's Services ID
+    //   CBASE_APPLE_TEAM_ID       the developer team (10 characters): the client secret's issuer
+    //   CBASE_APPLE_KEY_ID        the Sign in with Apple key's id (10 characters)
+    //   CBASE_APPLE_PRIVATE_KEY   that key, the .p8 file's PEM text ("\n" may stand for each line
+    //                             break) (secret). With the two above it turns on the code exchange
+    //                             and revocation; without them, sign-in verifies tokens only
+    //   CBASE_APPLE_REDIRECT_URI  the web flow's return URL, which the code exchange repeats
+    //   CBASE_APPLE_ISSUER        https://appleid.apple.com: the tokens' "iss" and the host of
+    //                             /auth/keys, /auth/token and /auth/revoke (a test's stand-in names its own)
+    char apple_client_ids[512];
+    char apple_team_id[16];
+    char apple_key_id[16];
+    char apple_private_key[2048];
+    char apple_redirect_uri[512];
+    char apple_issuer[256];
 } cb_config;
 
 // Reads the environment into cfg. CB_OK, or CB_E_INVALID with a sentence in err.

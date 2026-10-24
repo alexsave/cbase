@@ -14,6 +14,10 @@
 //                                TTL its session's end, then CB_AUTH_SPENT_TOKEN_MS
 //                                after its first take
 //   AUTHFAIL#<email>   FAILS     n, last_at, locked_until; TTL an hour after the last write
+//   IDENT#<idp>#<sub>  IDENT     idp, subject, user_id, client_id, email, email_verified,
+//                                private_email, grant, created_at, updated_at;
+//                                gsi1 USERIDENT#<user>/<idp>#<sub>
+//   ONCE#<key>         ONCE      key; TTL the claim's end (a claim past it is taken over)
 // A reader treats an item past its expires_ms as gone (TTL deletion lags).
 #ifndef CB_ROWS_AUTH_H
 #define CB_ROWS_AUTH_H
@@ -40,6 +44,11 @@ int cb_rows_refresh_take(cb_store *s, const char *hash, int64_t now_ms, int64_t 
 int cb_rows_signin_fails_get(cb_store *s, const char *email, int64_t now_ms, cb_signin_fails *out);
 int cb_rows_signin_fails_put(cb_store *s, const char *email, const cb_signin_fails *f, int64_t now_ms);
 int cb_rows_signin_fails_clear(cb_store *s, const char *email);
+int cb_rows_identity_get(cb_store *s, int idp, const char *subject, cb_identity_row *out);
+int cb_rows_identity_put(cb_store *s, const cb_identity_row *r, bool fresh);
+int cb_rows_identities_of(cb_store *s, const char *user_id, cb_identity_fn fn, void *ud);
+int cb_rows_user_create_identity(cb_store *s, const cb_user_row *u, const cb_identity_row *r);
+int cb_rows_once_claim(cb_store *s, const char *key, int64_t expires_at, int64_t now_ms);
 // Every operation above, for a backend's cb_store_ops.
 #define CB_ROWS_AUTH_OPS \
     .user_get = cb_rows_user_get, \
@@ -58,6 +67,11 @@ int cb_rows_signin_fails_clear(cb_store *s, const char *email);
     .refresh_take = cb_rows_refresh_take, \
     .signin_fails_get = cb_rows_signin_fails_get, \
     .signin_fails_put = cb_rows_signin_fails_put, \
-    .signin_fails_clear = cb_rows_signin_fails_clear,
+    .signin_fails_clear = cb_rows_signin_fails_clear, \
+    .identity_get = cb_rows_identity_get, \
+    .identity_put = cb_rows_identity_put, \
+    .identities_of = cb_rows_identities_of, \
+    .user_create_identity = cb_rows_user_create_identity, \
+    .once_claim = cb_rows_once_claim,
 
 #endif

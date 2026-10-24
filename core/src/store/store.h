@@ -93,6 +93,25 @@ typedef struct {
     int64_t locked_until;   // 0: not locked
 } cb_signin_fails;
 
+// An identity at a provider (auth/oidc.h): who the provider says signed in (its idp and subject,
+// unique together), and the account it is. Written when the account is made with it (user_create_
+// identity) or linked to it, and again when the provider's grant (a refresh token, sealed by
+// oidc.h cb_oidc_seal) or the provider's email changes. Deleted with the account.
+#define CB_IDENTITY_SUB_MAX    255
+#define CB_IDENTITY_CLIENT_MAX 255
+#define CB_IDENTITY_GRANT_MAX  1100   // >= oidc.h CB_OIDC_SEALED_MAX
+typedef struct {
+    int     idp;                                    // cbase/auth_wire.h CBW_IDP_*
+    char    subject[CB_IDENTITY_SUB_MAX + 1];
+    cb_uuid user_id;
+    char    client_id[CB_IDENTITY_CLIENT_MAX + 1];  // the client the grant was made to ("" none)
+    char    email[CB_EMAIL_MAX + 1];                // the provider's, "" when it gave none
+    bool    email_verified, private_email;
+    char    grant[CB_IDENTITY_GRANT_MAX];           // the sealed refresh token, "" none
+    int64_t created_at, updated_at;
+} cb_identity_row;
+typedef bool (*cb_identity_fn)(const cb_identity_row *r, void *ud);
+
 typedef bool (*cb_name_fn)(const char *name, void *ud);   // an id, a collection name
 typedef bool (*cb_user_fn)(const cb_user_row *r, void *ud);
 // The admin console's raw browse: one row as name/value text pairs.
@@ -122,7 +141,7 @@ typedef struct cb_store_ops {
     // session_gen one up, none kept (a global sign-out).
     int (*user_end_sessions)(cb_store *s, const char *id);
     int (*user_touch_sign_in)(cb_store *s, const char *id, int64_t at);
-    // Deletes the user and their refresh tokens, and what the product hangs
+    // Deletes the user and their refresh tokens and identities, and what the product hangs
     // off the account (cb_store_app delete_keys and delete_txn), the cascade
     // auth.admin.deleteUser had. The product has already redacted what it
     // keeps of the user elsewhere.
@@ -173,6 +192,20 @@ typedef struct cb_store_ops {
     int (*admin_browse)(cb_store *s, const char *collection, const char *prefix, const char *cursor, int limit,
                         cb_admin_row_fn fn, void *ud, char *next_cursor, size_t next_cap);
     int (*admin_query)(cb_store *s, const char *statement, bool allow_write, cb_admin_row_fn fn, void *ud);
+
+    // identities (cb_identity_row). get: CB_E_NOT_FOUND for none. put: fresh refuses an identity
+    // already there (CB_E_CONFLICT), else replaces it. of: a user's, in no set order.
+    // user_create_identity: user_create and the identity's fresh put in ONE transaction, so an
+    // account made by a sign-in never stands without its identity, nor an identity without its
+    // account; CB_E_CONFLICT when the email (the name) or the identity is taken.
+    int (*identity_get)(cb_store *s, int idp, const char *subject, cb_identity_row *out);
+    int (*identity_put)(cb_store *s, const cb_identity_row *r, bool fresh);
+    int (*identities_of)(cb_store *s, const char *user_id, cb_identity_fn fn, void *ud);
+    int (*user_create_identity)(cb_store *s, const cb_user_row *u, const cb_identity_row *r);
+    // A one-time key (a provider token's hash, oidc.h): CB_OK the first time, CB_E_CONFLICT while a
+    // claim of it stands (until its expires_at; after it the key may be claimed again, and the row
+    // may go).
+    int (*once_claim)(cb_store *s, const char *key, int64_t expires_at, int64_t now_ms);
 
     // migration (foolish/server/migrate/import.c): the user as given, insert
     // or replace, with no side effects: unlike user_create, no product items.
@@ -366,7 +399,7 @@ void cb_store_throttles_get(cb_store_throttles *out);
 
 // The SQLite schema version this binary applies (store_sqlite.c), and the
 // embedded schema text (build/gen/schema_sql.c, from providers/local/sql/schema.sql).
-#define CB_SCHEMA_VERSION 8
+#define CB_SCHEMA_VERSION 9
 extern const char cbase_schema_sql[];
 extern const unsigned long cbase_schema_sql_len;
 

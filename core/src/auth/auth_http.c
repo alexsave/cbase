@@ -12,6 +12,8 @@
 #include "util/err.h"
 #include "util/log.h"
 
+#include <stdlib.h>
+
 #include "../../../../shared/c/hex/hex.h"
 
 #include <openssl/crypto.h>
@@ -57,13 +59,19 @@ static int account_code(int rc) {
     case CB_AUTH_E_REFRESH_USED: return CBW_ACCOUNT_E_REFRESH_USED;
     case CB_AUTH_E_SAME_PASSWORD: return CBW_ACCOUNT_E_SAME_PASSWORD;
     case CB_AUTH_E_TOO_MANY: return CBW_ACCOUNT_E_TOO_MANY;
+    case CB_AUTH_E_BAD_IDENTITY: return CBW_ACCOUNT_E_BAD_IDENTITY;
+    case CB_AUTH_E_NEEDS_NAME: return CBW_ACCOUNT_E_NEEDS_NAME;
+    case CB_AUTH_E_LINKED: return CBW_ACCOUNT_E_LINKED;
+    case CB_AUTH_E_NO_PROVIDER: return CBW_ACCOUNT_E_NO_PROVIDER;
     default: return 0;
     }
 }
 
 static void auth_failed(cb_http_res *res, int rc) {
     int code = account_code(rc);
-    if (code) cb_refuse(res, code == CBW_ACCOUNT_E_EXISTS ? 409 : code == CBW_ACCOUNT_E_TOO_MANY ? 429 : 400, CBW_WHY_ACCOUNT, code);
+    if (code)
+        cb_refuse(res, code == CBW_ACCOUNT_E_EXISTS || code == CBW_ACCOUNT_E_LINKED ? 409 : code == CBW_ACCOUNT_E_TOO_MANY ? 429 : 400,
+                  CBW_WHY_ACCOUNT, code);
     else if (rc == CB_E_NOT_FOUND) cb_refuse(res, 401, CBW_WHY_AUTH, 0);   // the account behind the token is gone
     else failed(res, rc);
 }
@@ -215,7 +223,53 @@ static void h_password(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     else cb_res_status(res, 204);
 }
 
+// POST /v1/auth/oidc (auth_http.h): a provider's identity signed in, made into an account, or
+// linked to the bearer's.
+static void h_oidc(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
+    if (!ctx->auth) { cb_refuse(res, 503, CBW_WHY_INTERNAL, 0); return; }
+    cb_aw_oidc *q = malloc(sizeof *q);
+    if (!q) { failed(res, CB_E_NOMEM); return; }
+    cb_user u;
+    char canon[CBW_NAME_MAX * 2 + 8] = "", email[CB_EMAIL_MAX + 1] = "", ip[96];
+    bool link = false;
+    if (cb_aw_oidc_decode((const uint8_t *)req->body, req->body_len, q) != 0 || memchr(q->token, 0, q->token_len) ||
+        memchr(q->nonce, 0, q->nonce_len) || memchr(q->code, 0, q->code_len) || memchr(q->name, 0, q->name_len)) {
+        cb_refuse(res, 400, CBW_WHY_MALFORMED, 0);
+        goto out;
+    }
+    link = (q->flags & CBW_OIDC_LINK) != 0;
+    if (link && !caller(ctx, req, res, &u)) goto out;
+    cb_viewer_key(ctx, req, ip, sizeof ip);
+    if (!within(res, CB_LIMIT_SIGNIN_IP, ip)) goto out;
+    if (q->name_len && !link) {
+        // A new account's name: the case step and its email, as sign-up's; and sign-up's limits.
+        int cn = cb_name_case(q->name, q->name_len, canon, sizeof canon);
+        if (cn < 0 || cn > CBW_NAME_MAX) { auth_failed(res, CB_AUTH_E_BAD_USERNAME); goto out; }
+        if (!account_domain(ctx)) { cb_refuse(res, 503, CBW_WHY_INTERNAL, 0); goto out; }
+        if (cb_auth_name_email(account_domain(ctx), canon, (size_t)cn, email) < 0) { failed(res, CB_E_STATE); goto out; }
+        if (!within(res, CB_LIMIT_SIGNUP_IP, ip) || !within(res, CB_LIMIT_SIGNUP_ALL, "*")) goto out;
+    }
+    cb_oidc_ask ask = { .idp = q->idp, .id_token = q->token, .id_token_len = q->token_len, .nonce = q->nonce,
+                        .nonce_len = q->nonce_len, .code = q->code, .code_len = q->code_len,
+                        .name = canon[0] ? canon : NULL, .email = canon[0] ? email : NULL };
+    if (link) {
+        int rc = cb_auth_oidc_link(ctx->auth, &u, &ask);
+        if (rc != CB_OK) auth_failed(res, rc);
+        else cb_res_status(res, 204);
+    } else {
+        cb_session s;
+        int rc = cb_auth_oidc(ctx->auth, &ask, &s);
+        if (rc != CB_OK) auth_failed(res, rc);
+        else send_session(res, &s);
+        OPENSSL_cleanse(&s, sizeof s);
+    }
+out:
+    OPENSSL_cleanse(q, sizeof *q);
+    free(q);
+}
+
 static const cb_route AUTH_ROUTES[] = {
+    { "POST", "/v1/auth/oidc", CB_ROUTE_POOL, h_oidc, 0 },
     { "POST", "/v1/auth/signup", CB_ROUTE_POOL, h_signup, 0 },
     { "POST", "/v1/auth/signin", CB_ROUTE_POOL, h_signin, 0 },
     { "POST", "/v1/auth/refresh", CB_ROUTE_POOL, h_refresh, 0 },
