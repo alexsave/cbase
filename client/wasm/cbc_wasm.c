@@ -43,6 +43,30 @@ uint32_t cbcw_sign_in(int op, int name_len, int pw_len, double now) {
 }
 uint32_t cbcw_sign_out(int global, double now) { return cbc_sign_out(&g_c, global, NOW(now)); }
 
+#ifdef CBC_OIDC
+// A provider's sign-in (cbase/client.h): io holds CBC_OIDC_ENTROPY bytes of the page's entropy
+// (crypto.getRandomValues), and the begin answers 0 or CBC_E_ARG. The nonce to hand the provider
+// and the state are then copied into io, each answering its length.
+int cbcw_oidc_begin(void) { return cbc_oidc_begin(&g_c, g_io, CBC_OIDC_ENTROPY); }
+static int put_cstr(const char *p) {
+    int n = 0;
+    while (p[n] && n < CBCW_IO) { g_io[n] = (uint8_t)p[n]; n++; }
+    return n;
+}
+int cbcw_oidc_nonce(void) { return put_cstr(cbc_oidc_nonce(&g_c)); }
+int cbcw_oidc_state(void) { return put_cstr(cbc_oidc_state(&g_c)); }
+// io holds the state, the ID token, the code and the name, one after the other.
+uint32_t cbcw_oidc_sign_in(int idp, int flags, int state_len, int token_len, int code_len, int name_len, double now) {
+    if (state_len < 0 || token_len < 0 || code_len < 0 || name_len < 0 ||
+        (long)state_len + token_len + code_len + name_len > CBCW_IO)
+        return 0;
+    const char *p = (const char *)g_io;
+    return cbc_oidc_sign_in(&g_c, idp, flags, p, (size_t)state_len, p + state_len, (size_t)token_len,
+                            p + state_len + token_len, (size_t)code_len, p + state_len + token_len + code_len,
+                            (size_t)name_len, NOW(now));
+}
+#endif   // CBC_OIDC
+
 // io holds the path, then the body.
 uint32_t cbcw_call(int method, int flags, int path_len, int body_len, double now) {
     if (path_len < 0 || body_len < 0 || path_len + body_len > CBCW_IO) return 0;

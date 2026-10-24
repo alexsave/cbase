@@ -11,7 +11,7 @@
 //
 // Copied by `make -C c_base/client ts` into an app's generated directory, beside the generated
 // files it imports; edit it here.
-import type { CbcWasm } from './client_exports.ts';
+import type { CbcWasmOidc } from './client_exports_oidc.ts';
 import { LAYOUT_HASH } from './client_layout_hash.ts';
 import {
   CBC_EV_DONE,
@@ -24,6 +24,8 @@ import {
   CBC_GET,
   CBC_POST,
   CBC_RQ_BODY,
+  CBC_OIDC_ENTROPY,
+  CBW_OIDC_LINK,
   CBW_SIGNIN,
   CBW_SIGNUP,
   cbc_req_hdr_SIZE,
@@ -38,6 +40,24 @@ import {
 } from './client_layout.ts';
 
 export { CBC_C_AUTH, CBC_C_HTTP, CBC_C_READ, CBC_ROOM } from './client_layout.ts';
+export {
+  CBW_ACCOUNT_E_BAD_IDENTITY,
+  CBW_ACCOUNT_E_EXISTS,
+  CBW_ACCOUNT_E_LINKED,
+  CBW_ACCOUNT_E_NEEDS_NAME,
+  CBW_ACCOUNT_E_NO_PROVIDER,
+  CBW_IDP_APPLE,
+  CBW_WHY_ACCOUNT,
+} from './client_layout.ts';
+
+// What a provider answered, handed back for its sign-in (cbase/client.h cbc_oidc_sign_in).
+export interface CbIdentityAnswer {
+  readonly state: string;     // the state it echoed
+  readonly idToken: string;
+  readonly code?: string;     // its authorization code, when it gave one
+  readonly name?: string;     // a new account's name (upper-cased here, as a sign-up's)
+  readonly link?: boolean;    // add the identity to the signed-in account instead
+}
 
 export type CbState = 'connecting' | 'open' | 'closed';
 
@@ -124,7 +144,8 @@ function unb64(s: string): Uint8Array {
 }
 
 export class CbClient {
-  private readonly x: CbcWasm;
+  // Typed as the oidc variant's exports, a superset; a base module has none of cbcw_oidc_*.
+  private readonly x: CbcWasmOidc;
   private readonly io: number;
   private readonly ioCap: number;
   private readonly o: CbOptions;
@@ -139,7 +160,7 @@ export class CbClient {
   private reopenAt = 0;
   private stopped = false;
 
-  private constructor(x: CbcWasm, o: CbOptions) {
+  private constructor(x: CbcWasmOidc, o: CbOptions) {
     this.x = x;
     this.o = o;
     this.io = x.cbcw_io();
@@ -157,7 +178,7 @@ export class CbClient {
   static async open(o: CbOptions): Promise<CbClient> {
     const src = o.wasm instanceof ArrayBuffer ? o.wasm : await (await (o.fetch ?? fetch)(o.wasm)).arrayBuffer();
     const { instance } = await WebAssembly.instantiate(src, {});
-    const x = instance.exports as unknown as CbcWasm;
+    const x = instance.exports as unknown as CbcWasmOidc;
     const hash = x.cbcw_layout_hash() >>> 0;
     if (hash !== LAYOUT_HASH) throw new CbLayoutMismatch(hash);
     const p = x.cbcw_cfg();
@@ -211,6 +232,44 @@ export class CbClient {
     this.mem().u8.set(pb, this.io + nb.length);
     const t = this.x.cbcw_sign_in(signUp ? CBW_SIGNUP : CBW_SIGNIN, nb.length, pb.length, this.now()) >>> 0;
     return this.ticket(t);
+  }
+
+  // A provider's sign-in begins: the module makes the nonce and the state from the page's entropy and
+  // keeps the raw nonce; the page hands these two to the provider (Apple's nonce and state).
+  oidcBegin(): { nonce: string; state: string } {
+    this.needOidc();
+    const e = new Uint8Array(CBC_OIDC_ENTROPY);
+    globalThis.crypto.getRandomValues(e);
+    this.put(e);
+    e.fill(0);
+    if (this.x.cbcw_oidc_begin() !== 0) throw new Error('c_base: the provider sign-in did not begin');
+    const dec = new TextDecoder();
+    const nonce = dec.decode(this.bytes(0, this.x.cbcw_oidc_nonce()));
+    const state = dec.decode(this.bytes(0, this.x.cbcw_oidc_state()));
+    return { nonce, state };
+  }
+
+  // What the provider answered, to the server. Resolves when a session came (or, with link, when the
+  // identity was added); rejects with the CbError the server refused with (CBW_ACCOUNT_E_NEEDS_NAME:
+  // call again with a name, the same answer otherwise).
+  oidcSignIn(idp: number, a: CbIdentityAnswer): Promise<ArrayBuffer> {
+    this.needOidc();
+    const parts = [a.state, a.idToken, a.code ?? '', (a.name ?? '').toUpperCase()].map((x) => utf8.encode(x));
+    const total = parts.reduce((n, p) => n + p.length, 0);
+    if (total > this.ioCap) return Promise.reject(new RangeError('c_base sign-in: the answer is too large'));
+    let at = this.io;
+    for (const p of parts) {
+      this.mem().u8.set(p, at);
+      at += p.length;
+    }
+    const t = this.x.cbcw_oidc_sign_in(idp, a.link ? CBW_OIDC_LINK : 0, parts[0].length, parts[1].length, parts[2].length,
+      parts[3].length, this.now()) >>> 0;
+    return this.ticket(t);
+  }
+
+  private needOidc(): void {
+    if (typeof this.x.cbcw_oidc_begin !== 'function')
+      throw new Error('c_base: this module has no provider sign-in: load cbase_client_oidc.wasm');
   }
 
   signOut(global = false): Promise<ArrayBuffer> {

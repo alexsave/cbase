@@ -5,7 +5,8 @@
 #   make check        the unit tests, natively and under ASan + UBSan, and the fuzz corpus replayed
 #   make fuzz         build/fuzz/client (libFuzzer + ASan + UBSan; Homebrew LLVM on macOS)
 #   make fuzz-smoke   it for FUZZ_TIME seconds (default 30) from a scratch copy of the corpus
-#   make wasm         build/wasm/cbase_client.wasm, and the size gate (WASM_RAW_MAX, WASM_GZ_MAX)
+#   make wasm         build/wasm/cbase_client.wasm and its oidc variant cbase_client_oidc.wasm, and the
+#                     size gate of each (WASM_RAW_MAX/WASM_GZ_MAX, WASM_OIDC_RAW_MAX/WASM_OIDC_GZ_MAX)
 #   make ts           the page's TypeScript into TS_OUT (default build/ts): the generated layout,
 #                     its hash and the exports, beside the hand-written shim (ts/*.ts), and the
 #                     module into WASM_OUT (default build/ts/cbase_client.wasm)
@@ -18,11 +19,15 @@ CC     ?= cc
 
 WARN    := -Wall -Wextra -Werror -Wshadow -Wvla -Wstrict-prototypes
 INC     := -Iinclude -I$(C_ROOT)/shared/c
-CFLAGS  := -std=gnu11 -O2 -g $(WARN) $(INC)
+# The native library has every part; the wasm module's base build leaves out the provider sign-in
+# (cbase/client.h CBC_OIDC) and its digests, which its oidc variant adds back.
+OIDC_DEF := -DCBC_OIDC
+OIDC_SRC := $(C_ROOT)/shared/c/sha256.c $(C_ROOT)/shared/c/b64/b64.c $(C_ROOT)/shared/c/hex/hex.c
+CFLAGS  := -std=gnu11 -O2 -g $(WARN) $(INC) $(OIDC_DEF)
 SAN     := -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer
-ASAN_CFLAGS := -std=gnu11 -O1 -g $(WARN) $(INC) $(SAN)
+ASAN_CFLAGS := -std=gnu11 -O1 -g $(WARN) $(INC) $(OIDC_DEF) $(SAN)
 
-SRC      := src/client.c
+SRC      := src/client.c $(OIDC_SRC)
 TEST_INC := -I$(C_ROOT)/c_base/core/test
 
 include $(C_ROOT)/shared/tools/c_rules.mk
@@ -82,9 +87,15 @@ fuzz-replay: build/asan/fuzz/client
 include $(C_ROOT)/shared/tools/gen_tools.mk
 include $(C_ROOT)/shared/tools/wasm_cc.mk
 
-# THE BUDGET (CLIENT_DESIGN.md 3.5): the module a page loads, raw and as gzip -9 sends it.
+# TWO MODULES, ONE SOURCE (CLIENT_DESIGN.md 3.5): the base module every page may load, and its oidc
+# variant, which adds the provider sign-in (cbase/client.h CBC_OIDC: cbc_oidc_*, cbc_pkce and their
+# SHA-256, base64url and hex from shared/c). Each has its own budget, raw and as gzip -9 sends it,
+# held by the size gate. An app that links the client into its own module lists OIDC_SRC once
+# beside its own sources, so a digest it already links is shared, never doubled.
 WASM_RAW_MAX ?= 10240
 WASM_GZ_MAX  ?= 5120
+WASM_OIDC_RAW_MAX ?= 13312
+WASM_OIDC_GZ_MAX  ?= 7168
 
 WASM_CFLAGS  := --target=wasm32 -Oz -nostdlib -ffreestanding -mbulk-memory -mno-nontrapping-fptoint -std=c11 \
                 $(WARN) $(INC) -isystem $(C_ROOT)/shared/c/wasm/include
@@ -92,16 +103,19 @@ WASM_EXPORTS := cbcw_layout_hash cbcw_io cbcw_io_cap cbcw_cfg cbcw_init cbcw_err
                 cbcw_user cbcw_sign_in cbcw_sign_out cbcw_call cbcw_next_request cbcw_on_response cbcw_stream_wanted \
                 cbcw_stream_path cbcw_sub cbcw_unsub cbcw_opened cbcw_closed cbcw_in cbcw_next_out cbcw_tick cbcw_due_ms \
                 cbcw_n_events cbcw_event
-WASM_LDFLAGS := -Wl,--no-entry -Wl,--export-memory -Wl,-z,stack-size=65536 -Wl,--stack-first -Wl,--strip-all \
-                $(foreach e,$(WASM_EXPORTS),-Wl,--export=$(e))
-WASM_SRC     := wasm/cbc_wasm.c $(SRC) $(C_ROOT)/shared/c/wasm/libc.c
+WASM_OIDC_EXPORTS := $(WASM_EXPORTS) cbcw_oidc_begin cbcw_oidc_nonce cbcw_oidc_state cbcw_oidc_sign_in
+WASM_LDBASE  := -Wl,--no-entry -Wl,--export-memory -Wl,-z,stack-size=65536 -Wl,--stack-first -Wl,--strip-all
+WASM_LDFLAGS := $(WASM_LDBASE) $(foreach e,$(WASM_EXPORTS),-Wl,--export=$(e))
+WASM_OIDC_LDFLAGS := $(WASM_LDBASE) $(foreach e,$(WASM_OIDC_EXPORTS),-Wl,--export=$(e))
+WASM_SRC      := wasm/cbc_wasm.c src/client.c $(C_ROOT)/shared/c/wasm/libc.c
+WASM_OIDC_SRC := $(WASM_SRC) $(OIDC_SRC)
 
 # The layout the page reads is the module's (wasm32), so structgen reads the header under the
 # module's flags and target. The hash is remade every time and rewritten only when it moves.
 SG_ROOTS := cbc_event cbc_req_hdr cbc_user cbc_cfg
 SG_ARGS  := --header include/cbase/client.h $(foreach r,$(SG_ROOTS),--root $(r) --snapshot $(r)) --writer cbc_cfg \
             --count cbc_event.room=room_len --count cbc_user.user_id=user_id_len --count cbc_user.name=name_len \
-            --const CBC_EV_ --const CBC_WHY_ --const CBC_C_ --const CBC_RQ_ --const CBC_E_ --const CBW_ --const CBC_GET --const CBC_POST --const CBC_ROOM
+            --const CBC_EV_ --const CBC_WHY_ --const CBC_C_ --const CBC_RQ_ --const CBC_E_ --const CBW_ --const CBC_GET --const CBC_POST --const CBC_ROOM --const CBC_OIDC_ENTROPY
 build/layout.hash: $(STRUCTGEN) FORCE
 	@mkdir -p build/gen
 	@$(STRUCTGEN) --cwd . $(SG_ARGS) --build 'cbc=$(strip $(INC) -isystem $(C_ROOT)/shared/c/wasm/include -ffreestanding)' \
@@ -111,29 +125,41 @@ build/layout.hash: $(STRUCTGEN) FORCE
 build/wasm/cbase_client.wasm: $(WASM_SRC) $(wildcard include/cbase/*.h) $(C_ROOT)/shared/c/stream_frame.h build/layout.hash
 	@mkdir -p $(@D)
 	$(WASM_CC) $(WASM_CFLAGS) -DCBC_LAYOUT_HASH=$$(cat build/layout.hash) $(WASM_LDFLAGS) $(WASM_SRC) -o $@
+build/wasm/cbase_client_oidc.wasm: $(WASM_OIDC_SRC) $(wildcard include/cbase/*.h) $(C_ROOT)/shared/c/stream_frame.h build/layout.hash
+	@mkdir -p $(@D)
+	$(WASM_CC) $(WASM_CFLAGS) $(OIDC_DEF) -DCBC_LAYOUT_HASH=$$(cat build/layout.hash) $(WASM_OIDC_LDFLAGS) $(WASM_OIDC_SRC) -o $@
 
+# Each module's exports, typed from the C and held to the built module.
 build/gen/client_exports.ts: build/wasm/cbase_client.wasm $(STRUCTGEN)
 	@mkdir -p $(@D)
 	@$(STRUCTGEN) --cwd . --source wasm/cbc_wasm.c --build 'cbcw=$(WASM_CFLAGS) -DCBC_LAYOUT_HASH=0' --target wasm32 \
 	  --link '$(WASM_LDFLAGS)' --exports-name CbcWasm --exports-ts $@.new --check-wasm $< && mv $@.new $@
+build/gen/client_exports_oidc.ts: build/wasm/cbase_client_oidc.wasm $(STRUCTGEN)
+	@mkdir -p $(@D)
+	@$(STRUCTGEN) --cwd . --source wasm/cbc_wasm.c --build 'cbcw=$(WASM_CFLAGS) $(OIDC_DEF) -DCBC_LAYOUT_HASH=0' --target wasm32 \
+	  --link '$(WASM_OIDC_LDFLAGS)' --exports-name CbcWasmOidc --exports-ts $@.new --check-wasm $< && mv $@.new $@
 
 .PHONY: wasm size-gate
 wasm: wasm-cc-check size-gate
-size-gate: build/wasm/cbase_client.wasm
-	@raw=$$(wc -c < $<); gz=$$(gzip -9 -n -c $< | wc -c); \
-	echo "cbase_client.wasm: $$raw B raw (budget $(WASM_RAW_MAX)), $$gz B gzip -9 (budget $(WASM_GZ_MAX))"; \
-	if [ $$raw -gt $(WASM_RAW_MAX) ] || [ $$gz -gt $(WASM_GZ_MAX) ]; then echo "size gate: over budget" >&2; exit 1; fi
+# $(call SIZE_GATE,<module>,<raw max>,<gz max>)
+SIZE_GATE = raw=$$(wc -c < $(1)); gz=$$(gzip -9 -n -c $(1) | wc -c); \
+	echo "$(notdir $(1)): $$raw B raw (budget $(2)), $$gz B gzip -9 (budget $(3))"; \
+	if [ $$raw -gt $(2) ] || [ $$gz -gt $(3) ]; then echo "size gate: $(notdir $(1)) over budget" >&2; exit 1; fi
+size-gate: build/wasm/cbase_client.wasm build/wasm/cbase_client_oidc.wasm
+	@$(call SIZE_GATE,build/wasm/cbase_client.wasm,$(WASM_RAW_MAX),$(WASM_GZ_MAX))
+	@$(call SIZE_GATE,build/wasm/cbase_client_oidc.wasm,$(WASM_OIDC_RAW_MAX),$(WASM_OIDC_GZ_MAX))
 
 # ---- the page's TypeScript ----------------------------------------------------------------------
 TS_OUT   ?= build/ts
 WASM_OUT ?= $(TS_OUT)/cbase_client.wasm
 TS_SRC   := $(sort $(wildcard ts/*.ts))
 .PHONY: ts ts-test
-ts: wasm build/gen/client_exports.ts
+ts: wasm build/gen/client_exports.ts build/gen/client_exports_oidc.ts
 	@mkdir -p $(TS_OUT)
-	@for f in build/gen/client_layout.ts build/gen/client_layout_hash.ts build/gen/client_exports.ts $(TS_SRC); do \
+	@for f in build/gen/client_layout.ts build/gen/client_layout_hash.ts build/gen/client_exports.ts build/gen/client_exports_oidc.ts $(TS_SRC); do \
 	  cmp -s $$f $(TS_OUT)/$$(basename $$f) || { cp $$f $(TS_OUT)/$$(basename $$f); echo "wrote $(TS_OUT)/$$(basename $$f)"; }; done
 	@mkdir -p $(dir $(WASM_OUT)) && { cmp -s build/wasm/cbase_client.wasm $(WASM_OUT) || { cp build/wasm/cbase_client.wasm $(WASM_OUT); echo "wrote $(WASM_OUT)"; }; }
+	@o=$(dir $(WASM_OUT))cbase_client_oidc.wasm; cmp -s build/wasm/cbase_client_oidc.wasm $$o || { cp build/wasm/cbase_client_oidc.wasm $$o; echo "wrote $$o"; }
 ts-test: ts
 	node --test --test-timeout=20000 test/ts/*.test.ts
 

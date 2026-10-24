@@ -11,6 +11,8 @@ import { CbClient, CbError } from '../../build/ts/socket.ts';
 
 const WASM = readFileSync(new URL('../../build/ts/cbase_client.wasm', import.meta.url));
 const wasm = () => WASM.buffer.slice(WASM.byteOffset, WASM.byteOffset + WASM.byteLength) as ArrayBuffer;
+const OIDC = readFileSync(new URL('../../build/ts/cbase_client_oidc.wasm', import.meta.url));
+const wasmOidc = () => OIDC.buffer.slice(OIDC.byteOffset, OIDC.byteOffset + OIDC.byteLength) as ArrayBuffer;
 
 const SF_V = 1, SF_HELLO = 60, SF_READY = 61, SF_SUB = 62, SF_REPLY = 65;
 
@@ -123,5 +125,67 @@ test('an anonymous read goes over HTTP; a busy one goes again; a refusal is a Cb
   assert.deepEqual(seen.slice(0, 3), ['GET http://adv.test/adv/users', 'GET http://adv.test/busy', 'GET http://adv.test/busy']);
   // The refusal's own why and code (not what the status alone would say): the body was handed in.
   await assert.rejects(c.get('/refused'), (e: unknown) => e instanceof CbError && e.status === 409 && e.why === 3 && e.code === 17);
+  c.close();
+});
+
+test('Sign in with Apple: the nonce and state from the module, the answer as bytes, a name asked for, then a session', async () => {
+  const { createHash } = await import('node:crypto');
+  const bodies: Uint8Array[] = [];
+  const auths: (string | undefined)[] = [];
+  let answer: Response | null = null;
+  const fakeFetch = (async (url: string, init: RequestInit) => {
+    assert.equal(url, 'http://app.test/v1/auth/oidc');
+    assert.equal(init.method, 'POST');
+    auths.push((init.headers as Record<string, string>).authorization);
+    bodies.push(new Uint8Array(init.body as ArrayBuffer));
+    return answer!;
+  }) as unknown as typeof fetch;
+  const sessions: (string | null)[] = [];
+  const base = await start({ wasm: wasm(), server: 'http://app.test', fetch: fakeFetch });
+  assert.throws(() => base.oidcBegin(), /cbase_client_oidc\.wasm/);   // the base module has none of it
+  const c = await start({ wasm: wasmOidc(), server: 'http://app.test', fetch: fakeFetch,
+    WebSocket: FakeSocket as unknown as typeof WebSocket, onSession: (u) => sessions.push(u ? u.name : null) });
+  const { nonce, state } = c.oidcBegin();
+  assert.match(nonce, /^[0-9a-f]{64}$/);
+  assert.match(state, /^[A-Za-z0-9_-]{22}$/);
+  const again = c.oidcBegin();                     // each begin is fresh entropy
+  assert.notEqual(again.nonce, nonce);
+  // The provider answered: no account has the identity yet.
+  answer = new Response(new Uint8Array([1, 8, 11, 0, 0, 0, 0, 0, 0, 0]), { status: 400 });
+  await assert.rejects(c.oidcSignIn(1, { state: again.state, idToken: 'H.P.S', code: 'c0de' }),
+    (e: unknown) => e instanceof CbError && e.why === 8 && e.code === 11);
+  const b = bodies[0];
+  assert.deepEqual([...b.subarray(0, 4)], [1, 7, 1, 0]);          // [CBW_V][CBW_OIDC] apple, no flags
+  assert.equal(b[4] | b[5] << 8, 5);
+  assert.equal(new TextDecoder().decode(b.subarray(6, 11)), 'H.P.S');
+  assert.equal(b[11], 43);
+  const raw = new TextDecoder().decode(b.subarray(12, 55));
+  assert.equal(createHash('sha256').update(raw).digest('hex'), again.nonce);   // the token's claim is the raw nonce's hash
+  assert.equal(b[55] | b[56] << 8, 4);
+  assert.equal(new TextDecoder().decode(b.subarray(57, 61)), 'c0de');
+  assert.equal(b[61], 0);                                            // no name
+  assert.equal(b.length, 62);
+  // The same answer with a name: a session.
+  const enc = new TextEncoder();
+  const acc = enc.encode('ACC'), ref = enc.encode('R1'), id = enc.encode('u-1'), nm = enc.encode('ADA');
+  const s = [1, 20, acc.length, 0, ...acc, ref.length, ...ref, 0, 0, 0, 0, 0, 2, id.length, ...id, nm.length, ...nm];
+  answer = new Response(new Uint8Array(s), { status: 200 });
+  await c.oidcSignIn(1, { state: again.state, idToken: 'H.P.S', code: 'c0de', name: 'ada' });
+  const b2 = bodies[1];
+  assert.equal(new TextDecoder().decode(b2.subarray(62)), 'ADA');   // upper-cased, as a sign-up's
+  assert.equal(b2[61], 3);
+  assert.deepEqual(sessions, ['ADA']);
+  assert.equal(c.user()?.name, 'ADA');
+  // The begin is spent: the same state again is refused by the module, before any request.
+  await assert.rejects(c.oidcSignIn(1, { state: again.state, idToken: 'H.P.S' }), (e: unknown) => e instanceof CbError && e.code === -5);
+  assert.equal(bodies.length, 2);
+  assert.deepEqual(auths, [undefined, undefined]);    // a sign-in carries no bearer
+  // A link: the flag, and the bearer of the account it joins; 204, no new session.
+  const l = c.oidcBegin();
+  answer = new Response(null, { status: 204 });
+  await c.oidcSignIn(1, { state: l.state, idToken: 'H.P.S', link: true });
+  assert.equal(bodies[2][3], 1);                      // CBW_OIDC_LINK
+  assert.equal(auths[2], 'Bearer ACC');
+  assert.deepEqual(sessions, ['ADA']);
   c.close();
 });

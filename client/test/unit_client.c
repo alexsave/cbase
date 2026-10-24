@@ -9,7 +9,7 @@
 
 #include <string.h>
 
-static uint8_t g_out[8192];
+static uint8_t g_out[16384];
 
 // ---- the host's side ---------------------------------------------------------------------------
 static void mk(cbc *c, int anonymous, uint64_t seed) {
@@ -76,7 +76,7 @@ static void up(cbc *c, int64_t now) {
 // The next HTTP request: its head into *h and its path, auth and body as strings into the buffers.
 static cbc_req_hdr g_h;
 static char g_path[300], g_auth[2100];
-static uint8_t g_body[600];
+static uint8_t g_body[8192];
 static int request(cbc *c, int64_t now) {
     int n = cbc_next_request(c, g_out, sizeof g_out, now);
     if (n <= 0) return n;
@@ -633,7 +633,170 @@ static void due_ms(void) {
     T_EQ_INT(cbc_due_ms(&d, 0), 940000);           // the refresh
 }
 
+// ---- sign-in with an identity provider ---------------------------------------------------------
+static const char RAW[] = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";   // base64url of bytes 0..31
+static const char STATE[] = "ICEiIyQlJicoKSorLC0uLw";                      // of bytes 32..47
+static void begun(cbc *c) {
+    uint8_t e[CBC_OIDC_ENTROPY];
+    for (int i = 0; i < CBC_OIDC_ENTROPY; i++) e[i] = (uint8_t)i;
+    T_EQ_INT(cbc_oidc_begin(c, e, sizeof e), 0);
+}
+
+static void oidc_begin_makes_nonce_and_state(void) {
+    cbc c; mk(&c, 0, 1);
+    T_EQ_STR(cbc_oidc_nonce(&c), "");
+    T_EQ_STR(cbc_oidc_state(&c), "");
+    uint8_t e[CBC_OIDC_ENTROPY] = { 0 };
+    T_EQ_INT(cbc_oidc_begin(&c, e, sizeof e - 1), CBC_E_ARG);
+    T_EQ_INT(cbc_oidc_begin(&c, NULL, sizeof e), CBC_E_ARG);
+    T_EQ_STR(cbc_oidc_nonce(&c), "");
+    begun(&c);
+    // hashlib.sha256(RAW.encode()).hexdigest(): the claim Apple echoes
+    T_EQ_STR(cbc_oidc_nonce(&c), "ea866a757e4c38babfa8127cbe9a409d3e1f93a00ff1488ff735fcf917afffd0");
+    T_EQ_STR(cbc_oidc_state(&c), STATE);
+    T_EQ_STR(c.oidc_nonce, RAW);
+}
+
+// The body of POST /v1/auth/oidc, field by field (cbase/auth_wire.h).
+static size_t oidc_body(uint8_t *o, int flags, const char *tok, const char *code, const char *name) {
+    size_t at = 0, tn = strlen(tok), cn = strlen(code), nn = strlen(name);
+    o[at++] = CBW_V; o[at++] = CBW_OIDC; o[at++] = CBW_IDP_APPLE; o[at++] = (uint8_t)flags;
+    le_put_u16(o + at, (uint16_t)tn); at += 2; memcpy(o + at, tok, tn); at += tn;
+    o[at++] = 43; memcpy(o + at, RAW, 43); at += 43;
+    le_put_u16(o + at, (uint16_t)cn); at += 2; memcpy(o + at, code, cn); at += cn;
+    o[at++] = (uint8_t)nn; memcpy(o + at, name, nn); at += nn;
+    return at;
+}
+
+static void oidc_sign_in_asks_a_name_then_signs_in(void) {
+    cbc c; mk(&c, 0, 1);
+    T_EQ_INT(cbc_oidc_sign_in(&c, CBW_IDP_APPLE, 0, STATE, 22, "TOK", 3, "", 0, "", 0, 0), 0);
+    T_EQ_INT(cbc_error(&c), CBC_E_STATE);   // nothing begun
+    begun(&c);
+    T_EQ_INT(cbc_oidc_sign_in(&c, CBW_IDP_APPLE, 0, "ICEiIyQlJicoKSorLC0uLx", 22, "TOK", 3, "", 0, "", 0, 0), 0);
+    T_EQ_INT(cbc_error(&c), CBC_E_STATE);   // another state
+    T_EQ_INT(cbc_oidc_sign_in(&c, CBW_IDP_APPLE, 0, STATE, 21, "TOK", 3, "", 0, "", 0, 0), 0);
+    T_EQ_INT(cbc_error(&c), CBC_E_STATE);
+    uint32_t t = cbc_oidc_sign_in(&c, CBW_IDP_APPLE, 0, STATE, 22, "ID.TOK.EN", 9, "CODE", 4, "", 0, 0);
+    T_CHECK(t != 0);
+    T_CHECK(request(&c, 0) > 0);
+    T_EQ_STR(g_path, "/v1/auth/oidc");
+    T_EQ_INT(g_h.method, CBC_POST);
+    T_EQ_INT(g_h.flags, CBC_RQ_BODY);
+    T_EQ_INT(g_h.auth_len, 0);
+    uint8_t want[256];
+    size_t wn = oidc_body(want, 0, "ID.TOK.EN", "CODE", "");
+    T_EQ_MEM(g_body, g_h.body_len, want, wn);
+    // No account yet: asked for a name; the begin stands.
+    uint8_t r[16];
+    size_t rn = refusal(r, CBW_WHY_ACCOUNT, CBW_ACCOUNT_E_NEEDS_NAME);
+    T_EQ_INT(cbc_on_response(&c, g_h.id, 400, r, rn, 1), 1);
+    T_EQ_INT(ev(&c, 0)->ticket, t);
+    T_EQ_INT(ev(&c, 0)->code, CBW_ACCOUNT_E_NEEDS_NAME);
+    T_EQ_STR(cbc_oidc_state(&c), STATE);
+    // The same token with a name: a session, and the begin is spent.
+    t = cbc_oidc_sign_in(&c, CBW_IDP_APPLE, 0, STATE, 22, "ID.TOK.EN", 9, "CODE", 4, "ADA", 3, 2);
+    T_CHECK(t != 0);
+    T_CHECK(request(&c, 2) > 0);
+    wn = oidc_body(want, 0, "ID.TOK.EN", "CODE", "ADA");
+    T_EQ_MEM(g_body, g_h.body_len, want, wn);
+    uint8_t b[256];
+    size_t n = session_body(b, "TOK", "R1", 100000000, "u-7", "ADA");
+    T_EQ_INT(cbc_on_response(&c, g_h.id, 200, b, n, 3), 2);
+    T_EQ_INT(ev(&c, 0)->kind, CBC_EV_SESSION);
+    T_EQ_INT(ev(&c, 1)->ticket, t);
+    T_EQ_MEM(cbc_user_of(&c)->name, cbc_user_of(&c)->name_len, "ADA", 3);
+    T_EQ_STR(cbc_oidc_state(&c), "");
+    T_EQ_STR(c.oidc_nonce, "");
+    T_EQ_INT(cbc_oidc_sign_in(&c, CBW_IDP_APPLE, 0, STATE, 22, "ID.TOK.EN", 9, "", 0, "", 0, 4), 0);
+    T_EQ_INT(cbc_error(&c), CBC_E_STATE);
+}
+
+static void oidc_link_carries_the_bearer(void) {
+    cbc c; mk(&c, 0, 1);
+    begun(&c);
+    T_EQ_INT(cbc_oidc_sign_in(&c, CBW_IDP_APPLE, CBW_OIDC_LINK, STATE, 22, "T", 1, "", 0, "", 0, 0), 0);
+    T_EQ_INT(cbc_error(&c), CBC_E_AUTH);   // nobody signed in
+    signed_in(&c, "BEAR", 100000000);
+    uint32_t t = cbc_oidc_sign_in(&c, CBW_IDP_APPLE, CBW_OIDC_LINK, STATE, 22, "T", 1, "", 0, "", 0, 0);
+    T_CHECK(t != 0);
+    T_CHECK(request(&c, 0) > 0);
+    T_EQ_STR(g_path, "/v1/auth/oidc");
+    T_EQ_STR(g_auth, "Bearer BEAR");
+    uint8_t want[128];
+    size_t wn = oidc_body(want, CBW_OIDC_LINK, "T", "", "");
+    T_EQ_MEM(g_body, g_h.body_len, want, wn);
+    T_EQ_INT(cbc_on_response(&c, g_h.id, 204, NULL, 0, 1), 1);
+    T_EQ_INT(ev(&c, 0)->kind, CBC_EV_DONE);
+    T_EQ_INT(ev(&c, 0)->why, 0);
+    T_EQ_INT(cbc_user_of(&c)->signed_in, 1);   // a link makes no session and ends none
+    T_EQ_STR(cbc_oidc_state(&c), "");
+    // A token due to be refreshed goes first: the link waits for it, as every bearer call does.
+    begun(&c);
+    cbc e2; mk(&e2, 0, 1);
+    signed_in(&e2, "OLD", 1000);
+    begun(&e2);
+    T_CHECK(cbc_oidc_sign_in(&e2, CBW_IDP_APPLE, CBW_OIDC_LINK, STATE, 22, "T", 1, "", 0, "", 0, 999) != 0);
+    T_CHECK(request(&e2, 999) > 0);
+    T_EQ_STR(g_path, "/v1/auth/refresh");
+    T_EQ_INT(request(&e2, 999), 0);   // not with the old token: it waits for the new one
+    // Another account's identity: the refusal, and the begin stands.
+    begun(&c);
+    t = cbc_oidc_sign_in(&c, CBW_IDP_APPLE, CBW_OIDC_LINK, STATE, 22, "T", 1, "", 0, "", 0, 2);
+    request(&c, 2);
+    uint8_t r[16];
+    size_t rn = refusal(r, CBW_WHY_ACCOUNT, CBW_ACCOUNT_E_LINKED);
+    T_EQ_INT(cbc_on_response(&c, g_h.id, 409, r, rn, 3), 1);
+    T_EQ_INT(ev(&c, 0)->code, CBW_ACCOUNT_E_LINKED);
+    T_EQ_STR(cbc_oidc_state(&c), STATE);
+    // A sign-out under way takes no link.
+    cbc_sign_out(&c, 0, 4);
+    T_EQ_INT(cbc_oidc_sign_in(&c, CBW_IDP_APPLE, CBW_OIDC_LINK, STATE, 22, "T", 1, "", 0, "", 0, 4), 0);
+    T_EQ_INT(cbc_error(&c), CBC_E_AUTH);
+}
+
+static void oidc_bounds(void) {
+    cbc c; mk(&c, 0, 1);
+    begun(&c);
+    static char big[CBW_ID_TOKEN_MAX + 2];
+    memset(big, 'x', sizeof big);
+#define ARG(...) do { T_EQ_INT(cbc_oidc_sign_in(&c, __VA_ARGS__, 0), 0); T_EQ_INT(cbc_error(&c), CBC_E_ARG); } while (0)
+    ARG(0, 0, STATE, 22, "T", 1, "", 0, "", 0);                   // no provider 0
+    ARG(256, 0, STATE, 22, "T", 1, "", 0, "", 0);
+    ARG(CBW_IDP_APPLE, 2, STATE, 22, "T", 1, "", 0, "", 0);       // a flag the wire does not have
+    ARG(CBW_IDP_APPLE, 0, STATE, 22, "", 0, "", 0, "", 0);        // no token
+    ARG(CBW_IDP_APPLE, 0, STATE, 22, NULL, 1, "", 0, "", 0);
+    ARG(CBW_IDP_APPLE, 0, STATE, 22, big, CBW_ID_TOKEN_MAX + 1, "", 0, "", 0);
+    ARG(CBW_IDP_APPLE, 0, STATE, 22, "T", 1, big, CBW_CODE_MAX + 1, "", 0);
+    ARG(CBW_IDP_APPLE, 0, STATE, 22, "T", 1, NULL, 1, "", 0);
+    ARG(CBW_IDP_APPLE, 0, STATE, 22, "T", 1, "", 0, big, CBW_NAME_MAX + 1);
+    ARG(CBW_IDP_APPLE, 0, STATE, 22, "T", 1, "", 0, NULL, 1);
+#undef ARG
+    // Past what one call can hold: refused whole, never cut.
+    T_EQ_INT(cbc_oidc_sign_in(&c, CBW_IDP_APPLE, 0, STATE, 22, big, CBC_ARENA, "", 0, "", 0, 0), 0);
+    T_EQ_INT(cbc_error(&c), CBC_E_FULL);
+    // At the bounds of the fields, it fits.
+    T_CHECK(cbc_oidc_sign_in(&c, CBW_IDP_APPLE, 0, STATE, 22, big, 2000, big, CBW_CODE_MAX, big, CBW_NAME_MAX, 0) != 0);
+}
+
+static void pkce_is_rfc7636(void) {
+    // RFC 7636 appendix B.
+    static const uint8_t v[32] = { 116, 24, 223, 180, 151, 153, 224, 37, 79, 250, 96, 125, 216, 173, 187, 186,
+                                   22, 212, 37, 77, 105, 214, 191, 240, 91, 88, 5, 88, 83, 132, 141, 121 };
+    char verifier[44], challenge[44];
+    T_EQ_INT(cbc_pkce(v, sizeof v, verifier, challenge), 0);
+    T_EQ_STR(verifier, "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk");
+    T_EQ_STR(challenge, "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM");
+    T_EQ_INT(cbc_pkce(v, 31, verifier, challenge), CBC_E_ARG);
+    T_EQ_INT(cbc_pkce(NULL, 32, verifier, challenge), CBC_E_ARG);
+}
+
 int main(void) {
+    T_RUN(oidc_begin_makes_nonce_and_state);
+    T_RUN(oidc_sign_in_asks_a_name_then_signs_in);
+    T_RUN(oidc_link_carries_the_bearer);
+    T_RUN(oidc_bounds);
+    T_RUN(pkce_is_rfc7636);
     T_RUN(anonymous_hello_then_sub);
     T_RUN(counted_holds);
     T_RUN(sub_refused_backs_off);

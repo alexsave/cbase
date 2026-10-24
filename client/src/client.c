@@ -6,6 +6,11 @@
 #include "stream_frame.h"   // shared/c
 #include "rng.h"            // shared/c
 #include "le_bytes.h"       // shared/c
+#ifdef CBC_OIDC
+#include "sha256.h"         // shared/c
+#include "b64/b64.h"        // shared/c
+#include "hex/hex.h"        // shared/c
+#endif
 
 #include <limits.h>
 #include <string.h>
@@ -19,7 +24,7 @@ _Static_assert(CBW_ACCESS_MAX <= SF_TOKEN_MAX, "a HELLO carries the whole access
 enum { SOCK_CLOSED, SOCK_OPEN, SOCK_HELLO, SOCK_READY };
 enum { SUB_FREE, SUB_WANT, SUB_SENT, SUB_LIVE, SUB_REFUSED, SUB_DROP };
 enum { CALL_FREE, CALL_QUEUED, CALL_WAIT, CALL_HTTP, CALL_SOCK };
-enum { K_APP, K_SIGN, K_SIGNOUT };
+enum { K_APP, K_SIGN, K_SIGNOUT, K_LINK };
 
 #define CBC_TRIES        4     // a read is sent at most this often in all after losses
 #define CBC_BUSY_TRIES   3     // and sent again at most this often after a 503 busy
@@ -289,6 +294,93 @@ uint32_t cbc_sign_in(cbc *c, int op, const char *name, size_t name_len, const ch
     return call_add(c, K_SIGN, SF_METH_POST, 0, path, strlen(path), b, n);
 }
 
+// ---- sign-in with an identity provider --------------------------------------------------------
+// The begin's state is in every build (it is part of cbc's layout, which the generated readers
+// hold every variant to); the calls that make and send it are CBC_OIDC's (client.h).
+static void oidc_clear(cbc *c) {
+    memset(c->oidc_nonce, 0, sizeof c->oidc_nonce);
+    memset(c->oidc_hash, 0, sizeof c->oidc_hash);
+    memset(c->oidc_state, 0, sizeof c->oidc_state);
+    c->oidc_on = 0;
+}
+
+#ifdef CBC_OIDC
+
+int cbc_oidc_begin(cbc *c, const uint8_t *entropy, size_t n) {
+    if (!entropy || n != CBC_OIDC_ENTROPY) return CBC_E_ARG;
+    oidc_clear(c);
+    uint8_t d[SHA256_DIGEST_LEN];
+    if (b64url_encode(entropy, 32, c->oidc_nonce, sizeof c->oidc_nonce) != 43 ||
+        b64url_encode(entropy + 32, 16, c->oidc_state, sizeof c->oidc_state) != 22) { oidc_clear(c); return CBC_E_ARG; }
+    sha256(c->oidc_nonce, 43, d);
+    hex_encode(d, sizeof d, c->oidc_hash, sizeof c->oidc_hash);
+    c->oidc_on = 1;
+    return 0;
+}
+
+const char *cbc_oidc_nonce(const cbc *c) { return c->oidc_hash; }
+const char *cbc_oidc_state(const cbc *c) { return c->oidc_state; }
+
+// The state the provider echoed is the kept one: compared in time that does not depend on where
+// they differ.
+static int state_is(const cbc *c, const char *s, size_t n) {
+    if (n != 22) return 0;
+    unsigned diff = 0;
+    for (size_t i = 0; i < 22; i++) diff |= (unsigned)(uint8_t)s[i] ^ (uint8_t)c->oidc_state[i];
+    return diff == 0;
+}
+
+static size_t put_str8(uint8_t *b, size_t at, const char *s, size_t n) {
+    b[at++] = (uint8_t)n;
+    if (n) memcpy(b + at, s, n);
+    return at + n;
+}
+static size_t put_str16(uint8_t *b, size_t at, const char *s, size_t n) {
+    le_put_u16(b + at, (uint16_t)n);
+    at += 2;
+    if (n) memcpy(b + at, s, n);
+    return at + n;
+}
+
+uint32_t cbc_oidc_sign_in(cbc *c, int idp, int flags, const char *state, size_t state_len, const char *id_token,
+                          size_t token_len, const char *code, size_t code_len, const char *name, size_t name_len,
+                          int64_t now) {
+    (void)now;
+    c->err = 0;
+    if (!c->oidc_on || !state || !state_is(c, state, state_len)) { c->err = CBC_E_STATE; return 0; }
+    if (idp < 1 || idp > 255 || (flags & ~CBW_OIDC_LINK) || !id_token || token_len == 0 || token_len > CBW_ID_TOKEN_MAX ||
+        code_len > CBW_CODE_MAX || (code_len && !code) || name_len > CBW_NAME_MAX || (name_len && !name)) {
+        c->err = CBC_E_ARG;
+        return 0;
+    }
+    int link = (flags & CBW_OIDC_LINK) != 0;
+    if (c->ending || (link && !c->user.signed_in)) { c->err = CBC_E_AUTH; return 0; }
+    size_t need = 2 + 2 + 2 + token_len + 1 + 43 + 2 + code_len + 1 + name_len;
+    if (need > CBC_ARENA) { c->err = CBC_E_FULL; return 0; }
+    uint8_t b[CBC_ARENA];
+    size_t at = 0;
+    b[at++] = CBW_V;
+    b[at++] = CBW_OIDC;
+    b[at++] = (uint8_t)idp;
+    b[at++] = (uint8_t)flags;
+    at = put_str16(b, at, id_token, token_len);
+    at = put_str8(b, at, c->oidc_nonce, 43);
+    at = put_str16(b, at, code, code_len);
+    at = put_str8(b, at, name, name_len);
+    uint32_t t = call_add(c, link ? K_LINK : K_SIGN, SF_METH_POST, link ? CBC_C_AUTH : 0, "/v1/auth/oidc", 13, b, at);
+    memset(b, 0, at);
+    return t;
+}
+
+int cbc_pkce(const uint8_t *entropy, size_t n, char verifier[44], char challenge[44]) {
+    if (!entropy || n != CBC_PKCE_ENTROPY) return CBC_E_ARG;
+    uint8_t d[SHA256_DIGEST_LEN];
+    if (b64url_encode(entropy, 32, verifier, 44) != 43) return CBC_E_ARG;
+    sha256(verifier, 43, d);
+    return b64url_encode(d, sizeof d, challenge, 44) == 43 ? 0 : CBC_E_ARG;
+}
+#endif   // CBC_OIDC
+
 uint32_t cbc_sign_out(cbc *c, int global, int64_t now) {
     (void)now;
     if (!c->user.signed_in || c->ending) { c->err = CBC_E_AUTH; return 0; }
@@ -414,6 +506,7 @@ int cbc_on_response(cbc *c, uint32_t id, int status, const uint8_t *body, size_t
             if (session_take(c, body, len) != 0) { call_done(c, k, status, CBW_WHY_MALFORMED, 0, 0, 0, 0); return c->n_events; }
             ev_add(c, CBC_EV_SESSION);
         }
+        if (k->kind == K_SIGN || k->kind == K_LINK) oidc_clear(c);   // a provider's sign-in is spent
         call_done(c, k, status, 0, 0, 0, 0, (uint32_t)len);
         return c->n_events;
     }

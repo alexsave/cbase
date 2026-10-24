@@ -181,6 +181,11 @@ typedef struct cbc {
     int32_t  n_events;
     cbc_event events[CBC_EVENTS_MAX];
     uint8_t  arena[CBC_ARENA];
+    // a provider's sign-in (cbc_oidc_begin): what it kept, all NUL-terminated
+    uint8_t  oidc_on;
+    char     oidc_nonce[44];    // the raw nonce, base64url of 32 bytes
+    char     oidc_hash[65];     // its SHA-256, lowercase hex: the token's nonce claim
+    char     oidc_state[23];    // base64url of 16 bytes
 } cbc;
 
 #define CBC_SIZE sizeof(cbc)
@@ -191,6 +196,7 @@ _Static_assert(sizeof(cbc) <= CBC_SIZE_BUDGET, "cbc grew past its budget (CLIENT
 #define CBC_E_FULL  (-2)   // CBC_CALLS_MAX calls or CBC_SUBS_MAX rooms already, or the arena is full
 #define CBC_E_AUTH  (-3)   // the call needs a user and nobody is signed in (or the session is ending)
 #define CBC_E_CAP   (-4)   // the host's output buffer is too small for what is waiting
+#define CBC_E_STATE (-5)   // a provider's answer with no sign-in begun, or with another state than it
 
 void cbc_init(cbc *c, const cbc_cfg *cfg);
 int  cbc_error(const cbc *c);
@@ -209,6 +215,39 @@ uint32_t cbc_sign_in(cbc *c, int op, const char *name, size_t name_len, const ch
 // Sign out this session (global 0) or every session of the user (1): no call is taken after it,
 // the socket closes, and the session ends when the server answers, whatever it answers.
 uint32_t cbc_sign_out(cbc *c, int global, int64_t now);
+
+// ---- sign-in with an identity provider (cbase/auth_wire.h CBW_OIDC) -----------------------------
+// OPT-IN: these exist in a build with CBC_OIDC defined (the native library, and the wasm module's
+// oidc variant, cbase_client_oidc.wasm); the base module of an app that signs nobody in through a
+// provider stays without them and their SHA-256. The begin's state below is in cbc in every build.
+// It begins before the provider's own button does anything: from CBC_OIDC_ENTROPY bytes of the
+// host's entropy the client makes the raw nonce (32 bytes) and the state (16 bytes) and keeps both.
+// The host hands the provider cbc_oidc_nonce (the raw nonce's SHA-256, lowercase hex, which comes
+// back as the ID token's nonce claim) and cbc_oidc_state; the raw nonce never leaves the client
+// but in the sign-in's body, where the server checks the token against it.
+#define CBC_OIDC_ENTROPY 48
+#ifdef CBC_OIDC
+int cbc_oidc_begin(cbc *c, const uint8_t *entropy, size_t n);   // 0, or CBC_E_ARG for n != 48
+const char *cbc_oidc_nonce(const cbc *c);   // "" before a begin
+const char *cbc_oidc_state(const cbc *c);   // "" before a begin
+// What the provider answered, sent to the server (POST /v1/auth/oidc): the state it echoed (it must
+// be the kept one), its ID token, its authorization code (or none), and for a new account the name
+// it takes (the host upper-cases it, as for a sign-up). flags CBW_OIDC_LINK adds the identity to the
+// signed-in account instead (the bearer goes with it; no session comes back). A ticket finished by a
+// CBC_EV_DONE (and a CBC_EV_SESSION when a session came), or 0: CBC_E_STATE (no begin, another
+// state), CBC_E_AUTH (a link with nobody signed in, or a sign-out under way), CBC_E_ARG (a field past
+// its bound: cbase/auth_wire.h), CBC_E_FULL. The begin is kept until a sign-in or link succeeds, so
+// CBW_ACCOUNT_E_NEEDS_NAME or EXISTS is answered by sending the same token again with a name.
+uint32_t cbc_oidc_sign_in(cbc *c, int idp, int flags, const char *state, size_t state_len, const char *id_token,
+                          size_t token_len, const char *code, size_t code_len, const char *name, size_t name_len,
+                          int64_t now);
+// PKCE (RFC 7636, S256) for a provider's redirect flow: from 32 bytes of the host's entropy, the
+// verifier (base64url, 43 characters) the token request carries and the challenge (base64url of its
+// SHA-256, 43 characters) the authorization request carries, each NUL-terminated. 0, or CBC_E_ARG.
+// (Apple's flows take a nonce and a state, not PKCE; a provider that takes PKCE takes it from here.)
+#define CBC_PKCE_ENTROPY 32
+int cbc_pkce(const uint8_t *entropy, size_t n, char verifier[44], char challenge[44]);
+#endif   // CBC_OIDC
 
 // ---- calls -------------------------------------------------------------------------------------
 #define CBC_GET  1   // == SF_METH_GET
