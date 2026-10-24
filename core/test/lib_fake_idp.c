@@ -36,6 +36,16 @@ static void bn_b64u(EVP_PKEY *pk, const char *which, char *out, size_t cap) {
     if (n > 0) b64u(buf, (size_t)n, out, cap);
 }
 
+const char *fi_jwk(fake_idp *f, int key, const char *kid) {
+    static _Thread_local char out[2048];
+    char n[1500], e[16];
+    EVP_PKEY *pk = key < 0 ? f->weak : f->rsa[key];
+    bn_b64u(pk, OSSL_PKEY_PARAM_RSA_N, n, sizeof n);
+    bn_b64u(pk, OSSL_PKEY_PARAM_RSA_E, e, sizeof e);
+    snprintf(out, sizeof out, "{\"kty\":\"RSA\",\"kid\":\"%s\",\"use\":\"sig\",\"alg\":\"RS256\",\"n\":\"%s\",\"e\":\"%s\"}", kid, n, e);
+    return out;
+}
+
 static void jwks(fake_idp *f, cb_buf *b) {
     cb_buf_puts(b, "{\"keys\":[");
     bool first = true;
@@ -213,7 +223,7 @@ void fi_publish(fake_idp *f, int key, bool on) {
 }
 
 const char *fi_p8_pem(fake_idp *f, bool escaped) {
-    static char out[2048];
+    static _Thread_local char out[2048];
     BIO *b = BIO_new(BIO_s_mem());
     out[0] = 0;
     if (b && PEM_write_bio_PrivateKey(b, f->p8, NULL, NULL, 0, NULL, NULL) == 1) {
@@ -231,8 +241,8 @@ const char *fi_p8_pem(fake_idp *f, bool escaped) {
 }
 
 const char *fi_mint_raw(fake_idp *f, int key, const char *header_json, const char *payload_json) {
-    static char out[16384];
-    char h[1024], p[8192];
+    static _Thread_local char out[32768];
+    char h[1024], p[16384];
     b64u((const uint8_t *)header_json, strlen(header_json), h, sizeof h);
     b64u((const uint8_t *)payload_json, strlen(payload_json), p, sizeof p);
     int n = snprintf(out, sizeof out, "%s.%s", h, p);
@@ -256,7 +266,7 @@ static void sha_hex(const char *s, char out[65]) {
 }
 
 const char *fi_mint(fake_idp *f, int key, const char *alg, const char *kid, const fi_claims *c) {
-    char header[128], payload[4096];
+    char header[128], payload[12288];
     snprintf(header, sizeof header, "{\"kid\":\"%s\",\"alg\":\"%s\"}", kid ? kid : key >= 0 ? f->kid[key] : "weak",
              alg ? alg : "RS256");
     cb_buf b;

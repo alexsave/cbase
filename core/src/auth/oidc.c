@@ -81,8 +81,8 @@ static EVP_PKEY *load_p8(const char *text) {
     // P-256 only: what ES256 is.
     char group[32] = "";
     size_t gl = 0;
-    if (pk && (EVP_PKEY_get_base_id(pk) != EVP_PKEY_EC ||
-               !EVP_PKEY_get_utf8_string_param(pk, OSSL_PKEY_PARAM_GROUP_NAME, group, sizeof group, &gl) ||
+    // (A key that is not EC has no group: the one check refuses it too.)
+    if (pk && (!EVP_PKEY_get_utf8_string_param(pk, OSSL_PKEY_PARAM_GROUP_NAME, group, sizeof group, &gl) ||
                strcmp(group, "prime256v1") != 0)) {
         EVP_PKEY_free(pk);
         pk = NULL;
@@ -197,7 +197,7 @@ static EVP_PKEY *rsa_of(const char *n_b64, const char *e_b64) {
     uint8_t nb[CB_JWKS_N_MAX], eb[16];
     int nn = b64url_strict(n_b64, strlen(n_b64), nb, sizeof nb);
     int en = b64url_strict(e_b64, strlen(e_b64), eb, sizeof eb);
-    if (nn < 256 || en < 1 || nb[0] == 0) return NULL;   // 2048 bits at least; no leading zero byte
+    if (nn < 1 || en < 1) return NULL;   // the size rule is the key's bits, below
     BIGNUM *n = BN_bin2bn(nb, nn, NULL), *e = BN_bin2bn(eb, en, NULL);
     OSSL_PARAM_BLD *bld = OSSL_PARAM_BLD_new();
     OSSL_PARAM *params = NULL;
@@ -236,6 +236,23 @@ static bool add_key(const char *kid, const char *n_b64, const char *e_b64, void 
     return ks->n < CB_OIDC_JWKS_MAX;
 }
 
+// A key set's usable keys in place of the held ones, under p->mu: how many (the held ones kept when
+// none is usable: 0), or -1 for a document that is not a key set.
+static int install_keys(idp *p, const char *json, size_t n, int64_t now_ms) {
+    key_set ks;
+    memset(&ks, 0, sizeof ks);
+    int got = cb_js_jwks_each(json, n, add_key, &ks);
+    if (got < 0 || ks.n == 0) {
+        for (int i = 0; i < ks.n; i++) EVP_PKEY_free(ks.keys[i].pk);
+        return got < 0 ? -1 : 0;
+    }
+    for (int i = 0; i < p->n_keys; i++) EVP_PKEY_free(p->keys[i].pk);
+    memcpy(p->keys, ks.keys, sizeof ks.keys);
+    p->n_keys = ks.n;
+    p->fetched_ms = now_ms;
+    return ks.n;
+}
+
 // Fetches the key set under p->mu: CB_OK (the keys replaced), or CB_E_IO (the old keys kept).
 static int fetch_keys(idp *p, int64_t now_ms) {
     p->tried_ms = now_ms;
@@ -248,20 +265,23 @@ static int fetch_keys(idp *p, int64_t now_ms) {
         if (rc == CB_OK) cb_https_response_free(&r);
         return CB_E_IO;
     }
-    key_set ks;
-    memset(&ks, 0, sizeof ks);
-    int got = cb_js_jwks_each((const char *)r.body.p, r.body.len, add_key, &ks);
+    int held = install_keys(p, (const char *)r.body.p, r.body.len, now_ms);
     cb_https_response_free(&r);
-    if (got < 0 || ks.n == 0) {
-        for (int i = 0; i < ks.n; i++) EVP_PKEY_free(ks.keys[i].pk);
+    if (held <= 0) {
         CB_WARN("oidc", "%s: the key set holds no usable key", p->name);
         return CB_E_IO;
     }
-    for (int i = 0; i < p->n_keys; i++) EVP_PKEY_free(p->keys[i].pk);
-    memcpy(p->keys, ks.keys, sizeof ks.keys);
-    p->n_keys = ks.n;
-    p->fetched_ms = now_ms;
     return CB_OK;
+}
+
+int cb_oidc_keys_load(cb_oidc *o, int id, const char *json, size_t n, int64_t now_ms) {
+    idp *p = idp_of(o, id);
+    if (!p) return -1;
+    pthread_mutex_lock(&p->mu);
+    p->tried_ms = now_ms;
+    int held = install_keys(p, json, n, now_ms);
+    pthread_mutex_unlock(&p->mu);
+    return held;
 }
 
 // The key named kid, up-referenced for the caller (free it), or NULL with *rc: CB_E_AUTH for a kid
@@ -313,10 +333,12 @@ static void sha256_hex(const void *p, size_t n, char out[65]) {
 static int verify(idp *p, const char *token, size_t n, const char *nonce, size_t nonce_len, int64_t now_ms,
                   cb_oidc_identity *out) {
     memset(out, 0, sizeof *out);
-    if (!token || n == 0 || n > CB_OIDC_TOKEN_MAX || memchr(token, 0, n)) return CB_E_AUTH;
+    // The bound before any work. A third dot, a NUL or any other byte outside the alphabet is the
+    // strict decode's refusal below (the one owner of a part's shape).
+    if (!token || n == 0 || n > CB_OIDC_TOKEN_MAX) return CB_E_AUTH;
     const char *d1 = memchr(token, '.', n);
     const char *d2 = d1 ? memchr(d1 + 1, '.', (size_t)(token + n - d1 - 1)) : NULL;
-    if (!d1 || !d2 || memchr(d2 + 1, '.', (size_t)(token + n - d2 - 1))) return CB_E_AUTH;
+    if (!d1 || !d2) return CB_E_AUTH;
     size_t hn = (size_t)(d1 - token), pn = (size_t)(d2 - d1 - 1), sn = (size_t)(token + n - d2 - 1);
     if (hn == 0 || pn == 0 || sn == 0) return CB_E_AUTH;
     uint8_t *buf = malloc(n + 3);   // the largest part decoded, and a NUL
@@ -345,7 +367,7 @@ static int verify(idp *p, const char *token, size_t n, const char *nonce, size_t
     if (k <= 0) goto out;
     int krc;
     if (!(pk = key_for(p, kid, now_ms, &krc))) { rc = krc; goto out; }
-    if ((size_t)k != (size_t)EVP_PKEY_get_size(pk)) goto out;
+    // A signature of another length than the modulus is OpenSSL's refusal (RSASSA-PKCS1-v1_5).
     if (!(md = EVP_MD_CTX_new())) { rc = CB_E_NOMEM; goto out; }
     if (EVP_DigestVerifyInit(md, NULL, EVP_sha256(), NULL, pk) != 1) { rc = CB_E_NOMEM; goto out; }
     if (EVP_DigestVerify(md, buf, (size_t)k, (const unsigned char *)token, (size_t)(d2 - token)) != 1) goto out;
@@ -569,7 +591,7 @@ int cb_oidc_open(const cb_oidc *o, const char *sealed, char *out, size_t cap) {
               EVP_DecryptFinal_ex(c, (unsigned char *)out + l1, &l2) == 1;
     EVP_CIPHER_CTX_free(c);
     OPENSSL_cleanse(buf, sizeof buf);
-    if (!ok || memchr(out, 0, n)) {
+    if (!ok) {
         OPENSSL_cleanse(out, cap);
         out[0] = 0;
         return -1;

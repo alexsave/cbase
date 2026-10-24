@@ -72,6 +72,10 @@ const char *fi_mint(fake_idp *f, int key, const char *alg, const char *kid, cons
 // The same with the payload JSON as given, byte for byte.
 const char *fi_mint_raw(fake_idp *f, int key, const char *header_json, const char *payload_json);
 
+// One key of it as a JWK object ({"kty":"RSA","kid":kid,...}); key -1 is the weak one. Static
+// storage (per thread), overwritten by the next call.
+const char *fi_jwk(fake_idp *f, int key, const char *kid);
+
 // Verifies an ES256 client secret as the fake does; the claims' sub into sub_out. true when good.
 bool fi_secret_ok(fake_idp *f, const char *secret, const char *client_id);
 

@@ -148,7 +148,7 @@ static void every_refusal(void) {
     REFUSED(fi_mint_raw(&g_f, 0, "{\"alg\":\"RS256\",\"kid\":\"k0\"}", "{\"iss\":1}"));
     REFUSED(fi_mint_raw(&g_f, 0, "{\"alg\":\"RS256\",\"kid\":\"k0\"}", "not json"));
     // The shape: three parts, canonical base64url, a whole signature.
-    char t[16384];
+    char t[32768];
     cb_strlcpy(t, fi_mint(&g_f, 0, NULL, NULL, &c), sizeof t);
     T_EQ_INT(verify(o, t, &id), CB_OK);
     size_t n = strlen(t);
@@ -157,17 +157,27 @@ static void every_refusal(void) {
     sig[5] = sig[5] == 'A' ? 'B' : 'A';              // one signature character
     REFUSED(t);
     sig[5] = keep;
+    // The last character of a 256-byte signature carries 4 bits and 2 spare ones: setting a spare
+    // bit spells the same bytes another way, which only the canonical check refuses.
+    static const char ALPHA[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     char last = t[n - 1];
-    t[n - 1] = last == 'A' ? 'B' : 'A';             // the last character: its spare bits (non-canonical) or the signature
+    int v = (int)(strchr(ALPHA, last) - ALPHA);
+    T_EQ_INT(v & 3, 0);
+    t[n - 1] = ALPHA[v | 1];
     REFUSED(t);
     t[n - 1] = last;
-    char *pd = strchr(t, '.') + 1;
-    char was = *pd;
-    *pd = '+';                                      // the other alphabet: decodes, but is not the token's text
-    REFUSED(t);
-    *pd = was;
+    // The other alphabet: '+' and '/' decode as '-' and '_' do, to the same bytes, and only the
+    // canonical check refuses the second spelling.
+    char *alt = strpbrk(sig, "-_");
+    T_CHECK(alt != NULL);
+    if (alt) {
+        char was = *alt;
+        *alt = was == '-' ? '+' : '/';
+        REFUSED(t);
+        *alt = was;
+    }
     T_EQ_INT(verify(o, t, &id), CB_OK);
-    char four[16500];
+    char four[33000];
     snprintf(four, sizeof four, "%s.x", t);
     REFUSED(four);
     snprintf(four, sizeof four, "%.*s", (int)(sig - 1 - t), t);   // two parts
@@ -184,6 +194,40 @@ static void every_refusal(void) {
     big[CB_OIDC_TOKEN_MAX + 1] = 0;
     REFUSED(big);
     free(big);
+    // The raw nonce's bounds, with tokens whose nonce claim is that raw nonce's hash.
+    {
+        char shortn[CB_OIDC_NONCE_MIN];
+        memset(shortn, 's', sizeof shortn - 1);
+        shortn[sizeof shortn - 1] = 0;
+        fi_claims sc = good("s");
+        sc.nonce_raw = shortn;
+        const char *st = fi_mint(&g_f, 0, NULL, NULL, &sc);
+        T_EQ_INT(cb_oidc_verify(o, CBW_IDP_APPLE, st, strlen(st), shortn, strlen(shortn), g_now, &id), CB_E_AUTH);
+        char longr[CB_OIDC_NONCE_MAX + 2];
+        memset(longr, 'l', sizeof longr - 1);
+        longr[sizeof longr - 1] = 0;
+        sc.nonce_raw = longr;
+        st = fi_mint(&g_f, 0, NULL, NULL, &sc);
+        T_EQ_INT(cb_oidc_verify(o, CBW_IDP_APPLE, st, strlen(st), longr, strlen(longr), g_now, &id), CB_E_AUTH);
+        longr[CB_OIDC_NONCE_MAX] = 0;   // at the bound it is good
+        sc.nonce_raw = longr;
+        st = fi_mint(&g_f, 0, NULL, NULL, &sc);
+        T_EQ_INT(cb_oidc_verify(o, CBW_IDP_APPLE, st, strlen(st), longr, strlen(longr), g_now, &id), CB_OK);
+    }
+    // A token past CB_OIDC_TOKEN_MAX, well formed and signed, is refused for its size alone.
+    {
+        static char pad[CB_OIDC_TOKEN_MAX];
+        fi_claims bc = good("s");
+        snprintf(pad, sizeof pad, ",\"pad\":\"%0*d\"", CB_OIDC_TOKEN_MAX * 3 / 4 - 400, 0);
+        bc.extra = pad;
+        const char *bt = fi_mint(&g_f, 0, NULL, NULL, &bc);
+        T_CHECK(bt && strlen(bt) > CB_OIDC_TOKEN_MAX);
+        T_EQ_INT(verify(o, bt, &id), CB_E_AUTH);
+        snprintf(pad, sizeof pad, ",\"pad\":\"%0*d\"", CB_OIDC_TOKEN_MAX * 3 / 4 - 1200, 0);
+        bt = fi_mint(&g_f, 0, NULL, NULL, &bc);
+        T_CHECK(bt && strlen(bt) <= CB_OIDC_TOKEN_MAX);
+        T_EQ_INT(verify(o, bt, &id), CB_OK);
+    }
     // The raw nonce's bounds.
     T_EQ_INT(cb_oidc_verify(o, CBW_IDP_APPLE, t, n, NONCE, CB_OIDC_NONCE_MIN - 1, g_now, &id), CB_E_AUTH);
     char longn[CB_OIDC_NONCE_MAX + 2];
@@ -265,6 +309,92 @@ static void keys_rotate_and_refetch(void) {
     for (int i = 1; i < FI_KEYS; i++) fi_publish(&g_f, i, false);
 }
 
+// A key set read as a fetch reads it (cb_oidc_keys_load): unusable keys skipped, not the set; a kid
+// twice is its first key; nothing usable keeps what is held.
+static void key_sets(void) {
+    cb_oidc *o = new_oidc(false);
+    cb_oidc_identity id;
+    char set[8192], k0[2048], k1[2048];
+    cb_strlcpy(k0, fi_jwk(&g_f, 0, "k0"), sizeof k0);
+    cb_strlcpy(k1, fi_jwk(&g_f, 1, "k0"), sizeof k1);   // another key under the same kid
+    // An unusable key first (1024 bits; then one of kty EC; then a bad modulus), then the good one.
+    snprintf(set, sizeof set, "{\"keys\":[%s,{\"kty\":\"EC\",\"kid\":\"e\",\"crv\":\"P-256\"},"
+             "{\"kty\":\"RSA\",\"kid\":\"z\",\"n\":\"AA\",\"e\":\"AQAB\"},%s,%s]}", fi_jwk(&g_f, -1, "weak"), k0, k1);
+    T_EQ_INT(cb_oidc_keys_load(o, CBW_IDP_APPLE, set, strlen(set), g_now), 1);
+    fi_claims c = good("s");
+    T_EQ_INT(verify(o, fi_mint(&g_f, 0, NULL, "k0", &c), &id), CB_OK);    // the first k0
+    T_EQ_INT(verify(o, fi_mint(&g_f, 1, NULL, "k0", &c), &id), CB_E_AUTH);
+    T_EQ_INT(verify(o, fi_mint(&g_f, -1, NULL, "weak", &c), &id), CB_E_AUTH);
+    // Nothing usable: 0, and the held key still verifies; not a key set: -1.
+    snprintf(set, sizeof set, "{\"keys\":[%s]}", fi_jwk(&g_f, -1, "weak"));
+    T_EQ_INT(cb_oidc_keys_load(o, CBW_IDP_APPLE, set, strlen(set), g_now), 0);
+    T_EQ_INT(verify(o, fi_mint(&g_f, 0, NULL, "k0", &c), &id), CB_OK);
+    T_EQ_INT(cb_oidc_keys_load(o, CBW_IDP_APPLE, "{\"keys\":1}", 10, g_now), -1);
+    T_EQ_INT(cb_oidc_keys_load(o, CBW_IDP_APPLE, "[", 1, g_now), -1);
+    T_EQ_INT(cb_oidc_keys_load(o, 9, set, strlen(set), g_now), -1);
+    // More than it holds: the first CB_OIDC_JWKS_MAX.
+    cb_buf b;
+    cb_buf_init(&b);
+    cb_buf_puts(&b, "{\"keys\":[");
+    for (int i = 0; i < CB_OIDC_JWKS_MAX + 2; i++) {
+        char kid[8];
+        snprintf(kid, sizeof kid, "m%d", i);
+        cb_buf_printf(&b, "%s%s", i ? "," : "", fi_jwk(&g_f, i % 2, kid));
+    }
+    cb_buf_puts(&b, "]}");
+    T_EQ_INT(cb_oidc_keys_load(o, CBW_IDP_APPLE, (const char *)b.p, b.len, g_now), CB_OIDC_JWKS_MAX);
+    T_EQ_INT(verify(o, fi_mint(&g_f, 1, NULL, "m15", &c), &id), CB_OK);
+    T_EQ_INT(verify(o, fi_mint(&g_f, 0, NULL, "m16", &c), &id), CB_E_AUTH);
+    cb_buf_free(&b);
+    cb_oidc_free(o);
+}
+
+// The configuration's own refusals.
+static void configuration(void) {
+    cb_config c;
+    cb_oidc *o = NULL;
+    char err[256];
+    config(&c, false);
+    char big[CB_OIDC_STR_MAX + 2];
+    memset(big, 'c', sizeof big - 1);
+    big[sizeof big - 1] = 0;
+    snprintf(c.apple_client_ids, sizeof c.apple_client_ids, IOS ",%s", big);
+    T_EQ_INT(cb_oidc_new(&c, &o, err, sizeof err), CB_E_INVALID);
+    big[CB_OIDC_STR_MAX] = 0;                       // at the bound it is one
+    snprintf(c.apple_client_ids, sizeof c.apple_client_ids, IOS ",%s", big);
+    T_EQ_INT(cb_oidc_new(&c, &o, err, sizeof err), CB_OK);
+    cb_oidc_free(o);
+    strcpy(c.apple_client_ids, "a,b,c,d,e,f,g,h,i");   // nine: one past CB_OIDC_CLIENTS_MAX
+    T_EQ_INT(cb_oidc_new(&c, &o, err, sizeof err), CB_E_INVALID);
+    strcpy(c.apple_client_ids, "a,,b,");            // empty items are no client
+    T_EQ_INT(cb_oidc_new(&c, &o, err, sizeof err), CB_OK);
+    T_CHECK(cb_oidc_on(o, CBW_IDP_APPLE));
+    cb_oidc_free(o);
+    strcpy(c.apple_client_ids, ",");
+    T_EQ_INT(cb_oidc_new(&c, &o, err, sizeof err), CB_OK);
+    T_CHECK(!cb_oidc_on(o, CBW_IDP_APPLE));        // no client: off
+    cb_oidc_free(o);
+    // A P-384 key is not ES256's.
+    config(&c, true);
+    EVP_PKEY *p384 = EVP_EC_gen("P-384");
+    BIO *bio = BIO_new(BIO_s_mem());
+    PEM_write_bio_PrivateKey(bio, p384, NULL, NULL, 0, NULL, NULL);
+    char *pem = NULL;
+    long pl = BIO_get_mem_data(bio, &pem);
+    snprintf(c.apple_private_key, sizeof c.apple_private_key, "%.*s", (int)pl, pem);
+    BIO_free(bio);
+    EVP_PKEY_free(p384);
+    T_EQ_INT(cb_oidc_new(&c, &o, err, sizeof err), CB_E_INVALID);
+    // The issuer's port.
+    config(&c, false);
+    strcpy(c.apple_issuer, "https://localhost:0");
+    T_EQ_INT(cb_oidc_new(&c, &o, err, sizeof err), CB_E_INVALID);
+    strcpy(c.apple_issuer, "https://localhost:70000");
+    T_EQ_INT(cb_oidc_new(&c, &o, err, sizeof err), CB_E_INVALID);
+    strcpy(c.apple_issuer, "https://:443");
+    T_EQ_INT(cb_oidc_new(&c, &o, err, sizeof err), CB_E_INVALID);
+}
+
 // ---- the client secret, the exchange, the revocation, the seal -------------------------------
 
 static void client_secret(void) {
@@ -328,6 +458,9 @@ static void exchange_and_revoke(void) {
     // A client that is not ours, an empty code, a NUL in it: never sent.
     calls = g_f.token_calls;
     T_EQ_INT(cb_oidc_exchange(o, CBW_IDP_APPLE, "com.example.x", "sub1", "code-sub1", 9, g_now, r, sizeof r), CB_E_AUTH);
+    // A revocation names the client the grant was made to, configured still or not: a client retired
+    // from the configuration still has its grants revoked.
+    T_EQ_INT(cb_oidc_revoke(o, CBW_IDP_APPLE, "com.example.retired", "rt", g_now), CB_OK);
     T_EQ_INT(cb_oidc_exchange(o, CBW_IDP_APPLE, IOS, "sub1", "", 0, g_now, r, sizeof r), CB_E_AUTH);
     T_EQ_INT(cb_oidc_exchange(o, CBW_IDP_APPLE, IOS, "sub1", "code\0x", 6, g_now, r, sizeof r), CB_E_AUTH);
     T_EQ_INT(g_f.token_calls - calls, 0);
@@ -733,6 +866,8 @@ int main(void) {
     T_RUN(a_good_token);
     T_RUN(every_refusal);
     T_RUN(keys_rotate_and_refetch);
+    T_RUN(key_sets);
+    T_RUN(configuration);
     T_RUN(client_secret);
     T_RUN(exchange_and_revoke);
     T_RUN(seal);

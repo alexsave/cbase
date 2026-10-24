@@ -89,7 +89,8 @@ int cb_oidc_verify(cb_oidc *o, int idp, const char *token, size_t n, const char 
 int cb_oidc_exchange(cb_oidc *o, int idp, const char *client_id, const char *sub, const char *code, size_t code_len,
                      int64_t now_ms, char *refresh, size_t cap);
 
-// The grant behind refresh_token revoked at <issuer>/auth/revoke. CB_OK (the provider answered 200,
+// The grant behind refresh_token revoked at <issuer>/auth/revoke, for the client it was made to
+// (configured now or not: a client retired from the configuration still has its grants revoked). CB_OK (the provider answered 200,
 // which it also answers for a token already revoked); CB_E_STATE without a key; CB_E_AUTH when the
 // provider refused (its 400: a client it does not know, a bad secret); CB_E_IO otherwise.
 int cb_oidc_revoke(cb_oidc *o, int idp, const char *client_id, const char *refresh_token, int64_t now_ms);
@@ -103,6 +104,11 @@ int cb_oidc_open(const cb_oidc *o, const char *sealed, char *out, size_t cap);
 // The client secret for client_id at now_s (above), NUL-terminated: its length, or CB_E_STATE
 // without a key, CB_E_NOMEM, or CB_E_FULL when out is too small. For the calls above and the tests.
 int cb_oidc_client_secret(cb_oidc *o, int idp, const char *client_id, int64_t now_s, char *out, size_t cap);
+
+// A key set's text installed as if a fetch had just answered it (fetched and tried at now_ms): the
+// keys held, 0 when none is usable (the held ones stay), -1 for a provider that is off or a document
+// that is not a key set. For the fuzz target and the tests, which have no network; a server fetches.
+int cb_oidc_keys_load(cb_oidc *o, int idp, const char *json, size_t n, int64_t now_ms);
 
 // Key fetches made so far (the tests: a rotation fetches once, a flood of unknown kids once a minute).
 int cb_oidc_key_fetches(const cb_oidc *o, int idp);
