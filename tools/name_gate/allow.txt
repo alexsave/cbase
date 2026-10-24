@@ -48,7 +48,6 @@
 1 c_base/core/src/auth/auth.c /foolish/i
 1 c_base/core/src/auth/auth.c /\bbots?\b/i
 1 c_base/core/src/auth/auth.h /foolish/i
-1 c_base/core/src/auth/auth.h /\bgames?\b/i
 1 c_base/core/src/auth/auth.h /\bbots?\b/i
 1 c_base/core/src/auth/auth.h /\bcards?\b/i
 1 c_base/core/src/auth/bcrypt.h /lambda/i

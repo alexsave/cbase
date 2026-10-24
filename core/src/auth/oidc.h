@@ -6,7 +6,7 @@
 //
 // AN ID TOKEN IS ACCEPTED when, in this order:
 //   * it is three base64url parts, each canonical (the one spelling of its bytes, so a token has one
-//     text and the replay key below is the token's), at most CB_OIDC_TOKEN_MAX bytes;
+//     text and the one-use key below is the token's), at most CB_OIDC_TOKEN_MAX bytes;
 //   * its header says alg RS256 (nothing else: not none, not an HMAC) and a kid the provider
 //     publishes. The keys are fetched from the provider over HTTPS (<issuer>/auth/keys), kept
 //     CB_OIDC_KEYS_TTL_MS, and fetched again at once for a kid they do not hold, at most once every
@@ -70,7 +70,7 @@ typedef struct {
     char    email[CB_EMAIL_MAX + 1];          // "" when the token carries none
     bool    email_verified, private_email;
     int64_t exp;                              // seconds since the epoch
-    char    key[65];                          // lowercase hex SHA-256 of the token's text: the replay key
+    char    key[65];                          // lowercase hex SHA-256 of the token's text: its one-use key
 } cb_oidc_identity;
 
 // Verifies an ID token of provider idp for the raw nonce the client kept (above). CB_OK and *out;

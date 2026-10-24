@@ -575,13 +575,14 @@ static bool grant_of(const cb_identity_row *r, void *ud) {
 }
 
 // Every grant of user_id's identities revoked at its provider (auth.h cb_auth_delete_user).
-static void revoke_grants(cb_auth *a, const char *user_id) {
+static int revoke_grants(cb_auth *a, const char *user_id) {
     grants *gs = calloc(1, sizeof *gs);
-    if (!gs) { g_revoke_failures++; CB_ERROR("auth", "user %s: out of memory reading the grants to revoke", user_id); return; }
+    if (!gs) return CB_E_NOMEM;
     int rc = CB_STORE_CALL(a->store, identities_of, user_id, grant_of, gs);
     if (rc < 0 && rc != CB_E_NOTIMPL) {
-        g_revoke_failures++;
-        CB_ERROR("auth", "user %s: the identities could not be read (%s): no grant revoked", user_id, cb_strerror(rc));
+        // Not read, so not revoked: the delete fails, and its retry revokes them.
+        free(gs);
+        return rc;
     }
     for (int i = 0; i < gs->n; i++) {
         char refresh[CB_OIDC_REFRESH_MAX + 1];
@@ -596,12 +597,14 @@ static void revoke_grants(cb_auth *a, const char *user_id) {
     }
     OPENSSL_cleanse(gs, sizeof *gs);
     free(gs);
+    return CB_OK;
 }
 
 int cb_auth_delete_user(cb_auth *a, const char *user_id) {
     if (!a->store) return CB_E_STATE;
-    revoke_grants(a, user_id);
-    int rc = CB_STORE_CALL(a->store, user_delete, user_id);
+    int rc = revoke_grants(a, user_id);
+    if (rc != CB_OK) return rc;
+    rc = CB_STORE_CALL(a->store, user_delete, user_id);
     if (rc == CB_OK) ended(a, user_id, NULL, NULL);
     return rc;
 }

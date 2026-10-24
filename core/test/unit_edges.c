@@ -54,6 +54,8 @@ static const char *const VARS[] = {
     "CBASE_JWT_SECRET", "CBASE_ADMIN_TOKEN", "CBASE_ALLOWED_ORIGINS", "CBASE_PUBLIC_URL", "CBASE_REQ_WORKERS",
     "CBASE_BOT_WORKERS", "CBASE_LOOP_CPU", "CBASE_BG_CPU", "CBASE_MAX_BODY", "CBASE_JWT_TTL", "CBASE_LOG_LEVEL", "CBASE_ORIGIN_SECRET",
     "CBASE_BOT_SPEEDUP", "CBASE_DEV", "CBASE_MAX_CONNS", "CBASE_LISTEN_BACKLOG",
+    "CBASE_APPLE_CLIENT_IDS", "CBASE_APPLE_TEAM_ID", "CBASE_APPLE_KEY_ID", "CBASE_APPLE_PRIVATE_KEY",
+    "CBASE_APPLE_REDIRECT_URI", "CBASE_APPLE_ISSUER",
 };
 
 static void env_clear(void) {
@@ -75,7 +77,8 @@ static void refused(const char *name, const char *value, const char *says) {
 // only them), no secret's value anywhere.
 typedef struct { int n, secrets; bool leaked, unknown, wrong_secret; } seen;
 static bool is_secret_name(const char *n) {
-    return !strcmp(n, "CBASE_JWT_SECRET") || !strcmp(n, "CBASE_ADMIN_TOKEN") || !strcmp(n, "CBASE_ORIGIN_SECRET");
+    return !strcmp(n, "CBASE_JWT_SECRET") || !strcmp(n, "CBASE_ADMIN_TOKEN") || !strcmp(n, "CBASE_ORIGIN_SECRET") ||
+           !strcmp(n, "CBASE_APPLE_PRIVATE_KEY");
 }
 static void see(const char *name, const char *value, bool secret, void *ud) {
     seen *s = ud;
@@ -87,6 +90,36 @@ static void see(const char *name, const char *value, bool secret, void *ud) {
 }
 
 static void configuration_refusals(void) {
+    // Sign in with Apple (config.h): the issuer is https://host[:port], the key's three settings go
+    // together and need a client, the ids are ten letters and digits, the return URL is https.
+    refused("CBASE_APPLE_ISSUER", "http://appleid.apple.com", "CBASE_APPLE_ISSUER");
+    refused("CBASE_APPLE_ISSUER", "https://appleid.apple.com/auth", "CBASE_APPLE_ISSUER");
+    refused("CBASE_APPLE_ISSUER", "https://", "CBASE_APPLE_ISSUER");
+    refused("CBASE_APPLE_CLIENT_IDS", "a b", "CBASE_APPLE_CLIENT_IDS");
+    refused("CBASE_APPLE_CLIENT_IDS", "a\"b", "CBASE_APPLE_CLIENT_IDS");
+    refused("CBASE_APPLE_TEAM_ID", "TEAM123456", "go together");
+    refused("CBASE_APPLE_PRIVATE_KEY", "x", "go together");
+    refused("CBASE_APPLE_REDIRECT_URI", "http://app.example/back", "https");
+    {
+        env_clear();
+        setenv("CBASE_APPLE_TEAM_ID", "TEAM12345", 1);   // nine
+        setenv("CBASE_APPLE_KEY_ID", "KEY1234567", 1);
+        setenv("CBASE_APPLE_PRIVATE_KEY", "pem", 1);
+        setenv("CBASE_APPLE_CLIENT_IDS", "com.example.app", 1);
+        cb_config c;
+        char err[512] = "";
+        T_EQ_INT(cb_config_from_env(&c, err, sizeof err), CB_E_INVALID);
+        setenv("CBASE_APPLE_TEAM_ID", "team123456", 1);  // lower case
+        T_EQ_INT(cb_config_from_env(&c, err, sizeof err), CB_E_INVALID);
+        setenv("CBASE_APPLE_TEAM_ID", "TEAM123456", 1);
+        T_EQ_INT(cb_config_from_env(&c, err, sizeof err), CB_OK);
+        T_EQ_STR(c.apple_issuer, "https://appleid.apple.com");
+        unsetenv("CBASE_APPLE_CLIENT_IDS");
+        T_EQ_INT(cb_config_from_env(&c, err, sizeof err), CB_E_INVALID);
+        T_CHECK(strstr(err, "names no client") != NULL);
+        env_clear();
+    }
+
     char longv[2100];
     memset(longv, 'x', sizeof longv - 1);
     longv[sizeof longv - 1] = 0;
@@ -186,7 +219,7 @@ static void configuration_refusals(void) {
     seen s = { 0 };
     cb_config_each(&c, see, &s);
     T_CHECK(s.n >= (int)(sizeof VARS / sizeof VARS[0]));   // every setting this test knows, and any added since
-    T_EQ_INT(s.secrets, 3);
+    T_EQ_INT(s.secrets, 4);
     T_CHECK(!s.leaked);
     T_CHECK(!s.unknown);
     T_CHECK(!s.wrong_secret);

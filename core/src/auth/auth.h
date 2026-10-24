@@ -129,6 +129,8 @@ int cb_auth_change_password(cb_auth *a, const cb_user *u, const char *current, c
 // twice; one that still fails is logged as an ERROR and counted
 // (cb_auth_revoke_failures), and the account is deleted all the same: whoever asked
 // for their account to go gets that, and the grant lapses at the provider unused.
+// The identities not being readable (the store's failure) fails the delete before
+// anything is deleted, so its retry still finds and revokes every grant.
 int cb_auth_delete_user(cb_auth *a, const char *user_id);
 // Revocations that failed since the process started (above).
 int64_t cb_auth_revoke_failures(void);

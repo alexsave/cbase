@@ -10,6 +10,7 @@
 
 #include "../../../../shared/c/b64/b64.h"
 #include "../../../../shared/c/hex/hex.h"
+#include "../../../../shared/c/num_parse.h"
 
 #include <openssl/bn.h>
 #include <openssl/core_names.h>
@@ -116,8 +117,12 @@ static int idp_setup(idp *p, int id, const char *name, const char *issuer, const
     if (hl == 0 || hl >= sizeof p->host) { snprintf(err, cap, "%s: the issuer's host", name); return CB_E_INVALID; }
     memcpy(p->host, h, hl);
     p->host[hl] = 0;
-    p->port = colon ? atoi(colon + 1) : 443;
-    if (p->port <= 0 || p->port > 65535) { snprintf(err, cap, "%s: the issuer's port", name); return CB_E_INVALID; }
+    int64_t port = 443;
+    if (colon && !num_parse_i64_cstr(colon + 1, 1, 65535, &port)) {
+        snprintf(err, cap, "%s: the issuer's port", name);
+        return CB_E_INVALID;
+    }
+    p->port = (int)port;
     cb_strlcpy(p->team_id, team, sizeof p->team_id);
     cb_strlcpy(p->key_id, key_id, sizeof p->key_id);
     cb_strlcpy(p->redirect_uri, redirect, sizeof p->redirect_uri);

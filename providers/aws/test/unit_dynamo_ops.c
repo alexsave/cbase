@@ -141,9 +141,10 @@ static void user_delete_cascade(void) {
         { "Query", "USERGAMES#" U1, 200, seats_s },
         { "Query", "USERCHAT#" U1, 200, "{\"Items\":[{\"pk\":{\"S\":\"CHAT#g00000\"},\"sk\":{\"S\":\"1#c\"}}]}" },
         { "Query", "USERREFRESH#" U1, 200, "{\"Items\":[{\"pk\":{\"S\":\"REFRESH#aa\"},\"sk\":{\"S\":\"TOKEN\"}}]}" },
+        { "Query", "USERIDENT#" U1, 200, "{\"Items\":[{\"pk\":{\"S\":\"IDENT#1#s\"},\"sk\":{\"S\":\"IDENT\"}}]}" },
         { "BatchWriteItem", "GAME#g00024", 200, UNPROCESSED },   // the first 25, partly undone
         { "BatchWriteItem", "GAME#g00024", 200, "{}" },          // sent again whole
-        { "BatchWriteItem", "REFRESH#aa", 200, "{}" },           // the other 7
+        { "BatchWriteItem", "IDENT#1#s", 200, "{}" },            // the other 8, the identity among them
         { "TransactWriteItems", "EMAIL#ann@x.io", 200, "{}" },
         // A user who is not there: nothing else asked.
         { "GetItem", "\"USER#" U2 "\"", 200, NOITEM },
@@ -155,13 +156,15 @@ static void user_delete_cascade(void) {
         { "Query", "USERGAMES#", 200, EMPTY },
         { "Query", "USERCHAT#", 200, EMPTY },
         { "Query", "USERREFRESH#", 200, EMPTY },
+        { "Query", "USERIDENT#", 200, EMPTY },
         { "TransactWriteItems", NULL, 400, VALIDATION },
     };
     RUN(steps, s);
     T_EQ_INT(CB_STORE_CALL(s, user_delete, U1), CB_OK);
-    T_EQ_INT(sc_.at, 8);
-    T_CHECK(strstr(sc_.bodies[6], "GAME#g00029") != NULL);   // the second batch holds what the first did not
-    T_CHECK(strstr(sc_.bodies[6], "GAME#g00024") == NULL);
+    T_EQ_INT(sc_.at, 9);
+    T_CHECK(strstr(sc_.bodies[7], "GAME#g00029") != NULL);   // the second batch holds what the first did not
+    T_CHECK(strstr(sc_.bodies[7], "GAME#g00024") == NULL);
+    T_CHECK(strstr(sc_.bodies[7], "REFRESH#aa") != NULL);
     T_EQ_INT(CB_STORE_CALL(s, user_delete, U2), CB_E_NOT_FOUND);
     T_EQ_INT(CB_STORE_CALL(s, user_delete, U1), CB_E_DB);
     T_EQ_INT(CB_STORE_CALL(s, user_delete, U1), CB_E_DB);
