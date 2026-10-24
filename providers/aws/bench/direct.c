@@ -55,7 +55,7 @@
 #include "net.h"
 
 #include "aws/aws_call.h"
-#include "aws/https.h"
+#include "net/https.h"
 #include "aws/sigv4.h"
 #include "aws_json.h"
 #include "store/rows_foolish.h"

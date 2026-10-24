@@ -1,7 +1,7 @@
 // net.c - the bench's HTTP and WebSocket client (net.h).
 #include "net.h"
 
-#include "aws/https.h"
+#include "net/https.h"
 #include "net/ws.h"
 #include "netwire.h"
 #include "mqtt/mqtt.h"

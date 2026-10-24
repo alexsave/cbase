@@ -1,5 +1,5 @@
-// lib_aws_tls.c - the local TLS stand-in for AWS endpoints (lib_aws_tls.h).
-#include "lib_aws_tls.h"
+// lib_tls.c - the local TLS stand-in for remote endpoints (lib_tls.h).
+#include "lib_tls.h"
 
 #include <openssl/err.h>
 #include <openssl/pem.h>

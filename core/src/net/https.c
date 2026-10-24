@@ -6,7 +6,7 @@
 // connections wait in a small pool keyed by host and port; a caller takes one
 // out (so two threads never share an SSL), and puts it back only after a
 // response that allows keep-alive.
-#include "https.h"
+#include "net/https.h"
 
 #include "util/clock.h"
 #include "util/err.h"
@@ -32,12 +32,12 @@
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
-#include "../../../../../shared/c/clock.h"
+#include "../../../../shared/c/clock.h"
 
-// Idle connections kept, every host together: DynamoDB's one or two, and IoT's
-// one per lane of a commit's fan-out (realtime/rt_iot.c, up to 9 at 8 humans).
+// Idle connections kept, every host together: a remote store's one or two, and a push broker's
+// one per lane of a commit's fan-out (up to 9).
 #define POOL_MAX     24
-#define IDLE_MAX_MS  50000   // AWS front ends drop idle connections after about a minute
+#define IDLE_MAX_MS  50000   // cloud front ends drop idle connections after about a minute
 
 typedef struct {
     SSL    *ssl;      // NULL on a plain-HTTP connection
@@ -61,9 +61,17 @@ enum { K_STORE, K_PUSH, K_OTHER, K_N };
 static _Atomic int     g_calls[K_N], g_dials[K_N];
 static _Atomic int64_t g_us[K_N];
 
+// cb_https_tally_roles: set once, before any request, by the provider that reads the tally.
+static char g_store_prefix[64], g_push_part[64];
+
+void cb_https_tally_roles(const char *store_prefix, const char *push_part) {
+    snprintf(g_store_prefix, sizeof g_store_prefix, "%s", store_prefix ? store_prefix : "");
+    snprintf(g_push_part, sizeof g_push_part, "%s", push_part ? push_part : "");
+}
+
 static int host_kind(const char *host, bool tls) {
-    if (!tls || strncmp(host, "dynamodb.", 9) == 0) return K_STORE;
-    if (strstr(host, ".iot.")) return K_PUSH;
+    if (!tls || (g_store_prefix[0] && strncmp(host, g_store_prefix, strlen(g_store_prefix)) == 0)) return K_STORE;
+    if (g_push_part[0] && strstr(host, g_push_part)) return K_PUSH;
     return K_OTHER;
 }
 
@@ -260,12 +268,12 @@ static int ctx_build(void) {
     SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
     SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL);
 #ifdef SSL_OP_IGNORE_UNEXPECTED_EOF
-    // AWS sometimes closes without close_notify; the parser decides completeness.
+    // Some front ends close without close_notify; the parser decides completeness.
     SSL_CTX_set_options(ctx, SSL_OP_IGNORE_UNEXPECTED_EOF);
 #endif
     const char *ca = g_ca_file[0] ? g_ca_file : getenv("CBASE_CA_FILE");
     static const char *const KNOWN[] = {
-        "/etc/pki/tls/certs/ca-bundle.crt",     // Amazon Linux 2023: the Lambda runtime
+        "/etc/pki/tls/certs/ca-bundle.crt",     // Fedora, RHEL and their kin (a one-shot provider's runtime)
         "/etc/ssl/certs/ca-certificates.crt",   // Debian, Ubuntu, Alpine
         "/etc/ssl/cert.pem",                    // Alpine, macOS's system copy
     };

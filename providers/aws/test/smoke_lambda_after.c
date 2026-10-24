@@ -13,7 +13,7 @@
 // bootstrap's timing line counts that publish as after-response work.
 #include "t.h"
 
-#include "lib_aws_tls.h"
+#include "lib_tls.h"
 #include "lib_fake_runtime.h"
 #include "lib_proc.h"
 #include "../../../../shared/c/b64/b64.h"
@@ -133,7 +133,7 @@ static void answers_then_pushes(const char *bin) {
     char timing[512] = "";
     T_EQ_INT(tp_wait_line(&c, "inv: http POST /v1/create 200", 20000, timing, sizeof timing), 0);
     // One outbound call is the publish, made after the answer (to the stand-in,
-    // a host that is not *.iot.*, so the tally files it as other: aws/https.c host_kind).
+    // a host that is not *.iot.*, so the tally files it as other: net/https.c host_kind, the roles main_lambda.c sets).
     T_CHECK(strstr(timing, " other=1/") != NULL);
 
     fr_done(g_fr);

@@ -1,7 +1,8 @@
-// https.h - a minimal blocking HTTPS/1.1 client on OpenSSL, for AWS endpoints.
+// https.h - a minimal blocking HTTPS/1.1 client on OpenSSL: a provider's cloud endpoints, and the
+// platform's own outbound calls (an identity provider's keys, token and revocation endpoints).
 //
 // One request per call, over a kept-alive TLS connection per host and port
-// (a warm Lambda container reuses it across invocations). A request that
+// (a warm one-shot container reuses it across invocations). A request that
 // fails on a REUSED connection before any response byte arrives (the peer
 // closed it while idle, or the container was frozen) is retried once on a
 // fresh connection; nothing else is retried.
@@ -9,11 +10,11 @@
 // TLS 1.2 or newer, the peer's certificate verified against a CA bundle and
 // its name checked against `host`. The bundle is, in order: the file given to
 // cb_https_set_ca_file, $CBASE_CA_FILE, the first that exists of
-// /etc/pki/tls/certs/ca-bundle.crt (Amazon Linux, so the Lambda runtime),
-// /etc/ssl/certs/ca-certificates.crt (Debian, Alpine) and /etc/ssl/cert.pem,
-// and else OpenSSL's default paths (Homebrew's on a Mac). The static Alpine
-// build's OpenSSL looks under /etc/ssl by default, which provided.al2023 does
-// not populate the same way, hence the explicit list.
+// /etc/pki/tls/certs/ca-bundle.crt (Fedora and its kin, among them a one-shot
+// provider's runtime), /etc/ssl/certs/ca-certificates.crt (Debian, Alpine) and
+// /etc/ssl/cert.pem, and else OpenSSL's default paths (Homebrew's on a Mac). The
+// static Alpine build's OpenSSL looks under /etc/ssl by default, which that
+// runtime does not populate the same way, hence the explicit list.
 //
 // Bodies: Content-Length, chunked, or (with Connection: close) read to EOF.
 #ifndef CB_HTTPS_H
@@ -43,18 +44,19 @@ void cb_https_response_free(cb_https_response *r);
 int cb_https_request(const char *host, int port, const char *method, const char *path, const char *headers,
                      const void *body, size_t body_len, int timeout_ms, cb_https_response *out);
 
-// The same exchange over plain TCP, no TLS: for a local stand-in only
-// (DynamoDB Local on http://127.0.0.1:8000). cb_aws_call reaches it only for
-// an endpoint URL that says http://, never for AWS's own hosts.
+// The same exchange over plain TCP, no TLS: for a local stand-in of a cloud
+// store only (on http://127.0.0.1:8000). A provider reaches it only for an
+// endpoint URL that says http://, never for the cloud's own hosts.
 int cb_http_plain_request(const char *host, int port, const char *method, const char *path, const char *headers,
                           const void *body, size_t body_len, int timeout_ms, cb_https_response *out);
 
 // What this process's requests cost since the last take, by role: the store
-// (DynamoDB, and a plain-HTTP stand-in for it), the pushes (IoT Core), and
-// anything else (Lambda invoke, CloudFront, SSM). `dials` counts new
-// connections (TCP, plus TLS on https), the requests that found no warm one.
-// Process-wide and lock-free; main_lambda.c takes it once per invocation for
-// its timing line, where one invocation runs at a time.
+// (a remote store, and a plain-HTTP stand-in for it), the pushes (a push
+// broker), and anything else (an invoke, an edge invalidation, a secret, an
+// identity provider). `dials` counts new connections (TCP, plus TLS on https),
+// the requests that found no warm one. Process-wide and lock-free; a one-shot
+// provider's main takes it once per invocation for its timing line, where one
+// invocation runs at a time.
 typedef struct {
     int     calls;
     int     dials;
@@ -64,6 +66,11 @@ typedef struct {
     cb_https_count store, push, other;
 } cb_https_tally;
 void cb_https_tally_take(cb_https_tally *out);
+// Which hosts are the store's and the pushes' (the tally knows no cloud by name): a host that starts
+// with store_prefix, or any plain-HTTP one, is the store's; one that contains push_part is the
+// pushes'; every other is other. Set once at start, before any request, by the provider whose main
+// reads the tally; unset, every TLS host is other.
+void cb_https_tally_roles(const char *store_prefix, const char *push_part);
 
 // Uses `path` (a PEM bundle) for verification from now on, or the default
 // search above when NULL. Drops pooled connections. CB_OK, or CB_E_IO when

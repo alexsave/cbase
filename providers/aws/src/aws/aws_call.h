@@ -6,7 +6,7 @@
 #ifndef CB_AWS_CALL_H
 #define CB_AWS_CALL_H
 
-#include "https.h"
+#include "net/https.h"
 
 #include <stdbool.h>
 #include <stddef.h>

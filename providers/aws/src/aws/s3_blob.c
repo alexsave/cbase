@@ -1,7 +1,7 @@
 // s3_blob.c - see s3_blob.h and util/blob.h.
 #include "aws/s3_blob.h"
 
-#include "https.h"
+#include "net/https.h"
 #include "sigv4.h"
 #include "util/blob.h"
 #include "util/clock.h"

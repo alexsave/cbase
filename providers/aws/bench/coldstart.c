@@ -15,7 +15,7 @@
 #include "bench.h"
 #include "net.h"
 
-#include "aws/https.h"
+#include "net/https.h"
 
 #include <stdio.h>
 #include <stdlib.h>

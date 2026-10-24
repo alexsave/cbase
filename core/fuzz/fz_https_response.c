@@ -5,7 +5,7 @@
 // "more" or the same response.
 #include "fz.h"
 
-#include "aws/https.h"
+#include "net/https.h"
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     if (size < 1) return 0;

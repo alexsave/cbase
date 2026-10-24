@@ -36,7 +36,7 @@
 #include "after.h"
 #include "rate_limits.h"
 #include "aws/event.h"
-#include "aws/https.h"
+#include "net/https.h"
 #include "aws/runtime_api.h"
 #include "aws/ssm.h"
 #include "boot.h"
@@ -121,6 +121,7 @@ static int dispatch(cb_ctx *ctx, const cb_invocation *inv, cb_buf *out, char *wh
 }
 
 int main(void) {
+    cb_https_tally_roles("dynamodb.", ".iot.");   // the timing line's store and pushes (net/https.h)
     char host[256];
     int port = 0;
     if (cb_runtime_init(host, sizeof host, &port) != CB_OK) {

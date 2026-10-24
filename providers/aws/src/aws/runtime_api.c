@@ -5,7 +5,7 @@
 // there is no read timeout on it.
 #include "runtime_api.h"
 
-#include "aws/https.h"
+#include "net/https.h"
 #include "aws_json.h"
 #include "util/err.h"
 #include "util/log.h"

@@ -1,7 +1,7 @@
-// lib_aws_tls.h - a local TLS server standing in for an AWS endpoint.
+// lib_tls.h - a local TLS server standing in for a remote endpoint (a cloud API, an identity provider).
 //
 // For unit_https.c, unit_aws_calls.c: a thread on 127.0.0.1 serving TLS with a
-// fixed self-signed certificate for "localhost" (lib_aws_tls.c embeds it; it
+// fixed self-signed certificate for "localhost" (lib_tls.c embeds it; it
 // is valid until 2126), one connection at a time (or each on its own thread:
 // tls_srv_start_concurrent). Each request (head and
 // Content-Length body) is recorded and answered by the test's callback.
