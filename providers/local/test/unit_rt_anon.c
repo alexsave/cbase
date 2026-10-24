@@ -370,7 +370,8 @@ static void the_anonymous_rule(void) {
 
 // A CLIENT UNDER SIGNALS: lib_client's calls survive EINTR. Another thread signals this one
 // every 200 us (a handler installed without SA_RESTART, as libFuzzer's -timeout alarm is) while it
-// opens anonymous sockets, says HELLO, SUBs and PINGs, and asks HTTP; every call must succeed.
+// opens anonymous sockets, says HELLO and SUBs, and asks HTTP, for at least 200 rounds and 500
+// signals; every call must succeed.
 // fz_rt_anon failed at random on a loaded CI runner because poll and recv returned EINTR and the
 // client took that for the server's refusal.
 static volatile sig_atomic_t g_hits;
@@ -398,8 +399,10 @@ static void a_client_under_signals(void) {
     pthread_create(&th, NULL, storm, NULL);
     cb_buf m;
     cb_buf_init(&m);
-    int opened = 0, answered = 0;
-    for (int i = 0; i < 200; i++) {
+    // At least 200 rounds and until 500 signals have landed (a fast machine finishes 200 rounds
+    // before the storm gets going), at most 5000.
+    int opened = 0, answered = 0, rounds = 0;
+    for (; rounds < 5000 && (rounds < 200 || g_hits < 500); rounds++) {
         int a = tc_ws_open(g.port, "/ws/public", NULL);
         if (a < 0) continue;
         opened++;
@@ -413,9 +416,9 @@ static void a_client_under_signals(void) {
     atomic_store(&g_storm, 0);
     pthread_join(th, NULL);
     signal(SIGUSR1, SIG_DFL);
-    T_CHECK(g_hits > 100);   // the storm really landed
-    T_EQ_INT(opened, 200);
-    T_EQ_INT(answered, 400);
+    T_CHECK(g_hits >= 500);   // the storm really landed
+    T_EQ_INT(opened, rounds);
+    T_EQ_INT(answered, 2 * rounds);
     // And the server holds none of them now.
     for (int k = 0; k < 200 && atomic_load(&g.ctx.stats.ws_conns); k++) usleep(5000);
     T_EQ_INT(atomic_load(&g.ctx.stats.ws_conns), 0);
