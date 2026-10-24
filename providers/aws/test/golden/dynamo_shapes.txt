@@ -1,3 +1,4 @@
+Batch.DeleteRequest key=pk:S=?,sk:S=?
 Batch.DeleteRequest key=pk:S=CHAT#{},sk:S={}#{}
 Batch.DeleteRequest key=pk:S=GAME#{},sk:S=MEMBER#{}
 Batch.DeleteRequest key=pk:S=REFRESH#{},sk:S=TOKEN
@@ -10,6 +11,7 @@ DeleteItem key=pk:S=AUTHFAIL#{},sk:S=FAILS
 DeleteItem key=pk:S=SCAN,sk:S=GAME#{} names=row_version vals=N
 DescribeTable
 ExecuteStatement
+GetItem key=pk:S=?,sk:S=?
 GetItem key=pk:S=AUTHFAIL#{},sk:S=FAILS
 GetItem key=pk:S=EMAIL#{},sk:S=USER
 GetItem key=pk:S=GAME#{},sk:S=MEMBER#{}
@@ -20,6 +22,7 @@ GetItem key=pk:S=SNAP#{},sk:S=PLAYER#{}
 GetItem key=pk:S=SNAP#{},sk:S=SNAP
 GetItem key=pk:S=USER#{},sk:S=PROFILE
 GetItem key=pk:S=USER#{},sk:S=RATING
+PutItem item=client_id:S,created_at:N,email:S,email_verified:BOOL,grant:S,gsi1pk:S=?,gsi1sk:S={}#{},idp:N,pk:S=?,private_email:BOOL,sk:S=?,subject:S,updated_at:N,user_id:S
 PutItem item=created_at:N,expires_at:N,expires_ms:N,gen:N,id:S,pk:S=SESSION#{},revoked:BOOL,sk:S=SESSION,user_id:S
 PutItem item=created_at:N,expires_at:N,expires_ms:N,gsi1pk:S=USERREFRESH#{},gsi1sk:S={},pk:S=REFRESH#{},revoked:BOOL,session_id:S,sk:S=TOKEN,token_hash:S,user_id:S
 PutItem item=created_at:N,extras:B,game_id:S,gsi1pk:S=GAMESNAPS#{},gsi1sk:S={}#{},gsi2pk:S=PLAYER#{},gsi2sk:S={}#{},id:S,moves:B,pk:S=SNAP#{},player_ids:L,sk:S=PLAYER#{}
@@ -27,8 +30,11 @@ PutItem item=created_at:N,gsi1pk:S=USERREFRESH#{},gsi1sk:S={},pk:S=REFRESH#{},re
 PutItem item=elo_rating:N,games_played:N,gsi2pk:S=RATINGS,gsi2sk:S=E#{}#{},pk:S=USER#{},previous_elo:N,sk:S=RATING,updated_at:N,user_id:S,username:S
 PutItem item=elo_rating:N,games_played:N,gsi2pk:S=RATINGS,gsi2sk:S=E#{}#{},pk:S=USER#{},sk:S=RATING,updated_at:N,user_id:S,username:S
 PutItem item=elo_rating:N,games_played:N,gsi2pk:S=RATINGS,gsi2sk:S={},pk:S=USER#{},sk:S=RATING,user_id:S
+PutItem item=expires_at:N,expires_ms:N,key:S,pk:S=?,sk:S=? names=expires_ms vals=N
 PutItem item=expires_at:N,expires_ms:N,last_at:N,locked_until:N,n:N,pk:S=AUTHFAIL#{},sk:S=FAILS
+Query index=gsi1 names=gsi1pk vals=S:?
 Query index=gsi1 names=gsi1pk vals=S:USERGAMES#{}
+Query index=gsi1 names=gsi1pk,pk,sk vals=S:?
 Query index=gsi1 names=gsi1pk,pk,sk vals=S:GAMESNAPS#{}
 Query index=gsi1 names=gsi1pk,pk,sk vals=S:USERCHAT#{}
 Query index=gsi1 names=gsi1pk,pk,sk vals=S:USERREFRESH#{}
@@ -61,6 +67,7 @@ Txn.Delete key=pk:S=SCAN,sk:S=GAME#{}
 Txn.Delete key=pk:S=USER#{},sk:S=PROFILE
 Txn.Delete key=pk:S=USER#{},sk:S=RATING
 Txn.Put item=bot_id:S,game_id:S,pk:S=GAME#{},sk:S=BOT#{}
+Txn.Put item=client_id:S,created_at:N,email:S,email_verified:BOOL,grant:S,gsi1pk:S=?,gsi1sk:S={}#{},idp:N,pk:S=?,private_email:BOOL,sk:S=?,subject:S,updated_at:N,user_id:S
 Txn.Put item=created_at:N,dur:N,fool:N,game_id:S,gsi2pk:S=PLAYER#{},gsi2sk:S={}#{},id:S,n_players:N,pk:S=SNAP#{},rank:N,seat:N,sk:S=PLAYER#{}
 Txn.Put item=created_at:N,elo_rating:N,games_played:N,gsi2pk:S=BOTS,gsi2sk:S={},id:S,nickname:S,pk:S=BOT#{},previous_elo:N,sk:S=BOT,strategy_key:S,updated_at:N
 Txn.Put item=created_at:N,elo_rating:N,games_played:N,gsi2pk:S=BOTS,gsi2sk:S={},id:S,nickname:S,pk:S=BOT#{},sk:S=BOT,strategy_key:S,updated_at:N
