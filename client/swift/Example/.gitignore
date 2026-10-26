@@ -1,0 +1,4 @@
+# xcodegen writes these from project.yml
+CbaseAppleExample.xcodeproj/
+Sources/Info.plist
+Sources/Example.entitlements

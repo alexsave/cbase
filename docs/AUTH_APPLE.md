@@ -154,3 +154,12 @@ A page that offers it loads `cbase_client_oidc.wasm`; the base `cbase_client.was
 It checks every client secret it receives the way Apple does (ES256, `kid`, `iss` the team, `sub` the client, `aud` the issuer).
 The refusals covered: a bad signature, another key under a published kid, `alg` HS256, RS512 and none, wrong or missing `iss`, wrong or missing `aud`, an `aud` array, expired, issued in the future, wrong or missing nonce, a raw nonce too short or too long, missing `sub`, non-canonical base64url, the other base64 alphabet, padding, two or four parts, an empty signature, an oversized token, a 1024-bit key, an unknown kid with the refetch and its once-a-minute bound, a key set that cannot be fetched, a replayed token.
 Every test is mutation-checked (`docs/mutation_checks.md`).
+
+## 6. iOS (this branch only)
+
+This branch, `cbase-auth-swift`, adds an iOS client that no app uses yet; the web ships first, and the main foolish iOS app is not touched.
+- `c_base/client/swift/CBaseClient`: `CbClient` (URLSession over the C client, structgen's Swift snapshots from `make -C c_base/client swift`), `AppleSignIn` (no UIKit: fills Apple's request with the C client's nonce and state, sends the credential, asks for a new account's name), `SignInWithAppleView` (Apple's own `SignInWithAppleButton`, white on dark, black on light).
+- The view's `fakeCredential` parameter is the test seam: given it, a tap asks the fake Apple instead of Apple, and the rest of the flow is the real one.
+- `c_base/client/swift/Example`: an xcodegen example app with unit tests (the flow against a real server and the fake Apple: a new name, a taken name asked again, signing in again, a link, giving up) and a UI test (tap, pick a name, signed in, sign out, with a screenshot of each step).
+- `SIM=<simulator udid> make -C c_base/client swift-e2e` runs them against `build/test/fake_apple` and a real `cbase serve`.
+State when it was set aside (2026-10-24): it builds; the unit tests passed in the simulator, and the UI test passed once against the demo stack; the AppleSignIn and CbClient mutants were killed but the case step's, which the server owns (dropped on the web too).

@@ -164,6 +164,23 @@ ts: wasm build/gen/client_exports.ts build/gen/client_exports_oidc.ts
 ts-test: ts
 	node --test --test-timeout=20000 test/ts/*.test.ts
 
+# THE SWIFT SURFACE (swift/): structgen's snapshots of the structs a Swift host reads (cbc_event,
+# cbc_req_hdr, cbc_user) over a pointer into the linked C client, for the iOS target. The constants
+# are not written here: a Swift host imports cbase/client.h itself, and Clang gives it every macro.
+SWIFT_OUT ?= build/gen/ClientLayout.swift
+.PHONY: swift
+swift: $(STRUCTGEN)
+	@mkdir -p $(dir $(SWIFT_OUT))
+	@$(STRUCTGEN) --cwd . --header include/cbase/client.h $(foreach r,$(SG_ROOTS),--root $(r) --snapshot $(r)) --snapshot-only \
+	  --count cbc_event.room=room_len --count cbc_user.user_id=user_id_len --count cbc_user.name=name_len \
+	  --build 'cbc=$(INC) $(OIDC_DEF)' --target arm64-apple-ios17.0 --swift $(SWIFT_OUT).new && \
+	  { cmp -s $(SWIFT_OUT).new $(SWIFT_OUT) || { mv $(SWIFT_OUT).new $(SWIFT_OUT); echo "wrote $(SWIFT_OUT)"; }; }; rm -f $(SWIFT_OUT).new
+
+# The iOS half in the simulator (swift/run_e2e.sh): SIM=<udid> make swift-e2e. Not part of check.
+.PHONY: swift-e2e
+swift-e2e: swift
+	swift/run_e2e.sh $(SIM)
+
 # THE SIGN IN WITH APPLE DEMO (ts/demo): the button on a page of its own, bundled with esbuild and
 # React from the repository's node_modules (ESBUILD, NODE_MODULES), served by ts/demo/serve.mjs
 # against the fake Apple and a real `cbase serve` (both built in c_base first). Not part of check.

@@ -1,0 +1,81 @@
+# The example app for c_base's Sign in with Apple on iOS (SignInWithAppleView over the C client).
+# xcodegen generate, then build for a simulator; ../../Makefile's swift target writes the Swift
+# layout the build reads (a pre-build step runs it). docs/AUTH_APPLE.md says how to run it against
+# the fake Apple.
+name: CbaseAppleExample
+options:
+  bundleIdPrefix: com.example
+  deploymentTarget:
+    iOS: "17.0"
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    GCC_PREPROCESSOR_DEFINITIONS: ["$(inherited)", "CBC_OIDC=1"]
+    HEADER_SEARCH_PATHS: ["$(SRCROOT)/../../include", "$(SRCROOT)/../../../../shared/c"]
+    SWIFT_OBJC_BRIDGING_HEADER: Sources/Bridging.h
+    CODE_SIGN_STYLE: Automatic
+    CODE_SIGN_IDENTITY: "-"
+targets:
+  CbaseAppleExample:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      - path: ../CBaseClient
+      - path: ../../build/gen/ClientLayout.swift
+        optional: true
+      - path: ../../src/client.c
+      - path: ../../../../shared/c/sha256.c
+      - path: ../../../../shared/c/b64/b64.c
+      - path: ../../../../shared/c/hex/hex.c
+    preBuildScripts:
+      - name: Swift layout (structgen)
+        script: make -C "$SRCROOT/../.." swift
+        basedOnDependencyAnalysis: false
+    info:
+      path: Sources/Info.plist
+      properties:
+        CFBundleDisplayName: c_base Apple
+        UILaunchScreen: {}
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+    entitlements:
+      path: Sources/Example.entitlements
+      properties:
+        com.apple.developer.applesignin: [Default]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.app
+  CbaseAppleExampleTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests
+    dependencies:
+      - target: CbaseAppleExample
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/CbaseAppleExample.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/CbaseAppleExample"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+  CbaseAppleExampleUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: UITests
+    dependencies:
+      - target: CbaseAppleExample
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: CbaseAppleExample
+schemes:
+  CbaseAppleExample:
+    build:
+      targets:
+        CbaseAppleExample: all
+        CbaseAppleExampleTests: [test]
+        CbaseAppleExampleUITests: [test]
+    test:
+      targets: [CbaseAppleExampleTests, CbaseAppleExampleUITests]
