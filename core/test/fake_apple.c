@@ -33,7 +33,7 @@
 
 static fake_idp g_f;
 static tls_srv g_mint;
-static char g_seen[64][160];   // person|client pairs that have signed in (Apple sends the name once)
+static char g_seen[64][64 + 256 + 2];   // person|client pairs that have signed in (Apple sends the name once)
 static int g_n_seen;
 
 static void qget(const char *req, const char *key, char *out, size_t cap) {
@@ -119,7 +119,7 @@ static tls_action mint(const cb_buf *req, cb_buf *resp, void *ud) {
     char token[16384];
     const char *t = fi_mint(&g_f, 0, NULL, NULL, &c);
     cb_strlcpy(token, t ? t : "", sizeof token);
-    char key[160];
+    char key[sizeof person + sizeof aud + 2];
     snprintf(key, sizeof key, "%s|%s", person, aud);
     bool first = true;
     for (int i = 0; i < g_n_seen; i++)

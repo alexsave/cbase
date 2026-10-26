@@ -337,7 +337,7 @@ static void key_sets(void) {
     cb_buf_init(&b);
     cb_buf_puts(&b, "{\"keys\":[");
     for (int i = 0; i < CB_OIDC_JWKS_MAX + 2; i++) {
-        char kid[8];
+        char kid[16];
         snprintf(kid, sizeof kid, "m%d", i);
         cb_buf_printf(&b, "%s%s", i ? "," : "", fi_jwk(&g_f, i % 2, kid));
     }

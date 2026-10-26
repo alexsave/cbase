@@ -179,7 +179,7 @@ static tls_action handle(const cb_buf *req, cb_buf *resp, void *ud) {
     }
     if (strcmp(code, "code-500") == 0) { answer(resp, 500, "{}"); return TLS_KEEP; }
     if (strncmp(code, "code-", 5) != 0) { answer(resp, 400, "{\"error\":\"invalid_grant\"}"); return TLS_KEEP; }
-    char sub[256];
+    char sub[256 + 8];   // the code's rest (under 256) and "-other"
     bool other = strncmp(code, "code-other-", 11) == 0;
     snprintf(sub, sizeof sub, "%s%s", code + (other ? 11 : 5), other ? "-other" : "");
     int64_t now = now_of(f);
