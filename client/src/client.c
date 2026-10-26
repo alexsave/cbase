@@ -5,11 +5,11 @@
 
 #include "stream_frame.h"   // shared/c
 #include "rng.h"            // shared/c
-#include "le_bytes.h"       // shared/c
+#include "../../../shared/c/le_bytes.h"
 #ifdef CBC_OIDC
-#include "sha256.h"         // shared/c
-#include "b64/b64.h"        // shared/c
-#include "hex/hex.h"        // shared/c
+#include "../../../shared/c/sha256.h"
+#include "../../../shared/c/b64/b64.h"
+#include "../../../shared/c/hex/hex.h"
 #endif
 
 #include <limits.h>

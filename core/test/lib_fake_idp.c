@@ -295,7 +295,8 @@ const char *fi_mint(fake_idp *f, int key, const char *alg, const char *kid, cons
     char nh[65];
     if (c->nonce_raw) {
         sha_hex(c->nonce_raw, nh);
-        FI_STR("nonce", nh);
+        const char *hashed = nh;
+        FI_STR("nonce", hashed);
     } else {
         FI_STR("nonce", c->nonce_hashed);
     }

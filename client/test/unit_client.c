@@ -5,7 +5,7 @@
 
 #include "cbase/client.h"
 #include "stream_frame.h"
-#include "le_bytes.h"
+#include "../../../shared/c/le_bytes.h"
 
 #include <string.h>
 

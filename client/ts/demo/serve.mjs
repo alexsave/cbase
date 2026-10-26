@@ -58,8 +58,10 @@ const listening = await lineOf(server, 'listening on');
 const serverUrl = 'http://127.0.0.1:' + listening.match(/listening on [^ ]*:(\d+)/)[1];
 
 // 3. The page.
-const config = `window.CBASE_DEMO = ${JSON.stringify({ server: serverUrl, wasm: 'cbase_client_oidc.wasm', clientId: 'com.example.web',
-  redirectURI: 'https://demo.example/auth/apple', appleJs: `${env.FAKE_APPLE_MINT}/appleid.auth.js`, fake: true })};\n`;
+// The page's settings as a JS literal, its strings quoted here.
+const q = (v) => `'${String(v).replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
+const config = `window.CBASE_DEMO = { server: ${q(serverUrl)}, wasm: 'cbase_client_oidc.wasm', clientId: 'com.example.web', ` +
+  `redirectURI: 'https://demo.example/auth/apple', appleJs: ${q(`${env.FAKE_APPLE_MINT}/appleid.auth.js`)}, fake: true };\n`;
 const types = { '.html': 'text/html', '.js': 'text/javascript', '.wasm': 'application/wasm', '.css': 'text/css' };
 createServer((req, res) => {
   const path = (req.url || '/').split('?')[0];
