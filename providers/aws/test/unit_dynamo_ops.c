@@ -236,6 +236,83 @@ static void refresh_put_and_revoke_session(void) {
     cb_store_close(s);
 }
 
+// ---- identities and one-time claims (store.h cb_identity_row, once_claim) ------------------------
+
+#define IDENT_ITEM(sub, user) \
+    "{\"pk\":{\"S\":\"IDENT#1#" sub "\"},\"sk\":{\"S\":\"IDENT\"},\"idp\":{\"N\":\"1\"},\"subject\":{\"S\":\"" sub "\"}," \
+    "\"user_id\":{\"S\":\"" user "\"},\"client_id\":{\"S\":\"com.example.web\"},\"email\":{\"S\":\"r@privaterelay.appleid.com\"}," \
+    "\"email_verified\":{\"BOOL\":true},\"private_email\":{\"BOOL\":true},\"grant\":{\"S\":\"00ff\"}," \
+    "\"created_at\":{\"N\":\"5\"},\"updated_at\":{\"N\":\"6\"}}"
+
+static bool count_ident(const cb_identity_row *r, void *ud) {
+    T_EQ_INT(r->idp, 1);
+    (*(int *)ud)++;
+    return true;
+}
+
+static void identities_and_claims(void) {
+    static const step steps[] = {
+        // get: the item, then none, then an item that is not an identity
+        { "GetItem", "\"IDENT#1#s1\"", 200, "{\"Item\":" IDENT_ITEM("s1", U1) "}" },
+        { "GetItem", "\"IDENT#1#s2\"", 200, NOITEM },
+        { "GetItem", "\"IDENT#1#s3\"", 200, "{\"Item\":{\"pk\":{\"S\":\"IDENT#1#s3\"}}}" },
+        // put: fresh (absent, or refused), and a replace with no condition
+        { "PutItem", "\"gsi1pk\":{\"S\":\"USERIDENT#" U1 "\"}", 200, "{}" },
+        { "PutItem", "attribute_not_exists", 400, COND_NO_ITEM },
+        { "PutItem", "\"grant\":{\"S\":\"\"}", 200, "{}" },
+        // of: GSI1 by the user
+        { "Query", "USERIDENT#" U1, 200, "{\"Items\":[" IDENT_ITEM("s1", U1) "," IDENT_ITEM("s2", U1) ",{\"pk\":{\"S\":\"x\"}}]}" },
+        // the account and its identity in one transaction; each refusal of the three is taken
+        { "TransactWriteItems", "IDENT#1#s4", 200, "{}" },
+        { "TransactWriteItems", NULL, 400, CANCEL_0 },
+        { "TransactWriteItems", NULL, 400, "{\"__type\":\"com.amazonaws.dynamodb.v20120810#TransactionCanceledException\","
+                                             "\"CancellationReasons\":[{\"Code\":\"None\"},{\"Code\":\"None\"},{\"Code\":\"ConditionalCheckFailed\"}]}" },
+        // a claim: taken, then refused while it stands
+        { "PutItem", "ONCE#" "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", 200, "{}" },
+        { "PutItem", "attribute_not_exists", 400, COND_NO_ITEM },
+    };
+    RUN(steps, s);
+    cb_identity_row r;
+    T_EQ_INT(CB_STORE_CALL(s, identity_get, 1, "s1", &r), CB_OK);
+    T_EQ_STR(r.user_id, U1);
+    T_EQ_STR(r.client_id, "com.example.web");
+    T_CHECK(r.email_verified && r.private_email);
+    T_EQ_STR(r.grant, "00ff");
+    T_EQ_INT(r.updated_at, 6);
+    T_EQ_INT(CB_STORE_CALL(s, identity_get, 1, "s2", &r), CB_E_NOT_FOUND);
+    T_EQ_INT(CB_STORE_CALL(s, identity_get, 1, "s3", &r), CB_E_DB);
+    T_EQ_INT(CB_STORE_CALL(s, identity_get, 1, "", &r), CB_E_NOT_FOUND);   // asks nothing
+    cb_identity_row w = { .idp = 1, .subject = "s1", .user_id = U1, .client_id = "com.example.web", .grant = "00ff" };
+    T_EQ_INT(CB_STORE_CALL(s, identity_put, &w, true), CB_OK);
+    T_EQ_INT(CB_STORE_CALL(s, identity_put, &w, true), CB_E_CONFLICT);
+    w.grant[0] = 0;
+    T_EQ_INT(CB_STORE_CALL(s, identity_put, &w, false), CB_OK);
+    T_CHECK(strstr(sc_.bodies[5], "attribute_not_exists") == NULL);   // a replace holds no condition
+    cb_identity_row bad = { .idp = 1, .subject = "", .user_id = U1 };
+    T_EQ_INT(CB_STORE_CALL(s, identity_put, &bad, true), CB_E_INVALID);   // asks nothing
+    int n = 0;
+    T_EQ_INT(CB_STORE_CALL(s, identities_of, U1, count_ident, &n), 2);
+    T_EQ_INT(n, 2);
+    T_EQ_INT(CB_STORE_CALL(s, identities_of, "x", count_ident, &n), CB_E_INVALID);
+    cb_user_row u = { .id = U2, .email = "d@x.io", .username = "D", .created_at = 1 };
+    cb_identity_row i4 = { .idp = 1, .subject = "s4", .user_id = U2 };
+    T_EQ_INT(CB_STORE_CALL(s, user_create_identity, &u, &i4), CB_OK);
+    int conds = 0;   // each of the three writes must be absent: the email, the profile, the identity
+    for (const char *p = sc_.bodies[7]; (p = strstr(p, "attribute_not_exists")) != NULL; p++) conds++;
+    T_EQ_INT(conds, 3);
+    T_EQ_INT(CB_STORE_CALL(s, user_create_identity, &u, &i4), CB_E_CONFLICT);   // the email
+    T_EQ_INT(CB_STORE_CALL(s, user_create_identity, &u, &i4), CB_E_CONFLICT);   // the identity
+    i4.user_id[0] = 0;
+    T_EQ_INT(CB_STORE_CALL(s, user_create_identity, &u, &i4), CB_E_INVALID);    // asks nothing
+    const char *k = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    T_EQ_INT(CB_STORE_CALL(s, once_claim, k, 9000, 1000), CB_OK);
+    T_CHECK(strstr(sc_.bodies[10], "expires_ms") != NULL);   // the condition reads the claim's end
+    T_EQ_INT(CB_STORE_CALL(s, once_claim, k, 9000, 1000), CB_E_CONFLICT);
+    T_EQ_INT(CB_STORE_CALL(s, once_claim, "short", 9000, 1000), CB_E_INVALID);   // asks nothing
+    T_EQ_INT(sc_.at, sc_.n);
+    cb_store_close(s);
+}
+
 // ---- games ---------------------------------------------------------------------------------------
 
 static void game_create_delete(void) {
@@ -849,6 +926,7 @@ int main(void) {
     T_RUN(user_delete_cascade);
     T_RUN(users_list_pages);
     T_RUN(refresh_put_and_revoke_session);
+    T_RUN(identities_and_claims);
     T_RUN(game_create_delete);
     T_RUN(games_of_user_and_membership);
     T_RUN(bots_idle_deletes_the_marker);
