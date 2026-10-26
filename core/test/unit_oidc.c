@@ -602,8 +602,8 @@ static int oidc(const char *bearer, uint8_t idp, uint8_t flags, const char *toke
     b[at++] = flags;
     le_put_u16(b + at, (uint16_t)tn); at += 2; memcpy(b + at, token, tn); at += tn;
     b[at++] = (uint8_t)nn; memcpy(b + at, nonce, nn); at += nn;
-    le_put_u16(b + at, (uint16_t)cn); at += 2; memcpy(b + at, code, cn); at += cn;
-    b[at++] = (uint8_t)mn; memcpy(b + at, name, mn); at += mn;
+    le_put_u16(b + at, (uint16_t)cn); at += 2; if (cn) memcpy(b + at, code, cn); at += cn;
+    b[at++] = (uint8_t)mn; if (mn) memcpy(b + at, name, mn); at += mn;
     return send_req("/v1/auth/oidc", bearer, b, at);
 }
 
