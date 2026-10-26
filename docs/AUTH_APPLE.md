@@ -1,7 +1,8 @@
 # Sign in with Apple on c_base
 
-Status: built and tested end to end against a fake Apple (`core/test/lib_fake_idp.c`).
-It has not met the real Apple yet: that needs the four portal steps below, which only Alex can do.
+Status: built and tested end to end against a fake Apple (`core/test/lib_fake_idp.c`), on the server and in a browser.
+The web is what ships first; an iOS client (a SwiftUI view over the same C client) is kept on the branch `cbase-auth-swift` and is used by no app yet.
+It has not met the real Apple yet: that needs the portal steps of section 3, which only Alex can do.
 
 ## 1. What it is
 
@@ -19,6 +20,9 @@ The pieces:
 | Apple's JSON (its only JSON) | `core/src/core_json.c`, the OpenID Connect section |
 | Identities and one-time claims | `store.h` (`cb_identity_row`, `once_claim`), SQLite schema 9, `rows_auth.c` items |
 | The fake Apple and the tests | `core/test/lib_fake_idp.c`, `core/test/unit_oidc.c` |
+| A stand-in Apple to run against | `core/test/fake_apple.c` (`build/test/fake_apple`) |
+| The C client's half | `client/src/client.c` (`cbc_oidc_begin`, `cbc_oidc_nonce`, `cbc_oidc_state`, `cbc_oidc_sign_in`, `cbc_pkce`; opt-in under `CBC_OIDC`) |
+| The web | `client/ts/socket.ts` (`oidcBegin`, `oidcSignIn`), `client/ts/react/SignInWithApple.tsx`, the demo `client/ts/demo` |
 
 ## 2. The rules, in one place
 
@@ -56,29 +60,36 @@ Revocation (the App Store rule for apps that offer Sign in with Apple):
 Nothing here needs code.
 Every step is in the Apple Developer portal or on the server.
 
-### 3.1 The App ID capability
+Apple ties a web sign-in to an App ID (the "primary App ID"), so the web needs these three things in the portal, in this order.
+The primary App ID is `cards.foolish.app`.
 
-Each iOS app that offers the button needs "Sign in with Apple" on its App ID (for example `cards.foolish.app`), and the entitlement `com.apple.developer.applesignin = [Default]` in the app.
-- Portal: Certificates, Identifiers & Profiles, Identifiers, the App ID, tick "Sign in with Apple", Save, then regenerate its provisioning profiles.
-- Or through the App Store Connect API key in `~/.appstoreconnect`: `POST /v1/bundleIdCapabilities` with `capabilityType: APPLE_ID_AUTH` for the bundle id's resource id.
-  This has not been called; it needs Alex's go-ahead first.
-- Remember the memory note: an `xcodegen` run wipes the entitlements file, so check it after one.
+### 3.1 The primary App ID
 
-### 3.2 The Services ID (the web)
+- Portal: Certificates, Identifiers & Profiles, Identifiers, `cards.foolish.app`, tick "Sign in with Apple", leave it "Enable as a primary App ID", Save.
+- Nothing in the iOS app changes for this: the capability on the App ID is what the Services ID and the key point at.
+  (An iOS app that one day offers the button also needs the entitlement `com.apple.developer.applesignin` in its build; the main foolish app is not touched now.)
+- It can also be done with the App Store Connect API key in `~/.appstoreconnect`, only with Alex's say-so; nothing has been called.
+  The requests would be `GET /v1/bundleIds?filter[identifier]=cards.foolish.app` for the resource id, then `POST /v1/bundleIdCapabilities` with
+  `{"data":{"type":"bundleIdCapabilities","attributes":{"capabilityType":"APPLE_ID_AUTH","settings":[{"key":"APPLE_ID_AUTH_APP_CONSENT","options":[{"key":"PRIMARY_APP_CONSENT"}]}]},"relationships":{"bundleId":{"data":{"type":"bundleIds","id":"<that id>"}}}}}`.
 
-The web button needs a Services ID, which is the web's client id.
-- Portal: Identifiers, the "+" button, Services IDs, a name and an id such as `cards.foolish.web`.
-- Tick "Sign in with Apple", Configure, choose the primary App ID, and add:
-  - the domain the page is served from (for example `staging.foolish.cards`; Apple requires real https, no localhost and no IP addresses);
-  - the return URL (for example `https://staging.foolish.cards/auth/apple`), which is also `CBASE_APPLE_REDIRECT_URI`.
-- Popup mode still requires a return URL to be registered, even though the page never navigates to it.
+### 3.2 The Services ID, its domain and its return URL
+
+The Services ID is the web's client id: the `aud` of the tokens Apple issues to the page.
+- Portal: Identifiers, the "+" button, "Services IDs", a description ("foolish web") and an identifier, `cards.foolish.web`.
+- Open it, tick "Sign in with Apple", Configure:
+  - Primary App ID: `cards.foolish.app`.
+  - Domains and Subdomains: the host the page is served from, for example `staging.foolish.cards` (and later `foolish.cards`).
+    Apple requires a real https host: no localhost, no IP address, no port.
+  - Return URLs: `https://staging.foolish.cards/auth/apple`.
+    The page uses popup mode and never navigates there, but Apple requires one, and the server repeats it in the code exchange, so it is also `CBASE_APPLE_REDIRECT_URI`.
+- Save, then Continue, then Save again (the portal asks twice).
 
 ### 3.3 The Sign in with Apple key (.p8)
 
 The key signs the client secret that the code exchange and the revocation need.
-- Portal: Keys, the "+" button, a name, tick "Sign in with Apple", Configure it with the primary App ID, Continue, Register, Download.
+- Portal: Keys, the "+" button, a name ("foolish sign in"), tick "Sign in with Apple", Configure: primary App ID `cards.foolish.app`, Save, Continue, Register, Download.
 - The `.p8` downloads exactly once.
-  Note its Key ID (10 characters) and the Team ID (10 characters, top right of the portal).
+  Note its Key ID (10 characters, on the key's page) and the Team ID (10 characters, top right of the portal).
 
 ### 3.4 Where the secrets go
 
@@ -88,7 +99,7 @@ Never print them, never commit them, and never regenerate them on a live stack (
 Add to `ops.env`:
 
 ```
-CBASE_APPLE_CLIENT_IDS=cards.foolish.app,cards.foolish.web
+CBASE_APPLE_CLIENT_IDS=cards.foolish.web
 CBASE_APPLE_TEAM_ID=<the 10-character team id>
 CBASE_APPLE_KEY_ID=<the 10-character key id>
 CBASE_APPLE_PRIVATE_KEY=<the .p8 file's text, each line break written as \n>
@@ -107,7 +118,7 @@ Then move the `.p8` somewhere safe (or delete it: the portal can make another ke
 
 | Setting | Meaning | Secret |
 |---|---|---|
-| `CBASE_APPLE_CLIENT_IDS` | The audiences a token may carry: every iOS bundle id and the web Services ID, comma-separated. Unset: Sign in with Apple is off. | no |
+| `CBASE_APPLE_CLIENT_IDS` | The audiences a token may carry, comma-separated: the web's Services ID now, an iOS bundle id when an app offers the button. Unset: Sign in with Apple is off. | no |
 | `CBASE_APPLE_TEAM_ID` | The client secret's issuer. | no |
 | `CBASE_APPLE_KEY_ID` | The client secret's `kid`. | no |
 | `CBASE_APPLE_PRIVATE_KEY` | The `.p8` PEM. With the two above, turns on the code exchange and revocation; without them sign-in works but nothing can be revoked. | yes |
@@ -118,13 +129,26 @@ The server refuses to start when the three key settings are only partly set, whe
 
 ### 3.6 Before it is offered to people
 
-- [ ] App ID capability on (3.1) and a build with the entitlement.
-- [ ] Services ID with the staging domain and return URL (3.2).
-- [ ] Key made and in `ops.env` (3.3, 3.4).
-- [ ] One real sign-in on a device and one on the staging web page, then the account deleted, and the server log showing no revocation ERROR.
-- [ ] App Store review notes say how a reviewer signs in (the button) and where account deletion is.
+- [ ] "Sign in with Apple" on the primary App ID `cards.foolish.app` (3.1).
+- [ ] Services ID `cards.foolish.web` with the staging domain and return URL (3.2).
+- [ ] Key made and its settings in `ops.env` (3.3, 3.4), and the server restarted with them.
+- [ ] A page offering the button: it loads `cbase_client_oidc.wasm` and renders `<SignInWithApple clientId="cards.foolish.web" redirectURI="https://staging.foolish.cards/auth/apple" ...>` (section 4).
+- [ ] One real sign-in on the staging page, then the account deleted, and the server log showing no revocation ERROR.
 
-## 4. How it was tested without Apple
+## 4. The clients
+
+The flow is the same on every client, and every decision in it is the C client's:
+1. `cbc_oidc_begin` makes a raw nonce (32 bytes) and a state (16 bytes) from the host's entropy and keeps both.
+2. The host hands Apple `cbc_oidc_nonce` (the raw nonce's SHA-256, which Apple puts in the token) and `cbc_oidc_state`.
+3. Apple answers with an identity token, an authorization code and the state; `cbc_oidc_sign_in` checks the state and sends all three with the raw nonce to `POST /v1/auth/oidc`.
+4. `CBW_ACCOUNT_E_NEEDS_NAME` means a new account: the host asks the person for a name (Apple's name of the person is the suggestion) and calls `cbc_oidc_sign_in` again with the same answer and the name.
+5. The session that comes back is the ordinary one: the socket, the refresh and the sign-out are unchanged.
+
+The web: `<SignInWithApple client clientId redirectURI askName onSession>` loads Apple's JS SDK and runs it in popup mode.
+A page that offers it loads `cbase_client_oidc.wasm`; the base `cbase_client.wasm` leaves the provider sign-in out and stays under its own size budget.
+`make -C c_base/client demo NODE_MODULES=<a node_modules with react, react-dom and esbuild>` serves a page with the button against the fake Apple and a real `cbase serve` on http://127.0.0.1:8941/ (`?auto=1` signs in by itself).
+
+## 5. How it was tested without Apple
 
 `core/test/unit_oidc.c` runs everything against `lib_fake_idp.c`, a TLS server on localhost that answers `/auth/keys`, `/auth/token` and `/auth/revoke` in Apple's shapes and mints identity tokens with any claims, signed by keys it publishes or does not.
 It checks every client secret it receives the way Apple does (ES256, `kid`, `iss` the team, `sub` the client, `aud` the issuer).

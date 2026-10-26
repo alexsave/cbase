@@ -48,7 +48,9 @@ const server = spawn(join(cbase, 'build/cbase'), ['serve'], {
   env: { ...process.env, ...env, CBASE_DEV: '1', CBASE_LISTEN: '127.0.0.1:0', CBASE_DB: join(dir, 'cbase.sqlite'),
          CBASE_JWT_SECRET: 'demo-secret-demo-secret-demo-secret-0123', CBASE_ALLOWED_ORIGINS: page,
          CBASE_APPLE_CLIENT_IDS: 'com.example.web,com.example.app',
-         CBASE_APPLE_REDIRECT_URI: 'https://demo.example/auth/apple' },
+         CBASE_APPLE_REDIRECT_URI: 'https://demo.example/auth/apple',
+         // Every client here is one address (127.0.0.1): the test runs sign up many accounts from it.
+         CBASE_LIMIT_SIGNUP_IP: '10000', CBASE_LIMIT_SIGNUP_ALL: '10000', CBASE_LIMIT_SIGNIN_IP: '10000' },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 kids.push(server);
@@ -66,4 +68,4 @@ createServer((req, res) => {
   if (!file.startsWith(demo) || !existsSync(file)) { res.writeHead(404); res.end('not found'); return; }
   res.writeHead(200, { 'content-type': types[extname(file)] || 'application/octet-stream', 'cache-control': 'no-store' });
   res.end(readFileSync(file));
-}).listen(pagePort, '127.0.0.1', () => console.log(`demo: ${page}/ (server ${serverUrl}, fake Apple ${env.CBASE_APPLE_ISSUER})`));
+}).listen(pagePort, '127.0.0.1', () => console.log(`demo: ${page}/ (server ${serverUrl}, fake Apple ${env.CBASE_APPLE_ISSUER}, mint ${env.FAKE_APPLE_MINT})`));

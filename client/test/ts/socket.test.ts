@@ -172,7 +172,7 @@ test('Sign in with Apple: the nonce and state from the module, the answer as byt
   answer = new Response(new Uint8Array(s), { status: 200 });
   await c.oidcSignIn(1, { state: again.state, idToken: 'H.P.S', code: 'c0de', name: 'ada' });
   const b2 = bodies[1];
-  assert.equal(new TextDecoder().decode(b2.subarray(62)), 'ADA');   // upper-cased, as a sign-up's
+  assert.equal(new TextDecoder().decode(b2.subarray(62)), 'ada');   // as typed: the server's case step owns the name
   assert.equal(b2[61], 3);
   assert.deepEqual(sessions, ['ADA']);
   assert.equal(c.user()?.name, 'ADA');

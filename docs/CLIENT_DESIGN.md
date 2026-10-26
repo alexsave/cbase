@@ -504,3 +504,7 @@ Swift with the next iOS build (step 8), Kotlin when an Android host exists.
 They belong to the platform, not to each app: a route such as `/v1/auth/oidc/<provider>` verifies the provider's ID token (the provider's published keys, fetched and cached by the platform) and answers the same session as signin, so the socket, the refresh and the client do not change.
 The client gains one sign-in op that carries the provider's token; an app's config names only which providers it offers and its client ids.
 Linking a provider to an existing account, and an account that has only a provider and no password, are the questions to settle then.
+
+Done for Apple (2026-10-24): `POST /v1/auth/oidc` with `CBW_IDP_APPLE`, the client's `cbc_oidc_*` (opt-in under `CBC_OIDC`, so the base module keeps its budget and `cbase_client_oidc.wasm` has its own), and the React button (a SwiftUI view is on the branch `cbase-auth-swift`, used by no app yet).
+Linking is explicit (a signed-in account adds an identity), never by email; a provider-only account has no password.
+docs/AUTH_APPLE.md is the design, the tests and Alex's checklist.

@@ -55,7 +55,7 @@ export interface CbIdentityAnswer {
   readonly state: string;     // the state it echoed
   readonly idToken: string;
   readonly code?: string;     // its authorization code, when it gave one
-  readonly name?: string;     // a new account's name (upper-cased here, as a sign-up's)
+  readonly name?: string;     // a new account's name as typed (the server's case step makes it the account's)
   readonly link?: boolean;    // add the identity to the signed-in account instead
 }
 
@@ -254,7 +254,7 @@ export class CbClient {
   // call again with a name, the same answer otherwise).
   oidcSignIn(idp: number, a: CbIdentityAnswer): Promise<ArrayBuffer> {
     this.needOidc();
-    const parts = [a.state, a.idToken, a.code ?? '', (a.name ?? '').toUpperCase()].map((x) => utf8.encode(x));
+    const parts = [a.state, a.idToken, a.code ?? '', a.name ?? ''].map((x) => utf8.encode(x));
     const total = parts.reduce((n, p) => n + p.length, 0);
     if (total > this.ioCap) return Promise.reject(new RangeError('c_base sign-in: the answer is too large'));
     let at = this.io;

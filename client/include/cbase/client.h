@@ -232,7 +232,7 @@ const char *cbc_oidc_nonce(const cbc *c);   // "" before a begin
 const char *cbc_oidc_state(const cbc *c);   // "" before a begin
 // What the provider answered, sent to the server (POST /v1/auth/oidc): the state it echoed (it must
 // be the kept one), its ID token, its authorization code (or none), and for a new account the name
-// it takes (the host upper-cases it, as for a sign-up). flags CBW_OIDC_LINK adds the identity to the
+// it takes, as the person typed it (the server's case step makes it the account's). flags CBW_OIDC_LINK adds the identity to the
 // signed-in account instead (the bearer goes with it; no session comes back). A ticket finished by a
 // CBC_EV_DONE (and a CBC_EV_SESSION when a session came), or 0: CBC_E_STATE (no begin, another
 // state), CBC_E_AUTH (a link with nobody signed in, or a sign-out under way), CBC_E_ARG (a field past

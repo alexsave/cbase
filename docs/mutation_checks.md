@@ -825,3 +825,15 @@ The fuzz target was checked by hand: a push span one byte long made the corpus r
 - socket.ts: no refusal body handed in -> `an anonymous read goes over HTTP; a busy one goes again; a refusal is a CbError`.
 - socket.ts: frames not sent -> `anonymous: /ws/public, an empty HELLO, the SUB after READY, then pushes`.
 - socket.ts: no close on -1 -> `anonymous: /ws/public, an empty HELLO, the SUB after READY, then pushes`.
+
+## Sign in with Apple (2026-10-24)
+
+Every test of the platform's sessions and of Sign in with Apple was mutation-checked: the code broken one way at a time, the test run, the code restored.
+A mutant counts as killed when a check of the test fails, or the sanitizers stop it; the harness waits a whole second between writes, since make compares seconds, and refuses a run whose binary did not change.
+- `core/src/auth/auth_http.c`, `auth_wire.c`, `net/refuse.c` (unit_auth_http, the auth_diff transcript): 25 mutants, all killed; the read bound of a str8 by ASan.
+- `core/src/auth/oidc.c` (unit_oidc): 61 mutants, all killed or a compile error of a helper left unused; the checks two tests proved redundant were removed, so each rule has one owner.
+- `core/src/auth/auth.c`, the OIDC rules (unit_oidc): 22 mutants, all killed, the races with a store that hides a row.
+- `providers/local/src/store/store_sqlite.c`, identities and claims (unit_store): 7, all killed.
+- `core/fuzz/fz_auth_wire.c`, `fz_oidc.c`: a decoder that skips the whole-body check, and a claims reader that takes an empty subject, each found by the fuzzer.
+- `client/src/client.c`, `cbc_oidc_*` and `cbc_pkce` (unit_client): 25, all killed (one by the arena bound crashing the test).
+- `client/ts/socket.ts`, `oidcBegin` and `oidcSignIn` (socket.test.ts): 7, all killed.
