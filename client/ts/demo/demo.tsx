@@ -35,7 +35,7 @@ function NamePrompt(p: { suggested: string; again?: 'taken'; onDone: (name: stri
   }, []);
   return (
     <form
-      className="card"
+      className="panel"
       onSubmit={(e) => {
         e.preventDefault();
         p.onDone(v);
@@ -93,7 +93,7 @@ function App(): ReactElement {
         <div className="muted small">{cfg.fake ? 'against the fake Apple (no Apple ID involved)' : 'against Apple'}</div>
       </header>
       {user ? (
-        <section className="card">
+        <section className="panel">
           <h2>Signed in</h2>
           <dl>
             <dt>Name</dt>
@@ -115,7 +115,7 @@ function App(): ReactElement {
           }}
         />
       ) : (
-        <section className="card">
+        <section className="panel">
           <h2>Welcome</h2>
           <p className="muted">One account for every app on this server.</p>
           {client ? (

@@ -4,7 +4,7 @@
 // decides nothing about auth: the nonce and the state are made and kept in the module, the server
 // verifies Apple's token, and the session arrives through the client's own onSession.
 //
-//   <SignInWithApple client={client} clientId="cards.example.web" redirectURI="https://app.example/auth/apple"
+//   <SignInWithApple client={client} clientId="com.example.web" redirectURI="https://app.example/auth/apple"
 //                    askName={(suggested) => prompt('Pick a name', suggested) ?? ''} onSession={...} />
 //
 // A NEW ACCOUNT. Apple's first sign-in of a person answers their name (and only then); the server

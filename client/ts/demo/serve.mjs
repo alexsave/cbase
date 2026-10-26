@@ -45,7 +45,7 @@ for (const l of readFileSync(envFile, 'utf8').split('\n')) {
 // 2. The server, trusting the fake as it would Apple.
 const page = `http://127.0.0.1:${pagePort}`;
 const server = spawn(join(cbase, 'build/cbase'), ['serve'], {
-  env: { ...process.env, ...env, CBASE_DEV: '1', CBASE_LISTEN: '127.0.0.1:0', CBASE_DB: join(dir, 'cbase.sqlite'),
+  env: { ...process.env, ...env, CBASE_DEV: '1', CBASE_LISTEN: '127.0.0.1:0', CBASE_DB: join(dir, 'cbase.db'),
          CBASE_JWT_SECRET: 'demo-secret-demo-secret-demo-secret-0123', CBASE_ALLOWED_ORIGINS: page,
          CBASE_APPLE_CLIENT_IDS: 'com.example.web,com.example.app',
          CBASE_APPLE_REDIRECT_URI: 'https://demo.example/auth/apple',
