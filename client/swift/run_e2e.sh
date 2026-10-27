@@ -27,7 +27,9 @@ mint=$(echo "$line" | sed -E 's/.*mint (http[^)]*)\).*/\1/')
 echo "run_e2e: server $server, fake Apple mint $mint"
 cd "$here/Example"
 xcodegen generate > /dev/null
+# -collect-test-diagnostics never: on a failure xcodebuild otherwise runs `simctl diagnose` (a
+# sysdiagnose, up to ten minutes) before it exits; the failure and its screenshots are in the xcresult.
 TEST_RUNNER_CB_SERVER=$server TEST_RUNNER_CB_MINT=$mint TEST_RUNNER_CB_SHOTS=$shots \
   xcodebuild -project CbaseAppleExample.xcodeproj -scheme CbaseAppleExample -destination "id=$sim" \
-  -derivedDataPath "$client/build/ios-dd" test 2>&1 | grep -E "Test Case .*(passed|failed)|error:|\*\* "
+  -derivedDataPath "$client/build/ios-dd" -collect-test-diagnostics never test 2>&1 | grep -E "Test Case .*(passed|failed)|error:|\*\* "
 echo "run_e2e: screenshots in $shots"
