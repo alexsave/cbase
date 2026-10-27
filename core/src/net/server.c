@@ -4,6 +4,7 @@
 #include "loop.h"
 #include "router.h"
 #include "handler.h"
+#include "rate_limits.h"
 #include "util/clock.h"
 #include "util/err.h"
 #include "util/log.h"
@@ -53,6 +54,7 @@ struct cb_ws {
     const cb_ws_handlers *h;
     void *ud;
     char *query;         // the upgrade request's query, kept for realtime
+    char *viewer;        // the upgrade request's viewer key (rate_limits.h cb_viewer_key), kept for realtime
     cb_buf msg;          // a fragmented message being assembled
     int msg_op;          // its opcode, -1 when none
     struct cb_ws *next, *prev;   // every connection, for sweeps and shutdown
@@ -346,6 +348,9 @@ static void finish(conn *c) {
         c->h = c->res.ws_handlers;
         c->ud = c->res.ws_ud;
         c->query = strdup(c->req->query);
+        char key[64];
+        cb_viewer_key(ctx, c->req, key, sizeof key);
+        c->viewer = strdup(key);
     } else if (!keep) {
         c->close_after = true;
     }
@@ -610,8 +615,10 @@ static void become_ws(conn *c) {
     atomic_fetch_sub_explicit(&c->srv->ctx->stats.http_conns, 1, memory_order_relaxed);
     atomic_fetch_add_explicit(&c->srv->ctx->stats.ws_conns, 1, memory_order_relaxed);
     if (c->h && c->h->on_open) c->h->on_open(c, c->ud);
-    free(c->query);   // read once, by on_open (cb_ws_query)
+    free(c->query);   // read once, by on_open (cb_ws_query, cb_ws_viewer)
     c->query = NULL;
+    free(c->viewer);
+    c->viewer = NULL;
 }
 
 static int queue_frame(conn *c, int opcode, const void *data, size_t len) {
@@ -648,6 +655,7 @@ void cb_ws_close(cb_ws *c, uint16_t code) {
 
 uint64_t cb_ws_id(const cb_ws *c) { return c->id; }
 const char *cb_ws_query(const cb_ws *c) { return c->query ? c->query : ""; }
+const char *cb_ws_viewer(const cb_ws *c) { return c->viewer ? c->viewer : ""; }
 
 // Reads every whole frame in `in`. Returns false when the connection was closed.
 static bool ws_frames(conn *c) {
@@ -756,6 +764,7 @@ static void conn_free(conn *c) {
     cb_res_free(&c->res);
     if (c->job) job_put(c->srv, c->job);
     free(c->query);
+    free(c->viewer);
     free(c);
 }
 

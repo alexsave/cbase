@@ -27,9 +27,10 @@
 //
 // A REQ IS AN HTTP REQUEST. It names a route (method and path) and carries the
 // body; the route's handler runs exactly as for HTTP, with the connection's
-// user in place of the bearer (http.h auth_user), and its status and body come
-// back in the REPLY. Routes that run on the loop and /v1/auth/* (a session is
-// made and ended over HTTP) are refused.
+// user in place of the bearer (http.h auth_user) and the viewer its upgrade
+// named in place of the peer (ws.h cb_ws_viewer: what an address limit keys
+// on), and its status and body come back in the REPLY. Routes that run on the
+// loop and /v1/auth/* (a session is made and ended over HTTP) are refused.
 //
 // A SOCKET NEVER OUTLIVES ITS LOGIN. HELLO verifies the token with its session
 // (auth.h cb_auth_verify_token), and the connection ends when the token does.
@@ -85,6 +86,7 @@ typedef struct lconn {
     uint32_t in_frames;            // how many, against INBOX_FRAMES_MAX
     uint8_t nwatch;
     char **watch;                  // the rooms watched, malloc'd [0..nwatch)
+    char viewer[64];               // the upgrade's viewer key (ws.h cb_ws_viewer): each REQ's address
 } lconn;
 
 // One room's spectators.
@@ -341,6 +343,7 @@ typedef struct job {
     msg *frame;
     cb_user user;            // the connection's, for a REQ
     bool has_user;
+    char viewer[64];         // the connection's viewer key, for a REQ (its peer)
     uint64_t gen;            // the end counter the connection was checked at
     int rc;                  // CB_OK, or why the connection ends
     // a HELLO's grant
@@ -411,7 +414,10 @@ static void run_req(job *j, const sf_frame *f) {
     req.query = "";
     req.minor = 1;
     req.keep_alive = true;
-    cb_strlcpy(req.peer, "ws", sizeof req.peer);
+    // The socket's viewer, as its upgrade named it (ws.h cb_ws_viewer): an address limit
+    // (rate_limits.h) counts a REQ under the address its socket came from, never under one
+    // key that every socket would share.
+    cb_strlcpy(req.peer, j->viewer, sizeof req.peer);
     req.conn_id = j->ws_id;
     req.body = f->body_len ? f->body : NULL;
     req.body_len = f->body_len;
@@ -605,6 +611,7 @@ static void pump(local *L, lconn *c) {
             j->frame = m;
             j->gen = c->open ? c->checked_gen : atomic_load(&L->end_gen);
             if (c->open) { j->user = *c->user; j->has_user = true; }
+            memcpy(j->viewer, c->viewer, sizeof j->viewer);
             if (f.kind == SF_REQ && L->ctx->router) {
                 char path[SF_PATH_MAX + 1];
                 memcpy(path, f.path, f.path_len);
@@ -655,6 +662,7 @@ static void on_open(cb_ws *ws, void *ud) {
     if (!c) { cb_ws_close(ws, 1011); return; }
     c->ws = ws;
     c->ws_id = cb_ws_id(ws);
+    cb_strlcpy(c->viewer, cb_ws_viewer(ws), sizeof c->viewer);
     if (!maps_add(L, c)) { free(c); cb_ws_close(ws, 1011); return; }
     c->next = L->head;
     if (L->head) L->head->prev = c;

@@ -99,5 +99,9 @@ uint64_t cb_ws_id(const cb_ws *ws);
 // The upgrade request's raw query, kept ("" for none): an MQTT connection's
 // token may ride in it (realtime/stream_mqtt.h).
 const char *cb_ws_query(const cb_ws *ws);
+// The upgrade request's viewer key (rate_limits.h cb_viewer_key: the address a
+// rate limit counts it under, "" for none), read by on_open: a socket's later
+// requests carry no headers of their own, so realtime keys them on this.
+const char *cb_ws_viewer(const cb_ws *ws);
 
 #endif
