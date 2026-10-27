@@ -837,3 +837,24 @@ A mutant counts as killed when a check of the test fails, or the sanitizers stop
 - `core/fuzz/fz_auth_wire.c`, `fz_oidc.c`: a decoder that skips the whole-body check, and a claims reader that takes an empty subject, each found by the fuzzer.
 - `client/src/client.c`, `cbc_oidc_*` and `cbc_pkce` (unit_client): 25, all killed (one by the arena bound crashing the test).
 - `client/ts/socket.ts`, `oidcBegin` and `oidcSignIn` (socket.test.ts): 7, all killed.
+
+## Guessed game ids (2026-10-27)
+
+The id-miss rule (`foolish/server/src/app/misses.h`, `CB_LIMIT_ID_MISS_IP`) and the socket's viewer address, one mutant at a time, each run after a whole second so make rebuilt it; all 23 killed, each by the assertion named.
+- rate_limits.c: the rule's burst 30 made 31 -> `id_misses_are_peeked_then_taken` burst == 30; smoke `guessed_ids_are_limited_per_address` the 31st miss == 429.
+- rate_limits.c: an allowed peek reports a retry -> `id_misses_are_peeked_then_taken` retry == 0.
+- config.c: BUMP_USER and ID_MISS_IP names swapped -> `id_miss_burst_is_a_setting` the name in its kind's slot.
+- rate_limits.c: cb_limits_configure skips the last settable rule -> `id_miss_burst_is_a_setting` burst == 3.
+- misses.c: a miss takes nothing (peeks) -> unit_v1 `guessed_game_ids_are_limited` miss(how, b) == 429; smoke the 31st miss == 429.
+- misses.c: a limited address may always look -> unit_v1 a stranger's game == 429; smoke the same.
+- v1_http.c view_of: no look before the spectators' read -> a stranger's game == 429.
+- v1_http.c view_of: a missing game is free -> miss(how, b) == 429.
+- v1_http.c view_of: a spectator's read costs -> spectating a given id 60 times == 200.
+- v1_http.c lookup_game: a bad shape is free -> miss(how, b) == 429.
+- v1_http.c h_replay: a bad shape is free; a missing replay is free -> miss(how, b) == 429 (each).
+- functions_http.c h_meta: a bad shape is free; a missing game is free; a refused join is free; an ask not seated is free -> miss(how, b) == 429 (each).
+- functions_http.c h_meta: a limited address may join -> ask_at(ASK_JOIN, a stranger's game) == 429.
+- functions_http.c h_action: a bad shape is free; a missing game is free -> miss(how, b) == 429; a move not seated is free -> move_at(a stranger's game) == 429.
+- rt_local.c run_req: every REQ's peer "ws" again -> `a_req_is_limited_under_its_sockets_address` body == "127.0.0.1".
+- server.c: the upgrade keeps no viewer -> the same; keeps the socket peer instead of the edge's address -> body == "203.0.113.9".
+- auth_http.c within(): the wall clock instead of cb_auth_now -> `rate_limited_account_routes` BAD_LOGIN a window/burst later.
