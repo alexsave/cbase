@@ -8,7 +8,6 @@
 #include "net/refuse.h"
 #include "net/router.h"
 #include "rate_limits.h"
-#include "util/clock.h"
 #include "util/err.h"
 #include "util/log.h"
 
@@ -88,10 +87,12 @@ static void send_session(cb_http_res *res, const cb_session *s) {
 
 // ---- checks -----------------------------------------------------------------------------
 
-// One from key's bucket of `kind`, or false with the 429 answered.
+// One from key's bucket of `kind`, or false with the 429 answered. On the auth clock
+// (auth.h cb_auth_now), as the lockout and the tokens are: a test that holds it still is
+// not refilled by however long its bcrypts take.
 static bool within(cb_http_res *res, cb_limit_kind kind, const char *key) {
     int retry;
-    if (cb_limit_take(kind, key, cb_now_ms(), &retry)) return true;
+    if (cb_limit_take(kind, key, cb_auth_now(), &retry)) return true;
     CB_INFO("auth", "rate limit %s: %s", cb_limit_rules[kind].name, key);
     cb_refuse_limited(res, retry, true);
     return false;
