@@ -99,7 +99,7 @@ static bool admin_gate(const cb_ctx *ctx, const cb_http_req *req, cb_http_res *r
     char ip[96];
     cb_viewer_key(ctx, req, ip, sizeof ip);
     const int64_t now = cb_now_ms();
-    if (!cb_limit_peek(CB_LIMIT_ADMIN_FAIL_IP, ip, now)) {
+    if (!cb_limit_peek(CB_LIMIT_ADMIN_FAIL_IP, ip, now, NULL)) {
         cb_router_error(res, 429, "too many wrong admin tokens");
         return false;
     }

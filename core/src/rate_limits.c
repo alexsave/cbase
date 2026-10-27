@@ -25,8 +25,8 @@ cb_limit_rule cb_limit_rules[CB_LIMIT_KINDS] = {
     [CB_LIMIT_PASSWORD_USER] = { "password change per account", 5, 60 * MIN_MS },
     [CB_LIMIT_CREATE_USER]   = { "create per account", 20, 10 * MIN_MS },
     [CB_LIMIT_CHAT_USER]     = { "chat per account", 30, MIN_MS },
-    [CB_LIMIT_SUB_USER]      = { "subscribe per account", 120, MIN_MS },
     [CB_LIMIT_BUMP_USER]     = { "bump per account", 30, MIN_MS },
+    [CB_LIMIT_ID_MISS_IP]    = { "id miss per address", 30, 5 * MIN_MS },
     [CB_LIMIT_ADMIN_FAIL_IP] = { "wrong admin token per address", 10, 60 * MIN_MS },
 };
 
@@ -70,8 +70,8 @@ bool cb_limit_take(cb_limit_kind kind, const char *key, int64_t now_ms, int *ret
     return take_or_peek(kind, key, now_ms, retry_s, true);
 }
 
-bool cb_limit_peek(cb_limit_kind kind, const char *key, int64_t now_ms) {
-    return take_or_peek(kind, key, now_ms, NULL, false);
+bool cb_limit_peek(cb_limit_kind kind, const char *key, int64_t now_ms, int *retry_s) {
+    return take_or_peek(kind, key, now_ms, retry_s, false);
 }
 
 static bool take_or_peek(cb_limit_kind kind, const char *key, int64_t now_ms, int *retry_s, bool take) {
@@ -101,7 +101,7 @@ static bool take_or_peek(cb_limit_kind kind, const char *key, int64_t now_ms, in
     }
     bool ok = b->tokens >= 1.0;
     if (ok && take) b->tokens -= 1.0;
-    else if (retry_s) *retry_s = (int)((1.0 - b->tokens) / rate / 1000.0) + 1;
+    if (!ok && retry_s) *retry_s = (int)((1.0 - b->tokens) / rate / 1000.0) + 1;
     pthread_mutex_unlock(&g_mu);
     return ok;
 }

@@ -69,7 +69,7 @@ static int check_lengths(const cb_config *c, char *err, size_t cap);
 const char *const cb_config_limit_names[CB_CONFIG_LIMITS] = {
     "CBASE_LIMIT_SIGNIN_IP", "CBASE_LIMIT_SIGNIN_NAME", "CBASE_LIMIT_SIGNUP_IP", "CBASE_LIMIT_SIGNUP_ALL",
     "CBASE_LIMIT_REFRESH_IP", "CBASE_LIMIT_PASSWORD_USER", "CBASE_LIMIT_CREATE_USER", "CBASE_LIMIT_CHAT_USER",
-    "CBASE_LIMIT_SUB_USER", "CBASE_LIMIT_BUMP_USER",
+    "CBASE_LIMIT_BUMP_USER", "CBASE_LIMIT_ID_MISS_IP",
 };
 
 // Ten upper-case letters and digits: an Apple team or key id.

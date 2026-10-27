@@ -122,7 +122,7 @@ typedef struct {
     // cb_limit_kind (0 = the rule's own default). Set by CBASE_LIMIT_<KIND>:
     // SIGNIN_IP 20/5min, SIGNIN_NAME 10/5min, SIGNUP_IP 5/h, SIGNUP_ALL 60/h,
     // REFRESH_IP 60/5min, PASSWORD_USER 5/h, CREATE_USER 20/10min,
-    // CHAT_USER 30/min, SUB_USER 120/min, BUMP_USER 30/min. The admin one is
+    // CHAT_USER 30/min, BUMP_USER 30/min, ID_MISS_IP 30/5min. The admin one is
     // CBASE_ADMIN_FAIL_LIMIT above.
     int  limit_burst[CB_CONFIG_LIMITS];
     // SIGN IN WITH APPLE (auth/oidc.h; docs/AUTH_APPLE.md is the checklist). Off unless

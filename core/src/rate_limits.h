@@ -1,6 +1,7 @@
 // rate_limits.h - the platform's rate limits on the requests that cost something: guessing a
 // password, making an account, refreshing a session, creating a game,
-// chatting, subscribing and bumping a game (security findings H1, M7, M8).
+// chatting, bumping a game (security findings H1, M7, M8), and asking after ids
+// that name nothing.
 //
 // Held in memory, per process: under Lambda that is per warm container, so a
 // caller spread over several containers gets each one's allowance. That is
@@ -31,8 +32,9 @@ typedef enum {
     CB_LIMIT_PASSWORD_USER,  // password changes by one account (two bcrypts each)
     CB_LIMIT_CREATE_USER,    // games created by one account
     CB_LIMIT_CHAT_USER,      // chat messages by one account
-    CB_LIMIT_SUB_USER,       // stream subscriptions by one account
     CB_LIMIT_BUMP_USER,      // bumps (bot kicks) by one account
+    CB_LIMIT_ID_MISS_IP,     // lookups by id from one address that named nothing: taken on a miss only (the product
+                             // says which lookups count and peeks before the ones a limited address may not make)
     CB_LIMIT_ADMIN_FAIL_IP,  // wrong console tokens from one address (finding L7): taken on a failure only
     CB_LIMIT_KINDS
 } cb_limit_kind;
@@ -56,9 +58,10 @@ void cb_limits_configure(const cb_config *cfg);
 // refused, *retry_s (if given) is the whole seconds until one is back.
 bool cb_limit_take(cb_limit_kind kind, const char *key, int64_t now_ms, int *retry_s);
 // Whether `key`'s bucket of `kind` has one to give at now_ms, taking none:
-// for a limit counted on failures only (CB_LIMIT_ADMIN_FAIL_IP), checked
-// before the attempt and taken after a failed one.
-bool cb_limit_peek(cb_limit_kind kind, const char *key, int64_t now_ms);
+// for a limit counted on failures only (CB_LIMIT_ADMIN_FAIL_IP,
+// CB_LIMIT_ID_MISS_IP), checked before the attempt and taken after a failed
+// one. When it has none, *retry_s (if given) is as cb_limit_take's.
+bool cb_limit_peek(cb_limit_kind kind, const char *key, int64_t now_ms, int *retry_s);
 // Forgets every bucket (the tests, between cases).
 void cb_limits_reset(void);
 
