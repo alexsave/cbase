@@ -14,6 +14,7 @@
 #include "net/loop.h"
 #include "net/router.h"
 #include "net/server.h"
+#include "rate_limits.h"
 #include "app/pushes.h"
 #include "realtime/realtime.h"
 #include "realtime/rt_local.h"
@@ -61,6 +62,12 @@ static void h_park(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     snprintf(res->park_key, sizeof res->park_key, "k");
 }
 static void h_ping(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) { cb_res_text(res, 200, "pong"); }
+// A route that answers the address a rate limit would count the request under (rate_limits.h).
+static void h_viewer(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
+    char key[96];
+    cb_viewer_key(ctx, req, key, sizeof key);
+    cb_res_send(res, 200, "application/octet-stream", key, strlen(key));
+}
 
 static void h_pub_on_loop(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res);
 static void h_pub_twice(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res);
@@ -84,6 +91,7 @@ static void start(void) {
     T_EQ_INT(cb_router_add(g_ctx.router, "*", "/t/who", CB_ROUTE_POOL, h_who), CB_OK);
     T_EQ_INT(cb_router_add(g_ctx.router, "GET", "/t/park", CB_ROUTE_POOL, h_park), CB_OK);
     T_EQ_INT(cb_router_add(g_ctx.router, "GET", "/t/ping", CB_ROUTE_POOL, h_ping), CB_OK);
+    T_EQ_INT(cb_router_add(g_ctx.router, "GET", "/t/viewer", CB_ROUTE_POOL, h_viewer), CB_OK);
     T_EQ_INT(cb_router_add(g_ctx.router, "*", "/t/loop", CB_ROUTE_LOOP, h_who), CB_OK);
     T_EQ_INT(cb_router_add(g_ctx.router, "GET", "/t/publoop", CB_ROUTE_LOOP, h_pub_on_loop), CB_OK);
     T_EQ_INT(cb_router_add(g_ctx.router, "GET", "/t/pubtwice", CB_ROUTE_LOOP, h_pub_twice), CB_OK);
@@ -639,6 +647,31 @@ static void req_runs_a_route_as_the_user(void) {
     cb_buf_free(&m);
 }
 
+// A REQ is counted under the address its socket's upgrade came from (ws.h cb_ws_viewer), as an
+// HTTP request from there would be: never one key every socket shares, which would let one
+// client past an address limit refuse everybody's requests.
+static void a_req_is_limited_under_its_sockets_address(void) {
+    cb_buf m;
+    cb_buf_init(&m);
+    sf_frame f;
+    int a = open_as(U1, NULL, &m);
+    T_EQ_INT(req(a, 1, SF_METH_GET, "/t/viewer", "", &m, &f), 200);
+    T_EQ_MEM(f.body, f.body_len, "127.0.0.1", 9);
+    close(a);
+    // Behind the edge: the address the edge vouched for at the upgrade (the origin secret proves it).
+    static const char secret[] = "unit-rt-local-origin-secret-0123456789";
+    cb_strlcpy(g_cfg.origin_secret, secret, sizeof g_cfg.origin_secret);
+    int b = tc_ws_open(g_port, "/ws", CB_ORIGIN_HEADER ": unit-rt-local-origin-secret-0123456789\r\n" CB_VIEWER_HEADER ": 203.0.113.9:50123\r\n");
+    T_CHECK(b >= 0);
+    send_hello(b, "tok-" U2);
+    T_EQ_INT(fr_recv(b, 2000, &m), SF_READY);
+    T_EQ_INT(req(b, 2, SF_METH_GET, "/t/viewer", "", &m, &f), 200);
+    T_EQ_MEM(f.body, f.body_len, "203.0.113.9", 11);
+    g_cfg.origin_secret[0] = 0;
+    close(b);
+    cb_buf_free(&m);
+}
+
 // A SESSION THAT ENDS CLOSES ITS SOCKETS (auth.c calls cb_rt_end_sessions).
 static void ended_sessions_close_their_sockets(void) {
     cb_buf m;
@@ -846,6 +879,7 @@ int main(void) {
     T_RUN(a_req_that_would_wait_runs_again_on_the_pool);
     T_RUN(pushes_keep_their_order_across_threads);
     T_RUN(req_runs_a_route_as_the_user);
+    T_RUN(a_req_is_limited_under_its_sockets_address);
     T_RUN(ended_sessions_close_their_sockets);
     T_RUN(refusals_end_the_connection);
     T_RUN(a_flood_while_busy_ends_only_that_socket);
