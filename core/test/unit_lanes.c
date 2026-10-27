@@ -192,15 +192,22 @@ static void first_seq(void) {
 // Two workers, many items, every one run exactly once, and the live ones ahead of a backfill
 // flood that arrived earlier: both workers are held on plugs while the flood and the live items
 // are put, so when the gate opens the live items are the next two workers take.
-static atomic_int g_ran[2], g_order, g_live_last_at;
+//
+// What is checked is the TAKE order, not the run order: a flood item only ever runs once the live
+// lane is empty, since take_one pops lane 1 only when lane 0 had nothing under the mutex and no
+// live item is put after the gate opens. Counting run order instead (an order number drawn inside
+// run) flaked on a loaded Linux runner: a worker that took the last live item was preempted
+// before drawing its number while the other ran flood items.
+static atomic_int g_ran[2], g_flood_early;
+static cb_lanes *g_two;
+static uint64_t g_plug_seq_max;
 static void run_count(void *ud, int lane, const uint8_t *bytes, size_t len, uint64_t seq, int64_t put_us) {
-    (void)ud; (void)bytes; (void)len; (void)seq; (void)put_us;
+    (void)ud; (void)bytes; (void)len; (void)put_us;
     atomic_fetch_add(&g_entered, 1);
     pthread_mutex_lock(&g_mu);
     while (!g_open) pthread_cond_wait(&g_cv, &g_mu);
     pthread_mutex_unlock(&g_mu);
-    int at = atomic_fetch_add(&g_order, 1);
-    if (lane == 0) atomic_store(&g_live_last_at, at);
+    if (lane == 1 && seq > g_plug_seq_max && cb_lanes_depth(g_two, 0) != 0) atomic_fetch_add(&g_flood_early, 1);
     atomic_fetch_add(&g_ran[lane], 1);
 }
 
@@ -211,9 +218,12 @@ static void two_workers(void) {
     size_t caps[2] = { 0, 0 };   // unbounded
     cb_lanes_opts o = opts(2, 2, caps, run_count, NULL);
     T_EQ_INT(cb_lanes_new(&l, &o), CB_OK);
+    g_two = l;
     uint8_t b[4] = { 0 };
-    T_EQ_INT(cb_lanes_put(l, 1, b, 4, NULL), CB_OK);
-    T_EQ_INT(cb_lanes_put(l, 1, b, 4, NULL), CB_OK);
+    uint64_t seq = 0;
+    T_EQ_INT(cb_lanes_put(l, 1, b, 4, &seq), CB_OK);
+    T_EQ_INT(cb_lanes_put(l, 1, b, 4, &seq), CB_OK);
+    g_plug_seq_max = seq;
     wait_for(&g_entered, 2);
     T_EQ_INT(atomic_load(&g_entered), 2);   // both workers hold a plug
     for (int i = 0; i < 200; i++) T_EQ_INT(cb_lanes_put(l, 1, b, 4, NULL), CB_OK);
@@ -221,13 +231,14 @@ static void two_workers(void) {
     T_EQ_INT(cb_lanes_depth(l, 1), 200);
     T_EQ_INT(cb_lanes_depth(l, 0), 20);
     gate(true);
-    wait_for(&g_order, 222);
+    wait_for(&g_entered, 222);
+    for (int n = 0; n < 2000 && atomic_load(&g_ran[0]) + atomic_load(&g_ran[1]) < 222; n++) usleep(1000);
     T_EQ_INT(atomic_load(&g_ran[0]), 20);
     T_EQ_INT(atomic_load(&g_ran[1]), 202);
-    // The two plugs ran first (orders 0 and 1); the 20 live items were all taken before any of
-    // the flood, so the last live one ran by order 21, give or take the two workers' interleaving.
-    T_CHECK_MSG(atomic_load(&g_live_last_at) <= 23, "the last live item ran at %d", atomic_load(&g_live_last_at));
+    T_CHECK_MSG(atomic_load(&g_flood_early) == 0, "%d flood items were taken while live items waited",
+                atomic_load(&g_flood_early));
     cb_lanes_free(l);
+    g_two = NULL;
 }
 
 // Freed with items queued: the one being run finishes, the queued are dropped (none runs, though
