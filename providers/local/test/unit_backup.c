@@ -138,6 +138,51 @@ static void only_a_change_sends_and_a_failed_upload_retries(void) {
     cb_store_close(st);
 }
 
+static bool no_row(int n, const char *const *names, const char *const *values, void *ud) {
+    (void)n, (void)names, (void)values, (void)ud;
+    return true;
+}
+
+// An admin's write (POST /admin/api/query with confirm "WRITE": cb_store_admin_query with
+// allow_write) is a change like any other: the next tick sends a copy holding it. It runs as one
+// statement outside the store's own transactions, so it used to move no change count, and an
+// admin's correction stayed out of the bucket until some unrelated write came (an instance
+// replaced meanwhile restored the rows from before it). An admin's read, and a write the
+// database refuses, send nothing.
+static void an_admin_write_is_backed_up(void) {
+    fresh();
+    char db[300];
+    snprintf(db, sizeof db, "%s/db", g_dir);
+    cb_store *st = NULL;
+    T_EQ_INT(cb_store_open_sqlite(db, &st), CB_OK);
+    put_item(st, "fix");
+    cb_config cfg;
+    memset(&cfg, 0, sizeof cfg);
+    snprintf(cfg.db_path, sizeof cfg.db_path, "%s", db);
+    cb_ctx ctx;
+    memset(&ctx, 0, sizeof ctx);
+    ctx.cfg = &cfg;
+    ctx.store = st;
+    cb_blob blob = { fake_put, fake_get, NULL, NULL };
+    cb_backup *b = cb_backup_start(&ctx, &blob, "k", 0);
+    T_CHECK(b != NULL);
+    T_EQ_INT(cb_backup_once(b), 1);
+    T_EQ_INT(cb_store_admin_query(st, "SELECT count(*) FROM signin_fails", false, no_row, NULL), 1);   // its one row
+    T_EQ_INT(cb_store_admin_query(st, "SELECT count(*) FROM signin_fails", true, no_row, NULL), 1);
+    T_EQ_INT(cb_backup_once(b), 0);   // a read changed nothing
+    T_CHECK(cb_store_admin_query(st, "UPDATE no_such_table SET n = 1", true, no_row, NULL) < 0);
+    T_EQ_INT(cb_backup_once(b), 0);   // nor did a refused write
+    T_EQ_INT(cb_store_admin_query(st, "UPDATE signin_fails SET n = 7 WHERE email = 'fix'", true, no_row, NULL), 0);   // no rows back
+    T_EQ_INT(cb_backup_once(b), 1);   // the correction goes up at the next tick
+    T_EQ_INT(g_puts, 2);
+    char o[300];
+    obj_path(o, sizeof o);
+    T_EQ_INT(count_rows(o, "SELECT count(*) FROM signin_fails WHERE email = 'fix' AND n = 7"), 1);
+    T_EQ_INT(cb_backup_once(b), 0);   // and once
+    cb_backup_stop(b);
+    cb_store_close(st);
+}
+
 static void restore_puts_a_sound_backup_in_place_and_refuses_the_rest(void) {
     fresh();
     char db[300], src[300], o[300];
@@ -178,6 +223,7 @@ int main(void) {
     cb_log_init(CB_LOG_ERROR + 1, 0);
     T_RUN(the_copy_is_a_valid_database_with_the_same_rows);
     T_RUN(only_a_change_sends_and_a_failed_upload_retries);
+    T_RUN(an_admin_write_is_backed_up);
     T_RUN(restore_puts_a_sound_backup_in_place_and_refuses_the_rest);
     return T_DONE();
 }

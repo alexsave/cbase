@@ -865,3 +865,8 @@ The id-miss rule (`foolish/server/src/app/misses.h`, `CB_LIMIT_ID_MISS_IP`) and 
 - journal.c j_ratings_top: the leaderboard read skips the settle -> the same, top_a == the owner's rating.
 - journal.c flusher: a 200 ms sleep before each flush pass (the CI coverage race made certain), without the rule -> smoke `a_rematch_rates_its_own_game` board[g + 1][s] == board[g][s] + stamp[g].delta[s]; with the rule the scenario passes three times in a row.
 - table.c: 564f70c40's kernel fix undone (table_continue keeps the stamp, table_stamp judges the board) -> smoke `a_rematch_rates_its_own_game` stamp[g].before[s] == board[g][s] (got 1000, want 995) and stamp[g].delta[s] == want[s].
+
+## An admin's write is backed up (2026-10-28: store_sqlite.c changed, unit_backup)
+
+- store_sqlite.c sq_admin_query: a write statement moves no change count (main before the fix) -> `an_admin_write_is_backed_up` cb_backup_once(b) == 1 after the UPDATE (got 0), g_puts == 2 and the bucket's copy holds n = 7.
+- store_sqlite.c sq_admin_query: every statement counts, reads too -> `an_admin_write_is_backed_up` cb_backup_once(b) == 0 after the two SELECTs (got 1).

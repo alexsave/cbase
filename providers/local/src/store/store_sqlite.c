@@ -241,9 +241,15 @@ static int begin(sq *q) {
     }
     return CB_OK;
 }
+// THE CHANGE COUNT's one owner (cb_store_local_changes: the backup job copies the database only
+// when it moved): a write that reached the database counts here, whichever way it ran. The
+// store's own transactions count at their COMMIT; an admin's write statement, which runs alone
+// in autocommit, counts once it has run (sq_admin_query).
+static void changed(sq *q) { atomic_fetch_add_explicit(&q->changes, 1, memory_order_relaxed); }
+
 static int commit(sq *q) {
     int rc = ctl(q, ST_COMMIT);
-    if (rc == CB_OK) atomic_fetch_add_explicit(&q->changes, 1, memory_order_relaxed);
+    if (rc == CB_OK) changed(q);
     return rc;
 }
 static void rollback(sq *q) {
@@ -1587,7 +1593,14 @@ static int sq_admin_query(cb_store *st, const char *statement, bool allow_write,
         bool reads = sqlite3_stmt_readonly(s) &&
                      (strcmp(kw, "SELECT") == 0 || strcmp(kw, "WITH") == 0 || strcmp(kw, "EXPLAIN") == 0);
         if (rc == CB_OK && !allow_write && !reads) rc = CB_E_FORBIDDEN;
-        if (rc == CB_OK) rc = textrows_read(q, s, 0, 0, &rows, NULL);
+        if (rc == CB_OK) {
+            rc = textrows_read(q, s, 0, 0, &rows, NULL);
+            // A write that ran is a change the backup must send: an admin's correction would
+            // otherwise reach the bucket only with some unrelated write after it. One that failed
+            // part way may have kept rows too (OR FAIL), so a write counts once stepped; a
+            // statement SQLite calls read-only never does.
+            if (!sqlite3_stmt_readonly(s)) changed(q);
+        }
     }
     sqlite3_finalize(s);
     unlock(q);
