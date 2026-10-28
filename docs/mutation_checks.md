@@ -858,3 +858,10 @@ The id-miss rule (`foolish/server/src/app/misses.h`, `CB_LIMIT_ID_MISS_IP`) and 
 - rt_local.c run_req: every REQ's peer "ws" again -> `a_req_is_limited_under_its_sockets_address` body == "127.0.0.1".
 - server.c: the upgrade keeps no viewer -> the same; keeps the socket peer instead of the edge's address -> body == "203.0.113.9".
 - auth_http.c within(): the wall clock instead of cb_auth_now -> `rate_limited_account_routes` BAD_LOGIN a window/burst later.
+
+## A ratings read answers every acknowledged rated end (2026-10-28: journal.c ratings_settle, unit_journal, smoke)
+
+- journal.c ratings_settle: no flush (the read goes straight to the tables) -> `a_ratings_read_answers_every_acknowledged_rated_end` top_a == the owner's rating (got -1: not on the board yet) and got[i] == owner[i] (got 1000).
+- journal.c j_ratings_top: the leaderboard read skips the settle -> the same, top_a == the owner's rating.
+- journal.c flusher: a 200 ms sleep before each flush pass (the CI coverage race made certain), without the rule -> smoke `a_rematch_rates_its_own_game` board[g + 1][s] == board[g][s] + stamp[g].delta[s]; with the rule the scenario passes three times in a row.
+- table.c: 564f70c40's kernel fix undone (table_continue keeps the stamp, table_stamp judges the board) -> smoke `a_rematch_rates_its_own_game` stamp[g].before[s] == board[g][s] (got 1000, want 995) and stamp[g].delta[s] == want[s].
