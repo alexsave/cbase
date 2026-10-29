@@ -836,16 +836,20 @@ static void import_writes(void) {
     cb_store_close(s);
 }
 
-// cbase-import --seed-bots and --reindex-ratings on DynamoDB: seeded only into
-// an empty bot set; every rating row reindexed, a done one not counted, an
-// error stopping it.
+// cbase-import --seed-bots and --reindex-ratings on DynamoDB: the seed's rows
+// whose ids the bot set lacks, in one transaction of puts each held to its item
+// being absent (a taken id refuses it all), and nothing when none is missing;
+// every rating row reindexed, a done one not counted, an error stopping it.
+#define PROD_MIAMI_1 "176d94a4-71f2-4542-9510-5603e52058d7"   // a seeded bot's real id (foolish/c/src/bots.c)
 static void import_seed_and_reindex(void) {
     static const char RATINGS[] = "{\"Items\":[" RATING_ITEM(U1, "1200", "5") "," RATING_ITEM(U2, "900", "2") "]}";
     static const step steps[] = {
-        { "Query", "BOT", 200, EMPTY },                // no bots: the schema's go in
-        { "Query", "BOT", 200, EMPTY },                // bots_replace reads the (empty) set
+        { "Query", "BOT", 200, EMPTY },                // no bots: every seeded one goes in
+        { "TransactWriteItems", "attribute_not_exists", 200, "{}" },
+        // one of them there already, and one no seed knows: the other 48 go in
+        { "Query", "BOT", 200, "{\"Items\":[" BOT_ITEM(PROD_MIAMI_1, "%Miami 1", "random", "1000") ","
+                                BOT_ITEM("b1", "%Ann", "random", "1000") "]}" },
         { "TransactWriteItems", "strategy_key", 200, "{}" },
-        { "Query", "BOT", 200, "{\"Items\":[" BOT_ITEM("b1", "%Ann", "random", "1000") "]}" },   // some: none seeded
         { "Query", "BOT", 400, VALIDATION },
         { "Query", "RATING", 200, RATINGS },
         { "UpdateItem", "USER#" U1, 200, "{}" },
@@ -856,8 +860,9 @@ static void import_seed_and_reindex(void) {
     };
     RUN(steps, s);
     int seeded = cb_import_seed_bots(s);
-    T_CHECK(seeded > 10);
-    T_EQ_INT(cb_import_seed_bots(s), 0);
+    T_EQ_INT(seeded, 49);
+    T_EQ_INT(cb_import_seed_bots(s), 48);
+    T_CHECK(strstr(sc_.bodies[3], "BOT#" PROD_MIAMI_1) == NULL);   // the one already there is not written
     T_EQ_INT(cb_import_seed_bots(s), CB_E_DB);
     T_EQ_INT(cb_import_reindex_ratings(s), 1);
     T_EQ_INT(cb_import_reindex_ratings(s), CB_E_DB);
