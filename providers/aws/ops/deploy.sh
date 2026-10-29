@@ -23,7 +23,8 @@
 #      resource (CBASE_ALLOW_REPLACE=1 to mean it), then executed and waited for;
 #   6. prints the stack's outputs (FunctionUrl,
 #      DistributionDomain, TableName, PublicUrl);
-#   7. seeds the 49 bots into a table that has none (cbase-import --seed-bots),
+#   7. brings the table's bots to the registry (cbase-import --seed-bots: adds
+#      the accounts it lacks, 56 into an empty table, and renames by id),
 #      moves rating rows to the leaderboard's index key (--reindex-ratings),
 #      and with --import DIR runs build/cbase-import against the stack's table,
 #      both with temporary credentials exported from the CLI.

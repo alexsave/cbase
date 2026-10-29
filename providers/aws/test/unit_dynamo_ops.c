@@ -836,7 +836,9 @@ static void import_writes(void) {
     cb_store_close(s);
 }
 
-// cbase-import --seed-bots and --reindex-ratings on DynamoDB: the seed's rows
+// cbase-import --seed-bots and --reindex-ratings on DynamoDB: a stored seed
+// row whose nickname is not the registry's renamed in one transaction of
+// nickname-only updates each held to its item existing, then the seed's rows
 // whose ids the bot set lacks, in one transaction of puts each held to its item
 // being absent (a taken id refuses it all), and nothing when none is missing;
 // every rating row reindexed, a done one not counted, an error stopping it.
@@ -846,9 +848,11 @@ static void import_seed_and_reindex(void) {
     static const step steps[] = {
         { "Query", "BOT", 200, EMPTY },                // no bots: every seeded one goes in
         { "TransactWriteItems", "attribute_not_exists", 200, "{}" },
-        // one of them there already, and one no seed knows: the other 48 go in
-        { "Query", "BOT", 200, "{\"Items\":[" BOT_ITEM(PROD_MIAMI_1, "%Miami 1", "random", "1000") ","
+        // one of them there already under another name, and one no seed knows:
+        // that one renamed (its nickname alone), then the other 55 go in
+        { "Query", "BOT", 200, "{\"Items\":[" BOT_ITEM(PROD_MIAMI_1, "%Miami Old", "random", "1000") ","
                                 BOT_ITEM("b1", "%Ann", "random", "1000") "]}" },
+        { "TransactWriteItems", "attribute_exists", 200, "{}" },
         { "TransactWriteItems", "strategy_key", 200, "{}" },
         { "Query", "BOT", 400, VALIDATION },
         { "Query", "RATING", 200, RATINGS },
@@ -860,9 +864,12 @@ static void import_seed_and_reindex(void) {
     };
     RUN(steps, s);
     int seeded = cb_import_seed_bots(s);
-    T_EQ_INT(seeded, 49);
-    T_EQ_INT(cb_import_seed_bots(s), 48);
-    T_CHECK(strstr(sc_.bodies[3], "BOT#" PROD_MIAMI_1) == NULL);   // the one already there is not written
+    T_EQ_INT(seeded, 56);
+    T_EQ_INT(cb_import_seed_bots(s), 56);   // 1 renamed + 55 added
+    T_CHECK(strstr(sc_.bodies[3], "BOT#" PROD_MIAMI_1) != NULL && strstr(sc_.bodies[3], "%Miami 1") != NULL);
+    T_CHECK(strstr(sc_.bodies[3], "elo_rating") == NULL && strstr(sc_.bodies[3], "strategy_key") == NULL);   // the name alone
+    T_CHECK(strstr(sc_.bodies[3], "BOT#b1") == NULL);                // a bot no seed names is never touched
+    T_CHECK(strstr(sc_.bodies[4], "BOT#" PROD_MIAMI_1) == NULL);   // the one already there is not added
     T_EQ_INT(cb_import_seed_bots(s), CB_E_DB);
     T_EQ_INT(cb_import_reindex_ratings(s), 1);
     T_EQ_INT(cb_import_reindex_ratings(s), CB_E_DB);
