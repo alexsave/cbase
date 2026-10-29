@@ -122,4 +122,31 @@ static const char *const DG_NUM_GRID[2][3] = {
 };
 static const DgPair DG_NUM_PAIR[2] = { [1] = { "one", 11 }, [0] = { .flag = 10, .name = "zero" } };
 
+
+// ---- a row that carries what no literal can say (--columns) -------------------
+//
+// A registry row's shape: data beside a function pointer and an array, in one
+// row (c/src/bots.c keeps its dispatch in a table of its own, for the link's
+// sake, but holds an id array). Read whole it is refused; --columns reads the
+// named fields and never looks at the rest. `run` points at a real function so
+// the row would compile into anything that linked it.
+static int dg_double(int x) { return 2 * x; }
+typedef struct {
+    const char *name;
+    int       (*run)(int);
+    int         rank;
+    const char *ids[2];
+    const char *city;
+} DgDispatch;
+static const DgDispatch DG_DISPATCH[3] = {
+    [2] = { .city = "Vienna", .ids = { "id-c1", "id-c2" }, .name = "c", .rank = 30, .run = dg_double },
+    [0] = { .name = "a", .run = dg_double, .rank = 10, .ids = { "id-a1", "id-a2" }, .city = "Miami" },
+    // [1] is a retired slot: every column a hole.
+};
+
+// A column one emitted row leaves out: optional in the TS row type, since a
+// hole is left out of its row rather than written as an empty value.
+typedef struct { const char *name; const char *note; int rank; } DgSparse;
+static const DgSparse DG_SPARSE[2] = { [0] = { .name = "a", .note = "x", .rank = 1 }, [1] = { .name = "b", .rank = 2 } };
+
 #endif

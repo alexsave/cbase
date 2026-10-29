@@ -9,7 +9,8 @@
 // together would mean a layout hash over data that has no layout.
 //
 //   datagen --cwd DIR --header H... --table T [--labels T.DIM=L]...
-//           [--require-complete] [--flags FLAGS] [--target TRIPLE] [--name IDENT]
+//           [--columns F,F...] [--require-complete] [--flags FLAGS]
+//           [--target TRIPLE] [--name IDENT]
 //           [--ts OUT] [--swift OUT] [--kotlin OUT --kotlin-package PKG] [--json OUT]
 //
 // --table T       the table to read: a file-scope `static const` array of one or
@@ -27,6 +28,15 @@
 //                 keyed by those strings instead of by position. Without it the
 //                 dimension is emitted as an array. A struct's columns are
 //                 already named, so --labels T.1 is refused for one.
+// --columns F,F...
+//                 a table of structs: read and emit only these fields, in the
+//                 struct's own order. The others are never evaluated and never
+//                 type-checked, so a row may carry what no host reads and no
+//                 literal can say - a function pointer, an array of ids - beside
+//                 the data a host does read (c/src/bots.c, the bot registry, is
+//                 that case: one row per brain holds its names, its flags and
+//                 the array of its server accounts' ids). A field named here that the struct does not have is
+//                 refused, and so is one whose type datagen cannot read.
 // --require-complete
 //                 every slot of the index space must be filled, and a gap is a
 //                 build failure naming each one. This is what stands in for a
@@ -105,6 +115,7 @@ static int require_complete, ts_const;
 static const char *complete_if;   // --require-complete-if TABLE.COLUMN
 static int nheaders;
 static const char *label_table[MAXDIM];   // --labels T.D=L, by dimension
+static const char *columns;               // --columns F,F...: a struct's fields to read
 
 // ---- the extracted table ---------------------------------------------------
 //
@@ -120,6 +131,9 @@ typedef struct {
     const char *rec_name;  // that record's name, for the emitted row type
     char *field[MAXCOL];   // its field names, in declaration order
     char colptr[MAXCOL];   // per column: is this column's C type a pointer?
+    char colbad[MAXCOL];   // per column: a type datagen cannot read (refused if read)
+    char colskip[MAXCOL];  // per column: left out by --columns, never evaluated
+    char *coltype[MAXCOL]; // per column: its C type, spelled for a refusal
     int nfield;
     Cell *cells;
 } Table;
@@ -298,6 +312,8 @@ static enum CXChildVisitResult entry_visit(CXCursor c, CXCursor p, CXClientData 
         ListCtx inner = { t, 1, idx, 0, seen };
         clang_visitChildren(value, entry_visit, &inner);
         free(seen);
+    } else if (ctx->dim == 1 && t->is_struct && t->colskip[idx]) {
+        // A field --columns left out: not evaluated, whatever it holds.
     } else {
         char where[256];
         snprintf(where, sizeof where, "%s[%ld]%s", t->name, ctx->dim == 1 ? ctx->row : idx,
@@ -315,12 +331,59 @@ static enum CXVisitorResult collect_field(CXCursor c, CXClientData d) {
     if (clang_Cursor_isBitField(c)) die("%s: a bitfield is a layout question, and datagen reads contents", t->rec_name);
     t->field[t->nfield] = str(clang_getCursorSpelling(c));
     CXType ft = clang_getCanonicalType(clang_getCursorType(c));
-    if (ft.kind != CXType_Pointer && ft.kind != CXType_Enum && !(ft.kind >= CXType_Bool && ft.kind <= CXType_LongDouble))
-        die("%s.%s is a %s; datagen reads tables of literals", t->rec_name, t->field[t->nfield],
-            clang_getCString(clang_getTypeSpelling(ft)));
+    // Refused when it is READ (select_columns), not here: --columns may leave it out.
+    t->coltype[t->nfield] = str(clang_getTypeSpelling(ft));
+    t->colbad[t->nfield] = ft.kind != CXType_Pointer && ft.kind != CXType_Enum
+                           && !(ft.kind >= CXType_Bool && ft.kind <= CXType_LongDouble);
     t->colptr[t->nfield] = ft.kind == CXType_Pointer;
     t->nfield++;
     return CXVisit_Continue;
+}
+
+// --columns, applied to a table of structs as soon as its fields are known (and
+// before any cell is read): a field it does not name is marked to skip, a name
+// it gives that the struct lacks is refused, and every field that IS read must
+// have a type datagen can read. Only the main table takes it: a label or
+// companion table is read whole, as before.
+static int columns_applied;
+static void select_columns(Table *t) {
+    if (columns && !columns_applied) {
+        columns_applied = 1;
+        for (int i = 0; i < t->nfield; i++) t->colskip[i] = 1;
+        char *list = xstrdup(columns);
+        for (char *tok = strtok(list, ","); tok; tok = strtok(NULL, ",")) {
+            long i = -1;
+            for (int j = 0; j < t->nfield && i < 0; j++) if (!strcmp(t->field[j], tok)) i = j;
+            if (i < 0) die("--columns: %s has no field named %s", t->rec_name, tok);
+            t->colskip[i] = 0;
+        }
+        free(list);
+    }
+    for (int i = 0; i < t->nfield; i++) {
+        if (t->colskip[i] || !t->colbad[i]) continue;
+        die("%s.%s is a %s; datagen reads tables of literals%s", t->rec_name, t->field[i], t->coltype[i],
+            columns ? "" : " (--columns can leave it out)");
+    }
+}
+
+// The skipped columns taken out of a table that has been read, so every emitter
+// and every check after this sees only the fields --columns named, in the
+// struct's order.
+static void drop_skipped(Table *t) {
+    if (!t->is_struct) return;
+    long rows = t->dim[0], cols = t->dim[1], keep = 0;
+    for (long b = 0; b < cols; b++) {
+        if (t->colskip[b]) continue;
+        for (long a = 0; a < rows; a++) t->cells[a * cols + keep] = t->cells[a * cols + b];
+        t->field[keep] = t->field[b];
+        t->colptr[keep] = t->colptr[b];
+        keep++;
+    }
+    // Repack the rows to the new width (cell_at reads `a * dim[1] + b`).
+    for (long a = 0; a < rows; a++)
+        for (long b = 0; b < keep; b++) t->cells[a * keep + b] = t->cells[a * cols + b];
+    t->nfield = (int)keep;
+    t->dim[1] = keep;
 }
 
 // ---- finding the table ------------------------------------------------------
@@ -365,6 +428,7 @@ static enum CXChildVisitResult find_var(CXCursor c, CXCursor p, CXClientData d) 
         t->rec_name = str(clang_getCursorSpelling(rd));
         clang_Type_visitFields(ty, collect_field, t);
         if (!t->nfield) die("%s's element type %s has no fields", f->want, t->rec_name);
+        select_columns(t);
         t->is_struct = 1;
         t->ndim = 2;
         t->dim[1] = t->nfield;
@@ -417,7 +481,7 @@ static void read_labels(CXTranslationUnit tu, const char *tbl, long want, Labels
     if (t.is_struct) {
         // One column of a struct table, lifted out as the one-dimensional table
         // of names the rest of this function already knows how to check.
-        Table flat = { t.name, 1, { t.dim[0], 0 }, 0, NULL, {0}, {0}, 0, NULL };
+        Table flat = { .name = t.name, .ndim = 1, .dim = { t.dim[0], 0 } };
         if (!(flat.cells = calloc((size_t)t.dim[0], sizeof *flat.cells))) die("out of memory");
         for (long i = 0; i < t.dim[0]; i++) flat.cells[i] = *cell_at(&t, i, col);
         t = flat;
@@ -556,8 +620,17 @@ static void emit_ts(Table *t, Labels *lab) {
     banner(&b, "//");
     if (t->is_struct) {   // one named row type, each field with its own C type
         bprintf(&b, "\nexport interface %sRow {\n", export_name);
-        for (int i = 0; i < t->nfield; i++)
-            bprintf(&b, "    readonly %s: %s;\n", t->field[i], t->colptr[i] ? "string" : "number");
+        for (int i = 0; i < t->nfield; i++) {
+            // A hole is left out of its row (emit_dim), so a column with one in
+            // any row that IS emitted is optional, and the type says so.
+            int hole = 0;
+            for (long r = 0; r < t->dim[0] && !hole; r++) {
+                int any = 0;
+                for (int j = 0; j < t->nfield; j++) if (cell_at(t, r, j)->kind) { any = 1; break; }
+                if (any && !cell_at(t, r, i)->kind) hole = 1;
+            }
+            bprintf(&b, "    readonly %s%s: %s;\n", t->field[i], hole ? "?" : "", t->colptr[i] ? "string" : "number");
+        }
         bprintf(&b, "}\n\nexport const %s: readonly %sRow[] = ", export_name, export_name);
         static const Syntax sxr = { "{", "}", "[", "]", ":", "{}", quoted };
         emit_dim(&b, t, lab, 0, 0, &sxr, "");
@@ -732,7 +805,7 @@ static void build_args(void) {
 }
 
 static void usage(void) {
-    fputs("usage: datagen --cwd DIR --header H... --table T [--labels T.DIM=L]...\n"
+    fputs("usage: datagen --cwd DIR --header H... --table T [--labels T.DIM=L]... [--columns F,F...]\n"
           "               [--require-complete] [--require-complete-if T.COL]\n"
           "               [--ts-const] [--flags FLAGS] [--target TRIPLE] [--name IDENT]\n"
           "               [--ts OUT.ts] [--swift OUT.swift] [--json OUT.json]\n"
@@ -764,6 +837,7 @@ int main(int argc, char **argv) {
             label_table[d] = eq + 1;
         }
         else if (!strcmp(a, "--name")) export_name = v;
+        else if (!strcmp(a, "--columns")) columns = v;
         else if (!strcmp(a, "--ts")) out_ts = v;
         else if (!strcmp(a, "--swift")) out_swift = v;
         else if (!strcmp(a, "--kotlin")) out_kotlin = v;
@@ -792,6 +866,8 @@ int main(int argc, char **argv) {
 
     Table t = {0};
     read_table(tu, table_name, &t);
+    if (columns && !t.is_struct) die("--columns: %s is not a table of structs, so it has no fields to pick", table_name);
+    drop_skipped(&t);
     Labels lab[MAXDIM] = {{0}};
     if (t.is_struct) {
         if (label_table[1]) die("%s is an array of %s: its columns are already named by that struct's fields", table_name, t.rec_name);

@@ -202,15 +202,46 @@ expect_fail "--require-complete-if of the wrong length" "rows for a dimension of
 [ "$(tr -d ' \n' < "$tmp/bycol.json")" = '{"a":"zero","b":"one","c":"two"}' ]
 ok $? "a dimension can be labelled by one column of a table of structs"
 
+# --columns: a row that also holds a function pointer and an array of ids (a
+# bot registry's shape). The fields it names are read, in the struct's order
+# and not the list's; the rest are never evaluated. A retired slot is a row of
+# holes: left out of TS and JSON like any empty row, and written with empty
+# values in Swift and Kotlin, whose rows are positional.
+# Mutations that turned these red, each restored after (in datagen.c): an
+# unselected cell evaluated anyway (the read and emit cases, and the real
+# table's); drop_skipped not called (the "exactly the named fields" cases); an
+# unknown --columns name ignored ("a field the struct lacks"); a selected field
+# of an unreadable type let through (both array cases: the refusal came later,
+# from the evaluator, with the wrong words).
+[ "$(json --table DG_DISPATCH --columns city,name,rank)" = '[{"name":"a","rank":10,"city":"Miami"},{"name":"c","rank":30,"city":"Vienna"}]' ]
+ok $? "--columns reads the named fields, in the struct's order, and skips the rest"
+"$DG" "${t[@]}" --table DG_DISPATCH --columns name,rank --name DgDispatch --swift "$tmp/disp.swift" --ts "$tmp/disp.ts"
+grep -q 'DgDispatchRow(name: "a", rank: 10),' "$tmp/disp.swift" && grep -q 'DgDispatchRow(name: "", rank: 0),' "$tmp/disp.swift" \
+  && ! grep -q 'run\|ids\|city' "$tmp/disp.swift" && ! grep -q 'run\|ids\|city' "$tmp/disp.ts"
+ok $? "--columns: the emitted row type has exactly the named fields"
+"$DG" "${t[@]}" --table DG_SPARSE --name DgSparse --ts "$tmp/sparse.ts"
+grep -q 'readonly note?: string;' "$tmp/sparse.ts" && grep -q 'readonly name: string;' "$tmp/sparse.ts" \
+  && grep -q 'readonly rank: number;' "$tmp/sparse.ts"
+ok $? "a column a row leaves out is optional in the TS row type, and only that one"
+# (Red, restored after: the optional mark never set in emit_ts.)
+expect_fail "a row with an id array, read whole" "DgDispatch.ids is a const char *[2]; datagen reads tables of literals (--columns can leave it out)" \
+  "${t[@]}" --table DG_DISPATCH --json "$tmp/o.json"
+expect_fail "--columns naming the function pointer" "neither a string literal nor an integer constant" \
+  "${t[@]}" --table DG_DISPATCH --columns name,run --json "$tmp/o.json"
+expect_fail "--columns naming an array field" "DgDispatch.ids is a const char *[2]" \
+  "${t[@]}" --table DG_DISPATCH --columns name,ids --json "$tmp/o.json"
+expect_fail "--columns naming a field the struct lacks" "DgDispatch has no field named km" \
+  "${t[@]}" --table DG_DISPATCH --columns name,km --json "$tmp/o.json"
+expect_fail "--columns on a table that is not of structs" "is not a table of structs, so it has no fields to pick" \
+  "${t[@]}" --table DG_NUM_ORDERED --columns name --json "$tmp/o.json"
+
 # ---- the hard case, on the real thing ---------------------------------------
 #
-# c/src/bot_roster.c is the table in this repo that a string-table-shaped tool
-# cannot read: an array of STRUCTS with two string columns, an enum-valued int
-# and four uint8_t flags, one row whose knobs come from a #define and one whose
-# knobs are two adjacent string literals the preprocessor joins. It is read here
-# as a CAPABILITY PROOF and nothing else - the roster is not generated from, and
-# this PR changes nothing about it or about e2e/bot_roster_parity.test.ts, which
-# reads the same file as text on purpose.
+# c/src/bots.c, the bot registry, is the table in this repo that a
+# string-table-shaped tool cannot read: an array of STRUCTS indexed by an enum
+# constant, with string columns, uint8_t flags, an int32_t and an array of ids
+# in one row, knobs from a #define, and empty (retired) slots. tools/structgen/gen.sh generates the phone's bot ladder from it with
+# --columns, so this case is the tool's contract with a real consumer.
 #
 # Why it earns a place in this suite anyway: it is the one case that can tell
 # "generic" from "i18n with extra steps", and it is real, so it goes stale the
@@ -221,33 +252,34 @@ ok $? "a dimension can be labelled by one column of a table of structs"
 # skips where there is none, rather than failing a shared tool's suite over a
 # product's file.
 root="$(cd "$here/../../.." && pwd)"
-# A product tree sits BESIDE shared/, one folder down: <product>/c/src/bot_roster.c.
+# A product tree sits BESIDE shared/, one folder down: <product>/c/src/bots.c.
 # Found by glob so this file names no product.
 table=""
-for cand in "$root"/*/c/src/bot_roster.c; do
+for cand in "$root"/*/c/src/bots.c; do
   [ -f "$cand" ] && { table="$cand"; break; }
 done
 if [ -z "$table" ]; then
-  echo "cli: no product table beside this tool (<product>/c/src/bot_roster.c) - skipping the real-table case"
+  echo "cli: no product table beside this tool (<product>/c/src/bots.c) - skipping the real-table case"
   # A lane that must not skip says so: the table moved once, and the case quietly
   # stopped running while the suite reported "all pass".
   [ -n "${DG_REQUIRE_REAL_TABLE:-}" ] && { echo "cli: DG_REQUIRE_REAL_TABLE is set, so a skip is a failure"; exit 1; }
   [ $fails -eq 0 ] && { echo "cli: all pass"; exit 0; } || { echo "cli: $fails failed"; exit 1; }
 fi
 prod="$(cd "$(dirname "$table")/../.." && pwd)"
-roster=(--cwd "$prod/c/src" --header bot_roster.c --table ROSTER --name BotRoster
+roster=(--cwd "$prod/c/src" --header bots.c --table BOTS --name BotRegistry
+        --columns name,key,knobs,uses_logs,tier,city,km
         --flags "-I. -isystem $prod/c/wasm/include -isystem $root/shared/c/wasm/include --target=wasm32 -D_Thread_local=")
 "$DG" "${roster[@]}" --json "$tmp/roster.json" --ts "$tmp/roster.ts" --swift "$tmp/roster.swift" \
   --kotlin "$tmp/roster.kt" --kotlin-package test.pkg
-grep -q '"key": "cordite"' "$tmp/roster.json" && grep -q '"strat": 7,' "$tmp/roster.json"
-ok $? "a struct row's columns are read by field name, and an enum cell as its value"
+grep -q '"key": "cordite"' "$tmp/roster.json" && grep -q '"tier": 9,' "$tmp/roster.json"
+ok $? "a struct row's columns are read by field name, its slot by an enum constant"
 grep -q '"knobs": "CD_BUDGET=prod,CD_RACE=1,CD_RACE_C=75"' "$tmp/roster.json"
 ok $? "a cell whose value is a #define is resolved, not copied as its name"
-grep -q '"knobs": "OG_TRUMP_KEEP=40"' "$tmp/roster.json"
-ok $? "two adjacent string literals are one string, joined as C joins them"
-grep -q 'readonly uses_logs: number;' "$tmp/roster.ts" && grep -q 'readonly knobs: string;' "$tmp/roster.ts" \
-  && grep -q 'public let tier: Int' "$tmp/roster.swift" && grep -q 'BotRosterRow(key: "random"' "$tmp/roster.swift" \
-  && grep -q '    val uses_logs: Int,' "$tmp/roster.kt" && grep -q 'BotRosterRow(key = "random"' "$tmp/roster.kt"
+grep -q '"city": "St. Petersburg"' "$tmp/roster.json" && grep -q '"km": 635' "$tmp/roster.json"
+ok $? "the rows' data come through beside an id array --columns left out"
+grep -q 'readonly uses_logs?: number;' "$tmp/roster.ts" && grep -q 'readonly knobs?: string;' "$tmp/roster.ts" && grep -q 'readonly name: string;' "$tmp/roster.ts" \
+  && grep -q 'public let tier: Int' "$tmp/roster.swift" && grep -q 'BotRegistryRow(name: "random", key: "random"' "$tmp/roster.swift" \
+  && grep -q '    val uses_logs: Int,' "$tmp/roster.kt" && grep -q 'BotRegistryRow(name = "random", key = "random"' "$tmp/roster.kt"
 ok $? "the row type carries each column's own C type into all three languages"
 
 [ $fails -eq 0 ] && echo "cli: all pass" || { echo "cli: $fails failed"; exit 1; }
