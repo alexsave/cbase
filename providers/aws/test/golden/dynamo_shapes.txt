@@ -90,6 +90,7 @@ Txn.Put item=elo_rating:N,games_played:N,pk:S=USER#{},previous_elo:N,sk:S=RATING
 Txn.Put item=game_id:S,last_commit_at:N,pk:S=SCAN,row_version:N,sk:S=GAME#{},updated_at:N
 Txn.Put item=pk:S=EMAIL#{},sk:S=USER,user_id:S
 Txn.Update key=pk:S=BOT#{},sk:S=BOT names=elo_rating,games_played,previous_elo,updated_at vals=N
+Txn.Update key=pk:S=BOT#{},sk:S=BOT names=nickname vals=S
 Txn.Update key=pk:S=GAME#{},sk:S=MEMBER#{} names=game_id,gsi1pk,gsi1sk,joined_at,updated_at,user_id vals=N,S,S:USERGAMES#{},S:{}#{}
 Txn.Update key=pk:S=GAME#{},sk:S=ROW names=game_seed,last_commit_at,logs_packed,needs_bots,roster,round_epoch,seats_exact,state,status,updated_at,version vals=B,BOOL,N
 Txn.Update key=pk:S=GAME#{},sk:S=ROW names=game_seed,last_commit_at,needs_bots,roster,round_epoch,seats_exact,state,status,updated_at,version vals=B,BOOL,N
