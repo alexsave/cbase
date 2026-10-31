@@ -357,6 +357,18 @@ The TypeScript server's e2e suite went with it; these unit_app.c tests carry ove
 
 Equivalent, recorded so nobody chases it: a bot cycle reading the row cache instead of the store survives, because in one process the cache holds the newest commit. Not ported: the casts' per-seat masking (the test checks every envelope against the seat's view, not every cast, which the kernel's own table_cast tests hold).
 
+
+## A created game's id comes from the create's answer (2026-10-31)
+
+A macos-latest run of `a_goods_only_commit_is_broadcast` saw status 2 (game over) for 7 of its 8 games.
+The test helpers took a created game's id from the dashboard's newest game, the fake clock gave every game the same updated_at, and the in-RAM store broke the tie by slot, so after a first game played to its end with no goods-only commit, every create named that finished game.
+The helpers now read the id from the create answer's roster trailer (foolish/server/test/lib_created_game.c), and the in-RAM store breaks a tie by game id as the tables do.
+Each mutant was applied, the named test failed on the named assertion, and the source was restored.
+
+- Reproduction (not shipped): game 1 of `a_goods_only_commit_is_broadcast` forced to find no goods-only commit, on main -> games 2-8 print game 1's id, `status_of(gid) == GAME_STATUS_PLAYING` x7 and `found > 0`; the same forcing with the fix -> green, game 2 a new id.
+- unit_app.c `create_game_by` back to the dashboard's newest game (with that forcing) -> the same 8 in `a_goods_only_commit_is_broadcast`, `strcmp(g1, gid) != 0` in `a_finished_games_replay_is_a_job` (whose `g_now += 60000` this replaced), and `strcmp(ga, gb) != 0` in `a_bot_pause_does_not_hold_the_thread` (which had been driving one game twice).
+- lib_created_game.c: the id read one character short -> `create_answers_the_seat_0_envelope` `cb_game_id_ok`, unit_journal `a_move_off_its_board_is_refused` `n > 0`, unit_inline_moves `a_move_on_a_locked_game_waits_on_the_pool` `m.n > 0`, unit_v1 `guessed_game_ids_are_limited` `get_id("/v1/games/", g_theirs) == 200`.
+- lib_app_store_mem.c: a tie in `games_of_user` left in slot order -> `the_dashboard_breaks_a_tie_by_game_id` `ids[0] == "aaaaaa"`.
 ## Edge cache, the bounded leaderboard read, and busy (2026-10-17)
 
 Each mutation rewritten in, its one test binary rebuilt with the touched object deleted, then rewritten back (DESIGN.md "Edge cache").
