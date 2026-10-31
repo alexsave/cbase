@@ -82,6 +82,17 @@ test('any other one-segment path is the shell: game ids and replay codes', () =>
     assert.equal(key(foolish, 'foolish.cards', '/dash'), '/foolish/_shell.html');
 });
 
+test('a promo code reaches the shell in any case, which plays it (foolish/src/common/promo.ts)', () => {
+    // The promo playing cards' QR codes (foolish/c/promo/promo_codes.h). The
+    // router knows nothing of them: a code is a one-segment path like a game id,
+    // and the page tells the two apart. So this pins that no rule here (a case
+    // rule, a hex-only id rule) ever stops one from reaching the page.
+    for (const p of ['/br', '/BR', '/Br', '/ws', '/WS', '/br/']) {
+        assert.equal(key(foolish, 'foolish.cards', p), '/foolish/_shell.html', p);
+        assert.equal(key(foolish, 'www.foolish.cards', p), '/foolish/_shell.html', p);
+    }
+});
+
 test('files pass untouched, so a missing chunk stays a 404', () => {
     for (const p of ['/_next/static/chunks/0a1b.js', '/_next/static/media/web.wasm.08p.jvewh7r_1.gz',
                      '/oracle.wasm.gz', '/dashboard.txt', '/manifest.json', '/favicon.ico']) {
