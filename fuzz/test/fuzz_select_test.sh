@@ -46,16 +46,23 @@
 #     stays green: lib_client.o is also a new compile that rt_anon reaches);
 #   * a base that does not dry-run taken as no change: "does not parse" (by
 #     its reason; every object is then new, so the selection alone is ALL).
-# Mutation-checked (2026-11-01), the one-command builds:
-#   * 'c_base/client fuzz client' taken off one_builds: --all, every client
-#     case and sha256.c;
-#   * 'shared/fuzz all product' taken off: --all, every product case,
-#     sha256.c and deal_rng.c;
-#   * the command comparison dropped (why never set): the CFLAGS, SRC_uttt,
-#     client fuzz flags and does-not-parse cases;
-#   * the -M step dropped (no header or source in the table): every source
-#     case of the two builds (the corpus cases stay green: the fz_<t>.c the
-#     corpus hangs off is then missing too, so they go red as well).
+# Mutation-checked (2026-11-01), the one-command builds, each red on exactly
+# the named cases:
+#   * 'c_base/client fuzz client' taken off one_builds: --all, the client's
+#     source and corpus, sha256.c (its client half) and the client's fuzz
+#     flags;
+#   * 'shared/fuzz all product' taken off: --all, uttt's source and corpus,
+#     sha256.c (its product half), deal_rng.c, shared/fuzz CFLAGS, SRC_uttt
+#     and its does-not-parse case (both the selection and the reason);
+#   * the command comparison dropped (no "its command changed"): shared/fuzz
+#     CFLAGS, SRC_uttt and the client's fuzz flags (does-not-parse stays
+#     green: it is its own vector, ob_ok, on purpose);
+#   * the -M step dropped (nothing the compiler reads in the table): the
+#     client's and uttt's source and corpus cases, sha256.c and deal_rng.c
+#     (the corpus cases go red too: the corpus is found beside the fz_<t>.c
+#     that -M puts in the table);
+#   * the sha256.c/deal_rng.c split put back as IFS='|' read <<< "$(halves)":
+#     both cases, on bash 3.2 only (macOS /bin/bash; CI's bash 5 stays green).
 # The sed programs below are make text: their $ and $(...) are meant literally.
 # shellcheck disable=SC2016
 set -euo pipefail
@@ -114,15 +121,17 @@ sel "the client's own source" client:client --files c_base/client/src/client.c
 sel "a file in the client's corpus" client:client --files c_base/client/fuzz/corpus/client/fuzz_select_test
 sel "a product source (uttt)" product:uttt --files uttt/c/src/uttt_rule.c
 sel "a file in uttt's corpus" product:uttt --files shared/fuzz/corpus/uttt/fuzz_select_test
-# halves <selection>: its c_base names, a |, then its prefixed ones.
+# halves <selection>: its c_base names, a |, then its prefixed ones. Split by
+# expansion, not IFS='|' read <<< "$(halves ...)": bash 3.2 (macOS) applies
+# that IFS to the here-string's own expansion too, so halves never splits.
 halves() { local c='' o='' w; for w in $1; do case "$w" in *:*) o="$o $w";; *) c="$c $w";; esac; done
           printf '%s|%s\n' "$(echo "$c" | norm)" "$(echo "$o" | norm)"; }
 got="$("$SEL" --files shared/c/sha256.c 2> "$S/err" | norm)" || fail "sha256.c: the selector failed"
-IFS='|' read -r c o <<< "$(halves "$got")"
+h="$(halves "$got")"; c=${h%%|*} o=${h#*|}
 [ "$o" = "$(echo "client:client $prod_all" | norm)" ] || fail "sha256.c selected [$o] of the client and the products: want all of them"
 [ -n "$c" ] || fail "sha256.c selected no c_base target (oidc and jwt reach it)"
 got="$("$SEL" --files shared/c/deal_rng.c 2> "$S/err" | norm)" || fail "deal_rng.c: the selector failed"
-IFS='|' read -r c o <<< "$(halves "$got")"
+h="$(halves "$got")"; c=${h%%|*} o=${h#*|}
 [ "$o" = "$(echo "product:msg_whole product:pickemup product:tallybones product:chuiniu product:foolish_wire" | norm)" ] ||
   fail "deal_rng.c selected [$o] of the client and the products: want the five whose source lists name it"
 
