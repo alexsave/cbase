@@ -272,7 +272,6 @@ int cb_js_admin_game_write(cb_buf *out, const cb_js_admin_game *g, const cb_js_a
     adm_game(&w, g);
     cb_jw_kint(&w, "state_len", g->state_len);
     cb_jw_kint(&w, "roster_len", g->roster_len);
-    cb_jw_kint(&w, "logs_len", g->logs_len);
     cb_jw_kbool(&w, "has_seed", g->has_seed);
     if (e->view_ok) {
         if (e->envelope_hex) cb_jw_kstr(&w, "envelope_hex", e->envelope_hex);

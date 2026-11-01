@@ -102,7 +102,7 @@ typedef struct {
     int                     n_seats;
     const char             *title;
     size_t                  title_len;
-    int64_t                 state_len, roster_len, logs_len;   // the game call's
+    int64_t                 state_len, roster_len;   // the game call's
     bool                    has_seed;
 } cb_js_admin_game;
 // GET games: {"games":[game..],"next"}.

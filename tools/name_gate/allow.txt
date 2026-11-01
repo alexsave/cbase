@@ -181,7 +181,7 @@
 1 c_base/core/src/store/store_priv.h /x-amz/i
 1 c_base/core/src/store/store_priv.h /sqlite/i
 2 c_base/core/src/store/store_priv.h /\bgames?\b/i
-13 c_base/core/src/store/store_sql.h /sqlite/i
+14 c_base/core/src/store/store_sql.h /sqlite/i
 1 c_base/core/src/util/bytea.h /\breplays?\b/i
 1 c_base/core/src/util/err.h /sqlite/i
 2 c_base/core/src/util/err.h /\bgames?\b/i
@@ -239,7 +239,7 @@
 1 foolish/server/src/store/rows_foolish.h /lambda/i
 11 foolish/server/src/store/rows_foolish.h /dynamo/i
 6 foolish/server/src/store/rows_foolish.h /sqlite/i
-66 foolish/server/src/store/rows_sql.c /sqlite/i
+74 foolish/server/src/store/rows_sql.c /sqlite/i
 2 foolish/server/src/store/store_import.c /dynamo/i
 1 foolish/server/src/store/store_import.h /\baws\b/i
 1 foolish/server/src/store/store_import.h /dynamo/i

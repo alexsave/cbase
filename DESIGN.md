@@ -138,7 +138,7 @@ It does not imitate Lambda: what it holds in memory is the authority, and the ru
 - One instance: boot takes an exclusive `flock` on `<db>.serve-lock` before the store opens, and a second `cbase serve` on the same file refuses to start (`boot.c`, `unit_config`).
   The provider says it with `CB_PROV_ONE_PROCESS`.
 - Store, schema 8: plain tables (`providers/local/sql/schema.sql`, `foolish/server/sql/schema.sql`), every statement prepared at open, UUIDs as 16-byte BLOBs.
-  A commit writes the fixed-size `games` row and one `game_moves` row in one transaction, whatever the game's length (a plain move goes to the move journal first, below).
+  A commit writes the `games` row in one transaction: its columns, and its chunk appended to the session's move list (`games.move_list`, `foolish/c/src/move_list.h`: the replay code's atoms and the commits' times, a few hundred bytes a game), on the row's own page, whatever the game's length (a plain move goes to the move journal first, below).
   `users.username` is the name as shown, exactly as stored; `users.username_key` (`auth/names.h` `cb_name_key`) is the unique column names compare by.
 - Store, group commit: writes queue, and the thread that finds no group running leads one transaction (BEGIN, a SAVEPOINT per request when the group holds more than one, COMMIT) and hands each caller its own result.
   A move is acknowledged only after its COMMIT.
@@ -191,7 +191,7 @@ It does not imitate Lambda: what it holds in memory is the authority, and the ru
   A bot cycle adopts the resident without the lock (its commit is fenced), and the session log of a session the tables do not hold yet comes from the overlay alone.
   At most `max_games` (4096) are resident: the least recently used idle ones leave at the flush thread's pass, and a game idle 60 s with nothing waiting leaves; a game with waiting commits never does.
   An import flushes first (`journal_scan`).
-  THE FLUSH RULE (`flush_due`, its one owner): a game's waiting moves go to the tables (the games row fenced on the version the table holds, and its game_moves rows) when its oldest waiting move is `CBASE_JOURNAL_GAME_AGE_S` old (600) or its waiting moves hold `CBASE_JOURNAL_GAME_BYTES` (256 KiB); every game's go when all the waiting moves hold `CBASE_JOURNAL_TOTAL_BYTES` (16 MiB, sized for the t4g.nano's 512 MB), at close, and for the admin console. A flush pass is bounded transactions of at most `CBASE_JOURNAL_TXN_MOVES` (2000) waiting moves, the oldest games first, with the flush lock given back between them, so a write around the journal waits one transaction and never a whole pass.
+  THE FLUSH RULE (`flush_due`, its one owner): a game's waiting moves go to the tables (the games row fenced on the version the table holds, and its move list chunks appended) when its oldest waiting move is `CBASE_JOURNAL_GAME_AGE_S` old (600) or its waiting moves hold `CBASE_JOURNAL_GAME_BYTES` (256 KiB); every game's go when all the waiting moves hold `CBASE_JOURNAL_TOTAL_BYTES` (16 MiB, sized for the t4g.nano's 512 MB), at close, and for the admin console. A flush pass is bounded transactions of at most `CBASE_JOURNAL_TXN_MOVES` (2000) waiting moves, the oldest games first, with the flush lock given back between them, so a write around the journal waits one transaction and never a whole pass.
   The waiting moves' log deltas are one grown buffer per game (`jgame.logs`, offsets in its move list), not an allocation per move.
   Every other commit but one that rates (a deal, a seat, a lobby edit, an unrated end) is journaled whole, as a full record: its row, its session-log records and whether it clears the log, coded raw beside the move batches, recovered by adopting the row at its base version; the flush writes the row, the log clears and appends in order, and brings the stored seats to the roster's.
   A commit that rates and a delete write that game's waiting commits first, around the journal, in their own transaction (a rating is read from the tables by the leaderboard and the next game): most games reach the tables once, at their end, and a lobby, its deal and its moves cost no SQLite on the request path.
@@ -207,6 +207,7 @@ It does not imitate Lambda: what it holds in memory is the authority, and the ru
 - Backups: the database is copied to the VM's backup bucket (dualstack S3 host) when it changed, with a write-behind layer's files and a manifest beside it, and the newest copy is restored at start when the file is missing (`providers/local/src/store/backup.c`).
 - Rig: `bench/nano/` is the 0.1-CPU, 512 MB rehearsal; `sat.sh` (saturation, `WAL=1` for the WAL meter), `run.sh` (human pace), `prof_off.sh` (time inside syscalls), `botg.sh` (bot tables).
   Measured on the final build: saturation 18.3k moves/s at p99 1.1 ms on a quiet host (16.76k at p99 10 ms before the checkpointer), and 9.8 KB of WAL per move (2.4 frames: the games row's page and the game_moves page).
+  Since the move list replaced game_moves (schema 10) a move writes one page, not two: without the journal 5.2 KB of WAL per move against 10.5 KB (1.14 frames a commit against 2.31, `cbase-bench roundtrip`, 5,000 moves, this Mac).
 
 ## Module: store
 
@@ -220,7 +221,7 @@ Since schema 6 (stage 6, 2026-10-18) it holds nothing but the `items` table and 
 THE ITEM LAYER (`core/src/store/items.h`, docs/PLATFORM.md stages 5 and 6): DynamoDB's model on both backends, seven operations in `cb_store_ops` (`item_get`, `item_write`, `item_txn`, `item_query`, `item_batch_get`, `item_batch_delete`, `item_keys`): a string pk and sk, typed attributes (a list of strings among them, for a replay's `player_ids`), the two overloaded indexes, a write conditioned by up to four clauses, sets that are plain, if-absent, an increment or a removal, the item back on a refusal, transactions, and TTL as the `expires_ms`/`expires_at` pair.
 DynamoDB spells it in `json_surface.c` (`dw_iget`, `dw_iwrite`, `dw_itxn`, `dw_iquery`, `dw_ibatch`, `dw_ibatch_delete`, `dw_item_read`); SQLite keeps one `items` table (schema 6), the keys in columns and every attribute in one binary record (`cb_item_record_*`, no JSON), and never deletes an expired item, so readers check `expires_ms` on both.
 Every row is written once above it, the same items and attributes DynamoDB held before: sessions, refresh tokens and failed sign-ins in `core/src/store/rows_auth.c`, users, email and every foolish row in `foolish/server/src/store/rows_foolish.c` (a port of the DynamoDB backend's logic: the CAS, the lone commit, the lease on the SCAN marker, seats, ratings, snapshots, chat, imports), so SQLite behaves as DynamoDB by construction.
-Attribute names that differ from the row structs: a game's `logs` is `logs_packed` and its seed `game_seed`, every TTL'd row's `expires_at` field is `expires_ms`; absent attributes default to elo 1000, previous_elo -1 (never written when negative), games_played 0.
+Attribute names that differ from the row structs: a game's `logs` (its session's move list) is `move_list` and its seed `game_seed`, every TTL'd row's `expires_at` field is `expires_ms`; absent attributes default to elo 1000, previous_elo -1 (never written when negative), games_played 0.
 `make check-dynamo` holds the keys: every request its lane sends is reduced to its shape (`dw_shape`: each key value as the template slot it fills, never by what an id looks like, and every attribute name), and the set must equal `providers/aws/test/golden/dynamo_shapes.txt`.
 The 99 shapes were the same on main's store code, on stage 5's and on stage 6's before its one intended change, the replay pointers (below); the golden then holds 102, three of them requests only `unit_store` sends (a legacy rating row put by hand, read back, and reindexed out of the leaderboard).
 
@@ -237,7 +238,7 @@ Items, by partition key and sort key:
 | `REFRESH#<sha256 hex>` | `TOKEN` | user, session, created, revoked, revoked_at; gsi1 `USERREFRESH#<user>` |
 | `SESSION#<id>` | `SESSION` | user, created, gen, revoked; TTL its end |
 | `AUTHFAIL#<email>` | `FAILS` | n, last_at, locked_until; TTL an hour after the last write |
-| `GAME#<id>` | `ROW` | state, roster, logs_packed, seed (Binary); version, round_epoch, status, needs_bots, created/updated/last_commit |
+| `GAME#<id>` | `ROW` | state, roster, move_list, seed (Binary); version, round_epoch, status, needs_bots, created/updated/last_commit |
 | `GAME#<id>` | `MEMBER#<user>` | a seated human; gsi1 `USERGAMES#<user>` / `<updated_at, 15 digits>#<game>` gives the dashboard |
 | `GAME#<id>` | `BOT#<bot id>` | a seated bot |
 | `BOT#<id>` | `BOT` | the 49 bots, with their ratings |
@@ -491,8 +492,8 @@ As built:
 - The per-op `noCommit`/`freshOnly` flags became one rule: MOOT, STALE_ROUND and REJECTED commit nothing; STALE_ROUND, REJECTED and any refusal read from a cached row re-run fresh.
 - Ratings: when the products want them, the host reads `ratings_for`, calls `table_rate` and `table_commit_products` again in the same section; the operation is not re-run.
 - The end of a game: the replay code and extras go into a separate `snapshot_put` after the winning commit, as `finalize.ts` did.
-  finalize.ts then cleared `logs_packed` with a second, unfenced UPDATE; the store has no such write, so the finished game's log stays until the next commit that leaves the finished table (a lobby commit empties it, a deal replaces it).
-  This is accepted: the log is read only by the next deal's append and by the replay gate, both of which handle it.
+  finalize.ts then cleared `logs_packed` with a second, unfenced UPDATE; the store has no such write, so the finished game's move list stays until the next commit that leaves the finished table (a lobby commit empties it, a deal replaces it).
+  This is accepted: the list is read only by the game end's replay (`table_replay_code_list`, `table_replay_extras_list`), and no bot cycle reads it (the row carries the bot memory).
   The snapshot's `player_ids` include the bots, as finalize.ts wrote them.
 - `fanout.c`: a pv- INSERT/UPDATE/DELETE per human row on every commit, and the gu- casts per human seat and the game- cast on every commit too.
   table_io.ts cast only when `n_events > 0 || goods_changed`, and c_base added `roster_changed` after a delete-account redaction on a dealt table cast nothing and an open page kept the deleted name until a reload.

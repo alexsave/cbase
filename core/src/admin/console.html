@@ -603,7 +603,7 @@ function panelGames(main) {
           h('div', { class: 'k' }, 'Version / round'), h('div', { class: 'v' }, g.version + ' / ' + g.round_epoch),
           h('div', { class: 'k' }, 'Seats'), h('div', { class: 'v' }, seatsText(g)),
           h('div', { class: 'k' }, 'Needs bots'), h('div', { class: 'v' }, g.needs_bots ? 'yes' : 'no'),
-          h('div', { class: 'k' }, 'Bytes'), h('div', { class: 'v' }, 'state ' + fmtBytes(g.state_len) + ', roster ' + fmtBytes(g.roster_len) + ', log ' + fmtBytes(g.logs_len) + (g.has_seed ? ', seeded' : '')),
+          h('div', { class: 'k' }, 'Bytes'), h('div', { class: 'v' }, 'state ' + fmtBytes(g.state_len) + ', roster ' + fmtBytes(g.roster_len) + (g.has_seed ? ', seeded' : '')),
           h('div', { class: 'k' }, 'Created'), h('div', { class: 'v' }, fmtTime(g.created_at)),
           h('div', { class: 'k' }, 'Last commit'), h('div', { class: 'v' }, fmtTime(g.last_commit_at))),
         h('h3', { style: 'margin-top:14px' }, 'Spectator envelope' + (g.envelope_hex ? ' (' + g.envelope_hex.length / 2 + ' bytes, v' + g.envelope_version + ')' : '')),
