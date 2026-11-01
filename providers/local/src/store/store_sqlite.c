@@ -275,6 +275,16 @@ sqlite3_stmt *cb_sql_stmt(cb_sql *x, int id) {
 int cb_sql_run(cb_sql *x, sqlite3_stmt *st, const char *what) { return run(x, st, what); }
 int cb_sql_fail(cb_sql *x, const char *what, int rc) { return fail(x, what, rc); }
 int cb_sql_changes(cb_sql *x) { return sqlite3_changes(x->db); }
+sqlite3_stmt *cb_sql_prepare_once(cb_sql *x, const char *sql) {
+    sqlite3_stmt *st = NULL;
+    const int rc = sqlite3_prepare_v2(x->db, sql, -1, &st, NULL);
+    if (rc != SQLITE_OK) {
+        CB_ERROR(MOD, "prepare %s: %s", sql, sqlite3_errmsg(x->db));
+        sqlite3_finalize(st);
+        return NULL;
+    }
+    return st;
+}
 int cb_sql_exec(cb_sql *x, const char *sql) {
     int rc = sqlite3_exec(x->db, sql, NULL, NULL, NULL);
     return rc == SQLITE_OK ? CB_OK : fail(x, "exec", rc);
@@ -604,6 +614,7 @@ static int apply_schema(sq *q, const cb_store_app *app) {
         goto out;
     if ((rc = exec(q, cbase_schema_sql)) != CB_OK) goto out;
     if (app && app->sql_schema && (rc = exec(q, app->sql_schema)) != CB_OK) goto out;
+    if (app && app->sql_upgrade && have > 0 && have < CB_SCHEMA_VERSION && (rc = app->sql_upgrade(q, have)) != CB_OK) goto out;
     char v[64];
     snprintf(v, sizeof v, "PRAGMA user_version = %d", CB_SCHEMA_VERSION);
     if ((rc = exec(q, v)) != CB_OK) goto out;

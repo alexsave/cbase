@@ -269,6 +269,11 @@ typedef struct cb_store_app {
     // product's that hangs off the user, in the delete's transaction.
     int (*sql_signup)(struct cb_sql *x, const cb_user_row *u);
     int (*sql_delete)(struct cb_sql *x, const char *user_id);
+    // The product's own steps from an older schema that are not idempotent (a column
+    // added, rows converted, a table dropped): called in the schema's transaction,
+    // after the product's tables, with the user_version the database had (never 0, a
+    // new database, nor CB_SCHEMA_VERSION). An error rolls the open back. NULL: none.
+    int (*sql_upgrade)(struct cb_sql *x, int64_t from_version);
 } cb_store_app;
 
 // A file a write-behind layer keeps beside the store's file: its path is the database's
@@ -399,7 +404,8 @@ void cb_store_throttles_get(cb_store_throttles *out);
 
 // The SQLite schema version this binary applies (store_sqlite.c), and the
 // embedded schema text (build/gen/schema_sql.c, from providers/local/sql/schema.sql).
-#define CB_SCHEMA_VERSION 9
+// 10: the product's own upgrade step from 9 (cb_store_app sql_upgrade).
+#define CB_SCHEMA_VERSION 10
 extern const char cbase_schema_sql[];
 extern const unsigned long cbase_schema_sql_len;
 

@@ -49,6 +49,10 @@ int cb_sql_fail(cb_sql *x, const char *what, int rc);
 int cb_sql_exec(cb_sql *x, const char *sql);
 // Rows the last statement changed.
 int cb_sql_changes(cb_sql *x);
+// A statement prepared once, for a step that runs once (an upgrade's, whose tables the
+// product's statements, all prepared at open, may not name): the caller finalizes it.
+// NULL after logging why.
+struct sqlite3_stmt *cb_sql_prepare_once(cb_sql *x, const char *sql);
 
 // A UUID's 16 bytes at parameter i (NULL when id is not one); true when bound as bytes.
 bool cb_sql_bind_uuid(struct sqlite3_stmt *st, int i, const char *id);
