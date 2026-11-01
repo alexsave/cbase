@@ -32,6 +32,11 @@ int cb_backup_once(cb_backup *b);
 // Backups that finished, and that failed; for the tests and the log.
 void cb_backup_counts(const cb_backup *b, long *ok, long *failed);
 
+// THE COPY BEFORE AN UPGRADE, sent once (store.h cb_store_local_pre_upgrade_path): when it exists beside
+// db_path and "<copy>.sent" does not, it is put under "<key>.pre-schema<N>" and the marker written. 1 sent,
+// 0 nothing to send, or the put's CB_E_* (the next start tries again). The server never deletes the copy.
+int cb_backup_push_pre_upgrade(const cb_blob *blob, const char *key, const char *db_path);
+
 // The serve hooks of the local provider: restore before boot, the timer after listen, from the environment
 // (CBASE_BACKUP_BUCKET, CBASE_BACKUP_REGION, CBASE_BACKUP_KEY, CBASE_BACKUP_INTERVAL_S). No bucket: nothing.
 int cb_backup_serve_prepare(const cb_config *cfg);

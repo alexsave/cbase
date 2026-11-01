@@ -219,11 +219,40 @@ static void restore_puts_a_sound_backup_in_place_and_refuses_the_rest(void) {
     T_CHECK(access(db, F_OK) != 0);
 }
 
+// THE COPY BEFORE AN UPGRADE goes to the bucket once, under the backup's key and the copy's suffix: a
+// second start sends nothing, a failed send leaves no marker and the next start sends it.
+// MUTATION-CHECKED: the marker not written turns "a second start sends nothing" red; the marker written
+// on a failed put turns "the next start sends it" red.
+static void the_copy_before_an_upgrade_is_sent_once(void) {
+    fresh();
+    char db[400], copy[1100], obj[600];
+    snprintf(db, sizeof db, "%s/live.sqlite", g_dir);
+    cb_blob blob = { fake_put, fake_get, NULL, NULL };
+    T_EQ_INT(cb_backup_push_pre_upgrade(&blob, "k", db), 0);   // no copy: nothing to send
+    T_CHECK(cb_store_local_pre_upgrade_path(db, copy, sizeof copy));
+    FILE *f = fopen(copy, "wb");
+    fputs("the schema-9 database", f);
+    fclose(f);
+    g_fail_put = 1;
+    T_CHECK(cb_backup_push_pre_upgrade(&blob, "k", db) < 0);   // the put failed
+    g_fail_put = 0;
+    T_EQ_INT(cb_backup_push_pre_upgrade(&blob, "k", db), 1);   // the next start sends it
+    char key[64];
+    snprintf(key, sizeof key, "k%s", strrchr(copy, '.'));
+    key_path(key, obj, sizeof obj);
+    T_CHECK(access(obj, F_OK) == 0);   // under "<key>.pre-schema<N>"
+    const int puts = g_puts;
+    T_EQ_INT(cb_backup_push_pre_upgrade(&blob, "k", db), 0);   // a second start sends nothing
+    T_EQ_INT(g_puts, puts);
+    T_CHECK(access(copy, F_OK) == 0);   // and the copy stays
+}
+
 int main(void) {
     cb_log_init(CB_LOG_ERROR + 1, 0);
     T_RUN(the_copy_is_a_valid_database_with_the_same_rows);
     T_RUN(only_a_change_sends_and_a_failed_upload_retries);
     T_RUN(an_admin_write_is_backed_up);
     T_RUN(restore_puts_a_sound_backup_in_place_and_refuses_the_rest);
+    T_RUN(the_copy_before_an_upgrade_is_sent_once);
     return T_DONE();
 }

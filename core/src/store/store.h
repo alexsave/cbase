@@ -353,6 +353,11 @@ unsigned long cb_store_local_changes(cb_store *s);
 // backend or a database without a WAL): the bytes a write costs on disk before any checkpoint.
 unsigned long cb_store_local_wal_frames(cb_store *s);
 long cb_store_local_blocks(long *fresh);
+// THE COPY BEFORE AN UPGRADE: opening a database at an older schema first writes a consistent
+// copy of it (the database library's online backup) to this path beside it, synced, and kept: the
+// server never deletes it. A copy that cannot be made refuses the open with the database untouched.
+// The path is "<db_path>.pre-schema<CB_SCHEMA_VERSION>"; false when it does not fit `cap`.
+bool cb_store_local_pre_upgrade_path(const char *db_path, char *out, size_t cap);
 // Opens the DynamoDB table `table` in the region and with the credentials the
 // Lambda environment provides (aws/sigv4.h cb_aws_creds_from_env).
 int cb_store_open_dynamo(const char *table, cb_store **out);

@@ -376,10 +376,31 @@ int cb_backup_serve_prepare(const cb_config *cfg) {
     return cb_backup_restore(&blob, key, cfg->db_path);
 }
 
+int cb_backup_push_pre_upgrade(const cb_blob *blob, const char *key, const char *db_path) {
+    char copy[1100], sent[1110], obj[400];
+    if (!cb_store_local_pre_upgrade_path(db_path, copy, sizeof copy)) return CB_E_INVALID;
+    snprintf(sent, sizeof sent, "%s.sent", copy);
+    struct stat st;
+    if (stat(copy, &st) != 0 || stat(sent, &st) == 0) return 0;
+    const char *suffix = strrchr(copy, '.');   // ".pre-schema<N>"
+    snprintf(obj, sizeof obj, "%s%s", key, suffix ? suffix : ".pre-upgrade");
+    const int rc = blob->put(blob->ud, obj, copy);
+    if (rc != CB_OK) {
+        CB_ERROR(MOD, "the copy before the upgrade (%s) could not be sent to %s (%s): the next start tries again", copy, obj,
+                 cb_strerror(rc));
+        return rc;
+    }
+    FILE *f = fopen(sent, "w");
+    if (f) fclose(f);
+    CB_INFO(MOD, "sent the copy before the upgrade (%s) to %s", copy, obj);
+    return 1;
+}
+
 void cb_backup_serve_start(cb_ctx *ctx) {
     cb_blob blob;
     char key[256];
     int64_t iv;
     if (env_blob(&blob, key, sizeof key, &iv) != CB_OK) return;
+    (void)cb_backup_push_pre_upgrade(&blob, key, ctx->cfg->db_path);
     if (cb_backup_start(ctx, &blob, key, iv)) CB_INFO(MOD, "backing up to %s every %lld s when the database changed", key, (long long)(iv / 1000));
 }
