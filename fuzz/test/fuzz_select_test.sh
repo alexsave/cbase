@@ -61,6 +61,14 @@ sel() {
   [ "$got" = "$(echo "$want" | norm)" ] || fail "$label: selected [$got], want [$want]"
 }
 
+# ---- no pipe the reader cuts short ---------------------------------------------
+# Under pipefail GNU sed (Linux, CI) fails when `| head` stops reading early;
+# macOS sed is silent, so the cases below cannot catch it on a Mac (PR #460's
+# first CI run did). Mutation-checked: the reasons list's `| head -20` put back.
+if grep -nE '^[^#]*\|[[:space:]]*head([[:space:]]|$)' "$SEL" > "$S/heads"; then
+  fail "the selector truncates a pipe with head (fails under pipefail on Linux): $(tr '\n' ' ' < "$S/heads")"
+fi
+
 # ---- file changes, against HEAD ---------------------------------------------
 sel "a doc" "" --files README.md
 sel "a workflow" "" --files .github/workflows/c_base.yml
