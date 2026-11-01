@@ -629,7 +629,7 @@ typedef struct { int n; char ids[GB_N][CB_GAME_ID_MAX + 1]; bool logs; } rows_se
 static bool seen_row(const cb_game_row *r, void *ud) {
     rows_seen *s = ud;
     if (s->n < GB_N) snprintf(s->ids[s->n++], sizeof s->ids[0], "%s", r->id);
-    s->logs |= r->logs != NULL || r->logs_len != 0;
+    s->logs |= r->list != NULL || r->list_len != 0;
     return true;
 }
 

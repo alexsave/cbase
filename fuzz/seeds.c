@@ -320,7 +320,7 @@ static void dynamo_items(void) {
     g.state = g_state; g.state_len = (size_t)g_state_len;
     g.roster = g_roster; g.roster_len = sizeof g_roster;
     static uint8_t logs[4] = { 1, 2, 3, 4 };
-    g.logs = logs; g.logs_len = 4;
+    g.list = logs; g.list_len = 4;
     g.has_seed = true; g.version = 3; g.needs_bots = true; g.created_at = 1; g.updated_at = 2;
     (void)CB_ROWS_CALL(st, game_create, &g, U1);
     cb_snapshot_row sn;
