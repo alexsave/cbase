@@ -51,6 +51,8 @@ It writes `/etc/cbase/cbase.env` (root, 0600), the unit, and restarts `cbase`.
 It installs itself as `/usr/local/sbin/cbase-vm-boot`, so running it again is the upgrade.
 The service runs as the system user `cbase` with its data in `/var/lib/cbase`, and listens on `:::8080` (dual-stack socket).
 Its log is `journalctl -u cbase`; the boot script's log is `/var/log/cbase-vm-boot.log`.
+Journald is volatile (`/etc/systemd/journald.conf.d/cbase.conf`: RAM only, 16M cap), so `journalctl -u cbase` only reaches back to the last reboot; cbase state and backups are elsewhere and survive.
+This is deliberate: persistent journald wrote about 1.2 GB a day to the EBS root (mmap writeback amplification), and chrony's own logs are off for the same reason.
 
 ## Why IPv6-only
 

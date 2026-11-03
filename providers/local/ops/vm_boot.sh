@@ -11,6 +11,7 @@
 #                                       SecureStrings, made by vm_deploy.sh)
 #   2. installs the SSM agent from its pinned rpm (minimal AL2023 has none),
 #      dual-stack endpoints on, IMDS over IPv6;
+#   2b. makes journald volatile and turns chrony's own logs off (see there);
 #   3. fetches the static `cbase serve` binary, checks its sha256, writes the
 #      0600 EnvironmentFile and the systemd unit, and (re)starts cbase.
 # It never prints a parameter value.
@@ -108,6 +109,37 @@ EOF
   systemctl daemon-reload
   systemctl enable --now amazon-ssm-agent
 fi
+
+# 2b. system logs live in RAM. Measured on the production VM (2 GB xfs root, 80% full):
+# journald wrote 1.1-1.36 GB a day to EBS (lifetime wchar 2.5 MB against write_bytes
+# 20.9 GB, about 100 KB of writeback per log line: mmap amplification), mostly from
+# ec2-net-utils' refresh-policy-routes@ens5.timer (an IMDS query every ~20 s, 3-4 lines);
+# chronyd added ~28 MB a day through `log measurements statistics tracking`; cbase is quiet.
+# So journald is volatile (a size-capped /run/log/journal) and chrony's own logs are off.
+# Cost: system logs, `journalctl -u cbase` included, are lost on reboot. cbase state and
+# backups do not live there. Under ~50 MB a day of writes remain, and ~90 MB of old journal
+# and chrony logs are freed. Idempotent: each service restarts only when its file changed.
+# The refresh-policy-routes noise is not silenced separately: volatile storage already
+# removes its disk cost, and a LogLevelMax drop-in would hide real route failures.
+# R is a root prefix for the tests (empty on the VM).
+R="${VM_ROOT:-}"
+jconf="$R/etc/systemd/journald.conf.d/cbase.conf"
+mkdir -p "$(dirname "$jconf")"
+printf '[Journal]\nStorage=volatile\nRuntimeMaxUse=16M\nRuntimeKeepFree=32M\nForwardToSyslog=no\n' > "$jconf.new"
+if cmp -s "$jconf.new" "$jconf"; then
+  rm -f "$jconf.new"
+else
+  mv -f "$jconf.new" "$jconf"
+  systemctl restart systemd-journald
+  rm -rf "$R"/var/log/journal/*
+fi
+if [ -f "$R/etc/chrony.conf" ] && grep -q '^log ' "$R/etc/chrony.conf"; then
+  sed -i.bak 's/^log /#log /' "$R/etc/chrony.conf"
+  rm -f "$R/etc/chrony.conf.bak"
+  systemctl restart chronyd
+  rm -rf "$R"/var/log/chrony/*
+fi
+# end 2b
 
 # 3. the server.
 getent passwd cbase >/dev/null || useradd --system --no-create-home --home-dir /var/lib/cbase --shell /sbin/nologin cbase
