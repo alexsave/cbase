@@ -407,7 +407,9 @@ The web is the only switch that matters on day one, and it flips back in minutes
 1. The web's hosting: Vercel is gone (W9), so a bad web deploy is rolled back on AWS (W7, last paragraph).
 2. Anything players did on c_base since the switch stays in DynamoDB and is not copied back.
 3. A bad c_base build is rolled back separately: download an earlier `cbase-lambda` artifact (every CI run keeps one for 30 days) and run `c_base/providers/aws/ops/lambda_deploy.sh <its cbase-lambda.zip>` from a tree that contains main; it points the stack back at that zip.
-   Or point the stack straight at the earlier key, which is still in the code bucket: **CloudFormation > cbase > Update > Use existing template**, CodeKey = the old `cbase-lambda-<hash>.zip`.
+   Or point the stack straight at the earlier key, if it is still in the code bucket: **CloudFormation > cbase > Update > Use existing template**, CodeKey = the old `cbase-lambda-<hash>.zip`.
+   `lambda_deploy.sh` deletes every other `cbase-lambda-*.zip` after a deploy is live and healthy, keeping the new zip and the one the stack ran before it, so only one step back is in the bucket; for older code use the CI artifact.
+   `c_base/ops/s3_prune.sh --dry-run lambda` shows what a prune would delete. The function and the stack are never deleted.
 
 ## Costs, for reference
 

@@ -23,7 +23,13 @@
 #      only after the upload, so a failed upload leaves the old binary serving;
 #   5. --verify: cbase active, /usr/local/bin/cbase has this sha256, the
 #      instance's own /health and /ready answer 200, and <PublicUrl>/health
-#      answers "ok cbase". Any of them not so fails the deploy.
+#      answers "ok cbase". Any of them not so fails the deploy;
+#   6. prunes the bucket (c_base/ops/s3_prune_lib.sh): every other
+#      vm/cbase-serve-* and its .sha256 goes, except the new release and the one
+#      the pointer named before (the one-step rollback). Only after step 5
+#      passed, only when the pointer read back as the new key, and never
+#      templates/ or the amazon-ssm rpm. A prune that fails warns and does not
+#      fail the deploy. CBASE_PRUNE_DRY_RUN=1 only prints what it would delete.
 #
 # Every AWS call here is one the GitHub role grants (role_covers_release.sh
 # holds the two together). Settings: AWS_REGION (us-east-1), CBASE_VM_STACK
@@ -50,6 +56,8 @@ case "$1" in
     [ -f "$bin" ] || die "$bin is not a file"
     # shellcheck source=c_base/ops/require_main.sh
     . "$repo/c_base/ops/require_main.sh"
+    # shellcheck source=c_base/ops/s3_prune_lib.sh
+    . "$repo/c_base/ops/s3_prune_lib.sh"
     require_main "$repo"
     file "$bin" | grep -Eq 'ARM aarch64.*(statically|static-pie) linked' || die "$bin is not a static arm64 binary"
     sum="$(sha256 "$bin")"
@@ -137,6 +145,12 @@ else
 fi
 
 # ---- 3. the pointer ---------------------------------------------------------------
+# What it named until now is the rollback target the prune keeps. If it cannot be
+# read, nothing is pruned (a guess here would delete the wrong release).
+prev_key=""
+if old_value="$(aws ssm get-parameter --name "$param" --query Parameter.Value --output text 2>/dev/null)"; then
+  prev_key="$(echo "$old_value" | awk '{print $2}')"
+fi
 aws ssm put-parameter --name "$param" --type String --overwrite --value "$bucket $key $sum" >/dev/null
 echo "$param -> $key"
 
@@ -144,3 +158,17 @@ echo "$param -> $key"
 restart
 verify "$sum"
 echo "cbase-vm runs $key"
+
+# ---- 6. the prune -------------------------------------------------------------------
+# The live key is read back from the pointer, the source of truth, never taken
+# from this run's variables or the listing's order.
+live_key="$(aws ssm get-parameter --name "$param" --query Parameter.Value --output text 2>/dev/null | awk '{print $2}')" || live_key=""
+if [ -z "$prev_key" ] || [ "$prev_key" = None ]; then
+  echo "prune skipped: the pointer's previous value could not be read"
+elif [ "$prev_key" = "$key" ]; then
+  echo "prune skipped: the pointer already named $key (the release it replaced is not known)"
+elif [ "$live_key" != "$key" ]; then
+  echo "prune skipped: the pointer reads '$live_key', not $key"
+else
+  prune_bucket vm "$bucket" "$live_key" "$prev_key" || echo "warning: the prune failed; the deploy stands" >&2
+fi

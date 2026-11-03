@@ -5,12 +5,16 @@
 # The role is least privilege, so a call the script gains and the role lacks
 # fails the deploy on main, after every test passed, with production still on
 # the old binary. This reads each `aws <service> <command>` in SCRIPT
-# (providers/local/ops/vm_release.sh by default) and requires the IAM action
+# (providers/local/ops/vm_release.sh and the prune it sources,
+# c_base/ops/s3_prune_lib.sh, by default) and requires the IAM action
 # it needs in the role. A command this table does not know stops the check: add
 # its action here and to the role.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 script="${1:-$here/../../local/ops/vm_release.sh}"
+# The default also reads the prune library vm_release.sh sources.
+files=("$script")
+[ -n "${1:-}" ] || files+=("$here/../../../ops/s3_prune_lib.sh")
 role="${2:-$here/github_oidc.yaml}"
 
 # The IAM action(s) a CLI command needs, space-separated; "-" for none.
@@ -20,7 +24,10 @@ action_of() {
     "s3api get-object") echo s3:GetObject ;;
     "s3api head-object") echo s3:GetObject ;;
     "s3api put-object") echo s3:PutObject ;;
+    "s3api list-objects-v2") echo s3:ListBucket ;;
+    "s3api delete-object") echo s3:DeleteObject ;;
     "ssm put-parameter") echo ssm:PutParameter ;;
+    "ssm get-parameter") echo ssm:GetParameter ;;
     "ssm send-command") echo ssm:SendCommand ;;
     "ssm get-command-invocation") echo ssm:GetCommandInvocation ;;
     "autoscaling describe-auto-scaling-groups") echo autoscaling:DescribeAutoScalingGroups ;;
@@ -28,7 +35,7 @@ action_of() {
   esac
 }
 
-calls="$(grep -v '^[[:space:]]*#' "$script" | grep -oE '(^|[^A-Za-z_-])aws [a-z0-9]+ [a-z-]+' | sed -E 's/^[^a]*aws //' | sort -u)"
+calls="$(cat "${files[@]}" | grep -v '^[[:space:]]*#' | grep -oE '(^|[^A-Za-z_-])aws [a-z0-9]+ [a-z0-9-]+' | sed -E 's/^[^a]*aws //' | sort -u)"
 [ -n "$calls" ] || { echo "role_covers_release: no aws call in $script" >&2; exit 1; }
 bad=0
 while IFS= read -r c; do

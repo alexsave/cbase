@@ -118,11 +118,21 @@ Resources:
               # ---- the API server (cbase-vm) ----
               - Sid: VmRelease
                 Effect: Allow
-                Action: [s3:PutObject, s3:GetObject]
+                Action: [s3:PutObject, s3:GetObject, s3:DeleteObject]
                 Resource: !Sub "arn:${AWS::Partition}:s3:::${CodeBucket}/vm/cbase-serve-*"
+              # The prune after a release (ops/s3_prune_lib.sh) lists only the
+              # release prefix and deletes only vm/cbase-serve-* above: templates/
+              # and the amazon-ssm rpm are out of reach.
+              - Sid: VmReleaseList
+                Effect: Allow
+                Action: s3:ListBucket
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${CodeBucket}"
+                Condition:
+                  StringLike:
+                    "s3:prefix": vm/cbase-serve-*
               - Sid: VmReleasePointer
                 Effect: Allow
-                Action: ssm:PutParameter
+                Action: [ssm:PutParameter, ssm:GetParameter]
                 Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cbase-vm/release/serve"
               # SendCommand authorizes the document and each instance: the
               # instance only when it carries the group's tag (Auto Scaling

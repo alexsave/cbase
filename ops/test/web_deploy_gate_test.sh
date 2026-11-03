@@ -33,7 +33,7 @@ g() { git -c user.name=t -c user.email=t@t -c init.defaultBranch=main "$@"; }
 g init -q --bare "$tmp/origin.git"
 g clone -q "$tmp/origin.git" "$tmp/seed" 2>/dev/null
 mkdir -p "$tmp/seed/c_base/ops" "$tmp/seed/c_base/providers/aws/ops/site" "$tmp/seed/c_base/providers/local/ops"
-cp "$ops/require_main.sh" "$ops/ops_env.sh" "$tmp/seed/c_base/ops/"
+cp "$ops/require_main.sh" "$ops/ops_env.sh" "$ops/s3_prune_lib.sh" "$tmp/seed/c_base/ops/"
 cp "$aws_ops/lambda_deploy.sh" "$tmp/seed/c_base/providers/aws/ops/"
 cp "$aws_ops/site/web_deploy.sh" "$tmp/seed/c_base/providers/aws/ops/site/"
 cp "$ops/../providers/local/ops/vm_release.sh" "$tmp/seed/c_base/providers/local/ops/"

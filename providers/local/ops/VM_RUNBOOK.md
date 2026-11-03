@@ -214,7 +214,12 @@ aws cloudformation wait stack-delete-complete --stack-name cbase-vm
 
 The backup bucket is retained on purpose; empty and delete it by hand when it is truly unwanted.
 The SecureStrings were made outside the stack, so delete them too: `aws ssm delete-parameters --names /cbase-vm/env/CBASE_JWT_SECRET /cbase-vm/env/CBASE_ADMIN_TOKEN /cbase-vm/env/CBASE_ORIGIN_SECRET`.
-The releases under `s3://<CodeBucket>/vm/` stay until removed.
+The releases under `s3://<CodeBucket>/vm/` do not go with the stack.
+They are pruned on every deploy instead: after `vm_release.sh` verifies a new release (and after `vm_deploy.sh` with a BIN), every other `vm/cbase-serve-*` and its `.sha256` is deleted, except the new release and the one the pointer named before it (the one-step rollback).
+`templates/` and the amazon-ssm rpm are never touched.
+To prune by hand, or to see what a prune would delete: `c_base/ops/s3_prune.sh --dry-run vm`, then again without `--dry-run`.
+It reads the live key from `/cbase-vm/release/serve` and prunes nothing if that read fails.
+A rollback is the previous key in the pointer; only one step back is kept.
 
 ## OS updates
 

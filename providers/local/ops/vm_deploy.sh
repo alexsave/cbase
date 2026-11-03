@@ -21,7 +21,12 @@
 #      /cbase-vm/env/ (CBASE_JWT_SECRET, CBASE_ADMIN_TOKEN, CBASE_ORIGIN_SECRET);
 #      never regenerated, never printed;
 #   4. gzips vm_boot.sh (with cbase.service inside) into the user-data;
-#   5. cloudformation deploy of vm.yaml as stack cbase-vm.
+#   5. cloudformation deploy of vm.yaml as stack cbase-vm;
+#   6. with BIN, prunes the bucket (c_base/ops/s3_prune_lib.sh): every other
+#      vm/cbase-serve-* and its .sha256 goes, except the release the parameter
+#      now names and the one it named before this run (which the instance still
+#      runs until --restart). Never templates/ or the amazon-ssm rpm. A prune
+#      that fails warns. CBASE_PRUNE_DRY_RUN=1 only prints what it would delete.
 #
 # It does not read ~/.config/cbase/ops.env: that file holds the live `cbase`
 # stack's secrets, and this stack keeps its own in SSM.
@@ -38,6 +43,8 @@ case "${1:-}" in
   -h|--help) sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'; exit ;;
   -*) die "unknown argument $1" ;;
 esac
+# shellcheck source=c_base/ops/s3_prune_lib.sh
+. "$repo/c_base/ops/s3_prune_lib.sh"
 for tool in aws openssl gzip base64 shasum curl; do command -v "$tool" >/dev/null || die "$tool is not installed"; done
 
 account="$(aws sts get-caller-identity --query Account --output text 2>/dev/null)" || die "no AWS credentials (aws login)"
@@ -69,7 +76,12 @@ upload() {   # upload FILE KEY: puts FILE and KEY.sha256 unless KEY is there; pr
   fi
   printf '%s %s %s\n' "$bucket" "$2" "$sum"
 }
+prev_key=""
 if [ -n "$bin" ]; then
+  # The key the parameter names now, which the prune keeps; unreadable means no prune.
+  if old_value="$(aws ssm get-parameter --name /cbase-vm/release/serve --query Parameter.Value --output text 2>/dev/null)"; then
+    prev_key="$(echo "$old_value" | awk '{print $2}')"
+  fi
   serve_release="$(upload "$bin" "vm/cbase-serve-$version")"
 else
   serve_release="$(aws ssm get-parameter --name /cbase-vm/release/serve --query Parameter.Value --output text 2>/dev/null || true)"
@@ -138,3 +150,17 @@ aws cloudformation deploy \
     "CloudFrontPrefixList=$pl" \
     "OriginSecret=$origin_secret"
 aws cloudformation describe-stacks --stack-name "$stack" --query 'Stacks[0].Outputs[].[OutputKey,OutputValue]' --output text
+
+# ---- 6. the prune -------------------------------------------------------------------
+if [ -n "$bin" ]; then
+  live_key="$(aws ssm get-parameter --name /cbase-vm/release/serve --query Parameter.Value --output text 2>/dev/null | awk '{print $2}')" || live_key=""
+  if [ -z "$prev_key" ] || [ "$prev_key" = None ]; then
+    echo "prune skipped: the pointer's previous value could not be read"
+  elif [ "$live_key" != "vm/cbase-serve-$version" ]; then
+    echo "prune skipped: the pointer reads '$live_key', not vm/cbase-serve-$version"
+  elif [ "$prev_key" = "$live_key" ]; then
+    echo "prune skipped: the pointer already named $live_key (the release it replaced is not known)"
+  else
+    prune_bucket vm "$bucket" "$live_key" "$prev_key" || echo "warning: the prune failed; the deploy stands" >&2
+  fi
+fi

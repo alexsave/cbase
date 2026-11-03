@@ -18,7 +18,14 @@
 #      but CodeKey, so CloudFormation stays the record of what is live and a
 #      rollback is the same update with the old key;
 #   4. checks the function's CodeSha256 is this zip's, and that
-#      <PublicUrl>/health answers "ok cbase".
+#      <PublicUrl>/health answers "ok cbase";
+#   5. prunes the bucket (c_base/ops/s3_prune_lib.sh): every other
+#      cbase-lambda-*.zip goes, except this one and the one the stack ran before
+#      (the one-step rollback). Only after step 4 passed, only when this run
+#      shipped a zip, and only when the stack's CodeKey reads back as this zip.
+#      The function, the stack and every other key (templates/, vm/) stay. A
+#      prune that fails warns and does not fail the deploy. CBASE_PRUNE_DRY_RUN=1
+#      only prints what it would delete.
 #
 # Settings: CBASE_STACK (cbase), AWS_REGION (us-east-1).
 set -euo pipefail
@@ -35,6 +42,8 @@ command -v aws >/dev/null 2>&1 || die "the AWS CLI is not installed"
 
 # shellcheck source=c_base/ops/require_main.sh
 . "$repo/c_base/ops/require_main.sh"
+# shellcheck source=c_base/ops/s3_prune_lib.sh
+. "$repo/c_base/ops/s3_prune_lib.sh"
 require_main "$repo"
 
 # ---- 1. the name --------------------------------------------------------------------
@@ -59,6 +68,7 @@ output() {
 }
 
 current="$(param CodeKey)"
+shipped=""
 if [ "$current" = "$key" ]; then
   echo "the $stack stack already runs $key; nothing to ship"
 else
@@ -85,6 +95,7 @@ else
     die "the $stack stack update did not complete (CloudFormation rolled it back to $current)"
   fi
   echo "the $stack stack now runs $key"
+  shipped=1
 fi
 
 # ---- 4. is it live ------------------------------------------------------------------
@@ -97,9 +108,19 @@ url="$(output PublicUrl)"
 for i in 1 2 3 4 5 6; do
   body="$(curl -fsS --max-time 20 "$url/health" || true)"
   case "$body" in
-    "ok cbase "*) echo "$url/health: $body"; exit 0 ;;
+    "ok cbase "*) echo "$url/health: $body"; healthy=1; break ;;
   esac
   echo "attempt $i: [$body]"
   sleep 5
 done
-die "$url/health did not answer ok cbase"
+[ -n "${healthy:-}" ] || die "$url/health did not answer ok cbase"
+
+# ---- 5. the prune -------------------------------------------------------------------
+# The live key is read back from the stack, the source of truth.
+if [ -z "$shipped" ]; then
+  echo "prune skipped: nothing was shipped, so the release before $key is not known"
+elif [ "$(param CodeKey 2>/dev/null || true)" != "$key" ]; then
+  echo "prune skipped: the stack's CodeKey does not read back as $key"
+else
+  prune_bucket lambda "$bucket" "$key" "$current" || echo "warning: the prune failed; the deploy stands" >&2
+fi
