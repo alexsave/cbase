@@ -36,7 +36,7 @@ mkdir -p "$tmp/seed/c_base/ops" "$tmp/seed/c_base/providers/aws/ops/site" "$tmp/
 cp "$ops/require_main.sh" "$ops/ops_env.sh" "$ops/s3_prune_lib.sh" "$tmp/seed/c_base/ops/"
 cp "$aws_ops/lambda_deploy.sh" "$tmp/seed/c_base/providers/aws/ops/"
 cp "$aws_ops/site/web_deploy.sh" "$tmp/seed/c_base/providers/aws/ops/site/"
-cp "$ops/../providers/local/ops/vm_release.sh" "$tmp/seed/c_base/providers/local/ops/"
+cp "$ops/../providers/local/ops/vm_release.sh" "$ops/../providers/local/ops/vm_deploy.sh" "$ops/../providers/local/ops/vm_boot_lib.sh" "$tmp/seed/c_base/providers/local/ops/"
 g -C "$tmp/seed" add -A
 g -C "$tmp/seed" commit -q -m A
 g -C "$tmp/seed" push -q origin HEAD:main
@@ -63,6 +63,14 @@ run_vm() {
   bash "$tmp/work/c_base/providers/local/ops/vm_release.sh" "$tmp/fake.bin" > "$tmp/out" 2>&1 && return 0 || return $?
 }
 
+# vm_release.sh --restart and vm_deploy.sh pin THIS tree's boot script, so they are gated too.
+run_vm_restart() {
+  bash "$tmp/work/c_base/providers/local/ops/vm_release.sh" --restart > "$tmp/out" 2>&1 && return 0 || return $?
+}
+run_vm_deploy() {
+  bash "$tmp/work/c_base/providers/local/ops/vm_deploy.sh" > "$tmp/out" 2>&1 && return 0 || return $?
+}
+
 # 1. Behind main: refused, by the gate, with no AWS call.
 if run; then fail "a tree behind origin/main deployed"; fi
 grep -q 'does not contain origin/main' "$tmp/out" || { cat "$tmp/out" >&2; fail "behind main: refused, but not by require_main"; }
@@ -78,6 +86,16 @@ if run_vm; then fail "vm: a tree behind origin/main deployed"; fi
 grep -q 'does not contain origin/main' "$tmp/out" || { cat "$tmp/out" >&2; fail "vm, behind main: refused, but not by require_main"; }
 [ ! -e "$tmp/aws_calls" ] || fail "vm, behind main: aws was called before the refusal: $(cat "$tmp/aws_calls")"
 echo "ok - vm: a tree behind origin/main is refused before any AWS call"
+
+if run_vm_restart; then fail "vm --restart: a tree behind origin/main deployed"; fi
+grep -q 'does not contain origin/main' "$tmp/out" || { cat "$tmp/out" >&2; fail "vm --restart, behind main: refused, but not by require_main"; }
+[ ! -e "$tmp/aws_calls" ] || fail "vm --restart, behind main: aws was called before the refusal: $(cat "$tmp/aws_calls")"
+echo "ok - vm --restart: a tree behind origin/main is refused before any AWS call"
+
+if run_vm_deploy; then fail "vm_deploy: a tree behind origin/main deployed"; fi
+grep -q 'does not contain origin/main' "$tmp/out" || { cat "$tmp/out" >&2; fail "vm_deploy, behind main: refused, but not by require_main"; }
+[ ! -e "$tmp/aws_calls" ] || fail "vm_deploy, behind main: aws was called before the refusal: $(cat "$tmp/aws_calls")"
+echo "ok - vm_deploy: a tree behind origin/main is refused before any AWS call"
 
 # 1b. In CI, on the first attempt of a run on main, the same tree is an older
 #     commit OF main whose newer push's run is queued behind this one (the

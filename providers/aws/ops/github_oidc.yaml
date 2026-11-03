@@ -14,10 +14,12 @@ Description: >-
 # carry no GitHub resources.
 #
 # What the role may do, and nothing else:
-#   * the API server: upload a `cbase serve` binary under the code bucket's
-#     vm/ prefix, point /cbase-vm/release/serve at it, and run a shell command
-#     on the cbase-vm group's instance through SSM (its boot script, which
-#     fetches, checks and restarts; then the health checks) and read the result
+#   * the API server: upload a `cbase serve` binary and the boot script
+#     (vm/cbase-vm-boot-<sha12>) under the code bucket's vm/ prefix, point
+#     /cbase-vm/release/serve and /cbase-vm/release/boot at them, and run a shell
+#     command on the cbase-vm group's instance through SSM (the boot stub, which
+#     fetches and checks the boot script, which fetches, checks and restarts the
+#     server; then the health checks) and read the result
 #     (c_base/providers/local/ops/vm_release.sh; role_covers_release.sh holds
 #     the script's calls to this list). It reads and writes no other parameter
 #     (the VM's secrets are SecureStrings under /cbase-vm/env/, out of reach);
@@ -119,21 +121,25 @@ Resources:
               - Sid: VmRelease
                 Effect: Allow
                 Action: [s3:PutObject, s3:GetObject, s3:DeleteObject]
-                Resource: !Sub "arn:${AWS::Partition}:s3:::${CodeBucket}/vm/cbase-serve-*"
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:s3:::${CodeBucket}/vm/cbase-serve-*"
+                  - !Sub "arn:${AWS::Partition}:s3:::${CodeBucket}/vm/cbase-vm-boot-*"
               # The prune after a release (ops/s3_prune_lib.sh) lists only the
-              # release prefix and deletes only vm/cbase-serve-* above: templates/
-              # and the amazon-ssm rpm are out of reach.
+              # release prefixes and deletes only the two key patterns above:
+              # templates/ and the amazon-ssm rpm are out of reach.
               - Sid: VmReleaseList
                 Effect: Allow
                 Action: s3:ListBucket
                 Resource: !Sub "arn:${AWS::Partition}:s3:::${CodeBucket}"
                 Condition:
                   StringLike:
-                    "s3:prefix": vm/cbase-serve-*
+                    "s3:prefix": [vm/cbase-serve-*, vm/cbase-vm-boot-*]
               - Sid: VmReleasePointer
                 Effect: Allow
                 Action: [ssm:PutParameter, ssm:GetParameter]
-                Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cbase-vm/release/serve"
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cbase-vm/release/serve"
+                  - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cbase-vm/release/boot"
               # SendCommand authorizes the document and each instance: the
               # instance only when it carries the group's tag (Auto Scaling
               # tags every instance it launches with aws:autoscaling:groupName).

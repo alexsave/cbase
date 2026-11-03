@@ -7,6 +7,12 @@ AWSTemplateFormatVersion: "2010-09-09"
 # makes the SecureStrings and fills in the parameters below); see
 # c_base/providers/local/ops/VM_RUNBOOK.md.
 #
+# The user-data is a stub (BootStub), not the boot script: the script is an
+# object in the code bucket, named by the SSM String /cbase-vm/release/boot, which
+# vm_deploy.sh and vm_release.sh set (the stack does not own it, so a CI release
+# and a stack update never fight over it). The launch template therefore changes
+# only if the stub does, and a boot-script change never needs a stack update.
+#
 # What it makes:
 #   * a VPC with an Amazon-provided IPv6 /56 and one IPv6-only subnet, an
 #     internet gateway and a ::/0 route (no IPv4 address, no NAT: SSM, S3,
@@ -51,9 +57,12 @@ Parameters:
   AgentRelease:
     Type: String
     Description: '"<bucket> <key> <sha256>" of the pinned SSM agent rpm'
-  UserDataGz:
+  BootStub:
     Type: String
-    Description: base64 of the gzipped vm_boot.sh (cloud-init unzips it)
+    Description: >-
+      base64 of vm_boot_stub.sh, the user-data (about 1.4 KB; a parameter holds
+      4096 bytes). It fetches the full boot script pinned by
+      /cbase-vm/release/boot (vm_boot.sh, which has no size limit)
   CloudFrontPrefixList:
     Type: String
     Description: id of com.amazonaws.global.ipv6.cloudfront.origin-facing
@@ -300,7 +309,7 @@ Resources:
         PrivateDnsNameOptions:
           HostnameType: resource-name
           EnableResourceNameDnsAAAARecord: true
-        UserData: !Ref UserDataGz
+        UserData: !Ref BootStub
         TagSpecifications:
           - ResourceType: instance
             Tags: [{ Key: Name, Value: cbase-vm }]

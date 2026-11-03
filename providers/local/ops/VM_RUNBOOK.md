@@ -42,13 +42,19 @@ The security group drops anything not from CloudFront's IPv6 origin-facing prefi
 
 ## Boot (no dnf)
 
-`vm_boot.sh` is the user-data, gzipped and spliced with `cbase.service` by `vm_deploy.sh`.
+The user-data is only `vm_boot_stub.sh` (about 1 KB, base64 in the launch template).
+It reads `/cbase-vm/release/boot` (`"<bucket> <key> <sha256>"`), downloads that object, checks its sha256 and its syntax (`bash -n`), keeps the installed script as `/usr/local/sbin/cbase-vm-boot.prev`, installs the new one as `/usr/local/sbin/cbase-vm-boot`, and runs it.
+Any failed check exits non-zero and leaves the installed script untouched.
+The object is `vm_boot.sh` with `cbase.service` spliced in (`vm_boot_lib.sh`), uploaded by `vm_deploy.sh` and `vm_release.sh` as `vm/cbase-vm-boot-<first 12 hex of its sha256>`.
+It has no size limit (a CloudFormation parameter holds 4096 bytes, which the old gzipped user-data had reached); `vm_deploy.sh` refuses a stub over 1024 bytes, so new logic goes in `vm_boot.sh`.
+The stub fetches with the same signed `curl` as the rest of the boot (IMDSv2 over IPv6, `--aws-sigv4`, no aws CLI).
+The instance role reads `vm/*` and `/cbase-vm/*`, which covers both.
+`vm_boot.sh` then does the rest.
 It gets the role's credentials from IMDSv2 at `[fd00:ec2::254]` and signs its own requests with `curl --aws-sigv4`.
 It reads every `/cbase-vm/` parameter with one `GetParametersByPath` call to `ssm.<region>.api.aws`.
 It installs the SSM agent from the rpm pinned in `release/agent` (the minimal AMI ships none), with `UseDualStackEndpoint` on and IMDS in IPv6 mode.
 It downloads the binary from `release/serve` over the S3 dual-stack endpoint and checks its sha256 before moving it into place.
 It writes `/etc/cbase/cbase.env` (root, 0600), the unit, and restarts `cbase`.
-It installs itself as `/usr/local/sbin/cbase-vm-boot`, so running it again is the upgrade.
 The service runs as the system user `cbase` with its data in `/var/lib/cbase`, and listens on `:::8080` (dual-stack socket).
 Its log is `journalctl -u cbase`; the boot script's log is `/var/log/cbase-vm-boot.log`.
 Journald is volatile (`/etc/systemd/journald.conf.d/cbase.conf`: RAM only, 16M cap), so `journalctl -u cbase` only reaches back to the last reboot; cbase state and backups are elsewhere and survive.
@@ -71,7 +77,7 @@ The fixed `::10` address is what keeps that record valid across instance replace
 
 ## Deploy
 
-A stack change (vm.yaml, the boot script, the unit) is a hand step:
+A stack change (vm.yaml, the stub) is a hand step; a boot script or unit change is not, it ships like the server (below):
 
 ```sh
 c_base/providers/local/ops/vm_deploy.sh              # create or update the stack, keeping the live release
@@ -81,14 +87,21 @@ c_base/providers/local/ops/vm_deploy.sh --verify     # = vm_release.sh --verify
 
 The first boot takes about two minutes after the instance launches.
 `--verify` uses SSM Run Command, so it works with no inbound port at all.
-A boot script or unit change reaches the running instance only through a new instance (it is the launch template's user-data); `--restart` reruns the copy the instance installed at boot.
+`vm_deploy.sh` also pins this tree's boot script (it uploads it and sets `/cbase-vm/release/boot`), then deploys the stack; the pointer is owned by the scripts, not by the stack, so a CI release and a stack update never fight over it.
+It refuses a tree that does not contain `origin/main`, like `vm_release.sh`.
 
 ## Upgrade the server
 
 Every push to main that changes the server deploys it: the `c_base` workflow's `deploy to cbase-vm` job builds the static binary (`build_bootstrap.sh serve`) and runs `vm_release.sh` on it, as the GitHub role (c_base/RUNBOOK.md, "GitHub deploys").
 `vm_release.sh BIN` uploads BIN as `vm/cbase-serve-<short sha>` with its `.sha256`, points `/cbase-vm/release/serve` at it, runs the instance's boot script through SSM (it fetches and checks the binary named there and restarts `cbase`), then checks that `cbase` is active, that `/usr/local/bin/cbase` has BIN's sha256, that the instance's own `/health` and `/ready` answer 200, and that `https://api.foolish.cards/health` answers `ok cbase`.
 It refuses a tree that does not contain `origin/main` (`c_base/ops/require_main.sh`).
-By hand, the same command runs from this Mac; `vm_release.sh --restart` restarts on the release already named, and `--verify` runs only the checks.
+Every `vm_release.sh` run (and `--restart`) pins the tree's boot script first: it uploads `vm/cbase-vm-boot-<sha12>` (the same object when the script did not change), sets `/cbase-vm/release/boot`, and then sends the stub over SSM, so the instance fetches, checks and installs the new boot script before running it.
+A boot-script or unit change therefore reaches the running instance with the next push to main that touches `c_base/**`, or with `vm_deploy.sh --restart` (= `vm_release.sh --restart`) by hand from a tree that contains main; no stack update and no new instance.
+The stub is sent as text, not run from the installed copy, so it works even on an instance whose installed boot script predates the stub.
+After the checks pass, the prune keeps the new boot object and the one it replaced, like the binary.
+By hand, the same command runs from this Mac; `vm_release.sh --restart` pins the tree's boot script and restarts on the server release already named, and `--verify` runs only the checks.
+To roll the boot script back, revert the change on main (the pointer is the tree's boot script, so an older tree is refused).
+In an emergency, `aws ssm put-parameter --name /cbase-vm/release/boot --overwrite --value "<bucket> vm/cbase-vm-boot-<older sha12> <its sha256>"` and a Run Command of the stub work too, and on the instance `cbase-vm-boot.prev` is the script that ran before.
 The stack's `ServeRelease` parameter is what the stack first set; after that `/cbase-vm/release/serve` is owned by `vm_release.sh`, and `vm_deploy.sh` with no BIN keeps its value, so a template change never rolls the server back.
 A restart drops open WebSockets; clients reconnect.
 To roll back the server, run `vm_release.sh` on an older build of main's tree, or point the parameter back at an older `vm/cbase-serve-*` key and run `--restart`.

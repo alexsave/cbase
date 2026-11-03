@@ -20,13 +20,22 @@
 #   3. makes the VM's own secrets once, as SSM SecureStrings under
 #      /cbase-vm/env/ (CBASE_JWT_SECRET, CBASE_ADMIN_TOKEN, CBASE_ORIGIN_SECRET);
 #      never regenerated, never printed;
-#   4. gzips vm_boot.sh (with cbase.service inside) into the user-data;
+#   4. pins the boot script: vm_boot.sh with cbase.service inside goes up as
+#      vm/cbase-vm-boot-<sha12> and /cbase-vm/release/boot names it. The
+#      user-data is only vm_boot_stub.sh (fetch that script, check it, run it;
+#      refused over 1024 bytes), so the boot script has no size limit and a
+#      change to it reaches the running instance with --restart, no stack
+#      update and no new instance;
 #   5. cloudformation deploy of vm.yaml as stack cbase-vm;
 #   6. with BIN, prunes the bucket (c_base/ops/s3_prune_lib.sh): every other
 #      vm/cbase-serve-* and its .sha256 goes, except the release the parameter
 #      now names and the one it named before this run (which the instance still
 #      runs until --restart). Never templates/ or the amazon-ssm rpm. A prune
-#      that fails warns. CBASE_PRUNE_DRY_RUN=1 only prints what it would delete.
+#      that fails warns. The same for vm/cbase-vm-boot-* (the new script and the
+#      one before it). CBASE_PRUNE_DRY_RUN=1 only prints what it would delete.
+#
+# Like vm_release.sh it refuses a tree that does not contain origin/main: the
+# boot script it pins is this tree's.
 #
 # It does not read ~/.config/cbase/ops.env: that file holds the live `cbase`
 # stack's secrets, and this stack keeps its own in SSM.
@@ -40,12 +49,17 @@ repo="$(git -C "$ops" rev-parse --show-toplevel)"
 die() { echo "vm_deploy.sh: $*" >&2; exit 1; }
 case "${1:-}" in
   --restart|--verify) exec "$ops/vm_release.sh" "$1" ;;
-  -h|--help) sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'; exit ;;
+  -h|--help) sed -n '2,45p' "$0" | sed 's/^# \{0,1\}//'; exit ;;
   -*) die "unknown argument $1" ;;
 esac
 # shellcheck source=c_base/ops/s3_prune_lib.sh
 . "$repo/c_base/ops/s3_prune_lib.sh"
-for tool in aws openssl gzip base64 shasum curl; do command -v "$tool" >/dev/null || die "$tool is not installed"; done
+# shellcheck source=c_base/ops/require_main.sh
+. "$repo/c_base/ops/require_main.sh"
+require_main "$repo"
+# shellcheck source=c_base/providers/local/ops/vm_boot_lib.sh
+. "$ops/vm_boot_lib.sh"   # sha256, boot_assemble, boot_key, stub_build
+for tool in aws openssl base64 curl; do command -v "$tool" >/dev/null || die "$tool is not installed"; done
 
 account="$(aws sts get-caller-identity --query Account --output text 2>/dev/null)" || die "no AWS credentials (aws login)"
 region="${AWS_REGION:-${AWS_DEFAULT_REGION:-$(aws configure get region 2>/dev/null || true)}}"
@@ -65,7 +79,7 @@ aws s3api head-bucket --bucket "$bucket" 2>/dev/null || die "no bucket $bucket (
 
 upload() {   # upload FILE KEY: puts FILE and KEY.sha256 unless KEY is there; prints "<bucket> <key> <sha256>"
   local sum
-  sum="$(shasum -a 256 "$1" | cut -d' ' -f1)"
+  sum="$(sha256 "$1")"
   if ! aws s3api head-object --bucket "$bucket" --key "$2" >/dev/null 2>&1; then
     aws s3 cp "$1" "s3://$bucket/$2" --only-show-errors >&2
     printf '%s  %s\n' "$sum" "$(basename "$2")" | aws s3 cp - "s3://$bucket/$2.sha256" --only-show-errors >&2
@@ -93,7 +107,7 @@ echo "serve release: $serve_release"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 curl -sSf -o "$tmp/agent.rpm" "https://s3.dualstack.$region.amazonaws.com/amazon-ssm-$region/latest/linux_arm64/amazon-ssm-agent.rpm"
-agent_sum="$(shasum -a 256 "$tmp/agent.rpm" | cut -c1-16)"
+agent_sum="$(sha256 "$tmp/agent.rpm" | cut -c1-16)"
 agent_release="$(upload "$tmp/agent.rpm" "vm/amazon-ssm-agent-arm64-$agent_sum.rpm")"
 echo "agent release: $agent_release"
 
@@ -110,15 +124,22 @@ for name in CBASE_JWT_SECRET CBASE_ADMIN_TOKEN CBASE_ORIGIN_SECRET; do
   fi
 done
 
-# ---- 4. user-data -----------------------------------------------------------------
-# Comment lines are dropped (a CloudFormation parameter holds 4096 bytes).
-awk -v unit="$ops/cbase.service" '
-  NR > 1 && /^#/ { next }
-  $0 == "@CBASE_SERVICE@" { while ((getline l < unit) > 0) if (l !~ /^#/) print l; next } { print }
-' "$ops/vm_boot.sh" > "$tmp/boot.sh"
-grep -q '^ExecStart=/usr/local/bin/cbase serve$' "$tmp/boot.sh" || die "cbase.service was not spliced into the boot script"
-user_data="$(gzip -9n < "$tmp/boot.sh" | base64 | tr -d '\n')"
-[ "${#user_data}" -le 4096 ] || die "user-data is ${#user_data} bytes; a parameter holds 4096"
+# ---- 4. the boot script, and the user-data ---------------------------------------
+# The full script is an object the instance fetches by its sha256; the user-data
+# is the stub, which a CloudFormation parameter (4096 bytes) holds with room to spare.
+prev_boot_key=""
+if old_boot="$(aws ssm get-parameter --name /cbase-vm/release/boot --query Parameter.Value --output text 2>/dev/null)"; then
+  prev_boot_key="$(echo "$old_boot" | awk '{print $2}')"
+fi
+boot_assemble "$ops/vm_boot.sh" "$ops/cbase.service" "$tmp/boot.sh" || die "cannot build the boot script"
+boot_sum="$(sha256 "$tmp/boot.sh")"
+boot_obj="$(boot_key "$boot_sum")"
+aws s3 cp "$tmp/boot.sh" "s3://$bucket/$boot_obj" --only-show-errors
+aws ssm put-parameter --name /cbase-vm/release/boot --type String --overwrite --value "$bucket $boot_obj $boot_sum" >/dev/null
+echo "boot script: $boot_obj ($boot_sum)"
+stub_build "$ops/vm_boot_stub.sh" "$tmp/stub.sh" || die "the user-data stub is too big"
+user_data="$(base64 < "$tmp/stub.sh" | tr -d '\n')"
+echo "user-data: ${#user_data} bytes of base64 (the stub is $(wc -c < "$tmp/stub.sh" | tr -d ' ') bytes)"
 
 # ---- 5. the stack -----------------------------------------------------------------
 pl="$(aws ec2 describe-managed-prefix-lists --filters Name=prefix-list-name,Values=com.amazonaws.global.ipv6.cloudfront.origin-facing \
@@ -146,7 +167,7 @@ aws cloudformation deploy \
     "CodeBucket=$bucket" \
     "ServeRelease=$serve_release" \
     "AgentRelease=$agent_release" \
-    "UserDataGz=$user_data" \
+    "BootStub=$user_data" \
     "CloudFrontPrefixList=$pl" \
     "OriginSecret=$origin_secret"
 aws cloudformation describe-stacks --stack-name "$stack" --query 'Stacks[0].Outputs[].[OutputKey,OutputValue]' --output text
@@ -163,4 +184,13 @@ if [ -n "$bin" ]; then
   else
     prune_bucket vm "$bucket" "$live_key" "$prev_key" || echo "warning: the prune failed; the deploy stands" >&2
   fi
+fi
+
+# The boot script: the new one and the one it replaced stay (same rule as the binary).
+if [ -z "$prev_boot_key" ] || [ "$prev_boot_key" = None ]; then
+  echo "boot prune skipped: the pointer's previous value could not be read"
+elif [ "$prev_boot_key" = "$boot_obj" ]; then
+  echo "boot prune skipped: the pointer already named $boot_obj"
+else
+  prune_bucket boot "$bucket" "$boot_obj" "$prev_boot_key" || echo "warning: the boot prune failed; the deploy stands" >&2
 fi

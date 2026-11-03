@@ -10,6 +10,7 @@
 #
 # KIND is the only thing the plan may touch:
 #   vm      vm/cbase-serve-<version> and vm/cbase-serve-<version>.sha256
+#   boot    vm/cbase-vm-boot-<sha12> (no .sha256: the pointer holds the sha256)
 #   lambda  cbase-lambda-<name>.zip
 # Anything else (templates/, vm/amazon-ssm-agent-*.rpm, other prefixes) is never
 # planned for deletion, whatever the keep list says.
@@ -17,10 +18,13 @@
 # Fail safe:
 #   - LIVE comes from the caller, which read it from the source of truth (the SSM
 #     release parameter, the stack's CodeKey); it is never inferred from the
-#     listing's timestamps. An empty LIVE, or a LIVE the listing does not contain
-#     (wrong bucket, a short listing), plans nothing and returns 1.
+#     listing's timestamps. An empty LIVE, a LIVE of another kind, or a LIVE the
+#     listing does not contain (wrong bucket, a short listing), plans nothing and
+#     returns 1.
 #   - Kept: LIVE and PREV (the release LIVE replaced: the one-step rollback) and,
-#     for vm, each one's .sha256.
+#     for vm, each one's .sha256. The kinds are disjoint: a vm plan never lists a
+#     boot object, so the live boot script survives any serve prune, and the
+#     reverse.
 #   - A failed list or delete returns 1. Callers warn and carry on: a deploy that
 #     already went live never fails because the cleanup did.
 
@@ -28,6 +32,7 @@
 _prune_pattern() {
   case "$1" in
     vm) echo '^vm/cbase-serve-[^/]+$' ;;
+    boot) echo '^vm/cbase-vm-boot-[^/]+$' ;;
     lambda) echo '^cbase-lambda-[^/]+[.]zip$' ;;
     *) return 1 ;;
   esac
@@ -37,6 +42,7 @@ _prune_pattern() {
 _prune_prefix() {
   case "$1" in
     vm) echo 'vm/cbase-serve-' ;;
+    boot) echo 'vm/cbase-vm-boot-' ;;
     lambda) echo 'cbase-lambda-' ;;
     *) return 1 ;;
   esac
@@ -46,6 +52,8 @@ prune_plan() {
   local kind="$1" live="${2:-}" prev="${3:-}" pat keep listing out
   pat="$(_prune_pattern "$kind")" || { echo "prune_plan: unknown kind '$kind'" >&2; return 1; }
   [ -n "$live" ] || { echo "prune_plan: no live key; nothing is pruned" >&2; return 1; }
+  # A live key of another kind (a serve key given to the boot plan) would keep nothing of this kind.
+  printf '%s\n' "$live" | grep -Eq "$pat" || { echo "prune_plan: the live key $live is not a $kind key; nothing is pruned" >&2; return 1; }
   # Keys hold no space: the keep list is space-separated (BSD awk takes no newline in -v).
   keep="$live $prev"
   if [ "$kind" = vm ]; then keep="$keep $live.sha256"; [ -z "$prev" ] || keep="$keep $prev.sha256"; fi

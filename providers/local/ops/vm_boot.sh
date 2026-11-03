@@ -1,7 +1,10 @@
 #!/bin/bash
-# vm_boot.sh: the cbase-vm instance's user-data (vm_deploy.sh gzips it into the
-# launch template) and its upgrade command (it installs itself as
-# /usr/local/sbin/cbase-vm-boot; `vm_deploy.sh --restart` runs it again).
+# vm_boot.sh: the cbase-vm instance's boot script. It is not the user-data: the
+# user-data is vm_boot_stub.sh, which fetches THIS file (with cbase.service spliced
+# in by vm_boot_lib.sh) from the code bucket, as pinned by /cbase-vm/release/boot,
+# checks its sha256, installs it as /usr/local/sbin/cbase-vm-boot and runs it. The
+# same stub runs on `vm_deploy.sh --restart`, so editing this file and releasing it
+# upgrades the running instance. Nothing here is size-limited.
 #
 # No dnf: everything comes from S3 and SSM over IPv6, signed by curl
 # (--aws-sigv4) with the instance role's credentials from IMDSv2.
@@ -21,8 +24,6 @@ trap 'echo "cbase-vm-boot: failed at line $LINENO"' ERR
 umask 077
 
 IMDS='http://[fd00:ec2::254]'
-self=/usr/local/sbin/cbase-vm-boot
-[ "$(readlink -f "$0")" = "$self" ] || install -m 0700 "$0" "$self"
 
 tok="$(curl -sSf -X PUT "$IMDS/latest/api/token" -H 'X-aws-ec2-metadata-token-ttl-seconds: 300')"
 md() { curl -sSf -H "X-aws-ec2-metadata-token: $tok" "$IMDS/latest/$1"; }
