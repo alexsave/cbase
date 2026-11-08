@@ -608,18 +608,22 @@ static const cb_admin_call API[] = {
 static void h_api(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     if (!admin_gate(ctx, req, res)) return;
     const char *name = req->path + strlen("/admin/api/");
-    bool known = false;
+    char allow[128] = "";   // the methods the name is called with, for a 405's Allow (router.h)
+    size_t an = 0;
     // The platform's calls, then the app's panels (cbase/app.h admin_calls).
     for (int t = 0; t < 2; t++) {
         const cb_admin_call *calls = t == 0 ? API : ctx->app ? ctx->app->admin_calls : NULL;
         int n = t == 0 ? (int)(sizeof API / sizeof API[0]) : ctx->app ? ctx->app->n_admin_calls : 0;
         for (int i = 0; calls && i < n; i++) {
             if (strcmp(calls[i].name, name) != 0) continue;
-            known = true;
             if (strcmp(calls[i].method, req->method) == 0) { calls[i].fn(ctx, req, res); return; }
+            const int w = snprintf(allow + an, sizeof allow - an, "%s%s", an ? ", " : "", calls[i].method);
+            if (w > 0 && (size_t)w < sizeof allow - an) an += (size_t)w;
+            else allow[an] = 0;
         }
     }
-    cb_router_error(res, known ? 405 : 404, known ? "method not allowed" : "no such admin call");
+    if (an) cb_router_not_allowed(res, allow);
+    else cb_router_error(res, 404, "no such admin call");
 }
 
 static void h_page(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {

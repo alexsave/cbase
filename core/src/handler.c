@@ -50,7 +50,11 @@ void cb_handle(cb_ctx *ctx, cb_http_req *req, cb_http_res *res) {
     } else {
         bool known = false;
         const cb_route *r = cb_router_match(ctx->router, m, req->path, &known);
-        if (!r) cb_router_error(res, known ? 405 : 404, known ? "method not allowed" : "not found");
+        if (!r && known) {
+            char allow[128];
+            cb_router_allow(ctx->router, req->path, allow, sizeof allow);
+            cb_router_not_allowed(res, allow);
+        } else if (!r) cb_router_error(res, 404, "not found");
         else if (cb_http_header_get(req, "upgrade") && !cb_router_upgrade_origin_ok(ctx, req)) {
             // A browser's upgrade from a page on an origin neither list names (router.h): refused
             // before the handler runs, so no handshake is ever answered 101 for it.

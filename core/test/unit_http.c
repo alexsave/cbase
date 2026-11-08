@@ -166,6 +166,33 @@ static void routing(void) {
 }
 
 // The table is sorted at add: whatever order routes arrive in, the best match wins.
+// A 405's Allow (router.h cb_router_allow): the methods the path is routed under, in one order,
+// each once, HEAD beside GET, the unnamed ones by name, cut only at a whole method.
+static void allow_lists(void) {
+    cb_router *r = cb_router_new();
+    T_EQ_INT(cb_router_add(r, "DELETE", "/a/:id", 0, h_a), CB_OK);
+    T_EQ_INT(cb_router_add(r, "PURGE", "/a/:id", 0, h_a), CB_OK);
+    T_EQ_INT(cb_router_add(r, "GET", "/a/:id", 0, h_a), CB_OK);
+    T_EQ_INT(cb_router_add(r, "GET", "/a/*", 0, h_b), CB_OK);     // GET again, by a prefix: once
+    T_EQ_INT(cb_router_add(r, "POST", "/a/new", 0, h_c), CB_OK);
+    T_EQ_INT(cb_router_add(r, "PURGE", "/a/new", 0, h_c), CB_OK);   // PURGE again, exact: once
+    T_EQ_INT(cb_router_add(r, "HEAD", "/h", 0, h_c), CB_OK);
+    char b[64];
+    cb_router_allow(r, "/a/7", b, sizeof b);
+    T_EQ_STR(b, "GET, HEAD, DELETE, PURGE");
+    cb_router_allow(r, "/a/new", b, sizeof b);   // the exact route and the parameter one both fit
+    T_EQ_STR(b, "GET, HEAD, POST, DELETE, PURGE");
+    cb_router_allow(r, "/a/x/y", b, sizeof b);   // only the prefix fits
+    T_EQ_STR(b, "GET, HEAD");
+    cb_router_allow(r, "/h", b, sizeof b);
+    T_EQ_STR(b, "HEAD");
+    cb_router_allow(r, "/none", b, sizeof b);
+    T_EQ_STR(b, "");
+    cb_router_allow(r, "/a/7", b, 16);           // "GET, HEAD, DELETE" is 17: cut before DELETE
+    T_EQ_STR(b, "GET, HEAD");
+    cb_router_free(r);
+}
+
 static void routing_priority(void) {
     const int GET = cb_http_method_id("GET"), POST = cb_http_method_id("POST"), HEAD = cb_http_method_id("HEAD");
     cb_router *r = cb_router_new();
@@ -681,6 +708,7 @@ int main(void) {
     T_RUN(query_iteration);
     T_RUN(responses);
     T_RUN(routing);
+    T_RUN(allow_lists);
     T_RUN(routing_priority);
     T_RUN(route_params);
     T_RUN(route_param_conflicts);

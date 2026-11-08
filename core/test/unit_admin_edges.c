@@ -74,6 +74,8 @@ static void setup(cb_store *store, const cb_provider *mode, const char *db_path)
     T_EQ_INT(cb_admin_routes(&g_ctx), CB_OK);
 }
 
+static char g_allow[128];   // the last call's Allow header, "" for none
+
 static int call(const char *method, const char *path, const char *query, const char *body) {
     cb_http_req q;
     memset(&q, 0, sizeof q);
@@ -86,6 +88,8 @@ static int call(const char *method, const char *path, const char *query, const c
     cb_http_res r;
     cb_res_init(&r);
     cb_handle(&g_ctx, &q, &r);
+    char *a = strstr(cb_buf_cstr(&r.headers), "Allow: ");
+    snprintf(g_allow, sizeof g_allow, "%.*s", a ? (int)strcspn(a + 7, "\r") : 0, a ? a + 7 : "");
     cb_buf_reset(&g_body);
     cb_buf_append(&g_body, r.body.p, r.body.len);
     int st = r.status;
@@ -169,6 +173,13 @@ static void malformed_asks(void) {
     T_EQ_INT(call("GET", "/admin/api/logs", "level=loud", NULL), 400);
     // A limit past the page cap is the cap, and an offset that is not a number the default.
     T_EQ_INT(call("GET", "/admin/api/users", "limit=99999&offset=x", NULL), 200);
+    // A call by another method is 405 with Allow naming the ones it takes; an unknown call, 404.
+    T_EQ_INT(call("DELETE", "/admin/api/overview", NULL, NULL), 405);
+    T_EQ_STR(g_allow, "GET");
+    T_EQ_INT(call("PUT", "/admin/api/backups", NULL, NULL), 405);
+    T_EQ_STR(g_allow, "GET, POST");
+    T_EQ_INT(call("GET", "/admin/api/nothing", NULL, NULL), 404);
+    T_EQ_STR(g_allow, "");
 }
 
 #ifdef CBASE_LINKS_AWS

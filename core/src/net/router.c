@@ -205,6 +205,42 @@ const cb_route *cb_router_match(const cb_router *r, int method, const char *path
     return cb_router_match_n(r, method, path, strlen(path), path_known);
 }
 
+// Appends `m` to the list in out[0..*n) unless it is there, whole or not at all.
+static void allow_add(char *out, size_t cap, size_t *n, const char *m) {
+    const size_t ml = strlen(m);
+    for (const char *p = out; *p;) {
+        const size_t l = strcspn(p, ",");
+        if (l == ml && memcmp(p, m, ml) == 0) return;
+        p += l;
+        while (*p == ',' || *p == ' ') p++;
+    }
+    const size_t sep = *n ? 2 : 0;
+    if (*n + sep + ml >= cap) return;
+    if (sep) memcpy(out + *n, ", ", 2);
+    memcpy(out + *n + sep, m, ml);
+    *n += sep + ml;
+    out[*n] = 0;
+}
+
+void cb_router_allow(const cb_router *r, const char *path, char *out, size_t cap) {
+    static const struct { int id; const char *name; } ORDER[] = {
+        { CB_M_GET, "GET" }, { CB_M_HEAD, "HEAD" }, { CB_M_POST, "POST" },
+        { CB_M_PUT, "PUT" }, { CB_M_PATCH, "PATCH" }, { CB_M_DELETE, "DELETE" },
+    };
+    if (!cap) return;
+    out[0] = 0;
+    size_t n = 0;
+    const size_t plen = strlen(path);
+    for (size_t k = 0; k < sizeof ORDER / sizeof ORDER[0]; k++)
+        for (int i = 0; i < r->n; i++) {
+            const entry *e = &r->r[i];
+            const bool named = e->mid == ORDER[k].id || (ORDER[k].id == CB_M_HEAD && e->mid == CB_M_GET);
+            if (named && fits(e, path, plen)) { allow_add(out, cap, &n, ORDER[k].name); break; }
+        }
+    for (int i = 0; i < r->n; i++)   // the methods the server has no id for, by their names
+        if (r->r[i].mid == CB_M_OTHER && fits(&r->r[i], path, plen)) allow_add(out, cap, &n, r->r[i].route.method);
+}
+
 size_t cb_router_max_body(const cb_router *r) { return r ? r->max_body : 0; }
 
 void cb_router_bind(const cb_route *route, cb_http_req *req) {
@@ -312,6 +348,11 @@ int cb_router_cors_check(const cb_app *app, const cb_config *cfg, char *err, siz
         return CB_E_INVALID;
     }
     return CB_OK;
+}
+
+void cb_router_not_allowed(cb_http_res *res, const char *allow) {
+    cb_router_error(res, 405, "method not allowed");
+    cb_res_header(res, "Allow", allow);
 }
 
 void cb_router_error(cb_http_res *res, int status, const char *msg) {

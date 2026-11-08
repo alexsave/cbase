@@ -38,7 +38,8 @@
 //     any origin: every answer and preflight says Access-Control-Allow-Origin: *.
 //     The app's cors_credentials adds Access-Control-Allow-Credentials: true to an
 //     echoed origin; never to "*", which boot refuses beside it.
-//   * 404 for no route, 405 for a path routed only under other methods, 503
+//   * 404 for no route, 405 for a path routed only under other methods (with
+//     Allow naming those methods), 503
 //     when the request pool is saturated or gone.
 //   * HEAD. A path with no HEAD route of its own matches its GET route, and
 //     cb_handle marks the response `head` so it goes out with GET's headers
@@ -99,6 +100,11 @@ const cb_route *cb_router_match(const cb_router *r, int method, const char *path
 // cb_router_match for a path of plen bytes, not NUL-ended (a head not parsed yet: http.h
 // cb_http_scan).
 const cb_route *cb_router_match_n(const cb_router *r, int method, const char *path, size_t plen, bool *path_known);
+// The methods `path` is routed under, for a 405's Allow header (RFC 9110 15.5.6): ", "-separated,
+// GET, HEAD, POST, PUT, PATCH, DELETE in that order and then any other method by its name, each
+// once, HEAD wherever GET is (a HEAD is answered through a GET route). "" for a path no route
+// matches; a list that does not fit in cap-1 bytes is cut at a whole method.
+void cb_router_allow(const cb_router *r, const char *path, char *out, size_t cap);
 // The largest max_body any route declares, or 0 when none does: the server reads a request's
 // head for its route's cap only then.
 size_t cb_router_max_body(const cb_router *r);
@@ -131,6 +137,9 @@ bool cb_router_upgrade_origin_ok(const cb_ctx *ctx, const cb_http_req *req);
 // (scheme://host[:port]) or "*", and no credentials beside "*" in either list. CB_OK, or
 // CB_E_INVALID with a sentence in err.
 int cb_router_cors_check(const cb_app *app, const cb_config *cfg, char *err, size_t cap);
+// A path routed only under other methods: 405 "method not allowed" with Allow: `allow` (a list
+// as cb_router_allow writes it). Every 405 of the router's goes out through it, so none lacks Allow.
+void cb_router_not_allowed(cb_http_res *res, const char *allow);
 // Writes a plain-text error body with `status`. Clients read the status; the
 // text is for people and logs (a refusal a client acts on is the kernel's
 // AskRefusal, written by the route itself).

@@ -83,7 +83,13 @@ static void h_headers(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     cb_buf_free(&b);
 }
 
+// /decks/:id, under GET, DELETE and a method the server has no name for.
+static void h_deck(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) { cb_res_text(res, 200, "deck"); }
+
 static const cb_route ROUTES[] = {
+    { .method = "GET", .pattern = "/decks/:id", .flags = CB_ROUTE_POOL, .fn = h_deck },
+    { .method = "DELETE", .pattern = "/decks/:id", .flags = CB_ROUTE_POOL, .fn = h_deck },
+    { .method = "PURGE", .pattern = "/decks/:id", .flags = CB_ROUTE_POOL, .fn = h_deck },
     { .method = "GET", .pattern = "/t/headers", .flags = CB_ROUTE_POOL, .fn = h_headers },
     { .method = "GET", .pattern = "/t/answer", .flags = CB_ROUTE_POOL, .fn = h_answer },
     { .method = "POST", .pattern = "/api/wire", .flags = CB_ROUTE_POOL, .fn = h_wire },
@@ -304,6 +310,46 @@ static void reads_request_headers_by_name_in_any_case(void) {
     cb_buf_free(&want);
 }
 
+// ---- 4. 404 and 405 -----------------------------------------------------------------------------
+
+static void unknown_path_404_wrong_method_405_with_allow(void) {
+    cb_buf w;
+    cb_buf_init(&w);
+    T_CHECK(raw_str("GET /api/nothing HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n", &w) > 0);
+    T_CHECK(wire_is(&w,
+                    "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain; charset=utf-8\r\nVary: Origin\r\n"
+                    "Content-Length: 9\r\nConnection: close\r\n\r\n",
+                    "not found", 9));
+    // A path routed under other methods: 405, and Allow names them (RFC 9110 15.5.6).
+    static const char W405[] = "HTTP/1.1 405 Method Not Allowed\r\nContent-Type: text/plain; charset=utf-8\r\n"
+                               "Allow: %s\r\nVary: Origin\r\nContent-Length: 18\r\nConnection: close\r\n\r\n";
+    static const struct { const char *req, *allow; } A[] = {
+        { "GET /api/wire HTTP/1.1\r\n", "POST" },
+        { "PUT /api/wire HTTP/1.1\r\n", "POST" },
+        { "PROPFIND /api/wire HTTP/1.1\r\n", "POST" },
+        { "POST /decks/7 HTTP/1.1\r\nContent-Length: 2\r\n", "GET, HEAD, DELETE, PURGE" },
+        { "PATCH /decks/a%2Fb HTTP/1.1\r\n", "GET, HEAD, DELETE, PURGE" },
+        { "POST /t/answer HTTP/1.1\r\n", "GET, HEAD" },
+    };
+    for (size_t i = 0; i < sizeof A / sizeof A[0]; i++) {
+        char req[256], head[512];
+        snprintf(req, sizeof req, "%sHost: x\r\nConnection: close\r\n\r\n%s", A[i].req,
+                 strstr(A[i].req, "Content-Length") ? "{}" : "");
+        snprintf(head, sizeof head, W405, A[i].allow);
+        T_CHECK(raw_str(req, &w) > 0);
+        T_CHECK(wire_is(&w, head, "method not allowed", 18));
+    }
+    // A HEAD the path has no route for: the same head, no body.
+    char head[512];
+    snprintf(head, sizeof head, W405, "POST");
+    T_CHECK(raw_str("HEAD /api/wire HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n", &w) > 0);
+    T_CHECK(wire_is(&w, head, NULL, 0));
+    // And the methods it is routed under still answer.
+    T_CHECK(raw_str("PURGE /decks/7 HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n", &w) > 0);
+    T_CHECK(cb_starts_with(cb_buf_cstr(&w), "HTTP/1.1 200 OK\r\n"));
+    cb_buf_free(&w);
+}
+
 // ---- the test -----------------------------------------------------------------------------------
 
 static const char *g_self;
@@ -328,6 +374,7 @@ int main(int argc, char **argv) {
     T_RUN(answers_any_status_type_body_and_headers);
     T_RUN(gets_the_raw_body_and_its_type);
     T_RUN(reads_request_headers_by_name_in_any_case);
+    T_RUN(unknown_path_404_wrong_method_405_with_allow);
 
     T_EQ_INT(tp_stop(&c, SIGTERM, 30000), 0);
     return T_DONE();
