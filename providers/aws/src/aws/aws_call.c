@@ -91,8 +91,10 @@ int cb_aws_call_region(const char *region, const char *service, const char *meth
     }
     int rc = cb_sigv4_sign(&c, &r, &h);
     if (rc == CB_OK)
-        rc = (tls ? cb_https_request : cb_http_plain_request)(host, port, method, path, cb_buf_cstr(&h), body, body_len,
-                                                              timeout_ms, out);
+        // An http:// endpoint is a local stand-in for the service (DynamoDB Local): the store's row.
+        rc = tls ? cb_https_request(host, port, method, path, cb_buf_cstr(&h), body, body_len, timeout_ms, out)
+                 : cb_http_plain_request(CB_HTTPS_STORE, host, port, method, path, cb_buf_cstr(&h), body, body_len,
+                                         timeout_ms, out);
     cb_buf_free(&h);
     return rc;
 }

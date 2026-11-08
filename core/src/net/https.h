@@ -40,16 +40,25 @@ void cb_https_response_free(cb_https_response *r);
 int cb_https_request(const char *host, int port, const char *method, const char *path, const char *headers,
                      const void *body, size_t body_len, int timeout_ms, cb_https_response *out);
 
-// The same exchange over plain TCP, no TLS: for a local stand-in of a cloud
-// store only (on http://127.0.0.1:8000). A provider reaches it only for an
-// endpoint URL that says http://, never for the cloud's own hosts.
-int cb_http_plain_request(const char *host, int port, const char *method, const char *path, const char *headers,
-                          const void *body, size_t body_len, int timeout_ms, cb_https_response *out);
+// Whose call a request is, for the tally below.
+typedef enum { CB_HTTPS_STORE, CB_HTTPS_PUSH, CB_HTTPS_OTHER } cb_https_role;
+
+// The same exchange over plain TCP, no TLS, for a peer on the same machine or a network the
+// caller trusts: a local stand-in for a cloud service (a store on http://127.0.0.1:8000, the
+// instance metadata service), or a product's call to a process of its own on loopback (a
+// companion app's local bridge). Nothing is encrypted or authenticated, so never for a cloud
+// host or anything a stranger could stand in for. Everything above holds: the caller's header
+// lines, a binary body either way (Content-Length or chunked), timeout_ms for the whole exchange,
+// the kept-alive connection per host and port with its one retry, and a peer that closes after
+// its answer. The tally has no host name to tell the role by, so the caller names it: `role`.
+int cb_http_plain_request(cb_https_role role, const char *host, int port, const char *method, const char *path,
+                          const char *headers, const void *body, size_t body_len, int timeout_ms,
+                          cb_https_response *out);
 
 // What this process's requests cost since the last take, by role: the store
 // (a remote store, and a plain-HTTP stand-in for it), the pushes (a push
 // broker), and anything else (an invoke, an edge invalidation, a secret, an
-// identity provider). `dials` counts new connections (TCP, plus TLS on https),
+// identity provider, a product's own loopback call). `dials` counts new connections (TCP, plus TLS on https),
 // the requests that found no warm one. Process-wide and lock-free; a one-shot
 // provider's main takes it once per invocation for its timing line, where one
 // invocation runs at a time.
@@ -62,10 +71,11 @@ typedef struct {
     cb_https_count store, push, other;
 } cb_https_tally;
 void cb_https_tally_take(cb_https_tally *out);
-// Which hosts are the store's and the pushes' (the tally knows no cloud by name): a host that starts
-// with store_prefix, or any plain-HTTP one, is the store's; one that contains push_part is the
-// pushes'; every other is other. Set once at start, before any request, by the provider whose main
-// reads the tally; unset, every TLS host is other.
+// Which TLS hosts are the store's and the pushes' (the tally knows no cloud by name): a host that
+// starts with store_prefix is the store's; one that contains push_part is the pushes'; every other
+// is other. Set once at start, before any request, by the provider whose main reads the tally;
+// unset, every TLS host is other. A plain-HTTP request is the role its caller names
+// (cb_http_plain_request).
 void cb_https_tally_roles(const char *store_prefix, const char *push_part);
 
 // Uses `path` (a PEM bundle) for verification from now on, or the default

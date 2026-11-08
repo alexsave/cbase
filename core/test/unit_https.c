@@ -398,6 +398,124 @@ static void openssl_bundle_before_the_system_list(void) {
     tls_srv_stop(&s);
 }
 
+// ---- plain HTTP, for a product's loopback peer ----------------------------------------------------
+//
+// cb_http_plain_request against lib_tls's plain mode, as a product's bridge client uses it against a
+// companion process on 127.0.0.1: its own header lines, binary bodies both ways, a short and a long
+// timeout, one kept-alive connection, and a peer that closes after its answer.
+
+#define BRIDGE_HEADERS "X-Amgi-Bridge-Token: tok-1\r\nX-Amgi-Bridge-Protocol: 3\r\nContent-Type: application/x-amgi-wire\r\n"
+
+static tls_action bridge(const cb_buf *req, cb_buf *resp, void *ud) {
+    const char *mode = ud;
+    const char *q = (const char *)req->p;
+    if (strncmp(q, "POST /hang ", 11) == 0) return TLS_HANG;
+    if (strncmp(q, "POST /slow ", 11) == 0) cb_sleep_ms(1700);   // past 1.5 s, well inside 30
+    if (strncmp(q, "POST /bye ", 10) == 0) {
+        cb_buf_puts(resp, "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 3\r\n\r\nbye");
+        return TLS_CLOSE;
+    }
+    // The request's body back behind two bytes of its own, NUL and 0xff.
+    const char *he = strstr(q, "\r\n\r\n");
+    const size_t at = (size_t)(he + 4 - q), n = req->len - at;
+    cb_buf_printf(resp, "HTTP/1.1 200 OK\r\nContent-Type: application/x-amgi-wire\r\nContent-Length: %zu\r\n\r\n", n + 2);
+    cb_buf_append(resp, "\0\xff", 2);
+    cb_buf_append(resp, req->p + at, n);
+    return strcmp(mode, "close") == 0 ? TLS_CLOSE : TLS_KEEP;   // "close": shut after every answer, unannounced
+}
+
+static int bridge_post(int port, const char *path, const void *body, size_t n, int timeout_ms, cb_https_response *r) {
+    return cb_http_plain_request(CB_HTTPS_OTHER, "127.0.0.1", port, "POST", path, BRIDGE_HEADERS, body, n, timeout_ms, r);
+}
+
+static void plain_binary_both_ways_with_its_headers(void) {
+    tls_srv s;
+    T_EQ_INT(tls_srv_start_plain(&s, bridge, "keep"), 0);
+    uint8_t body[300];
+    for (size_t i = 0; i < sizeof body; i++) body[i] = (uint8_t)(i * 37);
+    body[0] = 0, body[1] = '\r', body[2] = '\n', body[3] = '\r', body[4] = '\n';
+    cb_https_tally tally;
+    cb_https_tally_take(&tally);   // from here on
+    cb_https_response r;
+    for (int k = 0; k < 2; k++) {
+        T_EQ_INT(bridge_post(s.port, "/echo", body, sizeof body, 1500, &r), CB_OK);
+        T_EQ_INT(r.status, 200);
+        T_EQ_INT(r.body.len, sizeof body + 2);
+        T_CHECK(r.body.len == sizeof body + 2 && memcmp(r.body.p, "\0\xff", 2) == 0 &&
+                memcmp(r.body.p + 2, body, sizeof body) == 0);
+        T_CHECK(strstr(cb_buf_cstr(&r.headers), "\r\nContent-Type: application/x-amgi-wire\r\n") != NULL);
+        cb_https_response_free(&r);
+        // The request as it went: the caller's lines as given, then the length, then the bytes.
+        cb_buf want;
+        cb_buf_init(&want);
+        cb_buf_printf(&want, "POST /echo HTTP/1.1\r\nHost: 127.0.0.1:%d\r\n" BRIDGE_HEADERS "Content-Length: %zu\r\n\r\n",
+                      s.port, sizeof body);
+        cb_buf_append(&want, body, sizeof body);
+        pthread_mutex_lock(&s.lock);
+        T_EQ_MEM(s.last.p, s.last.len, want.p, want.len);
+        pthread_mutex_unlock(&s.lock);
+        cb_buf_free(&want);
+    }
+    T_EQ_INT(atomic_load(&s.accepts), 1);   // the second rode the first's connection
+    // A product's call is the tally's other row, never the store's.
+    cb_https_tally_take(&tally);
+    T_EQ_INT(tally.other.calls, 2);
+    T_EQ_INT(tally.other.dials, 1);
+    T_EQ_INT(tally.store.calls + tally.push.calls, 0);
+    // A stand-in for a store names its row.
+    T_EQ_INT(cb_http_plain_request(CB_HTTPS_STORE, "127.0.0.1", s.port, "POST", "/echo", NULL, "x", 1, 1500, &r), CB_OK);
+    cb_https_response_free(&r);
+    cb_https_tally_take(&tally);
+    T_EQ_INT(tally.store.calls, 1);
+    T_EQ_INT(tally.other.calls + tally.push.calls, 0);
+    tls_srv_stop(&s);
+}
+
+// The bridge's two timeouts: a ping's 1.5 s ends at 1.5 s against a peer that answers nothing; a
+// sync's 30 s waits out a peer that takes 1.7 s.
+static void plain_timeouts_short_and_long(void) {
+    tls_srv s;
+    T_EQ_INT(tls_srv_start_plain(&s, bridge, "keep"), 0);
+    cb_https_response r;
+    int64_t t0 = cb_mono_ms();
+    T_EQ_INT(bridge_post(s.port, "/hang", "p", 1, 1500, &r), CB_E_IO);
+    int64_t took = cb_mono_ms() - t0;
+    T_CHECK(took >= 1400 && took < 2100);
+    cb_https_response_free(&r);
+    t0 = cb_mono_ms();
+    T_EQ_INT(bridge_post(s.port, "/slow", "\0s", 2, 30000, &r), CB_OK);
+    took = cb_mono_ms() - t0;
+    T_CHECK(took >= 1650 && took < 10000);
+    T_EQ_INT(r.status, 200);
+    T_EQ_MEM(r.body.p, r.body.len, "\0\xff\0s", 4);
+    cb_https_response_free(&r);
+    tls_srv_stop(&s);
+}
+
+// A peer that closes after its answer, unannounced or with Connection: close: every request still
+// answers, each on a connection of its own.
+static void plain_peer_that_closes(void) {
+    tls_srv s;
+    T_EQ_INT(tls_srv_start_plain(&s, bridge, "close"), 0);
+    cb_https_response r;
+    for (int k = 0; k < 3; k++) {
+        T_EQ_INT(bridge_post(s.port, "/echo", "\0", 1, 1500, &r), CB_OK);
+        T_EQ_MEM(r.body.p, r.body.len, "\0\xff\0", 3);
+        cb_https_response_free(&r);
+        cb_sleep_ms(50);   // the close lands while the connection is idle in the pool
+    }
+    T_EQ_INT(atomic_load(&s.accepts), 3);
+    T_EQ_INT(atomic_load(&s.requests), 3);   // none sent twice
+    for (int k = 0; k < 2; k++) {
+        T_EQ_INT(bridge_post(s.port, "/bye", NULL, 0, 1500, &r), CB_OK);
+        T_EQ_STR(cb_buf_cstr(&r.body), "bye");
+        cb_https_response_free(&r);
+    }
+    T_EQ_INT(atomic_load(&s.accepts), 5);
+    T_EQ_INT(atomic_load(&s.requests), 5);   // not pooled, so never a write into a closed one
+    tls_srv_stop(&s);
+}
+
 // ---- the real internet, when there is one ---------------------------------------
 
 static bool online(void) {
@@ -431,6 +549,9 @@ int main(void) {
     T_RUN(times_out_on_a_pooled_connection);
     T_RUN(handshake_times_out);
     T_RUN(openssl_bundle_before_the_system_list);
+    T_RUN(plain_binary_both_ways_with_its_headers);
+    T_RUN(plain_timeouts_short_and_long);
+    T_RUN(plain_peer_that_closes);
     T_RUN(example_com);
     return T_DONE();
 }

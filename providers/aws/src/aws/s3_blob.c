@@ -55,7 +55,8 @@ int cb_imds_parse(const char *doc, cb_aws_creds *out, int64_t *expiry_ms) {
 static int imds_get(const char *host, int port, const char *method, const char *path, const char *hdrs, cb_buf *out) {
     cb_https_response r;
     memset(&r, 0, sizeof r);
-    int rc = cb_http_plain_request(host, port, method, path, hdrs, NULL, 0, 3000, &r);
+    // The instance metadata service, for credentials: not the store's call, though plain HTTP.
+    int rc = cb_http_plain_request(CB_HTTPS_OTHER, host, port, method, path, hdrs, NULL, 0, 3000, &r);
     if (rc == CB_OK && r.status == 200) cb_buf_append(out, r.body.p, r.body.len);
     else if (rc == CB_OK) rc = CB_E_IO;
     cb_https_response_free(&r);

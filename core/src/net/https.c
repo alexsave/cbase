@@ -58,7 +58,7 @@ static int g_npool;
 
 // ---- the tally (https.h) ----------------------------------------------------------
 
-enum { K_STORE, K_PUSH, K_OTHER, K_N };
+enum { K_STORE = CB_HTTPS_STORE, K_PUSH = CB_HTTPS_PUSH, K_OTHER = CB_HTTPS_OTHER, K_N };
 static _Atomic int     g_calls[K_N], g_dials[K_N];
 static _Atomic int64_t g_us[K_N];
 
@@ -70,8 +70,9 @@ void cb_https_tally_roles(const char *store_prefix, const char *push_part) {
     snprintf(g_push_part, sizeof g_push_part, "%s", push_part ? push_part : "");
 }
 
-static int host_kind(const char *host, bool tls) {
-    if (!tls || (g_store_prefix[0] && strncmp(host, g_store_prefix, strlen(g_store_prefix)) == 0)) return K_STORE;
+// A TLS host's role, by the names cb_https_tally_roles set.
+static int host_kind(const char *host) {
+    if (g_store_prefix[0] && strncmp(host, g_store_prefix, strlen(g_store_prefix)) == 0) return K_STORE;
     if (g_push_part[0] && strstr(host, g_push_part)) return K_PUSH;
     return K_OTHER;
 }
@@ -469,8 +470,9 @@ static int exchange(conn *c, const cb_buf *req, bool head, int64_t deadline, cb_
 static void ignore_sigpipe(void) { signal(SIGPIPE, SIG_IGN); }
 #endif
 
-static int request(bool tls, const char *host, int port, const char *method, const char *path, const char *headers,
-                   const void *body, size_t body_len, int timeout_ms, cb_https_response *out) {
+// kind: the tally's row (K_*). tls: false for plain TCP.
+static int request(int kind, bool tls, const char *host, int port, const char *method, const char *path,
+                   const char *headers, const void *body, size_t body_len, int timeout_ms, cb_https_response *out) {
     memset(out, 0, sizeof *out);
     cb_buf_init(&out->headers);
     cb_buf_init(&out->body);
@@ -494,7 +496,6 @@ static int request(bool tls, const char *host, int port, const char *method, con
     if (body_len) cb_buf_append(&req, body, body_len);
     if (req.oom) { cb_buf_free(&req); return CB_E_NOMEM; }
 
-    const int kind = host_kind(host, tls);
     const int64_t t0 = mono_us();
     int rc = CB_E_IO;
     for (int attempt = 0; attempt < 2; attempt++) {
@@ -521,10 +522,12 @@ static int request(bool tls, const char *host, int port, const char *method, con
 
 int cb_https_request(const char *host, int port, const char *method, const char *path, const char *headers,
                      const void *body, size_t body_len, int timeout_ms, cb_https_response *out) {
-    return request(true, host, port, method, path, headers, body, body_len, timeout_ms, out);
+    return request(host_kind(host), true, host, port, method, path, headers, body, body_len, timeout_ms, out);
 }
 
-int cb_http_plain_request(const char *host, int port, const char *method, const char *path, const char *headers,
-                          const void *body, size_t body_len, int timeout_ms, cb_https_response *out) {
-    return request(false, host, port, method, path, headers, body, body_len, timeout_ms, out);
+int cb_http_plain_request(cb_https_role role, const char *host, int port, const char *method, const char *path,
+                          const char *headers, const void *body, size_t body_len, int timeout_ms,
+                          cb_https_response *out) {
+    const int kind = role == CB_HTTPS_STORE || role == CB_HTTPS_PUSH ? (int)role : K_OTHER;
+    return request(kind, false, host, port, method, path, headers, body, body_len, timeout_ms, out);
 }
