@@ -14,16 +14,13 @@ EXAMPLE :=
 include app.mk
 include $(CBASE)/cbase.mk
 
-# THE LINK CHECK: a local-only binary carries nothing of the cloud provider. Every external symbol
-# of build/cbase is read (nm) and none may name the aws provider's parts: its store, its push
-# transport, its signer, its runtime, its object store, its instance metadata. A provider file that
-# reached this link by any path (a core call, a stray source root) puts its symbols here.
-LINK_BANNED := aws|dynamo|sigv4|lambda|iot_|_iot|s3_|_s3|imds|runtime_api|cloudfront|eventbridge|ssm
+# THE LINK CHECK: a local-only binary carries nothing of the cloud provider. Every global symbol
+# of build/cbase is read (nm) and none may be on the aws word list (tools/symbol_gate.sh: its
+# store, push transport, signer, runtime, object store, instance metadata). A provider file that
+# reached this link by any path (a core call, a stray source root) puts its symbols here. c_base's
+# own check runs the same gate over this binary with every aws object's symbols banned as well
+# (the top-level Makefile's symbol-gate), which a local-only build cannot do: it compiles none.
 .PHONY: link-check
 link-check: build/$(APP_SERVE)
-	@nm -g build/$(APP_SERVE) | awk '{print $$NF}' > build/link-check.syms
-	@if grep -Ei '$(LINK_BANNED)' build/link-check.syms > build/link-check.hits; then head -20 build/link-check.hits; \
-	  echo "link-check: build/$(APP_SERVE) (CBASE_PROVIDERS=$(CBASE_PROVIDERS)) holds $$(wc -l < build/link-check.hits | tr -d ' ') symbol(s) of a provider it does not link"; exit 1; fi
-	@test $$(wc -l < build/link-check.syms) -gt 100 || { echo "link-check: build/$(APP_SERVE) shows too few symbols to judge"; exit 1; }
-	@echo "link-check: build/$(APP_SERVE) holds no symbol of a provider it does not link ($$(wc -l < build/link-check.syms | tr -d ' ') symbols read)"
+	bash $(CBASE)/tools/symbol_gate.sh build/$(APP_SERVE)
 check: link-check

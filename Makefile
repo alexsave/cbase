@@ -12,7 +12,8 @@
 #   make smoke      the end-to-end smokes against a real build/cbase and build/bootstrap
 #   make check      test + smoke + the client, then the example again as a local-only product
 #                   (example/Makefile: its own build, its tests, its link check), then the
-#                   repository's own gates (tools/repo_gate_test.sh)
+#                   repository's own gates (tools/repo_gate_test.sh) and the symbol gate over the
+#                   local-only binary (tools/symbol_gate.sh)
 #   make check-asan the same tests, every object rebuilt under ASan + UBSan
 #   make check-dynamo  the store conformance suite and the example smoke against DynamoDB Local
 #                   (providers/aws/ops/dynamo_local.sh; needs Docker or a DynamoDB Local on 8000)
@@ -41,7 +42,15 @@ example-check:
 # The repository's own rules over its files (tools/repo_gate_test.sh): nothing reaches outside it.
 repo-gate:
 	bash tools/repo_gate_test.sh
-check: example-check repo-gate
+# THE SYMBOL GATE (tools/symbol_gate.sh): the local-only example's build/cbase holds no global
+# symbol any object under providers/aws defines (every one this build compiles: the provider's
+# sources and its tests), nor one on the gate's word list. The aws objects are this build's, so
+# the banned set grows with the provider and nobody keeps it.
+AWS_GATE_OBJS := $(call c_objs,build/obj/cbase,$(sort $(wildcard providers/aws/src/*.c providers/aws/src/*/*.c providers/aws/test/*.c)))
+.PHONY: symbol-gate
+symbol-gate: example-check $(AWS_GATE_OBJS)
+	bash tools/symbol_gate.sh example/build/$(APP_SERVE) $(AWS_GATE_OBJS)
+check: example-check repo-gate symbol-gate
 
 # The deploy tooling's own tests (ops/test, providers/*/ops/test): no AWS, no network, a stub `aws`
 # and scratch git trees. CI's ops job runs them; they are not part of check.
