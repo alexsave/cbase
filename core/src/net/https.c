@@ -7,6 +7,7 @@
 // out (so two threads never share an SSL), and puts it back only after a
 // response that allows keep-alive.
 #include "net/https.h"
+#include "net/tls.h"
 
 #include "util/clock.h"
 #include "util/err.h"
@@ -249,11 +250,6 @@ int cb_https_parse_response(const uint8_t *buf, size_t len, bool head_only, bool
 
 // ---- TLS ----------------------------------------------------------------------
 
-static bool file_exists(const char *p) {
-    struct stat st;
-    return stat(p, &st) == 0 && S_ISREG(st.st_mode);
-}
-
 static void conn_close(conn *c) {
     if (c->ssl) SSL_free(c->ssl);   // no close_notify: the peer may be long gone
     if (c->fd >= 0) close(c->fd);
@@ -261,32 +257,10 @@ static void conn_close(conn *c) {
     c->fd = -1;
 }
 
-// Builds g_ctx under g_lock. CB_OK or CB_E_IO.
+// Builds g_ctx under g_lock (tls.h: the CA search both outbound clients share). CB_OK or CB_E_IO.
 static int ctx_build(void) {
-    SSL_CTX *ctx = SSL_CTX_new(TLS_client_method());
+    SSL_CTX *ctx = cb_tls_client_ctx(g_ca_file, NULL, 0);
     if (!ctx) return CB_E_IO;
-    SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
-    SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL);
-#ifdef SSL_OP_IGNORE_UNEXPECTED_EOF
-    // Some front ends close without close_notify; the parser decides completeness.
-    SSL_CTX_set_options(ctx, SSL_OP_IGNORE_UNEXPECTED_EOF);
-#endif
-    const char *ca = g_ca_file[0] ? g_ca_file : getenv("CBASE_CA_FILE");
-    static const char *const KNOWN[] = {
-        "/etc/pki/tls/certs/ca-bundle.crt",     // Fedora, RHEL and their kin (a one-shot provider's runtime)
-        "/etc/ssl/certs/ca-certificates.crt",   // Debian, Ubuntu, Alpine
-        "/etc/ssl/cert.pem",                    // Alpine, macOS's system copy
-    };
-    int ok = 0;
-    if (ca && *ca) {
-        ok = SSL_CTX_load_verify_locations(ctx, ca, NULL);
-        if (!ok) CB_ERROR("https", "cannot load CA bundle %s", ca);
-    } else {
-        for (size_t i = 0; i < sizeof KNOWN / sizeof KNOWN[0] && !ok; i++)
-            if (file_exists(KNOWN[i])) ok = SSL_CTX_load_verify_locations(ctx, KNOWN[i], NULL);
-        if (!ok) ok = SSL_CTX_set_default_verify_paths(ctx);
-    }
-    if (!ok) { SSL_CTX_free(ctx); ERR_clear_error(); return CB_E_IO; }
     if (g_ctx) SSL_CTX_free(g_ctx);
     g_ctx = ctx;
     return CB_OK;
@@ -339,38 +313,7 @@ static void bound(conn *c, int64_t deadline) {
     set_timeouts(c, need);
 }
 
-static int dial(const char *host, int port, int64_t deadline) {
-    struct addrinfo hints, *ai = NULL;
-    memset(&hints, 0, sizeof hints);
-    hints.ai_socktype = SOCK_STREAM;
-    char ps[16];
-    snprintf(ps, sizeof ps, "%d", port);
-    if (getaddrinfo(host, ps, &hints, &ai) != 0) return -1;
-    int fd = -1;
-    for (struct addrinfo *a = ai; a && fd < 0 && left(deadline) > 0; a = a->ai_next) {
-        fd = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
-        if (fd < 0) continue;
-        int one = 1;
-#ifdef SO_NOSIGPIPE
-        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
-#endif
-        int fl = fcntl(fd, F_GETFL, 0);
-        fcntl(fd, F_SETFL, fl | O_NONBLOCK);
-        int rc = connect(fd, a->ai_addr, a->ai_addrlen);
-        if (rc != 0 && errno == EINPROGRESS) {
-            struct pollfd pf = { fd, POLLOUT, 0 };
-            int err = 0;
-            socklen_t el = sizeof err;
-            if (poll(&pf, 1, (int)left(deadline)) == 1 && getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &el) == 0 && err == 0)
-                rc = 0;
-        }
-        if (rc != 0) { close(fd); fd = -1; continue; }
-        fcntl(fd, F_SETFL, fl & ~O_NONBLOCK);
-        (void)one;
-    }
-    freeaddrinfo(ai);
-    return fd;
-}
+static int dial(const char *host, int port, int64_t deadline) { return cb_net_dial(host, port, deadline, false); }
 
 static int conn_open(conn *c, const char *host, int port, bool tls, int64_t deadline) {
     memset(c, 0, sizeof *c);
@@ -395,13 +338,11 @@ static int conn_open(conn *c, const char *host, int port, bool tls, int64_t dead
     if (c->fd < 0) { CB_WARN("https", "connect %s:%d failed", host, port); conn_close(c); return CB_E_IO; }
     bound(c, deadline);
     SSL_set_fd(c->ssl, c->fd);
-    SSL_set_tlsext_host_name(c->ssl, host);   // SNI
     // The certificate must name the host. If the name cannot be set (finding
     // L10: SSL_set1_host's answer was ignored), no connection is made at all,
     // rather than one whose certificate is checked against nothing.
-    if (SSL_set1_host(c->ssl, host) != 1) {
+    if (cb_tls_bind_host(c->ssl, host) != CB_OK) {
         CB_WARN("https", "TLS to %s:%d: the host name to verify could not be set", host, port);
-        ERR_clear_error();
         conn_close(c);
         return CB_E_IO;
     }

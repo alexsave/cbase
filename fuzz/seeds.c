@@ -15,6 +15,8 @@
 #include "aws_json.h"
 #include "store/store_priv.h"
 #include "net/ws.h"
+#include "net/h2_session.h"
+#include "net/hpack.h"
 #include "b64/b64.h"
 
 #include "mqtt/mqtt.h"
@@ -427,6 +429,185 @@ static void seeds_mqtt(void) {
     puts_("iot_auth", "query-token", ev);
 }
 
+// ---- HTTP/2: HPACK blocks and a server's frames ---------------------------------------------
+// RFC 7541's own examples (C.3 to C.6: a peer's blocks on one connection, its table filled,
+// evicted and named by index), a table size update, and a gRPC request as the client's
+// encoder writes it.
+static size_t unhex(const char *h, uint8_t *out, size_t cap) {
+    size_t n = 0;
+    for (; *h && n < cap; h++) {
+        if (*h == ' ') continue;
+        unsigned v;
+        if (sscanf(h, "%2x", &v) != 1) break;
+        out[n++] = (uint8_t)v;
+        h++;
+    }
+    return n;
+}
+
+// fz_hpack's input: the table selector, then each block as <u16 length><bytes>.
+static void hpack_seed(const char *name, uint8_t sel, const char *const *blocks, int n) {
+    cb_buf b;
+    cb_buf_init(&b);
+    cb_buf_putc(&b, (char)sel);
+    for (int i = 0; i < n; i++) {
+        uint8_t raw[512];
+        size_t k = unhex(blocks[i], raw, sizeof raw);
+        uint8_t len[2] = { (uint8_t)k, (uint8_t)(k >> 8) };
+        cb_buf_append(&b, len, 2);
+        cb_buf_append(&b, raw, k);
+    }
+    put("hpack", name, b.p, b.len);
+    cb_buf_free(&b);
+}
+
+static void seeds_hpack(void) {
+    static const char *const c3[] = {
+        "8286 8441 0f77 7777 2e65 7861 6d70 6c65 2e63 6f6d",
+        "8286 84be 5808 6e6f 2d63 6163 6865",
+        "8287 85bf 400a 6375 7374 6f6d 2d6b 6579 0c63 7573 746f 6d2d 7661 6c75 65",
+    };
+    static const char *const c4[] = {
+        "8286 8441 8cf1 e3c2 e5f2 3a6b a0ab 90f4 ff",
+        "8286 84be 5886 a8eb 1064 9cbf",
+        "8287 85bf 4088 25a8 49e9 5ba9 7d7f 8925 a849 e95b b8e8 b4bf",
+    };
+    static const char *const c5[] = {
+        "4803 3330 3258 0770 7269 7661 7465 611d 4d6f 6e2c 2032 3120 4f63 7420 3230 3133 2032 303a 3133 3a32 3120 474d"
+        " 546e 1768 7474 7073 3a2f 2f77 7777 2e65 7861 6d70 6c65 2e63 6f6d",
+        "4803 3330 37c1 c0bf",
+        "88c1 611d 4d6f 6e2c 2032 3120 4f63 7420 3230 3133 2032 303a 3133 3a32 3220 474d 54c0 5a04 677a 6970 7738 666f"
+        " 6f3d 4153 444a 4b48 514b 425a 584f 5157 454f 5049 5541 5851 5745 4f49 553b 206d 6178 2d61 6765 3d33 3630 303b"
+        " 2076 6572 7369 6f6e 3d31",
+    };
+    static const char *const c6[] = {
+        "4882 6402 5885 aec3 771a 4b61 96d0 7abe 9410 54d4 44a8 2005 9504 0b81 66e0 82a6 2d1b ff6e 919d 29ad 1718 63c7"
+        " 8f0b 97c8 e9ae 82ae 43d3",
+        "4883 640e ffc1 c0bf",
+        "88c1 6196 d07a be94 1054 d444 a820 0595 040b 8166 e084 a62d 1bff c05a 839b d9ab 77ad 94e7 821d d7f2 e6c7 b335"
+        " dfdf cd5b 3960 d5af 2708 7f36 72c1 ab27 0fb5 291f 9587 3160 65c0 03ed 4ee5 b106 3d50 07",
+    };
+    static const char *const resize[] = {
+        "400a 6375 7374 6f6d 2d6b 6579 0d63 7573 746f 6d2d 6865 6164 6572", "20 3fe1 1f 82", "3f0f be",
+    };
+    hpack_seed("c3-requests", 0, c3, 3);
+    hpack_seed("c4-requests-huffman", 0, c4, 3);
+    hpack_seed("c5-responses", 2, c5, 3);
+    hpack_seed("c6-responses-huffman", 2, c6, 3);
+    hpack_seed("table-size-update", 0, resize, 3);
+    // Never-indexed literals, one of a pair the static table holds (:method GET): the
+    // encoder must keep it a never-indexed literal, not the index.
+    static const char *const never[] = { "1203 4745 54 1f00 0673 6563 7265 74", "82" };
+    hpack_seed("never-indexed", 0, never, 2);
+    // A gRPC request as the client writes it: static indexes, never-indexed literals, Huffman.
+    cb_buf blk, b;
+    cb_buf_init(&blk);
+    cb_buf_init(&b);
+    cb_hpack_encode(&blk, ":method", 7, "POST", 4, false);
+    cb_hpack_encode(&blk, ":scheme", 7, "https", 5, false);
+    cb_hpack_encode(&blk, ":path", 5, "/google.ai.generativelanguage.v1beta.GenerativeService/GenerateContent", 70, false);
+    cb_hpack_encode(&blk, "content-type", 12, "application/grpc", 16, false);
+    cb_hpack_encode(&blk, "te", 2, "trailers", 8, false);
+    cb_hpack_encode(&blk, "grpc-timeout", 12, "60000m", 6, false);
+    cb_hpack_encode(&blk, "x-goog-api-key", 14, "AIzaSyExampleExampleExample", 27, true);
+    cb_buf_putc(&b, 0);
+    uint8_t len[2] = { (uint8_t)blk.len, (uint8_t)(blk.len >> 8) };
+    cb_buf_append(&b, len, 2);
+    cb_buf_append(&b, blk.p, blk.len);
+    put("hpack", "grpc-request", b.p, b.len);
+    cb_buf_free(&blk);
+    cb_buf_free(&b);
+}
+
+// fz_h2_session's input: <mode><k>, then the peer's bytes as pieces <u8 length><bytes>.
+static void h2_seed(const char *name, uint8_t mode, uint8_t k, const cb_buf *peer, size_t piece) {
+    cb_buf b;
+    cb_buf_init(&b);
+    cb_buf_putc(&b, (char)mode);
+    cb_buf_putc(&b, (char)k);
+    for (size_t at = 0; at < peer->len; at += piece) {
+        size_t n = peer->len - at < piece ? peer->len - at : piece;
+        cb_buf_putc(&b, (char)n);
+        cb_buf_append(&b, peer->p + at, n);
+    }
+    put("h2_session", name, b.p, b.len);
+    cb_buf_free(&b);
+}
+
+static void h2_headers(cb_buf *out, uint32_t stream, bool end, const char *const *kv, int n) {
+    cb_buf blk;
+    cb_buf_init(&blk);
+    for (int i = 0; i < n; i++)
+        cb_hpack_encode(&blk, kv[2 * i], strlen(kv[2 * i]), kv[2 * i + 1], strlen(kv[2 * i + 1]), false);
+    cb_h2_frame_headers(out, stream, blk.p, blk.len, end, CB_H2_DEFAULT_FRAME);
+    cb_buf_free(&blk);
+}
+
+static void h2_data(cb_buf *out, uint32_t stream, const void *p, size_t n, bool end) {
+    cb_h2_frame_head(out, (uint32_t)n, CB_H2_DATA, end ? CB_H2_F_END_STREAM : 0, stream);
+    cb_buf_append(out, p, n);
+}
+
+static void seeds_h2_session(void) {
+    static const char *const head[] = { ":status", "200", "content-type", "application/grpc" };
+    static const char *const ok[] = { "grpc-status", "0" };
+    static const char *const quota[] = { ":status", "200", "content-type", "application/grpc", "grpc-status", "8",
+                                         "grpc-message", "quota%20used", "grpc-status-details-bin", "CAgSBHF1b3Q" };
+    static const uint8_t msg[] = { 0, 0, 0, 0, 3, 'h', 'e', 'y' };
+    uint8_t opaque[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
+    // Both answered: stream 1 with a body and trailers, stream 3 trailers-only; the server's
+    // ACK, a PING and window updates around them.
+    cb_buf p;
+    cb_buf_init(&p);
+    cb_h2_frame_settings(&p, NULL, NULL, 0, true);
+    cb_h2_frame_ping(&p, opaque, false);
+    cb_h2_frame_u32(&p, CB_H2_WINDOW_UPDATE, 0, 1 << 20);
+    cb_h2_frame_u32(&p, CB_H2_WINDOW_UPDATE, 1, 1 << 20);
+    h2_headers(&p, 1, false, head, 2);
+    h2_data(&p, 1, msg, sizeof msg, false);
+    h2_headers(&p, 1, true, ok, 1);
+    h2_headers(&p, 3, true, quota, 5);
+    h2_seed("answered", 0, 0, &p, 255);
+    h2_seed("answered-small-pieces", 0, 0, &p, 7);
+    h2_seed("answered-refusing", 3, 1, &p, 64);
+    // A body over 100 bytes, refused by the caller, then the other stream cancelled.
+    cb_buf_reset(&p);
+    cb_h2_frame_settings(&p, NULL, NULL, 0, true);
+    h2_headers(&p, 1, false, head, 2);
+    static uint8_t big[300];
+    h2_data(&p, 1, big, sizeof big, true);
+    h2_headers(&p, 3, false, head, 2);
+    h2_seed("body-refused-then-cancel", 5, 2, &p, 200);
+    // Refused and gone away: a REFUSED_STREAM, then a GOAWAY below stream 3.
+    cb_buf_reset(&p);
+    cb_h2_frame_settings(&p, NULL, NULL, 0, true);
+    cb_h2_frame_u32(&p, CB_H2_RST_STREAM, 1, CB_H2_REFUSED_STREAM);
+    cb_h2_frame_goaway(&p, 1, CB_H2_NO_ERROR);
+    h2_seed("refused-goaway", 0, 0, &p, 255);
+    // One stream at a time: the GET waits, then the GOAWAY (or the end) ends it waiting.
+    h2_seed("one-at-a-time-goaway", 16, 0, &p, 255);
+    cb_buf_reset(&p);
+    cb_h2_frame_settings(&p, NULL, NULL, 0, true);
+    h2_headers(&p, 1, false, head, 2);
+    h2_data(&p, 1, msg, sizeof msg, false);
+    h2_seed("one-at-a-time-cut", 16 | 4, 0, &p, 9);
+    // A server with settings of its own (a stream limit of 1, a small window), then a
+    // CONTINUATION-split block, then a protocol error (DATA on stream 0).
+    cb_buf_reset(&p);
+    const uint16_t ids[] = { CB_H2_S_MAX_CONCURRENT_STREAMS, CB_H2_S_INITIAL_WINDOW_SIZE, CB_H2_S_MAX_FRAME_SIZE };
+    const uint32_t vals[] = { 1, 100, 16384 };
+    cb_h2_frame_settings(&p, ids, vals, 3, false);
+    cb_h2_frame_settings(&p, NULL, NULL, 0, true);
+    cb_buf blk;
+    cb_buf_init(&blk);
+    for (int i = 0; i < 2; i++) cb_hpack_encode(&blk, head[2 * i], strlen(head[2 * i]), head[2 * i + 1], strlen(head[2 * i + 1]), false);
+    cb_h2_frame_headers(&p, 1, blk.p, blk.len, true, 8);
+    cb_buf_free(&blk);
+    h2_data(&p, 0, "x", 1, false);
+    h2_seed("settings-continuation-error", 8, 3, &p, 33);
+    cb_buf_free(&p);
+}
+
 int main(int argc, char **argv) {
     if (argc != 2) { fprintf(stderr, "usage: seeds <corpus dir>\n"); return 2; }
     g_root = argv[1];
@@ -444,6 +625,8 @@ int main(int argc, char **argv) {
     seeds_bcrypt();
     seeds_https();
     seeds_mqtt();
+    seeds_hpack();
+    seeds_h2_session();
     printf("seeds: %d files (%d DynamoDB items)\n", g_written, g_n_items);
     return 0;
 }

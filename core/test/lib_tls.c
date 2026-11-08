@@ -18,7 +18,7 @@
 
 // openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -days 36500
 //   -nodes -subj /CN=localhost -addext subjectAltName=DNS:localhost
-static const char CERT[] =
+const char tls_test_cert_pem[] =
     "-----BEGIN CERTIFICATE-----\n"
     "MIIBlDCCATugAwIBAgIUS5Gjqj5aKgf2FZ2KDLrlqY4XqdAwCgYIKoZIzj0EAwIw\n"
     "FDESMBAGA1UEAwwJbG9jYWxob3N0MCAXDTI2MTAxMzE3MzUxM1oYDzIxMjYwOTE5\n"
@@ -30,7 +30,7 @@ static const char CERT[] =
     "RwAwRAIgKWdZaw0nAThN5MlcyRCwacHevaIM7ZGWHntM3DFJpeMCIClTdJVtgzyB\n"
     "K/gfdPMBHMgoJBRcx5yP7p7vlhTBbwUp\n"
     "-----END CERTIFICATE-----\n";
-static const char KEY[] =
+const char tls_test_key_pem[] =
     "-----BEGIN PRIVATE KEY-----\n"
     "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgr/b0XIoorD205G/Z\n"
     "EgXwfGYSxrpzAywOxlAert7X66KhRANCAATGjOlro7rpkBRboPjMTR2qg8zyJKFh\n"
@@ -164,7 +164,7 @@ int tls_srv_start(tls_srv *s, tls_handler fn, void *ud) {
     s->fn = fn;
     s->ud = ud;
     SSL_CTX *ctx = SSL_CTX_new(TLS_server_method());
-    BIO *cb = BIO_new_mem_buf(CERT, -1), *kb = BIO_new_mem_buf(KEY, -1);
+    BIO *cb = BIO_new_mem_buf(tls_test_cert_pem, -1), *kb = BIO_new_mem_buf(tls_test_key_pem, -1);
     X509 *x = PEM_read_bio_X509(cb, NULL, NULL, NULL);
     EVP_PKEY *k = PEM_read_bio_PrivateKey(kb, NULL, NULL, NULL);
     BIO_free(cb);
@@ -177,7 +177,7 @@ int tls_srv_start(tls_srv *s, tls_handler fn, void *ud) {
     snprintf(s->ca_file, sizeof s->ca_file, "%s/cbase_test_ca_%d_%p.pem", tmp && *tmp ? tmp : "/tmp", (int)getpid(), (void *)s);
     FILE *f = fopen(s->ca_file, "w");
     if (!f) return -1;
-    fputs(CERT, f);
+    fputs(tls_test_cert_pem, f);
     fclose(f);
     s->lfd = socket(AF_INET, SOCK_STREAM, 0);
     int one = 1;

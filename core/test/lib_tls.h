@@ -46,6 +46,11 @@ typedef struct {
     pthread_mutex_t fn_lock;    // the handler runs under it: tests write it single-threaded
 } tls_srv;
 
+// The fixed self-signed certificate for "localhost" and its key, as PEM: for
+// another test server (lib_h2_srv.c) to serve the same identity.
+extern const char tls_test_cert_pem[];
+extern const char tls_test_key_pem[];
+
 // 0, or -1.
 int  tls_srv_start(tls_srv *s, tls_handler fn, void *ud);
 // The same server speaking plain HTTP (DynamoDB Local's way), for the
