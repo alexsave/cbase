@@ -1,5 +1,5 @@
 // ingress_process.h - the process ingress: a long-lived HTTP and WebSocket
-// server over net/ (docs/PLATFORM.md 8.3.1). `cbase serve` is this with the
+// server over net/ (docs/history/PLATFORM_SPLIT.md 8.3.1). `cbase serve` is this with the
 // local provider; a Cloud Run provider would be this with its own. It reads
 // the CBASE_* environment, boots (boot.h), listens on CBASE_LISTEN, runs one
 // loop timer per schedule the app declares, and drains on SIGTERM or SIGINT.

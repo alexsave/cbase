@@ -106,7 +106,7 @@ dw_reason dw_cancel_reason(const char *body, size_t n, int index, bool *has_item
 
 // Walks the elements of a JSON array value: *pos starts at 0. false at the end
 // or on malformed input.
-// THE KEY-CAPTURE PROOF (docs/PLATFORM.md stages 5 and 6): the shape of one
+// THE KEY-CAPTURE PROOF (docs/history/PLATFORM_SPLIT.md stages 5 and 6): the shape of one
 // request as lines appended to out, each "<Op> <what>", with every key value
 // normalized (uuid, id, number, email: placeholders; upper-case words
 // kept), every attribute name and type, and the expression names and values

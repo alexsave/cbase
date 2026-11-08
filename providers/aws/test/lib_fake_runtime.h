@@ -1,5 +1,5 @@
 // lib_fake_runtime.h - Lambda's Runtime API, faked, for driving the real
-// `bootstrap` with no AWS (the fake Runtime API harness, docs/PLATFORM.md 6.1).
+// `bootstrap` with no AWS (the fake Runtime API harness, docs/history/PLATFORM_SPLIT.md 6.1).
 //
 // A cb_server on 127.0.0.1 serves what bootstrap asks of the Runtime API:
 //   GET  /2018-06-01/runtime/invocation/next   the next queued event, as

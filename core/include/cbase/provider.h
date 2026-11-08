@@ -1,5 +1,5 @@
 // cbase/provider.h - where the platform runs: ONE const struct per provider,
-// mostly data (docs/PLATFORM.md section 8.3). A binary's main names the one
+// mostly data (docs/history/PLATFORM_SPLIT.md section 8.3). A binary's main names the one
 // it is (ctx->prov), so the provider is chosen at link time; the store and the
 // push transport stay vtables (store.h, realtime.h) because the test lanes mix
 // them (serve's ingress over the DynamoDB store).

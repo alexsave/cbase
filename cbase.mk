@@ -119,7 +119,7 @@ ifeq ($(LTO),1)
   CB_LTO := -flto
 endif
 
-# ---- the sides (docs/PLATFORM.md 8.4) ---------------------------------------------------------
+# ---- the sides (docs/history/PLATFORM_SPLIT.md 8.4) -------------------------------------------
 # THE SOURCE ROOTS: the core, which names no product and no provider; each linked provider; the
 # product's. Each side's tests (core's, each provider's, the product's), and every test program
 # reaches every one of them: a test may assemble a mixed lane.
@@ -230,7 +230,7 @@ CB_LIB_SRC := $(CB)lib/b64/b64.c $(CB)lib/hex/hex.c $(CB)lib/sha256.c $(CB)lib/m
               $(CB)lib/stats/hist.c $(CB)lib/proc.c
 LIB_SRC  := $(sort $(filter-out $(MAIN_SERVE) $(MAIN_LAMBDA),$(foreach r,$(SRC_ROOTS),$(wildcard $(r)/*.c $(r)/*/*.c)))) $(CB_LIB_SRC) \
             $(APP_LIB_SRC) $(CB_GEN) $(APP_GEN)
-# THE CONFORMANCE SUITES (docs/PLATFORM.md 8.7 decision 2): core/test/conformance/ holds one library
+# THE CONFORMANCE SUITES (docs/history/PLATFORM_SPLIT.md 8.7 decision 2): core/test/conformance/ holds one library
 # per provider interface (store, push, ingress, job), each linked into every test program like a
 # lib_*.c, and each provider's lane runs them from a unit test of its own.
 CONF_SRC := $(sort $(wildcard $(CB)core/test/conformance/*.c))
@@ -374,7 +374,7 @@ CB_OWN_SRC := $(sort $(foreach r,$(CB_SRC_ROOTS),$(wildcard $(r)/*.c $(r)/*/*.c)
 libc-gate: $(call c_objs,build/obj/cbase,$(CB_OWN_SRC))
 	@bash $(CB)tools/libc_gate.sh --nm nm --cc '$(CC) $(CB_LTO)' $^
 
-# THE COMPILER GATE AS A TEST (docs/PLATFORM.md 9, stage 7): each <side>/test/gate/*.c includes one
+# THE COMPILER GATE AS A TEST (docs/history/PLATFORM_SPLIT.md 9, stage 7): each <side>/test/gate/*.c includes one
 # header from across that side's line (core a provider's or the product's, one provider the other's,
 # the product a provider's). Each is compiled twice, -fsyntax-only: in CB_CFLAGS as a source of that
 # side gets them (side_inc_of the same path under the side's src/), where it must FAIL, and on that
@@ -444,7 +444,7 @@ ifneq ($(CB_AWS),)
 # (APP_DYNAMO_RUNS, quoted commands as RUN_ALL takes them; APP_DYNAMO_DEPS what they need built),
 # every one with CBASE_STORE=dynamo.
 #
-# THE KEY-CAPTURE PROOF (docs/PLATFORM.md stages 5 and 6), when the product keeps a golden file
+# THE KEY-CAPTURE PROOF (docs/history/PLATFORM_SPLIT.md stages 5 and 6), when the product keeps a golden file
 # (APP_DYNAMO_GOLDEN): every request the product's runs send is reduced to its shape (aws_json.h
 # dw_shape: the keys and index keys it touches, normalized, and every attribute name), and the set
 # of shapes must equal the golden. A change that moves a key or renames an attribute fails here;

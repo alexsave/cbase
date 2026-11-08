@@ -651,7 +651,7 @@ The hand-minimised input is `fuzz/corpus/event/crash-40a6db73`.
 
 ## The name gate, the compiler gate and fuzz.mk's bookkeeping (stage 8, 2026-10-18)
 
-The name gate (PLATFORM.md 8.4) is `core/test/unit_name_gate.c` over `shared/tools/name_gate/words.txt` (products, providers, foolish's domain words) and the shrinking allowlist `shared/tools/name_gate/allow.txt` (exact counts per file and pattern); `shared_is_shared_validation.test.ts` reads its product list from the same file.
+The name gate (docs/history/PLATFORM_SPLIT.md 8.4) is `core/test/unit_name_gate.c` over `shared/tools/name_gate/words.txt` (products, providers, foolish's domain words) and the shrinking allowlist `shared/tools/name_gate/allow.txt` (exact counts per file and pattern); `shared_is_shared_validation.test.ts` reads its product list from the same file.
 The compiler gate is `make compiler-gate` over one file per side under `<side>/test/gate/`.
 One bug found: `fuzz-seeds` copied every target's seeds before refusing a stray seed directory, leaving the tree half-seeded; the refusal now runs first.
 

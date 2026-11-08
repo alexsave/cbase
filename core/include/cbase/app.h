@@ -5,7 +5,7 @@
 // boot runs its self-test and registers its routes after the platform's own
 // (/health, /admin, the provider's).
 //
-// It grows stage by stage (docs/PLATFORM.md 8.6): jobs and schedules, topic
+// It grows stage by stage (docs/history/PLATFORM_SPLIT.md 8.6): jobs and schedules, topic
 // families, cached paths, collections and admin panels join it as the code
 // that knows them moves behind the platform.
 #ifndef CB_APP_H
