@@ -54,8 +54,8 @@ mkdir -p "$tmp/cbase"
     | while IFS= read -r -d '' f; do [ -f "$f" ] && printf '%s\0' "$f"; done \
     | tar --null -T - -cf - ) | tar -xf - -C "$tmp/cbase" || fail "cannot copy the tree of $SRC"
 head="$(git -C "$SRC" rev-parse --short HEAD)$(git -C "$SRC" diff --quiet HEAD 2> /dev/null || echo ' + edits')"
-[ ! -e "$tmp/cbase/build" ] && [ ! -e "$tmp/cbase/example/build" ] || fail "the copy has a build/ in it"
-[ -f "$tmp/cbase/cbase.mk" ] && [ -d "$tmp/cbase/providers/local/src" ] || fail "the copy of $SRC is no cbase tree"
+if [ -e "$tmp/cbase/build" ] || [ -e "$tmp/cbase/example/build" ]; then fail "the copy has a build/ in it"; fi
+if [ ! -f "$tmp/cbase/cbase.mk" ] || [ ! -d "$tmp/cbase/providers/local/src" ]; then fail "the copy of $SRC is no cbase tree"; fi
 # What a local-only product need not carry: nothing of it may be read by the build.
 rm -rf "$tmp/cbase/providers/aws" "$tmp/cbase/ops"
 
