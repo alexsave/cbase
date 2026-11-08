@@ -4,7 +4,7 @@ AWSTemplateFormatVersion: "2010-09-09"
 # reads them from the product's ops settings), never this file's defaults.
 #
 # Upload this file in the CloudFormation console (Create stack > Upload a
-# template file). RUNBOOK.md walks through every click, in order.
+# template file), or run providers/aws/ops/deploy.sh; RUNBOOK.md section 4 is the walk.
 #
 # What it makes:
 #   * the DynamoDB table (single-table design, DESIGN.md "Store"), PROVISIONED
