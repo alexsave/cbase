@@ -151,3 +151,28 @@ if bash "$tmp/shallow/cbase/providers/aws/ops/lambda_deploy.sh" "$tmp/fake.zip" 
 if grep -q 'does not contain origin/main' "$tmp/out"; then cat "$tmp/out" >&2; fail "shallow: a shallow clone of a branch containing main was refused"; fi
 grep -q '^aws cloudformation describe-stacks' "$tmp/aws_calls" 2>/dev/null || { cat "$tmp/out" >&2; fail "shallow: never reached the stack"; }
 echo "ok - a shallow clone of a branch containing origin/main gets past the gate"
+
+# 4. cbase as a real submodule of the product (how a product mounts it): the deploy is the
+#    product's, so the gate checks the PRODUCT against its origin/main (deploy_repo resolves the
+#    superproject), never the submodule's own history, which is current with its own main.
+g init -q --bare "$tmp/cb_origin.git"
+g clone -q "$tmp/cb_origin.git" "$tmp/cb_seed" 2>/dev/null
+cp -R "$tmp/seed/cbase/." "$tmp/cb_seed/"
+g -C "$tmp/cb_seed" add -A
+g -C "$tmp/cb_seed" commit -q -m cbase
+g -C "$tmp/cb_seed" push -q origin HEAD:main
+g init -q --bare "$tmp/prod_origin.git"
+g clone -q "$tmp/prod_origin.git" "$tmp/prod_seed" 2>/dev/null
+g -C "$tmp/prod_seed" -c protocol.file.allow=always submodule -q add "$tmp/cb_origin.git" cbase
+g -C "$tmp/prod_seed" commit -q -m "the product, cbase mounted"
+g -C "$tmp/prod_seed" push -q origin HEAD:main
+g -c protocol.file.allow=always clone -q --recurse-submodules "$tmp/prod_origin.git" "$tmp/prod_work" 2>/dev/null
+echo later > "$tmp/prod_seed/later"
+g -C "$tmp/prod_seed" add -A
+g -C "$tmp/prod_seed" commit -q -m "the product moves on"
+g -C "$tmp/prod_seed" push -q origin HEAD:main
+rm -f "$tmp/aws_calls"
+if bash "$tmp/prod_work/cbase/providers/aws/ops/lambda_deploy.sh" "$tmp/fake.zip" > "$tmp/out" 2>&1; then fail "submodule: a product behind its origin/main deployed"; fi
+grep -q 'does not contain origin/main' "$tmp/out" || { cat "$tmp/out" >&2; fail "submodule: refused, but not by require_main on the product"; }
+[ ! -e "$tmp/aws_calls" ] || fail "submodule: aws was called before the refusal: $(cat "$tmp/aws_calls")"
+echo "ok - with cbase as a submodule, the gate checks the product's tree, not cbase's"

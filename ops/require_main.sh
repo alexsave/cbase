@@ -1,5 +1,6 @@
 # shellcheck shell=bash
-# Sourced, not run: require_main TREE refuses (exits 1) unless TREE contains
+# Sourced, not run: require_main TREE refuses (exits 1) unless TREE (the repository deploy_repo
+# names for it: a product's, when cbase is inside one) contains
 # origin/main, or is the first attempt of a CI run of a commit of main (QUEUED
 # below). vm_release.sh, vm_deploy.sh and lambda_deploy.sh call it before
 # their first AWS call; test/deploy_gate_test.sh proves it for each.
@@ -37,8 +38,19 @@
 # A shallow checkout (actions/checkout's default) is deepened first: on any
 # other ref, HEAD contains main through history the clone does not have, and
 # the ancestry test would refuse a tree that is fine.
+# deploy_repo DIR: the repository a deploy from DIR ships, the one require_main checks and whose
+# commit names the release. cbase sits in a product's repository (a submodule, or a directory of
+# it): that product's, the superproject, is the one deployed; cbase's own repository is deployed
+# only when it is no part of another.
+deploy_repo() {
+  local sup
+  sup="$(git -C "$1" rev-parse --show-superproject-working-tree)"
+  if [ -n "$sup" ]; then printf '%s\n' "$sup"; else git -C "$1" rev-parse --show-toplevel; fi
+}
+
 require_main() {
-  local tree="$1" main head
+  local tree main head
+  tree="$(deploy_repo "$1")"
   if [ "$(git -C "$tree" rev-parse --is-shallow-repository)" = true ]; then
     git -C "$tree" fetch --quiet --unshallow origin || { echo "cannot unshallow $tree to check it against origin/main" >&2; exit 1; }
   fi

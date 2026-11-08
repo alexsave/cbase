@@ -48,10 +48,9 @@
 set -euo pipefail
 ops="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cb="$(cd "$ops/../../.." && pwd)"   # the cbase root
-# The repository being deployed: the product's that cbase sits in (a submodule's superproject,
-# or the repository cbase is a directory of), or cbase's own.
-repo="$(git -C "$cb" rev-parse --show-superproject-working-tree)"
-[ -n "$repo" ] || repo="$(git -C "$cb" rev-parse --show-toplevel)"
+# shellcheck source=ops/require_main.sh
+. "$cb/ops/require_main.sh"   # require_main, deploy_repo
+repo="$(deploy_repo "$cb")"
 die() { echo "vm_deploy.sh: $*" >&2; exit 1; }
 case "${1:-}" in
   --restart|--verify) exec "$ops/vm_release.sh" "$1" ;;
@@ -60,8 +59,6 @@ case "${1:-}" in
 esac
 # shellcheck source=ops/s3_prune_lib.sh
 . "$cb/ops/s3_prune_lib.sh"
-# shellcheck source=ops/require_main.sh
-. "$cb/ops/require_main.sh"
 require_main "$repo"
 public_url="${CBASE_PUBLIC_URL:-}"
 origin_domain="${CBASE_VM_ORIGIN_DOMAIN:-}"

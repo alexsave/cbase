@@ -31,10 +31,9 @@
 set -euo pipefail
 
 cb="$(cd "$(dirname "$0")/../../.." && pwd)"   # the cbase root
-# The repository being deployed: the product's that cbase sits in (a submodule's superproject,
-# or the repository cbase is a directory of), or cbase's own.
-repo="$(git -C "$cb" rev-parse --show-superproject-working-tree)"
-[ -n "$repo" ] || repo="$(git -C "$cb" rev-parse --show-toplevel)"
+# shellcheck source=ops/require_main.sh
+. "$cb/ops/require_main.sh"   # require_main, deploy_repo
+repo="$(deploy_repo "$cb")"
 stack="${CBASE_STACK:-cbase}"
 export AWS_REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-1}}"
 
@@ -44,8 +43,6 @@ zip="$1"
 [ -f "$zip" ] || die "$zip is not a file"
 command -v aws >/dev/null 2>&1 || die "the AWS CLI is not installed"
 
-# shellcheck source=ops/require_main.sh
-. "$cb/ops/require_main.sh"
 # shellcheck source=ops/s3_prune_lib.sh
 . "$cb/ops/s3_prune_lib.sh"
 require_main "$repo"

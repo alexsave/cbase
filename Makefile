@@ -45,7 +45,7 @@ check: example-check repo-gate
 
 # The deploy tooling's own tests (ops/test, providers/*/ops/test): no AWS, no network, a stub `aws`
 # and scratch git trees. CI's ops job runs them; they are not part of check.
-OPS_TESTS := $(sort $(wildcard ops/test/*.sh providers/*/ops/test/*.sh))
+OPS_TESTS := $(sort $(wildcard ops/test/*.sh providers/*/ops/test/*.sh)) tools/changed_files_test.sh
 .PHONY: ops-test
 ops-test:
 	@for t in $(OPS_TESTS); do echo "== $$t"; bash $$t || exit 1; done

@@ -49,10 +49,9 @@
 set -euo pipefail
 ops="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cb="$(cd "$ops/../../.." && pwd)"   # the cbase root
-# The repository being deployed: the product's that cbase sits in (a submodule's superproject,
-# or the repository cbase is a directory of), or cbase's own.
-repo="$(git -C "$cb" rev-parse --show-superproject-working-tree)"
-[ -n "$repo" ] || repo="$(git -C "$cb" rev-parse --show-toplevel)"
+# shellcheck source=ops/require_main.sh
+. "$cb/ops/require_main.sh"   # require_main, deploy_repo
+repo="$(deploy_repo "$cb")"
 die() { echo "vm_release.sh: $*" >&2; exit 1; }
 [ $# -eq 1 ] || { sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 command -v aws >/dev/null 2>&1 || die "the AWS CLI is not installed"
@@ -66,8 +65,6 @@ mode=release
 case "$1" in
   --restart)
     mode=restart
-    # shellcheck source=ops/require_main.sh
-    . "$cb/ops/require_main.sh"
     require_main "$repo"   # --restart ships this tree's boot script
     ;;
   --verify) mode=verify ;;
@@ -76,8 +73,6 @@ case "$1" in
   *)
     bin="$1"
     [ -f "$bin" ] || die "$bin is not a file"
-    # shellcheck source=ops/require_main.sh
-    . "$cb/ops/require_main.sh"
     require_main "$repo"
     file "$bin" | grep -Eq 'ARM aarch64.*(statically|static-pie) linked' || die "$bin is not a static arm64 binary"
     sum="$(sha256 "$bin")"
