@@ -93,6 +93,6 @@ struct cb_ctx {
 
 // The release, as /health reports it. VERSION at the root is its one source: a tag is v<VERSION>
 // (ci.yml's version job refuses any other), and core/test/unit_version.c holds this to it.
-#define CB_VERSION "0.1.1"
+#define CB_VERSION "0.1.2"
 
 #endif
