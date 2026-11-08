@@ -31,6 +31,18 @@ Where a decision was measured on that product's traffic, the number is kept as t
 9. **Tests in C**, every one mutation-checked ([docs/mutation_checks.md](docs/mutation_checks.md)), and gates that hold the rules (the README's "Rules the code keeps").
 10. **Conventions:** no em dashes; no JSON outside `core/src/core_json.c` and `providers/aws/src/aws_json.c`; one random source per kind; one integer parser ("Numbers from text"); every time from the host's clock, passed in.
 
+## Why C, and not Rust
+
+Rust was weighed for the server on its strongest ground: memory safety at compile time for exactly the code a server exposes to the internet (HTTP parsing, WebSocket framing, token decoding), a maintained ecosystem for it, concurrency without data races, and an official Lambda runtime and AWS SDK.
+C was chosen, with those arguments answered rather than dismissed:
+
+- A product's own code is C, and the platform's hot path is "parse the wire, call the product, commit, publish": in Rust every product call would cross an `unsafe extern` seam, so the guarantee would stop at the boundary that carries the interesting data.
+- The parsers came from code that was already fuzzed, and every parser and codec has a libFuzzer target in CI, replayed under ASan and UBSan.
+- One toolchain: make and clang build everything, the sanitizer and fuzz lanes included, with no second build system and no crate supply chain to audit.
+- The honest extra price of C on Lambda is cbase's own SigV4 signer, HTTPS client, Runtime API loop and DynamoDB wire, each with unit tests and the readers among them with fuzz targets; it is paid once.
+
+If the AWS surface grows a great deal, the Rust case gets stronger and this section should be reread.
+
 ## Why Lambda, and what it costs
 
 The aws provider exists because it is free at a small product's scale: Lambda's 1M requests and 400,000 GB-seconds a month, DynamoDB's always-free 25 GB with 25 provisioned write and 25 read units ("The free tier, provisioned"), a free Function URL, CloudFront's free plan, free ACM certificates and a free EventBridge Scheduler.
