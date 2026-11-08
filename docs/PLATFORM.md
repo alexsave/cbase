@@ -141,6 +141,18 @@ A table `{method, pattern, flags, handler}`, exactly today's `cb_route`, so `han
 The platform refuses an app route that shadows a platform one (router `CB_E_CONFLICT`, already there).
 Handlers keep running on the request pool under serve and once per invocation under Lambda.
 
+A pattern is exact (`/health`), a prefix (`/v1/games/*`), or has path parameters (`/decks/:id/notes/:nid`), which the handler reads decoded with `cb_route_param(req, "id", out, cap)`.
+An exact pattern always wins, then a parameter pattern (the one whose first differing segment is literal), then the longest prefix, whatever order they were added in (`net/router.h`).
+A route may take a body larger or smaller than `CBASE_MAX_BODY` (1 MiB) with its own `max_body` (at most 1 GiB, for a media upload); serve answers a longer Content-Length 413 from the head alone, before reading the body.
+Chunked request bodies stay refused (411): every client sends a Content-Length.
+
+CORS is the app's to declare, and the default is deny (`net/router.h`).
+`cb_app.cors_origins` lists the web origins whose pages may call the app, each exactly as a browser sends `Origin`; the deployment may add its own through `CBASE_ALLOWED_ORIGINS` (default empty).
+A listed origin is echoed in `Access-Control-Allow-Origin` with `Vary: Origin`; any other gets no `Access-Control-*` header, and its preflight is answered 403.
+`"*"` in either list is any origin, answered `*`; `cors_credentials` adds `Access-Control-Allow-Credentials: true` to an echoed origin, and boot refuses it beside `"*"`.
+A WebSocket upgrade, on every socket path (`/ws`, `/ws/public`, an app's own), is held to the same lists: an `Origin` neither names is answered 403 before the handler runs, so it never gets a 101.
+An upgrade without `Origin` (a native client, the C SDK's POSIX host, a test) goes ahead, since only a browser sends one and the check exists to stop a browser driven by another site.
+
 ### 2.2 Collections instead of hard-coded rows
 
 The store becomes two layers.
@@ -236,6 +248,21 @@ The default is false, so every app written before the field opens the provider's
 Each child is its own process group, and serve ends every group still running when it shuts down (SIGTERM, then SIGKILL after the grace).
 On Linux the leader also gets `PR_SET_PDEATHSIG`, so it dies with a server that is SIGKILLed; on macOS a SIGKILLed or crashed server cannot clean up, and its children run on until they end.
 An optional socketpair on the child's fd 3 carries lines both ways; cbase knows no protocol over it, and an overlong line closes the channel, not the child.
+
+### 2.9 Upgrading a product across the HTTP changes
+
+A product that consumes cbase from before the CORS, path parameter and body cap changes makes three edits, and the compiler or boot names each one it misses.
+
+1. **Route rows.** `cb_route` gained `max_body` after `inline_us`, so a positional row such as `{ "GET", "/v1/x", CB_ROUTE_POOL, h_x, 0 }` fails `-Wmissing-field-initializers`.
+   Prefer designated initializers, which name what they set and survive the next field: `{ .method = "GET", .pattern = "/v1/x", .flags = CB_ROUTE_POOL, .fn = h_x }`.
+   The least edit is a trailing `, 0` on each positional row: `{ "GET", "/v1/x", CB_ROUTE_POOL, h_x, 0, 0 }`, which keeps the server's `CBASE_MAX_BODY`.
+2. **`cb_handle` and `cb_core_http` take a mutable `cb_http_req *`**, since they bind the route's path parameters into it before the handler runs.
+   A caller that passed a `const cb_http_req *` (a test, an ingress of its own) passes a non-const one; handlers keep `const cb_http_req *req`.
+3. **CORS is denied by default**, browsers' WebSocket upgrades included.
+   A product that relied on the old default (`Access-Control-Allow-Origin: *` for every origin) keeps today's behaviour by declaring it in its `cb_app`:
+   `static const char *const ORIGINS[] = { "*" };` with `.cors_origins = ORIGINS, .n_cors_origins = 1`.
+   Better is the list of origins its pages are served from, `{ "https://app.example.com", "https://www.example.com" }`.
+   The deployment's `CBASE_ALLOWED_ORIGINS="*"` does the same without a code change, but it now defaults to empty, in the templates (`cbase.yaml`, `deploy.sh`, `vm.yaml`) too.
 
 ## 3. The C-to-Lambda packager
 

@@ -71,7 +71,9 @@ Parameters:
     Description: the public base URL clients use (https://api.example.com)
   AllowedOrigins:
     Type: String
-    Default: "*"
+    # CBASE_ALLOWED_ORIGINS: origins beside the app's own (cb_app cors_origins). One blank, the
+    # default, is none: SSM refuses an empty value, and the list's blanks are trimmed.
+    Default: " "
   OriginDomain:
     Type: String
     Description: the AAAA name of OriginIpv6 (kept at the domain's DNS host, not here)

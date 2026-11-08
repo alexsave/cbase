@@ -27,7 +27,7 @@
 #include <stdint.h>
 
 // cb_handle, counted in ctx->stats (requests, 5xx).
-void cb_core_http(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res);
+void cb_core_http(cb_ctx *ctx, cb_http_req *req, cb_http_res *res);
 
 // A CONNECT's verdict: CB_OK and the grant (stream_mqtt.h cb_mqtt_authorize),
 // CB_E_AUTH (refused; also a CONNECT that did not come through the edge:

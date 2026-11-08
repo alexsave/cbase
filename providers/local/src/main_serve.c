@@ -2,8 +2,8 @@
 // the process ingress (ingress_process.h) with the local provider
 // (provider_local.c).
 //
-// The startup line the smoke test waits for, on stderr:
-//   ... INFO  serve: listening on 127.0.0.1:<port>
+// Once listening it says so on stdout, one line (ingress_process.h THE STARTUP LINE):
+//   cbase: listening 127.0.0.1:<port>
 #include "cbase/app.h"
 #include "cbase/provider.h"
 #include "ingress_process.h"

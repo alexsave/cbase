@@ -18,8 +18,9 @@
 
 #include <stdbool.h>
 
-// Answers `req` into `res` (cb_res_init'ed by the caller).
-void cb_handle(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res);
+// Answers `req` into `res` (cb_res_init'ed by the caller). It writes only req's path
+// parameters (router.h cb_router_bind), for the handler to read.
+void cb_handle(cb_ctx *ctx, cb_http_req *req, cb_http_res *res);
 
 // serve only: true when cb_handle for this request must run on the loop thread
 // (a CB_ROUTE_LOOP route, such as the WebSocket upgrade) or costs nothing (a

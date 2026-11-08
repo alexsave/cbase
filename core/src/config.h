@@ -20,8 +20,9 @@ extern const char *const cb_config_limit_names[CB_CONFIG_LIMITS];
 #define CB_CPU_AUTO (-2)   // serve picks the CPU at start (cb_affinity_pick)
 
 typedef struct cb_config {
-    // CBASE_LISTEN, "host:port", default 127.0.0.1:8080. Port 0 asks the OS for
-    // a free one (the smoke test reads the bound port from the log line).
+    // CBASE_LISTEN, "host:port", default 127.0.0.1:8080: the one setting for where serve
+    // listens (there is no PORT). Port 0 asks the OS for a free one, which the startup line
+    // on stdout names (ingress_process.h).
     char listen_host[64];
     int  listen_port;
     // CBASE_STORE: "sqlite" or "dynamo". Default: sqlite under serve, dynamo
@@ -60,8 +61,10 @@ typedef struct cb_config {
     // the edge vouches for). Unset (serve, tests): nothing is checked. At
     // least 32 characters when set.
     char origin_secret[128];
-    // CBASE_ALLOWED_ORIGINS: "*" (default) or a comma list of origins echoed in
-    // Access-Control-Allow-Origin.
+    // CBASE_ALLOWED_ORIGINS: a comma list of origins the deployment allows beside the app's own
+    // (cbase/app.h cors_origins), echoed in Access-Control-Allow-Origin: a staging page, a
+    // developer's localhost. Default empty: the app's list alone. "*" is any origin (net/router.h
+    // CORS), refused at boot when the app asks for credentials.
     char allowed_origins[1024];
     // CBASE_PUBLIC_URL: the URL clients use (https://api.example.com), for
     // logs and the admin console. Default http://<listen>.
@@ -84,7 +87,7 @@ typedef struct cb_config {
     // given takes the knob by hand, and the other, if unset, is then CB_CPU_OFF.
     int  loop_cpu;
     int  bg_cpu;
-    long max_body;        // CBASE_MAX_BODY 1048576: request body bytes
+    long max_body;        // CBASE_MAX_BODY 1048576: request body bytes, for a route without its own (router.h max_body)
     int  jwt_ttl_s;       // CBASE_JWT_TTL 3600: access token lifetime
     int  admin_fail_limit;// CBASE_ADMIN_FAIL_LIMIT 10: wrong console tokens per address an hour (rate_limits.h)
     int  log_level;       // CBASE_LOG_LEVEL info: debug|info|warn|error
@@ -186,7 +189,9 @@ int64_t cb_config_scaled_ms(const cb_config *cfg, int64_t ms);
 // else only for `value` equal to it (constant time). NULL is a missing header.
 bool cb_config_origin_proven(const cb_config *cfg, const char *value);
 
-// Is `origin` allowed by CBASE_ALLOWED_ORIGINS? Always true for "*".
+// Does CBASE_ALLOWED_ORIGINS list `origin`, exactly? Never true for "*" itself.
 bool cb_config_origin_allowed(const cb_config *cfg, const char *origin);
+// Does CBASE_ALLOWED_ORIGINS list "*" (any origin)?
+bool cb_config_origin_any(const cb_config *cfg);
 
 #endif

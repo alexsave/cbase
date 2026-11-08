@@ -38,7 +38,7 @@
 #   CBASE_FUNCTION_NAME    cbase
 #   CBASE_TABLE            cbase
 #   CBASE_CODE_BUCKET      cbase-code-<account>-<region>
-#   CBASE_ALLOWED_ORIGINS  *
+#   CBASE_ALLOWED_ORIGINS  "" (origins beside the app's own cors_origins; "*" any)
 #   CBASE_ORIGIN_ENFORCED  yes (no: send the origin header without checking it,
 #                          for the first deploy of a new or rotated secret)
 #   CBASE_ALARM_EMAIL      where the alarms are emailed ("" for nobody)
@@ -141,7 +141,7 @@ stack="${CBASE_STACK:-cbase}"
 function_name="${CBASE_FUNCTION_NAME:-cbase}"
 table="${CBASE_TABLE:-cbase}"
 bucket="${CBASE_CODE_BUCKET:-cbase-code-$account-$region}"
-origins="${CBASE_ALLOWED_ORIGINS:-*}"
+origins="${CBASE_ALLOWED_ORIGINS:-}"
 cert="${CBASE_CERT_ARN:-}"
 if [ -z "$cert" ]; then
   cat >&2 <<MSG

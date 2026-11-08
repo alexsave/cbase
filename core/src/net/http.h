@@ -24,6 +24,15 @@
 #define CB_HTTP_MAX_HEADERS   64
 #define CB_HTTP_MAX_HEAD      16384   // request line + headers
 #define CB_HTTP_DEFAULT_BODY  (1u << 20)
+#define CB_HTTP_MAX_PARAMS    8       // path parameters a route pattern may name (router.h)
+
+// One path parameter of the matched route (router.h): its name in the pattern (after the ':'),
+// its value in the request's path, raw (not percent-decoded). Neither is NUL-ended.
+typedef struct {
+    const char *name;
+    const char *value;
+    uint16_t    name_len, value_len;
+} cb_http_param;
 
 typedef struct {
     const char *name;    // as received; compare case-insensitively
@@ -59,6 +68,10 @@ typedef struct cb_http_req {
     // A parked request run again (http.h cb_http_res park_ms): true when it was woken by its time
     // running out, so the handler answers now whatever it finds.
     bool        park_expired;
+    // The matched route's path parameters ("/decks/:id" -> id), set before its handler runs
+    // (router.h cb_router_bind); read them with cb_route_param.
+    uint8_t     n_params;
+    cb_http_param params[CB_HTTP_MAX_PARAMS];
 } cb_http_req;
 
 // The header's value, or NULL. First match, case-insensitive name.
@@ -87,6 +100,21 @@ int cb_http_query_each(const char *query, cb_query_fn fn, void *ud);
 //         -411 a chunked body, -413 a body over max_body, -431 headers over
 //         CB_HTTP_MAX_HEAD or CB_HTTP_MAX_HEADERS, -505 not HTTP/1.x
 int cb_http_parse(char *buf, size_t len, size_t max_body, cb_http_req *out);
+
+// What a request's head says before its body is read, for deciding the body's cap (router.h
+// cb_route max_body) from its route: the method (CB_M_*) and the raw path (not NUL-ended: the
+// target up to its '?'), and the Content-Length. Reads buf[0..len) and writes nothing.
+typedef struct {
+    int         meth;
+    const char *path;
+    size_t      path_len;
+    size_t      body_len;
+} cb_http_head;
+// > 0 when the whole head is there (*out filled), CB_HTTP_MORE, or what cb_http_parse would
+// answer for the head (< 0) with no body limit but CB_HTTP_MAX_BODY_SCAN. A request line too
+// malformed to name a path leaves path_len 0 (cb_http_parse refuses it).
+#define CB_HTTP_MAX_BODY_SCAN ((size_t)1 << 40)
+int cb_http_scan(const char *buf, size_t len, cb_http_head *out);
 
 // ---- the response --------------------------------------------------------------
 

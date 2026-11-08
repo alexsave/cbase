@@ -147,6 +147,21 @@ struct cb_app {
     // account"): hex(SHA-256(name))[:16] "@" it. Fixed for the life of the app's store, since every
     // account is found by it. NULL: no accounts by name (the name routes answer 503).
     const char          *account_domain;
+    // CORS (net/router.h): the web origins whose pages may call this app from a browser, each
+    // exactly as a browser sends it in Origin ("https://app.example.com", "http://localhost:5173":
+    // scheme, host and any port, no path, no trailing slash). The platform answers a cross-origin
+    // request with Access-Control-* headers only when its Origin is listed here or in the
+    // deployment's CBASE_ALLOWED_ORIGINS (config.h); every other origin gets none, and its
+    // preflight is refused (403). NULL / 0: no origin, the default: a page on another site cannot
+    // read the app's answers, which matters most for a server on the user's own machine.
+    // "*" is any origin, answered "Access-Control-Allow-Origin: *": for an API with no cookies
+    // whose every caller sends its own bearer token. Boot checks the list (cb_router_cors_check).
+    const char *const   *cors_origins;
+    int                  n_cors_origins;
+    // The listed origins may send credentials (cookies, HTTP auth): their answers also say
+    // Access-Control-Allow-Credentials: true. Boot refuses it beside "*" anywhere, since a browser
+    // never sends credentials to "*" and an echo of every origin with credentials is no CORS at all.
+    bool                 cors_credentials;
 };
 
 // The app this binary serves: the product defines it, one per link.

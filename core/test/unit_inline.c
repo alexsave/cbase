@@ -106,13 +106,13 @@ static void start(void) {
     // Routes with a budget of their own (router.h cb_route.inline_us): 5 and 6 ms handlers not over
     // theirs, however long a loaded runner oversleeps them (0.5 s).
     static const cb_route own[] = {
-        { "POST", "/f5", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_f5, 500000 },
-        { "POST", "/slowok", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_slow, 500000 },
-        { "POST", "/nap6", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_nap6, 5000 },
+        { "POST", "/f5", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_f5, 500000, 0 },
+        { "POST", "/slowok", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_slow, 500000, 0 },
+        { "POST", "/nap6", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_nap6, 5000, 0 },
         // Never a suspect however slow a sanitizer makes its 1 ms nap.
-        { "POST", "/nap1", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_nap1, 50000 },
-        { "POST", "/fx50", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_fx, 50000 },
-        { "POST", "/fy50", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_fy, 50000 },
+        { "POST", "/nap1", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_nap1, 50000, 0 },
+        { "POST", "/fx50", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_fx, 50000, 0 },
+        { "POST", "/fy50", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_fy, 50000, 0 },
     };
     T_EQ_INT(cb_router_add_all(g_ctx.router, own, 6), CB_OK);
     cb_server_opts o;

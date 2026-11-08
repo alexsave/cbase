@@ -437,6 +437,7 @@ static void run_req(job *j, const sf_frame *f) {
     if (strncmp(path, "/v1/auth/", 9) == 0) j->status = 403;   // a session is made and ended over HTTP
     else if (!r || (r->flags & CB_ROUTE_LOOP)) j->status = j->route_known ? 405 : 404;
     else {
+        cb_router_bind(r, &req);
         r->fn(ctx, &req, &res);
         j->status = (uint16_t)(res.status ? res.status : 200);
         if (res.body.oom) j->status = 500;

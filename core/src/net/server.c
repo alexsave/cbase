@@ -587,10 +587,25 @@ static void dispatch(conn *c) {
     }
 }
 
+// The body cap for the request at the head of c->in: its route's own max_body when the head is
+// all there and its route declares one (router.h), else the server's max_body. The head is read
+// for it only when some route declares one; else this is the server's cap, as it always was.
+static size_t body_cap(const conn *c) {
+    const cb_server *s = c->srv;
+    const cb_router *rt = s->ctx ? s->ctx->router : NULL;
+    const size_t dflt = (size_t)s->o.max_body;
+    if (!cb_router_max_body(rt)) return dflt;
+    cb_http_head h;
+    if (cb_http_scan((const char *)c->in.p, c->in.len, &h) <= 0 || !h.path_len) return dflt;
+    const cb_route *r = cb_router_match_n(rt, h.meth, h.path, h.path_len, NULL);
+    return r && r->max_body ? r->max_body : dflt;
+}
+
 static void conn_try_parse(conn *c) {
     if (c->state != C_HTTP || c->close_after || c->upgrade_after || c->in.len == 0) return;
-    // cb_http_parse wants a NUL-safe buffer; cb_buf always has one past len.
-    int r = cb_http_parse((char *)c->in.p, c->in.len, (size_t)c->srv->o.max_body, &g_req);
+    // cb_http_parse wants a NUL-safe buffer; cb_buf always has one past len. A Content-Length
+    // over the cap is -413 as soon as the head is in, before any of the body is read.
+    int r = cb_http_parse((char *)c->in.p, c->in.len, body_cap(c), &g_req);
     if (r == CB_HTTP_MORE) {
         if (!c->started) c->started = cb_loop_now(loop_of(c));
         return;
@@ -835,6 +850,8 @@ static void conn_io(cb_loop *l, int fd, int ev, void *ud) {
                 c->last_active = cb_loop_now(l);
                 c->ping_sent = false;   // whatever the peer sent (a PONG, a frame) shows it is there
                 size_t limit = c->state == C_WS ? CB_WS_MAX_MESSAGE + 64 : CB_HTTP_MAX_HEAD + (size_t)c->srv->o.max_body;
+                // Past the server's cap, the request's route may take more (a media upload's).
+                if (c->in.len > limit && c->state != C_WS) limit = CB_HTTP_MAX_HEAD + body_cap(c);
                 if (c->in.len > limit) {
                     if (c->state == C_WS) { cb_ws_close(c, 1009); return; }
                     respond_now(c, 413, "Content Too Large");

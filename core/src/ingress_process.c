@@ -15,7 +15,9 @@
 // every every_ms (divided by CBASE_CLOCK_SPEEDUP), the store never touched on
 // the loop thread. An app's schedule is how it catches a job a start lost.
 //
-// The startup line the smoke test waits for, on stderr:
+// THE STARTUP LINE (ingress_process.h), on stdout, once, when the socket is bound and listening:
+//   cbase: listening 127.0.0.1:<port>
+// and the log's own, on stderr:
 //   ... INFO  serve: listening on 127.0.0.1:<port>
 //
 // A drain names who asked for it: "serve: SIGTERM from pid 4242 (pkill):
@@ -120,6 +122,15 @@ static int usage(void) {
     return 2;
 }
 
+// The startup line (ingress_process.h): the bound address, an IPv6 host in brackets, flushed at
+// once, since a parent reading a pipe would otherwise see it only when the buffer fills or the
+// process exits.
+static void say_listening(const char *host, int port) {
+    if (strchr(host, ':')) printf("cbase: listening [%s]:%d\n", host, port);
+    else printf("cbase: listening %s:%d\n", host, port);
+    fflush(stdout);
+}
+
 int cb_process_main(const cb_provider *prov, const cb_app *app, int argc, char **argv) {
     if (argc != 2 || strcmp(argv[1], "serve") != 0) return usage();
     cb_config cfg;
@@ -219,6 +230,7 @@ int cb_process_main(const cb_provider *prov, const cb_app *app, int argc, char *
         CB_INFO("serve", "pinned: the loop to %s, every other thread to %s%s", lc, bc, cpu_auto ? " (auto)" : "");
     }
     CB_INFO("serve", "listening on %s:%d (%s)", cfg.listen_host, port, cb_loop_backend(ctx.loop));
+    say_listening(cfg.listen_host, port);
     int rc = cb_loop_run(ctx.loop);
 
     // Down in reverse: no handler may run against a freed connection. The children first: each one

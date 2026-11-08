@@ -12,6 +12,7 @@ typedef struct tp_pump tp_pump;
 typedef struct {
     pid_t    pid;
     int      err_fd;   // the child's stderr (read by the pump)
+    int      out_fd;   // its stdout, for tp_start_out (the test reads it); -1 otherwise
     tp_pump *pump;
     char     dir[256]; // a fresh temporary directory for its files
 } tp_child;
@@ -33,6 +34,9 @@ typedef struct {
 // So argv[0] must be a binary of ours (a system one such as /bin/sh may not
 // run from a copy): a test that needs a scripted child runs its own binary.
 int tp_start(tp_child *c, char *const argv[], char *const env[]);
+// tp_start, with the child's stdout a pipe too, whose read end is c->out_fd (blocking; the test
+// reads it and closes it).
+int tp_start_out(tp_child *c, char *const argv[], char *const env[]);
 // Waits until a line containing `needle` appears in the child's stderr after
 // the line the previous wait matched; copies that line into out. 0, or -1 on
 // timeout or once the child has closed its stderr.

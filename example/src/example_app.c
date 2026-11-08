@@ -23,8 +23,8 @@ static void h_echo(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
 }
 
 static const cb_route ROUTES[] = {
-    { "GET", "/v1/hello", CB_ROUTE_LOOP, h_hello, 0 },
-    { "POST", "/v1/echo", CB_ROUTE_POOL, h_echo, 0 },
+    { "GET", "/v1/hello", CB_ROUTE_LOOP, h_hello, 0, 0 },
+    { "POST", "/v1/echo", CB_ROUTE_POOL, h_echo, 0, 0 },
 };
 static const cb_route_list ROUTE_LIST = { ROUTES, (int)(sizeof ROUTES / sizeof ROUTES[0]) };
 static const cb_route_list *const ROUTE_LISTS[] = { &ROUTE_LIST };

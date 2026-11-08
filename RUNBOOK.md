@@ -259,7 +259,7 @@ CloudFormation cannot create a Lambda function of this runtime without its code,
    - JwtSecret, AdminToken: the two values from step 2.
    - DomainName: `api.foolish.cards` (the default).
    - CertificateArn: the ARN from step 3.
-   - AllowedOrigins: `*` (the default).
+   - AllowedOrigins: empty (the default): the app's own `cors_origins` alone.
    - FunctionName: `cbase`; TableName: `cbase` (the defaults).
 5. **Next**. On **Configure stack options** leave everything at its default and tick **I acknowledge that AWS CloudFormation might create IAM resources with custom names**. **Next**.
 6. Review, then **Submit**.
