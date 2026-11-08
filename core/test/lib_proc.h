@@ -40,6 +40,10 @@ int tp_wait_line(tp_child *c, const char *needle, int timeout_ms, char *out, siz
 // Sends `sig` (0: none, just wait for it to exit) and waits up to timeout_ms; returns the exit status, or -1
 // (the child is then killed).
 int tp_stop(tp_child *c, int sig, int timeout_ms);
+// Waits up to timeout_ms for pid to be gone: no such process, or (Linux) a zombie nobody has reaped
+// yet (a killed descendant reparented to a PID 1 that does not reap, as in a container). 1 when it
+// is gone, 0 when it still runs.
+int tp_gone(int pid, int timeout_ms);
 // A fresh temporary directory (removed by tp_stop with its contents).
 int tp_tempdir(char *out, size_t cap);
 

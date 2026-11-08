@@ -23,6 +23,7 @@
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #ifdef CBASE_LINKS_LOCAL
@@ -104,13 +105,7 @@ static int get(int port, const char *path, tc_response *r) {
     return r->status;
 }
 
-static bool gone(int pid) {
-    for (int i = 0; i < 500; i++) {
-        if (kill(pid, 0) != 0 && errno == ESRCH) return true;
-        usleep(10000);
-    }
-    return false;
-}
+static bool gone(int pid) { return tp_gone(pid, 5000) == 1; }
 
 static void children_end_with_the_server(void) {
     char *env[] = { "CBASE_DEV=1", "CBASE_LISTEN=127.0.0.1:0", "CBASE_JWT_SECRET=spawn-serve-secret-spawn-serve-secret", "CBASE_STORE=",

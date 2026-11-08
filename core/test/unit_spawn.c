@@ -4,6 +4,7 @@
 // Each case makes a loop and a spawner, starts its children, runs the loop on this thread until
 // every done has run, and reads the results the callbacks copied.
 #include "t.h"
+#include "lib_proc.h"
 
 #include "net/loop.h"
 #include "spawn.h"
@@ -156,13 +157,7 @@ static bool build_helper(void) {
 }
 
 // Waits up to 5 s for pid to be gone (a killed child is a zombie until init reaps it).
-static bool gone(int pid) {
-    for (int i = 0; i < 500; i++) {
-        if (kill(pid, 0) != 0 && errno == ESRCH) return true;
-        usleep(10000);
-    }
-    return false;
-}
+static bool gone(int pid) { return tp_gone(pid, 5000) == 1; }
 
 static int parse_pid(const char *s) {
     int v = 0;
