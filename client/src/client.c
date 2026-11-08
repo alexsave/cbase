@@ -3,8 +3,8 @@
 // once, for every host; the host moves bytes.
 #include "cbase/client.h"
 
-#include "stream_frame.h"   // shared/c
-#include "rng.h"            // shared/c
+#include "stream_frame.h"   // lib/
+#include "rng.h"            // lib/
 #include "le_bytes.h"
 #ifdef CBC_OIDC
 #include "sha256.h"

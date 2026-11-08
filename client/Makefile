@@ -10,7 +10,8 @@
 #   make ts           the page's TypeScript into TS_OUT (default build/ts): the generated layout,
 #                     its hash and the exports, beside the hand-written shim (ts/*.ts), and the
 #                     module into WASM_OUT (default build/ts/cbase_client.wasm)
-#   make ts-test      the shim's own tests (node --test, against a fake socket and the real module)
+#   make ts-test      the shim's own tests (node --test, against a fake socket and the real module):
+#                     node alone, no packages; opt-in, so `make check` needs neither node nor the network
 #
 # An app syncs `make ts` into its own generated directory (gitignored) and serves the module.
 # CB is the c_base root as this directory reaches it; every source outside client/ is under it

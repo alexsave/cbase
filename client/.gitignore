@@ -1,1 +1,3 @@
 build/
+# the Sign in with Apple demo's esbuild and React (make demo; NODE_MODULES)
+node_modules/
