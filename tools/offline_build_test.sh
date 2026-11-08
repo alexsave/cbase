@@ -31,7 +31,7 @@
 # (its tests talk to servers they start on loopback, which the sandbox would refuse): every
 # platform test and the example's smoke on a tree with no providers/aws and no ops/, which is
 # the only place a test that reads the tree for aws files would show it. CHECK_JOBS is the
-# -j of both (default: every core). c_base's `make check` runs it with --check; CI runs make
+# -j of both (default: every core). cbase's `make check` runs it with --check; CI runs make
 # check.
 set -euo pipefail
 
@@ -55,7 +55,7 @@ mkdir -p "$tmp/cbase"
     | tar --null -T - -cf - ) | tar -xf - -C "$tmp/cbase" || fail "cannot copy the tree of $SRC"
 head="$(git -C "$SRC" rev-parse --short HEAD)$(git -C "$SRC" diff --quiet HEAD 2> /dev/null || echo ' + edits')"
 [ ! -e "$tmp/cbase/build" ] && [ ! -e "$tmp/cbase/example/build" ] || fail "the copy has a build/ in it"
-[ -f "$tmp/cbase/cbase.mk" ] && [ -d "$tmp/cbase/providers/local/src" ] || fail "the copy of $SRC is no c_base tree"
+[ -f "$tmp/cbase/cbase.mk" ] && [ -d "$tmp/cbase/providers/local/src" ] || fail "the copy of $SRC is no cbase tree"
 # What a local-only product need not carry: nothing of it may be read by the build.
 rm -rf "$tmp/cbase/providers/aws" "$tmp/cbase/ops"
 

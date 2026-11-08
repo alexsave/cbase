@@ -7,7 +7,7 @@
 # each hit, when one
 #
 #   * is DEFINED BY ONE OF THE OBJECTS given: the objects are every object under providers/aws
-#     that c_base's own build compiles (the top-level Makefile passes them), and each global
+#     that cbase's own build compiles (the top-level Makefile passes them), and each global
 #     symbol one of them defines but `main` is banned, so whatever the provider grows is banned
 #     with it, by its real name, without anyone keeping a list; or
 #   * hits THE WORD LIST below, the second net: it needs no aws object (a product's local-only
@@ -16,7 +16,7 @@
 #
 # A symbol list too short to judge (a stripped binary, a wrong path) fails too, and so does a
 # derived set too small to mean anything (the objects were never built, or the wrong ones).
-# c_base's `make check` runs it over the local-only example's build/cbase with every aws
+# cbase's `make check` runs it over the local-only example's build/cbase with every aws
 # object; CI runs make check.
 set -euo pipefail
 

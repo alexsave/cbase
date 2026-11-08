@@ -17,7 +17,7 @@ include $(CBASE)/cbase.mk
 # THE LINK CHECK: a local-only binary carries nothing of the cloud provider. Every global symbol
 # of build/cbase is read (nm) and none may be on the aws word list (tools/symbol_gate.sh: its
 # store, push transport, signer, runtime, object store, instance metadata). A provider file that
-# reached this link by any path (a core call, a stray source root) puts its symbols here. c_base's
+# reached this link by any path (a core call, a stray source root) puts its symbols here. cbase's
 # own check runs the same gate over this binary with every aws object's symbols banned as well
 # (the top-level Makefile's symbol-gate), which a local-only build cannot do: it compiles none.
 .PHONY: link-check
