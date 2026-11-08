@@ -61,9 +61,18 @@ static bool parse_line(const char *path, int no, char *s, size_t n, env_line *ou
         }
         v++;
         vn -= 2;
-    } else if (vn && blank(v[vn - 1])) {
-        snprintf(err, cap, "CBASE_ENV_FILE %s line %d's value ends in a blank (quote the value if it is meant)", path, no);
-        return false;
+    } else {
+        // An inline comment, as Node's loadEnvFile reads one: a '#' after a blank ends an unquoted
+        // value, and the blanks before it go too. A '#' with no blank before it is the value's own.
+        size_t c = 1;
+        while (c < vn && !(v[c] == '#' && blank(v[c - 1]))) c++;
+        if (c < vn) {
+            vn = c;
+            while (vn && blank(v[vn - 1])) vn--;
+        } else if (vn && blank(v[vn - 1])) {
+            snprintf(err, cap, "CBASE_ENV_FILE %s line %d's value ends in a blank (quote the value if it is meant)", path, no);
+            return false;
+        }
     }
     s[kn] = 0;
     v[vn] = 0;

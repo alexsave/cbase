@@ -323,8 +323,9 @@ The format is strict, and what breaks a rule is refused rather than guessed at:
 
 - One setting per line, nothing before the key, and no blank on either side of the `=` (refused, not trimmed).
 - A key is a letter or `_`, then letters, digits and `_`, and appears once in the file.
-- The value is the rest of the line as written: no shell expansion (`$HOME` stays `$HOME`), no escapes, and a `#` inside it is part of it; it may be empty.
-- A value wrapped in a pair of single or double quotes loses the pair and nothing else; a value that opens a quote and does not close it at the end of the line is refused, as is an unquoted value that ends in a blank.
+- The value is the rest of the line as written: no shell expansion (`$HOME` stays `$HOME`) and no escapes; it may be empty.
+- A value wrapped in a pair of single or double quotes loses the pair and nothing else, and a `#` inside the quotes is part of it (`"abc # x"` is `abc # x`); a value that opens a quote and does not close it at the end of the line is refused.
+- In an unquoted value a `#` after a space or a tab starts a comment, as Node's `process.loadEnvFile` reads it, so a `.env.local` written for Node reads the same: `KEY=abc # my key` is `abc`, the blanks before the `#` trimmed. A `#` with no blank before it is part of the value (`a#b`). An unquoted value with no comment that ends in a blank is refused.
 - A line that starts with `#` is a comment, a line of nothing or only blanks is skipped, and a `\r\n` line end reads as `\n`.
 
 A file that cannot be read, is larger than 1 MiB, holds a NUL byte or has a line that breaks a rule refuses the boot with a sentence that names the file and the line's number, and nothing from it is set.

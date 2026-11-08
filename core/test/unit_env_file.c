@@ -1,5 +1,6 @@
-// unit_env_file.c - CBASE_ENV_FILE (env_file.h): each rule of the format, the environment's
-// precedence, and every refusal's sentence with its line number.
+// unit_env_file.c - CBASE_ENV_FILE (env_file.h): each rule of the format (an unquoted value's
+// inline comment, as Node reads one, among them), the environment's precedence, and every
+// refusal's sentence with its line number.
 #include "t.h"
 
 #include "cbase/app.h"
@@ -69,6 +70,27 @@ static void values_as_written(void) {
     T_EQ_STR(get("EF_G"), "");
     T_EQ_STR(get("_ef9"), "crlf");                     // a "\r\n" end is a "\n" one
     T_EQ_STR(get("EF_H"), "last line, no newline");
+    clear();
+}
+
+// An inline comment in an unquoted value, as Node's loadEnvFile reads it: after a space or a tab.
+static void inline_comments(void) {
+    clear();
+    T_EQ_INT(load("EF_A=abc # note\n"
+                  "EF_B=abc#x\n"
+                  "EF_C=\"abc # x\"\n"
+                  "EF_D=abc\t# a tab before it\n"
+                  "EF_E=a b  \t # blanks before it, all trimmed\n"
+                  "EF_F=#first\n"
+                  "EF_G='q # kept'\n"), CB_OK);
+    T_EQ_STR(g_err, "");
+    T_EQ_STR(get("EF_A"), "abc");
+    T_EQ_STR(get("EF_B"), "abc#x");       // no blank before it: the value's own
+    T_EQ_STR(get("EF_C"), "abc # x");     // quoted: as written
+    T_EQ_STR(get("EF_D"), "abc");
+    T_EQ_STR(get("EF_E"), "a b");
+    T_EQ_STR(get("EF_F"), "#first");      // nothing before it at all
+    T_EQ_STR(get("EF_G"), "q # kept");
     clear();
 }
 
@@ -175,6 +197,7 @@ int main(void) {
     if (!mkdtemp(g_dir)) { perror("mkdtemp"); return 1; }
     snprintf(g_path, sizeof g_path, "%s/.env.local", g_dir);
     T_RUN(values_as_written);
+    T_RUN(inline_comments);
     T_RUN(comments_and_blanks);
     T_RUN(the_environment_wins);
     T_RUN(refusals_name_the_line);

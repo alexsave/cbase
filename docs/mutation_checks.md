@@ -1040,3 +1040,10 @@ smoke_boot built in example/storeless (make storeless-smoke) and in cbase's own 
 
 - smoke_boot.c: g_storeless forced false for the storeless app (the smoke before the fix) -> 16 of 29 checks fail: `cbase_refuses` no CBASE_JWT_SECRET, no CBASE_PUBLIC_URL, store sqlite and the busy port, `the_cpu_knob_boots_or_refuses` listening on (twice), `the_startup_line_names_the_port` its line (both rounds).
 - smoke_boot.c: store_env passing CBASE_STORE through -> 13 checks fail: every boot refused with "names a store".
+
+## CBASE_ENV_FILE reads an unquoted value's inline comment as Node does (fifo-fix)
+
+- env_file.c: the comment never cut -> `inline_comments` EF_A == "abc", EF_D == "abc" (tab), EF_E == "a b".
+- env_file.c: any '#' starts a comment, blank before it or not -> `inline_comments` EF_B == "abc#x" and `values_as_written` EF_E == "a#not-a-comment=b".
+- env_file.c: the blanks before the '#' kept -> `inline_comments` EF_A, EF_D and EF_E.
+- env_file.c: a tab not a blank -> `inline_comments` EF_D and EF_E, and the tab-only line and tab-after-'=' cases elsewhere.

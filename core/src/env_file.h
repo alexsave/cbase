@@ -8,10 +8,14 @@
 //     the '=' (a blank there is refused, not trimmed: "KEY = v" is no setting).
 //   - KEY is a letter or '_', then letters, digits and '_'.
 //   - VALUE is everything after the '=', to the end of the line, taken as written: no shell
-//     expansion ($HOME stays "$HOME"), no escapes, and '#' inside it is part of it. It may be
-//     empty. One wrapped in a pair of single or double quotes loses the pair and nothing else
-//     ('a b' is a b); a value that opens a quote and does not end with it is refused, as is an
-//     unquoted value that ends in a blank (quote it if the blank is meant).
+//     expansion ($HOME stays "$HOME"), no escapes. It may be empty. One wrapped in a pair of
+//     single or double quotes loses the pair and nothing else ('a b' is a b, "a # b" is a # b); a
+//     value that opens a quote and does not end with it is refused.
+//   - In an UNQUOTED value, as Node's process.loadEnvFile reads one, a '#' after a space or a tab
+//     starts a comment: the value is what comes before it, its trailing blanks trimmed
+//     ("KEY=abc # my key" is abc). A '#' with no blank before it is the value's own (a#b). An
+//     unquoted value with no comment that ends in a blank is refused (quote it if the blank is
+//     meant).
 //   - A line whose first character is '#' is a comment; a line of nothing or only blanks is
 //     skipped. A "\r\n" line end is a "\n" one.
 //   - A key may appear once.
