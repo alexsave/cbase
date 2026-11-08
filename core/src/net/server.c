@@ -62,6 +62,11 @@ struct cb_ws {
     bool parked;                 // its request waits for cb_server_wake or its deadline (no thread holds it)
     char park_key[48];
     int64_t park_deadline;       // loop ms, set by the first park of a request
+    // A FILE BODY being written (http.h cb_http_res file): the descriptor, taken from the response
+    // once its head is queued, and the bytes still to send from `file_off`. -1 when none; while one
+    // is, no next request is parsed, so a pipelined answer never lands inside the file's bytes.
+    int file_fd;
+    uint64_t file_off, file_left;
 };
 typedef struct cb_ws conn;
 
@@ -192,8 +197,53 @@ static void want(conn *c) {
 static void become_ws(conn *c);
 static bool ws_frames(conn *c);
 
+#define FILE_CHUNK (256u * 1024u)   // a file body is read into `out` this much at a time
+
+// The next chunk of the file body into the empty `out`: 1 when queued, 0 when the file is all
+// sent (its descriptor closed), -1 when it could not be read (the connection is closed: its
+// Content-Length is already on the wire, and a short body is all a peer could be told).
+static int file_refill(conn *c) {
+    if (c->file_left == 0) {
+        close(c->file_fd);
+        c->file_fd = -1;
+        return 0;
+    }
+    const size_t want_n = c->file_left < FILE_CHUNK ? (size_t)c->file_left : FILE_CHUNK;
+    if (!cb_buf_reserve(&c->out, want_n)) { conn_close(c); return -1; }
+    ssize_t r;
+    do r = pread(c->file_fd, c->out.p + c->out.len, want_n, (off_t)c->file_off);
+    while (r < 0 && errno == EINTR);
+    if (r <= 0) {
+        CB_WARN("net", "conn %llu: a file body could not be read at %llu (%s): closing it", (unsigned long long)c->id,
+                (unsigned long long)c->file_off, r < 0 ? strerror(errno) : "it got shorter");
+        conn_close(c);
+        return -1;
+    }
+    c->out.len += (size_t)r;
+    c->out.p[c->out.len] = 0;
+    c->file_off += (uint64_t)r;
+    c->file_left -= (uint64_t)r;
+    return 1;
+}
+
 // `out` written as far as it goes: what the connection does next. false when it was closed.
 static bool written(conn *c) {
+    if (c->out.len == 0 && c->file_fd >= 0) {
+        const int r = file_refill(c);
+        if (r < 0) return false;
+        if (r > 0) {
+            // The next chunk: at once, or (batched) with this pass's sends.
+            if (batching(c)) mark_dirty(c);
+            want(c);
+            return true;
+        }
+        // The file is all sent: a pipelined request that waited behind it is read now (below).
+        if (c->in.len && !c->close_after && !c->upgrade_after) {
+            want(c);
+            conn_try_parse(c);
+            return !c->buried;
+        }
+    }
     buf_idle(c, &c->out);
     if (c->out.len == 0) {
         if (c->close_after) { conn_close(c); return false; }
@@ -341,6 +391,14 @@ static void finish(conn *c) {
     if (c->res.upgrade) keep = true;
     buf_take(c, &c->out);
     cb_res_serialize(&c->res, keep, &c->out);
+    if (c->res.file && c->res.file_fd >= 0 && cb_res_bodied(c->res.status)) {
+        // Its bytes follow the head, a chunk at a time as the socket takes them (written). A HEAD's
+        // file body has no descriptor (net/files.c gives it the size alone), so none is sent for it.
+        c->file_fd = c->res.file_fd;
+        c->res.file_fd = -1;
+        c->file_off = 0;
+        c->file_left = c->res.file_len;
+    }
     atomic_fetch_add_explicit(&ctx->stats.requests, 1, memory_order_relaxed);
     if (c->res.status >= 500) atomic_fetch_add_explicit(&ctx->stats.responses_5xx, 1, memory_order_relaxed);
     if (c->res.upgrade) {
@@ -602,7 +660,7 @@ static size_t body_cap(const conn *c) {
 }
 
 static void conn_try_parse(conn *c) {
-    if (c->state != C_HTTP || c->close_after || c->upgrade_after || c->in.len == 0) return;
+    if (c->state != C_HTTP || c->close_after || c->upgrade_after || c->in.len == 0 || c->file_fd >= 0) return;
     // cb_http_parse wants a NUL-safe buffer; cb_buf always has one past len. A Content-Length
     // over the cap is -413 as soon as the head is in, before any of the body is read.
     int r = cb_http_parse((char *)c->in.p, c->in.len, body_cap(c), &g_req);
@@ -616,6 +674,7 @@ static void conn_try_parse(conn *c) {
         return;
     }
     c->req_len = (size_t)r;
+    g_req.stream_ok = true;   // a file body goes out from its descriptor (written)
     cb_strlcpy(g_req.peer, c->peer, sizeof g_req.peer);
     g_req.conn_id = c->id;
     dispatch(c);
@@ -777,6 +836,7 @@ static void conn_free(conn *c) {
     buf_give(c->srv, &c->wbuf);
     cb_buf_free(&c->msg);
     cb_res_free(&c->res);
+    if (c->file_fd >= 0) close(c->file_fd);
     if (c->job) job_put(c->srv, c->job);
     free(c->query);
     free(c->viewer);
@@ -908,6 +968,7 @@ static void on_accept(cb_loop *l, int lfd, int ev, void *ud) {
         c->fd = fd;
         c->id = ++s->next_id;
         c->msg_op = -1;
+        c->file_fd = -1;
         c->last_active = cb_loop_now(l);
         cb_buf_init(&c->in);
         cb_buf_init(&c->out);
@@ -959,7 +1020,7 @@ static void sweep(cb_loop *l, void *ud) {
         } else if (c->started && now - c->started > s->o.head_ms) {
             respond_now(c, 408, "Request Timeout");
             flush(c);
-        } else if (!c->started && !c->out.len && !c->sending && now - c->last_active > s->o.idle_ms) {
+        } else if (!c->started && !c->out.len && !c->sending && c->file_fd < 0 && now - c->last_active > s->o.idle_ms) {
             conn_close(c);
         }
     }
@@ -1024,7 +1085,7 @@ void cb_server_drain(cb_server *s, int64_t timeout_ms) {
     for (conn *c = s->all, *next; c; c = next) {
         next = c->next;
         if (c->state == C_WS) cb_ws_close(c, 1001);
-        else if (c->state == C_HTTP && !c->out.len && !c->sending && !c->req_len) conn_close(c);
+        else if (c->state == C_HTTP && !c->out.len && !c->sending && !c->req_len && c->file_fd < 0) conn_close(c);
     }
     if (s->sweep_timer) cb_loop_cancel(s->ctx->loop, s->sweep_timer);
     s->sweep_timer = cb_loop_timer(s->ctx->loop, 0, sweep, s);

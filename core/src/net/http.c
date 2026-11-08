@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <unistd.h>
 
 const char *cb_http_header_get(const cb_http_req *r, const char *name) {
     for (int i = 0; i < r->n_headers; i++)
@@ -239,11 +240,16 @@ int cb_http_parse(char *buf, size_t len, size_t max_body, cb_http_req *out) {
 void cb_res_init(cb_http_res *res) {
     memset(res, 0, sizeof *res);
     res->status = 200;
+    res->file_fd = -1;
     cb_buf_init(&res->headers);
     cb_buf_init(&res->body);
 }
 
 void cb_res_free(cb_http_res *res) {
+    // Only a file body's: a response zeroed by hand (not cb_res_init'ed) holds no descriptor 0.
+    if (res->file && res->file_fd >= 0) close(res->file_fd);
+    res->file_fd = -1;
+    res->file = false;
     cb_buf_free(&res->headers);
     cb_buf_free(&res->body);
 }
@@ -331,14 +337,18 @@ const char *cb_http_reason(int status) {
     }
 }
 
+// 1xx, 204 and 304 carry no body (RFC 9110 15.3.5, 15.4.5), and no Content-Length: a 304's
+// would claim the stored representation is that long (RFC 9110 8.6).
+bool cb_res_bodied(int status) { return status >= 200 && status != 204 && status != 304; }
+
 void cb_res_serialize(const cb_http_res *res, bool keep_alive, cb_buf *out) {
     cb_buf_printf(out, "HTTP/1.1 %d %s\r\n", res->status, cb_http_reason(res->status));
     cb_buf_append(out, res->headers.p ? res->headers.p : (const uint8_t *)"", res->headers.len);
-    // 1xx, 204 and 304 carry no body (RFC 9110 15.3.5, 15.4.5), and no Content-Length: a 304's
-    // would claim the stored representation is that long (RFC 9110 8.6).
-    const bool bodied = res->status >= 200 && res->status != 204 && res->status != 304;
-    if (bodied) cb_buf_printf(out, "Content-Length: %zu\r\n", res->body.len);
+    const bool bodied = cb_res_bodied(res->status);
+    if (bodied)
+        cb_buf_printf(out, "Content-Length: %llu\r\n", (unsigned long long)(res->file ? res->file_len : res->body.len));
     if (res->status != 101) cb_buf_puts(out, keep_alive ? "Connection: keep-alive\r\n" : "Connection: close\r\n");
     cb_buf_puts(out, "\r\n");
-    if (bodied && res->body.len && !res->head) cb_buf_append(out, res->body.p, res->body.len);
+    // A file body is the transport's to write after this head (net/server.c).
+    if (bodied && res->body.len && !res->head && !res->file) cb_buf_append(out, res->body.p, res->body.len);
 }

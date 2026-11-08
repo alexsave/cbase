@@ -72,6 +72,10 @@ typedef struct cb_http_req {
     // (router.h cb_router_bind); read them with cb_route_param.
     uint8_t     n_params;
     cb_http_param params[CB_HTTP_MAX_PARAMS];
+    // The transport writes a file body from its descriptor (cb_http_res file): serve's HTTP/1.1
+    // (net/server.c sets it). false for anything else (a one-shot platform's event, a socket's
+    // REQ, a request built by hand), where net/files.h reads the file into the body instead.
+    bool        stream_ok;
 } cb_http_req;
 
 // The header's value, or NULL. First match, case-insensitive name.
@@ -138,6 +142,14 @@ typedef struct cb_http_res {
     // Content-Length but without the body. The Lambda encoder still sends the
     // body; the function URL front end drops it (and says Content-Length: 0).
     bool   head;
+    // A FILE BODY (net/files.h cb_send_file fills these; nothing else should): the answer's body
+    // is file_len bytes of file_fd from offset 0, written by the transport a chunk at a time as
+    // the socket takes them (net/server.c), never held whole; `body` is not sent. file_fd is -1
+    // for a HEAD's (its size alone). Only when the request's stream_ok said the transport can.
+    // cb_res_free closes file_fd (when `file` is set).
+    bool   file;
+    int    file_fd;
+    uint64_t file_len;
     // A WebSocket upgrade (ws.h cb_ws_upgrade fills these; nothing else should).
     bool   upgrade;
     const struct cb_ws_handlers *ws_handlers;
@@ -160,6 +172,9 @@ void cb_res_text(cb_http_res *res, int status, const char *text);
 // The bytes on the wire: status line, the headers, Content-Length, Connection,
 // a blank line and the body. `keep_alive` is the connection's decision.
 void cb_res_serialize(const cb_http_res *res, bool keep_alive, cb_buf *out);
+// Does an answer of this status carry a body and a Content-Length? Not a 1xx, 204 or 304. The one
+// rule for both: cb_res_serialize's head, and serve's file body after it (net/server.c).
+bool cb_res_bodied(int status);
 const char *cb_http_reason(int status);
 
 #endif

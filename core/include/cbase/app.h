@@ -175,6 +175,13 @@ struct cb_app {
     // "info". CBASE_LOG_LEVEL overrides. The startup line on stdout ("cbase: listening ...") is not
     // the log's and is printed at every level.
     const char          *log_level;
+
+    // ---- answering with files (net/files.h) ----
+    // The app's content types, by extension, before the platform's own table (cb_mime_type):
+    // { "mp3", "audio/mpeg" }. A row here overrides the platform's for the same extension. NULL / 0:
+    // the platform's alone.
+    const struct cb_mime_s *mime_types;
+    int                  n_mime_types;
 };
 
 // The app this binary serves: the product defines it, one per link.

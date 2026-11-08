@@ -292,6 +292,22 @@ The format is strict, and what breaks a rule is refused rather than guessed at:
 A file that cannot be read, is larger than 1 MiB, holds a NUL byte or has a line that breaks a rule refuses the boot with a sentence that names the file and the line's number, and nothing from it is set.
 `core/test/unit_env_file.c` holds a case for each rule.
 
+### 2.11 Answering with files
+
+`core/src/net/files.h` serves a local web app's shell, assets and media from disk, in four calls a handler makes:
+
+- `int cb_send_file(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res, const char *path, const char *content_type, const char *cache_control)` answers with the file: 200, its Content-Type (`NULL`: by extension), the given Cache-Control, and Content-Length its size; a HEAD gets the head alone, a missing file or a directory 404, an unreadable one 403.
+  It returns the status, so a single-page route is one line: `cb_send_file(ctx, req, res, index_html, NULL, "no-store");`.
+- `int cb_path_join(const char *base, const char *name, char *out, size_t cap)` turns one name from the request (`cb_route_param`'s, already decoded) into the real path inside `base`, refusing an empty name, `.`, `..`, a `/`, a `\` or a control byte (`CB_E_INVALID`), and anything that resolves outside `base`'s real path, which is what a symlink out of it does (`CB_E_FORBIDDEN`).
+- `int cb_serve_dir(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res, const char *dir, const char *rel, const char *cache_control)` is a directory under a prefix route (`"/assets/*"`, `rel` the path below its stem): each segment percent-decoded and held to the same rule, so `%2F`, `%00` and `..` are 404, a symlink out is 403, a directory is 404 and never listed, and only GET and HEAD are answered.
+- `const char *cb_mime_type(const cb_app *app, const char *path)`: the app's table `cb_app.mime_types` first (`{ "pack", "application/x-amgi-pack" }`, an extension without its dot, compared without case), then the platform's (html, css and js with `charset=utf-8`, wasm, svg, png, jpeg, gif, webp, ico, txt, json, map, the fonts, mp3, wav, ogg, m4a), else `application/octet-stream`.
+
+A file is opened per request and never cached, so a rebuild on disk is what the next request gets.
+Under serve's HTTP/1.1 the body is never held: serve writes it from the descriptor 256 KB at a time as the socket takes it (`net/server.c`), so a 40 MB file costs one chunk of memory, and a request pipelined behind it waits for its last byte.
+On any other transport (a one-shot platform's event, a socket's REQ), which `cb_http_req.stream_ok` tells apart, the same call reads the file whole into the body.
+Not done, on purpose: Range and Accept-Ranges (Safari's audio wants them later; the place is `cb_send_file`, answering 206 from the same descriptor), ETag, compression and listings.
+`example/test/unit_web.c` serves amgi's shape over a real serve: every type, the single-page routes, every traversal shape, HEAD, a 6 MB and a 40 MB file streamed whole (the servers' resident peak stays a few MB), and a pipelined request.
+
 ## 3. The C-to-Lambda packager
 
 ### 3.1 What a product provides
