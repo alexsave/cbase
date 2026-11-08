@@ -490,6 +490,7 @@ endif
 # keeps one (APP_COV_FLOOR), the product's line and branch floors with both files' zero lists.
 # COV_FILTER is the measured scope: the platform's sources and lib/'s codecs, and APP_COV_FILTER;
 # CB_COV_STRIP is what cov_gate cuts from a path so it reads as the floor files spell it.
+# build/obj/cov-extra exists only when the product has APP_EXTRA_SRC (the example has none).
 COV_GCOV ?= $(if $(filter Darwin,$(UNAME)),xcrun llvm-cov gcov,gcov)
 COV_FLAGS := -O0 --coverage
 COV_CB_CFLAGS = $(filter-out -O2,$(CB_CFLAGS)) $(COV_FLAGS) -DCB_INSTRUMENTED
@@ -523,7 +524,7 @@ build/cov/floor.txt: $(CB)tools/cov_floor.txt $(APP_COV_FLOOR)
 	@mkdir -p $(@D)
 	@{ $(if $(APP_COV_FLOOR),grep -v '^\(line\|branch\) ' $(CB)tools/cov_floor.txt; cat $(APP_COV_FLOOR),cat $<); } > $@
 coverage: $(addprefix build/cov/test/,$(UNITS)) $(call SMOKE_PROGS,build/cov) build/cov_gate build/cov/floor.txt
-	@find build/obj/cov build/obj/cov-extra -name '*.gcda' -delete
+	@find build/obj/cov $(if $(APP_EXTRA_SRC),build/obj/cov-extra) -name '*.gcda' -delete
 	@printf '%s\0' $(COV_RUNS) | xargs -0 -P $(COV_JOBS) -n 1 sh -c 'log=build/cov/$$(echo "$$0" | tr " /=" "___").log; eval "$$0" > $$log 2>&1 || { cat $$log; echo "coverage: FAILED: $$0"; exit 1; }'
 	gcovr --root $(COV_ROOT) --object-directory build/obj --gcov-executable '$(COV_GCOV)' --gcov-ignore-parse-errors=all \
 	  $(COV_FILTER) $(COV_EXCLUDE) --exclude-unreachable-branches --exclude-throw-branches \
