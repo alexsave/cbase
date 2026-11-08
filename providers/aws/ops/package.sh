@@ -45,7 +45,7 @@ size="$(wc -c < "$out" | tr -d ' ')"
 
 cat <<MSG
 
-Upload these (cbase/RUNBOOK.md, steps 3 and 4):
+Upload these (RUNBOOK.md section 4, or let deploy.sh do it):
   1. the code:      $out
                     ($size bytes, sha256 $sum)
                     to the S3 bucket you name as the stack's CodeBucket, key cbase-lambda.zip

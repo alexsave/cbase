@@ -1,546 +1,177 @@
-# cbase runbook: the first deploy to AWS
+# Running a cbase product
 
-This puts cbase live at `https://api.foolish.cards`.
-It has been live there since 2026-10-14: the first deploy, the import and the web cutover (steps 1 to 11, and W1 to W5 under "Web hosting") are done and kept for rebuilding the stack, and what changes it day to day is step 13 (every push to `main` deploys) and the hand steps it names.
-There are two ways, and they build the same stack:
+How to run a product built on cbase, on each provider: `local` (`cbase serve`, on your machine or on one small VM) and `aws` (Lambda, DynamoDB, IoT Core and CloudFront).
+Each provider ships its own templates and scripts; this guide strings them together.
+The values that belong to one product's deployment are placeholders here:
 
-- **The CLI path (do this one):** `aws configure` once, then one script, `cbase/providers/aws/ops/deploy.sh`, does the bucket, the build, the upload, the stack, and the import.
-- **The console path (the fallback):** the same steps by hand in the AWS console, kept below for when the CLI is not an option.
+| placeholder | what it is |
+|---|---|
+| `<product>` | the product's Makefile directory, the one that includes `cbase.mk` (`CBASE_PRODUCT`) |
+| `<domain>` | the API's public name, for example `api.example.com` |
+| `<account>`, `<region>` | the AWS account id and region; the templates assume `us-east-1` |
+| `<stack>` | the CloudFormation stack: `cbase` for the aws provider, `cbase-vm` for the VM (each overridable) |
+| `<bucket>` | the code bucket, `cbase-code-<account>-<region>` by default |
 
-Both share the account setup (step 1), the certificate's DNS record (step 3), the quota check (step 7), DNS (step 8), the health check (step 9), and everything after the import (steps 11 to 14).
-Everything is in the region **US East (N. Virginia) us-east-1**.
+Every script below prints its usage from its header, which is the full reference: read it before running the script.
+Paths are from the cbase root; a product that has cbase as a submodule runs them as `cbase/<path>`.
 
-## What I set up for you already
+## 1. Before either provider
 
-- `cbase/providers/aws/ops/cbase.yaml`: one CloudFormation template that creates the whole backend (DynamoDB table, Lambda function, Function URL, the IoT Core authorizer for realtime, the one-minute bot scan, CloudFront at your domain).
-  It passes `cfn-lint`, and it is the live stack's template.
-- `cbase/providers/aws/ops/deploy.sh`: the CLI path, end to end (it created the live stack on 2026-10-14, and a template change still goes through it).
-- `cbase/providers/aws/ops/package.sh`: builds `cbase/build/cbase-lambda.zip`, the static arm64 Lambda binary, and prints its sha256.
-  The same zip is built by CI on every change and kept as the `cbase-lambda` artifact of the `cbase` workflow run, so Docker on your Mac is optional.
-- `.github/workflows/cbase.yml`: builds and tests cbase on Linux and macOS, under ASan, lints the template, builds the zip, and on `main` deploys it to the function (step 13).
-- The admin console at `https://api.foolish.cards/admin` (the token from step 2).
-- This runbook.
+Build and test the product the way CI does: `make check` (and `make check-asan`) in `<product>`.
+The deploy scripts refuse a tree that does not contain `origin/main` (`ops/require_main.sh`), so what ships is always a commit of main, never a branch that forked before a fix.
+In a product, the repository checked is the product's (the superproject), since that is what is deployed.
 
-## What you must give me afterwards
+### The ops settings file
 
-Paste these back into the session so I can finish the verification:
-
-1. The stack status (it should say `CREATE_COMPLETE`).
-2. The stack's **Outputs** tab: `FunctionUrl`, `WebSocketUrl`, `DistributionDomain`, `TableName`, and `FunctionName`.
-3. Whether `https://api.foolish.cards/health` answers `ok cbase ...` (step 9).
-
-Never paste the JWT secret or the admin token into a chat.
-
-With those I run the latency bench against the live stack from this Mac (DESIGN.md, "The bench"); it needs no key:
-
-```
-make -C cbase bench && cbase/build/cbase-bench roundtrip --url https://api.foolish.cards --n 500 --concurrency 1
-```
-
-It signs up two throwaway accounts (`BENCH...`) and plays real games against the function, so run it after step 9 and before the import (step 10), or delete those two accounts in the console afterwards.
-
-## The CLI path
-
-1. Do step 1 below (the account, the plan, the zero-spend budget).
-2. Give the CLI credentials.
-   The simplest: **IAM > Users > Create user** `alex-cli`, attach `AdministratorAccess`, then **Security credentials > Create access key > Command Line Interface**, and run:
-
-   ```
-   aws configure          # paste the two keys; region us-east-1; output json
-   aws sts get-caller-identity
-   ```
-
-   The second command must print your account id.
-   (With IAM Identity Center instead: `aws configure sso`, `aws sso login`, and `export AWS_PROFILE=<the profile>`.)
-3. Request the certificate (CloudFront needs it in us-east-1):
-
-   ```
-   aws acm request-certificate --region us-east-1 --domain-name api.foolish.cards --validation-method DNS
-   aws acm describe-certificate --region us-east-1 --certificate-arn <the ARN it printed> \
-       --query 'Certificate.DomainValidationOptions[0].ResourceRecord'
-   ```
-
-   Add that CNAME in Google Cloud DNS exactly as step 3.6 to 3.8 below describe, and wait until `aws acm describe-certificate ... --query Certificate.Status` says `ISSUED`.
-4. Put the ARN where the script reads it:
-
-   ```
-   mkdir -p ~/.config/cbase && chmod 700 ~/.config/cbase
-   echo 'CBASE_CERT_ARN=arn:aws:acm:us-east-1:...' >> ~/.config/cbase/ops.env
-   ```
-
-   That is the ops settings file ("The ops settings file", below); the script generates the secrets into it on the first run, while the stack does not exist yet, and reuses them on every later run.
-   Keep a copy in your password manager: losing the JWT secret signs everyone out.
-5. Start Docker Desktop (the build runs in an arm64 Alpine container), then deploy:
-
-   ```
-   cbase/providers/aws/ops/deploy.sh
-   ```
-
-   It prints the account and region, builds and uploads the zip, creates the stack (5 to 15 minutes; CloudFront is the slow part), and prints the outputs table and what to do next.
-   Running it again later deploys a new build: the zip's name carries its sha256, so CloudFormation sees new code.
-6. Do steps 7, 8 and 9 below (quota, DNS, health check), and send me what "What you must give me afterwards" lists.
-7. The import: export from Supabase (step 10.5 below), rehearse into SQLite (step 10.6), then:
-
-   ```
-   cbase/providers/aws/ops/deploy.sh --import foolish/server/migrate/out
-   rm -rf foolish/server/migrate/out /tmp/cbase-rehearsal.sqlite
-   ```
-
-   The script hands `cbase-import` temporary credentials exported from the CLI for that one command; no access key is created for it.
-   Do it back to back with step 11 at a quiet hour, as step 10 explains.
-8. Continue with steps 11 to 14.
-
-## The ops settings file
-
-`deploy.sh` and `web_deploy.sh` read their settings and secrets from one file, outside the repo (`cbase/ops/ops_env.sh` is the one reader):
+The deploy scripts read their settings and secrets from one file outside the repository, through one reader (`ops/ops_env.sh`):
 
 1. `$CBASE_OPS_ENV` when it is set;
 2. else `~/.config/cbase/ops.env`;
-3. else the old `cbase/ops/.env`, when it is the only one there.
+3. else `ops/.env` (gitignored), when it is the only one there.
 
-It is mode 0600, holds only `CBASE_*` `NAME=value` lines (`CBASE_JWT_SECRET`, `CBASE_ADMIN_TOKEN`, `CBASE_ORIGIN_SECRET`, `CBASE_ALARM_EMAIL`, `CBASE_CERT_ARN`, `CBASE_WEB_FOOLISH_CERT`, `CBASE_WEB_UTTT_CERT`), and a value already in the environment wins over it.
-It lives outside the repo because the only copy once lived in `cbase/ops/.env` and went with a removed worktree.
+It is mode 0600 and holds only `CBASE_*` `NAME=value` lines; a value already in the environment wins over the file.
+It lives outside the repository so that removing a worktree can never take the only copy of a secret.
 
-A secret is generated only for a stack that does not exist yet.
-Against the live stack a missing secret stops `deploy.sh` with a message, and so does a `CBASE_JWT_SECRET` that differs from the live one: either would sign every user out.
+The rule that matters: a secret is generated only for a stack that does not exist yet.
+Against a live stack a fresh `CBASE_JWT_SECRET` would sign every user out and a fresh admin token would lock the console, so a missing secret there stops the run and says where to recover it from.
+`ops/test/ops_env_test.sh` holds these rules.
 
-`CBASE_JWT_SECRET` and `CBASE_ADMIN_TOKEN` live in SSM Parameter Store as SecureStrings, `/cbase/jwt-secret` and `/cbase/admin-token` (standard tier, free; `deploy.sh` writes them only when missing or changed).
-The function reads them when a container starts (`providers/aws/src/aws/ssm.h`); they are not in its environment, which the GitHub deploy role can read through `lambda:GetFunction` (CloudFormation needs it).
-If the file is lost, recover the values from SSM, not from a new `openssl rand`:
+## 2. The local provider on your machine
+
+`cbase serve` is one process over one SQLite file; the README's quick start runs it.
+Settings are `CBASE_*` variables (`core/src/config.h`, logged at start with secrets redacted), or a file named by `CBASE_ENV_FILE` (docs/PLATFORM.md 2.10).
+Outside `CBASE_DEV=1` it needs `CBASE_JWT_SECRET` (at least 32 characters) and `CBASE_PUBLIC_URL`, unless the app is storeless (docs/PLATFORM.md 2.7).
+`CBASE_DB` is the database file (default `./cbase.sqlite`); a second `cbase serve` on the same file refuses to start.
+`GET /health` is liveness and `GET /ready` readiness, when the app declares them (docs/PLATFORM.md 2.9).
+Ctrl-C drains like SIGTERM: requests in flight finish, then the app's `serve_close` runs.
+
+Backups: with `CBASE_BACKUP_BUCKET` (and `CBASE_BACKUP_REGION`) set, serve copies the database to S3 when it changed, every `CBASE_BACKUP_INTERVAL_S` (default 60) under `CBASE_BACKUP_KEY`, and restores the newest copy at start when the database file is missing (`providers/local/src/store/backup.h`).
+
+## 3. The local provider on a VM
+
+`providers/local/ops/vm.yaml` is `cbase serve` on one EC2 t4g.nano: an IPv6-only VPC (no public IPv4 address, nothing to scan), an auto-scaling group of exactly one instance that claims a fixed address at boot, a security group that admits the serve port only from CloudFront, SSM instead of SSH, a versioned backup bucket, two alarms, and a CloudFront distribution in front (`StagingUrl`).
+[providers/local/ops/VM_RUNBOOK.md](providers/local/ops/VM_RUNBOOK.md) is the detailed record: the boot chain, why IPv6-only, backups and restores, OS updates and cost.
+
+### Create the stack
+
+1. Build the static binary: `make serve-binary` in `<product>` (an arm64 Alpine container, so Docker is needed) gives `dist/cbase-serve-linux-arm64` and its `.sha256`.
+2. Deploy, with the product's two names:
+
+   ```
+   CBASE_PUBLIC_URL=https://<domain> CBASE_VM_ORIGIN_DOMAIN=vm-origin.<your zone> \
+     providers/local/ops/vm_deploy.sh dist/cbase-serve-linux-arm64
+   ```
+
+   It uploads the binary and the boot script to `<bucket>/vm/`, makes the VM's own secrets once as SSM SecureStrings under `/cbase-vm/env/` (never regenerated, never printed), and creates or updates the stack.
+   It never reads the ops settings file: the VM keeps its secrets in SSM.
+3. Point an AAAA record for `vm-origin.<your zone>` at the stack's `OriginIpv6` output.
+   CloudFront reaches an origin by name, not address, and the fixed address keeps the record valid across instance replacements.
+4. Check it: `providers/local/ops/vm_deploy.sh --verify` (the service is active, the binary's sha256, the instance's own `/health` and `/ready`, and `<PublicUrl>/health`), all through SSM Run Command, with no inbound port.
+
+The stack's own distribution (`StagingUrl`) caches nothing and adds the origin secret header; to serve `<domain>`, put a distribution that holds `<domain>`'s certificate in front of the same origin name.
+
+### Ship a new build
 
 ```
-umask 077; mkdir -p ~/.config/cbase
-for n in jwt-secret:CBASE_JWT_SECRET admin-token:CBASE_ADMIN_TOKEN; do
-  printf '%s=%s\n' "${n#*:}" "$(aws ssm get-parameter --name /cbase/${n%%:*} --with-decryption --query Parameter.Value --output text)"
-done >> ~/.config/cbase/ops.env
-# CBASE_ORIGIN_SECRET is the distribution's X-Cbase-Origin header value:
-aws cloudfront get-distribution-config --id <DistributionId> \
-  --query 'DistributionConfig.Origins.Items[0].CustomHeaders.Items[0].HeaderValue' --output text
+providers/local/ops/vm_release.sh dist/cbase-serve-linux-arm64    # upload, point at it, restart, verify
+providers/local/ops/vm_release.sh --restart                       # run this tree's boot script again on the release named
+providers/local/ops/vm_release.sh --verify                        # the checks only
 ```
 
-Then add the certificate ARNs (`aws acm list-certificates --region us-east-1`).
-`cbase/ops/test/ops_env_test.sh` holds the rules (CI runs it).
+`vm_release.sh` changes the code only, never the stack: it points `/cbase-vm/release/serve` at the new binary and runs the instance's boot stub through SSM, which fetches and checks it and restarts the service.
+A boot-script or unit change ships the same way.
+A restart drops open WebSockets; clients reconnect.
+After the checks pass it prunes the bucket, keeping the new release and the one before it.
 
-## Closing the origin, the concurrency ceiling and the alarms
+Rollback: run `vm_release.sh` on an older build of main, or point `/cbase-vm/release/serve` at an older `vm/cbase-serve-*` key and run `--restart`.
+`ops/s3_prune.sh --dry-run vm` shows what a prune would delete.
+
+### Day to day
+
+- Shell: `aws ssm start-session --target <instance-id>` (needs the Session Manager plugin); the server's log is `journalctl -u cbase`.
+- Alarms: subscribe an address to the `AlarmTopic` output (`aws sns subscribe ... --protocol email`).
+- OS updates: the boot runs no package manager, so fixes arrive with new images: run `vm_deploy.sh` (it picks up the newest AL2023 image), then an instance refresh with `MinHealthyPercentage` 0, since the old instance holds the fixed address.
+  A replacement restores the newest backup at start.
+- Scale to zero: `CBASE_VM_DESIRED=0 providers/local/ops/vm_deploy.sh` (the instance and its disk go; the VPC, buckets and parameters stay).
+
+## 4. The aws provider
+
+`providers/aws/ops/cbase.yaml` is the whole backend in one stack: the DynamoDB table (provisioned inside the always-free 25 read and 25 write units, split 15/5/5 over the table and its two indexes, point-in-time recovery on, TTL on `expires_at`), the Lambda function (the static arm64 `bootstrap`, 256 MB, 60 s, reserved concurrency 30), its Function URL, realtime over IoT Core when `IotEndpoint` is set, an EventBridge schedule, CloudFront at `<domain>`, ten CloudWatch alarms and their SNS topic.
+CloudFront sends `/mqtt` to IoT Core and everything else to the Function URL, so clients see one origin.
+
+The template still carries two choices of the product it was first written for: one schedule, named `"scan"`, invoked every minute, and two cached public paths, `/v1/leaderboard` and `/v1/bots`.
+An app with other schedules or cached paths edits those resources until the template takes them from the app.
+
+### The first deploy
+
+1. Give the AWS CLI credentials (`aws configure`, or `aws sso login` and `AWS_PROFILE`), and check that `aws sts get-caller-identity` prints `<account>`.
+2. Request the certificate in us-east-1 (CloudFront reads certificates only there), add the CNAME it asks for at your DNS host, and wait for `ISSUED`:
+
+   ```
+   aws acm request-certificate --region us-east-1 --domain-name <domain> --validation-method DNS
+   aws acm describe-certificate --region us-east-1 --certificate-arn <arn> --query Certificate.Status
+   ```
+
+3. Put the settings in the ops settings file: `CBASE_DOMAIN=<domain>`, `CBASE_CERT_ARN=<arn>`, and optionally `CBASE_ALARM_EMAIL`, `CBASE_ALLOWED_ORIGINS`, `CBASE_STACK`, `CBASE_TABLE`, `CBASE_FUNCTION_NAME`, `CBASE_CODE_BUCKET` and `CBASE_IOT` (the header of `providers/aws/ops/deploy.sh` lists every one and its default).
+4. Start Docker (the build runs in an arm64 Alpine container), then:
+
+   ```
+   CBASE_PRODUCT=<product> providers/aws/ops/deploy.sh
+   ```
+
+   It creates the code bucket if missing, generates `CBASE_JWT_SECRET` and `CBASE_ADMIN_TOKEN` into the settings file for a new stack and writes them to SSM Parameter Store as SecureStrings (the function reads them at container start, never from its environment), builds and uploads the zip under a name carrying its sha256, runs a change set (refused when it would replace a resource, unless `CBASE_ALLOW_REPLACE=1`), and prints the outputs: `FunctionUrl`, `DistributionDomain`, `DistributionId`, `TableName`, `PublicUrl`.
+   Keep a copy of the settings file in a password manager: losing the JWT secret signs everyone out.
+5. Point a CNAME for `<domain>` at `DistributionDomain`.
+6. Check that `https://<domain>/health` answers `ok cbase <version> mode=lambda ...`, and open `https://<domain>/admin` with the admin token when the app declares the console.
+
+`deploy.sh` is also how a template change ships, and running it again with a new build deploys that build.
+A product's own steps against the table after every deploy (seeding its rows, an import with `--import DIR`) are its `CBASE_DEPLOY_AFTER` command, run with temporary credentials, the stack's table and its distribution.
+
+### Closing the origin
 
 The Function URL and IoT Core's endpoint each have a public AWS hostname.
-CloudFront adds `X-Cbase-Origin: <CBASE_ORIGIN_SECRET>` to everything it sends to either, and the function answers anything without it 403 before it reads the store or a password (`core/src/config.h`); at IoT Core it is the custom authorizer that refuses a CONNECT without it (`realtime/rt_iot.c`).
-Adding the secret to a stack, or rotating it, is two deploys, because the function changes at once and the distribution takes minutes:
+CloudFront adds `X-Cbase-Origin: <CBASE_ORIGIN_SECRET>` to everything it sends to either, and the function answers anything without it 403 before it reads the store (`core/src/config.h`); at IoT Core the custom authorizer refuses a connection without it.
+Adding the secret, or rotating it, is two deploys, because the function changes at once and the distribution takes minutes:
 
 ```
-CBASE_ORIGIN_ENFORCED=no cbase/providers/aws/ops/deploy.sh   # CloudFront starts sending it; nothing checks it yet
+CBASE_ORIGIN_ENFORCED=no providers/aws/ops/deploy.sh   # CloudFront starts sending it; nothing checks it yet
 aws cloudfront wait distribution-deployed --id <DistributionId>
-cbase/providers/aws/ops/deploy.sh                            # now the function refuses requests without it
+providers/aws/ops/deploy.sh                            # now the function refuses requests without it
 ```
 
-To rotate, delete `CBASE_ORIGIN_SECRET` from the settings file, set it to a new `openssl rand -hex 32`, and run the same two deploys.
-The value sits in the distribution's configuration, which the GitHub deploy role can read (`cloudfront:GetDistribution`); it only proves a request came through CloudFront, so that is accepted.
+### Ship new code
 
-The function's reserved concurrency (30, `cbase.yaml`) is the ceiling on what a flood can bill, about $9 a day at saturation.
-Ten CloudWatch alarms (the always-free ten) mail `CBASE_ALARM_EMAIL` through the SNS topic `cbase-alarms`: Lambda throttles, errors, concurrency of 20 or more, Function URL 5xx, more than 6000 invocations in 5 minutes, the table's read and write units and each index's write units past 80%, and refused writes.
-A new address gets a confirmation email from AWS first; nothing is sent to it until the link in it is clicked.
+`providers/aws/ops/lambda_deploy.sh <product>/build/cbase-lambda.zip` ships a built zip (`providers/aws/ops/package.sh` makes it) without touching the template: it updates the stack on its previous template with only the code key changed, checks the function's code hash and `<PublicUrl>/health`, and prunes the bucket to this zip and the one before it.
+Rollback is the same command on an older zip, or a stack update with the old `CodeKey`.
 
-Rate limits (`core/src/rate_limits.h`) are held in each warm container's memory and cost nothing.
-The one counted in the table is failed sign-ins per account (`AUTHFAIL#<email>`, `core/src/auth/auth.h`): a wrong password costs one more read (1 RCU) and one write (1 WCU) than before, a sign-in while the account is locked costs one read and no write or bcrypt, and a success after failures costs one delete (1 WCU).
-A name with no account is never counted, so guessing names writes nothing.
+### Day to day
 
-Sessions (`core/src/auth/auth.c`) are one `SESSION#<id>` item each: a sign-in writes it (1 WCU), every refresh reads it strongly consistent (1 RCU), and a token row no longer writes the `gsi2` index (one index WCU fewer per refresh).
-Ending a session, all of a user's sessions, or every session but the caller's on a password change is one write, where it was one write per token ever issued.
-Token rows expire by TTL (a week after they are spent, or with their session), and a session ends 180 days after it began.
+- Logs: every invocation ends with one `inv:` line (`providers/aws/src/main_lambda.c`): the status and time, `store=` (DynamoDB), `push=` (IoT Core) and `other=` (Lambda invoke, CloudFront, SSM), each as calls/ms/new connections.
+  In CloudWatch Logs Insights on the function's log group:
 
-## Realtime: AWS IoT Core
+  ```
+  fields @timestamp, @message
+  | filter @message like /inv: http/
+  | parse @message /inv: http (?<method>\S+) (?<path>\S+) (?<status>\d+) ms=(?<ms>[\d.]+) after=(?<after>[\d.]+) store=(?<store_calls>\d+)\/(?<store_ms>[\d.]+)\/(?<store_dials>\d+) push=(?<push_calls>\d+)\/(?<push_ms>[\d.]+)/
+  | stats count(*) as n, pct(ms, 50) as p50, pct(ms, 95) as p95, avg(store_calls) as store_calls by method, path
+  | sort n desc
+  ```
 
-Pushes go out as MQTT over WebSocket from AWS IoT Core, reached at `wss://api.foolish.cards/mqtt` through CloudFront (DESIGN.md "Module: realtime").
-`providers/aws/ops/deploy.sh` reads this account's endpoint itself (`aws iot describe-endpoint --endpoint-type iot:Data-ATS`) and passes it as `IotEndpoint`; nothing else is configured by hand.
+- Alarms: Lambda throttles, errors and concurrency, Function URL 5xx, invocations past 6000 in 5 minutes, the table's and each index's consumed units, and refused writes, mailed to `CBASE_ALARM_EMAIL` once its confirmation link is clicked.
+- Lost secrets: read them back from SSM (`aws ssm get-parameter --name <SecretsPrefix>jwt-secret --with-decryption`), never generate new ones; the origin secret is the distribution's `X-Cbase-Origin` header value.
+- The DynamoDB table survives a stack delete on purpose (the template retains it), so a second create with the same name needs the old table removed first.
 
-To check it end to end with throwaway accounts (all deleted at the end):
+### Cost
 
-```
-cbase/build/cbase-bench mqtt --url https://api.foolish.cards --n 20 --pushes 20 \
-    --iot "$(aws iot describe-endpoint --endpoint-type iot:Data-ATS --query endpointAddress --output text)"
-```
+At a small product's volume Lambda, DynamoDB's provisioned 25 and 25 units, the Function URL, EventBridge Scheduler, CloudFront, ACM, ten alarms and SNS email are inside their always-free allowances.
+Point-in-time recovery is not: $0.20 per GB-month of table, a fraction of a cent for a few MB.
+IoT Core bills per million connection-minutes and messages after its first free year: cents a month.
+Nothing checks the capacity split against the free allowance, so a change to it is checked by hand: the six numbers add up to at most 25 a side, the billing mode stays PROVISIONED, and no auto scaling (it would scale past 25 and bill).
+`providers/aws/test/unit_dynamo.c` does hold the template's index names, key types and TTL attribute to the store's.
 
-It prints the authorization matrix (who may CONNECT, what one may SUBSCRIBE to, IoT's own host refused around the edge) and the connect and push latencies, and saves them under `cbase/bench/results`.
-A CONNECT that IoT refuses is a closed socket with no CONNACK; the authorizer's own decision is in the function's log as `iot connect allow` or `iot connect deny`.
+## 5. Deploying from CI
 
-## Reading the invocation log
-
-Every invocation ends with one `inv:` line (providers/aws/src/main_lambda.c).
-Its keys name a role, not an AWS service: `store=` is the store's calls (DynamoDB), `push=` the stream's publishes (IoT Core), `other=` the rest (Lambda invoke, CloudFront, SSM), each as calls/ms/new connections.
-Until 2026-10-18 the store's key was `ddb=`; a query over older lines asks for both.
-In CloudWatch Logs Insights, on the function's log group:
-
-```
-fields @timestamp, @message
-| filter @message like /inv: http/
-| parse @message /inv: http (?<method>\S+) (?<path>\S+) (?<status>\d+) ms=(?<ms>[\d.]+) after=(?<after>[\d.]+) (?:store|ddb)=(?<store_calls>\d+)\/(?<store_ms>[\d.]+)\/(?<store_dials>\d+) push=(?<push_calls>\d+)\/(?<push_ms>[\d.]+)/
-| stats count(*) as n, pct(ms, 50) as p50, pct(ms, 95) as p95, avg(store_calls) as store_calls, pct(store_ms, 50) as store_p50 by method, path
-| sort n desc
-```
-
-## The console path (the fallback)
-
-The steps below do the same by hand, with no CLI.
-
-## 1. The AWS account
-
-1. Sign in at https://console.aws.amazon.com/ (or create the account there; a card is required even on the free plan).
-2. Open **Billing and Cost Management > Free Tier** and note which plan the account is on.
-   An account opened on or after 2025-07-15 is on the credit-based Free plan: note the credit balance and the plan end date shown there.
-   An older account shows the legacy 12-month free tier; note whether it has expired.
-3. Everything this stack uses is in an always-free allowance except AWS IoT Core (realtime), which costs cents a month after its first free year.
-   On the Free plan, some services are blocked until you upgrade; if a stack resource later fails with an error that mentions the plan, upgrade to the Paid plan (Billing > Free Tier > Upgrade plan), which keeps any remaining credits.
-4. Set a spending alarm: **Billing and Cost Management > Budgets > Create budget > Use a template > Zero spend budget**, with your email.
-   Two budgets are free.
-   This is what catches a mistake: anything that starts billing, a DynamoDB table switched to on-demand or provisioned past the free units included, emails you once the month's actual spend passes one cent.
-   After the stack is up, **Billing and Cost Management > Free Tier** lists DynamoDB's always-free offers (25 GB, 25 write capacity units, 25 read capacity units) with this month's usage against each; the stack provisions exactly 25 and 25 across the table and its two indexes, so both should read at or under 100%.
-   If they read over, the indexes are billed outside the free units: tell me, and the split in `providers/aws/ops/cbase.yaml` moves.
-5. Switch the region selector (top right) to **US East (N. Virginia) us-east-1**.
-
-## 2. Generate the three secrets on your Mac
-
-Run these in Terminal, one at a time, and save each result in your password manager under the name shown.
-
-```
-openssl rand -base64 32    # JwtSecret     (CBASE_JWT_SECRET)
-openssl rand -base64 32    # AdminToken    (CBASE_ADMIN_TOKEN)
-```
-
-## 3. The certificate for api.foolish.cards
-
-CloudFront only takes certificates from us-east-1, whatever region the rest is in.
-
-1. Open **Certificate Manager** (search "ACM" in the console search bar) and confirm the region is us-east-1.
-2. Click **Request** > **Request a public certificate** > **Next**.
-3. Fully qualified domain name: `api.foolish.cards`.
-4. Validation method: **DNS validation**; key algorithm: RSA 2048.
-   Click **Request**.
-5. Open the new certificate (status **Pending validation**).
-   Under **Domains** there is a CNAME name and a CNAME value; keep this tab open.
-6. In another tab open the Google Cloud console > **Network services > Cloud DNS** > the `foolish.cards` zone > **Add standard** (or **Add record set**).
-7. DNS name: the part of the ACM CNAME name before `.api.foolish.cards.`, followed by `.api`.
-   For example, if ACM shows `_3f9c2a.api.foolish.cards.`, type `_3f9c2a.api` (Cloud DNS adds `.foolish.cards.` itself).
-8. Resource record type: **CNAME**; TTL: 300; canonical name: the ACM CNAME value exactly, ending in `.acm-validations.aws.`.
-   Click **Create**.
-9. Leave the apex `foolish.cards` and `www` records alone: they serve the website ("Web hosting", below), and nothing in steps 1 to 12 touches them.
-10. Wait until ACM shows the certificate as **Issued** (usually 5 to 30 minutes; refresh the page).
-11. Copy the certificate's **ARN** (starts with `arn:aws:acm:us-east-1:`).
-    You need it in step 6.
-
-## 4. The code zip
-
-Either of these gives you `cbase-lambda.zip`:
-
-- Without Docker: GitHub > the repository > **Actions** > **cbase** > the latest green run on `main` (or on this branch) > **Artifacts** > `cbase-lambda`. Unzip the download; inside is `cbase-lambda.zip` and its `.sha256`.
-- With Docker Desktop running: `cbase/providers/aws/ops/package.sh` from the repository root.
-  It prints the path, the size and the sha256.
-
-## 5. The S3 bucket for the code
-
-CloudFormation cannot create a Lambda function of this runtime without its code, so the zip goes to S3 first.
-
-1. Open **S3** > **Create bucket**.
-2. Bucket type: General purpose.
-   Name: `cbase-code-` followed by your 12-digit account id (top right menu shows it), for example `cbase-code-123456789012`.
-3. Region: us-east-1.
-   Leave **Block all public access** on and every other setting at its default.
-   Click **Create bucket**.
-4. Open the bucket > **Upload** > **Add files** > `cbase-lambda.zip` > **Upload**.
-5. The object key must be exactly `cbase-lambda.zip`.
-
-## 6. Create the stack
-
-1. Open **CloudFormation** > **Create stack** > **With new resources (standard)**.
-2. Prepare template: **Choose an existing template**; template source: **Upload a template file** > **Choose file** > `cbase/providers/aws/ops/cbase.yaml` > **Next**.
-3. Stack name: `cbase`.
-4. Parameters:
-   - CodeBucket: the bucket name from step 5.
-   - CodeKey: `cbase-lambda.zip` (the default).
-   - JwtSecret, AdminToken: the two values from step 2.
-   - DomainName: `api.foolish.cards` (the default).
-   - CertificateArn: the ARN from step 3.
-   - AllowedOrigins: empty (the default): the app's own `cors_origins` alone.
-   - FunctionName: `cbase`; TableName: `cbase` (the defaults).
-5. **Next**. On **Configure stack options** leave everything at its default and tick **I acknowledge that AWS CloudFormation might create IAM resources with custom names**. **Next**.
-6. Review, then **Submit**.
-7. Wait for the stack status to reach **CREATE_COMPLETE** (5 to 15 minutes; the CloudFront distribution is the slow part).
-   The **Events** tab shows progress.
-8. Open the **Outputs** tab and copy every value: you need `DistributionDomain` next, and the whole list goes back to me.
-
-If the status becomes `ROLLBACK_COMPLETE`, open **Events**, find the first row whose status is `CREATE_FAILED`, and send me its **Status reason**.
-Then delete the stack, and also delete the `cbase` table in **DynamoDB > Tables** if it is still there (the template keeps the table on delete so data is never lost by accident, which would make a second create fail on the name).
-
-## 7. Raise the Lambda concurrency quota if it is low
-
-1. Open **Service Quotas** > **AWS services** > **AWS Lambda** > **Concurrent executions**.
-2. If the applied value is below 100 (new accounts sometimes start at 10), click **Request increase at account level** and ask for 1000.
-   It is free and usually approved within a day.
-
-## 8. Point api.foolish.cards at CloudFront
-
-1. In Google Cloud DNS, in the `foolish.cards` zone, **Add standard**.
-2. DNS name: `api`; type: **CNAME**; TTL: 300; canonical name: the `DistributionDomain` output followed by a dot, for example `d1a2b3c4d5e6f7.cloudfront.net.`. **Create**.
-
-## 9. Check it answers
-
-1. Open the `FunctionUrl` output with `health` appended (for example `https://abc123.lambda-url.us-east-1.on.aws/health`).
-   It should read `ok cbase 0.1.0 mode=lambda uptime_s=...`.
-2. After a few minutes for DNS, open `https://api.foolish.cards/health`.
-   It should read the same.
-3. Open `https://api.foolish.cards/admin`, paste the AdminToken, and check the Overview panel says mode `lambda` and store `dynamo`.
-
-Send me the outputs now (see "What you must give me afterwards"); I verify the API and the realtime path before any players are moved.
-
-## 10. Import the data from Supabase
-
-The import runs on your Mac and writes straight into DynamoDB with a temporary access key that you delete right after.
-GitHub Actions is not used for this on purpose: the export holds every password hash, and it must never become a CI artifact.
-
-Players who sign up or move between the export and step 11 are lost, so do steps 10 and 11 back to back at a quiet hour.
-
-1. Build the tools: `make -C cbase` (gives `cbase/build/cbase-import`).
-2. Create the temporary key: **IAM > Users > Create user**, name `cbase-import`, no console access, **Next**.
-3. **Attach policies directly** > **Create policy** > **JSON**, paste the following with your account id in place of `ACCOUNT`, name it `cbase-import`, create it, then attach it to the user and finish creating the user.
-
-   ```
-   {"Version": "2012-10-17", "Statement": [{"Effect": "Allow",
-     "Action": ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem",
-                "dynamodb:Query", "dynamodb:BatchWriteItem", "dynamodb:ConditionCheckItem", "dynamodb:DescribeTable"],
-     "Resource": ["arn:aws:dynamodb:us-east-1:ACCOUNT:table/cbase", "arn:aws:dynamodb:us-east-1:ACCOUNT:table/cbase/index/*"]}]}
-   ```
-
-4. Open the user > **Security credentials** > **Create access key** > **Command Line Interface (CLI)** > tick the confirmation > **Create access key**. Keep the page open.
-5. Export from Supabase into `foolish/server/migrate/out/` with `foolish/server/migrate/export.sh`.
-   It reads the Supabase CLI's token from the macOS keychain, so run `supabase login` first if `supabase projects list` does not work; every statement it sends is a read-only `SELECT` (`foolish/server/migrate/README.md`).
-6. Rehearse into a throwaway SQLite file first, and read the counts it prints:
-
-   ```
-   CBASE_STORE=sqlite CBASE_DB=/tmp/cbase-rehearsal.sqlite cbase/build/cbase-import foolish/server/migrate/out
-   ```
-
-7. Then the real import, pasting the two values from step 10.4 into the same Terminal window:
-
-   ```
-   export AWS_REGION=us-east-1 AWS_ACCESS_KEY_ID='paste' AWS_SECRET_ACCESS_KEY='paste'
-   CBASE_STORE=dynamo CBASE_TABLE=cbase cbase/build/cbase-import foolish/server/migrate/out
-   ```
-
-8. Check the counts it prints match the rehearsal.
-9. Delete the key and the user: **IAM > Users > cbase-import > Delete**, and delete the `cbase-import` policy under **IAM > Policies**.
-10. Delete the export: `rm -rf foolish/server/migrate/out /tmp/cbase-rehearsal.sqlite`, and close the Terminal window.
-11. In the admin console, the Users, Games and Bots panels should now show the imported rows.
-
-## 11. Move the website
-
-The web build bakes the backend's URL in at build time, and CI builds the site (Vercel no longer builds from Git), so a value change needs a CI rebuild.
-
-1. Vercel > the foolish project > **Settings > Environment Variables**.
-2. Set `NEXT_PUBLIC_BACKEND_URL` for **Production** to `https://api.foolish.cards`.
-3. (The binary surface has no anon key: nothing else to set.)
-4. The site no longer speaks Supabase's protocols, so there is no backend to roll the web back to; a web rollback is a rollback of the hosting only (below).
-5. GitHub > **Actions** > **web** > the latest successful run on `main` > **Re-run all jobs**.
-   Its `vercel pull` fetches the new values and the deploy ships them.
-6. Open https://foolish.cards, sign in with an existing account, and play a move against a bot.
-
-That was the cutover on Vercel; the site is on AWS now, where `web_aws.yml` sets `NEXT_PUBLIC_BACKEND_URL` to `https://api.foolish.cards` itself, and the Vercel value is gone with the projects (W9).
-   The admin console's Logs panel shows the requests.
-
-## 12. Move the iOS apps
-
-1. The Release build reads `BACKEND_URL` from `foolish/ios/Config/Release.xcconfig`, which already says:
-
-   ```
-   BACKEND_URL = https:/$()/api.foolish.cards
-   ```
-
-   The `$()` is required: in an `.xcconfig`, `//` starts a comment.
-2. Bump the build number, archive, and upload a TestFlight build as usual; test online play on a device before releasing it.
-3. The standalone iOS app never shipped, so no installed build calls Supabase, and step 14 waits for nothing.
-
-## 13. GitHub deploys
-
-Since 2026-10-14 every push to `main` deploys what is live, to AWS, with no hand steps:
-
-| What changed on `main` | Workflow, job | What it does |
-|---|---|---|
-| `cbase/**`, `foolish/c/**`, `foolish/server/**`, `shared/c/**`, `shared/tools/**` | `cbase`, `deploy to cbase-vm` | after every test job passes, `providers/local/ops/vm_release.sh`: the CI-built static `cbase serve` binary to the code bucket's `vm/`, `/cbase-vm/release/serve` pointed at it, the boot script pinned the same way (`vm/cbase-vm-boot-<sha12>`, `/cbase-vm/release/boot`), the instance's boot stub run through SSM (it fetches the pinned boot script, which restarts the server), then the binary's sha256, the instance's `/health` and `/ready`, and `https://api.foolish.cards/health` checked (providers/local/ops/VM_RUNBOOK.md, "Upgrade the server"). Until 2026-10-19 this job was `deploy to Lambda` (`lambda_deploy.sh`) |
-| `foolish/**`, `shared/**`, `uttt/c/**`, `uttt/web/**` | `web_aws`, `deploy` | `providers/aws/ops/site/web_deploy.sh site foolish`, then `site uttt`: upload, page lists, invalidation, then `www.foolish.cards` and `www.uttt.live` must answer 200 (both apexes are on CloudFront too) |
-
-Both refuse a tree that does not contain `origin/main` (`ops/require_main.sh`), so a branch behind main, or a re-run of an old run by hand, deploys nothing.
-One run per lane runs on main at a time (the workflow's `concurrency` group, `cancel-in-progress: false` on main, because a cancel can land in the middle of a CloudFormation update); a newer push's run waiting behind it replaces any older one still waiting, so the waiting slot always holds the newest commit.
-A run that starts deploys its own commit even if main moved on while it built (the first attempt only; a re-run is refused), because the newest push's run is queued behind it and deploys next.
-So the newest commit of main always deploys.
-This replaced a rule that skipped a run whose commit main had moved past: on 2026-10-18, from 01:25 to 03:05 UTC, main moved on inside every cbase run, so every deploy skipped and nothing shipped until the pushes paused.
-Both can also be run by hand on `main` (Actions > the workflow > Run workflow) to redeploy main as it is.
-Nothing deploys to Vercel on push any more, and nothing deploys to Supabase at all.
-
-The credentials are one role, `cbase-github-deploy`, made by the stack `cbase-github` from `providers/aws/ops/github_oidc.yaml` together with the account's GitHub OIDC provider:
-
-```
-aws cloudformation deploy --region us-east-1 --stack-name cbase-github \
-  --template-file cbase/providers/aws/ops/github_oidc.yaml --capabilities CAPABILITY_NAMED_IAM
-```
-
-1. It trusts only `repo:alexsave/foolish:ref:refs/heads/main`.
-   To prove a workflow change from its branch before merging, deploy the stack once with `--parameter-overrides ExtraSubject=repo:alexsave/foolish:ref:refs/heads/<branch>` (and let the workflow's `if:` accept that ref on the branch), then deploy it again with `ExtraSubject=` empty.
-2. It may upload a serve binary under the code bucket's `vm/cbase-serve-*` and the boot script under `vm/cbase-vm-boot-*`, write `/cbase-vm/release/serve` and `/cbase-vm/release/boot`, run commands through SSM on the `cbase-vm` group's instance and read their results, upload to the web bucket, invalidate the two distributions, rewrite the `cbase-web` page lists, and read that stack; it holds none of the rights a template change needs, so `providers/local/ops/vm_deploy.sh` and `providers/aws/ops/site/web_deploy.sh stack` stay hand steps from this Mac.
-   `providers/aws/ops/role_covers_release.sh` (in CI) fails when `vm_release.sh` makes an AWS call the role does not grant.
-   The Lambda deploy rights were removed on 2026-10-19 when the VM took production; the frozen `cbase` Lambda is redeployed only by hand (`lambda_deploy.sh` with an operator's credentials) if it is ever rolled back to.
-3. Repository secrets (Settings > Secrets and variables > Actions): `CBASE_AWS_ROLE_ARN` (the stack's `DeployRoleArn` output).
-
-The Vercel rollback lanes (`web.yml`, `uttt-web.yml`) were deleted on 2026-10-18 (W9).
-- There is no Supabase lane: `deploy.yml` was deleted on 2026-10-14, because the standalone iOS app never shipped and no client talks to Supabase (step 14).
-
-## 14. Retire Supabase
-
-The standalone iOS app never shipped, so no client talks to Supabase, and nothing waits 30 days.
-`.github/workflows/deploy.yml`, the Supabase functions deploy, was deleted on 2026-10-14.
-
-1. Delete the repository secrets `SUPABASE_ACCESS_TOKEN` and `SUPABASE_DB_PASSWORD` (GitHub > Settings > Secrets and variables > Actions): no workflow reads them any more. Left for you on purpose.
-2. Supabase dashboard > the project > **Project Settings > General > Pause project**.
-3. Do not delete it until you are sure no rollback is needed; a paused project keeps its data.
-
-## Rollback
-
-The web is the only switch that matters on day one, and it flips back in minutes:
-
-1. The web's hosting: Vercel is gone (W9), so a bad web deploy is rolled back on AWS (W7, last paragraph).
-2. Anything players did on cbase since the switch stays in DynamoDB and is not copied back.
-3. A bad cbase build is rolled back separately: download an earlier `cbase-lambda` artifact (every CI run keeps one for 30 days) and run `cbase/providers/aws/ops/lambda_deploy.sh <its cbase-lambda.zip>` from a tree that contains main; it points the stack back at that zip.
-   Or point the stack straight at the earlier key, if it is still in the code bucket: **CloudFormation > cbase > Update > Use existing template**, CodeKey = the old `cbase-lambda-<hash>.zip`.
-   `lambda_deploy.sh` deletes every other `cbase-lambda-*.zip` after a deploy is live and healthy, keeping the new zip and the one the stack ran before it, so only one step back is in the bucket; for older code use the CI artifact.
-   `cbase/ops/s3_prune.sh --dry-run lambda` shows what a prune would delete. The function and the stack are never deleted.
-
-## Costs, for reference
-
-Lambda (1M requests and 400,000 GB-seconds a month), DynamoDB (25 GB, and 25 write and 25 read units of provisioned capacity, which the table and its indexes use exactly), the Function URL, EventBridge Scheduler, CloudFront and ACM are inside their always-free allowances at foolish's volume.
-DynamoDB's point-in-time recovery is not: $0.20 per GB-month, about a tenth of a cent a month at our few MB.
-AWS IoT Core has a 12-month free tier, then $0.08 per million connection-minutes and $1.00 per million messages in us-east-1: cents a month.
-The code zip in S3 is about 2 MB: well under a cent a month.
-CloudWatch Logs keeps 30 days (set in the template) inside its 5 GB free allowance.
-The ten alarms are CloudWatch's always-free ten alarm metrics, and the SNS email topic is inside SNS's free 1,000 emails a month.
-Reserved concurrency costs nothing.
-
-## Web hosting: foolish.cards and uttt.live off Vercel
-
-The design is `docs/VERCEL.md`; the stack is `providers/aws/ops/site/web.yaml`; the deploy is `providers/aws/ops/site/web_deploy.sh`.
-W1 to W5 are done: the stack `cbase-web` is live, and foolish.cards, www, utils.foolish.cards and uttt.live all resolve to its two distributions (checked with `dig`, 2026-10-17).
-Those steps stay as the record and for a rebuild; W7 is the rollback and W9 the teardown.
-
-What exists (us-east-1, account 487337210065):
-
-| Thing | Value |
-|---|---|
-| Stack | `cbase-web` |
-| Bucket | `cbase-web-487337210065` (prefixes `foolish/`, `utils/`, `uttt/`) |
-| foolish distribution | `E1YC4MJXHIOBQD`, `dgow77nr7v5kf.cloudfront.net` (foolish.cards, www, utils) |
-| uttt distribution | `E1PSTHCGSF35HM`, `d2hb0vxf10cj0w.cloudfront.net` (uttt.live, www) |
-| foolish certificate | `arn:aws:acm:us-east-1:487337210065:certificate/42ecb64e-bf84-4372-9170-2e645119b12f` |
-| uttt certificate | `arn:aws:acm:us-east-1:487337210065:certificate/6f0b38fc-6ed7-40b3-83ef-14347c9cb4ae` |
-
-Two distributions, not one: a CloudFront flat-rate plan covers one distribution with at most one apex domain, and an account holds three Free plans, so api, foolish and uttt use exactly the three.
-
-### W1. Validate the two certificates
-
-Squarespace > Domains > foolish.cards (then uttt.live) > **DNS > DNS Settings > Add record**, type **CNAME**, one per row.
-In Squarespace's Host field type the name WITHOUT the domain at its end (the first column below already has it cut).
-
-| Domain | Host | Type | Data |
-|---|---|---|---|
-| foolish.cards | `_94dd294a48c86186e616d0b27ff953cb` | CNAME | `_49023923d4e291bfda886e04ed7e8969.wzccmgtwzk.acm-validations.aws.` |
-| foolish.cards | `_1043bf13b4c9c7509aa150c4cf652ea4.www` | CNAME | `_7b65955f569b0ee08fb6d70cd92bda60.wzccmgtwzk.acm-validations.aws.` |
-| foolish.cards | `_647d6b5b48d15624b07a1f54887974e5.utils` | CNAME | `_e29e73ddf64b9147f3550aa0f62662c9.wzccmgtwzk.acm-validations.aws.` |
-| uttt.live | `_faca958838ac79f06a92911f68615c4c` | CNAME | `_da5d6f5a49462a73d3f1535041af4c67.wzccmgtwzk.acm-validations.aws.` |
-| uttt.live | `_7f7b50a58f31999214fc4ad280da4a73.www` | CNAME | `_eca85018c66683829aebdad41c6a2b38.wzccmgtwzk.acm-validations.aws.` |
-
-These records only prove ownership; they change nothing that is served, and they stay in place for good (ACM renews against them).
-Check, until both say ISSUED (minutes to an hour):
-
-```
-aws acm describe-certificate --region us-east-1 --certificate-arn <arn> --query Certificate.Status
-```
-
-### W2. Put the names on the distributions
-
-```
-CBASE_WEB_FOOLISH_CERT=arn:aws:acm:us-east-1:487337210065:certificate/42ecb64e-bf84-4372-9170-2e645119b12f \
-CBASE_WEB_UTTT_CERT=arn:aws:acm:us-east-1:487337210065:certificate/6f0b38fc-6ed7-40b3-83ef-14347c9cb4ae \
-  cbase/providers/aws/ops/site/web_deploy.sh stack
-```
-
-CloudFront refuses an alias another distribution holds, but Vercel is not a CloudFront distribution, so this works while DNS still points at Vercel.
-The distribution update takes a few minutes.
-
-### W3. Put both distributions on the Free plan
-
-CloudFront console > **Distributions** > the distribution > the pricing plan > **Free**, once for each of the two.
-Plans are chosen only in the console; until then they run pay-as-you-go, which is also $0 at this volume.
-
-### W4. Prove it before DNS moves
-
-The certificate and Host are exactly what visitors will send; only the address is forced:
-
-```
-for p in / /dashboard /privacy /imessage-privacy /support /abc123 /.well-known/apple-app-site-association; do
-  curl -sI --connect-to foolish.cards:443:dgow77nr7v5kf.cloudfront.net:443 "https://foolish.cards$p" | head -1
-done
-curl -sI --connect-to foolish.cards:443:dgow77nr7v5kf.cloudfront.net:443 https://foolish.cards/.well-known/apple-app-site-association | grep -i content-type   # application/json
-curl -sI -H 'Accept-Encoding: gzip, br' --connect-to foolish.cards:443:dgow77nr7v5kf.cloudfront.net:443 https://foolish.cards/oracle.wasm.gz | grep -ci content-encoding   # 0
-curl -s --connect-to foolish.cards:443:dgow77nr7v5kf.cloudfront.net:443 https://foolish.cards/m/1x | grep -o '<title>[^<]*'
-curl -sI --connect-to uttt.live:443:d2hb0vxf10cj0w.cloudfront.net:443 https://uttt.live/234 | grep -i location   # /243
-```
-
-Before the flip, Vercel answered `https://foolish.cards/...` with a 307 to `www`, and served the association file there as `application/octet-stream`.
-Apple fetches the association file at the apex without following redirects, so universal links were broken on Vercel; the apex flip below fixed that.
-
-### W5. The DNS flip, in this order
-
-A day ahead, lower the TTL of every record you are about to change to 300 (Squarespace > DNS Settings, each record's TTL).
-DNSSEC must be off for an ALIAS at `@` (it is: `dig +short DS foolish.cards` prints nothing).
-
-1. **uttt.live**, the rehearsal: replace the `@` A record (76.76.21.21) with an **ALIAS** `@` to `d2hb0vxf10cj0w.cloudfront.net`, and the `www` CNAME with `d2hb0vxf10cj0w.cloudfront.net`.
-   Test: `dig +short uttt.live A` and `dig +short uttt.live AAAA` return CloudFront addresses (not 76.76.21.21), `curl -sI https://uttt.live/` says `server: CloudFront`, and a replay link from the app plays.
-   If Squarespace will not take the ALIAS, stop here and use the fallback below before touching foolish.cards.
-2. **www.foolish.cards**: the `www` CNAME (then `d204b352f329121a.vercel-dns-017.com`) becomes `dgow77nr7v5kf.cloudfront.net`.
-   Test: `curl -sI https://www.foolish.cards/` says `server: CloudFront`; sign in and play a move against a bot.
-3. **foolish.cards**: the `@` A record (216.198.79.193) becomes an **ALIAS** `@` to `dgow77nr7v5kf.cloudfront.net`.
-   Test: `dig +short foolish.cards A` and `AAAA` return CloudFront addresses, `curl -sI https://foolish.cards/.well-known/apple-app-site-association` is a 200 with `application/json` and no redirect, then `cd foolish && npm run test:validate` (universal_links_validation) and a link tapped on a phone opens the app.
-4. **utils.foolish.cards**, whenever: it is a different site (the sibling repo `foolish-utils`), so first build it there with `output: 'export'` and `images.unoptimized`, upload with `cbase/providers/aws/ops/site/web_deploy.sh site utils --out ../foolish-utils/out` (the right content types, cache headers and invalidation), check it with `curl --connect-to` as in W4, then point the `utils` CNAME (then `1a8ccd91b52ad608.vercel-dns-017.com`) at `dgow77nr7v5kf.cloudfront.net`.
-
-Fallback if the apex ALIAS does not work: a Route 53 hosted zone ($0.50 a month; ALIAS queries to CloudFront are free).
-Create the zone for the domain, recreate EVERY record from Squarespace in it (the ACM CNAMEs too), add the apex as an A and AAAA alias to the distribution, then change the domain's nameservers at Squarespace to the zone's four.
-Not an apex-to-www forward: the iOS app's entitlement is `applinks:foolish.cards` only, and Apple does not follow redirects for the association file.
-
-### W6. Two weeks in parallel
-
-Since 2026-10-14 only `web_aws.yml` deploys on push (step 13).
-Watch for two weeks; the cbase admin console's Logs panel shows the `/m` unfurl requests coming through the new distribution.
-
-### W7. Rollback (DNS part retired 2026-10-18)
-
-The DNS rollback to Vercel existed until W9 and is gone; the records below are history.
-It was DNS only, and the 300-second TTL made it minutes:
-
-- foolish.cards: `@` back to an A record 216.198.79.193; `www` back to CNAME `d204b352f329121a.vercel-dns-017.com`.
-- uttt.live: `@` back to an A record 76.76.21.21; `www` back to CNAME `e0da883ddeb2a161.vercel-dns-017.com`.
-- utils: CNAME back to `1a8ccd91b52ad608.vercel-dns-017.com`.
-
-A bad web deploy on AWS without a DNS rollback: re-run `web_aws` on the last good commit (Actions > web_aws > that run > Re-run all jobs), or restore objects from the bucket's versions (kept 30 days).
-
-### W8. GitHub deploys for the web
-
-1. The role and its one secret (`CBASE_AWS_ROLE_ARN`) are step 13's: one role deploys the Lambda and the web.
-2. A template change to `providers/aws/ops/site/web.yaml` is always `web_deploy.sh stack` from this Mac; CI only uploads and rewrites the two page lists on the existing template.
-3. utils.foolish.cards is built in the sibling repo `foolish-utils` and still deployed by hand (W5 step 4).
-4. Now and then, `cbase/providers/aws/ops/site/web_deploy.sh site foolish --prune-static` (and `uttt`) deletes hashed files no current page uses; a tab left open across two deploys reloads.
-5. The Infinite Oracle's Mode B headers: `CBASE_WEB_ISOLATION=yes cbase/providers/aws/ops/site/web_deploy.sh stack` (and `no` to undo).
-
-### W9. Retire Vercel - DONE 2026-10-18
-
-Done ahead of the 2026-10-28 date, with Alex's go-ahead: steps 1 and 2 are in the repo teardown PR (workflows, both `VERCEL` halves, the web_deploy_scope test), the repository secrets are deleted by hand after it merges, and Alex deletes the Vercel projects foolish, uttt and foolish-utils himself.
-The W7 rollback below no longer exists; the history is kept.
-
-1. Delete `.github/workflows/web.yml` (workflow_dispatch-only since 2026-10-14; its pull-request gate lives in `web_aws.yml`) and the `VERCEL` half of `foolish/next.config.mjs`.
-   Delete `.github/workflows/uttt-web.yml` too (workflow_dispatch-only since its apex moved to CloudFront) and the `VERCEL` half of `uttt/web/next.config.mjs`.
-2. Delete the repository secrets `VERCEL_PROJECT_ID`, `UTTT_VERCEL_PROJECT_ID`, `VERCEL_TOKEN` and `VERCEL_ORG_ID`.
-3. Vercel dashboard: remove the domains from the foolish and uttt projects and delete both (and the foolish-utils one once utils has moved).
+cbase's own CI (`.github/workflows/ci.yml`) builds and tests, and deploys nothing.
+A product deploys from its own workflow with its own role, through GitHub's OIDC provider: on each push to main it builds the binary and runs `vm_release.sh` (local) or `lambda_deploy.sh` (aws).
+`providers/aws/ops/role_covers_release.sh SCRIPT ROLE.yaml` fails when the script makes an AWS call the product's role template does not grant, so the two cannot drift; template changes stay hand steps with an operator's credentials.
+Give the deploying workflow one concurrency group per ref with `cancel-in-progress: false` on main: `require_main.sh` lets the first attempt of a run on main deploy its own commit even when main has moved on (the run queued behind it deploys the newer one), and refuses a re-run, which would roll main back.

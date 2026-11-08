@@ -50,7 +50,7 @@ cbase_ops_secret() {
   if [ "$exists" = yes ]; then
     echo "ops_env: $name is not in $file, and the stack already exists." >&2
     echo "ops_env: generating a new one would sign every user out (or lock the console)." >&2
-    echo "ops_env: recover it from the live function (cbase/RUNBOOK.md, \"The ops settings file\") and run again." >&2
+    echo "ops_env: recover it from the live function (RUNBOOK.md section 4, \"Lost secrets\") and run again." >&2
     return 1
   fi
   local value

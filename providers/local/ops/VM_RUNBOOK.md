@@ -92,7 +92,7 @@ It refuses a tree that does not contain `origin/main`, like `vm_release.sh`.
 
 ## Upgrade the server
 
-Every push to main that changes the server deploys it: the `cbase` workflow's `deploy to cbase-vm` job builds the static binary (`build_bootstrap.sh serve`) and runs `vm_release.sh` on it, as the GitHub role (cbase/RUNBOOK.md, "GitHub deploys").
+Every push to main that changes the server deploys it: the `cbase` workflow's `deploy to cbase-vm` job builds the static binary (`build_bootstrap.sh serve`) and runs `vm_release.sh` on it, as the GitHub role (RUNBOOK.md section 5, "Deploying from CI").
 `vm_release.sh BIN` uploads BIN as `vm/cbase-serve-<short sha>` with its `.sha256`, points `/cbase-vm/release/serve` at it, runs the instance's boot script through SSM (it fetches and checks the binary named there and restarts `cbase`), then checks that `cbase` is active, that `/usr/local/bin/cbase` has BIN's sha256, that the instance's own `/health` and `/ready` answer 200, and that `https://api.foolish.cards/health` answers `ok cbase`.
 It refuses a tree that does not contain `origin/main` (`cbase/ops/require_main.sh`).
 Every `vm_release.sh` run (and `--restart`) pins the tree's boot script first: it uploads `vm/cbase-vm-boot-<sha12>` (the same object when the script did not change), sets `/cbase-vm/release/boot`, and then sends the stub over SSM, so the instance fetches, checks and installs the new boot script before running it.
