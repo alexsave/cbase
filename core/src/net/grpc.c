@@ -25,14 +25,21 @@ void cb_grpc_reply_free(cb_grpc_reply *r) {
     cb_grpc_reply_init(r);
 }
 
+// Each coarser unit rounds up, so the server never sees a deadline earlier than
+// the call's; the unit is chosen on the rounded value, which must fit 8 digits.
 void cb_grpc_timeout(int64_t ms, char *out, size_t cap) {
     if (ms < 1) ms = 1;
+    int64_t s = ms / 1000 + (ms % 1000 != 0), h = ms / 3600000 + (ms % 3600000 != 0);
     if (ms <= 99999999) snprintf(out, cap, "%lldm", (long long)ms);
-    else if (ms / 1000 <= 99999999) snprintf(out, cap, "%lldS", (long long)((ms + 999) / 1000));
-    else snprintf(out, cap, "%lldH", (long long)((ms + 3599999) / 3600000 > 99999999 ? 99999999 : (ms + 3599999) / 3600000));
+    else if (s <= 99999999) snprintf(out, cap, "%lldS", (long long)s);
+    else snprintf(out, cap, "%lldH", (long long)(h > 99999999 ? 99999999 : h));
 }
 
+// On CB_E_INVALID nothing is handed back, so a refused reply never shows a message.
 int cb_grpc_unframe(const uint8_t *p, size_t n, const uint8_t **msg, size_t *len, bool *has) {
+    const uint8_t *m = NULL;
+    size_t ml_found = 0;
+    bool found = false;
     *msg = NULL;
     *len = 0;
     *has = false;
@@ -43,12 +50,15 @@ int cb_grpc_unframe(const uint8_t *p, size_t n, const uint8_t **msg, size_t *len
         uint32_t ml = (uint32_t)p[at + 1] << 24 | (uint32_t)p[at + 2] << 16 | (uint32_t)p[at + 3] << 8 | p[at + 4];
         if (flag != 0) return CB_E_INVALID;     // compressed (never asked for), or a reserved bit
         if (ml > n - at - 5) return CB_E_INVALID;
-        if (*has) return CB_E_INVALID;          // a unary reply holds one message
-        *msg = p + at + 5;
-        *len = ml;
-        *has = true;
+        if (found) return CB_E_INVALID;         // a unary reply holds one message
+        m = p + at + 5;
+        ml_found = ml;
+        found = true;
         at += 5 + (size_t)ml;
     }
+    *msg = m;
+    *len = ml_found;
+    *has = found;
     return CB_OK;
 }
 

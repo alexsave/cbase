@@ -63,7 +63,7 @@ int cb_grpc_unary(cb_h2_channel *ch, const char *path, const cb_h2_field *meta, 
 // milliseconds, else in seconds, else in hours. Writes it to out (cap >= 10).
 void cb_grpc_timeout(int64_t ms, char *out, size_t cap);
 // The messages in a reply body: CB_OK with the one message (or none) in
-// *msg/*len/*has, or CB_E_INVALID.
+// *msg/*len/*has, or CB_E_INVALID with none.
 int cb_grpc_unframe(const uint8_t *p, size_t n, const uint8_t **msg, size_t *len, bool *has);
 // grpc-message's percent-encoding, decoded into out (appended). Bytes that are
 // not a valid %XX escape are kept as they are, as the spec asks.

@@ -18,7 +18,7 @@
 //   /close                the connection is closed under it
 //   /test.Echo/Echo       gRPC: the request message back, grpc-status 0
 //   /test.Echo/Fail       gRPC trailers-only: grpc-status 8, a percent-encoded grpc-message, status details
-//   /test.Echo/Meta       gRPC: a message "<x-goog-api-key>|<grpc-timeout>"
+//   /test.Echo/Meta       gRPC: a message "<x-goog-api-key>|<grpc-timeout>|<never or indexed>" (how the key came)
 //   /test.Echo/Two        gRPC: two messages (malformed for unary)
 //   /test.Echo/Zip        gRPC: one message flagged compressed
 //   anything else         404

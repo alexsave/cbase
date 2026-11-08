@@ -33,6 +33,7 @@ typedef struct sconn sconn;
 typedef struct {
     uint32_t id;
     bool     used, open, reset;
+    bool     key_never;  // x-goog-api-key came never-indexed
     int64_t  window;     // what this side may still send on it
     cb_buf   path, api_key, timeout, body;
 } sstream;
@@ -142,6 +143,7 @@ typedef struct {
     uint32_t id;
     char     path[256];
     char     api_key[256], timeout[32];
+    bool     key_never;
     cb_buf   body;
 } job;
 
@@ -268,7 +270,7 @@ static void *respond(void *arg) {
         if (strcmp(path, "/test.Echo/Echo") == 0) grpc_message(&body, msg, ml, 0);
         else if (strcmp(path, "/test.Echo/Meta") == 0) {
             char t[400];
-            int tl = snprintf(t, sizeof t, "%s|%s", j->api_key, j->timeout);
+            int tl = snprintf(t, sizeof t, "%s|%s|%s", j->api_key, j->timeout, j->key_never ? "never" : "indexed");
             grpc_message(&body, t, (size_t)tl, 0);
         } else if (strcmp(path, "/test.Echo/Two") == 0) {
             grpc_message(&body, "a", 1, 0);
@@ -306,7 +308,7 @@ static int on_field(void *ctx, const char *n, size_t nl, const char *v, size_t v
     if (!h->st) return CB_OK;
     cb_buf *dst = NULL;
     if (nl == 5 && memcmp(n, ":path", 5) == 0) dst = &h->st->path;
-    else if (nl == 14 && memcmp(n, "x-goog-api-key", 14) == 0) dst = &h->st->api_key;
+    else if (nl == 14 && memcmp(n, "x-goog-api-key", 14) == 0) { dst = &h->st->api_key; h->st->key_never = never; }
     else if (nl == 12 && memcmp(n, "grpc-timeout", 12) == 0) dst = &h->st->timeout;
     if (dst) {
         cb_buf_reset(dst);
@@ -322,6 +324,7 @@ static void start_job(sconn *c, sstream *st) {   // under wmu
     j->id = st->id;
     snprintf(j->path, sizeof j->path, "%.*s", (int)st->path.len, st->path.p ? (const char *)st->path.p : "");
     snprintf(j->api_key, sizeof j->api_key, "%.*s", (int)st->api_key.len, st->api_key.p ? (const char *)st->api_key.p : "");
+    j->key_never = st->key_never;
     snprintf(j->timeout, sizeof j->timeout, "%.*s", (int)st->timeout.len, st->timeout.p ? (const char *)st->timeout.p : "");
     cb_buf_init(&j->body);
     cb_buf_append(&j->body, st->body.p, st->body.len);
@@ -426,6 +429,7 @@ static void *reader(void *arg) {
                         st->window = c->peer_initial;
                         cb_buf_reset(&st->path);
                         cb_buf_reset(&st->api_key);
+                        st->key_never = false;
                         cb_buf_reset(&st->timeout);
                         cb_buf_reset(&st->body);
                         c->open_now++;
