@@ -316,7 +316,15 @@ static void bound(conn *c, int64_t deadline) {
 
 static int dial(const char *host, int port, int64_t deadline) { return cb_net_dial(host, port, deadline, false); }
 
-static int conn_open(conn *c, const char *host, int port, bool tls, int64_t deadline) {
+// Why a dial failed: the deadline ran out, or else no connection could be made (refused,
+// unreachable, the name did not resolve). request() logs the why.
+static cb_https_fail dial_failure(int64_t deadline) {
+    return left(deadline) <= 0 ? CB_HTTPS_FAIL_TIMEOUT : CB_HTTPS_FAIL_CONNECT;
+}
+
+// A new connection to host:port. CB_OK, or CB_E_IO with *fail saying why (CB_HTTPS_FAIL_CONNECT,
+// _TIMEOUT or _TLS: nothing of a request has been sent), or CB_E_NOMEM.
+static int conn_open(conn *c, const char *host, int port, bool tls, int64_t deadline, cb_https_fail *fail) {
     memset(c, 0, sizeof *c);
     c->fd = -1;
     cb_strlcpy(c->host, host, sizeof c->host);
@@ -324,7 +332,7 @@ static int conn_open(conn *c, const char *host, int port, bool tls, int64_t dead
     c->tls = tls;
     if (!tls) {
         c->fd = dial(host, port, deadline);
-        if (c->fd < 0) { CB_WARN("https", "connect %s:%d failed", host, port); return CB_E_IO; }
+        if (c->fd < 0) { *fail = dial_failure(deadline); return CB_E_IO; }
         return CB_OK;
     }
     pthread_mutex_lock(&g_lock);
@@ -336,7 +344,7 @@ static int conn_open(conn *c, const char *host, int port, bool tls, int64_t dead
     pthread_mutex_unlock(&g_lock);
     if (rc != CB_OK) return rc;
     c->fd = dial(host, port, deadline);
-    if (c->fd < 0) { CB_WARN("https", "connect %s:%d failed", host, port); conn_close(c); return CB_E_IO; }
+    if (c->fd < 0) { *fail = dial_failure(deadline); conn_close(c); return CB_E_IO; }
     bound(c, deadline);
     SSL_set_fd(c->ssl, c->fd);
     // The certificate must name the host. If the name cannot be set (finding
@@ -344,10 +352,15 @@ static int conn_open(conn *c, const char *host, int port, bool tls, int64_t dead
     // rather than one whose certificate is checked against nothing.
     if (cb_tls_bind_host(c->ssl, host) != CB_OK) {
         CB_WARN("https", "TLS to %s:%d: the host name to verify could not be set", host, port);
+        *fail = CB_HTTPS_FAIL_TLS;
         conn_close(c);
         return CB_E_IO;
     }
     if (SSL_connect(c->ssl) != 1) {
+        // A handshake the peer never finished is a timeout (bound(): the socket's timeouts end
+        // it at the deadline); anything else is TLS refusing the peer.
+        bool timed_out = errno == EAGAIN || errno == EWOULDBLOCK || left(deadline) <= 0;
+        *fail = timed_out ? CB_HTTPS_FAIL_TIMEOUT : CB_HTTPS_FAIL_TLS;
         long vr = SSL_get_verify_result(c->ssl);
         char e[256];
         ERR_error_string_n(ERR_get_error(), e, sizeof e);
@@ -379,6 +392,21 @@ static bool pool_take(const char *host, int port, bool tls, conn *out) {
     return found;
 }
 
+// Whether a pooled connection can still carry a request: nothing is waiting to be read on it. A
+// peer that closed or reset it while idle has left an EOF, an error or (TLS) a close_notify to
+// read, and a peer that sent anything unasked is not one to trust with the next request either.
+// Either way the connection is dropped before a byte of the request goes out, so a non-idempotent
+// request (which is never resent, https.h) does not fail for a close that had already happened.
+static bool conn_alive(conn *c) {
+    if (c->ssl && SSL_pending(c->ssl) > 0) return false;
+    uint8_t b;
+    for (;;) {
+        ssize_t r = recv(c->fd, &b, 1, MSG_PEEK | MSG_DONTWAIT);
+        if (r < 0 && errno == EINTR) continue;
+        return r < 0 && (errno == EAGAIN || errno == EWOULDBLOCK);
+    }
+}
+
 static void pool_put(conn *c) {
     c->idle_since = cb_mono_ms();
     pthread_mutex_lock(&g_lock);
@@ -387,7 +415,9 @@ static void pool_put(conn *c) {
     conn_close(c);
 }
 
-static int write_all(conn *c, const void *p, size_t n) {
+// 0, or -1 with *fail: CB_HTTPS_FAIL_TIMEOUT when the socket's write timeout ran out, else
+// CB_HTTPS_FAIL_RESET (the peer reset or closed the connection).
+static int write_all(conn *c, const void *p, size_t n, cb_https_fail *fail) {
     const char *b = p;
     while (n) {
         int chunk = n > (1u << 30) ? (1 << 30) : (int)n;
@@ -401,7 +431,10 @@ static int write_all(conn *c, const void *p, size_t n) {
 #endif
             if (w < 0 && errno == EINTR) continue;
         }
-        if (w <= 0) return -1;
+        if (w <= 0) {
+            *fail = errno == EAGAIN || errno == EWOULDBLOCK ? CB_HTTPS_FAIL_TIMEOUT : CB_HTTPS_FAIL_RESET;
+            return -1;
+        }
         b += w;
         n -= (size_t)w;
     }
@@ -419,23 +452,27 @@ static int plain_read(conn *c, uint8_t *p, size_t cap) {
     }
 }
 
-// One exchange on c. CB_OK (and *ka), CB_E_IO, or 1 meaning "failed before
-// any response byte" (the caller may retry a reused connection).
-static int exchange(conn *c, const cb_buf *req, bool head, int64_t deadline, cb_https_response *out, bool *ka) {
+// One exchange on c. CB_OK (and *ka); or CB_E_IO with *fail saying why and *unanswered set when
+// not one byte of an answer had come (the case a reused connection's request may be resent in,
+// request() below); or CB_E_NOMEM.
+static int exchange(conn *c, const cb_buf *req, bool head, int64_t deadline, cb_https_response *out, bool *ka,
+                    cb_https_fail *fail, bool *unanswered) {
+    *unanswered = true;
     bound(c, deadline);
-    if (write_all(c, req->p, req->len) != 0) { ERR_clear_error(); return 1; }
+    if (write_all(c, req->p, req->len, fail) != 0) { ERR_clear_error(); return CB_E_IO; }
     cb_buf in;
     cb_buf_init(&in);
     int rc = CB_E_IO;
+    *fail = CB_HTTPS_FAIL_RESET;
     for (;;) {
-        if (left(deadline) <= 0) { CB_WARN("https", "%s: timed out", c->host); break; }
-        if (!cb_buf_reserve(&in, 16384)) { rc = CB_E_NOMEM; break; }
+        if (left(deadline) <= 0) { *fail = CB_HTTPS_FAIL_TIMEOUT; break; }
+        if (!cb_buf_reserve(&in, 16384)) { rc = CB_E_NOMEM; *fail = CB_HTTPS_FAIL_NONE; break; }
         bound(c, deadline);
         bool eof = false;
         if (!c->ssl) {
             int r = plain_read(c, in.p + in.len, in.cap - in.len - 1);
-            if (r == -2) { CB_WARN("https", "%s: timed out", c->host); break; }
-            if (r < 0) { if (in.len == 0) rc = 1; break; }
+            if (r == -2) { *fail = CB_HTTPS_FAIL_TIMEOUT; break; }
+            if (r < 0) break;
             if (r == 0) eof = true;
             else in.len += (size_t)r;
         } else {
@@ -447,20 +484,20 @@ static int exchange(conn *c, const cb_buf *req, bool head, int64_t deadline, cb_
                 ERR_clear_error();
                 if (e == SSL_ERROR_ZERO_RETURN || (e == SSL_ERROR_SYSCALL && errno == 0)) eof = true;
                 else if (e == SSL_ERROR_WANT_READ || e == SSL_ERROR_WANT_WRITE) {
-                    if (errno == EAGAIN || errno == EWOULDBLOCK) { CB_WARN("https", "%s: timed out", c->host); break; }
+                    if (errno == EAGAIN || errno == EWOULDBLOCK) { *fail = CB_HTTPS_FAIL_TIMEOUT; break; }
                     continue;
                 } else {
-                    if (in.len == 0) rc = 1;
                     break;
                 }
             }
         }
-        // A clean close before any byte: the peer had dropped the idle connection.
-        if (eof && in.len == 0) { rc = 1; break; }
+        *unanswered = in.len == 0;
+        // A close before any byte of an answer: CB_HTTPS_FAIL_RESET, unanswered.
+        if (eof && in.len == 0) break;
         int k = cb_https_parse_response(in.p, in.len, head, eof, out, ka);
-        if (k > 0) { rc = CB_OK; if ((size_t)k != in.len) *ka = false; break; }
-        if (k < 0) { rc = k; break; }
-        if (eof) break;
+        if (k > 0) { rc = CB_OK; *fail = CB_HTTPS_FAIL_NONE; if ((size_t)k != in.len) *ka = false; break; }
+        if (k < 0) { rc = k; *fail = k == CB_E_IO ? CB_HTTPS_FAIL_PROTOCOL : CB_HTTPS_FAIL_NONE; break; }
+        if (eof) break;   // the peer closed partway through an answer
     }
     cb_buf_free(&in);
     return rc;
@@ -470,9 +507,56 @@ static int exchange(conn *c, const cb_buf *req, bool head, int64_t deadline, cb_
 static void ignore_sigpipe(void) { signal(SIGPIPE, SIG_IGN); }
 #endif
 
+// Whether a request may be sent again after a reused connection fails before any answer
+// (https.h, RFC 9110 9.2.2): only a safe method, unless its caller vouches for it.
+static bool resendable(const char *method, unsigned flags) {
+    if (flags & CB_HTTP_RETRY_IDEMPOTENT) return true;
+    return strcmp(method, "GET") == 0 || strcmp(method, "HEAD") == 0 || strcmp(method, "OPTIONS") == 0;
+}
+
+const char *cb_https_fail_name(cb_https_fail f) {
+    switch (f) {
+    case CB_HTTPS_FAIL_NONE: return "none";
+    case CB_HTTPS_FAIL_CONNECT: return "connect";
+    case CB_HTTPS_FAIL_TIMEOUT: return "timeout";
+    case CB_HTTPS_FAIL_RESET: return "reset";
+    case CB_HTTPS_FAIL_TLS: return "tls";
+    case CB_HTTPS_FAIL_PROTOCOL: return "protocol";
+    }
+    return "unknown";
+}
+
+// out->why for a failed request, from what failed and whether any of the request went out.
+static void say_why(cb_https_response *out, const char *method, const char *host, int port, int timeout_ms,
+                    bool not_resent) {
+    const char *applied = out->sent ? "the request may or may not have been applied" : "nothing was sent";
+    switch (out->fail) {
+    case CB_HTTPS_FAIL_CONNECT:
+        cb_fmt_cut(out->why, sizeof out->why, "no connection to %s:%d (refused or unreachable): %s", host, port, applied);
+        break;
+    case CB_HTTPS_FAIL_TIMEOUT:
+        cb_fmt_cut(out->why, sizeof out->why, "%s:%d did not answer within %d ms: %s", host, port, timeout_ms, applied);
+        break;
+    case CB_HTTPS_FAIL_RESET:
+        cb_fmt_cut(out->why, sizeof out->why, "%s:%d closed the connection without a whole answer: %s%s%s%s", host,
+                   port, applied, not_resent ? "; not resent, as " : "", not_resent ? method : "",
+                   not_resent ? " is not idempotent" : "");
+        break;
+    case CB_HTTPS_FAIL_TLS:
+        cb_fmt_cut(out->why, sizeof out->why, "TLS to %s:%d failed: %s", host, port, applied);
+        break;
+    case CB_HTTPS_FAIL_PROTOCOL:
+        cb_fmt_cut(out->why, sizeof out->why, "%s:%d sent a malformed or oversized answer: %s", host, port, applied);
+        break;
+    case CB_HTTPS_FAIL_NONE:
+        break;
+    }
+}
+
 // kind: the tally's row (K_*). tls: false for plain TCP.
-static int request(int kind, bool tls, const char *host, int port, const char *method, const char *path,
-                   const char *headers, const void *body, size_t body_len, int timeout_ms, cb_https_response *out) {
+static int request(int kind, bool tls, unsigned flags, const char *host, int port, const char *method,
+                   const char *path, const char *headers, const void *body, size_t body_len, int timeout_ms,
+                   cb_https_response *out) {
     memset(out, 0, sizeof *out);
     cb_buf_init(&out->headers);
     cb_buf_init(&out->body);
@@ -482,7 +566,8 @@ static int request(int kind, bool tls, const char *host, int port, const char *m
     static pthread_once_t once = PTHREAD_ONCE_INIT;
     pthread_once(&once, ignore_sigpipe);
 #endif
-    int64_t deadline = cb_mono_ms() + (timeout_ms > 0 ? timeout_ms : 10000);
+    if (timeout_ms <= 0) timeout_ms = 10000;
+    int64_t deadline = cb_mono_ms() + timeout_ms;
     bool head = strcmp(method, "HEAD") == 0;
     cb_buf req;
     cb_buf_init(&req);
@@ -498,36 +583,57 @@ static int request(int kind, bool tls, const char *host, int port, const char *m
 
     const int64_t t0 = mono_us();
     int rc = CB_E_IO;
+    bool not_resent = false;
     for (int attempt = 0; attempt < 2; attempt++) {
         conn c;
         bool reused = attempt == 0 && pool_take(host, port, tls, &c);
+        if (reused && !conn_alive(&c)) { conn_close(&c); reused = false; }   // closed while idle: never used
         if (!reused) {
             atomic_fetch_add_explicit(&g_dials[kind], 1, memory_order_relaxed);
-            rc = conn_open(&c, host, port, tls, deadline);
+            rc = conn_open(&c, host, port, tls, deadline, &out->fail);
             if (rc != CB_OK) break;
         }
-        bool ka = false;
-        rc = exchange(&c, &req, head, deadline, out, &ka);
+        bool ka = false, unanswered = false;
+        out->sent = true;
+        rc = exchange(&c, &req, head, deadline, out, &ka, &out->fail, &unanswered);
         if (rc == CB_OK && ka) pool_put(&c);
         else conn_close(&c);
-        if (rc == 1 && reused) continue;   // the idle connection was dead: once more, fresh
-        if (rc == 1) rc = CB_E_IO;
+        // A reused connection that failed before any answer most likely died just as the request
+        // went out, and a fresh one would carry it: but the peer may have read it and acted
+        // before closing, so only a request that may run twice is sent again (https.h).
+        bool died = rc == CB_E_IO && unanswered && out->fail == CB_HTTPS_FAIL_RESET && reused;
+        if (died && resendable(method, flags)) { out->fail = CB_HTTPS_FAIL_NONE; continue; }
+        not_resent = died;
         break;
     }
+    if (rc != CB_OK) say_why(out, method, host, port, timeout_ms, not_resent);
+    if (rc == CB_E_IO) CB_WARN("https", "%s %s: %s", method, path, out->why);
     atomic_fetch_add_explicit(&g_calls[kind], 1, memory_order_relaxed);
     atomic_fetch_add_explicit(&g_us[kind], mono_us() - t0, memory_order_relaxed);
     cb_buf_free(&req);
     return rc;
 }
 
+int cb_https_request_flags(unsigned flags, const char *host, int port, const char *method, const char *path,
+                           const char *headers, const void *body, size_t body_len, int timeout_ms,
+                           cb_https_response *out) {
+    return request(host_kind(host), true, flags, host, port, method, path, headers, body, body_len, timeout_ms, out);
+}
+
 int cb_https_request(const char *host, int port, const char *method, const char *path, const char *headers,
                      const void *body, size_t body_len, int timeout_ms, cb_https_response *out) {
-    return request(host_kind(host), true, host, port, method, path, headers, body, body_len, timeout_ms, out);
+    return cb_https_request_flags(0, host, port, method, path, headers, body, body_len, timeout_ms, out);
+}
+
+int cb_http_plain_request_flags(unsigned flags, cb_https_role role, const char *host, int port, const char *method,
+                                const char *path, const char *headers, const void *body, size_t body_len,
+                                int timeout_ms, cb_https_response *out) {
+    const int kind = role == CB_HTTPS_STORE || role == CB_HTTPS_PUSH ? (int)role : K_OTHER;
+    return request(kind, false, flags, host, port, method, path, headers, body, body_len, timeout_ms, out);
 }
 
 int cb_http_plain_request(cb_https_role role, const char *host, int port, const char *method, const char *path,
                           const char *headers, const void *body, size_t body_len, int timeout_ms,
                           cb_https_response *out) {
-    const int kind = role == CB_HTTPS_STORE || role == CB_HTTPS_PUSH ? (int)role : K_OTHER;
-    return request(kind, false, host, port, method, path, headers, body, body_len, timeout_ms, out);
+    return cb_http_plain_request_flags(0, role, host, port, method, path, headers, body, body_len, timeout_ms, out);
 }

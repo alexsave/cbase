@@ -108,6 +108,12 @@ static void serve_conn(tls_srv *s, SSL_CTX *ctx, int fd) {
             }
             break;
         }
+        if (a == TLS_SWALLOW) break;
+        if (a == TLS_RESET) {
+            struct linger lg = { 1, 0 };
+            setsockopt(fd, SOL_SOCKET, SO_LINGER, &lg, sizeof lg);
+            break;
+        }
         if (a == TLS_LATE) poll(NULL, 0, 200);
         if (io_write(ssl, fd, out.p, (int)out.len) <= 0) break;
         if (a == TLS_CLOSE) { if (ssl) SSL_shutdown(ssl); break; }

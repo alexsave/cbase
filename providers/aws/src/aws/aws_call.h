@@ -31,9 +31,11 @@ int cb_aws_call(const char *service, const char *method, const char *host, int p
                 const char *const *headers, int n_headers, const void *body, size_t body_len, int timeout_ms,
                 cb_https_response *out);
 
-// cb_aws_call signed for `region` instead of the credentials' (AWS_REGION): a
-// global service's (CloudFront signs for us-east-1 from anywhere).
-int cb_aws_call_region(const char *region, const char *service, const char *method, const char *host, int port, bool tls,
+// cb_aws_call with `flags` (https.h: CB_HTTP_RETRY_IDEMPOTENT for a request that may run twice by
+// the service's contract, a read sent as POST or a write with its own idempotency token; 0
+// otherwise, and a POST is then never resent), signed for `region` instead of the credentials'
+// (AWS_REGION) when not NULL: a global service's (CloudFront signs for us-east-1 from anywhere).
+int cb_aws_call_region(unsigned flags, const char *region, const char *service, const char *method, const char *host, int port, bool tls,
                        const char *path, const char *const *headers, int n_headers, const void *body, size_t body_len,
                        int timeout_ms, cb_https_response *out);
 

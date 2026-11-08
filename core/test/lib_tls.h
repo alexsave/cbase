@@ -19,6 +19,8 @@ typedef enum {
     TLS_HANG,       // write nothing, hold the connection until the client goes
     TLS_DROP,       // write the response, then close silently before the NEXT request (an idle timeout)
     TLS_LATE,       // wait 200 ms, then write the response and carry on as TLS_KEEP
+    TLS_SWALLOW,    // the request was read: write nothing, close cleanly (a peer that acted and died)
+    TLS_RESET,      // the request was read: write nothing, reset the connection (SO_LINGER 0)
 } tls_action;
 
 // `req` is the whole request (head and body); append the raw response to `resp`.

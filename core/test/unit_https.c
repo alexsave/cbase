@@ -360,6 +360,8 @@ static void handshake_times_out(void) {
     T_EQ_INT(cb_https_request("localhost", ntohs(a.sin_port), "GET", "/", NULL, NULL, 0, 300, &r), CB_E_IO);
     int64_t took = cb_mono_ms() - t0;
     T_CHECK(took >= 190 && took < 2000);
+    T_EQ_STR(cb_https_fail_name(r.fail), "timeout");
+    T_CHECK(!r.sent);
     cb_https_response_free(&r);
     close(lfd);
 }
@@ -516,6 +518,157 @@ static void plain_peer_that_closes(void) {
     tls_srv_stop(&s);
 }
 
+// ---- what is sent twice (https.h) ---------------------------------------------------------------
+//
+// A peer that answers the first request on a kept-alive connection, then reads the second and
+// closes without a word (it may have acted on it): a safe method is sent again on a fresh
+// connection, a write never is.
+
+typedef struct {
+    atomic_int  n;
+    tls_action  second;   // what the second request gets
+} once_peer;
+
+static tls_action answer_then(const cb_buf *req, cb_buf *resp, void *ud) {
+    once_peer *p = ud;
+    if (atomic_fetch_add(&p->n, 1) + 1 == 2) return p->second;
+    const char *q = (const char *)req->p;
+    const char *sp = strchr(q, ' ');
+    cb_buf_printf(resp, "HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n%.*s", (int)(sp - q), (int)(sp - q), q);
+    return TLS_KEEP;
+}
+
+static int send_on(bool tls, unsigned flags, int port, const char *method, const char *path, cb_https_response *r) {
+    const char *body = strcmp(method, "GET") == 0 ? NULL : "note";
+    size_t n = body ? 4 : 0;
+    return tls ? cb_https_request_flags(flags, "localhost", port, method, path, NULL, body, n, 3000, r)
+               : cb_http_plain_request_flags(flags, CB_HTTPS_OTHER, "127.0.0.1", port, method, path, NULL, body, n,
+                                             3000, r);
+}
+
+// The second request's outcome on a fresh peer: how many requests the peer read in all.
+static int second_request(bool tls, tls_action second, unsigned flags, const char *method, int *rc,
+                          cb_https_response *r) {
+    once_peer p = { .second = second };
+    atomic_init(&p.n, 0);
+    tls_srv s;
+    T_EQ_INT((tls ? tls_srv_start : tls_srv_start_plain)(&s, answer_then, &p), 0);
+    if (tls) T_EQ_INT(cb_https_set_ca_file(s.ca_file), CB_OK);
+    cb_https_response first;
+    T_EQ_INT(send_on(tls, 0, s.port, "GET", "/first", &first), CB_OK);
+    cb_https_response_free(&first);
+    *rc = send_on(tls, flags, s.port, method, "/second", r);
+    int seen = atomic_load(&s.requests);
+    tls_srv_stop(&s);
+    return seen;
+}
+
+static void writes_are_never_resent_on(bool tls) {
+    static const char *const writes[] = { "POST", "PATCH", "PUT", "DELETE" };
+    for (size_t i = 0; i < sizeof writes / sizeof writes[0]; i++) {
+        int rc;
+        cb_https_response r;
+        T_EQ_INT(second_request(tls, TLS_SWALLOW, 0, writes[i], &rc, &r), 2);   // the write reached it once
+        T_EQ_INT(rc, CB_E_IO);
+        T_EQ_STR(cb_https_fail_name(r.fail), "reset");
+        T_CHECK(r.sent);
+        T_CHECK(strstr(r.why, "may or may not have been applied") != NULL);
+        T_CHECK(strstr(r.why, "not resent") != NULL);
+        cb_https_response_free(&r);
+    }
+    // A safe method is sent again, once, and answered there.
+    static const char *const safe[] = { "GET", "HEAD", "OPTIONS" };
+    for (size_t i = 0; i < sizeof safe / sizeof safe[0]; i++) {
+        int rc;
+        cb_https_response r;
+        T_EQ_INT(second_request(tls, TLS_SWALLOW, 0, safe[i], &rc, &r), 3);
+        T_EQ_INT(rc, CB_OK);
+        T_EQ_INT(r.status, 200);
+        T_EQ_STR(r.why, "");
+        cb_https_response_free(&r);
+    }
+    // So is a write its caller vouches for, and a reset is the same as a close.
+    int rc;
+    cb_https_response r;
+    T_EQ_INT(second_request(tls, TLS_RESET, CB_HTTP_RETRY_IDEMPOTENT, "POST", &rc, &r), 3);
+    T_EQ_INT(rc, CB_OK);
+    T_EQ_STR(cb_buf_cstr(&r.body), "POST");
+    cb_https_response_free(&r);
+    T_EQ_INT(second_request(tls, TLS_RESET, 0, "POST", &rc, &r), 2);
+    T_EQ_INT(rc, CB_E_IO);
+    cb_https_response_free(&r);
+}
+
+static void writes_are_never_resent(void) {
+    writes_are_never_resent_on(false);
+    writes_are_never_resent_on(true);
+}
+
+// A connection the peer closed while it sat idle is dropped before the request goes out, so a write
+// on it is not lost to a close that had already happened.
+static void idle_close_is_seen_before_a_write(void) {
+    for (int tls = 0; tls < 2; tls++) {
+        tls_srv s;
+        T_EQ_INT((tls ? tls_srv_start : tls_srv_start_plain)(&s, answer, "close"), 0);
+        if (tls) T_EQ_INT(cb_https_set_ca_file(s.ca_file), CB_OK);
+        cb_https_response r;
+        T_EQ_INT(send_on(tls, 0, s.port, "GET", "/a", &r), CB_OK);
+        cb_https_response_free(&r);
+        cb_sleep_ms(100);   // the close lands while the connection is idle in the pool
+        T_EQ_INT(send_on(tls, 0, s.port, "POST", "/w", &r), CB_OK);
+        T_EQ_STR(cb_buf_cstr(&r.body), "POST /w HTTP/1.1|note");
+        cb_https_response_free(&r);
+        T_EQ_INT(atomic_load(&s.requests), 2);
+        T_EQ_INT(atomic_load(&s.accepts), 2);
+        tls_srv_stop(&s);
+    }
+}
+
+// What failed, told apart: a peer that never answers, a port nobody listens on, a peer that resets.
+static void failures_say_which(void) {
+    for (int tls = 0; tls < 2; tls++) {
+        tls_srv s;
+        T_EQ_INT((tls ? tls_srv_start : tls_srv_start_plain)(&s, answer, "hang"), 0);
+        if (tls) T_EQ_INT(cb_https_set_ca_file(s.ca_file), CB_OK);
+        cb_https_response r;
+        T_EQ_INT(tls ? cb_https_request("localhost", s.port, "POST", "/", NULL, "x", 1, 300, &r)
+                     : cb_http_plain_request(CB_HTTPS_OTHER, "127.0.0.1", s.port, "POST", "/", NULL, "x", 1, 300, &r),
+                 CB_E_IO);
+        T_EQ_STR(cb_https_fail_name(r.fail), "timeout");
+        T_CHECK(r.sent);
+        T_CHECK(strstr(r.why, "did not answer within 300 ms: the request may or may not have been applied") != NULL);
+        cb_https_response_free(&r);
+        tls_srv_stop(&s);
+
+        // Reset after reading the request, on a fresh connection.
+        once_peer p = { .second = TLS_RESET };
+        atomic_init(&p.n, 1);   // the first request it sees is the "second"
+        T_EQ_INT((tls ? tls_srv_start : tls_srv_start_plain)(&s, answer_then, &p), 0);
+        if (tls) T_EQ_INT(cb_https_set_ca_file(s.ca_file), CB_OK);
+        T_EQ_INT(send_on(tls, 0, s.port, "GET", "/", &r), CB_E_IO);
+        T_EQ_STR(cb_https_fail_name(r.fail), "reset");
+        T_CHECK(r.sent);
+        cb_https_response_free(&r);
+        T_EQ_INT(atomic_load(&s.requests), 1);   // a fresh connection's failure is not resent, even a GET's
+        tls_srv_stop(&s);
+    }
+    // A port nobody listens on: refused, nothing sent.
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    struct sockaddr_in a = { .sin_family = AF_INET, .sin_addr.s_addr = htonl(INADDR_LOOPBACK) };
+    socklen_t al = sizeof a;
+    T_EQ_INT(bind(fd, (struct sockaddr *)&a, sizeof a), 0);
+    T_EQ_INT(getsockname(fd, (struct sockaddr *)&a, &al), 0);
+    close(fd);
+    for (int tls = 0; tls < 2; tls++) {
+        cb_https_response r;
+        T_EQ_INT(send_on(tls, 0, ntohs(a.sin_port), "POST", "/", &r), CB_E_IO);
+        T_EQ_STR(cb_https_fail_name(r.fail), "connect");
+        T_CHECK(!r.sent);
+        T_CHECK(strstr(r.why, "nothing was sent") != NULL);
+        cb_https_response_free(&r);
+    }
+}
+
 // ---- the real internet, when there is one ---------------------------------------
 
 static bool online(void) {
@@ -552,6 +705,9 @@ int main(void) {
     T_RUN(plain_binary_both_ways_with_its_headers);
     T_RUN(plain_timeouts_short_and_long);
     T_RUN(plain_peer_that_closes);
+    T_RUN(writes_are_never_resent);
+    T_RUN(idle_close_is_seen_before_a_write);
+    T_RUN(failures_say_which);
     T_RUN(example_com);
     return T_DONE();
 }

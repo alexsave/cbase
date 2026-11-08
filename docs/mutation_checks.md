@@ -999,3 +999,14 @@ All in example/test/unit_web.c, over a real `cbase serve`.
 - router.c: no Host let through -> `holds_requests_to_the_host_list` no Host == 400, HTTP/1.0 == 400.
 - router.c: '@' allowed in a host -> `holds_requests_to_the_host_list` user@127.0.0.1 == 400.
 - boot.c: the list's boot check dropped -> `holds_requests_to_the_host_list` a bad entry starts and is never refused.
+
+## What the HTTP clients send twice (safe-writes)
+
+unit_https, over plain HTTP and TLS: a peer answers a first request on a kept-alive connection, then reads the second and closes (or resets) without answering.
+The idle-close check before reuse now carries `plain_peer_that_closes` and `dead_idle_connection_retried` "close": a POST there is no longer resent, so it must never be written into a connection already closed.
+
+- https.c: every method resendable (the old retry restored) -> `writes_are_never_resent` the peer read the POST twice, and it answered CB_OK.
+- https.c: CB_HTTP_RETRY_IDEMPOTENT ignored -> `writes_are_never_resent` the vouched-for POST answered CB_E_IO, the peer read it once.
+- https.c: no liveness check before reuse -> `plain_peer_that_closes` the bridge POST after an idle close answered CB_E_IO.
+- https.c: a read timeout reported as a reset -> `failures_say_which` fail == "timeout" and its why.
+- https.c: a refused connect reported as a timeout -> `failures_say_which` fail == "connect", plain and TLS.

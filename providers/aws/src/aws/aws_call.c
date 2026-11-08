@@ -59,11 +59,11 @@ void cb_aws_path_segment(cb_buf *b, const char *s) { cb_sigv4_uri_encode(b, s, s
 int cb_aws_call(const char *service, const char *method, const char *host, int port, bool tls, const char *path,
                 const char *const *headers, int n_headers, const void *body, size_t body_len, int timeout_ms,
                 cb_https_response *out) {
-    return cb_aws_call_region(NULL, service, method, host, port, tls, path, headers, n_headers, body, body_len,
+    return cb_aws_call_region(0, NULL, service, method, host, port, tls, path, headers, n_headers, body, body_len,
                               timeout_ms, out);
 }
 
-int cb_aws_call_region(const char *region, const char *service, const char *method, const char *host, int port, bool tls,
+int cb_aws_call_region(unsigned flags, const char *region, const char *service, const char *method, const char *host, int port, bool tls,
                        const char *path, const char *const *headers, int n_headers, const void *body, size_t body_len,
                        int timeout_ms, cb_https_response *out) {
     memset(out, 0, sizeof *out);
@@ -92,9 +92,10 @@ int cb_aws_call_region(const char *region, const char *service, const char *meth
     int rc = cb_sigv4_sign(&c, &r, &h);
     if (rc == CB_OK)
         // An http:// endpoint is a local stand-in for the service (DynamoDB Local): the store's row.
-        rc = tls ? cb_https_request(host, port, method, path, cb_buf_cstr(&h), body, body_len, timeout_ms, out)
-                 : cb_http_plain_request(CB_HTTPS_STORE, host, port, method, path, cb_buf_cstr(&h), body, body_len,
-                                         timeout_ms, out);
+        rc = tls ? cb_https_request_flags(flags, host, port, method, path, cb_buf_cstr(&h), body, body_len, timeout_ms,
+                                          out)
+                 : cb_http_plain_request_flags(flags, CB_HTTPS_STORE, host, port, method, path, cb_buf_cstr(&h), body,
+                                               body_len, timeout_ms, out);
     cb_buf_free(&h);
     return rc;
 }

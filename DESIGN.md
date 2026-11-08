@@ -658,7 +658,7 @@ As built:
 - `runtime_api.c`: the Runtime API client, exercised by `providers/aws/test/smoke_lambda.c` against the real `bootstrap` through a fake Runtime API.
 - `sigv4.c`: Signature Version 4 with libcrypto, credentials from the Lambda environment (`AWS_REGION`, falling back to `AWS_DEFAULT_REGION`); the path is signed double-encoded (every service but S3); `X-Amz-Content-Sha256` is not sent (only S3 needs it).
   Checked against seven cases of AWS's signing test suite.
-- `https.c`: a blocking HTTPS/1.1 client on OpenSSL, TLS 1.2+, peer and hostname verified, one deadline per exchange, Content-Length, chunked and read-to-close bodies, a small idle pool per host with one retry for a pooled connection that died before any byte.
+- `https.c`: a blocking HTTPS/1.1 client on OpenSSL, TLS 1.2+, peer and hostname verified, one deadline per exchange, Content-Length, chunked and read-to-close bodies, a small idle pool per host whose connections are checked for a close before reuse, and one resend, for GET, HEAD and OPTIONS only (or a caller's CB_HTTP_RETRY_IDEMPOTENT), of a request whose pooled connection died before any byte (a POST, PATCH, PUT or DELETE is never resent), and a failure kind on every CB_E_IO (connect, timeout, reset, tls, protocol) with whether the request may have been applied.
   The CA bundle is found on provided.al2023 without configuration (`CBASE_CA_FILE` overrides).
 - `aws_call.c`: the one signed-request step (credentials, SigV4, HTTPS) under `iot_data.c`, `lambda_invoke.c`, `ssm.c`, `cloudfront.c` and the DynamoDB store.
   An endpoint URL that says `http://` (DynamoDB Local) is reached over plain TCP (`cb_http_plain_request`), signed the same way; plain HTTP is decided by the URL alone and refused for any `amazonaws.com` host.

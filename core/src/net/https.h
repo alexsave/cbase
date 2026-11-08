@@ -2,10 +2,21 @@
 // platform's own outbound calls (an identity provider's keys, token and revocation endpoints).
 //
 // One request per call, over a kept-alive TLS connection per host and port
-// (a warm one-shot container reuses it across invocations). A request that
-// fails on a REUSED connection before any response byte arrives (the peer
-// closed it while idle, or the container was frozen) is retried once on a
-// fresh connection; nothing else is retried.
+// (a warm one-shot container reuses it across invocations).
+//
+// WHAT IS SENT TWICE (RFC 9110 9.2.2). A pooled connection with anything waiting to be read on it
+// (the peer closed or reset it while idle) is dropped before the request is written, unused, and
+// the request goes out on a fresh one. A request that then fails on a REUSED connection before any
+// response byte arrives (the peer closed it just as the request went out, or the container was
+// frozen) may or may not have been read and acted on, so it is sent again, once, on a fresh
+// connection, ONLY when it is a safe method: GET, HEAD or OPTIONS. Every other method (POST,
+// PATCH, PUT, DELETE, anything else) is never resent by this client: it answers CB_E_IO with
+// fail CB_HTTPS_FAIL_RESET, sent true, and a why saying the request may or may not have been
+// applied. PUT and DELETE are idempotent in the RFC, but whether a peer honours that is the
+// peer's, so this client does not assume it. A caller whose request is idempotent by its peer's
+// contract (a read sent as POST, a write carrying its own idempotency key) opts in with
+// CB_HTTP_RETRY_IDEMPOTENT; nothing turns it on by default. Nothing else is ever retried: a
+// timeout, a failed connect, a partial answer.
 //
 // TLS 1.2 or newer, the peer's certificate verified against a CA bundle and
 // its name checked against `host`. The bundle is, in order: the file given to
@@ -24,10 +35,30 @@
 
 #define CB_HTTPS_MAX_BODY (32u << 20)
 
+// Why a request answered CB_E_IO, for a caller that must tell a slow peer from a missing one.
+typedef enum {
+    CB_HTTPS_FAIL_NONE = 0,   // it did not fail (CB_OK), or failed for memory (CB_E_NOMEM)
+    CB_HTTPS_FAIL_CONNECT,    // no connection: refused, unreachable, the name did not resolve
+    CB_HTTPS_FAIL_TIMEOUT,    // timeout_ms ran out (connect, handshake, write or read)
+    CB_HTTPS_FAIL_RESET,      // the peer reset or closed the connection before a whole answer
+    CB_HTTPS_FAIL_TLS,        // the TLS handshake failed (the certificate did not verify, say)
+    CB_HTTPS_FAIL_PROTOCOL,   // the answer was malformed, or its body over CB_HTTPS_MAX_BODY
+} cb_https_fail;
+
+// A short constant name for logs and tests ("timeout"), never NULL.
+const char *cb_https_fail_name(cb_https_fail f);
+
 typedef struct {
     int    status;
     cb_buf headers;   // the response head as text (status line, headers, blank line)
     cb_buf body;      // de-chunked
+    // On a failure (always reset at the start of a request):
+    cb_https_fail fail;
+    bool   sent;      // some of the request may have reached the peer: false only when no
+                      // connection was ever made (CB_HTTPS_FAIL_CONNECT, TLS, a connect timeout),
+                      // so nothing can have been applied
+    char   why[192];  // for a person: what failed, and whether the request may have been applied;
+                      // "" on CB_OK
 } cb_https_response;
 
 void cb_https_response_free(cb_https_response *r);
@@ -36,9 +67,18 @@ void cb_https_response_free(cb_https_response *r);
 // `host` may carry no port; `port` 443 is left out of the Host header.
 // CB_OK with *out filled (any status), or CB_E_IO for a connection or TLS
 // failure, a malformed response, or a timeout after timeout_ms (the whole
-// exchange, connect included).
+// exchange, connect included), with out->fail, sent and why saying which.
 int cb_https_request(const char *host, int port, const char *method, const char *path, const char *headers,
                      const void *body, size_t body_len, int timeout_ms, cb_https_response *out);
+
+// The flags of the _flags variants below (0 is the plain call's behaviour).
+// CB_HTTP_RETRY_IDEMPOTENT: this request may run twice with the effect of once, by its peer's
+// contract, so it is resent like a GET (above). Only for a caller that can name that contract.
+#define CB_HTTP_RETRY_IDEMPOTENT 1u
+
+int cb_https_request_flags(unsigned flags, const char *host, int port, const char *method, const char *path,
+                           const char *headers, const void *body, size_t body_len, int timeout_ms,
+                           cb_https_response *out);
 
 // Whose call a request is, for the tally below.
 typedef enum { CB_HTTPS_STORE, CB_HTTPS_PUSH, CB_HTTPS_OTHER } cb_https_role;
@@ -49,11 +89,15 @@ typedef enum { CB_HTTPS_STORE, CB_HTTPS_PUSH, CB_HTTPS_OTHER } cb_https_role;
 // companion app's local bridge). Nothing is encrypted or authenticated, so never for a cloud
 // host or anything a stranger could stand in for. Everything above holds: the caller's header
 // lines, a binary body either way (Content-Length or chunked), timeout_ms for the whole exchange,
-// the kept-alive connection per host and port with its one retry, and a peer that closes after
-// its answer. The tally has no host name to tell the role by, so the caller names it: `role`.
+// the kept-alive connection per host and port with its one resend of a safe method (never of a
+// POST, PATCH, PUT or DELETE: above), a peer that closes after its answer, and out->fail, sent and
+// why. The tally has no host name to tell the role by, so the caller names it: `role`.
 int cb_http_plain_request(cb_https_role role, const char *host, int port, const char *method, const char *path,
                           const char *headers, const void *body, size_t body_len, int timeout_ms,
                           cb_https_response *out);
+int cb_http_plain_request_flags(unsigned flags, cb_https_role role, const char *host, int port, const char *method,
+                                const char *path, const char *headers, const void *body, size_t body_len,
+                                int timeout_ms, cb_https_response *out);
 
 // What this process's requests cost since the last take, by role: the store
 // (a remote store, and a plain-HTTP stand-in for it), the pushes (a push

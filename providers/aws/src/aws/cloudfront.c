@@ -42,8 +42,10 @@ int cb_cloudfront_invalidate(const char *distribution, const char *const *paths,
     if (rc == CB_OK) {
         static const char *const headers[] = { "Content-Type: application/xml" };
         cb_https_response r;
-        rc = cb_aws_call_region(CF_REGION, "cloudfront", "POST", host, port, tls, cb_buf_cstr(&path), headers, 1,
-                                body.p, body.len, CF_TIMEOUT_MS, &r);
+        // CreateInvalidation is idempotent by its CallerReference: the same reference sent again
+        // answers the invalidation it made, so a resend after a lost connection makes no second.
+        rc = cb_aws_call_region(CB_HTTP_RETRY_IDEMPOTENT, CF_REGION, "cloudfront", "POST", host, port, tls,
+                                cb_buf_cstr(&path), headers, 1, body.p, body.len, CF_TIMEOUT_MS, &r);
         if (rc == CB_OK && r.status != 201) {
             CB_WARN("cloudfront", "invalidation of %s answered %d: %.300s", paths[0], r.status, cb_buf_cstr(&r.body));
             rc = CB_E_IO;

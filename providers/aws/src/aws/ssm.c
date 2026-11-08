@@ -57,7 +57,9 @@ int cb_ssm_load_secrets(cb_config *cfg, char *err, size_t cap) {
     if (rc == CB_OK) {
         static const char *const headers[] = { "X-Amz-Target: AmazonSSM.GetParameters",
                                                "Content-Type: application/x-amz-json-1.1" };
-        rc = cb_aws_call("ssm", "POST", host, port, tls, cb_buf_cstr(&path), headers, 2, body.p, body.len, SSM_TIMEOUT_MS, &r);
+        // GetParameters reads (a POST only by the protocol's shape), so it may be resent.
+        rc = cb_aws_call_region(CB_HTTP_RETRY_IDEMPOTENT, NULL, "ssm", "POST", host, port, tls, cb_buf_cstr(&path),
+                                headers, 2, body.p, body.len, SSM_TIMEOUT_MS, &r);
         if (rc == CB_OK && r.status != 200) {
             // The error body names the parameter or the denied action, never a value.
             snprintf(err, cap, "SSM GetParameters answered %d: %.200s", r.status, cb_buf_cstr(&r.body));
