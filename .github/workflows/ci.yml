@@ -1,6 +1,6 @@
 # cbase's own CI: the platform built and tested with its example app on Linux and macOS, the example
 # again as a local-only consumer (part of make check, with its link check), sanitized on Linux, the
-# client's wasm half with the pinned toolchain, every fuzz target, the coverage gate, the store on
+# client's wasm half with the pinned toolchain, the client's platform hosts, every fuzz target, the coverage gate, the store on
 # DynamoDB Local, and the deploy tooling's own tests. Nothing here deploys: a product deploys its own
 # build of cbase from its own repository.
 name: ci
@@ -104,6 +104,20 @@ jobs:
         run: make -C client wasm
       - name: the page shim's tests over the module
         run: make -C client ts-test
+
+  # THE CLIENT's platform hosts (client/hosts/<name>/host.mk, each one's README.md): every host whose
+  # test needs its platform's headers, fetched by a pinned commit into client/build. Each runs the
+  # shared host suite on its host (every case with socket ids from 1 and from 0), natively and under
+  # ASan + UBSan, then compiles the host for wasm32 with the pinned clang, libc-gates and links it.
+  client_hosts:
+    name: client hosts on their platforms (host suite, wasm32, libc gate)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Toolchain (the pinned clang and libclang)
+        run: bash tools/ci_llvm.sh
+      - name: every platform host's suite, its wasm32 compile, libc gate and link
+        run: make -C client -j"$(getconf _NPROCESSORS_ONLN)" check-hosts
 
   # THE FUZZ STAGE: one job per target, in parallel, each 30 s from its corpus (fuzz_nightly.yml is
   # the same shape at 10 min): every target of cbase's own build (<t>) and the client's
