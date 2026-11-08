@@ -40,3 +40,25 @@ example-check:
 repo-gate:
 	bash tools/repo_gate_test.sh
 check: example-check
+
+# THE HTTP/2 AND gRPC MODULE A LA CARTE (docs/H2.md): a consumer that takes net/h2*, hpack, grpc and
+# tls and only what they need is linked from exactly those objects (build/h2_alacarte, so a module
+# that reached a provider or the product would not link), and tools/h2_alacarte/check.sh holds its
+# symbols against every symbol the providers' and the product's objects define. Part of check.
+H2_ALACARTE_SRC := $(addprefix core/src/net/,h2.c h2_session.c hpack.c grpc.c tls.c) \
+                   $(addprefix core/src/util/,str.c err.c log.c clock.c) lib/b64/b64.c lib/hex/hex.c
+H2_ALACARTE_FORBID := $(call c_objs,build/obj/cbase,$(filter providers/% $(addsuffix /%,$(APP_SRC_ROOTS)),$(LIB_SRC)))
+H2_ALACARTE_LIBS := $(OPENSSL_LDFLAGS) -lssl -lcrypto -lpthread
+# $(call H2_ALONE,<program>,<main source>): a program of the module's objects and its main alone.
+define H2_ALONE
+build/$(1): $$(call c_objs,build/obj/cbase,$(2) $$(H2_ALACARTE_SRC))
+	@mkdir -p $$(@D)
+	@echo "  LINK $$@"
+	@$$(CC) $$^ -o $$@ $$(H2_ALACARTE_LIBS)
+endef
+$(eval $(call H2_ALONE,h2_alacarte,tools/h2_alacarte/h2_alacarte.c))
+.PHONY: h2-alacarte
+h2-alacarte: build/h2_alacarte $(H2_ALACARTE_FORBID)
+	tools/h2_alacarte/check.sh build/h2_alacarte $(H2_ALACARTE_FORBID)
+check: h2-alacarte
+
