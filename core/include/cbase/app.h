@@ -186,6 +186,20 @@ struct cb_app {
     // THE THREADS), 1..256. An app whose handlers wait (a remote call that holds its thread for
     // seconds) sets as many as it wants waiting at once. 0: cbase's 1. CBASE_REQ_WORKERS overrides.
     int                  req_workers;
+    // SLOW_WORKERS: serve's slow pool, the threads every CB_ROUTE_SLOW handler runs on (net/router.h),
+    // apart from the request pool, 1..256; started only when some route is slow. An app sets as many
+    // as it lets hold a remote call at once. 0: cbase's 4. CBASE_SLOW_WORKERS overrides.
+    int                  slow_workers;
+    // SLOW_QUEUE: how many slow requests may wait for a slow worker once every one is busy,
+    // 0..4096. One that finds the queue full too is answered at once by slow_full, never queued.
+    // 0: cbase's 0, no queue (a slow request starts at once or is refused at once). CBASE_SLOW_QUEUE
+    // overrides.
+    int                  slow_queue;
+    // SLOW_FULL: the answer to a slow request refused so, written into res as a handler writes one.
+    // It runs on serve's loop thread and must not block (no store, no lock another thread holds);
+    // the host and origin checks have passed, and CORS is added after it. A socket's REQ gets its
+    // status and body. NULL: 503 "server busy" (text/plain) with Retry-After: 5.
+    cb_handler           slow_full;
     // LOG_LEVEL: the least level the log keeps, "debug", "info", "warn" or "error". NULL: cbase's
     // "info". CBASE_LOG_LEVEL overrides. The startup line on stdout ("cbase: listening ...") is not
     // the log's and is printed at every level.

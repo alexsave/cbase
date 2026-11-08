@@ -24,6 +24,13 @@
 // everyone else meanwhile. CB_ROUTE_LOOP runs it on the loop thread instead:
 // required for a WebSocket upgrade (ws.h cb_ws_upgrade), and allowed for
 // handlers that only read memory (/health). A LOOP handler must never block.
+// CB_ROUTE_SLOW runs it on the SLOW POOL instead of the request pool: for a handler that holds
+// its thread for seconds or minutes (a remote model call), so it never holds a request worker
+// and the fast routes (a status poll, a file) are never queued behind it. The slow pool is
+// bounded (cbase/app.h slow_workers, slow_queue): a slow request that finds every slow worker busy
+// and the slow queue full is answered at once by the app's slow_full, or by 503 "server busy"
+// with Retry-After: 5, and never waits. Under a one-shot platform every handler runs in
+// place and the flag changes nothing.
 //
 // WHAT THE ROUTER DOES ITSELF, so no module repeats it:
 //   * CORS, for the origins the app declares (cbase/app.h cors_origins) and the
@@ -64,6 +71,8 @@ typedef void (*cb_handler)(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res
                               // optimization, so the valve never sends it to the pool (there it is
                               // slower for everyone: a hand-off in, a wait for the loop's journal,
                               // a post out). Only the pass budget and its own to_pool do
+#define CB_ROUTE_SLOW   0x8   // run on the slow pool (above), not the request pool; never with
+                              // CB_ROUTE_LOOP, CB_ROUTE_INLINE or CB_ROUTE_HOME (CB_E_INVALID)
 
 typedef struct cb_route_s {
     const char *method;    // "GET", "POST", ..., or "*"
@@ -86,8 +95,8 @@ cb_router *cb_router_new(void);
 void cb_router_free(cb_router *r);
 // Adds a route. The strings must outlive the router (string literals).
 // CB_E_CONFLICT for the same method and pattern (or parameter shape) twice,
-// CB_E_INVALID for a pattern that does not start with '/', a malformed parameter
-// or a max_body over CB_ROUTE_MAX_BODY.
+// CB_E_INVALID for a pattern that does not start with '/', a malformed parameter,
+// a max_body over CB_ROUTE_MAX_BODY or CB_ROUTE_SLOW beside a loop flag.
 int cb_router_add(cb_router *r, const char *method, const char *pattern, unsigned flags, cb_handler fn);
 // Adds routes[0..n) in order, each with its inline budget: CB_OK, or the first
 // refusal (the routes before it stay added).
@@ -108,6 +117,8 @@ void cb_router_allow(const cb_router *r, const char *path, char *out, size_t cap
 // The largest max_body any route declares, or 0 when none does: the server reads a request's
 // head for its route's cap only then.
 size_t cb_router_max_body(const cb_router *r);
+// Whether any route is CB_ROUTE_SLOW: serve starts its slow pool only then.
+bool cb_router_has_slow(const cb_router *r);
 
 // Sets req's path parameters from `route`, the route cb_router_match answered for req->path
 // (none for a route without them). Whoever runs a route's handler calls it first: cb_handle,

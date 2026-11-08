@@ -40,6 +40,16 @@ static bool copy(char *dst, size_t cap, const char *name, const char *v, char *e
 // variable.
 #define REQ_WORKERS_DEFAULT 1
 
+// THE SLOW POOL (net/router.h CB_ROUTE_SLOW): a few threads for the handlers that hold theirs on a
+// remote call for seconds or minutes, apart from the request pool so a status poll or a file is
+// never queued behind one. 4 by default (an app that has slow routes ships its own count: as many
+// as it lets wait on the remote at once), and NO queue by default: a slow request either starts
+// at once or is refused at once, since one that waited would wait for a whole slow handler to end
+// (minutes) with nothing on the wire. An app whose clients would rather wait ships a queue.
+#define SLOW_WORKERS_DEFAULT 4
+#define SLOW_QUEUE_DEFAULT   0
+#define SLOW_QUEUE_MAX       4096
+
 static bool num(const char *name, long dflt, long lo, long hi, long *out, char *err, size_t ecap) {
     const char *v = getenv(name);
     if (!v || !*v) { *out = dflt; return true; }
@@ -194,6 +204,10 @@ int cb_config_from_env(cb_config *c, char *err, size_t cap) {
     c->req_workers = (int)v;
     if (!num("CBASE_JOB_WORKERS", 1, 1, 64, &v, err, cap)) return CB_E_INVALID;
     c->job_workers = (int)v;
+    if (!num("CBASE_SLOW_WORKERS", SLOW_WORKERS_DEFAULT, 1, 256, &v, err, cap)) return CB_E_INVALID;
+    c->slow_workers = (int)v;
+    if (!num("CBASE_SLOW_QUEUE", SLOW_QUEUE_DEFAULT, 0, SLOW_QUEUE_MAX, &v, err, cap)) return CB_E_INVALID;
+    c->slow_queue = (int)v;
     // THE SATURATION KNOB (util/affinity.h): automatic by default (both unset), by hand once either
     // is given, and then the other, unset, is not pinned (config.h loop_cpu).
     if (!cpu("CBASE_LOOP_CPU", &c->loop_cpu, err, cap)) return CB_E_INVALID;
@@ -262,6 +276,10 @@ void cb_config_each(const cb_config *c, cb_config_fn fn, void *ud) {
     fn("CBASE_REQ_WORKERS", b, false, ud);
     snprintf(b, sizeof b, "%d", c->job_workers);
     fn("CBASE_JOB_WORKERS", b, false, ud);
+    snprintf(b, sizeof b, "%d", c->slow_workers);
+    fn("CBASE_SLOW_WORKERS", b, false, ud);
+    snprintf(b, sizeof b, "%d", c->slow_queue);
+    fn("CBASE_SLOW_QUEUE", b, false, ud);
     snprintf(b, sizeof b, "%d", c->loop_cpu);
     fn("CBASE_LOOP_CPU", cpu_shown(c->loop_cpu, b), false, ud);
     snprintf(b, sizeof b, "%d", c->bg_cpu);
@@ -387,6 +405,16 @@ static int app_defaults(cb_config *c, const cb_app *app, char *err, size_t cap) 
         return CB_E_INVALID;
     }
     if (app->req_workers && !given("CBASE_REQ_WORKERS")) c->req_workers = app->req_workers;
+    if (app->slow_workers < 0 || app->slow_workers > 256) {
+        snprintf(err, cap, "the app's slow_workers %d is not in 1..256 (0: cbase's default)", app->slow_workers);
+        return CB_E_INVALID;
+    }
+    if (app->slow_workers && !given("CBASE_SLOW_WORKERS")) c->slow_workers = app->slow_workers;
+    if (app->slow_queue < 0 || app->slow_queue > SLOW_QUEUE_MAX) {
+        snprintf(err, cap, "the app's slow_queue %d is not in 0..%d (0: cbase's default, none)", app->slow_queue, SLOW_QUEUE_MAX);
+        return CB_E_INVALID;
+    }
+    if (app->slow_queue && !given("CBASE_SLOW_QUEUE")) c->slow_queue = app->slow_queue;
     if (app->log_level) {
         int lvl = cb_log_level_parse(app->log_level);
         if (lvl < 0) {

@@ -55,7 +55,7 @@ static void every_status_has_its_reason(void) {
 static const char *const VARS[] = {
     "CBASE_LISTEN", "CBASE_STORE", "CBASE_DB", "CBASE_TABLE", "CBASE_IOT_ENDPOINT", "CBASE_CF_DISTRIBUTION",
     "CBASE_JWT_SECRET", "CBASE_ADMIN_TOKEN", "CBASE_ALLOWED_ORIGINS", "CBASE_PUBLIC_URL", "CBASE_REQ_WORKERS",
-    "CBASE_JOB_WORKERS", "CBASE_LOOP_CPU", "CBASE_BG_CPU", "CBASE_MAX_BODY", "CBASE_JWT_TTL", "CBASE_LOG_LEVEL", "CBASE_ORIGIN_SECRET",
+    "CBASE_JOB_WORKERS", "CBASE_SLOW_WORKERS", "CBASE_SLOW_QUEUE", "CBASE_LOOP_CPU", "CBASE_BG_CPU", "CBASE_MAX_BODY", "CBASE_JWT_TTL", "CBASE_LOG_LEVEL", "CBASE_ORIGIN_SECRET",
     "CBASE_CLOCK_SPEEDUP", "CBASE_DEV", "CBASE_MAX_CONNS", "CBASE_LISTEN_BACKLOG",
     "CBASE_APPLE_CLIENT_IDS", "CBASE_APPLE_TEAM_ID", "CBASE_APPLE_KEY_ID", "CBASE_APPLE_PRIVATE_KEY",
     "CBASE_APPLE_REDIRECT_URI", "CBASE_APPLE_ISSUER",
@@ -156,6 +156,8 @@ static void configuration_refusals(void) {
     refused("CBASE_REQ_WORKERS", "0", "CBASE_REQ_WORKERS=0 is not a number in 1..256");
     refused("CBASE_REQ_WORKERS", "4x", "is not a number");
     refused("CBASE_JOB_WORKERS", "65", "is not a number in 1..64");
+    refused("CBASE_SLOW_WORKERS", "0", "CBASE_SLOW_WORKERS=0 is not a number in 1..256");
+    refused("CBASE_SLOW_QUEUE", "4097", "CBASE_SLOW_QUEUE=4097 is not a number in 0..4096");
     refused("CBASE_MAX_BODY", "10", "is not a number in 1024..");
     refused("CBASE_JWT_TTL", "59", "is not a number in 60..");
     refused("CBASE_LOG_LEVEL", "loud", "is not debug, info, warn or error");

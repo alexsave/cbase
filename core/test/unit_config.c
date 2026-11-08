@@ -396,6 +396,38 @@ static void the_apps_pool_under_the_environment(void) {
     unsetenv("CBASE_REQ_WORKERS");
 }
 
+// The app's slow pool (cbase/app.h slow_workers, slow_queue) over cbase's 4 and 0, under
+// CBASE_SLOW_WORKERS and CBASE_SLOW_QUEUE, and a value out of range refused even under them.
+static void the_apps_slow_pool_under_the_environment(void) {
+    clear_env();
+    unsetenv("CBASE_SLOW_WORKERS");
+    unsetenv("CBASE_SLOW_QUEUE");
+    static const cb_app MINE = { .name = "mine", .slow_workers = 12, .slow_queue = 3 }, NONE = { .name = "none" },
+                        BADW = { .name = "badw", .slow_workers = 257 }, BADQ = { .name = "badq", .slow_queue = -1 },
+                        BIGQ = { .name = "bigq", .slow_queue = 4097 };
+    cb_config c;
+    char err[256] = "";
+    T_EQ_INT(cb_config_load(&c, &NONE, err, sizeof err), CB_OK);
+    T_EQ_INT(c.slow_workers, 4);   // cbase's
+    T_EQ_INT(c.slow_queue, 0);
+    T_EQ_INT(cb_config_load(&c, &MINE, err, sizeof err), CB_OK);
+    T_EQ_INT(c.slow_workers, 12);  // the app's
+    T_EQ_INT(c.slow_queue, 3);
+    setenv("CBASE_SLOW_WORKERS", "2", 1);
+    setenv("CBASE_SLOW_QUEUE", "0", 1);
+    T_EQ_INT(cb_config_load(&c, &MINE, err, sizeof err), CB_OK);
+    T_EQ_INT(c.slow_workers, 2);   // the environment's, over the app's, 0 among them
+    T_EQ_INT(c.slow_queue, 0);
+    T_EQ_INT(cb_config_load(&c, &BADW, err, sizeof err), CB_E_INVALID);
+    T_CHECK(strstr(err, "slow_workers 257") != NULL);
+    T_EQ_INT(cb_config_load(&c, &BADQ, err, sizeof err), CB_E_INVALID);
+    T_CHECK(strstr(err, "slow_queue -1") != NULL);
+    T_EQ_INT(cb_config_load(&c, &BIGQ, err, sizeof err), CB_E_INVALID);
+    T_CHECK(strstr(err, "slow_queue 4097") != NULL);
+    unsetenv("CBASE_SLOW_WORKERS");
+    unsetenv("CBASE_SLOW_QUEUE");
+}
+
 // The app's log level (cbase/app.h log_level) over cbase's info, under CBASE_LOG_LEVEL, and a
 // name that is no level refused even under the variable.
 static void the_apps_log_level_under_the_environment(void) {
@@ -423,6 +455,7 @@ int main(void) {
     T_RUN(lambda_refuses_a_clock_speedup);
     T_RUN(the_apps_settings_follow_the_platforms);
     T_RUN(the_apps_pool_under_the_environment);
+    T_RUN(the_apps_slow_pool_under_the_environment);
     T_RUN(the_apps_log_level_under_the_environment);
     T_RUN(secrets_never_shown);
     T_RUN(the_cpu_knob);

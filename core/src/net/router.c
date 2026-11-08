@@ -22,6 +22,7 @@ struct cb_router {
     entry *r;
     int n, cap;
     size_t max_body;   // the largest route max_body (cb_router_max_body)
+    bool   has_slow;   // a CB_ROUTE_SLOW route was added (cb_router_has_slow)
 };
 
 cb_router *cb_router_new(void) { return calloc(1, sizeof(cb_router)); }
@@ -94,6 +95,8 @@ static bool same_shape(const char *a, const char *b) {
 static int add(cb_router *r, const cb_route *rt) {
     const char *method = rt->method, *pattern = rt->pattern;
     if (!pattern || pattern[0] != '/' || !method || !rt->fn || rt->max_body > CB_ROUTE_MAX_BODY) return CB_E_INVALID;
+    // A slow handler holds its thread: it can never run on the loop.
+    if ((rt->flags & CB_ROUTE_SLOW) && (rt->flags & (CB_ROUTE_LOOP | CB_ROUTE_INLINE | CB_ROUTE_HOME))) return CB_E_INVALID;
     entry e = { *rt, (uint8_t)cb_http_method_id(method), K_EXACT, strlen(pattern), 0, 0 };
     if (has_params(pattern)) {
         bool ok;
@@ -127,6 +130,7 @@ static int add(cb_router *r, const cb_route *rt) {
     r->r[at] = e;
     r->n++;
     if (rt->max_body > r->max_body) r->max_body = rt->max_body;
+    if (rt->flags & CB_ROUTE_SLOW) r->has_slow = true;
     return CB_OK;
 }
 
@@ -243,6 +247,8 @@ void cb_router_allow(const cb_router *r, const char *path, char *out, size_t cap
 }
 
 size_t cb_router_max_body(const cb_router *r) { return r ? r->max_body : 0; }
+
+bool cb_router_has_slow(const cb_router *r) { return r && r->has_slow; }
 
 void cb_router_bind(const cb_route *route, cb_http_req *req) {
     req->n_params = 0;

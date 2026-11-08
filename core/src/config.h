@@ -80,6 +80,10 @@ typedef struct cb_config {
     // Tunables, each CBASE_<NAME> with these defaults:
     int  req_workers;     // CBASE_REQ_WORKERS 1, or the app's (cbase/app.h req_workers): serve's request pool (config.c THE THREADS)
     int  job_workers;     // CBASE_JOB_WORKERS 1: serve's job pool (an app's jobs, cbase/app.h cb_job)
+    int  slow_workers;    // CBASE_SLOW_WORKERS 4, or the app's (cbase/app.h slow_workers): serve's slow pool
+                          // (net/router.h CB_ROUTE_SLOW), started only when a route is slow
+    int  slow_queue;      // CBASE_SLOW_QUEUE 0, or the app's (cbase/app.h slow_queue): slow requests that
+                          // may wait for a slow worker; one past it is refused at once (cbase/app.h slow_full)
     // THE SATURATION KNOB (util/affinity.h): CBASE_LOOP_CPU, the CPU serve's loop is pinned to, and
     // CBASE_BG_CPU, the CPU every other serve thread is pinned to. Each is a CPU number, `off`
     // (CB_CPU_OFF) or unset. Both unset is CB_CPU_AUTO in both: serve picks the two lowest CPUs it
