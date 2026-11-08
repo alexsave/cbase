@@ -23,11 +23,11 @@
  * report an error at all. cbase's test/unit_num_gate.c refuses them under
  * cbase/src.
  *
- * WHAT IS NOT HERE, ON PURPOSE: wasm/libc.c's atoi and atol. They are the
- * wasm fill-in for the C library and copy its lenient rules (a blank, a '+',
- * wrap on overflow), because a kernel compiled for wasm and natively must
- * behave the same. They stay lenient; code that reads untrusted text calls
- * this file instead.
+ * WHAT IS NOT HERE, ON PURPOSE: atoi and atol. They are the C library's, and
+ * a C library is the final program's (a wasm module supplies its own, with
+ * the same lenient rules: a blank, a '+', wrap on overflow, because a kernel
+ * compiled for wasm and natively must behave the same). They stay lenient;
+ * code that reads untrusted text calls this file instead.
  *
  * The test is cbase's test/unit_num.c, and fuzz/fz_num.c holds it against a
  * model that accumulates in __int128. */

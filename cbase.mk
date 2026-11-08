@@ -362,6 +362,18 @@ include $(CB)tools/lib_tests.mk
 $(call LIB_TESTS_IN,,build/obj/cbase,CC,CB_CFLAGS)
 $(call LIB_TESTS_IN,asan_,build/obj/asan,CC,ASAN_CB_CFLAGS)
 
+# THE LIBC GATE (tools/libc_gate.sh): cbase defines no C library. Its objects require memcpy,
+# malloc, snprintf and sin, and the final program brings them, so nm over every platform object
+# (core's and each linked provider's, the mains, the generated tables) and every one of lib/'s
+# finds no definition of one. lib/ is read whole, not as the platform links it, so a helper added
+# there is held too. The product's own objects are the product's, and are not read. test and
+# check run it.
+CB_OWN_SRC := $(sort $(foreach r,$(CB_SRC_ROOTS),$(wildcard $(r)/*.c $(r)/*/*.c))) $(CB_GEN) \
+              $(sort $(filter-out %_test.c,$(wildcard $(CB)lib/*.c $(CB)lib/*/*.c)))
+.PHONY: libc-gate
+libc-gate: $(call c_objs,build/obj/cbase,$(CB_OWN_SRC))
+	@bash $(CB)tools/libc_gate.sh --nm nm --cc '$(CC) $(CB_LTO)' $^
+
 # THE COMPILER GATE AS A TEST (docs/PLATFORM.md 9, stage 7): each <side>/test/gate/*.c includes one
 # header from across that side's line (core a provider's or the product's, one provider the other's,
 # the product a provider's). Each is compiled twice, -fsyntax-only: in CB_CFLAGS as a source of that
@@ -403,7 +415,7 @@ ifneq ($(CB_GATE_PRODUCT),)
 $(eval $(call GATE,$(CB_GATE_PRODUCT),$(CB_STEM)core/src/gate,$(APP_GATE_HEADER)))
 endif
 
-test: compiler-gate lib-tests $(call UNIT_RUNS,build/test)
+test: compiler-gate libc-gate lib-tests $(call UNIT_RUNS,build/test)
 	$(call RUN_ALL,UNIT TESTS,$(call UNIT_RUNS,build/test))
 # Every unit test and the smokes again with every loop on io_uring (Linux; where the kernel or a
 # seccomp filter refuses it the loops fall back to epoll, said in their logs): CBASE_IO_URING, which
@@ -415,7 +427,7 @@ test-uring: $(call UNIT_RUNS,build/test) $(call SMOKE_PROGS,build)
 smoke: $(call SMOKE_PROGS,build)
 	$(call RUN_ALL,SMOKE,$(call SMOKE_RUNS,build))
 # One pool for both, so the smokes and the units share the machine's cores.
-check: compiler-gate lib-tests $(call UNIT_RUNS,build/test) $(call SMOKE_PROGS,build) $(CB_CLIENT_CHECK)
+check: compiler-gate libc-gate lib-tests $(call UNIT_RUNS,build/test) $(call SMOKE_PROGS,build) $(CB_CLIENT_CHECK)
 	$(call RUN_ALL,CHECK,$(call SMOKE_RUNS,build) $(call UNIT_RUNS,build/test))
 
 test-asan: lib-tests-asan $(call UNIT_RUNS,build/asan/test)

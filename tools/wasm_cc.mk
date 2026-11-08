@@ -49,15 +49,16 @@ wasm-cc-check:
 	esac
 
 # THE SAME FILES FOR wasm32, freestanding, as a `wasm` target: the proof that a
-# kernel reaches nothing past the few libc names lib/wasm supplies.
+# kernel reaches nothing past the few libc names its module supplies.
 # Objects only, in their own variant (c_rules.mk, included first), so the proof
 # recompiles what changed and not the kernel. $(WARN) is the product's one
-# list of warnings.
+# list of warnings. WASM_LIBC_INC is the directory of the product's own
+# freestanding libc headers: a C library is the final program's, and cbase
+# ships none (tools/libc_gate.sh; client/wasm is the client module's own).
 #
+#   WASM_LIBC_INC := wasm/include
 #   $(eval $(call WASM_OBJECT_PROOF,$(SRC)))
-# WASM_SYSINC: the C library headers the product's freestanding build reads (its own libc's).
-WASM_SYSINC ?= $(CB)lib/wasm/include
-WASM_OBJECT_FLAGS = --target=wasm32 -Oz -nostdlib -ffreestanding $(WARN) -isystem $(WASM_SYSINC)
+WASM_OBJECT_FLAGS = --target=wasm32 -Oz -nostdlib -ffreestanding $(WARN) $(addprefix -isystem ,$(WASM_LIBC_INC))
 define WASM_OBJECT_PROOF
 $(call C_VARIANT,build/wasm,WASM_CC,WASM_OBJECT_FLAGS)
 .PHONY: wasm

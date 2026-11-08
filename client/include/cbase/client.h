@@ -1,5 +1,5 @@
 // cbase/client.h - THE C_BASE CLIENT: the other half of `cbase serve`'s socket (GET /ws and
-// GET /ws/public, shared/c/stream_frame.h) and of the platform's sessions (/v1/auth,
+// GET /ws/public, lib/stream_frame.h) and of the platform's sessions (/v1/auth,
 // cbase/auth_wire.h). One client is one user (or one anonymous listener) talking to one app.
 // cbase/docs/CLIENT_DESIGN.md is the design; this is the contract.
 //
@@ -26,7 +26,7 @@
 //
 // NO ALLOCATION, NO CLOCK, NO GLOBALS. The caller owns the cbc (CBC_SIZE bytes, at most
 // CBC_SIZE_BUDGET), so a load generator holds thousands in one process; randomness is the
-// reconnect jitter's, from cfg.seed (shared/c/rng.h). The structs a host reads (cbc_event,
+// reconnect jitter's, from cfg.seed (lib/rng.h). The structs a host reads (cbc_event,
 // cbc_req_hdr, cbc_user) and writes (cbc_cfg) are read in other languages through the accessors
 // structgen generates from this header; no host spells a byte offset.
 #ifndef CBASE_CLIENT_H
