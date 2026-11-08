@@ -55,7 +55,9 @@ wasm-cc-check:
 # list of warnings.
 #
 #   $(eval $(call WASM_OBJECT_PROOF,$(SRC)))
-WASM_OBJECT_FLAGS = --target=wasm32 -Oz -nostdlib -ffreestanding $(WARN) -isystem $(CB)lib/wasm/include
+# WASM_SYSINC: the C library headers the product's freestanding build reads (its own libc's).
+WASM_SYSINC ?= $(CB)lib/wasm/include
+WASM_OBJECT_FLAGS = --target=wasm32 -Oz -nostdlib -ffreestanding $(WARN) -isystem $(WASM_SYSINC)
 define WASM_OBJECT_PROOF
 $(call C_VARIANT,build/wasm,WASM_CC,WASM_OBJECT_FLAGS)
 .PHONY: wasm

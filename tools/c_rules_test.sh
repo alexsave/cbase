@@ -43,7 +43,7 @@ echo 7 > layout.hash
 cat > Makefile <<EOF
 CC     ?= cc
 CFLAGS ?= -O1 -Wall -Werror
-C_ROOT := ../..   # repo-gate: scratch tree
+C_ROOT := ../..# repo-gate: scratch tree (no blank before the #: make keeps it in the value)
 SRC    := src/main.c src/lone.c ../../shared/c/shared.c   # repo-gate: scratch tree
 HOST_FLAGS   = \$(CFLAGS) -isystem sys \$(OBJ_FLAGS_\$*)
 HASHED_FLAGS = \$(CFLAGS) -isystem sys -DLONE -DLAYOUT=\$\$(cat layout.hash)

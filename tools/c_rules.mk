@@ -2,7 +2,7 @@
 # tools/structgen, tools/datagen, and a product's own).
 #
 #   C_ROOT := ..
-#   include $(C_ROOT)/c_base/tools/c_rules.mk
+#   include $(C_ROOT)/cbase/tools/c_rules.mk
 #   $(eval $(call C_VARIANT,build/obj/host,CC,CFLAGS))
 #   build/thing: $(call c_objs,build/obj/host,$(SRC) tests/thing.c)
 #   	$(CC) $(CFLAGS) $^ -o $@ $(LDLIBS)
@@ -88,9 +88,14 @@
 # lands under <dir>/_root/.
 
 # The directory every source outside the including Makefile's own is under, as
-# that Makefile reaches it. Every such source must be spelled through it. It is
-# the includer's to say; with none said, every source is the includer's own.
-C_ROOT ?= .
+# that Makefile reaches it (".." for a product's c/ beside its repository's
+# shared/, "." when every source is the includer's own). Every such source must
+# be spelled through it. It is the includer's to say, always: a guessed default
+# that is wrong for one includer files its objects outside their variant's
+# directory, so an unset C_ROOT stops the build here instead.
+ifeq ($(origin C_ROOT),undefined)
+  $(error c_rules.mk: set C_ROOT (the directory every source outside this Makefile's own is under) before including it)
+endif
 
 # $(call c_objs,<variant dir>,<sources>): the objects those sources become.
 c_objs = $(addprefix $(1)/,$(patsubst $(C_ROOT)/%,_root/%,$(patsubst %.c,%.o,$(2))))

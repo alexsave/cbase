@@ -57,8 +57,11 @@ CFLAGS ?= -O2 -std=c11 -Wall -Wextra -Werror=implicit-function-declaration -Werr
 # path handling and the in-memory probe translation unit (tools/sgcommon). They
 # ask clang different questions and share how the question is asked, so this is
 # one list, in the one file both Makefiles already include.
-SGC_SRC := ../sgcommon/sgc.c ../sgcommon/sgc_probe.c
-SGC_HDR := ../sgcommon/sgc.h ../sgcommon/sgc_probe.h
+# Found from this file's own directory, so a program that is not sgcommon's sibling (a product's
+# own generator beside its own Makefile) builds from the same copy.
+SGC_DIR := $(patsubst %/,%,$(dir $(lastword $(MAKEFILE_LIST))))/sgcommon
+SGC_SRC := $(SGC_DIR)/sgc.c $(SGC_DIR)/sgc_probe.c
+SGC_HDR := $(SGC_DIR)/sgc.h $(SGC_DIR)/sgc_probe.h
 
 # One libclang program from the C files a Makefile that includes this names.
 # SG_RESOURCE_DIR is the builtin-header directory of the clang this was built
@@ -80,7 +83,7 @@ define LLVM_PROGRAM
   echo "$(@F): (looked for $(LLVM_PREFIX)/include/clang-c/Index.h)"; \
   echo "$(@F): Ubuntu: bash tools/ci_llvm.sh   macOS: brew install llvm"; \
   exit 1; }
-$(CC) $(CFLAGS) -I$(LLVM_PREFIX)/include -I../sgcommon -DSG_RESOURCE_DIR='"$(shell $(LLVM_PREFIX)/bin/clang -print-resource-dir)"' -DSGC_TOOL='"$(@F)"' $(filter %.c,$^) -L$(LLVM_PREFIX)/lib -lclang -Wl,-rpath,$(LLVM_PREFIX)/lib -o $@
+$(CC) $(CFLAGS) -I$(LLVM_PREFIX)/include -I$(SGC_DIR) -DSG_RESOURCE_DIR='"$(shell $(LLVM_PREFIX)/bin/clang -print-resource-dir)"' -DSGC_TOOL='"$(@F)"' $(filter %.c,$^) -L$(LLVM_PREFIX)/lib -lclang -Wl,-rpath,$(LLVM_PREFIX)/lib -o $@
 endef
 
 clean:

@@ -1,7 +1,7 @@
 # The two code generators, as a Makefile reaches them: where they are, the rule
 # that builds each, and the one way a generated file is put where it is read.
 # Included by every Makefile that generates anything (client/Makefile). CB is
-# the c_base root as the including Makefile spells it, with its slash ("../").
+# the cbase root as the including Makefile spells it, with its slash ("../").
 #
 #   CB := ../
 #   include $(CB)tools/gen_tools.mk
@@ -11,20 +11,24 @@
 # structgen asks clang for layouts and datagen asks it for the contents of
 # static tables (tools/llvm.mk finds the libclang both are built on).
 
-STRUCTGEN_DIR := $(CB)tools/structgen
-DATAGEN_DIR   := $(CB)tools/datagen
+ifeq ($(origin CB),undefined)
+  $(error gen_tools.mk: set CB (the cbase root as this Makefile reaches it, with its slash) before including it)
+endif
+# Where each generator is; a product with a generator of its own beside cbase's names it.
+STRUCTGEN_DIR ?= $(CB)tools/structgen
+DATAGEN_DIR   ?= $(CB)tools/datagen
 STRUCTGEN     := $(STRUCTGEN_DIR)/build/structgen
 DATAGEN       := $(DATAGEN_DIR)/build/datagen
 
 # Each tool's own Makefile owns how it is built; these rules own WHEN, which is
 # whenever anything it is made of is newer than it.
 $(STRUCTGEN): $(wildcard $(STRUCTGEN_DIR)/*.c) $(wildcard $(STRUCTGEN_DIR)/*.h) \
-              $(wildcard $(STRUCTGEN_DIR)/../sgcommon/*.c) $(wildcard $(STRUCTGEN_DIR)/../sgcommon/*.h) \
-              $(STRUCTGEN_DIR)/Makefile $(STRUCTGEN_DIR)/../llvm.mk
+              $(wildcard $(CB)tools/sgcommon/*.c) $(wildcard $(CB)tools/sgcommon/*.h) \
+              $(STRUCTGEN_DIR)/Makefile $(CB)tools/llvm.mk
 	$(MAKE) -C $(STRUCTGEN_DIR) build/structgen
 
-$(DATAGEN): $(DATAGEN_DIR)/datagen.c $(wildcard $(DATAGEN_DIR)/../sgcommon/*.c) \
-            $(wildcard $(DATAGEN_DIR)/../sgcommon/*.h) $(DATAGEN_DIR)/Makefile $(DATAGEN_DIR)/../llvm.mk
+$(DATAGEN): $(DATAGEN_DIR)/datagen.c $(wildcard $(CB)tools/sgcommon/*.c) \
+            $(wildcard $(CB)tools/sgcommon/*.h) $(DATAGEN_DIR)/Makefile $(CB)tools/llvm.mk
 	$(MAKE) -C $(DATAGEN_DIR) build/datagen
 
 # $(call gen_sync,<just generated>,<where it is read>): copy only when the
