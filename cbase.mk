@@ -140,8 +140,12 @@ CORE_INC    := -I$(CB)core/include -I$(CB)client/include -I$(CB)core/src $(LIB_I
 LOCAL_INC   := $(CORE_INC) -I$(CB)providers/local/src
 AWS_INC     := $(CORE_INC) -I$(CB)providers/aws/src
 PRODUCT_INC := $(CORE_INC) $(APP_INC)
+# A mixed lane (a test, a tool) that reaches a provider says so with #ifdef CBASE_LINKS_<PROVIDER>, so
+# the same test builds in a product that links fewer providers; no side's own source sees these.
+CB_DEF_local := -DCBASE_LINKS_LOCAL
+CB_DEF_aws   := -DCBASE_LINKS_AWS
 ALL_INC     := -I$(CB)core/include -I$(CB)client/include $(addprefix -I,$(SRC_ROOTS)) $(addprefix -I,$(TEST_ROOTS)) \
-               -I$(CB)bench $(APP_INC) $(LIB_INC)
+               -I$(CB)bench $(APP_INC) $(LIB_INC) $(foreach p,$(CBASE_PROVIDERS),$(CB_DEF_$(p)))
 CB_APP_STEMS := $(foreach r,$(APP_SRC_ROOTS),$(call cb_stem,$(r))/%)
 side_inc_of = $(if $(filter $(CB_STEM)core/src/%,$(1)),$(CORE_INC),$(if $(filter $(CB_STEM)providers/local/src/%,$(1)),$(LOCAL_INC),$(if \
                 $(filter $(CB_STEM)providers/aws/src/%,$(1)),$(AWS_INC),$(if $(filter $(CB_APP_STEMS),$(1)),$(PRODUCT_INC),$(ALL_INC)))))
