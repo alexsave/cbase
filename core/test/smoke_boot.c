@@ -1,6 +1,8 @@
 // smoke_boot.c - the two binaries refusing to start, as an operator meets it.
 //
 //   build/test/smoke_boot build/cbase build/bootstrap
+//   build/test/smoke_boot build/cbase        (a build with the local provider alone)
+//   build/test/smoke_boot - build/bootstrap  (a build with the aws provider alone)
 //
 // `cbase` with no command, a setting that does not parse, a database it cannot
 // open and a port already taken; `bootstrap` outside Lambda, and under a
@@ -265,12 +267,16 @@ static void bootstrap_refuses(void) {
 }
 
 int main(int argc, char **argv) {
-    if (argc != 3) { fprintf(stderr, "usage: smoke_boot <path to cbase> <path to bootstrap>\n"); return 2; }
-    g_cbase = argv[1];
-    g_bootstrap = argv[2];
+    if (argc != 2 && argc != 3) {
+        fprintf(stderr, "usage: smoke_boot <path to cbase, or -> [<path to bootstrap>]\n");
+        return 2;
+    }
+    // A build links the providers it names (cbase.mk CBASE_PROVIDERS): each binary it has is tried.
+    g_cbase = strcmp(argv[1], "-") == 0 ? NULL : argv[1];
+    g_bootstrap = argc == 3 ? argv[2] : NULL;
     signal(SIGPIPE, SIG_IGN);
-    T_RUN(cbase_refuses);
-    T_RUN(the_cpu_knob_boots_or_refuses);
-    T_RUN(bootstrap_refuses);
+    if (g_cbase) T_RUN(cbase_refuses);
+    if (g_cbase) T_RUN(the_cpu_knob_boots_or_refuses);
+    if (g_bootstrap) T_RUN(bootstrap_refuses);
     return T_DONE();
 }

@@ -1,6 +1,7 @@
 // unit_num_gate.c - the number-parsing gate (shared/c/num_parse.h): every decimal
 // integer c_base reads from text goes through num_parse_i64. This test reads
-// every C source under core/, providers/ and ../foolish/server/ and fails, naming the file and line, when one
+// every C source under core/src, each provider's src/ and the product's source
+// roots (CBASE_APP_SRC_ROOTS, lib_tree.h) and fails, naming the file and line, when one
 // names a C library integer parser:
 //
 //   * strtol, strtoll, strtoul, strtoull, strtoimax, strtoumax: a leading
@@ -14,8 +15,9 @@
 // takes (DynamoDB's CapacityUnits); anywhere else they are a violation too.
 //
 // Comments, string literals and character literals are skipped, so a comment
-// may name strtol. It runs from c_base/ (make test's directory).
+// may name strtol. It runs from any directory (lib_tree.h).
 #include "t.h"
+#include "lib_tree.h"
 
 #include <ctype.h>
 #include <dirent.h>
@@ -90,9 +92,9 @@ static void scan_text(const char *path, const char *s, size_t n) {
     }
 }
 
-static void scan_file(const char *path) {
+static void scan_file(const char *path, const char *name) {
     FILE *f = fopen(path, "rb");
-    if (!f) { violation(path, 0, "(cannot be read)", 16); return; }
+    if (!f) { violation(name, 0, "(cannot be read)", 16); return; }
     fseek(f, 0, SEEK_END);
     long n = ftell(f);
     fseek(f, 0, SEEK_SET);
@@ -100,36 +102,47 @@ static void scan_file(const char *path) {
     if (!s || fread(s, 1, (size_t)n, f) != (size_t)n) abort();
     fclose(f);
     g_files++;
-    scan_text(path, s, (size_t)n);
+    scan_text(name, s, (size_t)n);
     free(s);
 }
 
-static void scan_dir(const char *dir) {
+// Every C source under dir (opened as `dir`), each named `name`/<the rest of its path>.
+static void scan_named(const char *dir, const char *name) {
     DIR *d = opendir(dir);
     if (!d) return;
     struct dirent *e;
     while ((e = readdir(d)) != NULL) {
         if (e->d_name[0] == '.') continue;
-        char p[1024];
+        char p[1024], q[1024];
         snprintf(p, sizeof p, "%s/%s", dir, e->d_name);
+        snprintf(q, sizeof q, "%s/%s", name, e->d_name);
         struct stat st;
         if (stat(p, &st) != 0) continue;
-        if (S_ISDIR(st.st_mode)) { scan_dir(p); continue; }
-        size_t L = strlen(p);
-        if (L > 2 && p[L - 2] == '.' && (p[L - 1] == 'c' || p[L - 1] == 'h')) scan_file(p);
+        if (S_ISDIR(st.st_mode)) { scan_named(p, q); continue; }
+        size_t L = strlen(q);
+        if (L > 2 && q[L - 2] == '.' && (q[L - 1] == 'c' || q[L - 1] == 'h')) scan_file(p, q);
     }
     closedir(d);
+}
+
+// A c_base directory, from c_base's root.
+static void scan_dir(const char *rel) {
+    char p[TT_PATH_MAX];
+    scan_named(tt_path(p, sizeof p, rel), rel);
 }
 
 // The gate itself: the tree as it is.
 static void only_num_parse_i64_reads_numbers(void) {
     struct stat st;
-    T_CHECK(stat("core/src/config.c", &st) == 0);   // run from c_base/, or nothing is scanned
-    T_CHECK(stat(FLOAT_HOME, &st) == 0);              // the float exemption names a real file
+    char p[TT_PATH_MAX];
+    T_CHECK(stat(tt_path(p, sizeof p, "core/src/config.c"), &st) == 0);   // CBASE_ROOT is c_base, or nothing is scanned
+    T_CHECK(stat(tt_path(p, sizeof p, FLOAT_HOME), &st) == 0);              // the float exemption names a real file
     scan_dir("core/src");
     scan_dir("providers/local/src");
     scan_dir("providers/aws/src");
-    scan_dir("../foolish/server/src");
+    char roots[TT_ROOTS_MAX][TT_PATH_MAX];
+    int n = tt_env_list("CBASE_APP_SRC_ROOTS", roots, TT_ROOTS_MAX);
+    for (int i = 0; i < n; i++) scan_named(roots[i], roots[i]);
     T_CHECK(g_files >= 50);   // a gate that read nothing proves nothing
     T_EQ_INT(g_violations, 0);
 }

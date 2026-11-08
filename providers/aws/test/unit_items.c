@@ -6,7 +6,6 @@
 
 #include "aws_json.h"
 #include "lib_proc.h"
-#include "lib_store_backend.h"
 #include "store/items.h"
 #include "store/store.h"
 #include "store/store_priv.h"

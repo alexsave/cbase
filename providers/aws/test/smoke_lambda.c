@@ -1,7 +1,10 @@
 // smoke_lambda.c - the real `bootstrap` binary against a fake Lambda Runtime API.
 //
-//   build/test/smoke_lambda build/bootstrap
+//   build/test/smoke_lambda build/bootstrap <schedule> <job>
 //
+// <schedule> and <job> are one of the linked app's schedules and one of its jobs (cbase/app.h): the
+// literals Lambda's scheduler and the async self-invoke send (cbase.mk passes the product's,
+// APP_LAMBDA_SCHEDULE and APP_LAMBDA_JOB).
 // This program IS the Runtime API: a cb_server on a free port answering
 // /2018-06-01/runtime/invocation/next with one event after another, recording
 // what bootstrap POSTs back for each, and answering /next with 500 once they
@@ -10,13 +13,13 @@
 // runs on. The events:
 //   req-1  a Function URL GET /health: answered on /response with the
 //          encoded HTTP response (statusCode 200, the health text, not base64)
-//   req-2  the schedule's string literal "scan": answered on /response with {}
+//   req-2  the schedule's string literal (<schedule>): answered on /response with {}
 //   req-3  a literal no one sends and no name spells ("non-sense"): answered on /error, as an
 //          event that does not decode
-//   req-4  a drive for a game that is gone: answered {}
+//   req-4  the job for a key it has nothing to do for ("<job>:abc123"): answered {}
 //   req-5  IoT Core's custom authorizer request with a token that does not
 //          verify: answered {"isAuthenticated":false}
-// bootstrap runs on SQLite in a temporary directory, so the scan touches no AWS.
+// bootstrap runs on SQLite in a temporary directory, so the schedule touches no AWS.
 
 #include "t.h"
 
@@ -49,9 +52,13 @@ static const char IOT_AUTH[] =
     "\"connectionMetadata\":{\"id\":\"c1\"}}";
 
 #define N_EVENTS 5
-static const char *const EVENTS[N_EVENTS] = { HEALTH, "\"scan\"", "\"non-sense\"", "\"bot_drive:abc123\"", IOT_AUTH };
+static const char *g_schedule, *g_job;
 
 static void one_invocation(const char *bin) {
+    char schedule_ev[96], job_ev[96];
+    snprintf(schedule_ev, sizeof schedule_ev, "\"%s\"", g_schedule);
+    snprintf(job_ev, sizeof job_ev, "\"%s:abc123\"", g_job);
+    const char *const EVENTS[N_EVENTS] = { HEALTH, schedule_ev, "\"non-sense\"", job_ev, IOT_AUTH };
     cb_log_init(CB_LOG_WARN, 0);
     int port = 0;
     fr_runtime *fr = fr_start("arn:aws:lambda:us-west-1:0:function:cbase", &port);
@@ -74,9 +81,12 @@ static void one_invocation(const char *bin) {
     T_CHECK(strstr(hl, " ip=") != NULL);   // the access log's viewer (M9)
     // Each names its Lambda request id, the one the REPORT line carries.
     char line[512] = "";
-    T_EQ_INT(tp_wait_line(&c, "inv: scan ms=", 20000, line, sizeof line), 0);
+    char want[128];
+    snprintf(want, sizeof want, "inv: %s ms=", g_schedule);
+    T_EQ_INT(tp_wait_line(&c, want, 20000, line, sizeof line), 0);
     T_CHECK(strstr(line, " rid=req-2") != NULL);
-    T_EQ_INT(tp_wait_line(&c, "inv: bot_drive abc123 ms=", 20000, line, sizeof line), 0);
+    snprintf(want, sizeof want, "inv: %s abc123 ms=", g_job);
+    T_EQ_INT(tp_wait_line(&c, want, 20000, line, sizeof line), 0);
     T_CHECK(strstr(line, " rid=req-4") != NULL);
     T_EQ_INT(tp_wait_line(&c, "inv: iot connect deny ms=", 20000, line, sizeof line), 0);
     T_CHECK(strstr(line, " rid=req-5") != NULL);
@@ -105,7 +115,7 @@ static void one_invocation(const char *bin) {
     T_CHECK(cb_json_get_str(body, n, "headers.Content-Type", ctype, sizeof ctype));
     T_EQ_STR(ctype, "text/plain; charset=utf-8");
 
-    // req-2: the scan literal reached the app's schedule (cb_bots_scan), which answered {}.
+    // req-2: the schedule's literal reached the app's schedule, which answered {}.
     body = cb_buf_cstr(fr_posted_body(fr, 1));
     T_EQ_STR(fr_posted_path(fr, 1), "/2018-06-01/runtime/invocation/req-2/response");
     T_EQ_STR(body, "{}");
@@ -115,7 +125,7 @@ static void one_invocation(const char *bin) {
     T_EQ_STR(fr_posted_path(fr, 2), "/2018-06-01/runtime/invocation/req-3/error");
     T_EQ_STR(body, "{\"errorMessage\":\"event decode: CB_E_INVALID\",\"errorType\":\"Handler\"}");
 
-    // req-4: a drive for a game that is gone answers {}, not an error, so
+    // req-4: a job with nothing to do for its key (CB_E_NOT_FOUND) answers {}, not an error, so
     // Lambda does not retry an async invoke that can never succeed.
     body = cb_buf_cstr(fr_posted_body(fr, 3));
     T_EQ_STR(fr_posted_path(fr, 3), "/2018-06-01/runtime/invocation/req-4/response");
@@ -137,8 +147,10 @@ static const char *g_bin;
 static void lambda_round_trip(void) { one_invocation(g_bin); }
 
 int main(int argc, char **argv) {
-    if (argc != 2) { fprintf(stderr, "usage: smoke_lambda <path to bootstrap>\n"); return 2; }
+    if (argc != 4) { fprintf(stderr, "usage: smoke_lambda <path to bootstrap> <schedule> <job>\n"); return 2; }
     g_bin = argv[1];
+    g_schedule = argv[2];
+    g_job = argv[3];
     T_RUN(lambda_round_trip);
     return T_DONE();
 }

@@ -1,11 +1,12 @@
-# fuzz.mk - the fuzz targets, included by c_base/Makefile. A target lives on
-# the side whose code it attacks (FUZZ_ROOTS: core/fuzz, providers/<p>/fuzz,
-# foolish/server/fuzz), its corpus beside it (<side>/fuzz/corpus/<target>);
-# this directory holds the harness (fz.h, replay_main.c, seeds.c).
+# fuzz.mk - the fuzz targets, included by cbase.mk. A target lives on the side
+# whose code it attacks (FUZZ_ROOTS: core/fuzz, providers/<p>/fuzz for each
+# linked provider, and the product's APP_FUZZ_ROOTS), its corpus beside it
+# (<side>/fuzz/corpus/<target>); this directory holds the harness (fz.h,
+# replay_main.c, seeds.c).
 #
 #   make fuzz           build/fuzz/<target> for every <side>/fuzz/fz_<target>.c:
-#                       libFuzzer + ASan + UBSan, every object (the kernel's
-#                       included) rebuilt with coverage instrumentation
+#                       libFuzzer + ASan + UBSan, every object (a product's
+#                       APP_EXTRA_SRC included) rebuilt with coverage instrumentation
 #   make fuzz-smoke     each target for FUZZ_TIME seconds (default 30), from
 #                       a scratch copy of its checked-in corpus; a crash leaves
 #                       its input in build/fuzz-crashes/<target>/ and fails
@@ -17,8 +18,9 @@
 #                       (inputs are renamed to their hashes, except a found
 #                       bug's reproducer, <corpus>/repro-<what>,
 #                       which is kept by name beside its unit test)
-#   make fuzz-seeds     build/fuzz/seeds writes the seed inputs (fuzz/seeds.c)
-#                       into each target's corpus (made from the real encoders and the
+#   make fuzz-seeds     the seed writers (fuzz/seeds.c, the platform's targets'; and
+#                       a product's own, APP_FUZZ_SEEDS) write the seed inputs into
+#                       each target's corpus (made from the real encoders and the
 #                       tests' recorded fixtures)
 #
 # libFuzzer needs clang with -fsanitize=fuzzer. Apple's clang lacks it, so on
@@ -37,16 +39,16 @@ FUZZ_TIME ?= 30
 FUZZ_JOBS ?= 1
 
 FUZZ_SAN := -fsanitize=address,undefined,fuzzer-no-link -fno-sanitize-recover=undefined -fno-omit-frame-pointer
-FUZZ_KERNEL_CFLAGS := $(filter-out -O3 -flto,$(KERNEL_CFLAGS)) -O1 -g $(FUZZ_SAN) -fno-sanitize=object-size
-FUZZ_CB_CFLAGS = $(filter-out -O2,$(CB_CFLAGS)) -O1 $(FUZZ_SAN) -Ifuzz
+APP_EXTRA_FUZZ_CFLAGS ?= $(filter-out -O2 -O3 -flto,$(APP_EXTRA_CFLAGS)) -O1 -g $(FUZZ_SAN)
+FUZZ_CB_CFLAGS = $(filter-out -O2,$(CB_CFLAGS)) -O1 $(FUZZ_SAN) -I$(CB)fuzz
 # The replay build (no libFuzzer): the asan variant's objects, the harness too.
-FUZZ_REPLAY_CFLAGS = $(ASAN_CB_CFLAGS) -Ifuzz
+FUZZ_REPLAY_CFLAGS = $(ASAN_CB_CFLAGS) -I$(CB)fuzz
 
 $(eval $(call C_VARIANT,build/obj/fuzz,FUZZ_CC,FUZZ_CB_CFLAGS,,$(SIDE_STAMP)))
-$(eval $(call C_VARIANT,build/obj/fuzz-kernel,FUZZ_CC,FUZZ_KERNEL_CFLAGS))
+$(eval $(call C_VARIANT,build/obj/fuzz-extra,FUZZ_CC,APP_EXTRA_FUZZ_CFLAGS))
 $(eval $(call C_VARIANT,build/obj/fuzz-replay,CC,FUZZ_REPLAY_CFLAGS,,$(SIDE_STAMP)))
 
-FUZZ_ROOTS   := core/fuzz providers/local/fuzz providers/aws/fuzz $(C_ROOT)/foolish/server/fuzz
+FUZZ_ROOTS   := $(CB)core/fuzz $(addprefix $(CB)providers/,$(addsuffix /fuzz,$(CBASE_PROVIDERS))) $(APP_FUZZ_ROOTS)
 FUZZ_SRC     := $(sort $(foreach r,$(FUZZ_ROOTS),$(wildcard $(r)/fz_*.c)))
 FUZZ_ALL     := $(sort $(patsubst fz_%.c,%,$(notdir $(FUZZ_SRC))))
 FUZZ_TARGETS := $(FUZZ_ALL)
@@ -59,32 +61,40 @@ fz_src    = $(filter %/fz_$(1).c,$(FUZZ_SRC))
 fz_corpus = $(patsubst %/fz_$(1).c,%/corpus/$(1),$(call fz_src,$(1)))
 FUZZ_PAIRS = $(foreach t,$(FUZZ_TARGETS),$(t)=$(call fz_corpus,$(t)))
 # What a target links beside its own file: fuzz/lib_*.c (the harness helpers).
-FUZZ_LIB     := $(sort $(wildcard fuzz/lib_*.c))
-# Program sources a target replaces with its own (FUZZ_EXCLUDE_<target>):
-# the sequence target makes the process's randomness a function of the input.
-FUZZ_EXCLUDE_sequence := core/src/util/random.c
+FUZZ_LIB     := $(sort $(wildcard $(CB)fuzz/lib_*.c))
+# Program sources a target replaces with its own (FUZZ_EXCLUDE_<target>, which
+# a product sets for its own targets: one that makes the process's randomness a
+# function of the input leaves out $(CB)core/src/util/random.c).
 fuzz_lib = $(filter-out $(FUZZ_EXCLUDE_$(1)),$(LIB_SRC))
 # Sources a target links beside the program's (FUZZ_EXTRA_<target>): the anonymous socket's target
 # talks to a real server over loopback with the tests' client.
-FUZZ_EXTRA_rt_anon := core/test/lib_client.c
+FUZZ_EXTRA_rt_anon := $(CB)core/test/lib_client.c
 
 define FUZZ_PROG
-build/fuzz/$(1): $$(call c_objs,build/obj/fuzz,$$(call fz_src,$(1)) $$(FUZZ_LIB) $$(FUZZ_EXTRA_$(1)) $$(call fuzz_lib,$(1))) $$(call c_objs,build/obj/fuzz-kernel,$$(KERNEL_SRC))
+build/fuzz/$(1): $$(call c_objs,build/obj/fuzz,$$(call fz_src,$(1)) $$(FUZZ_LIB) $$(FUZZ_EXTRA_$(1)) $$(call fuzz_lib,$(1))) $$(call c_objs,build/obj/fuzz-extra,$$(APP_EXTRA_SRC))
 	@mkdir -p $$(@D)
 	@echo "  LINK $$@"
 	@$$(FUZZ_CC) $$(FUZZ_CB_CFLAGS) -fsanitize=fuzzer $$^ -o $$@ $$(LDLIBS)
-build/asan/fuzz/$(1): $$(call c_objs,build/obj/fuzz-replay,$$(call fz_src,$(1)) fuzz/replay_main.c $$(FUZZ_LIB) $$(FUZZ_EXTRA_$(1))) $$(call c_objs,build/obj/asan,$$(call fuzz_lib,$(1))) $$(call c_objs,build/obj/asan-kernel,$$(KERNEL_SRC))
+build/asan/fuzz/$(1): $$(call c_objs,build/obj/fuzz-replay,$$(call fz_src,$(1)) $(CB)fuzz/replay_main.c $$(FUZZ_LIB) $$(FUZZ_EXTRA_$(1))) $$(call c_objs,build/obj/asan,$$(call fuzz_lib,$(1))) $$(call c_objs,build/obj/asan-extra,$$(APP_EXTRA_SRC))
 	@mkdir -p $$(@D)
 	@echo "  LINK $$@"
 	@$$(CC) $$(ASAN_CB_CFLAGS) $$^ -o $$@ $$(LDLIBS)
 endef
 $(foreach t,$(FUZZ_TARGETS),$(eval $(call FUZZ_PROG,$(t))))
 
-# The seed writer: an ordinary program under the asan build.
-build/asan/fuzz/seeds: $(call c_objs,build/obj/fuzz-replay,fuzz/seeds.c $(FUZZ_LIB)) $(call c_objs,build/obj/asan,$(LIB_SRC)) $(call c_objs,build/obj/asan-kernel,$(KERNEL_SRC))
+# The seed writers: ordinary programs under the asan build, the platform's
+# (fuzz/seeds.c, for its own targets) and the product's (APP_FUZZ_SEEDS), each
+# called with the staging directory. FUZZ_SEEDS_PROG is every one of them.
+build/asan/fuzz/seeds: $(call c_objs,build/obj/fuzz-replay,$(CB)fuzz/seeds.c $(FUZZ_LIB)) $(call c_objs,build/obj/asan,$(LIB_SRC)) $(call c_objs,build/obj/asan-extra,$(APP_EXTRA_SRC))
 	@mkdir -p $(@D)
 	@echo "  LINK $@"
 	@$(CC) $(ASAN_CB_CFLAGS) $^ -o $@ $(LDLIBS)
+ifneq ($(strip $(APP_FUZZ_SEEDS)),)
+build/asan/fuzz/app-seeds: $(call c_objs,build/obj/fuzz-replay,$(APP_FUZZ_SEEDS) $(FUZZ_LIB)) $(call c_objs,build/obj/asan,$(LIB_SRC)) $(call c_objs,build/obj/asan-extra,$(APP_EXTRA_SRC))
+	@mkdir -p $(@D)
+	@echo "  LINK $@"
+	@$(CC) $(ASAN_CB_CFLAGS) $^ -o $@ $(LDLIBS)
+endif
 
 .PHONY: fuzz fuzz-smoke fuzz-nightly fuzz-replay fuzz-merge fuzz-seeds
 fuzz: $(addprefix build/fuzz/,$(FUZZ_TARGETS))
@@ -129,18 +139,18 @@ fuzz-merge: fuzz
 # seeds for a name that is no target are refused before any corpus is
 # written. The program and the staging directory are variables so
 # fuzz/test/fuzz_mk_test.sh can run these rules with a stand-in program.
-FUZZ_SEEDS_PROG := build/asan/fuzz/seeds
+FUZZ_SEEDS_PROG := build/asan/fuzz/seeds $(if $(strip $(APP_FUZZ_SEEDS)),build/asan/fuzz/app-seeds)
 FUZZ_SEEDS_OUT  := build/fuzz-seeds
 fuzz-seeds: $(FUZZ_SEEDS_PROG)
 	rm -rf $(FUZZ_SEEDS_OUT) && mkdir -p $(FUZZ_SEEDS_OUT)
-	$(FUZZ_SEEDS_PROG) $(FUZZ_SEEDS_OUT)
+	for p in $(FUZZ_SEEDS_PROG); do $$p $(FUZZ_SEEDS_OUT) || exit 1; done
 	@for d in $(FUZZ_SEEDS_OUT)/*; do [ -d "$$d" ] || continue; case " $(FUZZ_ALL) " in *" $${d##*/} "*) ;; \
 	  *) echo "fuzz-seeds: seeds for $${d##*/}, which is no target"; exit 1;; esac; done
 	@for tc in $(FUZZ_PAIRS); do t=$${tc%%=*}; c=$${tc#*=}; \
 	  [ -d $(FUZZ_SEEDS_OUT)/$$t ] || continue; mkdir -p $$c; cp $(FUZZ_SEEDS_OUT)/$$t/* $$c/; \
 	done
 
-# Every target's name, for CI's matrix (c_base.yml, c_base_fuzz_nightly.yml).
+# Every target's name, for CI's matrix (ci.yml, fuzz_nightly.yml).
 .PHONY: print-fuzz-targets
 print-fuzz-targets:
 	@echo $(FUZZ_ALL)

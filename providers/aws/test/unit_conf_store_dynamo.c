@@ -6,17 +6,16 @@
 #include "t.h"
 
 #include "conformance/store.h"
-#include "lib_store_backend.h"
+#include "lib_dynamo_local.h"
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <unistd.h>
 
 static cb_store *open_dynamo(void *ud) {
     char name[64];
-    snprintf(name, sizeof name, "conf_%d_%d", (int)getpid(), rand() % 100000);
+    tdl_table_name("conf_", name, sizeof name);
     cb_store *s = NULL;
-    if (tsb_create_table(name) != 0 || cb_store_open_dynamo(name, &s) != CB_OK) return NULL;
+    if (tdl_create_table(name) != 0 || cb_store_open_dynamo(name, &s) != CB_OK) return NULL;
     return s;
 }
 
@@ -28,7 +27,7 @@ static void dynamo_conforms(void) {
 }
 
 int main(void) {
-    if (!tsb_dynamo()) {
+    if (!tdl_enabled()) {
         printf("skip unit_conf_store_dynamo.c: no DynamoDB Local (CBASE_STORE=dynamo, make check-dynamo)\n");
         return 0;
     }

@@ -4,26 +4,30 @@
 //   * core (core/src, core/include) and the client (client/src, include, wasm, ts) hit no pattern of any list: no product,
 //     no provider, no foolish domain word;
 //   * a provider (providers/<p>/src) hits no product and no domain word;
-//   * the product (../foolish/server/src) hits no provider word.
+//   * the product (its source roots, CBASE_APP_SRC_ROOTS) hits no provider word.
 //
-// The lists are tools/name_gate/words.txt (the TypeScript gate over
-// shared/ reads its product list from the same file; its header says the
-// pattern syntax). Every line of every file under those directories is read,
+// The lists are tools/name_gate/words.txt (its header says the pattern
+// syntax). Every line of every file under those directories is read,
 // comments and strings included: a name in a comment is the first step of
 // the drift, not an exception to it.
 //
-// THE ALLOWLIST, tools/name_gate/allow.txt, holds today's hits, one
-// line per file and pattern:
+// THE ALLOWLISTS hold today's hits, one line per file and pattern: c_base's
+// own, tools/name_gate/allow.txt, for its files, and the product's
+// (CBASE_APP_NAME_ALLOW, cbase.mk's APP_NAME_ALLOW) for the product's:
 //
-//     <count> <path from the repository root> <pattern, as words.txt writes it>
+//     <count> <path> <pattern, as words.txt writes it>
+//
+// A c_base path is from c_base's root ("core/src/x.c"), a product path as the
+// product spells its roots (lib_tree.h).
 //
 // The count is the number of lines of that file the pattern hits, and it must
 // be exact: a hit beyond it fails (a new name), and so does a count above
 // today's (the file got cleaner: lower the count, or delete the line), so the
 // list can only shrink. CBASE_NAME_GATE_WRITE=<file> writes the list as the
 // tree is today, sorted, for a change that removes names. The gate goes strict
-// when allow.txt is empty. It runs from c_base/ (make test's directory).
+// when the allowlists are empty. It runs from any directory (lib_tree.h).
 #include "t.h"
+#include "lib_tree.h"
 
 #include <dirent.h>
 #include <stdbool.h>
@@ -123,7 +127,8 @@ static char *slurp(const char *path, size_t *n) {
 // words.txt into g_pat. Returns false on a line it cannot read.
 static bool load_words(void) {
     size_t n;
-    char *s = slurp(WORDS, &n);
+    char words[TT_PATH_MAX];
+    char *s = slurp(tt_path(words, sizeof words, WORDS), &n);
     if (!s) return false;
     int list = 0;
     bool ok = true;
@@ -192,29 +197,33 @@ static int scan_text(const char *path, int forbidden, const char *s, size_t n) {
     return total;
 }
 
-// Every file under dir (from c_base/), named from the repository root.
-static void scan_dir(const char *dir, int forbidden) {
+// Every file under dir (opened as `dir`), each named `name`/<the rest of its path>.
+static void scan_named(const char *dir, const char *name, int forbidden) {
     DIR *d = opendir(dir);
     if (!d) return;
     struct dirent *e;
     while ((e = readdir(d)) != NULL) {
         if (e->d_name[0] == '.') continue;
-        char p[512];
+        char p[TT_PATH_MAX + 256], q[TT_PATH_MAX + 256];
         if (snprintf(p, sizeof p, "%s/%s", dir, e->d_name) >= (int)sizeof p) continue;   // no path is that long
+        if (snprintf(q, sizeof q, "%s/%s", name, e->d_name) >= (int)sizeof q) continue;
         struct stat st;
         if (stat(p, &st) != 0) continue;
-        if (S_ISDIR(st.st_mode)) { scan_dir(p, forbidden); continue; }
+        if (S_ISDIR(st.st_mode)) { scan_named(p, q, forbidden); continue; }
         size_t n;
         char *s = slurp(p, &n);
         if (!s) continue;
-        char name[520];
-        if (strncmp(p, "../", 3) == 0) snprintf(name, sizeof name, "%s", p + 3);
-        else snprintf(name, sizeof name, "c_base/%s", p);
         g_files++;
-        scan_text(name, forbidden, s, n);
+        scan_text(q, forbidden, s, n);
         free(s);
     }
     closedir(d);
+}
+
+// A c_base directory, from c_base's root.
+static void scan_dir(const char *rel, int forbidden) {
+    char p[TT_PATH_MAX];
+    scan_named(tt_path(p, sizeof p, rel), rel, forbidden);
 }
 
 // The sides and what each may not say.
@@ -226,7 +235,8 @@ static void scan_tree(void) {
     scan_dir("client/src", L_PRODUCTS | L_PROVIDERS | L_DOMAIN);
     scan_dir("client/wasm", L_PRODUCTS | L_PROVIDERS | L_DOMAIN);
     scan_dir("client/ts", L_PRODUCTS | L_PROVIDERS | L_DOMAIN);
-    DIR *d = opendir("providers");
+    char prov[TT_PATH_MAX];
+    DIR *d = opendir(tt_path(prov, sizeof prov, "providers"));
     struct dirent *e;
     while (d && (e = readdir(d)) != NULL) {
         if (e->d_name[0] == '.') continue;
@@ -235,15 +245,21 @@ static void scan_tree(void) {
         scan_dir(p, L_PRODUCTS | L_DOMAIN);
     }
     if (d) closedir(d);
-    scan_dir("../foolish/server/src", L_PROVIDERS);
+    // The product's sources, as the product names them.
+    char roots[TT_ROOTS_MAX][TT_PATH_MAX];
+    int n = tt_env_list("CBASE_APP_SRC_ROOTS", roots, TT_ROOTS_MAX);
+    for (int i = 0; i < n; i++) scan_named(roots[i], roots[i], L_PROVIDERS);
 }
 
-// allow.txt into the tallies' allowed counts. Returns the number of lines it
-// could not read (a pattern not in words.txt is one).
-static int load_allow(void) {
+// An allowlist into the tallies' allowed counts. Returns the number of lines it
+// could not read (a pattern not in words.txt is one), and 1 for no such file.
+static int load_allow(const char *path) {
     size_t n;
-    char *s = slurp(ALLOW, &n);
-    if (!s) return 1;
+    char *s = slurp(path, &n);
+    if (!s) {
+        fprintf(stderr, "name gate: cannot read the allowlist %s\n", path);
+        return 1;
+    }
     int bad = 0;
     for (char *line = strtok(s, "\n"); line; line = strtok(NULL, "\n")) {
         if (!*line || *line == '#') continue;
@@ -277,7 +293,7 @@ static void write_allow(const char *out) {
     qsort(g_tally, (size_t)g_ntally, sizeof *g_tally, cmp_tally);
     FILE *f = fopen(out, "w");
     if (!f) return;
-    fprintf(f, "# allow.txt - the name gate's shrinking allowlist (c_base/core/test/unit_name_gate.c says the format).\n"
+    fprintf(f, "# allow.txt - the name gate's shrinking allowlist (core/test/unit_name_gate.c says the format).\n"
                "# <count> <path> <pattern>: the lines of that file the pattern hits today. Only ever lowered.\n");
     for (int i = 0; i < g_ntally; i++)
         if (g_tally[i].hits) fprintf(f, "%d %s %s\n", g_tally[i].hits, g_tally[i].path, g_pat[g_tally[i].pat].text);
@@ -316,12 +332,16 @@ static void the_matcher_sees_each_shape(void) {
 // The gate itself: the tree as it is, against the allowlist.
 static void each_side_names_only_its_own(void) {
     struct stat st;
-    T_CHECK(stat("core/src", &st) == 0);   // run from c_base/, or nothing is scanned
+    char core[TT_PATH_MAX];
+    T_CHECK(stat(tt_path(core, sizeof core, "core/src"), &st) == 0);   // CBASE_ROOT is c_base, or nothing is scanned
     scan_tree();
     T_CHECK(g_files >= 100);                // a gate that read nothing proves nothing
     const char *out = getenv("CBASE_NAME_GATE_WRITE");
     if (out && *out) { write_allow(out); printf("name gate: wrote %s\n", out); }
-    T_EQ_INT(load_allow(), 0);
+    char allow[TT_PATH_MAX];
+    T_EQ_INT(load_allow(tt_path(allow, sizeof allow, ALLOW)), 0);
+    const char *app_allow = getenv("CBASE_APP_NAME_ALLOW");
+    if (app_allow && *app_allow) T_EQ_INT(load_allow(app_allow), 0);
     int new_hits = 0, stale = 0;
     for (int i = 0; i < g_ntally; i++) {
         tally *t = &g_tally[i];

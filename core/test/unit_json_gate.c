@@ -1,9 +1,9 @@
 // unit_json_gate.c - the JSON containment gate (DESIGN.md "Where JSON is
 // tolerated"): every JSON shape c_base speaks lives in providers/aws/src/aws_json.c, on
 // top of the one low-level writer and reader, core/src/util/json.{c,h}. This test reads
-// every C source under core/, providers/, ../foolish/server/ and bench/ but the
-// tests and the fuzz targets (each side's test/ and fuzz/, which build JSON to
-// feed it) and fails, naming the file
+// every C source under core/, providers/ and bench/, and the product's trees
+// (CBASE_APP_JSON_ROOTS, lib_tree.h), but the tests and the fuzz targets (each
+// side's test/ and fuzz/, which build JSON to feed it) and fails, naming the file
 // and line, when any other file
 //
 //   * includes util/json.h (by any spelling ending in /json.h or json.h),
@@ -18,8 +18,9 @@
 //
 // Comments are skipped, so a comment may describe a shape; adjacent literals
 // are joined first, as the compiler joins them, so a key cannot hide across
-// two of them. It runs from c_base/ (make test's directory).
+// two of them. It runs from any directory (lib_tree.h).
 #include "t.h"
+#include "lib_tree.h"
 
 #include <ctype.h>
 #include <dirent.h>
@@ -31,7 +32,7 @@
 
 // The files allowed to speak JSON: the surface and the mechanism under it.
 static const char *const ALLOWED[] = { "core/src/core_json.c", "providers/aws/src/aws_json.c", "core/src/util/json.c", "core/src/util/json.h" };
-static const char *const ROOTS[] = { "core", "providers", "../foolish/server", "bench" };
+static const char *const ROOTS[] = { "core", "providers", "bench" };
 
 static int  g_files, g_violations;
 static bool g_quiet;   // planted text: counted, not printed
@@ -183,9 +184,9 @@ static void scan_text(const char *path, const char *s, size_t n) {
     free(l.p);
 }
 
-static void scan_file(const char *path) {
+static void scan_file(const char *path, const char *name) {
     FILE *f = fopen(path, "rb");
-    if (!f) { violation(path, 0, "cannot be read", "", 0); return; }
+    if (!f) { violation(name, 0, "cannot be read", "", 0); return; }
     fseek(f, 0, SEEK_END);
     long n = ftell(f);
     fseek(f, 0, SEEK_SET);
@@ -193,27 +194,29 @@ static void scan_file(const char *path) {
     if (!s || fread(s, 1, (size_t)n, f) != (size_t)n) abort();
     fclose(f);
     g_files++;
-    scan_text(path, s, (size_t)n);
+    scan_text(name, s, (size_t)n);
     free(s);
 }
 
-static void scan_dir(const char *dir) {
+// Every C source under dir (opened as `dir`), each named `name`/<the rest of its path>.
+static void scan_named(const char *dir, const char *name) {
     DIR *d = opendir(dir);
     if (!d) return;
     struct dirent *e;
     while ((e = readdir(d)) != NULL) {
         if (e->d_name[0] == '.') continue;
-        char p[1024];
+        char p[1024], q[1024];
         snprintf(p, sizeof p, "%s/%s", dir, e->d_name);
+        snprintf(q, sizeof q, "%s/%s", name, e->d_name);
         struct stat st;
         if (stat(p, &st) != 0) continue;
         if (S_ISDIR(st.st_mode)) {
-            if (strcmp(e->d_name, "test") != 0 && strcmp(e->d_name, "fuzz") != 0) scan_dir(p);
+            if (strcmp(e->d_name, "test") != 0 && strcmp(e->d_name, "fuzz") != 0) scan_named(p, q);
             continue;
         }
-        size_t L = strlen(p);
-        bool c_source = L > 2 && p[L - 2] == '.' && (p[L - 1] == 'c' || p[L - 1] == 'h');
-        if (c_source && !allowed(p)) scan_file(p);
+        size_t L = strlen(q);
+        bool c_source = L > 2 && q[L - 2] == '.' && (q[L - 1] == 'c' || q[L - 1] == 'h');
+        if (c_source && !allowed(q)) scan_file(p, q);
     }
     closedir(d);
 }
@@ -221,8 +224,12 @@ static void scan_dir(const char *dir) {
 // The gate itself: the tree as it is.
 static void only_json_surface_speaks_json(void) {
     struct stat st;
-    T_CHECK(stat(ALLOWED[0], &st) == 0);   // run from c_base/, or nothing is scanned
-    for (size_t i = 0; i < sizeof ROOTS / sizeof ROOTS[0]; i++) scan_dir(ROOTS[i]);
+    char p[TT_PATH_MAX];
+    T_CHECK(stat(tt_path(p, sizeof p, ALLOWED[0]), &st) == 0);   // CBASE_ROOT is c_base, or nothing is scanned
+    for (size_t i = 0; i < sizeof ROOTS / sizeof ROOTS[0]; i++) scan_named(tt_path(p, sizeof p, ROOTS[i]), ROOTS[i]);
+    char roots[TT_ROOTS_MAX][TT_PATH_MAX];
+    int n = tt_env_list("CBASE_APP_JSON_ROOTS", roots, TT_ROOTS_MAX);
+    for (int i = 0; i < n; i++) scan_named(roots[i], roots[i]);
     T_CHECK(g_files >= 50);   // a gate that read nothing proves nothing
     T_EQ_INT(g_violations, 0);
 }
