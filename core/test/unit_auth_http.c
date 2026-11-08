@@ -21,7 +21,7 @@
 #include "util/log.h"
 #include "util/str.h"
 
-#include "../../../shared/c/le_bytes.h"
+#include "le_bytes.h"
 
 #include <stdlib.h>
 

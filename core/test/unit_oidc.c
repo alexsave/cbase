@@ -23,8 +23,8 @@
 #include "util/log.h"
 #include "util/str.h"
 
-#include "../../../shared/c/b64/b64.h"
-#include "../../../shared/c/le_bytes.h"
+#include "b64/b64.h"
+#include "le_bytes.h"
 
 #include <openssl/pem.h>
 #include <openssl/sha.h>

@@ -12,7 +12,7 @@
 #include <openssl/sha.h>
 #include <stdlib.h>
 
-#include "../../../shared/c/hex/hex.h"
+#include "hex/hex.h"
 
 static cb_config cfg;
 static cb_ctx ctx;

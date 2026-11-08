@@ -31,7 +31,7 @@
 #include "ctx.h"
 #include "store/store.h"
 
-#include "../../../../shared/c/mqtt/mqtt.h"
+#include "mqtt/mqtt.h"
 
 #include <stdbool.h>
 #include <stddef.h>

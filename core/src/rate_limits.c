@@ -11,7 +11,7 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <string.h>
-#include "../../../shared/c/fnv.h"
+#include "fnv.h"
 
 #define MIN_MS (60LL * 1000)
 

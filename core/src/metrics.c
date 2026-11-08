@@ -5,8 +5,8 @@
 #include "net/router.h"
 #include "util/clock.h"
 #include "util/err.h"
-#include "../../../shared/c/proc.h"
-#include "../../../shared/c/stats/hist.h"
+#include "proc.h"
+#include "stats/hist.h"
 
 #include <stdlib.h>
 #include <string.h>

@@ -1,7 +1,7 @@
 // refuse.c - the platform's refusal (refuse.h).
 #include "net/refuse.h"
 
-#include "../../../../shared/c/le_bytes.h"
+#include "le_bytes.h"
 
 #include <stdio.h>
 

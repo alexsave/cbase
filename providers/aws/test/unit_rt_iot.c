@@ -17,7 +17,7 @@
 #include "realtime/rt_deps.h"
 #include "realtime/rt_iot.h"
 #include "realtime/stream_mqtt.h"
-#include "../../../../shared/c/b64/b64.h"
+#include "b64/b64.h"
 #include "util/err.h"
 #include "util/json.h"
 #include "app/fanout.h"

@@ -3,7 +3,7 @@
 // cb_handle without a real backend.
 #include "lib_admin_fakestore.h"
 
-#include "../../../shared/c/num_parse.h"
+#include "num_parse.h"
 #include "util/str.h"
 
 #include <stdio.h>

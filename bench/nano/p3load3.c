@@ -21,7 +21,7 @@
 #include "client_table.h"
 #include "netclient.h"
 #include "netwire.h"
-#include "../../shared/c/rng.h"
+#include "rng.h"
 
 #include <errno.h>
 #include <poll.h>

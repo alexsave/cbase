@@ -3,7 +3,7 @@
 
 #include "util/bytea.h"
 #include "util/err.h"
-#include "../../../../shared/c/le_bytes.h"
+#include "le_bytes.h"
 
 #include <stdlib.h>
 #include <string.h>

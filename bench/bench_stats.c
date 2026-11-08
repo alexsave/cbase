@@ -1,6 +1,6 @@
 // bench_stats.c - percentiles, the run file and the Markdown report (bench_stats.h).
 #include "bench_stats.h"
-#include "../../shared/c/stats/percentile.h"
+#include "stats/percentile.h"
 
 #include <inttypes.h>
 #include <math.h>

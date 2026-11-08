@@ -7,9 +7,9 @@
 #include "util/clock.h"
 #include "util/err.h"
 #include "util/log.h"
-#include "../../../../../shared/c/hex/hex.h"
-#include "../../../../../shared/c/num_parse.h"
-#include "../../../../../shared/c/sha256.h"
+#include "hex/hex.h"
+#include "num_parse.h"
+#include "sha256.h"
 
 #include <pthread.h>
 #include <stdio.h>

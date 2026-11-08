@@ -20,7 +20,7 @@
 
 #include "ask.h"
 #include "netclient.h"
-#include "../../../../shared/c/stream_frame.h"
+#include "stream_frame.h"
 #include "netwire.h"
 
 #include <pthread.h>

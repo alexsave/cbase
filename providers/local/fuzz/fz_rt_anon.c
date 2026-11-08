@@ -22,7 +22,7 @@
 #include "net/ws.h"
 #include "realtime/realtime.h"
 #include "realtime/rt_local.h"
-#include "../../../../shared/c/stream_frame.h"
+#include "stream_frame.h"
 #include "util/err.h"
 #include "util/clock.h"
 #include "util/log.h"

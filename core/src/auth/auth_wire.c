@@ -1,7 +1,7 @@
 // auth_wire.c - the server's half of the platform's session bytes (auth_wire.h).
 #include "auth/auth_wire.h"
 
-#include "../../../../shared/c/le_bytes.h"
+#include "le_bytes.h"
 
 #include <string.h>
 

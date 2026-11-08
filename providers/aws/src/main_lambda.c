@@ -55,7 +55,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
-#include "../../../../shared/c/clock.h"
+#include "clock.h"
 
 static int64_t mono_us(void) {
     return host_mono_us();

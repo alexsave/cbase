@@ -7,7 +7,7 @@
 #include "util/log.h"
 #include "util/pool.h"
 #include "net/loop.h"
-#include "../../../../../shared/c/num_parse.h"
+#include "num_parse.h"
 
 #include <sqlite3.h>
 #include <stdatomic.h>

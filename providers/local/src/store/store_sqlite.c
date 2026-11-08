@@ -25,8 +25,8 @@
 #include "util/clock.h"
 #include "util/log.h"
 #include "util/str.h"
-#include "../../../../../shared/c/hex/hex.h"
-#include "../../../../../shared/c/num_parse.h"
+#include "hex/hex.h"
+#include "num_parse.h"
 
 #include <ctype.h>
 #include <errno.h>

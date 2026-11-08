@@ -44,7 +44,7 @@
 #include <openssl/hmac.h>
 #include <openssl/sha.h>
 #include <sqlite3.h>
-#include "../../../shared/c/rng.h"
+#include "rng.h"
 
 #define NS(ts) ((int64_t)(ts).tv_sec * 1000000000LL + (ts).tv_nsec)
 static inline int64_t now_ns(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return NS(t); }

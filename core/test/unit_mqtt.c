@@ -5,7 +5,7 @@
 // over-read is an ASan report, and topic filter matching (4.7).
 #include "t.h"
 
-#include "../../../shared/c/mqtt/mqtt.h"
+#include "mqtt/mqtt.h"
 
 #include <stdlib.h>
 

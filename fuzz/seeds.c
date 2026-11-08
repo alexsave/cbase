@@ -16,10 +16,10 @@
 #include "store/store_priv.h"
 #include "net/ws.h"
 #include "store/rows_foolish.h"
-#include "../../shared/c/b64/b64.h"
+#include "b64/b64.h"
 
-#include "../../shared/c/mqtt/mqtt.h"
-#include "../../shared/c/hex/hex.h"
+#include "mqtt/mqtt.h"
+#include "hex/hex.h"
 #include "util/str.h"
 
 #include "fixture_cloudfront_event.h"

@@ -34,10 +34,10 @@
 
 #include "bcrypt.h"
 #include "names.h"
-#include "../../../../shared/c/b64/b64.h"
+#include "b64/b64.h"
 #include "util/clock.h"
 #include "util/err.h"
-#include "../../../../shared/c/hex/hex.h"
+#include "hex/hex.h"
 #include "util/log.h"
 #include "util/str.h"
 #include "util/uuid.h"

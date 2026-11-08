@@ -5,7 +5,7 @@
 #include "net/ws.h"
 #include "netwire.h"
 #include "mqtt/mqtt.h"
-#include "../../shared/c/b64/b64.h"
+#include "b64/b64.h"
 #include "util/uuid.h"
 
 #include <openssl/err.h>
@@ -25,7 +25,7 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
-#include "../../shared/c/clock.h"
+#include "clock.h"
 
 int64_t bn_now_us(void) {
     return host_mono_us();

@@ -32,7 +32,7 @@
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
-#include "../../../../shared/c/clock.h"
+#include "clock.h"
 
 // Idle connections kept, every host together: a remote store's one or two, and a push broker's
 // one per lane of a commit's fan-out (up to 9).

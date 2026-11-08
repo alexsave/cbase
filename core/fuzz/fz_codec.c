@@ -4,9 +4,9 @@
 // Each decode that succeeds must round-trip through its own encoder.
 #include "fz.h"
 
-#include "../../../shared/c/b64/b64.h"
+#include "b64/b64.h"
 #include "util/clock.h"
-#include "../../../shared/c/hex/hex.h"
+#include "hex/hex.h"
 #include "util/bytea.h"
 #include "util/str.h"
 #include "util/uuid.h"

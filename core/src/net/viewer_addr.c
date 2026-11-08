@@ -1,6 +1,6 @@
 #include "viewer_addr.h"
 
-#include "../../../../shared/c/num_parse.h"
+#include "num_parse.h"
 
 #include <arpa/inet.h>
 #include <string.h>

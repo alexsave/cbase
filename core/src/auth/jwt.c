@@ -12,7 +12,7 @@
 // skew. Tokens of the earlier GoTrue-JWT format do not verify: one re-sign-in.
 #include "jwt.h"
 
-#include "../../../../shared/c/b64/b64.h"
+#include "b64/b64.h"
 #include "util/err.h"
 #include "util/str.h"
 

@@ -8,9 +8,9 @@
 #include "util/log.h"
 #include "util/str.h"
 
-#include "../../../../shared/c/b64/b64.h"
-#include "../../../../shared/c/hex/hex.h"
-#include "../../../../shared/c/num_parse.h"
+#include "b64/b64.h"
+#include "hex/hex.h"
+#include "num_parse.h"
 
 #include <openssl/bn.h>
 #include <openssl/core_names.h>

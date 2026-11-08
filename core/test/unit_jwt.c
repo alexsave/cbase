@@ -4,7 +4,7 @@
 #include "t.h"
 
 #include "auth/jwt.h"
-#include "../../../shared/c/b64/b64.h"
+#include "b64/b64.h"
 #include "util/err.h"
 
 #include <openssl/evp.h>

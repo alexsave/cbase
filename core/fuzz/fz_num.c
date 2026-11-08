@@ -7,7 +7,7 @@
 // int64s from the input (either order; lo > hi must be refused).
 #include "fz.h"
 
-#include "../../../shared/c/num_parse.h"
+#include "num_parse.h"
 
 static int64_t i64_at(const uint8_t *p) {
     uint64_t u = 0;

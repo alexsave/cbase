@@ -14,7 +14,7 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
-#include "../../../shared/c/clock.h"
+#include "clock.h"
 
 extern char **environ;
 

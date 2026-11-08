@@ -8,7 +8,7 @@
 #include "aws/sigv4.h"
 #include "config.h"
 #include "net/http.h"
-#include "../../../shared/c/b64/b64.h"
+#include "b64/b64.h"
 #include "util/err.h"
 #include "util/json.h"
 #include "util/log.h"

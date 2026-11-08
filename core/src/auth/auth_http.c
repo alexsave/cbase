@@ -13,7 +13,7 @@
 
 #include <stdlib.h>
 
-#include "../../../../shared/c/hex/hex.h"
+#include "hex/hex.h"
 
 #include <openssl/crypto.h>
 #include <openssl/sha.h>

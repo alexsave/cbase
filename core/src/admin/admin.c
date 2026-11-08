@@ -42,7 +42,7 @@
 #include "util/clock.h"
 #include "util/err.h"
 #include "util/log.h"
-#include "../../../../shared/c/num_parse.h"
+#include "num_parse.h"
 
 #include <ctype.h>
 #include <dirent.h>

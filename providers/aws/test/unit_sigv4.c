@@ -11,7 +11,7 @@
 
 #include "aws/sigv4.h"
 #include "util/err.h"
-#include "../../../../shared/c/hex/hex.h"
+#include "hex/hex.h"
 
 #include <openssl/hmac.h>
 

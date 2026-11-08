@@ -8,7 +8,7 @@
 #include "fz.h"
 
 #include "aws_json.h"
-#include "../../../../shared/c/b64/b64.h"
+#include "b64/b64.h"
 #include "util/json.h"
 
 static const char *const PATHS[] = {

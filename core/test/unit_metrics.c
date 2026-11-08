@@ -9,7 +9,7 @@
 #include "net/router.h"
 #include "util/clock.h"
 #include "util/err.h"
-#include "../../../shared/c/stats/hist.h"
+#include "stats/hist.h"
 
 #include <math.h>
 #include <stdio.h>

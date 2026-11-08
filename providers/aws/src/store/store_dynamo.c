@@ -16,10 +16,10 @@
 #include "aws/sigv4.h"
 #include "aws_json.h"
 #include "util/clock.h"
-#include "../../../../../shared/c/hex/hex.h"
+#include "hex/hex.h"
 #include "util/log.h"
 #include "util/uuid.h"
-#include "../../../../../shared/c/rng.h"
+#include "rng.h"
 
 #include <fcntl.h>
 #include <stdatomic.h>

@@ -1,9 +1,9 @@
 #include "config.h"
 
-#include "../../../shared/c/b64/b64.h"
+#include "b64/b64.h"
 #include "util/err.h"
 #include "util/log.h"
-#include "../../../shared/c/num_parse.h"
+#include "num_parse.h"
 #include "util/affinity.h"
 #include "util/str.h"
 #include "util/uuid.h"

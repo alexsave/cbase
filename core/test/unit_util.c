@@ -1,10 +1,10 @@
 // unit_util.c - the util layer: bytea, uuid, clock, str, json, log, pool.
 #include "t.h"
 
-#include "../../../shared/c/b64/b64.h"
+#include "b64/b64.h"
 #include "util/clock.h"
 #include "util/err.h"
-#include "../../../shared/c/hex/hex.h"
+#include "hex/hex.h"
 #include "util/bytea.h"
 #include "util/json.h"
 #include "util/log.h"

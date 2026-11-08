@@ -16,8 +16,8 @@
 #include "auth/oidc.h"
 #include "cbase/auth_wire.h"
 #include "core_json.h"
-#include "../../../shared/c/b64/b64.h"
-#include "../../../shared/c/hex/hex.h"
+#include "b64/b64.h"
+#include "hex/hex.h"
 
 #include <openssl/bn.h>
 #include <openssl/core_names.h>

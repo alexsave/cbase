@@ -11,7 +11,7 @@
 
 #include "metrics.h"
 #include "util/err.h"
-#include "../../../shared/c/stats/hist.h"
+#include "stats/hist.h"
 
 static bool name_model(const char *s) {
     size_t n = strlen(s);

@@ -5,7 +5,7 @@
 // write back to a packet that reads the same.
 #include "fz.h"
 
-#include "../../../shared/c/mqtt/mqtt.h"
+#include "mqtt/mqtt.h"
 
 static void check_packet(const uint8_t *p, int n, int k, const MqttPacket *m, int from) {
     FZ_CHECK(k > 0 && k <= n);

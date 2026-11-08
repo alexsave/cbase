@@ -13,7 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include "../../../../shared/c/clock.h"
+#include "clock.h"
 
 struct fr_runtime {
     cb_ctx          ctx;

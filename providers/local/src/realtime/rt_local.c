@@ -52,7 +52,7 @@
 #include "util/log.h"
 #include "util/pool.h"
 
-#include "../../../../../shared/c/stream_frame.h"
+#include "stream_frame.h"
 
 #include <pthread.h>
 #include <stdatomic.h>

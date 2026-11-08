@@ -10,7 +10,7 @@
 #ifdef __APPLE__
 #include <pthread/qos.h>
 #endif
-#include "../../../shared/c/clock.h"
+#include "clock.h"
 
 // crypt_blowfish's and OpenBSD's published vectors (wrapper.c / regress).
 static const struct { const char *hash, *pw; } VECTORS[] = {

@@ -7,7 +7,7 @@
 #include "fz.h"
 
 #include "auth/auth_wire.h"
-#include "../../../shared/c/le_bytes.h"
+#include "le_bytes.h"
 
 static size_t put_str8(uint8_t *o, size_t at, const char *s, size_t n) {
     o[at++] = (uint8_t)n;

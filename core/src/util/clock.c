@@ -1,7 +1,7 @@
 #include "clock.h"
 
 #include "err.h"
-#include "../../../../shared/c/clock.h"
+#include "clock.h"
 
 #include <errno.h>
 #include <stdio.h>

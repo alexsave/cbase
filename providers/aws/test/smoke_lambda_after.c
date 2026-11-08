@@ -16,7 +16,7 @@
 #include "lib_tls.h"
 #include "lib_fake_runtime.h"
 #include "lib_proc.h"
-#include "../../../../shared/c/b64/b64.h"
+#include "b64/b64.h"
 #include "util/err.h"
 #include "util/json.h"
 #include "util/log.h"

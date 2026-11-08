@@ -3,7 +3,7 @@
 
 #include "auth.h"
 #include "util/err.h"
-#include "../../../../shared/c/text_util/utf8.h"
+#include "text_util/utf8.h"
 
 #include <stdbool.h>
 #include <stdint.h>

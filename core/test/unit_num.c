@@ -1,7 +1,7 @@
 // unit_num.c - num_parse_i64 (shared/c/num_parse.h), the one decimal integer parser.
 #include "t.h"
 
-#include "../../../shared/c/num_parse.h"
+#include "num_parse.h"
 
 #include <stdint.h>
 

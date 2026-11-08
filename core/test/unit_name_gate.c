@@ -6,13 +6,13 @@
 //   * a provider (providers/<p>/src) hits no product and no domain word;
 //   * the product (../foolish/server/src) hits no provider word.
 //
-// The lists are ../shared/tools/name_gate/words.txt (the TypeScript gate over
+// The lists are tools/name_gate/words.txt (the TypeScript gate over
 // shared/ reads its product list from the same file; its header says the
 // pattern syntax). Every line of every file under those directories is read,
 // comments and strings included: a name in a comment is the first step of
 // the drift, not an exception to it.
 //
-// THE ALLOWLIST, ../shared/tools/name_gate/allow.txt, holds today's hits, one
+// THE ALLOWLIST, tools/name_gate/allow.txt, holds today's hits, one
 // line per file and pattern:
 //
 //     <count> <path from the repository root> <pattern, as words.txt writes it>
@@ -32,8 +32,8 @@
 #include <string.h>
 #include <sys/stat.h>
 
-#define WORDS "../shared/tools/name_gate/words.txt"
-#define ALLOW "../shared/tools/name_gate/allow.txt"
+#define WORDS "tools/name_gate/words.txt"
+#define ALLOW "tools/name_gate/allow.txt"
 
 enum { L_PRODUCTS = 1, L_PROVIDERS = 2, L_DOMAIN = 4 };
 
