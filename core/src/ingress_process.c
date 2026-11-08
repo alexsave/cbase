@@ -6,7 +6,8 @@
 // provider's store and push transport (local: SQLite and the in-process hub;
 // a Cloud Run provider would run this same ingress with its own). Listens on CBASE_LISTEN
 // (127.0.0.1:8080). SIGTERM or SIGINT drains: in-flight requests finish,
-// WebSockets get 1001, then the process exits 0.
+// WebSockets get 1001, then the process exits 0. The children the app started (spawn.h) are ended
+// on the way down (their groups SIGTERMed, then SIGKILLed): none outlives the server.
 //
 // THE SCHEDULES. Under Lambda, EventBridge Scheduler invokes each of the
 // app's schedules (cbase/app.h); serve has
@@ -30,6 +31,7 @@
 #include "ctx.h"
 #include "net/loop.h"
 #include "net/server.h"
+#include "spawn.h"
 #include "util/clock.h"
 #include "util/err.h"
 #include "util/log.h"
@@ -154,7 +156,8 @@ int cb_process_main(const cb_provider *prov, const cb_app *app, int argc, char *
     ctx.loop = cb_loop_new();
     ctx.req_pool = cb_pool_new(cfg.req_workers, "req");
     ctx.job_pool = cb_pool_new(cfg.job_workers, "job");
-    if (!ctx.loop || !ctx.req_pool || !ctx.job_pool) { fprintf(stderr, "cbase: out of memory\n"); return 1; }
+    ctx.spawner = ctx.loop ? cb_spawner_new(ctx.loop) : NULL;
+    if (!ctx.loop || !ctx.req_pool || !ctx.job_pool || !ctx.spawner) { fprintf(stderr, "cbase: out of memory\n"); return 1; }
     if (prov->serve_prepare && prov->serve_prepare(&cfg) != CB_OK) return 1;
     if (cb_boot(&ctx, err, sizeof err) != CB_OK) { CB_ERROR("serve", "%s", err); return 1; }
 
@@ -217,11 +220,16 @@ int cb_process_main(const cb_provider *prov, const cb_app *app, int argc, char *
     CB_INFO("serve", "listening on %s:%d (%s)", cfg.listen_host, port, cb_loop_backend(ctx.loop));
     int rc = cb_loop_run(ctx.loop);
 
-    // Down in reverse: no handler may run against a freed connection.
+    // Down in reverse: no handler may run against a freed connection. The children first: each one
+    // still running is ended (its group SIGTERMed, then SIGKILLed), so none outlives the server and a
+    // pool thread waiting for one (cb_spawn_wait) is let go before its pool is joined.
+    cb_spawner_stop(ctx.spawner);
     cb_pool_free(ctx.req_pool);
     cb_pool_free(ctx.job_pool);
     cb_server_free(ctx.server);
     cb_unboot(&ctx);
+    cb_spawner_free(ctx.spawner);
+    ctx.spawner = NULL;
     cb_loop_free(ctx.loop);
     CB_INFO("serve", "stopped");
     return rc == CB_OK ? 0 : 1;
