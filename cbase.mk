@@ -33,6 +33,8 @@
 #                    with its own -O3 and warnings), linked into every program: APP_EXTRA_CFLAGS,
 #                    and its sanitized, coverage and fuzz builds APP_EXTRA_ASAN_CFLAGS,
 #                    APP_EXTRA_COV_CFLAGS, APP_EXTRA_FUZZ_CFLAGS (derived from it when unset)
+#   APP_LIB_SRC      single sources outside its roots linked into every program in CB_CFLAGS (a
+#                    helper of its own repository's)
 #   APP_EMBED        files embedded as C strings: <file>=<symbol> (build/gen/<symbol>.c)
 #   APP_PROGS        more programs `make` builds: <name>=<main source>, each build/<name>
 #   APP_TOOLS        the same, built only when named (hand-run generators)
@@ -222,7 +224,7 @@ CB_GEN += build/gen/cbase_links.c
 CB_LIB_SRC := $(CB)lib/b64/b64.c $(CB)lib/hex/hex.c $(CB)lib/sha256.c $(CB)lib/mqtt/mqtt.c \
               $(CB)lib/stats/hist.c $(CB)lib/proc.c
 LIB_SRC  := $(sort $(filter-out $(MAIN_SERVE) $(MAIN_LAMBDA),$(foreach r,$(SRC_ROOTS),$(wildcard $(r)/*.c $(r)/*/*.c)))) $(CB_LIB_SRC) \
-            $(CB_GEN) $(APP_GEN)
+            $(APP_LIB_SRC) $(CB_GEN) $(APP_GEN)
 # THE CONFORMANCE SUITES (docs/PLATFORM.md 8.7 decision 2): core/test/conformance/ holds one library
 # per provider interface (store, push, ingress, job), each linked into every test program like a
 # lib_*.c, and each provider's lane runs them from a unit test of its own.
@@ -366,7 +368,7 @@ $(call LIB_TESTS_IN,asan_,build/obj/asan,CC,ASAN_CB_CFLAGS)
 # written here from APP_GATE_HEADER, the product being whoever includes this file.
 gate_hdr_ok = $(if $(findstring _includes_aws,$(1)),$(CB_AWS),$(if $(findstring _includes_local,$(1)),$(CB_LOCAL),x))
 GATE_SRC := $(sort $(foreach r,$(TEST_ROOTS),$(foreach g,$(wildcard $(r)/gate/*.c),$(if $(call gate_hdr_ok,$(notdir $(g))),$(g)))))
-gate_side = $(call cb_stem,$(subst /test/gate/,/src/,$(1)))
+gate_side = $(call cb_stem,$(patsubst /%,%,$(subst /test/gate/,/src/,/$(1))))
 gate_hdr = $(shell sed -n 's/^\#include "\(.*\)"$$/\1/p' $(1))
 ifneq ($(strip $(APP_GATE_HEADER)),)
 CB_GATE_PRODUCT := build/gate/src/core_includes_product.c
@@ -501,7 +503,7 @@ coverage: $(addprefix build/cov/test/,$(UNITS)) $(call SMOKE_PROGS,build/cov) bu
 	gcovr --root $(COV_ROOT) --object-directory build/obj --gcov-executable '$(COV_GCOV)' --gcov-ignore-parse-errors=all \
 	  $(COV_FILTER) $(COV_EXCLUDE) --exclude-unreachable-branches --exclude-throw-branches \
 	  --lcov build/cov/coverage.lcov
-	build/cov_gate build/cov/coverage.lcov build/cov/floor.txt --report $(addprefix --strip ,$(CB_COV_STRIP)) > build/cov/report.txt || { cat build/cov/report.txt; exit 1; }
+	build/cov_gate build/cov/coverage.lcov build/cov/floor.txt --report --strip '$(abspath $(COV_ROOT))/' $(addprefix --strip ,$(CB_COV_STRIP)) > build/cov/report.txt || { cat build/cov/report.txt; exit 1; }
 	@tail -4 build/cov/report.txt
 COV_JOBS ?= $(shell getconf _NPROCESSORS_ONLN)
 

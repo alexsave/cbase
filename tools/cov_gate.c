@@ -1,6 +1,6 @@
 // cov_gate.c - c_base's coverage gate and per-function report (docs/COVERAGE.md).
 //
-//   build/cov_gate <coverage.lcov> <floor.txt> [--report]
+//   build/cov_gate <coverage.lcov> <floor.txt> [--report] [--strip <prefix>]...
 //
 // Reads the LCOV tracefile gcovr writes from the coverage build (`make
 // coverage`) and holds it against the floor file:
@@ -24,6 +24,11 @@
 // --report prints, for every file, its line and branch coverage, then every
 // function under 100% line coverage with its own numbers, worst first within
 // the file. Exit status: 0 the gate holds, 1 it does not, 2 bad input.
+//
+// --strip <prefix> (any number): a path in the tracefile is named as the floor file
+// names it by cutting everything through the first <prefix> in it, when it starts
+// with <prefix> or holds "/<prefix>" (cbase.mk passes the measured root's absolute
+// path, and a product names the directory c_base is in, "c_base/").
 #include <ctype.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -43,16 +48,21 @@ static int g_nfiles, g_capfiles;
 
 static int by_line(const void *a, const void *b) { return ((const fn_t *)a)->line - ((const fn_t *)b)->line; }
 
-// Path relative to c_base ("core/src/...", "providers/aws/src/..."), or from
-// "foolish/" on for the kernel and the product.
+// The --strip prefixes.
+#define MAX_STRIP 8
+static const char *g_strip[MAX_STRIP];
+static int g_nstrip;
+
+// The path as the floor names it: through each --strip prefix cut, in the order given.
 static const char *short_path(const char *p) {
-    const char *f = strstr(p, "/foolish/c/src/");
-    if (f) return f + 1;
-    f = strstr(p, "/foolish/server/src/");
-    if (f) return f + 1;
-    if (!strncmp(p, "../foolish/", 11)) return p + 3;
-    const char *s = strstr(p, "/c_base/");
-    if (s) return s + 8;
+    for (int i = 0; i < g_nstrip; i++) {
+        size_t k = strlen(g_strip[i]);
+        if (!strncmp(p, g_strip[i], k)) { p += k; continue; }
+        char slash[600];
+        snprintf(slash, sizeof slash, "/%s", g_strip[i]);
+        const char *f = strstr(p, slash);
+        if (f) p = f + 1 + k;
+    }
     return p;
 }
 
@@ -136,8 +146,13 @@ static int fn_cmp(const void *a, const void *b) {
 }
 
 int main(int argc, char **argv) {
-    if (argc < 3) { fprintf(stderr, "usage: cov_gate <coverage.lcov> <floor.txt> [--report]\n"); return 2; }
-    bool report = argc > 3 && !strcmp(argv[3], "--report");
+    if (argc < 3) { fprintf(stderr, "usage: cov_gate <coverage.lcov> <floor.txt> [--report] [--strip <prefix>]...\n"); return 2; }
+    bool report = false;
+    for (int i = 3; i < argc; i++) {
+        if (!strcmp(argv[i], "--report")) report = true;
+        else if (!strcmp(argv[i], "--strip") && i + 1 < argc && g_nstrip < MAX_STRIP) g_strip[g_nstrip++] = argv[++i];
+        else { fprintf(stderr, "cov_gate: unknown argument %s\n", argv[i]); return 2; }
+    }
     if (read_lcov(argv[1]) != 0) return 2;
 
     double floor_line = -1, floor_branch = -1;
