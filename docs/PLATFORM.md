@@ -298,6 +298,18 @@ Zero or NULL in the field leaves cbase's default, so an app that sets nothing is
 
 - `req_workers`: serve's request pool, the threads every `CB_ROUTE_POOL` handler runs on, 1 to 256 (cbase's default 1; `CBASE_REQ_WORKERS`).
   An app whose handlers hold their thread on a remote call sets as many as it wants waiting at once: amgi's Gemini calls hold one for up to about 30 s, so it ships `.req_workers = 12`.
+- `slow_workers`: serve's slow pool, the threads every `CB_ROUTE_SLOW` handler runs on, apart from the request pool, 1 to 256 (cbase's default 4; `CBASE_SLOW_WORKERS`).
+  Serve starts it only when some route is slow.
+  A route marked `CB_ROUTE_SLOW` (a handler that holds its thread on a remote call for seconds or minutes) never holds a request worker, so the fast routes (a status poll, a file) are never queued behind it.
+  amgi's Gemini calls are slow routes, so it ships `.slow_workers = 12`, and its fast routes keep cbase's one request worker.
+  Under a one-shot platform (Lambda) every handler runs in place and the flag changes nothing.
+- `slow_queue`: how many slow requests may wait for a slow worker once every one is busy, 0 to 4096 (cbase's default 0, no queue; `CBASE_SLOW_QUEUE`).
+  With none, a slow request starts at once or is refused at once: one that waited would wait for a whole slow handler to end, minutes with nothing on the wire.
+- `slow_full`: the answer to a slow request that finds every slow worker busy and the queue full, written as a handler writes one, at once and never queued.
+  It runs on the loop thread and must not block; the host and origin checks have passed, and CORS is added after it.
+  NULL is cbase's answer: `503` with the text body `server busy` and `Retry-After: 5`.
+  A socket's REQ to a slow route is refused the same way (its status and body).
+  amgi answers its own wire format's `notStarted` here.
 - `log_level`: the least level the log keeps, `"debug"`, `"info"`, `"warn"` or `"error"` (cbase's default `"info"`; `CBASE_LOG_LEVEL`).
   amgi ships `"warn"`.
   The startup line on stdout, `cbase: listening <host>:<port>`, is not the log's and is printed at every level, so a parent that waits for it works whatever the app ships.
