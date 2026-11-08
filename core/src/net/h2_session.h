@@ -80,7 +80,17 @@ typedef struct {
 } cb_h2_iov;
 
 // How a stream ended.
+typedef enum {
+    CB_H2_END_OK = 0,
+    CB_H2_END_PEER_RESET,    // the peer sent RST_STREAM
+    CB_H2_END_GOAWAY,        // the peer went away before processing it
+    CB_H2_END_STREAM_ERROR,  // this side reset it: a malformed response, or a callback refused it
+    CB_H2_END_CONN_ERROR,    // the peer broke the protocol, and the connection is dead
+    CB_H2_END_FAILED,        // this side ended the session (cb_h2_sess_fail, a graceful close, out of ids)
+} cb_h2_end_kind;
+
 typedef struct {
+    cb_h2_end_kind kind;
     bool     ok;          // the response arrived whole (END_STREAM after its headers)
     uint32_t h2_code;     // the RST_STREAM or GOAWAY code, or the one this side used
     bool     by_peer;     // the peer reset it, or went away under it

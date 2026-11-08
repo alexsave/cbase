@@ -180,11 +180,11 @@ static void end_open(cb_h2_sess *s, cb_h2_stream *st, const cb_h2_end *e) {
     stream_free(st);
 }
 
-static void end_waiting_all(cb_h2_sess *s, uint32_t code, bool by_peer, const char *why) {
+static void end_waiting_all(cb_h2_sess *s, cb_h2_end_kind kind, uint32_t code, bool by_peer, const char *why) {
     while (s->wait_head) {
         cb_h2_stream *st = s->wait_head;
         unlink_wait(s, st);
-        cb_h2_end e = { false, code, by_peer, true, why };
+        cb_h2_end e = { kind, false, code, by_peer, true, why };
         if (s->cb.on_end) s->cb.on_end(st->user, &e);
         stream_free(st);
     }
@@ -193,11 +193,11 @@ static void end_waiting_all(cb_h2_sess *s, uint32_t code, bool by_peer, const ch
 // A stream error: RST_STREAM with code, and the stream ends.
 static void reset_stream(cb_h2_sess *s, cb_h2_stream *st, uint32_t code, const char *why) {
     cb_h2_frame_u32(&s->ctl, CB_H2_RST_STREAM, st->id, code);
-    cb_h2_end e = { false, code, false, false, why };
+    cb_h2_end e = { CB_H2_END_STREAM_ERROR, false, code, false, false, why };
     end_open(s, st, &e);
 }
 
-static void fail(cb_h2_sess *s, uint32_t code, bool by_peer, const char *why) {
+static void fail(cb_h2_sess *s, cb_h2_end_kind kind, uint32_t code, bool by_peer, const char *why) {
     if (s->dead) return;
     s->dead = true;
     if (!s->goaway_sent) {
@@ -206,15 +206,15 @@ static void fail(cb_h2_sess *s, uint32_t code, bool by_peer, const char *why) {
         s->goaway_sent = true;
     }
     while (s->open) {
-        cb_h2_end e = { false, code, by_peer, false, why };
+        cb_h2_end e = { kind, false, code, by_peer, false, why };
         end_open(s, s->open, &e);
     }
-    end_waiting_all(s, code, by_peer, why);
+    end_waiting_all(s, kind, code, by_peer, why);
 }
 
 // A connection error found in what the peer sent.
 static int conn_error(cb_h2_sess *s, uint32_t code, const char *why) {
-    fail(s, code, false, why);
+    fail(s, CB_H2_END_CONN_ERROR, code, false, why);
     return CB_E_IO;
 }
 
@@ -281,13 +281,13 @@ bool cb_h2_sess_accepting(const cb_h2_sess *s) {
 int cb_h2_sess_streams(const cb_h2_sess *s) { return s->n_open + s->n_wait; }
 uint32_t cb_h2_sess_peer_setting(const cb_h2_sess *s, int id) { return id >= 1 && id <= 6 ? s->peer[id] : 0; }
 
-void cb_h2_sess_fail(cb_h2_sess *s, uint32_t code, const char *why) { fail(s, code, false, why); }
+void cb_h2_sess_fail(cb_h2_sess *s, uint32_t code, const char *why) { fail(s, CB_H2_END_FAILED, code, false, why); }
 
 void cb_h2_sess_goaway(cb_h2_sess *s) {
     if (s->dead || s->goaway_sent) return;
     cb_h2_frame_goaway(&s->ctl, 0, CB_H2_NO_ERROR);
     s->goaway_sent = true;
-    end_waiting_all(s, CB_H2_NO_ERROR, false, "the connection is closing");
+    end_waiting_all(s, CB_H2_END_FAILED, CB_H2_NO_ERROR, false, "the connection is closing");
 }
 
 // RFC 9113 8.2.2: fields that name the connection, not the request.
@@ -422,7 +422,7 @@ static int on_field(void *ctx, const char *name, size_t nl, const char *value, s
 // The response is whole: if the request is still going out, it stops (CANCEL).
 static void complete(cb_h2_sess *s, cb_h2_stream *st) {
     if (!st->end_sent) cb_h2_frame_u32(&s->ctl, CB_H2_RST_STREAM, st->id, CB_H2_CANCEL);
-    cb_h2_end e = { true, CB_H2_NO_ERROR, false, false, NULL };
+    cb_h2_end e = { CB_H2_END_OK, true, CB_H2_NO_ERROR, false, false, NULL };
     end_open(s, st, &e);
 }
 
@@ -552,11 +552,11 @@ static int on_goaway(cb_h2_sess *s, const cb_h2_frame *f, const uint8_t *p) {
     for (cb_h2_stream *st = s->open, *next; st; st = next) {
         next = st->next;
         if (st->id > last) {
-            cb_h2_end e = { false, code, true, true, "the peer went away before it processed the request" };
+            cb_h2_end e = { CB_H2_END_GOAWAY, false, code, true, true, "the peer went away before it processed the request" };
             end_open(s, st, &e);
         }
     }
-    end_waiting_all(s, code, true, "the peer went away before the request was sent");
+    end_waiting_all(s, CB_H2_END_GOAWAY, code, true, "the peer went away before the request was sent");
     return CB_OK;
 }
 
@@ -604,7 +604,7 @@ static int on_frame(cb_h2_sess *s, const cb_h2_frame *f, const uint8_t *payload)
         cb_h2_stream *st = find(s, f->stream);
         if (!st) return CB_OK;
         uint32_t code = rd32(payload);
-        cb_h2_end e = { false, code, true, code == CB_H2_REFUSED_STREAM, "the peer reset the stream" };
+        cb_h2_end e = { CB_H2_END_PEER_RESET, false, code, true, code == CB_H2_REFUSED_STREAM, "the peer reset the stream" };
         end_open(s, st, &e);
         return CB_OK;
     }
@@ -657,13 +657,22 @@ int cb_h2_sess_recv(cb_h2_sess *s, const uint8_t *p, size_t n) {
 }
 
 // ---- sending ----------------------------------------------------------------------
+// Streams open only once the peer's SETTINGS are in: its MAX_CONCURRENT_STREAMS
+// counts as unlimited until then, and a burst opened before it arrives would be
+// refused past the limit. A server's preface is its first frame, so this waits
+// on bytes already on their way.
+static bool may_open(const cb_h2_sess *s) {
+    return s->got_settings && s->wait_head && !s->goaway_recv && !s->goaway_sent &&
+           (uint32_t)s->n_open < s->peer[CB_H2_S_MAX_CONCURRENT_STREAMS];
+}
+
 static void open_waiting(cb_h2_sess *s, cb_buf *out) {
-    while (s->wait_head && !s->goaway_recv && !s->goaway_sent &&
+    while (s->got_settings && s->wait_head && !s->goaway_recv && !s->goaway_sent &&
            (uint32_t)s->n_open < s->peer[CB_H2_S_MAX_CONCURRENT_STREAMS]) {
         cb_h2_stream *st = s->wait_head;
         if (s->next_id > 0x7fffffffu) {
             s->ids_out = true;
-            end_waiting_all(s, CB_H2_NO_ERROR, false, "the connection is out of stream ids");
+            end_waiting_all(s, CB_H2_END_FAILED, CB_H2_NO_ERROR, false, "the connection is out of stream ids");
             return;
         }
         unlink_wait(s, st);
@@ -731,9 +740,7 @@ size_t cb_h2_sess_flush(cb_h2_sess *s, cb_buf *out) {
 bool cb_h2_sess_want_flush(const cb_h2_sess *s) {
     if (s->ctl.len) return true;
     if (s->dead) return false;
-    if (s->wait_head && !s->goaway_recv && !s->goaway_sent &&
-        (uint32_t)s->n_open < s->peer[CB_H2_S_MAX_CONCURRENT_STREAMS])
-        return true;
+    if (may_open(s)) return true;
     if (s->conn_send_window <= 0) return false;
     for (const cb_h2_stream *st = s->open; st; st = st->next)
         if (!st->end_sent && st->send_window > 0) return true;

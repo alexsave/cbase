@@ -232,6 +232,9 @@ static void response(void) {
         rq_init(&r);
         get(&p, &r, "/v1/x", NULL, 0);
         pump(&p);
+        T_EQ_INT(count(&p, CB_H2_HEADERS), 0);   // nothing opens before the server's SETTINGS
+        s_preface(&p, NULL, NULL, 0);
+        pump(&p);
         const sframe *h = last_of(&p, CB_H2_HEADERS);
         T_CHECK(h != NULL);
         T_EQ_INT(h->stream, 1);
@@ -241,13 +244,13 @@ static void response(void) {
                  "x-goog-api-key=k3y!;");
         cb_buf b;
         cb_buf_init(&b);
-        s_settings(&b, NULL, NULL, 0);
         s_headers(&b, 1, ":status=200;content-type=application/grpc", false, CB_H2_DEFAULT_FRAME);
         s_data(&b, 1, "hello ", 6, false);
         s_data(&b, 1, "world", 5, false);
         s_headers(&b, 1, "grpc-status=0;grpc-message=ok", true, CB_H2_DEFAULT_FRAME);
         T_EQ_INT(deliver(&p, &b, bytewise), CB_OK);
         T_CHECK(r.ended && r.end.ok);
+        T_EQ_INT(r.end.kind, CB_H2_END_OK);
         T_EQ_STR(r.headers, ":status=200;content-type=application/grpc;");
         T_EQ_STR(r.trailers, "grpc-status=0;grpc-message=ok;");
         T_EQ_MEM(r.body.p, r.body.len, "hello world", 11);
@@ -274,10 +277,10 @@ static void header_shapes(void) {
     get(&p, &a, "/a", NULL, 0);
     get(&p, &b2, "/b", NULL, 0);
     get(&p, &c, "/c", NULL, 0);
+    s_preface(&p, NULL, NULL, 0);
     pump(&p);
     cb_buf b;
     cb_buf_init(&b);
-    s_settings(&b, NULL, NULL, 0);
     s_headers(&b, 1, ":status=200;grpc-status=14;grpc-message=unavailable", true, CB_H2_DEFAULT_FRAME);
     s_headers(&b, 3, ":status=103;link=x", false, CB_H2_DEFAULT_FRAME);
     s_headers(&b, 3, ":status=204", true, CB_H2_DEFAULT_FRAME);
@@ -570,7 +573,9 @@ static void resets_goaway_ping(void) {
     T_EQ_INT(deliver(&p, &b, false), CB_OK);
     T_CHECK(a.ended && !a.end.ok && a.end.by_peer && a.end.unprocessed);
     T_EQ_INT(a.end.h2_code, CB_H2_REFUSED_STREAM);
+    T_EQ_INT(a.end.kind, CB_H2_END_PEER_RESET);
     T_CHECK(c.ended && c.end.unprocessed && c.end.by_peer);
+    T_EQ_INT(c.end.kind, CB_H2_END_GOAWAY);
     T_CHECK(!b2.ended);
     T_CHECK(!cb_h2_sess_accepting(p.c));
     req d;
@@ -665,6 +670,7 @@ static void stream_errors(void) {
         T_EQ_INT(deliver(&p, &b, false), CB_OK);
         T_CHECK(r.ended && !r.end.ok && !r.end.by_peer);
         T_EQ_INT(r.end.h2_code, cases[i].code);
+        T_EQ_INT(r.end.kind, CB_H2_END_STREAM_ERROR);
         if (cases[i].fields[0] != ':') T_EQ_STR(r.headers, "");   // no field reaches the caller before :status
         T_CHECK(!cb_h2_sess_dead(p.c));
         pump(&p);
@@ -740,30 +746,29 @@ static void early_response(void) {
 // GOAWAY with the code.
 typedef void (*build_fn)(cb_buf *b);
 static void ce_not_settings(cb_buf *b) { cb_h2_frame_u32(b, CB_H2_WINDOW_UPDATE, 0, 1); }
-static void ce_push(cb_buf *b) { s_settings(b, NULL, NULL, 0); cb_h2_frame_head(b, 4, CB_H2_PUSH_PROMISE, CB_H2_F_END_HEADERS, 1); cb_buf_append(b, "\0\0\0\2", 4); }
-static void ce_big(cb_buf *b) { s_settings(b, NULL, NULL, 0); cb_h2_frame_head(b, CB_H2_DEFAULT_FRAME + 1, CB_H2_DATA, 0, 1); }
-static void ce_idle(cb_buf *b) { s_settings(b, NULL, NULL, 0); s_headers(b, 7, ":status=200", true, CB_H2_DEFAULT_FRAME); }
-static void ce_even(cb_buf *b) { s_settings(b, NULL, NULL, 0); s_headers(b, 2, ":status=200", true, CB_H2_DEFAULT_FRAME); }
+static void ce_push(cb_buf *b) { cb_h2_frame_head(b, 4, CB_H2_PUSH_PROMISE, CB_H2_F_END_HEADERS, 1); cb_buf_append(b, "\0\0\0\2", 4); }
+static void ce_big(cb_buf *b) { cb_h2_frame_head(b, CB_H2_DEFAULT_FRAME + 1, CB_H2_DATA, 0, 1); }
+static void ce_idle(cb_buf *b) { s_headers(b, 7, ":status=200", true, CB_H2_DEFAULT_FRAME); }
+static void ce_even(cb_buf *b) { s_headers(b, 2, ":status=200", true, CB_H2_DEFAULT_FRAME); }
 // Stream 2 is below the last opened (3), so only its evenness makes it one this side never opened.
-static void ce_even_low(cb_buf *b) { s_settings(b, NULL, NULL, 0); cb_h2_frame_u32(b, CB_H2_WINDOW_UPDATE, 2, 1); }
-static void ce_hpack(cb_buf *b) { s_settings(b, NULL, NULL, 0); cb_h2_frame_head(b, 1, CB_H2_HEADERS, CB_H2_F_END_HEADERS, 1); cb_buf_putc(b, (char)0x80); }
+static void ce_even_low(cb_buf *b) { cb_h2_frame_u32(b, CB_H2_WINDOW_UPDATE, 2, 1); }
+static void ce_hpack(cb_buf *b) { cb_h2_frame_head(b, 1, CB_H2_HEADERS, CB_H2_F_END_HEADERS, 1); cb_buf_putc(b, (char)0x80); }
 static void ce_enable_push(cb_buf *b) { const uint16_t i[] = { CB_H2_S_ENABLE_PUSH }; const uint32_t v[] = { 1 }; s_settings(b, i, v, 1); }
 static void ce_window(cb_buf *b) { const uint16_t i[] = { CB_H2_S_INITIAL_WINDOW_SIZE }; const uint32_t v[] = { 0x80000000u }; s_settings(b, i, v, 1); }
 static void ce_frame_size(cb_buf *b) { const uint16_t i[] = { CB_H2_S_MAX_FRAME_SIZE }; const uint32_t v[] = { 100 }; s_settings(b, i, v, 1); }
 static void ce_settings_len(cb_buf *b) { cb_h2_frame_head(b, 5, CB_H2_SETTINGS, 0, 0); cb_buf_append(b, "\0\0\0\0\0", 5); }
-static void ce_cont(cb_buf *b) { s_settings(b, NULL, NULL, 0); cb_h2_frame_head(b, 1, CB_H2_CONTINUATION, CB_H2_F_END_HEADERS, 1); cb_buf_putc(b, (char)0x88); }
+static void ce_cont(cb_buf *b) { cb_h2_frame_head(b, 1, CB_H2_CONTINUATION, CB_H2_F_END_HEADERS, 1); cb_buf_putc(b, (char)0x88); }
 static void ce_interleave(cb_buf *b) {
-    s_settings(b, NULL, NULL, 0);
     cb_h2_frame_head(b, 1, CB_H2_HEADERS, 0, 1);
     cb_buf_putc(b, (char)0x88);
     uint8_t o[8] = { 0 };
     cb_h2_frame_ping(b, o, false);
 }
-static void ce_wu_zero(cb_buf *b) { s_settings(b, NULL, NULL, 0); cb_h2_frame_u32(b, CB_H2_WINDOW_UPDATE, 0, 0); }
-static void ce_wu_over(cb_buf *b) { s_settings(b, NULL, NULL, 0); cb_h2_frame_u32(b, CB_H2_WINDOW_UPDATE, 0, 0x7fffffffu); }
-static void ce_ping_len(cb_buf *b) { s_settings(b, NULL, NULL, 0); cb_h2_frame_head(b, 4, CB_H2_PING, 0, 0); cb_buf_append(b, "1234", 4); }
-static void ce_rst_zero(cb_buf *b) { s_settings(b, NULL, NULL, 0); cb_h2_frame_u32(b, CB_H2_RST_STREAM, 0, 1); }
-static void ce_pad(cb_buf *b) { s_settings(b, NULL, NULL, 0); s_headers(b, 1, ":status=200", false, CB_H2_DEFAULT_FRAME); cb_h2_frame_head(b, 2, CB_H2_DATA, CB_H2_F_PADDED, 1); cb_buf_append(b, "\x05x", 2); }
+static void ce_wu_zero(cb_buf *b) { cb_h2_frame_u32(b, CB_H2_WINDOW_UPDATE, 0, 0); }
+static void ce_wu_over(cb_buf *b) { cb_h2_frame_u32(b, CB_H2_WINDOW_UPDATE, 0, 0x7fffffffu); }
+static void ce_ping_len(cb_buf *b) { cb_h2_frame_head(b, 4, CB_H2_PING, 0, 0); cb_buf_append(b, "1234", 4); }
+static void ce_rst_zero(cb_buf *b) { cb_h2_frame_u32(b, CB_H2_RST_STREAM, 0, 1); }
+static void ce_pad(cb_buf *b) { s_headers(b, 1, ":status=200", false, CB_H2_DEFAULT_FRAME); cb_h2_frame_head(b, 2, CB_H2_DATA, CB_H2_F_PADDED, 1); cb_buf_append(b, "\x05x", 2); }
 
 static void connection_errors(void) {
     static const struct {
@@ -788,6 +793,8 @@ static void connection_errors(void) {
         rq_init(&r3);
         get(&p, &r, "/", NULL, 0);
         get(&p, &r3, "/3", NULL, 0);   // stream 3, so 2 is below the last opened
+        // Every case but the first comes after the server's preface, with the streams open.
+        if (cases[i].f != ce_not_settings) s_preface(&p, NULL, NULL, 0);
         pump(&p);
         cb_buf b;
         cb_buf_init(&b);
@@ -797,6 +804,7 @@ static void connection_errors(void) {
         T_CHECK(cb_h2_sess_dead(p.c));
         T_CHECK(r.ended && !r.end.ok);
         T_EQ_INT(r.end.h2_code, cases[i].code);
+        T_EQ_INT(r.end.kind, CB_H2_END_CONN_ERROR);
         pump(&p);
         const sframe *g = last_of(&p, CB_H2_GOAWAY);
         T_CHECK(g != NULL);
@@ -817,6 +825,7 @@ static void submit_and_fail(void) {
     lim.max_streams = 2;
     peer p;
     peer_init(&p, &lim);
+    s_preface(&p, NULL, NULL, 0);
     req r[3];
     cb_h2_stream *st;
     for (int i = 0; i < 3; i++) rq_init(&r[i]);
@@ -835,6 +844,7 @@ static void submit_and_fail(void) {
     // r[1] has not been flushed: it is unprocessed; r[0] went out: it is not.
     cb_h2_sess_fail(p.c, CB_H2_INTERNAL_ERROR, "the socket closed");
     T_CHECK(r[0].ended && !r[0].end.unprocessed && !r[0].end.by_peer);
+    T_EQ_INT(r[0].end.kind, CB_H2_END_FAILED);
     T_CHECK(r[1].ended && r[1].end.unprocessed);
     T_EQ_STR(r[1].end.why, "the socket closed");
     T_CHECK(cb_h2_sess_dead(p.c));
