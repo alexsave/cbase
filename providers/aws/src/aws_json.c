@@ -994,6 +994,7 @@ static bool icond(ux *u, const cb_iwrite *x, cb_buf *out) {
         case CB_C_ATTR_EXISTS: cb_buf_printf(out, "attribute_exists(%s)", a); break;
         case CB_C_ABSENT_OR_EQ: cb_buf_printf(out, "(attribute_not_exists(%s) OR %s = %s)", a, a, vn); break;
         case CB_C_ABSENT_OR_LT: cb_buf_printf(out, "(attribute_not_exists(%s) OR %s < %s)", a, a, vn); break;
+        case CB_C_ABSENT_OR_GT: cb_buf_printf(out, "(attribute_not_exists(%s) OR %s > %s)", a, a, vn); break;
         default: return false;
         }
     }

@@ -145,6 +145,7 @@ typedef enum {
     CB_C_ATTR_EXISTS,    // the attribute v.name is present
     CB_C_ABSENT_OR_EQ,   // the attribute is absent or equals v
     CB_C_ABSENT_OR_LT,   // the attribute is absent or a number below v.n
+    CB_C_ABSENT_OR_GT,   // the attribute is absent or a number above v.n
 } cb_ccheck;
 
 typedef struct {

@@ -113,8 +113,10 @@ static const char *const SQL[ST__COUNT] = {
     [ST_REFRESH_SWEEP] = "DELETE FROM refresh_tokens WHERE user_id = ?1 AND expires_at > 0 AND expires_at <= ?2",
     [ST_REFRESH_GET] = "SELECT token_hash, user_id, session_id, created_at, revoked, revoked_at, expires_at "
                        "FROM refresh_tokens WHERE token_hash = ?1",
+    // The first take (revoked_at still 0) stamps revoked_at and keeps the row ?3 more; a later one changes neither
+    // (store.h cb_refresh_row). SET's right-hand sides read the row as it was.
     [ST_REFRESH_TAKE] = "UPDATE refresh_tokens SET revoked = 1, revoked_at = CASE WHEN revoked_at = 0 THEN ?2 ELSE revoked_at END, "
-                        "expires_at = ?3 WHERE token_hash = ?1",
+                        "expires_at = CASE WHEN revoked_at = 0 THEN ?3 ELSE expires_at END WHERE token_hash = ?1",
     [ST_FAILS_GET] = "SELECT n, last_at, locked_until, expires_at FROM signin_fails WHERE email = ?1",
     [ST_FAILS_PUT] = "INSERT OR REPLACE INTO signin_fails (email, n, last_at, locked_until, expires_at) VALUES (?1, ?2, ?3, ?4, ?5)",
     [ST_FAILS_CLEAR] = "DELETE FROM signin_fails WHERE email = ?1",
@@ -1401,7 +1403,9 @@ static void refresh_of(sqlite3_stmt *s, cb_refresh_row *r) {
     r->expires_at = sqlite3_column_int64(s, 6);
 }
 
-// Rotation (store.h refresh_take): the row as it was, then spent in the same transaction.
+// Rotation (store.h refresh_take): the row as it was, then spent in the same transaction. A row past its time
+// (not yet swept) is as good as gone, and is left as it is: spending it would keep it CB_AUTH_SPENT_TOKEN_MS more,
+// and the next take would find a live spent token.
 static int refresh_take_step(sq *q, void *ud) {
     refresh_op *o = ud;
     sqlite3_stmt *s = stmt(q, ST_REFRESH_GET);
@@ -1411,6 +1415,7 @@ static int refresh_take_step(sq *q, void *ud) {
     if (r == SQLITE_ROW) { refresh_of(s, o->out); rc = CB_OK; }
     else rc = r == SQLITE_DONE ? CB_E_NOT_FOUND : fail(q, "refresh get", r);
     done(s);
+    if (rc == CB_OK && o->out->expires_at > 0 && o->out->expires_at <= o->now) rc = CB_E_NOT_FOUND;
     if (rc != CB_OK) return rc;
     if (!(s = stmt(q, ST_REFRESH_TAKE))) return CB_E_DB;
     b_hash(s, 1, o->hash);
@@ -1423,8 +1428,6 @@ static int sq_refresh_take(cb_store *st, const char *hash, int64_t now_ms, int64
     memset(out, 0, sizeof *out);
     refresh_op o = { .hash = hash, .now = now_ms, .spent = spent_ms, .out = out };
     int rc = cb_sql_write(st, refresh_take_step, &o);
-    // Past its time but not yet swept: as good as gone.
-    if (rc == CB_OK && out->expires_at > 0 && out->expires_at <= now_ms) rc = CB_E_NOT_FOUND;
     if (rc != CB_OK) memset(out, 0, sizeof *out);
     return rc;
 }
