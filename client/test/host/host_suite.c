@@ -944,6 +944,51 @@ static void a_socket_that_cannot_open_is_told_each_try_and_backs_off(void) {
     kept(w);
 }
 
+// A socket that is made and closes before it opens, try after try (a server that is down; the only
+// failure a platform that cannot say why reports): one CBC_EV_SOCKET_FAILED (CBC_SOCK_FAILED) a try,
+// the tries backed off as reconnects are, and a failure with the platform's why (when it can say
+// one) told once, its close after it not again. Once the server is up, the socket opens.
+static void a_socket_closed_before_it_opens_is_told_each_try_and_backs_off(void) {
+    cbhs_world *w = world();
+    g_cfg.anonymous = 1;
+    cbc *c = start(w, g_h);
+    T_EQ_INT(cbc_sub(c, CBC_ROOM, "feed", 4), 0);
+    pump(w);
+    int64_t at[5];   // five tries, the world's room for a sixth and a seventh below (W_SOCKS)
+    int n = 0;
+    for (int64_t end = w->now + 60000; w->now < end && n < 5;) {
+        uint32_t id = opening(w);
+        if (!id) { advance(w, 1); continue; }
+        at[n++] = w->now;
+        w->sock[id - 1].state = S_FREE;            // closed by the platform before it opened
+        w->h->ws_closed(w->host, wire(w, id));
+        const w_event *e = event(w);
+        T_CHECK(e && e->kind == CBC_EV_SOCKET_FAILED && e->why == CBC_SOCK_FAILED);
+        T_CHECK(event(w) == NULL);
+        T_EQ_INT(opening(w), 0);                   // not at once
+    }
+    T_EQ_INT(n, 5);
+    for (int i = 1; i < n; i++) T_CHECK(at[i] - at[i - 1] >= g_cfg.retry_first_ms);
+    T_CHECK(at[4] - at[0] >= 6 * (int64_t)g_cfg.retry_first_ms);   // backed off: not four waits at the floor
+    T_CHECK(next_try(w));
+    uint32_t id = opening(w);
+    T_CHECK(id != 0);
+    if (!id) return;
+    fail_opening(w, id, CBC_SOCK_REFUSED);         // refused by the network
+    settle(w);                                     // and the platform's close after its error
+    const w_event *e = event(w);
+    T_CHECK(e && e->kind == CBC_EV_SOCKET_FAILED && e->why == (g_h->no_sock_why ? CBC_SOCK_FAILED : CBC_SOCK_REFUSED));
+    T_CHECK(event(w) == NULL);                     // once, for the error and its close
+    T_CHECK(next_try(w));
+    id = opening(w);
+    T_CHECK(id != 0);
+    if (!id) return;
+    accept_sock(w, id);
+    T_EQ_INT(frame(w), SF_HELLO);
+    T_CHECK(event(w) == NULL);
+    kept(w);
+}
+
 int cbhs_run(const cbhs_host *h) {
     g_h = h;
     // Every case twice: socket ids from 1, then from 0 (a platform's ids may start anywhere, and
@@ -967,7 +1012,8 @@ int cbhs_run(const cbhs_host *h) {
         T_RUN(a_retried_borrowed_body_resends_the_same_bytes);
         T_RUN(a_slow_borrowed_upload_is_not_aborted);
         T_RUN(an_auth_http_call_waits_for_the_refresh_without_spinning);
-        T_RUN(a_socket_that_cannot_open_is_told_each_try_and_backs_off);
+        if (!h->no_sock_why) T_RUN(a_socket_that_cannot_open_is_told_each_try_and_backs_off);
+        T_RUN(a_socket_closed_before_it_opens_is_told_each_try_and_backs_off);
     }
     printf("host suite: %s\n", h->name);
     return T_DONE();

@@ -15,7 +15,7 @@
 // world's deliveries onto the host's entry points.
 //
 //   #include "host_suite.h"
-//   static const cbhs_host my_host = { "mine", start, client, pump, ws_opened, ws_message, ws_closed, ws_failed };
+//   static const cbhs_host my_host = { "mine", start, client, pump, ws_opened, ws_message, ws_closed, ws_failed, 0 };
 //   int main(void) { return cbhs_run(&my_host); }
 //
 // THE WORLD'S RULES, which every platform's loop keeps and so every host may count on: nothing is
@@ -72,6 +72,12 @@ typedef struct {
     void (*ws_message)(void *host, uint32_t id, const uint8_t *frame, size_t len);
     void (*ws_closed)(void *host, uint32_t id);
     void (*ws_failed)(void *host, uint32_t id, int why);   // before its open; why: a CBC_SOCK_*
+    // 1: the platform cannot say why a socket failed or could not be made (a browser: the
+    // WebSocket constructor throws, and its error event carries nothing), so it never refuses one
+    // with a CBC_SOCK_* and its only report of a failure is the close before the open
+    // (CBC_SOCK_FAILED); ws_failed may then report nothing. The cases that need the platform's why
+    // are not run; every other case is.
+    int   no_sock_why;
 } cbhs_host;
 
 // Every case, on fresh worlds; prints each failure and a summary. Answers the process's exit code.

@@ -31,6 +31,6 @@ static void ws_message(void *h, uint32_t id, const uint8_t *p, size_t n) { cbc_p
 static void ws_closed(void *h, uint32_t id) { cbc_posix_ws_closed(h, id); }
 static void ws_failed(void *h, uint32_t id, int why) { cbc_posix_ws_failed(h, id, why); }
 
-static const cbhs_host POSIX_HOST = { "posix (hosts/posix/cbc_posix.c)", start, client, pump, ws_opened, ws_message, ws_closed, ws_failed };
+static const cbhs_host POSIX_HOST = { "posix (hosts/posix/cbc_posix.c)", start, client, pump, ws_opened, ws_message, ws_closed, ws_failed, 0 };
 
 int main(void) { return cbhs_run(&POSIX_HOST); }
