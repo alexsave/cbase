@@ -1,11 +1,9 @@
-// The words both libclang generators are written in.
+// The words a libclang generator is written in.
 //
-// tools/structgen and tools/datagen are two programs against ONE library asking
-// it two different questions - structgen asks for SHAPE, datagen asks for
-// CONTENTS - and neither can answer the other's. What is here is what asking
-// anything at all has in common: how a generator refuses, how it builds a line
-// of output, and how it copies a string. Nothing that belongs to one tool's
-// question belongs in here.
+// tools/structgen asks libclang for SHAPE. What is here is what asking anything
+// at all has in common: how a generator refuses, how it builds a line of output,
+// and how it copies a string. Nothing that belongs to one tool's question
+// belongs in here, so a second generator on the same library starts from it.
 #ifndef SGC_H
 #define SGC_H
 #include <stddef.h>

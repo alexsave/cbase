@@ -136,7 +136,9 @@ static void only_num_parse_i64_reads_numbers(void) {
     struct stat st;
     char p[TT_PATH_MAX];
     T_CHECK(stat(tt_path(p, sizeof p, "core/src/config.c"), &st) == 0);   // CBASE_ROOT is cbase, or nothing is scanned
-    T_CHECK(stat(tt_path(p, sizeof p, FLOAT_HOME), &st) == 0);              // the float exemption names a real file
+    // The float exemption names a real file wherever its provider is in the tree (a product that
+    // vendors core and providers/local alone has no providers/aws, and nothing there to scan).
+    if (stat(tt_path(p, sizeof p, "providers/aws"), &st) == 0) T_CHECK(stat(tt_path(p, sizeof p, FLOAT_HOME), &st) == 0);
     scan_dir("core/src");
     scan_dir("providers/local/src");
     scan_dir("providers/aws/src");

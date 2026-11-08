@@ -283,6 +283,22 @@ static int load_allow(const char *path) {
     return bad;
 }
 
+// A path under a provider whose directory is not in this tree: a product that vendors core and
+// providers/local alone has no providers/aws, so the allowlist's lines for it are not stale, they
+// are about files this tree does not carry. Where the provider is present, a line for a file it no
+// longer has is stale as ever.
+static bool provider_absent(const char *path) {
+    static const char pre[] = "providers/";
+    if (strncmp(path, pre, sizeof pre - 1) != 0) return false;
+    const char *slash = strchr(path + sizeof pre - 1, '/');
+    char dir[TT_PATH_MAX], p[TT_PATH_MAX];
+    if (!slash || (size_t)(slash - path) >= sizeof dir) return false;
+    memcpy(dir, path, (size_t)(slash - path));
+    dir[slash - path] = 0;
+    struct stat st;
+    return stat(tt_path(p, sizeof p, dir), &st) != 0;
+}
+
 static int cmp_tally(const void *a, const void *b) {
     const tally *x = a, *y = b;
     int c = strcmp(x->path, y->path);
@@ -349,7 +365,7 @@ static void each_side_names_only_its_own(void) {
             new_hits++;
             fprintf(stderr, "name gate: %s: %d line(s) hit %s, %d allowed; the first is %d: %s\n", t->path, t->hits,
                     g_pat[t->pat].text, t->allowed, t->first_line, t->first);
-        } else if (t->hits < t->allowed) {
+        } else if (t->hits < t->allowed && !provider_absent(t->path)) {
             stale++;
             fprintf(stderr, "name gate: %s hits %s on %d line(s) now, and allow.txt still allows %d: lower it%s\n",
                     t->path, g_pat[t->pat].text, t->hits, t->allowed, t->hits ? "" : " (delete the line)");

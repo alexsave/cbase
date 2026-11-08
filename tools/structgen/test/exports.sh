@@ -54,7 +54,7 @@ if "$SG" "${run[@]}" --link "$FULL" --exports-name FixtureExports --exports-ts "
         if diff "$tmp/want.$which.ts" "$tmp/got.$which.ts"; then ok "the $which link's interface, to the byte"
         else bad "the $which link's interface differs (above: < wanted, > written)"; fi
     done
-    head -2 "$tmp/full.ts" | grep -qx '// build: wasm; link: FixtureExports (10 functions)' \
+    grep -qx '// build: wasm; link: FixtureExports (10 functions)' <<< "$(head -2 "$tmp/full.ts")" \
         && ok "the banner names the build, the link and its function count" || bad "banner: $(head -2 "$tmp/full.ts")"
 else
     bad "the fixture run failed"
@@ -70,14 +70,14 @@ lazy_out=(--exports-name X --exports-ts "$tmp/x.ts")
 if "$SG" "${lazy[@]}" --link "$SMALL" "${lazy_out[@]}" 2>/dev/null; then ok "a source that names no export is not read while every export is defined"
 else bad "a source that names no export was parsed although nothing was missing"; fi
 if err="$("$SG" "${lazy[@]}" --link "$SMALL -Wl,--export=ex_pasted" "${lazy_out[@]}" 2>&1)"; then bad "an undefined export did not send the run to the remaining sources"
-elif printf '%s' "$err" | grep -qF 'this source was read'; then ok "...and is read once an export is still undefined"
+elif grep -qF 'this source was read' <<< "$err"; then ok "...and is read once an export is still undefined"
 else bad "an undefined export was refused without reading the remaining sources: $err"; fi
 
 # ---- requests it must refuse ----------------------------------------------------
 expect_fail() { # description pattern args...
     local what="$1" pat="$2"; shift 2
     local err; err="$("$SG" "$@" 2>&1 >/dev/null)"; local rc=$?
-    if [ $rc -ne 0 ] && printf '%s' "$err" | grep -qF -- "$pat"; then ok "$what"
+    if [ $rc -ne 0 ] && grep -qF -- "$pat" <<< "$err"; then ok "$what"
     else bad "$what (rc=$rc): $err"; fi
 }
 out=(--exports-name X --exports-ts "$tmp/x.ts")
@@ -130,7 +130,7 @@ else
 
     expect_check() { # description pattern module link-flags
         local err; err="$("$SG" "${run[@]}" --link "$4" --exports-name FixtureExports --check-wasm "$3" 2>&1 >/dev/null)"; local rc=$?
-        if [ $rc -ne 0 ] && printf '%s' "$err" | grep -qF -- "$2"; then ok "$1"
+        if [ $rc -ne 0 ] && grep -qF -- "$2" <<< "$err"; then ok "$1"
         else bad "$1 (rc=$rc): $err"; fi
     }
     # The module exports more than the line the run was given, and less.
@@ -158,7 +158,7 @@ else
         || bad "the kind fixture did not link"
     # (--export-if-defined of a name nothing defines is no member at all.)
     err="$("$SG" --cwd "$tmp" --build wasm= --source kind.c --link "-Wl,--export-if-defined=ex_absent -Wl,--export=__stack_pointer" --exports-name X --check-wasm "$tmp/kind.wasm" 2>&1)"; rc=$?
-    if [ $rc -ne 0 ] && printf '%s' "$err" | grep -qF 'memory: a memory in X, a function in the module'; then ok "--check-wasm: an export of another kind than the interface gives it"
+    if [ $rc -ne 0 ] && grep -qF 'memory: a memory in X, a function in the module' <<< "$err"; then ok "--check-wasm: an export of another kind than the interface gives it"
     else bad "--check-wasm: an export of another kind (rc=$rc): $err"; fi
     printf 'not a module' > "$tmp/junk.wasm"
     expect_check "--check-wasm: a file that is not a module" "is not a wasm module" "$tmp/junk.wasm" "$FULL"

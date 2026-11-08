@@ -193,8 +193,8 @@
 // One thing each, and structgen.h lists them. This file is the run itself: the
 // request, the traversal, an emitter per output - plus the two helpers that
 // belong to no one emitter because both of them use them (camel and the
-// collision check). The rest of the plumbing, shared with tools/datagen, is in
-// tools/sgcommon.
+// collision check). The rest of the plumbing, what any libclang generator
+// needs, is in tools/sgcommon.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

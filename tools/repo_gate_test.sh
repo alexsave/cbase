@@ -12,6 +12,15 @@
 #   * names a product's tree by its path: "foolish/" (the product cbase was carved out of; a
 #     product reaches cbase, never the other way round).
 #
+# And tools/ stands apart from the platform: a project takes tools/structgen (with tools/sgcommon,
+# tools/llvm.mk and lib/fnv.h) without core or a provider, so the gate also fails when
+#
+#   * a C file under tools/ includes a header that is not under tools/ or lib/: each
+#     #include "x" must be found beside the file or in tools/sgcommon (the one -I a tool's
+#     build adds, tools/llvm.mk), and be under tools/ or lib/ once found; a header found
+#     nowhere there is reached through some -I into core/ or a provider, and fails too, or
+#   * a Makefile or .mk under tools/ names core/ or providers/ (an -I, a source, a VPATH).
+#
 # Documentation (*.md, *.html) may describe the history and is not read; neither are the fuzz
 # corpora (inputs, not paths). A test that builds a scratch tree of its own in a temporary
 # directory (tools/c_rules_test.sh) marks each line that climbs inside it "repo-gate: scratch tree". The checks are run over planted files first, so a gate that
@@ -35,6 +44,33 @@ scan() {
           my $k = () = $1 =~ m{\.\.}g;
           if ($k > $depth) { chomp(my $t = $l); print "$f:$.: climbs $k above a file $depth deep: $t\n"; last; }
         }
+      }
+    }' "$@" )
+}
+
+# tools_scan <root> <file>...: prints every include from tools/ that leaves tools/ and lib/, and
+# every tools/ make file naming core/ or providers/, as "<file>:<line>: <why>: <text>". The
+# files are paths from <root>, every one under tools/.
+tools_scan() {
+  local root="$1"; shift
+  ( cd "$root" && perl -MFile::Spec -e '
+    sub norm { my @o; for my $p (split m{/}, $_[0]) { next if $p eq "" || $p eq "."; if ($p eq "..") { return undef unless @o; pop @o; } else { push @o, $p; } } join "/", @o }
+    for my $f (@ARGV) {
+      open(my $h, "<", $f) or next;
+      (my $dir = $f) =~ s{/[^/]*$}{};
+      my $mk = $f =~ m{(^|/)Makefile$|\.mk$};
+      while (my $l = <$h>) {
+        chomp(my $t = $l);
+        if ($mk) {
+          next if $l =~ m{^\s*#};
+          print "$f:$.: a tools/ make file names core/ or providers/: $t\n" if $l =~ m{(?<![A-Za-z0-9_.-])(core|providers)/};
+          next;
+        }
+        next unless $l =~ m{^\s*#\s*include\s*"([^"]+)"};
+        my $inc = $1; my $at;
+        for my $d ($dir, "tools/sgcommon") { my $c = norm("$d/$inc"); if (defined $c && -f $c) { $at = $c; last; } }
+        if (!defined $at) { print "$f:$.: includes a header found neither beside it nor in tools/sgcommon (an -I into core/ or a provider?): $t\n"; }
+        elsif ($at !~ m{^(tools|lib)/}) { print "$f:$.: includes $at, outside tools/ and lib/: $t\n"; }
       }
     }' "$@" )
 }
@@ -63,6 +99,22 @@ printf 'touch ../../../x   # repo-gate: scratch tree\n... and src/...) are not c
 got="$(scan "$P" a/Makefile a/b/ok.c a/b/up.sh a/b/name.mk a/b/word.c a/b/marked.sh | sed 's/: .*//' | LC_ALL=C sort | tr '\n' ' ')"
 [ "$got" = "a/Makefile:1 a/b/name.mk:1 a/b/up.sh:1 " ] || fail "the scanner over planted files saw [$got], not [a/Makefile:1 a/b/name.mk:1 a/b/up.sh:1 ]"
 
+# ---- the tools/ closure, over planted files ------------------------------------------------------
+mkdir -p "$P/t/tools/sgcommon" "$P/t/tools/gen/test" "$P/t/lib" "$P/t/core/src/store" "$P/t/providers/aws/src"
+touch "$P/t/tools/sgcommon/sgc.h" "$P/t/tools/gen/gen.h" "$P/t/tools/gen/test/fix.h" "$P/t/lib/fnv.h" \
+      "$P/t/core/src/store/store.h" "$P/t/providers/aws/src/sigv4.h"
+printf '#include "gen.h"\n#include "sgc.h"\n#include "../../lib/fnv.h"\n#include <stdio.h>\n' > "$P/t/tools/gen/ok.c"
+printf '#include "fix.h"\n' > "$P/t/tools/gen/test/ok.c"
+printf '#include "gen.h"\n#include "../../core/src/store/store.h"\n' > "$P/t/tools/gen/up.c"
+printf '  #  include "store/store.h"\n' > "$P/t/tools/gen/path.h"
+printf '#include "../../../providers/aws/src/sigv4.h"\n' > "$P/t/tools/gen/test/deep.c"
+printf '# the core/ of it is in a comment\nCFLAGS += -I../sgcommon\n' > "$P/t/tools/gen/Makefile"
+printf 'CFLAGS += -I../../providers/aws/src\n' > "$P/t/tools/gen/aws.mk"
+got="$(tools_scan "$P/t" tools/gen/ok.c tools/gen/test/ok.c tools/gen/up.c tools/gen/path.h tools/gen/test/deep.c tools/gen/Makefile tools/gen/aws.mk \
+       | sed 's/: .*//' | LC_ALL=C sort | tr '\n' ' ')"
+want="tools/gen/aws.mk:1 tools/gen/path.h:1 tools/gen/test/deep.c:1 tools/gen/up.c:2 "
+[ "$got" = "$want" ] || fail "the tools/ closure over planted files saw [$got], not [$want]"
+
 # ---- the repository ------------------------------------------------------------------------------
 list="$(files)"
 n="$(echo "$list" | wc -l | tr -d ' ')"
@@ -74,5 +126,15 @@ if [ -n "$out" ]; then
   fail "$(echo "$out" | wc -l | tr -d ' ') line(s) reach outside the repository (above)"
 fi
 
+tlist="$(git -C "$ROOT" ls-files -- 'tools/*.c' 'tools/*.h' 'tools/Makefile' 'tools/*/Makefile' 'tools/*.mk')"
+tn="$(echo "$tlist" | wc -l | tr -d ' ')"
+[ "$tn" -ge 30 ] || fail "only $tn files under tools/ were read: did the file kinds move?"
+# shellcheck disable=SC2086
+tout="$(tools_scan "$ROOT" $tlist)"
+if [ -n "$tout" ]; then
+  echo "$tout"
+  fail "$(echo "$tout" | wc -l | tr -d ' ') line(s) of tools/ reach core/ or a provider (above)"
+fi
+
 if [ "$fails" -ne 0 ]; then echo "repo_gate_test: $fails failed"; exit 1; fi
-echo "ok   repo_gate_test: $n files, none climbs above the root or names a product's tree"
+echo "ok   repo_gate_test: $n files, none climbs above the root or names a product's tree; $tn under tools/ include nothing from core/ or providers/"

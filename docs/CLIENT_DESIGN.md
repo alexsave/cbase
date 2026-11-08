@@ -361,7 +361,7 @@ The name is **the cbase client**: C prefix `cbc_`, header `cbase/client.h`, TS p
 | The load harness | `cbase/client/load/` |
 | Static serving | `cbase/core/src/site/` and `cbase/tools/embed_site.c` |
 | Histograms, process readers | `shared/c/stats/hist.h`, `shared/c/proc.h` (stay, from PR #429) |
-| structgen, datagen | `shared/tools/` (stay) |
+| structgen | `cbase/tools/structgen` (datagen left cbase at v0.1.0) |
 | Tests | `cbase/client/test/` (unit, fuzz with a corpus, and the `nc_trace` differential tool) |
 
 `cbase/client` sits beside `cbase/core` because it is the other half of cbase's own protocol, not a helper that apps and cbase both happen to use.

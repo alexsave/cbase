@@ -10,7 +10,7 @@ fails=0
 expect_fail() { # description pattern args...
     local what="$1" pat="$2"; shift 2
     local err; err="$("$SG" "$@" 2>&1 >/dev/null)"; local rc=$?
-    if [ $rc -ne 0 ] && printf '%s' "$err" | grep -qF -- "$pat"; then echo "ok   $what"
+    if [ $rc -ne 0 ] && grep -qF -- "$pat" <<< "$err"; then echo "ok   $what"
     else echo "FAIL $what (rc=$rc): $err"; fails=$((fails + 1)); fi
 }
 expect_fail "missing requested field"      "no field named nope"            "${base[@]}" --fields Kinds=tag,nope

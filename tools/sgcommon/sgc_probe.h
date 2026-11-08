@@ -1,11 +1,11 @@
-// The probe translation unit: how both generators ask libclang anything.
+// The probe translation unit: how a generator asks libclang anything.
 //
 // Neither tool parses a file off disk. Each writes a few lines of C in memory -
 // the headers to include, plus whatever declares the thing it wants to ask
-// about - and hands that to libclang as an unsaved file. The question differs
-// (structgen declares a pointer per --root, datagen names a table); the probe,
-// the flags it is parsed with and the rule that any error-severity diagnostic
-// ends the run do not.
+// about - and hands that to libclang as an unsaved file. The question is the
+// tool's (structgen declares a pointer per --root); the probe, the flags it is
+// parsed with and the rule that any error-severity diagnostic ends the run are
+// here.
 #ifndef SGC_PROBE_H
 #define SGC_PROBE_H
 #include <clang-c/Index.h>

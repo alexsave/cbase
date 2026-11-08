@@ -16,8 +16,8 @@
 //   structgen.c  main: parse, traverse, emit, write
 //
 // die, Buf/bprintf, xstrdup, absolute and the probe translation unit are in
-// tools/sgcommon, shared with tools/datagen: the two tools ask libclang
-// different questions, but they ask them the same way.
+// tools/sgcommon: what asking libclang anything takes, apart from structgen's
+// own question.
 #ifndef SG_STRUCTGEN_H
 #define SG_STRUCTGEN_H
 #include <stddef.h>

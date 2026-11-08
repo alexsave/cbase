@@ -1,5 +1,5 @@
 # How a C file becomes an object, once, for every Makefile that compiles C (cbase.mk, client/,
-# tools/structgen, tools/datagen, and a product's own).
+# tools/structgen, and a product's own).
 #
 #   C_ROOT := ..
 #   include $(C_ROOT)/cbase/tools/c_rules.mk
