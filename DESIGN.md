@@ -444,6 +444,15 @@ It lost 1 game, 1 bot seat, 4 replays and 2 chat messages to `ProvisionedThrough
 The rerun into the live table: 3 min 43 s, not one throttle, every table at its export count (games 67, replays 144, chat 42, the other five as before), 41 of 41 hashes, 67 of 67 games through `table_load`, exit 0, with 15 extras named (5 games, 2 seats, 2 replays, 2 accounts with their ratings).
 An independent per-family `aws dynamodb scan --select COUNT` agreed with export plus extras for all eight, the admin users list held 43 (41 + 2), and a wrong password for an imported email answered 400 `invalid_credentials` through CloudFront.
 
+### A known gap: a resent write that was applied (2026-11-08, not yet fixed)
+
+The store's retry (`store_dynamo.c call_top`) resends every request that got no answer, writes included, and it is the one layer that does: the HTTP client never resends a POST (`net/https.h`).
+A lost connection does not say whether DynamoDB applied the write before it went.
+When it did, the resend of a conditional write (a `ConditionExpression`, or a transaction whose items carry one) meets the state its own first send made, and comes back `ConditionalCheckFailedException` or `TransactionCanceledException` with a `ConditionalCheckFailed` reason.
+The caller then sees a conflict for a write that succeeded: a false CB_E_CONFLICT, or a version mismatch, where the truth is "done".
+Nothing is written twice, since the condition stops the second, but the answer is wrong.
+The fix wants the outcome made knowable: a `ClientRequestToken` on `TransactWriteItems` (idempotent for 10 minutes, so a resend answers the first send's result), or, after a resent write's condition fails, a consistent read that tells "mine already" from "someone else's".
+
 ## Module: auth
 
 Owner: `core/src/auth/`.

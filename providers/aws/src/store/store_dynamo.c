@@ -194,7 +194,10 @@ static void capture(const dyn *d, const dw_req *r) {
 }
 
 // Sends `r`, again after a pause while DynamoDB says to (throttled, a 5xx, a
-// lost connection), as long as the backoff allows. The answer is in *resp,
+// lost connection), as long as the backoff allows. This is the one layer that resends a write (the
+// HTTP client never resends a POST, net/https.h), and a resend after a lost connection whose first
+// send WAS applied can answer a false ConditionalCheckFailed: DESIGN.md "A known gap: a resent
+// write that was applied". The answer is in *resp,
 // and its top level, walked once, in *top (aws_json.h dw_top): valid
 // while *resp is not changed. top may be NULL.
 // Runs the credential command and puts what it printed in the environment the signer reads. The secrets
