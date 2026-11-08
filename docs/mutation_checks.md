@@ -945,3 +945,26 @@ The module checks:
 - VERSION: 0.1.2 with CB_VERSION at 0.1.1 -> `cb_version_is_the_version_file` CB_VERSION == v.
 - VERSION: "v0.1.1" (the tag's spelling) -> `cb_version_is_the_version_file` shape && dots == 2.
 - ci.yml version job's script: TAG=v0.1.0 against VERSION 0.1.1 -> exit 1, "tag v0.1.0, but VERSION says v0.1.1".
+
+## A product's HTTP surface (amgi-http)
+
+unit_serve_surface runs under a real `cbase serve` and compares whole responses byte for byte; unit_http, unit_admin_edges and unit_https cover the rest.
+
+- http.c: a 304 keeps Content-Length -> `answers_any_status_type_body_and_headers` the 304's wire bytes.
+- http.c: the 307 reason dropped -> the same test's 307 wire bytes.
+- http.c: a header line ended with a bare LF -> every answer's wire bytes.
+- http.c: the response body written one byte short -> every answer's wire bytes.
+- http.c: the parsed request body one byte short, or one byte late -> `gets_the_raw_body_and_its_type` the echoed body.
+- http.c: header lookup case-sensitive -> `reads_request_headers_by_name_in_any_case` the five values.
+- http.c: a header value's leading blanks kept -> the same test's token line, and `gets_the_raw_body_and_its_type` (its Content-Type).
+- http.h: CB_HTTP_MAX_HEAD at 8192 -> the same test, the 11 KB head refused.
+- router.c: cb_router_not_allowed without Allow -> `unknown_path_404_wrong_method_405_with_allow` every 405's wire bytes.
+- router.c: HEAD not implied by GET -> `allow_lists` the lists with GET.
+- router.c: a method listed twice -> `allow_lists` "/a/new" (PURGE twice).
+- router.c: a list not cut at cap -> `allow_lists` the cut at 16 bytes.
+- admin.c: the console's 405 without Allow -> `malformed_asks` g_allow == "GET".
+- https.c: every plain call on the store's row -> `plain_binary_both_ways_with_its_headers` tally.other.calls == 2.
+- https.c: timeout_ms ignored (10 s) -> `plain_timeouts_short_and_long` the 1.5 s bound; capped at 1.6 s -> its 30 s call.
+- https.c: the caller's header lines dropped, the body one byte short -> `plain_binary_both_ways_with_its_headers` the request as sent.
+- https.c: no connection pooled -> the same test's accepts == 1.
+- https.c: no retry on a reused connection the peer closed -> `plain_peer_that_closes` every call.
