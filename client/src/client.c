@@ -79,7 +79,7 @@ static cbc_event *ev_add(cbc *c, int kind) {
 int cbc_n_events(const cbc *c) { return c->n_events; }
 const cbc_event *cbc_event_at(const cbc *c, int i) { return i >= 0 && i < c->n_events ? &c->events[i] : NULL; }
 
-// ---- the arena: each waiting call's path, then its body ----------------------------------------
+// ---- the arena: each waiting call's path, then its body (a borrowed body stays the caller's) ----
 static int arena_take(cbc *c, size_t n) {
     if (n > (size_t)CBC_ARENA - c->arena_used) return -1;
     int at = c->arena_used;
@@ -89,7 +89,7 @@ static int arena_take(cbc *c, size_t n) {
 
 // Frees a call's bytes and moves every later call's down over them, so the arena never fragments.
 static void arena_give(cbc *c, cbc_call_slot *k) {
-    size_t n = (size_t)k->path_len + k->body_len, at = k->at_arena;
+    size_t n = (size_t)k->path_len + (k->ref ? 0 : k->body_len), at = k->at_arena;
     if (!n) return;
     memmove(c->arena + at, c->arena + at + n, c->arena_used - at - n);
     c->arena_used = (uint16_t)(c->arena_used - n);
@@ -101,6 +101,12 @@ static void arena_give(cbc *c, cbc_call_slot *k) {
 
 static const char *call_path(const cbc *c, const cbc_call_slot *k) { return (const char *)c->arena + k->at_arena; }
 static const uint8_t *call_body(const cbc *c, const cbc_call_slot *k) { return c->arena + k->at_arena + k->path_len; }
+
+const uint8_t *cbc_req_body(const cbc *c, uint32_t id) {
+    for (int i = 0; i < CBC_CALLS_MAX; i++)
+        if (c->calls[i].state == CALL_HTTP && c->calls[i].id == id) return c->calls[i].ref;
+    return NULL;
+}
 
 // ---- init --------------------------------------------------------------------------------------
 void cbc_cfg_default(cbc_cfg *cfg) {
@@ -210,7 +216,7 @@ static cbc_call_slot *call_by_id(cbc *c, int state, uint32_t id) {
 // A call goes over HTTP (else it rides the socket): a session's own calls, a call flagged so, and
 // every call of a client with no signed-in user (an anonymous socket takes no REQ).
 static int over_http(const cbc *c, const cbc_call_slot *k) {
-    return k->kind != K_APP || (k->flags & CBC_C_HTTP) || c->cfg.anonymous || !c->user.signed_in;
+    return k->kind != K_APP || (k->flags & CBC_C_HTTP) || k->ref || c->cfg.anonymous || !c->user.signed_in;
 }
 
 static int call_ready(const cbc_call_slot *k, int64_t now) {
@@ -250,35 +256,51 @@ static void call_lost(cbc *c, cbc_call_slot *k, int64_t now, int http) {
     call_done(c, k, 0, CBC_WHY_LOST, 0, 0, 0, 0);
 }
 
-static uint32_t call_add(cbc *c, int kind, int method, int flags, const char *path, size_t pn, const uint8_t *body, size_t bn) {
+// A call into a free slot: its path into the arena, and its body too unless it is borrowed (ref:
+// only the pointer is kept, cbc_call_ref).
+static uint32_t call_add(cbc *c, int kind, int method, int flags, const char *path, size_t pn, const uint8_t *body,
+                         size_t bn, int ref) {
     c->err = 0;
     if ((method != SF_METH_GET && method != SF_METH_POST) || pn == 0 || pn > CBC_PATH_MAX || path[0] != '/' ||
-        bn > 0xffff || (bn && !body)) { c->err = CBC_E_ARG; return 0; }
+        (ref ? !body || (uint64_t)bn > UINT32_MAX : bn > 0xffff || (bn && !body))) { c->err = CBC_E_ARG; return 0; }
     cbc_call_slot *k = NULL;
     for (int i = 0; i < CBC_CALLS_MAX && !k; i++)
         if (c->calls[i].state == CALL_FREE) k = &c->calls[i];
     if (!k) { c->err = CBC_E_FULL; return 0; }
-    int at = arena_take(c, pn + bn);
+    size_t kept = ref ? 0 : bn;
+    int at = arena_take(c, pn + kept);
     if (at < 0) { c->err = CBC_E_FULL; return 0; }
     memcpy(c->arena + at, path, pn);
-    if (bn) memcpy(c->arena + at + pn, body, bn);
+    if (kept) memcpy(c->arena + at + pn, body, kept);
     memset(k, 0, sizeof *k);
+    k->ref = ref ? body : NULL;
     k->state = CALL_QUEUED;
     k->kind = (uint8_t)kind;
     k->method = (uint8_t)method;
     k->flags = (uint8_t)flags;
     k->at_arena = (uint16_t)at;
     k->path_len = (uint16_t)pn;
-    k->body_len = (uint16_t)bn;
+    k->body_len = (uint32_t)bn;
     k->ticket = next_id31(&c->next_ticket);
     return k->ticket;
+}
+
+static uint32_t app_call(cbc *c, int method, int flags, const char *path, size_t path_len, const uint8_t *body,
+                         size_t body_len, int ref) {
+    if (c->ending || ((flags & CBC_C_AUTH) && !c->user.signed_in)) { c->err = CBC_E_AUTH; return 0; }
+    return call_add(c, K_APP, method, flags & (CBC_C_READ | CBC_C_AUTH | CBC_C_HTTP), path, path_len, body, body_len, ref);
 }
 
 uint32_t cbc_call(cbc *c, int method, int flags, const char *path, size_t path_len,
                   const uint8_t *body, size_t body_len, int64_t now) {
     (void)now;
-    if (c->ending || ((flags & CBC_C_AUTH) && !c->user.signed_in)) { c->err = CBC_E_AUTH; return 0; }
-    return call_add(c, K_APP, method, flags & (CBC_C_READ | CBC_C_AUTH | CBC_C_HTTP), path, path_len, body, body_len);
+    return app_call(c, method, flags, path, path_len, body, body_len, 0);
+}
+
+uint32_t cbc_call_ref(cbc *c, int method, int flags, const char *path, size_t path_len,
+                      const uint8_t *body, size_t body_len, int64_t now) {
+    (void)now;
+    return app_call(c, method, flags, path, path_len, body, body_len, 1);
 }
 
 uint32_t cbc_sign_in(cbc *c, int op, const char *name, size_t name_len, const char *pw, size_t pw_len, int64_t now) {
@@ -291,7 +313,7 @@ uint32_t cbc_sign_in(cbc *c, int op, const char *name, size_t name_len, const ch
     b[n++] = (uint8_t)name_len; memcpy(b + n, name, name_len); n += name_len;
     b[n++] = (uint8_t)pw_len; if (pw_len) memcpy(b + n, pw, pw_len); n += pw_len;
     const char *path = op == CBW_SIGNUP ? "/v1/auth/signup" : "/v1/auth/signin";
-    return call_add(c, K_SIGN, SF_METH_POST, 0, path, strlen(path), b, n);
+    return call_add(c, K_SIGN, SF_METH_POST, 0, path, strlen(path), b, n, 0);
 }
 
 // ---- sign-in with an identity provider --------------------------------------------------------
@@ -367,7 +389,7 @@ uint32_t cbc_oidc_sign_in(cbc *c, int idp, int flags, const char *state, size_t 
     at = put_str8(b, at, c->oidc_nonce, 43);
     at = put_str16(b, at, code, code_len);
     at = put_str8(b, at, name, name_len);
-    uint32_t t = call_add(c, link ? K_LINK : K_SIGN, SF_METH_POST, link ? CBC_C_AUTH : 0, "/v1/auth/oidc", 13, b, at);
+    uint32_t t = call_add(c, link ? K_LINK : K_SIGN, SF_METH_POST, link ? CBC_C_AUTH : 0, "/v1/auth/oidc", 13, b, at, 0);
     memset(b, 0, at);
     return t;
 }
@@ -385,7 +407,7 @@ uint32_t cbc_sign_out(cbc *c, int global, int64_t now) {
     (void)now;
     if (!c->user.signed_in || c->ending) { c->err = CBC_E_AUTH; return 0; }
     uint8_t b[3] = { CBW_V, CBW_SIGNOUT, (uint8_t)(global ? CBW_SCOPE_GLOBAL : CBW_SCOPE_LOCAL) };
-    uint32_t t = call_add(c, K_SIGNOUT, SF_METH_POST, CBC_C_AUTH, "/v1/auth/signout", 16, b, sizeof b);
+    uint32_t t = call_add(c, K_SIGNOUT, SF_METH_POST, CBC_C_AUTH, "/v1/auth/signout", 16, b, sizeof b, 0);
     if (t) c->ending = 1;
     return t;
 }
@@ -407,11 +429,12 @@ static int refresh_sendable(const cbc *c, int64_t now) {
     return c->user.signed_in && !c->ending && !c->refresh_out && token_due(c, now) && now >= c->refresh_at;
 }
 
-// Writes one request: the head, the path, "Bearer <token>" when auth, the body.
+// Writes one request: the head, the path, "Bearer <token>" when auth, the body (none with
+// CBC_RQ_REF: the host sends the caller's).
 static int put_request(cbc *c, uint8_t *out, size_t cap, uint32_t id, int method, int flags,
                        const char *path, size_t pn, int auth, const uint8_t *body, size_t bn) {
     size_t an = auth ? 7 + (size_t)c->access_len : 0;
-    size_t n = sizeof(cbc_req_hdr) + pn + an + bn;
+    size_t n = sizeof(cbc_req_hdr) + pn + an + (flags & CBC_RQ_REF ? 0 : bn);
     if (cap < n) { c->err = CBC_E_CAP; return CBC_E_CAP; }
     cbc_req_hdr h;
     memset(&h, 0, sizeof h);
@@ -425,7 +448,7 @@ static int put_request(cbc *c, uint8_t *out, size_t cap, uint32_t id, int method
     size_t at = sizeof h;
     memcpy(out + at, path, pn); at += pn;
     if (auth) { memcpy(out + at, "Bearer ", 7); memcpy(out + at + 7, c->access, c->access_len); at += an; }
-    if (bn) memcpy(out + at, body, bn);
+    if (bn && !(flags & CBC_RQ_REF)) memcpy(out + at, body, bn);
     return (int)n;
 }
 
@@ -452,7 +475,7 @@ int cbc_next_request(cbc *c, uint8_t *out, size_t cap, int64_t now) {
     if (!best) return 0;
     uint32_t id = next_id31(&c->next_http_id);
     int auth = c->user.signed_in && best->kind != K_SIGN;
-    int n = put_request(c, out, cap, id, best->method, best->kind == K_SIGN ? CBC_RQ_BODY : 0,
+    int n = put_request(c, out, cap, id, best->method, (best->kind == K_SIGN ? CBC_RQ_BODY : 0) | (best->ref ? CBC_RQ_REF : 0),
                         call_path(c, best), best->path_len, auth, call_body(c, best), best->body_len);
     if (n < 0) return n;
     best->id = id;

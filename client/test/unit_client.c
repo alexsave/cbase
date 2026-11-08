@@ -84,6 +84,7 @@ static int request(cbc *c, int64_t now) {
     size_t at = sizeof g_h;
     memcpy(g_path, g_out + at, g_h.path_len); g_path[g_h.path_len] = 0; at += g_h.path_len;
     memcpy(g_auth, g_out + at, g_h.auth_len); g_auth[g_h.auth_len] = 0; at += g_h.auth_len;
+    if (g_h.flags & CBC_RQ_REF) { T_EQ_INT((long long)at, n); return n; }   // the body is the caller's
     memcpy(g_body, g_out + at, g_h.body_len);
     T_EQ_INT((long long)(at + g_h.body_len), n);
     return n;
@@ -614,6 +615,85 @@ static void the_arena_keeps_each_call_whole(void) {
     T_EQ_INT(cbc_call(&c, CBC_POST, 0, "/x", 2, (const uint8_t *)"z", 1, 0) != 0, 1);
 }
 
+// ---- a large body, borrowed (cbc_call_ref) ----------------------------------------------------
+// The client keeps the caller's pointer and never copies the bytes: not into the arena, not into
+// the request; the host is handed the same pointer back for every send until the DONE.
+static void a_borrowed_body_is_never_copied(void) {
+    static uint8_t big[20000];
+    for (size_t i = 0; i < sizeof big; i++) big[i] = (uint8_t)(i * 7);
+    cbc c; mk(&c, 0, 1);
+    signed_in(&c, "TOK", 1000000000);
+    up(&c, 0);
+    T_EQ_INT(cbc_call(&c, CBC_POST, CBC_C_AUTH, "/notes/bulk", 11, big, sizeof big, 0), 0);   // the copy: past the arena
+    T_EQ_INT(cbc_error(&c), CBC_E_FULL);
+    uint32_t t = cbc_call_ref(&c, CBC_POST, CBC_C_AUTH | CBC_C_READ, "/notes/bulk", 11, big, sizeof big, 0);
+    T_CHECK(t != 0);
+    T_EQ_INT(c.arena_used, 11);                    // the path alone
+    T_EQ_INT(out_kind(&c, 0), 0);                  // never on the socket, though it is READY
+    size_t head = sizeof(cbc_req_hdr) + 11 + 10;   // "Bearer TOK"
+    T_EQ_INT(cbc_next_request(&c, g_out, head - 1, 0), CBC_E_CAP);   // room for the head, path, auth: no more
+    T_EQ_INT(cbc_next_request(&c, g_out, head, 0), (int)head);
+    memcpy(&g_h, g_out, sizeof g_h);
+    T_EQ_INT(g_h.flags, CBC_RQ_REF);
+    T_EQ_INT(g_h.body_len, sizeof big);
+    T_EQ_INT(g_h.method, CBC_POST);
+    T_CHECK(cbc_req_body(&c, g_h.id) == big);      // the caller's own bytes
+    T_CHECK(cbc_req_body(&c, g_h.id + 1) == NULL);
+    // Lost: no DONE, and while it waits it is not out.
+    uint32_t id = g_h.id;
+    T_EQ_INT(cbc_on_response(&c, id, 0, NULL, 0, 0), 0);
+    T_CHECK(cbc_req_body(&c, id) == NULL);
+    T_EQ_INT(request(&c, 500), (int)head);
+    T_CHECK(g_h.id != id && cbc_req_body(&c, g_h.id) == big);
+    T_EQ_INT(cbc_on_response(&c, g_h.id, 200, (const uint8_t *)"ok", 2, 500), 1);
+    T_EQ_INT(ev(&c, 0)->kind, CBC_EV_DONE);
+    T_EQ_INT(ev(&c, 0)->ticket, t);
+    T_CHECK(cbc_req_body(&c, g_h.id) == NULL);     // after the DONE the client holds nothing
+    T_EQ_INT(c.arena_used, 0);
+    T_EQ_INT(request(&c, 100000), 0);
+}
+
+// The arena moves the paths of the calls after a borrowed one down over it, by its path alone.
+static void a_borrowed_body_beside_copied_ones(void) {
+    cbc c; mk(&c, 1, 1);
+    static uint8_t big[9000];
+    cbc_call(&c, CBC_POST, 0, "/one", 4, (const uint8_t *)"111", 3, 0);
+    cbc_call_ref(&c, CBC_POST, 0, "/big", 4, big, sizeof big, 0);
+    cbc_call(&c, CBC_POST, 0, "/three", 6, (const uint8_t *)"3", 1, 0);
+    request(&c, 0);
+    T_EQ_STR(g_path, "/one");
+    T_EQ_INT(g_h.flags & CBC_RQ_REF, 0);
+    request(&c, 0);
+    uint32_t big_id = g_h.id;
+    T_EQ_STR(g_path, "/big");
+    T_CHECK(cbc_req_body(&c, big_id) == big);
+    cbc_on_response(&c, big_id, 200, NULL, 0, 0);
+    T_EQ_INT(c.arena_used, 4 + 3 + 6 + 1);
+    request(&c, 0);
+    T_EQ_STR(g_path, "/three");
+    T_EQ_MEM(g_body, g_h.body_len, "3", 1);
+}
+
+static void borrowed_bounds(void) {
+    cbc c; mk(&c, 1, 1);
+    T_EQ_INT(cbc_call_ref(&c, CBC_POST, 0, "/x", 2, NULL, 5, 0), 0);
+    T_EQ_INT(cbc_error(&c), CBC_E_ARG);
+    T_EQ_INT(cbc_call_ref(&c, CBC_POST, 0, "/x", 2, NULL, 0, 0), 0);
+    T_EQ_INT(cbc_error(&c), CBC_E_ARG);
+    T_EQ_INT(cbc_call_ref(&c, CBC_POST, CBC_C_AUTH, "/x", 2, (const uint8_t *)"b", 1, 0), 0);
+    T_EQ_INT(cbc_error(&c), CBC_E_AUTH);
+#if SIZE_MAX > UINT32_MAX
+    T_EQ_INT(cbc_call_ref(&c, CBC_POST, 0, "/x", 2, (const uint8_t *)"b", (size_t)UINT32_MAX + 1, 0), 0);
+    T_EQ_INT(cbc_error(&c), CBC_E_ARG);
+#endif
+    // A host's opaque handle comes back as it was given: the client never reads through it.
+    const uint8_t *handle = (const uint8_t *)(uintptr_t)7;
+    T_CHECK(cbc_call_ref(&c, CBC_POST, 0, "/x", 2, handle, UINT32_MAX, 0) != 0);
+    request(&c, 0);
+    T_EQ_INT(g_h.body_len, UINT32_MAX);
+    T_CHECK(cbc_req_body(&c, g_h.id) == handle);
+}
+
 static void due_ms(void) {
     cbc c; mk(&c, 1, 1);
     T_EQ_INT(cbc_due_ms(&c, 0), -1);
@@ -824,5 +904,8 @@ int main(void) {
     T_RUN(limits);
     T_RUN(the_arena_keeps_each_call_whole);
     T_RUN(due_ms);
+    T_RUN(a_borrowed_body_is_never_copied);
+    T_RUN(a_borrowed_body_beside_copied_ones);
+    T_RUN(borrowed_bounds);
     return T_DONE();
 }

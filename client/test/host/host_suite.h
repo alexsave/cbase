@@ -4,7 +4,9 @@
 //
 // A host is the code between a platform's I/O and the client core: it opens the socket while
 // cbc_stream_wanted, hands every message to cbc_in and sends what cbc_next_out writes, sends what
-// cbc_next_request writes and answers it with cbc_on_response, keeps one timer on cbc_due_ms and
+// cbc_next_request writes (with a CBC_RQ_REF request, the head's body_len bytes from cbc_req_body:
+// the caller's buffer, a 64 KB case checks it byte for byte and on every retry) and answers it with
+// cbc_on_response, keeps one timer on cbc_due_ms and
 // calls cbc_tick, keeps the session and seeds the jitter. The suite cannot reach a platform's
 // sockets, so it gives the host a WORLD instead: a fake network, clock, timer wheel, store and
 // entropy (the cbhs_* calls below), behind which the suite's script plays the server. A host runs

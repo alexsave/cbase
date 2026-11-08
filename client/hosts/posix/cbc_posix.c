@@ -69,7 +69,8 @@ static void send_request(cbc_posix *h) {
     q->used = 1;
     const char *path = (const char *)h->req + sizeof r;
     const char *auth = path + r.path_len;
-    const uint8_t *body = (const uint8_t *)auth + r.auth_len;
+    // A borrowed body (cbc_call_ref) is the caller's, sent from where it is: never copied here.
+    const uint8_t *body = r.flags & CBC_RQ_REF ? cbc_req_body(&h->c, r.id) : (const uint8_t *)auth + r.auth_len;
     h->io.http(h->io.ud, r.method == CBC_POST ? "POST" : "GET", path, r.path_len, r.auth_len ? auth : NULL, r.auth_len,
                body, r.body_len, on_http, q);
 }

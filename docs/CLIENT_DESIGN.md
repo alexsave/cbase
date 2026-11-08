@@ -174,7 +174,12 @@ Everything that knows a card, a seat, a game or a bot:
   The app's knowledge comes in as data (a route table) and goes out as events the app's own C reads after each call, the way the shared lifts so far have done it.
 - **The output buffer is the caller's.**
   The client state stays small, and a load generator shares one scratch buffer.
-  Built: 10,240 bytes per `cbc`, under a budget of 12,288 that a static assert pins; the access token's 2 KB and the 4 KB arena for waiting calls are most of it.
+  Built: 10,504 bytes per `cbc` (64-bit), under a budget of 12,288 that a static assert pins; the access token's 2 KB and the 4 KB arena for waiting calls are most of it.
+- **A large body is borrowed, not copied.**
+  `cbc_call` copies its body into the arena, so a body past 4 KB does not fit.
+  `cbc_call_ref` keeps only the caller's pointer and length, and the caller keeps the bytes valid until the call's `CBC_EV_DONE` (a retry sends from them again).
+  It always goes over HTTP: `cbc_next_request` writes the head, path and Authorization with `CBC_RQ_REF`, and the host sends the body from `cbc_req_body`, so the core never reads or copies those bytes, and a page may pass an opaque handle instead of a pointer.
+  Over HTTP and not the socket because one WebSocket message is one frame: a large one would hold every push and reply up behind it.
 
 ### 3.2 The C header, sketched
 

@@ -10,7 +10,8 @@
 //            cbc_opened; every binary message to cbc_in; send each frame cbc_next_out writes
 //            (-1: close the socket); on any close, cbc_closed, and reopen after the ms it answers
 //   HTTP     send each request cbc_next_request writes, answer it with cbc_on_response
-//            (status 0: it never arrived)
+//            (status 0: it never arrived); a CBC_RQ_REF request's body is the caller's, at
+//            cbc_req_body, valid until the call's CBC_EV_DONE (cbc_call_ref)
 //   timer    wake after cbc_due_ms and call cbc_tick, then drain both outputs again
 //   events   cbc_in, cbc_on_response, cbc_closed and cbc_tick raise events: read them with
 //            cbc_n_events / cbc_event_at after each, before calling any of the four again. A span
@@ -109,9 +110,11 @@ typedef struct {
 } cbc_event;
 
 // A request cbc_next_request writes: this head, then path_len bytes of path, auth_len bytes of the
-// Authorization value ("Bearer ..."; none when 0), body_len bytes of body.
+// Authorization value ("Bearer ..."; none when 0), body_len bytes of body. With CBC_RQ_REF the body
+// is not written: its body_len bytes are the caller's, at cbc_req_body (cbc_call_ref).
 #define CBC_RQ_BODY 0x1   // hand the answer's body to cbc_on_response (else only its length is needed,
                           // and its body only when the status is not 2xx: a refusal)
+#define CBC_RQ_REF  0x2   // the body is borrowed: send cbc_req_body(id)'s body_len bytes after the head
 typedef struct {
     uint32_t id;        // cbc_on_response's
     uint8_t  method;    // CBC_GET, CBC_POST
@@ -157,10 +160,10 @@ typedef struct {
     uint32_t ticket;
     uint32_t id;             // the HTTP request's or the SF_REQ's
     uint16_t path_len;
-    uint16_t body_len;
-    uint16_t at_arena;       // path then body, in the arena
-    uint16_t pad2;
+    uint16_t at_arena;       // path then body, in the arena (a borrowed body is not)
+    uint32_t body_len;
     int64_t  at;             // SENT: when; WAIT: when to send again
+    const uint8_t *ref;      // cbc_call_ref's borrowed body (NULL: the body is in the arena)
 } cbc_call_slot;
 
 typedef struct cbc {
@@ -275,9 +278,27 @@ int cbc_pkce(const uint8_t *entropy, size_t n, char verifier[44], char challenge
 uint32_t cbc_call(cbc *c, int method, int flags, const char *path, size_t path_len,
                   const uint8_t *body, size_t body_len, int64_t now);
 
+// A LARGE BODY, BORROWED (a bulk write: POST /notes/bulk and its kind). cbc_call's body is copied
+// into the arena (CBC_ARENA bytes for every waiting call); this one's is not. The client keeps body
+// (the pointer) and body_len (up to UINT32_MAX) and never reads, copies or frees the bytes: THE
+// CALLER KEEPS THEM VALID AND UNCHANGED UNTIL THE CALL'S CBC_EV_DONE, and a read sent again after a
+// loss or a 503 goes from the same bytes. It always goes over HTTP (a big body never holds the
+// socket's frames up behind it). The host sends it from two places: the head, path and
+// Authorization that cbc_next_request writes (flags CBC_RQ_REF, body_len the whole length, nothing
+// of the body in out), then body_len bytes from cbc_req_body. Only the path is copied (into the
+// arena). A ticket, finished by exactly one CBC_EV_DONE, or 0 (cbc_error: CBC_E_ARG for a NULL body
+// or one past UINT32_MAX, CBC_E_AUTH, CBC_E_FULL). body may be a host's opaque handle instead of a
+// pointer (a page's key to bytes of its own): the client hands it back exactly as it got it.
+uint32_t cbc_call_ref(cbc *c, int method, int flags, const char *path, size_t path_len,
+                      const uint8_t *body, size_t body_len, int64_t now);
+
 // The next HTTP request to send into out (cbc_req_hdr, then its bytes): its length, 0 for none,
-// CBC_E_CAP. The refresh comes first when it is due.
+// CBC_E_CAP. The refresh comes first when it is due. A CBC_RQ_REF request needs room for its head,
+// path and Authorization only.
 int  cbc_next_request(cbc *c, uint8_t *out, size_t cap, int64_t now);
+// The borrowed body of HTTP request id while it is out (cbc_req_hdr.flags CBC_RQ_REF): the pointer
+// cbc_call_ref was given. NULL for a request that is not out or whose body is in its own bytes.
+const uint8_t *cbc_req_body(const cbc *c, uint32_t id);
 // The answer to request id. body may be NULL when the request did not ask for it (CBC_RQ_BODY)
 // and the status is 2xx; len is the body's length either way. Answers the events raised.
 int  cbc_on_response(cbc *c, uint32_t id, int status, const uint8_t *body, size_t len, int64_t now);
