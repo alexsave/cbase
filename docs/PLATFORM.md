@@ -276,6 +276,8 @@ Zero or NULL in the field leaves cbase's default, so an app that sets nothing is
   amgi ships `"warn"`.
   The startup line on stdout, `cbase: listening <host>:<port>`, is not the log's and is printed at every level, so a parent that waits for it works whatever the app ships.
 
+Ctrl-C is SIGTERM: serve drains on SIGINT as on SIGTERM (requests in flight finish, WebSockets get 1001), then calls the app's `serve_close` and exits 0 (`core/test/unit_serve_knobs.c` sends it to a real `cbase serve` with a request in flight).
+
 `CBASE_ENV_FILE`, when set, names a file of `KEY=VALUE` lines that `cb_config_load` reads into the environment before anything else is read (`core/src/env_file.h`).
 A key the environment already holds, even as an empty string, keeps its value, so the shell's variables override the file.
 The app reads its own settings from it as it reads any variable, with `getenv`: amgi's `.env.local` holds `GEMINI_API_KEY` and `GEMINI_API_BASE`.
