@@ -230,6 +230,21 @@ A product's intents become a data table `{kind, method, path template, needs aut
 The foolish part that stays foolish is the book of games (cast-skip refetch, reconcile after a refused move, `nc_set_boards`).
 The `nc_*` names the web and iOS hosts call stay as they are (foolish's file forwards), so the hosts gain no lines.
 
+### 2.7 Upgrading a product across the HTTP changes
+
+A product that consumes cbase from before the CORS, path parameter and body cap changes makes three edits, and the compiler or boot names each one it misses.
+
+1. **Route rows.** `cb_route` gained `max_body` after `inline_us`, so a positional row such as `{ "GET", "/v1/x", CB_ROUTE_POOL, h_x, 0 }` fails `-Wmissing-field-initializers`.
+   Prefer designated initializers, which name what they set and survive the next field: `{ .method = "GET", .pattern = "/v1/x", .flags = CB_ROUTE_POOL, .fn = h_x }`.
+   The least edit is a trailing `, 0` on each positional row: `{ "GET", "/v1/x", CB_ROUTE_POOL, h_x, 0, 0 }`, which keeps the server's `CBASE_MAX_BODY`.
+2. **`cb_handle` and `cb_core_http` take a mutable `cb_http_req *`**, since they bind the route's path parameters into it before the handler runs.
+   A caller that passed a `const cb_http_req *` (a test, an ingress of its own) passes a non-const one; handlers keep `const cb_http_req *req`.
+3. **CORS is denied by default**, browsers' WebSocket upgrades included.
+   A product that relied on the old default (`Access-Control-Allow-Origin: *` for every origin) keeps today's behaviour by declaring it in its `cb_app`:
+   `static const char *const ORIGINS[] = { "*" };` with `.cors_origins = ORIGINS, .n_cors_origins = 1`.
+   Better is the list of origins its pages are served from, `{ "https://app.example.com", "https://www.example.com" }`.
+   The deployment's `CBASE_ALLOWED_ORIGINS="*"` does the same without a code change, but it now defaults to empty, in the templates (`cbase.yaml`, `deploy.sh`, `vm.yaml`) too.
+
 ## 3. The C-to-Lambda packager
 
 ### 3.1 What a product provides
