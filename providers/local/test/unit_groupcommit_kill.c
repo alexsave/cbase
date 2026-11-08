@@ -12,6 +12,7 @@
 #include "store/store_sql.h"
 #include "t.h"
 #include "util/err.h"
+#include "rng.h"
 
 #include <fcntl.h>
 #include <pthread.h>
@@ -83,12 +84,16 @@ static bool has(cb_store *st, const char *key, const char *side, int64_t *n) {
     return ok;
 }
 
+// The kill moments' one seed (lib/rng.h): fixed, so a red run's moments come again; change it here
+// to try others.
+#define GCK_SEED UINT64_C(0x6763b17c0ffee001)
+
 static void a_kill_loses_no_acknowledged_write_and_shows_no_partial_group(void) {
     snprintf(g_path, sizeof g_path, "/tmp/unit_gck_%d.db", (int)getpid());
     char rm[3 * sizeof g_path + 32];
     snprintf(rm, sizeof rm, "rm -f %s %s-wal %s-shm", g_path, g_path, g_path);
     T_CHECK(system(rm) == 0);
-    srand((unsigned)time(NULL));
+    uint64_t rng = rng_seed64(GCK_SEED);
     long acked_total = 0;
     for (g_round = 0; g_round < ROUNDS; g_round++) {
         int p[2];
@@ -114,7 +119,7 @@ static void a_kill_loses_no_acknowledged_write_and_shows_no_partial_group(void) 
             else usleep(200);
         }
         clock_gettime(CLOCK_MONOTONIC, &t0);
-        long run_ms = 40 + rand() % 120;
+        long run_ms = 40 + (long)(rng_splitmix64(&rng) % 120);
         for (;;) {
             ssize_t r = read(p[0], acks + n_acks, sizeof(ack) * 4096);
             if (r > 0) n_acks += (size_t)r / sizeof(ack);

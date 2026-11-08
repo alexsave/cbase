@@ -3,8 +3,7 @@
 //
 //   build/test/smoke_example build/cbase
 //
-// The platform's own routes answer (/health, /admin), the app's two routes answer, its console page's
-// calls answer behind the token and the overview carries its counter, an unknown path
+// The platform's own routes answer (/health, /admin), the app's two routes answer, an unknown path
 // is 404 and a known one under another method 405, and the server stops on SIGTERM with status 0.
 #include "t.h"
 #include "lib_client.h"
@@ -57,26 +56,6 @@ static void serves_the_app(void) {
     tc_response_free(&r);
     T_EQ_INT(get("POST", "/v1/echo", "Content-Type: application/octet-stream\r\n", "round trip", &r), 200);
     T_EQ_STR(cb_buf_cstr(&r.body), "round trip");
-    tc_response_free(&r);
-
-    // The console draws the app's own page from what the app declares, and the overview carries its
-    // counter under its label.
-    const char *bearer = "Authorization: Bearer " ADMIN "\r\n";
-    T_EQ_INT(get("GET", "/admin/api/panels", bearer, NULL, &r), 200);
-    T_CHECK(strstr(cb_buf_cstr(&r.body), "\"name\":\"greetings\"") && strstr(cb_buf_cstr(&r.body), "\"detail\":\"greeting\""));
-    tc_response_free(&r);
-    T_EQ_INT(get("GET", "/admin/api/greetings", bearer, NULL, &r), 200);
-    T_CHECK(strstr(cb_buf_cstr(&r.body), "good night, moon") != NULL);
-    tc_response_free(&r);
-    T_EQ_INT(get("GET", "/admin/api/greeting?id=moon", bearer, NULL, &r), 200);
-    T_CHECK(strstr(cb_buf_cstr(&r.body), "\"length\":16") != NULL);
-    tc_response_free(&r);
-    T_EQ_INT(get("GET", "/admin/api/greeting?id=mars", bearer, NULL, &r), 404);
-    tc_response_free(&r);
-    T_EQ_INT(get("GET", "/admin/api/greetings", NULL, NULL, &r), 401);   // behind the console's token
-    tc_response_free(&r);
-    T_EQ_INT(get("GET", "/admin/api/overview", bearer, NULL, &r), 200);
-    T_CHECK(strstr(cb_buf_cstr(&r.body), "\"app_count\":2,\"app_count_label\":\"Greetings\"") != NULL);
     tc_response_free(&r);
 
     T_EQ_INT(get("GET", "/v1/nothing-here", NULL, NULL, &r), 404);

@@ -282,6 +282,48 @@ static void the_exported_gate(void) {
     T_EQ_INT(st, 404);
 }
 
+// THE APP'S PAGES (cbase/app.h cb_admin_panel): GET panels lists what the app declares, absent
+// fields null; the app's calls answer behind the same token; the overview carries its counter under
+// its label. A fixture app: the console draws whatever an app declares.
+static void h_items(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) { cb_res_text(res, 200, "the items"); }
+static int items_count(cb_ctx *ctx, int64_t now_ms) { return 7; }
+static const cb_admin_call ITEM_CALLS[] = { { "GET", "items", h_items } };
+static const cb_admin_panel ITEM_PANELS[] = {
+    { "items", "Items", "Every item.", "items", "prefix", "next", "item" },
+    { "plain", NULL, NULL, "rows", NULL, NULL, NULL },
+};
+static const cb_app ITEMS_APP = { .name = "items", .admin_calls = ITEM_CALLS, .n_admin_calls = 1, .admin_panels = ITEM_PANELS,
+                                  .n_admin_panels = 2, .admin_count = items_count, .admin_count_label = "Items" };
+
+static void the_apps_pages_are_what_it_declares(void) {
+    setup(&g_store, &cb_provider_local, "/nonexistent-cbase/cbase.sqlite");
+    g_ctx.app = &ITEMS_APP;
+    g_rc = CB_OK;
+    T_EQ_INT(call("GET", "/admin/api/panels", NULL, NULL), 200);
+    const char *b = cb_buf_cstr(&g_body);
+    T_EQ_INT(cb_json_array_len(b, g_body.len, "panels"), 2);
+    char v[64] = "";
+    T_CHECK(cb_json_get_str(b, g_body.len, "panels.0.detail", v, sizeof v));
+    T_EQ_STR(v, "item");
+    T_CHECK(cb_json_get_str(b, g_body.len, "panels.0.query", v, sizeof v));
+    T_EQ_STR(v, "prefix");
+    T_CHECK(cb_json_get_str(b, g_body.len, "panels.1.title", v, sizeof v));
+    T_EQ_STR(v, "plain");   // no title: its name
+    T_EQ_INT(cb_json_find(b, g_body.len, "panels.1.detail", NULL), CB_JSON_NULL);
+    T_EQ_INT(call("GET", "/admin/api/items", NULL, NULL), 200);
+    T_CHECK(says("the items"));
+    T_EQ_INT(call("GET", "/admin/api/overview", NULL, NULL), 200);
+    int64_t n = 0;
+    T_CHECK(cb_json_get_i64(cb_buf_cstr(&g_body), g_body.len, "app_count", &n));
+    T_EQ_INT(n, 7);
+    T_CHECK(cb_json_get_str(cb_buf_cstr(&g_body), g_body.len, "app_count_label", v, sizeof v));
+    T_EQ_STR(v, "Items");
+    // No app: no pages, and no counter.
+    setup(&g_store, &cb_provider_local, "/nonexistent-cbase/cbase.sqlite");
+    T_EQ_INT(call("GET", "/admin/api/panels", NULL, NULL), 200);
+    T_EQ_INT(cb_json_array_len(cb_buf_cstr(&g_body), g_body.len, "panels"), 0);
+}
+
 int main(void) {
     cb_log_init(CB_LOG_ERROR + 1, 0);
     T_RUN(store_errors_map_to_statuses);
@@ -292,6 +334,7 @@ int main(void) {
 #endif
     T_RUN(backups_newest_first);
     T_RUN(the_exported_gate);
+    T_RUN(the_apps_pages_are_what_it_declares);
     cb_router_free(g_ctx.router);
     cb_buf_free(&g_body);
     return T_DONE();
