@@ -28,6 +28,16 @@
 // own event callback. Nothing here allocates or keeps a global: the host's struct embeds a
 // cbc_host, and a process may run any number.
 //
+// A STOP AND RESTART: there is no stop call. A host stops when the environment stops calling in,
+// and restarts with cbc_host_init on the same struct. Everything owed to the old one must then be
+// dropped by the environment, never handed to the new one: its timers stopped and its socket
+// closed before the init, and every HTTP answer still out at that moment dropped when it comes
+// (stamp each env.http call with a generation the environment bumps at the init, and pass on only
+// an answer of the current one). The shared host cannot tell: the tag it hands env.http is a slot
+// in the struct, which the new client reuses for its own requests. Such an answer may come as late
+// as the request's wait_ms, and with cbc_cfg http_wait_ms 0 (wait_ms 0) the core sets no bound on
+// how long it stays out.
+//
 // client/test/host/host_suite.h is the suite every host passes; a new environment proves itself
 // with the same scripted server.
 //
