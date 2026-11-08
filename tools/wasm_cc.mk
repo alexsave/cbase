@@ -3,7 +3,7 @@
 # first target: this file defines the `wasm-cc-check` target, and the first
 # target make reads is the default goal).
 #
-#   include ../../shared/tools/wasm_cc.mk
+#   include $(CB)tools/wasm_cc.mk
 #   wasm: wasm-cc-check
 #
 # THE COMPILER IS PART OF THE OUTPUT, so picking it up off PATH is picking up
@@ -17,7 +17,7 @@
 #
 # So macOS defaults to the pinned Homebrew LLVM when it is installed, and
 # wasm-cc-check refuses Apple clang outright. Setting WASM_CC= explicitly still
-# wins (CI's shared/scripts/ci_llvm.sh exports it), and still meets the guard.
+# wins (CI's tools/ci_llvm.sh exports it), and still meets the guard.
 ifeq ($(origin WASM_CC),undefined)
   ifneq ($(wildcard /opt/homebrew/opt/llvm/bin/clang),)
     WASM_CC := /opt/homebrew/opt/llvm/bin/clang
@@ -26,7 +26,7 @@ ifeq ($(origin WASM_CC),undefined)
   endif
 endif
 
-# The pinned major, matching shared/scripts/ci_llvm.sh LLVM_VERSION. A warning
+# The pinned major, matching tools/ci_llvm.sh LLVM_VERSION. A warning
 # and not a refusal: a different point release is a few bytes, a different
 # MAJOR is kilobytes, and both are worth saying out loud without stopping
 # someone who knows why they are doing it.
@@ -49,13 +49,13 @@ wasm-cc-check:
 	esac
 
 # THE SAME FILES FOR wasm32, freestanding, as a `wasm` target: the proof that a
-# kernel reaches nothing past the few libc names shared/c/wasm supplies.
+# kernel reaches nothing past the few libc names lib/wasm supplies.
 # Objects only, in their own variant (c_rules.mk, included first), so the proof
 # recompiles what changed and not the kernel. $(WARN) is the product's one
 # list of warnings.
 #
 #   $(eval $(call WASM_OBJECT_PROOF,$(SRC)))
-WASM_OBJECT_FLAGS = --target=wasm32 -Oz -nostdlib -ffreestanding $(WARN) -isystem $(C_ROOT)/shared/c/wasm/include
+WASM_OBJECT_FLAGS = --target=wasm32 -Oz -nostdlib -ffreestanding $(WARN) -isystem $(CB)lib/wasm/include
 define WASM_OBJECT_PROOF
 $(call C_VARIANT,build/wasm,WASM_CC,WASM_OBJECT_FLAGS)
 .PHONY: wasm

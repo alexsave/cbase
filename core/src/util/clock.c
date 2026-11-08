@@ -1,7 +1,7 @@
 #include "clock.h"
 
 #include "err.h"
-#include "clock.h"
+#include "../../../lib/clock.h"   // lib/'s host clock: a bare "clock.h" here is this directory's own
 
 #include <errno.h>
 #include <stdio.h>

@@ -1,6 +1,8 @@
-# How a C file becomes an object, once, for every product's c/Makefile.
+# How a C file becomes an object, once, for every Makefile that compiles C (cbase.mk, client/,
+# tools/structgen, tools/datagen, and a product's own).
 #
-#   include ../../shared/tools/c_rules.mk
+#   C_ROOT := ..
+#   include $(C_ROOT)/c_base/tools/c_rules.mk
 #   $(eval $(call C_VARIANT,build/obj/host,CC,CFLAGS))
 #   build/thing: $(call c_objs,build/obj/host,$(SRC) tests/thing.c)
 #   	$(CC) $(CFLAGS) $^ -o $@ $(LDLIBS)
@@ -20,7 +22,7 @@
 # NAMES, NOT VALUES, for the compiler and the flags: the recipe expands them
 # when it runs, so a `$$(cat build/layout/x.hash)` inside the flags still
 # works, and so does A FLAG FOR ONE OBJECT. In a compile, $* is the source
-# without its .c (src/game, or shared/c/sha256 for one under $(C_ROOT)), so
+# without its .c (src/game, or lib/sha256 for one under $(C_ROOT)), so
 #
 #     HOST_FLAGS = $(CFLAGS) $(OBJ_FLAGS_$*)
 #     OBJ_FLAGS_tools/thing := -Isrc
@@ -49,7 +51,7 @@
 #
 # -MD AND NOT -MMD. -MMD leaves out whatever was found through -isystem, and
 # the freestanding wasm builds reach the repo's OWN libc headers that way
-# (shared/c/wasm/include). They are exactly the headers an edit to which must
+# (lib/wasm/include). They are exactly the headers an edit to which must
 # rebuild a module. The cost is that a host object also lists the SDK's
 # headers, which is correct: a new SDK is a new object.
 #
@@ -85,9 +87,10 @@
 # objects could). A source outside the product is reached through $(C_ROOT) and
 # lands under <dir>/_root/.
 
-# The repository root as a product's c/ directory sees it. Every source that is
-# not under the including Makefile's own directory must be spelled through it.
-C_ROOT ?= ../..
+# The directory every source outside the including Makefile's own is under, as
+# that Makefile reaches it. Every such source must be spelled through it. It is
+# the includer's to say; with none said, every source is the includer's own.
+C_ROOT ?= .
 
 # $(call c_objs,<variant dir>,<sources>): the objects those sources become.
 c_objs = $(addprefix $(1)/,$(patsubst $(C_ROOT)/%,_root/%,$(patsubst %.c,%.o,$(2))))

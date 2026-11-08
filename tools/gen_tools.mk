@@ -1,17 +1,18 @@
-# The two code generators, as a product's c/Makefile reaches them: where they
-# are, the rule that builds each, and the one way a generated file is put where
-# it is read. Included by every product that generates anything.
+# The two code generators, as a Makefile reaches them: where they are, the rule
+# that builds each, and the one way a generated file is put where it is read.
+# Included by every Makefile that generates anything (client/Makefile). CB is
+# the c_base root as the including Makefile spells it, with its slash ("../").
 #
-#   include ../../shared/tools/gen_tools.mk
+#   CB := ../
+#   include $(CB)tools/gen_tools.mk
 #   thing: $(STRUCTGEN)
 #   	$(STRUCTGEN) ... --swift build/x.swift && $(call gen_sync,build/x.swift,../ios/Generated/X.swift)
 #
 # structgen asks clang for layouts and datagen asks it for the contents of
-# static tables (shared/tools/llvm.mk finds the libclang both are built on).
-# These two rules were written out in five Makefiles.
+# static tables (tools/llvm.mk finds the libclang both are built on).
 
-STRUCTGEN_DIR := $(C_ROOT)/shared/tools/structgen
-DATAGEN_DIR   := $(C_ROOT)/shared/tools/datagen
+STRUCTGEN_DIR := $(CB)tools/structgen
+DATAGEN_DIR   := $(CB)tools/datagen
 STRUCTGEN     := $(STRUCTGEN_DIR)/build/structgen
 DATAGEN       := $(DATAGEN_DIR)/build/datagen
 

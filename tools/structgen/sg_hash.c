@@ -18,7 +18,7 @@
 #include "sg_args.h"
 #include "sg_hash.h"
 #include "sg_model.h"
-#include "../../c/fnv.h"
+#include "../../lib/fnv.h"
 
 static unsigned layout_hash = FNV32_OFFSET;
 static int hash_path[256], hash_depth;   // the records on the path being hashed, for a pointer cycle
