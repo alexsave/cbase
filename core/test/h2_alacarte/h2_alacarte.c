@@ -1,7 +1,7 @@
 // h2_alacarte.c - a consumer of the HTTP/2 and gRPC module alone: linked from net/h2*,
 // net/hpack, net/grpc, net/tls and the util and lib pieces they need, and nothing else
 // (the Makefile's H2_ALACARTE_SRC). That it links at all proves the module reaches no
-// provider (providers/aws, providers/local) and no product code; tools/h2_alacarte/check.sh
+// provider (providers/aws, providers/local) and no product code; core/test/h2_alacarte/check.sh
 // then holds its symbols to that. Run, it touches each layer once: HPACK both ways, the
 // session's preface, the gRPC pieces, and a channel's call to a port nobody listens on.
 #include "net/grpc.h"

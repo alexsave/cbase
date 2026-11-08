@@ -64,7 +64,7 @@ check: repo-gate symbol-gate offline-build
 
 # THE HTTP/2 AND gRPC MODULE A LA CARTE (docs/H2.md): a consumer that takes net/h2*, hpack, grpc and
 # tls and only what they need is linked from exactly those objects (build/h2_alacarte, so a module
-# that reached a provider or the product would not link), and tools/h2_alacarte/check.sh holds its
+# that reached a provider or the product would not link), and core/test/h2_alacarte/check.sh holds its
 # symbols against every symbol the providers' and the product's objects define. Part of check.
 H2_ALACARTE_SRC := $(addprefix core/src/net/,h2.c h2_session.c hpack.c grpc.c tls.c) \
                    $(addprefix core/src/util/,str.c err.c log.c clock.c) lib/b64/b64.c lib/hex/hex.c
@@ -77,19 +77,19 @@ build/$(1): $$(call c_objs,build/obj/cbase,$(2) $$(H2_ALACARTE_SRC))
 	@echo "  LINK $$@"
 	@$$(CC) $$^ -o $$@ $$(H2_ALACARTE_LIBS)
 endef
-$(eval $(call H2_ALONE,h2_alacarte,tools/h2_alacarte/h2_alacarte.c))
+$(eval $(call H2_ALONE,h2_alacarte,core/test/h2_alacarte/h2_alacarte.c))
 .PHONY: h2-alacarte
 h2-alacarte: build/h2_alacarte $(H2_ALACARTE_FORBID)
-	tools/h2_alacarte/check.sh build/h2_alacarte $(H2_ALACARTE_FORBID)
+	core/test/h2_alacarte/check.sh build/h2_alacarte $(H2_ALACARTE_FORBID)
 check: h2-alacarte
 
-# THE HTTP/2 INTEROP CHECK (tools/h2_interop): the same module, alone, calling Node's node:http2
+# THE HTTP/2 INTEROP CHECK (core/test/h2_interop): the same module, alone, calling Node's node:http2
 # over cleartext and TLS. Opt in, never part of check: it needs node (NODE) and the openssl CLI.
 NODE ?= node
-$(eval $(call H2_ALONE,h2_interop,tools/h2_interop/h2_interop.c))
+$(eval $(call H2_ALONE,h2_interop,core/test/h2_interop/h2_interop.c))
 .PHONY: h2-interop
 h2-interop: build/h2_interop
-	NODE='$(NODE)' tools/h2_interop/run.sh build/h2_interop
+	NODE='$(NODE)' core/test/h2_interop/run.sh build/h2_interop
 
 # The deploy tooling's own tests (ops/test, providers/*/ops/test): no AWS, no network, a stub `aws`
 # and scratch git trees. CI's ops job runs them; they are not part of check.

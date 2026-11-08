@@ -7,7 +7,7 @@
 # needs is one that a provider's or the product's objects define, and nothing it needs is
 # a cbase symbol left unresolved. Then the program runs.
 #
-# usage: tools/h2_alacarte/check.sh <binary> <provider and product objects>...
+# usage: core/test/h2_alacarte/check.sh <binary> <provider and product objects>...
 set -euo pipefail
 
 BIN="$1"; shift

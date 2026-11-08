@@ -1,12 +1,12 @@
 // h2_interop.c - the HTTP/2 client and its gRPC calls (net/grpc.h) against Node's
-// node:http2 (tools/h2_interop/server.js), the stack amgi's Gemini client and its
+// node:http2 (core/test/h2_interop/server.js), the stack amgi's Gemini client and its
 // fake server run on. Over cleartext and TLS (ALPN h2, the certificate verified):
 // echoes of many sizes on one connection, so Node's HPACK names its own earlier fields
 // from its dynamic table and Huffman-codes its strings; the metadata as Node saw it
 // (the API key never-indexed, grpc-timeout); a trailers-only RESOURCE_EXHAUSTED with
 // its message and details; an unknown method; and calls from many threads at once.
 //
-// usage: h2_interop <cleartext port> <tls port> <ca file>   (tools/h2_interop/run.sh)
+// usage: h2_interop <cleartext port> <tls port> <ca file>   (core/test/h2_interop/run.sh)
 // Exit 0 when every check passed.
 #include "net/grpc.h"
 #include "util/err.h"
