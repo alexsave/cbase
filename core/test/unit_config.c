@@ -112,8 +112,10 @@ static void secrets_never_shown(void) {
     clear_env();
 }
 
-// CBASE_BOT_SPEEDUP is a test knob: Lambda refuses to boot with anything but
-// production's pace, before it touches a store, whatever else is set.
+// CBASE_BOT_SPEEDUP is a test knob: a provider without a test clock (CB_PROV_TEST_CLOCK; Lambda's
+// is one) refuses to boot with anything but production's pace, before it touches a store, whatever
+// else is set.
+static const cb_provider NO_TEST_CLOCK = { .name = "fixture", .mode = "fixture" };
 static void lambda_refuses_a_bot_speedup(void) {
     clear_env();
     cb_config c;
@@ -126,7 +128,7 @@ static void lambda_refuses_a_bot_speedup(void) {
         static cb_ctx ctx;
         memset(&ctx, 0, sizeof ctx);
         ctx.cfg = &c;
-        ctx.prov = &cb_provider_aws;
+        ctx.prov = &NO_TEST_CLOCK;
         err[0] = 0;
         T_EQ_INT(cb_boot(&ctx, err, sizeof err), CB_E_INVALID);
         T_CHECK(strstr(err, "CBASE_BOT_SPEEDUP") != NULL);

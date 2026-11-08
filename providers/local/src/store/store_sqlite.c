@@ -1820,3 +1820,6 @@ static const cb_store_ops SQLITE_OPS = {
     .user_create_identity = sq_user_create_identity,
     .once_claim = sq_once_claim,
 };
+
+static int sqlite_backend_open(const char *db_path, const char *table, cb_store **out) { return cb_store_open_sqlite(db_path, out); }
+const cb_store_backend cb_store_backend_sqlite = { "sqlite", sqlite_backend_open };

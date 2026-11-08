@@ -2,8 +2,8 @@
 //
 // What a backup needs of its storage and no more: put a file under a key, get the file under a key,
 // and delete one it no longer names.
-// A provider that has such a place implements it (cb_blob_open_s3, in the cloud provider's own
-// files); a test passes a fake. Both calls block, so they run on a job thread, never on the loop.
+// A provider that has such a place implements it (a cb_blob_backend, in that provider's own files);
+// a test passes a fake. Both calls block, so they run on a job thread, never on the loop.
 #ifndef CB_BLOB_H
 #define CB_BLOB_H
 
@@ -18,8 +18,14 @@ typedef struct {
     int (*del)(void *ud, const char *key);
 } cb_blob;
 
-// An object bucket in `region`, reached with the credentials this process has (the environment's, else the
-// instance role's). CB_OK and *out, or a CB_E_*.
-int cb_blob_open_s3(const char *bucket, const char *region, cb_blob *out);
+// AN OBJECT STORE BACKEND: a bucket in `region`, reached with the credentials this process has (the
+// environment's, else the instance role's). open answers CB_OK and *out, or a CB_E_*.
+typedef struct {
+    const char *name;
+    int (*open)(const char *bucket, const char *region, cb_blob *out);
+} cb_blob_backend;
+// The object stores this binary links, NULL-terminated, the first the one a backup uses: written by
+// cbase.mk (build/gen/cbase_links.c) from the providers the build links. Empty when none is.
+extern const cb_blob_backend *const cb_blob_backends[];
 
 #endif

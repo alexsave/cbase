@@ -5,6 +5,7 @@
 
 #include "cbase/app.h"
 
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,7 +14,27 @@
 
 int cb_store_open_named(const char *store, const char *fallback, const char *db_path, const char *table, cb_store **out) {
     const char *name = store && *store ? store : fallback;
-    return name && strcmp(name, "dynamo") == 0 ? cb_store_open_dynamo(table, out) : cb_store_open_sqlite(db_path, out);
+    *out = NULL;
+    for (int i = 0; name && cb_store_backends[i]; i++)
+        if (strcmp(cb_store_backends[i]->name, name) == 0) return cb_store_backends[i]->open(db_path, table, out);
+    return CB_E_NOTIMPL;
+}
+
+// ---- the thread's deadline, and the process's throttling (store.h) ------------------
+
+static _Thread_local int64_t t_deadline;
+static _Atomic uint64_t g_throttled, g_gave_up;
+
+void cb_store_set_deadline(int64_t deadline_ms) { t_deadline = deadline_ms; }
+int64_t cb_store_deadline(void) { return t_deadline; }
+
+void cb_store_throttle_note(bool gave_up) {
+    atomic_fetch_add_explicit(gave_up ? &g_gave_up : &g_throttled, 1, memory_order_relaxed);
+}
+
+void cb_store_throttles_get(cb_store_throttles *out) {
+    out->throttled = atomic_load_explicit(&g_throttled, memory_order_relaxed);
+    out->gave_up = atomic_load_explicit(&g_gave_up, memory_order_relaxed);
 }
 
 void cb_store_init(cb_store *s, const cb_store_ops *ops, void *impl) {

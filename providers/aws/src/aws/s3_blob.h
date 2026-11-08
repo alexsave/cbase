@@ -3,6 +3,7 @@
 #define CB_S3_BLOB_H
 
 #include "sigv4.h"
+#include "util/blob.h"
 
 #include <stdint.h>
 
@@ -15,5 +16,9 @@ int cb_imds_parse(const char *doc, cb_aws_creds *out, int64_t *expiry_ms);
 // metadata service, IPv6 endpoint first, kept until five minutes before they expire). CBASE_IMDS_ENDPOINT
 // ("host:port", plain HTTP) points the fetch elsewhere, for a stand-in.
 int cb_aws_creds_get(cb_aws_creds *out);
+
+// An S3 bucket in `region` as a cb_blob (util/blob.h), with cb_aws_creds_get's credentials: the object store
+// this provider links (cb_blob_backend_s3). CB_OK and *out, or a CB_E_*.
+int cb_blob_open_s3(const char *bucket, const char *region, cb_blob *out);
 
 #endif

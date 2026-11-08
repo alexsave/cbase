@@ -22,7 +22,6 @@
 #include "rng.h"
 
 #include <fcntl.h>
-#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -82,18 +81,7 @@ static bool tally_is_read(const char *target) {
     return false;
 }
 
-// ---- throttling (store.h cb_store_set_deadline) -------------------------------------
-
-static _Thread_local int64_t t_deadline;
-static _Atomic uint64_t g_throttled, g_gave_up;
-
-void cb_store_set_deadline(int64_t deadline_ms) { t_deadline = deadline_ms; }
-int64_t cb_store_deadline(void) { return t_deadline; }
-
-void cb_store_throttles_get(cb_store_throttles *out) {
-    out->throttled = atomic_load_explicit(&g_throttled, memory_order_relaxed);
-    out->gave_up = atomic_load_explicit(&g_gave_up, memory_order_relaxed);
-}
+// ---- throttling (store.h cb_store_set_deadline, cb_store_throttle_note) -------------
 
 // The pauses between sends of one request: full jitter (a uniform pause up to
 // a ceiling that doubles from RETRY_BASE_MS to RETRY_CAP_MS), at most
@@ -126,13 +114,14 @@ static void backoff_start(dyn *d, backoff *b) {
     b->d = d;
     b->sends = 1;
     b->errors = 0;
-    b->until = t_deadline > 0 ? t_deadline - DEADLINE_MARGIN_MS : cb_now_ms() + CB_STORE_RETRY_WALL_MS;
+    int64_t deadline = cb_store_deadline();
+    b->until = deadline > 0 ? deadline - DEADLINE_MARGIN_MS : cb_now_ms() + CB_STORE_RETRY_WALL_MS;
 }
 
 // Waits before the next send, counting a throttle. false: no send left, or
 // no time for the pause; a throttled request is then counted as given up.
 static bool backoff_pause(backoff *b, bool throttled, const char *target) {
-    if (throttled) atomic_fetch_add_explicit(&g_throttled, 1, memory_order_relaxed);
+    if (throttled) cb_store_throttle_note(false);
     bool bulk = b->d->bulk;
     int64_t cap = bulk ? BULK_CAP_MS : RETRY_CAP_MS;
     int64_t ceiling = RETRY_BASE_MS << (b->sends < 8 ? b->sends - 1 : 7);
@@ -144,7 +133,7 @@ static bool backoff_pause(backoff *b, bool throttled, const char *target) {
                      : b->sends >= RETRY_SENDS || cb_now_ms() + pause > b->until;
     if (stop) {
         if (throttled) {
-            atomic_fetch_add_explicit(&g_gave_up, 1, memory_order_relaxed);
+            cb_store_throttle_note(true);
             cb_store_mark_busy();   // the request's CB_E_DB reaches its caller as CB_E_BUSY
             CB_WARN(MOD, "%s: throttled, given up after %d send(s)", target, b->sends);
         }
@@ -755,3 +744,6 @@ int cb_store_open_dynamo(const char *table, cb_store **out) {
     }
     return CB_OK;
 }
+
+static int dynamo_backend_open(const char *db_path, const char *table, cb_store **out) { return cb_store_open_dynamo(table, out); }
+const cb_store_backend cb_store_backend_dynamo = { "dynamo", dynamo_backend_open };

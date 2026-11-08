@@ -417,6 +417,41 @@ static void signing_key_per_thread(void) {
     T_EQ_INT(other, 1);
 }
 
+// ---- sigv4: the canonical query --------------------------------------------------------------
+
+static void sigv4_query_order(void) {
+    cb_aws_creds c;
+    memset(&c, 0, sizeof c);
+    snprintf(c.access_key, sizeof c.access_key, "AKIDEXAMPLE");
+    snprintf(c.secret_key, sizeof c.secret_key, "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY");
+    snprintf(c.region, sizeof c.region, "us-east-1");
+    cb_sigv4_req r = { .method = "GET", .host = "example.amazonaws.com", .path = "/", .service = "service",
+                       .now_ms = 1440938160000LL };
+    cb_buf can, sts;
+    cb_buf_init(&can);
+    cb_buf_init(&sts);
+    char sig[65];
+    // Sorted by key then value; a key with no '=' signs as "key=" and sorts before its valued twins;
+    // a key that is a prefix of another sorts first.
+    r.query = "b=2&a=1&a&ab=1&a=0&&";
+    T_EQ_INT(cb_sigv4_debug(&c, &r, &can, &sts, sig), CB_OK);
+    const char *q = strchr(cb_buf_cstr(&can), '\n');
+    q = q ? strchr(q + 1, '\n') : NULL;
+    T_CHECK(q && strncmp(q + 1, "a=&a=0&a=1&ab=1&b=2\n", 20) == 0);
+    // Sixty-four pairs sign; sixty-five do not.
+    cb_buf many;
+    cb_buf_init(&many);
+    for (int i = 0; i < 64; i++) cb_buf_printf(&many, "%sk%02d=v", i ? "&" : "", i);
+    r.query = cb_buf_cstr(&many);
+    T_EQ_INT(cb_sigv4_debug(&c, &r, &can, &sts, sig), CB_OK);
+    cb_buf_puts(&many, "&k64=v");
+    r.query = cb_buf_cstr(&many);
+    T_EQ_INT(cb_sigv4_debug(&c, &r, &can, &sts, sig), CB_E_INVALID);
+    cb_buf_free(&many);
+    cb_buf_free(&can);
+    cb_buf_free(&sts);
+}
+
 int main(void) {
     T_RUN(aws_test_suite);
     T_RUN(signed_header_lines);
@@ -426,5 +461,6 @@ int main(void) {
     T_RUN(signing_key_kept);
     T_RUN(hmac_long_key_boundaries);
     T_RUN(signing_key_per_thread);
+    T_RUN(sigv4_query_order);
     return T_DONE();
 }

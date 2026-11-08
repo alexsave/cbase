@@ -225,3 +225,5 @@ int cb_blob_open_s3(const char *bucket, const char *region, cb_blob *out) {
     *out = (cb_blob){ .put = s3_put, .get = s3_get, .ud = c, .del = s3_del };
     return CB_OK;
 }
+
+const cb_blob_backend cb_blob_backend_s3 = { "s3", cb_blob_open_s3 };

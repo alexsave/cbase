@@ -361,9 +361,20 @@ bool cb_store_local_pre_upgrade_path(const char *db_path, char *out, size_t cap)
 // Opens the DynamoDB table `table` in the region and with the credentials the
 // Lambda environment provides (aws/sigv4.h cb_aws_creds_from_env).
 int cb_store_open_dynamo(const char *table, cb_store **out);
-// The store CBASE_STORE names ("dynamo", else SQLite), or `fallback` when it
-// names none: what each provider's store_open is (cbase/provider.h). The
-// return of the opener it picked.
+// A STORE BACKEND: a provider's store, by the name CBASE_STORE and a provider's
+// default (cbase/provider.h store) call it. open takes the settings either kind
+// reads (a file's path, a table's name) and uses its own.
+typedef struct {
+    const char *name;
+    int (*open)(const char *db_path, const char *table, cb_store **out);
+} cb_store_backend;
+// The backends this binary links, NULL-terminated: written by cbase.mk
+// (build/gen/cbase_links.c) from the providers the build links, so a store is
+// in the binary because its provider is, and core names none of them.
+extern const cb_store_backend *const cb_store_backends[];
+// The store CBASE_STORE names, or `fallback` when it names none: what each
+// provider's store_open is (cbase/provider.h). The return of the opener it
+// picked; CB_E_NOTIMPL when no linked backend has that name.
 int cb_store_open_named(const char *store, const char *fallback, const char *db_path, const char *table, cb_store **out);
 void cb_store_close(cb_store *s);
 
@@ -406,6 +417,8 @@ typedef struct {
     uint64_t throttled, gave_up;
 } cb_store_throttles;
 void cb_store_throttles_get(cb_store_throttles *out);
+// A backend counts a throttled response, and a request it gave up on still throttled.
+void cb_store_throttle_note(bool gave_up);
 
 // The SQLite schema version this binary applies (store_sqlite.c), and the
 // embedded schema text (build/gen/schema_sql.c, from providers/local/sql/schema.sql).

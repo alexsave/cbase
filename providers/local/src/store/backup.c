@@ -363,7 +363,12 @@ static int env_blob(cb_blob *blob, char *key, size_t kcap, int64_t *interval_ms)
     const char *iv = getenv("CBASE_BACKUP_INTERVAL_S");
     if (iv && *iv && !num_parse_i64(iv, strlen(iv), 1, 86400, &secs)) secs = 60;
     *interval_ms = secs * 1000;
-    return cb_blob_open_s3(bucket, region && *region ? region : "us-east-1", blob);
+    const cb_blob_backend *b = cb_blob_backends[0];
+    if (!b) {
+        CB_ERROR(MOD, "CBASE_BACKUP_BUCKET is set, and this binary links no object store to send backups to");
+        return CB_E_NOTIMPL;
+    }
+    return b->open(bucket, region && *region ? region : "us-east-1", blob);
 }
 
 int cb_backup_serve_prepare(const cb_config *cfg) {

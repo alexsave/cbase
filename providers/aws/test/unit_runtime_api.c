@@ -8,6 +8,8 @@
 // POST through CloudFront failed to decode and answered 502.
 #include "t.h"
 
+#include "cbase/provider.h"
+
 #include "aws/event.h"
 #include "aws/runtime_api.h"
 #include "fixture_cloudfront_event.h"
@@ -190,7 +192,14 @@ static void next_truncated(void) {
     cb_buf_free(&r);
 }
 
+// Lambda runs production's pace alone: the aws provider has no test clock, so a CBASE_BOT_SPEEDUP
+// other than 1 refuses its boot (core/test/unit_config.c holds that refusal for any such provider).
+static void lambda_has_no_test_clock(void) {
+    T_EQ_INT(cb_provider_aws.flags & CB_PROV_TEST_CLOCK, 0);
+}
+
 int main(void) {
+    T_RUN(lambda_has_no_test_clock);
     T_RUN(next_chunked);
     T_RUN(next_content_length);
     T_RUN(next_truncated);
