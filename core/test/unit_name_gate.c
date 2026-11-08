@@ -9,7 +9,8 @@
 // The lists are tools/name_gate/words.txt (its header says the pattern
 // syntax). Every line of every file under those directories is read,
 // comments and strings included: a name in a comment is the first step of
-// the drift, not an exception to it.
+// the drift, not an exception to it. So of the scanner the gates share
+// (lib_cscan.h) this one takes the walk, not the lexer.
 //
 // THE ALLOWLISTS hold today's hits, one line per file and pattern: cbase's
 // own, tools/name_gate/allow.txt, for its files (provider words only: a line
@@ -28,6 +29,7 @@
 // tree is today, sorted, for a change that removes names. The gate goes strict
 // when the allowlists are empty. It runs from any directory (lib_tree.h).
 #include "t.h"
+#include "lib_cscan.h"
 #include "lib_tree.h"
 
 #include <dirent.h>
@@ -111,25 +113,11 @@ static bool matches(const pattern *p, const char *s, size_t n) {
 
 // ---- the files --------------------------------------------------------------
 
-static char *slurp(const char *path, size_t *n) {
-    FILE *f = fopen(path, "rb");
-    if (!f) return NULL;
-    fseek(f, 0, SEEK_END);
-    long k = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    char *s = malloc((size_t)k + 1);
-    if (!s || fread(s, 1, (size_t)k, f) != (size_t)k) abort();
-    fclose(f);
-    s[k] = 0;
-    *n = (size_t)k;
-    return s;
-}
-
 // words.txt into g_pat. Returns false on a line it cannot read.
 static bool load_words(void) {
     size_t n;
     char words[TT_PATH_MAX];
-    char *s = slurp(tt_path(words, sizeof words, WORDS), &n);
+    char *s = cscan_slurp(tt_path(words, sizeof words, WORDS), &n);
     if (!s) return false;
     int list = 0;
     bool ok = true;
@@ -198,27 +186,15 @@ static int scan_text(const char *path, int forbidden, const char *s, size_t n) {
     return total;
 }
 
+static void on_file(const char *name, const char *text, size_t n, void *ctx) {
+    g_files++;
+    scan_text(name, *(const int *)ctx, text, n);
+}
+
 // Every file under dir (opened as `dir`), each named `name`/<the rest of its path>.
 static void scan_named(const char *dir, const char *name, int forbidden) {
-    DIR *d = opendir(dir);
-    if (!d) return;
-    struct dirent *e;
-    while ((e = readdir(d)) != NULL) {
-        if (e->d_name[0] == '.') continue;
-        char p[TT_PATH_MAX + 256], q[TT_PATH_MAX + 256];
-        if (snprintf(p, sizeof p, "%s/%s", dir, e->d_name) >= (int)sizeof p) continue;   // no path is that long
-        if (snprintf(q, sizeof q, "%s/%s", name, e->d_name) >= (int)sizeof q) continue;
-        struct stat st;
-        if (stat(p, &st) != 0) continue;
-        if (S_ISDIR(st.st_mode)) { scan_named(p, q, forbidden); continue; }
-        size_t n;
-        char *s = slurp(p, &n);
-        if (!s) continue;
-        g_files++;
-        scan_text(q, forbidden, s, n);
-        free(s);
-    }
-    closedir(d);
+    cscan_walker w = { .all_files = true, .file = on_file, .ctx = &forbidden };
+    cscan_walk(&w, dir, name);
 }
 
 // A cbase directory, from cbase's root.
@@ -256,7 +232,7 @@ static void scan_tree(void) {
 // could not read (a pattern not in words.txt is one), and 1 for no such file.
 static int load_allow(const char *path, int refused_lists) {
     size_t n;
-    char *s = slurp(path, &n);
+    char *s = cscan_slurp(path, &n);
     if (!s) {
         fprintf(stderr, "name gate: cannot read the allowlist %s\n", path);
         return 1;

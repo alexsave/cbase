@@ -14,18 +14,17 @@
 // random source outside its home: the C library's (rand, random, srand, the *rand48
 // family, arc4random*), the system's (getentropy, getrandom, SecRandomCopyBytes),
 // OpenSSL's (RAND_bytes and its kin), or a device ("/dev/urandom", "/dev/random", in a
-// string literal). Comments, character literals and #include lines are skipped, so a
-// comment may say "random" and random.c may include <openssl/rand.h>; this file, which plants
+// string literal). Comments, character literals and #include lines are skipped (the scanner is
+// lib_cscan.h's), so a comment may say "random" and random.c may include <openssl/rand.h>; this file, which plants
 // the banned names in its own tests, is not read.
 // It runs from any directory (lib_tree.h).
 #include "t.h"
+#include "lib_cscan.h"
 #include "lib_tree.h"
 
 #include <ctype.h>
-#include <dirent.h>
 #include <stdbool.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 
@@ -85,91 +84,33 @@ static void check_literal(const char *path, int line, const char *s, size_t n) {
     }
 }
 
-static void scan_text(const char *path, const char *s, size_t n) {
-    int line = 1;
-    bool line_start = true;   // only blanks so far on this line
-    size_t i = 0;
-    while (i < n) {
-        char c = s[i];
-        if (c == '\n') { line++; i++; line_start = true; continue; }
-        if (c == ' ' || c == '\t') { i++; continue; }
-        if (line_start && c == '#') {   // #include <openssl/rand.h> names a header, not a call
-            size_t b = i + 1;
-            while (b < n && (s[b] == ' ' || s[b] == '\t')) b++;
-            if (n - b >= 7 && memcmp(s + b, "include", 7) == 0) {
-                while (i < n && s[i] != '\n') i++;
-                continue;
-            }
-        }
-        line_start = false;
-        if (c == '/' && i + 1 < n && s[i + 1] == '/') {
-            while (i < n && s[i] != '\n') i++;
-            continue;
-        }
-        if (c == '/' && i + 1 < n && s[i + 1] == '*') {
-            i += 2;
-            while (i + 1 < n && !(s[i] == '*' && s[i + 1] == '/')) { if (s[i] == '\n') line++; i++; }
-            i += 2;
-            continue;
-        }
-        if (c == '"' || c == '\'') {
-            size_t b = ++i;
-            int at = line;
-            while (i < n && s[i] != c) {
-                if (s[i] == '\n') line++;
-                i += s[i] == '\\' ? 2 : 1;
-            }
-            if (c == '"') check_literal(path, at, s + b, (i < n ? i : n) - b);
-            i++;
-            continue;
-        }
-        if (isalpha((unsigned char)c) || c == '_') {
-            size_t b = i;
-            while (i < n && ident_char(s[i])) i++;
-            check_ident(path, line, s + b, i - b);
-            continue;
-        }
-        if (isdigit((unsigned char)c)) {   // a number's suffix is not an identifier
-            while (i < n && ident_char(s[i])) i++;
-            continue;
-        }
-        i++;
-    }
+static void on_tok(const cscan_tok *t, void *ctx) {
+    const char *path = ctx;
+    if (t->kind == CSCAN_IDENT) check_ident(path, t->line, t->s, t->n);
+    else if (t->kind == CSCAN_STRING) check_literal(path, t->line, t->s, t->n);
 }
 
-static void scan_file(const char *path, const char *name) {
-    FILE *f = fopen(path, "rb");
-    if (!f) { violation(name, 0, "(cannot be read)", 16); return; }
-    fseek(f, 0, SEEK_END);
-    long n = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    char *s = malloc((size_t)n + 1);
-    if (!s || fread(s, 1, (size_t)n, f) != (size_t)n) abort();
-    fclose(f);
+static void scan_text(const char *path, const char *s, size_t n) { cscan_lex(s, n, on_tok, (void *)path); }
+
+static void on_file(const char *name, const char *text, size_t n, void *ctx) {
+    (void)ctx;
     g_files++;
-    scan_text(name, s, (size_t)n);
-    free(s);
+    scan_text(name, text, n);
+}
+static void on_unreadable(const char *name, void *ctx) {
+    (void)ctx;
+    violation(name, 0, "(cannot be read)", 16);
+}
+static bool is_self(const char *name, void *ctx) {
+    (void)ctx;
+    return strcmp(name, SELF) == 0;
 }
 
-// Every C source under dir (opened as `dir`), each named `name`/<the rest of its path>; build
-// output and installed packages are not the tree's.
-static void scan_named(const char *dir, const char *name) {
-    DIR *d = opendir(dir);
-    if (!d) return;
-    struct dirent *e;
-    while ((e = readdir(d)) != NULL) {
-        if (e->d_name[0] == '.' || strcmp(e->d_name, "build") == 0 || strcmp(e->d_name, "node_modules") == 0) continue;
-        char p[1024], q[1024];
-        snprintf(p, sizeof p, "%s/%s", dir, e->d_name);
-        snprintf(q, sizeof q, "%s/%s", name, e->d_name);
-        struct stat st;
-        if (stat(p, &st) != 0) continue;
-        if (S_ISDIR(st.st_mode)) { scan_named(p, q); continue; }
-        size_t L = strlen(q);
-        if (L > 2 && q[L - 2] == '.' && (q[L - 1] == 'c' || q[L - 1] == 'h') && strcmp(q, SELF) != 0) scan_file(p, q);
-    }
-    closedir(d);
-}
+// Build output and installed packages are not the tree's.
+static const char *const SKIP_DIRS[] = { "build", "node_modules", NULL };
+static const cscan_walker WALK = { .skip_dirs = SKIP_DIRS, .skip = is_self, .file = on_file, .unreadable = on_unreadable };
+
+static void scan_named(const char *dir, const char *name) { cscan_walk(&WALK, dir, name); }
 
 static void scan_dir(const char *rel) {
     char p[TT_PATH_MAX];

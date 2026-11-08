@@ -148,7 +148,6 @@ Mutation checks (file, mutation, what failed):
 - rt_local.c, bad vsn upgraded: the_upgrade_route.
 - rt_local.c, publish to every socket: join_publish_and_isolation.
 
-
 ## AWS
 
 - sigv4.c, header sort skipped: unit_sigv4 get-header-value-trim canonical request.
@@ -341,7 +340,6 @@ Each mutant below was applied, the named test went red on the named assertion, a
 - v1_http.c: no auth module answered 500 -> `without_a_backend` the sign-up's status is 503.
 - realtime.c: `rt_publish_view` sends nothing -> the game smoke, B heard no views.
 
-
 ## Ported from the TypeScript e2e (stage 4)
 
 The TypeScript server's e2e suite went with it; these unit_app.c tests carry over what it guarded that no C test did. Two seams were added for them: `cb_app_game_uuid` (the UUID a game id is cut from) and `cb_bots_cycle_observer` (what each bot cycle is handed). Each mutant was applied, the named test failed on the named assertion, and the source was restored.
@@ -359,7 +357,6 @@ The TypeScript server's e2e suite went with it; these unit_app.c tests carry ove
 - `bot_moves_wait_for_the_table_to_settle` (web_bot_first_move_pace, web_throwin_vs_bot, win_screen_rating_is_the_games): the kernel's wait ignored -> `g_pace.at[k] >= t_last + wait`.
 
 Equivalent, recorded so nobody chases it: a bot cycle reading the row cache instead of the store survives, because in one process the cache holds the newest commit. Not ported: the casts' per-seat masking (the test checks every envelope against the seat's view, not every cast, which the kernel's own table_cast tests hold).
-
 
 ## A created game's id comes from the create's answer (2026-10-31)
 
@@ -480,8 +477,6 @@ A mutation that would not compile (an unused variable under -Werror) was replace
 - stream.c: a batch's entries not checked for a client's kind -> smoke_matrix `stream_frames` "server frame in a batch" (an ACK inside ran nothing before; now the batch's SUB_AS was answered and the socket stayed).
 - rt_apigw.c: route replies taken when CBASE_WS_ROUTE_REPLY says no, and not when it says yes -> smoke_lambda_after: `the_answer_goes_first` (the SUB's ACK never POSTed) and `route_replies_ride_in_the_answer` (no body in the $default answer).
 - smoke.c's two deadlines (the transport's 10 s, "the version held 5 s"): each reproduced red by freezing the server with SIGSTOP (11-15 s, mid-game; 12 s, while the idle test waited for the bots), and green after with the same freeze.
-
-
 
 ## MQTT on IoT Core, stage 1 (2026-10-17: unit_mqtt, unit_stream_mqtt, unit_rt_iot, unit_rt_local, unit_store, unit_ws, smoke_authz)
 
@@ -1086,3 +1081,13 @@ The two fixes were first seen red as found: unit_auth_sqlite `a_session_past_its
 - admin.c: the write word ignored -> `a_write_needs_the_word_and_a_text_prefix_matches` CREATE without it == 403.
 - admin.c: the backup's VACUUM INTO sent as a read -> `a_backup_is_a_file_beside_the_database` POST backups == 200 and the copy's account.
 - admin.c: the logs level ignored -> `logs_tail_the_consoles_warnings` level=error does not say the warning.
+
+## One C scanner for the source gates (small-debts)
+
+core/test/lib_cscan.c is the lexer and the walk the four source gates share; each mutation was rebuilt and all four gates run.
+
+- lib_cscan.c: `//` comments not skipped -> `unit_random_gate` and `unit_num_gate` `the_scanner_sees_each_kind` (the planted comment == 0), `unit_json_gate` the same test (the planted "code in a comment" == 0) and `only_json_surface_speaks_json` violations == 0.
+- lib_cscan.c: `/* */` comments not skipped -> the same three planted assertions.
+- lib_cscan.c: string and character literals lexed as code -> `unit_random_gate` the planted "/dev/urandom" == 1 and "rand and random" == 0, `unit_num_gate` "strtol and atoi" == 0, `unit_json_gate` every planted key, macro and XML literal.
+- lib_cscan.c: `#include` lines lexed as code -> `unit_random_gate` the planted includes == 0, `unit_json_gate` the planted util/json.h includes == 1.
+- lib_cscan.c: the walk enters no directory -> `g_files` floor in all four gates (`unit_name_gate` also stale == 0).

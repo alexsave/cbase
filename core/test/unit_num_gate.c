@@ -14,16 +14,14 @@
 // file, providers/aws/src/aws_json.c, which reads the one fractional number cbase
 // takes (DynamoDB's CapacityUnits); anywhere else they are a violation too.
 //
-// Comments, string literals and character literals are skipped, so a comment
-// may name strtol. It runs from any directory (lib_tree.h).
+// Comments, string literals and character literals are skipped (the scanner is
+// lib_cscan.h's), so a comment may name strtol. It runs from any directory (lib_tree.h).
 #include "t.h"
+#include "lib_cscan.h"
 #include "lib_tree.h"
 
-#include <ctype.h>
-#include <dirent.h>
 #include <stdbool.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 
@@ -48,82 +46,30 @@ static void violation(const char *path, int line, const char *s, size_t n) {
         fprintf(stderr, "num gate: %s:%d: %.*s (use num_parse_i64, shared/c/num_parse.h)\n", path, line, (int)n, s);
 }
 
-static bool ident_char(char c) { return isalnum((unsigned char)c) || c == '_'; }
-
-static void scan_text(const char *path, const char *s, size_t n) {
-    bool float_ok = strcmp(path, FLOAT_HOME) == 0;
-    int line = 1;
-    size_t i = 0;
-    while (i < n) {
-        char c = s[i];
-        if (c == '\n') { line++; i++; continue; }
-        if (c == '/' && i + 1 < n && s[i + 1] == '/') {
-            while (i < n && s[i] != '\n') i++;
-            continue;
-        }
-        if (c == '/' && i + 1 < n && s[i + 1] == '*') {
-            i += 2;
-            while (i + 1 < n && !(s[i] == '*' && s[i + 1] == '/')) { if (s[i] == '\n') line++; i++; }
-            i += 2;
-            continue;
-        }
-        if (c == '"' || c == '\'') {
-            i++;
-            while (i < n && s[i] != c) {
-                if (s[i] == '\n') line++;
-                i += s[i] == '\\' ? 2 : 1;
-            }
-            i++;
-            continue;
-        }
-        if (isalpha((unsigned char)c) || c == '_') {
-            size_t b = i;
-            while (i < n && ident_char(s[i])) i++;
-            if (in(INTEGER, sizeof INTEGER / sizeof INTEGER[0], s + b, i - b) ||
-                (!float_ok && in(FLOATING, sizeof FLOATING / sizeof FLOATING[0], s + b, i - b)))
-                violation(path, line, s + b, i - b);
-            continue;
-        }
-        if (isdigit((unsigned char)c)) {   // a number's suffix is not an identifier
-            while (i < n && ident_char(s[i])) i++;
-            continue;
-        }
-        i++;
-    }
+static void on_tok(const cscan_tok *t, void *ctx) {
+    const char *path = ctx;
+    if (t->kind != CSCAN_IDENT) return;
+    if (in(INTEGER, sizeof INTEGER / sizeof INTEGER[0], t->s, t->n) ||
+        (strcmp(path, FLOAT_HOME) != 0 && in(FLOATING, sizeof FLOATING / sizeof FLOATING[0], t->s, t->n)))
+        violation(path, t->line, t->s, t->n);
 }
 
-static void scan_file(const char *path, const char *name) {
-    FILE *f = fopen(path, "rb");
-    if (!f) { violation(name, 0, "(cannot be read)", 16); return; }
-    fseek(f, 0, SEEK_END);
-    long n = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    char *s = malloc((size_t)n + 1);
-    if (!s || fread(s, 1, (size_t)n, f) != (size_t)n) abort();
-    fclose(f);
+static void scan_text(const char *path, const char *s, size_t n) { cscan_lex(s, n, on_tok, (void *)path); }
+
+static void on_file(const char *name, const char *text, size_t n, void *ctx) {
+    (void)ctx;
     g_files++;
-    scan_text(name, s, (size_t)n);
-    free(s);
+    scan_text(name, text, n);
 }
+static void on_unreadable(const char *name, void *ctx) {
+    (void)ctx;
+    violation(name, 0, "(cannot be read)", 16);
+}
+
+static const cscan_walker WALK = { .file = on_file, .unreadable = on_unreadable };
 
 // Every C source under dir (opened as `dir`), each named `name`/<the rest of its path>.
-static void scan_named(const char *dir, const char *name) {
-    DIR *d = opendir(dir);
-    if (!d) return;
-    struct dirent *e;
-    while ((e = readdir(d)) != NULL) {
-        if (e->d_name[0] == '.') continue;
-        char p[1024], q[1024];
-        snprintf(p, sizeof p, "%s/%s", dir, e->d_name);
-        snprintf(q, sizeof q, "%s/%s", name, e->d_name);
-        struct stat st;
-        if (stat(p, &st) != 0) continue;
-        if (S_ISDIR(st.st_mode)) { scan_named(p, q); continue; }
-        size_t L = strlen(q);
-        if (L > 2 && q[L - 2] == '.' && (q[L - 1] == 'c' || q[L - 1] == 'h')) scan_file(p, q);
-    }
-    closedir(d);
-}
+static void scan_named(const char *dir, const char *name) { cscan_walk(&WALK, dir, name); }
 
 // A cbase directory, from cbase's root.
 static void scan_dir(const char *rel) {
