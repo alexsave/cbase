@@ -11,8 +11,8 @@
 // The functions are pure over buffers (no socket, no clock, no randomness: a
 // token or a time is an argument), so each shape is checked byte for byte
 // against a recorded body in the unit tests.
-#ifndef CB_JSON_SURFACE_H
-#define CB_JSON_SURFACE_H
+#ifndef CB_AWS_JSON_H
+#define CB_AWS_JSON_H
 
 #include "store/items.h"
 #include "store/store.h"
