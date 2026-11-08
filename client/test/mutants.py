@@ -1,5 +1,6 @@
 # mutants.py - the mutation check of cbase/client (test/mutate.sh): each mutant breaks one
 # behaviour, and the suite that covers it must go red. (file, name, old, new): old occurs exactly once.
+# HOST_CDOM's rows add the text the red run must contain: the case or the rule that caught it.
 C = [
   ('src/client.c', 'jitter: no randomness', 'uint32_t w = lo + (uint32_t)(rng_splitmix64(&c->rng) % (hi - lo + 1));', 'uint32_t w = (uint32_t)hi;'),
   ('src/client.c', 'jitter: no floor', 'uint32_t w = lo + (uint32_t)(rng_splitmix64(&c->rng) % (hi - lo + 1));', 'uint32_t w = (uint32_t)(rng_splitmix64(&c->rng) % (hi + 1));'),
@@ -35,6 +36,31 @@ C = [
   ('src/client.c', 'reply span off by one', '    uint32_t off = 8, len = (uint32_t)f->body_len;', '    uint32_t off = 9, len = (uint32_t)f->body_len;'),
   ('src/client.c', 'a dead refresh keeps waiting calls', '            call_done(c, k, 401, CBW_WHY_AUTH, 0, 0, 0, 0);', '            ;'),
   ('src/client.c', 'second READY accepted', '        if (c->sock != SOCK_HELLO) { ev_add(c, CBC_EV_BAD); break; }', ''),
+]
+# The cdom host (hosts/cdom/cbc_cdom.c), on the host suite and its adapter's rules (test/unit_host_cdom.c,
+# make build/test/unit_host_cdom, against the pinned cdom or CDOM=<checkout>).
+H = 'hosts/cdom/cbc_cdom.c'
+HOST_CDOM = [
+  (H, 'a 0 ms re-arm while the socket closes', 'if (due > 0 || (due == 0 && !h->closing)) h->tick_timer', 'if (due >= 0) h->tick_timer',
+   'a timer re-armed at 0 ms over and over'),
+  (H, 'no pump after a tick', '    cbc_tick(&h->c, cbc_cdom_now());\n    events(h, 0);\n    cbc_cdom_pump(h);', '    cbc_tick(&h->c, cbc_cdom_now());\n    events(h, 0);',
+   '[the_timer_pings_and_a_silent_socket_is_closed]'),
+  (H, 'the session stored as raw bytes', 'if (t > 0) cd_store_put_cb(on_stored, h, h->key, h->klen, h->text, (uint32_t)t);',
+   'if (t > 0) cd_store_put_cb(on_stored, h, h->key, h->klen, h->sess, (uint32_t)n);', "a put that is not the session's base64"),
+  (H, 'the kept session not decoded', 'int n = len > 0 ? b64_decode((const char *)p, (size_t)len, h->sess, sizeof h->sess) : -1;',
+   'int n = len;\n    if (n > 0) memcpy(h->sess, p, (size_t)n);', '[the_kept_session_is_used_at_start]'),
+  (H, 'an anonymous client asks the store', 'if (session_key && !k.anonymous) {', 'if (session_key) {', 'an anonymous client asked the store'),
+  (H, 'a pump while the load is out', "    if (h->loading) return;   // the session's load answers first, and pumps\n", '',
+   'FAIL  cdom: a sign-up made before'),
+  (H, 'no ready', '    if (h->ready) h->ready(h->ctx, &h->c);\n    cbc_cdom_pump(h);\n}', '    cbc_cdom_pump(h);\n}', 'ready was not called once'),
+  (H, 'no Authorization header', '    if (r.auth_len) {\n        memcpy(hd, AU', '    if (0) {\n        memcpy(hd, AU', '[a_sign_out_closes_and_forgets]'),
+  (H, 'no Content-Type', 'if (r.body_len) { memcpy(hd + hl, CT', 'if (0) { memcpy(hd + hl, CT', 'without its octet-stream type'),
+  (H, 'no reopen after a close', '        h->reopen_timer = cd_timer_cb(wait, on_reopen, h);\n', '        (void)wait;\n        (void)on_reopen;\n',
+   '[a_dropped_socket_is_reopened_after_the_wait]'),
+  (H, 'no save on a session event', 'if (e->kind == CBC_EV_SESSION && !saved) { session_save(h); saved = 1; }',
+   'if (e->kind == CBC_EV_SESSION && !saved) { (void)session_save; saved = 1; }', '[signs_up_then_says_hello]'),
+  (H, 'a borrowed body sent from the head buffer', 'const uint8_t *body = r.flags & CBC_RQ_REF ? cbc_req_body(&h->c, r.id) : (const uint8_t *)auth + r.auth_len;',
+   'const uint8_t *body = (const uint8_t *)auth + r.auth_len;', '[a_64k_body_arrives_byte_for_byte_and_done_comes_once_after]'),
 ]
 # The page shim: applied to the copy the TS tests import (build/ts/socket.ts).
 TS = [
