@@ -64,6 +64,11 @@ static void h_shell(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
 static void h_assets(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     cb_serve_dir(ctx, req, res, g_web, req->path + strlen("/assets/"), "no-store");
 }
+// /any/*: the same directory under a route of every method, where cb_serve_dir's own method rule
+// is the one that holds.
+static void h_any(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
+    cb_serve_dir(ctx, req, res, g_web, req->path + strlen("/any/"), "no-store");
+}
 // /media/:filename: one file by its name, which is user input.
 static void h_media(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     char name[256], p[1100];
@@ -71,6 +76,14 @@ static void h_media(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     const int rc = cb_path_join(g_media, name, p, sizeof p);
     if (rc == CB_OK) cb_send_file(ctx, req, res, p, NULL, "private, max-age=31536000, immutable");
     else cb_res_text(res, rc == CB_E_FORBIDDEN ? 403 : 404, "no such media\n");
+}
+
+// /notmod: the shell's file answer turned into a 304, as a conditional GET would: no body may
+// follow its head, file body or not (http.h cb_res_bodied).
+static void h_notmod(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
+    char p[1100];
+    snprintf(p, sizeof p, "%s/app.wasm", g_web);
+    if (cb_send_file(ctx, req, res, p, NULL, "no-store") == 200) cb_res_status(res, 304);
 }
 
 // The app's own types: one of its own, and one over the platform's.
@@ -83,6 +96,8 @@ static const cb_route ROUTES[] = {
     { .method = "GET", .pattern = "/deck/:id", .fn = h_shell },
     { .method = "GET", .pattern = "/assets/*", .fn = h_assets },
     { .method = "GET", .pattern = "/media/:filename", .fn = h_media },
+    { .method = "GET", .pattern = "/notmod", .fn = h_notmod },
+    { .method = "*", .pattern = "/any/*", .fn = h_any },
 };
 static const cb_route_list ROUTE_LIST = { ROUTES, (int)(sizeof ROUTES / sizeof ROUTES[0]) };
 static const cb_route_list *const ROUTE_LISTS[] = { &ROUTE_LIST };
@@ -340,6 +355,13 @@ static void refuses_every_way_out(void) {
     refused("GET", "/assets/subout/secret.txt", 403);
     refused("POST", "/assets/app.js", 405);
     refused("DELETE", "/assets/app.js", 405);
+    refused("POST", "/any/app.js", 405);   // the helper's own rule, under a route of any method
+    tc_response r;
+    T_EQ_INT(req("PUT", "/any/app.js", NULL, NULL, 0, &r), 405);
+    T_EQ_STR(hdr(&r, "allow"), "GET, HEAD");
+    tc_response_free(&r);
+    T_EQ_INT(req("GET", "/any/app.js", NULL, NULL, 0, &r), 200);
+    tc_response_free(&r);
     refused("GET", "/media/..%2Fsecret.txt", 404);
     refused("GET", "/media/..%2F..%2Fsecret.txt", 404);
     refused("GET", "/media/%2e%2e", 404);
@@ -430,6 +452,13 @@ static void streams_large_files_and_head(void) {
     T_EQ_INT(tc_request(fd, "HEAD", "/decks", NULL, NULL, 0, 10000, &r), 0);
     T_EQ_INT(r.status, 200);
     T_EQ_STR(hdr(&r, "content-length"), "34");
+    T_EQ_INT((int)r.body.len, 0);
+    tc_response_free(&r);
+    // A file answer made a 304: no Content-Length and none of the file's bytes, so the next
+    // answer on the connection is the next request's.
+    T_EQ_INT(tc_request(fd, "GET", "/notmod", NULL, NULL, 0, 10000, &r), 0);
+    T_EQ_INT(r.status, 304);
+    T_EQ_STR(hdr(&r, "content-length"), "");
     T_EQ_INT((int)r.body.len, 0);
     tc_response_free(&r);
     T_EQ_INT(tc_request(fd, "GET", "/assets/style.css", NULL, NULL, 0, 10000, &r), 0);
