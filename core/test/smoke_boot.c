@@ -16,10 +16,18 @@
 // the storeless boot: outside dev it starts with no JWT secret and no public URL (it signs nothing
 // and issues nothing), says its startup line, makes no database file, and refuses CBASE_STORE with
 // its sentence. An app with a store gets the store's refusals, as ever.
+//
+// No serve default a product may change is assumed (cbase/app.h). Every child is started through
+// spawn, which sets CBASE_LOG_LEVEL=info: the lines waited for are INFO, and the variable beats
+// the app's log_level by design, so they are written whatever level the app ships. Every request
+// carries a Host the app's allow-list answers (probe_host), and GET /health is held to what the
+// app declares (the_port_answers): the platform's 200 when it declares health_route, and else
+// what the app's own routes make of the path, its 404 for a path it does not route.
 #include "t.h"
 #include "lib_proc.h"
 
 #include "cbase/app.h"
+#include "net/router.h"
 #include "util/json.h"
 
 #include <dirent.h>
@@ -50,13 +58,28 @@ static char **store_env(char **env) {
     return env;
 }
 
+// THE ONE WAY A CHILD STARTS: `env` and CBASE_LOG_LEVEL=info after it, whatever log_level the app
+// ships (an app's "warn" would keep every line this smoke waits for unwritten), with its stdout a
+// pipe (c->out_fd) when `out`. Every cbase and bootstrap this smoke runs starts here.
+static int spawn(tp_child *c, char *const argv[], char *const env[], bool out) {
+    char *e[32];
+    int k = 0;
+    for (int i = 0; env[i]; i++) {
+        if (k == 30) return -1;
+        e[k++] = env[i];
+    }
+    e[k++] = "CBASE_LOG_LEVEL=info";
+    e[k] = NULL;
+    return out ? tp_start_out(c, argv, e) : tp_start(c, argv, e);
+}
+
 // Runs `bin` with `args` and `env` to its exit; true when it exits `status`
 // having said `says` on stderr.
 static bool exits(const char *bin, const char *arg, char *const env[], int status, const char *says) {
     tp_child c;
     char *argv[] = { (char *)bin, (char *)arg, NULL };
     if (!arg) argv[1] = NULL;
-    if (tp_start(&c, argv, env) != 0) return false;
+    if (spawn(&c, argv, env, false) != 0) return false;
     char line[512] = "";
     int found = says ? tp_wait_line(&c, says, 15000, line, sizeof line) : 0;
     int st = tp_stop(&c, 0, 15000);
@@ -82,7 +105,7 @@ static void storeless_boots(void) {
     char *env[] = { "CBASE_LISTEN=127.0.0.1:0", db, NULL };
     char *argv[] = { (char *)g_cbase, "serve", NULL };
     tp_child c;
-    T_EQ_INT(tp_start_out(&c, argv, env), 0);
+    T_EQ_INT(spawn(&c, argv, env, true), 0);
     char line[256] = "";
     size_t n = 0;
     struct pollfd p = { c.out_fd, POLLIN, 0 };
@@ -182,7 +205,7 @@ static void own_cpus(char *out, size_t cap) {
 static void boots_with(char *const env[], const char *says, const char *loop_want, const char *bg_want) {
     tp_child c;
     char *argv[] = { (char *)g_cbase, "serve", NULL };
-    T_EQ_INT(tp_start(&c, argv, env), 0);
+    T_EQ_INT(spawn(&c, argv, env, false), 0);
     T_EQ_INT(tp_wait_line(&c, says, 15000, NULL, 0), 0);
     T_EQ_INT(tp_wait_line(&c, "listening on", 15000, NULL, 0), 0);
     int loop_ok, bg_ok, bg_all;
@@ -252,11 +275,11 @@ static void the_cpu_knob_boots_or_refuses(void) {
     store_env(autov);
     store_env(off);
     tp_child c;
-    T_EQ_INT(tp_start(&c, argv, autov), 0);
+    T_EQ_INT(spawn(&c, argv, autov, false), 0);
     T_EQ_INT(tp_wait_line(&c, "CPU knob auto: picking CPUs needs Linux, so nothing is pinned", 15000, NULL, 0), 0);
     T_EQ_INT(tp_wait_line(&c, "listening on", 15000, NULL, 0), 0);
     T_EQ_INT(tp_stop(&c, SIGTERM, 15000), 0);
-    T_EQ_INT(tp_start(&c, argv, off), 0);
+    T_EQ_INT(spawn(&c, argv, off, false), 0);
     T_EQ_INT(tp_wait_line(&c, "CBASE_LOOP_CPU=off (not pinned)", 15000, NULL, 0), 0);
     T_EQ_INT(tp_wait_line(&c, "listening on", 15000, NULL, 0), 0);
     T_EQ_INT(tp_stop(&c, SIGTERM, 15000), 0);
@@ -277,18 +300,75 @@ static size_t read_out_line(int fd, char *buf, size_t cap, int ms) {
     return n;
 }
 
-// GET /health on 127.0.0.1:port: the status line's code, or -1.
-static int health(int port) {
+// The Host this smoke sends to serve on 127.0.0.1:port: one the app answers. With no allow-list
+// declared every Host is answered; with one (cbase/app.h host_allow), its first entry, at the port
+// serve bound when the entry names none (a bare entry means that port), as the entry is when it
+// names one (the router holds the Host's port to the entry's, not to the socket's).
+static void probe_host(int port, char *out, size_t cap) {
+    const cb_app *app = cb_main_app;
+    if (!app || app->n_host_allow <= 0 || !app->host_allow[0]) { snprintf(out, cap, "127.0.0.1:%d", port); return; }
+    const char *h = app->host_allow[0], *e = h[0] == '[' ? strchr(h, ']') : h;
+    if (strchr(e ? e : h, ':')) snprintf(out, cap, "%s", h);
+    else snprintf(out, cap, "%s:%d", h, port);
+}
+
+// GET /health on 127.0.0.1:port, with the Host the app answers: the status line's code, or -1, and
+// the body (NUL-ended) in body. Asked from loopback, /health passes an origin secret the app may
+// set (handler.c is_local_probe), so it reaches the router in every product.
+static int get_health(int port, char *body, size_t cap) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     struct sockaddr_in a = { .sin_family = AF_INET, .sin_port = htons((uint16_t)port) };
     a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    body[0] = 0;
     if (fd < 0 || connect(fd, (struct sockaddr *)&a, sizeof a) != 0) { if (fd >= 0) close(fd); return -1; }
-    const char *q = "GET /health HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
-    char b[512] = "";
+    char host[300], q[400], b[2048];
+    probe_host(port, host, sizeof host);
+    snprintf(q, sizeof q, "GET /health HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", host);
+    size_t n = 0;
     int code = -1;
-    if (write(fd, q, strlen(q)) == (ssize_t)strlen(q) && read(fd, b, sizeof b - 1) > 12) sscanf(b, "HTTP/1.1 %d", &code);
+    if (write(fd, q, strlen(q)) == (ssize_t)strlen(q)) {
+        for (ssize_t r; n + 1 < sizeof b && (r = read(fd, b + n, sizeof b - 1 - n)) > 0;) n += (size_t)r;   // to the close
+    }
+    b[n] = 0;
     close(fd);
+    if (n > 12) sscanf(b, "HTTP/1.1 %d", &code);
+    const char *e = strstr(b, "\r\n\r\n");
+    if (e) snprintf(body, cap, "%s", e + 4);
     return code;
+}
+
+// What GET /health is in this app, as its routes alone make it: 200 when it declares the platform's
+// (health_route); else 404 when none of its routes has the path, 405 when one has it for another
+// method, and 0 when one of its own answers GET there (its handler's to say, any status).
+static int health_want(void) {
+    const cb_app *app = cb_main_app;
+    if (app && app->health_route) return 200;
+    cb_router *r = cb_router_new();
+    for (int l = 0; r && app && l < app->n_route_lists; l++) cb_router_add_all(r, app->routes[l]->routes, app->routes[l]->n);
+    bool known = false;
+    const cb_route *m = r ? cb_router_match(r, CB_M_GET, "/health", &known) : NULL;
+    cb_router_free(r);
+    return m ? 0 : known ? 405 : 404;
+}
+
+// The port serve named answers, as this app declares it: GET /health is the platform's ("ok cbase
+// ...", 200) when the app declares it, and else the app's own answer: its 404 "not found" for a
+// path it does not route, never the platform's /health. A Host refused (400, 403) fails here too.
+static void the_port_answers(int port) {
+    char body[1024];
+    const int want = health_want(), got = get_health(port, body, sizeof body);
+    if (want == 200) {
+        T_EQ_INT(got, 200);
+        T_CHECK(strncmp(body, "ok cbase ", 9) == 0);
+    } else if (want == 404) {
+        T_EQ_INT(got, 404);
+        T_EQ_STR(body, "not found");
+    } else if (want == 405) {
+        T_EQ_INT(got, 405);
+    } else {
+        T_CHECK(got >= 100 && got < 600);       // the app's own handler answered
+        T_CHECK(strncmp(body, "ok cbase ", 9) != 0);
+    }
 }
 
 // THE STARTUP LINE (ingress_process.h): with port 0, serve binds a free port and says which on
@@ -300,7 +380,7 @@ static void the_startup_line_names_the_port(void) {
     char *argv[] = { (char *)g_cbase, "serve", NULL };
     for (int round = 0; round < 2; round++) {   // twice: two free ports, each named
         tp_child c;
-        T_EQ_INT(tp_start_out(&c, argv, env), 0);
+        T_EQ_INT(spawn(&c, argv, env, true), 0);
         char line[256];
         size_t n = read_out_line(c.out_fd, line, sizeof line, 15000);
         int port = 0;
@@ -315,7 +395,7 @@ static void the_startup_line_names_the_port(void) {
         T_EQ_INT(tp_wait_line(&c, "listening on", 15000, logl, sizeof logl), 0);
         snprintf(want, sizeof want, "listening on 127.0.0.1:%d ", port);
         T_CHECK(strstr(logl, want) != NULL);
-        T_EQ_INT(health(port), 200);
+        the_port_answers(port);
         T_EQ_INT(tp_stop(&c, SIGTERM, 15000), 0);
         // Exactly once: after the drain and the exit, stdout holds nothing more.
         char rest[256];

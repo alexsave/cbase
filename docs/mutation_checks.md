@@ -1041,6 +1041,15 @@ smoke_boot built in example/storeless (make storeless-smoke) and in cbase's own 
 - smoke_boot.c: g_storeless forced false for the storeless app (the smoke before the fix) -> 16 of 29 checks fail: `cbase_refuses` no CBASE_JWT_SECRET, no CBASE_PUBLIC_URL, store sqlite and the busy port, `the_cpu_knob_boots_or_refuses` listening on (twice), `the_startup_line_names_the_port` its line (both rounds).
 - smoke_boot.c: store_env passing CBASE_STORE through -> 13 checks fail: every boot refused with "names a store".
 
+## smoke_boot holds for any product's serve defaults (smoke-any-product)
+
+smoke_boot built in example/storeless (make storeless-smoke: storeless, log_level "warn", no platform routes, a Host allow-list, as amgi ships) and in cbase's own build (the example, which keeps a store and declares /health).
+
+- smoke_boot.c: spawn without CBASE_LOG_LEVEL=info (the smoke before the fix) -> `the_cpu_knob_boots_or_refuses` the CPU knob lines and listening on (both boots), `the_startup_line_names_the_port` listening on and its port (both rounds) never said.
+- smoke_boot.c: GET /health wanted 200 whatever the app declares (the smoke before the fix) -> `the_startup_line_names_the_port` got 404, want 200, and no "ok cbase" body (both rounds).
+- smoke_boot.c: Host "x" sent whatever the allow-list (the smoke before the fix) -> `the_startup_line_names_the_port` got 403 "host not allowed", want 404 "not found" (both rounds).
+- smoke_boot.c: probe_host sending a bare entry without the bound port -> the same 403 (a Host with no port is port 80).
+
 ## CBASE_ENV_FILE reads an unquoted value's inline comment as Node does (fifo-fix)
 
 - env_file.c: the comment never cut -> `inline_comments` EF_A == "abc", EF_D == "abc" (tab), EF_E == "a b".
