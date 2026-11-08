@@ -22,9 +22,11 @@ static void h_echo(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     cb_res_send(res, 200, "application/octet-stream", req->body, req->body_len);
 }
 
+// Designated rows name what they set, and a field cb_route gains later (docs/PLATFORM.md 2.9)
+// defaults to 0 without an edit here.
 static const cb_route ROUTES[] = {
-    { "GET", "/v1/hello", CB_ROUTE_LOOP, h_hello, 0, 0 },
-    { "POST", "/v1/echo", CB_ROUTE_POOL, h_echo, 0, 0 },
+    { .method = "GET", .pattern = "/v1/hello", .flags = CB_ROUTE_LOOP, .fn = h_hello },
+    { .method = "POST", .pattern = "/v1/echo", .flags = CB_ROUTE_POOL, .fn = h_echo },
 };
 static const cb_route_list ROUTE_LIST = { ROUTES, (int)(sizeof ROUTES / sizeof ROUTES[0]) };
 static const cb_route_list *const ROUTE_LISTS[] = { &ROUTE_LIST };
