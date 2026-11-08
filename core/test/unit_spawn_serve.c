@@ -87,9 +87,9 @@ static void h_wait(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
 }
 
 static const cb_route ROUTES[] = {
-    { "GET", "/t/run", CB_ROUTE_POOL, h_run, 0 },
-    { "GET", "/t/start", CB_ROUTE_POOL, h_start, 0 },
-    { "GET", "/t/wait", CB_ROUTE_POOL, h_wait, 0 },
+    { .method = "GET", .pattern = "/t/run", .flags = CB_ROUTE_POOL, .fn = h_run },
+    { .method = "GET", .pattern = "/t/start", .flags = CB_ROUTE_POOL, .fn = h_start },
+    { .method = "GET", .pattern = "/t/wait", .flags = CB_ROUTE_POOL, .fn = h_wait },
 };
 static const cb_route_list LIST = { ROUTES, 3 };
 static const cb_route_list *const LISTS[] = { &LIST };
