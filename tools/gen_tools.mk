@@ -25,6 +25,18 @@ $(STRUCTGEN): $(wildcard $(STRUCTGEN_DIR)/*.c) $(wildcard $(STRUCTGEN_DIR)/*.h) 
               $(STRUCTGEN_DIR)/Makefile $(CB)tools/llvm.mk
 	$(MAKE) -C $(STRUCTGEN_DIR) build/structgen
 
+# A PRODUCT'S OWN GENERATOR, as a hook: cbase ships no datagen (it left cbase at v0.1.0), but a
+# product that keeps a copy names its directory before including this file
+# (DATAGEN_DIR := <its datagen, as its Makefile reaches it>) and gets DATAGEN and the rule that builds it, the
+# same way structgen's is built. There is no default: nothing here points inside cbase for it.
+ifneq ($(strip $(DATAGEN_DIR)),)
+DATAGEN := $(DATAGEN_DIR)/build/datagen
+$(DATAGEN): $(wildcard $(DATAGEN_DIR)/*.c) $(wildcard $(DATAGEN_DIR)/*.h) \
+            $(wildcard $(CB)tools/sgcommon/*.c) $(wildcard $(CB)tools/sgcommon/*.h) \
+            $(DATAGEN_DIR)/Makefile $(CB)tools/llvm.mk
+	$(MAKE) -C $(DATAGEN_DIR) build/datagen
+endif
+
 # $(call gen_sync,<just generated>,<where it is read>): copy only when the
 # CONTENT differs, so a regeneration that changes nothing does not move the
 # file's mtime and make Xcode (or tsc) recompile everything that imports it.
