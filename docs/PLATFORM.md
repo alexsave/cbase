@@ -264,6 +264,29 @@ A product that consumes cbase from before the CORS, path parameter and body cap 
    Better is the list of origins its pages are served from, `{ "https://app.example.com", "https://www.example.com" }`.
    The deployment's `CBASE_ALLOWED_ORIGINS="*"` does the same without a code change, but it now defaults to empty, in the templates (`cbase.yaml`, `deploy.sh`, `vm.yaml`) too.
 
+### 2.10 Serve's settings an app ships, and CBASE_ENV_FILE
+
+A few of serve's settings have a default the app may ship in its `cb_app`, in the block "serve's defaults" at the end of `cbase/app.h`.
+The order is always the same: cbase's default, then the app's, then the `CBASE_*` variable, which wins whenever it is set and not empty.
+Zero or NULL in the field leaves cbase's default, so an app that sets nothing is unchanged, and boot refuses a value out of range with a sentence, even when the variable overrides it.
+
+- `req_workers`: serve's request pool, the threads every `CB_ROUTE_POOL` handler runs on, 1 to 256 (cbase's default 1; `CBASE_REQ_WORKERS`).
+  An app whose handlers hold their thread on a remote call sets as many as it wants waiting at once: amgi's Gemini calls hold one for up to about 30 s, so it ships `.req_workers = 12`.
+
+`CBASE_ENV_FILE`, when set, names a file of `KEY=VALUE` lines that `cb_config_load` reads into the environment before anything else is read (`core/src/env_file.h`).
+A key the environment already holds, even as an empty string, keeps its value, so the shell's variables override the file.
+The app reads its own settings from it as it reads any variable, with `getenv`: amgi's `.env.local` holds `GEMINI_API_KEY` and `GEMINI_API_BASE`.
+The format is strict, and what breaks a rule is refused rather than guessed at:
+
+- One setting per line, nothing before the key, and no blank on either side of the `=` (refused, not trimmed).
+- A key is a letter or `_`, then letters, digits and `_`, and appears once in the file.
+- The value is the rest of the line as written: no shell expansion (`$HOME` stays `$HOME`), no escapes, and a `#` inside it is part of it; it may be empty.
+- A value wrapped in a pair of single or double quotes loses the pair and nothing else; a value that opens a quote and does not close it at the end of the line is refused, as is an unquoted value that ends in a blank.
+- A line that starts with `#` is a comment, a line of nothing or only blanks is skipped, and a `\r\n` line end reads as `\n`.
+
+A file that cannot be read, is larger than 1 MiB, holds a NUL byte or has a line that breaks a rule refuses the boot with a sentence that names the file and the line's number, and nothing from it is set.
+`core/test/unit_env_file.c` holds a case for each rule.
+
 ## 3. The C-to-Lambda packager
 
 ### 3.1 What a product provides

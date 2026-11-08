@@ -148,8 +148,10 @@ typedef struct cb_config {
 
 // Reads the environment into cfg. CB_OK, or CB_E_INVALID with a sentence in err.
 int cb_config_from_env(cb_config *cfg, char *err, size_t cap);
-// cb_config_from_env, then the app's own settings over it (cbase/app.h config): what each main
-// runs. CB_OK, or CB_E_INVALID with a sentence in err.
+// CBASE_ENV_FILE's lines into the environment, where it does not already hold them (env_file.h),
+// then cb_config_from_env, the app's defaults under the environment (cbase/app.h "serve's
+// defaults") and the app's own settings over it all (cbase/app.h config): what each main runs.
+// CB_OK, or CB_E_INVALID with a sentence in err.
 struct cb_app;
 int cb_config_load(cb_config *cfg, const struct cb_app *app, char *err, size_t cap);
 

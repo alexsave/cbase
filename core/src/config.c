@@ -3,6 +3,7 @@
 #include "cbase/app.h"
 
 #include "b64/b64.h"
+#include "env_file.h"
 #include "util/err.h"
 #include "util/log.h"
 #include "num_parse.h"
@@ -390,7 +391,8 @@ static int app_defaults(cb_config *c, const cb_app *app, char *err, size_t cap) 
 }
 
 int cb_config_load(cb_config *cfg, const cb_app *app, char *err, size_t cap) {
-    int rc = cb_config_from_env(cfg, err, cap);
+    int rc = given("CBASE_ENV_FILE") ? cb_env_file_load(getenv("CBASE_ENV_FILE"), err, cap) : CB_OK;
+    if (rc == CB_OK) rc = cb_config_from_env(cfg, err, cap);
     if (rc == CB_OK && app) rc = app_defaults(cfg, app, err, cap);
     if (rc == CB_OK && app && app->config) rc = app->config(cfg, err, cap);
     return rc;

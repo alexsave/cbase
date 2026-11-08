@@ -33,6 +33,8 @@ curl http://127.0.0.1:8080/health
 ```
 
 Settings come from `CBASE_*` environment variables, listed in `core/src/config.h` and logged at start with secrets redacted.
+`CBASE_ENV_FILE=.env.local` reads `KEY=VALUE` lines from that file first, for the app's secrets as well as `CBASE_*` settings; a variable already in the environment wins, and a bad line refuses the start, naming its number (the format is in docs/PLATFORM.md 2.10).
+An app may ship its own defaults for a few settings (`cb_app.req_workers`); the variable still overrides them.
 The console is at http://127.0.0.1:8080/admin (paste the admin token).
 `CBASE_LISTEN` (host:port, default 127.0.0.1:8080) is the one setting for where it listens; there is no `PORT`.
 With port 0 (`CBASE_LISTEN=127.0.0.1:0`) the OS picks a free port, and once the socket is listening serve writes exactly one line to stdout, `cbase: listening 127.0.0.1:<port>` (an IPv6 host in brackets), for a parent process or a test to read; the log is on stderr (`core/src/ingress_process.h`).
