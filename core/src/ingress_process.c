@@ -106,7 +106,7 @@ static void sched_task(void *ud) {
 
 static void on_sched_timer(cb_loop *l, void *ud) {
     sched_timer *t = ud;
-    if (t->ctx->store) cb_pool_submit(t->ctx->req_pool, sched_task, t);
+    if (t->ctx->store || (t->ctx->app && t->ctx->app->storeless)) cb_pool_submit(t->ctx->req_pool, sched_task, t);
     if (t->s->serve_once) return;
     cb_loop_timer(l, cb_config_scaled_ms(t->ctx->cfg, t->s->every_ms), on_sched_timer, t);
 }
@@ -158,7 +158,7 @@ int cb_process_main(const cb_provider *prov, const cb_app *app, int argc, char *
     ctx.job_pool = cb_pool_new(cfg.job_workers, "job");
     ctx.spawner = ctx.loop ? cb_spawner_new(ctx.loop) : NULL;
     if (!ctx.loop || !ctx.req_pool || !ctx.job_pool || !ctx.spawner) { fprintf(stderr, "cbase: out of memory\n"); return 1; }
-    if (prov->serve_prepare && prov->serve_prepare(&cfg) != CB_OK) return 1;
+    if (prov->serve_prepare && !(app && app->storeless) && prov->serve_prepare(&cfg) != CB_OK) return 1;
     if (cb_boot(&ctx, err, sizeof err) != CB_OK) { CB_ERROR("serve", "%s", err); return 1; }
 
     cb_server_opts o;

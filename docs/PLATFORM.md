@@ -218,6 +218,23 @@ A product's intents become a data table `{kind, method, path template, needs aut
 The foolish part that stays foolish is the book of games (cast-skip refetch, reconcile after a refused move, `nc_set_boards`).
 The `nc_*` names the web and iOS hosts call stay as they are (foolish's file forwards), so the hosts gain no lines.
 
+### 2.7 A storeless app
+
+An app that keeps its data itself (its own database files, opened in `serve_open` and closed in `serve_close`) sets `storeless` in its `cb_app`.
+Boot then opens no platform store: no schema is applied, no database file is made, and no `.serve-lock` is taken beside one.
+What lives in the platform's store is off: the auth routes answer 503, the console's store views answer 503, `/ready` says `store=none`, and serve's backup restore is not run (a configured bucket is said to back up nothing).
+The app's routes, jobs, schedules, console pages and counter run as for any app.
+A storeless app that still asks for the store is refused at boot with a sentence that names what it asked for: store rows (`cb_app.store`), an account domain, `delete_account`, `CBASE_STORE`, or Sign in with Apple.
+The default is false, so every app written before the field opens the provider's store as it always did.
+`example/test/unit_storeless.c` serves the example app storeless through `cbase serve`'s ingress and checks that its directory stays empty.
+
+### 2.8 Child processes
+
+`core/src/spawn.h` runs programs from the server's loop: argv, an explicit environment, a working directory, stdin bytes, stdout and stderr each under a cap, a timeout, a kill from the caller, the exit code or signal in one callback on the loop thread.
+Each child is its own process group, and serve ends every group still running when it shuts down (SIGTERM, then SIGKILL after the grace).
+On Linux the leader also gets `PR_SET_PDEATHSIG`, so it dies with a server that is SIGKILLed; on macOS a SIGKILLed or crashed server cannot clean up, and its children run on until they end.
+An optional socketpair on the child's fd 3 carries lines both ways; cbase knows no protocol over it, and an overlong line closes the channel, not the child.
+
 ## 3. The C-to-Lambda packager
 
 ### 3.1 What a product provides

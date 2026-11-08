@@ -57,6 +57,34 @@ static void release_instance(void) {
     g_instance_fd = -1;
 }
 
+// A STORELESS APP (cbase/app.h storeless) is refused at boot, with a sentence, when it or the
+// configuration asks for something that lives in the platform's store.
+static int storeless_check(const cb_ctx *ctx, char *err, size_t cap) {
+    const cb_app *app = ctx->app;
+    const char *what = app->store ? "declares store rows (cb_app.store)"
+                     : app->account_domain ? "names an account domain (cb_app.account_domain), and accounts live in the platform's store"
+                     : app->delete_account ? "deletes accounts (cb_app.delete_account), and accounts live in the platform's store"
+                     : NULL;
+    if (what) {
+        snprintf(err, cap, "the app %s keeps no platform store (cb_app.storeless) but %s", app->name ? app->name : "", what);
+        return CB_E_INVALID;
+    }
+    if (ctx->cfg->store[0]) {
+        snprintf(err, cap, "CBASE_STORE=%s names a store, and the app %s keeps none (cb_app.storeless)", ctx->cfg->store,
+                 app->name ? app->name : "");
+        return CB_E_INVALID;
+    }
+    if (ctx->cfg->apple_client_ids[0]) {
+        snprintf(err, cap, "CBASE_APPLE_CLIENT_IDS turns on Sign in with Apple, whose accounts live in the platform's store, "
+                 "and the app %s keeps none (cb_app.storeless)", app->name ? app->name : "");
+        return CB_E_INVALID;
+    }
+    return CB_OK;
+}
+
+// A storeless app was opened (serve_open ran, or it has none): serve_close is owed at unboot.
+static bool g_storeless_open;
+
 int cb_boot(cb_ctx *ctx, char *err, size_t cap) {
     const cb_config *cfg = ctx->cfg;
     ctx->version = CB_VERSION;
@@ -78,16 +106,24 @@ int cb_boot(cb_ctx *ctx, char *err, size_t cap) {
     }
     cb_edge_setup(ctx->app ? ctx->app->cached_paths : NULL, ctx->app ? ctx->app->n_cached_paths : 0, prov->edge_purge);
 
-    const char *store = cfg->store[0] ? cfg->store : prov->store;
-    if ((prov->flags & CB_PROV_ONE_PROCESS) && (rc = claim_instance(cfg->db_path, err, cap)) != CB_OK) return rc;
-    rc = cb_store_open_named(store, prov->store, cfg->db_path, cfg->table, &ctx->store);
-    char what[40];
-    snprintf(what, sizeof what, "store %s", store);
-    if ((rc = soft(what, rc, err, cap)) != CB_OK) return rc;
+    const bool storeless = ctx->app && ctx->app->storeless;
+    if (storeless) {
+        if ((rc = storeless_check(ctx, err, cap)) != CB_OK) return rc;
+        CB_INFO("boot", "the app keeps no platform store: none is opened, and accounts and the console's store views are off");
+    } else {
+        const char *store = cfg->store[0] ? cfg->store : prov->store;
+        if ((prov->flags & CB_PROV_ONE_PROCESS) && (rc = claim_instance(cfg->db_path, err, cap)) != CB_OK) return rc;
+        rc = cb_store_open_named(store, prov->store, cfg->db_path, cfg->table, &ctx->store);
+        char what[40];
+        snprintf(what, sizeof what, "store %s", store);
+        if ((rc = soft(what, rc, err, cap)) != CB_OK) return rc;
+    }
     if ((prov->flags & CB_PROV_ONE_PROCESS) && ctx->app && ctx->app->serve_open &&
         (rc = ctx->app->serve_open(ctx, err, cap)) != CB_OK)
         return rc;
-    if ((rc = soft("auth", cb_auth_new(ctx, &ctx->auth), err, cap)) != CB_OK) return rc;
+    g_storeless_open = storeless;
+    // Accounts live in the store: a storeless app has none, and every auth route answers 503.
+    if (!storeless && (rc = soft("auth", cb_auth_new(ctx, &ctx->auth), err, cap)) != CB_OK) return rc;
     if (ctx->auth && (prov->flags & CB_PROV_ONE_PROCESS)) cb_auth_hold_sessions(ctx->auth);
     if ((rc = soft("realtime", prov->rt_open ? prov->rt_open(ctx, &ctx->rt) : CB_OK, err, cap)) != CB_OK) return rc;
     ctx->job_start = prov->job_start;
@@ -105,8 +141,10 @@ void cb_unboot(cb_ctx *ctx) {
     // The app closes FIRST, with everything it was opened with still there: an app's own threads
     // (a load simulator's players) count into ctx->metrics and publish through ctx->rt until its
     // serve_close joins them (unit_config.c serve_close_runs_first).
-    if (ctx->store && ctx->prov && (ctx->prov->flags & CB_PROV_ONE_PROCESS) && ctx->app && ctx->app->serve_close)
+    if ((ctx->store || g_storeless_open) && ctx->prov && (ctx->prov->flags & CB_PROV_ONE_PROCESS) && ctx->app &&
+        ctx->app->serve_close)
         ctx->app->serve_close(ctx);
+    g_storeless_open = false;
     cb_router_free(ctx->router);
     ctx->router = NULL;
     cb_metrics_free(ctx->metrics);
