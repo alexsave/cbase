@@ -260,7 +260,9 @@ static void call_lost(cbc *c, cbc_call_slot *k, int64_t now, int http) {
 static uint32_t call_add(cbc *c, int kind, int method, int flags, const char *path, size_t pn, const uint8_t *body,
                          size_t bn, int ref) {
     c->err = 0;
-    if ((method != SF_METH_GET && method != SF_METH_POST) || pn == 0 || pn > CBC_PATH_MAX || path[0] != '/' ||
+    // A GET carries no body (a browser's fetch refuses one): CBC_E_ARG, here, for every host.
+    if ((method != SF_METH_GET && method != SF_METH_POST) || (method == SF_METH_GET && bn) || pn == 0 ||
+        pn > CBC_PATH_MAX || path[0] != '/' ||
         (ref ? !body || (uint64_t)bn > UINT32_MAX : bn > 0xffff || (bn && !body))) { c->err = CBC_E_ARG; return 0; }
     cbc_call_slot *k = NULL;
     for (int i = 0; i < CBC_CALLS_MAX && !k; i++)

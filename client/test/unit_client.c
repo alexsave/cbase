@@ -674,6 +674,20 @@ static void a_borrowed_body_beside_copied_ones(void) {
     T_EQ_MEM(g_body, g_h.body_len, "3", 1);
 }
 
+// A GET carries no body, copied or borrowed (a browser's fetch refuses one); an empty one is a GET.
+static void a_get_with_a_body_is_refused(void) {
+    static uint8_t big[100];
+    cbc c; mk(&c, 1, 1);
+    T_EQ_INT(cbc_call(&c, CBC_GET, CBC_C_READ, "/x", 2, (const uint8_t *)"b", 1, 0), 0);
+    T_EQ_INT(cbc_error(&c), CBC_E_ARG);
+    T_EQ_INT(cbc_call_ref(&c, CBC_GET, CBC_C_READ, "/x", 2, big, sizeof big, 0), 0);
+    T_EQ_INT(cbc_error(&c), CBC_E_ARG);
+    T_EQ_INT(request(&c, 0), 0);                   // nothing was taken
+    T_CHECK(cbc_call(&c, CBC_GET, CBC_C_READ, "/x", 2, (const uint8_t *)"b", 0, 0) != 0);
+    T_EQ_INT(cbc_error(&c), 0);
+    T_CHECK(cbc_call(&c, CBC_POST, 0, "/x", 2, (const uint8_t *)"b", 1, 0) != 0);
+}
+
 static void borrowed_bounds(void) {
     cbc c; mk(&c, 1, 1);
     T_EQ_INT(cbc_call_ref(&c, CBC_POST, 0, "/x", 2, NULL, 5, 0), 0);
@@ -933,6 +947,7 @@ int main(void) {
     T_RUN(a_borrowed_body_is_never_copied);
     T_RUN(a_borrowed_body_beside_copied_ones);
     T_RUN(borrowed_bounds);
+    T_RUN(a_get_with_a_body_is_refused);
     T_RUN(http_deadline);
     return T_DONE();
 }

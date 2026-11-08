@@ -221,7 +221,7 @@ typedef struct cbc {
 _Static_assert(sizeof(cbc) <= CBC_SIZE_BUDGET, "cbc grew past its budget (CLIENT_DESIGN.md 3.1)");
 
 // Refusals of a call into this file (cbc_error).
-#define CBC_E_ARG   (-1)   // a path, room or body past its bound, or a bad method
+#define CBC_E_ARG   (-1)   // a path, room or body past its bound, a bad method, or a GET with a body
 #define CBC_E_FULL  (-2)   // CBC_CALLS_MAX calls or CBC_SUBS_MAX rooms already, or the arena is full
 #define CBC_E_AUTH  (-3)   // the call needs a user and nobody is signed in (or the session is ending)
 #define CBC_E_CAP   (-4)   // the host's output buffer is too small for what is waiting
@@ -285,8 +285,9 @@ int cbc_pkce(const uint8_t *entropy, size_t n, char verifier[44], char challenge
 #define CBC_C_AUTH 0x2   // needs the user: refused at once when nobody is signed in
 #define CBC_C_HTTP 0x4   // always over HTTP, with the bearer when signed in (CLIENT_DESIGN.md 6.4)
 
-// A call of an app route: method (CBC_GET, CBC_POST), the path (and query), a body. A
-// ticket, finished by exactly one CBC_EV_DONE, or 0 (cbc_error).
+// A call of an app route: method (CBC_GET, CBC_POST), the path (and query), a body (none for a
+// GET: CBC_E_ARG, as a browser refuses one). A ticket, finished by exactly one CBC_EV_DONE, or 0
+// (cbc_error).
 uint32_t cbc_call(cbc *c, int method, int flags, const char *path, size_t path_len,
                   const uint8_t *body, size_t body_len, int64_t now);
 
