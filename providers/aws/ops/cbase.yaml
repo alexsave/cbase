@@ -496,7 +496,7 @@ Resources:
   # (free): cdn-upstream-connect (a new connection to the Function URL, else
   # 0), cdn-upstream-fbl (the origin's first byte), cdn-downstream-fbl, the
   # POP and the layer. It is how the edge's share of a move is measured
-  # (cbase/docs/BENCH_VM_VS_DYNAMO.md): about 30% of requests through the
+  # (docs/history/BENCH_VM_VS_DYNAMO.md): about 30% of requests through the
   # edge took 25 to 30 ms more than the same request to the Function URL,
   # with the Lambda's own time unchanged.
   ServerTimingPolicy:

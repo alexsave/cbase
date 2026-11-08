@@ -1,5 +1,8 @@
 # Should the web's list reads go straight to DynamoDB?
 
+> **History.** foolish's question (2026-10-17) of whether its web's list reads should go straight to DynamoDB, which led to the edge cache.
+> It was written in the foolish monorepo before cbase was split out of it (2026-11-08), and its paths, names and section references are that repository's (https://github.com/alexsave/foolish); nothing in it describes cbase as it is now.
+
 > **Since then (2026-10-17):** the recommendation landed.
 > The list reads stayed on cbase, and `/v1/leaderboard` and `/v1/bots` are cached at CloudFront and invalidated by event (DESIGN.md, "Edge cache").
 
