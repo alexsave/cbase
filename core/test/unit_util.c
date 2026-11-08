@@ -91,6 +91,11 @@ static void strings(void) {
     T_EQ_INT(cb_url_decode("%zz", 3, out, sizeof out, true), -1);
     T_EQ_INT(cb_strlcpy(out, "0123456789abcdefXYZ", 8), 19);
     T_EQ_STR(out, "0123456");
+    // cb_fmt_cut: cut to cap-1 and terminated, and the full length returned.
+    T_EQ_INT(cb_fmt_cut(out, 8, "%s:%d", "example.com", 443), 15);
+    T_EQ_STR(out, "example");
+    T_EQ_INT(cb_fmt_cut(out, sizeof out, "%s:%d", "a", 1), 3);
+    T_EQ_STR(out, "a:1");
     T_CHECK(cb_span_eq_nocase(CB_SPAN_LIT("Content-Type"), "content-type"));
     // An empty span may carry no pointer: an empty string, and no memcpy from
     // NULL (undefined behaviour that UBSan reports under glibc).

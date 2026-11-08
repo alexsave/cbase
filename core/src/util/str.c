@@ -90,6 +90,14 @@ size_t cb_strlcpy(char *dst, const char *src, size_t cap) {
     return n;
 }
 
+int cb_fmt_cut(char *dst, size_t cap, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(dst, cap, fmt, ap);
+    va_end(ap);
+    return n;
+}
+
 bool cb_strncpy0(char *dst, size_t cap, const char *src, size_t n) {
     if (cap == 0) return false;
     if (n >= cap) { dst[0] = 0; return false; }

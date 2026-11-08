@@ -28,7 +28,6 @@
 #include <poll.h>
 #include <pthread.h>
 #include <signal.h>
-#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -342,18 +341,8 @@ static int64_t left_ms(int64_t deadline) {
     return l > 0 ? l : 0;
 }
 
-// Writes conn_open's reason into err[cap], cut short when it does not fit: the reason is for a
-// person, so a long host name may truncate it. One owner, so gcc's -Wformat-truncation (which
-// cannot see that a cut reason is fine) has no snprintf of a host into a short buffer to flag.
-__attribute__((format(printf, 3, 4)))
-static void err_set(char *err, size_t cap, const char *fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(err, cap, fmt, ap);
-    va_end(ap);
-}
-
-// Opens a connection (TCP, then TLS with ALPN h2), without the channel's lock.
+// Opens a connection (TCP, then TLS with ALPN h2), without the channel's lock. Its reasons are
+// written with cb_fmt_cut: a long host name may cut one short.
 // CB_OK and *out, or CB_E_IO with why and err.
 static int conn_open(cb_h2_channel *ch, int64_t deadline, conn **out, cb_h2_why *why, char *err, size_t cap) {
     int64_t cdl = cb_mono_ms() + ch->o.connect_timeout_ms;
@@ -361,7 +350,7 @@ static int conn_open(cb_h2_channel *ch, int64_t deadline, conn **out, cb_h2_why 
     int fd = cb_net_dial(ch->host, ch->port, cdl, true);
     if (fd < 0) {
         *why = left_ms(deadline) ? CB_H2_WHY_CONNECT : CB_H2_WHY_TIMEOUT;
-        err_set(err, cap, "could not connect to %s:%d", ch->host, ch->port);
+        cb_fmt_cut(err, cap, "could not connect to %s:%d", ch->host, ch->port);
         return CB_E_IO;
     }
     SSL *ssl = NULL;
@@ -371,7 +360,7 @@ static int conn_open(cb_h2_channel *ch, int64_t deadline, conn **out, cb_h2_why 
             if (ssl) SSL_free(ssl);
             close(fd);
             *why = CB_H2_WHY_TLS;
-            err_set(err, cap, "TLS to %s:%d: the host name to verify could not be set", ch->host, ch->port);
+            cb_fmt_cut(err, cap, "TLS to %s:%d: the host name to verify could not be set", ch->host, ch->port);
             return CB_E_IO;
         }
         SSL_set_mode(ssl, SSL_MODE_ENABLE_PARTIAL_WRITE | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
@@ -389,11 +378,11 @@ static int conn_open(cb_h2_channel *ch, int64_t deadline, conn **out, cb_h2_why 
             if (code) ERR_error_string_n(code, e2, sizeof e2);
             ERR_clear_error();
             *why = ev && !left_ms(deadline) ? CB_H2_WHY_TIMEOUT : CB_H2_WHY_TLS;
-            err_set(err, cap, "TLS to %s:%d failed%s%s%s%s", ch->host, ch->port, ev ? " (timed out)" : "",
+            cb_fmt_cut(err, cap, "TLS to %s:%d failed%s%s%s%s", ch->host, ch->port, ev ? " (timed out)" : "",
                      e2[0] ? ": " : "", e2, vr != X509_V_OK ? "; the certificate did not verify" : "");
             if (vr != X509_V_OK) {
                 size_t at = strlen(err);
-                err_set(err + at, cap - at, " (%s)", X509_verify_cert_error_string(vr));
+                cb_fmt_cut(err + at, cap - at, " (%s)", X509_verify_cert_error_string(vr));
             }
             SSL_free(ssl);
             close(fd);
@@ -406,7 +395,7 @@ static int conn_open(cb_h2_channel *ch, int64_t deadline, conn **out, cb_h2_why 
             SSL_free(ssl);
             close(fd);
             *why = CB_H2_WHY_TLS;
-            err_set(err, cap, "%s:%d did not agree to HTTP/2 (ALPN h2)", ch->host, ch->port);
+            cb_fmt_cut(err, cap, "%s:%d did not agree to HTTP/2 (ALPN h2)", ch->host, ch->port);
             return CB_E_IO;
         }
     }
@@ -417,7 +406,7 @@ static int conn_open(cb_h2_channel *ch, int64_t deadline, conn **out, cb_h2_why 
         if (ssl) SSL_free(ssl);
         close(fd);
         *why = CB_H2_WHY_PROTOCOL;
-        err_set(err, cap, "no resources for a connection");
+        cb_fmt_cut(err, cap, "no resources for a connection");
         return CB_E_IO;
     }
     for (int i = 0; i < 2; i++) fcntl(pfd[i], F_SETFL, fcntl(pfd[i], F_GETFL, 0) | O_NONBLOCK);
@@ -435,7 +424,7 @@ static int conn_open(cb_h2_channel *ch, int64_t deadline, conn **out, cb_h2_why 
         close(pfd[1]);
         free(c);
         *why = CB_H2_WHY_PROTOCOL;
-        err_set(err, cap, "no memory for a session");
+        cb_fmt_cut(err, cap, "no memory for a session");
         return CB_E_IO;
     }
     *out = c;

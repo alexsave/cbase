@@ -53,6 +53,12 @@ size_t cb_strlcpy(char *dst, const char *src, size_t cap);
 // src may be NULL when n is 0 (an empty span).
 bool   cb_strncpy0(char *dst, size_t cap, const char *src, size_t n);
 bool   cb_starts_with(const char *s, const char *prefix);
+// snprintf for text a person reads (an error's reason, a log line's detail): writes at most
+// cap-1 bytes and always terminates (cap > 0), cut short when it does not fit. Returns the
+// full length, so a result >= cap means it was cut. The one owner of a by-design cut, so
+// gcc's -Wformat-truncation (which cannot see that a cut reason is fine) has no snprintf of
+// a long name into a short buffer to flag; a write whose cut would be wrong checks the result.
+int    cb_fmt_cut(char *dst, size_t cap, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
 
 // Percent-decoding of a URL component. `plus_is_space` for a query string
 // (application/x-www-form-urlencoded). Returns the decoded length, or -1 for a

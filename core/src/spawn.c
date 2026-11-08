@@ -14,6 +14,7 @@
 #include "util/clock.h"
 #include "util/err.h"
 #include "util/log.h"
+#include "util/str.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -574,7 +575,7 @@ static void child_start(child *c) {
     if (!pv) pv = getenv("PATH");
     char path[1024];
     if (!resolve(c->argv[0], pv, path, sizeof path)) {
-        snprintf(why, sizeof why, "no such program in PATH: %s", c->argv[0]);
+        cb_fmt_cut(why, sizeof why, "no such program in PATH: %s", c->argv[0]);
         finish(c, CB_E_NOT_FOUND, why);
         return;
     }
@@ -599,7 +600,7 @@ static void child_start(child *c) {
     if (pid < 0) {
         int *ours[] = { &pin[1], &pout[0], &perr[0], &pch[0], &prep[0] };
         for (size_t i = 0; i < sizeof ours / sizeof ours[0]; i++) close_fd(ours[i]);
-        snprintf(why, sizeof why, "%s: %s", ok ? "fork" : "pipes", strerror(fork_errno));
+        cb_fmt_cut(why, sizeof why, "%s: %s", ok ? "fork" : "pipes", strerror(fork_errno));
         finish(c, rc_of_errno(fork_errno), why);
         return;
     }
@@ -620,7 +621,7 @@ static void child_start(child *c) {
         while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
         c->reaped = true;
         static const char *const step[] = { "dup2", "chdir", "exec" };
-        snprintf(why, sizeof why, "%s %s: %s", step[msg[0] >= 0 && msg[0] < 3 ? msg[0] : 2],
+        cb_fmt_cut(why, sizeof why, "%s %s: %s", step[msg[0] >= 0 && msg[0] < 3 ? msg[0] : 2],
                  msg[0] == 1 ? c->cwd : path, strerror(msg[1]));
         c->started = false;
         finish(c, rc_of_errno(msg[1]), why);
