@@ -443,17 +443,28 @@ static void streams_large_files_and_head(void) {
     close(fd);
     free(w);
     free(b);
+    // Streamed, not held: this server, having sent its 40 MB file four times, never grew by the
+    // file's size. Its resident peak is a few MB.
+#ifdef __APPLE__
     T_EQ_INT(stop(SIGTERM), 0);
-    // Streamed, not held: the largest server so far (each test's, this one's 40 MB file sent four
-    // times among them) never grew by the file's size. Its resident peak is a few MB.
+    // The largest child so far, every test's server among them (macOS counts each from its exec).
     struct rusage ru;
     T_EQ_INT(getrusage(RUSAGE_CHILDREN, &ru), 0);
-#ifdef __APPLE__
-    const long long peak = (long long)ru.ru_maxrss;          // bytes
+    const long long peak = (long long)ru.ru_maxrss;   // bytes
 #else
-    const long long peak = (long long)ru.ru_maxrss * 1024;   // KB
+    // Linux carries a parent's high-water mark into its children's rusage across fork and exec,
+    // and this test's own buffers are larger than the file: the server's own mm (VmHWM) instead.
+    long long peak = -1;
+    char path[64], line[256];
+    snprintf(path, sizeof path, "/proc/%d/status", (int)g_child.pid);
+    FILE *st = fopen(path, "r");
+    while (st && fgets(line, sizeof line, st))
+        if (strncmp(line, "VmHWM:", 6) == 0) peak = strtoll(line + 6, NULL, 10) * 1024;   // kB
+    if (st) fclose(st);
+    T_CHECK(peak > 0);
+    T_EQ_INT(stop(SIGTERM), 0);
 #endif
-    fprintf(stderr, "     the servers' resident peak: %lld KB\n", peak / 1024);
+    fprintf(stderr, "     the server's resident peak: %lld KB\n", peak / 1024);
     T_CHECK(peak < (long long)BIG_SIZE / 2);
 }
 
