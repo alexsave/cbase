@@ -3,7 +3,7 @@
 # Two gates read this file:
 #   foolish/e2e/validation/shared_is_shared_validation.test.ts: nothing under
 #     shared/ hits a [products] pattern;
-#   cbase/core/test/unit_name_gate.c (cbase/docs/PLATFORM.md 8.4): cbase's
+#   cbase/core/test/unit_name_gate.c (docs/history/PLATFORM_SPLIT.md 8.4): cbase's
 #     core hits no pattern of any list, a provider no [products] or [domain]
 #     pattern, foolish/server/src no [providers] pattern, but for the lines of
 #     allow.txt beside this file.
@@ -47,7 +47,7 @@
 /MessagesExtension/
 
 [providers]
-# PLATFORM.md 8.4's list: AWS, Google Cloud (the slot, not created) and the
+# docs/history/PLATFORM_SPLIT.md 8.4's list: AWS, Google Cloud (the slot, not created) and the
 # local provider's database.
 /\baws\b/i
 /amazon/i

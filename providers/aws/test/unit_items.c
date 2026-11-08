@@ -1,6 +1,6 @@
 // unit_items.c - the item layer (store/items.h) on DynamoDB (SQLite keeps plain tables), and the
 // key-capture proof's shapes (aws_json.h dw_shape): just enough to hold
-// the coverage floors through stage 5 (docs/PLATFORM.md section 9 lists the
+// the coverage floors through stage 5 (docs/history/PLATFORM_SPLIT.md section 9 lists the
 // full suite owed by stage 8).
 #include "t.h"
 
@@ -193,7 +193,7 @@ static void shapes_ignore_what_an_id_looks_like(void) {
 
 // cb_av_same, the one value comparison (SQLite's conditions, the request's
 // shared placeholder), over every kind; the name is not compared. Written to
-// hold the coverage floor (docs/PLATFORM.md section 9, stage 7).
+// hold the coverage floor (docs/history/PLATFORM_SPLIT.md section 9, stage 7).
 static void values_compare_by_kind_and_value(void) {
     const char *l1[] = { "a", "b" }, *l2[] = { "a", "c" }, *l3[] = { "a" };
     const uint8_t b1[] = { 1, 2 }, b2[] = { 1, 3 };

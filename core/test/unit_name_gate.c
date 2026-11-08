@@ -1,4 +1,4 @@
-// unit_name_gate.c - the name gate (docs/PLATFORM.md 8.4): each side of the tree
+// unit_name_gate.c - the name gate (docs/history/PLATFORM_SPLIT.md 8.4): each side of the tree
 // names nothing on the far side of its line.
 //
 //   * core (core/src, core/include) and the client (client/src, include, wasm, ts) hit no pattern of any list: no product,

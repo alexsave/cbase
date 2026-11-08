@@ -1,6 +1,6 @@
 // jobs.h - the app's jobs and schedules (cbase/app.h), started and run by
 // name, so no provider knows what a job does and no app knows how one is
-// started (docs/PLATFORM.md 8.3.4):
+// started (docs/history/PLATFORM_SPLIT.md 8.3.4):
 //
 //   start   cb_job_start(ctx, "greet", key) -> ctx->job_start, the
 //           provider's: a pool thread under serve, an async self-invoke

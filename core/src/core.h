@@ -1,4 +1,4 @@
-// core.h - the entries a provider's ingress calls (docs/PLATFORM.md 8.3.1).
+// core.h - the entries a provider's ingress calls (docs/history/PLATFORM_SPLIT.md 8.3.1).
 //
 // A provider owns main and the shape its work arrives in (a Lambda event, a
 // socket, a Cloud Tasks POST); core sees none of it. Each kind of work is one

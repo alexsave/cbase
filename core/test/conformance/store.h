@@ -1,4 +1,4 @@
-// conformance/store.h - THE STORE CONFORMANCE SUITE (docs/PLATFORM.md 8.3.2,
+// conformance/store.h - THE STORE CONFORMANCE SUITE (docs/history/PLATFORM_SPLIT.md 8.3.2,
 // 8.6 stage 5, 8.7 decisions 1 and 2): the item layer's contract (store/items.h,
 // store.h cb_store_ops item_*), as one library every provider's lane runs
 // against its own backend.

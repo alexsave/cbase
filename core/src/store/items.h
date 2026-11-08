@@ -1,5 +1,5 @@
 // items.h - the store's item layer: DynamoDB's model, on both backends
-// (docs/PLATFORM.md 2.2 and 8.3.2).
+// (docs/PLATFORM.md 2.2, docs/history/PLATFORM_SPLIT.md 8.3.2).
 //
 // An ITEM is a string partition key (pk) and sort key (sk) with typed
 // attributes (string, number, boolean, bytes). Two overloaded indexes,
@@ -27,7 +27,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// THE LIMITS, the tightest of every provider (docs/PLATFORM.md 8.7 decision
+// THE LIMITS, the tightest of every provider (docs/history/PLATFORM_SPLIT.md 8.7 decision
 // 1): every backend refuses a write past one the same way, CB_E_INVALID with
 // nothing sent or written (cb_iwrite_check), so a product that works on
 // local works everywhere.
