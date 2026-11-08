@@ -29,7 +29,7 @@
 #include <stdint.h>
 
 #define CB_EMAIL_MAX     320
-#define CB_USERNAME_MAX  64    // == kernel ROSTER_NAME_MAX
+#define CB_USERNAME_MAX  64    // a product that shows names holds its own cap equal
 #define CB_HASH_MAX      128   // a bcrypt hash is 60
 #define CB_TOPIC_MAX     128
 
@@ -176,7 +176,7 @@ typedef struct cb_store_ops {
     // admin console: list the collections, browse one in pages, and run one
     // read-only statement (SQL for SQLite, PartiQL for DynamoDB; writes only
     // with allow_write: CB_E_FORBIDDEN otherwise). Collections are SQLite's
-    // tables, or DynamoDB's key families ("USER", "GAME", ...). browse's
+    // tables, or DynamoDB's key families ("USER", "EMAIL", ...). browse's
     // `prefix`: NULL or "" for every row; on SQLite "column=value" is an eq
     // filter and any other text matches the start of the first column; on
     // DynamoDB it matches the pk after "<FAMILY>#". `cursor` is "" for the
@@ -244,7 +244,7 @@ typedef struct {
 
 typedef struct cb_store_app {
     // The product's operations table, opaque here: the product's own call
-    // macro reads it (foolish: CB_ROWS_CALL).
+    // macro reads it.
     const void *rows;
     // Signup: acct[0..n) are the account's writes (EMAIL, PROFILE); the hook
     // sends them in ONE transaction with the product's own after them, as

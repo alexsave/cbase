@@ -12,7 +12,8 @@
 // the drift, not an exception to it.
 //
 // THE ALLOWLISTS hold today's hits, one line per file and pattern: cbase's
-// own, tools/name_gate/allow.txt, for its files, and the product's
+// own, tools/name_gate/allow.txt, for its files (provider words only: a line
+// allowing a [products] or [domain] pattern is refused), and the product's
 // (CBASE_APP_NAME_ALLOW, cbase.mk's APP_NAME_ALLOW) for the product's:
 //
 //     <count> <path> <pattern, as words.txt writes it>
@@ -253,7 +254,7 @@ static void scan_tree(void) {
 
 // An allowlist into the tallies' allowed counts. Returns the number of lines it
 // could not read (a pattern not in words.txt is one), and 1 for no such file.
-static int load_allow(const char *path) {
+static int load_allow(const char *path, int refused_lists) {
     size_t n;
     char *s = slurp(path, &n);
     if (!s) {
@@ -271,6 +272,11 @@ static int load_allow(const char *path) {
                 if (strcmp(g_pat[p].text, sp2 + 1) == 0) pat = p;
         if (count <= 0 || pat < 0 || (size_t)(sp2 - sp1 - 1) >= sizeof g_tally[0].path) {
             fprintf(stderr, "name gate: allow.txt: cannot read: %s\n", line);
+            bad++;
+            continue;
+        }
+        if (g_pat[pat].list & refused_lists) {
+            fprintf(stderr, "name gate: %s may not allow %s: no file of its side may name it\n", path, g_pat[pat].text);
             bad++;
             continue;
         }
@@ -339,9 +345,11 @@ static void each_side_names_only_its_own(void) {
     const char *out = getenv("CBASE_NAME_GATE_WRITE");
     if (out && *out) { write_allow(out); printf("name gate: wrote %s\n", out); }
     char allow[TT_PATH_MAX];
-    T_EQ_INT(load_allow(tt_path(allow, sizeof allow, ALLOW)), 0);
+    // cbase's own allowlist is strict for the product and domain lists: the platform names no
+    // product and no product's nouns, comments included, so no line may allow one.
+    T_EQ_INT(load_allow(tt_path(allow, sizeof allow, ALLOW), L_PRODUCTS | L_DOMAIN), 0);
     const char *app_allow = getenv("CBASE_APP_NAME_ALLOW");
-    if (app_allow && *app_allow) T_EQ_INT(load_allow(app_allow), 0);
+    if (app_allow && *app_allow) T_EQ_INT(load_allow(app_allow, 0), 0);
     int new_hits = 0, stale = 0;
     for (int i = 0; i < g_ntally; i++) {
         tally *t = &g_tally[i];

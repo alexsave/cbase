@@ -1,6 +1,6 @@
 // uuid.h - random ids, and the process's one source of random bytes.
 //
-// Every secret cbase draws (a deal seed, a refresh token, a session id, a game
+// Every secret cbase draws (a seed, a refresh token, a session id, a document
 // id) comes through cb_random_bytes, which is OpenSSL's CSPRNG. A failure to
 // draw is fatal: there is no safe fallback for a secret.
 #ifndef CB_UUID_H

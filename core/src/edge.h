@@ -2,16 +2,11 @@
 // answer changes (DESIGN.md "Edge cache").
 //
 // The edge keeps one copy of each public read the app declares
-// (cbase/app.h cached_paths; foolish's /v1/leaderboard and /v1/bots) for its
-// s-maxage, a safety net. Whatever changes one of those answers marks its
-// path stale here (bit i is the app's path i), and the path is invalidated
-// once the request is answered. Foolish's marks (app/foolish_app.h):
-//
-//   CB_EDGE_BOARD  a commit that applied ratings (table_ops.c), an account
-//                  deleted (functions_http.c), an import or a ratings
-//                  reindex (cbase-import)
-//   CB_EDGE_BOTS   the bots seeded or replaced (cbase-import)
-//   CB_EDGE_ALL    every declared path: an admin write query
+// (cbase/app.h cached_paths) for its s-maxage, a safety net. Whatever changes
+// one of those answers marks its path stale here (bit i is the app's path i),
+// and the path is invalidated once the request is answered. An app names its
+// own bits; CB_EDGE_ALL is every declared path (an admin write query marks
+// it).
 //
 // Marking is a bit in a process-wide mask, so it never blocks or fails what
 // marked it. cb_edge_flush purges every path marked since the last flush

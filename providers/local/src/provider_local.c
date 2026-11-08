@@ -34,9 +34,9 @@ typedef struct {
 
 // The jobs queued and not yet started. A start for one of them is dropped:
 // the queued run reads its state when it starts, so it sees whatever the
-// later start would have. Without this every bump during a long bot drive
-// queued one more drive (thousands in a game), each of which later took the
-// lease, read the row, found nothing and let go. A job leaves the set when it
+// later start would have. Without this every wake-up during a long job queued
+// one more run of it (thousands for one key), each of which later found
+// nothing to do. A job leaves the set when it
 // STARTS, so a start while one runs still queues one. Full (more jobs waiting
 // than slots): starts queue as they always did.
 #define PENDING_MAX 1024

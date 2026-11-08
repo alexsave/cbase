@@ -1,6 +1,6 @@
 // provider_aws.c - `bootstrap`'s provider under AWS Lambda (cbase/provider.h):
 // DynamoDB by default, IoT Core for the stream when the stack has it
-// (CBASE_IOT_ENDPOINT), bot drives by an async self-invoke, CloudFront's
+// (CBASE_IOT_ENDPOINT), jobs by an async self-invoke, CloudFront's
 // viewer address and invalidations, and the AWS console's links for the
 // admin console.
 #include "cbase/provider.h"

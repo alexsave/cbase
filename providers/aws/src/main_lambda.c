@@ -5,24 +5,24 @@
 // over API Gateway, routes); a failure is reported to /runtime/init/error and
 // the process exits. Then forever: GET the next invocation, decode the event
 // (aws/event.h), dispatch it, POST the response, then do what the caller does
-// not wait for (app/after.h: an HTTP request's pushes and bot kicks, and the
+// not wait for (after.h: an HTTP request's pushes and job starts, and the
 // edge cache's invalidation):
 //   HTTP       cb_handle -> cb_event_encode_http
 //   IOT_AUTH   cb_iot_authorize (an MQTT CONNECT to IoT Core) -> its policy
 //   SCHEDULE   cb_schedule_run, the app's schedule the literal names
-//              ("scan"; jobs.h)                                  -> {}
+//              ("tick"; jobs.h)                                  -> {}
 //   JOB        cb_job_run, the app's job "<job>:<key>" names
-//              ("bot_drive:<id>"), budgeted against ctx->deadline_ms
+//              ("greet:<key>"), budgeted against ctx->deadline_ms
 //              (Lambda-Runtime-Deadline-Ms)                     -> {}
 // An event that does not decode, or a handler that cannot answer, is POSTed
 // to the invocation's /error. Lambda retries a failed ASYNC invocation (the
-// self-invoke, the schedule) twice, so a job with nothing to do (a drive
-// for a game that no longer exists: CB_E_NOT_FOUND) answers {} rather than an error: retrying it cannot help. The process holds nothing between invocations
-// but what a warm container may cache (app/table_ops.h).
+// self-invoke, the schedule) twice, so a job with nothing to do (a key that
+// names nothing any more: CB_E_NOT_FOUND) answers {} rather than an error: retrying it cannot help. The process holds nothing between invocations
+// but what a warm container may cache (an app's own caches).
 //
 // Every invocation ends with one INFO line, so latency is measured rather
 // than estimated (CloudWatch Logs Insights reads it with `parse`):
-//   inv: http GET /v1/leaderboard 200 ms=8.4 after=0.0 store=2/7.9/0 push=0/0.0/0 other=0/0.0/0 rid=<request id> ip=<viewer>
+//   inv: http GET /v1/hello 200 ms=8.4 after=0.0 store=2/7.9/0 push=0/0.0/0 other=0/0.0/0 rid=<request id> ip=<viewer>
 // ip is the viewer's address an HTTP request came from (CloudFront's
 // CloudFront-Viewer-Address, rate_limits.h cb_viewer_key): with it this line is
 // the API's access log, at no cost past the line it already was (finding M9;

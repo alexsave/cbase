@@ -6,7 +6,7 @@
 //   * `cbase serve`, a local HTTP + WebSocket server for development and tests.
 // Both build one cb_ctx (core/src/boot.c) and hand every request to the same
 // handler (core/src/handler.h). What differs is the PROVIDER (cbase/provider.h:
-// the store backend, the realtime transport, how a bot drive is started, the
+// the store backend, the realtime transport, how a job is started, the
 // edge's viewer header), which each main names, and what is served is the APP
 // (cbase/app.h: its routes and its self-test), which each main names too
 // (docs/PLATFORM.md).
@@ -37,7 +37,7 @@ typedef struct cb_provider cb_provider;   // cbase/provider.h
 // elsewhere and not waited for. serve: the job pool (provider_local.c).
 // lambda: an async self-invoke carrying the JSON string literal
 // "<job>:<key>" (aws/lambda_invoke.h). Fire and forget: CB_OK when it was
-// handed on; a lost job is the app's schedule's to catch (foolish's scan).
+// handed on; a lost job is the app's schedule's to catch.
 typedef int (*cb_job_start_fn)(cb_ctx *ctx, const char *job, const char *key);
 
 // The same, started after delay_ms without holding a thread meanwhile (serve:
@@ -72,7 +72,7 @@ struct cb_ctx {
     cb_pool    *job_pool;     // the jobs (provider_local.c), CBASE_JOB_WORKERS threads
     cb_server  *server;
     // lambda only: the current invocation's deadline (Lambda-Runtime-Deadline-Ms,
-    // epoch ms), 0 under serve. A bot drive budgets against it.
+    // epoch ms), 0 under serve. A long job budgets against it.
     int64_t     deadline_ms;
     cb_stats    stats;
     // The app's metrics registry (metrics.h), from cb_app.metrics; NULL when it declares none.

@@ -13,23 +13,22 @@
 //
 // WHO HEARS A PUSH is a target (cb_rt_to): one of the app's TOPIC FAMILIES
 // (cbase/app.h cb_topic_family), with its {user} and {doc} filled in by
-// cb_rt_topic. Foolish's (app/pushes.h):
-//   views  u/{user}/v          the user's views of every game they sit at
-//   seat   u/{user}/c/{doc}    one seat's casts
-//   watch  s/{doc}             the spectators' casts
-//   chat   u/{user}/m/{doc}    a game's chat as one member hears it
+// cb_rt_topic. For example:
+//   views  u/{user}/v          what the user follows, every document of theirs
+//   member u/{user}/c/{doc}    one member's own copy of a document's pushes
+//   watch  s/{doc}             a room anyone watching the document hears
+//   chat   u/{user}/m/{doc}    a document's messages as one member hears them
 // Every private topic starts with the user it is for, so who may hear it is
 // decided once, at CONNECT, by a static policy (stream_mqtt.h): a connection
 // may subscribe under u/<its user>/ and s/, and nothing else. A family's
 // pattern must therefore start with one of those two (cb_rt_families_check),
 // and a product publishes a member's copy to each member's own topic.
 //
-// PUBLISH from any thread (a request handler, a bot drive). Under serve the
+// PUBLISH from any thread (a request handler, a job). Under serve the
 // call copies the frame and posts it to the loop; under Lambda it publishes to
 // IoT before returning. Nothing is retried: a client takes its state whole
 // again when its subscription goes live. The payload is opaque bytes: the
-// product's own frame (foolish's are netwire.h's NW_WS_VIEW, NW_WS_CAST,
-// NW_WS_CHAT, written in app/pushes.c).
+// product's own frame, in its own wire format.
 #ifndef CB_REALTIME_H
 #define CB_REALTIME_H
 
@@ -128,7 +127,7 @@ int cb_rt_failures_take(void);
 void cb_rt_failures_add(int n);
 
 // Account deletion: every connection the user holds is ended, so a page left
-// open hears nothing more of the games it sat at (their seats keep the id:
+// open hears nothing more of the rooms it watched (their rows keep the id:
 // table.h table_redact). A connection
 // made later with the same, still unexpired, token is refused: the stream's
 // token check reads the account (rt_deps.h verify_token). IoT Core keeps no

@@ -25,7 +25,7 @@ static const char *const COMMON[] = {
     "q1w2e3r4t5", "qazwsxedc", "qwer1234", "qwerty12", "qwerty123", "qwerty1234", "qwertyui", "qwertyuiop",
     "samantha", "shadow12", "starwars", "summer2024", "summer2025", "summer2026", "sunshine", "sunshine1",
     "superman", "superman1", "test1234", "thomas12", "trustno1", "welcome1", "welcome123", "whatever",
-    "winter2025", "winter2026", "zaq12wsx", "zxcvbnm1", "zxcvbnm123", "foolish1", "foolish123", "foolishcards",
+    "winter2025", "winter2026", "zaq12wsx", "zxcvbnm1", "zxcvbnm123",
     "durak123", "durakonline",
 };
 

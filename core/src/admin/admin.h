@@ -8,7 +8,7 @@
 // The API (admin.c), each a panel of a hosted database console's information
 // architecture cut to what cbase has:
 //   GET  overview       version, mode, uptime, store, requests, 5xx,
-//                       connections (serve), games needing bots, last backup,
+//                       connections (serve), the app's counter, last backup,
 //                       process metrics; under Lambda, links to the
 //                       function, CloudWatch Logs Insights and the table
 //   GET  collections    store admin_collections

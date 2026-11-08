@@ -2,10 +2,10 @@
 // auth_http.h.
 //
 // Email + password only (the clients derive the email from the username:
-// hex(SHA-256(UPPER(name)))[:16] + "@foolish.cards"). An access token is an
+// hex(SHA-256(UPPER(name)))[:16] + "@" + the app's account_domain). An access token is an
 // HS256 JWT (jwt.h) valid CBASE_JWT_TTL seconds; a refresh token is 32 random
 // bytes, base64url, stored only as its SHA-256 and rotated on every use. A
-// username containing '%' is refused (bot nicknames carry that prefix).
+// username containing '%' is refused (that prefix is reserved for an app's own names).
 #ifndef CB_AUTH_H
 #define CB_AUTH_H
 

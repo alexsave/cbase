@@ -146,7 +146,7 @@ bool cb_rt_families_anonymous(const cb_topic_family *const *f, int n) {
 
 // ---- the batch (realtime.h cb_rt_batch_begin) ------------------------------------------
 
-#define RT_BATCH_MAX 32   // a commit of 8 humans: 8 views, 8 casts, the spectators, up to 8 seats left
+#define RT_BATCH_MAX 32   // a commit's pushes to 8 users: two each, the room's, a few more
 #define RT_ID_MAX    64   // level_ok's longest id: a longer one is never a topic
 
 typedef struct {

@@ -2,9 +2,9 @@
 // name, so no provider knows what a job does and no app knows how one is
 // started (docs/PLATFORM.md 8.3.4):
 //
-//   start   cb_job_start(ctx, "bot_drive", id) -> ctx->job_start, the
+//   start   cb_job_start(ctx, "greet", key) -> ctx->job_start, the
 //           provider's: a pool thread under serve, an async self-invoke
-//           with the literal "bot_drive:<id>" under Lambda
+//           with the literal "greet:<key>" under Lambda
 //   run     the job arriving (the pool's task, the invocation): cb_job_run
 //   tick    a schedule arriving (serve's timer, EventBridge's literal
 //           "scan"): cb_schedule_run

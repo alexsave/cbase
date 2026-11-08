@@ -74,8 +74,8 @@ main { flex: 1; min-width: 0; padding: 20px 24px 48px; }
 main h2 { font-size: 18px; margin: 0 0 4px; }
 main .sub { color: var(--ink-2); margin: 0 0 16px; }
 
-.card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; margin-bottom: 16px; }
-.card h3 { font-size: 13px; margin: 0 0 10px; color: var(--ink-2); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+.box { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; margin-bottom: 16px; }
+.box h3 { font-size: 13px; margin: 0 0 10px; color: var(--ink-2); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
 .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; margin-bottom: 16px; }
 .tile { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
 .tile .k { color: var(--ink-2); font-size: 12px; }
@@ -121,7 +121,7 @@ pre.log { max-height: 60vh; overflow-y: auto; white-space: pre-wrap; overflow-wr
 .confirm p { margin: 0 0 8px; }
 
 .login { max-width: 420px; margin: 12vh auto; padding: 0 16px; }
-.login .card { padding: 20px; }
+.login .box { padding: 20px; }
 .login input { width: 100%; margin: 8px 0 12px; }
 
 @media (max-width: 760px) {
@@ -311,7 +311,7 @@ function renderLogin(why) {
   };
   input.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') go(); });
   app.appendChild(h('div', { class: 'login' },
-    h('div', { class: 'card' },
+    h('div', { class: 'box' },
       h('h2', null, 'cbase console'),
       h('p', { class: 'muted' }, 'Paste the admin token. It is kept in this tab only and forgotten when the tab closes.'),
       why ? h('div', { class: 'msg bad' }, why) : null,
@@ -391,7 +391,7 @@ function panelOverview(main) {
         tile('Max RSS', fmtBytes((p.max_rss_kb || 0) * 1024)),
         tile('CPU user / sys', fmtNum(p.cpu_user_ms) + ' / ' + fmtNum(p.cpu_sys_ms) + ' ms', true),
         tile('Started', fmtTime(o.started_at), true)));
-      body.appendChild(h('div', { class: 'card' }, h('h3', null, 'Endpoints'),
+      body.appendChild(h('div', { class: 'box' }, h('h3', null, 'Endpoints'),
         h('div', { class: 'kv' },
           h('div', { class: 'k' }, 'Public URL'), h('div', { class: 'v mono' }, o.public_url),
           h('div', { class: 'k' }, 'Health'), h('div', { class: 'v' }, h('a', { href: '/health', target: '_blank', rel: 'noopener' }, '/health')))));
@@ -405,7 +405,7 @@ function panelOverview(main) {
 
 function linksCard(l) {
   const a = (href, text) => h('a', { href, target: '_blank', rel: 'noopener' }, text);
-  return h('div', { class: 'card' }, h('h3', null, 'AWS console'),
+  return h('div', { class: 'box' }, h('h3', null, 'AWS console'),
     h('div', { class: 'kv' },
       h('div', { class: 'k' }, 'Function'), h('div', { class: 'v' }, a(l.lambda, 'Lambda function')),
       h('div', { class: 'k' }, 'Logs'), h('div', { class: 'v' }, a(l.logs_insights, 'CloudWatch Logs Insights, last hour')),
@@ -536,7 +536,7 @@ function panelUsers(main) {
     const word = h('input', { placeholder: u.username || u.id.slice(0, 8), autocomplete: 'off', 'aria-label': 'Confirmation' });
     const need = u.username || u.id.slice(0, 8);
     const note = h('div');
-    clear(detail).appendChild(h('div', { class: 'card' }, h('h3', null, 'User'),
+    clear(detail).appendChild(h('div', { class: 'box' }, h('h3', null, 'User'),
       h('div', { class: 'kv' },
         h('div', { class: 'k' }, 'Id'), h('div', { class: 'v mono' }, u.id),
         h('div', { class: 'k' }, 'Email'), h('div', { class: 'v mono' }, u.email),
@@ -617,7 +617,7 @@ function panelApp(main, p) {
         if (/_hex$/.test(k) && typeof d[k] === 'string') { dumps.push([k, d[k]]); return; }
         kv.append(h('div', { class: 'k' }, k), h('div', { class: 'v' }, showValue(k, d[k])));
       });
-      clear(detail).appendChild(h('div', { class: 'card' }, h('h3', null, p.title + ' ' + id), kv,
+      clear(detail).appendChild(h('div', { class: 'box' }, h('h3', null, p.title + ' ' + id), kv,
         ...dumps.map(([k, v]) => h('div', null, h('h3', { style: 'margin-top:14px' }, k + ' (' + v.length / 2 + ' bytes)'),
           h('pre', { class: 'hex' }, hexDump(v))))));
     } catch (e) { clear(detail).appendChild(errorBox(e)); }
@@ -680,7 +680,7 @@ function panelConfig(main) {
   main.appendChild(out);
   api('config').then((c) => {
     clear(out).append(
-      h('div', { class: 'card' }, h('h3', null, 'Runtime'), h('div', { class: 'kv' },
+      h('div', { class: 'box' }, h('h3', null, 'Runtime'), h('div', { class: 'kv' },
         h('div', { class: 'k' }, 'Mode'), h('div', { class: 'v' }, c.mode),
         h('div', { class: 'k' }, 'Store backend'), h('div', { class: 'v' }, c.store),
         h('div', { class: 'k' }, 'DynamoDB table'), h('div', { class: 'v mono' }, c.table),
@@ -703,7 +703,7 @@ function panelBackups(main) {
   const load = () => api('backups').then((b) => {
     clear(out);
     if (b.kind === 'pitr') {
-      out.append(h('div', { class: 'card' }, h('h3', null, 'Point-in-time recovery'), h('p', { style: 'margin:0' }, b.explain)));
+      out.append(h('div', { class: 'box' }, h('h3', null, 'Point-in-time recovery'), h('p', { style: 'margin:0' }, b.explain)));
       if (b.links) out.appendChild(linksCard(b.links));
       return;
     }

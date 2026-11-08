@@ -2,7 +2,7 @@
 // console tails.
 //
 // Lines go to stderr (journald keeps them on the VM) as
-//   2026-10-13T12:34:56.789000+00:00 INFO  app: game 1a2b3c committed v12
+//   2026-10-13T12:34:56.789000+00:00 INFO  app: item 1a2b3c committed v12
 // and into a fixed ring of the last N entries, each with a sequence number, so
 // the console can poll "everything after seq S at level >= L" without missing
 // or repeating a line. Thread-safe; never allocates after cb_log_init.
