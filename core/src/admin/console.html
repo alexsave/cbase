@@ -7,8 +7,8 @@
 <title>cbase console</title>
 <!--
   cbase console: one static file, embedded into the binary at build time
-  (cbase/Makefile build/gen/console_html.c) and served at GET /admin.
-  Its API is /admin/api/* (cbase/src/admin/admin.c), every call carrying
+  (cbase.mk build/gen/console_html.c) and served at GET /admin.
+  Its API is /admin/api/* (core/src/admin/admin.c), every call carrying
   "Authorization: Bearer <CBASE_ADMIN_TOKEN>". The token lives in
   sessionStorage only, so closing the tab forgets it.
   No framework, no CDN, no build step: the page's Content-Security-Policy
@@ -278,8 +278,6 @@ const PANELS = [
   ['tables', 'Tables', panelTables],
   ['query', 'Query', panelQuery],
   ['users', 'Users', panelUsers],
-  ['games', 'Games', panelGames],
-  ['bots', 'Bots', panelBots],
   ['logs', 'Logs', panelLogs],
   ['config', 'Config', panelConfig],
   ['backups', 'Backups', panelBackups],
@@ -327,14 +325,26 @@ function renderShell() {
   modeBadge = h('span', { class: 'badge' }, '...');
   const nav = h('nav', { class: 'side', 'aria-label': 'Panels' });
   const main = h('main', { id: 'main' });
-  PANELS.forEach(([id, label]) => nav.appendChild(h('button', { 'data-panel': id, onclick: () => show(id) }, label)));
+  const addNav = ([id, label]) => nav.appendChild(h('button', { 'data-panel': id, onclick: () => show(id) }, label));
+  PANELS.forEach(addNav);
   app.appendChild(h('header', { class: 'top' },
     h('h1', null, 'cbase console'), modeBadge,
     h('span', { class: 'spacer' }),
     h('button', { onclick: () => signOut(null) }, 'Sign out')));
   app.appendChild(h('div', { class: 'shell' }, nav, main));
   const want = (location.hash || '').slice(1);
-  show(PANELS.some((p) => p[0] === want) ? want : 'overview');
+  // The app's own pages (cbase/app.h admin_panels), after the platform's: drawn from what the app
+  // declares, each from its own admin calls.
+  api('panels').then((r) => {
+    (r.panels || []).forEach((p) => {
+      if (PANELS.some((x) => x[0] === p.name)) return;
+      const entry = [p.name, p.title, (main) => panelApp(main, p)];
+      PANELS.push(entry);
+      addNav(entry);
+    });
+  }).catch(() => {}).finally(() => {
+    show(PANELS.some((p) => p[0] === want) ? want : 'overview');
+  });
   api('overview').then((o) => {
     modeBadge.textContent = o.mode + ' · ' + o.store + ' · v' + o.version;
   }).catch(() => {});
@@ -374,7 +384,7 @@ function panelOverview(main) {
         tile('Uptime', fmtDur(o.uptime_s)),
         tile(o.mode === 'lambda' ? 'Invocations' : 'Requests', fmtNum(o.requests)),
         tile('5xx errors', fmtNum(o.errors_5xx)),
-        tile('Games needing bots', o.games_needing_bots == null ? 'n/a' : fmtNum(o.games_needing_bots)),
+        o.app_count_label ? tile(o.app_count_label, o.app_count == null ? 'n/a' : fmtNum(o.app_count)) : null,
         tile('DynamoDB throttles', o.store === 'dynamo' ? fmtNum((o.store_throttles || {}).throttled || 0) + ' throttled / ' + fmtNum((o.store_throttles || {}).gave_up || 0) + ' failed' : 'n/a', true),
         tile('Connections', o.ws_conns == null ? 'API Gateway' : fmtNum(o.ws_conns) + ' ws / ' + fmtNum(o.http_conns) + ' http', o.ws_conns == null),
         tile('Last backup', o.last_backup ? (o.last_backup.includes('T') ? fmtTime(o.last_backup) : o.last_backup) : 'none yet', true),
@@ -471,7 +481,7 @@ function panelQuery(main) {
   api('config').then((c) => {
     const sql = c.store === 'sqlite';
     dialect.textContent = sql ? 'SQLite SQL' : 'DynamoDB PartiQL';
-    if (!ta.value) ta.value = sql ? 'SELECT id, status, version, updated_at FROM games ORDER BY updated_at DESC LIMIT 20'
+    if (!ta.value) ta.value = sql ? 'SELECT id, email, created_at FROM users ORDER BY created_at DESC LIMIT 20'
       : 'SELECT * FROM "' + c.table + '" WHERE pk = \'SCAN\'';
   }).catch(() => {});
   const run = async (confirm) => {
@@ -501,7 +511,7 @@ function panelQuery(main) {
 // ---- Users ---------------------------------------------------------------------------------
 
 function panelUsers(main) {
-  heading(main, 'Users', 'Search by email or username. Deleting runs the same delete-account path a player does: they leave every game, their leaderboard name is cleared, then the account goes.');
+  heading(main, 'Users', 'Search by email or username. Deleting runs the app’s delete-account path, the one an account holder’s own delete runs, then the account goes.');
   const search = h('input', { placeholder: 'search email or username', class: 'grow', 'aria-label': 'Search' });
   const out = h('div');
   const pager = h('div', { class: 'bar' });
@@ -549,12 +559,7 @@ function panelUsers(main) {
   load();
 }
 
-// ---- Games ---------------------------------------------------------------------------------
-
-function seatsText(g) {
-  if (!g.seats) return '(roster unreadable)';
-  return g.seats.map((s) => s.name + (s.bot ? ' (bot)' : '')).join(', ') || '(empty)';
-}
+// ---- the app's pages ---------------------------------------------------------------------
 
 // 16 bytes a line: offset, hex, ASCII.
 function hexDump(hex) {
@@ -568,69 +573,60 @@ function hexDump(hex) {
   return lines.join('\n');
 }
 
-function panelGames(main) {
-  heading(main, 'Games', 'Each row is the stored game. Open one for its byte sizes and the spectator envelope, the bytes spectator_views answers.');
-  const prefix = h('input', { placeholder: 'id prefix', 'aria-label': 'Id prefix' });
+// A value as a cell or a detail line: an object or a list as its JSON, a time as a time.
+function showValue(k, v) {
+  if (v == null) return h('span', { class: 'null' }, 'null');
+  if (typeof v === 'object') return h('pre', { class: 'mono' }, JSON.stringify(v, null, 1));
+  if (typeof v === 'string' && /_at$/.test(k)) return fmtTime(v);
+  return String(v);
+}
+
+// One app page (cbase/app.h cb_admin_panel): its list call's rows as a table, a filter and more
+// pages when the panel says so, and a row opened through its detail call, every field shown (a
+// field named *_hex as a hex dump).
+function panelApp(main, p) {
+  heading(main, p.title, p.blurb || '');
+  const filter = p.query ? h('input', { placeholder: p.query, 'aria-label': p.query }) : null;
   const out = h('div');
   const detail = h('div');
   const more = h('button', { disabled: true }, 'Load more');
-  let games = [], next = '';
+  let rows = [], next = '';
+  const cols = () => columnsOf(rows).map((c) => Object.assign(c, { render: (v) => showValue(c.key, v) }));
   const draw = () => {
-    clear(out).appendChild(dataTable(games, [
-      { key: 'id', label: 'Id', cls: 'mono' }, { key: 'status_label', label: 'Status' },
-      { key: 'version', label: 'Version', num: true }, { key: 'seats', label: 'Seats', render: (v, g) => h('div', { style: 'min-width:200px' }, seatsText(g)) },
-      { key: 'needs_bots', label: 'Needs bots', render: (v) => v ? h('span', { class: 'badge warn' }, 'yes') : 'no' },
-      { key: 'updated_at', label: 'Updated', render: fmtTime },
-    ], { sort: true, onRow: (g) => open(g.id), empty: 'No games.' }));
+    clear(out).appendChild(dataTable(rows, cols(), { sort: true, onRow: p.detail ? (r) => open(r.id) : null, empty: 'Nothing here.' }));
     more.disabled = !next;
   };
   const load = async (append) => {
     try {
-      const r = await api('games', { query: { prefix: prefix.value, cursor: append ? next : '', limit: 25 } });
-      games = append ? games.concat(r.games) : r.games;
-      next = r.next || '';
+      const query = { limit: 25 };
+      if (filter) query[p.query] = filter.value;
+      if (p.next) query.cursor = append ? next : '';
+      const r = await api(p.name, { query });
+      rows = append ? rows.concat(r[p.list] || []) : (r[p.list] || []);
+      next = p.next ? (r[p.next] || '') : '';
       draw();
     } catch (e) { clear(out).appendChild(errorBox(e)); }
   };
   async function open(id) {
     clear(detail).appendChild(h('p', { class: 'muted' }, 'Loading ' + id + '...'));
     try {
-      const g = await api('game', { query: { id } });
-      clear(detail).appendChild(h('div', { class: 'card' }, h('h3', null, 'Game ' + g.id),
-        h('div', { class: 'kv' },
-          h('div', { class: 'k' }, 'Title'), h('div', { class: 'v' }, g.title || '(none)'),
-          h('div', { class: 'k' }, 'Status'), h('div', { class: 'v' }, g.status_label + ' (' + g.status + ')'),
-          h('div', { class: 'k' }, 'Version / round'), h('div', { class: 'v' }, g.version + ' / ' + g.round_epoch),
-          h('div', { class: 'k' }, 'Seats'), h('div', { class: 'v' }, seatsText(g)),
-          h('div', { class: 'k' }, 'Needs bots'), h('div', { class: 'v' }, g.needs_bots ? 'yes' : 'no'),
-          h('div', { class: 'k' }, 'Bytes'), h('div', { class: 'v' }, 'state ' + fmtBytes(g.state_len) + ', roster ' + fmtBytes(g.roster_len) + (g.has_seed ? ', seeded' : '')),
-          h('div', { class: 'k' }, 'Created'), h('div', { class: 'v' }, fmtTime(g.created_at)),
-          h('div', { class: 'k' }, 'Last commit'), h('div', { class: 'v' }, fmtTime(g.last_commit_at))),
-        h('h3', { style: 'margin-top:14px' }, 'Spectator envelope' + (g.envelope_hex ? ' (' + g.envelope_hex.length / 2 + ' bytes, v' + g.envelope_version + ')' : '')),
-        g.envelope_hex ? h('pre', { class: 'hex' }, hexDump(g.envelope_hex))
-          : h('p', { class: 'muted' }, 'Not available: ' + (g.envelope_error || 'unknown'))));
+      const d = await api(p.detail, { query: { id } });
+      const kv = h('div', { class: 'kv' });
+      const dumps = [];
+      Object.keys(d).forEach((k) => {
+        if (/_hex$/.test(k) && typeof d[k] === 'string') { dumps.push([k, d[k]]); return; }
+        kv.append(h('div', { class: 'k' }, k), h('div', { class: 'v' }, showValue(k, d[k])));
+      });
+      clear(detail).appendChild(h('div', { class: 'card' }, h('h3', null, p.title + ' ' + id), kv,
+        ...dumps.map(([k, v]) => h('div', null, h('h3', { style: 'margin-top:14px' }, k + ' (' + v.length / 2 + ' bytes)'),
+          h('pre', { class: 'hex' }, hexDump(v))))));
     } catch (e) { clear(detail).appendChild(errorBox(e)); }
   }
   more.addEventListener('click', () => load(true));
-  prefix.addEventListener('keydown', (e) => { if (e.key === 'Enter') load(false); });
-  main.append(h('div', { class: 'bar' }, prefix, h('button', { class: 'primary', onclick: () => load(false) }, 'Load')),
+  if (filter) filter.addEventListener('keydown', (e) => { if (e.key === 'Enter') load(false); });
+  main.append(h('div', { class: 'bar' }, filter, h('button', { class: 'primary', onclick: () => load(false) }, 'Load')),
     detail, out, h('div', { class: 'bar' }, more));
   load(false);
-}
-
-// ---- Bots ------------------------------------------------------------------------------------
-
-function panelBots(main) {
-  heading(main, 'Bots', 'The bot ladder with ratings, in ladder order.');
-  const out = h('div', null, h('p', { class: 'muted' }, 'Loading...'));
-  main.appendChild(out);
-  api('bots').then((r) => {
-    clear(out).appendChild(dataTable(r.bots, [
-      { key: 'nickname', label: 'Nickname' }, { key: 'strategy_key', label: 'Strategy', cls: 'mono' },
-      { key: 'elo_rating', label: 'Rating', num: true }, { key: 'previous_elo', label: 'Previous', num: true },
-      { key: 'games_played', label: 'Games', num: true }, { key: 'updated_at', label: 'Updated', render: fmtTime },
-    ], { sort: true, empty: 'No bots.' }));
-  }).catch((e) => clear(out).appendChild(errorBox(e)));
 }
 
 // ---- Logs ---------------------------------------------------------------------------------------

@@ -12,16 +12,11 @@
 2 core/include/cbase/provider.h /iot ?core/i
 2 core/include/cbase/provider.h /sqlite/i
 2 core/include/cbase/provider.h /\bbots?\b/i
-1 core/src/admin/admin.c /foolish/i
 6 core/src/admin/admin.c /\baws\b/i
 2 core/src/admin/admin.c /lambda/i
 5 core/src/admin/admin.c /dynamo/i
 1 core/src/admin/admin.c /iot ?core/i
 13 core/src/admin/admin.c /sqlite/i
-5 core/src/admin/admin.c /\bgames?\b/i
-5 core/src/admin/admin.c /\bbots?\b/i
-1 core/src/admin/admin.c /\bratings?\b/i
-1 core/src/admin/admin.c /\bleaderboards?\b/i
 1 core/src/admin/admin.h /lambda/i
 2 core/src/admin/admin.h /dynamo/i
 3 core/src/admin/admin.h /sqlite/i
@@ -32,13 +27,6 @@
 6 core/src/admin/console.html /dynamo/i
 1 core/src/admin/console.html /api ?gateway/i
 4 core/src/admin/console.html /sqlite/i
-14 core/src/admin/console.html /\bgames?\b/i
-4 core/src/admin/console.html /\bseats?\b/i
-10 core/src/admin/console.html /\bbots?\b/i
-2 core/src/admin/console.html /\brosters?\b/i
-2 core/src/admin/console.html /\bratings?\b/i
-1 core/src/admin/console.html /\belo\b/i
-1 core/src/admin/console.html /\bleaderboards?\b/i
 10 core/src/admin/console.html /\bcards?\b/i
 2 core/src/after.h /foolish/i
 3 core/src/after.h /lambda/i
@@ -84,24 +72,11 @@
 2 core/src/core_json.c /lambda/i
 1 core/src/core_json.c /dynamo/i
 1 core/src/core_json.c /sqlite/i
-12 core/src/core_json.c /\bgames?\b/i
-7 core/src/core_json.c /\bseats?\b/i
-8 core/src/core_json.c /\bbots?\b/i
-2 core/src/core_json.c /\brosters?\b/i
-1 core/src/core_json.c /\bratings?\b/i
-3 core/src/core_json.c /\belo\b/i
-1 core/src/core_json.h /foolish/i
 4 core/src/core_json.h /\baws\b/i
 4 core/src/core_json.h /lambda/i
 4 core/src/core_json.h /dynamo/i
 1 core/src/core_json.h /cloudfront/i
 5 core/src/core_json.h /sqlite/i
-13 core/src/core_json.h /\bgames?\b/i
-6 core/src/core_json.h /\bseats?\b/i
-8 core/src/core_json.h /\bbots?\b/i
-4 core/src/core_json.h /\brosters?\b/i
-2 core/src/core_json.h /\bratings?\b/i
-2 core/src/core_json.h /\belo\b/i
 1 core/src/ctx.h /foolish/i
 2 core/src/ctx.h /\baws\b/i
 7 core/src/ctx.h /lambda/i

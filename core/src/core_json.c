@@ -58,6 +58,11 @@ static void adm_links(cb_jw *w, const cb_js_admin_links *l) {
 
 static int adm_done(cb_jw *w) { return cb_jw_ok(w) ? CB_OK : CB_E_NOMEM; }
 
+static void adm_kstr_or_null(cb_jw *w, const char *k, const char *v) {
+    if (v) cb_jw_kstr(w, k, v);
+    else cb_jw_knull(w, k);
+}
+
 int cb_js_admin_overview_write(cb_buf *out, const cb_js_admin_overview *o) {
     cb_jw w;
     cb_jw_init(&w, out);
@@ -78,8 +83,9 @@ int cb_js_admin_overview_write(cb_buf *out, const cb_js_admin_overview *o) {
         cb_jw_knull(&w, "http_conns");
         cb_jw_knull(&w, "ws_conns");
     }
-    if (o->games_needing_bots < 0) cb_jw_knull(&w, "games_needing_bots");
-    else cb_jw_kint(&w, "games_needing_bots", o->games_needing_bots);
+    if (o->app_count < 0) cb_jw_knull(&w, "app_count");
+    else cb_jw_kint(&w, "app_count", o->app_count);
+    adm_kstr_or_null(&w, "app_count_label", o->app_count_label);
     cb_jw_key(&w, "store_throttles");
     cb_jw_obj(&w);
     cb_jw_kint(&w, "throttled", (int64_t)o->throttled);
@@ -211,105 +217,26 @@ static int adm_one(cb_buf *out, const char *key, const char *value) {
 int cb_js_admin_deleted(cb_buf *out, const char *id) { return adm_one(out, "deleted", id); }
 int cb_js_admin_written(cb_buf *out, const char *path) { return adm_one(out, "written", path); }
 
-// One game's scalar columns and its seats, into an open object.
-static void adm_game(cb_jw *w, const cb_js_admin_game *g) {
-    cb_jw_kstr(w, "id", g->id);
-    cb_jw_kint(w, "status", g->status);
-    cb_jw_kstr(w, "status_label", g->status_label);
-    cb_jw_kint(w, "version", g->version);
-    cb_jw_kint(w, "round_epoch", g->round_epoch);
-    cb_jw_kbool(w, "needs_bots", g->needs_bots);
-    adm_kiso(w, "created_at", g->created_at);
-    adm_kiso(w, "updated_at", g->updated_at);
-    adm_kiso(w, "last_commit_at", g->last_commit_at);
-    cb_jw_key(w, "seats");
-    if (!g->seats_ok) {
-        cb_jw_null(w);
-        cb_jw_kint(w, "roster_error", g->roster_error);
-        return;
-    }
-    cb_jw_arr(w);
-    for (int i = 0; i < g->n_seats; i++) {
-        cb_jw_obj(w);
-        cb_jw_key(w, "name");
-        cb_jw_strn(w, g->seats[i].name, g->seats[i].name_len);
-        cb_jw_key(w, "id");
-        cb_jw_strn(w, g->seats[i].id, g->seats[i].id_len);
-        cb_jw_kbool(w, "bot", g->seats[i].bot);
-        cb_jw_end(w);
-    }
-    cb_jw_end(w);
-    cb_jw_key(w, "title");
-    cb_jw_strn(w, g->title, g->title_len);
-}
-
-cb_js_stream *cb_js_admin_games_begin(cb_buf *out) {
-    cb_js_stream *s = adm_open(out);
-    if (!s) return NULL;
-    cb_jw_key(&s->w, "games");
-    cb_jw_arr(&s->w);
-    return s;
-}
-
-void cb_js_admin_games_add(cb_js_stream *s, const cb_js_admin_game *g) {
-    cb_jw_obj(&s->w);
-    adm_game(&s->w, g);
-    cb_jw_end(&s->w);
-}
-
-int cb_js_admin_games_end(cb_js_stream *s, const char *next) {
-    if (s) {
-        cb_jw_end(&s->w);
-        cb_jw_kstr(&s->w, "next", next);
-    }
-    return adm_close(s);
-}
-
-int cb_js_admin_game_write(cb_buf *out, const cb_js_admin_game *g, const cb_js_admin_envelope *e) {
+int cb_js_admin_panels_write(cb_buf *out, const cb_admin_panel *p, int n) {
     cb_jw w;
     cb_jw_init(&w, out);
     cb_jw_obj(&w);
-    adm_game(&w, g);
-    cb_jw_kint(&w, "state_len", g->state_len);
-    cb_jw_kint(&w, "roster_len", g->roster_len);
-    cb_jw_kbool(&w, "has_seed", g->has_seed);
-    if (e->view_ok) {
-        if (e->envelope_hex) cb_jw_kstr(&w, "envelope_hex", e->envelope_hex);
-        else cb_jw_knull(&w, "envelope_hex");
-        cb_jw_kint(&w, "envelope_version", e->envelope_version);
-    } else {
-        cb_jw_knull(&w, "envelope_hex");
-        cb_jw_kstr(&w, "envelope_error", e->envelope_error);
+    cb_jw_key(&w, "panels");
+    cb_jw_arr(&w);
+    for (int i = 0; p && i < n; i++) {
+        cb_jw_obj(&w);
+        cb_jw_kstr(&w, "name", p[i].name);
+        cb_jw_kstr(&w, "title", p[i].title ? p[i].title : p[i].name);
+        adm_kstr_or_null(&w, "blurb", p[i].blurb);
+        adm_kstr_or_null(&w, "list", p[i].list);
+        adm_kstr_or_null(&w, "query", p[i].query);
+        adm_kstr_or_null(&w, "next", p[i].next);
+        adm_kstr_or_null(&w, "detail", p[i].detail);
+        cb_jw_end(&w);
     }
     cb_jw_end(&w);
+    cb_jw_end(&w);
     return adm_done(&w);
-}
-
-cb_js_stream *cb_js_admin_bots_begin(cb_buf *out) {
-    cb_js_stream *s = adm_open(out);
-    if (!s) return NULL;
-    cb_jw_key(&s->w, "bots");
-    cb_jw_arr(&s->w);
-    return s;
-}
-
-void cb_js_admin_bots_add(cb_js_stream *s, const cb_js_admin_bot *r) {
-    cb_jw *w = &s->w;
-    cb_jw_obj(w);
-    cb_jw_kstr(w, "id", r->id);
-    cb_jw_kstr(w, "nickname", r->nickname);
-    cb_jw_kstr(w, "strategy_key", r->strategy_key);
-    cb_jw_kint(w, "elo_rating", r->elo_rating);
-    if (r->previous_elo < 0) cb_jw_knull(w, "previous_elo");
-    else cb_jw_kint(w, "previous_elo", r->previous_elo);
-    cb_jw_kint(w, "games_played", r->games_played);
-    adm_kiso(w, "updated_at", r->updated_at);
-    cb_jw_end(w);
-}
-
-int cb_js_admin_bots_end(cb_js_stream *s) {
-    if (s) cb_jw_end(&s->w);
-    return adm_close(s);
 }
 
 cb_js_stream *cb_js_admin_logs_begin(cb_buf *out, uint64_t last_seq) {

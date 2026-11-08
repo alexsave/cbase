@@ -1,5 +1,6 @@
 // unit_json_gate.c - the JSON containment gate (DESIGN.md "Where JSON is
-// tolerated"): every JSON shape cbase speaks lives in providers/aws/src/aws_json.c, on
+// tolerated"): every JSON shape cbase speaks lives in core/src/core_json.c or
+// providers/aws/src/aws_json.c (a product's, in its one file: CBASE_APP_JSON_FILES), on
 // top of the one low-level writer and reader, core/src/util/json.{c,h}. This test reads
 // every C source under core/, providers/ and bench/, and the product's trees
 // (CBASE_APP_JSON_ROOTS, lib_tree.h), but the tests and the fuzz targets (each
@@ -37,9 +38,17 @@ static const char *const ROOTS[] = { "core", "providers", "bench" };
 static int  g_files, g_violations;
 static bool g_quiet;   // planted text: counted, not printed
 
+// The product's own JSON file, as the product names it (CBASE_APP_JSON_FILES, cbase.mk's
+// APP_JSON_FILES): one per product, the same containment on its side.
+static char g_app_files[TT_ROOTS_MAX][TT_PATH_MAX];
+static int  g_n_app_files = -1;
+
 static bool allowed(const char *path) {
     for (size_t i = 0; i < sizeof ALLOWED / sizeof ALLOWED[0]; i++)
         if (strcmp(path, ALLOWED[i]) == 0) return true;
+    if (g_n_app_files < 0) g_n_app_files = tt_env_list("CBASE_APP_JSON_FILES", g_app_files, TT_ROOTS_MAX);
+    for (int i = 0; i < g_n_app_files; i++)
+        if (strcmp(path, g_app_files[i]) == 0) return true;
     return false;
 }
 

@@ -49,6 +49,7 @@
 #                    gate's core_includes_product case); default none, and the case is not run
 #   APP_NAME_ALLOW   the name gate's allowlist for the product's files (unit_name_gate.c)
 #   APP_JSON_ROOTS   the trees the JSON gate reads for the product (default APP_SRC_ROOTS)
+#   APP_JSON_FILES   the product's one JSON file (its shapes), which the JSON gate allows
 #   APP_FUZZ_ROOTS   the product's fuzz/ directories (fuzz/fuzz.mk)
 #   APP_FUZZ_SEEDS   the product's seed writer's source (fuzz/seeds.c's contract), if any
 #   APP_BENCH_ROOTS  the bench's product side; cbase-bench is built only when it is set
@@ -338,6 +339,7 @@ export CBASE_POISON_LOGS := 1
 export CBASE_ROOT := $(CBASE)
 export CBASE_APP_SRC_ROOTS := $(APP_SRC_ROOTS)
 export CBASE_APP_JSON_ROOTS := $(or $(APP_JSON_ROOTS),$(APP_SRC_ROOTS))
+export CBASE_APP_JSON_FILES := $(APP_JSON_FILES)
 export CBASE_APP_NAME_ALLOW := $(APP_NAME_ALLOW)
 CHECK_JOBS ?= $(shell getconf _NPROCESSORS_ONLN)
 RUN_ALL_SH = mkdir -p build/logs && printf '%s\0' $(2) | xargs -0 -P $(CHECK_JOBS) -n 1 sh -c \

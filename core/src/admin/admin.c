@@ -9,17 +9,17 @@
 // send a Bearer on a navigation, so the page needs only console_on().
 //
 // WHAT IT READS. The store's admin_* operations (collections, browse, query)
-// and its ordinary reads (users_list, bots_list, game_get,
-// games_needing_bots); util/log.h's ring; config.h's cb_config_each (secrets
+// and its ordinary reads (users_list, user_get), and the app's counter
+// (cbase/app.h admin_count); util/log.h's ring; config.h's cb_config_each (secrets
 // already redacted there); ctx->stats and getrusage for the process. Nothing
 // here writes but three paths, each one a deliberate act in the console:
 //   * POST query with confirm "WRITE": the store's admin_query with
 //     allow_write. Without that exact word allow_write is false, and the
 //     STORE is the one that refuses a write (SQLite's sqlite3_stmt_readonly,
 //     DynamoDB's PartiQL statement kind); this file never parses SQL.
-//   * POST users/delete: cb_app_delete_account, the SAME function the app's
-//     delete-account route calls, so the redaction from every game, the
-//     leaderboard name and the account delete stay one implementation.
+//   * POST users/delete: the app's delete_account (cbase/app.h), the SAME
+//     function its own delete-account route calls, so what the app removes of
+//     an account and the account delete stay one implementation.
 //   * POST backups (SQLite only): VACUUM INTO a timestamped file beside the
 //     database, through admin_query. DynamoDB has point-in-time recovery on
 //     (providers/aws/ops/cbase.yaml) and the console explains it rather than copying.
@@ -263,8 +263,9 @@ static void api_overview(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) 
         o.http_conns = atomic_load_explicit(&ctx->stats.http_conns, memory_order_relaxed);
         o.ws_conns = atomic_load_explicit(&ctx->stats.ws_conns, memory_order_relaxed);
     }
-    // The app's one counter line (foolish: the games needing bots).
-    o.games_needing_bots = ctx->app && ctx->app->admin_count && ctx->store ? ctx->app->admin_count(ctx, now) : -1;
+    // The app's one counter line, under its own label (cbase/app.h admin_count).
+    o.app_count = ctx->app && ctx->app->admin_count && ctx->store ? ctx->app->admin_count(ctx, now) : -1;
+    o.app_count_label = ctx->app && ctx->app->admin_count ? ctx->app->admin_count_label : NULL;
     // DynamoDB throttling (store.h cb_store_throttles_get): this process's
     // throttled responses, and the requests that failed still throttled.
     // Nonzero means the provisioned capacity is too small for the load.
@@ -372,7 +373,7 @@ static void api_query(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     row_sink s = { cb_js_admin_query_begin(&b, is_sqlite(ctx) ? "sql" : "partiql", allow_write), 0, ADMIN_QUERY_ROWS, false };
     if (!s.s) { cb_buf_free(&b); free(stmt); cb_admin_no_memory(res); return; }
     int rc = cb_store_admin_query(ctx->store, stmt, allow_write, put_row, &s);
-    // A hand edit may have touched a rating or a bot: both edge copies go (app/edge.h).
+    // A hand edit may have touched any cached read: every edge copy goes (edge.h).
     if (allow_write) cb_edge_stale(CB_EDGE_ALL);
     // ... or a session or an account: the sessions held in memory are read again (auth.h).
     if (allow_write) cb_auth_forget_sessions(ctx->auth);
@@ -581,8 +582,18 @@ static void api_backup_now(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res
 
 // ---- dispatch -------------------------------------------------------------------------
 
+// GET panels: the app's console pages (cbase/app.h admin_panels), which the console draws.
+static void api_panels(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
+    cb_buf b;
+    cb_buf_init(&b);
+    cb_admin_send_json(res, 200, &b, cb_js_admin_panels_write(&b, ctx->app ? ctx->app->admin_panels : NULL,
+                                                                 ctx->app ? ctx->app->n_admin_panels : 0));
+    cb_buf_free(&b);
+}
+
 static const cb_admin_call API[] = {
     { "GET", "overview", api_overview },
+    { "GET", "panels", api_panels },
     { "GET", "collections", api_collections },
     { "GET", "browse", api_browse },
     { "POST", "query", api_query },

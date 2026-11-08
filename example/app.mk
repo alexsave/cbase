@@ -8,3 +8,4 @@ APP_SMOKES      := smoke_example
 APP_GATE_HEADER := example_app.h
 APP_LAMBDA_SCHEDULE := tick
 APP_LAMBDA_JOB  := greet
+APP_JSON_FILES  := $(EXAMPLE)src/example_json.c

@@ -121,10 +121,10 @@ static void store_errors_map_to_statuses(void) {
             T_CHECK(says(M[m].says));
         }
     }
-    // The overview reads the heartbeat's count, and says -1 when it cannot.
+    // The overview carries the app's counter, and null when there is none to read.
     g_rc = CB_E_DB;
     T_EQ_INT(call("GET", "/admin/api/overview", NULL, NULL), 200);
-    T_EQ_INT(cb_json_find(cb_buf_cstr(&g_body), g_body.len, "games_needing_bots", NULL), CB_JSON_NULL);
+    T_EQ_INT(cb_json_find(cb_buf_cstr(&g_body), g_body.len, "app_count", NULL), CB_JSON_NULL);
     // And a backup the store refuses is the store's status.
     char dir[256], path[300];
     const char *tmp = getenv("TMPDIR");

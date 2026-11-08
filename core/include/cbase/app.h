@@ -71,6 +71,21 @@ typedef struct {
     cb_handler  fn;
 } cb_admin_call;
 
+// An ADMIN PANEL: a page of the console the app declares, drawn by the console from data alone.
+// Its list is the app's admin call `name` (GET /admin/api/<name>), whose answer holds the rows in
+// the array `list`; a row opens the call `detail` (GET /admin/api/<detail>?id=<the row's id>), when
+// there is one. A text filter, when the list call takes one, is its query parameter `query`; a list
+// that pages names its cursor field `next` (the next call sends it back as cursor=).
+typedef struct {
+    const char *name;    // the nav id and the list call: "items"
+    const char *title;   // "Items"
+    const char *blurb;   // a sentence under the title, or NULL
+    const char *list;    // the answer's array of rows: "items"
+    const char *query;   // the list call's filter parameter, or NULL
+    const char *next;    // the answer's cursor field, or NULL (one page)
+    const char *detail;  // the call a row opens, or NULL
+} cb_admin_panel;
+
 struct cb_app {
     const char          *name;            // "foolish": the log tag, later the stack and the key namespace
     const cb_route_list *const *routes;   // n_route_lists of them
@@ -94,11 +109,15 @@ struct cb_app {
     // the console's users/delete runs. CB_OK; a refusal's kernel code and
     // detail in *code and *detail. NULL: accounts are not deleted.
     int (*delete_account)(cb_ctx *ctx, const char *user_id, int *code, int *detail);
-    // The console: the app's panels after the platform's, and the overview's
-    // one counter line (>= 0, or < 0 when the store could not say).
+    // The console: the app's admin calls after the platform's, the panels the console draws
+    // from them, and the overview's one counter line (admin_count: >= 0, or < 0 when the store
+    // could not say; admin_count_label its tile's label).
     const cb_admin_call *admin_calls;
     int                  n_admin_calls;
+    const cb_admin_panel *admin_panels;
+    int                  n_admin_panels;
     int (*admin_count)(cb_ctx *ctx, int64_t now_ms);
+    const char          *admin_count_label;
     // Under a provider that is the one process on its store (CB_PROV_ONE_PROCESS):
     // called once the store is open and before anything is served (a product recovers
     // a write-behind journal here), and once nothing runs any more, before the store

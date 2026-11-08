@@ -12,6 +12,7 @@
 
 #include "auth/auth.h"
 #include "store/store.h"
+#include "cbase/app.h"
 #include "util/str.h"
 
 #include <stdbool.h>
@@ -41,7 +42,8 @@ typedef struct {
     int64_t     uptime_s, started_ms, requests, errors_5xx;
     bool        conns_known;             // serve: the process holds the sockets
     int64_t     http_conns, ws_conns;
-    int64_t     games_needing_bots;      // < 0: null (the store could not say)
+    int64_t     app_count;               // the app's counter (cbase/app.h admin_count); < 0: null
+    const char *app_count_label;         // its label, NULL: null
     uint64_t    throttled, gave_up;      // store.h cb_store_throttles
     bool        continuous_backup;       // DynamoDB: point-in-time recovery
     int64_t     last_backup_ms;          // SQLite: the newest backup file, 0 for none
@@ -80,55 +82,9 @@ bool cb_js_admin_id_body(const char *body, size_t n, char *id, size_t cap);
 int  cb_js_admin_deleted(cb_buf *out, const char *id);
 int  cb_js_admin_written(cb_buf *out, const char *path);
 
-// One game as the console shows it (a product's admin call fills it: foolish
-// reads its row and decodes its seats with the kernel's roster_decode):
-// its scalar columns and its seats (seats_ok false: "seats": null and
-// "roster_error"), and for the one-game call its byte sizes.
-typedef struct {
-    const char *name, *id;
-    size_t      name_len, id_len;
-    bool        bot;
-} cb_js_admin_seat;
-typedef struct {
-    const char             *id;
-    int                     status;
-    const char             *status_label;
-    int64_t                 version, round_epoch;
-    bool                    needs_bots;
-    int64_t                 created_at, updated_at, last_commit_at;
-    bool                    seats_ok;
-    int                     roster_error;
-    const cb_js_admin_seat *seats;
-    int                     n_seats;
-    const char             *title;
-    size_t                  title_len;
-    int64_t                 state_len, roster_len;   // the game call's
-    bool                    has_seed;
-} cb_js_admin_game;
-// GET games: {"games":[game..],"next"}.
-cb_js_stream *cb_js_admin_games_begin(cb_buf *out);
-void          cb_js_admin_games_add(cb_js_stream *s, const cb_js_admin_game *g);
-int           cb_js_admin_games_end(cb_js_stream *s, const char *next);
-// GET game: the game, its byte sizes, and the spectator envelope as hex
-// (view_ok false: envelope_hex null and envelope_error; envelope_hex NULL
-// with view_ok: null).
-typedef struct {
-    bool        view_ok;
-    const char *envelope_hex;
-    int64_t     envelope_version;
-    const char *envelope_error;
-} cb_js_admin_envelope;
-int cb_js_admin_game_write(cb_buf *out, const cb_js_admin_game *g, const cb_js_admin_envelope *e);
-
-// GET bots: {"bots":[{id,nickname,strategy_key,elo_rating,previous_elo (null
-// when < 0),games_played,updated_at}..]}.
-cb_js_stream *cb_js_admin_bots_begin(cb_buf *out);
-typedef struct {
-    const char *id, *nickname, *strategy_key;
-    int64_t     elo_rating, previous_elo, games_played, updated_at;   // previous_elo < 0: null
-} cb_js_admin_bot;
-void          cb_js_admin_bots_add(cb_js_stream *s, const cb_js_admin_bot *b);
-int           cb_js_admin_bots_end(cb_js_stream *s);
+// GET panels: {"panels":[{name,title,blurb,list,query,next,detail}..]}, the app's
+// (cbase/app.h cb_admin_panel), absent fields null.
+int cb_js_admin_panels_write(cb_buf *out, const cb_admin_panel *p, int n);
 
 // GET logs: {"last_seq","entries":[{seq,at,level,module,msg}..],"links"}.
 cb_js_stream *cb_js_admin_logs_begin(cb_buf *out, uint64_t last_seq);
