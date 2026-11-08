@@ -223,6 +223,16 @@ static int call_ready(const cbc_call_slot *k, int64_t now) {
     return k->state == CALL_QUEUED || (k->state == CALL_WAIT && k->at <= now);
 }
 
+// THE ONE RULE for whether a waiting call goes out at now, read by cbc_next_request, cbc_next_out
+// and cbc_due_ms alike, so the host's timer is never armed for a call that would not go: it is due
+// by its own time, and its way is open (over HTTP, unless it needs the user while the token is due:
+// it waits for the refresh, whose own time cbc_due_ms counts; on the socket, once it is READY).
+static int call_sendable(const cbc *c, const cbc_call_slot *k, int64_t now) {
+    if (!call_ready(k, now)) return 0;
+    if (over_http(c, k)) return k->kind == K_SIGN || !(k->flags & CBC_C_AUTH) || !token_due(c, now);
+    return c->sock == SOCK_READY;
+}
+
 static void call_free(cbc *c, cbc_call_slot *k) {
     arena_give(c, k);
     memset(k, 0, sizeof *k);
@@ -464,12 +474,11 @@ int cbc_next_request(cbc *c, uint8_t *out, size_t cap, int64_t now) {
         c->refresh_out = 1;
         return n;
     }
-    // The oldest call that is due and goes over HTTP; one that needs the user waits for a refresh.
+    // The oldest call that goes over HTTP and is sendable now.
     cbc_call_slot *best = NULL;
     for (int i = 0; i < CBC_CALLS_MAX; i++) {
         cbc_call_slot *k = &c->calls[i];
-        if (!call_ready(k, now) || !over_http(c, k)) continue;
-        if (k->kind != K_SIGN && (k->flags & CBC_C_AUTH) && token_due(c, now)) continue;
+        if (!call_sendable(c, k, now) || !over_http(c, k)) continue;
         if (!best || (int32_t)(k->ticket - best->ticket) < 0) best = k;
     }
     if (!best) return 0;
@@ -787,7 +796,7 @@ int cbc_next_out(cbc *c, uint8_t *out, size_t cap, int64_t now) {
     cbc_call_slot *best = NULL;
     for (int i = 0; i < CBC_CALLS_MAX; i++) {
         cbc_call_slot *k = &c->calls[i];
-        if (call_ready(k, now) && !over_http(c, k) && (!best || (int32_t)(k->ticket - best->ticket) < 0)) best = k;
+        if (call_sendable(c, k, now) && !over_http(c, k) && (!best || (int32_t)(k->ticket - best->ticket) < 0)) best = k;
     }
     if (best) {
         uint32_t id = next_id31(&c->next_sock_id);
@@ -828,9 +837,10 @@ int cbc_due_ms(const cbc *c, int64_t now) {
     int ready = c->sock == SOCK_READY;
     for (int i = 0; i < CBC_CALLS_MAX; i++) {
         const cbc_call_slot *k = &c->calls[i];
-        if (k->state == CALL_QUEUED && (over_http(c, k) || ready)) earliest(&t, now);
-        else if (k->state == CALL_WAIT && (over_http(c, k) || ready)) earliest(&t, k->at);
-        else if (k->state == CALL_SOCK) earliest(&t, k->at + (int64_t)c->cfg.call_wait_ms);
+        // A waiting call is due at its own time when it is sendable then (call_sendable).
+        int64_t at = k->state == CALL_WAIT && k->at > now ? k->at : now;
+        if (k->state == CALL_SOCK) earliest(&t, k->at + (int64_t)c->cfg.call_wait_ms);
+        else if (call_sendable(c, k, at)) earliest(&t, at);
     }
     if (c->sock != SOCK_CLOSED && !cbc_stream_wanted(c)) earliest(&t, now);
     if (c->sock == SOCK_OPEN && (c->cfg.anonymous || !token_due(c, now))) earliest(&t, now);

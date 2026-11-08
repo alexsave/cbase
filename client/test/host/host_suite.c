@@ -617,6 +617,50 @@ static void a_retried_borrowed_body_resends_the_same_bytes(void) {
     kept(w);
 }
 
+// An HTTP call that needs the user, made while the refresh is out, waits for it without spinning
+// the loop (cbc_due_ms and cbc_next_request read one rule, call_sendable): while the refresh is
+// out, while it backs off after a loss, and it goes out on the new token once the refresh lands.
+static void an_auth_http_call_waits_for_the_refresh_without_spinning(void) {
+    cbhs_world *w = world();
+    int64_t exp = T0 + g_cfg.refresh_early_ms + 5000;
+    cbc *c = signed_up(w, g_h, exp);
+    advance(w, 5000);
+    w_req *r = request(w);
+    T_CHECK(r != NULL);
+    if (!r) return;
+    T_EQ_STR(r->path, "/v1/auth/refresh");         // out, not answered yet
+    uint32_t t = cbc_call(c, CBC_GET, CBC_C_HTTP | CBC_C_AUTH, "/v1/list", 8, NULL, 0, cbhs_now(w));
+    T_CHECK(t != 0);
+    pump(w);
+    T_CHECK(request(w) == NULL);                   // it waits for the refresh
+    advance(w, 1000);                              // the refresh still out: no spin
+    T_CHECK(request(w) == NULL);
+    answer(r, 0, NULL, 0);                         // lost: the refresh backs off retry_first_ms
+    T_CHECK(request(w) == NULL);
+    advance(w, g_cfg.retry_first_ms - 1);          // backing off: no spin, nothing sent
+    T_CHECK(request(w) == NULL);
+    advance(w, 1);
+    r = request(w);
+    T_CHECK(r != NULL);
+    if (!r) return;
+    T_EQ_STR(r->path, "/v1/auth/refresh");
+    T_CHECK(request(w) == NULL);
+    uint8_t b[128];
+    size_t n = session_body(b, "TOK2", "R2", FAR);
+    answer(r, 200, b, n);                          // the refresh lands: the call goes at once
+    const w_event *e = event(w);
+    T_CHECK(e && e->kind == CBC_EV_SESSION);
+    w_req *q = request(w);
+    T_CHECK(q != NULL);
+    if (!q) return;
+    T_EQ_STR(q->path, "/v1/list");
+    T_EQ_STR(q->auth, "Bearer TOK2");
+    answer(q, 200, "[]", 2);
+    e = event(w);
+    T_CHECK(e && e->kind == CBC_EV_DONE && e->ticket == t && e->status == 200);
+    kept(w);
+}
+
 static void an_anonymous_listener_opens_the_public_socket(void) {
     cbhs_world *w = world();
     g_cfg.anonymous = 1;
@@ -654,6 +698,7 @@ int cbhs_run(const cbhs_host *h) {
     T_RUN(an_anonymous_listener_opens_the_public_socket);
     T_RUN(a_64k_body_arrives_byte_for_byte_and_done_comes_once_after);
     T_RUN(a_retried_borrowed_body_resends_the_same_bytes);
+    T_RUN(an_auth_http_call_waits_for_the_refresh_without_spinning);
     printf("host suite: %s\n", h->name);
     return T_DONE();
 }
