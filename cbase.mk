@@ -450,7 +450,7 @@ ifneq ($(CB_AWS),)
 # of shapes must equal the golden. A change that moves a key or renames an attribute fails here;
 # `make dynamo-shapes` rewrites the golden file, for a change that means to. The conformance suite
 # runs outside the capture: its keys are the suite's own (core/test/conformance/store.c).
-DYNAMO_CONFORMANCE := unit_conf_store_dynamo
+DYNAMO_CONFORMANCE := unit_conf_store_dynamo unit_conf_auth_dynamo
 DYNAMO_SHAPES := $(CURDIR)/build/dynamo_shapes.raw
 .PHONY: check-dynamo dynamo-shapes check-dynamo-shapes-run
 check-dynamo: $(addprefix build/test/,$(DYNAMO_CONFORMANCE)) $(APP_DYNAMO_DEPS)
