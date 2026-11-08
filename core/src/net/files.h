@@ -43,7 +43,8 @@ int cb_path_join(const char *base, const char *name, char *out, size_t cap);
 // Answers the request with the file at `path`: 200, Content-Type (content_type, or NULL for
 // cb_mime_type's), Cache-Control when cache_control is not NULL ("no-store"), and Content-Length
 // the file's size; a HEAD gets the same head and no body. The file is opened per call. A path that
-// does not exist, or is not a regular file (a directory), is 404; one that may not be read is 403;
+// does not exist, or is not a regular file (a directory, a FIFO, a device: refused at once, never
+// waited on), is 404; one that may not be read is 403;
 // a read that fails is 500. Returns the status it answered. The path is the caller's to trust:
 // one built from the request goes through cb_path_join or cb_serve_dir first.
 //   cb_send_file(ctx, req, res, "/app/dist/index.html", NULL, "no-store");

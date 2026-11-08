@@ -1027,3 +1027,9 @@ unit_storeless under a real serve, and smoke_example against build/cbase.
 - handler.c: the auth routes registered whatever the app says -> `declares_no_platform_routes` every /v1/auth/* == 404, and `serves_with_no_store` signup == 404.
 - boot.c: a storeless app declaring auth_routes not refused -> `refused_in_boot` the "auth routes" case boots, its sentence missing.
 - example_app.c: auth_routes left false -> `smoke_example` refresh == 400, signup and signin == 503 (each 404).
+
+## A FIFO is no file (fifo-fix)
+
+unit_web `a_fifo_is_no_file`, over a real serve with its one request worker: a FIFO in the served directory, asked for through cb_serve_dir and through cb_path_join + cb_send_file.
+
+- files.c: open() without O_NONBLOCK (the code before the fix) -> each FIFO request rc == 0 and status == 404 (no answer in 3 s), then the next file's 200 (the one worker held in open()), then stop(SIGTERM) == 0.

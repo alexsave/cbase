@@ -8,8 +8,9 @@
 //
 //   * files (net/files.h): the content types, a directory under a prefix route and a media file
 //     by name with every traversal refused (never a byte from outside), single-page routes that
-//     answer index.html, HEAD, a missing file, files of many MB streamed whole, a request
-//     pipelined behind a file, and the same helper reading the file whole off serve;
+//     answer index.html, HEAD, a missing file, a FIFO answered 404 at once (the worker never
+//     held), files of many MB streamed whole, a request pipelined behind a file, and the same
+//     helper reading the file whole off serve;
 //   * the Host allow-list (cbase/app.h host_allow), against DNS rebinding: the listed hosts at
 //     the bound port pass, IPv6 among them; another name, another port, no Host or two are refused
 //     before any handler runs, on the app's routes, the platform's, a file and a WebSocket upgrade
@@ -25,6 +26,7 @@
 #include "net/http.h"
 #include "net/router.h"
 #include "num_parse.h"
+#include "util/clock.h"
 #include "util/err.h"
 
 #include <errno.h>
@@ -514,6 +516,51 @@ static void streams_large_files_and_head(void) {
     T_CHECK(grew < (long long)BIG_SIZE / 2);
 }
 
+// A FIFO in the directory is no file, and asking for one costs nothing: open() on a FIFO with no
+// writer blocks until one comes, so cb_send_file opens with O_NONBLOCK, and the FIFO fails its
+// regular-file check at once. serve has one request worker (config.c THE THREADS): were it held
+// in open(), the next request would never be answered.
+static void a_fifo_is_no_file(void) {
+    char p[1024];
+    snprintf(p, sizeof p, "%s/pipe", g_dir);
+    T_EQ_INT(mkfifo(p, 0644), 0);
+    snprintf(p, sizeof p, "%s/media/pipe", g_dir);
+    T_EQ_INT(mkfifo(p, 0644), 0);
+    T_EQ_INT(start_web(), 0);
+    static const char *const paths[] = { "/assets/pipe", "/media/pipe", "/assets/pipe" };
+    for (size_t i = 0; i < sizeof paths / sizeof paths[0]; i++) {
+        const int fd = tc_connect(g_port);
+        T_CHECK(fd >= 0);
+        tc_response r;
+        const int64_t t0 = cb_mono_ms();
+        const int rc = tc_request(fd, "GET", paths[i], NULL, NULL, 0, 3000, &r);
+        const int64_t ms = cb_mono_ms() - t0;
+        close(fd);
+        if (rc != 0 || ms >= 1000) fprintf(stderr, "     GET %s: rc %d after %lld ms\n", paths[i], rc, (long long)ms);
+        T_EQ_INT(rc, 0);
+        T_EQ_INT(r.status, 404);
+        T_CHECK(ms < 1000);
+        tc_response_free(&r);
+    }
+    // The worker is free: a file right behind them.
+    tc_response r;
+    T_EQ_INT(req("GET", "/assets/app.js", NULL, NULL, 0, &r), 200);
+    T_EQ_STR(cb_buf_cstr(&r.body), "export const x = 1;\n");
+    tc_response_free(&r);
+    T_EQ_INT(stop(SIGTERM), 0);
+    // Off serve, a device is no file either. (The FIFO is not tried here: without O_NONBLOCK this
+    // process, not a server, would wait in open() for ever, where the checks above fail in 3 s.)
+    cb_http_req q;
+    memset(&q, 0, sizeof q);
+    strcpy(q.method, "GET");
+    q.path = "/x";
+    q.query = "";
+    cb_http_res res;
+    cb_res_init(&res);
+    T_EQ_INT(cb_send_file(NULL, &q, &res, "/dev/null", NULL, NULL), 404);
+    cb_res_free(&res);
+}
+
 // A rebuild on disk is what the next request gets: nothing is cached.
 static void reads_the_file_per_request(void) {
     T_EQ_INT(start_web(), 0);
@@ -686,6 +733,7 @@ int main(int argc, char **argv) {
     T_RUN(refuses_every_way_out);
     T_RUN(streams_large_files_and_head);
     T_RUN(reads_the_file_per_request);
+    T_RUN(a_fifo_is_no_file);
     T_RUN(holds_requests_to_the_host_list);
     T_RUN(reads_whole_off_serve);
     return T_DONE();

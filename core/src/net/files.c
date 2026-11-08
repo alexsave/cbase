@@ -97,7 +97,14 @@ static int meth(const cb_http_req *req) { return req->meth ? req->meth : cb_http
 
 int cb_send_file(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res, const char *path, const char *content_type,
                  const char *cache_control) {
-    const int fd = open(path, O_RDONLY | O_CLOEXEC);
+    // O_NONBLOCK: open() on a FIFO with no writer (or on some devices) waits for one, which would
+    // hold this request's worker forever before the regular-file check below could refuse it. On a
+    // regular file it changes nothing: a read of one never answers EAGAIN, so the pread below and
+    // serve's (net/server.c) read it as they would without the flag.
+    // The last component is followed if it is a link: cb_path_join and cb_serve_dir hand over the
+    // resolved real path (a link inside the directory is served, one out of it refused there), and
+    // a path the caller built itself is the caller's to trust (files.h).
+    const int fd = open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
     if (fd < 0) {
         const int st = errno == EACCES ? 403 : errno == ENOENT || errno == ENOTDIR ? 404 : 500;
         cb_router_error(res, st, st == 404 ? "not found" : st == 403 ? "forbidden" : "could not read the file");
