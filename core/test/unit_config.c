@@ -25,6 +25,37 @@ static void clear_env(void) {
     for (size_t i = 0; i < sizeof names / sizeof names[0]; i++) unsetenv(names[i]);
 }
 
+// A storeless app (cbase/app.h) signs no tokens: serve wants neither its JWT secret nor its public
+// URL outside dev mode, and holds every other rule (a secret's length, a wildcard public URL).
+static void storeless_needs_no_token_secrets(void) {
+    cb_config c;
+    char err[256];
+    clear_env();
+    T_EQ_INT(cb_config_from_env(&c, err, sizeof err), CB_OK);
+    T_CHECK(!c.dev && c.jwt_secret_generated && !c.public_url_given);
+    T_EQ_INT(cb_config_check_serve(&c, true, err, sizeof err), CB_OK);
+    T_EQ_INT(cb_config_check_serve(&c, false, err, sizeof err), CB_E_INVALID);   // an app with accounts: refused
+    T_CHECK(strstr(err, "CBASE_JWT_SECRET") != NULL);
+    setenv("CBASE_JWT_SECRET", S32, 1);
+    T_EQ_INT(cb_config_from_env(&c, err, sizeof err), CB_OK);
+    T_EQ_INT(cb_config_check_serve(&c, true, err, sizeof err), CB_OK);
+    T_EQ_INT(cb_config_check_serve(&c, false, err, sizeof err), CB_E_INVALID);
+    T_CHECK(strstr(err, "CBASE_PUBLIC_URL") != NULL);
+    cb_strlcpy(c.jwt_secret, "short", sizeof c.jwt_secret);   // set (as SSM would): still held to its length
+    T_EQ_INT(cb_config_check_serve(&c, true, err, sizeof err), CB_E_INVALID);
+    T_CHECK(strstr(err, "CBASE_JWT_SECRET") != NULL);
+    unsetenv("CBASE_JWT_SECRET");
+    setenv("CBASE_PUBLIC_URL", "http://0.0.0.0:8080", 1);   // given: still not the wildcard address
+    T_EQ_INT(cb_config_from_env(&c, err, sizeof err), CB_OK);
+    T_EQ_INT(cb_config_check_serve(&c, true, err, sizeof err), CB_E_INVALID);
+    T_CHECK(strstr(err, "wildcard") != NULL);
+    setenv("CBASE_LISTEN", "0.0.0.0:8080", 1);   // not given, the default names the listener's: no matter
+    unsetenv("CBASE_PUBLIC_URL");
+    T_EQ_INT(cb_config_from_env(&c, err, sizeof err), CB_OK);
+    T_EQ_INT(cb_config_check_serve(&c, true, err, sizeof err), CB_OK);
+    unsetenv("CBASE_LISTEN");
+}
+
 static void secrets_rule(void) {
     cb_config c;
     char err[256];
@@ -40,7 +71,7 @@ static void secrets_rule(void) {
     T_EQ_INT(cb_config_from_env(&c, err, sizeof err), CB_OK);
     T_CHECK(c.dev && c.jwt_secret_generated);
     T_EQ_INT(cb_config_check_secrets(&c, false, err, sizeof err), CB_OK);
-    T_EQ_INT(cb_config_check_serve(&c, err, sizeof err), CB_OK);
+    T_EQ_INT(cb_config_check_serve(&c, false, err, sizeof err), CB_OK);
     T_EQ_INT(cb_config_check_secrets(&c, true, err, sizeof err), CB_E_INVALID);   // dev mode is not a Lambda thing
     unsetenv("CBASE_DEV");
     T_EQ_INT(cb_config_from_env(&c, err, sizeof err), CB_OK);
@@ -49,15 +80,15 @@ static void secrets_rule(void) {
     c.jwt_secret_generated = false;
     T_EQ_INT(cb_config_check_secrets(&c, true, err, sizeof err), CB_OK);
     // Serve outside dev mode also wants CBASE_PUBLIC_URL, and not the wildcard address.
-    T_EQ_INT(cb_config_check_serve(&c, err, sizeof err), CB_E_INVALID);
+    T_EQ_INT(cb_config_check_serve(&c, false, err, sizeof err), CB_E_INVALID);
     T_CHECK(strstr(err, "CBASE_PUBLIC_URL") != NULL);
     setenv("CBASE_JWT_SECRET", S32, 1);
     setenv("CBASE_PUBLIC_URL", "http://0.0.0.0:8080", 1);
     T_EQ_INT(cb_config_from_env(&c, err, sizeof err), CB_OK);
-    T_EQ_INT(cb_config_check_serve(&c, err, sizeof err), CB_E_INVALID);
+    T_EQ_INT(cb_config_check_serve(&c, false, err, sizeof err), CB_E_INVALID);
     setenv("CBASE_PUBLIC_URL", "https://api.example.org", 1);
     T_EQ_INT(cb_config_from_env(&c, err, sizeof err), CB_OK);
-    T_EQ_INT(cb_config_check_serve(&c, err, sizeof err), CB_OK);
+    T_EQ_INT(cb_config_check_serve(&c, false, err, sizeof err), CB_OK);
     unsetenv("CBASE_PUBLIC_URL");
     // The limits and the connection cap are settings with today's values as defaults, and bounds.
     T_EQ_INT(cb_config_from_env(&c, err, sizeof err), CB_OK);
@@ -257,7 +288,7 @@ static void the_cpu_knob(void) {
     T_EQ_INT(cb_config_from_env(&c, err, sizeof err), CB_OK);
     T_EQ_INT(c.loop_cpu, CB_CPU_AUTO);
     T_EQ_INT(c.bg_cpu, CB_CPU_AUTO);
-    T_EQ_INT(cb_config_check_serve(&c, err, sizeof err), CB_OK);
+    T_EQ_INT(cb_config_check_serve(&c, false, err, sizeof err), CB_OK);
     T_EQ_STR(shown(&c, "CBASE_LOOP_CPU"), "(unset: auto, picked at start)");
     T_EQ_STR(shown(&c, "CBASE_BG_CPU"), "(unset: auto, picked at start)");
     setenv("CBASE_LOOP_CPU", "", 1);   // empty is unset, as for every variable
@@ -268,7 +299,7 @@ static void the_cpu_knob(void) {
     T_EQ_INT(cb_config_from_env(&c, err, sizeof err), CB_OK);
     T_EQ_INT(c.loop_cpu, CB_CPU_OFF);
     T_EQ_INT(c.bg_cpu, CB_CPU_OFF);
-    T_EQ_INT(cb_config_check_serve(&c, err, sizeof err), CB_OK);
+    T_EQ_INT(cb_config_check_serve(&c, false, err, sizeof err), CB_OK);
     T_EQ_STR(shown(&c, "CBASE_LOOP_CPU"), "off (not pinned)");
     T_EQ_STR(shown(&c, "CBASE_BG_CPU"), "off (not pinned)");
     unsetenv("CBASE_BG_CPU");          // one given: the other, unset, is off, not auto
@@ -289,9 +320,9 @@ static void the_cpu_knob(void) {
     T_EQ_INT(cb_config_from_env(&c, err, sizeof err), CB_OK);
     T_EQ_INT(c.loop_cpu, 0);
     T_EQ_INT(c.bg_cpu, 1);
-    if (cb_affinity_supported()) T_EQ_INT(cb_config_check_serve(&c, err, sizeof err), CB_OK);
+    if (cb_affinity_supported()) T_EQ_INT(cb_config_check_serve(&c, false, err, sizeof err), CB_OK);
     else {
-        T_EQ_INT(cb_config_check_serve(&c, err, sizeof err), CB_E_INVALID);
+        T_EQ_INT(cb_config_check_serve(&c, false, err, sizeof err), CB_E_INVALID);
         T_CHECK(strstr(err, "needs Linux") != NULL);
     }
     setenv("CBASE_BG_CPU", "1024", 1);
@@ -338,6 +369,7 @@ static void the_apps_settings_follow_the_platforms(void) {
 
 int main(void) {
     T_RUN(secrets_rule);
+    T_RUN(storeless_needs_no_token_secrets);
     T_RUN(lambda_refuses_a_clock_speedup);
     T_RUN(the_apps_settings_follow_the_platforms);
     T_RUN(secrets_never_shown);

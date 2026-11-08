@@ -125,10 +125,11 @@ int cb_process_main(const cb_provider *prov, const cb_app *app, int argc, char *
     cb_config cfg;
     char err[512];
     if (cb_config_load(&cfg, app, err, sizeof err) != CB_OK) { fprintf(stderr, "cbase: %s\n", err); return 2; }
-    if (cb_config_check_serve(&cfg, err, sizeof err) != CB_OK) { fprintf(stderr, "cbase: %s\n", err); return 2; }
+    const bool storeless = app && app->storeless;
+    if (cb_config_check_serve(&cfg, storeless, err, sizeof err) != CB_OK) { fprintf(stderr, "cbase: %s\n", err); return 2; }
     cb_log_init(cfg.log_level, 0);
     cb_config_each(&cfg, log_config, NULL);
-    if (cfg.jwt_secret_generated) CB_WARN("config", "CBASE_JWT_SECRET is unset (CBASE_DEV=1): sessions die when this process does");
+    if (cfg.jwt_secret_generated && !storeless) CB_WARN("config", "CBASE_JWT_SECRET is unset (CBASE_DEV=1): sessions die when this process does");
 
     static cb_ctx ctx;
     ctx.cfg = &cfg;

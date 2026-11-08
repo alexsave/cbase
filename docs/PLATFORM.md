@@ -224,6 +224,8 @@ An app that keeps its data itself (its own database files, opened in `serve_open
 Boot then opens no platform store: no schema is applied, no database file is made, and no `.serve-lock` is taken beside one.
 What lives in the platform's store is off: the auth routes answer 503, the console's store views answer 503, `/ready` says `store=none`, and serve's backup restore is not run (a configured bucket is said to back up nothing).
 The app's routes, jobs, schedules, console pages and counter run as for any app.
+Outside `CBASE_DEV`, serve needs neither `CBASE_JWT_SECRET` nor `CBASE_PUBLIC_URL` for a storeless app: nothing signs or verifies a token, and the public URL is the token issuer, whose one other reader is the console's overview (it shows the default).
+A secret that is set is not used (boot says so) and is still held to its length; a public URL that is given still may not name the wildcard address.
 A storeless app that still asks for the store is refused at boot with a sentence that names what it asked for: store rows (`cb_app.store`), an account domain, `delete_account`, `CBASE_STORE`, or Sign in with Apple.
 The default is false, so every app written before the field opens the provider's store as it always did.
 `example/test/unit_storeless.c` serves the example app storeless through `cbase serve`'s ingress and checks that its directory stays empty.

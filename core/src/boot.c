@@ -110,6 +110,7 @@ int cb_boot(cb_ctx *ctx, char *err, size_t cap) {
     if (storeless) {
         if ((rc = storeless_check(ctx, err, cap)) != CB_OK) return rc;
         CB_INFO("boot", "the app keeps no platform store: none is opened, and accounts and the console's store views are off");
+        if (!cfg->jwt_secret_generated) CB_INFO("boot", "CBASE_JWT_SECRET is set, and the app keeps no accounts: it is not used");
     } else {
         const char *store = cfg->store[0] ? cfg->store : prov->store;
         if ((prov->flags & CB_PROV_ONE_PROCESS) && (rc = claim_instance(cfg->db_path, err, cap)) != CB_OK) return rc;

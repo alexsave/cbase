@@ -115,7 +115,8 @@ struct cb_app {
     // instance lock beside one. What lives in the platform's store is off: accounts (the auth routes
     // answer 503), the console's store views (503), /ready says store=none. An app that is storeless
     // and still asks for one of those (store rows, an account domain, delete_account) is refused at
-    // boot, with a sentence, as is CBASE_STORE or Sign in with Apple configured for it. false (the
+    // boot, with a sentence, as is CBASE_STORE or Sign in with Apple configured for it. Serve wants
+    // neither CBASE_JWT_SECRET nor CBASE_PUBLIC_URL for it (config.h cb_config_check_serve). false (the
     // default): the provider's store is opened, as for every app before this field.
     bool                 storeless;
     // Delete-account (docs/PLATFORM.md 2.5): the one implementation, which

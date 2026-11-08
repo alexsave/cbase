@@ -23,6 +23,7 @@
 #include "util/log.h"
 
 #include <dirent.h>
+#include <stdbool.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -99,16 +100,20 @@ static int child_main(const char *variant) {
     return cb_process_main(&cb_provider_local, &g_app, 2, argv);
 }
 
-static int start(tp_child *c, const char *variant, const char *dir, int *port) {
+// Started as a person runs it on their own machine: not in dev mode, and with neither a JWT secret
+// nor a public URL (a storeless app signs no tokens), unless `secret` gives the secret anyway.
+static int start(tp_child *c, const char *variant, const char *dir, int *port, bool secret) {
     static char envdir[1100], envdb[1100];
     snprintf(envdir, sizeof envdir, "STORELESS_DIR=%s", dir);
     snprintf(envdb, sizeof envdb, "CBASE_DB=%s/example.sqlite", dir);
-    char *env[] = { "CBASE_DEV=1", "CBASE_LISTEN=127.0.0.1:0", envdir, envdb, "CBASE_JWT_SECRET=storeless-secret-storeless-secret-0",
+    char *env[] = { "CBASE_DEV=", "CBASE_PUBLIC_URL=", "CBASE_LISTEN=127.0.0.1:0", envdir, envdb,
+                    secret ? "CBASE_JWT_SECRET=storeless-secret-storeless-secret-0" : "CBASE_JWT_SECRET=",
                     "CBASE_ADMIN_TOKEN=" ADMIN, "CBASE_STORE=", "CBASE_BACKUP_BUCKET=storeless-no-such-bucket", NULL };
     char *argv[] = { (char *)g_self, "serve-storeless", (char *)variant, NULL };
     if (tp_start(c, argv, env) != 0) return -1;
     if (!port) return 0;
     char line[512] = "";
+    if (secret && tp_wait_line(c, "it is not used", 20000, line, sizeof line) != 0) return -1;
     // A backup bucket is configured, and there is nothing to back up: said, and the start goes on
     // (the restore that runs before a store opens is not run at all).
     if (tp_wait_line(c, "nothing is backed up", 20000, line, sizeof line) != 0) return -1;
@@ -125,7 +130,7 @@ static void serves_with_no_store(void) {
     T_EQ_INT(tp_tempdir(dir, sizeof dir), 0);
     tp_child c;
     int port = 0;
-    T_EQ_INT(start(&c, "plain", dir, &port), 0);
+    T_EQ_INT(start(&c, "plain", dir, &port, false), 0);
     T_CHECK(port > 0);
     char line[512];
     T_EQ_INT(tp_wait_line(&c, "the schedule ran", 20000, line, sizeof line), 0);   // schedules run with no store
@@ -157,12 +162,26 @@ static void serves_with_no_store(void) {
     rm_tree_files(dir);
 }
 
+// A JWT secret given to a storeless app is not used, and said so; the app serves as without one.
+static void a_secret_is_ignored(void) {
+    char dir[256];
+    T_EQ_INT(tp_tempdir(dir, sizeof dir), 0);
+    tp_child c;
+    int port = 0;
+    T_EQ_INT(start(&c, "plain", dir, &port, true), 0);   // waits for "it is not used"
+    tc_response r;
+    T_EQ_INT(get(port, "GET", "/v1/hello", NULL, NULL, &r), 200);
+    tc_response_free(&r);
+    T_EQ_INT(tp_stop(&c, SIGTERM, 15000), 0);
+    rm_tree_files(dir);
+}
+
 // A storeless app that names an account domain does not start: the sentence, and exit 1.
 static void refused_end_to_end(void) {
     char dir[256], seen[512], line[512] = "";
     T_EQ_INT(tp_tempdir(dir, sizeof dir), 0);
     tp_child c;
-    T_EQ_INT(start(&c, "accounts", dir, NULL), 0);
+    T_EQ_INT(start(&c, "accounts", dir, NULL, false), 0);
     T_EQ_INT(tp_wait_line(&c, "keeps no platform store", 20000, line, sizeof line), 0);
     T_CHECK(strstr(line, "account domain") != NULL);
     T_EQ_INT(tp_stop(&c, 0, 15000), 1);
@@ -238,6 +257,7 @@ int main(int argc, char **argv) {
     g_self = argv[0];
     if (argc == 3 && strcmp(argv[1], "serve-storeless") == 0) return child_main(argv[2]);
     T_RUN(serves_with_no_store);
+    T_RUN(a_secret_is_ignored);
     T_RUN(refused_end_to_end);
     T_RUN(refused_in_boot);
     return T_DONE();
