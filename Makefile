@@ -12,8 +12,9 @@
 #   make smoke      the end-to-end smokes against a real build/cbase and build/bootstrap
 #   make check      test + smoke + the client, then the example again as a local-only product
 #                   (example/Makefile: its own build, its tests, its link check), then the
-#                   repository's own gates (tools/repo_gate_test.sh) and the symbol gate over the
-#                   local-only binary (tools/symbol_gate.sh)
+#                   repository's own gates (tools/repo_gate_test.sh), the symbol gate over the
+#                   local-only binary (tools/symbol_gate.sh) and the offline clean build
+#                   (tools/offline_build_test.sh)
 #   make check-asan the same tests, every object rebuilt under ASan + UBSan
 #   make check-dynamo  the store conformance suite and the example smoke against DynamoDB Local
 #                   (providers/aws/ops/dynamo_local.sh; needs Docker or a DynamoDB Local on 8000)
@@ -47,10 +48,14 @@ repo-gate:
 # sources and its tests), nor one on the gate's word list. The aws objects are this build's, so
 # the banned set grows with the provider and nobody keeps it.
 AWS_GATE_OBJS := $(call c_objs,build/obj/cbase,$(sort $(wildcard providers/aws/src/*.c providers/aws/src/*/*.c providers/aws/test/*.c)))
-.PHONY: symbol-gate
+.PHONY: symbol-gate offline-build
 symbol-gate: example-check $(AWS_GATE_OBJS)
 	bash tools/symbol_gate.sh example/build/$(APP_SERVE) $(AWS_GATE_OBJS)
-check: example-check repo-gate symbol-gate
+# THE OFFLINE BUILD (tools/offline_build_test.sh): the local-only example from a fresh clone of
+# this repository's HEAD, with the network denied to the build and no fetcher on its PATH.
+offline-build:
+	CHECK_JOBS=$(CHECK_JOBS) bash tools/offline_build_test.sh
+check: example-check repo-gate symbol-gate offline-build
 
 # The deploy tooling's own tests (ops/test, providers/*/ops/test): no AWS, no network, a stub `aws`
 # and scratch git trees. CI's ops job runs them; they are not part of check.

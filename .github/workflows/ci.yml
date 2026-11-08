@@ -29,7 +29,7 @@ jobs:
       - run: sudo apt-get update -q && sudo apt-get install -y -q build-essential libssl-dev libsqlite3-dev
       - name: build
         run: make -j"$(getconf _NPROCESSORS_ONLN)"
-      - name: unit tests, smokes, the client, the local-only example and its link check, the repository gate, the symbol gate
+      - name: unit tests, smokes, the client, the local-only example and its link check, the repository gate, the symbol gate, the offline clean build
         run: make -j"$(getconf _NPROCESSORS_ONLN)" check
       # CBASE_IO_URING (net/loop.h): the suite again with every loop on io_uring; unit_uring's first
       # line says whether the runner allowed it (else the loops fall back to epoll, as serve's would).
@@ -50,7 +50,7 @@ jobs:
       - run: brew list openssl@3 sqlite >/dev/null 2>&1 || brew install openssl@3 sqlite
       - name: build
         run: make -j"$(getconf _NPROCESSORS_ONLN)"
-      - name: unit tests, smokes, the client, the local-only example and its link check, the repository gate, the symbol gate
+      - name: unit tests, smokes, the client, the local-only example and its link check, the repository gate, the symbol gate, the offline clean build
         run: make -j"$(getconf _NPROCESSORS_ONLN)" check
 
   asan:
@@ -196,7 +196,7 @@ jobs:
           /tmp/cfn/bin/cfn-lint --regions us-east-1 -- providers/aws/ops/cbase.yaml providers/local/ops/vm.yaml
       - name: the shell scripts
         run: |
-          s="$(git ls-files 'ops/*.sh' 'providers/*/ops/*.sh' 'providers/*/ops/test/*.sh' 'fuzz/test/*.sh' tools/repo_gate_test.sh tools/c_rules_test.sh tools/changed_files.sh tools/changed_files_test.sh tools/symbol_gate.sh)"
+          s="$(git ls-files 'ops/*.sh' 'providers/*/ops/*.sh' 'providers/*/ops/test/*.sh' 'fuzz/test/*.sh' tools/repo_gate_test.sh tools/c_rules_test.sh tools/changed_files.sh tools/changed_files_test.sh tools/symbol_gate.sh tools/offline_build_test.sh)"
           # shellcheck disable=SC2086
           bash -n $s
           # shellcheck disable=SC2086
