@@ -40,8 +40,11 @@ uint32_t cbhs_ws_open(cbhs_world *w, const char *path);              // a socket
 void     cbhs_ws_send(cbhs_world *w, uint32_t id, const uint8_t *frame, size_t len);
 void     cbhs_ws_close(cbhs_world *w, uint32_t id);
 typedef void (*cbhs_done_fn)(void *ctx, int status, const uint8_t *body, size_t len);
+// wait_ms: the request's deadline as the core set it (cbc_req_hdr.wait_ms; 0: none), which the
+// world keeps as a platform's HTTP client does: unanswered by then, it answers status 0.
 void     cbhs_http(cbhs_world *w, const char *method, const char *path, size_t path_len, const char *auth,
-                   size_t auth_len, const uint8_t *body, size_t body_len, cbhs_done_fn done, void *ctx);
+                   size_t auth_len, const uint8_t *body, size_t body_len, uint32_t wait_ms, cbhs_done_fn done,
+                   void *ctx);
 typedef void (*cbhs_fire_fn)(void *ctx);
 uint32_t cbhs_timer(cbhs_world *w, uint32_t ms, cbhs_fire_fn fire, void *ctx);   // an id (> 0)
 void     cbhs_timer_stop(cbhs_world *w, uint32_t id);

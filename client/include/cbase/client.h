@@ -60,6 +60,7 @@
 #define CBC_PATH_MAX    256    // == SF_PATH_MAX
 #define CBC_ROOM_MAX    64     // == SF_GID_MAX
 #define CBC_SIZE_BUDGET 12288  // sizeof(cbc), pinned below
+#define CBC_HTTP_MIN_BPS 16000 // the slowest upload a body's deadline makes room for: 16 kB/s (128 kbit/s)
 
 // ---- configuration -----------------------------------------------------------------------------
 typedef struct {
@@ -71,6 +72,12 @@ typedef struct {
     uint32_t refresh_early_ms;  // refresh the access token this long before it expires (60000)
     uint32_t force_refresh_ms;  // a socket refused before READY refreshes at most this often (600000)
     uint32_t call_wait_ms;      // a socket call unanswered this long is lost (15000)
+    // THE HTTP DEADLINE (cbc_req_hdr.wait_ms), the core's for every host: a request is given
+    // http_wait_ms, and its body the time it takes at CBC_HTTP_MIN_BPS on top, so a large borrowed
+    // upload on a slow uplink is not cut off while it is still going (64 KB: 4 s more; 100 MB: 104
+    // min). 0: no deadline. At most 2^31.
+    uint32_t http_wait_ms;      // (15000)
+    uint32_t pad0;
     uint64_t seed;              // the reconnect jitter's generator: per client, from the host's entropy
     uint8_t  anonymous;         // 1: GET /ws/public, an empty HELLO, no session, every call over HTTP
     uint8_t  pad[7];
@@ -112,7 +119,9 @@ typedef struct {
 
 // A request cbc_next_request writes: this head, then path_len bytes of path, auth_len bytes of the
 // Authorization value ("Bearer ..."; none when 0), body_len bytes of body. With CBC_RQ_REF the body
-// is not written: its body_len bytes are the caller's, at cbc_req_body (cbc_call_ref).
+// is not written: its body_len bytes are the caller's, at cbc_req_body (cbc_call_ref). wait_ms is
+// its deadline, which the host hands its HTTP client as is (fetch's abort, a curl timeout): no
+// answer this long after it was sent is status 0. 0: none (cbc_cfg http_wait_ms).
 #define CBC_RQ_BODY 0x1   // hand the answer's body to cbc_on_response (else only its length is needed,
                           // and its body only when the status is not 2xx: a refusal)
 #define CBC_RQ_REF  0x2   // the body is borrowed: send cbc_req_body(id)'s body_len bytes after the head
@@ -124,6 +133,7 @@ typedef struct {
     uint16_t auth_len;
     uint16_t pad;
     uint32_t body_len;
+    uint32_t wait_ms;   // the deadline: cbc_cfg http_wait_ms, and the body's time at CBC_HTTP_MIN_BPS
 } cbc_req_hdr;
 
 typedef struct {

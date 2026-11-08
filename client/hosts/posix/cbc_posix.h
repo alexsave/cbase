@@ -8,7 +8,8 @@
 //            to io.ws_send (-1: io.ws_close); on its close (cbc_posix_ws_closed), cbc_closed, and
 //            the next open after the ms it answers (an io.timer)
 //   HTTP     each cbc_next_request to io.http (the path as the request target, "Bearer ..." as the
-//            Authorization value), answered by cbc_on_response (status 0: it never arrived); a
+//            Authorization value, the core's deadline), answered by cbc_on_response (status 0: it
+//            never arrived, or its deadline passed); a
 //            borrowed body (CBC_RQ_REF, cbc_call_ref) goes to io.http as the caller's own pointer
 //   timer    one io.timer after cbc_due_ms, calling cbc_tick, then drain both outputs again; at
 //            most one armed for the ticks and one for the reopen
@@ -49,8 +50,10 @@ typedef struct {
     // application/octet-stream), answered once through done: the status (0: it never arrived)
     // and the body. path, auth and body last only for this call (the io sends or copies them),
     // except a borrowed body (cbc_call_ref's), which is the app's and lasts until done is called.
+    // wait_ms is its deadline (the core's, cbc_req_hdr.wait_ms; 0: none): the io aborts it then
+    // and answers status 0, and sets no deadline of its own.
     void (*http)(void *ud, const char *method, const char *path, size_t path_len, const char *auth, size_t auth_len,
-                 const uint8_t *body, size_t body_len, cbc_posix_done_fn done, void *ctx);
+                 const uint8_t *body, size_t body_len, uint32_t wait_ms, cbc_posix_done_fn done, void *ctx);
     // A one-shot timer: an id (> 0); stop cancels one that has not fired.
     uint32_t (*timer)(void *ud, uint32_t ms, cbc_posix_fire_fn fire, void *ctx);
     void     (*timer_stop)(void *ud, uint32_t id);

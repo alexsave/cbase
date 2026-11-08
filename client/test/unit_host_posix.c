@@ -9,7 +9,9 @@ static uint32_t io_ws_open(void *ud, const char *path) { return cbhs_ws_open(ud,
 static void io_ws_send(void *ud, uint32_t id, const uint8_t *p, size_t n) { cbhs_ws_send(ud, id, p, n); }
 static void io_ws_close(void *ud, uint32_t id) { cbhs_ws_close(ud, id); }
 static void io_http(void *ud, const char *m, const char *path, size_t pn, const char *auth, size_t an, const uint8_t *body,
-                    size_t bn, cbc_posix_done_fn done, void *ctx) { cbhs_http(ud, m, path, pn, auth, an, body, bn, done, ctx); }
+                    size_t bn, uint32_t wait_ms, cbc_posix_done_fn done, void *ctx) {
+    cbhs_http(ud, m, path, pn, auth, an, body, bn, wait_ms, done, ctx);
+}
 static uint32_t io_timer(void *ud, uint32_t ms, cbc_posix_fire_fn fire, void *ctx) { return cbhs_timer(ud, ms, fire, ctx); }
 static void io_timer_stop(void *ud, uint32_t id) { cbhs_timer_stop(ud, id); }
 static size_t io_load(void *ud, uint8_t *out, size_t cap) { return cbhs_load(ud, out, cap); }

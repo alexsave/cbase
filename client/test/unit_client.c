@@ -691,7 +691,33 @@ static void borrowed_bounds(void) {
     T_CHECK(cbc_call_ref(&c, CBC_POST, 0, "/x", 2, handle, UINT32_MAX, 0) != 0);
     request(&c, 0);
     T_EQ_INT(g_h.body_len, UINT32_MAX);
+    T_EQ_INT(g_h.wait_ms, 15000 + UINT32_MAX / 16);   // 74 hours: the most a body can add, in range
     T_CHECK(cbc_req_body(&c, g_h.id) == handle);
+}
+
+// THE HTTP DEADLINE is the core's (cbc_req_hdr.wait_ms): http_wait_ms, and a body's time at
+// CBC_HTTP_MIN_BPS on top, borrowed or copied alike; http_wait_ms 0 is none.
+static void http_deadline(void) {
+    static uint8_t big[64000];
+    cbc c; mk(&c, 1, 1);
+    cbc_call(&c, CBC_GET, 0, "/a", 2, NULL, 0, 0);
+    request(&c, 0);
+    T_EQ_INT(g_h.wait_ms, 15000);
+    cbc_call(&c, CBC_POST, 0, "/b", 2, big, 1600, 0);
+    request(&c, 0);
+    T_EQ_INT(g_h.wait_ms, 15000 + 100);
+    cbc_call_ref(&c, CBC_POST, 0, "/c", 2, big, sizeof big, 0);
+    request(&c, 0);
+    T_EQ_INT(g_h.wait_ms, 15000 + 4000);           // 64 kB at 16 kB/s
+    cbc_cfg cfg;
+    cbc_cfg_default(&cfg);
+    T_EQ_INT(cfg.http_wait_ms, 15000);
+    cfg.http_wait_ms = 0;
+    cfg.anonymous = 1;
+    cbc_init(&c, &cfg);
+    cbc_call_ref(&c, CBC_POST, 0, "/d", 2, big, sizeof big, 0);
+    request(&c, 0);
+    T_EQ_INT(g_h.wait_ms, 0);
 }
 
 static void due_ms(void) {
@@ -907,5 +933,6 @@ int main(void) {
     T_RUN(a_borrowed_body_is_never_copied);
     T_RUN(a_borrowed_body_beside_copied_ones);
     T_RUN(borrowed_bounds);
+    T_RUN(http_deadline);
     return T_DONE();
 }

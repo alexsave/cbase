@@ -55,6 +55,7 @@ static void send_request(cbc_host *h) {
     // A borrowed body (cbc_call_ref) is the caller's, sent from where it is: never copied here.
     rq.body = r.flags & CBC_RQ_REF ? cbc_req_body(&h->c, r.id) : (const uint8_t *)rq.path + r.path_len + r.auth_len;
     rq.body_len = r.body_len;
+    rq.wait_ms = r.wait_ms;
     h->env->http(h->ud, &rq, q);
 }
 

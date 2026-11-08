@@ -45,6 +45,7 @@ typedef struct {
     cbhs_done_fn done;
     void    *ctx;
     int      answered;
+    int64_t  deadline;          // when the world aborts it (status 0); 0: never
 } w_req;
 
 struct cbhs_world {
@@ -110,7 +111,7 @@ void cbhs_ws_close(cbhs_world *w, uint32_t id) {
 }
 
 void cbhs_http(cbhs_world *w, const char *method, const char *path, size_t path_len, const char *auth, size_t auth_len,
-               const uint8_t *body, size_t body_len, cbhs_done_fn done, void *ctx) {
+               const uint8_t *body, size_t body_len, uint32_t wait_ms, cbhs_done_fn done, void *ctx) {
     if (w->n_reqs == W_REQS || path_len > CBC_PATH_MAX || auth_len >= sizeof w->req[0].auth || body_len > W_BODY) {
         broke(w, "a request past the suite's room");
         return;
@@ -124,6 +125,7 @@ void cbhs_http(cbhs_world *w, const char *method, const char *path, size_t path_
     r->body_len = body_len;
     r->done = done;
     r->ctx = ctx;
+    r->deadline = wait_ms ? w->now + wait_ms : 0;
 }
 
 uint32_t cbhs_timer(cbhs_world *w, uint32_t ms, cbhs_fire_fn fire, void *ctx) {
@@ -206,18 +208,28 @@ static cbc *start(cbhs_world *w, const cbhs_host *h) {
 
 static void pump(cbhs_world *w) { w->h->pump(w->host); }
 
-// Moves the clock ms ahead, firing every timer that falls due on the way, each at its own time. A
-// host that keeps re-arming a timer at 0 ms spins its loop (a busy wait, burning a core until
-// something else happens): more than W_SPIN fires at one instant is a broken rule, and the clock
-// moves on.
+// Moves the clock ms ahead, firing every timer that falls due on the way, each at its own time,
+// and aborting every request whose deadline passes (status 0, as an HTTP client's timeout
+// answers). A host that keeps re-arming a timer at 0 ms spins its loop (a busy wait, burning a
+// core until something else happens): more than W_SPIN fires at one instant is a broken rule, and
+// the clock moves on.
 #define W_SPIN 64
 static void advance(cbhs_world *w, int64_t ms) {
     int64_t end = w->now + ms, at = w->now;
     int same = 0;
     for (;;) {
-        int k = -1;
+        int k = -1, q = -1;
         for (int i = 0; i < W_TIMERS; i++)
             if (w->timer[i].armed && w->timer[i].at <= end && (k < 0 || w->timer[i].at < w->timer[k].at)) k = i;
+        for (int i = 0; i < w->n_reqs; i++)
+            if (!w->req[i].answered && w->req[i].deadline && w->req[i].deadline <= end &&
+                (q < 0 || w->req[i].deadline < w->req[q].deadline)) q = i;
+        if (q >= 0 && (k < 0 || w->req[q].deadline < w->timer[k].at)) {   // the deadline first
+            if (w->req[q].deadline > w->now) w->now = w->req[q].deadline;
+            w->req[q].answered = 1;
+            w->req[q].done(w->req[q].ctx, 0, NULL, 0);
+            continue;
+        }
         if (k < 0) break;
         if (w->timer[k].at > w->now) w->now = w->timer[k].at;
         if (w->now == at && ++same > W_SPIN) { broke(w, "a timer re-armed at 0 ms over and over: the loop spins"); break; }
@@ -662,7 +674,7 @@ static void a_64k_body_arrives_byte_for_byte_and_done_comes_once_after(void) {
     w_req *r = request(w);
     big_arrived(r, "/notes/bulk");
     T_CHECK(event(w) == NULL);                     // the bytes went out; no DONE before the answer
-    advance(w, g_cfg.call_wait_ms * 2);
+    advance(w, g_cfg.call_wait_ms + 1000);         // past a socket call's wait: an HTTP call has its own
     T_CHECK(event(w) == NULL);
     T_CHECK(request(w) == NULL);
     if (r) answer(r, 200, "ok", 2);
@@ -748,6 +760,37 @@ static void an_auth_http_call_waits_for_the_refresh_without_spinning(void) {
     kept(w);
 }
 
+// A borrowed body's deadline is the core's (cbc_req_hdr.wait_ms), which grows with the body, and
+// the host hands it to its HTTP client as is: a 64 KB upload still going 18 s on (past the
+// socket-call wait, inside the body's time at CBC_HTTP_MIN_BPS) is not cut off, and one never
+// answered is given up on by its deadline all the same (a write: lost).
+static void a_slow_borrowed_upload_is_not_aborted(void) {
+    cbhs_world *w = world();
+    big_fill();
+    cbc *c = signed_up(w, g_h, FAR);
+    uint32_t t = cbc_call_ref(c, CBC_POST, CBC_C_AUTH, "/notes/bulk", 11, g_big, BIG_N, cbhs_now(w));
+    pump(w);
+    w_req *r = request(w);
+    big_arrived(r, "/notes/bulk");
+    advance(w, 18000);                             // the upload still going
+    T_CHECK(event(w) == NULL);
+    T_CHECK(r && !r->answered);                    // not aborted
+    if (!r || r->answered) return;
+    answer(r, 200, "ok", 2);
+    const w_event *e = event(w);
+    T_CHECK(e && e->kind == CBC_EV_DONE && e->ticket == t && e->status == 200 && e->why == 0);
+    uint32_t t2 = cbc_call_ref(c, CBC_POST, CBC_C_AUTH, "/notes/bulk", 11, g_big, BIG_N, cbhs_now(w));
+    pump(w);
+    r = request(w);
+    big_arrived(r, "/notes/bulk");
+    advance(w, 60000);                             // never answered: its deadline passes
+    e = event(w);
+    T_CHECK(e && e->kind == CBC_EV_DONE && e->ticket == t2 && e->why == CBC_WHY_LOST);
+    T_CHECK(r && r->answered);
+    T_CHECK(request(w) == NULL);                   // a write is not sent again
+    kept(w);
+}
+
 static void an_anonymous_listener_opens_the_public_socket(void) {
     cbhs_world *w = world();
     g_cfg.anonymous = 1;
@@ -815,6 +858,7 @@ int cbhs_run(const cbhs_host *h) {
     T_RUN(a_socket_nobody_wants_is_closed_while_it_opens);
     T_RUN(a_64k_body_arrives_byte_for_byte_and_done_comes_once_after);
     T_RUN(a_retried_borrowed_body_resends_the_same_bytes);
+    T_RUN(a_slow_borrowed_upload_is_not_aborted);
     T_RUN(an_auth_http_call_waits_for_the_refresh_without_spinning);
     printf("host suite: %s\n", h->name);
     return T_DONE();

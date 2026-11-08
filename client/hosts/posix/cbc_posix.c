@@ -36,7 +36,7 @@ static void env_ws_close(void *ud, uint32_t id) {
 }
 static void env_http(void *ud, const cbc_host_req *r, void *tag) {
     cbc_posix *h = ud;
-    h->io.http(h->io.ud, r->method, r->path, r->path_len, r->auth, r->auth_len, r->body, r->body_len,
+    h->io.http(h->io.ud, r->method, r->path, r->path_len, r->auth, r->auth_len, r->body, r->body_len, r->wait_ms,
                cbc_host_http_answered, tag);
 }
 static uint32_t env_timer(void *ud, uint32_t ms, cbc_host_fire_fn fire, void *ctx) {

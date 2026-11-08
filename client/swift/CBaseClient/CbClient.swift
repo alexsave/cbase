@@ -159,6 +159,8 @@ public final class CbClient {
         var req = URLRequest(url: URL(string: path, relativeTo: server)!)
         req.httpMethod = h.method == Int(CBC_POST) ? "POST" : "GET"
         req.cachePolicy = .reloadIgnoringLocalCacheData
+        // The deadline is the core's (cbc_req_hdr.wait_ms, which grows with the body; 0: none).
+        if h.waitMs > 0 { req.timeoutInterval = TimeInterval(h.waitMs) / 1000 }
         if !auth.isEmpty { req.setValue(auth, forHTTPHeaderField: "Authorization") }
         if h.bodyLen > 0 {
             req.httpBody = body

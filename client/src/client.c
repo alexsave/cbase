@@ -109,17 +109,12 @@ const uint8_t *cbc_req_body(const cbc *c, uint32_t id) {
 }
 
 // ---- init --------------------------------------------------------------------------------------
-void cbc_cfg_default(cbc_cfg *cfg) {
-    memset(cfg, 0, sizeof *cfg);
-    cfg->ping_ms = 30000;
-    cfg->pong_ms = 10000;
-    cfg->ack_wait_ms = 10000;
-    cfg->retry_first_ms = 500;
-    cfg->retry_max_ms = 10000;
-    cfg->refresh_early_ms = 60000;
-    cfg->force_refresh_ms = 600000;
-    cfg->call_wait_ms = 15000;
-}
+// The defaults as data: one copy, smaller in the module than a store a field.
+static const cbc_cfg CFG_DEFAULT = {
+    .ping_ms = 30000, .pong_ms = 10000, .ack_wait_ms = 10000, .retry_first_ms = 500, .retry_max_ms = 10000,
+    .refresh_early_ms = 60000, .force_refresh_ms = 600000, .call_wait_ms = 15000, .http_wait_ms = 15000,
+};
+void cbc_cfg_default(cbc_cfg *cfg) { *cfg = CFG_DEFAULT; }
 
 void cbc_init(cbc *c, const cbc_cfg *cfg) {
     memset(c, 0, sizeof *c);
@@ -454,6 +449,8 @@ static int put_request(cbc *c, uint8_t *out, size_t cap, uint32_t id, int method
     h.path_len = (uint16_t)pn;
     h.auth_len = (uint16_t)an;
     h.body_len = (uint32_t)bn;
+    // The deadline (client.h cbc_cfg http_wait_ms): the wait, and the body's time at CBC_HTTP_MIN_BPS.
+    if (c->cfg.http_wait_ms) h.wait_ms = c->cfg.http_wait_ms + (uint32_t)(bn / (CBC_HTTP_MIN_BPS / 1000));
     memcpy(out, &h, sizeof h);
     size_t at = sizeof h;
     memcpy(out + at, path, pn); at += pn;

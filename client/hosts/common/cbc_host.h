@@ -8,7 +8,8 @@
 //            cbc_next_out frame to env.ws_send (-1: env.ws_close); on its close
 //            (cbc_host_ws_closed), cbc_closed, and the next open after the ms it answers
 //   HTTP     each cbc_next_request to env.http (cbc_host_req: the path as the request target,
-//            "Bearer ..." as the Authorization value, the deadline the core set), answered once by
+//            "Bearer ..." as the Authorization value, the deadline the core set, which the
+//            environment hands its HTTP client as is and never invents), answered once by
 //            cbc_host_http_answered (status 0: it never arrived); a borrowed body (CBC_RQ_REF,
 //            cbc_call_ref) is handed over as the caller's own pointer
 //   timer    one env.timer after cbc_due_ms, calling cbc_tick, then drain both outputs again; at
@@ -51,6 +52,8 @@ typedef struct {
     size_t         auth_len;
     const uint8_t *body;       // body_len bytes, sent as application/octet-stream (0: no body)
     size_t         body_len;
+    uint32_t       wait_ms;    // the deadline, the core's (cbc_req_hdr.wait_ms): no answer this long
+                               // after it was sent is status 0 (abort it); 0: none
 } cbc_host_req;
 
 typedef struct {

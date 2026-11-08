@@ -69,7 +69,7 @@ export interface CbUser {
 
 // The configuration's numbers a page may set (the rest are the module's defaults).
 export type CbTiming = Partial<Pick<cbc_cfg_Snap, 'pingMs' | 'pongMs' | 'ackWaitMs' | 'retryFirstMs' | 'retryMaxMs' |
-  'refreshEarlyMs' | 'forceRefreshMs' | 'callWaitMs'>>;
+  'refreshEarlyMs' | 'forceRefreshMs' | 'callWaitMs' | 'httpWaitMs'>>;
 
 export interface CbOptions {
   // The module: its URL (fetched) or its bytes.
@@ -476,7 +476,10 @@ export class CbClient {
     const headers: Record<string, string> = {};
     if (auth) headers.authorization = auth;
     if (body) headers['content-type'] = 'application/octet-stream';
-    this.fetchFn(this.http + path, { method: h.method === CBC_POST ? 'POST' : 'GET', headers, body, cache: 'no-store' })
+    // The deadline is the core's (cbc_req_hdr.wait_ms, which grows with the body; 0: none): an abort
+    // rejects the fetch, which answers status 0.
+    const signal = h.waitMs ? AbortSignal.timeout(h.waitMs) : undefined;
+    this.fetchFn(this.http + path, { method: h.method === CBC_POST ? 'POST' : 'GET', headers, body, cache: 'no-store', signal })
       .then(async (res) => ({ status: res.status, buf: await res.arrayBuffer() }))
       .then(
         ({ status, buf }) => this.answered(id, status, buf, wantBody),

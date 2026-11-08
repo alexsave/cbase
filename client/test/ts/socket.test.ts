@@ -128,6 +128,22 @@ test('an anonymous read goes over HTTP; a busy one goes again; a refusal is a Cb
   c.close();
 });
 
+test("a request the server never answers is aborted at the core's deadline, and a read goes again", async () => {
+  let calls = 0;
+  const fakeFetch = ((_url: string, init: RequestInit) => {
+    calls++;
+    if (calls === 1) return new Promise((_ok, fail) => init.signal?.addEventListener('abort', () => fail(new Error('aborted'))));
+    return Promise.resolve(new Response(new Uint8Array([9]), { status: 200 }));
+  }) as unknown as typeof fetch;
+  const c = await start({ wasm: wasm(), server: 'http://adv.test', anonymous: true, fetch: fakeFetch,
+                          timing: { httpWaitMs: 30, retryFirstMs: 10 } });
+  const t0 = Date.now();
+  assert.deepEqual([...new Uint8Array(await c.get('/slow'))], [9]);
+  assert.equal(calls, 2);
+  assert.ok(Date.now() - t0 >= 25, 'not before the deadline');
+  c.close();
+});
+
 test('Sign in with Apple: the nonce and state from the module, the answer as bytes, a name asked for, then a session', async () => {
   const { createHash } = await import('node:crypto');
   const bodies: Uint8Array[] = [];
