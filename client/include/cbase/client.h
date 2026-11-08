@@ -180,7 +180,8 @@ typedef struct {
 typedef struct cbc {
     cbc_cfg  cfg;
     uint64_t rng;
-    // the session (the NW_SESSION fields, auth_wire.h)
+    int64_t  forced_last;       // the last pre-READY close that forced a refresh (kept past a session)
+    // the session (the NW_SESSION fields, auth_wire.h), user to refresh: cleared as one span
     cbc_user user;
     uint16_t access_len;
     uint8_t  refresh_len;
@@ -191,7 +192,6 @@ typedef struct cbc {
     uint8_t  pad0;
     uint32_t refresh_id;
     int64_t  refresh_at;        // a failed refresh's next try
-    int64_t  forced_last;       // the last pre-READY close that forced one
     char     access[CBW_ACCESS_MAX];
     char     refresh[CBW_REFRESH_MAX];
     // the socket

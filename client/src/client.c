@@ -20,6 +20,8 @@ _Static_assert(CBC_ROOM == SF_WHAT_ROOM, "a room's kind is the hub's");
 _Static_assert(CBC_ROOM_MAX == SF_GID_MAX, "a room is an SF_SUB's gid");
 _Static_assert(CBC_GET == SF_METH_GET && CBC_POST == SF_METH_POST, "a call's method is an SF_REQ's");
 _Static_assert(CBW_ACCESS_MAX <= SF_TOKEN_MAX, "a HELLO carries the whole access token");
+_Static_assert(offsetof(cbc, forced_last) < offsetof(cbc, user) && offsetof(cbc, user) < offsetof(cbc, refresh),
+               "session_clear zeroes user..refresh as one span, and keeps forced_last");
 
 enum { SOCK_CLOSED, SOCK_OPEN, SOCK_HELLO, SOCK_READY };
 enum { SUB_FREE, SUB_WANT, SUB_SENT, SUB_LIVE, SUB_REFUSED, SUB_DROP };
@@ -157,17 +159,9 @@ static int session_take(cbc *c, const uint8_t *p, size_t n) {
     return 0;
 }
 
+// The session's fields are one span of cbc, user to refresh (client.h): zeroed at once.
 static void session_clear(cbc *c) {
-    memset(&c->user, 0, sizeof c->user);
-    memset(c->access, 0, sizeof c->access);
-    memset(c->refresh, 0, sizeof c->refresh);
-    c->access_len = 0;
-    c->refresh_len = 0;
-    c->ending = 0;
-    c->refresh_out = 0;
-    c->refresh_forced = 0;
-    c->refresh_tries = 0;
-    c->refresh_at = 0;
+    memset(&c->user, 0, (size_t)((char *)(c->refresh + sizeof c->refresh) - (char *)&c->user));
 }
 
 int cbc_session_save(const cbc *c, uint8_t *out, size_t cap) {
