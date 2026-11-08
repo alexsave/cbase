@@ -17,7 +17,7 @@
 set -euo pipefail
 D=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 : "${CAL_SUBNET:?set CAL_SUBNET}" "${CAL_PROFILE:?set CAL_PROFILE}"
-export AWS_PAGER= AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
+export AWS_PAGER='' AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
 REGION=$AWS_DEFAULT_REGION
 ROLES=${CAL_ROLES:-"c6g t4g"}
 MAXM=${CAL_MAX_MIN:-185}
@@ -42,7 +42,8 @@ rec AMI "$AMI"
 
 # bucket: private, only the instance role may put and get
 B=cbase-perf-temp-cal-$SUF
-aws s3api create-bucket --bucket "$B" $([ "$REGION" = us-east-1 ] || echo --create-bucket-configuration LocationConstraint="$REGION") >/dev/null
+loc=(); [ "$REGION" = us-east-1 ] || loc=(--create-bucket-configuration "LocationConstraint=$REGION")
+aws s3api create-bucket --bucket "$B" ${loc[@]+"${loc[@]}"} >/dev/null   # bash 3.2: an empty array is unset under -u
 rec BUCKET "$B"
 aws s3api put-public-access-block --bucket "$B" --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
 BPOL=$(mktemp); trap 'rm -f "$BPOL" "${UD:-}"' EXIT
@@ -54,7 +55,7 @@ SG=$(aws ec2 create-security-group --group-name "cbase-perf-temp-cal-sg-$SUF" --
 rec SG "$SG"
 # (a VPC with an IPv6 block may already give a new SG this rule: then the call answers InvalidPermission.Duplicate)
 aws ec2 authorize-security-group-egress --group-id "$SG" --ip-permissions 'IpProtocol=-1,Ipv6Ranges=[{CidrIpv6=::/0}]' >/dev/null 2>&1 || \
-  aws ec2 describe-security-groups --group-ids "$SG" --query "SecurityGroups[0].IpPermissionsEgress[?IpProtocol=='-1'].Ipv6Ranges[].CidrIpv6" --output text | grep -qx '::/0'
+  aws ec2 describe-security-groups --group-ids "$SG" --query "SecurityGroups[0].IpPermissionsEgress[?IpProtocol=='-1'].Ipv6Ranges[].CidrIpv6" --output text | grep -x '::/0' > /dev/null   # read to the end: grep -q under pipefail can SIGPIPE the writer
 # a new SG carries an allow-all IPv4 egress rule; the subnet has no IPv4 route, but drop it anyway
 aws ec2 revoke-security-group-egress --group-id "$SG" --ip-permissions 'IpProtocol=-1,IpRanges=[{CidrIp=0.0.0.0/0}]' >/dev/null || true
 aws ec2 create-tags --resources "$SG" --tags "Key=Name,Value=cbase-perf-temp-cal-sg-$SUF"

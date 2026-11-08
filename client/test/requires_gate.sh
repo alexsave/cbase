@@ -52,8 +52,9 @@ diff "$T/req" "$T/hdr" > /dev/null || fail "$HDR's <string.h> line names [$(tr '
 # shellcheck disable=SC2086  # CC is a command line
 $CC -w -fno-builtin -c "$T/stub.c" -o "$T/stub.o"
 first="$(head -1 "$T/req")"
-if "$NM" -P "$T/stub.o" | awk '{print $1}' | grep -qx "_$first"; then pre=_
-elif "$NM" -P "$T/stub.o" | awk '{print $1}' | grep -qx "$first"; then pre=
+# (grep reads to the end, not -q: under pipefail, -q's early exit can SIGPIPE awk and fail the test.)
+if "$NM" -P "$T/stub.o" | awk '{print $1}' | grep -x "_$first" > /dev/null; then pre=_
+elif "$NM" -P "$T/stub.o" | awk '{print $1}' | grep -x "$first" > /dev/null; then pre=
 else fail "the stub defines $first and $NM -P does not show it: the gate cannot see"; fi
 
 # ---- what the objects leave undefined ------------------------------------------------------------

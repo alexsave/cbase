@@ -64,7 +64,9 @@ done <<<"$calls"
 names="$(cat "${files[@]}" | grep -v '^[[:space:]]*#' | grep -oE 'cbase-vm/release/[a-z]+|vm/cbase-[a-z]+(-[a-z]+)*-' | sort -u)" || names=""
 while IFS= read -r n; do
   [ -n "$n" ] || continue
-  if ! grep -v '^[[:space:]]*#' "$role" | grep -qF -- "$n"; then
+  # grep reads to the end (not -q): under pipefail, -q's early exit can SIGPIPE the first grep and
+  # fail the pipeline though the name is there.
+  if ! grep -v '^[[:space:]]*#' "$role" | grep -F -- "$n" > /dev/null; then
     echo "role_covers_release: the deploy role does not name $n, which $script uses" >&2
     bad=1
   fi
