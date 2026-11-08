@@ -1,6 +1,6 @@
 // unit_sqlite_lib.c - the SQLite the local store runs on is upstream's, the one production links.
 // Apple's /usr/lib/libsqlite3 carries code of its own (a purgeable page cache) that changes between
-// macOS releases, and a test of this program's allocations would measure it (c_base/Makefile, SQLITE IS
+// macOS releases, and a test of this program's allocations would measure it (cbase/Makefile, SQLITE IS
 // UPSTREAM'S). Held here:
 //   - the library linked is the one whose header the store compiled against;
 //   - it is not Apple's build (Apple's source id ends in "aapl").

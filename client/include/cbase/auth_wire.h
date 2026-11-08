@@ -1,7 +1,7 @@
 // cbase/auth_wire.h - the platform's sessions on the wire: the bodies of /v1/auth/* and the
 // refusal every route answers with. They are the bytes the first app's wire already numbers 1-5
 // and 20, and its 10-byte refusal (PLATFORM.md 2.6 split that wire by range), stated here for every
-// app. The server reads this file too (c_base/core/src/auth/auth_http.c, the platform's /v1/auth),
+// app. The server reads this file too (cbase/core/src/auth/auth_http.c, the platform's /v1/auth),
 // and the app's own wire header static-asserts its numbers against it. Little-endian; a str8
 // is a u8 length then bytes, a str16 a u16 length; a time is u48 epoch ms.
 //

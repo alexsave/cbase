@@ -1,12 +1,12 @@
 #!/bin/bash
 # Ships a built `cbase serve` binary to the running cbase-vm instance: the code
-# only, never the stack. .github/workflows/c_base.yml runs it on every push to
+# only, never the stack. .github/workflows/cbase.yml runs it on every push to
 # main, as the product's deploy role makes; it runs the same
 # from this Mac.
 #
-#   c_base/providers/local/ops/vm_release.sh BIN   # upload, point at it, restart, verify
-#   c_base/providers/local/ops/vm_release.sh --restart   # pin this tree's boot script, run it on the instance (it re-reads SSM, refetches, restarts); verify
-#   c_base/providers/local/ops/vm_release.sh --verify    # is-active, the binary's sha256, local /health and /ready, the edge's /health
+#   cbase/providers/local/ops/vm_release.sh BIN   # upload, point at it, restart, verify
+#   cbase/providers/local/ops/vm_release.sh --restart   # pin this tree's boot script, run it on the instance (it re-reads SSM, refetches, restarts); verify
+#   cbase/providers/local/ops/vm_release.sh --verify    # is-active, the binary's sha256, local /health and /ready, the edge's /health
 #
 # BIN in order:
 #   0. refuses a tree that does not contain origin/main, except a CI run of a
@@ -33,7 +33,7 @@
 #   5. --verify: cbase active, /usr/local/bin/cbase has this sha256, the
 #      instance's own /health and /ready answer 200, and <PublicUrl>/health
 #      answers "ok cbase". Any of them not so fails the deploy;
-#   6. prunes the bucket (c_base/ops/s3_prune_lib.sh): every other
+#   6. prunes the bucket (cbase/ops/s3_prune_lib.sh): every other
 #      vm/cbase-serve-* and its .sha256 goes, except the new release and the one
 #      the pointer named before (the one-step rollback); the same for
 #      vm/cbase-vm-boot-*, by its own pointer. Only after step 5
@@ -48,9 +48,9 @@
 # CBASE_PUBLIC_URL (required: the public base URL, https://api.example.com).
 set -euo pipefail
 ops="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cb="$(cd "$ops/../../.." && pwd)"   # the c_base root
-# The repository being deployed: the product's that c_base sits in (a submodule's superproject,
-# or the repository c_base is a directory of), or c_base's own.
+cb="$(cd "$ops/../../.." && pwd)"   # the cbase root
+# The repository being deployed: the product's that cbase sits in (a submodule's superproject,
+# or the repository cbase is a directory of), or cbase's own.
 repo="$(git -C "$cb" rev-parse --show-superproject-working-tree)"
 [ -n "$repo" ] || repo="$(git -C "$cb" rev-parse --show-toplevel)"
 die() { echo "vm_release.sh: $*" >&2; exit 1; }

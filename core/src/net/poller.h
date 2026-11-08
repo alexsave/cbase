@@ -1,7 +1,7 @@
 // poller.h - the OS readiness queue behind the event loop (loop.c), and its one owner.
 //
 // epoll (or io_uring, when asked for) on Linux, kqueue on macOS and the BSDs. There is no poll(2) fallback:
-// every platform c_base builds for has one of the two, and an unknown one is
+// every platform cbase builds for has one of the two, and an unknown one is
 // a compile error rather than a silent O(fds) wake. Level-triggered, like
 // the poll(2) the loop used to call, so a callback that does not drain an fd
 // is told again. The cost of a wake is the fds that are ready, not the fds

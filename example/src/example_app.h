@@ -1,5 +1,5 @@
-// example_app.h - the smallest product on c_base: the routes it serves, and the one const struct it
-// hands the platform (cbase/app.h). c_base's own build links it as its product, so every platform
+// example_app.h - the smallest product on cbase: the routes it serves, and the one const struct it
+// hands the platform (cbase/app.h). cbase's own build links it as its product, so every platform
 // test and smoke runs with a real app linked; example/Makefile builds it again as a consumer would,
 // with the local provider alone.
 #ifndef EXAMPLE_APP_H

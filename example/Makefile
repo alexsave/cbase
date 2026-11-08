@@ -1,4 +1,4 @@
-# example/Makefile - the example app built as any product builds on c_base: include cbase.mk, say
+# example/Makefile - the example app built as any product builds on cbase: include cbase.mk, say
 # where the app is, name the providers. This one links the local provider alone, so it is what a
 # product that runs on a person's own machine gets: `make -C example check` builds `cbase serve`
 # with the app in it and runs the platform's local tests and the app's smoke, with no cloud account,

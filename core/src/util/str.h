@@ -1,6 +1,6 @@
 // str.h - byte buffers, spans and the small string helpers every module needs.
 //
-// cb_buf is the one growable buffer in c_base: response bodies, JSON being
+// cb_buf is the one growable buffer in cbase: response bodies, JSON being
 // written, a WebSocket's outbound queue. It always keeps one spare byte past
 // `len` and writes a NUL there, so a buffer holding text can be handed to a
 // function that wants a C string without a copy.

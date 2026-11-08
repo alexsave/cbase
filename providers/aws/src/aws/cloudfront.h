@@ -1,4 +1,4 @@
-// cloudfront.h - CreateInvalidation, the one CloudFront call c_base makes.
+// cloudfront.h - CreateInvalidation, the one CloudFront call cbase makes.
 //
 // POST https://cloudfront.amazonaws.com/2020-05-31/distribution/<id>/invalidation
 // with the InvalidationBatch XML (aws_json.h cf_invalidation_xml), SigV4

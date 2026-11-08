@@ -1,7 +1,7 @@
 // AppleSignInTests.swift - Sign in with Apple's iOS half against a real `cbase serve` and the fake
 // Apple, from the simulator: the C client's nonce and state, the credential, the name a new account
 // asks for, a taken name asked again, the same identity signing in again, and a link. The server and
-// the fake are the host's (make -C c_base/client swift-e2e starts both and passes their URLs in the
+// the fake are the host's (make -C cbase/client swift-e2e starts both and passes their URLs in the
 // test run's environment, CB_SERVER and CB_MINT); without them the tests that need them are skipped.
 import AuthenticationServices
 import XCTest
@@ -42,7 +42,7 @@ final class AppleSignInTests: XCTestCase {
     }
 
     func testNewAccountAsksANameThenSignsInAgain() async throws {
-        guard let server, let mint else { throw XCTSkip("no CB_SERVER and CB_MINT: run make -C c_base/client swift-e2e") }
+        guard let server, let mint else { throw XCTSkip("no CB_SERVER and CB_MINT: run make -C cbase/client swift-e2e") }
         let who = person()
         let fake = FakeApple(mint: mint, person: who)
         let client = CbClient(server: server)

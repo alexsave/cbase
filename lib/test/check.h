@@ -64,7 +64,7 @@ static inline int first_fails_of(const char *test)
 #define OK(c, what) CHECK(c, "%s", what)
 
 /* report() fails a binary that ran no check at all when CHECK_ZERO_IS_FAIL is
- * defined (c_base's t.h rule: a suite that silently stopped registering its
+ * defined (cbase's t.h rule: a suite that silently stopped registering its
  * tests must not pass). Off by default: some suites check inside a loop that
  * may legitimately be empty. */
 static inline int report(const char *what)

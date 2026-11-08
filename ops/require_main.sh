@@ -13,7 +13,7 @@
 # has fixed since, unfixed, so this refuses it: merge main and deploy again.
 #
 # QUEUED. In CI, a run on main deploys its own commit even when main has moved
-# on while it built. The deploying workflows (c_base.yml, web_aws.yml) hold one
+# on while it built. The deploying workflows (cbase.yml, web_aws.yml) hold one
 # workflow-level concurrency group per ref with cancel-in-progress false on
 # main: one run at a time, and the one waiting slot always holds the newest
 # push (GitHub cancels an older waiting run when a newer one arrives). So a
@@ -23,7 +23,7 @@
 # HEAD is correct, and the newest commit always deploys.
 #
 # This replaced a SUPERSEDED rule that ended such a run skipped. It starved:
-# from 01:25 to 03:05 UTC on 2026-10-18, c_base runs took about 20 minutes and
+# from 01:25 to 03:05 UTC on 2026-10-18, cbase runs took about 20 minutes and
 # main moved on inside every one of them, so every run that reached its deploy
 # job found itself superseded and skipped, and the run behind it then did the
 # same. Nothing shipped until the pushes paused.

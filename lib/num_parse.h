@@ -20,8 +20,8 @@
  * WHY NOT THE C LIBRARY. strtol and its kin take a leading blank and a '+',
  * strtoull wraps "-1" to 2^64 - 1, and a caller that ignores the end pointer
  * takes anything after the digits; atoi and atol take all of that and cannot
- * report an error at all. c_base's test/unit_num_gate.c refuses them under
- * c_base/src.
+ * report an error at all. cbase's test/unit_num_gate.c refuses them under
+ * cbase/src.
  *
  * WHAT IS NOT HERE, ON PURPOSE: wasm/libc.c's atoi and atol. They are the
  * wasm fill-in for the C library and copy its lenient rules (a blank, a '+',
@@ -29,7 +29,7 @@
  * behave the same. They stay lenient; code that reads untrusted text calls
  * this file instead.
  *
- * The test is c_base's test/unit_num.c, and fuzz/fz_num.c holds it against a
+ * The test is cbase's test/unit_num.c, and fuzz/fz_num.c holds it against a
  * model that accumulates in __int128. */
 #ifndef SHARED_NUM_PARSE_H
 #define SHARED_NUM_PARSE_H

@@ -1,14 +1,14 @@
 # Coverage
 
-`make -C c_base coverage` measures what c_base's tests run, and fails when it went down.
-CI runs it as the `coverage` job of `.github/workflows/c_base.yml`.
+`make -C cbase coverage` measures what cbase's tests run, and fails when it went down.
+CI runs it as the `coverage` job of `.github/workflows/cbase.yml`.
 
 ## What is measured
 
-Every source in `c_base/src`, and of the kernel the files the binary surface is made of, `foolish/c/src/netwire.c` and `netclient.c`, and the stream's MQTT codec `shared/c/mqtt/mqtt.c` (its tests are c_base's, `core/test/unit_mqtt.c`).
+Every source in `cbase/src`, and of the kernel the files the binary surface is made of, `foolish/c/src/netwire.c` and `netclient.c`, and the stream's MQTT codec `shared/c/mqtt/mqtt.c` (its tests are cbase's, `core/test/unit_mqtt.c`).
 The rest of the kernel is measured by foolish/c's own coverage job.
 The objects are built a third way, beside the normal and the sanitized ones: `build/obj/cov` at `-O0 --coverage`, and `build/obj/cov-kernel`, where only `netwire.c` and `netclient.c` are instrumented, so the bots in the tests play at the kernel's own speed.
-Every c_base object in it, `bcrypt.c` included, is built with `-DCB_INSTRUMENTED`, so `unit_bcrypt` checks the cost but not its CPU budget there: an instrumented build's timings are not the shipped binary's (`bcrypt.c` at `-O2` with `--coverage` measured 120 ms and at `-O0` 699 ms, against about 60 ms shipped).
+Every cbase object in it, `bcrypt.c` included, is built with `-DCB_INSTRUMENTED`, so `unit_bcrypt` checks the cost but not its CPU budget there: an instrumented build's timings are not the shipped binary's (`bcrypt.c` at `-O2` with `--coverage` measured 120 ms and at `-O0` 699 ms, against about 60 ms shipped).
 
 The runs, all at once, are every unit test, `smoke` with its game, `smoke_lambda`, `smoke_lambda_after`, `smoke_authz`, `smoke_matrix` and `smoke_boot`.
 The smoke game was left out until 2026-10-18, when its bots still paced themselves like people (minutes a game); it runs at `CBASE_BOT_SPEEDUP=20` now and takes seconds.
@@ -31,7 +31,7 @@ The floors are the numbers CI measures (gcc and gcov on Linux), which differ fro
 ## Running it on a Mac
 
 ```
-make -C c_base coverage
+make -C cbase coverage
 ```
 
 needs gcovr (`brew install gcovr`); the Makefile hands it `xcrun llvm-cov gcov` on macOS and `gcov` elsewhere.

@@ -1,5 +1,5 @@
 // unit_json_gate.c - the JSON containment gate (DESIGN.md "Where JSON is
-// tolerated"): every JSON shape c_base speaks lives in providers/aws/src/aws_json.c, on
+// tolerated"): every JSON shape cbase speaks lives in providers/aws/src/aws_json.c, on
 // top of the one low-level writer and reader, core/src/util/json.{c,h}. This test reads
 // every C source under core/, providers/ and bench/, and the product's trees
 // (CBASE_APP_JSON_ROOTS, lib_tree.h), but the tests and the fuzz targets (each
@@ -225,7 +225,7 @@ static void scan_named(const char *dir, const char *name) {
 static void only_json_surface_speaks_json(void) {
     struct stat st;
     char p[TT_PATH_MAX];
-    T_CHECK(stat(tt_path(p, sizeof p, ALLOWED[0]), &st) == 0);   // CBASE_ROOT is c_base, or nothing is scanned
+    T_CHECK(stat(tt_path(p, sizeof p, ALLOWED[0]), &st) == 0);   // CBASE_ROOT is cbase, or nothing is scanned
     for (size_t i = 0; i < sizeof ROOTS / sizeof ROOTS[0]; i++) scan_named(tt_path(p, sizeof p, ROOTS[i]), ROOTS[i]);
     char roots[TT_ROOTS_MAX][TT_PATH_MAX];
     int n = tt_env_list("CBASE_APP_JSON_ROOTS", roots, TT_ROOTS_MAX);

@@ -1,4 +1,4 @@
-# mutants.py - the mutation check of c_base/client (test/mutate.sh): each mutant breaks one
+# mutants.py - the mutation check of cbase/client (test/mutate.sh): each mutant breaks one
 # behaviour, and the suite that covers it must go red. (file, name, old, new): old occurs exactly once.
 C = [
   ('src/client.c', 'jitter: no randomness', 'uint32_t w = lo + (uint32_t)(rng_splitmix64(&c->rng) % (hi - lo + 1));', 'uint32_t w = (uint32_t)hi;'),

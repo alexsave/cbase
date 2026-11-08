@@ -3,7 +3,7 @@
 //
 // The Blowfish core below is crypt_blowfish as musl libc carries it
 // (src/crypt/crypt_blowfish.c, Solar Designer's size-optimized version), copied
-// unchanged but for four things, each marked "c_base:":
+// unchanged but for four things, each marked "cbase:":
 //   * the subtype table: "$2a$" runs the correct algorithm with no
 //     anti-collision tweak, exactly like "$2b$" and "$2y$". GoTrue wrote its
 //     hashes with Go's golang.org/x/crypto/bcrypt, which implements the correct
@@ -11,7 +11,7 @@
 //     would only ever differ on a password holding a 0xFF byte (never valid
 //     UTF-8), but parity with Go is the point, so it is not applied. "$2x$"
 //     (the sign-extension bug) is refused.
-//   * sign-compare casts, so the file builds under c_base's -Wextra -Werror;
+//   * sign-compare casts, so the file builds under cbase's -Wextra -Werror;
 //   * the self-test wrapper is static (bf_crypt_checked) rather than musl's
 //     __crypt_blowfish;
 //   * the cb_bcrypt_* API at the end.
@@ -623,7 +623,7 @@ static void BF_set_key(const char *key, BF_key expanded, BF_key initial,
 	initial[0] ^= sign;
 }
 
-// c_base: 'a' is 4 (the correct algorithm, as Go's bcrypt), not 2 (the
+// cbase: 'a' is 4 (the correct algorithm, as Go's bcrypt), not 2 (the
 // anti-collision tweak); 'x' is 0 (refused). Indexed by subtype - 'a'.
 static const unsigned char flags_by_subtype[26] = {
 	4, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -646,10 +646,10 @@ static char *BF_crypt(const char *key, const char *setting,
 
 	if (setting[0] != '$' ||
 	    setting[1] != '2' ||
-	    (unsigned)(setting[2] - 'a') > 25U || /* c_base: casts */
+	    (unsigned)(setting[2] - 'a') > 25U || /* cbase: casts */
 	    !flags_by_subtype[setting[2] - 'a'] ||
 	    setting[3] != '$' ||
-	    (unsigned)(setting[4] - '0') > 3U || /* c_base: costs to 31, not 19 */
+	    (unsigned)(setting[4] - '0') > 3U || /* cbase: costs to 31, not 19 */
 	    (setting[4] - '0') * 10 + (setting[5] - '0') > 31 ||
 	    (unsigned)(setting[5] - '0') > 9U ||
 	    setting[6] != '$') {
@@ -774,7 +774,7 @@ static char *BF_crypt(const char *key, const char *setting,
  * The performance cost of this quick self-test is around 0.6% at the "$2a$08"
  * setting.
  */
-static char *bf_crypt_checked(const char *key, const char *setting, char *output) /* c_base: was __crypt_blowfish */
+static char *bf_crypt_checked(const char *key, const char *setting, char *output) /* cbase: was __crypt_blowfish */
 {
 	const char *test_key = "8b \xd0\xc1\xd2\xcf\xcc\xd8";
 	const char *test_setting = "$2a$00$abcdefghijklmnopqrstuu";
@@ -834,7 +834,7 @@ static char *bf_crypt_checked(const char *key, const char *setting, char *output
 	return "*";
 }
 
-// ---- c_base: the API (bcrypt.h) ------------------------------------------------
+// ---- cbase: the API (bcrypt.h) ------------------------------------------------
 
 #define BCRYPT_SETTING_LEN (7 + 22)   // "$2b$10$" and the salt
 

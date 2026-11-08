@@ -6,7 +6,7 @@
 # AWS: `aws` is a stub that records any call, and the gate has to fire before
 # the first one.
 #
-# The tree under test is a product's repository with c_base in it (c_base/, as a product
+# The tree under test is a product's repository with cbase in it (cbase/, as a product
 # vendors it), so the scripts find the deploying repository above themselves.
 #
 # Run: bash ops/test/deploy_gate_test.sh
@@ -35,10 +35,10 @@ g() { git -c user.name=t -c user.email=t@t -c init.defaultBranch=main "$@"; }
 # origin with main at A; a clone at A; then main moves to B on origin.
 g init -q --bare "$tmp/origin.git"
 g clone -q "$tmp/origin.git" "$tmp/seed" 2>/dev/null
-mkdir -p "$tmp/seed/c_base/ops" "$tmp/seed/c_base/providers/aws/ops" "$tmp/seed/c_base/providers/local/ops"
-cp "$ops/require_main.sh" "$ops/ops_env.sh" "$ops/s3_prune_lib.sh" "$tmp/seed/c_base/ops/"
-cp "$aws_ops/lambda_deploy.sh" "$tmp/seed/c_base/providers/aws/ops/"
-cp "$ops/../providers/local/ops/vm_release.sh" "$ops/../providers/local/ops/vm_deploy.sh" "$ops/../providers/local/ops/vm_boot_lib.sh" "$tmp/seed/c_base/providers/local/ops/"
+mkdir -p "$tmp/seed/cbase/ops" "$tmp/seed/cbase/providers/aws/ops" "$tmp/seed/cbase/providers/local/ops"
+cp "$ops/require_main.sh" "$ops/ops_env.sh" "$ops/s3_prune_lib.sh" "$tmp/seed/cbase/ops/"
+cp "$aws_ops/lambda_deploy.sh" "$tmp/seed/cbase/providers/aws/ops/"
+cp "$ops/../providers/local/ops/vm_release.sh" "$ops/../providers/local/ops/vm_deploy.sh" "$ops/../providers/local/ops/vm_boot_lib.sh" "$tmp/seed/cbase/providers/local/ops/"
 g -C "$tmp/seed" add -A
 g -C "$tmp/seed" commit -q -m A
 g -C "$tmp/seed" push -q origin HEAD:main
@@ -50,20 +50,20 @@ g -C "$tmp/seed" push -q origin HEAD:main
 
 run_lambda() {
   echo zip > "$tmp/fake.zip"
-  bash "$tmp/work/c_base/providers/aws/ops/lambda_deploy.sh" "$tmp/fake.zip" > "$tmp/out" 2>&1 && return 0 || return $?
+  bash "$tmp/work/cbase/providers/aws/ops/lambda_deploy.sh" "$tmp/fake.zip" > "$tmp/out" 2>&1 && return 0 || return $?
 }
 
 run_vm() {
   echo bin > "$tmp/fake.bin"
-  bash "$tmp/work/c_base/providers/local/ops/vm_release.sh" "$tmp/fake.bin" > "$tmp/out" 2>&1 && return 0 || return $?
+  bash "$tmp/work/cbase/providers/local/ops/vm_release.sh" "$tmp/fake.bin" > "$tmp/out" 2>&1 && return 0 || return $?
 }
 
 # vm_release.sh --restart and vm_deploy.sh pin THIS tree's boot script, so they are gated too.
 run_vm_restart() {
-  bash "$tmp/work/c_base/providers/local/ops/vm_release.sh" --restart > "$tmp/out" 2>&1 && return 0 || return $?
+  bash "$tmp/work/cbase/providers/local/ops/vm_release.sh" --restart > "$tmp/out" 2>&1 && return 0 || return $?
 }
 run_vm_deploy() {
-  bash "$tmp/work/c_base/providers/local/ops/vm_deploy.sh" > "$tmp/out" 2>&1 && return 0 || return $?
+  bash "$tmp/work/cbase/providers/local/ops/vm_deploy.sh" > "$tmp/out" 2>&1 && return 0 || return $?
 }
 
 # 1. Behind main: refused, by the gate, with no AWS call.
@@ -147,7 +147,7 @@ rm -f "$tmp/aws_calls"
 g clone -q --depth 1 --branch feature "file://$tmp/origin.git" "$tmp/shallow" 2>/dev/null
 [ "$(git -C "$tmp/shallow" rev-parse --is-shallow-repository)" = true ] || fail "the test clone is not shallow"
 echo zip > "$tmp/fake.zip"
-if bash "$tmp/shallow/c_base/providers/aws/ops/lambda_deploy.sh" "$tmp/fake.zip" > "$tmp/out" 2>&1; then fail "shallow: expected the stub aws to stop the deploy"; fi
+if bash "$tmp/shallow/cbase/providers/aws/ops/lambda_deploy.sh" "$tmp/fake.zip" > "$tmp/out" 2>&1; then fail "shallow: expected the stub aws to stop the deploy"; fi
 if grep -q 'does not contain origin/main' "$tmp/out"; then cat "$tmp/out" >&2; fail "shallow: a shallow clone of a branch containing main was refused"; fi
 grep -q '^aws cloudformation describe-stacks' "$tmp/aws_calls" 2>/dev/null || { cat "$tmp/out" >&2; fail "shallow: never reached the stack"; }
 echo "ok - a shallow clone of a branch containing origin/main gets past the gate"

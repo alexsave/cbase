@@ -1,4 +1,4 @@
-# client/ - the c_base client (include/cbase/client.h), its tests, its fuzz target, its wasm
+# client/ - the cbase client (include/cbase/client.h), its tests, its fuzz target, its wasm
 # module with the size gate, and the TypeScript a page uses it through. docs/CLIENT_DESIGN.md
 # is the design. Nothing here links the server: the client is its own small build.
 #
@@ -13,7 +13,7 @@
 #   make ts-test      the shim's own tests (node --test, against a fake socket and the real module)
 #
 # An app syncs `make ts` into its own generated directory (gitignored) and serves the module.
-# CB is the c_base root as this directory reaches it; every source outside client/ is under it
+# CB is the cbase root as this directory reaches it; every source outside client/ is under it
 # (C_ROOT, tools/c_rules.mk).
 CB     := ../
 C_ROOT := ..
@@ -59,8 +59,8 @@ check: test test-asan fuzz-replay
 
 # ---- fuzz -------------------------------------------------------------------------------------
 # The target is fuzz/fz_client.c, its corpus fuzz/corpus/client; the harness (fz.h, replay_main.c)
-# is c_base's (fuzz/). The replay build runs every corpus file once under the sanitizers on
-# any compiler, as c_base's fuzz-replay does.
+# is cbase's (fuzz/). The replay build runs every corpus file once under the sanitizers on
+# any compiler, as cbase's fuzz-replay does.
 ifeq ($(UNAME),Darwin)
   FUZZ_CC ?= $(firstword $(wildcard /opt/homebrew/opt/llvm/bin/clang /usr/local/opt/llvm/bin/clang) clang)
 else
@@ -72,7 +72,7 @@ FUZZ_CFLAGS  := -std=gnu11 -O1 -g $(WARN) $(INC) -I$(FUZZ_HARNESS) -fsanitize=ad
 build/fuzz/client: fuzz/fz_client.c $(SRC) $(wildcard include/cbase/*.h) $(CB)lib/stream_frame.h
 	@mkdir -p $(@D)
 	$(FUZZ_CC) $(FUZZ_CFLAGS) fuzz/fz_client.c $(SRC) -o $@
-REPLAY_FLAGS = $(ASAN_CFLAGS) -I$(FUZZ_HARNESS) -Wno-unused-parameter   # c_base's harness is built that way
+REPLAY_FLAGS = $(ASAN_CFLAGS) -I$(FUZZ_HARNESS) -Wno-unused-parameter   # cbase's harness is built that way
 $(eval $(call C_VARIANT,build/obj/replay,CC,REPLAY_FLAGS))
 build/asan/fuzz/client: $(call c_objs,build/obj/replay,fuzz/fz_client.c $(FUZZ_HARNESS)/replay_main.c) $(call c_objs,build/obj/asan,$(SRC))
 	@mkdir -p $(@D)
@@ -187,7 +187,7 @@ swift-e2e: swift
 # THE SIGN IN WITH APPLE DEMO (ts/demo): the button on a page of its own, bundled with esbuild and
 # React from a node_modules of its own (ESBUILD, NODE_MODULES; `npm install --prefix client esbuild
 # react react-dom` makes client/node_modules, or point NODE_MODULES at one you have), served by
-# ts/demo/serve.mjs against the fake Apple and a real `cbase serve` (both built in c_base first).
+# ts/demo/serve.mjs against the fake Apple and a real `cbase serve` (both built in cbase first).
 # Not part of check, and nothing else here needs node_modules: ts-test runs on node alone.
 NODE_MODULES ?= node_modules
 ESBUILD      ?= $(NODE_MODULES)/.bin/esbuild

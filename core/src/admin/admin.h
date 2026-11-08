@@ -1,4 +1,4 @@
-// admin.h - the c_base console: GET /admin serves one static HTML file
+// admin.h - the cbase console: GET /admin serves one static HTML file
 // (core/src/admin/console.html, embedded at build time like the schema), and
 // /admin/api/* is its JSON API, every call requiring
 // "Authorization: Bearer <CBASE_ADMIN_TOKEN>" (401 without it). When that
@@ -6,7 +6,7 @@
 // it were not routed. Not CB_ROUTE_APIKEY: the console is not a client.
 //
 // The API (admin.c), each a panel of a hosted database console's information
-// architecture cut to what c_base has:
+// architecture cut to what cbase has:
 //   GET  overview       version, mode, uptime, store, requests, 5xx,
 //                       connections (serve), games needing bots, last backup,
 //                       process metrics; under Lambda, links to the

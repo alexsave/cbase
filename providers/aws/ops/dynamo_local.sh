@@ -2,10 +2,10 @@
 # Amazon's DynamoDB Local with the table providers/aws/ops/cbase.yaml defines, for the
 # DynamoDB store's tests and the import rehearsal (DESIGN.md "Store").
 #
-#   c_base/providers/aws/ops/dynamo_local.sh            start (or reuse) it, create the table if missing
-#   c_base/providers/aws/ops/dynamo_local.sh --reset    the same, and the table dropped and created empty
-#   c_base/providers/aws/ops/dynamo_local.sh --stop     stop and remove the container (its data goes with it)
-#   eval "$(c_base/providers/aws/ops/dynamo_local.sh)"  start it and export the env it prints
+#   cbase/providers/aws/ops/dynamo_local.sh            start (or reuse) it, create the table if missing
+#   cbase/providers/aws/ops/dynamo_local.sh --reset    the same, and the table dropped and created empty
+#   cbase/providers/aws/ops/dynamo_local.sh --stop     stop and remove the container (its data goes with it)
+#   eval "$(cbase/providers/aws/ops/dynamo_local.sh)"  start it and export the env it prints
 #
 # Prints, on stdout, the environment the store and the AWS CLI need to reach
 # it: AWS_ENDPOINT_URL_DYNAMODB=http://127.0.0.1:<port>, a region, and dummy
@@ -27,7 +27,7 @@
 #   AWS_REGION          us-east-1
 set -euo pipefail
 
-here="$(cd "$(dirname "$0")/../../.." && pwd)"   # c_base/
+here="$(cd "$(dirname "$0")/../../.." && pwd)"   # cbase/
 name="cbase-dynamodb-local"
 image="amazon/dynamodb-local:3.3.1@sha256:ff89bd48ff32cd8d9be5fee8873b65b8854dc408f1afe881be6eb00247bc0dab"
 port="${CBASE_DYNAMO_PORT:-8000}"

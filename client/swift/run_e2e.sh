@@ -4,9 +4,9 @@
 # generates the example's project, and runs its unit and UI tests against them. The UI test's
 # screenshots land in $CB_SHOTS (default build/ios-shots).
 #
-#   c_base/client/swift/run_e2e.sh <simulator udid>
+#   cbase/client/swift/run_e2e.sh <simulator udid>
 #
-# Builds c_base's cbase and fake_apple first. Stops what it started, whatever the result.
+# Builds cbase's cbase and fake_apple first. Stops what it started, whatever the result.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 client=$(cd "$here/.." && pwd)

@@ -422,5 +422,5 @@ int cb_poller_wait_until(cb_poller *p, cb_poll_ev *out, int max, int64_t until_m
 uint64_t cb_poller_alarms(const cb_poller *p) { return p->alarms; }
 
 #else
-#error "c_base's event loop needs epoll (Linux) or kqueue (macOS, BSD); there is no poll(2) fallback"
+#error "cbase's event loop needs epoll (Linux) or kqueue (macOS, BSD); there is no poll(2) fallback"
 #endif

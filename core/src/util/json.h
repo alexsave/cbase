@@ -1,6 +1,6 @@
 // json.h - the compatibility tax: a tiny JSON writer and a tolerant reader.
 //
-// JSON exists in c_base ONLY where something outside it sets the format: AWS
+// JSON exists in cbase ONLY where something outside it sets the format: AWS
 // (Lambda's events, DynamoDB, the Runtime and Management APIs), the access
 // token's JWT, and the admin console's API (DESIGN.md "Where JSON is
 // tolerated"); core_json.c or aws_json.c holds every shape. The kernel's bytes never

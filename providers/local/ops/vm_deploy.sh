@@ -1,9 +1,9 @@
 #!/bin/bash
 # Deploys the cbase-vm stack (vm.yaml): `cbase serve` on one t4g.nano.
 #
-#   c_base/providers/local/ops/vm_deploy.sh [BIN]   # create or update the stack (and upload BIN as its release)
-#   c_base/providers/local/ops/vm_deploy.sh --restart   # vm_release.sh --restart
-#   c_base/providers/local/ops/vm_deploy.sh --verify    # vm_release.sh --verify
+#   cbase/providers/local/ops/vm_deploy.sh [BIN]   # create or update the stack (and upload BIN as its release)
+#   cbase/providers/local/ops/vm_deploy.sh --restart   # vm_release.sh --restart
+#   cbase/providers/local/ops/vm_deploy.sh --verify    # vm_release.sh --verify
 #
 # A new server binary is vm_release.sh's (CI runs it on every push to main): it
 # moves /cbase-vm/release/serve and restarts the instance, with no stack update.
@@ -27,7 +27,7 @@
 #      change to it reaches the running instance with --restart, no stack
 #      update and no new instance;
 #   5. cloudformation deploy of vm.yaml as stack cbase-vm;
-#   6. with BIN, prunes the bucket (c_base/ops/s3_prune_lib.sh): every other
+#   6. with BIN, prunes the bucket (cbase/ops/s3_prune_lib.sh): every other
 #      vm/cbase-serve-* and its .sha256 goes, except the release the parameter
 #      now names and the one it named before this run (which the instance still
 #      runs until --restart). Never templates/ or the amazon-ssm rpm. A prune
@@ -47,9 +47,9 @@
 # name CloudFront reaches the instance at, vm-origin.example.com).
 set -euo pipefail
 ops="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cb="$(cd "$ops/../../.." && pwd)"   # the c_base root
-# The repository being deployed: the product's that c_base sits in (a submodule's superproject,
-# or the repository c_base is a directory of), or c_base's own.
+cb="$(cd "$ops/../../.." && pwd)"   # the cbase root
+# The repository being deployed: the product's that cbase sits in (a submodule's superproject,
+# or the repository cbase is a directory of), or cbase's own.
 repo="$(git -C "$cb" rev-parse --show-superproject-working-tree)"
 [ -n "$repo" ] || repo="$(git -C "$cb" rev-parse --show-toplevel)"
 die() { echo "vm_deploy.sh: $*" >&2; exit 1; }

@@ -1,4 +1,4 @@
-# c_base as a platform: splitting the general part from foolish
+# cbase as a platform: splitting the general part from foolish
 
 Designed on origin/main at b98c630b and a66076da (2026-10-17); refreshed on 56a9fe87 (2026-10-18) for what changed in between (section 0.1).
 The goal is Alex's: a C backend platform (database, client SDK, AWS plumbing, and a packager that turns C into a bare Lambda) that foolish is one product of.
@@ -6,9 +6,9 @@ Alex's decisions are recorded at the end of sections 7 and 8; section 8.6 is the
 
 ## 0. The headline, in five lines
 
-About two thirds of c_base's C source is already product-free in substance, but only a third of it is free by file: the foolish half is threaded through the mixed files rather than fenced off.
+About two thirds of cbase's C source is already product-free in substance, but only a third of it is free by file: the foolish half is threaded through the mixed files rather than fenced off.
 The single most valuable and most unusual piece is the packager, the minimal C AWS client and the fake Runtime API harness together: "one C file with a handler table, one command, a tested Lambda with a URL" exists nowhere else in this shape.
-Nothing outside foolish uses c_base today (uttt, werewolf, pickemup, chuiniu and tallybones have no server), so an example product inside c_base is the only honest second user until one of them needs a backend.
+Nothing outside foolish uses cbase today (uttt, werewolf, pickemup, chuiniu and tallybones have no server), so an example product inside cbase is the only honest second user until one of them needs a backend.
 The live data constraint is narrower than it looks: SQLite has no production data, so the local backend can be rebuilt freely, and the DynamoDB key and attribute names are the only thing that must not move.
 Every existing literal can stay as-is by making it an instance of the general form (`bot_drive:<id>` is `<job>:<key>`, `scan` is a schedule name, `u/<user>/v`, `u/<user>/c/<game>`, `s/<game>` and `u/<user>/m/<game>` are topic families, netwire kind numbers are frozen in place).
 
@@ -24,20 +24,20 @@ Every existing literal can stay as-is by making it an instance of the general fo
 - Pull request #372 made a mid-game commit one conditional UpdateItem when the bot-scan marker does not change; transactions remain for create, join, finish and a marker change.
   DESIGN.md's Store section holds the CAS argument, and the item layer (stages 5 and 6) must keep that single-item path, so it offers a conditional update of one item beside the transaction.
 - Pull request #370 added `CBASE_BOT_SPEEDUP` and the board's time (`cb_bots_ms`, `cb_bots_board_now`), and the test lanes run every program in parallel (`RUN_ALL`).
-- Pull request #373 added `shared/c/num_parse.h`, and `test/unit_num_gate.c` forbids `strto*`, `atoi` and `scanf` in `c_base/src` except `strtod` in `json_surface.c`.
+- Pull request #373 added `shared/c/num_parse.h`, and `test/unit_num_gate.c` forbids `strto*`, `atoi` and `scanf` in `cbase/src` except `strtod` in `json_surface.c`.
 - Pull request #371 gave the kernel netclient its own-work pool (`NC_OWN_MAX`) and `ASK_WHY_BUSY` for a full pump.
 - Pull request #368 added `ops/role_covers_template.sh`: the GitHub OIDC deploy role must cover every resource type the template GetAtts, and the generated template of stage 8 must keep that gate passing.
 - Pull request #364 queues deploys in a workflow-level concurrency group, and `require_main.sh` refuses re-runs and trees behind main.
 - Secrets come from SSM Parameter Store at container start (`aws/ssm.c`, `CBASE_SECRETS_SSM`), and the template now has an SNS alarm topic and ten CloudWatch alarms, the origin secret header, and reserved concurrency.
-- THE SHARED RULE (Alex, 2026-10-18): c_base is a consumer of `shared/` like the apps.
-  A helper used by more than one of {apps, c_base} lives in `shared/c`, never in `c_base/src/util`; pull requests #376 and #377 moved base32, base64 and hex there.
-  c_base-only platform code (HTTP, the store, AWS, the contained JSON) stays in c_base, and `core/` must not grow general helpers that belong in `shared/c`.
+- THE SHARED RULE (Alex, 2026-10-18): cbase is a consumer of `shared/` like the apps.
+  A helper used by more than one of {apps, cbase} lives in `shared/c`, never in `cbase/src/util`; pull requests #376 and #377 moved base32, base64 and hex there.
+  cbase-only platform code (HTTP, the store, AWS, the contained JSON) stays in cbase, and `core/` must not grow general helpers that belong in `shared/c`.
 - JSON CONTAINMENT (Alex): every JSON shape and every JSON reader or writer call lives in one file, `json_surface.c` over `util/json.c`, enforced by `unit_json_gate.c`.
   Stage 7 splits it into `core_json.c` and `aws_json.c`, one file per side, still gated, still no JSON anywhere else.
 
 ## 1. Inventory
 
-Counts are physical lines of every tracked file under `c_base/` (44,771 in all), by file, then the mixed source split by section.
+Counts are physical lines of every tracked file under `cbase/` (44,771 in all), by file, then the mixed source split by section.
 
 ### 1.1 Totals by class
 
@@ -48,7 +48,7 @@ Counts are physical lines of every tracked file under `c_base/` (44,771 in all),
 | mixed | 68 | 22,173 | 10,975 | 5,877 | 700 | 957 | 3,664 |
 
 The mixed source (10,975 lines), split by section as read: about 7,270 platform and 3,680 foolish.
-So `c_base/src` as a whole is about 13,650 lines of platform and 6,530 lines of foolish: two thirds general.
+So `cbase/src` as a whole is about 13,650 lines of platform and 6,530 lines of foolish: two thirds general.
 The tests follow the source: about 3,400 platform, 5,700 foolish and 5,900 mixed (the store, DynamoDB, stream and admin tests exercise both halves).
 
 ### 1.2 Platform (product-free in substance)
@@ -103,10 +103,10 @@ The tests follow the source: about 3,400 platform, 5,700 foolish and 5,900 mixed
 - Tests: `unit_store`, `unit_store_faults`, `unit_dynamo`, `unit_dynamo_ops` (also the free-tier template check, which is platform), `unit_admin`, `unit_admin_edges`, `unit_auth`, `unit_event`, `unit_aws_calls`, `unit_stream`, `lib_admin_fakestore`, `smoke_lambda`, `smoke_lambda_after`, `smoke_authz`, `smoke_boot`, `bench_dynamo`.
 - Docs: `DESIGN.md`, `RUNBOOK.md`, `REPORT.md`, `README.md`, `docs/*`.
 
-### 1.5 Kernel and shared files c_base touches
+### 1.5 Kernel and shared files cbase touches
 
 - Mixed: `foolish/c/src/netwire.[ch]` (814 lines) and `netclient.[ch]` (1,819 lines); see section 2.6.
-- Foolish: `table.h`, `game.h`, `ask.h` (the 10-byte `AskRefusal`, which c_base uses as its error body everywhere), `roster.h`, `bot_roster.h`, `replay.h`, `replay_extras.h`, `msg_wire.h`, `awire.h`, `legal.h`, `client_table.h`, `view.h`, `evwire.h`, `cordite_sim.h`, `thread_heap.h`; `foolish/c/Makefile`'s `print-core` and `print-human-caps`; `foolish/c/wasm/wasm_net_api.c` (the web's netclient bridge).
+- Foolish: `table.h`, `game.h`, `ask.h` (the 10-byte `AskRefusal`, which cbase uses as its error body everywhere), `roster.h`, `bot_roster.h`, `replay.h`, `replay_extras.h`, `msg_wire.h`, `awire.h`, `legal.h`, `client_table.h`, `view.h`, `evwire.h`, `cordite_sim.h`, `thread_heap.h`; `foolish/c/Makefile`'s `print-core` and `print-human-caps`; `foolish/c/wasm/wasm_net_api.c` (the web's netclient bridge).
 - Shared: `shared/c/sha256.h` (the username email), `shared/tools/c_rules.mk`.
 
 ## 2. The platform API a product implements
@@ -235,8 +235,8 @@ APP_CFLAGS := -I../../c/src $(KERNEL_CAPS)
 
 ### 3.2 The build
 
-`make -C c_base APP=<dir>` builds `build/<name>/cbase` (serve), `build/<name>/bootstrap` (native, for the fake-runtime lane) and `build/<name>/test/*`.
-`make -C c_base APP=<dir> zip` builds `dist/<name>/bootstrap.zip` through today's `tools/build_bootstrap.sh`, generalized to copy `APP_DIRS` instead of the hard-coded `foolish/c`: static, musl, arm64, the same bytes every run, for the `provided.al2023` runtime (Amazon Linux 2023 with no language runtime: the bare Lambda).
+`make -C cbase APP=<dir>` builds `build/<name>/cbase` (serve), `build/<name>/bootstrap` (native, for the fake-runtime lane) and `build/<name>/test/*`.
+`make -C cbase APP=<dir> zip` builds `dist/<name>/bootstrap.zip` through today's `tools/build_bootstrap.sh`, generalized to copy `APP_DIRS` instead of the hard-coded `foolish/c`: static, musl, arm64, the same bytes every run, for the `provided.al2023` runtime (Amazon Linux 2023 with no language runtime: the bare Lambda).
 `package.sh` already checks the zip holds exactly one executable `bootstrap`.
 The platform library is compiled WITHOUT any product include path, so a platform file that includes a product header fails to compile: the compiler enforces the split, and the name gate (section 4) catches comments and literals.
 
@@ -274,7 +274,7 @@ Product steps that today run inside `deploy.sh` (`--seed-bots`, `--reindex-ratin
 ## 4. Where things live
 
 ```
-c_base/                       the platform; NO PRODUCT NAMES (gate)
+cbase/                       the platform; NO PRODUCT NAMES (gate)
   src/{util,net,aws,auth,store,realtime,admin}/   the items layer replaces the row ops
   client/                     cbase/wire.{h,c}, cbase/client.{h,c}: compiled into each product's
                               wasm and iOS builds by relative path, like shared/c
@@ -290,7 +290,7 @@ foolish/server/impls/cbase/   foolish's app: table_ops, bots, fanout, the routes
 foolish/c/src/netwire.*, netclient.*   foolish's kinds and the book of games only
 ```
 
-The gate: a C test in `c_base/test` that reads the product-name patterns from one list both gates read (moved out of `shared_is_shared_validation.test.ts` into a plain text file under `shared/tools/`), plus a c_base-only list of foolish domain words (`game`, `seat`, `bot`, `roster`, `rating`, `elo`, `replay`, `snapshot`, `leaderboard`, `deal`, `card`, `u/`-topic family names such as `/c/` and `/m/` are checked by the family test instead), refusing any hit under `c_base/` except `examples/`.
+The gate: a C test in `cbase/test` that reads the product-name patterns from one list both gates read (moved out of `shared_is_shared_validation.test.ts` into a plain text file under `shared/tools/`), plus a cbase-only list of foolish domain words (`game`, `seat`, `bot`, `roster`, `rating`, `elo`, `replay`, `snapshot`, `leaderboard`, `deal`, `card`, `u/`-topic family names such as `/c/` and `/m/` are checked by the family test instead), refusing any hit under `cbase/` except `examples/`.
 It starts with an explicit allowlist of today's offenders whose count may only go down, and is strict after stage 6.
 
 How uttt could adopt it: uttt has no server; an online mode would declare a `matches` collection with CAS on version, `m-{doc}-{user}` and `m-{doc}` families, a few product kinds from 64 up, link `uttt/c` through its `app.mk`, and deploy its own app stack at `api.uttt.live`.
@@ -320,7 +320,7 @@ Sizes are touched lines, net change in brackets.
    The live-data proof: a test lists every pk, sk, GSI key and attribute name each operation writes, captured before the stage and required equal after it, plus the existing DynamoDB golden requests (expression spelling may change, names may not).
    Deployed as a code-only update; this is the riskiest code change against live data, but it changes no key, so no data migration exists.
 6. **The physical move** (about 9,000 moved, net 0).
-   Foolish's half to `foolish/server/impls/cbase/`, `make -C c_base APP=...`, CI paths, the gate goes strict.
+   Foolish's half to `foolish/server/impls/cbase/`, `make -C cbase APP=...`, CI paths, the gate goes strict.
    No AWS change.
 7. **The packager and the generated template: THE LIVE STAGE** (about 1,200, net +400).
    `app.mk`, the generalized static build, `cbase describe`, `base.yaml`, the generated app template.
@@ -328,7 +328,7 @@ Sizes are touched lines, net change in brackets.
    The table stays in the `cbase` stack (`DeletionPolicy: Retain` already) and the base stack holds only the code bucket and the OIDC role, whose stack is re-pointed by hand with `CBASE_AWS_ROLE_ARN` unchanged if its logical role is kept.
    Done by hand from the Mac with the RUNBOOK's rollback (the same update with the previous template and CodeKey).
 8. **The example product** (about 500, net +500).
-   `c_base/examples/notes` in CI on all three lanes; optionally deployed as a second app stack to prove multi-product end to end.
+   `cbase/examples/notes` in CI on all three lanes; optionally deployed as a second app stack to prove multi-product end to end.
 9. **The wire and client split** (about 2,000 moved, net +200).
    `cbase/wire.h` and `cbase/client.c` out of the kernel; foolish's Makefile, `web.wasm` and the iOS xcframework add them by relative path; numbers frozen by static assert; hosts unchanged.
    Ships with the next web deploy and the next iOS build; old iOS installs see identical bytes.
@@ -368,32 +368,32 @@ What is missing to reach it:
 
 | rank | piece | today | home | why |
 |---|---|---|---|---|
-| 1 | C-to-Lambda packager (static musl arm64, reproducible, zip check, sha256 code keys, template from a C descriptor) | `tools/build_bootstrap.sh`, `ops/package.sh`, `ops/*deploy.sh` | c_base platform | nothing else ships C to `provided.al2023` this simply |
-| 2 | Minimal C AWS client: SigV4, HTTPS keep-alive, DynamoDB, IoT Data, Lambda invoke, CloudFront, SSM | `src/aws/*` | c_base platform | no C SDK this small exists; JSON contained in one file |
-| 3 | Lambda runtime loop + fake Runtime API harness | `main_lambda.c`, `aws/runtime_api`, `test/smoke_lambda.c` | c_base platform | tests the real bootstrap with no AWS and no Docker |
-| 4 | Binary realtime over IoT Core MQTT (a custom authorizer, one static policy, per-user topics, lane-parallel publish) and its local hub twin | `realtime/*` | c_base platform | push with no connection table to keep |
-| 5 | DynamoDB free-tier gate + throttle backoff to the invocation deadline + paced bulk importer + DynamoDB Local lane built from the template | `unit_dynamo.c`, `store_dynamo.c`, `store_import.c` (pacing), `ops/dynamo_local.sh`, `dynamo_table.py` | c_base platform | "$0 by construction" is the platform's promise |
+| 1 | C-to-Lambda packager (static musl arm64, reproducible, zip check, sha256 code keys, template from a C descriptor) | `tools/build_bootstrap.sh`, `ops/package.sh`, `ops/*deploy.sh` | cbase platform | nothing else ships C to `provided.al2023` this simply |
+| 2 | Minimal C AWS client: SigV4, HTTPS keep-alive, DynamoDB, IoT Data, Lambda invoke, CloudFront, SSM | `src/aws/*` | cbase platform | no C SDK this small exists; JSON contained in one file |
+| 3 | Lambda runtime loop + fake Runtime API harness | `main_lambda.c`, `aws/runtime_api`, `test/smoke_lambda.c` | cbase platform | tests the real bootstrap with no AWS and no Docker |
+| 4 | Binary realtime over IoT Core MQTT (a custom authorizer, one static policy, per-user topics, lane-parallel publish) and its local hub twin | `realtime/*` | cbase platform | push with no connection table to keep |
+| 5 | DynamoDB free-tier gate + throttle backoff to the invocation deadline + paced bulk importer + DynamoDB Local lane built from the template | `unit_dynamo.c`, `store_dynamo.c`, `store_import.c` (pacing), `ops/dynamo_local.sh`, `dynamo_table.py` | cbase platform | "$0 by construction" is the platform's promise |
 | 6 | The JSON/XML containment gate | `test/unit_json_gate.c` | shared/tools as a lint taking (allowed file, forbidden calls, forbidden literal patterns) | useful to any C tree that tolerates a format |
-| 7 | The request-pump client pattern (intent, ticket, next_request, on_response, due_ms; hosts are transports) | `netclient.[ch]` | the generic pump to c_base/client; the pattern written up in ARCHITECTURE_AS_A_PATTERN | the client half of the platform |
-| 8 | Auth: bcrypt, HS256 JWT, refresh rotation with the reuse grace | `src/auth/*` | c_base platform | needed by every product with accounts |
-| 9 | Deploy safety: `require_main.sh`, the change-set replacement guard, the secrets guard, OIDC role limited to code | `ops/*` | c_base platform; `require_main.sh` also to shared/scripts | cheap, catches the expensive mistakes |
-| 10 | Edge cache with event invalidation | `app/edge.*`, cache behaviours | c_base platform, paths declared | small, real latency win |
-| 11 | Admin console (overview, browse, query with a WRITE confirm, logs ring, config, backups) | `admin/*` | c_base platform, product panels as data | a Supabase-studio stand-in |
-| 12 | The latency bench (spaced, cold start, per-call ddb/push tallies, the `inv:` log line) | `bench/*`, `main_lambda.c` timing | harness to c_base platform; stats to shared/c/stats | measured rather than guessed |
+| 7 | The request-pump client pattern (intent, ticket, next_request, on_response, due_ms; hosts are transports) | `netclient.[ch]` | the generic pump to cbase/client; the pattern written up in ARCHITECTURE_AS_A_PATTERN | the client half of the platform |
+| 8 | Auth: bcrypt, HS256 JWT, refresh rotation with the reuse grace | `src/auth/*` | cbase platform | needed by every product with accounts |
+| 9 | Deploy safety: `require_main.sh`, the change-set replacement guard, the secrets guard, OIDC role limited to code | `ops/*` | cbase platform; `require_main.sh` also to shared/scripts | cheap, catches the expensive mistakes |
+| 10 | Edge cache with event invalidation | `app/edge.*`, cache behaviours | cbase platform, paths declared | small, real latency win |
+| 11 | Admin console (overview, browse, query with a WRITE confirm, logs ring, config, backups) | `admin/*` | cbase platform, product panels as data | a Supabase-studio stand-in |
+| 12 | The latency bench (spaced, cold start, per-call ddb/push tallies, the `inv:` log line) | `bench/*`, `main_lambda.c` timing | harness to cbase platform; stats to shared/c/stats | measured rather than guessed |
 | 13 | `tp_child` test-process helper (always-drained stderr, own temp dir, owned PIDs only) | `test/lib_proc.[ch]` | shared/c/test | every product smoke that spawns a binary wants it |
 | 14 | `embed.c` (file into a C array) | `tools/embed.c` | shared/tools | trivial, used by any binary that ships a page |
-| 15 | net (poll loop, HTTP/1.1 parser hardened, WebSocket codec, router) | `src/net/*` | c_base platform | general but not unique |
-| 16 | util (pool, log ring, clock, uuid, b64, hex) | `src/util/*` | c_base platform; nothing here is worth shared/ until a second non-server user appears | commodity |
+| 15 | net (poll loop, HTTP/1.1 parser hardened, WebSocket codec, router) | `src/net/*` | cbase platform | general but not unique |
+| 16 | util (pool, log ring, clock, uuid, b64, hex) | `src/util/*` | cbase platform; nothing here is worth shared/ until a second non-server user appears | commodity |
 
 `rng.h` is already on its way to shared/ (`foolish/foolyard/include/rng.h`), and the store's `backoff` RNG could use it when it lands.
 
 ## 7. Decisions for Alex
 
 1. **The platform's name and home.**
-   Options: keep `c_base/` at the top level; rename it; move it under `shared/`.
-   Recommend keeping `c_base/` and the name: the binaries, `CBASE_*` variables, the stack, function and table are all `cbase`, renaming any of the live ones costs a migration for nothing, and `shared/` is for code products compile in, not a deployable service.
+   Options: keep `cbase/` at the top level; rename it; move it under `shared/`.
+   Recommend keeping `cbase/` and the name: the binaries, `CBASE_*` variables, the stack, function and table are all `cbase`, renaming any of the live ones costs a migration for nothing, and `shared/` is for code products compile in, not a deployable service.
 2. **Where foolish's server half goes.**
-   Options: `foolish/server/impls/cbase/` (beside `impls/native`, the A10 layout); `foolish/c_base_app/`; `foolish/server/` flat.
+   Options: `foolish/server/impls/cbase/` (beside `impls/native`, the A10 layout); `foolish/cbase_app/`; `foolish/server/` flat.
    Recommend `foolish/server/impls/cbase/`.
 3. **Stacks and tables.**
    Options: one stack and one function hosting every product by Host; a base stack plus one app stack per product sharing one table by key namespace; fully separate stacks each with its own table.
@@ -408,7 +408,7 @@ What is missing to reach it:
 One more, smaller: a product's account rules (foolish's username-to-email `@foolish.cards` and the `%` ban) become descriptor data, and the rating row `user_create` makes "as the auth.users trigger did" should be checked for redundancy, since `game_commit` already creates a missing human rating; if `/v1/history` reads fine without it, the side effect goes and the platform's signup knows nothing about ratings.
 
 ## Decisions (Alex, 2026-10-17)
-- Name and home: keep c_base/ (platform, product-free).
+- Name and home: keep cbase/ (platform, product-free).
 - Foolish's server half: foolish/server/ directly (not server/impls/cbase/).
 - Stacks: one stack AND one DynamoDB table per product (not a shared table). Consequence to design for: the free 25 RCU/25 WCU are per account and foolish's stack provisions all 25 today (15/15 table + 5/5 per GSI), so the free-tier gate must become account-wide and the units get split across products (or a product goes on-demand), decided per product at creation.
 - Store: declared collections now, generated codecs later.
@@ -418,12 +418,12 @@ One more, smaller: a product's account rules (foolish's username-to-email `@fool
 
 Read on origin/main at a66076da (2026-10-17), in a detached worktree, with nothing in the repo changed.
 Alex (2026-10-17): "allow for various cloud server impls. So Google Cloud should be possible. Don't actually add a Google Cloud implementation but split up the code so that it is organized accordingly."
-So c_base gets two axes: product (foolish vs platform, sections 1 to 7) and provider (aws, local, and a gcp slot that is named but not created).
+So cbase gets two axes: product (foolish vs platform, sections 1 to 7) and provider (aws, local, and a gcp slot that is named but not created).
 The rule for the second axis is the same as the first: core names no provider, a provider names no product, and the product names no provider.
 
 ### 8.1 The headline, in five lines
 
-About 12,500 lines of c_base are AWS-specific (about 6,200 of source, 1,450 of ops, 4,000 of tests, 900 of bench), over a quarter of the tree.
+About 12,500 lines of cbase are AWS-specific (about 6,200 of source, 1,450 of ops, 4,000 of tests, 900 of bench), over a quarter of the tree.
 Three seams already exist and are the right shape: the store vtable (`cb_store_ops`: SQLite, DynamoDB), the push transport vtable (`cb_rt_transport`: rt_local, rt_iot) and the bot kick (`cb_kick_fn`: local pool, Lambda self-invoke).
 What is NOT behind a seam is the ingress (`main_lambda.c` switches on four AWS event shapes), the edge purge (`edge.c` calls CloudFront by name), the admin's AWS console links, the `ctx->mode == CB_MODE_LAMBDA` checks that pick every backend at once, and `json_surface.c`, which is 85% AWS shapes.
 The surprise is how little a GCP provider would need that local does not already have: Cloud Run runs a long-lived HTTP and WebSocket server process, which is `cbase serve`'s main, not the Lambda one.
@@ -475,7 +475,7 @@ The origin proof (`CBASE_ORIGIN_SECRET`, `X-Cbase-Origin`) landed and is generic
 | `ops/dynamo_local.sh`, `ops/dynamo_table.py` (DynamoDB Local from the template) | about 280 |
 | `ops/changeset_replacements.jq`, `ops/test/changeset_gate_test.sh`, `ops/test/changesets/*` | about 20 + test |
 | `ops/web.yaml`, `ops/web_deploy.sh` (S3 plus CloudFront static sites; AWS mechanism, product values) | about 690 |
-| `.github/workflows/c_base.yml`: the DynamoDB Local lane, cfn-lint, the ops gates, package and deploy jobs, the deploy queue | part |
+| `.github/workflows/cbase.yml`: the DynamoDB Local lane, cfn-lint, the ops gates, package and deploy jobs, the deploy queue | part |
 
 Provider-free in ops: `ops_env.sh` (the settings file; its secret helpers are generic).
 
@@ -627,7 +627,7 @@ Alarms belong to the provider's template (sec-h2's ten CloudWatch alarms; Cloud 
 ### 8.4 Layout, both axes
 
 ```
-c_base/
+cbase/
   core/                         names no product and no provider (gates)
     include/cbase/              app.h, provider.h, items.h, wire.h, client.h
     src/util, net (loop, http, ws, router, server, https), auth, items, realtime/{stream,gateway,hub}.c,
@@ -675,13 +675,13 @@ The descriptor never names a provider: collections, topic families, jobs, schedu
 
 ### 8.6 Revised migration, both axes in one sequence
 
-Each stage is one pull request, merged (rebased onto main) before the next starts, and leaves `make -C c_base check check-asan check-dynamo coverage` green.
+Each stage is one pull request, merged (rebased onto main) before the next starts, and leaves `make -C cbase check check-asan check-dynamo coverage` green.
 Each is deployable as a code-only Lambda update unless marked LIVE.
 Through stage 7 the client-visible bytes (netwire, MQTT topics and payloads, HTTP routes and bodies), the DynamoDB table, key and attribute names, and every AWS resource name stay unchanged, held by the existing tests plus the key-capture proof of stage 6.
 Every new or changed function gets unit tests, mutation-checked and recorded in `docs/mutation_checks.md`; untrusted-input code is fuzzed; coverage floors only go up.
 Section 5's stage 10 is gone (Alex: one stack and one table per product).
 
-0. **This document** as `c_base/docs/PLATFORM.md`, refreshed for section 0.1.
+0. **This document** as `cbase/docs/PLATFORM.md`, refreshed for section 0.1.
 1. **Gates and both descriptors** (about 900, net +400).
    Name gate in allowlist mode with all three word lists; `cb_app`; `cb_provider` defined by each main (local: SQLite, hub, pool, no purge; aws: DynamoDB, IoT, invoke, CloudFront); `boot.c`'s mode switch, `ctx->mode`, the admin's links and labels read the provider instead.
    The `inv:` line's `ddb=` becomes `store=`, with the RUNBOOK's Logs Insights queries in the same commit.
@@ -713,7 +713,7 @@ Section 5's stage 10 is gone (Alex: one stack and one table per product).
 7. **The physical move, both axes at once** (about 12,000 moved, net 0).
    `core/`, `providers/local/`, `providers/aws/` (with `ops/site/` for the static-site stacks) and `foolish/server/` in one `git mv` so no file moves twice; `json_surface.c` splits into `core_json.c` and `aws_json.c`, each the only JSON file on its side; the include paths and all three name gates go strict; CI paths add `foolish/server/**`.
    No AWS change.
-   As built (2026-10-18): every file moved once, by side: `core/{include/cbase,src,test,fuzz}`, `providers/local/{src,test,sql}`, `providers/aws/{src,test,fuzz,bench,ops,ops/site}`, `foolish/server/{src,test,fuzz,bench,migrate,tools}`; the harnesses stay at `c_base/fuzz` (fuzz.mk, fz.h, replay_main.c, seeds.c), `c_base/bench` (the harness and its statistics) and `c_base/tools` (embed, cov_gate), and the provider-free `require_main.sh` and `ops_env.sh` at `c_base/ops`.
+   As built (2026-10-18): every file moved once, by side: `core/{include/cbase,src,test,fuzz}`, `providers/local/{src,test,sql}`, `providers/aws/{src,test,fuzz,bench,ops,ops/site}`, `foolish/server/{src,test,fuzz,bench,migrate,tools}`; the harnesses stay at `cbase/fuzz` (fuzz.mk, fz.h, replay_main.c, seeds.c), `cbase/bench` (the harness and its statistics) and `cbase/tools` (embed, cov_gate), and the provider-free `require_main.sh` and `ops_env.sh` at `cbase/ops`.
    The store is option 1 (Alex: "whichever one is faster"): core's `cb_store_ops` (items, admin reads, accounts and auth rows) and foolish's `cb_rows_ops` (`rows_foolish.h`, called through `CB_ROWS_CALL`), installed on every store at open through `cb_store_app` (store.h), which the product's `cb_app` names and `cb_store_init` reads from the link-time `cb_main_app`.
    The account hooks (`signup_txn`, `delete_keys`, `delete_txn`) keep every request of signup and delete as it was (check-dynamo's 102 shapes unchanged); the bot seed is foolish's (`foolish/server/src/store/bot_seed.c`) and its `seed` hook, run by SQLite at open and by a deploy's `--seed-bots`.
    The compiler gate is per side in the Makefile (`side_inc`): core sees core and shared/c, a provider core and itself, the product core, itself and the kernel; tests, fuzz targets, benches and tools see every root.

@@ -11,13 +11,13 @@
 // comments and strings included: a name in a comment is the first step of
 // the drift, not an exception to it.
 //
-// THE ALLOWLISTS hold today's hits, one line per file and pattern: c_base's
+// THE ALLOWLISTS hold today's hits, one line per file and pattern: cbase's
 // own, tools/name_gate/allow.txt, for its files, and the product's
 // (CBASE_APP_NAME_ALLOW, cbase.mk's APP_NAME_ALLOW) for the product's:
 //
 //     <count> <path> <pattern, as words.txt writes it>
 //
-// A c_base path is from c_base's root ("core/src/x.c"), a product path as the
+// A cbase path is from cbase's root ("core/src/x.c"), a product path as the
 // product spells its roots (lib_tree.h).
 //
 // The count is the number of lines of that file the pattern hits, and it must
@@ -220,7 +220,7 @@ static void scan_named(const char *dir, const char *name, int forbidden) {
     closedir(d);
 }
 
-// A c_base directory, from c_base's root.
+// A cbase directory, from cbase's root.
 static void scan_dir(const char *rel, int forbidden) {
     char p[TT_PATH_MAX];
     scan_named(tt_path(p, sizeof p, rel), rel, forbidden);
@@ -333,7 +333,7 @@ static void the_matcher_sees_each_shape(void) {
 static void each_side_names_only_its_own(void) {
     struct stat st;
     char core[TT_PATH_MAX];
-    T_CHECK(stat(tt_path(core, sizeof core, "core/src"), &st) == 0);   // CBASE_ROOT is c_base, or nothing is scanned
+    T_CHECK(stat(tt_path(core, sizeof core, "core/src"), &st) == 0);   // CBASE_ROOT is cbase, or nothing is scanned
     scan_tree();
     T_CHECK(g_files >= 100);                // a gate that read nothing proves nothing
     const char *out = getenv("CBASE_NAME_GATE_WRITE");

@@ -1,12 +1,12 @@
 #!/bin/bash
 # Ships a built Lambda zip to the cbase stack: the code only, never the
 # template. By hand only, with an operator's credentials: until 2026-10-19
-# .github/workflows/c_base.yml ran it on every push to main; since the cutover
+# .github/workflows/cbase.yml ran it on every push to main; since the cutover
 # the cbase-vm instance serves production (providers/local/ops/vm_release.sh),
 # the Lambda is frozen at reserved concurrency 0 for a rollback, and the GitHub
 # role holds no Lambda rights.
 #
-#   c_base/providers/aws/ops/lambda_deploy.sh c_base/build/cbase-lambda.zip
+#   cbase/providers/aws/ops/lambda_deploy.sh cbase/build/cbase-lambda.zip
 #
 # In order:
 #   0. refuses a tree that does not contain origin/main, except a CI run of a
@@ -19,7 +19,7 @@
 #      rollback is the same update with the old key;
 #   4. checks the function's CodeSha256 is this zip's, and that
 #      <PublicUrl>/health answers "ok cbase";
-#   5. prunes the bucket (c_base/ops/s3_prune_lib.sh): every other
+#   5. prunes the bucket (cbase/ops/s3_prune_lib.sh): every other
 #      cbase-lambda-*.zip goes, except this one and the one the stack ran before
 #      (the one-step rollback). Only after step 4 passed, only when this run
 #      shipped a zip, and only when the stack's CodeKey reads back as this zip.
@@ -30,9 +30,9 @@
 # Settings: CBASE_STACK (cbase), AWS_REGION (us-east-1).
 set -euo pipefail
 
-cb="$(cd "$(dirname "$0")/../../.." && pwd)"   # the c_base root
-# The repository being deployed: the product's that c_base sits in (a submodule's superproject,
-# or the repository c_base is a directory of), or c_base's own.
+cb="$(cd "$(dirname "$0")/../../.." && pwd)"   # the cbase root
+# The repository being deployed: the product's that cbase sits in (a submodule's superproject,
+# or the repository cbase is a directory of), or cbase's own.
 repo="$(git -C "$cb" rev-parse --show-superproject-working-tree)"
 [ -n "$repo" ] || repo="$(git -C "$cb" rev-parse --show-toplevel)"
 stack="${CBASE_STACK:-cbase}"

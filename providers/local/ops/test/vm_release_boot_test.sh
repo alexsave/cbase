@@ -20,7 +20,7 @@
 # fake fails every SSM call, so verify fails the release anyway).
 set -u
 here="$(cd "$(dirname "$0")/.." && pwd)"
-c_base="$(cd "$here/../../.." && pwd)"
+cbase="$(cd "$here/../../.." && pwd)"
 fails=0
 check() { if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1: got [$2] want [$3]"; fails=$((fails + 1)); fi; }
 tmp="$(mktemp -d)"
@@ -30,12 +30,12 @@ g() { git -c user.name=t -c user.email=t@t -c init.defaultBranch=main "$@"; }
 # A clone that is main's tip, holding the files vm_release.sh uses.
 g init -q --bare "$tmp/origin.git"
 g clone -q "$tmp/origin.git" "$tmp/seed" 2>/dev/null
-mkdir -p "$tmp/seed/c_base/ops" "$tmp/seed/c_base/providers/local/ops"
-cp "$c_base/ops/require_main.sh" "$c_base/ops/s3_prune_lib.sh" "$tmp/seed/c_base/ops/"
-cp "$here/vm_release.sh" "$here/vm_boot_lib.sh" "$here/vm_boot_stub.sh" "$here/vm_boot.sh" "$here/cbase.service" "$tmp/seed/c_base/providers/local/ops/"
+mkdir -p "$tmp/seed/cbase/ops" "$tmp/seed/cbase/providers/local/ops"
+cp "$cbase/ops/require_main.sh" "$cbase/ops/s3_prune_lib.sh" "$tmp/seed/cbase/ops/"
+cp "$here/vm_release.sh" "$here/vm_boot_lib.sh" "$here/vm_boot_stub.sh" "$here/vm_boot.sh" "$here/cbase.service" "$tmp/seed/cbase/providers/local/ops/"
 g -C "$tmp/seed" add -A; g -C "$tmp/seed" commit -q -m A; g -C "$tmp/seed" push -q origin HEAD:main
 g clone -q "$tmp/origin.git" "$tmp/work" 2>/dev/null
-rel="$tmp/work/c_base/providers/local/ops/vm_release.sh"
+rel="$tmp/work/cbase/providers/local/ops/vm_release.sh"
 # shellcheck source=providers/local/ops/vm_boot_lib.sh
 . "$here/vm_boot_lib.sh"
 

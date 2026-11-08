@@ -3,9 +3,9 @@ AWSTemplateFormatVersion: "2010-09-09"
 # EC2 t4g.nano. A separate stack from `cbase` (providers/aws/ops/cbase.yaml);
 # it takes no production traffic until a CloudFront origin points at it.
 #
-# Deploy with c_base/providers/local/ops/vm_deploy.sh (it uploads the binary,
+# Deploy with cbase/providers/local/ops/vm_deploy.sh (it uploads the binary,
 # makes the SecureStrings and fills in the parameters below); see
-# c_base/providers/local/ops/VM_RUNBOOK.md.
+# cbase/providers/local/ops/VM_RUNBOOK.md.
 #
 # The user-data is a stub (BootStub), not the boot script: the script is an
 # object in the code bucket, named by the SSM String /cbase-vm/release/boot, which

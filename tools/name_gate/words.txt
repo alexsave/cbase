@@ -3,7 +3,7 @@
 # Two gates read this file:
 #   foolish/e2e/validation/shared_is_shared_validation.test.ts: nothing under
 #     shared/ hits a [products] pattern;
-#   c_base/core/test/unit_name_gate.c (c_base/docs/PLATFORM.md 8.4): c_base's
+#   cbase/core/test/unit_name_gate.c (cbase/docs/PLATFORM.md 8.4): cbase's
 #     core hits no pattern of any list, a provider no [products] or [domain]
 #     pattern, foolish/server/src no [providers] pattern, but for the lines of
 #     allow.txt beside this file.

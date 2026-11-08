@@ -13,21 +13,21 @@ check() { if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1: got [$2] 
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
-fake_c_base="$tmp/c_base"
-mkdir -p "$fake_c_base/ops" "$tmp/home"
+fake_cbase="$tmp/cbase"
+mkdir -p "$fake_cbase/ops" "$tmp/home"
 export HOME="$tmp/home"
 unset CBASE_OPS_ENV CBASE_JWT_SECRET CBASE_ADMIN_TOKEN CBASE_X OTHER_SETTING
 
 # Which file: the home file when neither exists (a first deploy writes there).
-check "default is the home file" "$(cbase_ops_env_file "$fake_c_base")" "$HOME/.config/cbase/ops.env"
+check "default is the home file" "$(cbase_ops_env_file "$fake_cbase")" "$HOME/.config/cbase/ops.env"
 # The old ops/.env is still read when it is the only one.
-: > "$fake_c_base/ops/.env"
-check "an old ops/.env alone is read" "$(cbase_ops_env_file "$fake_c_base")" "$fake_c_base/ops/.env"
+: > "$fake_cbase/ops/.env"
+check "an old ops/.env alone is read" "$(cbase_ops_env_file "$fake_cbase")" "$fake_cbase/ops/.env"
 # The home file wins over it once it exists.
 mkdir -p "$HOME/.config/cbase" && : > "$HOME/.config/cbase/ops.env"
-check "the home file wins" "$(cbase_ops_env_file "$fake_c_base")" "$HOME/.config/cbase/ops.env"
+check "the home file wins" "$(cbase_ops_env_file "$fake_cbase")" "$HOME/.config/cbase/ops.env"
 # CBASE_OPS_ENV wins over both.
-check "CBASE_OPS_ENV wins" "$(CBASE_OPS_ENV="$tmp/x.env" cbase_ops_env_file "$fake_c_base")" "$tmp/x.env"
+check "CBASE_OPS_ENV wins" "$(CBASE_OPS_ENV="$tmp/x.env" cbase_ops_env_file "$fake_cbase")" "$tmp/x.env"
 
 # Reading: CBASE_* only, comments skipped, the environment wins.
 f="$tmp/read.env"

@@ -54,10 +54,10 @@ Amplify is the wrong tool: it exists to run Next on a server, and the point of m
 
 ## 4. The design if we move
 
-### (a) The `/m/<payload>` unfurl becomes a C route in c_base
+### (a) The `/m/<payload>` unfurl becomes a C route in cbase
 
 Crawlers (Messages, Slack, WhatsApp) run no JavaScript, so `/m/<payload>` must answer real HTML with the tags in the head.
-Today the TS route percent-decodes and trims the payload, and if it starts with `1` (the text-level format version) it calls three wasm exports; each is a thin wrapper over kernel C that c_base already links:
+Today the TS route percent-decodes and trims the payload, and if it starts with `1` (the text-level format version) it calls three wasm exports; each is a thin wrapper over kernel C that cbase already links:
 
 | TS call | wasm export | kernel C |
 |---|---|---|
@@ -65,7 +65,7 @@ Today the TS route percent-decodes and trims the payload, and if it starts with 
 | `kernelMsgDecode(bytes)` | `wasm_msg_decode` (`foolish/c/wasm/wasm_api.c`) | `msg_decode` then `msg_replay` into a `Game` (`c/src/msg_wire.h`) |
 | reads `env.joins[].name`, `nPlayers`, `phase`, `carryKey`, `turn` | `wasm_msg_header_ptr` | the `MsgEnvelope` fields `joins`, `n_players`, `phase`, `carry_key`, `turn` |
 
-`msg_wire.c` and `replay.c` are already in the kernel's core list that `c_base/Makefile` compiles, so the route adds no kernel source.
+`msg_wire.c` and `replay.c` are already in the kernel's core list that `cbase/Makefile` compiles, so the route adds no kernel source.
 The C route must call `msg_replay` too, not only `msg_decode`: the TS route falls back to the generic tags when the replay fails, and the golden test below would catch the difference.
 
 The route, in `foolish/server/src/app/` next to the other GET handlers, answers `GET /m/<payload>` with a small HTML page:
@@ -117,7 +117,7 @@ The pieces:
 
 - ACM certificate in us-east-1 for `foolish.cards` and `www.foolish.cards`, DNS-validated by a `_xxx` CNAME at Squarespace.
 - A private S3 bucket with Origin Access Control; no website endpoint, no public access.
-- A second origin: the c_base Function URL (a stack output today), with a `/m/*` behaviour pointing at it, `Managed-AllViewerExceptHostHeader` for origin requests and `Managed-CachingOptimized`, which honours the route's own `Cache-Control`.
+- A second origin: the cbase Function URL (a stack output today), with a `/m/*` behaviour pointing at it, `Managed-AllViewerExceptHostHeader` for origin requests and `Managed-CachingOptimized`, which honours the route's own `Cache-Control`.
 - Default behaviour to S3 with `Managed-CachingOptimized` and the Function above; compression on (CloudFront compresses HTML, JS and CSS, which S3 never does).
 - Cache lifetime per path comes from the objects' own `Cache-Control`, set at upload (d), so only managed cache policies are needed; that sidesteps the Free plan's exclusion of custom caching rules.
 - `/.well-known/apple-app-site-association` uploaded with `Content-Type: application/json` (S3 would otherwise say `binary/octet-stream`) and served at the apex with no redirect, since the app's entitlement is `applinks:foolish.cards` only.
@@ -177,7 +177,7 @@ Lost:
 - Preview URLs per PR (rarely used; rebuildable as in (d)).
 - Vercel's page-view analytics (replaced by nothing, deliberately).
 - The dashboard's one-click rollback and atomic deploys; the deploy's ordering gives most of the atomicity, and a rollback is re-running the deploy job on an older commit (or S3 versioning).
-- Runtime log search for the one function; the `/m` route logs to the c_base CloudWatch group instead.
+- Runtime log search for the one function; the `/m` route logs to the cbase CloudWatch group instead.
 - Zero-config Next server features, none of which the app uses, and which become unavailable rather than merely unused, which is the point.
 
 Gained:
@@ -199,7 +199,7 @@ Risks, highest first: the Squarespace apex ALIAS (tested before anything moves, 
 Recommendation: move, for the account, the quotas and the north star, not for money.
 Order:
 
-1. Finish the Supabase to c_base cutover first and let it run stable; it changes the web's two env values and the same domain, and two migrations at once make every failure ambiguous.
+1. Finish the Supabase to cbase cutover first and let it run stable; it changes the web's two env values and the same domain, and two migrations at once make every failure ambiguous.
 2. Build the `/m` C route with its goldens while the cutover settles; it ships behind no DNS change, reachable only through the Function URL.
 3. Rehearse the whole hosting move on uttt.live, which has no server route and no universal links.
 4. Then foolish.cards: stack, test with `--connect-to`, ALIAS, two weeks in parallel, retire Vercel.
@@ -210,7 +210,7 @@ Nothing in the monorepo depends on it, and it is not part of the foolish move's 
 
 ## 7. As built (2026-10-14)
 
-Built ahead of the cutover, up to "ready to flip"; c_base/RUNBOOK.md "Web hosting" has the state and the steps.
+Built ahead of the cutover, up to "ready to flip"; cbase/RUNBOOK.md "Web hosting" has the state and the steps.
 Where it differs from sections 4 and 6, and why:
 
 - Two distributions in one stack (`providers/aws/ops/site/web.yaml`), foolish (with www and utils) and uttt: a flat-rate plan covers one apex, and each distribution has its own copy of the same viewer-request Function, because a Function attached to a plan's distribution cannot be shared. `providers/aws/ops/site/test/web_router.test.mjs` runs that code out of the template and fails when the copies drift.

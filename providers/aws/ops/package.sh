@@ -3,7 +3,7 @@
 #
 #   CBASE_PRODUCT=<the product's Makefile directory> providers/aws/ops/package.sh
 #
-# CBASE_PRODUCT defaults to c_base itself (its example app). The binary itself is
+# CBASE_PRODUCT defaults to cbase itself (its example app). The binary itself is
 # `make -C <product> bootstrap` (ops/build_static.sh: a
 # static Linux arm64 `bootstrap` built in a pinned Alpine container, the same
 # bytes every run). This script calls it rather than repeating it, copies the
@@ -14,7 +14,7 @@
 # Needs Docker. Run on this Mac or on the CI's ubuntu runner.
 set -euo pipefail
 
-here="$(cd "$(dirname "$0")/../../.." && pwd)"   # the c_base root
+here="$(cd "$(dirname "$0")/../../.." && pwd)"   # the cbase root
 prod="$(cd "${CBASE_PRODUCT:-$here}" && pwd)"    # the product's build
 make -C "$prod" bootstrap
 
@@ -45,7 +45,7 @@ size="$(wc -c < "$out" | tr -d ' ')"
 
 cat <<MSG
 
-Upload these (c_base/RUNBOOK.md, steps 3 and 4):
+Upload these (cbase/RUNBOOK.md, steps 3 and 4):
   1. the code:      $out
                     ($size bytes, sha256 $sum)
                     to the S3 bucket you name as the stack's CodeBucket, key cbase-lambda.zip

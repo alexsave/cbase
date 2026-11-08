@@ -56,7 +56,7 @@ typedef struct {
 // ---- the transport -------------------------------------------------------------------
 
 // HTTPS + SigV4 through aws/aws_call.h, the one signed-request step every AWS
-// call in c_base takes: the production `send`.
+// call in cbase takes: the production `send`.
 static int https_send(void *ud, const char *target, const uint8_t *body, size_t len, int *status, cb_buf *resp) {
     dyn *d = ud;
     char ct[96], tg[96];

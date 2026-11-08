@@ -1,11 +1,11 @@
 #!/bin/bash
-# mutate.sh - the mutation check of c_base/client: every mutant in test/mutants.py is applied, the
+# mutate.sh - the mutation check of cbase/client: every mutant in test/mutants.py is applied, the
 # suite that covers it is run, and the mutant must turn it red. The C mutants run the unit tests
 # (the object deleted first: make compares whole seconds, so a source rewritten in the same second
 # as its object would not rebuild); the TS mutants run the shim's tests against the copy they
 # import. Every file is restored from a copy taken first, never from git.
 #
-#   make -C c_base/client ts && c_base/client/test/mutate.sh
+#   make -C cbase/client ts && cbase/client/test/mutate.sh
 set -u
 D=$(cd "$(dirname "$0")/.." && pwd)
 cd "$D"

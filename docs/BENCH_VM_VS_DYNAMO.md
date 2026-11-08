@@ -1,4 +1,4 @@
-# c_base per-move latency and server cost: Lambda + DynamoDB vs a single VM (SQLite)
+# cbase per-move latency and server cost: Lambda + DynamoDB vs a single VM (SQLite)
 
 Measured 2026-10-18 from Alex's M1 in New York on home Wi-Fi (CloudFront POP BOS50), against origin/main 78f03f792 (includes #365 trims and #370 speedup knobs).
 Investigation only: nothing committed, worktree removed, no AWS resource changed.
@@ -110,7 +110,7 @@ REPORT Duration for those older moves: avg 58 ms, p50 51, p95 117, 1 cold start 
 Network legs (kept-alive, same Mac, same hour):
 - CloudFront cache hit (`foolish.cards/favicon.ico`, BOS50): p50 14.9 ms, p95 16.7 (cbase-bench spaced, n=100); curl 13.8 p50.
 - ICMP: api.foolish.cards 13.7 ms, the Function URL host 13.8, dynamodb.us-east-1 15.4.
-- Function URL directly (`/health`, answered 403 by c_base's origin check, so the handler runs and returns at once): p50 29.1 ms, p95 36.0 (curl, n=59).
+- Function URL directly (`/health`, answered 403 by cbase's origin check, so the handler runs and returns at once): p50 29.1 ms, p95 36.0 (curl, n=59).
 - CloudFront to Lambda `/health`: bimodal, 65% of samples 30 to 40 ms, about 30% at 60 to 85 ms (p50 37 to 60 ms depending on the minute).
 
 Decomposition of the action's 57 ms p50:
@@ -152,16 +152,16 @@ Build (throwaway worktree off origin/main 78f03f792, patches saved as bench-vm/w
 
 ```
 git worktree add --detach .claude/worktrees/bench-vm origin/main
-cp bench-vm/harness/p3client_fixretry.c c_base/tools/p3client.c   # then the MQTT port, see worktree.diff
+cp bench-vm/harness/p3client_fixretry.c cbase/tools/p3client.c   # then the MQTT port, see worktree.diff
 git apply bench-vm/harness/Makefile.diff
-make -C c_base -j10 build/cbase build/p3client build/cbase-bench
+make -C cbase -j10 build/cbase build/p3client build/cbase-bench
 ```
 
 Local runs (bench-vm/run.sh STORE LABEL GAMES SAMPLE [LOGLEVEL], P3FIX=1, port 8858):
 
 ```
 docker run -d --name benchvm-ddb -p 127.0.0.1:8857:8000 amazon/dynamodb-local:3.3.1 -jar DynamoDBLocal.jar -inMemory -sharedDb
-CBASE_DYNAMO_PORT=8857 c_base/ops/dynamo_local.sh
+CBASE_DYNAMO_PORT=8857 cbase/ops/dynamo_local.sh
 bench-vm/series2.sh          # sql40_1..3, ddb40_1..3, sql40_s, ddb40_s
 for i in 1 2 3 4; do bench-vm/run.sh sqlite sqls_$i 40 1; done
 python3 bench-vm/selfprof.py runs/sqls_1/sample_server.txt,...,runs/sql40_s/sample_server.txt 12
@@ -182,8 +182,8 @@ python3 bench-vm/summ.py prod/rt_inv.txt
 Production:
 
 ```
-c_base/build/cbase-bench roundtrip --url https://api.foolish.cards --n 150 --concurrency 1   # x2 (a third hit the signup limit)
-c_base/build/cbase-bench spaced --url https://foolish.cards --path /favicon.ico --n 100 --gap 100 --games 0
+cbase/build/cbase-bench roundtrip --url https://api.foolish.cards --n 150 --concurrency 1   # x2 (a third hit the signup limit)
+cbase/build/cbase-bench spaced --url https://foolish.cards --path /favicon.ico --n 100 --gap 100 --games 0
 bench-vm/curlt.sh https://api.foolish.cards/health 60
 bench-vm/curlt.sh https://<function-url-host>/health 60
 ping -c 20 api.foolish.cards; ping -c 20 dynamodb.us-east-1.amazonaws.com
@@ -194,7 +194,7 @@ The roundtrip binary was patched (worktree only) to `POST /v1/account/delete` bo
 ## Surprising
 
 - The commit's TransactWriteItems costs 15 to 17 ms server-side at p50, 15x a GetItem and 7x a conditional UpdateItem (2.4 ms); it is about 30% of a move's latency and nearly all of its DynamoDB time.
-  If c_base stays on DynamoDB, a mid-game commit as one conditional UpdateItem (when the transaction's other items, the SCAN marker and seat puts, are not needed) would likely save about 13 ms per move; I did not verify which items a mid-game commit carries.
+  If cbase stays on DynamoDB, a mid-game commit as one conditional UpdateItem (when the transaction's other items, the SCAN marker and seat puts, are not needed) would likely save about 13 ms per move; I did not verify which items a mid-game commit carries.
 - The Lambda Function URL invoke overhead is about 15 ms per request, 15x the Lambda's own compute (1.0 ms).
 - The after-phase publishes 5 IoT messages sequentially at 7.8 ms each (39 ms p50, up to 224 ms); every move is billed about 65 ms for about 1 ms of CPU, and the opponent's push trails the response by 6 to 9 ms.
 - Per-move DynamoDB calls are already down to 1.38 in production from 5.5 on the evening of 2026-10-17.

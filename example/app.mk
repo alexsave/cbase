@@ -1,5 +1,5 @@
 # example/app.mk - the example product, as a Makefile that includes cbase.mk describes it. Included
-# by c_base's own Makefile (EXAMPLE := example/) and by example/Makefile (EXAMPLE empty), so the
+# by cbase's own Makefile (EXAMPLE := example/) and by example/Makefile (EXAMPLE empty), so the
 # app is described once.
 APP_SRC_ROOTS   := $(EXAMPLE)src
 APP_TEST_ROOTS  := $(EXAMPLE)test

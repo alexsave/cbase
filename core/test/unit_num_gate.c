@@ -1,5 +1,5 @@
 // unit_num_gate.c - the number-parsing gate (shared/c/num_parse.h): every decimal
-// integer c_base reads from text goes through num_parse_i64. This test reads
+// integer cbase reads from text goes through num_parse_i64. This test reads
 // every C source under core/src, each provider's src/ and the product's source
 // roots (CBASE_APP_SRC_ROOTS, lib_tree.h) and fails, naming the file and line, when one
 // names a C library integer parser:
@@ -11,7 +11,7 @@
 //   * any scanf (sscanf, fscanf, ...): %d and friends have strtol's rules.
 //
 // The floating-point parsers (strtod, strtof, strtold) are allowed in one
-// file, providers/aws/src/aws_json.c, which reads the one fractional number c_base
+// file, providers/aws/src/aws_json.c, which reads the one fractional number cbase
 // takes (DynamoDB's CapacityUnits); anywhere else they are a violation too.
 //
 // Comments, string literals and character literals are skipped, so a comment
@@ -125,7 +125,7 @@ static void scan_named(const char *dir, const char *name) {
     closedir(d);
 }
 
-// A c_base directory, from c_base's root.
+// A cbase directory, from cbase's root.
 static void scan_dir(const char *rel) {
     char p[TT_PATH_MAX];
     scan_named(tt_path(p, sizeof p, rel), rel);
@@ -135,7 +135,7 @@ static void scan_dir(const char *rel) {
 static void only_num_parse_i64_reads_numbers(void) {
     struct stat st;
     char p[TT_PATH_MAX];
-    T_CHECK(stat(tt_path(p, sizeof p, "core/src/config.c"), &st) == 0);   // CBASE_ROOT is c_base, or nothing is scanned
+    T_CHECK(stat(tt_path(p, sizeof p, "core/src/config.c"), &st) == 0);   // CBASE_ROOT is cbase, or nothing is scanned
     T_CHECK(stat(tt_path(p, sizeof p, FLOAT_HOME), &st) == 0);              // the float exemption names a real file
     scan_dir("core/src");
     scan_dir("providers/local/src");

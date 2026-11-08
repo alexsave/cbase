@@ -25,7 +25,7 @@ void    cb_sleep_ms(int64_t ms);
 // when cap < 33.
 int cb_iso8601(int64_t ms, char *out, size_t cap);
 
-// Reads the timestamp texts c_base meets: ISO-8601 with 'T' or ' ' between
+// Reads the timestamp texts cbase meets: ISO-8601 with 'T' or ' ' between
 // date and time, an optional fraction of any length, and 'Z', "+HH", "+HHMM"
 // or "+HH:MM" (or none, read as UTC). This covers psql's CSV export
 // ("2026-01-05 10:11:12.345678+00"). 0 and *ms set, or CB_E_INVALID.

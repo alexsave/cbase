@@ -1,7 +1,7 @@
 // serve.mjs - the Sign in with Apple demo on one machine: the fake Apple (build/test/fake_apple),
 // a `cbase serve` that trusts it, and this page, each on a port of its own. Ctrl-C stops all three.
 //
-//   node serve.mjs <c_base dir> <demo dir> [page port]
+//   node serve.mjs <cbase dir> <demo dir> [page port]
 //
 // The page is http://127.0.0.1:<page port>/ (?auto=1 signs in by itself). Nothing here holds or
 // asks for an Apple ID: every token is the fake's, minted for the page's own nonce.

@@ -4,11 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
-<title>c_base console</title>
+<title>cbase console</title>
 <!--
-  c_base console: one static file, embedded into the binary at build time
-  (c_base/Makefile build/gen/console_html.c) and served at GET /admin.
-  Its API is /admin/api/* (c_base/src/admin/admin.c), every call carrying
+  cbase console: one static file, embedded into the binary at build time
+  (cbase/Makefile build/gen/console_html.c) and served at GET /admin.
+  Its API is /admin/api/* (cbase/src/admin/admin.c), every call carrying
   "Authorization: Bearer <CBASE_ADMIN_TOKEN>". The token lives in
   sessionStorage only, so closing the tab forgets it.
   No framework, no CDN, no build step: the page's Content-Security-Policy
@@ -314,7 +314,7 @@ function renderLogin(why) {
   input.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') go(); });
   app.appendChild(h('div', { class: 'login' },
     h('div', { class: 'card' },
-      h('h2', null, 'c_base console'),
+      h('h2', null, 'cbase console'),
       h('p', { class: 'muted' }, 'Paste the admin token. It is kept in this tab only and forgotten when the tab closes.'),
       why ? h('div', { class: 'msg bad' }, why) : null,
       input,
@@ -329,7 +329,7 @@ function renderShell() {
   const main = h('main', { id: 'main' });
   PANELS.forEach(([id, label]) => nav.appendChild(h('button', { 'data-panel': id, onclick: () => show(id) }, label)));
   app.appendChild(h('header', { class: 'top' },
-    h('h1', null, 'c_base console'), modeBadge,
+    h('h1', null, 'cbase console'), modeBadge,
     h('span', { class: 'spacer' }),
     h('button', { onclick: () => signOut(null) }, 'Sign out')));
   app.appendChild(h('div', { class: 'shell' }, nav, main));

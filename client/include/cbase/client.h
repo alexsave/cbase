@@ -1,7 +1,7 @@
 // cbase/client.h - THE C_BASE CLIENT: the other half of `cbase serve`'s socket (GET /ws and
 // GET /ws/public, shared/c/stream_frame.h) and of the platform's sessions (/v1/auth,
 // cbase/auth_wire.h). One client is one user (or one anonymous listener) talking to one app.
-// c_base/docs/CLIENT_DESIGN.md is the design; this is the contract.
+// cbase/docs/CLIENT_DESIGN.md is the design; this is the contract.
 //
 // SANS-IO. The host owns the socket, the HTTP client and one timer, and nothing else. It passes in
 // every byte it receives and the time (now, epoch ms), and sends every byte this file hands out:

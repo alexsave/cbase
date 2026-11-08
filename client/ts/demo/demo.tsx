@@ -1,6 +1,6 @@
 // demo.tsx - the Sign in with Apple button on a page of its own, against a real `cbase serve` and
-// either Apple or the fake Apple (c_base/core/test/fake_apple.c). serve.mjs beside it starts all
-// three and writes the page's settings into config.js; `make -C c_base/client demo` runs it.
+// either Apple or the fake Apple (cbase/core/test/fake_apple.c). serve.mjs beside it starts all
+// three and writes the page's settings into config.js; `make -C cbase/client demo` runs it.
 //
 // With ?auto=1 the page presses the button itself and takes Apple's suggested name, so a headless
 // browser can be pointed at it and the signed-in page captured.
@@ -89,7 +89,7 @@ function App(): ReactElement {
   return (
     <main>
       <header>
-        <div className="mark">c_base</div>
+        <div className="mark">cbase</div>
         <div className="muted small">{cfg.fake ? 'against the fake Apple (no Apple ID involved)' : 'against Apple'}</div>
       </header>
       {user ? (

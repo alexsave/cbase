@@ -313,7 +313,7 @@ int  cb_event_redact(const char *json, size_t len, size_t max, cb_buf *out);
 void cb_runtime_error_body(cb_buf *b, const char *type, const char *message);
 
 // =====================================================================================
-// CloudFront (cf_): THE ONE XML SHAPE c_base speaks. CloudFront's API is XML,
+// CloudFront (cf_): THE ONE XML SHAPE cbase speaks. CloudFront's API is XML,
 // not JSON; it lives here so every tolerated foreign text format has one
 // file, and the containment gate (core/test/unit_json_gate.c) fails any other
 // file that holds an XML-looking literal (an "<?xml" prolog or an xmlns).

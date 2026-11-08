@@ -1,6 +1,6 @@
 # Mutation checks
 
-Every test in c_base was mutation-checked: the code it covers was broken, the named assertion went red, and the code was restored by rewriting it (never `git checkout`) with its objects deleted, because make compares whole seconds.
+Every test in cbase was mutation-checked: the code it covers was broken, the named assertion went red, and the code was restored by rewriting it (never `git checkout`) with its objects deleted, because make compares whole seconds.
 Each line is: file, mutation, the assertion that failed.
 This file collects the six builders' records and the integration's; DESIGN.md says what each module is.
 
@@ -230,7 +230,7 @@ The console was checked by eye in headless Chrome against a mock API, light and 
 - main_serve.c, no heartbeat timer: smoke game_scenario `now_v > ver` (the bots never resume after the crash).
 - fanout.c, no pv- publish: smoke `LB->n_pv > 0`; no spectator cast: smoke `LB->n_cast > 0`.
 - bots.c, every drive returns at once: smoke game_scenario `status == GAME_STATUS_GAME_OVER` after the 90 s stall rule (the run stops instead of hanging).
-- Makefile, c_base's objects built without `KERNEL_CAPS`: the compile fails at table_ops.c's `_Static_assert(MAX_LOG_PAIRS >= MAX_DECK)`.
+- Makefile, cbase's objects built without `KERNEL_CAPS`: the compile fails at table_ops.c's `_Static_assert(MAX_LOG_PAIRS >= MAX_DECK)`.
 
 ## DynamoDB Local (2026-10-13)
 
@@ -595,7 +595,7 @@ Each mutation was applied, its object deleted and the test rebuilt, then restore
 
 `num_parse_i64` (shared/c/num_parse.h) is the one decimal integer parser; DESIGN.md "Numbers from text".
 Each mutation was applied, its object deleted and the test rebuilt, then restored from a copy the same way.
-The parser was written as c_base/src/util/num.c and moved, unchanged, into shared/c/num_parse.h (header only) before the PR landed; the mutations below were made on those same lines.
+The parser was written as cbase/src/util/num.c and moved, unchanged, into shared/c/num_parse.h (header only) before the PR landed; the mutations below were made on those same lines.
 
 - num_parse.h: leading blanks skipped -> `unit_num` `shapes_refused` " 20" and "\t20" refused; `unit_edges` `configuration_refusals` CBASE_BOT_SPEEDUP " 20".
 - num_parse.h: a leading '+' taken -> `unit_num` `shapes_refused` "+20" and "+0"; `unit_edges` CBASE_BOT_SPEEDUP "+20"; `fz_num` m == p from the seed corpus, and from an empty corpus within 60 s.
@@ -793,7 +793,7 @@ Each line: file, mutation, the assertion that went red. The test binary was dele
 
 ## The client (2026-10-22)
 
-c_base/client/test/mutate.sh runs every mutant in c_base/client/test/mutants.py and fails when one survives; these are its results.
+cbase/client/test/mutate.sh runs every mutant in cbase/client/test/mutants.py and fails when one survives; these are its results.
 The C mutants run unit_client with the object deleted first; the TS mutants run the shim's node tests against the copy they import.
 The fuzz target was checked by hand: a push span one byte long made the corpus replay fail its span check (fz_client.c).
 

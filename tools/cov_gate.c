@@ -1,4 +1,4 @@
-// cov_gate.c - c_base's coverage gate and per-function report (docs/COVERAGE.md).
+// cov_gate.c - cbase's coverage gate and per-function report (docs/COVERAGE.md).
 //
 //   build/cov_gate <coverage.lcov> <floor.txt> [--report] [--strip <prefix>]...
 //
@@ -28,7 +28,7 @@
 // --strip <prefix> (any number): a path in the tracefile is named as the floor file
 // names it by cutting everything through the first <prefix> in it, when it starts
 // with <prefix> or holds "/<prefix>" (cbase.mk passes the measured root's absolute
-// path, and a product names the directory c_base is in, "c_base/").
+// path, and a product names the directory cbase is in, "cbase/").
 #include <ctype.h>
 #include <stdbool.h>
 #include <stdio.h>

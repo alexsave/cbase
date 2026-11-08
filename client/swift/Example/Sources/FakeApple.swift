@@ -1,5 +1,5 @@
 // FakeApple.swift - the example's test seam (SignInWithAppleView's fakeCredential): a credential
-// from c_base's fake Apple (c_base/core/test/fake_apple.c, its /mint), for this sign-in's nonce and
+// from cbase's fake Apple (cbase/core/test/fake_apple.c, its /mint), for this sign-in's nonce and
 // state, so the simulator runs the whole flow with no Apple ID. Its answer is Apple's own JSON shape;
 // it is read here, in the example, and nowhere in the client.
 import Foundation

@@ -1,4 +1,4 @@
-// SignInWithApple.tsx - the Sign in with Apple button for a page on c_base: Apple's JS SDK
+// SignInWithApple.tsx - the Sign in with Apple button for a page on cbase: Apple's JS SDK
 // (appleid.auth.js) in popup mode, and the answer handed to the C client (CbClient.oidcBegin and
 // oidcSignIn, cbase/client.h cbc_oidc_*). This file holds the button and the one call to Apple; it
 // decides nothing about auth: the nonce and the state are made and kept in the module, the server

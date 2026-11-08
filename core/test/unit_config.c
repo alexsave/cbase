@@ -1,4 +1,4 @@
-// unit_config.c - the settings c_base reads at start (config.h): the secrets'
+// unit_config.c - the settings cbase reads at start (config.h): the secrets'
 // rule (cb_config_check_secrets: findings L7, L8, M5), the origin proof, and
 // that the console's view of the settings never shows a secret.
 #include "t.h"

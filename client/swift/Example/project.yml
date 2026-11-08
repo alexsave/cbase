@@ -1,4 +1,4 @@
-# The example app for c_base's Sign in with Apple on iOS (SignInWithAppleView over the C client).
+# The example app for cbase's Sign in with Apple on iOS (SignInWithAppleView over the C client).
 # xcodegen generate, then build for a simulator; ../../Makefile's swift target writes the Swift
 # layout the build reads (a pre-build step runs it). docs/AUTH_APPLE.md says how to run it against
 # the fake Apple.
@@ -36,7 +36,7 @@ targets:
     info:
       path: Sources/Info.plist
       properties:
-        CFBundleDisplayName: c_base Apple
+        CFBundleDisplayName: cbase Apple
         UILaunchScreen: {}
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true

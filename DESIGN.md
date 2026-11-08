@@ -1,6 +1,6 @@
-# c_base design
+# cbase design
 
-c_base is the foolish backend written in C, replacing Supabase (Postgres, PostgREST, GoTrue, Realtime, the Deno edge functions, pg_cron, pg_net and Vault).
+cbase is the foolish backend written in C, replacing Supabase (Postgres, PostgREST, GoTrue, Realtime, the Deno edge functions, pg_cron, pg_net and Vault).
 It runs on AWS Lambda as a custom runtime in production, and as a local server for development and tests.
 The web and iOS clients speak its binary surface ("Binary surface", below), the kernel's bytes end to end.
 It first shipped a Supabase-compatible facade, so the clients of the day could switch by changing a URL and an anon key; that facade and the Supabase code it stood in for were deleted once every client had moved (stage 4 of "Binary surface").
@@ -266,7 +266,7 @@ As built (store builder, then integration):
   What it gives up: an item that went missing under a seat that stays (only `user_delete`, whose account then goes too) is no longer put back.
   It took the keys-only Query out of every move, and out of the game's order lock (measured with two client processes against DynamoDB Local: 362 to 296 us of server CPU a move).
 - The commit that writes the row alone (2026-10-18).
-  A transaction cost 15 to 17 ms at p50 inside DynamoDB where a conditional `UpdateItem` cost 2.4 (CloudWatch, 7 days; c_base/docs/BENCH_VM_VS_DYNAMO.md), and it was nearly all of a move's DynamoDB time.
+  A transaction cost 15 to 17 ms at p50 inside DynamoDB where a conditional `UpdateItem` cost 2.4 (CloudWatch, 7 days; cbase/docs/BENCH_VM_VS_DYNAMO.md), and it was nearly all of a move's DynamoDB time.
   So a commit whose transaction would hold item 0 and nothing else is sent as item 0's own update: the same expression, the same `#version = :expected` condition, the same `ReturnValuesOnConditionCheckFailure: ALL_OLD`, read the same way (refused with the item: `CB_E_CONFLICT`; refused without: `CB_E_NOT_FOUND`, and the condition is never met on an absent row, so nothing is created).
   `json_surface.c` `dw_commit_is_lone` decides: not the import; no seat item to put or delete against the stored seats; no rating; and no SCAN marker to write, which needs the new row's `needs_bots` false and the fenced row's false too (`cb_game_commit` `prev_needs_bots`, read only with `prev_known`).
   Create, join, leave, a bot seated or removed, the rated end of a game, every commit of a game with bot work before or after it, and the first commit of a row that does not vouch for its seats stay transactions.
@@ -281,7 +281,7 @@ As built (store builder, then integration):
     The lone commit writes `needs_bots` false only on a row that already said false: no marker before, none created since, none after; the invariant is kept.
     A stray marker is the failure the rule guards against (the scan would kick the game every minute, and `bots_idle`, fenced on the marker's older `row_version`, could not take it away), so a `prev_needs_bots` claimed false wrongly is what the app's memory store refuses (`foolish/server/test/lib_app_store_mem.c`, every app test).
   - Ratings: a rated commit is a transaction, so its ratings and its row stay one write.
-  A transport loss after DynamoDB applied the write reads, on the retry, as a lost CAS: the same as a transaction sent without a client request token, which c_base never sends.
+  A transport loss after DynamoDB applied the write reads, on the retry, as a lost CAS: the same as a transaction sent without a client request token, which cbase never sends.
   Tests: `unit_dynamo` (the request byte for byte, every condition that sends the transaction instead, the lost CAS, the gone game, a transaction conflict retried, any other refusal `CB_E_DB`), `unit_store` on DynamoDB Local (`lone_commit_cas`: one `UpdateItem` per move by the tally, the second writer losing and writing nothing, a gone game not created, the marker taken by the commit after bot work and not brought back; `lone_cas_under_threads`: four threads racing lone commits, no lost update), and the game smoke under `make check-dynamo`.
 - `last_commit_at` is stamped by the store from `row->updated_at` on every commit; `row->last_commit_at` is read only by the import.
 - The lease: acquire and renew move the scan's staleness clock (never `last_commit_at`); release clears `lease_until` and does not move it.
@@ -296,7 +296,7 @@ As built (store builder, then integration):
   Before this, about one Lambda drive per human move in a game against a bot started only to find the lease taken (24 of 34 in one game).
 - `game_commit`, `game_delete` and `lease_acquire` on a game that is gone return `CB_E_NOT_FOUND` (DynamoDB tells it apart from a lost CAS with `ReturnValuesOnConditionCheckFailure: ALL_OLD`).
 - The DynamoDB section of `json_surface.c` (formerly `dynamo_wire.c`) spells every DynamoDB string and builds every request as a pure function over buffers; `store_dynamo.c` decides only which requests to send in which order.
-  Its transport is `aws/aws_call.h` (one signed-request step for every AWS call in c_base), and it honours `AWS_ENDPOINT_URL_DYNAMODB`, the SDKs' own override.
+  Its transport is `aws/aws_call.h` (one signed-request step for every AWS call in cbase), and it honours `AWS_ENDPOINT_URL_DYNAMODB`, the SDKs' own override.
 - Ratings on DynamoDB are read, clamped in C and written fenced on the value read, because an update expression cannot clamp; a rating another table moved cancels the transaction and the commit re-reads and resends (up to 5 times).
 - Refresh tokens carry `revoked_at`: the first `refresh_take` stamps it (later takes keep it), and `refresh_revoke_session` and `refresh_revoke_user` set it to 0, so auth can grant GoTrue's 10 s reuse grace to a rotation and never to a logout (see Auth).
 - The snapshot is not inside `game_commit`: it stays a separate `snapshot_put` after the winning commit, as `finalize.ts` did.
@@ -496,7 +496,7 @@ As built:
   This is accepted: the list is read only by the game end's replay (`table_replay_code_list`, `table_replay_extras_list`), and no bot cycle reads it (the row carries the bot memory).
   The snapshot's `player_ids` include the bots, as finalize.ts wrote them.
 - `fanout.c`: a pv- INSERT/UPDATE/DELETE per human row on every commit, and the gu- casts per human seat and the game- cast on every commit too.
-  table_io.ts cast only when `n_events > 0 || goods_changed`, and c_base added `roster_changed` after a delete-account redaction on a dealt table cast nothing and an open page kept the deleted name until a reload.
+  table_io.ts cast only when `n_events > 0 || goods_changed`, and cbase added `roster_changed` after a delete-account redaction on a dealt table cast nothing and an open page kept the deleted name until a reload.
   The rule still missed commits that move the version: a good said over an uncovered table (silent, `game_shown_good_mask`) and a hand rearranged.
   The kernel client gates casts on the version and fetches the game whole when one is skipped, so in a two-player game at full speed about a third of each client's requests were those refetches.
   Every commit now casts; a cast with no events carries the viewer's final board, and the page applies it as a board.
@@ -518,9 +518,9 @@ Untested: the Lambda deadline budget and the Lambda re-kick (the Lambda runs thi
 Found here:
 
 - Kernel, present in production's TypeScript host too: `bot_drive_pre_action_hook` (bot_drive.c) is a process global, so serve's bot pool runs drives one at a time (see Kernel thread safety).
-- c_base's own build, fixed at integration: the kernel was compiled with its native arena's compact capacities (`MAX_LOG_PAIRS=16` and the rest), so a pickup of more than 16 cards was logged short, `table_replay_code`'s gate refused the finished game, and it got no snapshot (about 1 in 15 random three-seat games).
+- cbase's own build, fixed at integration: the kernel was compiled with its native arena's compact capacities (`MAX_LOG_PAIRS=16` and the rest), so a pickup of more than 16 cards was logged short, `table_replay_code`'s gate refused the finished game, and it got no snapshot (about 1 in 15 random three-seat games).
   The app builder reported it as a production kernel defect; it is not, because the shipped wasm and iOS builds use the wide human-game capacities.
-  `c_base/Makefile` now reads them from `foolish/c`'s own `WASM_FLAGS` (its `print-human-caps` target, so no second copy exists) for the kernel and for c_base's objects, and `table_ops.c` asserts `MAX_LOG_PAIRS >= MAX_DECK` at compile time.
+  `cbase/Makefile` now reads them from `foolish/c`'s own `WASM_FLAGS` (its `print-human-caps` target, so no second copy exists) for the kernel and for cbase's objects, and `table_ops.c` asserts `MAX_LOG_PAIRS >= MAX_DECK` at compile time.
 - Kernel, the same in production: a session over `MAX_LOGS` (1024) records is truncated and its replay refused the same way; it is sized on p99 by design and was not observed.
 
 ## Unfurl route
@@ -554,7 +554,7 @@ Found here:
   Under `next build` the route's server bundle hands node:fs a URL object from another realm when it loads bots.wasm.gz ("The "path" argument must be of type string or an instance of Buffer or URL. Received an instance of URL"), the catch swallows it, and the title is always "A Durak game in iMessage" (seen with `next start` and on https://foolish.cards on 2026-10-14).
   e2e/msg_og.test.ts calls generateMetadata under tsx, where the load works, so it never saw this.
   The goldens are what the route was written to say, and the C route says it.
-- Kernel, and a c_base defect in `cbase serve`: the replay codec keeps its scratch in plain process globals (`replay.c`: `g_bn`, `g_rec`, `g_model`, `g_opts`, `g_weights`, `g_deal_slot`, `g_atom_sink`, `g_err`), not `_Thread_local` ones, so two replay encodes or decodes on two pool threads race.
+- Kernel, and a cbase defect in `cbase serve`: the replay codec keeps its scratch in plain process globals (`replay.c`: `g_bn`, `g_rec`, `g_model`, `g_opts`, `g_weights`, `g_deal_slot`, `g_atom_sink`, `g_err`), not `_Thread_local` ones, so two replay encodes or decodes on two pool threads race.
   The unfurl's mutex covers unfurl against unfurl only; `table_replay_code` (a game finishing) runs the same codec on another pool thread.
   Lambda runs one invocation per container and is not affected.
   The fix is the kernel's: mark those statics `_Thread_local` (every single-threaded build defines the qualifier away already), then drop the mutex.
@@ -712,7 +712,7 @@ As built:
 - `providers/aws/ops/package.sh` calls `make bootstrap` and checks the zip holds exactly one executable `bootstrap`.
 - `providers/aws/ops/deploy.sh` is the whole deploy from this Mac once `aws configure` has credentials: secrets generated once, for a new stack only, into the ops settings file outside the repo (`ops/ops_env.sh`, RUNBOOK "The ops settings file"), the code bucket, the zip under a sha-named key, `cloudformation deploy`, the outputs, and the import with `--import`.
   It created the live stack on 2026-10-14 and stays the hand step for a template change.
-- `.github/workflows/c_base.yml` builds and tests on Ubuntu and macOS, under ASan, lints the template, builds the zip, and on every push to `main` deploys it to the function through `providers/aws/ops/lambda_deploy.sh` with the OIDC role (RUNBOOK.md step 13).
+- `.github/workflows/cbase.yml` builds and tests on Ubuntu and macOS, under ASan, lints the template, builds the zip, and on every push to `main` deploys it to the function through `providers/aws/ops/lambda_deploy.sh` with the OIDC role (RUNBOOK.md step 13).
 - `foolish/server/migrate/export.sh` (read-only, through the Management API with the Supabase CLI's keychain token) and `cbase-import` (see Store).
 
 The first deploy (2026-10-14) proved what was unproven until then: the CloudFront WebSocket path, the Function URL permission, the CI lanes and the deploy job.
@@ -733,14 +733,14 @@ Every test is mutation-checked: break the code, see the right assertion fail, re
 ## Kernel capacities
 
 The kernel's array capacities are build parameters, and its compact defaults belong to the native bot arena.
-c_base builds it with the shipped human-game capacities (`KERNEL_CAPS` in the Makefile, read from `foolish/c`'s `WASM_FLAGS` through `print-human-caps`), the same as the wasm module the hosted backend runs and the iOS build, and passes them to its own objects too, because they change the sizes of structs both halves use.
+cbase builds it with the shipped human-game capacities (`KERNEL_CAPS` in the Makefile, read from `foolish/c`'s `WASM_FLAGS` through `print-human-caps`), the same as the wasm module the hosted backend runs and the iOS build, and passes them to its own objects too, because they change the sizes of structs both halves use.
 
 ## Kernel thread safety
 
 `cbase serve` runs kernel calls on several threads, so the kernel is compiled with its `_Thread_local` qualifiers intact (foolish/c's own Makefile strips them for its single-threaded programs).
 One kernel global is not per-thread: `bot_drive_pre_action_hook` (bot_drive.c), which `table_bot_drive` sets and restores around each drive.
 Two concurrent drives race on the restore, and one of them can lose its per-decision seeding.
-So serve's bot pool defaults to one thread (`CBASE_BOT_WORKERS=1`) until the kernel makes that hook `_Thread_local`, a one-word kernel change outside c_base.
+So serve's bot pool defaults to one thread (`CBASE_BOT_WORKERS=1`) until the kernel makes that hook `_Thread_local`, a one-word kernel change outside cbase.
 Lambda runs one invocation per container at a time and is not affected.
 Human moves and lobby edits do not touch the hook.
 The replay codec is not per-thread either (replay.c's scratch is plain process globals): see "Unfurl route", Found here.
@@ -767,9 +767,9 @@ Alex decided the same day to stay on Lambda + DynamoDB for now and parked the VM
 Three wins on the Lambda path followed (PR #372): the lone `UpdateItem` commit ("Module: store"), the push lanes ("Pushes, after the answer"), and the edge's `Server-Timing`, which showed the remaining slow mode is CloudFront opening a new connection to the Function URL, with no $0 setting that prevents it.
 The function now answers a move 13.7 ms sooner at p50 and bills 24 ms for it instead of 61; the report's last section has the numbers, adjusted for the client network having changed between the runs.
 
-### The bench: `c_base/bench/` (built 2026-10-13)
+### The bench: `cbase/bench/` (built 2026-10-13)
 
-`make -C c_base bench` builds `build/cbase-bench` (`make all` builds it too, so CI keeps it compiling); `bench/bench.h` lists the sub-commands and `bench/bench_stats.h` the run file.
+`make -C cbase bench` builds `build/cbase-bench` (`make all` builds it too, so CI keeps it compiling); `bench/bench.h` lists the sub-commands and `bench/bench_stats.h` the run file.
 It is one C program, and the same client measures `cbase serve` and the deployed stack: `http://` is a kept-alive socket read by `https.c`'s own response parser, `https://` goes through `cb_https_request` itself, and the WebSocket (ws or wss) uses the frame codec of `net/ws.c`.
 
 - `roundtrip --url <base> [--n 500] [--concurrency 1|4]`: each worker signs up two players, opens an MQTT stream socket per player (`/mqtt`, which `cbase serve` and IoT Core behind the edge both serve) subscribed to its views (`u/<user>/v`), and plays two-human games (create, join, both ready, moves until the end, then a new game).
@@ -855,12 +855,12 @@ This run came after the first real-AWS defect was fixed: every POST through Clou
 The deployed baseline is one command from this Mac once the stack answers (RUNBOOK.md "What you must give me afterwards"):
 
 ```
-make -C c_base bench
-c_base/build/cbase-bench roundtrip --url https://api.foolish.cards --n 500 --concurrency 1
-c_base/build/cbase-bench roundtrip --url https://api.foolish.cards --n 500 --concurrency 4
-c_base/build/cbase-bench coldstart --url https://api.foolish.cards --repeat 6 \
+make -C cbase bench
+cbase/build/cbase-bench roundtrip --url https://api.foolish.cards --n 500 --concurrency 1
+cbase/build/cbase-bench roundtrip --url https://api.foolish.cards --n 500 --concurrency 4
+cbase/build/cbase-bench coldstart --url https://api.foolish.cards --repeat 6 \
   --force-cmd 'm=$(aws lambda get-function-configuration --function-name cbase --query MemorySize --output text); aws lambda update-function-configuration --function-name cbase --memory-size $((m == 256 ? 257 : 256)) >/dev/null && aws lambda wait function-updated --function-name cbase'
-c_base/build/cbase-bench report
+cbase/build/cbase-bench report
 ```
 
 Each `roundtrip` worker signs up two real accounts (`BENCH<HEX><n>`), prints their user ids as it makes them, plays real games, and deletes both accounts at the end (`POST /v1/account/delete`; their games stay, as any deleted account's do); a run cut short names the ids to delete with the admin API (`POST /admin/api/users/delete`).
@@ -890,8 +890,8 @@ It does not delete, and does not try to:
 
 ## Where JSON is tolerated, and why
 
-The kernel's bytes never become JSON, and no client speaks JSON to c_base: the client surface is binary ("Binary surface").
-JSON appears only where something outside c_base sets the format and cannot be changed:
+The kernel's bytes never become JSON, and no client speaks JSON to cbase: the client surface is binary ("Binary surface").
+JSON appears only where something outside cbase sets the format and cannot be changed:
 
 1. AWS's APIs: the Lambda event and response envelope, the Runtime API's error body, DynamoDB, and the self-invoke payload Lambda Invoke carries.
    IoT Core's custom authorizer request and its policy answer are JSON too; a publish carries the stream message itself as its body.
@@ -903,7 +903,7 @@ Until stage 4 the list also held the Supabase facade: GoTrue's bodies, PostgREST
 ### One file holds all of it
 
 Every JSON shape above lives in one file, `core/src/core_json.c` and `providers/aws/src/aws_json.c` (declared in `providers/aws/src/aws_json.h`): every key name, every shape, and every call into the low-level writer and reader `core/src/util/json.c`, which nothing else includes.
-Everything else in c_base hands it structs and spans and gets bytes or structs back, so a reader who wants to know what c_base says in JSON reads one file; deleting the facade in stage 4 was deleting its sections.
+Everything else in cbase hands it structs and spans and gets bytes or structs back, so a reader who wants to know what cbase says in JSON reads one file; deleting the facade in stage 4 was deleting its sections.
 The functions are pure over buffers (no socket, no clock, no randomness), so each shape is checked byte for byte against a recorded body in the unit tests.
 
 The sections of `json_surface.c`, with their callers:
@@ -914,10 +914,10 @@ The sections of `json_surface.c`, with their callers:
 - The JWT header and claims (`cb_js_jwt_*`, for `jwt.c`, which keeps the base64url, the HMAC and the time checks).
 - The admin console (`cb_js_admin_*`, for `admin.c`): one-shot answers take a struct, and the lists the store streams row by row are written through an opaque `cb_js_stream`, so no writer leaves the file.
 - The client's side (`cb_js_client_function_url_event`, for `foolish/server/bench/cpu.c`): a Function URL event as AWS delivers a browser's request, the mirror of the event envelope.
-- CloudFront (`cf_invalidation_xml`, for `aws/cloudfront.c`): the CreateInvalidation body, the one XML shape c_base speaks ("Edge cache").
+- CloudFront (`cf_invalidation_xml`, for `aws/cloudfront.c`): the CreateInvalidation body, the one XML shape cbase speaks ("Edge cache").
   CloudFront's API has no JSON form, so XML is the second tolerated foreign text format, and it is contained the same way: in this file, with the same gate.
 
-The one JSON outside it is `foolish/server/migrate/export.sh`, the one-off shell exporter that read production through Supabase's Management API (JSON by Supabase's design) with `python3`; it is not C and it never runs in c_base.
+The one JSON outside it is `foolish/server/migrate/export.sh`, the one-off shell exporter that read production through Supabase's Management API (JSON by Supabase's design) with `python3`; it is not C and it never runs in cbase.
 
 `core/test/unit_json_gate.c` holds the rule.
 It reads every C source under `src/`, `bench/` and `migrate/` and fails, naming the file and line, when any file other than `json_surface.c` and `util/json.{c,h}` includes `util/json.h`, names the writer or reader (`cb_jw`, `cb_jw_*`, `cb_json_*`, `CB_JW_*`, `CB_JSON_*`), or holds a string literal with a JSON key in it (a quoted word and a colon).
@@ -927,13 +927,13 @@ Tests (`test/`) are not scanned: their recorded bodies are the oracle the shapes
 
 ## Numbers from text (2026-10-18)
 
-Every decimal integer c_base reads from text goes through one parser, `num_parse_i64` (`shared/c/num_parse.h`, header only, one owner for the whole repository): the `CBASE_*` settings and `CBASE_LISTEN`'s port, the admin API's query numbers and `after`, SQLite's browse cursor, a DynamoDB `N` attribute, an AWS endpoint's port, the Lambda runtime's port and deadline header, and the import's cells and `counts.txt`.
+Every decimal integer cbase reads from text goes through one parser, `num_parse_i64` (`shared/c/num_parse.h`, header only, one owner for the whole repository): the `CBASE_*` settings and `CBASE_LISTEN`'s port, the admin API's query numbers and `after`, SQLite's browse cursor, a DynamoDB `N` attribute, an AWS endpoint's port, the Lambda runtime's port and deadline header, and the import's cells and `counts.txt`.
 It takes exactly `-?[0-9]+`, the `-` only when the range has negatives, and the value in the caller's range; overflow is seen digit by digit.
 The C library's parsers took a leading blank and `+`, `strtoull` wrapped `-1` to 2^64-1, and the call sites that ignored the end pointer took anything after the digits, so `CBASE_BOT_SPEEDUP=" 20"` was 20 and an admin cursor of `"3x"` was 3.
 Leading zeros are taken: base 10 is fixed, so `007` can only mean 7.
 
 `core/test/unit_num_gate.c` holds the rule: it lexes every C source under `src/` and fails on `strtol`, `strtoll`, `strtoul`, `strtoull`, `strtoimax`, `strtoumax`, `atoi`, `atol`, `atoll` or any `scanf`.
-`strtod` and its kin are allowed only in `json_surface.c`, for the one fractional number c_base reads (DynamoDB's `CapacityUnits`).
+`strtod` and its kin are allowed only in `json_surface.c`, for the one fractional number cbase reads (DynamoDB's `CapacityUnits`).
 `core/fuzz/fz_num.c` holds the parser against a model that accumulates in `__int128`.
 
 ## Edge cache (2026-10-17)
@@ -1021,7 +1021,7 @@ The client's pump applies it to every read it sends; the two transports (web `ba
 
 Phase 2, decided: the binary surface replaces the Supabase-compatible facade for every client, the iOS app and the web alike, and the facade is then deleted.
 Alex: "if we're gonna do this, let's do it right".
-It lands as four pull requests, each green and landed before the next: (1) this surface on the server and the C client library; (2) iOS on it, supabase-swift removed; (3) the web on it, supabase-js removed, the env names renamed; (4) the facade deleted from c_base (GoTrue, PostgREST and Phoenix routes and their sections of `json_surface.c`) with the dead Supabase server code and harnesses.
+It lands as four pull requests, each green and landed before the next: (1) this surface on the server and the C client library; (2) iOS on it, supabase-swift removed; (3) the web on it, supabase-js removed, the env names renamed; (4) the facade deleted from cbase (GoTrue, PostgREST and Phoenix routes and their sections of `json_surface.c`) with the dead Supabase server code and harnesses.
 
 ### What the clients use (the inventory this is cut to)
 
@@ -1034,8 +1034,8 @@ Nothing else: no client reads `bots` beyond id, nickname and strategy key, or ra
 The wire is the kernel's, like every other wire in this repo (awire, ask, the table request and response, the roster trailer, the envelope).
 `netwire.c` is the one codec: it writes and reads every request body, response body and stream frame below, both directions, so the server and every client run the same encoder against the same decoder and there is no second statement of a layout anywhere.
 `netclient.c` is the client: the session (the token store as plain data), the request builders, the response readers, the stream's subscriptions, retries and version gates.
-Both are in the kernel's source list (`KERNEL_SRC` and `IOS_CORE_SRC`), so c_base links them through the list it already reads (`print-kernel`), `web.wasm` exports the client's entry points, and the iOS xcframework carries them; structgen reads `netclient.h` for the Swift and TypeScript readers of the answer structs, so no host writes or reads a byte of any of it.
-They sit in the kernel's tree rather than under `c_base/` because three builds compile one list and the kernel already owns the neighbouring formats; they import nothing, never see a socket, parse no JWT (a token is opaque bytes with an expiry the server states), and take `now_ms` from the host like every kernel call.
+Both are in the kernel's source list (`KERNEL_SRC` and `IOS_CORE_SRC`), so cbase links them through the list it already reads (`print-kernel`), `web.wasm` exports the client's entry points, and the iOS xcframework carries them; structgen reads `netclient.h` for the Swift and TypeScript readers of the answer structs, so no host writes or reads a byte of any of it.
+They sit in the kernel's tree rather than under `cbase/` because three builds compile one list and the kernel already owns the neighbouring formats; they import nothing, never see a socket, parse no JWT (a token is opaque bytes with an expiry the server states), and take `now_ms` from the host like every kernel call.
 Nothing under `shared/` changes, so the rule that nothing there names a product is untouched.
 
 All integers are little-endian.
@@ -1127,13 +1127,13 @@ History: the stream named here (`stream.c`, `/v1/stream`, `rt_apigw`, the connec
 
 - `foolish/c/src/netwire.{h,c}`: the codec, both directions, as above. The action request and response moved out of `table.c` into `table_wire.c` (same functions, same bytes), because `table.c` reaches every bot and the iOS core library and the client link neither.
   `ask.h` gained `ASK_WHY_ACCOUNT` (code an `NW_ACCOUNT_E_*`) and `ASK_WHY_FORBIDDEN`.
-- `foolish/c/src/netclient.{h,c}`: the client, in the kernel's source list for c_base, the iOS core library and (stage 3) `web.wasm`; nothing exports it yet.
+- `foolish/c/src/netclient.{h,c}`: the client, in the kernel's source list for cbase, the iOS core library and (stage 3) `web.wasm`; nothing exports it yet.
   One request builder per route; an authenticated builder answers the refresh first when the token is within 60 s of its expiry (`NcRequest.is_refresh`), so a host's whole transport is one loop of "build, send, if it was the refresh hand it back and build again".
   Answers are read into fixed structs, with blobs as offsets into the body the host passed (no copy); a stream event's payload is in the client's own 32 KB buffer, because a text frame has to be decoded somewhere.
 - `foolish/server/src/app/v1_http.c`: the routes, reading the store through the same calls `postgrest.c` makes, without its query language.
   `functions_http.c` mounts its four handlers under `/v1/` too (no anon key), so the writes keep one implementation.
   The leaderboard sorts each population in C and sends each one's top 100; the web merges them and cuts the whole again, as it did.
-- `c_base/src/realtime/stream.c`: the stream's protocol (`cb_nw_on_frame`), with the topic policy of `cb_phx_may_join`.
+- `cbase/src/realtime/stream.c`: the stream's protocol (`cb_nw_on_frame`), with the topic policy of `cb_phx_may_join`.
   `realtime.c` builds each push's binary frame beside the two Phoenix ones (`CB_RT_PROTOS` frames per publish, indexed by `cb_rt_proto(vsn)`), `rt_local` serves `GET /v1/stream?proto=nw1` and sends binary frames, and `rt_apigw` takes `proto=nw1` at `$connect` (no anon key) and posts base64 text.
   A CONN row whose `$connect` was lost is rebuilt as the stream when its frame does not start like JSON.
 - `providers/aws/ops/cbase.yaml`: CloudFront sends `/v1/stream*` to the WebSocket API through the same rewrite as `/realtime/v1/websocket*`.
@@ -1144,7 +1144,7 @@ The JSON gate is unchanged: none of this is JSON.
 
 ### As built (stage 4, the facade deleted)
 
-- c_base: `auth_http`, `postgrest`, `phoenix` and `rt_rows` are gone with their tests, as are the anon key (`CBASE_ANON_KEY`, the router's `CB_ROUTE_APIKEY`, the template's `AnonKey`), the `/functions/v1/` mounts, the `/realtime/v1/websocket` CloudFront behaviour and the router's JSON gateway error (its own refusals are plain text now).
+- cbase: `auth_http`, `postgrest`, `phoenix` and `rt_rows` are gone with their tests, as are the anon key (`CBASE_ANON_KEY`, the router's `CB_ROUTE_APIKEY`, the template's `AnonKey`), the `/functions/v1/` mounts, the `/realtime/v1/websocket` CloudFront behaviour and the router's JSON gateway error (its own refusals are plain text now).
   `realtime.c` builds one message per push; `rt_local` and `rt_apigw` speak only the stream.
   `json_surface.c` lost its GoTrue, Phoenix, Realtime payload, PostgREST, gateway error and bench client sections (3472 lines to about 2940).
 - The game smoke (`foolish/server/test/smoke.c`) plays its whole game, crash included, over `/v1` and `/v1/stream` with the kernel's client library building every request and reading every answer; three sockets hear a seat's casts, the spectators' casts and a user's views.
@@ -1164,7 +1164,7 @@ The web app from this branch (`npx next dev`, `.env.local` pointing `NEXT_PUBLIC
 Verified: sign-up of both players through supabase-js (GoTrue facade); the dashboard (PostgREST `player_views`); create; the second player joining by URL; adding a bot; both players marking ready and the game starting; moves dragged from both tabs, each tab's table updated by the realtime push without a reload, the two tabs agreeing on the table after every round; a pickup; and the leaderboard and match history pages loading.
 The detailed record and screenshots are in REPORT.md.
 
-Found on the way, NOT a c_base defect: when the first player joins a one-player lobby, the host's page fails to plan the join's animation (`anim_build_plan error -2`, `n_players < 2` in anim_plan.c, because the page plans against its held one-player board) and its animation queue then stalls until a reload.
+Found on the way, NOT a cbase defect: when the first player joins a one-player lobby, the host's page fails to plan the join's animation (`anim_build_plan error -2`, `n_players < 2` in anim_plan.c, because the page plans against its held one-player board) and its animation queue then stalls until a reload.
 The same failure reproduces against `e2e/fake_supabase.mts`, which mirrors the hosted adapter, so production has it today; it belongs to the web client and kernel (`src/state/animPlan.ts`, `useAnimationRun.ts`, `c/src/anim_plan.c`).
 
 ## Acceptance on iOS (2026-10-13)
@@ -1174,7 +1174,7 @@ Verified: sign-up and sign-in through GoTrue (a wrong password renders GoTrue's 
 No request was refused or misread by the server: every response the app received was the shape it decodes.
 supabase-swift 2.55.4 connects with `vsn=2.0.0`, offers `permessage-deflate` (not negotiated, so frames stay plain), and sends its join payload as a Swift dictionary, whose key order changes between runs; `unit_phoenix.c` supabase_swift_frames pins both recorded orders.
 
-Found on the way, NOT c_base defects (the hosted backend answers the same, because the kernel decides): the app's `RootView` does not observe the `OnlineGame`, so after Ready it stays on the lobby with a spinner while the started board sits in the model; joining one's own started game by code is refused 400 `TABLE_E_NOT_WAITING`; Home after game over sends an exit the kernel refuses the same way; stored bot nicknames are cities (`%Vienna 1`), which `BotNames.displayNickname` does not know, so the lobby and table print the raw `%`; after delete-account the app stays on a Dashboard whose Create game does nothing; the win screen's buttons sit over the fool's hand.
+Found on the way, NOT cbase defects (the hosted backend answers the same, because the kernel decides): the app's `RootView` does not observe the `OnlineGame`, so after Ready it stays on the lobby with a spinner while the started board sits in the model; joining one's own started game by code is refused 400 `TABLE_E_NOT_WAITING`; Home after game over sends an exit the kernel refuses the same way; stored bot nicknames are cities (`%Vienna 1`), which `BotNames.displayNickname` does not know, so the lobby and table print the raw `%`; after delete-account the app stays on a Dashboard whose Create game does nothing; the win screen's buttons sit over the fool's hand.
 
 ## Open defects carried over from Supabase
 

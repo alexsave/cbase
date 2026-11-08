@@ -25,7 +25,7 @@
 #include <strings.h>
 
 // =====================================================================================
-// DynamoDB. Every DynamoDB string in c_base is in this section: the targets, the
+// DynamoDB. Every DynamoDB string in cbase is in this section: the targets, the
 // item layout, the expressions.
 
 #define TARGET "DynamoDB_20120810."

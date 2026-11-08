@@ -1,4 +1,4 @@
-// admin.c - the c_base console (admin.h): GET /admin serves the embedded
+// admin.c - the cbase console (admin.h): GET /admin serves the embedded
 // core/src/admin/console.html, and /admin/api/* is its JSON API.
 //
 // THE GATE. Every route here, the page included, answers 404 when

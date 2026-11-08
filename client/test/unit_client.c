@@ -1,4 +1,4 @@
-// unit_client.c - the c_base client's behaviour (cbase/client.h), driven as a host drives it: bytes
+// unit_client.c - the cbase client's behaviour (cbase/client.h), driven as a host drives it: bytes
 // in, bytes out, time passed in. The server's side of every exchange is written with
 // stream_frame.h's own writers and the auth wire's layout, so a frame here is a frame on the wire.
 #include "t.h"

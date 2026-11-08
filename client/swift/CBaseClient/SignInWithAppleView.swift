@@ -1,6 +1,6 @@
 // SignInWithAppleView.swift - Apple's own Sign in with Apple button (AuthenticationServices'
 // SignInWithAppleButton) wired to AppleSignIn: Apple draws the button and runs the sheet; the
-// answer goes to the c_base client. Black on a light screen, white on a dark one (Apple's rule).
+// answer goes to the cbase client. Black on a light screen, white on a dark one (Apple's rule).
 //
 // THE TEST SEAM. A simulator cannot finish a real Apple sign-in without an Apple ID. Given
 // `fakeCredential`, the same button is drawn, and a tap asks that function for the credential

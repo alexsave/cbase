@@ -1,4 +1,4 @@
-# c_base provider: Google Cloud (gcp)
+# cbase provider: Google Cloud (gcp)
 
 ## Status
 

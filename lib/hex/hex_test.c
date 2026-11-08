@@ -32,7 +32,7 @@ int main(void)
     TEST("hex: refusals");
     CHECK(hex_decode("abc", 3, back, sizeof back) == -1, "an odd length");
     CHECK(hex_decode("zz", 2, back, sizeof back) == -1, "a non-hex digit");
-    CHECK(hex_decode("\\x00", 4, back, sizeof back) == -1, "no Postgres prefix here (c_base's bytea strips it)");
+    CHECK(hex_decode("\\x00", 4, back, sizeof back) == -1, "no Postgres prefix here (cbase's bytea strips it)");
     CHECK(hex_decode("0001", 4, back, 1) == -1, "a cap too small");
     CHECK(hex_encode(raw, 5, out, 10) == -1, "no room for the NUL");
 

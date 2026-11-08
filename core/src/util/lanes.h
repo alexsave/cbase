@@ -10,9 +10,9 @@
 // CPUs (an app's serve_open), the threads inherit the background mask and the loop keeps its
 // core. What is queued when the lanes are freed is dropped: nothing was acknowledged as done.
 //
-// WHY HERE AND NOT IN shared/c: shared/c holds what both c_base and the products' other hosts
+// WHY HERE AND NOT IN shared/c: shared/c holds what both cbase and the products' other hosts
 // (wasm, iOS, the web) compile. This is built on cb_pool and answers in CB_E_* for a route's 503,
-// so only a product running on c_base can use it; it is the platform's, beside the pool it uses.
+// so only a product running on cbase can use it; it is the platform's, beside the pool it uses.
 #ifndef CB_LANES_H
 #define CB_LANES_H
 

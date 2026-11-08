@@ -3,7 +3,7 @@
 # reader of them. Sourced by deploy.sh (and a product's own deploy scripts); never run.
 #
 # THE FILE: $CBASE_OPS_ENV, else ~/.config/cbase/ops.env, else the old
-# c_base/ops/.env (gitignored). It lives outside the repo on purpose: a
+# cbase/ops/.env (gitignored). It lives outside the repo on purpose: a
 # worktree removed with its checkout once took the only copy with it.
 # Mode 0600. Only CBASE_* NAME=value lines are read, so the file can never run
 # anything, and a value already in the environment wins over the file.
@@ -50,7 +50,7 @@ cbase_ops_secret() {
   if [ "$exists" = yes ]; then
     echo "ops_env: $name is not in $file, and the stack already exists." >&2
     echo "ops_env: generating a new one would sign every user out (or lock the console)." >&2
-    echo "ops_env: recover it from the live function (c_base/RUNBOOK.md, \"The ops settings file\") and run again." >&2
+    echo "ops_env: recover it from the live function (cbase/RUNBOOK.md, \"The ops settings file\") and run again." >&2
     return 1
   fi
   local value

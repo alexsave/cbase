@@ -1,7 +1,7 @@
-# c_base - report to Alex (2026-10-13)
+# cbase - report to Alex (2026-10-13)
 
 > **Since then (2026-10-17):** this report is the record of 2026-10-13 and 14 and is not kept current.
-> c_base is live at `https://api.foolish.cards` (since 2026-10-14) and deploys from GitHub Actions on every push to `main` (RUNBOOK.md, step 13).
+> cbase is live at `https://api.foolish.cards` (since 2026-10-14) and deploys from GitHub Actions on every push to `main` (RUNBOOK.md, step 13).
 > The Supabase-compatible facade (GoTrue, PostgREST, Phoenix, the anon key) is deleted: every client speaks the binary `/v1` surface through the kernel's `netclient` (DESIGN.md, "Binary surface").
 > The TypeScript server, its schema and its Postgres harness are deleted, and so is `deploy.yml`; nothing deploys to Supabase.
 > The web is a static export on S3 behind CloudFront and the `/m` unfurl is a C route (docs/VERCEL.md); Vercel is a dispatch-only rollback until about 2026-10-28.
@@ -30,7 +30,7 @@ Supabase today is $0 and would stay $0 until the project is paused for a week of
 
 The product's real load is tens of requests an hour.
 The heartbeat machinery that fakes a consistent server out of stateless functions is the largest consumer of the free tier (258,660 posts in one 30 day window in September against the 500,000 invocation cap).
-In c_base that machinery does not exist: bots are a timer inside the one process.
+In cbase that machinery does not exist: bots are a timer inside the one process.
 
 ## 3. AWS prices, current as of 2026-10-13
 
@@ -49,15 +49,15 @@ Every public IPv4 address costs $3.65 a month since February 2024, in use or not
 | B'. Lightsail $3.50 IPv6-only bundle behind CloudFront's free plan or Cloudflare free | $3.50 | first three months free | yes |
 | C. Lambda custom runtime (a C binary) + DynamoDB + Lambda function URL | $0 | always free at our volume | no, and it would re-fake the consistent server |
 
-DNS costs nothing extra: foolish.cards is already on Google Cloud DNS, so c_base is one A record (api.foolish.cards), not a Route 53 zone.
+DNS costs nothing extra: foolish.cards is already on Google Cloud DNS, so cbase is one A record (api.foolish.cards), not a Route 53 zone.
 TLS costs nothing: Caddy on the box fetches Let's Encrypt certificates.
 Egress at our volume is inside the 100 GB free allowance.
 Backups to S3 cost cents, or nothing if they stay on the box's disk.
 
 The decision (Alex, 2026-10-13): option C, Lambda plus DynamoDB, because it is $0.
 What that costs in design: no resident state, so the CAS on version, the 25 second bot lease, the once-a-minute heartbeat scan and the async self-invoke for bot drives are rebuilt in C on DynamoDB.
-What it costs in JSON: the Lambda event envelope and the DynamoDB API are JSON by AWS's design; both are confined to src/aws/ and store_dynamo.c and the rest of c_base never sees them.
-Alex was shown the fully binary alternatives (AWS Lambda Web Adapter as the front door, S3 with If-Match conditional writes as the store at about $0.15 a month, client polling instead of API Gateway WebSocket) and kept DynamoDB for the exact zero; those alternatives are written into c_base/DESIGN.md, and c_base/bench/ now measures them: the local baseline is in DESIGN.md, the run against the deployed stack is owed.
+What it costs in JSON: the Lambda event envelope and the DynamoDB API are JSON by AWS's design; both are confined to src/aws/ and store_dynamo.c and the rest of cbase never sees them.
+Alex was shown the fully binary alternatives (AWS Lambda Web Adapter as the front door, S3 with If-Match conditional writes as the store at about $0.15 a month, client polling instead of API Gateway WebSocket) and kept DynamoDB for the exact zero; those alternatives are written into cbase/DESIGN.md, and cbase/bench/ now measures them: the local baseline is in DESIGN.md, the run against the deployed stack is owed.
 
 The line items of the chosen shape:
 
@@ -95,7 +95,7 @@ The migration costs about $0 to $1 a year and buys ownership of the data, no Den
 The repo already argued this once.
 RUST_VS_C_KERNEL.md recommends Rust for the server first, on correctness grounds: six of ten shipped memory-safety bugs were in the server's hand-rolled plumbing, and all six were compile-time-preventable.
 The owner declined the rewrite for the kernel because a second engine forks the one source of truth across wasm, iOS and the server.
-c_base is not the kernel, so the question is genuinely open for the shell, and here is the honest version of both sides.
+cbase is not the kernel, so the question is genuinely open for the shell, and here is the honest version of both sides.
 
 Where Rust wins:
 
@@ -128,13 +128,13 @@ The decision is C, with the Rust arguments answered structurally rather than dis
 5. Every kernel call stays a plain C call, no FFI, no bindgen, no second declaration of any struct.
 
 Lambda changes one weight in this debate and it should be said: Rust has an official Lambda runtime crate and an official AWS SDK, while C has neither (the AWS Common Runtime exists in C but is a heavy dependency set).
-c_base therefore carries its own small SigV4 signer, HTTPS client, runtime-API loop and DynamoDB wire, about a thousand lines with their own unit tests and fuzz targets.
+cbase therefore carries its own small SigV4 signer, HTTPS client, runtime-API loop and DynamoDB wire, about a thousand lines with their own unit tests and fuzz targets.
 That is the honest extra price of C on Lambda, and it is paid once.
 If the facade grows instead of shrinking, or the AWS surface grows past DynamoDB and API Gateway, the Rust case gets stronger and this section should be reread.
 
 ## 5. What was built
 
-c_base is one C program with two mains: `bootstrap`, the Lambda custom runtime, and `cbase serve`, a local HTTP and WebSocket server on SQLite for development, the tests and the browser.
+cbase is one C program with two mains: `bootstrap`, the Lambda custom runtime, and `cbase serve`, a local HTTP and WebSocket server on SQLite for development, the tests and the browser.
 Both call the same handler, and the kernel is linked from `foolish/c` with its own source list.
 It speaks the Supabase surface the shipped clients use, so the web app moves to it by changing two environment values.
 Six builders wrote the modules in parallel against the skeleton's headers; one integrator merged them (no textual conflicts), aligned them, and ran the end-to-end checks.
@@ -161,7 +161,7 @@ The Lambda smoke drives the real `bootstrap` through a fake Runtime API (health,
 
 Results on 2026-10-13, after the last change: `make check` green on this Mac (clang); `make check-asan` green on this Mac (ASan and UBSan over everything, the kernel included); `make check` green on Ubuntu 24.04 arm64 in Docker (gcc 13.3, after two gcc-only warnings in the auth module were fixed); `make bootstrap` produces the static arm64 Lambda zip (3.4 MB, holding a 6.5 MB statically linked, stripped aarch64 ELF).
 
-What integration found and fixed, beyond aligning interfaces: c_base compiled the kernel with its bot arena's compact capacities instead of the shipped human-game ones, so about one game in fifteen ended without a replay (reported by the app builder as a production kernel defect; production is not affected, and the build now reads the capacities from the kernel's own wasm flags, enforced by a compile-time assert); the template's DynamoDB indexes did not match the store's (names and a key type), so every dashboard, session and replay query would have failed on the first deploy, and a test now reads the template; the console's Games panel would have failed on DynamoDB; refresh had no reuse grace, so a phone that lost a refresh response would have been signed out; logout did not sign out other devices; serve had no heartbeat; DynamoDB carried its own copy of the request-signing step.
+What integration found and fixed, beyond aligning interfaces: cbase compiled the kernel with its bot arena's compact capacities instead of the shipped human-game ones, so about one game in fifteen ended without a replay (reported by the app builder as a production kernel defect; production is not affected, and the build now reads the capacities from the kernel's own wasm flags, enforced by a compile-time assert); the template's DynamoDB indexes did not match the store's (names and a key type), so every dashboard, session and replay query would have failed on the first deploy, and a test now reads the template; the console's Games panel would have failed on DynamoDB; refresh had no reuse grace, so a phone that lost a refresh response would have been signed out; logout did not sign out other devices; serve had no heartbeat; DynamoDB carried its own copy of the request-signing step.
 
 The browser acceptance (2026-10-13): the web app from this branch, served by `npx next dev` with `.env.local` pointing at `cbase serve` on a fresh SQLite file, driven in a headless Chrome launched for the purpose (fresh profile, no extensions) over the DevTools protocol, two isolated browser contexts as two players.
 Verified: both players signed up through supabase-js; the dashboard loaded; a table was created, the second player joined by its URL, a bot was added, both marked ready and the game started; 58 human moves (47 cards dragged onto the table and 11 pickups) went through the UI from both tabs while the bot played, the server reaching version 170; each tab redrew the other's moves from the realtime push without a reload, and the two tabs' tables agreed after every one of the 33 rounds checked; a third context signed in with a password, and the dashboard, leaderboard and match history pages loaded (empty states, since no game in the browser reached its end; the smoke covers game over, ratings and replays); the admin console showed the live game.
@@ -169,7 +169,7 @@ A persistent DevTools monitor recorded every WebSocket frame, console error and 
 Screenshots: `/private/tmp/claude-501/-Users-alex-Dev-foolish/8f0c400b-6797-4ece-ae66-85b191c32756/scratchpad/browser/shots/acc_*.png` (27 files).
 Not verified in the browser: a game played to its end (my scripted player cannot cover, so it picked up for ever), chat, delete-account, and supabase-swift.
 
-Found in the browser, and NOT c_base's: when the first player joins a one-player lobby, the host's page fails to plan the join's animation (`anim_build_plan error -2`: the page plans against its held one-player board, and anim_plan.c refuses fewer than two players), and its animation queue then stalls, so the host does not see the joiner, or anything after, until a reload.
+Found in the browser, and NOT cbase's: when the first player joins a one-player lobby, the host's page fails to plan the join's animation (`anim_build_plan error -2`: the page plans against its held one-player board, and anim_plan.c refuses fewer than two players), and its animation queue then stalls, so the host does not see the joiner, or anything after, until a reload.
 The same error reproduces against `e2e/fake_supabase.mts`, which mirrors the hosted adapter, so production has it today; it belongs to `src/state/animPlan.ts`, `useAnimationRun.ts` and `c/src/anim_plan.c`.
 
 Not verified, and why:
@@ -178,9 +178,9 @@ Not verified, and why:
   The DynamoDB wire is checked against the API reference's documented shapes and its signing against AWS's own test vectors and a local TLS server; the first deploy is the first contact.
 - The CloudFront WebSocket path (the `/realtime/v1/websocket` rewrite onto the API Gateway stage) and the API Gateway management API's `@connections/<id>` encoding.
 - `ops/deploy.sh` and the CI workflow have never run (`bash -n`, shellcheck and actionlint only).
-- iOS: supabase-swift has not talked to c_base; the smoke speaks its Phoenix serializer, and the auth error shape was chosen from its decoder's source.
+- iOS: supabase-swift has not talked to cbase; the smoke speaks its Phoenix serializer, and the auth error shape was chosen from its decoder's source.
 - Under Lambda: the bot drive's deadline budget and re-kick, and the per-container cache under real concurrency.
-- The latency bench (c_base/bench/, DESIGN.md) is built with a local baseline; its run against the deployed stack is owed.
+- The latency bench (cbase/bench/, DESIGN.md) is built with a local baseline; its run against the deployed stack is owed.
 - A migrated GoTrue password has been shape-checked but not verified against a known password.
 
 The TypeScript this migration deletes once Supabase is switched off, measured on this branch without deleting anything: 1,687 non-blank lines in `foolish/server/impls/supabase` (the five edge functions and their adapter, 14 files, none of them tests) and 417 in `foolish/sdk/ts/table/server_table.ts`, 2,104 lines in all, plus 1,683 lines of SQL (`seed.sql` and five migrations).
@@ -190,7 +190,7 @@ The deletion is a follow-up PR after cutover.
 ## 6. What Alex does next
 
 1. Give the AWS CLI credentials (`aws configure`), and request the ACM certificate for api.foolish.cards in us-east-1 (RUNBOOK.md, "The CLI path").
-2. Run `c_base/ops/deploy.sh`; it builds, uploads and creates the stack, and prints the outputs.
+2. Run `cbase/ops/deploy.sh`; it builds, uploads and creates the stack, and prints the outputs.
 3. Point the `api` CNAME at the CloudFront domain it prints, and check `/health` and `/admin`.
 4. Export from Supabase, rehearse into SQLite, then `deploy.sh --import` into DynamoDB, and delete the export.
 5. Switch the web build's two environment values in Vercel and re-run the web workflow; the old values are the rollback.
@@ -205,7 +205,7 @@ The deletion is a follow-up PR after cutover.
 - The free tier, made true: the always-free 25 read and 25 write units are for PROVISIONED capacity only, and the template was on-demand; it now provisions 15/15 on the table and 5/5 on each index, a test refuses any template that adds up past 25, throttles are retried with jittered backoff and counted in the admin overview, and three cuts (the lease off the game row, seats written only when they change, one query for the seats) took a three-seat game from 1,984 to 1,248 table write units; a human move is now 2 requests and about 8 write units, which fits roughly one move a second across all games before DynamoDB slows rather than bills.
   Point-in-time recovery is the one DynamoDB line still billed, about $0.001 a month at our size; it is the only backup.
   Whether index units draw from the same free 25 is AWS's least explicit rule; the Billing console's Free Tier page settles it after the deploy.
-- The latency bench (c_base/bench/): built, with a local baseline; the JSON on the Lambda path costs about 70 microseconds of CPU per action, about 1.4% of a 5 ms request, so the binary alternatives can save at most that against milliseconds of store round trips.
+- The latency bench (cbase/bench/): built, with a local baseline; the JSON on the Lambda path costs about 70 microseconds of CPU per action, about 1.4% of a 5 ms request, so the binary alternatives can save at most that against milliseconds of store round trips.
 - iOS: supabase-swift 2.55 ran the whole online flow against `cbase serve` (sign-up, sign-in, create, bot, a game to the end, the 9 s watchdog, reconnects, token refresh, sign-out, delete-account) with zero server mismatches; its recorded frames are unit tests.
 - Browser: a game played to its end by two tabs and a bot, the win screen's rating stamp, match history, the replay, the leaderboard, chat, delete-account, a reload and a server kill mid-game all verified.
 - Three product defects found in the browser and fixed on the server (production has them too, see the PR body for what the Supabase side would need): chat times were shown off by the UTC offset, deleted players' names survived in stored replays, and a redaction did not reach an open game page.
@@ -214,5 +214,5 @@ The deletion is a follow-up PR after cutover.
 
 Today, outside node_modules and generated code, the repo holds about 81,900 non-blank lines of TS/JS: 20,600 web client, 37,600 tests and harnesses, 15,300 generated, and about 8,500 of everything else.
 The migration deletes the 1,900 lines of server TypeScript (five edge functions and their adapter) and the 420 line Deno-only server_table.ts, and retires the 1,343 line seed.sql and 5 migrations with it.
-It does not touch the 2,600 lines of tools and visualisers, the 1,300 lines of scripts, or the 37,600 lines of tests; those are the next targets and are listed in c_base/DESIGN.md under "What stays TypeScript, and why".
-The next north-star step outside the server is the web hosting: c_base/docs/VERCEL.md moves foolish.cards off Vercel and its last Next server code, the /m link unfurl, into a C route.
+It does not touch the 2,600 lines of tools and visualisers, the 1,300 lines of scripts, or the 37,600 lines of tests; those are the next targets and are listed in cbase/DESIGN.md under "What stays TypeScript, and why".
+The next north-star step outside the server is the web hosting: cbase/docs/VERCEL.md moves foolish.cards off Vercel and its last Next server code, the /m link unfurl, into a C route.

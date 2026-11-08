@@ -1,4 +1,4 @@
-# c_base's fuzz targets (each side's fuzz/, and the client's), every night for 10 minutes each, one
+# cbase's fuzz targets (each side's fuzz/, and the client's), every night for 10 minutes each, one
 # runner per target. ci.yml's fuzz job runs each for 30 s on every pull request and push to main;
 # this is the long run. A crash fails the target's job and its input is uploaded: minimise it
 # (`build/fuzz/<target> -minimize_crash=1 <input>`), add it to the target's corpus

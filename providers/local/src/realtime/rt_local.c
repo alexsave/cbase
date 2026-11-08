@@ -729,7 +729,7 @@ static const cb_ws_handlers WS_HUB = { on_open, on_message, on_close };
 // every room family one, so any room's doc names a public room). ITS OWN ROUTE AND MESSAGE
 // HANDLER, which decides what such a socket may say and hands what it may to the signed-in
 // socket's handler (on_message, pump, do_sub) unchanged, so that path's code is the same as it
-// was (c_base/tools/hotpath_proof.sh compares it instruction by instruction):
+// was (cbase/tools/hotpath_proof.sh compares it instruction by instruction):
 //   - the first frame is a HELLO with an EMPTY token (any token at all ends it: a client that
 //     has one signs in at /ws), answered READY here, with no job and no store;
 //   - then SUB and UNSUB of a ROOM (SF_WHAT_ROOM) and PING, handed to on_message; a SUB or UNSUB

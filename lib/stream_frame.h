@@ -126,7 +126,7 @@ typedef struct SF_PACKED { uint8_t v, kind; uint32_t id; uint8_t meth; uint16_t 
 typedef struct SF_PACKED { uint8_t v, kind; uint32_t id; uint16_t status; } sf_reply_hdr;          // then the body
 _Static_assert(sizeof(sf_bare_hdr) == 2 && sizeof(sf_hello_hdr) == 4 && sizeof(sf_sub_hdr) == 8 && sizeof(sf_req_hdr) == 9 &&
                sizeof(sf_reply_hdr) == 8, "the heads are the frames' bytes");
-// What a SUB asks to hear (`what`): a room on the hub. The hub (c_base rt_local.c) knows the one
+// What a SUB asks to hear (`what`): a room on the hub. The hub (cbase rt_local.c) knows the one
 // value it registers; a product's netwire.h names the rest.
 #define SF_WHAT_ROOM 2
 

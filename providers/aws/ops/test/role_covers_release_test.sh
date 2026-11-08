@@ -28,7 +28,7 @@ printf '      Resource: arn:x:s3:::b/vm/cbase-serve-*\n' >> "$t/scoped.yaml"
 "$here/role_covers_release.sh" "$t/scoped.sh" "$t/scoped.yaml" >/dev/null || fail "a script whose pointer and prefix the role names was refused"
 printf 'aws ssm put-parameter --name /cbase-vm/release/boot\n' >> "$t/scoped.sh"
 if "$here/role_covers_release.sh" "$t/scoped.sh" "$t/scoped.yaml" 2>/dev/null; then fail "a pointer the role does not name passed"; fi
-# With no role named it refuses, saying so: the role is a product's, not c_base's. A product checks
+# With no role named it refuses, saying so: the role is a product's, not cbase's. A product checks
 # its own: CBASE_DEPLOY_ROLE=<its role template> providers/aws/ops/role_covers_release.sh
 if env -u CBASE_DEPLOY_ROLE "$here/role_covers_release.sh" "$t/scoped.sh" 2>"$t/err"; then fail "no role named, and it passed"; fi
 grep -q "name the deploy role" "$t/err" || fail "no role named: refused, but not saying why"

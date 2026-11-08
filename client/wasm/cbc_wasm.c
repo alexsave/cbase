@@ -1,4 +1,4 @@
-// cbc_wasm.c - the c_base client for a page with no C of its own: one client (cbase/client.h) per
+// cbc_wasm.c - the cbase client for a page with no C of its own: one client (cbase/client.h) per
 // module instance, and the doors TypeScript calls. structgen types these exports from this file
 // (client_exports.ts) and holds the built module to them (--check-wasm); the structs the page reads
 // and writes in this module's memory are read by structgen's accessors (client_layout.ts), and the

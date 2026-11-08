@@ -1,4 +1,4 @@
-// lib_proc.h - start a c_base binary as a child for the smoke tests.
+// lib_proc.h - start a cbase binary as a child for the smoke tests.
 #ifndef CB_TEST_PROC_H
 #define CB_TEST_PROC_H
 

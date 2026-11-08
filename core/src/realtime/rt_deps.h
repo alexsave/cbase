@@ -6,7 +6,7 @@
 // unit_rt_iot.c and unit_rt_local.c
 // swap entries for fakes, because every object of the program is linked into
 // every test, so a fake cannot replace a real function by name. Nothing else
-// in c_base should touch this table.
+// in cbase should touch this table.
 #ifndef CB_RT_DEPS_H
 #define CB_RT_DEPS_H
 

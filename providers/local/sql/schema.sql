@@ -1,4 +1,4 @@
--- c_base schema (DESIGN.md "Store"). SQLite, WAL.
+-- cbase schema (DESIGN.md "Store"). SQLite, WAL.
 --
 -- APPLIED AT EVERY START, inside one transaction, by
 -- providers/local/src/store/store_sqlite.c: every statement here is

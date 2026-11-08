@@ -1,4 +1,4 @@
-// ingress_process.c - the process ingress (ingress_process.h): c_base as a
+// ingress_process.c - the process ingress (ingress_process.h): cbase as a
 // long-lived HTTP + WebSocket server, `cbase serve`.
 //
 // For development, the tests and the browser acceptance run: the same handler

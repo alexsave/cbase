@@ -2,7 +2,7 @@
 # Prunes the code bucket's old releases by hand, with the same rule the deploy
 # scripts apply after a release goes live (ops/s3_prune_lib.sh):
 #
-#   c_base/ops/s3_prune.sh [--dry-run] vm|boot|lambda
+#   cbase/ops/s3_prune.sh [--dry-run] vm|boot|lambda
 #
 # Keeps the live release (read from the SSM release parameter for vm and boot, from the
 # stack's CodeKey for lambda) and the one before it: for vm the parameter's

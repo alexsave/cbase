@@ -1,4 +1,4 @@
-// AppleSignIn.swift - Sign in with Apple's answer handed to the c_base client, with no UIKit: the
+// AppleSignIn.swift - Sign in with Apple's answer handed to the cbase client, with no UIKit: the
 // request is prepared here (scopes, the nonce and state the C client made), the credential is
 // turned into a plain value, and the value goes to the server through CbClient. A new account's
 // name is asked of the app (askName) and the same answer is sent again with it.

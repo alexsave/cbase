@@ -1,4 +1,4 @@
-// socket.ts - the page's host of the c_base client (c_base/client/include/cbase/client.h, compiled to
+// socket.ts - the page's host of the cbase client (cbase/client/include/cbase/client.h, compiled to
 // cbase_client.wasm). Everything about the protocol is the module's: the frames, which call goes
 // on the socket and which over HTTP, retries, the reconnect's jittered wait, ping, the token and its
 // refresh. This file owns the browser's three resources and nothing else: one WebSocket, fetch, and
@@ -9,7 +9,7 @@
 // THE SCHEME. The socket's URL is the server's with http mapped to ws and https to wss; the server
 // defaults to the page's own origin, so a page on https talks wss (CLIENT_DESIGN.md 6.5).
 //
-// Copied by `make -C c_base/client ts` into an app's generated directory, beside the generated
+// Copied by `make -C cbase/client ts` into an app's generated directory, beside the generated
 // files it imports; edit it here.
 import type { CbcWasmOidc } from './client_exports_oidc.ts';
 import { LAYOUT_HASH } from './client_layout_hash.ts';
@@ -101,7 +101,7 @@ export class CbError extends Error {
   readonly code: number;
   readonly detail: number;
   constructor(status: number, why: number, code: number, detail: number) {
-    super(`c_base call failed: status ${status}, why ${why}${code ? `, code ${code}` : ''}`);
+    super(`cbase call failed: status ${status}, why ${why}${code ? `, code ${code}` : ''}`);
     this.name = 'CbError';
     this.status = status;
     this.why = why;
@@ -113,7 +113,7 @@ export class CbError extends Error {
 // The module is not the one this page's readers were generated for.
 export class CbLayoutMismatch extends Error {
   constructor(got: number) {
-    super(`cbase_client.wasm layout ${got.toString(16)} is not this page's ${LAYOUT_HASH.toString(16)}: rebuild (make -C c_base/client ts)`);
+    super(`cbase_client.wasm layout ${got.toString(16)} is not this page's ${LAYOUT_HASH.toString(16)}: rebuild (make -C cbase/client ts)`);
     this.name = 'CbLayoutMismatch';
   }
 }
@@ -218,7 +218,7 @@ export class CbClient {
   call(method: number, flags: number, path: string, body?: Uint8Array): Promise<ArrayBuffer> {
     const p = utf8.encode(path);
     const b = body ?? new Uint8Array(0);
-    if (p.length + b.length > this.ioCap) return Promise.reject(new RangeError('c_base call: path and body too large'));
+    if (p.length + b.length > this.ioCap) return Promise.reject(new RangeError('cbase call: path and body too large'));
     this.mem().u8.set(p, this.io);
     this.mem().u8.set(b, this.io + p.length);
     const t = this.x.cbcw_call(method, flags, p.length, b.length, this.now()) >>> 0;
@@ -242,7 +242,7 @@ export class CbClient {
     globalThis.crypto.getRandomValues(e);
     this.put(e);
     e.fill(0);
-    if (this.x.cbcw_oidc_begin() !== 0) throw new Error('c_base: the provider sign-in did not begin');
+    if (this.x.cbcw_oidc_begin() !== 0) throw new Error('cbase: the provider sign-in did not begin');
     const dec = new TextDecoder();
     const nonce = dec.decode(this.bytes(0, this.x.cbcw_oidc_nonce()));
     const state = dec.decode(this.bytes(0, this.x.cbcw_oidc_state()));
@@ -256,7 +256,7 @@ export class CbClient {
     this.needOidc();
     const parts = [a.state, a.idToken, a.code ?? '', a.name ?? ''].map((x) => utf8.encode(x));
     const total = parts.reduce((n, p) => n + p.length, 0);
-    if (total > this.ioCap) return Promise.reject(new RangeError('c_base sign-in: the answer is too large'));
+    if (total > this.ioCap) return Promise.reject(new RangeError('cbase sign-in: the answer is too large'));
     let at = this.io;
     for (const p of parts) {
       this.mem().u8.set(p, at);
@@ -269,7 +269,7 @@ export class CbClient {
 
   private needOidc(): void {
     if (typeof this.x.cbcw_oidc_begin !== 'function')
-      throw new Error('c_base: this module has no provider sign-in: load cbase_client_oidc.wasm');
+      throw new Error('cbase: this module has no provider sign-in: load cbase_client_oidc.wasm');
   }
 
   signOut(global = false): Promise<ArrayBuffer> {
@@ -288,7 +288,7 @@ export class CbClient {
     const ws = this.ws;
     this.ws = null;
     if (ws) ws.close();
-    for (const w of this.waiting.values()) w.reject(new Error('c_base client closed'));
+    for (const w of this.waiting.values()) w.reject(new Error('cbase client closed'));
     this.waiting.clear();
   }
 
@@ -470,7 +470,7 @@ export class CbClient {
     const auth = h.authLen ? dec.decode(this.bytes(at, h.authLen)) : '';
     at += h.authLen;
     const body = h.bodyLen ? this.copyIo(at, h.bodyLen) : undefined;
-    if (at + h.bodyLen !== n) throw new Error('c_base request: lengths disagree');
+    if (at + h.bodyLen !== n) throw new Error('cbase request: lengths disagree');
     const id = h.id >>> 0;
     const wantBody = (h.flags & CBC_RQ_BODY) !== 0;
     const headers: Record<string, string> = {};

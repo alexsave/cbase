@@ -1,4 +1,4 @@
-# c_base: a backend platform as one C process (DESIGN.md), built here with its example app.
+# cbase: a backend platform as one C process (DESIGN.md), built here with its example app.
 #
 # This Makefile is cbase.mk (the fragment every product includes; its header says what a product
 # sets) with the example app (example/) as the product and every provider linked, so every

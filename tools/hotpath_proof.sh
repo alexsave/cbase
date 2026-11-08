@@ -1,6 +1,6 @@
 #!/bin/bash
-# hotpath_proof.sh - the static proof that a change to c_base leaves named functions' machine code
-# exactly as it was. Two trees are compiled object by object with c_base's own Makefile (so each
+# hotpath_proof.sh - the static proof that a change to cbase leaves named functions' machine code
+# exactly as it was. Two trees are compiled object by object with cbase's own Makefile (so each
 # object gets the very flags `make` gives it): BASE (default origin/main), exported with git
 # archive, and the working tree as it is. Every function of every object under core/src,
 # providers/*/src and the lib/ files on the hot path (mqtt, hist) is disassembled

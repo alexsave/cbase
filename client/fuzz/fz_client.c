@@ -1,4 +1,4 @@
-// fz_client.c - the c_base client (cbase/client.h) under any sequence a host and a server can
+// fz_client.c - the cbase client (cbase/client.h) under any sequence a host and a server can
 // produce: a step program read from the input drives one client through sessions, calls, rooms,
 // socket opens and closes, frames and answers of any bytes, and time. Every step checks what the
 // client hands out:

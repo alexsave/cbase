@@ -13,8 +13,8 @@
  * count a step early, which is a display rounding, not a fact anyone acts on. Nothing here
  * allocates or locks. Every number is a plain integer; no libm.
  *
- * Two servers on c_base each wrote this for themselves before it was lifted; this is the one
- * copy, and c_base's metrics registry builds on it. */
+ * Two servers on cbase each wrote this for themselves before it was lifted; this is the one
+ * copy, and cbase's metrics registry builds on it. */
 #ifndef SHARED_STATS_HIST_H
 #define SHARED_STATS_HIST_H
 

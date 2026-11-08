@@ -3,7 +3,7 @@
 // The server's frames are written out here byte by byte (stream_frame.h: [SF_V][kind] ...), as a
 // server would put them on the wire; the shim itself reads none of them.
 //
-//   make -C c_base/client ts-test
+//   make -C cbase/client ts-test
 import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';

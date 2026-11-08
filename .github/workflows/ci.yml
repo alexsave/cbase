@@ -1,8 +1,8 @@
-# c_base's own CI: the platform built and tested with its example app on Linux and macOS, the example
+# cbase's own CI: the platform built and tested with its example app on Linux and macOS, the example
 # again as a local-only consumer (part of make check, with its link check), sanitized on Linux, the
 # client's wasm half with the pinned toolchain, every fuzz target, the coverage gate, the store on
 # DynamoDB Local, and the deploy tooling's own tests. Nothing here deploys: a product deploys its own
-# build of c_base from its own repository.
+# build of cbase from its own repository.
 name: ci
 
 on:
@@ -86,7 +86,7 @@ jobs:
         run: make -C client ts-test
 
   # THE FUZZ STAGE: one job per target, in parallel, each 30 s from its corpus (fuzz_nightly.yml is
-  # the same shape at 10 min): every target of c_base's own build (<t>) and the client's
+  # the same shape at 10 min): every target of cbase's own build (<t>) and the client's
   # (client:<t>).
   fuzz_targets:
     name: fuzz targets to run

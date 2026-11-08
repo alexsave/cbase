@@ -1,4 +1,4 @@
-# The c_base client: design
+# The cbase client: design
 
 Status: approved by Alex on 2026-10-22, with the decisions of section 6.
 Step 1 (the library) and step 2 (adventurer) are being built.
@@ -11,7 +11,7 @@ Of the 23,781 lines in `foolish/src`, about 490 lines of session, socket and rou
 The rest of `src` is the game: the table, the animations, the oracle, the replays and the styles, and it stays.
 What moves is the plumbing under the website.
 That is the generic half of the C client (`netclient.c`, `netwire.c`), the TypeScript that loads wasm and moves bytes (`sdk/ts/wasm`, `sdk/ts/net`, most of `src/common/backend.ts`), and the iOS socket shell (`ios/FoolishNet/Stream.swift`, `Backend.swift`).
-In lines: about 1,360 of C, 1,250 of TypeScript and 410 of Swift move from `foolish/` into `c_base/client/`.
+In lines: about 1,360 of C, 1,250 of TypeScript and 410 of Swift move from `foolish/` into `cbase/client/`.
 Foolish keeps about 970 lines of `netclient.c` (its endpoints, row readers, version gates and seat logic) and gains about 120 lines of forwarders and a route table.
 The `nc_*` names that the web and iOS hosts call stay the same, so the hosts gain no lines.
 Foolish moves last, behind a differential proof that every byte the client sends and every event it raises is unchanged.
@@ -42,8 +42,8 @@ A note on the five apps:
 | State mirror | `ServerContext.tsx` 895, version gates 64-room LRU (netclient.c:1142-1172), quiet-room refetch at 60 s + 6 s jitter | `cc_client.g` mirror, `useSyncExternalStore` (use.ts) | snapshot + stream merged by version (App.tsx:97-253) | refetch on push, debounced | n/a |
 | Wasm build and load | `web.wasm.gz` (67 KB raw, 31 KB gz per c/Makefile:1463), sync instantiate after vendored gunzip (`sdk/ts/wasm/*` 531 lines) | `chess.wasm` 24,764 B, 10,481 B gz, `instantiateStreaming` (kernel.ts 122) | `sf.wasm` 1,299 B (api.ts:177-212) | none | none |
 | Generated bindings | structgen `net_layout.bots.ts`, `kernel.ios.swift`; Kotlin `Kernel.kt` without the net structs | `web_layout.ts` 168 | `wire.ts` 204, `metrics.ts` 114, `sf_wasm.ts` 23 | `wire.ts` 637, `stream_frame.ts` 103 | none |
-| Static site serving | `next build` export to S3 + CloudFront (`c_base/providers/aws/ops/site/web.yaml` 454, `web_deploy.sh` 232) | `c_chess/server/src/web.c` 142: reads `CC_WEB_DIR` into the heap at boot, gzip twins, linear lookup, `GET /*` INLINE+HOME | `next start` on its own port | `next dev` | n/a |
-| Ops panel | none (c_base admin console only) | none | `Ops.tsx` 135 over c_base `GET /metrics` (generic) | `Ops.tsx` 98 over its own `/adv/ops` | stdout report |
+| Static site serving | `next build` export to S3 + CloudFront (`cbase/providers/aws/ops/site/web.yaml` 454, `web_deploy.sh` 232) | `c_chess/server/src/web.c` 142: reads `CC_WEB_DIR` into the heap at boot, gzip twins, linear lookup, `GET /*` INLINE+HOME | `next start` on its own port | `next dev` | n/a |
+| Ops panel | none (cbase admin console only) | none | `Ops.tsx` 135 over cbase `GET /metrics` (generic) | `Ops.tsx` 98 over its own `/adv/ops` | stdout report |
 | Load generator | `server/bench/roundtrip.c` 474, codecs only (the client is a singleton) | `server/tools/chessbench.c` 514, one `cc_client` per bot | load comes from in-process `sim.c` 1005 + `league.c` 990 over `lib_client` | `server/gen` 397 + its own `httpc.c` 216, HTTP only | `server/tools/wsbench.c` 603, own non-blocking WS client on `cb_loop` (77-284) |
 | Tests of the client | `unit_netclient.c` 1996 (42 tests), `fz_netclient.c` 208 with a 1,548-file corpus, `e2e/stream_dead_socket.test.ts` 86 | `server/test/smoke.c` 475 drives `cc_client` | smoke only | `smoke.c:113-131` opens `/ws/public` | `smoke.c` 345 |
 
@@ -73,7 +73,7 @@ Foolish's behaviour is the best on every axis but one, and the shared client sta
 ## 2. What of foolish moves, file by file
 
 Line counts are `wc -l` at origin/main.
-"Moves" means the lines leave `foolish/` and land in `c_base/client/`, rewritten from file statics to a context struct, with the same logic.
+"Moves" means the lines leave `foolish/` and land in `cbase/client/`, rewritten from file statics to a context struct, with the same logic.
 
 ### 2.1 C
 
@@ -88,7 +88,7 @@ Line counts are `wc -l` at origin/main.
 | **C total** | | **~1,360** | | |
 
 Foolish gains about 120 lines of C: the `nc_*` forwarders over one static `cbc` (about 80) and its route table as data (about 40).
-`c_base/client` gains about 1,420 (the moved lines plus about 60 of context plumbing and static asserts).
+`cbase/client` gains about 1,420 (the moved lines plus about 60 of context plumbing and static asserts).
 Net change in C across the repo: about +180, which matches PLATFORM.md's estimate of +200 for stage 9.
 The tests split as well: about 1,100 of the 1,996 lines of `unit_netclient.c` test generic behaviour and move with it, and `fz_netclient.c` stays in foolish and keeps driving the whole stack.
 
@@ -156,8 +156,8 @@ Everything that knows a card, a seat, a game or a bot:
    `Nc*` keep their names and layouts in `netclient.h` as foolish's names for the moved structs, and a static assert pins every size and offset.
 4. **web.wasm keeps its export list.**
    The list is diffed, and its size is reported; growth over 512 bytes needs a reason.
-5. **No c_base server code changes in the client steps.**
-   Any step that does touch the server (static serving, section 3.5) runs `c_base/tools/hotpath_proof.sh` with its default hot-path list, and every function on it must be identical.
+5. **No cbase server code changes in the client steps.**
+   Any step that does touch the server (static serving, section 3.5) runs `cbase/tools/hotpath_proof.sh` with its default hot-path list, and every function on it must be identical.
 6. **The full `npm run test:e2e` pass, the live smoke and one played game** run at the end, after the targeted gates above, as the defer-full-e2e rule says.
 
 ## 3. The proposed interface
@@ -178,7 +178,7 @@ Everything that knows a card, a seat, a game or a bot:
 
 ### 3.2 The C header, sketched
 
-**Built (step 1):** `c_base/client/include/cbase/client.h` is the contract, and it differs from this sketch in four ways, each found while building it.
+**Built (step 1):** `cbase/client/include/cbase/client.h` is the contract, and it differs from this sketch in four ways, each found while building it.
 - **One door for everything the host reads.** `cbc_in`, `cbc_on_response`, `cbc_closed` and `cbc_tick` raise events, a finished call among them (`CBC_EV_DONE`), so there is no `cbc_next_done`.
 - **No pointers in what other languages read.** A request is written into the caller's buffer as a `cbc_req_hdr` followed by its path, its Authorization value and its body, as a frame is, so structgen's readers reach every byte.
 - **A call names its method, path and flags itself** (`CBC_C_READ`, `CBC_C_AUTH`, `CBC_C_HTTP`); a route table is the app layer's data, from which its forwarders build calls.
@@ -187,7 +187,7 @@ Everything that knows a card, a seat, a game or a bot:
 The sketch as it was drafted:
 
 ```c
-// c_base/client/include/cbase/client.h - the c_base client: the other half of `cbase serve`'s
+// cbase/client/include/cbase/client.h - the cbase client: the other half of `cbase serve`'s
 // /ws and /v1/auth. Sans-IO: the host owns sockets and timers and passes bytes and now_ms.
 #include "stream_frame.h"   // shared/c
 
@@ -284,11 +284,11 @@ structgen reads `cbase/client.h` exactly as it reads `netclient.h` today, and it
 - **Kotlin:** the same, written only when an Android host exists.
 
 The hand-written host shim is the one part per language that cannot be C, and it holds only I/O:
-- `c_base/client/ts/socket.ts` (about 200 lines): a WebSocket, `fetch`, one `setTimeout`, `localStorage` for the blob, and the cross-tab `storage` listener.
+- `cbase/client/ts/socket.ts` (about 200 lines): a WebSocket, `fetch`, one `setTimeout`, `localStorage` for the blob, and the cross-tab `storage` listener.
   It replaces foolish's `backend.ts` core, c_chess's `net.ts`, birdseye's `openStream` and adventurer's `openFeed`.
-- `c_base/client/ts/wasm.ts`: the loader (foolish's `wasm_asset.ts`, `gunzip.ts`, `tiny_inflate.mjs`, `layout_hash.ts`), with the asset URL and the expected hash as arguments.
-- `c_base/client/ts/react/`: `useClient` over `useSyncExternalStore` (c_chess's pattern), `AuthProvider`, `KernelGate` and the route guards, all moved from foolish.
-- `c_base/client/swift/`: `CbSocket.swift` and `CbBackend.swift` (URLSession, Keychain blob), from foolish's `Stream.swift` and `Backend.swift`.
+- `cbase/client/ts/wasm.ts`: the loader (foolish's `wasm_asset.ts`, `gunzip.ts`, `tiny_inflate.mjs`, `layout_hash.ts`), with the asset URL and the expected hash as arguments.
+- `cbase/client/ts/react/`: `useClient` over `useSyncExternalStore` (c_chess's pattern), `AuthProvider`, `KernelGate` and the route guards, all moved from foolish.
+- `cbase/client/swift/`: `CbSocket.swift` and `CbBackend.swift` (URLSession, Keychain blob), from foolish's `Stream.swift` and `Backend.swift`.
 - No hand-written byte offsets anywhere: every byte is read by C or by a structgen reader.
   The one exception today, the gzip header in `gunzip.ts:12-18`, is the gzip format, not ours.
 
@@ -296,7 +296,7 @@ The hand-written host shim is the one part per language that cannot be C, and it
 
 Two packagings, the same objects:
 - **Linked into the app's own module** for apps with C on the client (foolish's `web.wasm`, c_chess's `chess.wasm`).
-  `c_base/client/client.mk` lists the sources and the exports, as `shared/tools/gen_tools.mk` does for structgen.
+  `cbase/client/client.mk` lists the sources and the exports, as `shared/tools/gen_tools.mk` does for structgen.
 - **A prebuilt `cbase_client.wasm`** for apps with no C of their own on the client (birdseye, adventurer).
   It replaces birdseye's 1,299-byte `sf.wasm` with a client that also correlates, retries and pings.
 
@@ -308,11 +308,11 @@ Budget, measured by a CI gate that prints the number and fails past it:
 ### 3.6 Static-site serving
 
 Each app chooses, explicitly, between a CDN and this (section 6.3).
-For an app that chooses SERVE, c_base serves the app's static export itself, from memory, in the app's own process.
-- **Build.** `c_base/tools/embed_site.c` (C, like `embed.c`) walks the `next build` export, writes a gzip `-9` twin when it is smaller, and emits `site_gen.c`.
+For an app that chooses SERVE, cbase serves the app's static export itself, from memory, in the app's own process.
+- **Build.** `cbase/tools/embed_site.c` (C, like `embed.c`) walks the `next build` export, writes a gzip `-9` twin when it is smaller, and emits `site_gen.c`.
   That file holds a sorted path table and the bodies in `.rodata`, with each response's headers precomputed (Content-Type, Content-Length, Content-Encoding, Vary, Cache-Control `immutable` for `/_next/static/` and `no-cache` otherwise, and an ETag from `shared/c/fnv.h`).
   A deploy stays one file.
-- **Runtime.** `c_base/core/src/site/site.c` (about 150 lines, lifted from c_chess's `web.c`).
+- **Runtime.** `cbase/core/src/site/site.c` (about 150 lines, lifted from c_chess's `web.c`).
   The app names its mode and its table in `cb_app.site`, and boot registers `GET /*` with `CB_ROUTE_INLINE | CB_ROUTE_HOME` after every other route, so the longest match keeps every API route and `/ws` ahead of it.
   Lookup is a binary search, `If-None-Match` answers 304, and fallbacks (Next's `404.html`, a `/{id}` page such as foolish's `[game_id]`) are rows of data in the table.
   The body is sent from `.rodata` without a copy, which needs a borrowed-body flag on `cb_http_res`, because `cb_res_body` copies today (http.h:67).
@@ -326,16 +326,16 @@ For an app that chooses SERVE, c_base serves the app's static export itself, fro
 
 ### 3.7 The ops panel
 
-- **One metrics source.** Every app reports through PR #429's registry (`c_base/core/src/metrics.h`) and `GET /metrics`.
+- **One metrics source.** Every app reports through PR #429's registry (`cbase/core/src/metrics.h`) and `GET /metrics`.
   adventurer's `/adv/ops` record becomes registry rows.
-- **One reader.** structgen's `metrics.ts` from `metrics.h`, with birdseye's `readMetrics`, moves to `c_base/client/ts/ops/`.
+- **One reader.** structgen's `metrics.ts` from `metrics.h`, with birdseye's `readMetrics`, moves to `cbase/client/ts/ops/`.
 - **One component.** `CbOps` (from birdseye's `Ops.tsx`, 135 lines): the platform's rows first, the app's after, rates as sparklines, histograms as p50/p90/p99.
   An app puts it on a page in one line.
-- The admin console that c_base already serves (`core/src/admin/console.html`) gets the same view, so an app with no website still has one.
+- The admin console that cbase already serves (`core/src/admin/console.html`) gets the same view, so an app with no website still has one.
 
 ### 3.8 The load-test harness
 
-`cbase-load` is a C library in `c_base/client/load/`, built natively on the same `cbc`.
+`cbase-load` is a C library in `cbase/client/load/`, built natively on the same `cbc`.
 - **Transport:** a non-blocking WebSocket and HTTP client on `cb_loop`, lifted from `wsbench.c:77-284` and `chessbench.c:107-304`.
   The upgrade key is random per connection instead of fixed.
 - **Many clients per process:** one `cbc` per virtual user, which the context struct makes possible and the foolish singleton never did (`roundtrip.c:20-22` had to use the codecs alone for that reason).
@@ -347,25 +347,25 @@ For an app that chooses SERVE, c_base serves the app's static export itself, fro
 
 ## 4. Where each piece lives, and the name
 
-The name is **the c_base client**: C prefix `cbc_`, header `cbase/client.h`, TS package `@cbase/client`, load library `cbase-load`.
+The name is **the cbase client**: C prefix `cbc_`, header `cbase/client.h`, TS package `@cbase/client`, load library `cbase-load`.
 
 | Piece | Where |
 |---|---|
-| The C client (`conn.c`, `session.c`, `pump.c`, `gate.c`) | `c_base/client/src/`, header `c_base/client/include/cbase/client.h` |
-| The platform's auth wire (`cbase/wire.h`, from `netwire.[ch]`'s platform range) | `c_base/client/include/cbase/wire.h`, read by the server too |
+| The C client (`conn.c`, `session.c`, `pump.c`, `gate.c`) | `cbase/client/src/`, header `cbase/client/include/cbase/client.h` |
+| The platform's auth wire (`cbase/wire.h`, from `netwire.[ch]`'s platform range) | `cbase/client/include/cbase/wire.h`, read by the server too |
 | The frame codec | `shared/c/stream_frame.h` (stays) |
 | The wasm libc | `shared/c/wasm/libc.c` (stays) |
-| The wasm exports and `cbase_client.wasm` | `c_base/client/wasm/` |
-| The TS host shim, loader, React hooks, ops component | `c_base/client/ts/` |
-| The Swift host shim | `c_base/client/swift/` |
-| The load harness | `c_base/client/load/` |
-| Static serving | `c_base/core/src/site/` and `c_base/tools/embed_site.c` |
+| The wasm exports and `cbase_client.wasm` | `cbase/client/wasm/` |
+| The TS host shim, loader, React hooks, ops component | `cbase/client/ts/` |
+| The Swift host shim | `cbase/client/swift/` |
+| The load harness | `cbase/client/load/` |
+| Static serving | `cbase/core/src/site/` and `cbase/tools/embed_site.c` |
 | Histograms, process readers | `shared/c/stats/hist.h`, `shared/c/proc.h` (stay, from PR #429) |
 | structgen, datagen | `shared/tools/` (stay) |
-| Tests | `c_base/client/test/` (unit, fuzz with a corpus, and the `nc_trace` differential tool) |
+| Tests | `cbase/client/test/` (unit, fuzz with a corpus, and the `nc_trace` differential tool) |
 
-`c_base/client` sits beside `c_base/core` because it is the other half of c_base's own protocol, not a helper that apps and c_base both happen to use.
-It falls under the same product-name gate as the rest of `c_base/`.
+`cbase/client` sits beside `cbase/core` because it is the other half of cbase's own protocol, not a helper that apps and cbase both happen to use.
+It falls under the same product-name gate as the rest of `cbase/`.
 Alex confirmed the split (section 6.1).
 
 ## 5. Migration order
@@ -374,7 +374,7 @@ Each step lands as its own PR with its own proof.
 PR #429 (the packed frame heads, `/ws/public`, the metrics registry) merges first, since steps 2 to 5 use it.
 
 1. **The library, used by nothing.** Done (2026-10-22): see the status below.
-   `c_base/client` with `cbc`, `cbase/wire.h`, the TS shim, the wasm build, unit tests mutation-checked, a fuzz target with its corpus, and the size gate.
+   `cbase/client` with `cbc`, `cbase/wire.h`, the TS shim, the wasm build, unit tests mutation-checked, a fuzz target with its corpus, and the size gate.
    Proof: its own tests, and the product-name gate.
    Deletes nothing.
 2. **adventurer**, a read-only anonymous viewer with no wasm today. Done (2026-10-24): see the status below.
@@ -390,10 +390,10 @@ PR #429 (the packed frame heads, `/ws/public`, the metrics registry) merges firs
    Proof: `wsbench` reports the same moves per second within noise.
    Deletes: `wsbench.c:77-284` (about 200).
 4b. **`/v1/auth` into the platform.**
-   The four routes and their wire move from `foolish/server/src/app/v1_http.c` into `c_base/core`, byte for byte.
+   The four routes and their wire move from `foolish/server/src/app/v1_http.c` into `cbase/core`, byte for byte.
    Proof: foolish's smokes and `unit_v1` unchanged and green, and `hotpath_proof.sh`.
 5. **c_chess**, a full client with an optimistic mirror and static serving.
-   `client.c` keeps its chess half on top of `cbc`, `net.ts` and `kernel.ts` go to the shim, `web.c` goes to c_base's site serving, and `chessbench` goes to `cbase-load`.
+   `client.c` keeps its chess half on top of `cbc`, `net.ts` and `kernel.ts` go to the shim, `web.c` goes to cbase's site serving, and `chessbench` goes to `cbase-load`.
    Its auth moves to the platform's `/v1/auth` and session blob (section 6.4).
    Proof: `smoke.c` (475 lines) unchanged and green, `chessbench` at or above 89,593 moves per second (DESIGN.md's configuration C), and the hot-path proof for the site step.
    Deletes: about 150 lines of `client.c`, about 180 of `net.ts`, about 70 of `kernel.ts`, `web.c` (142), and about 300 of `chessbench.c`.
@@ -412,11 +412,11 @@ PR #429 (the packed frame heads, `/ws/public`, the metrics registry) merges firs
 ### 5.1 Status
 
 **Step 1, the library (branch `cbase-client`).**
-- C: `c_base/client/include/cbase/client.h` and `auth_wire.h`, `src/client.c`; the wasm doors in `wasm/cbc_wasm.c`; the page shim in `ts/socket.ts`.
-- The module is 9,819 bytes raw and 4,980 gzipped, under the 10,240 and 5,120 the size gate holds (`make -C c_base/client wasm`), and byte-identical when built on macOS (Homebrew clang 22.1.8) and on Linux (apt.llvm.org clang 22.1.8).
+- C: `cbase/client/include/cbase/client.h` and `auth_wire.h`, `src/client.c`; the wasm doors in `wasm/cbc_wasm.c`; the page shim in `ts/socket.ts`.
+- The module is 9,819 bytes raw and 4,980 gzipped, under the 10,240 and 5,120 the size gate holds (`make -C cbase/client wasm`), and byte-identical when built on macOS (Homebrew clang 22.1.8) and on Linux (apt.llvm.org clang 22.1.8).
 - Proof: 27 unit tests (456 checks) natively and under ASan and UBSan; a step-program fuzz target whose 1,035-input corpus replays in `make check` and which ran 2.2 million inputs on macOS and 709,458 in a 30-second smoke on Linux with no failure; three node tests of the shim over the real module; 40 mutants (34 in C, 6 in the shim), every one caught (`test/mutate.sh`, recorded in `mutation_checks.md`).
-- Wiring: c_base's `make check` runs the client's check, the name gate holds `client/` to core's rule, and `c_base.yml` has a `client` job for the module, its size gate and the shim's tests.
-- The full `make -C c_base check` and `check-asan` passed on macOS, and `check`, `check-asan` and `fuzz-replay` passed in the Linux CI image.
+- Wiring: cbase's `make check` runs the client's check, the name gate holds `client/` to core's rule, and `cbase.yml` has a `client` job for the module, its size gate and the shim's tests.
+- The full `make -C cbase check` and `check-asan` passed on macOS, and `check`, `check-asan` and `fuzz-replay` passed in the Linux CI image.
 
 **Step 2, adventurer (branch `adventurer`).**
 - The page's feed and its reads run on the client: the hand-written socket loop and its frame writers left `web/src/api.ts` (425 lines to 386), and the generated `stream_frame.ts` (103) is no longer made.
@@ -429,7 +429,7 @@ The five open questions of the first draft are answered, and two rules were adde
 
 ### 6.1 Where it lives
 
-`c_base/client/`, as proposed, under the product-name gate; the helpers it uses stay in `shared/c`.
+`cbase/client/`, as proposed, under the product-name gate; the helpers it uses stay in `shared/c`.
 
 ### 6.2 Reconnect jitter: on from the start
 
@@ -469,7 +469,7 @@ c_chess, birdseye and adventurer declare SERVE when they move to it.
 Every app signs in through the platform's `/v1/auth` and listens anonymously through `/ws/public`.
 c_chess's `/c/auth` and its JSON guest, and birdseye's dev-only `/be/session`, go away when those apps move.
 One fact the first draft missed: `/v1/auth/*` is still served by foolish (`foolish/server/src/app/v1_http.c:690-693`), not by the platform.
-Lifting those routes into `c_base/core`, byte for byte, is therefore a step of its own before the first signed-in app other than foolish moves (step 4b in section 5).
+Lifting those routes into `cbase/core`, byte for byte, is therefore a step of its own before the first signed-in app other than foolish moves (step 4b in section 5).
 
 **Authenticate once per socket.**
 This is the client's default model:
@@ -492,7 +492,7 @@ This is the client's default model:
 
 The client is transport-agnostic: it reads and writes frames, and the host's socket may be `ws` or `wss`.
 The browser shim takes the scheme from the server URL, which defaults to the page's own origin, so a page on `https` opens `wss` and a page on `http` opens `ws`; an explicit `http(s)` server URL maps the same way.
-TLS termination in c_base is the c_chess agent's work; the native load harness uses it once it lands.
+TLS termination in cbase is the c_chess agent's work; the native load harness uses it once it lands.
 
 ### 6.6 Swift and Kotlin
 

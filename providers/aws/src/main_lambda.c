@@ -1,4 +1,4 @@
-// main_lambda.c - `bootstrap`: c_base as an AWS Lambda custom runtime
+// main_lambda.c - `bootstrap`: cbase as an AWS Lambda custom runtime
 // (provided.al2023, arm64, statically linked; `make bootstrap`).
 //
 // Start: read the config, cb_boot (kernel self-test, store, auth, realtime

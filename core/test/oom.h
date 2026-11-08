@@ -2,7 +2,7 @@
 //
 // Included by exactly ONE file of a test program (unit_oom.c), it DEFINES
 // malloc, calloc, realloc and free for that program. The static linker
-// resolves every c_base and kernel object's call to them here (the
+// resolves every cbase and kernel object's call to them here (the
 // definitions are in the program being linked); on macOS the system's
 // libraries keep their own (two-level namespaces), on glibc they reach these
 // too, which forward to __libc_malloc and friends. Every block comes from the
@@ -19,7 +19,7 @@
 //
 // Only the thread that armed it fails, so a pool worker's allocation never
 // fails behind a test's back. And only an allocation the program's own code
-// makes (c_base and the kernel): on glibc the definitions also catch every
+// makes (cbase and the kernel): on glibc the definitions also catch every
 // shared library's calls (sqlite's caches, OpenSSL's lazily made tables), whose
 // failures and long-lived blocks are the libraries' business, so a caller
 // outside the executable's text is passed through, as macOS's two-level

@@ -1,7 +1,7 @@
-// t.h - the c_base test harness: a handful of assertion macros and a runner.
+// t.h - the cbase test harness: a handful of assertion macros and a runner.
 //
 // Each test/unit_*.c is its own program (the Makefile finds them by name, so a
-// new file needs no Makefile edit) built against every c_base object and the
+// new file needs no Makefile edit) built against every cbase object and the
 // kernel:
 //
 //     #include "t.h"

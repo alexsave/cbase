@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # repo_gate_test.sh - nothing in this repository reaches outside it.
 #
-# c_base is a repository of its own, and a product's submodule: a path that climbs above its root
+# cbase is a repository of its own, and a product's submodule: a path that climbs above its root
 # names whatever happens to sit beside it (a product's tree, another checkout), and builds or runs
 # only there. So every tracked build file, source and script is read, and the gate fails, naming
 # file and line, when one
@@ -9,8 +9,8 @@
 #   * climbs above the repository root: a run of k "../" in a file k-1 or fewer directories
 #     deep (paths in a Makefile, a script and an #include are taken from the file's own
 #     directory, where make -C, $(dirname "$0") and the compiler start), or
-#   * names a product's tree by its path: "foolish/" (the product c_base was carved out of; a
-#     product reaches c_base, never the other way round).
+#   * names a product's tree by its path: "foolish/" (the product cbase was carved out of; a
+#     product reaches cbase, never the other way round).
 #
 # Documentation (*.md, *.html) may describe the history and is not read; neither are the fuzz
 # corpora (inputs, not paths). A test that builds a scratch tree of its own in a temporary
@@ -57,7 +57,7 @@ printf 'include ../../x.mk\n' > "$P/a/Makefile"                    # 2 up from 1
 printf '#include "../../lib/x.h"\n' > "$P/a/b/ok.c"                # 2 up from 2 deep: in
 # shellcheck disable=SC2016  # planted text: the \$( must reach the file unexpanded
 printf 'cd "$(dirname "$0")/../../.." && ls\n' > "$P/a/b/up.sh"    # 3 up from 2 deep: out
-printf 'CB := ../../c_base/foolish/server\n' > "$P/a/b/name.mk"    # in, but names the tree
+printf 'CB := ../../cbase/foolish/server\n' > "$P/a/b/name.mk"    # in, but names the tree
 printf 'a.foolish/x and my_foolish/x are not the tree\n' > "$P/a/b/word.c"
 printf 'touch ../../../x   # repo-gate: scratch tree\n... and src/...) are not climbs\n' > "$P/a/b/marked.sh"
 got="$(scan "$P" a/Makefile a/b/ok.c a/b/up.sh a/b/name.mk a/b/word.c a/b/marked.sh | sed 's/: .*//' | LC_ALL=C sort | tr '\n' ' ')"

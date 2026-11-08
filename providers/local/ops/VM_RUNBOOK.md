@@ -80,9 +80,9 @@ The fixed `::10` address is what keeps that record valid across instance replace
 A stack change (vm.yaml, the stub) is a hand step; a boot script or unit change is not, it ships like the server (below):
 
 ```sh
-c_base/providers/local/ops/vm_deploy.sh              # create or update the stack, keeping the live release
-c_base/providers/local/ops/vm_deploy.sh BIN          # the first deploy: upload BIN as vm/cbase-serve-<short sha> too
-c_base/providers/local/ops/vm_deploy.sh --verify     # = vm_release.sh --verify
+cbase/providers/local/ops/vm_deploy.sh              # create or update the stack, keeping the live release
+cbase/providers/local/ops/vm_deploy.sh BIN          # the first deploy: upload BIN as vm/cbase-serve-<short sha> too
+cbase/providers/local/ops/vm_deploy.sh --verify     # = vm_release.sh --verify
 ```
 
 The first boot takes about two minutes after the instance launches.
@@ -92,11 +92,11 @@ It refuses a tree that does not contain `origin/main`, like `vm_release.sh`.
 
 ## Upgrade the server
 
-Every push to main that changes the server deploys it: the `c_base` workflow's `deploy to cbase-vm` job builds the static binary (`build_bootstrap.sh serve`) and runs `vm_release.sh` on it, as the GitHub role (c_base/RUNBOOK.md, "GitHub deploys").
+Every push to main that changes the server deploys it: the `cbase` workflow's `deploy to cbase-vm` job builds the static binary (`build_bootstrap.sh serve`) and runs `vm_release.sh` on it, as the GitHub role (cbase/RUNBOOK.md, "GitHub deploys").
 `vm_release.sh BIN` uploads BIN as `vm/cbase-serve-<short sha>` with its `.sha256`, points `/cbase-vm/release/serve` at it, runs the instance's boot script through SSM (it fetches and checks the binary named there and restarts `cbase`), then checks that `cbase` is active, that `/usr/local/bin/cbase` has BIN's sha256, that the instance's own `/health` and `/ready` answer 200, and that `https://api.foolish.cards/health` answers `ok cbase`.
-It refuses a tree that does not contain `origin/main` (`c_base/ops/require_main.sh`).
+It refuses a tree that does not contain `origin/main` (`cbase/ops/require_main.sh`).
 Every `vm_release.sh` run (and `--restart`) pins the tree's boot script first: it uploads `vm/cbase-vm-boot-<sha12>` (the same object when the script did not change), sets `/cbase-vm/release/boot`, and then sends the stub over SSM, so the instance fetches, checks and installs the new boot script before running it.
-A boot-script or unit change therefore reaches the running instance with the next push to main that touches `c_base/**`, or with `vm_deploy.sh --restart` (= `vm_release.sh --restart`) by hand from a tree that contains main; no stack update and no new instance.
+A boot-script or unit change therefore reaches the running instance with the next push to main that touches `cbase/**`, or with `vm_deploy.sh --restart` (= `vm_release.sh --restart`) by hand from a tree that contains main; no stack update and no new instance.
 The stub is sent as text, not run from the installed copy, so it works even on an instance whose installed boot script predates the stub.
 After the checks pass, the prune keeps the new boot object and the one it replaced, like the binary.
 By hand, the same command runs from this Mac; `vm_release.sh --restart` pins the tree's boot script and restarts on the server release already named, and `--verify` runs only the checks.
@@ -125,7 +125,7 @@ The SQLite data lives on the instance's root volume; a replacement restores the 
 It works on items, not rows, so it is product-agnostic: every attribute of every item is copied, the gsi1 and gsi2 keys and the TTL pair among them, through the same `item_write` the server uses.
 It only reads DynamoDB (Scan, BatchGetItem, DescribeTable) and never writes it.
 
-The command, from `c_base/` after `make -s build/cbase-export`:
+The command, from `cbase/` after `make -s build/cbase-export`:
 
 ```
 eval "$(aws configure export-credentials --format env)"
@@ -214,7 +214,7 @@ The instance uses standard (not unlimited) CPU credits, so it cannot run up a su
 ## Scale to zero
 
 ```sh
-CBASE_VM_DESIRED=0 c_base/providers/local/ops/vm_deploy.sh
+CBASE_VM_DESIRED=0 cbase/providers/local/ops/vm_deploy.sh
 ```
 
 This terminates the instance (and its data) but keeps the VPC, buckets, parameters and alarms, which cost nothing at rest.
@@ -232,7 +232,7 @@ The SecureStrings were made outside the stack, so delete them too: `aws ssm dele
 The releases under `s3://<CodeBucket>/vm/` do not go with the stack.
 They are pruned on every deploy instead: after `vm_release.sh` verifies a new release (and after `vm_deploy.sh` with a BIN), every other `vm/cbase-serve-*` and its `.sha256` is deleted, except the new release and the one the pointer named before it (the one-step rollback).
 `templates/` and the amazon-ssm rpm are never touched.
-To prune by hand, or to see what a prune would delete: `c_base/ops/s3_prune.sh --dry-run vm`, then again without `--dry-run`.
+To prune by hand, or to see what a prune would delete: `cbase/ops/s3_prune.sh --dry-run vm`, then again without `--dry-run`.
 It reads the live key from `/cbase-vm/release/serve` and prunes nothing if that read fails.
 A rollback is the previous key in the pointer; only one step back is kept.
 
@@ -242,7 +242,7 @@ The VM picks up OS fixes only through new AMIs, because the boot script runs no 
 The procedure is a monthly ASG instance refresh, which replaces the instance with one launched from the latest AL2023 AMI.
 Schedule: the first Monday of each month, and at once when a security advisory names a package on the VM.
 This is a schedule note only; no AWS resource carries it.
-The rig image is rebuilt the same way: `c_base/bench/nano/build_images.sh` pulls a fresh amazonlinux:2023 and upgrades with `--releasever=latest`.
+The rig image is rebuilt the same way: `cbase/bench/nano/build_images.sh` pulls a fresh amazonlinux:2023 and upgrades with `--releasever=latest`.
 
 ## Cost
 

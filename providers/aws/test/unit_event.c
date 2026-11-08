@@ -2,7 +2,7 @@
 //
 // The fixtures are the event shapes AWS documents, written out by hand:
 // a Function URL request ("Invoking Lambda function URLs", payload format
-// 2.0), an EventBridge scheduled event, and c_base's own two string
+// 2.0), an EventBridge scheduled event, and cbase's own two string
 // literals; and an API Gateway WebSocket $connect, which nothing takes any more.
 #include "t.h"
 
@@ -144,7 +144,7 @@ static const char WS_CONNECT[] =
     "\"requestId\":\"ABCD1234=\",\"domainName\":\"abcd1234.execute-api.us-east-1.amazonaws.com\","
     "\"connectionId\":\"AAAA1234=\",\"apiId\":\"abcd1234\"},\"isBase64Encoded\":false}";
 
-// API Gateway's WebSocket events are not c_base's since realtime moved to IoT
+// API Gateway's WebSocket events are not cbase's since realtime moved to IoT
 // Core: one that still arrives is refused like any unknown event.
 static void a_websocket_event_is_refused(void) {
     cb_event ev;

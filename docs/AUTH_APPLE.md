@@ -1,4 +1,4 @@
-# Sign in with Apple on c_base
+# Sign in with Apple on cbase
 
 Status: built and tested end to end against a fake Apple (`core/test/lib_fake_idp.c`), on the server and in a browser.
 The web is what ships first.
@@ -7,7 +7,7 @@ It has not met the real Apple yet: that needs the portal steps of section 3, whi
 
 ## 1. What it is
 
-Sign in with Apple is platform auth: one route, `POST /v1/auth/oidc`, that every app on c_base gets.
+Sign in with Apple is platform auth: one route, `POST /v1/auth/oidc`, that every app on cbase gets.
 It answers the same session as a password sign-in (`CBW_SESSION`), so the socket, the refresh and the client do not change.
 The design is provider-generic (`CBW_IDP_*` in `client/include/cbase/auth_wire.h`); Apple is provider 1.
 
@@ -95,7 +95,7 @@ The key signs the client secret that the code exchange and the revocation need.
 
 ### 3.4 Where the secrets go
 
-The c_base secrets live in `~/.config/cbase/ops.env` (mode 0600).
+The cbase secrets live in `~/.config/cbase/ops.env` (mode 0600).
 Never print them, never commit them, and never regenerate them on a live stack (`CBASE_JWT_SECRET` especially: it also derives the key the stored grants are sealed with, so a new one makes every stored grant unrevocable).
 
 Add to `ops.env`:
@@ -148,7 +148,7 @@ The flow is the same on every client, and every decision in it is the C client's
 
 The web: `<SignInWithApple client clientId redirectURI askName onSession>` loads Apple's JS SDK and runs it in popup mode.
 A page that offers it loads `cbase_client_oidc.wasm`; the base `cbase_client.wasm` leaves the provider sign-in out and stays under its own size budget.
-`make -C c_base/client demo NODE_MODULES=<a node_modules with react, react-dom and esbuild>` serves a page with the button against the fake Apple and a real `cbase serve` on http://127.0.0.1:8941/ (`?auto=1` signs in by itself).
+`make -C cbase/client demo NODE_MODULES=<a node_modules with react, react-dom and esbuild>` serves a page with the button against the fake Apple and a real `cbase serve` on http://127.0.0.1:8941/ (`?auto=1` signs in by itself).
 
 ## 5. How it was tested without Apple
 
@@ -160,7 +160,7 @@ Every test is mutation-checked (`docs/mutation_checks.md`).
 ## 6. iOS
 
 No app uses it yet; the main foolish iOS app does not link it.
-The code is in `c_base/client/swift`:
+The code is in `cbase/client/swift`:
 - `CBaseClient/CbClient.swift`: the host of the C client, URLSession and one timer; it reads the C client's structs through structgen's Swift snapshots and spells no byte offset.
 - `CBaseClient/AppleSignIn.swift`: no UIKit; it fills Apple's request with the C client's nonce and state, sends the credential, and asks the app for a new account's name (asked again when the name is taken).
 - `CBaseClient/SignInWithAppleView.swift`: Apple's own `SignInWithAppleButton`, black on a light screen and white on a dark one, wired to `AppleSignIn`.
@@ -170,9 +170,9 @@ The code is in `c_base/client/swift`:
 
 1. In the developer portal, turn on "Sign in with Apple" for the app's App ID, and add the app's bundle id to `CBASE_APPLE_CLIENT_IDS` on the server (section 3).
 2. Give the target the "Sign in with Apple" capability, which is the entitlement `com.apple.developer.applesignin` with the value `[Default]`.
-3. Compile the C client into the target with the provider sign-in turned on: `c_base/client/src/client.c` and, from `shared/c`, `sha256.c`, `b64/b64.c` and `hex/hex.c`, with `CBC_OIDC=1` in the preprocessor definitions and `c_base/client/include` and `shared/c` on the header search path.
+3. Compile the C client into the target with the provider sign-in turned on: `cbase/client/src/client.c` and, from `shared/c`, `sha256.c`, `b64/b64.c` and `hex/hex.c`, with `CBC_OIDC=1` in the preprocessor definitions and `cbase/client/include` and `shared/c` on the header search path.
 4. Add a bridging header that imports `cbase/client.h` (the example's is `Example/Sources/Bridging.h`), so Swift sees the C client and every constant in it.
-5. Run `make -C c_base/client swift` to write `c_base/client/build/gen/ClientLayout.swift`, the struct snapshots, and add it and the three files of `CBaseClient` to the target; a pre-build step that runs the make keeps it current (the example's `project.yml` has one).
+5. Run `make -C cbase/client swift` to write `cbase/client/build/gen/ClientLayout.swift`, the struct snapshots, and add it and the three files of `CBaseClient` to the target; a pre-build step that runs the make keeps it current (the example's `project.yml` has one).
 6. Make one `CbClient(server:)` and one `AppleSignIn(client:askName:)`; `askName` gets Apple's name of the person as a suggestion and whether the last name was taken, and answers the name, or nil to give up.
 7. Show `SignInWithAppleView(signIn:onResult:)`; the result is the signed-in `CbUser`, or the error to show.
 8. For a link to an account that is already signed in, set `link` on the `AppleSignIn` first; the button then says "Continue" and the result is nil.
@@ -185,7 +185,7 @@ A simulator cannot finish a real Apple sign-in without an Apple ID.
 The view's `fakeCredential` parameter is the test seam: given it, a tap asks that function for the credential instead of Apple, and the rest of the flow is the real one.
 Nothing sets it in a shipped build; the example sets it from its `-CbFakeApple` launch argument, and `Example/Sources/FakeApple.swift` gets the credential from `build/test/fake_apple`'s `/mint`.
 
-`SIM=<simulator udid> make -C c_base/client swift-e2e` starts the fake Apple and a real `cbase serve` that trusts it, and runs the example's tests against them in that simulator.
+`SIM=<simulator udid> make -C cbase/client swift-e2e` starts the fake Apple and a real `cbase serve` that trusts it, and runs the example's tests against them in that simulator.
 The unit tests cover the request Apple gets, a new account's name, a taken name asked again, the same identity signing in again, a spent begin refused, giving up, and a link.
-The UI test taps the button, takes the suggested name, sees the signed-in screen and signs out, and keeps a screenshot of each step in `c_base/client/build/ios-shots`.
-No CI lane runs it, since it needs a simulator; the C client it links is tested in `make -C c_base check`.
+The UI test taps the button, takes the suggested name, sees the signed-in screen and signs out, and keeps a screenshot of each step in `cbase/client/build/ios-shots`.
+No CI lane runs it, since it needs a simulator; the C client it links is tested in `make -C cbase check`.

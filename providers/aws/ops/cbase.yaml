@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: "2010-09-09"
-# c_base on AWS: everything a product's backend runs on, in one stack. The product's instance of it
+# cbase on AWS: everything a product's backend runs on, in one stack. The product's instance of it
 # (its domain, its names, its origins) is the parameters its deploy passes (providers/aws/ops/deploy.sh
 # reads them from the product's ops settings), never this file's defaults.
 #
@@ -36,7 +36,7 @@ AWSTemplateFormatVersion: "2010-09-09"
 # few MB; point-in-time recovery bills $0.20 per GB-month of table, a
 # fraction of a cent at our few MB (DESIGN.md "The free tier, provisioned").
 
-Description: c_base, a product's backend (Lambda + DynamoDB + CloudFront)
+Description: cbase, a product's backend (Lambda + DynamoDB + CloudFront)
 
 Metadata:
   AWS::CloudFormation::Interface:
@@ -117,7 +117,7 @@ Parameters:
     Description: CBASE_ALLOWED_ORIGINS, "*" or a comma list such as https://example.com,https://www.example.com.
   FunctionDescription:
     Type: String
-    Default: c_base (static arm64 bootstrap)
+    Default: cbase (static arm64 bootstrap)
     Description: The Lambda function's description, as the product names its backend.
   FunctionName:
     Type: String
@@ -413,7 +413,7 @@ Resources:
       SourceArn: !GetAtt IotAuthorizer.Arn
 
   # ---- the heartbeat: the bot scan every minute -----------------------------------
-  # The payload is the JSON string literal "scan" (c_base_brief_lambda.md,
+  # The payload is the JSON string literal "scan" (cbase_brief_lambda.md,
   # decision record): valid JSON for Lambda, read by stripping two quotes.
   SchedulerRole:
     Type: AWS::IAM::Role
@@ -496,7 +496,7 @@ Resources:
   # (free): cdn-upstream-connect (a new connection to the Function URL, else
   # 0), cdn-upstream-fbl (the origin's first byte), cdn-downstream-fbl, the
   # POP and the layer. It is how the edge's share of a move is measured
-  # (c_base/docs/BENCH_VM_VS_DYNAMO.md): about 30% of requests through the
+  # (cbase/docs/BENCH_VM_VS_DYNAMO.md): about 30% of requests through the
   # edge took 25 to 30 ms more than the same request to the Function URL,
   # with the Lambda's own time unchanged.
   ServerTimingPolicy:

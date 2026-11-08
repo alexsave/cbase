@@ -3,7 +3,7 @@
 // PostgREST sends a BYTEA column as the text "\x" followed by lowercase hex,
 // which inside a JSON string is written "\\x...". The clients read view rows,
 // replay codes and extras that way, and the migration export writes them that
-// way, so c_base speaks it on both edges.
+// way, so cbase speaks it on both edges.
 #ifndef CB_BYTEA_H
 #define CB_BYTEA_H
 

@@ -1,6 +1,6 @@
 // ctx.h - the handles every request handler is given.
 //
-// c_base runs two ways (DESIGN.md "Two mains, one handler"):
+// cbase runs two ways (DESIGN.md "Two mains, one handler"):
 //   * `bootstrap`, an AWS Lambda custom runtime: one request per invocation, no
 //     state between invocations but a warm container's cache;
 //   * `cbase serve`, a local HTTP + WebSocket server for development and tests.

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Deploys c_base to AWS from this Mac with the AWS CLI: the first deploy and
+# Deploys cbase to AWS from this Mac with the AWS CLI: the first deploy and
 # every later one, the same script.
 #
 #   aws configure            # or: aws sso login --profile <p>; export AWS_PROFILE=<p>
@@ -52,7 +52,7 @@
 # distribution anyway). Nothing else ever prints them.
 set -euo pipefail
 
-here="$(cd "$(dirname "$0")/../../.." && pwd)"   # the c_base root
+here="$(cd "$(dirname "$0")/../../.." && pwd)"   # the cbase root
 prod="$(cd "${CBASE_PRODUCT:-$here}" && pwd)"    # the product's build (its Makefile's directory)
 # shellcheck source=ops/ops_env.sh
 . "$here/ops/ops_env.sh"
@@ -225,7 +225,7 @@ aws cloudformation deploy \
     "CertificateArn=$cert" \
     "AllowedOrigins=$origins" \
     "FunctionName=$function_name" \
-    "FunctionDescription=${CBASE_FUNCTION_DESCRIPTION:-c_base (static arm64 bootstrap)}" \
+    "FunctionDescription=${CBASE_FUNCTION_DESCRIPTION:-cbase (static arm64 bootstrap)}" \
     "TableName=$table" \
     "DistributionId=$dist_id" \
     "IotEndpoint=$iot_endpoint" | tee "$prod/build/deploy-changeset.txt"

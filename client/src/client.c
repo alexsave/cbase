@@ -1,4 +1,4 @@
-// client.c - the c_base client (cbase/client.h): the socket's state machine, the calls and their
+// client.c - the cbase client (cbase/client.h): the socket's state machine, the calls and their
 // retries, the session and its refresh. Every decision about time, retries and tokens is here,
 // once, for every host; the host moves bytes.
 #include "cbase/client.h"

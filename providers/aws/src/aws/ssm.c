@@ -72,7 +72,7 @@ int cb_ssm_load_secrets(cb_config *cfg, char *err, size_t cap) {
         size_t vcap = want[i].dcap < sizeof v ? want[i].dcap : sizeof v;
         int got = ssm_parameter_value(cb_buf_cstr(&r.body), r.body.len, names[i], v, vcap);
         if (got < 0) {
-            snprintf(err, cap, "SSM %s is not a value c_base can use (over %zu characters, or holding a NUL)", names[i], vcap - 1);
+            snprintf(err, cap, "SSM %s is not a value cbase can use (over %zu characters, or holding a NUL)", names[i], vcap - 1);
             rc = CB_E_IO;
         } else if (got == 1) {
             cb_strlcpy(want[i].dst, v, want[i].dcap);

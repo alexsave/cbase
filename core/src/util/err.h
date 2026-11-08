@@ -1,4 +1,4 @@
-// err.h - the error codes every c_base module returns.
+// err.h - the error codes every cbase module returns.
 //
 // One numbering for the whole process, so a store refusal can travel up through
 // the app layer to an HTTP handler without a translation table at each step.

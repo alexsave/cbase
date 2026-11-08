@@ -1,9 +1,9 @@
-// CbClient.swift - the iOS host of the c_base client (c_base/client/include/cbase/client.h, linked
+// CbClient.swift - the iOS host of the cbase client (cbase/client/include/cbase/client.h, linked
 // as C into the app). Everything about the protocol is the C client's: the requests and their
 // bodies, the session and its refresh, which answer is a refusal. This file owns what only a host
 // has: URLSession, one timer, and the randomness the C client asks for. It spells no byte offset:
 // cbc_req_hdr, cbc_event and cbc_user are read through structgen's snapshots (ClientLayout.swift,
-// `make -C c_base/client swift`), and the constants are cbase/client.h's own, imported by Clang.
+// `make -C cbase/client swift`), and the constants are cbase/client.h's own, imported by Clang.
 //
 // This is the HTTP half: what a sign-in, its refresh and an app's HTTP calls need. The socket half
 // (CbSocket, CLIENT_DESIGN.md 3.4) lands with the next iOS client step.
@@ -93,7 +93,7 @@ public final class CbClient {
     public func oidcBegin() -> (nonce: String, state: String) {
         var e = [UInt8](repeating: 0, count: Int(CBC_OIDC_ENTROPY))
         guard SecRandomCopyBytes(kSecRandomDefault, e.count, &e) == errSecSuccess,
-              cbc_oidc_begin(c, e, e.count) == 0 else { fatalError("c_base: no entropy for a sign-in") }
+              cbc_oidc_begin(c, e, e.count) == 0 else { fatalError("cbase: no entropy for a sign-in") }
         e.withUnsafeMutableBytes { _ = memset($0.baseAddress, 0, $0.count) }
         return (String(cString: cbc_oidc_nonce(c)), String(cString: cbc_oidc_state(c)))
     }
@@ -153,7 +153,7 @@ public final class CbClient {
         let auth = String(decoding: UnsafeBufferPointer(start: out + at, count: h.authLen), as: UTF8.self)
         at += h.authLen
         let body = Data(bytes: out + at, count: h.bodyLen)
-        precondition(at + h.bodyLen == n, "c_base request: lengths disagree")
+        precondition(at + h.bodyLen == n, "cbase request: lengths disagree")
         let id = UInt32(truncatingIfNeeded: h.id)
         let wantBody = (h.flags & Int(CBC_RQ_BODY)) != 0
         var req = URLRequest(url: URL(string: path, relativeTo: server)!)

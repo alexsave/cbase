@@ -1,7 +1,7 @@
 // unit_ws.c - the RFC 6455 frame codec, read the way a hostile peer writes it.
 //
 // PORTED from an earlier native server's ws_frame_test.c. The native test fed
-// frames through a WsConn primed with bytes on a dead fd; the c_base codec is a
+// frames through a WsConn primed with bytes on a dead fd; the cbase codec is a
 // pure function over a buffer, so the same frames go straight in.
 //
 // The 8-byte ("127") length form is eight bytes of attacker-controlled data.

@@ -1,5 +1,5 @@
 [Unit]
-Description=cbase serve (c_base, local provider: SQLite + its own MQTT hub)
+Description=cbase serve (cbase, local provider: SQLite + its own MQTT hub)
 After=network-online.target
 Wants=network-online.target
 StartLimitIntervalSec=0

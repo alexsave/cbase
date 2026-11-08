@@ -1,6 +1,6 @@
 // sigv4.h - AWS Signature Version 4 and the credentials it signs with.
 //
-// Every AWS call c_base makes (DynamoDB, the API Gateway management API,
+// Every AWS call cbase makes (DynamoDB, the API Gateway management API,
 // Lambda Invoke) is an HTTPS request signed here: canonical request, string to
 // sign, the derived key HMAC-SHA256 chain (libcrypto), and the Authorization,
 // X-Amz-Date and (with session credentials) X-Amz-Security-Token headers.

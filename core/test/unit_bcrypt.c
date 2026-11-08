@@ -106,7 +106,7 @@ static int64_t cpu_ms(void) {
 //
 // LATENCY: one hash and one verify each stay under 100 ms of this thread's CPU,
 // so a sign-in on the Lambda is not slow. Only the shipped flags can say that:
-// a build with -DCB_INSTRUMENTED (coverage, ASan; c_base/Makefile) is several
+// a build with -DCB_INSTRUMENTED (coverage, ASan; cbase/Makefile) is several
 // times slower for reasons that are not bcrypt's, and skips the bound. The best
 // of three, on a performance core where the OS offers one: a thread moved to an
 // efficiency core mid-hash costs more CPU for the same work.

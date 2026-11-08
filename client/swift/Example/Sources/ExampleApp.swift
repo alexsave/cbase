@@ -68,7 +68,7 @@ struct RootView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("c_base").font(.largeTitle.bold())
+                Text("cbase").font(.largeTitle.bold())
                 Text(m.fake == nil ? "against Apple" : "against the fake Apple (no Apple ID involved)")
                     .font(.footnote).foregroundStyle(.secondary)
             }

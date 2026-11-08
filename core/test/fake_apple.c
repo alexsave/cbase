@@ -71,7 +71,7 @@ static void send_body(cb_buf *resp, int status, const char *type, const char *bo
 }
 
 static const char SDK[] =
-    "// The fake Apple's appleid.auth.js (c_base/core/test/fake_apple.c): AppleID.auth.init and signIn, as\n"
+    "// The fake Apple's appleid.auth.js (cbase/core/test/fake_apple.c): AppleID.auth.init and signIn, as\n"
     "// Apple's SDK answers them in popup mode, from the fake's /mint.\n"
     "(function () {\n"
     "  var here = document.currentScript ? new URL(document.currentScript.src).origin : '';\n"

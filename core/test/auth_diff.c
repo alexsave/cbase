@@ -4,7 +4,7 @@
 // design are named instead of compared (a token's bytes, a user id, an expiry's instant). What is
 // compared: the status, every header but Date, and the body's bytes (a refusal's ten exactly; a
 // session's layout, its lengths, its name, its user by order of appearance, and its expiry against
-// the TTL). c_base/tools/auth_route_diff.sh builds the base binary and runs this.
+// the TTL). cbase/tools/auth_route_diff.sh builds the base binary and runs this.
 //
 //   build/test/auth_diff <base cbase> <new cbase>
 //

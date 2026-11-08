@@ -12,7 +12,7 @@
 #   CBASE_BUILD_DIR    where under it make runs (the product's Makefile's directory; default .)
 #   CBASE_BUILD_SERVE  the serve binary's name in that build (default cbase)
 #   CBASE_BUILD_LAMBDA the Lambda binary's name (default bootstrap)
-# With none set it builds c_base itself (its example app). The binaries land in
+# With none set it builds cbase itself (its example app). The binaries land in
 # <CBASE_BUILD_ROOT>/<CBASE_BUILD_DIR>/dist.
 #
 # HOW: an arm64 Alpine container (musl, with static OpenSSL and SQLite archives in its package
@@ -40,7 +40,7 @@ case "$what" in
 esac
 
 IMAGE="alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6"
-cb="$(cd "$(dirname "$0")/.." && pwd)"   # the c_base root
+cb="$(cd "$(dirname "$0")/.." && pwd)"   # the cbase root
 root="$(cd "${CBASE_BUILD_ROOT:-$cb}" && pwd)"
 dir="${CBASE_BUILD_DIR:-.}"
 copy="${CBASE_BUILD_COPY:-.}"
