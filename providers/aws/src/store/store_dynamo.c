@@ -532,7 +532,7 @@ static int emit_items(cb_span items, cb_admin_row_fn fn, void *ud, bool *more) {
     return n;
 }
 
-// A page of a Scan over one key family (DESIGN.md's item table). `prefix`
+// A page of a Scan over one key family (aws_json.h "THE ITEM LAYOUT"). `prefix`
 // narrows the pk after "<FAMILY>#"; `cursor` is the hex of the previous page's
 // LastEvaluatedKey. A Scan's Limit counts items read before the filter, so a
 // page may come back short (even empty) with a cursor to go on from.
