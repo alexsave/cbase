@@ -20,8 +20,9 @@ extern const char *const cb_config_limit_names[CB_CONFIG_LIMITS];
 #define CB_CPU_AUTO (-2)   // serve picks the CPU at start (cb_affinity_pick)
 
 typedef struct cb_config {
-    // CBASE_LISTEN, "host:port", default 127.0.0.1:8080. Port 0 asks the OS for
-    // a free one (the smoke test reads the bound port from the log line).
+    // CBASE_LISTEN, "host:port", default 127.0.0.1:8080: the one setting for where serve
+    // listens (there is no PORT). Port 0 asks the OS for a free one, which the startup line
+    // on stdout names (ingress_process.h).
     char listen_host[64];
     int  listen_port;
     // CBASE_STORE: "sqlite" or "dynamo". Default: sqlite under serve, dynamo

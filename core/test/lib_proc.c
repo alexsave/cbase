@@ -115,8 +115,9 @@ static int private_image(tp_child *c, const char *bin, char *out, size_t cap) {
     return rc;
 }
 
-int tp_start(tp_child *c, char *const argv[], char *const env[]) {
+static int start(tp_child *c, char *const argv[], char *const env[], bool want_out) {
     memset(c, 0, sizeof *c);
+    c->out_fd = -1;
     const char *base = getenv("TMPDIR");
     snprintf(c->dir, sizeof c->dir, "%s/tp-XXXXXX", base && *base ? base : "/tmp");
     if (!mkdtemp(c->dir)) return -1;
@@ -131,14 +132,20 @@ int tp_start(tp_child *c, char *const argv[], char *const env[]) {
     if (!cargv) return -1;
     cargv[0] = image;
     for (int i = 1; i < argc; i++) cargv[i] = argv[i];
-    int p[2];
+    int p[2], o[2] = { -1, -1 };
     if (pipe(p)) { free(cargv); return -1; }
+    if (want_out && pipe(o)) { free(cargv); return -1; }
     pid_t pid = fork();
     if (pid < 0) { free(cargv); return -1; }
     if (pid == 0) {
         dup2(p[1], 2);
         close(p[0]);
         close(p[1]);
+        if (want_out) {
+            dup2(o[1], 1);
+            close(o[0]);
+            close(o[1]);
+        }
         for (int i = 0; env && env[i]; i++) putenv(env[i]);
         execv(image, cargv);
         fprintf(stderr, "exec %s (as %s): %s\n", argv[0], image, strerror(errno));
@@ -146,6 +153,10 @@ int tp_start(tp_child *c, char *const argv[], char *const env[]) {
     }
     free(cargv);
     close(p[1]);
+    if (want_out) {
+        close(o[1]);
+        c->out_fd = o[0];
+    }
     fcntl(p[0], F_SETFL, O_NONBLOCK);
     c->pid = pid;
     c->err_fd = p[0];
@@ -156,6 +167,10 @@ int tp_start(tp_child *c, char *const argv[], char *const env[]) {
     c->pump->fd = p[0];
     return pthread_create(&c->pump->th, NULL, pump_run, c->pump) == 0 ? 0 : -1;
 }
+
+int tp_start(tp_child *c, char *const argv[], char *const env[]) { return start(c, argv, env, false); }
+
+int tp_start_out(tp_child *c, char *const argv[], char *const env[]) { return start(c, argv, env, true); }
 
 int tp_wait_line(tp_child *c, const char *needle, int timeout_ms, char *out, size_t cap) {
     tp_pump *p = c->pump;

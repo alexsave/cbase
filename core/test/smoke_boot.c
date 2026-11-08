@@ -16,6 +16,7 @@
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
@@ -193,6 +194,66 @@ static void the_cpu_knob_boots_or_refuses(void) {
 #endif
 }
 
+// Reads the child's stdout into buf until a newline or `ms` pass: the bytes read (buf NUL-ended).
+static size_t read_out_line(int fd, char *buf, size_t cap, int ms) {
+    size_t n = 0;
+    struct pollfd p = { fd, POLLIN, 0 };
+    while (n + 1 < cap && !memchr(buf, '\n', n) && poll(&p, 1, ms) == 1) {
+        ssize_t r = read(fd, buf + n, cap - 1 - n);
+        if (r <= 0) break;
+        n += (size_t)r;
+        buf[n] = 0;
+    }
+    buf[n] = 0;
+    return n;
+}
+
+// GET /health on 127.0.0.1:port: the status line's code, or -1.
+static int health(int port) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    struct sockaddr_in a = { .sin_family = AF_INET, .sin_port = htons((uint16_t)port) };
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (fd < 0 || connect(fd, (struct sockaddr *)&a, sizeof a) != 0) { if (fd >= 0) close(fd); return -1; }
+    const char *q = "GET /health HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
+    char b[512] = "";
+    int code = -1;
+    if (write(fd, q, strlen(q)) == (ssize_t)strlen(q) && read(fd, b, sizeof b - 1) > 12) sscanf(b, "HTTP/1.1 %d", &code);
+    close(fd);
+    return code;
+}
+
+// THE STARTUP LINE (ingress_process.h): with port 0, serve binds a free port and says which on
+// stdout, in one line, once, after the bind: the port it names answers, and nothing else is ever
+// written there, through a drain to the exit.
+static void the_startup_line_names_the_port(void) {
+    char *env[] = { "CBASE_LISTEN=127.0.0.1:0", "CBASE_STORE=sqlite", "CBASE_DB=:memory:", "CBASE_DEV=1", NULL };
+    char *argv[] = { (char *)g_cbase, "serve", NULL };
+    for (int round = 0; round < 2; round++) {   // twice: two free ports, each named
+        tp_child c;
+        T_EQ_INT(tp_start_out(&c, argv, env), 0);
+        char line[256];
+        size_t n = read_out_line(c.out_fd, line, sizeof line, 15000);
+        int port = 0;
+        char tail[8] = "";
+        T_EQ_INT(sscanf(line, "cbase: listening 127.0.0.1:%d%7[^x]", &port, tail), 2);
+        T_EQ_STR(tail, "\n");                  // the line ends at the port: nothing after it
+        T_CHECK(n > 0 && strchr(line, '\n') == line + n - 1);   // one line, and only one
+        T_CHECK(port > 0 && port < 65536);
+        if (port <= 0) { tp_stop(&c, SIGKILL, 5000); close(c.out_fd); continue; }
+        // The log says the same port, and the port answers: the line came after the bind.
+        char logl[256] = "", want[64];
+        T_EQ_INT(tp_wait_line(&c, "listening on", 15000, logl, sizeof logl), 0);
+        snprintf(want, sizeof want, "listening on 127.0.0.1:%d ", port);
+        T_CHECK(strstr(logl, want) != NULL);
+        T_EQ_INT(health(port), 200);
+        T_EQ_INT(tp_stop(&c, SIGTERM, 15000), 0);
+        // Exactly once: after the drain and the exit, stdout holds nothing more.
+        char rest[256];
+        T_EQ_INT((long long)read_out_line(c.out_fd, rest, sizeof rest, 2000), 0);
+        close(c.out_fd);
+    }
+}
+
 // One request to the fake Runtime API, recorded, answered 202.
 typedef struct { int fd; char req[4096]; } one_req;
 static void *take_one(void *ud) {
@@ -277,6 +338,7 @@ int main(int argc, char **argv) {
     signal(SIGPIPE, SIG_IGN);
     if (g_cbase) T_RUN(cbase_refuses);
     if (g_cbase) T_RUN(the_cpu_knob_boots_or_refuses);
+    if (g_cbase) T_RUN(the_startup_line_names_the_port);
     if (g_bootstrap) T_RUN(bootstrap_refuses);
     return T_DONE();
 }
