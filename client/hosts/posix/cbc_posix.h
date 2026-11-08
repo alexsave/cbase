@@ -1,6 +1,7 @@
 // cbc_posix.h - THE C SDK'S NATIVE HOST: a cbase client (cbase/client.h) run by a native C app's
-// event loop. The app's loop owns the socket, the HTTP client and the timers (cbc_posix_io); this
-// file owns everything cbase/client.h asks of a host on top of them, once:
+// event loop. The app's loop owns the socket, the HTTP client and the timers (cbc_posix_io); the
+// shared host (client/hosts/common/cbc_host.h) owns everything cbase/client.h asks of a host on top
+// of them, and this file is its environment (the io, the clock, the store, the seed):
 //
 //   socket   while cbc_stream_wanted: io.ws_open(cbc_stream_path), then cbc_opened when the loop
 //            says it opened (cbc_posix_ws_opened); every message to cbc_in; each cbc_next_out frame
@@ -21,7 +22,7 @@
 // cbc_posix_ws_* the loop calls comes later, from the loop, never from inside the io call that
 // started it; and after the app calls into the client (cbc_sign_in, cbc_call, cbc_sub, ...) it
 // calls cbc_posix_pump. Nothing here allocates or keeps a global: the app owns the cbc_posix (one
-// per client, about 40 KB), and a process may run any number.
+// per client, about 45 KB), and a process may run any number.
 //
 // client/test/host/host_suite.h is the suite every host passes (unit_host_posix.c runs it on this
 // one); a new host proves itself with the same scripted server.
@@ -32,6 +33,7 @@
 #include <stdint.h>
 
 #include "cbase/client.h"
+#include "cbc_host.h"   // client/hosts/common
 
 typedef void (*cbc_posix_done_fn)(void *ctx, int status, const uint8_t *body, size_t len);
 typedef void (*cbc_posix_fire_fn)(void *ctx);
@@ -63,35 +65,11 @@ typedef struct {
 
 typedef void (*cbc_posix_event_fn)(void *ctx, cbc *c, const cbc_event *e, const uint8_t *bytes);
 
-#define CBC_POSIX_FRAME_CAP 8192    // a HELLO (a token) or a REQ (a path and an arena's body)
-#define CBC_POSIX_REQ_CAP   16384   // cbc_req_hdr, a path, "Bearer <jwt>", a copied body (an OIDC
-                                    // sign-in's); a borrowed body is never here
-#define CBC_POSIX_SESS_CAP  4096    // the session's bytes: two tokens, a user id, a name
-#define CBC_POSIX_PEND_MAX  (CBC_CALLS_MAX + 2)   // every call over HTTP at once, and the refresh
-
-typedef struct cbc_posix cbc_posix;
-typedef struct {
-    cbc_posix *h;
-    uint32_t   id;    // the request's (cbc_req_hdr.id)
-    uint8_t    used;
-} cbc_posix_pend;
-
 // The fields are this file's; the app allocates the struct and reads none of them.
-struct cbc_posix {
-    cbc c;
+typedef struct cbc_posix {
+    cbc_host host;    // the shared host (client/hosts/common/cbc_host.h), on the environment below
     cbc_posix_io io;
-    cbc_posix_event_fn fn;
-    void *ctx;
-    uint32_t sock;        // the client's socket id; 0: none
-    uint8_t  open;        // its open was heard
-    uint8_t  closing;     // ws_close sent, its close not yet heard
-    uint8_t  pad[2];
-    uint32_t tick_timer, reopen_timer;
-    cbc_posix_pend pend[CBC_POSIX_PEND_MAX];
-    uint8_t frame[CBC_POSIX_FRAME_CAP];
-    uint8_t req[CBC_POSIX_REQ_CAP];
-    uint8_t sess[CBC_POSIX_SESS_CAP];
-};
+} cbc_posix;
 
 // Starts the host: cfg (NULL: cbc_cfg_default; the seed is always the host's entropy), the app's
 // event callback. Loads the session and pumps. 0, or -1 when there is no entropy for the seed.

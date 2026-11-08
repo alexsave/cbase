@@ -16,8 +16,9 @@
 //   events   cbc_in, cbc_on_response, cbc_closed and cbc_tick raise events: read them with
 //            cbc_n_events / cbc_event_at after each, before calling any of the four again. A span
 //            (off, len) is into the bytes passed to the call that raised it.
-// client/hosts/<name>/ holds hosts that keep this (posix: a native app's event loop), and every
-// host passes one suite against a scripted server (client/test/host/host_suite.h).
+// client/hosts/<name>/ holds hosts that keep this (posix: a native app's event loop), each the
+// shared host (client/hosts/common/cbc_host.h) on its platform's I/O, and every host passes one
+// suite against a scripted server (client/test/host/host_suite.h).
 //
 // ONE AUTHENTICATION PER SOCKET (CLIENT_DESIGN.md 6.4). A session is made over HTTP
 // (cbc_sign_in, and the refresh this file sends itself), the socket says HELLO with its token once,

@@ -23,6 +23,9 @@
 #   CBC_CFLAGS       what the core needs of the compiler beyond the app's own flags: nothing (it is
 #                    C11, -std=c11 or later, strict or GNU; the wasm module builds it -std=c11)
 #   CBC_REQUIRES     the C library functions the core's objects may call
+#   CBC_HOST_SRC     the shared host (client/hosts/common/cbc_host.h): the platform-free half of every
+#                    C host, which a host's own file (hosts/posix, a cdom app's hosts/cdom) runs on
+#   CBC_HOST_INC     its include flag
 #
 # The core is the same files cbase's own client/Makefile builds, tests and fuzzes: that Makefile
 # includes this one, so there is one list.
@@ -39,3 +42,5 @@ CBC_INC         := -I$(CBC_CB)client/include -I$(CBC_CB)lib
 CBC_OIDC_CFLAGS := -DCBC_OIDC
 CBC_CFLAGS      :=
 CBC_REQUIRES    := memcpy memmove memset memcmp strlen
+CBC_HOST_SRC    := $(CBC_CB)client/hosts/common/cbc_host.c
+CBC_HOST_INC    := -I$(CBC_CB)client/hosts/common
