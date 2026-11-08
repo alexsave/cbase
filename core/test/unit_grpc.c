@@ -37,6 +37,10 @@ static int call(cb_h2_channel *ch, const char *path, const void *req, size_t n, 
 }
 
 static void echo(void) {
+    cb_grpc_reply fresh;
+    cb_grpc_reply_init(&fresh);
+    T_EQ_INT(fresh.code, -1);   // no answer yet
+    T_CHECK(!fresh.has_msg);
     for (int tls = 0; tls < 2; tls++) {
         h2srv_opts so = { .tls = tls };
         h2srv *s = h2srv_start(&so);
@@ -59,6 +63,12 @@ static void echo(void) {
         T_EQ_INT(r.code, CB_GRPC_OK);
         T_CHECK(r.has_msg);
         T_EQ_INT((int)r.msg_len, 0);
+        // Long enough that every byte of the length prefix counts (the server checks it).
+        static uint8_t big[0x01020304 & 0xfffff];
+        for (size_t i = 0; i < sizeof big; i++) big[i] = (uint8_t)(i * 13);
+        T_EQ_INT(cb_grpc_unary(ch, "/test.Echo/Echo", NULL, 0, big, sizeof big, 20000, 0, &r), CB_OK);
+        T_EQ_INT(r.code, CB_GRPC_OK);
+        T_EQ_MEM(r.msg, r.msg_len, big, sizeof big);
         T_EQ_INT(cb_h2_channel_dials(ch), 1);
         cb_grpc_reply_free(&r);
         cb_h2_channel_free(ch);
@@ -141,11 +151,63 @@ static void not_grpc(void) {
     // No answer at all: the transport's error, untouched.
     T_EQ_INT(call(ch, "/reset", "x", 1, &r), CB_E_IO);
     T_EQ_INT(r.resp.why, CB_H2_WHY_RESET);
+    T_EQ_INT(r.code, -1);   // no answer: no code, not even OK
     // A reply over max_reply: the HTTP/2 cap, the message's prefix allowed for.
     T_EQ_INT(cb_grpc_unary(ch, "/test.Echo/Echo", NULL, 0, "abcdefgh", 8, 5000, 8, &r), CB_OK);
     T_EQ_MEM(r.msg, r.msg_len, "abcdefgh", 8);
     T_EQ_INT(cb_grpc_unary(ch, "/test.Echo/Echo", NULL, 0, "abcdefghi", 9, 5000, 8, &r), CB_E_IO);
     T_EQ_INT(r.resp.why, CB_H2_WHY_TOO_BIG);
+    cb_grpc_reply_free(&r);
+    cb_h2_channel_free(ch);
+    h2srv_stop(s);
+}
+
+// Answers the server shapes from the path: the status's parse, an error with a
+// message (which the caller is not shown), and gRPC fields on an HTTP error.
+static void raw(void) {
+    h2srv_opts so = { 0 };
+    h2srv *s = h2srv_start(&so);
+    cb_h2_channel *ch = channel(s);
+    cb_grpc_reply r;
+    cb_grpc_reply_init(&r);
+    T_EQ_INT(call(ch, "/test.Echo/Raw/200/14/-/-", "x", 1, &r), CB_OK);
+    T_EQ_INT(r.code, CB_GRPC_UNAVAILABLE);
+    T_EQ_INT(call(ch, "/test.Echo/Raw/200/123/-/-", "x", 1, &r), CB_OK);
+    T_EQ_INT(r.code, 123);
+    static const char *const bad[] = { "/test.Echo/Raw/200//-/-", "/test.Echo/Raw/200/1234/-/-",
+                                       "/test.Echo/Raw/200/8x/-/-", "/test.Echo/Raw/200/x8/-/-",
+                                       "/test.Echo/Raw/200/-1/-/-", "/test.Echo/Raw/200/:/-/-" };
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        T_EQ_INT(call(ch, bad[i], "x", 1, &r), CB_E_INVALID);
+        T_CHECK(strstr(r.resp.err, "grpc-status") != NULL);
+    }
+    // Details that are not base64.
+    T_EQ_INT(call(ch, "/test.Echo/Raw/200/8/!!!!/-", "x", 1, &r), CB_E_INVALID);
+    T_CHECK(strstr(r.resp.err, "base64") != NULL);
+    // Padded details decode the same as unpadded.
+    T_EQ_INT(call(ch, "/test.Echo/Raw/200/8/AQI=/-", "x", 1, &r), CB_OK);
+    T_EQ_MEM(r.details.p, r.details.len, "\x01\x02", 2);
+    // An error that carries a message anyway: the caller is not handed it.
+    T_EQ_INT(call(ch, "/test.Echo/Raw/200/9/-/hello", "x", 1, &r), CB_OK);
+    T_EQ_INT(r.code, CB_GRPC_FAILED_PRECONDITION);
+    T_CHECK(!r.has_msg && r.msg == NULL && r.msg_len == 0);
+    // OK with a message in the body and the status in the trailers.
+    T_EQ_INT(call(ch, "/test.Echo/Raw/200/0/-/hello", "x", 1, &r), CB_OK);
+    T_EQ_MEM(r.msg, r.msg_len, "hello", 5);
+    // OK with no message is no unary reply.
+    T_EQ_INT(call(ch, "/test.Echo/Raw/200/0/-/-", "x", 1, &r), CB_E_INVALID);
+    T_CHECK(strstr(r.resp.err, "without a message") != NULL);
+    // A gRPC status on an HTTP error: the status counts, the body is not read as messages.
+    T_EQ_INT(call(ch, "/test.Echo/Raw/503/14/-/!oops", "x", 1, &r), CB_OK);
+    T_EQ_INT(r.code, CB_GRPC_UNAVAILABLE);
+    T_EQ_INT(r.http_status, 503);
+    T_CHECK(!r.has_msg);
+    // A request message over 4 GB never leaves (the length is refused before the bytes are read).
+    if (sizeof(size_t) > 4) {
+        T_EQ_INT(cb_grpc_unary(ch, "/test.Echo/Echo", NULL, 0, "", (size_t)0x100000000ull, 1000, 0, &r), CB_E_INVALID);
+        T_CHECK(strstr(r.resp.err, "4 GB") != NULL);
+    }
+    T_EQ_INT(h2srv_requests(s), 14);
     cb_grpc_reply_free(&r);
     cb_h2_channel_free(ch);
     h2srv_stop(s);
@@ -254,6 +316,9 @@ static void unframe(void) {
     T_EQ_INT(cb_grpc_unframe(one, sizeof one - 1, &m, &n, &has), CB_E_INVALID);
     static const uint8_t huge[] = { 0, 0xff, 0xff, 0xff, 0xff, 'a' };
     T_EQ_INT(cb_grpc_unframe(huge, sizeof huge, &m, &n, &has), CB_E_INVALID);
+    // 16 MB claimed by the top byte alone, 64 KB there: cut short.
+    static uint8_t top[5 + 65536] = { 0, 1, 0, 0, 0 };
+    T_EQ_INT(cb_grpc_unframe(top, sizeof top, &m, &n, &has), CB_E_INVALID);
     // Flagged compressed (1), and a reserved bit.
     static const uint8_t zip[] = { 1, 0, 0, 0, 1, 'z' };
     T_EQ_INT(cb_grpc_unframe(zip, sizeof zip, &m, &n, &has), CB_E_INVALID);
@@ -313,6 +378,7 @@ int main(void) {
     T_RUN(meta);
     T_RUN(fail);
     T_RUN(not_grpc);
+    T_RUN(raw);
     T_RUN(malformed);
     T_RUN(concurrent);
     return T_DONE();

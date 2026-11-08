@@ -21,6 +21,12 @@
 //   /test.Echo/Meta       gRPC: a message "<x-goog-api-key>|<grpc-timeout>|<never or indexed>" (how the key came)
 //   /test.Echo/Two        gRPC: two messages (malformed for unary)
 //   /test.Echo/Zip        gRPC: one message flagged compressed
+//   /test.Echo/Raw/<http>/<grpc-status>/<details>/<msg>
+//                         :status <http>, grpc-status and grpc-status-details-bin as given ("-": none);
+//                         msg "-": trailers-only; "!<bytes>": the bytes unframed; else one framed message
+//                         with the gRPC fields in the trailers
+// Every other /test.Echo/ route first checks the request is one framed message with a
+// true length prefix, and answers grpc-status 13 trailers-only when it is not.
 //   anything else         404
 #ifndef CB_TEST_H2_SRV_H
 #define CB_TEST_H2_SRV_H

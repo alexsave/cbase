@@ -107,8 +107,8 @@ int cb_grpc_unary(cb_h2_channel *ch, const char *path, const cb_h2_field *meta, 
     for (int i = 0; i < n_meta; i++) f[3 + i] = meta[i];
     uint8_t prefix[5] = { 0, (uint8_t)(req_len >> 24), (uint8_t)(req_len >> 16), (uint8_t)(req_len >> 8),
                           (uint8_t)req_len };
-    cb_h2_iov body[2] = { { prefix, 5 }, { req, req_len } };
-    int rc = cb_h2_request(ch, "POST", path, f, 3 + n_meta, body, req_len ? 2 : 1, timeout_ms,
+    cb_h2_iov body[2] = { { prefix, 5 }, { req, req_len } };   // the session skips an empty piece
+    int rc = cb_h2_request(ch, "POST", path, f, 3 + n_meta, body, 2, timeout_ms,
                            max_reply ? max_reply + 5 : 0, &r->resp);
     if (rc != CB_OK) return rc;
     r->http_status = r->resp.status;

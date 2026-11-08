@@ -263,10 +263,45 @@ static void *respond(void *arg) {
         field(&block, "grpc-message", "quota used up%3A try l%61ter %zz 100%");
         field(&block, "grpc-status-details-bin", b64);
         headers(c, j->id, &block, true);
+    } else if (grpc && strncmp(path, "/test.Echo/Raw/", 15) == 0) {
+        // /test.Echo/Raw/<http>/<grpc-status>/<details>/<msg>: "-" leaves a part out.
+        char part[4][64] = { "", "", "", "" };
+        const char *q = path + 15;
+        for (int i = 0; i < 4; i++) {
+            size_t k = strcspn(q, "/");
+            snprintf(part[i], sizeof part[i], "%.*s", (int)k, q);
+            q += k + (q[k] == '/');
+        }
+        bool has_msg = strcmp(part[3], "-") != 0;
+        field(&block, ":status", part[0]);
+        field(&block, "content-type", "application/grpc");
+        cb_buf grpc_fields;
+        cb_buf_init(&grpc_fields);
+        if (strcmp(part[1], "-") != 0) field(&grpc_fields, "grpc-status", part[1]);
+        if (strcmp(part[2], "-") != 0) field(&grpc_fields, "grpc-status-details-bin", part[2]);
+        if (!has_msg) {   // trailers-only
+            cb_buf_append(&block, grpc_fields.p, grpc_fields.len);
+            headers(c, j->id, &block, true);
+        } else {
+            if (part[3][0] == '!') cb_buf_puts(&body, part[3] + 1);   // not framed
+            else grpc_message(&body, part[3], strlen(part[3]), 0);
+            headers(c, j->id, &block, false);
+            data(c, j->id, body.p, body.len, false);
+            headers(c, j->id, &grpc_fields, true);
+        }
+        cb_buf_free(&grpc_fields);
+    } else if (grpc && (j->body.len < 5 || j->body.p[0] != 0 ||
+                        ((uint32_t)j->body.p[1] << 24 | (uint32_t)j->body.p[2] << 16 | (uint32_t)j->body.p[3] << 8 |
+                         j->body.p[4]) != j->body.len - 5)) {
+        // The request must be one framed message, its prefix true to its length.
+        field(&block, ":status", "200");
+        field(&block, "content-type", "application/grpc");
+        field(&block, "grpc-status", "13");
+        field(&block, "grpc-message", "the request is not one framed message");
+        headers(c, j->id, &block, true);
     } else if (grpc) {
-        // The request is one framed message.
-        const uint8_t *msg = j->body.len >= 5 ? j->body.p + 5 : NULL;
-        size_t ml = j->body.len >= 5 ? j->body.len - 5 : 0;
+        const uint8_t *msg = j->body.p + 5;
+        size_t ml = j->body.len - 5;
         if (strcmp(path, "/test.Echo/Echo") == 0) grpc_message(&body, msg, ml, 0);
         else if (strcmp(path, "/test.Echo/Meta") == 0) {
             char t[400];
