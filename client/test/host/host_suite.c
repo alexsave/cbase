@@ -67,6 +67,11 @@ struct cbhs_world {
     w_event  ev[W_EVENTS];
     int      n_ev, ev_read;
     int      broken;            // the host broke a rule of the world (named on stderr)
+    // The script's app, when a case sets one: called with every event the host hands over, after it
+    // is recorded, from inside the host's own callback (so it may call into the client and pump,
+    // as an app is allowed to).
+    void   (*app)(cbhs_world *w, cbc *c, const w_event *e);
+    uint32_t app_ticket;        // what the app's last call answered
 };
 
 static void broke(cbhs_world *w, const char *why) {
@@ -178,6 +183,7 @@ void cbhs_event(cbhs_world *w, cbc *c, const cbc_event *e, const uint8_t *bytes)
         if (e->len && !bytes) broke(w, "an event with a span and no bytes to read it from");
         else if (e->len <= W_DATA && bytes) memcpy(v->data, bytes + e->off, e->len);
     }
+    if (w->app) w->app(w, c, v);
 }
 
 // ---- the script's side: the server, the clock, the app ---------------------------------------------
@@ -445,6 +451,46 @@ static void a_dropped_socket_is_reopened_after_the_wait(void) {
     kept(w);
 }
 
+// The app re-issues a lost write and pumps from inside its own DONE callback: the reopen's wait
+// is already armed when the host hands the close's events over, so the re-entrant pump opens no
+// socket at once, and the call goes on the next one, after the backoff.
+static void retry_lost(cbhs_world *w, cbc *c, const w_event *e) {
+    if (e->kind != CBC_EV_DONE || e->why != CBC_WHY_LOST) return;
+    w->app_ticket = cbc_call(c, CBC_POST, 0, "/v1/echo", 8, (const uint8_t *)"hi", 2, cbhs_now(w));
+    w->h->pump(w->host);
+}
+static void a_call_retried_from_inside_done_waits_for_the_reopen(void) {
+    cbhs_world *w = world();
+    cbc *c = signed_up(w, g_h, FAR);
+    uint32_t t = cbc_call(c, CBC_POST, 0, "/v1/echo", 8, (const uint8_t *)"hi", 2, cbhs_now(w));
+    pump(w);
+    T_EQ_INT(frame(w), SF_REQ);
+    w->app = retry_lost;
+    drop(w);                                       // the write is lost: DONE LOST, and the app retries
+    w->app = NULL;
+    const w_event *e = event(w);
+    T_CHECK(e && e->kind == CBC_EV_DONE && e->ticket == t && e->why == CBC_WHY_LOST);
+    T_CHECK(w->app_ticket != 0);
+    T_EQ_INT(opening(w), 0);                       // not at once: the reconnect floor
+    advance(w, g_cfg.retry_first_ms - 1);
+    T_EQ_INT(opening(w), 0);
+    advance(w, g_cfg.retry_max_ms);
+    uint32_t id = opening(w);
+    T_CHECK(id != 0);
+    if (!id) return;
+    accept_sock(w, id);
+    T_EQ_INT(frame(w), SF_HELLO);
+    bare(w, SF_READY);
+    T_EQ_INT(frame(w), SF_REQ);                    // the retried call, on the new socket
+    T_EQ_MEM(g_f.path, g_f.path_len, "/v1/echo", 8);
+    reply(w, g_f.id, 200, NULL, 0);
+    e = event(w);
+    T_CHECK(e && e->kind == CBC_EV_READY);
+    e = event(w);
+    T_CHECK(e && e->kind == CBC_EV_DONE && e->ticket == w->app_ticket && e->status == 200);
+    kept(w);
+}
+
 static void the_kept_session_is_used_at_start(void) {
     cbhs_world *w = world();
     uint8_t b[128];
@@ -691,6 +737,7 @@ int cbhs_run(const cbhs_host *h) {
     T_RUN(an_http_call_carries_the_bearer_and_is_retried_by_the_timer);
     T_RUN(the_timer_pings_and_a_silent_socket_is_closed);
     T_RUN(a_dropped_socket_is_reopened_after_the_wait);
+    T_RUN(a_call_retried_from_inside_done_waits_for_the_reopen);
     T_RUN(the_kept_session_is_used_at_start);
     T_RUN(a_room_goes_live_and_pushes_reach_the_app);
     T_RUN(a_refresh_rolls_the_socket_onto_the_new_token);

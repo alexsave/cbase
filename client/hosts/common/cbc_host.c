@@ -98,9 +98,11 @@ void cbc_host_ws_closed(cbc_host *h, uint32_t id) {
     h->sock = 0;
     h->open = h->closing = 0;
     uint32_t wait = cbc_closed(&h->c, cbc_host_now(h));
-    events(h, NULL);
+    // The reopen's wait is armed BEFORE the app hears the close's events: an app that re-issues a
+    // lost call and pumps from inside its callback must not open the next socket at once.
     if (h->reopen_timer) h->env->timer_stop(h->ud, h->reopen_timer);
     h->reopen_timer = h->env->timer(h->ud, wait, on_reopen, h);
+    events(h, NULL);
     cbc_host_pump(h);
 }
 
