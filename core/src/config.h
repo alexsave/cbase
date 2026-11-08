@@ -90,7 +90,7 @@ typedef struct cb_config {
     long max_body;        // CBASE_MAX_BODY 1048576: request body bytes, for a route without its own (router.h max_body)
     int  jwt_ttl_s;       // CBASE_JWT_TTL 3600: access token lifetime
     int  admin_fail_limit;// CBASE_ADMIN_FAIL_LIMIT 10: wrong console tokens per address an hour (rate_limits.h)
-    int  log_level;       // CBASE_LOG_LEVEL info: debug|info|warn|error
+    int  log_level;       // CBASE_LOG_LEVEL info, or the app's (cbase/app.h log_level): debug|info|warn|error
     // CBASE_CLOCK_SPEEDUP 1 (1..100): every timer of the platform's (a schedule's
     // period under serve, cb_config_scaled_ms) and of an app's that asks it,
     // divided by this. For the smoke tests, so what waits minutes plays out in

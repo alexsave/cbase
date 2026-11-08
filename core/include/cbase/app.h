@@ -171,6 +171,10 @@ struct cb_app {
     // THE THREADS), 1..256. An app whose handlers wait (a remote call that holds its thread for
     // seconds) sets as many as it wants waiting at once. 0: cbase's 1. CBASE_REQ_WORKERS overrides.
     int                  req_workers;
+    // LOG_LEVEL: the least level the log keeps, "debug", "info", "warn" or "error". NULL: cbase's
+    // "info". CBASE_LOG_LEVEL overrides. The startup line on stdout ("cbase: listening ...") is not
+    // the log's and is printed at every level.
+    const char          *log_level;
 };
 
 // The app this binary serves: the product defines it, one per link.

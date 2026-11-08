@@ -12,6 +12,7 @@
 #include "config.h"
 #include "ctx.h"
 #include "util/err.h"
+#include "util/log.h"
 #include "util/affinity.h"
 #include "util/str.h"
 
@@ -395,12 +396,34 @@ static void the_apps_pool_under_the_environment(void) {
     unsetenv("CBASE_REQ_WORKERS");
 }
 
+// The app's log level (cbase/app.h log_level) over cbase's info, under CBASE_LOG_LEVEL, and a
+// name that is no level refused even under the variable.
+static void the_apps_log_level_under_the_environment(void) {
+    clear_env();
+    unsetenv("CBASE_LOG_LEVEL");
+    static const cb_app WARN = { .name = "warn", .log_level = "warn" }, NONE = { .name = "none" },
+                        LOUD = { .name = "loud", .log_level = "loud" };
+    cb_config c;
+    char err[256] = "";
+    T_EQ_INT(cb_config_load(&c, &NONE, err, sizeof err), CB_OK);
+    T_EQ_INT(c.log_level, CB_LOG_INFO);
+    T_EQ_INT(cb_config_load(&c, &WARN, err, sizeof err), CB_OK);
+    T_EQ_INT(c.log_level, CB_LOG_WARN);
+    setenv("CBASE_LOG_LEVEL", "debug", 1);
+    T_EQ_INT(cb_config_load(&c, &WARN, err, sizeof err), CB_OK);
+    T_EQ_INT(c.log_level, CB_LOG_DEBUG);
+    T_EQ_INT(cb_config_load(&c, &LOUD, err, sizeof err), CB_E_INVALID);
+    T_CHECK(strstr(err, "log_level loud") != NULL);
+    unsetenv("CBASE_LOG_LEVEL");
+}
+
 int main(void) {
     T_RUN(secrets_rule);
     T_RUN(storeless_needs_no_token_secrets);
     T_RUN(lambda_refuses_a_clock_speedup);
     T_RUN(the_apps_settings_follow_the_platforms);
     T_RUN(the_apps_pool_under_the_environment);
+    T_RUN(the_apps_log_level_under_the_environment);
     T_RUN(secrets_never_shown);
     T_RUN(the_cpu_knob);
     T_RUN(one_instance_per_database);

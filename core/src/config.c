@@ -387,6 +387,14 @@ static int app_defaults(cb_config *c, const cb_app *app, char *err, size_t cap) 
         return CB_E_INVALID;
     }
     if (app->req_workers && !given("CBASE_REQ_WORKERS")) c->req_workers = app->req_workers;
+    if (app->log_level) {
+        int lvl = cb_log_level_parse(app->log_level);
+        if (lvl < 0) {
+            snprintf(err, cap, "the app's log_level %s is not debug, info, warn or error", app->log_level);
+            return CB_E_INVALID;
+        }
+        if (!given("CBASE_LOG_LEVEL")) c->log_level = lvl;
+    }
     return CB_OK;
 }
 

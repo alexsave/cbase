@@ -272,6 +272,9 @@ Zero or NULL in the field leaves cbase's default, so an app that sets nothing is
 
 - `req_workers`: serve's request pool, the threads every `CB_ROUTE_POOL` handler runs on, 1 to 256 (cbase's default 1; `CBASE_REQ_WORKERS`).
   An app whose handlers hold their thread on a remote call sets as many as it wants waiting at once: amgi's Gemini calls hold one for up to about 30 s, so it ships `.req_workers = 12`.
+- `log_level`: the least level the log keeps, `"debug"`, `"info"`, `"warn"` or `"error"` (cbase's default `"info"`; `CBASE_LOG_LEVEL`).
+  amgi ships `"warn"`.
+  The startup line on stdout, `cbase: listening <host>:<port>`, is not the log's and is printed at every level, so a parent that waits for it works whatever the app ships.
 
 `CBASE_ENV_FILE`, when set, names a file of `KEY=VALUE` lines that `cb_config_load` reads into the environment before anything else is read (`core/src/env_file.h`).
 A key the environment already holds, even as an empty string, keeps its value, so the shell's variables override the file.

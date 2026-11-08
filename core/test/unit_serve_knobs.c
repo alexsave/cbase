@@ -1,5 +1,6 @@
 // unit_serve_knobs.c - what an app sets for serve (cbase/app.h "serve's defaults"), seen through a
-// real `cbase serve` (cb_process_main): the request pool it asks for is the pool its handlers get.
+// real `cbase serve` (cb_process_main): the request pool it asks for is the pool its handlers get,
+// and its log level quiets the log but never the startup line.
 //
 // This program runs ITSELF as the server (lib_proc.h: a scripted child is the test's own binary):
 // each serve-* mode serves one small app through the serve ingress.
@@ -16,6 +17,7 @@
 #include "util/err.h"
 #include "util/log.h"
 
+#include <poll.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
@@ -59,6 +61,10 @@ static const cb_route_list POOL_LIST = { POOL_ROUTES, 1 };
 static const cb_route_list *const POOL_LISTS[] = { &POOL_LIST };
 static const cb_app POOL_APP = { .name = "knobs-pool", .routes = POOL_LISTS, .n_route_lists = 1, .storeless = true,
                                  .req_workers = POOL_N };
+
+// THE LOG LEVEL. An app that ships "error": the log keeps no INFO line, and the startup line on
+// stdout, which is not the log's, is printed all the same.
+static const cb_app QUIET_APP = { .name = "knobs-quiet", .storeless = true, .log_level = "error" };
 
 // ---- the tests ----------------------------------------------------------------------------------
 
@@ -120,15 +126,50 @@ static void the_apps_pool_is_the_pool(void) {
     T_EQ_INT(tp_stop(&c, SIGTERM, 30000), 0);
 }
 
+// One line from fd (the child's stdout), within timeout_ms. 0, or -1.
+static int read_line(int fd, char *out, size_t cap, int timeout_ms) {
+    size_t n = 0;
+    for (int waited = 0; n + 1 < cap; ) {
+        struct pollfd p = { .fd = fd, .events = POLLIN };
+        int r = poll(&p, 1, 100);
+        if (r == 0) {
+            if ((waited += 100) >= timeout_ms) return -1;
+            continue;
+        }
+        if (r < 0 || read(fd, out + n, 1) != 1) return -1;
+        if (out[n] == '\n') { out[n] = 0; return 0; }
+        n++;
+    }
+    return -1;
+}
+
+// At "error" the startup line is on stdout, and the log on stderr holds no INFO line.
+static void the_startup_line_at_every_level(void) {
+    char *env[] = { DEV_ENV, NULL };
+    char *argv[] = { (char *)g_self, "serve-quiet", NULL };
+    tp_child c;
+    T_EQ_INT(tp_start_out(&c, argv, env), 0);
+    char line[256] = "";
+    T_EQ_INT(read_line(c.out_fd, line, sizeof line, 20000), 0);
+    T_CHECK(strncmp(line, "cbase: listening 127.0.0.1:", 27) == 0);
+    close(c.out_fd);
+    kill(c.pid, SIGTERM);
+    T_EQ_INT(tp_wait_line(&c, " INFO ", 20000, line, sizeof line), -1);   // to the end of its stderr: none
+    T_EQ_INT(tp_stop(&c, 0, 30000), 0);
+}
+
 int main(int argc, char **argv) {
     g_self = argv[0];
     if (argc == 2 && strncmp(argv[1], "serve-", 6) == 0) {
-        const cb_app *app = strcmp(argv[1], "serve-pool") == 0 ? &POOL_APP : NULL;
+        const cb_app *app = strcmp(argv[1], "serve-pool") == 0    ? &POOL_APP
+                            : strcmp(argv[1], "serve-quiet") == 0 ? &QUIET_APP
+                                                                  : NULL;
         if (!app) return 2;
         char *sargv[] = { argv[0], "serve", NULL };
         return cb_process_main(&cb_provider_local, app, 2, sargv);
     }
     T_RUN(the_apps_pool_is_the_pool);
+    T_RUN(the_startup_line_at_every_level);
     return T_DONE();
 }
 
