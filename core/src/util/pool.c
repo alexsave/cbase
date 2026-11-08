@@ -6,6 +6,7 @@
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -24,6 +25,7 @@ struct cb_pool {
     size_t pending;
     atomic_size_t outstanding;   // queued + running: what cb_pool_idle reads
     bool stopping;
+    size_t cap;                  // the most tasks queued or running (bounded), or SIZE_MAX
     int n;
     pthread_t *threads;
     char name[16];
@@ -68,10 +70,13 @@ static void *worker(void *arg) {
     }
 }
 
-cb_pool *cb_pool_new(int threads, const char *name) {
+cb_pool *cb_pool_new(int threads, const char *name) { return cb_pool_new_bounded(threads, name, -1); }
+
+cb_pool *cb_pool_new_bounded(int threads, const char *name, int queue) {
     if (threads < 1) threads = 1;
     cb_pool *p = calloc(1, sizeof *p);
     if (!p) return NULL;
+    p->cap = queue < 0 ? SIZE_MAX : (size_t)threads + (size_t)queue;
     pthread_mutex_init(&p->lock, NULL);
     pthread_cond_init(&p->cv, NULL);
     cb_strlcpy(p->name, name ? name : "pool", sizeof p->name);
@@ -94,6 +99,8 @@ cb_pool *cb_pool_new(int threads, const char *name) {
 int cb_pool_submit(cb_pool *p, cb_task_fn fn, void *ud) {
     pthread_mutex_lock(&p->lock);
     if (p->stopping) { pthread_mutex_unlock(&p->lock); return CB_E_STATE; }
+    // Every submit takes the lock, so no two pass this together; a worker's decrement only lowers it.
+    if (atomic_load_explicit(&p->outstanding, memory_order_acquire) >= p->cap) { pthread_mutex_unlock(&p->lock); return CB_E_FULL; }
     task *t = p->spare;
     if (t) { p->spare = t->next; p->n_spare--; }
     else if (!(t = malloc(sizeof *t))) { pthread_mutex_unlock(&p->lock); return CB_E_NOMEM; }
