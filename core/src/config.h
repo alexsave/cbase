@@ -60,8 +60,10 @@ typedef struct cb_config {
     // the edge vouches for). Unset (serve, tests): nothing is checked. At
     // least 32 characters when set.
     char origin_secret[128];
-    // CBASE_ALLOWED_ORIGINS: "*" (default) or a comma list of origins echoed in
-    // Access-Control-Allow-Origin.
+    // CBASE_ALLOWED_ORIGINS: a comma list of origins the deployment allows beside the app's own
+    // (cbase/app.h cors_origins), echoed in Access-Control-Allow-Origin: a staging page, a
+    // developer's localhost. Default empty: the app's list alone. "*" is any origin (net/router.h
+    // CORS), refused at boot when the app asks for credentials.
     char allowed_origins[1024];
     // CBASE_PUBLIC_URL: the URL clients use (https://api.example.com), for
     // logs and the admin console. Default http://<listen>.
@@ -180,7 +182,9 @@ int64_t cb_config_scaled_ms(const cb_config *cfg, int64_t ms);
 // else only for `value` equal to it (constant time). NULL is a missing header.
 bool cb_config_origin_proven(const cb_config *cfg, const char *value);
 
-// Is `origin` allowed by CBASE_ALLOWED_ORIGINS? Always true for "*".
+// Does CBASE_ALLOWED_ORIGINS list `origin`, exactly? Never true for "*" itself.
 bool cb_config_origin_allowed(const cb_config *cfg, const char *origin);
+// Does CBASE_ALLOWED_ORIGINS list "*" (any origin)?
+bool cb_config_origin_any(const cb_config *cfg);
 
 #endif

@@ -12,11 +12,18 @@
 // handlers that only read memory (/health). A LOOP handler must never block.
 //
 // WHAT THE ROUTER DOES ITSELF, so no module repeats it:
-//   * CORS. An OPTIONS request to any routed path is answered 200 "ok" with
-//     Access-Control-Allow-Origin (CBASE_ALLOWED_ORIGINS), -Headers (what the
-//     web client sends: authorization, content-type), -Methods and Max-Age
-//     7200. Every other response gets Access-Control-Allow-Origin unless the
-//     handler set its own.
+//   * CORS, for the origins the app declares (cbase/app.h cors_origins) and the
+//     deployment adds (config.h CBASE_ALLOWED_ORIGINS), and no other. An OPTIONS
+//     request to any routed path from a listed Origin is answered 200 "ok" with
+//     Access-Control-Allow-Origin (that origin), -Headers (what the web client
+//     sends: authorization, content-type), -Methods and Max-Age 7200; from any
+//     other origin, or with none, 403 "origin not allowed" and no Access-Control-*
+//     header. Every other response from a listed origin gets
+//     Access-Control-Allow-Origin unless the handler set its own, and every
+//     response whose CORS depends on the Origin says Vary: Origin. "*" listed is
+//     any origin: every answer and preflight says Access-Control-Allow-Origin: *.
+//     The app's cors_credentials adds Access-Control-Allow-Credentials: true to an
+//     echoed origin; never to "*", which boot refuses beside it.
 //   * 404 for no route, 405 for a path routed only under other methods, 503
 //     when the request pool is saturated or gone.
 //   * HEAD. A path with no HEAD route of its own matches its GET route, and
@@ -70,8 +77,12 @@ const cb_route *cb_router_match(const cb_router *r, int method, const char *path
 // test can drive them without sockets.
 // Answers an OPTIONS preflight into res.
 void cb_router_preflight(const cb_ctx *ctx, const cb_http_req *req, cb_http_res *res);
-// Adds Access-Control-Allow-Origin to a finished response if it has none.
+// Adds the CORS headers to a finished response if it has no Access-Control-Allow-Origin.
 void cb_router_cors(const cb_ctx *ctx, const cb_http_req *req, cb_http_res *res);
+// Boot's check of the CORS declaration: every app origin shaped as a browser sends it
+// (scheme://host[:port]) or "*", and no credentials beside "*" in either list. CB_OK, or
+// CB_E_INVALID with a sentence in err.
+int cb_router_cors_check(const cb_app *app, const cb_config *cfg, char *err, size_t cap);
 // Writes a plain-text error body with `status`. Clients read the status; the
 // text is for people and logs (a refusal a client acts on is the kernel's
 // AskRefusal, written by the route itself).

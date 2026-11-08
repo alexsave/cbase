@@ -1,10 +1,12 @@
 // unit_http.c - the HTTP parser, the response writer and the router's matching.
 #include "t.h"
 
+#include "cbase/app.h"
 #include "net/http.h"
 #include "net/router.h"
 #include "util/err.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 
 static int parse(const char *text, size_t max_body, cb_http_req *r, char **keep) {
@@ -194,32 +196,185 @@ static void routing_priority(void) {
     cb_router_free(r);
 }
 
-static void cors(void) {
+// The headers a response carries, as one string ("Name: value\r\n..."), for exact compares.
+static const char *heads(const cb_http_res *res) { return cb_buf_cstr(&res->headers); }
+
+// One request through the router's CORS: a preflight (OPTIONS) or an answer's headers.
+static void cors_run(const cb_ctx *ctx, const char *method, const char *origin, cb_http_res *res) {
+    char text[256];
+    if (origin) snprintf(text, sizeof text, "%s /v1/decks HTTP/1.1\r\nOrigin: %s\r\n\r\n", method, origin);
+    else snprintf(text, sizeof text, "%s /v1/decks HTTP/1.1\r\n\r\n", method);
+    cb_http_req r;
+    char *b;
+    T_CHECK(parse(text, 0, &r, &b) > 0);
+    cb_res_init(res);
+    if (strcmp(method, "OPTIONS") == 0) cb_router_preflight(ctx, &r, res);
+    cb_router_cors(ctx, &r, res);
+    free(b);
+}
+
+static const char *const APP_ORIGINS[] = { "https://app.example", "http://localhost:5173" };
+
+// The default is deny: no app list, no deployment list, so no origin gets a CORS header and every
+// preflight is refused.
+static void cors_default_denies(void) {
     cb_config cfg;
     memset(&cfg, 0, sizeof cfg);
-    strcpy(cfg.allowed_origins, "https://foolish.cards, http://localhost:3000");
     cb_ctx ctx;
     memset(&ctx, 0, sizeof ctx);
     ctx.cfg = &cfg;
+    const char *who[] = { "https://evil.example", "null", NULL };
+    for (int i = 0; i < 3; i++) {
+        cb_http_res res;
+        cors_run(&ctx, "OPTIONS", who[i], &res);
+        T_EQ_INT(res.status, 403);
+        T_CHECK(strstr(heads(&res), "Access-Control-") == NULL);
+        cb_res_free(&res);
+        cors_run(&ctx, "GET", who[i], &res);
+        T_CHECK(strstr(heads(&res), "Access-Control-") == NULL);
+        cb_res_free(&res);
+    }
+}
+
+// The app's list and the deployment's: a listed origin is echoed, with exactly the right headers;
+// an unlisted one gets no Access-Control-* header and its preflight fails.
+static void cors_lists(void) {
+    cb_config cfg;
+    memset(&cfg, 0, sizeof cfg);
+    strcpy(cfg.allowed_origins, "https://staging.example, http://localhost:3000");
+    cb_app app;
+    memset(&app, 0, sizeof app);
+    app.cors_origins = APP_ORIGINS;
+    app.n_cors_origins = 2;
+    cb_ctx ctx;
+    memset(&ctx, 0, sizeof ctx);
+    ctx.cfg = &cfg;
+    ctx.app = &app;
+    char err[200] = "";
+    T_EQ_INT(cb_router_cors_check(&app, &cfg, err, sizeof err), CB_OK);
+    cb_http_res res;
+    const char *ok[] = { "https://app.example", "http://localhost:5173", "https://staging.example", "http://localhost:3000" };
+    for (int i = 0; i < 4; i++) {
+        char want[512];
+        cors_run(&ctx, "OPTIONS", ok[i], &res);
+        T_EQ_INT(res.status, 200);
+        snprintf(want, sizeof want,
+                 "Vary: Origin\r\nAccess-Control-Allow-Origin: %s\r\n"
+                 "Access-Control-Allow-Headers: authorization, content-type\r\n"
+                 "Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS\r\n"
+                 "Access-Control-Max-Age: 7200\r\nContent-Type: text/plain; charset=utf-8\r\n", ok[i]);
+        T_EQ_STR(heads(&res), want);
+        cb_res_free(&res);
+        cors_run(&ctx, "GET", ok[i], &res);
+        snprintf(want, sizeof want, "Vary: Origin\r\nAccess-Control-Allow-Origin: %s\r\n", ok[i]);
+        T_EQ_STR(heads(&res), want);
+        cb_res_free(&res);
+    }
+    // Near misses are not the origin: a prefix, a suffix, another scheme, a port, a trailing slash.
+    const char *no[] = { "https://app.exampl", "https://app.example.evil", "http://app.example", "https://app.example:444",
+                         "https://app.example/", "null", "", "*", NULL };
+    for (int i = 0; i < (int)(sizeof no / sizeof no[0]); i++) {
+        cors_run(&ctx, "OPTIONS", no[i], &res);
+        T_EQ_INT(res.status, 403);
+        T_CHECK(strstr(heads(&res), "Access-Control-") == NULL);
+        cb_res_free(&res);
+        cors_run(&ctx, "POST", no[i], &res);
+        T_EQ_STR(heads(&res), "Vary: Origin\r\n");   // the answer depends on the Origin, and says so
+        cb_res_free(&res);
+    }
+    // A handler's own Access-Control-Allow-Origin (a public read's "*") is left alone.
     cb_http_req r;
     char *b;
-    parse("GET /v1/stream?proto=nw1 HTTP/1.1\r\nOrigin: http://localhost:3000\r\n\r\n", 0, &r, &b);
-    cb_http_res res;
-    cb_res_init(&res);
-    cb_router_cors(&ctx, &r, &res);
-    cb_buf out;
-    cb_buf_init(&out);
-    cb_res_serialize(&res, true, &out);
-    T_CHECK(strstr(cb_buf_cstr(&out), "Access-Control-Allow-Origin: http://localhost:3000\r\n") != NULL);
-    cb_buf_free(&out);
-    cb_res_free(&res);
-    free(b);
     parse("GET /v1/bots HTTP/1.1\r\nOrigin: https://evil.example\r\n\r\n", 0, &r, &b);
     cb_res_init(&res);
+    cb_res_header(&res, "Access-Control-Allow-Origin", "*");
     cb_router_cors(&ctx, &r, &res);
-    T_CHECK(!cb_res_has_header(&res, "Access-Control-Allow-Origin"));
+    T_EQ_STR(heads(&res), "Access-Control-Allow-Origin: *\r\n");
     cb_res_free(&res);
     free(b);
+}
+
+// Credentials go with an echoed origin only; "*" never goes with them: boot refuses the pair,
+// from either list.
+static void cors_credentials(void) {
+    cb_config cfg;
+    memset(&cfg, 0, sizeof cfg);
+    cb_app app;
+    memset(&app, 0, sizeof app);
+    app.cors_origins = APP_ORIGINS;
+    app.n_cors_origins = 2;
+    app.cors_credentials = true;
+    cb_ctx ctx;
+    memset(&ctx, 0, sizeof ctx);
+    ctx.cfg = &cfg;
+    ctx.app = &app;
+    char err[200] = "";
+    T_EQ_INT(cb_router_cors_check(&app, &cfg, err, sizeof err), CB_OK);
+    cb_http_res res;
+    cors_run(&ctx, "GET", "https://app.example", &res);
+    T_EQ_STR(heads(&res), "Vary: Origin\r\nAccess-Control-Allow-Origin: https://app.example\r\n"
+                          "Access-Control-Allow-Credentials: true\r\n");
+    cb_res_free(&res);
+    cors_run(&ctx, "OPTIONS", "https://app.example", &res);
+    T_EQ_INT(res.status, 200);
+    T_CHECK(strstr(heads(&res), "Access-Control-Allow-Credentials: true\r\n") != NULL);
+    cb_res_free(&res);
+    cors_run(&ctx, "GET", "https://evil.example", &res);
+    T_CHECK(strstr(heads(&res), "Access-Control-") == NULL);
+    cb_res_free(&res);
+    // "*" beside credentials, in the deployment's list or the app's: refused.
+    strcpy(cfg.allowed_origins, "https://x.example, *");
+    T_CHECK(cb_config_origin_any(&cfg));
+    T_CHECK(!cb_config_origin_allowed(&cfg, "*"));   // "*" is the wildcard, never an origin echoed
+    T_CHECK(cb_config_origin_allowed(&cfg, "https://x.example"));
+    T_EQ_INT(cb_router_cors_check(&app, &cfg, err, sizeof err), CB_E_INVALID);
+    T_CHECK(strstr(err, "CBASE_ALLOWED_ORIGINS") != NULL);
+    cfg.allowed_origins[0] = 0;
+    static const char *const any[] = { "https://app.example", "*" };
+    app.cors_origins = any;
+    T_EQ_INT(cb_router_cors_check(&app, &cfg, err, sizeof err), CB_E_INVALID);
+    T_CHECK(strstr(err, "cors_origins") != NULL);
+    // Even past boot's check, "*" goes out without credentials.
+    cors_run(&ctx, "GET", "https://evil.example", &res);
+    T_EQ_STR(heads(&res), "Access-Control-Allow-Origin: *\r\n");
+    cb_res_free(&res);
+    // Without credentials "*" is any origin, answered "*" and never with credentials.
+    app.cors_credentials = false;
+    T_EQ_INT(cb_router_cors_check(&app, &cfg, err, sizeof err), CB_OK);
+    const char *who[] = { "https://evil.example", NULL };
+    for (int i = 0; i < 2; i++) {
+        cors_run(&ctx, "GET", who[i], &res);
+        T_EQ_STR(heads(&res), "Access-Control-Allow-Origin: *\r\n");
+        cb_res_free(&res);
+        cors_run(&ctx, "OPTIONS", who[i], &res);
+        T_EQ_INT(res.status, 200);
+        T_CHECK(strstr(heads(&res), "Access-Control-Allow-Origin: *\r\n") != NULL);
+        T_CHECK(strstr(heads(&res), "Credentials") == NULL);
+        cb_res_free(&res);
+    }
+}
+
+// Boot refuses an app origin that no browser would send.
+static void cors_check_shapes(void) {
+    cb_app app;
+    memset(&app, 0, sizeof app);
+    char err[200] = "";
+    const char *bad[] = { "app.example", "https://", "https://app.example/", "https://app.example/x", "ftp://a.example",
+                          "https://a.example, https://b.example", "https://a b", "null", "" };
+    for (int i = 0; i < (int)(sizeof bad / sizeof bad[0]); i++) {
+        const char *one[] = { bad[i] };
+        app.cors_origins = one;
+        app.n_cors_origins = 1;
+        T_EQ_INT(cb_router_cors_check(&app, NULL, err, sizeof err), CB_E_INVALID);
+    }
+    const char *good[] = { "https://app.example", "http://localhost:5173", "http://127.0.0.1:8080", "http://[::1]:3000", "*" };
+    for (int i = 0; i < (int)(sizeof good / sizeof good[0]); i++) {
+        const char *one[] = { good[i] };
+        app.cors_origins = one;
+        app.n_cors_origins = 1;
+        T_EQ_INT(cb_router_cors_check(&app, NULL, err, sizeof err), CB_OK);
+    }
+    T_EQ_INT(cb_router_cors_check(NULL, NULL, err, sizeof err), CB_OK);
 }
 
 int main(void) {
@@ -231,6 +386,9 @@ int main(void) {
     T_RUN(responses);
     T_RUN(routing);
     T_RUN(routing_priority);
-    T_RUN(cors);
+    T_RUN(cors_default_denies);
+    T_RUN(cors_lists);
+    T_RUN(cors_credentials);
+    T_RUN(cors_check_shapes);
     return T_DONE();
 }

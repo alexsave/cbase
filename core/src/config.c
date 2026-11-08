@@ -170,7 +170,7 @@ int cb_config_from_env(cb_config *c, char *err, size_t cap) {
     if (!copy(c->secrets_ssm, sizeof c->secrets_ssm, "CBASE_SECRETS_SSM", env("CBASE_SECRETS_SSM", ""), err, cap)) return CB_E_INVALID;
     if (!copy(c->origin_secret, sizeof c->origin_secret, "CBASE_ORIGIN_SECRET", env("CBASE_ORIGIN_SECRET", ""), err, cap))
         return CB_E_INVALID;
-    if (!copy(c->allowed_origins, sizeof c->allowed_origins, "CBASE_ALLOWED_ORIGINS", env("CBASE_ALLOWED_ORIGINS", "*"), err, cap))
+    if (!copy(c->allowed_origins, sizeof c->allowed_origins, "CBASE_ALLOWED_ORIGINS", env("CBASE_ALLOWED_ORIGINS", ""), err, cap))
         return CB_E_INVALID;
     if (apple_from_env(c, err, cap) != CB_OK) return CB_E_INVALID;
     {
@@ -348,9 +348,8 @@ bool cb_config_origin_proven(const cb_config *c, const char *value) {
     return CRYPTO_memcmp(value, c->origin_secret, n) == 0;
 }
 
-bool cb_config_origin_allowed(const cb_config *c, const char *origin) {
-    const char *p = c->allowed_origins;
-    size_t on = strlen(origin);
+// Is `want` (on bytes) one of the comma list's entries, blanks around each trimmed?
+static bool origin_listed(const char *p, const char *want, size_t on) {
     while (*p) {
         while (*p == ' ' || *p == ',') p++;
         const char *e = p;
@@ -358,11 +357,17 @@ bool cb_config_origin_allowed(const cb_config *c, const char *origin) {
         const char *t = e;
         while (t > p && t[-1] == ' ') t--;
         size_t n = (size_t)(t - p);
-        if ((n == 1 && *p == '*') || (n == on && n > 0 && memcmp(p, origin, n) == 0)) return true;
+        if (n == on && n > 0 && memcmp(p, want, n) == 0) return true;
         p = e;
     }
     return false;
 }
+
+bool cb_config_origin_allowed(const cb_config *c, const char *origin) {
+    return strcmp(origin, "*") != 0 && origin_listed(c->allowed_origins, origin, strlen(origin));
+}
+
+bool cb_config_origin_any(const cb_config *c) { return origin_listed(c->allowed_origins, "*", 1); }
 
 int cb_config_load(cb_config *cfg, const cb_app *app, char *err, size_t cap) {
     int rc = cb_config_from_env(cfg, err, cap);

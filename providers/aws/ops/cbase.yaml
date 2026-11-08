@@ -113,8 +113,8 @@ Parameters:
     ConstraintDescription: an ACM certificate ARN in us-east-1
   AllowedOrigins:
     Type: String
-    Default: "*"
-    Description: CBASE_ALLOWED_ORIGINS, "*" or a comma list such as https://example.com,https://www.example.com.
+    Default: ""
+    Description: CBASE_ALLOWED_ORIGINS, origins allowed beside the app's own (cb_app cors_origins), a comma list such as https://staging.example.com; "*" is any origin. Empty (the default) adds none.
   FunctionDescription:
     Type: String
     Default: cbase (static arm64 bootstrap)
