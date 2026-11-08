@@ -36,6 +36,10 @@
 // NEEDS: cdom's src/cdom.c, cdom_net.c, cdom_store.c, cdom_random.c and mini.c in the module,
 // -isystem cdom/src/libc (the program's string.h), and cbase's client.mk (CBC_SRC, CBC_INC) plus
 // lib/b64/b64.c (already in CBC_OIDC_SRC: list it once).
+//
+// client/test/host/host_suite.h is the suite every host passes; client/test/unit_host_cdom.c runs it
+// on this one (make -C client check-host-cdom, against the cdom at client/Makefile's CDOM_PIN).
+// README.md here: how to build it, the pinned cdom, and the decisions in it.
 #ifndef CBC_CDOM_H
 #define CBC_CDOM_H
 #include <stdint.h>
