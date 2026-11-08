@@ -268,7 +268,7 @@ fi
 prod="$(cd "$(dirname "$table")/../.." && pwd)"
 roster=(--cwd "$prod/c/src" --header bots.c --table BOTS --name BotRegistry
         --columns name,key,knobs,uses_logs,tier,city,km
-        --flags "-I. -isystem $prod/c/wasm/include -isystem $root/shared/c/wasm/include --target=wasm32 -D_Thread_local=")
+        --flags "-I. -isystem $prod/c/wasm/include --target=wasm32 -D_Thread_local=")
 "$DG" "${roster[@]}" --json "$tmp/roster.json" --ts "$tmp/roster.ts" --swift "$tmp/roster.swift" \
   --kotlin "$tmp/roster.kt" --kotlin-package test.pkg
 grep -q '"key": "cordite"' "$tmp/roster.json" && grep -q '"tier": 9,' "$tmp/roster.json"

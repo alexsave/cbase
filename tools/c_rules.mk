@@ -50,8 +50,8 @@
 # rule to make target".
 #
 # -MD AND NOT -MMD. -MMD leaves out whatever was found through -isystem, and
-# the freestanding wasm builds reach the repo's OWN libc headers that way
-# (lib/wasm/include). They are exactly the headers an edit to which must
+# the freestanding wasm builds reach their program's OWN libc headers that way
+# (client/wasm/include). They are exactly the headers an edit to which must
 # rebuild a module. The cost is that a host object also lists the SDK's
 # headers, which is correct: a new SDK is a new object.
 #

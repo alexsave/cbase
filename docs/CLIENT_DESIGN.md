@@ -354,7 +354,7 @@ The name is **the c_base client**: C prefix `cbc_`, header `cbase/client.h`, TS 
 | The C client (`conn.c`, `session.c`, `pump.c`, `gate.c`) | `c_base/client/src/`, header `c_base/client/include/cbase/client.h` |
 | The platform's auth wire (`cbase/wire.h`, from `netwire.[ch]`'s platform range) | `c_base/client/include/cbase/wire.h`, read by the server too |
 | The frame codec | `shared/c/stream_frame.h` (stays) |
-| The wasm libc | `shared/c/wasm/libc.c` (stays) |
+| The wasm libc | `c_base/client/wasm/libc.c` and `include/string.h`, the module's own: cbase defines no C library (`tools/libc_gate.sh`) |
 | The wasm exports and `cbase_client.wasm` | `c_base/client/wasm/` |
 | The TS host shim, loader, React hooks, ops component | `c_base/client/ts/` |
 | The Swift host shim | `c_base/client/swift/` |
