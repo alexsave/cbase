@@ -4,6 +4,9 @@
 #
 #   make check        the unit tests and the host suite on the native host (hosts/posix), natively
 #                     and under ASan + UBSan, the libc and requires gates, and the fuzz corpus replayed
+#   make check-hosts  every host's own check that needs its platform (hosts/<name>/host.mk, the
+#                     platform fetched by a pinned commit into build/): its host suite, natively and
+#                     under ASan + UBSan, and its wasm32 compile with the libc gate
 #   make fuzz         build/fuzz/client (libFuzzer + ASan + UBSan; Homebrew LLVM on macOS)
 #   make fuzz-smoke   it for FUZZ_TIME seconds (default 30) from a scratch copy of the corpus
 #   make wasm         build/wasm/cbase_client.wasm and its oidc variant cbase_client_oidc.wasm, and the
@@ -212,6 +215,16 @@ SIZE_GATE = raw=$$(wc -c < $(1)); gz=$$(gzip -9 -n -c $(1) | wc -c); \
 size-gate: build/wasm/cbase_client.wasm build/wasm/cbase_client_oidc.wasm
 	@$(call SIZE_GATE,build/wasm/cbase_client.wasm,$(WASM_RAW_MAX),$(WASM_GZ_MAX))
 	@$(call SIZE_GATE,build/wasm/cbase_client_oidc.wasm,$(WASM_OIDC_RAW_MAX),$(WASM_OIDC_GZ_MAX))
+
+# ---- the hosts a platform's own build needs (hosts/<name>/host.mk) ----------------------------------
+# A host whose test needs its platform's headers (fetched by a pinned commit into build/, never
+# reached beside this tree) brings its own targets in a host.mk, included here, and adds its check to
+# HOST_CHECKS. They are outside `make check` (they fetch, and compile for wasm32): `make check-hosts`
+# runs every one, and CI runs it. Each host's README.md says what it checks.
+HOST_CHECKS :=
+include $(sort $(wildcard hosts/*/host.mk))
+.PHONY: check-hosts
+check-hosts: $(HOST_CHECKS)
 
 # ---- the page's TypeScript ----------------------------------------------------------------------
 TS_OUT   ?= build/ts
