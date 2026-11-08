@@ -282,6 +282,12 @@ typedef struct cb_store_app {
     // after the product's tables, with the user_version the database had (never 0, a
     // new database, nor CB_SCHEMA_VERSION). An error rolls the open back. NULL: none.
     int (*sql_upgrade)(struct cb_sql *x, int64_t from_version);
+    // The product's steps BEFORE the schemas, for a database at an older version: what a new
+    // schema of its replaces wholesale (its old tables dropped, children first; the platform's own
+    // go after, so a product's table that referred to one is gone first). Called in the schema's
+    // transaction with the user_version the database had (never 0 nor CB_SCHEMA_VERSION). An
+    // error rolls the open back. NULL: none.
+    int (*sql_before)(struct cb_sql *x, int64_t from_version);
 
     // ON THE ITEM LAYOUT (items.h): the product's key families, after the platform's USER, EMAIL and
     // REFRESH (the console's collections, a browse's pk prefix "<FAMILY>#"); a family marked whole
@@ -291,6 +297,10 @@ typedef struct cb_store_app {
     int                    n_families;
     const cb_store_alias  *family_aliases;
     int                    n_family_aliases;
+    // The shapes of its keys, per key attribute (pk, sk, gsi1pk, gsi1sk, gsi2pk, gsi2sk), each list
+    // NULL-terminated or NULL: '#'-separated slots, a literal word or "{}" for a value ("ORDER#{}"),
+    // which the DynamoDB backend's key capture normalizes a key to (aws_json.h dw_shape).
+    const char *const     *key_templates[6];
 } cb_store_app;
 
 // A file a write-behind layer keeps beside the store's file: its path is the database's

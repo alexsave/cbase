@@ -585,13 +585,11 @@ static int pragma_int(sqlite3 *db, const char *sql, int64_t *out) {
     return rc == SQLITE_ROW ? CB_OK : CB_E_DB;
 }
 
-// The tables of schemas 1 to 5, children first.
+// The platform's tables of schemas 1 to 5, children first (a product's own go first, through its
+// sql_before: store.h cb_store_app).
 static const char LEGACY_DROP[] =
-    "DROP TABLE IF EXISTS rt_conn_topics; DROP TABLE IF EXISTS rt_conns; DROP TABLE IF EXISTS chat_messages; "
-    "DROP TABLE IF EXISTS game_snapshots; DROP TABLE IF EXISTS game_members; DROP TABLE IF EXISTS game_bots; "
-    "DROP TABLE IF EXISTS ratings; DROP TABLE IF EXISTS games; DROP TABLE IF EXISTS sessions; "
-    "DROP TABLE IF EXISTS refresh_tokens; DROP TABLE IF EXISTS signin_fails; DROP TABLE IF EXISTS users; "
-    "DROP TABLE IF EXISTS bots; DROP TABLE IF EXISTS bot_seed;";
+    "DROP TABLE IF EXISTS rt_conn_topics; DROP TABLE IF EXISTS rt_conns; DROP TABLE IF EXISTS sessions; "
+    "DROP TABLE IF EXISTS refresh_tokens; DROP TABLE IF EXISTS signin_fails; DROP TABLE IF EXISTS users;";
 
 bool cb_store_local_pre_upgrade_path(const char *db_path, char *out, size_t cap) {
     const int n = snprintf(out, cap, "%s.pre-schema%d", db_path, CB_SCHEMA_VERSION);
@@ -675,6 +673,7 @@ static int apply_schema(sq *q, const cb_store_app *app, const char *db_path) {
     // Schemas 1 to 5 had tables of the names 7 uses, in other shapes, which a CREATE ... IF NOT EXISTS
     // would keep: they go first, with what a development database had in them (SQLite held no production
     // data). Schema 6 had dropped them already; 7 drops its `items` table in the schema itself.
+    if (app && app->sql_before && have > 0 && have < CB_SCHEMA_VERSION && (rc = app->sql_before(q, have)) != CB_OK) goto out;
     if (have > 0 && have < 6 && (rc = exec(q, LEGACY_DROP)) != CB_OK) goto out;
     // 7 -> 8: the name shown and the name compared part (schema.sql users). Schema 7 held only names in
     // their canonical form (signup cased them, the import refused others), so a 7 name is its own key.

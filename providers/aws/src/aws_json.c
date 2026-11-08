@@ -348,17 +348,18 @@ static bool attr(cb_span item, const char *name, const char *type, cb_span *tok)
 // layout, "THE ITEM LAYOUT" in aws_json.h): '#'-separated slots, each a
 // literal word or "{}" for a value the row supplies. A value is normalized to
 // the template whose literal slots it matches, its other slots printed as
-// "{}" without ever being looked at: a game id is a short code that may be
-// all digits, all letters, or a word (FOOLISH.CARDS/ABC123), so no class may
-// come from what an id looks like. Several templates may share a shape
-// ("{}#{}": a chat's sort key, a seat's dashboard key); they read the same.
-static const char *const KEY_TEMPLATES[][16] = {
-    /* pk */     { "USER#{}", "EMAIL#{}", "REFRESH#{}", "SESSION#{}", "AUTHFAIL#{}", "GAME#{}", "BOT#{}", "SNAP#{}", "CHAT#{}", "SCAN" },
-    /* sk */     { "PROFILE", "RATING", "USER", "TOKEN", "SESSION", "FAILS", "ROW", "BOT", "SNAP", "MEMBER#{}", "BOT#{}", "PLAYER#{}", "GAME#{}", "{}#{}" },
-    /* gsi1pk */ { "USERGAMES#{}", "USERCHAT#{}", "USERREFRESH#{}", "GAMESNAPS#{}" },
+// "{}" without ever being looked at: an id may be all digits, all letters, or
+// a word, so no class may come from what an id looks like. Several templates
+// may share a shape; they read the same. The platform's (its accounts' items,
+// rows_auth.c) are here; the store's product adds its own (store.h
+// cb_store_app key_templates).
+static const char *const KEY_TEMPLATES[][8] = {
+    /* pk */     { "USER#{}", "EMAIL#{}", "REFRESH#{}", "SESSION#{}", "AUTHFAIL#{}" },
+    /* sk */     { "PROFILE", "USER", "TOKEN", "SESSION", "FAILS" },
+    /* gsi1pk */ { "USERREFRESH#{}" },
     /* gsi1sk */ { "{}#{}", "{}" },
-    /* gsi2pk */ { "RATINGS", "BOTS", "USERS", "PLAYER#{}" },
-    /* gsi2sk */ { "E#{}#{}", "{}#{}", "{}" },
+    /* gsi2pk */ { "USERS" },
+    /* gsi2sk */ { "{}#{}", "{}" },
 };
 static const char *const KEY_ATTRS[] = { "pk", "sk", "gsi1pk", "gsi1sk", "gsi2pk", "gsi2sk" };
 #define N_KEY_ATTRS 6
@@ -409,14 +410,25 @@ static int literals(const char *tp) {
 // (a begins_with or a bound) the value may stop part way. Of several that
 // fit, the one with the most literal slots: "E#" begins a rating's rank key,
 // not a two-slot "{}#{}".
-static void shape_value(cb_buf *o, int attr, cb_span tok, bool prefix) {
+// The i-th template of key attribute attr: the platform's, then the product's (NULL past the last).
+static const char *key_template(const cb_store_app *a, int attr, int i) {
+    int k = 0;
+    while (k < 8 && KEY_TEMPLATES[attr][k]) k++;
+    if (i < k) return KEY_TEMPLATES[attr][i];
+    const char *const *more = a ? a->key_templates[attr] : NULL;
+    for (int j = 0; more && more[j]; j++)
+        if (j == i - k) return more[j];
+    return NULL;
+}
+
+static void shape_value(const cb_store_app *a, cb_buf *o, int attr, cb_span tok, bool prefix) {
     char v[1024];
     int n = cb_json_unescape(tok, v, sizeof v);
     if (n < 0 || attr < 0) { cb_buf_puts(o, "?"); return; }
     int best = -1, best_lit = -1;
     bool best_part = false;
-    for (int i = 0; i < 16 && KEY_TEMPLATES[attr][i]; i++) {
-        const char *tp = KEY_TEMPLATES[attr][i];
+    const char *tp;
+    for (int i = 0; (tp = key_template(a, attr, i)) != NULL; i++) {
         bool whole = fits(tp, v, (size_t)n, false), part = !whole && prefix && fits(tp, v, (size_t)n, true);
         int lit = literals(tp);
         if ((whole || part) && lit > best_lit) {
@@ -426,7 +438,7 @@ static void shape_value(cb_buf *o, int attr, cb_span tok, bool prefix) {
         }
     }
     if (best < 0) cb_buf_puts(o, "?");
-    else cb_buf_printf(o, "%s%s", KEY_TEMPLATES[attr][best], best_part ? "(prefix)" : "");
+    else cb_buf_printf(o, "%s%s", key_template(a, attr, best), best_part ? "(prefix)" : "");
 }
 
 // A sorted, de-duplicated set of short strings, joined by ','.
@@ -455,7 +467,7 @@ static void set_put(cb_buf *o, const char *label, shape_set *z) {
 
 // An item's attributes ({"name":{"T":v},...}): name:type, and for a key
 // attribute the template its value fills.
-static void shape_item(shape_set *z, cb_span item) {
+static void shape_item(const cb_store_app *a, shape_set *z, cb_span item) {
     size_t pos = 0;
     cb_span k, v;
     while (dw_object_next(item, &pos, &k, &v)) {
@@ -468,7 +480,7 @@ static void shape_item(shape_set *z, cb_span item) {
         int attr = key_attr_of(k.p + 1, k.n - 2);
         if (attr >= 0 && key_is(tk, "S")) {
             cb_buf_putc(&e, '=');
-            shape_value(&e, attr, tv, false);
+            shape_value(a, &e, attr, tv, false);
         }
         set_add(z, cb_buf_cstr(&e), e.len);
         cb_buf_free(&e);
@@ -481,7 +493,7 @@ static void shape_item(shape_set *z, cb_span item) {
 // item layer and the builders before it name a set's value after its
 // attribute), ":pk" and ":sk" for a Query's key condition (the index's pair),
 // ":p" for a Scan's pk prefix; any other value is its type alone.
-static void shape_exprs(shape_set *names, shape_set *vals, cb_span req, int index) {
+static void shape_exprs(const cb_store_app *a, shape_set *names, shape_set *vals, cb_span req, int index) {
     cb_span m, k, v;
     size_t pos = 0;
     if (member(req, "ExpressionAttributeNames", &m))
@@ -506,7 +518,7 @@ static void shape_exprs(shape_set *names, shape_set *vals, cb_span req, int inde
             else attr = key_attr_of(ph, phn);
             if (attr >= 0 && key_is(tk, "S")) {
                 cb_buf_putc(&e, ':');
-                shape_value(&e, attr, tv, prefix);
+                shape_value(a, &e, attr, tv, prefix);
             }
             set_add(vals, cb_buf_cstr(&e), e.len);
             cb_buf_free(&e);
@@ -514,7 +526,7 @@ static void shape_exprs(shape_set *names, shape_set *vals, cb_span req, int inde
 }
 
 // One request (or one item of a transaction or batch) as one line.
-static void shape_one(cb_buf *out, const char *op, cb_span req) {
+static void shape_one(const cb_store_app *a, cb_buf *out, const char *op, cb_span req) {
     shape_set *key = calloc(1, sizeof *key), *item = calloc(1, sizeof *item), *names = calloc(1, sizeof *names),
               *vals = calloc(1, sizeof *vals);
     if (key && item && names && vals) {
@@ -525,9 +537,9 @@ static void shape_one(cb_buf *out, const char *op, cb_span req) {
             cb_buf_printf(out, " index=%.*s", (int)v.n - 2, v.p + 1);
             index = v.n >= 3 && v.p[v.n - 2] == '1' ? 1 : 2;
         }
-        if (member(req, "Key", &v)) shape_item(key, v);
-        if (member(req, "Item", &v)) shape_item(item, v);
-        shape_exprs(names, vals, req, index);
+        if (member(req, "Key", &v)) shape_item(a, key, v);
+        if (member(req, "Item", &v)) shape_item(a, item, v);
+        shape_exprs(a, names, vals, req, index);
         if (key->n) set_put(out, "key", key);
         if (item->n) set_put(out, "item", item);
         if (names->n) set_put(out, "names", names);
@@ -540,7 +552,7 @@ static void shape_one(cb_buf *out, const char *op, cb_span req) {
     free(vals);
 }
 
-void dw_shape(const char *target, cb_span body, cb_buf *out) {
+void dw_shape(const cb_store_app *a, const char *target, cb_span body, cb_buf *out) {
     const char *op = strchr(target, '.');
     op = op ? op + 1 : target;
     cb_span m, e, k, v;
@@ -551,7 +563,7 @@ void dw_shape(const char *target, cb_span body, cb_buf *out) {
             if (!dw_object_next(e, &ip, &k, &v)) continue;
             char sub[64];
             snprintf(sub, sizeof sub, "Txn.%.*s", (int)k.n - 2, k.p + 1);
-            shape_one(out, sub, v);
+            shape_one(a, out, sub, v);
         }
     } else if ((strcmp(op, "BatchWriteItem") == 0 || strcmp(op, "BatchGetItem") == 0) && member(body, "RequestItems", &m)) {
         size_t tp = 0;
@@ -566,7 +578,7 @@ void dw_shape(const char *target, cb_span body, cb_buf *out) {
                     cb_buf_puts(&w, "{\"Key\":");
                     cb_buf_append(&w, e.p, e.n);
                     cb_buf_putc(&w, '}');
-                    shape_one(out, "BatchGet", cb_span_of((const char *)w.p, w.len));
+                    shape_one(a, out, "BatchGet", cb_span_of((const char *)w.p, w.len));
                     cb_buf_free(&w);
                 }
             } else {
@@ -575,13 +587,13 @@ void dw_shape(const char *target, cb_span body, cb_buf *out) {
                     if (!dw_object_next(e, &ip, &k, &v)) continue;
                     char sub[64];
                     snprintf(sub, sizeof sub, "Batch.%.*s", (int)k.n - 2, k.p + 1);
-                    shape_one(out, sub, v);
+                    shape_one(a, out, sub, v);
                 }
             }
             pos = 0;
         }
     } else {
-        shape_one(out, op, body);
+        shape_one(a, out, op, body);
     }
 }
 

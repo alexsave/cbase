@@ -130,7 +130,8 @@ dw_reason dw_cancel_reason(const char *body, size_t n, int index, bool *has_item
 // read the same however their expressions are spelled. A transaction or a
 // batch is one line per item. Test only (store_dynamo.c writes them where
 // CBASE_DYNAMO_CAPTURE says).
-void dw_shape(const char *target, cb_span body, cb_buf *out);
+// `a`: the store's product, whose key templates (store.h cb_store_app) join the platform's; NULL for none.
+void dw_shape(const cb_store_app *a, const char *target, cb_span body, cb_buf *out);
 bool dw_array_next(cb_span arr, size_t *pos, cb_span *elem);
 // Walks the members of a JSON object value: key (a string token, quotes
 // included) and value.

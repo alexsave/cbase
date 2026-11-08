@@ -59,7 +59,7 @@ static void dynamo_txn_and_query(void) {
     // And its shape: one line an item, the keys normalized.
     cb_buf shape;
     cb_buf_init(&shape);
-    dw_shape(g_target, cb_span_of((const char *)g_body.p, g_body.len), &shape);
+    dw_shape(NULL, g_target, cb_span_of((const char *)g_body.p, g_body.len), &shape);
     T_CHECK(strstr(cb_buf_cstr(&shape), "Txn.Put item=b:BOOL,bytes:B,expires_at:N,expires_ms:N,gsi1pk:S=?,pk:S=?,sk:S=?\n") != NULL);
     T_CHECK(strstr(cb_buf_cstr(&shape), "Txn.ConditionCheck key=pk:S=?,sk:S=?\n") != NULL);
     cb_buf_free(&shape);
@@ -72,20 +72,20 @@ static void dynamo_txn_and_query(void) {
     T_CHECK(strstr(cb_buf_cstr(&g_body), "\"IndexName\":\"gsi1\"") != NULL);
     T_CHECK(strstr(cb_buf_cstr(&g_body), "begins_with(#gsi1sk, :sk)") != NULL);
     cb_buf_init(&shape);
-    dw_shape(g_target, cb_span_of((const char *)g_body.p, g_body.len), &shape);
+    dw_shape(NULL, g_target, cb_span_of((const char *)g_body.p, g_body.len), &shape);
     T_EQ_STR(cb_buf_cstr(&shape), "Query index=gsi1 names=gsi1pk,gsi1sk vals=S:?,S:{}#{}(prefix)\n");
     cb_buf_free(&shape);
     // A batch's shapes, one line an item, with an email and a hash normalized.
     cb_buf_init(&shape);
-    dw_shape("DynamoDB_20120810.BatchWriteItem",
+    dw_shape(NULL, "DynamoDB_20120810.BatchWriteItem",
              CB_SPAN_LIT("{\"RequestItems\":{\"cbase\":[{\"DeleteRequest\":{\"Key\":{\"pk\":{\"S\":\"AUTHFAIL#a@x.io\"},"
-                         "\"sk\":{\"S\":\"FAILS\"}}}},{\"DeleteRequest\":{\"Key\":{\"pk\":{\"S\":\"GAME#ab12cd\"},\"sk\":{\"S\":\"ROW\"}}}}]}}"),
+                         "\"sk\":{\"S\":\"FAILS\"}}}},{\"DeleteRequest\":{\"Key\":{\"pk\":{\"S\":\"REFRESH#ab12cd\"},\"sk\":{\"S\":\"TOKEN\"}}}}]}}"),
              &shape);
     T_EQ_STR(cb_buf_cstr(&shape), "Batch.DeleteRequest key=pk:S=AUTHFAIL#{},sk:S=FAILS\n"
-                                  "Batch.DeleteRequest key=pk:S=GAME#{},sk:S=ROW\n");
+                                  "Batch.DeleteRequest key=pk:S=REFRESH#{},sk:S=TOKEN\n");
     cb_buf_free(&shape);
     cb_buf_init(&shape);
-    dw_shape("DynamoDB_20120810.BatchGetItem",
+    dw_shape(NULL, "DynamoDB_20120810.BatchGetItem",
              CB_SPAN_LIT("{\"RequestItems\":{\"cbase\":{\"Keys\":[{\"pk\":{\"S\":\"USER#aaaaaaaa-0000-4000-8000-000000000001\"},"
                          "\"sk\":{\"S\":\"PROFILE\"}}]}}}"),
              &shape);
@@ -132,45 +132,61 @@ static void records_and_reads(void) {
 }
 
 // THE KEY-CAPTURE PROOF'S CLASSES ARE POSITIONAL (data safety: the proof
-// holds the production keys). A game id is a short code that may be all
-// digits of any length, all letters, or a word the layout also uses; the
-// shape of a request must not change with it.
-static void shape_of_game(const char *gid, cb_buf *out) {
-    char pk[64], gsk[64], chat[64];
-    snprintf(pk, sizeof pk, "GAME#%s", gid);
-    snprintf(gsk, sizeof gsk, "001760000000000#%s", gid);
-    snprintf(chat, sizeof chat, "CHAT#%s", gid);
+// holds the production keys). An id may be all digits of any length, all
+// letters, or a word the layout also uses; the shape of a request must not
+// change with it. The keys are a fixture product's, its templates its own
+// (store.h cb_store_app key_templates) beside the platform's.
+static const char *const FX_PK[] = { "ORDER#{}", "NOTE#{}", NULL };
+static const char *const FX_SK[] = { "LINE#{}", "{}#{}", NULL };
+static const char *const FX_GSI1PK[] = { "USERORDERS#{}", NULL };
+static const cb_store_app FX = { .key_templates = { FX_PK, FX_SK, FX_GSI1PK } };
+
+static void shape_of_order(const char *oid, cb_buf *out) {
+    char pk[64], gsk[64], note[64];
+    snprintf(pk, sizeof pk, "ORDER#%s", oid);
+    snprintf(gsk, sizeof gsk, "001760000000000#%s", oid);
+    snprintf(note, sizeof note, "NOTE#%s", oid);
     cb_buf_reset(out);
-    const cb_iset st[] = { { CB_AVS("game_id", gid), CB_SET_TO }, { CB_AVS("gsi1pk", "USERGAMES#aaaaaaaa-0000-4000-8000-000000000001"), CB_SET_TO },
+    const cb_iset st[] = { { CB_AVS("order_id", oid), CB_SET_TO }, { CB_AVS("gsi1pk", "USERORDERS#aaaaaaaa-0000-4000-8000-000000000001"), CB_SET_TO },
                            { CB_AVS("gsi1sk", gsk), CB_SET_TO } };
-    cb_iwrite w = { .op = CB_IW_UPDATE, .key = { pk, "MEMBER#aaaaaaaa-0000-4000-8000-000000000001" }, .sets = st, .n_sets = 3 };
+    cb_iwrite w = { .op = CB_IW_UPDATE, .key = { pk, "LINE#aaaaaaaa-0000-4000-8000-000000000001" }, .sets = st, .n_sets = 3 };
     dw_req r;
     dw_req_init(&r);
     T_CHECK(dw_iwrite(&r, "cbase", &w, false));
-    dw_shape(r.target, cb_span_of((const char *)r.body.p, r.body.len), out);
-    const cb_av a[] = { CB_AVS("game_id", gid) };
-    cb_iwrite p = { .op = CB_IW_PUT, .key = { chat, gsk }, .attrs = a, .n_attrs = 1 };
+    dw_shape(&FX, r.target, cb_span_of((const char *)r.body.p, r.body.len), out);
+    const cb_av a[] = { CB_AVS("order_id", oid) };
+    cb_iwrite p = { .op = CB_IW_PUT, .key = { note, gsk }, .attrs = a, .n_attrs = 1 };
     T_CHECK(dw_iwrite(&r, "cbase", &p, false));
-    dw_shape(r.target, cb_span_of((const char *)r.body.p, r.body.len), out);
-    const cb_iquery q = { .index = 0, .pk = pk, .sk_prefix = "MEMBER#", .forward = true };
+    dw_shape(&FX, r.target, cb_span_of((const char *)r.body.p, r.body.len), out);
+    const cb_iquery q = { .index = 0, .pk = pk, .sk_prefix = "LINE#", .forward = true };
     dw_iquery(&r, "cbase", &q, cb_span_of("", 0));
-    dw_shape(r.target, cb_span_of((const char *)r.body.p, r.body.len), out);
+    dw_shape(&FX, r.target, cb_span_of((const char *)r.body.p, r.body.len), out);
     dw_req_free(&r);
 }
 
 static void shapes_ignore_what_an_id_looks_like(void) {
-    static const char *const IDS[] = { "1234567890", "123456789012345", "0000000000", "000000000000000", "7", "123456", "123456789012", "ABC123", "ROW", "SCAN",
+    static const char *const IDS[] = { "1234567890", "123456789012345", "0000000000", "000000000000000", "7", "123456", "123456789012", "ABC123", "LINE", "NOTE",
                                        "a1b2c3d4e5f6", "aaaaaaaa-0000-4000-8000-000000000001" };
     cb_buf first, other;
     cb_buf_init(&first);
     cb_buf_init(&other);
-    shape_of_game("ab12cd", &first);
-    T_CHECK(strstr(cb_buf_cstr(&first), "pk:S=GAME#{}") != NULL);
+    shape_of_order("ab12cd", &first);
+    T_CHECK(strstr(cb_buf_cstr(&first), "pk:S=ORDER#{}") != NULL);
     T_CHECK(strstr(cb_buf_cstr(&first), "sk:S={}#{}") != NULL);
     for (size_t i = 0; i < sizeof IDS / sizeof IDS[0]; i++) {
-        shape_of_game(IDS[i], &other);
+        shape_of_order(IDS[i], &other);
         T_EQ_STR(cb_buf_cstr(&other), cb_buf_cstr(&first));
     }
+    // Without the product, its keys are no template's: the proof shows them as unknown.
+    cb_buf_reset(&other);
+    dw_req r;
+    dw_req_init(&r);
+    const cb_av a[] = { CB_AVS("order_id", "x") };
+    cb_iwrite p = { .op = CB_IW_PUT, .key = { "ORDER#x", "LINE#y" }, .attrs = a, .n_attrs = 1 };
+    T_CHECK(dw_iwrite(&r, "cbase", &p, false));
+    dw_shape(NULL, r.target, cb_span_of((const char *)r.body.p, r.body.len), &other);
+    T_CHECK(strstr(cb_buf_cstr(&other), "pk:S=?") != NULL);
+    dw_req_free(&r);
     cb_buf_free(&first);
     cb_buf_free(&other);
 }

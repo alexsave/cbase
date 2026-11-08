@@ -49,6 +49,7 @@ typedef struct {
     int64_t at[2];     // when bal was last refilled (mono ms)
     int64_t (*mono)(void);
     void    (*sleep)(int64_t ms);
+    const cb_store_app *app;   // the store's product: its key templates in the capture
 } dyn;
 
 #define D(s) ((dyn *)(s)->impl)
@@ -171,7 +172,7 @@ static void pace(dyn *d, int k) {
 // attribute name the store writes or reads, held unchanged (stages 5 and 6).
 static int g_capture_fd = -2;   // -2: not looked at yet; -1: off
 
-static void capture(const dw_req *r) {
+static void capture(const dyn *d, const dw_req *r) {
     if (g_capture_fd == -2) {
         const char *path = getenv("CBASE_DYNAMO_CAPTURE");
         g_capture_fd = path && *path ? open(path, O_WRONLY | O_APPEND | O_CREAT, 0644) : -1;
@@ -179,7 +180,7 @@ static void capture(const dw_req *r) {
     if (g_capture_fd < 0) return;
     cb_buf b;
     cb_buf_init(&b);
-    dw_shape(r->target, cb_span_of((const char *)r->body.p, r->body.len), &b);
+    dw_shape(d->app, r->target, cb_span_of((const char *)r->body.p, r->body.len), &b);
     // One line at a time: each stays whole.
     const char *p = cb_buf_cstr(&b), *end = p + b.len;
     while (p < end) {
@@ -233,7 +234,7 @@ static dw_status call_top(dyn *d, const dw_req *r, cb_buf *resp, dw_top *top) {
     top->body = cb_span_of("", 0);
     backoff b;
     backoff_start(d, &b);
-    capture(r);
+    capture(d, r);
     int refreshes = 0;
     for (;;) {
         int status = 0;
@@ -710,6 +711,7 @@ int cb_store_open_dynamo_with(const char *table, cb_dynamo_send_fn send, void *u
     d->mono = cb_mono_ms;
     d->sleep = cb_sleep_ms;
     cb_store_init(s, &DYNAMO_OPS, d);
+    d->app = s->app;
     *out = s;
     return CB_OK;
 }
