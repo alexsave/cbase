@@ -1,5 +1,8 @@
 # Moving foolish.cards off Vercel (2026-10-14)
 
+> **History.** foolish's plan (2026-10-14) to move its web sites, foolish.cards and uttt.live, off Vercel onto S3 and CloudFront, and its as-built record.
+> It was written in the foolish monorepo before cbase was split out of it (2026-11-08), and its paths, names and section references are that repository's (https://github.com/alexsave/foolish); nothing in it describes cbase as it is now.
+
 > **Since then (2026-10-17):** the move is done.
 > foolish.cards, www, utils.foolish.cards and uttt.live are all served from S3 behind CloudFront (`providers/aws/ops/site/web.yaml`), and `.github/workflows/web_aws.yml` builds and deploys both sites on every push to `main`.
 > The `/m` unfurl is the C route `foolish/server/src/app/unfurl_http.c` (DESIGN.md, "Unfurl route"), and `foolish/src/app/m/` is gone.

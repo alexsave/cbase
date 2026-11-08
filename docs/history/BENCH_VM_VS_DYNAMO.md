@@ -1,5 +1,8 @@
 # cbase per-move latency and server cost: Lambda + DynamoDB vs a single VM (SQLite)
 
+> **History.** A measurement (2026-10-18) of foolish's per-move latency and server cost on the aws provider (Lambda and DynamoDB) against the local provider on one small VM (SQLite).
+> It was written in the foolish monorepo before cbase was split out of it (2026-11-08), and its paths, names and section references are that repository's (https://github.com/alexsave/foolish); nothing in it describes cbase as it is now.
+
 Measured 2026-10-18 from Alex's M1 in New York on home Wi-Fi (CloudFront POP BOS50), against origin/main 78f03f792 (includes #365 trims and #370 speedup knobs).
 Investigation only: nothing committed, worktree removed, no AWS resource changed.
 The raw outputs (runs, CloudWatch pulls, the SQL profile) were kept outside the repository.
