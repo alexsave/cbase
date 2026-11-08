@@ -112,6 +112,100 @@ static void users_by_email_password_touch(void) {
     cb_store_close(s);
 }
 
+// A global sign-out: session_gen one up and none kept, in one write to an account that exists.
+static void users_end_sessions(void) {
+    static const step steps[] = {
+        { "UpdateItem", "#session_gen = if_not_exists(#session_gen, :session_gen0) + :session_gen", 200, "{}" },
+        { "UpdateItem", "\"USER#" U2 "\"", 400, COND_NO_ITEM },
+        { "UpdateItem", NULL, 400, VALIDATION },
+    };
+    RUN(steps, s);
+    T_EQ_INT(CB_STORE_CALL(s, user_end_sessions, U1), CB_OK);
+    T_CHECK(strstr(sc_.bodies[0], "attribute_exists(pk)") != NULL);
+    T_CHECK(strstr(sc_.bodies[0], "\":kept_session\":{\"S\":\"\"}") != NULL);
+    T_EQ_INT(CB_STORE_CALL(s, user_end_sessions, U2), CB_E_NOT_FOUND);
+    T_EQ_INT(CB_STORE_CALL(s, user_end_sessions, U1), CB_E_DB);
+    T_EQ_INT(sc_.at, sc_.n);
+    cb_store_close(s);
+}
+
+// The import (store.h user_import): the account read first (its generation is never lowered), then
+// one transaction whose EMAIL# put holds only when the email is absent or already this account's,
+// and which gives a changed email's old item up.
+static void users_import(void) {
+    static const step steps[] = {
+        // a new account: its two items, the email's condition on the email item
+        { "GetItem", "\"USER#" U1 "\"", 200, NOITEM },
+        { "TransactWriteItems", "(attribute_not_exists(#user_id) OR #user_id = :c0)", 200, "{}" },
+        // the same account with a changed email and a lower generation: the old email goes
+        { "GetItem", "\"USER#" U1 "\"", 200,
+          "{\"Item\":{\"pk\":{\"S\":\"USER#" U1 "\"},\"sk\":{\"S\":\"PROFILE\"},\"id\":{\"S\":\"" U1 "\"},"
+          "\"email\":{\"S\":\"ann@x.io\"},\"password_hash\":{\"S\":\"$2b$10$x\"},\"session_gen\":{\"N\":\"4\"},"
+          "\"kept_session\":{\"S\":\"" U2 "\"}}}" },
+        { "TransactWriteItems", "\"Delete\"", 200, "{}" },
+        // another account's email: the transaction refused
+        { "GetItem", NULL, 200, NOITEM },
+        { "TransactWriteItems", NULL, 400, CANCEL_0 },
+        // the read failing: nothing written
+        { "GetItem", NULL, 400, VALIDATION },
+    };
+    RUN(steps, s);
+    cb_user_row u = { .id = U1, .email = "ann@x.io", .password_hash = "$2b$10$x", .created_at = 5 };
+    T_EQ_INT(CB_STORE_CALL(s, user_import, &u), CB_OK);
+    T_CHECK(strstr(sc_.bodies[1], "\"Delete\"") == NULL);
+    strcpy(u.email, "bob@x.io");
+    u.session_gen = 1;
+    T_EQ_INT(CB_STORE_CALL(s, user_import, &u), CB_OK);
+    const char *t = sc_.bodies[3];
+    T_CHECK(strstr(t, "\"EMAIL#bob@x.io\"") != NULL);
+    T_CHECK(strstr(t, "\"EMAIL#ann@x.io\"") != NULL);   // the delete's key
+    T_CHECK(strstr(t, "\"session_gen\":{\"N\":\"4\"}") != NULL);   // the stored generation, not the lower one
+    T_CHECK(strstr(t, "\"kept_session\":{\"S\":\"" U2 "\"}") != NULL);
+    T_EQ_INT(CB_STORE_CALL(s, user_import, &u), CB_E_DB);
+    T_EQ_INT(CB_STORE_CALL(s, user_import, &u), CB_E_DB);
+    cb_user_row bad = u;
+    strcpy(bad.id, "not-a-uuid");
+    T_EQ_INT(CB_STORE_CALL(s, user_import, &bad), CB_E_INVALID);   // asks nothing
+    T_EQ_INT(sc_.at, sc_.n);
+    cb_store_close(s);
+}
+
+// The delete (store.h user_delete): the account read, its refresh tokens and identities found on
+// GSI1 (keys only) and deleted in one batch, then the account's two items in one transaction.
+static void users_delete(void) {
+    static const step steps[] = {
+        { "GetItem", "\"USER#" U1 "\"", 200, "{\"Item\":" USER_ITEM(U1, "ann@x.io") "}" },
+        { "Query", "USERREFRESH#" U1, 200,
+          "{\"Items\":[{\"pk\":{\"S\":\"REFRESH#h1\"},\"sk\":{\"S\":\"TOKEN\"}},{\"pk\":{\"S\":\"REFRESH#h2\"},\"sk\":{\"S\":\"TOKEN\"}},"
+          "{\"pk\":{\"S\":\"REFRESH#nosk\"}}],\"Count\":3}" },
+        { "Query", "USERIDENT#" U1, 200, "{\"Items\":[{\"pk\":{\"S\":\"IDENT#1#s1\"},\"sk\":{\"S\":\"IDENT\"}}],\"Count\":1}" },
+        { "BatchWriteItem", "REFRESH#h2", 200, "{\"UnprocessedItems\":{}}" },
+        { "TransactWriteItems", "EMAIL#ann@x.io", 200, "{}" },
+        // none: nothing more asked
+        { "GetItem", NULL, 200, NOITEM },
+        // the account with nothing hung off it: no batch
+        { "GetItem", NULL, 200, "{\"Item\":" USER_ITEM(U2, "bob@x.io") "}" },
+        { "Query", NULL, 200, "{\"Items\":[],\"Count\":0}" },
+        { "Query", NULL, 200, "{\"Items\":[],\"Count\":0}" },
+        { "TransactWriteItems", "EMAIL#bob@x.io", 200, "{}" },
+        // a query failing: the account stays
+        { "GetItem", NULL, 200, "{\"Item\":" USER_ITEM(U1, "ann@x.io") "}" },
+        { "Query", NULL, 400, VALIDATION },
+    };
+    RUN(steps, s);
+    T_EQ_INT(CB_STORE_CALL(s, user_delete, U1), CB_OK);
+    const char *b = sc_.bodies[3];
+    T_CHECK(strstr(b, "REFRESH#h1") && strstr(b, "IDENT#1#s1"));
+    T_CHECK(strstr(b, "REFRESH#nosk") == NULL);   // a key without its sort key is skipped
+    T_CHECK(strstr(sc_.bodies[1], "\"IndexName\":\"gsi1\"") != NULL);
+    T_CHECK(strstr(sc_.bodies[4], "USER#" U1) != NULL);
+    T_EQ_INT(CB_STORE_CALL(s, user_delete, U1), CB_E_NOT_FOUND);
+    T_EQ_INT(CB_STORE_CALL(s, user_delete, U2), CB_OK);
+    T_EQ_INT(CB_STORE_CALL(s, user_delete, U1), CB_E_DB);
+    T_EQ_INT(sc_.at, sc_.n);
+    cb_store_close(s);
+}
+
 typedef struct { int n; char ids[8][40]; int stop_after; } users_seen;
 static bool see_user(const cb_user_row *u, void *ud) {
     users_seen *w = ud;
@@ -382,6 +476,9 @@ int main(void) {
     cb_log_init(CB_LOG_ERROR + 1, 0);
     T_RUN(users_by_email_password_touch);
     T_RUN(users_list_pages);
+    T_RUN(users_end_sessions);
+    T_RUN(users_import);
+    T_RUN(users_delete);
     T_RUN(refresh_put_and_revoke_session);
     T_RUN(refresh_take_once);
     T_RUN(identities_and_claims);

@@ -120,17 +120,39 @@ int cb_rows_user_create(cb_store *s, const cb_user_row *u) {
 // lowers it; a row exported after more sign-outs raises it), and kept_session
 // goes with the generation that won. Read then write, not atomic: the import
 // is a one-shot admin tool run against a quiet store.
+//
+// The email is the account's own or no one's (as the local store's unique email
+// refuses it): the EMAIL# item is written only when it is absent or already
+// this account's, so an import never takes another account's email (whose
+// sign-in it would then answer). An account imported with a changed email
+// gives its old one up in the same transaction, so the old email signs in to
+// nothing. CB_E_INVALID for an id that is not a canonical UUID, with nothing
+// written; CB_E_DB for an email that is another account's.
 int cb_rows_user_import(cb_store *s, const cb_user_row *u_in) {
+    unsigned char b[CB_UUID_BYTES];
+    if (!cb_uuid_pack(u_in->id, b)) return CB_E_INVALID;
     cb_user_row u = *u_in, old;
-    if (cb_rows_user_get(s, u.id, &old) == CB_OK && old.session_gen >= u.session_gen) {
+    int rc = cb_rows_user_get(s, u.id, &old);
+    if (rc != CB_OK && rc != CB_E_NOT_FOUND) return rc;
+    bool had = rc == CB_OK;
+    if (had && old.session_gen >= u.session_gen) {
         u.session_gen = old.session_gen;
         memcpy(u.kept_session, old.kept_session, sizeof u.kept_session);
     }
-    cb_iwrite w[2];
+    cb_iwrite w[3];
     acct_items *a = calloc(1, sizeof *a);
     if (!a) return CB_E_NOMEM;
     acct_writes(w, a, &u, false);
-    int rc = s->ops->item_txn(s, w, 2, NULL, NULL);
+    const cb_iclause mine = { CB_C_ABSENT_OR_EQ, CB_AVS("user_id", u.id) };
+    w[0].cond[w[0].n_cond++] = mine;
+    int n = 2;
+    char opk[KEY_MAX];
+    if (had && strcmp(old.email, u.email) != 0) {
+        w[n] = (cb_iwrite){ .op = CB_IW_DELETE, .key = { key(opk, sizeof opk, "EMAIL#", old.email), "USER" } };
+        w[n].cond[w[n].n_cond++] = mine;
+        n++;
+    }
+    rc = s->ops->item_txn(s, w, n, NULL, NULL);
     free(a);
     return rc == CB_E_CONFLICT ? CB_E_DB : rc;
 }
