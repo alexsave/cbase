@@ -21,6 +21,12 @@
 #     nowhere there is reached through some -I into core/ or a provider, and fails too, or
 #   * a Makefile or .mk under tools/ names core/ or providers/ (an -I, a source, a VPATH).
 #
+# And cbase and the UI framework cdom have no edge in either direction: an app joins them (its own
+# adapter onto client/hosts/common), and neither names the other. So the gate also fails when
+#
+#   * a tracked file of any kind (a binary too) outside docs/ and the top README.md holds "cdom",
+#     in any case. This file spells the word and is not read for it.
+#
 # Documentation (*.md, *.html) may describe the history and is not read; neither are the fuzz
 # corpora (inputs, not paths). A test that builds a scratch tree of its own in a temporary
 # directory (tools/c_rules_test.sh) marks each line that climbs inside it "repo-gate: scratch tree". The checks are run over planted files first, so a gate that
@@ -82,6 +88,21 @@ files() {
     | grep -v -e '/corpus/' -e "^$SELF\$"
 }
 
+# named_list: the tracked files (paths on stdin) read for the framework's name: all but docs/, the
+# top README.md and this file.
+named_list() { grep -v -e '^docs/' -e '^README\.md$' -e "^$SELF\$" || true; }
+
+# named_scan <root> <file>...: prints every line that holds the framework's name, in any case, as
+# "<file>:<line>: names cdom: <text>".
+named_scan() {
+  local root="$1"; shift
+  ( cd "$root" && perl -e '
+    for my $f (@ARGV) {
+      open(my $h, "<", $f) or next;
+      while (my $l = <$h>) { if ($l =~ m{cdom}i) { chomp $l; print "$f:$.: names cdom: $l\n"; } }
+    }' "$@" )
+}
+
 fails=0
 fail() { echo "FAIL: $*"; fails=$((fails + 1)); }
 
@@ -115,6 +136,21 @@ got="$(tools_scan "$P/t" tools/gen/ok.c tools/gen/test/ok.c tools/gen/up.c tools
 want="tools/gen/aws.mk:1 tools/gen/path.h:1 tools/gen/test/deep.c:1 tools/gen/up.c:2 "
 [ "$got" = "$want" ] || fail "the tools/ closure over planted files saw [$got], not [$want]"
 
+# ---- the framework's name, over planted files ----------------------------------------------------
+mkdir -p "$P/n/docs/sub" "$P/n/client/src" "$P/n/sub" "$P/n/tools"
+printf 'int x; // the CDom adapter\n' > "$P/n/client/src/a.c"
+printf 'all:\n\n# see ../cdom/Makefile\n' > "$P/n/client/Makefile"
+printf 'cDOM\n' > "$P/n/sub/README.md"                            # only the top README.md is docs
+printf 'cd om and c-dom are not it\n' > "$P/n/sub/ok.sh"
+printf 'cdom is an example consumer\n' > "$P/n/docs/sub/x.md"
+printf 'cdom\n' > "$P/n/README.md"
+printf 'cdom\n' > "$P/n/$SELF"
+# shellcheck disable=SC2046  # one path a word
+got="$(named_scan "$P/n" $(printf '%s\n' client/src/a.c client/Makefile sub/README.md sub/ok.sh docs/sub/x.md README.md "$SELF" | named_list) \
+       | sed 's/: .*//' | LC_ALL=C sort | tr '\n' ' ')"
+want="client/Makefile:3 client/src/a.c:1 sub/README.md:1 "
+[ "$got" = "$want" ] || fail "the framework's name over planted files saw [$got], not [$want]"
+
 # ---- the repository ------------------------------------------------------------------------------
 list="$(files)"
 n="$(echo "$list" | wc -l | tr -d ' ')"
@@ -136,5 +172,15 @@ if [ -n "$tout" ]; then
   fail "$(echo "$tout" | wc -l | tr -d ' ') line(s) of tools/ reach core/ or a provider (above)"
 fi
 
+alist="$(git -C "$ROOT" ls-files | named_list)"
+an="$(echo "$alist" | wc -l | tr -d ' ')"
+[ "$an" -ge 1000 ] || fail "only $an files were read for the framework's name: did the listing move?"
+# shellcheck disable=SC2086
+aout="$(named_scan "$ROOT" $alist)"
+if [ -n "$aout" ]; then
+  echo "$aout"
+  fail "$(echo "$aout" | wc -l | tr -d ' ') line(s) outside docs/ and README.md name cdom (above): cbase and cdom have no edge"
+fi
+
 if [ "$fails" -ne 0 ]; then echo "repo_gate_test: $fails failed"; exit 1; fi
-echo "ok   repo_gate_test: $n files, none climbs above the root or names a product's tree; $tn under tools/ include nothing from core/ or providers/"
+echo "ok   repo_gate_test: $n files, none climbs above the root or names a product's tree; $tn under tools/ include nothing from core/ or providers/; $an name no UI framework"
