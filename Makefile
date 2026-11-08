@@ -19,6 +19,8 @@
 #   make fuzz, fuzz-smoke, fuzz-nightly, fuzz-replay, fuzz-merge, fuzz-seeds
 #                   the libFuzzer targets (<side>/fuzz/fz_*.c; fuzz/fuzz.mk says what each does)
 #   make coverage   the coverage build and gate (docs/COVERAGE.md)
+#   make ops-test   the deploy tooling's tests (no AWS)
+#   make serve-binary, make bootstrap   the static Linux arm64 binaries (ops/build_static.sh, Docker)
 #   make clean
 #
 # Builds on macOS (clang, Homebrew openssl@3 and sqlite) and on Ubuntu 24.04 (gcc, libssl-dev,
@@ -39,4 +41,11 @@ example-check:
 # The repository's own rules over its files (tools/repo_gate_test.sh): nothing reaches outside it.
 repo-gate:
 	bash tools/repo_gate_test.sh
-check: example-check
+check: example-check repo-gate
+
+# The deploy tooling's own tests (ops/test, providers/*/ops/test): no AWS, no network, a stub `aws`
+# and scratch git trees. CI's ops job runs them; they are not part of check.
+OPS_TESTS := $(sort $(wildcard ops/test/*.sh providers/*/ops/test/*.sh))
+.PHONY: ops-test
+ops-test:
+	@for t in $(OPS_TESTS); do echo "== $$t"; bash $$t || exit 1; done

@@ -1,15 +1,14 @@
 # shellcheck shell=bash
 # Sourced, not run: require_main TREE refuses (exits 1) unless TREE contains
 # origin/main, or is the first attempt of a CI run of a commit of main (QUEUED
-# below). web_deploy.sh, vm_release.sh and lambda_deploy.sh call it before
-# their first AWS call; test/web_deploy_gate_test.sh proves it for each.
+# below). vm_release.sh, vm_deploy.sh and lambda_deploy.sh call it before
+# their first AWS call; test/deploy_gate_test.sh proves it for each.
 #
-# WHY. On 2026-10-14 foolish.cards was deployed by hand from claude/c_base,
-# which had branched before PR #287 (the kernel fix for "anim_build_plan error
-# -2", the lobby that stays up after Ready) reached main. The site then served a
-# web.wasm byte-identical to a c_base build and to no build of main, so a fix
-# that was merged, tested and green was not live, and the defect it fixed was
-# seen twice in production. Every build step is a function of the tree; the one
+# WHY. On 2026-10-14 a product's site was deployed by hand from a branch that
+# had forked before a kernel fix reached main. The site then served a module
+# byte-identical to that branch's build and to no build of main, so a fix that
+# was merged, tested and green was not live, and the defect it fixed was seen
+# twice in production. Every build step is a function of the tree; the one
 # thing nothing checked was WHICH tree. A tree behind main ships whatever main
 # has fixed since, unfixed, so this refuses it: merge main and deploy again.
 #

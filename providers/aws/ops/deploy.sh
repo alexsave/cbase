@@ -4,7 +4,7 @@
 #
 #   aws configure            # or: aws sso login --profile <p>; export AWS_PROFILE=<p>
 #   c_base/providers/aws/ops/deploy.sh                 # build, upload, create or update the stack
-#   c_base/providers/aws/ops/deploy.sh --import DIR    # and then import a foolish/server/migrate/export.sh export into DynamoDB
+#   providers/aws/ops/deploy.sh --import DIR    # and then import a product export into DynamoDB
 #
 # What it does, in order:
 #   1. checks the CLI has credentials and a region (aws sts get-caller-identity);
@@ -35,7 +35,7 @@
 # Settings, from the environment or the settings file (the environment wins):
 #   CBASE_CERT_ARN         required: the ACM certificate for the domain, in
 #                          us-east-1 (CloudFront reads certificates only there)
-#   CBASE_DOMAIN           api.foolish.cards
+#   CBASE_DOMAIN           required: the API's domain (api.example.com)
 #   CBASE_STACK            cbase (the CloudFormation stack name)
 #   CBASE_FUNCTION_NAME    cbase
 #   CBASE_TABLE            cbase
@@ -54,10 +54,11 @@
 # distribution anyway). Nothing else ever prints them.
 set -euo pipefail
 
-here="$(cd "$(dirname "$0")/../../.." && pwd)"   # c_base/
+here="$(cd "$(dirname "$0")/../../.." && pwd)"   # the c_base root
+prod="$(cd "${CBASE_PRODUCT:-$here}" && pwd)"    # the product's build (its Makefile's directory)
 # shellcheck source=c_base/ops/ops_env.sh
 . "$here/ops/ops_env.sh"
-env_file="$(cbase_ops_env_file "$here")"
+env_file="$(cbase_ops_env_file "$prod")"
 import_dir=""
 
 usage() {
@@ -136,7 +137,8 @@ put_secret() {
 put_secret "${secrets_prefix}jwt-secret" "$CBASE_JWT_SECRET"
 put_secret "${secrets_prefix}admin-token" "$CBASE_ADMIN_TOKEN"
 
-domain="${CBASE_DOMAIN:-api.foolish.cards}"
+domain="${CBASE_DOMAIN:-}"
+[ -n "$domain" ] || { echo "deploy.sh: set CBASE_DOMAIN, the API's domain (in the ops settings file)" >&2; exit 2; }
 stack="${CBASE_STACK:-cbase}"
 function_name="${CBASE_FUNCTION_NAME:-cbase}"
 table="${CBASE_TABLE:-cbase}"
@@ -174,8 +176,8 @@ if ! aws s3api head-bucket --bucket "$bucket" >/dev/null 2>&1; then
 fi
 
 # ---- 4. build and upload the zip --------------------------------------------------
-"$here/providers/aws/ops/package.sh"
-zip="$here/build/cbase-lambda.zip"
+CBASE_PRODUCT="$prod" "$here/providers/aws/ops/package.sh"
+zip="$prod/build/cbase-lambda.zip"
 sum="$(awk '{print $1}' "$zip.sha256")"
 key="cbase-lambda-${sum:0:16}.zip"
 aws s3 cp "$zip" "s3://$bucket/$key" --only-show-errors
@@ -225,21 +227,22 @@ aws cloudformation deploy \
     "CertificateArn=$cert" \
     "AllowedOrigins=$origins" \
     "FunctionName=$function_name" \
+    "FunctionDescription=${CBASE_FUNCTION_DESCRIPTION:-c_base (static arm64 bootstrap)}" \
     "TableName=$table" \
     "DistributionId=$dist_id" \
-    "IotEndpoint=$iot_endpoint" | tee "$here/build/deploy-changeset.txt"
-changeset="$(grep -o 'arn:aws:cloudformation:[^ ]*changeSet/[^ ]*' "$here/build/deploy-changeset.txt" | head -1 || true)"
+    "IotEndpoint=$iot_endpoint" | tee "$prod/build/deploy-changeset.txt"
+changeset="$(grep -o 'arn:aws:cloudformation:[^ ]*changeSet/[^ ]*' "$prod/build/deploy-changeset.txt" | head -1 || true)"
 if [ -n "$changeset" ]; then
   aws cloudformation describe-change-set --region "$region" --change-set-name "$changeset" \
     --query 'Changes[].ResourceChange.[Action,LogicalResourceId,ResourceType,Replacement]' --output table
   # What may be recreated: providers/aws/ops/changeset_replacements.jq (a "Conditional" on
   # an attribute of a resource that is only modified is not).
   aws cloudformation describe-change-set --region "$region" --change-set-name "$changeset" --output json \
-    > "$here/build/deploy-changeset.json"
+    > "$prod/build/deploy-changeset.json"
   jq -r '.Changes[].ResourceChange | select(.Replacement == "Conditional")
          | "  conditional: \(.LogicalResourceId) <- \([.Details[] | select(.Target.RequiresRecreation != "Never")
-           | "\(.ChangeSource) \(.CausingEntity // .Target.Name)"] | join(", "))"' "$here/build/deploy-changeset.json"
-  replacing="$(jq -r -f "$here/providers/aws/ops/changeset_replacements.jq" "$here/build/deploy-changeset.json")"
+           | "\(.ChangeSource) \(.CausingEntity // .Target.Name)"] | join(", "))"' "$prod/build/deploy-changeset.json"
+  replacing="$(jq -r -f "$here/providers/aws/ops/changeset_replacements.jq" "$prod/build/deploy-changeset.json")"
   if [ -n "$replacing" ] && [ "$replacing" != None ] && [ "${CBASE_ALLOW_REPLACE:-}" != 1 ]; then
     aws cloudformation delete-change-set --region "$region" --change-set-name "$changeset" >/dev/null || true
     die "the change set replaces: $replacing. Read it, then rerun with CBASE_ALLOW_REPLACE=1 if that is meant"
@@ -273,7 +276,7 @@ MSG
 # open), so every deploy seeds the schema's 49 into a table that has none and
 # leaves a table with bots alone. The import then replaces them with the
 # hosted rows, as it does on SQLite.
-make -s -C "$here" build/cbase-import
+make -s -C "$prod" build/cbase-import
 stack_table="$(output TableName)"
 (
   # Temporary credentials for this subshell only (SSO and assumed roles included).
@@ -281,14 +284,14 @@ stack_table="$(output TableName)"
   export AWS_REGION="$region"
   # The import tool invalidates what it changed at the edge (app/edge.h).
   export CBASE_CF_DISTRIBUTION="$(output DistributionId)"
-  CBASE_STORE=dynamo CBASE_TABLE="$stack_table" "$here/build/cbase-import" --seed-bots
+  CBASE_STORE=dynamo CBASE_TABLE="$stack_table" "$prod/build/cbase-import" --seed-bots
   # The leaderboard's sparse, rating-ordered index key: rows from before it
   # move once; afterwards this rewrites nothing.
-  CBASE_STORE=dynamo CBASE_TABLE="$stack_table" "$here/build/cbase-import" --reindex-ratings
+  CBASE_STORE=dynamo CBASE_TABLE="$stack_table" "$prod/build/cbase-import" --reindex-ratings
   if [ -n "$import_dir" ]; then
     [ -d "$import_dir" ] || die "--import: $import_dir is not a directory"
     echo "importing $import_dir into DynamoDB table $stack_table"
-    CBASE_STORE=dynamo CBASE_TABLE="$stack_table" "$here/build/cbase-import" "$import_dir"
+    CBASE_STORE=dynamo CBASE_TABLE="$stack_table" "$prod/build/cbase-import" "$import_dir"
   fi
 )
 if [ -n "$import_dir" ]; then

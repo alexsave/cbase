@@ -1,8 +1,10 @@
 AWSTemplateFormatVersion: "2010-09-09"
-# c_base on AWS: everything the foolish backend runs on, in one stack.
+# c_base on AWS: everything a product's backend runs on, in one stack. The product's instance of it
+# (its domain, its names, its origins) is the parameters its deploy passes (providers/aws/ops/deploy.sh
+# reads them from the product's ops settings), never this file's defaults.
 #
 # Upload this file in the CloudFormation console (Create stack > Upload a
-# template file). c_base/RUNBOOK.md walks through every click, in order.
+# template file). RUNBOOK.md walks through every click, in order.
 #
 # What it makes:
 #   * the DynamoDB table (single-table design, DESIGN.md "Store"), PROVISIONED
@@ -20,21 +22,21 @@ AWSTemplateFormatVersion: "2010-09-09"
 #     origin; it caches exactly two paths, the
 #     public /v1/leaderboard and /v1/bots, which the function invalidates
 #     when they change (DESIGN.md "Edge cache");
-#   (GitHub Actions deploys new code through ops/github_oidc.yaml's role, which
-#   holds no other rights here: see that file.)
+#   (CI deploys new code through the product's own deploy role, which holds no
+#   other rights here; providers/aws/ops/role_covers_release.sh checks one.)
 #
 # Region: create the stack in us-east-1. The ACM certificate must be in
 # us-east-1 for CloudFront whatever region the stack is in, and keeping
 # everything in one region keeps the runbook to one region selector.
 #
-# Cost at foolish's volume: Lambda, DynamoDB (provisioned capacity; on-demand
+# Cost at a small product's volume: Lambda, DynamoDB (provisioned capacity; on-demand
 # has no free tier), the Function URL, EventBridge Scheduler, CloudFront and
 # ACM sit inside their always-free allowances; IoT Core bills per million
 # connection-minutes and messages, cents a month at our volume; the code zip in S3 is a
 # few MB; point-in-time recovery bills $0.20 per GB-month of table, a
 # fraction of a cent at our few MB (DESIGN.md "The free tier, provisioned").
 
-Description: c_base, the foolish backend (Lambda + DynamoDB + CloudFront)
+Description: c_base, a product's backend (Lambda + DynamoDB + CloudFront)
 
 Metadata:
   AWS::CloudFormation::Interface:
@@ -103,8 +105,7 @@ Parameters:
       sends it before anything arrives.
   DomainName:
     Type: String
-    Default: api.foolish.cards
-    Description: The custom domain clients use. CBASE_PUBLIC_URL becomes https://<this>.
+    Description: The custom domain clients use (api.example.com). CBASE_PUBLIC_URL becomes https://<this>.
   CertificateArn:
     Type: String
     Description: The ACM certificate for DomainName. It MUST be in us-east-1 (N. Virginia) for CloudFront.
@@ -113,7 +114,11 @@ Parameters:
   AllowedOrigins:
     Type: String
     Default: "*"
-    Description: CBASE_ALLOWED_ORIGINS, "*" or a comma list such as https://foolish.cards,https://www.foolish.cards.
+    Description: CBASE_ALLOWED_ORIGINS, "*" or a comma list such as https://example.com,https://www.example.com.
+  FunctionDescription:
+    Type: String
+    Default: c_base (static arm64 bootstrap)
+    Description: The Lambda function's description, as the product names its backend.
   FunctionName:
     Type: String
     Default: cbase
@@ -306,7 +311,7 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: !Ref FunctionName
-      Description: c_base, the foolish backend (static arm64 bootstrap)
+      Description: !Ref FunctionDescription
       Runtime: provided.al2023
       Architectures: [arm64]
       Handler: bootstrap
@@ -710,7 +715,7 @@ Resources:
       OKActions: [!Ref AlarmTopic]
 
   # 5. A flood: Lambda's free allowance is 1M requests a month, about 115 per
-  # 5 minutes on average; this is far above foolish's traffic.
+  # 5 minutes on average; this is far above a small product's traffic.
   AlarmInvocations:
     Type: AWS::CloudWatch::Alarm
     Properties:

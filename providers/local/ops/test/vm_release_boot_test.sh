@@ -70,7 +70,7 @@ echo "ok cbase"
 X
 printf '#!/bin/bash\necho "ELF 64-bit LSB executable, ARM aarch64, statically linked"\n' > "$tmp/bin/file"
 chmod +x "$tmp/bin/aws" "$tmp/bin/curl" "$tmp/bin/file"
-export FAKE="$tmp/state" CBASE_CODE_BUCKET=bkt AWS_REGION=us-east-1 CBASE_VM_VERSION=v1
+export FAKE="$tmp/state" CBASE_CODE_BUCKET=bkt AWS_REGION=us-east-1 CBASE_VM_VERSION=v1 CBASE_PUBLIC_URL=https://api.example.com
 
 # What the tree's boot script and stub are.
 boot_assemble "$here/vm_boot.sh" "$here/cbase.service" "$tmp/want_boot.sh"

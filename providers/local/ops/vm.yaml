@@ -68,13 +68,12 @@ Parameters:
     Description: id of com.amazonaws.global.ipv6.cloudfront.origin-facing
   PublicUrl:
     Type: String
-    Default: https://api.foolish.cards
+    Description: the public base URL clients use (https://api.example.com)
   AllowedOrigins:
     Type: String
     Default: "*"
   OriginDomain:
     Type: String
-    Default: vm-origin.foolish.cards
     Description: the AAAA name of OriginIpv6 (kept at the domain's DNS host, not here)
   OriginSecret:
     Type: String

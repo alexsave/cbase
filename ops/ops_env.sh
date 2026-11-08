@@ -1,6 +1,6 @@
 #!/bin/bash
 # ops_env.sh - where the ops scripts' settings and secrets live, and the one
-# reader of them. Sourced by deploy.sh and web_deploy.sh; never run.
+# reader of them. Sourced by deploy.sh (and a product's own deploy scripts); never run.
 #
 # THE FILE: $CBASE_OPS_ENV, else ~/.config/cbase/ops.env, else the old
 # c_base/ops/.env (gitignored). It lives outside the repo on purpose: a

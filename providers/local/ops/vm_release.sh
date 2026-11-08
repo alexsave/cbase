@@ -1,7 +1,7 @@
 #!/bin/bash
 # Ships a built `cbase serve` binary to the running cbase-vm instance: the code
 # only, never the stack. .github/workflows/c_base.yml runs it on every push to
-# main, as the role providers/aws/ops/github_oidc.yaml makes; it runs the same
+# main, as the product's deploy role makes; it runs the same
 # from this Mac.
 #
 #   c_base/providers/local/ops/vm_release.sh BIN   # upload, point at it, restart, verify
@@ -45,25 +45,29 @@
 # holds the two together). Settings: AWS_REGION (us-east-1), CBASE_VM_STACK
 # (cbase-vm, the auto-scaling group's name too), CBASE_CODE_BUCKET
 # (cbase-code-<account>-<region>), CBASE_VM_VERSION (the short SHA),
-# CBASE_PUBLIC_URL (https://api.foolish.cards).
+# CBASE_PUBLIC_URL (required: the public base URL, https://api.example.com).
 set -euo pipefail
 ops="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo="$(cd "$ops/../../../.." && pwd)"
+cb="$(cd "$ops/../../.." && pwd)"   # the c_base root
+# The repository being deployed: the product's that c_base sits in (a submodule's superproject,
+# or the repository c_base is a directory of), or c_base's own.
+repo="$(git -C "$cb" rev-parse --show-superproject-working-tree)"
+[ -n "$repo" ] || repo="$(git -C "$cb" rev-parse --show-toplevel)"
 die() { echo "vm_release.sh: $*" >&2; exit 1; }
 [ $# -eq 1 ] || { sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 command -v aws >/dev/null 2>&1 || die "the AWS CLI is not installed"
 
-# shellcheck source=c_base/providers/local/ops/vm_boot_lib.sh
+# shellcheck source=providers/local/ops/vm_boot_lib.sh
 . "$ops/vm_boot_lib.sh"   # sha256, boot_assemble, boot_key, stub_build
-# shellcheck source=c_base/ops/s3_prune_lib.sh
-. "$repo/c_base/ops/s3_prune_lib.sh"   # prune_bucket
+# shellcheck source=ops/s3_prune_lib.sh
+. "$cb/ops/s3_prune_lib.sh"   # prune_bucket
 
 mode=release
 case "$1" in
   --restart)
     mode=restart
-    # shellcheck source=c_base/ops/require_main.sh
-    . "$repo/c_base/ops/require_main.sh"
+    # shellcheck source=ops/require_main.sh
+    . "$cb/ops/require_main.sh"
     require_main "$repo"   # --restart ships this tree's boot script
     ;;
   --verify) mode=verify ;;
@@ -72,8 +76,8 @@ case "$1" in
   *)
     bin="$1"
     [ -f "$bin" ] || die "$bin is not a file"
-    # shellcheck source=c_base/ops/require_main.sh
-    . "$repo/c_base/ops/require_main.sh"
+    # shellcheck source=ops/require_main.sh
+    . "$cb/ops/require_main.sh"
     require_main "$repo"
     file "$bin" | grep -Eq 'ARM aarch64.*(statically|static-pie) linked' || die "$bin is not a static arm64 binary"
     sum="$(sha256 "$bin")"
@@ -85,7 +89,7 @@ esac
 
 export AWS_REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-1}}"
 stack="${CBASE_VM_STACK:-cbase-vm}"
-public="${CBASE_PUBLIC_URL:-https://api.foolish.cards}"
+public="${CBASE_PUBLIC_URL:-}"
 param=/cbase-vm/release/serve
 boot_param=/cbase-vm/release/boot
 
@@ -123,6 +127,7 @@ verify() {   # verify [SHA256]: the checks of step 5
             "curl -sS -o /dev/null -w 'GET /ready  -> %{http_code}\n' --fail http://127.0.0.1:8080/ready" \
             "journalctl -u cbase --no-pager | tail -n 5 | cut -c1-200" \
     || die "the instance is not healthy"
+  [ -n "$public" ] || die "set CBASE_PUBLIC_URL, the public base URL (https://api.example.com), to verify through it"
   echo "verify: $public/health"
   local body=""
   for _ in $(seq 1 12); do

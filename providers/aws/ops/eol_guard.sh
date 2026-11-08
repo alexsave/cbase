@@ -1,6 +1,6 @@
 #!/bin/bash
 # eol_guard.sh BINARY : fail when the shipped build's toolchain is past its
-# end of support. Checks (1) the Alpine minor pinned in build_bootstrap.sh and
+# end of support. Checks (1) the Alpine minor pinned in ops/build_static.sh and
 # (2) the OpenSSL line compiled into BINARY (its `OpenSSL x.y.z` string),
 # each against the dated tables below, taken from
 # https://alpinelinux.org/releases/ and
@@ -29,8 +29,8 @@ check() {    # check WHAT KEY TABLE
   echo "eol_guard: $1 $2 supported until $eol"
 }
 
-alpine="$(sed -n 's/^IMAGE="alpine:\([0-9]*\.[0-9]*\)@sha256:.*/\1/p' "$here/build_bootstrap.sh")"
-[ -n "$alpine" ] || { echo "eol_guard: no pinned alpine in build_bootstrap.sh" >&2; exit 1; }
+alpine="$(sed -n 's/^IMAGE="alpine:\([0-9]*\.[0-9]*\)@sha256:.*/\1/p' "$here/../../../ops/build_static.sh")"
+[ -n "$alpine" ] || { echo "eol_guard: no pinned alpine in ops/build_static.sh" >&2; exit 1; }
 ossl="$(strings "$bin" | sed -n 's/^OpenSSL \([0-9]*\.[0-9]*\)\.[0-9]*.*/\1/p' | head -1)"
 [ -n "$ossl" ] || { echo "eol_guard: no OpenSSL version string in $bin" >&2; exit 1; }
 

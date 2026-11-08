@@ -9,7 +9,7 @@
 # moves /cbase-vm/release/serve and restarts the instance, with no stack update.
 # So with no BIN this keeps the release that parameter names, and a template
 # change never rolls the server back. With BIN (a static musl arm64 build, e.g.
-# c_base/bench/nano/build.sh vm1 or build_bootstrap.sh serve) it uploads BIN as
+# a product's perf build, or `make serve-binary`) it uploads BIN as
 # vm/cbase-serve-<short sha> (CBASE_VM_VERSION overrides) and the stack points
 # the parameter at it; run --restart after to swap the binary.
 #
@@ -42,22 +42,31 @@
 #
 # Environment: AWS_REGION, CBASE_CODE_BUCKET (cbase-code-<account>-<region>),
 # CBASE_VM_STACK (cbase-vm), CBASE_VM_VERSION, CBASE_VM_DESIRED (1),
-# CBASE_VM_AZ (picked from the AZs that offer t4g.nano).
+# CBASE_VM_AZ (picked from the AZs that offer t4g.nano); and the product's instance of the stack,
+# both required: CBASE_PUBLIC_URL (https://api.example.com) and CBASE_VM_ORIGIN_DOMAIN (the AAAA
+# name CloudFront reaches the instance at, vm-origin.example.com).
 set -euo pipefail
 ops="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo="$(git -C "$ops" rev-parse --show-toplevel)"
+cb="$(cd "$ops/../../.." && pwd)"   # the c_base root
+# The repository being deployed: the product's that c_base sits in (a submodule's superproject,
+# or the repository c_base is a directory of), or c_base's own.
+repo="$(git -C "$cb" rev-parse --show-superproject-working-tree)"
+[ -n "$repo" ] || repo="$(git -C "$cb" rev-parse --show-toplevel)"
 die() { echo "vm_deploy.sh: $*" >&2; exit 1; }
 case "${1:-}" in
   --restart|--verify) exec "$ops/vm_release.sh" "$1" ;;
   -h|--help) sed -n '2,45p' "$0" | sed 's/^# \{0,1\}//'; exit ;;
   -*) die "unknown argument $1" ;;
 esac
-# shellcheck source=c_base/ops/s3_prune_lib.sh
-. "$repo/c_base/ops/s3_prune_lib.sh"
-# shellcheck source=c_base/ops/require_main.sh
-. "$repo/c_base/ops/require_main.sh"
+# shellcheck source=ops/s3_prune_lib.sh
+. "$cb/ops/s3_prune_lib.sh"
+# shellcheck source=ops/require_main.sh
+. "$cb/ops/require_main.sh"
 require_main "$repo"
-# shellcheck source=c_base/providers/local/ops/vm_boot_lib.sh
+public_url="${CBASE_PUBLIC_URL:-}"
+origin_domain="${CBASE_VM_ORIGIN_DOMAIN:-}"
+[ -n "$public_url" ] && [ -n "$origin_domain" ] || die "set CBASE_PUBLIC_URL and CBASE_VM_ORIGIN_DOMAIN (the product's instance of the stack)"
+# shellcheck source=providers/local/ops/vm_boot_lib.sh
 . "$ops/vm_boot_lib.sh"   # sha256, boot_assemble, boot_key, stub_build
 for tool in aws openssl base64 curl; do command -v "$tool" >/dev/null || die "$tool is not installed"; done
 
@@ -169,7 +178,9 @@ aws cloudformation deploy \
     "AgentRelease=$agent_release" \
     "BootStub=$user_data" \
     "CloudFrontPrefixList=$pl" \
-    "OriginSecret=$origin_secret"
+    "OriginSecret=$origin_secret" \
+    "PublicUrl=$public_url" \
+    "OriginDomain=$origin_domain"
 aws cloudformation describe-stacks --stack-name "$stack" --query 'Stacks[0].Outputs[].[OutputKey,OutputValue]' --output text
 
 # ---- 6. the prune -------------------------------------------------------------------

@@ -30,7 +30,11 @@
 # Settings: CBASE_STACK (cbase), AWS_REGION (us-east-1).
 set -euo pipefail
 
-repo="$(cd "$(dirname "$0")/../../../.." && pwd)"
+cb="$(cd "$(dirname "$0")/../../.." && pwd)"   # the c_base root
+# The repository being deployed: the product's that c_base sits in (a submodule's superproject,
+# or the repository c_base is a directory of), or c_base's own.
+repo="$(git -C "$cb" rev-parse --show-superproject-working-tree)"
+[ -n "$repo" ] || repo="$(git -C "$cb" rev-parse --show-toplevel)"
 stack="${CBASE_STACK:-cbase}"
 export AWS_REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-1}}"
 
@@ -40,10 +44,10 @@ zip="$1"
 [ -f "$zip" ] || die "$zip is not a file"
 command -v aws >/dev/null 2>&1 || die "the AWS CLI is not installed"
 
-# shellcheck source=c_base/ops/require_main.sh
-. "$repo/c_base/ops/require_main.sh"
-# shellcheck source=c_base/ops/s3_prune_lib.sh
-. "$repo/c_base/ops/s3_prune_lib.sh"
+# shellcheck source=ops/require_main.sh
+. "$cb/ops/require_main.sh"
+# shellcheck source=ops/s3_prune_lib.sh
+. "$cb/ops/s3_prune_lib.sh"
 require_main "$repo"
 
 # ---- 1. the name --------------------------------------------------------------------
@@ -101,7 +105,7 @@ fi
 # ---- 4. is it live ------------------------------------------------------------------
 fn="$(output FunctionName)"
 # GetFunction, which CloudFormation needs the role to hold anyway; the role has
-# no GetFunctionConfiguration (providers/aws/ops/github_oidc.yaml).
+# no GetFunctionConfiguration (the product's deploy role).
 live_sha="$(aws lambda get-function --function-name "$fn" --query Configuration.CodeSha256 --output text)"
 [ "$live_sha" = "$code_sha" ] || die "function $fn runs CodeSha256 $live_sha, not this zip's $code_sha"
 url="$(output PublicUrl)"

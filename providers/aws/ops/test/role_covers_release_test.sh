@@ -1,7 +1,7 @@
 #!/bin/bash
 # providers/aws/ops/role_covers_release.sh against small scripts: a covered
 # script passes, a call the role lacks fails, and a call the check does not know
-# fails; then the real vm_release.sh and role pass.
+# fails; and with no role named it refuses (the role is the product's).
 set -euo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
 t="$(mktemp -d)"
@@ -28,5 +28,8 @@ printf '      Resource: arn:x:s3:::b/vm/cbase-serve-*\n' >> "$t/scoped.yaml"
 "$here/role_covers_release.sh" "$t/scoped.sh" "$t/scoped.yaml" >/dev/null || fail "a script whose pointer and prefix the role names was refused"
 printf 'aws ssm put-parameter --name /cbase-vm/release/boot\n' >> "$t/scoped.sh"
 if "$here/role_covers_release.sh" "$t/scoped.sh" "$t/scoped.yaml" 2>/dev/null; then fail "a pointer the role does not name passed"; fi
-"$here/role_covers_release.sh" >/dev/null || fail "the real vm_release.sh and role do not agree"
+# With no role named it refuses, saying so: the role is a product's, not c_base's. A product checks
+# its own: CBASE_DEPLOY_ROLE=<its role template> providers/aws/ops/role_covers_release.sh
+if env -u CBASE_DEPLOY_ROLE "$here/role_covers_release.sh" "$t/scoped.sh" 2>"$t/err"; then fail "no role named, and it passed"; fi
+grep -q "name the deploy role" "$t/err" || fail "no role named: refused, but not saying why"
 echo "role_covers_release_test: ok"

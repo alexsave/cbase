@@ -1,12 +1,13 @@
 #!/bin/bash
-# role_covers_release.sh [SCRIPT] [github_oidc.yaml]: the GitHub deploy role
+# role_covers_release.sh [SCRIPT] [ROLE.yaml]: the GitHub deploy role (ROLE.yaml, or
+# CBASE_DEPLOY_ROLE: the product's template of it)
 # grants every AWS call the CI deploy makes.
 #
 # The role is least privilege, so a call the script gains and the role lacks
 # fails the deploy on main, after every test passed, with production still on
 # the old binary. This reads each `aws <service> <command>` in SCRIPT
 # (providers/local/ops/vm_release.sh and the libraries it sources,
-# c_base/ops/s3_prune_lib.sh and providers/local/ops/vm_boot_lib.sh, by default) and requires the IAM action
+# ops/s3_prune_lib.sh and providers/local/ops/vm_boot_lib.sh, by default) and requires the IAM action
 # it needs in the role. A command this table does not know stops the check: add
 # its action here and to the role.
 #
@@ -22,7 +23,9 @@ script="${1:-$here/../../local/ops/vm_release.sh}"
 # that names the boot script's key).
 files=("$script")
 [ -n "${1:-}" ] || files+=("$here/../../../ops/s3_prune_lib.sh" "$here/../../local/ops/vm_boot_lib.sh")
-role="${2:-$here/github_oidc.yaml}"
+# The role is the product's deploy identity (its template, beside its own stack definition).
+role="${2:-${CBASE_DEPLOY_ROLE:-}}"
+[ -n "$role" ] || { echo "role_covers_release.sh: name the deploy role's template (argument 2, or CBASE_DEPLOY_ROLE)" >&2; exit 2; }
 
 # The IAM action(s) a CLI command needs, space-separated; "-" for none.
 action_of() {

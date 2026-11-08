@@ -153,7 +153,7 @@ CB_CFLAGS = -std=gnu11 -D_GNU_SOURCE -O2 -g -Wall -Wextra -Werror -Wno-unused-pa
             $(side_inc) $(SQLITE_CFLAGS) $(OPENSSL_CFLAGS) -pthread $(CPU_CFLAGS) $(APP_CFLAGS) $(CB_LTO)
 LDLIBS := $(SQLITE_LDFLAGS) $(OPENSSL_LDFLAGS) -lsqlite3 -lssl -lcrypto -lpthread -lm $(APP_LDLIBS) $(LTO_LDFLAGS)
 # STATIC=1: a fully static link (the Lambda bootstrap and the VM's serve, built on musl by
-# providers/aws/ops/build_bootstrap.sh). Not meaningful on macOS.
+# ops/build_static.sh). Not meaningful on macOS.
 ifeq ($(STATIC),1)
   LDLIBS += -static
 endif
@@ -451,10 +451,17 @@ check-dynamo-shapes-run:
 endif
 
 # The Lambda artifact: dist/bootstrap and dist/bootstrap.zip, static Linux arm64, built in a pinned
-# arm64 Alpine container (providers/aws/ops/build_bootstrap.sh).
+# arm64 Alpine container (ops/build_static.sh).
 .PHONY: bootstrap
 bootstrap:
-	$(CB)providers/aws/ops/build_bootstrap.sh
+	$(CB_STATIC) $(CB)ops/build_static.sh bootstrap
+endif
+ifneq ($(CB_LOCAL),)
+# The VM's binary: dist/cbase-serve-linux-arm64 and its .sha256, `cbase serve` static on musl, the
+# same way (ops/build_static.sh serve).
+.PHONY: serve-binary
+serve-binary:
+	$(CB_STATIC) $(CB)ops/build_static.sh serve
 endif
 
 # ---- coverage (docs/COVERAGE.md) ----------------------------------------------------------------
@@ -506,6 +513,13 @@ coverage: $(addprefix build/cov/test/,$(UNITS)) $(call SMOKE_PROGS,build/cov) bu
 	build/cov_gate build/cov/coverage.lcov build/cov/floor.txt --report --strip '$(abspath $(COV_ROOT))/' $(addprefix --strip ,$(CB_COV_STRIP)) > build/cov/report.txt || { cat build/cov/report.txt; exit 1; }
 	@tail -4 build/cov/report.txt
 COV_JOBS ?= $(shell getconf _NPROCESSORS_ONLN)
+
+# What ops/build_static.sh copies into its container and where it runs make: everything under
+# C_ROOT the build reads (CBASE_BUILD_COPY, a product's to say; default all of C_ROOT), and this
+# Makefile's directory under it.
+CBASE_BUILD_COPY ?= .
+CB_STATIC = CBASE_BUILD_ROOT='$(abspath $(C_ROOT))' CBASE_BUILD_DIR='$(patsubst $(abspath $(C_ROOT))/%,%,$(CURDIR)/)' \
+            CBASE_BUILD_COPY='$(CBASE_BUILD_COPY)' CBASE_BUILD_SERVE='$(APP_SERVE)' CBASE_BUILD_LAMBDA='$(APP_LAMBDA)'
 
 # The fuzz targets: every <side>/fuzz/fz_*.c (fuzz/fuzz.mk).
 include $(CB)fuzz/fuzz.mk
