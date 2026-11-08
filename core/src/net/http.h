@@ -24,6 +24,15 @@
 #define CB_HTTP_MAX_HEADERS   64
 #define CB_HTTP_MAX_HEAD      16384   // request line + headers
 #define CB_HTTP_DEFAULT_BODY  (1u << 20)
+#define CB_HTTP_MAX_PARAMS    8       // path parameters a route pattern may name (router.h)
+
+// One path parameter of the matched route (router.h): its name in the pattern (after the ':'),
+// its value in the request's path, raw (not percent-decoded). Neither is NUL-ended.
+typedef struct {
+    const char *name;
+    const char *value;
+    uint16_t    name_len, value_len;
+} cb_http_param;
 
 typedef struct {
     const char *name;    // as received; compare case-insensitively
@@ -59,6 +68,10 @@ typedef struct cb_http_req {
     // A parked request run again (http.h cb_http_res park_ms): true when it was woken by its time
     // running out, so the handler answers now whatever it finds.
     bool        park_expired;
+    // The matched route's path parameters ("/decks/:id" -> id), set before its handler runs
+    // (router.h cb_router_bind); read them with cb_route_param.
+    uint8_t     n_params;
+    cb_http_param params[CB_HTTP_MAX_PARAMS];
 } cb_http_req;
 
 // The header's value, or NULL. First match, case-insensitive name.

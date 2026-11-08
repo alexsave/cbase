@@ -141,6 +141,9 @@ A table `{method, pattern, flags, handler}`, exactly today's `cb_route`, so `han
 The platform refuses an app route that shadows a platform one (router `CB_E_CONFLICT`, already there).
 Handlers keep running on the request pool under serve and once per invocation under Lambda.
 
+A pattern is exact (`/health`), a prefix (`/v1/games/*`), or has path parameters (`/decks/:id/notes/:nid`), which the handler reads decoded with `cb_route_param(req, "id", out, cap)`.
+An exact pattern always wins, then a parameter pattern (the one whose first differing segment is literal), then the longest prefix, whatever order they were added in (`net/router.h`).
+
 CORS is the app's to declare, and the default is deny (`net/router.h`).
 `cb_app.cors_origins` lists the web origins whose pages may call the app, each exactly as a browser sends `Origin`; the deployment may add its own through `CBASE_ALLOWED_ORIGINS` (default empty).
 A listed origin is echoed in `Access-Control-Allow-Origin` with `Vary: Origin`; any other gets no `Access-Control-*` header, and its preflight is answered 403.

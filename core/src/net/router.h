@@ -1,9 +1,23 @@
 // router.h - which handler answers which request, and where it runs.
 //
 // A route is a method, a path pattern and a handler. Patterns are exact
-// ("/health") or a prefix ending in "/*" ("/v1/items/*" matches "/v1/items/ab12"
-// and "/v1/items/"). The longest matching pattern wins; an exact pattern beats a
-// prefix of the same length. Method "*" matches any method.
+// ("/health"), a prefix ending in "/*" ("/v1/items/*" matches "/v1/items/ab12"
+// and "/v1/items/"), or have PARAMETERS: a segment ":name" ([A-Za-z0-9_]+, the
+// whole segment) matches any one non-empty path segment ("/decks/:id/notes/:nid"
+// matches "/decks/7/notes/a%2Fb", id "7", nid "a/b"), at most
+// CB_HTTP_MAX_PARAMS of them, and not with "/*". Method "*" matches any method.
+//
+// WHICH ROUTE WINS, whatever order they were added in, and the same every time:
+//   1. an exact pattern, always;
+//   2. then a parameter pattern; between two that fit the same path, the one
+//      whose first segment that differs is literal ("/decks/new/:x" beats
+//      "/decks/:id/notes" for "/decks/new/notes");
+//   3. then a prefix, the longest first.
+// A route whose method does not fit is passed over for the next one that does
+// (405 when none does). Two parameter patterns of the same shape under one
+// method ("/a/:id" and "/a/:key") are CB_E_CONFLICT, as the same pattern is.
+// Paths are matched raw (percent-escapes and all), so "%2F" never splits a
+// segment; cb_route_param decodes the value.
 //
 // WHERE A HANDLER RUNS. By default on the REQUEST POOL (util/pool.h): it may
 // block on SQLite, bcrypt or a document's lock, and the network loop keeps serving
@@ -62,8 +76,8 @@ typedef struct cb_route_s {
 cb_router *cb_router_new(void);
 void cb_router_free(cb_router *r);
 // Adds a route. The strings must outlive the router (string literals).
-// CB_E_CONFLICT for the same method and pattern twice, CB_E_INVALID for a
-// pattern that does not start with '/'.
+// CB_E_CONFLICT for the same method and pattern (or parameter shape) twice,
+// CB_E_INVALID for a pattern that does not start with '/' or a malformed parameter.
 int cb_router_add(cb_router *r, const char *method, const char *pattern, unsigned flags, cb_handler fn);
 // Adds routes[0..n) in order, each with its inline budget: CB_OK, or the first
 // refusal (the routes before it stay added).
@@ -72,6 +86,18 @@ int cb_router_add_all(cb_router *r, const cb_route *routes, int n);
 // The route for method + path, or NULL. When NULL, *path_known says whether
 // the path matched a route under another method (405 rather than 404).
 const cb_route *cb_router_match(const cb_router *r, int method, const char *path, bool *path_known);   // method: CB_M_*
+
+// Sets req's path parameters from `route`, the route cb_router_match answered for req->path
+// (none for a route without them). Whoever runs a route's handler calls it first: cb_handle,
+// and a socket's REQ (rt_local.c). No allocation: the parameters point into the pattern and
+// into req->path.
+void cb_router_bind(const cb_route *route, cb_http_req *req);
+
+// The path parameter `name` of the request's route, percent-decoded ('+' stays '+') into out
+// with a NUL: true, or false when the route has no such parameter, its value has a bad escape or
+// decodes to a NUL byte, or it does not fit in cap-1 bytes.
+//   char id[32]; if (!cb_route_param(req, "id", id, sizeof id)) { 400 }
+bool cb_route_param(const cb_http_req *req, const char *name, char *out, size_t cap);
 
 // The router's own answers, used by handler.c around the handler. Exposed so a
 // test can drive them without sockets.

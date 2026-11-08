@@ -35,7 +35,7 @@ static bool is_local_probe(const cb_http_req *req) {
            strcmp(req->peer, "::ffff:127.0.0.1") == 0;
 }
 
-void cb_handle(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
+void cb_handle(cb_ctx *ctx, cb_http_req *req, cb_http_res *res) {
     const int m = meth_of(req);
     res->head = m == CB_M_HEAD;
     if (ctx->cfg && !is_local_probe(req) && !cb_config_origin_proven(ctx->cfg, cb_http_header_get(req, CB_ORIGIN_HEADER))) {
@@ -51,7 +51,10 @@ void cb_handle(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
         bool known = false;
         const cb_route *r = cb_router_match(ctx->router, m, req->path, &known);
         if (!r) cb_router_error(res, known ? 405 : 404, known ? "method not allowed" : "not found");
-        else r->fn(ctx, req, res);
+        else {
+            cb_router_bind(r, req);
+            r->fn(ctx, req, res);
+        }
     }
     cb_router_cors(ctx, req, res);
 }

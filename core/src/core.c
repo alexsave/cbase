@@ -9,7 +9,7 @@
 
 #include <stdatomic.h>
 
-void cb_core_http(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
+void cb_core_http(cb_ctx *ctx, cb_http_req *req, cb_http_res *res) {
     cb_handle(ctx, req, res);
     atomic_fetch_add_explicit(&ctx->stats.requests, 1, memory_order_relaxed);
     if (res->status >= 500) atomic_fetch_add_explicit(&ctx->stats.responses_5xx, 1, memory_order_relaxed);

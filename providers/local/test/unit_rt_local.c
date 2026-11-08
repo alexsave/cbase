@@ -60,6 +60,12 @@ static void h_park(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     snprintf(res->park_key, sizeof res->park_key, "k");
 }
 static void h_ping(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) { cb_res_text(res, 200, "pong"); }
+// A route with a path parameter (router.h): answers it.
+static void h_deck(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
+    char id[32];
+    if (!cb_route_param(req, "id", id, sizeof id)) { cb_res_text(res, 400, "no id"); return; }
+    cb_res_send(res, 200, "application/octet-stream", id, strlen(id));
+}
 // A route that answers the address a rate limit would count the request under (rate_limits.h).
 static void h_viewer(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     char key[96];
@@ -89,6 +95,7 @@ static void start(void) {
     T_EQ_INT(cb_router_add(g_ctx.router, "*", "/t/who", CB_ROUTE_POOL, h_who), CB_OK);
     T_EQ_INT(cb_router_add(g_ctx.router, "GET", "/t/park", CB_ROUTE_POOL, h_park), CB_OK);
     T_EQ_INT(cb_router_add(g_ctx.router, "GET", "/t/ping", CB_ROUTE_POOL, h_ping), CB_OK);
+    T_EQ_INT(cb_router_add(g_ctx.router, "GET", "/t/decks/:id", CB_ROUTE_POOL, h_deck), CB_OK);
     T_EQ_INT(cb_router_add(g_ctx.router, "GET", "/t/viewer", CB_ROUTE_POOL, h_viewer), CB_OK);
     T_EQ_INT(cb_router_add(g_ctx.router, "*", "/t/loop", CB_ROUTE_LOOP, h_who), CB_OK);
     T_EQ_INT(cb_router_add(g_ctx.router, "GET", "/t/publoop", CB_ROUTE_LOOP, h_pub_on_loop), CB_OK);
@@ -312,6 +319,8 @@ static void req_runs_a_route_as_the_user(void) {
     T_EQ_INT(req(a, 7, SF_METH_POST, "/t/who", "hello", &m, &f), 200);
     T_EQ_MEM(f.body, f.body_len, U1 ":sess-a:hello", 36 + 1 + 6 + 1 + 5);
     T_EQ_INT(req(a, 8, SF_METH_GET, "/t/nothing", "", &m, &f), 404);
+    T_EQ_INT(req(a, 8, SF_METH_GET, "/t/decks/d%2F9", "", &m, &f), 200);   // its path parameter, bound
+    T_EQ_MEM(f.body, f.body_len, "d/9", 3);
     T_EQ_INT(req(a, 9, SF_METH_GET, "/t/loop", "", &m, &f), 405);   // a loop route is not for a socket
     T_EQ_INT(req(a, 10, SF_METH_POST, "/v1/auth/signin", "", &m, &f), 403);
     // Replies come back in request order, ids echoed, even pipelined.

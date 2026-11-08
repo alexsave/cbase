@@ -2,6 +2,7 @@
 #include "t.h"
 
 #include "cbase/app.h"
+#include "handler.h"
 #include "net/http.h"
 #include "net/router.h"
 #include "util/err.h"
@@ -196,6 +197,171 @@ static void routing_priority(void) {
     cb_router_free(r);
 }
 
+static void h_d(cb_ctx *c, const cb_http_req *q, cb_http_res *s) {}
+static void h_e(cb_ctx *c, const cb_http_req *q, cb_http_res *s) {}
+
+// A request for `path` (a test's own: bound to the route that matched, as cb_handle binds it).
+static const cb_route *bound(const cb_router *r, int meth, const char *path, cb_http_req *q) {
+    memset(q, 0, sizeof *q);
+    q->path = path;
+    bool known = false;
+    const cb_route *m = cb_router_match(r, meth, path, &known);
+    cb_router_bind(m, q);
+    return m;
+}
+
+// Path parameters: what they match, what the handler reads, and which route wins.
+static void route_params(void) {
+    const int GET = cb_http_method_id("GET"), POST = cb_http_method_id("POST");
+    cb_router *r = cb_router_new();
+    T_EQ_INT(cb_router_add(r, "GET", "/decks/:id/notes/:nid", 0, h_a), CB_OK);
+    T_EQ_INT(cb_router_add(r, "GET", "/decks/:id", 0, h_b), CB_OK);
+    T_EQ_INT(cb_router_add(r, "GET", "/decks/new", 0, h_c), CB_OK);         // exact, added after
+    T_EQ_INT(cb_router_add(r, "GET", "/decks/*", 0, h_d), CB_OK);           // prefix
+    T_EQ_INT(cb_router_add(r, "POST", "/decks/:id", 0, h_e), CB_OK);        // same shape, another method
+    cb_http_req q;
+    char v[64];
+    const cb_route *m = bound(r, GET, "/decks/42/notes/n7", &q);
+    T_CHECK(m && m->fn == h_a);
+    T_EQ_INT(q.n_params, 2);
+    T_CHECK(cb_route_param(&q, "id", v, sizeof v));
+    T_EQ_STR(v, "42");
+    T_CHECK(cb_route_param(&q, "nid", v, sizeof v));
+    T_EQ_STR(v, "n7");
+    T_CHECK(!cb_route_param(&q, "deck", v, sizeof v));   // no such parameter
+    T_CHECK(!cb_route_param(&q, "i", v, sizeof v));      // a name is whole, not a prefix
+    // Exact beats parameter beats prefix, though added in the other order.
+    m = bound(r, GET, "/decks/new", &q);
+    T_CHECK(m && m->fn == h_c);
+    T_EQ_INT(q.n_params, 0);
+    m = bound(r, GET, "/decks/7", &q);
+    T_CHECK(m && m->fn == h_b);
+    T_CHECK(cb_route_param(&q, "id", v, sizeof v));
+    T_EQ_STR(v, "7");
+    m = bound(r, POST, "/decks/7", &q);
+    T_CHECK(m && m->fn == h_e);
+    m = bound(r, GET, "/decks/7/notes", &q);            // no 4-segment parameter route with 3: the prefix
+    T_CHECK(m && m->fn == h_d);
+    T_EQ_INT(q.n_params, 0);
+    m = bound(r, GET, "/decks/", &q);                   // a parameter is never empty: the prefix
+    T_CHECK(m && m->fn == h_d);
+    m = bound(r, GET, "/decks//notes/x", &q);
+    T_CHECK(m && m->fn == h_d);
+    // Encoded characters: matched raw, so "%2F" stays inside its segment; the value is decoded,
+    // '+' kept, and a bad escape, a NUL or a value that does not fit is refused.
+    m = bound(r, GET, "/decks/a%2Fb/notes/caf%C3%A9+x%20y", &q);
+    T_CHECK(m && m->fn == h_a);
+    T_CHECK(cb_route_param(&q, "id", v, sizeof v));
+    T_EQ_STR(v, "a/b");
+    T_CHECK(cb_route_param(&q, "nid", v, sizeof v));
+    T_EQ_STR(v, "caf\xc3\xa9+x y");
+    m = bound(r, GET, "/decks/%zz", &q);
+    T_CHECK(m && m->fn == h_b);
+    T_CHECK(!cb_route_param(&q, "id", v, sizeof v));
+    m = bound(r, GET, "/decks/a%00b", &q);
+    T_CHECK(!cb_route_param(&q, "id", v, sizeof v));
+    m = bound(r, GET, "/decks/123456", &q);
+    T_CHECK(!cb_route_param(&q, "id", v, 6));            // 6 bytes and the NUL do not fit in 6
+    T_CHECK(cb_route_param(&q, "id", v, 7));
+    // 405 and 404 as for any route.
+    bool known = false;
+    T_CHECK(!cb_router_match(r, cb_http_method_id("DELETE"), "/decks/7", &known) && known);
+    T_CHECK(!cb_router_match(r, GET, "/deck/7", &known) && !known);
+    cb_router_free(r);
+}
+
+// cb_handle binds the route's parameters before its handler runs.
+static char g_seen[32];
+static void h_seen(cb_ctx *c, const cb_http_req *q, cb_http_res *s) {
+    if (!cb_route_param(q, "nid", g_seen, sizeof g_seen)) strcpy(g_seen, "(none)");
+}
+
+static void route_params_reach_the_handler(void) {
+    cb_ctx ctx;
+    memset(&ctx, 0, sizeof ctx);
+    ctx.router = cb_router_new();
+    T_EQ_INT(cb_router_add(ctx.router, "GET", "/decks/:id/notes/:nid", 0, h_seen), CB_OK);
+    cb_http_req q;
+    char *b;
+    T_CHECK(parse("GET /decks/1/notes/n%2B2?x=1 HTTP/1.1\r\n\r\n", 0, &q, &b) > 0);
+    q.n_params = 3;   // whatever was there before is replaced
+    cb_http_res res;
+    cb_res_init(&res);
+    cb_handle(&ctx, &q, &res);
+    T_EQ_INT(res.status, 200);
+    T_EQ_STR(g_seen, "n+2");
+    T_EQ_INT(q.n_params, 2);
+    cb_res_free(&res);
+    free(b);
+    // A route without parameters leaves none, whatever the request held.
+    T_EQ_INT(cb_router_add(ctx.router, "GET", "/plain", 0, h_seen), CB_OK);
+    T_CHECK(parse("GET /plain HTTP/1.1\r\n\r\n", 0, &q, &b) > 0);
+    q.params[0] = (cb_http_param){ "nid", "x", 3, 1 };
+    q.n_params = 1;
+    cb_res_init(&res);
+    cb_handle(&ctx, &q, &res);
+    T_EQ_STR(g_seen, "(none)");
+    T_EQ_INT(q.n_params, 0);
+    cb_res_free(&res);
+    free(b);
+    cb_router_free(ctx.router);
+}
+
+// The first differing segment decides between two parameter patterns, whatever the order added;
+// the same shape under one method is a conflict; malformed parameters are refused.
+static void route_param_conflicts(void) {
+    const int GET = cb_http_method_id("GET");
+    for (int order = 0; order < 2; order++) {
+        cb_router *r = cb_router_new();
+        if (order == 0) {
+            T_EQ_INT(cb_router_add(r, "GET", "/decks/:id/notes", 0, h_a), CB_OK);
+            T_EQ_INT(cb_router_add(r, "GET", "/decks/new/:x", 0, h_b), CB_OK);
+            T_EQ_INT(cb_router_add(r, "GET", "/:a/:b/notes", 0, h_c), CB_OK);
+        } else {
+            T_EQ_INT(cb_router_add(r, "GET", "/:a/:b/notes", 0, h_c), CB_OK);
+            T_EQ_INT(cb_router_add(r, "GET", "/decks/new/:x", 0, h_b), CB_OK);
+            T_EQ_INT(cb_router_add(r, "GET", "/decks/:id/notes", 0, h_a), CB_OK);
+        }
+        cb_http_req q;
+        char v[16];
+        const cb_route *m = bound(r, GET, "/decks/new/notes", &q);
+        T_CHECK(m && m->fn == h_b);            // "new" is literal where the other has :id
+        T_CHECK(cb_route_param(&q, "x", v, sizeof v));
+        T_EQ_STR(v, "notes");
+        m = bound(r, GET, "/decks/9/notes", &q);
+        T_CHECK(m && m->fn == h_a);            // "decks" literal beats :a
+        m = bound(r, GET, "/cards/9/notes", &q);
+        T_CHECK(m && m->fn == h_c);
+        T_CHECK(cb_route_param(&q, "a", v, sizeof v));
+        T_EQ_STR(v, "cards");
+        // The same shape, whatever its names, is the same route.
+        T_EQ_INT(cb_router_add(r, "GET", "/decks/:deck/notes", 0, h_d), CB_E_CONFLICT);
+        T_EQ_INT(cb_router_add(r, "GET", "/decks/:id/notes", 0, h_d), CB_E_CONFLICT);
+        T_EQ_INT(cb_router_add(r, "*", "/decks/:deck/notes", 0, h_d), CB_OK);   // another method: not a conflict
+        T_EQ_INT(cb_router_add(r, "GET", "/decks/:id/notez", 0, h_d), CB_OK);   // another shape
+        cb_router_free(r);
+    }
+    // A pattern of parameters alone still beats every prefix.
+    cb_router *r = cb_router_new();
+    T_EQ_INT(cb_router_add(r, "GET", "/x/*", 0, h_a), CB_OK);
+    T_EQ_INT(cb_router_add(r, "GET", "/:a/:b", 0, h_b), CB_OK);
+    cb_http_req pq;
+    const cb_route *pm = bound(r, GET, "/x/y", &pq);
+    T_CHECK(pm && pm->fn == h_b);
+    pm = bound(r, GET, "/x/y/z", &pq);
+    T_CHECK(pm && pm->fn == h_a);
+    cb_router_free(r);
+    r = cb_router_new();
+    const char *bad[] = { "/a/:", "/a/:b-c", "/a/:id/:id", "/a/:id/*", "/a/:x/:b/:c/:d/:e/:f/:g/:h/:i" };
+    for (int i = 0; i < (int)(sizeof bad / sizeof bad[0]); i++) T_EQ_INT(cb_router_add(r, "GET", bad[i], 0, h_a), CB_E_INVALID);
+    // A ':' inside a segment is a literal, as it always was.
+    T_EQ_INT(cb_router_add(r, "GET", "/a/b:c", 0, h_a), CB_OK);
+    cb_http_req q;
+    T_CHECK(bound(r, GET, "/a/b:c", &q) != NULL);
+    T_CHECK(bound(r, GET, "/a/bxc", &q) == NULL);
+    cb_router_free(r);
+}
+
 // The headers a response carries, as one string ("Name: value\r\n..."), for exact compares.
 static const char *heads(const cb_http_res *res) { return cb_buf_cstr(&res->headers); }
 
@@ -386,6 +552,9 @@ int main(void) {
     T_RUN(responses);
     T_RUN(routing);
     T_RUN(routing_priority);
+    T_RUN(route_params);
+    T_RUN(route_param_conflicts);
+    T_RUN(route_params_reach_the_handler);
     T_RUN(cors_default_denies);
     T_RUN(cors_lists);
     T_RUN(cors_credentials);
