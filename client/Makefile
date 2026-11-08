@@ -4,6 +4,9 @@
 #
 #   make check        the unit tests and the host suite on the native host (hosts/posix), natively
 #                     and under ASan + UBSan, the libc and requires gates, and the fuzz corpus replayed
+#   make check-host-cdom  the host suite on the browser host (hosts/cdom), natively and under ASan +
+#                     UBSan, and the host with the core compiled for wasm32 against cdom's string.h,
+#                     libc-gated; against cdom at CDOM_PIN (fetched into build/cdom), or CDOM=<checkout>
 #   make fuzz         build/fuzz/client (libFuzzer + ASan + UBSan; Homebrew LLVM on macOS)
 #   make fuzz-smoke   it for FUZZ_TIME seconds (default 30) from a scratch copy of the corpus
 #   make wasm         build/wasm/cbase_client.wasm and its oidc variant cbase_client_oidc.wasm, and the
@@ -39,8 +42,10 @@ SRC      := $(CBC_SRC) $(OIDC_SRC)
 TEST_INC := -I$(CB)core/test -Itest/host -Ihosts/posix
 # THE HOSTS (hosts/<name>/): the code between a platform's I/O and the core, each passing the one
 # host suite (test/host/host_suite.h, a scripted fake server) through a few lines of adapter
-# (test/unit_host_<name>.c). The native host is built here; cdom's is cdom's to run the suite on.
+# (test/unit_host_<name>.c). Both are built and run here; the cdom host needs cdom's headers
+# (below), so it has a target of its own, outside `make check`.
 HOST_POSIX_SRC := hosts/posix/cbc_posix.c
+HOST_CDOM_SRC  := hosts/cdom/cbc_cdom.c
 HOST_SUITE_SRC := test/host/host_suite.c
 
 include $(CB)tools/c_rules.mk
@@ -65,10 +70,41 @@ build/asan/test/unit_host_posix: $(call c_objs,build/obj/asan,$(SRC)) $(call c_o
 	@mkdir -p $(@D)
 	$(CC) $(ASAN_CFLAGS) $^ -o $@
 
+# THE CDOM HOST (hosts/cdom/, README.md there): the browser host of a C app built on cdom
+# (github.com/alexsave/cdom), which only such an app compiles; nothing else here includes it. Its
+# test needs cdom's headers (cdom.h, cdom_net.h, cdom_store.h, cdom_random.h) and its wasm32
+# compile cdom's string.h (src/libc), so it runs against one cdom, pinned: CDOM_PIN, fetched by its
+# commit into build/cdom (the repository reaches nothing outside itself, tools/repo_gate_test.sh).
+# CDOM=<a cdom checkout> runs it against that one instead. A new pin is this one line, moved when
+# the host has passed against the newer cdom.
+CDOM_REPO := https://github.com/alexsave/cdom.git
+CDOM_PIN  := 3051b89a0edab4f80b4006c72d203eb0f39eac97
+CDOM      ?= build/cdom
+CDOM_GOT  := $(if $(filter build/cdom,$(CDOM)),build/cdom/.pin-$(CDOM_PIN))
+build/cdom/.pin-$(CDOM_PIN):
+	git init -q build/cdom
+	git -C build/cdom fetch -q --depth 1 $(CDOM_REPO) $(CDOM_PIN)
+	git -C build/cdom -c advice.detachedHead=false checkout -q --force FETCH_HEAD
+	@test "$$(git -C build/cdom rev-parse HEAD)" = $(CDOM_PIN)
+	@touch $@
+HOST_CDOM_INC := -I$(CDOM)/src -Ihosts/cdom
+HOST_CDOM_TEST_FLAGS = $(CFLAGS) $(TEST_INC) $(HOST_CDOM_INC)
+ASAN_CDOM_TEST_FLAGS = $(ASAN_CFLAGS) $(TEST_INC) $(HOST_CDOM_INC)
+$(eval $(call C_VARIANT,build/obj/host-cdom,CC,HOST_CDOM_TEST_FLAGS))
+$(eval $(call C_VARIANT,build/obj/asan-cdom,CC,ASAN_CDOM_TEST_FLAGS))
+HOST_CDOM_TEST := $(HOST_CDOM_SRC) $(HOST_SUITE_SRC) test/unit_host_cdom.c
+$(call c_objs,build/obj/host-cdom,$(HOST_CDOM_TEST)) $(call c_objs,build/obj/asan-cdom,$(HOST_CDOM_TEST)): | $(CDOM_GOT)
+build/test/unit_host_cdom: $(call c_objs,build/obj/host,$(SRC)) $(call c_objs,build/obj/host-cdom,$(HOST_CDOM_TEST))
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) $^ -o $@
+build/asan/test/unit_host_cdom: $(call c_objs,build/obj/asan,$(SRC)) $(call c_objs,build/obj/asan-cdom,$(HOST_CDOM_TEST))
+	@mkdir -p $(@D)
+	$(CC) $(ASAN_CFLAGS) $^ -o $@
+
 # THE LIBC GATE (../tools/libc_gate.sh): the client is a library, so its objects define no C
 # library symbol; the program that links it brings one. Here over the native objects, and over the
 # wasm32 objects under `make wasm` (below).
-.PHONY: all check test test-asan libc-gate requires-gate
+.PHONY: all check test test-asan libc-gate requires-gate test-host-cdom check-host-cdom
 all: build/test/unit_client build/test/unit_host_posix
 test: libc-gate requires-gate build/test/unit_client build/test/unit_host_posix
 	./build/test/unit_client
@@ -77,6 +113,10 @@ test-asan: build/asan/test/unit_client build/asan/test/unit_host_posix
 	./build/asan/test/unit_client
 	./build/asan/test/unit_host_posix
 check: test test-asan fuzz-replay
+test-host-cdom: build/test/unit_host_cdom build/asan/test/unit_host_cdom
+	./build/test/unit_host_cdom
+	./build/asan/test/unit_host_cdom
+check-host-cdom: test-host-cdom host-cdom-wasm
 libc-gate: $(call c_objs,build/obj/host,$(SRC))
 	@bash $(CB)tools/libc_gate.sh --nm nm --cc '$(CC)' $^
 
@@ -210,6 +250,19 @@ SIZE_GATE = raw=$$(wc -c < $(1)); gz=$$(gzip -9 -n -c $(1) | wc -c); \
 size-gate: build/wasm/cbase_client.wasm build/wasm/cbase_client_oidc.wasm
 	@$(call SIZE_GATE,build/wasm/cbase_client.wasm,$(WASM_RAW_MAX),$(WASM_GZ_MAX))
 	@$(call SIZE_GATE,build/wasm/cbase_client_oidc.wasm,$(WASM_OIDC_RAW_MAX),$(WASM_OIDC_GZ_MAX))
+
+# THE CDOM HOST FOR wasm32, as a cdom app compiles it: the host, the core and lib/b64 against
+# cdom's string.h (-isystem $(CDOM)/src/libc, the program's C library, not wasm/include), objects
+# only (the app links them into its own module), and the libc gate over them.
+HOST_CDOM_WASM_CFLAGS := --target=wasm32 -Oz -nostdlib -ffreestanding -mbulk-memory -mno-nontrapping-fptoint -std=c11 \
+                         $(WARN) $(INC) -isystem $(CDOM)/src/libc $(HOST_CDOM_INC)
+$(eval $(call C_VARIANT,build/obj/wasm-cdom,WASM_CC,HOST_CDOM_WASM_CFLAGS))
+HOST_CDOM_WASM_OBJS := $(call c_objs,build/obj/wasm-cdom,$(HOST_CDOM_SRC) $(CBC_SRC) $(CB)lib/b64/b64.c)
+$(HOST_CDOM_WASM_OBJS): | $(CDOM_GOT)
+.PHONY: host-cdom-wasm
+host-cdom-wasm: wasm-cc-check $(HOST_CDOM_WASM_OBJS)
+	@bash $(CB)tools/libc_gate.sh --nm $(WASM_NM) --cc '$(WASM_CC) --target=wasm32 -nostdlib -ffreestanding' $(HOST_CDOM_WASM_OBJS)
+	@echo "host-cdom-wasm: $(words $(HOST_CDOM_WASM_OBJS)) objects for wasm32 against $(CDOM)/src/libc/string.h, libc gate passed"
 
 # ---- the page's TypeScript ----------------------------------------------------------------------
 TS_OUT   ?= build/ts
