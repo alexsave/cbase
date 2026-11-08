@@ -95,7 +95,16 @@ enum {
     CBC_EV_DONE        = 5,   // call `ticket` finished: status, why (0 = done), and its body's span
     CBC_EV_SESSION     = 6,   // the session changed (signed in, refreshed, ended): save it again
     CBC_EV_BAD         = 7,   // a frame that is not this protocol's
+    // Raised by a host, never by the core (the core never sees a socket that did not open): no
+    // socket could be opened, why a CBC_SOCK_*. The next try is after the reconnect wait, as
+    // after any close; one event a try.
+    CBC_EV_SOCKET_FAILED = 8,
 };
+
+// Why a host could not open a socket (CBC_EV_SOCKET_FAILED.why).
+#define CBC_SOCK_UNSUPPORTED 1   // none can be opened here (a page's scheme, no socket API)
+#define CBC_SOCK_REFUSED     2   // the platform refused to make one (a construction error)
+#define CBC_SOCK_FAILED      3   // made, and it failed or closed before it opened (refused, no answer)
 
 // Why a call finished without its answer (CBC_EV_DONE.why). The server's own are the AskRefusal
 // whys (auth_wire.h CBW_WHY_*); CBC_WHY_LOST is this file's: it never arrived, or a write may have

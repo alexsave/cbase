@@ -59,6 +59,7 @@ void cbc_posix_pump(cbc_posix *h) { cbc_host_pump(&h->host); }
 void cbc_posix_ws_opened(cbc_posix *h, uint32_t id) { cbc_host_ws_opened(&h->host, id); }
 void cbc_posix_ws_message(cbc_posix *h, uint32_t id, const uint8_t *frame, size_t len) { cbc_host_ws_message(&h->host, id, frame, len); }
 void cbc_posix_ws_closed(cbc_posix *h, uint32_t id) { cbc_host_ws_closed(&h->host, id); }
+void cbc_posix_ws_failed(cbc_posix *h, uint32_t id, int why) { cbc_host_ws_failed(&h->host, id, why); }
 
 int cbc_posix_start(cbc_posix *h, const cbc_posix_io *io, const cbc_cfg *cfg, cbc_posix_event_fn fn, void *ctx) {
     memset(h, 0, sizeof *h);

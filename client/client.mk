@@ -26,6 +26,9 @@
 #   CBC_HOST_SRC     the shared host (client/hosts/common/cbc_host.h): the platform-free half of every
 #                    C host, which a host's own file (hosts/posix, or an app's own) runs on
 #   CBC_HOST_INC     its include flag
+#   CBC_SUITE_SRC    the host suite (client/test/host/host_suite.h): the test a host's adapter links
+#                    with the core, the shared host and the host itself, to pass what every host passes
+#   CBC_SUITE_INC    its include flags (with CBC_INC)
 #
 # The core is the same files cbase's own client/Makefile builds, tests and fuzzes: that Makefile
 # includes this one, so there is one list.
@@ -44,3 +47,5 @@ CBC_CFLAGS      :=
 CBC_REQUIRES    := memcpy memmove memset memcmp strlen
 CBC_HOST_SRC    := $(CBC_CB)client/hosts/common/cbc_host.c
 CBC_HOST_INC    := -I$(CBC_CB)client/hosts/common
+CBC_SUITE_SRC   := $(CBC_CB)client/test/host/host_suite.c
+CBC_SUITE_INC   := -I$(CBC_CB)client/test/host -I$(CBC_CB)core/test

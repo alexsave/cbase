@@ -15,7 +15,7 @@
 // world's deliveries onto the host's entry points.
 //
 //   #include "host_suite.h"
-//   static const cbhs_host my_host = { "mine", start, client, pump, ws_opened, ws_message, ws_closed };
+//   static const cbhs_host my_host = { "mine", start, client, pump, ws_opened, ws_message, ws_closed, ws_failed };
 //   int main(void) { return cbhs_run(&my_host); }
 //
 // THE WORLD'S RULES, which every platform's loop keeps and so every host may count on: nothing is
@@ -38,6 +38,7 @@ typedef struct cbhs_world cbhs_world;
 int64_t  cbhs_now(cbhs_world *w);                                   // epoch ms
 // 0 and the socket's id in *id: the world's ids start at 1, or at 0 when the suite runs again as
 // a platform whose ids start there (every case runs both ways), so a host keeps them as they are.
+// A CBC_SOCK_* when the script makes the world refuse one (UNSUPPORTED, REFUSED).
 int      cbhs_ws_open(cbhs_world *w, const char *path, uint32_t *id);
 void     cbhs_ws_send(cbhs_world *w, uint32_t id, const uint8_t *frame, size_t len);
 void     cbhs_ws_close(cbhs_world *w, uint32_t id);
@@ -70,6 +71,7 @@ typedef struct {
     void (*ws_opened)(void *host, uint32_t id);
     void (*ws_message)(void *host, uint32_t id, const uint8_t *frame, size_t len);
     void (*ws_closed)(void *host, uint32_t id);
+    void (*ws_failed)(void *host, uint32_t id, int why);   // before its open; why: a CBC_SOCK_*
 } cbhs_host;
 
 // Every case, on fresh worlds; prints each failure and a summary. Answers the process's exit code.

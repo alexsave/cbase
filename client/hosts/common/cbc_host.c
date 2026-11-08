@@ -74,10 +74,31 @@ static void on_tick(void *ctx) {
     cbc_host_pump(h);
 }
 
+// The socket is gone, opened or not: cbc_closed (which counts every try, so a socket that never
+// opens backs off as one that keeps dropping does), and the reopen armed BEFORE the app hears the
+// events: an app that re-issues a lost call and pumps from inside its callback must not open the
+// next socket at once. A failure (why: a CBC_SOCK_*) is told the app first; 0: a close.
+static void gone(cbc_host *h, int why) {
+    h->has_sock = 0;
+    h->open = 0;
+    uint32_t wait = cbc_closed(&h->c, cbc_host_now(h));
+    if (h->reopen_timer) h->env->timer_stop(h->ud, h->reopen_timer);
+    h->reopen_timer = h->env->timer(h->ud, wait, on_reopen, h);
+    if (why && h->fn) {
+        cbc_event e;
+        memset(&e, 0, sizeof e);
+        e.kind = CBC_EV_SOCKET_FAILED;
+        e.why = (uint8_t)why;
+        h->fn(h->ctx, &h->c, &e, NULL);
+    }
+    events(h, NULL);
+}
+
 static void ws_open(cbc_host *h) {
     h->open = 0;
-    h->has_sock = h->env->ws_open(h->ud, cbc_stream_path(&h->c), &h->sock) == 0;
-    if (!h->has_sock) h->reopen_timer = h->env->timer(h->ud, h->c.cfg.retry_first_ms, on_reopen, h);
+    int why = h->env->ws_open(h->ud, cbc_stream_path(&h->c), &h->sock);
+    h->has_sock = why == 0;
+    if (why) gone(h, why);
 }
 
 void cbc_host_ws_opened(cbc_host *h, uint32_t id) {
@@ -96,14 +117,13 @@ void cbc_host_ws_message(cbc_host *h, uint32_t id, const uint8_t *frame, size_t 
 
 void cbc_host_ws_closed(cbc_host *h, uint32_t id) {
     if (!h->has_sock || id != h->sock) return;
-    h->has_sock = 0;
-    h->open = 0;
-    uint32_t wait = cbc_closed(&h->c, cbc_host_now(h));
-    // The reopen's wait is armed BEFORE the app hears the close's events: an app that re-issues a
-    // lost call and pumps from inside its callback must not open the next socket at once.
-    if (h->reopen_timer) h->env->timer_stop(h->ud, h->reopen_timer);
-    h->reopen_timer = h->env->timer(h->ud, wait, on_reopen, h);
-    events(h, NULL);
+    gone(h, h->open ? 0 : CBC_SOCK_FAILED);
+    cbc_host_pump(h);
+}
+
+void cbc_host_ws_failed(cbc_host *h, uint32_t id, int why) {
+    if (!h->has_sock || id != h->sock) return;
+    gone(h, h->open ? 0 : why);
     cbc_host_pump(h);
 }
 

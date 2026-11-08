@@ -56,6 +56,9 @@ struct cbhs_world {
     struct { uint8_t state; char path[32]; } sock[W_SOCKS];
     uint32_t n_socks;
     uint32_t id_base;           // the first socket id the world hands out: 1, or 0 (g_id_base)
+    int      refuse;            // nonzero: every ws_open is refused with this CBC_SOCK_*
+    int      n_refused;
+    int64_t  refused_at[W_EVENTS];   // when each was
     // the frames the server received, in order, each with its socket
     struct { uint32_t sock; size_t len; uint8_t b[W_FRAME]; } frame[W_FRAMES];
     int n_frames, frames_read;
@@ -91,6 +94,11 @@ static uint32_t slot_of(cbhs_world *w, uint32_t id) {
 }
 
 int cbhs_ws_open(cbhs_world *w, const char *path, uint32_t *id) {
+    if (w->refuse) {
+        if (w->n_refused < W_EVENTS) w->refused_at[w->n_refused] = w->now;
+        w->n_refused++;
+        return w->refuse;
+    }
     if (w->n_socks == W_SOCKS) { broke(w, "more sockets opened than the suite has room for"); return -1; }
     for (uint32_t i = 0; i < w->n_socks; i++)
         if (w->sock[i].state == S_OPENING || w->sock[i].state == S_OPEN) broke(w, "a second socket opened while one is up");
@@ -281,6 +289,12 @@ static void drop(cbhs_world *w) {
     if (!id) return;
     w->sock[id - 1].state = S_FREE;
     w->h->ws_closed(w->host, wire(w, id));
+}
+// The socket the host is opening fails before it opens (why: a CBC_SOCK_*); the loop's close
+// after it comes when the script settles.
+static void fail_opening(cbhs_world *w, uint32_t id, int why) {
+    w->sock[id - 1].state = S_CLOSING;
+    w->h->ws_failed(w->host, wire(w, id), why);
 }
 static int closing(cbhs_world *w) {
     for (uint32_t i = 0; i < w->n_socks; i++)
@@ -855,6 +869,81 @@ static void a_socket_nobody_wants_is_closed_while_it_opens(void) {
     kept(w);
 }
 
+// The clock to the host's next try at a socket (refused or opening), a ms at a time; 0: none came
+// within the longest reconnect wait.
+static int next_try(cbhs_world *w) {
+    int n = w->n_refused;
+    for (uint32_t ms = 0; ms <= g_cfg.retry_max_ms; ms++) {
+        if (w->n_refused != n || opening(w)) return 1;
+        advance(w, 1);
+    }
+    return 0;
+}
+
+// A socket the platform cannot make (a page's scheme, a construction error): the app hears one
+// CBC_EV_SOCKET_FAILED a try, with the platform's why, and the tries back off as reconnects do
+// (never more often than the floor, and not at the floor forever). One that fails before it opens
+// is the same with its why, the platform's close after it is not heard again, and a close before
+// the open is a failure too. Once the platform can, the socket opens.
+static void a_socket_that_cannot_open_is_told_each_try_and_backs_off(void) {
+    cbhs_world *w = world();
+    g_cfg.anonymous = 1;
+    cbc *c = start(w, g_h);
+    w->refuse = CBC_SOCK_UNSUPPORTED;
+    T_EQ_INT(cbc_sub(c, CBC_ROOM, "feed", 4), 0);
+    pump(w);
+    T_EQ_INT(w->n_refused, 1);
+    const w_event *e = event(w);
+    T_CHECK(e && e->kind == CBC_EV_SOCKET_FAILED && e->why == CBC_SOCK_UNSUPPORTED);
+    T_CHECK(event(w) == NULL);
+    advance(w, g_cfg.retry_first_ms - 1);
+    T_EQ_INT(w->n_refused, 1);                     // not before the reconnect floor
+    advance(w, 60000);
+    int n = w->n_refused;
+    T_CHECK(n >= 4 && n <= 60000 / (int)g_cfg.retry_first_ms / 3);   // backed off, not at the floor
+    for (int i = 1; i < n && i < W_EVENTS; i++) T_CHECK(w->refused_at[i] - w->refused_at[i - 1] >= g_cfg.retry_first_ms);
+    int failed = 0;
+    while ((e = event(w)) != NULL) {
+        T_CHECK(e->kind == CBC_EV_SOCKET_FAILED && e->why == CBC_SOCK_UNSUPPORTED);
+        failed++;
+    }
+    T_EQ_INT(failed, n - 1);                       // one a try
+    T_EQ_INT(w->n_socks, 0);
+    w->refuse = CBC_SOCK_REFUSED;                  // the why is the platform's
+    T_CHECK(next_try(w));
+    e = event(w);
+    T_CHECK(e && e->kind == CBC_EV_SOCKET_FAILED && e->why == CBC_SOCK_REFUSED);
+    T_CHECK(event(w) == NULL);
+    w->refuse = 0;                                 // made now, and it fails before it opens
+    T_CHECK(next_try(w));
+    uint32_t id = opening(w);
+    T_CHECK(id != 0);
+    if (!id) return;
+    fail_opening(w, id, CBC_SOCK_REFUSED);         // refused by the network: the platform's why
+    e = event(w);
+    T_CHECK(e && e->kind == CBC_EV_SOCKET_FAILED && e->why == CBC_SOCK_REFUSED);
+    settle(w);                                     // the platform's close after its error
+    T_CHECK(event(w) == NULL);
+    T_EQ_INT(opening(w), 0);                       // not at once
+    T_CHECK(next_try(w));
+    id = opening(w);
+    T_CHECK(id != 0);
+    if (!id) return;
+    w->sock[id - 1].state = S_FREE;                // closed by the platform before it opened
+    w->h->ws_closed(w->host, wire(w, id));
+    e = event(w);
+    T_CHECK(e && e->kind == CBC_EV_SOCKET_FAILED && e->why == CBC_SOCK_FAILED);
+    T_CHECK(event(w) == NULL);
+    T_CHECK(next_try(w));
+    id = opening(w);
+    T_CHECK(id != 0);
+    if (!id) return;
+    accept_sock(w, id);
+    T_EQ_INT(frame(w), SF_HELLO);
+    T_CHECK(event(w) == NULL);
+    kept(w);
+}
+
 int cbhs_run(const cbhs_host *h) {
     g_h = h;
     // Every case twice: socket ids from 1, then from 0 (a platform's ids may start anywhere, and
@@ -878,6 +967,7 @@ int cbhs_run(const cbhs_host *h) {
         T_RUN(a_retried_borrowed_body_resends_the_same_bytes);
         T_RUN(a_slow_borrowed_upload_is_not_aborted);
         T_RUN(an_auth_http_call_waits_for_the_refresh_without_spinning);
+        T_RUN(a_socket_that_cannot_open_is_told_each_try_and_backs_off);
     }
     printf("host suite: %s\n", h->name);
     return T_DONE();

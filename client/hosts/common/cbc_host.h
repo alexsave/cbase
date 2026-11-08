@@ -6,7 +6,10 @@
 //   socket   while cbc_stream_wanted: env.ws_open(cbc_stream_path), then cbc_opened when the
 //            platform says it opened (cbc_host_ws_opened); every message to cbc_in; each
 //            cbc_next_out frame to env.ws_send (-1: env.ws_close); on its close
-//            (cbc_host_ws_closed), cbc_closed, and the next open after the ms it answers
+//            (cbc_host_ws_closed), cbc_closed, and the next open after the ms it answers; one
+//            that cannot be made (env.ws_open's CBC_SOCK_*) or fails before it opens
+//            (cbc_host_ws_failed, or a close before the open) is a CBC_EV_SOCKET_FAILED to the
+//            app and the same close and wait
 //   HTTP     each cbc_next_request to env.http (cbc_host_req: the path as the request target,
 //            "Bearer ..." as the Authorization value, the deadline the core set, which the
 //            environment hands its HTTP client as is and never invents), answered once by
@@ -41,16 +44,46 @@
 // client/test/host/host_suite.h is the suite every host passes; a new environment proves itself
 // with the same scripted server.
 //
-// WRITING A HOST (a browser framework's adapter, an app's own): nothing here names a platform, so a
-// new host lives in its own tree, client/hosts/posix being the model:
-//   1. the environment: a cbc_host_env whose calls each map onto one platform call (its socket,
-//      HTTP client, timer, store and clock), cbc_host_init with the platform's seed, the session
-//      loaded into h->sess, then cbc_host_pump;
-//   2. the platform's callbacks into cbc_host_ws_opened/_message/_closed and
-//      cbc_host_http_answered (with the tag env.http got), each from the platform's loop;
-//   3. its adapter onto the host suite (cbhs_host, as client/test/unit_host_posix.c does, a line
-//      a call), which runs every case the other hosts pass against the scripted server.
-// It builds with CBC_HOST_SRC and CBC_HOST_INC (client/client.mk).
+// WRITING A HOST (a browser framework's adapter, an app's own): nothing here names a platform, so
+// a host lives in the app's or the framework's own tree, with cbase as a submodule.
+// client/hosts/posix (cbc_posix.c, 80 lines) is the model; this is everything it does:
+//
+//   build    include client/client.mk with CBASE set; compile CBC_SRC (and CBC_OIDC_SRC with
+//            CBC_OIDC_CFLAGS for a provider's sign-in) and CBC_HOST_SRC with CBC_INC and
+//            CBC_HOST_INC, natively or for wasm32 (the core and this file need only CBC_REQUIRES)
+//   struct   the host's own struct embeds a cbc_host (cbc_posix: the cbc_host and the app's io);
+//            the env's ud is that struct, and one static const cbc_host_env serves every host
+//   env      each call one platform call:
+//              ws_open     make the socket for path (a page: ws or wss by its own scheme, then
+//                          the page's host and path); 0 and its id, or CBC_SOCK_UNSUPPORTED
+//                          (no socket can be made here) or CBC_SOCK_REFUSED (the platform
+//                          threw); never call back into the host from inside it
+//              ws_send     one binary message; ws_close: close it (its close is still reported)
+//              http        method, path (the request target on the app's origin), Authorization
+//                          when auth, the body as application/octet-stream, abort after wait_ms
+//                          when nonzero; later, cbc_host_http_answered(tag, status, body, len),
+//                          status 0 when it never arrived or was aborted, and the whole body
+//                          (it lasts for the call)
+//              timer       one-shot, calling fire(ctx) later; an id > 0; timer_stop cancels
+//              save        keep the bytes (len 0: forget them), or NULL
+//              now         wall-clock epoch ms
+//   start    a seed from the platform's entropy into cfg (cbc_cfg_default, then cfg.seed),
+//            cbc_host_init, the kept session (if any) through cbc_session_load on
+//            cbc_host_client into h->sess, then cbc_host_pump; a store that answers later:
+//            cbc_host_hold(h, 1) first, then load, cbc_host_hold(h, 0) and pump
+//   socket   the platform's events, from its loop: open -> cbc_host_ws_opened(id); a binary
+//            message -> cbc_host_ws_message(id, bytes, len) (the bytes last for the call); an
+//            error before the open -> cbc_host_ws_failed(id, CBC_SOCK_FAILED, or a more exact
+//            CBC_SOCK_*); close -> cbc_host_ws_closed(id). Ids are passed as the platform gives
+//            them (0 is an id), and an id that is not the host's socket is ignored, so a late or
+//            doubled report (an error then its close) needs no filter of the adapter's
+//   app      the event_fn gets every event with the bytes its span is into; the app calls into
+//            cbc_host_client and then cbc_host_pump, from anywhere on the loop, its callback too
+//   restart  as A STOP AND RESTART above: stop the timers, close the socket, drop old answers
+//   test     an adapter onto the host suite (cbhs_host: start, client, pump and the four socket
+//            reports), mapping env calls onto the cbhs_* world (client/test/unit_host_posix.c,
+//            a line a call), linked with CBC_SUITE_SRC and CBC_SUITE_INC: it runs every case
+//            the other hosts pass against the scripted server, with socket ids from 1 and from 0
 #ifndef CBC_HOST_H
 #define CBC_HOST_H
 
@@ -78,10 +111,11 @@ typedef struct {
 } cbc_host_req;
 
 typedef struct {
-    // The socket: 0 and its id in *id, or nonzero when none can be opened (the host waits
-    // retry_first_ms and asks again). The id is the platform's own, passed as is: any value, 0
-    // too (the host keeps whether it has one apart from the id). Its open, messages and close
-    // come back through cbc_host_ws_*.
+    // The socket: 0 and its id in *id, or, when none can be made, a CBC_SOCK_* (UNSUPPORTED or
+    // REFUSED; the app gets a CBC_EV_SOCKET_FAILED and the host asks again after the reconnect
+    // wait). The id is the platform's own, passed as is: any value, 0 too (the host keeps whether
+    // it has one apart from the id). Its open, messages, failure and close come back through
+    // cbc_host_ws_*.
     int      (*ws_open)(void *ud, const char *path, uint32_t *id);
     void     (*ws_send)(void *ud, uint32_t id, const uint8_t *frame, size_t len);
     void     (*ws_close)(void *ud, uint32_t id);
@@ -144,6 +178,11 @@ void cbc_host_hold(cbc_host *h, int on);
 void cbc_host_ws_opened(cbc_host *h, uint32_t id);
 void cbc_host_ws_message(cbc_host *h, uint32_t id, const uint8_t *frame, size_t len);
 void cbc_host_ws_closed(cbc_host *h, uint32_t id);
+// It failed before it opened (why: a CBC_SOCK_*, CBC_SOCK_FAILED when the platform says no more):
+// the app gets a CBC_EV_SOCKET_FAILED, and the next try is after the reconnect wait. A close
+// before the open (cbc_host_ws_closed) is the same failure with CBC_SOCK_FAILED, and the
+// platform's close after a failure is ignored. After the open, a failure is a close.
+void cbc_host_ws_failed(cbc_host *h, uint32_t id, int why);
 // The answer to the env.http call given tag: the status (0: it never arrived) and the body.
 void cbc_host_http_answered(void *tag, int status, const uint8_t *body, size_t len);
 

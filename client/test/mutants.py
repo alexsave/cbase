@@ -46,13 +46,18 @@ C = [
 # The shared host (hosts/common/cbc_host.c), on the host suite (build/test/unit_host_posix).
 HC = 'hosts/common/cbc_host.c'
 HOST = [
-  (HC, 'the reopen armed after the events', '    h->reopen_timer = h->env->timer(h->ud, wait, on_reopen, h);\n    events(h, NULL);', '    events(h, NULL);\n    h->reopen_timer = h->env->timer(h->ud, wait, on_reopen, h);'),
+  (HC, 'the reopen armed after the events', '    h->reopen_timer = h->env->timer(h->ud, wait, on_reopen, h);\n    if (why && h->fn) {', '    events(h, NULL);\n    h->reopen_timer = h->env->timer(h->ud, wait, on_reopen, h);\n    if (why && h->fn) {'),
   (HC, 'the host invents the HTTP deadline', '    rq.wait_ms = r.wait_ms;', '    rq.wait_ms = h->c.cfg.call_wait_ms;'),
   (HC, 'no timer while the close is out', '    if (due >= 0) h->tick_timer', '    if (due >= 0 && !h->c.closing) h->tick_timer'),
-  (HC, 'an opening socket nobody wants is kept', '        h->env->ws_close(h->ud, h->sock);\n        h->sock = 0;', '        (void)0;'),
-  (HC, 'no pump after a tick', '    events(h, NULL);\n    cbc_host_pump(h);\n}\n\nstatic void ws_open', '    events(h, NULL);\n}\n\nstatic void ws_open'),
+  (HC, 'an opening socket nobody wants is kept', '        h->env->ws_close(h->ud, h->sock);\n        h->has_sock = 0;', '        (void)0;'),
+  (HC, 'no pump after a tick', '    events(h, NULL);\n    cbc_host_pump(h);\n}\n\n// The socket is gone', '    events(h, NULL);\n}\n\n// The socket is gone'),
   (HC, 'no save on a session event', 'if (e->kind == CBC_EV_SESSION && !saved) { session_save(h); saved = 1; }', 'if (e->kind == CBC_EV_SESSION && !saved) { (void)session_save; saved = 1; }'),
-  (HC, 'socket id 0 taken for none', 'cbc_stream_path(&h->c), &h->sock) == 0;', 'cbc_stream_path(&h->c), &h->sock) == 0 && h->sock;'),
+  (HC, 'socket id 0 taken for none', '    h->has_sock = why == 0;', '    h->has_sock = why == 0 && h->sock;'),
+  (HC, 'no SOCKET_FAILED', '        h->fn(h->ctx, &h->c, &e, NULL);\n', ''),
+  (HC, 'a refused socket retried at the floor', '    if (why) gone(h, why);', '    if (why) h->reopen_timer = h->env->timer(h->ud, h->c.cfg.retry_first_ms, on_reopen, h);'),
+  (HC, 'a close before the open is no failure', '    gone(h, h->open ? 0 : CBC_SOCK_FAILED);', '    gone(h, 0);'),
+  (HC, 'the failure\'s why not passed on', '    gone(h, h->open ? 0 : why);', '    gone(h, h->open ? 0 : ((void)why, CBC_SOCK_FAILED));'),
+  (HC, 'the close after a failure heard again', '    if (!h->has_sock || id != h->sock) return;\n    gone(h, h->open ? 0 : CBC_SOCK_FAILED);', '    if (id != h->sock) return;\n    gone(h, h->open ? 0 : CBC_SOCK_FAILED);'),
   (HC, 'a borrowed body sent from the head buffer', '    rq.body = r.flags & CBC_RQ_REF ? cbc_req_body(&h->c, r.id) : ', '    rq.body = '),
 ]
 # The page shim: applied to the copy the TS tests import (build/ts/socket.ts).

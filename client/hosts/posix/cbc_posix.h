@@ -6,7 +6,8 @@
 //   socket   while cbc_stream_wanted: io.ws_open(cbc_stream_path), then cbc_opened when the loop
 //            says it opened (cbc_posix_ws_opened); every message to cbc_in; each cbc_next_out frame
 //            to io.ws_send (-1: io.ws_close); on its close (cbc_posix_ws_closed), cbc_closed, and
-//            the next open after the ms it answers (an io.timer)
+//            the next open after the ms it answers (an io.timer); one that cannot be made, or
+//            fails before it opens (cbc_posix_ws_failed), is a CBC_EV_SOCKET_FAILED and the same wait
 //   HTTP     each cbc_next_request to io.http (the path as the request target, "Bearer ..." as the
 //            Authorization value, the core's deadline), answered by cbc_on_response (status 0: it
 //            never arrived, or its deadline passed); a
@@ -41,9 +42,9 @@ typedef void (*cbc_posix_fire_fn)(void *ctx);
 
 typedef struct {
     void *ud;   // handed back to every call below
-    // The socket: 0 and its id in *id (the loop's own, any value, 0 too), or nonzero when none
-    // can be opened (the host waits retry_first_ms and asks again). Its open, messages and close
-    // come back through cbc_posix_ws_*.
+    // The socket: 0 and its id in *id (the loop's own, any value, 0 too), or a CBC_SOCK_* when
+    // none can be made (the app gets a CBC_EV_SOCKET_FAILED; the host asks again after the
+    // reconnect wait). Its open, messages, failure and close come back through cbc_posix_ws_*.
     int      (*ws_open)(void *ud, const char *path, uint32_t *id);
     void     (*ws_send)(void *ud, uint32_t id, const uint8_t *frame, size_t len);
     void     (*ws_close)(void *ud, uint32_t id);
@@ -88,5 +89,7 @@ int64_t cbc_posix_now(const cbc_posix *h);
 void cbc_posix_ws_opened(cbc_posix *h, uint32_t id);
 void cbc_posix_ws_message(cbc_posix *h, uint32_t id, const uint8_t *frame, size_t len);
 void cbc_posix_ws_closed(cbc_posix *h, uint32_t id);
+// It failed before it opened (why: a CBC_SOCK_*): cbc_host_ws_failed.
+void cbc_posix_ws_failed(cbc_posix *h, uint32_t id, int why);
 
 #endif
