@@ -108,8 +108,9 @@ typedef struct cb_h2_stream cb_h2_stream;
 // on_end follows with ok false. A stream's on_end is its last call, and
 // after it the stream handle is gone.
 typedef struct {
-    // trailer false: the response's header block (each 1xx block's too);
-    // true: the trailers after the body.
+    // trailer false: the response's final header block (1xx blocks are dropped);
+    // true: the trailers after the body. A :status comes first, and only as three
+    // digits 200 to 599: anything else is malformed and resets the stream.
     int  (*on_header)(void *user, bool trailer, const char *name, size_t name_len, const char *value,
                       size_t value_len);
     int  (*on_data)(void *user, const uint8_t *p, size_t n);

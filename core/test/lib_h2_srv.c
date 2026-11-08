@@ -44,7 +44,9 @@ struct h2srv {
     char            ca_file[256];
     SSL_CTX        *ctx;
     pthread_t       acceptor;
-    atomic_int      stop, accepts, requests, resets, max_open, refused_once, goaway_once;
+    atomic_int      stop, accepts, requests, resets, closes, max_open, refused_once, goaway_once, headers_once;
+    unsigned char   alpn_offer[64];   // the client's last ALPN list, as sent
+    atomic_int      alpn_offer_len;
     pthread_mutex_t mu;      // the threads' count and the connection list
     pthread_cond_t  cv;
     int             threads;
@@ -236,6 +238,18 @@ static void *respond(void *arg) {
     } else if (strcmp(path, "/reset") == 0) {
         cb_h2_frame_u32(&block, CB_H2_RST_STREAM, j->id, CB_H2_INTERNAL_ERROR);
         send_buf(c, &block);
+    } else if (strcmp(path, "/refuse-after-headers-once") == 0 && atomic_fetch_add(&s->headers_once, 1) == 0) {
+        // Headers, then REFUSED_STREAM: still never processed, so the client sends it again.
+        field(&block, ":status", "503");
+        field(&block, "x-first", "1");
+        headers(c, j->id, &block, false);
+        cb_buf_reset(&block);
+        cb_h2_frame_u32(&block, CB_H2_RST_STREAM, j->id, CB_H2_REFUSED_STREAM);
+        send_buf(c, &block);
+    } else if (strcmp(path, "/refuse-after-headers-once") == 0) {
+        field(&block, ":status", "200");
+        headers(c, j->id, &block, false);
+        data(c, j->id, (const uint8_t *)"again", 5, true);
     } else if (strcmp(path, "/refuse") == 0) {
         cb_h2_frame_u32(&block, CB_H2_RST_STREAM, j->id, CB_H2_REFUSED_STREAM);
         send_buf(c, &block);
@@ -404,7 +418,12 @@ static void *reader(void *arg) {
     pthread_mutex_unlock(&c->wmu);
     for (;;) {
         ssize_t r = s_read(c, buf, sizeof buf);
-        if (r <= 0) break;
+        if (r <= 0) {
+            pthread_mutex_lock(&c->wmu);
+            if (!c->dead) atomic_fetch_add(&s->closes, 1);   // the client closed it, not this side
+            pthread_mutex_unlock(&c->wmu);
+            break;
+        }
         cb_buf_append(&in, buf, (size_t)r);
         if (!preface) {
             if (in.len < CB_H2_PREFACE_LEN) continue;
@@ -496,9 +515,9 @@ static void *reader(void *arg) {
                     send_buf(c, &out);
                 }
                 if (st && (f.flags & CB_H2_F_END_STREAM)) start_job(c, st);
-            } else if (f.type == CB_H2_GOAWAY) {
-                c->dead = true;
             }
+            // A GOAWAY from the client opens no more streams; the connection is read
+            // on until the client closes it (h2srv_closes counts that close).
         }
         cb_buf_consume(&in, at);
         bool dead = c->dead;
@@ -522,6 +541,9 @@ static void *reader(void *arg) {
 static int alpn_select(SSL *ssl, const unsigned char **out, unsigned char *outlen, const unsigned char *in,
                        unsigned inlen, void *arg) {
     h2srv *s = arg;
+    unsigned keep = inlen < sizeof s->alpn_offer ? inlen : (unsigned)sizeof s->alpn_offer;
+    memcpy(s->alpn_offer, in, keep);
+    atomic_store(&s->alpn_offer_len, (int)keep);
     const char *want = s->o.alpn_http11_only ? "http/1.1" : "h2";
     size_t wl = strlen(want);
     for (unsigned i = 0; i < inlen;) {
@@ -658,3 +680,8 @@ int h2srv_accepts(h2srv *s) { return atomic_load(&s->accepts); }
 int h2srv_max_open(h2srv *s) { return atomic_load(&s->max_open); }
 int h2srv_requests(h2srv *s) { return atomic_load(&s->requests); }
 int h2srv_resets(h2srv *s) { return atomic_load(&s->resets); }
+int h2srv_closes(h2srv *s) { return atomic_load(&s->closes); }
+int h2srv_alpn_offer(h2srv *s, const unsigned char **p) {
+    *p = s->alpn_offer;
+    return atomic_load(&s->alpn_offer_len);
+}

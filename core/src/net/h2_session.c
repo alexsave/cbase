@@ -660,10 +660,11 @@ int cb_h2_sess_recv(cb_h2_sess *s, const uint8_t *p, size_t n) {
 // Streams open only once the peer's SETTINGS are in: its MAX_CONCURRENT_STREAMS
 // counts as unlimited until then, and a burst opened before it arrives would be
 // refused past the limit. A server's preface is its first frame, so this waits
-// on bytes already on their way.
+// on bytes already on their way. No GOAWAY test is needed: a GOAWAY either way
+// ends every waiting stream (on_goaway, cb_h2_sess_goaway, fail), and submit
+// takes none after it, so nothing waits once one has gone by.
 static bool may_open(const cb_h2_sess *s) {
-    return s->got_settings && s->wait_head && !s->goaway_recv && !s->goaway_sent &&
-           (uint32_t)s->n_open < s->peer[CB_H2_S_MAX_CONCURRENT_STREAMS];
+    return s->got_settings && s->wait_head && (uint32_t)s->n_open < s->peer[CB_H2_S_MAX_CONCURRENT_STREAMS];
 }
 
 static void open_waiting(cb_h2_sess *s, cb_buf *out) {

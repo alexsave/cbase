@@ -10,7 +10,10 @@
 #include "util/clock.h"
 #include "util/err.h"
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
 #include <pthread.h>
+#include <sys/socket.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -65,6 +68,11 @@ static void echo_both_ways(void) {
         T_EQ_INT(r.status, 204);
         T_EQ_INT(cb_h2_channel_dials(ch), 1);
         T_EQ_INT(h2srv_accepts(s), 1);
+        if (tls) {   // the client offers h2 and nothing else
+            const unsigned char *offer;
+            int n = h2srv_alpn_offer(s, &offer);
+            T_EQ_MEM(offer, n, "\x02h2", 3);
+        }
         cb_h2_response_free(&r);
         cb_h2_channel_free(ch);
         h2srv_stop(s);
@@ -107,6 +115,23 @@ static void refusals(void) {
     int port = h2srv_port(s);
     cb_h2_channel_free(ch);
     h2srv_stop(s);
+
+    // A peer that takes the connection and never answers the handshake: the call's
+    // deadline bounds it, not the 10 s connect timeout.
+    int lfd = socket(AF_INET, SOCK_STREAM, 0);
+    struct sockaddr_in sa = { .sin_family = AF_INET, .sin_addr.s_addr = htonl(INADDR_LOOPBACK) };
+    socklen_t sl = sizeof sa;
+    T_CHECK(bind(lfd, (struct sockaddr *)&sa, sizeof sa) == 0 && listen(lfd, 8) == 0);
+    getsockname(lfd, (struct sockaddr *)&sa, &sl);
+    snprintf(origin, sizeof origin, "https://localhost:%d", ntohs(sa.sin_port));
+    o.ca_file = NULL;
+    T_EQ_INT(cb_h2_channel_new(origin, &o, &ch), CB_OK);
+    int64_t t0 = cb_mono_ms();
+    T_EQ_INT(get(ch, "/", 300, 0, &r), CB_E_IO);
+    T_EQ_INT(r.why, CB_H2_WHY_TIMEOUT);
+    T_CHECK(cb_mono_ms() - t0 < 2500);
+    cb_h2_channel_free(ch);
+    close(lfd);
 
     snprintf(origin, sizeof origin, "http://127.0.0.1:%d", port);   // closed now
     T_EQ_INT(cb_h2_channel_new(origin, NULL, &ch), CB_OK);
@@ -196,6 +221,7 @@ static void big_bodies(void) {
 }
 
 static void failures(void) {
+    cb_span v;
     h2srv_opts so = { 0 };
     h2srv *s = h2srv_start(&so);
     cb_h2_channel *ch = channel(s, NULL);
@@ -228,6 +254,15 @@ static void failures(void) {
     before = h2srv_requests(s);
     T_EQ_INT(get(ch, "/refuse-once", 5000, 0, &r), CB_OK);
     T_EQ_MEM(r.body.p, r.body.len, "again", 5);
+    T_EQ_INT(h2srv_requests(s) - before, 2);
+    // Refused after its headers came: still never processed, sent again, and the
+    // answer holds nothing of the first attempt.
+    before = h2srv_requests(s);
+    T_EQ_INT(get(ch, "/refuse-after-headers-once", 5000, 0, &r), CB_OK);
+    T_EQ_INT(r.status, 200);
+    T_EQ_MEM(r.body.p, r.body.len, "again", 5);
+    T_EQ_INT(r.n_headers, 1);
+    T_CHECK(!cb_h2_response_get(&r, false, "x-first", &v));
     T_EQ_INT(h2srv_requests(s) - before, 2);
     // A GOAWAY below the stream: sent again on a fresh connection.
     int dials = cb_h2_channel_dials(ch);
@@ -271,6 +306,7 @@ static void idle_close(void) {
     T_EQ_INT(get(ch, "/status/200", 5000, 0, &r), CB_OK);
     T_EQ_INT(cb_h2_channel_dials(ch), 1);
     sleep_ms(600);
+    T_EQ_INT(h2srv_closes(s), 1);   // closed by the client, not merely left
     T_EQ_INT(get(ch, "/status/200", 5000, 0, &r), CB_OK);
     T_EQ_INT(cb_h2_channel_dials(ch), 2);
     cb_h2_response_free(&r);

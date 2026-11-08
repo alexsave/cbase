@@ -14,6 +14,8 @@
 //   /status/<code>        that status, body "status", no gRPC fields
 //   /reset                RST_STREAM (INTERNAL_ERROR)
 //   /refuse               RST_STREAM (REFUSED_STREAM), every time
+//   /refuse-after-headers-once  the first: a 503 header block, then RST_STREAM (REFUSED_STREAM);
+//                         later ones 200 "again"
 //   /refuse-once          the first request on the server: RST_STREAM (REFUSED_STREAM); later ones 200 "again"
 //   /goaway               GOAWAY below its stream, then the connection closes, every time
 //   /goaway-once          the first: GOAWAY below its stream, then the connection closes; later ones 200 "again"
@@ -54,5 +56,8 @@ int    h2srv_accepts(h2srv *s);              // connections taken
 int    h2srv_max_open(h2srv *s);             // the most streams open at once on one connection
 int    h2srv_requests(h2srv *s);
 int    h2srv_resets(h2srv *s);               // RST_STREAMs the client sent
+int    h2srv_closes(h2srv *s);               // connections the client closed
+// The ALPN protocol list the last TLS client offered, as it was sent: its length, and *p.
+int    h2srv_alpn_offer(h2srv *s, const unsigned char **p);
 
 #endif

@@ -141,7 +141,8 @@ static int on_header(void *user, bool trailer, const char *name, size_t nl, cons
     cb_buf_putc(&r->fields, 0);
     if (trailer) r->n_trailers++;
     else r->n_headers++;
-    if (!trailer && nl == 7 && memcmp(name, ":status", 7) == 0 && vl == 3)
+    // The session passes a :status only as three digits (h2_session.h on_header).
+    if (!trailer && nl == 7 && memcmp(name, ":status", 7) == 0)
         r->status = (value[0] - '0') * 100 + (value[1] - '0') * 10 + (value[2] - '0');
     return CB_OK;
 }
@@ -621,7 +622,13 @@ int cb_h2_request(cb_h2_channel *ch, const char *method, const char *path, const
         k.max_body = max_body ? max_body : DEFAULT_MAX_BODY;
         rc = cb_h2_sess_submit(c->sess, method, ch->tls ? "https" : "http", ch->authority, path, fields, n_fields, body,
                                n_body, &k, &k.st);
-        if (rc == CB_E_STATE) {   // it stopped taking streams since get_conn: another connection
+        // get_conn hands out only an accepting session, and the lock was held since, so
+        // a session going away never gets here. This covers the one refusal accepting
+        // does not see: the stream ids the waiting streams would take run out (submit's
+        // own count). Another connection, and the attempt does not count. (It would
+        // also catch a going-away session if get_conn's test were dropped: two vectors,
+        // one fallback.)
+        if (rc == CB_E_STATE) {
             if (ch->cur == c) ch->cur = NULL;
             conn_unref(c);
             pthread_cond_destroy(&k.cv);
@@ -638,7 +645,8 @@ int cb_h2_request(cb_h2_channel *ch, const char *method, const char *path, const
         wake(c);
         bool timed_out = false;
         while (!k.done) {
-            if (!wait_until(&k.cv, &ch->mu, deadline) && !k.done) {
+            // A false wait_until never let go of the lock, so k.done is still false.
+            if (!wait_until(&k.cv, &ch->mu, deadline)) {
                 cb_h2_sess_cancel(c->sess, k.st);
                 wake(c);
                 timed_out = true;
