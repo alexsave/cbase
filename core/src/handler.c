@@ -38,6 +38,13 @@ static bool is_local_probe(const cb_http_req *req) {
 void cb_handle(cb_ctx *ctx, cb_http_req *req, cb_http_res *res) {
     const int m = meth_of(req);
     res->head = m == CB_M_HEAD;
+    const int host_refused = cb_router_host_refusal(ctx, req);
+    if (host_refused) {
+        // Not a Host the app answers to (cbase/app.h host_allow): before anything else, on every
+        // route, a socket's upgrade and a file among them, and with no CORS header after.
+        cb_router_error(res, host_refused, host_refused == 400 ? "bad host" : "host not allowed");
+        return;
+    }
     if (ctx->cfg && !is_local_probe(req) && !cb_config_origin_proven(ctx->cfg, cb_http_header_get(req, CB_ORIGIN_HEADER))) {
         // Not through the edge (config.h CBASE_ORIGIN_SECRET): nothing else runs.
         cb_router_error(res, 403, "forbidden");

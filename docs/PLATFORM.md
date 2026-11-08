@@ -153,6 +153,15 @@ A listed origin is echoed in `Access-Control-Allow-Origin` with `Vary: Origin`; 
 A WebSocket upgrade, on every socket path (`/ws`, `/ws/public`, an app's own), is held to the same lists: an `Origin` neither names is answered 403 before the handler runs, so it never gets a 101.
 An upgrade without `Origin` (a native client, the C SDK's POSIX host, a test) goes ahead, since only a browser sends one and the check exists to stop a browser driven by another site.
 
+The Host allow-list is the app's to declare too, against DNS rebinding (`net/router.h`).
+A page on `evil.example` whose name its owner points at 127.0.0.1 is same-origin with a server on the user's machine as far as the browser knows, so CORS cannot stop it; the `Host` header it sends still says `evil.example`.
+`cb_app.host_allow` lists the hosts the app answers to, each as `host:port`, `[v6]:port`, or a bare `host` / `[v6]` that means that host at the port serve bound (so an app that binds port 0 writes `{ "127.0.0.1", "localhost", "[::1]" }`).
+Once it is declared, every request is held to it before anything else runs, on every route: the platform's, the app's, a WebSocket upgrade (refused with no 101) and a file.
+A `Host` that is listed goes ahead (the host compared without case, a missing port read as 80); a well-formed one that is not is 403 "host not allowed".
+A request with no `Host`, two of them, or one that is not `host[:port]` is 400, as RFC 9112 3.2 says: a browser always sends exactly one, so only a hand-made request can lack it, and there is nothing to hold it to.
+Boot refuses an entry that is not shaped so (a scheme, a path, a wildcard, port 0).
+Not declared (NULL / 0), nothing is checked: a server behind an edge (CloudFront, which sends its own Host) is as it was.
+
 ### 2.2 Collections instead of hard-coded rows
 
 The store becomes two layers.
@@ -251,7 +260,7 @@ An optional socketpair on the child's fd 3 carries lines both ways; cbase knows 
 
 ### 2.9 Upgrading a product across the HTTP changes
 
-A product that consumes cbase from before the CORS, path parameter and body cap changes makes three edits, and the compiler or boot names each one it misses.
+A product that consumes cbase from before the CORS, path parameter and body cap changes makes three edits, and the compiler or boot names each one it misses; a local server makes a fourth.
 
 1. **Route rows.** `cb_route` gained `max_body` after `inline_us`, so a positional row such as `{ "GET", "/v1/x", CB_ROUTE_POOL, h_x, 0 }` fails `-Wmissing-field-initializers`.
    Prefer designated initializers, which name what they set and survive the next field: `{ .method = "GET", .pattern = "/v1/x", .flags = CB_ROUTE_POOL, .fn = h_x }`.
@@ -263,6 +272,10 @@ A product that consumes cbase from before the CORS, path parameter and body cap 
    `static const char *const ORIGINS[] = { "*" };` with `.cors_origins = ORIGINS, .n_cors_origins = 1`.
    Better is the list of origins its pages are served from, `{ "https://app.example.com", "https://www.example.com" }`.
    The deployment's `CBASE_ALLOWED_ORIGINS="*"` does the same without a code change, but it now defaults to empty, in the templates (`cbase.yaml`, `deploy.sh`, `vm.yaml`) too.
+4. **A server on the user's own machine declares its Host allow-list** (2.1), since CORS alone does not stop DNS rebinding.
+   Nothing breaks without it: the default is no list, and a product behind an edge leaves it so.
+   A local one adds `static const char *const HOSTS[] = { "127.0.0.1", "localhost", "[::1]" };` with `.host_allow = HOSTS, .n_host_allow = 3`, each a bare host meaning the port serve bound, so port 0 works.
+   Its own tests then send a listed `Host` with the bound port: cbase's test client sends `Host: 127.0.0.1` with no port, which such a list refuses (403), and a request with none is 400.
 
 ### 2.10 Serve's settings an app ships, and CBASE_ENV_FILE
 

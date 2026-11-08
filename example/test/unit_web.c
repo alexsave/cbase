@@ -9,7 +9,11 @@
 //   * files (net/files.h): the content types, a directory under a prefix route and a media file
 //     by name with every traversal refused (never a byte from outside), single-page routes that
 //     answer index.html, HEAD, a missing file, files of many MB streamed whole, a request
-//     pipelined behind a file, and the same helper reading the file whole off serve.
+//     pipelined behind a file, and the same helper reading the file whole off serve;
+//   * the Host allow-list (cbase/app.h host_allow), against DNS rebinding: the listed hosts at
+//     the bound port pass, IPv6 among them; another name, another port, no Host or two are refused
+//     before any handler runs, on the app's routes, the platform's, a file and a WebSocket upgrade
+//     (no 101); with no list, any Host goes ahead as before.
 #include "t.h"
 #include "lib_client.h"
 #include "lib_proc.h"
@@ -92,7 +96,19 @@ static cb_app g_app = {
     .n_mime_types = (int)(sizeof MIME / sizeof MIME[0]),
 };
 
+// The hosts amgi answers to: its loopback names at the port it bound, and one named with its own port.
+static const char *const HOSTS[] = { "127.0.0.1", "localhost", "[::1]", "app.example.test:9999" };
+
 static int child_main(const char *variant) {
+    if (strcmp(variant, "hosts") == 0) {
+        g_app.host_allow = HOSTS;
+        g_app.n_host_allow = (int)(sizeof HOSTS / sizeof HOSTS[0]);
+    }
+    if (strcmp(variant, "badhost") == 0) {
+        static const char *const BAD[] = { "127.0.0.1", "http://localhost:8080" };
+        g_app.host_allow = BAD;
+        g_app.n_host_allow = 2;
+    }
     g_web = getenv("WEB_DIR");
     if (g_web) snprintf(g_media, sizeof g_media, "%s/media", g_web);
     char *argv[] = { (char *)g_self, "serve", NULL };
@@ -457,6 +473,112 @@ static void reads_the_file_per_request(void) {
 
 // Off serve (a one-shot platform, a socket's REQ: stream_ok false), the same call reads the
 // file whole into the body; the join and the content types in this process.
+// ---- the Host allow-list ------------------------------------------------------------------------
+
+// Sends `text` (a whole request, every header its own) on a fresh connection and reads one answer.
+static int raw(const char *text, tc_response *r) {
+    memset(r, 0, sizeof *r);
+    const int fd = tc_connect(g_port);
+    if (fd < 0) return -1;
+    cb_buf in;
+    cb_buf_init(&in);
+    int rc = send(fd, text, strlen(text), 0) == (ssize_t)strlen(text) ? read_response(fd, false, r, &in) : -1;
+    cb_buf_free(&in);
+    close(fd);
+    return rc == 0 ? r->status : -1;
+}
+
+// GET path with exactly the Host line `host` ("" for none): the status.
+static int with_host(const char *path, const char *host) {
+    char t[1024];
+    snprintf(t, sizeof t, "GET %s HTTP/1.1\r\n%s%s%sConnection: close\r\n\r\n", path, host[0] ? "Host: " : "", host,
+             host[0] ? "\r\n" : "");
+    tc_response r;
+    const int st = raw(t, &r);
+    // A refusal is the platform's own, never the handler's answer.
+    if (st == 400 || st == 403) T_CHECK(!strstr(cb_buf_cstr(&r.body), "doctype"));
+    tc_response_free(&r);
+    return st;
+}
+
+static void holds_requests_to_the_host_list(void) {
+    static char env[600];
+    snprintf(env, sizeof env, "WEB_DIR=%s", g_dir);
+    T_EQ_INT(start("hosts", env), 0);
+    char h[128];
+    // Listed, at the port it bound: the host in any case, IPv6 in brackets.
+    snprintf(h, sizeof h, "127.0.0.1:%d", g_port);
+    T_EQ_INT(with_host("/decks", h), 200);
+    snprintf(h, sizeof h, "localhost:%d", g_port);
+    T_EQ_INT(with_host("/decks", h), 200);
+    snprintf(h, sizeof h, "LocalHost:%d", g_port);
+    T_EQ_INT(with_host("/decks", h), 200);
+    snprintf(h, sizeof h, "[::1]:%d", g_port);
+    T_EQ_INT(with_host("/decks", h), 200);
+    T_EQ_INT(with_host("/decks", "app.example.test:9999"), 200);   // its own port, not the bound one
+    // An attacker's name that resolves to 127.0.0.1: refused on every kind of route.
+    snprintf(h, sizeof h, "evil.example:%d", g_port);
+    T_EQ_INT(with_host("/decks", h), 403);
+    T_EQ_INT(with_host("/assets/app.js", h), 403);
+    T_EQ_INT(with_host("/media/a.mp3", h), 403);
+    T_EQ_INT(with_host("/health", h), 403);
+    T_EQ_INT(with_host("/no/such/route", h), 403);
+    T_EQ_INT(with_host("/decks", "evil.example"), 403);
+    snprintf(h, sizeof h, "127.0.0.1.evil.example:%d", g_port);
+    T_EQ_INT(with_host("/decks", h), 403);
+    // A listed name at another port, or none (80), is another origin.
+    snprintf(h, sizeof h, "127.0.0.1:%d", g_port + 1);
+    T_EQ_INT(with_host("/decks", h), 403);
+    T_EQ_INT(with_host("/decks", "127.0.0.1"), 403);
+    snprintf(h, sizeof h, "app.example.test:%d", g_port);
+    T_EQ_INT(with_host("/decks", h), 403);
+    snprintf(h, sizeof h, "[::2]:%d", g_port);
+    T_EQ_INT(with_host("/decks", h), 403);
+    // No Host, two, or one that is no host[:port]: 400 (RFC 9112 3.2).
+    T_EQ_INT(with_host("/decks", ""), 400);
+    snprintf(h, sizeof h, "127.0.0.1:%d\r\nHost: evil.example:%d", g_port, g_port);
+    T_EQ_INT(with_host("/decks", h), 400);
+    snprintf(h, sizeof h, "127.0.0.1:%d\r\nHost: 127.0.0.1:%d", g_port, g_port);
+    T_EQ_INT(with_host("/decks", h), 400);
+    snprintf(h, sizeof h, "127.0.0.1:%dx", g_port);
+    T_EQ_INT(with_host("/decks", h), 400);
+    T_EQ_INT(with_host("/decks", "127.0.0.1:123456"), 400);
+    T_EQ_INT(with_host("/decks", "user@127.0.0.1"), 400);
+    T_EQ_INT(with_host("/decks", "[::1"), 400);
+    T_EQ_INT(with_host("/decks", ":80"), 400);
+    tc_response r;
+    T_EQ_INT(raw("GET /decks HTTP/1.0\r\n\r\n", &r), 400);   // HTTP/1.0 with no Host is held to the list too
+    tc_response_free(&r);
+
+    // A WebSocket upgrade: 101 from a listed Host, 403 and no 101 from any other.
+    char up[600];
+    const char *ws = "GET /ws HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                     "Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n";
+    snprintf(h, sizeof h, "localhost:%d", g_port);
+    snprintf(up, sizeof up, ws, h);
+    T_EQ_INT(raw(up, &r), 101);
+    tc_response_free(&r);
+    snprintf(h, sizeof h, "evil.example:%d", g_port);
+    snprintf(up, sizeof up, ws, h);
+    T_EQ_INT(raw(up, &r), 403);
+    T_CHECK(!strstr(cb_buf_cstr(&r.head), "Upgrade: websocket"));
+    tc_response_free(&r);
+    T_EQ_INT(stop(SIGTERM), 0);
+
+    // No list: any Host goes ahead, as before.
+    T_EQ_INT(start("plain", env), 0);
+    T_EQ_INT(with_host("/decks", "evil.example"), 200);
+    T_EQ_INT(with_host("/decks", ""), 200);
+    T_EQ_INT(stop(SIGTERM), 0);
+
+    // A list entry that is no host[:port] does not start: the sentence, and exit 1.
+    T_EQ_INT(start("badhost", env), -1);
+    char line[512];
+    T_EQ_INT(tp_wait_line(&g_child, "is not host[:port]", 20000, line, sizeof line), 0);
+    T_CHECK(strstr(line, "http://localhost:8080") != NULL);
+    T_EQ_INT(stop(0), 1);
+}
+
 static void reads_whole_off_serve(void) {
     char p[1100];
     snprintf(p, sizeof p, "%s/app.wasm", g_dir);
@@ -507,6 +629,7 @@ int main(int argc, char **argv) {
     T_RUN(refuses_every_way_out);
     T_RUN(streams_large_files_and_head);
     T_RUN(reads_the_file_per_request);
+    T_RUN(holds_requests_to_the_host_list);
     T_RUN(reads_whole_off_serve);
     return T_DONE();
 }

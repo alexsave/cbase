@@ -82,6 +82,9 @@ struct cb_ctx {
     // Child processes on the loop (spawn.h): serve only, NULL where no loop runs. Its children end
     // when serve does (cb_spawner_stop, after the loop returns).
     cb_spawner *spawner;
+    // serve only: the port it bound (CBASE_LISTEN's, or the kernel's for port 0), which a bare host
+    // of the app's Host allow-list means (cbase/app.h host_allow); 0 elsewhere.
+    int         bound_port;
 };
 
 // The release, as /health reports it. VERSION at the root is its one source: a tag is v<VERSION>

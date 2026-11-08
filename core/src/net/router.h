@@ -140,6 +140,15 @@ int cb_router_cors_check(const cb_app *app, const cb_config *cfg, char *err, siz
 // A path routed only under other methods: 405 "method not allowed" with Allow: `allow` (a list
 // as cb_router_allow writes it). Every 405 of the router's goes out through it, so none lacks Allow.
 void cb_router_not_allowed(cb_http_res *res, const char *allow);
+// THE HOST ALLOW-LIST (cbase/app.h host_allow), against DNS rebinding: 0 when the request may go
+// ahead (the app declares no list, or its Host is listed: the host without case, at the entry's
+// port, or at ctx->bound_port for a bare entry; a Host with no port is port 80), else the status
+// to refuse it with before anything else runs: 400 for no Host, two of them, or one that is not
+// host[:port] (RFC 9112 3.2), 403 for a well-formed one not listed. cb_handle answers it first.
+int cb_router_host_refusal(const cb_ctx *ctx, const cb_http_req *req);
+// Boot's check of the list: every entry host[:port] or [v6][:port], with no scheme, path, user,
+// wildcard or port 0. CB_OK, or CB_E_INVALID with a sentence in err.
+int cb_router_host_check(const cb_app *app, char *err, size_t cap);
 // Writes a plain-text error body with `status`. Clients read the status; the
 // text is for people and logs (a refusal a client acts on is the kernel's
 // AskRefusal, written by the route itself).

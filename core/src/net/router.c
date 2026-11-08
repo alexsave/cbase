@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 // A route with its method as an int (http.h CB_M_*), named once at add. `route`
 // is first, so the entry's address is the route's.
@@ -353,6 +354,84 @@ int cb_router_cors_check(const cb_app *app, const cb_config *cfg, char *err, siz
 void cb_router_not_allowed(cb_http_res *res, const char *allow) {
     cb_router_error(res, 405, "method not allowed");
     cb_res_header(res, "Allow", allow);
+}
+
+// ---- the Host allow-list (router.h) -------------------------------------------------------------
+
+// A Host value or an allow-list entry, split: the host (an IPv6 one with its brackets) and the port,
+// -1 when none is given. false for one that is not shaped as RFC 9110 says a Host is: an empty
+// host, a port that is not 1 to 5 digits up to 65535, a blank, or a byte that never names a host.
+static bool host_split(const char *s, const char **h, size_t *hl, int *port) {
+    size_t n = 0;
+    if (s[0] == '[') {
+        const char *e = strchr(s, ']');
+        if (!e || e == s + 1) return false;
+        for (const char *p = s + 1; p < e; p++)
+            if (!((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f') || (*p >= 'A' && *p <= 'F') || *p == ':' || *p == '.'))
+                return false;
+        n = (size_t)(e - s) + 1;
+    } else {
+        while (s[n] && s[n] != ':') {
+            const char c = s[n];
+            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '.' || c == '_'))
+                return false;
+            n++;
+        }
+        if (n == 0) return false;
+    }
+    *h = s;
+    *hl = n;
+    *port = -1;
+    if (!s[n]) return true;
+    if (s[n] != ':' || !s[n + 1]) return false;
+    int v = 0, d = 0;
+    for (const char *p = s + n + 1; *p; p++, d++) {
+        if (*p < '0' || *p > '9' || d == 5) return false;
+        v = v * 10 + (*p - '0');
+    }
+    if (v > 65535) return false;
+    *port = v;
+    return true;
+}
+
+int cb_router_host_refusal(const cb_ctx *ctx, const cb_http_req *req) {
+    const cb_app *app = ctx->app;
+    if (!app || app->n_host_allow <= 0) return 0;
+    // Exactly one Host (RFC 9112 3.2: none, or more than one, is 400).
+    const char *host = NULL;
+    for (int i = 0; i < req->n_headers; i++)
+        if (strcasecmp(req->headers[i].name, "host") == 0) {
+            if (host) return 400;
+            host = req->headers[i].value;
+        }
+    const char *h;
+    size_t hl;
+    int port;
+    if (!host || !host_split(host, &h, &hl, &port)) return 400;
+    if (port < 0) port = 80;   // http's own, when the Host names none
+    for (int i = 0; i < app->n_host_allow; i++) {
+        const char *eh;
+        size_t el;
+        int ep;
+        if (!app->host_allow[i] || !host_split(app->host_allow[i], &eh, &el, &ep)) continue;   // boot refused it
+        if (ep < 0) ep = ctx->bound_port > 0 ? ctx->bound_port : 80;   // "at the port serve bound"
+        if (el == hl && strncasecmp(eh, h, hl) == 0 && ep == port) return 0;
+    }
+    return 403;
+}
+
+int cb_router_host_check(const cb_app *app, char *err, size_t cap) {
+    for (int i = 0; app && i < app->n_host_allow; i++) {
+        const char *s = app->host_allow[i], *h;
+        size_t hl;
+        int port;
+        if (!s || !host_split(s, &h, &hl, &port) || port == 0) {
+            snprintf(err, cap, "the app's allowed host %d (\"%s\") is not host[:port] or [v6]:port (no scheme, path or wildcard)",
+                     i, s ? s : "(null)");
+            return CB_E_INVALID;
+        }
+    }
+    return CB_OK;
 }
 
 void cb_router_error(cb_http_res *res, int status, const char *msg) {

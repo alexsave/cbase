@@ -195,6 +195,7 @@ int cb_process_main(const cb_provider *prov, const cb_app *app, int argc, char *
     ctx.server = cb_server_new(&ctx, &o);
     int port = 0;
     if (!ctx.server || cb_server_listen(ctx.server, cfg.listen_host, cfg.listen_port, &port) != CB_OK) return 1;
+    ctx.bound_port = port;
 
     if (pipe(g_sigpipe) != 0) return 1;
     fcntl(g_sigpipe[0], F_SETFL, O_NONBLOCK);

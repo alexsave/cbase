@@ -182,6 +182,17 @@ struct cb_app {
     // the platform's alone.
     const struct cb_mime_s *mime_types;
     int                  n_mime_types;
+    // ---- the Host allow-list (net/router.h), against DNS rebinding ----
+    // The hosts this app answers to, as a browser sends Host: "host:port", "[v6]:port", or a bare
+    // "host" / "[v6]" for that host at the port serve bound (an app that binds port 0 lists
+    // { "127.0.0.1", "localhost", "[::1]" }). Declared, every request is held to it before anything
+    // else runs, on every route (the platform's, the app's, a WebSocket upgrade, a file): a Host not
+    // listed is 403, none, two or a malformed one 400. A page on a name its owner points at
+    // 127.0.0.1 is same-origin with a server on the user's machine, so CORS cannot stop it; its
+    // Host still names it. NULL / 0: no check, the default (a server behind an edge, whose Host is
+    // the edge's). Boot checks the list (cb_router_host_check).
+    const char *const   *host_allow;
+    int                  n_host_allow;
 };
 
 // The app this binary serves: the product defines it, one per link.
