@@ -39,7 +39,7 @@ typedef struct {
 // >= 0 when it ran.
 typedef struct {
     const char *name;      // [a-z0-9_], at most CB_JOB_NAME_MAX: "scan"
-    int64_t     every_ms;  // serve's period (divided by CBASE_BOT_SPEEDUP); AWS's is the template's
+    int64_t     every_ms;  // serve's period (divided by CBASE_CLOCK_SPEEDUP); AWS's is the template's
     int (*run)(cb_ctx *ctx, int64_t now_ms);
     bool        serve_once; // serve runs it once, every_ms after start, and never again
 } cb_schedule;
@@ -93,6 +93,11 @@ struct cb_app {
     // Runs once at boot, before anything is served: CB_OK, or a CB_E_* with
     // a sentence in err, and the process must not serve. NULL: none.
     int (*selftest)(char *err, size_t cap);
+    // The app's own settings, read once the platform's are (config.h cb_config_load): its own
+    // knobs, kept where it keeps them, and any platform setting it names its own way (it may set
+    // cfg's fields). CB_OK, or CB_E_INVALID with a sentence in err, and the process does not start.
+    // NULL: none.
+    int (*config)(struct cb_config *cfg, char *err, size_t cap);
     const cb_job        *jobs;
     int                  n_jobs;
     const cb_schedule   *schedules;

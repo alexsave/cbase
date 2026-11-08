@@ -25,7 +25,7 @@ enum {
     CB_PROV_HELD_SOCKETS = 1u << 1,
     // The edge can purge a path (app/edge.h); else s-maxage alone bounds staleness.
     CB_PROV_EDGE_PURGE   = 1u << 2,
-    // CBASE_BOT_SPEEDUP may be other than 1 (config.h): a test runtime only.
+    // CBASE_CLOCK_SPEEDUP may be other than 1 (config.h): a test runtime only.
     CB_PROV_TEST_CLOCK   = 1u << 3,
     // One process makes every write (cbase serve, one instance by design): what it holds in memory is the
     // authority (auth.h cb_auth_hold_sessions).

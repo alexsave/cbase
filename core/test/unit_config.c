@@ -112,26 +112,26 @@ static void secrets_never_shown(void) {
     clear_env();
 }
 
-// CBASE_BOT_SPEEDUP is a test knob: a provider without a test clock (CB_PROV_TEST_CLOCK; Lambda's
+// CBASE_CLOCK_SPEEDUP is a test knob: a provider without a test clock (CB_PROV_TEST_CLOCK; Lambda's
 // is one) refuses to boot with anything but production's pace, before it touches a store, whatever
 // else is set.
 static const cb_provider NO_TEST_CLOCK = { .name = "fixture", .mode = "fixture" };
-static void lambda_refuses_a_bot_speedup(void) {
+static void lambda_refuses_a_clock_speedup(void) {
     clear_env();
     cb_config c;
     char err[256] = "";
     T_EQ_INT(cb_config_from_env(&c, err, sizeof err), CB_OK);
-    T_EQ_INT(c.bot_speedup, 1);
+    T_EQ_INT(c.clock_speedup, 1);
     const int bad[] = { 2, 20, 100 };
     for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
-        c.bot_speedup = bad[i];
+        c.clock_speedup = bad[i];
         static cb_ctx ctx;
         memset(&ctx, 0, sizeof ctx);
         ctx.cfg = &c;
         ctx.prov = &NO_TEST_CLOCK;
         err[0] = 0;
         T_EQ_INT(cb_boot(&ctx, err, sizeof err), CB_E_INVALID);
-        T_CHECK(strstr(err, "CBASE_BOT_SPEEDUP") != NULL);
+        T_CHECK(strstr(err, "CBASE_CLOCK_SPEEDUP") != NULL);
         T_CHECK(ctx.store == NULL && ctx.router == NULL);
     }
     clear_env();
@@ -304,9 +304,42 @@ static void the_cpu_knob(void) {
     unsetenv("CBASE_DEV");
 }
 
+// THE APP'S OWN SETTINGS (cbase/app.h config, config.h cb_config_load): read once the platform's
+// are, over them; a refusal is the load's, with the app's sentence; no app, or none, is the
+// platform's alone.
+static int app_config(cb_config *c, char *err, size_t cap) {
+    const char *v = getenv("CBASE_TEST_APP_POOL");
+    if (!v) return CB_OK;
+    if (strcmp(v, "bad") == 0) { snprintf(err, cap, "CBASE_TEST_APP_POOL=bad is no size"); return CB_E_INVALID; }
+    c->job_workers = 3;
+    return CB_OK;
+}
+static void the_apps_settings_follow_the_platforms(void) {
+    clear_env();
+    static const cb_app WITH = { .name = "with", .config = app_config }, WITHOUT = { .name = "without" };
+    cb_config c;
+    char err[256] = "";
+    setenv("CBASE_JOB_WORKERS", "2", 1);
+    T_EQ_INT(cb_config_load(&c, &WITH, err, sizeof err), CB_OK);
+    T_EQ_INT(c.job_workers, 2);   // the app says nothing: the platform's
+    setenv("CBASE_TEST_APP_POOL", "yes", 1);
+    T_EQ_INT(cb_config_load(&c, &WITH, err, sizeof err), CB_OK);
+    T_EQ_INT(c.job_workers, 3);   // the app's, over the platform's
+    T_EQ_INT(cb_config_load(&c, &WITHOUT, err, sizeof err), CB_OK);
+    T_EQ_INT(c.job_workers, 2);
+    T_EQ_INT(cb_config_load(&c, NULL, err, sizeof err), CB_OK);
+    T_EQ_INT(c.job_workers, 2);
+    setenv("CBASE_TEST_APP_POOL", "bad", 1);
+    T_EQ_INT(cb_config_load(&c, &WITH, err, sizeof err), CB_E_INVALID);
+    T_CHECK(strstr(err, "CBASE_TEST_APP_POOL=bad") != NULL);
+    unsetenv("CBASE_TEST_APP_POOL");
+    clear_env();
+}
+
 int main(void) {
     T_RUN(secrets_rule);
-    T_RUN(lambda_refuses_a_bot_speedup);
+    T_RUN(lambda_refuses_a_clock_speedup);
+    T_RUN(the_apps_settings_follow_the_platforms);
     T_RUN(secrets_never_shown);
     T_RUN(the_cpu_knob);
     T_RUN(one_instance_per_database);

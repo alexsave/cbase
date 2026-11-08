@@ -51,8 +51,8 @@ static void every_status_has_its_reason(void) {
 static const char *const VARS[] = {
     "CBASE_LISTEN", "CBASE_STORE", "CBASE_DB", "CBASE_TABLE", "CBASE_IOT_ENDPOINT", "CBASE_CF_DISTRIBUTION",
     "CBASE_JWT_SECRET", "CBASE_ADMIN_TOKEN", "CBASE_ALLOWED_ORIGINS", "CBASE_PUBLIC_URL", "CBASE_REQ_WORKERS",
-    "CBASE_BOT_WORKERS", "CBASE_LOOP_CPU", "CBASE_BG_CPU", "CBASE_MAX_BODY", "CBASE_JWT_TTL", "CBASE_LOG_LEVEL", "CBASE_ORIGIN_SECRET",
-    "CBASE_BOT_SPEEDUP", "CBASE_DEV", "CBASE_MAX_CONNS", "CBASE_LISTEN_BACKLOG",
+    "CBASE_JOB_WORKERS", "CBASE_LOOP_CPU", "CBASE_BG_CPU", "CBASE_MAX_BODY", "CBASE_JWT_TTL", "CBASE_LOG_LEVEL", "CBASE_ORIGIN_SECRET",
+    "CBASE_CLOCK_SPEEDUP", "CBASE_DEV", "CBASE_MAX_CONNS", "CBASE_LISTEN_BACKLOG",
     "CBASE_APPLE_CLIENT_IDS", "CBASE_APPLE_TEAM_ID", "CBASE_APPLE_KEY_ID", "CBASE_APPLE_PRIVATE_KEY",
     "CBASE_APPLE_REDIRECT_URI", "CBASE_APPLE_ISSUER",
 };
@@ -151,20 +151,20 @@ static void configuration_refusals(void) {
     refused("CBASE_PUBLIC_URL", longv, "CBASE_PUBLIC_URL is longer than");
     refused("CBASE_REQ_WORKERS", "0", "CBASE_REQ_WORKERS=0 is not a number in 1..256");
     refused("CBASE_REQ_WORKERS", "4x", "is not a number");
-    refused("CBASE_BOT_WORKERS", "65", "is not a number in 1..64");
+    refused("CBASE_JOB_WORKERS", "65", "is not a number in 1..64");
     refused("CBASE_MAX_BODY", "10", "is not a number in 1024..");
     refused("CBASE_JWT_TTL", "59", "is not a number in 60..");
     refused("CBASE_LOG_LEVEL", "loud", "is not debug, info, warn or error");
     // The test knob: a whole number of times faster, 1 (production's pace) to 100.
-    refused("CBASE_BOT_SPEEDUP", "0", "CBASE_BOT_SPEEDUP=0 is not a number in 1..100");
-    refused("CBASE_BOT_SPEEDUP", "-5", "is not a number in 1..100");
-    refused("CBASE_BOT_SPEEDUP", "101", "is not a number in 1..100");
-    refused("CBASE_BOT_SPEEDUP", "2.5", "is not a number in 1..100");
-    refused("CBASE_BOT_SPEEDUP", "20x", "is not a number in 1..100");
-    refused("CBASE_BOT_SPEEDUP", " 20", "is not a number in 1..100");
-    refused("CBASE_BOT_SPEEDUP", "+20", "is not a number in 1..100");
-    refused("CBASE_BOT_SPEEDUP", "20 ", "is not a number in 1..100");
-    refused("CBASE_BOT_SPEEDUP", "99999999999999999999", "is not a number in 1..100");
+    refused("CBASE_CLOCK_SPEEDUP", "0", "CBASE_CLOCK_SPEEDUP=0 is not a number in 1..100");
+    refused("CBASE_CLOCK_SPEEDUP", "-5", "is not a number in 1..100");
+    refused("CBASE_CLOCK_SPEEDUP", "101", "is not a number in 1..100");
+    refused("CBASE_CLOCK_SPEEDUP", "2.5", "is not a number in 1..100");
+    refused("CBASE_CLOCK_SPEEDUP", "20x", "is not a number in 1..100");
+    refused("CBASE_CLOCK_SPEEDUP", " 20", "is not a number in 1..100");
+    refused("CBASE_CLOCK_SPEEDUP", "+20", "is not a number in 1..100");
+    refused("CBASE_CLOCK_SPEEDUP", "20 ", "is not a number in 1..100");
+    refused("CBASE_CLOCK_SPEEDUP", "99999999999999999999", "is not a number in 1..100");
     // The saturation knob: off, a CPU number, or unset (auto); nothing else is a spelling of either.
     refused("CBASE_LOOP_CPU", "-1", "CBASE_LOOP_CPU=-1 is not off or a CPU number in 0..1023");
     refused("CBASE_LOOP_CPU", "-2", "is not off or a CPU number");
@@ -183,7 +183,7 @@ static void configuration_refusals(void) {
         char e[256] = "";
         T_EQ_INT(cb_config_from_env(&d, e, sizeof e), CB_OK);
         T_EQ_INT(d.req_workers, 1);
-        T_EQ_INT(d.bot_workers, 1);
+        T_EQ_INT(d.job_workers, 1);
     }
 
     // Everything set and in range: read as given, and listed with the secrets redacted.
@@ -195,11 +195,11 @@ static void configuration_refusals(void) {
     setenv("CBASE_ADMIN_TOKEN", "console-token-0123456789-abcdefgh", 1);   // at least 32 (L7)
     setenv("CBASE_ORIGIN_SECRET", "edge-origin-0123456789abcdef0123456789", 1);
     setenv("CBASE_REQ_WORKERS", "8", 1);
-    setenv("CBASE_BOT_WORKERS", "2", 1);
+    setenv("CBASE_JOB_WORKERS", "2", 1);
     setenv("CBASE_MAX_BODY", "2048", 1);
     setenv("CBASE_JWT_TTL", "600", 1);
     setenv("CBASE_LOG_LEVEL", "warn", 1);
-    setenv("CBASE_BOT_SPEEDUP", "100", 1);
+    setenv("CBASE_CLOCK_SPEEDUP", "100", 1);
     setenv("CBASE_ALLOWED_ORIGINS", " https://a.example , https://b.example ", 1);
     cb_config c;
     char err[256] = "";
@@ -208,11 +208,11 @@ static void configuration_refusals(void) {
     T_EQ_INT(c.listen_port, 9000);
     T_EQ_STR(c.store, "dynamo");
     T_EQ_INT(c.req_workers, 8);
-    T_EQ_INT(c.bot_workers, 2);
+    T_EQ_INT(c.job_workers, 2);
     T_EQ_INT(c.max_body, 2048);
     T_EQ_INT(c.jwt_ttl_s, 600);
     T_EQ_INT(c.log_level, CB_LOG_WARN);
-    T_EQ_INT(c.bot_speedup, 100);
+    T_EQ_INT(c.clock_speedup, 100);
     T_CHECK(!c.jwt_secret_generated);
     T_EQ_STR(c.public_url, "http://0.0.0.0:9000");
     seen s = { 0 };

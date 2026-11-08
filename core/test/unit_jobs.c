@@ -217,25 +217,25 @@ static void schedule_run_by_name(void) {
 static void scaled_periods(void) {
     cb_config cfg;
     memset(&cfg, 0, sizeof cfg);
-    cfg.bot_speedup = 1;
+    cfg.clock_speedup = 1;
     T_EQ_INT(cb_config_scaled_ms(&cfg, 60000), 60000);
     T_EQ_INT(cb_config_scaled_ms(&cfg, 1), 1);
     T_EQ_INT(cb_config_scaled_ms(&cfg, 0), 0);
     // 7: rounded up, so a period never becomes shorter than its share, nor 0.
-    cfg.bot_speedup = 7;
+    cfg.clock_speedup = 7;
     T_EQ_INT(cb_config_scaled_ms(&cfg, 60000), 8572);
     T_EQ_INT(cb_config_scaled_ms(&cfg, 7000), 1000);
     T_EQ_INT(cb_config_scaled_ms(&cfg, 7001), 1001);
     T_EQ_INT(cb_config_scaled_ms(&cfg, 1), 1);
     T_EQ_INT(cb_config_scaled_ms(&cfg, 0), 0);
-    cfg.bot_speedup = 100;
+    cfg.clock_speedup = 100;
     T_EQ_INT(cb_config_scaled_ms(&cfg, 60000), 600);
     T_EQ_INT(cb_config_scaled_ms(&cfg, 60001), 601);
     T_EQ_INT(cb_config_scaled_ms(&cfg, 99), 1);
     // A speedup below 1 (never configured: config.c refuses it) and no config are 1.
-    cfg.bot_speedup = 0;
+    cfg.clock_speedup = 0;
     T_EQ_INT(cb_config_scaled_ms(&cfg, 60000), 60000);
-    cfg.bot_speedup = -3;
+    cfg.clock_speedup = -3;
     T_EQ_INT(cb_config_scaled_ms(&cfg, 60000), 60000);
     T_EQ_INT(cb_config_scaled_ms(NULL, 60000), 60000);
 }

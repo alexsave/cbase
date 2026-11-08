@@ -192,7 +192,7 @@ static void next_truncated(void) {
     cb_buf_free(&r);
 }
 
-// Lambda runs production's pace alone: the aws provider has no test clock, so a CBASE_BOT_SPEEDUP
+// Lambda runs production's pace alone: the aws provider has no test clock, so a CBASE_CLOCK_SPEEDUP
 // other than 1 refuses its boot (core/test/unit_config.c holds that refusal for any such provider).
 static void lambda_has_no_test_clock(void) {
     T_EQ_INT(cb_provider_aws.flags & CB_PROV_TEST_CLOCK, 0);

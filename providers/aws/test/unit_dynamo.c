@@ -201,15 +201,15 @@ typedef struct { int n; char msg[8][16]; } msgs_t;
 
 static void flow_admin_query_guard(void) {
     static const step steps[] = {
-        { "ExecuteStatement", "SELECT", 200, "{\"Items\":[{\"pk\":{\"S\":\"BOT#x\"}}]}" },
-        // CB_ADMIN_GAMES is the GAME family on this backend.
-        { "Scan", "{\"S\":\"GAME#ab\"}", 200, "{\"Items\":[{\"pk\":{\"S\":\"GAME#ab12cd\"},\"sk\":{\"S\":\"ROW\"},\"id\":{\"S\":\"ab12cd\"}}]}" },
+        { "ExecuteStatement", "SELECT", 200, "{\"Items\":[{\"pk\":{\"S\":\"USER#x\"}}]}" },
+        // A family's browse is a Scan of its pk prefix.
+        { "Scan", "{\"S\":\"USER#ab\"}", 200, "{\"Items\":[{\"pk\":{\"S\":\"USER#ab12cd\"},\"sk\":{\"S\":\"PROFILE\"},\"id\":{\"S\":\"ab12cd\"}}]}" },
     };
     RUN(steps, s);
     T_EQ_INT(CB_STORE_CALL(s, admin_query, "DELETE FROM \"cbase\" WHERE pk='x'", false, NULL, NULL), CB_E_FORBIDDEN);
     T_EQ_INT(CB_STORE_CALL(s, admin_query, "SELECT * FROM \"cbase\"", false, NULL, NULL), 1);
     char next[64];
-    T_EQ_INT(CB_STORE_CALL(s, admin_browse, CB_ADMIN_GAMES, "ab", NULL, 10, NULL, NULL, next, sizeof next), 1);
+    T_EQ_INT(CB_STORE_CALL(s, admin_browse, "USER", "ab", NULL, 10, NULL, NULL, next, sizeof next), 1);
     T_EQ_INT(CB_STORE_CALL(s, admin_browse, "nosuch", NULL, NULL, 10, NULL, NULL, next, sizeof next), CB_E_INVALID);
     T_EQ_INT(sc_.at, 2);
     cb_store_close(s);

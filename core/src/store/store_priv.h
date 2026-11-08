@@ -9,10 +9,11 @@
 // THE ADMIN CONSOLE'S COLLECTIONS, the same on both backends: the key
 // families of the item layout (aws_json.h "THE ITEM LAYOUT"). The i-th
 // (NULL past the last); and the pk prefix a collection's items start with,
-// with `prefix` after it ("GAME#ab", or "SCAN": a whole partition), into out:
-// false for a name that is not one (CB_ADMIN_GAMES is GAME).
-const char *cb_store_collection(int i);
-bool cb_store_collection_pk(const char *c, const char *prefix, char *out, size_t cap);
+// with `prefix` after it ("USER#ab", or a whole family's own name), into out:
+// false for a name that is not one (an alias the product declares is its family).
+// `a` is the store's product (cb_store s->app), NULL for none.
+const char *cb_store_collection(const cb_store_app *a, int i);
+bool cb_store_collection_pk(const cb_store_app *a, const char *c, const char *prefix, char *out, size_t cap);
 
 // users_list's search: `needle` ("" matches all) is in the email or the
 // username, ASCII case-insensitively.

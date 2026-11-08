@@ -63,10 +63,10 @@ int cb_boot(cb_ctx *ctx, char *err, size_t cap) {
     ctx->started_ms = cb_now_ms();
     if (!ctx->prov) { snprintf(err, cap, "no provider"); return CB_E_INVALID; }
     const cb_provider *prov = ctx->prov;
-    // A test knob production never runs with (config.h CBASE_BOT_SPEEDUP).
-    if (!(prov->flags & CB_PROV_TEST_CLOCK) && cfg->bot_speedup != 1) {
-        snprintf(err, cap, "CBASE_BOT_SPEEDUP=%d is for cbase serve's tests: Lambda runs the bots at their own pace",
-                 cfg->bot_speedup);
+    // A test knob production never runs with (config.h CBASE_CLOCK_SPEEDUP).
+    if (!(prov->flags & CB_PROV_TEST_CLOCK) && cfg->clock_speedup != 1) {
+        snprintf(err, cap, "CBASE_CLOCK_SPEEDUP=%d is for cbase serve's tests: Lambda runs every timer at its own pace",
+                 cfg->clock_speedup);
         return CB_E_INVALID;
     }
     int rc = ctx->app && ctx->app->selftest ? ctx->app->selftest(err, cap) : CB_OK;

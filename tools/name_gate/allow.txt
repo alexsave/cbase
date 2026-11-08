@@ -4,14 +4,14 @@
 2 core/include/cbase/app.h /\baws\b/i
 1 core/include/cbase/app.h /lambda/i
 1 core/include/cbase/app.h /eventbridge/i
-2 core/include/cbase/app.h /\bbots?\b/i
+1 core/include/cbase/app.h /\bbots?\b/i
 3 core/include/cbase/provider.h /\baws\b/i
 2 core/include/cbase/provider.h /lambda/i
 3 core/include/cbase/provider.h /dynamo/i
 1 core/include/cbase/provider.h /cloudfront/i
 2 core/include/cbase/provider.h /iot ?core/i
 2 core/include/cbase/provider.h /sqlite/i
-2 core/include/cbase/provider.h /\bbots?\b/i
+1 core/include/cbase/provider.h /\bbots?\b/i
 6 core/src/admin/admin.c /\baws\b/i
 2 core/src/admin/admin.c /lambda/i
 5 core/src/admin/admin.c /dynamo/i
@@ -43,14 +43,12 @@
 1 core/src/auth/names.h /\bleaderboards?\b/i
 1 core/src/auth/passwords.c /foolish/i
 1 core/src/boot.c /lambda/i
-4 core/src/boot.c /\bbots?\b/i
 1 core/src/boot.h /lambda/i
 1 core/src/boot.h /\bbots?\b/i
 3 core/src/config.c /lambda/i
 2 core/src/config.c /dynamo/i
 1 core/src/config.c /cloudfront/i
 3 core/src/config.c /sqlite/i
-9 core/src/config.c /\bbots?\b/i
 1 core/src/config.h /foolish/i
 6 core/src/config.h /\baws\b/i
 1 core/src/config.h /amazon/i
@@ -60,8 +58,6 @@
 2 core/src/config.h /iot ?core/i
 1 core/src/config.h /cloudformation/i
 2 core/src/config.h /sqlite/i
-2 core/src/config.h /\bgames?\b/i
-7 core/src/config.h /\bbots?\b/i
 1 core/src/config.h /\bcards?\b/i
 1 core/src/core.c /\bgames?\b/i
 1 core/src/core.c /\bbots?\b/i
@@ -80,7 +76,7 @@
 1 core/src/ctx.h /foolish/i
 2 core/src/ctx.h /\baws\b/i
 7 core/src/ctx.h /lambda/i
-3 core/src/ctx.h /\bbots?\b/i
+2 core/src/ctx.h /\bbots?\b/i
 2 core/src/edge.h /foolish/i
 1 core/src/edge.h /\bFoolish\w*/
 1 core/src/edge.h /\baws\b/i
@@ -99,7 +95,7 @@
 1 core/src/ingress_process.c /eventbridge/i
 1 core/src/ingress_process.c /cloud ?run/i
 1 core/src/ingress_process.c /sqlite/i
-4 core/src/ingress_process.c /\bbots?\b/i
+2 core/src/ingress_process.c /\bbots?\b/i
 1 core/src/ingress_process.h /cloud ?run/i
 1 core/src/jobs.h /lambda/i
 1 core/src/jobs.h /eventbridge/i
@@ -135,22 +131,19 @@
 12 core/src/store/items.h /dynamo/i
 5 core/src/store/items.h /sqlite/i
 1 core/src/store/rows_auth.h /\baws\b/i
-2 core/src/store/store.c /\bgames?\b/i
-1 core/src/store/store.c /\bbots?\b/i
 1 core/src/store/store.h /foolish/i
 2 core/src/store/store.h /\baws\b/i
 4 core/src/store/store.h /lambda/i
-19 core/src/store/store.h /dynamo/i
+18 core/src/store/store.h /dynamo/i
 1 core/src/store/store.h /sigv4/i
-16 core/src/store/store.h /sqlite/i
-6 core/src/store/store.h /\bgames?\b/i
+17 core/src/store/store.h /sqlite/i
+1 core/src/store/store.h /\bgames?\b/i
 1 core/src/store/store.h /\brosters?\b/i
 2 core/src/store/store_priv.h /\baws\b/i
 11 core/src/store/store_priv.h /dynamo/i
 1 core/src/store/store_priv.h /sigv4/i
 1 core/src/store/store_priv.h /x-amz/i
 1 core/src/store/store_priv.h /sqlite/i
-2 core/src/store/store_priv.h /\bgames?\b/i
 14 core/src/store/store_sql.h /sqlite/i
 1 core/src/util/bytea.h /\breplays?\b/i
 1 core/src/util/err.h /sqlite/i

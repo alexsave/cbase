@@ -69,7 +69,7 @@ struct cb_ctx {
     // serve only (NULL under Lambda)
     cb_loop    *loop;
     cb_pool    *req_pool;
-    cb_pool    *job_pool;     // the jobs (provider_local.c), CBASE_BOT_WORKERS threads
+    cb_pool    *job_pool;     // the jobs (provider_local.c), CBASE_JOB_WORKERS threads
     cb_server  *server;
     // lambda only: the current invocation's deadline (Lambda-Runtime-Deadline-Ms,
     // epoch ms), 0 under serve. A bot drive budgets against it.

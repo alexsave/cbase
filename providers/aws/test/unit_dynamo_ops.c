@@ -282,10 +282,40 @@ static void admin_collections_are_the_families(void) {
     T_EQ_STR(w.names[0], "USER");
     T_EQ_STR(w.names[1], "EMAIL");
     T_EQ_STR(w.names[2], "REFRESH");
-    T_CHECK(dw_collection(-1) == NULL);
-    T_CHECK(dw_collection(8) == NULL);
-    T_EQ_STR(dw_collection(7), "SCAN");
+    T_CHECK(dw_collection(NULL, -1) == NULL);
+    T_CHECK(dw_collection(NULL, 3) == NULL);   // the platform's three, with no product
+    T_CHECK(!dw_collection_valid(NULL, "ORDER"));
     T_EQ_INT(sc_.at, 0);
+    cb_store_close(s);
+}
+
+// A PRODUCT'S FAMILIES (cbase/app.h, store.h cb_store_app families): after the platform's three,
+// browsed by "<FAMILY>#prefix", a whole family by its own name, an alias as its family; the store's
+// own product, never a global one.
+static const cb_store_family FX_FAMILIES[] = { { "ORDER", false }, { "QUEUE", true } };
+static const cb_store_alias FX_ALIASES[] = { { "orders", "ORDER" } };
+static const cb_store_app FX = { .families = FX_FAMILIES, .n_families = 2, .family_aliases = FX_ALIASES, .n_family_aliases = 1 };
+
+static void a_products_families_follow_the_platforms(void) {
+    T_EQ_STR(dw_collection(&FX, 2), "REFRESH");
+    T_EQ_STR(dw_collection(&FX, 3), "ORDER");
+    T_EQ_STR(dw_collection(&FX, 4), "QUEUE");
+    T_CHECK(dw_collection(&FX, 5) == NULL);
+    T_CHECK(dw_collection_valid(&FX, "orders") && dw_collection_valid(&FX, "QUEUE"));
+    T_CHECK(!dw_collection_valid(&FX, "queue") && !dw_collection_valid(NULL, "ORDER"));
+    static const step steps[] = {
+        { "Scan", "{\"S\":\"ORDER#ab\"}", 200, "{\"Items\":[]}" },
+        { "Scan", "{\"S\":\"QUEUE\"}", 200, "{\"Items\":[]}" },
+    };
+    script sc_ = { .steps = steps, .n = 2 };
+    cb_store *s = NULL;
+    T_EQ_INT(cb_store_open_dynamo_with("cbase", fake_send, &sc_, &s), CB_OK);
+    if (!s) return;
+    s->app = &FX;
+    char next[64];
+    T_EQ_INT(CB_STORE_CALL(s, admin_browse, "orders", "ab", NULL, 10, NULL, NULL, next, sizeof next), 0);
+    T_EQ_INT(CB_STORE_CALL(s, admin_browse, "QUEUE", NULL, NULL, 10, NULL, NULL, next, sizeof next), 0);
+    T_EQ_INT(sc_.at, 2);
     cb_store_close(s);
 }
 
@@ -296,5 +326,6 @@ int main(void) {
     T_RUN(refresh_put_and_revoke_session);
     T_RUN(identities_and_claims);
     T_RUN(admin_collections_are_the_families);
+    T_RUN(a_products_families_follow_the_platforms);
     return T_DONE();
 }

@@ -1286,16 +1286,16 @@ bool dw_get_answer_of_put(const dw_req *put, cb_buf *out) {
 
 // ---- admin -----------------------------------------------------------------------------------------------
 
-const char *dw_collection(int i) { return cb_store_collection(i); }
+const char *dw_collection(const cb_store_app *a, int i) { return cb_store_collection(a, i); }
 
-bool dw_collection_valid(const char *c) {
+bool dw_collection_valid(const cb_store_app *a, const char *c) {
     char p[KB];
-    return cb_store_collection_pk(c, NULL, p, sizeof p);
+    return cb_store_collection_pk(a, c, NULL, p, sizeof p);
 }
 
-void dw_scan_family(dw_req *r, const char *table, const char *family, const char *prefix, int limit, cb_span start) {
+void dw_scan_family(dw_req *r, const cb_store_app *a, const char *table, const char *family, const char *prefix, int limit, cb_span start) {
     char p[KB];
-    if (!cb_store_collection_pk(family, prefix, p, sizeof p)) p[0] = 0;
+    if (!cb_store_collection_pk(a, family, prefix, p, sizeof p)) p[0] = 0;
     cb_jw w;
     begin(r, &w, "Scan");
     cb_jw_kstr(&w, "TableName", table);

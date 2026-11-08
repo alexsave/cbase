@@ -11,7 +11,7 @@
 // THE SCHEDULES. Under Lambda, EventBridge Scheduler invokes each of the
 // app's schedules (cbase/app.h; foolish's bot scan every minute); serve has
 // no scheduler, so a loop timer per schedule submits it to the request pool
-// every every_ms (divided by CBASE_BOT_SPEEDUP), the store never touched on
+// every every_ms (divided by CBASE_CLOCK_SPEEDUP), the store never touched on
 // the loop thread. Foolish's scan catches a drive that a kick lost, as
 // bot-heartbeat did.
 //
@@ -123,7 +123,7 @@ int cb_process_main(const cb_provider *prov, const cb_app *app, int argc, char *
     if (argc != 2 || strcmp(argv[1], "serve") != 0) return usage();
     cb_config cfg;
     char err[512];
-    if (cb_config_from_env(&cfg, err, sizeof err) != CB_OK) { fprintf(stderr, "cbase: %s\n", err); return 2; }
+    if (cb_config_load(&cfg, app, err, sizeof err) != CB_OK) { fprintf(stderr, "cbase: %s\n", err); return 2; }
     if (cb_config_check_serve(&cfg, err, sizeof err) != CB_OK) { fprintf(stderr, "cbase: %s\n", err); return 2; }
     cb_log_init(cfg.log_level, 0);
     cb_config_each(&cfg, log_config, NULL);
@@ -154,7 +154,7 @@ int cb_process_main(const cb_provider *prov, const cb_app *app, int argc, char *
     cb_loop_use_uring(cfg.io_uring);
     ctx.loop = cb_loop_new();
     ctx.req_pool = cb_pool_new(cfg.req_workers, "req");
-    ctx.job_pool = cb_pool_new(cfg.bot_workers, "job");
+    ctx.job_pool = cb_pool_new(cfg.job_workers, "job");
     if (!ctx.loop || !ctx.req_pool || !ctx.job_pool) { fprintf(stderr, "cbase: out of memory\n"); return 1; }
     if (prov->serve_prepare && prov->serve_prepare(&cfg) != CB_OK) return 1;
     if (cb_boot(&ctx, err, sizeof err) != CB_OK) { CB_ERROR("serve", "%s", err); return 1; }

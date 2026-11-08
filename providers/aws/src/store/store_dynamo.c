@@ -499,7 +499,7 @@ static int dy_item_batch_get(cb_store *s, const cb_ikey *keys, int n, const char
 
 static int dy_admin_collections(cb_store *s, cb_name_fn fn, void *ud) {
     int n = 0;
-    for (const char *c; (c = dw_collection(n)) != NULL;) {
+    for (const char *c; (c = dw_collection(s->app, n)) != NULL;) {
         n++;
         if (!fn(c, ud)) break;
     }
@@ -535,7 +535,7 @@ static int emit_items(cb_span items, cb_admin_row_fn fn, void *ud, bool *more) {
 static int dy_admin_browse(cb_store *s, const char *collection, const char *prefix, const char *cursor, int limit,
                            cb_admin_row_fn fn, void *ud, char *next_cursor, size_t next_cap) {
     if (next_cursor && next_cap) next_cursor[0] = '\0';
-    if (!dw_collection_valid(collection)) return CB_E_INVALID;
+    if (!dw_collection_valid(s->app, collection)) return CB_E_INVALID;
     if (limit <= 0 || limit > 1000) limit = 100;
     dyn *d = D(s);
     size_t clen = cursor ? strlen(cursor) : 0;
@@ -544,7 +544,7 @@ static int dy_admin_browse(cb_store *s, const char *collection, const char *pref
     if (sn < 0) { free(start); return CB_E_INVALID; }
     dw_req r;
     dw_req_init(&r);
-    dw_scan_family(&r, d->table, collection, prefix, limit, cb_span_of((const char *)start, (size_t)sn));
+    dw_scan_family(&r, s->app, d->table, collection, prefix, limit, cb_span_of((const char *)start, (size_t)sn));
     free(start);
     cb_buf resp;
     cb_buf_init(&resp);

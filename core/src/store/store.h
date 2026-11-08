@@ -114,7 +114,6 @@ typedef bool (*cb_identity_fn)(const cb_identity_row *r, void *ud);
 typedef bool (*cb_name_fn)(const char *name, void *ud);   // an id, a collection name
 typedef bool (*cb_user_fn)(const cb_user_row *r, void *ud);
 // The admin console's raw browse: one row as name/value text pairs.
-#define CB_ADMIN_GAMES "games"   // see admin_collections
 typedef bool (*cb_admin_row_fn)(int n, const char *const *names, const char *const *values, void *ud);
 
 // ---- the interface ------------------------------------------------------------------
@@ -183,10 +182,10 @@ typedef struct cb_store_ops {
     // DynamoDB it matches the pk after "<FAMILY>#". `cursor` is "" for the
     // first page and next_cursor comes back "" after the last. A value is
     // text, a blob "\x" hex, SQL NULL a NULL pointer. fn may be NULL.
-    // CB_ADMIN_GAMES names the same thing on both backends: browse rows that
-    // each name one game (SQLite's games table, column "id"; DynamoDB's GAME
-    // family, where only the pk GAME#<id> / sk ROW item carries "id"), so the
-    // console's Games panel needs no per-backend knowledge.
+    // A product's console name for one of its families (cb_store_app
+    // family_aliases: SQLite's table of that name, the item layout's family)
+    // names the same thing on both backends, so a product's panel needs no
+    // per-backend knowledge.
     int (*admin_collections)(cb_store *s, cb_name_fn fn, void *ud);
     int (*admin_browse)(cb_store *s, const char *collection, const char *prefix, const char *cursor, int limit,
                         cb_admin_row_fn fn, void *ud, char *next_cursor, size_t next_cap);
@@ -233,6 +232,16 @@ typedef struct cb_store_ops {
 // (cb_store_init), so a store opened anywhere (serve, the Lambda, a tool, a
 // test) holds the product's rows; a test double installs its own. Any hook
 // may be NULL.
+// A product's key family on the item layout, and a console name for one (cb_store_app families).
+typedef struct {
+    const char *name;    // "ORDER": its items' pk is "ORDER#<id>"
+    bool        whole;   // the family is one partition: its pk is the name itself
+} cb_store_family;
+typedef struct {
+    const char *alias;   // the console's name: "orders" (a SQLite table of that name)
+    const char *family;  // "ORDER"
+} cb_store_alias;
+
 typedef struct cb_store_app {
     // The product's operations table, opaque here: the product's own call
     // macro reads it (foolish: CB_ROWS_CALL).
@@ -273,6 +282,15 @@ typedef struct cb_store_app {
     // after the product's tables, with the user_version the database had (never 0, a
     // new database, nor CB_SCHEMA_VERSION). An error rolls the open back. NULL: none.
     int (*sql_upgrade)(struct cb_sql *x, int64_t from_version);
+
+    // ON THE ITEM LAYOUT (items.h): the product's key families, after the platform's USER, EMAIL and
+    // REFRESH (the console's collections, a browse's pk prefix "<FAMILY>#"); a family marked whole
+    // is one partition, browsed as the pk itself. And the console names it gives one (a browse of
+    // "<alias>" is of that family), so one name serves both backends.
+    const cb_store_family *families;
+    int                    n_families;
+    const cb_store_alias  *family_aliases;
+    int                    n_family_aliases;
 } cb_store_app;
 
 // A file a write-behind layer keeps beside the store's file: its path is the database's

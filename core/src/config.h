@@ -19,7 +19,7 @@ extern const char *const cb_config_limit_names[CB_CONFIG_LIMITS];
 #define CB_CPU_OFF  (-1)   // not pinned
 #define CB_CPU_AUTO (-2)   // serve picks the CPU at start (cb_affinity_pick)
 
-typedef struct {
+typedef struct cb_config {
     // CBASE_LISTEN, "host:port", default 127.0.0.1:8080. Port 0 asks the OS for
     // a free one (the smoke test reads the bound port from the log line).
     char listen_host[64];
@@ -76,7 +76,7 @@ typedef struct {
     bool dev;
     // Tunables, each CBASE_<NAME> with these defaults:
     int  req_workers;     // CBASE_REQ_WORKERS 1: serve's request pool (config.c THE THREADS)
-    int  bot_workers;     // CBASE_BOT_WORKERS 1: serve's bot pool; see DESIGN.md "Kernel thread safety"
+    int  job_workers;     // CBASE_JOB_WORKERS 1: serve's job pool (an app's jobs, cbase/app.h cb_job)
     // THE SATURATION KNOB (util/affinity.h): CBASE_LOOP_CPU, the CPU serve's loop is pinned to, and
     // CBASE_BG_CPU, the CPU every other serve thread is pinned to. Each is a CPU number, `off`
     // (CB_CPU_OFF) or unset. Both unset is CB_CPU_AUTO in both: serve picks the two lowest CPUs it
@@ -87,16 +87,14 @@ typedef struct {
     long max_body;        // CBASE_MAX_BODY 1048576: request body bytes
     int  jwt_ttl_s;       // CBASE_JWT_TTL 3600: access token lifetime
     int  admin_fail_limit;// CBASE_ADMIN_FAIL_LIMIT 10: wrong console tokens per address an hour (rate_limits.h)
-    int  rated_min_age_s; // CBASE_RATED_MIN_AGE 259200 (72 h): a game with a younger account ends unrated (M6)
     int  log_level;       // CBASE_LOG_LEVEL info: debug|info|warn|error
-    // CBASE_BOT_SPEEDUP 1 (1..100): every timer of the bot loop (app/bots.h:
-    // the pace a bot waits before it acts, the lease, the scan's staleness and
-    // abandon windows, the drive's wall ceiling, serve's scan period) divided
-    // by this. For the smoke tests, so a game against a bot and a crash's
-    // lease expiry play out in seconds with every ratio between the timers
-    // kept. `cbase serve` only: cb_boot refuses any other value under Lambda,
-    // so a stray variable cannot make production's bots hurry.
-    int  bot_speedup;
+    // CBASE_CLOCK_SPEEDUP 1 (1..100): every timer of the platform's (a schedule's
+    // period under serve, cb_config_scaled_ms) and of an app's that asks it,
+    // divided by this. For the smoke tests, so what waits minutes plays out in
+    // seconds with every ratio between the timers kept. `cbase serve` only:
+    // cb_boot refuses any other value under a provider without a test clock
+    // (Lambda), so a stray variable cannot make production hurry.
+    int  clock_speedup;
     // Serve's connection limits (net/server.h): CBASE_MAX_CONNS 4096 open
     // connections (a new one past it is refused, and logged), CBASE_LISTEN_BACKLOG 512.
     int  max_conns;
@@ -147,6 +145,10 @@ typedef struct {
 
 // Reads the environment into cfg. CB_OK, or CB_E_INVALID with a sentence in err.
 int cb_config_from_env(cb_config *cfg, char *err, size_t cap);
+// cb_config_from_env, then the app's own settings over it (cbase/app.h config): what each main
+// runs. CB_OK, or CB_E_INVALID with a sentence in err.
+struct cb_app;
+int cb_config_load(cb_config *cfg, const struct cb_app *app, char *err, size_t cap);
 
 // Every setting as NAME and value, secrets replaced by "(set)" or "(unset)",
 // for the startup log and the admin console's Config panel.
@@ -167,7 +169,7 @@ int cb_config_check_secrets(const cb_config *cfg, bool lambda, char *err, size_t
 int cb_config_check_serve(const cb_config *cfg, char *err, size_t cap);
 
 // A timer of the platform's own (a schedule's period under serve) as this
-// process runs it: divided by CBASE_BOT_SPEEDUP, rounded up so never 0.
+// process runs it: divided by CBASE_CLOCK_SPEEDUP, rounded up so never 0.
 int64_t cb_config_scaled_ms(const cb_config *cfg, int64_t ms);
 
 // The header CloudFront adds (CBASE_ORIGIN_SECRET above).

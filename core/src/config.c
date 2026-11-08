@@ -1,5 +1,7 @@
 #include "config.h"
 
+#include "cbase/app.h"
+
 #include "b64/b64.h"
 #include "util/err.h"
 #include "util/log.h"
@@ -187,8 +189,8 @@ int cb_config_from_env(cb_config *c, char *err, size_t cap) {
     long v;
     if (!num("CBASE_REQ_WORKERS", REQ_WORKERS_DEFAULT, 1, 256, &v, err, cap)) return CB_E_INVALID;
     c->req_workers = (int)v;
-    if (!num("CBASE_BOT_WORKERS", 1, 1, 64, &v, err, cap)) return CB_E_INVALID;
-    c->bot_workers = (int)v;
+    if (!num("CBASE_JOB_WORKERS", 1, 1, 64, &v, err, cap)) return CB_E_INVALID;
+    c->job_workers = (int)v;
     // THE SATURATION KNOB (util/affinity.h): automatic by default (both unset), by hand once either
     // is given, and then the other, unset, is not pinned (config.h loop_cpu).
     if (!cpu("CBASE_LOOP_CPU", &c->loop_cpu, err, cap)) return CB_E_INVALID;
@@ -203,10 +205,8 @@ int cb_config_from_env(cb_config *c, char *err, size_t cap) {
     c->jwt_ttl_s = (int)v;
     if (!num("CBASE_ADMIN_FAIL_LIMIT", 10, 1, 100000, &v, err, cap)) return CB_E_INVALID;
     c->admin_fail_limit = (int)v;
-    if (!num("CBASE_RATED_MIN_AGE", 72 * 3600, 0, 30 * 86400, &v, err, cap)) return CB_E_INVALID;
-    c->rated_min_age_s = (int)v;
-    if (!num("CBASE_BOT_SPEEDUP", 1, 1, 100, &v, err, cap)) return CB_E_INVALID;
-    c->bot_speedup = (int)v;
+    if (!num("CBASE_CLOCK_SPEEDUP", 1, 1, 100, &v, err, cap)) return CB_E_INVALID;
+    c->clock_speedup = (int)v;
     if (!num("CBASE_MAX_CONNS", 16384, 1, 1000000, &v, err, cap)) return CB_E_INVALID;
     c->max_conns = (int)v;
     if (!num("CBASE_LISTEN_BACKLOG", 512, 1, 65535, &v, err, cap)) return CB_E_INVALID;
@@ -257,8 +257,8 @@ void cb_config_each(const cb_config *c, cb_config_fn fn, void *ud) {
     fn("CBASE_PUBLIC_URL", c->public_url, false, ud);
     snprintf(b, sizeof b, "%d", c->req_workers);
     fn("CBASE_REQ_WORKERS", b, false, ud);
-    snprintf(b, sizeof b, "%d", c->bot_workers);
-    fn("CBASE_BOT_WORKERS", b, false, ud);
+    snprintf(b, sizeof b, "%d", c->job_workers);
+    fn("CBASE_JOB_WORKERS", b, false, ud);
     snprintf(b, sizeof b, "%d", c->loop_cpu);
     fn("CBASE_LOOP_CPU", cpu_shown(c->loop_cpu, b), false, ud);
     snprintf(b, sizeof b, "%d", c->bg_cpu);
@@ -269,11 +269,9 @@ void cb_config_each(const cb_config *c, cb_config_fn fn, void *ud) {
     fn("CBASE_JWT_TTL", b, false, ud);
     snprintf(b, sizeof b, "%d", c->admin_fail_limit);
     fn("CBASE_ADMIN_FAIL_LIMIT", b, false, ud);
-    snprintf(b, sizeof b, "%d", c->rated_min_age_s);
-    fn("CBASE_RATED_MIN_AGE", b, false, ud);
     fn("CBASE_LOG_LEVEL", cb_log_level_name(c->log_level), false, ud);
-    snprintf(b, sizeof b, "%d", c->bot_speedup);
-    fn("CBASE_BOT_SPEEDUP", b, false, ud);
+    snprintf(b, sizeof b, "%d", c->clock_speedup);
+    fn("CBASE_CLOCK_SPEEDUP", b, false, ud);
     fn("CBASE_DEV", c->dev ? "1" : "0", false, ud);
     snprintf(b, sizeof b, "%d", c->max_conns);
     fn("CBASE_MAX_CONNS", b, false, ud);
@@ -366,7 +364,13 @@ bool cb_config_origin_allowed(const cb_config *c, const char *origin) {
     return false;
 }
 
+int cb_config_load(cb_config *cfg, const cb_app *app, char *err, size_t cap) {
+    int rc = cb_config_from_env(cfg, err, cap);
+    if (rc == CB_OK && app && app->config) rc = app->config(cfg, err, cap);
+    return rc;
+}
+
 int64_t cb_config_scaled_ms(const cb_config *cfg, int64_t ms) {
-    const int64_t k = cfg && cfg->bot_speedup > 1 ? cfg->bot_speedup : 1;
+    const int64_t k = cfg && cfg->clock_speedup > 1 ? cfg->clock_speedup : 1;
     return (ms + k - 1) / k;
 }

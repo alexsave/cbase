@@ -122,17 +122,23 @@ bool cb_store_user_matches(const cb_user_row *u, const char *needle) {
 
 // ---- the admin console's collections (store_priv.h) -------------------------------------
 
-static const char *const FAMILIES[] = { "USER", "EMAIL", "REFRESH", "GAME", "BOT", "SNAP", "CHAT", "SCAN" };
+// The platform's own families (its accounts' items, rows_auth.c), then the linked product's.
+static const char *const FAMILIES[] = { "USER", "EMAIL", "REFRESH" };
 #define N_FAMILIES (int)(sizeof FAMILIES / sizeof FAMILIES[0])
 
-const char *cb_store_collection(int i) { return i >= 0 && i < N_FAMILIES ? FAMILIES[i] : NULL; }
+const char *cb_store_collection(const cb_store_app *a, int i) {
+    if (i < 0) return NULL;
+    if (i < N_FAMILIES) return FAMILIES[i];
+    return a && i - N_FAMILIES < a->n_families ? a->families[i - N_FAMILIES].name : NULL;
+}
 
-bool cb_store_collection_pk(const char *c, const char *prefix, char *out, size_t cap) {
-    if (c && strcmp(c, CB_ADMIN_GAMES) == 0) c = "GAME";
-    for (int i = 0; c && i < N_FAMILIES; i++)
-        if (strcmp(FAMILIES[i], c) == 0) {
-            // SCAN is a whole partition; every other family is "<FAMILY>#...".
-            int k = snprintf(out, cap, "%s%s%s", c, strcmp(c, "SCAN") == 0 ? "" : "#", prefix ? prefix : "");
+bool cb_store_collection_pk(const cb_store_app *a, const char *c, const char *prefix, char *out, size_t cap) {
+    for (int i = 0; c && a && i < a->n_family_aliases; i++)
+        if (strcmp(a->family_aliases[i].alias, c) == 0) c = a->family_aliases[i].family;
+    for (int i = 0; c && cb_store_collection(a, i); i++)
+        if (strcmp(cb_store_collection(a, i), c) == 0) {
+            bool whole = i >= N_FAMILIES && a->families[i - N_FAMILIES].whole;
+            int k = snprintf(out, cap, "%s%s%s", c, whole ? "" : "#", prefix ? prefix : "");
             return k > 0 && (size_t)k < cap;
         }
     return false;

@@ -130,7 +130,7 @@ int main(void) {
     }
     cb_config cfg;
     char err[512];
-    if (cb_config_from_env(&cfg, err, sizeof err) != CB_OK) {
+    if (cb_config_load(&cfg, cb_main_app, err, sizeof err) != CB_OK) {
         cb_runtime_init_error(host, port, "Config", err);
         return 1;
     }

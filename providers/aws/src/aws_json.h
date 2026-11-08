@@ -225,10 +225,10 @@ bool dw_get_answer_of_put(const dw_req *put, cb_buf *out);
 
 // Admin.
 // The key families, as the console's collections ("USER", "GAME", ...).
-const char *dw_collection(int i);   // NULL past the last
-bool dw_collection_valid(const char *c);
+const char *dw_collection(const cb_store_app *a, int i);   // NULL past the last; a: the store's product
+bool dw_collection_valid(const cb_store_app *a, const char *c);
 // A page of a Scan over one family, pk beginning with family#prefix.
-void dw_scan_family(dw_req *r, const char *table, const char *family, const char *prefix, int limit, cb_span start);
+void dw_scan_family(dw_req *r, const cb_store_app *a, const char *table, const char *family, const char *prefix, int limit, cb_span start);
 // The item layer's key walk (item_keys): a page of a consistent Scan over the
 // whole table, keys only (Limit caps the items a page reads, so the pages stay
 // small enough to pace).
