@@ -6,7 +6,7 @@
 // application/grpc, te: trailers, grpc-timeout from the call's deadline, the
 // caller's metadata, the request as one length-prefixed message, and the
 // reply's message, grpc-status, grpc-message (percent-decoded) and
-// grpc-status-details-bin (base64-decoded: a google.rpc.Status, for the caller
+// grpc-status-details-bin (base64-decoded: a protobuf Status message, for the caller
 // to read) from the trailers, or from the headers of a trailers-only answer.
 //
 // An answer without a grpc-status is not gRPC (a proxy's error page, a 503

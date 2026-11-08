@@ -365,7 +365,8 @@ static void free_under_call(void) {
 
 static void origins(void) {
     static const char *const bad[] = { "ftp://x", "http://", "http://h:0", "http://h:99999", "http://h/path",
-                                       "https://[::1", "http://h:", "h:80" };
+                                       "https://[::1", "http://h:", "h:80",
+                                       "http://h:+80", "http://h: 80", "http://h:80x", "http://h:-1" };
     for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
         cb_h2_channel *ch = NULL;
         T_EQ_INT(cb_h2_channel_new(bad[i], NULL, &ch), CB_E_INVALID);

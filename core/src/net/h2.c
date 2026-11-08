@@ -15,6 +15,7 @@
 #include "net/h2.h"
 
 #include "net/tls.h"
+#include "num_parse.h"
 #include "util/clock.h"
 #include "util/err.h"
 #include "util/log.h"
@@ -470,9 +471,8 @@ int cb_h2_channel_new(const char *origin, const cb_h2_opts *opts, cb_h2_channel 
         host[hl] = 0;
     }
     if (colon) {
-        char *end;
-        long p = strtol(colon + 1, &end, 10);
-        if (*end || p < 1 || p > 65535 || end == colon + 1) return CB_E_INVALID;
+        int64_t p;
+        if (!num_parse_i64_cstr(colon + 1, 1, 65535, &p)) return CB_E_INVALID;   // digits alone
         port = (int)p;
     }
     cb_h2_channel *ch = calloc(1, sizeof *ch);
