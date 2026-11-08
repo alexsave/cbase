@@ -939,3 +939,9 @@ The module checks:
 - oidc.c: cb_oidc_seal's nonce drawn with RAND_bytes again, as before the fix -> `every_draw_has_one_owner` violations == 0 (core/src/auth/oidc.c:569: RAND_bytes).
 - unit_random_gate.c: a device in a literal not reported -> `the_scanner_sees_each_kind` "/dev/urandom" and "/dev/random" == 1.
 - unit_random_gate.c: a name's home ignored, so every RAND_bytes and getentropy is allowed -> `the_scanner_sees_each_kind` planted RAND_bytes == 1, getentropy == 3 in the planted line, RAND_bytes in the client host == 1.
+
+## The release number (2026-11-08: VERSION, ctx.h CB_VERSION, unit_version, ci.yml's version job)
+
+- VERSION: 0.1.2 with CB_VERSION at 0.1.1 -> `cb_version_is_the_version_file` CB_VERSION == v.
+- VERSION: "v0.1.1" (the tag's spelling) -> `cb_version_is_the_version_file` shape && dots == 2.
+- ci.yml version job's script: TAG=v0.1.0 against VERSION 0.1.1 -> exit 1, "tag v0.1.0, but VERSION says v0.1.1".

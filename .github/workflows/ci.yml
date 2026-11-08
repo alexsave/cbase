@@ -8,6 +8,7 @@ name: ci
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request: {}
   workflow_dispatch: {}
 
@@ -20,6 +21,21 @@ permissions:
   contents: read
 
 jobs:
+  # A release tag names the release VERSION holds (core/test/unit_version.c holds CB_VERSION to the
+  # same file): pushing v0.2.0 with VERSION still at 0.1.9 fails here.
+  version:
+    name: the tag is v<VERSION>
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          want="v$(cat VERSION)"
+          if [ "$TAG" != "$want" ]; then echo "tag $TAG, but VERSION says $want" >&2; exit 1; fi
+          echo "tag $TAG is VERSION"
+
   # Linux: the platform the shipped binaries run on.
   check:
     name: make check (ubuntu-24.04)
