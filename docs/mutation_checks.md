@@ -882,3 +882,54 @@ The id-miss rule (`foolish/server/src/app/misses.h`, `CB_LIMIT_ID_MISS_IP`) and 
 
 - store_sqlite.c sq_admin_query: a write statement moves no change count (main before the fix) -> `an_admin_write_is_backed_up` cb_backup_once(b) == 1 after the UPDATE (got 0), g_puts == 2 and the bucket's copy holds n = 7.
 - store_sqlite.c sq_admin_query: every statement counts, reads too -> `an_admin_write_is_backed_up` cb_backup_once(b) == 0 after the two SELECTs (got 1).
+
+## HTTP/2 and gRPC (2026-11-08: grpc.c, h2.c, h2_session.c's open gate, the fuzzers, the module checks)
+
+unit_hpack and unit_h2_session were mutation-checked when they were written (81c64811, 712a745e).
+These are the records of what came after.
+
+grpc.c, against unit_grpc (51 mutants: 49 killed, 2 that do not compile, 1 survivor):
+- cb_grpc_reply_init: code 0, not -1 -> `echo` fresh.code == -1.
+- cb_grpc_timeout: ms < 0 floor, seconds truncated, hours truncated, `<` for `<=` at each unit, no 8-digit hour cap -> `timeout_units` b == cases[i].want.
+- cb_grpc_unframe: a 4-byte prefix taken -> `unframe` cut prefix == CB_E_INVALID; only flag bit 0 tested -> the reserved bit == CB_E_INVALID; the length checked against the prefix's bytes too -> cut message == CB_E_INVALID; a second message taken -> two == CB_E_INVALID; the top length byte shifted 16 -> top == CB_E_INVALID; the low byte shifted 9 -> big == CB_OK; *has true on no message -> !has.
+- percent-decode: a-f off by one, A-F dropped, `i + 2 <= n` or `i + 1 < n`, i += 1, hi << 3 -> `percent` (the "%4" of a cut length, the decoded strings).
+- the trailers-then-headers lookup, either half dropped -> `fail` (trailers-only) and `echo` (trailers).
+- the metadata cap off by one, a negative count let through -> `meta` == CB_E_INVALID; the copy of the metadata dropped -> `meta` the server's echo.
+- the 4 GB request check dropped -> `raw` (a crash reading 4 GB from ""), the default grpc-timeout lost -> `meta` "|10000m|indexed", te "trailerz" -> `echo` (the session refuses it).
+- the request prefix's length bytes (>> 8, >> 16, the low byte) -> `echo` r.code == CB_GRPC_OK (lib_h2_srv checks the prefix); the body sent as one piece -> `echo`.
+- max_reply without its 5 prefix bytes -> `not_grpc` the 8-byte echo == CB_OK.
+- http_status not set -> `echo`; not-gRPC code 0 -> `not_grpc` r.code == -1.
+- the status parse: empty allowed, four digits allowed, either digit bound dropped, code * 16, code not stored -> `raw` and `echo`.
+- grpc-message not decoded, its NUL counted -> `fail`, `echo`; bad base64 details taken, details length not set -> `raw`, `fail`.
+- a gRPC status on an HTTP error read as messages -> `raw` the 503; OK without a message taken -> `raw`; an error's message handed back -> `raw` !r.has_msg.
+- Survives: cb_grpc_reply_free not freeing the details. A leak, which only LeakSanitizer (Linux) sees; macOS has none.
+- Equivalent, and gone: the body's piece count `req_len ? 2 : 1` (the session skips an empty piece), now always 2.
+
+h2.c, against unit_h2 (32 mutants: 27 killed, 2 gone with the checks they mutated, 3 argued):
+- the retry without "unprocessed" -> `failures` the reset is sent once; without "attempt == 0" -> `failures` /refuse == CB_E_IO; never -> `failures` refuse-once sent twice; unprocessed answered as OK -> `failures` /refuse == CB_E_IO.
+- the response not reset before a retry -> `failures` refuse-after-headers r.n_headers == 1.
+- no cancel on the deadline -> `failures` (the server's RST_STREAM count, and a crash on the dead call's record).
+- the body cap `>=` -> `big_bodies` /big/100 under 100 == CB_OK; no default cap, a 4 MB default -> `echo_both_ways`, `big_bodies`; TOO_BIG not reported -> `big_bodies` r.why.
+- why_of: GOAWAY or RESET reported as PROTOCOL -> `failures` /goaway, /reset.
+- idle close never, the idle clock never restarted, restarted every turn, no default -> `idle_close` dials, `echo_both_ways` dials == 1.
+- the drained connection never exits -> `idle_close` h2srv_closes == 1.
+- no host binding -> `refusals` 127.0.0.1 == CB_E_IO; ALPN not required -> `refusals` the http/1.1 server; ALPN offering http/1.1 too -> `echo_both_ways` offer == "\x02h2".
+- the connect deadline not clamped to the call's -> `refusals` the silent TLS peer ends within 2.5 s; its why always TLS -> `refusals` r.why == CB_H2_WHY_TIMEOUT; a refused dial reported as a timeout -> `refusals` CB_H2_WHY_CONNECT.
+- no close on a closing channel, no wake-up in on_end -> hung (killed at 150 s).
+- trailers not counted -> `echo_both_ways` the trailer; conn_fail not idempotent -> `free_under_call` c.why == CB_H2_WHY_CLOSED.
+- Gone: the timeout test's "&& !k.done" (a false wait_until never released the lock), the status parse's "vl == 3" (the session passes :status only as three digits).
+- Argued: the retry's "left_ms(deadline)" is reached only in a scheduling race (the answer lands as the deadline passes), and then the second attempt ends at once on the passed deadline. get_conn's accepting test is covered by submit's CB_E_STATE fallback by design (the comment there says which vector each covers). That fallback's "attempt--" matters only when a connection runs out of stream ids, which a test cannot reach in reasonable time.
+
+h2_session.c's open gate (may_open), against unit_h2_session and unit_h2:
+- got_settings dropped -> `response` no HEADERS before the server's SETTINGS, and unit_h2 `concurrency` h2srv_max_open <= 4.
+- the stream limit `<=` -> `concurrency` the HEADERS count.
+- Gone: the goaway_recv and goaway_sent tests, which a GOAWAY's draining of the wait list made unreachable.
+
+The fuzzers, against their checked-in corpora (core/fuzz/corpus/hpack, h2_session):
+- hpack.c: the encoder writes a never-indexed field as a plain literal, or as a static index -> fz_hpack's round trip (the never-indexed seeds).
+- hpack.c: the decoder reports never-indexed as false -> survives fz_hpack (decoder and round trip agree with each other); unit_hpack's field text ("name:! value") is what holds it.
+- h2_session.c: recv answers CB_OK on a dead session, fail() does not mark it dead, a waiting stream's on_end called twice -> fz_h2_session's invariants.
+
+The module checks:
+- make h2-alacarte: grpc.c calling a provider function -> the link fails; a module object on the forbidden list -> check.sh names the shared symbols.
+- make h2-interop: the decoder's dynamic table index off by one, the Huffman flag ignored -> the first echo fails.
