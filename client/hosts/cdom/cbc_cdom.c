@@ -74,7 +74,9 @@ static void send_request(cbc_cdom *h, int n) {
     q->used = 1;
     const char *path = (const char *)h->req + sizeof r;
     const char *auth = path + r.path_len;
-    const uint8_t *body = (const uint8_t *)auth + r.auth_len;
+    // A borrowed body (cbc_call_ref) is the caller's, sent from where it is: never copied here, and
+    // cd_http_cb reads it during the call. Any other body follows the head in h->req.
+    const uint8_t *body = r.flags & CBC_RQ_REF ? cbc_req_body(&h->c, r.id) : (const uint8_t *)auth + r.auth_len;
     // "Authorization: <auth>\nContent-Type: application/octet-stream\n", written behind the request
     // (cbc_next_request left CBC_CDOM_HDR_CAP for it, more than "Authorization: " and a token take)
     static const char AU[] = "Authorization: ", CT[] = "Content-Type: application/octet-stream\n";

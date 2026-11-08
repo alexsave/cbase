@@ -8,7 +8,8 @@
 //            the ms it answers (a cd_timer_cb)
 //   HTTP     each cbc_next_request to cd_http_cb (same origin, the path as the URL, "Bearer ..." as
 //            the Authorization header), answered by cbc_on_response (CD_HTTP_FAILED, and
-//            CD_HTTP_TIMEOUT past cfg.call_wait_ms: status 0)
+//            CD_HTTP_TIMEOUT past cfg.call_wait_ms: status 0); a CBC_RQ_REF request's body_len
+//            bytes are the caller's, sent from cbc_req_body (cbc_call_ref), never copied
 //   timer    one cd_timer_cb after cbc_due_ms, calling cbc_tick, then drain both outputs again; at
 //            most one armed for the ticks and one for the reopen, and none re-armed at 0 ms while
 //            the socket's close is on its way (the close's report pumps)
@@ -47,7 +48,8 @@ typedef void (*cbc_cdom_event_fn)(void *ctx, cbc *c, const cbc_event *e, const u
 typedef void (*cbc_cdom_ready_fn)(void *ctx, cbc *c);
 
 #define CBC_CDOM_FRAME_CAP 8192    // a HELLO (a token, SF_TOKEN_MAX) or a REQ (a path and an arena's body)
-#define CBC_CDOM_REQ_CAP   16384   // cbc_req_hdr, a path, "Bearer <jwt>", a body (an OIDC sign-in's ID token)
+#define CBC_CDOM_REQ_CAP   16384   // cbc_req_hdr, a path, "Bearer <jwt>", an arena's body (an OIDC sign-in's
+                                   // ID token); a borrowed body is never in it
 #define CBC_CDOM_HDR_CAP   2200    // the request's header lines, written behind it in the same buffer
 #define CBC_CDOM_SESS_CAP  4096    // the session's bytes: two tokens, a user id, a name
 #define CBC_CDOM_TEXT_CAP  5464    // their base64: 4 * ceil(CBC_CDOM_SESS_CAP / 3)
