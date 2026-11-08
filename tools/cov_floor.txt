@@ -54,9 +54,6 @@ zero core/src/core_json.c cb_js_admin_deleted STANDALONE: reached only by foolis
 zero core/src/core_json.c cb_js_admin_written STANDALONE: reached only by foolish's suites before cbase stood alone; no cbase test calls it yet
 zero core/src/core_json.c cb_js_admin_logs_add STANDALONE: reached only by foolish's suites before cbase stood alone; no cbase test calls it yet
 zero core/src/edge.c cb_edge_marks STANDALONE: reached only by foolish's suites before cbase stood alone; no cbase test calls it yet
-zero core/src/handler.c h_ready STANDALONE: reached only by foolish's suites before cbase stood alone; no cbase test calls it yet
-zero core/src/ingress_process.c sched_task STANDALONE: reached only by foolish's suites before cbase stood alone; no cbase test calls it yet
-zero core/src/ingress_process.c on_sched_timer STANDALONE: reached only by foolish's suites before cbase stood alone; no cbase test calls it yet
 zero core/src/jobs.c cb_job_start_after STANDALONE: reached only by foolish's suites before cbase stood alone; no cbase test calls it yet
 zero core/src/net/loop.c cb_loop_running STANDALONE: reached only by foolish's suites before cbase stood alone; no cbase test calls it yet
 zero core/src/net/loop.c cb_loop_posts STANDALONE: reached only by foolish's suites before cbase stood alone; no cbase test calls it yet
@@ -73,6 +70,7 @@ zero core/src/store/store.c cb_store_mark_busy STANDALONE: reached only by fooli
 zero core/src/store/store.c side_main STANDALONE: reached only by foolish's suites before cbase stood alone; no cbase test calls it yet
 zero core/src/store/store.c cb_store_side_start STANDALONE: reached only by foolish's suites before cbase stood alone; no cbase test calls it yet
 zero core/src/store/store.c cb_store_side_join STANDALONE: reached only by foolish's suites before cbase stood alone; no cbase test calls it yet
+zero core/src/spawn.c child_report RUNS IN THE CHILD: between fork and exec, where gcov counts nothing (the child execs or _exits, and neither writes its counters); unit_spawn no_such_program reaches it
 zero providers/aws/src/aws_json.c dw_host STANDALONE: reached only by foolish's suites before cbase stood alone; no cbase test calls it yet
 zero providers/aws/src/aws_json.c ux_val_b STANDALONE: reached only by foolish's suites before cbase stood alone; no cbase test calls it yet
 zero providers/aws/src/aws_json.c ux_remove STANDALONE: reached only by foolish's suites before cbase stood alone; no cbase test calls it yet

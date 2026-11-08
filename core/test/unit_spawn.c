@@ -293,6 +293,31 @@ static void grandchild_dies_with_group(void) {
     rig_close();
 }
 
+// A descendant that LEFT the group (setpgrp) and holds stdout open is not the leader's to kill and
+// does not hold the result: once the leader has ended, its pipes get grace_ms, then close, and what
+// was written before is the output. The descendant says it has left (a file it makes) before the
+// leader exits, so the case cannot pass on a descendant the group kill reached first.
+static void a_descendant_outside_the_group_is_drained(void) {
+    int64_t t0 = cb_mono_ms();
+    res *x = run1((cb_spawn_opts){
+        .argv = SH("f=\"$TMPDIR/cb-drain-$$\"; rm -f \"$f\"; "
+                   "/usr/bin/perl -e 'setpgrp(0,0); open(F, \">\", $ARGV[0]) or die; close F; sleep 30' \"$f\" & "
+                   "n=0; while [ ! -e \"$f\" ] && [ $n -lt 200 ]; do sleep 0.05; n=$((n+1)); done; "
+                   "rm -f \"$f\"; echo $!; echo done"),
+        .env = ARGV("PATH=/usr/bin:/bin", "TMPDIR=/tmp"),
+        .grace_ms = 300 });
+    int64_t took = cb_mono_ms() - t0;
+    T_EQ_INT(x->r.exit_code, 0);
+    T_EQ_INT(x->r.killed, CB_SPAWN_NOT_KILLED);
+    T_CHECK(strstr(x->out, "done\n") != NULL);
+    int gc = parse_pid(x->out);
+    T_CHECK(gc > 0 && kill(gc, 0) == 0);   // still running: it left the group, so no kill reached it
+    T_CHECK(took >= 300);                  // the pipes were given their grace
+    T_CHECK(took < 10000);                 // and not the descendant's 30 s
+    if (gc > 0) { kill(gc, SIGKILL); T_CHECK(gone(gc)); }
+    rig_close();
+}
+
 static void env_isolated(void) {
     setenv("CB_SPAWN_SECRET", "ours", 1);
     res *x = run1((cb_spawn_opts){ .argv = ARGV("/usr/bin/env"), .env = ARGV("A=1", "B=two") });
@@ -498,6 +523,7 @@ int main(void) {
     T_RUN(timeout_kills);
     T_RUN(caller_kill);
     T_RUN(grandchild_dies_with_group);
+    T_RUN(a_descendant_outside_the_group_is_drained);
     T_RUN(env_isolated);
     T_RUN(cwd_given);
     T_RUN(no_such_program);
