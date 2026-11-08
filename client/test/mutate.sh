@@ -1,17 +1,22 @@
 #!/bin/bash
 # mutate.sh - the mutation check of cbase/client: every mutant in test/mutants.py is applied, the
 # suite that covers it is run, and the mutant must turn it red. The C mutants run the unit tests
-# (the object deleted first: make compares whole seconds, so a source rewritten in the same second
-# as its object would not rebuild); the TS mutants run the shim's tests against the copy they
-# import. Every file is restored from a copy taken first, never from git.
+# and the host suite (the object deleted first: make compares whole seconds, so a source rewritten
+# in the same second as its object would not rebuild); the shared host's mutants run the host
+# suite on the native host; the TS mutants run the shim's tests against the copy they import.
+# Every file is restored from a copy taken first, never from git.
 #
 #   make -C cbase/client ts && cbase/client/test/mutate.sh
 set -u
+export PYTHONDONTWRITEBYTECODE=1   # no __pycache__ beside mutants.py
 D=$(cd "$(dirname "$0")/.." && pwd)
 cd "$D"
 T=$(mktemp -d)
 cp src/client.c "$T/client.c"
-trap 'cp "$T/client.c" src/client.c; cp ts/socket.ts build/ts/socket.ts; rm -f build/obj/host/src/client.o; rm -rf "$T"' EXIT
+cp hosts/common/cbc_host.c "$T/cbc_host.c"
+CORE_O=build/obj/host/_root/client/src/client.o
+HOST_O=build/obj/host-test/_root/client/hosts/common/cbc_host.o
+trap 'cp "$T/client.c" src/client.c; cp "$T/cbc_host.c" hosts/common/cbc_host.c; cp ts/socket.ts build/ts/socket.ts; rm -f "$CORE_O" "$HOST_O"; rm -rf "$T"' EXIT
 apply() {  # kind index -> prints the name
   python3 - "$1" "$2" <<'PY'
 import sys
@@ -27,12 +32,23 @@ bad=0
 for ((i = 0; i < $(count C); i++)); do
   cp "$T/client.c" src/client.c
   name=$(apply C "$i") || { echo "BAD MUTANT C $i"; bad=1; continue; }
-  rm -f build/obj/host/src/client.o build/test/unit_client
-  out=$(make -s build/test/unit_client 2>&1 && ./build/test/unit_client 2>&1)
-  if echo "$out" | grep -q '^FAIL '; then echo "killed  : $name <- $(echo "$out" | grep '^FAIL ' | head -1 | sed 's/.*\[\(.*\)\].*/\1/')"
+  rm -f "$CORE_O" build/test/unit_client build/test/unit_host_posix
+  out=$(make -s build/test/unit_client build/test/unit_host_posix 2>&1 && { ./build/test/unit_client; ./build/test/unit_host_posix; } 2>&1)
+  if echo "$out" | grep -q '^FAIL .*\['; then echo "killed  : $name <- $(echo "$out" | grep '^FAIL .*\[' | head -1 | sed 's/.*\[\(.*\)\].*/\1/')"
   else echo "SURVIVED: $name"; bad=1; fi
 done
 cp "$T/client.c" src/client.c
+rm -f "$CORE_O"
+for ((i = 0; i < $(count HOST); i++)); do
+  cp "$T/cbc_host.c" hosts/common/cbc_host.c
+  name=$(apply HOST "$i") || { echo "BAD MUTANT HOST $i"; bad=1; continue; }
+  rm -f "$HOST_O" build/test/unit_host_posix
+  out=$(make -s build/test/unit_host_posix 2>&1 && ./build/test/unit_host_posix 2>&1)
+  if echo "$out" | grep -q '^FAIL .*\['; then echo "killed  : $name <- $(echo "$out" | grep '^FAIL .*\[' | head -1 | sed 's/.*\[\(.*\)\].*/\1/')"
+  else echo "SURVIVED: $name"; bad=1; fi
+done
+cp "$T/cbc_host.c" hosts/common/cbc_host.c
+rm -f "$HOST_O"
 for ((i = 0; i < $(count TS); i++)); do
   cp ts/socket.ts build/ts/socket.ts
   name=$(apply TS "$i") || { echo "BAD MUTANT TS $i"; bad=1; continue; }

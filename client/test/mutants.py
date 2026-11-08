@@ -5,7 +5,7 @@ C = [
   ('src/client.c', 'jitter: no floor', 'uint32_t w = lo + (uint32_t)(rng_splitmix64(&c->rng) % (hi - lo + 1));', 'uint32_t w = (uint32_t)(rng_splitmix64(&c->rng) % (hi + 1));'),
   ('src/client.c', 'READY keeps the last wait', '        c->reconnect_prev = 0;\n        ev_add(c, CBC_EV_READY);', '        ev_add(c, CBC_EV_READY);'),
   ('src/client.c', 'ping one ms late', 'now - c->last_out >= (int64_t)c->cfg.ping_ms) {', 'now - c->last_out > (int64_t)c->cfg.ping_ms) {'),
-  ('src/client.c', 'no half-open close', 'if (c->ping_at && now - c->ping_at >= (int64_t)c->cfg.pong_ms) return -1;   // half-open', ''),
+  ('src/client.c', 'no half-open close', 'if (c->ping_at && now - c->ping_at >= (int64_t)c->cfg.pong_ms) return close_now(c);   // half-open', ''),
   ('src/client.c', 'a frame does not clear the probe', '    c->ping_at = 0;   // any frame answers the probe\n', ''),
   ('src/client.c', 'refusal backoff does not double', 's->backoff * 2 < c->cfg.retry_max_ms ? s->backoff * 2 : c->cfg.retry_max_ms', 's->backoff'),
   ('src/client.c', 'unanswered SUB never asked again', '           (s->state == SUB_SENT && s->at + (int64_t)c->cfg.ack_wait_ms <= now);', '           (s->state == SUB_SENT && s->at + (int64_t)c->cfg.ack_wait_ms <= now - 1000000000);'),
@@ -16,7 +16,7 @@ C = [
   ('src/client.c', 'forced refresh not rate-limited', '(c->forced_last == 0 || now - c->forced_last >= (int64_t)c->cfg.force_refresh_ms)', '1'),
   ('src/client.c', 'a used refresh does not sign out', '(code == CBW_ACCOUNT_E_BAD_REFRESH || code == CBW_ACCOUNT_E_REFRESH_USED)', '(code == CBW_ACCOUNT_E_BAD_REFRESH)'),
   ('src/client.c', 'a failed refresh goes again at once', '    c->refresh_at = now + backoff_ms(c, c->refresh_tries);\n', '    c->refresh_at = now;\n'),
-  ('src/client.c', 'calls never ride the socket', '    return k->kind != K_APP || (k->flags & CBC_C_HTTP) || c->cfg.anonymous || !c->user.signed_in;', '    return 1 || k->kind != K_APP || (k->flags & CBC_C_HTTP) || c->cfg.anonymous || !c->user.signed_in;'),
+  ('src/client.c', 'calls never ride the socket', '    return k->kind != K_APP || (k->flags & CBC_C_HTTP) || k->ref || c->cfg.anonymous || !c->user.signed_in;', '    return 1 || k->kind != K_APP || (k->flags & CBC_C_HTTP) || k->ref || c->cfg.anonymous || !c->user.signed_in;'),
   ('src/client.c', 'a lost read is not sent again', '    if ((k->flags & CBC_C_READ) && k->tries + 1 < CBC_TRIES) {', '    if (0) {'),
   ('src/client.c', 'one try more', '#define CBC_TRIES        4 ', '#define CBC_TRIES        5 '),
   ('src/client.c', 'no socket-call timeout', '        if (k->state == CALL_SOCK && now - k->at >= (int64_t)c->cfg.call_wait_ms) call_lost(c, k, now, 0);', '        if (k->state == CALL_SOCK && now - k->at >= INT64_MAX) call_lost(c, k, now, 0);'),
@@ -25,7 +25,7 @@ C = [
   ('src/client.c', 'sign-out keeps the session on a refusal', '        call_done(c, k, status, 0, 0, 0, 0, 0);\n        session_end(c);', '        call_done(c, k, status, 0, 0, 0, 0, 0);\n        if (ok_status(status)) session_end(c);'),
   ('src/client.c', 'a session a byte over is taken', '    if (nlen > CBW_NAME_MAX || n - at != nlen) return -1;', '    if (nlen > CBW_NAME_MAX || n - at < nlen) return -1;'),
   ('src/client.c', 'HELLO with a stale token', '        if (token_due(c, now)) return 0;   // the refresh first (cbc_next_request)\n', ''),
-  ('src/client.c', 'HELLO waits forever', '    if (c->sock == SOCK_HELLO) return now - c->hello_at >= (int64_t)c->cfg.ack_wait_ms ? -1 : 0;', '    if (c->sock == SOCK_HELLO) return 0;'),
+  ('src/client.c', 'HELLO waits forever', '    if (c->sock == SOCK_HELLO) return now - c->hello_at >= (int64_t)c->cfg.ack_wait_ms ? close_now(c) : 0;', '    if (c->sock == SOCK_HELLO) return 0;'),
   ('src/client.c', 'arena offsets not moved', '            c->calls[i].at_arena = (uint16_t)(c->calls[i].at_arena - n);', '            ;'),
   ('src/client.c', 'due_ms forgets the PING', '        earliest(&t, c->ping_at ? c->ping_at + (int64_t)c->cfg.pong_ms : c->last_out + (int64_t)c->cfg.ping_ms);', ''),
   ('src/client.c', 'push span short', '        if (e) { e->push = p[1]; e->off = 0; e->len = (uint32_t)n; }', '        if (e) { e->push = p[1]; e->off = 0; e->len = (uint32_t)n - 1; }'),
@@ -35,6 +35,24 @@ C = [
   ('src/client.c', 'reply span off by one', '    uint32_t off = 8, len = (uint32_t)f->body_len;', '    uint32_t off = 9, len = (uint32_t)f->body_len;'),
   ('src/client.c', 'a dead refresh keeps waiting calls', '            call_done(c, k, 401, CBW_WHY_AUTH, 0, 0, 0, 0);', '            ;'),
   ('src/client.c', 'second READY accepted', '        if (c->sock != SOCK_HELLO) { ev_add(c, CBC_EV_BAD); break; }', ''),
+  ('src/client.c', 'due_ms counts a call held for the refresh', '        else if (call_sendable(c, k, at)) earliest(&t, at);', '        else if (k->state == CALL_QUEUED || k->state == CALL_WAIT) earliest(&t, at);'),
+  ('src/client.c', 'an auth call goes out during the refresh', ' || !token_due(c, now);', ' || 1;'),
+  ('src/client.c', 'the socket counted while its close is out', '    if (c->closing) ready = 0;\n    else if', '    if (0) ready = 0;\n    else if'),
+  ('src/client.c', 'a close asked for twice', 'if (c->sock == SOCK_CLOSED || c->closing) return 0;', 'if (c->sock == SOCK_CLOSED) return 0;'),
+  ('src/client.c', 'the HTTP deadline ignores the body', ' + (uint32_t)(bn / (CBC_HTTP_MIN_BPS / 1000));', ';'),
+  ('src/client.c', 'no HTTP deadline off switch', '    if (c->cfg.http_wait_ms) h.wait_ms', '    h.wait_ms'),
+  ('src/client.c', 'a GET with a body taken', ' || (method == SF_METH_GET && bn) ||', ' ||'),
+]
+# The shared host (hosts/common/cbc_host.c), on the host suite (build/test/unit_host_posix).
+HC = 'hosts/common/cbc_host.c'
+HOST = [
+  (HC, 'the reopen armed after the events', '    h->reopen_timer = h->env->timer(h->ud, wait, on_reopen, h);\n    events(h, NULL);', '    events(h, NULL);\n    h->reopen_timer = h->env->timer(h->ud, wait, on_reopen, h);'),
+  (HC, 'the host invents the HTTP deadline', '    rq.wait_ms = r.wait_ms;', '    rq.wait_ms = h->c.cfg.call_wait_ms;'),
+  (HC, 'no timer while the close is out', '    if (due >= 0) h->tick_timer', '    if (due >= 0 && !h->c.closing) h->tick_timer'),
+  (HC, 'an opening socket nobody wants is kept', '        h->env->ws_close(h->ud, h->sock);\n        h->sock = 0;', '        (void)0;'),
+  (HC, 'no pump after a tick', '    events(h, NULL);\n    cbc_host_pump(h);\n}\n\nstatic void ws_open', '    events(h, NULL);\n}\n\nstatic void ws_open'),
+  (HC, 'no save on a session event', 'if (e->kind == CBC_EV_SESSION && !saved) { session_save(h); saved = 1; }', 'if (e->kind == CBC_EV_SESSION && !saved) { (void)session_save; saved = 1; }'),
+  (HC, 'a borrowed body sent from the head buffer', '    rq.body = r.flags & CBC_RQ_REF ? cbc_req_body(&h->c, r.id) : ', '    rq.body = '),
 ]
 # The page shim: applied to the copy the TS tests import (build/ts/socket.ts).
 TS = [
@@ -44,4 +62,5 @@ TS = [
   ('build/ts/socket.ts', 'no refusal body handed in', 'if ((wantBody || !ok) && buf.byteLength <= this.ioCap) {', 'if (wantBody && buf.byteLength <= this.ioCap) {'),
   ('build/ts/socket.ts', 'frames not sent', 'if (this.ws && this.ws.readyState === 1) this.ws.send(this.copyIo(0, n));', ';'),
   ('build/ts/socket.ts', 'no close on -1', '        if (ws) ws.close();\n        this.socketClosed();', '        this.ws = ws;'),
+  ('build/ts/socket.ts', 'no HTTP deadline', "cache: 'no-store', signal })", "cache: 'no-store' })"),
 ]
