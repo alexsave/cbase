@@ -1,12 +1,12 @@
 // router.h - which handler answers which request, and where it runs.
 //
 // A route is a method, a path pattern and a handler. Patterns are exact
-// ("/health") or a prefix ending in "/*" ("/v1/games/*" matches "/v1/games/ab12"
-// and "/v1/games/"). The longest matching pattern wins; an exact pattern beats a
+// ("/health") or a prefix ending in "/*" ("/v1/items/*" matches "/v1/items/ab12"
+// and "/v1/items/"). The longest matching pattern wins; an exact pattern beats a
 // prefix of the same length. Method "*" matches any method.
 //
 // WHERE A HANDLER RUNS. By default on the REQUEST POOL (util/pool.h): it may
-// block on SQLite, bcrypt or a game's lock, and the network loop keeps serving
+// block on SQLite, bcrypt or a document's lock, and the network loop keeps serving
 // everyone else meanwhile. CB_ROUTE_LOOP runs it on the loop thread instead:
 // required for a WebSocket upgrade (ws.h cb_ws_upgrade), and allowed for
 // handlers that only read memory (/health). A LOOP handler must never block.

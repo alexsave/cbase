@@ -1,7 +1,7 @@
 // boot.h - bringing a cb_ctx up and down: what both mains share.
 //
 // Order (and the reverse on the way down): the app's self-test, then the
-// provider's store, auth, the provider's realtime and bot kick, the router,
+// provider's store, auth, the provider's realtime and job start, the router,
 // the platform's routes and then the app's (cbase/app.h, cbase/provider.h). serve creates
 // its loop and pools BEFORE cb_boot (rt_local needs the loop) and its server
 // after; Lambda has neither.

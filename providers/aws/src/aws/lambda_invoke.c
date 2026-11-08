@@ -1,4 +1,4 @@
-// lambda_invoke.c - the async self-invoke that starts a bot drive (lambda_invoke.h).
+// lambda_invoke.c - the async self-invoke that starts a job (lambda_invoke.h).
 #include "lambda_invoke.h"
 
 #include "aws_call.h"

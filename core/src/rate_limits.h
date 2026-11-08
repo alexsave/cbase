@@ -1,6 +1,6 @@
 // rate_limits.h - the platform's rate limits on the requests that cost something: guessing a
-// password, making an account, refreshing a session, creating a game,
-// chatting, bumping a game (security findings H1, M7, M8), and asking after ids
+// password, making an account, refreshing a session, an app's costly writes
+// (creating, messaging, waking: security findings H1, M7, M8), and asking after ids
 // that name nothing.
 //
 // Held in memory, per process: under Lambda that is per warm container, so a
@@ -30,9 +30,9 @@ typedef enum {
     CB_LIMIT_SIGNUP_ALL,     // accounts made through this container, whoever asks (key "*"): sign-up's cost, bounded
     CB_LIMIT_REFRESH_IP,     // refreshes from one address
     CB_LIMIT_PASSWORD_USER,  // password changes by one account (two bcrypts each)
-    CB_LIMIT_CREATE_USER,    // games created by one account
+    CB_LIMIT_CREATE_USER,    // an app's creations by one account
     CB_LIMIT_CHAT_USER,      // chat messages by one account
-    CB_LIMIT_BUMP_USER,      // bumps (bot kicks) by one account
+    CB_LIMIT_BUMP_USER,      // an app's wake-ups (a job started on a request) by one account
     CB_LIMIT_ID_MISS_IP,     // lookups by id from one address that named nothing: taken on a miss only (the product
                              // says which lookups count and peeks before the ones a limited address may not make)
     CB_LIMIT_ADMIN_FAIL_IP,  // wrong console tokens from one address (finding L7): taken on a failure only

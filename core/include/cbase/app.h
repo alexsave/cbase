@@ -30,7 +30,7 @@ typedef struct {
 // answers CB_OK, CB_E_NOT_FOUND when there is nothing to do for the key (a
 // retry cannot help, so it is not a failure), or another CB_E_*.
 typedef struct {
-    const char *name;   // [a-z0-9_], at most CB_JOB_NAME_MAX: "bot_drive"
+    const char *name;   // [a-z0-9_], at most CB_JOB_NAME_MAX: "greet"
     int (*run)(cb_ctx *ctx, const char *key);
 } cb_job;
 
@@ -87,7 +87,7 @@ typedef struct {
 } cb_admin_panel;
 
 struct cb_app {
-    const char          *name;            // "foolish": the log tag, later the stack and the key namespace
+    const char          *name;            // "example": the log tag, later the stack and the key namespace
     const cb_route_list *const *routes;   // n_route_lists of them
     int                  n_route_lists;
     // Runs once at boot, before anything is served: CB_OK, or a CB_E_* with

@@ -230,7 +230,7 @@ static size_t skip_ws(cb_span s, size_t i) {
 // not closed. A quote closes the string unless an odd run of backslashes ends
 // right before it (each backslash escapes the byte after it, so a run pairs off
 // from its start): memchr finds the candidates, and a base64 blob, the bulk of
-// every game row, is crossed at memchr's speed instead of a byte at a time.
+// many a row, is crossed at memchr's speed instead of a byte at a time.
 // Linear: every backslash belongs to the run before one quote.
 static size_t skip_string_at(cb_span s, size_t i) {
     size_t from = i + 1;
@@ -408,8 +408,8 @@ static int literals(const char *tp) {
 // The template a key attribute's value fills, into o ("?" when none does: a
 // key the layout does not know, which the proof then shows). With `prefix`
 // (a begins_with or a bound) the value may stop part way. Of several that
-// fit, the one with the most literal slots: "E#" begins a rating's rank key,
-// not a two-slot "{}#{}".
+// fit, the one with the most literal slots: "E#{}#{}" before a two-slot
+// "{}#{}" for a value both fit.
 // The i-th template of key attribute attr: the platform's, then the product's (NULL past the last).
 static const char *key_template(const cb_store_app *a, int attr, int i) {
     int k = 0;
@@ -600,8 +600,8 @@ void dw_shape(const cb_store_app *a, const char *target, cb_span body, cb_buf *o
 // ---- one pass over an item ------------------------------------------------------------------
 //
 // An item decoder reads ten or more attributes, and `attr` finds each one by
-// walking the item from its start, crossing every blob before it: the game
-// row's state, roster and session log were walked a dozen times per read. The
+// walking the item from its start, crossing every blob before it: a large
+// row's blobs were walked a dozen times per read. The
 // index walks the item once, keeping each attribute's name, its typed value
 // and that value's first member ({"S": ...}: the type and its token), and the
 // decoders read the index.
@@ -760,7 +760,7 @@ dw_reason dw_cancel_reason(const char *body, size_t n, int index, bool *has_item
 // What a response's reader wants (Item, Items, ConsumedCapacity, ...) is a
 // member of its top-level object, and every response is read at least twice
 // (dw_consumed in `call`, then the operation's reader). cb_json_find walked
-// to each one validating every byte it passed, a game row's blobs included.
+// to each one validating every byte it passed, a row's blobs included.
 // dw_top_scan walks the top level once (dw_object_next, which crosses a blob
 // at memchr's speed) and the dw_top_ readers read the index; the body-taking
 // readers scan for themselves. On a valid document a reader finds what
@@ -967,8 +967,8 @@ static bool ux_iset(ux *u, const cb_av *v, cb_set_how how) {
 
 // The condition, its names and values registered in u, into out. false on a
 // clause that cannot be spelled. A clause comparing an attribute with the
-// very value an update sets it to reuses the set's ":<attribute>" (a rating's
-// reindex: "#gsi2sk <> :gsi2sk"), so the request has one value, not two.
+// very value an update sets it to reuses the set's ":<attribute>" (an index
+// key's rewrite: "#gsi2sk <> :gsi2sk"), so the request has one value, not two.
 static bool icond(ux *u, const cb_iwrite *x, cb_buf *out) {
     for (int i = 0; i < x->n_cond; i++) {
         const cb_iclause *c = &x->cond[i];
@@ -1235,7 +1235,7 @@ static bool item_read(cb_span item, cb_item *out, char *why, size_t why_cap) {
             ok = tok_b(tv, &bytes, &a.len);
             a.bytes = bytes;
         } else if (key_is(tk, "L")) {
-            // A list of strings (snapshots' player_ids); anything else in it is refused.
+            // A list of strings (a member list); anything else in it is refused.
             a.kind = CB_AV_SL;
             size_t lp = 0;
             cb_span e, et;
@@ -1986,8 +1986,8 @@ void cb_js_client_function_url_event(cb_buf *out, const char *bearer, int conten
         "{\"version\":\"2.0\",\"routeKey\":\"$default\",\"rawPath\":\"/v1/action\",\"rawQueryString\":\"\","
         "\"headers\":{\"accept\":\"*/*\",\"accept-encoding\":\"gzip, deflate, br, zstd\",\"accept-language\":\"en-US,en;q=0.9\","
         "\"authorization\":\"Bearer %s\",\"content-length\":\"%d\",\"content-type\":\"application/octet-stream\","
-        "\"host\":\"abcdefghijklmnopqrstuvwxyz012345.lambda-url.us-east-1.on.aws\",\"origin\":\"https://foolish.cards\","
-        "\"referer\":\"https://foolish.cards/\",\"sec-fetch-dest\":\"empty\",\"sec-fetch-mode\":\"cors\",\"sec-fetch-site\":\"cross-site\","
+        "\"host\":\"abcdefghijklmnopqrstuvwxyz012345.lambda-url.us-east-1.on.aws\",\"origin\":\"https://app.example.com\","
+        "\"referer\":\"https://app.example.com/\",\"sec-fetch-dest\":\"empty\",\"sec-fetch-mode\":\"cors\",\"sec-fetch-site\":\"cross-site\","
         "\"user-agent\":\"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36\","
         "\"via\":\"2.0 0123456789abcdef0123456789abcdef.cloudfront.net (CloudFront)\",\"x-amz-cf-id\":\"AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGhIjKlMnOpQr==\","
         "\"x-amzn-trace-id\":\"Root=1-670b1c2d-0123456789abcdef01234567\","

@@ -3,7 +3,7 @@
 // Ties the loop, the HTTP parser, the router, the request pool and the
 // WebSocket codec together. Owned by the loop thread: every function here is
 // loop-thread-only. Other threads reach a WebSocket by posting to the loop
-// (loop.h cb_loop_post), which is how realtime's publish calls get from a bot
+// (loop.h cb_loop_post), which is how realtime's publish calls get from a job
 // worker to a socket (rt_local.c keeps its sockets' ids).
 //
 // One connection at a time per socket: a request is parsed, its handler runs

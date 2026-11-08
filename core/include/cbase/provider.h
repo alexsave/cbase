@@ -5,7 +5,7 @@
 // them (serve's ingress over the DynamoDB store).
 //
 //   cb_provider_local   `cbase serve` (provider_local.c): SQLite, the
-//                       in-process MQTT hub, the bot pool, no edge
+//                       in-process MQTT hub, the job pool, no edge
 //   cb_provider_aws     `bootstrap` under Lambda (provider_aws.c): DynamoDB,
 //                       IoT Core, the async self-invoke, CloudFront
 //

@@ -7,7 +7,7 @@
 // throttle's backoff, the tally, the admin console's scans and PartiQL, and
 // the import's bulk mode; core_json.c or aws_json.c spells every request, so no DynamoDB
 // string appears here. The rows above it are written once for both backends
-// (rows_auth.c, rows_foolish.c: the CAS, the lease and the rest are there).
+// (rows_auth.c, and a product's own rows over the item layer).
 #include "store/store.h"
 #include "store/store_priv.h"
 #include "store/rows_auth.h"

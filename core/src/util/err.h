@@ -9,8 +9,8 @@
 
 #define CB_OK            0
 #define CB_E_NOTIMPL   (-1)   // a stub: the module has not been built yet
-#define CB_E_NOT_FOUND (-2)   // no such row, game, user, route
-#define CB_E_CONFLICT  (-3)   // a unique key is taken (an email, a game id)
+#define CB_E_NOT_FOUND (-2)   // no such row, document, user, route
+#define CB_E_CONFLICT  (-3)   // a unique key is taken (an email, an id)
 #define CB_E_INVALID   (-4)   // the input does not parse or breaks a rule
 #define CB_E_IO        (-5)   // a socket or file failed
 #define CB_E_NOMEM     (-6)   // an allocation failed

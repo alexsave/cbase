@@ -9,11 +9,10 @@
 // WebSockets get 1001, then the process exits 0.
 //
 // THE SCHEDULES. Under Lambda, EventBridge Scheduler invokes each of the
-// app's schedules (cbase/app.h; foolish's bot scan every minute); serve has
+// app's schedules (cbase/app.h); serve has
 // no scheduler, so a loop timer per schedule submits it to the request pool
 // every every_ms (divided by CBASE_CLOCK_SPEEDUP), the store never touched on
-// the loop thread. Foolish's scan catches a drive that a kick lost, as
-// bot-heartbeat did.
+// the loop thread. An app's schedule is how it catches a job a start lost.
 //
 // The startup line the smoke test waits for, on stderr:
 //   ... INFO  serve: listening on 127.0.0.1:<port>

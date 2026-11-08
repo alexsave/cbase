@@ -63,7 +63,7 @@ typedef struct cb_config {
     // CBASE_ALLOWED_ORIGINS: "*" (default) or a comma list of origins echoed in
     // Access-Control-Allow-Origin.
     char allowed_origins[1024];
-    // CBASE_PUBLIC_URL: the URL clients use (https://api.foolish.cards), for
+    // CBASE_PUBLIC_URL: the URL clients use (https://api.example.com), for
     // logs and the admin console. Default http://<listen>.
     char public_url[512];
     // CBASE_PUBLIC_URL was given (not defaulted from CBASE_LISTEN): `cbase

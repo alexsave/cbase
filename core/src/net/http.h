@@ -42,7 +42,7 @@ typedef struct cb_http_req {
     char        method[16];       // "GET", "POST", ...: the text; compare meth, not this
     uint8_t     meth;             // CB_M_*, set with `method` by cb_http_parse; CB_M_NONE for a hand-built one
     const char *path;             // "/rest/v1/player_views": raw (not percent-decoded), no query
-    const char *query;            // "select=view&game_id=eq.abc": raw, "" when none
+    const char *query;            // "select=view&id=eq.abc": raw, "" when none
     int         minor;            // HTTP/1.<minor>
     cb_http_header headers[CB_HTTP_MAX_HEADERS];
     int         n_headers;

@@ -4,8 +4,8 @@
 // the invocation to end, and the runtime takes the next event only when the
 // process asks for it. So an HTTP invocation answers first and then does what
 // its caller does not wait for (main_lambda.c): whatever the app deferred
-// (foolish: each commit's pushes, app/fanout.h, and the bot drives a move or
-// a meta wakes, app/bots.h), then the edge cache's invalidation (app/edge.h).
+// (a product's pushes after a commit, the jobs a request wakes), then the edge
+// cache's invalidation (edge.h).
 //
 // cb_after_begin opens the window for this thread; while it is open
 // cb_after_defer queues a step, in call order, and cb_after_run runs them in
@@ -16,7 +16,7 @@
 // ORDER. The queue is FIFO and cb_after_run drains it on the thread that
 // filled it before that thread takes another event; under Lambda that thread
 // is the only one that commits. A step that must keep an order of its own
-// (foolish's pushes, in a game's commit order) takes its own lock.
+// (a product's pushes, in a document's commit order) takes its own lock.
 //
 // LOSS. A step the queue cannot hold (no memory) is refused, and its caller
 // does it at once: late is better than lost.

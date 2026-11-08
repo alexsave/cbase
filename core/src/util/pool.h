@@ -1,9 +1,9 @@
 // pool.h - a fixed set of worker threads draining one FIFO of tasks.
 //
 // cbase runs two: the REQUEST pool, where every HTTP handler that may block
-// (SQLite, bcrypt, a game's lock) runs so the network loop never waits, and the
-// BOT pool (app/bots_sched.h), where the kernel's solvers run so a slow bot
-// never delays a human's request. A task is a function and a pointer; it owns
+// (SQLite, bcrypt, a document's lock) runs so the network loop never waits, and the
+// JOB pool, where an app's jobs (cbase/app.h cb_job) run so a slow job never
+// delays a request. A task is a function and a pointer; it owns
 // the pointer.
 #ifndef CB_POOL_H
 #define CB_POOL_H

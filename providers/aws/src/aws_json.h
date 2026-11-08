@@ -40,32 +40,16 @@
 //
 //   pk                 sk                 what (GSI keys)
 //   USER#<id>          PROFILE            the account (GSI2 USERS / <created>#<id>)
-//   USER#<id>          RATING             the leaderboard row (GSI2 RATINGS / E#<rank>#<id>, only
-//                                         once games_played > 0: a sparse, rating-ordered key)
 //   EMAIL#<email>      USER               the user id; signup's uniqueness
 //   (the next three are store/rows_auth.c's, through the item layer)
 //   AUTHFAIL#<email>   FAILS              failed sign-ins at the account (auth.h CB_AUTH_FAIL_*; TTL an hour)
 //   REFRESH#<hash>     TOKEN              a refresh token (GSI1 USERREFRESH#<user>; TTL its session's
 //                                         end, a week once spent; rows before sessions also GSI2 SESSION#)
 //   SESSION#<id>       SESSION            a session: revoked, its absolute end (TTL)
-//   GAME#<id>          ROW                the game
-//   GAME#<id>          MEMBER#<user>      a seated human (GSI1 USERGAMES#<user> / <updated>#<game>)
-//   GAME#<id>          BOT#<bot>          a seated bot
-//   BOT#<id>           BOT                a bot and its rating (GSI2 BOTS / <id>)
-//   SNAP#<id>          SNAP               a replay (GSI1 GAMESNAPS#<game> / <created>#<id>)
-//   SNAP#<id>          PLAYER#<user>      the replay again, once per player (GSI1 as above,
-//                                         GSI2 PLAYER#<user> / <created>#<id>)
-//   CHAT#<game>        <created>#<id>     a chat message (GSI1 USERCHAT#<user> / <created>#<id>)
-//   SCAN               GAME#<id>          present while a bot can act (table_bots_due): the
-//                                         heartbeat's partition, the bot lease, row_version
+//   and a product's own families after these (store.h cb_store_app families and key_templates),
+//   its rows written over the item layer (items.h).
 //
-// Times in sort keys are 15-digit zero-padded ms so they sort as text. A
-// rating's GSI2 sort key is "E#" + (2147483647 - rating) as 10 zero-padded
-// digits + "#" + the user id, so a forward Query is the leaderboard (highest
-// first, then user id) and a Limit bounds it; a row with no games carries no
-// GSI2 key and is not in the index at all. The "E#" prefix keeps the Query
-// off the rows written before this layout (GSI2 RATINGS / <id>), which
-// cbase-import --reindex-ratings rewrites once.
+// Times in sort keys are 15-digit zero-padded ms so they sort as text.
 // The index names and the TTL attribute the table must be created with.
 // providers/aws/ops/cbase.yaml spells them too; providers/aws/test/unit_dynamo.c reads the template and
 // fails when the two disagree.
@@ -124,7 +108,7 @@ dw_reason dw_cancel_reason(const char *body, size_t n, int index, bool *has_item
 // or on malformed input.
 // THE KEY-CAPTURE PROOF (docs/PLATFORM.md stages 5 and 6): the shape of one
 // request as lines appended to out, each "<Op> <what>", with every key value
-// normalized (uuid, game id, number, email: placeholders; upper-case words
+// normalized (uuid, id, number, email: placeholders; upper-case words
 // kept), every attribute name and type, and the expression names and values
 // as sorted sets, so two requests that touch the same keys and attributes
 // read the same however their expressions are spelled. A transaction or a
@@ -225,7 +209,7 @@ bool dw_item_keys(cb_span item, char *pk, size_t pk_cap, char *sk, size_t sk_cap
 bool dw_get_answer_of_put(const dw_req *put, cb_buf *out);
 
 // Admin.
-// The key families, as the console's collections ("USER", "GAME", ...).
+// The key families, as the console's collections ("USER", "EMAIL", ...).
 const char *dw_collection(const cb_store_app *a, int i);   // NULL past the last; a: the store's product
 bool dw_collection_valid(const cb_store_app *a, const char *c);
 // A page of a Scan over one family, pk beginning with family#prefix.
@@ -259,9 +243,9 @@ bool dw_statement_reads(const char *statement);
 //              (lowercase names; repeated values comma-joined), cookies (joined
 //              into one "cookie" header, "; " between), body, isBase64Encoded.
 //              Decoded into a cb_http_req for cb_handle.
-//   SCHEDULE   the bot scan: an EventBridge event ("source":"aws.events"), or
-//              the JSON string literal "scan" (the Scheduler's configured input).
-//   BOT_DRIVE  our self-invoke: the JSON string literal "bot_drive:<game id>".
+//   SCHEDULE   an app's schedule: an EventBridge event ("source":"aws.events"), or
+//              the schedule's name as a JSON string literal (the Scheduler's configured input).
+//   JOB        our self-invoke: the JSON string literal "<job>:<key>".
 //   IOT_AUTH   AWS IoT Core's custom authorizer request at an MQTT CONNECT
 //              (an object with "protocolData"): protocolData.mqtt.password
 //              (base64) and clientId, the top-level "token", and
@@ -295,7 +279,7 @@ int  cb_event_encode_http(const cb_http_res *res, cb_buf *out);
 // caller can write a wildcard into a policy. CB_OK or CB_E_NOMEM.
 int  cb_iot_auth_encode(bool ok, const char *user_id, int64_t lifetime_s, const char *region, const char *account,
                         cb_buf *out);
-// The response JSON for an event that answers nothing (the bot scan, a
+// The response JSON for an event that answers nothing (a schedule, a
 // self-invoke): {}. CB_OK or CB_E_NOMEM.
 int  cb_event_encode_none(cb_buf *out);
 // The self-invoke payload "<job>:<key>" (with its quotes) into out, the

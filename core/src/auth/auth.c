@@ -1,4 +1,4 @@
-// auth.c - accounts and sessions (auth.h): what GoTrue did for foolish.
+// auth.c - accounts and sessions (auth.h): what a hosted auth service does.
 //
 // A session is a session_id (a UUID minted at sign-up or sign-in) plus a chain
 // of refresh tokens. Each refresh token is 32 CSPRNG bytes in base64url; only
@@ -311,7 +311,7 @@ static int check_password(const char *pw, const char *username) {
     return CB_OK;
 }
 
-// A new name's rule (names.h; '%', a bot's prefix, among it).
+// A new name's rule (names.h; '%', a reserved prefix, among it).
 static int check_username(const char *u) { return u ? cb_name_check(u, strlen(u)) : CB_AUTH_E_BAD_USERNAME; }
 
 static void token_hash(const char *token, char out[65]) {

@@ -1,5 +1,5 @@
 // names.h - a username's canonical form (security finding M4: look-alike
-// names on the leaderboard, in rosters and in chat).
+// names an app shows other people).
 //
 // An account is found by the email its name derives (auth_http.h
 // cb_auth_name_email: SHA-256 of the name's bytes), so two names that read the
@@ -19,7 +19,7 @@
 //                  invisible, formatting, bidirectional, private-use or
 //                  variation characters (a variation selector only right after
 //                  an emoji); U+0020 the only space, never at either end or
-//                  twice in a row; no '%' (a bot's prefix); no Latin, Greek and
+//                  twice in a row; no '%' (a reserved prefix); no Latin, Greek and
 //                  Cyrillic letters mixed in one name (the homoglyph spoof: "A"
 //                  and Cyrillic "А"); 1 to CB_NAME_MAX_CHARS characters.
 // Names made before this rule (the 23 lower-case ASCII names imported from the

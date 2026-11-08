@@ -25,7 +25,7 @@
 #define CB_STREAM_MQTT_H
 
 // The longest access token (a JWT) a connection may present, bytes: the
-// clients' own cap (foolish's netwire.h NW_ACCESS_MAX, held equal there).
+// clients' own cap (a product's client holds it equal).
 #define CB_RT_TOKEN_MAX 2048
 
 #include "ctx.h"

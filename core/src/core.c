@@ -23,7 +23,7 @@ int cb_core_connect(cb_ctx *ctx, const char *token, size_t token_len, const char
 
 int cb_core_job(cb_ctx *ctx, const char *job, const char *key) {
     int rc = cb_job_run(ctx, job, key);
-    // Nothing to do (a drive's game is gone, or no bot can act on it).
+    // Nothing to do (what the key names is gone, or there is nothing to do for it).
     if (rc == CB_E_NOT_FOUND) {
         CB_INFO("jobs", "%s:%s: nothing to do", job, key);
         rc = CB_OK;
