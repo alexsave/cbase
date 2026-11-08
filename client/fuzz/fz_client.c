@@ -5,7 +5,8 @@
 //   - every frame cbc_next_out writes parses (stream_frame.h) and is a client's: HELLO, SUB,
 //     UNSUB, REQ or PING, and a HELLO comes only on a socket that was just opened;
 //   - every request cbc_next_request writes is exactly its head's lengths, with a path that starts
-//     with '/', and a body under the arena;
+//     with '/', and a body under the arena; a borrowed body's (cbc_call_ref, CBC_RQ_REF) is not
+//     in it, and cbc_req_body hands back a pointer into the input, where every borrowed body is;
 //   - every event's span lies inside the bytes passed to the call that raised it, and no call
 //     raises more than CBC_EVENTS_MAX;
 //   - a reconnect wait lies in [retry_first_ms, retry_max_ms];
@@ -45,6 +46,8 @@ static void check_events(const cbc *c, size_t passed) {
 }
 
 static uint8_t g_out[CBW_ACCESS_MAX + CBC_ARENA + 1024];
+static const uint8_t *g_in;   // the input: every borrowed body is a span of it
+static size_t g_in_n;
 
 static void drain(cbc *c, int64_t now, int *hello_ok) {
     for (int guard = 0; guard < 64; guard++) {
@@ -60,15 +63,24 @@ static void drain(cbc *c, int64_t now, int *hello_ok) {
         if (n <= 0) break;
         cbc_req_hdr h;
         memcpy(&h, g_out, sizeof h);
-        FZ_CHECK((size_t)n == sizeof h + h.path_len + h.auth_len + h.body_len);
         FZ_CHECK(h.path_len > 0 && g_out[sizeof h] == '/');
         FZ_CHECK(h.method == CBC_GET || h.method == CBC_POST);
-        FZ_CHECK(h.body_len <= CBC_ARENA);
+        if (h.flags & CBC_RQ_REF) {
+            FZ_CHECK((size_t)n == sizeof h + h.path_len + h.auth_len);
+            const uint8_t *b = cbc_req_body(c, h.id);
+            FZ_CHECK(b && b >= g_in && h.body_len <= g_in_n && b - g_in <= (ptrdiff_t)(g_in_n - h.body_len));
+        } else {
+            FZ_CHECK((size_t)n == sizeof h + h.path_len + h.auth_len + h.body_len);
+            FZ_CHECK(h.body_len <= CBC_ARENA);
+            FZ_CHECK(cbc_req_body(c, h.id) == NULL);
+        }
     }
 }
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     fz_in in = { data, size, 0 };
+    g_in = data;
+    g_in_n = size;
     memset(g_done, 0, sizeof g_done);
     static cbc c;
     cbc_cfg cfg;
@@ -87,7 +99,10 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         case 0: now += take16(&in); break;
         case 1: p = take_bytes(&in, &n, 2200); cbc_session_load(&c, p, n); break;
         case 2: { p = take_bytes(&in, &n, 300); size_t k = n / 2;
-                  cbc_call(&c, 1 + (take8(&in) & 1), take8(&in) & 7, (const char *)p, k, p + k, n - k, now); break; }
+                  int m = 1 + (take8(&in) & 1), fl = take8(&in);   // flags' bit 3: the body borrowed
+                  if (fl & 8) cbc_call_ref(&c, m, fl & 7, (const char *)p, k, p + k, n - k, now);
+                  else cbc_call(&c, m, fl & 7, (const char *)p, k, p + k, n - k, now);
+                  break; }
         case 3: { char room[2] = { (char)('a' + (take8(&in) & 7)), 0 }; cbc_sub(&c, take8(&in) & 3, room, 1); break; }
         case 4: { char room[2] = { (char)('a' + (take8(&in) & 7)), 0 }; cbc_unsub(&c, take8(&in) & 3, room, 1); break; }
         case 5: cbc_opened(&c, now); hello_ok = 1; break;
