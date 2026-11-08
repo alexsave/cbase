@@ -21,11 +21,15 @@
 #     nowhere there is reached through some -I into core/ or a provider, and fails too, or
 #   * a Makefile or .mk under tools/ names core/ or providers/ (an -I, a source, a VPATH).
 #
-# And cbase and the UI framework cdom have no edge in either direction: an app joins them (its own
-# adapter onto client/hosts/common), and neither names the other. So the gate also fails when
+# And the UI framework cdom has one edge into cbase and none out of it: cbase may depend on cdom
+# for its browser adapter alone (client/hosts/cdom, an adapter onto client/hosts/common, and its
+# test adapter client/test/unit_host_cdom.c), and cdom never names cbase. So the gate also
+# fails when
 #
-#   * a tracked file of any kind (a binary too) outside docs/ and the top README.md holds "cdom",
-#     in any case. This file spells the word and is not read for it.
+#   * a tracked file of any kind (a binary too) outside docs/, the top README.md, client/hosts/cdom/
+#     and client/test/unit_host_cdom.c holds "cdom", in any case. The client's Makefile, CI and
+#     mutation check reach that host through what it declares in its own directory, never by
+#     name. This file spells the word and is not read for it.
 #
 # Documentation (*.md, *.html) may describe the history and is not read; neither are the fuzz
 # corpora (inputs, not paths). A test that builds a scratch tree of its own in a temporary
@@ -89,8 +93,10 @@ files() {
 }
 
 # named_list: the tracked files (paths on stdin) read for the framework's name: all but docs/, the
-# top README.md and this file.
-named_list() { grep -v -e '^docs/' -e '^README\.md$' -e "^$SELF\$" || true; }
+# top README.md, the framework's adapter (its directory and its test adapter) and this file.
+named_list() {
+  grep -v -e '^docs/' -e '^README\.md$' -e '^client/hosts/cdom/' -e '^client/test/unit_host_cdom\.c$' -e "^$SELF\$" || true
+}
 
 # named_scan <root> <file>...: prints every line that holds the framework's name, in any case, as
 # "<file>:<line>: names cdom: <text>".
@@ -145,10 +151,21 @@ printf 'cd om and c-dom are not it\n' > "$P/n/sub/ok.sh"
 printf 'cdom is an example consumer\n' > "$P/n/docs/sub/x.md"
 printf 'cdom\n' > "$P/n/README.md"
 printf 'cdom\n' > "$P/n/$SELF"
+mkdir -p "$P/n/client/hosts/cdom/sub" "$P/n/client/hosts/cdomx" "$P/n/client/test"
+printf '#include "cdom.h"\n' > "$P/n/client/hosts/cdom/sub/h.c"            # the adapter's own tree
+printf '#include "cdom.h"\n' > "$P/n/client/test/unit_host_cdom.c"         # and its test adapter
+printf '#include "cdom.h"\n' > "$P/n/client/hosts/cdomx/h.c"               # not the adapter's
+printf '#include "cdom.h"\n' > "$P/n/client/test/unit_host_cdom.c.orig"    # nor a copy beside it
+printf 'cdom\n' > "$P/n/client/test/x_unit_host_cdom.c"
+mkdir -p "$P/n/core/src" "$P/n/.github/workflows"
+printf '#include "cdom.h"\n' > "$P/n/core/src/c.c"                          # the platform: never
+printf 'run: make -C client check-host-cdom\n' > "$P/n/.github/workflows/ci.yml"   # CI by its name: no
 # shellcheck disable=SC2046  # one path a word
-got="$(named_scan "$P/n" $(printf '%s\n' client/src/a.c client/Makefile sub/README.md sub/ok.sh docs/sub/x.md README.md "$SELF" | named_list) \
+got="$(named_scan "$P/n" $(printf '%s\n' client/src/a.c client/Makefile sub/README.md sub/ok.sh docs/sub/x.md README.md "$SELF" \
+         client/hosts/cdom/sub/h.c client/test/unit_host_cdom.c client/hosts/cdomx/h.c client/test/unit_host_cdom.c.orig \
+         client/test/x_unit_host_cdom.c core/src/c.c .github/workflows/ci.yml | named_list) \
        | sed 's/: .*//' | LC_ALL=C sort | tr '\n' ' ')"
-want="client/Makefile:3 client/src/a.c:1 sub/README.md:1 "
+want=".github/workflows/ci.yml:1 client/Makefile:3 client/hosts/cdomx/h.c:1 client/src/a.c:1 client/test/unit_host_cdom.c.orig:1 client/test/x_unit_host_cdom.c:1 core/src/c.c:1 sub/README.md:1 "
 [ "$got" = "$want" ] || fail "the framework's name over planted files saw [$got], not [$want]"
 
 # ---- the repository ------------------------------------------------------------------------------
@@ -179,7 +196,7 @@ an="$(echo "$alist" | wc -l | tr -d ' ')"
 aout="$(named_scan "$ROOT" $alist)"
 if [ -n "$aout" ]; then
   echo "$aout"
-  fail "$(echo "$aout" | wc -l | tr -d ' ') line(s) outside docs/ and README.md name cdom (above): cbase and cdom have no edge"
+  fail "$(echo "$aout" | wc -l | tr -d ' ') line(s) outside docs/, README.md and the framework's adapter name cdom (above): only client/hosts/cdom reaches it"
 fi
 
 if [ "$fails" -ne 0 ]; then echo "repo_gate_test: $fails failed"; exit 1; fi
