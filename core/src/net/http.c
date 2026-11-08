@@ -297,6 +297,12 @@ const char *cb_http_reason(int status) {
     case 202: return "Accepted";
     case 204: return "No Content";
     case 206: return "Partial Content";
+    case 301: return "Moved Permanently";
+    case 302: return "Found";
+    case 303: return "See Other";
+    case 304: return "Not Modified";
+    case 307: return "Temporary Redirect";
+    case 308: return "Permanent Redirect";
     case 400: return "Bad Request";
     case 401: return "Unauthorized";
     case 403: return "Forbidden";
@@ -305,16 +311,21 @@ const char *cb_http_reason(int status) {
     case 406: return "Not Acceptable";
     case 408: return "Request Timeout";
     case 409: return "Conflict";
+    case 410: return "Gone";
     case 411: return "Length Required";
+    case 412: return "Precondition Failed";
     case 413: return "Content Too Large";
     case 415: return "Unsupported Media Type";
+    case 416: return "Range Not Satisfiable";
     case 422: return "Unprocessable Content";
     case 426: return "Upgrade Required";
     case 429: return "Too Many Requests";
     case 431: return "Request Header Fields Too Large";
     case 500: return "Internal Server Error";
     case 501: return "Not Implemented";
+    case 502: return "Bad Gateway";
     case 503: return "Service Unavailable";
+    case 504: return "Gateway Timeout";
     case 505: return "HTTP Version Not Supported";
     default:  return "Unknown";
     }
@@ -323,10 +334,11 @@ const char *cb_http_reason(int status) {
 void cb_res_serialize(const cb_http_res *res, bool keep_alive, cb_buf *out) {
     cb_buf_printf(out, "HTTP/1.1 %d %s\r\n", res->status, cb_http_reason(res->status));
     cb_buf_append(out, res->headers.p ? res->headers.p : (const uint8_t *)"", res->headers.len);
-    // 1xx and 204 carry no body and no Content-Length (RFC 9110 8.6).
-    if (res->status >= 200 && res->status != 204) cb_buf_printf(out, "Content-Length: %zu\r\n", res->body.len);
+    // 1xx, 204 and 304 carry no body (RFC 9110 15.3.5, 15.4.5), and no Content-Length: a 304's
+    // would claim the stored representation is that long (RFC 9110 8.6).
+    const bool bodied = res->status >= 200 && res->status != 204 && res->status != 304;
+    if (bodied) cb_buf_printf(out, "Content-Length: %zu\r\n", res->body.len);
     if (res->status != 101) cb_buf_puts(out, keep_alive ? "Connection: keep-alive\r\n" : "Connection: close\r\n");
     cb_buf_puts(out, "\r\n");
-    if (res->status >= 200 && res->status != 204 && res->body.len && !res->head)
-        cb_buf_append(out, res->body.p, res->body.len);
+    if (bodied && res->body.len && !res->head) cb_buf_append(out, res->body.p, res->body.len);
 }
