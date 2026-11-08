@@ -279,6 +279,11 @@ void cb_router_preflight(const cb_ctx *ctx, const cb_http_req *req, cb_http_res 
     cb_res_body(res, "ok", 2);
 }
 
+bool cb_router_upgrade_origin_ok(const cb_ctx *ctx, const cb_http_req *req) {
+    const char *origin = cb_http_header_get(req, "origin");
+    return !origin || cors_of(ctx, origin) != CORS_DENY;
+}
+
 // An origin as a browser sends it: http:// or https://, then a host and any port, with no path,
 // query, user, blank or comma.
 static bool origin_shaped(const char *o) {

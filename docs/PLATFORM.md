@@ -150,6 +150,8 @@ CORS is the app's to declare, and the default is deny (`net/router.h`).
 `cb_app.cors_origins` lists the web origins whose pages may call the app, each exactly as a browser sends `Origin`; the deployment may add its own through `CBASE_ALLOWED_ORIGINS` (default empty).
 A listed origin is echoed in `Access-Control-Allow-Origin` with `Vary: Origin`; any other gets no `Access-Control-*` header, and its preflight is answered 403.
 `"*"` in either list is any origin, answered `*`; `cors_credentials` adds `Access-Control-Allow-Credentials: true` to an echoed origin, and boot refuses it beside `"*"`.
+A WebSocket upgrade, on every socket path (`/ws`, `/ws/public`, an app's own), is held to the same lists: an `Origin` neither names is answered 403 before the handler runs, so it never gets a 101.
+An upgrade without `Origin` (a native client, the C SDK's POSIX host, a test) goes ahead, since only a browser sends one and the check exists to stop a browser driven by another site.
 
 ### 2.2 Collections instead of hard-coded rows
 

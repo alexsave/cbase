@@ -121,6 +121,12 @@ bool cb_route_param(const cb_http_req *req, const char *name, char *out, size_t 
 void cb_router_preflight(const cb_ctx *ctx, const cb_http_req *req, cb_http_res *res);
 // Adds the CORS headers to a finished response if it has no Access-Control-Allow-Origin.
 void cb_router_cors(const cb_ctx *ctx, const cb_http_req *req, cb_http_res *res);
+// May this upgrade (a WebSocket's) go ahead, by its Origin? A browser always sends Origin on an
+// upgrade and CORS does not guard a socket, so the same lists do: an Origin listed (or "*") may,
+// an unlisted one may not. No Origin at all (a native client, the C SDK's POSIX host, a test) may:
+// the check stops a browser driven by another site, and nothing else sends one. cb_handle answers
+// a refused one 403 before the route's handler runs, for every socket path.
+bool cb_router_upgrade_origin_ok(const cb_ctx *ctx, const cb_http_req *req);
 // Boot's check of the CORS declaration: every app origin shaped as a browser sends it
 // (scheme://host[:port]) or "*", and no credentials beside "*" in either list. CB_OK, or
 // CB_E_INVALID with a sentence in err.

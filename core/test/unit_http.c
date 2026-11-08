@@ -5,6 +5,7 @@
 #include "handler.h"
 #include "net/http.h"
 #include "net/router.h"
+#include "net/ws.h"
 #include "util/err.h"
 
 #include <stdio.h>
@@ -588,6 +589,67 @@ static void cors_credentials(void) {
     }
 }
 
+// A WebSocket upgrade through cb_handle, by Origin: the lists decide for a browser's, none is a
+// native client's and upgrades, and "*" upgrades anything. A refusal never runs the handler.
+static int g_upgraded;
+static void h_sock(cb_ctx *c, const cb_http_req *q, cb_http_res *s) {
+    static const cb_ws_handlers none = { NULL, NULL, NULL };
+    g_upgraded++;
+    cb_ws_upgrade(q, s, &none, NULL);
+}
+static int upgrade_status(cb_ctx *ctx, const char *origin) {
+    char text[512];
+    snprintf(text, sizeof text,
+             "GET /ws/public HTTP/1.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\n"
+             "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n%s%s%s\r\n", origin ? "Origin: " : "", origin ? origin : "",
+             origin ? "\r\n" : "");
+    cb_http_req q;
+    char *b;
+    T_CHECK(parse(text, 0, &q, &b) > 0);
+    cb_http_res res;
+    cb_res_init(&res);
+    const int before = g_upgraded;
+    cb_handle(ctx, &q, &res);
+    int st = res.status;
+    if (st != 101) T_EQ_INT(g_upgraded, before);   // a refusal never reached the handler
+    if (st == 403) T_CHECK(strstr(heads(&res), "Sec-WebSocket-Accept") == NULL && !res.upgrade);
+    cb_res_free(&res);
+    free(b);
+    return st;
+}
+
+static void upgrade_origins(void) {
+    cb_config cfg;
+    memset(&cfg, 0, sizeof cfg);
+    strcpy(cfg.allowed_origins, "https://staging.example");
+    cb_app app;
+    memset(&app, 0, sizeof app);
+    app.cors_origins = APP_ORIGINS;
+    app.n_cors_origins = 2;
+    cb_ctx ctx;
+    memset(&ctx, 0, sizeof ctx);
+    ctx.cfg = &cfg;
+    ctx.app = &app;
+    ctx.router = cb_router_new();
+    T_EQ_INT(cb_router_add(ctx.router, "GET", "/ws/public", CB_ROUTE_LOOP, h_sock), CB_OK);
+    T_EQ_INT(upgrade_status(&ctx, "https://app.example"), 101);       // the app's list
+    T_EQ_INT(upgrade_status(&ctx, "https://staging.example"), 101);   // the deployment's
+    T_EQ_INT(upgrade_status(&ctx, NULL), 101);                        // no Origin: not a browser
+    T_EQ_INT(upgrade_status(&ctx, "https://evil.example"), 403);
+    T_EQ_INT(upgrade_status(&ctx, "null"), 403);
+    T_EQ_INT(upgrade_status(&ctx, ""), 403);
+    // Nothing listed at all (the default): a browser's upgrade from anywhere is refused.
+    ctx.app = NULL;
+    cfg.allowed_origins[0] = 0;
+    T_EQ_INT(upgrade_status(&ctx, "https://app.example"), 403);
+    T_EQ_INT(upgrade_status(&ctx, NULL), 101);
+    // "*": anything.
+    strcpy(cfg.allowed_origins, "*");
+    T_EQ_INT(upgrade_status(&ctx, "https://evil.example"), 101);
+    T_EQ_INT(upgrade_status(&ctx, "null"), 101);
+    cb_router_free(ctx.router);
+}
+
 // Boot refuses an app origin that no browser would send.
 static void cors_check_shapes(void) {
     cb_app app;
@@ -629,5 +691,6 @@ int main(void) {
     T_RUN(cors_lists);
     T_RUN(cors_credentials);
     T_RUN(cors_check_shapes);
+    T_RUN(upgrade_origins);
     return T_DONE();
 }

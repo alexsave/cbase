@@ -51,6 +51,11 @@ void cb_handle(cb_ctx *ctx, cb_http_req *req, cb_http_res *res) {
         bool known = false;
         const cb_route *r = cb_router_match(ctx->router, m, req->path, &known);
         if (!r) cb_router_error(res, known ? 405 : 404, known ? "method not allowed" : "not found");
+        else if (cb_http_header_get(req, "upgrade") && !cb_router_upgrade_origin_ok(ctx, req)) {
+            // A browser's upgrade from a page on an origin neither list names (router.h): refused
+            // before the handler runs, so no handshake is ever answered 101 for it.
+            cb_router_error(res, 403, "origin not allowed");
+        }
         else if (r->max_body && req->body_len > r->max_body) {
             // A body that arrived whole, past the route's own cap: a one-shot platform's, or a socket's REQ.
             // Serve's HTTP never gets here with one: it answers 413 before reading the body

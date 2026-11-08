@@ -85,7 +85,7 @@ static void *run(void *arg) {
 static void start(void) {
     cb_log_init(CB_LOG_ERROR + 1, 0);
     memset(&g_cfg, 0, sizeof g_cfg);
-    strcpy(g_cfg.allowed_origins, "*");
+    strcpy(g_cfg.allowed_origins, "https://ok.example");   // a socket's Origin is checked against it
     g_ctx.cfg = &g_cfg;
     g_ctx.loop = cb_loop_new();
     g_ctx.req_pool = cb_pool_new(2, "tedge");
@@ -421,6 +421,32 @@ static void no_connection_no_sweep(void) {
     close(fd);
 }
 
+// A WebSocket upgrade's Origin, over a real socket (router.h cb_router_upgrade_origin_ok): a listed
+// one upgrades, an unlisted one is 403 and never 101, and none at all (a native client) upgrades.
+static void upgrades_by_origin(void) {
+    int fd = tc_ws_open(g_port, "/ws", "Origin: https://ok.example\r\n");
+    T_CHECK(fd >= 0);
+    if (fd >= 0) close(fd);
+    fd = tc_ws_open(g_port, "/ws", NULL);
+    T_CHECK(fd >= 0);
+    if (fd >= 0) close(fd);
+    T_EQ_INT(tc_ws_open(g_port, "/ws", "Origin: https://evil.example\r\n"), -1);
+    // What the refused one is answered: 403, no handshake.
+    fd = tc_connect(g_port);
+    const char *q = "GET /ws HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                    "Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                    "Origin: https://evil.example\r\n\r\n";
+    T_CHECK(write(fd, q, strlen(q)) == (ssize_t)strlen(q));
+    cb_buf in;
+    cb_buf_init(&in);
+    bool closed;
+    read_until_closed(fd, &in, 1000, &closed);
+    T_CHECK(cb_starts_with(cb_buf_cstr(&in), "HTTP/1.1 403 "));
+    T_CHECK(strstr(cb_buf_cstr(&in), "Sec-WebSocket-Accept") == NULL);
+    close(fd);
+    cb_buf_free(&in);
+}
+
 // A body of n bytes to `path`: the status, and the length the handler saw in *seen.
 static int send_body(const char *method, const char *path, size_t n, long *seen) {
     char *b = malloc(n + 1);
@@ -477,6 +503,7 @@ int main(void) {
     start();
     T_RUN(http_defences);
     T_RUN(per_route_body_caps);
+    T_RUN(upgrades_by_origin);
     T_RUN(a_head_past_every_cap);
     T_RUN(a_client_gone_mid_request);
     T_RUN(a_reset_mid_answer);
