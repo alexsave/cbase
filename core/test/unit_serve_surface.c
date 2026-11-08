@@ -68,7 +68,23 @@ static void h_wire(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     cb_res_header(res, "X-Got-Type", ct);
 }
 
+// GET /t/headers: the product's five context headers, each asked for in a spelling of its own, a
+// line each ("-" for one not sent).
+static void h_headers(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
+    static const char *const NAMES[] = { "x-amgi-base-dir", "X-AMGI-COLLECTION", "X-Amgi-Profile",
+                                         "x-AMGI-bridge-URL", "X-Amgi-Bridge-Token" };
+    cb_buf b;
+    cb_buf_init(&b);
+    for (size_t i = 0; i < sizeof NAMES / sizeof NAMES[0]; i++) {
+        const char *v = cb_http_header_get(req, NAMES[i]);
+        cb_buf_printf(&b, "%s\n", v ? v : "-");
+    }
+    cb_res_send(res, 200, "text/plain", b.p, b.len);
+    cb_buf_free(&b);
+}
+
 static const cb_route ROUTES[] = {
+    { .method = "GET", .pattern = "/t/headers", .flags = CB_ROUTE_POOL, .fn = h_headers },
     { .method = "GET", .pattern = "/t/answer", .flags = CB_ROUTE_POOL, .fn = h_answer },
     { .method = "POST", .pattern = "/api/wire", .flags = CB_ROUTE_POOL, .fn = h_wire },
 };
@@ -221,6 +237,73 @@ static void gets_the_raw_body_and_its_type(void) {
     cb_buf_free(&w);
 }
 
+// ---- 3. request headers by name ----------------------------------------------------------------
+
+// A Windows path deep in a folder of Korean names, percent-encoded UTF-8 as the product sends it,
+// cut at a whole escape near `n` bytes: the long header values a real profile can carry.
+static void long_path(char *out, size_t n, const char *tail) {
+    static const char SEG[] = "%ED%95%9C%EA%B5%AD%EC%96%B4%20%EC%B9%B4%EB%93%9C%5C";
+    size_t k = (size_t)snprintf(out, n, "C%%3A%%5CUsers%%5C");
+    while (k + sizeof SEG + strlen(tail) < n) k += (size_t)snprintf(out + k, n - k, "%s", SEG);
+    snprintf(out + k, n - k, "%s", tail);
+}
+
+static void reads_request_headers_by_name_in_any_case(void) {
+    // Five of about 2 KB each, beside what a browser sends of its own (a cookie jar shared by
+    // everything on 127.0.0.1 among it): about 11 KB of head, inside CB_HTTP_MAX_HEAD's 16 KB,
+    // which is Node's default too, the server the product moves from.
+    char dir[2048], col[2048], prof[2048], url[2048], tok[2048], cookie[2048];
+    long_path(dir, sizeof dir, "Anki2");
+    long_path(col, sizeof col, "Anki2%5CUser%201%5Ccollection.anki2");
+    long_path(prof, sizeof prof, "User%201");
+    snprintf(url, sizeof url, "http%%3A%%2F%%2F127.0.0.1%%3A8798%%2F");
+    memset(tok, 'k', sizeof tok - 1), tok[sizeof tok - 1] = 0;
+    memset(cookie, 'c', sizeof cookie - 1), cookie[sizeof cookie - 1] = 0;
+    cb_buf q, w;
+    cb_buf_init(&q);
+    cb_buf_init(&w);
+    cb_buf_printf(&q,
+                  "GET /t/headers HTTP/1.1\r\nHost: 127.0.0.1:3000\r\n"
+                  "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+                  "Chrome/142.0.0.0 Safari/537.36\r\n"
+                  "Accept: */*\r\nAccept-Language: ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7\r\n"
+                  "Accept-Encoding: gzip, deflate, br, zstd\r\nReferer: http://127.0.0.1:3000/decks\r\n"
+                  "Sec-Fetch-Dest: empty\r\nSec-Fetch-Mode: cors\r\nSec-Fetch-Site: same-origin\r\n"
+                  "Cookie: jar=%s\r\n"
+                  "X-Amgi-Base-Dir: %s\r\nx-amgi-collection: %s\r\nX-AMGI-PROFILE: %s\r\n"
+                  "X-Amgi-Bridge-Url: %s\r\nX-Amgi-Bridge-Token: \t %s  \r\n"
+                  "Connection: close\r\n\r\n",
+                  cookie, dir, col, prof, url, tok);
+    T_CHECK(q.len > 10500 && q.len < CB_HTTP_MAX_HEAD);
+    cb_buf want;
+    cb_buf_init(&want);
+    cb_buf_printf(&want, "%s\n%s\n%s\n%s\n%s\n", dir, col, prof, url, tok);   // the token's blanks trimmed
+    char head[256];
+    snprintf(head, sizeof head,
+             "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nVary: Origin\r\nContent-Length: %zu\r\n"
+             "Connection: close\r\n\r\n",
+             want.len);
+    T_CHECK(raw(q.p, q.len, &w) > 0);
+    T_CHECK(wire_is(&w, head, want.p, want.len));
+    // One not sent is not there.
+    T_CHECK(raw_str("GET /t/headers HTTP/1.1\r\nHost: x\r\nx-amgi-profile: p\r\nConnection: close\r\n\r\n", &w) > 0);
+    T_CHECK(wire_is(&w,
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nVary: Origin\r\nContent-Length: 10\r\n"
+                    "Connection: close\r\n\r\n",
+                    "-\n-\np\n-\n-\n", 10));
+    // Past the cap, the head is refused whole (431) before any handler runs.
+    cb_buf_reset(&q);
+    cb_buf_printf(&q, "GET /t/headers HTTP/1.1\r\nHost: x\r\n");
+    for (int i = 0; i < 9; i++) cb_buf_printf(&q, "X-Amgi-Base-Dir-%d: %s\r\n", i, dir);
+    cb_buf_puts(&q, "\r\n");
+    T_CHECK(q.len > CB_HTTP_MAX_HEAD);
+    T_CHECK(raw(q.p, q.len, &w) > 0);
+    T_CHECK(cb_starts_with(cb_buf_cstr(&w), "HTTP/1.1 431 "));
+    cb_buf_free(&q);
+    cb_buf_free(&w);
+    cb_buf_free(&want);
+}
+
 // ---- the test -----------------------------------------------------------------------------------
 
 static const char *g_self;
@@ -244,6 +327,7 @@ int main(int argc, char **argv) {
 
     T_RUN(answers_any_status_type_body_and_headers);
     T_RUN(gets_the_raw_body_and_its_type);
+    T_RUN(reads_request_headers_by_name_in_any_case);
 
     T_EQ_INT(tp_stop(&c, SIGTERM, 30000), 0);
     return T_DONE();
