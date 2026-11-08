@@ -15,23 +15,26 @@
 #
 # An app syncs `make ts` into its own generated directory (gitignored) and serves the module.
 # CB is the c_base root as this directory reaches it; every source outside client/ is under it
-# (C_ROOT, tools/c_rules.mk).
+# (C_ROOT, tools/c_rules.mk). The client core's sources, include path and flags are client.mk's,
+# the fragment a C app includes to take the core, so this build and an app's read one list.
 CB     := ../
 C_ROOT := ..
+CBASE  := ..
+include client.mk
 UNAME  := $(shell uname)
 CC     ?= cc
 
 WARN    := -Wall -Wextra -Werror -Wshadow -Wvla -Wstrict-prototypes
-INC     := -Iinclude -I$(CB)lib
+INC     := $(CBC_INC)
 # The native library has every part; the wasm module's base build leaves out the provider sign-in
 # (cbase/client.h CBC_OIDC) and its digests, which its oidc variant adds back.
-OIDC_DEF := -DCBC_OIDC
-OIDC_SRC := $(CB)lib/sha256.c $(CB)lib/b64/b64.c $(CB)lib/hex/hex.c
+OIDC_DEF := $(CBC_OIDC_CFLAGS)
+OIDC_SRC := $(CBC_OIDC_SRC)
 CFLAGS  := -std=gnu11 -O2 -g $(WARN) $(INC) $(OIDC_DEF)
 SAN     := -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer
 ASAN_CFLAGS := -std=gnu11 -O1 -g $(WARN) $(INC) $(OIDC_DEF) $(SAN)
 
-SRC      := src/client.c $(OIDC_SRC)
+SRC      := $(CBC_SRC) $(OIDC_SRC)
 TEST_INC := -I$(CB)core/test
 
 include $(CB)tools/c_rules.mk
@@ -127,8 +130,8 @@ WASM_OIDC_LDFLAGS := $(WASM_LDBASE) $(foreach e,$(WASM_OIDC_EXPORTS),-Wl,--expor
 WASM_OIDC_CFLAGS := $(WASM_CFLAGS) $(OIDC_DEF)
 $(eval $(call C_VARIANT,build/obj/wasm,WASM_CC,WASM_CFLAGS))
 $(eval $(call C_VARIANT,build/obj/wasm-oidc,WASM_CC,WASM_OIDC_CFLAGS))
-WASM_OBJS      := $(call c_objs,build/obj/wasm,src/client.c)
-WASM_OIDC_OBJS := $(call c_objs,build/obj/wasm-oidc,src/client.c $(OIDC_SRC))
+WASM_OBJS      := $(call c_objs,build/obj/wasm,$(CBC_SRC))
+WASM_OIDC_OBJS := $(call c_objs,build/obj/wasm-oidc,$(CBC_SRC) $(OIDC_SRC))
 WASM_LIBC      := wasm/libc.c wasm/include/string.h
 
 # The layout the page reads is the module's (wasm32), so structgen reads the header under the
