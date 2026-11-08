@@ -8,7 +8,7 @@
 
 #include "aws_json.h"
 #include "store/rows_auth.h"
-#include "store/rows_foolish.h"
+#include "store/rows_auth.h"
 #include "b64/b64.h"
 #include "util/json.h"
 #include "num_parse.h"
@@ -283,18 +283,8 @@ static void items_of(cb_span item) {
             cb_item_free(&back);
         }
         cb_buf_free(&rec);
+        // The platform's own row decoder over what it read (a product's are its own targets').
         cb_user_row u; (void)cb_rows_user_of(&ii, &u);
-        cb_game_row g; memset(&g, 0, sizeof g);
-        if (cb_rows_game_of(&ii, &g)) FZ_CHECK(!g.state_len || g.state);
-        cb_game_row_free(&g);
-        cb_bot_row b; (void)cb_rows_bot_of(&ii, &b);
-        cb_rating_row rt; (void)cb_rows_rating_of(&ii, &rt);
-        cb_snapshot_row sn; memset(&sn, 0, sizeof sn);
-        if (cb_rows_snapshot_of(&ii, &sn)) FZ_CHECK(sn.n_players >= 0 && sn.n_players <= CB_MAX_SEATS);
-        cb_snapshot_row_free(&sn);
-        cb_chat_row c; memset(&c, 0, sizeof c);
-        (void)cb_rows_chat_of(&ii, &c);
-        cb_chat_row_free(&c);
         cb_buf st; cb_buf_init(&st);
         const char *nm[CB_ITEM_ATTRS], *vl[CB_ITEM_ATTRS];
         int k = cb_item_text(&ii, &st, nm, vl, CB_ITEM_ATTRS);

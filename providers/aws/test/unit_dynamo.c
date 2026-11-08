@@ -24,8 +24,6 @@
 #define TOK "11111111-2222-4333-8444-555555555555"
 #define U1 "aaaaaaaa-0000-4000-8000-000000000001"
 #define U2 "aaaaaaaa-0000-4000-8000-000000000002"
-#define B1 "bbbbbbbb-0000-4000-8000-000000000001"
-#define U3 "aaaaaaaa-0000-4000-8000-000000000003"
 
 
 // ---- requests, byte for byte -----------------------------------------------------------------
@@ -135,13 +133,6 @@ static void flow_transaction_throttled(void) {
     T_EQ_INT(throttled_since(&t0), 2);
     cb_store_close(s);
 }
-
-#define GB_N 130
-typedef struct {
-    int  calls, keys[8];
-    char asked[8][GB_N][8];
-} games_srv;
-
 
 // Failed sign-ins (store.h signin_fails) over the scripted transport: the
 // AUTHFAIL item read consistently, replaced with its TTL in seconds, deleted;

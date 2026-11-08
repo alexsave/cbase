@@ -11,7 +11,7 @@
 // answers they consume in order: [status pick][u16 length][body].
 #include "fz.h"
 
-#include "store/rows_foolish.h"
+#include "store/rows_auth.h"
 #include "store/store_priv.h"
 #include "util/log.h"
 
@@ -36,18 +36,10 @@ static int fake_send(void *ud, const char *target, const uint8_t *body, size_t l
 }
 
 static bool on_user(const cb_user_row *u, void *ud) { (void)strlen(u->email); return true; }
-static bool on_member(const cb_member_row *m, void *ud) { return true; }
-static bool on_game(const cb_game_row *g, void *ud) { FZ_CHECK(!g->state_len || g->state); return true; }
 static bool on_name(const char *n, void *ud) { (void)strlen(n); return true; }
-static bool on_bot(const cb_bot_row *b, void *ud) { return true; }
-static bool on_rating(const cb_rating_row *r, void *ud) { return true; }
-static bool on_snap(const cb_snapshot_row *s, void *ud) { FZ_CHECK(s->n_players >= 0 && s->n_players <= CB_MAX_SEATS); return true; }
-static bool on_chat(const cb_chat_row *c, void *ud) { return true; }
 static bool on_row(int n, const char *const *names, const char *const *values, void *ud) { return true; }
 
 #define U1 "11111111-1111-4111-8111-111111111111"
-#define U2 "22222222-2222-4222-8222-222222222222"
-#define GID "ab12cd"
 
 int LLVMFuzzerInitialize(int *argc, char ***argv) {
     cb_log_init(CB_LOG_ERROR + 1, 0);
@@ -68,47 +60,16 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     cb_store_set_deadline(0);
     for (int step = 0; step < 16 && fz_left(&prog); step++) {
         int op = fz_u8(&prog) % 24;
-        cb_user_row u; cb_game_row g; cb_refresh_row rr; cb_uuid tok;
-        memset(&g, 0, sizeof g);
+        // A product's own rows (ops 2..14, 19 and 20 of its target's program) are its own target's:
+        // here those ops do nothing, so one corpus drives both.
+        cb_user_row u; cb_refresh_row rr;
         switch (op) {
         case 0: (void)CB_STORE_CALL(s, user_get, U1, &u); break;
         case 1: (void)CB_STORE_CALL(s, user_by_email, "a@b.io", &u); break;
-        case 2: if (CB_ROWS_CALL(s, game_get, GID, &g) == 0) FZ_CHECK(!g.state_len || g.state); cb_game_row_free(&g); break;
-        case 3: (void)CB_ROWS_CALL(s, games_of_user, U1, 20, on_member, NULL); break;
-        case 4: { const char *ids[2] = { GID, "ff00ee" }; (void)CB_ROWS_CALL(s, games_get_views, ids, 2, on_game, NULL); break; }
-        case 5: (void)CB_ROWS_CALL(s, is_member, GID, U1); break;
-        case 6: (void)CB_ROWS_CALL(s, games_needing_bots, 0, 0, 10, on_name, NULL); break;
-        case 7: (void)CB_ROWS_CALL(s, lease_acquire, GID, 1000, 25000, tok); break;
-        case 8: (void)CB_ROWS_CALL(s, bots_list, on_bot, NULL); break;
-        case 9: (void)CB_ROWS_CALL(s, ratings_top, 20, on_rating, NULL); break;
-        case 10: { const char *ids[2] = { U1, U2 }; int32_t out[2]; (void)CB_ROWS_CALL(s, ratings_for, ids, 2, out); break; }
-        case 11: { cb_snapshot_query q = { .viewer_id = U1, .limit = 10, .newest_first = true }; (void)CB_ROWS_CALL(s, snapshots_query, &q, on_snap, NULL); break; }
-        case 12: (void)CB_ROWS_CALL(s, chat_list, GID, 50, on_chat, NULL); break;
-        // The chat's members (the realtime publish's targets: one per member's own topic).
-        case 13: (void)CB_ROWS_CALL(s, game_members, GID, on_name, NULL); break;
-        case 14: (void)CB_ROWS_CALL(s, is_member, GID, U2); break;
         case 15: (void)CB_STORE_CALL(s, refresh_take, "00", 1000, 60000, &rr); break;
         case 16: (void)CB_STORE_CALL(s, users_list, "", 0, 10, on_user, NULL); break;
         case 17: (void)CB_STORE_CALL(s, admin_collections, on_name, NULL); break;
-        case 18: { char next[256]; (void)CB_STORE_CALL(s, admin_browse, "games", "", "", 10, on_row, NULL, next, sizeof next); break; }
-        case 19: {
-            cb_game_row row;
-            memset(&row, 0, sizeof row);
-            snprintf(row.id, sizeof row.id, GID);
-            static uint8_t state[8] = { 1 }, roster[8] = { 1 };
-            row.state = state; row.state_len = sizeof state; row.roster = roster; row.roster_len = sizeof roster;
-            row.version = 4;
-            cb_game_commit c;
-            memset(&c, 0, sizeof c);
-            c.row = &row; c.expected_version = 3;
-            c.n_humans = 1; snprintf(c.humans[0], sizeof c.humans[0], U1);
-            c.n_rated = fz_u8(&prog) & 1;
-            snprintf(c.rated_ids[0], sizeof c.rated_ids[0], U1);
-            c.rating_delta[0] = 12;
-            (void)CB_ROWS_CALL(s, game_commit, &c);
-            break;
-        }
-        case 20: (void)CB_ROWS_CALL(s, game_delete, GID, 3); break;
+        case 18: { char next[256]; (void)CB_STORE_CALL(s, admin_browse, "users", "", "", 10, on_row, NULL, next, sizeof next); break; }
         case 21: (void)CB_STORE_CALL(s, admin_query, "SELECT * FROM cbase", false, on_row, NULL); break;
         // The readers the security fixes added (H1's sign-in failures, M1's sessions).
         case 22: { cb_session_row se; (void)CB_STORE_CALL(s, session_get, "s1", 1000, &se); break; }

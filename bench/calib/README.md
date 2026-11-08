@@ -1,6 +1,6 @@
 # calib - the CPU calibration suite
 
-`calbench` measures what one CPU core, the kernel and libc cost on a box, so a model of the Docker arm64 rig (c_base/bench/nano) can be carried over to a t4g.nano.
+`calbench` measures what one CPU core, the kernel and libc cost on a box, so a model of the Docker arm64 rig (cbase/bench/nano) can be carried over to a t4g.nano.
 It is one static musl arm64 binary, built with cbase serve's flags (`-std=gnu11 -D_GNU_SOURCE -O2 -g -pthread -static`, no `-mcpu`).
 The binary is not part of the product and nothing in the Makefile or CI builds it.
 

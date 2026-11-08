@@ -1,7 +1,7 @@
 // fz.h - what every fuzz target (fuzz/fz_*.c) shares.
 //
 // Each fz_<name>.c defines LLVMFuzzerTestOneInput for one untrusted-input
-// boundary, and is built two ways (c_base/Makefile):
+// boundary, and is built two ways (cbase/Makefile):
 //   build/fuzz/<name>         libFuzzer + ASan + UBSan (clang: `make fuzz`)
 //   build/asan/fuzz/<name>    the same input function with fuzz/replay_main.c
 //                             as main, under the ordinary ASan build (gcc or

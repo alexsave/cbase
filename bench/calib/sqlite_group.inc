@@ -1,6 +1,6 @@
 /* sqlite_group.inc : the `sqlite` group of calbench.c (included by it, not built on its own).
  *
- * What SQLite costs per syscall and per transaction with production's settings (c_base/providers/local/src/store/
+ * What SQLite costs per syscall and per transaction with production's settings (cbase/providers/local/src/store/
  * store_sqlite.c): SQLITE_OPEN_FULLMUTEX, busy_timeout 5000, journal_mode=WAL, synchronous=NORMAL, the default page_size
  * and cache_size, the writer's automatic checkpoint replaced by a PASSIVE checkpoint every 1000 frames off the request
  * path (here: untimed, between samples), and the store's pooled allocator for 1 KB to 64 KB blocks. The SQLite is the

@@ -1,7 +1,7 @@
-# cbase.mk - c_base as a make fragment: a product includes it and gets the platform's build and
+# cbase.mk - cbase as a make fragment: a product includes it and gets the platform's build and
 # its whole test machinery, with its own code on the product side of the compiler gate.
 #
-#   CBASE           := c_base             # REQUIRED: the c_base root, from the including Makefile
+#   CBASE           := cbase             # REQUIRED: the cbase root, from the including Makefile
 #   C_ROOT          := .                  # the directory every source outside this one is under
 #                                         # (tools/c_rules.mk); default $(CBASE)
 #   CBASE_PROVIDERS := local              # the providers linked: local, aws, or "local aws"
@@ -9,7 +9,7 @@
 #   APP_TEST_ROOTS  := test               # the product's tests: unit_*.c, lib_*.c, smokes, gate/*.c
 #   include $(CBASE)/cbase.mk
 #
-# and then `make`, `make check`, `make check-asan`, ... as c_base's own Makefile runs them (that
+# and then `make`, `make check`, `make check-asan`, ... as cbase's own Makefile runs them (that
 # Makefile is this file with the example app, example/app.mk, as its product).
 #
 # NO FILE LISTS TO EDIT. Every .c under a source root (the core, each linked provider, each
@@ -59,7 +59,7 @@
 # libsqlite3-dev). Nothing else is needed, and nothing is fetched.
 
 ifeq ($(strip $(CBASE)),)
-  $(error cbase.mk: set CBASE to the c_base root (as the including Makefile reaches it) before including it)
+  $(error cbase.mk: set CBASE to the cbase root (as the including Makefile reaches it) before including it)
 endif
 C_ROOT ?= $(CBASE)
 CBASE_PROVIDERS ?= local
@@ -76,7 +76,7 @@ endif
 CB_LOCAL := $(filter local,$(CBASE_PROVIDERS))
 CB_AWS   := $(filter aws,$(CBASE_PROVIDERS))
 
-# CB is how a platform path is spelled from the including Makefile ("" when that is c_base itself,
+# CB is how a platform path is spelled from the including Makefile ("" when that is cbase itself,
 # so its paths are core/src/... and not ./core/src/...). cb_stem is a path as c_rules.mk's $* sees it
 # in a compile (relative to C_ROOT when under it), which is what the include sides match on.
 CB := $(if $(filter .,$(CBASE)),,$(patsubst %/,%,$(CBASE))/)
@@ -297,11 +297,11 @@ $(call prog,build/test,build/obj/cbase,build/obj/extra,auth_diff,$(CB)core/test/
 # docs/AUTH_APPLE.md): never part of a server, never part of check.
 $(call prog,build/test,build/obj/cbase,build/obj/extra,fake_apple,$(CB)core/test/fake_apple.c $(TLIB_SRC),CB_CFLAGS)
 
-# THE BENCH (bench/: the harness and its statistics; each side's bench/): its own program when the
-# product has a bench side (its requests are the product's), and a unit test of its statistics and
-# report that runs with the others either way.
-BENCH_ROOTS := $(CB)bench $(if $(CB_AWS),$(CB)providers/aws/bench) $(APP_BENCH_ROOTS)
-BENCH_SRC := $(filter-out $(CB)bench/unit_%.c,$(sort $(foreach r,$(BENCH_ROOTS),$(wildcard $(r)/*.c))))
+# THE BENCH: the platform's statistics and run report (bench/bench_stats.h) and their unit test,
+# which runs with the others; the program, cbase-bench, is the product's (its requests are the
+# product's: APP_BENCH_ROOTS, every .c there with the statistics), and is built only when it has one.
+BENCH_ROOTS := $(APP_BENCH_ROOTS)
+BENCH_SRC := $(sort $(foreach r,$(BENCH_ROOTS),$(wildcard $(r)/*.c))) $(CB)bench/bench_stats.c
 CB_BENCH := $(if $(strip $(APP_BENCH_ROOTS)),build/cbase-bench)
 ifneq ($(CB_BENCH),)
 $(call prog,build,build/obj/cbase,build/obj/extra,cbase-bench,$(BENCH_SRC),CB_CFLAGS)
@@ -333,7 +333,7 @@ bench: $(CB_BENCH)
 # Every test lane fills a product's pooled sections with 0xAA when it resets one, so a read past
 # what was written fails a test; shipped builds do not set it.
 export CBASE_POISON_LOGS := 1
-# The trees the source gates read (unit_name_gate.c, unit_json_gate.c, unit_num_gate.c): c_base's
+# The trees the source gates read (unit_name_gate.c, unit_json_gate.c, unit_num_gate.c): cbase's
 # own, from wherever the test runs, and the product's, named as the product spells them.
 export CBASE_ROOT := $(CBASE)
 export CBASE_APP_SRC_ROOTS := $(APP_SRC_ROOTS)

@@ -20,7 +20,6 @@
 
 #define U1 "aaaaaaaa-0000-4000-8000-000000000001"
 #define U2 "aaaaaaaa-0000-4000-8000-000000000002"
-#define B1 "bbbbbbbb-0000-4000-8000-000000000001"
 
 typedef struct {
     const char *op;          // the target after "DynamoDB_20120810."
@@ -262,37 +261,7 @@ static void identities_and_claims(void) {
 // store's error.
 typedef struct { int n; char ids[4][40]; int stop_after; } ids_seen;
 
-// ---- bots and ratings ------------------------------------------------------------------------------
-
-typedef struct { int n; char names[8][80]; int32_t elo[8]; int stop_after; } names_seen;
-
-#define BOT_ITEM(id, nick, key, elo) \
-    "{\"pk\":{\"S\":\"BOT#" id "\"},\"sk\":{\"S\":\"BOT\"},\"id\":{\"S\":\"" id "\"},\"nickname\":{\"S\":\"" nick "\"}," \
-    "\"strategy_key\":{\"S\":\"" key "\"},\"elo_rating\":{\"N\":\"" elo "\"},\"games_played\":{\"N\":\"3\"}}"
-#define RATING_ITEM(id, elo, games) \
-    "{\"pk\":{\"S\":\"USER#" id "\"},\"sk\":{\"S\":\"RATING\"},\"user_id\":{\"S\":\"" id "\"},\"username\":{\"S\":\"N\"}," \
-    "\"elo_rating\":{\"N\":\"" elo "\"},\"games_played\":{\"N\":\"" games "\"}}"
-
-// ---- snapshots and chat --------------------------------------------------------------------------
-
-typedef struct { int n; char ids[8][40]; int players; } snaps_seen;
-
-// A player's pointer (SNAP#<id> PLAYER#<user>: the id, the game, the date)
-// and the replay it points at (SNAP#<id> SNAP: the only item with the moves).
-#define SNAP_POINTER(id, game) \
-    "{\"pk\":{\"S\":\"SNAP#" id "\"},\"sk\":{\"S\":\"PLAYER#" U1 "\"},\"id\":{\"S\":\"" id "\"}," \
-    "\"game_id\":{\"S\":\"" game "\"},\"created_at\":{\"N\":\"3\"}}"
-#define SNAP_MAIN(id, game) \
-    "{\"pk\":{\"S\":\"SNAP#" id "\"},\"sk\":{\"S\":\"SNAP\"},\"id\":{\"S\":\"" id "\"},\"game_id\":{\"S\":\"" game "\"}," \
-    "\"player_ids\":{\"L\":[{\"S\":\"" U1 "\"},{\"S\":\"" U2 "\"}]},\"moves\":{\"B\":\"AQI=\"},\"created_at\":{\"N\":\"3\"}}"
-#define SNAP_BATCH(...) "{\"Responses\":{\"cbase\":[" __VA_ARGS__ "]},\"UnprocessedKeys\":{}}"
-
-// ---- the history summary on the pointers -------------------------------------------------------------
-
-typedef struct {
-    int n, seat[4], rank[4], n_players[4], fool[4], dur[4], has[4], moves_null, ids_ok;
-    size_t extras_len[4];
-} sum_seen;
+typedef struct { int n; char names[8][80]; } names_seen;
 
 // ---- admin and the import -------------------------------------------------------------------------
 
@@ -319,14 +288,6 @@ static void admin_collections_are_the_families(void) {
     T_EQ_INT(sc_.at, 0);
     cb_store_close(s);
 }
-
-// cbase-import --seed-bots and --reindex-ratings on DynamoDB: a stored seed
-// row whose nickname is not the registry's renamed in one transaction of
-// nickname-only updates each held to its item existing, then the seed's rows
-// whose ids the bot set lacks, in one transaction of puts each held to its item
-// being absent (a taken id refuses it all), and nothing when none is missing;
-// every rating row reindexed, a done one not counted, an error stopping it.
-#define PROD_MIAMI_1 "176d94a4-71f2-4542-9510-5603e52058d7"   // a seeded bot's real id (foolish/c/src/bots.c)
 
 int main(void) {
     cb_log_init(CB_LOG_ERROR + 1, 0);
