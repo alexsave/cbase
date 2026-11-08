@@ -2,7 +2,8 @@
 # module with the size gate, and the TypeScript a page uses it through. docs/CLIENT_DESIGN.md
 # is the design. Nothing here links the server: the client is its own small build.
 #
-#   make check        the unit tests, natively and under ASan + UBSan, and the fuzz corpus replayed
+#   make check        the unit tests and the host suite on the native host (hosts/posix), natively
+#                     and under ASan + UBSan, the libc and requires gates, and the fuzz corpus replayed
 #   make fuzz         build/fuzz/client (libFuzzer + ASan + UBSan; Homebrew LLVM on macOS)
 #   make fuzz-smoke   it for FUZZ_TIME seconds (default 30) from a scratch copy of the corpus
 #   make wasm         build/wasm/cbase_client.wasm and its oidc variant cbase_client_oidc.wasm, and the
@@ -35,7 +36,12 @@ SAN     := -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omi
 ASAN_CFLAGS := -std=gnu11 -O1 -g $(WARN) $(INC) $(OIDC_DEF) $(SAN)
 
 SRC      := $(CBC_SRC) $(OIDC_SRC)
-TEST_INC := -I$(CB)core/test
+TEST_INC := -I$(CB)core/test -Itest/host -Ihosts/posix
+# THE HOSTS (hosts/<name>/): the code between a platform's I/O and the core, each passing the one
+# host suite (test/host/host_suite.h, a scripted fake server) through a few lines of adapter
+# (test/unit_host_<name>.c). The native host is built here; cdom's is cdom's to run the suite on.
+HOST_POSIX_SRC := hosts/posix/cbc_posix.c
+HOST_SUITE_SRC := test/host/host_suite.c
 
 include $(CB)tools/c_rules.mk
 $(eval $(call C_VARIANT,build/obj/host,CC,CFLAGS))
@@ -52,16 +58,24 @@ build/test/unit_client: $(call c_objs,build/obj/host,$(SRC)) $(call c_objs,build
 build/asan/test/unit_client: $(call c_objs,build/obj/asan,$(SRC)) $(call c_objs,build/obj/asan-test,test/unit_client.c)
 	@mkdir -p $(@D)
 	$(CC) $(ASAN_CFLAGS) $^ -o $@
+build/test/unit_host_posix: $(call c_objs,build/obj/host,$(SRC)) $(call c_objs,build/obj/host-test,$(HOST_POSIX_SRC) $(HOST_SUITE_SRC) test/unit_host_posix.c)
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) $^ -o $@
+build/asan/test/unit_host_posix: $(call c_objs,build/obj/asan,$(SRC)) $(call c_objs,build/obj/asan-test,$(HOST_POSIX_SRC) $(HOST_SUITE_SRC) test/unit_host_posix.c)
+	@mkdir -p $(@D)
+	$(CC) $(ASAN_CFLAGS) $^ -o $@
 
 # THE LIBC GATE (../tools/libc_gate.sh): the client is a library, so its objects define no C
 # library symbol; the program that links it brings one. Here over the native objects, and over the
 # wasm32 objects under `make wasm` (below).
 .PHONY: all check test test-asan libc-gate requires-gate
-all: build/test/unit_client
-test: libc-gate requires-gate build/test/unit_client
+all: build/test/unit_client build/test/unit_host_posix
+test: libc-gate requires-gate build/test/unit_client build/test/unit_host_posix
 	./build/test/unit_client
-test-asan: build/asan/test/unit_client
+	./build/test/unit_host_posix
+test-asan: build/asan/test/unit_client build/asan/test/unit_host_posix
 	./build/asan/test/unit_client
+	./build/asan/test/unit_host_posix
 check: test test-asan fuzz-replay
 libc-gate: $(call c_objs,build/obj/host,$(SRC))
 	@bash $(CB)tools/libc_gate.sh --nm nm --cc '$(CC)' $^
