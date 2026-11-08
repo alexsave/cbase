@@ -106,8 +106,8 @@ WASM_OIDC_RAW_MAX ?= 13312
 WASM_OIDC_GZ_MAX  ?= 7168
 
 # THE MODULE IS A FINAL PROGRAM, so it brings the C library its objects require, and wasm/ is
-# all of it: wasm/include/string.h sends memcpy, memmove and memset to the compiler's builtins
-# (memory.copy and memory.fill under -mbulk-memory), and wasm/libc.c defines memcmp and strlen.
+# all of it: wasm/include/string.h declares the five string.h functions the objects call, and
+# wasm/libc.c defines them (memcpy, memmove and memset as memory.copy and memory.fill).
 # Nothing in cbase defines a C library (tools/libc_gate.sh), and nothing but this module reads
 # wasm/include.
 WASM_CFLAGS  := --target=wasm32 -Oz -nostdlib -ffreestanding -mbulk-memory -mno-nontrapping-fptoint -std=c11 \
