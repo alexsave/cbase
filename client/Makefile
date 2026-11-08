@@ -49,13 +49,18 @@ build/asan/test/unit_client: $(call c_objs,build/obj/asan,$(SRC)) $(call c_objs,
 	@mkdir -p $(@D)
 	$(CC) $(ASAN_CFLAGS) $^ -o $@
 
-.PHONY: all check test test-asan
+# THE LIBC GATE (../tools/libc_gate.sh): the client is a library, so its objects define no C
+# library symbol; the program that links it brings one. Here over the native objects, and over the
+# wasm32 objects under `make wasm` (below).
+.PHONY: all check test test-asan libc-gate
 all: build/test/unit_client
-test: build/test/unit_client
+test: libc-gate build/test/unit_client
 	./build/test/unit_client
 test-asan: build/asan/test/unit_client
 	./build/asan/test/unit_client
 check: test test-asan fuzz-replay
+libc-gate: $(call c_objs,build/obj/host,$(SRC))
+	@bash $(CB)tools/libc_gate.sh --nm nm --cc '$(CC)' $^
 
 # ---- fuzz -------------------------------------------------------------------------------------
 # The target is fuzz/fz_client.c, its corpus fuzz/corpus/client; the harness (fz.h, replay_main.c)
@@ -103,7 +108,8 @@ WASM_OIDC_GZ_MAX  ?= 7168
 # THE MODULE IS A FINAL PROGRAM, so it brings the C library its objects require, and wasm/ is
 # all of it: wasm/include/string.h sends memcpy, memmove and memset to the compiler's builtins
 # (memory.copy and memory.fill under -mbulk-memory), and wasm/libc.c defines memcmp and strlen.
-# Nothing in cbase defines a C library, and nothing but this module reads wasm/include.
+# Nothing in cbase defines a C library (tools/libc_gate.sh), and nothing but this module reads
+# wasm/include.
 WASM_CFLAGS  := --target=wasm32 -Oz -nostdlib -ffreestanding -mbulk-memory -mno-nontrapping-fptoint -std=c11 \
                 $(WARN) $(INC) -isystem wasm/include
 WASM_EXPORTS := cbcw_layout_hash cbcw_io cbcw_io_cap cbcw_cfg cbcw_init cbcw_error cbcw_session_save cbcw_session_load \
@@ -115,7 +121,7 @@ WASM_LDBASE  := -Wl,--no-entry -Wl,--export-memory -Wl,-z,stack-size=65536 -Wl,-
 WASM_LDFLAGS := $(WASM_LDBASE) $(foreach e,$(WASM_EXPORTS),-Wl,--export=$(e))
 WASM_OIDC_LDFLAGS := $(WASM_LDBASE) $(foreach e,$(WASM_OIDC_EXPORTS),-Wl,--export=$(e))
 # The library half of each module (the client, and for oidc its digests) is compiled to objects,
-# which the link takes; the program half (the doors in cbc_wasm.c, with the
+# which the libc gate reads and the link takes; the program half (the doors in cbc_wasm.c, with the
 # layout hash, and the C library in wasm/libc.c) is compiled in the link.
 WASM_OIDC_CFLAGS := $(WASM_CFLAGS) $(OIDC_DEF)
 $(eval $(call C_VARIANT,build/obj/wasm,WASM_CC,WASM_CFLAGS))
@@ -153,8 +159,13 @@ build/gen/client_exports_oidc.ts: build/wasm/cbase_client_oidc.wasm $(STRUCTGEN)
 	@$(STRUCTGEN) --cwd . --source wasm/cbc_wasm.c --build 'cbcw=$(WASM_CFLAGS) $(OIDC_DEF) -DCBC_LAYOUT_HASH=0' --target wasm32 \
 	  --link '$(WASM_OIDC_LDFLAGS)' --exports-name CbcWasmOidc --exports-ts $@.new --check-wasm $< && mv $@.new $@
 
-.PHONY: wasm size-gate
-wasm: wasm-cc-check size-gate
+.PHONY: wasm size-gate wasm-libc-gate
+wasm: wasm-cc-check wasm-libc-gate size-gate
+# The libc gate over the module's library objects, read with the llvm-nm beside WASM_CC. wasm/libc.c
+# is the program's own C library and is not handed to it.
+WASM_NM ?= $(if $(findstring /,$(WASM_CC)),$(dir $(WASM_CC)))llvm-nm
+wasm-libc-gate: $(WASM_OBJS) $(WASM_OIDC_OBJS)
+	@bash $(CB)tools/libc_gate.sh --nm $(WASM_NM) --cc '$(WASM_CC) --target=wasm32 -nostdlib -ffreestanding' $^
 # $(call SIZE_GATE,<module>,<raw max>,<gz max>)
 SIZE_GATE = raw=$$(wc -c < $(1)); gz=$$(gzip -9 -n -c $(1) | wc -c); \
 	echo "$(notdir $(1)): $$raw B raw (budget $(2)), $$gz B gzip -9 (budget $(3))"; \

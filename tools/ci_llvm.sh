@@ -143,7 +143,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ] && [ "${1:-}" = "--verify-downloads" ]; then
   exit 0
 fi
 
-if [ ! -f "$LLVM/include/clang-c/Index.h" ] || [ ! -x "$LLVM/bin/wasm-ld" ]; then
+if [ ! -f "$LLVM/include/clang-c/Index.h" ] || [ ! -x "$LLVM/bin/wasm-ld" ] || [ ! -x "$LLVM/bin/llvm-nm" ]; then
   SUDO="$(command -v sudo || true)"
   retry 4 $SUDO apt-get update -qq
   # gcc, for `cc`: tools/structgen/Makefile builds the generator with
@@ -159,7 +159,7 @@ if [ ! -f "$LLVM/include/clang-c/Index.h" ] || [ ! -x "$LLVM/bin/wasm-ld" ]; the
   retry 4 $SUDO bash "$LLVM_SH" "$LLVM_VERSION"
   rm -f "$LLVM_SH"
   retry 4 $SUDO apt-get install -y --no-install-recommends \
-      "clang-$LLVM_VERSION" "lld-$LLVM_VERSION" "libclang-$LLVM_VERSION-dev"
+      "clang-$LLVM_VERSION" "lld-$LLVM_VERSION" "llvm-$LLVM_VERSION" "libclang-$LLVM_VERSION-dev"
 fi
 
 # binaryen from the GitHub release, not apt: Ubuntu 24.04 ships 108 and the pin
