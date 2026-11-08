@@ -62,3 +62,10 @@ h2-alacarte: build/h2_alacarte $(H2_ALACARTE_FORBID)
 	tools/h2_alacarte/check.sh build/h2_alacarte $(H2_ALACARTE_FORBID)
 check: h2-alacarte
 
+# THE HTTP/2 INTEROP CHECK (tools/h2_interop): the same module, alone, calling Node's node:http2
+# over cleartext and TLS. Opt in, never part of check: it needs node (NODE) and the openssl CLI.
+NODE ?= node
+$(eval $(call H2_ALONE,h2_interop,tools/h2_interop/h2_interop.c))
+.PHONY: h2-interop
+h2-interop: build/h2_interop
+	NODE='$(NODE)' tools/h2_interop/run.sh build/h2_interop
