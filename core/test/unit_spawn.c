@@ -479,16 +479,23 @@ static void blocking_wait(void) {
     rig_close();
 }
 
-// The shutdown: children (and their groups) still running are ended, each told so.
+// The shutdown: children (and their groups) still running are ended, each told so. The stop
+// waits for both to say they run: the shell its grandchild's pid, the helper "ready". Stopping
+// on the helper alone raced a slow shell (CI's macOS runner): SIGTERM came before the shell had
+// started its sleep, so there was no grandchild to check.
+static int g_up, g_grandchild;
 static void on_ready_stop(cb_spawner *sp, uint64_t id, const char *line, size_t n, void *ud) {
-    if (strcmp(line, "ready") == 0) cb_loop_stop(R.l);
+    if (strncmp(line, "pid ", 4) == 0) g_grandchild = atoi(line + 4), g_up++;
+    else if (strcmp(line, "ready") == 0) g_up++;
+    if (g_up == 2) cb_loop_stop(R.l);
 }
 
 static void shutdown_kills(void) {
     rig_open();
-    start(0, (cb_spawn_opts){ .argv = SH("/bin/sleep 30 & echo $!; wait"), .grace_ms = 300 });
+    g_up = 0, g_grandchild = 0;
+    start(0, (cb_spawn_opts){ .argv = SH("/bin/sleep 30 & echo pid $! >&3; wait"), .channel = true, .grace_ms = 300, .on_line = on_ready_stop });
     start(1, (cb_spawn_opts){ .argv = ARGV(g_helper, "ignore-term"), .channel = true, .grace_ms = 300, .on_line = on_ready_stop });
-    run();   // stopped once the second ignores SIGTERM: both children run on
+    run();   // stopped once both run and the second ignores SIGTERM: both children run on
     T_CHECK(!R.r[0].done && !R.r[1].done);
     int64_t t0 = cb_mono_ms();
     cb_spawner_stop(R.sp);
@@ -496,7 +503,8 @@ static void shutdown_kills(void) {
     T_CHECK(R.r[0].done && R.r[1].done);
     T_EQ_INT(R.r[0].r.killed, CB_SPAWN_SHUTDOWN);
     T_EQ_INT(R.r[0].r.term_signal, SIGTERM);
-    int gc = parse_pid(R.r[0].out);
+    int gc = g_grandchild;
+    T_CHECK(gc > 0);
     T_CHECK(gc > 0 && gone(gc));
     // The second ignores SIGTERM: SIGKILL ended it, after the grace.
     T_EQ_INT(R.r[1].r.killed, CB_SPAWN_SHUTDOWN);
