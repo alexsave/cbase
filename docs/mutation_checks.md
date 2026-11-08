@@ -1010,3 +1010,12 @@ The idle-close check before reuse now carries `plain_peer_that_closes` and `dead
 - https.c: no liveness check before reuse -> `plain_peer_that_closes` the bridge POST after an idle close answered CB_E_IO.
 - https.c: a read timeout reported as a reset -> `failures_say_which` fail == "timeout" and its why.
 - https.c: a refused connect reported as a timeout -> `failures_say_which` fail == "connect", plain and TLS.
+
+## The platform's routes, the app's to declare (safe-writes)
+
+unit_storeless, under a real serve with CBASE_ADMIN_TOKEN set: the "bare" app declares none of them and has its own /ready.
+
+- handler.c: /health registered whatever the app says -> `declares_no_platform_routes` /health == 404.
+- handler.c: the console registered whatever the app says -> `declares_no_platform_routes` /admin, /admin/api/overview, /admin/api/x == 404.
+- handler.c: /ready registered whatever the app says -> `declares_no_platform_routes` the app's own /ready conflicts, and the boot fails.
+- example_app.c: health_route left false -> `serves_with_no_store` /health == 200.

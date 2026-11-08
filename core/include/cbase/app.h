@@ -90,6 +90,17 @@ struct cb_app {
     const char          *name;            // "example": the log tag, later the stack and the key namespace
     const cb_route_list *const *routes;   // n_route_lists of them
     int                  n_route_lists;
+    // THE PLATFORM'S ROUTES, each the app's to declare and each off by default: an app's port carries
+    // its own routes and only the platform routes it names here. Off, the route is not registered at
+    // all, so a request to it is the app's own 404 (or the app's own route, when it has that path).
+    // HEALTH_ROUTE: GET /health, liveness (a load balancer's, a deploy check's, a watchdog's).
+    // READY_ROUTE: GET /ready, readiness (the store answers a point read).
+    // ADMIN_ROUTES: the console, GET /admin and /admin/api/*, which still answer only once
+    // CBASE_ADMIN_TOKEN is set (admin/admin.h). Off, nothing of the console is registered whatever
+    // the token, and the app's admin_calls and admin_panels are never served.
+    bool                 health_route;
+    bool                 ready_route;
+    bool                 admin_routes;
     // Runs once at boot, before anything is served: CB_OK, or a CB_E_* with
     // a sentence in err, and the process must not serve. NULL: none.
     int (*selftest)(char *err, size_t cap);

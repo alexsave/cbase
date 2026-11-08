@@ -87,6 +87,13 @@ static void app_close(cb_ctx *ctx) { g_closed++; }
 
 static int two(cb_ctx *ctx, int64_t now_ms) { return 2; }
 
+// "bare": an app that declares none of the platform's routes (cbase/app.h health_route, ready_route,
+// admin_routes) and has a /ready of its own.
+static void h_own_ready(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) { cb_res_text(res, 200, "the app's own\n"); }
+static const cb_route OWN[] = { { .method = "GET", .pattern = "/ready", .flags = CB_ROUTE_LOOP, .fn = h_own_ready } };
+static const cb_route_list OWN_LIST = { OWN, 1 };
+static const cb_route_list *g_lists[4];
+
 static int child_main(const char *variant) {
     app_storeless();
     g_app.schedules = TICK;
@@ -94,6 +101,13 @@ static int child_main(const char *variant) {
     g_app.admin_count = two;
     g_app.admin_count_label = "Things";
     if (strcmp(variant, "accounts") == 0) g_app.account_domain = "accounts.example.test";
+    if (strcmp(variant, "bare") == 0) {
+        g_app.health_route = g_app.ready_route = g_app.admin_routes = false;
+        for (int i = 0; i < g_app.n_route_lists && i < 3; i++) g_lists[i] = g_app.routes[i];
+        g_lists[g_app.n_route_lists] = &OWN_LIST;
+        g_app.routes = g_lists;
+        g_app.n_route_lists++;
+    }
     const char *dir = getenv("STORELESS_DIR");
     if (!dir || chdir(dir) != 0) return 3;
     char *argv[] = { (char *)g_self, "serve", NULL };
@@ -123,6 +137,32 @@ static int start(tp_child *c, const char *variant, const char *dir, int *port, b
     if (!colon || !num_parse_i64(colon + 1, strcspn(colon + 1, " \r\n"), 1, 65535, &p)) return -1;
     *port = (int)p;
     return 0;
+}
+
+// An app that declares none of the platform's routes carries only its own, under a real serve with
+// the admin token set: /health, /admin and /admin/api/* are its 404, /ready is its own route.
+static void declares_no_platform_routes(void) {
+    char dir[256];
+    T_EQ_INT(tp_tempdir(dir, sizeof dir), 0);
+    tp_child c;
+    int port = 0;
+    T_EQ_INT(start(&c, "bare", dir, &port, false), 0);
+    tc_response r;
+    const char *bearer = "Authorization: Bearer " ADMIN "\r\n";
+    static const char *const gone[] = { "/health", "/admin", "/admin/api/overview", "/admin/api/x" };
+    for (size_t i = 0; i < sizeof gone / sizeof gone[0]; i++) {
+        T_EQ_INT(get(port, "GET", gone[i], bearer, NULL, &r), 404);
+        tc_response_free(&r);
+    }
+    T_EQ_INT(get(port, "POST", "/admin/api/query", bearer, "{}", &r), 404);
+    tc_response_free(&r);
+    T_EQ_INT(get(port, "GET", "/ready", NULL, NULL, &r), 200);
+    T_EQ_STR(cb_buf_cstr(&r.body), "the app's own\n");
+    tc_response_free(&r);
+    T_EQ_INT(get(port, "GET", "/v1/hello", NULL, NULL, &r), 200);   // its own routes, as ever
+    tc_response_free(&r);
+    T_EQ_INT(tp_stop(&c, SIGTERM, 15000), 0);
+    rm_tree_files(dir);
 }
 
 static void serves_with_no_store(void) {
@@ -257,6 +297,7 @@ int main(int argc, char **argv) {
     g_self = argv[0];
     if (argc == 3 && strcmp(argv[1], "serve-storeless") == 0) return child_main(argv[2]);
     T_RUN(serves_with_no_store);
+    T_RUN(declares_no_platform_routes);
     T_RUN(a_secret_is_ignored);
     T_RUN(refused_end_to_end);
     T_RUN(refused_in_boot);

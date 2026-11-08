@@ -261,6 +261,7 @@ An optional socketpair on the child's fd 3 carries lines both ways; cbase knows 
 ### 2.9 Upgrading a product across the HTTP changes
 
 A product that consumes cbase from before the CORS, path parameter and body cap changes makes three edits, and the compiler or boot names each one it misses; a local server makes a fourth.
+A product from before the platform routes became opt-in makes the fifth, which nothing names for it: its `/health`, `/ready` or console simply answers 404.
 
 1. **Route rows.** `cb_route` gained `max_body` after `inline_us`, so a positional row such as `{ "GET", "/v1/x", CB_ROUTE_POOL, h_x, 0 }` fails `-Wmissing-field-initializers`.
    Prefer designated initializers, which name what they set and survive the next field: `{ .method = "GET", .pattern = "/v1/x", .flags = CB_ROUTE_POOL, .fn = h_x }`.
@@ -276,6 +277,13 @@ A product that consumes cbase from before the CORS, path parameter and body cap 
    Nothing breaks without it: the default is no list, and a product behind an edge leaves it so.
    A local one adds `static const char *const HOSTS[] = { "127.0.0.1", "localhost", "[::1]" };` with `.host_allow = HOSTS, .n_host_allow = 3`, each a bare host meaning the port serve bound, so port 0 works.
    Its own tests then send a listed `Host` with the bound port: cbase's test client sends `Host: 127.0.0.1` with no port, which such a list refuses (403), and a request with none is 400.
+5. **The platform's routes are declared by the app, and off by default.**
+   `cb_app` gained `bool health_route` (`GET /health`), `bool ready_route` (`GET /ready`) and `bool admin_routes` (the console: `GET /admin` and `/admin/api/*`).
+   One left false is not registered at all, so a request to it is the app's own 404, or the app's own route when it has that path.
+   A product keeps what it had by declaring each it uses: `.health_route = true, .ready_route = true, .admin_routes = true`.
+   A load balancer's or deploy check's probe needs `health_route`, and a readiness probe `ready_route`.
+   `admin_routes` still serves the console only once `CBASE_ADMIN_TOKEN` is set; without it, the token is ignored and boot warns that no console is served.
+   foolish, when it cuts over, declares all three.
 
 ### 2.10 Serve's settings an app ships, and CBASE_ENV_FILE
 

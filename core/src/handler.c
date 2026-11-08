@@ -1,5 +1,6 @@
 #include "handler.h"
 
+#include "config.h"
 #include "metrics.h"
 
 #include "admin/admin.h"
@@ -146,14 +147,18 @@ static int reg(const char *what, int rc) {
 }
 
 int cb_routes_register(cb_ctx *ctx) {
-    int rc = cb_router_add(ctx->router, "GET", "/health", CB_ROUTE_LOOP, h_health);
-    if (rc == CB_OK) rc = cb_router_add(ctx->router, "GET", "/ready", CB_ROUTE_POOL, h_ready);
+    // The platform's own routes, only those the app declares (cbase/app.h): none with no app.
+    const cb_app *app = ctx->app;
+    int rc = CB_OK;
+    if (app && app->health_route) rc = cb_router_add(ctx->router, "GET", "/health", CB_ROUTE_LOOP, h_health);
+    if (rc == CB_OK && app && app->ready_route) rc = cb_router_add(ctx->router, "GET", "/ready", CB_ROUTE_POOL, h_ready);
     if (rc == CB_OK) rc = reg("auth", cb_auth_routes(ctx));
-    if (rc == CB_OK) rc = reg("admin", cb_admin_routes(ctx));
+    if (rc == CB_OK && app && app->admin_routes) rc = reg("admin", cb_admin_routes(ctx));
+    else if (rc == CB_OK && ctx->cfg && ctx->cfg->admin_token[0])
+        CB_WARN("boot", "CBASE_ADMIN_TOKEN is set, but the app declares no admin routes: no console is served");
     if (rc == CB_OK) rc = reg("metrics", cb_metrics_routes(ctx));
     if (rc == CB_OK && ctx->prov && ctx->prov->routes) rc = reg(ctx->prov->name, ctx->prov->routes(ctx));
     // Then the app's, every list in order (cbase/app.h).
-    const cb_app *app = ctx->app;
     for (int l = 0; rc == CB_OK && app && l < app->n_route_lists; l++)
         rc = reg(app->name, cb_router_add_all(ctx->router, app->routes[l]->routes, app->routes[l]->n));
     return rc;
