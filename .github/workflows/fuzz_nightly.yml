@@ -1,0 +1,72 @@
+# c_base's fuzz targets (each side's fuzz/, and the client's), every night for 10 minutes each, one
+# runner per target. ci.yml's fuzz job runs each for 30 s on every pull request and push to main;
+# this is the long run. A crash fails the target's job and its input is uploaded: minimise it
+# (`build/fuzz/<target> -minimize_crash=1 <input>`), add it to the target's corpus
+# (<side>/fuzz/corpus/<target>) and as a unit test, and fix it.
+name: fuzz (nightly)
+
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  targets:
+    name: list the targets
+    runs-on: ubuntu-24.04
+    outputs:
+      targets: ${{ steps.list.outputs.targets }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: list
+        run: |
+          t=$(make -s print-fuzz-targets | tr ' ' '\n' | sed '/^$/d' | jq -R . | jq -sc .)
+          echo "targets=$t" >> "$GITHUB_OUTPUT"
+
+  fuzz:
+    name: ${{ matrix.target }} (10 min)
+    needs: targets
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.targets.outputs.targets) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - run: sudo apt-get update -q && sudo apt-get install -y -q build-essential clang libssl-dev libsqlite3-dev
+      - name: build
+        run: make -j"$(getconf _NPROCESSORS_ONLN)" build/fuzz/${{ matrix.target }}
+      - name: fuzz
+        run: make fuzz-nightly FUZZ_TARGETS=${{ matrix.target }}
+      - name: the inputs that crashed
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: fuzz-crashes-${{ matrix.target }}
+          path: build/fuzz-crashes/${{ matrix.target }}
+          if-no-files-found: ignore
+          retention-days: 30
+
+  client:
+    name: client:client (10 min)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - run: sudo apt-get update -q && sudo apt-get install -y -q build-essential clang libssl-dev libsqlite3-dev
+      - name: build
+        run: make -C client build/fuzz/client
+      - name: fuzz
+        run: make -C client fuzz-smoke FUZZ_TIME=600
+      - name: the inputs that crashed
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: fuzz-crashes-client
+          path: client/build/fuzz-crashes
+          if-no-files-found: ignore
+          retention-days: 30

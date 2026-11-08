@@ -3,7 +3,7 @@
 # every later one, the same script.
 #
 #   aws configure            # or: aws sso login --profile <p>; export AWS_PROFILE=<p>
-#   c_base/providers/aws/ops/deploy.sh                 # build, upload, create or update the stack
+#   CBASE_PRODUCT=<dir> providers/aws/ops/deploy.sh    # build, upload, create or update the stack
 #   providers/aws/ops/deploy.sh --import DIR    # and then import a product export into DynamoDB
 #
 # What it does, in order:
@@ -23,11 +23,9 @@
 #      resource (CBASE_ALLOW_REPLACE=1 to mean it), then executed and waited for;
 #   6. prints the stack's outputs (FunctionUrl,
 #      DistributionDomain, TableName, PublicUrl);
-#   7. brings the table's bots to the registry (cbase-import --seed-bots: adds
-#      the accounts it lacks, 56 into an empty table, and renames by id),
-#      moves rating rows to the leaderboard's index key (--reindex-ratings),
-#      and with --import DIR runs build/cbase-import against the stack's table,
-#      both with temporary credentials exported from the CLI.
+#   7. runs the product's own steps against the stack's table (CBASE_DEPLOY_AFTER,
+#      below: seeding its rows, an import with --import DIR), with temporary
+#      credentials exported from the CLI.
 #
 #      Against an existing stack it never generates one: a missing secret
 #      stops the run, and a JWT secret that differs from the live function's
@@ -56,7 +54,7 @@ set -euo pipefail
 
 here="$(cd "$(dirname "$0")/../../.." && pwd)"   # the c_base root
 prod="$(cd "${CBASE_PRODUCT:-$here}" && pwd)"    # the product's build (its Makefile's directory)
-# shellcheck source=c_base/ops/ops_env.sh
+# shellcheck source=ops/ops_env.sh
 . "$here/ops/ops_env.sh"
 env_file="$(cbase_ops_env_file "$prod")"
 import_dir=""
@@ -268,32 +266,28 @@ aws cloudformation describe-stacks --region "$region" --stack-name "$stack" \
 cat <<MSG
 
 Next (RUNBOOK.md): point the DNS CNAME for $domain at $(output DistributionDomain),
-then build the web app with NEXT_PUBLIC_BACKEND_URL=$(output PublicUrl).
+then point the product's clients at $(output PublicUrl).
 MSG
 
-# ---- 7. the bots, and the import ----------------------------------------------------
-# A fresh table has no bots (nothing else seeds DynamoDB; SQLite seeds them at
-# open), so every deploy seeds the schema's 49 into a table that has none and
-# leaves a table with bots alone. The import then replaces them with the
-# hosted rows, as it does on SQLite.
-make -s -C "$prod" build/cbase-import
+# ---- 7. the product's own steps against the stack ----------------------------------------------
+# What a product does to its table after every deploy (seed its rows, move an index key, import an
+# export with --import DIR) is the product's: CBASE_DEPLOY_AFTER names its command, run with
+# temporary credentials for this subshell only (SSO and assumed roles included), the stack's region
+# and table (CBASE_STORE=dynamo, CBASE_TABLE), its distribution (CBASE_CF_DISTRIBUTION: a tool that
+# changes cached reads invalidates them) and the --import directory (CBASE_IMPORT_DIR, "" for none).
 stack_table="$(output TableName)"
-(
-  # Temporary credentials for this subshell only (SSO and assumed roles included).
-  eval "$(aws configure export-credentials --format env)"
-  export AWS_REGION="$region"
-  # The import tool invalidates what it changed at the edge (app/edge.h).
-  export CBASE_CF_DISTRIBUTION="$(output DistributionId)"
-  CBASE_STORE=dynamo CBASE_TABLE="$stack_table" "$prod/build/cbase-import" --seed-bots
-  # The leaderboard's sparse, rating-ordered index key: rows from before it
-  # move once; afterwards this rewrites nothing.
-  CBASE_STORE=dynamo CBASE_TABLE="$stack_table" "$prod/build/cbase-import" --reindex-ratings
-  if [ -n "$import_dir" ]; then
-    [ -d "$import_dir" ] || die "--import: $import_dir is not a directory"
-    echo "importing $import_dir into DynamoDB table $stack_table"
-    CBASE_STORE=dynamo CBASE_TABLE="$stack_table" "$prod/build/cbase-import" "$import_dir"
-  fi
-)
+if [ -n "${CBASE_DEPLOY_AFTER:-}" ]; then
+  [ -z "$import_dir" ] || [ -d "$import_dir" ] || die "--import: $import_dir is not a directory"
+  (
+    eval "$(aws configure export-credentials --format env)"
+    export AWS_REGION="$region" CBASE_STORE=dynamo CBASE_TABLE="$stack_table" CBASE_IMPORT_DIR="$import_dir"
+    CBASE_CF_DISTRIBUTION="$(output DistributionId)"
+    export CBASE_CF_DISTRIBUTION
+    cd "$prod" && bash -c "$CBASE_DEPLOY_AFTER"
+  )
+elif [ -n "$import_dir" ]; then
+  die "--import needs the product's CBASE_DEPLOY_AFTER, which knows its rows"
+fi
 if [ -n "$import_dir" ]; then
   echo "import done. The export holds password hashes: rm -rf $import_dir"
 fi

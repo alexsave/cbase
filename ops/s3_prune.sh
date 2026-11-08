@@ -16,7 +16,7 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 die() { echo "s3_prune.sh: $*" >&2; exit 1; }
-# shellcheck source=c_base/ops/s3_prune_lib.sh
+# shellcheck source=ops/s3_prune_lib.sh
 . "$here/s3_prune_lib.sh"
 if [ "${1:-}" = --dry-run ]; then export CBASE_PRUNE_DRY_RUN=1; shift; fi
 kind="${1:-}"

@@ -36,7 +36,7 @@ cp "$here/vm_release.sh" "$here/vm_boot_lib.sh" "$here/vm_boot_stub.sh" "$here/v
 g -C "$tmp/seed" add -A; g -C "$tmp/seed" commit -q -m A; g -C "$tmp/seed" push -q origin HEAD:main
 g clone -q "$tmp/origin.git" "$tmp/work" 2>/dev/null
 rel="$tmp/work/c_base/providers/local/ops/vm_release.sh"
-# shellcheck source=c_base/providers/local/ops/vm_boot_lib.sh
+# shellcheck source=providers/local/ops/vm_boot_lib.sh
 . "$here/vm_boot_lib.sh"
 
 mkdir "$tmp/bin" "$tmp/state"

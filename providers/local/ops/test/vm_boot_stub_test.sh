@@ -20,7 +20,7 @@
 # installed script is executable by root only".
 set -u
 here="$(cd "$(dirname "$0")/.." && pwd)"
-# shellcheck source=c_base/providers/local/ops/vm_boot_lib.sh
+# shellcheck source=providers/local/ops/vm_boot_lib.sh
 . "$here/vm_boot_lib.sh"
 fails=0
 check() { if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1: got [$2] want [$3]"; fails=$((fails + 1)); fi; }

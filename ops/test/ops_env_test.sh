@@ -4,7 +4,7 @@
 # exist yet. No AWS calls.
 set -u
 here="$(cd "$(dirname "$0")/../.." && pwd)"
-# shellcheck source=c_base/ops/ops_env.sh
+# shellcheck source=ops/ops_env.sh
 . "$here/ops/ops_env.sh"
 fails=0
 # The mode in octal: GNU stat first, since its -f means the filesystem.

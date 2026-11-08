@@ -3,7 +3,7 @@
 # and prune_bucket against a fake `aws` that records its calls.
 set -euo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
-# shellcheck source=c_base/ops/s3_prune_lib.sh
+# shellcheck source=ops/s3_prune_lib.sh
 . "$here/s3_prune_lib.sh"
 t="$(mktemp -d)"
 trap 'rm -rf "$t"' EXIT

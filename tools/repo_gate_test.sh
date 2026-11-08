@@ -55,6 +55,7 @@ trap 'rm -rf "$P"' EXIT
 mkdir -p "$P/a/b"
 printf 'include ../../x.mk\n' > "$P/a/Makefile"                    # 2 up from 1 deep: out
 printf '#include "../../lib/x.h"\n' > "$P/a/b/ok.c"                # 2 up from 2 deep: in
+# shellcheck disable=SC2016  # planted text: the \$( must reach the file unexpanded
 printf 'cd "$(dirname "$0")/../../.." && ls\n' > "$P/a/b/up.sh"    # 3 up from 2 deep: out
 printf 'CB := ../../c_base/foolish/server\n' > "$P/a/b/name.mk"    # in, but names the tree
 printf 'a.foolish/x and my_foolish/x are not the tree\n' > "$P/a/b/word.c"

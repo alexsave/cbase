@@ -67,6 +67,7 @@ linked()   { grep -c -e ' -o build/prog$' -e ' -o build/hprog$' "$1"; }
 run()      { make "$@" > "$t/out.log" 2>&1; echo $? > "$t/out.rc"; }
 check() {  # <what is promised> <expected objects> [<expected links>]
   local rc got want; rc=$(cat "$t/out.rc"); got=$(compiled "$t/out.log")
+  # shellcheck disable=SC2086  # $2 is a list of objects, split on purpose
   want=$(printf '%s\n' $2 | sort | tr '\n' ' ' | sed 's/ $//')
   if [ "$rc" != 0 ]; then
     fails=$((fails+1)); echo "not ok - $1: make failed"; sed 's/^/      /' "$t/out.log" | tail -5
