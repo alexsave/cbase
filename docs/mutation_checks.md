@@ -968,3 +968,34 @@ unit_serve_surface runs under a real `cbase serve` and compares whole responses 
 - https.c: the caller's header lines dropped, the body one byte short -> `plain_binary_both_ways_with_its_headers` the request as sent.
 - https.c: no connection pooled -> the same test's accepts == 1.
 - https.c: no retry on a reused connection the peer closed -> `plain_peer_that_closes` every call.
+
+## Answering with files, and the Host allow-list (amgi-serve, 2026-11-08)
+
+All in example/test/unit_web.c, over a real `cbase serve`.
+
+- server.c: `g_req.stream_ok` left false (the file read whole into memory) -> `streams_large_files_and_head` grew < BIG_SIZE / 2 (macOS, and on Linux in CI: ubuntu, coverage, ASan).
+- server.c: no pipelined parse held behind a file body -> `streams_large_files_and_head` read_response == 0 and the big file byte-equal.
+- server.c: pread from offset 0 every chunk -> `streams_large_files_and_head` app.wasm and big.bin byte-equal.
+- server.c: a file body sent whatever the status -> `streams_large_files_and_head` the request after the 304 answers 200.
+- http.c: Content-Length from body.len, not file_len -> `single_page_routes` content-length == "34" and the body.
+- http.c: a file answer's Content-Length on a 304 -> `streams_large_files_and_head` content-length == "".
+- files.c: ".." allowed as a name -> `refuses_every_way_out` got == status, and `reads_whole_off_serve` cb_path_join == CB_E_INVALID.
+- files.c: '/' allowed in a name -> `refuses_every_way_out` (sub%2finner.js) got == status.
+- files.c: control bytes allowed (so "%00" too) -> `refuses_every_way_out` got == status, `reads_whole_off_serve` CB_E_INVALID.
+- files.c: anything resolved counts as inside the directory -> `refuses_every_way_out` got == status and no "SECRET" in the body.
+- files.c: a trailing '/' after a file accepted -> `refuses_every_way_out` (/assets/app.js/) got == status.
+- files.c: a directory answered as a file -> `refuses_every_way_out` and `reads_whole_off_serve` cb_send_file(dir) == 404.
+- files.c: a HEAD's descriptor kept, so serve sends the file -> `streams_large_files_and_head` the HEAD after it parses.
+- files.c: extensions compared with case -> `serves_content_types` LOGO.PNG type, `reads_whole_off_serve` a/b.WASM.
+- files.c: the app's table not read first -> `serves_content_types` deck.pack and notes.txt types.
+- files.c: Cache-Control never set -> `serves_content_types` cache-control == "no-store".
+- files.c: cb_serve_dir's GET/HEAD rule dropped -> `refuses_every_way_out` PUT /any/app.js == 405 with Allow.
+- handler.c: the Host refusal never applied -> `holds_requests_to_the_host_list` every 403 and 400.
+- router.c: a second Host ignored -> `holds_requests_to_the_host_list` two Hosts == 400.
+- router.c: a bare entry at port 80, not the bound port -> `holds_requests_to_the_host_list` the listed hosts == 200.
+- router.c: hosts compared with case -> `holds_requests_to_the_host_list` LocalHost:<port> == 200.
+- router.c: any port accepted -> `holds_requests_to_the_host_list` 127.0.0.1:<port+1> == 403.
+- router.c: a Host with no port read as the bound port -> `holds_requests_to_the_host_list` "127.0.0.1" == 403.
+- router.c: no Host let through -> `holds_requests_to_the_host_list` no Host == 400, HTTP/1.0 == 400.
+- router.c: '@' allowed in a host -> `holds_requests_to_the_host_list` user@127.0.0.1 == 400.
+- boot.c: the list's boot check dropped -> `holds_requests_to_the_host_list` a bad entry starts and is never refused.
