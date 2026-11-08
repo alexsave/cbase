@@ -270,12 +270,12 @@ out:
 }
 
 static const cb_route AUTH_ROUTES[] = {
-    { "POST", "/v1/auth/oidc", CB_ROUTE_POOL, h_oidc, 0 },
-    { "POST", "/v1/auth/signup", CB_ROUTE_POOL, h_signup, 0 },
-    { "POST", "/v1/auth/signin", CB_ROUTE_POOL, h_signin, 0 },
-    { "POST", "/v1/auth/refresh", CB_ROUTE_POOL, h_refresh, 0 },
-    { "POST", "/v1/auth/signout", CB_ROUTE_POOL, h_signout, 0 },
-    { "POST", "/v1/auth/password", CB_ROUTE_POOL, h_password, 0 },
+    { "POST", "/v1/auth/oidc", CB_ROUTE_POOL, h_oidc, 0, 0 },
+    { "POST", "/v1/auth/signup", CB_ROUTE_POOL, h_signup, 0, 0 },
+    { "POST", "/v1/auth/signin", CB_ROUTE_POOL, h_signin, 0, 0 },
+    { "POST", "/v1/auth/refresh", CB_ROUTE_POOL, h_refresh, 0, 0 },
+    { "POST", "/v1/auth/signout", CB_ROUTE_POOL, h_signout, 0, 0 },
+    { "POST", "/v1/auth/password", CB_ROUTE_POOL, h_password, 0, 0 },
 };
 
 int cb_auth_routes(cb_ctx *ctx) {

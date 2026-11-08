@@ -51,7 +51,12 @@ void cb_handle(cb_ctx *ctx, cb_http_req *req, cb_http_res *res) {
         bool known = false;
         const cb_route *r = cb_router_match(ctx->router, m, req->path, &known);
         if (!r) cb_router_error(res, known ? 405 : 404, known ? "method not allowed" : "not found");
-        else {
+        else if (r->max_body && req->body_len > r->max_body) {
+            // A body that arrived whole, past the route's own cap: a one-shot platform's, or a socket's REQ.
+            // Serve's HTTP never gets here with one: it answers 413 before reading the body
+            // (net/server.c body_cap), which this cannot do for a body already in memory.
+            cb_router_error(res, 413, "content too large");
+        } else {
             cb_router_bind(r, req);
             r->fn(ctx, req, res);
         }

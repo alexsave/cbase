@@ -87,7 +87,7 @@ typedef struct cb_config {
     // given takes the knob by hand, and the other, if unset, is then CB_CPU_OFF.
     int  loop_cpu;
     int  bg_cpu;
-    long max_body;        // CBASE_MAX_BODY 1048576: request body bytes
+    long max_body;        // CBASE_MAX_BODY 1048576: request body bytes, for a route without its own (router.h max_body)
     int  jwt_ttl_s;       // CBASE_JWT_TTL 3600: access token lifetime
     int  admin_fail_limit;// CBASE_ADMIN_FAIL_LIMIT 10: wrong console tokens per address an hour (rate_limits.h)
     int  log_level;       // CBASE_LOG_LEVEL info: debug|info|warn|error

@@ -20,6 +20,7 @@ typedef struct { cb_route route; uint8_t mid, kind; size_t len, stem; int64_t sc
 struct cb_router {
     entry *r;
     int n, cap;
+    size_t max_body;   // the largest route max_body (cb_router_max_body)
 };
 
 cb_router *cb_router_new(void) { return calloc(1, sizeof(cb_router)); }
@@ -91,7 +92,7 @@ static bool same_shape(const char *a, const char *b) {
 
 static int add(cb_router *r, const cb_route *rt) {
     const char *method = rt->method, *pattern = rt->pattern;
-    if (!pattern || pattern[0] != '/' || !method || !rt->fn) return CB_E_INVALID;
+    if (!pattern || pattern[0] != '/' || !method || !rt->fn || rt->max_body > CB_ROUTE_MAX_BODY) return CB_E_INVALID;
     entry e = { *rt, (uint8_t)cb_http_method_id(method), K_EXACT, strlen(pattern), 0, 0 };
     if (has_params(pattern)) {
         bool ok;
@@ -124,11 +125,12 @@ static int add(cb_router *r, const cb_route *rt) {
     while (at > 0 && r->r[at - 1].score < e.score) { r->r[at] = r->r[at - 1]; at--; }
     r->r[at] = e;
     r->n++;
+    if (rt->max_body > r->max_body) r->max_body = rt->max_body;
     return CB_OK;
 }
 
 int cb_router_add(cb_router *r, const char *method, const char *pattern, unsigned flags, cb_handler fn) {
-    const cb_route rt = { method, pattern, flags, fn, 0 };
+    const cb_route rt = { method, pattern, flags, fn, 0, 0 };
     return add(r, &rt);
 }
 
@@ -176,8 +178,7 @@ static bool fits(const entry *e, const char *path, size_t plen) {
 // The first route (best score first) whose pattern matches the path and whose
 // method fits. *path_known is whether any pattern matched the path under any
 // method (405 rather than 404).
-static const cb_route *match(const cb_router *r, int method, const char *path, bool *path_known) {
-    const size_t plen = strlen(path);
+static const cb_route *match(const cb_router *r, int method, const char *path, size_t plen, bool *path_known) {
     bool known = false;
     const cb_route *best = NULL;
     for (int i = 0; i < r->n; i++) {
@@ -192,13 +193,19 @@ static const cb_route *match(const cb_router *r, int method, const char *path, b
     return best;
 }
 
-const cb_route *cb_router_match(const cb_router *r, int method, const char *path, bool *path_known) {
-    const cb_route *best = match(r, method, path, path_known);
+const cb_route *cb_router_match_n(const cb_router *r, int method, const char *path, size_t plen, bool *path_known) {
+    const cb_route *best = match(r, method, path, plen, path_known);
     // HEAD is GET without the body (RFC 9110 9.3.2): a path with no HEAD route
     // of its own answers through its GET route, and handler.c drops the body.
-    if (!best && method == CB_M_HEAD) best = match(r, CB_M_GET, path, NULL);
+    if (!best && method == CB_M_HEAD) best = match(r, CB_M_GET, path, plen, NULL);
     return best;
 }
+
+const cb_route *cb_router_match(const cb_router *r, int method, const char *path, bool *path_known) {
+    return cb_router_match_n(r, method, path, strlen(path), path_known);
+}
+
+size_t cb_router_max_body(const cb_router *r) { return r ? r->max_body : 0; }
 
 void cb_router_bind(const cb_route *route, cb_http_req *req) {
     req->n_params = 0;

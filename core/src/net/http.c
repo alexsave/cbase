@@ -146,6 +146,29 @@ int cb_http_method_id(const char *n) {
     return CB_M_OTHER;
 }
 
+int cb_http_scan(const char *buf, size_t len, cb_http_head *out) {
+    size_t he = 0, bl = 0;
+    int rc = scan_head(buf, len, CB_HTTP_MAX_BODY_SCAN, &he, &bl);
+    if (rc <= 0) return rc;
+    memset(out, 0, sizeof *out);
+    out->meth = CB_M_OTHER;
+    out->body_len = bl;
+    // "METHOD SP target SP": the method by name, the target's path up to '?'.
+    size_t i = 0;
+    char m[16];
+    while (i < he && i < sizeof m - 1 && is_tchar((unsigned char)buf[i])) { m[i] = buf[i]; i++; }
+    if (i == 0 || i >= he || buf[i] != ' ') return 1;
+    m[i] = 0;
+    out->meth = cb_http_method_id(m);
+    const size_t ps = ++i;
+    while (i < he && buf[i] != ' ' && buf[i] != '?' && buf[i] != '\r') i++;
+    if (i < he && buf[ps] == '/') {
+        out->path = buf + ps;
+        out->path_len = i - ps;
+    }
+    return 1;
+}
+
 int cb_http_parse(char *buf, size_t len, size_t max_body, cb_http_req *out) {
     size_t he = 0, bl = 0;
     int rc = scan_head(buf, len, max_body, &he, &bl);

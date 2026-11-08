@@ -143,6 +143,8 @@ Handlers keep running on the request pool under serve and once per invocation un
 
 A pattern is exact (`/health`), a prefix (`/v1/games/*`), or has path parameters (`/decks/:id/notes/:nid`), which the handler reads decoded with `cb_route_param(req, "id", out, cap)`.
 An exact pattern always wins, then a parameter pattern (the one whose first differing segment is literal), then the longest prefix, whatever order they were added in (`net/router.h`).
+A route may take a body larger or smaller than `CBASE_MAX_BODY` (1 MiB) with its own `max_body` (at most 1 GiB, for a media upload); serve answers a longer Content-Length 413 from the head alone, before reading the body.
+Chunked request bodies stay refused (411): every client sends a Content-Length.
 
 CORS is the app's to declare, and the default is deny (`net/router.h`).
 `cb_app.cors_origins` lists the web origins whose pages may call the app, each exactly as a browser sends `Origin`; the deployment may add its own through `CBASE_ALLOWED_ORIGINS` (default empty).

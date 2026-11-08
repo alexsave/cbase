@@ -307,6 +307,74 @@ static void route_params_reach_the_handler(void) {
     cb_router_free(ctx.router);
 }
 
+// The head scan (http.h cb_http_scan): what the server reads to pick a body cap before the body.
+static void head_scan(void) {
+    cb_http_head h;
+    const char *t = "PUT /decks/9/media?x=1 HTTP/1.1\r\nContent-Length: 70000\r\n\r\nab";
+    T_EQ_INT(cb_http_scan(t, strlen(t), &h), 1);
+    T_EQ_INT(h.meth, CB_M_PUT);
+    T_EQ_MEM(h.path, h.path_len, "/decks/9/media", 14);
+    T_EQ_INT((long long)h.body_len, 70000);           // no body limit of its own
+    T_EQ_INT(cb_http_scan(t, 20, &h), CB_HTTP_MORE);   // the head not all there yet
+    t = "GET /x HTTP/1.1\r\n\r\n";
+    T_EQ_INT(cb_http_scan(t, strlen(t), &h), 1);
+    T_EQ_MEM(h.path, h.path_len, "/x", 2);
+    T_EQ_INT((long long)h.body_len, 0);
+    t = "GET x HTTP/1.1\r\n\r\n";                  // no path a route could have: none named
+    T_EQ_INT(cb_http_scan(t, strlen(t), &h), 1);
+    T_EQ_INT((long long)h.path_len, 0);
+    t = "POST /x HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n";
+    T_EQ_INT(cb_http_scan(t, strlen(t), &h), -411);    // chunked stays refused
+}
+
+// A route's max_body: the router keeps the largest, refuses one past CB_ROUTE_MAX_BODY, matches a
+// path that is not NUL-ended, and cb_handle refuses a whole body past the cap before the handler.
+static int g_ran;
+static void h_count(cb_ctx *c, const cb_http_req *q, cb_http_res *s) { g_ran++; }
+static void route_body_caps(void) {
+    cb_router *r = cb_router_new();
+    T_EQ_INT((long long)cb_router_max_body(r), 0);
+    T_EQ_INT((long long)cb_router_max_body(NULL), 0);
+    const cb_route rs[] = {
+        { "POST", "/up", 0, h_count, 0, 5000 },
+        { "POST", "/small", 0, h_count, 0, 10 },
+        { "POST", "/plain", 0, h_count, 0, 0 },
+        { "POST", "/huge", 0, h_count, 0, CB_ROUTE_MAX_BODY + 1 },
+    };
+    T_EQ_INT(cb_router_add_all(r, rs, 3), CB_OK);
+    T_EQ_INT((long long)cb_router_max_body(r), 5000);
+    T_EQ_INT(cb_router_add_all(r, rs + 3, 1), CB_E_INVALID);
+    T_EQ_INT((long long)cb_router_max_body(r), 5000);
+    bool known = false;
+    const cb_route *m = cb_router_match_n(r, CB_M_POST, "/upX", 3, &known);
+    T_CHECK(m && m->max_body == 5000);
+    T_CHECK(!cb_router_match_n(r, CB_M_POST, "/up", 2, &known) && !known);
+    cb_ctx ctx;
+    memset(&ctx, 0, sizeof ctx);
+    ctx.router = r;
+    static const uint8_t body[11] = "0123456789";
+    const struct { const char *path; size_t n; int status, ran; } cases[] = {
+        { "/small", 10, 200, 1 }, { "/small", 11, 413, 0 }, { "/plain", 11, 200, 1 }, { "/up", 11, 200, 1 },
+    };
+    for (int i = 0; i < 4; i++) {
+        cb_http_req q;
+        memset(&q, 0, sizeof q);
+        strcpy(q.method, "POST");
+        q.path = cases[i].path;
+        q.query = "";
+        q.body = body;
+        q.body_len = cases[i].n;
+        cb_http_res res;
+        cb_res_init(&res);
+        g_ran = 0;
+        cb_handle(&ctx, &q, &res);
+        T_EQ_INT(res.status, cases[i].status);
+        T_EQ_INT(g_ran, cases[i].ran);
+        cb_res_free(&res);
+    }
+    cb_router_free(r);
+}
+
 // The first differing segment decides between two parameter patterns, whatever the order added;
 // the same shape under one method is a conflict; malformed parameters are refused.
 static void route_param_conflicts(void) {
@@ -555,6 +623,8 @@ int main(void) {
     T_RUN(route_params);
     T_RUN(route_param_conflicts);
     T_RUN(route_params_reach_the_handler);
+    T_RUN(head_scan);
+    T_RUN(route_body_caps);
     T_RUN(cors_default_denies);
     T_RUN(cors_lists);
     T_RUN(cors_credentials);

@@ -71,13 +71,22 @@ typedef struct cb_route_s {
     cb_handler  fn;
     int         inline_us; // CB_ROUTE_INLINE: the most thread CPU time a run on the loop should take
                            // (0: the server's inline_budget_us); more counts toward the valve
+    size_t      max_body;  // the most request body bytes this route takes (0: the server's
+                           // CBASE_MAX_BODY, 1 MiB by default), larger or smaller than it, at
+                           // most CB_ROUTE_MAX_BODY: a media upload's. A longer Content-Length is
+                           // answered 413 before any of its body is read (net/server.c), and a
+                           // longer body that arrives whole (a one-shot platform's, a socket's REQ) is answered
+                           // 413 before the handler runs (handler.c)
 } cb_route;
+
+#define CB_ROUTE_MAX_BODY ((size_t)1 << 30)   // 1 GiB: a route's max_body, at most
 
 cb_router *cb_router_new(void);
 void cb_router_free(cb_router *r);
 // Adds a route. The strings must outlive the router (string literals).
 // CB_E_CONFLICT for the same method and pattern (or parameter shape) twice,
-// CB_E_INVALID for a pattern that does not start with '/' or a malformed parameter.
+// CB_E_INVALID for a pattern that does not start with '/', a malformed parameter
+// or a max_body over CB_ROUTE_MAX_BODY.
 int cb_router_add(cb_router *r, const char *method, const char *pattern, unsigned flags, cb_handler fn);
 // Adds routes[0..n) in order, each with its inline budget: CB_OK, or the first
 // refusal (the routes before it stay added).
@@ -86,6 +95,13 @@ int cb_router_add_all(cb_router *r, const cb_route *routes, int n);
 // The route for method + path, or NULL. When NULL, *path_known says whether
 // the path matched a route under another method (405 rather than 404).
 const cb_route *cb_router_match(const cb_router *r, int method, const char *path, bool *path_known);   // method: CB_M_*
+
+// cb_router_match for a path of plen bytes, not NUL-ended (a head not parsed yet: http.h
+// cb_http_scan).
+const cb_route *cb_router_match_n(const cb_router *r, int method, const char *path, size_t plen, bool *path_known);
+// The largest max_body any route declares, or 0 when none does: the server reads a request's
+// head for its route's cap only then.
+size_t cb_router_max_body(const cb_router *r);
 
 // Sets req's path parameters from `route`, the route cb_router_match answered for req->path
 // (none for a route without them). Whoever runs a route's handler calls it first: cb_handle,

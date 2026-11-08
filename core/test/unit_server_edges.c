@@ -19,6 +19,7 @@
 #include "util/uuid.h"
 
 #include <poll.h>
+#include <stdio.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -32,6 +33,20 @@ static pthread_t g_thread;
 static atomic_int g_flood_rc;
 
 static void h_echo(cb_ctx *c, const cb_http_req *q, cb_http_res *s) { cb_res_send(s, 200, "text/plain", q->body, q->body_len); }
+// Answers how many body bytes it was given, all of them checked.
+static void h_len(cb_ctx *c, const cb_http_req *q, cb_http_res *s) {
+    for (size_t i = 0; i < q->body_len; i++)
+        if (q->body[i] != (uint8_t)('a' + i % 26)) { cb_res_text(s, 500, "garbled"); return; }
+    char b[32];
+    snprintf(b, sizeof b, "%zu", q->body_len);
+    cb_res_text(s, 200, b);
+}
+// Routes with body caps of their own (router.h cb_route max_body), beside the server's 1024.
+static const cb_route CAPPED[] = {
+    { "POST", "/up", CB_ROUTE_POOL, h_len, 0, 64 * 1024 },          // more than the server's
+    { "POST", "/tiny", CB_ROUTE_POOL, h_len, 0, 16 },               // less
+    { "PUT", "/decks/:id/media", CB_ROUTE_POOL, h_len, 0, 8192 },   // a parameter route's
+};
 static void h_big(cb_ctx *c, const cb_http_req *q, cb_http_res *s) {
     static char big[4 << 20];
     memset(big, 'z', sizeof big);
@@ -79,6 +94,8 @@ static void start(void) {
     cb_router_add(g_ctx.router, "POST", "/slow", CB_ROUTE_POOL, h_slow);
     cb_router_add(g_ctx.router, "GET", "/big", CB_ROUTE_POOL, h_big);
     cb_router_add(g_ctx.router, "GET", "/ws", CB_ROUTE_LOOP, h_ws);
+    cb_router_add(g_ctx.router, "POST", "/len", CB_ROUTE_POOL, h_len);
+    T_EQ_INT(cb_router_add_all(g_ctx.router, CAPPED, 3), CB_OK);
     cb_server_opts o;
     cb_server_opts_default(&o);
     o.max_body = 1024;
@@ -404,9 +421,62 @@ static void no_connection_no_sweep(void) {
     close(fd);
 }
 
+// A body of n bytes to `path`: the status, and the length the handler saw in *seen.
+static int send_body(const char *method, const char *path, size_t n, long *seen) {
+    char *b = malloc(n + 1);
+    for (size_t i = 0; i < n; i++) b[i] = (char)('a' + i % 26);
+    tc_response r;
+    int st = tc_http(g_port, method, path, NULL, b, n, &r) == 0 ? r.status : -1;
+    *seen = st == 200 ? strtol(cb_buf_cstr(&r.body), NULL, 10) : -1;
+    if (st >= 0) tc_response_free(&r);
+    free(b);
+    return st;
+}
+
+// The head alone, with a Content-Length: the status line the server answers before any body
+// byte is sent, or 0 when it answers nothing within wait_ms (it is waiting for the body; under
+// head_ms, 300 ms here, after which an unfinished request is 408).
+static int head_only(const char *method, const char *path, size_t n, int wait_ms) {
+    int fd = tc_connect(g_port);
+    char h[256];
+    int hn = snprintf(h, sizeof h, "%s %s HTTP/1.1\r\nHost: x\r\nContent-Length: %zu\r\n\r\n", method, path, n);
+    T_CHECK(write(fd, h, (size_t)hn) == hn);
+    cb_buf in;
+    cb_buf_init(&in);
+    bool closed;
+    read_until_closed(fd, &in, wait_ms, &closed);
+    int st = 0;
+    sscanf(cb_buf_cstr(&in), "HTTP/1.1 %d", &st);
+    close(fd);
+    cb_buf_free(&in);
+    return st;
+}
+
+// Each route's own cap, at the boundary: the cap is taken, one byte more is 413, and that 413
+// comes from the head alone, before the body is read. A route without one keeps the server's.
+static void per_route_body_caps(void) {
+    static const struct { const char *method, *path; size_t cap; } caps[] = {
+        { "POST", "/up", 64 * 1024 }, { "POST", "/tiny", 16 }, { "PUT", "/decks/d1/media", 8192 }, { "POST", "/len", 1024 },
+    };
+    T_EQ_INT((long long)cb_router_max_body(g_ctx.router), 64 * 1024);
+    for (int i = 0; i < 4; i++) {
+        long seen = 0;
+        T_EQ_INT(send_body(caps[i].method, caps[i].path, caps[i].cap, &seen), 200);
+        T_EQ_INT(seen, (long long)caps[i].cap);
+        T_EQ_INT(send_body(caps[i].method, caps[i].path, caps[i].cap + 1, &seen), 413);
+        T_EQ_INT(head_only(caps[i].method, caps[i].path, caps[i].cap + 1, 2000), 413);
+        T_EQ_INT(head_only(caps[i].method, caps[i].path, caps[i].cap, 150), 0);   // within it: it waits for the body
+    }
+    // The upload's whole cap sent at once, far past the server's own cap in one burst, is read.
+    long seen = 0;
+    T_EQ_INT(send_body("POST", "/up", 60 * 1024, &seen), 200);
+    T_EQ_INT(seen, 60 * 1024);
+}
+
 int main(void) {
     start();
     T_RUN(http_defences);
+    T_RUN(per_route_body_caps);
     T_RUN(a_head_past_every_cap);
     T_RUN(a_client_gone_mid_request);
     T_RUN(a_reset_mid_answer);

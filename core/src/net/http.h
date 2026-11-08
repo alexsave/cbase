@@ -101,6 +101,21 @@ int cb_http_query_each(const char *query, cb_query_fn fn, void *ud);
 //         CB_HTTP_MAX_HEAD or CB_HTTP_MAX_HEADERS, -505 not HTTP/1.x
 int cb_http_parse(char *buf, size_t len, size_t max_body, cb_http_req *out);
 
+// What a request's head says before its body is read, for deciding the body's cap (router.h
+// cb_route max_body) from its route: the method (CB_M_*) and the raw path (not NUL-ended: the
+// target up to its '?'), and the Content-Length. Reads buf[0..len) and writes nothing.
+typedef struct {
+    int         meth;
+    const char *path;
+    size_t      path_len;
+    size_t      body_len;
+} cb_http_head;
+// > 0 when the whole head is there (*out filled), CB_HTTP_MORE, or what cb_http_parse would
+// answer for the head (< 0) with no body limit but CB_HTTP_MAX_BODY_SCAN. A request line too
+// malformed to name a path leaves path_len 0 (cb_http_parse refuses it).
+#define CB_HTTP_MAX_BODY_SCAN ((size_t)1 << 40)
+int cb_http_scan(const char *buf, size_t len, cb_http_head *out);
+
 // ---- the response --------------------------------------------------------------
 
 typedef struct cb_http_res {
