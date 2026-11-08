@@ -261,7 +261,7 @@ An optional socketpair on the child's fd 3 carries lines both ways; cbase knows 
 ### 2.9 Upgrading a product across the HTTP changes
 
 A product that consumes cbase from before the CORS, path parameter and body cap changes makes three edits, and the compiler or boot names each one it misses; a local server makes a fourth.
-A product from before the platform routes became opt-in makes the fifth, which nothing names for it: its `/health`, `/ready` or console simply answers 404.
+A product from before the platform routes became opt-in makes the fifth and sixth, which nothing names for it: its `/health`, `/ready`, console or account routes simply answer 404.
 
 1. **Route rows.** `cb_route` gained `max_body` after `inline_us`, so a positional row such as `{ "GET", "/v1/x", CB_ROUTE_POOL, h_x, 0 }` fails `-Wmissing-field-initializers`.
    Prefer designated initializers, which name what they set and survive the next field: `{ .method = "GET", .pattern = "/v1/x", .flags = CB_ROUTE_POOL, .fn = h_x }`.
@@ -284,6 +284,11 @@ A product from before the platform routes became opt-in makes the fifth, which n
    A load balancer's or deploy check's probe needs `health_route`, and a readiness probe `ready_route`.
    `admin_routes` still serves the console only once `CBASE_ADMIN_TOKEN` is set; without it, the token is ignored and boot warns that no console is served.
    foolish, when it cuts over, declares all three.
+6. **The account routes are declared by the app too, and off by default.**
+   `cb_app` gained `bool auth_routes`: `POST /v1/auth/oidc`, `signup`, `signin`, `refresh`, `signout` and `password`.
+   Left false, none is registered, so each is the app's own 404; a client that signs in needs `.auth_routes = true`.
+   Accounts live in the platform's store, so a storeless app that declares them is refused at boot, with a sentence naming `cb_app.auth_routes`.
+   foolish, when it cuts over, declares it.
 
 ### 2.10 Serve's settings an app ships, and CBASE_ENV_FILE
 

@@ -3,7 +3,7 @@
 //
 //   build/test/smoke_example build/cbase
 //
-// The platform's own routes answer (/health, /admin), the app's two routes answer, an unknown path
+// The platform's own routes it declares answer (/health, /admin, the account routes), the app's two routes answer, an unknown path
 // is 404 and a known one under another method 405, and the server stops on SIGTERM with status 0.
 #include "t.h"
 #include "lib_client.h"
@@ -50,6 +50,15 @@ static void serves_the_app(void) {
     tc_response_free(&r);
     T_EQ_INT(get("GET", "/admin", NULL, NULL, &r), 200);
     tc_response_free(&r);
+    // The account routes it declares (cb_app.auth_routes) are there, where an undeclared route is
+    // 404: a refresh not in the auth wire is its 400, and sign-up and sign-in are 503, as the
+    // example names no account domain (cb_app.account_domain).
+    static const struct { const char *path; int status; } auth[] = {
+        { "/v1/auth/refresh", 400 }, { "/v1/auth/signup", 503 }, { "/v1/auth/signin", 503 } };
+    for (size_t i = 0; i < sizeof auth / sizeof auth[0]; i++) {
+        T_EQ_INT(get("POST", auth[i].path, "Content-Type: application/octet-stream\r\n", "not the wire", &r), auth[i].status);
+        tc_response_free(&r);
+    }
 
     T_EQ_INT(get("GET", "/v1/hello", NULL, NULL, &r), 200);
     T_EQ_STR(cb_buf_cstr(&r.body), EXAMPLE_HELLO);

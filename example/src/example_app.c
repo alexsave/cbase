@@ -48,6 +48,7 @@ static const cb_app EXAMPLE_APP = {
     .health_route = true,   // the platform's routes it uses (cbase/app.h): its smokes, the deploy check
     .ready_route = true,
     .admin_routes = true,
+    .auth_routes = true,
     .jobs = JOBS,
     .n_jobs = 1,
     .schedules = SCHEDULES,

@@ -73,6 +73,7 @@ static cb_app g_app;
 static void app_storeless(void) {
     g_app = *cb_main_app;
     g_app.storeless = true;
+    g_app.auth_routes = false;   // the example's accounts live in the store
 }
 
 // The server's own schedule, and its own database opened and closed where an app opens its own.
@@ -156,6 +157,13 @@ static void declares_no_platform_routes(void) {
     }
     T_EQ_INT(get(port, "POST", "/admin/api/query", bearer, "{}", &r), 404);
     tc_response_free(&r);
+    static const char *const auth[] = { "oidc", "signup", "signin", "refresh", "signout", "password" };
+    for (size_t i = 0; i < sizeof auth / sizeof auth[0]; i++) {
+        char path[64];
+        snprintf(path, sizeof path, "/v1/auth/%s", auth[i]);
+        T_EQ_INT(get(port, "POST", path, "Content-Type: application/json\r\n", "{}", &r), 404);
+        tc_response_free(&r);
+    }
     T_EQ_INT(get(port, "GET", "/ready", NULL, NULL, &r), 200);
     T_EQ_STR(cb_buf_cstr(&r.body), "the app's own\n");
     tc_response_free(&r);
@@ -186,8 +194,8 @@ static void serves_with_no_store(void) {
     T_EQ_INT(get(port, "GET", "/ready", NULL, NULL, &r), 200);
     T_CHECK(strstr(cb_buf_cstr(&r.body), "store=none") != NULL);
     tc_response_free(&r);
-    // Accounts live in the store: off, and said so with a 503, never a crash.
-    T_EQ_INT(get(port, "POST", "/v1/auth/signup", "Content-Type: application/json\r\n", "{\"email\":\"a@b.test\",\"password\":\"pw-pw-pw-pw\"}", &r), 503);
+    // Accounts live in the store: a storeless app has no auth routes at all.
+    T_EQ_INT(get(port, "POST", "/v1/auth/signup", "Content-Type: application/json\r\n", "{\"email\":\"a@b.test\",\"password\":\"pw-pw-pw-pw\"}", &r), 404);
     tc_response_free(&r);
     // The console: the app's counter answers (it keeps its own data); the store's views are 503.
     const char *bearer = "Authorization: Bearer " ADMIN "\r\n";
@@ -260,6 +268,7 @@ static void refused_in_boot(void) {
         { "store rows", "", "", "declares store rows", 1 },
         { "account domain", "", "", "names an account domain", 2 },
         { "delete account", "", "", "deletes accounts", 3 },
+        { "auth routes", "", "", "serves the account routes (cb_app.auth_routes)", 4 },
         { "CBASE_STORE", "sqlite", "", "CBASE_STORE=sqlite names a store", 0 },
         { "Apple", "", "app.example.test", "Sign in with Apple", 0 },
     };
@@ -268,6 +277,7 @@ static void refused_in_boot(void) {
         if (cases[i].field == 1) g_app.store = &SOME_ROWS;
         if (cases[i].field == 2) g_app.account_domain = "accounts.example.test";
         if (cases[i].field == 3) g_app.delete_account = fake_delete;
+        if (cases[i].field == 4) g_app.auth_routes = true;
         int rc = boot_in(&g_app, dir, cases[i].store, cases[i].apple, err, sizeof err);
         T_EQ_INT(rc, CB_E_INVALID);
         if (!strstr(err, cases[i].needle)) fprintf(stderr, "     %s: \"%s\"\n", cases[i].what, err);

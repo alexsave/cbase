@@ -98,9 +98,13 @@ struct cb_app {
     // ADMIN_ROUTES: the console, GET /admin and /admin/api/*, which still answer only once
     // CBASE_ADMIN_TOKEN is set (admin/admin.h). Off, nothing of the console is registered whatever
     // the token, and the app's admin_calls and admin_panels are never served.
+    // AUTH_ROUTES: the account routes, POST /v1/auth/oidc, signup, signin, refresh, signout and
+    // password (auth/auth_http.h). Accounts live in the platform's store, so a storeless app that
+    // declares them is refused at boot, with a sentence.
     bool                 health_route;
     bool                 ready_route;
     bool                 admin_routes;
+    bool                 auth_routes;
     // Runs once at boot, before anything is served: CB_OK, or a CB_E_* with
     // a sentence in err, and the process must not serve. NULL: none.
     int (*selftest)(char *err, size_t cap);
@@ -123,9 +127,9 @@ struct cb_app {
     const struct cb_store_app *store;
     // STORELESS: the app keeps its data itself (its own database files, opened in serve_open) and
     // needs no platform store. Boot then opens none: no store, no schema, no database file and no
-    // instance lock beside one. What lives in the platform's store is off: accounts (the auth routes
-    // answer 503), the console's store views (503), /ready says store=none. An app that is storeless
-    // and still asks for one of those (store rows, an account domain, delete_account) is refused at
+    // instance lock beside one. What lives in the platform's store is off: accounts, the console's
+    // store views (503), /ready says store=none. An app that is storeless and still asks for one of
+    // those (store rows, the auth routes, an account domain, delete_account) is refused at
     // boot, with a sentence, as is CBASE_STORE or Sign in with Apple configured for it. Serve wants
     // neither CBASE_JWT_SECRET nor CBASE_PUBLIC_URL for it (config.h cb_config_check_serve). false (the
     // default): the provider's store is opened, as for every app before this field.

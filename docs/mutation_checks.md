@@ -1019,3 +1019,11 @@ unit_storeless, under a real serve with CBASE_ADMIN_TOKEN set: the "bare" app de
 - handler.c: the console registered whatever the app says -> `declares_no_platform_routes` /admin, /admin/api/overview, /admin/api/x == 404.
 - handler.c: /ready registered whatever the app says -> `declares_no_platform_routes` the app's own /ready conflicts, and the boot fails.
 - example_app.c: health_route left false -> `serves_with_no_store` /health == 200.
+
+## The account routes, the app's to declare (auth-opt-in)
+
+unit_storeless under a real serve, and smoke_example against build/cbase.
+
+- handler.c: the auth routes registered whatever the app says -> `declares_no_platform_routes` every /v1/auth/* == 404, and `serves_with_no_store` signup == 404.
+- boot.c: a storeless app declaring auth_routes not refused -> `refused_in_boot` the "auth routes" case boots, its sentence missing.
+- example_app.c: auth_routes left false -> `smoke_example` refresh == 400, signup and signin == 503 (each 404).

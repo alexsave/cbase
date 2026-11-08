@@ -62,6 +62,7 @@ static void release_instance(void) {
 static int storeless_check(const cb_ctx *ctx, char *err, size_t cap) {
     const cb_app *app = ctx->app;
     const char *what = app->store ? "declares store rows (cb_app.store)"
+                     : app->auth_routes ? "serves the account routes (cb_app.auth_routes), and accounts live in the platform's store"
                      : app->account_domain ? "names an account domain (cb_app.account_domain), and accounts live in the platform's store"
                      : app->delete_account ? "deletes accounts (cb_app.delete_account), and accounts live in the platform's store"
                      : NULL;
@@ -125,7 +126,7 @@ int cb_boot(cb_ctx *ctx, char *err, size_t cap) {
         (rc = ctx->app->serve_open(ctx, err, cap)) != CB_OK)
         return rc;
     g_storeless_open = storeless;
-    // Accounts live in the store: a storeless app has none, and every auth route answers 503.
+    // Accounts live in the store: a storeless app has none (and declares no auth routes: above).
     if (!storeless && (rc = soft("auth", cb_auth_new(ctx, &ctx->auth), err, cap)) != CB_OK) return rc;
     if (ctx->auth && (prov->flags & CB_PROV_ONE_PROCESS)) cb_auth_hold_sessions(ctx->auth);
     if ((rc = soft("realtime", prov->rt_open ? prov->rt_open(ctx, &ctx->rt) : CB_OK, err, cap)) != CB_OK) return rc;
