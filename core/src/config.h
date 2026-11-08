@@ -78,7 +78,7 @@ typedef struct cb_config {
     // URL be defaulted from the listen address. Production gives both.
     bool dev;
     // Tunables, each CBASE_<NAME> with these defaults:
-    int  req_workers;     // CBASE_REQ_WORKERS 1: serve's request pool (config.c THE THREADS)
+    int  req_workers;     // CBASE_REQ_WORKERS 1, or the app's (cbase/app.h req_workers): serve's request pool (config.c THE THREADS)
     int  job_workers;     // CBASE_JOB_WORKERS 1: serve's job pool (an app's jobs, cbase/app.h cb_job)
     // THE SATURATION KNOB (util/affinity.h): CBASE_LOOP_CPU, the CPU serve's loop is pinned to, and
     // CBASE_BG_CPU, the CPU every other serve thread is pinned to. Each is a CPU number, `off`

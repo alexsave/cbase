@@ -367,11 +367,40 @@ static void the_apps_settings_follow_the_platforms(void) {
     clear_env();
 }
 
+// THE APP'S DEFAULTS (cbase/app.h "serve's defaults"): the app's request pool over cbase's 1,
+// the environment's over the app's, and a value out of range refused even under the variable.
+static void the_apps_pool_under_the_environment(void) {
+    clear_env();
+    unsetenv("CBASE_REQ_WORKERS");
+    static const cb_app TWELVE = { .name = "twelve", .req_workers = 12 }, NONE = { .name = "none" },
+                        BAD = { .name = "bad", .req_workers = 257 }, NEG = { .name = "neg", .req_workers = -1 };
+    cb_config c;
+    char err[256] = "";
+    T_EQ_INT(cb_config_load(&c, &NONE, err, sizeof err), CB_OK);
+    T_EQ_INT(c.req_workers, 1);   // an app that says nothing: cbase's
+    T_EQ_INT(cb_config_load(&c, NULL, err, sizeof err), CB_OK);
+    T_EQ_INT(c.req_workers, 1);
+    T_EQ_INT(cb_config_load(&c, &TWELVE, err, sizeof err), CB_OK);
+    T_EQ_INT(c.req_workers, 12);  // the app's
+    setenv("CBASE_REQ_WORKERS", "", 1);   // empty is unset, as for every variable
+    T_EQ_INT(cb_config_load(&c, &TWELVE, err, sizeof err), CB_OK);
+    T_EQ_INT(c.req_workers, 12);
+    setenv("CBASE_REQ_WORKERS", "3", 1);
+    T_EQ_INT(cb_config_load(&c, &TWELVE, err, sizeof err), CB_OK);
+    T_EQ_INT(c.req_workers, 3);   // the environment's, over the app's
+    T_EQ_INT(cb_config_load(&c, &BAD, err, sizeof err), CB_E_INVALID);
+    T_CHECK(strstr(err, "req_workers 257") != NULL);
+    T_EQ_INT(cb_config_load(&c, &NEG, err, sizeof err), CB_E_INVALID);
+    T_CHECK(strstr(err, "req_workers -1") != NULL);
+    unsetenv("CBASE_REQ_WORKERS");
+}
+
 int main(void) {
     T_RUN(secrets_rule);
     T_RUN(storeless_needs_no_token_secrets);
     T_RUN(lambda_refuses_a_clock_speedup);
     T_RUN(the_apps_settings_follow_the_platforms);
+    T_RUN(the_apps_pool_under_the_environment);
     T_RUN(secrets_never_shown);
     T_RUN(the_cpu_knob);
     T_RUN(one_instance_per_database);

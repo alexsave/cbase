@@ -34,7 +34,9 @@ static bool copy(char *dst, size_t cap, const char *name, const char *v, char *e
 // (what would block the loop: a read or write of the store, a password's hash, a document whose lock
 // another thread holds), and the job worker the compute thread (the app's jobs). A second request
 // worker only contended for the store's one writer and the allocator; a box that wants more says
-// so (CBASE_REQ_WORKERS), and nothing is sized from the CPUs the process sees.
+// so (CBASE_REQ_WORKERS), and nothing is sized from the CPUs the process sees. An app whose
+// handlers wait on something remote ships its own count (cbase/app.h req_workers), under the
+// variable.
 #define REQ_WORKERS_DEFAULT 1
 
 static bool num(const char *name, long dflt, long lo, long hi, long *out, char *err, size_t ecap) {
@@ -369,8 +371,27 @@ bool cb_config_origin_allowed(const cb_config *c, const char *origin) {
 
 bool cb_config_origin_any(const cb_config *c) { return origin_listed(c->allowed_origins, "*", 1); }
 
+// Was the variable given? The rule env() reads by: set and not empty.
+static bool given(const char *name) {
+    const char *v = getenv(name);
+    return v && *v;
+}
+
+// THE APP'S DEFAULTS (cbase/app.h "serve's defaults"): each over cbase's own, under the
+// environment's. Checked whether or not the environment overrides it, so an app's bad value is
+// found on the first boot, not on the first one without the variable.
+static int app_defaults(cb_config *c, const cb_app *app, char *err, size_t cap) {
+    if (app->req_workers < 0 || app->req_workers > 256) {
+        snprintf(err, cap, "the app's req_workers %d is not in 1..256 (0: cbase's default)", app->req_workers);
+        return CB_E_INVALID;
+    }
+    if (app->req_workers && !given("CBASE_REQ_WORKERS")) c->req_workers = app->req_workers;
+    return CB_OK;
+}
+
 int cb_config_load(cb_config *cfg, const cb_app *app, char *err, size_t cap) {
     int rc = cb_config_from_env(cfg, err, cap);
+    if (rc == CB_OK && app) rc = app_defaults(cfg, app, err, cap);
     if (rc == CB_OK && app && app->config) rc = app->config(cfg, err, cap);
     return rc;
 }

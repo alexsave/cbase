@@ -162,6 +162,15 @@ struct cb_app {
     // Access-Control-Allow-Credentials: true. Boot refuses it beside "*" anywhere, since a browser
     // never sends credentials to "*" and an echo of every origin with credentials is no CORS at all.
     bool                 cors_credentials;
+
+    // ---- serve's defaults, the app's to set (config.h cb_config_load) ----
+    // Each is the default the app ships with: its CBASE_* variable, when set, still wins, and 0 or
+    // NULL leaves cbase's own default. Boot refuses a value out of range, with a sentence.
+    //
+    // REQ_WORKERS: serve's request pool, the threads every CB_ROUTE_POOL handler runs on (config.c
+    // THE THREADS), 1..256. An app whose handlers wait (a remote call that holds its thread for
+    // seconds) sets as many as it wants waiting at once. 0: cbase's 1. CBASE_REQ_WORKERS overrides.
+    int                  req_workers;
 };
 
 // The app this binary serves: the product defines it, one per link.
