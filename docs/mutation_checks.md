@@ -888,7 +888,7 @@ The id-miss rule (`foolish/server/src/app/misses.h`, `CB_LIMIT_ID_MISS_IP`) and 
 unit_hpack and unit_h2_session were mutation-checked when they were written (81c64811, 712a745e).
 These are the records of what came after.
 
-grpc.c, against unit_grpc (51 mutants: 49 killed, 2 that do not compile, 1 survivor):
+grpc.c, against unit_grpc (52 mutants: 48 killed, 2 that do not compile, 1 equivalent and gone, 1 survivor; then the always-two-piece body cut to one, killed):
 - cb_grpc_reply_init: code 0, not -1 -> `echo` fresh.code == -1.
 - cb_grpc_timeout: ms < 0 floor, seconds truncated, hours truncated, `<` for `<=` at each unit, no 8-digit hour cap -> `timeout_units` b == cases[i].want.
 - cb_grpc_unframe: a 4-byte prefix taken -> `unframe` cut prefix == CB_E_INVALID; only flag bit 0 tested -> the reserved bit == CB_E_INVALID; the length checked against the prefix's bytes too -> cut message == CB_E_INVALID; a second message taken -> two == CB_E_INVALID; the top length byte shifted 16 -> top == CB_E_INVALID; the low byte shifted 9 -> big == CB_OK; *has true on no message -> !has.
