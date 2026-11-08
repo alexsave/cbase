@@ -315,19 +315,30 @@ int cb_rows_refresh_put(cb_store *s, const cb_refresh_row *r) {
 int cb_rows_refresh_take(cb_store *s, const char *hash, int64_t now_ms, int64_t spent_ms, cb_refresh_row *out) {
     char pk[KEY_MAX];
     memset(out, 0, sizeof *out);
-    // Spent in one conditional write: the first take stamps revoked_at, a
-    // later one keeps it; a spent token is kept spent_ms more, for reuse
-    // detection, then the TTL takes it. The token as it was comes back.
+    // The first take spends it in one conditional write: the token exists,
+    // was never taken (no revoked_at, or 0) and is not past its time; it is
+    // stamped revoked_at and kept spent_ms more, for reuse detection, then the
+    // TTL takes it. The token as it was comes back. Any other take changes
+    // nothing (store.h cb_refresh_row: a later take neither moves revoked_at
+    // nor keeps the row longer, and an expired row is never brought back to
+    // life as a spent one): it reads the token, strongly consistent, and the
+    // reader below tells a spent one from one gone or past its time.
     const cb_iset sets[] = {
         { CB_AVBOOL("revoked", true), CB_SET_TO },
-        { CB_AVN("revoked_at", now_ms), CB_SET_IF_ABSENT },
+        { CB_AVN("revoked_at", now_ms), CB_SET_TO },
     };
     cb_iwrite w = { .op = CB_IW_UPDATE, .key = { key(pk, sizeof pk, "REFRESH#", hash), "TOKEN" }, .sets = sets,
-                    .n_sets = 2, .ttl_ms = now_ms + spent_ms, .ttl_how = CB_SET_TO, .cond = { CB_IF_EXISTS }, .n_cond = 1 };
+                    .n_sets = 2, .ttl_ms = now_ms + spent_ms, .ttl_how = CB_SET_TO,
+                    .cond = { CB_IF_EXISTS, { CB_C_ABSENT_OR_EQ, CB_AVN("revoked_at", 0) },
+                              { CB_C_ABSENT_OR_GT, CB_AVN(CB_ITEM_TTL_MS, now_ms) } },
+                    .n_cond = 3 };
     cb_item old;
     cb_item_init(&old);
     int rc = s->ops->item_write(s, &w, &old);
-    if (rc == CB_E_CONFLICT) rc = CB_E_NOT_FOUND;   // no such token
+    if (rc == CB_E_CONFLICT) {   // taken before (or none, or past its time)
+        cb_item_reset(&old);
+        rc = s->ops->item_get(s, w.key, true, &old);
+    }
     if (rc == CB_OK) {
         if (!cb_item_s(&old, "token_hash", out->token_hash, sizeof out->token_hash) ||
             !cb_item_s(&old, "user_id", out->user_id, sizeof out->user_id))
@@ -341,6 +352,7 @@ int cb_rows_refresh_take(cb_store *s, const char *hash, int64_t now_ms, int64_t 
         if (rc == CB_OK && out->expires_at > 0 && out->expires_at <= now_ms) rc = CB_E_NOT_FOUND;
     }
     cb_item_free(&old);
+    if (rc != CB_OK) memset(out, 0, sizeof *out);
     return rc;
 }
 

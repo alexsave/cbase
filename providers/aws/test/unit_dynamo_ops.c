@@ -176,6 +176,65 @@ static void refresh_put_and_revoke_session(void) {
     cb_store_close(s);
 }
 
+#define TOKEN_ITEM(extra) \
+    "{\"pk\":{\"S\":\"REFRESH#h1\"},\"sk\":{\"S\":\"TOKEN\"},\"token_hash\":{\"S\":\"h1\"},\"user_id\":{\"S\":\"" U1 "\"}," \
+    "\"session_id\":{\"S\":\"s1\"},\"created_at\":{\"N\":\"9\"}" extra "}"
+
+// The take (store.h refresh_take): the first one spends the token in one write whose condition
+// says it exists, was never taken and is not past its time; any other is a strongly consistent
+// read that writes nothing, so a later take neither keeps the row longer nor brings an expired
+// one back as spent.
+static void refresh_take_once(void) {
+    static const step steps[] = {
+        // the first take: spent, the token as it was
+        { "UpdateItem", "attribute_exists(pk) AND (attribute_not_exists(#revoked_at) OR #revoked_at = :c1) AND "
+                        "(attribute_not_exists(#expires_ms) OR #expires_ms > :c2)", 200,
+          "{\"Attributes\":" TOKEN_ITEM(",\"revoked\":{\"BOOL\":false},\"expires_ms\":{\"N\":\"5000\"}") "}" },
+        // a later take: refused, then read as spent
+        { "UpdateItem", "\"REFRESH#h1\"", 400, COND_NO_ITEM },
+        { "GetItem", "\"ConsistentRead\":true", 200,
+          "{\"Item\":" TOKEN_ITEM(",\"revoked\":{\"BOOL\":true},\"revoked_at\":{\"N\":\"100\"},\"expires_ms\":{\"N\":\"60100\"}") "}" },
+        // past its time: refused, then read and found expired
+        { "UpdateItem", NULL, 400, COND_NO_ITEM },
+        { "GetItem", NULL, 200, "{\"Item\":" TOKEN_ITEM(",\"revoked\":{\"BOOL\":false},\"expires_ms\":{\"N\":\"5000\"}") "}" },
+        // none
+        { "UpdateItem", NULL, 400, COND_NO_ITEM },
+        { "GetItem", NULL, 200, NOITEM },
+        // a row that is not a token
+        { "UpdateItem", NULL, 200, "{\"Attributes\":{\"pk\":{\"S\":\"REFRESH#h1\"}}}" },
+        // the backend failing, on the write and on the read
+        { "UpdateItem", NULL, 400, VALIDATION },
+        { "UpdateItem", NULL, 400, COND_NO_ITEM },
+        { "GetItem", NULL, 400, VALIDATION },
+    };
+    RUN(steps, s);
+    cb_refresh_row r;
+    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "h1", 100, 60000, &r), CB_OK);
+    T_CHECK(!r.revoked);
+    T_EQ_STR(r.user_id, U1);
+    T_EQ_STR(r.session_id, "s1");
+    T_EQ_INT(r.created_at, 9);
+    T_EQ_INT(r.expires_at, 5000);
+    // the first take's write: revoked, revoked_at and the TTL set; the condition's values
+    T_CHECK(strstr(sc_.bodies[0], "\"ReturnValues\":\"ALL_OLD\"") != NULL);
+    T_CHECK(strstr(sc_.bodies[0], "\":c1\":{\"N\":\"0\"}") != NULL);
+    T_CHECK(strstr(sc_.bodies[0], "\":c2\":{\"N\":\"100\"}") != NULL);
+    T_CHECK(strstr(sc_.bodies[0], "\":revoked_at\":{\"N\":\"100\"}") != NULL);
+    T_CHECK(strstr(sc_.bodies[0], "\":expires_ms\":{\"N\":\"60100\"}") != NULL);
+    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "h1", 200, 60000, &r), CB_OK);
+    T_CHECK(r.revoked);
+    T_EQ_INT(r.revoked_at, 100);
+    T_EQ_INT(r.expires_at, 60100);
+    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "h1", 6000, 60000, &r), CB_E_NOT_FOUND);
+    T_EQ_INT(r.user_id[0], 0);
+    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "h1", 100, 60000, &r), CB_E_NOT_FOUND);
+    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "h1", 100, 60000, &r), CB_E_DB);
+    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "h1", 100, 60000, &r), CB_E_DB);
+    T_EQ_INT(CB_STORE_CALL(s, refresh_take, "h1", 100, 60000, &r), CB_E_DB);
+    T_EQ_INT(sc_.at, sc_.n);
+    cb_store_close(s);
+}
+
 // ---- identities and one-time claims (store.h cb_identity_row, once_claim) ------------------------
 
 #define IDENT_ITEM(sub, user) \
@@ -324,6 +383,7 @@ int main(void) {
     T_RUN(users_by_email_password_touch);
     T_RUN(users_list_pages);
     T_RUN(refresh_put_and_revoke_session);
+    T_RUN(refresh_take_once);
     T_RUN(identities_and_claims);
     T_RUN(admin_collections_are_the_families);
     T_RUN(a_products_families_follow_the_platforms);

@@ -289,7 +289,7 @@ static bool one_ok(const cb_iwrite *x, bool txn, size_t *size) {
     if (x->op == CB_IW_PUT && ns.count + 2 > CB_ITEM_ATTRS) return false;
     for (int i = 0; i < x->n_cond; i++) {
         const cb_iclause *c = &x->cond[i];
-        if (c->check < CB_C_EXISTS || c->check > CB_C_ABSENT_OR_LT) return false;
+        if (c->check < CB_C_EXISTS || c->check > CB_C_ABSENT_OR_GT) return false;
         if (c->check == CB_C_EXISTS || c->check == CB_C_ABSENT) continue;
         if (!name_ok(c->v.name) || (c->check != CB_C_ATTR_EXISTS && !value_ok(&c->v))) return false;
         names_add(&ns, c->v.name);

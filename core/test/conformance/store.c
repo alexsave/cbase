@@ -288,6 +288,9 @@ static void each_check_alone(void) {
         { { CB_C_ABSENT_OR_LT, CB_AVN("missing", 0) }, true, "ABSENT_OR_LT absent" },
         { { CB_C_ABSENT_OR_LT, CB_AVN("n", 6) }, true, "ABSENT_OR_LT below" },
         { { CB_C_ABSENT_OR_LT, CB_AVN("n", 5) }, false, "ABSENT_OR_LT not below" },
+        { { CB_C_ABSENT_OR_GT, CB_AVN("missing", 0) }, true, "ABSENT_OR_GT absent" },
+        { { CB_C_ABSENT_OR_GT, CB_AVN("n", 4) }, true, "ABSENT_OR_GT above" },
+        { { CB_C_ABSENT_OR_GT, CB_AVN("n", 5) }, false, "ABSENT_OR_GT not above" },
     };
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
         int64_t before = num(pk, "A", "mark");
