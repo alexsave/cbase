@@ -1,0 +1,60 @@
+# mutants.py - the cdom adapter's mutants (test/mutate.sh runs every hosts/<name>/mutants.py): each
+# breaks one behaviour of cbc_cdom.c, often back to what the adapter before the shared layer did, and
+# its suite (build/test/unit_host_cdom: the host suite and the adapter's own cases, test/unit_host_cdom.c)
+# must go red, with the text in the row's last field. (file, name, old, new, want): old occurs once.
+BUILD = 'build/test/unit_host_cdom'
+RUN = './build/test/unit_host_cdom'
+OBJ = 'build/obj/host-cdom/hosts/cdom/cbc_cdom.o'
+H = 'hosts/cdom/cbc_cdom.c'
+MUTANTS = [
+  # (a) a stop and a new start
+  (H, 'an older start\'s answers handed on', '    return o->h->live && o->gen == o->h->gen;', '    return 1;',
+   'FAIL  cdom: a request\'s answer after a stop'),
+  (H, 'a stop does not move the generation on', '    h->gen++;   // every answer', '    h->gen += 0;   // every answer',
+   'FAIL  cdom: a request\'s answer after a stop'),
+  (H, 'a stop leaves the tick armed', '    if (k->tick_timer) cd_timer_stop(k->tick_timer);\n', '',
+   'FAIL  cdom: a stop cancels every timer'),
+  (H, 'a stop leaves the socket open', '    if (k->has_sock) cd_ws_close(k->sock);', '    (void)0;',
+   'FAIL  cdom: a stop cancels every timer'),
+  (H, 'a start on a live handle goes on', '    if (h->live) __builtin_trap();', '    (void)0;',
+   'FAIL  cdom: a start on a live handle traps'),
+  (H, 'past the slot table, never answered', '    if (!h->late_timer) h->late_timer = cd_timer_cb(0, on_late, h);', '    (void)on_late;',
+   'FAIL  cdom: past the slot table'),
+  # (b) the key
+  (H, 'a key past CBC_CDOM_KEY_MAX cut short', '    if (kl > CBC_CDOM_KEY_MAX) return -1;', '    if (kl > CBC_CDOM_KEY_MAX) kl = CBC_CDOM_KEY_MAX;',
+   'FAIL  cdom: a key past CBC_CDOM_KEY_MAX'),
+  # (c) a page that is not http: or https:
+  (H, 'a file: page opens ws://', '    else return CBC_SOCK_UNSUPPORTED;   // file:', '    else s = "ws://";   // file:',
+   'FAIL  cdom: a file: page opens no socket'),
+  # (d) the test gaps: wss, the timeout, ids from 0, the deadline
+  (H, 'an https: page opens ws://', '    if (pl == 6 && memcmp(proto, "https:", 6) == 0) s = "wss://";', '    if (pl == 6 && memcmp(proto, "https:", 6) == 0) s = "ws://";',
+   'a socket URL not on the page\'s scheme and host'),
+  (H, 'CD_HTTP_TIMEOUT taken for a status', 'if (status == CD_HTTP_FAILED || status == CD_HTTP_TIMEOUT) status = 0;', 'if (status == CD_HTTP_FAILED) status = 0;',
+   '[a_slow_borrowed_upload_is_not_aborted]'),
+  (H, 'cdom\'s socket id + 1', '    *id = cd_ws_open_cb(on_ws, h, url, n + k);', '    *id = cd_ws_open_cb(on_ws, h, url, n + k) + 1;',
+   '[signs_up_then_says_hello]'),
+  (H, 'the deadline the call wait', '               (uint32_t)r->body_len, r->wait_ms);', '               (uint32_t)r->body_len, cbc_cdom_client(h)->cfg.call_wait_ms);',
+   'a request whose deadline is not http_wait_ms + body_len'),
+  # the borrowed body: cbc_req_body's bytes over HTTP, never the head buffer
+  (H, 'a borrowed body sent from the head buffer', 'h->hdr, hl, r->body,', 'h->hdr, hl, (const uint8_t *)r->path + r->path_len + r->auth_len,',
+   '[a_64k_body_arrives_byte_for_byte_and_done_comes_once_after]'),
+  # the request's headers, the session in the store, the load
+  (H, 'no Authorization header', '    if (r->auth) {   // "Bearer <access>"', '    if (0) {   // "Bearer <access>"',
+   '[an_http_call_carries_the_bearer_and_is_retried_by_the_timer]'),
+  (H, 'no Content-Type', '    if (r->body_len) { memcpy(h->hdr + hl, CT', '    if (0) { memcpy(h->hdr + hl, CT',
+   'a body without its octet-stream type'),
+  (H, 'the session stored as raw bytes', 'cd_store_put_cb(on_stored, NULL, h->key, h->klen, h->text, (uint32_t)t);',
+   'cd_store_put_cb(on_stored, NULL, h->key, h->klen, p, (uint32_t)len);', 'a put that is not the session\'s base64'),
+  (H, 'signed out keeps the session', '    else cd_store_del_cb(on_stored, NULL, h->key, h->klen);', '    else (void)0;',
+   '[a_sign_out_closes_and_forgets]'),
+  (H, 'the kept session not decoded', 'int n = len > 0 ? b64_decode((const char *)p, (size_t)len, h->host.sess, sizeof h->host.sess) : -1;',
+   'int n = len > 0 && len <= CBC_HOST_SESS_CAP ? len : -1;\n    if (n > 0) memcpy(h->host.sess, p, (size_t)n);', '[the_kept_session_is_used_at_start]'),
+  (H, 'an anonymous client asks the store', '    size_t kl = session_key && !k.anonymous ? strlen(session_key) : 0;', '    size_t kl = session_key ? strlen(session_key) : 0;',
+   'an anonymous client asked the store'),
+  (H, 'no hold while the load is out', '        cbc_host_hold(&h->host, 1);   // until the store answers', '        (void)0;   // until the store answers',
+   'FAIL  cdom: a sign-up made before'),
+  (H, 'no ready after the load', '    if (h->ready) h->ready(h->ctx, cbc_cdom_client(h));\n    cbc_host_pump(&h->host);\n}\n\nstatic void on_loaded',
+   '    cbc_host_pump(&h->host);\n}\n\nstatic void on_loaded', 'ready was not called once'),
+  (H, 'no seed check', '    if (cd_random_bytes(&k.seed, sizeof k.seed) != CD_RANDOM_OK) return -1;', '    cd_random_bytes(&k.seed, sizeof k.seed);',
+   'FAIL  cdom: a page without crypto.getRandomValues'),
+]
