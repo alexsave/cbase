@@ -24,6 +24,18 @@
 // refreshes refresh_early_ms before expiry and then rolls the socket (cbc_next_out answers -1 once
 // no socket call is in flight, and cbc_closed answers 0 for that close).
 //
+// TIME. Every `now` is wall-clock epoch ms (the server's token expiries are epoch ms: a host
+// passes Date.now(), clock_gettime(CLOCK_REALTIME), cd_epoch_ms(), never a monotonic clock). If it
+// steps back, each timer waits on until the clock passes its old deadline again, and a refresh
+// comes late; a token the server already finds expired is answered 401 and refreshed then.
+//
+// REQUIRES (client/client.mk CBC_REQUIRES; client/test/requires_gate.sh links the core's objects
+// against these alone, and fails on anything else they leave undefined):
+//   <string.h>  memcpy memmove memset memcmp strlen
+//   <limits.h> <stddef.h> <stdint.h>
+// and nothing more: no allocator, no stdio, no clock, no other C library function. A freestanding
+// program (a wasm32 module built -nostdlib) defines the five itself.
+//
 // NO ALLOCATION, NO CLOCK, NO GLOBALS. The caller owns the cbc (CBC_SIZE bytes, at most
 // CBC_SIZE_BUDGET), so a load generator holds thousands in one process; randomness is the
 // reconnect jitter's, from cfg.seed (lib/rng.h). The structs a host reads (cbc_event,

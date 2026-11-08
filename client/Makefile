@@ -56,15 +56,29 @@ build/asan/test/unit_client: $(call c_objs,build/obj/asan,$(SRC)) $(call c_objs,
 # THE LIBC GATE (../tools/libc_gate.sh): the client is a library, so its objects define no C
 # library symbol; the program that links it brings one. Here over the native objects, and over the
 # wasm32 objects under `make wasm` (below).
-.PHONY: all check test test-asan libc-gate
+.PHONY: all check test test-asan libc-gate requires-gate
 all: build/test/unit_client
-test: libc-gate build/test/unit_client
+test: libc-gate requires-gate build/test/unit_client
 	./build/test/unit_client
 test-asan: build/asan/test/unit_client
 	./build/asan/test/unit_client
 check: test test-asan fuzz-replay
 libc-gate: $(call c_objs,build/obj/host,$(SRC))
 	@bash $(CB)tools/libc_gate.sh --nm nm --cc '$(CC)' $^
+
+# THE REQUIRES GATE (test/requires_gate.sh): the core's objects need of the program only
+# cbase/client.h's REQUIRES (client.mk CBC_REQUIRES), and link against a stub of those alone. Over
+# the native objects here, built freestanding, as the wasm32
+# module builds them: a hosted native compile adds the toolchain's own calls to every object (macOS
+# lowers a zeroing memset to bzero and probes a large frame with ___chkstk_darwin, the stack
+# protector calls __stack_chk_fail, glibc's _FORTIFY_SOURCE turns memcpy into __memcpy_chk), which
+# are its C library's to answer and not the core's to require. And over the wasm32 objects as the
+# module links them, under `make wasm` (below).
+REQ_CFLAGS := $(CFLAGS) -ffreestanding -fno-stack-protector -fno-stack-check -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0
+$(eval $(call C_VARIANT,build/obj/req,CC,REQ_CFLAGS))
+REQUIRES_GATE = bash test/requires_gate.sh --requires '$(CBC_REQUIRES)' --header include/cbase/client.h
+requires-gate: $(call c_objs,build/obj/req,$(SRC)) test/requires_gate.sh include/cbase/client.h
+	@$(REQUIRES_GATE) --cc '$(CC) $(REQ_CFLAGS)' --nm nm --link native $(filter %.o,$^)
 
 # ---- fuzz -------------------------------------------------------------------------------------
 # The target is fuzz/fz_client.c, its corpus fuzz/corpus/client; the harness (fz.h, replay_main.c)
@@ -163,13 +177,18 @@ build/gen/client_exports_oidc.ts: build/wasm/cbase_client_oidc.wasm $(STRUCTGEN)
 	@$(STRUCTGEN) --cwd . --source wasm/cbc_wasm.c --build 'cbcw=$(WASM_CFLAGS) $(OIDC_DEF) -DCBC_LAYOUT_HASH=0' --target wasm32 \
 	  --link '$(WASM_OIDC_LDFLAGS)' --exports-name CbcWasmOidc --exports-ts $@.new --check-wasm $< && mv $@.new $@
 
-.PHONY: wasm size-gate wasm-libc-gate
-wasm: wasm-cc-check wasm-libc-gate size-gate
+.PHONY: wasm size-gate wasm-libc-gate wasm-requires-gate
+wasm: wasm-cc-check wasm-libc-gate wasm-requires-gate size-gate
 # The libc gate over the module's library objects, read with the llvm-nm beside WASM_CC. wasm/libc.c
 # is the program's own C library and is not handed to it.
 WASM_NM ?= $(if $(findstring /,$(WASM_CC)),$(dir $(WASM_CC)))llvm-nm
 wasm-libc-gate: $(WASM_OBJS) $(WASM_OIDC_OBJS)
 	@bash $(CB)tools/libc_gate.sh --nm $(WASM_NM) --cc '$(WASM_CC) --target=wasm32 -nostdlib -ffreestanding' $^
+# Each module's library objects, linked against the requires stub alone (wasm-ld refuses anything
+# undefined): the base module's and the oidc variant's.
+wasm-requires-gate: $(WASM_OBJS) $(WASM_OIDC_OBJS) test/requires_gate.sh include/cbase/client.h
+	@$(REQUIRES_GATE) --cc '$(WASM_CC) $(WASM_CFLAGS)' --nm $(WASM_NM) --link wasm $(WASM_OBJS)
+	@$(REQUIRES_GATE) --cc '$(WASM_CC) $(WASM_OIDC_CFLAGS)' --nm $(WASM_NM) --link wasm $(WASM_OIDC_OBJS)
 # $(call SIZE_GATE,<module>,<raw max>,<gz max>)
 SIZE_GATE = raw=$$(wc -c < $(1)); gz=$$(gzip -9 -n -c $(1) | wc -c); \
 	echo "$(notdir $(1)): $$raw B raw (budget $(2)), $$gz B gzip -9 (budget $(3))"; \
