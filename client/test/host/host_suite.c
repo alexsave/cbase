@@ -177,7 +177,7 @@ size_t cbhs_load(cbhs_world *w, uint8_t *out, size_t cap) {
 
 void cbhs_save(cbhs_world *w, const uint8_t *p, size_t len) {
     if (len > W_STORE) { broke(w, "a session past the suite's room"); return; }
-    memcpy(w->store, p, len);
+    if (len) memcpy(w->store, p, len);   // len 0 may come with p NULL (forget it)
     w->store_len = len;
 }
 
