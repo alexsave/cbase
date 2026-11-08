@@ -4,9 +4,10 @@
 # libclang reports is the layout clang emits.
 #
 # The libclang discovery, the CFLAGS and the build recipe are in tools/llvm.mk,
-# shared with tools/datagen - the other program in this repo built on the same
-# library. structgen asks clang for layouts; datagen asks it for the contents of
-# static tables. A machine that can build one can build the other.
+# with the shared plumbing in tools/sgcommon. structgen and those two are a unit
+# of their own: they include nothing from core/ or providers/
+# (tools/repo_gate_test.sh), so a project can take tools/structgen,
+# tools/sgcommon, tools/llvm.mk and lib/fnv.h alone.
 include ../llvm.mk
 
 # ONE LINK OF EVERY PART. The parts are one program split by what each is about,
@@ -21,3 +22,10 @@ build/structgen: $(SG_SRC) $(SG_HDR) $(SGC_SRC) $(SGC_HDR)
 structgen: build/structgen
 .PHONY: structgen
 .DEFAULT_GOAL := structgen
+
+# Its own tests (test/*.sh: what it refuses, the wasm export check, the layout
+# hash, the Swift emitter where there is a swiftc), on structgen and sgcommon
+# alone: nothing else in the repository is built.
+test: build/structgen
+	@for t in test/*.sh; do bash $$t || exit 1; done
+.PHONY: test

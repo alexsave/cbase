@@ -80,6 +80,10 @@ jobs:
           node-version: 24
       - name: Toolchain (the pinned clang and libclang)
         run: bash tools/ci_llvm.sh
+      # structgen and tools/sgcommon on their own (a project can take them alone): built and tested
+      # with nothing else of the repository.
+      - name: structgen's own tests
+        run: make -C tools/structgen test
       - name: the module and its size gate
         run: make -C client wasm
       - name: the page shim's tests over the module

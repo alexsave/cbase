@@ -1,8 +1,6 @@
-# Where libclang is, for the tools that are built on it. Included by
-# tools/structgen/Makefile and tools/datagen/Makefile, which are two programs
-# against the SAME libclang: structgen asks clang for layouts, datagen asks it
-# for the contents of static tables. One copy of the discovery, so a machine
-# that can build one can build the other.
+# Where libclang is, for the tools that are built on it: tools/structgen/Makefile
+# includes it (structgen asks clang for layouts). One copy of the discovery and
+# the recipe, so a second libclang program builds the way structgen does.
 #
 # THE FALLBACK IS A MAC FALLBACK, and it used to be everybody's. A Linux box
 # with no llvm-config on PATH took /opt/homebrew/opt/llvm - a directory that
@@ -53,10 +51,10 @@ endif
 # structgen job builds with -Werror on top.
 CFLAGS ?= -O2 -std=c11 -Wall -Wextra -Werror=implicit-function-declaration -Werror=int-conversion
 
-# What both programs are partly made of: the refusal, the growable string, the
-# path handling and the in-memory probe translation unit (tools/sgcommon). They
-# ask clang different questions and share how the question is asked, so this is
-# one list, in the one file both Makefiles already include.
+# What every libclang program here is partly made of: the refusal, the growable string, the
+# path handling and the in-memory probe translation unit (tools/sgcommon). A
+# program asks clang its own question and shares how the question is asked, so
+# this is one list, in the one file every such Makefile includes.
 # Found from this file's own directory, so a program that is not sgcommon's sibling (a product's
 # own generator beside its own Makefile) builds from the same copy.
 SGC_DIR := $(patsubst %/,%,$(dir $(lastword $(MAKEFILE_LIST))))/sgcommon
