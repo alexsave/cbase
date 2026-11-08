@@ -1,5 +1,5 @@
-// lib_tree.h - where the source gates (unit_name_gate.c, unit_json_gate.c, unit_num_gate.c) find the
-// trees they read, wherever the test runs.
+// lib_tree.h - where the source gates (unit_name_gate.c, unit_json_gate.c, unit_num_gate.c,
+// unit_random_gate.c) find the trees they read, wherever the test runs.
 //
 // cbase.mk runs every test from the including Makefile's directory, which is cbase's own root only
 // when cbase is the product's build. So the gates take their trees from the environment cbase.mk

@@ -933,3 +933,9 @@ The fuzzers, against their checked-in corpora (core/fuzz/corpus/hpack, h2_sessio
 The module checks:
 - make h2-alacarte: grpc.c calling a provider function -> the link fails; a module object on the forbidden list -> check.sh names the shared symbols.
 - make h2-interop: the decoder's dynamic table index off by one, the Huffman flag ignored -> the first echo fails.
+
+## One random source per kind (2026-11-08: oidc.c's nonce, unit_random_gate)
+
+- oidc.c: cb_oidc_seal's nonce drawn with RAND_bytes again, as before the fix -> `every_draw_has_one_owner` violations == 0 (core/src/auth/oidc.c:569: RAND_bytes).
+- unit_random_gate.c: a device in a literal not reported -> `the_scanner_sees_each_kind` "/dev/urandom" and "/dev/random" == 1.
+- unit_random_gate.c: a name's home ignored, so every RAND_bytes and getentropy is allowed -> `the_scanner_sees_each_kind` planted RAND_bytes == 1, getentropy == 3 in the planted line, RAND_bytes in the client host == 1.

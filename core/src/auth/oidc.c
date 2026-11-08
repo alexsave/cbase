@@ -7,6 +7,7 @@
 #include "util/err.h"
 #include "util/log.h"
 #include "util/str.h"
+#include "util/uuid.h"
 
 #include "b64/b64.h"
 #include "hex/hex.h"
@@ -20,7 +21,6 @@
 #include <openssl/hmac.h>
 #include <openssl/param_build.h>
 #include <openssl/pem.h>
-#include <openssl/rand.h>
 #include <openssl/sha.h>
 #include <pthread.h>
 #include <stdlib.h>
@@ -566,7 +566,7 @@ int cb_oidc_seal(const cb_oidc *o, const char *plain, char *out, size_t cap) {
     size_t n = plain ? strlen(plain) : 0;
     if (!o || n > CB_OIDC_REFRESH_MAX || cap < 2 * (12 + n + 16) + 1) return -1;
     uint8_t buf[12 + CB_OIDC_REFRESH_MAX + 16];
-    if (RAND_bytes(buf, 12) != 1) return -1;
+    cb_random_bytes(buf, 12);   // the GCM nonce; cb_random_bytes aborts rather than return none
     EVP_CIPHER_CTX *c = EVP_CIPHER_CTX_new();
     int l1 = 0, l2 = 0;
     bool ok = c && EVP_EncryptInit_ex(c, EVP_aes_256_gcm(), NULL, o->seal_key, buf) == 1 &&
