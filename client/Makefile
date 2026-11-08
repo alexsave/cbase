@@ -2,7 +2,8 @@
 # module with the size gate, and the TypeScript a page uses it through. docs/CLIENT_DESIGN.md
 # is the design. Nothing here links the server: the client is its own small build.
 #
-#   make check        the unit tests, natively and under ASan + UBSan, and the fuzz corpus replayed
+#   make check        the unit tests and the host suite on the native host (hosts/posix), natively
+#                     and under ASan + UBSan, the libc and requires gates, and the fuzz corpus replayed
 #   make fuzz         build/fuzz/client (libFuzzer + ASan + UBSan; Homebrew LLVM on macOS)
 #   make fuzz-smoke   it for FUZZ_TIME seconds (default 30) from a scratch copy of the corpus
 #   make wasm         build/wasm/cbase_client.wasm and its oidc variant cbase_client_oidc.wasm, and the
@@ -15,24 +16,32 @@
 #
 # An app syncs `make ts` into its own generated directory (gitignored) and serves the module.
 # CB is the cbase root as this directory reaches it; every source outside client/ is under it
-# (C_ROOT, tools/c_rules.mk).
+# (C_ROOT, tools/c_rules.mk). The client core's sources, include path and flags are client.mk's,
+# the fragment a C app includes to take the core, so this build and an app's read one list.
 CB     := ../
 C_ROOT := ..
+CBASE  := ..
+include client.mk
 UNAME  := $(shell uname)
 CC     ?= cc
 
 WARN    := -Wall -Wextra -Werror -Wshadow -Wvla -Wstrict-prototypes
-INC     := -Iinclude -I$(CB)lib
+INC     := $(CBC_INC)
 # The native library has every part; the wasm module's base build leaves out the provider sign-in
 # (cbase/client.h CBC_OIDC) and its digests, which its oidc variant adds back.
-OIDC_DEF := -DCBC_OIDC
-OIDC_SRC := $(CB)lib/sha256.c $(CB)lib/b64/b64.c $(CB)lib/hex/hex.c
+OIDC_DEF := $(CBC_OIDC_CFLAGS)
+OIDC_SRC := $(CBC_OIDC_SRC)
 CFLAGS  := -std=gnu11 -O2 -g $(WARN) $(INC) $(OIDC_DEF)
 SAN     := -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer
 ASAN_CFLAGS := -std=gnu11 -O1 -g $(WARN) $(INC) $(OIDC_DEF) $(SAN)
 
-SRC      := src/client.c $(OIDC_SRC)
-TEST_INC := -I$(CB)core/test
+SRC      := $(CBC_SRC) $(OIDC_SRC)
+TEST_INC := -I$(CB)core/test -Itest/host -Ihosts/posix
+# THE HOSTS (hosts/<name>/): the code between a platform's I/O and the core, each passing the one
+# host suite (test/host/host_suite.h, a scripted fake server) through a few lines of adapter
+# (test/unit_host_<name>.c). The native host is built here; cdom's is cdom's to run the suite on.
+HOST_POSIX_SRC := hosts/posix/cbc_posix.c
+HOST_SUITE_SRC := test/host/host_suite.c
 
 include $(CB)tools/c_rules.mk
 $(eval $(call C_VARIANT,build/obj/host,CC,CFLAGS))
@@ -49,19 +58,41 @@ build/test/unit_client: $(call c_objs,build/obj/host,$(SRC)) $(call c_objs,build
 build/asan/test/unit_client: $(call c_objs,build/obj/asan,$(SRC)) $(call c_objs,build/obj/asan-test,test/unit_client.c)
 	@mkdir -p $(@D)
 	$(CC) $(ASAN_CFLAGS) $^ -o $@
+build/test/unit_host_posix: $(call c_objs,build/obj/host,$(SRC)) $(call c_objs,build/obj/host-test,$(HOST_POSIX_SRC) $(HOST_SUITE_SRC) test/unit_host_posix.c)
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) $^ -o $@
+build/asan/test/unit_host_posix: $(call c_objs,build/obj/asan,$(SRC)) $(call c_objs,build/obj/asan-test,$(HOST_POSIX_SRC) $(HOST_SUITE_SRC) test/unit_host_posix.c)
+	@mkdir -p $(@D)
+	$(CC) $(ASAN_CFLAGS) $^ -o $@
 
 # THE LIBC GATE (../tools/libc_gate.sh): the client is a library, so its objects define no C
 # library symbol; the program that links it brings one. Here over the native objects, and over the
 # wasm32 objects under `make wasm` (below).
-.PHONY: all check test test-asan libc-gate
-all: build/test/unit_client
-test: libc-gate build/test/unit_client
+.PHONY: all check test test-asan libc-gate requires-gate
+all: build/test/unit_client build/test/unit_host_posix
+test: libc-gate requires-gate build/test/unit_client build/test/unit_host_posix
 	./build/test/unit_client
-test-asan: build/asan/test/unit_client
+	./build/test/unit_host_posix
+test-asan: build/asan/test/unit_client build/asan/test/unit_host_posix
 	./build/asan/test/unit_client
+	./build/asan/test/unit_host_posix
 check: test test-asan fuzz-replay
 libc-gate: $(call c_objs,build/obj/host,$(SRC))
 	@bash $(CB)tools/libc_gate.sh --nm nm --cc '$(CC)' $^
+
+# THE REQUIRES GATE (test/requires_gate.sh): the core's objects need of the program only
+# cbase/client.h's REQUIRES (client.mk CBC_REQUIRES), and link against a stub of those alone. Over
+# the native objects here, built freestanding, as the wasm32
+# module builds them: a hosted native compile adds the toolchain's own calls to every object (macOS
+# lowers a zeroing memset to bzero and probes a large frame with ___chkstk_darwin, the stack
+# protector calls __stack_chk_fail, glibc's _FORTIFY_SOURCE turns memcpy into __memcpy_chk), which
+# are its C library's to answer and not the core's to require. And over the wasm32 objects as the
+# module links them, under `make wasm` (below).
+REQ_CFLAGS := $(CFLAGS) -ffreestanding -fno-stack-protector -fno-stack-check -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0
+$(eval $(call C_VARIANT,build/obj/req,CC,REQ_CFLAGS))
+REQUIRES_GATE = bash test/requires_gate.sh --requires '$(CBC_REQUIRES)' --header include/cbase/client.h
+requires-gate: $(call c_objs,build/obj/req,$(SRC)) test/requires_gate.sh include/cbase/client.h
+	@$(REQUIRES_GATE) --cc '$(CC) $(REQ_CFLAGS)' --nm nm --link native $(filter %.o,$^)
 
 # ---- fuzz -------------------------------------------------------------------------------------
 # The target is fuzz/fz_client.c, its corpus fuzz/corpus/client; the harness (fz.h, replay_main.c)
@@ -127,8 +158,8 @@ WASM_OIDC_LDFLAGS := $(WASM_LDBASE) $(foreach e,$(WASM_OIDC_EXPORTS),-Wl,--expor
 WASM_OIDC_CFLAGS := $(WASM_CFLAGS) $(OIDC_DEF)
 $(eval $(call C_VARIANT,build/obj/wasm,WASM_CC,WASM_CFLAGS))
 $(eval $(call C_VARIANT,build/obj/wasm-oidc,WASM_CC,WASM_OIDC_CFLAGS))
-WASM_OBJS      := $(call c_objs,build/obj/wasm,src/client.c)
-WASM_OIDC_OBJS := $(call c_objs,build/obj/wasm-oidc,src/client.c $(OIDC_SRC))
+WASM_OBJS      := $(call c_objs,build/obj/wasm,$(CBC_SRC))
+WASM_OIDC_OBJS := $(call c_objs,build/obj/wasm-oidc,$(CBC_SRC) $(OIDC_SRC))
 WASM_LIBC      := wasm/libc.c wasm/include/string.h
 
 # The layout the page reads is the module's (wasm32), so structgen reads the header under the
@@ -160,13 +191,18 @@ build/gen/client_exports_oidc.ts: build/wasm/cbase_client_oidc.wasm $(STRUCTGEN)
 	@$(STRUCTGEN) --cwd . --source wasm/cbc_wasm.c --build 'cbcw=$(WASM_CFLAGS) $(OIDC_DEF) -DCBC_LAYOUT_HASH=0' --target wasm32 \
 	  --link '$(WASM_OIDC_LDFLAGS)' --exports-name CbcWasmOidc --exports-ts $@.new --check-wasm $< && mv $@.new $@
 
-.PHONY: wasm size-gate wasm-libc-gate
-wasm: wasm-cc-check wasm-libc-gate size-gate
+.PHONY: wasm size-gate wasm-libc-gate wasm-requires-gate
+wasm: wasm-cc-check wasm-libc-gate wasm-requires-gate size-gate
 # The libc gate over the module's library objects, read with the llvm-nm beside WASM_CC. wasm/libc.c
 # is the program's own C library and is not handed to it.
 WASM_NM ?= $(if $(findstring /,$(WASM_CC)),$(dir $(WASM_CC)))llvm-nm
 wasm-libc-gate: $(WASM_OBJS) $(WASM_OIDC_OBJS)
 	@bash $(CB)tools/libc_gate.sh --nm $(WASM_NM) --cc '$(WASM_CC) --target=wasm32 -nostdlib -ffreestanding' $^
+# Each module's library objects, linked against the requires stub alone (wasm-ld refuses anything
+# undefined): the base module's and the oidc variant's.
+wasm-requires-gate: $(WASM_OBJS) $(WASM_OIDC_OBJS) test/requires_gate.sh include/cbase/client.h
+	@$(REQUIRES_GATE) --cc '$(WASM_CC) $(WASM_CFLAGS)' --nm $(WASM_NM) --link wasm $(WASM_OBJS)
+	@$(REQUIRES_GATE) --cc '$(WASM_CC) $(WASM_OIDC_CFLAGS)' --nm $(WASM_NM) --link wasm $(WASM_OIDC_OBJS)
 # $(call SIZE_GATE,<module>,<raw max>,<gz max>)
 SIZE_GATE = raw=$$(wc -c < $(1)); gz=$$(gzip -9 -n -c $(1) | wc -c); \
 	echo "$(notdir $(1)): $$raw B raw (budget $(2)), $$gz B gzip -9 (budget $(3))"; \

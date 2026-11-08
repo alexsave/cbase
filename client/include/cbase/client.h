@@ -15,6 +15,8 @@
 //   events   cbc_in, cbc_on_response, cbc_closed and cbc_tick raise events: read them with
 //            cbc_n_events / cbc_event_at after each, before calling any of the four again. A span
 //            (off, len) is into the bytes passed to the call that raised it.
+// client/hosts/<name>/ holds hosts that keep this (posix: a native app's event loop), and every
+// host passes one suite against a scripted server (client/test/host/host_suite.h).
 //
 // ONE AUTHENTICATION PER SOCKET (CLIENT_DESIGN.md 6.4). A session is made over HTTP
 // (cbc_sign_in, and the refresh this file sends itself), the socket says HELLO with its token once,
@@ -23,6 +25,18 @@
 // carries no REQ), and a call flagged CBC_C_HTTP. A socket never outlives its token: the client
 // refreshes refresh_early_ms before expiry and then rolls the socket (cbc_next_out answers -1 once
 // no socket call is in flight, and cbc_closed answers 0 for that close).
+//
+// TIME. Every `now` is wall-clock epoch ms (the server's token expiries are epoch ms: a host
+// passes Date.now(), clock_gettime(CLOCK_REALTIME), cd_epoch_ms(), never a monotonic clock). If it
+// steps back, each timer waits on until the clock passes its old deadline again, and a refresh
+// comes late; a token the server already finds expired is answered 401 and refreshed then.
+//
+// REQUIRES (client/client.mk CBC_REQUIRES; client/test/requires_gate.sh links the core's objects
+// against these alone, and fails on anything else they leave undefined):
+//   <string.h>  memcpy memmove memset memcmp strlen
+//   <limits.h> <stddef.h> <stdint.h>
+// and nothing more: no allocator, no stdio, no clock, no other C library function. A freestanding
+// program (a wasm32 module built -nostdlib) defines the five itself.
 //
 // NO ALLOCATION, NO CLOCK, NO GLOBALS. The caller owns the cbc (CBC_SIZE bytes, at most
 // CBC_SIZE_BUDGET), so a load generator holds thousands in one process; randomness is the
