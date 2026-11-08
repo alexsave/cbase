@@ -16,7 +16,7 @@ C = [
   ('src/client.c', 'forced refresh not rate-limited', '(c->forced_last == 0 || now - c->forced_last >= (int64_t)c->cfg.force_refresh_ms)', '1'),
   ('src/client.c', 'a used refresh does not sign out', '(code == CBW_ACCOUNT_E_BAD_REFRESH || code == CBW_ACCOUNT_E_REFRESH_USED)', '(code == CBW_ACCOUNT_E_BAD_REFRESH)'),
   ('src/client.c', 'a failed refresh goes again at once', '    c->refresh_at = now + backoff_ms(c, c->refresh_tries);\n', '    c->refresh_at = now;\n'),
-  ('src/client.c', 'calls never ride the socket', '    return k->kind != K_APP || (k->flags & CBC_C_HTTP) || c->cfg.anonymous || !c->user.signed_in;', '    return 1 || k->kind != K_APP || (k->flags & CBC_C_HTTP) || c->cfg.anonymous || !c->user.signed_in;'),
+  ('src/client.c', 'calls never ride the socket', '    return k->kind != K_APP || (k->flags & CBC_C_HTTP) || k->ref || c->cfg.anonymous || !c->user.signed_in;', '    return 1 || k->kind != K_APP || (k->flags & CBC_C_HTTP) || k->ref || c->cfg.anonymous || !c->user.signed_in;'),
   ('src/client.c', 'a lost read is not sent again', '    if ((k->flags & CBC_C_READ) && k->tries + 1 < CBC_TRIES) {', '    if (0) {'),
   ('src/client.c', 'one try more', '#define CBC_TRIES        4 ', '#define CBC_TRIES        5 '),
   ('src/client.c', 'no socket-call timeout', '        if (k->state == CALL_SOCK && now - k->at >= (int64_t)c->cfg.call_wait_ms) call_lost(c, k, now, 0);', '        if (k->state == CALL_SOCK && now - k->at >= INT64_MAX) call_lost(c, k, now, 0);'),

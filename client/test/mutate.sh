@@ -7,11 +7,12 @@
 #
 #   make -C cbase/client ts && cbase/client/test/mutate.sh
 set -u
+export PYTHONDONTWRITEBYTECODE=1   # no __pycache__ beside mutants.py
 D=$(cd "$(dirname "$0")/.." && pwd)
-cd "$D"
+cd "$D" || exit 1
 T=$(mktemp -d)
 cp src/client.c "$T/client.c"
-trap 'cp "$T/client.c" src/client.c; cp ts/socket.ts build/ts/socket.ts; rm -f build/obj/host/src/client.o; rm -rf "$T"' EXIT
+trap 'cp "$T/client.c" src/client.c; cp ts/socket.ts build/ts/socket.ts; rm -f build/obj/host/_root/client/src/client.o; rm -rf "$T"' EXIT
 apply() {  # kind index -> prints the name
   python3 - "$1" "$2" <<'PY'
 import sys
@@ -27,7 +28,7 @@ bad=0
 for ((i = 0; i < $(count C); i++)); do
   cp "$T/client.c" src/client.c
   name=$(apply C "$i") || { echo "BAD MUTANT C $i"; bad=1; continue; }
-  rm -f build/obj/host/src/client.o build/test/unit_client
+  rm -f build/obj/host/_root/client/src/client.o build/test/unit_client
   out=$(make -s build/test/unit_client 2>&1 && ./build/test/unit_client 2>&1)
   if echo "$out" | grep -q '^FAIL '; then echo "killed  : $name <- $(echo "$out" | grep '^FAIL ' | head -1 | sed 's/.*\[\(.*\)\].*/\1/')"
   else echo "SURVIVED: $name"; bad=1; fi
