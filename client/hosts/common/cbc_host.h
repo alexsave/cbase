@@ -1,6 +1,6 @@
 // cbc_host.h - THE SHARED HOST: everything cbase/client.h asks of a host that does not depend on
-// the platform, written once for every C host (client/hosts/posix for a native event loop,
-// client/hosts/cdom for a page on cdom). A host is this file plus an ENVIRONMENT (cbc_host_env):
+// the platform, written once for every C host (client/hosts/posix for a native event loop, and any
+// host an app or another repository writes). A host is this file plus an ENVIRONMENT (cbc_host_env):
 // the platform's socket, HTTP client, timers, clock and session store, a few lines each.
 //
 //   socket   while cbc_stream_wanted: env.ws_open(cbc_stream_path), then cbc_opened when the
@@ -30,6 +30,17 @@
 //
 // client/test/host/host_suite.h is the suite every host passes; a new environment proves itself
 // with the same scripted server.
+//
+// WRITING A HOST (a browser framework's adapter, an app's own): nothing here names a platform, so a
+// new host lives in its own tree, client/hosts/posix being the model:
+//   1. the environment: a cbc_host_env whose calls each map onto one platform call (its socket,
+//      HTTP client, timer, store and clock), cbc_host_init with the platform's seed, the session
+//      loaded into h->sess, then cbc_host_pump;
+//   2. the platform's callbacks into cbc_host_ws_opened/_message/_closed and
+//      cbc_host_http_answered (with the tag env.http got), each from the platform's loop;
+//   3. its adapter onto the host suite (cbhs_host, as client/test/unit_host_posix.c does, a line
+//      a call), which runs every case the other hosts pass against the scripted server.
+// It builds with CBC_HOST_SRC and CBC_HOST_INC (client/client.mk).
 #ifndef CBC_HOST_H
 #define CBC_HOST_H
 

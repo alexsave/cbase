@@ -24,7 +24,7 @@
 #                    C11, -std=c11 or later, strict or GNU; the wasm module builds it -std=c11)
 #   CBC_REQUIRES     the C library functions the core's objects may call
 #   CBC_HOST_SRC     the shared host (client/hosts/common/cbc_host.h): the platform-free half of every
-#                    C host, which a host's own file (hosts/posix, a cdom app's hosts/cdom) runs on
+#                    C host, which a host's own file (hosts/posix, or an app's own) runs on
 #   CBC_HOST_INC     its include flag
 #
 # The core is the same files cbase's own client/Makefile builds, tests and fuzzes: that Makefile

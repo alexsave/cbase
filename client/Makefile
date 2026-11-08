@@ -40,7 +40,8 @@ TEST_INC := -I$(CB)core/test -Itest/host $(CBC_HOST_INC) -Ihosts/posix
 # THE HOSTS (hosts/<name>/): the code between a platform's I/O and the core, each passing the one
 # host suite (test/host/host_suite.h, a scripted fake server) through a few lines of adapter
 # (test/unit_host_<name>.c). Every C host is the shared host (hosts/common/cbc_host.h) on an
-# environment of its own. The native host is built here; cdom's is cdom's to run the suite on.
+# environment of its own. The native host is built here; a host in another repository runs the
+# same suite from there, against this tree as a submodule.
 HOST_POSIX_SRC := $(CBC_HOST_SRC) hosts/posix/cbc_posix.c
 HOST_SUITE_SRC := test/host/host_suite.c
 

@@ -11,7 +11,7 @@
 // sockets, so it gives the host a WORLD instead: a fake network, clock, timer wheel, store and
 // entropy (the cbhs_* calls below), behind which the suite's script plays the server. A host runs
 // on it through an ADAPTER (cbhs_host): a few lines that map the host's platform calls onto the
-// world (cdom's cd_ws_open, cd_http_cb, cd_timer_cb, cd_epoch_ms; cbc_posix.h's io) and the
+// world (cbc_posix.h's io; a browser host's socket, fetch and timer calls) and the
 // world's deliveries onto the host's entry points.
 //
 //   #include "host_suite.h"
