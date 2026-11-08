@@ -26,8 +26,15 @@ void cb_handle(cb_ctx *ctx, cb_http_req *req, cb_http_res *res);
 // (a CB_ROUTE_LOOP route, such as the WebSocket upgrade) or costs nothing (a
 // preflight, a 404); false sends it to the request pool.
 bool cb_handle_on_loop(const cb_ctx *ctx, const cb_http_req *req);
-// The request's route when it is a pool route marked CB_ROUTE_INLINE, else NULL.
-const struct cb_route_s *cb_handle_inline_route(const cb_ctx *ctx, const cb_http_req *req);
+// The request's route (router.h cb_router_match), or NULL: serve reads its flags to pick where it
+// runs (CB_ROUTE_INLINE on the loop, CB_ROUTE_SLOW on the slow pool).
+const struct cb_route_s *cb_handle_route(const cb_ctx *ctx, const cb_http_req *req);
+// serve only: the answer to a request for the CB_ROUTE_SLOW `route` that the slow pool refused
+// (full: cbase/app.h slow_queue), on the loop thread. The host and origin checks first, as
+// cb_handle makes them; then the app's slow_full, or cb_res_slow_full; then CORS.
+void cb_handle_slow_full(cb_ctx *ctx, const struct cb_route_s *route, cb_http_req *req, cb_http_res *res);
+// cbase's own answer to a slow request refused: 503 "server busy", Retry-After: 5.
+void cb_res_slow_full(cb_http_res *res);
 
 // Builds ctx->router: GET /health here, then every module's routes
 // (v1_http.h, functions_http.h, admin.h, unfurl_http.h, and under serve

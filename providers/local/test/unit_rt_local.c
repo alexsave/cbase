@@ -79,6 +79,7 @@ static void h_heard(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res);
 static void h_act(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res);
 static void h_would_wait(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res);
 static void h_order(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res);
+static void h_slow(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res);
 
 static void start(void) {
     cb_log_init(CB_LOG_ERROR, 0);
@@ -89,6 +90,7 @@ static void start(void) {
     g_ctx.prov = &cb_provider_local;
     g_ctx.loop = cb_loop_new();
     g_ctx.req_pool = cb_pool_new(3, "trt");
+    g_ctx.slow_pool = cb_pool_new_bounded(1, "tsl", 0);   // one slow worker, no queue
     g_ctx.router = cb_router_new();
     T_EQ_INT(cb_rt_local_new(&g_ctx, &g_ctx.rt), CB_OK);
     T_EQ_INT(cb_rt_local_routes(&g_ctx), CB_OK);
@@ -104,6 +106,9 @@ static void start(void) {
     T_EQ_INT(cb_router_add(g_ctx.router, "POST", "/t/act", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_act), CB_OK);
     T_EQ_INT(cb_router_add(g_ctx.router, "POST", "/t/wait", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_would_wait), CB_OK);
     T_EQ_INT(cb_router_add(g_ctx.router, "GET", "/t/order", CB_ROUTE_LOOP, h_order), CB_OK);
+    T_EQ_INT(cb_router_add(g_ctx.router, "GET", "/t/slow", CB_ROUTE_SLOW, h_slow), CB_OK);
+    T_EQ_INT(cb_router_add(g_ctx.router, "GET", "/t/slowloop", CB_ROUTE_SLOW | CB_ROUTE_LOOP, h_slow), CB_E_INVALID);
+    T_EQ_INT(cb_router_add(g_ctx.router, "GET", "/t/slowinline", CB_ROUTE_SLOW | CB_ROUTE_INLINE, h_slow), CB_E_INVALID);
     T_EQ_INT(cb_router_add(g_ctx.router, "POST", "/v1/auth/t", CB_ROUTE_POOL | CB_ROUTE_INLINE, h_act), CB_OK);
     cb_server_opts o;
     cb_server_opts_default(&o);
@@ -513,6 +518,39 @@ static void a_flood_while_busy_ends_only_that_socket(void) {
     cb_buf_free(&m);
 }
 
+// THE SLOW POOL over a socket (router.h CB_ROUTE_SLOW): a slow route's REQ runs on the slow pool,
+// and one that finds it full (one worker, held; no queue) is answered at once with cbase's 503,
+// while the request pool still answers the same socket's other REQs.
+static atomic_int g_slow_in, g_slow_go;
+static void h_slow(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
+    atomic_store(&g_slow_in, 1);
+    for (int i = 0; i < 5000 && !atomic_load(&g_slow_go); i++) usleep(1000);
+    cb_res_text(res, 200, atomic_load(&g_slow_go) ? "slow done" : "never let go");
+}
+
+static void a_slow_req_runs_on_the_slow_pool(void) {
+    cb_buf m;
+    cb_buf_init(&m);
+    sf_frame f;
+    int a = open_as(U1, NULL, &m), b = open_as(U2, NULL, &m);
+    uint8_t buf[256];
+    T_EQ_INT(tc_ws_send(a, CB_WS_OP_BIN, buf, (size_t)sf_put_req(buf, sizeof buf, 40, SF_METH_GET, "/t/slow", 7, NULL, 0)), 0);
+    for (int i = 0; i < 5000 && !atomic_load(&g_slow_in); i++) usleep(1000);
+    T_CHECK(atomic_load(&g_slow_in));
+    T_EQ_INT(req(b, 41, SF_METH_GET, "/t/slow", "", &m, &f), 503);   // full: at once, no handler run
+    T_EQ_MEM(f.body, f.body_len, "server busy", 11);
+    T_EQ_INT(req(b, 42, SF_METH_POST, "/t/who", "x", &m, &f), 200);   // the request pool is free
+    atomic_store(&g_slow_go, 1);
+    T_EQ_INT(fr_recv(a, 6000, &m), SF_REPLY);
+    T_EQ_INT(sf_parse(m.p, m.len, &f), 0);
+    T_EQ_INT(f.id, 40);
+    T_EQ_INT(f.status, 200);
+    T_EQ_MEM(f.body, f.body_len, "slow done", 9);
+    close(a);
+    close(b);
+    cb_buf_free(&m);
+}
+
 static void drain_post(cb_loop *l, void *ud) { cb_server_drain(g_ctx.server, 2000); }
 
 static void stop(void) {
@@ -523,6 +561,7 @@ static void stop(void) {
     cb_rt_failures_take();
     publish_view(99);
     T_EQ_INT(cb_rt_failures_take(), 1);
+    cb_pool_free(g_ctx.slow_pool);
     cb_pool_free(g_ctx.req_pool);
     cb_server_free(g_ctx.server);
     cb_rt_free(g_ctx.rt);
@@ -565,6 +604,7 @@ int main(void) {
     T_RUN(ended_sessions_close_their_sockets);
     T_RUN(refusals_end_the_connection);
     T_RUN(a_flood_while_busy_ends_only_that_socket);
+    T_RUN(a_slow_req_runs_on_the_slow_pool);
     stop();
     return T_DONE();
 }

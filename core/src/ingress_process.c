@@ -172,6 +172,12 @@ int cb_process_main(const cb_provider *prov, const cb_app *app, int argc, char *
     if (!ctx.loop || !ctx.req_pool || !ctx.job_pool || !ctx.spawner) { fprintf(stderr, "cbase: out of memory\n"); return 1; }
     if (prov->serve_prepare && !(app && app->storeless) && prov->serve_prepare(&cfg) != CB_OK) return 1;
     if (cb_boot(&ctx, err, sizeof err) != CB_OK) { CB_ERROR("serve", "%s", err); return 1; }
+    // The slow pool, once the routes are known (cb_boot registered them): only when one is slow.
+    if (cb_router_has_slow(ctx.router)) {
+        ctx.slow_pool = cb_pool_new_bounded(cfg.slow_workers, "slow", cfg.slow_queue);
+        if (!ctx.slow_pool) { fprintf(stderr, "cbase: out of memory\n"); return 1; }
+        CB_INFO("serve", "slow pool: %d workers, %d queued at most", cfg.slow_workers, cfg.slow_queue);
+    }
 
     cb_server_opts o;
     cb_server_opts_default(&o);
@@ -238,6 +244,8 @@ int cb_process_main(const cb_provider *prov, const cb_app *app, int argc, char *
     // still running is ended (its group SIGTERMed, then SIGKILLed), so none outlives the server and a
     // pool thread waiting for one (cb_spawn_wait) is let go before its pool is joined.
     cb_spawner_stop(ctx.spawner);
+    cb_pool_free(ctx.slow_pool);
+    ctx.slow_pool = NULL;
     cb_pool_free(ctx.req_pool);
     cb_pool_free(ctx.job_pool);
     cb_server_free(ctx.server);

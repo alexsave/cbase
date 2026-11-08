@@ -359,6 +359,8 @@ typedef struct job {
     conn *c;
     cb_http_req req;
     uint64_t wake_seq;           // s->wake_seq when the handler last started
+    cb_pool *pool;               // where its handler runs: the slow pool for a CB_ROUTE_SLOW route, else the request pool
+    const cb_route *route;       // its route (for a slow one's refusal), or NULL
 } job;
 
 #define JOB_CHUNK 32   // blocks allocated at once, and preallocated at start
@@ -435,7 +437,23 @@ static void finish(conn *c) {
 
 static void job_run(void *ud);
 
-// The parked (or just woken) request's handler goes to the pool again.
+// Hands the job to its pool (c is C_BUSY and counted in s->busy): true, or false with the
+// request answered at once: the slow pool full (CB_E_FULL: the app's slow_full, or 503 "server
+// busy"), or no pool to take it (503 "server is shutting down").
+static bool submit(conn *c, job *j) {
+    cb_server *s = j->srv;
+    const int rc = j->pool ? cb_pool_submit(j->pool, job_run, j) : CB_E_STATE;
+    if (rc == CB_OK) return true;
+    s->busy--;
+    c->state = C_HTTP;
+    c->park_deadline = 0;
+    if (rc == CB_E_FULL) cb_handle_slow_full(s->ctx, j->route, c->req, &c->res);
+    else cb_router_error(&c->res, 503, "server is shutting down");
+    finish(c);
+    return false;
+}
+
+// The parked (or just woken) request's handler goes to its pool again.
 static void resubmit(conn *c, job *j) {
     cb_server *s = j->srv;
     cb_res_free(&c->res);
@@ -444,13 +462,7 @@ static void resubmit(conn *c, job *j) {
     c->state = C_BUSY;
     s->busy++;
     j->wake_seq = s->wake_seq;
-    if (!s->ctx->req_pool || cb_pool_submit(s->ctx->req_pool, job_run, j) != CB_OK) {
-        s->busy--;
-        c->state = C_HTTP;
-        c->park_deadline = 0;
-        cb_router_error(&c->res, 503, "server is shutting down");
-        finish(c);
-    }
+    submit(c, j);
 }
 
 static void wake_conn(cb_server *s, conn *c, int64_t now) {
@@ -611,7 +623,8 @@ static void dispatch(conn *c) {
         finish(c);
         return;
     }
-    const cb_route *ir = cb_handle_inline_route(ctx, c->req);
+    const cb_route *rr = cb_handle_route(ctx, c->req);
+    const cb_route *ir = rr && (rr->flags & CB_ROUTE_INLINE) ? rr : NULL;
     if (ir && cb_server_inline_ok(s, ir)) {
         // Fast and the loop is free: no hand-off, no wake, no second post.
         const cb_inline_mark t0 = cb_server_inline_begin(s);
@@ -633,16 +646,15 @@ static void dispatch(conn *c) {
     c->job = j;
     j->srv = s; j->c = c;
     j->wake_seq = s->wake_seq;
+    // A slow route's handler never holds a request worker (router.h CB_ROUTE_SLOW): the fast routes
+    // are never queued behind it. With no slow pool (none started) it runs where any other does.
+    j->route = rr;
+    j->pool = rr && (rr->flags & CB_ROUTE_SLOW) && ctx->slow_pool ? ctx->slow_pool : ctx->req_pool;
     c->park_deadline = 0;
     c->state = C_BUSY;
     s->busy++;
     want(c);
-    if (!ctx->req_pool || cb_pool_submit(ctx->req_pool, job_run, j) != CB_OK) {
-        s->busy--;
-        c->state = C_HTTP;
-        cb_router_error(&c->res, 503, "server is shutting down");
-        finish(c);
-    }
+    submit(c, j);
 }
 
 // The body cap for the request at the head of c->in: its route's own max_body when the head is

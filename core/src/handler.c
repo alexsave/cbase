@@ -36,20 +36,33 @@ static bool is_local_probe(const cb_http_req *req) {
            strcmp(req->peer, "::ffff:127.0.0.1") == 0;
 }
 
-void cb_handle(cb_ctx *ctx, cb_http_req *req, cb_http_res *res) {
-    const int m = meth_of(req);
-    res->head = m == CB_M_HEAD;
+// What runs before anything else, for every request (cb_handle) and every refusal of a slow one
+// (cb_handle_slow_full): G_PASS, or the refusal written into res, G_BARE (no CORS after it) or
+// G_CORS.
+enum { G_PASS, G_BARE, G_CORS };
+static int gate(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
+    res->head = meth_of(req) == CB_M_HEAD;
     const int host_refused = cb_router_host_refusal(ctx, req);
     if (host_refused) {
         // Not a Host the app answers to (cbase/app.h host_allow): before anything else, on every
         // route, a socket's upgrade and a file among them, and with no CORS header after.
         cb_router_error(res, host_refused, host_refused == 400 ? "bad host" : "host not allowed");
-        return;
+        return G_BARE;
     }
     if (ctx->cfg && !is_local_probe(req) && !cb_config_origin_proven(ctx->cfg, cb_http_header_get(req, CB_ORIGIN_HEADER))) {
         // Not through the edge (config.h CBASE_ORIGIN_SECRET): nothing else runs.
         cb_router_error(res, 403, "forbidden");
-        return;
+        return G_CORS;
+    }
+    return G_PASS;
+}
+
+void cb_handle(cb_ctx *ctx, cb_http_req *req, cb_http_res *res) {
+    const int m = meth_of(req);
+    const int g = gate(ctx, req, res);
+    if (g == G_BARE) return;
+    if (g == G_CORS) {
+        // refused (gate), with CORS after
     } else if (m == CB_M_OPTIONS) {
         bool known = false;
         cb_router_match(ctx->router, CB_M_ANY, req->path, &known);
@@ -88,9 +101,25 @@ bool cb_handle_on_loop(const cb_ctx *ctx, const cb_http_req *req) {
     return !r || (r->flags & CB_ROUTE_LOOP);
 }
 
-const cb_route *cb_handle_inline_route(const cb_ctx *ctx, const cb_http_req *req) {
-    const cb_route *r = cb_router_match(ctx->router, meth_of(req), req->path, NULL);
-    return r && (r->flags & CB_ROUTE_INLINE) ? r : NULL;
+const cb_route *cb_handle_route(const cb_ctx *ctx, const cb_http_req *req) {
+    return cb_router_match(ctx->router, meth_of(req), req->path, NULL);
+}
+
+void cb_handle_slow_full(cb_ctx *ctx, const cb_route *route, cb_http_req *req, cb_http_res *res) {
+    const int g = gate(ctx, req, res);
+    if (g == G_BARE) return;
+    if (g == G_PASS) {
+        if (ctx->app && ctx->app->slow_full) {
+            cb_router_bind(route, req);
+            ctx->app->slow_full(ctx, req, res);
+        } else cb_res_slow_full(res);
+    }
+    cb_router_cors(ctx, req, res);
+}
+
+void cb_res_slow_full(cb_http_res *res) {
+    cb_router_error(res, 503, "server busy");
+    cb_res_header(res, "Retry-After", "5");
 }
 
 // GET /health: liveness for the load balancer, the smoke tests and the deploy

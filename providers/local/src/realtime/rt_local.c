@@ -42,6 +42,7 @@
 #include "rt_local.h"
 
 #include "auth/auth.h"
+#include "handler.h"
 #include "net/loop.h"
 #include "net/router.h"
 #include "net/server.h"
@@ -355,6 +356,7 @@ typedef struct job {
     uint32_t req_id;
     uint16_t status;
     bool to_pool;            // run inline, it would have waited (http.h to_pool): it runs again on the pool
+    bool slow_full;          // its CB_ROUTE_SLOW route's pool was full: answered with the refusal, on the loop
     cb_buf body;
     cb_buf hdrs;             // the handler's headers (a socket's reply has none): a buffer kept with the job
 } job;
@@ -438,7 +440,10 @@ static void run_req(job *j, const sf_frame *f) {
     else if (!r || (r->flags & CB_ROUTE_LOOP)) j->status = j->route_known ? 405 : 404;
     else {
         cb_router_bind(r, &req);
-        r->fn(ctx, &req, &res);
+        // A slow REQ the slow pool refused gets the same answer an HTTP one does (cbase/app.h slow_full).
+        if (!j->slow_full) r->fn(ctx, &req, &res);
+        else if (ctx->app && ctx->app->slow_full) ctx->app->slow_full(ctx, &req, &res);
+        else cb_res_slow_full(&res);
         j->status = (uint16_t)(res.status ? res.status : 200);
         if (res.body.oom) j->status = 500;
         j->to_pool = res.to_pool;
@@ -638,8 +643,22 @@ static void pump(local *L, lconn *c) {
                 cb_buf_reset(&j->body);
                 cb_buf_reset(&j->hdrs);
             }
+            // A slow route's REQ runs on the slow pool, as its HTTP request would (router.h CB_ROUTE_SLOW).
             cb_pool *pool = L->ctx->req_pool;
-            if (pool && cb_pool_submit(pool, job_run, j) == CB_OK) return;
+            if (f.kind == SF_REQ && j->route && (j->route->flags & CB_ROUTE_SLOW) && L->ctx->slow_pool) pool = L->ctx->slow_pool;
+            const int prc = pool ? cb_pool_submit(pool, job_run, j) : CB_E_STATE;
+            if (prc == CB_OK) return;
+            if (prc == CB_E_FULL) {
+                // Full: refused at once, here on the loop, with no handler run and nothing read from
+                // the store (a connection that never said HELLO is ended, as the pool would end it).
+                if (!j->has_user) j->rc = CB_E_INVALID;
+                else {
+                    j->slow_full = true;
+                    run_req(j, &f);
+                }
+                c = job_settle(L, j);
+                continue;
+            }
             // No pool (or it is stopping): handle it here. Only the tests run without one. One that
             // would wait has nowhere to go.
             job_run_frame(j);

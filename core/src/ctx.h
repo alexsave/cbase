@@ -85,6 +85,10 @@ struct cb_ctx {
     // serve only: the port it bound (CBASE_LISTEN's, or the kernel's for port 0), which a bare host
     // of the app's Host allow-list means (cbase/app.h host_allow); 0 elsewhere.
     int         bound_port;
+    // serve only: the slow pool (net/router.h CB_ROUTE_SLOW), bounded (cbase/app.h slow_workers,
+    // slow_queue), started only when some route is slow; NULL otherwise, and then a slow route runs
+    // on req_pool as any other.
+    cb_pool    *slow_pool;
 };
 
 // The release, as /health reports it. VERSION at the root is its one source: a tag is v<VERSION>
