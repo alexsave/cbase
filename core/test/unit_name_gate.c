@@ -315,10 +315,10 @@ static void the_matcher_sees_each_shape(void) {
     T_EQ_INT(planted(L_DOMAIN, "endgame, gamely"), 0);
     // ? and case: /pick ?'?em ?up/i over three spellings, /\bFoolish\w*/ only in its case.
     T_EQ_INT(planted(L_PRODUCTS, "Pick 'Em Up\npick em up\npickemup\npick up"), 4);   // pickemup: /pickemup/i too
-    T_EQ_INT(planted(L_PRODUCTS, "FoolishKit"), 2);         // /foolish/i and /\bFoolish\w*/
-    T_EQ_INT(planted(L_PRODUCTS, "foolishkit"), 1);         // /foolish/i alone
+    T_EQ_INT(planted(L_PRODUCTS, "FoolishKit"), 2);         // the any-case pattern and the capitalized one
+    T_EQ_INT(planted(L_PRODUCTS, "foolishkit"), 1);         // the any-case pattern alone
     // An escaped punctuation character is itself: /cards\.foolish/i, /pub\/sub/i.
-    T_EQ_INT(planted(L_PRODUCTS, "cards.foolish.msg"), 2);  // and /foolish/i
+    T_EQ_INT(planted(L_PRODUCTS, "cards.foolish.msg"), 2);  // and the any-case pattern
     T_EQ_INT(planted(L_PROVIDERS, "a pub/sub topic\na pub-sub topic"), 1);
     // A pattern counts one per line, however often the line says it.
     T_EQ_INT(planted(L_PROVIDERS, "aws_call(aws, AWS)"), 1);

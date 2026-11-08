@@ -1,6 +1,6 @@
 // unit_ws.c - the RFC 6455 frame codec, read the way a hostile peer writes it.
 //
-// PORTED from foolish/server/impls/native/ws_frame_test.c. The native test fed
+// PORTED from an earlier native server's ws_frame_test.c. The native test fed
 // frames through a WsConn primed with bytes on a dead fd; the c_base codec is a
 // pure function over a buffer, so the same frames go straight in.
 //

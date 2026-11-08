@@ -24,9 +24,9 @@
 //   GET  config         cb_config_each (secrets already redacted there)
 //   GET  backups        SQLite: the VACUUM INTO files; DynamoDB: PITR explained
 //   POST backups        SQLite only: VACUUM INTO <db dir>/backups/cbase-<UTC>.sqlite
-// and then the app's own panels (cbase/app.h admin_calls; foolish's games,
-// game and bots are foolish/server/src/app/admin_panels.c), behind the same
-// gate, with the overview's one counter line the app's admin_count.
+// and then the app's own panels (cbase/app.h admin_calls, the product's own
+// file), behind the same gate, with the overview's one counter line the app's
+// admin_count.
 #ifndef CB_ADMIN_H
 #define CB_ADMIN_H
 

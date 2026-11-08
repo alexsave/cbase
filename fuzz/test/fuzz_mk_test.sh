@@ -2,7 +2,7 @@
 # fuzz_mk_test.sh - fuzz/fuzz.mk's bookkeeping, with no fuzzer and no build:
 #
 #   * print-fuzz-targets lists exactly the fz_*.c files of every side's fuzz/
-#     (core/fuzz, providers/*/fuzz, ../foolish/server/fuzz), found here by a
+#     (core/fuzz, providers/*/fuzz; the example app has none), found here by a
 #     directory walk and not by fuzz.mk's own FUZZ_ROOTS, so a side whose fuzz/
 #     fuzz.mk does not list is a failure;
 #   * two roots holding one target name are refused (the Makefile will not parse);
@@ -12,7 +12,7 @@
 #
 # The last two run fuzz.mk's own rules over scratch roots (FUZZ_ROOTS) with a
 # stand-in seed program (FUZZ_SEEDS_PROG, FUZZ_SEEDS_OUT). Run from anywhere:
-#   bash c_base/fuzz/test/fuzz_mk_test.sh
+#   bash fuzz/test/fuzz_mk_test.sh
 set -euo pipefail
 
 CB="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -23,7 +23,7 @@ fail() { echo "FAIL: $*"; fails=$((fails + 1)); }
 mk() { MAKEFLAGS='' make -s --no-print-directory -C "$CB" "$@"; }
 
 # ---- print-fuzz-targets is every side's fz_*.c ----------------------------------
-want="$(cd "$CB" && find core/fuzz providers/*/fuzz ../foolish/server/fuzz -maxdepth 1 -name 'fz_*.c' 2>/dev/null \
+want="$(cd "$CB" && find core/fuzz providers/*/fuzz -maxdepth 1 -name 'fz_*.c' 2>/dev/null \
         | sed 's|.*/fz_||; s|\.c$||' | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')"
 got="$(mk print-fuzz-targets | tr -s ' \n' ' ' | sed 's/ $//' | tr ' ' '\n' | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')"
 [ "$(echo "$want" | wc -w)" -ge 20 ] || fail "found only $(echo "$want" | wc -w) fz_*.c files - did the sides move?"

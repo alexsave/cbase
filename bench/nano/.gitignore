@@ -1,6 +1,0 @@
-secrets.env
-client.env
-bin/
-runs/
-rss_*.log
-vbase

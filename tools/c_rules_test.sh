@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
-# The compile rules themselves, tested (shared/tools/c_rules.mk): a toy kernel
+# The compile rules themselves, tested (tools/c_rules.mk): a toy kernel
 # in a temp directory, built through the real rules, and every promise the
 # rules make checked by what make then recompiled.
 #
-#   shared/tools/c_rules_test.sh            # the rules in this tree
-#   C_RULES_MK=/path/to/c_rules.mk shared/tools/c_rules_test.sh
+#   tools/c_rules_test.sh            # the rules in this tree
+#   C_RULES_MK=/path/to/c_rules.mk tools/c_rules_test.sh
+#
+# The toy is a product two directories below a tree of shared sources (p/c and
+# shared/c in a scratch directory), so its paths climb out of p/c: each such
+# line is marked "repo-gate: scratch tree" for tools/repo_gate_test.sh.
 #
 # The override is how this test is itself tested: point it at a copy of the
 # rules with one promise broken, and the check for that promise must be the one
@@ -27,11 +31,11 @@ cd "$t/p/c" || exit 2
 # main.c reads a header of its own, one from the shared tree and one found
 # through -isystem; shared.c reads only its own; lone.c is the file that gets a
 # flag nobody else has.
-printf '#include "own.h"\n#include "../../../shared/c/shared.h"\n#include <sys_only.h>\nint lone(void);\nint main(void){return OWN+SYS_ONLY+shared()+lone();}\n' > src/main.c
+printf '#include "own.h"\n#include "../../../shared/c/shared.h"\n#include <sys_only.h>\nint lone(void);\nint main(void){return OWN+SYS_ONLY+shared()+lone();}\n' > src/main.c   # repo-gate: scratch tree
 printf '#define OWN 0\n' > src/own.h
 printf '#define SYS_ONLY 0\n' > sys/sys_only.h
-printf 'int shared(void);\n' > ../../shared/c/shared.h
-printf '#include "shared.h"\nint shared(void){return 0;}\n' > ../../shared/c/shared.c
+printf 'int shared(void);\n' > ../../shared/c/shared.h   # repo-gate: scratch tree
+printf '#include "shared.h"\nint shared(void){return 0;}\n' > ../../shared/c/shared.c   # repo-gate: scratch tree
 printf '#ifndef LONE\n#error "lone.c was compiled without its own flag"\n#endif\nint lone(void){return 0;}\n' > src/lone.c
 echo 7 > layout.hash
 
@@ -39,7 +43,8 @@ echo 7 > layout.hash
 cat > Makefile <<EOF
 CC     ?= cc
 CFLAGS ?= -O1 -Wall -Werror
-SRC    := src/main.c src/lone.c ../../shared/c/shared.c
+C_ROOT := ../..   # repo-gate: scratch tree
+SRC    := src/main.c src/lone.c ../../shared/c/shared.c   # repo-gate: scratch tree
 HOST_FLAGS   = \$(CFLAGS) -isystem sys \$(OBJ_FLAGS_\$*)
 HASHED_FLAGS = \$(CFLAGS) -isystem sys -DLONE -DLAYOUT=\$\$(cat layout.hash)
 OBJ_FLAGS_src/lone := -DLONE
@@ -96,7 +101,7 @@ sleep 1; touch src/own.h
 run
 check "a header edit recompiles exactly the files that include it" "$H/src/main.o $X/src/main.o" 2
 
-sleep 1; touch ../../shared/c/shared.h
+sleep 1; touch ../../shared/c/shared.h   # repo-gate: scratch tree
 run
 check "a header outside the product reaches the files that include it, and only them" \
   "$H/_root/shared/c/shared.o $H/src/main.o $X/_root/shared/c/shared.o $X/src/main.o" 2
@@ -122,7 +127,7 @@ check "new contents in a file the flags read rebuild that variant alone, in the 
 
 # Red if: -MP is dropped ("No rule to make target src/own.h").
 sleep 1
-printf '#include "../../../shared/c/shared.h"\n#include <sys_only.h>\nint lone(void);\nint main(void){return SYS_ONLY+shared()+lone();}\n' > src/main.c
+printf '#include "../../../shared/c/shared.h"\n#include <sys_only.h>\nint lone(void);\nint main(void){return SYS_ONLY+shared()+lone();}\n' > src/main.c   # repo-gate: scratch tree
 rm src/own.h
 run CFLAGS='-O2 -Wall -Werror'
 check "a header that was deleted, and is no longer included, is not an error" "$H/src/main.o $X/src/main.o" 2

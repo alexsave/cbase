@@ -3,19 +3,18 @@
 # exactly as it was. Two trees are compiled object by object with c_base's own Makefile (so each
 # object gets the very flags `make` gives it): BASE (default origin/main), exported with git
 # archive, and the working tree as it is. Every function of every object under core/src,
-# providers/*/src, ../foolish/server/src and the shared/c files c_base links is disassembled
+# providers/*/src and the lib/ files on the hot path (mqtt, hist) is disassembled
 # (llvm-objdump, addresses and the hex immediates that hold them stripped) and compared; the
 # verdict names each function that differs, and each REQUIRED function (the arguments, or the
 # default hot-path list below) must be in both and identical, or the script fails.
 #
-#   c_base/tools/hotpath_proof.sh [-b BASE] [function...]
+#   tools/hotpath_proof.sh [-b BASE] [function...]
 #
-# Run from anywhere; writes under c_base/build/hotpath/ (the per-function diffs, the two
+# Run from anywhere; writes under build/hotpath/ (the per-function diffs, the two
 # disassemblies). Builds with -j4. Same-line static helpers that the compiler inlined are part of
 # their caller's code, so an inlining decision that moved shows as the caller differing.
 set -euo pipefail
 CB=$(cd "$(dirname "$0")/.." && pwd)
-ROOT=$(cd "$CB/.." && pwd)
 BASE=origin/main
 if [ "${1:-}" = "-b" ]; then BASE=$2; shift 2; fi
 REQUIRED=("$@")
@@ -34,28 +33,23 @@ mkdir -p "$OUT/old" "$OUT/new"
 OBJDUMP=$(command -v llvm-objdump || echo /opt/homebrew/opt/llvm/bin/llvm-objdump)
 [ -x "$OBJDUMP" ] || OBJDUMP=objdump
 
-# The objects: every .c of the platform and of the product c_base serves, as c_base names them.
+# The objects: every .c of the platform, and the lib/ files on the hot path, as the build names them.
 objs_of() {
-  (cd "$1/c_base" && for f in $(find core/src providers/local/src providers/aws/src -name '*.c' ! -name 'main_*.c' | sort); do
-      echo "build/obj/cbase/${f%.c}.o"; done
-   cd "$1" && for f in $(find foolish/server/src -name '*.c' | sort) shared/c/mqtt/mqtt.c shared/c/stats/hist.c; do
-      if [ -f "$f" ]; then echo "build/obj/cbase/_root/${f%.c}.o"; fi; done) | sort -u
+  (cd "$1" && for f in $(find core/src providers/*/src -name '*.c' ! -name 'main_*.c' | sort) lib/mqtt/mqtt.c lib/stats/hist.c; do
+      if [ -f "$f" ]; then echo "build/obj/cbase/${f%.c}.o"; fi; done) | sort -u
 }
 
-echo "base: $BASE ($(git -C "$ROOT" rev-parse --short "$BASE")), new: the working tree ($(git -C "$ROOT" rev-parse --short HEAD) + edits)"
+echo "base: $BASE ($(git -C "$CB" rev-parse --short "$BASE")), new: the working tree ($(git -C "$CB" rev-parse --short HEAD) + edits)"
 mkdir -p "$OUT/old/tree"
-git -C "$ROOT" archive "$BASE" c_base shared foolish | tar -xf - -C "$OUT/old/tree"
+git -C "$CB" archive "$BASE" | tar -xf - -C "$OUT/old/tree"
 for side in old new; do
-  if [ $side = old ]; then T=$OUT/old/tree; else T=$ROOT; fi
-  # Objects that exist in that tree's sources only.
-  objs=$(objs_of "$T" | while read -r o; do
-      src=${o#build/obj/cbase/}; src=${src#_root/}; src=${src%.o}.c
-      if [ -f "$T/c_base/$src" ] || [ -f "$T/$src" ]; then echo "$o"; fi; done)
+  if [ $side = old ]; then T=$OUT/old/tree; else T=$CB; fi
+  objs=$(objs_of "$T")
   # shellcheck disable=SC2086
-  make -s -C "$T/c_base" -j4 $objs > "$OUT/$side/make.log" 2>&1 || { cat "$OUT/$side/make.log"; echo "$side: build failed"; exit 1; }
+  make -s -C "$T" -j4 $objs > "$OUT/$side/make.log" 2>&1 || { cat "$OUT/$side/make.log"; echo "$side: build failed"; exit 1; }
   for o in $objs; do
     echo "### $o"
-    "$OBJDUMP" -d --no-show-raw-insn --no-leading-addr "$T/c_base/$o" 2>/dev/null \
+    "$OBJDUMP" -d --no-show-raw-insn --no-leading-addr "$T/$o" 2>/dev/null \
       | sed -E 's/<[^>]*\+0x[0-9a-f]+>//; s/<ltmp[0-9]+>//g; s/0x[0-9a-f]+//g; s/[[:space:]]+$//'
   done > "$OUT/$side/all.dis"
 done

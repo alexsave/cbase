@@ -1,7 +1,7 @@
 // The WebSocket frame codec - see ws.h. The connection half lives in server.c,
 // beside the connection it is a state of.
 //
-// LIFTED from foolish/server/impls/native: the header writer is ws.c's
+// LIFTED from an earlier native server: the header writer is its ws.c's
 // ws_send_frame (0..125 / 126 + u16 / 127 + u64), the reader is shard.c's
 // wsasync_feed with its per-field logic and unsigned length assembly. What
 // changed: the reader is a pure function over a buffer instead of a state

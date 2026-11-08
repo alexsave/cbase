@@ -6,9 +6,8 @@
 // plain tables (providers/local/sql/schema.sql, store_sqlite.c); DynamoDB in
 // items (items.h, the item layer only that backend implements) written by
 // rows_auth.c. A product's own rows are its own table (cb_store_app below):
-// on SQLite its SQL tables (store_sql.h), on DynamoDB its items; foolish's
-// are foolish/server/src/store/rows_sql.c and rows_foolish.c. Callers use the
-// wrappers. Every function is safe to call from several threads at once
+// on SQLite its SQL tables (store_sql.h), on DynamoDB its items, in the
+// product's own files. Callers use the wrappers. Every function is safe to call from several threads at once
 // (serve runs handlers on a pool).
 //
 // CONVENTIONS. Times are ms since the Unix epoch. Ids are canonical lowercase
@@ -207,7 +206,7 @@ typedef struct cb_store_ops {
     // may go).
     int (*once_claim)(cb_store *s, const char *key, int64_t expires_at, int64_t now_ms);
 
-    // migration (foolish/server/migrate/import.c): the user as given, insert
+    // migration (a product's importer): the user as given, insert
     // or replace, with no side effects: unlike user_create, no product items.
     int (*user_import)(cb_store *s, const cb_user_row *u);
 

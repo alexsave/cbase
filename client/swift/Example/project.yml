@@ -12,7 +12,7 @@ settings:
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: complete
     GCC_PREPROCESSOR_DEFINITIONS: ["$(inherited)", "CBC_OIDC=1"]
-    HEADER_SEARCH_PATHS: ["$(SRCROOT)/../../include", "$(SRCROOT)/../../../../shared/c"]
+    HEADER_SEARCH_PATHS: ["$(SRCROOT)/../../include", "$(SRCROOT)/../../../lib"]
     SWIFT_OBJC_BRIDGING_HEADER: Sources/Bridging.h
     CODE_SIGN_STYLE: Automatic
     CODE_SIGN_IDENTITY: "-"
@@ -26,9 +26,9 @@ targets:
       - path: ../../build/gen/ClientLayout.swift
         optional: true
       - path: ../../src/client.c
-      - path: ../../../../shared/c/sha256.c
-      - path: ../../../../shared/c/b64/b64.c
-      - path: ../../../../shared/c/hex/hex.c
+      - path: ../../../lib/sha256.c
+      - path: ../../../lib/b64/b64.c
+      - path: ../../../lib/hex/hex.c
     preBuildScripts:
       - name: Swift layout (structgen)
         script: make -C "$SRCROOT/../.." swift

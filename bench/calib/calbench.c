@@ -155,7 +155,7 @@ static void pin(int cpu) { cpu_set_t s; CPU_ZERO(&s); CPU_SET(cpu, &s); sched_se
 static int g_ncpu = 0;
 static int ncpu(void) { if (!g_ncpu) g_ncpu = (int)sysconf(_SC_NPROCESSORS_ONLN); return g_ncpu; }
 static uint64_t rng = 88172645463325252ULL;
-static inline uint64_t xr(void) { return rng_splitmix64(&rng); }   // the one generator (shared/c/rng.h)
+static inline uint64_t xr(void) { return rng_splitmix64(&rng); }   // the one generator (lib/rng.h)
 static char P[64];
 #define PRM(...) (snprintf(P, sizeof P, __VA_ARGS__), P)
 

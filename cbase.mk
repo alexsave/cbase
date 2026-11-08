@@ -1,8 +1,8 @@
 # cbase.mk - c_base as a make fragment: a product includes it and gets the platform's build and
 # its whole test machinery, with its own code on the product side of the compiler gate.
 #
-#   CBASE           := ../c_base          # REQUIRED: the c_base root, from the including Makefile
-#   C_ROOT          := ..                 # the directory every source outside this one is under
+#   CBASE           := c_base             # REQUIRED: the c_base root, from the including Makefile
+#   C_ROOT          := .                  # the directory every source outside this one is under
 #                                         # (tools/c_rules.mk); default $(CBASE)
 #   CBASE_PROVIDERS := local              # the providers linked: local, aws, or "local aws"
 #   APP_SRC_ROOTS   := src                # the product's sources: every .c under them (two levels)
@@ -24,7 +24,7 @@
 #
 # WHAT A PRODUCT MAY SET (all optional but CBASE):
 #
-#   APP_INC          its side's include flags (-Isrc -I../kernel/src); the product side sees core's
+#   APP_INC          its side's include flags (-Isrc -Ikernel/src); the product side sees core's
 #                    headers and these, never a provider's
 #   APP_CFLAGS       flags for EVERY object cbase.mk compiles in this product, the platform's too:
 #                    a -D that changes a struct the two halves share must reach both

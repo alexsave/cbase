@@ -13,7 +13,8 @@
 #     product reaches c_base, never the other way round).
 #
 # Documentation (*.md, *.html) may describe the history and is not read; neither are the fuzz
-# corpora (inputs, not paths). The checks are run over planted files first, so a gate that
+# corpora (inputs, not paths). A test that builds a scratch tree of its own in a temporary
+# directory (tools/c_rules_test.sh) marks each line that climbs inside it "repo-gate: scratch tree". The checks are run over planted files first, so a gate that
 # stopped seeing fails too. Run from anywhere: bash tools/repo_gate_test.sh
 set -euo pipefail
 
@@ -28,9 +29,10 @@ scan() {
       open(my $h, "<", $f) or next;
       my $depth = () = $f =~ m{/}g;
       while (my $l = <$h>) {
+        next if $l =~ m{repo-gate: scratch tree};
         if ($l =~ m{(?<![A-Za-z0-9_.-])foolish/}) { chomp $l; print "$f:$.: names the product tree foolish/: $l\n"; }
-        while ($l =~ m{((?:\.\./)+)}g) {
-          my $k = () = $1 =~ m{\.\./}g;
+        while ($l =~ m{(?<!\.)((?:\.\.(?:/|(?=[\x22\x27\x60)\s]|$)))+)}g) {
+          my $k = () = $1 =~ m{\.\.}g;
           if ($k > $depth) { chomp(my $t = $l); print "$f:$.: climbs $k above a file $depth deep: $t\n"; last; }
         }
       }
@@ -56,7 +58,8 @@ printf '#include "../../lib/x.h"\n' > "$P/a/b/ok.c"                # 2 up from 2
 printf 'cd "$(dirname "$0")/../../.." && ls\n' > "$P/a/b/up.sh"    # 3 up from 2 deep: out
 printf 'CB := ../../c_base/foolish/server\n' > "$P/a/b/name.mk"    # in, but names the tree
 printf 'a.foolish/x and my_foolish/x are not the tree\n' > "$P/a/b/word.c"
-got="$(scan "$P" a/Makefile a/b/ok.c a/b/up.sh a/b/name.mk a/b/word.c | sed 's/: .*//' | sort | tr '\n' ' ')"
+printf 'touch ../../../x   # repo-gate: scratch tree\n... and src/...) are not climbs\n' > "$P/a/b/marked.sh"
+got="$(scan "$P" a/Makefile a/b/ok.c a/b/up.sh a/b/name.mk a/b/word.c a/b/marked.sh | sed 's/: .*//' | LC_ALL=C sort | tr '\n' ' ')"
 [ "$got" = "a/Makefile:1 a/b/name.mk:1 a/b/up.sh:1 " ] || fail "the scanner over planted files saw [$got], not [a/Makefile:1 a/b/name.mk:1 a/b/up.sh:1 ]"
 
 # ---- the repository ------------------------------------------------------------------------------

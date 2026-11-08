@@ -1,6 +1,6 @@
 // The HTTP/1.1 parser and response writer - see http.h.
 //
-// LIFTED from foolish/server/impls/native/httpd.c (find_headers_end and
+// LIFTED from an earlier native server's httpd.c (find_headers_end and
 // parse_request_line_and_headers): the same single pass over the header block
 // with fixed-width name compares. What changed:
 //   * it reads a buffer and can be called again (CB_HTTP_MORE) instead of

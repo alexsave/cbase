@@ -4,7 +4,7 @@
 # function and exits 1 when any differs or is missing. A function is found by its definition line
 # (a line starting with its return type and ending in "<name>(...) {") and runs to the brace that
 # closes it.
-#   c_base/tools/hotpath_source.py [-b BASE] file:function...
+#   tools/hotpath_source.py [-b BASE] file:function...
 import re, subprocess, sys, os
 root = subprocess.check_output(['git', 'rev-parse', '--show-toplevel'], cwd=os.path.dirname(os.path.abspath(__file__))).decode().strip()
 args = sys.argv[1:]
