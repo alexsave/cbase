@@ -277,7 +277,7 @@ void cd_store_get_cb(cd_store_fn fn, void *ctx, const char *key, uint32_t klen, 
 }
 static void keep(const uint8_t *p, size_t n) {
     if (g_w) cbhs_save(g_w, p, n);
-    else { memcpy(g_solo_store, p, n); g_solo_len = n; }
+    else { if (n) memcpy(g_solo_store, p, n); g_solo_len = n; }
 }
 void cd_store_put_cb(cd_store_done_fn fn, void *ctx, const char *key, uint32_t klen, const void *p, uint32_t len) {
     if (!key_ok(key, klen)) broke("a put of another key");
