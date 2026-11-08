@@ -187,7 +187,8 @@ typedef struct cbc {
     // the socket
     uint8_t  sock;              // CBC_SOCK_* (client.c)
     uint8_t  roll;              // the close cbc_next_out asked for is the token's planned roll
-    uint8_t  pad1[2];
+    uint8_t  closing;           // cbc_next_out asked for the close (-1); cbc_closed not yet called
+    uint8_t  pad1;
     uint32_t next_sock_id, next_sub_id, next_http_id, next_ticket;
     uint32_t reconnect_prev;    // the last reconnect wait (0: none since READY)
     int64_t  hello_at, last_out, ping_at;
@@ -324,7 +325,10 @@ uint32_t cbc_closed(cbc *c, int64_t now);
 // One binary message from the server. Answers the events raised.
 int  cbc_in(cbc *c, const uint8_t *frame, size_t len, int64_t now);
 // The next frame to send into out: its length, 0 for none, -1: close the socket now (half-open, a
-// HELLO never answered, a session that ended, the token's roll), CBC_E_CAP.
+// HELLO never answered, a session that ended, the token's roll), CBC_E_CAP. After a -1 it answers
+// 0 until cbc_closed, and cbc_due_ms counts nothing of the socket meanwhile (only its other
+// timers: HTTP retries, waits, the refresh), so a host arms its timer as always while the close is
+// on its way.
 int  cbc_next_out(cbc *c, uint8_t *out, size_t cap, int64_t now);
 
 // ---- time and events ---------------------------------------------------------------------------

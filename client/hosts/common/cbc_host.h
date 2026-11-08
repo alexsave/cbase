@@ -92,9 +92,8 @@ struct cbc_host {
     void *ctx;
     uint32_t sock;            // the client's socket id; 0: none
     uint8_t  open;            // its open was heard
-    uint8_t  closing;         // ws_close sent, its close not yet heard
     uint8_t  held;            // cbc_host_hold: the pump does nothing
-    uint8_t  pad;
+    uint8_t  pad[2];
     uint32_t tick_timer, reopen_timer;
     cbc_host_pend pend[CBC_HOST_PEND_MAX];
     uint8_t frame[CBC_HOST_FRAME_CAP];

@@ -230,7 +230,7 @@ static int call_ready(const cbc_call_slot *k, int64_t now) {
 static int call_sendable(const cbc *c, const cbc_call_slot *k, int64_t now) {
     if (!call_ready(k, now)) return 0;
     if (over_http(c, k)) return k->kind == K_SIGN || !(k->flags & CBC_C_AUTH) || !token_due(c, now);
-    return c->sock == SOCK_READY;
+    return c->sock == SOCK_READY && !c->closing;
 }
 
 static void call_free(cbc *c, cbc_call_slot *k) {
@@ -616,7 +616,7 @@ int cbc_unsub(cbc *c, int what, const char *room, size_t n) {
 
 void cbc_opened(cbc *c, int64_t now) {
     c->sock = SOCK_OPEN;
-    c->roll = 0;
+    c->roll = c->closing = 0;
     c->ping_at = 0;
     c->last_out = now;
 }
@@ -637,6 +637,7 @@ uint32_t cbc_closed(cbc *c, int64_t now) {
     ev_reset(c);
     int was = c->sock;
     c->sock = SOCK_CLOSED;
+    c->closing = 0;
     c->ping_at = 0;
     for (int i = 0; i < CBC_CALLS_MAX; i++)
         if (c->calls[i].state == CALL_SOCK) call_lost(c, &c->calls[i], now, 0);
@@ -750,9 +751,15 @@ static int sent(cbc *c, int n, int64_t now) {
     return n;
 }
 
+// -1: the host is to close the socket. Asked once: until cbc_closed nothing more is wanted of it.
+static int close_now(cbc *c) {
+    c->closing = 1;
+    return -1;
+}
+
 int cbc_next_out(cbc *c, uint8_t *out, size_t cap, int64_t now) {
-    if (c->sock == SOCK_CLOSED) return 0;
-    if (!cbc_stream_wanted(c)) return -1;
+    if (c->sock == SOCK_CLOSED || c->closing) return 0;
+    if (!cbc_stream_wanted(c)) return close_now(c);
     if (c->sock == SOCK_OPEN) {
         if (c->cfg.anonymous) {
             int n = sf_put_hello(out, cap, "", 0);
@@ -770,10 +777,10 @@ int cbc_next_out(cbc *c, uint8_t *out, size_t cap, int64_t now) {
         c->hello_exp = c->user.expires_at;
         return sent(c, n, now);
     }
-    if (c->sock == SOCK_HELLO) return now - c->hello_at >= (int64_t)c->cfg.ack_wait_ms ? -1 : 0;
+    if (c->sock == SOCK_HELLO) return now - c->hello_at >= (int64_t)c->cfg.ack_wait_ms ? close_now(c) : 0;
     // READY.
-    if (c->ping_at && now - c->ping_at >= (int64_t)c->cfg.pong_ms) return -1;   // half-open
-    if (roll_due(c, now)) { c->roll = 1; return -1; }
+    if (c->ping_at && now - c->ping_at >= (int64_t)c->cfg.pong_ms) return close_now(c);   // half-open
+    if (roll_due(c, now)) { c->roll = 1; return close_now(c); }
     for (int i = 0; i < CBC_SUBS_MAX; i++) {
         cbc_sub_slot *s = &c->subs[i];
         if (s->state != SUB_DROP) continue;
@@ -842,9 +849,11 @@ int cbc_due_ms(const cbc *c, int64_t now) {
         if (k->state == CALL_SOCK) earliest(&t, k->at + (int64_t)c->cfg.call_wait_ms);
         else if (call_sendable(c, k, at)) earliest(&t, at);
     }
-    if (c->sock != SOCK_CLOSED && !cbc_stream_wanted(c)) earliest(&t, now);
-    if (c->sock == SOCK_OPEN && (c->cfg.anonymous || !token_due(c, now))) earliest(&t, now);
-    if (c->sock == SOCK_HELLO) earliest(&t, c->hello_at + (int64_t)c->cfg.ack_wait_ms);
+    // A socket whose close was asked for (c->closing) wants nothing until cbc_closed.
+    if (c->closing) ready = 0;
+    else if (c->sock != SOCK_CLOSED && !cbc_stream_wanted(c)) earliest(&t, now);
+    else if (c->sock == SOCK_OPEN && (c->cfg.anonymous || !token_due(c, now))) earliest(&t, now);
+    else if (c->sock == SOCK_HELLO) earliest(&t, c->hello_at + (int64_t)c->cfg.ack_wait_ms);
     if (ready) {
         earliest(&t, c->ping_at ? c->ping_at + (int64_t)c->cfg.pong_ms : c->last_out + (int64_t)c->cfg.ping_ms);
         if (roll_due(c, now)) earliest(&t, now);

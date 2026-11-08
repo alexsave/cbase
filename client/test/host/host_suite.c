@@ -431,6 +431,47 @@ static void the_timer_pings_and_a_silent_socket_is_closed(void) {
     kept(w);
 }
 
+// The host closed a half-open socket and the platform has not reported the close (a browser can
+// take a minute on a dead link): the client's other timers run on meanwhile. A lost HTTP read is
+// sent again on time, retry_first_ms after the loss, with no spin, and the socket reopens after
+// the close is heard.
+static void an_http_retry_goes_on_time_while_a_close_is_pending(void) {
+    cbhs_world *w = world();
+    cbc *c = signed_up(w, g_h, FAR);
+    advance(w, g_cfg.ping_ms);
+    T_EQ_INT(frame(w), SF_PING);
+    advance(w, g_cfg.pong_ms);                     // half-open: the host closes it
+    T_EQ_INT(closing(w), 1);
+    uint32_t t = cbc_call(c, CBC_GET, CBC_C_HTTP | CBC_C_READ, "/v1/list", 8, NULL, 0, cbhs_now(w));
+    pump(w);
+    w_req *r = request(w);
+    T_CHECK(r != NULL);
+    if (!r) return;
+    answer(r, 0, NULL, 0);                         // lost: a read goes again after retry_first_ms
+    advance(w, g_cfg.retry_first_ms - 1);
+    T_CHECK(request(w) == NULL);
+    advance(w, 1);
+    r = request(w);
+    T_CHECK(r != NULL);                            // on time, the close still out
+    if (!r) return;
+    T_EQ_STR(r->path, "/v1/list");
+    answer(r, 200, "[]", 2);
+    const w_event *e = event(w);
+    T_CHECK(e && e->kind == CBC_EV_DONE && e->ticket == t && e->status == 200);
+    T_EQ_INT(closing(w), 1);
+    advance(w, 30000);                             // nothing else is due: no spin, no frame
+    T_EQ_INT(frame(w), 0);
+    T_EQ_INT(opening(w), 0);
+    settle(w);                                     // the close is heard: the next socket after the wait
+    advance(w, g_cfg.retry_max_ms);
+    uint32_t id = opening(w);
+    T_CHECK(id != 0);
+    if (!id) return;
+    accept_sock(w, id);
+    T_EQ_INT(frame(w), SF_HELLO);
+    kept(w);
+}
+
 static void a_dropped_socket_is_reopened_after_the_wait(void) {
     cbhs_world *w = world();
     signed_up(w, g_h, FAR);
@@ -730,6 +771,33 @@ static void an_anonymous_listener_opens_the_public_socket(void) {
     kept(w);
 }
 
+// The last room goes while the socket is still opening (the client has not heard of it): the host
+// closes it then and there, and the next hold opens a new one.
+static void a_socket_nobody_wants_is_closed_while_it_opens(void) {
+    cbhs_world *w = world();
+    g_cfg.anonymous = 1;
+    cbc *c = start(w, g_h);
+    T_EQ_INT(cbc_sub(c, CBC_ROOM, "feed", 4), 0);
+    pump(w);
+    uint32_t id = opening(w);
+    T_CHECK(id != 0);
+    T_EQ_INT(cbc_unsub(c, CBC_ROOM, "feed", 4), 0);
+    pump(w);
+    T_EQ_INT(opening(w), 0);
+    T_EQ_INT(closing(w), 1);                       // closed before it opened
+    settle(w);
+    advance(w, 60000);
+    T_EQ_INT(w->n_socks, 1);                       // nobody wants one: none opened
+    T_EQ_INT(cbc_sub(c, CBC_ROOM, "feed", 4), 0);
+    pump(w);
+    uint32_t id2 = opening(w);
+    T_CHECK(id2 != 0 && id2 != id);
+    if (!id2) return;
+    accept_sock(w, id2);
+    T_EQ_INT(frame(w), SF_HELLO);
+    kept(w);
+}
+
 int cbhs_run(const cbhs_host *h) {
     g_h = h;
     T_RUN(signs_up_then_says_hello);
@@ -737,12 +805,14 @@ int cbhs_run(const cbhs_host *h) {
     T_RUN(an_http_call_carries_the_bearer_and_is_retried_by_the_timer);
     T_RUN(the_timer_pings_and_a_silent_socket_is_closed);
     T_RUN(a_dropped_socket_is_reopened_after_the_wait);
+    T_RUN(an_http_retry_goes_on_time_while_a_close_is_pending);
     T_RUN(a_call_retried_from_inside_done_waits_for_the_reopen);
     T_RUN(the_kept_session_is_used_at_start);
     T_RUN(a_room_goes_live_and_pushes_reach_the_app);
     T_RUN(a_refresh_rolls_the_socket_onto_the_new_token);
     T_RUN(a_sign_out_closes_and_forgets);
     T_RUN(an_anonymous_listener_opens_the_public_socket);
+    T_RUN(a_socket_nobody_wants_is_closed_while_it_opens);
     T_RUN(a_64k_body_arrives_byte_for_byte_and_done_comes_once_after);
     T_RUN(a_retried_borrowed_body_resends_the_same_bytes);
     T_RUN(an_auth_http_call_waits_for_the_refresh_without_spinning);
