@@ -9,6 +9,7 @@
 /ops/.env
 # The example app built as a local-only consumer (make -C example).
 /example/build/
+/example/storeless/build/
 
 # Tools built in place (tools/structgen: make -C tools/structgen).
 /tools/*/build/

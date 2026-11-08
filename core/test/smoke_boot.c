@@ -9,10 +9,20 @@
 // Runtime API (a socket here) with a bad setting and with a store it cannot
 // open, where it must tell Lambda through /runtime/init/error, typed, before
 // it exits. Each exits non-zero with one line that says why.
+//
+// It holds for every product, and adapts to the app the product links (cb_main_app, the same app
+// the binaries serve): a STORELESS app (cbase/app.h storeless) opens no store, so every boot here
+// runs without CBASE_STORE and CBASE_DB (store_env), and in place of the store's refusals it checks
+// the storeless boot: outside dev it starts with no JWT secret and no public URL (it signs nothing
+// and issues nothing), says its startup line, makes no database file, and refuses CBASE_STORE with
+// its sentence. An app with a store gets the store's refusals, as ever.
 #include "t.h"
 #include "lib_proc.h"
 
+#include "cbase/app.h"
 #include "util/json.h"
+
+#include <dirent.h>
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -26,6 +36,19 @@
 #include <unistd.h>
 
 static const char *g_cbase, *g_bootstrap;
+static bool g_storeless;   // cb_main_app keeps no platform store
+
+// `env` as this app boots with it: for a storeless app its CBASE_STORE and CBASE_DB lines dropped
+// (in place), since naming a store is what such an app refuses. The one place the two kinds differ
+// in what every boot below is given.
+static char **store_env(char **env) {
+    if (!g_storeless) return env;
+    int k = 0;
+    for (int i = 0; env[i]; i++)
+        if (strncmp(env[i], "CBASE_STORE=", 12) != 0 && strncmp(env[i], "CBASE_DB=", 9) != 0) env[k++] = env[i];
+    env[k] = NULL;
+    return env;
+}
 
 // Runs `bin` with `args` and `env` to its exit; true when it exits `status`
 // having said `says` on stderr.
@@ -41,20 +64,63 @@ static bool exits(const char *bin, const char *arg, char *const env[], int statu
     return found == 0 && st == status;
 }
 
+// The names in dir but . and .., counted.
+static int entries(const char *dir) {
+    DIR *d = opendir(dir);
+    int n = 0;
+    for (struct dirent *e; d && (e = readdir(d));) n += strcmp(e->d_name, ".") != 0 && strcmp(e->d_name, "..") != 0;
+    if (d) closedir(d);
+    return d ? n : -1;
+}
+
+// A storeless app's boot, outside dev: no JWT secret and no public URL asked for, the startup line,
+// no database file where CBASE_DB would put one; and CBASE_STORE named is refused with its sentence.
+static void storeless_boots(void) {
+    char dir[256], db[400];
+    T_EQ_INT(tp_tempdir(dir, sizeof dir), 0);
+    snprintf(db, sizeof db, "CBASE_DB=%s/cbase.sqlite", dir);
+    char *env[] = { "CBASE_LISTEN=127.0.0.1:0", db, NULL };
+    char *argv[] = { (char *)g_cbase, "serve", NULL };
+    tp_child c;
+    T_EQ_INT(tp_start_out(&c, argv, env), 0);
+    char line[256] = "";
+    size_t n = 0;
+    struct pollfd p = { c.out_fd, POLLIN, 0 };
+    while (n + 1 < sizeof line && !memchr(line, '\n', n) && poll(&p, 1, 15000) == 1) {
+        ssize_t r = read(c.out_fd, line + n, sizeof line - 1 - n);
+        if (r <= 0) break;
+        n += (size_t)r;
+        line[n] = 0;
+    }
+    if (!strstr(line, "cbase: listening 127.0.0.1:")) fprintf(stderr, "     storeless serve said \"%s\" on stdout\n", line);
+    T_CHECK(strstr(line, "cbase: listening 127.0.0.1:") != NULL);
+    T_EQ_INT(tp_stop(&c, SIGTERM, 15000), 0);
+    close(c.out_fd);
+    T_EQ_INT(entries(dir), 0);   // no database file, nor its -wal or -shm
+    rmdir(dir);
+    char want[256];
+    snprintf(want, sizeof want, "CBASE_STORE=sqlite names a store, and the app %s keeps none", cb_main_app->name ? cb_main_app->name : "");
+    char *named[] = { "CBASE_LISTEN=127.0.0.1:0", "CBASE_STORE=sqlite", "CBASE_DB=:memory:", "CBASE_DEV=1", NULL };
+    T_CHECK(exits(g_cbase, "serve", named, 1, want));
+}
+
 static void cbase_refuses(void) {
     char *none[] = { NULL };
     T_CHECK(exits(g_cbase, NULL, none, 2, "usage: cbase serve"));
     T_CHECK(exits(g_cbase, "nonsense", none, 2, "usage: cbase serve"));
     char *bad_listen[] = { "CBASE_LISTEN=nowhere", NULL };
     T_CHECK(exits(g_cbase, "serve", bad_listen, 2, "CBASE_LISTEN=nowhere is not host:port"));
-    // Without CBASE_DEV=1 serve wants the JWT secret and the public URL before it does anything.
-    char *no_secret[] = { "CBASE_LISTEN=127.0.0.1:0", "CBASE_STORE=sqlite", "CBASE_DB=:memory:", NULL };
-    T_CHECK(exits(g_cbase, "serve", no_secret, 2, "no CBASE_JWT_SECRET"));
-    char *no_url[] = { "CBASE_LISTEN=127.0.0.1:0", "CBASE_STORE=sqlite", "CBASE_DB=:memory:",
-                       "CBASE_JWT_SECRET=boot-secret-boot-secret-boot-secret!", NULL };
-    T_CHECK(exits(g_cbase, "serve", no_url, 2, "no CBASE_PUBLIC_URL"));
-    char *bad_db[] = { "CBASE_LISTEN=127.0.0.1:0", "CBASE_STORE=sqlite", "CBASE_DB=/dev/null/cbase.sqlite", "CBASE_DEV=1", NULL };
-    T_CHECK(exits(g_cbase, "serve", bad_db, 1, "store sqlite"));
+    if (g_storeless) storeless_boots();
+    else {
+        // Without CBASE_DEV=1 serve wants the JWT secret and the public URL before it does anything.
+        char *no_secret[] = { "CBASE_LISTEN=127.0.0.1:0", "CBASE_STORE=sqlite", "CBASE_DB=:memory:", NULL };
+        T_CHECK(exits(g_cbase, "serve", no_secret, 2, "no CBASE_JWT_SECRET"));
+        char *no_url[] = { "CBASE_LISTEN=127.0.0.1:0", "CBASE_STORE=sqlite", "CBASE_DB=:memory:",
+                           "CBASE_JWT_SECRET=boot-secret-boot-secret-boot-secret!", NULL };
+        T_CHECK(exits(g_cbase, "serve", no_url, 2, "no CBASE_PUBLIC_URL"));
+        char *bad_db[] = { "CBASE_LISTEN=127.0.0.1:0", "CBASE_STORE=sqlite", "CBASE_DB=/dev/null/cbase.sqlite", "CBASE_DEV=1", NULL };
+        T_CHECK(exits(g_cbase, "serve", bad_db, 1, "store sqlite"));
+    }
     // A port someone else holds.
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     struct sockaddr_in a;
@@ -68,7 +134,7 @@ static void cbase_refuses(void) {
     char listen_env[64];
     snprintf(listen_env, sizeof listen_env, "CBASE_LISTEN=127.0.0.1:%d", ntohs(a.sin_port));
     char *busy[] = { listen_env, "CBASE_STORE=sqlite", "CBASE_DB=:memory:", "CBASE_DEV=1", NULL };
-    T_CHECK(exits(g_cbase, "serve", busy, 1, "listen"));
+    T_CHECK(exits(g_cbase, "serve", store_env(busy), 1, "listen"));
     close(fd);
 }
 
@@ -149,13 +215,14 @@ static void the_cpu_knob_boots_or_refuses(void) {
     snprintf(says, sizeof says, "pinned: the loop to CPU %d, every other thread to CPU %d", low[0], low[1]);
     char *pinned[] = { "CBASE_LISTEN=127.0.0.1:0", "CBASE_STORE=sqlite", "CBASE_DB=:memory:", "CBASE_DEV=1",
                        loop_env, bg_env, NULL };
-    boots_with(pinned, says, lo0, lo1);
+    boots_with(store_env(pinned), says, lo0, lo1);
     char *no_cpu[] = { "CBASE_LISTEN=127.0.0.1:0", "CBASE_STORE=sqlite", "CBASE_DB=:memory:", "CBASE_DEV=1",
                        "CBASE_BG_CPU=1023", NULL };
-    T_CHECK(exits(g_cbase, "serve", no_cpu, 2, "CBASE_BG_CPU: CPU 1023 is not one this process may use"));
+    T_CHECK(exits(g_cbase, "serve", store_env(no_cpu), 2, "CBASE_BG_CPU: CPU 1023 is not one this process may use"));
 
     // Auto: the lowest two, or nothing pinned with one.
     char *autov[] = { "CBASE_LISTEN=127.0.0.1:0", "CBASE_STORE=sqlite", "CBASE_DB=:memory:", "CBASE_DEV=1", NULL };
+    store_env(autov);
     if (n >= 2) {
         snprintf(says, sizeof says, "pinned: the loop to CPU %d, every other thread to CPU %d (auto)", low[0], low[1]);
         boots_with(autov, says, lo0, lo1);
@@ -172,16 +239,18 @@ static void the_cpu_knob_boots_or_refuses(void) {
     // Off: nothing pinned, every thread on every CPU this test may use.
     char *off[] = { "CBASE_LISTEN=127.0.0.1:0", "CBASE_STORE=sqlite", "CBASE_DB=:memory:", "CBASE_DEV=1",
                     "CBASE_LOOP_CPU=off", "CBASE_BG_CPU=off", NULL };
-    boots_with(off, "CBASE_BG_CPU=off (not pinned)", mine, mine);
+    boots_with(store_env(off), "CBASE_BG_CPU=off (not pinned)", mine, mine);
 #else
     char *pinned[] = { "CBASE_LISTEN=127.0.0.1:0", "CBASE_STORE=sqlite", "CBASE_DB=:memory:", "CBASE_DEV=1",
                        "CBASE_LOOP_CPU=0", NULL };
-    T_CHECK(exits(g_cbase, "serve", pinned, 2, "needs Linux"));
+    T_CHECK(exits(g_cbase, "serve", store_env(pinned), 2, "needs Linux"));
     // Auto and off cost no start here: auto says once why nothing is pinned, and both serve.
     char *argv[] = { (char *)g_cbase, "serve", NULL };
     char *autov[] = { "CBASE_LISTEN=127.0.0.1:0", "CBASE_STORE=sqlite", "CBASE_DB=:memory:", "CBASE_DEV=1", NULL };
     char *off[] = { "CBASE_LISTEN=127.0.0.1:0", "CBASE_STORE=sqlite", "CBASE_DB=:memory:", "CBASE_DEV=1",
                     "CBASE_LOOP_CPU=off", "CBASE_BG_CPU=off", NULL };
+    store_env(autov);
+    store_env(off);
     tp_child c;
     T_EQ_INT(tp_start(&c, argv, autov), 0);
     T_EQ_INT(tp_wait_line(&c, "CPU knob auto: picking CPUs needs Linux, so nothing is pinned", 15000, NULL, 0), 0);
@@ -227,6 +296,7 @@ static int health(int port) {
 // written there, through a drain to the exit.
 static void the_startup_line_names_the_port(void) {
     char *env[] = { "CBASE_LISTEN=127.0.0.1:0", "CBASE_STORE=sqlite", "CBASE_DB=:memory:", "CBASE_DEV=1", NULL };
+    store_env(env);
     char *argv[] = { (char *)g_cbase, "serve", NULL };
     for (int round = 0; round < 2; round++) {   // twice: two free ports, each named
         tp_child c;
@@ -320,11 +390,13 @@ static void bootstrap_refuses(void) {
     T_CHECK(init_error(bad_config, "Config", "CBASE_STORE=postgres", false));
     // Under Lambda no JWT secret is no start (finding L8): a random one per
     // container would sign users out at random.
+    // A storeless app's too: the secret is asked for before the app is.
     char *no_secret[] = { "CBASE_STORE=sqlite", NULL };
-    T_CHECK(init_error(no_secret, "Config", "no CBASE_JWT_SECRET", false));
+    T_CHECK(init_error(store_env(no_secret), "Config", "no CBASE_JWT_SECRET", false));
     char *bad_boot[] = { "CBASE_STORE=sqlite", "CBASE_DB=/dev/null/cbase.sqlite",
                          "CBASE_JWT_SECRET=boot-secret-boot-secret-boot-secret!", NULL };
-    T_CHECK(init_error(bad_boot, "Boot", "store sqlite", true));
+    // A store it cannot open; for a storeless app, a store named at all.
+    T_CHECK(init_error(bad_boot, "Boot", g_storeless ? "names a store" : "store sqlite", true));
 }
 
 int main(int argc, char **argv) {
@@ -336,6 +408,9 @@ int main(int argc, char **argv) {
     g_cbase = strcmp(argv[1], "-") == 0 ? NULL : argv[1];
     g_bootstrap = argc == 3 ? argv[2] : NULL;
     signal(SIGPIPE, SIG_IGN);
+    g_storeless = cb_main_app && cb_main_app->storeless;
+    printf("smoke_boot: the app %s %s\n", cb_main_app && cb_main_app->name ? cb_main_app->name : "",
+           g_storeless ? "is storeless" : "keeps a store");
     if (g_cbase) T_RUN(cbase_refuses);
     if (g_cbase) T_RUN(the_cpu_knob_boots_or_refuses);
     if (g_cbase) T_RUN(the_startup_line_names_the_port);

@@ -15,7 +15,8 @@
 #                   binary (tools/symbol_gate.sh), then the example as a local-only product in a
 #                   fresh tree without providers/aws/ or ops/: built with the network denied,
 #                   then its own check (tools/offline_build_test.sh --check: example/Makefile's
-#                   tests, smokes and link check)
+#                   tests, smokes and link check), and the platform's smokes against a storeless
+#                   product (example/storeless)
 #   make check-asan the same tests, every object rebuilt under ASan + UBSan
 #   make check-dynamo  the store conformance suite and the example smoke against DynamoDB Local
 #                   (providers/aws/ops/dynamo_local.sh; needs Docker or a DynamoDB Local on 8000)
@@ -61,6 +62,13 @@ symbol-gate: example-serve $(AWS_GATE_OBJS)
 offline-build:
 	CHECK_JOBS=$(CHECK_JOBS) bash tools/offline_build_test.sh --check
 check: repo-gate symbol-gate offline-build
+
+# THE STORELESS SMOKE: the platform's smokes against a product that keeps no store
+# (example/storeless), so smoke_boot's storeless branch runs here as its stored one does above.
+.PHONY: storeless-smoke
+storeless-smoke:
+	$(MAKE) -C example/storeless smoke
+check: storeless-smoke
 
 # THE HTTP/2 AND gRPC MODULE A LA CARTE (docs/H2.md): a consumer that takes net/h2*, hpack, grpc and
 # tls and only what they need is linked from exactly those objects (build/h2_alacarte, so a module

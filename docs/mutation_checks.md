@@ -1033,3 +1033,10 @@ unit_storeless under a real serve, and smoke_example against build/cbase.
 unit_web `a_fifo_is_no_file`, over a real serve with its one request worker: a FIFO in the served directory, asked for through cb_serve_dir and through cb_path_join + cb_send_file.
 
 - files.c: open() without O_NONBLOCK (the code before the fix) -> each FIFO request rc == 0 and status == 404 (no answer in 3 s), then the next file's 200 (the one worker held in open()), then stop(SIGTERM) == 0.
+
+## smoke_boot holds for a storeless product (fifo-fix)
+
+smoke_boot built in example/storeless (make storeless-smoke) and in cbase's own build (the example, which keeps a store).
+
+- smoke_boot.c: g_storeless forced false for the storeless app (the smoke before the fix) -> 16 of 29 checks fail: `cbase_refuses` no CBASE_JWT_SECRET, no CBASE_PUBLIC_URL, store sqlite and the busy port, `the_cpu_knob_boots_or_refuses` listening on (twice), `the_startup_line_names_the_port` its line (both rounds).
+- smoke_boot.c: store_env passing CBASE_STORE through -> 13 checks fail: every boot refused with "names a store".
