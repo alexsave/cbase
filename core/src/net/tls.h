@@ -3,13 +3,15 @@
 // same way.
 //
 // THE CONTEXT: TLS 1.2 or newer, the peer's certificate verified against a CA
-// bundle. The bundle is, in order: the file given, $CBASE_CA_FILE, the first
-// that exists of /etc/pki/tls/certs/ca-bundle.crt (Fedora and its kin, among
-// them a one-shot provider's runtime), /etc/ssl/certs/ca-certificates.crt
-// (Debian, Alpine) and /etc/ssl/cert.pem, and else OpenSSL's default paths
-// (Homebrew's on a Mac). The static Alpine build's OpenSSL looks under
-// /etc/ssl by default, which that runtime does not populate the same way,
-// hence the explicit list. The host name is checked per connection
+// bundle. The bundle is, in order: the file given, $CBASE_CA_FILE, OpenSSL's
+// own file when it exists ($SSL_CERT_FILE, else the one its build names:
+// Homebrew's on a Mac, the distribution's on Linux), the first that exists of
+// /etc/pki/tls/certs/ca-bundle.crt (Fedora and its kin, among them a one-shot
+// provider's runtime), /etc/ssl/certs/ca-certificates.crt (Debian, Alpine) and
+// /etc/ssl/cert.pem, and else OpenSSL's default paths. OpenSSL's file comes
+// before the list because a Mac also has /etc/ssl/cert.pem, Apple's lagging
+// copy; the list is there because the static Alpine build's file is absent on
+// the runtime it ships to. The host name is checked per connection
 // (cb_tls_bind_host).
 #ifndef CB_TLS_H
 #define CB_TLS_H
