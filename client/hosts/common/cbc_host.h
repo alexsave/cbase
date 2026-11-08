@@ -68,9 +68,11 @@ typedef struct {
 } cbc_host_req;
 
 typedef struct {
-    // The socket: an id (> 0), or 0 when none can be opened (the host waits retry_first_ms and
-    // asks again). Its open, messages and close come back through cbc_host_ws_*.
-    uint32_t (*ws_open)(void *ud, const char *path);
+    // The socket: 0 and its id in *id, or nonzero when none can be opened (the host waits
+    // retry_first_ms and asks again). The id is the platform's own, passed as is: any value, 0
+    // too (the host keeps whether it has one apart from the id). Its open, messages and close
+    // come back through cbc_host_ws_*.
+    int      (*ws_open)(void *ud, const char *path, uint32_t *id);
     void     (*ws_send)(void *ud, uint32_t id, const uint8_t *frame, size_t len);
     void     (*ws_close)(void *ud, uint32_t id);
     // One HTTP request, answered once, later, by cbc_host_http_answered(tag, ...).
@@ -104,10 +106,11 @@ struct cbc_host {
     void *ud;                 // handed to every env call
     cbc_host_event_fn fn;
     void *ctx;
-    uint32_t sock;            // the client's socket id; 0: none
+    uint32_t sock;            // the client's socket id (the platform's, any value) while has_sock
+    uint8_t  has_sock;        // a socket is the client's: opening, or open
     uint8_t  open;            // its open was heard
     uint8_t  held;            // cbc_host_hold: the pump does nothing
-    uint8_t  pad[2];
+    uint8_t  pad[1];
     uint32_t tick_timer, reopen_timer;
     cbc_host_pend pend[CBC_HOST_PEND_MAX];
     uint8_t frame[CBC_HOST_FRAME_CAP];

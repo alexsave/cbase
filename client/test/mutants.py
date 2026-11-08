@@ -52,6 +52,7 @@ HOST = [
   (HC, 'an opening socket nobody wants is kept', '        h->env->ws_close(h->ud, h->sock);\n        h->sock = 0;', '        (void)0;'),
   (HC, 'no pump after a tick', '    events(h, NULL);\n    cbc_host_pump(h);\n}\n\nstatic void ws_open', '    events(h, NULL);\n}\n\nstatic void ws_open'),
   (HC, 'no save on a session event', 'if (e->kind == CBC_EV_SESSION && !saved) { session_save(h); saved = 1; }', 'if (e->kind == CBC_EV_SESSION && !saved) { (void)session_save; saved = 1; }'),
+  (HC, 'socket id 0 taken for none', 'cbc_stream_path(&h->c), &h->sock) == 0;', 'cbc_stream_path(&h->c), &h->sock) == 0 && h->sock;'),
   (HC, 'a borrowed body sent from the head buffer', '    rq.body = r.flags & CBC_RQ_REF ? cbc_req_body(&h->c, r.id) : ', '    rq.body = '),
 ]
 # The page shim: applied to the copy the TS tests import (build/ts/socket.ts).

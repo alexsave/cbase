@@ -76,27 +76,27 @@ static void on_tick(void *ctx) {
 
 static void ws_open(cbc_host *h) {
     h->open = 0;
-    h->sock = h->env->ws_open(h->ud, cbc_stream_path(&h->c));
-    if (!h->sock) h->reopen_timer = h->env->timer(h->ud, h->c.cfg.retry_first_ms, on_reopen, h);
+    h->has_sock = h->env->ws_open(h->ud, cbc_stream_path(&h->c), &h->sock) == 0;
+    if (!h->has_sock) h->reopen_timer = h->env->timer(h->ud, h->c.cfg.retry_first_ms, on_reopen, h);
 }
 
 void cbc_host_ws_opened(cbc_host *h, uint32_t id) {
-    if (!h->sock || id != h->sock) return;
+    if (!h->has_sock || id != h->sock) return;
     h->open = 1;
     cbc_opened(&h->c, cbc_host_now(h));
     cbc_host_pump(h);
 }
 
 void cbc_host_ws_message(cbc_host *h, uint32_t id, const uint8_t *frame, size_t len) {
-    if (!h->sock || id != h->sock || !h->open) return;
+    if (!h->has_sock || id != h->sock || !h->open) return;
     cbc_in(&h->c, frame, len, cbc_host_now(h));
     events(h, frame);
     cbc_host_pump(h);
 }
 
 void cbc_host_ws_closed(cbc_host *h, uint32_t id) {
-    if (!h->sock || id != h->sock) return;
-    h->sock = 0;
+    if (!h->has_sock || id != h->sock) return;
+    h->has_sock = 0;
     h->open = 0;
     uint32_t wait = cbc_closed(&h->c, cbc_host_now(h));
     // The reopen's wait is armed BEFORE the app hears the close's events: an app that re-issues a
@@ -113,7 +113,7 @@ void cbc_host_pump(cbc_host *h) {
     for (int n; (n = cbc_next_request(&h->c, h->req, sizeof h->req, now)) > 0;) send_request(h);
     // An open socket's close is the core's to ask for (cbc_next_out's -1, asked once: it answers 0
     // after it until cbc_closed, and cbc_due_ms counts nothing of the socket meanwhile).
-    if (h->sock && h->open) {
+    if (h->has_sock && h->open) {
         for (int n; (n = cbc_next_out(&h->c, h->frame, sizeof h->frame, now)) != 0;) {
             if (n < 0) {   // -1: close it now (CBC_E_CAP cannot happen at CBC_HOST_FRAME_CAP)
                 h->env->ws_close(h->ud, h->sock);
@@ -124,11 +124,11 @@ void cbc_host_pump(cbc_host *h) {
     }
     // One still opening, which the core has not heard of, is closed and forgotten here when nobody
     // wants it any more (its close, when the platform reports it, is not the client's).
-    if (h->sock && !h->open && !cbc_stream_wanted(&h->c)) {
+    if (h->has_sock && !h->open && !cbc_stream_wanted(&h->c)) {
         h->env->ws_close(h->ud, h->sock);
-        h->sock = 0;
+        h->has_sock = 0;
     }
-    if (!h->sock && !h->reopen_timer && cbc_stream_wanted(&h->c)) ws_open(h);
+    if (!h->has_sock && !h->reopen_timer && cbc_stream_wanted(&h->c)) ws_open(h);
     if (h->tick_timer) { h->env->timer_stop(h->ud, h->tick_timer); h->tick_timer = 0; }
     int due = cbc_due_ms(&h->c, now);
     if (due >= 0) h->tick_timer = h->env->timer(h->ud, (uint32_t)due, on_tick, h);

@@ -52,9 +52,10 @@ struct cbhs_world {
     const cbhs_host *h;
     void   *host;
     int64_t now;
-    // sockets, by id - 1
+    // sockets, by slot: the script names one by slot + 1 (0: none), the host by its id, slot + id_base
     struct { uint8_t state; char path[32]; } sock[W_SOCKS];
     uint32_t n_socks;
+    uint32_t id_base;           // the first socket id the world hands out: 1, or 0 (g_id_base)
     // the frames the server received, in order, each with its socket
     struct { uint32_t sock; size_t len; uint8_t b[W_FRAME]; } frame[W_FRAMES];
     int n_frames, frames_read;
@@ -83,31 +84,40 @@ static void broke(cbhs_world *w, const char *why) {
 // ---- the world's calls -----------------------------------------------------------------------------
 int64_t cbhs_now(cbhs_world *w) { return w->now; }
 
-uint32_t cbhs_ws_open(cbhs_world *w, const char *path) {
-    if (w->n_socks == W_SOCKS) { broke(w, "more sockets opened than the suite has room for"); return 0; }
+// The slot of the host's socket id, or W_SOCKS when it names no socket the world handed out.
+static uint32_t slot_of(cbhs_world *w, uint32_t id) {
+    uint32_t i = id - w->id_base;   // wraps past n_socks for an id below the base
+    return i < w->n_socks ? i : W_SOCKS;
+}
+
+int cbhs_ws_open(cbhs_world *w, const char *path, uint32_t *id) {
+    if (w->n_socks == W_SOCKS) { broke(w, "more sockets opened than the suite has room for"); return -1; }
     for (uint32_t i = 0; i < w->n_socks; i++)
         if (w->sock[i].state == S_OPENING || w->sock[i].state == S_OPEN) broke(w, "a second socket opened while one is up");
     uint32_t i = w->n_socks++;
     w->sock[i].state = S_OPENING;
     snprintf(w->sock[i].path, sizeof w->sock[i].path, "%s", path);
-    return i + 1;
+    *id = i + w->id_base;
+    return 0;
 }
 
 void cbhs_ws_send(cbhs_world *w, uint32_t id, const uint8_t *frame, size_t len) {
-    if (id == 0 || id > w->n_socks || w->sock[id - 1].state != S_OPEN) { broke(w, "a frame sent on a socket that is not open"); return; }
+    uint32_t i = slot_of(w, id);
+    if (i == W_SOCKS || w->sock[i].state != S_OPEN) { broke(w, "a frame sent on a socket that is not open"); return; }
     if (w->n_frames == W_FRAMES || len > W_FRAME) { broke(w, "more frames than the suite has room for"); return; }
-    w->frame[w->n_frames].sock = id;
+    w->frame[w->n_frames].sock = i + 1;
     w->frame[w->n_frames].len = len;
     memcpy(w->frame[w->n_frames].b, frame, len);
     w->n_frames++;
 }
 
 void cbhs_ws_close(cbhs_world *w, uint32_t id) {
-    if (id == 0 || id > w->n_socks || (w->sock[id - 1].state != S_OPEN && w->sock[id - 1].state != S_OPENING)) {
+    uint32_t i = slot_of(w, id);
+    if (i == W_SOCKS || (w->sock[i].state != S_OPEN && w->sock[i].state != S_OPENING)) {
         broke(w, "a close of a socket that is not up");
         return;
     }
-    w->sock[id - 1].state = S_CLOSING;
+    w->sock[i].state = S_CLOSING;
 }
 
 void cbhs_http(cbhs_world *w, const char *method, const char *path, size_t path_len, const char *auth, size_t auth_len,
@@ -191,9 +201,11 @@ void cbhs_event(cbhs_world *w, cbc *c, const cbc_event *e, const uint8_t *bytes)
 // ---- the script's side: the server, the clock, the app ---------------------------------------------
 static cbhs_world g_w;
 static cbc_cfg g_cfg;
+static uint32_t g_id_base;   // cbhs_run's: every case runs with socket ids from 1, then from 0
 
 static cbhs_world *world(void) {
     memset(&g_w, 0, sizeof g_w);
+    g_w.id_base = g_id_base;
     g_w.now = T0;
     g_w.entropy = 42;
     cbc_cfg_default(&g_cfg);
@@ -240,7 +252,9 @@ static void advance(cbhs_world *w, int64_t ms) {
     w->now = end;
 }
 
-// The socket the host is opening (0: none), accepted.
+// The socket the host is opening (0: none), accepted. The script's names are slot + 1; what crosses
+// to the host is the world's id (wire).
+static uint32_t wire(cbhs_world *w, uint32_t s) { return s - 1 + w->id_base; }
 static uint32_t opening(cbhs_world *w) {
     for (uint32_t i = 0; i < w->n_socks; i++)
         if (w->sock[i].state == S_OPENING) return i + 1;
@@ -253,12 +267,12 @@ static uint32_t up_sock(cbhs_world *w) {
 }
 static void accept_sock(cbhs_world *w, uint32_t id) {
     w->sock[id - 1].state = S_OPEN;
-    w->h->ws_opened(w->host, id);
+    w->h->ws_opened(w->host, wire(w, id));
 }
 // The loop reports every close the host asked for.
 static void settle(cbhs_world *w) {
     for (uint32_t i = 0; i < w->n_socks; i++)
-        if (w->sock[i].state == S_CLOSING) { w->sock[i].state = S_FREE; w->h->ws_closed(w->host, i + 1); }
+        if (w->sock[i].state == S_CLOSING) { w->sock[i].state = S_FREE; w->h->ws_closed(w->host, wire(w, i + 1)); }
 }
 // The server drops the socket.
 static void drop(cbhs_world *w) {
@@ -266,7 +280,7 @@ static void drop(cbhs_world *w) {
     T_CHECK(id != 0);
     if (!id) return;
     w->sock[id - 1].state = S_FREE;
-    w->h->ws_closed(w->host, id);
+    w->h->ws_closed(w->host, wire(w, id));
 }
 static int closing(cbhs_world *w) {
     for (uint32_t i = 0; i < w->n_socks; i++)
@@ -287,7 +301,7 @@ static void to_host(cbhs_world *w, const uint8_t *p, size_t n) {
     T_CHECK(id != 0);
     static uint8_t b[W_FRAME];   // the loop's buffer: the host reads its spans out of it
     memcpy(b, p, n);
-    if (id) w->h->ws_message(w->host, id, b, n);
+    if (id) w->h->ws_message(w->host, wire(w, id), b, n);
 }
 static void bare(cbhs_world *w, uint8_t kind) {
     uint8_t b[2];
@@ -843,23 +857,28 @@ static void a_socket_nobody_wants_is_closed_while_it_opens(void) {
 
 int cbhs_run(const cbhs_host *h) {
     g_h = h;
-    T_RUN(signs_up_then_says_hello);
-    T_RUN(a_call_rides_the_socket);
-    T_RUN(an_http_call_carries_the_bearer_and_is_retried_by_the_timer);
-    T_RUN(the_timer_pings_and_a_silent_socket_is_closed);
-    T_RUN(a_dropped_socket_is_reopened_after_the_wait);
-    T_RUN(an_http_retry_goes_on_time_while_a_close_is_pending);
-    T_RUN(a_call_retried_from_inside_done_waits_for_the_reopen);
-    T_RUN(the_kept_session_is_used_at_start);
-    T_RUN(a_room_goes_live_and_pushes_reach_the_app);
-    T_RUN(a_refresh_rolls_the_socket_onto_the_new_token);
-    T_RUN(a_sign_out_closes_and_forgets);
-    T_RUN(an_anonymous_listener_opens_the_public_socket);
-    T_RUN(a_socket_nobody_wants_is_closed_while_it_opens);
-    T_RUN(a_64k_body_arrives_byte_for_byte_and_done_comes_once_after);
-    T_RUN(a_retried_borrowed_body_resends_the_same_bytes);
-    T_RUN(a_slow_borrowed_upload_is_not_aborted);
-    T_RUN(an_auth_http_call_waits_for_the_refresh_without_spinning);
+    // Every case twice: socket ids from 1, then from 0 (a platform's ids may start anywhere, and
+    // a host passes them as they are).
+    for (int base = 1; base >= 0; base--) {
+        g_id_base = (uint32_t)base;
+        T_RUN(signs_up_then_says_hello);
+        T_RUN(a_call_rides_the_socket);
+        T_RUN(an_http_call_carries_the_bearer_and_is_retried_by_the_timer);
+        T_RUN(the_timer_pings_and_a_silent_socket_is_closed);
+        T_RUN(a_dropped_socket_is_reopened_after_the_wait);
+        T_RUN(an_http_retry_goes_on_time_while_a_close_is_pending);
+        T_RUN(a_call_retried_from_inside_done_waits_for_the_reopen);
+        T_RUN(the_kept_session_is_used_at_start);
+        T_RUN(a_room_goes_live_and_pushes_reach_the_app);
+        T_RUN(a_refresh_rolls_the_socket_onto_the_new_token);
+        T_RUN(a_sign_out_closes_and_forgets);
+        T_RUN(an_anonymous_listener_opens_the_public_socket);
+        T_RUN(a_socket_nobody_wants_is_closed_while_it_opens);
+        T_RUN(a_64k_body_arrives_byte_for_byte_and_done_comes_once_after);
+        T_RUN(a_retried_borrowed_body_resends_the_same_bytes);
+        T_RUN(a_slow_borrowed_upload_is_not_aborted);
+        T_RUN(an_auth_http_call_waits_for_the_refresh_without_spinning);
+    }
     printf("host suite: %s\n", h->name);
     return T_DONE();
 }

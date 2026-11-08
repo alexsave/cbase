@@ -22,9 +22,9 @@ int64_t cbc_posix_now(const cbc_posix *h) {
 cbc *cbc_posix_client(cbc_posix *h) { return cbc_host_client(&h->host); }
 
 // ---- the environment: each call one io call ----------------------------------------------------
-static uint32_t env_ws_open(void *ud, const char *path) {
+static int env_ws_open(void *ud, const char *path, uint32_t *id) {
     cbc_posix *h = ud;
-    return h->io.ws_open(h->io.ud, path);
+    return h->io.ws_open(h->io.ud, path, id);
 }
 static void env_ws_send(void *ud, uint32_t id, const uint8_t *frame, size_t len) {
     cbc_posix *h = ud;

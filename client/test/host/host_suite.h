@@ -36,7 +36,9 @@ typedef struct cbhs_world cbhs_world;
 
 // ---- the world, as a host's I/O reaches it --------------------------------------------------------
 int64_t  cbhs_now(cbhs_world *w);                                   // epoch ms
-uint32_t cbhs_ws_open(cbhs_world *w, const char *path);              // a socket id (> 0)
+// 0 and the socket's id in *id: the world's ids start at 1, or at 0 when the suite runs again as
+// a platform whose ids start there (every case runs both ways), so a host keeps them as they are.
+int      cbhs_ws_open(cbhs_world *w, const char *path, uint32_t *id);
 void     cbhs_ws_send(cbhs_world *w, uint32_t id, const uint8_t *frame, size_t len);
 void     cbhs_ws_close(cbhs_world *w, uint32_t id);
 typedef void (*cbhs_done_fn)(void *ctx, int status, const uint8_t *body, size_t len);

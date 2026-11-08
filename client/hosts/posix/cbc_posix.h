@@ -41,9 +41,10 @@ typedef void (*cbc_posix_fire_fn)(void *ctx);
 
 typedef struct {
     void *ud;   // handed back to every call below
-    // The socket: an id (> 0), or 0 when none can be opened (the host waits retry_first_ms and
-    // asks again). Its open, messages and close come back through cbc_posix_ws_*.
-    uint32_t (*ws_open)(void *ud, const char *path);
+    // The socket: 0 and its id in *id (the loop's own, any value, 0 too), or nonzero when none
+    // can be opened (the host waits retry_first_ms and asks again). Its open, messages and close
+    // come back through cbc_posix_ws_*.
+    int      (*ws_open)(void *ud, const char *path, uint32_t *id);
     void     (*ws_send)(void *ud, uint32_t id, const uint8_t *frame, size_t len);
     void     (*ws_close)(void *ud, uint32_t id);
     // One HTTP request ("GET" or "POST"; auth NULL when none; a body of body_len bytes, sent as

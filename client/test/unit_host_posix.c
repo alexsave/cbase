@@ -5,7 +5,7 @@
 
 static cbc_posix g_host;
 
-static uint32_t io_ws_open(void *ud, const char *path) { return cbhs_ws_open(ud, path); }
+static int io_ws_open(void *ud, const char *path, uint32_t *id) { return cbhs_ws_open(ud, path, id); }
 static void io_ws_send(void *ud, uint32_t id, const uint8_t *p, size_t n) { cbhs_ws_send(ud, id, p, n); }
 static void io_ws_close(void *ud, uint32_t id) { cbhs_ws_close(ud, id); }
 static void io_http(void *ud, const char *m, const char *path, size_t pn, const char *auth, size_t an, const uint8_t *body,
