@@ -48,8 +48,29 @@ static void h_answer(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     cb_res_header(res, "Cache-Control", FOREVER);
 }
 
+// The magic a wire body starts with.
+static const uint8_t MAGIC[] = { 'A', 'W', 0, 1 };
+
+// POST /api/wire: the product's own checks of a request, on the raw bytes. 415 unless the type is
+// the wire's (parameters after it allowed, as the product's startsWith check allows them), 400
+// unless the body starts with MAGIC, and else the body back as it came, with the type it came as.
+static void h_wire(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
+    const char *ct = cb_http_header_get(req, "Content-Type");
+    if (!ct || strncmp(ct, WIRE_MIME, strlen(WIRE_MIME)) != 0) {
+        cb_res_send(res, 415, WIRE_MIME, "\0type", 5);
+        return;
+    }
+    if (req->body_len < sizeof MAGIC || memcmp(req->body, MAGIC, sizeof MAGIC) != 0) {
+        cb_res_send(res, 400, WIRE_MIME, "\0bytes", 6);
+        return;
+    }
+    cb_res_send(res, 200, WIRE_MIME, req->body, req->body_len);
+    cb_res_header(res, "X-Got-Type", ct);
+}
+
 static const cb_route ROUTES[] = {
     { .method = "GET", .pattern = "/t/answer", .flags = CB_ROUTE_POOL, .fn = h_answer },
+    { .method = "POST", .pattern = "/api/wire", .flags = CB_ROUTE_POOL, .fn = h_wire },
 };
 static const cb_route_list LIST = { ROUTES, sizeof ROUTES / sizeof ROUTES[0] };
 static const cb_route_list *const LISTS[] = { &LIST };
@@ -151,6 +172,55 @@ static void answers_any_status_type_body_and_headers(void) {
     cb_buf_free(&w);
 }
 
+// ---- 2. what a handler is given of a request ---------------------------------------------------
+
+// Sends a POST /api/wire with `type` (NULL: no Content-Type) and body[0..n), Connection: close.
+static long post_wire(const char *type, const void *body, size_t n, cb_buf *out) {
+    cb_buf q;
+    cb_buf_init(&q);
+    cb_buf_printf(&q, "POST /api/wire HTTP/1.1\r\nHost: x\r\n");
+    if (type) cb_buf_printf(&q, "Content-Type: %s\r\n", type);
+    cb_buf_printf(&q, "Content-Length: %zu\r\nConnection: close\r\n\r\n", n);
+    cb_buf_append(&q, body, n);
+    long k = raw(q.p, q.len, out);
+    cb_buf_free(&q);
+    return k;
+}
+
+static void gets_the_raw_body_and_its_type(void) {
+    // MAGIC, then every byte value twice over: NULs, CR LF, a blank line's bytes, high bytes, and
+    // what would be a percent-escape or a form field if anything decoded it.
+    uint8_t body[4 + 512 + 9];
+    memcpy(body, MAGIC, sizeof MAGIC);
+    for (int i = 0; i < 512; i++) body[4 + i] = (uint8_t)i;
+    memcpy(body + 4 + 512, "a=%41&b=+", 9);
+    cb_buf w;
+    cb_buf_init(&w);
+    char head[512];
+    snprintf(head, sizeof head,
+             "HTTP/1.1 200 OK\r\nContent-Type: " WIRE_MIME "\r\nX-Got-Type: " WIRE_MIME "; v=3\r\nVary: Origin\r\n"
+             "Content-Length: %zu\r\nConnection: close\r\n\r\n",
+             sizeof body);
+    T_CHECK(post_wire(WIRE_MIME "; v=3", body, sizeof body, &w) > 0);
+    T_CHECK(wire_is(&w, head, body, sizeof body));
+    // The handler's own refusals: a body of another type, or of none, is its 415; bytes that are
+    // not a message of its kind, its 400.
+    static const char R415[] = "HTTP/1.1 415 Unsupported Media Type\r\nContent-Type: " WIRE_MIME
+                               "\r\nVary: Origin\r\nContent-Length: 5\r\nConnection: close\r\n\r\n";
+    T_CHECK(post_wire("application/json", body, sizeof body, &w) > 0);
+    T_CHECK(wire_is(&w, R415, "\0type", 5));
+    T_CHECK(post_wire(NULL, body, sizeof body, &w) > 0);
+    T_CHECK(wire_is(&w, R415, "\0type", 5));
+    static const char R400[] = "HTTP/1.1 400 Bad Request\r\nContent-Type: " WIRE_MIME
+                               "\r\nVary: Origin\r\nContent-Length: 6\r\nConnection: close\r\n\r\n";
+    body[2] = 'X';
+    T_CHECK(post_wire(WIRE_MIME, body, sizeof body, &w) > 0);
+    T_CHECK(wire_is(&w, R400, "\0bytes", 6));
+    T_CHECK(post_wire(WIRE_MIME, "", 0, &w) > 0);
+    T_CHECK(wire_is(&w, R400, "\0bytes", 6));
+    cb_buf_free(&w);
+}
+
 // ---- the test -----------------------------------------------------------------------------------
 
 static const char *g_self;
@@ -173,6 +243,7 @@ int main(int argc, char **argv) {
     g_port = (int)port;
 
     T_RUN(answers_any_status_type_body_and_headers);
+    T_RUN(gets_the_raw_body_and_its_type);
 
     T_EQ_INT(tp_stop(&c, SIGTERM, 30000), 0);
     return T_DONE();
