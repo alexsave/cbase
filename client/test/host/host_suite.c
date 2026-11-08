@@ -6,6 +6,7 @@
 
 #include "stream_frame.h"   // lib/: the server's frames are written and read with the wire's own code
 #include "le_bytes.h"
+#include "rng.h"            // lib/: the large body's bytes, from one named seed
 
 #include <stdio.h>
 #include <string.h>
@@ -14,7 +15,7 @@
 #define W_FRAMES  32
 #define W_FRAME   4096
 #define W_REQS    32
-#define W_BODY    2048
+#define W_BODY    (64 * 1024 + 1024)   // a borrowed 64 KB body, whole
 #define W_TIMERS  16
 #define W_EVENTS  64
 #define W_DATA    256
@@ -540,6 +541,82 @@ static void a_sign_out_closes_and_forgets(void) {
     kept(w);
 }
 
+// ---- a large body, borrowed (cbc_call_ref) ------------------------------------------------------
+#define BIG_N    (64 * 1024)
+#define BIG_SEED UINT64_C(0x5eed0b0d1e5)   // the body's bytes: change this one line to draw others
+static uint8_t g_big[BIG_N];
+static void big_fill(void) {
+    uint64_t s = BIG_SEED;
+    for (size_t i = 0; i < BIG_N; i += 8) {
+        uint64_t v = rng_splitmix64(&s);
+        for (int j = 0; j < 8; j++) g_big[i + (size_t)j] = (uint8_t)(v >> (8 * j));
+    }
+}
+// What the server received is the caller's 64 KB, byte for byte, with the head the core wrote.
+static void big_arrived(const w_req *r, const char *path) {
+    T_CHECK(r != NULL);
+    if (!r) return;
+    T_EQ_STR(r->method, "POST");
+    T_EQ_STR(r->path, path);
+    T_EQ_STR(r->auth, "Bearer TOK");
+    T_EQ_INT(r->body_len, BIG_N);
+    T_CHECK(r->body_len == BIG_N && memcmp(r->body, g_big, BIG_N) == 0);
+}
+
+static void a_64k_body_arrives_byte_for_byte_and_done_comes_once_after(void) {
+    cbhs_world *w = world();
+    big_fill();
+    cbc *c = signed_up(w, g_h, FAR);
+    uint32_t t = cbc_call_ref(c, CBC_POST, CBC_C_AUTH, "/notes/bulk", 11, g_big, BIG_N, cbhs_now(w));
+    T_CHECK(t != 0);
+    T_CHECK(event(w) == NULL);
+    pump(w);
+    T_EQ_INT(frame(w), 0);                         // over HTTP, never the socket
+    w_req *r = request(w);
+    big_arrived(r, "/notes/bulk");
+    T_CHECK(event(w) == NULL);                     // the bytes went out; no DONE before the answer
+    advance(w, g_cfg.call_wait_ms * 2);
+    T_CHECK(event(w) == NULL);
+    T_CHECK(request(w) == NULL);
+    if (r) answer(r, 200, "ok", 2);
+    const w_event *e = event(w);
+    T_CHECK(e && e->kind == CBC_EV_DONE && e->ticket == t && e->status == 200 && e->why == 0);
+    if (e) T_EQ_MEM(e->data, e->len, "ok", 2);
+    T_CHECK(event(w) == NULL);                     // exactly once
+    advance(w, 60000);
+    T_CHECK(event(w) == NULL);
+    T_CHECK(request(w) == NULL);
+    kept(w);
+}
+
+static void a_retried_borrowed_body_resends_the_same_bytes(void) {
+    cbhs_world *w = world();
+    big_fill();
+    cbc *c = signed_up(w, g_h, FAR);
+    uint32_t t = cbc_call_ref(c, CBC_POST, CBC_C_AUTH | CBC_C_READ, "/notes/bulk", 11, g_big, BIG_N, cbhs_now(w));
+    pump(w);
+    w_req *r = request(w);
+    big_arrived(r, "/notes/bulk");
+    if (r) answer(r, 0, NULL, 0);                  // lost: a read goes again after the wait
+    T_CHECK(event(w) == NULL);
+    T_CHECK(request(w) == NULL);
+    advance(w, g_cfg.retry_first_ms);
+    r = request(w);
+    big_arrived(r, "/notes/bulk");
+    if (r) answer(r, 503, NULL, 0);                // busy: once more after 250 ms
+    T_CHECK(event(w) == NULL);
+    advance(w, 250);
+    r = request(w);
+    big_arrived(r, "/notes/bulk");
+    T_CHECK(event(w) == NULL);
+    if (r) answer(r, 200, NULL, 0);
+    const w_event *e = event(w);
+    T_CHECK(e && e->kind == CBC_EV_DONE && e->ticket == t && e->status == 200);
+    T_CHECK(event(w) == NULL);
+    T_CHECK(request(w) == NULL);
+    kept(w);
+}
+
 static void an_anonymous_listener_opens_the_public_socket(void) {
     cbhs_world *w = world();
     g_cfg.anonymous = 1;
@@ -575,6 +652,8 @@ int cbhs_run(const cbhs_host *h) {
     T_RUN(a_refresh_rolls_the_socket_onto_the_new_token);
     T_RUN(a_sign_out_closes_and_forgets);
     T_RUN(an_anonymous_listener_opens_the_public_socket);
+    T_RUN(a_64k_body_arrives_byte_for_byte_and_done_comes_once_after);
+    T_RUN(a_retried_borrowed_body_resends_the_same_bytes);
     printf("host suite: %s\n", h->name);
     return T_DONE();
 }

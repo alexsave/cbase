@@ -7,7 +7,8 @@
 //            to io.ws_send (-1: io.ws_close); on its close (cbc_posix_ws_closed), cbc_closed, and
 //            the next open after the ms it answers (an io.timer)
 //   HTTP     each cbc_next_request to io.http (the path as the request target, "Bearer ..." as the
-//            Authorization value), answered by cbc_on_response (status 0: it never arrived)
+//            Authorization value), answered by cbc_on_response (status 0: it never arrived); a
+//            borrowed body (CBC_RQ_REF, cbc_call_ref) goes to io.http as the caller's own pointer
 //   timer    one io.timer after cbc_due_ms, calling cbc_tick, then drain both outputs again; at
 //            most one armed for the ticks and one for the reopen
 //   time     io.now, else clock_gettime(CLOCK_REALTIME): wall-clock epoch ms
@@ -44,7 +45,8 @@ typedef struct {
     void     (*ws_close)(void *ud, uint32_t id);
     // One HTTP request ("GET" or "POST"; auth NULL when none; a body of body_len bytes, sent as
     // application/octet-stream), answered once through done: the status (0: it never arrived)
-    // and the body.
+    // and the body. path, auth and body last only for this call (the io sends or copies them),
+    // except a borrowed body (cbc_call_ref's), which is the app's and lasts until done is called.
     void (*http)(void *ud, const char *method, const char *path, size_t path_len, const char *auth, size_t auth_len,
                  const uint8_t *body, size_t body_len, cbc_posix_done_fn done, void *ctx);
     // A one-shot timer: an id (> 0); stop cancels one that has not fired.
@@ -62,7 +64,8 @@ typedef struct {
 typedef void (*cbc_posix_event_fn)(void *ctx, cbc *c, const cbc_event *e, const uint8_t *bytes);
 
 #define CBC_POSIX_FRAME_CAP 8192    // a HELLO (a token) or a REQ (a path and an arena's body)
-#define CBC_POSIX_REQ_CAP   16384   // cbc_req_hdr, a path, "Bearer <jwt>", a body (an OIDC sign-in's)
+#define CBC_POSIX_REQ_CAP   16384   // cbc_req_hdr, a path, "Bearer <jwt>", a copied body (an OIDC
+                                    // sign-in's); a borrowed body is never here
 #define CBC_POSIX_SESS_CAP  4096    // the session's bytes: two tokens, a user id, a name
 #define CBC_POSIX_PEND_MAX  (CBC_CALLS_MAX + 2)   // every call over HTTP at once, and the refresh
 
