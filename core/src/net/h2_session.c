@@ -667,8 +667,7 @@ static bool may_open(const cb_h2_sess *s) {
 }
 
 static void open_waiting(cb_h2_sess *s, cb_buf *out) {
-    while (s->got_settings && s->wait_head && !s->goaway_recv && !s->goaway_sent &&
-           (uint32_t)s->n_open < s->peer[CB_H2_S_MAX_CONCURRENT_STREAMS]) {
+    while (may_open(s)) {
         cb_h2_stream *st = s->wait_head;
         if (s->next_id > 0x7fffffffu) {
             s->ids_out = true;

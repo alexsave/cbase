@@ -13,7 +13,9 @@
 //   /slow/<ms>            200 "slow" after ms
 //   /status/<code>        that status, body "status", no gRPC fields
 //   /reset                RST_STREAM (INTERNAL_ERROR)
+//   /refuse               RST_STREAM (REFUSED_STREAM), every time
 //   /refuse-once          the first request on the server: RST_STREAM (REFUSED_STREAM); later ones 200 "again"
+//   /goaway               GOAWAY below its stream, then the connection closes, every time
 //   /goaway-once          the first: GOAWAY below its stream, then the connection closes; later ones 200 "again"
 //   /close                the connection is closed under it
 //   /test.Echo/Echo       gRPC: the request message back, grpc-status 0
@@ -51,5 +53,6 @@ const char *h2srv_ca_file(const h2srv *s);   // the certificate as a PEM file (T
 int    h2srv_accepts(h2srv *s);              // connections taken
 int    h2srv_max_open(h2srv *s);             // the most streams open at once on one connection
 int    h2srv_requests(h2srv *s);
+int    h2srv_resets(h2srv *s);               // RST_STREAMs the client sent
 
 #endif

@@ -185,6 +185,10 @@ static void big_bodies(void) {
     T_EQ_INT(r.why, CB_H2_WHY_TOO_BIG);
     T_EQ_INT(get(ch, "/big/10", 5000, 100, &r), CB_OK);
     T_EQ_INT((int)r.body.len, 10);
+    T_EQ_INT(get(ch, "/big/100", 5000, 100, &r), CB_OK);   // the cap itself is allowed
+    T_EQ_INT((int)r.body.len, 100);
+    T_EQ_INT(get(ch, "/big/101", 5000, 100, &r), CB_E_IO);
+    T_EQ_INT(r.why, CB_H2_WHY_TOO_BIG);
     T_EQ_INT(cb_h2_channel_dials(ch), 1);
     cb_h2_response_free(&r);
     cb_h2_channel_free(ch);
@@ -203,14 +207,25 @@ static void failures(void) {
     T_EQ_INT(r.why, CB_H2_WHY_TIMEOUT);
     T_CHECK(strstr(r.err, "300 ms") != NULL);
     T_CHECK(cb_mono_ms() - t0 < 2500);
+    // The stream given up on is reset (CANCEL), so the server stops on it.
+    for (int i = 0; i < 300 && h2srv_resets(s) < 1; i++) sleep_ms(10);
+    T_EQ_INT(h2srv_resets(s), 1);
     T_EQ_INT(get(ch, "/status/200", 5000, 0, &r), CB_OK);
     T_EQ_INT(cb_h2_channel_dials(ch), 1);
-    // A reset.
+    // A reset: it may have been processed, so it is not sent again.
+    int before = h2srv_requests(s);
     T_EQ_INT(get(ch, "/reset", 5000, 0, &r), CB_E_IO);
     T_EQ_INT(r.why, CB_H2_WHY_RESET);
     T_EQ_INT(r.h2_code, CB_H2_INTERNAL_ERROR);
+    T_EQ_INT(h2srv_requests(s) - before, 1);
+    // Refused every time: sent twice, never a third time, and the refusal is the answer.
+    before = h2srv_requests(s);
+    T_EQ_INT(get(ch, "/refuse", 5000, 0, &r), CB_E_IO);
+    T_EQ_INT(r.why, CB_H2_WHY_RESET);
+    T_EQ_INT(r.h2_code, CB_H2_REFUSED_STREAM);
+    T_EQ_INT(h2srv_requests(s) - before, 2);
     // Refused once: sent again, and answered.
-    int before = h2srv_requests(s);
+    before = h2srv_requests(s);
     T_EQ_INT(get(ch, "/refuse-once", 5000, 0, &r), CB_OK);
     T_EQ_MEM(r.body.p, r.body.len, "again", 5);
     T_EQ_INT(h2srv_requests(s) - before, 2);
@@ -222,9 +237,18 @@ static void failures(void) {
     // The connection drops under a call: no retry (it may have been processed),
     // and the next call dials again.
     dials = cb_h2_channel_dials(ch);
+    before = h2srv_requests(s);
     T_EQ_INT(get(ch, "/close", 5000, 0, &r), CB_E_IO);
     T_EQ_INT(r.why, CB_H2_WHY_PROTOCOL);
+    T_EQ_INT(h2srv_requests(s) - before, 1);
     T_EQ_INT(get(ch, "/status/200", 5000, 0, &r), CB_OK);
+    T_EQ_INT(cb_h2_channel_dials(ch), dials + 1);
+    // Going away every time: sent again on a fresh connection, never a third time.
+    dials = cb_h2_channel_dials(ch);
+    before = h2srv_requests(s);
+    T_EQ_INT(get(ch, "/goaway", 5000, 0, &r), CB_E_IO);
+    T_EQ_INT(r.why, CB_H2_WHY_GOAWAY);
+    T_EQ_INT(h2srv_requests(s) - before, 2);
     T_EQ_INT(cb_h2_channel_dials(ch), dials + 1);
     // A field HTTP/2 refuses never leaves.
     cb_h2_field bad = { "Upper", "x", 5, 1, false };
@@ -249,6 +273,19 @@ static void idle_close(void) {
     sleep_ms(600);
     T_EQ_INT(get(ch, "/status/200", 5000, 0, &r), CB_OK);
     T_EQ_INT(cb_h2_channel_dials(ch), 2);
+    cb_h2_response_free(&r);
+    cb_h2_channel_free(ch);
+
+    // The idle clock restarts after each call: three gaps of 600 ms under a
+    // 1500 ms idle close keep one connection, though together they pass it.
+    o.idle_close_ms = 1500;
+    ch = channel(s, &o);
+    for (int i = 0; i < 3; i++) {
+        T_EQ_INT(get(ch, "/slow/20", 5000, 0, &r), CB_OK);
+        sleep_ms(600);
+    }
+    T_EQ_INT(get(ch, "/status/200", 5000, 0, &r), CB_OK);
+    T_EQ_INT(cb_h2_channel_dials(ch), 1);
     cb_h2_response_free(&r);
     cb_h2_channel_free(ch);
     h2srv_stop(s);

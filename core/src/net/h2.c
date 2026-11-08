@@ -272,7 +272,7 @@ static void *io_main(void *arg) {
             if (!c->idle_since) c->idle_since = now;
             int64_t idle_left = c->idle_since + ch->o.idle_close_ms - now;
             if (idle_left <= 0 && cb_h2_sess_accepting(c->sess)) {
-                if (ch->cur == c) ch->cur = NULL;   // no new call comes here
+                // No new call comes here: get_conn takes only an accepting session.
                 cb_h2_sess_goaway(c->sess);
                 continue;
             }
@@ -659,8 +659,10 @@ int cb_h2_request(cb_h2_channel *ch, const char *method, const char *path, const
             break;
         }
         if (k.end.ok) { rc = CB_OK; break; }
-        // Never processed by the peer: once more, on a fresh connection.
-        if (k.end.unprocessed && attempt == 0 && left_ms(deadline) && !ch->closing) {
+        // Never processed by the peer: once more, on a connection that takes it
+        // (the same one after a REFUSED_STREAM, a fresh one after a GOAWAY). A
+        // closing channel needs no test here: get_conn refuses it first.
+        if (k.end.unprocessed && attempt == 0 && left_ms(deadline)) {
             response_reset(out);
             continue;
         }

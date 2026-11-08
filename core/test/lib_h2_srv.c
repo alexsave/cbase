@@ -44,7 +44,7 @@ struct h2srv {
     char            ca_file[256];
     SSL_CTX        *ctx;
     pthread_t       acceptor;
-    atomic_int      stop, accepts, requests, max_open, refused_once, goaway_once;
+    atomic_int      stop, accepts, requests, resets, max_open, refused_once, goaway_once;
     pthread_mutex_t mu;      // the threads' count and the connection list
     pthread_cond_t  cv;
     int             threads;
@@ -236,11 +236,14 @@ static void *respond(void *arg) {
     } else if (strcmp(path, "/reset") == 0) {
         cb_h2_frame_u32(&block, CB_H2_RST_STREAM, j->id, CB_H2_INTERNAL_ERROR);
         send_buf(c, &block);
+    } else if (strcmp(path, "/refuse") == 0) {
+        cb_h2_frame_u32(&block, CB_H2_RST_STREAM, j->id, CB_H2_REFUSED_STREAM);
+        send_buf(c, &block);
     } else if (strcmp(path, "/refuse-once") == 0 && atomic_fetch_add(&s->refused_once, 1) == 0) {
         cb_h2_frame_u32(&block, CB_H2_RST_STREAM, j->id, CB_H2_REFUSED_STREAM);
         send_buf(c, &block);
-    } else if (strcmp(path, "/goaway-once") == 0 && atomic_fetch_add(&s->goaway_once, 1) == 0) {
-        cb_h2_frame_goaway(&block, j->id - 2, CB_H2_NO_ERROR);
+    } else if (strcmp(path, "/goaway") == 0 || (strcmp(path, "/goaway-once") == 0 && atomic_fetch_add(&s->goaway_once, 1) == 0)) {
+        cb_h2_frame_goaway(&block, j->id > 2 ? j->id - 2 : 0, CB_H2_NO_ERROR);   // below it (stream 1: none)
         send_buf(c, &block);
         shutdown(c->fd, SHUT_RDWR);
         c->dead = true;
@@ -444,6 +447,7 @@ static void *reader(void *arg) {
                 send_buf(c, &out);
             } else if (f.type == CB_H2_RST_STREAM) {
                 sstream *st = find(c, f.stream);
+                atomic_fetch_add(&s->resets, 1);
                 if (st) { st->reset = true; pthread_cond_broadcast(&c->wcv); }
             } else if (f.type == CB_H2_HEADERS || f.type == CB_H2_CONTINUATION) {
                 if (f.type == CB_H2_HEADERS) {
@@ -653,3 +657,4 @@ const char *h2srv_ca_file(const h2srv *s) { return s->ca_file; }
 int h2srv_accepts(h2srv *s) { return atomic_load(&s->accepts); }
 int h2srv_max_open(h2srv *s) { return atomic_load(&s->max_open); }
 int h2srv_requests(h2srv *s) { return atomic_load(&s->requests); }
+int h2srv_resets(h2srv *s) { return atomic_load(&s->resets); }

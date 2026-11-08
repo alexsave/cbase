@@ -12,8 +12,9 @@
 // touches its socket and TLS state; callers hand it requests through the
 // session (h2_session.h) under the channel's lock and sleep on their own
 // condition variable. A request the peer provably never processed (REFUSED_STREAM, a
-// GOAWAY below it, or never sent) is sent once more on a fresh connection,
-// within the same deadline; nothing else is retried.
+// GOAWAY below it, or never sent) is sent once more, within the same deadline,
+// on whichever connection takes new calls then (the same one after a
+// REFUSED_STREAM, a fresh one after a GOAWAY); nothing else is retried.
 //
 // The request body is sent from the caller's buffers (no copy beyond one frame
 // at a time) and the response body arrives into one buffer.
