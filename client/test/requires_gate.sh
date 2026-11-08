@@ -34,7 +34,9 @@ while [ $# -gt 0 ]; do
     *) break ;;
   esac
 done
-[ -n "$CC" ] && [ -n "$LINK" ] && [ -n "$REQ" ] && [ -n "$HDR" ] || { echo "requires_gate: --cc, --link, --requires and --header are required" >&2; exit 2; }
+if [ -z "$CC" ] || [ -z "$LINK" ] || [ -z "$REQ" ] || [ -z "$HDR" ]; then
+    echo "requires_gate: --cc, --link, --requires and --header are required" >&2; exit 2
+fi
 [ $# -gt 0 ] || { echo "requires_gate: no objects given" >&2; exit 2; }
 T="$(mktemp -d)"
 trap 'rm -rf "$T"' EXIT

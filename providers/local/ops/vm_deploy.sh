@@ -62,7 +62,9 @@ esac
 require_main "$repo"
 public_url="${CBASE_PUBLIC_URL:-}"
 origin_domain="${CBASE_VM_ORIGIN_DOMAIN:-}"
-[ -n "$public_url" ] && [ -n "$origin_domain" ] || die "set CBASE_PUBLIC_URL and CBASE_VM_ORIGIN_DOMAIN (the product's instance of the stack)"
+if [ -z "$public_url" ] || [ -z "$origin_domain" ]; then
+    die "set CBASE_PUBLIC_URL and CBASE_VM_ORIGIN_DOMAIN (the product's instance of the stack)"
+fi
 # shellcheck source=providers/local/ops/vm_boot_lib.sh
 . "$ops/vm_boot_lib.sh"   # sha256, boot_assemble, boot_key, stub_build
 for tool in aws openssl base64 curl; do command -v "$tool" >/dev/null || die "$tool is not installed"; done

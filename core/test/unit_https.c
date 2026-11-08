@@ -377,6 +377,27 @@ static void times_out(void) {
     tls_srv_stop(&s);
 }
 
+// With no file given, OpenSSL's own bundle ($SSL_CERT_FILE here) is the one used, ahead of the
+// fixed list of system files (tls.h): on a Mac that list's /etc/ssl/cert.pem is Apple's lagging
+// copy, which could not verify example.com on CI's runner while Homebrew's bundle could.
+static void openssl_bundle_before_the_system_list(void) {
+    tls_srv s;
+    T_EQ_INT(tls_srv_start(&s, answer, "keep"), 0);
+    const char *had = getenv("CBASE_CA_FILE");
+    char *saved = had ? strdup(had) : NULL;
+    unsetenv("CBASE_CA_FILE");
+    setenv("SSL_CERT_FILE", s.ca_file, 1);
+    T_EQ_INT(cb_https_set_ca_file(NULL), CB_OK);
+    cb_https_response r;
+    T_EQ_INT(cb_https_request("localhost", s.port, "GET", "/x", NULL, NULL, 0, 3000, &r), CB_OK);
+    T_EQ_INT(r.status, 200);
+    cb_https_response_free(&r);
+    unsetenv("SSL_CERT_FILE");
+    if (saved) { setenv("CBASE_CA_FILE", saved, 1); free(saved); }
+    T_EQ_INT(cb_https_set_ca_file(NULL), CB_OK);
+    tls_srv_stop(&s);
+}
+
 // ---- the real internet, when there is one ---------------------------------------
 
 static bool online(void) {
@@ -409,6 +430,7 @@ int main(void) {
     T_RUN(timeouts_follow_the_deadline);
     T_RUN(times_out_on_a_pooled_connection);
     T_RUN(handshake_times_out);
+    T_RUN(openssl_bundle_before_the_system_list);
     T_RUN(example_com);
     return T_DONE();
 }
