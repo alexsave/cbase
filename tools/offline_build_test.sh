@@ -126,6 +126,11 @@ if [ "$CHECK" = 1 ]; then
     # The failed tests' lines, or the end of the log when it stopped before a test (a compile).
     grep -E '^(FAIL|FAILED)|FAILED$|\.[ch]:[0-9]+:[0-9]+: error:' "$tmp/check.log" > "$tmp/check.fail" || true
     if [ -s "$tmp/check.fail" ]; then head -40 "$tmp/check.fail"; else tail -40 "$tmp/check.log"; fi
+    # Each failed program's own log (RUN_ALL's build/logs/<command>.log): its warnings say why.
+    sed -n 's/^FAILED: //p' "$tmp/check.log" | while IFS= read -r c; do
+      l="$tmp/cbase/example/build/logs/$(printf '%s' "$c" | tr ' /=' '___').log"
+      if [ -f "$l" ]; then echo "--- the end of $c's log:"; tail -40 "$l"; fi
+    done
     fail "the local-only example's make check failed in a tree without providers/aws/ or ops/ (the failures above)"
   fi
   echo "ok   offline build: make -C example check passed in that tree ($(grep -c '^ok ' "$tmp/check.log") ok lines)"
