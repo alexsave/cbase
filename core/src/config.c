@@ -317,15 +317,15 @@ int cb_config_check_secrets(const cb_config *c, bool lambda, char *err, size_t c
     return check_lengths(c, err, cap);
 }
 
-int cb_config_check_serve(const cb_config *c, char *err, size_t cap) {
-    int rc = cb_config_check_secrets(c, false, err, cap);
+int cb_config_check_serve(const cb_config *c, bool storeless, char *err, size_t cap) {
+    int rc = storeless ? check_lengths(c, err, cap) : cb_config_check_secrets(c, false, err, cap);
     if (rc != CB_OK) return rc;
     // Only a CPU given by number is refused where threads cannot be pinned; auto pins nothing there.
     if ((c->loop_cpu >= 0 || c->bg_cpu >= 0) && !cb_affinity_supported()) {
         snprintf(err, cap, "CBASE_LOOP_CPU and CBASE_BG_CPU pin threads, which needs Linux");
         return CB_E_INVALID;
     }
-    if (c->dev) return rc;
+    if (c->dev || (storeless && !c->public_url_given)) return rc;
     if (!c->public_url_given) {
         snprintf(err, cap, "no CBASE_PUBLIC_URL: it is the token issuer, and the default (http://%s:%d) is no one's address "
                  "(CBASE_DEV=1 allows it)", c->listen_host, c->listen_port);

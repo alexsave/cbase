@@ -110,6 +110,15 @@ struct cb_app {
     int                  n_cached_paths;
     // Its rows and its part of an account, on every store (store/store.h).
     const struct cb_store_app *store;
+    // STORELESS: the app keeps its data itself (its own database files, opened in serve_open) and
+    // needs no platform store. Boot then opens none: no store, no schema, no database file and no
+    // instance lock beside one. What lives in the platform's store is off: accounts (the auth routes
+    // answer 503), the console's store views (503), /ready says store=none. An app that is storeless
+    // and still asks for one of those (store rows, an account domain, delete_account) is refused at
+    // boot, with a sentence, as is CBASE_STORE or Sign in with Apple configured for it. Serve wants
+    // neither CBASE_JWT_SECRET nor CBASE_PUBLIC_URL for it (config.h cb_config_check_serve). false (the
+    // default): the provider's store is opened, as for every app before this field.
+    bool                 storeless;
     // Delete-account (docs/PLATFORM.md 2.5): the one implementation, which
     // the console's users/delete runs. CB_OK; a refusal's kernel code and
     // detail in *code and *detail. NULL: accounts are not deleted.
@@ -126,7 +135,8 @@ struct cb_app {
     // Under a provider that is the one process on its store (CB_PROV_ONE_PROCESS):
     // called once the store is open and before anything is served (a product recovers
     // a write-behind journal here), and once nothing runs any more, before the store
-    // closes. NULL: none.
+    // closes. A storeless app's are called at the same two points (it opens its own
+    // database here). NULL: none.
     int (*serve_open)(cb_ctx *ctx, char *err, size_t cap);
     void (*serve_close)(cb_ctx *ctx);
     // What the app counts (metrics.h): one row per metric, by name and kind; the platform keeps

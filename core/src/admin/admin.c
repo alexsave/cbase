@@ -264,7 +264,7 @@ static void api_overview(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) 
         o.ws_conns = atomic_load_explicit(&ctx->stats.ws_conns, memory_order_relaxed);
     }
     // The app's one counter line, under its own label (cbase/app.h admin_count).
-    o.app_count = ctx->app && ctx->app->admin_count && ctx->store ? ctx->app->admin_count(ctx, now) : -1;
+    o.app_count = ctx->app && ctx->app->admin_count && (ctx->store || ctx->app->storeless) ? ctx->app->admin_count(ctx, now) : -1;
     o.app_count_label = ctx->app && ctx->app->admin_count ? ctx->app->admin_count_label : NULL;
     // DynamoDB throttling (store.h cb_store_throttles_get): this process's
     // throttled responses, and the requests that failed still throttled.

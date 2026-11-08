@@ -166,7 +166,13 @@ int cb_config_check_secrets(const cb_config *cfg, bool lambda, char *err, size_t
 // (the JWT secret given unless CBASE_DEV=1) and, outside dev mode, an explicit
 // CBASE_PUBLIC_URL that does not name 0.0.0.0. CB_OK, or CB_E_INVALID with a
 // sentence in err.
-int cb_config_check_serve(const cb_config *cfg, char *err, size_t cap);
+//
+// A STORELESS app (cbase/app.h storeless) has no accounts, so nothing signs or verifies a token:
+// its JWT secret need not be given (one that is, is not used; boot says so), and nor need the
+// public URL, the token issuer, whose one other reader is the console's overview, which then shows
+// the default. Every other rule stands: a secret that is set is still held to its length, a public
+// URL that is given still may not name the wildcard address, and the CPU knob's rule is unchanged.
+int cb_config_check_serve(const cb_config *cfg, bool storeless, char *err, size_t cap);
 
 // A timer of the platform's own (a schedule's period under serve) as this
 // process runs it: divided by CBASE_CLOCK_SPEEDUP, rounded up so never 0.

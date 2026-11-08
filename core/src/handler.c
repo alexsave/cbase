@@ -96,6 +96,12 @@ static void h_health(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
 static void h_ready(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     (void)req;
     char b[256];
+    if (!ctx->store && ctx->app && ctx->app->storeless) {   // nothing of the platform's to wait for
+        snprintf(b, sizeof b, "ready cbase %s mode=%s store=none\n", ctx->version, ctx->prov ? ctx->prov->mode : "none");
+        cb_res_text(res, 200, b);
+        cb_res_header(res, "Cache-Control", "no-store");
+        return;
+    }
     int rc = ctx->store ? CB_OK : CB_E_NOTIMPL;
     if (ctx->store) {
         rc = ctx->store->ops->ready ? ctx->store->ops->ready(ctx->store) : CB_E_NOTIMPL;

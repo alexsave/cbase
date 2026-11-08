@@ -32,6 +32,7 @@ typedef struct cb_ctx    cb_ctx;
 typedef struct cb_app    cb_app;      // cbase/app.h
 typedef struct cb_metrics cb_metrics; // metrics.h
 typedef struct cb_provider cb_provider;   // cbase/provider.h
+typedef struct cb_spawner cb_spawner; // spawn.h          (serve only)
 
 // How a job is started (jobs.h): the app's job `job` for `key`, run
 // elsewhere and not waited for. serve: the job pool (provider_local.c).
@@ -78,6 +79,9 @@ struct cb_ctx {
     // The app's metrics registry (metrics.h), from cb_app.metrics; NULL when it declares none.
     // Last, after stats: nothing before it moved when it was added.
     cb_metrics *metrics;
+    // Child processes on the loop (spawn.h): serve only, NULL where no loop runs. Its children end
+    // when serve does (cb_spawner_stop, after the loop returns).
+    cb_spawner *spawner;
 };
 
 #define CB_VERSION "0.1.0"

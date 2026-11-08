@@ -405,6 +405,11 @@ void cb_backup_serve_start(cb_ctx *ctx) {
     cb_blob blob;
     char key[256];
     int64_t iv;
+    if (!ctx->store) {   // a storeless app (cbase/app.h): there is no database of the platform's to back up
+        const char *bucket = getenv("CBASE_BACKUP_BUCKET");
+        if (bucket && *bucket) CB_WARN(MOD, "CBASE_BACKUP_BUCKET is set, and the app keeps no platform store: nothing is backed up");
+        return;
+    }
     if (env_blob(&blob, key, sizeof key, &iv) != CB_OK) return;
     (void)cb_backup_push_pre_upgrade(&blob, key, ctx->cfg->db_path);
     if (cb_backup_start(ctx, &blob, key, iv)) CB_INFO(MOD, "backing up to %s every %lld s when the database changed", key, (long long)(iv / 1000));

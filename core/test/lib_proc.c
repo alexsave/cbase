@@ -90,6 +90,27 @@ static void *pump_run(void *arg) {
     return NULL;
 }
 
+int tp_gone(int pid, int timeout_ms) {
+    int64_t end = cb_mono_ms() + timeout_ms;
+    for (;;) {
+        if (kill(pid, 0) != 0 && errno == ESRCH) return 1;
+#ifdef __linux__
+        char path[64], buf[256];
+        snprintf(path, sizeof path, "/proc/%d/stat", pid);
+        FILE *f = fopen(path, "r");
+        if (f) {
+            size_t n = fread(buf, 1, sizeof buf - 1, f);
+            fclose(f);
+            buf[n] = 0;
+            const char *rp = strrchr(buf, ')');   // "pid (comm) S ...": the state after the name
+            if (rp && rp[1] == ' ' && rp[2] == 'Z') return 1;
+        }
+#endif
+        if (cb_mono_ms() > end) return 0;
+        usleep(10000);
+    }
+}
+
 int tp_tempdir(char *out, size_t cap) {
     const char *base = getenv("TMPDIR");
     snprintf(out, cap, "%s/cbase-test-XXXXXX", base && *base ? base : "/tmp");
