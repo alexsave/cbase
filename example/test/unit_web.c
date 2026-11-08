@@ -383,8 +383,29 @@ static int read_response(int fd, bool head, tc_response *r, cb_buf *in) {
     }
 }
 
+#ifndef __APPLE__
+// The server's own resident high-water mark (its mm's VmHWM), in bytes, or -1.
+static long long server_hwm(void) {
+    long long kb = -1;
+    char path[64], line[256];
+    snprintf(path, sizeof path, "/proc/%d/status", (int)g_child.pid);
+    FILE *st = fopen(path, "r");
+    while (st && fgets(line, sizeof line, st))
+        if (strncmp(line, "VmHWM:", 6) == 0) kb = strtoll(line + 6, NULL, 10);
+    if (st) fclose(st);
+    return kb < 0 ? -1 : kb * 1024;
+}
+#endif
+
 static void streams_large_files_and_head(void) {
     T_EQ_INT(start_web(), 0);
+#ifndef __APPLE__
+    tc_response warm;
+    T_EQ_INT(req("GET", "/assets/app.js", NULL, NULL, 0, &warm), 200);   // its buffers in use once
+    tc_response_free(&warm);
+    const long long base = server_hwm();
+    T_CHECK(base > 0);
+#endif
     uint8_t *w = pattern(WASM_SIZE, 1), *b = pattern(BIG_SIZE, 2);
     tc_response r;
     T_EQ_INT(req("GET", "/assets/app.wasm", NULL, NULL, 0, &r), 200);
@@ -450,22 +471,18 @@ static void streams_large_files_and_head(void) {
     // The largest child so far, every test's server among them (macOS counts each from its exec).
     struct rusage ru;
     T_EQ_INT(getrusage(RUSAGE_CHILDREN, &ru), 0);
-    const long long peak = (long long)ru.ru_maxrss;   // bytes
+    const long long grew = (long long)ru.ru_maxrss;   // bytes, from nothing
 #else
     // Linux carries a parent's high-water mark into its children's rusage across fork and exec,
-    // and this test's own buffers are larger than the file: the server's own mm (VmHWM) instead.
-    long long peak = -1;
-    char path[64], line[256];
-    snprintf(path, sizeof path, "/proc/%d/status", (int)g_child.pid);
-    FILE *st = fopen(path, "r");
-    while (st && fgets(line, sizeof line, st))
-        if (strncmp(line, "VmHWM:", 6) == 0) peak = strtoll(line + 6, NULL, 10) * 1024;   // kB
-    if (st) fclose(st);
+    // and this test's own buffers are larger than the file: the server's own mm (VmHWM) instead,
+    // as growth past what it held before the files, so a sanitizer's own memory is not counted.
+    const long long peak = server_hwm();
     T_CHECK(peak > 0);
+    const long long grew = peak - base;
     T_EQ_INT(stop(SIGTERM), 0);
 #endif
-    fprintf(stderr, "     the server's resident peak: %lld KB\n", peak / 1024);
-    T_CHECK(peak < (long long)BIG_SIZE / 2);
+    fprintf(stderr, "     the server's resident growth: %lld KB\n", grew / 1024);
+    T_CHECK(grew < (long long)BIG_SIZE / 2);
 }
 
 // A rebuild on disk is what the next request gets: nothing is cached.
