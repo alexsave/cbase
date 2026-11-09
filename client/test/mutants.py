@@ -33,6 +33,7 @@ C = [
   ('src/client.c', 'HELLO waits forever', '    if (c->sock == SOCK_HELLO) return now - c->hello_at >= (int64_t)c->cfg.ack_wait_ms ? close_now(c) : 0;', '    if (c->sock == SOCK_HELLO) return 0;'),
   ('src/client.c', 'arena offsets not moved', '            c->calls[i].at_arena = (uint16_t)(c->calls[i].at_arena - n);', '            ;'),
   ('src/client.c', 'due_ms forgets the PING', '        earliest(&t, c->ping_at ? c->ping_at + (int64_t)c->cfg.pong_ms : c->last_out + (int64_t)c->cfg.ping_ms);', ''),
+  ('src/client.c', 'a non-2xx body not the app\'s', '    call_done(c, k, status, why, code, detail, 0, (uint32_t)len);\n    return c->n_events;\n}', '    call_done(c, k, status, why, code, detail, 0, 0);\n    return c->n_events;\n}'),
   ('src/client.c', 'push span short', '        if (e) { e->push = p[1]; e->off = 0; e->len = (uint32_t)n; }', '        if (e) { e->push = p[1]; e->off = 0; e->len = (uint32_t)n - 1; }'),
   ('src/client.c', 'no bearer over HTTP', '    int auth = c->user.signed_in && best->kind != K_SIGN;', '    int auth = 0;'),
   ('src/client.c', 'refresh not first', '    if (refresh_sendable(c, now)) {', '    if (0 && refresh_sendable(c, now)) {'),
@@ -64,6 +65,7 @@ HOST = [
   (HC, 'a close before the open is no failure', '    gone(h, h->open ? 0 : CBC_SOCK_FAILED);', '    gone(h, 0);'),
   (HC, 'the failure\'s why not passed on', '    gone(h, h->open ? 0 : why);', '    gone(h, h->open ? 0 : ((void)why, CBC_SOCK_FAILED));'),
   (HC, 'the close after a failure heard again', '    if (!h->has_sock || id != h->sock) return;\n    gone(h, h->open ? 0 : CBC_SOCK_FAILED);', '    if (id != h->sock) return;\n    gone(h, h->open ? 0 : CBC_SOCK_FAILED);'),
+  (HC, 'a non-2xx body kept from the app', '    events(h, body);\n', '    events(h, status >= 200 && status < 300 ? body : NULL);\n'),
   (HC, 'a borrowed body sent from the head buffer', '    rq.body = r.flags & CBC_RQ_REF ? cbc_req_body(&h->c, r.id) : ', '    rq.body = '),
 ]
 # The page shim: applied to the copy the TS tests import (build/ts/socket.ts).
@@ -74,5 +76,6 @@ TS = [
   ('build/ts/socket.ts', 'no refusal body handed in', 'if ((wantBody || !ok) && buf.byteLength <= this.ioCap) {', 'if (wantBody && buf.byteLength <= this.ioCap) {'),
   ('build/ts/socket.ts', 'frames not sent', 'if (this.ws && this.ws.readyState === 1) this.ws.send(this.copyIo(0, n));', ';'),
   ('build/ts/socket.ts', 'no close on -1', '        if (ws) ws.close();\n        this.socketClosed();', '        this.ws = ws;'),
+  ('build/ts/socket.ts', 'a non-2xx body not on the CbError', 'e.detail, bytes!));', 'e.detail));'),
   ('build/ts/socket.ts', 'no HTTP deadline', "cache: 'no-store', signal })", "cache: 'no-store' })"),
 ]

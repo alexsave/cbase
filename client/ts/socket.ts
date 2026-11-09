@@ -93,20 +93,24 @@ export interface CbOptions {
   seed?: bigint;
 }
 
-// A call that finished without its answer: the HTTP status (0: it never arrived), and the
-// refusal's why, code and detail (auth_wire.h CBW_WHY_*, or CBC_WHY_LOST).
+// A call that finished without its answer: the HTTP status (0: it never arrived), the refusal's
+// why, code and detail (auth_wire.h CBW_WHY_*, or CBC_WHY_LOST), and the body the server sent with
+// that status, as cbase/client.h's DONE span holds it (a handler's own text for a 400; empty for
+// status 0 and for a call the client refused before sending).
 export class CbError extends Error {
   readonly status: number;
   readonly why: number;
   readonly code: number;
   readonly detail: number;
-  constructor(status: number, why: number, code: number, detail: number) {
+  readonly body: ArrayBuffer;
+  constructor(status: number, why: number, code: number, detail: number, body: ArrayBuffer = new ArrayBuffer(0)) {
     super(`cbase call failed: status ${status}, why ${why}${code ? `, code ${code}` : ''}`);
     this.name = 'CbError';
     this.status = status;
     this.why = why;
     this.code = code;
     this.detail = detail;
+    this.body = body;
   }
 }
 
@@ -373,7 +377,7 @@ export class CbClient {
           this.waiting.delete(e.ticket >>> 0);
           if (!w) break;
           if (e.why === 0) w.resolve(bytes!);
-          else w.reject(new CbError(e.status, e.why, e.code, e.detail));
+          else w.reject(new CbError(e.status, e.why, e.code, e.detail, bytes!));
           break;
         }
         case CBC_EV_SESSION:

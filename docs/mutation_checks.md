@@ -1374,3 +1374,13 @@ Each mutant was made in example/minimal, its build/ deleted, and the file restor
 
 - Makefile: `APP_WASM_SEPARATE := 1` added (the module kept apart) -> `GET / bundles no module, or not build/page/page.wasm (magic '')` red.
 - server/minimal.c: the `/page.wasm` route put back -> `GET /page.wasm answered 200, not 404` red.
+
+## A non-2xx answer's body is the app's (page-on-server)
+
+client.h now says what a DONE's span holds on a non-2xx answer: the server's error body, read as a 2xx's is.
+The host suite's a_non_2xx_answer_hands_the_app_its_body answers an anonymous call 400 "bad name\n" and reads the DONE's span, on every host the suite runs on; socket.test.ts reads a 400's text off the CbError.
+Each mutant was made in place, its object deleted (or build/ts/socket.ts edited), and the file restored from a copy.
+
+- client.c: cbc_on_response's last call_done gives a span of 0 bytes -> `e->data == "bad name\n"` red (unit_host_posix); a row in client/test/mutants.py (C).
+- cbc_host.c: cbc_host_http_answered hands the app NULL bytes for a non-2xx -> the same assertion red; a row in client/test/mutants.py (HOST).
+- socket.ts: the DONE's bytes left off the CbError -> `a refusal is a CbError with its body` red at the 400's body; a row in client/test/mutants.py (TS).
