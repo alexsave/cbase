@@ -1,0 +1,207 @@
+# shellcheck shell=bash
+# state.sh - who is in a group: the state file (README.md "./cbase deploy tool"). Sourced by
+# tools/cbase.
+#
+# WHERE: s3://cbase-state-<account>/vm/<group>.txt and s3://cbase-state-<account>/static/<group>.txt.
+# Tags find a group (aws.sh aws_group_find); its state file alone says who is in it.
+#
+# THE FORMAT, plain text, one line per member, sorted by app, written whole by this file alone:
+#   cbase-state 1 vm <group>
+#   app=<name> port=<port> service=cbase-<name>.service mem=<MiB>
+# and for a static group
+#   cbase-state 1 static <group>
+#   app=<name> folder=<name>/
+# The first line names the format's version, the kind and the group, and must match the file's
+# key. Every field is present, in this order, separated by one blank. A line that is not so, a
+# second line for an app, and (vm) a port two apps hold or one outside the range stop the tool,
+# naming the file and the line.
+#
+# THE WRITE is S3's conditional PUT: If-Match with the ETag the read returned, or If-None-Match: *
+# when there was no file. A precondition failure (412, or 409 for a write in flight) means another
+# run wrote first: the file is read again and the change made again on what it now holds, up to
+# STATE_ATTEMPTS times. A join keeps an app's port when it is already a member; a new member
+# claims the lowest port in STATE_PORT_MIN..STATE_PORT_MAX that no member holds, in the same write
+# that records it, so two racing joins can never hold one port.
+#
+# THE BACKOFF between attempts is deterministic, not random: there is no sanctioned seedable
+# source in shell (cbase's is lib/rng.h, in C), and $RANDOM is not one. Attempt k waits
+# min(2000, 100 * 2^(k-1)) ms plus a stagger of 0-99 ms that is the app's name's cksum mod 100,
+# so two apps racing for one file do not retry in step, and the same run always waits the same.
+# A conditional write always lets one writer through, so every attempt that loses is lost to a
+# write that won: the retries are bounded by the number of racing writers.
+
+STATE_VERSION=1
+STATE_PORT_MIN=8700
+STATE_PORT_MAX=8799
+STATE_ATTEMPTS=8
+
+# The state file as read: its members' lines and their apps, ports and the line numbers.
+ST_LINES=()
+ST_APPS=()
+ST_PORTS=()   # vm groups: each member's port
+
+state_bucket() { printf 'cbase-state-%s' "$AWS_ACCOUNT"; }
+state_key() { printf '%s/%s.txt' "$1" "$2"; }
+
+# state_parse KIND GROUP FILE WHERE: ST_* from FILE (WHERE names it in errors).
+state_parse() {
+  local kind="$1" group="$2" file="$3" where="$4" line no=0 app port i
+  ST_LINES=()
+  ST_APPS=()
+  ST_PORTS=()
+  while IFS= read -r line || [ -n "$line" ]; do
+    no=$((no + 1))
+    if [ "$no" -eq 1 ]; then
+      [ "$line" = "cbase-state $STATE_VERSION $kind $group" ] \
+        || state_die "$where" "$no" "is not \"cbase-state $STATE_VERSION $kind $group\" (the format's version, the kind and the group)"
+      continue
+    fi
+    if [ "$kind" = vm ]; then
+      [[ "$line" =~ ^app=([a-z]([a-z0-9-]{0,30}[a-z0-9])?)\ port=([0-9]{4,5})\ service=([a-z0-9-]+)\.service\ mem=([0-9]{1,6})$ ]] \
+        || state_die "$where" "$no" "is not \"app=<name> port=<port> service=cbase-<name>.service mem=<MiB>\""
+      app="${BASH_REMATCH[1]}"
+      port="$((10#${BASH_REMATCH[3]}))"
+      [ "${BASH_REMATCH[4]}" = "cbase-$app" ] || state_die "$where" "$no" "names service ${BASH_REMATCH[4]}.service for app $app (it is cbase-$app.service)"
+      { [ "$port" -ge "$STATE_PORT_MIN" ] && [ "$port" -le "$STATE_PORT_MAX" ]; } \
+        || state_die "$where" "$no" "holds port $port, outside $STATE_PORT_MIN-$STATE_PORT_MAX"
+      for i in "${!ST_PORTS[@]}"; do
+        [ "${ST_PORTS[$i]}" != "$port" ] || state_die "$where" "$no" "gives port $port to $app, and ${ST_APPS[$i]} holds it"
+      done
+    else
+      [[ "$line" =~ ^app=([a-z]([a-z0-9-]{0,30}[a-z0-9])?)\ folder=([a-z0-9-]+)/$ ]] \
+        || state_die "$where" "$no" "is not \"app=<name> folder=<name>/\""
+      app="${BASH_REMATCH[1]}"
+      port=""
+      [ "${BASH_REMATCH[3]}" = "$app" ] || state_die "$where" "$no" "gives app $app the folder ${BASH_REMATCH[3]}/ (it is $app/)"
+    fi
+    for i in "${!ST_APPS[@]}"; do
+      [ "${ST_APPS[$i]}" != "$app" ] || state_die "$where" "$no" "lists $app again"
+    done
+    ST_LINES+=("$line")
+    ST_APPS+=("$app")
+    ST_PORTS+=("$port")
+  done < "$file"
+  [ "$no" -ge 1 ] || state_die "$where" 1 "is empty (it starts \"cbase-state $STATE_VERSION $kind $group\")"
+}
+
+state_die() {
+  echo "cbase: state file $1 line $2 $3. It is written by ./cbase alone; fix or restore it by hand only with care." >&2
+  exit 1
+}
+
+# state_render KIND GROUP FILE: the header and ST_LINES sorted by app, into FILE.
+state_render() {
+  {
+    printf 'cbase-state %s %s %s\n' "$STATE_VERSION" "$1" "$2"
+    if [ "${#ST_LINES[@]}" -gt 0 ]; then printf '%s\n' "${ST_LINES[@]}" | LC_ALL=C sort; fi
+  } > "$3"
+}
+
+# state_free_port: the lowest port in the range no member holds, or nothing when all are taken.
+state_free_port() {
+  local p held
+  for ((p = STATE_PORT_MIN; p <= STATE_PORT_MAX; p++)); do
+    held=""
+    for q in "${ST_PORTS[@]+"${ST_PORTS[@]}"}"; do
+      [ "$q" != "$p" ] || { held=1; break; }
+    done
+    [ -n "$held" ] || { printf '%s\n' "$p"; return 0; }
+  done
+}
+
+state_backoff() {   # state_backoff ATTEMPT APP
+  local ms=$((100 * (1 << ($1 - 1)))) stagger
+  [ "$ms" -le 2000 ] || ms=2000
+  stagger=$(( $(printf '%s' "$2" | cksum | cut -d' ' -f1) % 100 ))
+  ms=$((ms + stagger))
+  sleep "$(printf '%d.%03d' $((ms / 1000)) $((ms % 1000)))"
+}
+
+# state_read KIND GROUP: ST_* and STATE_ETAG from the group's file ("*" when there is none yet,
+# and no members).
+STATE_ETAG=""
+STATE_TMP=""
+state_read() {
+  local kind="$1" group="$2" bucket key rc=0
+  bucket="$(state_bucket)"
+  key="$(state_key "$kind" "$group")"
+  [ -n "$STATE_TMP" ] || { STATE_TMP="$(mktemp -d "${TMPDIR:-/tmp}/cbase-state.XXXXXX")"; CB_CLEANUP+=("$STATE_TMP"); }
+  rm -f "$STATE_TMP/cur"
+  STATE_ETAG="$(aws_s3_get "$bucket" "$key" "$STATE_TMP/cur")" || rc=$?
+  if [ "$rc" -eq 3 ]; then
+    STATE_ETAG="*"
+    ST_LINES=()
+    ST_APPS=()
+    ST_PORTS=()
+    return 0
+  fi
+  [ "$rc" -eq 0 ] || exit "$rc"
+  state_parse "$kind" "$group" "$STATE_TMP/cur" "s3://$bucket/$key"
+}
+
+# state_change KIND GROUP APP MEM OP: one join or leave, read-modify-conditional-write, retried.
+# OP is join or leave. Prints what it did.
+state_change() {
+  local kind="$1" group="$2" app="$3" mem="$4" op="$5" attempt line i at port bucket key rc
+  bucket="$(state_bucket)"
+  key="$(state_key "$kind" "$group")"
+  for ((attempt = 1; attempt <= STATE_ATTEMPTS; attempt++)); do
+    state_read "$kind" "$group"
+    at=""
+    for i in "${!ST_APPS[@]}"; do
+      [ "${ST_APPS[$i]}" != "$app" ] || at="$i"
+    done
+    if [ "$op" = leave ]; then
+      if [ -z "$at" ]; then
+        echo "$app is not in $kind group $group: nothing to leave"
+        return 0
+      fi
+      line="${ST_LINES[$at]}"
+      local keep=() keep_apps=() keep_ports=()
+      for i in "${!ST_APPS[@]}"; do
+        [ "$i" = "$at" ] && continue
+        keep+=("${ST_LINES[$i]}")
+        keep_apps+=("${ST_APPS[$i]}")
+        keep_ports+=("${ST_PORTS[$i]}")
+      done
+      ST_LINES=("${keep[@]+"${keep[@]}"}")
+      ST_APPS=("${keep_apps[@]+"${keep_apps[@]}"}")
+      ST_PORTS=("${keep_ports[@]+"${keep_ports[@]}"}")
+    else
+      if [ "$kind" = vm ]; then
+        if [ -n "$at" ]; then port="${ST_PORTS[$at]}"; else port="$(state_free_port)"; fi
+        [ -n "$port" ] || { echo "cbase: vm group $group has no free port: all of $STATE_PORT_MIN-$STATE_PORT_MAX are held" >&2; exit 1; }
+        line="app=$app port=$port service=cbase-$app.service mem=$mem"
+      else
+        line="app=$app folder=$app/"
+      fi
+      if [ -n "$at" ] && [ "${ST_LINES[$at]}" = "$line" ]; then
+        echo "$app is in $kind group $group: $line"
+        return 0
+      fi
+      if [ -n "$at" ]; then ST_LINES[at]="$line"; else ST_LINES+=("$line"); ST_APPS+=("$app"); ST_PORTS+=("${port:-}"); fi
+    fi
+    state_render "$kind" "$group" "$STATE_TMP/new"
+    rc=0
+    aws_s3_put "$bucket" "$key" "$STATE_TMP/new" "$STATE_ETAG" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      if [ "$op" = leave ]; then echo "$app left $kind group $group (it held: $line)"
+      else echo "$app joined $kind group $group: $line"; fi
+      return 0
+    fi
+    [ "$rc" -eq 3 ] || exit "$rc"
+    echo "cbase: s3://$bucket/$key changed while $app's $op was being written (attempt $attempt of $STATE_ATTEMPTS): reading it again" >&2
+    [ "$attempt" -eq "$STATE_ATTEMPTS" ] || state_backoff "$attempt" "$app"
+  done
+  echo "cbase: s3://$bucket/$key kept changing: $app's $op lost $STATE_ATTEMPTS conditional writes in a row; run it again" >&2
+  exit 1
+}
+
+# state_list KIND GROUP: the group's members, as the file has them. Status 3 when there is no file.
+state_list() {
+  local kind="$1" group="$2"
+  state_read "$kind" "$group"
+  if [ "$STATE_ETAG" = "*" ]; then return 3; fi
+  echo "$kind group $group (s3://$(state_bucket)/$(state_key "$kind" "$group")): ${#ST_LINES[@]} app$([ "${#ST_LINES[@]}" -eq 1 ] || echo s)"
+  if [ "${#ST_LINES[@]}" -gt 0 ]; then printf '  %s\n' "${ST_LINES[@]}" | LC_ALL=C sort; fi
+}
