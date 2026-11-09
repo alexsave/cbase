@@ -72,14 +72,14 @@ PY
 }
 for mf in hosts/*/mutants.py; do
   [ -f "$mf" ] || continue
-  build=$(hostmut "$mf" BUILD); run=$(hostmut "$mf" RUN); obj=$(hostmut "$mf" OBJ)
+  build=$(hostmut "$mf" BUILD); run=$(hostmut "$mf" RUN); read -r -a objs <<< "$(hostmut "$mf" OBJ)"   # OBJ: the objects its mutants touch
   if ! make -s "$build" > "$T/host.log" 2>&1 || ! $run > "$T/host.log" 2>&1; then echo "BAD HOST SUITE $mf: red before any mutant"; bad=1; continue; fi
   for ((i = 0; i < $(hostmut "$mf" n); i++)); do
     HF=$(hostmut "$mf" "$i" file)
     cp "$HF" "$T/host_src"
     if ! name=$(hostmut "$mf" "$i" apply); then echo "BAD MUTANT $mf $i"; bad=1; HF=; continue; fi
     want=$(hostmut "$mf" "$i" want)
-    rm -f "$obj" "$build"
+    rm -f "${objs[@]}" "$build"
     if ! make -s "$build" > "$T/host.log" 2>&1; then echo "BAD MUTANT $mf $i (does not build): $name"; bad=1
     elif $run > "$T/host.log" 2>&1; then echo "SURVIVED: $name"; bad=1
     elif grep -qF -- "$want" "$T/host.log"; then echo "killed  : $name <- $want"
@@ -87,7 +87,7 @@ for mf in hosts/*/mutants.py; do
     cp "$T/host_src" "$HF"
     HF=
   done
-  rm -f "$obj" "$build"
+  rm -f "${objs[@]}" "$build"
 done
 for ((i = 0; i < $(count TS); i++)); do
   cp ts/socket.ts build/ts/socket.ts

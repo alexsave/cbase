@@ -31,10 +31,13 @@
 // own event callback. Nothing here allocates or keeps a global: the host's struct embeds a
 // cbc_host, and a process may run any number.
 //
-// A STOP AND RESTART: there is no stop call. A host stops when the environment stops calling in,
-// and restarts with cbc_host_init on the same struct. Everything owed to the old one must then be
-// dropped by the environment, never handed to the new one: its timers stopped and its socket
-// closed before the init, and every HTTP answer still out at that moment dropped when it comes
+// A STOP AND RESTART: cbc_host_stop stops a host, from the platform's loop or from inside the
+// app's callback: its timers stopped, its socket closed, and nothing more sent or told the app,
+// though the call that was running when the app stopped it goes on to return. A host restarts with
+// cbc_host_init on the same struct, from the loop (never from inside the app's callback, which still
+// runs on the struct: cbc_host_in_app). Everything owed to the old one must then be dropped by the
+// environment, never handed to the new one: the stop has stopped its timers and closed its socket,
+// and every HTTP answer still out at that moment is dropped when it comes
 // (stamp each env.http call with a generation the environment bumps at the init, and pass on only
 // an answer of the current one). The shared host cannot tell: the tag it hands env.http is a slot
 // in the struct, which the new client reuses for its own requests. Such an answer may come as late
@@ -79,7 +82,7 @@
 //            doubled report (an error then its close) needs no filter of the adapter's
 //   app      the event_fn gets every event with the bytes its span is into; the app calls into
 //            cbc_host_client and then cbc_host_pump, from anywhere on the loop, its callback too
-//   restart  as A STOP AND RESTART above: stop the timers, close the socket, drop old answers
+//   restart  as A STOP AND RESTART above: cbc_host_stop, then drop old answers
 //   test     an adapter onto the host suite (cbhs_host: start, client, pump and the four socket
 //            reports), mapping env calls onto the cbhs_* world (client/test/unit_host_posix.c,
 //            a line a call), linked with CBC_SUITE_SRC and CBC_SUITE_INC: it runs every case
@@ -154,7 +157,8 @@ struct cbc_host {
     uint8_t  has_sock;        // a socket is the client's: opening, or open
     uint8_t  open;            // its open was heard
     uint8_t  held;            // cbc_host_hold: the pump does nothing
-    uint8_t  pad[1];
+    uint8_t  stopped;         // cbc_host_stop: nothing more is sent, armed or told the app
+    uint32_t depth;           // the app's callback is running (nested calls counted)
     uint32_t tick_timer, reopen_timer;
     cbc_host_pend pend[CBC_HOST_PEND_MAX];
     uint8_t frame[CBC_HOST_FRAME_CAP];
@@ -173,6 +177,15 @@ void cbc_host_pump(cbc_host *h);
 // on 1: every pump does nothing until on 0 (a platform whose session store answers later holds
 // the host until it has). Does not pump.
 void cbc_host_hold(cbc_host *h, int on);
+
+// Stops the host, from anywhere, the app's own callback too: its tick and reopen timers stopped
+// (env.timer_stop), its socket closed (env.ws_close), and from then on nothing is sent, opened, armed
+// or saved, and the app is told nothing more (not even the rest of the events of the call it stopped
+// in): the pump, the socket reports and cbc_host_http_answered reach the platform and the app no more.
+// Only cbc_host_init starts the struct again.
+void cbc_host_stop(cbc_host *h);
+// 1 while the app's event callback runs (an environment that must not restart from inside it asks).
+int cbc_host_in_app(const cbc_host *h);
 
 // What the platform reports of the socket env.ws_open gave (another id is not the client's: ignored).
 void cbc_host_ws_opened(cbc_host *h, uint32_t id);

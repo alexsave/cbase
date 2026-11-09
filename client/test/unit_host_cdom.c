@@ -502,26 +502,118 @@ static void a_stop_cancels_the_timers_and_closes_the_socket(void) {
           "a stop cancels every timer and closes the socket; its late events tell the app nothing and send nothing");
 }
 
-// (a) Starting a live handle traps (it would orphan the first start's socket and timers).
-static void a_start_on_a_live_handle_traps(void) {
-    solo();
+// (a) A stop from inside the app's own callback stops the host there: whatever call the callback came
+// from (an HTTP answer's DONE, a socket's CBC_EV_SOCKET_FAILED, ready after the load), nothing is
+// opened, sent or armed after it, though a subscription still wants the socket.
+static int g_stop_on;   // the event kind stop_event stops the host on (0: none)
+static void stop_event(void *ctx, cbc *c, const cbc_event *e, const uint8_t *bytes) {
+    solo_event(ctx, c, e, bytes);
+    if (g_stop_on && ((int)e->kind == g_stop_on || g_stop_on < 0)) cbc_cdom_stop(&g_host);   // -1: on any
+}
+static void sub_and_stop(void *ctx, cbc *c) {   // ready: a socket wanted and a call made, then the stop
+    (void)ctx;
+    g_ready++;
+    cbc_sub(c, CBC_ROOM, "feed", 4);
+    cbc_call(c, CBC_POST, CBC_C_HTTP, "/v1/a", 5, (const uint8_t *)"1", 1, cbc_cdom_now());
+    cbc_cdom_stop(&g_host);
+}
+static uint32_t host_sock(void) {   // the id cdom handed the host's socket (SOCKS: none)
+    uint32_t id = SOCKS;
+    for (uint32_t i = 0; i < g_n_ids && i < SOCKS; i++)
+        if (g_sock[i].live && g_sock[i].ctx == &g_host) id = i;
+    return id;
+}
+static int stopped_quiet(uint32_t opens) { return !g_host.live && g_n_opens == opens && g_n_sends == 0 && solo_armed() == 0; }
+static void a_stop_inside_a_callback_stops_the_host(void) {
+    cbc_cfg k = anon();
+    solo();   // in a call's DONE, the sub made while the call was out
+    g_stop_on = CBC_EV_DONE;
+    cbc_cdom_start(&g_host, &k, NULL, stop_event, NULL, NULL);
+    post("/v1/a", "1");
+    cbc_sub(cbc_cdom_client(&g_host), CBC_ROOM, "feed", 4);
+    answer_req(0, 200, (const uint8_t *)"ok", 2);
+    int done = g_done == 1 && stopped_quiet(0);
+    solo();   // in the first of a sign-up answer's events: the rest of the batch is not told
+    g_stop_on = -1;
+    cbc_cdom_start(&g_host, NULL, "app.session", stop_event, NULL, NULL);
+    drain();
+    cbc_sign_in(cbc_cdom_client(&g_host), CBW_SIGNUP, "ANN", 3, "secret!!", 8, cbc_cdom_now());
+    cbc_cdom_pump(&g_host);
+    uint8_t b[64];
+    size_t bn = session_body(b);
+    answer_req(0, 200, b, (uint32_t)bn);
+    int batch = cbc_n_events(cbc_cdom_client(&g_host)) >= 2 && g_events == 1 && stopped_quiet(0);
+    solo();   // in the CBC_EV_SOCKET_FAILED of a socket that closed before it opened
+    g_stop_on = CBC_EV_SOCKET_FAILED;
+    cbc_cdom_start(&g_host, &k, NULL, stop_event, NULL, NULL);
+    cbc_sub(cbc_cdom_client(&g_host), CBC_ROOM, "feed", 4);
+    cbc_cdom_pump(&g_host);
+    deliver(host_sock(), CD_WS_CLOSE, NULL, 1006);
+    int closed = g_failed == 1 && stopped_quiet(1);
+    solo();   // in the CBC_EV_SOCKET_FAILED a file: page raises from inside the pump, a lost read's retry due
+    g_proto = "file:";
+    cbc_cdom_start(&g_host, &k, NULL, stop_event, NULL, NULL);
+    cbc_call(cbc_cdom_client(&g_host), CBC_GET, CBC_C_READ, "/v1/r", 5, NULL, 0, cbc_cdom_now());
+    cbc_cdom_pump(&g_host);
+    answer_req(0, CD_HTTP_FAILED, NULL, 0);
+    int due = solo_armed() == 1;
+    cbc_sub(cbc_cdom_client(&g_host), CBC_ROOM, "feed", 4);
+    cbc_cdom_pump(&g_host);
+    int unsupported = due && g_failed == 1 && g_n_req == 1 && stopped_quiet(0);
+    g_proto = "http:";
+    solo();   // in ready, called inside the start (anonymous)
+    g_stop_on = 0;
+    cbc_cdom_start(&g_host, &k, NULL, stop_event, sub_and_stop, NULL);
+    int ready = g_ready == 1 && g_n_req == 0 && stopped_quiet(0);
+    solo();   // in ready, after the load
+    cbc_cdom_start(&g_host, NULL, "app.session", stop_event, sub_and_stop, NULL);
+    drain();
+    int loaded = g_ready == 1 && g_n_req == 0 && stopped_quiet(0);
+    check(done && batch && closed && unsupported && ready && loaded,
+          "a stop inside DONE, SOCKET_FAILED or ready opens, sends and arms nothing after it");
+}
+
+// (a) Starting a live handle traps (it would orphan the first start's socket and timers), and so
+// does a start from inside the app's callback, stopped first: the call it came from still runs on
+// the handle.
+static void restart(void) {
+    cbc_cdom_stop(&g_host);
+    cbc_cfg k = anon();
+    cbc_cdom_start(&g_host, &k, NULL, solo_event, NULL, NULL);
+}
+static void restart_event(void *ctx, cbc *c, const cbc_event *e, const uint8_t *bytes) {
+    solo_event(ctx, c, e, bytes);
+    if (e->kind == CBC_EV_DONE) restart();
+}
+static void restart_ready(void *ctx, cbc *c) { (void)ctx; (void)c; restart(); }
+static int traps(int how) {   // a child's start: 0 on a live handle, 1 in DONE, 2 in ready
     fflush(stdout);
     pid_t p = fork();
     if (p == 0) {
         cbc_cfg k = anon();
-        cbc_cdom_start(&g_host, &k, NULL, solo_event, NULL, NULL);
-        cbc_cdom_start(&g_host, &k, NULL, solo_event, NULL, NULL);
+        cbc_cdom_start(&g_host, &k, NULL, how == 1 ? restart_event : solo_event, how == 2 ? restart_ready : NULL, NULL);
+        if (how == 0) cbc_cdom_start(&g_host, &k, NULL, solo_event, NULL, NULL);
+        if (how == 1) { post("/v1/a", "1"); answer_req(0, 200, (const uint8_t *)"ok", 2); }
         _exit(0);
     }
     int st = 0;
     waitpid(p, &st, 0);
-    int trapped = WIFSIGNALED(st) && (WTERMSIG(st) == SIGTRAP || WTERMSIG(st) == SIGILL);
+    return WIFSIGNALED(st) && (WTERMSIG(st) == SIGTRAP || WTERMSIG(st) == SIGILL);
+}
+static void a_start_on_a_live_handle_traps(void) {
+    solo();
+    int trapped = traps(0);
+    solo();
+    int in_done = traps(1);
+    solo();
+    int in_ready = traps(2);
     solo();
     cbc_cfg k = anon();
     int once = cbc_cdom_start(&g_host, &k, NULL, solo_event, NULL, NULL) == 0;
     cbc_cdom_stop(&g_host);
     int again = cbc_cdom_start(&g_host, &k, NULL, solo_event, NULL, NULL) == 0;
     check(trapped && once && again, "a start on a live handle traps; a stopped one starts again");
+    check(in_done && in_ready, "a start from inside DONE or ready traps, stopped first: from the loop only");
 }
 
 // (a) Old answers fill the slot table only so far: past it, a request is answered status 0 from a
@@ -634,6 +726,7 @@ int main(void) {
     a_late_http_answer_after_a_restart_is_dropped();
     a_late_load_after_a_restart_is_dropped();
     a_stop_cancels_the_timers_and_closes_the_socket();
+    a_stop_inside_a_callback_stops_the_host();
     a_start_on_a_live_handle_traps();
     a_full_slot_table_answers_status_0_later();
     the_key_is_copied_and_bounded();

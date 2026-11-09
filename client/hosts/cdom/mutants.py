@@ -1,21 +1,35 @@
 # mutants.py - the cdom adapter's mutants (test/mutate.sh runs every hosts/<name>/mutants.py): each
-# breaks one behaviour of cbc_cdom.c, often back to what the adapter before the shared layer did, and
-# its suite (build/test/unit_host_cdom: the host suite and the adapter's own cases, test/unit_host_cdom.c)
-# must go red, with the text in the row's last field. (file, name, old, new, want): old occurs once.
+# breaks one behaviour of cbc_cdom.c, or of the shared host's stop (which only this suite drives),
+# often back to what the adapter before the shared layer did, and its suite (build/test/unit_host_cdom:
+# the host suite and the adapter's own cases, test/unit_host_cdom.c) must go red, with the text in the
+# row's last field. (file, name, old, new, want): old occurs once. OBJ: every object a mutant touches.
 BUILD = 'build/test/unit_host_cdom'
 RUN = './build/test/unit_host_cdom'
-OBJ = 'build/obj/host-cdom/hosts/cdom/cbc_cdom.o'
+OBJ = 'build/obj/host-cdom/hosts/cdom/cbc_cdom.o build/obj/host-cdom/_root/client/hosts/common/cbc_host.o'
 H = 'hosts/cdom/cbc_cdom.c'
+HC = 'hosts/common/cbc_host.c'   # the shared host's stop, which only this suite drives
 MUTANTS = [
   # (a) a stop and a new start
   (H, 'an older start\'s answers handed on', '    return o->h->live && o->gen == o->h->gen;', '    return 1;',
    'FAIL  cdom: a request\'s answer after a stop'),
   (H, 'a stop does not move the generation on', '    h->gen++;   // every answer', '    h->gen += 0;   // every answer',
    'FAIL  cdom: a request\'s answer after a stop'),
-  (H, 'a stop leaves the tick armed', '    if (k->tick_timer) cd_timer_stop(k->tick_timer);\n', '',
+  (HC, 'a stop leaves the tick armed', '    if (h->tick_timer) h->env->timer_stop(h->ud, h->tick_timer);\n    if (h->reopen', '    if (h->reopen',
    'FAIL  cdom: a stop cancels every timer'),
-  (H, 'a stop leaves the socket open', '    if (k->has_sock) cd_ws_close(k->sock);', '    (void)0;',
+  (HC, 'a stop leaves the socket open', '    if (h->has_sock) h->env->ws_close(h->ud, h->sock);   // its close', '    (void)0;   // its close',
    'FAIL  cdom: a stop cancels every timer'),
+  (H, 'the adapter\'s stop leaves the shared host running', '    cbc_host_stop(&h->host);   // its', '    (void)0;   // its',
+   'FAIL  cdom: a stop inside DONE, SOCKET_FAILED or ready'),
+  (HC, 'a stopped host still pumps', '    if (h->held || h->stopped) return;', '    if (h->held) return;',
+   'FAIL  cdom: a stop inside DONE, SOCKET_FAILED or ready'),
+  (HC, 'a stop in the pump\'s own SOCKET_FAILED goes on', '    if (!h->has_sock && !h->reopen_timer && cbc_stream_wanted(&h->c)) ws_open(h);\n    if (h->stopped) return;',
+   '    if (!h->has_sock && !h->reopen_timer && cbc_stream_wanted(&h->c)) ws_open(h);', 'FAIL  cdom: a stop inside DONE, SOCKET_FAILED or ready'),
+  (HC, 'a stop mid-batch tells the rest', 'i < n && !h->stopped; i++', 'i < n; i++',
+   'FAIL  cdom: a stop inside DONE, SOCKET_FAILED or ready'),
+  (HC, 'the app\'s callback not counted', '    h->depth++;\n    h->fn(h->ctx, &h->c, e, bytes);\n    h->depth--;', '    h->fn(h->ctx, &h->c, e, bytes);',
+   'FAIL  cdom: a start from inside DONE or ready traps'),
+  (H, 'ready not counted', '    if (h->in_ready || cbc_host_in_app(&h->host)) __builtin_trap();', '    if (cbc_host_in_app(&h->host)) __builtin_trap();',
+   'FAIL  cdom: a start from inside DONE or ready traps'),
   (H, 'a start on a live handle goes on', '    if (h->live) __builtin_trap();', '    (void)0;',
    'FAIL  cdom: a start on a live handle traps'),
   (H, 'past the slot table, never answered', '    if (!h->late_timer) h->late_timer = cd_timer_cb(0, on_late, h);', '    (void)on_late;',
@@ -53,7 +67,7 @@ MUTANTS = [
    'an anonymous client asked the store'),
   (H, 'no hold while the load is out', '        cbc_host_hold(&h->host, 1);   // until the store answers', '        (void)0;   // until the store answers',
    'FAIL  cdom: a sign-up made before'),
-  (H, 'no ready after the load', '    if (h->ready) h->ready(h->ctx, cbc_cdom_client(h));\n    cbc_host_pump(&h->host);\n}\n\nstatic void on_loaded',
+  (H, 'no ready after the load', '    tell_ready(h);\n    cbc_host_pump(&h->host);\n}\n\nstatic void on_loaded',
    '    cbc_host_pump(&h->host);\n}\n\nstatic void on_loaded', 'ready was not called once'),
   (H, 'no seed check', '    if (cd_random_bytes(&k.seed, sizeof k.seed) != CD_RANDOM_OK) return -1;', '    cd_random_bytes(&k.seed, sizeof k.seed);',
    'FAIL  cdom: a page without crypto.getRandomValues'),
