@@ -1,6 +1,7 @@
 // unit_https.c - the HTTPS client: its response parser on recorded responses,
-// TLS verification and keep-alive against a local TLS server, and one real
-// request to https://example.com when this machine is online.
+// and TLS verification and keep-alive against a local TLS server. Nothing here
+// reaches the network: the system trust store is checked by refusing the local
+// server's test CA, never by a request to a real host.
 #include "t.h"
 #include <pthread.h>
 
@@ -10,7 +11,6 @@
 #include "util/err.h"
 
 #include <arpa/inet.h>
-#include <netdb.h>
 #include <netinet/in.h>
 #include <stdlib.h>
 #include <sys/socket.h>
@@ -158,15 +158,52 @@ static tls_action answer(const cb_buf *req, cb_buf *resp, void *ud) {
     return strcmp(mode, "drop") == 0 ? TLS_DROP : TLS_KEEP;
 }
 
+// The default search (cb_https_set_ca_file(NULL)) is the system trust store,
+// which loads and verifies: it refuses a peer signed by the test CA that the
+// test CA file accepts, and switching back refuses again (the switch drops the
+// connection the test CA trusted). $CBASE_CA_FILE, which the default search
+// reads first, is unset for the system half and then names the test CA.
+static void system_store_refuses_the_test_ca(void) {
+    tls_srv s;
+    T_EQ_INT(tls_srv_start(&s, answer, "keep"), 0);
+    cb_https_response r;
+    const char *env = getenv("CBASE_CA_FILE");
+    char *saved = env ? strdup(env) : NULL;
+    unsetenv("CBASE_CA_FILE");
+
+    T_EQ_INT(cb_https_set_ca_file(NULL), CB_OK);
+    T_EQ_INT(cb_https_request("localhost", s.port, "GET", "/x", NULL, NULL, 0, 3000, &r), CB_E_IO);
+    T_EQ_STR(cb_https_fail_name(r.fail), "tls");
+    cb_https_response_free(&r);
+
+    T_EQ_INT(cb_https_set_ca_file(s.ca_file), CB_OK);
+    T_EQ_INT(cb_https_request("localhost", s.port, "GET", "/x", NULL, NULL, 0, 3000, &r), CB_OK);
+    T_EQ_INT(r.status, 200);
+    cb_https_response_free(&r);
+
+    T_EQ_INT(cb_https_set_ca_file(NULL), CB_OK);
+    T_EQ_INT(cb_https_request("localhost", s.port, "GET", "/x", NULL, NULL, 0, 3000, &r), CB_E_IO);
+    T_EQ_STR(cb_https_fail_name(r.fail), "tls");
+    cb_https_response_free(&r);
+
+    // The default search reads $CBASE_CA_FILE before the system store.
+    T_EQ_INT(setenv("CBASE_CA_FILE", s.ca_file, 1), 0);
+    T_EQ_INT(cb_https_set_ca_file(NULL), CB_OK);
+    T_EQ_INT(cb_https_request("localhost", s.port, "GET", "/x", NULL, NULL, 0, 3000, &r), CB_OK);
+    T_EQ_INT(r.status, 200);
+    cb_https_response_free(&r);
+
+    if (saved) setenv("CBASE_CA_FILE", saved, 1);
+    else unsetenv("CBASE_CA_FILE");
+    free(saved);
+    T_EQ_INT(cb_https_set_ca_file(NULL), CB_OK);
+    tls_srv_stop(&s);
+}
+
 static void verified_and_kept_alive(void) {
     tls_srv s;
     T_EQ_INT(tls_srv_start(&s, answer, "keep"), 0);
     cb_https_response r;
-
-    // The system CAs do not know this certificate.
-    T_EQ_INT(cb_https_set_ca_file(NULL), CB_OK);
-    T_EQ_INT(cb_https_request("localhost", s.port, "GET", "/x", NULL, NULL, 0, 3000, &r), CB_E_IO);
-    cb_https_response_free(&r);
 
     T_EQ_INT(cb_https_set_ca_file(s.ca_file), CB_OK);
     // Trusted, but the name does not match: 127.0.0.1 is not "localhost".
@@ -669,31 +706,12 @@ static void failures_say_which(void) {
     }
 }
 
-// ---- the real internet, when there is one ---------------------------------------
-
-static bool online(void) {
-    struct addrinfo hints = { 0 }, *ai = NULL;
-    hints.ai_socktype = SOCK_STREAM;
-    if (getaddrinfo("example.com", "443", &hints, &ai) != 0) return false;
-    freeaddrinfo(ai);
-    return true;
-}
-
-static void example_com(void) {
-    if (!online()) { fprintf(stderr, "SKIP unit_https example_com: offline\n"); return; }
-    T_EQ_INT(cb_https_set_ca_file(NULL), CB_OK);
-    cb_https_response r;
-    T_EQ_INT(cb_https_request("example.com", 443, "GET", "/", "User-Agent: cbase-test\r\n", NULL, 0, 10000, &r), CB_OK);
-    T_EQ_INT(r.status, 200);
-    T_CHECK(strstr(cb_buf_cstr(&r.body), "Example Domain") != NULL);
-    cb_https_response_free(&r);
-}
-
 int main(void) {
     T_RUN(content_length);
     T_RUN(chunked_body);
     T_RUN(special_statuses);
     T_RUN(malformed);
+    T_RUN(system_store_refuses_the_test_ca);
     T_RUN(verified_and_kept_alive);
     T_RUN(concurrent_requests_pool_their_connections);
     T_RUN(dead_idle_connection_retried);
@@ -708,6 +726,5 @@ int main(void) {
     T_RUN(writes_are_never_resent);
     T_RUN(idle_close_is_seen_before_a_write);
     T_RUN(failures_say_which);
-    T_RUN(example_com);
     return T_DONE();
 }
