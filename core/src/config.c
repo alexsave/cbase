@@ -131,7 +131,7 @@ static int apple_from_env(cb_config *c, char *err, size_t cap) {
 
 int cb_config_from_env(cb_config *c, char *err, size_t cap) {
     memset(c, 0, sizeof *c);
-    const char *listen = env("CBASE_LISTEN", "127.0.0.1:8080");
+    const char *listen = env("CBASE_LISTEN", CB_LISTEN_DEFAULT);
     const char *colon = strrchr(listen, ':');
     if (!colon || colon == listen || !colon[1]) {
         snprintf(err, cap, "CBASE_LISTEN=%s is not host:port", listen);

@@ -11,7 +11,8 @@
 #               named to serve as CBASE_ENV_FILE when it exists and CBASE_ENV_FILE is not already
 #               set; empty for none. It is not read here: serve reads it strictly, so a bad line
 #               refuses the boot with serve's own sentence
-#   <listen>    CBASE_LISTEN unless the environment already sets it (APP_SERVE_LISTEN)
+#   <listen>    CBASE_LISTEN unless the environment already sets it (APP_SERVE_LISTEN); empty
+#               for none, which leaves serve its own default (core/src/config.h CB_LISTEN_DEFAULT)
 #
 # The binary is exec'd, so make's child is the server itself and a signal sent to it (SIGTERM,
 # Ctrl-C's SIGINT) reaches serve, which drains and exits.
@@ -45,6 +46,6 @@ if [ -z "${CBASE_ENV_FILE:-}" ] && [ -n "$env_file" ]; then
   fi
 fi
 CBASE_LISTEN="${CBASE_LISTEN:-$listen}"
-export CBASE_LISTEN
+if [ -n "$CBASE_LISTEN" ]; then export CBASE_LISTEN; else unset CBASE_LISTEN; fi
 
 exec "$bin" serve

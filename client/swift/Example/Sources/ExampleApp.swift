@@ -1,6 +1,6 @@
 // ExampleApp.swift - one screen: the Sign in with Apple button, a name for a new account, and the
 // signed-in user. Launch arguments (the simulator run, docs/AUTH_APPLE.md):
-//   -CbServer <url>     the cbase serve (default http://127.0.0.1:8080)
+//   -CbServer <url>     the cbase serve (default http://127.0.0.1:8642)
 //   -CbFakeApple <url>  the fake Apple's mint: the button's tap uses it instead of Apple
 //   -CbPerson <who>     the fake's person (default ada)
 //   -CbAuto 1           tap the button and take Apple's suggested name, for an unattended run
@@ -26,7 +26,7 @@ final class Model: ObservableObject {
 
     init() {
         let d = UserDefaults.standard
-        client = CbClient(server: URL(string: d.string(forKey: "CbServer") ?? "http://127.0.0.1:8080")!)
+        client = CbClient(server: URL(string: d.string(forKey: "CbServer") ?? "http://127.0.0.1:8642")!)
         fake = d.string(forKey: "CbFakeApple").flatMap(URL.init(string:)).map { FakeApple(mint: $0, person: d.string(forKey: "CbPerson") ?? "ada") }
         auto = d.bool(forKey: "CbAuto")
         var ask: ((String, Bool) async -> String?)!

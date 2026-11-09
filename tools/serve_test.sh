@@ -16,6 +16,9 @@
 #   * CBASE_ENV_FILE already set: it wins over the run directory's file;
 #   * the default run directory: with APP_SERVE_DIR unset serve runs in the directory of the
 #     Makefile make read (example/).
+#   * the default port: with no PORT and no CBASE_LISTEN serve listens on 127.0.0.1:8642 (the
+#     port README.md and cbase.mk name, core/src/config.h CB_LISTEN_DEFAULT); skipped, and said,
+#     when something on this machine already listens there.
 # Every make is started with a clean environment (env -i), so no CBASE_* of the caller's and no
 # parent make's flags reach it. Everything started is stopped by PID on exit.
 set -euo pipefail
@@ -193,6 +196,23 @@ else
   fail "make serve in the default run directory did not come up"; show default
 fi
 stop default
+
+# ---- 6. the default port, with no PORT and no CBASE_LISTEN -------------------------------------
+DEFAULT_PORT=8642
+if [ "$(code "$DEFAULT_PORT" /health)" != 000 ]; then
+  echo "skip the default port: something already answers on 127.0.0.1:$DEFAULT_PORT"
+else
+  start dport CBASE_DEV=1 -- APP_ENV_FILE=
+  listening dport; p6="$GOT"
+  if [ "$p6" = "$DEFAULT_PORT" ] && [ "$(code "$p6" /health)" = 200 ]; then
+    ok "with no PORT and no CBASE_LISTEN serve listens on 127.0.0.1:$DEFAULT_PORT"
+  elif [ -n "$p6" ]; then
+    fail "with no PORT and no CBASE_LISTEN serve listens on $p6, not the default $DEFAULT_PORT"
+  else
+    fail "make serve with no PORT and no CBASE_LISTEN did not come up"; show dport
+  fi
+  stop dport
+fi
 
 if [ "$fails" -gt 0 ]; then echo "serve test: $fails failure(s)"; exit 1; fi
 echo "serve test: make serve passed every case"

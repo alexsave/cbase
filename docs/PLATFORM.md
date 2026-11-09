@@ -197,6 +197,8 @@ A product from before the platform routes became opt-in makes the fifth and sixt
    It returns the value's length, `CB_E_NOT_FOUND` for an absent key, `CB_E_FULL` for a value longer than `cap - 1` and `CB_E_INVALID` for a query that does not read, so a handler can answer "no key" and "a bad value" apart.
    Each old call has a one-line replacement that keeps its meaning: `if (cb_http_query_get(r, k, v, n))` becomes `if (cb_http_query_find(r, k, v, n) >= 0)`, and its `!` form becomes `< 0`.
    A call that also tested `v[0]` (present and not empty) becomes `> 0`.
+8. **`make serve` and `cbase serve` default to `127.0.0.1:8642`** (`CB_LISTEN_DEFAULT`, `core/src/config.h`), where `make serve` was on 3000 and serve alone on 8080.
+   Nothing names it: a product that relied on the old port keeps it with one line in its Makefile, `APP_SERVE_LISTEN := 127.0.0.1:$(or $(PORT),3000)`, or sets `CBASE_LISTEN` where it runs serve itself.
 
 ### 2.10 Serve's settings an app ships, and CBASE_ENV_FILE
 

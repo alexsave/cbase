@@ -5,7 +5,7 @@
 // as the Lambda (handler.h), on the lifted network layer (src/net), with the
 // provider's store and push transport (local: SQLite and the in-process hub;
 // a Cloud Run provider would run this same ingress with its own). Listens on CBASE_LISTEN
-// (127.0.0.1:8080). SIGTERM or SIGINT drains: in-flight requests finish,
+// (config.h CB_LISTEN_DEFAULT). SIGTERM or SIGINT drains: in-flight requests finish,
 // WebSockets get 1001, then the process exits 0. The children the app started (spawn.h) are ended
 // on the way down (their groups SIGTERMed, then SIGKILLed): none outlives the server.
 //
