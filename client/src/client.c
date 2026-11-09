@@ -28,9 +28,8 @@ enum { SUB_FREE, SUB_WANT, SUB_SENT, SUB_LIVE, SUB_REFUSED, SUB_DROP };
 enum { CALL_FREE, CALL_QUEUED, CALL_WAIT, CALL_HTTP, CALL_SOCK };
 enum { K_APP, K_SIGN, K_SIGNOUT, K_LINK };
 
-#define CBC_TRIES        4     // a read is sent at most this often in all after losses
-#define CBC_BUSY_TRIES   3     // and sent again at most this often after a 503 busy
-#define CBC_BUSY_FIRST_MS 250  // 250, 500, 1000
+// CBC_TRIES, CBC_BUSY_TRIES and CBC_BUSY_FIRST_MS, the retry counts and waits, are cbase/client.h's:
+// an app reads there how long a dead server takes to be heard.
 #define TOP_BIT          0x80000000u   // a SUB's request id: its REPLY is told from a call's by it
 
 // ---- small helpers -----------------------------------------------------------------------------

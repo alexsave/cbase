@@ -1224,3 +1224,14 @@ Each mutation was made in core/src/net/http.c, its object deleted a second after
 - the too-long value's `q->out[0] = 0` dropped -> line 134 red (out still held the last value).
 - `cap == 0` answered 0 -> line 136 red.
 - the found value's length answered one long (`q->got = (int)n + 1`) -> core/fuzz/fz_query.c's new FZ_CHECK (the code is one of the four, a length that is out's) fails on replay of core/fuzz/corpus/query.
+
+## How long a dead server takes to be heard, as cbase/client.h says it (starter-friction)
+
+CBC_TRIES, CBC_BUSY_TRIES and CBC_BUSY_FIRST_MS moved from client/src/client.c into cbase/client.h, with the sentence an app reads: with the defaults a read against a server that refuses connections is told lost about 3.5 s after the call.
+client/test/unit_client.c `a_dead_server_is_heard_after_the_header_s_time` follows cbc_due_ms from the call to its CBC_EV_DONE and holds both numbers; it runs before anonymous_reads_go_by_http, whose crash under these mutants would otherwise hide it.
+Each mutation was made, the client's host objects deleted a second after the edit, unit_client rebuilt and run, and the file restored from a copy.
+
+- client.h: `CBC_TRIES 4` -> `5` -> line 421 `CBC_TRIES == 4` and line 435 `now == 3500` red.
+- client.c: backoff_ms does not double -> line 435 `now == 3500` red (and anonymous_reads_go_by_http).
+- client.c: a lost HTTP read goes again at once (`k->at = http ? now : 0`) -> lines 429 and 431 red (the next send is due at once).
+- client.c (client/test/mutants.py's `one try more`, now on the use, since the define left the file the C mutants rewrite): `k->tries + 1 < CBC_TRIES` -> `k->tries < CBC_TRIES` -> line 434 `sends == CBC_TRIES` and line 435 red.
