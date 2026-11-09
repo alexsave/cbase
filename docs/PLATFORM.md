@@ -245,6 +245,9 @@ A file that cannot be read, is larger than 1 MiB, holds a NUL byte or has a line
 - `int cb_serve_dir(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res, const char *dir, const char *rel, const char *cache_control)` is a directory under a prefix route (`"/assets/*"`, `rel` the path below its stem): each segment percent-decoded and held to the same rule, so `%2F`, `%00` and `..` are 404, a symlink out is 403, a directory is 404 and never listed, and only GET and HEAD are answered.
 - `const char *cb_mime_type(const cb_app *app, const char *path)`: the app's table `cb_app.mime_types` first (`{ "pack", "application/x-amgi-pack" }`, an extension without its dot, compared without case), then the platform's (html, css and js with `charset=utf-8`, wasm, svg, png, jpeg, gif, webp, ico, txt, json, map, the fonts, mp3, wav, ogg, m4a), else `application/octet-stream`.
 
+Every path these calls take (`path`, `base`, `dir`) is opened as given, so a relative one resolves against serve's working directory, not the source file or the binary.
+Under `make serve` that directory is `APP_SERVE_DIR` (cbase.mk; the default is the directory of the Makefile make read), so a product whose Makefile sits in `server/` and whose page is at `ui/out/index.html` from the repository root sets `APP_SERVE_DIR := ..` and passes `"ui/out/index.html"`.
+A product that runs its binary by hand runs it from that same directory, or passes absolute paths.
 A file is opened per request and never cached, so a rebuild on disk is what the next request gets.
 Under serve's HTTP/1.1 the body is never held: serve writes it from the descriptor 256 KB at a time as the socket takes it (`net/server.c`), so a 40 MB file costs one chunk of memory, and a request pipelined behind it waits for its last byte.
 On any other transport (a one-shot platform's event, a socket's REQ), which `cb_http_req.stream_ok` tells apart, the same call reads the file whole into the body.
