@@ -14,7 +14,8 @@
 // random source outside its home: the C library's (rand, random, srand, the *rand48
 // family, arc4random*), the system's (getentropy, getrandom, SecRandomCopyBytes),
 // OpenSSL's (RAND_bytes and its kin), or a device ("/dev/urandom", "/dev/random", in a
-// string literal). Comments, character literals and #include lines are skipped (the scanner is
+// string literal), or seeds a stream from the clock (a time call inside rng_seed64's parentheses).
+// Comments, character literals and #include lines are skipped (the scanner is
 // lib_cscan.h's), so a comment may say "random" and random.c may include <openssl/rand.h>; this file, which plants
 // the banned names in its own tests, is not read.
 // It runs from any directory (lib_tree.h).
@@ -50,6 +51,24 @@ static const source_rule RULES[] = {
     { "arc4random", NULL },         { "arc4random_buf", NULL },  { "arc4random_uniform", NULL },
     { "getentropy", HOST_HOME },    { "getrandom", NULL },       { "SecRandomCopyBytes", NULL },
 };
+// A seed from the clock: a clock call inside rng_seed64's parentheses. A seeded stream's seed is
+// a constant, a value the caller was handed, or a draw from cb_random_bytes, so one line fixes it;
+// a time is a stray random that no line fixes.
+static bool clock_ident(const char *s, size_t n) {
+    static const char *const NAMES[] = { "time", "clock", "clock_gettime", "gettimeofday", "mach_absolute_time",
+                                         "mach_continuous_time", "CLOCK_REALTIME", "CLOCK_MONOTONIC" };
+    static const char *const PREFIXES[] = { "cb_now_", "cb_mono_", "host_mono_", "host_real_", "host_clock_" };
+    for (size_t i = 0; i < sizeof NAMES / sizeof NAMES[0]; i++)
+        if (strlen(NAMES[i]) == n && memcmp(NAMES[i], s, n) == 0) return true;
+    for (size_t i = 0; i < sizeof PREFIXES / sizeof PREFIXES[0]; i++) {
+        size_t k = strlen(PREFIXES[i]);
+        if (n > k && memcmp(PREFIXES[i], s, k) == 0) return true;
+    }
+    return false;
+}
+// The seed call being read: 0 outside one, 1 after "rng_seed64", then the parentheses' depth + 1.
+static int g_seed_depth;
+
 // Devices, matched inside string literals.
 static const char *const DEVICES[] = { "/dev/urandom", "/dev/random" };
 
@@ -84,13 +103,35 @@ static void check_literal(const char *path, int line, const char *s, size_t n) {
     }
 }
 
+static void check_seed(const char *path, const cscan_tok *t) {
+    bool open = t->kind == CSCAN_PUNCT && t->s[0] == '(', close = t->kind == CSCAN_PUNCT && t->s[0] == ')';
+    if (g_seed_depth == 0) {
+        if (t->kind == CSCAN_IDENT && t->n == 10 && memcmp(t->s, "rng_seed64", 10) == 0) g_seed_depth = 1;
+        return;
+    }
+    if (g_seed_depth == 1) {   // the name, then its '(' (a mention without a call is no seed)
+        g_seed_depth = open ? 2 : 0;
+        return;
+    }
+    if (open) g_seed_depth++;
+    else if (close && --g_seed_depth == 1) g_seed_depth = 0;
+    else if (t->kind == CSCAN_IDENT && clock_ident(t->s, t->n)) {
+        violation(path, t->line, t->s, t->n);
+        g_seed_depth = 0;   // one finding a call
+    }
+}
+
 static void on_tok(const cscan_tok *t, void *ctx) {
     const char *path = ctx;
     if (t->kind == CSCAN_IDENT) check_ident(path, t->line, t->s, t->n);
     else if (t->kind == CSCAN_STRING) check_literal(path, t->line, t->s, t->n);
+    check_seed(path, t);
 }
 
-static void scan_text(const char *path, const char *s, size_t n) { cscan_lex(s, n, on_tok, (void *)path); }
+static void scan_text(const char *path, const char *s, size_t n) {
+    g_seed_depth = 0;
+    cscan_lex(s, n, on_tok, (void *)path);
+}
 
 static void on_file(const char *name, const char *text, size_t n, void *ctx) {
     (void)ctx;
@@ -164,6 +205,12 @@ static void the_scanner_sees_each_kind(void) {
     T_EQ_INT(planted("(planted)", "const char *m = \"rand and random\"; char q = 'r';\n"), 0);
     T_EQ_INT(planted("(planted)", "rng_splitmix64(&s); cb_random_bytes(b, 8); int randomness = xRandomness; long l = 10l;\n"), 0);
     T_EQ_INT(planted("(planted)", "const char *d = \"/dev/urandomish\";\n"), 0);
+    // A seed from the clock, and seeds that are not.
+    T_EQ_INT(planted("(planted)", "s = rng_seed64((uint64_t)cb_mono_ms() ^ (uint64_t)(uintptr_t)&s);\n"), 1);
+    T_EQ_INT(planted("(planted)", "s = rng_seed64(f(time(NULL)));\n"), 1);
+    T_EQ_INT(planted("(planted)", "s = rng_seed64(host_mono_ns());\n"), 1);
+    T_EQ_INT(planted("(planted)", "s = rng_seed64(SEED); t = cb_mono_ms(); u = rng_seed64(base + i * RNG_GOLDEN);\n"), 0);
+    T_EQ_INT(planted("(planted)", "uint64_t (*f)(uint64_t) = rng_seed64; int64_t t = cb_now_ms();\n"), 0);
 }
 
 int main(void) {

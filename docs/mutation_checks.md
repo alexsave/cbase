@@ -1452,3 +1452,11 @@ The config's defaults (owner's ruling: CBASE_APP is the one required key), the s
 - conf.sh: an undeclared memory not flagged as estimated -> `the full shape resolved otherwise` red.
 - conf.sh: a VM-only app's default `* vm` made `* static` -> `the vm shape resolved otherwise` red.
 - tools/cbase: an undeclared app joined with an empty mem instead of `~128` -> `an undeclared app's memory` red.
+
+## A seed from the clock is a stray random (cli-static)
+
+providers/aws/src/store/store_dynamo.c seeded its backoff jitter from `cb_mono_ms()` and a thread-local's address; it now draws the seed from `cb_random_bytes` through one macro, `JITTER_SEED`, that a single line fixes to a constant.
+core/test/unit_random_gate.c now refuses a clock call (`time`, `clock_gettime`, `gettimeofday`, `cb_now_*`, `cb_mono_*`, `host_mono_*` and kin) inside `rng_seed64(...)`.
+
+- store_dynamo.c: `rng_seed64(seed ^ (uint64_t)cb_mono_ms())` -> `every_draw_has_one_owner` red, naming store_dynamo.c and `cb_mono_ms`.
+- unit_random_gate.c: the seed check not called -> `the_scanner_sees_each_kind` red on the three planted clock seeds.
