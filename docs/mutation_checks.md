@@ -1444,3 +1444,11 @@ Each mutant was made in place with perl, the whole test run, and the file restor
 - conf.sh: SECRET and TOKEN dropped from the key-name words -> `a secret` red at `CBASE_API_TOKEN is named like a secret`.
 - conf.sh: the syntax pass's line count started at 1 (every number one too high) -> `a bad cbase.conf` red at `cbase.conf line 2: is not KEY = value (no '=')`.
 - README.md: the example's `CBASE_MEMORY = 256M` made `256` -> `README.md's example cbase.conf: status 1, not 0` red.
+
+The config's defaults (owner's ruling: CBASE_APP is the one required key), the same way:
+
+- conf.sh: the `/api/* vm` default dropped -> `the full shape resolved otherwise` red (CBASE_APP alone).
+- conf.sh: the defaults applied even when routes are written (merged, not replaced) -> `config check printed another config` red (the good file's written routes gain `/api/* vm`).
+- conf.sh: an undeclared memory not flagged as estimated -> `the full shape resolved otherwise` red.
+- conf.sh: a VM-only app's default `* vm` made `* static` -> `the vm shape resolved otherwise` red.
+- tools/cbase: an undeclared app joined with an empty mem instead of `~128` -> `an undeclared app's memory` red.

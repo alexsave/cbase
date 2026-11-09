@@ -301,33 +301,45 @@ They say "not yet" and exit 2 today.
 
 ### cbase.conf
 
-One `KEY = value` per line, committed with the app; `#` starts a comment line; an unknown key or a bad value stops the tool with the line's number and a sentence.
-`tools/cbase.d/conf.sh` documents every rule.
+A full app is one line: its own VM and bucket, `/` from the bucket and `/api/*` to the VM, at its distribution's `cloudfront.net` address.
 
-```
-# required: [a-z][a-z0-9-]*, at most 32 characters
+```conf
 CBASE_APP = shop
-# its VM group, or none (static only); default CBASE_APP
-CBASE_VM = shop
-# its static group (a bucket), or none (VM only); default CBASE_APP
-CBASE_STATIC = shop
-# the memory it declares, required with a VM: <n>M or <n>G
-CBASE_MEMORY = 256M
-# repeated, in order: <pattern> vm|static|ws [cache|nocache] [ALL|GET,HEAD,...]
-CBASE_ROUTE = /api/* vm
-# ws: the VM, uncached, every method, long timeouts
-CBASE_ROUTE = /live ws
-CBASE_ROUTE = /assets/* static
-# needs CBASE_CERT_ARN, an existing certificate in us-east-1 (CloudFront's region)
-CBASE_DOMAIN = shop.example.com
-CBASE_CERT_ARN = arn:aws:acm:us-east-1:111122223333:certificate/12345678-abcd-ef01-2345-6789abcdef01
-# optional: the Route 53 zone for the record; without it the CNAME is printed and DNS is untouched
-CBASE_ZONE = Z0123456789ABCDEFGHIJ
-# optional: a hostname whose every request goes to the VM
-CBASE_API_HOST = api.example.com
 ```
 
-A route's cache policy defaults to `cache` for static and `nocache` for vm, its methods to `GET,HEAD` for static and `ALL` for vm, and with no `*` route one is added last (`* static`, or `* vm` for a VM-only app).
+A static site has no VM:
+
+```conf
+CBASE_APP = site
+CBASE_VM = none
+```
+
+A real domain is one more line; deploy finds an issued certificate for it or requests one (phase 2):
+
+```conf
+CBASE_APP = shop
+CBASE_DOMAIN = shop.example.com
+```
+
+The file is one `KEY = value` per line, committed with the app, and a line starting with `#` is a comment.
+An unknown key or a bad value stops the tool with the line's number and a sentence; `tools/cbase.d/conf.sh` documents every rule.
+
+`CBASE_APP` is the one required key: the app's name, `[a-z][a-z0-9-]*`, at most 32 characters.
+It names the app's service (`cbase-<app>.service`), its port claim and its bucket folder (`<app>/`).
+
+Optional, each with its default:
+
+- `CBASE_VM = <group> | none`: the VM group the app runs in; default `CBASE_APP`, its own; `none` makes a static site.
+- `CBASE_STATIC = <group> | none`: the static group (a bucket) its files go to; default `CBASE_APP`; `none` makes a VM-only app (not both `none`).
+- `CBASE_MEMORY = <n>M | <n>G`: the memory a VM app declares, 16M to 64G; default undeclared, so the service has no hard cap and the group's fit check counts it at a conservative 128M and says so ("shop: memory not declared, counted as 128M"); declared, it is a real cap and an exact count.
+- `CBASE_ROUTE = <pattern> vm|static|ws [cache|nocache] [ALL|GET,HEAD,...]`, repeated, matched in order; default `/api/* vm` and `* static` for an app with both, `* static` for a static site, `* vm` for a VM-only app.
+  Routes are written only to differ from the default, and any `CBASE_ROUTE` line replaces the defaults rather than adding to them; written routes with no `*` route get `* static` (or `* vm`) last, since CloudFront needs a default behaviour.
+  `ws` is the VM uncached, every method, long timeouts; a route's cache defaults to `cache` for static and `nocache` for vm, its methods to `GET,HEAD` for static and `ALL` for vm.
+- `CBASE_DOMAIN = <host>`: the app's hostname; default none, and the app is at its `cloudfront.net` address.
+- `CBASE_API_HOST = <host>`: a second hostname whose every request goes to the VM; default none.
+- `CBASE_CERT_ARN = arn:aws:acm:us-east-1:...`: an override; default, deploy finds an issued us-east-1 certificate covering the hostnames (wildcards and SANs included) or requests one with DNS validation.
+- `CBASE_ZONE = Z...`: an override; default, deploy finds the account's Route 53 hosted zone that covers the domain and writes the records there, or with none prints the records to add.
+
 The file is public, so the tool refuses any line that looks like a secret, naming the line and never echoing it: a key named with SECRET, TOKEN, PASSWORD, PASSWD, PRIVATE or CREDENTIAL, an AWS access key id, a PEM block, or a long random-looking string.
 
 ### Groups and the state file
@@ -338,12 +350,13 @@ Who is in a group is its state file alone, `s3://cbase-state-<account>/vm/<group
 
 ```
 cbase-state 1 vm shop
-app=shop port=8700 service=cbase-shop.service mem=256
+app=shop port=8700 service=cbase-shop.service mem=~128
 
 cbase-state 1 static shop
 app=shop folder=shop/
 ```
 
+`mem` is the declared MiB, or `~128` for an app that declares none (the estimate it is counted at).
 A join or leave reads the file with its ETag and writes it back with S3's `If-Match` (`If-None-Match: *` for a new file).
 A 412 or 409 means another run wrote first: the file is read again and the change made again, up to 8 times, with a fixed backoff (no randomness: `tools/cbase.d/state.sh` says why).
 A VM app claims the lowest free port in 8700-8799 in the same write, so two racing deploys never hold one port.
