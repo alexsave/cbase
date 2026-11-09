@@ -172,16 +172,13 @@ A whole product can be one file, such as `src/myapp.c`:
 // GET /v1/hello?name=Ada answers "hello, Ada"; with no name, "hello, world".
 static void h_hello(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     char name[64], text[96];
+    // The value's length; 0 for "?name=", CB_E_NOT_FOUND for no name at all: both greet the world.
     int n = cb_http_query_find(req, "name", name, sizeof name);
-    if (n == CB_E_NOT_FOUND) {
-        cb_res_text(res, 200, "hello, world\n");
-        return;
-    }
-    if (n < 0) {   // CB_E_FULL: longer than name holds; CB_E_INVALID: the query does not read
+    if (n == CB_E_FULL || n == CB_E_INVALID) {   // longer than name holds; a query that does not read
         cb_res_text(res, 400, "bad name\n");
         return;
     }
-    snprintf(text, sizeof text, "hello, %s\n", name);
+    snprintf(text, sizeof text, "hello, %s\n", n > 0 ? name : "world");
     cb_res_text(res, 200, text);
 }
 
