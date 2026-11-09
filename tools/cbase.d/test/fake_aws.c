@@ -43,7 +43,7 @@
 #define BODY_MAX (1 << 20)
 
 typedef struct {
-    char   path[512];   // "/bucket/key"
+    char   path[1024];  // "/bucket/key"
     char  *body;
     size_t len;
     unsigned version;   // the ETag is "v<version>-<len>"
@@ -148,6 +148,15 @@ static void write_all(int fd, const char *p, size_t n) {
     }
 }
 
+// Copies src into dst[cap]; false (dst untouched) when it does not fit. memcpy, not snprintf, so a
+// compiler's truncation warnings have nothing to guess at.
+static bool copy(char *dst, size_t cap, const char *src) {
+    size_t n = strlen(src);
+    if (n >= cap) return false;
+    memcpy(dst, src, n + 1);
+    return true;
+}
+
 // ---- requests -----------------------------------------------------------------------------------
 
 typedef struct {
@@ -196,9 +205,8 @@ static bool read_request(conn *c, request *r) {
         *colon = 0;
         char *v = colon + 1;
         while (*v == ' ') v++;
-        snprintf(r->hdr[r->nhdr][0], sizeof r->hdr[0][0], "%s", line);
-        snprintf(r->hdr[r->nhdr][1], sizeof r->hdr[0][1], "%s", v);
-        r->nhdr++;
+        if (copy(r->hdr[r->nhdr][0], sizeof r->hdr[0][0], line) && copy(r->hdr[r->nhdr][1], sizeof r->hdr[0][1], v))
+            r->nhdr++;
     }
     char *q = strchr(r->target, '?');
     snprintf(r->path, sizeof r->path, "%.*s", q ? (int)(q - r->target) : (int)strlen(r->target), r->target);
@@ -348,7 +356,7 @@ static void s3_put(int fd, const request *r) {
         if (!o) {
             if (g_nobj == MAX_OBJ) die("too many objects");
             o = &g_obj[g_nobj++];
-            snprintf(o->path, sizeof o->path, "%s", r->path);
+            if (!copy(o->path, sizeof o->path, r->path)) die("a key too long for the recording");
         }
         free(o->body);
         o->body = malloc(r->len + 1);
@@ -406,7 +414,7 @@ static void tagging(int fd, const request *r) {
     size_t n = (size_t)snprintf(out, sizeof out, "{\"PaginationToken\":\"\",\"ResourceTagMappingList\":[");
     int hits = 0;
     for (int i = 0; i < g_nres; i++) {
-        char want_tag[512], want_type[128];
+        char want_tag[1024], want_type[1024];
         snprintf(want_tag, sizeof want_tag, "\"Key\":\"%s\",\"Values\":[\"%s\"]", g_res[i].key, g_res[i].value);
         snprintf(want_type, sizeof want_type, "\"ResourceTypeFilters\":[\"%s\"]", g_res[i].type);
         if (!strstr(flat, want_tag) || !strstr(flat, want_type)) continue;
