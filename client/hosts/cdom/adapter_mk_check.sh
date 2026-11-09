@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck disable=SC2016 # make text in single quotes is meant literally
 # adapter_mk_check.sh [make] - adapter.mk's two rules, read by make itself (run from client/, as
 # host.mk's check-cdom-adapter-mk does, in `make check`; nothing is fetched):
 #
