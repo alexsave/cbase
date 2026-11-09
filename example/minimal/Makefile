@@ -19,12 +19,12 @@ CBASE_PROVIDERS := local
 APP_SRC_ROOTS   := server
 APP_SERVE       := minimal
 
-# THE ORDER OF THE FOUR INCLUDES. adapter.mk last: it needs cdom.mk's variables (CDOM_CFLAGS) and
-# client.mk's (CBC_SRC), and stops, naming the missing one, when either is not read yet. cbase.mk
-# first: cdom.mk turns .SECONDEXPANSION on for every rule read after it, so cbase.mk's rules, read
-# before it, are expanded as cbase's own build tests them (the other order builds today too, but
-# would read every cbase.mk prerequisite twice). cdom.mk's APP_WASM and APP_PAGE rules read APP_*
-# when make builds, so those are set after the includes.
+# THE ORDER OF THE FOUR INCLUDES, the one every cbase doc shows (README.md, client/hosts/cdom/README.md,
+# adapter.mk): cbase.mk first, because cdom.mk turns .SECONDEXPANSION on for every rule read after it
+# and cbase.mk's rules are expanded as cbase's own build tests them only when read before it;
+# adapter.mk last, because it needs cdom.mk's variables (CDOM_CFLAGS) and client.mk's (CBC_SRC), and
+# stops, naming the missing one, when either is not read yet. cdom.mk's APP_WASM and APP_PAGE rules
+# read APP_* when make builds, so those are set after the includes.
 include $(CBASE)/cbase.mk
 include $(CDOM)/cdom.mk
 include $(CBASE)/client/client.mk

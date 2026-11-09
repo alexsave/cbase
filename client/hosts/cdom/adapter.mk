@@ -6,11 +6,16 @@
 # names cbase's sources and flags, and which of cdom's modules the adapter calls, never a cdom file.
 # The cdom the adapter has passed against is the pin README.md here names.
 #
-# Each of the three is included once, cdom.mk first: this fragment needs cdom.mk's variables, and
-# cdom.mk's APP_WASM rule reads APP_* when make builds, so they may be set after it. With that rule:
+# ONE ORDER, each included once: cbase.mk (the app's server), cdom.mk, client/client.mk, then this
+# fragment. cbase.mk first keeps cbase's rules out of the .SECONDEXPANSION cdom.mk turns on for every
+# rule read after it; this one last because it needs cdom.mk's and client.mk's variables, and stops,
+# naming the missing one, when either is not read yet. A page with no cbase server leaves out
+# cbase.mk alone. cdom.mk's APP_WASM rule reads APP_* when make builds, so they may be set after the
+# includes (example/minimal/Makefile is the four, built and checked). With that rule:
 #
 #   CBASE := path/to/cbase                # REQUIRED: the cbase root, as the including Makefile reaches it
 #   CDOM  := path/to/cdom                 # REQUIRED: the cdom checkout, as the including Makefile reaches it
+#   include $(CBASE)/cbase.mk
 #   include $(CDOM)/cdom.mk
 #   include $(CBASE)/client/client.mk
 #   include $(CBASE)/client/hosts/cdom/adapter.mk
@@ -19,7 +24,7 @@
 #   APP_MODULES := $(CBC_CDOM_MODULES)
 #   APP_CFLAGS  := $(CBC_INC) $(CBC_CDOM_CFLAGS)
 #
-# With a rule of the app's own, the same three includes, and cdom's sources from cdom.mk:
+# With a rule of the app's own, the same four includes, and cdom's sources from cdom.mk:
 #
 #   UI_SRC    := ui/src/app.c $(CBC_SRC) $(CBC_B64_SRC) $(CBC_CDOM_SRC) \
 #                $(CDOM_SRC) $(CDOM_NET_SRC) $(CDOM_STORE_SRC) $(CDOM_RANDOM_SRC)

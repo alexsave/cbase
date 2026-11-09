@@ -11,8 +11,9 @@
 #                         runs it (example/minimal/check.sh: make serve, the route over curl, the
 #                         page and its linked module); in check-host-cdom too
 #   make check-cdom-pin-doc   README.md here names CDOM_PIN (pin_doc_check.sh); in `make check` too
-#   make check-cdom-adapter-mk  adapter.mk refuses to be read without cdom.mk, and no file is in two
-#                         of the lists an app adds (adapter_mk_check.sh); in `make check` too
+#   make check-cdom-adapter-mk  adapter.mk refuses to be read without cdom.mk, no file is in two
+#                         of the lists an app adds, and every doc shows the four includes in one
+#                         order (adapter_mk_check.sh); in `make check` too
 #
 # cdom (github.com/alexsave/cdom) is fetched by its commit into build/cdom, never reached beside this
 # tree (tools/repo_gate_test.sh). A new pin is the one line below, moved when the adapter has passed
