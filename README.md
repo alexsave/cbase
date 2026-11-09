@@ -192,7 +192,17 @@ Which client mode: an app with no accounts sets `cbc_cfg.anonymous`, and its cal
 
 ### The smallest app: a server and a page that calls it
 
-[example/minimal/](example/minimal/) is the smallest whole app, server and browser page, and the skeleton to copy for one: one Makefile that includes `cbase.mk`, cdom's `cdom.mk`, `client/client.mk` and the cdom adapter's `adapter.mk`, in that order (its comment says why), a server with one route, and a page in C on [cdom](https://github.com/alexsave/cdom).
+[example/minimal/](example/minimal/) is the smallest whole app, server and browser page, and the skeleton to copy for one: one Makefile, a server with one route, and a page in C on [cdom](https://github.com/alexsave/cdom).
+Its Makefile includes four fragments, each once and in this order:
+
+```make
+include $(CBASE)/cbase.mk                     # the server
+include $(CDOM)/cdom.mk                       # cdom's sources, flags and page rules
+include $(CBASE)/client/client.mk             # the client core
+include $(CBASE)/client/hosts/cdom/adapter.mk # the cdom adapter
+```
+
+`cbase.mk` comes first because `cdom.mk` turns on `.SECONDEXPANSION` for every rule read after it, and cbase's rules are tested without it; `adapter.mk` comes last because it needs `cdom.mk`'s and `client.mk`'s variables, and stops, naming the fix, when either is missing.
 The server is one `cb_app` with `GET /api/hello` answering `hello from cbase` (`example/minimal/server/minimal.c`).
 `make -C example/minimal serve` builds both and runs the server, outside dev mode with no setting at all (it is storeless); open the URL its startup line prints.
 cbase's CI builds it against the cdom pin and checks it as a person runs it (`example/minimal/check.sh`).

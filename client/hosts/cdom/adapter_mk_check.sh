@@ -6,7 +6,11 @@
 #     with them (a stand-in for cdom.mk) it reads;
 #   * every file is in one list: across the lists an app on this adapter adds (client.mk's CBC_SRC,
 #     CBC_OIDC_SRC and CBC_B64_SRC, adapter.mk's CBC_CDOM_SRC) no file is twice, and lib/b64/b64.c is
-#     there exactly once, so no app dedupes.
+#     there exactly once, so no app dedupes;
+#   * one include order: every run of include lines in the docs that show one (the top README.md,
+#     README.md here, this adapter.mk's header, example/minimal/Makefile) that reaches past cbase.mk
+#     is exactly cbase.mk, cdom.mk, client/client.mk, adapter.mk (a server's Makefile, cbase.mk
+#     alone, is its own run), and each of them shows the four at least once.
 set -u
 MAKE_BIN=${1:-make}
 fail() { echo "FAIL  cdom adapter.mk: $*" >&2; exit 1; }
@@ -35,3 +39,21 @@ dup=$(printf '%s\n' "$files" | sort | uniq -d)
 n=$(printf '%s\n' "$files" | grep -c '/lib/b64/b64\.c$')
 [ "$n" = 1 ] || fail "lib/b64/b64.c is in those lists $n times, not once"
 echo "ok    cdom adapter.mk: stops without cdom.mk; $(printf '%s\n' "$files" | wc -l | tr -d ' ') files, each in one list, lib/b64 once"
+
+# One include order in every doc that shows one (adapter.mk's header says why this order).
+want='cbase.mk cdom.mk client.mk adapter.mk'
+for f in ../README.md hosts/cdom/README.md hosts/cdom/adapter.mk ../example/minimal/Makefile; do
+  [ -f "$f" ] || fail "no $f to read the include order from"
+  runs=$(awk '
+    { line = $0; sub(/^#[ \t]*/, "", line) }
+    line ~ /^include \$\((CBASE|CDOM)\)\// {
+      split(line, w, /[ \t]+/); n = split(w[2], p, "/"); run = run (run == "" ? "" : " ") p[n]; next
+    }
+    run != "" { print run; run = "" }
+    END { if (run != "") print run }' "$f")
+  printf '%s\n' "$runs" | grep -qx "$want" || fail "$f shows no run of the four includes, '$want'"
+  while IFS= read -r r; do
+    [ "$r" = "$want" ] || [ "$r" = cbase.mk ] || fail "$f includes in the order '$r', not '$want'"
+  done <<< "$runs"
+done
+echo "ok    cdom adapter.mk: README.md, README.md here, adapter.mk and example/minimal/Makefile show one include order"

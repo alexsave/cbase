@@ -68,22 +68,24 @@ A new pin is that one line, moved once the adapter passes against the newer cdom
 - the adapter's own cases: a stop and a new start, a stop from inside a callback, late answers dropped, the key, a page that is not http: or https:, a host past 256 bytes, a socket the browser refuses to make, the early call that waits for the load;
 - the adapter, the shared host, the core and `lib/b64` compiled for wasm32 with `cdom.mk`'s flags (`CDOM_CFLAGS`: cdom's own `string.h`), the libc gate over them, and a module linked from them and `link_app.c` by `cdom.mk`'s `APP_WASM` rule, with the modules `CBC_CDOM_MODULES` names;
 - the minimal app (`example/minimal/check.sh`, also `make -C client check-minimal-example`): its one Makefile builds the server and the page against this cdom, and `make serve`, run outside dev mode with no setting but a free port, answers the route over curl and serves the page and its linked module;
-- `adapter_mk_check.sh` (also in `make -C client check`, nothing fetched): `adapter.mk` read without `cdom.mk` stops and names the fix, and no file is in two of the lists an app adds (`lib/b64/b64.c` once).
+- `adapter_mk_check.sh` (also in `make -C client check`, nothing fetched): `adapter.mk` read without `cdom.mk` stops and names the fix, no file is in two of the lists an app adds (`lib/b64/b64.c` once), and every doc that shows the includes (the top README, this file, `adapter.mk`'s header, `example/minimal/Makefile`) shows them in the one order.
 
 `client/test/mutate.sh` runs this adapter's mutants (`mutants.py`) with the rest of the client's.
 
 ## In an app's Makefile
 
 cdom's sources and flags are cdom's own `cdom.mk` (at the cdom root), and this directory names only cbase's, so a file cdom renames is one edit, in cdom.
-An app includes `cdom.mk`, `client/client.mk` and then `adapter.mk` here, with `CBASE` and `CDOM` set to the two checkouts as its Makefile reaches them.
-`adapter.mk` stops, naming the fix, when `cdom.mk` has not been included before it.
+An app with a server and a page includes four fragments, each once and in this order, with `CBASE` and `CDOM` set to the two checkouts as its Makefile reaches them: cbase's `cbase.mk`, cdom's `cdom.mk`, `client/client.mk`, then `adapter.mk` here.
+`cbase.mk` comes first because `cdom.mk` turns on `.SECONDEXPANSION` for every rule read after it, and cbase's rules are tested without it; `adapter.mk` comes last because it needs `cdom.mk`'s and `client.mk`'s variables, and stops, naming the fix, when either has not been read.
+A page with no cbase server of its own leaves out `cbase.mk` and keeps the other three in the same order.
+`example/minimal/Makefile` is the four, built and checked.
 
-Each is included once, `cdom.mk` first.
 With `cdom.mk`'s `APP_WASM` rule, the app names the adapter's cdom modules in `APP_MODULES`; the rule reads `APP_*` when make builds, so they are set after the includes:
 
 ```make
 CBASE := cbase
 CDOM  := cdom
+include $(CBASE)/cbase.mk
 include $(CDOM)/cdom.mk
 include $(CBASE)/client/client.mk
 include $(CBASE)/client/hosts/cdom/adapter.mk
@@ -98,6 +100,7 @@ With a rule of its own, the app takes cdom's sources and flags from `cdom.mk` by
 ```make
 CBASE := cbase
 CDOM  := cdom
+include $(CBASE)/cbase.mk
 include $(CDOM)/cdom.mk
 include $(CBASE)/client/client.mk
 include $(CBASE)/client/hosts/cdom/adapter.mk
