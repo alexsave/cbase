@@ -494,10 +494,13 @@ Optional, each with its default:
 - `CBASE_API_CERT_ARN = arn:aws:acm:us-east-1:...`: the API host's own certificate, used as it is; `CBASE_CERT_ARN` is used as it is too, and neither is ever replaced.
 - `CBASE_API_ROUTE = <pattern> vm|ws [cache|nocache|origin] [<methods>]`, repeated: the API host's own behaviours; `origin` keeps what the origin's `Cache-Control` says. The API host's VM origin waits 60 s, and every answer carries CloudFront's `Server-Timing`.
 - `CBASE_VM_STACK = <stack>`: adopts an existing VM; the group's instance is the stack's (an instance, or an auto-scaling group of one), with no group-init.
+  The adopted VM's role reads its own namespaces, not cbase's, so an app's settings and servers default to paths under them: settings `/<stack>/<app>/` (the stack's SSM `/<stack>/*`, as `/cbase-vm/amgi/`) and servers `s3://cbase-code-<account>-<region>/vm/<app>/` (the code bucket's `vm/*`).
+  `CBASE_VM_SETTINGS` and `CBASE_VM_ARTIFACTS` override both, as a grandfathered member names its own.
+  The first deploy into an adopted group makes the state bucket when the account has none (private, versioned, public access blocked, as group-init makes it), and its join writes the group's state file; it never makes a VM.
 - `CBASE_VM_ORIGIN = <host>`: the AAAA hostname CloudFront reaches an IPv6-only VM at.
 - `CBASE_VM_PORT = <port>` and `CBASE_VM_DATA = <dir>`: a grandfathered member, an app that ran on the VM before cbase; its port and data directory are recorded as they are (`legacy=1`).
-- `CBASE_VM_SETTINGS = /<path>/`: the SSM path of the app's settings, which the instance writes into its env file; default `/cbase/<app>/`.
-- `CBASE_VM_ARTIFACTS = s3://<bucket>/<prefix>/`: where the app's servers go and the instance fetches them; default the state bucket's `artifacts/<app>/`.
+- `CBASE_VM_SETTINGS = /<path>/`: the SSM path of the app's settings, which the instance writes into its env file; default `/cbase/<app>/` (`/<stack>/<app>/` in an adopted group).
+- `CBASE_VM_ARTIFACTS = s3://<bucket>/<prefix>/`: where the app's servers go and the instance fetches them; default the state bucket's `artifacts/<app>/` (the code bucket's `vm/<app>/` in an adopted group).
 - `CBASE_BACKUP_BUCKET = <bucket>` and `CBASE_BACKUP_KEY = <key>`: where serve backs up the database; default the state bucket and `backups/<app>/cbase.sqlite`. An adopted VM names the key its own boot restores.
 - `CBASE_VM_REPLACES = <unit>.service`: for a grandfathered member, the unit that served it before; the deploy stops and disables that one unit right before the app's own starts.
   On an adopted VM whose own boot installs its old unit, run `./cbase deploy` again after an instance replacement.
@@ -575,6 +578,7 @@ Its Cache-Control is `no-cache` for html (a browser and CloudFront revalidate it
 The stack holds one distribution, its Origin Access Control and a CloudFront Function that routes every app like an SPA.
 A path with an extension, or under `/.well-known/`, is the file itself, and a missing one is S3's 404, never the shell, so a broken asset link fails loudly.
 A clean URL of a page in the build is that page (`/about` is `about.html`, `/docs/` is `docs/index.html`), from the page list deploy renders into the function.
+A trailing slash that is no directory's index is tried without it: `/privacy/` is `privacy.html`.
 Any other path (`/abc123`, `/game/7`) is the app shell, `CBASE_SHELL` (default `/index.html`), with a 200, and the app routes it client-side and shows its own 404.
 Its default behaviour is the bucket, read through the Origin Access Control with `OriginPath /<app>`, so an app reads its own folder and nothing else.
 The bucket's policy belongs to the static group: `group-init` sets it once per bucket, on `aws:SourceAccount`, and deploy never edits it.
@@ -665,6 +669,8 @@ Every stack change is a change set, made and printed before anything runs.
 - **A dry run changes nothing.**
   `--dry-run` (or `DRY_RUN=1`) makes and prints the change set, deletes it unexecuted (with the empty stack a first change set leaves), and prints the upload it would make.
   A VM app's dry run checks the memory fit and prints the port it would claim, and writes no state file, sends no SSM command and executes nothing.
+  A problem a deploy would stop on (a missing origin secret, a hostname another distribution holds, a bucket policy to add) is said where it is found, and the dry run goes on to the fit, the port and the change set; it then lists every problem and exits 1.
+  An adopted group with no state bucket yet is planned as an empty group, and the dry run says which bucket and state file a deploy would make.
 - **No secret is printed.**
   A change set's and a drift's values are shown, but never one under an origin's custom headers or set by a parameter not known to be plain: those print as `origin header <where> changed`.
   The tool's `--query` filters keep such values out of what the CLI answers, and any line of an AWS error that names one, or holds the origin secret's value, is masked.

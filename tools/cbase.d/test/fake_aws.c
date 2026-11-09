@@ -17,7 +17,8 @@
 //   * STS GetCallerIdentity (the Query protocol, an XML answer naming --account).
 //   * Tagging GetResources (JSON 1.1): the --resource lines whose tag key, value and resource type
 //     the request's filters name.
-//   * CloudFormation (Query): DescribeStacks, Create/Describe/Delete/ExecuteChangeSet, DeleteStack,
+//   * CloudFormation (Query): DescribeStacks, DescribeStackResources (an adopted stack's instance: a
+//     --resource line tagged aws:cloudformation:stack-name), Create/Describe/Delete/ExecuteChangeSet, DeleteStack,
 //     DetectStackDrift, DescribeStackDriftDetectionStatus, DescribeStackResourceDrifts,
 //     DescribeStackEvents. Every wait ends at once (the change set and the stack are done when
 //     first asked). A create's change set adds the template's resources; an update's is a Modify of
@@ -1110,6 +1111,26 @@ static void cloudformation(int fd, const request *r) {
             cfn_close(&b, a);
         }
         logf_("CFN DescribeStackResourceDrifts %s", name ? name : "-");
+    } else if (strcmp(a, "DescribeStackResources") == 0) {
+        // An adopted stack (CBASE_VM_STACK): the instance a --resource line tags with
+        // aws:cloudformation:stack-name, as CloudFormation tags what it makes.
+        const char *inst = NULL;
+        for (int i = 0; i < g_nres && name; i++)
+            if (strcmp(g_res[i].key, "aws:cloudformation:stack-name") == 0 && strcmp(g_res[i].value, name) == 0 &&
+                strcmp(g_res[i].type, "ec2:instance") == 0 && strrchr(g_res[i].arn, '/'))
+                inst = strrchr(g_res[i].arn, '/') + 1;
+        if (!inst) {
+            status = 400, ecode = "ValidationError";
+            snprintf(emsg, sizeof emsg, "Stack with id %.200s does not exist", name ? name : "");
+        } else {
+            cfn_open(&b, a);
+            sb_add(&b, "<StackResources><member><StackName>%s</StackName><LogicalResourceId>Instance</LogicalResourceId>"
+                       "<PhysicalResourceId>%s</PhysicalResourceId><ResourceType>AWS::EC2::Instance</ResourceType>"
+                       "<ResourceStatus>CREATE_COMPLETE</ResourceStatus><Timestamp>2026-11-09T12:00:00Z</Timestamp></member></StackResources>",
+                   name, inst);
+            cfn_close(&b, a);
+        }
+        logf_("CFN DescribeStackResources %s %s", name ? name : "-", inst ? inst : "none");
     } else if (strcmp(a, "DescribeStackEvents") == 0) {
         cfn_open(&b, a);
         sb_add(&b, "<StackEvents/>");

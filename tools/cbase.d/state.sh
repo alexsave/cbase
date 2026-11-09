@@ -178,15 +178,18 @@ state_backoff() {   # state_backoff ATTEMPT APP
 
 # state_read KIND GROUP: ST_* and STATE_ETAG from the group's file ("*" when there is none yet,
 # and no members).
+# STATE_NO_BUCKET=1 (a dry run's, when the account has no state bucket yet) reads no file at all.
 STATE_ETAG=""
 STATE_TMP=""
+STATE_NO_BUCKET=""
 state_read() {
   local kind="$1" group="$2" bucket key rc=0
   bucket="$(state_bucket)"
   key="$(state_key "$kind" "$group")"
   [ -n "$STATE_TMP" ] || { STATE_TMP="$(mktemp -d "${TMPDIR:-/tmp}/cbase-state.XXXXXX")"; CB_CLEANUP+=("$STATE_TMP"); }
   rm -f "$STATE_TMP/cur"
-  STATE_ETAG="$(aws_s3_get "$bucket" "$key" "$STATE_TMP/cur")" || rc=$?
+  if [ "$STATE_NO_BUCKET" = 1 ]; then rc=3
+  else STATE_ETAG="$(aws_s3_get "$bucket" "$key" "$STATE_TMP/cur")" || rc=$?; fi
   if [ "$rc" -eq 3 ]; then
     STATE_ETAG="*"
     ST_LINES=()

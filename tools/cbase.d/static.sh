@@ -59,7 +59,7 @@ cbase: s3://$b's policy does not let this account's distributions read it, so th
      "Condition": {"StringEquals": {"aws:SourceAccount": "$AWS_ACCOUNT"}}}
   It lets any CloudFront distribution of account $AWS_ACCOUNT read the bucket (a cbase static group's own statement), and removes nothing.
 EOF
-  if [ "${DRY_RUN:-}" = 1 ]; then echo "dry run: a deploy would stop here, on the bucket policy above; this dry run goes on"; return 0; fi
+  if [ "${DRY_RUN:-}" = 1 ]; then dry_problem "s3://$b's policy (above)"; return 0; fi
   echo "cbase: then deploy again; nothing was changed" >&2
   exit 1
 }

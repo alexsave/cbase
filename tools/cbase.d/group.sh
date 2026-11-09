@@ -67,15 +67,48 @@ group_confirm() {
   return 1
 }
 
+# group_state_bucket_found: status 0 when the account has its state bucket, 1 when it has none.
+group_state_bucket_found() {
+  local bucket
+  bucket="$(state_bucket)"
+  aws_call s3api head-bucket --bucket "$bucket" > /dev/null && return 0
+  case "$(aws_code)" in 404|NoSuchBucket|NotFound) return 1 ;; *) aws_fail "reading the state bucket s3://$bucket" ;; esac
+}
+
 # group_state_bucket REGION: the state bucket, made when the account has none.
 group_state_bucket() {
-  local region="$1" bucket cfg=()
+  local region="$1" bucket
   bucket="$(state_bucket)"
-  if aws_call s3api head-bucket --bucket "$bucket" > /dev/null; then
+  if group_state_bucket_found; then
     echo "state bucket: s3://$bucket"
     return 0
   fi
-  case "$(aws_code)" in 404|NoSuchBucket|NotFound) ;; *) aws_fail "reading the state bucket s3://$bucket" ;; esac
+  group_state_bucket_make "$region"
+}
+
+# group_state_bucket_adopted REGION GROUP: deploy's, for an adopted vm group (CBASE_VM_STACK),
+# which no group-init made: the state bucket made when the account has none, as group-init makes
+# it (private, versioned, public access blocked). A bucket is free and harmless; the VM is not, and
+# only group-init makes one. The app's join then writes the group's state file with If-None-Match,
+# a grandfathered member (CBASE_VM_PORT, CBASE_VM_DATA) recorded as it is. A dry run makes
+# nothing: it says what a deploy would make, and goes on as if the bucket held no state file.
+group_state_bucket_adopted() {
+  local region="$1" group="$2" bucket
+  bucket="$(state_bucket)"
+  group_state_bucket_found && return 0
+  if [ "${DRY_RUN:-}" = 1 ]; then
+    echo "dry run: would create state bucket s3://$bucket ($region; versioned, public access blocked) and seed $(state_key vm "$group") with $CONF_APP${CONF_VM_PORT:+ (grandfathered: port $CONF_VM_PORT, data $CONF_VM_DATA)}"
+    # shellcheck disable=SC2034 # state.sh reads it
+    STATE_NO_BUCKET=1
+    return 0
+  fi
+  group_state_bucket_make "$region"
+}
+
+# group_state_bucket_make REGION: the state bucket, made (a name this account holds already is it).
+group_state_bucket_make() {
+  local region="$1" bucket cfg=()
+  bucket="$(state_bucket)"
   [ "$region" = us-east-1 ] || cfg=(--create-bucket-configuration "LocationConstraint=$region")
   if ! aws_call s3api create-bucket --bucket "$bucket" --region "$region" ${cfg[@]+"${cfg[@]}"} > /dev/null; then
     case "$(aws_code)" in

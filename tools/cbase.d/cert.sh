@@ -295,7 +295,7 @@ cert_alias_check() {
     done
   done <<< "$text"
   [ "$found" = 1 ] || return 0
-  if [ "${DRY_RUN:-}" = 1 ]; then echo "dry run: a deploy would stop here, on the hostnames above; this dry run goes on"; return 0; fi
+  if [ "${DRY_RUN:-}" = 1 ]; then dry_problem "a hostname another distribution holds (above)"; return 0; fi
   echo "cbase: nothing was changed" >&2
   exit 1
 }

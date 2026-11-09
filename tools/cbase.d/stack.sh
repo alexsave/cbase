@@ -172,7 +172,8 @@ STACK_FUNCTION_MAX=10240
 #       bucket lacks is S3's 404 (the group's policy grants s3:ListBucket), never the shell, so a
 #       broken asset link fails loudly;
 #   (b) a page: "/x" is /x.html, and "/x/" /x/index.html ("/" /index.html), when the build has
-#       that page (PAGES, the build's html files, rendered in by deploy);
+#       that page (PAGES, the build's html files, rendered in by deploy); a "/x/" that is no
+#       directory's index is tried as "/x", so /privacy/ is /privacy.html, as the live router had it;
 #   (c) anything else is the app shell, CBASE_SHELL (default /index.html), with S3's 200: the app
 #       routes it client-side and shows its own 404.
 # cbase_test.sh runs this code under node.
@@ -194,7 +195,10 @@ function handler(event) {
     return request;
   }
   var page = uri.substring(1);
-  if (page === '' || page.charAt(page.length - 1) === '/') page = page + 'index';
+  if (page === '' || page.charAt(page.length - 1) === '/') {
+    if (page === '' || PAGES.indexOf(' ' + page + 'index ') >= 0) page = page + 'index';
+    else page = page.substring(0, page.length - 1);
+  }
   request.uri = PAGES.indexOf(' ' + page + ' ') >= 0 ? '/' + page + '.html' : SHELL;
   return request;
 }
