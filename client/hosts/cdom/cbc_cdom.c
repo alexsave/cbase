@@ -22,11 +22,13 @@ static void loaded(cbc_cdom *h, const uint8_t *p, int32_t len);
 static void on_late(void *ctx) {
     cbc_cdom *h = ctx;
     void *late[CBC_HOST_PEND_MAX + 1];
-    uint32_t n = h->n_late;
+    uint32_t n = h->n_late, g = h->gen;
     memcpy(late, h->late, n * sizeof late[0]);
     h->n_late = 0;
     h->late_timer = 0;
-    for (uint32_t i = 0; i < n && h->live; i++) {
+    // Each is this start's only while it lasts: a stop inside an answer ends the rest, and so would a
+    // new start (which traps inside a callback, so the gen half is held by that trap too).
+    for (uint32_t i = 0; i < n && h->live && h->gen == g; i++) {
         if (late[i]) cbc_host_http_answered(late[i], 0, NULL, 0);
         else loaded(h, NULL, -1);
     }
