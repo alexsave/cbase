@@ -92,6 +92,14 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 24
+      # tools/ci_llvm.sh's pinned downloads (binaryen's release tarball, llvm.sh), so a run does not
+      # need github.com's release host once one has filled it. ci_llvm.sh owns the cache: it hashes
+      # every entry against its pin before use, and the pins live in it, hence the key.
+      - name: Toolchain download cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ci-llvm-cache
+          key: ci-llvm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/ci_llvm.sh') }}
       - name: Toolchain (the pinned clang and libclang)
         run: bash tools/ci_llvm.sh
       # structgen and tools/sgcommon on their own (a project can take them alone): built and tested
@@ -112,6 +120,14 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
+      # tools/ci_llvm.sh's pinned downloads (binaryen's release tarball, llvm.sh), so a run does not
+      # need github.com's release host once one has filled it. ci_llvm.sh owns the cache: it hashes
+      # every entry against its pin before use, and the pins live in it, hence the key.
+      - name: Toolchain download cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ci-llvm-cache
+          key: ci-llvm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/ci_llvm.sh') }}
       - name: Toolchain (the pinned clang and libclang)
         run: bash tools/ci_llvm.sh
       - name: every platform host's suite, its wasm32 compile, libc gate and link

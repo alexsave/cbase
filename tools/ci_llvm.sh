@@ -77,6 +77,12 @@ BINARYEN_VERSION="${BINARYEN_VERSION:-130}"
 LLVM="/usr/lib/llvm-$LLVM_VERSION"
 BINARYEN="/opt/binaryen-version_$BINARYEN_VERSION"
 
+# The directory fetch_verified caches the pinned downloads in (see there).
+# In CI it is $RUNNER_TEMP/ci-llvm-cache, the path ci.yml's actions/cache steps
+# restore and save; outside CI it is unset, and there is no cache. Set it to ""
+# to turn it off, or to a directory to use that one.
+CI_LLVM_CACHE="${CI_LLVM_CACHE-${RUNNER_TEMP:+$RUNNER_TEMP/ci-llvm-cache}}"
+
 LLVM_SH_URL="https://raw.githubusercontent.com/opencollab/llvm-jenkins.debian.net/076c86e05ebae0ab66edeecd2f0f438ae15de0bb/llvm.sh"
 LLVM_SH_SHA256="da89c676166fd38eebc669b6355c7da27eb3971437059580e86161256d603dc5"
 binaryen_url() { echo "https://github.com/WebAssembly/binaryen/releases/download/version_$1/binaryen-version_$1-$2-linux.tar.gz"; }
@@ -92,18 +98,56 @@ sha256_of() {
   if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
   else shasum -a 256 "$1" | cut -d' ' -f1; fi
 }
-# fetch_verified URL SHA256 DEST - download as the invoking user, then refuse
-# anything whose hash is not the pinned one. The download goes through retry
-# (below), the one retry owner here, so a blip gets the same paced attempts as
-# apt-get: curl's own --retry gave up after about 7 s of 504s from the
-# release host (ci, run 42567993955). A hash mismatch is never retried.
+# fetch_verified URL SHA256 DEST - put the pinned file at DEST, from the cache
+# when it holds it, else downloaded as the invoking user; either way refuse
+# anything whose hash is not the pinned one. This is the one owner of both the
+# cache and the download: nothing else here reads or fills the cache.
+#
+# THE CACHE (CI_LLVM_CACHE, above): ci.yml restores it with actions/cache
+# before this runs, so once one run has filled it a job does not need
+# github.com's release host at all - that host returned 504 for over 90 s,
+# through every retry (ci, run 42572314686). Entries are named by their pinned
+# SHA-256, so raising a pin is a miss, never a stale hit. A cached file is never
+# trusted: it is hashed exactly like a download, and a mismatch deletes it and
+# falls back to the download, whose verified result then replaces it.
+#
+# The download goes through retry (below), the one retry owner here, so a blip
+# gets the same paced attempts as apt-get: curl's own --retry gave up after
+# about 7 s of 504s from the release host (ci, run 42567993955). A hash
+# mismatch is never retried.
 fetch_verified() {
+  local got cached=""
+  if [ -n "${CI_LLVM_CACHE:-}" ]; then
+    cached="$CI_LLVM_CACHE/$2-${1##*/}"
+    if [ -f "$cached" ]; then
+      got="$(sha256_of "$cached")"
+      if [ "$got" = "$2" ]; then
+        echo "ci_llvm: cache hit, no download: $cached" >&2
+        cp "$cached" "$3"; return 0
+      fi
+      echo "::warning::cached $cached has SHA-256 $got, pinned $2 - deleting it and downloading" >&2
+      rm -f "$cached"
+    else
+      echo "ci_llvm: cache miss: $cached" >&2
+    fi
+  fi
   if command -v curl >/dev/null 2>&1; then retry 4 curl -fsSL --proto '=https' --tlsv1.2 -o "$3" "$1" || return 1
   else retry 4 wget -qO "$3" "$1" || return 1; fi
-  local got; got="$(sha256_of "$3")"
+  got="$(sha256_of "$3")"
   if [ "$got" != "$2" ]; then
     echo "::error::$1 has SHA-256 $got, pinned $2 - refusing to use it" >&2
     rm -f "$3"; return 1
+  fi
+  # Saved only after the hash check, through a temporary name, so a cache entry
+  # is only ever a whole verified file. Failing to save costs the next run a
+  # download, not this one its toolchain.
+  if [ -n "$cached" ]; then
+    if mkdir -p "$CI_LLVM_CACHE" && cp "$3" "$cached.tmp.$$" && mv "$cached.tmp.$$" "$cached"; then
+      echo "ci_llvm: saved to cache: $cached" >&2
+    else
+      rm -f "$cached.tmp.$$"
+      echo "::warning::could not save $1 to $cached; the next run downloads it again" >&2
+    fi
   fi
 }
 
@@ -135,6 +179,8 @@ if [ "${BASH_SOURCE[0]}" != "$0" ] && [ -n "${CI_LLVM_DEFINE_ONLY:-}" ]; then re
 # Only when run, never when sourced (several workflows `. ci_llvm.sh`, and a
 # sourced $1 is the caller's).
 if [ "${BASH_SOURCE[0]}" = "$0" ] && [ "${1:-}" = "--verify-downloads" ]; then
+  # The point is to prove the hosts still serve the pinned bytes: no cache.
+  CI_LLVM_CACHE=""
   D="$(mktemp -d)"; trap 'rm -rf "$D"' EXIT
   fetch_verified "$LLVM_SH_URL" "$LLVM_SH_SHA256" "$D/llvm.sh" || exit 1
   echo "ok llvm.sh $LLVM_SH_SHA256"
