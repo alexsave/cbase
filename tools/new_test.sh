@@ -17,7 +17,9 @@
 #     the submodule's URL here and only the file protocol is allowed, so .gitmodules must name the
 #     public URL, the gitlink must be this checkout's commit, every file must be staged, and
 #     CBASE must be cbase. Skipped, and
-#     said, when this cbase is not a git checkout.
+#     said, when this cbase is not a git checkout;
+#   * the README's whole product (its ```c block after `src/myapp.c`) as a starter's src/server.c:
+#     it builds and serves, and GET /v1/hello answers as its comment says, an empty name as none.
 # Everything started is stopped by PID on exit.
 set -euo pipefail
 
@@ -65,24 +67,49 @@ else fail "CBASE is '$got', not $want"; fi
 if grep -qx 'build/' "$H/.gitignore"; then ok ".gitignore holds build/"
 else fail ".gitignore does not hold build/"; fi
 
+# serve_up <dir> <log>: `make serve` in <dir>, with a clean environment and only
+# CBASE_LISTEN=127.0.0.1:0, in the background (MPID); once it prints its startup line, url is the
+# URL that line names. A server that never comes up fails the run.
+serve_up() {
+  env -i PATH="$PATH" HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}" CBASE_LISTEN=127.0.0.1:0 \
+    "$MAKE_BIN" --no-print-directory -C "$1" -j"$JOBS" serve > "$T/$2.out" 2> "$T/$2.err" &
+  MPID=$!
+  local line="" n=0
+  until line="$(grep -m1 '^cbase: listening ' "$T/$2.out" 2>/dev/null)" || [ "$n" -gt 3000 ]; do
+    kill -0 "$MPID" 2>/dev/null || break
+    sleep 0.2; n=$((n + 1))
+  done
+  if [ -z "$line" ]; then
+    fail "make serve in $1 did not come up listening"
+    echo "---- make serve stdout"; cat "$T/$2.out"; echo "---- make serve stderr"; tail -40 "$T/$2.err"; exit 1
+  fi
+  read -r _ _ _ url _ <<< "$line"
+  case "$url" in
+    http://127.0.0.1:*/) ;;
+    *) fail "the startup line names no URL: $line"; exit 1 ;;
+  esac
+}
+# serve_down: SIGTERM to make's child (the server); true when make then exits.
+serve_down() {
+  local server n=0
+  server="$(pgrep -P "$MPID" | head -1 || true)"
+  if [ -n "$server" ]; then kill -TERM "$server" 2>/dev/null || true; fi
+  while kill -0 "$MPID" 2>/dev/null && [ "$n" -lt 150 ]; do sleep 0.1; n=$((n + 1)); done
+  if kill -0 "$MPID" 2>/dev/null; then return 1; fi
+  wait "$MPID" 2>/dev/null || true; MPID=""
+}
+# asks <url> <code> <body> <what>: GET <url> answers <code> with exactly <body> (printf's format).
+asks() {
+  local code
+  code="$(curl -s --max-time 5 -o "$T/ask.body" -w '%{http_code}' "$1" || true)"
+  # shellcheck disable=SC2059
+  if [ "$code" = "$2" ] && printf "$3" | cmp -s - "$T/ask.body"; then ok "$4: $2 \"$(tr '\n' ' ' < "$T/ask.body" | sed 's/ $//')\""
+  else fail "$4: $code '$(cat "$T/ask.body" 2>/dev/null)', not $2 '$3'"; fi
+}
+
 # ---- 2. make serve there: GET / is "cbase\n", GET /health is 200 -------------------------------
-env -i PATH="$PATH" HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}" CBASE_LISTEN=127.0.0.1:0 \
-  "$MAKE_BIN" --no-print-directory -C "$H" -j"$JOBS" serve > "$T/serve.out" 2> "$T/serve.err" &
-MPID=$!
-line="" n=0
-until line="$(grep -m1 '^cbase: listening ' "$T/serve.out" 2>/dev/null)" || [ "$n" -gt 3000 ]; do
-  kill -0 "$MPID" 2>/dev/null || break
-  sleep 0.2; n=$((n + 1))
-done
-show() { echo "---- make serve stdout"; cat "$T/serve.out"; echo "---- make serve stderr"; tail -40 "$T/serve.err"; }
-if [ -z "$line" ]; then
-  fail "make serve in the new server did not come up listening"; show; exit 1
-fi
-read -r _ _ _ url _ <<< "$line"
-case "$url" in
-  http://127.0.0.1:*/) ok "make serve built it and prints $url" ;;
-  *) fail "the startup line names no URL: $line"; show; exit 1 ;;
-esac
+serve_up "$H" serve
+ok "make serve built it and prints $url"
 
 code="$(curl -s --max-time 5 -o "$T/root.body" -w '%{http_code}' "$url" || true)"
 if [ "$code" = 200 ] && printf 'cbase\n' | cmp -s - "$T/root.body"; then ok "GET / answers 200 with exactly \"cbase\\n\""
@@ -91,12 +118,8 @@ code="$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' "${url}health" || tr
 if [ "$code" = 200 ]; then ok "GET /health answers 200"
 else fail "GET /health answered $code, not 200"; fi
 
-server="$(pgrep -P "$MPID" | head -1 || true)"
-if [ -n "$server" ]; then kill -TERM "$server" 2>/dev/null || true; fi
-n=0
-while kill -0 "$MPID" 2>/dev/null && [ "$n" -lt 150 ]; do sleep 0.1; n=$((n + 1)); done
-if kill -0 "$MPID" 2>/dev/null; then fail "make serve did not stop on SIGTERM to its child"
-else wait "$MPID" 2>/dev/null || true; MPID=""; ok "SIGTERM to make's child stopped the server"; fi
+if serve_down; then ok "SIGTERM to make's child stopped the server"
+else fail "make serve did not stop on SIGTERM to its child"; fi
 
 # ---- 3. a DIR that is not empty, or not a directory, is refused and left as it was --------------
 before="$(tree "$H")"
@@ -138,6 +161,34 @@ if sha="$(git -C "$ROOT" rev-parse --verify HEAD 2>/dev/null)"; then
   fi
 else
   echo "skip make new: GIT=1 ($ROOT is not a git checkout)"
+fi
+
+# ---- 5. the README's whole product, src/myapp.c, served in a starter -----------------------------
+# The README's ```c block after the line that names `src/myapp.c`, as the starter's src/server.c:
+# it builds, and its GET /v1/hello greets a name, the world for no name and for an empty one alike,
+# decodes an escaped & and space, and answers 400 for a name too long or a query that does not read.
+R="$T/readme"
+if new readme "DIR=readme"; then
+  awk '/such as `src\/myapp\.c`/ { want = 1; next }
+       want && /^```c$/ { on = 1; next }
+       on && /^```$/ { exit }
+       on { print }' "$ROOT/README.md" > "$R/src/server.c"
+  if grep -q 'cb_main_app' "$R/src/server.c"; then
+    ok "the README's src/myapp.c is $(wc -l < "$R/src/server.c" | tr -d ' ') lines, put in $R"
+    serve_up "$R" readme
+    ok "the README's product builds and serves at $url"
+    asks "${url}v1/hello?name=Ada" 200 'hello, Ada\n' "README product: ?name=Ada"
+    asks "${url}v1/hello" 200 'hello, world\n' "README product: no name"
+    asks "${url}v1/hello?name=" 200 'hello, world\n' "README product: ?name= (empty)"
+    asks "${url}v1/hello?name=Ada%20%26%20Grace" 200 'hello, Ada & Grace\n' "README product: an escaped & and space"
+    asks "${url}v1/hello?name=$(printf '%064d' 0)" 400 'bad name\n' "README product: a name of 64 bytes"
+    asks "${url}v1/hello?name=%zz" 400 'bad name\n' "README product: a bad escape"
+    serve_down || fail "the README's product did not stop on SIGTERM"
+  else
+    fail "no README.md block after src/myapp.c with cb_main_app in it"
+  fi
+else
+  fail "make new DIR=readme failed"; cat "$T/readme.log"
 fi
 
 if [ "$fails" -gt 0 ]; then echo "make new: $fails failure(s)"; exit 1; fi
