@@ -368,6 +368,9 @@ static int read_string(const uint8_t *p, size_t n, cb_buf *scratch, cb_span *s) 
     cb_buf_reset(scratch);
     int rc = cb_hpack_huff_decode(q, len, scratch);
     if (rc < 0) return rc;
+    // A scratch that could not grow holds less than the string (or nothing): no field, the decode
+    // ends. Its out-of-memory mark stays, so the decoder answers so from here on.
+    if (scratch->oom) return CB_E_NOMEM;
     *s = cb_span_of(scratch->p ? (const char *)scratch->p : "", scratch->len);
     return k + (int)len;
 }

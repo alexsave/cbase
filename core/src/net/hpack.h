@@ -61,8 +61,8 @@ typedef int (*cb_hpack_emit)(void *ctx, const char *name, size_t name_len, const
                              bool never);
 
 // Decodes one complete header block (the HEADERS payload and its
-// CONTINUATIONs, joined). CB_OK, CB_E_INVALID for a malformed block, or what
-// emit answered.
+// CONTINUATIONs, joined). CB_OK, CB_E_INVALID for a malformed block, CB_E_NOMEM
+// when a string or a table entry did not fit in memory, or what emit answered.
 int cb_hpack_decode(cb_hpack_dec *d, const uint8_t *p, size_t n, cb_hpack_emit emit, void *ctx);
 
 // The decoder's dynamic table, for the tests: entry i (1 is the newest), or
