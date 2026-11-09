@@ -55,7 +55,9 @@ Settings are `CBASE_*` environment variables, listed in `core/src/config.h` and 
 `CBASE_ENV_FILE=.env.local` reads `KEY=VALUE` lines from that file first, for the app's secrets as well as `CBASE_*` settings; a variable already in the environment wins, an unquoted value's ` # comment` is dropped as Node drops it (`KEY=abc # note` is `abc`, `a#b` stays `a#b`, a quoted `"a # b"` keeps it), and a bad line refuses the start, naming its number (the format is in docs/PLATFORM.md 2.10).
 An app may ship its own defaults for a few settings (`cb_app.req_workers`, `cb_app.log_level`); the variable still overrides them.
 `CBASE_DEV=1` allows a random JWT secret per process and a public URL derived from the listen address.
-Outside it, serve needs `CBASE_JWT_SECRET` (at least 32 characters) and `CBASE_PUBLIC_URL`.
+Outside it, an app that keeps the platform's store needs `CBASE_JWT_SECRET` (at least 32 characters), which signs its users' tokens, and `CBASE_PUBLIC_URL`, the tokens' issuer.
+A storeless app (`.storeless = true`) has no accounts, so nothing signs or checks a token, and it needs neither: it runs outside dev mode with no setting at all (`core/src/config.h`, `cb_config_check_serve`; `core/test/smoke_boot.c` boots one so).
+One that is set is still checked: a secret shorter than 32 characters, or a public URL naming `0.0.0.0`, refuses the start.
 `CBASE_ADMIN_TOKEN` (at least 32 characters) opens the console at `/admin`.
 
 ## Using it in a product
