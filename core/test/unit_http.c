@@ -111,6 +111,43 @@ static void query_iteration(void) {
     T_EQ_INT(cb_http_query_each("a=%zz", count_pairs, &n), CB_E_INVALID);
 }
 
+// cb_http_query_find tells an absent key from a bad value, which cb_http_query_get answers alike.
+static void query_find_says_which(void) {
+    cb_http_req r;
+    memset(&r, 0, sizeof r);
+    char v[8];
+    r.query = "xname=a&name=b%20c&flag&e=";
+    T_EQ_INT(cb_http_query_find(&r, "name", v, sizeof v), 3);   // the key itself, not one ending in it
+    T_EQ_STR(v, "b c");
+    T_EQ_INT(cb_http_query_find(&r, "flag", v, sizeof v), 0);   // no '=': there, empty
+    T_EQ_STR(v, "");
+    T_CHECK(cb_http_query_get(&r, "flag", v, sizeof v));         // and get says so too
+    T_EQ_INT(cb_http_query_find(&r, "e", v, sizeof v), 0);
+    T_EQ_INT(cb_http_query_find(&r, "nam", v, sizeof v), CB_E_NOT_FOUND);
+    T_EQ_INT(cb_http_query_find(&r, "z", v, sizeof v), CB_E_NOT_FOUND);
+    r.query = "";
+    T_EQ_INT(cb_http_query_find(&r, "z", v, sizeof v), CB_E_NOT_FOUND);
+    r.query = "name=1234567";                                    // 7 bytes fill cap 8 with the NUL
+    T_EQ_INT(cb_http_query_find(&r, "name", v, sizeof v), 7);
+    r.query = "name=12345678";                                   // 8 do not
+    T_EQ_INT(cb_http_query_find(&r, "name", v, sizeof v), CB_E_FULL);
+    T_EQ_STR(v, "");
+    T_CHECK(!cb_http_query_get(&r, "name", v, sizeof v));
+    T_EQ_INT(cb_http_query_find(&r, "name", v, 0), CB_E_FULL);
+    r.query = "name=%zz";                                        // a bad escape in its value
+    T_EQ_INT(cb_http_query_find(&r, "name", v, sizeof v), CB_E_INVALID);
+    T_EQ_STR(v, "");
+    T_CHECK(!cb_http_query_get(&r, "name", v, sizeof v));
+    r.query = "a=%zz&name=b";                                    // one before it: the query does not read
+    T_EQ_INT(cb_http_query_find(&r, "name", v, sizeof v), CB_E_INVALID);
+    r.query = "name=b&a=%zz";                                    // one after it is never read
+    T_EQ_INT(cb_http_query_find(&r, "name", v, sizeof v), 1);
+    T_CHECK(cb_http_query_get(&r, "name", v, sizeof v));
+    T_EQ_STR(v, "b");
+    r.query = "a=%zz";                                           // absent, but unreadable: not NOT_FOUND
+    T_EQ_INT(cb_http_query_find(&r, "z", v, sizeof v), CB_E_INVALID);
+}
+
 static void responses(void) {
     cb_http_res res;
     cb_res_init(&res);
@@ -706,6 +743,7 @@ int main(void) {
     T_RUN(refusals);
     T_RUN(keep_alive_rules);
     T_RUN(query_iteration);
+    T_RUN(query_find_says_which);
     T_RUN(responses);
     T_RUN(routing);
     T_RUN(allow_lists);

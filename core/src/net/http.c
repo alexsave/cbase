@@ -58,21 +58,28 @@ int cb_http_query_each(const char *query, cb_query_fn fn, void *ud) {
     return count;
 }
 
-typedef struct { const char *key; char *out; size_t cap; bool found; bool ok; } qget;
+typedef struct { const char *key; char *out; size_t cap; int got; } qget;
 
 static bool qget_fn(const char *key, const char *value, void *ud) {
     qget *q = ud;
     if (strcmp(key, q->key) != 0) return true;
-    q->found = true;
-    q->ok = cb_strlcpy(q->out, value, q->cap) < q->cap;
+    size_t n = strlen(value);
+    if (n >= q->cap) { q->out[0] = 0; q->got = CB_E_FULL; }
+    else { memcpy(q->out, value, n + 1); q->got = (int)n; }   // n < 1024: cb_http_query_each's cap
     return false;
 }
 
+int cb_http_query_find(const cb_http_req *r, const char *key, char *out, size_t cap) {
+    if (cap == 0) return CB_E_FULL;
+    qget q = { key, out, cap, CB_E_NOT_FOUND };
+    // A key found ends the walk before anything after it is read; a bad pair before it (or
+    // anywhere, when the key is not there) is a query that does not read.
+    if (cb_http_query_each(r->query, qget_fn, &q) < 0) { out[0] = 0; return CB_E_INVALID; }
+    return q.got;
+}
+
 bool cb_http_query_get(const cb_http_req *r, const char *key, char *out, size_t cap) {
-    qget q = { key, out, cap, false, false };
-    if (cap == 0) return false;
-    if (cb_http_query_each(r->query, qget_fn, &q) < 0) return false;
-    return q.found && q.ok;
+    return cb_http_query_find(r, key, out, cap) >= 0;
 }
 
 // ---- parse ---------------------------------------------------------------------

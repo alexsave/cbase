@@ -1211,3 +1211,16 @@ Each mutation was made in tools/serve.sh or cbase.mk, the test run, and the file
 - serve.sh: the env file named whether or not it exists -> `make serve with no .env.local did not come up listening (an absent env file must be no error)` red.
 - serve.sh: the env file named even when CBASE_ENV_FILE is set -> `with CBASE_ENV_FILE set make serve did not boot on it` red.
 - cbase.mk: `APP_SERVE_DIR ?= $(CB)` (cbase's root, not the Makefile's directory) -> `with APP_SERVE_DIR unset serve runs in '<cbase root>', not <cbase root>/example` red.
+
+## cb_http_query_find says absent, too long or unreadable (starter-friction)
+
+core/test/unit_http.c `query_find_says_which` holds cb_http_query_find, the lookup that tells a handler an absent key from a bad value, and cb_http_query_get, which now answers through it.
+Each mutation was made in core/src/net/http.c, its object deleted a second after the edit, unit_http rebuilt and run, and the file restored from a copy.
+
+- `n >= q->cap` -> `n > q->cap` -> lines 133-135 red: an 8-byte value in cap 8 is not CB_E_FULL, out is not cleared, and get answers true.
+- the unreadable query's CB_E_INVALID -> CB_E_NOT_FOUND -> lines 138, 142 and 148 red (a bad escape in the key's value, one before it, one with the key absent).
+- the walk's start `CB_E_NOT_FOUND` -> `0` -> lines 126, 127 and 129 red, and a_whole_request's `!cb_http_query_get(&r, "z", ...)` at line 45.
+- get's `>= 0` -> `> 0` -> line 124 red: `?flag`, a key with an empty value, read as absent.
+- the too-long value's `q->out[0] = 0` dropped -> line 134 red (out still held the last value).
+- `cap == 0` answered 0 -> line 136 red.
+- the found value's length answered one long (`q->got = (int)n + 1`) -> core/fuzz/fz_query.c's new FZ_CHECK (the code is one of the four, a length that is out's) fails on replay of core/fuzz/corpus/query.
