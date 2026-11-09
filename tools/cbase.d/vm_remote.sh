@@ -1,39 +1,64 @@
 #!/bin/bash
-# vm_boot.sh: the cbase-vm instance's boot script. It is not the user-data: the
-# user-data is vm_boot_stub.sh, which fetches THIS file (with cbase.service spliced
-# in by vm_boot_lib.sh) from the code bucket, as pinned by /cbase-vm/release/boot,
-# checks its sha256, installs it as /usr/local/sbin/cbase-vm-boot and runs it. The
-# same stub runs on `vm_deploy.sh --restart`, so editing this file and releasing it
-# upgrades the running instance. Nothing here is size-limited.
+# vm_remote.sh: the deploy of one app on its group's VM, run as root by SSM (AWS-RunShellScript).
+# vm.sh (vm_remote_deploy) sends it with the app's values set above this text and its unit
+# (vm_unit.service, filled in) spliced in at @CBASE_SERVICE@. It grew out of the boot script of the
+# VM cbase was carved out of, which ran it in production: the same credentials, signing, fetch and
+# install, for an app of a group (its own user, port, data and unit) instead of the one server.
 #
-# No dnf: everything comes from S3 and SSM over IPv6, signed by curl
-# (--aws-sigv4) with the instance role's credentials from IMDSv2.
-#   1. reads every parameter under /cbase-vm/ (GetParametersByPath, page by page):
-#        release/serve, release/agent   "<bucket> <key> <sha256>" (vm.yaml)
-#        env/CBASE_*                    the server's environment (secrets are
-#                                       SecureStrings, made by vm_deploy.sh)
-#   2. installs the SSM agent from its pinned rpm (minimal AL2023 has none),
-#      dual-stack endpoints on, IMDS over IPv6;
-#   2b. makes journald volatile and turns chrony's own logs off (see there);
-#   3. fetches the static `cbase serve` binary, checks its sha256, writes the
-#      0600 EnvironmentFile and the systemd unit, and (re)starts cbase.
-# It never prints a parameter value.
+# No dnf and no aws CLI: everything comes from S3 and SSM over the dual-stack endpoints, signed by
+# curl (--aws-sigv4) with the instance role's credentials from IMDSv2 (over IPv6, else IPv4), so it
+# runs on Amazon Linux 2023 minimal (an IPv6-only VM's image) as on the standard one.
+#   1. the app's user and its data directory (the service's alone);
+#   2. the port, free before a first start (exit 3 when another process holds it);
+#   3. the instance role's credentials;
+#   4. fetches the static `serve` binary, checks its sha256, swaps it in;
+#   5. reads every parameter under the app's settings path (GetParametersByPath, page by page)
+#      into the 0600 EnvironmentFile;
+#   6. writes the systemd unit and (re)starts it, and only it;
+#   7. waits for GET /health (200) on the port, or its startup line (exit 4 when it does not come).
+# A new VM's own setup (its fixed address, the SSM agent's dual-stack configuration, the journal in
+# RAM) is the group's boot, not an app's deploy, and is not here.
+# It prints "CBASE: " lines alone (vm.sh prints those), and never a parameter value.
+# CBASE_VM_ROOT is unset on the instance; cbase_vm_test.sh runs it under a scratch root with
+# stand-ins for systemctl, ss, curl and the rest.
+# shellcheck disable=SC2154 # app, port, user, unit, home, data, bucket, key, sha, region, settings: vm.sh sets them
 set -eEuo pipefail
-exec > >(tee -a /var/log/cbase-vm-boot.log /dev/console | logger -t cbase-vm-boot) 2>&1
-trap 'echo "cbase-vm-boot: failed at line $LINENO"' ERR
+trap 'echo "CBASE: the deploy of $app failed at line $LINENO"' ERR
 umask 077
+R="${CBASE_VM_ROOT:-}"
+say() { echo "CBASE: $*"; }
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+envfile="$R/etc/cbase/$app.env"
 
-IMDS='http://[fd00:ec2::254]'
+# 1. Its user and its folders: the data folder is the service's alone.
+id -u "$user" > /dev/null 2>&1 || useradd --system --user-group --no-create-home --home-dir "/srv/cbase/$app" --shell /sbin/nologin "$user"
+mkdir -p "$home" "$R$data"
+chmod 0755 "$R/srv/cbase" "$home"
+chown -R "$user:$user" "$R$data"
+chmod 0700 "$R$data"
 
-tok="$(curl -sSf -X PUT "$IMDS/latest/api/token" -H 'X-aws-ec2-metadata-token-ttl-seconds: 300')"
-md() { curl -sSf -H "X-aws-ec2-metadata-token: $tok" "$IMDS/latest/$1"; }
-region="$(md meta-data/placement/region)"
+# 2. The port, free before a first start: with the unit not running, nothing may listen on it.
+if ! systemctl is-active --quiet "$unit"; then
+  if [ -n "$(ss -Hltn "sport = :$port")" ]; then
+    say "port $port is in use on the VM, and not by $unit: refused, nothing was started"
+    exit 3
+  fi
+fi
+
+# 3. The instance role's credentials.
+imds=""
+for a in 'http://[fd00:ec2::254]' http://169.254.169.254; do
+  if tok="$(curl -sSf --max-time 2 -X PUT "$a/latest/api/token" -H 'X-aws-ec2-metadata-token-ttl-seconds: 300' 2> /dev/null)"; then imds="$a"; break; fi
+done
+[ -n "$imds" ] || { say "no instance metadata service answered (IMDSv2, over IPv6 or IPv4): refused"; exit 1; }
+md() { curl -sSf -H "X-aws-ec2-metadata-token: $tok" "$imds/latest/$1"; }
 role="$(md meta-data/iam/security-credentials/)"
 creds="$(md "meta-data/iam/security-credentials/$role")"
 field() { python3 -c 'import json,sys; print(json.load(sys.stdin)[sys.argv[1]])' "$1"; }
-ak="$(field AccessKeyId <<<"$creds")"
-sk="$(field SecretAccessKey <<<"$creds")"
-st="$(field Token <<<"$creds")"
+ak="$(field AccessKeyId <<< "$creds")"
+sk="$(field SecretAccessKey <<< "$creds")"
+st="$(field Token <<< "$creds")"
 
 aws_curl() {   # aws_curl SERVICE URL [curl args...]
   local svc="$1" url="$2"; shift 2
@@ -41,124 +66,74 @@ aws_curl() {   # aws_curl SERVICE URL [curl args...]
     -H "x-amz-security-token: $st" "$@" "$url"
 }
 
-# 1. the parameters, into a private directory: one file per name (never echoed).
+# 4. The server: fetched, its sha256 checked, then swapped in.
+aws_curl s3 "https://$bucket.s3.dualstack.$region.amazonaws.com/$key" -o "$tmp/serve" \
+  || { say "the artifact s3://$bucket/$key could not be fetched: refused"; exit 1; }
+echo "$sha  $tmp/serve" | sha256sum -c --quiet - || { say "the artifact's sha256 is not $sha: refused"; exit 1; }
+install -m 0755 "$tmp/serve" "$home/serve.new"
+mv -f "$home/serve.new" "$home/serve"
+
+# 5. The settings, into a private file: one NAME=value line per parameter (never echoed).
 # GetParametersByPath answers at most 10 per page: follow NextToken until there is none.
-P="$(mktemp -d)"
-trap 'rm -rf "$P"' EXIT
+install -d -m 0700 "$R/etc/cbase"
+: > "$tmp/env"
 next=""
 for _ in $(seq 1 50); do
   body="$(python3 -c '
 import json, sys
-b = {"Path": "/cbase-vm/", "Recursive": True, "WithDecryption": True, "MaxResults": 10}
-if sys.argv[1]: b["NextToken"] = sys.argv[1]
-print(json.dumps(b))' "$next")"
-  next="$(aws_curl ssm "https://ssm.$region.api.aws/" \
-    -H 'Content-Type: application/x-amz-json-1.1' -H 'X-Amz-Target: AmazonSSM.GetParametersByPath' \
-    --data "$body" |
-    python3 -c '
-import json, os, sys
+b = {"Path": sys.argv[1], "WithDecryption": True, "MaxResults": 10}
+if sys.argv[2]: b["NextToken"] = sys.argv[2]
+print(json.dumps(b))' "$settings" "$next")"
+  if ! next="$(aws_curl ssm "https://ssm.$region.api.aws/" \
+                 -H 'Content-Type: application/x-amz-json-1.1' -H 'X-Amz-Target: AmazonSSM.GetParametersByPath' \
+                 --data "$body" |
+               python3 -c '
+import json, re, sys
 d = json.load(sys.stdin)
-for p in d["Parameters"]:
-    n = p["Name"][len("/cbase-vm/"):]
-    if "/" not in n or ".." in n: continue
-    os.makedirs(os.path.join(sys.argv[1], os.path.dirname(n)), exist_ok=True)
-    with open(os.path.join(sys.argv[1], n), "w") as f: f.write(p["Value"])
+with open(sys.argv[1], "a") as f:
+    for p in d["Parameters"]:
+        k, v = p["Name"].rsplit("/", 1)[-1], p["Value"]
+        if not re.fullmatch("[A-Za-z_][A-Za-z0-9_]*", k): sys.exit("the SSM parameter " + p["Name"] + " does not end in an environment name")
+        if chr(10) in v: sys.exit("the SSM parameter " + p["Name"] + " holds a newline, which its env file line cannot")
+        f.write(k + "=" + v + chr(10))
 print(d.get("NextToken", ""))
-' "$P")"
+' "$tmp/env" 2> "$tmp/why")"; then
+    say "settings: $(tail -1 "$tmp/why" | cut -c1-200): refused"
+    exit 1
+  fi
   [ -n "$next" ] || break
 done
-[ -z "$next" ] || { echo "more than 50 pages of parameters under /cbase-vm/"; exit 1; }
+[ -z "$next" ] || { say "more than 50 pages of parameters under $settings: refused"; exit 1; }
+n="$(wc -l < "$tmp/env" | tr -d ' ')"
+chmod 0600 "$tmp/env"
+mv -f "$tmp/env" "$envfile"
+say "settings: $n from SSM $settings (values not shown)"
 
-fetch() {   # fetch RELEASE_PARAM DEST: the pinned object, sha256-checked, moved into place
-  local bucket key sum
-  read -r bucket key sum < "$P/release/$1" || [ -n "${sum:-}" ]   # SSM values end without a newline
-  aws_curl s3 "https://$bucket.s3.dualstack.$region.amazonaws.com/$key" -o "$2.new"
-  echo "$sum  $2.new" | sha256sum -c --quiet || { rm -f "$2.new"; echo "sha256 mismatch: $key"; exit 1; }
-  echo "fetched $key"
-}
-
-# 1b. the fixed address (/cbase-vm/net/origin_ipv6) on this instance's interface.
-# A replacement may boot before EC2 has freed it from the old one: retry.
-want="$(cat "$P/net/origin_ipv6")"
-mac="$(md meta-data/mac)"
-eni="$(md "meta-data/network/interfaces/macs/$mac/interface-id")"
-have() { md "meta-data/network/interfaces/macs/$mac/ipv6s" | python3 -c '
-import ipaddress, sys
-w = ipaddress.ip_address(sys.argv[1]); sys.exit(0 if any(ipaddress.ip_address(l.strip()) == w for l in sys.stdin if l.strip()) else 1)' "$want"; }
-for _ in $(seq 1 30); do
-  have && break
-  aws_curl ec2 "https://ec2.$region.api.aws/" --retry 0 -o /dev/null \
-    --data "Action=AssignIpv6Addresses&Version=2016-11-15&NetworkInterfaceId=$eni&Ipv6Addresses.1=$want" || true
-  sleep 10
-done
-have || { echo "could not claim $want"; exit 1; }
-dev="$(ip -o link | awk -F': ' -v m="$mac" '$0 ~ m { print $2; exit }')"
-ip -6 addr replace "$want/128" dev "$dev"
-echo "address $want on $dev"
-
-# 2. the SSM agent, once per instance.
-if ! systemctl is-active --quiet amazon-ssm-agent; then
-  fetch agent /root/amazon-ssm-agent.rpm
-  rpm -i --nodigest --nosignature /root/amazon-ssm-agent.rpm.new 2>/dev/null || rpm -q amazon-ssm-agent
-  rm -f /root/amazon-ssm-agent.rpm.new
-  cat > /etc/amazon/ssm/amazon-ssm-agent.json <<EOF
-{"Agent":{"Region":"$region","UseDualStackEndpoint":true},"Ssm":{"Endpoint":"ssm.$region.api.aws"},"Mgs":{"Region":"$region","Endpoint":"ssmmessages.$region.api.aws"},"S3":{"Region":"$region","Endpoint":"s3.dualstack.$region.amazonaws.com"}}
-EOF
-  mkdir -p /etc/systemd/system/amazon-ssm-agent.service.d
-  printf '[Service]\nEnvironment=AWS_EC2_METADATA_SERVICE_ENDPOINT_MODE=IPv6\nEnvironment=AWS_USE_DUALSTACK_ENDPOINT=true\n' \
-    > /etc/systemd/system/amazon-ssm-agent.service.d/ipv6.conf
-  systemctl daemon-reload
-  systemctl enable --now amazon-ssm-agent
-fi
-
-# 2b. system logs live in RAM. Measured on the production VM (2 GB xfs root, 80% full):
-# journald wrote 1.1-1.36 GB a day to EBS (lifetime wchar 2.5 MB against write_bytes
-# 20.9 GB, about 100 KB of writeback per log line: mmap amplification), mostly from
-# ec2-net-utils' refresh-policy-routes@ens5.timer (an IMDS query every ~20 s, 3-4 lines);
-# chronyd added ~28 MB a day through `log measurements statistics tracking`; cbase is quiet.
-# So journald is volatile (a size-capped /run/log/journal) and chrony's own logs are off.
-# Cost: system logs, `journalctl -u cbase` included, are lost on reboot. cbase state and
-# backups do not live there. Under ~50 MB a day of writes remain, and ~90 MB of old journal
-# and chrony logs are freed. Idempotent: each service restarts only when its file changed.
-# The refresh-policy-routes noise is not silenced separately: volatile storage already
-# removes its disk cost, and a LogLevelMax drop-in would hide real route failures.
-# R is a root prefix for the tests (empty on the VM).
-R="${VM_ROOT:-}"
-jconf="$R/etc/systemd/journald.conf.d/cbase.conf"
-mkdir -p "$(dirname "$jconf")"
-printf '[Journal]\nStorage=volatile\nRuntimeMaxUse=16M\nRuntimeKeepFree=32M\nForwardToSyslog=no\n' > "$jconf.new"
-if cmp -s "$jconf.new" "$jconf"; then
-  rm -f "$jconf.new"
-else
-  mv -f "$jconf.new" "$jconf"
-  systemctl restart systemd-journald
-  rm -rf "$R"/var/log/journal/*
-fi
-if [ -f "$R/etc/chrony.conf" ] && grep -q '^log ' "$R/etc/chrony.conf"; then
-  sed -i.bak 's/^log /#log /' "$R/etc/chrony.conf"
-  rm -f "$R/etc/chrony.conf.bak"
-  systemctl restart chronyd
-  rm -rf "$R"/var/log/chrony/*
-fi
-# end 2b
-
-# 3. the server.
-getent passwd cbase >/dev/null || useradd --system --no-create-home --home-dir /var/lib/cbase --shell /sbin/nologin cbase
-fetch serve /usr/local/bin/cbase
-chmod 0755 /usr/local/bin/cbase.new
-mv -f /usr/local/bin/cbase.new /usr/local/bin/cbase
-install -d -m 0700 /etc/cbase
-: > /etc/cbase/cbase.env.new
-for f in "$P"/env/CBASE_*; do
-  printf '%s=%s\n' "$(basename "$f")" "$(cat "$f")" >> /etc/cbase/cbase.env.new
-done
-mv -f /etc/cbase/cbase.env.new /etc/cbase/cbase.env
-cat > /etc/systemd/system/cbase.service <<'EOF'
+# 6. The unit, and only it restarted.
+cat > "$R/etc/systemd/system/$unit.new" << 'EOF'
 @CBASE_SERVICE@
 EOF
+mv -f "$R/etc/systemd/system/$unit.new" "$R/etc/systemd/system/$unit"
 systemctl daemon-reload
-systemctl enable cbase
-systemctl restart cbase
-echo "cbase: $(systemctl is-active cbase)"
-sleep 30
-tail -n 3 /var/log/amazon/ssm/amazon-ssm-agent.log 2>/dev/null | cut -c1-300 || true
+systemctl enable --quiet "$unit"
+since="$(date +%s)"
+systemctl restart "$unit"
+
+# 7. Up: GET /health answers 200 on the port, or the startup line is in its journal.
+for i in $(seq 1 60); do
+  if [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "http://127.0.0.1:$port/health" || true)" = 200 ]; then
+    say "$unit is up: GET /health answered 200 on 127.0.0.1:$port"
+    exit 0
+  fi
+  if journalctl -u "$unit" --since "@$since" -o cat --no-pager 2> /dev/null | grep -q '^cbase: listening '; then
+    say "$unit is up: it is listening on port $port (no /health route)"
+    exit 0
+  fi
+  if ! systemctl is-active --quiet "$unit"; then
+    say "$unit stopped after its start: see journalctl -u $unit on the instance"
+    exit 4
+  fi
+  [ "$i" = 60 ] || sleep 1
+done
+say "$unit did not answer on 127.0.0.1:$port in 60 s: see journalctl -u $unit on the instance"
+exit 4
