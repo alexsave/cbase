@@ -1,35 +1,40 @@
 [Unit]
-Description=cbase serve (c_base, local provider: SQLite + its own MQTT hub)
+Description=cbase app @APP@ (vm_unit.service, installed by ./cbase deploy: edits by hand are undone)
 After=network-online.target
 Wants=network-online.target
 StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-User=cbase
-Group=cbase
-# The secrets and settings (vm_boot.sh writes it from SSM, root-owned 0600;
-# systemd reads it before dropping to the cbase user).
-EnvironmentFile=/etc/cbase/cbase.env
+User=@USER@
+Group=@USER@
+# The secrets and settings (vm_remote.sh writes it from SSM, root-owned 0600;
+# systemd reads it before dropping to the app's user).
+EnvironmentFile=/etc/cbase/@APP@.env
 Environment=CBASE_STORE=sqlite
-Environment=CBASE_DB=/var/lib/cbase/cbase.sqlite
+Environment=CBASE_DB=@DATA@/cbase.sqlite
 # "::" (no brackets: config.c splits host:port at the last colon) is a
 # dual-stack socket, so a local probe from 127.0.0.1 or ::1 both reach it.
-Environment=CBASE_LISTEN=:::8080
+Environment=CBASE_LISTEN=:::@PORT@
 Environment=SSL_CERT_FILE=/etc/pki/tls/certs/ca-bundle.crt
-ExecStart=/usr/local/bin/cbase serve
+# Backups: the database to s3://@BACKUP_BUCKET@/backups/@APP@/ (serve's CBASE_BACKUP_*).
+Environment=CBASE_BACKUP_BUCKET=@BACKUP_BUCKET@
+Environment=CBASE_BACKUP_REGION=@REGION@
+Environment=CBASE_BACKUP_KEY=backups/@APP@/cbase.sqlite
+Environment=CBASE_BACKUP_URL=s3://@BACKUP_BUCKET@/backups/@APP@/
+ExecStart=@HOME@/serve serve
+@MEMORY_MAX@
 Restart=always
 RestartSec=1
 # SIGTERM drains (ingress_process.c); give open games time to settle.
 KillSignal=SIGTERM
 TimeoutStopSec=30
 LimitNOFILE=65536
-StateDirectory=cbase
-StateDirectoryMode=0700
-WorkingDirectory=/var/lib/cbase
+WorkingDirectory=@DATA@
 UMask=0077
 
-# Hardening. Writable: only /var/lib/cbase (StateDirectory).
+# Hardening. Writable: only the data directory.
+ReadWritePaths=@DATA@
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes

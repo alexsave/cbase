@@ -156,7 +156,7 @@ err_has "there is no SSM parameter /cbase/shop/CBASE_ORIGIN_SECRET" "a VM app wi
 err_has "aws ssm put-parameter --type SecureString --name /cbase/shop/CBASE_ORIGIN_SECRET" "the command that makes the origin secret"
 since "$m" | grep -qE "^PUT |^CFN CreateChangeSet|^SSM SendCommand" && fail "a deploy with no origin secret changed something"
 ok
-ORIGIN_SECRET=hunter4-origin-header-value
+ORIGIN_SECRET=hunter4-origin-header-value-for-the-edge
 fake_set "origin-secret=$ORIGIN_SECRET"
 m="$(mark)"
 run "$shop" deploy
@@ -187,12 +187,15 @@ printf 'SSM SendComman\nPUT /g9-group-\nCFN ExecuteCha\n' | diff -u - "$t/order"
 ok
 # The command: the deploy script, the unit it installs.
 script_of > "$t/script"
-grep -Fq "aws s3api get-object --region us-east-1 --bucket $BUCKET --key artifacts/shop/$sha" "$t/script" || fail "the script does not fetch the artifact"
-grep -Fq "echo \"$sha  \$tmp/serve\" | sha256sum -c" "$t/script" || fail "the script does not check the artifact's sha256"
-awk "/^cat > .*<< 'CBASE_UNIT'\$/{f=1; next} /^CBASE_UNIT\$/{f=0} f" "$t/script" > "$t/unit"
-for want in "User=cbase-shop" "WorkingDirectory=/srv/cbase/shop" "ExecStart=/srv/cbase/shop/serve serve" \
-            "Environment=CBASE_LISTEN=0.0.0.0:8700" "Environment=CBASE_DB=/srv/cbase/shop/data/cbase.sqlite" \
-            "Environment=CBASE_ENV_FILE=/srv/cbase/shop/env" "Restart=on-failure" "ReadWritePaths=/srv/cbase/shop/data"; do
+{ grep -Fxq "key=artifacts/shop/$sha" "$t/script" && grep -Fxq "bucket=$BUCKET" "$t/script"; } || fail "the script does not fetch the artifact"
+grep -Fq 'aws_curl s3 "https://$bucket.s3.dualstack.$region.amazonaws.com/$key"' "$t/script" || fail "the script does not fetch over S3's dual-stack endpoint"
+{ grep -Fxq "sha=$sha" "$t/script" && grep -Fq 'echo "$sha  $tmp/serve" | sha256sum -c' "$t/script"; } || fail "the script does not check the artifact's sha256"
+awk "/^cat > .*<< 'EOF'\$/{f=1; next} /^EOF\$/{f=0} f" "$t/script" > "$t/unit"
+for want in "User=cbase-shop" "WorkingDirectory=/srv/cbase/shop/data" "ExecStart=/srv/cbase/shop/serve serve" \
+            "Environment=CBASE_LISTEN=:::8700" "Environment=CBASE_DB=/srv/cbase/shop/data/cbase.sqlite" \
+            "EnvironmentFile=/etc/cbase/shop.env" "Restart=always" "ReadWritePaths=/srv/cbase/shop/data" \
+            "Environment=CBASE_BACKUP_BUCKET=$BUCKET" "Environment=CBASE_BACKUP_KEY=backups/shop/cbase.sqlite" \
+            "Environment=CBASE_BACKUP_URL=s3://$BUCKET/backups/shop/" "Environment=CBASE_BACKUP_REGION=us-east-1"; do
   grep -Fxq -- "$want" "$t/unit" || { cat "$t/unit" >&2; fail "the unit lacks [$want]"; }
 done
 grep -q '^MemoryMax' "$t/unit" && fail "an undeclared app's unit has a MemoryMax"
@@ -219,9 +222,9 @@ out_has "  shop: memory not declared, counted as 128M" "a member's undeclared me
 out_has "  memory: blog 64, shop ~128 = 192 MiB of the 320 MiB for apps" "two members fit"
 since "$m" | grep -q "params=VmOrigin=ec2-i-0g9.compute-1.amazonaws.com,VmPort=8701,OriginSecret=(the ssm value) " || fail "blog's stack lacks its port"
 since "$m" | grep -q "^PUT /g9-group-bucket/" && fail "a VM-only app uploaded files"
-script_of | awk "/<< 'CBASE_UNIT'\$/{f=1; next} /^CBASE_UNIT\$/{f=0} f" > "$t/unit"
+script_of | awk "/^cat > .*<< 'EOF'\$/{f=1; next} /^EOF\$/{f=0} f" > "$t/unit"
 grep -Fxq "MemoryMax=64M" "$t/unit" || { cat "$t/unit" >&2; fail "a declared app's unit lacks MemoryMax=64M"; }
-grep -Fxq "Environment=CBASE_LISTEN=0.0.0.0:8701" "$t/unit" || fail "blog's unit is not on its port"
+grep -Fxq "Environment=CBASE_LISTEN=:::8701" "$t/unit" || fail "blog's unit is not on its port"
 template_of cbase-app-blog | grep -q "TargetOriginId: vm" || fail "blog's distribution does not route to the VM"
 ok
 # A redeploy keeps the port, and the artifact already there is not sent again.
@@ -369,16 +372,36 @@ cat > "$stubs/ss" << 'EOF'
 #!/bin/bash
 [ "${STUB_TAKEN:-0}" != 1 ] || echo "LISTEN 0 4096 0.0.0.0:${STUB_PORT} 0.0.0.0:* users:((\"python3\",pid=7,fd=3))"
 EOF
-cat > "$stubs/aws" << 'EOF'
+cat > "$stubs/curl" << 'EOF'
 #!/bin/bash
-echo "aws $*" >> "$STUB_LOG"
-case "$1 $2" in
-  "s3api get-object") cp "$STUB_ELF" "${!#}" ;;
-  "ssm get-parameters-by-path")
-    case "$*" in
-      *"length(Parameters)"*) echo 1 ;;
-      *) printf '/cbase/%s/DB_PASSWORD\t%s\n' "$STUB_APP" "$STUB_SECRET" ;;
+# The instance's curl: IMDSv2 (IPv6 unless STUB_NO_IMDS6=1), the artifact from S3, one SSM
+# parameter holding a secret (GetParametersByPath, in two pages), and GET /health 200.
+out=""; url=""; w=""; data=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift ;; -w) w="$2"; shift ;; --data) data="$2"; shift ;;
+    -H|-X|--user|--aws-sigv4|--max-time|--retry) shift ;;
+    -*) ;;
+    *) url="$1" ;;
+  esac
+  shift
+done
+echo "curl $url" >> "$STUB_LOG"
+case "$url" in
+  'http://[fd00:ec2::254]'*) [ "${STUB_NO_IMDS6:-0}" != 1 ] || exit 7 ;;
+esac
+case "$url" in
+  */latest/api/token) echo tok ;;
+  */iam/security-credentials/) echo role ;;
+  */iam/security-credentials/role) echo '{"AccessKeyId":"AKIASTUBSTUBSTUB0000","SecretAccessKey":"stub","Token":"stub"}' ;;
+  *.s3.dualstack.*) cp "$STUB_ELF" "$out" ;;
+  https://ssm.*.api.aws/)
+    case "$data" in
+      *NextToken*) printf '{"Parameters":[{"Name":"%sDB_PASSWORD","Value":"%s"}]}\n' "$STUB_SETTINGS" "$STUB_SECRET" ;;
+      *) printf '{"Parameters":[],"NextToken":"p2"}\n' ;;
     esac ;;
+  */health) [ -z "$w" ] || printf 200 ;;
+  *) exit 22 ;;
 esac
 EOF
 cat > "$stubs/sha256sum" << 'EOF'
@@ -390,7 +413,6 @@ printf '#!/bin/bash\n[ "${1:-}" != -u ] || case "${2:-}" in cbase-*) [ -f "$STUB
 printf '#!/bin/bash\necho "useradd $*" >> "$STUB_LOG"; touch "$STUB_USERS/${!#}"\n' > "$stubs/useradd"
 printf '#!/bin/bash\necho "userdel $*" >> "$STUB_LOG"; rm -f "$STUB_USERS/$1"\n' > "$stubs/userdel"
 printf '#!/bin/bash\necho "chown $*" >> "$STUB_LOG"\n' > "$stubs/chown"
-printf '#!/bin/bash\nprintf 200\n' > "$stubs/curl"
 printf '#!/bin/bash\n:\n' > "$stubs/journalctl"
 chmod +x "$stubs"/*
 # on_vm ROOT SCRIPT: the script as SSM runs it, under ROOT; stdout in $t/vm-out, status in $rc.
@@ -399,7 +421,7 @@ on_vm() {
   : > "$1/calls"
   rc=0
   env PATH="$stubs:$PATH" CBASE_VM_ROOT="$1" STUB_LOG="$1/calls" STUB_USERS="$1/users" STUB_ELF="$t/elf-arm64" \
-      STUB_APP=shop STUB_PORT=8700 STUB_SECRET="$SECRET" bash "$2" > "$t/vm-out" 2>&1 < /dev/null || rc=$?
+      STUB_APP=shop STUB_PORT=8700 STUB_SETTINGS="${STUB_SETTINGS:-/cbase/shop/}" STUB_SECRET="$SECRET" bash "$2" > "$t/vm-out" 2>&1 < /dev/null || rc=$?
 }
 grep '^SSM SendCommand .*\[cbase deploy of shop\]' "$t/log" | tail -1 | sed -n 's/.*echo \([A-Za-z0-9+/=]*\) | base64 -d.*/\1/p' | base64 -d > "$t/shop-deploy.sh"
 [ -s "$t/shop-deploy.sh" ] || fail "no deploy script of shop's in the fake's log"
@@ -411,13 +433,13 @@ on_vm "$vm" "$t/shop-deploy.sh"
 grep -Fq "CBASE: cbase-shop.service is up: GET /health answered 200 on 127.0.0.1:8700" "$t/vm-out" || { cat "$t/vm-out" >&2; fail "the deploy script's health line"; }
 grep -Fq "CBASE: settings: 1 from SSM /cbase/shop/ (values not shown)" "$t/vm-out" || fail "the deploy script's settings line"
 grep -Fq "$SECRET" "$t/vm-out" && fail "the deploy script printed a setting's value"
-[ "$(cat "$vm/srv/cbase/shop/env")" = "DB_PASSWORD='$SECRET'" ] || fail "the env file is not the SSM parameter"
+[ "$(cat "$vm/etc/cbase/shop.env")" = "DB_PASSWORD=$SECRET" ] || fail "the env file is not the SSM parameter"
 cmp -s "$vm/srv/cbase/shop/serve" "$t/elf-arm64" || fail "the server was not installed"
 [ -d "$vm/srv/cbase/shop/data" ] || fail "the data folder was not made"
-awk "/<< 'CBASE_UNIT'\$/{f=1; next} /^CBASE_UNIT\$/{f=0} f" "$t/shop-deploy.sh" | diff -u - "$vm/etc/systemd/system/cbase-shop.service" \
+awk "/^cat > .*<< 'EOF'\$/{f=1; next} /^EOF\$/{f=0} f" "$t/shop-deploy.sh" | diff -u - "$vm/etc/systemd/system/cbase-shop.service" \
   || fail "the installed unit is not the one the deploy rendered"
 grep -q "^useradd .*cbase-shop$" "$vm/calls" || fail "the app's user was not made"
-grep -Fxq "chown cbase-shop:cbase-shop $vm/srv/cbase/shop/data" "$vm/calls" || fail "the data folder is not the service's"
+grep -Fxq "chown -R cbase-shop:cbase-shop $vm/srv/cbase/shop/data" "$vm/calls" || fail "the data folder is not the service's"
 if [ "$(grep -c '^systemctl restart' "$vm/calls")" != 1 ] || ! grep -Fxq "systemctl restart cbase-shop.service" "$vm/calls"; then
   cat "$vm/calls" >&2
   fail "the deploy script restarted other than cbase-shop.service"
@@ -446,7 +468,7 @@ on_vm "$t/vm1" "$t/shop-undeploy.sh"
 grep -Fxq "systemctl disable --now --quiet cbase-shop.service" "$t/vm1/calls" || fail "the undeploy script did not stop and disable the unit"
 [ ! -e "$t/vm1/etc/systemd/system/cbase-shop.service" ] || fail "the undeploy script left the unit"
 [ "$(cat "$t/vm1/srv/cbase/shop/data/cbase.sqlite")" = precious ] || fail "the undeploy script did not keep the data"
-[ ! -e "$t/vm1/srv/cbase/shop/env" ] || fail "the undeploy script left the env file"
+[ ! -e "$t/vm1/etc/cbase/shop.env" ] || fail "the undeploy script left the env file"
 grep -Fq "CBASE: kept /srv/cbase/shop/data (./cbase undeploy --delete-data deletes it)" "$t/vm-out" || fail "the undeploy script does not say the data is kept"
 ok
 out_has "undeploy: kept s3://g9-group-bucket/shop/ (./cbase undeploy --delete-files deletes it)" "undeploy keeps the files"

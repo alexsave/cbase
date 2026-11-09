@@ -103,7 +103,8 @@ vm_find() {
 # aws_mask masks any line that holds it, and a bad one is refused without it.
 VM_ORIGIN_SECRET=""
 vm_origin_secret() {
-  local name="/cbase/$CONF_APP/CBASE_ORIGIN_SECRET"
+  local name
+  name="$(vm_settings)CBASE_ORIGIN_SECRET"
   if ! VM_ORIGIN_SECRET="$(aws_call ssm get-parameter --name "$name" --with-decryption --query Parameter.Value --output text)"; then
     VM_ORIGIN_SECRET=""
     if [ "$(aws_code)" = ParameterNotFound ]; then
@@ -113,9 +114,9 @@ vm_origin_secret() {
     fi
     aws_fail "reading the SSM parameter $name"
   fi
-  if ! [[ "$VM_ORIGIN_SECRET" =~ ^[A-Za-z0-9_-]{16,128}$ ]]; then
+  if ! [[ "$VM_ORIGIN_SECRET" =~ ^[A-Za-z0-9_-]{32,128}$ ]]; then
     VM_ORIGIN_SECRET=""
-    echo "cbase: the SSM parameter $name is not 16 to 128 letters, digits, _ and - (its value is not shown): openssl rand -hex 32 makes one" >&2
+    echo "cbase: the SSM parameter $name is not 32 to 128 letters, digits, _ and - (its value is not shown): openssl rand -hex 32 makes one" >&2
     exit 1
   fi
   AWS_MASK_VALUES+=("$VM_ORIGIN_SECRET")
@@ -188,9 +189,12 @@ vm_plan_dry() {
   vm_fit_set
   state_read vm "$group"
   for i in "${!ST_APPS[@]}"; do [ "${ST_APPS[$i]}" != "$CONF_APP" ] || at="$i"; done
-  if [ -n "$at" ]; then port="${ST_PORTS[$at]}"; else port="$(state_free_port)"; fi
+  if [ -n "$CONF_VM_PORT" ]; then port="$CONF_VM_PORT"
+  elif [ -n "$at" ] && [[ "${ST_LINES[$at]}" != *" legacy=1" ]]; then port="${ST_PORTS[$at]}"
+  else port="$(state_free_port)"; fi
   [ -n "$port" ] || { echo "cbase: vm group $group has no free port: all of $STATE_PORT_MIN-$STATE_PORT_MAX are held" >&2; exit 1; }
   line="app=$CONF_APP port=$port service=cbase-$CONF_APP.service mem=$(vm_mem)"
+  [ -z "$CONF_VM_PORT" ] || line="$line data=$CONF_VM_DATA legacy=1"
   if ! state_fit "$CONF_APP" "$line"; then
     printf '%s\n' "$STATE_FIT_REPORT" >&2
     echo "cbase: $CONF_APP would not fit on vm group $group ($STATE_FIT_WHAT)" >&2
@@ -205,9 +209,23 @@ vm_plan_dry() {
 # in the one conditional write. VM_PORT, and VM_NEW (1 when the app was not a member).
 vm_join() {
   vm_fit_set
+  # shellcheck disable=SC2034 # state.sh reads them
+  STATE_LEGACY_PORT="$CONF_VM_PORT"
+  # shellcheck disable=SC2034
+  STATE_LEGACY_DATA="$CONF_VM_DATA"
   state_change vm "$1" "$CONF_APP" "$(vm_mem)" join
   VM_PORT="$STATE_PORT"
   VM_NEW="$STATE_JOINED_NEW"
+}
+
+# vm_settings: the SSM path of the app's settings (CBASE_VM_SETTINGS, or /cbase/<app>/), ending in /.
+vm_settings() { printf '%s' "${CONF_VM_SETTINGS:-/cbase/$CONF_APP/}"; }
+# vm_artifacts: "<bucket> <prefix>" the app's servers go to and the instance fetches from
+# (CBASE_VM_ARTIFACTS, or the state bucket's artifacts/<app>/), the prefix ending in /.
+vm_artifacts() {
+  local a="${CONF_VM_ARTIFACTS:-s3://$(state_bucket)/artifacts/$CONF_APP/}"
+  a="${a#s3://}"
+  printf '%s %s' "${a%%/*}" "${a#*/}"
 }
 
 # vm_data_dir: the app's data directory on the VM: a grandfathered member's own (CBASE_VM_DATA), or
@@ -218,46 +236,17 @@ vm_backup_bucket() { printf '%s' "${CONF_BACKUP_BUCKET:-$(state_bucket)}"; }
 # vm_region: the group's region (the CLI's), which the instance's calls and its backups use.
 vm_region() { aws_region_required; }
 
-# vm_unit PORT: the app's systemd unit. MemoryMax only for a declared CBASE_MEMORY: an undeclared
-# app has no cap (it is only counted at 128M).
+# vm_unit PORT: the app's systemd unit, vm_unit.service filled in. MemoryMax only for a declared
+# CBASE_MEMORY: an undeclared app has no cap (it is only counted at 128M).
 vm_unit() {
-  local port="$1" app="$CONF_APP" home="/srv/cbase/$CONF_APP" data
-  data="$(vm_data_dir)"
-  cat << EOF
-# cbase-$app.service: the app $app, installed by ./cbase deploy (tools/cbase.d/vm.sh). Edits by hand
-# are undone by the next deploy.
-[Unit]
-Description=cbase app $app
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=cbase-$app
-Group=cbase-$app
-WorkingDirectory=$home
-ExecStart=$home/serve serve
-Environment=CBASE_LISTEN=:::$port
-Environment=CBASE_DB=$data/cbase.sqlite
-Environment=CBASE_ENV_FILE=$home/env
-Environment=CBASE_BACKUP_BUCKET=$(vm_backup_bucket)
-Environment=CBASE_BACKUP_REGION=$(vm_region)
-Environment=CBASE_BACKUP_KEY=backups/$app/cbase.sqlite
-Environment=CBASE_BACKUP_URL=s3://$(vm_backup_bucket)/backups/$app/
-EOF
-  [ -n "$CONF_MEMORY_ESTIMATED" ] || printf 'MemoryMax=%sM\n' "$CONF_MEMORY"
-  cat << EOF
-Restart=on-failure
-RestartSec=2
-NoNewPrivileges=yes
-PrivateTmp=yes
-ProtectHome=yes
-ProtectSystem=strict
-ReadWritePaths=$data
-
-[Install]
-WantedBy=multi-user.target
-EOF
+  local port="$1" mem="/^@MEMORY_MAX@\$/d"
+  [ -n "$CONF_MEMORY_ESTIMATED" ] || mem="s|^@MEMORY_MAX@\$|MemoryMax=${CONF_MEMORY}M|"
+  # Every value is one this tool checked (a name, digits, a path, a bucket and region name), none
+  # holding a '|' or a '&', so each is a literal sed replacement.
+  # shellcheck disable=SC2154 # here is tools/cbase's directory
+  sed -e "s|@APP@|$CONF_APP|g" -e "s|@USER@|cbase-$CONF_APP|g" -e "s|@PORT@|$port|g" \
+      -e "s|@DATA@|$(vm_data_dir)|g" -e "s|@HOME@|/srv/cbase/$CONF_APP|g" -e "s|@REGION@|$(vm_region)|g" \
+      -e "s|@BACKUP_BUCKET@|$(vm_backup_bucket)|g" -e "$mem" "$here/cbase.d/vm_unit.service"
 }
 
 # vm_remote_deploy PORT BUCKET KEY SHA REGION: the script SSM runs as root on the instance. Every
@@ -268,92 +257,25 @@ vm_remote_deploy() {
   local port="$1" bucket="$2" key="$3" sha="$4" region="$5" app="$CONF_APP"
   cat << EOF
 #!/bin/bash
-# The deploy of cbase app $app on its VM, rendered by ./cbase deploy (tools/cbase.d/vm.sh) and run
-# as root by SSM. It prints "CBASE: " lines alone, none naming a setting's value. Exit 3: the port
-# is taken; 4: the service did not come up.
-set -euo pipefail
-R="\${CBASE_VM_ROOT:-}"
+# The deploy of cbase app $app on its VM, rendered by ./cbase deploy (tools/cbase.d/vm.sh) from
+# vm_remote.sh, and run as root by SSM.
 app=$app
 port=$port
 user=cbase-$app
 unit=cbase-$app.service
-home="\$R/srv/cbase/$app"
-say() { echo "CBASE: \$*"; }
-tmp="\$(mktemp -d)"
-trap 'rm -rf "\$tmp"' EXIT
-
-# 1. Its user and its folders: the data folder is the service's alone.
-id -u "\$user" > /dev/null 2>&1 || useradd --system --user-group --no-create-home --home-dir "/srv/cbase/\$app" --shell /sbin/nologin "\$user"
-data="\$R$(vm_data_dir)"
-mkdir -p "\$data"
-chmod 0755 "\$R/srv/cbase" "\$home"
-chown -R "\$user:\$user" "\$data"
-chmod 0700 "\$data"
-
-# 2. The port, free before a first start: with the unit not running, nothing may listen on it.
-if ! systemctl is-active --quiet "\$unit"; then
-  if [ -n "\$(ss -Hltn "sport = :\$port")" ]; then
-    say "port \$port is in use on the VM, and not by \$unit: refused, nothing was started"
-    exit 3
-  fi
-fi
-
-# 3. The server: fetched, its sha256 checked, then swapped in.
-aws s3api get-object --region $region --bucket $bucket --key $key "\$tmp/serve" > /dev/null
-echo "$sha  \$tmp/serve" | sha256sum -c --quiet - || { say "the artifact's sha256 is not $sha: refused"; exit 1; }
-install -m 0755 "\$tmp/serve" "\$home/serve.new"
-mv -f "\$home/serve.new" "\$home/serve"
-
-# 4. The settings: SSM Parameter Store /cbase/$app/<NAME>, as NAME='value' lines of the env file
-# serve reads (CBASE_ENV_FILE). Read on the instance and written there; never printed.
-aws ssm get-parameters-by-path --region $region --path "/cbase/\$app/" --with-decryption \\
-  --query 'Parameters[].[Name,Value]' --output text > "\$tmp/params"
-want="\$(aws ssm get-parameters-by-path --region $region --path "/cbase/\$app/" --query 'length(Parameters)' --output text)"
-n=0
-: > "\$tmp/env"
-while IFS=\$'\\t' read -r name value; do
-  [ -n "\$name" ] || continue
-  k="\${name##*/}"
-  [[ "\$k" =~ ^[A-Za-z_][A-Za-z0-9_]*\$ ]] || { say "the SSM parameter \$name does not end in an environment name: refused"; exit 1; }
-  case "\$value" in *"'"*) say "the SSM parameter \$name holds a single quote, which its env file line cannot: refused"; exit 1 ;; esac
-  printf "%s='%s'\\n" "\$k" "\$value" >> "\$tmp/env"
-  n=\$((n + 1))
-done < "\$tmp/params"
-[ "\$n" = "\$want" ] || { say "an SSM parameter under /cbase/\$app/ holds a newline, which its env file line cannot: refused"; exit 1; }
-chown "root:\$user" "\$tmp/env"
-chmod 0640 "\$tmp/env"
-mv -f "\$tmp/env" "\$home/env"
-say "settings: \$n from SSM /cbase/\$app/ (values not shown)"
-
-# 5. The unit, and only it restarted.
-cat > "\$R/etc/systemd/system/\$unit.new" << 'CBASE_UNIT'
-$(vm_unit "$port")
-CBASE_UNIT
-mv -f "\$R/etc/systemd/system/\$unit.new" "\$R/etc/systemd/system/\$unit"
-systemctl daemon-reload
-systemctl enable --quiet "\$unit"
-since="\$(date +%s)"
-systemctl restart "\$unit"
-
-# 6. Up: GET /health answers 200 on the port, or the startup line is in its journal.
-for i in \$(seq 1 60); do
-  if [ "\$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "http://127.0.0.1:\$port/health" || true)" = 200 ]; then
-    say "\$unit is up: GET /health answered 200 on 127.0.0.1:\$port"
-    exit 0
-  fi
-  if journalctl -u "\$unit" --since "@\$since" -o cat --no-pager 2> /dev/null | grep -q '^cbase: listening '; then
-    say "\$unit is up: it is listening on port \$port (no /health route)"
-    exit 0
-  fi
-  if ! systemctl is-active --quiet "\$unit"; then
-    say "\$unit stopped after its start: see journalctl -u \$unit on the instance"
-    exit 4
-  fi
-  [ "\$i" = 60 ] || sleep 1
-done
-say "\$unit did not answer on 127.0.0.1:\$port in 60 s: see journalctl -u \$unit on the instance"
-exit 4
+home="\${CBASE_VM_ROOT:-}/srv/cbase/$app"
+data=$(vm_data_dir)
+bucket=$bucket
+key=$key
+sha=$sha
+region=$region
+settings=$(vm_settings)
 EOF
+  vm_unit "$port" > "$CB_TMP/vm-unit"
+  # The unit spliced in at @CBASE_SERVICE@ (the production boot script's own way), and the shebang
+  # once, above.
+  awk -v unit="$CB_TMP/vm-unit" 'NR == 1 { next } $0 == "@CBASE_SERVICE@" { while ((getline l < unit) > 0) print l; next } { print }' \
+    "$here/cbase.d/vm_remote.sh"
 }
 
 # vm_remote_undeploy DELETE_DATA: the script that stops and removes the app's service.
@@ -376,7 +298,7 @@ if [ -f "\$R/etc/systemd/system/\$unit" ]; then
 else
   say "\$unit is not installed"
 fi
-rm -f "\$home/serve" "\$home/serve.new" "\$home/env"
+rm -f "\$home/serve" "\$home/serve.new" "\$R/etc/cbase/\$app.env"
 EOF
   if [ "$1" = 1 ]; then
     cat << 'EOF'
@@ -438,9 +360,9 @@ vm_ssm_run() {
 # vm_ship GROUP: the artifact uploaded and the service (re)started on VM_ID. Status 1 when the
 # service was not started (said why): a port taken on the VM releases the claim this deploy made.
 vm_ship() {
-  local group="$1" bucket region
-  bucket="$(state_bucket)"
-  VM_KEY="artifacts/$CONF_APP/$VM_SHA"
+  local group="$1" bucket region prefix
+  read -r bucket prefix <<< "$(vm_artifacts)"
+  VM_KEY="$prefix$VM_SHA"
   region="$(aws_region_required)"
   if aws_call s3api head-object --bucket "$bucket" --key "$VM_KEY" --query ETag --output text > /dev/null; then
     echo "artifact: s3://$bucket/$VM_KEY is already this server"

@@ -113,6 +113,7 @@ STATE_MEM=""
 STATE_MEM_EST=""
 state_mem() {
   local m="${1##* mem=}"
+  m="${m%% *}"   # a grandfathered member's " data=... legacy=1" follows
   STATE_MEM_EST=""
   if [ "${m#\~}" != "$m" ]; then STATE_MEM_EST=1; m="${m#\~}"; fi
   STATE_MEM="$((10#$m))"
