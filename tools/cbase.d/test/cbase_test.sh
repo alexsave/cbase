@@ -10,8 +10,15 @@
 # echoed); the values that look random but are not secrets; no credentials; a group found and not
 # found; README.md's example; join, rejoin, leave and the port claim; two racing joins on a new file and on an
 # existing one (distinct ports, one 412 and its retry); apps; a corrupt state file; a missing
-# state bucket; doctor; the commands not built yet. docs/mutation_checks.md records the
-# mutations each was checked against.
+# state bucket; doctor; the commands not built yet. Then deploy (phase 2): a static site end to
+# end (the stack's create, each file's headers, the hashed rule, the upload order, nothing outside
+# the app's folder), a redeploy (drift checked, no changes, the invalidation), prune scoped to the
+# folder even over a listing of the whole bucket, a bucket's replacement and removal refused, a
+# distribution's replacement allowed and said, drift refused then accepted, DRY_RUN, an origin
+# header's and a parameter's value kept out of a drift, a change set and an error, the
+# certificate found, requested with a zone, requested without one (the records printed, status 3),
+# a certificate read that fails, a VM app stopped as phase 3, a missing group and a missing build,
+# and the template's routes. docs/mutation_checks.md records the mutations each was checked against.
 set -euo pipefail
 export LC_ALL=C
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -584,6 +591,8 @@ printf 'DELETE /%s/site/data.json 204\nDELETE /%s/site/old/page.html 204\nDELETE
   "$SITE_BUCKET" "$SITE_BUCKET" "$SITE_BUCKET" > "$t/want"
 diff -u "$t/want" "$t/deleted" || fail "the prune deleted other than the folder's three stale files"
 out_has "pruned 3 files the build no longer has, under s3://$SITE_BUCKET/site/ alone" "the prune's count"
+# The listing is the folder's alone: no other app's key is even read, let alone named.
+grep -q "is outside site/" "$t/err" && { cat "$t/err" >&2; fail "the prune listed keys outside the app's folder"; }
 ok
 # A listing that answers keys outside the folder (as a wrong one might): still nothing outside is
 # deleted, and each is named. CBASE_PRUNE=1 is the flag's spelling in the environment.
@@ -700,9 +709,9 @@ ok
 fake_set "fail-execute=1&drift=0"
 run "$site" deploy
 expect_rc 1 "an execute that fails with the value in its message"
+no_secret "the failed execute"
 err_has "executing change set cbase-deploy on cbase-app-site failed:" "the failed execute"
 err_has "(a line naming an origin header or a parameter value, not shown)" "the failed execute's message"
-no_secret "the failed execute"
 fake_set "fail-execute=0&secret=&secret2="
 ok
 
@@ -734,20 +743,21 @@ err_has "AWS refused it (AccessDenied)" "a certificate that cannot be read"
 since "$m" | grep -qE "ACM RequestCertificate|CFN CreateChangeSet" && fail "a certificate read that failed went on"
 fake_set acm-deny=0
 ok
-# Requested, with a zone: a.b.example.com is under no wildcard (one label each), so a request; its
-# validation CNAME goes in the longest zone (example.com: corp.example.com is private), ACM issues
-# it, and the alias follows.
-deep="$(app deep "CBASE_APP = deep" "CBASE_VM = none" "CBASE_STATIC = site" "CBASE_DOMAIN = a.b.example.com")"
+# Requested, with a zone: a.corp.example.com is under no wildcard (one label each), so a request;
+# its validation CNAME goes in the longest public zone (example.com: corp.example.com is private),
+# ACM issues it, and the alias follows.
+deep="$(app deep "CBASE_APP = deep" "CBASE_VM = none" "CBASE_STATIC = site" "CBASE_DOMAIN = a.corp.example.com")"
 mkdir -p "$deep/build" && printf 'x\n' > "$deep/build/index.html"
 m="$(mark)"
 run "$deep" deploy
 expect_rc 0 "a domain whose certificate is requested, with a zone"
-since "$m" | grep -q "ACM RequestCertificate a.b.example.com" || fail "no certificate was requested for a.b.example.com"
-since "$m" | grep -qE "R53 UPSERT Z0EXAMPLE _v[0-9]+\.a\.b\.example\.com\. CNAME _a[0-9]+\.acm-validations\.aws\." \
+since "$m" | grep -q "ACM RequestCertificate a.corp.example.com" || fail "no certificate was requested for a.corp.example.com"
+since "$m" | grep -qE "R53 UPSERT Z0EXAMPLE _v[0-9]+\.a\.corp\.example\.com\. CNAME _a[0-9]+\.acm-validations\.aws\." \
   || { since "$m" >&2; fail "the validation record was not written"; }
 since "$m" | grep -q "ACM issued" || fail "the requested certificate was not issued"
-since "$m" | grep -q "R53 UPSERT Z0EXAMPLE a.b.example.com A alias=" || fail "the alias was not written"
-out_has "deployed deep: https://a.b.example.com/" "the requested certificate's URL"
+since "$m" | grep -q "R53 UPSERT Z0EXAMPLE a.corp.example.com A alias=" || fail "the alias was not written"
+since "$m" | grep -q "Z0PRIVATE" && fail "a record was written in a private zone"
+out_has "deployed deep: https://a.corp.example.com/" "the requested certificate's URL"
 ok
 # Requested, no zone: the records printed, a clean stop (status 3), nothing else changed; the next
 # deploy reuses the pending request.

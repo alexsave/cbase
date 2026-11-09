@@ -446,10 +446,12 @@ What works now:
 - `cbase/tools/cbase config check`: reads `cbase.conf` and prints it with the defaults filled in (no AWS).
 - `cbase/tools/cbase doctor`: the config, the AWS account, each of the app's groups found by its tag, and the group's members.
 - `cbase/tools/cbase apps [GROUP]`: a group's members, from its state file (default: the groups `cbase.conf` names).
-- `cbase/tools/cbase state join` and `state leave`: the membership step deploy and undeploy will run, for repair and the tests.
+- `cbase/tools/cbase state join` and `state leave`: the membership step deploy and undeploy run, for repair and the tests.
+- `cbase/tools/cbase deploy [--dry-run] [--accept-drift] [--prune]`: a static site's whole deploy, and the static part of an app with a VM (below).
+- `cbase/tools/cbase template`: the distribution's stack template that deploy renders, with the bucket and the certificate as placeholders (no AWS).
 
-Coming: `deploy` for static files and the app's own CloudFormation distribution (phase 2), `group-init vm|static GROUP`, the VM deploy over SSM, ports checked on the VM and the memory check (phase 3), and `undeploy` (phase 3).
-They say "not yet" and exit 2 today.
+Coming in phase 3: the VM side of a deploy (the service over SSM, its port checked on the VM, the memory check), `group-init vm|static GROUP` and `undeploy`.
+An app with a VM stops at `deploy` with a sentence saying so, before any AWS call, and `group-init` and `undeploy` say "not yet"; all three exit 2.
 
 ### cbase.conf
 
@@ -466,7 +468,7 @@ CBASE_APP = site
 CBASE_VM = none
 ```
 
-A real domain is one more line; deploy finds an issued certificate for it or requests one (phase 2):
+A real domain is one more line; deploy finds an issued certificate for it or requests one:
 
 ```conf
 CBASE_APP = shop
@@ -491,6 +493,8 @@ Optional, each with its default:
 - `CBASE_API_HOST = <host>`: a second hostname whose every request goes to the VM; default none.
 - `CBASE_CERT_ARN = arn:aws:acm:us-east-1:...`: an override; default, deploy finds an issued us-east-1 certificate covering the hostnames (wildcards and SANs included) or requests one with DNS validation.
 - `CBASE_ZONE = Z...`: an override; default, deploy finds the account's Route 53 hosted zone that covers the domain and writes the records there, or with none prints the records to add.
+- `CBASE_STATIC_DIR = <dir>`: the directory deploy uploads; default `build` for a static site, `ui/out` for an app with a VM.
+- `CBASE_HASHED = <glob> ...`: the content-hashed files, cached for a year; default none.
 
 The file is public, so the tool refuses any line that looks like a secret, naming the line and never echoing it: a key named with SECRET, TOKEN, PASSWORD, PASSWD, PRIVATE or CREDENTIAL, an AWS access key id, a PEM block, or a long random-looking string.
 
@@ -513,11 +517,80 @@ A join or leave reads the file with its ETag and writes it back with S3's `If-Ma
 A 412 or 409 means another run wrote first: the file is read again and the change made again, up to 8 times, with a fixed backoff (no randomness: `tools/cbase.d/state.sh` says why).
 A VM app claims the lowest free port in 8700-8799 in the same write, so two racing deploys never hold one port.
 
+### Deploying a static site
+
+A static site is two lines of `cbase.conf`, plus its static group, which `group-init` makes once (phase 3).
+Until then a group is made by hand: a private bucket tagged `cbase:static-group=site`, its policy (below), and the state bucket `cbase-state-<account>`.
+
+```conf
+CBASE_APP = site
+CBASE_VM = none
+```
+
+`cbase/tools/cbase deploy` then, in order:
+
+1. finds the static group's bucket by its tag, and stops with the `group-init` command when there is none (deploy never creates a group);
+2. reads the static dir, `CBASE_STATIC_DIR`, which must hold `index.html`;
+3. finds or makes the certificate when there is a `CBASE_DOMAIN` (below);
+4. makes a change set of the app's own stack, `cbase-app-<app>` in us-east-1, prints it, and holds it to the safety rules (below);
+5. joins the static group's state file, which records the app's folder, `<app>/`;
+6. uploads the files into `s3://<bucket>/<app>/`: the content-hashed files first, then the rest, the html last, so no page names a file that has not landed;
+7. with `--prune` (or `CBASE_PRUNE=1`), deletes what the folder holds and this build does not, and never a key outside `<app>/`, whatever the bucket's listing says;
+8. executes the change set and waits, invalidates `/*` on a stack that existed, writes the hostname's Route 53 alias, and prints the URL.
+
+`CBASE_STATIC_DIR = <dir>` is the directory deploy uploads, relative to the repository's root; its default is `build` for a static site (what cdom's `make new` builds) and `ui/out` for an app with a VM (the starter's page, so a server binary under `build/` is never published).
+A path with a part that starts with `.` is not uploaded (`.git`, `.DS_Store`), but `.well-known/`.
+`CBASE_HASHED = <glob> ...` names the content-hashed files (`CBASE_HASHED = assets/*`; `*` crosses `/`), which are cached for a year, immutable; its default is none.
+Each file's Content-Type comes from one table, `tools/cbase.d/static_rules.tsv`, by extension (`.wasm` is `application/wasm`).
+Its Cache-Control is `no-cache` for html (a browser and CloudFront revalidate it, so a deploy is seen at once), `public, max-age=31536000, immutable` for a hashed file (never html), and `no-cache` for the rest.
+
+The stack holds one distribution, its Origin Access Control and a CloudFront Function for clean URLs (`/about` is `about.html`, `/docs/` is `docs/index.html`).
+Its default behaviour is the bucket, read through the Origin Access Control with `OriginPath /<app>`, so an app reads its own folder and nothing else.
+The bucket's policy belongs to the static group: `group-init` sets it once per bucket, on `aws:SourceAccount`, and deploy never edits it.
+That policy lets any distribution in the account read the bucket, so a shared static group holds public content only.
+
+### Deploying a full app
+
+A full app (`CBASE_APP = shop` alone) deploys the same static part, and its distribution adds each `CBASE_ROUTE` as a behaviour on the VM origin, the group VM's public DNS name and the app's port, which phase 3's VM deploy supplies as the stack's `VmOrigin` and `VmPort` parameters.
+A route's methods map to the smallest of CloudFront's three method sets that covers them (`GET,HEAD`; `GET,HEAD,OPTIONS`; all seven), `cache` is AWS's CachingOptimized policy and `nocache` CachingDisabled, and a VM route forwards every viewer header but `Host`.
+A `ws` route is its own origin for its long timeouts (CloudFront sets them per origin): 60 s to read and to keep alive, uncached, every method.
+`CBASE_API_HOST` is a second distribution whose every request goes to the VM.
+`cbase/tools/cbase template` prints the stack an app's `cbase.conf` makes, to read before a first deploy.
+
+### Certificates
+
+With no `CBASE_DOMAIN` there is no certificate: the app is at its distribution's `cloudfront.net` name, which deploy prints.
+With one, deploy looks in ACM in us-east-1 (the one region CloudFront reads) for an ISSUED certificate that covers every hostname, the domain and `CBASE_API_HOST`.
+A certificate's names are its domain and SANs, and a wildcard covers one label: `*.example.com` covers `www.example.com` and neither `example.com` nor `a.b.example.com`.
+Without one, it reuses a certificate it requested before that is still pending, or requests one with DNS validation.
+It then looks for the account's public Route 53 hosted zone whose name is the longest suffix of each hostname.
+With a zone, deploy writes the validation CNAME there, waits for ACM to issue the certificate, and after the stack writes the hostname's alias (A and AAAA) to the distribution.
+With none, it prints the exact records to add where the domain's DNS is served and stops with status 3, having changed nothing else; the next deploy goes on once ACM has issued the certificate, and prints the record that points the hostname at the distribution.
+`CBASE_CERT_ARN` and `CBASE_ZONE` are overrides, for a certificate or a zone deploy would not pick.
+Deploy never registers a domain or makes a hosted zone.
+
+### The safety rules
+
+Every stack change is a change set, made and printed before anything runs.
+
+- **A bucket is never replaced or removed.**
+  A change set that would replace or remove an `AWS::S3::Bucket` is refused and deleted, and nothing is executed or uploaded: a bucket replaced is every file in it lost.
+  This is the one hard stop.
+- **A distribution may be replaced.**
+  A new distribution is a new `cloudfront.net` name and a brief outage; deploy allows it and says so, and rewrites a Route 53 alias itself.
+- **Drift stops a deploy.**
+  On a stack that exists, CloudFormation's drift detection runs first, and a resource changed by hand is printed and the deploy stops, since the update would undo the change; `--accept-drift` (or `CBASE_ACCEPT_DRIFT=1`) overwrites it.
+- **A dry run changes nothing.**
+  `--dry-run` (or `DRY_RUN=1`) makes and prints the change set, deletes it unexecuted (with the empty stack a first change set leaves), and prints the upload it would make.
+- **No secret is printed.**
+  A change set's and a drift's values are shown, but never one under an origin's custom headers or set by a parameter not known to be plain: those print as `origin header <where> changed`.
+  The tool's `--query` filters keep such values out of what the CLI answers, and any line of an AWS error that names one is masked.
+
 ### Credentials
 
 The AWS CLI's own chain: `AWS_PROFILE` and `~/.aws` (an `aws login` or SSO session) on a laptop, the OIDC role's environment in CI.
 The tool reads, prints and passes no credential, and with none it says to run `aws login` or set `AWS_PROFILE`.
-`make check` runs `tools/cbase.d/test/cbase_test.sh`, which drives the tool through the real AWS CLI against a local fake of S3, STS and the Tagging API, with dummy keys; no test calls AWS.
+`make check` runs `tools/cbase.d/test/cbase_test.sh`, which drives the tool through the real AWS CLI against a local fake of S3, STS, the Tagging API, CloudFormation, ACM, Route 53 and CloudFront (`tools/cbase.d/test/fake_aws.c`), with dummy keys; no test calls AWS.
 
 ## Rules the code keeps
 

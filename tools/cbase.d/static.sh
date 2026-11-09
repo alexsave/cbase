@@ -155,6 +155,9 @@ static_upload() {
 # static_prune BUCKET REGION APP: deletes the keys under APP/ that this build does not have.
 static_prune() {
   local bucket="$1" region="$2" app="$3" k rel n=0 text keys=()
+  # Two guards, for two things: --prefix keeps the listing to the folder (no other app's key is
+  # read, and a big shared bucket is not walked); the case below holds whatever a listing says,
+  # so no key outside the folder is ever deleted. cbase_test.sh fails without either.
   text="$(aws_call s3api list-objects-v2 --bucket "$bucket" --prefix "$app/" --region "$region" \
             --query 'Contents[].Key' --output text)" || aws_fail "listing s3://$bucket/$app/"
   # The CLI's text output: a page's keys on a line, tab-separated (no key holds a tab: static_scan

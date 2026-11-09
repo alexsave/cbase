@@ -211,7 +211,7 @@ case "$cmd" in
     dist_domain="$(stack_output DistributionDomain)"
     { [ -n "$dist_id" ] && [ -n "$dist_domain" ]; } || { echo "cbase: the $STACK_NAME stack has no DistributionId or DistributionDomain output" >&2; exit 1; }
     # 8. The edge's copies of the old files dropped; then the hostnames pointed at the distribution.
-    if [ "$STACK_STATUS" != NONE ]; then
+    if [ "$STACK_TYPE" = UPDATE ]; then   # a distribution just made has nothing cached
       inv="$(aws_call cloudfront create-invalidation --distribution-id "$dist_id" --paths '/*' --query Invalidation.Id --output text)" \
         || aws_fail "invalidating $dist_id"
       echo "invalidation $inv of /* on $dist_id"

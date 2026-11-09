@@ -1460,3 +1460,32 @@ core/test/unit_random_gate.c now refuses a clock call (`time`, `clock_gettime`, 
 
 - store_dynamo.c: `rng_seed64(seed ^ (uint64_t)cb_mono_ms())` -> `every_draw_has_one_owner` red, naming store_dynamo.c and `cb_mono_ms`.
 - unit_random_gate.c: the seed check not called -> `the_scanner_sees_each_kind` red on the three planted clock seeds.
+
+## ./cbase deploy, phase 2: the static part (cli-static)
+
+tools/cbase.d/test/cbase_test.sh deploys a static site through the real AWS CLI against tools/cbase.d/test/fake_aws.c, which now answers CloudFormation, ACM, Route 53, CloudFront and the rest of S3 the tool calls.
+Each mutant below was made in a copy of tools/ and README.md in a scratch directory, the whole suite run on it, and the copy deleted; the source tree was never edited.
+
+- stack.sh: the bucket gate's `ResourceType=='AWS::S3::Bucket'` made `'AWS::S3::None'` -> `a change set that would replace-bucket: status 0, not 1` red.
+- stack.sh: the drift guard's `CBASE_ACCEPT_DRIFT` test made `true` -> `a drifted stack: status 0, not 1` red.
+- tools/cbase: the dry run's `stack_discard` dropped -> `a dry run left its change set` red.
+- tools/cbase: the dry run's stop made `if false` -> `a dry run: stdout lacks [dry run: change set cbase-deploy deleted unexecuted ...]` red.
+- static.sh: prune's folder guard made `*) ;;` -> `a prune deleted outside the app's folder` red.
+- static.sh: prune's `--prefix "$app/"` dropped -> first SURVIVED (the folder guard still kept every outside key); the normal prune now also asserts no outside key is listed, and the mutant is `the prune listed keys outside the app's folder` red. The two guards are kept and the code says what each covers.
+- static.sh: `static_hashed` answering no -> `s3://site-bucket/site/assets/app.1a2b3c4d.js has [...|no-cache], not [...|public, max-age=31536000, immutable]` red.
+- static.sh: html's exception from the hashed rule dropped -> `s3://site-bucket/site/assets/page.html has [...|immutable], not [...|no-cache]` red.
+- static.sh: the upload phases run `3 2 1` -> `the upload order is not hashed, other, html` red.
+- static_rules.tsv: `*.wasm` made `application/octet-stream` -> `s3://site-bucket/site/app.wasm has [application/octet-stream|no-cache], not [application/wasm|no-cache]` red.
+- static.sh: the dot-file skip dropped -> `a dot file was uploaded` red.
+- static.sh: the index.html check made `true ||` -> `a build with no index.html: status 0, not 1` red.
+- stack.sh: the drift query's `!($filter)` dropped -> `the drift refusal: an origin header's value was printed` red.
+- stack.sh: the change set query's `!($filter)` dropped -> `the change set: an origin header's value was printed` red.
+- aws.sh: `aws_mask` made `cat` -> `the failed execute: an origin header's value was printed` red.
+- The masking test also found a real leak before any mutant: a filter inside a projection's projection (`Changes[?...].Details[?filter]`) reads null fields in the CLI's JMESPath, so "not secret" held for everything; the queries now pipe to their one resource and the plain filter asks for a path that is there (fails closed).
+- cert.sh: the wildcard made to cover any depth -> `no certificate was requested for a.corp.example.com` red.
+- cert.sh: `cert_lookup`'s stop on a failed read dropped -> `a certificate read that failed went on` red (before the fix, a failed DescribeCertificate inside `$(cert_find ...)` read as "none covers" and requested a certificate; the test was written for it).
+- cert.sh: the zone query's `Config.PrivateZone==false` dropped -> `the validation record was not written` red (it went to the private zone).
+- cert.sh: the no-zone `exit 3` dropped -> `a domain with no zone: status 1, not 3` red.
+- cert.sh: the alias write made `if false` -> `the A alias was not written` red.
+- tools/cbase: the invalidation made `if false` -> `a redeploy invalidates: stdout lacks [invalidation I1FAKE of /* on E1FAKEDIST]` red.
+- tools/cbase: the VM app's phase 3 stop dropped -> `a VM app's deploy: status 1, not 2` red.
