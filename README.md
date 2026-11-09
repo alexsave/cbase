@@ -15,6 +15,7 @@ v0.1.1 is the first public tag.
 Its first consumer is amgi, a local flashcard app that runs `cbase serve` on the user's own machine.
 The API is pre-1.0 and will change.
 Breaking changes, and how to upgrade a product across them, are recorded in [docs/PLATFORM.md](docs/PLATFORM.md) section 2.9.
+The cdom a browser app pairs with this cbase is the commit [client/hosts/cdom/README.md](client/hosts/cdom/README.md) names under "The cdom pin", at the same cbase commit.
 
 ## Quick start
 

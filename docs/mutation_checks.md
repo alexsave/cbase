@@ -1235,3 +1235,17 @@ Each mutation was made, the client's host objects deleted a second after the edi
 - client.c: backoff_ms does not double -> line 435 `now == 3500` red (and anonymous_reads_go_by_http).
 - client.c: a lost HTTP read goes again at once (`k->at = http ? now : 0`) -> lines 429 and 431 red (the next send is due at once).
 - client.c (client/test/mutants.py's `one try more`, now on the use, since the define left the file the C mutants rewrite): `k->tries + 1 < CBC_TRIES` -> `k->tries < CBC_TRIES` -> line 434 `sends == CBC_TRIES` and line 435 red.
+
+## The README names the cdom pin host.mk fetches (starter-friction)
+
+client/hosts/cdom/pin_doc_check.sh, run by `make -C client check` and check-host-cdom as check-cdom-pin-doc, holds client/hosts/cdom/README.md's "The pin is [<short>](<cdom>/commit/<sha>)" line to host.mk's CDOM_PIN.
+Each mutation was made in a copy-restored README.md or host.mk, and `make -s check-cdom-pin-doc` run.
+An earlier draft also compared the pin line's sha on its own; the link loop below already covers that line, so the second compare was redundant and was dropped.
+
+- README.md: the linked commit moved (00c74ee8ae65 -> 11c74ee8ae65) -> `links cdom commit 11c74ee8..., host.mk's CDOM_PIN is 00c74ee8...` red.
+- host.mk: CDOM_PIN moved in its first 8 characters, README not -> `shows '00c74ee8', not the pin's first 8 or more characters` red.
+- host.mk: CDOM_PIN moved after its 8th character -> `links cdom commit 00c74ee8ae..., host.mk's CDOM_PIN is 00c74ee8be...` red.
+- README.md: the short form another commit's (`[00c74ee9]`) -> `shows '00c74ee9', not the pin's first 8 or more characters` red.
+- README.md: the short form 4 characters (`[00c7]`) -> the same check red.
+- README.md: a second link to another cdom commit -> `links cdom commit aaaa..., host.mk's CDOM_PIN is 00c74ee8...` red.
+- README.md: the "The pin is" line reworded -> `no line 'The pin is [<short>](...)'` red.

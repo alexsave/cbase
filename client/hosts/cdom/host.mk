@@ -5,10 +5,12 @@
 #                         ASan + UBSan, then the adapter, the core and lib/b64 compiled for wasm32
 #                         against cdom's string.h, and the libc gate over them; against cdom at
 #                         CDOM_PIN (fetched into build/cdom), or CDOM=<a cdom checkout>
+#   make check-cdom-pin-doc  README.md here names CDOM_PIN (pin_doc_check.sh); in `make check` too
 #
 # cdom (github.com/alexsave/cdom) is fetched by its commit into build/cdom, never reached beside this
 # tree (tools/repo_gate_test.sh). A new pin is the one line below, moved when the adapter has passed
-# against the newer cdom. The pin is a cdom whose I/O contract (src/cdom.h, its rule at the top) holds
+# against the newer cdom, and README.md's "The pin is" line with it (check-cdom-pin-doc holds the
+# two equal). The pin is a cdom whose I/O contract (src/cdom.h, its rule at the top) holds
 # cd_page_origin, cd_random_bytes and CD_WS_REFUSED.
 CDOM_REPO := https://github.com/alexsave/cdom.git
 CDOM_PIN  := 00c74ee8ae65ae1f400011ea692e6d6fa611ba61
@@ -49,7 +51,13 @@ $(eval $(call C_VARIANT,build/obj/wasm-cdom,WASM_CC,HOST_CDOM_WASM_CFLAGS))
 HOST_CDOM_WASM_OBJS := $(call c_objs,build/obj/wasm-cdom,$(CBC_CDOM_SRC) $(CBC_SRC))
 $(HOST_CDOM_WASM_OBJS): | $(CDOM_GOT)
 
-.PHONY: test-host-cdom host-cdom-wasm check-host-cdom
+# The pin as README.md here names it, which is what an app reads to pair cdom with this cbase:
+# pin_doc_check.sh holds the README's commit to CDOM_PIN. Plain text, nothing fetched, so the
+# client's own `make check` runs it too.
+.PHONY: test-host-cdom host-cdom-wasm check-host-cdom check-cdom-pin-doc
+check-cdom-pin-doc:
+	@bash hosts/cdom/pin_doc_check.sh hosts/cdom/README.md $(CDOM_PIN)
+check: check-cdom-pin-doc
 test-host-cdom: build/test/unit_host_cdom build/asan/test/unit_host_cdom
 	./build/test/unit_host_cdom
 	./build/asan/test/unit_host_cdom
@@ -62,6 +70,6 @@ build/wasm/host_cdom_link.wasm: $(HOST_CDOM_WASM_OBJS) hosts/cdom/link_app.c | $
 host-cdom-wasm: wasm-cc-check $(HOST_CDOM_WASM_OBJS) build/wasm/host_cdom_link.wasm
 	@bash $(CB)tools/libc_gate.sh --nm $(WASM_NM) --cc '$(WASM_CC) --target=wasm32 -nostdlib -ffreestanding' $(HOST_CDOM_WASM_OBJS)
 	@echo "host-cdom-wasm: $(words $(HOST_CDOM_WASM_OBJS)) objects for wasm32 against $(CDOM)/src/libc/string.h, libc gate passed, linked with cdom"
-check-host-cdom: test-host-cdom host-cdom-wasm
+check-host-cdom: check-cdom-pin-doc test-host-cdom host-cdom-wasm
 HOST_CHECKS += check-host-cdom
 
