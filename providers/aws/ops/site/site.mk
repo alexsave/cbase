@@ -4,7 +4,7 @@
 #
 #   SITE_STACK  := mysite-web
 #   SITE_DIR    := web/out
-#   include $(CBASE)/providers/aws/ops/site/site.mk
+#   include cbase/providers/aws/ops/site/site.mk     # wherever cbase is; CBASE is not needed
 #
 # It needs neither cbase.mk nor CBASE, and does not care which providers CBASE_PROVIDERS links:
 # a product whose API runs on the local provider deploys its site the same way.
@@ -38,6 +38,11 @@
 #                    routes on the client; with it the router reads the page list, and a deeper
 #                    unknown path gets /404.html. Without it every extensionless path gets .html.
 #   SITE_REDIRECTS   302s, space-separated from=to (/old=/new).
+#   SITE_HOSTS       more sites on the same distribution, space-separated host=prefix
+#                    (docs.example.com=docs): a request for that Host reads the bucket under that
+#                    prefix, with no shell (every extensionless path gets .html). The host must be
+#                    in SITE_ALIASES. Upload one with `make deploy-web SITE_DIR=... SITE_PREFIX=docs
+#                    SITE_SHELL=`, which leaves the page list alone.
 #   SITE_ALIASES     the site's names, space-separated; SITE_CERT_ARN their ACM certificate (us-east-1).
 #   SITE_BUCKET      the bucket's name; it may hold ${AWS::AccountId} (default CloudFormation's).
 #   SITE_COMMENT     the distribution's comment (default "cbase site SITE_STACK").
@@ -60,7 +65,7 @@ CBASE_SITE_DIR := $(patsubst %/,%,$(dir $(lastword $(MAKEFILE_LIST))))
 
 # The knobs reach the scripts through their environment, each named once here.
 CBASE_SITE_KNOBS := SITE_STACK SITE_DIR SITE_NAME SITE_PREFIX SITE_HASHED SITE_RULES SITE_SHELL \
-  SITE_REDIRECTS SITE_ALIASES SITE_CERT_ARN SITE_BUCKET SITE_COMMENT SITE_PRICE_CLASS \
+  SITE_REDIRECTS SITE_HOSTS SITE_ALIASES SITE_CERT_ARN SITE_BUCKET SITE_COMMENT SITE_PRICE_CLASS \
   SITE_ISOLATION SITE_ORIGINS SITE_ROUTES
 cbase_site_env = $(foreach k,$(CBASE_SITE_KNOBS),$(k)='$(subst ','\'',$($(k)))')
 

@@ -19,7 +19,7 @@
 #     no changes executes nothing; a new stack skips drift detection;
 #   * render: the routes' behaviours and origins in order, with their policies; a route to an
 #     unknown origin, an origin no route uses and an unknown option are refused;
-#   * the router's rules, run in node when node is on PATH;
+#   * the router's rules (and a SITE_HOSTS name's prefix), run in node when node is on PATH;
 #   * site.mk alone (no CBASE, no cbase.mk): site-template, PRUNE=1, DRY_RUN=1, ACCEPT_DRIFT=1;
 #   * the OIDC role grants every call site_deploy.sh makes (role_covers_release.sh).
 set -euo pipefail
@@ -208,6 +208,7 @@ render_fails env SITE_ORIGINS="vm=vm.example.com,colour=red" SITE_ROUTES="/m/*=v
 render_fails env SITE_ROUTES="/m/*=s3,methods=all"
 render_fails env SITE_ALIASES="www.example.com"
 render_fails env SITE_PREFIX="/lead"
+render_fails env SITE_HOSTS="docs.example.com=docs"
 # The S3-only render (no routes) has no CacheBehaviors.
 render > "$t/plain.yaml"
 if grep -q CacheBehaviors "$t/plain.yaml"; then fail "an S3-only site has behaviours"; fi
@@ -216,7 +217,9 @@ if command -v cfn-lint >/dev/null 2>&1; then cfn-lint --regions us-east-1 -- "$t
 
 # ---- the router's rules ---------------------------------------------------------------------
 if command -v node >/dev/null 2>&1; then
-  SITE_SHELL=/_shell.html SITE_PREFIX=www SITE_REDIRECTS="/old=/new" render > "$t/router.yaml"
+  SITE_SHELL=/_shell.html SITE_PREFIX=www SITE_REDIRECTS="/old=/new" SITE_HOSTS="docs.example.com=docs" \
+    SITE_ALIASES="example.com docs.example.com" SITE_CERT_ARN=arn:aws:acm:us-east-1:111122223333:certificate/abc \
+    render > "$t/router.yaml"
   awk '/FunctionCode: !Sub \|/ { on = 1; next } on && NF && !/^        / { on = 0 } on && NF { print }' "$t/router.yaml" \
     | sed 's/^        //' | sed "s/\${Pages}/about docs\/intro index/" > "$t/router.js"
   cat >> "$t/router.js" <<'J'
@@ -225,10 +228,12 @@ var cases = [
   ['/docs/intro', '/www/docs/intro.html'], ['/abc123', '/www/_shell.html'], ['/a/b', '/www/404.html'],
   ['/app.js', '/www/app.js'], ['/.well-known/thing', '/www/.well-known/thing']];
 for (var i = 0; i < cases.length; i++) {
-  var r = handler({ request: { uri: cases[i][0], querystring: {} } });
+  var r = handler({ request: { uri: cases[i][0], querystring: {}, headers: { host: { value: 'example.com' } } } });
   if (r.uri !== cases[i][1]) { console.log('router: ' + cases[i][0] + ' -> ' + r.uri + ', want ' + cases[i][1]); process.exit(1); }
 }
-var red = handler({ request: { uri: '/old', querystring: { a: { value: '1' } } } });
+var docs = handler({ request: { uri: '/guide/start', querystring: {}, headers: { host: { value: 'Docs.Example.com' } } } });
+if (docs.uri !== '/docs/guide/start.html') { console.log('router: a SITE_HOSTS name -> ' + docs.uri); process.exit(1); }
+var red = handler({ request: { uri: '/old', querystring: { a: { value: '1' } }, headers: {} } });
 if (red.statusCode !== 302 || red.headers.location.value !== '/new?a=1') { console.log('router: the redirect'); process.exit(1); }
 J
   node "$t/router.js" || fail "the router's rules"
@@ -236,7 +241,7 @@ J
   render > "$t/router2.yaml"
   awk '/FunctionCode: !Sub \|/ { on = 1; next } on && NF && !/^        / { on = 0 } on && NF { print }' "$t/router2.yaml" \
     | sed 's/^        //' | sed "s/\${Pages}//" > "$t/router2.js"
-  echo "var r = handler({ request: { uri: '/a/b', querystring: {} } }); if (r.uri !== '/a/b.html') { console.log(r.uri); process.exit(1); }" >> "$t/router2.js"
+  echo "var r = handler({ request: { uri: '/a/b', querystring: {}, headers: {} } }); if (r.uri !== '/a/b.html') { console.log(r.uri); process.exit(1); }" >> "$t/router2.js"
   node "$t/router2.js" || fail "the router with no shell"
 else
   echo "site_test: node is not on PATH: the router's rules were not run"

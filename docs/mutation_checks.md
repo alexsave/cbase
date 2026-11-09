@@ -1437,3 +1437,4 @@ Each mutant was made in place and the file restored from a copy.
 - site_deploy.sh: the stale filter's check against the build's own files removed -> `a live page is never deleted` red.
 - site_deploy.sh: the html pass removed -> `html is revalidated (no-cache)` red.
 - site_role.yaml: cloudformation:UpdateStack removed -> `site_role.yaml does not grant every call site_deploy.sh makes` red (role_covers_release.sh names the action).
+- site.yaml: the router's SITE_HOSTS lookup removed -> `the router's rules` red (`a SITE_HOSTS name -> /www/404.html`).

@@ -24,6 +24,7 @@ AWSTemplateFormatVersion: "2010-09-09"
 #       5. with a shell: a page of the list (the Pages parameter) gets .html, any other
 #          one-segment path is the shell (an app's client-side route), a deeper one /404.html;
 #       6. the key is the prefix (SITE_PREFIX) and the path.
+#     A name of SITE_HOSTS is a second site on the same distribution: its own prefix, no shell.
 #     Not custom error responses: those are distribution-wide, so a missing JS file would come
 #     back as a 200 of HTML, and a route origin's errors would be rewritten too.
 #   * Distribution: the default behaviour is the bucket with the router.
@@ -127,6 +128,7 @@ Resources:
         var SHELL = '@@SHELL@@';
         var PREFIX = '@@PREFIX@@';
         var REDIRECTS = {@@REDIRECTS@@};
+        var HOSTS = {@@HOSTS@@};
         function query(request) {
           var out = [];
           var q = request.querystring;
@@ -139,6 +141,9 @@ Resources:
         function handler(event) {
           var request = event.request;
           var uri = request.uri;
+          var host = request.headers.host ? request.headers.host.value.toLowerCase() : '';
+          var prefix = PREFIX, shell = SHELL;
+          if (HOSTS[host] !== undefined) { prefix = HOSTS[host]; shell = ''; }
           var to = REDIRECTS[uri];
           if (to) {
             return { statusCode: 302, statusDescription: 'Found',
@@ -150,14 +155,14 @@ Resources:
             uri = '/index.html';
           } else if (uri.indexOf('/.well-known/') === 0 || uri.substring(uri.lastIndexOf('/')).indexOf('.') >= 0) {
             // a file
-          } else if (!SHELL || PAGES.indexOf(' ' + uri.substring(1) + ' ') >= 0) {
+          } else if (!shell || PAGES.indexOf(' ' + uri.substring(1) + ' ') >= 0) {
             uri = uri + '.html';
           } else if (uri.indexOf('/', 1) < 0) {
-            uri = SHELL;
+            uri = shell;
           } else {
             uri = '/404.html';
           }
-          request.uri = PREFIX + uri;
+          request.uri = prefix + uri;
           return request;
         }
 

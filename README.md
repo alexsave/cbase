@@ -291,10 +291,10 @@ SITE_ALIASES := example.com www.example.com
 SITE_CERT_ARN := arn:aws:acm:us-east-1:111122223333:certificate/...
 SITE_ORIGINS := vm=vm-origin.example.com,proto=http-only,http=8080
 SITE_ROUTES  := /api/*=vm,cache=CachingDisabled,request=AllViewerExceptHostHeader,methods=all
-include $(CBASE)/providers/aws/ops/site/site.mk
+include cbase/providers/aws/ops/site/site.mk
 ```
 
-`site.mk` needs neither `cbase.mk` nor an aws provider in `CBASE_PROVIDERS`, so a product whose API runs on the local provider deploys its site the same way.
+`site.mk` needs neither `cbase.mk`, `CBASE`, nor an aws provider in `CBASE_PROVIDERS` (it finds its scripts beside itself), so a product whose API runs on the local provider deploys its site the same way.
 Its header lists every knob.
 
 - `make deploy-web` uploads the built directory: content-hashed files first (immutable for a year), then the other files, then the router's page list, then the html (revalidated on every visit), then deletes what the build dropped, then one invalidation of `/*`.

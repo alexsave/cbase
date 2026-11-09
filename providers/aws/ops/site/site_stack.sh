@@ -84,6 +84,16 @@ render_blocks() {
     redirects="$redirects${redirects:+, }'$from': '$to'"
   done
 
+  local h hp
+  hosts=""
+  for h in ${SITE_HOSTS:-}; do
+    hp="${h#*=}"; h="${h%%=*}"
+    [ "$h" != "$hp" ] || die "SITE_HOSTS: '$h' is not host=prefix"
+    match "$h" '[a-z0-9][a-z0-9.-]*' SITE_HOSTS "a host name (lower case)"
+    match "$hp" '[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9._-]+)*' SITE_HOSTS "a key prefix"
+    hosts="$hosts${hosts:+, }'$h': '/$hp'"
+  done
+
   BUCKET_NAME=""
   if [ -n "${SITE_BUCKET:-}" ]; then
     # shellcheck disable=SC2016 # ${AWS::AccountId} is CloudFormation's, kept literal
@@ -98,6 +108,9 @@ render_blocks() {
     list="$list${list:+, }$a"
   done
   [ -z "$list" ] || ALIASES="        Aliases: [$list]"
+  for h in ${SITE_HOSTS:-}; do
+    case " ${SITE_ALIASES:-} " in *" ${h%%=*} "*) ;; *) die "SITE_HOSTS: ${h%%=*} is not in SITE_ALIASES" ;; esac
+  done
   VIEWER_CERTIFICATE="        ViewerCertificate:
           CloudFrontDefaultCertificate: true"
   if [ -n "${SITE_CERT_ARN:-}" ]; then
@@ -284,6 +297,7 @@ render() {
     line="${line//@@SHELL@@/$shell}"
     line="${line//@@PREFIX@@/${prefix:+/$prefix}}"
     line="${line//@@REDIRECTS@@/$redirects}"
+    line="${line//@@HOSTS@@/$hosts}"
     line="${line//@@COMMENT@@/$comment}"
     line="${line//@@PRICE_CLASS@@/$price}"
     case "$line" in *@@*) die "site.yaml: an unknown @@ value: $line" ;; esac
