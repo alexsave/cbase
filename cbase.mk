@@ -61,6 +61,12 @@
 #                    taken and /etc/services assigns it nothing. A product sets its own port in its
 #                    Makefile (APP_SERVE_LISTEN := 127.0.0.1:4100), or a run sets one: `PORT=4100
 #                    make serve`, or `CBASE_LISTEN=127.0.0.1:0 make serve` for a port the OS picks.
+#                    A PRODUCT EXTENDS `make serve` WITH ITS OWN LINES, NO KNOB: `serve: ui/out/app.wasm`
+#                    builds something first (a page), and `serve: export CBASE_DEV := 1` puts a
+#                    variable in serve's environment (make hands a target's exported variable to its
+#                    recipe), each in the product's Makefile, before or after this include
+#                    (tools/serve_test.sh holds both). tools/serve.sh's arguments are cbase.mk's
+#                    internal interface, never a product's to call: they may change with any release.
 #                    serve prints the address it bound on stdout once it listens,
 #                    "cbase: listening 127.0.0.1:<port> http://127.0.0.1:<port>/"
 #                    (core/src/ingress_process.h)

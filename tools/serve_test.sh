@@ -19,6 +19,8 @@
 #   * the default port: with no PORT and no CBASE_LISTEN serve listens on 127.0.0.1:8642 (the
 #     port README.md and cbase.mk name, core/src/config.h CB_LISTEN_DEFAULT); skipped, and said,
 #     when something on this machine already listens there.
+#   * a product's own serve lines (cbase.mk's header): `serve: <prerequisite>` is built before serve
+#     runs, and `serve: export VAR := value` reaches the server's environment.
 #   * the old flag names (cbase.mk's header, SERVER_CFLAGS): APP_CFLAGS in a Makefile with no
 #     APP_WASM, and APP_LDLIBS, stop the build with a sentence naming the new name; APP_CFLAGS with
 #     an APP_WASM (set in a second makefile, read after the product's) is the UI module's, and the
@@ -219,7 +221,31 @@ else
   stop dport
 fi
 
-# ---- 7. the old flag names stop the build, naming the new ones ---------------------------------
+# ---- 7. a product extends serve with its own lines, and no knob ---------------------------------
+# cbase.mk's header and README.md: `serve: <prerequisite>` builds something first (a page), and
+# `serve: export VAR := value` puts a variable in serve's environment. Here a second makefile, read
+# after the product's, does both: its prerequisite writes a mark, and its export is CBASE_DEV=1,
+# which the run's environment does not hold and without which the example (it keeps a store) does
+# not boot with no JWT secret. So the server answering proves the export reached it.
+MARK="$T/prereq.mark"
+printf 'serve: serve-test-prereq
+serve: export CBASE_DEV := 1
+.PHONY: serve-test-prereq
+serve-test-prereq:
+	@echo built > "%s"
+' "$MARK" > "$T/ext.mk"
+start ext CBASE_LISTEN=127.0.0.1:0 -- APP_ENV_FILE= -f Makefile -f "$T/ext.mk"
+listening ext; p7="$GOT"
+if [ -n "$p7" ] && [ "$(code "$p7" /health)" = 200 ]; then
+  ok "serve: export CBASE_DEV := 1 in the product's Makefile reaches the server (it boots with no JWT secret)"
+else
+  fail "with serve: export CBASE_DEV := 1 the server did not boot: the product's export did not reach serve"; show ext
+fi
+if [ "$(cat "$MARK" 2>/dev/null)" = built ]; then ok "serve: <prerequisite> in the product's Makefile is built before serve runs"
+else fail "the product's serve: <prerequisite> was not built before serve ran"; fi
+stop ext
+
+# ---- 8. the old flag names stop the build, naming the new ones ---------------------------------
 # build/cbase is built, so each make reaches only the flag stamp (tools/c_rules.mk), which reads
 # CB_CFLAGS every run: that is where the APP_CFLAGS check is, once the whole Makefile is read.
 # oldflag <label> <want in stderr> <make arguments...>: the make must fail and say <want>.

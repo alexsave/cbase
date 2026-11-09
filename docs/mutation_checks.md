@@ -1295,3 +1295,11 @@ Each mutation was made a second after a copy, ingress_process.o deleted, build/c
 - the CPU line at info on macOS too -> smoke_boot line 295 `knob_lines == 0` red.
 - the CPU line never said on macOS -> smoke_boot line 298, the wait for it in the debug start, red.
 - tools/serve_test.sh: the port taken after the line's last `:` (the old parse, which now reads `<port>/`) -> `GET /health answered 404`, `did not boot on a .env.local` and the rest of the cases red.
+
+## A product extends make serve with its own lines (round3-friction)
+
+tools/serve_test.sh case 7 reads a second makefile after the example's with `serve: serve-test-prereq` (which writes a mark) and `serve: export CBASE_DEV := 1`, and runs `make serve` with no CBASE_DEV in its environment: the example keeps a store, so it boots with no JWT secret only when the export reached it.
+Each mutation was made a second after a copy, `bash tools/serve_test.sh` run, and the file restored.
+
+- cbase.mk: `serve::` (a double-colon rule, which a product's `serve:` line cannot join) -> `the product's export did not reach serve` and `the product's serve: <prerequisite> was not built before serve ran` red.
+- tools/serve.sh: `exec env -u CBASE_DEV "$bin" serve` -> `the product's export did not reach serve` red (and the cases whose CBASE_DEV comes from the environment).
