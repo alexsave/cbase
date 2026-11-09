@@ -8,9 +8,10 @@
 #
 # cdom (github.com/alexsave/cdom) is fetched by its commit into build/cdom, never reached beside this
 # tree (tools/repo_gate_test.sh). A new pin is the one line below, moved when the adapter has passed
-# against the newer cdom. The pin is cdom's I/O contract commit (src/cdom.h, its rule at the top).
+# against the newer cdom. The pin is a cdom whose I/O contract (src/cdom.h, its rule at the top) holds
+# cd_page_origin, cd_random_bytes and CD_WS_REFUSED.
 CDOM_REPO := https://github.com/alexsave/cdom.git
-CDOM_PIN  := 3d7e4c3df4c449c8920de513b5caa0af854d6a2d
+CDOM_PIN  := 3ffbeeb2558e61005517b5bb900481fe3761c1dd
 CDOM      ?= build/cdom
 CDOM_GOT  := $(if $(filter build/cdom,$(CDOM)),build/cdom/.pin-$(CDOM_PIN))
 build/cdom/.pin-$(CDOM_PIN):

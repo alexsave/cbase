@@ -38,13 +38,20 @@ MUTANTS = [
   (H, 'a key past CBC_CDOM_KEY_MAX cut short', '    if (kl > CBC_CDOM_KEY_MAX) return -1;', '    if (kl > CBC_CDOM_KEY_MAX) kl = CBC_CDOM_KEY_MAX;',
    'FAIL  cdom: a key past CBC_CDOM_KEY_MAX'),
   # (c) a page that is not http: or https:
-  (H, 'a file: page opens ws://', '    else return CBC_SOCK_UNSUPPORTED;   // file:', '    else s = "ws://";   // file:',
+  (H, 'a file: page opens a socket', '    if (!sl) return CBC_SOCK_UNSUPPORTED;   // file:', '    if (!sl && 0) return CBC_SOCK_UNSUPPORTED;   // file:',
    'FAIL  cdom: a file: page opens no socket'),
   # (d) the test gaps: wss, the timeout, ids from 0, the deadline
-  (H, 'a host read only as far as 256 bytes', 'url + n, 257);', 'url + n, 256);',
+  (H, 'a host past 256 bytes taken', '    if (on - sl > 256) return CBC_SOCK_UNSUPPORTED;', '    if (on - sl > 259) return CBC_SOCK_UNSUPPORTED;',
    'FAIL  cdom: a host:port of 256 bytes'),
-  (H, 'an https: page opens ws://', '    if (pl == 6 && memcmp(proto, "https:", 6) == 0) s = "wss://";', '    if (pl == 6 && memcmp(proto, "https:", 6) == 0) s = "ws://";',
+  (H, 'an https: page opens ws://', '    memcpy(url + 2, origin + 4, on - 4);', '    memcpy(url + 2, origin + 5, on - 5);',
    'a socket URL not on the page\'s scheme and host'),
+  (H, 'the origin\'s scheme kept', '    memcpy(url, "ws", 2);', '    memcpy(url, "ht", 2);',
+   'a socket URL not on the page\'s scheme and host'),
+  # (e) a socket the browser refuses to make
+  (H, 'a refused socket is a plain failure', '    else if (ev == CD_WS_REFUSED) cbc_host_ws_failed(&h->host, id, CBC_SOCK_REFUSED);', '    else if (ev == CD_WS_REFUSED) cbc_host_ws_failed(&h->host, id, CBC_SOCK_FAILED);',
+   'FAIL  cdom: a refused socket'),
+  (H, 'a refused socket unheard', '    else if (ev == CD_WS_REFUSED) cbc_host_ws_failed(&h->host, id, CBC_SOCK_REFUSED);\n', '',
+   'FAIL  cdom: a refused socket'),
   (H, 'CD_HTTP_TIMEOUT taken for a status', 'if (status == CD_HTTP_FAILED || status == CD_HTTP_TIMEOUT) status = 0;', 'if (status == CD_HTTP_FAILED) status = 0;',
    '[a_slow_borrowed_upload_is_not_aborted]'),
   (H, 'cdom\'s socket id + 1', '    *id = cd_ws_open_cb(on_ws, h, url, n + k);', '    *id = cd_ws_open_cb(on_ws, h, url, n + k) + 1;',
