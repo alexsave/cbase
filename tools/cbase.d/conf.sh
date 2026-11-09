@@ -37,6 +37,12 @@
 #                  claims) and its data directory (an absolute path, CBASE_DB is <dir>/cbase.sqlite)
 #                  are recorded in the state file as they are ("data=<dir> legacy=1"), and the
 #                  service runs there; only a change to these keys moves them.
+#   CBASE_VM_SETTINGS optional: the SSM path of the app's settings, which the instance reads into
+#                  its env file (the origin secret is its CBASE_ORIGIN_SECRET); default /cbase/<app>/.
+#                  An adopted VM's role reads its own path, which this names.
+#   CBASE_VM_ARTIFACTS optional: s3://<bucket>/<prefix>/ the app's servers go to, one object per
+#                  sha256, and the instance fetches from; default s3://cbase-state-<account>/artifacts/<app>/.
+#                  An adopted VM's role reads its own, which this names.
 #   CBASE_BACKUP_BUCKET optional, for an app with a VM: the bucket its backups go to, as
 #                  s3://<bucket>/backups/<app>/cbase.sqlite (serve's CBASE_BACKUP_*). Default the
 #                  state bucket, which a cbase group's instance role may write under backups/ alone.
@@ -81,6 +87,12 @@
 #                  here or in CBASE_ROUTE) keeps what the origin's Cache-Control says
 #                  (Managed-UseOriginCacheControlHeaders-QueryStrings: a query string is its own
 #                  entry): CBASE_API_ROUTE = /v1/leaderboard vm origin GET,HEAD,OPTIONS.
+#   CBASE_STATIC_BUCKET optional, adoption: an existing bucket the app's files are in, found by its
+#                  name (no static group, no group-init, no state file). Deploy never replaces,
+#                  removes or rewrites it, nor its policy: one that does not let the account's
+#                  distributions read it gets the statement to add printed (static.sh).
+#   CBASE_STATIC_PREFIX optional: the app's folder in its bucket, its distribution's OriginPath;
+#                  default the app's name. An adopted bucket's existing folder is named here.
 #   CBASE_STATIC_DIR optional, for an app with static files: the directory deploy uploads, relative
 #                  to the repository's root, holding index.html. Default "build" for a static site
 #                  (a page's `make new` writes build/index.html) and "ui/out" for an app with a VM
@@ -97,7 +109,7 @@
 # to conf_secret_scan below, and one that looks like a secret stops the tool, naming the line and
 # never echoing it.
 
-CONF_KEYS="CBASE_APP CBASE_VM CBASE_VM_STACK CBASE_VM_ORIGIN CBASE_VM_PORT CBASE_VM_DATA CBASE_BACKUP_BUCKET CBASE_STATIC CBASE_MEMORY CBASE_ROUTE CBASE_DOMAIN CBASE_CERT_ARN CBASE_API_CERT_ARN CBASE_ZONE CBASE_API_HOST CBASE_API_ROUTE CBASE_STATIC_DIR CBASE_HASHED CBASE_SHELL"
+CONF_KEYS="CBASE_APP CBASE_VM CBASE_VM_STACK CBASE_VM_ORIGIN CBASE_VM_PORT CBASE_VM_DATA CBASE_VM_SETTINGS CBASE_VM_ARTIFACTS CBASE_BACKUP_BUCKET CBASE_STATIC CBASE_STATIC_BUCKET CBASE_STATIC_PREFIX CBASE_MEMORY CBASE_ROUTE CBASE_DOMAIN CBASE_CERT_ARN CBASE_API_CERT_ARN CBASE_ZONE CBASE_API_HOST CBASE_API_ROUTE CBASE_STATIC_DIR CBASE_HASHED CBASE_SHELL"
 
 # The parsed settings (conf_load fills them).
 CONF_FILE=""
@@ -112,6 +124,10 @@ CONF_VM_ORIGIN=""    # the VM's origin hostname, or ""
 CONF_VM_PORT=""      # a grandfathered member's port and data dir, or "" (both)
 CONF_VM_DATA=""
 CONF_BACKUP_BUCKET=""   # the backups' bucket, or "" for the state bucket
+CONF_STATIC_BUCKET=""   # an adopted bucket, or ""
+CONF_STATIC_PREFIX=""   # the app's folder in its bucket, or "" for the app's name
+CONF_VM_SETTINGS=""     # the settings' SSM path, or "" for /cbase/<app>/
+CONF_VM_ARTIFACTS=""    # s3://<bucket>/<prefix>/ of the servers, or "" for the state bucket's
 CONF_DOMAIN=""       # the first of CONF_DOMAINS (the app's URL), or ""
 CONF_DOMAINS=()      # every CBASE_DOMAIN hostname, in the file's order
 CONF_CERT_ARN=""
@@ -300,6 +316,8 @@ conf_load() {
   local dir_no="" hashed_no="" shell_no="" dir_set="" g
   local vm_set="" static_set="" memory="" route_nos=() api_route_no="" vmkey_no=""
   CONF_VM_STACK=""; CONF_VM_ORIGIN=""; CONF_VM_PORT=""; CONF_VM_DATA=""; CONF_BACKUP_BUCKET=""
+  CONF_VM_SETTINGS=""; CONF_VM_ARTIFACTS=""; CONF_STATIC_BUCKET=""; CONF_STATIC_PREFIX=""
+  local stkey_no=""
   CONF_API_ROUTES=()
   CONF_HASHED=()
   CONF_SHELL=""
@@ -353,6 +371,19 @@ conf_load() {
         { [[ "$value" =~ ^(/[A-Za-z0-9_][A-Za-z0-9._-]*)+$ ]] && [[ "$value/" != */../* ]] && [[ "$value/" != /srv/cbase/* ]]; } \
           || conf_die "$no" "CBASE_VM_DATA is an absolute directory on the VM (/var/lib/app), not under /srv/cbase/"
         CONF_VM_DATA="$value"; vmkey_no="$no" ;;
+      CBASE_STATIC_BUCKET)
+        [[ "$value" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]] || conf_die "$no" "CBASE_STATIC_BUCKET is an S3 bucket's name"
+        CONF_STATIC_BUCKET="$value"; stkey_no="$no" ;;
+      CBASE_STATIC_PREFIX)
+        [[ "$value" =~ ^[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9_-][A-Za-z0-9._-]*)*$ ]] \
+          || conf_die "$no" "CBASE_STATIC_PREFIX is a folder in the bucket (site, sites/one): letters, digits and . _ - /, no leading or trailing /"
+        CONF_STATIC_PREFIX="$value"; stkey_no="$no" ;;
+      CBASE_VM_SETTINGS)
+        [[ "$value" =~ ^(/[A-Za-z0-9_.-]+)+/$ ]] || conf_die "$no" "CBASE_VM_SETTINGS is an SSM path, starting and ending with / (/app/env/)"
+        CONF_VM_SETTINGS="$value"; vmkey_no="$no" ;;
+      CBASE_VM_ARTIFACTS)
+        [[ "$value" =~ ^s3://[a-z0-9][a-z0-9.-]{1,61}[a-z0-9](/[A-Za-z0-9_.-]+)*/$ ]] || conf_die "$no" "CBASE_VM_ARTIFACTS is s3://<bucket>/<prefix>/, ending with /"
+        CONF_VM_ARTIFACTS="$value"; vmkey_no="$no" ;;
       CBASE_BACKUP_BUCKET)
         [[ "$value" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]] || conf_die "$no" "CBASE_BACKUP_BUCKET is an S3 bucket's name"
         CONF_BACKUP_BUCKET="$value"; vmkey_no="$no" ;;
@@ -452,6 +483,7 @@ conf_load() {
     [ -z "$dir_no" ] || conf_die "$dir_no" "CBASE_STATIC_DIR is the static files' directory, and CBASE_STATIC is none"
     [ -z "$hashed_no" ] || conf_die "$hashed_no" "CBASE_HASHED names static files, and CBASE_STATIC is none"
     [ -z "$shell_no" ] || conf_die "$shell_no" "CBASE_SHELL is a page of the static files, and CBASE_STATIC is none"
+    [ -z "$stkey_no" ] || conf_die "$stkey_no" "CBASE_STATIC_BUCKET and CBASE_STATIC_PREFIX are for static files, and CBASE_STATIC is none"
     CONF_STATIC_DIR=""; CONF_STATIC_DIR_DEFAULT=""
   elif [ -n "$dir_set" ]; then
     CONF_STATIC_DIR="$dir_set"; CONF_STATIC_DIR_DEFAULT=""
@@ -490,8 +522,12 @@ conf_print() {
   [ -z "$CONF_VM_STACK" ] || printf '%-10s %s (adopted: found by its stack, no group-init)\n' vm-stack "$CONF_VM_STACK"
   [ -z "$CONF_VM_ORIGIN" ] || printf '%-10s %s (IPv6)\n' vm-origin "$CONF_VM_ORIGIN"
   [ -z "$CONF_VM_PORT" ] || printf '%-10s port %s, data %s (grandfathered: kept as it is)\n' legacy "$CONF_VM_PORT" "$CONF_VM_DATA"
+  [ -z "$CONF_VM_SETTINGS" ] || printf '%-10s SSM %s\n' settings "$CONF_VM_SETTINGS"
+  [ -z "$CONF_VM_ARTIFACTS" ] || printf '%-10s %s\n' artifacts "$CONF_VM_ARTIFACTS"
   [ -z "$CONF_BACKUP_BUCKET" ] || printf '%-10s s3://%s/backups/%s/\n' backups "$CONF_BACKUP_BUCKET" "$CONF_APP"
-  printf '%-10s %s\n' static "$CONF_STATIC"
+  if [ -n "$CONF_STATIC_BUCKET" ]; then printf '%-10s s3://%s/%s/ (adopted bucket)\n' static "$CONF_STATIC_BUCKET" "${CONF_STATIC_PREFIX:-$CONF_APP}"
+  else printf '%-10s %s\n' static "$CONF_STATIC"; fi
+  [ -n "$CONF_STATIC_BUCKET" ] || [ -z "$CONF_STATIC_PREFIX" ] || printf '%-10s %s/\n' folder "$CONF_STATIC_PREFIX"
   if [ -n "$CONF_STATIC_DIR" ]; then
     if [ -n "$CONF_STATIC_DIR_DEFAULT" ]; then printf '%-10s %s/ (the default)\n' files "$CONF_STATIC_DIR"
     else printf '%-10s %s/\n' files "$CONF_STATIC_DIR"; fi
