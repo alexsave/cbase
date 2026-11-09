@@ -151,7 +151,7 @@ bool cb_admin_need_store(cb_ctx *ctx, cb_http_res *res) {
 
 int cb_admin_q_int(const cb_http_req *req, const char *key, int dflt, int lo, int hi) {
     char v[32];
-    if (!cb_http_query_get(req, key, v, sizeof v) || !v[0]) return dflt;
+    if (cb_http_query_find(req, key, v, sizeof v) <= 0) return dflt;   // absent, empty or unreadable
     // Any number is taken and clamped to lo..hi ("-5" is lo); text that is
     // not one is the default.
     int64_t x;
@@ -160,7 +160,7 @@ int cb_admin_q_int(const cb_http_req *req, const char *key, int dflt, int lo, in
 }
 
 void cb_admin_q_str(const cb_http_req *req, const char *key, char *out, size_t cap) {
-    if (!cb_http_query_get(req, key, out, cap)) out[0] = 0;
+    if (cb_http_query_find(req, key, out, cap) < 0) out[0] = 0;
 }
 
 static const char *mode_label(const cb_ctx *ctx) { return ctx->prov ? ctx->prov->mode : "none"; }
@@ -452,12 +452,12 @@ static void api_user_delete(cb_ctx *ctx, const cb_http_req *req, cb_http_res *re
 static void api_logs(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     char v[32];
     int64_t after = 0;
-    if (cb_http_query_get(req, "after", v, sizeof v) && v[0] && !num_parse_i64_cstr(v, 0, INT64_MAX, &after)) {
+    if (cb_http_query_find(req, "after", v, sizeof v) > 0 && !num_parse_i64_cstr(v, 0, INT64_MAX, &after)) {
         cb_router_error(res, 400, "logs: after is a sequence number");
         return;
     }
     int level = CB_LOG_DEBUG;
-    if (cb_http_query_get(req, "level", v, sizeof v) && v[0]) {
+    if (cb_http_query_find(req, "level", v, sizeof v) > 0) {
         level = cb_log_level_parse(v);
         if (level < 0) { cb_router_error(res, 400, "logs: level is debug, info, warn or error"); return; }
     }

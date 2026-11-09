@@ -41,7 +41,7 @@ static const uint8_t BIN[] = { 'A', 'W', 0, 1, 0, 0, 0xff, 'x', 0, '\r', '\n', '
 static void h_answer(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     char st[8];
     int64_t status = 200;
-    if (cb_http_query_get(req, "status", st, sizeof st)) num_parse_i64(st, strlen(st), 1, 999, &status);
+    if (cb_http_query_find(req, "status", st, sizeof st) >= 0) num_parse_i64(st, strlen(st), 1, 999, &status);
     cb_res_send(res, (int)status, WIRE_MIME, BIN, sizeof BIN);
     if (status == 429) cb_res_header(res, "Retry-After", "30");
     if (status == 307) cb_res_header(res, "Location", "/decks");

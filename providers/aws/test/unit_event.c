@@ -70,7 +70,7 @@ static void function_url_request(void) {
     T_EQ_STR(r->path, "/my/path");
     T_EQ_STR(r->query, "parameter1=value1&parameter1=value2&parameter2=value");
     char v[64];
-    T_CHECK(cb_http_query_get(r, "parameter2", v, sizeof v));
+    T_EQ_INT(cb_http_query_find(r, "parameter2", v, sizeof v), 5);
     T_EQ_STR(v, "value");
     T_EQ_INT(r->n_headers, 3);
     T_EQ_STR(cb_http_header_get(r, "header1"), "value1");

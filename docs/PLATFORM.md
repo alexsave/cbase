@@ -193,6 +193,10 @@ A product from before the platform routes became opt-in makes the fifth and sixt
    `cb_app` gained `bool auth_routes`: `POST /v1/auth/oidc`, `signup`, `signin`, `refresh`, `signout` and `password`.
    Left false, none is registered, so each is the app's own 404; a client that signs in needs `.auth_routes = true`.
    Accounts live in the platform's store, so a storeless app that declares them is refused at boot, with a sentence naming `cb_app.auth_routes`.
+7. **`cb_http_query_get` is gone (v0.1.5); `cb_http_query_find` is the one query lookup** (`core/src/net/http.h`), and the compiler names every call left.
+   It returns the value's length, `CB_E_NOT_FOUND` for an absent key, `CB_E_FULL` for a value longer than `cap - 1` and `CB_E_INVALID` for a query that does not read, so a handler can answer "no key" and "a bad value" apart.
+   Each old call has a one-line replacement that keeps its meaning: `if (cb_http_query_get(r, k, v, n))` becomes `if (cb_http_query_find(r, k, v, n) >= 0)`, and its `!` form becomes `< 0`.
+   A call that also tested `v[0]` (present and not empty) becomes `> 0`.
 
 ### 2.10 Serve's settings an app ships, and CBASE_ENV_FILE
 
