@@ -40,8 +40,10 @@
 #                  vm. CloudFront allows the smallest of its three method sets that covers the
 #                  list (GET,HEAD; GET,HEAD,OPTIONS; all), and the origin refuses the rest.
 #                  A "*" route goes last, wherever it was written.
-#   CBASE_DOMAIN   optional: the app's hostname (www.example.com). Without it the app is reached
-#                  at its distribution's cloudfront.net address.
+#   CBASE_DOMAIN   optional: the app's hostnames, blank-separated (example.com www.example.com),
+#                  each an alias of the one distribution, all on one certificate, each with its own
+#                  DNS record (in its own zone). The first is the app's URL. Without it the app is
+#                  reached at its distribution's cloudfront.net address.
 #   CBASE_CERT_ARN optional, an override: the ACM certificate (us-east-1, CloudFront's region)
 #                  for the domain and the API hostname, arn:aws:acm:us-east-1:<account>:certificate/<uuid>.
 #                  Without it deploy finds or makes one (cert.sh): an ISSUED us-east-1 certificate
@@ -79,7 +81,8 @@ CONF_STATIC=""
 CONF_MEMORY=""      # the declared MiB; "" when undeclared or the app has no VM
 CONF_MEMORY_ESTIMATED=""   # 1: a VM app with no CBASE_MEMORY, counted at CONF_MEMORY_ESTIMATE
 CONF_MEMORY_ESTIMATE=128   # MiB: the conservative count for an undeclared app (vm.sh's fit check)
-CONF_DOMAIN=""
+CONF_DOMAIN=""       # the first of CONF_DOMAINS (the app's URL), or ""
+CONF_DOMAINS=()      # every CBASE_DOMAIN hostname, in the file's order
 CONF_CERT_ARN=""
 CONF_ZONE=""
 CONF_API_HOST=""
@@ -251,6 +254,7 @@ conf_load() {
   local vm_set="" static_set="" memory="" route_nos=()
   CONF_HASHED=()
   CONF_SHELL=""
+  CONF_DOMAINS=()
   no=0
   for line in "${lines[@]+"${lines[@]}"}"; do
     no=$((no + 1))
@@ -293,9 +297,18 @@ conf_load() {
       CBASE_ROUTE)
         route_nos+=("$no")
         conf_route "$no" "$value" ;;
-      CBASE_DOMAIN|CBASE_API_HOST)
-        conf_host_ok "$value" || conf_die "$no" "$key is a lower-case hostname (www.example.com)"
-        if [ "$key" = CBASE_DOMAIN ]; then CONF_DOMAIN="$value"; domain_no="$no"; else CONF_API_HOST="$value"; api_no="$no"; fi ;;
+      CBASE_DOMAIN)
+        read -r -a CONF_DOMAINS <<< "$value"
+        for g in "${!CONF_DOMAINS[@]}"; do
+          conf_host_ok "${CONF_DOMAINS[$g]}" || conf_die "$no" "CBASE_DOMAIN is lower-case hostnames, blank-separated (example.com www.example.com)"
+          for k in "${CONF_DOMAINS[@]:0:$g}"; do
+            [ "$k" != "${CONF_DOMAINS[$g]}" ] || conf_die "$no" "CBASE_DOMAIN names ${CONF_DOMAINS[$g]} twice"
+          done
+        done
+        CONF_DOMAIN="${CONF_DOMAINS[0]}"; domain_no="$no" ;;
+      CBASE_API_HOST)
+        conf_host_ok "$value" || conf_die "$no" "CBASE_API_HOST is one lower-case hostname (api.example.com)"
+        CONF_API_HOST="$value"; api_no="$no" ;;
       CBASE_CERT_ARN)
         if [[ "$value" =~ ^arn:aws:acm:([a-z0-9-]+):[0-9]{12}:certificate/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
           [ "${BASH_REMATCH[1]}" = us-east-1 ] || conf_die "$no" "CBASE_CERT_ARN is in ${BASH_REMATCH[1]}, and CloudFront takes a certificate from us-east-1 alone"
@@ -351,6 +364,11 @@ conf_load() {
     fi
   done
   [ -z "$api_no" ] || [ -n "$domain_no" ] || conf_die "$api_no" "CBASE_API_HOST is a second hostname, and there is no CBASE_DOMAIN (the first)"
+  if [ -n "$api_no" ]; then
+    for k in "${CONF_DOMAINS[@]}"; do
+      [ "$k" != "$CONF_API_HOST" ] || conf_die "$api_no" "CBASE_API_HOST $k is one of CBASE_DOMAIN's hostnames: a hostname is on one distribution"
+    done
+  fi
   [ -z "$cert_no" ] || [ -n "$domain_no" ] || conf_die "$cert_no" "CBASE_CERT_ARN is for CBASE_DOMAIN, and there is none (without a domain the app is at its cloudfront.net address)"
   [ -z "$zone_no" ] || [ -n "$domain_no" ] || conf_die "$zone_no" "CBASE_ZONE is where CBASE_DOMAIN's record goes, and there is no CBASE_DOMAIN"
   if [ "$CONF_STATIC" = none ]; then
@@ -399,7 +417,7 @@ conf_print() {
   fi
   [ "${#CONF_HASHED[@]}" -eq 0 ] || printf '%-10s %s\n' hashed "${CONF_HASHED[*]}"
   [ -z "$CONF_SHELL" ] || printf '%-10s %s\n' shell "$CONF_SHELL"
-  [ -z "$CONF_DOMAIN" ] || printf '%-10s %s\n' domain "$CONF_DOMAIN"
+  [ -z "$CONF_DOMAIN" ] || printf '%-10s %s\n' domain "${CONF_DOMAINS[*]}"
   [ -z "$CONF_API_HOST" ] || printf '%-10s %s\n' api-host "$CONF_API_HOST"
   if [ -n "$CONF_CERT_ARN" ]; then printf '%-10s %s\n' cert "$CONF_CERT_ARN"
   elif [ -n "$CONF_DOMAIN" ]; then printf '%-10s %s\n' cert "(found or requested by deploy)"

@@ -60,7 +60,7 @@ conf_error "cbase.conf line 3: CBASE_CERT_ARN is in eu-west-1, and CloudFront ta
 conf_error "cbase.conf line 3: CBASE_API_HOST is a second hostname, and there is no CBASE_DOMAIN" "CBASE_APP = a" "CBASE_MEMORY = 1G" "CBASE_API_HOST = api.example.com"
 conf_error "cbase.conf line 3: CBASE_CERT_ARN is for CBASE_DOMAIN, and there is none" "CBASE_APP = a" "CBASE_VM = none" \
   "CBASE_CERT_ARN = arn:aws:acm:us-east-1:$ACCOUNT:certificate/12345678-abcd-ef01-2345-6789abcdef01"
-conf_error "cbase.conf line 2: CBASE_DOMAIN is a lower-case hostname" "CBASE_APP = a" "CBASE_DOMAIN = *.example.com"
+conf_error "cbase.conf line 2: CBASE_DOMAIN is lower-case hostnames" "CBASE_APP = a" "CBASE_DOMAIN = *.example.com"
 conf_error "cbase.conf line 2: is not KEY = value (a key is upper-case" "CBASE_APP = a" "cbase_vm = none"
 
 # A good one, defaults filled in, routes normalized, the "*" route last.
@@ -402,10 +402,12 @@ ST_SITE="cbase:static-group site s3 arn:aws:s3:::$SITE_BUCKET"
 CERT_WILD="arn:aws:acm:us-east-1:$ACCOUNT:certificate/11111111-1111-1111-1111-111111111111"
 CERT_OTHER="arn:aws:acm:us-east-1:$ACCOUNT:certificate/22222222-2222-2222-2222-222222222222"
 CERT_DEEP="arn:aws:acm:us-east-1:$ACCOUNT:certificate/33333333-3333-3333-3333-333333333333"
+CERT_NOZONE="arn:aws:acm:us-east-1:$ACCOUNT:certificate/44444444-4444-4444-4444-444444444444"
 site_fake=(--bucket "$BUCKET" --bucket "$SITE_BUCKET:us-west-2" --resource "$ST_SITE" --resource "$VM_G1"
            --cert "$CERT_OTHER ISSUED other.org" --cert "$CERT_DEEP ISSUED *.www.example.com"
            --cert "$CERT_WILD ISSUED example.com,*.example.com" --zone "Z0EXAMPLE example.com"
-           --zone "Z0PRIVATE corp.example.com private")
+           --zone "Z0PRIVATE corp.example.com private" --zone "Z0SHOPORG shop.org"
+           --cert "$CERT_NOZONE ISSUED a.nozone.net,b.nozone.net")
 head_of() {   # head_of KEY: "<Content-Type>|<Cache-Control>" of s3://site-bucket/KEY
   aws s3api head-object --bucket "$SITE_BUCKET" --key "$1" --query '[ContentType,CacheControl]' --output text | tr '\t' '|'
 }
@@ -699,6 +701,61 @@ expect_rc 3 "a domain with no zone, again"
 out_has "requested before, still pending validation" "the pending certificate is reused"
 since "$m" | grep -q "ACM RequestCertificate" && fail "a second certificate was requested"
 ok
+
+# ---- several hostnames: one distribution, one certificate, a record each -------------------------
+# example.com and www.example.com: the issued example.com,*.example.com covers both, and each is an
+# alias of the one distribution.
+two="$(app two "CBASE_APP = two" "CBASE_VM = none" "CBASE_STATIC = site" "CBASE_DOMAIN = example.com www.example.com")"
+mkdir -p "$two/build" && printf 'x\n' > "$two/build/index.html"
+m="$(mark)"
+run "$two" deploy
+expect_rc 0 "two hostnames with an issued certificate"
+out_has "certificate: $CERT_WILD, issued, covers example.com www.example.com" "one certificate covers both hostnames"
+since "$m" | grep -q "ACM RequestCertificate" && fail "a certificate was requested when one covered both hostnames"
+template_of cbase-app-two > "$t/tpl"
+grep -Fq "Aliases: [example.com, www.example.com]" "$t/tpl" || { cat "$t/tpl" >&2; fail "the template lacks both aliases"; }
+[ "$(grep -c "Aliases:" "$t/tpl")" = 1 ] || fail "two hostnames made more than one distribution's aliases"
+for h in example.com www.example.com; do
+  for ty in A AAAA; do
+    since "$m" | grep -q "R53 UPSERT Z0EXAMPLE $h $ty alias=d" || fail "the $ty alias of $h was not written"
+  done
+done
+out_has "deployed two: https://example.com/" "the first hostname is the URL"
+ok
+# A hostname no certificate covers (shop.org, in its own zone): a new request naming every
+# hostname, its records written in each one's zone, and an alias in each.
+printf 'CBASE_APP = two\nCBASE_VM = none\nCBASE_STATIC = site\nCBASE_DOMAIN = example.com www.example.com shop.org\n' > "$two/cbase.conf"
+m="$(mark)"
+run "$two" deploy
+expect_rc 0 "three hostnames, one of them uncovered"
+since "$m" | grep -q "ACM RequestCertificate example.com,www.example.com,shop.org" || { since "$m" | grep ACM >&2; fail "the request did not name every hostname"; }
+since "$m" | grep -qE "R53 UPSERT Z0SHOPORG _v[0-9]+\.shop\.org\. CNAME" || fail "shop.org's validation record was not written in its zone"
+since "$m" | grep -qE "R53 UPSERT Z0EXAMPLE _v[0-9]+\.www\.example\.com\. CNAME" || fail "www.example.com's validation record was not written"
+since "$m" | grep -q "ACM issued" || fail "the certificate for three hostnames was not issued"
+since "$m" | grep -q "R53 UPSERT Z0SHOPORG shop.org A alias=d" || fail "shop.org's alias was not written in its zone"
+since "$m" | grep -q "R53 UPSERT Z0EXAMPLE www.example.com AAAA alias=d" || fail "www.example.com's alias was not written"
+template_of cbase-app-two | grep -Fq "Aliases: [example.com, www.example.com, shop.org]" || fail "the template lacks the three aliases"
+ok
+# No zone for either hostname: the record to add is printed for each.
+nz="$(app nz "CBASE_APP = nz" "CBASE_VM = none" "CBASE_STATIC = site" "CBASE_DOMAIN = a.nozone.net b.nozone.net")"
+mkdir -p "$nz/build" && printf 'x\n' > "$nz/build/index.html"
+run "$nz" deploy
+expect_rc 0 "two hostnames with no zone"
+out_has "certificate: $CERT_NOZONE, issued, covers a.nozone.net b.nozone.net" "the no-zone certificate"
+for h in a.nozone.net b.nozone.net; do
+  grep -Eq "^dns: point $h at d[0-9]+fake\.cloudfront\.net where its DNS is served" "$t/out" || { cat "$t/out" >&2; fail "no record printed for $h"; }
+done
+ok
+conf_error "cbase.conf line 2: CBASE_DOMAIN names www.example.com twice" "CBASE_APP = a" "CBASE_DOMAIN = www.example.com www.example.com"
+conf_error "cbase.conf line 2: CBASE_DOMAIN is lower-case hostnames, blank-separated" "CBASE_APP = a" "CBASE_DOMAIN = example.com WWW.example.com"
+conf_error "cbase.conf line 3: CBASE_API_HOST api.example.com is one of CBASE_DOMAIN's hostnames" "CBASE_APP = a" "CBASE_DOMAIN = example.com api.example.com" "CBASE_API_HOST = api.example.com"
+shape domains "app        site
+vm         none
+static     site
+files      build/ (the default)
+domain     example.com www.example.com
+cert       (found or requested by deploy)
+route      * static cache GET,HEAD" "CBASE_APP = site" "CBASE_VM = none" "CBASE_DOMAIN =  example.com   www.example.com"
 
 # ---- what deploy refuses -----------------------------------------------------------------------
 # A static group that does not exist: the group-init command, nothing made.

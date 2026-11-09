@@ -1522,3 +1522,11 @@ The router section was run alone for these checks; the whole suite ran green bef
 - stack.sh: the shell's existence check dropped -> `a shell the build lacks: status 0, not 1` red.
 - conf.sh: CBASE_SHELL's CBASE_STATIC = none refusal dropped -> `a bad cbase.conf (... CBASE_SHELL is a page of the static files, and CBASE_STATIC is none): status 0, not 1` red.
 - conf.sh: CBASE_SHELL's path pattern loosened (no leading '/', any part) -> `a bad cbase.conf (... CBASE_SHELL is a page of the build, an absolute path ending in .html): status 0, not 1` red.
+- stack.sh: the Aliases made the first of CBASE_DOMAIN's hostnames alone -> `the template lacks both aliases` red.
+- cert.sh: a request's SANs cut to the second hostname -> `the request did not name every hostname` red.
+- cert.sh: CERT_HOSTS made the first hostname alone -> `one certificate covers both hostnames: stdout lacks [certificate: ..., issued, covers example.com www.example.com]` red.
+- tools/cbase: the alias loop made the first hostname alone -> `the A alias of www.example.com was not written` red.
+- tools/cbase: the API host's `cert_point` dropped -> cbase_vm_test.sh's `the API host's alias is not its own distribution's` red.
+- conf.sh: CBASE_DOMAIN's twice check made `true` -> `a bad cbase.conf (... CBASE_DOMAIN names www.example.com twice): status 0, not 1` red.
+- conf.sh: the API host's check against CBASE_DOMAIN made `true` -> `a bad cbase.conf (... CBASE_API_HOST api.example.com is one of CBASE_DOMAIN's hostnames): status 0, not 1` red.
+- conf.sh: config check's domain line made `$CONF_DOMAIN` (the first) -> `the domains shape resolved otherwise` red.

@@ -21,7 +21,6 @@
 # and while the instance holds data, then destroying. No secret in any output.
 # docs/mutation_checks.md records the mutations each was checked against.
 # shellcheck disable=SC2016 # the expected text and the stand-in scripts hold a literal $
-# shellcheck disable=SC2119 # start_fake with no resources: an empty account
 set -euo pipefail
 # shellcheck source=tools/cbase.d/test/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -57,7 +56,8 @@ vm_app() {
 # ================================================================================================
 # group-init
 # ================================================================================================
-start_fake
+CERT_APIH="arn:aws:acm:us-east-1:$ACCOUNT:certificate/55555555-5555-5555-5555-555555555555"
+start_fake --cert "$CERT_APIH ISSUED apih.example.com,api.example.com" --zone "Z0EXAMPLE example.com"
 # A VM costs money: without --yes (and no terminal to type yes at) the change set is shown and
 # deleted, and nothing is made, not even the state bucket.
 m="$(mark)"
@@ -443,6 +443,21 @@ grep -Fq 'rm -rf "$home"' "$t/gone-undeploy.sh" || fail "the --delete-data scrip
 mkdir -p "$t/vm3/srv/cbase/gone/data" && printf 'x\n' > "$t/vm3/srv/cbase/gone/data/f"
 on_vm "$t/vm3" "$t/gone-undeploy.sh"
 { [ "$rc" = 0 ] && [ ! -e "$t/vm3/srv/cbase/gone" ]; } || fail "the --delete-data script left /srv/cbase/gone"
+ok
+
+# ---- CBASE_API_HOST: its own distribution, and its own alias -----------------------------------
+apih="$(vm_app apih "CBASE_APP = apih" "CBASE_VM = g9" "CBASE_STATIC = none" "CBASE_MEMORY = 16M" \
+          "CBASE_DOMAIN = apih.example.com" "CBASE_API_HOST = api.example.com")"
+m="$(mark)"
+run "$apih" deploy
+expect_rc 0 "a deploy with CBASE_API_HOST"
+out_has "certificate: $CERT_APIH, issued, covers apih.example.com api.example.com" "one certificate covers the domain and the API host"
+since "$m" | grep -q "R53 UPSERT Z0EXAMPLE apih.example.com A alias=d" || fail "the domain's alias was not written"
+since "$m" | grep -q "R53 UPSERT Z0EXAMPLE api.example.com A alias=api-d" || { since "$m" | grep R53 >&2; fail "the API host's alias is not its own distribution's"; }
+ok
+run "$apih" undeploy
+expect_rc 0 "the API host app's undeploy"
+out_has "undeploy: the DNS records of apih.example.com api.example.com still point at the deleted distribution" "undeploy names every hostname"
 ok
 
 # ================================================================================================

@@ -257,7 +257,12 @@ case "$cmd" in
     fi
     url="https://$dist_domain/"
     if [ -n "$CERT_ARN" ]; then
-      cert_point "$CONF_DOMAIN" "$dist_domain"
+      for h in "${CONF_DOMAINS[@]}"; do cert_point "$h" "$dist_domain"; done
+      if [ -n "$CONF_API_HOST" ]; then
+        api_domain="$(stack_output ApiDistributionDomain)"
+        [ -n "$api_domain" ] || { echo "cbase: the $STACK_NAME stack has no ApiDistributionDomain output" >&2; exit 1; }
+        cert_point "$CONF_API_HOST" "$api_domain"
+      fi
       url="https://$CONF_DOMAIN/"
     fi
     echo "deployed $CONF_APP: $url"
@@ -300,7 +305,7 @@ case "$cmd" in
       fi
       state_change static "$CONF_STATIC" "$CONF_APP" "" leave
     fi
-    [ -z "$CONF_DOMAIN" ] || echo "undeploy: $CONF_DOMAIN's DNS records still point at the deleted distribution: remove them where the domain's DNS is served"
+    [ -z "$CONF_DOMAIN" ] || echo "undeploy: the DNS records of ${CONF_DOMAINS[*]}${CONF_API_HOST:+ $CONF_API_HOST} still point at the deleted distribution: remove them where the domain's DNS is served"
     echo "undeployed $CONF_APP"
     ;;
   group-init|group-destroy)
