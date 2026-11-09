@@ -276,6 +276,84 @@ A raw value would break on its first `&`, `=`, `+` or `#`, which the browser's `
 - TypeScript: coming soon.
 - Swift: coming soon.
 
+## ./cbase deploy tool (in progress)
+
+`tools/cbase` deploys an app: its service on a VM, its static files in a bucket folder, and a CloudFront distribution with its routes, all from a `cbase.conf` in the app's repository.
+It is a bash script that runs straight from the app's cbase submodule, with no build step and no provider linked: `cbase/tools/cbase <command>`.
+An app that wants the short spelling keeps a one-line wrapper at its root, `./cbase`:
+
+```
+#!/bin/sh
+exec "$(dirname "$0")/cbase/tools/cbase" "$@"
+```
+
+It needs bash (macOS's own 3.2 is enough) and AWS CLI v2, and every AWS call it makes is one AWS CLI call read with `--query ... --output text`, so the tool parses no JSON.
+
+What works now:
+
+- `cbase/tools/cbase config check`: reads `cbase.conf` and prints it with the defaults filled in (no AWS).
+- `cbase/tools/cbase doctor`: the config, the AWS account, each of the app's groups found by its tag, and the group's members.
+- `cbase/tools/cbase apps [GROUP]`: a group's members, from its state file (default: the groups `cbase.conf` names).
+- `cbase/tools/cbase state join` and `state leave`: the membership step deploy and undeploy will run, for repair and the tests.
+
+Coming: `deploy` for static files and the app's own CloudFormation distribution (phase 2), `group-init vm|static GROUP`, the VM deploy over SSM, ports checked on the VM and the memory check (phase 3), and `undeploy` (phase 3).
+They say "not yet" and exit 2 today.
+
+### cbase.conf
+
+One `KEY = value` per line, committed with the app; `#` starts a comment line; an unknown key or a bad value stops the tool with the line's number and a sentence.
+`tools/cbase.d/conf.sh` documents every rule.
+
+```
+# required: [a-z][a-z0-9-]*, at most 32 characters
+CBASE_APP = shop
+# its VM group, or none (static only); default CBASE_APP
+CBASE_VM = shop
+# its static group (a bucket), or none (VM only); default CBASE_APP
+CBASE_STATIC = shop
+# the memory it declares, required with a VM: <n>M or <n>G
+CBASE_MEMORY = 256M
+# repeated, in order: <pattern> vm|static|ws [cache|nocache] [ALL|GET,HEAD,...]
+CBASE_ROUTE = /api/* vm
+# ws: the VM, uncached, every method, long timeouts
+CBASE_ROUTE = /live ws
+CBASE_ROUTE = /assets/* static
+# needs CBASE_CERT_ARN, an existing certificate in us-east-1 (CloudFront's region)
+CBASE_DOMAIN = shop.example.com
+CBASE_CERT_ARN = arn:aws:acm:us-east-1:111122223333:certificate/12345678-abcd-ef01-2345-6789abcdef01
+# optional: the Route 53 zone for the record; without it the CNAME is printed and DNS is untouched
+CBASE_ZONE = Z0123456789ABCDEFGHIJ
+# optional: a hostname whose every request goes to the VM
+CBASE_API_HOST = api.example.com
+```
+
+A route's cache policy defaults to `cache` for static and `nocache` for vm, its methods to `GET,HEAD` for static and `ALL` for vm, and with no `*` route one is added last (`* static`, or `* vm` for a VM-only app).
+The file is public, so the tool refuses any line that looks like a secret, naming the line and never echoing it: a key named with SECRET, TOKEN, PASSWORD, PASSWD, PRIVATE or CREDENTIAL, an AWS access key id, a PEM block, or a long random-looking string.
+
+### Groups and the state file
+
+A group is found by its tag through the Resource Groups Tagging API: `cbase:vm-group=<name>` on its one EC2 instance, `cbase:static-group=<name>` on its one bucket.
+The tool never creates one: a missing group stops with the `./cbase group-init` command that makes it.
+Who is in a group is its state file alone, `s3://cbase-state-<account>/vm/<group>.txt` or `.../static/<group>.txt`, plain text:
+
+```
+cbase-state 1 vm shop
+app=shop port=8700 service=cbase-shop.service mem=256
+
+cbase-state 1 static shop
+app=shop folder=shop/
+```
+
+A join or leave reads the file with its ETag and writes it back with S3's `If-Match` (`If-None-Match: *` for a new file).
+A 412 or 409 means another run wrote first: the file is read again and the change made again, up to 8 times, with a fixed backoff (no randomness: `tools/cbase.d/state.sh` says why).
+A VM app claims the lowest free port in 8700-8799 in the same write, so two racing deploys never hold one port.
+
+### Credentials
+
+The AWS CLI's own chain: `AWS_PROFILE` and `~/.aws` (an `aws login` or SSO session) on a laptop, the OIDC role's environment in CI.
+The tool reads, prints and passes no credential, and with none it says to run `aws login` or set `AWS_PROFILE`.
+`make check` runs `tools/cbase.d/test/cbase_test.sh`, which drives the tool through the real AWS CLI against a local fake of S3, STS and the Tagging API, with dummy keys; no test calls AWS.
+
 ## Rules the code keeps
 
 Each line names the tool, test or record that holds the rule; the tools run in `make check` or in CI.

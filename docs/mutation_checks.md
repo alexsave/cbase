@@ -1423,3 +1423,24 @@ Each mutant was made in place, build/test/unit_https rebuilt from a deleted obje
 - tls.c: the fixed list tried before OpenSSL's own bundle -> `system_store_refuses_the_test_ca` stays green, as it must: the test CA is in neither, so both orders refuse it, and only a real host whose roots differ between the two bundles would tell them apart.
   `openssl_bundle_before_the_system_list` catches it locally instead ($SSL_CERT_FILE names the test CA, and a fixed-list file that exists, /etc/ssl/cert.pem on macOS or /etc/ssl/certs/ca-certificates.crt on Ubuntu, loads first and refuses): red at its CB_OK and status 200.
   On a host with none of the fixed files it would stay green.
+
+## The deploy tool's foundation: cbase.conf, groups, the state file (cli-foundation)
+
+tools/cbase.d/test/cbase_test.sh runs tools/cbase as an app does, through the real AWS CLI, against tools/cbase.d/test/fake_aws.c on loopback.
+Each mutant was made in place with perl, the whole test run, and the file restored from a copy (checked byte-equal); nothing is compiled from the mutated files, so make's whole-second mtimes do not matter.
+
+- aws.sh: every put-object sent with no precondition (`--if-match`/`--if-none-match` replaced by `--metadata x=y`) -> `a new state file is written If-None-Match: *` red.
+- aws.sh: the same mutant with the join section's two precondition log checks taken out of a copy of the test -> `racing joins x and y: not exactly one 412` red: the race alone catches a lost update.
+- aws.sh: If-Match alone dropped (an existing file written unconditionally) -> `an existing state file is written If-Match` red.
+- state.sh: a precondition failure fatal (no retry) -> `racing joins x and y: status 0 and 1` red.
+- state.sh: the port claim ignores the ports members hold (a double claim) -> `b claims the next port` red.
+- state.sh: a rejoin claims a new port instead of keeping its own -> `a rejoin keeps its port` red.
+- state.sh: leave keeps the leaving app's line -> `the vm state file after a leave` red.
+- state.sh: a port two members hold read as valid -> `a corrupt state file (line 3 gives port 8701 to c, and b holds it)` red.
+- aws.sh: a group with no tagged resource treated as found -> `a missing vm group: status 0, not 1` red.
+- conf.sh: the secret scan returns at once (every secret-looking value accepted) -> `a secret` red at its first case (an access key id in CBASE_ZONE).
+- conf.sh: the access key id pattern removed -> `a secret` red at the access key id case.
+- conf.sh: the long mixed-case run's length raised from 24 to 2400 -> `a secret` red at the AWS secret key case.
+- conf.sh: SECRET and TOKEN dropped from the key-name words -> `a secret` red at `CBASE_API_TOKEN is named like a secret`.
+- conf.sh: the syntax pass's line count started at 1 (every number one too high) -> `a bad cbase.conf` red at `cbase.conf line 2: is not KEY = value (no '=')`.
+- README.md: the example's `CBASE_MEMORY = 256M` made `256` -> `README.md's example cbase.conf: status 1, not 0` red.
