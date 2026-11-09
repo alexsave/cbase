@@ -902,7 +902,7 @@ done
   || fail "the API host's behaviours are not its routes, then the ws routes"
 # Server-Timing on every answer of the API host, and the VM at 60 s.
 [ "$(grep -c "ResponseHeadersPolicyId: !Ref ServerTimingPolicy" "$t/api")" = 5 ] || fail "an API behaviour lacks the Server-Timing policy"
-grep -A6 "^  ServerTimingPolicy:" "$t/api" | grep -q "Enabled: true" || fail "the Server-Timing policy is not on"
+grep -A8 "^  ServerTimingPolicy:" "$t/api" | grep -q "Enabled: true" || fail "the Server-Timing policy is not on"
 awk '/- Id: vm/{f=1} f' "$t/api" | grep -m1 "OriginReadTimeout" | grep -q 60 || fail "the API host's VM origin's read timeout"
 awk '/- Id: vm/{f=1} f' "$t/api" | grep -m1 "OriginKeepaliveTimeout" | grep -q 60 || fail "the API host's VM origin's keep-alive"
 awk '/^  Distribution:$/{f=1} /^  ApiDistribution:$/{f=0} f' "$t/out" | grep -q "ResponseHeadersPolicyId" && fail "the main distribution got the API host's Server-Timing policy"

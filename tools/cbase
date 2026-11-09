@@ -160,7 +160,8 @@ case "$cmd" in
     conf_load "$conf"
     # Placeholders where deploy puts what it finds: the static group's bucket and region, and the
     # certificate (found or requested).
-    STACK_BUCKET="${CONF_STATIC}-bucket"
+    STACK_BUCKET="${CONF_STATIC_BUCKET:-${CONF_STATIC}-bucket}"
+    STACK_PREFIX="${CONF_STATIC_PREFIX:-$CONF_APP}"
     STACK_BUCKET_REGION=us-east-1
     # The router's page list is the build's, when there is one to read (else empty: every
     # extensionless path is the shell).
@@ -200,11 +201,13 @@ case "$cmd" in
       vm_origin_secret
     fi
     if [ "$CONF_STATIC" != none ]; then
-      STACK_BUCKET="$(aws_group_find static "$CONF_STATIC")"
-      STACK_BUCKET_REGION="$(aws_call s3api get-bucket-location --bucket "$STACK_BUCKET" --query LocationConstraint --output text)" \
-        || aws_fail "reading s3://$STACK_BUCKET's region"
-      case "$STACK_BUCKET_REGION" in None|'') STACK_BUCKET_REGION=us-east-1 ;; EU) STACK_BUCKET_REGION=eu-west-1 ;; esac
-      echo "static group $CONF_STATIC: s3://$STACK_BUCKET ($STACK_BUCKET_REGION), the app's folder $CONF_APP/"
+      static_bucket_find
+      if [ -n "$CONF_STATIC_BUCKET" ]; then
+        echo "static bucket s3://$STACK_BUCKET ($STACK_BUCKET_REGION, adopted: CBASE_STATIC_BUCKET), the app's folder $STACK_PREFIX/"
+        static_policy_check "$STACK_BUCKET"
+      else
+        echo "static group $CONF_STATIC: s3://$STACK_BUCKET ($STACK_BUCKET_REGION), the app's folder $STACK_PREFIX/"
+      fi
       # 2. The files, read and grouped before anything is changed.
       static_scan "$CONF_STATIC_DIR"
       static_plan "$CONF_STATIC_DIR"
@@ -236,7 +239,7 @@ case "$cmd" in
     if [ "$DRY_RUN" = 1 ]; then
       [ -z "$STACK_CHANGES" ] || stack_discard
       if [ "$CONF_STATIC" != none ]; then
-        echo "the upload ($CONF_STATIC_DIR/ to s3://$STACK_BUCKET/$CONF_APP/), in order:"
+        echo "the upload ($CONF_STATIC_DIR/ to s3://$STACK_BUCKET/$STACK_PREFIX/), in order:"
         static_print_plan
       fi
       echo "dry run: change set ${STACK_CS} deleted unexecuted; nothing was uploaded, deleted or changed"
@@ -252,10 +255,10 @@ case "$cmd" in
     # 8. The files: the app joins the static group's state file, which records its folder; then
     #    hashed, the rest, html last; then the prune, if asked.
     if [ "$CONF_STATIC" != none ]; then
-      state_change static "$CONF_STATIC" "$CONF_APP" "" join
+      [ -n "$CONF_STATIC_BUCKET" ] || state_change static "$CONF_STATIC" "$CONF_APP" "" join
       static_print_plan
-      static_upload "$STACK_BUCKET" "$STACK_BUCKET_REGION" "$CONF_APP"
-      [ "${CBASE_PRUNE:-}" != 1 ] || static_prune "$STACK_BUCKET" "$STACK_BUCKET_REGION" "$CONF_APP"
+      static_upload "$STACK_BUCKET" "$STACK_BUCKET_REGION" "$STACK_PREFIX"
+      [ "${CBASE_PRUNE:-}" != 1 ] || static_prune "$STACK_BUCKET" "$STACK_BUCKET_REGION" "$STACK_PREFIX"
     fi
     # 9. The distribution.
     [ -z "$STACK_CHANGES" ] || stack_execute
@@ -306,18 +309,15 @@ case "$cmd" in
     fi
     # 3. The files: kept unless --delete-files (the folder alone, never another app's key).
     if [ "$CONF_STATIC" != none ]; then
-      STACK_BUCKET="$(aws_group_find static "$CONF_STATIC")"
-      STACK_BUCKET_REGION="$(aws_call s3api get-bucket-location --bucket "$STACK_BUCKET" --query LocationConstraint --output text)" \
-        || aws_fail "reading s3://$STACK_BUCKET's region"
-      case "$STACK_BUCKET_REGION" in None|'') STACK_BUCKET_REGION=us-east-1 ;; EU) STACK_BUCKET_REGION=eu-west-1 ;; esac
+      static_bucket_find
       if [ -n "$del_files" ]; then
         ST_FILES="$CB_TMP/no-files"
         : > "$ST_FILES"
-        static_prune "$STACK_BUCKET" "$STACK_BUCKET_REGION" "$CONF_APP"
+        static_prune "$STACK_BUCKET" "$STACK_BUCKET_REGION" "$STACK_PREFIX"
       else
-        echo "undeploy: kept s3://$STACK_BUCKET/$CONF_APP/ (./cbase undeploy --delete-files deletes it)"
+        echo "undeploy: kept s3://$STACK_BUCKET/$STACK_PREFIX/ (./cbase undeploy --delete-files deletes it)"
       fi
-      state_change static "$CONF_STATIC" "$CONF_APP" "" leave
+      [ -n "$CONF_STATIC_BUCKET" ] || state_change static "$CONF_STATIC" "$CONF_APP" "" leave
     fi
     [ -z "$CONF_DOMAIN" ] || echo "undeploy: the DNS records of ${CONF_DOMAINS[*]}${CONF_API_HOST:+ $CONF_API_HOST} still point at the deleted distribution: remove them where the domain's DNS is served"
     echo "undeployed $CONF_APP"

@@ -22,6 +22,48 @@
 # with "<app>/": a key outside the app's folder is never deleted, whatever a listing says. Without it
 # nothing is deleted (a tab still open on the last build asks for the last build's files).
 
+# static_bucket_find: STACK_BUCKET and STACK_BUCKET_REGION, the app's bucket: CBASE_STATIC_BUCKET
+# (adopted, by its name: no group, no tag, no state file), or the static group's, by its tag; and
+# STACK_PREFIX, the app's folder in it (CBASE_STATIC_PREFIX, or the app's name).
+# shellcheck disable=SC2034 # stack.sh and tools/cbase read it
+STACK_PREFIX=""
+static_bucket_find() {
+  if [ -n "$CONF_STATIC_BUCKET" ]; then STACK_BUCKET="$CONF_STATIC_BUCKET"
+  else STACK_BUCKET="$(aws_group_find static "$CONF_STATIC")"; fi
+  STACK_BUCKET_REGION="$(aws_call s3api get-bucket-location --bucket "$STACK_BUCKET" --query LocationConstraint --output text)" \
+    || aws_fail "reading s3://$STACK_BUCKET's region"
+  case "$STACK_BUCKET_REGION" in None|'') STACK_BUCKET_REGION=us-east-1 ;; EU) STACK_BUCKET_REGION=eu-west-1 ;; esac
+  # shellcheck disable=SC2034 # stack.sh and tools/cbase read it
+  STACK_PREFIX="${CONF_STATIC_PREFIX:-$CONF_APP}"
+}
+
+# static_policy_check BUCKET: an adopted bucket's policy lets the account's distributions read it,
+# as a cbase static group's does (cloudfront.amazonaws.com on aws:SourceAccount). Deploy never
+# writes a bucket policy: without that statement, the statement to add (beside the others, which
+# stay) is printed, and the deploy stops before anything changes; a dry run says so and goes on.
+static_policy_check() {
+  local b="$1" pol
+  if pol="$(aws_call s3api get-bucket-policy --bucket "$b" --query Policy --output text)"; then
+    if [[ "$pol" == *cloudfront.amazonaws.com* && "$pol" == *aws:SourceAccount* && "$pol" == *"$AWS_ACCOUNT"* ]]; then
+      echo "static bucket s3://$b: its policy lets the account's distributions read it"
+      return 0
+    fi
+  else
+    case "$(aws_code)" in NoSuchBucketPolicy) ;; *) aws_fail "reading s3://$b's policy" ;; esac
+  fi
+  cat >&2 << EOF
+cbase: s3://$b's policy does not let this account's distributions read it, so the app's new distribution would answer 403.
+  Add this statement to the policy's Statement list, keeping every statement it has (S3 console: the bucket, Permissions, Bucket policy, Edit):
+    {"Sid": "TheAccountsDistributionsRead", "Effect": "Allow", "Principal": {"Service": "cloudfront.amazonaws.com"},
+     "Action": ["s3:GetObject", "s3:ListBucket"], "Resource": ["arn:aws:s3:::$b", "arn:aws:s3:::$b/*"],
+     "Condition": {"StringEquals": {"aws:SourceAccount": "$AWS_ACCOUNT"}}}
+  It lets any CloudFront distribution of account $AWS_ACCOUNT read the bucket (a cbase static group's own statement), and removes nothing.
+EOF
+  if [ "${DRY_RUN:-}" = 1 ]; then echo "dry run: a deploy would stop here, on the bucket policy above; this dry run goes on"; return 0; fi
+  echo "cbase: then deploy again; nothing was changed" >&2
+  exit 1
+}
+
 ST_RULE_GLOB=()
 ST_RULE_TYPE=()
 ST_IMMUTABLE='public, max-age=31536000, immutable'

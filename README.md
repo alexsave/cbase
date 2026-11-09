@@ -491,6 +491,15 @@ Optional, each with its default:
 - `CBASE_ZONE = Z...`: an override; default, deploy finds the account's Route 53 hosted zone that covers the domain and writes the records there, or with none prints the records to add.
 - `CBASE_STATIC_DIR = <dir>`: the directory deploy uploads; default `build` for a static site, `ui/out` for an app with a VM.
 - `CBASE_HASHED = <glob> ...`: the content-hashed files, cached for a year; default none.
+- `CBASE_API_CERT_ARN = arn:aws:acm:us-east-1:...`: the API host's own certificate, used as it is; `CBASE_CERT_ARN` is used as it is too, and neither is ever replaced.
+- `CBASE_API_ROUTE = <pattern> vm|ws [cache|nocache|origin] [<methods>]`, repeated: the API host's own behaviours; `origin` keeps what the origin's `Cache-Control` says. The API host's VM origin waits 60 s, and every answer carries CloudFront's `Server-Timing`.
+- `CBASE_VM_STACK = <stack>`: adopts an existing VM; the group's instance is the stack's (an instance, or an auto-scaling group of one), with no group-init.
+- `CBASE_VM_ORIGIN = <host>`: the AAAA hostname CloudFront reaches an IPv6-only VM at.
+- `CBASE_VM_PORT = <port>` and `CBASE_VM_DATA = <dir>`: a grandfathered member, an app that ran on the VM before cbase; its port and data directory are recorded as they are (`legacy=1`).
+- `CBASE_VM_SETTINGS = /<path>/`: the SSM path of the app's settings, which the instance writes into its env file; default `/cbase/<app>/`.
+- `CBASE_VM_ARTIFACTS = s3://<bucket>/<prefix>/`: where the app's servers go and the instance fetches them; default the state bucket's `artifacts/<app>/`.
+- `CBASE_BACKUP_BUCKET = <bucket>`: where serve backs up the database, `backups/<app>/cbase.sqlite`; default the state bucket.
+- `CBASE_STATIC_BUCKET = <bucket>` and `CBASE_STATIC_PREFIX = <folder>`: adopts an existing bucket and the app's folder in it; deploy never replaces it or writes its policy, and prints the one statement to add when the policy does not let the account's distributions read it.
 - `CBASE_SHELL = <path>`: the app shell, the page of the build served with a 200 for every path that is neither a file nor a page; default `/index.html`.
 
 The file is public, so the tool refuses any line that looks like a secret, naming the line and never echoing it: a key named with SECRET, TOKEN, PASSWORD, PASSWD, PRIVATE or CREDENTIAL, an AWS access key id, a PEM block, or a long random-looking string.
@@ -575,6 +584,7 @@ A full app (`CBASE_APP = shop` alone) deploys the same static part, and its dist
 A route's methods map to the smallest of CloudFront's three method sets that covers them (`GET,HEAD`; `GET,HEAD,OPTIONS`; all seven), `cache` is AWS's CachingOptimized policy and `nocache` CachingDisabled, and a VM route forwards every viewer header but `Host`.
 A `ws` route is its own origin for its long timeouts (CloudFront sets them per origin): 60 s to read and to keep alive, uncached, every method.
 `CBASE_API_HOST` is a second distribution whose every request goes to the VM, and a `ws` route keeps its `ws` behaviour there too.
+A VM app's settings come from SSM at each deploy, its `CBASE_ORIGIN_SECRET` among them: CloudFront sends that value as `X-Cbase-Origin` on every VM origin (a NoEcho parameter, never printed), and serve refuses a request without it.
 `cbase/tools/cbase template` prints the stack an app's `cbase.conf` makes, to read before a first deploy.
 
 The VM side of a deploy, in order:
@@ -586,8 +596,9 @@ The VM side of a deploy, in order:
 5. runs one SSM command on the instance, with no SSH: the user `cbase-<app>`, `/srv/cbase/<app>/data` owned by the service, the port checked free before a first start, the binary fetched and its sha256 checked, the unit `cbase-<app>.service` installed and only it restarted, then its `/health` (or its startup line) waited for;
 6. sets the stack's `VmOrigin` and `VmPort`, so `/api/*` and any `ws` route reach the app's port.
 
-The service gets `CBASE_LISTEN=0.0.0.0:<port>`, `CBASE_DB` in its data folder, `Restart=on-failure`, and `MemoryMax` only when `CBASE_MEMORY` is declared.
-Its settings are SSM Parameter Store parameters under `/cbase/<app>/`, which the instance writes into the env file serve reads (`CBASE_ENV_FILE`); no value passes through the tool.
+The service's unit grew out of the production unit of the VM cbase came from (`tools/cbase.d/vm_unit.service`): `CBASE_LISTEN=:::<port>` (a dual-stack socket), `CBASE_DB` in its data folder, the backup settings, `Restart=always`, its hardening, and `MemoryMax` only when `CBASE_MEMORY` is declared.
+The instance fetches the server and reads its settings with curl signed by the instance role (`tools/cbase.d/vm_remote.sh`), so it needs no aws CLI.
+Its settings are SSM Parameter Store parameters under `/cbase/<app>/`, which the instance writes into the unit's 0600 `EnvironmentFile`; no value passes through the tool but the origin secret, which is masked.
 Only the remote script's own status lines are printed, never the rest of the command's output, and a failure points at `journalctl -u cbase-<app>` on the instance.
 A port another process holds on the VM refuses the deploy and releases the claim it made.
 
@@ -636,15 +647,19 @@ Every stack change is a change set, made and printed before anything runs.
 - **A bucket is never replaced or removed.**
   A change set that would replace or remove an `AWS::S3::Bucket` is refused and deleted, and nothing is executed or uploaded: a bucket replaced is every file in it lost.
   This is the one hard stop.
-- **A distribution may be replaced.**
-  A new distribution is a new `cloudfront.net` name and a brief outage; deploy allows it and says so, and rewrites a Route 53 alias itself.
+- **No downtime after an app's first deploy.**
+  Once the app's stack exists, no deploy, update or template change may make it unreachable.
+  A change set that replaces or removes a distribution, or takes a hostname off one, is refused and deleted unless `--allow-downtime` (or `CBASE_ALLOW_DOWNTIME=1`) is passed; the first deploy, the stack's creation, is not held.
+- **A hostname is on one distribution.**
+  A hostname another distribution already serves stops the deploy before anything changes, naming that distribution and the one step that frees it (CloudFront refuses it with `CNAMEAlreadyExists`); moving it is the person's step.
 - **Drift stops a deploy.**
   On a stack that exists, CloudFormation's drift detection runs first, and a resource changed by hand is printed and the deploy stops, since the update would undo the change; `--accept-drift` (or `CBASE_ACCEPT_DRIFT=1`) overwrites it.
 - **A dry run changes nothing.**
   `--dry-run` (or `DRY_RUN=1`) makes and prints the change set, deletes it unexecuted (with the empty stack a first change set leaves), and prints the upload it would make.
+  A VM app's dry run checks the memory fit and prints the port it would claim, and writes no state file, sends no SSM command and executes nothing.
 - **No secret is printed.**
   A change set's and a drift's values are shown, but never one under an origin's custom headers or set by a parameter not known to be plain: those print as `origin header <where> changed`.
-  The tool's `--query` filters keep such values out of what the CLI answers, and any line of an AWS error that names one is masked.
+  The tool's `--query` filters keep such values out of what the CLI answers, and any line of an AWS error that names one, or holds the origin secret's value, is masked.
 
 ### Credentials
 

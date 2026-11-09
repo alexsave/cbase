@@ -132,6 +132,8 @@ stack_vm_origin() {
               OriginReadTimeout: $2
               OriginKeepaliveTimeout: $3
 EOF
+  # An IPv6-only VM: its origin name has an AAAA record alone (CBASE_VM_ORIGIN, or the group's).
+  if [ -n "${VM_IPV6:-}" ] || [ -n "$CONF_VM_ORIGIN" ]; then printf '              IpAddressType: ipv6\n'; fi
 }
 
 # stack_viewer_cert ALIAS...: the Aliases and ViewerCertificate lines.
@@ -242,13 +244,13 @@ Parameters:
     AllowedPattern: "[a-z0-9.-]+"
   VmPort:
     Type: Number
-    Description: the port the app claimed in its VM group's state file (set by ./cbase deploy)
-    MinValue: 8700
-    MaxValue: 8799
+    Description: the app's port in its VM group's state file, claimed or grandfathered (set by ./cbase deploy)
+    MinValue: 1024
+    MaxValue: 65535
   OriginSecret:
     Type: String
     NoEcho: true
-    Description: the X-Cbase-Origin header's value, SSM /cbase/$CONF_APP/CBASE_ORIGIN_SECRET (set by ./cbase deploy; never printed)
+    Description: the X-Cbase-Origin header's value, the app's SSM setting CBASE_ORIGIN_SECRET (set by ./cbase deploy; never printed)
 EOF
     fi
     printf '\nResources:\n'
@@ -287,7 +289,7 @@ EOF
       cat << EOF
           - Id: static
             DomainName: $STACK_BUCKET.s3.$STACK_BUCKET_REGION.amazonaws.com
-            OriginPath: /$CONF_APP
+            OriginPath: /$STACK_PREFIX
             OriginAccessControlId: !GetAtt Oac.Id
             S3OriginConfig:
               OriginAccessIdentity: ""

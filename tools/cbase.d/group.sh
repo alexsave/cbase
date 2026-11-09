@@ -138,6 +138,21 @@ Resources:
                 Effect: Allow
                 Action: s3:GetObject
                 Resource: !Sub "arn:\${AWS::Partition}:s3:::\${ArtifactBucket}/artifacts/*"
+              # The apps' backups (serve's CBASE_BACKUP_*): s3://<state bucket>/backups/, and no
+              # other key of the bucket. One role serves every app of the group, and any process on
+              # the instance can read its credentials from IMDS, so a per-app prefix in IAM would
+              # not hold one app from another: the boundary between apps is their Unix users.
+              - Sid: TheAppsBackups
+                Effect: Allow
+                Action: [s3:GetObject, s3:PutObject]
+                Resource: !Sub "arn:\${AWS::Partition}:s3:::\${ArtifactBucket}/backups/*"
+              - Sid: TheAppsBackupsList
+                Effect: Allow
+                Action: s3:ListBucket
+                Resource: !Sub "arn:\${AWS::Partition}:s3:::\${ArtifactBucket}"
+                Condition:
+                  StringLike:
+                    s3:prefix: "backups/*"
               - Sid: TheAppsSettings
                 Effect: Allow
                 Action: ssm:GetParametersByPath
