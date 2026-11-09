@@ -202,6 +202,8 @@ const cb_app *const cb_main_app = &APP;
 ```
 
 A handler is `void h(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res)` (`cb_handler`, `core/src/net/router.h`), and answers with the `cb_res_*` calls in `core/src/net/http.h` (`cb_res_text`, `cb_res_send`, `cb_res_header`).
+`CB_ROUTE_LOOP` runs the handler on the server's one loop thread, which serves every socket, so it must never block (no store, no lock another thread holds, nothing that waits); a route without it (`CB_ROUTE_POOL`, 0) runs on the request pool, where it may block.
+Every `CB_ROUTE_LOOP` handler runs on that one thread, one at a time, so a counter only they touch needs no lock; pool routes run on several workers at once (a `CB_ROUTE_INLINE` one on the loop thread too), so state one shares needs a lock or an `_Atomic` (`core/src/net/router.h`, "WHERE A HANDLER RUNS").
 The `CB_E_*` codes are in `core/src/util/err.h`.
 Serving a page: `core/src/net/files.h` answers with a file (`cb_send_file`) or a directory under a prefix route (`cb_serve_dir`), read when asked for, so a rebuilt page needs no restart.
 A route pattern is exact, a prefix (`/v1/items/*`) or has path parameters (`/decks/:id`).
