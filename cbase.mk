@@ -50,7 +50,12 @@
 #                    APP_ENV_FILE (default .env.local, from APP_SERVE_DIR unless absolute; empty for
 #                    none) to serve as CBASE_ENV_FILE when the file exists and CBASE_ENV_FILE is
 #                    unset, and sets CBASE_LISTEN to APP_SERVE_LISTEN (default 127.0.0.1:$(PORT), or
-#                    127.0.0.1:3000 with no PORT) unless CBASE_LISTEN is set
+#                    127.0.0.1:3000 with no PORT) unless CBASE_LISTEN is set. 3000 is amgi's port
+#                    too (the origin its Anki bridge allows), so a second product on the machine
+#                    sets its own: APP_SERVE_LISTEN := 127.0.0.1:4000 in its Makefile, or at run time
+#                    `PORT=4000 make serve`, or `CBASE_LISTEN=127.0.0.1:0 make serve` for a port the
+#                    OS picks. serve prints the address it bound on stdout once it listens,
+#                    "cbase: listening 127.0.0.1:<port>" (core/src/ingress_process.h)
 #   APP_LAMBDA_SCHEDULE, APP_LAMBDA_JOB   one of the app's schedules and one of its jobs, which the
 #                    Lambda smoke (smoke_lambda) sends as the scheduler and the self-invoke do
 #   APP_GATE_HEADER  one of the product's headers, which a core source must not reach (the compiler

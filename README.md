@@ -92,6 +92,9 @@ It needs the local provider in `CBASE_PROVIDERS`, and `tools/serve.sh` is the on
 - When `APP_ENV_FILE` exists (default `.env.local`, from `APP_SERVE_DIR` unless absolute) and `CBASE_ENV_FILE` is not already set, it is named to serve as `CBASE_ENV_FILE`; an absent file is no error, and an empty `APP_ENV_FILE` names none.
   The script never reads the file: serve reads it strictly, so a bad line refuses the boot with serve's own sentence naming the line.
 - `CBASE_LISTEN` is `APP_SERVE_LISTEN` unless the environment sets it; the default is `127.0.0.1` on `PORT`, or on 3000 without one.
+  3000 is amgi's port as well (the origin its Anki bridge allows), so a second product on the same machine collides with it unless it picks another.
+  A product sets its own in its Makefile (`APP_SERVE_LISTEN := 127.0.0.1:4000`), or a run sets one: `PORT=4000 make serve`, or `CBASE_LISTEN=127.0.0.1:0 make serve` for a free port the OS picks.
+  Once the socket is bound, serve prints where on stdout, one line: `cbase: listening 127.0.0.1:<port>` (`core/src/ingress_process.h`).
 - The binary is exec'd, so make's child is the server itself: Ctrl-C or a SIGTERM sent to it reaches serve, which drains and exits.
 
 ```make
