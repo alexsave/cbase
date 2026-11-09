@@ -413,6 +413,30 @@ static void an_unanswered_socket_call(void) {
     T_EQ_MEM(g_f.path, g_f.path_len, "/r", 2);
 }
 
+// What cbase/client.h's "HOW LONG A DEAD SERVER TAKES TO BE HEARD" says, with the defaults: a read
+// against a server that refuses every connection at once is sent CBC_TRIES (4) times, 500, 1000 and
+// 2000 ms apart, and is told lost 3.5 s after the call. cbc_due_ms says each next send.
+static void a_dead_server_is_heard_after_the_header_s_time(void) {
+    cbc c; mk(&c, 1, 1);
+    T_EQ_INT(CBC_TRIES, 4);
+    uint32_t t = cbc_call(&c, CBC_GET, CBC_C_READ, "/r", 2, NULL, 0, 0);
+    int64_t now = 0;
+    int sends = 0;
+    for (;;) {
+        T_CHECK(request(&c, now) > 0);
+        sends++;
+        if (cbc_on_response(&c, g_h.id, 0, NULL, 0, now) == 1) break;   // refused at once: status 0
+        T_EQ_INT(request(&c, now), 0);
+        int64_t due = cbc_due_ms(&c, now);
+        T_CHECK(due > 0);
+        now += due;
+    }
+    T_EQ_INT(sends, CBC_TRIES);
+    T_EQ_INT(now, 3500);
+    T_EQ_INT(ev(&c, 0)->ticket, t);
+    T_EQ_INT(ev(&c, 0)->why, CBC_WHY_LOST);
+}
+
 static void anonymous_reads_go_by_http(void) {
     cbc c; mk(&c, 1, 1);
     uint32_t t = cbc_call(&c, CBC_GET, CBC_C_READ, "/adv/users", 10, NULL, 0, 0);
@@ -935,6 +959,7 @@ int main(void) {
     T_RUN(a_refused_socket_call);
     T_RUN(a_socket_loss);
     T_RUN(an_unanswered_socket_call);
+    T_RUN(a_dead_server_is_heard_after_the_header_s_time);
     T_RUN(anonymous_reads_go_by_http);
     T_RUN(a_busy_read_goes_again);
     T_RUN(a_401_refreshes_and_goes_once_more);
