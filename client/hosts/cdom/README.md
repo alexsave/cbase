@@ -72,6 +72,7 @@ ui/out/app.wasm: $(UI_SRC)
 `lib/b64/b64.c`, which the adapter needs for the session, is `client.mk`'s `CBC_B64_SRC` and in no other list, so an app that also builds the provider sign-in adds `CBC_OIDC_SRC` and has nothing to dedupe.
 `host.mk` builds and links the adapter from these same variables, through `cdom.mk`'s `APP_WASM` rule, so the list an app compiles is the one cbase tests.
 The page's origin comes from `cd_page_origin` (cdom's net module).
+Serving a page: the app's cbase server answers with the page and its wasm module through `core/src/net/files.h` (`cb_send_file` for one file, `cb_serve_dir` for a directory under a prefix route), whose content types include `wasm`.
 
 ## The session
 

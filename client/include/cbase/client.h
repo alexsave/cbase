@@ -15,7 +15,7 @@
 //   timer    wake after cbc_due_ms and call cbc_tick, then drain both outputs again
 //   events   cbc_in, cbc_on_response, cbc_closed and cbc_tick raise events: read them with
 //            cbc_n_events / cbc_event_at after each, before calling any of the four again. A span
-//            (off, len) is into the bytes passed to the call that raised it.
+//            (off, len) is into the bytes passed to the call that raised it (cbc_event).
 // client/hosts/<name>/ holds hosts that keep this (posix: a native app's event loop), each the
 // shared host (client/hosts/common/cbc_host.h) on its platform's I/O, and every host passes one
 // suite against a scripted server (client/test/host/host_suite.h).
@@ -79,7 +79,12 @@ typedef struct {
     uint32_t http_wait_ms;      // (15000)
     uint32_t pad0;
     uint64_t seed;              // the reconnect jitter's generator: per client, from the host's entropy
-    uint8_t  anonymous;         // 1: GET /ws/public, an empty HELLO, no session, every call over HTTP
+    // 1: no session and every call over HTTP; a socket (GET /ws/public, an empty HELLO) is open
+    // only while a room is held (cbc_sub), so an anonymous client that holds none is plain HTTP.
+    // WHICH MODE: an app with no accounts sets anonymous; an app with accounts leaves it 0 and
+    // signs in (cbc_sign_in), its socket open (GET /ws) while a user is signed in. Before that a
+    // call without CBC_C_AUTH goes over HTTP at once and waits for no socket.
+    uint8_t  anonymous;
     uint8_t  pad[7];
 } cbc_cfg;
 
@@ -122,9 +127,16 @@ typedef struct {
     uint32_t ticket;    // DONE
     int32_t  code;      // DONE: the refusal's code and detail
     int32_t  detail;
-    uint32_t off, len;  // PUSH, DONE: the span, into the bytes passed to the call that raised it
+    uint32_t off, len;  // PUSH, DONE: the span (below)
     char     room[CBC_ROOM_MAX];   // SUB_*
 } cbc_event;
+// THE SPAN. A PUSH's and a DONE's body is off/len into the bytes passed to the call that raised
+// the event: cbc_in's frame, or cbc_on_response's body. Those bytes last only until that call
+// returns. A host that keeps the I/O itself (client/hosts/common/cbc_host.h, and every adapter on
+// it under client/hosts/) hands its app those same bytes with every event, as `bytes`, so
+// the body is len bytes at bytes + off. bytes is NULL when the call that raised the event had none
+// (cbc_tick, cbc_closed, a body cbc_on_response was not given), and a span is read only when it is
+// not NULL.
 
 // A request cbc_next_request writes: this head, then path_len bytes of path, auth_len bytes of the
 // Authorization value ("Bearer ..."; none when 0), body_len bytes of body. With CBC_RQ_REF the body
