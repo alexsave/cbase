@@ -558,7 +558,7 @@ CBASE_VM = none
 `CBASE_STATIC_DIR = <dir>` is the directory deploy uploads, relative to the repository's root; its default is `build` for a static site (what cdom's `make new` builds) and `ui/out` for an app with a VM (the starter's page, so a server binary under `build/` is never published).
 A path with a part that starts with `.` is not uploaded (`.git`, `.DS_Store`), but `.well-known/`.
 `CBASE_HASHED = <glob> ...` names the content-hashed files (`CBASE_HASHED = assets/*`; `*` crosses `/`), which are cached for a year, immutable; its default is none.
-Each file's Content-Type comes from one table, `tools/cbase.d/static_rules.tsv`, by extension (`.wasm` is `application/wasm`).
+Each file's Content-Type comes from one table, `tools/cbase.d/static_rules.tsv`, by a glob on its path: by extension (`.wasm` is `application/wasm`), or by the whole path for an extensionless file (`.well-known/apple-app-site-association` is `application/json`).
 Its Cache-Control is `no-cache` for html (a browser and CloudFront revalidate it, so a deploy is seen at once), `public, max-age=31536000, immutable` for a hashed file (never html), and `no-cache` for the rest.
 
 The stack holds one distribution, its Origin Access Control and a CloudFront Function that routes every app like an SPA.
