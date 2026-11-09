@@ -62,6 +62,21 @@ One that is set is still checked: a secret shorter than 32 characters, or a publ
 
 ## Using it in a product
 
+### Start a new server
+
+```
+make -C <cbase> new DIR=<path>
+```
+
+`DIR` must not exist or be empty, and is taken from where you ran make.
+It gets a `Makefile` (`CBASE` and `APP_SRC_ROOTS`, then `include $(CBASE)/cbase.mk`), `src/server.c` (a storeless app whose one route, `GET /`, answers `cbase`, beside the platform's `GET /health`) and a `.gitignore` (`build/`).
+`CBASE` is this checkout's path from `DIR`.
+With `GIT=1`, `DIR` is also a git repository with cbase as its submodule at this commit, and `CBASE` is `cbase`.
+Then `make serve` there builds the server and prints the URL it listens at.
+The server ships no test: `tools/new_test.sh`, part of cbase's `make check`, builds it, serves it and asks it.
+
+### By hand
+
 Add cbase as a submodule at `cbase/`, by its https URL so that anyone can clone the product:
 
 ```

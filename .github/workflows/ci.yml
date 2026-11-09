@@ -242,7 +242,7 @@ jobs:
           /tmp/cfn/bin/cfn-lint --regions us-east-1 -- providers/aws/ops/cbase.yaml providers/local/ops/vm.yaml
       - name: the shell scripts
         run: |
-          s="$(git ls-files 'ops/*.sh' 'providers/*/ops/*.sh' 'providers/*/ops/test/*.sh' 'fuzz/test/*.sh' tools/repo_gate_test.sh tools/c_rules_test.sh tools/changed_files.sh tools/changed_files_test.sh tools/libc_gate.sh tools/symbol_gate.sh tools/offline_build_test.sh tools/serve.sh tools/serve_test.sh client/test/requires_gate.sh example/minimal/check.sh)"
+          s="$(git ls-files 'ops/*.sh' 'providers/*/ops/*.sh' 'providers/*/ops/test/*.sh' 'fuzz/test/*.sh' tools/repo_gate_test.sh tools/c_rules_test.sh tools/changed_files.sh tools/changed_files_test.sh tools/libc_gate.sh tools/symbol_gate.sh tools/offline_build_test.sh tools/serve.sh tools/serve_test.sh tools/new.sh tools/new_test.sh client/test/requires_gate.sh example/minimal/check.sh)"
           # shellcheck disable=SC2086
           bash -n $s
           # shellcheck disable=SC2086
