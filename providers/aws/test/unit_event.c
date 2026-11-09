@@ -10,6 +10,7 @@
 #include "fixture_cloudfront_event.h"
 #include "aws_json.h"
 #include "b64/b64.h"
+#include "ctx.h"
 #include "util/err.h"
 #include "util/json.h"
 
@@ -196,7 +197,7 @@ static void schedule_and_bot_drive(void) {
 static void encode_text(void) {
     cb_http_res res;
     cb_res_init(&res);
-    cb_res_text(&res, 200, "ok cbase \"0.1.0\"\n");
+    cb_res_text(&res, 200, "ok cbase \"" CB_VERSION "\"\n");
     cb_res_header(&res, "Cache-Control", "no-store");
     cb_res_header(&res, "Vary", "Origin");
     cb_res_header(&res, "vary", "Accept");
@@ -208,7 +209,7 @@ static void encode_text(void) {
     T_EQ_STR(cb_buf_cstr(&out),
              "{\"statusCode\":200,\"headers\":{\"Content-Type\":\"text/plain; charset=utf-8\",\"Cache-Control\":\"no-store\","
              "\"Vary\":\"Origin, Accept\"},\"cookies\":[\"a=1; Path=/\",\"b=2\"],"
-             "\"body\":\"ok cbase \\\"0.1.0\\\"\\n\",\"isBase64Encoded\":false}");
+             "\"body\":\"ok cbase \\\"" CB_VERSION "\\\"\\n\",\"isBase64Encoded\":false}");
     cb_res_free(&res);
 
     // An empty 204: an empty body, never base64.

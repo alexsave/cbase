@@ -1120,3 +1120,10 @@ tools/c_rules.mk declared a bare `.SECONDARY:`, which makes every target seconda
 Every object is an explicit prerequisite of its program, so none is intermediate and the line is not needed; it is gone.
 
 - c_rules.mk: `.SECONDARY:` put back -> tools/c_rules_test.sh `a deleted object is rebuilt and its program relinked` compiled nothing, expected build/obj/host/src/lone.o.
+
+## unit_event's version from CB_VERSION (small-debts)
+
+unit_event `encode_text` built its answer and its expected event from the literal "0.1.0"; both are now built from CB_VERSION (ctx.h).
+
+- unit_event.c: the expected event's version put back to the literal "0.1.0" (the answer CB_VERSION's) -> `encode_text` cb_buf_cstr(&out) red.
+- util/json.c: '"' not escaped -> `encode_text` (the version's quotes) and `encode_binary` red.
