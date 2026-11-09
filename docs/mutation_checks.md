@@ -3,6 +3,9 @@
 Every test in cbase was mutation-checked: the code it covers was broken, the named assertion went red, and the code was restored by rewriting it (never `git checkout`) with its objects deleted, because make compares whole seconds.
 Each line is: file, mutation, the assertion that failed.
 This file collects the six builders' records and the integration's; DESIGN.md says what each module is.
+Many entries were written in the monorepo cbase came from, and name files that are not in cbase: the product's own files (`rows_foolish.c`, `bots.c`, `misses.c` and the like), tests that moved with the product, and files since renamed (`json_surface.c` is now `core/src/core_json.c` and `providers/aws/src/aws_json.c`).
+Those entries stay as a record of what was checked then, and are history.
+Paths that start with `foolish/` are marked `[history: not in cbase]`.
 
 ## Store, sql, migrate
 
@@ -362,7 +365,7 @@ Equivalent, recorded so nobody chases it: a bot cycle reading the row cache inst
 
 A macos-latest run of `a_goods_only_commit_is_broadcast` saw status 2 (game over) for 7 of its 8 games.
 The test helpers took a created game's id from the dashboard's newest game, the fake clock gave every game the same updated_at, and the in-RAM store broke the tie by slot, so after a first game played to its end with no goods-only commit, every create named that finished game.
-The helpers now read the id from the create answer's roster trailer (foolish/server/test/lib_created_game.c), and the in-RAM store breaks a tie by game id as the tables do.
+The helpers now read the id from the create answer's roster trailer (foolish/server/test/lib_created_game.c [history: not in cbase]), and the in-RAM store breaks a tie by game id as the tables do.
 Each mutant was applied, the named test failed on the named assertion, and the source was restored.
 
 - Reproduction (not shipped): game 1 of `a_goods_only_commit_is_broadcast` forced to find no goods-only commit, on main -> games 2-8 print game 1's id, `status_of(gid) == GAME_STATUS_PLAYING` x7 and `found > 0`; the same forcing with the fix -> green, game 2 a new id.
@@ -651,7 +654,7 @@ The hand-minimised input is `fuzz/corpus/event/crash-40a6db73`.
 
 ## The name gate, the compiler gate and fuzz.mk's bookkeeping (stage 8, 2026-10-18)
 
-The name gate (docs/history/PLATFORM_SPLIT.md 8.4) is `core/test/unit_name_gate.c` over `shared/tools/name_gate/words.txt` (products, providers, foolish's domain words) and the shrinking allowlist `shared/tools/name_gate/allow.txt` (exact counts per file and pattern); `shared_is_shared_validation.test.ts` reads its product list from the same file.
+The name gate (docs/history/PLATFORM_SPLIT.md 8.4) is `core/test/unit_name_gate.c` over `tools/name_gate/words.txt` (products, providers, foolish's domain words) and the shrinking allowlist `tools/name_gate/allow.txt` (exact counts per file and pattern); `shared_is_shared_validation.test.ts` reads its product list from the same file.
 The compiler gate is `make compiler-gate` over one file per side under `<side>/test/gate/`.
 One bug found: `fuzz-seeds` copied every target's seeds before refusing a stray seed directory, leaving the tree half-seeded; the refusal now runs first.
 
@@ -659,7 +662,7 @@ One bug found: `fuzz-seeds` copied every target's seeds before refusing a stray 
 - unit_name_gate.c match_here: `\b` taken as `before || after` -> `unit_name_gate` `the_matcher_sees_each_shape` (planted(L_DOMAIN, "both robots") == 0).
 - unit_name_gate.c scan_tree: providers scanned without L_DOMAIN -> `unit_name_gate` `each_side_names_only_its_own` (stale == 0, got 19).
 - core/src/util/random.c: a planted "DynamoDB" comment -> `unit_name_gate` `each_side_names_only_its_own` (new_hits == 0).
-- foolish/server/src/app/admin_panels.c: a planted "SQLite" comment -> `unit_name_gate` `each_side_names_only_its_own` (new_hits == 0).
+- foolish/server/src/app/admin_panels.c [history: not in cbase]: a planted "SQLite" comment -> `unit_name_gate` `each_side_names_only_its_own` (new_hits == 0).
 - allow.txt: the app.h /eventbridge/i line deleted -> `unit_name_gate` `each_side_names_only_its_own` (new_hits == 0).
 - allow.txt: that count raised from 1 to 2 -> `unit_name_gate` `each_side_names_only_its_own` (stale == 0).
 - allow.txt: a line for a file with no hits -> `unit_name_gate` `each_side_names_only_its_own` (stale == 0).
@@ -677,7 +680,7 @@ One bug found: `fuzz-seeds` copied every target's seeds before refusing a stray 
 - fuzz.mk: the refusal's exact-word match loosened to a substring -> `fuzz_mk_test.sh` ("seeds for on (a part of one) were taken").
 - fuzz.mk: the refusal moved back after the copy -> `fuzz_mk_test.sh` ("seeds for no target were refused only after corpora were written").
 
-## Queue batch: netclient dead-socket watch and view hint (foolish/c/src/netclient.c, unit_netclient.c)
+## Queue batch: netclient dead-socket watch and view hint (foolish/c/src/netclient.c [history: not in cbase], unit_netclient.c)
 
 - netclient.c: the dead test `>=` made `>` (and `+ 1`) -> `a_half_open_socket_is_closed_after_the_pong_wait` o != NULL && o->len == 0 at exactly NC_PONG_MS.
 - netclient.c: the dead test `NC_PONG_MS - 1` -> the same test, nc_stream_next(t + NC_PONG_MS - 1) == NULL.
@@ -762,7 +765,7 @@ Cherry-picked from origin/stage8-owed-tests (2bf3960ce with f316ad639's Makefile
 - store_dynamo.c: a share past 1 allowed / a share of 0 allowed / allowed outside bulk mode -> the same test's CB_E_INVALID assertions.
 - store_dynamo.c: the explicit clamp of the balance to the new rate DELETED, not mutated: its mutant survived because the pacing's own refill caps the balance at the rate before every call.
 
-## Queue batch: cbase-export (foolish/server/migrate/export.c, foolish/server/test/unit_export.c on `make check-dynamo`)
+## Queue batch: cbase-export (foolish/server/migrate/export.c [history: not in cbase], foolish/server/test/unit_export.c [history: not in cbase] on `make check-dynamo`)
 
 A REAL BUG came out of the first run: a file made new by the export is opened with the schema's 49 bots, so the "already holds items" refusal fired on every new file (exit 2 at the first run), and a bot the table did not have would have been left in the file as an EXTRA. A file absent or empty before the run is now cleared of its seed first; a file that held something before is still refused without --into-existing.
 The test is a 1051-item table (all five attribute kinds, the index keys, the TTL pair, a 1024-byte pk, a 300 KB item, the schema's bots), run through the real build/cbase-export, every item read back out of the SQLite file and compared attribute by attribute with the table's. The table is made on demand (the export paces itself to a provisioned table's reads, 5 RCU/s here: four minutes for the same run).
@@ -852,7 +855,7 @@ A mutant counts as killed when a check of the test fails, or the sanitizers stop
 
 ## Guessed game ids (2026-10-27)
 
-The id-miss rule (`foolish/server/src/app/misses.h`, `CB_LIMIT_ID_MISS_IP`) and the socket's viewer address, one mutant at a time, each run after a whole second so make rebuilt it; all 23 killed, each by the assertion named.
+The id-miss rule (`foolish/server/src/app/misses.h [history: not in cbase]`, `CB_LIMIT_ID_MISS_IP`) and the socket's viewer address, one mutant at a time, each run after a whole second so make rebuilt it; all 23 killed, each by the assertion named.
 - rate_limits.c: the rule's burst 30 made 31 -> `id_misses_are_peeked_then_taken` burst == 30; smoke `guessed_ids_are_limited_per_address` the 31st miss == 429.
 - rate_limits.c: an allowed peek reports a retry -> `id_misses_are_peeked_then_taken` retry == 0.
 - config.c: BUMP_USER and ID_MISS_IP names swapped -> `id_miss_burst_is_a_setting` the name in its kind's slot.
