@@ -74,12 +74,13 @@ CBASE_PROVIDERS := local   # local, aws, or "local aws"
 APP_SRC_ROOTS   := src     # every .c under these is the product's
 APP_TEST_ROOTS  := test    # its unit_*.c, lib_*.c and smokes
 APP_INC         := -Isrc   # the product's include flags
-APP_CFLAGS      :=         # flags for every object, the platform's too
-APP_LDLIBS      :=         # more libraries for every link
+SERVER_CFLAGS   :=         # flags for every server object, the platform's too
+SERVER_LDFLAGS  :=         # more libraries and link flags for every link
 APP_LIB_SRC     :=         # single sources outside the roots, linked into every program
 include $(CBASE)/cbase.mk
 ```
 
+`SERVER_CFLAGS` and `SERVER_LDFLAGS` are the native server's flags; `APP_CFLAGS` and `APP_LDFLAGS` are cdom.mk's, for a browser UI's wasm module, so one Makefile can include both fragments and give each side its own.
 There are no file lists to edit: a new `.c` under a source root is part of every program, and a new `unit_*.c` under a test root is a new test.
 `make`, `make check` and `make check-asan` then work in the product as they do in cbase.
 

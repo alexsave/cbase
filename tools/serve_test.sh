@@ -19,6 +19,10 @@
 #   * the default port: with no PORT and no CBASE_LISTEN serve listens on 127.0.0.1:8642 (the
 #     port README.md and cbase.mk name, core/src/config.h CB_LISTEN_DEFAULT); skipped, and said,
 #     when something on this machine already listens there.
+#   * the old flag names (cbase.mk's header, SERVER_CFLAGS): APP_CFLAGS in a Makefile with no
+#     APP_WASM, and APP_LDLIBS, stop the build with a sentence naming the new name; APP_CFLAGS with
+#     an APP_WASM (set in a second makefile, read after the product's) is the UI module's, and the
+#     build goes on.
 # Every make is started with a clean environment (env -i), so no CBASE_* of the caller's and no
 # parent make's flags reach it. Everything started is stopped by PID on exit.
 set -euo pipefail
@@ -212,6 +216,28 @@ else
     fail "make serve with no PORT and no CBASE_LISTEN did not come up"; show dport
   fi
   stop dport
+fi
+
+# ---- 7. the old flag names stop the build, naming the new ones ---------------------------------
+# build/cbase is built, so each make reaches only the flag stamp (tools/c_rules.mk), which reads
+# CB_CFLAGS every run: that is where the APP_CFLAGS check is, once the whole Makefile is read.
+# oldflag <label> <want in stderr> <make arguments...>: the make must fail and say <want>.
+oldflag() {
+  local label="$1" want="$2"; shift 2
+  if env -i PATH="$PATH" HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}" "$MAKE_BIN" --no-print-directory -C "$EX" "$@" build/cbase \
+       > "$T/$label.out" 2> "$T/$label.err"; then
+    fail "make with $label exited 0: the old name was taken silently"
+  elif grep -qF "$want" "$T/$label.err"; then ok "$label stops the build: $want"
+  else fail "make with $label failed without naming the new name ($want)"; show "$label"; fi
+}
+oldflag APP_CFLAGS "name the server's flags SERVER_CFLAGS" APP_CFLAGS=-DOLD_NAME
+oldflag APP_LDLIBS "name the server's link flags SERVER_LDFLAGS" APP_LDLIBS=-lm
+printf '# a UI module, named after cbase.mk is read: APP_CFLAGS is its flags\nAPP_WASM := ui/app.wasm\n' > "$T/ui.mk"
+if env -i PATH="$PATH" HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}" "$MAKE_BIN" --no-print-directory -C "$EX" \
+     -f Makefile -f "$T/ui.mk" APP_CFLAGS=-DOLD_NAME build/cbase > "$T/ui.out" 2> "$T/ui.err"; then
+  ok "APP_CFLAGS with an APP_WASM is the UI module's: the server's build goes on"
+else
+  fail "APP_CFLAGS with an APP_WASM (set after cbase.mk) stopped the server's build"; show ui
 fi
 
 if [ "$fails" -gt 0 ]; then echo "serve test: $fails failure(s)"; exit 1; fi

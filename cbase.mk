@@ -26,9 +26,14 @@
 #
 #   APP_INC          its side's include flags (-Isrc -Ikernel/src); the product side sees core's
 #                    headers and these, never a provider's
-#   APP_CFLAGS       flags for EVERY object cbase.mk compiles in this product, the platform's too:
+#   SERVER_CFLAGS    flags for EVERY object cbase.mk compiles in this product, the platform's too:
 #                    a -D that changes a struct the two halves share must reach both
-#   APP_LDLIBS       more libraries for every link (-framework Accelerate)
+#   SERVER_LDFLAGS   more libraries and link flags for every link (-framework Accelerate)
+#                    The SERVER_ names are the native server's. APP_CFLAGS and APP_LDFLAGS are the
+#                    UI framework's, for the wasm module its APP_WASM rule builds (README.md), so a
+#                    product with both sets each for its own side. cbase.mk stops, naming
+#                    SERVER_CFLAGS, when APP_CFLAGS is set and APP_WASM is not (a server Makefile
+#                    from before the rename), and when APP_LDLIBS (SERVER_LDFLAGS's old name) is set.
 #   APP_EXTRA_SRC    sources compiled with the product's own flags instead of CB_CFLAGS (a kernel
 #                    with its own -O3 and warnings), linked into every program: APP_EXTRA_CFLAGS,
 #                    and its sanitized, coverage and fuzz builds APP_EXTRA_ASAN_CFLAGS,
@@ -77,6 +82,17 @@
 ifeq ($(strip $(CBASE)),)
   $(error cbase.mk: set CBASE to the cbase root (as the including Makefile reaches it) before including it)
 endif
+
+# THE OLD FLAG NAMES FAIL LOUDLY (the header's SERVER_CFLAGS). APP_CFLAGS is the UI framework's,
+# read only by the rule that builds APP_WASM, so it is an error only in a Makefile that sets no
+# APP_WASM, and that is known only once the whole Makefile is read: APP_WASM may be set after this
+# file. So the check is in CB_CFLAGS, which is expanded when the first object's flags are (every
+# build, tools/c_rules.mk's .flags). APP_LDLIBS is no one else's, and is refused here.
+ifneq ($(strip $(APP_LDLIBS)),)
+  $(error cbase.mk: APP_LDLIBS is gone: name the server's link flags SERVER_LDFLAGS)
+endif
+cb_app_cflags_guard = $(if $(and $(strip $(APP_CFLAGS)),$(if $(strip $(APP_WASM)),,no-wasm)),$(error \
+  cbase.mk: APP_CFLAGS is set with no APP_WASM, and cbase.mk no longer reads it: name the server's flags SERVER_CFLAGS))
 C_ROOT ?= $(CBASE)
 CBASE_PROVIDERS ?= local
 UNAME := $(shell uname)
@@ -175,8 +191,8 @@ SIDE_STAMP := core: $(CORE_INC) local: $(LOCAL_INC) aws: $(AWS_INC) product: $(P
 
 # -Werror on every object cbase.mk compiles; a product's APP_EXTRA_SRC keeps its own warnings.
 CB_CFLAGS = -std=gnu11 -D_GNU_SOURCE -O2 -g -Wall -Wextra -Werror -Wno-unused-parameter -Wshadow -Wvla \
-            $(side_inc) $(SQLITE_CFLAGS) $(OPENSSL_CFLAGS) -pthread $(CPU_CFLAGS) $(APP_CFLAGS) $(CB_LTO)
-LDLIBS := $(SQLITE_LDFLAGS) $(OPENSSL_LDFLAGS) -lsqlite3 -lssl -lcrypto -lpthread -lm $(APP_LDLIBS) $(LTO_LDFLAGS)
+            $(side_inc) $(SQLITE_CFLAGS) $(OPENSSL_CFLAGS) -pthread $(CPU_CFLAGS) $(SERVER_CFLAGS) $(CB_LTO) $(cb_app_cflags_guard)
+LDLIBS := $(SQLITE_LDFLAGS) $(OPENSSL_LDFLAGS) -lsqlite3 -lssl -lcrypto -lpthread -lm $(SERVER_LDFLAGS) $(LTO_LDFLAGS)
 # STATIC=1: a fully static link (the Lambda bootstrap and the VM's serve, built on musl by
 # ops/build_static.sh). Not meaningful on macOS.
 ifeq ($(STATIC),1)

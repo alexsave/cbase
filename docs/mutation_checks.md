@@ -1215,6 +1215,10 @@ Each mutation was made in tools/serve.sh or cbase.mk, the test run, and the file
 - core/src/config.h: `CB_LISTEN_DEFAULT` `127.0.0.1:8080` (serve's old default; rebuilt) -> `with no PORT and no CBASE_LISTEN serve listens on 8080, not the default 8642` red.
 - cbase.mk: `APP_SERVE_LISTEN ?=` (PORT ignored) -> `with PORT=<port> and no CBASE_LISTEN serve listens on 8642, not <port>` red.
 - Not a mutant: serve.sh exporting an empty `CBASE_LISTEN` instead of unsetting it, since config.c reads an empty variable as unset.
+- cbase.mk: the APP_CFLAGS check made at include time (`ifneq` on APP_CFLAGS and APP_WASM) instead of in CB_CFLAGS -> `APP_CFLAGS with an APP_WASM (set after cbase.mk) stopped the server's build` red.
+- cbase.mk: the guard's `$(if $(strip $(APP_WASM)),,no-wasm)` made `no-wasm` (APP_WASM ignored) -> `APP_CFLAGS with an APP_WASM (set after cbase.mk) stopped the server's build` red.
+- cbase.mk: `$(cb_app_cflags_guard)` dropped from CB_CFLAGS -> `make with APP_CFLAGS exited 0: the old name was taken silently` red.
+- cbase.mk: the APP_LDLIBS `$(error ...)` dropped -> `make with APP_LDLIBS exited 0: the old name was taken silently` red.
 
 ## cb_http_query_find says absent, too long or unreadable (starter-friction)
 
