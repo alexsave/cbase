@@ -1,0 +1,116 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  cbase site: the role a GitHub Actions workflow assumes through OIDC to run
+  `make deploy-web` (site_deploy.sh) against one site stack, and nothing else.
+
+# Optional: a product that deploys its site from CI makes this stack once, by hand, with an
+# operator's credentials, and gives its RoleArn output to the workflow
+# (aws-actions/configure-aws-credentials, role-to-assume). No keys are stored anywhere.
+#
+#   aws cloudformation deploy --region us-east-1 --stack-name <site stack>-github \
+#     --template-file providers/aws/ops/site/site_role.yaml --capabilities CAPABILITY_IAM \
+#     --parameter-overrides GitHubRepo=<owner/name> SiteStack=<site stack> \
+#       BucketName=<its BucketName output> DistributionId=<its DistributionId output> \
+#       RouterName=<SITE_NAME>-router
+#
+# What the role may do: read the site stack, update it on its previous template (the router's
+# page list; CloudFormation then republishes the router as this role), write, read and delete the
+# bucket's objects, and invalidate the distribution.
+# It cannot change the template: applying one needs IAM, S3 bucket and CloudFront distribution
+# rights the role does not have, so `make deploy-web-stack` stays a hand step.
+# providers/aws/ops/site/test/site_test.sh holds every `aws` call site_deploy.sh makes to an action
+# granted here (providers/aws/ops/role_covers_release.sh).
+#
+# An account holds one GitHub OIDC provider. Leave OidcProviderArn empty to make it here, or name
+# the one another stack already made.
+
+Parameters:
+  GitHubRepo:
+    Type: String
+    Description: owner/name of the only repository the role trusts.
+    AllowedPattern: "[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"
+  Branch:
+    Type: String
+    Default: main
+    Description: the only branch whose workflows may assume the role.
+  OidcProviderArn:
+    Type: String
+    Default: ""
+    Description: the account's GitHub OIDC provider, when another stack already made it; empty makes one here.
+  SiteStack:
+    Type: String
+    Description: the site's stack name (SITE_STACK).
+  BucketName:
+    Type: String
+    Description: the site stack's BucketName output.
+  DistributionId:
+    Type: String
+    Description: the site stack's DistributionId output.
+  RouterName:
+    Type: String
+    Description: the router Function's name, SITE_NAME followed by -router.
+
+Conditions:
+  MakeProvider: !Equals [!Ref OidcProviderArn, ""]
+
+Resources:
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: MakeProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList: [sts.amazonaws.com]
+
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If [MakeProvider, !Ref GitHubOidcProvider, !Ref OidcProviderArn]
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                "token.actions.githubusercontent.com:aud": sts.amazonaws.com
+                "token.actions.githubusercontent.com:sub": !Sub "repo:${GitHubRepo}:ref:refs/heads/${Branch}"
+      Policies:
+        - PolicyName: site-deploy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: Stack
+                Effect: Allow
+                Action:
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeStackEvents
+                  - cloudformation:UpdateStack
+                Resource: !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${SiteStack}/*"
+              - Sid: Files
+                Effect: Allow
+                Action: [s3:PutObject, s3:GetObject, s3:DeleteObject]
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${BucketName}/*"
+              - Sid: List
+                Effect: Allow
+                Action: s3:ListBucket
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${BucketName}"
+              - Sid: Invalidate
+                Effect: Allow
+                Action: [cloudfront:CreateInvalidation, cloudfront:GetInvalidation]
+                Resource: !Sub "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${DistributionId}"
+              # What CloudFormation calls, as this role, to apply a new page list.
+              - Sid: Router
+                Effect: Allow
+                Action:
+                  - cloudfront:UpdateFunction
+                  - cloudfront:PublishFunction
+                  - cloudfront:DescribeFunction
+                  - cloudfront:GetFunction
+                Resource: !Sub "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:function/${RouterName}"
+
+Outputs:
+  RoleArn:
+    Description: the role-to-assume of the deploying workflow.
+    Value: !GetAtt DeployRole.Arn

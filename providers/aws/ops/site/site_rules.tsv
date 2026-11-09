@@ -1,0 +1,50 @@
+# site_rules.tsv - the one table of per-file upload rules (providers/aws/ops/site/site_deploy.sh).
+#
+# One rule per line, three fields separated by a TAB: glob, Content-Type, Cache-Control.
+# The glob is matched against the file's path from the site's root (no leading slash), and * crosses /.
+# The first rule that matches wins.
+# A product's own table (SITE_RULES, the same format) is read before this one, so its rules win.
+# Cache-Control is a header value, or one of two words:
+#   revalidate  public, max-age=0, s-maxage=86400, must-revalidate
+#               a browser revalidates every time (no-cache); CloudFront holds the file until the
+#               deploy's invalidation, a day at most if one is ever missed
+#   immutable   public, max-age=31536000, immutable
+# A file under a content-hashed glob (SITE_HASHED) is immutable whatever its rule says, but html,
+# which is never immutable.
+#
+# CloudFront compresses only the types on its list ("Serve compressed files" in the CloudFront
+# developer guide), and only objects of 1,000 to 10,000,000 bytes.
+# application/wasm is on the list, so a separate .wasm (the opt-out from a UI framework that
+# bundles the module into the page) is compressed at the edge up to 10 MB, and sent as stored above.
+*.html	text/html; charset=utf-8	revalidate
+*.htm	text/html; charset=utf-8	revalidate
+*.css	text/css; charset=utf-8	revalidate
+*.js	text/javascript; charset=utf-8	revalidate
+*.mjs	text/javascript; charset=utf-8	revalidate
+*.map	application/json	revalidate
+*.json	application/json	revalidate
+*.webmanifest	application/manifest+json	revalidate
+*.txt	text/plain; charset=utf-8	revalidate
+*.csv	text/csv; charset=utf-8	revalidate
+*.xml	application/xml	revalidate
+*.wasm	application/wasm	revalidate
+*.svg	image/svg+xml	revalidate
+*.png	image/png	revalidate
+*.jpg	image/jpeg	revalidate
+*.jpeg	image/jpeg	revalidate
+*.gif	image/gif	revalidate
+*.webp	image/webp	revalidate
+*.avif	image/avif	revalidate
+*.ico	image/x-icon	revalidate
+*.woff2	font/woff2	revalidate
+*.woff	font/woff	revalidate
+*.ttf	font/ttf	revalidate
+*.otf	font/otf	revalidate
+*.pdf	application/pdf	revalidate
+*.mp4	video/mp4	revalidate
+*.webm	video/webm	revalidate
+*.mp3	audio/mpeg	revalidate
+*.ogg	audio/ogg	revalidate
+*.wav	audio/wav	revalidate
+*.gz	application/gzip	revalidate
+*	application/octet-stream	revalidate

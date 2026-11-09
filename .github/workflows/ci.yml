@@ -248,10 +248,12 @@ jobs:
         run: |
           python3 -m venv /tmp/cfn
           /tmp/cfn/bin/pip install -q cfn-lint==1.57.2
-          /tmp/cfn/bin/cfn-lint --regions us-east-1 -- providers/aws/ops/cbase.yaml providers/local/ops/vm.yaml
+          /tmp/cfn/bin/cfn-lint --regions us-east-1 -- providers/aws/ops/cbase.yaml providers/local/ops/vm.yaml providers/aws/ops/site/site_role.yaml
+      - name: the site template, rendered (site_test.sh runs cfn-lint on its renders when it is on PATH)
+        run: PATH="/tmp/cfn/bin:$PATH" bash providers/aws/ops/site/test/site_test.sh
       - name: the shell scripts
         run: |
-          s="$(git ls-files 'ops/*.sh' 'providers/*/ops/*.sh' 'providers/*/ops/test/*.sh' 'fuzz/test/*.sh' tools/repo_gate_test.sh tools/c_rules_test.sh tools/changed_files.sh tools/changed_files_test.sh tools/libc_gate.sh tools/symbol_gate.sh tools/offline_build_test.sh tools/serve.sh tools/serve_test.sh tools/new.sh tools/new_test.sh client/test/requires_gate.sh 'client/hosts/*/*.sh' example/minimal/check.sh)"
+          s="$(git ls-files 'ops/*.sh' 'providers/*/ops/*.sh' 'providers/*/ops/test/*.sh' 'providers/aws/ops/site/*.sh' 'providers/aws/ops/site/test/*.sh' 'fuzz/test/*.sh' tools/repo_gate_test.sh tools/c_rules_test.sh tools/changed_files.sh tools/changed_files_test.sh tools/libc_gate.sh tools/symbol_gate.sh tools/offline_build_test.sh tools/serve.sh tools/serve_test.sh tools/new.sh tools/new_test.sh client/test/requires_gate.sh 'client/hosts/*/*.sh' example/minimal/check.sh)"
           # shellcheck disable=SC2086
           bash -n $s
           # shellcheck disable=SC2086

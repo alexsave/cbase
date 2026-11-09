@@ -276,6 +276,41 @@ A raw value would break on its first `&`, `=`, `+` or `#`, which the browser's `
 - TypeScript: coming soon.
 - Swift: coming soon.
 
+## Deploying a site
+
+The production rule: static files are served from S3 + CloudFront, and the API routes from the VM.
+`cb_send_file` is for local and desktop use only.
+
+`providers/aws/ops/site/` holds the mechanism, and the product keeps its values in its own Makefile:
+
+```make
+SITE_STACK   := mysite-web
+SITE_DIR     := web/out
+SITE_HASHED  := assets/*
+SITE_ALIASES := example.com www.example.com
+SITE_CERT_ARN := arn:aws:acm:us-east-1:111122223333:certificate/...
+SITE_ORIGINS := vm=vm-origin.example.com,proto=http-only,http=8080
+SITE_ROUTES  := /api/*=vm,cache=CachingDisabled,request=AllViewerExceptHostHeader,methods=all
+include $(CBASE)/providers/aws/ops/site/site.mk
+```
+
+`site.mk` needs neither `cbase.mk` nor an aws provider in `CBASE_PROVIDERS`, so a product whose API runs on the local provider deploys its site the same way.
+Its header lists every knob.
+
+- `make deploy-web` uploads the built directory: content-hashed files first (immutable for a year), then the other files, then the router's page list, then the html (revalidated on every visit), then deletes what the build dropped, then one invalidation of `/*`.
+  `PRUNE=1` also deletes content-hashed files the build no longer has.
+  It never changes the template.
+- `make deploy-web-stack` creates or updates the stack (`site.yaml`, one bucket and one distribution).
+  It runs CloudFormation drift detection first and refuses to update a stack that drifted, printing each drifted property, so a change made by hand in the console is never silently undone; `ACCEPT_DRIFT=1` is the only override.
+  It then makes a change set, prints it, and refuses to execute one that would replace or remove the distribution or the bucket.
+  `DRY_RUN=1` prints the change set, deletes it and executes nothing.
+- `make site-template` prints the rendered template.
+
+Each file's Content-Type and Cache-Control come from one table, `providers/aws/ops/site/site_rules.tsv`, which a product's own table (`SITE_RULES`) goes before.
+Every route (`SITE_ROUTES`) has its own cache policy, so an API route can say `CachingDisabled`.
+An origin no route uses is refused, so no dead origin stays in the distribution.
+The scripts run on the caller's credentials: OIDC in CI, through the optional role in `site_role.yaml`, or `aws login` on a Mac.
+
 ## Rules the code keeps
 
 Each line names the tool, test or record that holds the rule; the tools run in `make check` or in CI.

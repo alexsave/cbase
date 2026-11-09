@@ -95,6 +95,14 @@ serve-test: example-serve
 	bash tools/serve_test.sh
 check: serve-test
 
+# THE SITE DEPLOY TEST (providers/aws/ops/site/test/site_test.sh): the S3 + CloudFront site's upload,
+# page list, invalidation, deletes and prune, the stack's drift guard and no-replacement gate, the
+# template's render and the router's rules, against a fake `aws` on PATH. No AWS call, no network.
+.PHONY: site-test
+site-test:
+	bash providers/aws/ops/site/test/site_test.sh
+check: site-test
+
 # THE HTTP/2 AND gRPC MODULE A LA CARTE (docs/H2.md): a consumer that takes net/h2*, hpack, grpc and
 # tls and only what they need is linked from exactly those objects (build/h2_alacarte, so a module
 # that reached a provider or the product would not link), and core/test/h2_alacarte/check.sh holds its

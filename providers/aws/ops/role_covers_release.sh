@@ -7,7 +7,8 @@
 # fails the deploy on main, after every test passed, with production still on
 # the old binary. This reads each `aws <service> <command>` in SCRIPT
 # (providers/local/ops/vm_release.sh and the libraries it sources,
-# ops/s3_prune_lib.sh and providers/local/ops/vm_boot_lib.sh, by default) and requires the IAM action
+# ops/s3_prune_lib.sh and providers/local/ops/vm_boot_lib.sh, by default; or the site upload,
+# providers/aws/ops/site/site_deploy.sh with its role site_role.yaml) and requires the IAM action
 # it needs in the role. A command this table does not know stops the check: add
 # its action here and to the role.
 #
@@ -41,6 +42,14 @@ action_of() {
     "ssm send-command") echo ssm:SendCommand ;;
     "ssm get-command-invocation") echo ssm:GetCommandInvocation ;;
     "autoscaling describe-auto-scaling-groups") echo autoscaling:DescribeAutoScalingGroups ;;
+    "cloudformation describe-stacks") echo cloudformation:DescribeStacks ;;
+    "cloudformation update-stack") echo cloudformation:UpdateStack ;;
+    "cloudformation wait") echo cloudformation:DescribeStacks ;;
+    "s3 sync") echo s3:PutObject s3:ListBucket ;;
+    "s3 cp") echo s3:PutObject ;;
+    "s3 rm") echo s3:DeleteObject ;;
+    "cloudfront create-invalidation") echo cloudfront:CreateInvalidation ;;
+    "cloudfront wait") echo cloudfront:GetInvalidation ;;
     *) return 1 ;;
   esac
 }

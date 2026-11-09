@@ -1,0 +1,201 @@
+AWSTemplateFormatVersion: "2010-09-09"
+# site.yaml - one static site: a private S3 bucket behind one CloudFront distribution.
+# The production rule: static files from S3 + CloudFront, the API routes on the VM.
+#
+# This file is the template's skeleton.
+# providers/aws/ops/site/site_stack.sh renders it from a product's knobs (site.mk's header):
+# every marker line (a hash and an at-sign before a block name) is replaced by that block, and each
+# value in double at-signs by the knob it names.
+# Rendered, it is a plain CloudFormation template with no transform; `make site-template` prints it.
+#
+# What it makes:
+#   * Bucket: private, versioned (old versions expire after 30 days), read only by the
+#     distribution through Origin Access Control (Oac).
+#     Stale content-hashed files are not expired by a lifecycle rule: an object's age is when it
+#     was first uploaded, not when the build stopped naming it.
+#     `make deploy-web PRUNE=1` deletes them.
+#   * Router: a viewer-request CloudFront Function on every S3 behaviour.
+#     It maps clean URLs to the upload's .html files and puts the bucket prefix in front.
+#     Per request, in order:
+#       1. a redirect (SITE_REDIRECTS) answers 302, keeping the query;
+#       2. trailing slashes go; / is /index.html;
+#       3. a path under /.well-known/, or whose last segment has a dot, is a file and passes as is;
+#       4. with no shell (SITE_SHELL), every other path gets .html, and a miss is S3's 404;
+#       5. with a shell: a page of the list (the Pages parameter) gets .html, any other
+#          one-segment path is the shell (an app's client-side route), a deeper one /404.html;
+#       6. the key is the prefix (SITE_PREFIX) and the path.
+#     Not custom error responses: those are distribution-wide, so a missing JS file would come
+#     back as a 200 of HTML, and a route origin's errors would be rewritten too.
+#   * Distribution: the default behaviour is the bucket with the router.
+#     Each route (SITE_ROUTES) is a behaviour of its own, in list order, on S3 or on an origin of
+#     SITE_ORIGINS, with its own cache policy and origin request policy.
+#   * Isolation (SITE_ISOLATION=yes): a viewer-response Function adding
+#     Cross-Origin-Opener-Policy same-origin and Cross-Origin-Embedder-Policy credentialless to
+#     every S3 response, for a page that needs SharedArrayBuffer.
+#
+# Caching: AWS-managed policies only, so a CloudFront flat-rate plan (which allows no custom
+# ones) can hold the distribution.
+# Managed-CachingOptimized honours each object's own Cache-Control, which site_deploy.sh sets at
+# upload (site_rules.tsv): content-hashed files immutable for a year, everything else revalidated
+# by browsers and held by CloudFront until the deploy's one invalidation.
+#
+# Region: us-east-1 (CloudFront reads ACM certificates only there).
+
+Description: "cbase site: static files from S3 behind CloudFront"
+
+Parameters:
+  Pages:
+    Type: String
+    Default: ""
+    Description: The upload's pages, space-separated paths without .html. site_deploy.sh writes it from each upload; nobody edits it by hand.
+    AllowedPattern: "[a-zA-Z0-9_./ -]*"
+    MaxLength: 4096
+  #@SECRET_PARAMETERS
+
+Resources:
+  Bucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      #@BUCKET_NAME
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules: [{ ObjectOwnership: BucketOwnerEnforced }]
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      VersioningConfiguration: { Status: Enabled }
+      LifecycleConfiguration:
+        Rules:
+          - Id: old-versions
+            Status: Enabled
+            NoncurrentVersionExpiration: { NoncurrentDays: 30 }
+            AbortIncompleteMultipartUpload: { DaysAfterInitiation: 1 }
+            ExpiredObjectDeleteMarker: true
+
+  # GetObject for the files; ListBucket so a missing file is a 404, not a 403.
+  # The router never sends an empty key, so ListBucket is never a listing.
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref Bucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: CloudFrontRead
+            Effect: Allow
+            Principal: { Service: cloudfront.amazonaws.com }
+            Action: s3:GetObject
+            Resource: !Sub "${Bucket.Arn}/*"
+            Condition:
+              StringEquals:
+                "AWS:SourceArn": !Sub "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Distribution}"
+          - Sid: CloudFrontList
+            Effect: Allow
+            Principal: { Service: cloudfront.amazonaws.com }
+            Action: s3:ListBucket
+            Resource: !GetAtt Bucket.Arn
+            Condition:
+              StringEquals:
+                "AWS:SourceArn": !Sub "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Distribution}"
+
+  Oac:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: "@@NAME@@"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  Router:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: "@@NAME@@-router"
+      AutoPublish: true
+      FunctionConfig:
+        Comment: clean URLs, the page list, the bucket prefix
+        Runtime: cloudfront-js-2.0
+      FunctionCode: !Sub |
+        // cbase site router (providers/aws/ops/site/site.yaml)
+        var PAGES = ' ${Pages} ';
+        var SHELL = '@@SHELL@@';
+        var PREFIX = '@@PREFIX@@';
+        var REDIRECTS = {@@REDIRECTS@@};
+        function query(request) {
+          var out = [];
+          var q = request.querystring;
+          for (var k in q) {
+            var vs = q[k].multiValue ? q[k].multiValue : [q[k]];
+            for (var i = 0; i < vs.length; i++) out.push(vs[i].value === '' ? k : k + '=' + vs[i].value);
+          }
+          return out.length ? '?' + out.join('&') : '';
+        }
+        function handler(event) {
+          var request = event.request;
+          var uri = request.uri;
+          var to = REDIRECTS[uri];
+          if (to) {
+            return { statusCode: 302, statusDescription: 'Found',
+                     headers: { location: { value: to + query(request) },
+                                'cache-control': { value: 'no-cache' } } };
+          }
+          while (uri.length > 1 && uri.charAt(uri.length - 1) === '/') uri = uri.substring(0, uri.length - 1);
+          if (uri === '/') {
+            uri = '/index.html';
+          } else if (uri.indexOf('/.well-known/') === 0 || uri.substring(uri.lastIndexOf('/')).indexOf('.') >= 0) {
+            // a file
+          } else if (!SHELL || PAGES.indexOf(' ' + uri.substring(1) + ' ') >= 0) {
+            uri = uri + '.html';
+          } else if (uri.indexOf('/', 1) < 0) {
+            uri = SHELL;
+          } else {
+            uri = '/404.html';
+          }
+          request.uri = PREFIX + uri;
+          return request;
+        }
+
+  #@ISOLATION_FUNCTION
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Comment: "@@COMMENT@@"
+        Enabled: true
+        #@ALIASES
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        PriceClass: "@@PRICE_CLASS@@"
+        #@VIEWER_CERTIFICATE
+        Origins:
+          - Id: s3
+            DomainName: !GetAtt Bucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt Oac.Id
+            S3OriginConfig: { OriginAccessIdentity: "" }
+          #@ORIGINS
+        DefaultCacheBehavior:
+          TargetOriginId: s3
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD]
+          CachedMethods: [GET, HEAD]
+          Compress: true
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6   # Managed-CachingOptimized
+          FunctionAssociations:
+            #@S3_FUNCTIONS
+        #@CACHE_BEHAVIORS
+
+Outputs:
+  BucketName:
+    Value: !Ref Bucket
+  DistributionId:
+    Value: !Ref Distribution
+  DistributionDomain:
+    Description: Point the site's names here (an ALIAS at the apex, a CNAME below it).
+    Value: !GetAtt Distribution.DomainName

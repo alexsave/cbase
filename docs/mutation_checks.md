@@ -1423,3 +1423,17 @@ Each mutant was made in place, build/test/unit_https rebuilt from a deleted obje
 - tls.c: the fixed list tried before OpenSSL's own bundle -> `system_store_refuses_the_test_ca` stays green, as it must: the test CA is in neither, so both orders refuse it, and only a real host whose roots differ between the two bundles would tell them apart.
   `openssl_bundle_before_the_system_list` catches it locally instead ($SSL_CERT_FILE names the test CA, and a fixed-list file that exists, /etc/ssl/cert.pem on macOS or /etc/ssl/certs/ca-certificates.crt on Ubuntu, loads first and refuses): red at its CB_OK and status 200.
   On a host with none of the fixed files it would stay green.
+
+## The static site on S3 + CloudFront (site-deploy)
+
+providers/aws/ops/site/test/site_test.sh runs site_deploy.sh, site_stack.sh and site.mk against a fake `aws` on PATH that records its argv.
+Each mutant was made in place and the file restored from a copy.
+
+- site_stack.sh: the drift guard returns instead of refusing -> `a drifted stack was updated` red.
+- site_stack.sh: the replacement gate never refuses (`if false`) -> `a change set replacing Distribution was executed` red.
+- site_rules.tsv: the html rule made immutable -> `html is revalidated (no-cache)` red.
+- site_deploy.sh: the content-hashed override to immutable removed -> `a hashed file is immutable` red.
+- site_deploy.sh: the stale filter lists hashed keys for every pass, not only --prune -> `a stale hashed file stays without --prune` red.
+- site_deploy.sh: the stale filter's check against the build's own files removed -> `a live page is never deleted` red.
+- site_deploy.sh: the html pass removed -> `html is revalidated (no-cache)` red.
+- site_role.yaml: cloudformation:UpdateStack removed -> `site_role.yaml does not grant every call site_deploy.sh makes` red (role_covers_release.sh names the action).
