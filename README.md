@@ -80,6 +80,9 @@ APP_LIB_SRC     :=         # single sources outside the roots, linked into every
 include $(CBASE)/cbase.mk
 ```
 
+`C_ROOT` is the directory every source file outside the Makefile's own directory lives under; the build mirrors those files under `build/obj/<variant>/_root/` rather than following `..`.
+The default (`$(CBASE)`) fits a product with cbase as a submodule; set it only when the Makefile compiles files outside both its own directory and cbase, as amgi's `server/` does with `..`.
+
 `SERVER_CFLAGS` and `SERVER_LDFLAGS` are the native server's flags; `APP_CFLAGS` and `APP_LDFLAGS` are cdom.mk's, for a browser UI's wasm module, so one Makefile can include both fragments and give each side its own.
 There are no file lists to edit: a new `.c` under a source root is part of every program, and a new `unit_*.c` under a test root is a new test.
 `make`, `make check` and `make check-asan` then work in the product as they do in cbase.
