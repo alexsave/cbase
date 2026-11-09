@@ -393,7 +393,8 @@ EOF
 # stack_print_template FILE: the template, any origin header's value masked (there is none in a
 # template deploy renders: a secret would come in a NoEcho parameter, never a literal).
 stack_print_template() {
-  sed -E 's/^([[:blank:]]*(- )?HeaderValue:).*/\1 (masked)/' "$1"
+  # A reference (!Ref OriginSecret) names a NoEcho parameter, not a value, and stays.
+  sed -E '/^[[:blank:]]*(- )?HeaderValue: !Ref [A-Za-z0-9]+$/!s/^([[:blank:]]*(- )?HeaderValue:).*/\1 (masked)/' "$1"
 }
 
 # cfn ARGS...: one CloudFormation call in the stack's region.
