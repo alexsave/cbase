@@ -5,7 +5,8 @@
 # but a free port. Then, at the URL its startup line prints:
 #
 #   * GET /api/hello answers 200 "hello from cbase" (the route the page calls);
-#   * GET / is the page with cdom's shim inlined, and GET /page.wasm the linked module.
+#   * GET / is cdom's default page with the shim inlined and the linked module bundled into it, as a
+#     data: URL whose bytes are build/page/page.wasm; no module is served apart (GET /page.wasm 404).
 #
 #   bash example/minimal/check.sh [<make>] [<cdom checkout>]
 #
@@ -64,14 +65,19 @@ if [ "$got" = "hello from cbase
 else fail "GET /api/hello answered '$got', not 200 'hello from cbase'"; fi
 
 code="$(curl -s --max-time 5 -o "$T/page.html" -w '%{http_code}' "$url" || true)"
-if [ "$code" = 200 ] && grep -q 'cdom.start("page.wasm", "app")' "$T/page.html" && ! grep -q 'CDOM_SHIM' "$T/page.html"; then
+if [ "$code" = 200 ] && grep -q '<title>cbase minimal</title>' "$T/page.html" && ! grep -q 'CDOM_SHIM\|CDOM_WASM' "$T/page.html"; then
   ok "GET / is the page, with the shim inlined"
 else fail "GET / answered $code, or is not the page with the shim inlined"; fi
-
-code="$(curl -s --max-time 5 -o "$T/page.wasm" -w '%{http_code}' "${url}page.wasm" || true)"
-magic="$(head -c 4 "$T/page.wasm" 2>/dev/null | od -An -tx1 | tr -d ' \n')"
-if [ "$code" = 200 ] && [ "$magic" = 0061736d ]; then ok "GET /page.wasm is the linked module ($(wc -c < "$T/page.wasm" | tr -d ' ') bytes)"
-else fail "GET /page.wasm answered $code with magic '$magic', not a wasm module"; fi
+# The module, bundled: cdom.start's first argument is a data: URL of the very module the build linked.
+sed -n 's/.*cdom\.start("data:application\/wasm;base64,\([A-Za-z0-9+\/=]*\)", "app").*/\1/p' "$T/page.html" \
+  | base64 -d > "$T/bundled.wasm" 2>/dev/null || true
+magic="$(head -c 4 "$T/bundled.wasm" | od -An -tx1 | tr -d ' \n')"
+if [ "$magic" = 0061736d ] && cmp -s "$T/bundled.wasm" "$HERE/build/page/page.wasm"; then
+  ok "GET / bundles the linked module ($(wc -c < "$T/bundled.wasm" | tr -d ' ') bytes, build/page/page.wasm's)"
+else fail "GET / bundles no module, or not build/page/page.wasm (magic '$magic')"; fi
+code="$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' "${url}page.wasm" || true)"
+if [ "$code" = 404 ]; then ok "GET /page.wasm is 404: the page is the one file"
+else fail "GET /page.wasm answered $code, not 404: a module served apart from the page"; fi
 
 if [ "$fails" -gt 0 ]; then show; echo "minimal example: $fails failure(s)"; exit 1; fi
 echo "minimal example: passed"

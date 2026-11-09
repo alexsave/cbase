@@ -36,9 +36,9 @@ APP_SRC      := page/page.c $(CBC_SRC) $(CBC_B64_SRC) $(CBC_CDOM_SRC)
 APP_MODULES  := $(CBC_CDOM_MODULES)
 APP_CFLAGS   := -Wall -Wextra -Werror $(CBC_INC) $(CBC_CDOM_CFLAGS)
 APP_LDFLAGS  := -Wl,--strip-all
+# cdom's default page (cdom.mk's header), with the module bundled into it: one file, build/page/index.html.
 APP_PAGE     := build/page/index.html
-APP_PAGE_SRC := page/index.html
-APP_WASM_SEPARATE := 1   # the page loads page.wasm by URL (cdom.mk's header)
+APP_TITLE    := cbase minimal
 
 # make serve builds the page first (cbase.mk's header: a product's own serve lines).
 serve: $(APP_WASM) $(APP_PAGE)
