@@ -64,6 +64,8 @@ One that is set is still checked: a secret shorter than 32 characters, or a publ
 
 ## Using it in a product
 
+A product with a browser page on cdom starts from the two starters and follows [A cdom page on a cbase server, from the two starters](client/hosts/cdom/README.md#a-cdom-page-on-a-cbase-server-from-the-two-starters): one Makefile, the page served at `/`, the client call, a query, the make targets and a test in Chrome, worked through `example/minimal`.
+
 ### Start a new server
 
 ```
@@ -79,6 +81,11 @@ It is a plain `CBASE := <path>` line: edit it to move cbase, or override it for 
 With `GIT=1`, `DIR` is also a git repository with cbase as its submodule at this commit, and `CBASE` is `cbase`.
 Then `make serve` there builds the server and prints the URL it listens at.
 The server ships no test: `tools/new_test.sh`, part of cbase's `make check`, builds it, serves it and asks it.
+
+### A page on this server
+
+The starter's `GET /` answers `cbase` until a page takes `/` over.
+For a page on [cdom](https://github.com/alexsave/cdom), run cdom's starter too (`make -C <cdom> new DIR=<path>`) and follow [A cdom page on a cbase server, from the two starters](client/hosts/cdom/README.md#a-cdom-page-on-a-cbase-server-from-the-two-starters), which walks through [example/minimal/](example/minimal/), the app to copy.
 
 ### By hand
 
@@ -219,6 +226,7 @@ Which client mode: an app with no accounts sets `cbc_cfg.anonymous`, and its cal
 ### The smallest app: a server and a page that calls it
 
 [example/minimal/](example/minimal/) is the smallest whole app, server and browser page, and the skeleton to copy for one: one Makefile, a server with one route, and a page in C on [cdom](https://github.com/alexsave/cdom).
+[A cdom page on a cbase server, from the two starters](client/hosts/cdom/README.md#a-cdom-page-on-a-cbase-server-from-the-two-starters) walks through it from the two starters.
 Its Makefile includes four fragments, each once and in this order:
 
 ```make

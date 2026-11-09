@@ -4,35 +4,90 @@
 It is an adapter: the shared host (`client/hosts/common/cbc_host.h`) with cdom's socket, fetch, timers, clock, store and entropy as its environment, one cdom call each.
 `cbc_cdom.h` holds the contract; this file says how to build and test it.
 
-## The smallest app
+## A cdom page on a cbase server, from the two starters
 
-[example/minimal](../../../example/minimal) is a whole app on this adapter, server and page, to copy: one Makefile that includes `cbase.mk`, `cdom.mk`, `client/client.mk` and `adapter.mk` (its comment says why in that order), a server with one route (`server/minimal.c`), and a page whose C is the call itself (`page/page.c`):
+This is the path from the two `make new` commands to one app whose page calls its server, worked through [example/minimal](../../../example/minimal).
+Every block marked as quoted below is a run of lines from that app's files, held so by `quote_check.sh` here; the app itself is built, served and opened in Chrome by `example/minimal/check.sh` in CI.
 
+### 1. The starters, and which cdom
+
+```
+make -C <cbase> new DIR=<scratch>/server
+make -C <cdom> new DIR=<scratch>/page
+```
+
+Each writes a directory with a Makefile and one source: cbase's `src/server.c`, a server whose `GET /` answers `cbase`, and cdom's `src/app.c`, a page.
+An app with both keeps the two sources (say `server/` and `page/`) and writes the one Makefile of part 2 in place of the two.
+Take cdom at the pin this cbase is tested with ("The cdom pin", below), or a later commit of cdom's main.
+A page that calls a server is opened at the URL `make serve` prints, never from disk: the adapter talks to the page's own http: or https: origin.
+
+### 2. One Makefile, four includes
+
+`example/minimal/Makefile` sets the server's lines first (`CBASE_PROVIDERS := local`, `APP_SRC_ROOTS := server`, `APP_SERVE := minimal`), then includes four fragments, each once and in this order:
+
+<!-- quoted: example/minimal/Makefile -->
+```make
+include $(CBASE)/cbase.mk
+include $(CDOM)/cdom.mk
+include $(CBASE)/client/client.mk
+include $(CBASE)/client/hosts/cdom/adapter.mk
+```
+
+`cbase.mk` comes first because `cdom.mk` turns on `.SECONDEXPANSION` for every rule read after it, and cbase's rules are tested without it.
+`adapter.mk` comes last because it needs `cdom.mk`'s and `client.mk`'s variables, and stops, naming the fix, when either is missing.
+The page's lines come after them (`APP_WASM`, `APP_SRC` with `$(CBC_SRC) $(CBC_B64_SRC) $(CBC_CDOM_SRC)`, `APP_MODULES := $(CBC_CDOM_MODULES)`, `APP_CFLAGS` with `$(CBC_INC) $(CBC_CDOM_CFLAGS)`, and `APP_PAGE`), since `cdom.mk`'s rules read them when make builds.
+
+### 3. The page at `GET /`
+
+The starter's `GET /` answers `cbase`; a page app takes `/` over for its page, here cdom's default page with the module bundled into it, one file:
+
+<!-- quoted: example/minimal/server/minimal.c -->
 ```c
-static cbc_cdom client;   /* static and zeroed: the handle lives for the page */
-static cd_id answer;      /* a text node, named with cd_name_text */
+static void h_page(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
+    cb_send_file(ctx, req, res, "build/page/index.html", NULL, "no-store");
+}
 
+static const cb_route ROUTES[] = {
+    { .method = "GET", .pattern = "/api/hello", .flags = CB_ROUTE_LOOP, .fn = h_hello },
+    { .method = "GET", .pattern = "/", .fn = h_page },
+};
+```
+
+`cb_send_file` (`core/src/net/files.h`) reads the file when asked, so a rebuilt page needs no restart.
+A separate module is the better choice for a large app, for a host that caches a hashed `.wasm` for long, and for cdom's no-WebAssembly fallback: `APP_WASM_SEPARATE := 1` (`cdom.mk`'s header) keeps it a file beside the page, and the server answers it with a second `cb_send_file` route (its content type is `wasm`).
+
+### 4. The call
+
+<!-- quoted: example/minimal/page/page.c -->
+```c
 static void on_event(void *ctx, cbc *c, const cbc_event *e, const uint8_t *bytes) {
+  (void)ctx; (void)c;
   if (e->kind != CBC_EV_DONE) return;
   if (e->status == 200 && bytes) cd_set_text(answer, cd_tmp((const char *)bytes + e->off, e->len));
   else cd_set_text(answer, CD_LIT("the server did not answer"));
 }
-
-/* in cd_main, after building the page */
-cbc_cfg cfg;
-cbc_cfg_default(&cfg);
-cfg.anonymous = 1;   /* no accounts: every call is plain HTTP on the page's origin */
-if (cbc_cdom_start(&client, &cfg, NULL, on_event, NULL, NULL) != 0) return;
-cbc_call(cbc_cdom_client(&client), CBC_GET, CBC_C_IDEMPOTENT | CBC_C_FAIL_FAST, "/api/hello", 10, NULL, 0, cbc_cdom_now());
-cbc_cdom_pump(&client);   /* after every call into the client */
 ```
 
-`make -C example/minimal serve` builds both and runs the server; open the URL its startup line prints.
+<!-- quoted: example/minimal/page/page.c -->
+```c
+  cbc_cfg cfg;
+  cbc_cfg_default(&cfg);
+  cfg.anonymous = 1;   /* no accounts: every call is plain HTTP */
+  if (cbc_cdom_start(&client, &cfg, NULL, on_event, NULL, NULL) != 0) return;
+  /* Idempotent (safe to send again) and fail fast (a dead server is reported at once). */
+  cbc_call(cbc_cdom_client(&client), CBC_GET, CBC_C_IDEMPOTENT | CBC_C_FAIL_FAST, "/api/hello", 10, NULL, 0,
+           cbc_cdom_now());
+  cbc_cdom_pump(&client);   /* after every call into the client */
+```
 
-### A call with a query
+`cbc_cdom_start` runs once, on a handle in static storage; `cbc_call` answers a ticket, and `cbc_cdom_pump` sends what the call queued.
+Every ticket ends in exactly one `CBC_EV_DONE`, whose body is `e->len` bytes at `bytes + e->off`.
+Status 0 is an answer that never arrived: no server is listening, or the deadline passed; with `CBC_C_FAIL_FAST` it is told at once instead of tried again.
+A non-2xx answer's body is the server's error body, read the same way: `cb_res_text(res, 400, "bad name\n")` reaches the page as status 400 and those 9 bytes, with `e->why` read from the status (`client.h`, "WHAT A DONE'S SPAN HOLDS").
 
-`cbc_call` sends its path as given, so its parameter is `encoded_path` (`client/include/cbase/client.h`): the client cannot tell a value's `&` or `=` from the query's own separators.
-The page builds the query with the client's `cbc_query_add`, which percent-encodes each key and value as RFC 3986 asks (all but `A-Z a-z 0-9 - . _ ~`), and is the same call on every host:
+### 5. User text in a query
+
+`cbc_call` sends its path as given (the parameter is `encoded_path`), so the page builds a query with `cbc_query_add`, which percent-encodes each key and value as RFC 3986 asks (all but `A-Z a-z 0-9 - . _ ~`):
 
 ```c
 /* name: n bytes the user typed */
@@ -43,8 +98,39 @@ cbc_call(cbc_cdom_client(&client), CBC_GET, CBC_C_IDEMPOTENT | CBC_C_FAIL_FAST, 
 cbc_cdom_pump(&client);
 ```
 
-The browser's `fetch` encodes a space and UTF-8 itself but leaves `&`, `=`, `+` and `#` alone, so a page that sends a raw value works for "Ada" and breaks on "Ada & Grace".
-cdom's own `cd_url_encode` (`src/cdom_url.h`) is for the page's address; a path for `cbc_call` is `cbc_query_add`'s.
+The server reads the value back with `cb_http_query_find(req, "name", buf, sizeof buf)`, as the top README's `src/myapp.c` does; `tools/new_test.sh` builds that file and asks it for "Ada & Grace".
+A raw value breaks on its first `&`, `=`, `+` or `#`, which the browser's `fetch` leaves alone; cdom's `cd_url_encode` is for the page's own address, not for this path.
+
+### 6. The make targets cbase.mk owns, and `start`
+
+`cbase.mk` owns `all`, `test`, `smoke`, `check`, `check-asan`, `test-asan`, `smoke-asan`, `coverage`, `bench`, `serve`, `clean` and the `fuzz` targets ([README.md](../../../README.md), "The targets cbase.mk owns"), and `cdom.mk` owns no target, only the files `APP_WASM` and `APP_PAGE` name.
+An app's own work goes under a name of its own (`e2e`, not `test`), joined to cbase's targets by a line with no recipe.
+A `start` target is `start: serve`, with the page as `serve`'s prerequisite (`serve: $(APP_WASM) $(APP_PAGE)`, as `example/minimal/Makefile` has it), never a copy of serve's recipe.
+
+### 7. An end-to-end test in Chrome
+
+cdom's `tools/cdp.mjs` is a small DevTools client: it starts a headless Chrome of its own (a temporary profile, killed by its PID) and drives it.
+It is in the cdom the app builds with: its `cdom/` submodule, or `client/build/cdom` here once a cdom goal has fetched it.
+It is a test-only dependency on Node 22 or later and Google Chrome (`CHROME` names another binary); the app and its build need neither.
+`example/minimal/e2e.mjs` opens the URL `make serve` printed and waits for the server's answer:
+
+<!-- quoted: example/minimal/e2e.mjs -->
+```js
+const b = await launch();
+let text = '';
+try {
+  await b.send('Page.navigate', { url });
+  // The page says "asking..." until the call's CBC_EV_DONE, then shows the answer in its place.
+  for (let i = 0; i < 100 && !text.includes(want); i++) {
+    await sleep(50);
+    text = (await b.evaluate("document.getElementById('app')?.textContent")) ?? '';
+  }
+} finally {
+  await b.close();
+}
+```
+
+`example/minimal/check.sh` runs it after its curl checks, while the server is up, and skips it, saying so, when Node or Chrome is missing (CI sets `MINIMAL_E2E=1`, which makes that a failure).
 
 ## The dependency
 
@@ -67,7 +153,8 @@ A new pin is that one line, moved once the adapter passes against the newer cdom
 - the shared host suite on this adapter (`client/test/unit_host_cdom.c` is cdom, as far as the adapter reaches it), natively and under ASan + UBSan, every case with socket ids from 1 and from 0 and on an http: and an https: page;
 - the adapter's own cases: a stop and a new start, a stop from inside a callback, late answers dropped, the key, a page that is not http: or https:, a host past 256 bytes, a socket the browser refuses to make, the early call that waits for the load;
 - the adapter, the shared host, the core and `lib/b64` compiled for wasm32 with `cdom.mk`'s flags (`CDOM_CFLAGS`: cdom's own `string.h`), the libc gate over them, and a module linked from them and `link_app.c` by `cdom.mk`'s `APP_WASM` rule, with the modules `CBC_CDOM_MODULES` names;
-- the minimal app (`example/minimal/check.sh`, also `make -C client check-minimal-example`): its one Makefile builds the server and the page against this cdom, and `make serve`, run outside dev mode with no setting but a free port, answers the route over curl and serves cdom's default page with the linked module bundled into it, as one file;
+- the minimal app (`example/minimal/check.sh`, also `make -C client check-minimal-example`): its one Makefile builds the server and the page against this cdom, and `make serve`, run outside dev mode with no setting but a free port, answers the route over curl and serves cdom's default page with the linked module bundled into it, as one file, which headless Chrome then opens and shows the answer in (`e2e.mjs`, skipped and said without Node 22 or Chrome, a failure under CI's `MINIMAL_E2E=1`);
+- `quote_check.sh` (also in `make -C client check`, nothing fetched): every block this file marks as quoted is a run of lines of the file it names;
 - `adapter_mk_check.sh` (also in `make -C client check`, nothing fetched): `adapter.mk` read without `cdom.mk` stops and names the fix, no file is in two of the lists an app adds (`lib/b64/b64.c` once), and every doc that shows the includes (the top README, this file, `adapter.mk`'s header, `example/minimal/Makefile`) shows them in the one order.
 
 `client/test/mutate.sh` runs this adapter's mutants (`mutants.py`) with the rest of the client's.

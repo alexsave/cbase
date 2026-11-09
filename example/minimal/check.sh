@@ -6,7 +6,10 @@
 #
 #   * GET /api/hello answers 200 "hello from cbase" (the route the page calls);
 #   * GET / is cdom's default page with the shim inlined and the linked module bundled into it, as a
-#     data: URL whose bytes are build/page/page.wasm; no module is served apart (GET /page.wasm 404).
+#     data: URL whose bytes are build/page/page.wasm; no module is served apart (GET /page.wasm 404);
+#   * the page in headless Chrome (e2e.mjs, on cdom's tools/cdp.mjs) shows "hello from cbase", the
+#     answer to its call. That needs Node 22 or later and Chrome (CHROME names one), which only this
+#     test needs: without them it is skipped and said, unless MINIMAL_E2E=1 (CI) makes it a failure.
 #
 #   bash example/minimal/check.sh [<make>] [<cdom checkout>]
 #
@@ -78,6 +81,23 @@ else fail "GET / bundles no module, or not build/page/page.wasm (magic '$magic')
 code="$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' "${url}page.wasm" || true)"
 if [ "$code" = 404 ]; then ok "GET /page.wasm is 404: the page is the one file"
 else fail "GET /page.wasm answered $code, not 404: a module served apart from the page"; fi
+
+# The page in a browser. cdp.mjs is the cdom checkout's this app was built with.
+cdp_cdom="${CDOM_DIR:-$HERE/../../client/build/cdom}"
+chrome="${CHROME:-}"
+if [ -z "$chrome" ]; then
+  for c in "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" "$(command -v google-chrome || true)" \
+           "$(command -v chromium || true)"; do
+    if [ -n "$c" ] && [ -x "$c" ]; then chrome="$c"; break; fi
+  done
+fi
+if [ -n "$chrome" ] && node -e 'process.exit(typeof WebSocket === "function" ? 0 : 1)' 2>/dev/null; then
+  CHROME="$chrome" node "$HERE/e2e.mjs" "$cdp_cdom" "$url" || fails=$((fails + 1))
+elif [ "${MINIMAL_E2E:-}" = 1 ]; then
+  fail "the page in Chrome: MINIMAL_E2E=1, and no Node 22 or later or no Chrome (CHROME='${CHROME:-}')"
+else
+  echo "skip  minimal example: the page in Chrome (it needs Node 22 or later and Chrome; CHROME names one)"
+fi
 
 if [ "$fails" -gt 0 ]; then show; echo "minimal example: $fails failure(s)"; exit 1; fi
 echo "minimal example: passed"

@@ -9,11 +9,14 @@
 #   make check-minimal-example  the minimal app (example/minimal: one Makefile with cbase.mk, cdom.mk,
 #                         client.mk and adapter.mk) built against the same cdom and run as a person
 #                         runs it (example/minimal/check.sh: make serve, the route over curl, the
-#                         page and its linked module); in check-host-cdom too
+#                         page and its linked module, and the page in Chrome through cdom's
+#                         tools/cdp.mjs, e2e.mjs); in check-host-cdom too
 #   make check-cdom-pin-doc   README.md here names CDOM_PIN (pin_doc_check.sh); in `make check` too
 #   make check-cdom-adapter-mk  adapter.mk refuses to be read without cdom.mk, no file is in two
 #                         of the lists an app adds, and every doc shows the four includes in one
 #                         order (adapter_mk_check.sh); in `make check` too
+#   make check-cdom-readme-quotes  every block README.md here marks as quoted is a run of lines of
+#                         the file it names (quote_check.sh); in `make check` too
 #
 # cdom (github.com/alexsave/cdom) is fetched by its commit into build/cdom, never reached beside this
 # tree (tools/repo_gate_test.sh). A new pin is the one line below, moved when the adapter has passed
@@ -35,12 +38,15 @@ build/cdom/.pin-$(CDOM_PIN):
 # The pin as README.md here names it, which is what an app reads to pair cdom with this cbase:
 # pin_doc_check.sh holds the README's commit to CDOM_PIN. And adapter.mk's two rules, read by make
 # itself (adapter_mk_check.sh). Plain text, nothing fetched, so the client's own `make check` runs both.
-.PHONY: test-host-cdom host-cdom-wasm check-host-cdom check-cdom-pin-doc check-cdom-adapter-mk check-minimal-example
+.PHONY: test-host-cdom host-cdom-wasm check-host-cdom check-cdom-pin-doc check-cdom-adapter-mk check-cdom-readme-quotes \
+        check-minimal-example
 check-cdom-pin-doc:
 	@bash hosts/cdom/pin_doc_check.sh hosts/cdom/README.md $(CDOM_PIN)
 check-cdom-adapter-mk:
 	@bash hosts/cdom/adapter_mk_check.sh '$(MAKE)'
-check: check-cdom-pin-doc check-cdom-adapter-mk
+check-cdom-readme-quotes:
+	@bash hosts/cdom/quote_check.sh hosts/cdom/README.md ..
+check: check-cdom-pin-doc check-cdom-adapter-mk check-cdom-readme-quotes
 
 # The rest reads cdom.mk, so it is read only once cdom is here: at the pin (its stamp) when fetched,
 # or a CDOM checkout that has cdom.mk. Before that, each of its goals fetches cdom and runs make
@@ -109,6 +115,6 @@ host-cdom-wasm: wasm-cc-check $(HOST_CDOM_WASM_OBJS) build/wasm/host_cdom_link.w
 .PHONY: check-minimal-example
 check-minimal-example: wasm-cc-check
 	WASM_CC='$(WASM_CC)' bash ../example/minimal/check.sh '$(MAKE)' '$(abspath $(CDOM))'
-check-host-cdom: check-cdom-pin-doc check-cdom-adapter-mk test-host-cdom host-cdom-wasm check-minimal-example
+check-host-cdom: check-cdom-pin-doc check-cdom-adapter-mk check-cdom-readme-quotes test-host-cdom host-cdom-wasm check-minimal-example
 endif
 HOST_CHECKS += check-host-cdom
