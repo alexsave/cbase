@@ -274,11 +274,14 @@ static void caller_kill(void) {
 }
 
 // The group goes with the child: a grandchild in it is killed when the child is, and when the child
-// exits on its own.
+// exits on its own. The kill follows the shell's "ready" on fd 3, after its grandchild's pid: a
+// timer started at the spawn raced a slow shell, which could be killed before it had started the
+// grandchild or said its pid.
 static void grandchild_dies_with_group(void) {
-    res *x = run1((cb_spawn_opts){ .argv = SH("/bin/sleep 30 & echo $!; wait"), .timeout_ms = 300 });
-    T_EQ_INT(x->r.killed, CB_SPAWN_TIMEOUT);
-    int gc = parse_pid(x->out);
+    res *x = run1((cb_spawn_opts){ .argv = SH("/bin/sleep 30 & echo pid $! >&3; echo ready >&3; wait"), .channel = true });
+    T_EQ_INT(x->r.killed, CB_SPAWN_KILLED);
+    T_EQ_INT(R.nlines, 2);
+    int gc = strncmp(R.lines[0], "pid ", 4) == 0 ? parse_pid(R.lines[0] + 4) : 0;
     T_CHECK(gc > 0);
     T_CHECK(gc > 0 && gone(gc));
     rig_close();

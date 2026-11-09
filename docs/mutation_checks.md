@@ -1105,3 +1105,11 @@ It now reads the server's own peak (proc_pid_rusage, lifetime peak physical foot
 Cold on this Mac (-j2, CHECK_JOBS=2): 71.2 s before, 78.5 s after (+7.3 s, 24 targets, about 7000 inputs).
 
 - replay_main.c: every replay answering 1 -> `make check-asan` fails with "FUZZ REPLAY FAILED" (rc 2); restored, it passes.
+
+## grandchild_dies_with_group waits for its shell (small-debts)
+
+unit_spawn `grandchild_dies_with_group` killed its shell on a 300 ms timeout started at the spawn, so a slow shell could be killed before it had started its grandchild or written its pid.
+The shell now writes `pid $!` and then `ready` on fd 3, and the rig's kill follows the `ready`.
+
+- unit_spawn.c (the race made certain): `sleep 0.5;` before the background job -> the old test red, `grandchild_dies_with_group` gc > 0 and gone(gc); the new test with the same delay green.
+- spawn.c: the group kill made a kill of the leader alone (kill_start's SIGTERM and reap's SIGKILL to c->pid) -> `grandchild_dies_with_group` gone(gc), both the killed and the exited halves.
