@@ -1507,3 +1507,18 @@ Each mutant below was made in a copy of tools/ in a scratch directory, the VM su
 - stack.sh: the keep guard's `'AWS::S3::Bucket'` made `'AWS::S3::None'` -> `a group-init whose change set would replace-bucket: status 0, not 1` red.
 - stack.sh: the keep guard's `'AWS::EC2::Instance'` made `'AWS::EC2::None'` -> `a group-init whose change set would replace-instance: status 0, not 1` red.
 - tools/cbase: undeploy's `--delete-files` test made `if true` (files deleted by default) -> `undeploy keeps the files: stdout lacks [undeploy: kept s3://g9-group-bucket/shop/ ...]` red, the first of the default undeploy's assertions to see the folder deleted.
+
+## ./cbase: the gaps foolish's switch needed (cli-static-gaps)
+
+tools/cbase.d/test/cbase_test.sh renders an app's template, cuts the Router's code out of it and runs it under node with sample requests: files, clean URLs of real pages, client-side routes, a missing asset, and a CBASE_SHELL override.
+The router section was run alone for these checks; the whole suite ran green before and after.
+
+- stack.sh: the router's PAGES test made `true` (every extensionless path its .html) -> `the router mapped a path otherwise` red.
+- stack.sh: the router's PAGES test made `false` (every extensionless path the shell) -> `the router mapped a path otherwise` red.
+- stack.sh: the router's file branch dropped -> `the router mapped a path otherwise` red (`/assets/missing.js` became the shell).
+- stack.sh: the router's `/.well-known/` test dropped -> `the router mapped a path otherwise` red.
+- stack.sh: the router's trailing-slash index dropped -> `the router mapped a path otherwise` red.
+- stack.sh: CBASE_SHELL ignored (the shell always /index.html) -> `the router with CBASE_SHELL mapped a path otherwise` red.
+- stack.sh: the shell's existence check dropped -> `a shell the build lacks: status 0, not 1` red.
+- conf.sh: CBASE_SHELL's CBASE_STATIC = none refusal dropped -> `a bad cbase.conf (... CBASE_SHELL is a page of the static files, and CBASE_STATIC is none): status 0, not 1` red.
+- conf.sh: CBASE_SHELL's path pattern loosened (no leading '/', any part) -> `a bad cbase.conf (... CBASE_SHELL is a page of the build, an absolute path ending in .html): status 0, not 1` red.

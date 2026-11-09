@@ -6,9 +6,9 @@
 #   Oac           the Origin Access Control the distribution signs its bucket reads with. The
 #                 bucket's policy, which lets it, is the static group's and is set once per bucket,
 #                 on aws:SourceAccount, by group-init (group.sh): deploy never edits a bucket policy.
-#   Router        a viewer-request CloudFront Function on every static behaviour: clean URLs ("/" is
-#                 /index.html, "/docs/" /docs/index.html, "/about" /about.html; a path whose last
-#                 part has a dot, or under /.well-known/, is a file and passes as it is).
+#   Router        a viewer-request CloudFront Function on every static behaviour, an SPA's routing
+#                 (stack_router): a file passes as it is, a page's clean URL is its .html ("/about"
+#                 /about.html, "/docs/" /docs/index.html), and any other path is the app shell.
 #   Distribution  the default behaviour is the "*" route; every other route is a behaviour, in
 #                 cbase.conf's order. The static origin is the group's bucket with OriginPath
 #                 /<app>, so the app reads its own folder and nothing else. A VM route (only when
@@ -135,6 +135,70 @@ EOF
   fi
 }
 
+# stack_pages: the build's pages, as the router's PAGES names them: each html file of ST_FILES (the
+# static dir, read by static_scan) less its ".html", blank-separated. A name of other characters
+# than a clean URL's is left out (no quote or backslash reaches the code); its file is still served
+# by its own path. With no build read (the template command away from one) the list is empty.
+stack_pages() {
+  { [ -n "$ST_FILES" ] && [ -f "$ST_FILES" ]; } || return 0
+  { grep -E '^[A-Za-z0-9_.~/-]+\.html$' "$ST_FILES" || true; } | { grep -v '^\.well-known/' || true; } \
+    | sed 's/\.html$//' | tr '\n' ' ' | sed 's/ $//'
+}
+
+# CloudFront's limit on a function's code, in bytes.
+STACK_FUNCTION_MAX=10240
+
+# stack_router: the Router resource. Its code is the one rule a static path is mapped by, an SPA's:
+#   (a) a file: a path whose last part has a dot, or under /.well-known/, passes as it is. One the
+#       bucket lacks is S3's 404 (the group's policy grants s3:ListBucket), never the shell, so a
+#       broken asset link fails loudly;
+#   (b) a page: "/x" is /x.html, and "/x/" /x/index.html ("/" /index.html), when the build has
+#       that page (PAGES, the build's html files, rendered in by deploy);
+#   (c) anything else is the app shell, CBASE_SHELL (default /index.html), with S3's 200: the app
+#       routes it client-side and shows its own 404.
+# cbase_test.sh runs this code under node.
+stack_router() {
+  local pages code shell="${CONF_SHELL:-/index.html}"
+  pages="$(stack_pages)"
+  if [ -n "$ST_FILES" ] && [ -f "$ST_FILES" ] && ! grep -Fxq -- "${shell#/}" "$ST_FILES"; then
+    echo "cbase: the app shell is $shell (CBASE_SHELL), and the static dir has no ${shell#/}: nothing was changed" >&2
+    exit 1
+  fi
+  code="$(cat << EOF
+// cbase app router (tools/cbase.d/stack.sh): the distribution's OriginPath is the app's folder.
+var SHELL = '$shell';
+var PAGES = ' $pages ';
+function handler(event) {
+  var request = event.request;
+  var uri = request.uri;
+  if (uri.indexOf('/.well-known/') === 0 || uri.substring(uri.lastIndexOf('/')).indexOf('.') >= 0) {
+    return request;
+  }
+  var page = uri.substring(1);
+  if (page === '' || page.charAt(page.length - 1) === '/') page = page + 'index';
+  request.uri = PAGES.indexOf(' ' + page + ' ') >= 0 ? '/' + page + '.html' : SHELL;
+  return request;
+}
+EOF
+)"
+  if [ "${#code}" -gt "$STACK_FUNCTION_MAX" ]; then
+    echo "cbase: the router's code is ${#code} bytes with the build's page list, over CloudFront's $STACK_FUNCTION_MAX: the build has too many pages; nothing was changed" >&2
+    exit 1
+  fi
+  cat << EOF
+  Router:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: cbase-$CONF_APP-router
+      AutoPublish: true
+      FunctionConfig:
+        Comment: clean URLs for the app $CONF_APP
+        Runtime: cloudfront-js-2.0
+      FunctionCode: |
+EOF
+  printf '%s\n' "$code" | sed 's/^/        /'
+}
+
 # stack_render FILE: the template, from CONF_* and STACK_BUCKET, STACK_BUCKET_REGION, STACK_CERT.
 stack_render() {
   local out="$1" r pattern origin cache methods has_static="" has_vm="" has_ws="" def="" i
@@ -179,31 +243,9 @@ EOF
         SigningBehavior: always
         SigningProtocol: sigv4
 
-  Router:
-    Type: AWS::CloudFront::Function
-    Properties:
-      Name: cbase-$CONF_APP-router
-      AutoPublish: true
-      FunctionConfig:
-        Comment: clean URLs for the app $CONF_APP
-        Runtime: cloudfront-js-2.0
-      FunctionCode: |
-        // cbase app router (tools/cbase.d/stack.sh): the distribution's OriginPath is the app's folder.
-        function handler(event) {
-          var request = event.request;
-          var uri = request.uri;
-          if (uri.charAt(uri.length - 1) === '/') {
-            uri = uri + 'index.html';
-          } else if (uri.indexOf('/.well-known/') === 0 || uri.substring(uri.lastIndexOf('/')).indexOf('.') >= 0) {
-            // a file
-          } else {
-            uri = uri + '.html';
-          }
-          request.uri = uri;
-          return request;
-        }
-
 EOF
+      stack_router
+      echo
     fi
     cat << EOF
   Distribution:

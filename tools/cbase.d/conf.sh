@@ -57,6 +57,10 @@
 #                  to the repository's root, holding index.html. Default "build" for a static site
 #                  (a page's `make new` writes build/index.html) and "ui/out" for an app with a VM
 #                  (the starter's page; its server builds elsewhere, so no binary is published).
+#   CBASE_SHELL    optional, for an app with static files: the app shell, the page of the build
+#                  the router answers every path with that is neither a file nor a page (an SPA's
+#                  client-side routes: /abc123, /game/7); default /index.html. stack.sh's
+#                  stack_router holds the rule.
 #   CBASE_HASHED   optional: the content-hashed files, blank-separated globs matched against a file's
 #                  path in the static dir (* crosses /), say "assets/*". They are cached for a year,
 #                  immutable; html never is. Default none: every file is revalidated (no-cache).
@@ -65,7 +69,7 @@
 # to conf_secret_scan below, and one that looks like a secret stops the tool, naming the line and
 # never echoing it.
 
-CONF_KEYS="CBASE_APP CBASE_VM CBASE_STATIC CBASE_MEMORY CBASE_ROUTE CBASE_DOMAIN CBASE_CERT_ARN CBASE_ZONE CBASE_API_HOST CBASE_STATIC_DIR CBASE_HASHED"
+CONF_KEYS="CBASE_APP CBASE_VM CBASE_STATIC CBASE_MEMORY CBASE_ROUTE CBASE_DOMAIN CBASE_CERT_ARN CBASE_ZONE CBASE_API_HOST CBASE_STATIC_DIR CBASE_HASHED CBASE_SHELL"
 
 # The parsed settings (conf_load fills them).
 CONF_FILE=""
@@ -82,6 +86,7 @@ CONF_API_HOST=""
 CONF_STATIC_DIR=""  # the static dir, no trailing '/'; "" for a VM-only app
 CONF_STATIC_DIR_DEFAULT=""   # 1: CONF_STATIC_DIR is the default, not written
 CONF_HASHED=()      # the content-hashed globs
+CONF_SHELL=""       # the app shell's path (/_shell.html), or ""
 CONF_ROUTES=()      # "<pattern> <origin> <cache> <methods>", normalized, the "*" route last
 
 conf_die() {   # conf_die LINE SENTENCE: the file's line and why, and the tool stops
@@ -242,9 +247,10 @@ conf_load() {
   done
   local key value seen=" " seen_at=" " k
   local app_no="" vm_no="" static_no="" mem_no="" domain_no="" cert_no="" zone_no="" api_no=""
-  local dir_no="" hashed_no="" dir_set="" g
+  local dir_no="" hashed_no="" shell_no="" dir_set="" g
   local vm_set="" static_set="" memory="" route_nos=()
   CONF_HASHED=()
+  CONF_SHELL=""
   no=0
   for line in "${lines[@]+"${lines[@]}"}"; do
     no=$((no + 1))
@@ -313,6 +319,11 @@ conf_load() {
           fi
         done
         hashed_no="$no" ;;
+      CBASE_SHELL)
+        # Each part starts with a letter, a digit, '_' or '-', so no part is '.' or '..'.
+        [[ "$value" =~ ^/[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9_-][A-Za-z0-9._-]*)*\.html$ ]] \
+          || conf_die "$no" "CBASE_SHELL is a page of the build, an absolute path ending in .html (/_shell.html): letters, digits and . _ - /, each part starting with a letter, a digit, _ or -"
+        CONF_SHELL="$value"; shell_no="$no" ;;
     esac
   done
   [ -n "$app_no" ] || conf_die_file "has no CBASE_APP line (the app's name: CBASE_APP = myapp)"
@@ -345,6 +356,7 @@ conf_load() {
   if [ "$CONF_STATIC" = none ]; then
     [ -z "$dir_no" ] || conf_die "$dir_no" "CBASE_STATIC_DIR is the static files' directory, and CBASE_STATIC is none"
     [ -z "$hashed_no" ] || conf_die "$hashed_no" "CBASE_HASHED names static files, and CBASE_STATIC is none"
+    [ -z "$shell_no" ] || conf_die "$shell_no" "CBASE_SHELL is a page of the static files, and CBASE_STATIC is none"
     CONF_STATIC_DIR=""; CONF_STATIC_DIR_DEFAULT=""
   elif [ -n "$dir_set" ]; then
     CONF_STATIC_DIR="$dir_set"; CONF_STATIC_DIR_DEFAULT=""
@@ -386,6 +398,7 @@ conf_print() {
     else printf '%-10s %s/\n' files "$CONF_STATIC_DIR"; fi
   fi
   [ "${#CONF_HASHED[@]}" -eq 0 ] || printf '%-10s %s\n' hashed "${CONF_HASHED[*]}"
+  [ -z "$CONF_SHELL" ] || printf '%-10s %s\n' shell "$CONF_SHELL"
   [ -z "$CONF_DOMAIN" ] || printf '%-10s %s\n' domain "$CONF_DOMAIN"
   [ -z "$CONF_API_HOST" ] || printf '%-10s %s\n' api-host "$CONF_API_HOST"
   if [ -n "$CONF_CERT_ARN" ]; then printf '%-10s %s\n' cert "$CONF_CERT_ARN"

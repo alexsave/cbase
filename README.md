@@ -491,6 +491,7 @@ Optional, each with its default:
 - `CBASE_ZONE = Z...`: an override; default, deploy finds the account's Route 53 hosted zone that covers the domain and writes the records there, or with none prints the records to add.
 - `CBASE_STATIC_DIR = <dir>`: the directory deploy uploads; default `build` for a static site, `ui/out` for an app with a VM.
 - `CBASE_HASHED = <glob> ...`: the content-hashed files, cached for a year; default none.
+- `CBASE_SHELL = <path>`: the app shell, the page of the build served with a 200 for every path that is neither a file nor a page; default `/index.html`.
 
 The file is public, so the tool refuses any line that looks like a secret, naming the line and never echoing it: a key named with SECRET, TOKEN, PASSWORD, PASSWD, PRIVATE or CREDENTIAL, an AWS access key id, a PEM block, or a long random-looking string.
 
@@ -560,7 +561,10 @@ A path with a part that starts with `.` is not uploaded (`.git`, `.DS_Store`), b
 Each file's Content-Type comes from one table, `tools/cbase.d/static_rules.tsv`, by extension (`.wasm` is `application/wasm`).
 Its Cache-Control is `no-cache` for html (a browser and CloudFront revalidate it, so a deploy is seen at once), `public, max-age=31536000, immutable` for a hashed file (never html), and `no-cache` for the rest.
 
-The stack holds one distribution, its Origin Access Control and a CloudFront Function for clean URLs (`/about` is `about.html`, `/docs/` is `docs/index.html`).
+The stack holds one distribution, its Origin Access Control and a CloudFront Function that routes every app like an SPA.
+A path with an extension, or under `/.well-known/`, is the file itself, and a missing one is S3's 404, never the shell, so a broken asset link fails loudly.
+A clean URL of a page in the build is that page (`/about` is `about.html`, `/docs/` is `docs/index.html`), from the page list deploy renders into the function.
+Any other path (`/abc123`, `/game/7`) is the app shell, `CBASE_SHELL` (default `/index.html`), with a 200, and the app routes it client-side and shows its own 404.
 Its default behaviour is the bucket, read through the Origin Access Control with `OriginPath /<app>`, so an app reads its own folder and nothing else.
 The bucket's policy belongs to the static group: `group-init` sets it once per bucket, on `aws:SourceAccount`, and deploy never edits it.
 That policy lets any distribution in the account read the bucket, so a shared static group holds public content only.
