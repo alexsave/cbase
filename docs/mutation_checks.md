@@ -1489,3 +1489,21 @@ Each mutant below was made in a copy of tools/ and README.md in a scratch direct
 - cert.sh: the alias write made `if false` -> `the A alias was not written` red.
 - tools/cbase: the invalidation made `if false` -> `a redeploy invalidates: stdout lacks [invalidation I1FAKE of /* on E1FAKEDIST]` red.
 - tools/cbase: the VM app's phase 3 stop dropped -> `a VM app's deploy: status 1, not 2` red.
+
+## ./cbase, phase 3: group-init, the VM deploy, undeploy, group-destroy (cli-vm)
+
+tools/cbase.d/test/cbase_vm_test.sh drives group-init, a VM app's deploy, undeploy and group-destroy through the real AWS CLI against tools/cbase.d/test/fake_aws.c, which now answers EC2, SSM and S3's bucket calls, and runs the scripts SSM would run under a scratch root with stand-ins for systemctl, ss and aws.
+Each mutant below was made in a copy of tools/ in a scratch directory, the VM suite run on it, and the copy deleted; the source tree was never edited.
+
+- state.sh: the memory fit's `[ "$total" -le "$STATE_FIT_LIMIT" ]` made `true` -> `an app that does not fit: status 0, not 1` red.
+- vm.sh: the remote script's port check made `if false && [ -n "$(ss ...)" ]` -> `the deploy script on a taken port: status 0, not 3` red.
+- vm.sh: the claim's release after a taken port dropped -> `the claim is released: stdout lacks [taken left vm group g9 ...]` red.
+- vm.sh: the undeploy script's `--delete-data` branch taken always -> `the undeploy script did not keep the data` red.
+- vm.sh: MemoryMax written for an undeclared app -> `an undeclared app's unit has a MemoryMax` red; MemoryMax never written -> `a declared app's unit lacks MemoryMax=64M` red.
+- vm.sh: the command output's `grep '^CBASE: '` made `grep ''` (every line printed) -> `a deploy's command output: a secret was printed` red.
+- group.sh: group-destroy's member refusal made `if false` -> `group-destroy of a group with members: status 0, not 1` red.
+- group.sh: group-destroy's data refusal made `if false` -> `group-destroy of an instance holding data: status 0, not 1` red.
+- group.sh: the `--yes` gate made `if false` -> `group-init vm without --yes: status 0, not 2` red.
+- stack.sh: the keep guard's `'AWS::S3::Bucket'` made `'AWS::S3::None'` -> `a group-init whose change set would replace-bucket: status 0, not 1` red.
+- stack.sh: the keep guard's `'AWS::EC2::Instance'` made `'AWS::EC2::None'` -> `a group-init whose change set would replace-instance: status 0, not 1` red.
+- tools/cbase: undeploy's `--delete-files` test made `if true` (files deleted by default) -> `undeploy keeps the files: stdout lacks [undeploy: kept s3://g9-group-bucket/shop/ ...]` red, the first of the default undeploy's assertions to see the folder deleted.
