@@ -434,7 +434,9 @@ test-asan: lib-tests-asan $(call UNIT_RUNS,build/asan/test)
 	$(call RUN_ALL,ASAN UNIT TESTS,$(call UNIT_RUNS,build/asan/test))
 smoke-asan: $(call SMOKE_PROGS,build/asan)
 	$(call RUN_ALL,ASAN SMOKE,$(call SMOKE_RUNS,build/asan))
-check-asan: lib-tests-asan $(call UNIT_RUNS,build/asan/test) $(call SMOKE_PROGS,build/asan)
+# And every checked-in fuzz input through its target once (fuzz/fuzz.mk fuzz-replay), so a corpus
+# the local run never built cannot break CI's asan lane alone.
+check-asan: lib-tests-asan $(call UNIT_RUNS,build/asan/test) $(call SMOKE_PROGS,build/asan) fuzz-replay
 	$(call RUN_ALL,ASAN CHECK,$(call SMOKE_RUNS,build/asan) $(call UNIT_RUNS,build/asan/test))
 
 ifneq ($(CB_AWS),)

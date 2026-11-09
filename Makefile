@@ -17,7 +17,8 @@
 #                   then its own check (tools/offline_build_test.sh --check: example/Makefile's
 #                   tests, smokes and link check), and the platform's smokes against a storeless
 #                   product (example/storeless)
-#   make check-asan the same tests, every object rebuilt under ASan + UBSan
+#   make check-asan the same tests, every object rebuilt under ASan + UBSan, and every fuzz
+#                   corpus replayed through its target under them (make fuzz-replay)
 #   make check-dynamo  the store conformance suite and the example smoke against DynamoDB Local
 #                   (providers/aws/ops/dynamo_local.sh; needs Docker or a DynamoDB Local on 8000)
 #   make fuzz, fuzz-smoke, fuzz-nightly, fuzz-replay, fuzz-merge, fuzz-seeds

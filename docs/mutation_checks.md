@@ -1098,3 +1098,10 @@ unit_web `streams_large_files_and_head` measured macOS's growth as the largest c
 It now reads the server's own peak (proc_pid_rusage, lifetime peak physical footprint) before and after the files, as Linux reads VmHWM: 0.3 MB plain, 1.1 MB under ASan.
 
 - files.c: the file read whole into the body whatever stream_ok says -> `streams_large_files_and_head` grew < BIG_SIZE / 2 (94 MB plain, 233 MB under ASan).
+
+## check-asan replays the fuzz corpus (small-debts)
+
+`make check-asan` now depends on fuzz-replay, so a local run builds every build/asan/fuzz/<target> and runs its corpus once, and CI's asan job no longer runs fuzz-replay as a step of its own.
+Cold on this Mac (-j2, CHECK_JOBS=2): 71.2 s before, 78.5 s after (+7.3 s, 24 targets, about 7000 inputs).
+
+- replay_main.c: every replay answering 1 -> `make check-asan` fails with "FUZZ REPLAY FAILED" (rc 2); restored, it passes.
