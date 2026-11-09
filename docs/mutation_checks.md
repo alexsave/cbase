@@ -1549,3 +1549,15 @@ The four fixes found in review got one test each; the rest of this work is teste
 - net/server.c: `inherited_listener` returning -1 (LISTEN_FDS ignored, a fresh bind) -> unit_socket_activation's `(int)port == g_port` and `answer(fd, 10000, body, sizeof body) == 200` red.
 - net/server.c: `drain_idle` closing a connection whose request had begun arriving (the old drain: `started` and `in.len` not waited for) -> unit_socket_activation's `answer(half, 10000, body, sizeof body) == 200` red.
 - vm_remote.sh: the first switch's `systemctl start "$sock"` dropped -> cbase_vm_test.sh's `a first deploy did not start the socket` red.
+
+## ./cbase: the gaps foolish's live dry runs found (adopt-dryrun-fixes)
+
+The two breaks got a test each (the lean-testing ruling); the adopted group's state bucket, a missing feature, is covered by the same dry run and was run once by hand as a real deploy against the fake.
+
+- stack.sh: the router's "/x/ tried as /x" dropped (back to `page + 'index'`) -> cbase_test.sh's `the router mapped a path otherwise` red.
+- vm.sh: vm_settings' adopted branch (`/<stack>/<app>/`) dropped -> cbase_vm_test.sh's `the paths derived from the adopted group` red.
+- vm.sh: vm_artifacts' adopted branch (the code bucket's `vm/<app>/`) dropped -> `the paths derived from the adopted group` red.
+- vm.sh: a dry run's missing origin secret stopping again (`exit 1`) -> `the dry run goes on` red.
+- tools/cbase: the dry run's end exiting 0 with problems listed -> `an adopted group's dry run with no origin secret: status 0, not 1` red.
+- group.sh: the dry run's `STATE_NO_BUCKET=1` dropped -> `the fit is still checked` red.
+- state.sh: state_read reading the missing bucket anyway -> `the fit is still checked` red.
