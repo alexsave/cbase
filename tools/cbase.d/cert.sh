@@ -6,7 +6,9 @@
 # is found its own zone, so they may sit in different zones, and one certificate covers them all.
 #
 # THE CERTIFICATE, an ACM one in us-east-1 (the one region CloudFront reads), found in this order:
-#   1. CBASE_CERT_ARN, an override: it must be ISSUED and cover every hostname;
+#   1. CBASE_CERT_ARN, an override: used as it is, never replaced; it must be ISSUED and cover
+#      CBASE_DOMAIN's hostnames (and CBASE_API_HOST, unless CBASE_API_CERT_ARN names the API
+#      host's own). CBASE_API_CERT_ARN, the same for the API host's distribution alone;
 #   2. an ISSUED certificate that covers every hostname, the first by ARN;
 #   3. one still PENDING_VALIDATION that covers them (an earlier deploy's request);
 #   4. a new request, DNS validation, for the first hostname with every other one as a SAN.
@@ -29,6 +31,8 @@
 
 CERT_REGION=us-east-1
 CERT_ARN=""        # the certificate the stack serves the hostnames with ("" for none yet)
+CERT_API_ARN=""    # the one CBASE_API_HOST's distribution serves (CBASE_API_CERT_ARN, else CERT_ARN)
+CERT_NEED=()       # the hostnames the found or requested certificate must cover
 CERT_HOSTS=()      # the hostnames
 CERT_ZONES=()      # each hostname's zone id, or "" for none
 
@@ -55,14 +59,14 @@ cert_covers() {
   return 1
 }
 
-# cert_covers_all ARN: the certificate covers every one of CERT_HOSTS. A failed read stops the tool
+# cert_covers_all ARN: the certificate covers every one of CERT_NEED. A failed read stops the tool
 # (never "does not cover", which would go on to request a certificate).
 cert_covers_all() {
   local names=() n h text
   text="$(cert_names "$1")" || exit 1
   while IFS= read -r n; do [ -z "$n" ] || names+=("$n"); done <<< "$text"
   [ "${#names[@]}" -gt 0 ] || return 1
-  for h in "${CERT_HOSTS[@]}"; do
+  for h in "${CERT_NEED[@]}"; do
     cert_covers "$h" "${names[@]}" || return 1
   done
 }
@@ -158,34 +162,59 @@ r53_change() {
   aws_call route53 wait resource-record-sets-changed --id "$id" || aws_fail "waiting for Route 53 change $id"
 }
 
+# cert_named ARN KEY: the certificate a key names, used as it is: ISSUED, and covering CERT_NEED.
+cert_named() {
+  local st
+  st="$(cert_status "$1")"
+  [ "$st" = ISSUED ] || { echo "cbase: $2 $1 is $st, not ISSUED" >&2; exit 1; }
+  cert_covers_all "$1" || { echo "cbase: $2 $1 does not cover ${CERT_NEED[*]} (its names: $(cert_names "$1" | tr '\n' ' '))" >&2; exit 1; }
+  echo "certificate: $1 ($2, used as it is)"
+}
+
 # cert_resolve: CERT_ARN for the hostnames, found, reused, or requested and validated. Stops,
 # status 3, when the records must be added by hand. DRY_RUN requests nothing and writes nothing.
 cert_resolve() {
   CERT_ARN=""
+  CERT_API_ARN=""
   CERT_HOSTS=()
   CERT_ZONES=()
+  CERT_NEED=()
   [ -n "$CONF_DOMAIN" ] || return 0
   # shellcheck disable=SC2153 # conf.sh sets CONF_DOMAINS
   CERT_HOSTS=("${CONF_DOMAINS[@]}")
   [ -z "$CONF_API_HOST" ] || CERT_HOSTS+=("$CONF_API_HOST")
-  local h z a st
+  local h z
   for h in "${CERT_HOSTS[@]}"; do
     z="$(zone_for_host "$h")"
     CERT_ZONES+=("$z")
     if [ -n "$z" ]; then echo "dns: $h is in Route 53 zone $z"; else echo "dns: no Route 53 hosted zone in this account covers $h"; fi
   done
+  if [ -n "$CONF_API_CERT_ARN" ]; then
+    CERT_NEED=("$CONF_API_HOST")
+    cert_named "$CONF_API_CERT_ARN" CBASE_API_CERT_ARN
+    CERT_API_ARN="$CONF_API_CERT_ARN"
+  fi
+  CERT_NEED=("${CONF_DOMAINS[@]}")
+  [ -z "$CONF_API_HOST" ] || [ -n "$CONF_API_CERT_ARN" ] || CERT_NEED+=("$CONF_API_HOST")
   if [ -n "$CONF_CERT_ARN" ]; then
-    st="$(cert_status "$CONF_CERT_ARN")"
-    [ "$st" = ISSUED ] || { echo "cbase: CBASE_CERT_ARN $CONF_CERT_ARN is $st, not ISSUED" >&2; exit 1; }
-    cert_covers_all "$CONF_CERT_ARN" || { echo "cbase: CBASE_CERT_ARN $CONF_CERT_ARN does not cover ${CERT_HOSTS[*]} (its names: $(cert_names "$CONF_CERT_ARN" | tr '\n' ' '))" >&2; exit 1; }
+    cert_named "$CONF_CERT_ARN" CBASE_CERT_ARN
     CERT_ARN="$CONF_CERT_ARN"
-    echo "certificate: $CERT_ARN (CBASE_CERT_ARN)"
+    CERT_API_ARN="${CERT_API_ARN:-$CERT_ARN}"
     return 0
   fi
+  cert_auto
+  [ -z "$CERT_ARN" ] || CERT_API_ARN="${CERT_API_ARN:-$CERT_ARN}"
+  [ -n "$CERT_ARN" ] || CERT_API_ARN=""
+}
+
+# cert_auto: CERT_ARN, the issued certificate that covers CERT_NEED, else the pending one, else a
+# new request (cert_resolve's steps 2 to 4).
+cert_auto() {
+  local z a
   cert_lookup ISSUED
   if [ -n "$CERT_FOUND" ]; then
     CERT_ARN="$CERT_FOUND"
-    echo "certificate: $CERT_ARN, issued, covers ${CERT_HOSTS[*]}"
+    echo "certificate: $CERT_ARN, issued, covers ${CERT_NEED[*]}"
     return 0
   fi
   cert_lookup PENDING_VALIDATION
@@ -193,16 +222,16 @@ cert_resolve() {
   if [ -n "$a" ]; then
     echo "certificate: $a, requested before, still pending validation"
   elif [ "${DRY_RUN:-}" = 1 ]; then
-    echo "certificate: none covers ${CERT_HOSTS[*]}; a deploy would request one (DNS validation). This dry run goes on without the hostnames."
+    echo "certificate: none covers ${CERT_NEED[*]}; a deploy would request one (DNS validation). This dry run goes on without the hostnames."
     return 0
   else
-    local args=(--domain-name "${CERT_HOSTS[0]}" --validation-method DNS)
-    [ "${#CERT_HOSTS[@]}" -eq 1 ] || args+=(--subject-alternative-names "${CERT_HOSTS[@]:1}")
+    local args=(--domain-name "${CERT_NEED[0]}" --validation-method DNS)
+    [ "${#CERT_NEED[@]}" -eq 1 ] || args+=(--subject-alternative-names "${CERT_NEED[@]:1}")
     # The same app's requests for the same hostnames within the hour are one request (ACM's
     # idempotency token); other hostnames are another request.
-    a="$(acm request-certificate "${args[@]}" --idempotency-token "cbase$(printf '%s %s' "$CONF_APP" "${CERT_HOSTS[*]}" | cksum | cut -d' ' -f1)" \
-           --query CertificateArn --output text)" || aws_fail "requesting a certificate for ${CERT_HOSTS[*]}"
-    echo "certificate: requested $a for ${CERT_HOSTS[*]} (DNS validation)"
+    a="$(acm request-certificate "${args[@]}" --idempotency-token "cbase$(printf '%s %s' "$CONF_APP" "${CERT_NEED[*]}" | cksum | cut -d' ' -f1)" \
+           --query CertificateArn --output text)" || aws_fail "requesting a certificate for ${CERT_NEED[*]}"
+    echo "certificate: requested $a for ${CERT_NEED[*]} (DNS validation)"
   fi
   # Pending: its records, written where there is a zone, printed where there is not.
   local records host name type value i hand=()

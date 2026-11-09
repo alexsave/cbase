@@ -166,6 +166,7 @@ case "$cmd" in
     # extensionless path is the shell).
     if [ "$CONF_STATIC" != none ] && [ -f "$CONF_STATIC_DIR/index.html" ]; then static_scan "$CONF_STATIC_DIR"; fi
     [ -z "$CONF_DOMAIN" ] || STACK_CERT="${CONF_CERT_ARN:-arn:aws:acm:us-east-1:111122223333:certificate/00000000-0000-0000-0000-000000000000}"
+    STACK_API_CERT="${CONF_API_CERT_ARN:-$STACK_CERT}"
     stack_render "$CB_TMP/stack.yaml"
     echo "# PLACEHOLDERS: the bucket ($STACK_BUCKET) is static group $CONF_STATIC's${CONF_DOMAIN:+, the certificate is the one deploy finds or requests}."
     stack_print_template "$CB_TMP/stack.yaml"
@@ -211,6 +212,7 @@ case "$cmd" in
     # 4. The certificate (it may stop, status 3, for DNS records added by hand).
     cert_resolve
     STACK_CERT="$CERT_ARN"
+    STACK_API_CERT="$CERT_API_ARN"
     # 5. The VM group: the port claimed and the memory fit checked, in one conditional write; the
     #    stack's VM origin is the instance and that port.
     if [ "$CONF_VM" != none ]; then

@@ -405,11 +405,12 @@ CERT_WILD="arn:aws:acm:us-east-1:$ACCOUNT:certificate/11111111-1111-1111-1111-11
 CERT_OTHER="arn:aws:acm:us-east-1:$ACCOUNT:certificate/22222222-2222-2222-2222-222222222222"
 CERT_DEEP="arn:aws:acm:us-east-1:$ACCOUNT:certificate/33333333-3333-3333-3333-333333333333"
 CERT_NOZONE="arn:aws:acm:us-east-1:$ACCOUNT:certificate/44444444-4444-4444-4444-444444444444"
+CERT_NAMED="arn:aws:acm:us-east-1:$ACCOUNT:certificate/66666666-6666-6666-6666-666666666666"
 site_fake=(--bucket "$BUCKET" --bucket "$SITE_BUCKET:us-west-2" --resource "$ST_SITE" --resource "$VM_G1"
            --cert "$CERT_OTHER ISSUED other.org" --cert "$CERT_DEEP ISSUED *.www.example.com"
            --cert "$CERT_WILD ISSUED example.com,*.example.com" --zone "Z0EXAMPLE example.com"
            --zone "Z0PRIVATE corp.example.com private" --zone "Z0SHOPORG shop.org"
-           --cert "$CERT_NOZONE ISSUED a.nozone.net,b.nozone.net")
+           --cert "$CERT_NOZONE ISSUED a.nozone.net,b.nozone.net" --cert "$CERT_NAMED ISSUED www.example.com")
 head_of() {   # head_of KEY: "<Content-Type>|<Cache-Control>" of s3://site-bucket/KEY
   aws s3api head-object --bucket "$SITE_BUCKET" --key "$1" --query '[ContentType,CacheControl]' --output text | tr '\t' '|'
 }
@@ -704,6 +705,28 @@ expect_rc 3 "a domain with no zone, again"
 out_has "requested before, still pending validation" "the pending certificate is reused"
 since "$m" | grep -q "ACM RequestCertificate" && fail "a second certificate was requested"
 ok
+
+# ---- a named certificate: used as it is, never looked for or replaced ---------------------------
+# CERT_WILD would be found first (by ARN); CBASE_CERT_ARN names CERT_NAMED, which is served.
+named="$(app named "CBASE_APP = named" "CBASE_VM = none" "CBASE_STATIC = site" "CBASE_DOMAIN = www.example.com" "CBASE_CERT_ARN = $CERT_NAMED")"
+mkdir -p "$named/build" && printf 'x\n' > "$named/build/index.html"
+m="$(mark)"
+run "$named" deploy
+expect_rc 0 "a named certificate"
+out_has "certificate: $CERT_NAMED (CBASE_CERT_ARN, used as it is)" "the named certificate is used"
+since "$m" | grep -qE "ACM (ListCertificates|RequestCertificate)" && fail "a certificate was looked for or requested with CBASE_CERT_ARN set"
+template_of cbase-app-named | grep -Fq "AcmCertificateArn: $CERT_NAMED" || fail "the template does not serve the named certificate"
+ok
+# One that does not cover the hostname stops the deploy (it is never swapped for another).
+printf 'CBASE_APP = named\nCBASE_VM = none\nCBASE_STATIC = site\nCBASE_DOMAIN = example.com\nCBASE_CERT_ARN = %s\n' "$CERT_NAMED" > "$named/cbase.conf"
+m="$(mark)"
+run "$named" deploy
+expect_rc 1 "a named certificate that does not cover the hostname"
+err_has "CBASE_CERT_ARN $CERT_NAMED does not cover example.com" "a named certificate that does not cover the hostname"
+since "$m" | grep -qE "ACM (ListCertificates|RequestCertificate)|CFN CreateChangeSet" && fail "a named certificate that does not cover went on"
+ok
+conf_error "cbase.conf line 4: CBASE_API_CERT_ARN is for CBASE_API_HOST, and there is none" "CBASE_APP = a" "CBASE_MEMORY = 1G" "CBASE_DOMAIN = a.example.com" \
+  "CBASE_API_CERT_ARN = arn:aws:acm:us-east-1:$ACCOUNT:certificate/12345678-abcd-ef01-2345-6789abcdef01"
 
 # ---- several hostnames: one distribution, one certificate, a record each -------------------------
 # example.com and www.example.com: the issued example.com,*.example.com covers both, and each is an
