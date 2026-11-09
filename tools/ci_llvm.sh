@@ -93,10 +93,13 @@ sha256_of() {
   else shasum -a 256 "$1" | cut -d' ' -f1; fi
 }
 # fetch_verified URL SHA256 DEST - download as the invoking user, then refuse
-# anything whose hash is not the pinned one.
+# anything whose hash is not the pinned one. The download goes through retry
+# (below), the one retry owner here, so a blip gets the same paced attempts as
+# apt-get: curl's own --retry gave up after about 7 s of 504s from the
+# release host (ci, run 42567993955). A hash mismatch is never retried.
 fetch_verified() {
-  if command -v curl >/dev/null 2>&1; then curl -fsSL --proto '=https' --tlsv1.2 --retry 3 -o "$3" "$1"
-  else wget -qO "$3" "$1"; fi
+  if command -v curl >/dev/null 2>&1; then retry 4 curl -fsSL --proto '=https' --tlsv1.2 -o "$3" "$1" || return 1
+  else retry 4 wget -qO "$3" "$1" || return 1; fi
   local got; got="$(sha256_of "$3")"
   if [ "$got" != "$2" ]; then
     echo "::error::$1 has SHA-256 $got, pinned $2 - refusing to use it" >&2
