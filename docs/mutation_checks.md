@@ -1091,3 +1091,10 @@ core/test/lib_cscan.c is the lexer and the walk the four source gates share; eac
 - lib_cscan.c: string and character literals lexed as code -> `unit_random_gate` the planted "/dev/urandom" == 1 and "rand and random" == 0, `unit_num_gate` "strtol and atoi" == 0, `unit_json_gate` every planted key, macro and XML literal.
 - lib_cscan.c: `#include` lines lexed as code -> `unit_random_gate` the planted includes == 0, `unit_json_gate` the planted util/json.h includes == 1.
 - lib_cscan.c: the walk enters no directory -> `g_files` floor in all four gates (`unit_name_gate` also stale == 0).
+
+## The server's own peak on macOS too (small-debts)
+
+unit_web `streams_large_files_and_head` measured macOS's growth as the largest child's whole maxrss, which under ASan (its runtime and shadow) came to 27 MB, past the 20 MB bound, so `make check-asan` failed on macOS.
+It now reads the server's own peak (proc_pid_rusage, lifetime peak physical footprint) before and after the files, as Linux reads VmHWM: 0.3 MB plain, 1.1 MB under ASan.
+
+- files.c: the file read whole into the body whatever stream_ok says -> `streams_large_files_and_head` grew < BIG_SIZE / 2 (94 MB plain, 233 MB under ASan).
