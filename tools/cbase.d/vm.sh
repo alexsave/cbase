@@ -296,7 +296,6 @@ vm_remote_undeploy() {
 set -euo pipefail
 R="\${CBASE_VM_ROOT:-}"
 app=$app
-user=cbase-$app
 unit=cbase-$app.service
 home="\$R/srv/cbase/$app"
 say() { echo "CBASE: \$*"; }
@@ -313,6 +312,7 @@ EOF
   if [ "$1" = 1 ]; then
     cat << 'EOF'
 rm -rf "$home"
+user="cbase-$app"
 if id -u "$user" > /dev/null 2>&1; then userdel "$user" || true; fi
 say "deleted /srv/cbase/$app and its data (--delete-data)"
 EOF
