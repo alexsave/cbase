@@ -57,7 +57,8 @@ vm_app() {
 # group-init
 # ================================================================================================
 CERT_APIH="arn:aws:acm:us-east-1:$ACCOUNT:certificate/55555555-5555-5555-5555-555555555555"
-start_fake --cert "$CERT_APIH ISSUED apih.example.com,api.example.com" --zone "Z0EXAMPLE example.com"
+CERT_API2="arn:aws:acm:us-east-1:$ACCOUNT:certificate/77777777-7777-7777-7777-777777777777"
+start_fake --cert "$CERT_APIH ISSUED apih.example.com,api.example.com" --cert "$CERT_API2 ISSUED api.example.com" --zone "Z0EXAMPLE example.com"
 # A VM costs money: without --yes (and no terminal to type yes at) the change set is shown and
 # deleted, and nothing is made, not even the state bucket.
 m="$(mark)"
@@ -454,6 +455,16 @@ expect_rc 0 "a deploy with CBASE_API_HOST"
 out_has "certificate: $CERT_APIH, issued, covers apih.example.com api.example.com" "one certificate covers the domain and the API host"
 since "$m" | grep -q "R53 UPSERT Z0EXAMPLE apih.example.com A alias=d" || fail "the domain's alias was not written"
 since "$m" | grep -q "R53 UPSERT Z0EXAMPLE api.example.com A alias=api-d" || { since "$m" | grep R53 >&2; fail "the API host's alias is not its own distribution's"; }
+ok
+# CBASE_API_CERT_ARN: the API host's distribution serves it as it is; the main one's is still found.
+printf 'CBASE_API_CERT_ARN = %s\n' "$CERT_API2" >> "$apih/cbase.conf"
+run "$apih" deploy
+expect_rc 0 "a deploy with CBASE_API_CERT_ARN"
+out_has "certificate: $CERT_API2 (CBASE_API_CERT_ARN, used as it is)" "the API certificate is used as named"
+out_has "certificate: $CERT_APIH, issued, covers apih.example.com" "the main certificate is found for the domain alone"
+template_of cbase-app-apih > "$t/tpl"
+awk '/^  ApiDistribution:$/{f=1} f' "$t/tpl" | grep -Fq "AcmCertificateArn: $CERT_API2" || fail "the API distribution does not serve CBASE_API_CERT_ARN"
+awk '/^  Distribution:$/{f=1} /^  ApiDistribution:$/{f=0} f' "$t/tpl" | grep -Fq "AcmCertificateArn: $CERT_APIH" || fail "the main distribution does not serve the found certificate"
 ok
 run "$apih" undeploy
 expect_rc 0 "the API host app's undeploy"

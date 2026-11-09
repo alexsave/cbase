@@ -51,6 +51,7 @@ STACK_CS=""         # the change set's name
 STACK_CHANGES=""    # 1 when the change set holds changes
 STACK_TEMPLATE=""   # the rendered template's file
 STACK_CERT=""       # the certificate the distribution serves the hostnames with, or ""
+STACK_API_CERT=""   # the certificate CBASE_API_HOST's distribution serves, or ""
 STACK_BUCKET=""     # the static group's bucket and its region
 STACK_BUCKET_REGION=""
 POLL_SECONDS="${CBASE_POLL_SECONDS:-5}"
@@ -302,7 +303,7 @@ EOF
         Comment: cbase app $CONF_APP, $CONF_API_HOST to the VM
         Enabled: true
 EOF
-      stack_viewer_cert "$CONF_API_HOST"
+      STACK_CERT="$STACK_API_CERT" stack_viewer_cert "$CONF_API_HOST"
       cat << EOF
         HttpVersion: http2and3
         IPV6Enabled: true

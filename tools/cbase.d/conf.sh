@@ -49,6 +49,9 @@
 #                  Without it deploy finds or makes one (cert.sh): an ISSUED us-east-1 certificate
 #                  covering every hostname (its SANs and wildcards counted), else one it requested
 #                  before and is still pending, else a new request with DNS validation.
+#   CBASE_API_CERT_ARN optional, an override like CBASE_CERT_ARN: the certificate CBASE_API_HOST's
+#                  distribution serves, used as it is. Without it that distribution serves
+#                  CBASE_CERT_ARN's (or the found one), which must then cover the API host too.
 #   CBASE_ZONE     optional, an override: the Route 53 hosted zone id (Z...) the domain's records
 #                  go in. Without it deploy looks for the account's public hosted zone that covers
 #                  each hostname (the longest suffix) and writes the records there; with none it
@@ -71,7 +74,7 @@
 # to conf_secret_scan below, and one that looks like a secret stops the tool, naming the line and
 # never echoing it.
 
-CONF_KEYS="CBASE_APP CBASE_VM CBASE_STATIC CBASE_MEMORY CBASE_ROUTE CBASE_DOMAIN CBASE_CERT_ARN CBASE_ZONE CBASE_API_HOST CBASE_STATIC_DIR CBASE_HASHED CBASE_SHELL"
+CONF_KEYS="CBASE_APP CBASE_VM CBASE_STATIC CBASE_MEMORY CBASE_ROUTE CBASE_DOMAIN CBASE_CERT_ARN CBASE_API_CERT_ARN CBASE_ZONE CBASE_API_HOST CBASE_STATIC_DIR CBASE_HASHED CBASE_SHELL"
 
 # The parsed settings (conf_load fills them).
 CONF_FILE=""
@@ -84,6 +87,7 @@ CONF_MEMORY_ESTIMATE=128   # MiB: the conservative count for an undeclared app (
 CONF_DOMAIN=""       # the first of CONF_DOMAINS (the app's URL), or ""
 CONF_DOMAINS=()      # every CBASE_DOMAIN hostname, in the file's order
 CONF_CERT_ARN=""
+CONF_API_CERT_ARN=""
 CONF_ZONE=""
 CONF_API_HOST=""
 CONF_STATIC_DIR=""  # the static dir, no trailing '/'; "" for a VM-only app
@@ -249,7 +253,7 @@ conf_load() {
     conf_secret_scan "$no" "$line"
   done
   local key value seen=" " seen_at=" " k
-  local app_no="" vm_no="" static_no="" mem_no="" domain_no="" cert_no="" zone_no="" api_no=""
+  local app_no="" vm_no="" static_no="" mem_no="" domain_no="" cert_no="" zone_no="" api_no="" api_cert_no=""
   local dir_no="" hashed_no="" shell_no="" dir_set="" g
   local vm_set="" static_set="" memory="" route_nos=()
   CONF_HASHED=()
@@ -309,13 +313,13 @@ conf_load() {
       CBASE_API_HOST)
         conf_host_ok "$value" || conf_die "$no" "CBASE_API_HOST is one lower-case hostname (api.example.com)"
         CONF_API_HOST="$value"; api_no="$no" ;;
-      CBASE_CERT_ARN)
+      CBASE_CERT_ARN|CBASE_API_CERT_ARN)
         if [[ "$value" =~ ^arn:aws:acm:([a-z0-9-]+):[0-9]{12}:certificate/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
-          [ "${BASH_REMATCH[1]}" = us-east-1 ] || conf_die "$no" "CBASE_CERT_ARN is in ${BASH_REMATCH[1]}, and CloudFront takes a certificate from us-east-1 alone"
+          [ "${BASH_REMATCH[1]}" = us-east-1 ] || conf_die "$no" "$key is in ${BASH_REMATCH[1]}, and CloudFront takes a certificate from us-east-1 alone"
         else
-          conf_die "$no" "CBASE_CERT_ARN is an ACM certificate's ARN: arn:aws:acm:us-east-1:<account>:certificate/<uuid>"
+          conf_die "$no" "$key is an ACM certificate's ARN: arn:aws:acm:us-east-1:<account>:certificate/<uuid>"
         fi
-        CONF_CERT_ARN="$value"; cert_no="$no" ;;
+        if [ "$key" = CBASE_CERT_ARN ]; then CONF_CERT_ARN="$value"; cert_no="$no"; else CONF_API_CERT_ARN="$value"; api_cert_no="$no"; fi ;;
       CBASE_ZONE)
         [[ "$value" =~ ^Z[A-Z0-9]{1,31}$ ]] || conf_die "$no" "CBASE_ZONE is a Route 53 hosted zone id (Z and upper-case letters and digits)"
         CONF_ZONE="$value"; zone_no="$no" ;;
@@ -370,6 +374,7 @@ conf_load() {
     done
   fi
   [ -z "$cert_no" ] || [ -n "$domain_no" ] || conf_die "$cert_no" "CBASE_CERT_ARN is for CBASE_DOMAIN, and there is none (without a domain the app is at its cloudfront.net address)"
+  [ -z "$api_cert_no" ] || [ -n "$api_no" ] || conf_die "$api_cert_no" "CBASE_API_CERT_ARN is for CBASE_API_HOST, and there is none"
   [ -z "$zone_no" ] || [ -n "$domain_no" ] || conf_die "$zone_no" "CBASE_ZONE is where CBASE_DOMAIN's record goes, and there is no CBASE_DOMAIN"
   if [ "$CONF_STATIC" = none ]; then
     [ -z "$dir_no" ] || conf_die "$dir_no" "CBASE_STATIC_DIR is the static files' directory, and CBASE_STATIC is none"
@@ -422,6 +427,7 @@ conf_print() {
   if [ -n "$CONF_CERT_ARN" ]; then printf '%-10s %s\n' cert "$CONF_CERT_ARN"
   elif [ -n "$CONF_DOMAIN" ]; then printf '%-10s %s\n' cert "(found or requested by deploy)"
   else printf '%-10s %s\n' address "(the distribution's cloudfront.net name)"; fi
+  [ -z "$CONF_API_CERT_ARN" ] || printf '%-10s %s\n' api-cert "$CONF_API_CERT_ARN"
   [ -z "$CONF_ZONE" ] || printf '%-10s %s\n' zone "$CONF_ZONE"
   for r in "${CONF_ROUTES[@]}"; do printf '%-10s %s\n' route "$r"; done
 }
