@@ -60,7 +60,7 @@ load_rules() {
   local g t c
   while IFS=$'\t' read -r g t c || [ -n "$g" ]; do
     case "$g" in ''|'#'*) continue ;; esac
-    [ -n "$t" ] && [ -n "$c" ] || die "$1: the rule for '$g' needs three TAB-separated fields"
+    if [ -z "$t" ] || [ -z "$c" ]; then die "$1: the rule for '$g' needs three TAB-separated fields"; fi
     case "$c" in
       revalidate) c='public, max-age=0, s-maxage=86400, must-revalidate' ;;
       immutable) c='public, max-age=31536000, immutable' ;;
@@ -183,7 +183,7 @@ stale_keys() {
   aws s3api list-objects-v2 --bucket "$bucket" ${keypre:+--prefix "$keypre"} --query 'Contents[].Key' --output text \
     > "$t/remote"
   while IFS= read -r k; do
-    [ -n "$k" ] && [ "$k" != None ] || continue
+    if [ -z "$k" ] || [ "$k" = None ]; then continue; fi
     rel="${k#"$keypre"}"
     if [ -n "$keypre" ] && [ "$rel" = "$k" ]; then continue; fi
     grep -Fxq -- "$rel" "$t/local" && continue

@@ -131,7 +131,7 @@ firstother="$(grep -n '^PUT ' "$LOG" | grep -vF "|$IMM" | head -1 | cut -d: -f1)
 pages_at="$(grep -n 'update-stack' "$LOG" | cut -d: -f1)"
 firsthtml="$(grep -n '^PUT ' "$LOG" | grep -F 'text/html' | head -1 | cut -d: -f1)"
 lastnonhtml="$(grep -n '^PUT ' "$LOG" | grep -vF 'text/html' | tail -1 | cut -d: -f1)"
-[ "$lastnonhtml" -lt "$pages_at" ] && [ "$pages_at" -lt "$firsthtml" ] || fail "the order is not assets, page list, html: $order"
+if [ "$lastnonhtml" -ge "$pages_at" ] || [ "$pages_at" -ge "$firsthtml" ]; then fail "the order is not assets, page list, html: $order"; fi
 has "update-stack --stack-name s --use-previous-template --parameters ParameterKey=Pages,ParameterValue=404 _shell about docs/intro index ParameterKey=OriginSecretVm,UsePreviousValue=true" "the page list is rewritten on the previous template"
 has "cloudformation wait stack-update-complete --stack-name s" "the page list update is waited for"
 has "cloudfront create-invalidation --distribution-id EDIST1 --paths /* " "one invalidation of /*"
