@@ -21,7 +21,10 @@
 # It prints "CBASE: " lines alone (vm.sh prints those), and never a parameter value.
 # CBASE_VM_ROOT is unset on the instance; cbase_vm_test.sh runs it under a scratch root with
 # stand-ins for systemctl, ss, curl and the rest.
-# shellcheck disable=SC2154 # app, port, user, unit, home, data, bucket, key, sha, region, settings: vm.sh sets them
+# replaces (CBASE_VM_REPLACES, a grandfathered member's alone) names the unit that served the app
+# before cbase: the port it holds is no refusal, its data is chowned only once it is stopped, and
+# it is stopped and disabled right before the app's unit starts, in this one command.
+# shellcheck disable=SC2154 # app, port, user, unit, home, data, bucket, key, sha, region, settings, replaces: vm.sh sets them
 set -eEuo pipefail
 trap 'echo "CBASE: the deploy of $app failed at line $LINENO"' ERR
 umask 077
@@ -35,11 +38,12 @@ envfile="$R/etc/cbase/$app.env"
 id -u "$user" > /dev/null 2>&1 || useradd --system --user-group --no-create-home --home-dir "/srv/cbase/$app" --shell /sbin/nologin "$user"
 mkdir -p "$home" "$R$data"
 chmod 0755 "$R/srv/cbase" "$home"
-chown -R "$user:$user" "$R$data"
-chmod 0700 "$R$data"
+own_data() { chown -R "$user:$user" "$R$data"; chmod 0700 "$R$data"; }
+# The data of a unit being replaced stays its own while it runs.
+if [ -z "$replaces" ]; then own_data; fi
 
 # 2. The port, free before a first start: with the unit not running, nothing may listen on it.
-if ! systemctl is-active --quiet "$unit"; then
+if ! systemctl is-active --quiet "$unit" && { [ -z "$replaces" ] || ! systemctl is-active --quiet "$replaces"; }; then
   if [ -n "$(ss -Hltn "sport = :$port")" ]; then
     say "port $port is in use on the VM, and not by $unit: refused, nothing was started"
     exit 3
@@ -116,6 +120,13 @@ EOF
 mv -f "$R/etc/systemd/system/$unit.new" "$R/etc/systemd/system/$unit"
 systemctl daemon-reload
 systemctl enable --quiet "$unit"
+if [ -n "$replaces" ]; then
+  # The unit the app ran as before cbase: stopped and disabled (its file stays), seconds before
+  # the app's own starts on its port and its data.
+  systemctl disable --now --quiet "$replaces" 2> /dev/null || true
+  say "$replaces stopped and disabled: $unit takes port $port and $data"
+  own_data
+fi
 since="$(date +%s)"
 systemctl restart "$unit"
 

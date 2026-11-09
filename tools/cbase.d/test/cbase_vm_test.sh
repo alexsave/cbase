@@ -195,7 +195,7 @@ for want in "User=cbase-shop" "WorkingDirectory=/srv/cbase/shop/data" "ExecStart
             "Environment=CBASE_LISTEN=:::8700" "Environment=CBASE_DB=/srv/cbase/shop/data/cbase.sqlite" \
             "EnvironmentFile=/etc/cbase/shop.env" "Restart=always" "ReadWritePaths=/srv/cbase/shop/data" \
             "Environment=CBASE_BACKUP_BUCKET=$BUCKET" "Environment=CBASE_BACKUP_KEY=backups/shop/cbase.sqlite" \
-            "Environment=CBASE_BACKUP_URL=s3://$BUCKET/backups/shop/" "Environment=CBASE_BACKUP_REGION=us-east-1"; do
+            "Environment=CBASE_BACKUP_URL=s3://$BUCKET/backups/shop/cbase.sqlite" "Environment=CBASE_BACKUP_REGION=us-east-1"; do
   grep -Fxq -- "$want" "$t/unit" || { cat "$t/unit" >&2; fail "the unit lacks [$want]"; }
 done
 grep -q '^MemoryMax' "$t/unit" && fail "an undeclared app's unit has a MemoryMax"
@@ -366,7 +366,7 @@ mkdir -p "$stubs"
 cat > "$stubs/systemctl" << 'EOF'
 #!/bin/bash
 echo "systemctl $*" >> "$STUB_LOG"
-[ "$1" != is-active ] || [ "${STUB_ACTIVE:-0}" = 1 ]
+[ "$1" != is-active ] || [ "${STUB_ACTIVE:-0}" = 1 ] || { [ -n "${STUB_ACTIVE_UNIT:-}" ] && [ "${!#}" = "$STUB_ACTIVE_UNIT" ]; }
 EOF
 cat > "$stubs/ss" << 'EOF'
 #!/bin/bash
@@ -421,7 +421,7 @@ on_vm() {
   : > "$1/calls"
   rc=0
   env PATH="$stubs:$PATH" CBASE_VM_ROOT="$1" STUB_LOG="$1/calls" STUB_USERS="$1/users" STUB_ELF="$t/elf-arm64" \
-      STUB_APP=shop STUB_PORT=8700 STUB_SETTINGS="${STUB_SETTINGS:-/cbase/shop/}" STUB_SECRET="$SECRET" bash "$2" > "$t/vm-out" 2>&1 < /dev/null || rc=$?
+      STUB_APP=shop STUB_PORT="${STUB_PORT:-8700}" STUB_SETTINGS="${STUB_SETTINGS:-/cbase/shop/}" STUB_SECRET="$SECRET" bash "$2" > "$t/vm-out" 2>&1 < /dev/null || rc=$?
 }
 grep '^SSM SendCommand .*\[cbase deploy of shop\]' "$t/log" | tail -1 | sed -n 's/.*echo \([A-Za-z0-9+/=]*\) | base64 -d.*/\1/p' | base64 -d > "$t/shop-deploy.sh"
 [ -s "$t/shop-deploy.sh" ] || fail "no deploy script of shop's in the fake's log"
@@ -521,6 +521,32 @@ ok
 run "$apih" undeploy
 expect_rc 0 "the API host app's undeploy"
 out_has "undeploy: the DNS records of apih.example.com api.example.com still point at the deleted distribution" "undeploy names every hostname"
+ok
+
+# ---- a grandfathered member: its backup key, and the unit it replaces --------------------------
+game="$(vm_app game "CBASE_APP = game" "CBASE_VM = g9" "CBASE_STATIC = none" "CBASE_MEMORY = 16M" \
+          "CBASE_VM_PORT = 8080" "CBASE_VM_DATA = /var/lib/game" "CBASE_VM_REPLACES = old.service" \
+          "CBASE_BACKUP_KEY = cbase/latest.sqlite")"
+run "$game" deploy
+expect_rc 0 "a grandfathered member's deploy"
+script_of > "$t/game-deploy.sh"
+# CBASE_BACKUP_KEY: the unit's key and its URL are the conf's (shop's above are the default).
+for want in "Environment=CBASE_BACKUP_KEY=cbase/latest.sqlite" "Environment=CBASE_BACKUP_URL=s3://$BUCKET/cbase/latest.sqlite"; do
+  grep -Fxq -- "$want" "$t/game-deploy.sh" || fail "the grandfathered unit lacks [$want]"
+done
+ok
+# CBASE_VM_REPLACES: the port the replaced unit holds is no refusal; that one unit alone is
+# stopped and disabled, before the app's own starts.
+vm="$t/vm4"
+STUB_PORT=8080 STUB_TAKEN=1 STUB_ACTIVE_UNIT=old.service on_vm "$vm" "$t/game-deploy.sh"
+[ "$rc" = 0 ] || { cat "$t/vm-out" >&2; fail "the deploy that replaces old.service: status $rc"; }
+grep -E '^systemctl (stop|disable|kill|mask)' "$vm/calls" > "$t/stops" || true
+printf 'systemctl disable --now --quiet old.service\n' | diff -u - "$t/stops" || fail "the deploy stopped other than old.service alone"
+[ "$(grep -nE '^systemctl (disable --now --quiet old.service|restart cbase-game.service)' "$vm/calls" | cut -d: -f2- | tr '\n' '|')" \
+  = "systemctl disable --now --quiet old.service|systemctl restart cbase-game.service|" ] || { cat "$vm/calls" >&2; fail "old.service was not stopped before cbase-game.service started"; }
+ok
+run "$game" undeploy
+expect_rc 0 "the grandfathered member's undeploy"
 ok
 
 # ================================================================================================

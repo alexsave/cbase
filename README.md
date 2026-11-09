@@ -498,7 +498,9 @@ Optional, each with its default:
 - `CBASE_VM_PORT = <port>` and `CBASE_VM_DATA = <dir>`: a grandfathered member, an app that ran on the VM before cbase; its port and data directory are recorded as they are (`legacy=1`).
 - `CBASE_VM_SETTINGS = /<path>/`: the SSM path of the app's settings, which the instance writes into its env file; default `/cbase/<app>/`.
 - `CBASE_VM_ARTIFACTS = s3://<bucket>/<prefix>/`: where the app's servers go and the instance fetches them; default the state bucket's `artifacts/<app>/`.
-- `CBASE_BACKUP_BUCKET = <bucket>`: where serve backs up the database, `backups/<app>/cbase.sqlite`; default the state bucket.
+- `CBASE_BACKUP_BUCKET = <bucket>` and `CBASE_BACKUP_KEY = <key>`: where serve backs up the database; default the state bucket and `backups/<app>/cbase.sqlite`. An adopted VM names the key its own boot restores.
+- `CBASE_VM_REPLACES = <unit>.service`: for a grandfathered member, the unit that served it before; the deploy stops and disables that one unit right before the app's own starts.
+  On an adopted VM whose own boot installs its old unit, run `./cbase deploy` again after an instance replacement.
 - `CBASE_STATIC_BUCKET = <bucket>` and `CBASE_STATIC_PREFIX = <folder>`: adopts an existing bucket and the app's folder in it; deploy never replaces it or writes its policy, and prints the one statement to add when the policy does not let the account's distributions read it.
 - `CBASE_SHELL = <path>`: the app shell, the page of the build served with a 200 for every path that is neither a file nor a page; default `/index.html`.
 

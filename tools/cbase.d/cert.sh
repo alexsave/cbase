@@ -283,7 +283,7 @@ cert_alias_check() {
             --query 'DistributionList.Items[?Aliases.Quantity > `0`].[Id,DomainName,join(`,`,Aliases.Items)]' --output text)" \
     || aws_fail "listing the account's CloudFront distributions"
   while IFS=$'\t' read -r id dom aliases; do
-    [ -n "$id" ] && [ "$id" != None ] || continue
+    { [ -n "$id" ] && [ "$id" != None ]; } || continue
     [[ "$own" != *" $id "* ]] || continue
     for h in "${CERT_HOSTS[@]}"; do
       for a in ${aliases//,/ }; do

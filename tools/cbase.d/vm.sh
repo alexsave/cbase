@@ -246,7 +246,8 @@ vm_unit() {
   # shellcheck disable=SC2154 # here is tools/cbase's directory
   sed -e "s|@APP@|$CONF_APP|g" -e "s|@USER@|cbase-$CONF_APP|g" -e "s|@PORT@|$port|g" \
       -e "s|@DATA@|$(vm_data_dir)|g" -e "s|@HOME@|/srv/cbase/$CONF_APP|g" -e "s|@REGION@|$(vm_region)|g" \
-      -e "s|@BACKUP_BUCKET@|$(vm_backup_bucket)|g" -e "$mem" "$here/cbase.d/vm_unit.service"
+      -e "s|@BACKUP_BUCKET@|$(vm_backup_bucket)|g" -e "s|@BACKUP_KEY@|${CONF_BACKUP_KEY:-backups/$CONF_APP/cbase.sqlite}|g" \
+      -e "$mem" "$here/cbase.d/vm_unit.service"
 }
 
 # vm_remote_deploy PORT BUCKET KEY SHA REGION: the script SSM runs as root on the instance. Every
@@ -270,6 +271,7 @@ key=$key
 sha=$sha
 region=$region
 settings=$(vm_settings)
+replaces=$CONF_VM_REPLACES
 EOF
   vm_unit "$port" > "$CB_TMP/vm-unit"
   # The unit spliced in at @CBASE_SERVICE@ (the production boot script's own way), and the shebang
