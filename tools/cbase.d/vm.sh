@@ -67,6 +67,32 @@ vm_find() {
   echo "vm group $group: $VM_ID ($VM_TYPE, $VM_MIB MiB), $VM_DNS"
 }
 
+# vm_origin_secret: VM_ORIGIN_SECRET, the app's origin secret, SSM /cbase/<app>/CBASE_ORIGIN_SECRET
+# (a SecureString), which the stack's VM origins send as X-Cbase-Origin and serve reads from its env
+# file as CBASE_ORIGIN_SECRET. CloudFormation resolves no ssm-secure reference in a distribution's
+# origin headers, so it goes in as the NoEcho parameter OriginSecret. Its value is never printed:
+# aws_mask masks any line that holds it, and a bad one is refused without it.
+VM_ORIGIN_SECRET=""
+vm_origin_secret() {
+  local name="/cbase/$CONF_APP/CBASE_ORIGIN_SECRET"
+  if ! VM_ORIGIN_SECRET="$(aws_call ssm get-parameter --name "$name" --with-decryption --query Parameter.Value --output text)"; then
+    VM_ORIGIN_SECRET=""
+    if [ "$(aws_code)" = ParameterNotFound ]; then
+      echo "cbase: there is no SSM parameter $name, the origin secret CloudFront sends the app as X-Cbase-Origin (and serve checks). Make it once, then deploy again; nothing was changed:" >&2
+      echo "  aws ssm put-parameter --type SecureString --name $name --value \"\$(openssl rand -hex 32)\"" >&2
+      exit 1
+    fi
+    aws_fail "reading the SSM parameter $name"
+  fi
+  if ! [[ "$VM_ORIGIN_SECRET" =~ ^[A-Za-z0-9_-]{16,256}$ ]]; then
+    VM_ORIGIN_SECRET=""
+    echo "cbase: the SSM parameter $name is not 16 to 256 letters, digits, _ and - (its value is not shown): openssl rand -hex 32 makes one" >&2
+    exit 1
+  fi
+  AWS_MASK_VALUES+=("$VM_ORIGIN_SECRET")
+  echo "origin secret: $name (X-Cbase-Origin; its value is not shown)"
+}
+
 # vm_type_mib TYPE: the instance type's memory in MiB (describe-instance-types).
 vm_type_mib() {
   local m

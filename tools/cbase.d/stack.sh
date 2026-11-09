@@ -15,7 +15,8 @@
 #                 CBASE_VM is not none) goes to the VmOrigin and VmPort parameters: the group VM's
 #                 public DNS name and the app's claimed port, which the VM deploy (vm.sh) supplies.
 #                 A ws route is its own origin, for its long timeouts (CloudFront sets them per
-#                 origin): read 60 s, keep-alive 60 s, uncached, every method.
+#                 origin): read 60 s, keep-alive 60 s, uncached, every method. Each VM origin
+#                 sends X-Cbase-Origin, the NoEcho parameter OriginSecret (stack_vm_origin).
 #   ApiDistribution  with CBASE_API_HOST: that hostname's every request to the VM, a ws route's
 #                 on the ws origin as on the Distribution.
 # Caching uses AWS-managed policies alone (CachingOptimized, CachingDisabled; the VM's requests
@@ -106,11 +107,16 @@ stack_behaviour() {
   fi
 }
 
-# stack_vm_origin ID READ KEEPALIVE: a custom origin on the VM.
+# stack_vm_origin ID READ KEEPALIVE: a custom origin on the VM. Every request CloudFront sends it
+# carries X-Cbase-Origin, the app's origin secret, which serve checks (CBASE_ORIGIN_SECRET, the same
+# SSM parameter in its env file): a request to the port that did not come through the edge is 403.
 stack_vm_origin() {
   cat << EOF
           - Id: $1
             DomainName: !Ref VmOrigin
+            OriginCustomHeaders:
+              - HeaderName: X-Cbase-Origin
+                HeaderValue: !Ref OriginSecret
             CustomOriginConfig:
               HTTPPort: !Ref VmPort
               OriginProtocolPolicy: http-only
@@ -230,6 +236,10 @@ Parameters:
     Description: the port the app claimed in its VM group's state file (set by ./cbase deploy)
     MinValue: 8700
     MaxValue: 8799
+  OriginSecret:
+    Type: String
+    NoEcho: true
+    Description: the X-Cbase-Origin header's value, SSM /cbase/$CONF_APP/CBASE_ORIGIN_SECRET (set by ./cbase deploy; never printed)
 EOF
     fi
     printf '\nResources:\n'

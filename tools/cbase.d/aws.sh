@@ -59,8 +59,15 @@ aws_fail() {
 # HeaderValue), or a parameter's value (ParameterValue). The CLI never prints a credential, and
 # this is the second guard of stack.sh's: its --query filters keep a change set's and a drift's
 # secret values out of what the CLI answers; an error's message is free text, so it is masked here.
+# AWS_MASK_VALUES: secret values this run holds (the origin secret), each of letters, digits, _
+# and - alone (vm.sh checks), so each is a literal sed pattern. A line holding one is masked too.
+AWS_MASK_VALUES=()
 aws_mask() {
-  sed -E '/OriginCustomHeaders|HeaderValue|ParameterValue/I s/.*/(a line naming an origin header or a parameter value, not shown)/'
+  local v e=(-e '/OriginCustomHeaders|HeaderValue|ParameterValue/I s/.*/(a line naming an origin header or a parameter value, not shown)/')
+  for v in ${AWS_MASK_VALUES[@]+"${AWS_MASK_VALUES[@]}"}; do
+    e+=(-e "/$v/ s/.*/(a line naming an origin header or a parameter value, not shown)/")
+  done
+  sed -E "${e[@]}"
 }
 
 aws_whoami_hint() {
