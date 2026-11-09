@@ -1059,3 +1059,30 @@ smoke_boot built in example/storeless (make storeless-smoke: storeless, log_leve
 - env_file.c: any '#' starts a comment, blank before it or not -> `inline_comments` EF_B == "abc#x" and `values_as_written` EF_E == "a#not-a-comment=b".
 - env_file.c: the blanks before the '#' kept -> `inline_comments` EF_A, EF_D and EF_E.
 - env_file.c: a tab not a blank -> `inline_comments` EF_D and EF_E, and the tab-only line and tab-after-'=' cases elsewhere.
+
+## The auth rows' contract and the admin console over SQLite (test-debt-security)
+
+The two fixes were first seen red as found: unit_auth_sqlite `a_session_past_its_end_stays_over` and conformance/auth `refresh_is_taken_once` and `refresh_expiry` failed at the test commit, and conformance/auth `import_rules` failed on DynamoDB Local in CI (check-dynamo, run 42534520765) before the import fix.
+
+- store_sqlite.c: the take's TTL stamped on every take (`expires_at = ?3`) -> conformance/auth `refresh_is_taken_once` expires_at == t0 + 10 + SPENT, and `refresh_expiry` take at t0 + SPENT == CB_E_NOT_FOUND (unit_conf_auth_local).
+- store_sqlite.c: the take's past-its-time check dropped -> conformance/auth `refresh_expiry` take(old) == CB_E_NOT_FOUND, and unit_auth_sqlite `a_session_past_its_end_stays_over` refresh == 400 with CBW_ACCOUNT_E_BAD_REFRESH and !refresh.
+- rows_auth.c: the first take's expiry condition dropped (`n_cond = 2`) -> unit_dynamo_ops `refresh_take_once` the request lacks what the script expects, and the `:c2` value.
+- aws_json.c: CB_C_ABSENT_OR_GT spelled `<` -> unit_dynamo_ops `refresh_take_once` the request lacks what the script expects.
+- rows_auth.c: the import's EMAIL# put unconditional -> unit_dynamo_ops `users_import` the request lacks what the script expects.
+- rows_auth.c: a changed email's old EMAIL# item kept -> unit_dynamo_ops `users_import` the delete of "EMAIL#ann@x.io".
+- rows_auth.c: the import's uuid check dropped -> unit_dynamo_ops `users_import` user_import(bad) == CB_E_INVALID, and a request past the script.
+- admin.c: const_eq always true -> unit_admin_sqlite `the_gate` "Bearer wrong" == 401 and !says("users"), and `logs_tail_the_consoles_warnings` the one warn entry.
+- admin.c: console_on always true -> `the_gate` users == 404 and the page == 404 with no token.
+- store_sqlite.c: is_table always yes -> `browse_pages_a_table` c=nope == 400 and the quoted name == 400, and `a_write_needs_the_word_and_a_text_prefix_matches` c=notes == 400.
+- store_sqlite.c: bind_blob_value without the uuid bind -> `browse_pages_a_table` id=<uuid text> rows == 1.
+- store_sqlite.c: bind_blob_value without the hex bind -> `browse_pages_a_table` id=<32 hex> rows == 1.
+- store_sqlite.c: a blob prefix's dashes kept -> `browse_pages_a_table` prefix=0C0D0000-00 rows == 1.
+- store_sqlite.c: browse offset ignored -> `browse_pages_a_table` cursor=2 rows == 1, next == "" and an unseen row.
+- store_sqlite.c: browse next cursor never set -> `browse_pages_a_table` next == "2".
+- store_sqlite.c: a TEXT prefix compared one character longer -> `a_write_needs_the_word_and_a_text_prefix_matches` prefix=ab rows == 2.
+- store_sqlite.c: users search ignored -> `users_and_their_delete` search=ben rows == 1.
+- admin.c: delete_account skipped -> `users_and_their_delete` g_deleted == 1 and user_get == CB_E_NOT_FOUND.
+- admin.c: the collections walk stops after one -> `collections_are_the_tables` n >= 5, users and sessions.
+- admin.c: the write word ignored -> `a_write_needs_the_word_and_a_text_prefix_matches` CREATE without it == 403.
+- admin.c: the backup's VACUUM INTO sent as a read -> `a_backup_is_a_file_beside_the_database` POST backups == 200 and the copy's account.
+- admin.c: the logs level ignored -> `logs_tail_the_consoles_warnings` level=error does not say the warning.
