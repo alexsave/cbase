@@ -16,6 +16,7 @@
 #include <limits.h>
 #include <pthread.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -516,6 +517,53 @@ static void shutdown_kills(void) {
     rig_close();
 }
 
+// THE SLOT'S RELEASE (spawn.c): cb_spawner_free does not close its pipe while a SIGCHLD handler
+// may still write to it. The handler that was there before the spawner's (this test's, installed
+// first in main) runs inside the spawner's, after its writes; armed, it holds there until let go.
+// A free started while one is held must wait for it.
+static atomic_int g_hold_armed, g_held, g_release, g_idle_stop, g_freed;
+
+static void held_chld(int sig) {
+    if (!atomic_load(&g_hold_armed)) return;
+    atomic_store(&g_held, 1);
+    while (!atomic_load(&g_release)) {}
+}
+
+static void *idle_thread(void *arg) {
+    while (!atomic_load(&g_idle_stop)) usleep(1000);
+    return NULL;
+}
+
+static void *free_thread(void *arg) {
+    cb_spawner_free(arg);
+    atomic_store(&g_freed, 1);
+    return NULL;
+}
+
+static void free_waits_for_a_running_handler(void) {
+    rig_open();
+    atomic_store(&g_held, 0), atomic_store(&g_release, 0), atomic_store(&g_idle_stop, 0), atomic_store(&g_freed, 0);
+    atomic_store(&g_hold_armed, 1);
+    pthread_t idle, freer;
+    pthread_create(&idle, NULL, idle_thread, NULL);
+    pthread_kill(idle, SIGCHLD);   // its handler runs on that thread and is held there
+    int64_t t0 = cb_mono_ms();
+    while (!atomic_load(&g_held) && cb_mono_ms() - t0 < 5000) usleep(1000);
+    T_CHECK(atomic_load(&g_held));
+    pthread_create(&freer, NULL, free_thread, R.sp);
+    usleep(200 * 1000);
+    T_CHECK(!atomic_load(&g_freed));   // the handler still runs: the pipe is not closed under it
+    atomic_store(&g_release, 1);
+    pthread_join(freer, NULL);
+    T_CHECK(atomic_load(&g_freed));
+    atomic_store(&g_hold_armed, 0);
+    atomic_store(&g_idle_stop, 1);
+    pthread_join(idle, NULL);
+    R.sp = NULL;
+    cb_loop_free(R.l);
+    R.l = NULL;
+}
+
 static void remove_dir(void) {
     char p[PATH_MAX + 16];
     snprintf(p, sizeof p, "%s/helper.c", g_dir);
@@ -525,6 +573,13 @@ static void remove_dir(void) {
 }
 
 int main(void) {
+    // Before any spawner, so the spawner's handler calls it (free_waits_for_a_running_handler).
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = held_chld;
+    sa.sa_flags = SA_RESTART;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGCHLD, &sa, NULL);
     bool built = build_helper();
     T_CHECK(built);
     T_RUN(exit_code_three);
@@ -541,6 +596,7 @@ int main(void) {
     T_RUN(channel_overlong);
     T_RUN(channel_unused);
     T_RUN(blocking_wait);
+    T_RUN(free_waits_for_a_running_handler);
     if (built) {
         T_RUN(channel_exchange);
         T_RUN(caller_kill_escalates);
