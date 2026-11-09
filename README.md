@@ -122,12 +122,15 @@ Each line names the tool, test or record that holds the rule; the tools run in `
 ## Docs
 
 - [cbase.mk](cbase.mk): its header lists every variable a product may set.
-- [docs/PLATFORM.md](docs/PLATFORM.md): section 2 is the app API (routes, CORS, storeless apps, child processes, the upgrade guide); the rest is the history of the split.
+- [docs/PLATFORM.md](docs/PLATFORM.md): the app API (routes, CORS, storeless apps, child processes, store, realtime, the upgrade guide), and how cbase came to be.
 - [docs/H2.md](docs/H2.md): the HTTP/2 and gRPC client, its threading, retry rule and limits.
 - [docs/AUTH_APPLE.md](docs/AUTH_APPLE.md): Sign in with Apple, on the server and in the clients.
 - [docs/COVERAGE.md](docs/COVERAGE.md): what the coverage gate measures.
 - [docs/mutation_checks.md](docs/mutation_checks.md): the mutation check behind each test.
-- History, written before cbase was split out of the monorepo it came from and describing that repository: [DESIGN.md](DESIGN.md) (the original design and each module's as-built record), [RUNBOOK.md](RUNBOOK.md), [REPORT.md](REPORT.md), [docs/CLIENT_DESIGN.md](docs/CLIENT_DESIGN.md), [docs/BENCH_VM_VS_DYNAMO.md](docs/BENCH_VM_VS_DYNAMO.md), [docs/DIRECT_DYNAMO.md](docs/DIRECT_DYNAMO.md), [docs/VERCEL.md](docs/VERCEL.md).
+- [DESIGN.md](DESIGN.md): the platform design record, each module's as-built design and the reasons for it.
+- [RUNBOOK.md](RUNBOOK.md): operating a cbase product on a local machine, a VM stack and the aws stack, and in CI.
+- [docs/CLIENT_DESIGN.md](docs/CLIENT_DESIGN.md): the client SDK design.
+- History, written before cbase was split out of the monorepo it came from: [docs/history/PLATFORM_SPLIT.md](docs/history/PLATFORM_SPLIT.md), [docs/history/REPORT_2026-10-13.md](docs/history/REPORT_2026-10-13.md), [docs/history/VERCEL.md](docs/history/VERCEL.md), [docs/history/BENCH_VM_VS_DYNAMO.md](docs/history/BENCH_VM_VS_DYNAMO.md), [docs/history/DIRECT_DYNAMO.md](docs/history/DIRECT_DYNAMO.md).
 
 ## License
 
