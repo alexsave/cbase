@@ -5,6 +5,7 @@
 #include "router.h"
 #include "handler.h"
 #include "rate_limits.h"
+#include "num_parse.h"
 #include "util/clock.h"
 #include "util/err.h"
 #include "util/log.h"
@@ -1001,6 +1002,26 @@ static void on_accept(cb_loop *l, int lfd, int ev, void *ud) {
     }
 }
 
+// THE DRAIN'S HTTP CONNECTIONS (cb_server_drain, then each sweep until the loop stops): one with
+// nothing of a request (no byte read, none waiting in the socket, nothing to send) is closed; every
+// other is waited for, its request read, answered and the connection closed after (keep-alive is
+// off while draining). So a request that had begun arriving when the drain began, or whose bytes
+// were already in the socket, is answered rather than cut: a restart that closed it would be an
+// error at the client. A request sent after the close is the peer's to retry (HTTP's idle race).
+// The connections still arriving or answering are returned; the drain is over at 0 (and none busy).
+static int drain_idle(cb_server *s) {
+    int arriving = 0;
+    for (conn *c = s->all, *next; c; c = next) {
+        next = c->next;
+        if (c->state != C_HTTP || c->dead) continue;
+        if (c->started || c->in.len || c->req_len || c->out.len || c->sending || c->file_fd >= 0) { arriving++; continue; }
+        char b;
+        if (c->fd >= 0 && recv(c->fd, &b, 1, MSG_PEEK | MSG_DONTWAIT) > 0) { arriving++; continue; }
+        conn_close(c);
+    }
+    return arriving;
+}
+
 // THE SWEEP runs once a second while a connection is open (every deadline it keeps is a
 // connection's: a parked request's, a head's, an idle socket's, a WebSocket's PING) and not at
 // all when none is: an idle box wakes nobody for it. The accept of a
@@ -1037,9 +1058,10 @@ static void sweep(cb_loop *l, void *ud) {
         }
     }
     if (s->draining) {
-        bool idle = s->busy == 0;
+        int arriving = drain_idle(s);
+        bool idle = s->busy == 0 && arriving == 0;
         if (idle || now >= s->drain_deadline) {
-            if (!idle) CB_WARN("net", "drain timed out with %d request(s) in flight", s->busy);
+            if (!idle) CB_WARN("net", "drain timed out with %d request(s) in flight and %d arriving or answering", s->busy, arriving);
             cb_loop_stop(l);
             return;
         }
@@ -1058,30 +1080,74 @@ cb_server *cb_server_new(cb_ctx *ctx, const cb_server_opts *opts) {
     return s;
 }
 
-int cb_server_listen(cb_server *s, const char *host, int port, int *bound_port) {
-    struct addrinfo hints, *ai = NULL;
-    memset(&hints, 0, sizeof hints);
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_flags = AI_PASSIVE | AI_NUMERICSERV;
-    char ps[16];
-    snprintf(ps, sizeof ps, "%d", port);
-    int gr = getaddrinfo(host, ps, &hints, &ai);
-    if (gr != 0) { CB_ERROR("net", "listen %s:%d: %s", host, port, gai_strerror(gr)); return CB_E_IO; }
-    int fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
-    int one = 1;
-    if (fd < 0 || setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one) < 0 ||
-        bind(fd, ai->ai_addr, ai->ai_addrlen) < 0 || listen(fd, s->o.backlog > 0 ? s->o.backlog : 512) < 0 || set_nonblock(fd)) {
-        CB_ERROR("net", "listen %s:%d: %s", host, port, strerror(errno));
-        if (fd >= 0) close(fd);
-        freeaddrinfo(ai);
-        return CB_E_IO;
+// THE INHERITED LISTENER: systemd's socket activation (sd_listen_fds(3)'s protocol, done here
+// without libsystemd). When LISTEN_PID is this process and LISTEN_FDS is at least 1, fd 3 is a
+// listening socket the service manager made and keeps: serve listens on it instead of binding,
+// whatever CBASE_LISTEN says (a different port is warned about). The manager's own copy holds the
+// socket, and its queue, while serve restarts: a connection made in the gap waits in the backlog
+// (the socket unit's Backlog=) for the next serve and is never refused (vm_unit.socket). So serve
+// closes its copy on a drain like a socket of its own, and never shuts it down (shutdown(2) would
+// end the queue for the manager's copy too). Only the first listen of a process takes it; a child
+// inherits neither the fd (FD_CLOEXEC) nor the claim (LISTEN_PID is not its pid).
+// -1: none inherited (bind as usual); -2: inherited and unusable (said why); else the fd.
+static int inherited_listener(void) {
+    static bool taken;
+    int64_t pid = 0, n = 0;
+    if (taken || !num_parse_i64_cstr(getenv("LISTEN_PID"), 1, INT32_MAX, &pid) || pid != (int64_t)getpid() ||
+        !num_parse_i64_cstr(getenv("LISTEN_FDS"), 1, INT32_MAX, &n))
+        return -1;
+    taken = true;
+    // A stream socket, and listening where the kernel says (Linux does; macOS has no SO_ACCEPTCONN
+    // to read and answers ENOPROTOOPT).
+    int fd = 3, type = 0, acc = 1;
+    socklen_t tl = sizeof type, al = sizeof acc;
+    if (getsockopt(fd, SOL_SOCKET, SO_TYPE, &type, &tl) < 0 || type != SOCK_STREAM ||
+        (getsockopt(fd, SOL_SOCKET, SO_ACCEPTCONN, &acc, &al) < 0 ? errno != ENOPROTOOPT : !acc)) {
+        CB_ERROR("net", "LISTEN_FDS: fd 3 is not a listening stream socket");
+        return -2;
     }
-    freeaddrinfo(ai);
+    if (n > 1) CB_WARN("net", "LISTEN_FDS is %lld: serve listens on fd 3 alone", (long long)n);
+    if (set_nonblock(fd)) {
+        CB_ERROR("net", "LISTEN_FDS: fd 3: %s", strerror(errno));
+        return -2;
+    }
+    return fd;
+}
+
+int cb_server_listen(cb_server *s, const char *host, int port, int *bound_port) {
+    int fd = inherited_listener();
+    if (fd == -2) return CB_E_IO;
+    const bool inherited = fd >= 0;
+    if (!inherited) {
+        struct addrinfo hints, *ai = NULL;
+        memset(&hints, 0, sizeof hints);
+        hints.ai_family = AF_UNSPEC;
+        hints.ai_socktype = SOCK_STREAM;
+        hints.ai_flags = AI_PASSIVE | AI_NUMERICSERV;
+        char ps[16];
+        snprintf(ps, sizeof ps, "%d", port);
+        int gr = getaddrinfo(host, ps, &hints, &ai);
+        if (gr != 0) { CB_ERROR("net", "listen %s:%d: %s", host, port, gai_strerror(gr)); return CB_E_IO; }
+        fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        int one = 1;
+        if (fd < 0 || setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one) < 0 ||
+            bind(fd, ai->ai_addr, ai->ai_addrlen) < 0 || listen(fd, s->o.backlog > 0 ? s->o.backlog : 512) < 0 || set_nonblock(fd)) {
+            CB_ERROR("net", "listen %s:%d: %s", host, port, strerror(errno));
+            if (fd >= 0) close(fd);
+            freeaddrinfo(ai);
+            return CB_E_IO;
+        }
+        freeaddrinfo(ai);
+    }
     struct sockaddr_storage sa;
     socklen_t sl = sizeof sa;
+    memset(&sa, 0, sizeof sa);
     getsockname(fd, (struct sockaddr *)&sa, &sl);
     int bound = ntohs(sa.ss_family == AF_INET6 ? ((struct sockaddr_in6 *)&sa)->sin6_port : ((struct sockaddr_in *)&sa)->sin_port);
+    if (inherited) {
+        if (port != 0 && bound != port) CB_WARN("net", "the inherited socket (LISTEN_FDS) is on port %d, not %d: serve listens on %d", bound, port, bound);
+        CB_INFO("net", "the listener is the inherited socket, fd 3 (systemd socket activation)");
+    }
     if (bound_port) *bound_port = bound;
     if (cb_loop_add(s->ctx->loop, fd, CB_EV_READ, on_accept, s) != CB_OK) { close(fd); return CB_E_IO; }
     cb_loop_after(s->ctx->loop, flush_dirty, s);
@@ -1093,12 +1159,14 @@ void cb_server_drain(cb_server *s, int64_t timeout_ms) {
     if (s->draining) return;
     s->draining = true;
     s->drain_deadline = cb_loop_now(s->ctx->loop) + timeout_ms;
+    // close, never shutdown: an inherited listener's queue is the service manager's to keep
+    // (THE INHERITED LISTENER, above).
     if (s->lfd >= 0) { cb_loop_remove(s->ctx->loop, s->lfd); close(s->lfd); s->lfd = -1; }
     for (conn *c = s->all, *next; c; c = next) {
         next = c->next;
         if (c->state == C_WS) cb_ws_close(c, 1001);
-        else if (c->state == C_HTTP && !c->out.len && !c->sending && !c->req_len && c->file_fd < 0) conn_close(c);
     }
+    drain_idle(s);
     if (s->sweep_timer) cb_loop_cancel(s->ctx->loop, s->sweep_timer);
     s->sweep_timer = cb_loop_timer(s->ctx->loop, 0, sweep, s);
 }
