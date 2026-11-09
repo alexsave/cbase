@@ -183,7 +183,7 @@ Each line names the tool, test or record that holds the rule; the tools run in `
 - [DESIGN.md](DESIGN.md): the platform design record, each module's as-built design and the reasons for it.
 - [RUNBOOK.md](RUNBOOK.md): operating a cbase product on a local machine, a VM stack and the aws stack, and in CI.
 - [docs/CLIENT_DESIGN.md](docs/CLIENT_DESIGN.md): the client SDK design.
-- History, written before cbase was split out of the monorepo it came from: [docs/history/PLATFORM_SPLIT.md](docs/history/PLATFORM_SPLIT.md), [docs/history/REPORT_2026-10-13.md](docs/history/REPORT_2026-10-13.md), [docs/history/VERCEL.md](docs/history/VERCEL.md), [docs/history/BENCH_VM_VS_DYNAMO.md](docs/history/BENCH_VM_VS_DYNAMO.md), [docs/history/DIRECT_DYNAMO.md](docs/history/DIRECT_DYNAMO.md).
+- History, written before cbase was split out of the monorepo it came from: [docs/history/PLATFORM_SPLIT.md](docs/history/PLATFORM_SPLIT.md), [docs/history/REPORT_2026-10-13.md](docs/history/REPORT_2026-10-13.md), [docs/history/BENCH_VM_VS_DYNAMO.md](docs/history/BENCH_VM_VS_DYNAMO.md), [docs/history/DIRECT_DYNAMO.md](docs/history/DIRECT_DYNAMO.md).
 
 ## License
 
