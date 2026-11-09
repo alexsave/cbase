@@ -9,8 +9,8 @@ static cd_id answer;      /* the text node the answer goes into */
 static void on_event(void *ctx, cbc *c, const cbc_event *e, const uint8_t *bytes) {
   (void)ctx; (void)c;
   if (e->kind != CBC_EV_DONE) return;
-  if (e->status == 200 && bytes) cd_set_text(answer, cd_tmp((const char *)bytes + e->off, e->len));
-  else cd_set_text(answer, CD_LIT("the server did not answer"));
+  if (e->status == 200 && bytes) cd_set_text_node(answer, cd_tmp((const char *)bytes + e->off, e->len));
+  else cd_set_text_node(answer, CD_LIT("the server did not answer"));
 }
 
 void cd_main(void) {
