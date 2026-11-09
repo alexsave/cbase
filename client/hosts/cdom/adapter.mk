@@ -6,22 +6,20 @@
 # names cbase's sources and flags, and which of cdom's modules the adapter calls, never a cdom file.
 # The cdom the adapter has passed against is the pin README.md here names.
 #
-# With cdom.mk's APP_WASM rule: cdom.mk reads APP_SRC and APP_MODULES where it is included, and this
-# fragment needs cdom.mk's variables first, so cdom.mk is included twice, for its variables and then,
-# with APP_WASM set, for its rule:
+# Each of the three is included once, cdom.mk first: this fragment needs cdom.mk's variables, and
+# cdom.mk's APP_WASM rule reads APP_* when make builds, so they may be set after it. With that rule:
 #
 #   CBASE := path/to/cbase                # REQUIRED: the cbase root, as the including Makefile reaches it
 #   CDOM  := path/to/cdom                 # REQUIRED: the cdom checkout, as the including Makefile reaches it
-#   include $(CDOM)/cdom.mk               # cdom's variables (no APP_WASM yet: no rule)
+#   include $(CDOM)/cdom.mk
 #   include $(CBASE)/client/client.mk
 #   include $(CBASE)/client/hosts/cdom/adapter.mk
 #   APP_WASM    := ui/out/app.wasm
 #   APP_SRC     := ui/src/app.c $(CBC_SRC) $(CBC_B64_SRC) $(CBC_CDOM_SRC)
 #   APP_MODULES := $(CBC_CDOM_MODULES)
 #   APP_CFLAGS  := $(CBC_INC) $(CBC_CDOM_CFLAGS)
-#   include $(CDOM)/cdom.mk               # again, APP_WASM set: the module's rule
 #
-# With a rule of the app's own, the same three includes once each, and cdom's sources from cdom.mk:
+# With a rule of the app's own, the same three includes, and cdom's sources from cdom.mk:
 #
 #   UI_SRC    := ui/src/app.c $(CBC_SRC) $(CBC_B64_SRC) $(CBC_CDOM_SRC) \
 #                $(CDOM_SRC) $(CDOM_NET_SRC) $(CDOM_STORE_SRC) $(CDOM_RANDOM_SRC)
