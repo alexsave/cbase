@@ -27,7 +27,7 @@
 #   make coverage   the coverage build and gate (docs/COVERAGE.md)
 #   make ops-test   the deploy tooling's tests (no AWS)
 #   make serve      build/cbase, then run it as `cbase serve` from here (cbase.mk's APP_SERVE_DIR,
-#                   APP_ENV_FILE, APP_SERVE_LISTEN; tools/serve.sh): 127.0.0.1:3000, or PORT
+#                   APP_ENV_FILE, APP_SERVE_LISTEN; tools/serve.sh): 127.0.0.1:8642, or PORT
 #   make serve-binary, make bootstrap   the static Linux arm64 binaries (ops/build_static.sh, Docker)
 #   make clean
 #

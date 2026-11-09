@@ -49,12 +49,14 @@
 #                    the product's own; one whose Makefile sits in server/ names its parent), names
 #                    APP_ENV_FILE (default .env.local, from APP_SERVE_DIR unless absolute; empty for
 #                    none) to serve as CBASE_ENV_FILE when the file exists and CBASE_ENV_FILE is
-#                    unset, and sets CBASE_LISTEN to APP_SERVE_LISTEN (default 127.0.0.1:$(PORT), or
-#                    127.0.0.1:3000 with no PORT) unless CBASE_LISTEN is set. 3000 is amgi's port
-#                    too (the origin its Anki bridge allows), so a second product on the machine
-#                    sets its own: APP_SERVE_LISTEN := 127.0.0.1:4000 in its Makefile, or at run time
-#                    `PORT=4000 make serve`, or `CBASE_LISTEN=127.0.0.1:0 make serve` for a port the
-#                    OS picks. serve prints the address it bound on stdout once it listens,
+#                    unset, and sets CBASE_LISTEN to APP_SERVE_LISTEN (default 127.0.0.1:$(PORT))
+#                    unless CBASE_LISTEN is set. With neither, serve takes its own default,
+#                    127.0.0.1:8642 (core/src/config.h CB_LISTEN_DEFAULT): 8642 because the common
+#                    dev servers' ports (3000 React, Next and Rails, 5173 Vite, 8000, 8080, ...) are
+#                    taken and /etc/services assigns it nothing. A product sets its own port in its
+#                    Makefile (APP_SERVE_LISTEN := 127.0.0.1:4100), or a run sets one: `PORT=4100
+#                    make serve`, or `CBASE_LISTEN=127.0.0.1:0 make serve` for a port the OS picks.
+#                    serve prints the address it bound on stdout once it listens,
 #                    "cbase: listening 127.0.0.1:<port>" (core/src/ingress_process.h)
 #   APP_LAMBDA_SCHEDULE, APP_LAMBDA_JOB   one of the app's schedules and one of its jobs, which the
 #                    Lambda smoke (smoke_lambda) sends as the scheduler and the self-invoke do
@@ -101,7 +103,9 @@ APP_SERVE  ?= cbase
 APP_LAMBDA ?= bootstrap
 APP_SERVE_DIR    ?= $(patsubst %/,%,$(dir $(firstword $(MAKEFILE_LIST))))
 APP_ENV_FILE     ?= .env.local
-APP_SERVE_LISTEN ?= 127.0.0.1:$(or $(PORT),3000)
+# Empty without PORT: serve.sh then leaves CBASE_LISTEN unset and serve's own default holds
+# (config.h CB_LISTEN_DEFAULT), so the default port is written in one place.
+APP_SERVE_LISTEN ?= $(if $(PORT),127.0.0.1:$(PORT))
 
 # ---- the toolchain's libraries ----------------------------------------------------------------
 # SQLITE IS UPSTREAM'S ON EVERY PLATFORM: the one production runs (Alpine's, static) is upstream's,

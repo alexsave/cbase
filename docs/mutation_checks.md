@@ -1211,6 +1211,10 @@ Each mutation was made in tools/serve.sh or cbase.mk, the test run, and the file
 - serve.sh: the env file named whether or not it exists -> `make serve with no .env.local did not come up listening (an absent env file must be no error)` red.
 - serve.sh: the env file named even when CBASE_ENV_FILE is set -> `with CBASE_ENV_FILE set make serve did not boot on it` red.
 - cbase.mk: `APP_SERVE_DIR ?= $(CB)` (cbase's root, not the Makefile's directory) -> `with APP_SERVE_DIR unset serve runs in '<cbase root>', not <cbase root>/example` red.
+- cbase.mk: `APP_SERVE_LISTEN ?= 127.0.0.1:$(or $(PORT),3000)` (the old default back) -> `with no PORT and no CBASE_LISTEN serve listens on 3000, not the default 8642` red.
+- core/src/config.h: `CB_LISTEN_DEFAULT` `127.0.0.1:8080` (serve's old default; rebuilt) -> `with no PORT and no CBASE_LISTEN serve listens on 8080, not the default 8642` red.
+- cbase.mk: `APP_SERVE_LISTEN ?=` (PORT ignored) -> `with PORT=<port> and no CBASE_LISTEN serve listens on 8642, not <port>` red.
+- Not a mutant: serve.sh exporting an empty `CBASE_LISTEN` instead of unsetting it, since config.c reads an empty variable as unset.
 
 ## cb_http_query_find says absent, too long or unreadable (starter-friction)
 

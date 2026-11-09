@@ -19,8 +19,14 @@ extern const char *const cb_config_limit_names[CB_CONFIG_LIMITS];
 #define CB_CPU_OFF  (-1)   // not pinned
 #define CB_CPU_AUTO (-2)   // serve picks the CPU at start (cb_affinity_pick)
 
+// Where serve listens when CBASE_LISTEN is unset: the one default, which `make serve` (cbase.mk,
+// tools/serve.sh) leaves to the binary. Port 8642 because the common dev servers' defaults (3000
+// React and Rails, 5173 Vite, 8000 and 8080, 4200, 5000, ...) are taken, and /etc/services
+// assigns it nothing.
+#define CB_LISTEN_DEFAULT "127.0.0.1:8642"
+
 typedef struct cb_config {
-    // CBASE_LISTEN, "host:port", default 127.0.0.1:8080: the one setting for where serve
+    // CBASE_LISTEN, "host:port", default CB_LISTEN_DEFAULT: the one setting for where serve
     // listens (there is no PORT). Port 0 asks the OS for a free one, which the startup line
     // on stdout names (ingress_process.h).
     char listen_host[64];
