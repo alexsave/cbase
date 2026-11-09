@@ -1438,3 +1438,4 @@ Each mutant was made in place and the file restored from a copy.
 - site_deploy.sh: the html pass removed -> `html is revalidated (no-cache)` red.
 - site_role.yaml: cloudformation:UpdateStack removed -> `site_role.yaml does not grant every call site_deploy.sh makes` red (role_covers_release.sh names the action).
 - site.yaml: the router's SITE_HOSTS lookup removed -> `the router's rules` red (`a SITE_HOSTS name -> /www/404.html`).
+- site.mk: the knobs passed in double quotes, not single -> `site.mk's $$ does not reach the template as ${AWS::AccountId}` red.
