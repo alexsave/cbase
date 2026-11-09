@@ -552,7 +552,7 @@ static void a_stop_inside_a_callback_stops_the_host(void) {
     solo();   // in the CBC_EV_SOCKET_FAILED a file: page raises from inside the pump, a lost read's retry due
     g_proto = "file:";
     cbc_cdom_start(&g_host, &k, NULL, stop_event, NULL, NULL);
-    cbc_call(cbc_cdom_client(&g_host), CBC_GET, CBC_C_READ, "/v1/r", 5, NULL, 0, cbc_cdom_now());
+    cbc_call(cbc_cdom_client(&g_host), CBC_GET, CBC_C_IDEMPOTENT, "/v1/r", 5, NULL, 0, cbc_cdom_now());
     cbc_cdom_pump(&g_host);
     answer_req(0, CD_HTTP_FAILED, NULL, 0);
     int due = solo_armed() == 1;

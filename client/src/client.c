@@ -241,11 +241,11 @@ static void call_done(cbc *c, cbc_call_slot *k, int status, int why, int32_t cod
     call_free(c, k);
 }
 
-// A call that never got its answer (the socket closed, or no REPLY came, or HTTP status 0): a read
-// goes again, at once on the socket's next READY or after a doubling wait over HTTP, CBC_TRIES
-// times in all; a write is over (it may have landed).
+// A call that never got its answer (the socket closed, or no REPLY came, or HTTP status 0): an
+// idempotent one goes again, at once on the socket's next READY or after a doubling wait over HTTP,
+// CBC_TRIES times in all, unless it fails fast; any other is over (a write may have landed).
 static void call_lost(cbc *c, cbc_call_slot *k, int64_t now, int http) {
-    if ((k->flags & CBC_C_READ) && k->tries + 1 < CBC_TRIES) {
+    if ((k->flags & (CBC_C_IDEMPOTENT | CBC_C_FAIL_FAST)) == CBC_C_IDEMPOTENT && k->tries + 1 < CBC_TRIES) {
         k->tries++;
         k->state = http ? CALL_WAIT : CALL_QUEUED;
         k->at = http ? now + backoff_ms(c, k->tries) : 0;
@@ -288,7 +288,7 @@ static uint32_t call_add(cbc *c, int kind, int method, int flags, const char *pa
 static uint32_t app_call(cbc *c, int method, int flags, const char *path, size_t path_len, const uint8_t *body,
                          size_t body_len, int ref) {
     if (c->ending || ((flags & CBC_C_AUTH) && !c->user.signed_in)) { c->err = CBC_E_AUTH; return 0; }
-    return call_add(c, K_APP, method, flags & (CBC_C_READ | CBC_C_AUTH | CBC_C_HTTP), path, path_len, body, body_len, ref);
+    return call_add(c, K_APP, method, flags & (CBC_C_IDEMPOTENT | CBC_C_FAIL_FAST | CBC_C_AUTH | CBC_C_HTTP), path, path_len, body, body_len, ref);
 }
 
 uint32_t cbc_call(cbc *c, int method, int flags, const char *path, size_t path_len,
@@ -536,7 +536,7 @@ int cbc_on_response(cbc *c, uint32_t id, int status, const uint8_t *body, size_t
     }
     int why; int32_t code, detail;
     why_of(status, body, len, &why, &code, &detail);
-    if (status == 503 && why == CBW_WHY_BUSY && (k->flags & CBC_C_READ) && k->busy < CBC_BUSY_TRIES) {
+    if (status == 503 && why == CBW_WHY_BUSY && (k->flags & CBC_C_IDEMPOTENT) && k->busy < CBC_BUSY_TRIES) {
         k->state = CALL_WAIT;
         k->at = now + ((int64_t)CBC_BUSY_FIRST_MS << k->busy);
         k->busy++;
@@ -682,7 +682,7 @@ static void take_reply(cbc *c, const sf_frame *f, int64_t now) {
     if (ok_status(f->status)) { call_done(c, k, f->status, 0, 0, 0, off, len); return; }
     int why; int32_t code, detail;
     why_of(f->status, f->body, f->body_len, &why, &code, &detail);
-    if (f->status == 503 && why == CBW_WHY_BUSY && (k->flags & CBC_C_READ) && k->busy < CBC_BUSY_TRIES) {
+    if (f->status == 503 && why == CBW_WHY_BUSY && (k->flags & CBC_C_IDEMPOTENT) && k->busy < CBC_BUSY_TRIES) {
         k->state = CALL_WAIT;
         k->at = now + ((int64_t)CBC_BUSY_FIRST_MS << k->busy);
         k->busy++;

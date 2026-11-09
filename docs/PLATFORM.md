@@ -203,6 +203,10 @@ A product from before the platform routes became opt-in makes the fifth and sixt
    `APP_CFLAGS` and `APP_LDFLAGS` are cdom.mk's, for a browser UI's wasm module, so a product that builds both in one Makefile gives each side its own flags.
    A server Makefile renames `APP_CFLAGS` to `SERVER_CFLAGS` and `APP_LDLIBS` to `SERVER_LDFLAGS`.
    One it misses stops the build with a sentence naming the new name: `APP_LDLIBS` always, and `APP_CFLAGS` when the Makefile sets no `APP_WASM` (cdom.mk reads `APP_CFLAGS` only in its `APP_WASM` rule).
+10. **`CBC_C_READ` is gone; a call's resend and its failure speed are two flags** (`cbase/client.h`, "HOW LONG A DEAD SERVER TAKES TO BE HEARD"), and the compiler names every use left.
+   `CBC_C_IDEMPOTENT` is the old flag's meaning, and its bit: the call is sent again after a loss and after a 503 busy, so a C call renames `CBC_C_READ` to `CBC_C_IDEMPOTENT` and behaves as before.
+   `CBC_C_FAIL_FAST` is new: a lost call is finished at once with `CBC_WHY_LOST`, idempotent or not, so a page can say "the server is down" at once instead of after about 3.5 s of resends.
+   The TypeScript layer exports both under the same names, and its `get` defaults to `CBC_C_IDEMPOTENT`.
 
 ### 2.10 Serve's settings an app ships, and CBASE_ENV_FILE
 

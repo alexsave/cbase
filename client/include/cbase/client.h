@@ -302,17 +302,24 @@ int cbc_pkce(const uint8_t *entropy, size_t n, char verifier[44], char challenge
 // ---- calls -------------------------------------------------------------------------------------
 #define CBC_GET  1   // == SF_METH_GET
 #define CBC_POST 2   // == SF_METH_POST
-#define CBC_C_READ 0x1   // idempotent: sent again after a loss or a 503 busy
-// HOW LONG A DEAD SERVER TAKES TO BE HEARD. A read (CBC_C_READ) that gets no answer (status 0 over
-// HTTP: a refused or reset connection, or its deadline passed; or the socket closed under it) is
-// sent CBC_TRIES times in all, then its CBC_EV_DONE says CBC_WHY_LOST. Over HTTP the sends are
-// retry_first_ms apart, doubling, capped at retry_max_ms (no jitter): with the defaults 500, 1000
-// and 2000 ms, so an app hears a server that refuses connections about 3.5 s after the call, and
-// one that never answers after 4 x http_wait_ms + 3.5 s (63.5 s). On the socket a lost read goes
-// again at the next READY, so it waits for the socket to come back. A write is sent once: lost,
-// its DONE says CBC_WHY_LOST at once (it may have landed). A 503 busy read is sent again at most
-// CBC_BUSY_TRIES times, after CBC_BUSY_FIRST_MS doubling (250, 500, 1000 ms).
-#define CBC_TRIES          4     // a read is sent at most this often in all after losses
+// TWO SEPARATE QUESTIONS, two flags. CBC_C_IDEMPOTENT: may the call be sent again? CBC_C_FAIL_FAST:
+// how soon is a dead server reported?
+#define CBC_C_IDEMPOTENT 0x1   // safe to send again: after a loss (below) and after a 503 busy
+#define CBC_C_FAIL_FAST  0x8   // a loss finishes the call at once, idempotent or not (below)
+// HOW LONG A DEAD SERVER TAKES TO BE HEARD. A call that gets no answer (status 0 over HTTP: a
+// refused or reset connection, or its deadline passed; or the socket closed under it) is LOST.
+// A lost call that is not CBC_C_IDEMPOTENT is sent once: its CBC_EV_DONE says CBC_WHY_LOST at once
+// (a write may have landed). A lost CBC_C_IDEMPOTENT call is sent CBC_TRIES times in all, then its
+// DONE says CBC_WHY_LOST. Over HTTP the sends are retry_first_ms apart, doubling, capped at
+// retry_max_ms (no jitter): with the defaults 500, 1000 and 2000 ms, so an app hears a server that
+// refuses connections about 3.5 s after the call, and one that never answers after
+// 4 x http_wait_ms + 3.5 s (63.5 s). On the socket a lost idempotent call goes again at the next
+// READY, so it waits for the socket to come back. CBC_C_FAIL_FAST sends a call once whatever
+// CBC_C_IDEMPOTENT says, so a UI that shows "the server is down" hears a refused connection at once
+// (and one that never answers after one http_wait_ms); an idempotent fail-fast call is still sent
+// again after a 503 busy, which a server that is up answered. A 503 busy idempotent call is sent
+// again at most CBC_BUSY_TRIES times, after CBC_BUSY_FIRST_MS doubling (250, 500, 1000 ms).
+#define CBC_TRIES          4     // an idempotent call is sent at most this often in all after losses
 #define CBC_BUSY_TRIES     3     // and sent again at most this often after a 503 busy
 #define CBC_BUSY_FIRST_MS  250   // the first busy wait, doubling
 #define CBC_C_AUTH 0x2   // needs the user: refused at once when nobody is signed in

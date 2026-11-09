@@ -20,7 +20,7 @@ import {
   CBC_EV_SESSION,
   CBC_EV_SUB_LIVE,
   CBC_EV_SUB_REFUSED,
-  CBC_C_READ,
+  CBC_C_IDEMPOTENT,
   CBC_GET,
   CBC_POST,
   CBC_RQ_BODY,
@@ -39,7 +39,7 @@ import {
   type cbc_event_Snap,
 } from './client_layout.ts';
 
-export { CBC_C_AUTH, CBC_C_HTTP, CBC_C_READ, CBC_ROOM } from './client_layout.ts';
+export { CBC_C_AUTH, CBC_C_FAIL_FAST, CBC_C_HTTP, CBC_C_IDEMPOTENT, CBC_ROOM } from './client_layout.ts';
 export {
   CBW_ACCOUNT_E_BAD_IDENTITY,
   CBW_ACCOUNT_E_EXISTS,
@@ -206,7 +206,7 @@ export class CbClient {
     };
   }
 
-  get(path: string, flags = CBC_C_READ): Promise<ArrayBuffer> {
+  get(path: string, flags = CBC_C_IDEMPOTENT): Promise<ArrayBuffer> {
     return this.call(CBC_GET, flags, path);
   }
 
