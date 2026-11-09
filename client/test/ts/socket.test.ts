@@ -109,7 +109,7 @@ test('a dropped socket reopens after the jittered wait and holds its rooms again
   c.close();
 });
 
-test('an anonymous read goes over HTTP; a busy one goes again; a refusal is a CbError', async () => {
+test('an anonymous read goes over HTTP; a busy one goes again; a refusal is a CbError with its body', async () => {
   const seen: string[] = [];
   let busy = 1;
   const fakeFetch = (async (url: string, init: RequestInit) => {
@@ -117,6 +117,7 @@ test('an anonymous read goes over HTTP; a busy one goes again; a refusal is a Cb
     if (url.endsWith('/busy') && busy-- > 0)
       return new Response(new Uint8Array([1, 10, 0, 0, 0, 0, 0, 0, 0, 0]), { status: 503 });
     if (url.endsWith('/refused')) return new Response(new Uint8Array([1, 3, 17, 0, 0, 0, 0, 0, 0, 0]), { status: 409 });
+    if (url.endsWith('/bad')) return new Response('bad name\n', { status: 400 });
     return new Response(new Uint8Array([5, 6, 7]), { status: 200 });
   }) as unknown as typeof fetch;
   const c = await start({ wasm: wasm(), server: 'http://adv.test', anonymous: true, fetch: fakeFetch });
@@ -125,6 +126,9 @@ test('an anonymous read goes over HTTP; a busy one goes again; a refusal is a Cb
   assert.deepEqual(seen.slice(0, 3), ['GET http://adv.test/adv/users', 'GET http://adv.test/busy', 'GET http://adv.test/busy']);
   // The refusal's own why and code (not what the status alone would say): the body was handed in.
   await assert.rejects(c.get('/refused'), (e: unknown) => e instanceof CbError && e.status === 409 && e.why === 3 && e.code === 17);
+  // A handler's own error body (cb_res_text(res, 400, "bad name\n")) is the CbError's, byte for byte.
+  await assert.rejects(c.get('/bad'), (e: unknown) => e instanceof CbError && e.status === 400 &&
+    new TextDecoder().decode(e.body) === 'bad name\n');
   c.close();
 });
 

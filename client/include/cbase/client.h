@@ -121,7 +121,7 @@ typedef struct {
     uint8_t  what;      // SUB_*: the room's kind (the app's, as in SF_SUB)
     uint8_t  push;      // PUSH: the app frame's kind
     uint8_t  why;       // DONE: 0, CBW_WHY_*, or CBC_WHY_LOST
-    uint16_t status;    // DONE: the HTTP status (0: never arrived); SUB_REFUSED: the REPLY's
+    uint16_t status;    // DONE: the HTTP status (0: never arrived), its body the span, 2xx or not (below); SUB_REFUSED: the REPLY's
     uint8_t  room_len;
     uint8_t  pad;
     uint32_t ticket;    // DONE
@@ -137,6 +137,14 @@ typedef struct {
 // the body is len bytes at bytes + off. bytes is NULL when the call that raised the event had none
 // (cbc_tick, cbc_closed, a body cbc_on_response was not given), and a span is read only when it is
 // not NULL.
+// WHAT A DONE'S SPAN HOLDS: the answer's whole body as the server sent it, over HTTP or the socket,
+// whatever its status. A 2xx is the route's answer. A non-2xx is the server's error body, read the
+// same way: a handler's own (cb_res_text(res, 400, "bad name\n") is status 400 and those 9 bytes),
+// or the platform's refusal, which why, code and detail are read from (with no refusal in it, why
+// is the status's: CBW_WHY_AUTH for 401, CBW_WHY_FORBIDDEN 403, CBW_WHY_NOT_FOUND 404, CBW_WHY_BUSY
+// 503, CBW_WHY_INTERNAL any other). Status 0 (it never arrived: no server answered, or the deadline
+// passed) has no body: len is 0. client/test/host/host_suite.c holds the 2xx and the non-2xx body
+// on every host.
 
 // A request cbc_next_request writes: this head, then path_len bytes of path, auth_len bytes of the
 // Authorization value ("Bearer ..."; none when 0), body_len bytes of body. With CBC_RQ_REF the body
@@ -149,7 +157,7 @@ typedef struct {
 // (0, len) into the bytes the host holds. A host still hands the app the whole body (THE SPAN
 // above): the shared host passes cbc_host_http_answered's body to the app with the DONE whatever
 // this flag says (client/test/host/host_suite.c holds it), and the TypeScript and Swift layers
-// resolve the call with it. What the flag saves is a copy into the core's buffer (the wasm
+// resolve the call with it (TypeScript rejects a non-2xx with a CbError whose body is it). What the flag saves is a copy into the core's buffer (the wasm
 // module's io), so a large answer is never limited by it.
 #define CBC_RQ_BODY 0x1   // the core reads the answer's body: pass it to cbc_on_response (else it needs
                           // a 2xx body's length only, and a non-2xx body, a refusal, as always)

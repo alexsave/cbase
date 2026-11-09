@@ -720,6 +720,28 @@ static void a_64k_body_arrives_byte_for_byte_and_done_comes_once_after(void) {
     kept(w);
 }
 
+// An app call answered with a status that is not 2xx hands the app the body the server sent, as a
+// 2xx does: the DONE's span is the whole body (here a handler's cb_res_text), and why, read from the
+// status when the body is no refusal of the platform's, is CBW_WHY_INTERNAL for a 400.
+static void a_non_2xx_answer_hands_the_app_its_body(void) {
+    cbhs_world *w = world();
+    g_cfg.anonymous = 1;
+    cbc *c = start(w, g_h);
+    uint32_t t = cbc_call(c, CBC_GET, CBC_C_IDEMPOTENT | CBC_C_FAIL_FAST, "/api/hello?name=x", 17, NULL, 0, cbhs_now(w));
+    T_CHECK(t != 0);
+    pump(w);
+    w_req *r = request(w);
+    T_CHECK(r != NULL);
+    if (r) T_EQ_STR(r->path, "/api/hello?name=x");
+    if (r) answer(r, 400, "bad name\n", 9);
+    const w_event *e = event(w);
+    T_CHECK(e && e->kind == CBC_EV_DONE && e->ticket == t && e->status == 400 && e->why == CBW_WHY_INTERNAL);
+    if (e) T_EQ_MEM(e->data, e->len, "bad name\n", 9);
+    T_CHECK(event(w) == NULL);                     // exactly once: a 400 is not sent again
+    T_CHECK(request(w) == NULL);
+    kept(w);
+}
+
 static void a_retried_borrowed_body_resends_the_same_bytes(void) {
     cbhs_world *w = world();
     big_fill();
@@ -1013,6 +1035,7 @@ int cbhs_run(const cbhs_host *h) {
         T_RUN(an_anonymous_listener_opens_the_public_socket);
         T_RUN(a_socket_nobody_wants_is_closed_while_it_opens);
         T_RUN(a_64k_body_arrives_byte_for_byte_and_done_comes_once_after);
+        T_RUN(a_non_2xx_answer_hands_the_app_its_body);
         T_RUN(a_retried_borrowed_body_resends_the_same_bytes);
         T_RUN(a_slow_borrowed_upload_is_not_aborted);
         T_RUN(an_auth_http_call_waits_for_the_refresh_without_spinning);
