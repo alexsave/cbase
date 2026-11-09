@@ -3,7 +3,7 @@
 // /admin/api/* is its JSON API, every call requiring
 // "Authorization: Bearer <CBASE_ADMIN_TOKEN>" (401 without it). When that
 // variable is unset every route here, the page included, answers 404, as if
-// it were not routed. Not CB_ROUTE_APIKEY: the console is not a client.
+// it were not routed. The console is not a client, so it has no client key.
 //
 // The API (admin.c), each a panel of a hosted database console's information
 // architecture cut to what cbase has:

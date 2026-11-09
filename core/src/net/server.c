@@ -546,8 +546,8 @@ bool cb_server_inline_ok(cb_server *s, const cb_route *r) {
 // THE VALVE'S CLOCKS. A run is timed by the monotonic clock (the vDSO: 30 ns, no system call).
 // On a burstable instance the hypervisor takes a vCPU away for milliseconds when both are busy,
 // and by that clock a 20 us handler then reads as 2.7 ms: three such holes in a second once
-// tripped the valve and sent every move to the pool for 5 s (bench/analysis_2026-10-20/
-// OPTIMIZED_DESIGN.md 4.2). So a run over its budget by the wall clock is only a suspect: the
+// tripped the valve and sent every move to the pool for 5 s (DESIGN.md "Serve's threads
+// and its loop"). So a run over its budget by the wall clock is only a suspect: the
 // next inline run is also timed by the thread's CPU clock (a real system call, 0.25 us), which
 // stops while the vCPU is away, and only a run over its budget in CPU counts toward the valve. A
 // handler that is truly slow is slow again on the next run; a hole is not. The thread CPU clock is
@@ -1003,7 +1003,7 @@ static void on_accept(cb_loop *l, int lfd, int ev, void *ud) {
 
 // THE SWEEP runs once a second while a connection is open (every deadline it keeps is a
 // connection's: a parked request's, a head's, an idle socket's, a WebSocket's PING) and not at
-// all when none is: an idle box wakes nobody for it (OPTIMIZED_DESIGN.md 4.3 E4). The accept of a
+// all when none is: an idle box wakes nobody for it. The accept of a
 // connection arms it again.
 static void sweep(cb_loop *l, void *ud) {
     cb_server *s = ud;
