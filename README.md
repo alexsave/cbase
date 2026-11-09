@@ -217,6 +217,16 @@ cbc_cdom_pump(&client);   // after every call into the client
 ```
 
 `CBC_C_IDEMPOTENT` says the call is safe to send again, and `CBC_C_FAIL_FAST` that a server that is down is reported at once (`client/include/cbase/client.h`).
+`cbc_call` sends its path as given (the parameter is `encoded_path`), so a query is built with `cbc_query_add`, which percent-encodes each key and value and adds `?` or `&`:
+
+```c
+char path[CBC_PATH_MAX] = "/v1/hello";
+size_t len = 9;
+if (cbc_query_add(path, sizeof path, &len, "name", name, name_len) == 0)   // CBC_E_FULL when it does not fit
+    cbc_call(cbc_cdom_client(&client), CBC_GET, CBC_C_IDEMPOTENT | CBC_C_FAIL_FAST, path, len, NULL, 0, cbc_cdom_now());
+```
+
+A raw value would break on its first `&`, `=`, `+` or `#`, which the browser's `fetch` does not encode.
 
 - TypeScript: coming soon.
 - Swift: coming soon.

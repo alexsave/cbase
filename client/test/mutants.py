@@ -1,6 +1,9 @@
 # mutants.py - the mutation check of cbase/client (test/mutate.sh): each mutant breaks one
 # behaviour, and the suite that covers it must go red. (file, name, old, new): old occurs exactly once.
 C = [
+  ('src/client.c', 'query: + kept as it is', "b == '_' || b == '~';", "b == '_' || b == '~' || b == '+';"),
+  ('src/client.c', 'query: no & between parameters', "    buf[at++] = has_q ? '&' : '?';", "    buf[at++] = '?';"),
+  ('src/client.c', 'query: cut short instead of CBC_E_FULL', "    if (pct_len(v, val_len, room - kl) > room - kl) return CBC_E_FULL;", "    if (pct_len(v, val_len, room - kl) > room - kl) val_len = 0;"),
   ('src/client.c', 'jitter: no randomness', 'uint32_t w = lo + (uint32_t)(rng_splitmix64(&c->rng) % (hi - lo + 1));', 'uint32_t w = (uint32_t)hi;'),
   ('src/client.c', 'jitter: no floor', 'uint32_t w = lo + (uint32_t)(rng_splitmix64(&c->rng) % (hi - lo + 1));', 'uint32_t w = (uint32_t)(rng_splitmix64(&c->rng) % (hi + 1));'),
   ('src/client.c', 'READY keeps the last wait', '        c->reconnect_prev = 0;\n        ev_add(c, CBC_EV_READY);', '        ev_add(c, CBC_EV_READY);'),
