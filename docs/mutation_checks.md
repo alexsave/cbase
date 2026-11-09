@@ -1148,3 +1148,20 @@ unit_spawn `free_waits_for_a_running_handler` holds a handler on a thread of its
 
 - spawn.c: release_slot's wait dropped (the code before the fix) -> `free_waits_for_a_running_handler` !g_freed, the free returned while the handler ran.
 - spawn.c: the handler not counting itself in -> the same assertion.
+
+## A stop from inside the app's callback stops the host (adapter-stop)
+
+cbc_cdom_stop stopped the adapter's timers and socket by hand, but every answer path of the shared host pumps after it tells the app, so a stop from inside the app's callback was followed by a pump on the stopped handle: a socket opened (and its HELLO sent on open), a tick armed into whatever started next.
+The shared host now owns the stop: cbc_host_stop stops its timers, closes its socket and holds the host stopped in the pump (at its top, after each request and after a socket that cannot be made) and in events (the rest of the batch neither saved nor told).
+cbc_cdom_stop calls it, and cbc_cdom_start traps inside the app's event callback (cbc_host_in_app, a depth counter) or ready.
+unit_host_cdom `a stop inside DONE, SOCKET_FAILED or ready` stops in a call's DONE with a sub made meanwhile, in the first event of a sign-up's batch, in the SOCKET_FAILED of a socket that closed before it opened, in the SOCKET_FAILED a file: page raises inside the pump with a lost read's retry due, and in ready (inside the start, and after the load) after a sub and a call.
+Each row is also in client/hosts/cdom/mutants.py.
+
+- cbc_cdom.c: cbc_host_stop not called (the stop as before) -> `a stop cancels every timer` and `a stop inside DONE, SOCKET_FAILED or ready` red.
+- cbc_host.c: the pump's stopped guard at its top removed -> `a stop inside DONE, SOCKET_FAILED or ready` red (a socket opened, a call sent after the stop).
+- cbc_host.c: the stopped check after ws_open removed -> the same case red (the file: subcase arms the read's retry).
+- cbc_host.c: events' stopped guard removed -> the same case red (the sign-up batch tells a second event).
+- cbc_host.c: tell's depth count removed -> `a start from inside DONE or ready traps` red.
+- cbc_cdom.c: in_ready not checked -> `a start from inside DONE or ready traps` red.
+- cbc_host.c: the stopped check after each send_request removed -> survives, by design: it covers send_request's slot-less answer, which the core's bound on the calls out (CBC_HOST_PEND_MAX) keeps from happening.
+- Not added: stopped guards in the cbc_host_ws_* reports and cbc_host_http_answered, and clearing fn. The stop drops has_sock, so every socket report already ignores every id, and an HTTP answer only feeds the core, whose events and pump are the two guards; each would be a second fix over the same vector.

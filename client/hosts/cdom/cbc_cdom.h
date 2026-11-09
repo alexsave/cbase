@@ -26,8 +26,10 @@
 // cbc_user_of(c)->signed_in and signs in if it must, and pumps. Without a key (or anonymous), ready is
 // called before cbc_cdom_start returns.
 //
-// A STOP AND A NEW START (cbc_host.h, A STOP AND RESTART): cbc_cdom_stop cancels the host's timers and
-// closes its socket. cdom cannot cancel a cd_http_cb request or a store get, so every one is stamped
+// A STOP AND A NEW START (cbc_host.h, A STOP AND RESTART): cbc_cdom_stop is the shared host's
+// cbc_host_stop (its timers cancelled, its socket closed, nothing more sent or told the app), from the
+// loop or from inside the app's own callback (an event, ready). A start is from the loop only: one
+// from inside a callback traps, as the call that callback came from still runs on the handle. cdom cannot cancel a cd_http_cb request or a store get, so every one is stamped
 // with the handle's generation, which each start moves on, in a slot of the handle's own that stays
 // reserved until cdom answers; an answer of an older generation is dropped there. A late socket event
 // is the shared host's to ignore (cdom does not hand an id out again before its close is delivered).
@@ -83,7 +85,8 @@ struct cbc_cdom {
     void *ctx;
     uint32_t gen;     // moved on by every start
     uint8_t  live;    // started and not stopped
-    uint8_t  pad[3];
+    uint8_t  in_ready;   // ready is running
+    uint8_t  pad[2];
     uint32_t klen;    // the store key's length (0: no session kept)
     char     key[CBC_CDOM_KEY_MAX];
     cbc_cdom_owed owed[CBC_CDOM_OWED_MAX];
@@ -97,13 +100,14 @@ struct cbc_cdom {
 // browser's), the store key the session lives under (NULL: none kept; ignored when cfg->anonymous;
 // copied, at most CBC_CDOM_KEY_MAX bytes), the app's event callback, and ready (NULL: none). 0, or -1
 // (nothing started) when the key is longer or the page has no crypto.getRandomValues. Traps on a live
-// handle. After any call the app makes into the client (cbc_sign_in, cbc_call, cbc_sub, ...) it calls
-// cbc_cdom_pump.
+// handle, and inside the app's event callback or ready (start from the loop only). After any call the
+// app makes into the client (cbc_sign_in, cbc_call, cbc_sub, ...) it calls cbc_cdom_pump.
 int  cbc_cdom_start(cbc_cdom *h, const cbc_cfg *cfg, const char *session_key, cbc_cdom_event_fn fn,
                     cbc_cdom_ready_fn ready, void *ctx);
-// Stops it: its timers cancelled, its socket closed, every answer cdom still owes it dropped when it
-// comes. Nothing more is sent or told the app; a stopped handle may be started again. A no-op on a
-// handle that is not live.
+// Stops it, from the loop or from inside the app's callback: its timers cancelled, its socket closed,
+// every answer cdom still owes it dropped when it comes. Nothing more is sent or told the app (not the
+// rest of the events of a callback it is called from); a stopped handle may be started again, from the
+// loop. A no-op on a handle that is not live.
 void cbc_cdom_stop(cbc_cdom *h);
 cbc *cbc_cdom_client(cbc_cdom *h);
 // Sends what the client has waiting and sets its timer: after every call the app makes into it.

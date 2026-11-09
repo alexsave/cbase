@@ -56,6 +56,14 @@ static int paid(cbc_cdom_owed *o) {
     return o->h->live && o->gen == o->h->gen;
 }
 
+// The app's ready, counted as its event callback is (cbc_host_in_app): a start from inside either traps.
+static void tell_ready(cbc_cdom *h) {
+    if (!h->ready) return;
+    h->in_ready++;
+    h->ready(h->ctx, cbc_cdom_client(h));
+    h->in_ready--;
+}
+
 // ---- the session: base64 in cdom's store -------------------------------------------------------
 static void on_stored(void *ctx, uint32_t ok) {
     (void)ctx;
@@ -67,7 +75,7 @@ static void loaded(cbc_cdom *h, const uint8_t *p, int32_t len) {
     int n = len > 0 ? b64_decode((const char *)p, (size_t)len, h->host.sess, sizeof h->host.sess) : -1;
     if (n > 0) cbc_session_load(cbc_cdom_client(h), h->host.sess, (size_t)n);
     cbc_host_hold(&h->host, 0);
-    if (h->ready) h->ready(h->ctx, cbc_cdom_client(h));
+    tell_ready(h);
     cbc_host_pump(&h->host);
 }
 
@@ -169,19 +177,17 @@ static const cbc_host_env ENV = { env_ws_open, env_ws_send, env_ws_close, env_ht
 void cbc_cdom_stop(cbc_cdom *h) {
     if (!h->live) return;
     h->live = 0;
-    cbc_host *k = &h->host;
-    if (k->tick_timer) cd_timer_stop(k->tick_timer);
-    if (k->reopen_timer) cd_timer_stop(k->reopen_timer);
+    cbc_host_stop(&h->host);   // its timers and socket; nothing more sent or told the app
     if (h->late_timer) cd_timer_stop(h->late_timer);
-    k->tick_timer = k->reopen_timer = h->late_timer = 0;
+    h->late_timer = 0;
     h->n_late = 0;
-    if (k->has_sock) cd_ws_close(k->sock);   // its close, when cdom reports it, finds the handle stopped
-    k->has_sock = 0;
 }
 
 int cbc_cdom_start(cbc_cdom *h, const cbc_cfg *cfg, const char *session_key, cbc_cdom_event_fn fn,
                    cbc_cdom_ready_fn ready, void *ctx) {
     if (h->live) __builtin_trap();   // a second start would orphan the first one's socket and timers
+    // From the app's callback, the call it came from still runs on the host: from the loop only.
+    if (h->in_ready || cbc_host_in_app(&h->host)) __builtin_trap();
     cbc_cfg k;
     if (cfg) k = *cfg;
     else cbc_cfg_default(&k);
@@ -201,7 +207,7 @@ int cbc_cdom_start(cbc_cdom *h, const cbc_cfg *cfg, const char *session_key, cbc
         if (o) cd_store_get_cb(on_loaded, o, h->key, h->klen, CD_STORE_DEADLINE_MS);
         return 0;
     }
-    if (ready) ready(ctx, cbc_cdom_client(h));
+    tell_ready(h);
     cbc_host_pump(&h->host);
     return 0;
 }

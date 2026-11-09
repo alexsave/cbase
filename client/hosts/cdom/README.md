@@ -22,7 +22,7 @@ A new pin is that one line, moved once the adapter passes against the newer cdom
 `make -C client check-host-cdom` (or `make -C client check-hosts`, every adapter that needs its platform) runs:
 
 - the shared host suite on this adapter (`client/test/unit_host_cdom.c` is cdom, as far as the adapter reaches it), natively and under ASan + UBSan, every case with socket ids from 1 and from 0 and on an http: and an https: page;
-- the adapter's own cases: a stop and a new start, late answers dropped, the key, a page that is not http: or https:, the early call that waits for the load;
+- the adapter's own cases: a stop and a new start, a stop from inside a callback, late answers dropped, the key, a page that is not http: or https:, the early call that waits for the load;
 - the adapter, the shared host, the core and `lib/b64` compiled for wasm32 against cdom's `src/libc/string.h`, the libc gate over them, and a link with cdom's sources (`link_app.c`).
 
 `client/test/mutate.sh` runs this adapter's mutants (`mutants.py`) with the rest of the client's.
@@ -45,7 +45,9 @@ Without a key, or for an anonymous client, `ready` is called before `cbc_cdom_st
 
 ## Stop and start again
 
-`cbc_cdom_stop` cancels the adapter's timers and closes its socket.
+`cbc_cdom_stop` is the shared host's `cbc_host_stop`: it cancels the timers, closes the socket, and nothing more is sent or told the app.
+The app may call it from the loop or from inside its own callback (an event, `ready`); the call that callback came from then sends, opens and arms nothing after it.
+`cbc_cdom_start` is from the loop only: a start from inside a callback traps.
 cdom cannot cancel a request or a store get, so each sits in a slot of the handle stamped with the start's generation until cdom answers, and an older start's answer is dropped.
 The handle must be zeroed before its first start (static storage is), and starting a live handle traps.
 
