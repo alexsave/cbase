@@ -1173,3 +1173,12 @@ It now takes the generation on entry and goes on only while the handle is live a
 
 - No test: a start inside an answer's callback traps (cbc_cdom_start's depth check, `a start from inside DONE or ready traps`), and on_late's answers reach the app only through that callback, so no deterministic case can move the generation inside on_late.
 - cbc_cdom.c: the generation check removed -> survives (the case cannot be made, above); the live half is the stop's, unchanged.
+
+## A host:port past 256 bytes makes no socket (adapter-stop)
+
+cdom's cd_get_str writes at most cap bytes and answers the bytes written, but the test's fake answered the whole string's length, so the adapter's `hn > 256` check (read with cap 256) passed only against the fake: with cdom, a longer host was cut to 256 bytes and a socket opened to it.
+The fake now answers min(length, cap) as cdom does, and the adapter reads with cap 257 and refuses 257.
+unit_host_cdom `a host:port of 256 bytes ...` opens ws://<host><path> at 256 bytes and no socket (CBC_SOCK_UNSUPPORTED) at 257, 258 and 259.
+
+- cbc_cdom.c: read with cap 256 again -> the case red, and the fake's socket-URL rule broken three times (the host cut short); also a row in client/hosts/cdom/mutants.py.
+- cbc_cdom.c: `hn > 257` -> the case red at 257 bytes (two URL rules broken).

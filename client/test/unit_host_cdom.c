@@ -67,6 +67,7 @@ static int solo_fire(void) {
 
 // ---- the page: location, and the literal strings it is read through ----
 static const char *g_proto = "http:";
+static const char *g_page_host = "app.test";   // location.host
 static const char *g_lits[8];
 static uint32_t g_n_lits;
 cd_str cd_lit_(cd_str *slot, const char *lit, uint32_t len) {
@@ -77,10 +78,11 @@ cd_str cd_lit_(cd_str *slot, const char *lit, uint32_t len) {
 uint32_t cd_get_str(cd_id id, cd_str path, char *dst, uint32_t cap) {
     const char *v = "";
     if (id == CD_WINDOW && path && strcmp(g_lits[path - 1], "location.protocol") == 0) v = g_proto;
-    else if (id == CD_WINDOW && path && strcmp(g_lits[path - 1], "location.host") == 0) v = "app.test";
+    else if (id == CD_WINDOW && path && strcmp(g_lits[path - 1], "location.host") == 0) v = g_page_host;
     else broke("a read of the page the adapter does not know");
-    uint32_t n = (uint32_t)strlen(v);
-    memcpy(dst, v, n < cap ? n : cap);
+    uint32_t n = (uint32_t)strlen(v);   // cdom's: at most cap bytes, and the bytes written
+    if (n > cap) n = cap;
+    memcpy(dst, v, n);
     return n;
 }
 
@@ -106,7 +108,8 @@ static void quiet(const char *what) { if (g_store_out) broke(what); }
 uint32_t cd_ws_open_cb(cd_ws_fn fn, void *ctx, const char *url, uint32_t len) {
     quiet("a socket opened while the session's load is out");
     g_n_opens++;
-    const char *origin = strcmp(g_proto, "https:") == 0 ? "wss://app.test" : "ws://app.test";
+    char origin[300];
+    snprintf(origin, sizeof origin, "%s%s", strcmp(g_proto, "https:") == 0 ? "wss://" : "ws://", g_page_host);
     uint32_t o = (uint32_t)strlen(origin);
     char path[64];
     if (len < o || memcmp(url, origin, o) != 0 || len - o >= sizeof path) { broke("a socket URL not on the page's scheme and host"); o = len = 0; }
@@ -400,6 +403,7 @@ static void solo(void) {
     g_n_sends = g_n_closes = 0;
     g_solo_len = 0;
     g_proto = "http:";
+    g_page_host = "app.test";
 }
 static cbc_cfg anon(void) {
     cbc_cfg k;
@@ -695,6 +699,28 @@ static void an_https_page_opens_wss(void) {
     g_proto = "http:";
 }
 
+// (d) A host:port of 256 bytes is the page's (no host name is longer); one of 257 to 259 bytes is
+// read only as far as 257 (cdom's cap), and makes no socket rather than one to a host cut short.
+static void a_host_past_256_bytes_makes_no_socket(void) {
+    static char host[260];
+    int ok = 1;
+    for (uint32_t len = 256; len <= 259; len++) {
+        solo();
+        memset(host, 'h', len - 5);
+        memcpy(host + len - 5, ":8080", 6);
+        g_page_host = host;
+        cbc_cfg k = anon();
+        cbc_cdom_start(&g_host, &k, NULL, solo_event, NULL, NULL);
+        cbc_sub(cbc_cdom_client(&g_host), CBC_ROOM, "feed", 4);
+        cbc_cdom_pump(&g_host);
+        if (len == 256) ok &= g_n_opens == 1 && g_failed == 0 && strlen(g_url) == 5 + 256 + 10 && memcmp(g_url + 5, host, 256) == 0;
+        else ok &= g_n_opens == 0 && g_failed == 1 && g_failed_why == CBC_SOCK_UNSUPPORTED;
+        cbc_cdom_stop(&g_host);
+    }
+    g_page_host = "app.test";
+    check(ok, "a host:port of 256 bytes opens ws://<it><path>; one of 257 to 259 bytes opens no socket (CBC_SOCK_UNSUPPORTED)");
+}
+
 // The store answers later, so a sign-up the app makes before ready waits in the client, and goes out
 // once the load has answered a miss.
 static void an_early_call_waits_for_the_load(void) {
@@ -732,6 +758,7 @@ int main(void) {
     the_key_is_copied_and_bounded();
     a_page_that_is_not_http_has_no_socket();
     an_https_page_opens_wss();
+    a_host_past_256_bytes_makes_no_socket();
     an_early_call_waits_for_the_load();
     no_entropy_starts_nothing();
     if (g_broken) fprintf(stderr, "cdom adapter: %d rule(s) broken\n", g_broken);

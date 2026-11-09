@@ -108,7 +108,8 @@ static int env_ws_open(void *ud, const char *path, uint32_t *id) {
     else return CBC_SOCK_UNSUPPORTED;   // file:, blob:, an extension's page: no server to reach
     uint32_t n = (uint32_t)strlen(s);
     memcpy(url, s, n);
-    uint32_t hn = cd_get_str(CD_WINDOW, CD_LIT("location.host"), url + n, 256);
+    // cdom writes at most cap bytes and answers how many: read one past the longest host to tell.
+    uint32_t hn = cd_get_str(CD_WINDOW, CD_LIT("location.host"), url + n, 257);
     if (hn > 256) return CBC_SOCK_UNSUPPORTED;   // no host name is that long
     n += hn;
     uint32_t k = (uint32_t)strlen(path);
