@@ -269,6 +269,37 @@ cert_auto() {
   echo "certificate: $CERT_ARN, issued"
 }
 
+# cert_alias_check OWN_ID...: every hostname (CERT_HOSTS) is free for this app's distributions.
+# CloudFront serves a hostname from one distribution alone, and a stack that names one another
+# distribution holds fails late, mid-execute (CNAMEAlreadyExists). So each hostname another
+# distribution holds (not one of OWN_ID, this app's) is named with that distribution and the one
+# step that frees it, and the deploy stops before anything changes; a dry run says so and goes on.
+# Moving it is the person's step, never automatic.
+cert_alias_check() {
+  local text id dom aliases h a found=0 own=" $* "
+  [ "${#CERT_HOSTS[@]}" -gt 0 ] || return 0
+  # shellcheck disable=SC2016 # the backticks are a JMESPath literal
+  text="$(aws_call cloudfront list-distributions \
+            --query 'DistributionList.Items[?Aliases.Quantity > `0`].[Id,DomainName,join(`,`,Aliases.Items)]' --output text)" \
+    || aws_fail "listing the account's CloudFront distributions"
+  while IFS=$'\t' read -r id dom aliases; do
+    [ -n "$id" ] && [ "$id" != None ] || continue
+    [[ "$own" != *" $id "* ]] || continue
+    for h in "${CERT_HOSTS[@]}"; do
+      for a in ${aliases//,/ }; do
+        [ "$a" = "$h" ] || continue
+        found=1
+        echo "cbase: $h is an alternate domain name of the distribution $id ($dom), which is not this app's, and CloudFront serves a hostname from one distribution alone (CNAMEAlreadyExists)." >&2
+        echo "  free it: remove $h from $id's alternate domain names (in the stack that made $id, or in the CloudFront console), then deploy again" >&2
+      done
+    done
+  done <<< "$text"
+  [ "$found" = 1 ] || return 0
+  if [ "${DRY_RUN:-}" = 1 ]; then echo "dry run: a deploy would stop here, on the hostnames above; this dry run goes on"; return 0; fi
+  echo "cbase: nothing was changed" >&2
+  exit 1
+}
+
 # cert_point DOMAIN HOST: each hostname at its distribution: an alias in its zone, or the record to
 # add by hand.
 cert_point() {

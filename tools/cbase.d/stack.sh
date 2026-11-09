@@ -33,7 +33,10 @@
 #      The same guard (stack_keep_guard) holds a VM group's INSTANCE (AWS::EC2::Instance), whose
 #      disk holds every member's /srv/cbase/<app>/data: group-init's stacks (group.sh) run through
 #      stack_changeset too, and an app's own stack holds neither;
-#   4. a distribution replaced (a new cloudfront.net name, a brief outage) is allowed, and printed;
+#   4. NO DOWNTIME after an app's first deploy (stack_downtime_guard): on an app's stack that
+#      exists, a change set that replaces or removes a distribution, or takes a hostname off one
+#      (an alias removed, or moved to the other distribution), is refused and deleted unless
+#      CBASE_ALLOW_DOWNTIME=1 (--allow-downtime). A first deploy (the stack's create) is not held;
 #   5. with DRY_RUN=1 (--dry-run) the change set is deleted unexecuted (and the empty stack a first
 #      change set leaves).
 #
@@ -60,6 +63,7 @@ POLL_SECONDS="${CBASE_POLL_SECONDS:-5}"
 STACK_PLAIN_PARAMS="VmOrigin VmPort InstanceType ImageId CloudFrontPrefixList ArtifactBucket"
 STACK_TAGS=()   # the stack's tags, "Key=K,Value=V" each
 STACK_CAPS=()   # --capabilities, for a template that makes an IAM role (a VM group's)
+STACK_APP=""    # 1: STACK_NAME is an app's stack, whose redeploys the downtime guard holds
 # The stack's parameters, "ParameterKey=K,ParameterValue=V" each: the VM deploy (vm.sh) sets VmOrigin
 # and VmPort. Empty for a static site, whose template has none.
 STACK_PARAMS=()
@@ -68,6 +72,7 @@ STACK_PARAMS=()
 CF_CACHING_OPTIMIZED=658327ea-f89d-4fab-a63d-7e88639e58f6
 CF_CACHING_DISABLED=4135ea2d-6df8-44a3-9df3-4b5a84be39ad
 CF_ALL_VIEWER_EXCEPT_HOST=b689b0a8-53d0-40ab-baf2-68738e2966ac
+CF_USE_ORIGIN_CC_QS=4cc15a8a-d715-48a4-82b8-cc0b614638fe   # the cache mode origin
 # shellcheck disable=SC2034 # cert.sh's alias records read it
 CF_ZONE_ID=Z2FDTNDATAQYW2   # every CloudFront distribution's hosted zone, for a Route 53 alias
 
@@ -95,11 +100,15 @@ stack_behaviour() {
   printf '%sAllowedMethods: %s\n' "$pad" "$(stack_methods "$methods")"
   printf '%sCachedMethods: [GET, HEAD]\n' "$pad"
   if [ "$origin" = ws ]; then printf '%sCompress: false\n' "$pad"; else printf '%sCompress: true\n' "$pad"; fi
-  if [ "$cache" = cache ]; then policy="$CF_CACHING_OPTIMIZED   # Managed-CachingOptimized"
-  else policy="$CF_CACHING_DISABLED   # Managed-CachingDisabled"; fi
+  case "$cache" in
+    cache) policy="$CF_CACHING_OPTIMIZED   # Managed-CachingOptimized" ;;
+    origin) policy="$CF_USE_ORIGIN_CC_QS   # Managed-UseOriginCacheControlHeaders-QueryStrings" ;;
+    *) policy="$CF_CACHING_DISABLED   # Managed-CachingDisabled" ;;
+  esac
   printf '%sCachePolicyId: %s\n' "$pad" "$policy"
   if [ "$origin" != static ]; then
     printf '%sOriginRequestPolicyId: %s   # Managed-AllViewerExceptHostHeader\n' "$pad" "$CF_ALL_VIEWER_EXCEPT_HOST"
+    [ -z "${STACK_RHP:-}" ] || printf '%sResponseHeadersPolicyId: !Ref %s\n' "$pad" "$STACK_RHP"
   else
     printf '%sFunctionAssociations:\n' "$pad"
     printf '%s  - EventType: viewer-request\n' "$pad"
@@ -320,19 +329,43 @@ EOF
         PriceClass: PriceClass_100
         Origins:
 EOF
-      stack_vm_origin vm 30 5
-      [ -z "$has_ws" ] || stack_vm_origin ws 60 60
+      # The VM at 60 s to read and to keep alive: an idle connection kept is a handshake saved.
+      stack_vm_origin vm 60 60
+      local api_ws="$has_ws"
+      for r in "${CONF_API_ROUTES[@]+"${CONF_API_ROUTES[@]}"}"; do [ "$(echo "$r" | cut -d' ' -f2)" != ws ] || api_ws=1; done
+      [ -z "$api_ws" ] || stack_vm_origin ws 60 60
+      STACK_RHP=ServerTimingPolicy
       printf '        DefaultCacheBehavior:\n'
       stack_behaviour "*" vm nocache ALL
-      # The ws routes keep their behaviour on the API host too: the ws origin's long timeouts.
+      # CBASE_API_ROUTE's lines, then the ws routes (CBASE_ROUTE's) it does not name.
       i=0
+      local api_rs=() seen=" "
+      for r in "${CONF_API_ROUTES[@]+"${CONF_API_ROUTES[@]}"}"; do api_rs+=("$r"); seen="$seen${r%% *} "; done
       for r in "${CONF_ROUTES[@]}"; do
         read -r pattern origin cache methods <<< "$r"
-        [ "$origin" = ws ] || continue
+        [ "$origin" = ws ] && [[ "$seen" != *" $pattern "* ]] && api_rs+=("$r")
+      done
+      for r in "${api_rs[@]+"${api_rs[@]}"}"; do
+        read -r pattern origin cache methods <<< "$r"
         [ "$i" -gt 0 ] || printf '        CacheBehaviors:\n'
         i=$((i + 1))
-        stack_behaviour "$pattern" ws "$cache" "$methods"
+        stack_behaviour "$pattern" "$origin" "$cache" "$methods"
       done
+      STACK_RHP=""
+      cat << EOF
+
+  # CloudFront's own timing of each API answer, in a Server-Timing header (an origin's own
+  # Server-Timing passes through as it is).
+  ServerTimingPolicy:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: cbase-$CONF_APP-server-timing
+        Comment: CloudFront's timing of each answer of the app $CONF_APP's API host
+        ServerTimingHeadersConfig:
+          Enabled: true
+          SamplingRate: 100
+EOF
     fi
     cat << EOF
 
@@ -345,6 +378,8 @@ Outputs:
 EOF
     if [ -n "$CONF_API_HOST" ]; then
       cat << EOF
+  ApiDistributionId:
+    Value: !Ref ApiDistribution
   ApiDistributionDomain:
     Description: where CBASE_API_HOST points
     Value: !GetAtt ApiDistribution.DomainName
@@ -518,6 +553,7 @@ stack_plan() {
   STACK_REGION=us-east-1
   STACK_TAGS=("Key=cbase:app,Value=$CONF_APP")
   STACK_CAPS=()
+  STACK_APP=1
   stack_render "$STACK_TEMPLATE"
   stack_changeset
 }
@@ -570,14 +606,51 @@ stack_changeset() {
   stack_print_changes
 
   stack_keep_guard
-  local replaced lid
+  [ "$STACK_APP" != 1 ] || [ "$STACK_TYPE" != UPDATE ] || stack_downtime_guard
+}
+
+# stack_aliases FILE: each distribution's hostnames in a template, "<logical id> <host>" a line.
+stack_aliases() {
+  awk '/^  [A-Za-z]+:$/ {lid = substr($1, 1, length($1) - 1)}
+       /^        Aliases: \[/ {s = $0; sub(/^ *Aliases: \[/, "", s); sub(/\]$/, "", s); n = split(s, a, ", "); for (i = 1; i <= n; i++) print lid, a[i]}' "$1"
+}
+
+# stack_downtime_guard: NO DOWNTIME after the first deploy. On an app's stack that exists, a change
+# set that replaces or removes a distribution (a new cloudfront.net name: the old hostname record
+# points at nothing until DNS moves), or takes a hostname off the distribution that serves it (an
+# alias removed, or moved to the other distribution: CloudFront serves it nowhere meanwhile), is
+# refused and deleted, unless CBASE_ALLOW_DOWNTIME=1 (--allow-downtime). The stack's current
+# template is the "before" of the aliases.
+stack_downtime_guard() {
+  local replaced lid why=() old
   replaced="$(cfn describe-change-set --stack-name "$STACK_NAME" --change-set-name "$STACK_CS" \
-      --query "Changes[?ResourceChange.ResourceType=='AWS::CloudFront::Distribution' && (ResourceChange.Action=='Remove' || ResourceChange.Replacement=='True' || ResourceChange.Replacement=='Conditional')].ResourceChange.LogicalResourceId" \
+      --query "Changes[?ResourceChange.ResourceType=='AWS::CloudFront::Distribution' && (ResourceChange.Action=='Remove' || ResourceChange.Replacement=='True' || ResourceChange.Replacement=='Conditional')].[ResourceChange.LogicalResourceId,ResourceChange.Action]" \
       --output text)" || aws_fail "describing change set $STACK_CS"
   [ "$replaced" != None ] || replaced=""
-  for lid in $replaced; do
-    echo "note: the distribution $lid is replaced: a new one with a new cloudfront.net name is made and the old one deleted, so the app is briefly unreachable and its hostname's record moves to the new name (deploy rewrites a Route 53 record itself)"
-  done
+  local a
+  while IFS=$'\t' read -r lid a; do
+    [ -n "$lid" ] || continue
+    if [ "$a" = Remove ]; then why+=("the distribution $lid is removed")
+    else why+=("the distribution $lid is replaced: a new one, with a new cloudfront.net name, and the old one deleted"); fi
+  done <<< "$replaced"
+  old="$CB_TMP/stack-old.yaml"
+  cfn get-template --stack-name "$STACK_NAME" --query TemplateBody --output text > "$old" || aws_fail "reading $STACK_NAME's template"
+  stack_aliases "$old" | LC_ALL=C sort > "$old.aliases"
+  stack_aliases "$STACK_TEMPLATE" | LC_ALL=C sort > "$CB_TMP/stack-new.aliases"
+  while read -r lid a; do
+    [ -n "$a" ] || continue
+    why+=("the hostname $a is taken off the distribution $lid")
+  done < <(LC_ALL=C comm -23 "$old.aliases" "$CB_TMP/stack-new.aliases")
+  [ "${#why[@]}" -gt 0 ] || return 0
+  local w
+  for w in "${why[@]}"; do echo "downtime: $w" >&2; done
+  if [ "${CBASE_ALLOW_DOWNTIME:-}" = 1 ]; then
+    echo "downtime: allowed (--allow-downtime): the app is unreachable at those hostnames until the change is done and DNS follows" >&2
+    return 0
+  fi
+  stack_discard
+  echo "cbase: this change set would make $CONF_APP unreachable for a while (above), and after an app's first deploy no deploy may: refused, and the change set deleted; nothing was executed. Run ./cbase deploy --allow-downtime (CBASE_ALLOW_DOWNTIME=1) to accept it." >&2
+  exit 1
 }
 
 # stack_keep_guard: THE ONE HARD STOP. A change set that would replace or remove a bucket (every

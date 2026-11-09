@@ -133,6 +133,8 @@ static int g_nzones;
 static char g_changes[32] = "auto";
 static int g_drift, g_fail_execute, g_list_ignores_prefix, g_acm_deny;
 static char g_secret[256], g_secret2[256];
+// The SSM SecureString /cbase/<app>/CBASE_ORIGIN_SECRET (origin-secret=V; empty: ParameterNotFound).
+static char g_origin_secret[256] = "fake-origin-secret-0123456789abcdef";
 static char g_account[16] = "111122223333";
 static char g_instance_type[32] = "t4g.nano";
 // The SSM commands sent, each with the answer it ends with.
@@ -948,8 +950,9 @@ static void cloudformation(int fd, const request *r) {
                        st->dist_id, st->dist_domain);
                 // A template with CBASE_API_HOST's distribution: its own cloudfront.net name.
                 if (strstr(st->template, "\n  ApiDistribution:\n"))
-                    sb_add(&b, "<member><OutputKey>ApiDistributionDomain</OutputKey><OutputValue>api-%s</OutputValue></member>",
-                           st->dist_domain);
+                    sb_add(&b, "<member><OutputKey>ApiDistributionDomain</OutputKey><OutputValue>api-%s</OutputValue></member>"
+                               "<member><OutputKey>ApiDistributionId</OutputKey><OutputValue>A%s</OutputValue></member>",
+                           st->dist_domain, st->dist_id);
                 sb_add(&b, "</Outputs>");
             }
             sb_add(&b, "</member></Stacks>");
@@ -995,7 +998,11 @@ static void cloudformation(int fd, const request *r) {
             char *pv = form_get(r->body, k);
             snprintf(k, sizeof k, "Parameters.member.%d.UsePreviousValue", i);
             char *pp = form_get(r->body, k);
-            sb_add(&params, "%s%s=%s", params.n ? "," : "", pk, pv ? pv : pp ? "(previous)" : "");
+            // The origin secret is never logged: whether it is the SSM parameter's value is.
+            if (strcmp(pk, "OriginSecret") == 0)
+                sb_add(&params, "%s%s=%s", params.n ? "," : "", pk, pv && strcmp(pv, g_origin_secret) == 0 ? "(the ssm value)" : "(MISMATCH)");
+            else
+                sb_add(&params, "%s%s=%s", params.n ? "," : "", pk, pv ? pv : pp ? "(previous)" : "");
             free(pk), free(pv), free(pp);
         }
         char *caps = form_get(r->body, "Capabilities.member.1");
@@ -1038,7 +1045,11 @@ static void cloudformation(int fd, const request *r) {
         logf_("CFN DeleteChangeSet %s %s", name ? name : "-", ecode ? ecode : "ok");
     } else if (strcmp(a, "ExecuteChangeSet") == 0) {
         if (!st || !st->has_cs) status = 404, ecode = "ChangeSetNotFound", copy(emsg, sizeof emsg, "ChangeSet does not exist");
-        else if (g_fail_execute) {
+        else if (g_fail_execute == 2) {
+            // The origin secret's bare value, on a line that names nothing a keyword could catch.
+            status = 400, ecode = "ValidationError";
+            snprintf(emsg, sizeof emsg, "Invalid value %.200s", g_origin_secret);
+        } else if (g_fail_execute) {
             status = 400, ecode = "ValidationError";
             snprintf(emsg, sizeof emsg, "Invalid request: OriginCustomHeaders HeaderValue=%.200s is not valid", g_secret);
         } else {
@@ -1052,6 +1063,18 @@ static void cloudformation(int fd, const request *r) {
             cfn_close(&b, a);
         }
         logf_("CFN ExecuteChangeSet %s %s", name ? name : "-", ecode ? ecode : "ok");
+    } else if (strcmp(a, "GetTemplate") == 0) {
+        if (!st || !st->template) {
+            status = 400, ecode = "ValidationError";
+            snprintf(emsg, sizeof emsg, "Stack with id %.200s does not exist", name ? name : "");
+        } else {
+            cfn_open(&b, a);
+            sb_add(&b, "<TemplateBody>");
+            sb_xml(&b, st->template);
+            sb_add(&b, "</TemplateBody><StagesAvailable><member>Original</member></StagesAvailable>");
+            cfn_close(&b, a);
+        }
+        logf_("CFN GetTemplate %s %s", name ? name : "-", ecode ? ecode : "ok");
     } else if (strcmp(a, "DeleteStack") == 0) {
         if (st && strncmp(st->name, "cbase-group-vm-", 15) == 0) {   // the instance goes; a bucket stays (Retain)
             char arn[256];
@@ -1298,9 +1321,64 @@ static void route53(int fd, const request *r) {
     }
 }
 
+// ListDistributions: each stack's distributions with their template's Aliases lines (the first is
+// its Distribution, the second its ApiDistribution, id A<id>), and the foreign one (foreign-dist=
+// ID:DOMAIN:HOST+HOST, a distribution no stack of the tool's made).
+static char g_foreign_dist[512];
+static void cf_dist_item(sb *b, const char *id, const char *domain, const char *aliases) {
+    int n = 0;
+    sb items = { 0 };
+    char tmp[512];
+    snprintf(tmp, sizeof tmp, "%s", aliases);
+    for (char *save = NULL, *t = strtok_r(tmp, "+", &save); t; t = strtok_r(NULL, "+", &save), n++)
+        sb_add(&items, "<CNAME>%s</CNAME>", t);
+    sb_add(b, "<DistributionSummary><Id>%s</Id><DomainName>%s</DomainName><Aliases><Quantity>%d</Quantity>%s%s%s</Aliases></DistributionSummary>",
+           id, domain, n, n ? "<Items>" : "", items.p ? items.p : "", n ? "</Items>" : "");
+    free(items.p);
+}
+static void cf_list(sb *b) {
+    int n = 0;
+    sb list = { 0 };
+    pthread_mutex_lock(&g_mu);
+    for (int i = 0; i < g_nstacks; i++) {
+        const char *t = g_stacks[i].template;
+        for (int k = 0; t && (t = strstr(t, "        Aliases: [")); k++) {
+            t += 18;
+            const char *e = strchr(t, ']');
+            if (!e) break;
+            char al[512], id[80];
+            snprintf(al, sizeof al, "%.*s", (int)(e - t), t);
+            for (char *c = al; *c; c++) if (*c == ',') *c = '+';
+            char *w = al, *o = al;
+            for (; *w; w++) if (*w != ' ') *o++ = *w;
+            *o = 0;
+            snprintf(id, sizeof id, "%s%s", k ? "A" : "", g_stacks[i].dist_id);
+            cf_dist_item(&list, id, g_stacks[i].dist_domain, al);
+            n++;
+        }
+    }
+    if (g_foreign_dist[0]) {
+        char id[64] = "", dom[128] = "", hosts[300] = "";
+        sscanf(g_foreign_dist, "%63[^:]:%127[^:]:%299s", id, dom, hosts);
+        cf_dist_item(&list, id, dom, hosts);
+        n++;
+    }
+    pthread_mutex_unlock(&g_mu);
+    sb_add(b, "<DistributionList xmlns=\"http://cloudfront.amazonaws.com/doc/2020-05-31/\"><Marker></Marker><MaxItems>100</MaxItems>"
+              "<IsTruncated>false</IsTruncated><Quantity>%d</Quantity>%s%s%s</DistributionList>",
+           n, n ? "<Items>" : "", list.p ? list.p : "", n ? "</Items>" : "");
+    free(list.p);
+    logf_("CF ListDistributions %d", n);
+}
+
 static void cloudfront(int fd, const request *r) {
     sb b = { 0 };
     sb_add(&b, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+    if (strcmp(r->method, "GET") == 0 && strcmp(r->path, "/2020-05-31/distribution") == 0) {
+        cf_list(&b);
+        respond_sb(fd, 200, "text/xml", &b);
+        return;
+    }
     const char *inv = strstr(r->path, "/invalidation");
     if (strncmp(r->path, "/2020-05-31/distribution/", 25) == 0 && inv) {
         char dist[64], paths[512];
@@ -1432,8 +1510,18 @@ static void ssm(int fd, const request *r, const char *op) {
     if (strcmp(op, "GetParameter") == 0) {
         char name[256];
         json_str(r->body, "Name", name, sizeof name);
-        sb_add(&b, "{\"Parameter\":{\"Name\":\"%s\",\"Type\":\"String\",\"Value\":\"ami-0f4ce1234567890ab\",\"Version\":1}}", name);
-        logf_("SSM GetParameter %s", name);
+        size_t nl = strlen(name), sl = strlen("/CBASE_ORIGIN_SECRET");
+        if (nl > sl && strcmp(name + nl - sl, "/CBASE_ORIGIN_SECRET") == 0) {
+            if (!g_origin_secret[0]) {
+                status = 400;
+                sb_add(&b, "{\"__type\":\"ParameterNotFound\",\"message\":\"\"}");
+            } else {
+                sb_add(&b, "{\"Parameter\":{\"Name\":\"%s\",\"Type\":\"SecureString\",\"Value\":\"%s\",\"Version\":1}}", name, g_origin_secret);
+            }
+        } else {
+            sb_add(&b, "{\"Parameter\":{\"Name\":\"%s\",\"Type\":\"String\",\"Value\":\"ami-0f4ce1234567890ab\",\"Version\":1}}", name);
+        }
+        logf_("SSM GetParameter %s %d", name, status);
     } else if (strcmp(op, "SendCommand") == 0) {
         // {"InstanceIds": ["i-..."], ..., "Parameters": {"commands": ["<one line>"]}}
         const char *ids = strstr(r->body, "\"InstanceIds\"");
@@ -1523,6 +1611,8 @@ static void control(int fd, const request *r) {
         if ((v = form_get(r->query, "drift"))) g_drift = atoi(v), free(v);
         if ((v = form_get(r->query, "secret"))) copy(g_secret, sizeof g_secret, v), free(v);
         if ((v = form_get(r->query, "secret2"))) copy(g_secret2, sizeof g_secret2, v), free(v);
+        if ((v = form_get(r->query, "origin-secret"))) copy(g_origin_secret, sizeof g_origin_secret, v), free(v);
+        if ((v = form_get(r->query, "foreign-dist"))) copy(g_foreign_dist, sizeof g_foreign_dist, v), free(v);
         if ((v = form_get(r->query, "fail-execute"))) g_fail_execute = atoi(v), free(v);
         if ((v = form_get(r->query, "list-ignores-prefix"))) g_list_ignores_prefix = atoi(v), free(v);
         if ((v = form_get(r->query, "acm-deny"))) g_acm_deny = atoi(v), free(v);

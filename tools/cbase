@@ -185,7 +185,8 @@ case "$cmd" in
         --dry-run) DRY_RUN=1 ;;
         --accept-drift) CBASE_ACCEPT_DRIFT=1 ;;
         --prune) CBASE_PRUNE=1 ;;
-        *) echo "cbase: deploy takes --dry-run, --accept-drift and --prune, not $a" >&2; exit 2 ;;
+        --allow-downtime) CBASE_ALLOW_DOWNTIME=1 ;;
+        *) echo "cbase: deploy takes --dry-run, --accept-drift, --prune and --allow-downtime, not $a" >&2; exit 2 ;;
       esac
     done
     DRY_RUN="${DRY_RUN:-}"
@@ -212,6 +213,15 @@ case "$cmd" in
     [ "$CONF_VM" = none ] || [ "$DRY_RUN" = 1 ] || vm_build
     # 4. The certificate (it may stop, status 3, for DNS records added by hand).
     cert_resolve
+    # The hostnames free: none an alternate domain name of another distribution.
+    if [ "${#CERT_HOSTS[@]}" -gt 0 ]; then
+      STACK_NAME="$(stack_name)"
+      STACK_REGION=us-east-1
+      stack_status
+      own=()
+      [ "$STACK_STATUS" = NONE ] || own=("$(stack_output DistributionId)" "$(stack_output ApiDistributionId)")
+      cert_alias_check ${own[@]+"${own[@]}"}
+    fi
     STACK_CERT="$CERT_ARN"
     STACK_API_CERT="$CERT_API_ARN"
     # 5. The VM group: the port claimed and the memory fit checked, in one conditional write; the
