@@ -1270,3 +1270,15 @@ Each mutation was made in a copy-restored file and `make check-cdom-adapter-mk` 
 - adapter.mk: lib/b64/b64.c added back to CBC_CDOM_SRC -> `in two of CBC_SRC, CBC_OIDC_SRC, CBC_B64_SRC and CBC_CDOM_SRC: ../lib/b64/b64.c` red.
 - client.mk: lib/b64/b64.c added back to CBC_OIDC_SRC -> the same line red.
 - adapter.mk: `random` dropped from CBC_CDOM_MODULES -> host-cdom-wasm's link through cdom.mk's APP_WASM rule red (`wasm-ld: undefined symbol: cd_random_bytes`), so the module list host.mk links is adapter.mk's.
+
+## Two flags: safe to resend, and how fast a dead server is reported (round3-friction)
+
+`CBC_C_READ` was both "safe to send again" and the reason a refused connection took about 3.5 s to report.
+It is gone, with no alias: `CBC_C_IDEMPOTENT` (its bit and its meaning) and `CBC_C_FAIL_FAST` (a loss finishes the call at once, idempotent or not; an idempotent call is still sent again after a 503 busy).
+client/test/unit_client.c `a_fail_fast_call_hears_a_dead_server_at_once` (over HTTP, plain and idempotent, then the busy resend) and `a_fail_fast_socket_call_is_over_at_the_close` (a socket loss) hold the new flag; `a_dead_server_is_heard_after_the_header_s_time` and `a_socket_loss` hold `CBC_C_IDEMPOTENT` as `CBC_C_READ` was held.
+Each mutation was made in client/src/client.c a second after a copy, its object deleted, unit_client rebuilt and run, and the file restored.
+
+- call_lost tests `CBC_C_IDEMPOTENT` alone (fail-fast ignored) -> line 449 `cbc_on_response(...) == 1` (the DONE at once) and line 477 `cbc_n_events(&c) == 1` (the socket close) red.
+- app_call masks `CBC_C_FAIL_FAST` out of the call's flags -> the same two lines red.
+- call_lost never resends (`if (0)`) -> `a_socket_loss` lines 390 to 396 red (the idempotent call is not sent at the next READY).
+- the HTTP busy resend skipped for a fail-fast call -> lines 461 to 463 red (the 503 is the DONE, nothing goes again).

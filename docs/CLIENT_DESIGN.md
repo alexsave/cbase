@@ -54,7 +54,7 @@ The app's, in its own layer over the client:
 
 - **One door for everything the host reads.** `cbc_in`, `cbc_on_response`, `cbc_closed` and `cbc_tick` raise events, a finished call among them (`CBC_EV_DONE`), read with `cbc_n_events` and `cbc_event_at` after each.
 - **No pointers in what other languages read.** A request is written into the caller's buffer as a `cbc_req_hdr` followed by its path, its Authorization value and its body, as a frame is, so structgen's readers reach every byte.
-- **A call names its method, path and flags itself** (`CBC_C_READ`, `CBC_C_AUTH`, `CBC_C_HTTP`); a route table, if an app wants one, is its own layer's data.
+- **A call names its method, path and flags itself** (`CBC_C_IDEMPOTENT`, `CBC_C_FAIL_FAST`, `CBC_C_AUTH`, `CBC_C_HTTP`); a route table, if an app wants one, is its own layer's data.
 - **The host's loop:** while `cbc_stream_wanted`, open `cbc_stream_path` and call `cbc_opened`; hand every message to `cbc_in` and send every frame `cbc_next_out` writes; on a close call `cbc_closed` and reopen after the ms it answers; send each request `cbc_next_request` writes and answer it with `cbc_on_response`; and wake after `cbc_due_ms` to call `cbc_tick`.
 
 ### 3.3 How an app plugs in its bodies
@@ -136,7 +136,7 @@ Why decorrelated and not full jitter:
 
 The generator is `lib/rng.h`'s splitmix64, its state a field of the client, seeded per client by the host (`cbc_cfg.seed`).
 The browser shim seeds it from `crypto.getRandomValues`, a native host from its own entropy, and every test with a constant, so a test's schedule is exact.
-Only the reconnect delay is jittered; a refused subscription and a lost read keep their doubling schedule, since they are one client's retries and not a crowd's.
+Only the reconnect delay is jittered; a refused subscription and a lost idempotent call keep their doubling schedule, since they are one client's retries and not a crowd's.
 
 ### 6.3 Static files are a choice each app makes
 

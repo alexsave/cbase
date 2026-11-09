@@ -429,7 +429,7 @@ static void a_call_rides_the_socket(void) {
 static void an_http_call_carries_the_bearer_and_is_retried_by_the_timer(void) {
     cbhs_world *w = world();
     cbc *c = signed_up(w, g_h, FAR);
-    uint32_t t = cbc_call(c, CBC_GET, CBC_C_HTTP | CBC_C_READ, "/v1/list", 8, NULL, 0, cbhs_now(w));
+    uint32_t t = cbc_call(c, CBC_GET, CBC_C_HTTP | CBC_C_IDEMPOTENT, "/v1/list", 8, NULL, 0, cbhs_now(w));
     pump(w);
     w_req *r = request(w);
     T_CHECK(r != NULL);
@@ -437,7 +437,7 @@ static void an_http_call_carries_the_bearer_and_is_retried_by_the_timer(void) {
     T_EQ_STR(r->method, "GET");
     T_EQ_STR(r->path, "/v1/list");
     T_EQ_STR(r->auth, "Bearer TOK");
-    answer(r, 0, NULL, 0);                      // it never arrived: a read goes again, later
+    answer(r, 0, NULL, 0);                      // it never arrived: an idempotent call goes again, later
     T_CHECK(event(w) == NULL);
     T_CHECK(request(w) == NULL);
     advance(w, g_cfg.retry_first_ms - 1);
@@ -484,12 +484,12 @@ static void an_http_retry_goes_on_time_while_a_close_is_pending(void) {
     T_EQ_INT(frame(w), SF_PING);
     advance(w, g_cfg.pong_ms);                     // half-open: the host closes it
     T_EQ_INT(closing(w), 1);
-    uint32_t t = cbc_call(c, CBC_GET, CBC_C_HTTP | CBC_C_READ, "/v1/list", 8, NULL, 0, cbhs_now(w));
+    uint32_t t = cbc_call(c, CBC_GET, CBC_C_HTTP | CBC_C_IDEMPOTENT, "/v1/list", 8, NULL, 0, cbhs_now(w));
     pump(w);
     w_req *r = request(w);
     T_CHECK(r != NULL);
     if (!r) return;
-    answer(r, 0, NULL, 0);                         // lost: a read goes again after retry_first_ms
+    answer(r, 0, NULL, 0);                         // lost: an idempotent call goes again after retry_first_ms
     advance(w, g_cfg.retry_first_ms - 1);
     T_CHECK(request(w) == NULL);
     advance(w, 1);
@@ -724,11 +724,11 @@ static void a_retried_borrowed_body_resends_the_same_bytes(void) {
     cbhs_world *w = world();
     big_fill();
     cbc *c = signed_up(w, g_h, FAR);
-    uint32_t t = cbc_call_ref(c, CBC_POST, CBC_C_AUTH | CBC_C_READ, "/notes/bulk", 11, g_big, BIG_N, cbhs_now(w));
+    uint32_t t = cbc_call_ref(c, CBC_POST, CBC_C_AUTH | CBC_C_IDEMPOTENT, "/notes/bulk", 11, g_big, BIG_N, cbhs_now(w));
     pump(w);
     w_req *r = request(w);
     big_arrived(r, "/notes/bulk");
-    if (r) answer(r, 0, NULL, 0);                  // lost: a read goes again after the wait
+    if (r) answer(r, 0, NULL, 0);                  // lost: an idempotent call goes again after the wait
     T_CHECK(event(w) == NULL);
     T_CHECK(request(w) == NULL);
     advance(w, g_cfg.retry_first_ms);

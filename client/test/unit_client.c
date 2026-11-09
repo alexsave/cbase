@@ -277,7 +277,7 @@ static void a_roll_waits_for_socket_calls(void) {
     cbc c; mk(&c, 0, 1);
     signed_in(&c, "OLD", 100000);
     up(&c, 0);
-    cbc_call(&c, CBC_GET, CBC_C_READ, "/x", 2, NULL, 0, 0);
+    cbc_call(&c, CBC_GET, CBC_C_IDEMPOTENT, "/x", 2, NULL, 0, 0);
     T_EQ_INT(out_kind(&c, 1), SF_REQ);
     uint32_t id = g_f.id;
     request(&c, 40000);
@@ -382,7 +382,7 @@ static void a_socket_loss(void) {
     cbc c; mk(&c, 0, 1);
     signed_in(&c, "TOK", 100000000);
     up(&c, 0);
-    uint32_t rd = cbc_call(&c, CBC_GET, CBC_C_READ, "/r", 2, NULL, 0, 0);
+    uint32_t rd = cbc_call(&c, CBC_GET, CBC_C_IDEMPOTENT, "/r", 2, NULL, 0, 0);
     uint32_t wr = cbc_call(&c, CBC_POST, 0, "/w", 2, NULL, 0, 0);
     T_EQ_INT(out_kind(&c, 0), SF_REQ);
     T_EQ_INT(out_kind(&c, 0), SF_REQ);
@@ -402,24 +402,24 @@ static void an_unanswered_socket_call(void) {
     cbc c; mk(&c, 0, 1);
     signed_in(&c, "TOK", 100000000);
     up(&c, 0);
-    cbc_call(&c, CBC_GET, CBC_C_READ, "/r", 2, NULL, 0, 0);
+    cbc_call(&c, CBC_GET, CBC_C_IDEMPOTENT, "/r", 2, NULL, 0, 0);
     uint32_t wr = cbc_call(&c, CBC_POST, 0, "/w", 2, NULL, 0, 0);
     out_kind(&c, 0);
     out_kind(&c, 0);
     T_EQ_INT(cbc_tick(&c, 14999), 0);
     T_EQ_INT(cbc_tick(&c, 15000), 1);
     T_EQ_INT(ev(&c, 0)->ticket, wr);
-    T_EQ_INT(out_kind(&c, 15000), SF_REQ);         // the read goes again
+    T_EQ_INT(out_kind(&c, 15000), SF_REQ);         // the idempotent call goes again
     T_EQ_MEM(g_f.path, g_f.path_len, "/r", 2);
 }
 
-// What cbase/client.h's "HOW LONG A DEAD SERVER TAKES TO BE HEARD" says, with the defaults: a read
-// against a server that refuses every connection at once is sent CBC_TRIES (4) times, 500, 1000 and
+// What cbase/client.h's "HOW LONG A DEAD SERVER TAKES TO BE HEARD" says, with the defaults: an
+// idempotent call against a server that refuses every connection at once is sent CBC_TRIES (4) times, 500, 1000 and
 // 2000 ms apart, and is told lost 3.5 s after the call. cbc_due_ms says each next send.
 static void a_dead_server_is_heard_after_the_header_s_time(void) {
     cbc c; mk(&c, 1, 1);
     T_EQ_INT(CBC_TRIES, 4);
-    uint32_t t = cbc_call(&c, CBC_GET, CBC_C_READ, "/r", 2, NULL, 0, 0);
+    uint32_t t = cbc_call(&c, CBC_GET, CBC_C_IDEMPOTENT, "/r", 2, NULL, 0, 0);
     int64_t now = 0;
     int sends = 0;
     for (;;) {
@@ -437,9 +437,54 @@ static void a_dead_server_is_heard_after_the_header_s_time(void) {
     T_EQ_INT(ev(&c, 0)->why, CBC_WHY_LOST);
 }
 
+// CBC_C_FAIL_FAST (cbase/client.h, the same block): a refused connection is heard at once, the
+// call sent once, idempotent or not; and an idempotent one is still sent again after a 503 busy,
+// which a server that is up answered. CBC_C_IDEMPOTENT alone is the case above (four sends, 3.5 s).
+static void a_fail_fast_call_hears_a_dead_server_at_once(void) {
+    cbc c; mk(&c, 1, 1);
+    static const int FLAGS[] = { CBC_C_FAIL_FAST, CBC_C_FAIL_FAST | CBC_C_IDEMPOTENT };
+    for (int i = 0; i < 2; i++) {
+        uint32_t t = cbc_call(&c, CBC_GET, FLAGS[i], "/r", 2, NULL, 0, 0);
+        T_CHECK(request(&c, 0) > 0);
+        T_EQ_INT(cbc_on_response(&c, g_h.id, 0, NULL, 0, 0), 1);   // refused: DONE at once
+        if (cbc_n_events(&c) != 1) return;                         // (no event to read below)
+        T_EQ_INT(ev(&c, 0)->ticket, t);
+        T_EQ_INT(ev(&c, 0)->why, CBC_WHY_LOST);
+        T_EQ_INT(ev(&c, 0)->status, 0);
+        T_EQ_INT(request(&c, 100000), 0);                          // and never sent again
+        T_EQ_INT(cbc_due_ms(&c, 0), -1);
+    }
+    uint32_t t = cbc_call(&c, CBC_GET, CBC_C_IDEMPOTENT | CBC_C_FAIL_FAST, "/r", 2, NULL, 0, 0);
+    uint8_t b[16];
+    size_t n = refusal(b, CBW_WHY_BUSY, 0);
+    request(&c, 0);
+    T_EQ_INT(cbc_on_response(&c, g_h.id, 503, b, n, 0), 0);        // busy: it waits
+    T_CHECK(request(&c, CBC_BUSY_FIRST_MS) > 0);                   // and goes again
+    T_EQ_INT(cbc_on_response(&c, g_h.id, 200, NULL, 2, CBC_BUSY_FIRST_MS), 1);
+    if (cbc_n_events(&c) != 1) return;
+    T_EQ_INT(ev(&c, 0)->ticket, t);
+    T_EQ_INT(ev(&c, 0)->why, 0);
+}
+
+// On the socket: a lost idempotent fail-fast call is over at the close, not sent at the next READY.
+static void a_fail_fast_socket_call_is_over_at_the_close(void) {
+    cbc c; mk(&c, 0, 1);
+    signed_in(&c, "TOK", 100000000);
+    up(&c, 0);
+    uint32_t t = cbc_call(&c, CBC_GET, CBC_C_IDEMPOTENT | CBC_C_FAIL_FAST, "/r", 2, NULL, 0, 0);
+    T_EQ_INT(out_kind(&c, 0), SF_REQ);
+    cbc_closed(&c, 5);
+    T_EQ_INT(cbc_n_events(&c), 1);
+    if (cbc_n_events(&c) != 1) return;
+    T_EQ_INT(ev(&c, 0)->ticket, t);
+    T_EQ_INT(ev(&c, 0)->why, CBC_WHY_LOST);
+    up(&c, 600);
+    T_CHECK(out_kind(&c, 600) != SF_REQ);                          // nothing of it rides the new socket
+}
+
 static void anonymous_reads_go_by_http(void) {
     cbc c; mk(&c, 1, 1);
-    uint32_t t = cbc_call(&c, CBC_GET, CBC_C_READ, "/adv/users", 10, NULL, 0, 0);
+    uint32_t t = cbc_call(&c, CBC_GET, CBC_C_IDEMPOTENT, "/adv/users", 10, NULL, 0, 0);
     T_CHECK(request(&c, 0) > 0);
     T_EQ_STR(g_path, "/adv/users");
     T_EQ_INT(g_h.method, CBC_GET);
@@ -462,7 +507,7 @@ static void anonymous_reads_go_by_http(void) {
     T_EQ_INT(cbc_on_response(&c, g_h.id, 0, NULL, 0, 0), 1);
     T_EQ_INT(ev(&c, 0)->ticket, w);
     // An answer: its span is the body the host holds.
-    uint32_t ok = cbc_call(&c, CBC_GET, CBC_C_READ, "/y", 2, NULL, 0, 0);
+    uint32_t ok = cbc_call(&c, CBC_GET, CBC_C_IDEMPOTENT, "/y", 2, NULL, 0, 0);
     request(&c, 0);
     T_EQ_INT(cbc_on_response(&c, g_h.id, 200, NULL, 12345, 0), 1);
     T_EQ_INT(ev(&c, 0)->ticket, ok);
@@ -471,7 +516,7 @@ static void anonymous_reads_go_by_http(void) {
 
 static void a_busy_read_goes_again(void) {
     cbc c; mk(&c, 1, 1);
-    uint32_t t = cbc_call(&c, CBC_GET, CBC_C_READ, "/r", 2, NULL, 0, 0);
+    uint32_t t = cbc_call(&c, CBC_GET, CBC_C_IDEMPOTENT, "/r", 2, NULL, 0, 0);
     uint8_t b[16];
     size_t n = refusal(b, CBW_WHY_BUSY, 0);
     int64_t now = 0;
@@ -650,7 +695,7 @@ static void a_borrowed_body_is_never_copied(void) {
     up(&c, 0);
     T_EQ_INT(cbc_call(&c, CBC_POST, CBC_C_AUTH, "/notes/bulk", 11, big, sizeof big, 0), 0);   // the copy: past the arena
     T_EQ_INT(cbc_error(&c), CBC_E_FULL);
-    uint32_t t = cbc_call_ref(&c, CBC_POST, CBC_C_AUTH | CBC_C_READ, "/notes/bulk", 11, big, sizeof big, 0);
+    uint32_t t = cbc_call_ref(&c, CBC_POST, CBC_C_AUTH | CBC_C_IDEMPOTENT, "/notes/bulk", 11, big, sizeof big, 0);
     T_CHECK(t != 0);
     T_EQ_INT(c.arena_used, 11);                    // the path alone
     T_EQ_INT(out_kind(&c, 0), 0);                  // never on the socket, though it is READY
@@ -702,12 +747,12 @@ static void a_borrowed_body_beside_copied_ones(void) {
 static void a_get_with_a_body_is_refused(void) {
     static uint8_t big[100];
     cbc c; mk(&c, 1, 1);
-    T_EQ_INT(cbc_call(&c, CBC_GET, CBC_C_READ, "/x", 2, (const uint8_t *)"b", 1, 0), 0);
+    T_EQ_INT(cbc_call(&c, CBC_GET, CBC_C_IDEMPOTENT, "/x", 2, (const uint8_t *)"b", 1, 0), 0);
     T_EQ_INT(cbc_error(&c), CBC_E_ARG);
-    T_EQ_INT(cbc_call_ref(&c, CBC_GET, CBC_C_READ, "/x", 2, big, sizeof big, 0), 0);
+    T_EQ_INT(cbc_call_ref(&c, CBC_GET, CBC_C_IDEMPOTENT, "/x", 2, big, sizeof big, 0), 0);
     T_EQ_INT(cbc_error(&c), CBC_E_ARG);
     T_EQ_INT(request(&c, 0), 0);                   // nothing was taken
-    T_CHECK(cbc_call(&c, CBC_GET, CBC_C_READ, "/x", 2, (const uint8_t *)"b", 0, 0) != 0);
+    T_CHECK(cbc_call(&c, CBC_GET, CBC_C_IDEMPOTENT, "/x", 2, (const uint8_t *)"b", 0, 0) != 0);
     T_EQ_INT(cbc_error(&c), 0);
     T_CHECK(cbc_call(&c, CBC_POST, 0, "/x", 2, (const uint8_t *)"b", 1, 0) != 0);
 }
@@ -960,6 +1005,8 @@ int main(void) {
     T_RUN(a_socket_loss);
     T_RUN(an_unanswered_socket_call);
     T_RUN(a_dead_server_is_heard_after_the_header_s_time);
+    T_RUN(a_fail_fast_call_hears_a_dead_server_at_once);
+    T_RUN(a_fail_fast_socket_call_is_over_at_the_close);
     T_RUN(anonymous_reads_go_by_http);
     T_RUN(a_busy_read_goes_again);
     T_RUN(a_401_refreshes_and_goes_once_more);
