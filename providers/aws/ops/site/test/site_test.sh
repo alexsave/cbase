@@ -330,11 +330,14 @@ SITE_HASHED := assets/*
 SITE_ORIGINS := vm=vm.example.com
 SITE_ROUTES := /m/*=vm,request=AllViewerExceptHostHeader
 SITE_COMMENT := two words
+SITE_BUCKET := site-\$\${AWS::AccountId}
 include $here/site.mk
 M
 env -u SITE_ORIGINS -u SITE_ROUTES -u SITE_STACK make -s -C "$t/product" site-template > "$t/mk.yaml" || fail "make site-template"
 grep -q 'PathPattern: /m/\*' "$t/mk.yaml" || fail "site.mk does not pass SITE_ROUTES"
 grep -q 'Comment: "two words"' "$t/mk.yaml" || fail "site.mk does not pass SITE_COMMENT"
+# shellcheck disable=SC2016 # CloudFormation's ${AWS::AccountId}, literal
+grep -qF 'BucketName: !Sub "site-${AWS::AccountId}"' "$t/mk.yaml" || fail "site.mk's \$\$ does not reach the template as \${AWS::AccountId}"
 # A quote in a knob reaches the script whole (and is refused there), never breaking the recipe.
 env -u SITE_ORIGINS -u SITE_ROUTES -u SITE_STACK make -s -C "$t/product" site-template "SITE_COMMENT=it's" > "$t/out" 2>&1 && fail "a quote in SITE_COMMENT was taken"
 grep -q "SITE_COMMENT: 'it's'" "$t/out" || { cat "$t/out"; fail "the quoted knob did not reach the script whole"; }

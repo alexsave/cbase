@@ -44,7 +44,8 @@
 #                    in SITE_ALIASES. Upload one with `make deploy-web SITE_DIR=... SITE_PREFIX=docs
 #                    SITE_SHELL=`, which leaves the page list alone.
 #   SITE_ALIASES     the site's names, space-separated; SITE_CERT_ARN their ACM certificate (us-east-1).
-#   SITE_BUCKET      the bucket's name; it may hold ${AWS::AccountId} (default CloudFormation's).
+#   SITE_BUCKET      the bucket's name; it may hold $${AWS::AccountId} (the $$ is make's)
+#                    (default: CloudFormation names it).
 #   SITE_COMMENT     the distribution's comment (default "cbase site SITE_STACK").
 #   SITE_PRICE_CLASS PriceClass_100 (default), PriceClass_200 or PriceClass_All.
 #   SITE_ISOLATION   yes adds COOP same-origin and COEP credentialless to every S3 response.
