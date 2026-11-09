@@ -1806,3 +1806,22 @@ New with the move:
 - `--port` read with `atoi` -> `--port 12abc is refused`, `--port 70000 is refused`, `--port -1 is refused` red.
 
 NOT HELD: the fake's `drain` (it reads and drops what a refused request still sends, so the close is a FIN and not an RST that can take the 400 from the client). With `drain` made a no-op the suite stays green on macOS, where loopback delivers the 400 either way; it is there for Linux's stack and CI is where it would show.
+
+## queryAdd: cbc_query_add for a TypeScript page (ts-query-add)
+
+socket.test.ts's queryAdd case encodes through the module's cbcw_query_add and reads the path back, the call's URL, the bound and the refusals.
+The socket.ts mutants are rows in client/test/mutants.py (TS).
+The cbc_wasm.c mutants were each made in place, the modules rebuilt, and the file restored from a copy.
+
+Each turns the queryAdd case red:
+
+- socket.ts: the value written over the byte that ends the key -> the first `assert.equal` (`/api/hello?name=Ada%20%26%20Grace`) red.
+- socket.ts: CBC_E_FULL answered with the path as it was -> `Missing expected exception (RangeError)` red.
+- socket.ts: a refused key answered with the path as it was -> `Missing expected exception (TypeError)` red.
+- socket.ts: the check against the io buffer removed -> the RangeError for 65279 bytes of value red (a TypeError came).
+- socket.ts: the check of a path already past CBC_PATH_MAX removed -> the RangeError for a 257-byte path red (a TypeError came).
+- cbc_wasm.c: cbcw_query_add answers the old length on a refusal -> `Missing expected exception (RangeError)` red.
+- cbc_wasm.c: a NUL in the key ends it early -> `Missing expected exception (TypeError)` red.
+- cbc_wasm.c: the key left without its ending NUL -> an `assert.equal` of an encoded path red.
+- cbc_wasm.c: the bound one byte past CBC_PATH_MAX -> `Missing expected exception (RangeError)` red.
+- cbc_wasm.c: the value read from the byte that ends the key -> an `assert.equal` of an encoded path red.

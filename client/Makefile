@@ -168,7 +168,7 @@ WASM_OIDC_GZ_MAX  ?= 7168
 WASM_CFLAGS  := --target=wasm32 -Oz -nostdlib -ffreestanding -mbulk-memory -mno-nontrapping-fptoint -std=c11 \
                 $(WARN) $(INC) -isystem wasm/include
 WASM_EXPORTS := cbcw_layout_hash cbcw_io cbcw_io_cap cbcw_cfg cbcw_init cbcw_error cbcw_session_save cbcw_session_load \
-                cbcw_user cbcw_sign_in cbcw_sign_out cbcw_call cbcw_next_request cbcw_on_response cbcw_stream_wanted \
+                cbcw_user cbcw_sign_in cbcw_sign_out cbcw_call cbcw_query_add cbcw_next_request cbcw_on_response cbcw_stream_wanted \
                 cbcw_stream_path cbcw_sub cbcw_unsub cbcw_opened cbcw_closed cbcw_in cbcw_next_out cbcw_tick cbcw_due_ms \
                 cbcw_n_events cbcw_event
 WASM_OIDC_EXPORTS := $(WASM_EXPORTS) cbcw_oidc_begin cbcw_oidc_nonce cbcw_oidc_state cbcw_oidc_sign_in
@@ -190,7 +190,7 @@ WASM_LIBC      := wasm/libc.c wasm/include/string.h
 SG_ROOTS := cbc_event cbc_req_hdr cbc_user cbc_cfg
 SG_ARGS  := --header include/cbase/client.h $(foreach r,$(SG_ROOTS),--root $(r) --snapshot $(r)) --writer cbc_cfg \
             --count cbc_event.room=room_len --count cbc_user.user_id=user_id_len --count cbc_user.name=name_len \
-            --const CBC_EV_ --const CBC_WHY_ --const CBC_C_ --const CBC_RQ_ --const CBC_E_ --const CBW_ --const CBC_GET --const CBC_POST --const CBC_ROOM --const CBC_OIDC_ENTROPY
+            --const CBC_EV_ --const CBC_WHY_ --const CBC_C_ --const CBC_RQ_ --const CBC_E_ --const CBW_ --const CBC_GET --const CBC_POST --const CBC_PATH_MAX --const CBC_ROOM --const CBC_OIDC_ENTROPY
 build/layout.hash: $(STRUCTGEN) FORCE
 	@mkdir -p build/gen
 	@$(STRUCTGEN) --cwd . $(SG_ARGS) --build 'cbc=$(strip $(INC) -isystem wasm/include -ffreestanding)' \

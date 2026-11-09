@@ -78,4 +78,9 @@ TS = [
   ('build/ts/socket.ts', 'no close on -1', '        if (ws) ws.close();\n        this.socketClosed();', '        this.ws = ws;'),
   ('build/ts/socket.ts', 'a non-2xx body not on the CbError', 'e.detail, bytes!));', 'e.detail));'),
   ('build/ts/socket.ts', 'no HTTP deadline', "cache: 'no-store', signal })", "cache: 'no-store' })"),
+  ('build/ts/socket.ts', 'queryAdd: the value over the byte that ends the key', 'u8.set(v, this.io + CBC_PATH_MAX + k.length + 1);', 'u8.set(v, this.io + CBC_PATH_MAX + k.length);'),
+  ('build/ts/socket.ts', 'queryAdd: a full path answered as it was', "if (n === CBC_E_FULL) throw new RangeError('cbase queryAdd: the path would pass CBC_PATH_MAX bytes');", 'if (n === CBC_E_FULL) return encodedPath;'),
+  ('build/ts/socket.ts', 'queryAdd: a refused key answered as the path', "if (n < 0) throw new TypeError('cbase queryAdd: the key is empty or holds a NUL');", 'if (n < 0) return encodedPath;'),
+  ('build/ts/socket.ts', 'queryAdd: no check against the io buffer', 'if (p.length > CBC_PATH_MAX || CBC_PATH_MAX + k.length + 1 + v.length > this.ioCap)', 'if (p.length > CBC_PATH_MAX)'),
+  ('build/ts/socket.ts', 'queryAdd: a path already too long reaches the module', 'if (p.length > CBC_PATH_MAX || ', 'if ('),
 ]
