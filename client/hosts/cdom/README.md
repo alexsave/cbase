@@ -59,8 +59,8 @@ A separate module is the better choice for a large app, for a host that caches a
 static void on_event(void *ctx, cbc *c, const cbc_event *e, const uint8_t *bytes) {
   (void)ctx; (void)c;
   if (e->kind != CBC_EV_DONE) return;
-  if (e->status == 200 && bytes) cd_set_text(answer, cd_tmp((const char *)bytes + e->off, e->len));
-  else cd_set_text(answer, CD_LIT("the server did not answer"));
+  if (e->status == 200 && bytes) cd_set_text_node(answer, cd_tmp((const char *)bytes + e->off, e->len));
+  else cd_set_text_node(answer, CD_LIT("the server did not answer"));
 }
 ```
 
@@ -150,7 +150,7 @@ The repository gate (`tools/repo_gate_test.sh`) allows cdom's name only in this 
 
 The adapter is built and tested against one cdom, pinned by commit in `host.mk` (`CDOM_PIN`), and fetched into `client/build/cdom` by the target itself.
 That cdom is the one this cbase pairs with: an app on both takes cdom at the pin below, with cbase at the same commit as this file.
-The pin is [35c93773](https://github.com/alexsave/cdom/commit/35c93773ef5e705cf3dbb05b94f135c0074f6afd), a cdom with `cdom.mk` at its root, included once (its sources and flags, which `adapter.mk` and `host.mk` take from it), and whose stable I/O contract (the rule at the top of `src/cdom.h`, held by `tests/link/contract.c`) declares every call the adapter makes, `cd_page_origin`, `cd_random_bytes` and `CD_WS_REFUSED` among them.
+The pin is [e8f7b079](https://github.com/alexsave/cdom/commit/e8f7b079942fb65e03fa5e167eb797d2ba166937), a cdom with `cdom.mk` at its root, included once (its sources and flags, which `adapter.mk` and `host.mk` take from it), and whose stable I/O contract (the rule at the top of `src/cdom.h`, held by `tests/link/contract.c`) declares every call the adapter makes, `cd_page_origin`, `cd_random_bytes` and `CD_WS_REFUSED` among them.
 A new pin is that one line, moved once the adapter passes against the newer cdom, and the line above with it: `pin_doc_check.sh` (run by `make -C client check` and `check-host-cdom`) fails when this file's commit is not `CDOM_PIN`.
 `CDOM=<a cdom checkout>` runs everything against that checkout instead.
 
