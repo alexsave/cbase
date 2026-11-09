@@ -44,22 +44,28 @@
 #                  at its distribution's cloudfront.net address.
 #   CBASE_CERT_ARN optional, an override: the ACM certificate (us-east-1, CloudFront's region)
 #                  for the domain and the API hostname, arn:aws:acm:us-east-1:<account>:certificate/<uuid>.
-#                  Without it deploy finds or makes one: PHASE 2 (cert_for_hosts, to come) finds an
-#                  ISSUED us-east-1 certificate covering every hostname (its SANs and wildcards
-#                  counted), else requests one with DNS validation; with CBASE_ZONE it writes the
-#                  validation record and waits, without it it prints the one CNAME and stops.
+#                  Without it deploy finds or makes one (cert.sh): an ISSUED us-east-1 certificate
+#                  covering every hostname (its SANs and wildcards counted), else one it requested
+#                  before and is still pending, else a new request with DNS validation.
 #   CBASE_ZONE     optional, an override: the Route 53 hosted zone id (Z...) the domain's records
-#                  go in. Without it PHASE 2 (zone_for_host, to come) looks for a hosted zone in the
-#                  account that covers CBASE_DOMAIN and uses it, and with none prints the DNS
-#                  records to add by hand.
+#                  go in. Without it deploy looks for the account's public hosted zone that covers
+#                  each hostname (the longest suffix) and writes the records there; with none it
+#                  prints the DNS records to add by hand and stops (cert.sh).
 #   CBASE_API_HOST optional: a second hostname whose every request goes to the VM (api.example.com);
 #                  needs CBASE_DOMAIN.
+#   CBASE_STATIC_DIR optional, for an app with static files: the directory deploy uploads, relative
+#                  to the repository's root, holding index.html. Default "build" for a static site
+#                  (cdom's `make new` writes build/index.html) and "ui/out" for an app with a VM
+#                  (the starter's page; its server builds elsewhere, so no binary is published).
+#   CBASE_HASHED   optional: the content-hashed files, blank-separated globs matched against a file's
+#                  path in the static dir (* crosses /), say "assets/*". They are cached for a year,
+#                  immutable; html never is. Default none: every file is revalidated (no-cache).
 #
 # NO SECRETS. cbase.conf is committed and public. Before the syntax is read, every line is held
 # to conf_secret_scan below, and one that looks like a secret stops the tool, naming the line and
 # never echoing it.
 
-CONF_KEYS="CBASE_APP CBASE_VM CBASE_STATIC CBASE_MEMORY CBASE_ROUTE CBASE_DOMAIN CBASE_CERT_ARN CBASE_ZONE CBASE_API_HOST"
+CONF_KEYS="CBASE_APP CBASE_VM CBASE_STATIC CBASE_MEMORY CBASE_ROUTE CBASE_DOMAIN CBASE_CERT_ARN CBASE_ZONE CBASE_API_HOST CBASE_STATIC_DIR CBASE_HASHED"
 
 # The parsed settings (conf_load fills them).
 CONF_FILE=""
@@ -73,6 +79,9 @@ CONF_DOMAIN=""
 CONF_CERT_ARN=""
 CONF_ZONE=""
 CONF_API_HOST=""
+CONF_STATIC_DIR=""  # the static dir, no trailing '/'; "" for a VM-only app
+CONF_STATIC_DIR_DEFAULT=""   # 1: CONF_STATIC_DIR is the default, not written
+CONF_HASHED=()      # the content-hashed globs
 CONF_ROUTES=()      # "<pattern> <origin> <cache> <methods>", normalized, the "*" route last
 
 conf_die() {   # conf_die LINE SENTENCE: the file's line and why, and the tool stops
@@ -233,7 +242,9 @@ conf_load() {
   done
   local key value seen=" " seen_at=" " k
   local app_no="" vm_no="" static_no="" mem_no="" domain_no="" cert_no="" zone_no="" api_no=""
+  local dir_no="" hashed_no="" dir_set="" g
   local vm_set="" static_set="" memory="" route_nos=()
+  CONF_HASHED=()
   no=0
   for line in "${lines[@]+"${lines[@]}"}"; do
     no=$((no + 1))
@@ -289,6 +300,18 @@ conf_load() {
       CBASE_ZONE)
         [[ "$value" =~ ^Z[A-Z0-9]{1,31}$ ]] || conf_die "$no" "CBASE_ZONE is a Route 53 hosted zone id (Z and upper-case letters and digits)"
         CONF_ZONE="$value"; zone_no="$no" ;;
+      CBASE_STATIC_DIR)
+        value="${value%/}"
+        { [[ "$value" =~ ^[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9_-][A-Za-z0-9._-]*)*$ ]] && [[ "/$value/" != */../* ]]; } \
+          || conf_die "$no" "CBASE_STATIC_DIR is a directory inside the repository, relative to its root (build, ui/out): letters, digits and . _ - /, no leading '/', no '..'"
+        dir_set="$value"; dir_no="$no" ;;
+      CBASE_HASHED)
+        read -r -a CONF_HASHED <<< "$value"
+        for g in "${CONF_HASHED[@]}"; do
+          [[ "$g" =~ ^[A-Za-z0-9._/*?-]+$ ]] && [[ "$g" != /* ]] \
+            || conf_die "$no" "CBASE_HASHED is blank-separated globs of letters, digits and . _ - / * ? (assets/*), each a path in the static dir with no leading '/'"
+        done
+        hashed_no="$no" ;;
     esac
   done
   [ -n "$app_no" ] || conf_die_file "has no CBASE_APP line (the app's name: CBASE_APP = myapp)"
@@ -318,6 +341,16 @@ conf_load() {
   [ -z "$api_no" ] || [ -n "$domain_no" ] || conf_die "$api_no" "CBASE_API_HOST is a second hostname, and there is no CBASE_DOMAIN (the first)"
   [ -z "$cert_no" ] || [ -n "$domain_no" ] || conf_die "$cert_no" "CBASE_CERT_ARN is for CBASE_DOMAIN, and there is none (without a domain the app is at its cloudfront.net address)"
   [ -z "$zone_no" ] || [ -n "$domain_no" ] || conf_die "$zone_no" "CBASE_ZONE is where CBASE_DOMAIN's record goes, and there is no CBASE_DOMAIN"
+  if [ "$CONF_STATIC" = none ]; then
+    [ -z "$dir_no" ] || conf_die "$dir_no" "CBASE_STATIC_DIR is the static files' directory, and CBASE_STATIC is none"
+    [ -z "$hashed_no" ] || conf_die "$hashed_no" "CBASE_HASHED names static files, and CBASE_STATIC is none"
+    CONF_STATIC_DIR=""; CONF_STATIC_DIR_DEFAULT=""
+  elif [ -n "$dir_set" ]; then
+    CONF_STATIC_DIR="$dir_set"; CONF_STATIC_DIR_DEFAULT=""
+  else
+    if [ "$CONF_VM" = none ]; then CONF_STATIC_DIR=build; else CONF_STATIC_DIR=ui/out; fi
+    CONF_STATIC_DIR_DEFAULT=1
+  fi
   # No route written: the defaults for the app's shape.
   if [ "${#CONF_ROUTES[@]}" -eq 0 ]; then
     if [ "$CONF_VM" != none ] && [ "$CONF_STATIC" != none ]; then CONF_ROUTES=("/api/* vm nocache ALL"); fi
@@ -347,6 +380,11 @@ conf_print() {
     printf '%-10s %s (%s: memory not declared, counted as %sM)\n' vm "$CONF_VM" "$CONF_APP" "$CONF_MEMORY_ESTIMATE"
   else printf '%-10s %s (memory %s MiB)\n' vm "$CONF_VM" "$CONF_MEMORY"; fi
   printf '%-10s %s\n' static "$CONF_STATIC"
+  if [ -n "$CONF_STATIC_DIR" ]; then
+    if [ -n "$CONF_STATIC_DIR_DEFAULT" ]; then printf '%-10s %s/ (the default)\n' files "$CONF_STATIC_DIR"
+    else printf '%-10s %s/\n' files "$CONF_STATIC_DIR"; fi
+  fi
+  [ "${#CONF_HASHED[@]}" -eq 0 ] || printf '%-10s %s\n' hashed "${CONF_HASHED[*]}"
   [ -z "$CONF_DOMAIN" ] || printf '%-10s %s\n' domain "$CONF_DOMAIN"
   [ -z "$CONF_API_HOST" ] || printf '%-10s %s\n' api-host "$CONF_API_HOST"
   if [ -n "$CONF_CERT_ARN" ]; then printf '%-10s %s\n' cert "$CONF_CERT_ARN"

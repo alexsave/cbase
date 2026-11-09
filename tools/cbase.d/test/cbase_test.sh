@@ -57,6 +57,8 @@ start_fake() {
 VM_G1="cbase:vm-group g1 ec2:instance arn:aws:ec2:us-east-1:$ACCOUNT:instance/i-0g1"
 VM_G2="cbase:vm-group g2 ec2:instance arn:aws:ec2:us-east-1:$ACCOUNT:instance/i-0g2"
 ST_G1="cbase:static-group g1 s3 arn:aws:s3:::g1-site-bucket"
+CF_OPTIMIZED=658327ea-f89d-4fab-a63d-7e88639e58f6
+CF_DISABLED=4135ea2d-6df8-44a3-9df3-4b5a84be39ad
 everything=(--bucket "$BUCKET" --resource "$VM_G1" --resource "$VM_G2" --resource "$ST_G1")
 
 # run DIR ARGS...: the tool from DIR (an app's repository), its stdout in $t/out, stderr in
@@ -134,6 +136,7 @@ cbase.conf: ok
 app        shop
 vm         shop (memory 512 MiB)
 static     shop
+files      ui/out/ (the default)
 domain     shop.example.com
 api-host   api.example.com
 cert       arn:aws:acm:us-east-1:$ACCOUNT:certificate/12345678-abcd-ef01-2345-6789abcdef01
@@ -160,6 +163,7 @@ shape() {   # shape NAME "WANT LINES" CONF LINES...: config check prints the WAN
 shape full "app        shop
 vm         shop (shop: memory not declared, counted as 128M)
 static     shop
+files      ui/out/ (the default)
 address    (the distribution's cloudfront.net name)
 route      /api/* vm nocache ALL
 route      * static cache GET,HEAD" "CBASE_APP = shop"
@@ -167,18 +171,21 @@ route      * static cache GET,HEAD" "CBASE_APP = shop"
 shape memory "app        shop
 vm         shop (memory 2048 MiB)
 static     shop
+files      ui/out/ (the default)
 address    (the distribution's cloudfront.net name)
 route      /api/* vm nocache ALL
 route      * static cache GET,HEAD" "CBASE_APP = shop" "CBASE_MEMORY = 2G"
 shape groups "app        shop
 vm         shared (shop: memory not declared, counted as 128M)
 static     sites
+files      ui/out/ (the default)
 address    (the distribution's cloudfront.net name)
 route      /api/* vm nocache ALL
 route      * static cache GET,HEAD" "CBASE_APP = shop" "CBASE_VM = shared" "CBASE_STATIC = sites"
 shape static "app        site
 vm         none
 static     site
+files      build/ (the default)
 address    (the distribution's cloudfront.net name)
 route      * static cache GET,HEAD" "CBASE_APP = site" "CBASE_VM = none"
 shape vm "app        svc
@@ -190,6 +197,7 @@ route      * vm nocache ALL" "CBASE_APP = svc" "CBASE_STATIC = none" "CBASE_MEMO
 shape written "app        shop
 vm         shop (shop: memory not declared, counted as 128M)
 static     shop
+files      ui/out/ (the default)
 address    (the distribution's cloudfront.net name)
 route      /rpc/* vm nocache ALL
 route      * static cache GET,HEAD" "CBASE_APP = shop" "CBASE_ROUTE = /rpc/* vm"
@@ -197,6 +205,7 @@ route      * static cache GET,HEAD" "CBASE_APP = shop" "CBASE_ROUTE = /rpc/* vm"
 shape domain "app        site
 vm         none
 static     site
+files      build/ (the default)
 domain     site.example.com
 cert       (found or requested by deploy)
 route      * static cache GET,HEAD" "CBASE_APP = site" "CBASE_VM = none" "CBASE_DOMAIN = site.example.com"
@@ -441,7 +450,7 @@ state_of vm g2 > "$t/g2"
 ok
 
 # ---- not yet -----------------------------------------------------------------------------------
-for c in deploy undeploy "group-init vm g1"; do
+for c in undeploy "group-init vm g1"; do
   # shellcheck disable=SC2086 # the command's words
   run "$b" $c
   expect_rc 2 "$c"
@@ -450,6 +459,375 @@ for c in deploy undeploy "group-init vm g1"; do
 done
 run "$b" frobnicate
 expect_rc 2 "an unknown command"
+ok
+
+# ================================================================================================
+# deploy: the static part (phase 2)
+# ================================================================================================
+export CBASE_POLL_SECONDS=0
+SITE_BUCKET="site-bucket"
+ST_SITE="cbase:static-group site s3 arn:aws:s3:::$SITE_BUCKET"
+CERT_WILD="arn:aws:acm:us-east-1:$ACCOUNT:certificate/11111111-1111-1111-1111-111111111111"
+CERT_OTHER="arn:aws:acm:us-east-1:$ACCOUNT:certificate/22222222-2222-2222-2222-222222222222"
+CERT_DEEP="arn:aws:acm:us-east-1:$ACCOUNT:certificate/33333333-3333-3333-3333-333333333333"
+site_fake=(--bucket "$BUCKET" --bucket "$SITE_BUCKET:us-west-2" --resource "$ST_SITE" --resource "$VM_G1"
+           --cert "$CERT_OTHER ISSUED other.org" --cert "$CERT_DEEP ISSUED *.www.example.com"
+           --cert "$CERT_WILD ISSUED example.com,*.example.com" --zone "Z0EXAMPLE example.com"
+           --zone "Z0PRIVATE corp.example.com private")
+fake_set() { curl -fsS -X POST "$AWS_ENDPOINT_URL/_fake/set?$1" > /dev/null; }
+template_of() { curl -fsS "$AWS_ENDPOINT_URL/_fake/template?stack=$1"; }
+head_of() {   # head_of KEY: "<Content-Type>|<Cache-Control>" of s3://site-bucket/KEY
+  aws s3api head-object --bucket "$SITE_BUCKET" --key "$1" --query '[ContentType,CacheControl]' --output text | tr '\t' '|'
+}
+seed() {   # seed KEY: an object of someone else's, put straight into the site bucket
+  printf 'theirs\n' > "$t/seed"
+  aws s3api put-object --bucket "$SITE_BUCKET" --key "$1" --body "$t/seed" > /dev/null
+}
+mark() { wc -l < "$t/log" | tr -d ' '; }    # the log's length now: what a run adds is after it
+since() { sed -n "$(( $1 + 1 )),\$p" "$t/log"; }   # since MARK: the log lines after MARK
+# The site: a static app (CBASE_VM = none) with every kind of file.
+site="$(app site "CBASE_APP = site" "CBASE_VM = none" "CBASE_HASHED = assets/*")"
+mkdir -p "$site/build/assets" "$site/build/docs" "$site/build/.well-known" "$site/build/.git"
+for f in index.html about.html docs/index.html app.wasm style.css data.json font.WOFF2 LICENSE assets/app.1a2b3c4d.js \
+         assets/logo.9f8e7d.png assets/page.html .well-known/security.txt .DS_Store .git/config; do
+  printf '%s\n' "$f" > "$site/build/$f"
+done
+
+# ---- static-only end to end: the create path, the headers, the hashed rule, the order ---------
+start_fake "${site_fake[@]}"
+seed other/index.html; seed site-admin/app.js; seed siteish.txt; seed index.html
+m="$(mark)"
+run "$site" deploy
+expect_rc 0 "a static site's first deploy"
+out_has "static group site: s3://$SITE_BUCKET (us-west-2), the app's folder site/" "the first deploy finds the group"
+out_has "stack: cbase-app-site is new" "the first deploy makes the stack"
+out_has "change set cbase-deploy on cbase-app-site (CREATE):" "the change set is printed"
+out_has "Add     Distribution     AWS::CloudFront::Distribution" "the change set is printed"
+out_has "site joined static group site: app=site folder=site/" "the app joins its static group"
+out_has "deployed site: https://d1fake.cloudfront.net/" "the URL is printed"
+since "$m" | grep -q "CFN ExecuteChangeSet cbase-app-site ok" || fail "the create's change set was not executed"
+since "$m" | grep -q "DetectStackDrift" && fail "drift detected on a stack that did not exist"
+since "$m" | grep -q "CF CreateInvalidation" && fail "a new distribution was invalidated"
+printf 'cbase-state 1 static site\napp=site folder=site/\n' > "$t/want"
+state_of static site | diff -u "$t/want" - || fail "the static group's state file after a deploy"
+ok
+# The template: the folder as OriginPath, the bucket's regional name, OAC, the router, no VM.
+template_of cbase-app-site > "$t/tpl"
+for want in "OriginPath: /site" "DomainName: $SITE_BUCKET.s3.us-west-2.amazonaws.com" "OriginAccessControlId: !GetAtt Oac.Id" \
+            "FunctionARN: !GetAtt Router.FunctionMetadata.FunctionARN" "CloudFrontDefaultCertificate: true"; do
+  grep -Fq -- "$want" "$t/tpl" || { cat "$t/tpl" >&2; fail "the stack's template lacks [$want]"; }
+done
+grep -Eq 'VmOrigin|TargetOriginId: vm|BucketPolicy|AWS::S3::' "$t/tpl" && fail "a static site's template names the VM, a bucket or a bucket policy"
+ok
+# Each file's headers.
+check_head() {   # check_head KEY "TYPE|CACHE"
+  local got
+  got="$(head_of "site/$1")"
+  [ "$got" = "$2" ] || fail "s3://$SITE_BUCKET/site/$1 has [$got], not [$2]"
+}
+NC=no-cache
+IM="public, max-age=31536000, immutable"
+check_head index.html "text/html; charset=utf-8|$NC"
+check_head docs/index.html "text/html; charset=utf-8|$NC"
+check_head app.wasm "application/wasm|$NC"
+check_head style.css "text/css; charset=utf-8|$NC"
+check_head data.json "application/json|$NC"
+check_head font.WOFF2 "font/woff2|$NC"
+check_head LICENSE "application/octet-stream|$NC"
+check_head .well-known/security.txt "text/plain; charset=utf-8|$NC"
+ok
+# The hashed rule: a file under CBASE_HASHED is immutable for a year, html never.
+check_head assets/app.1a2b3c4d.js "text/javascript; charset=utf-8|$IM"
+check_head assets/logo.9f8e7d.png "image/png|$IM"
+check_head assets/page.html "text/html; charset=utf-8|$NC"
+ok
+# Dot files are not uploaded (but .well-known/); nothing lands outside the app's folder.
+since "$m" | grep -E '^PUT /'"$SITE_BUCKET"'/' > "$t/puts"
+grep -Eq '/\.(DS_Store|git/)' "$t/puts" && fail "a dot file was uploaded"
+[ "$(wc -l < "$t/puts" | tr -d ' ')" = 12 ] || { cat "$t/puts" >&2; fail "the deploy uploaded other than its 12 files"; }
+grep -v "^PUT /$SITE_BUCKET/site/" "$t/puts" && fail "a deploy wrote outside its folder"
+ok
+# The order: the hashed files first, then the rest, the html last.
+last_hashed="$(grep -n '/site/assets/[a-z]*\.[0-9a-f]*\.\(js\|png\) ' "$t/puts" | tail -1 | cut -d: -f1)"
+first_other="$(grep -vn 'ct=text/html\|immutable' "$t/puts" | head -1 | cut -d: -f1)"
+last_other="$(grep -vn 'ct=text/html\|immutable' "$t/puts" | tail -1 | cut -d: -f1)"
+first_html="$(grep -n 'ct=text/html' "$t/puts" | head -1 | cut -d: -f1)"
+{ [ "$last_hashed" -lt "$first_other" ] && [ "$last_other" -lt "$first_html" ]; } \
+  || { cat "$t/puts" >&2; fail "the upload order is not hashed, other, html"; }
+ok
+# Someone else's objects are where they were.
+for k in other/index.html site-admin/app.js siteish.txt index.html; do
+  aws s3api head-object --bucket "$SITE_BUCKET" --key "$k" > /dev/null 2>&1 || fail "s3://$SITE_BUCKET/$k is gone"
+done
+ok
+
+# ---- a redeploy: drift checked, no changes, the edge invalidated --------------------------------
+m="$(mark)"
+run "$site" deploy
+expect_rc 0 "a redeploy"
+out_has "drift: none" "a redeploy checks drift"
+out_has "stack: cbase-app-site is up to date (no changes)" "an unchanged redeploy"
+out_has "invalidation I1FAKE of /* on E1FAKEDIST" "a redeploy invalidates"
+since "$m" | grep -q "CF CreateInvalidation E1FAKEDIST <Path>/\*</Path>" || fail "the invalidation was not /*"
+since "$m" | grep -q "CFN ExecuteChangeSet" && fail "a change set with no changes was executed"
+since "$m" | grep -q "^DELETE " && fail "a deploy without --prune deleted"
+ok
+
+# ---- prune: the build's leftovers in the app's folder, and nothing else -------------------------
+seed site/stale.js; seed site/old/page.html
+rm "$site/build/data.json"
+m="$(mark)"
+run "$site" deploy --prune
+expect_rc 0 "a prune"
+since "$m" | grep '^DELETE ' | sort > "$t/deleted"
+printf 'DELETE /%s/site/data.json 204\nDELETE /%s/site/old/page.html 204\nDELETE /%s/site/stale.js 204\n' \
+  "$SITE_BUCKET" "$SITE_BUCKET" "$SITE_BUCKET" > "$t/want"
+diff -u "$t/want" "$t/deleted" || fail "the prune deleted other than the folder's three stale files"
+out_has "pruned 3 files the build no longer has, under s3://$SITE_BUCKET/site/ alone" "the prune's count"
+ok
+# A listing that answers keys outside the folder (as a wrong one might): still nothing outside is
+# deleted, and each is named. CBASE_PRUNE=1 is the flag's spelling in the environment.
+fake_set list-ignores-prefix=1
+seed site/stale2.js
+m="$(mark)"
+rc=0
+(cd "$site" && CBASE_PRUNE=1 "$tool" deploy) > "$t/out" 2> "$t/err" || rc=$?
+expect_rc 0 "a prune over a listing of the whole bucket"
+since "$m" | grep '^DELETE ' > "$t/deleted" || true
+printf 'DELETE /%s/site/stale2.js 204\n' "$SITE_BUCKET" > "$t/want"
+diff -u "$t/want" "$t/deleted" || fail "a prune deleted outside the app's folder"
+for k in other/index.html site-admin/app.js siteish.txt index.html; do
+  err_has "prune: s3://$SITE_BUCKET/$k is outside site/, and is left alone" "the folder guard"
+  aws s3api head-object --bucket "$SITE_BUCKET" --key "$k" > /dev/null 2>&1 || fail "s3://$SITE_BUCKET/$k is gone"
+done
+fake_set list-ignores-prefix=0
+ok
+
+# ---- the safety rules --------------------------------------------------------------------------
+puts_since() { since "$1" | grep -c "^PUT /$SITE_BUCKET/" || true; }
+# A bucket replaced, or removed: refused, the change set deleted, nothing executed or uploaded.
+for how in replace-bucket remove-bucket; do
+  fake_set "changes=$how"
+  m="$(mark)"
+  run "$site" deploy
+  expect_rc 1 "a change set that would $how"
+  if [ "$how" = replace-bucket ]; then err_has "refused: the bucket Bucket would be replaced (Replacement: True)" "$how"
+  else err_has "refused: the bucket Bucket would be removed" "$how"; fi
+  err_has "refused, and the change set deleted; nothing was executed" "$how"
+  since "$m" | grep -q "CFN DeleteChangeSet cbase-app-site ok" || fail "$how: the change set was not deleted"
+  since "$m" | grep -q "CFN ExecuteChangeSet" && fail "$how: the change set was executed"
+  [ "$(puts_since "$m")" = 0 ] || fail "$how: files were uploaded"
+  ok
+done
+# A distribution replaced: allowed, and said.
+fake_set changes=replace-distribution
+m="$(mark)"
+run "$site" deploy
+expect_rc 0 "a distribution replacement"
+out_has "Modify  Distribution     AWS::CloudFront::Distribution (replacement: True)" "a distribution replacement is printed"
+out_has "note: the distribution Distribution is replaced: a new one with a new cloudfront.net name" "a distribution replacement is explained"
+since "$m" | grep -q "CFN ExecuteChangeSet cbase-app-site ok" || fail "a distribution replacement was not executed"
+fake_set changes=auto
+ok
+# Drift: printed and refused, then allowed with --accept-drift (and CBASE_ACCEPT_DRIFT=1).
+fake_set drift=1
+m="$(mark)"
+run "$site" deploy
+expect_rc 1 "a drifted stack"
+err_has "drift: Distribution (AWS::CloudFront::Distribution) MODIFIED" "drift is printed"
+err_has "drift:   Comment NOT_EQUAL: expected cbase app, actual edited by hand" "drift's values are printed"
+err_has "the cbase-app-site stack drifted from its template (above)" "drift is refused"
+since "$m" | grep -q "CFN CreateChangeSet" && fail "a drifted stack got a change set"
+[ "$(puts_since "$m")" = 0 ] || fail "a drifted stack's files were uploaded"
+ok
+run "$site" deploy --accept-drift
+expect_rc 0 "a drifted stack, accepted"
+err_has "drift: accepted (--accept-drift)" "accepted drift"
+ok
+rc=0
+(cd "$site" && CBASE_ACCEPT_DRIFT=1 "$tool" deploy) > "$t/out" 2> "$t/err" || rc=$?
+expect_rc 0 "a drifted stack, accepted by CBASE_ACCEPT_DRIFT=1"
+fake_set drift=0
+ok
+# DRY_RUN: the change set made, printed and deleted; nothing executed, uploaded or joined.
+printf 'CBASE_APP = site\nCBASE_VM = none\nCBASE_HASHED = assets/*\nCBASE_ROUTE = /img/* static nocache\n' > "$site/cbase.conf"
+m="$(mark)"
+rc=0
+(cd "$site" && DRY_RUN=1 "$tool" deploy) > "$t/out" 2> "$t/err" || rc=$?
+expect_rc 0 "a dry run"
+out_has "Modify  Distribution" "a dry run prints the change set"
+out_has "dry run: change set cbase-deploy deleted unexecuted; nothing was uploaded, deleted or changed" "a dry run"
+out_has "text/html; charset=utf-8  no-cache" "a dry run prints the upload"
+since "$m" | grep -q "CFN DeleteChangeSet cbase-app-site ok" || fail "a dry run left its change set"
+since "$m" | grep -qE "CFN ExecuteChangeSet|CF CreateInvalidation|^PUT |^DELETE " && fail "a dry run changed something"
+ok
+# A dry run of a new app: its empty stack goes too.
+dry="$(app dry "CBASE_APP = dry" "CBASE_VM = none" "CBASE_STATIC = site")"
+mkdir -p "$dry/build" && printf 'x\n' > "$dry/build/index.html"
+m="$(mark)"
+run "$dry" deploy --dry-run
+expect_rc 0 "a new app's dry run"
+since "$m" | grep -q "CFN DeleteStack cbase-app-dry" || fail "a new app's dry run left its empty stack"
+[ "$(template_of cbase-app-dry)" = "(none)" ] || fail "a new app's dry run left a stack"
+since "$m" | grep -qE "^PUT |CFN ExecuteChangeSet" && fail "a new app's dry run changed something"
+ok
+
+# ---- secrets in a change set, a drift and an error: never printed -------------------------------
+# A value that looks like nothing (no long random run) so only the masking can keep it out.
+SECRET=hunter2-origin-value
+SECRET2=hunter3-origin-value
+no_secret() {   # no_secret WHAT
+  if grep -Fq -e "$SECRET" -e "$SECRET2" "$t/out" "$t/err"; then
+    grep -F -e "$SECRET" -e "$SECRET2" "$t/out" "$t/err" >&2
+    fail "$1: an origin header's value was printed"
+  fi
+}
+fake_set "secret=$SECRET&secret2=$SECRET2&drift=1"
+run "$site" deploy
+expect_rc 1 "a drift holding an origin header"
+err_has "drift:   origin header Origins/0/OriginCustomHeaders/0/HeaderValue changed (its value is not shown)" "the drift's header"
+err_has "drift:   origin header Origins/0 changed (its value is not shown)" "the drift's whole origin"
+err_has "drift:   Comment NOT_EQUAL: expected cbase app, actual edited by hand" "a plain drift is still shown"
+no_secret "the drift refusal"
+ok
+run "$site" deploy --accept-drift
+expect_rc 0 "a change set holding an origin header"
+out_has "Comment: cbase app before -> cbase app after" "a plain change is shown"
+out_has "origin header Origins/1/OriginCustomHeaders/0/HeaderValue changed (its value is not shown)" "the change set's header"
+out_has "parameter OriginSecret changed Origins/1 (its value is not shown)" "the change set's parameter"
+no_secret "the change set"
+ok
+fake_set "fail-execute=1&drift=0"
+run "$site" deploy
+expect_rc 1 "an execute that fails with the value in its message"
+err_has "executing change set cbase-deploy on cbase-app-site failed:" "the failed execute"
+err_has "(a line naming an origin header or a parameter value, not shown)" "the failed execute's message"
+no_secret "the failed execute"
+fake_set "fail-execute=0&secret=&secret2="
+ok
+
+# ---- certificates ------------------------------------------------------------------------------
+# Found: an issued wildcard covers www.example.com (one of three, the deeper wildcard does not), and
+# the zone gets the alias.
+www="$(app www "CBASE_APP = www" "CBASE_VM = none" "CBASE_STATIC = site" "CBASE_DOMAIN = www.example.com")"
+mkdir -p "$www/build" && printf 'x\n' > "$www/build/index.html"
+m="$(mark)"
+run "$www" deploy
+expect_rc 0 "a domain with an issued certificate"
+out_has "dns: www.example.com is in Route 53 zone Z0EXAMPLE" "the zone is found"
+out_has "certificate: $CERT_WILD, issued, covers www.example.com" "the issued certificate is found"
+since "$m" | grep -q "ACM RequestCertificate" && fail "a certificate was requested when one was issued"
+template_of cbase-app-www > "$t/tpl"
+grep -Fq "AcmCertificateArn: $CERT_WILD" "$t/tpl" || fail "the template lacks the certificate"
+grep -Fq "Aliases: [www.example.com]" "$t/tpl" || fail "the template lacks the alias"
+since "$m" | grep -q "R53 UPSERT Z0EXAMPLE www.example.com A alias=d" || fail "the A alias was not written"
+since "$m" | grep -q "R53 UPSERT Z0EXAMPLE www.example.com AAAA alias=d" || fail "the AAAA alias was not written"
+out_has "deployed www: https://www.example.com/" "the domain's URL"
+ok
+# A certificate that cannot be read stops the deploy: it is never taken for "none covers", which
+# would request another.
+fake_set acm-deny=1
+m="$(mark)"
+run "$www" deploy
+expect_rc 1 "a certificate that cannot be read"
+err_has "AWS refused it (AccessDenied)" "a certificate that cannot be read"
+since "$m" | grep -qE "ACM RequestCertificate|CFN CreateChangeSet" && fail "a certificate read that failed went on"
+fake_set acm-deny=0
+ok
+# Requested, with a zone: a.b.example.com is under no wildcard (one label each), so a request; its
+# validation CNAME goes in the longest zone (example.com: corp.example.com is private), ACM issues
+# it, and the alias follows.
+deep="$(app deep "CBASE_APP = deep" "CBASE_VM = none" "CBASE_STATIC = site" "CBASE_DOMAIN = a.b.example.com")"
+mkdir -p "$deep/build" && printf 'x\n' > "$deep/build/index.html"
+m="$(mark)"
+run "$deep" deploy
+expect_rc 0 "a domain whose certificate is requested, with a zone"
+since "$m" | grep -q "ACM RequestCertificate a.b.example.com" || fail "no certificate was requested for a.b.example.com"
+since "$m" | grep -qE "R53 UPSERT Z0EXAMPLE _v[0-9]+\.a\.b\.example\.com\. CNAME _a[0-9]+\.acm-validations\.aws\." \
+  || { since "$m" >&2; fail "the validation record was not written"; }
+since "$m" | grep -q "ACM issued" || fail "the requested certificate was not issued"
+since "$m" | grep -q "R53 UPSERT Z0EXAMPLE a.b.example.com A alias=" || fail "the alias was not written"
+out_has "deployed deep: https://a.b.example.com/" "the requested certificate's URL"
+ok
+# Requested, no zone: the records printed, a clean stop (status 3), nothing else changed; the next
+# deploy reuses the pending request.
+other="$(app other "CBASE_APP = other" "CBASE_VM = none" "CBASE_STATIC = site" "CBASE_DOMAIN = shop.other.net")"
+mkdir -p "$other/build" && printf 'x\n' > "$other/build/index.html"
+m="$(mark)"
+run "$other" deploy
+expect_rc 3 "a domain with no zone"
+out_has "dns: no Route 53 hosted zone in this account covers shop.other.net" "no zone"
+grep -Eq "^  _v[0-9]+\.shop\.other\.net\.  CNAME  _a[0-9]+\.acm-validations\.aws\.   \(proves the certificate for shop\.other\.net\)$" "$t/out" \
+  || { cat "$t/out" >&2; fail "the validation record was not printed"; }
+out_has "then run ./cbase deploy again" "the clean stop says what next"
+since "$m" | grep -qE "R53 UPSERT|CFN CreateChangeSet|^PUT " && fail "a deploy waiting on DNS changed something"
+ok
+m="$(mark)"
+run "$other" deploy
+expect_rc 3 "a domain with no zone, again"
+out_has "requested before, still pending validation" "the pending certificate is reused"
+since "$m" | grep -q "ACM RequestCertificate" && fail "a second certificate was requested"
+ok
+
+# ---- what deploy refuses -----------------------------------------------------------------------
+# A VM app: phase 3, stopped before any AWS call.
+m="$(mark)"
+run "$b" deploy
+expect_rc 2 "a VM app's deploy"
+err_has "deploying the VM side (the service over SSM, its port, the VM origin of its routes) is phase 3" "a VM app's deploy"
+[ -z "$(since "$m")" ] || fail "a VM app's deploy called AWS"
+ok
+# A static group that does not exist: the group-init command, nothing made.
+ghost="$(app ghost "CBASE_APP = ghost" "CBASE_VM = none" "CBASE_STATIC = nosuch")"
+m="$(mark)"
+run "$ghost" deploy
+expect_rc 1 "a missing static group"
+err_has "Create it with: ./cbase group-init static nosuch" "a missing static group"
+since "$m" | grep -qE "^CFN|^PUT " && fail "a deploy to a missing group made something"
+ok
+# A static dir that is not a build.
+mkdir -p "$ghost/build"
+printf 'CBASE_APP = ghost\nCBASE_VM = none\nCBASE_STATIC = site\n' > "$ghost/cbase.conf"
+run "$ghost" deploy
+expect_rc 1 "a build with no index.html"
+err_has "build has no index.html, so it is not a built site" "a build with no index.html"
+printf 'CBASE_APP = ghost\nCBASE_VM = none\nCBASE_STATIC = site\nCBASE_STATIC_DIR = dist\n' > "$ghost/cbase.conf"
+run "$ghost" deploy
+expect_rc 1 "a missing static dir"
+err_has "the static dir dist does not exist" "a missing static dir"
+run "$ghost" deploy --force
+expect_rc 2 "an unknown deploy flag"
+ok
+conf_error "cbase.conf line 2: CBASE_STATIC_DIR is a directory inside the repository" "CBASE_APP = a" "CBASE_STATIC_DIR = ../site"
+conf_error "cbase.conf line 2: CBASE_STATIC_DIR is a directory inside the repository" "CBASE_APP = a" "CBASE_STATIC_DIR = /srv/www"
+conf_error "cbase.conf line 3: CBASE_STATIC_DIR is the static files' directory, and CBASE_STATIC is none" "CBASE_APP = a" "CBASE_STATIC = none" "CBASE_STATIC_DIR = dist"
+conf_error "cbase.conf line 2: CBASE_HASHED is blank-separated globs" "CBASE_APP = a" "CBASE_HASHED = /assets/*"
+
+# ---- the template: routes on the VM only for an app with one -----------------------------------
+full="$(app full "CBASE_APP = shop" "CBASE_ROUTE = /api/* vm" "CBASE_ROUTE = /live ws" "CBASE_ROUTE = /img/* static nocache GET,OPTIONS" \
+          "CBASE_ROUTE = /form vm POST" "CBASE_ROUTE = /read vm cache GET")"
+run "$full" template
+expect_rc 0 "a full app's template"
+behaviour() {   # behaviour PATTERN: the lines of that route's behaviour in $t/out
+  awk -v p="          - PathPattern: \"$1\"" '$0 == p {f=1; print; next} f && /^          - / {f=0} f && /^[^ ]/ {f=0} f' "$t/out"
+}
+behaviour /api/* | grep -q "TargetOriginId: vm" || fail "/api/* is not on the VM"
+behaviour /api/* | grep -q "AllowedMethods: \[GET, HEAD, OPTIONS, PUT, PATCH, POST, DELETE\]" || fail "/api/* has not every method"
+behaviour /api/* | grep -q "CachePolicyId: $CF_DISABLED" || fail "/api/* is cached"
+behaviour /live | grep -q "TargetOriginId: ws" || fail "/live is not on the ws origin"
+behaviour /live | grep -q "Compress: false" || fail "/live is compressed"
+behaviour /img/* | grep -q "AllowedMethods: \[GET, HEAD, OPTIONS\]" || fail "/img/* is not GET,HEAD,OPTIONS"
+behaviour /img/* | grep -q "FunctionARN: !GetAtt Router" || fail "/img/* has no router"
+behaviour /form | grep -q "AllowedMethods: \[GET, HEAD, OPTIONS, PUT, PATCH, POST, DELETE\]" || fail "POST alone is not all seven"
+behaviour /read | grep -q "AllowedMethods: \[GET, HEAD\]" || fail "/read is not GET,HEAD"
+behaviour /read | grep -q "CachePolicyId: $CF_OPTIMIZED" || fail "/read is not cached"
+awk '/- Id: ws/{f=1} f' "$t/out" | grep -q "OriginReadTimeout: 60" || fail "the ws origin's read timeout"
+awk '/- Id: ws/{f=1} f' "$t/out" | grep -q "OriginKeepaliveTimeout: 60" || fail "the ws origin's keep-alive"
+out_has "  VmOrigin:" "a full app's template has the VM origin parameter"
+ok
+run "$site" template
+expect_rc 0 "a static site's template"
+grep -Eq "VmOrigin|TargetOriginId: (vm|ws)" "$t/out" && fail "a static site's template names the VM"
 ok
 
 [ "$(log_count unsigned)" = 0 ] || fail "a call reached the fake without the test's credentials"
