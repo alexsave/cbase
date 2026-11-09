@@ -73,6 +73,15 @@ aws_region() {
   printf '%s' "${r:-the configured region}"
 }
 
+# aws_region_required: the region the CLI calls (AWS_REGION, AWS_DEFAULT_REGION, the profile's), or
+# the tool stops: a group's stack, its instance and its buckets are made there.
+aws_region_required() {
+  local r="${AWS_REGION:-${AWS_DEFAULT_REGION:-}}"
+  [ -n "$r" ] || r="$(aws configure get region 2> /dev/null || true)"
+  [[ "$r" =~ ^[a-z]{2}(-[a-z]+)+-[0-9]$ ]] || { echo "cbase: no AWS region is set: set AWS_REGION (us-east-1), or the profile's region (aws configure set region us-east-1)" >&2; exit 1; }
+  printf '%s' "$r"
+}
+
 # aws_account_load: AWS_ACCOUNT, the twelve-digit account the credentials are in (STS
 # GetCallerIdentity), asked once.
 AWS_ACCOUNT=""

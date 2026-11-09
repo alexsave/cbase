@@ -28,6 +28,19 @@
 //     validation records).
 //   * Route 53 (REST): ListHostedZonesByName, ChangeResourceRecordSets, GetChange (INSYNC).
 //   * CloudFront (REST): CreateInvalidation, GetInvalidation (Completed).
+//   * S3's bucket calls group-init and group-destroy make: HeadBucket, CreateBucket (409
+//     BucketAlreadyOwnedByYou for one that exists), PutPublicAccessBlock, PutBucketVersioning,
+//     DeleteBucketTagging (the bucket's group tag dropped from the tagging answers).
+//   * EC2 (Query, XML): DescribeInstances (an instance a --resource line or a group stack names:
+//     running, its type the instance-type knob, a public DNS name), DescribeInstanceTypes (a small
+//     recorded table: t4g.nano 512 MiB arm64 up to t4g.small, t3.nano x86_64),
+//     DescribeManagedPrefixLists (CloudFront's origin-facing list).
+//   * SSM (JSON 1.1): GetParameter (the Amazon Linux image), SendCommand (logged with its
+//     commands, which the test decodes), GetCommandInvocation (InProgress at the first read, then
+//     what the ssm-* knobs said when the command was sent).
+//   * A group stack (cbase-group-vm-<g>, cbase-group-static-<g>) made by an executed change set
+//     adds what group-init's would: the tagged instance i-0<g>, or the tagged bucket <g>-group-bucket.
+//     Deleting it takes the instance away; the bucket stays (Retain), with its tag.
 //   * Control, for the test alone: POST /_fake/gather?n=N holds the next N GetObject answers until
 //     all N have been asked (so N clients read the same ETag before any of them writes: a race
 //     made deterministic), or 20 s pass. POST /_fake/set?KNOB=VALUE scripts the next answers:
@@ -35,8 +48,9 @@
 //     secret=S and secret2=S (planted where a change set, a drift and an error would carry an
 //     origin header's or a parameter's value), fail-execute=0|1, list-ignores-prefix=0|1 (a
 //     listing that answers every key, whatever its prefix), acm-deny=0|1 (DescribeCertificate
-//     refused, AccessDenied). GET /_fake/template?stack=NAME answers
-//     the template the stack holds.
+//     refused, AccessDenied), changes=replace-instance (a group's instance replaced),
+//     instance-type=T (every instance's type), ssm-status=S, ssm-code=N, ssm-out=TEXT (what the next
+//     commands end with). GET /_fake/template?stack=NAME answers the template the stack holds.
 //
 // Every request is one line of the log: "<METHOD> <path> <status>" for S3 (a PutObject with its
 // precondition and its headers), "CFN <Action> ...", "ACM ...", "R53 ...", "CF ...". One thread per
@@ -59,10 +73,11 @@
 #include <unistd.h>
 
 #define MAX_OBJ 512
-#define MAX_RES 32
-#define MAX_BUCKETS 8
+#define MAX_RES 64
+#define MAX_BUCKETS 16
 #define BODY_MAX (1 << 20)
-#define MAX_STACKS 8
+#define MAX_STACKS 32
+#define MAX_CMDS 64
 #define MAX_CERTS 16
 #define MAX_ZONES 8
 
@@ -119,10 +134,23 @@ static char g_changes[32] = "auto";
 static int g_drift, g_fail_execute, g_list_ignores_prefix, g_acm_deny;
 static char g_secret[256], g_secret2[256];
 static char g_account[16] = "111122223333";
+static char g_instance_type[32] = "t4g.nano";
+// The SSM commands sent, each with the answer it ends with.
+typedef struct {
+    char id[40], instance[64], status[32], *out;
+    int  code, reads;
+} command;
+static command g_cmds[MAX_CMDS];
+static int g_ncmds;
+static char g_ssm_status[32] = "Success";
+static int g_ssm_code;
+static char g_ssm_out[2048] = "CBASE: done (the fake's answer)\n";
 static FILE *g_log;
 // The gather: the next g_gather_want GetObject answers wait until that many have been computed.
 static int g_gather_want, g_gather_seen;
 static unsigned g_gather_round;
+
+static const char *xml_text(const char *p, const char *tag, char *out, size_t cap);
 
 static void die(const char *fmt, ...) {
     va_list ap;
@@ -494,7 +522,10 @@ static void s3_get(int fd, const request *r, bool head) {
     }
     pthread_mutex_unlock(&g_mu);
     const char *m = head ? "HEAD" : "GET";
-    if (status == 4041) {
+    if (status != 200 && head) {   // a HEAD answer has no body: the CLI reads the bare status
+        logf_("HEAD %s 404%s", r->path, status == 4041 ? " NoSuchBucket" : "");
+        respond(fd, 404, "Not Found", "application/xml", NULL, "", 0);
+    } else if (status == 4041) {
         logf_("%s %s 404 NoSuchBucket", m, r->path);
         s3_error(fd, 404, "Not Found", "NoSuchBucket", "The specified bucket does not exist");
     } else if (status == 404) {
@@ -625,6 +656,66 @@ static void s3_bucket(int fd, const request *r) {
     respond_sb(fd, 200, "application/xml", &b);
 }
 
+static void bucket_add(const char *name, const char *region) {
+    if (g_nbuckets == MAX_BUCKETS) die("too many buckets");
+    copy(g_buckets[g_nbuckets], sizeof g_buckets[0], name);
+    copy(g_bucket_region[g_nbuckets++], sizeof g_bucket_region[0], region);
+}
+
+// The tagging answers' resources: one added, or every one whose ARN is arn dropped.
+static void resource_add(const char *key, const char *value, const char *type, const char *arn) {
+    if (g_nres == MAX_RES) die("too many resources");
+    resource *x = &g_res[g_nres++];
+    copy(x->key, sizeof x->key, key);
+    copy(x->value, sizeof x->value, value);
+    copy(x->type, sizeof x->type, type);
+    copy(x->arn, sizeof x->arn, arn);
+}
+static void resource_drop(const char *arn) {
+    for (int i = 0; i < g_nres; i++)
+        if (strcmp(g_res[i].arn, arn) == 0) g_res[i].arn[0] = g_res[i].key[0] = 0;
+}
+
+// HEAD /bucket, PUT /bucket (CreateBucket, ?publicAccessBlock, ?versioning), DELETE /bucket?tagging.
+static void s3_bucket_call(int fd, const request *r) {
+    pthread_mutex_lock(&g_mu);
+    int bi = bucket_of(r->path);
+    const char *name = r->path + 1;
+    int status = 200;
+    const char *what = "?";
+    if (strcmp(r->method, "HEAD") == 0) {
+        what = "HeadBucket";
+        status = bi < 0 ? 404 : 200;
+    } else if (strcmp(r->method, "PUT") == 0 && !r->query[0]) {
+        what = "CreateBucket";
+        if (bi >= 0) status = 409;
+        else {
+            char region[32] = "us-east-1";
+            xml_text(r->body, "LocationConstraint", region, sizeof region);
+            if (!region[0]) copy(region, sizeof region, "us-east-1");
+            bucket_add(name, region);
+        }
+    } else if (strcmp(r->method, "PUT") == 0) {
+        what = strstr(r->query, "publicAccessBlock") ? "PutPublicAccessBlock" : strstr(r->query, "versioning") ? "PutBucketVersioning" : "PutBucket?";
+        status = bi < 0 ? 4041 : 200;
+    } else if (strcmp(r->method, "DELETE") == 0 && strstr(r->query, "tagging")) {
+        what = "DeleteBucketTagging";
+        if (bi < 0) status = 4041;
+        else {
+            char arn[128];
+            snprintf(arn, sizeof arn, "arn:aws:s3:::%.63s", name);
+            resource_drop(arn);
+            status = 204;
+        }
+    }
+    pthread_mutex_unlock(&g_mu);
+    logf_("S3 %s %s %d", what, name, status == 4041 ? 404 : status);
+    if (strcmp(r->method, "HEAD") == 0) respond(fd, status, status == 200 ? "OK" : "Not Found", "application/xml", NULL, "", 0);
+    else if (status == 409) s3_error(fd, 409, "Conflict", "BucketAlreadyOwnedByYou", "Your previous request to create the named bucket succeeded and you already own it.");
+    else if (status == 4041) s3_error(fd, 404, "Not Found", "NoSuchBucket", "The specified bucket does not exist");
+    else respond(fd, status, status == 204 ? "No Content" : "OK", "application/xml", NULL, "", 0);
+}
+
 // ---- STS, Tagging --------------------------------------------------------------------------------
 
 static void sts(int fd, const request *r) {
@@ -661,6 +752,7 @@ static void tagging(int fd, const request *r) {
     sb_add(&out, "{\"PaginationToken\":\"\",\"ResourceTagMappingList\":[");
     int hits = 0;
     for (int i = 0; i < g_nres; i++) {
+        if (!g_res[i].arn[0]) continue;   // dropped
         char want_tag[1024], want_type[1024];
         const char *tag[] = { "\"Key\":\"", g_res[i].key, "\",\"Values\":[\"", g_res[i].value, "\"]" };
         const char *type[] = { "\"ResourceTypeFilters\":[\"", g_res[i].type, "\"]" };
@@ -768,6 +860,9 @@ static int cfn_changes(const stack *st, sb *b) {
     } else if (strcmp(g_changes, "remove-bucket") == 0) {
         cfn_change(b, "Remove", "Bucket", "AWS::S3::Bucket", NULL, NULL);
         n = 1;
+    } else if (strcmp(g_changes, "replace-instance") == 0) {
+        cfn_change(b, "Modify", "Instance", "AWS::EC2::Instance", "True", NULL);
+        n = 1;
     } else if (strcmp(g_changes, "replace-distribution") == 0) {
         cfn_change(b, "Modify", "Distribution", "AWS::CloudFront::Distribution", "True", d.p);
         n = 1;
@@ -777,6 +872,21 @@ static int cfn_changes(const stack *st, sb *b) {
     }
     free(d.p);
     return n;
+}
+
+// What a group stack's resources are to the other services, once its create ran: the instance (its
+// tag, so the tagging answers find it) or the bucket and its tag.
+static void group_made(const char *name) {
+    char arn[256], bucket[160];
+    if (strncmp(name, "cbase-group-vm-", 15) == 0) {
+        snprintf(arn, sizeof arn, "arn:aws:ec2:us-east-1:%s:instance/i-0%.100s", g_account, name + 15);
+        resource_add("cbase:vm-group", name + 15, "ec2:instance", arn);
+    } else if (strncmp(name, "cbase-group-static-", 19) == 0) {
+        snprintf(bucket, sizeof bucket, "%.100s-group-bucket", name + 19);
+        snprintf(arn, sizeof arn, "arn:aws:s3:::%s", bucket);
+        bucket_add(bucket, "us-east-1");
+        resource_add("cbase:static-group", name + 19, "s3", arn);
+    }
 }
 
 static void cfn_stack_drifts(sb *b, const stack *st) {
@@ -869,7 +979,24 @@ static void cloudformation(int fd, const request *r) {
             sb_add(&b, "<Id>arn:aws:cloudformation:us-east-1:%s:changeSet/%s/1</Id><StackId>%s</StackId>", g_account, st->cs_name, st->id);
             cfn_close(&b, a);
         }
-        logf_("CFN CreateChangeSet %s %s %s", name ? name : "-", type ? type : "-", ecode ? ecode : "ok");
+        sb params = { 0 };
+        for (int i = 1; i <= 16; i++) {
+            char k[64];
+            snprintf(k, sizeof k, "Parameters.member.%d.ParameterKey", i);
+            char *pk = form_get(r->body, k);
+            if (!pk) break;
+            snprintf(k, sizeof k, "Parameters.member.%d.ParameterValue", i);
+            char *pv = form_get(r->body, k);
+            snprintf(k, sizeof k, "Parameters.member.%d.UsePreviousValue", i);
+            char *pp = form_get(r->body, k);
+            sb_add(&params, "%s%s=%s", params.n ? "," : "", pk, pv ? pv : pp ? "(previous)" : "");
+            free(pk), free(pv), free(pp);
+        }
+        char *caps = form_get(r->body, "Capabilities.member.1");
+        logf_("CFN CreateChangeSet %s %s %s params=%s caps=%s", name ? name : "-", type ? type : "-", ecode ? ecode : "ok",
+              params.p ? params.p : "", caps ? caps : "");
+        free(params.p);
+        free(caps);
         free(type);
         free(tpl);
     } else if (strcmp(a, "DescribeChangeSet") == 0) {
@@ -909,6 +1036,7 @@ static void cloudformation(int fd, const request *r) {
             status = 400, ecode = "ValidationError";
             snprintf(emsg, sizeof emsg, "Invalid request: OriginCustomHeaders HeaderValue=%.200s is not valid", g_secret);
         } else {
+            if (strcmp(st->cs_type, "CREATE") == 0) group_made(st->name);
             copy(st->status, sizeof st->status, strcmp(st->cs_type, "CREATE") == 0 ? "CREATE_COMPLETE" : "UPDATE_COMPLETE");
             free(st->template);
             st->template = st->cs_template;
@@ -919,6 +1047,11 @@ static void cloudformation(int fd, const request *r) {
         }
         logf_("CFN ExecuteChangeSet %s %s", name ? name : "-", ecode ? ecode : "ok");
     } else if (strcmp(a, "DeleteStack") == 0) {
+        if (st && strncmp(st->name, "cbase-group-vm-", 15) == 0) {   // the instance goes; a bucket stays (Retain)
+            char arn[256];
+            snprintf(arn, sizeof arn, "arn:aws:ec2:us-east-1:%s:instance/i-0%.100s", g_account, st->name + 15);
+            resource_drop(arn);
+        }
         if (st) {
             free(st->template);
             free(st->cs_template);
@@ -1188,6 +1321,180 @@ static void cloudfront(int fd, const request *r) {
     respond(fd, 400, "Bad Request", "text/xml", NULL, "", 0);
 }
 
+// ---- EC2 (Query, XML) ------------------------------------------------------------------------------
+
+#define EC2_NS "http://ec2.amazonaws.com/doc/2016-11-15/"
+
+// The recorded instance types: name, MiB, architecture.
+static const struct {
+    const char *name;
+    int         mib;
+    const char *arch;
+} TYPES[] = {
+    { "t4g.nano", 512, "arm64" }, { "t4g.micro", 1024, "arm64" }, { "t4g.small", 2048, "arm64" }, { "t3.nano", 512, "x86_64" },
+};
+
+static void ec2_error(int fd, const char *code, const char *msg) {
+    sb b = { 0 };
+    sb_add(&b, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Response><Errors><Error><Code>%s</Code><Message>%s</Message></Error></Errors>"
+               "<RequestID>FAKE0000</RequestID></Response>",
+           code, msg);
+    respond(fd, 400, "Bad Request", "text/xml", NULL, b.p, b.n);
+    free(b.p);
+}
+
+static void ec2(int fd, const request *r) {
+    char *action = form_get(r->body, "Action");
+    const char *a = action ? action : "";
+    sb b = { 0 };
+    sb_add(&b, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<%sResponse xmlns=\"" EC2_NS "\"><requestId>FAKE0000</requestId>", a);
+    if (strcmp(a, "DescribeInstances") == 0) {
+        char *id = form_get(r->body, "InstanceId.1");
+        bool known = false;
+        pthread_mutex_lock(&g_mu);
+        for (int i = 0; i < g_nres && id; i++) {
+            const char *slash = strrchr(g_res[i].arn, '/');
+            if (g_res[i].arn[0] && strcmp(g_res[i].type, "ec2:instance") == 0 && slash && strcmp(slash + 1, id) == 0) known = true;
+        }
+        const char *arch = "arm64";
+        for (size_t i = 0; i < sizeof TYPES / sizeof TYPES[0]; i++)
+            if (strcmp(TYPES[i].name, g_instance_type) == 0) arch = TYPES[i].arch;
+        char type[32];
+        copy(type, sizeof type, g_instance_type);
+        pthread_mutex_unlock(&g_mu);
+        logf_("EC2 DescribeInstances %s %s", id ? id : "-", known ? type : "unknown");
+        if (!known) {
+            free(b.p);
+            ec2_error(fd, "InvalidInstanceID.NotFound", "The instance ID does not exist");
+            free(id), free(action);
+            return;
+        }
+        sb_add(&b, "<reservationSet><item><reservationId>r-0fake</reservationId><ownerId>%s</ownerId><instancesSet><item>"
+                   "<instanceId>%s</instanceId><instanceType>%s</instanceType><instanceState><code>16</code><name>running</name>"
+                   "</instanceState><dnsName>ec2-%s.compute-1.amazonaws.com</dnsName><architecture>%s</architecture></item>"
+                   "</instancesSet></item></reservationSet>",
+               g_account, id, type, id, arch);
+        free(id);
+    } else if (strcmp(a, "DescribeInstanceTypes") == 0) {
+        char *t = form_get(r->body, "InstanceType.1");
+        int k = -1;
+        for (size_t i = 0; t && i < sizeof TYPES / sizeof TYPES[0]; i++)
+            if (strcmp(TYPES[i].name, t) == 0) k = (int)i;
+        logf_("EC2 DescribeInstanceTypes %s %s", t ? t : "-", k < 0 ? "unknown" : "ok");
+        free(t);
+        if (k < 0) {
+            free(b.p);
+            ec2_error(fd, "InvalidInstanceType", "The following supplied instance types do not exist");
+            free(action);
+            return;
+        }
+        sb_add(&b, "<instanceTypeSet><item><instanceType>%s</instanceType><memoryInfo><sizeInMiB>%d</sizeInMiB></memoryInfo>"
+                   "<processorInfo><supportedArchitectures><item>%s</item></supportedArchitectures></processorInfo></item></instanceTypeSet>",
+               TYPES[k].name, TYPES[k].mib, TYPES[k].arch);
+    } else if (strcmp(a, "DescribeManagedPrefixLists") == 0) {
+        logf_("EC2 DescribeManagedPrefixLists");
+        sb_add(&b, "<prefixListSet><item><prefixListId>pl-3b927c52</prefixListId>"
+                   "<prefixListName>com.amazonaws.global.cloudfront.origin-facing</prefixListName></item></prefixListSet>");
+    } else {
+        logf_("EC2 %s 400", a);
+        free(b.p);
+        ec2_error(fd, "InvalidAction", "not in the recording");
+        free(action);
+        return;
+    }
+    sb_add(&b, "</%sResponse>", a);
+    respond_sb(fd, 200, "text/xml", &b);
+    free(action);
+}
+
+// ---- SSM (JSON 1.1) -------------------------------------------------------------------------------
+
+// Text made safe inside a JSON string.
+static void sb_json(sb *b, const char *s) {
+    for (; *s; s++) {
+        if (*s == '"' || *s == '\\') sb_add(b, "\\%c", *s);
+        else if (*s == '\n') sb_add(b, "\\n");
+        else if ((unsigned char)*s < 0x20) sb_add(b, "\\u%04x", *s);
+        else sb_add(b, "%c", *s);
+    }
+}
+
+static void ssm(int fd, const request *r, const char *op) {
+    sb b = { 0 };
+    int status = 200;
+    pthread_mutex_lock(&g_mu);
+    if (strcmp(op, "GetParameter") == 0) {
+        char name[256];
+        json_str(r->body, "Name", name, sizeof name);
+        sb_add(&b, "{\"Parameter\":{\"Name\":\"%s\",\"Type\":\"String\",\"Value\":\"ami-0f4ce1234567890ab\",\"Version\":1}}", name);
+        logf_("SSM GetParameter %s", name);
+    } else if (strcmp(op, "SendCommand") == 0) {
+        // {"InstanceIds": ["i-..."], ..., "Parameters": {"commands": ["<one line>"]}}
+        const char *ids = strstr(r->body, "\"InstanceIds\"");
+        char instance[64] = "";
+        if (ids) {
+            const char *q = strchr(ids + 13, '"');
+            const char *e = q ? strchr(q + 1, '"') : NULL;
+            if (q && e && (size_t)(e - q - 1) < sizeof instance) snprintf(instance, sizeof instance, "%.*s", (int)(e - q - 1), q + 1);
+        }
+        bool known = false;
+        for (int i = 0; i < g_nres; i++) {
+            const char *slash = strrchr(g_res[i].arn, '/');
+            if (g_res[i].arn[0] && strcmp(g_res[i].type, "ec2:instance") == 0 && slash && strcmp(slash + 1, instance) == 0) known = true;
+        }
+        const char *c = strstr(r->body, "\"commands\"");
+        const char *q = c ? strstr(c, "[\"") : NULL;
+        const char *e = q ? strstr(q + 2, "\"]") : NULL;
+        char comment[256];
+        json_str(r->body, "Comment", comment, sizeof comment);
+        if (!known) {
+            status = 400;
+            sb_add(&b, "{\"__type\":\"InvalidInstanceId\",\"Message\":\"Instances not in a valid state for account\"}");
+            logf_("SSM SendCommand %s InvalidInstanceId", instance);
+        } else {
+            if (g_ncmds == MAX_CMDS) die("too many commands");
+            command *cm = &g_cmds[g_ncmds++];
+            memset(cm, 0, sizeof *cm);
+            snprintf(cm->id, sizeof cm->id, "c0ffee00-0000-4000-8000-%012d", g_ncmds);
+            copy(cm->instance, sizeof cm->instance, instance);
+            copy(cm->status, sizeof cm->status, g_ssm_status);
+            cm->code = g_ssm_code;
+            sb out = { 0 };
+            sb_add(&out, "%s", g_ssm_out);
+            if (g_secret[0]) sb_add(&out, "DB_PASSWORD=%s\nCBASE_ORIGIN_SECRET='%s'\n", g_secret, g_secret2);
+            cm->out = out.p ? out.p : calloc(1, 1);
+            sb_add(&b, "{\"Command\":{\"CommandId\":\"%s\",\"DocumentName\":\"AWS-RunShellScript\",\"Status\":\"Pending\"}}", cm->id);
+            logf_("SSM SendCommand %s %s [%s] %.*s", instance, cm->id, comment, q && e ? (int)(e - q - 2) : 0, q && e ? q + 2 : "");
+        }
+    } else if (strcmp(op, "GetCommandInvocation") == 0) {
+        char id[64];
+        json_str(r->body, "CommandId", id, sizeof id);
+        command *cm = NULL;
+        for (int i = 0; i < g_ncmds; i++)
+            if (strcmp(g_cmds[i].id, id) == 0) cm = &g_cmds[i];
+        if (!cm) {
+            status = 400;
+            sb_add(&b, "{\"__type\":\"InvocationDoesNotExist\",\"Message\":\"\"}");
+        } else {
+            bool first = cm->reads++ == 0;   // the first read finds it running
+            sb_add(&b, "{\"CommandId\":\"%s\",\"InstanceId\":\"%s\",\"DocumentName\":\"AWS-RunShellScript\",\"Status\":\"%s\","
+                       "\"ResponseCode\":%d,\"StandardOutputContent\":\"",
+                   cm->id, cm->instance, first ? "InProgress" : cm->status, first ? -1 : cm->code);
+            if (!first) sb_json(&b, cm->out);
+            sb_add(&b, "\",\"StandardErrorContent\":\"");
+            if (!first && g_secret[0]) sb_json(&b, g_secret);
+            sb_add(&b, "\"}");
+            logf_("SSM GetCommandInvocation %s %s", cm->id, first ? "InProgress" : cm->status);
+        }
+    } else {
+        status = 400;
+        sb_add(&b, "{\"__type\":\"InvalidAction\",\"message\":\"not in the recording\"}");
+        logf_("SSM %s 400", op);
+    }
+    pthread_mutex_unlock(&g_mu);
+    respond_sb(fd, status, "application/x-amz-json-1.1", &b);
+}
+
 // ---- control, and the dispatch -------------------------------------------------------------------
 
 // POST /_fake/gather?n=N, and POST /_fake/set?<knob>=<value> for the CloudFormation scripts.
@@ -1213,6 +1520,10 @@ static void control(int fd, const request *r) {
         if ((v = form_get(r->query, "fail-execute"))) g_fail_execute = atoi(v), free(v);
         if ((v = form_get(r->query, "list-ignores-prefix"))) g_list_ignores_prefix = atoi(v), free(v);
         if ((v = form_get(r->query, "acm-deny"))) g_acm_deny = atoi(v), free(v);
+        if ((v = form_get(r->query, "instance-type"))) copy(g_instance_type, sizeof g_instance_type, v), free(v);
+        if ((v = form_get(r->query, "ssm-status"))) copy(g_ssm_status, sizeof g_ssm_status, v), free(v);
+        if ((v = form_get(r->query, "ssm-code"))) g_ssm_code = atoi(v), free(v);
+        if ((v = form_get(r->query, "ssm-out"))) copy(g_ssm_out, sizeof g_ssm_out, v), free(v);
         pthread_mutex_unlock(&g_mu);
         logf_("SET %s", r->query);
         respond(fd, 200, "OK", "text/plain", NULL, "ok\n", 3);
@@ -1270,13 +1581,18 @@ static void handle(int fd, request *r) {
         route53(fd, r);
     } else if (strcmp(service, "cloudfront") == 0) {
         cloudfront(fd, r);
+    } else if (strcmp(service, "ec2") == 0) {
+        ec2(fd, r);
+    } else if (strcmp(service, "ssm") == 0 && target && strncmp(target, "AmazonSSM.", 10) == 0) {
+        ssm(fd, r, target + 10);
     } else if (strcmp(service, "s3") == 0) {
         // The key as stored: the path decoded.
         char *dec = urldec(r->path, strlen(r->path), false);
         copy(r->path, sizeof r->path, dec);
         free(dec);
         bool bucket_only = !strchr(r->path + 1, '/');
-        if (strcmp(r->method, "GET") == 0 && bucket_only) s3_bucket(fd, r);
+        if (bucket_only && strcmp(r->method, "GET") != 0) s3_bucket_call(fd, r);
+        else if (strcmp(r->method, "GET") == 0 && bucket_only) s3_bucket(fd, r);
         else if (strcmp(r->method, "GET") == 0) s3_get(fd, r, false);
         else if (strcmp(r->method, "HEAD") == 0) s3_get(fd, r, true);
         else if (strcmp(r->method, "PUT") == 0) s3_put(fd, r);
@@ -1313,11 +1629,9 @@ int main(int argc, char **argv) {
         else if (strcmp(a, "--log") == 0) log_path = v;
         else if (strcmp(a, "--account") == 0) snprintf(g_account, sizeof g_account, "%s", v);
         else if (strcmp(a, "--bucket") == 0) {
-            if (g_nbuckets == MAX_BUCKETS) die("too many buckets");
             char name[64] = "", region[32] = "us-east-1";
             if (sscanf(v, "%63[^:]:%31s", name, region) < 1) die("--bucket is NAME or NAME:REGION");
-            copy(g_buckets[g_nbuckets], sizeof g_buckets[0], name);
-            copy(g_bucket_region[g_nbuckets++], sizeof g_bucket_region[0], region);
+            bucket_add(name, region);
         } else if (strcmp(a, "--cert") == 0) {
             char arn[256], status[32], names[1024];
             if (sscanf(v, "%255s %31s %1023s", arn, status, names) != 3) die("--cert is 'ARN STATUS NAME,NAME...'");

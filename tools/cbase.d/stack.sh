@@ -5,7 +5,7 @@
 # THE TEMPLATE (stack_render), plain CloudFormation with no transform, rendered from cbase.conf:
 #   Oac           the Origin Access Control the distribution signs its bucket reads with. The
 #                 bucket's policy, which lets it, is the static group's and is set once per bucket,
-#                 on aws:SourceAccount, by group-init (phase 3): deploy never edits a bucket policy.
+#                 on aws:SourceAccount, by group-init (group.sh): deploy never edits a bucket policy.
 #   Router        a viewer-request CloudFront Function on every static behaviour: clean URLs ("/" is
 #                 /index.html, "/docs/" /docs/index.html, "/about" /about.html; a path whose last
 #                 part has a dot, or under /.well-known/, is a file and passes as it is).
@@ -13,7 +13,7 @@
 #                 cbase.conf's order. The static origin is the group's bucket with OriginPath
 #                 /<app>, so the app reads its own folder and nothing else. A VM route (only when
 #                 CBASE_VM is not none) goes to the VmOrigin and VmPort parameters: the group VM's
-#                 public DNS name and the app's claimed port, which phase 3's VM deploy supplies.
+#                 public DNS name and the app's claimed port, which the VM deploy (vm.sh) supplies.
 #                 A ws route is its own origin, for its long timeouts (CloudFront sets them per
 #                 origin): read 60 s, keep-alive 60 s, uncached, every method.
 #   ApiDistribution  with CBASE_API_HOST: that hostname's every request to the VM.
@@ -27,7 +27,10 @@
 #      stops, unless CBASE_ACCEPT_DRIFT=1 (--accept-drift): the update would undo a change made by hand;
 #   2. a change set is made and described, always;
 #   3. a change that would replace or remove a BUCKET (AWS::S3::Bucket) is REFUSED, the change set
-#      deleted, nothing executed: a bucket replaced is every app's files lost. The one hard stop;
+#      deleted, nothing executed: a bucket replaced is every app's files lost. The one hard stop.
+#      The same guard (stack_keep_guard) holds a VM group's INSTANCE (AWS::EC2::Instance), whose
+#      disk holds every member's /srv/cbase/<app>/data: group-init's stacks (group.sh) run through
+#      stack_changeset too, and an app's own stack holds neither;
 #   4. a distribution replaced (a new cloudfront.net name, a brief outage) is allowed, and printed;
 #   5. with DRY_RUN=1 (--dry-run) the change set is deleted unexecuted (and the empty stack a first
 #      change set leaves).
@@ -39,7 +42,7 @@
 # filter, so they never reach this script, let alone its output; aws.sh aws_mask masks any line of
 # an AWS error that names one, the other way a value could be printed. Never run under set -x.
 
-STACK_REGION=us-east-1
+STACK_REGION=us-east-1   # an app's stack; group.sh sets a group stack's (the CLI's region)
 STACK_NAME=""
 STACK_STATUS=""     # before this deploy: NONE, or the stack's status
 STACK_TYPE=""       # CREATE or UPDATE
@@ -51,8 +54,10 @@ STACK_BUCKET=""     # the static group's bucket and its region
 STACK_BUCKET_REGION=""
 POLL_SECONDS="${CBASE_POLL_SECONDS:-5}"
 # The template's parameters that are plain (their values may be printed); any other one's are not.
-STACK_PLAIN_PARAMS="VmOrigin VmPort"
-# The stack's parameters, "ParameterKey=K,ParameterValue=V" each: phase 3's VM deploy sets VmOrigin
+STACK_PLAIN_PARAMS="VmOrigin VmPort InstanceType ImageId CloudFrontPrefixList ArtifactBucket"
+STACK_TAGS=()   # the stack's tags, "Key=K,Value=V" each
+STACK_CAPS=()   # --capabilities, for a template that makes an IAM role (a VM group's)
+# The stack's parameters, "ParameterKey=K,ParameterValue=V" each: the VM deploy (vm.sh) sets VmOrigin
 # and VmPort. Empty for a static site, whose template has none.
 STACK_PARAMS=()
 
@@ -152,11 +157,11 @@ EOF
 Parameters:
   VmOrigin:
     Type: String
-    Description: the VM group's instance public DNS name (set by ./cbase deploy, phase 3)
+    Description: the VM group's instance public DNS name (set by ./cbase deploy)
     AllowedPattern: "[a-z0-9.-]+"
   VmPort:
     Type: Number
-    Description: the port the app claimed in its VM group's state file (set by ./cbase deploy, phase 3)
+    Description: the port the app claimed in its VM group's state file (set by ./cbase deploy)
     MinValue: 8700
     MaxValue: 8799
 EOF
@@ -442,12 +447,22 @@ stack_print_changes() {
   done <<< "$lines"
 }
 
-# stack_plan: the template, the drift guard, the change set, its gates. Sets STACK_CHANGES.
+# stack_plan: the app's template, then stack_changeset. Sets STACK_CHANGES.
 stack_plan() {
   STACK_NAME="$(stack_name)"
   STACK_TEMPLATE="$CB_TMP/stack.yaml"
-  STACK_CS="cbase-deploy"
+  STACK_REGION=us-east-1
+  STACK_TAGS=("Key=cbase:app,Value=$CONF_APP")
+  STACK_CAPS=()
   stack_render "$STACK_TEMPLATE"
+  stack_changeset
+}
+
+# stack_changeset: STACK_NAME's change set from STACK_TEMPLATE (with STACK_PARAMS, STACK_TAGS,
+# STACK_CAPS, in STACK_REGION): the drift guard, the change set printed, its gates. Sets
+# STACK_CHANGES.
+stack_changeset() {
+  STACK_CS="cbase-deploy"
   stack_status
   case "$STACK_STATUS" in
     NONE|REVIEW_IN_PROGRESS) STACK_TYPE=CREATE; echo "stack: $STACK_NAME is new" ;;
@@ -467,7 +482,7 @@ stack_plan() {
   fi
   local why
   cfn create-change-set --stack-name "$STACK_NAME" --change-set-name "$STACK_CS" --change-set-type "$STACK_TYPE" \
-    --template-body "file://$STACK_TEMPLATE" --tags "Key=cbase:app,Value=$CONF_APP" \
+    --template-body "file://$STACK_TEMPLATE" --tags "${STACK_TAGS[@]}" ${STACK_CAPS[@]+--capabilities "${STACK_CAPS[@]}"} \
     ${STACK_PARAMS[@]+--parameters "${STACK_PARAMS[@]}"} --query Id --output text > /dev/null \
     || aws_fail "creating a change set on $STACK_NAME"
   if ! cfn wait change-set-create-complete --stack-name "$STACK_NAME" --change-set-name "$STACK_CS"; then
@@ -490,20 +505,8 @@ stack_plan() {
   STACK_CHANGES=1
   stack_print_changes
 
-  # THE ONE HARD STOP: a bucket replaced or removed.
-  local refused replaced lid
-  refused="$(cfn describe-change-set --stack-name "$STACK_NAME" --change-set-name "$STACK_CS" \
-      --query "Changes[?ResourceChange.ResourceType=='AWS::S3::Bucket' && (ResourceChange.Action=='Remove' || ResourceChange.Replacement=='True' || ResourceChange.Replacement=='Conditional')].ResourceChange.[LogicalResourceId,Action,Replacement]" \
-      --output text)" || aws_fail "describing change set $STACK_CS"
-  [ "$refused" != None ] || refused=""
-  if [ -n "$refused" ]; then
-    printf '%s\n' "$refused" | while IFS=$'\t' read -r lid a r; do
-      echo "refused: the bucket $lid would be $([ "$a" = Remove ] && echo removed || echo "replaced (Replacement: $r)")" >&2
-    done
-    stack_discard
-    echo "cbase: the change set would replace or remove a bucket, and every file in it with it: refused, and the change set deleted; nothing was executed" >&2
-    exit 1
-  fi
+  stack_keep_guard
+  local replaced lid
   replaced="$(cfn describe-change-set --stack-name "$STACK_NAME" --change-set-name "$STACK_CS" \
       --query "Changes[?ResourceChange.ResourceType=='AWS::CloudFront::Distribution' && (ResourceChange.Action=='Remove' || ResourceChange.Replacement=='True' || ResourceChange.Replacement=='Conditional')].ResourceChange.LogicalResourceId" \
       --output text)" || aws_fail "describing change set $STACK_CS"
@@ -511,6 +514,46 @@ stack_plan() {
   for lid in $replaced; do
     echo "note: the distribution $lid is replaced: a new one with a new cloudfront.net name is made and the old one deleted, so the app is briefly unreachable and its hostname's record moves to the new name (deploy rewrites a Route 53 record itself)"
   done
+}
+
+# stack_keep_guard: THE ONE HARD STOP. A change set that would replace or remove a bucket (every
+# file in it lost) or a VM group's instance (every member's data on its disk lost) is refused,
+# deleted, and nothing runs. Deploy's and group-init's change sets both pass through it.
+stack_keep_guard() {
+  local refused lid type a r what
+  refused="$(cfn describe-change-set --stack-name "$STACK_NAME" --change-set-name "$STACK_CS" \
+      --query "Changes[?(ResourceChange.ResourceType=='AWS::S3::Bucket' || ResourceChange.ResourceType=='AWS::EC2::Instance') && (ResourceChange.Action=='Remove' || ResourceChange.Replacement=='True' || ResourceChange.Replacement=='Conditional')].ResourceChange.[LogicalResourceId,ResourceType,Action,Replacement]" \
+      --output text)" || aws_fail "describing change set $STACK_CS"
+  [ "$refused" != None ] || refused=""
+  [ -n "$refused" ] || return 0
+  while IFS=$'\t' read -r lid type a r; do
+    [ -n "$lid" ] || continue
+    if [ "$type" = AWS::S3::Bucket ]; then what=bucket; else what=instance; fi
+    echo "refused: the $what $lid would be $([ "$a" = Remove ] && echo removed || echo "replaced (Replacement: $r)")" >&2
+  done <<< "$refused"
+  stack_discard
+  echo "cbase: the change set would replace or remove a bucket (and every file in it) or a VM group's instance (and every app's data on its disk): refused, and the change set deleted; nothing was executed" >&2
+  exit 1
+}
+
+# stack_delete: deletes STACK_NAME (in STACK_REGION) and waits; nothing when there is none.
+stack_delete() {
+  stack_status
+  if [ "$STACK_STATUS" = NONE ]; then
+    echo "stack: there is no $STACK_NAME stack: nothing to delete"
+    return 0
+  fi
+  cfn delete-stack --stack-name "$STACK_NAME" > /dev/null || aws_fail "deleting the $STACK_NAME stack"
+  echo "stack: deleting $STACK_NAME (a distribution takes some minutes to go)"
+  if ! cfn wait stack-delete-complete --stack-name "$STACK_NAME"; then
+    echo "cbase: the $STACK_NAME stack was not deleted (stack-delete-complete). Its failed resources:" >&2
+    cfn describe-stack-events --stack-name "$STACK_NAME" \
+      --query "StackEvents[?ends_with(ResourceStatus, 'FAILED')].[LogicalResourceId,ResourceStatusReason]" --output text \
+      > "$AWS_ERR" 2> /dev/null || true
+    aws_mask < "$AWS_ERR" | head -10 | sed 's/^/  /' >&2
+    exit 1
+  fi
+  echo "stack: $STACK_NAME is deleted"
 }
 
 # stack_execute: runs the change set and waits.

@@ -29,6 +29,8 @@
 #   make ops-test   the deploy tooling's tests (no AWS)
 #   make cbase-tool-test   the deploy tool (tools/cbase) end to end through the real AWS CLI against
 #                   a local fake of AWS (tools/cbase.d/test/cbase_test.sh; no AWS): part of check
+#   make cbase-vm-test     the same for its VM side: group-init, the VM deploy, undeploy, group-destroy
+#                   (tools/cbase.d/test/cbase_vm_test.sh; no AWS): part of check
 #   make serve      build/cbase, then run it as `cbase serve` from here (cbase.mk's APP_SERVE_DIR,
 #                   APP_ENV_FILE, APP_SERVE_LISTEN; tools/serve.sh): 127.0.0.1:8642, or PORT
 #   make serve-binary, make bootstrap   the static Linux arm64 binaries (ops/build_static.sh, Docker)
@@ -132,7 +134,10 @@ h2-interop: build/h2_interop
 .PHONY: cbase-tool-test
 cbase-tool-test:
 	bash tools/cbase.d/test/cbase_test.sh
-check: cbase-tool-test
+.PHONY: cbase-vm-test
+cbase-vm-test:
+	bash tools/cbase.d/test/cbase_vm_test.sh
+check: cbase-tool-test cbase-vm-test
 
 # The deploy tooling's own tests (ops/test, providers/*/ops/test): no AWS, no network, a stub `aws`
 # and scratch git trees. CI's ops job runs them; they are not part of check.
