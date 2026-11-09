@@ -104,6 +104,28 @@ The default (`$(CBASE)`) fits a product with cbase as a submodule; set it only w
 There are no file lists to edit: a new `.c` under a source root is part of every program, and a new `unit_*.c` under a test root is a new test.
 `make`, `make check` and `make check-asan` then work in the product as they do in cbase.
 
+### The targets cbase.mk owns
+
+`cbase.mk` defines these targets in the product's Makefile, each with its recipe:
+
+- `all`, the default goal (`.DEFAULT_GOAL := all`, whatever the product's first rule): the serve binary (the Lambda bootstrap too with the aws provider) and every program `APP_PROGS` names;
+- `test` (the compiler gate, `lib/`'s tests and every unit test), `smoke`, and `check` (the two together, and the client's check);
+- `check-asan`, `test-asan`, `smoke-asan`, `coverage`, `bench`, `serve`, `clean`, and the `fuzz` targets (`fuzz/fuzz.mk`).
+
+A product never writes a recipe for one of them: a second `test:` with a recipe draws make's `warning: overriding commands for target 'test'`, and the recipe read last replaces the other, so either cbase's tests or the product's stop running.
+A product adds its own work under a name of its own and joins it to cbase's target with a prerequisite line, which has no recipe and draws no warning, before or after the `include`:
+
+```make
+.PHONY: e2e
+e2e: build/$(APP_SERVE)
+	bash test/e2e.sh
+check: e2e          # make check runs it too
+```
+
+`test: e2e` joins it to `make test` the same way, and `serve: <file>` builds something before `make serve` (below).
+A unit test or a smoke needs no line at all: a `unit_*.c` under `APP_TEST_ROOTS` is one, and `APP_SMOKES` names the smokes.
+cbase's own `Makefile` and `example/Makefile` add their checks with `check:` lines.
+
 ### Running it: `make serve`
 
 `make serve` builds the product's serve binary (`build/$(APP_SERVE)`) through its usual rule and then runs it as `serve`, so every product has the same run line and none writes its own launcher.
