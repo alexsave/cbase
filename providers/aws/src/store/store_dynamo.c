@@ -109,7 +109,14 @@ typedef struct {
     int     errors;   // bulk: the sends again for something other than a throttle
 } backoff;
 
+// The jitter's stream (rng.h), one a thread. Its seed is one draw from cb_random_bytes
+// (util/uuid.h), the process's one random source, which a fuzz build makes deterministic:
+// JITTER_SEED is the one line that fixes every pause to the same sequence each run
+// (`#define JITTER_SEED(s) ((s) = 1)`). Never the clock or an address: unit_random_gate.c
+// refuses a time-based seed.
+#define JITTER_SEED(s) cb_random_bytes(&(s), sizeof(s))
 static _Thread_local uint64_t t_rng;
+static _Thread_local bool t_rng_seeded;
 
 static void backoff_start(dyn *d, backoff *b) {
     b->d = d;
@@ -127,8 +134,12 @@ static bool backoff_pause(backoff *b, bool throttled, const char *target) {
     int64_t cap = bulk ? BULK_CAP_MS : RETRY_CAP_MS;
     int64_t ceiling = RETRY_BASE_MS << (b->sends < 8 ? b->sends - 1 : 7);
     if (ceiling > cap) ceiling = cap;
-    // rng.h, one stream a thread: a jitter, not a secret
-    if (!t_rng) t_rng = rng_seed64((uint64_t)cb_mono_ms() ^ (uint64_t)(uintptr_t)&t_rng);
+    if (!t_rng_seeded) {   // a jitter, not a secret
+        uint64_t seed = 0;
+        JITTER_SEED(seed);
+        t_rng = rng_seed64(seed);
+        t_rng_seeded = true;
+    }
     int64_t pause = (int64_t)(rng_splitmix64(&t_rng) % (uint64_t)(ceiling + 1));
     bool stop = bulk ? !throttled && b->errors + 1 >= RETRY_SENDS
                      : b->sends >= RETRY_SENDS || cb_now_ms() + pause > b->until;
