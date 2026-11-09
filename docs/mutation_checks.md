@@ -1198,3 +1198,16 @@ It now plants providers/x/client/hosts/cdom/y.c and providers/x/client/test/unit
 
 - repo_gate_test.sh: `-e 'client/hosts/cdom/'` (no `^`) -> `the framework's name over planted files` red, providers/x/client/hosts/cdom/y.c missing.
 - repo_gate_test.sh: `-e 'client/test/unit_host_cdom\.c$'` (no `^`) -> the same check red, providers/x/client/test/unit_host_cdom.c missing.
+
+## make serve builds, then execs the serve binary from the run directory (make-serve)
+
+tools/serve_test.sh runs `make -C example serve` as a person runs it, each case a real make and server, and stops everything by PID.
+Each mutation was made in tools/serve.sh or cbase.mk, the test run, and the file restored from a copy.
+
+- serve.sh: the `CBASE_ENV_FILE=...; export CBASE_ENV_FILE` lines dropped -> `make serve did not boot on a .env.local holding CBASE_DEV=1` and `make serve still runs on a bad .env.local line` red.
+- serve.sh: `exec "$bin" serve` -> `"$bin" serve` -> `make's child is 'sh', not the serve binary` and `a server still answers on <port> after SIGTERM to make's child` red (the orphaned server held the port, so the next case could not bind it either).
+- serve.sh: `cd "$dir"` dropped -> `serve runs in '.../example', not APP_SERVE_DIR '.../run dir'` red, and the present and bad env-file cases red (the file was looked for in example/).
+- serve.sh: `CBASE_LISTEN="$listen"` (the environment's ignored) -> `CBASE_LISTEN=127.0.0.1:0 did not override the listen default: serve tried PORT=1` red.
+- serve.sh: the env file named whether or not it exists -> `make serve with no .env.local did not come up listening (an absent env file must be no error)` red.
+- serve.sh: the env file named even when CBASE_ENV_FILE is set -> `with CBASE_ENV_FILE set make serve did not boot on it` red.
+- cbase.mk: `APP_SERVE_DIR ?= $(CB)` (cbase's root, not the Makefile's directory) -> `with APP_SERVE_DIR unset serve runs in '<cbase root>', not <cbase root>/example` red.

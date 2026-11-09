@@ -34,18 +34,19 @@ make -j2 check
 `make check` builds everything, runs every unit test and smoke, the client's tests and the repository's gates, then builds the example app again as a local-only product in a stripped tree with the network denied and runs its checks there.
 `make` alone builds `build/cbase`, which is `cbase serve` with the example app (`example/`) linked in.
 
-Run it in development mode on a port the OS picks:
+Run it in development mode:
 
 ```
-CBASE_DEV=1 CBASE_LISTEN=127.0.0.1:0 CBASE_DB=/tmp/cbase-example.sqlite build/cbase serve
+CBASE_DEV=1 make serve
 ```
 
-Once the socket is bound, serve prints exactly one line to stdout, such as `cbase: listening 127.0.0.1:52817`, for a person or a parent process to read; the log goes to stderr.
-Then, with that port:
+`make serve` builds `build/cbase` and runs it as `cbase serve` from the repository root, on `127.0.0.1:3000` (`PORT=4000` for another port, `CBASE_LISTEN=127.0.0.1:0` for one the OS picks), with its database in `./cbase.sqlite`.
+Once the socket is bound, serve prints exactly one line to stdout, such as `cbase: listening 127.0.0.1:3000`, for a person or a parent process to read; the log goes to stderr.
+Then:
 
 ```
-curl http://127.0.0.1:52817/health
-curl http://127.0.0.1:52817/v1/hello
+curl http://127.0.0.1:3000/health
+curl http://127.0.0.1:3000/v1/hello
 ```
 
 Settings are `CBASE_*` environment variables, listed in `core/src/config.h` and logged at start with secrets redacted.
@@ -79,6 +80,26 @@ include $(CBASE)/cbase.mk
 
 There are no file lists to edit: a new `.c` under a source root is part of every program, and a new `unit_*.c` under a test root is a new test.
 `make`, `make check` and `make check-asan` then work in the product as they do in cbase.
+
+### Running it: `make serve`
+
+`make serve` builds the product's serve binary (`build/$(APP_SERVE)`) through its usual rule and then runs it as `serve`, so every product has the same run line and none writes its own launcher.
+It needs the local provider in `CBASE_PROVIDERS`, and `tools/serve.sh` is the one place that says how it runs:
+
+- It runs from `APP_SERVE_DIR`, where serve reads the app's files from its working directory; the default is the directory of the Makefile make read.
+  A product whose Makefile sits in `server/` and whose files are at the repository root sets `APP_SERVE_DIR := ..`.
+- When `APP_ENV_FILE` exists (default `.env.local`, from `APP_SERVE_DIR` unless absolute) and `CBASE_ENV_FILE` is not already set, it is named to serve as `CBASE_ENV_FILE`; an absent file is no error, and an empty `APP_ENV_FILE` names none.
+  The script never reads the file: serve reads it strictly, so a bad line refuses the boot with serve's own sentence naming the line.
+- `CBASE_LISTEN` is `APP_SERVE_LISTEN` unless the environment sets it; the default is `127.0.0.1` on `PORT`, or on 3000 without one.
+- The binary is exec'd, so make's child is the server itself: Ctrl-C or a SIGTERM sent to it reaches serve, which drains and exits.
+
+```make
+APP_SERVE     := myapp     # build/myapp
+APP_SERVE_DIR := ..        # run from the repository root, not server/
+include $(CBASE)/cbase.mk
+```
+
+`make -C server serve`, `PORT=4000 make -C server serve` and `CBASE_LISTEN=0.0.0.0:8080 make -C server serve` then all work, and `tools/serve_test.sh` (part of `make check`) holds each rule against the example.
 
 The product defines one const struct, `cb_app`, and points `cb_main_app` at it (`core/include/cbase/app.h`):
 

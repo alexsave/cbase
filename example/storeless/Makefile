@@ -4,6 +4,7 @@
 # takes its storeless branch.
 #
 #   make -C example/storeless smoke   build/cbase and the platform's smokes against it
+#   make -C example/storeless serve   build/cbase, then `cbase serve` from example/storeless/
 CBASE := ../..
 CBASE_PROVIDERS := local
 APP_SRC_ROOTS := src

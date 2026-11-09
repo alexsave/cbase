@@ -43,6 +43,14 @@
 #                    otherwise ($(1) is the build directory: build, build/asan, build/cov)
 #   APP_SERVE        the name of the `cbase serve` binary (default cbase); APP_LAMBDA the Lambda
 #                    bootstrap's (default bootstrap)
+#   APP_SERVE_DIR, APP_ENV_FILE, APP_SERVE_LISTEN   how `make serve` runs that binary (local
+#                    provider): it builds build/$(APP_SERVE), then tools/serve.sh execs it as
+#                    `serve` from APP_SERVE_DIR (default the directory of the Makefile make read,
+#                    the product's own; a product whose Makefile sits in server/ sets `..`), names
+#                    APP_ENV_FILE (default .env.local, from APP_SERVE_DIR unless absolute; empty for
+#                    none) to serve as CBASE_ENV_FILE when the file exists and CBASE_ENV_FILE is
+#                    unset, and sets CBASE_LISTEN to APP_SERVE_LISTEN (default 127.0.0.1:$(PORT), or
+#                    127.0.0.1:3000 with no PORT) unless CBASE_LISTEN is set
 #   APP_LAMBDA_SCHEDULE, APP_LAMBDA_JOB   one of the app's schedules and one of its jobs, which the
 #                    Lambda smoke (smoke_lambda) sends as the scheduler and the self-invoke do
 #   APP_GATE_HEADER  one of the product's headers, which a core source must not reach (the compiler
@@ -86,6 +94,9 @@ CB_STEM := $(call cb_stem,$(CB))
 
 APP_SERVE  ?= cbase
 APP_LAMBDA ?= bootstrap
+APP_SERVE_DIR    ?= $(patsubst %/,%,$(dir $(firstword $(MAKEFILE_LIST))))
+APP_ENV_FILE     ?= .env.local
+APP_SERVE_LISTEN ?= 127.0.0.1:$(or $(PORT),3000)
 
 # ---- the toolchain's libraries ----------------------------------------------------------------
 # SQLITE IS UPSTREAM'S ON EVERY PLATFORM: the one production runs (Alpine's, static) is upstream's,
@@ -482,6 +493,12 @@ ifneq ($(CB_LOCAL),)
 .PHONY: serve-binary
 serve-binary:
 	$(CB_STATIC) $(CB)ops/build_static.sh serve
+# `make serve`: build/$(APP_SERVE) through its rule above, then run it (tools/serve.sh owns how:
+# the run directory, the env file, the listen default, and the exec that makes make's child the
+# server, so a signal sent to it reaches serve). The header says the three knobs.
+.PHONY: serve
+serve: build/$(APP_SERVE)
+	@exec sh '$(CB)tools/serve.sh' '$(APP_SERVE_DIR)' 'build/$(APP_SERVE)' '$(APP_ENV_FILE)' '$(APP_SERVE_LISTEN)'
 endif
 
 # ---- coverage (docs/COVERAGE.md) ----------------------------------------------------------------

@@ -5,6 +5,9 @@
 # no network service and no setup beyond the build.
 #
 #   make -C example            build/cbase
+#   make -C example serve      build/cbase, then `cbase serve` from example/ on 127.0.0.1:3000 (or
+#                              PORT), with example/.env.local as CBASE_ENV_FILE when it exists
+#                              (cbase.mk's header: APP_SERVE_DIR, APP_ENV_FILE, APP_SERVE_LISTEN)
 #   make -C example check      the compiler gate, lib/'s tests, every unit test, the smokes, and
 #                              the link check
 #   make -C example link-check no symbol of a provider this build does not link is in build/cbase

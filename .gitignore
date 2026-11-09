@@ -10,6 +10,13 @@
 # The example app built as a local-only consumer (make -C example).
 /example/build/
 /example/storeless/build/
+# What `make serve` reads and writes in its run directory: the local settings file (never commit
+# it) and the default database.
+/.env.local
+/example/.env.local
+/example/storeless/.env.local
+/example/*.sqlite*
+/example/storeless/*.sqlite*
 
 # Tools built in place (tools/structgen: make -C tools/structgen).
 /tools/*/build/

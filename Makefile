@@ -16,7 +16,8 @@
 #                   fresh tree without providers/aws/ or ops/: built with the network denied,
 #                   then its own check (tools/offline_build_test.sh --check: example/Makefile's
 #                   tests, smokes and link check), and the platform's smokes against a storeless
-#                   product (example/storeless)
+#                   product (example/storeless), and `make -C example serve` as a person runs it
+#                   (tools/serve_test.sh)
 #   make check-asan the same tests, every object rebuilt under ASan + UBSan, and every fuzz
 #                   corpus replayed through its target under them (make fuzz-replay)
 #   make check-dynamo  the store conformance suite and the example smoke against DynamoDB Local
@@ -25,6 +26,8 @@
 #                   the libFuzzer targets (<side>/fuzz/fz_*.c; fuzz/fuzz.mk says what each does)
 #   make coverage   the coverage build and gate (docs/COVERAGE.md)
 #   make ops-test   the deploy tooling's tests (no AWS)
+#   make serve      build/cbase, then run it as `cbase serve` from here (cbase.mk's APP_SERVE_DIR,
+#                   APP_ENV_FILE, APP_SERVE_LISTEN; tools/serve.sh): 127.0.0.1:3000, or PORT
 #   make serve-binary, make bootstrap   the static Linux arm64 binaries (ops/build_static.sh, Docker)
 #   make clean
 #
@@ -70,6 +73,14 @@ check: repo-gate symbol-gate offline-build
 storeless-smoke:
 	$(MAKE) -C example/storeless smoke
 check: storeless-smoke
+
+# THE SERVE TEST (tools/serve_test.sh): `make -C example serve` as a person runs it, each case a
+# real make and server: the run directory, the env file (present, absent, bad, already named), the
+# listen default and its override, and a SIGTERM to make's child reaching the server.
+.PHONY: serve-test
+serve-test: example-serve
+	bash tools/serve_test.sh
+check: serve-test
 
 # THE HTTP/2 AND gRPC MODULE A LA CARTE (docs/H2.md): a consumer that takes net/h2*, hpack, grpc and
 # tls and only what they need is linked from exactly those objects (build/h2_alacarte, so a module
