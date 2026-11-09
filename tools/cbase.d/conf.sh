@@ -21,7 +21,7 @@
 #   CBASE_MEMORY   optional, for an app with a VM: the memory it declares, <n>M or <n>G (16M to
 #                  64G). Declared, it is the service's hard cap (MemoryMax) and the app's exact
 #                  count in its group's fit check. Unset, the service has no hard cap and the fit
-#                  check (phase 3) counts it at CONF_MEMORY_ESTIMATE (128M), saying so:
+#                  check (vm.sh) counts it at CONF_MEMORY_ESTIMATE (128M), saying so:
 #                  "shop: memory not declared, counted as 128M". conf_load resolves both:
 #                  CONF_MEMORY (declared MiB, or "") and CONF_MEMORY_ESTIMATED (1 when unset).
 #   CBASE_ROUTE    repeated, one route a line, matched in order. Written only to differ from the
@@ -74,7 +74,7 @@ CONF_VM=""
 CONF_STATIC=""
 CONF_MEMORY=""      # the declared MiB; "" when undeclared or the app has no VM
 CONF_MEMORY_ESTIMATED=""   # 1: a VM app with no CBASE_MEMORY, counted at CONF_MEMORY_ESTIMATE
-CONF_MEMORY_ESTIMATE=128   # MiB: the conservative count for an undeclared app (phase 3's fit check)
+CONF_MEMORY_ESTIMATE=128   # MiB: the conservative count for an undeclared app (vm.sh's fit check)
 CONF_DOMAIN=""
 CONF_CERT_ARN=""
 CONF_ZONE=""

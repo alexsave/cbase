@@ -5,15 +5,23 @@
 #
 #   cbase/tools/cbase config check      read cbase.conf and print it, defaults filled in (no AWS)
 #   cbase/tools/cbase doctor            the config, the AWS account, each group and its members
-#   cbase/tools/cbase apps [GROUP]      the apps in a group (default: cbase.conf's groups)
+#   cbase/tools/cbase apps [GROUP]      the apps in a group, with each one's port, service and memory
+#                                       (default: cbase.conf's groups)
 #   cbase/tools/cbase deploy [--dry-run] [--accept-drift] [--prune]
-#                                       the app's static files and its distribution (a VM app's
-#                                       VM side: phase 3). DRY_RUN=1, CBASE_ACCEPT_DRIFT=1 and
+#                                       the app: its service on the group's VM, its static files,
+#                                       its distribution. DRY_RUN=1, CBASE_ACCEPT_DRIFT=1 and
 #                                       CBASE_PRUNE=1 are the same as the flags
+#   cbase/tools/cbase undeploy [--delete-files] [--delete-data]
+#                                       the app's service stopped and removed, its memberships left,
+#                                       its stack deleted; its files and its data kept unless asked
+#   cbase/tools/cbase group-init vm|static GROUP [--type TYPE] [--yes]
+#                                       makes the group (an instance, or a bucket), the one command
+#                                       that does; a VM's needs --yes or a typed yes (it costs money)
+#   cbase/tools/cbase group-destroy vm|static GROUP [--delete-data] [--yes]
+#                                       deletes an empty group's stack (refused while it has members)
 #   cbase/tools/cbase template          the distribution's stack template deploy renders (no AWS;
 #                                       the bucket and certificate as placeholders)
-#   cbase/tools/cbase undeploy          not yet (phase 3)
-#   cbase/tools/cbase group-init vm|static GROUP   not yet (phase 3)
+#   cbase/tools/cbase group-template vm|static GROUP   the group's stack template (no AWS)
 #   cbase/tools/cbase state join|leave  the membership step deploy and undeploy run: the app
 #                                       joins (or leaves) its groups' state files, a VM app
 #                                       claiming its port. For repair, and for the tests.
@@ -46,11 +54,13 @@ trap cb_cleanup EXIT
 . "$here/cbase.d/cert.sh"
 # shellcheck source=tools/cbase.d/vm.sh
 . "$here/cbase.d/vm.sh"
+# shellcheck source=tools/cbase.d/group.sh
+. "$here/cbase.d/group.sh"
 CB_TMP="$(mktemp -d "${TMPDIR:-/tmp}/cbase.XXXXXX")"
 CB_CLEANUP+=("$CB_TMP")
 
 usage() {
-  sed -n '6,22p' "$here/cbase" | sed 's/^# \{0,1\}//'
+  sed -n '6,29p' "$here/cbase" | sed 's/^# \{0,1\}//'
 }
 
 conf="cbase.conf"
@@ -65,11 +75,6 @@ done
 [ $# -ge 1 ] || { usage >&2; exit 2; }
 cmd="$1"
 shift
-
-not_yet() {
-  echo "cbase: $1 is not built yet (it comes in $2); see README.md \"./cbase deploy tool\"" >&2
-  exit 2
-}
 
 # GROUPS: the groups cbase.conf names, "<kind> <group>" each. An array, never a loop over a pipe:
 # a command in the loop (aws) would share the loop's stdin.
@@ -162,6 +167,14 @@ case "$cmd" in
     echo "# PLACEHOLDERS: the bucket ($STACK_BUCKET) is static group $CONF_STATIC's${CONF_DOMAIN:+, the certificate is the one deploy finds or requests}."
     stack_print_template "$CB_TMP/stack.yaml"
     ;;
+  group-template)
+    kind="${1:-}"
+    group="${2:-}"
+    case "$kind" in vm|static) ;; *) echo "cbase: group-template vm GROUP or group-template static GROUP" >&2; exit 2 ;; esac
+    conf_name_ok "$group" && [ $# -eq 2 ] || { echo "cbase: group-template $kind wants one group name" >&2; exit 2; }
+    "group_render_$kind" "$group" "$CB_TMP/group.yaml"
+    cat "$CB_TMP/group.yaml"
+    ;;
   deploy)
     for a in "$@"; do
       case "$a" in
@@ -173,44 +186,66 @@ case "$cmd" in
     done
     DRY_RUN="${DRY_RUN:-}"
     conf_load "$conf"
-    # The VM side is phase 3: an app with a VM stops here, before anything is read or changed.
-    [ "$CONF_VM" = none ] || vm_deploy
     aws_init
     aws_account_load
     echo "deploy: $CONF_APP to account $AWS_ACCOUNT${DRY_RUN:+ (dry run: nothing is changed)}"
-    # 1. The static group, found by its tag (a missing one stops with its group-init command).
-    STACK_BUCKET="$(aws_group_find static "$CONF_STATIC")"
-    STACK_BUCKET_REGION="$(aws_call s3api get-bucket-location --bucket "$STACK_BUCKET" --query LocationConstraint --output text)" \
-      || aws_fail "reading s3://$STACK_BUCKET's region"
-    case "$STACK_BUCKET_REGION" in None|'') STACK_BUCKET_REGION=us-east-1 ;; EU) STACK_BUCKET_REGION=eu-west-1 ;; esac
-    echo "static group $CONF_STATIC: s3://$STACK_BUCKET ($STACK_BUCKET_REGION), the app's folder $CONF_APP/"
-    # 2. The files, read and grouped before anything is changed.
-    static_scan "$CONF_STATIC_DIR"
-    static_plan "$CONF_STATIC_DIR"
-    # 3. The certificate (it may stop, status 3, for DNS records added by hand).
+    # 1. The groups, found by their tags (a missing one stops with its group-init command).
+    if [ "$CONF_VM" != none ]; then
+      vm_find "$CONF_VM"
+    fi
+    if [ "$CONF_STATIC" != none ]; then
+      STACK_BUCKET="$(aws_group_find static "$CONF_STATIC")"
+      STACK_BUCKET_REGION="$(aws_call s3api get-bucket-location --bucket "$STACK_BUCKET" --query LocationConstraint --output text)" \
+        || aws_fail "reading s3://$STACK_BUCKET's region"
+      case "$STACK_BUCKET_REGION" in None|'') STACK_BUCKET_REGION=us-east-1 ;; EU) STACK_BUCKET_REGION=eu-west-1 ;; esac
+      echo "static group $CONF_STATIC: s3://$STACK_BUCKET ($STACK_BUCKET_REGION), the app's folder $CONF_APP/"
+      # 2. The files, read and grouped before anything is changed.
+      static_scan "$CONF_STATIC_DIR"
+      static_plan "$CONF_STATIC_DIR"
+    fi
+    # 3. The server, built before anything is changed (a dry run builds nothing).
+    [ "$CONF_VM" = none ] || [ "$DRY_RUN" = 1 ] || vm_build
+    # 4. The certificate (it may stop, status 3, for DNS records added by hand).
     cert_resolve
     STACK_CERT="$CERT_ARN"
-    # 4. The stack's change set, through its gates (drift, the bucket).
+    # 5. The VM group: the port claimed and the memory fit checked, in one conditional write; the
+    #    stack's VM origin is the instance and that port.
+    if [ "$CONF_VM" != none ]; then
+      if [ "$DRY_RUN" = 1 ]; then vm_plan_dry "$CONF_VM"; else vm_join "$CONF_VM"; fi
+      STACK_PARAMS=("ParameterKey=VmOrigin,ParameterValue=$VM_DNS" "ParameterKey=VmPort,ParameterValue=$VM_PORT")
+    fi
+    # 6. The stack's change set, through its gates (drift, the bucket).
     stack_plan
     if [ "$DRY_RUN" = 1 ]; then
       [ -z "$STACK_CHANGES" ] || stack_discard
-      echo "the upload ($CONF_STATIC_DIR/ to s3://$STACK_BUCKET/$CONF_APP/), in order:"
-      static_print_plan
+      if [ "$CONF_STATIC" != none ]; then
+        echo "the upload ($CONF_STATIC_DIR/ to s3://$STACK_BUCKET/$CONF_APP/), in order:"
+        static_print_plan
+      fi
       echo "dry run: change set ${STACK_CS} deleted unexecuted; nothing was uploaded, deleted or changed"
       exit 0
     fi
-    # 5. The app joins the static group's state file, which records its folder.
-    state_change static "$CONF_STATIC" "$CONF_APP" "" join
-    # 6. The files: hashed, then the rest, html last; then the prune, if asked.
-    static_print_plan
-    static_upload "$STACK_BUCKET" "$STACK_BUCKET_REGION" "$CONF_APP"
-    [ "${CBASE_PRUNE:-}" != 1 ] || static_prune "$STACK_BUCKET" "$STACK_BUCKET_REGION" "$CONF_APP"
-    # 7. The distribution.
+    # 7. The service: the artifact, then SSM installs and restarts it and waits for it to be up.
+    #    It goes before the files, so a service that does not start leaves the site as it was; the
+    #    change set is then deleted unexecuted.
+    if [ "$CONF_VM" != none ] && ! vm_ship "$CONF_VM"; then
+      [ -z "$STACK_CHANGES" ] || stack_discard
+      exit 1
+    fi
+    # 8. The files: the app joins the static group's state file, which records its folder; then
+    #    hashed, the rest, html last; then the prune, if asked.
+    if [ "$CONF_STATIC" != none ]; then
+      state_change static "$CONF_STATIC" "$CONF_APP" "" join
+      static_print_plan
+      static_upload "$STACK_BUCKET" "$STACK_BUCKET_REGION" "$CONF_APP"
+      [ "${CBASE_PRUNE:-}" != 1 ] || static_prune "$STACK_BUCKET" "$STACK_BUCKET_REGION" "$CONF_APP"
+    fi
+    # 9. The distribution.
     [ -z "$STACK_CHANGES" ] || stack_execute
     dist_id="$(stack_output DistributionId)"
     dist_domain="$(stack_output DistributionDomain)"
     { [ -n "$dist_id" ] && [ -n "$dist_domain" ]; } || { echo "cbase: the $STACK_NAME stack has no DistributionId or DistributionDomain output" >&2; exit 1; }
-    # 8. The edge's copies of the old files dropped; then the hostnames pointed at the distribution.
+    # 10. The edge's copies of the old files dropped; then the hostnames pointed at the distribution.
     if [ "$STACK_TYPE" = UPDATE ]; then   # a distribution just made has nothing cached
       inv="$(aws_call cloudfront create-invalidation --distribution-id "$dist_id" --paths '/*' --query Invalidation.Id --output text)" \
         || aws_fail "invalidating $dist_id"
@@ -224,7 +259,57 @@ case "$cmd" in
     fi
     echo "deployed $CONF_APP: $url"
     ;;
-  undeploy) not_yet undeploy "phase 3" ;;
-  group-init) not_yet group-init "phase 3" ;;
+  undeploy)
+    del_files=""; del_data=""
+    for a in "$@"; do
+      case "$a" in
+        --delete-files) del_files=1 ;;
+        --delete-data) del_data=1 ;;
+        *) echo "cbase: undeploy takes --delete-files and --delete-data, not $a" >&2; exit 2 ;;
+      esac
+    done
+    conf_load "$conf"
+    aws_init
+    aws_account_load
+    echo "undeploy: $CONF_APP from account $AWS_ACCOUNT"
+    # 1. The distribution first, so nothing routes to what goes next.
+    STACK_NAME="$(stack_name)"
+    STACK_REGION=us-east-1
+    stack_delete
+    # 2. The service, then its membership (its port released); its data kept unless --delete-data.
+    if [ "$CONF_VM" != none ]; then
+      vm_undeploy "$CONF_VM" "${del_data:-0}"
+    elif [ -n "$del_data" ]; then
+      echo "undeploy: --delete-data: $CONF_APP has no VM, so it has no data folder"
+    fi
+    # 3. The files: kept unless --delete-files (the folder alone, never another app's key).
+    if [ "$CONF_STATIC" != none ]; then
+      STACK_BUCKET="$(aws_group_find static "$CONF_STATIC")"
+      STACK_BUCKET_REGION="$(aws_call s3api get-bucket-location --bucket "$STACK_BUCKET" --query LocationConstraint --output text)" \
+        || aws_fail "reading s3://$STACK_BUCKET's region"
+      case "$STACK_BUCKET_REGION" in None|'') STACK_BUCKET_REGION=us-east-1 ;; EU) STACK_BUCKET_REGION=eu-west-1 ;; esac
+      if [ -n "$del_files" ]; then
+        ST_FILES="$CB_TMP/no-files"
+        : > "$ST_FILES"
+        static_prune "$STACK_BUCKET" "$STACK_BUCKET_REGION" "$CONF_APP"
+      else
+        echo "undeploy: kept s3://$STACK_BUCKET/$CONF_APP/ (./cbase undeploy --delete-files deletes it)"
+      fi
+      state_change static "$CONF_STATIC" "$CONF_APP" "" leave
+    fi
+    [ -z "$CONF_DOMAIN" ] || echo "undeploy: $CONF_DOMAIN's DNS records still point at the deleted distribution: remove them where the domain's DNS is served"
+    echo "undeployed $CONF_APP"
+    ;;
+  group-init|group-destroy)
+    kind="${1:-}"
+    group="${2:-}"
+    case "$kind" in vm|static) ;; *) echo "cbase: $cmd vm GROUP or $cmd static GROUP" >&2; exit 2 ;; esac
+    conf_name_ok "$group" || { echo "cbase: $cmd $kind wants a group name (a lower-case letter, then lower-case letters, digits and '-', at most 32 characters), not \"${group:0:40}\"" >&2; exit 2; }
+    shift 2
+    group_args "$cmd" "$@"
+    aws_init
+    aws_account_load
+    if [ "$cmd" = group-init ]; then group_init "$kind" "$group"; else group_destroy "$kind" "$group"; fi
+    ;;
   *) echo "cbase: unknown command $cmd" >&2; usage >&2; exit 2 ;;
 esac

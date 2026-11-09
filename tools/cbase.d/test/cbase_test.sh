@@ -10,86 +10,19 @@
 # echoed); the values that look random but are not secrets; no credentials; a group found and not
 # found; README.md's example; join, rejoin, leave and the port claim; two racing joins on a new file and on an
 # existing one (distinct ports, one 412 and its retry); apps; a corrupt state file; a missing
-# state bucket; doctor; the commands not built yet. Then deploy (phase 2): a static site end to
+# state bucket; doctor; an unknown command. Then deploy: a static site end to
 # end (the stack's create, each file's headers, the hashed rule, the upload order, nothing outside
 # the app's folder), a redeploy (drift checked, no changes, the invalidation), prune scoped to the
 # folder even over a listing of the whole bucket, a bucket's replacement and removal refused, a
 # distribution's replacement allowed and said, drift refused then accepted, DRY_RUN, an origin
 # header's and a parameter's value kept out of a drift, a change set and an error, the
 # certificate found, requested with a zone, requested without one (the records printed, status 3),
-# a certificate read that fails, a VM app stopped as phase 3, a missing group and a missing build,
-# and the template's routes. docs/mutation_checks.md records the mutations each was checked against.
+# a certificate read that fails, a missing group and a missing build, and the template's routes.
+# The VM side, group-init, undeploy and group-destroy are cbase_vm_test.sh's. docs/mutation_checks.md
+# records the mutations each was checked against.
 set -euo pipefail
-export LC_ALL=C
-root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-tool="$root/tools/cbase"
-t="$(mktemp -d "${TMPDIR:-/tmp}/cbase-test.XXXXXX")"
-FAKE_PID=""
-stop_fake() {
-  if [ -n "$FAKE_PID" ]; then kill "$FAKE_PID" 2> /dev/null || true; wait "$FAKE_PID" 2> /dev/null || true; fi
-  FAKE_PID=""
-}
-trap 'stop_fake; rm -rf "$t"' EXIT
-fail() { echo "cbase_test: FAIL: $*" >&2; exit 1; }
-pass=0
-ok() { pass=$((pass + 1)); }
-
-command -v aws > /dev/null 2>&1 || fail "the AWS CLI (aws) is not on PATH: the tests drive the real CLI against a local fake"
-${CC:-cc} -std=gnu11 -D_GNU_SOURCE -O2 -Wall -Wextra -Werror -pthread "$root/tools/cbase.d/test/fake_aws.c" -o "$t/fake_aws"
-
-ACCOUNT=111122223333
-BUCKET="cbase-state-$ACCOUNT"
-# The test's AWS: nothing of the person's (no profile, no config, no metadata service), dummy keys.
-unset AWS_PROFILE AWS_DEFAULT_PROFILE AWS_SESSION_TOKEN AWS_ENDPOINT_URL_S3 AWS_ENDPOINT_URL_STS \
-      AWS_ENDPOINT_URL_RESOURCE_GROUPS_TAGGING_API AWS_DEFAULT_REGION AWS_CA_BUNDLE
-export AWS_ACCESS_KEY_ID=AKIACBASEFAKE0000000 AWS_SECRET_ACCESS_KEY=cbase-test-dummy-secret-key \
-       AWS_REGION=us-east-1 AWS_CONFIG_FILE="$t/no-aws-config" AWS_SHARED_CREDENTIALS_FILE="$t/no-aws-credentials" \
-       AWS_EC2_METADATA_DISABLED=true AWS_PAGER="" AWS_MAX_ATTEMPTS=1 AWS_ENDPOINT_URL=http://127.0.0.1:1
-
-# start_fake ARGS...: a fresh fake (no objects), its log at $t/log, AWS_ENDPOINT_URL at it.
-start_fake() {
-  stop_fake
-  # Every call the last fake answered was signed with the dummy key: none was refused as unsigned
-  # (a call that had found other credentials).
-  if [ -f "$t/log" ] && grep -q unsigned "$t/log"; then fail "a call reached the fake without the test's credentials"; fi
-  rm -f "$t/port" "$t/log"
-  "$t/fake_aws" --port-file "$t/port" --log "$t/log" --account "$ACCOUNT" "$@" &
-  FAKE_PID=$!
-  local n=0
-  until [ -s "$t/port" ] || [ $n -gt 100 ]; do sleep 0.05; n=$((n + 1)); done
-  [ -s "$t/port" ] || fail "the fake did not start"
-  AWS_ENDPOINT_URL="http://127.0.0.1:$(cat "$t/port")"
-  export AWS_ENDPOINT_URL
-}
-VM_G1="cbase:vm-group g1 ec2:instance arn:aws:ec2:us-east-1:$ACCOUNT:instance/i-0g1"
-VM_G2="cbase:vm-group g2 ec2:instance arn:aws:ec2:us-east-1:$ACCOUNT:instance/i-0g2"
-ST_G1="cbase:static-group g1 s3 arn:aws:s3:::g1-site-bucket"
-CF_OPTIMIZED=658327ea-f89d-4fab-a63d-7e88639e58f6
-CF_DISABLED=4135ea2d-6df8-44a3-9df3-4b5a84be39ad
-everything=(--bucket "$BUCKET" --resource "$VM_G1" --resource "$VM_G2" --resource "$ST_G1")
-
-# run DIR ARGS...: the tool from DIR (an app's repository), its stdout in $t/out, stderr in
-# $t/err, status in $rc.
-rc=0
-run() {
-  local dir="$1"; shift
-  rc=0
-  (cd "$dir" && "$tool" "$@") > "$t/out" 2> "$t/err" || rc=$?
-}
-expect_rc() { [ "$rc" = "$1" ] || { cat "$t/out" "$t/err" >&2; fail "$2: status $rc, not $1"; }; }
-err_has() { grep -Fq -- "$1" "$t/err" || { cat "$t/err" >&2; fail "$2: stderr lacks [$1]"; }; }
-out_has() { grep -Fq -- "$1" "$t/out" || { cat "$t/out" >&2; fail "$2: stdout lacks [$1]"; }; }
-log_count() { grep -cF -- "$1" "$t/log" || true; }
-app() {   # app NAME LINES...: an app repository with cbase.conf of LINES
-  local d="$t/apps/$1"; shift
-  mkdir -p "$d"
-  printf '%s\n' "$@" > "$d/cbase.conf"
-  printf '%s' "$d"
-}
-state_of() {   # state_of KIND GROUP: the state file as the fake holds it
-  aws s3api get-object --bucket "$BUCKET" --key "$1/$2.txt" "$t/state" > /dev/null 2>&1 || { echo "(none)"; return; }
-  cat "$t/state"
-}
+# shellcheck source=tools/cbase.d/test/lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 # ---- cbase.conf: errors, each with its line number -------------------------------------------
 conf_error() {   # conf_error "EXPECTED" LINES...
@@ -364,13 +297,12 @@ ok
 # ---- apps --------------------------------------------------------------------------------------
 run "$b" apps
 expect_rc 0 "apps from cbase.conf"
-cat > "$t/want" << EOF
-vm group g1 (s3://$BUCKET/vm/g1.txt): 2 apps
-  app=b port=8701 service=cbase-b.service mem=1024
-  app=c port=8700 service=cbase-c.service mem=64
-static group g1 (s3://$BUCKET/static/g1.txt): 1 app
-  app=b folder=b/
-EOF
+{
+  echo "vm group g1 (s3://$BUCKET/vm/g1.txt): 2 apps"
+  printf '  %-24s %-5s %-34s %s\n' app port service mem b 8701 cbase-b.service 1024M c 8700 cbase-c.service 64M
+  echo "static group g1 (s3://$BUCKET/static/g1.txt): 1 app"
+  printf '  %-24s %s\n' app folder b b/
+} > "$t/want"
 diff -u "$t/want" "$t/out" || fail "apps listed another membership"
 ok
 run "$t" apps g1
@@ -391,7 +323,7 @@ expect_rc 0 "doctor"
 out_has "account   $ACCOUNT (us-east-1)" "doctor names the account"
 out_has "vm group g1: i-0g1" "doctor names the instance"
 out_has "static group g1: g1-site-bucket" "doctor names the bucket"
-out_has "  app=c port=8700" "doctor lists the members"
+out_has "  c                        8700  cbase-c.service" "doctor lists the members"
 ok
 run "$(app doc2 "CBASE_APP = z" "CBASE_VM = ghost" "CBASE_MEMORY = 64M" "CBASE_STATIC = g1")" doctor
 expect_rc 1 "doctor with a missing group"
@@ -456,20 +388,13 @@ state_of vm g2 > "$t/g2"
 [ "$(grep -o 'port=[0-9]*' "$t/g2" | sort -u | wc -l | tr -d ' ')" = 4 ] || fail "four apps, four ports"
 ok
 
-# ---- not yet -----------------------------------------------------------------------------------
-for c in undeploy "group-init vm g1"; do
-  # shellcheck disable=SC2086 # the command's words
-  run "$b" $c
-  expect_rc 2 "$c"
-  err_has "is not built yet" "$c"
-  ok
-done
+# ---- an unknown command ------------------------------------------------------------------------
 run "$b" frobnicate
 expect_rc 2 "an unknown command"
 ok
 
 # ================================================================================================
-# deploy: the static part (phase 2)
+# deploy: the static part
 # ================================================================================================
 export CBASE_POLL_SECONDS=0
 SITE_BUCKET="site-bucket"
@@ -481,8 +406,6 @@ site_fake=(--bucket "$BUCKET" --bucket "$SITE_BUCKET:us-west-2" --resource "$ST_
            --cert "$CERT_OTHER ISSUED other.org" --cert "$CERT_DEEP ISSUED *.www.example.com"
            --cert "$CERT_WILD ISSUED example.com,*.example.com" --zone "Z0EXAMPLE example.com"
            --zone "Z0PRIVATE corp.example.com private")
-fake_set() { curl -fsS -X POST "$AWS_ENDPOINT_URL/_fake/set?$1" > /dev/null; }
-template_of() { curl -fsS "$AWS_ENDPOINT_URL/_fake/template?stack=$1"; }
 head_of() {   # head_of KEY: "<Content-Type>|<Cache-Control>" of s3://site-bucket/KEY
   aws s3api head-object --bucket "$SITE_BUCKET" --key "$1" --query '[ContentType,CacheControl]' --output text | tr '\t' '|'
 }
@@ -490,8 +413,6 @@ seed() {   # seed KEY: an object of someone else's, put straight into the site b
   printf 'theirs\n' > "$t/seed"
   aws s3api put-object --bucket "$SITE_BUCKET" --key "$1" --body "$t/seed" > /dev/null
 }
-mark() { wc -l < "$t/log" | tr -d ' '; }    # the log's length now: what a run adds is after it
-since() { sed -n "$(( $1 + 1 )),\$p" "$t/log"; }   # since MARK: the log lines after MARK
 # The site: a static app (CBASE_VM = none) with every kind of file.
 site="$(app site "CBASE_APP = site" "CBASE_VM = none" "CBASE_HASHED = assets/*")"
 mkdir -p "$site/build/assets" "$site/build/docs" "$site/build/.well-known" "$site/build/.git"
@@ -780,13 +701,6 @@ since "$m" | grep -q "ACM RequestCertificate" && fail "a second certificate was 
 ok
 
 # ---- what deploy refuses -----------------------------------------------------------------------
-# A VM app: phase 3, stopped before any AWS call.
-m="$(mark)"
-run "$b" deploy
-expect_rc 2 "a VM app's deploy"
-err_has "deploying the VM side (the service over SSM, its port, the VM origin of its routes) is phase 3" "a VM app's deploy"
-[ -z "$(since "$m")" ] || fail "a VM app's deploy called AWS"
-ok
 # A static group that does not exist: the group-init command, nothing made.
 ghost="$(app ghost "CBASE_APP = ghost" "CBASE_VM = none" "CBASE_STATIC = nosuch")"
 m="$(mark)"

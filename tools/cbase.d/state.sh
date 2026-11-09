@@ -24,6 +24,13 @@
 # claims the lowest port in STATE_PORT_MIN..STATE_PORT_MAX that no member holds, in the same write
 # that records it, so two racing joins can never hold one port.
 #
+# THE MEMORY FIT (vm groups, deploy's join): with STATE_FIT_LIMIT set (the MiB the group's instance
+# leaves for apps, vm.sh), a join is checked in the same read-modify-write that claims the port:
+# every member's mem plus the joining app's must fit, or the join is refused and nothing written.
+# An undeclared member (mem=~128) counts at its estimate, and the report says so. Two racing joins
+# cannot both fit into the room for one: the second one's write fails its precondition, and its
+# retry checks again against the file the first one wrote.
+#
 # THE BACKOFF between attempts is deterministic, not random: there is no sanctioned seedable
 # source in shell (cbase's is lib/rng.h, in C), and $RANDOM is not one. Attempt k waits
 # min(2000, 100 * 2^(k-1)) ms plus a stagger of 0-99 ms that is the app's name's cksum mod 100,
@@ -40,6 +47,12 @@ STATE_ATTEMPTS=8
 ST_LINES=()
 ST_APPS=()
 ST_PORTS=()   # vm groups: each member's port
+
+STATE_FIT_LIMIT=""   # MiB the vm group's instance leaves for apps; "" for no fit check
+STATE_FIT_WHAT=""    # how the limit came about, for the report ("t4g.nano: 512 MiB less 192 for the OS")
+STATE_FIT_REPORT=""  # the last fit check's report
+STATE_JOINED_NEW=""  # 1 when the last join added the app (it was not a member)
+STATE_PORT=""        # the port the last vm join holds
 
 state_bucket() { printf 'cbase-state-%s' "$AWS_ACCOUNT"; }
 state_key() { printf '%s/%s.txt' "$1" "$2"; }
@@ -83,6 +96,41 @@ state_parse() {
     ST_PORTS+=("$port")
   done < "$file"
   [ "$no" -ge 1 ] || state_die "$where" 1 "is empty (it starts \"cbase-state $STATE_VERSION $kind $group\")"
+}
+
+# state_mem LINE: STATE_MEM, a vm member line's MiB, and STATE_MEM_EST, 1 when it is the
+# estimate an undeclared app is counted at (mem=~N).
+STATE_MEM=""
+STATE_MEM_EST=""
+state_mem() {
+  local m="${1##* mem=}"
+  STATE_MEM_EST=""
+  if [ "${m#\~}" != "$m" ]; then STATE_MEM_EST=1; m="${m#\~}"; fi
+  STATE_MEM="$((10#$m))"
+}
+
+# state_fit APP LINE: whether ST_LINES, with APP's line made LINE, fit in STATE_FIT_LIMIT MiB.
+# Fills STATE_FIT_REPORT, the members by name; status 1 when they do not fit.
+state_fit() {
+  local app="$1" new="$2" i a line total=0 notes="" members="" sorted
+  local lines=("${ST_LINES[@]+"${ST_LINES[@]}"}") apps=("${ST_APPS[@]+"${ST_APPS[@]}"}") at=""
+  for i in "${!apps[@]}"; do [ "${apps[$i]}" != "$app" ] || at="$i"; done
+  if [ -n "$at" ]; then lines[at]="$new"; else lines+=("$new"); fi
+  sorted="$(printf '%s\n' "${lines[@]}" | LC_ALL=C sort)"
+  while IFS= read -r line; do
+    a="${line#app=}"
+    a="${a%% *}"
+    state_mem "$line"
+    total=$((total + STATE_MEM))
+    if [ -n "$STATE_MEM_EST" ]; then
+      notes="$notes  $a: memory not declared, counted as ${STATE_MEM}M"$'\n'
+      members="$members${members:+, }$a ~$STATE_MEM"
+    else
+      members="$members${members:+, }$a $STATE_MEM"
+    fi
+  done <<< "$sorted"
+  STATE_FIT_REPORT="$notes  memory: $members = $total MiB of the $STATE_FIT_LIMIT MiB for apps ($STATE_FIT_WHAT)"
+  [ "$total" -le "$STATE_FIT_LIMIT" ]
 }
 
 state_die() {
@@ -173,11 +221,22 @@ state_change() {
         if [ -n "$at" ]; then port="${ST_PORTS[$at]}"; else port="$(state_free_port)"; fi
         [ -n "$port" ] || { echo "cbase: vm group $group has no free port: all of $STATE_PORT_MIN-$STATE_PORT_MAX are held" >&2; exit 1; }
         line="app=$app port=$port service=cbase-$app.service mem=$mem"
+        # shellcheck disable=SC2034 # vm.sh reads it
+        STATE_PORT="$port"
+        # THE MEMORY FIT, on the file this write is conditional on.
+        if [ -n "$STATE_FIT_LIMIT" ] && ! state_fit "$app" "$line"; then
+          printf '%s\n' "$STATE_FIT_REPORT" >&2
+          echo "cbase: $app does not fit on vm group $group: its members would need more than the $STATE_FIT_LIMIT MiB its instance leaves for apps ($STATE_FIT_WHAT). Declare less memory (CBASE_MEMORY), put the app in another group, or give the group a bigger instance (./cbase group-init vm $group --type <type>). Nothing was changed." >&2
+          exit 1
+        fi
       else
         line="app=$app folder=$app/"
       fi
+      # shellcheck disable=SC2034 # vm.sh reads it
+      if [ -z "$at" ]; then STATE_JOINED_NEW=1; else STATE_JOINED_NEW=""; fi
       if [ -n "$at" ] && [ "${ST_LINES[$at]}" = "$line" ]; then
         echo "$app is in $kind group $group: $line"
+        [ -z "$STATE_FIT_LIMIT" ] || [ "$kind" != vm ] || printf '%s\n' "$STATE_FIT_REPORT"
         return 0
       fi
       if [ -n "$at" ]; then ST_LINES[at]="$line"; else ST_LINES+=("$line"); ST_APPS+=("$app"); ST_PORTS+=("${port:-}"); fi
@@ -187,7 +246,10 @@ state_change() {
     aws_s3_put "$bucket" "$key" "$STATE_TMP/new" "$STATE_ETAG" || rc=$?
     if [ "$rc" -eq 0 ]; then
       if [ "$op" = leave ]; then echo "$app left $kind group $group (it held: $line)"
-      else echo "$app joined $kind group $group: $line"; fi
+      else
+        echo "$app joined $kind group $group: $line"
+        [ -z "$STATE_FIT_LIMIT" ] || [ "$kind" != vm ] || printf '%s\n' "$STATE_FIT_REPORT"
+      fi
       return 0
     fi
     [ "$rc" -eq 3 ] || exit "$rc"
@@ -198,11 +260,25 @@ state_change() {
   exit 1
 }
 
-# state_list KIND GROUP: the group's members, as the file has them. Status 3 when there is no file.
+# state_list KIND GROUP: the group's members, a table: a vm group's port, service and memory (the
+# declared MiB, "512M", or "~128 counted" for an app that declares none), a static group's folder.
+# Status 3 when there is no file.
 state_list() {
-  local kind="$1" group="$2"
+  local kind="$1" group="$2" line m f=()
   state_read "$kind" "$group"
   if [ "$STATE_ETAG" = "*" ]; then return 3; fi
   echo "$kind group $group (s3://$(state_bucket)/$(state_key "$kind" "$group")): ${#ST_LINES[@]} app$([ "${#ST_LINES[@]}" -eq 1 ] || echo s)"
-  if [ "${#ST_LINES[@]}" -gt 0 ]; then printf '  %s\n' "${ST_LINES[@]}" | LC_ALL=C sort; fi
+  [ "${#ST_LINES[@]}" -gt 0 ] || return 0
+  if [ "$kind" = vm ]; then printf '  %-24s %-5s %-34s %s\n' app port service mem
+  else printf '  %-24s %s\n' app folder; fi
+  while IFS= read -r line; do
+    read -r -a f <<< "$line"   # app=... port=... service=... mem=..., or app=... folder=...
+    if [ "$kind" = vm ]; then
+      state_mem "$line"
+      if [ -n "$STATE_MEM_EST" ]; then m="~$STATE_MEM counted"; else m="${STATE_MEM}M"; fi
+      printf '  %-24s %-5s %-34s %s\n' "${f[0]#app=}" "${f[1]#port=}" "${f[2]#service=}" "$m"
+    else
+      printf '  %-24s %s\n' "${f[0]#app=}" "${f[1]#folder=}"
+    fi
+  done < <(printf '%s\n' "${ST_LINES[@]}" | LC_ALL=C sort)
 }
