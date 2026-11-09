@@ -7,7 +7,7 @@
 # The cases, each under build/new_test/ (a fresh tree every run, inside this repository's ignored
 # build/, so none of the repository's gates reads it):
 #   * `make new DIR=hello`, run from build/new_test/: DIR is taken from where make ran, the three
-#     files are written, and CBASE is this checkout as a path from DIR (../../..);
+#     files are written, and CBASE is this checkout as a path from DIR (three levels up);
 #   * `make serve` in it, with a clean environment and only CBASE_LISTEN=127.0.0.1:0: it builds and
 #     prints the "cbase: listening ... http://127.0.0.1:<port>/" line, GET / answers 200 with
 #     exactly "cbase\n", and GET /health answers 200; SIGTERM to make's child (the server) stops it;
@@ -59,8 +59,9 @@ for f in Makefile src/server.c .gitignore; do
   [ -f "$H/$f" ] || fail "no $f in $H"
 done
 got="$(sed -n 's/^CBASE := //p' "$H/Makefile")"
-if [ "$got" = ../../.. ]; then ok "CBASE is this checkout as a path from DIR (../../..)"
-else fail "CBASE is '$got', not ../../.."; fi
+want=../../..   # repo-gate: scratch tree (build/new_test/hello to this checkout)
+if [ "$got" = "$want" ]; then ok "CBASE is this checkout as a path from DIR ($want)"
+else fail "CBASE is '$got', not $want"; fi
 if grep -qx 'build/' "$H/.gitignore"; then ok ".gitignore holds build/"
 else fail ".gitignore does not hold build/"; fi
 
