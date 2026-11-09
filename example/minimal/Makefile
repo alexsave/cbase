@@ -38,6 +38,7 @@ APP_CFLAGS   := -Wall -Wextra -Werror $(CBC_INC) $(CBC_CDOM_CFLAGS)
 APP_LDFLAGS  := -Wl,--strip-all
 APP_PAGE     := build/page/index.html
 APP_PAGE_SRC := page/index.html
+APP_WASM_SEPARATE := 1   # the page loads page.wasm by URL (cdom.mk's header)
 
 # make serve builds the page first (cbase.mk's header: a product's own serve lines).
 serve: $(APP_WASM) $(APP_PAGE)
