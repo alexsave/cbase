@@ -11,7 +11,7 @@
 # against the newer cdom. The pin is a cdom whose I/O contract (src/cdom.h, its rule at the top) holds
 # cd_page_origin, cd_random_bytes and CD_WS_REFUSED.
 CDOM_REPO := https://github.com/alexsave/cdom.git
-CDOM_PIN  := 3ffbeeb2558e61005517b5bb900481fe3761c1dd
+CDOM_PIN  := 00c74ee8ae65ae1f400011ea692e6d6fa611ba61
 CDOM      ?= build/cdom
 CDOM_GOT  := $(if $(filter build/cdom,$(CDOM)),build/cdom/.pin-$(CDOM_PIN))
 build/cdom/.pin-$(CDOM_PIN):
