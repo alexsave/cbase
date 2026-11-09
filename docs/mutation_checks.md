@@ -1127,3 +1127,15 @@ unit_event `encode_text` built its answer and its expected event from the litera
 
 - unit_event.c: the expected event's version put back to the literal "0.1.0" (the answer CB_VERSION's) -> `encode_text` cb_buf_cstr(&out) red.
 - util/json.c: '"' not escaped -> `encode_text` (the version's quotes) and `encode_binary` red.
+
+## unit_oom: allocation failure on cbase's own paths (small-debts)
+
+core/test/unit_oom.c is oom.h's user in cbase: the seam itself, and sweeps over RFC 7541 C.4's three Huffman-coded requests into one HPACK decoder and over a router of 20 routes, each run answering CB_E_NOMEM (never CB_OK with less in it) and leaving nothing allocated.
+The HPACK sweep found a bug: a Huffman string decoded into a scratch buffer that could not grow came back short or empty with CB_OK (":authority" with no value, a name lost), and the scratch's mark stayed, so every later Huffman string was empty too.
+hpack.c now answers CB_E_NOMEM there, which h2_session.c ends the connection on.
+
+- hpack.c: the scratch's oom not checked (the code before the fix) -> `hpack_decode_fails_whole` allocations 1 and 2: rc CB_OK, want CB_E_NOMEM, fields printed without their names or values.
+- hpack.c: a table entry's failed malloc answered CB_OK -> `hpack_decode_fails_whole` rc == CB_E_NOMEM, three runs.
+- router.c: cb_router_free not freeing the table -> `router_fails_whole` live == 0.
+- str.c: cb_buf_take handing over a buffer that ran out -> `the_seam_reaches_cbase` taken == NULL and the live count.
+- oom.h: no allocation ever failed -> `the_seam_reaches_cbase` (four checks) and both sweeps' failed_runs >= 3.
