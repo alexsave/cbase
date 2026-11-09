@@ -157,15 +157,19 @@ printf '#include "cdom.h"\n' > "$P/n/client/test/unit_host_cdom.c"         # and
 printf '#include "cdom.h"\n' > "$P/n/client/hosts/cdomx/h.c"               # not the adapter's
 printf '#include "cdom.h"\n' > "$P/n/client/test/unit_host_cdom.c.orig"    # nor a copy beside it
 printf 'cdom\n' > "$P/n/client/test/x_unit_host_cdom.c"
+mkdir -p "$P/n/providers/x/client/hosts/cdom" "$P/n/providers/x/client/test"
+printf '#include "cdom.h"\n' > "$P/n/providers/x/client/hosts/cdom/y.c"     # an adapter's path, nested: not it
+printf '#include "cdom.h"\n' > "$P/n/providers/x/client/test/unit_host_cdom.c"
 mkdir -p "$P/n/core/src" "$P/n/.github/workflows"
 printf '#include "cdom.h"\n' > "$P/n/core/src/c.c"                          # the platform: never
 printf 'run: make -C client check-host-cdom\n' > "$P/n/.github/workflows/ci.yml"   # CI by its name: no
 # shellcheck disable=SC2046  # one path a word
 got="$(named_scan "$P/n" $(printf '%s\n' client/src/a.c client/Makefile sub/README.md sub/ok.sh docs/sub/x.md README.md "$SELF" \
          client/hosts/cdom/sub/h.c client/test/unit_host_cdom.c client/hosts/cdomx/h.c client/test/unit_host_cdom.c.orig \
-         client/test/x_unit_host_cdom.c core/src/c.c .github/workflows/ci.yml | named_list) \
+         client/test/x_unit_host_cdom.c providers/x/client/hosts/cdom/y.c providers/x/client/test/unit_host_cdom.c \
+         core/src/c.c .github/workflows/ci.yml | named_list) \
        | sed 's/: .*//' | LC_ALL=C sort | tr '\n' ' ')"
-want=".github/workflows/ci.yml:1 client/Makefile:3 client/hosts/cdomx/h.c:1 client/src/a.c:1 client/test/unit_host_cdom.c.orig:1 client/test/x_unit_host_cdom.c:1 core/src/c.c:1 sub/README.md:1 "
+want=".github/workflows/ci.yml:1 client/Makefile:3 client/hosts/cdomx/h.c:1 client/src/a.c:1 client/test/unit_host_cdom.c.orig:1 client/test/x_unit_host_cdom.c:1 core/src/c.c:1 providers/x/client/hosts/cdom/y.c:1 providers/x/client/test/unit_host_cdom.c:1 sub/README.md:1 "
 [ "$got" = "$want" ] || fail "the framework's name over planted files saw [$got], not [$want]"
 
 # ---- the repository ------------------------------------------------------------------------------

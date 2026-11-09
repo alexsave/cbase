@@ -1190,3 +1190,11 @@ The world now keeps the pointer each request's body was handed in (w_req.body_at
 
 - cbc_cdom.c: env_http copies the body before cd_http_cb -> the three borrowed-body cases red at `r->body_at == g_big` (unit_host_cdom); a row in client/hosts/cdom/mutants.py.
 - cbc_host.c: send_request copies a CBC_RQ_REF body -> the same cases red on unit_host_posix; a row in client/test/mutants.py (HOST).
+
+## The framework-name gate's exceptions are anchored at the root (adapter-stop)
+
+tools/repo_gate_test.sh keeps the framework's name to client/hosts/cdom/ and client/test/unit_host_cdom.c, but its planted files never held either path nested under another directory, so dropping the `^` from either exception survived.
+It now plants providers/x/client/hosts/cdom/y.c and providers/x/client/test/unit_host_cdom.c, and expects both in `want`.
+
+- repo_gate_test.sh: `-e 'client/hosts/cdom/'` (no `^`) -> `the framework's name over planted files` red, providers/x/client/hosts/cdom/y.c missing.
+- repo_gate_test.sh: `-e 'client/test/unit_host_cdom\.c$'` (no `^`) -> the same check red, providers/x/client/test/unit_host_cdom.c missing.
