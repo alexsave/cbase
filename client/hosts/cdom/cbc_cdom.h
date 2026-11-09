@@ -53,6 +53,7 @@
 // NEEDS: cdom's src/cdom.c, cdom_net.c, cdom_store.c, cdom_random.c and mini.c in the module,
 // -isystem <cdom>/src/libc (the program's string.h), -I<cdom>/src, and cbase's client.mk (CBC_SRC,
 // CBC_HOST_SRC, CBC_INC, CBC_HOST_INC) plus lib/b64/b64.c (in CBC_OIDC_SRC too: list it once).
+// adapter.mk here sets all of it: CBC_CDOM_SRC, CBC_CDOM_CFLAGS and CBC_CDOM_LINK_SRC.
 // README.md here: how to build and test it, and the cdom it is pinned to.
 #ifndef CBC_CDOM_H
 #define CBC_CDOM_H

@@ -21,8 +21,11 @@ build/cdom/.pin-$(CDOM_PIN):
 	@test "$$(git -C build/cdom rev-parse HEAD)" = $(CDOM_PIN)
 	@touch $@
 
-HOST_CDOM_SRC  := $(CBC_HOST_SRC) hosts/cdom/cbc_cdom.c
-HOST_CDOM_INC  := $(CBC_HOST_INC) -Ihosts/cdom -I$(CDOM)/src
+# The adapter's sources and flags are adapter.mk's, the fragment a cdom app includes, so this build
+# and an app's read one list. The native tests link lib/b64 with the core (SRC: OIDC carries it).
+include hosts/cdom/adapter.mk
+HOST_CDOM_SRC  := $(filter-out $(SRC),$(CBC_CDOM_SRC))
+HOST_CDOM_INC  := $(CBC_CDOM_INC)
 HOST_CDOM_TEST := $(HOST_CDOM_SRC) $(CBC_SUITE_SRC) test/unit_host_cdom.c
 HOST_CDOM_TEST_FLAGS = $(CFLAGS) $(CBC_SUITE_INC) $(HOST_CDOM_INC)
 ASAN_CDOM_TEST_FLAGS = $(ASAN_CFLAGS) $(CBC_SUITE_INC) $(HOST_CDOM_INC)
@@ -38,12 +41,12 @@ build/asan/test/unit_host_cdom: $(call c_objs,build/obj/asan,$(SRC)) $(call c_ob
 	$(CC) $(ASAN_CFLAGS) $^ -o $@
 
 # FOR wasm32, as a cdom app compiles it: the adapter, the shared host, the core and lib/b64 against
-# cdom's string.h (-isystem $(CDOM)/src/libc, the program's C library, not wasm/include), objects
+# cdom's string.h (CBC_CDOM_CFLAGS: the program's C library, not wasm/include), objects
 # only (the app links them into its own module with cdom's sources and mini.c), and the libc gate.
 HOST_CDOM_WASM_CFLAGS := --target=wasm32 -Oz -nostdlib -ffreestanding -mbulk-memory -mno-nontrapping-fptoint -std=c11 \
-                         $(WARN) $(INC) -isystem $(CDOM)/src/libc $(HOST_CDOM_INC)
+                         $(WARN) $(INC) $(CBC_CDOM_CFLAGS)
 $(eval $(call C_VARIANT,build/obj/wasm-cdom,WASM_CC,HOST_CDOM_WASM_CFLAGS))
-HOST_CDOM_WASM_OBJS := $(call c_objs,build/obj/wasm-cdom,$(HOST_CDOM_SRC) $(CBC_SRC) $(CB)lib/b64/b64.c)
+HOST_CDOM_WASM_OBJS := $(call c_objs,build/obj/wasm-cdom,$(CBC_CDOM_SRC) $(CBC_SRC))
 $(HOST_CDOM_WASM_OBJS): | $(CDOM_GOT)
 
 .PHONY: test-host-cdom host-cdom-wasm check-host-cdom
@@ -52,7 +55,7 @@ test-host-cdom: build/test/unit_host_cdom build/asan/test/unit_host_cdom
 	./build/asan/test/unit_host_cdom
 # And linked, with link_app.c (a cd_main) and cdom's sources, into a module: the adapter needs of the
 # program nothing but cdom.
-HOST_CDOM_LINK_SRC = hosts/cdom/link_app.c $(addprefix $(CDOM)/src/,cdom.c cdom_net.c cdom_store.c cdom_random.c mini.c)
+HOST_CDOM_LINK_SRC = hosts/cdom/link_app.c $(CBC_CDOM_LINK_SRC)
 build/wasm/host_cdom_link.wasm: $(HOST_CDOM_WASM_OBJS) hosts/cdom/link_app.c | $(CDOM_GOT)
 	@mkdir -p $(@D)
 	$(WASM_CC) $(HOST_CDOM_WASM_CFLAGS) -Wl,--no-entry -Wl,--export-memory $(HOST_CDOM_LINK_SRC) $(HOST_CDOM_WASM_OBJS) -o $@

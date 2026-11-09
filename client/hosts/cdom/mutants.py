@@ -5,7 +5,7 @@
 # row's last field. (file, name, old, new, want): old occurs once. OBJ: every object a mutant touches.
 BUILD = 'build/test/unit_host_cdom'
 RUN = './build/test/unit_host_cdom'
-OBJ = 'build/obj/host-cdom/hosts/cdom/cbc_cdom.o build/obj/host-cdom/_root/client/hosts/common/cbc_host.o'
+OBJ = 'build/obj/host-cdom/_root/client/hosts/cdom/cbc_cdom.o build/obj/host-cdom/_root/client/hosts/common/cbc_host.o'
 H = 'hosts/cdom/cbc_cdom.c'
 HC = 'hosts/common/cbc_host.c'   # the shared host's stop, which only this suite drives
 MUTANTS = [

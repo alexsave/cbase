@@ -27,7 +27,25 @@ A new pin is that one line, moved once the adapter passes against the newer cdom
 
 `client/test/mutate.sh` runs this adapter's mutants (`mutants.py`) with the rest of the client's.
 
-An app compiles `CBC_SRC`, `CBC_HOST_SRC` and `lib/b64/b64.c` from `client/client.mk`, plus `cbc_cdom.c`, with `-isystem <cdom>/src/libc` and `-I<cdom>/src`, and links cdom's `cdom.c`, `cdom_net.c`, `cdom_store.c`, `cdom_random.c` and `mini.c`; the page's origin comes from `cd_page_origin` (`cdom_net.c`).
+## In an app's Makefile
+
+An app takes the adapter from `adapter.mk` here, a make fragment it includes after `client/client.mk`, with `CBASE` and `CDOM` set to the two checkouts as its Makefile reaches them:
+
+```make
+CBASE := cbase
+CDOM  := cdom
+include $(CBASE)/client/client.mk
+include $(CBASE)/client/hosts/cdom/adapter.mk
+UI_SRC    := ui/src/app.c $(CBC_SRC) $(CBC_CDOM_SRC) $(CBC_CDOM_LINK_SRC)
+UI_CFLAGS := --target=wasm32 -Oz -nostdlib -ffreestanding -mbulk-memory $(CBC_INC) $(CBC_CDOM_CFLAGS)
+```
+
+`CBC_CDOM_SRC` is the adapter, the shared host (`CBC_HOST_SRC`) and `lib/b64/b64.c`.
+`CBC_CDOM_CFLAGS` is the include flags (`CBC_CDOM_INC`: the shared host's, this directory's and `-I<cdom>/src`) and `-isystem <cdom>/src/libc`, cdom's C library.
+`CBC_CDOM_LINK_SRC` is cdom's `cdom.c`, `cdom_net.c`, `cdom_store.c`, `cdom_random.c` and `mini.c`.
+An app that also builds the provider sign-in (`CBC_OIDC_SRC`) takes `$(sort ...)` of the lists, since both carry `lib/b64/b64.c`.
+`host.mk` builds and links the adapter from these same variables, so the list an app compiles is the one cbase tests.
+The page's origin comes from `cd_page_origin` (`cdom_net.c`).
 
 ## The session
 
