@@ -199,6 +199,10 @@ A product from before the platform routes became opt-in makes the fifth and sixt
    A call that also tested `v[0]` (present and not empty) becomes `> 0`.
 8. **`make serve` and `cbase serve` default to `127.0.0.1:8642`** (`CB_LISTEN_DEFAULT`, `core/src/config.h`), where `make serve` was on 3000 and serve alone on 8080.
    Nothing names it: a product that relied on the old port keeps it with one line in its Makefile, `APP_SERVE_LISTEN := 127.0.0.1:$(or $(PORT),3000)`, or sets `CBASE_LISTEN` where it runs serve itself.
+9. **The server's build flags are `SERVER_CFLAGS` and `SERVER_LDFLAGS`** (cbase.mk's header).
+   `APP_CFLAGS` and `APP_LDFLAGS` are cdom.mk's, for a browser UI's wasm module, so a product that builds both in one Makefile gives each side its own flags.
+   A server Makefile renames `APP_CFLAGS` to `SERVER_CFLAGS` and `APP_LDLIBS` to `SERVER_LDFLAGS`.
+   One it misses stops the build with a sentence naming the new name: `APP_LDLIBS` always, and `APP_CFLAGS` when the Makefile sets no `APP_WASM` (cdom.mk reads `APP_CFLAGS` only in its `APP_WASM` rule).
 
 ### 2.10 Serve's settings an app ships, and CBASE_ENV_FILE
 
