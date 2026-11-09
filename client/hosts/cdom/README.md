@@ -46,13 +46,9 @@ The starter's `GET /` answers `cbase`; a page app takes `/` over for its page, h
 static void h_page(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
     cb_send_file(ctx, req, res, "build/page/index.html", NULL, "no-store");
 }
-
-static const cb_route ROUTES[] = {
-    { .method = "GET", .pattern = "/api/hello", .flags = CB_ROUTE_LOOP, .fn = h_hello },
-    { .method = "GET", .pattern = "/", .fn = h_page },
-};
 ```
 
+Its route is `{ .method = "GET", .pattern = "/", .fn = h_page }`, beside `GET /api/hello`, the route the page calls.
 `cb_send_file` (`core/src/net/files.h`) reads the file when asked, so a rebuilt page needs no restart.
 A separate module is the better choice for a large app, for a host that caches a hashed `.wasm` for long, and for cdom's no-WebAssembly fallback: `APP_WASM_SEPARATE := 1` (`cdom.mk`'s header) keeps it a file beside the page, and the server answers it with a second `cb_send_file` route (its content type is `wasm`).
 
@@ -70,9 +66,6 @@ static void on_event(void *ctx, cbc *c, const cbc_event *e, const uint8_t *bytes
 
 <!-- quoted: example/minimal/page/page.c -->
 ```c
-  cbc_cfg cfg;
-  cbc_cfg_default(&cfg);
-  cfg.anonymous = 1;   /* no accounts: every call is plain HTTP */
   if (cbc_cdom_start(&client, &cfg, NULL, on_event, NULL, NULL) != 0) return;
   /* Idempotent (safe to send again) and fail fast (a dead server is reported at once). */
   cbc_call(cbc_cdom_client(&client), CBC_GET, CBC_C_IDEMPOTENT | CBC_C_FAIL_FAST, "/api/hello", 10, NULL, 0,
@@ -80,10 +73,42 @@ static void on_event(void *ctx, cbc *c, const cbc_event *e, const uint8_t *bytes
   cbc_cdom_pump(&client);   /* after every call into the client */
 ```
 
-`cbc_cdom_start` runs once, on a handle in static storage; `cbc_call` answers a ticket, and `cbc_cdom_pump` sends what the call queued.
+`cbc_cdom_start` runs once, on a handle in static storage, with a `cbc_cfg` from `cbc_cfg_default` whose `anonymous = 1` makes every call plain HTTP; `cbc_call` answers a ticket, and `cbc_cdom_pump` sends what the call queued.
 Every ticket ends in exactly one `CBC_EV_DONE`, whose body is `e->len` bytes at `bytes + e->off`.
 Status 0 is an answer that never arrived: no server is listening, or the deadline passed; with `CBC_C_FAIL_FAST` it is told at once instead of tried again.
 A non-2xx answer's body is the server's error body, read the same way: `cb_res_text(res, 400, "bad name\n")` reaches the page as status 400 and those 9 bytes, with `e->why` read from the status (`client.h`, "WHAT A DONE'S SPAN HOLDS").
+
+A multi-field answer needs no JSON: newline-separated `key=value` lines, written with `cb_res_text` and read in the page with plain C (a value never holds a newline, so one from user text is refused or encoded first):
+
+<!-- compiled: server -->
+```c
+// GET /api/stats answers two fields, one key=value a line: "served=3\nversion=1.2\n".
+static int served;   // CB_ROUTE_LOOP: only the loop thread touches it
+static void h_stats(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
+    char text[64];
+    snprintf(text, sizeof text, "served=%d\nversion=%s\n", ++served, "1.2");
+    cb_res_text(res, 200, text);
+}
+```
+
+<!-- compiled: page -->
+```c
+/* The DONE's body, one key=value a line; field(key, key_len, value, value_len) is the page's own. */
+static void read_fields(const char *p, size_t n) {
+  while (n) {
+    size_t line = 0, key = 0;
+    while (line < n && p[line] != '\n') line++;
+    while (key < line && p[key] != '=') key++;
+    if (key < line) field(p, key, p + key + 1, line - key - 1);
+    if (line < n) line++;   /* past the '\n' */
+    p += line;
+    n -= line;
+  }
+}
+```
+
+The page calls it from its event callback, `read_fields((const char *)bytes + e->off, e->len)`, as part 4's `on_event` shows the text.
+For anything bigger, cbase's binary wire is the tool: `tools/structgen` generates the readers and writers of C structs, and `client/include/cbase/client.h` is what the client speaks with it.
 
 ### 5. User text in a query
 
@@ -112,24 +137,7 @@ A `start` target is `start: serve`, with the page as `serve`'s prerequisite (`se
 cdom's `tools/cdp.mjs` is a small DevTools client: it starts a headless Chrome of its own (a temporary profile, killed by its PID) and drives it.
 It is in the cdom the app builds with: its `cdom/` submodule, or `client/build/cdom` here once a cdom goal has fetched it.
 It is a test-only dependency on Node 22 or later and Google Chrome (`CHROME` names another binary); the app and its build need neither.
-`example/minimal/e2e.mjs` opens the URL `make serve` printed and waits for the server's answer:
-
-<!-- quoted: example/minimal/e2e.mjs -->
-```js
-const b = await launch();
-let text = '';
-try {
-  await b.send('Page.navigate', { url });
-  // The page says "asking..." until the call's CBC_EV_DONE, then shows the answer in its place.
-  for (let i = 0; i < 100 && !text.includes(want); i++) {
-    await sleep(50);
-    text = (await b.evaluate("document.getElementById('app')?.textContent")) ?? '';
-  }
-} finally {
-  await b.close();
-}
-```
-
+`example/minimal/e2e.mjs` is one: `launch()`, `Page.navigate` to the URL `make serve` printed, then `evaluate` of the mount's text until it shows the server's answer, and `close()`.
 `example/minimal/check.sh` runs it after its curl checks, while the server is up, and skips it, saying so, when Node or Chrome is missing (CI sets `MINIMAL_E2E=1`, which makes that a failure).
 
 ## The dependency
@@ -155,6 +163,7 @@ A new pin is that one line, moved once the adapter passes against the newer cdom
 - the adapter, the shared host, the core and `lib/b64` compiled for wasm32 with `cdom.mk`'s flags (`CDOM_CFLAGS`: cdom's own `string.h`), the libc gate over them, and a module linked from them and `link_app.c` by `cdom.mk`'s `APP_WASM` rule, with the modules `CBC_CDOM_MODULES` names;
 - the minimal app (`example/minimal/check.sh`, also `make -C client check-minimal-example`): its one Makefile builds the server and the page against this cdom, and `make serve`, run outside dev mode with no setting but a free port, answers the route over curl and serves cdom's default page with the linked module bundled into it, as one file, which headless Chrome then opens and shows the answer in (`e2e.mjs`, skipped and said without Node 22 or Chrome, a failure under CI's `MINIMAL_E2E=1`);
 - `quote_check.sh` (also in `make -C client check`, nothing fetched): every block this file marks as quoted is a run of lines of the file it names;
+- `compile_check.sh` (also in `make -C client check`, nothing fetched): the server block this file marks as compiled compiles with cbase's headers and warnings, and the page block's `key=value` reader is built and run over an answer it must split;
 - `adapter_mk_check.sh` (also in `make -C client check`, nothing fetched): `adapter.mk` read without `cdom.mk` stops and names the fix, no file is in two of the lists an app adds (`lib/b64/b64.c` once), and every doc that shows the includes (the top README, this file, `adapter.mk`'s header, `example/minimal/Makefile`) shows them in the one order.
 
 `client/test/mutate.sh` runs this adapter's mutants (`mutants.py`) with the rest of the client's.

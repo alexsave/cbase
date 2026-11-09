@@ -17,6 +17,8 @@
 #                         order (adapter_mk_check.sh); in `make check` too
 #   make check-cdom-readme-quotes  every block README.md here marks as quoted is a run of lines of
 #                         the file it names (quote_check.sh); in `make check` too
+#   make check-cdom-readme-code  the blocks README.md here marks as compiled build, and its
+#                         key=value reader reads (compile_check.sh); in `make check` too
 #
 # cdom (github.com/alexsave/cdom) is fetched by its commit into build/cdom, never reached beside this
 # tree (tools/repo_gate_test.sh). A new pin is the one line below, moved when the adapter has passed
@@ -39,14 +41,16 @@ build/cdom/.pin-$(CDOM_PIN):
 # pin_doc_check.sh holds the README's commit to CDOM_PIN. And adapter.mk's two rules, read by make
 # itself (adapter_mk_check.sh). Plain text, nothing fetched, so the client's own `make check` runs both.
 .PHONY: test-host-cdom host-cdom-wasm check-host-cdom check-cdom-pin-doc check-cdom-adapter-mk check-cdom-readme-quotes \
-        check-minimal-example
+        check-cdom-readme-code check-minimal-example
 check-cdom-pin-doc:
 	@bash hosts/cdom/pin_doc_check.sh hosts/cdom/README.md $(CDOM_PIN)
 check-cdom-adapter-mk:
 	@bash hosts/cdom/adapter_mk_check.sh '$(MAKE)'
 check-cdom-readme-quotes:
 	@bash hosts/cdom/quote_check.sh hosts/cdom/README.md ..
-check: check-cdom-pin-doc check-cdom-adapter-mk check-cdom-readme-quotes
+check-cdom-readme-code:
+	@bash hosts/cdom/compile_check.sh hosts/cdom/README.md .. '$(CC)'
+check: check-cdom-pin-doc check-cdom-adapter-mk check-cdom-readme-quotes check-cdom-readme-code
 
 # The rest reads cdom.mk, so it is read only once cdom is here: at the pin (its stamp) when fetched,
 # or a CDOM checkout that has cdom.mk. Before that, each of its goals fetches cdom and runs make
@@ -115,6 +119,6 @@ host-cdom-wasm: wasm-cc-check $(HOST_CDOM_WASM_OBJS) build/wasm/host_cdom_link.w
 .PHONY: check-minimal-example
 check-minimal-example: wasm-cc-check
 	WASM_CC='$(WASM_CC)' bash ../example/minimal/check.sh '$(MAKE)' '$(abspath $(CDOM))'
-check-host-cdom: check-cdom-pin-doc check-cdom-adapter-mk check-cdom-readme-quotes test-host-cdom host-cdom-wasm check-minimal-example
+check-host-cdom: check-cdom-pin-doc check-cdom-adapter-mk check-cdom-readme-quotes check-cdom-readme-code test-host-cdom host-cdom-wasm check-minimal-example
 endif
 HOST_CHECKS += check-host-cdom

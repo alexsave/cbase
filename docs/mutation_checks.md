@@ -1402,3 +1402,11 @@ Each mutant was made in place and the file restored from a copy (example/minimal
 - README.md here: the quoted h_page's "no-store" made "no-cache" -> `a quote of example/minimal/server/minimal.c is not a run of its lines` red.
 - README.md here: the e2e quote's marker names check.sh -> `a quote of example/minimal/check.sh is not a run of its lines` red.
 - page/page.c: the call's path made "/api/hellx" -> `the page in Chrome shows "the server did not answer", not "hello from cbase"` red, with every curl check still green.
+
+## A multi-field answer, key=value lines (page-on-server)
+
+client/hosts/cdom/compile_check.sh (make -C client check-cdom-readme-code) compiles the adapter README's server block with cbase's headers and warnings, and builds and runs its page block's reader over an answer with a line that has no '=', an empty line, an empty value, a value that holds '=' and no last '\n'.
+Each mutant was made in the README and the file restored from a copy.
+
+- the reader's `if (key < line)` made `if (1)` -> `the page block's reader split the answer as 'served|3 no field here|...` red.
+- the server block's `cb_res_text` misspelled -> `the server block does not compile` red.
