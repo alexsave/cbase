@@ -2,7 +2,8 @@
 # new.sh - `make new DIR=<path>` (cbase's top-level Makefile): a new server on cbase, the smallest
 # one there is. It writes three files into DIR, which must not exist or be empty:
 #
-#   Makefile     CBASE (this cbase, from DIR) and APP_SRC_ROOTS, then include $(CBASE)/cbase.mk
+#   Makefile     CBASE (this cbase, from DIR), APP_SRC_ROOTS and APP_SERVE (the server binary,
+#                build/<name>), then include $(CBASE)/cbase.mk
 #   src/server.c a storeless cb_app: GET / answers "cbase", and the platform's GET /health
 #   .gitignore   build/
 #
@@ -11,6 +12,9 @@
 # GIT=1 also runs git init there, adds this cbase as a submodule (cbase/, its public URL, at this
 # checkout's commit), so CBASE is cbase, and stages everything for the first commit. Without it
 # CBASE is this checkout's path, relative to DIR unless the two share only /.
+# The server is named for DIR: its base name, every byte but A-Z a-z 0-9 _ . - made _, is the
+# cb_app's name and APP_SERVE, so `make` builds build/<name>; a name cbase.mk keeps for build/'s own
+# (CB_BUILD_OWN: obj, test, ...) gets -server after it.
 #
 #   sh tools/new.sh <dir> <git> <caller dir>
 #
@@ -88,11 +92,18 @@ case "$ref" in
   *[[:space:]]*) die "cbase's path from $dir, '$ref', holds a space, which make cannot take" ;;
 esac
 name="$(basename "$dir" | LC_ALL=C tr -c 'A-Za-z0-9_.\n-' '_')"
+own="$(sed -n 's/^CB_BUILD_OWN := //p' "$cbase/cbase.mk")"
+[ -n "$own" ] || die "no CB_BUILD_OWN line in $cbase/cbase.mk"
+case " $own " in
+  *" $name "*) name="$name-server" ;;
+esac
 
 cat > "$dir/Makefile" << EOF
 # $name: a server on cbase. cbase.mk's header says everything else a product may set.
 CBASE := $ref
 APP_SRC_ROOTS := src
+# The server binary: make builds build/$name, and make serve runs it.
+APP_SERVE := $name
 include \$(CBASE)/cbase.mk
 EOF
 
@@ -125,4 +136,6 @@ printf 'build/\n' > "$dir/.gitignore"
 [ "$git_opt" != 1 ] || git -C "$dir" add -A
 
 echo "make new: wrote $dir (Makefile, src/server.c, .gitignore)"
-echo "make new: now run: make -C '$dir' serve"
+echo "make new: now run: make -C '$dir' serve (it builds build/$name; GET / answers \"cbase\")"
+echo "make new: a browser page on this server, from this starter and the page starter: $cbase/README.md,"
+echo "make new: \"A page on this server\", and the app to copy, $cbase/example/minimal (its page takes GET / over)"

@@ -7,10 +7,15 @@
 # The cases, each under build/new_test/ (a fresh tree every run, inside this repository's ignored
 # build/, so none of the repository's gates reads it):
 #   * `make new DIR=hello`, run from build/new_test/: DIR is taken from where make ran, the three
-#     files are written, and CBASE is this checkout as a path from DIR (three levels up);
-#   * `make serve` in it, with a clean environment and only CBASE_LISTEN=127.0.0.1:0: it builds and
-#     prints the "cbase: listening ... http://127.0.0.1:<port>/" line, GET / answers 200 with
-#     exactly "cbase\n", and GET /health answers 200; SIGTERM to make's child (the server) stops it;
+#     files are written, CBASE is this checkout as a path from DIR (three levels up), and the
+#     server is named for DIR: APP_SERVE := hello;
+#   * `make serve` in it, with a clean environment and only CBASE_LISTEN=127.0.0.1:0: it builds
+#     build/hello (and no build/cbase) and prints the "cbase: listening ... http://127.0.0.1:<port>/"
+#     line, GET / answers 200 with exactly "cbase\n", and GET /health answers 200; SIGTERM to make's
+#     child (the server) stops it;
+#   * a DIR named for one of cbase.mk's own build/ names (CB_BUILD_OWN), "obj", gets a server named
+#     obj-server, a DIR whose name holds a space and a colon gets one with each made _, and
+#     cbase.mk itself stops a product whose APP_SERVE is obj;
 #   * a DIR that is not empty, and a DIR that is a file, are refused and left as they were; an
 #     empty one is taken;
 #   * GIT=1, its file output alone and with no network: git's url.<this checkout>.insteadOf points
@@ -64,6 +69,9 @@ got="$(sed -n 's/^CBASE := //p' "$H/Makefile")"
 want=../../..   # repo-gate: scratch tree (build/new_test/hello to this checkout)
 if [ "$got" = "$want" ]; then ok "CBASE is this checkout as a path from DIR ($want)"
 else fail "CBASE is '$got', not $want"; fi
+got="$(sed -n 's/^APP_SERVE := //p' "$H/Makefile")"
+if [ "$got" = hello ]; then ok "the server is named for DIR: APP_SERVE := hello"
+else fail "APP_SERVE is '$got', not hello (DIR's name)"; fi
 if grep -qx 'build/' "$H/.gitignore"; then ok ".gitignore holds build/"
 else fail ".gitignore does not hold build/"; fi
 
@@ -110,6 +118,8 @@ asks() {
 # ---- 2. make serve there: GET / is "cbase\n", GET /health is 200 -------------------------------
 serve_up "$H" serve
 ok "make serve built it and prints $url"
+if [ -x "$H/build/hello" ] && [ ! -e "$H/build/cbase" ]; then ok "the binary is build/hello, named for the app"
+else fail "make serve built no build/hello, or a build/cbase: $(ls "$H/build" | tr '\n' ' ')"; fi
 
 code="$(curl -s --max-time 5 -o "$T/root.body" -w '%{http_code}' "$url" || true)"
 if [ "$code" = 200 ] && printf 'cbase\n' | cmp -s - "$T/root.body"; then ok "GET / answers 200 with exactly \"cbase\\n\""
@@ -134,6 +144,18 @@ else fail "the refused make new changed the file $T/afile"; fi
 mkdir "$T/empty"
 if new empty "DIR=$T/empty" && [ -f "$T/empty/src/server.c" ]; then ok "an empty DIR, named absolutely, is taken"
 else fail "make new into the empty $T/empty failed"; cat "$T/empty.log"; fi
+
+# ---- 3b. the server's name: one of cbase.mk's own build/ names, and bytes make cannot take -------
+if new obj "DIR=obj" && [ "$(sed -n 's/^APP_SERVE := //p' "$T/obj/Makefile")" = obj-server ] &&
+   grep -q '\.name = "obj-server"' "$T/obj/src/server.c"; then ok "DIR=obj, a name of cbase.mk's build/, gets the server obj-server"
+else fail "DIR=obj did not get the server obj-server: $(grep '^APP_SERVE' "$T/obj/Makefile" 2>/dev/null)"; cat "$T/obj.log"; fi
+if new odd "DIR=my app:1" && [ "$(sed -n 's/^APP_SERVE := //p' "$T/my app:1/Makefile")" = my_app_1 ]; then
+  ok "DIR='my app:1' gets the server my_app_1"
+else fail "DIR='my app:1' did not get the server my_app_1: $(grep '^APP_SERVE' "$T/my app:1/Makefile" 2>/dev/null)"; cat "$T/odd.log"; fi
+if "$MAKE_BIN" --no-print-directory -C "$H" -n APP_SERVE=obj > "$T/own.log" 2>&1; then
+  fail "cbase.mk took APP_SERVE=obj, one of its own build/ names"
+elif grep -q 'build/obj is cbase.mk.s own' "$T/own.log"; then ok "cbase.mk stops a product whose APP_SERVE is obj: $(grep -o 'build/obj is.*' "$T/own.log" | head -1)"
+else fail "make with APP_SERVE=obj failed without saying why"; cat "$T/own.log"; fi
 
 # ---- 4. GIT=1: the submodule's file output, with no network --------------------------------------
 if sha="$(git -C "$ROOT" rev-parse --verify HEAD 2>/dev/null)"; then

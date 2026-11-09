@@ -1384,3 +1384,12 @@ Each mutant was made in place, its object deleted (or build/ts/socket.ts edited)
 - client.c: cbc_on_response's last call_done gives a span of 0 bytes -> `e->data == "bad name\n"` red (unit_host_posix); a row in client/test/mutants.py (C).
 - cbc_host.c: cbc_host_http_answered hands the app NULL bytes for a non-2xx -> the same assertion red; a row in client/test/mutants.py (HOST).
 - socket.ts: the DONE's bytes left off the CbError -> `a refusal is a CbError with its body` red at the 400's body; a row in client/test/mutants.py (TS).
+
+## make new: the server named for its directory (page-on-server)
+
+tools/new_test.sh reads APP_SERVE from the generated Makefile, checks that make serve built build/hello and no build/cbase, makes DIR=obj and DIR='my app:1', and runs make -n with APP_SERVE=obj in the starter.
+Each mutant was made in place and the file restored from a copy.
+
+- new.sh: the template's `APP_SERVE := $name` made `APP_SERVE := cbase` -> `APP_SERVE is 'cbase', not hello (DIR's name)` and `make serve built no build/hello, or a build/cbase` red, with the obj and odd-name cases.
+- new.sh: the `-server` suffix for a CB_BUILD_OWN name dropped -> `DIR=obj did not get the server obj-server` red.
+- cbase.mk: the CB_BUILD_OWN guard on APP_SERVE and APP_LAMBDA removed -> `cbase.mk took APP_SERVE=obj, one of its own build/ names` red.
