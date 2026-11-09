@@ -1182,3 +1182,11 @@ unit_host_cdom `a host:port of 256 bytes ...` opens ws://<host><path> at 256 byt
 
 - cbc_cdom.c: read with cap 256 again -> the case red, and the fake's socket-URL rule broken three times (the host cut short); also a row in client/hosts/cdom/mutants.py.
 - cbc_cdom.c: `hn > 257` -> the case red at 257 bytes (two URL rules broken).
+
+## A borrowed body is sent from the caller's own buffer (adapter-stop)
+
+The host suite's borrowed-body cases compared the bytes the world received, which a copy of the body passes too; unit_host_cdom kept the pointer cdom was handed (g_last_body) but never read it.
+The world now keeps the pointer each request's body was handed in (w_req.body_at), and big_arrived checks it is the caller's g_big, for every host the suite runs on; the unused g_last_body is gone.
+
+- cbc_cdom.c: env_http copies the body before cd_http_cb -> the three borrowed-body cases red at `r->body_at == g_big` (unit_host_cdom); a row in client/hosts/cdom/mutants.py.
+- cbc_host.c: send_request copies a CBC_RQ_REF body -> the same cases red on unit_host_posix; a row in client/test/mutants.py (HOST).

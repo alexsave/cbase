@@ -42,6 +42,7 @@ typedef struct {
     char     auth[2200];        // "" when none
     size_t   body_len;
     uint8_t  body[W_BODY];
+    const uint8_t *body_at;     // the pointer the host handed (a borrowed body: the caller's own)
     cbhs_done_fn done;
     void    *ctx;
     int      answered;
@@ -141,6 +142,7 @@ void cbhs_http(cbhs_world *w, const char *method, const char *path, size_t path_
     if (auth) memcpy(r->auth, auth, auth_len);
     memcpy(r->body, body, body_len);
     r->body_len = body_len;
+    r->body_at = body;
     r->done = done;
     r->ctx = ctx;
     r->deadline = wait_ms ? w->now + wait_ms : 0;
@@ -679,7 +681,8 @@ static void big_fill(void) {
         for (int j = 0; j < 8; j++) g_big[i + (size_t)j] = (uint8_t)(v >> (8 * j));
     }
 }
-// What the server received is the caller's 64 KB, byte for byte, with the head the core wrote.
+// What the server received is the caller's 64 KB, byte for byte, with the head the core wrote, sent
+// from the caller's own buffer (the host and its platform layer hand the pointer on, never a copy).
 static void big_arrived(const w_req *r, const char *path) {
     T_CHECK(r != NULL);
     if (!r) return;
@@ -688,6 +691,7 @@ static void big_arrived(const w_req *r, const char *path) {
     T_EQ_STR(r->auth, "Bearer TOK");
     T_EQ_INT(r->body_len, BIG_N);
     T_CHECK(r->body_len == BIG_N && memcmp(r->body, g_big, BIG_N) == 0);
+    T_CHECK(r->body_at == g_big);                  // the caller's own buffer, never a copy of it
 }
 
 static void a_64k_body_arrives_byte_for_byte_and_done_comes_once_after(void) {
