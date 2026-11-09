@@ -914,6 +914,15 @@ run "$site" template
 expect_rc 0 "a static site's template"
 grep -Eq "VmOrigin|TargetOriginId: (vm|ws)" "$t/out" && fail "a static site's template names the VM"
 ok
+# OriginSecret: declared where a VM origin sends it, and nowhere else.
+grep -q "OriginSecret" "$t/out" && fail "a static site's template declares OriginSecret"
+run "$full" template
+grep -q "^  OriginSecret:$" "$t/out" || fail "a full app's template lacks OriginSecret"
+[ "$(grep -c "HeaderValue: !Ref OriginSecret" "$t/out")" -ge 1 ] || fail "a full app's template does not use OriginSecret"
+ok
+# The README tells an adopted VM's owner what an instance replacement needs.
+grep -Fq "run \`./cbase deploy\` again after an instance replacement" "$root/README.md" || fail "README.md lacks the instance replacement line"
+ok
 
 # ---- the router, run: its code from the template, driven under node ---------------------------
 # router_of: the Router's code in the template $t/out, into $t/router.js.

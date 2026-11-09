@@ -17,11 +17,11 @@ Environment=CBASE_DB=@DATA@/cbase.sqlite
 # dual-stack socket, so a local probe from 127.0.0.1 or ::1 both reach it.
 Environment=CBASE_LISTEN=:::@PORT@
 Environment=SSL_CERT_FILE=/etc/pki/tls/certs/ca-bundle.crt
-# Backups: the database to s3://@BACKUP_BUCKET@/backups/@APP@/ (serve's CBASE_BACKUP_*).
+# Backups: the database to s3://@BACKUP_BUCKET@/@BACKUP_KEY@ (serve's CBASE_BACKUP_*).
 Environment=CBASE_BACKUP_BUCKET=@BACKUP_BUCKET@
 Environment=CBASE_BACKUP_REGION=@REGION@
-Environment=CBASE_BACKUP_KEY=backups/@APP@/cbase.sqlite
-Environment=CBASE_BACKUP_URL=s3://@BACKUP_BUCKET@/backups/@APP@/
+Environment=CBASE_BACKUP_KEY=@BACKUP_KEY@
+Environment=CBASE_BACKUP_URL=s3://@BACKUP_BUCKET@/@BACKUP_KEY@
 ExecStart=@HOME@/serve serve
 @MEMORY_MAX@
 Restart=always

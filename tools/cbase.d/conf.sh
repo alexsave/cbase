@@ -43,6 +43,11 @@
 #   CBASE_VM_ARTIFACTS optional: s3://<bucket>/<prefix>/ the app's servers go to, one object per
 #                  sha256, and the instance fetches from; default s3://cbase-state-<account>/artifacts/<app>/.
 #                  An adopted VM's role reads its own, which this names.
+#   CBASE_VM_REPLACES optional, with CBASE_VM_PORT: the systemd unit (name.service) that served the
+#                  grandfathered app before cbase. The deploy stops and disables it right before
+#                  the app's own unit starts, in the same command; never a unit it is not named.
+#   CBASE_BACKUP_KEY optional: the backup's object key; default backups/<app>/cbase.sqlite. An
+#                  adopted VM whose boot restores another key names that one, so the two never part.
 #   CBASE_BACKUP_BUCKET optional, for an app with a VM: the bucket its backups go to, as
 #                  s3://<bucket>/backups/<app>/cbase.sqlite (serve's CBASE_BACKUP_*). Default the
 #                  state bucket, which a cbase group's instance role may write under backups/ alone.
@@ -109,7 +114,7 @@
 # to conf_secret_scan below, and one that looks like a secret stops the tool, naming the line and
 # never echoing it.
 
-CONF_KEYS="CBASE_APP CBASE_VM CBASE_VM_STACK CBASE_VM_ORIGIN CBASE_VM_PORT CBASE_VM_DATA CBASE_VM_SETTINGS CBASE_VM_ARTIFACTS CBASE_BACKUP_BUCKET CBASE_STATIC CBASE_STATIC_BUCKET CBASE_STATIC_PREFIX CBASE_MEMORY CBASE_ROUTE CBASE_DOMAIN CBASE_CERT_ARN CBASE_API_CERT_ARN CBASE_ZONE CBASE_API_HOST CBASE_API_ROUTE CBASE_STATIC_DIR CBASE_HASHED CBASE_SHELL"
+CONF_KEYS="CBASE_APP CBASE_VM CBASE_VM_STACK CBASE_VM_ORIGIN CBASE_VM_PORT CBASE_VM_DATA CBASE_VM_SETTINGS CBASE_VM_ARTIFACTS CBASE_VM_REPLACES CBASE_BACKUP_KEY CBASE_BACKUP_BUCKET CBASE_STATIC CBASE_STATIC_BUCKET CBASE_STATIC_PREFIX CBASE_MEMORY CBASE_ROUTE CBASE_DOMAIN CBASE_CERT_ARN CBASE_API_CERT_ARN CBASE_ZONE CBASE_API_HOST CBASE_API_ROUTE CBASE_STATIC_DIR CBASE_HASHED CBASE_SHELL"
 
 # The parsed settings (conf_load fills them).
 CONF_FILE=""
@@ -126,6 +131,8 @@ CONF_VM_DATA=""
 CONF_BACKUP_BUCKET=""   # the backups' bucket, or "" for the state bucket
 CONF_STATIC_BUCKET=""   # an adopted bucket, or ""
 CONF_STATIC_PREFIX=""   # the app's folder in its bucket, or "" for the app's name
+CONF_VM_REPLACES=""     # the unit a grandfathered member replaces, or ""
+CONF_BACKUP_KEY=""      # the backup's key, or "" for backups/<app>/cbase.sqlite
 CONF_VM_SETTINGS=""     # the settings' SSM path, or "" for /cbase/<app>/
 CONF_VM_ARTIFACTS=""    # s3://<bucket>/<prefix>/ of the servers, or "" for the state bucket's
 CONF_DOMAIN=""       # the first of CONF_DOMAINS (the app's URL), or ""
@@ -317,6 +324,7 @@ conf_load() {
   local vm_set="" static_set="" memory="" route_nos=() api_route_no="" vmkey_no=""
   CONF_VM_STACK=""; CONF_VM_ORIGIN=""; CONF_VM_PORT=""; CONF_VM_DATA=""; CONF_BACKUP_BUCKET=""
   CONF_VM_SETTINGS=""; CONF_VM_ARTIFACTS=""; CONF_STATIC_BUCKET=""; CONF_STATIC_PREFIX=""
+  CONF_VM_REPLACES=""; CONF_BACKUP_KEY=""
   local stkey_no=""
   CONF_API_ROUTES=()
   CONF_HASHED=()
@@ -371,6 +379,12 @@ conf_load() {
         { [[ "$value" =~ ^(/[A-Za-z0-9_][A-Za-z0-9._-]*)+$ ]] && [[ "$value/" != */../* ]] && [[ "$value/" != /srv/cbase/* ]]; } \
           || conf_die "$no" "CBASE_VM_DATA is an absolute directory on the VM (/var/lib/app), not under /srv/cbase/"
         CONF_VM_DATA="$value"; vmkey_no="$no" ;;
+      CBASE_VM_REPLACES)
+        [[ "$value" =~ ^[A-Za-z0-9_.@-]+\.service$ ]] || conf_die "$no" "CBASE_VM_REPLACES is a systemd unit's name (name.service)"
+        CONF_VM_REPLACES="$value"; vmkey_no="$no" ;;
+      CBASE_BACKUP_KEY)
+        [[ "$value" =~ ^[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9_-][A-Za-z0-9._-]*)*$ ]] || conf_die "$no" "CBASE_BACKUP_KEY is an object key (cbase/latest.sqlite): letters, digits and . _ - /, no leading /"
+        CONF_BACKUP_KEY="$value"; vmkey_no="$no" ;;
       CBASE_STATIC_BUCKET)
         [[ "$value" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]] || conf_die "$no" "CBASE_STATIC_BUCKET is an S3 bucket's name"
         CONF_STATIC_BUCKET="$value"; stkey_no="$no" ;;
@@ -450,6 +464,9 @@ conf_load() {
   if [ -n "$CONF_VM_PORT$CONF_VM_DATA" ] && { [ -z "$CONF_VM_PORT" ] || [ -z "$CONF_VM_DATA" ]; }; then
     conf_die "$vmkey_no" "CBASE_VM_PORT and CBASE_VM_DATA go together: a grandfathered member's port and its data directory"
   fi
+  if [ -n "$CONF_VM_REPLACES" ] && [ -z "$CONF_VM_PORT" ]; then
+    conf_die "$vmkey_no" "CBASE_VM_REPLACES is for a grandfathered member (CBASE_VM_PORT and CBASE_VM_DATA): the unit that served it before"
+  fi
   if [ "$CONF_VM" = none ]; then
     [ -z "$vmkey_no" ] || conf_die "$vmkey_no" "the CBASE_VM_* and CBASE_BACKUP_BUCKET keys are for an app with a VM, and CBASE_VM is none"
     [ -z "$mem_no" ] || conf_die "$mem_no" "CBASE_MEMORY is for an app with a VM, and CBASE_VM is none"
@@ -524,7 +541,10 @@ conf_print() {
   [ -z "$CONF_VM_PORT" ] || printf '%-10s port %s, data %s (grandfathered: kept as it is)\n' legacy "$CONF_VM_PORT" "$CONF_VM_DATA"
   [ -z "$CONF_VM_SETTINGS" ] || printf '%-10s SSM %s\n' settings "$CONF_VM_SETTINGS"
   [ -z "$CONF_VM_ARTIFACTS" ] || printf '%-10s %s\n' artifacts "$CONF_VM_ARTIFACTS"
-  [ -z "$CONF_BACKUP_BUCKET" ] || printf '%-10s s3://%s/backups/%s/\n' backups "$CONF_BACKUP_BUCKET" "$CONF_APP"
+  [ -z "$CONF_VM_REPLACES" ] || printf '%-10s %s (stopped and disabled by the first deploy)\n' replaces "$CONF_VM_REPLACES"
+  if [ -n "$CONF_BACKUP_BUCKET$CONF_BACKUP_KEY" ]; then
+    printf '%-10s s3://%s/%s\n' backups "${CONF_BACKUP_BUCKET:-(the state bucket)}" "${CONF_BACKUP_KEY:-backups/$CONF_APP/cbase.sqlite}"
+  fi
   if [ -n "$CONF_STATIC_BUCKET" ]; then printf '%-10s s3://%s/%s/ (adopted bucket)\n' static "$CONF_STATIC_BUCKET" "${CONF_STATIC_PREFIX:-$CONF_APP}"
   else printf '%-10s %s\n' static "$CONF_STATIC"; fi
   [ -n "$CONF_STATIC_BUCKET" ] || [ -z "$CONF_STATIC_PREFIX" ] || printf '%-10s %s/\n' folder "$CONF_STATIC_PREFIX"
