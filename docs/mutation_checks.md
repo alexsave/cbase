@@ -1318,3 +1318,14 @@ Each mutation was made a second after a copy, the example's outputs removed, the
 - Makefile: cdom.mk included before cbase.mk -> the check stays green: both orders build today, and the Makefile's comment says so rather than claiming the other order breaks.
 - tools/repo_gate_test.sh: the `^example/minimal/` exception dropped -> the planted files' line and the repository's own example/minimal lines red.
 - tools/repo_gate_test.sh: the exception unanchored (`example/minimal/`) -> the planted `x/example/minimal/p.c` is let through, red.
+
+## make new: the starter server (starter)
+
+tools/new_test.sh, part of make check, runs `make -C <cbase> new DIR=hello` from build/new_test/, then `make serve` in the new server with a clean environment and a free port, asks GET / and GET /health, stops the server by PID, and checks that a non-empty DIR and a file are refused and that GIT=1 writes its submodule with no network.
+Each mutation was made in tools/new.sh (the template the server is written from), the test run, and the file restored from a copy.
+
+- new.sh: `cb_res_text(res, 200, "cbase")` (no newline) -> `GET / answered 200 with 'cbase', not 200 "cbase\n"` red.
+- new.sh: `"Cbase\n"` -> `GET / answered 200 with 'Cbase', not 200 "cbase\n"` red.
+- new.sh: `.n_route_lists = 0` (the route dropped from the app) -> `GET / answered 404 with 'not found', not 200 "cbase\n"` red.
+- new.sh: `.health_route = true` dropped -> `GET /health answered 404, not 200` red.
+- new.sh: the non-empty refusal (`[ -z "$(ls -A "$dir")" ] || die ...`) dropped -> `make new over the non-empty .../build/new_test/hello succeeded` red.

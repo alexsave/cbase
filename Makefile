@@ -16,8 +16,9 @@
 #                   fresh tree without providers/aws/ or ops/: built with the network denied,
 #                   then its own check (tools/offline_build_test.sh --check: example/Makefile's
 #                   tests, smokes and link check), and the platform's smokes against a storeless
-#                   product (example/storeless), and `make -C example serve` as a person runs it
-#                   (tools/serve_test.sh)
+#                   product (example/storeless), `make -C example serve` as a person runs it
+#                   (tools/serve_test.sh), and `make new`'s server built, served and asked
+#                   (tools/new_test.sh)
 #   make check-asan the same tests, every object rebuilt under ASan + UBSan, and every fuzz
 #                   corpus replayed through its target under them (make fuzz-replay)
 #   make check-dynamo  the store conformance suite and the example smoke against DynamoDB Local
@@ -29,6 +30,9 @@
 #   make serve      build/cbase, then run it as `cbase serve` from here (cbase.mk's APP_SERVE_DIR,
 #                   APP_ENV_FILE, APP_SERVE_LISTEN; tools/serve.sh): 127.0.0.1:8642, or PORT
 #   make serve-binary, make bootstrap   the static Linux arm64 binaries (ops/build_static.sh, Docker)
+#   make new DIR=<path>   a new server on cbase in <path> (tools/new.sh): a Makefile, src/server.c
+#                   answering GET / with "cbase" and /health, and a .gitignore; then `make serve`
+#                   there. GIT=1 also makes it a git repository with cbase as its submodule
 #   make clean
 #
 # Builds on macOS (clang, Homebrew openssl@3 and sqlite) and on Ubuntu 24.04 (gcc, libssl-dev,
@@ -40,6 +44,15 @@ include example/app.mk
 APP_DYNAMO_RUNS := 'build/test/smoke_example build/cbase'
 APP_DYNAMO_DEPS := build/cbase build/test/smoke_example
 include cbase.mk
+
+# THE STARTER (tools/new.sh): `make -C <cbase> new DIR=<path>`. DIR is from where make was run
+# (make's PWD, which make -C does not change), or absolute. tools/new_test.sh holds it (check).
+.PHONY: new new-test
+new:
+	@sh tools/new.sh '$(DIR)' '$(GIT)' '$(or $(PWD),$(CURDIR))'
+new-test:
+	CHECK_JOBS=$(CHECK_JOBS) bash tools/new_test.sh
+check: new-test
 
 # The example as a consumer builds it (local alone), its tests and its link check, here in this
 # tree; the client was checked once above. check runs the same in a tree without providers/aws/
