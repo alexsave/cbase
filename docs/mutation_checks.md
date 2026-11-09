@@ -1165,3 +1165,11 @@ Each row is also in client/hosts/cdom/mutants.py.
 - cbc_cdom.c: in_ready not checked -> `a start from inside DONE or ready traps` red.
 - cbc_host.c: the stopped check after each send_request removed -> survives, by design: it covers send_request's slot-less answer, which the core's bound on the calls out (CBC_HOST_PEND_MAX) keeps from happening.
 - Not added: stopped guards in the cbc_host_ws_* reports and cbc_host_http_answered, and clearing fn. The stop drops has_sock, so every socket report already ignores every id, and an HTTP answer only feeds the core, whose events and pump are the two guards; each would be a second fix over the same vector.
+
+## on_late keeps to the start it was armed under (adapter-stop)
+
+on_late, the cdom adapter's 0 ms timer for answers past the slot table, went on while the handle was live but did not check the generation, so a stop and a new start inside one of its answers would have handed the old start's remaining answers to the new one.
+It now takes the generation on entry and goes on only while the handle is live and still on it.
+
+- No test: a start inside an answer's callback traps (cbc_cdom_start's depth check, `a start from inside DONE or ready traps`), and on_late's answers reach the app only through that callback, so no deterministic case can move the generation inside on_late.
+- cbc_cdom.c: the generation check removed -> survives (the case cannot be made, above); the live half is the stop's, unchanged.
