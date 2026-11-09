@@ -119,7 +119,7 @@ asks() {
 serve_up "$H" serve
 ok "make serve built it and prints $url"
 if [ -x "$H/build/hello" ] && [ ! -e "$H/build/cbase" ]; then ok "the binary is build/hello, named for the app"
-else fail "make serve built no build/hello, or a build/cbase: $(ls "$H/build" | tr '\n' ' ')"; fi
+else fail "make serve built no build/hello, or a build/cbase: $(cd "$H/build" && printf '%s ' *)"; fi
 
 code="$(curl -s --max-time 5 -o "$T/root.body" -w '%{http_code}' "$url" || true)"
 if [ "$code" = 200 ] && printf 'cbase\n' | cmp -s - "$T/root.body"; then ok "GET / answers 200 with exactly \"cbase\\n\""
