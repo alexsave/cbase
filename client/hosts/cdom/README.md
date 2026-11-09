@@ -50,6 +50,8 @@ The app may call it from the loop or from inside its own callback (an event, `re
 `cbc_cdom_start` is from the loop only: a start from inside a callback traps.
 cdom cannot cancel a request or a store get, so each sits in a slot of the handle stamped with the start's generation until cdom answers, and an older start's answer is dropped.
 The handle must be zeroed before its first start (static storage is), and starting a live handle traps.
+The handle lives for the page: never free it, stopped or not, and keep it static.
+Every context the adapter hands cdom points into it, and cdom may call back after a stop, a request's answer up to its `wait_ms` later, or with no limit when `http_wait_ms` is 0.
 
 ## What cdom cannot say
 
