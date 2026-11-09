@@ -17,7 +17,9 @@
 # distribution's replacement allowed and said, drift refused then accepted, DRY_RUN, an origin
 # header's and a parameter's value kept out of a drift, a change set and an error, the
 # certificate found, requested with a zone, requested without one (the records printed, status 3),
-# a certificate read that fails, a missing group and a missing build, and the template's routes.
+# a certificate read that fails, several hostnames on one distribution and one certificate, a missing
+# group and a missing build, the template's routes (ws ones on CBASE_API_HOST's distribution too),
+# and the router's code run under node (files, pages, the app shell).
 # The VM side, group-init, undeploy and group-destroy are cbase_vm_test.sh's. docs/mutation_checks.md
 # records the mutations each was checked against.
 set -euo pipefail
@@ -806,6 +808,24 @@ behaviour /read | grep -q "CachePolicyId: $CF_OPTIMIZED" || fail "/read is not c
 awk '/- Id: ws/{f=1} f' "$t/out" | grep -q "OriginReadTimeout: 60" || fail "the ws origin's read timeout"
 awk '/- Id: ws/{f=1} f' "$t/out" | grep -q "OriginKeepaliveTimeout: 60" || fail "the ws origin's keep-alive"
 out_has "  VmOrigin:" "a full app's template has the VM origin parameter"
+ok
+# CBASE_API_HOST's distribution: everything to the VM, and a ws route on the ws origin there too.
+apiws="$(app apiws "CBASE_APP = shop" "CBASE_ROUTE = /mqtt* ws" "CBASE_ROUTE = /ws* ws" "CBASE_ROUTE = /api/* vm" \
+           "CBASE_DOMAIN = shop.example.com" "CBASE_API_HOST = api.example.com")"
+run "$apiws" template
+expect_rc 0 "a template with CBASE_API_HOST and ws routes"
+awk '/^  ApiDistribution:$/{f=1} f' "$t/out" > "$t/api"
+api_behaviour() {   # api_behaviour PATTERN: that route's behaviour on the ApiDistribution
+  awk -v p="          - PathPattern: \"$1\"" '$0 == p {f=1; print; next} f && /^          - / {f=0} f && /^[^ ]/ {f=0} f' "$t/api"
+}
+for p in /mqtt* /ws*; do
+  api_behaviour "$p" | grep -q "TargetOriginId: ws" || { cat "$t/api" >&2; fail "$p is not on the API host's ws origin"; }
+  api_behaviour "$p" | grep -q "AllowedMethods: \[GET, HEAD, OPTIONS, PUT, PATCH, POST, DELETE\]" || fail "$p on the API host has not every method"
+  api_behaviour "$p" | grep -q "CachePolicyId: $CF_DISABLED" || fail "$p on the API host is cached"
+done
+awk '/- Id: ws/{f=1} f' "$t/api" | grep -q "OriginReadTimeout: 60" || fail "the API host's ws origin's read timeout"
+awk '/- Id: ws/{f=1} f' "$t/api" | grep -q "OriginKeepaliveTimeout: 60" || fail "the API host's ws origin's keep-alive"
+[ -z "$(api_behaviour /api/*)" ] || fail "a vm route is a behaviour of its own on the API host (its default is the VM)"
 ok
 run "$site" template
 expect_rc 0 "a static site's template"

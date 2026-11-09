@@ -16,7 +16,8 @@
 #                 public DNS name and the app's claimed port, which the VM deploy (vm.sh) supplies.
 #                 A ws route is its own origin, for its long timeouts (CloudFront sets them per
 #                 origin): read 60 s, keep-alive 60 s, uncached, every method.
-#   ApiDistribution  with CBASE_API_HOST: that hostname's every request to the VM.
+#   ApiDistribution  with CBASE_API_HOST: that hostname's every request to the VM, a ws route's
+#                 on the ws origin as on the Distribution.
 # Caching uses AWS-managed policies alone (CachingOptimized, CachingDisabled; the VM's requests
 # AllViewerExceptHostHeader), so a flat-rate CloudFront plan can hold the distribution.
 # A route's methods are the smallest of CloudFront's three sets that covers them: GET,HEAD;
@@ -309,8 +310,18 @@ EOF
         Origins:
 EOF
       stack_vm_origin vm 30 5
+      [ -z "$has_ws" ] || stack_vm_origin ws 60 60
       printf '        DefaultCacheBehavior:\n'
       stack_behaviour "*" vm nocache ALL
+      # The ws routes keep their behaviour on the API host too: the ws origin's long timeouts.
+      i=0
+      for r in "${CONF_ROUTES[@]}"; do
+        read -r pattern origin cache methods <<< "$r"
+        [ "$origin" = ws ] || continue
+        [ "$i" -gt 0 ] || printf '        CacheBehaviors:\n'
+        i=$((i + 1))
+        stack_behaviour "$pattern" ws "$cache" "$methods"
+      done
     fi
     cat << EOF
 
