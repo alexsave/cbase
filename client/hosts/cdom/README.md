@@ -28,7 +28,23 @@ cbc_cdom_pump(&client);   /* after every call into the client */
 ```
 
 `make -C example/minimal serve` builds both and runs the server; open the URL its startup line prints.
-`check-host-cdom` builds it against the pin and checks it as a person runs it (`example/minimal/check.sh`).
+
+### A call with a query
+
+`cbc_call` sends its path as given, so its parameter is `encoded_path` (`client/include/cbase/client.h`): the client cannot tell a value's `&` or `=` from the query's own separators.
+The page builds the query with the client's `cbc_query_add`, which percent-encodes each key and value as RFC 3986 asks (all but `A-Z a-z 0-9 - . _ ~`), and is the same call on every host:
+
+```c
+/* name: n bytes the user typed */
+char path[CBC_PATH_MAX] = "/api/hello";
+size_t len = 10;
+if (cbc_query_add(path, sizeof path, &len, "name", name, n) != 0) return;   /* CBC_E_FULL: too long */
+cbc_call(cbc_cdom_client(&client), CBC_GET, CBC_C_IDEMPOTENT | CBC_C_FAIL_FAST, path, len, NULL, 0, cbc_cdom_now());
+cbc_cdom_pump(&client);
+```
+
+The browser's `fetch` encodes a space and UTF-8 itself but leaves `&`, `=`, `+` and `#` alone, so a page that sends a raw value works for "Ada" and breaks on "Ada & Grace".
+cdom's own `cd_url_encode` (`src/cdom_url.h`) is for the page's address; a path for `cbc_call` is `cbc_query_add`'s.
 
 ## The dependency
 

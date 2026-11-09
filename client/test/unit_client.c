@@ -980,6 +980,81 @@ static void pkce_is_rfc7636(void) {
     T_EQ_INT(cbc_pkce(NULL, 32, verifier, challenge), CBC_E_ARG);
 }
 
+// ---- cbc_query_add ------------------------------------------------------------------------------
+// The first parameter opens the query with '?', the next ones join with '&'; a path that already
+// holds a '?' gets '&'.
+static void a_query_opens_then_joins(void) {
+    char b[64] = "/api/hello";
+    size_t n = 10;
+    T_EQ_INT(cbc_query_add(b, sizeof b, &n, "name", "Ada", 3), 0);
+    T_EQ_MEM(b, n, "/api/hello?name=Ada", 19);
+    T_EQ_INT(cbc_query_add(b, sizeof b, &n, "n", "2", 1), 0);
+    T_EQ_MEM(b, n, "/api/hello?name=Ada&n=2", 23);
+    char c[32] = "/a?x=1";
+    size_t m = 6;
+    T_EQ_INT(cbc_query_add(c, sizeof c, &m, "y", "z", 1), 0);
+    T_EQ_MEM(c, m, "/a?x=1&y=z", 10);
+}
+
+// An empty value is "key=", with nothing after the '=' (val may then be NULL).
+static void an_empty_query_value(void) {
+    char b[32] = "/p";
+    size_t n = 2;
+    T_EQ_INT(cbc_query_add(b, sizeof b, &n, "name", "", 0), 0);
+    T_EQ_MEM(b, n, "/p?name=", 8);
+    T_EQ_INT(cbc_query_add(b, sizeof b, &n, "e", NULL, 0), 0);
+    T_EQ_MEM(b, n, "/p?name=&e=", 11);
+}
+
+// Every byte but A-Z a-z 0-9 - . _ ~ is %XX in upper-case hex: the separators, '+', '#', '%', a
+// space, a slash and every byte of UTF-8, in the key as in the value.
+static void reserved_bytes_and_utf8_are_encoded(void) {
+    char b[128] = "/p";
+    size_t n = 2;
+    const char *v = "Ada & Gr\303\242ce=+#%/~-._";
+    T_EQ_INT(cbc_query_add(b, sizeof b, &n, "a b&c", v, strlen(v)), 0);
+    const char *want = "/p?a%20b%26c=Ada%20%26%20Gr%C3%A2ce%3D%2B%23%25%2F~-._";
+    T_EQ_MEM(b, n, want, strlen(want));
+    char z[16] = "/p";
+    size_t m = 2;
+    T_EQ_INT(cbc_query_add(z, sizeof z, &m, "k", "\0\xff", 2), 0);   // a NUL is a byte too
+    T_EQ_MEM(z, m, "/p?k=%00%FF", 11);
+}
+
+// What does not fit is CBC_E_FULL with the buffer and its length untouched, never cut short; an
+// exact fit fits.
+static void a_full_query_buffer_is_left_as_it_was(void) {
+    char b[16];
+    memset(b, '#', sizeof b);
+    memcpy(b, "/p", 2);
+    size_t n = 2;
+    T_EQ_INT(cbc_query_add(b, 9, &n, "k", "a b", 3), CBC_E_FULL);   // "/p?k=a%20b" is 10 bytes
+    T_EQ_INT((long long)n, 2);
+    for (size_t i = 2; i < sizeof b; i++) T_EQ_INT(b[i], '#');
+    T_EQ_INT(cbc_query_add(b, 10, &n, "k", "a b", 3), 0);           // an exact fit
+    T_EQ_MEM(b, n, "/p?k=a%20b", 10);
+    T_EQ_INT(b[10], '#');                                           // and no NUL after it
+    T_EQ_INT(cbc_query_add(b, 12, &n, "k", "", 0), CBC_E_FULL);      // "&k=" is 3, 2 are left
+    T_EQ_INT((long long)n, 10);
+    T_EQ_INT(b[10], '#');
+    T_EQ_INT(cbc_query_add(b, 13, &n, "k", "", 0), 0);
+    T_EQ_MEM(b, n, "/p?k=a%20b&k=", 13);
+}
+
+// NULL arguments, an empty key, a NULL value with a length, and a length past cap are CBC_E_ARG.
+static void query_add_refuses_bad_arguments(void) {
+    char b[16] = "/p";
+    size_t n = 2;
+    T_EQ_INT(cbc_query_add(NULL, sizeof b, &n, "k", "v", 1), CBC_E_ARG);
+    T_EQ_INT(cbc_query_add(b, sizeof b, NULL, "k", "v", 1), CBC_E_ARG);
+    T_EQ_INT(cbc_query_add(b, sizeof b, &n, NULL, "v", 1), CBC_E_ARG);
+    T_EQ_INT(cbc_query_add(b, sizeof b, &n, "", "v", 1), CBC_E_ARG);
+    T_EQ_INT(cbc_query_add(b, sizeof b, &n, "k", NULL, 1), CBC_E_ARG);
+    size_t past = sizeof b + 1;
+    T_EQ_INT(cbc_query_add(b, sizeof b, &past, "k", "v", 1), CBC_E_ARG);
+    T_EQ_INT((long long)n, 2);
+}
+
 int main(void) {
     T_RUN(oidc_begin_makes_nonce_and_state);
     T_RUN(oidc_sign_in_asks_a_name_then_signs_in);
@@ -1021,5 +1096,10 @@ int main(void) {
     T_RUN(borrowed_bounds);
     T_RUN(a_get_with_a_body_is_refused);
     T_RUN(http_deadline);
+    T_RUN(a_query_opens_then_joins);
+    T_RUN(an_empty_query_value);
+    T_RUN(reserved_bytes_and_utf8_are_encoded);
+    T_RUN(a_full_query_buffer_is_left_as_it_was);
+    T_RUN(query_add_refuses_bad_arguments);
     return T_DONE();
 }

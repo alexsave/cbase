@@ -333,11 +333,31 @@ int cbc_pkce(const uint8_t *entropy, size_t n, char verifier[44], char challenge
 #define CBC_C_AUTH 0x2   // needs the user: refused at once when nobody is signed in
 #define CBC_C_HTTP 0x4   // always over HTTP, with the bearer when signed in (CLIENT_DESIGN.md 6.4)
 
-// A call of an app route: method (CBC_GET, CBC_POST), the path (and query), a body (none for a
-// GET: CBC_E_ARG, as a browser refuses one). A ticket, finished by exactly one CBC_EV_DONE, or 0
+// A call of an app route: method (CBC_GET, CBC_POST), the path and query, a body (none for a GET:
+// CBC_E_ARG, as a browser refuses one). A ticket, finished by exactly one CBC_EV_DONE, or 0
 // (cbc_error).
-uint32_t cbc_call(cbc *c, int method, int flags, const char *path, size_t path_len,
+// THE PATH IS SENT AS GIVEN, so it is named encoded_path: the client encodes nothing in it, since
+// it cannot tell a value's & or = from the query's own separators. Build its query with
+// cbc_query_add (below), which encodes each key and value, or encode every value and every path
+// segment made from data yourself. A browser's fetch encodes a space and UTF-8 but leaves & = + #
+// alone, so a page that skips it works for "Ada" and breaks on "Ada & Grace". CBC_PATH_MAX bounds
+// encoded_path.
+uint32_t cbc_call(cbc *c, int method, int flags, const char *encoded_path, size_t encoded_path_len,
                   const uint8_t *body, size_t body_len, int64_t now);
+
+// A QUERY PARAMETER, ENCODED: appends "?" (when buf's first *len bytes hold no '?' yet) or "&",
+// then key=val, to the *len bytes at buf (cap bytes in all), and adds what it wrote to *len. The
+// key (a C string, not empty) and the val_len bytes of val are percent-encoded as RFC 3986 asks of
+// a query: the unreserved A-Z a-z 0-9 - . _ ~ as they are, every other byte as %XX in upper-case
+// hex, so a space, + & = # % and every byte of UTF-8 are always encoded, and the server's
+// cb_http_query_find reads the very bytes back. Nothing is written past *len but what is added,
+// and no NUL. 0; CBC_E_FULL when it does not fit, with buf and *len as they were (never cut short);
+// CBC_E_ARG for a NULL buf, len or key, an empty key, a NULL val with val_len > 0, or *len > cap.
+//   char path[CBC_PATH_MAX] = "/api/hello";
+//   size_t n = 10;
+//   if (cbc_query_add(path, sizeof path, &n, "name", name, name_len) == 0)
+//       cbc_call(c, CBC_GET, CBC_C_IDEMPOTENT, path, n, NULL, 0, now);
+int cbc_query_add(char *buf, size_t cap, size_t *len, const char *key, const char *val, size_t val_len);
 
 // A LARGE BODY, BORROWED (a bulk write: POST /notes/bulk and its kind). cbc_call's body is copied
 // into the arena (CBC_ARENA bytes for every waiting call); this one's is not. The client keeps body
@@ -346,11 +366,11 @@ uint32_t cbc_call(cbc *c, int method, int flags, const char *path, size_t path_l
 // loss or a 503 goes from the same bytes. It always goes over HTTP (a big body never holds the
 // socket's frames up behind it). The host sends it from two places: the head, path and
 // Authorization that cbc_next_request writes (flags CBC_RQ_REF, body_len the whole length, nothing
-// of the body in out), then body_len bytes from cbc_req_body. Only the path is copied (into the
-// arena). A ticket, finished by exactly one CBC_EV_DONE, or 0 (cbc_error: CBC_E_ARG for a NULL body
+// of the body in out), then body_len bytes from cbc_req_body. Only encoded_path (sent as given, as
+// cbc_call's) is copied (into the arena). A ticket, finished by exactly one CBC_EV_DONE, or 0 (cbc_error: CBC_E_ARG for a NULL body
 // or one past UINT32_MAX, CBC_E_AUTH, CBC_E_FULL). body may be a host's opaque handle instead of a
 // pointer (a page's key to bytes of its own): the client hands it back exactly as it got it.
-uint32_t cbc_call_ref(cbc *c, int method, int flags, const char *path, size_t path_len,
+uint32_t cbc_call_ref(cbc *c, int method, int flags, const char *encoded_path, size_t encoded_path_len,
                       const uint8_t *body, size_t body_len, int64_t now);
 
 // The next HTTP request to send into out (cbc_req_hdr, then its bytes): its length, 0 for none,

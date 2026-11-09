@@ -1,6 +1,7 @@
 # client/ - the cbase client (include/cbase/client.h), its tests, its fuzz target, its wasm
 # module with the size gate, and the TypeScript a page uses it through. docs/CLIENT_DESIGN.md
-# is the design. Nothing here links the server: the client is its own small build.
+# is the design. The client is its own small build: nothing here links the server, but for one test
+# (unit_query_wire) that reads the client's queries back with core's HTTP parser.
 #
 #   make check        the unit tests and the host suite on the native host (hosts/posix), natively
 #                     and under ASan + UBSan, the libc and requires gates, and the fuzz corpus replayed
@@ -63,6 +64,21 @@ build/test/unit_client: $(call c_objs,build/obj/host,$(SRC)) $(call c_objs,build
 build/asan/test/unit_client: $(call c_objs,build/obj/asan,$(SRC)) $(call c_objs,build/obj/asan-test,test/unit_client.c)
 	@mkdir -p $(@D)
 	$(CC) $(ASAN_CFLAGS) $^ -o $@
+# THE QUERY ON THE WIRE (test/unit_query_wire.c): cbc_query_add's paths read back by the server's
+# own parser and cb_http_query_find, so the two sides' encodings are held to each other. The test
+# links core's net/http.c and the two util files it needs, built as core builds them (its
+# _GNU_SOURCE and unused parameters), and nothing else of the server.
+WIRE_SRC   := $(CB)core/src/net/http.c $(CB)core/src/util/str.c $(CB)core/src/util/err.c
+WIRE_FLAGS      = $(CFLAGS) $(TEST_INC) -I$(CB)core/src -D_GNU_SOURCE -Wno-unused-parameter
+ASAN_WIRE_FLAGS = $(ASAN_CFLAGS) $(TEST_INC) -I$(CB)core/src -D_GNU_SOURCE -Wno-unused-parameter
+$(eval $(call C_VARIANT,build/obj/wire,CC,WIRE_FLAGS))
+$(eval $(call C_VARIANT,build/obj/asan-wire,CC,ASAN_WIRE_FLAGS))
+build/test/unit_query_wire: $(call c_objs,build/obj/host,$(SRC)) $(call c_objs,build/obj/wire,$(WIRE_SRC) test/unit_query_wire.c)
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) $^ -o $@
+build/asan/test/unit_query_wire: $(call c_objs,build/obj/asan,$(SRC)) $(call c_objs,build/obj/asan-wire,$(WIRE_SRC) test/unit_query_wire.c)
+	@mkdir -p $(@D)
+	$(CC) $(ASAN_CFLAGS) $^ -o $@
 build/test/unit_host_posix: $(call c_objs,build/obj/host,$(SRC)) $(call c_objs,build/obj/host-test,$(HOST_POSIX_SRC) $(HOST_SUITE_SRC) test/unit_host_posix.c)
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) $^ -o $@
@@ -74,13 +90,15 @@ build/asan/test/unit_host_posix: $(call c_objs,build/obj/asan,$(SRC)) $(call c_o
 # library symbol; the program that links it brings one. Here over the native objects, and over the
 # wasm32 objects under `make wasm` (below).
 .PHONY: all check test test-asan libc-gate requires-gate
-all: build/test/unit_client build/test/unit_host_posix
-test: libc-gate requires-gate build/test/unit_client build/test/unit_host_posix
+all: build/test/unit_client build/test/unit_host_posix build/test/unit_query_wire
+test: libc-gate requires-gate build/test/unit_client build/test/unit_host_posix build/test/unit_query_wire
 	./build/test/unit_client
 	./build/test/unit_host_posix
-test-asan: build/asan/test/unit_client build/asan/test/unit_host_posix
+	./build/test/unit_query_wire
+test-asan: build/asan/test/unit_client build/asan/test/unit_host_posix build/asan/test/unit_query_wire
 	./build/asan/test/unit_client
 	./build/asan/test/unit_host_posix
+	./build/asan/test/unit_query_wire
 check: test test-asan fuzz-replay
 libc-gate: $(call c_objs,build/obj/host,$(SRC))
 	@bash $(CB)tools/libc_gate.sh --nm nm --cc '$(CC)' $^

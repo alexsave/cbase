@@ -291,16 +291,59 @@ static uint32_t app_call(cbc *c, int method, int flags, const char *path, size_t
     return call_add(c, K_APP, method, flags & (CBC_C_IDEMPOTENT | CBC_C_FAIL_FAST | CBC_C_AUTH | CBC_C_HTTP), path, path_len, body, body_len, ref);
 }
 
-uint32_t cbc_call(cbc *c, int method, int flags, const char *path, size_t path_len,
+uint32_t cbc_call(cbc *c, int method, int flags, const char *encoded_path, size_t encoded_path_len,
                   const uint8_t *body, size_t body_len, int64_t now) {
     (void)now;
-    return app_call(c, method, flags, path, path_len, body, body_len, 0);
+    return app_call(c, method, flags, encoded_path, encoded_path_len, body, body_len, 0);
 }
 
-uint32_t cbc_call_ref(cbc *c, int method, int flags, const char *path, size_t path_len,
+uint32_t cbc_call_ref(cbc *c, int method, int flags, const char *encoded_path, size_t encoded_path_len,
                       const uint8_t *body, size_t body_len, int64_t now) {
     (void)now;
-    return app_call(c, method, flags, path, path_len, body, body_len, 1);
+    return app_call(c, method, flags, encoded_path, encoded_path_len, body, body_len, 1);
+}
+
+// RFC 3986's unreserved bytes, the only ones a query parameter keeps as they are.
+static int unreserved(uint8_t b) {
+    return (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') || b == '-' || b == '.' ||
+           b == '_' || b == '~';
+}
+// The encoded length of n bytes, or more than room as soon as it passes room (so it never wraps,
+// on wasm32's 32-bit size_t either).
+static size_t pct_len(const uint8_t *s, size_t n, size_t room) {
+    size_t k = 0;
+    for (size_t i = 0; i < n && k <= room; i++) k += unreserved(s[i]) ? 1 : 3;
+    return k;
+}
+static size_t pct_put(char *o, const uint8_t *s, size_t n) {
+    static const char hex[] = "0123456789ABCDEF";
+    size_t k = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (unreserved(s[i])) { o[k++] = (char)s[i]; continue; }
+        o[k++] = '%';
+        o[k++] = hex[s[i] >> 4];
+        o[k++] = hex[s[i] & 15];
+    }
+    return k;
+}
+
+int cbc_query_add(char *buf, size_t cap, size_t *len, const char *key, const char *val, size_t val_len) {
+    if (!buf || !len || !key || !key[0] || (!val && val_len) || *len > cap) return CBC_E_ARG;
+    const uint8_t *k = (const uint8_t *)key, *v = (const uint8_t *)val;
+    size_t kn = strlen(key), at = *len, room = cap - at;
+    if (room < 2) return CBC_E_FULL;   // the separator and the '='
+    room -= 2;
+    size_t kl = pct_len(k, kn, room);
+    if (kl > room) return CBC_E_FULL;
+    if (pct_len(v, val_len, room - kl) > room - kl) return CBC_E_FULL;
+    int has_q = 0;
+    for (size_t i = 0; i < at && !has_q; i++) has_q = buf[i] == '?';
+    buf[at++] = has_q ? '&' : '?';
+    at += pct_put(buf + at, k, kn);
+    buf[at++] = '=';
+    at += pct_put(buf + at, v, val_len);
+    *len = at;
+    return 0;
 }
 
 uint32_t cbc_sign_in(cbc *c, int op, const char *name, size_t name_len, const char *pw, size_t pw_len, int64_t now) {

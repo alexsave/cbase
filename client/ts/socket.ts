@@ -206,17 +206,19 @@ export class CbClient {
     };
   }
 
-  get(path: string, flags = CBC_C_IDEMPOTENT): Promise<ArrayBuffer> {
-    return this.call(CBC_GET, flags, path);
+  get(encodedPath: string, flags = CBC_C_IDEMPOTENT): Promise<ArrayBuffer> {
+    return this.call(CBC_GET, flags, encodedPath);
   }
 
-  post(path: string, body?: Uint8Array, flags = 0): Promise<ArrayBuffer> {
-    return this.call(CBC_POST, flags, path, body);
+  post(encodedPath: string, body?: Uint8Array, flags = 0): Promise<ArrayBuffer> {
+    return this.call(CBC_POST, flags, encodedPath, body);
   }
 
   // A call: its answer's body, or a CbError. It rides the socket when signed in, HTTP otherwise.
-  call(method: number, flags: number, path: string, body?: Uint8Array): Promise<ArrayBuffer> {
-    const p = utf8.encode(path);
+  // encodedPath is sent as given (cbase/client.h cbc_call): every query value in it is already
+  // percent-encoded, since the client cannot tell a value's & or = from the query's own.
+  call(method: number, flags: number, encodedPath: string, body?: Uint8Array): Promise<ArrayBuffer> {
+    const p = utf8.encode(encodedPath);
     const b = body ?? new Uint8Array(0);
     if (p.length + b.length > this.ioCap) return Promise.reject(new RangeError('cbase call: path and body too large'));
     this.mem().u8.set(p, this.io);
