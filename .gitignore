@@ -13,3 +13,6 @@
 
 # Tools built in place (tools/structgen: make -C tools/structgen).
 /tools/*/build/
+
+# Python bytecode (a mutants.py imported without PYTHONDONTWRITEBYTECODE).
+__pycache__/
