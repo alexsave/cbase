@@ -41,6 +41,8 @@ MUTANTS = [
   (H, 'a file: page opens ws://', '    else return CBC_SOCK_UNSUPPORTED;   // file:', '    else s = "ws://";   // file:',
    'FAIL  cdom: a file: page opens no socket'),
   # (d) the test gaps: wss, the timeout, ids from 0, the deadline
+  (H, 'a host read only as far as 256 bytes', 'url + n, 257);', 'url + n, 256);',
+   'FAIL  cdom: a host:port of 256 bytes'),
   (H, 'an https: page opens ws://', '    if (pl == 6 && memcmp(proto, "https:", 6) == 0) s = "wss://";', '    if (pl == 6 && memcmp(proto, "https:", 6) == 0) s = "ws://";',
    'a socket URL not on the page\'s scheme and host'),
   (H, 'CD_HTTP_TIMEOUT taken for a status', 'if (status == CD_HTTP_FAILED || status == CD_HTTP_TIMEOUT) status = 0;', 'if (status == CD_HTTP_FAILED) status = 0;',
