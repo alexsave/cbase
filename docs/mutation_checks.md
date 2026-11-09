@@ -1366,3 +1366,11 @@ Each mutant was made in core/src/ingress_process.c, its object deleted, and the 
 - the summary line skipped (`if (0) log_config_summary(...)`) -> `summaries == 1` red.
 - log_config says nothing at any level -> the debug wait for ` config: CBASE_LISTEN=127.0.0.1:0` red (and the CPU knob's `CBASE_LOOP_CPU=off (not pinned)`).
 - the dev start's JWT secret warning demoted to CB_DEBUG -> `warned == g_storeless ? 0 : 1` red.
+
+## The minimal app on cdom's default page, bundled (round4-friction)
+
+example/minimal/check.sh (make -C client check-minimal-example) reads GET / for the shim and the module bundled as a data: URL, compares that module with build/page/page.wasm, and asks GET /page.wasm for a 404.
+Each mutant was made in example/minimal, its build/ deleted, and the file restored from a copy.
+
+- Makefile: `APP_WASM_SEPARATE := 1` added (the module kept apart) -> `GET / bundles no module, or not build/page/page.wasm (magic '')` red.
+- server/minimal.c: the `/page.wasm` route put back -> `GET /page.wasm answered 200, not 404` red.

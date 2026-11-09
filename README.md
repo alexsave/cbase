@@ -227,6 +227,7 @@ include $(CBASE)/client/hosts/cdom/adapter.mk # the cdom adapter
 
 `cbase.mk` comes first because `cdom.mk` turns on `.SECONDEXPANSION` for every rule read after it, and cbase's rules are tested without it; `adapter.mk` comes last because it needs `cdom.mk`'s and `client.mk`'s variables, and stops, naming the fix, when either is missing.
 The server is one `cb_app` with `GET /api/hello` answering `hello from cbase` (`example/minimal/server/minimal.c`).
+The page is cdom's default page, with the wasm module bundled into it, so the server serves one file at `GET /`.
 `make -C example/minimal serve` builds both and runs the server, outside dev mode with no setting at all (it is storeless); open the URL its startup line prints.
 cbase's CI builds it against the cdom pin and checks it as a person runs it (`example/minimal/check.sh`).
 
