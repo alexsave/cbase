@@ -30,6 +30,9 @@
 #                    with the core, the shared host and the host itself, to pass what every host passes
 #   CBC_SUITE_INC    its include flags (with CBC_INC)
 #
+# A host adapter in client/hosts/<name>/ that an app compiles into its own program brings its own
+# fragment there, included after this one (that directory's README.md names it).
+#
 # The core is the same files cbase's own client/Makefile builds, tests and fuzzes: that Makefile
 # includes this one, so there is one list.
 
