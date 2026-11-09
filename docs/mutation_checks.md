@@ -1531,3 +1531,5 @@ The router section was run alone for these checks; the whole suite ran green bef
 - conf.sh: the API host's check against CBASE_DOMAIN made `true` -> `a bad cbase.conf (... CBASE_API_HOST api.example.com is one of CBASE_DOMAIN's hostnames): status 0, not 1` red.
 - conf.sh: config check's domain line made `$CONF_DOMAIN` (the first) -> `the domains shape resolved otherwise` red.
 - static_rules.tsv: the `.well-known/apple-app-site-association` rule dropped -> `s3://site-bucket/site/.well-known/apple-app-site-association has [application/octet-stream|no-cache], not [application/json|no-cache]` red.
+- stack.sh: the ApiDistribution's ws origin and ws behaviours dropped -> `/mqtt* is not on the API host's ws origin` red.
+- stack.sh: the ApiDistribution's ws origin made 30 s and 5 s -> `the API host's ws origin's read timeout` red.

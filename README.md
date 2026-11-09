@@ -574,7 +574,7 @@ That policy lets any distribution in the account read the bucket, so a shared st
 A full app (`CBASE_APP = shop` alone) deploys the same static part, and its distribution adds each `CBASE_ROUTE` as a behaviour on the VM origin, the group VM's public DNS name and the app's port, which the VM side of the deploy (below) supplies as the stack's `VmOrigin` and `VmPort` parameters.
 A route's methods map to the smallest of CloudFront's three method sets that covers them (`GET,HEAD`; `GET,HEAD,OPTIONS`; all seven), `cache` is AWS's CachingOptimized policy and `nocache` CachingDisabled, and a VM route forwards every viewer header but `Host`.
 A `ws` route is its own origin for its long timeouts (CloudFront sets them per origin): 60 s to read and to keep alive, uncached, every method.
-`CBASE_API_HOST` is a second distribution whose every request goes to the VM.
+`CBASE_API_HOST` is a second distribution whose every request goes to the VM, and a `ws` route keeps its `ws` behaviour there too.
 `cbase/tools/cbase template` prints the stack an app's `cbase.conf` makes, to read before a first deploy.
 
 The VM side of a deploy, in order:
