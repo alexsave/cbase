@@ -14,7 +14,7 @@
 # rules with one promise broken, and the check for that promise must be the one
 # that fails. Each check below names the edit that turns it red.
 #
-# Needs make and a C compiler, nothing else. It sleeps a second in four places,
+# Needs make and a C compiler, nothing else. It sleeps a second in five places,
 # on purpose: the make a Mac ships compares whole seconds, and the checks that
 # are NOT about that have to step over it, while the two that are about it
 # (the flag stamp, and the file a flag reads) must not.
@@ -132,5 +132,14 @@ printf '#include "../../../shared/c/shared.h"\n#include <sys_only.h>\nint lone(v
 rm src/own.h
 run CFLAGS='-O2 -Wall -Werror'
 check "a header that was deleted, and is no longer included, is not an error" "$H/src/main.o $X/src/main.o" 2
+
+# Red if: every target is made secondary again (a bare `.SECONDARY:`): a missing
+# object whose source is older than its program is then not rebuilt, and the
+# program built from it is kept. The sleep is so that the new object is a second
+# newer than the program; the rebuild itself does not wait for it.
+run CFLAGS='-O2 -Wall -Werror'
+sleep 1; rm -f $H/src/lone.o
+run CFLAGS='-O2 -Wall -Werror'
+check "a deleted object is rebuilt and its program relinked" "$H/src/lone.o" 1
 
 if [ "$fails" = 0 ]; then echo "c_rules_test: all checks passed"; else echo "c_rules_test: $fails FAILED"; exit 1; fi

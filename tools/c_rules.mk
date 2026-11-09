@@ -67,12 +67,9 @@
 # A CHANGED STAMP WAITS OUT THE SECOND before it is written. This make (3.81,
 # the one a Mac ships) compares whole seconds: a stamp rewritten in the same
 # second an object was written is not newer than it, and the object would be
-# kept. Deleting the objects instead does not work, and was tried: with
-# .SECONDARY below, make does not rebuild a missing object while the program
-# linked from it still looks current, and in that same second it does. So the
-# stamp is made to be one second newer than anything built before it, which
-# costs a second on the rare make that changes a command line and nothing on
-# every other.
+# kept. So the stamp is made to be one second newer than anything built before
+# it, which costs a second on the rare make that changes a command line and
+# nothing on every other.
 #
 # The stamp records the flags as make sees them, before the shell does: a
 # `$(cat build/layout/x.hash)` in them is recorded as that text. So a variant
@@ -125,6 +122,9 @@ C_FORCE:
 .DEFAULT_GOAL := $$(C_GOAL_WAS)
 endef
 
-# An object reached only through a pattern rule is "intermediate" to make, and
-# make deletes intermediates when it is done. Nothing here is disposable.
-.SECONDARY:
+# NO .SECONDARY. Every object is an explicit prerequisite of its program
+# (cbase.mk PROG, lib_tests.mk), so none is intermediate and make never deletes
+# one; and a bare `.SECONDARY:` made every target secondary, so a missing
+# object was rebuilt only when its source was newer than the program, and in
+# the source's own second it was not: a deleted object left a stale program in
+# place (tools/c_rules_test.sh).
