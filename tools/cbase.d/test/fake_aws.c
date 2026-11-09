@@ -157,6 +157,19 @@ static bool copy(char *dst, size_t cap, const char *src) {
     return true;
 }
 
+// The parts end to end into dst[cap]; false when they do not fit.
+static bool join(char *dst, size_t cap, const char *const *parts, int n) {
+    size_t at = 0;
+    for (int i = 0; i < n; i++) {
+        size_t k = strlen(parts[i]);
+        if (at + k >= cap) return false;
+        memcpy(dst + at, parts[i], k);
+        at += k;
+    }
+    dst[at] = 0;
+    return true;
+}
+
 // ---- requests -----------------------------------------------------------------------------------
 
 typedef struct {
@@ -415,11 +428,14 @@ static void tagging(int fd, const request *r) {
     int hits = 0;
     for (int i = 0; i < g_nres; i++) {
         char want_tag[1024], want_type[1024];
-        snprintf(want_tag, sizeof want_tag, "\"Key\":\"%s\",\"Values\":[\"%s\"]", g_res[i].key, g_res[i].value);
-        snprintf(want_type, sizeof want_type, "\"ResourceTypeFilters\":[\"%s\"]", g_res[i].type);
+        const char *tag[] = { "\"Key\":\"", g_res[i].key, "\",\"Values\":[\"", g_res[i].value, "\"]" };
+        const char *type[] = { "\"ResourceTypeFilters\":[\"", g_res[i].type, "\"]" };
+        if (!join(want_tag, sizeof want_tag, tag, 5) || !join(want_type, sizeof want_type, type, 3)) continue;
         if (!strstr(flat, want_tag) || !strstr(flat, want_type)) continue;
-        n += (size_t)snprintf(out + n, sizeof out - n, "%s{\"ResourceARN\":\"%s\",\"Tags\":[{\"Key\":\"%s\",\"Value\":\"%s\"}]}",
-                              hits++ ? "," : "", g_res[i].arn, g_res[i].key, g_res[i].value);
+        const char *item[] = { hits++ ? "," : "", "{\"ResourceARN\":\"", g_res[i].arn, "\",\"Tags\":[{\"Key\":\"",
+                               g_res[i].key, "\",\"Value\":\"", g_res[i].value, "\"}]}" };
+        if (!join(out + n, sizeof out - n, item, 8)) die("the answer outgrew its buffer");
+        n += strlen(out + n);
     }
     n += (size_t)snprintf(out + n, sizeof out - n, "]}");
     logf_("POST Tagging GetResources 200 %d", hits);
