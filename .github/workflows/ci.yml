@@ -132,7 +132,16 @@ jobs:
           key: ci-llvm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/ci_llvm.sh') }}
       - name: Toolchain (the pinned clang and libclang)
         run: bash tools/ci_llvm.sh
+      # example/minimal/e2e.mjs opens the minimal app's page in the runner's Google Chrome through
+      # its UI framework's DevTools client, which needs Node 22 or later; MINIMAL_E2E=1 makes a missing
+      # one a failure, not a skip. --no-sandbox: the runner's AppArmor may refuse Chrome's sandbox.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
       - name: every platform host's suite, its wasm32 compile, libc gate and link
+        env:
+          MINIMAL_E2E: 1
+          CHROME_ARGS: --no-sandbox
         run: make -C client -j"$(getconf _NPROCESSORS_ONLN)" check-hosts
 
   # THE FUZZ STAGE: one job per target, in parallel, each 30 s from its corpus (fuzz_nightly.yml is

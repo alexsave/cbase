@@ -1393,3 +1393,12 @@ Each mutant was made in place and the file restored from a copy.
 - new.sh: the template's `APP_SERVE := $name` made `APP_SERVE := cbase` -> `APP_SERVE is 'cbase', not hello (DIR's name)` and `make serve built no build/hello, or a build/cbase` red, with the obj and odd-name cases.
 - new.sh: the `-server` suffix for a CB_BUILD_OWN name dropped -> `DIR=obj did not get the server obj-server` red.
 - cbase.mk: the CB_BUILD_OWN guard on APP_SERVE and APP_LAMBDA removed -> `cbase.mk took APP_SERVE=obj, one of its own build/ names` red.
+
+## A cdom page on a cbase server: the section's quotes, and the page in Chrome (page-on-server)
+
+client/hosts/cdom/quote_check.sh (make -C client check-cdom-readme-quotes) holds every block the adapter README marks as quoted to a run of lines of the file it names, and example/minimal/check.sh runs e2e.mjs, which opens the page in headless Chrome through cdom's tools/cdp.mjs.
+Each mutant was made in place and the file restored from a copy (example/minimal's build/ deleted).
+
+- README.md here: the quoted h_page's "no-store" made "no-cache" -> `a quote of example/minimal/server/minimal.c is not a run of its lines` red.
+- README.md here: the e2e quote's marker names check.sh -> `a quote of example/minimal/check.sh is not a run of its lines` red.
+- page/page.c: the call's path made "/api/hellx" -> `the page in Chrome shows "the server did not answer", not "hello from cbase"` red, with every curl check still green.
