@@ -754,5 +754,68 @@ expect_rc 0 "a static site's template"
 grep -Eq "VmOrigin|TargetOriginId: (vm|ws)" "$t/out" && fail "a static site's template names the VM"
 ok
 
+# ---- the router, run: its code from the template, driven under node ---------------------------
+# router_of: the Router's code in the template $t/out, into $t/router.js.
+router_of() {
+  awk '/^      FunctionCode: \|$/ {f=1; next} f && /^        / {sub(/^        /, ""); print; next} f {exit}' "$t/out" > "$t/router.js"
+  [ -s "$t/router.js" ] || { cat "$t/out" >&2; fail "the template has no Router code"; }
+}
+# routes URI...: each URI through the router's handler, a line each: "URI -> <uri the origin is
+# asked for>".
+routes() {
+  node -e '
+    const handler = new Function(require("fs").readFileSync(process.argv[1], "utf8") + "\nreturn handler;")();
+    for (const uri of process.argv.slice(2))
+      console.log(uri + " -> " + handler({ request: { method: "GET", uri, querystring: {}, headers: {}, cookies: {} } }).uri);
+  ' "$t/router.js" "$@"
+}
+if ! command -v node > /dev/null 2>&1; then
+  # CI's runners have node; a machine without it skips the router's run, and says so.
+  [ -z "${CI:-}" ] || fail "node is not on PATH, and CI runs the router's code under it"
+  echo "cbase_test: node is not on PATH: the router's code was not run" >&2
+else
+  spa="$(app spa "CBASE_APP = spa" "CBASE_VM = none")"
+  mkdir -p "$spa/build/docs" "$spa/build/blog" "$spa/build/.well-known" "$spa/build/assets"
+  for f in index.html privacy.html _shell.html docs/index.html blog/post.html assets/app.js .well-known/apple-app-site-association; do
+    printf 'x\n' > "$spa/build/$f"
+  done
+  run "$spa" template
+  expect_rc 0 "an SPA's template"
+  out_has "var PAGES = ' _shell blog/post docs/index index privacy ';" "the router's page list is the build's"
+  out_has "var SHELL = '/index.html';" "the shell defaults to /index.html"
+  router_of
+  # (a) files as they are, (b) clean URLs of real pages, (c) anything else the shell; a missing
+  # asset (an extension) is passed to S3, which answers 404, never the shell.
+  routes /assets/app.js /privacy.html /.well-known/apple-app-site-association \
+         / /privacy /docs/ /blog/post \
+         /abc123 /game/7/replay /docs /privacy/ /blog/ \
+         /assets/missing.js > "$t/got"
+  printf '%s\n' "/assets/app.js -> /assets/app.js" "/privacy.html -> /privacy.html" \
+    "/.well-known/apple-app-site-association -> /.well-known/apple-app-site-association" \
+    "/ -> /index.html" "/privacy -> /privacy.html" "/docs/ -> /docs/index.html" "/blog/post -> /blog/post.html" \
+    "/abc123 -> /index.html" "/game/7/replay -> /index.html" "/docs -> /index.html" "/privacy/ -> /index.html" "/blog/ -> /index.html" \
+    "/assets/missing.js -> /assets/missing.js" > "$t/want"
+  diff -u "$t/want" "$t/got" || fail "the router mapped a path otherwise"
+  ok
+  # CBASE_SHELL overrides the shell's file; pages and files are as before.
+  printf 'CBASE_APP = spa\nCBASE_VM = none\nCBASE_SHELL = /_shell.html\n' > "$spa/cbase.conf"
+  run "$spa" template
+  expect_rc 0 "an SPA's template with CBASE_SHELL"
+  router_of
+  routes /abc123 /a/b / /privacy /assets/app.js > "$t/got"
+  printf '%s\n' "/abc123 -> /_shell.html" "/a/b -> /_shell.html" "/ -> /index.html" "/privacy -> /privacy.html" "/assets/app.js -> /assets/app.js" > "$t/want"
+  diff -u "$t/want" "$t/got" || fail "the router with CBASE_SHELL mapped a path otherwise"
+  ok
+  # A shell the build does not hold stops the render.
+  printf 'CBASE_APP = spa\nCBASE_VM = none\nCBASE_SHELL = /app.html\n' > "$spa/cbase.conf"
+  run "$spa" template
+  expect_rc 1 "a shell the build lacks"
+  err_has "the app shell is /app.html (CBASE_SHELL), and the static dir has no app.html" "a shell the build lacks"
+  ok
+fi
+conf_error "cbase.conf line 2: CBASE_SHELL is a page of the build, an absolute path ending in .html" "CBASE_APP = a" "CBASE_SHELL = _shell.html"
+conf_error "cbase.conf line 2: CBASE_SHELL is a page of the build, an absolute path ending in .html" "CBASE_APP = a" "CBASE_SHELL = /../x.html"
+conf_error "cbase.conf line 3: CBASE_SHELL is a page of the static files, and CBASE_STATIC is none" "CBASE_APP = a" "CBASE_STATIC = none" "CBASE_SHELL = /_shell.html"
+
 [ "$(log_count unsigned)" = 0 ] || fail "a call reached the fake without the test's credentials"
 echo "cbase_test: ok ($pass checks)"

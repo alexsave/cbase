@@ -162,6 +162,9 @@ case "$cmd" in
     # certificate (found or requested).
     STACK_BUCKET="${CONF_STATIC}-bucket"
     STACK_BUCKET_REGION=us-east-1
+    # The router's page list is the build's, when there is one to read (else empty: every
+    # extensionless path is the shell).
+    if [ "$CONF_STATIC" != none ] && [ -f "$CONF_STATIC_DIR/index.html" ]; then static_scan "$CONF_STATIC_DIR"; fi
     [ -z "$CONF_DOMAIN" ] || STACK_CERT="${CONF_CERT_ARN:-arn:aws:acm:us-east-1:111122223333:certificate/00000000-0000-0000-0000-000000000000}"
     stack_render "$CB_TMP/stack.yaml"
     echo "# PLACEHOLDERS: the bucket ($STACK_BUCKET) is static group $CONF_STATIC's${CONF_DOMAIN:+, the certificate is the one deploy finds or requests}."
