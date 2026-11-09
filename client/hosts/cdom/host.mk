@@ -6,6 +6,10 @@
 #                         with cdom.mk's flags, the libc gate over them, and a module linked by
 #                         cdom.mk's APP_WASM rule; against cdom at CDOM_PIN (fetched into build/cdom),
 #                         or CDOM=<a cdom checkout>
+#   make check-minimal-example  the minimal app (example/minimal: one Makefile with cbase.mk, cdom.mk,
+#                         client.mk and adapter.mk) built against the same cdom and run as a person
+#                         runs it (example/minimal/check.sh: make serve, the route over curl, the
+#                         page and its linked module); in check-host-cdom too
 #   make check-cdom-pin-doc   README.md here names CDOM_PIN (pin_doc_check.sh); in `make check` too
 #   make check-cdom-adapter-mk  adapter.mk refuses to be read without cdom.mk, and no file is in two
 #                         of the lists an app adds (adapter_mk_check.sh); in `make check` too
@@ -30,7 +34,7 @@ build/cdom/.pin-$(CDOM_PIN):
 # The pin as README.md here names it, which is what an app reads to pair cdom with this cbase:
 # pin_doc_check.sh holds the README's commit to CDOM_PIN. And adapter.mk's two rules, read by make
 # itself (adapter_mk_check.sh). Plain text, nothing fetched, so the client's own `make check` runs both.
-.PHONY: test-host-cdom host-cdom-wasm check-host-cdom check-cdom-pin-doc check-cdom-adapter-mk
+.PHONY: test-host-cdom host-cdom-wasm check-host-cdom check-cdom-pin-doc check-cdom-adapter-mk check-minimal-example
 check-cdom-pin-doc:
 	@bash hosts/cdom/pin_doc_check.sh hosts/cdom/README.md $(CDOM_PIN)
 check-cdom-adapter-mk:
@@ -40,7 +44,7 @@ check: check-cdom-pin-doc check-cdom-adapter-mk
 # The rest reads cdom.mk, so it is read only once cdom is here: at the pin (its stamp) when fetched,
 # or a CDOM checkout that has cdom.mk. Before that, each of its goals fetches cdom and runs make
 # again on itself, which then reads this file's second half; nothing else (`make check`) fetches.
-HOST_CDOM_GOALS := test-host-cdom host-cdom-wasm check-host-cdom \
+HOST_CDOM_GOALS := test-host-cdom host-cdom-wasm check-host-cdom check-minimal-example \
                    build/test/unit_host_cdom build/asan/test/unit_host_cdom build/wasm/host_cdom_link.wasm
 ifeq ($(wildcard $(if $(CDOM_GOT),$(CDOM_GOT),$(CDOM)/cdom.mk)),)
 $(HOST_CDOM_GOALS): $(CDOM_GOT)
@@ -99,6 +103,11 @@ test-host-cdom: build/test/unit_host_cdom build/asan/test/unit_host_cdom
 host-cdom-wasm: wasm-cc-check $(HOST_CDOM_WASM_OBJS) build/wasm/host_cdom_link.wasm
 	@bash $(CB)tools/libc_gate.sh --nm $(WASM_NM) --cc '$(WASM_CC) --target=wasm32 -nostdlib -ffreestanding' $(HOST_CDOM_WASM_OBJS)
 	@echo "host-cdom-wasm: $(words $(HOST_CDOM_WASM_OBJS)) objects for wasm32 with $(CDOM)/cdom.mk's flags, libc gate passed, linked by its APP_WASM rule"
-check-host-cdom: check-cdom-pin-doc check-cdom-adapter-mk test-host-cdom host-cdom-wasm
+# THE MINIMAL APP (example/minimal), against this cdom: its own make, as a product's, with the
+# compiler this build took for wasm32.
+.PHONY: check-minimal-example
+check-minimal-example: wasm-cc-check
+	WASM_CC='$(WASM_CC)' bash ../example/minimal/check.sh '$(MAKE)' '$(abspath $(CDOM))'
+check-host-cdom: check-cdom-pin-doc check-cdom-adapter-mk test-host-cdom host-cdom-wasm check-minimal-example
 endif
 HOST_CHECKS += check-host-cdom

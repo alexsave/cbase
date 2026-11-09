@@ -22,12 +22,12 @@
 #   * a Makefile or .mk under tools/ names core/ or providers/ (an -I, a source, a VPATH).
 #
 # And the UI framework cdom has one edge into cbase and none out of it: cbase may depend on cdom
-# for its browser adapter alone (client/hosts/cdom, an adapter onto client/hosts/common, and its
-# test adapter client/test/unit_host_cdom.c), and cdom never names cbase. So the gate also
-# fails when
+# for its browser adapter alone (client/hosts/cdom, an adapter onto client/hosts/common, its
+# test adapter client/test/unit_host_cdom.c, and the minimal app built on it, example/minimal),
+# and cdom never names cbase. So the gate also fails when
 #
-#   * a tracked file of any kind (a binary too) outside docs/, the top README.md, client/hosts/cdom/
-#     and client/test/unit_host_cdom.c holds "cdom", in any case. The client's Makefile, CI and
+#   * a tracked file of any kind (a binary too) outside docs/, the top README.md, client/hosts/cdom/,
+#     client/test/unit_host_cdom.c and example/minimal/ holds "cdom", in any case. The client's Makefile, CI and
 #     mutation check reach that host through what it declares in its own directory, never by
 #     name. This file spells the word and is not read for it.
 #
@@ -93,9 +93,11 @@ files() {
 }
 
 # named_list: the tracked files (paths on stdin) read for the framework's name: all but docs/, the
-# top README.md, the framework's adapter (its directory and its test adapter) and this file.
+# top README.md, the framework's adapter (its directory and its test adapter), the minimal app on
+# it (example/minimal/) and this file.
 named_list() {
-  grep -v -e '^docs/' -e '^README\.md$' -e '^client/hosts/cdom/' -e '^client/test/unit_host_cdom\.c$' -e "^$SELF\$" || true
+  grep -v -e '^docs/' -e '^README\.md$' -e '^client/hosts/cdom/' -e '^client/test/unit_host_cdom\.c$' \
+          -e '^example/minimal/' -e "^$SELF\$" || true
 }
 
 # named_scan <root> <file>...: prints every line that holds the framework's name, in any case, as
@@ -160,6 +162,12 @@ printf 'cdom\n' > "$P/n/client/test/x_unit_host_cdom.c"
 mkdir -p "$P/n/providers/x/client/hosts/cdom" "$P/n/providers/x/client/test"
 printf '#include "cdom.h"\n' > "$P/n/providers/x/client/hosts/cdom/y.c"     # an adapter's path, nested: not it
 printf '#include "cdom.h"\n' > "$P/n/providers/x/client/test/unit_host_cdom.c"
+mkdir -p "$P/n/example/minimal/page" "$P/n/example/minimalx" "$P/n/x/example/minimal"
+printf 'include cdom/cdom.mk\n' > "$P/n/example/minimal/Makefile"                # the minimal app: its own
+printf '#include "cdom.h"\n' > "$P/n/example/minimal/page/p.c"
+printf '#include "cdom.h"\n' > "$P/n/example/minimalx/p.c"                     # not it
+printf '#include "cdom.h"\n' > "$P/n/example/p.c"                              # nor the example beside it
+printf '#include "cdom.h"\n' > "$P/n/x/example/minimal/p.c"                    # nor its path, nested
 mkdir -p "$P/n/core/src" "$P/n/.github/workflows"
 printf '#include "cdom.h"\n' > "$P/n/core/src/c.c"                          # the platform: never
 printf 'run: make -C client check-host-cdom\n' > "$P/n/.github/workflows/ci.yml"   # CI by its name: no
@@ -167,9 +175,10 @@ printf 'run: make -C client check-host-cdom\n' > "$P/n/.github/workflows/ci.yml"
 got="$(named_scan "$P/n" $(printf '%s\n' client/src/a.c client/Makefile sub/README.md sub/ok.sh docs/sub/x.md README.md "$SELF" \
          client/hosts/cdom/sub/h.c client/test/unit_host_cdom.c client/hosts/cdomx/h.c client/test/unit_host_cdom.c.orig \
          client/test/x_unit_host_cdom.c providers/x/client/hosts/cdom/y.c providers/x/client/test/unit_host_cdom.c \
+         example/minimal/Makefile example/minimal/page/p.c example/minimalx/p.c example/p.c x/example/minimal/p.c \
          core/src/c.c .github/workflows/ci.yml | named_list) \
        | sed 's/: .*//' | LC_ALL=C sort | tr '\n' ' ')"
-want=".github/workflows/ci.yml:1 client/Makefile:3 client/hosts/cdomx/h.c:1 client/src/a.c:1 client/test/unit_host_cdom.c.orig:1 client/test/x_unit_host_cdom.c:1 core/src/c.c:1 providers/x/client/hosts/cdom/y.c:1 providers/x/client/test/unit_host_cdom.c:1 sub/README.md:1 "
+want=".github/workflows/ci.yml:1 client/Makefile:3 client/hosts/cdomx/h.c:1 client/src/a.c:1 client/test/unit_host_cdom.c.orig:1 client/test/x_unit_host_cdom.c:1 core/src/c.c:1 example/minimalx/p.c:1 example/p.c:1 providers/x/client/hosts/cdom/y.c:1 providers/x/client/test/unit_host_cdom.c:1 sub/README.md:1 x/example/minimal/p.c:1 "
 [ "$got" = "$want" ] || fail "the framework's name over planted files saw [$got], not [$want]"
 
 # ---- the repository ------------------------------------------------------------------------------
