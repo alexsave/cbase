@@ -2,12 +2,17 @@
 # its whole test machinery, with its own code on the product side of the compiler gate.
 #
 #   CBASE           := cbase             # REQUIRED: the cbase root, from the including Makefile
-#   C_ROOT          := .                  # the directory every source outside this one is under
-#                                         # (tools/c_rules.mk); default $(CBASE)
+#   C_ROOT          := .                  # optional (tools/c_rules.mk, below); default $(CBASE)
 #   CBASE_PROVIDERS := local              # the providers linked: local, aws, or "local aws"
 #   APP_SRC_ROOTS   := src                # the product's sources: every .c under them (two levels)
 #   APP_TEST_ROOTS  := test               # the product's tests: unit_*.c, lib_*.c, smokes, gate/*.c
 #   include $(CBASE)/cbase.mk
+#
+# C_ROOT is the directory every source file outside the Makefile's own directory lives under; the
+# build mirrors those files under build/obj/<variant>/_root/ rather than following a parent path.
+# The default ($(CBASE)) fits a product with cbase as a submodule; set it only when the Makefile
+# compiles files outside both its own directory and cbase, as amgi's server/ does with its parent
+# directory.
 #
 # and then `make`, `make check`, `make check-asan`, ... as cbase's own Makefile runs them (that
 # Makefile is this file with the example app, example/app.mk, as its product).
