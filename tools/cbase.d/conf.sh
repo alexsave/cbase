@@ -13,14 +13,23 @@
 #   - KEY is one of the keys below. Every key but CBASE_ROUTE may appear once.
 #
 # THE KEYS:
-#   CBASE_APP      required: the app's name, [a-z][a-z0-9-]*, at most 32 characters, not "none".
+#   CBASE_APP      the one required key: the app's name, [a-z][a-z0-9-]*, at most 32 characters, not "none".
 #                  It names the app's systemd service, its port claim and its bucket folder.
 #   CBASE_VM       the VM group the app runs in, or none (a static-only app); default CBASE_APP.
 #   CBASE_STATIC   the static group (a bucket) its files go to, or none (a VM-only app); default
 #                  CBASE_APP. Not both none.
-#   CBASE_MEMORY   the memory the app declares, required when it has a VM: <n>M or <n>G (16M to
-#                  64G). deploy refuses an app that does not fit in its group's free memory.
-#   CBASE_ROUTE    repeated, one route a line, matched in order:
+#   CBASE_MEMORY   optional, for an app with a VM: the memory it declares, <n>M or <n>G (16M to
+#                  64G). Declared, it is the service's hard cap (MemoryMax) and the app's exact
+#                  count in its group's fit check. Unset, the service has no hard cap and the fit
+#                  check (phase 3) counts it at CONF_MEMORY_ESTIMATE (128M), saying so:
+#                  "shop: memory not declared, counted as 128M". conf_load resolves both:
+#                  CONF_MEMORY (declared MiB, or "") and CONF_MEMORY_ESTIMATED (1 when unset).
+#   CBASE_ROUTE    repeated, one route a line, matched in order. Written only to differ from the
+#                  defaults: an app with a VM and static files gets "/api/* vm" and "* static", a
+#                  static-only app "* static", a VM-only app "* vm". ANY CBASE_ROUTE line REPLACES
+#                  the defaults (they are not merged in), except that CloudFront must have a
+#                  default behaviour: written routes with no "*" get "* static" (or "* vm" for a
+#                  VM-only app) added last. Each line is
 #                    CBASE_ROUTE = <pattern> <origin> [cache|nocache] [<methods>]
 #                  pattern: CloudFront's, "*" or a path starting with '/' ("/api/*").
 #                  origin: vm, static, or ws (the VM, no caching, every method, long timeouts:
@@ -30,13 +39,21 @@
 #                  default GET,HEAD for static (which takes only GET, HEAD and OPTIONS), ALL for
 #                  vm. CloudFront allows the smallest of its three method sets that covers the
 #                  list (GET,HEAD; GET,HEAD,OPTIONS; all), and the origin refuses the rest.
-#                  With no "*" route, one is added last: "* static" (or "* vm" when static is none).
-#   CBASE_DOMAIN   the app's hostname (www.example.com); needs CBASE_CERT_ARN.
-#   CBASE_CERT_ARN an existing ACM certificate in us-east-1 (CloudFront's region) for the domain
-#                  and the API hostname: arn:aws:acm:us-east-1:<account>:certificate/<uuid>.
-#   CBASE_ZONE     optional: the Route 53 hosted zone id (Z...) to write the domain's record in.
-#                  Without it the tool prints the CNAME to make, and never touches DNS.
-#   CBASE_API_HOST optional: a second hostname whose every request goes to the VM (api.example.com).
+#                  A "*" route goes last, wherever it was written.
+#   CBASE_DOMAIN   optional: the app's hostname (www.example.com). Without it the app is reached
+#                  at its distribution's cloudfront.net address.
+#   CBASE_CERT_ARN optional, an override: the ACM certificate (us-east-1, CloudFront's region)
+#                  for the domain and the API hostname, arn:aws:acm:us-east-1:<account>:certificate/<uuid>.
+#                  Without it deploy finds or makes one: PHASE 2 (cert_for_hosts, to come) finds an
+#                  ISSUED us-east-1 certificate covering every hostname (its SANs and wildcards
+#                  counted), else requests one with DNS validation; with CBASE_ZONE it writes the
+#                  validation record and waits, without it it prints the one CNAME and stops.
+#   CBASE_ZONE     optional, an override: the Route 53 hosted zone id (Z...) the domain's records
+#                  go in. Without it PHASE 2 (zone_for_host, to come) looks for a hosted zone in the
+#                  account that covers CBASE_DOMAIN and uses it, and with none prints the DNS
+#                  records to add by hand.
+#   CBASE_API_HOST optional: a second hostname whose every request goes to the VM (api.example.com);
+#                  needs CBASE_DOMAIN.
 #
 # NO SECRETS. cbase.conf is committed and public. Before the syntax is read, every line is held
 # to conf_secret_scan below, and one that looks like a secret stops the tool, naming the line and
@@ -49,7 +66,9 @@ CONF_FILE=""
 CONF_APP=""
 CONF_VM=""
 CONF_STATIC=""
-CONF_MEMORY=""      # MiB, "" when the app has no VM
+CONF_MEMORY=""      # the declared MiB; "" when undeclared or the app has no VM
+CONF_MEMORY_ESTIMATED=""   # 1: a VM app with no CBASE_MEMORY, counted at CONF_MEMORY_ESTIMATE
+CONF_MEMORY_ESTIMATE=128   # MiB: the conservative count for an undeclared app (phase 3's fit check)
 CONF_DOMAIN=""
 CONF_CERT_ARN=""
 CONF_ZONE=""
@@ -282,8 +301,8 @@ conf_load() {
     [ -z "$mem_no" ] || conf_die "$mem_no" "CBASE_MEMORY is for an app with a VM, and CBASE_VM is none"
     [ -z "$api_no" ] || conf_die "$api_no" "CBASE_API_HOST sends every request to the VM, and CBASE_VM is none"
   else
-    [ -n "$mem_no" ] || conf_die_file "has no CBASE_MEMORY line, and the app has a VM (the memory it declares: CBASE_MEMORY = 256M)"
     CONF_MEMORY="$memory"
+    if [ -z "$mem_no" ]; then CONF_MEMORY_ESTIMATED=1; else CONF_MEMORY_ESTIMATED=""; fi
   fi
   local i r origin
   for i in "${!CONF_ROUTES[@]}"; do
@@ -296,10 +315,13 @@ conf_load() {
       conf_die "${route_nos[$i]}" "routes to the VM ($origin), and CBASE_VM is none"
     fi
   done
-  [ -z "$domain_no" ] || [ -n "$cert_no" ] || conf_die "$domain_no" "CBASE_DOMAIN needs CBASE_CERT_ARN (an existing ACM certificate in us-east-1 for it)"
-  [ -z "$api_no" ] || [ -n "$cert_no" ] || conf_die "$api_no" "CBASE_API_HOST needs CBASE_CERT_ARN (an existing ACM certificate in us-east-1 for it)"
-  [ -z "$cert_no" ] || [ -n "$domain_no" ] || conf_die "$cert_no" "CBASE_CERT_ARN is for CBASE_DOMAIN, and there is none"
+  [ -z "$api_no" ] || [ -n "$domain_no" ] || conf_die "$api_no" "CBASE_API_HOST is a second hostname, and there is no CBASE_DOMAIN (the first)"
+  [ -z "$cert_no" ] || [ -n "$domain_no" ] || conf_die "$cert_no" "CBASE_CERT_ARN is for CBASE_DOMAIN, and there is none (without a domain the app is at its cloudfront.net address)"
   [ -z "$zone_no" ] || [ -n "$domain_no" ] || conf_die "$zone_no" "CBASE_ZONE is where CBASE_DOMAIN's record goes, and there is no CBASE_DOMAIN"
+  # No route written: the defaults for the app's shape.
+  if [ "${#CONF_ROUTES[@]}" -eq 0 ]; then
+    if [ "$CONF_VM" != none ] && [ "$CONF_STATIC" != none ]; then CONF_ROUTES=("/api/* vm nocache ALL"); fi
+  fi
   local has_default=""
   for r in "${CONF_ROUTES[@]+"${CONF_ROUTES[@]}"}"; do
     [ "${r%% *}" != "*" ] || has_default=1
@@ -321,11 +343,15 @@ conf_print() {
   local r
   printf '%-10s %s\n' app "$CONF_APP"
   if [ "$CONF_VM" = none ]; then printf '%-10s %s\n' vm none
+  elif [ -n "$CONF_MEMORY_ESTIMATED" ]; then
+    printf '%-10s %s (%s: memory not declared, counted as %sM)\n' vm "$CONF_VM" "$CONF_APP" "$CONF_MEMORY_ESTIMATE"
   else printf '%-10s %s (memory %s MiB)\n' vm "$CONF_VM" "$CONF_MEMORY"; fi
   printf '%-10s %s\n' static "$CONF_STATIC"
   [ -z "$CONF_DOMAIN" ] || printf '%-10s %s\n' domain "$CONF_DOMAIN"
   [ -z "$CONF_API_HOST" ] || printf '%-10s %s\n' api-host "$CONF_API_HOST"
-  [ -z "$CONF_CERT_ARN" ] || printf '%-10s %s\n' cert "$CONF_CERT_ARN"
+  if [ -n "$CONF_CERT_ARN" ]; then printf '%-10s %s\n' cert "$CONF_CERT_ARN"
+  elif [ -n "$CONF_DOMAIN" ]; then printf '%-10s %s\n' cert "(found or requested by deploy)"
+  else printf '%-10s %s\n' address "(the distribution's cloudfront.net name)"; fi
   [ -z "$CONF_ZONE" ] || printf '%-10s %s\n' zone "$CONF_ZONE"
   for r in "${CONF_ROUTES[@]}"; do printf '%-10s %s\n' route "$r"; done
 }

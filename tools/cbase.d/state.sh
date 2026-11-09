@@ -8,7 +8,8 @@
 # THE FORMAT, plain text, one line per member, sorted by app, written whole by this file alone:
 #   cbase-state 1 vm <group>
 #   app=<name> port=<port> service=cbase-<name>.service mem=<MiB>
-# and for a static group
+# where mem is the declared MiB (CBASE_MEMORY), or ~<MiB> for an app that declares none, counted
+# at that estimate (conf.sh CONF_MEMORY_ESTIMATE): "mem=~128". And for a static group
 #   cbase-state 1 static <group>
 #   app=<name> folder=<name>/
 # The first line names the format's version, the kind and the group, and must match the file's
@@ -57,8 +58,8 @@ state_parse() {
       continue
     fi
     if [ "$kind" = vm ]; then
-      [[ "$line" =~ ^app=([a-z]([a-z0-9-]{0,30}[a-z0-9])?)\ port=([0-9]{4,5})\ service=([a-z0-9-]+)\.service\ mem=([0-9]{1,6})$ ]] \
-        || state_die "$where" "$no" "is not \"app=<name> port=<port> service=cbase-<name>.service mem=<MiB>\""
+      [[ "$line" =~ ^app=([a-z]([a-z0-9-]{0,30}[a-z0-9])?)\ port=([0-9]{4,5})\ service=([a-z0-9-]+)\.service\ mem=~?([0-9]{1,6})$ ]] \
+        || state_die "$where" "$no" "is not \"app=<name> port=<port> service=cbase-<name>.service mem=<MiB>\" (mem=~<MiB> when estimated)"
       app="${BASH_REMATCH[1]}"
       port="$((10#${BASH_REMATCH[3]}))"
       [ "${BASH_REMATCH[4]}" = "cbase-$app" ] || state_die "$where" "$no" "names service ${BASH_REMATCH[4]}.service for app $app (it is cbase-$app.service)"

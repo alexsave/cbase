@@ -67,7 +67,7 @@ conf_groups() {
 
 case "$cmd" in
   config)
-    [ "${1:-}" = check ] && [ $# -eq 1 ] || { echo "cbase: config check is the one config command" >&2; exit 2; }
+    if [ "${1:-}" != check ] || [ $# -ne 1 ]; then echo "cbase: config check is the one config command" >&2; exit 2; fi
     conf_load "$conf"
     echo "$conf: ok"
     conf_print
@@ -129,7 +129,10 @@ case "$cmd" in
     conf_groups
     for g in "${GROUPS_[@]}"; do
       aws_group_find "${g%% *}" "${g#* }" > /dev/null
-      state_change "${g%% *}" "${g#* }" "$CONF_APP" "${CONF_MEMORY:-}" "$op"
+      # The state file records an undeclared app's memory as the estimate it is counted at: ~128.
+      mem="$CONF_MEMORY"
+      [ -z "$CONF_MEMORY_ESTIMATED" ] || mem="~$CONF_MEMORY_ESTIMATE"
+      state_change "${g%% *}" "${g#* }" "$CONF_APP" "$mem" "$op"
     done
     ;;
   deploy) not_yet deploy "phase 2 (static) and phase 3 (the VM)" ;;

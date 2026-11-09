@@ -99,7 +99,6 @@ conf_error "cbase.conf line 1: CBASE_APP is a name" "CBASE_APP = My_App"
 conf_error "cbase.conf line 1: CBASE_APP is a name" "CBASE_APP = none"
 conf_error "cbase.conf line 2: CBASE_MEMORY is <n>M or <n>G" "CBASE_APP = a" "CBASE_MEMORY = lots"
 conf_error "cbase.conf line 2: CBASE_MEMORY is from 16M to 64G" "CBASE_APP = a" "CBASE_MEMORY = 8M"
-conf_error "cbase.conf has no CBASE_MEMORY line, and the app has a VM" "CBASE_APP = a"
 conf_error "cbase.conf line 2: CBASE_MEMORY is for an app with a VM" "CBASE_APP = a" "CBASE_MEMORY = 64M" "CBASE_VM = none"
 conf_error "cbase.conf has no CBASE_APP line" "CBASE_VM = none"
 conf_error "cbase.conf line 3: CBASE_VM and CBASE_STATIC are both none" "CBASE_APP = a" "CBASE_VM = none" "CBASE_STATIC = none"
@@ -116,7 +115,9 @@ conf_error "cbase.conf line 2: has a quote in its value" "CBASE_APP = a" "CBASE_
 conf_error "cbase.conf line 2: CBASE_VM has no value" "CBASE_APP = a" "CBASE_VM ="
 conf_error "cbase.conf line 3: CBASE_CERT_ARN is in eu-west-1, and CloudFront takes a certificate from us-east-1 alone" \
   "CBASE_APP = a" "CBASE_VM = none" "CBASE_CERT_ARN = arn:aws:acm:eu-west-1:$ACCOUNT:certificate/12345678-abcd-ef01-2345-6789abcdef01"
-conf_error "cbase.conf line 2: CBASE_DOMAIN needs CBASE_CERT_ARN" "CBASE_APP = a" "CBASE_DOMAIN = www.example.com" "CBASE_VM = none"
+conf_error "cbase.conf line 3: CBASE_API_HOST is a second hostname, and there is no CBASE_DOMAIN" "CBASE_APP = a" "CBASE_MEMORY = 1G" "CBASE_API_HOST = api.example.com"
+conf_error "cbase.conf line 3: CBASE_CERT_ARN is for CBASE_DOMAIN, and there is none" "CBASE_APP = a" "CBASE_VM = none" \
+  "CBASE_CERT_ARN = arn:aws:acm:us-east-1:$ACCOUNT:certificate/12345678-abcd-ef01-2345-6789abcdef01"
 conf_error "cbase.conf line 2: CBASE_DOMAIN is a lower-case hostname" "CBASE_APP = a" "CBASE_DOMAIN = *.example.com"
 conf_error "cbase.conf line 2: is not KEY = value (a key is upper-case" "CBASE_APP = a" "cbase_vm = none"
 
@@ -144,13 +145,73 @@ route      * static cache GET,HEAD
 EOF
 diff -u "$t/want" "$t/out" || fail "config check printed another config"
 ok
-# README.md's example cbase.conf is one the tool takes.
+# The defaults, for each of the three shapes: routes and memory resolved.
+shape() {   # shape NAME "WANT LINES" CONF LINES...: config check prints the WANT lines after "ok"
+  local name="$1" want="$2" d; shift 2
+  d="$(app "shape-$name" "$@")"
+  run "$d" config check
+  expect_rc 0 "the $name shape"
+  printf 'cbase.conf: ok\n%s\n' "$want" > "$t/want"
+  diff -u "$t/want" "$t/out" || fail "the $name shape resolved otherwise"
+  ok
+}
+# CBASE_APP alone is a full app: its own VM and bucket, the default routes, memory undeclared and
+# counted at the estimate.
+shape full "app        shop
+vm         shop (shop: memory not declared, counted as 128M)
+static     shop
+address    (the distribution's cloudfront.net name)
+route      /api/* vm nocache ALL
+route      * static cache GET,HEAD" "CBASE_APP = shop"
+# Each optional key overrides its default (the good file above sets every one at once).
+shape memory "app        shop
+vm         shop (memory 2048 MiB)
+static     shop
+address    (the distribution's cloudfront.net name)
+route      /api/* vm nocache ALL
+route      * static cache GET,HEAD" "CBASE_APP = shop" "CBASE_MEMORY = 2G"
+shape groups "app        shop
+vm         shared (shop: memory not declared, counted as 128M)
+static     sites
+address    (the distribution's cloudfront.net name)
+route      /api/* vm nocache ALL
+route      * static cache GET,HEAD" "CBASE_APP = shop" "CBASE_VM = shared" "CBASE_STATIC = sites"
+shape static "app        site
+vm         none
+static     site
+address    (the distribution's cloudfront.net name)
+route      * static cache GET,HEAD" "CBASE_APP = site" "CBASE_VM = none"
+shape vm "app        svc
+vm         svc (memory 64 MiB)
+static     none
+address    (the distribution's cloudfront.net name)
+route      * vm nocache ALL" "CBASE_APP = svc" "CBASE_STATIC = none" "CBASE_MEMORY = 64M"
+# A written route replaces the defaults (no /api/* merged in); CloudFront's "*" is still added.
+shape written "app        shop
+vm         shop (shop: memory not declared, counted as 128M)
+static     shop
+address    (the distribution's cloudfront.net name)
+route      /rpc/* vm nocache ALL
+route      * static cache GET,HEAD" "CBASE_APP = shop" "CBASE_ROUTE = /rpc/* vm"
+# A domain needs no certificate in the file: deploy finds or makes one.
+shape domain "app        site
+vm         none
+static     site
+domain     site.example.com
+cert       (found or requested by deploy)
+route      * static cache GET,HEAD" "CBASE_APP = site" "CBASE_VM = none" "CBASE_DOMAIN = site.example.com"
+
+# README.md's examples (its ```conf blocks) are files the tool takes.
 mkdir -p "$t/apps/readme"
-awk '/^# required: \[a-z\]/{f=1} f&&/^```/{exit} f' "$root/README.md" > "$t/apps/readme/cbase.conf"
-[ -s "$t/apps/readme/cbase.conf" ] || fail "README.md has no example cbase.conf"
-run "$t/apps/readme" config check
-expect_rc 0 "README.md's example cbase.conf"
-out_has "route      /live ws nocache ALL" "README.md's example cbase.conf"
+awk '/^```conf$/{f=1; n++; next} /^```$/{f=0} f{print > (dir "/" n ".conf")}' dir="$t/apps/readme" "$root/README.md"
+n_examples=0
+for f in "$t/apps/readme"/*.conf; do
+  [ -f "$f" ] || continue
+  run "$t" -f "$f" config check
+  expect_rc 0 "README.md's example $(basename "$f")"
+  n_examples=$((n_examples + 1))
+done
+[ "$n_examples" -ge 3 ] || fail "README.md has $n_examples example cbase.conf blocks, not 3 or more"
 ok
 run "$d" -f missing.conf config check
 expect_rc 1 "a missing config"
@@ -274,6 +335,15 @@ run "$c" state join
 expect_rc 0 "c's join"
 out_has "c joined vm group g1: app=c port=8700" "the lowest free port is claimed again"
 ok
+# An app that declares no memory is recorded at the estimate it is counted at.
+e="$(app e "CBASE_APP = e" "CBASE_VM = g1" "CBASE_STATIC = none")"
+run "$e" state join
+expect_rc 0 "e's join"
+out_has "e joined vm group g1: app=e port=8702 service=cbase-e.service mem=~128" "an undeclared app's memory"
+ok
+run "$e" state leave
+expect_rc 0 "e's leave"
+ok
 
 # ---- apps --------------------------------------------------------------------------------------
 run "$b" apps
@@ -350,7 +420,7 @@ race() {   # race APP1 APP2 PORTS...: the two join at once; the ports they end u
   (cd "$d2" && "$tool" state join) > "$t/out2" 2> "$t/err2" & local p2=$!
   wait "$p1" || rc1=$?
   wait "$p2" || rc2=$?
-  [ "$rc1" = 0 ] && [ "$rc2" = 0 ] || { cat "$t/out1" "$t/err1" "$t/out2" "$t/err2" >&2; fail "racing joins $1 and $2: status $rc1 and $rc2"; }
+  if [ "$rc1" != 0 ] || [ "$rc2" != 0 ]; then cat "$t/out1" "$t/err1" "$t/out2" "$t/err2" >&2; fail "racing joins $1 and $2: status $rc1 and $rc2"; fi
   grep -q "GATHER timed out" "$t/log" && fail "racing joins $1 and $2 did not read at once"
   [ "$(( $(log_count "PUT /$BUCKET/vm/g2.txt 412") - before412 ))" = 1 ] || { cat "$t/log" >&2; fail "racing joins $1 and $2: not exactly one 412"; }
   grep -hq "changed while .* was being written (attempt 1 of 8): reading it again" "$t/err1" "$t/err2" \
