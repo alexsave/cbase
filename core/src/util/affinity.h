@@ -1,4 +1,4 @@
-// affinity.h - THE SATURATION KNOB (OPTIMIZED_DESIGN.md step 5, as section 10 left it): serve puts
+// affinity.h - THE SATURATION KNOB (DESIGN.md "Serve's threads and its loop"): serve puts
 // its loop on one CPU and every other thread on another (CBASE_LOOP_CPU, CBASE_BG_CPU; config.h).
 // It is on by default: with both unset serve picks the two lowest CPUs it may use when it starts
 // (cb_affinity_pick), and pins nothing where it has fewer than two or cannot pin. `off` turns it

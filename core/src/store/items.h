@@ -13,8 +13,8 @@
 //
 //   store_dynamo.c   GetItem, PutItem/UpdateItem/DeleteItem, TransactWriteItems,
 //                    Query on the table or an index (core_json.c or aws_json.c spells them)
-//   store_sqlite.c   one `items` table (providers/local/sql/schema.sql), the attributes in a
-//                    binary record (cb_item_record_*), the index keys in columns
+//   store_sqlite.c   plain tables (providers/local/sql/schema.sql: users, sessions,
+//                    refresh_tokens and so on), not an items table
 //
 // Rows written once above it (rows_auth.c: sessions, refresh tokens, sign-in
 // failures) behave the same on both backends by construction.

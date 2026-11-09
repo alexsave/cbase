@@ -30,7 +30,7 @@ static bool copy(char *dst, size_t cap, const char *name, const char *v, char *e
     return true;
 }
 
-// THE THREADS (OPTIMIZED_DESIGN.md step 10): serve is the loop, ONE request worker and one job
+// THE THREADS (DESIGN.md "Serve's threads and its loop"): serve is the loop, ONE request worker and one job
 // worker by default. An inline route runs on the loop; the request worker is the tables' thread
 // (what would block the loop: a read or write of the store, a password's hash, a document whose lock
 // another thread holds), and the job worker the compute thread (the app's jobs). A second request
