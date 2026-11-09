@@ -109,6 +109,7 @@ The saturation knob pins them (`core/src/util/affinity.h`, Linux only): `CBASE_L
 - Sends queue, and the loop flushes each marked connection once per iteration; an answer and the pushes its pass queued for the same socket leave in one send.
 - A session a token check found live is held in memory (`cb_auth_hold_sessions`, under `CB_PROV_ONE_PROCESS`), and every write that ends a session takes it out first-hand.
 - SIGTERM and SIGINT drain: requests in flight finish, WebSockets get 1001, then the app's `serve_close` runs.
+- A listener inherited from systemd (`LISTEN_FDS`, fd 3) is used instead of a bind; the drain closes serve's copy, never shuts it down, so the manager's copy keeps queueing connections for the next serve (docs/PLATFORM.md 2.10).
 
 ## Module: util and net
 

@@ -236,6 +236,13 @@ Zero or NULL in the field leaves cbase's default, so an app that sets nothing is
   The startup line on stdout, `cbase: listening <host>:<port> <url>`, is not the log's and is printed at every level, so a parent that waits for it works whatever the app ships.
 
 Ctrl-C is SIGTERM: serve drains on SIGINT as on SIGTERM (requests in flight finish, WebSockets get 1001), then calls the app's `serve_close` and exits 0 (`core/test/unit_serve_knobs.c` sends it to a real `cbase serve` with a request in flight).
+The drain closes the listener at once, closes each idle connection, and answers every request that had begun to arrive (or whose bytes were already waiting in the socket) before it stops, waiting up to 10 s.
+
+Serve supports systemd's socket activation.
+When `LISTEN_PID` is serve's own pid and `LISTEN_FDS` is at least 1, serve listens on the socket it inherited at fd 3 instead of binding `CBASE_LISTEN` (a different port there is warned about, and the startup line names the inherited socket's port); with no `LISTEN_FDS` it binds as before.
+The service manager keeps its own copy of the socket, so while serve restarts, connections queue in the socket's backlog for the next serve instead of being refused: this is how `./cbase deploy` restarts a VM app without downtime (`cbase-<app>.socket`, `tools/cbase.d/vm_unit.socket`).
+A WebSocket open across the restart is closed with 1001 and reconnects to the new serve, which has only what the store holds; an app that keeps state in memory (a game, a hub) writes what must survive a restart to its store, at the latest in `serve_close`.
+`core/test/unit_socket_activation.c` plays the service manager: it holds the socket across two serves and checks that a connection made during the drain and one made while no serve runs are both answered, by the second.
 
 `CBASE_ENV_FILE`, when set, names a file of `KEY=VALUE` lines that `cb_config_load` reads into the environment before anything else is read (`core/src/env_file.h`).
 A key the environment already holds, even as an empty string, keeps its value, so the shell's variables override the file.

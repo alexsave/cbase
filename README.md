@@ -652,6 +652,12 @@ Every stack change is a change set, made and printed before anything runs.
 - **No downtime after an app's first deploy.**
   Once the app's stack exists, no deploy, update or template change may make it unreachable.
   A change set that replaces or removes a distribution, or takes a hostname off one, is refused and deleted unless `--allow-downtime` (or `CBASE_ALLOW_DOWNTIME=1`) is passed; the first deploy, the stack's creation, is not held.
+- **A code deploy keeps serving.**
+  A restart gap is downtime too, so a VM app's port belongs to a systemd socket unit, `cbase-<app>.socket`, which `cbase serve` takes over as an inherited socket (socket activation) and systemd keeps open while the service restarts.
+  A deploy restarts only `cbase-<app>.service`, never the socket: a connection that arrives during the restart waits in the socket's queue (`Backlog=4096`) and is answered by the new serve, a short delay and never a refusal.
+  The old serve answers every request it had begun before it exits, and one process serves at a time, so an app's in-memory state is never split between two.
+  Its WebSockets are closed with 1001 (going away) and reconnect to the new serve, which starts from what the store holds: anything an app keeps only in memory is gone after a deploy, so the app keeps in its store what must outlive one.
+  The first deploy onto the socket (an app deployed before it, or a `CBASE_VM_REPLACES` unit) stops the old service before the socket can take its port; that one switch is the last gap.
 - **A hostname is on one distribution.**
   A hostname another distribution already serves stops the deploy before anything changes, naming that distribution and the one step that frees it (CloudFront refuses it with `CNAMEAlreadyExists`); moving it is the person's step.
 - **Drift stops a deploy.**

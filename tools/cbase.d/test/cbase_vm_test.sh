@@ -199,6 +199,11 @@ for want in "User=cbase-shop" "WorkingDirectory=/srv/cbase/shop/data" "ExecStart
   grep -Fxq -- "$want" "$t/unit" || { cat "$t/unit" >&2; fail "the unit lacks [$want]"; }
 done
 grep -q '^MemoryMax' "$t/unit" && fail "an undeclared app's unit has a MemoryMax"
+grep -Fxq "Requires=cbase-shop.socket" "$t/unit" || fail "the unit does not take its port from cbase-shop.socket"
+awk "/^cat > .*<< 'SOCKET'\$/{f=1; next} /^SOCKET\$/{f=0} f" "$t/script" > "$t/socket"
+for want in "ListenStream=[::]:8700" "BindIPv6Only=both" "Backlog=4096"; do
+  grep -Fxq -- "$want" "$t/socket" || { cat "$t/socket" >&2; fail "the socket unit lacks [$want]"; }
+done
 if [ "$(grep -c 'systemctl restart' "$t/script")" != 1 ] || ! grep -Fq 'systemctl restart "$unit"' "$t/script"; then
   fail "the script restarts other than the app's own unit"
 fi
@@ -438,6 +443,9 @@ cmp -s "$vm/srv/cbase/shop/serve" "$t/elf-arm64" || fail "the server was not ins
 [ -d "$vm/srv/cbase/shop/data" ] || fail "the data folder was not made"
 awk "/^cat > .*<< 'EOF'\$/{f=1; next} /^EOF\$/{f=0} f" "$t/shop-deploy.sh" | diff -u - "$vm/etc/systemd/system/cbase-shop.service" \
   || fail "the installed unit is not the one the deploy rendered"
+awk "/^cat > .*<< 'SOCKET'\$/{f=1; next} /^SOCKET\$/{f=0} f" "$t/shop-deploy.sh" | diff -u - "$vm/etc/systemd/system/cbase-shop.socket" \
+  || fail "the installed socket unit is not the one the deploy rendered"
+grep -Fxq "systemctl start cbase-shop.socket" "$vm/calls" || fail "a first deploy did not start the socket"
 grep -q "^useradd .*cbase-shop$" "$vm/calls" || fail "the app's user was not made"
 grep -Fxq "chown -R cbase-shop:cbase-shop $vm/srv/cbase/shop/data" "$vm/calls" || fail "the data folder is not the service's"
 if [ "$(grep -c '^systemctl restart' "$vm/calls")" != 1 ] || ! grep -Fxq "systemctl restart cbase-shop.service" "$vm/calls"; then
@@ -456,6 +464,8 @@ ok
 # A redeploy: the unit running holds the port, which is no refusal.
 STUB_ACTIVE=1 STUB_TAKEN=1 on_vm "$t/vm1" "$t/shop-deploy.sh"
 [ "$rc" = 0 ] || { cat "$t/vm-out" >&2; fail "the deploy script on a redeploy: status $rc"; }
+grep -E '^systemctl (start|stop|restart)' "$t/vm1/calls" | diff -u <(echo "systemctl restart cbase-shop.service") - \
+  || fail "a redeploy did other than restart the service alone (the socket holds the port)"
 ok
 # Undeploy, by default: the unit gone, the data kept. With --delete-data: the app's folder gone.
 printf 'precious\n' > "$t/vm1/srv/cbase/shop/data/cbase.sqlite"
@@ -466,7 +476,9 @@ script_of > "$t/shop-undeploy.sh"
 on_vm "$t/vm1" "$t/shop-undeploy.sh"
 [ "$rc" = 0 ] || { cat "$t/vm-out" >&2; fail "the undeploy script: status $rc"; }
 grep -Fxq "systemctl disable --now --quiet cbase-shop.service" "$t/vm1/calls" || fail "the undeploy script did not stop and disable the unit"
+grep -Fxq "systemctl disable --now --quiet cbase-shop.socket" "$t/vm1/calls" || fail "the undeploy script did not stop and disable the socket"
 [ ! -e "$t/vm1/etc/systemd/system/cbase-shop.service" ] || fail "the undeploy script left the unit"
+[ ! -e "$t/vm1/etc/systemd/system/cbase-shop.socket" ] || fail "the undeploy script left the socket unit"
 [ "$(cat "$t/vm1/srv/cbase/shop/data/cbase.sqlite")" = precious ] || fail "the undeploy script did not keep the data"
 [ ! -e "$t/vm1/etc/cbase/shop.env" ] || fail "the undeploy script left the env file"
 grep -Fq "CBASE: kept /srv/cbase/shop/data (./cbase undeploy --delete-data deletes it)" "$t/vm-out" || fail "the undeploy script does not say the data is kept"
@@ -542,8 +554,8 @@ STUB_PORT=8080 STUB_TAKEN=1 STUB_ACTIVE_UNIT=old.service on_vm "$vm" "$t/game-de
 [ "$rc" = 0 ] || { cat "$t/vm-out" >&2; fail "the deploy that replaces old.service: status $rc"; }
 grep -E '^systemctl (stop|disable|kill|mask)' "$vm/calls" > "$t/stops" || true
 printf 'systemctl disable --now --quiet old.service\n' | diff -u - "$t/stops" || fail "the deploy stopped other than old.service alone"
-[ "$(grep -nE '^systemctl (disable --now --quiet old.service|restart cbase-game.service)' "$vm/calls" | cut -d: -f2- | tr '\n' '|')" \
-  = "systemctl disable --now --quiet old.service|systemctl restart cbase-game.service|" ] || { cat "$vm/calls" >&2; fail "old.service was not stopped before cbase-game.service started"; }
+[ "$(grep -nE '^systemctl (disable --now --quiet old.service|start cbase-game.socket|restart cbase-game.service)' "$vm/calls" | cut -d: -f2- | tr '\n' '|')" \
+  = "systemctl disable --now --quiet old.service|systemctl start cbase-game.socket|systemctl restart cbase-game.service|" ] || { cat "$vm/calls" >&2; fail "old.service was not stopped before cbase-game.service started"; }
 ok
 run "$game" undeploy
 expect_rc 0 "the grandfathered member's undeploy"
