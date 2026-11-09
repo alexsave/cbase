@@ -11,7 +11,7 @@ It is taken a la carte: a product links only the parts it needs, and build gates
 
 ## Status
 
-v0.1.1 is the first public tag.
+The current release is the one the `VERSION` file names, and its tag is `v<VERSION>`.
 Its first consumer is amgi, a local flashcard app that runs `cbase serve` on the user's own machine.
 The API is pre-1.0 and will change.
 Breaking changes, and how to upgrade a product across them, are recorded in [docs/PLATFORM.md](docs/PLATFORM.md) section 2.9.
@@ -105,13 +105,36 @@ include $(CBASE)/cbase.mk
 
 `make -C server serve`, `PORT=4000 make -C server serve` and `CBASE_LISTEN=0.0.0.0:8080 make -C server serve` then all work, and `tools/serve_test.sh` (part of `make check`) holds each rule against the example.
 
-The product defines one const struct, `cb_app`, and points `cb_main_app` at it (`core/include/cbase/app.h`):
+The product defines one const struct, `cb_app`, and points `cb_main_app` at it (`core/include/cbase/app.h`).
+A whole product can be one file, such as `src/myapp.c`:
 
 ```c
+#include "cbase/app.h"   // cb_app, cb_route, cb_main_app
+#include "net/http.h"    // cb_http_req, cb_http_res, cb_res_text, cb_http_query_find
+#include "util/err.h"    // CB_E_NOT_FOUND, CB_E_FULL, CB_E_INVALID
+
+#include <stdio.h>
+
+// GET /v1/hello?name=Ada answers "hello, Ada"; with no name, "hello, world".
+static void h_hello(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
+    char name[64], text[96];
+    int n = cb_http_query_find(req, "name", name, sizeof name);
+    if (n == CB_E_NOT_FOUND) {
+        cb_res_text(res, 200, "hello, world\n");
+        return;
+    }
+    if (n < 0) {   // CB_E_FULL: longer than name holds; CB_E_INVALID: the query does not read
+        cb_res_text(res, 400, "bad name\n");
+        return;
+    }
+    snprintf(text, sizeof text, "hello, %s\n", name);
+    cb_res_text(res, 200, text);
+}
+
 static const cb_route ROUTES[] = {
     { .method = "GET", .pattern = "/v1/hello", .flags = CB_ROUTE_LOOP, .fn = h_hello },
 };
-static const cb_route_list ROUTE_LIST = { ROUTES, 1 };
+static const cb_route_list ROUTE_LIST = { ROUTES, (int)(sizeof ROUTES / sizeof ROUTES[0]) };
 static const cb_route_list *const ROUTE_LISTS[] = { &ROUTE_LIST };
 static const char *const ORIGINS[] = { "http://localhost:5173" };
 
@@ -124,12 +147,16 @@ static const cb_app APP = {
 const cb_app *const cb_main_app = &APP;
 ```
 
+A handler is `void h(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res)` (`cb_handler`, `core/src/net/router.h`), and answers with the `cb_res_*` calls in `core/src/net/http.h` (`cb_res_text`, `cb_res_send`, `cb_res_header`).
+The `CB_E_*` codes are in `core/src/util/err.h`.
+Serving a page: `core/src/net/files.h` answers with a file (`cb_send_file`) or a directory under a prefix route (`cb_serve_dir`), read when asked for, so a rebuilt page needs no restart.
 A route pattern is exact, a prefix (`/v1/items/*`) or has path parameters (`/decks/:id`).
 Jobs, schedules, admin panels, metrics and the store's rows are further fields of the same struct.
 A storeless app opens no platform store, and opens its own in the `serve_open` hook ([docs/PLATFORM.md](docs/PLATFORM.md) 2.7).
 
 [example/](example/) is the template to copy: a two-route app with a job and a schedule (`example/src/example_app.c`), its Makefile (`example/Makefile`, local provider only, with the symbol gate as its link check), a smoke and a storeless test.
 A C or wasm client includes `client/client.mk` and adds `$(CBC_SRC)` and `$(CBC_INC)` to its build.
+Which client mode: an app with no accounts sets `cbc_cfg.anonymous`, and its calls go over plain HTTP, with a socket only while it holds a room; an app with accounts leaves it 0 and signs in (`cbc_sign_in`), and its calls ride the socket once a user is signed in (`client/include/cbase/client.h`, `cbc_cfg`).
 
 ## Rules the code keeps
 

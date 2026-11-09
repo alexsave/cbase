@@ -64,7 +64,7 @@
 #include "cbase/client.h"
 #include "cbc_host.h"   // client/hosts/common
 
-// An event, as cbase/client.h raises it: bytes is what e->off/e->len index (NULL when none).
+// An event, as cbase/client.h raises it, with the bytes its span is into (cbc_event, THE SPAN).
 typedef void (*cbc_cdom_event_fn)(void *ctx, cbc *c, const cbc_event *e, const uint8_t *bytes);
 // The session is known (loaded, or none kept): the app's first moment to sign in.
 typedef void (*cbc_cdom_ready_fn)(void *ctx, cbc *c);
