@@ -6,7 +6,7 @@
 //   build/asan/fuzz/<name>    the same input function with fuzz/replay_main.c
 //                             as main, under the ordinary ASan build (gcc or
 //                             clang): every file of fuzz/corpus/<name> run once
-//                             (`make fuzz-replay`, part of the asan CI lane).
+//                             (`make fuzz-replay`, part of `make check-asan`).
 //
 // FZ_CHECK is an invariant: a failure aborts, which libFuzzer reports as a
 // crash with the input saved, exactly as a sanitizer report is.

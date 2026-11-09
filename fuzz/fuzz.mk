@@ -13,7 +13,8 @@
 #   make fuzz-nightly   the same with FUZZ_TIME=600
 #   make fuzz-replay    every file of its corpus through each target
 #                       once, under the ordinary ASan build (any compiler, no
-#                       libFuzzer): the corpus as a regression test
+#                       libFuzzer): the corpus as a regression test, part of
+#                       make check-asan
 #   make fuzz-merge     each scratch corpus minimised back into its corpus
 #                       (inputs are renamed to their hashes, except a found
 #                       bug's reproducer, <corpus>/repro-<what>,
