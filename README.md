@@ -106,6 +106,17 @@ include $(CBASE)/cbase.mk
 
 `make -C server serve`, `PORT=4100 make -C server serve` and `CBASE_LISTEN=0.0.0.0:8080 make -C server serve` then all work, and `tools/serve_test.sh` (part of `make check`) holds each rule against the example.
 
+A product extends `make serve` with lines of its own, and needs no knob for it:
+
+```make
+serve: ui/out/app.wasm ui/out/index.html   # built before serve runs (a page the server reads)
+serve: export CBASE_DEV := 1                 # in serve's environment (a local dev app)
+```
+
+The first adds prerequisites, which make builds before the run; the second is a target-specific exported variable, which make puts in the environment of serve's recipe, and so in the server's.
+Either goes before or after the `include`, and `tools/serve_test.sh` holds both.
+`tools/serve.sh` and its arguments are cbase.mk's internal interface: a product never calls it, so its own `start` rule is `start: serve` with the lines above, never a copy of serve's recipe.
+
 The product defines one const struct, `cb_app`, and points `cb_main_app` at it (`core/include/cbase/app.h`).
 A whole product can be one file, such as `src/myapp.c`:
 
