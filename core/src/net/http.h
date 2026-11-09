@@ -83,10 +83,7 @@ const char *cb_http_header_get(const cb_http_req *r, const char *name);
 // The token of "Authorization: Bearer <token>" (case-insensitive scheme), or NULL.
 const char *cb_http_bearer(const cb_http_req *r);
 // The first `key` in the query string, percent-decoded ('+' is a space) into
-// out with a NUL. false when absent, malformed or longer than cap-1: a handler
-// that answers "no key" and "a bad value" apart calls cb_http_query_find.
-bool cb_http_query_get(const cb_http_req *r, const char *key, char *out, size_t cap);
-// The same lookup, saying which: the value's length (>= 0, in out with a NUL)
+// out with a NUL, saying which of four it found: the value's length (>= 0)
 // when the key is there; CB_E_NOT_FOUND (util/err.h) when the whole query reads
 // and has no such key; CB_E_FULL when its value is longer than cap-1 (out holds
 // no value); CB_E_INVALID when the query does not read up to the key (a bad

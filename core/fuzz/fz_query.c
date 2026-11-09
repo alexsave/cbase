@@ -1,6 +1,6 @@
 // fz_query.c - query strings: every key=value pair decoded
 // (cb_http_query_each), one key looked up as a route does
-// (cb_http_query_get, cb_http_query_find), and the stream's token from the URL
+// (cb_http_query_find), and the stream's token from the URL
 // (cb_mqtt_query_token), over the raw query a URL carries.
 #include "fz.h"
 
@@ -23,8 +23,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     r.path = "/";
     r.query = q;
     char out[64];
-    if (cb_http_query_get(&r, "proto", out, sizeof out)) FZ_CHECK(strlen(out) < sizeof out);
-    (void)cb_http_query_get(&r, "", out, sizeof out);
+    (void)cb_http_query_find(&r, "", out, sizeof out);
     int found = cb_http_query_find(&r, "proto", out, sizeof out);   // says which: never another code
     FZ_CHECK(found == CB_E_NOT_FOUND || found == CB_E_FULL || found == CB_E_INVALID || (found >= 0 && (size_t)found == strlen(out)));
     char tok[256];

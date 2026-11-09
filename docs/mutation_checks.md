@@ -1214,16 +1214,16 @@ Each mutation was made in tools/serve.sh or cbase.mk, the test run, and the file
 
 ## cb_http_query_find says absent, too long or unreadable (starter-friction)
 
-core/test/unit_http.c `query_find_says_which` holds cb_http_query_find, the lookup that tells a handler an absent key from a bad value, and cb_http_query_get, which now answers through it.
+core/test/unit_http.c `query_find_says_which` holds cb_http_query_find, the one query lookup, which tells a handler an absent key from an empty one, a too-long value and an unreadable query.
+It replaced cb_http_query_get, which answered false for all three and is deleted; every cbase caller moved to it.
 Each mutation was made in core/src/net/http.c, its object deleted a second after the edit, unit_http rebuilt and run, and the file restored from a copy.
 
-- `n >= q->cap` -> `n > q->cap` -> lines 133-135 red: an 8-byte value in cap 8 is not CB_E_FULL, out is not cleared, and get answers true.
-- the unreadable query's CB_E_INVALID -> CB_E_NOT_FOUND -> lines 138, 142 and 148 red (a bad escape in the key's value, one before it, one with the key absent).
-- the walk's start `CB_E_NOT_FOUND` -> `0` -> lines 126, 127 and 129 red, and a_whole_request's `!cb_http_query_get(&r, "z", ...)` at line 45.
-- get's `>= 0` -> `> 0` -> line 124 red: `?flag`, a key with an empty value, read as absent.
-- the too-long value's `q->out[0] = 0` dropped -> line 134 red (out still held the last value).
-- `cap == 0` answered 0 -> line 136 red.
-- the found value's length answered one long (`q->got = (int)n + 1`) -> core/fuzz/fz_query.c's new FZ_CHECK (the code is one of the four, a length that is out's) fails on replay of core/fuzz/corpus/query.
+- `n >= q->cap` -> `n > q->cap` -> lines 132-133 red: an 8-byte value in cap 8 is not CB_E_FULL, and out is not cleared.
+- the unreadable query's CB_E_INVALID -> CB_E_NOT_FOUND -> lines 136, 139 and 144 red (a bad escape in the key's value, one before it, one with the key absent).
+- the walk's start `CB_E_NOT_FOUND` -> `0` -> lines 125, 126 and 128 red, and a_whole_request's `cb_http_query_find(&r, "z", ...) == CB_E_NOT_FOUND` at line 45.
+- the too-long value's `q->out[0] = 0` dropped -> line 133 red (out still held the last value).
+- `cap == 0` answered 0 -> line 134 red.
+- the found value's length answered one long (`q->got = (int)n + 1`) -> core/fuzz/fz_query.c's FZ_CHECK at line 28 (the code is one of the four, a length that is out's) fails on replay of core/fuzz/corpus/query.
 
 ## How long a dead server takes to be heard, as cbase/client.h says it (starter-friction)
 

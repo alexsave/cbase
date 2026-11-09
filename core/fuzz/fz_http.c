@@ -36,8 +36,8 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         const char *b = cb_http_bearer(&r);
         if (b) (void)strlen(b);
         char out[256];
-        (void)cb_http_query_get(&r, "since", out, sizeof out);
-        (void)cb_http_query_get(&r, "proto", out, 1);
+        (void)cb_http_query_find(&r, "since", out, sizeof out);
+        (void)cb_http_query_find(&r, "proto", out, 1);
         int visited = 0;
         (void)cb_http_query_each(r.query, each, &visited);
     }

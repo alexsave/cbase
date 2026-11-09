@@ -78,10 +78,6 @@ int cb_http_query_find(const cb_http_req *r, const char *key, char *out, size_t 
     return q.got;
 }
 
-bool cb_http_query_get(const cb_http_req *r, const char *key, char *out, size_t cap) {
-    return cb_http_query_find(r, key, out, cap) >= 0;
-}
-
 // ---- parse ---------------------------------------------------------------------
 
 // The blank line ending the header block, by a plain byte scan (native httpd.c:
