@@ -47,6 +47,7 @@ C = [
 HC = 'hosts/common/cbc_host.c'
 HOST = [
   (HC, 'the reopen armed after the events', '    h->reopen_timer = h->env->timer(h->ud, wait, on_reopen, h);\n    if (why) {', '    events(h, NULL);\n    h->reopen_timer = h->env->timer(h->ud, wait, on_reopen, h);\n    if (why) {'),
+  (HC, 'a borrowed body copied', '    rq.body_len = r.body_len;\n', '    rq.body_len = r.body_len;\n    static uint8_t copy[70000];\n    if ((r.flags & CBC_RQ_REF) && rq.body_len <= sizeof copy) { memcpy(copy, rq.body, rq.body_len); rq.body = copy; }\n'),
   (HC, 'the host invents the HTTP deadline', '    rq.wait_ms = r.wait_ms;', '    rq.wait_ms = h->c.cfg.call_wait_ms;'),
   (HC, 'no timer while the close is out', '    if (due >= 0) h->tick_timer', '    if (due >= 0 && !h->c.closing) h->tick_timer'),
   (HC, 'an opening socket nobody wants is kept', '        h->env->ws_close(h->ud, h->sock);\n        h->has_sock = 0;', '        (void)0;'),

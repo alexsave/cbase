@@ -54,6 +54,8 @@ MUTANTS = [
   # the borrowed body: cbc_req_body's bytes over HTTP, never the head buffer
   (H, 'a borrowed body sent from the head buffer', 'h->hdr, hl, r->body,', 'h->hdr, hl, (const uint8_t *)r->path + r->path_len + r->auth_len,',
    '[a_64k_body_arrives_byte_for_byte_and_done_comes_once_after]'),
+  (H, 'a borrowed body copied', '    cbc_cdom_owed *o = owe(h, tag);\n', '    static uint8_t copy[70000];\n    cbc_host_req rc = *r;\n    if (r->body_len <= sizeof copy) { memcpy(copy, r->body, r->body_len); rc.body = copy; r = &rc; }\n    cbc_cdom_owed *o = owe(h, tag);\n',
+   'r->body_at == g_big'),
   # the request's headers, the session in the store, the load
   (H, 'no Authorization header', '    if (r->auth) {   // "Bearer <access>"', '    if (0) {   // "Bearer <access>"',
    '[an_http_call_carries_the_bearer_and_is_retried_by_the_timer]'),

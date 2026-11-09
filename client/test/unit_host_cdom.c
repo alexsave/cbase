@@ -175,7 +175,6 @@ static const char *header(const char *hd, uint32_t hl, const char *name, uint32_
     }
     return NULL;
 }
-static const uint8_t *g_last_body;   // the last request's body pointer (a borrowed one is the caller's)
 void cd_http_cb(cd_http_fn fn, void *ctx, const char *method, uint32_t mlen, const char *url, uint32_t ulen,
                 const char *headers, uint32_t hlen, const void *body, uint32_t blen, uint32_t deadline_ms) {
     quiet("a request sent while the session's load is out");
@@ -193,7 +192,6 @@ void cd_http_cb(cd_http_fn fn, void *ctx, const char *method, uint32_t mlen, con
     if (g_n_req == REQS) { broke("more requests than the adapter has room for"); return; }
     uint32_t i = g_n_req++;
     g_req[i] = (fake_req){ fn, ctx, g_w ? cbhs_now(g_w) : g_solo_now, deadline_ms, 0 };
-    g_last_body = body;
     if (g_w) cbhs_http(g_w, m, url, ulen, auth, al, body, blen, deadline_ms, http_done, (void *)(uintptr_t)i);
 }
 
