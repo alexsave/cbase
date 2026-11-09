@@ -55,7 +55,7 @@
 #                  needs CBASE_DOMAIN.
 #   CBASE_STATIC_DIR optional, for an app with static files: the directory deploy uploads, relative
 #                  to the repository's root, holding index.html. Default "build" for a static site
-#                  (cdom's `make new` writes build/index.html) and "ui/out" for an app with a VM
+#                  (a page's `make new` writes build/index.html) and "ui/out" for an app with a VM
 #                  (the starter's page; its server builds elsewhere, so no binary is published).
 #   CBASE_HASHED   optional: the content-hashed files, blank-separated globs matched against a file's
 #                  path in the static dir (* crosses /), say "assets/*". They are cached for a year,
