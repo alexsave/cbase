@@ -52,7 +52,7 @@
 #                    check as `build/test/<name> build/$(APP_SERVE)` unless SMOKE_ARGS_<name> says
 #                    otherwise ($(1) is the build directory: build, build/asan, build/cov)
 #   APP_SERVE        the name of the `cbase serve` binary (default cbase); APP_LAMBDA the Lambda
-#                    bootstrap's (default bootstrap)
+#                    bootstrap's (default bootstrap); neither may be a name of CB_BUILD_OWN (below)
 #   APP_SERVE_DIR, APP_ENV_FILE, APP_SERVE_LISTEN   how `make serve` runs that binary (local
 #                    provider): it builds build/$(APP_SERVE), then tools/serve.sh execs it as
 #                    `serve` from APP_SERVE_DIR (default the directory of the Makefile make read,
@@ -129,6 +129,11 @@ CB_STEM := $(call cb_stem,$(CB))
 
 APP_SERVE  ?= cbase
 APP_LAMBDA ?= bootstrap
+# THE NAMES build/ HOLDS FOR cbase.mk ITSELF, its directories and its tools: a program named one of
+# them would be linked over a directory or a tool, so naming one stops the build here. tools/new.sh
+# reads this line to keep a new server's name (its directory's) off it.
+CB_BUILD_OWN := asan cbase-bench cov cov_gate embed fuzz fuzz-crashes fuzz-merged fuzz-seeds fuzz-work gate gen logs obj test
+$(foreach p,$(APP_SERVE) $(APP_LAMBDA),$(if $(filter $(CB_BUILD_OWN),$(p)),$(error cbase.mk: build/$(p) is cbase.mk's own; name the program another way (APP_SERVE, APP_LAMBDA))))
 APP_SERVE_DIR    ?= $(patsubst %/,%,$(dir $(firstword $(MAKEFILE_LIST))))
 APP_ENV_FILE     ?= .env.local
 # Empty without PORT: serve.sh then leaves CBASE_LISTEN unset and serve's own default holds
