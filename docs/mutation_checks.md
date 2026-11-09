@@ -1410,3 +1410,16 @@ Each mutant was made in the README and the file restored from a copy.
 
 - the reader's `if (key < line)` made `if (1)` -> `the page block's reader split the answer as 'served|3 no field here|...` red.
 - the server block's `cb_res_text` misspelled -> `the server block does not compile` red.
+
+## The system trust store, checked without the network (https-hermetic)
+
+unit_https's `system_store_refuses_the_test_ca` replaces the request to example.com: under cb_https_set_ca_file(NULL) with $CBASE_CA_FILE unset, the local TLS peer signed by the test CA is refused; the test CA file accepts it; NULL again refuses it; and $CBASE_CA_FILE naming the test CA makes NULL accept.
+Each mutant was made in place, build/test/unit_https rebuilt from a deleted object, and the file restored from a copy.
+
+- tls.c: SSL_VERIFY_PEER made SSL_VERIFY_NONE -> `system_store_refuses_the_test_ca` red at both refusals (CB_E_IO and fail "tls"), with `verified_and_kept_alive`'s name check.
+- https.c: cb_https_set_ca_file(NULL) keeps the last CA file (`g_ca_file[0] = 0` removed) -> `system_store_refuses_the_test_ca` red at the second refusal.
+- https.c: cb_https_set_ca_file keeps the pool -> `system_store_refuses_the_test_ca` red at the second refusal (the connection the test CA trusted was reused).
+- tls.c: $CBASE_CA_FILE ignored -> `system_store_refuses_the_test_ca` red at the env step's CB_OK and status 200.
+- tls.c: the fixed list tried before OpenSSL's own bundle -> `system_store_refuses_the_test_ca` stays green, as it must: the test CA is in neither, so both orders refuse it, and only a real host whose roots differ between the two bundles would tell them apart.
+  `openssl_bundle_before_the_system_list` catches it locally instead ($SSL_CERT_FILE names the test CA, and a fixed-list file that exists, /etc/ssl/cert.pem on macOS or /etc/ssl/certs/ca-certificates.crt on Ubuntu, loads first and refuses): red at its CB_OK and status 200.
+  On a host with none of the fixed files it would stay green.

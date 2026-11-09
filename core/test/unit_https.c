@@ -424,6 +424,8 @@ static void openssl_bundle_before_the_system_list(void) {
     T_EQ_INT(tls_srv_start(&s, answer, "keep"), 0);
     const char *had = getenv("CBASE_CA_FILE");
     char *saved = had ? strdup(had) : NULL;
+    const char *had_cert = getenv("SSL_CERT_FILE");
+    char *saved_cert = had_cert ? strdup(had_cert) : NULL;
     unsetenv("CBASE_CA_FILE");
     setenv("SSL_CERT_FILE", s.ca_file, 1);
     T_EQ_INT(cb_https_set_ca_file(NULL), CB_OK);
@@ -431,7 +433,9 @@ static void openssl_bundle_before_the_system_list(void) {
     T_EQ_INT(cb_https_request("localhost", s.port, "GET", "/x", NULL, NULL, 0, 3000, &r), CB_OK);
     T_EQ_INT(r.status, 200);
     cb_https_response_free(&r);
-    unsetenv("SSL_CERT_FILE");
+    if (saved_cert) setenv("SSL_CERT_FILE", saved_cert, 1);
+    else unsetenv("SSL_CERT_FILE");
+    free(saved_cert);
     if (saved) { setenv("CBASE_CA_FILE", saved, 1); free(saved); }
     T_EQ_INT(cb_https_set_ca_file(NULL), CB_OK);
     tls_srv_stop(&s);
