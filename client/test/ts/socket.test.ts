@@ -132,6 +132,24 @@ test('an anonymous read goes over HTTP; a busy one goes again; a refusal is a Cb
   c.close();
 });
 
+test('queryAdd encodes a key and value as cbc_query_add does, and the call sends that path as given', async () => {
+  const seen: string[] = [];
+  const fakeFetch = (async (url: string) => { seen.push(url); return new Response('ok', { status: 200 }); }) as unknown as typeof fetch;
+  const c = await start({ wasm: wasm(), server: 'http://adv.test', anonymous: true, fetch: fakeFetch });
+  const p = c.queryAdd('/api/hello', 'name', 'Ada & Grace');
+  assert.equal(p, '/api/hello?name=Ada%20%26%20Grace');
+  // the second parameter takes "&"; UTF-8 and what encodeURIComponent leaves alone are encoded
+  assert.equal(c.queryAdd(p, 'q', "é!*'()+=#~"), '/api/hello?name=Ada%20%26%20Grace&q=%C3%A9%21%2A%27%28%29%2B%3D%23~');
+  await c.get(p);
+  assert.deepEqual(seen, ['http://adv.test/api/hello?name=Ada%20%26%20Grace']);
+  // CBC_PATH_MAX is the bound, never cut short: a value that would pass it is a RangeError
+  assert.equal(c.queryAdd('/a', 'v', 'x'.repeat(256 - 5)).length, 256);
+  assert.throws(() => c.queryAdd('/a', 'v', 'x'.repeat(256 - 4)), RangeError);
+  assert.throws(() => c.queryAdd('/a', '', 'x'), TypeError);
+  assert.throws(() => c.queryAdd('/a', 'k\0', 'x'), TypeError);
+  c.close();
+});
+
 test("a request the server never answers is aborted at the core's deadline, and a read goes again", async () => {
   let calls = 0;
   const fakeFetch = ((_url: string, init: RequestInit) => {

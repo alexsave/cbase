@@ -24,6 +24,8 @@ import {
   CBC_GET,
   CBC_POST,
   CBC_RQ_BODY,
+  CBC_E_FULL,
+  CBC_PATH_MAX,
   CBC_OIDC_ENTROPY,
   CBW_OIDC_LINK,
   CBW_SIGNIN,
@@ -229,6 +231,27 @@ export class CbClient {
     this.mem().u8.set(b, this.io + p.length);
     const t = this.x.cbcw_call(method, flags, p.length, b.length, this.now()) >>> 0;
     return this.ticket(t);
+  }
+
+  // A query parameter, encoded (cbase/client.h cbc_query_add, the same code a C page calls):
+  // encodedPath with "?" (or "&" once it has a query) and key=value added, the key and the value's
+  // UTF-8 percent-encoded as RFC 3986 asks of a query (all but A-Z a-z 0-9 - . _ ~), so the server's
+  // cb_http_query_find reads the very bytes back. encodeURIComponent is not that rule: it leaves
+  // ! ' ( ) * as they are. A RangeError when the path would pass CBC_PATH_MAX (cbc_call's bound), a
+  // TypeError for an empty key or one that holds a NUL.
+  //   c.get(c.queryAdd('/api/hello', 'name', 'Ada & Grace'))   // GET /api/hello?name=Ada%20%26%20Grace
+  queryAdd(encodedPath: string, key: string, value: string): string {
+    const p = utf8.encode(encodedPath), k = utf8.encode(key), v = utf8.encode(value);
+    if (p.length > CBC_PATH_MAX || CBC_PATH_MAX + k.length + v.length > this.ioCap)
+      throw new RangeError('cbase queryAdd: the path would pass CBC_PATH_MAX bytes');
+    const u8 = this.mem().u8;
+    u8.set(p, this.io);
+    u8.set(k, this.io + CBC_PATH_MAX);
+    u8.set(v, this.io + CBC_PATH_MAX + k.length);
+    const n = this.x.cbcw_query_add(p.length, k.length, v.length);
+    if (n === CBC_E_FULL) throw new RangeError('cbase queryAdd: the path would pass CBC_PATH_MAX bytes');
+    if (n < 0) throw new TypeError('cbase queryAdd: the key is empty or holds a NUL');
+    return new TextDecoder().decode(this.bytes(0, n));
   }
 
   signIn(name: string, password: string, signUp = false): Promise<ArrayBuffer> {

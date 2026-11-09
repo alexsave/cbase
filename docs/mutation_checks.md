@@ -1384,3 +1384,9 @@ Each mutant was made in place, its object deleted (or build/ts/socket.ts edited)
 - client.c: cbc_on_response's last call_done gives a span of 0 bytes -> `e->data == "bad name\n"` red (unit_host_posix); a row in client/test/mutants.py (C).
 - cbc_host.c: cbc_host_http_answered hands the app NULL bytes for a non-2xx -> the same assertion red; a row in client/test/mutants.py (HOST).
 - socket.ts: the DONE's bytes left off the CbError -> `a refusal is a CbError with its body` red at the 400's body; a row in client/test/mutants.py (TS).
+
+## queryAdd: cbc_query_add for a TypeScript page (page-on-server follow-up)
+
+socket.test.ts's queryAdd case encodes through the module's cbcw_query_add and reads the path back, the call's URL, the bound and the refusals.
+
+- cbc_wasm.c: cbcw_query_add answers the old length on CBC_E_FULL -> `Missing expected exception (RangeError)` red.

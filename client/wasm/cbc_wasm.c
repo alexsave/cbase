@@ -72,6 +72,23 @@ uint32_t cbcw_call(int method, int flags, int path_len, int body_len, double now
     if (path_len < 0 || body_len < 0 || path_len + body_len > CBCW_IO) return 0;
     return cbc_call(&g_c, method, flags, (const char *)g_io, (size_t)path_len, g_io + path_len, (size_t)body_len, NOW(now));
 }
+// A query parameter, encoded (cbc_query_add): io holds the path at 0 (path_len bytes, at most
+// CBC_PATH_MAX), and from CBC_PATH_MAX on the key (key_len bytes), then the value (val_len bytes).
+// The path grows in place at 0, never past CBC_PATH_MAX, as cbc_call bounds it: its new length, or
+// CBC_E_FULL (the path as it was) or CBC_E_ARG (cbc_query_add's, and a key that holds a NUL).
+#define CBCW_KEY_MAX 255
+int cbcw_query_add(int path_len, int key_len, int val_len) {
+    if (path_len < 0 || path_len > CBC_PATH_MAX || key_len < 0 || key_len > CBCW_KEY_MAX || val_len < 0 ||
+        val_len > CBCW_IO - CBC_PATH_MAX - key_len)
+        return CBC_E_ARG;
+    char key[CBCW_KEY_MAX + 1];   // the key is a C string, and io holds no NUL after it
+    for (int i = 0; i < key_len; i++)
+        if ((key[i] = (char)g_io[CBC_PATH_MAX + i]) == 0) return CBC_E_ARG;   // a NUL would end it early
+    key[key_len] = 0;
+    size_t n = (size_t)path_len;
+    int rc = cbc_query_add((char *)g_io, CBC_PATH_MAX, &n, key, (const char *)g_io + CBC_PATH_MAX + key_len, (size_t)val_len);
+    return rc ? rc : (int)n;
+}
 int cbcw_next_request(double now) { return cbc_next_request(&g_c, g_io, sizeof g_io, NOW(now)); }
 // The answer to request id: given bytes of its body in io (0 when it was not handed in), len its
 // whole length.
