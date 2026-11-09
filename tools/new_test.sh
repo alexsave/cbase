@@ -92,7 +92,7 @@ if [ "$code" = 200 ]; then ok "GET /health answers 200"
 else fail "GET /health answered $code, not 200"; fi
 
 server="$(pgrep -P "$MPID" | head -1 || true)"
-[ -n "$server" ] && kill -TERM "$server" 2>/dev/null || true
+if [ -n "$server" ]; then kill -TERM "$server" 2>/dev/null || true; fi
 n=0
 while kill -0 "$MPID" 2>/dev/null && [ "$n" -lt 150 ]; do sleep 0.1; n=$((n + 1)); done
 if kill -0 "$MPID" 2>/dev/null; then fail "make serve did not stop on SIGTERM to its child"
