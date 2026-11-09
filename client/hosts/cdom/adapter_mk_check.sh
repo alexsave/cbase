@@ -1,0 +1,37 @@
+#!/bin/bash
+# adapter_mk_check.sh [make] - adapter.mk's two rules, read by make itself (run from client/, as
+# host.mk's check-cdom-adapter-mk does, in `make check`; nothing is fetched):
+#
+#   * it needs cdom.mk: read without cdom.mk's variables (CDOM_CFLAGS) it stops, naming the fix, and
+#     with them (a stand-in for cdom.mk) it reads;
+#   * every file is in one list: across the lists an app on this adapter adds (client.mk's CBC_SRC,
+#     CBC_OIDC_SRC and CBC_B64_SRC, adapter.mk's CBC_CDOM_SRC) no file is twice, and lib/b64/b64.c is
+#     there exactly once, so no app dedupes.
+set -u
+MAKE_BIN=${1:-make}
+fail() { echo "FAIL  cdom adapter.mk: $*" >&2; exit 1; }
+
+# frag <before>: a Makefile that includes client.mk and adapter.mk as an app does, <before> first,
+# and prints the lists an app adds, one per line.
+frag() {
+  printf '%s\n' "$1" 'CBASE := ..' 'include $(CBASE)/client/client.mk' 'include $(CBASE)/client/hosts/cdom/adapter.mk' \
+    '$(info $(CBC_SRC) $(CBC_OIDC_SRC) $(CBC_B64_SRC) $(CBC_CDOM_SRC))' 'all: ; @:'
+}
+run() { frag "$1" | "$MAKE_BIN" -s --no-print-directory -f - all 2>&1; }
+
+# Without cdom.mk: refused, with the fix named.
+if out=$(run ''); then fail "read without cdom.mk (CDOM_CFLAGS unset), and should stop: $out"; fi
+case "$out" in
+  *'adapter.mk: include $(CDOM)/cdom.mk'*) ;;
+  *) fail "without cdom.mk it stopped, but not naming the fix: $out" ;;
+esac
+
+# With cdom.mk's variables: read, and every file in one list.
+out=$(run 'CDOM_CFLAGS := -Istand-in-for-cdom.mk') || fail "with CDOM_CFLAGS set it does not read: $out"
+files=$(printf '%s\n' "$out" | tr ' ' '\n' | sed '/^$/d')
+[ -n "$files" ] || fail "the lists an app adds are empty"
+dup=$(printf '%s\n' "$files" | sort | uniq -d)
+[ -z "$dup" ] || fail "in two of CBC_SRC, CBC_OIDC_SRC, CBC_B64_SRC and CBC_CDOM_SRC: $dup"
+n=$(printf '%s\n' "$files" | grep -c '/lib/b64/b64\.c$')
+[ "$n" = 1 ] || fail "lib/b64/b64.c is in those lists $n times, not once"
+echo "ok    cdom adapter.mk: stops without cdom.mk; $(printf '%s\n' "$files" | wc -l | tr -d ' ') files, each in one list, lib/b64 once"

@@ -4,7 +4,7 @@
 #   CBASE := path/to/cbase                # REQUIRED: the cbase root, as the including Makefile reaches it
 #   include $(CBASE)/client/client.mk
 #   APP_SRC += $(CBC_SRC)                 # the core
-#   APP_SRC += $(CBC_OIDC_SRC)            # and, for a provider's sign-in, its digests (with CBC_OIDC_CFLAGS)
+#   APP_SRC += $(CBC_OIDC_SRC) $(CBC_B64_SRC)   # and, for a provider's sign-in, its digests (with CBC_OIDC_CFLAGS)
 #   CFLAGS  += $(CBC_INC) $(CBC_OIDC_CFLAGS)
 #
 # The core is SANS-IO and allocates nothing: the app's host owns the socket, HTTP, the timer and
@@ -16,8 +16,11 @@
 # What it sets, all relative to CBASE as given (never to the including Makefile's directory):
 #
 #   CBC_SRC          the core's sources
-#   CBC_OIDC_SRC     what a build with CBC_OIDC adds: lib/'s SHA-256, base64url and hex. An app that
-#                    already links one of them lists it once (the same files), never twice
+#   CBC_OIDC_SRC     what a build with CBC_OIDC adds: lib/'s SHA-256 and hex, with CBC_B64_SRC. An app
+#                    that already links one of them lists it once (the same files), never twice
+#   CBC_B64_SRC      lib/'s base64 and base64url, which the provider sign-in (CBC_OIDC_SRC) and a host
+#                    that keeps the session as text (its own fragment says) both need: in this list alone,
+#                    so an app with both lists it once and has nothing to dedupe
 #   CBC_INC          the include flags: cbase/client.h and the lib/ headers the core reads
 #   CBC_OIDC_CFLAGS  -DCBC_OIDC: the provider sign-in (cbc_oidc_*, cbc_pkce)
 #   CBC_CFLAGS       what the core needs of the compiler beyond the app's own flags: nothing (it is
@@ -43,7 +46,8 @@ endif
 CBC_CB := $(if $(filter .,$(CBASE)),,$(patsubst %/,%,$(CBASE))/)
 
 CBC_SRC         := $(CBC_CB)client/src/client.c
-CBC_OIDC_SRC    := $(CBC_CB)lib/sha256.c $(CBC_CB)lib/b64/b64.c $(CBC_CB)lib/hex/hex.c
+CBC_OIDC_SRC    := $(CBC_CB)lib/sha256.c $(CBC_CB)lib/hex/hex.c
+CBC_B64_SRC     := $(CBC_CB)lib/b64/b64.c
 CBC_INC         := -I$(CBC_CB)client/include -I$(CBC_CB)lib
 CBC_OIDC_CFLAGS := -DCBC_OIDC
 CBC_CFLAGS      :=
