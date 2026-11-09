@@ -46,7 +46,7 @@
 #   APP_SERVE_DIR, APP_ENV_FILE, APP_SERVE_LISTEN   how `make serve` runs that binary (local
 #                    provider): it builds build/$(APP_SERVE), then tools/serve.sh execs it as
 #                    `serve` from APP_SERVE_DIR (default the directory of the Makefile make read,
-#                    the product's own; a product whose Makefile sits in server/ sets `..`), names
+#                    the product's own; one whose Makefile sits in server/ names its parent), names
 #                    APP_ENV_FILE (default .env.local, from APP_SERVE_DIR unless absolute; empty for
 #                    none) to serve as CBASE_ENV_FILE when the file exists and CBASE_ENV_FILE is
 #                    unset, and sets CBASE_LISTEN to APP_SERVE_LISTEN (default 127.0.0.1:$(PORT), or
