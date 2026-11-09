@@ -27,7 +27,7 @@
 # and adapter.mk take from it) and whose I/O contract (src/cdom.h, its rule at the top) holds
 # cd_page_origin, cd_random_bytes and CD_WS_REFUSED.
 CDOM_REPO := https://github.com/alexsave/cdom.git
-CDOM_PIN  := 386cc8241bdcacacc4f018097ba196a741d47839
+CDOM_PIN  := f00157c082cb24c752b3138059cf4e52bf731b4d
 CDOM      ?= build/cdom
 CDOM_GOT  := $(if $(filter build/cdom,$(CDOM)),build/cdom/.pin-$(CDOM_PIN))
 build/cdom/.pin-$(CDOM_PIN):
