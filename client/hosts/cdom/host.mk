@@ -17,7 +17,7 @@
 # and adapter.mk take from it) and whose I/O contract (src/cdom.h, its rule at the top) holds
 # cd_page_origin, cd_random_bytes and CD_WS_REFUSED.
 CDOM_REPO := https://github.com/alexsave/cdom.git
-CDOM_PIN  := ac45e624dc7bced2d6f2ef15fcbdb69ab79045a4
+CDOM_PIN  := 118604efddc9123d71537356ac1643157aa1015c
 CDOM      ?= build/cdom
 CDOM_GOT  := $(if $(filter build/cdom,$(CDOM)),build/cdom/.pin-$(CDOM_PIN))
 build/cdom/.pin-$(CDOM_PIN):
@@ -49,8 +49,8 @@ $(HOST_CDOM_GOALS): $(CDOM_GOT)
 else
 
 # The adapter's sources and flags are adapter.mk's, the fragment a cdom app includes, and cdom's are
-# cdom.mk's, so this build and an app's read one list: included as adapter.mk's header says an app
-# with cdom.mk's APP_WASM rule does (cdom.mk for its variables, client.mk is client/Makefile's).
+# cdom.mk's, so this build and an app's read one list: included once each, as adapter.mk's header
+# says an app with cdom.mk's APP_WASM rule does (client.mk is client/Makefile's).
 include $(CDOM)/cdom.mk
 include hosts/cdom/adapter.mk
 
@@ -86,12 +86,12 @@ $(HOST_CDOM_WASM_OBJS): | $(CDOM_GOT)
 
 # And linked into a module by cdom.mk's own APP_WASM rule, as an app is: link_app.c (a cd_main) and
 # those objects, with cdom's core and the modules adapter.mk names (CBC_CDOM_MODULES): the adapter
-# needs of the program nothing but cdom. cdom.mk is read again for the rule, now that APP_WASM is set.
+# needs of the program nothing but cdom. The rule reads APP_* when make builds, so they are set here,
+# after the one include of cdom.mk above.
 APP_WASM    := build/wasm/host_cdom_link.wasm
 APP_SRC     := hosts/cdom/link_app.c $(HOST_CDOM_WASM_OBJS)
 APP_MODULES := $(CBC_CDOM_MODULES)
 APP_CFLAGS  := $(HOST_CDOM_WASM_OWN)
-include $(CDOM)/cdom.mk
 
 test-host-cdom: build/test/unit_host_cdom build/asan/test/unit_host_cdom
 	./build/test/unit_host_cdom
