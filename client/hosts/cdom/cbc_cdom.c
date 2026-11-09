@@ -90,28 +90,28 @@ static void on_loaded(void *ctx, const uint8_t *p, int32_t len) {
 static void on_ws(void *ctx, uint32_t id, uint32_t ev, const uint8_t *p, uint32_t len) {
     // A socket a stop closed (its last events) is no longer the shared host's: it ignores them. cdom
     // hands its id out again only after its close is delivered, so no new start's socket shares it.
+    // A socket the browser refused to make (its constructor threw) is CD_WS_REFUSED, from the loop, and
+    // its close follows, which the shared host ignores after the failure.
     cbc_cdom *h = ctx;
     if (ev == CD_WS_OPEN) cbc_host_ws_opened(&h->host, id);
     else if (ev == CD_WS_MSG) cbc_host_ws_message(&h->host, id, p, len);
+    else if (ev == CD_WS_REFUSED) cbc_host_ws_failed(&h->host, id, CBC_SOCK_REFUSED);
     else cbc_host_ws_closed(&h->host, id);   // a close before the open is the shared host's failure
 }
 
-// ws:// or wss:// as the page is http: or https:, the page's host, the client's path.
+// ws:// or wss:// as the page is http: or https:, the page's host, the client's path: the page's origin
+// (cd_page_origin, "http://<host>" or "https://<host>") with its "http" made "ws".
+#define ORIGIN_MAX (sizeof "https://" - 1 + 256)   // no host name is longer than 256 bytes
 static int env_ws_open(void *ud, const char *path, uint32_t *id) {
     cbc_cdom *h = ud;
-    char url[sizeof "wss://" - 1 + 256 + CBC_PATH_MAX];
-    char proto[8];
-    uint32_t pl = cd_get_str(CD_WINDOW, CD_LIT("location.protocol"), proto, sizeof proto);
-    const char *s;
-    if (pl == 6 && memcmp(proto, "https:", 6) == 0) s = "wss://";
-    else if (pl == 5 && memcmp(proto, "http:", 5) == 0) s = "ws://";
-    else return CBC_SOCK_UNSUPPORTED;   // file:, blob:, an extension's page: no server to reach
-    uint32_t n = (uint32_t)strlen(s);
-    memcpy(url, s, n);
-    // cdom writes at most cap bytes and answers how many: read one past the longest host to tell.
-    uint32_t hn = cd_get_str(CD_WINDOW, CD_LIT("location.host"), url + n, 257);
-    if (hn > 256) return CBC_SOCK_UNSUPPORTED;   // no host name is that long
-    n += hn;
+    char origin[ORIGIN_MAX], url[ORIGIN_MAX + CBC_PATH_MAX];
+    uint32_t on = cd_page_origin(origin, sizeof origin);   // its whole length, even past the room
+    uint32_t sl = on > 8 && memcmp(origin, "https://", 8) == 0 ? 8 : on > 7 && memcmp(origin, "http://", 7) == 0 ? 7 : 0;
+    if (!sl) return CBC_SOCK_UNSUPPORTED;   // file:, blob:, an extension's page: no server to reach
+    if (on - sl > 256) return CBC_SOCK_UNSUPPORTED;   // no host name is that long
+    memcpy(url, "ws", 2);
+    memcpy(url + 2, origin + 4, on - 4);   // "s://<host>" or "://<host>"
+    uint32_t n = 2 + on - 4;
     uint32_t k = (uint32_t)strlen(path);
     memcpy(url + n, path, k);
     *id = cd_ws_open_cb(on_ws, h, url, n + k);

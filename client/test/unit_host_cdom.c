@@ -5,13 +5,14 @@
 // cannot make, on the same fake cdom with no world behind it (solo).
 //
 // Where cdom differs from the world, the mapping is cdom's:
-//   - the page: location.protocol is http: (the suite runs again on https:), location.host
-//     app.test; the socket's URL must be ws:// or wss:// as the page is, on its host, with the path
+//   - the page: cd_page_origin is http://app.test (the suite runs again on https:); the socket's URL must be ws:// or wss:// as the page is, on its host, with the path
 //     the world gets
 //   - socket ids are cdom's, as its shim hands them out: from 0, the last freed id first, an id
 //     freed when its close is delivered (before the callback hears it); the world's ids are mapped
 //     onto them. cdom has no error event (a browser's says nothing), so the world's failure before
-//     the open reaches the host as its close alone (cbhs_host no_sock_why)
+//     the open reaches the host as its close alone (cbhs_host no_sock_why). A socket the browser
+//     refuses to make (its constructor throws) is cdom's CD_WS_REFUSED then its close, from the loop;
+//     the world refuses at the open, which cdom never does, so that is the adapter's own case
 //   - the request: Authorization travels as a header line (the world gets its value), and a body
 //     without "Content-Type: application/octet-stream" (or a type without a body) is a broken rule;
 //     its deadline must be the core's rule, http_wait_ms + body_len / (CBC_HTTP_MIN_BPS / 1000); an
@@ -65,25 +66,16 @@ static int solo_fire(void) {
     return 1;
 }
 
-// ---- the page: location, and the literal strings it is read through ----
+// ---- the page: its origin, location.protocol + "//" + location.host ----
 static const char *g_proto = "http:";
-static const char *g_page_host = "app.test";   // location.host
-static const char *g_lits[8];
-static uint32_t g_n_lits;
-cd_str cd_lit_(cd_str *slot, const char *lit, uint32_t len) {
-    (void)len;
-    if (!*slot) { g_lits[g_n_lits] = lit; *slot = ++g_n_lits; }
-    return *slot;
-}
-uint32_t cd_get_str(cd_id id, cd_str path, char *dst, uint32_t cap) {
-    const char *v = "";
-    if (id == CD_WINDOW && path && strcmp(g_lits[path - 1], "location.protocol") == 0) v = g_proto;
-    else if (id == CD_WINDOW && path && strcmp(g_lits[path - 1], "location.host") == 0) v = g_page_host;
-    else broke("a read of the page the adapter does not know");
-    uint32_t n = (uint32_t)strlen(v);   // cdom's: at most cap bytes, and the bytes written
-    if (n > cap) n = cap;
-    memcpy(dst, v, n);
-    return n;
+static const char *g_page_host = "app.test";   // location.host ("" on a file: page)
+// cdom's: location.protocol + "//" + location.host, at most cap bytes written, its whole length answered.
+uint32_t cd_page_origin(char *dst, uint32_t cap) {
+    char v[300];
+    int n = snprintf(v, sizeof v, "%s//%s", g_proto, strcmp(g_proto, "file:") == 0 ? "" : g_page_host);
+    uint32_t len = n > 0 ? (uint32_t)n : 0;
+    if (len) memcpy(dst, v, len < cap ? len : cap);
+    return len;
 }
 
 // ---- time and entropy ----
@@ -98,7 +90,8 @@ uint32_t cd_random_bytes(void *buf, uint32_t len) {
 
 // ---- the socket: cdom's ids over the world's ----
 #define SOCKS 16
-static struct { int live; uint32_t wid; cd_ws_fn fn; void *ctx; } g_sock[SOCKS];
+static struct { int live, refused; uint32_t wid; cd_ws_fn fn; void *ctx; } g_sock[SOCKS];
+static int g_refuse;   // solo: the next cd_ws_open_cb is a socket the browser refuses to make
 static uint32_t g_n_ids, g_free[SOCKS], g_n_free;   // the shim's: the ids made, the freed ones (a stack)
 static int g_store_out;   // the host's load is not answered yet
 static uint32_t g_n_opens;
@@ -118,10 +111,12 @@ uint32_t cd_ws_open_cb(cd_ws_fn fn, void *ctx, const char *url, uint32_t len) {
     memcpy(g_url, url, len < sizeof g_url - 1 ? len : sizeof g_url - 1);
     g_url[len < sizeof g_url - 1 ? len : sizeof g_url - 1] = 0;
     uint32_t wid = 0;
-    if (g_w && cbhs_ws_open(g_w, path, &wid) != 0) broke("the world refused a socket cdom cannot refuse");
+    if (g_w && cbhs_ws_open(g_w, path, &wid) != 0) broke("the world refused a socket at its open, which cdom reports later");
     uint32_t id = g_n_free ? g_free[--g_n_free] : g_n_ids++;
     if (id >= SOCKS) { broke("more sockets than the adapter has room for"); return 0; }
     g_sock[id].live = 1;
+    g_sock[id].refused = g_refuse;   // its CD_WS_REFUSED and close come from the loop, never in this call
+    g_refuse = 0;
     g_sock[id].wid = wid;
     g_sock[id].fn = fn;
     g_sock[id].ctx = ctx;
@@ -130,6 +125,7 @@ uint32_t cd_ws_open_cb(cd_ws_fn fn, void *ctx, const char *url, uint32_t len) {
 static int g_n_sends, g_n_closes;
 void cd_ws_send(uint32_t id, const void *p, uint32_t len) {
     if (id >= SOCKS || !g_sock[id].live) { broke("a send on an id cdom has not handed out"); return; }
+    if (g_sock[id].refused) broke("a send on a socket that never opened");
     g_n_sends++;
     if (g_w) cbhs_ws_send(g_w, g_sock[id].wid, p, len);
 }
@@ -402,6 +398,7 @@ static void solo(void) {
     g_solo_len = 0;
     g_proto = "http:";
     g_page_host = "app.test";
+    g_refuse = 0;
 }
 static cbc_cfg anon(void) {
     cbc_cfg k;
@@ -697,8 +694,8 @@ static void an_https_page_opens_wss(void) {
     g_proto = "http:";
 }
 
-// (d) A host:port of 256 bytes is the page's (no host name is longer); one of 257 to 259 bytes is
-// read only as far as 257 (cdom's cap), and makes no socket rather than one to a host cut short.
+// (d) A host:port of 256 bytes is the page's (no host name is longer); one of 257 to 259 bytes (its
+// origin past the adapter's room, or at it) makes no socket rather than one to a host cut short.
 static void a_host_past_256_bytes_makes_no_socket(void) {
     static char host[260];
     int ok = 1;
@@ -717,6 +714,34 @@ static void a_host_past_256_bytes_makes_no_socket(void) {
     }
     g_page_host = "app.test";
     check(ok, "a host:port of 256 bytes opens ws://<it><path>; one of 257 to 259 bytes opens no socket (CBC_SOCK_UNSUPPORTED)");
+}
+
+// (e) A socket the browser refuses to make (its WebSocket constructor throws: a URL it does not take, a
+// page's policy) is cdom's CD_WS_REFUSED, then its close, from the loop: the app hears one
+// CBC_EV_SOCKET_FAILED (CBC_SOCK_REFUSED), the close after it tells it nothing, and the next try is
+// after the reconnect wait, on the id cdom handed out again.
+static void a_refused_socket_is_sock_refused(void) {
+    solo();
+    cbc_cfg k = anon();
+    cbc_cdom_start(&g_host, &k, NULL, solo_event, NULL, NULL);
+    g_refuse = 1;
+    cbc_sub(cbc_cdom_client(&g_host), CBC_ROOM, "feed", 4);
+    cbc_cdom_pump(&g_host);
+    uint32_t id = SOCKS;
+    for (uint32_t i = 0; i < g_n_ids && i < SOCKS; i++)
+        if (g_sock[i].live && g_sock[i].ctx == &g_host) id = i;
+    int made = g_n_opens == 1 && id < SOCKS && g_failed == 0;   // nothing yet: cdom answers from the loop
+    deliver(id, CD_WS_REFUSED, NULL, 0);
+    int refused = g_failed == 1 && g_failed_why == CBC_SOCK_REFUSED;
+    deliver(id, CD_WS_CLOSE, NULL, 1006);
+    int once = g_failed == 1 && g_n_opens == 1 && g_n_sends == 0;
+    for (int i = 0; i < 3 && g_n_opens == 1; i++) solo_fire();   // the reconnect wait
+    uint32_t again = SOCKS;
+    for (uint32_t i = 0; i < g_n_ids && i < SOCKS; i++)
+        if (g_sock[i].live && g_sock[i].ctx == &g_host) again = i;
+    check(made && refused && once && g_n_opens == 2 && again == id,
+          "a refused socket is one CBC_EV_SOCKET_FAILED (CBC_SOCK_REFUSED), its close after tells nothing, the next try after the wait");
+    cbc_cdom_stop(&g_host);
 }
 
 // The store answers later, so a sign-up the app makes before ready waits in the client, and goes out
@@ -757,6 +782,7 @@ int main(void) {
     a_page_that_is_not_http_has_no_socket();
     an_https_page_opens_wss();
     a_host_past_256_bytes_makes_no_socket();
+    a_refused_socket_is_sock_refused();
     an_early_call_waits_for_the_load();
     no_entropy_starts_nothing();
     if (g_broken) fprintf(stderr, "cdom adapter: %d rule(s) broken\n", g_broken);

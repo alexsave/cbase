@@ -13,7 +13,7 @@ The repository gate (`tools/repo_gate_test.sh`) allows cdom's name only in this 
 ## The cdom pin
 
 The adapter is built and tested against one cdom, pinned by commit in `host.mk` (`CDOM_PIN`), and fetched into `client/build/cdom` by the target itself.
-The pin is [3d7e4c3d](https://github.com/alexsave/cdom/commit/3d7e4c3df4c449c8920de513b5caa0af854d6a2d), the commit where cdom declares its I/O calls a stable contract (the rule at the top of `src/cdom.h`, held by `tests/link/contract.c`).
+The pin is [3ffbeeb2](https://github.com/alexsave/cdom/commit/3ffbeeb2558e61005517b5bb900481fe3761c1dd), a cdom whose stable I/O contract (the rule at the top of `src/cdom.h`, held by `tests/link/contract.c`) declares every call the adapter makes, `cd_page_origin`, `cd_random_bytes` and `CD_WS_REFUSED` among them.
 A new pin is that one line, moved once the adapter passes against the newer cdom.
 `CDOM=<a cdom checkout>` runs everything against that checkout instead.
 
@@ -22,12 +22,12 @@ A new pin is that one line, moved once the adapter passes against the newer cdom
 `make -C client check-host-cdom` (or `make -C client check-hosts`, every adapter that needs its platform) runs:
 
 - the shared host suite on this adapter (`client/test/unit_host_cdom.c` is cdom, as far as the adapter reaches it), natively and under ASan + UBSan, every case with socket ids from 1 and from 0 and on an http: and an https: page;
-- the adapter's own cases: a stop and a new start, a stop from inside a callback, late answers dropped, the key, a page that is not http: or https:, the early call that waits for the load;
+- the adapter's own cases: a stop and a new start, a stop from inside a callback, late answers dropped, the key, a page that is not http: or https:, a host past 256 bytes, a socket the browser refuses to make, the early call that waits for the load;
 - the adapter, the shared host, the core and `lib/b64` compiled for wasm32 against cdom's `src/libc/string.h`, the libc gate over them, and a link with cdom's sources (`link_app.c`).
 
 `client/test/mutate.sh` runs this adapter's mutants (`mutants.py`) with the rest of the client's.
 
-An app compiles `CBC_SRC`, `CBC_HOST_SRC` and `lib/b64/b64.c` from `client/client.mk`, plus `cbc_cdom.c`, with `-isystem <cdom>/src/libc` and `-I<cdom>/src`, and links cdom's `cdom.c`, `cdom_net.c`, `cdom_store.c`, `cdom_random.c` and `mini.c`.
+An app compiles `CBC_SRC`, `CBC_HOST_SRC` and `lib/b64/b64.c` from `client/client.mk`, plus `cbc_cdom.c`, with `-isystem <cdom>/src/libc` and `-I<cdom>/src`, and links cdom's `cdom.c`, `cdom_net.c`, `cdom_store.c`, `cdom_random.c` and `mini.c`; the page's origin comes from `cd_page_origin` (`cdom_net.c`).
 
 ## The session
 
@@ -55,6 +55,7 @@ Every context the adapter hands cdom points into it, and cdom may call back afte
 
 ## What cdom cannot say
 
-A browser cannot say why a socket failed (the WebSocket error event carries nothing), so every failure reaches the app as a `CBC_EV_SOCKET_FAILED` with `CBC_SOCK_FAILED`, and the host suite runs this adapter with `no_sock_why`.
+A browser cannot say why a socket failed (the WebSocket error event carries nothing), so every failure of a socket it made reaches the app as a `CBC_EV_SOCKET_FAILED` with `CBC_SOCK_FAILED`, and the host suite runs this adapter with `no_sock_why`.
 A page that is not http: or https: is the adapter's own check: `CBC_SOCK_UNSUPPORTED`, again after every reconnect wait, and no socket is made.
-A WebSocket constructor that throws (a malformed URL, a page's policy) is not reported by cdom's `cd_ws_open_cb` at this pin, so the adapter cannot raise `CBC_SOCK_REFUSED`; on an http: or https: page with the page's own host, the URL the adapter builds is well formed.
+A socket the browser refuses to make (its WebSocket constructor throws: a URL it does not take, a page's policy where the browser refuses on the spot) is cdom's `CD_WS_REFUSED`, from the event loop and followed by its close, and reaches the app as one `CBC_EV_SOCKET_FAILED` with `CBC_SOCK_REFUSED`.
+What a browser refuses later (a blocked port, a Content-Security-Policy rule in Chrome) is a socket that failed: `CBC_SOCK_FAILED`.

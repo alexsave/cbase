@@ -3,11 +3,13 @@
 // (client/hosts/common/cbc_host.h) owns everything cbase/client.h asks of a host; this file is its
 // environment on cdom's I/O, one cdom call each:
 //
-//   socket   cd_ws_open_cb(ws[s]://<the page's host><cbc_stream_path>), ws:// on an http: page and
-//            wss:// on an https: one; on any other page (file:, a blob:, an extension's) no socket
-//            is made and the app gets a CBC_EV_SOCKET_FAILED (CBC_SOCK_UNSUPPORTED), again after
-//            each reconnect wait. CD_WS_OPEN, CD_WS_MSG and CD_WS_CLOSE go to cbc_host_ws_*, with
-//            cdom's socket id as it is (0 is an id)
+//   socket   cd_ws_open_cb(ws[s]://<the page's host><cbc_stream_path>), from cd_page_origin: ws:// on an
+//            http: page and wss:// on an https: one; on any other page (file:, a blob:, an
+//            extension's) no socket is made and the app gets a CBC_EV_SOCKET_FAILED
+//            (CBC_SOCK_UNSUPPORTED), again after each reconnect wait. CD_WS_OPEN, CD_WS_MSG and
+//            CD_WS_CLOSE go to cbc_host_ws_*, with cdom's socket id as it is (0 is an id), and
+//            CD_WS_REFUSED (the browser would not make the socket) to cbc_host_ws_failed as
+//            CBC_SOCK_REFUSED, its close after it ignored
 //   HTTP     cd_http_cb on the page's own origin (the path as the URL), "Authorization: Bearer ..."
 //            and "Content-Type: application/octet-stream" as its header lines, the core's deadline
 //            (cbc_req_hdr.wait_ms) as its deadline_ms; CD_HTTP_FAILED and CD_HTTP_TIMEOUT are
