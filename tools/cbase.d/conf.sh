@@ -38,11 +38,13 @@
 #                  are recorded in the state file as they are ("data=<dir> legacy=1"), and the
 #                  service runs there; only a change to these keys moves them.
 #   CBASE_VM_SETTINGS optional: the SSM path of the app's settings, which the instance reads into
-#                  its env file (the origin secret is its CBASE_ORIGIN_SECRET); default /cbase/<app>/.
-#                  An adopted VM's role reads its own path, which this names.
+#                  its env file (the origin secret is its CBASE_ORIGIN_SECRET); default /cbase/<app>/,
+#                  or /<CBASE_VM_STACK>/<app>/ in an adopted group (vm.sh vm_settings), under the
+#                  namespace an adopted VM's role reads. A grandfathered member names its own.
 #   CBASE_VM_ARTIFACTS optional: s3://<bucket>/<prefix>/ the app's servers go to, one object per
-#                  sha256, and the instance fetches from; default s3://cbase-state-<account>/artifacts/<app>/.
-#                  An adopted VM's role reads its own, which this names.
+#                  sha256, and the instance fetches from; default s3://cbase-state-<account>/artifacts/<app>/,
+#                  or s3://cbase-code-<account>-<region>/vm/<app>/ in an adopted group (vm.sh
+#                  vm_artifacts), the code bucket's vm/* an adopted VM's role reads.
 #   CBASE_VM_REPLACES optional, with CBASE_VM_PORT: the systemd unit (name.service) that served the
 #                  grandfathered app before cbase. The deploy stops and disables it right before
 #                  the app's own unit starts, in the same command; never a unit it is not named.

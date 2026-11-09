@@ -59,6 +59,15 @@ trap cb_cleanup EXIT
 CB_TMP="$(mktemp -d "${TMPDIR:-/tmp}/cbase.XXXXXX")"
 CB_CLEANUP+=("$CB_TMP")
 
+# dry_problem WHAT: in a dry run, a problem a deploy stops on, said where it is found and kept, so
+# the dry run goes on to the memory fit, the port and the change set; deploy lists every one at
+# the dry run's end and exits 1. A deploy stops at the first, before changing anything.
+DRY_PROBLEMS=()
+dry_problem() {
+  DRY_PROBLEMS+=("$1")
+  echo "dry run: a deploy would stop here, on $1; this dry run goes on"
+}
+
 usage() {
   sed -n '6,29p' "$here/cbase" | sed 's/^# \{0,1\}//'
 }
@@ -198,6 +207,9 @@ case "$cmd" in
     # 1. The groups, found by their tags (a missing one stops with its group-init command).
     if [ "$CONF_VM" != none ]; then
       vm_find "$CONF_VM"
+      read -r vm_bucket vm_prefix <<< "$(vm_artifacts)"
+      echo "vm paths: settings SSM $(vm_settings), servers s3://$vm_bucket/$vm_prefix"
+      [ -z "$CONF_VM_STACK" ] || group_state_bucket_adopted "$(vm_region)" "$CONF_VM"
       vm_origin_secret
     fi
     if [ "$CONF_STATIC" != none ]; then
@@ -243,7 +255,10 @@ case "$cmd" in
         static_print_plan
       fi
       echo "dry run: change set ${STACK_CS} deleted unexecuted; nothing was uploaded, deleted or changed"
-      exit 0
+      [ "${#DRY_PROBLEMS[@]}" -gt 0 ] || exit 0
+      echo "cbase: dry run: a deploy would stop on ${#DRY_PROBLEMS[@]} problem$([ "${#DRY_PROBLEMS[@]}" = 1 ] || echo s):" >&2
+      printf '  %s\n' "${DRY_PROBLEMS[@]}" >&2
+      exit 1
     fi
     # 7. The service: the artifact, then SSM installs and restarts it and waits for it to be up.
     #    It goes before the files, so a service that does not start leaves the site as it was; the

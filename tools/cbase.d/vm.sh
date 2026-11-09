@@ -114,6 +114,7 @@ vm_find() {
 # origin headers, so it goes in as the NoEcho parameter OriginSecret. Its value is never printed:
 # aws_mask masks any line that holds it, and a bad one is refused without it.
 VM_ORIGIN_SECRET=""
+VM_DRY_SECRET=cbase-dry-run-stand-in-for-the-missing-origin-secret   # a dry run's change set's, never a deploy's
 vm_origin_secret() {
   local name
   name="$(vm_settings)CBASE_ORIGIN_SECRET"
@@ -122,14 +123,20 @@ vm_origin_secret() {
     if [ "$(aws_code)" = ParameterNotFound ]; then
       echo "cbase: there is no SSM parameter $name, the origin secret CloudFront sends the app as X-Cbase-Origin (and serve checks). Make it once, then deploy again; nothing was changed:" >&2
       echo "  aws ssm put-parameter --type SecureString --name $name --value \"\$(openssl rand -hex 32)\"" >&2
-      exit 1
+      [ "${DRY_RUN:-}" = 1 ] || exit 1
+      dry_problem "no SSM parameter $name (the origin secret)"
+      VM_ORIGIN_SECRET="$VM_DRY_SECRET"
+      return 0
     fi
     aws_fail "reading the SSM parameter $name"
   fi
   if ! [[ "$VM_ORIGIN_SECRET" =~ ^[A-Za-z0-9_-]{32,128}$ ]]; then
     VM_ORIGIN_SECRET=""
     echo "cbase: the SSM parameter $name is not 32 to 128 letters, digits, _ and - (its value is not shown): openssl rand -hex 32 makes one" >&2
-    exit 1
+    [ "${DRY_RUN:-}" = 1 ] || exit 1
+    dry_problem "the SSM parameter $name is not an origin secret"
+    VM_ORIGIN_SECRET="$VM_DRY_SECRET"
+    return 0
   fi
   AWS_MASK_VALUES+=("$VM_ORIGIN_SECRET")
   echo "origin secret: $name (X-Cbase-Origin; its value is not shown)"
@@ -230,12 +237,22 @@ vm_join() {
   VM_NEW="$STATE_JOINED_NEW"
 }
 
-# vm_settings: the SSM path of the app's settings (CBASE_VM_SETTINGS, or /cbase/<app>/), ending in /.
-vm_settings() { printf '%s' "${CONF_VM_SETTINGS:-/cbase/$CONF_APP/}"; }
-# vm_artifacts: "<bucket> <prefix>" the app's servers go to and the instance fetches from
-# (CBASE_VM_ARTIFACTS, or the state bucket's artifacts/<app>/), the prefix ending in /.
+# vm_settings: the SSM path of the app's settings, ending in /: CBASE_VM_SETTINGS, else, in an
+# adopted group (CBASE_VM_STACK), /<stack>/<app>/, under the stack's own SSM namespace /<stack>/*
+# that its instance role reads (cbase-vm's reads /cbase-vm/*), else /cbase/<app>/.
+vm_settings() {
+  if [ -n "$CONF_VM_SETTINGS" ]; then printf '%s' "$CONF_VM_SETTINGS"
+  elif [ -n "$CONF_VM_STACK" ]; then printf '/%s/%s/' "$CONF_VM_STACK" "$CONF_APP"
+  else printf '/cbase/%s/' "$CONF_APP"; fi
+}
+# vm_artifacts: "<bucket> <prefix>" the app's servers go to and the instance fetches from, the
+# prefix ending in /: CBASE_VM_ARTIFACTS, else, in an adopted group, the account's code bucket's
+# vm/<app>/ (s3://cbase-code-<account>-<region>/vm/<app>/, under the vm/* its instance role reads),
+# else the state bucket's artifacts/<app>/.
 vm_artifacts() {
-  local a="${CONF_VM_ARTIFACTS:-s3://$(state_bucket)/artifacts/$CONF_APP/}"
+  local a="$CONF_VM_ARTIFACTS"
+  if [ -z "$a" ] && [ -n "$CONF_VM_STACK" ]; then a="s3://cbase-code-$AWS_ACCOUNT-$(vm_region)/vm/$CONF_APP/"
+  elif [ -z "$a" ]; then a="s3://$(state_bucket)/artifacts/$CONF_APP/"; fi
   a="${a#s3://}"
   printf '%s %s' "${a%%/*}" "${a#*/}"
 }

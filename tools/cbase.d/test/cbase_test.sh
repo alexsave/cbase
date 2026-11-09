@@ -809,9 +809,11 @@ taken="$(app taken "CBASE_APP = taken" "CBASE_VM = none" "CBASE_STATIC = site" "
 mkdir -p "$taken/build" && printf 'x\n' > "$taken/build/index.html"
 m="$(mark)"
 run "$taken" deploy --dry-run
-expect_rc 0 "a dry run with a hostname another distribution holds"
+expect_rc 1 "a dry run with a hostname another distribution holds"
 err_has "taken.example.com is an alternate domain name of the distribution EOLDDIST (dold.cloudfront.net), which is not this app's" "the dry run names the holder"
 out_has "dry run: a deploy would stop here" "the dry run goes on"
+out_has "dry run: change set" "the dry run reaches the change set"
+err_has "  a hostname another distribution holds (above)" "the dry run lists the problem at its end"
 m="$(mark)"
 run "$taken" deploy
 expect_rc 1 "a hostname another distribution holds"
@@ -958,12 +960,13 @@ else
   # asset (an extension) is passed to S3, which answers 404, never the shell.
   routes /assets/app.js /privacy.html /.well-known/apple-app-site-association \
          / /privacy /docs/ /blog/post \
-         /abc123 /game/7/replay /docs /privacy/ /blog/ \
+         /abc123 /game/7/replay /docs /privacy/ /blog/ /unknown/ /blog/post/ \
          /assets/missing.js > "$t/got"
   printf '%s\n' "/assets/app.js -> /assets/app.js" "/privacy.html -> /privacy.html" \
     "/.well-known/apple-app-site-association -> /.well-known/apple-app-site-association" \
     "/ -> /index.html" "/privacy -> /privacy.html" "/docs/ -> /docs/index.html" "/blog/post -> /blog/post.html" \
-    "/abc123 -> /index.html" "/game/7/replay -> /index.html" "/docs -> /index.html" "/privacy/ -> /index.html" "/blog/ -> /index.html" \
+    "/abc123 -> /index.html" "/game/7/replay -> /index.html" "/docs -> /index.html" "/privacy/ -> /privacy.html" "/blog/ -> /index.html" \
+    "/unknown/ -> /index.html" "/blog/post/ -> /blog/post.html" \
     "/assets/missing.js -> /assets/missing.js" > "$t/want"
   diff -u "$t/want" "$t/got" || fail "the router mapped a path otherwise"
   ok
