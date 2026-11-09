@@ -1,0 +1,139 @@
+#!/bin/bash
+# cbase - the deploy tool: an app's VM service, static files and CloudFront distribution, from
+# the app's cbase.conf (README.md "./cbase deploy tool"). It runs straight from the app's cbase
+# submodule, with no build step and no provider linked:
+#
+#   cbase/tools/cbase config check      read cbase.conf and print it, defaults filled in (no AWS)
+#   cbase/tools/cbase doctor            the config, the AWS account, each group and its members
+#   cbase/tools/cbase apps [GROUP]      the apps in a group (default: cbase.conf's groups)
+#   cbase/tools/cbase deploy            not yet (phase 2: static; phase 3: the VM)
+#   cbase/tools/cbase undeploy          not yet (phase 3)
+#   cbase/tools/cbase group-init vm|static GROUP   not yet (phase 3)
+#   cbase/tools/cbase state join|leave  the membership step deploy and undeploy run: the app
+#                                       joins (or leaves) its groups' state files, a VM app
+#                                       claiming its port. For repair, and for the tests.
+#
+# Options, before the command: -f FILE reads FILE instead of ./cbase.conf.
+#
+# AWS: every call is one AWS CLI call with its own credential chain (AWS_PROFILE, ~/.aws, SSO,
+# the environment's keys from CI's OIDC role); the tool holds no credential and prints none.
+# Never run it under `set -x` or `bash -x`.
+set -euo pipefail
+export LC_ALL=C
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CB_CLEANUP=()
+cb_cleanup() {
+  local f
+  for f in "${CB_CLEANUP[@]+"${CB_CLEANUP[@]}"}"; do rm -rf "$f"; done
+}
+trap cb_cleanup EXIT
+# shellcheck source=tools/cbase.d/conf.sh
+. "$here/cbase.d/conf.sh"
+# shellcheck source=tools/cbase.d/aws.sh
+. "$here/cbase.d/aws.sh"
+# shellcheck source=tools/cbase.d/state.sh
+. "$here/cbase.d/state.sh"
+
+usage() {
+  sed -n '6,17p' "$here/cbase" | sed 's/^# \{0,1\}//'
+}
+
+conf="cbase.conf"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -f) [ $# -ge 2 ] || { echo "cbase: -f wants a file" >&2; exit 2; }; conf="$2"; shift 2 ;;
+    -h|--help|help) usage; exit 0 ;;
+    -*) echo "cbase: unknown option $1" >&2; usage >&2; exit 2 ;;
+    *) break ;;
+  esac
+done
+[ $# -ge 1 ] || { usage >&2; exit 2; }
+cmd="$1"
+shift
+
+not_yet() {
+  echo "cbase: $1 is not built yet (it comes in $2); see README.md \"./cbase deploy tool\"" >&2
+  exit 2
+}
+
+# GROUPS: the groups cbase.conf names, "<kind> <group>" each. An array, never a loop over a pipe:
+# a command in the loop (aws) would share the loop's stdin.
+GROUPS_=()
+conf_groups() {
+  GROUPS_=()
+  [ "$CONF_VM" = none ] || GROUPS_+=("vm $CONF_VM")
+  [ "$CONF_STATIC" = none ] || GROUPS_+=("static $CONF_STATIC")
+}
+
+case "$cmd" in
+  config)
+    [ "${1:-}" = check ] && [ $# -eq 1 ] || { echo "cbase: config check is the one config command" >&2; exit 2; }
+    conf_load "$conf"
+    echo "$conf: ok"
+    conf_print
+    ;;
+  doctor)
+    [ $# -eq 0 ] || { echo "cbase: doctor takes no arguments" >&2; exit 2; }
+    conf_load "$conf"
+    echo "$conf: ok"
+    conf_print
+    aws_init
+    aws_account_load
+    echo "account   $AWS_ACCOUNT ($(aws_region))"
+    rc=0
+    conf_groups
+    for g in "${GROUPS_[@]}"; do
+      kind="${g%% *}"
+      group="${g#* }"
+      if id="$(aws_group_find "$kind" "$group")"; then
+        echo "$kind group $group: $id"
+        lrc=0
+        state_list "$kind" "$group" || lrc=$?
+        [ "$lrc" -ne 3 ] || echo "$kind group $group: no state file yet (no app has joined)"
+        [ "$lrc" -eq 0 ] || [ "$lrc" -eq 3 ] || exit "$lrc"
+      else
+        rc=1
+      fi
+    done
+    exit "$rc"
+    ;;
+  apps)
+    [ $# -le 1 ] || { echo "cbase: apps takes one group name at most" >&2; exit 2; }
+    if [ $# -eq 1 ]; then
+      conf_name_ok "$1" || { echo "cbase: $1 is not a group name" >&2; exit 2; }
+      GROUPS_=("vm $1" "static $1")
+    else
+      conf_load "$conf"
+      conf_groups
+    fi
+    aws_init
+    aws_account_load
+    found=""
+    for g in "${GROUPS_[@]}"; do
+      rc=0
+      state_list "${g%% *}" "${g#* }" || rc=$?
+      if [ "$rc" -eq 0 ]; then found=1; elif [ "$rc" -ne 3 ]; then exit "$rc"; fi
+    done
+    if [ -z "$found" ]; then
+      echo "cbase: no state file for $(printf '%s group, ' "${GROUPS_[@]}" | sed 's/, $//'): no app has joined it yet" >&2
+      exit 1
+    fi
+    ;;
+  state)
+    op="${1:-}"
+    case "$op" in join|leave) ;; *) echo "cbase: state join or state leave" >&2; exit 2 ;; esac
+    [ $# -eq 1 ] || { echo "cbase: state $op takes no more arguments" >&2; exit 2; }
+    conf_load "$conf"
+    aws_init
+    aws_account_load
+    conf_groups
+    for g in "${GROUPS_[@]}"; do
+      aws_group_find "${g%% *}" "${g#* }" > /dev/null
+      state_change "${g%% *}" "${g#* }" "$CONF_APP" "${CONF_MEMORY:-}" "$op"
+    done
+    ;;
+  deploy) not_yet deploy "phase 2 (static) and phase 3 (the VM)" ;;
+  undeploy) not_yet undeploy "phase 3" ;;
+  group-init) not_yet group-init "phase 3" ;;
+  *) echo "cbase: unknown command $cmd" >&2; usage >&2; exit 2 ;;
+esac
