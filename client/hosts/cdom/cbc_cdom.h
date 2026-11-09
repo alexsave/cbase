@@ -36,10 +36,17 @@
 // Starting a live handle (started, not stopped) traps. The handle must be zeroed before its first start
 // (static storage is): its slots outlive a stop.
 //
+// THE HANDLE LIVES FOR THE PAGE: never free it, nor let it go out of scope, stopped or not. Every
+// context the adapter hands cdom points into it (a slot of owed[], the handle itself, the shared
+// host's), and cdom may call back into it after any stop: a request's answer up to its wait_ms
+// later, and with cbc_cfg http_wait_ms 0 (no deadline) with no limit at all; a store get up to
+// CD_STORE_DEADLINE_MS; a socket's close when the browser reports it. Keep it static.
+//
 // WHAT IT OWNS IN THE MODULE: nothing global. Its socket, requests, timers and store answers are
 // cdom's _cb forms, in cdom's token range, so they never reach the app's hooks (cd_on_ws_*,
 // cd_on_http, cd_on_timer, cd_on_store*) or meet the app's tokens. The app owns the cbc_cdom (one per
-// client, about 50 KB: keep it static) and may run several, each under its own key.
+// client, about 50 KB, static: THE HANDLE LIVES FOR THE PAGE above) and may run several, each under its
+// own key.
 //
 // NEEDS: cdom's src/cdom.c, cdom_net.c, cdom_store.c, cdom_random.c and mini.c in the module,
 // -isystem <cdom>/src/libc (the program's string.h), -I<cdom>/src, and cbase's client.mk (CBC_SRC,
