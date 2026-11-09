@@ -25,6 +25,7 @@ Requirements:
 - Ubuntu 24.04: `sudo apt-get install build-essential libssl-dev libsqlite3-dev`.
 
 Nothing else is needed, and the build fetches nothing.
+An app with a page on cdom (`example/minimal/`) also needs a clang that targets wasm32, which Xcode's does not: on macOS `brew install llvm`, which cdom's `cdom.mk` finds at `/opt/homebrew/opt/llvm/bin/clang` (`WASM_CC=<clang>` names another).
 
 ```
 git clone https://github.com/alexsave/cbase.git
