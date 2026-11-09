@@ -1,6 +1,9 @@
 [Unit]
 Description=cbase app @APP@ (vm_unit.service, installed by ./cbase deploy: edits by hand are undone)
-After=network-online.target
+# The port is cbase-@APP@.socket's (vm_unit.socket), which systemd holds across this unit's
+# restarts: a restart queues connections, it never refuses one.
+Requires=cbase-@APP@.socket
+After=network-online.target cbase-@APP@.socket
 Wants=network-online.target
 StartLimitIntervalSec=0
 
@@ -13,8 +16,9 @@ Group=@USER@
 EnvironmentFile=/etc/cbase/@APP@.env
 Environment=CBASE_STORE=sqlite
 Environment=CBASE_DB=@DATA@/cbase.sqlite
-# "::" (no brackets: config.c splits host:port at the last colon) is a
-# dual-stack socket, so a local probe from 127.0.0.1 or ::1 both reach it.
+# serve listens on the socket unit's socket (fd 3); CBASE_LISTEN names the same port for its
+# startup line, and is what it would bind without the socket. "::" (no brackets: config.c splits
+# host:port at the last colon) is dual-stack.
 Environment=CBASE_LISTEN=:::@PORT@
 Environment=SSL_CERT_FILE=/etc/pki/tls/certs/ca-bundle.crt
 # Backups: the database to s3://@BACKUP_BUCKET@/@BACKUP_KEY@ (serve's CBASE_BACKUP_*).
@@ -26,7 +30,9 @@ ExecStart=@HOME@/serve serve
 @MEMORY_MAX@
 Restart=always
 RestartSec=1
-# SIGTERM drains (ingress_process.c); give open games time to settle.
+# SIGTERM drains (ingress_process.c): the listener closed (systemd's copy keeps queueing), the
+# requests in flight or arriving answered, every WebSocket closed with 1001 to reconnect to the
+# next serve; give open games time to settle.
 KillSignal=SIGTERM
 TimeoutStopSec=30
 LimitNOFILE=65536

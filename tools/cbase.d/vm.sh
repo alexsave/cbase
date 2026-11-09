@@ -21,9 +21,10 @@
 #      checked FREE before a first start (`ss`), refused with exit 3 when another process holds it,
 #      and deploy then releases the claim it just made; the artifact fetched and its sha256 checked;
 #      the app's settings from SSM Parameter Store /cbase/<app>/ into /srv/cbase/<app>/env (0640,
-#      root:cbase-<app>), which serve reads as CBASE_ENV_FILE; the unit cbase-<app>.service
-#      (vm_unit) installed and ONLY it restarted; then its GET /health answering 200 on
-#      127.0.0.1:<port>, or its startup line ("cbase: listening ...") in its journal, within 60 s;
+#      root:cbase-<app>), which serve reads as CBASE_ENV_FILE; the units cbase-<app>.socket
+#      (vm_socket) and cbase-<app>.service (vm_unit) installed and ONLY the service restarted
+#      (ZERO DOWNTIME, below); then its GET /health answering 200 on 127.0.0.1:<port>, or its
+#      startup line ("cbase: listening ...") in its journal, within 60 s;
 #   6. the stack's VmOrigin and VmPort parameters (stack.sh): the instance's public DNS name and the
 #      claimed port, which every vm and ws route's behaviour points at.
 #
@@ -33,13 +34,24 @@
 # reconfigure, and each app's port is its own origin). Health is checked from the instance, on
 # 127.0.0.1.
 #
+# ZERO DOWNTIME. After an app's first deploy no deploy refuses a connection. The port is the socket
+# unit's: systemd listens on it and hands it to serve as fd 3 (socket activation; net/server.c THE
+# INHERITED LISTENER), and keeps it while the service restarts, so a code deploy's restart queues
+# the connections that arrive (Backlog=, vm_unit.socket) for the new serve: a short delay, never a
+# refusal. The old serve's drain answers what it had begun; its WebSockets get 1001 and reconnect to
+# the new serve, which has only what the store holds. One serving process at a time, always (an
+# app's in-memory state is never split between two). A deploy never restarts the socket: only the
+# first deploy onto socket activation starts it, after stopping what held the port before (the
+# app's own service from before, or CBASE_VM_REPLACES's unit), and that one switch is a gap. So
+# an edit of vm_unit.socket reaches a running app at its VM's next boot, not at a deploy.
+#
 # SECRETS. A setting's value lives in SSM Parameter Store and goes from there to the env file on the
 # instance; it never reaches this script. The command's output is never printed whole: only the
 # remote script's own "CBASE: " lines, which name no value, pass (masked again by aws_mask), and a
 # failure points at journalctl on the instance rather than printing the journal.
 #
-# UNDEPLOY (vm_undeploy): the unit stopped, disabled and removed, its binary and env file deleted;
-# /srv/cbase/<app>/data and the user stay unless --delete-data.
+# UNDEPLOY (vm_undeploy): the socket and the unit stopped, disabled and removed, its binary and env
+# file deleted; /srv/cbase/<app>/data and the user stay unless --delete-data.
 #
 # Every wait is a counter loop over CBASE_POLL_SECONDS (macOS has no `timeout`).
 
@@ -250,6 +262,10 @@ vm_unit() {
       -e "$mem" "$here/cbase.d/vm_unit.service"
 }
 
+# vm_socket PORT: the app's socket unit, vm_unit.socket filled in: the port systemd holds across
+# the service's restarts.
+vm_socket() { sed -e "s|@APP@|$CONF_APP|g" -e "s|@PORT@|$1|g" "$here/cbase.d/vm_unit.socket"; }
+
 # vm_remote_deploy PORT BUCKET KEY SHA REGION: the script SSM runs as root on the instance. Every
 # value in it is one this tool checked (a name, digits, hex, a bucket and region name), so it is
 # written into the script as it is. CBASE_VM_ROOT is unset on the instance; cbase_vm_test.sh runs
@@ -264,6 +280,7 @@ app=$app
 port=$port
 user=cbase-$app
 unit=cbase-$app.service
+sock=cbase-$app.socket
 home="\${CBASE_VM_ROOT:-}/srv/cbase/$app"
 data=$(vm_data_dir)
 bucket=$bucket
@@ -274,9 +291,12 @@ settings=$(vm_settings)
 replaces=$CONF_VM_REPLACES
 EOF
   vm_unit "$port" > "$CB_TMP/vm-unit"
-  # The unit spliced in at @CBASE_SERVICE@ (the production boot script's own way), and the shebang
-  # once, above.
-  awk -v unit="$CB_TMP/vm-unit" 'NR == 1 { next } $0 == "@CBASE_SERVICE@" { while ((getline l < unit) > 0) print l; next } { print }' \
+  vm_socket "$port" > "$CB_TMP/vm-socket"
+  # The units spliced in at @CBASE_SERVICE@ and @CBASE_SOCKET@ (the production boot script's own
+  # way), and the shebang once, above.
+  awk -v unit="$CB_TMP/vm-unit" -v sock="$CB_TMP/vm-socket" 'NR == 1 { next }
+    $0 == "@CBASE_SERVICE@" { while ((getline l < unit) > 0) print l; next }
+    $0 == "@CBASE_SOCKET@" { while ((getline l < sock) > 0) print l; next } { print }' \
     "$here/cbase.d/vm_remote.sh"
 }
 
@@ -290,13 +310,16 @@ set -euo pipefail
 R="\${CBASE_VM_ROOT:-}"
 app=$app
 unit=cbase-$app.service
+sock=cbase-$app.socket
 home="\$R/srv/cbase/$app"
 say() { echo "CBASE: \$*"; }
 if [ -f "\$R/etc/systemd/system/\$unit" ]; then
+  # The socket first: with it listening, a connection would start the service again.
+  systemctl disable --now --quiet "\$sock" 2> /dev/null || true
   systemctl disable --now --quiet "\$unit" || true
-  rm -f "\$R/etc/systemd/system/\$unit"
+  rm -f "\$R/etc/systemd/system/\$unit" "\$R/etc/systemd/system/\$sock"
   systemctl daemon-reload
-  say "\$unit stopped, disabled and removed"
+  say "\$unit and \$sock stopped, disabled and removed"
 else
   say "\$unit is not installed"
 fi

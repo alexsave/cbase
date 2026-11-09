@@ -1543,3 +1543,9 @@ The four fixes found in review got one test each; the rest of this work is teste
 - vm_remote.sh: the port check's exception for the replaced unit dropped -> `the deploy that replaces old.service: status 3` red.
 - README.md: the instance replacement line dropped -> cbase_test.sh's `README.md lacks the instance replacement line` red.
 - stack.sh: the printed template masking `HeaderValue: !Ref OriginSecret` again -> `a full app's template does not use OriginSecret` red.
+
+## Zero-downtime deploys: socket activation (zero-downtime)
+
+- net/server.c: `inherited_listener` returning -1 (LISTEN_FDS ignored, a fresh bind) -> unit_socket_activation's `(int)port == g_port` and `answer(fd, 10000, body, sizeof body) == 200` red.
+- net/server.c: `drain_idle` closing a connection whose request had begun arriving (the old drain: `started` and `in.len` not waited for) -> unit_socket_activation's `answer(half, 10000, body, sizeof body) == 200` red.
+- vm_remote.sh: the first switch's `systemctl start "$sock"` dropped -> cbase_vm_test.sh's `a first deploy did not start the socket` red.

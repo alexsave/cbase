@@ -14,7 +14,8 @@
 #   4. fetches the static `serve` binary, checks its sha256, swaps it in;
 #   5. reads every parameter under the app's settings path (GetParametersByPath, page by page)
 #      into the 0600 EnvironmentFile;
-#   6. writes the systemd unit and (re)starts it, and only it;
+#   6. writes the socket unit and the service unit, starts the socket when it is not listening yet
+#      (the one switch onto it), and restarts the service, and only it (vm.sh ZERO DOWNTIME);
 #   7. waits for GET /health (200) on the port, or its startup line (exit 4 when it does not come).
 # A new VM's own setup (its fixed address, the SSM agent's dual-stack configuration, the journal in
 # RAM) is the group's boot, not an app's deploy, and is not here.
@@ -24,7 +25,7 @@
 # replaces (CBASE_VM_REPLACES, a grandfathered member's alone) names the unit that served the app
 # before cbase: the port it holds is no refusal, its data is chowned only once it is stopped, and
 # it is stopped and disabled right before the app's unit starts, in this one command.
-# shellcheck disable=SC2154 # app, port, user, unit, home, data, bucket, key, sha, region, settings, replaces: vm.sh sets them
+# shellcheck disable=SC2154 # app, port, user, unit, sock, home, data, bucket, key, sha, region, settings, replaces: vm.sh sets them
 set -eEuo pipefail
 trap 'echo "CBASE: the deploy of $app failed at line $LINENO"' ERR
 umask 077
@@ -42,8 +43,10 @@ own_data() { chown -R "$user:$user" "$R$data"; chmod 0700 "$R$data"; }
 # The data of a unit being replaced stays its own while it runs.
 if [ -z "$replaces" ]; then own_data; fi
 
-# 2. The port, free before a first start: with the unit not running, nothing may listen on it.
-if ! systemctl is-active --quiet "$unit" && { [ -z "$replaces" ] || ! systemctl is-active --quiet "$replaces"; }; then
+# 2. The port, free before a first start: with neither the socket nor the unit running, nothing
+# may listen on it.
+if ! systemctl is-active --quiet "$sock" && ! systemctl is-active --quiet "$unit" &&
+   { [ -z "$replaces" ] || ! systemctl is-active --quiet "$replaces"; }; then
   if [ -n "$(ss -Hltn "sport = :$port")" ]; then
     say "port $port is in use on the VM, and not by $unit: refused, nothing was started"
     exit 3
@@ -113,19 +116,33 @@ chmod 0600 "$tmp/env"
 mv -f "$tmp/env" "$envfile"
 say "settings: $n from SSM $settings (values not shown)"
 
-# 6. The unit, and only it restarted.
+# 6. The units, and only the service restarted: the socket holds the port across the restart, so
+# the connections that arrive meanwhile wait for the new serve (vm.sh ZERO DOWNTIME).
+cat > "$R/etc/systemd/system/$sock.new" << 'SOCKET'
+@CBASE_SOCKET@
+SOCKET
 cat > "$R/etc/systemd/system/$unit.new" << 'EOF'
 @CBASE_SERVICE@
 EOF
+mv -f "$R/etc/systemd/system/$sock.new" "$R/etc/systemd/system/$sock"
 mv -f "$R/etc/systemd/system/$unit.new" "$R/etc/systemd/system/$unit"
 systemctl daemon-reload
-systemctl enable --quiet "$unit"
+systemctl enable --quiet "$sock" "$unit"
 if [ -n "$replaces" ]; then
   # The unit the app ran as before cbase: stopped and disabled (its file stays), seconds before
   # the app's own starts on its port and its data.
   systemctl disable --now --quiet "$replaces" 2> /dev/null || true
   say "$replaces stopped and disabled: $unit takes port $port and $data"
   own_data
+fi
+if ! systemctl is-active --quiet "$sock"; then
+  # THE ONE SWITCH onto the socket: the app's service from before socket activation binds the port
+  # itself, so it stops before the socket can listen. This deploy's gap is the last.
+  if systemctl is-active --quiet "$unit"; then
+    systemctl stop "$unit"
+    say "$unit stopped to hand port $port to $sock (the switch to socket activation: later deploys queue connections, not refuse them)"
+  fi
+  systemctl start "$sock"
 fi
 since="$(date +%s)"
 systemctl restart "$unit"
