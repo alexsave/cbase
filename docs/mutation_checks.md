@@ -1533,3 +1533,13 @@ The router section was run alone for these checks; the whole suite ran green bef
 - static_rules.tsv: the `.well-known/apple-app-site-association` rule dropped -> `s3://site-bucket/site/.well-known/apple-app-site-association has [application/octet-stream|no-cache], not [application/json|no-cache]` red.
 - stack.sh: the ApiDistribution's ws origin and ws behaviours dropped -> `/mqtt* is not on the API host's ws origin` red.
 - stack.sh: the ApiDistribution's ws origin made 30 s and 5 s -> `the API host's ws origin's read timeout` red.
+
+## ./cbase adopts the live VM and bucket (cli-adopt)
+
+The four fixes found in review got one test each; the rest of this work is tested by the existing suites alone (the lean-testing ruling).
+
+- vm_unit.service: `CBASE_BACKUP_KEY=@BACKUP_KEY@` made `backups/@APP@/cbase.sqlite` -> cbase_vm_test.sh's `the grandfathered unit lacks [Environment=CBASE_BACKUP_KEY=cbase/latest.sqlite]` red.
+- vm_remote.sh: the `systemctl disable --now` of the replaced unit dropped -> `the deploy stopped other than old.service alone` red.
+- vm_remote.sh: the port check's exception for the replaced unit dropped -> `the deploy that replaces old.service: status 3` red.
+- README.md: the instance replacement line dropped -> cbase_test.sh's `README.md lacks the instance replacement line` red.
+- stack.sh: the printed template masking `HeaderValue: !Ref OriginSecret` again -> `a full app's template does not use OriginSecret` red.
