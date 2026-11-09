@@ -196,6 +196,7 @@ case "$cmd" in
     # 1. The groups, found by their tags (a missing one stops with its group-init command).
     if [ "$CONF_VM" != none ]; then
       vm_find "$CONF_VM"
+      vm_origin_secret
     fi
     if [ "$CONF_STATIC" != none ]; then
       STACK_BUCKET="$(aws_group_find static "$CONF_STATIC")"
@@ -217,7 +218,8 @@ case "$cmd" in
     #    stack's VM origin is the instance and that port.
     if [ "$CONF_VM" != none ]; then
       if [ "$DRY_RUN" = 1 ]; then vm_plan_dry "$CONF_VM"; else vm_join "$CONF_VM"; fi
-      STACK_PARAMS=("ParameterKey=VmOrigin,ParameterValue=$VM_DNS" "ParameterKey=VmPort,ParameterValue=$VM_PORT")
+      STACK_PARAMS=("ParameterKey=VmOrigin,ParameterValue=$VM_DNS" "ParameterKey=VmPort,ParameterValue=$VM_PORT"
+                    "ParameterKey=OriginSecret,ParameterValue=$VM_ORIGIN_SECRET")
     fi
     # 6. The stack's change set, through its gates (drift, the bucket).
     stack_plan
