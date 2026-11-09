@@ -249,6 +249,14 @@ jobs:
           python3 -m venv /tmp/cfn
           /tmp/cfn/bin/pip install -q cfn-lint==1.57.2
           /tmp/cfn/bin/cfn-lint --regions us-east-1 -- providers/aws/ops/cbase.yaml providers/local/ops/vm.yaml
+          # The app stack ./cbase deploy renders, for a static site, one with a domain, and a full app
+          # with every kind of route (tools/cbase template: no AWS).
+          mkdir -p /tmp/apps
+          printf 'CBASE_APP = site\nCBASE_VM = none\n' > /tmp/apps/site.conf
+          printf 'CBASE_APP = www\nCBASE_VM = none\nCBASE_DOMAIN = www.example.com\n' > /tmp/apps/www.conf
+          printf 'CBASE_APP = shop\nCBASE_DOMAIN = shop.example.com\nCBASE_API_HOST = api.example.com\nCBASE_ROUTE = /api/* vm\nCBASE_ROUTE = /live ws\nCBASE_ROUTE = /img/* static nocache GET,OPTIONS\nCBASE_ROUTE = /read vm cache GET\n' > /tmp/apps/shop.conf
+          for a in site www shop; do tools/cbase -f /tmp/apps/$a.conf template > /tmp/apps/$a.yaml; done
+          /tmp/cfn/bin/cfn-lint --regions us-east-1 -- /tmp/apps/site.yaml /tmp/apps/www.yaml /tmp/apps/shop.yaml
       - name: the shell scripts
         run: |
           s="$(git ls-files 'ops/*.sh' 'providers/*/ops/*.sh' 'providers/*/ops/test/*.sh' 'fuzz/test/*.sh' tools/repo_gate_test.sh tools/c_rules_test.sh tools/changed_files.sh tools/changed_files_test.sh tools/libc_gate.sh tools/symbol_gate.sh tools/offline_build_test.sh tools/serve.sh tools/serve_test.sh tools/new.sh tools/new_test.sh tools/cbase 'tools/cbase.d/*.sh' 'tools/cbase.d/test/*.sh' client/test/requires_gate.sh 'client/hosts/*/*.sh' example/minimal/check.sh)"

@@ -6,7 +6,12 @@
 #   cbase/tools/cbase config check      read cbase.conf and print it, defaults filled in (no AWS)
 #   cbase/tools/cbase doctor            the config, the AWS account, each group and its members
 #   cbase/tools/cbase apps [GROUP]      the apps in a group (default: cbase.conf's groups)
-#   cbase/tools/cbase deploy            not yet (phase 2: static; phase 3: the VM)
+#   cbase/tools/cbase deploy [--dry-run] [--accept-drift] [--prune]
+#                                       the app's static files and its distribution (a VM app's
+#                                       VM side: phase 3). DRY_RUN=1, CBASE_ACCEPT_DRIFT=1 and
+#                                       CBASE_PRUNE=1 are the same as the flags
+#   cbase/tools/cbase template          the distribution's stack template deploy renders (no AWS;
+#                                       the bucket and certificate as placeholders)
 #   cbase/tools/cbase undeploy          not yet (phase 3)
 #   cbase/tools/cbase group-init vm|static GROUP   not yet (phase 3)
 #   cbase/tools/cbase state join|leave  the membership step deploy and undeploy run: the app
@@ -33,9 +38,19 @@ trap cb_cleanup EXIT
 . "$here/cbase.d/aws.sh"
 # shellcheck source=tools/cbase.d/state.sh
 . "$here/cbase.d/state.sh"
+# shellcheck source=tools/cbase.d/static.sh
+. "$here/cbase.d/static.sh"
+# shellcheck source=tools/cbase.d/stack.sh
+. "$here/cbase.d/stack.sh"
+# shellcheck source=tools/cbase.d/cert.sh
+. "$here/cbase.d/cert.sh"
+# shellcheck source=tools/cbase.d/vm.sh
+. "$here/cbase.d/vm.sh"
+CB_TMP="$(mktemp -d "${TMPDIR:-/tmp}/cbase.XXXXXX")"
+CB_CLEANUP+=("$CB_TMP")
 
 usage() {
-  sed -n '6,17p' "$here/cbase" | sed 's/^# \{0,1\}//'
+  sed -n '6,22p' "$here/cbase" | sed 's/^# \{0,1\}//'
 }
 
 conf="cbase.conf"
@@ -135,7 +150,80 @@ case "$cmd" in
       state_change "${g%% *}" "${g#* }" "$CONF_APP" "$mem" "$op"
     done
     ;;
-  deploy) not_yet deploy "phase 2 (static) and phase 3 (the VM)" ;;
+  template)
+    [ $# -eq 0 ] || { echo "cbase: template takes no arguments" >&2; exit 2; }
+    conf_load "$conf"
+    # Placeholders where deploy puts what it finds: the static group's bucket and region, and the
+    # certificate (found or requested).
+    STACK_BUCKET="${CONF_STATIC}-bucket"
+    STACK_BUCKET_REGION=us-east-1
+    [ -z "$CONF_DOMAIN" ] || STACK_CERT="${CONF_CERT_ARN:-arn:aws:acm:us-east-1:111122223333:certificate/00000000-0000-0000-0000-000000000000}"
+    stack_render "$CB_TMP/stack.yaml"
+    echo "# PLACEHOLDERS: the bucket ($STACK_BUCKET) is static group $CONF_STATIC's${CONF_DOMAIN:+, the certificate is the one deploy finds or requests}."
+    stack_print_template "$CB_TMP/stack.yaml"
+    ;;
+  deploy)
+    for a in "$@"; do
+      case "$a" in
+        --dry-run) DRY_RUN=1 ;;
+        --accept-drift) CBASE_ACCEPT_DRIFT=1 ;;
+        --prune) CBASE_PRUNE=1 ;;
+        *) echo "cbase: deploy takes --dry-run, --accept-drift and --prune, not $a" >&2; exit 2 ;;
+      esac
+    done
+    DRY_RUN="${DRY_RUN:-}"
+    conf_load "$conf"
+    # The VM side is phase 3: an app with a VM stops here, before anything is read or changed.
+    [ "$CONF_VM" = none ] || vm_deploy
+    aws_init
+    aws_account_load
+    echo "deploy: $CONF_APP to account $AWS_ACCOUNT${DRY_RUN:+ (dry run: nothing is changed)}"
+    # 1. The static group, found by its tag (a missing one stops with its group-init command).
+    STACK_BUCKET="$(aws_group_find static "$CONF_STATIC")"
+    STACK_BUCKET_REGION="$(aws_call s3api get-bucket-location --bucket "$STACK_BUCKET" --query LocationConstraint --output text)" \
+      || aws_fail "reading s3://$STACK_BUCKET's region"
+    case "$STACK_BUCKET_REGION" in None|'') STACK_BUCKET_REGION=us-east-1 ;; EU) STACK_BUCKET_REGION=eu-west-1 ;; esac
+    echo "static group $CONF_STATIC: s3://$STACK_BUCKET ($STACK_BUCKET_REGION), the app's folder $CONF_APP/"
+    # 2. The files, read and grouped before anything is changed.
+    static_scan "$CONF_STATIC_DIR"
+    static_plan "$CONF_STATIC_DIR"
+    # 3. The certificate (it may stop, status 3, for DNS records added by hand).
+    cert_resolve
+    STACK_CERT="$CERT_ARN"
+    # 4. The stack's change set, through its gates (drift, the bucket).
+    stack_plan
+    if [ "$DRY_RUN" = 1 ]; then
+      [ -z "$STACK_CHANGES" ] || stack_discard
+      echo "the upload ($CONF_STATIC_DIR/ to s3://$STACK_BUCKET/$CONF_APP/), in order:"
+      static_print_plan
+      echo "dry run: change set ${STACK_CS} deleted unexecuted; nothing was uploaded, deleted or changed"
+      exit 0
+    fi
+    # 5. The app joins the static group's state file, which records its folder.
+    state_change static "$CONF_STATIC" "$CONF_APP" "" join
+    # 6. The files: hashed, then the rest, html last; then the prune, if asked.
+    static_print_plan
+    static_upload "$STACK_BUCKET" "$STACK_BUCKET_REGION" "$CONF_APP"
+    [ "${CBASE_PRUNE:-}" != 1 ] || static_prune "$STACK_BUCKET" "$STACK_BUCKET_REGION" "$CONF_APP"
+    # 7. The distribution.
+    [ -z "$STACK_CHANGES" ] || stack_execute
+    dist_id="$(stack_output DistributionId)"
+    dist_domain="$(stack_output DistributionDomain)"
+    { [ -n "$dist_id" ] && [ -n "$dist_domain" ]; } || { echo "cbase: the $STACK_NAME stack has no DistributionId or DistributionDomain output" >&2; exit 1; }
+    # 8. The edge's copies of the old files dropped; then the hostnames pointed at the distribution.
+    if [ "$STACK_STATUS" != NONE ]; then
+      inv="$(aws_call cloudfront create-invalidation --distribution-id "$dist_id" --paths '/*' --query Invalidation.Id --output text)" \
+        || aws_fail "invalidating $dist_id"
+      echo "invalidation $inv of /* on $dist_id"
+      aws_call cloudfront wait invalidation-completed --distribution-id "$dist_id" --id "$inv" || aws_fail "waiting for invalidation $inv"
+    fi
+    url="https://$dist_domain/"
+    if [ -n "$CERT_ARN" ]; then
+      cert_point "$CONF_DOMAIN" "$dist_domain"
+      url="https://$CONF_DOMAIN/"
+    fi
+    echo "deployed $CONF_APP: $url"
+    ;;
   undeploy) not_yet undeploy "phase 3" ;;
   group-init) not_yet group-init "phase 3" ;;
   *) echo "cbase: unknown command $cmd" >&2; usage >&2; exit 2 ;;

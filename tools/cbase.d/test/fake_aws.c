@@ -1,26 +1,47 @@
-// fake_aws.c - a recorded stand-in for the three AWS APIs ./cbase calls, on loopback, for
+// fake_aws.c - a recorded stand-in for the AWS APIs ./cbase calls, on loopback, for
 // tools/cbase.d/test/cbase_test.sh. Test-only: never part of a product, never reached by anything
 // but a test's AWS CLI through AWS_ENDPOINT_URL=http://127.0.0.1:<port>.
 //
-//   fake_aws --port-file F --log L --account 111122223333 [--bucket B]... [--resource 'KEY VALUE TYPE ARN']...
+//   fake_aws --port-file F --log L --account 111122223333 [--bucket B[:REGION]]...
+//            [--resource 'KEY VALUE TYPE ARN']... [--cert 'ARN STATUS NAME,NAME...']... [--zone 'ID NAME [private]']...
 //
-// What it answers, each as the real service answers it (the bodies are recorded from AWS's
-// documented responses, trimmed to what the CLI reads):
-//   * S3, path-style (/bucket/key): GetObject (200 with an ETag, 404 NoSuchKey, 404 NoSuchBucket)
-//     and PutObject with its preconditions: If-Match on a missing key is 404 NoSuchKey, on another
-//     ETag 412 PreconditionFailed; If-None-Match: * on a present key is 412. A body in the
-//     aws-chunked encoding (the CLI's trailing checksums) is decoded first. Expect: 100-continue
-//     is answered.
+// A request is routed by the service its signature's credential scope names, as AWS's endpoints
+// are told apart by host. What it answers, each as the real service answers it (the bodies are
+// recorded from AWS's documented responses, trimmed to what the CLI reads):
+//   * S3, path-style (/bucket/key): GetObject and HeadObject (200 with an ETag and the stored
+//     Content-Type and Cache-Control, 404 NoSuchKey, 404 NoSuchBucket), PutObject with its
+//     preconditions (If-Match on a missing key is 404 NoSuchKey, on another ETag 412
+//     PreconditionFailed; If-None-Match: * on a present key is 412), DeleteObject,
+//     GetBucketLocation and ListObjectsV2 (one page, by prefix). A body in the aws-chunked
+//     encoding (the CLI's trailing checksums) is decoded first. Expect: 100-continue is answered.
 //   * STS GetCallerIdentity (the Query protocol, an XML answer naming --account).
 //   * Tagging GetResources (JSON 1.1): the --resource lines whose tag key, value and resource type
 //     the request's filters name.
+//   * CloudFormation (Query): DescribeStacks, Create/Describe/Delete/ExecuteChangeSet, DeleteStack,
+//     DetectStackDrift, DescribeStackDriftDetectionStatus, DescribeStackResourceDrifts,
+//     DescribeStackEvents. Every wait ends at once (the change set and the stack are done when
+//     first asked). A create's change set adds the template's resources; an update's is a Modify of
+//     the distribution when the template changed, nothing when it did not, or what /_fake/set
+//     scripts.
+//   * ACM (JSON 1.1): ListCertificates (by status), DescribeCertificate (with each name's
+//     validation record), RequestCertificate (pending; issued once Route 53 holds every one of its
+//     validation records).
+//   * Route 53 (REST): ListHostedZonesByName, ChangeResourceRecordSets, GetChange (INSYNC).
+//   * CloudFront (REST): CreateInvalidation, GetInvalidation (Completed).
 //   * Control, for the test alone: POST /_fake/gather?n=N holds the next N GetObject answers until
 //     all N have been asked (so N clients read the same ETag before any of them writes: a race
-//     made deterministic), or 20 s pass.
+//     made deterministic), or 20 s pass. POST /_fake/set?KNOB=VALUE scripts the next answers:
+//     changes=auto|none|replace-bucket|remove-bucket|replace-distribution, drift=0|1,
+//     secret=S and secret2=S (planted where a change set, a drift and an error would carry an
+//     origin header's or a parameter's value), fail-execute=0|1, list-ignores-prefix=0|1 (a
+//     listing that answers every key, whatever its prefix), acm-deny=0|1 (DescribeCertificate
+//     refused, AccessDenied). GET /_fake/template?stack=NAME answers
+//     the template the stack holds.
 //
-// Every request is one line of the log: "<METHOD> <path> <status>", and for a PutObject its
-// precondition ("if-match" / "if-none-match"). One thread per connection; the state is under one
-// lock. Plain C and libc only (tools/ stands apart from the platform: tools/repo_gate_test.sh).
+// Every request is one line of the log: "<METHOD> <path> <status>" for S3 (a PutObject with its
+// precondition and its headers), "CFN <Action> ...", "ACM ...", "R53 ...", "CF ...". One thread per
+// connection; the state is under one lock. Plain C and libc only (tools/ stands apart from the
+// platform: tools/repo_gate_test.sh).
 #include <errno.h>
 #include <netinet/in.h>
 #include <pthread.h>
@@ -37,31 +58,66 @@
 #include <time.h>
 #include <unistd.h>
 
-#define MAX_OBJ 64
+#define MAX_OBJ 512
 #define MAX_RES 32
 #define MAX_BUCKETS 8
 #define BODY_MAX (1 << 20)
+#define MAX_STACKS 8
+#define MAX_CERTS 16
+#define MAX_ZONES 8
 
 typedef struct {
     char   path[1024];  // "/bucket/key"
     char  *body;
     size_t len;
     unsigned version;   // the ETag is "v<version>-<len>"
+    char   ctype[128], cache[128];   // its Content-Type and Cache-Control, as put
 } object;
 
 typedef struct {
     char key[128], value[128], type[64], arn[256];
 } resource;
 
+typedef struct {
+    char  name[128], id[256], status[64], dist_id[64], dist_domain[128];
+    char *template;      // the template the stack holds (NULL until a change set ran)
+    bool  has_cs;        // one change set at a time: the tool's
+    char  cs_name[128], cs_type[16];
+    char *cs_template;
+} stack;
+
+typedef struct {
+    char arn[256], status[32], names[8][256];
+    int  nnames;
+    bool written[8];     // its names' validation records, in a zone
+} cert;
+
+typedef struct {
+    char id[64], name[256];   // the name ends with '.'
+    bool private_;
+} zone;
+
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_cv = PTHREAD_COND_INITIALIZER;
+static pthread_mutex_t g_log_mu = PTHREAD_MUTEX_INITIALIZER;
 static object g_obj[MAX_OBJ];
 static int g_nobj;
 static unsigned g_version;
 static resource g_res[MAX_RES];
 static int g_nres;
 static char g_buckets[MAX_BUCKETS][64];
+static char g_bucket_region[MAX_BUCKETS][32];
 static int g_nbuckets;
+static stack g_stacks[MAX_STACKS];
+static int g_nstacks;
+static cert g_certs[MAX_CERTS];
+static int g_ncerts;
+static zone g_zones[MAX_ZONES];
+static int g_nzones;
+// The scripts (/_fake/set).
+static char g_changes[32] = "auto";
+static int g_drift, g_fail_execute, g_list_ignores_prefix, g_acm_deny;
+static char g_secret[256], g_secret2[256];
 static char g_account[16] = "111122223333";
 static FILE *g_log;
 // The gather: the next g_gather_want GetObject answers wait until that many have been computed.
@@ -81,11 +137,11 @@ static void die(const char *fmt, ...) {
 static void logf_(const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
-    pthread_mutex_lock(&g_mu);
+    pthread_mutex_lock(&g_log_mu);   // its own lock: a handler logs while it holds g_mu
     vfprintf(g_log, fmt, ap);
     fputc('\n', g_log);
     fflush(g_log);
-    pthread_mutex_unlock(&g_mu);
+    pthread_mutex_unlock(&g_log_mu);
     va_end(ap);
 }
 
@@ -266,45 +322,141 @@ static bool read_request(conn *c, request *r) {
     return true;
 }
 
+// ---- answers ------------------------------------------------------------------------------------
+
+// A growing text, for an answer of any length (no fixed buffer for a compiler to warn about).
+typedef struct {
+    char  *p;
+    size_t n, cap;
+} sb;
+
+static void sb_add(sb *b, const char *fmt, ...) {
+    for (;;) {
+        va_list ap;
+        va_start(ap, fmt);
+        size_t room = b->cap - b->n;
+        int k = vsnprintf(b->p ? b->p + b->n : NULL, b->p ? room : 0, fmt, ap);
+        va_end(ap);
+        if (k < 0) die("vsnprintf");
+        if (b->p && (size_t)k < room) {
+            b->n += (size_t)k;
+            return;
+        }
+        b->cap = (b->cap + (size_t)k + 1) * 2;
+        b->p = realloc(b->p, b->cap);
+        if (!b->p) die("out of memory");
+        if (b->n == 0) b->p[0] = 0;
+    }
+}
+
+// Text made safe inside an XML element.
+static void sb_xml(sb *b, const char *s) {
+    for (; *s; s++) {
+        if (*s == '<') sb_add(b, "&lt;");
+        else if (*s == '>') sb_add(b, "&gt;");
+        else if (*s == '&') sb_add(b, "&amp;");
+        else if (*s == '"') sb_add(b, "&quot;");
+        else sb_add(b, "%c", *s);
+    }
+}
+
 static void respond(int fd, int status, const char *reason, const char *ctype, const char *extra, const char *body,
                     size_t n) {
-    char head[1024];
-    int k = snprintf(head, sizeof head,
-                     "HTTP/1.1 %d %s\r\nx-amz-request-id: FAKE0000\r\nContent-Type: %s\r\nContent-Length: %zu\r\n%s\r\n",
-                     status, reason, ctype, n, extra ? extra : "");
-    write_all(fd, head, (size_t)k);
+    sb h = { 0 };
+    sb_add(&h, "HTTP/1.1 %d %s\r\nx-amz-request-id: FAKE0000\r\nContent-Type: %s\r\nContent-Length: %zu\r\n%s\r\n", status,
+           reason, ctype, n, extra ? extra : "");
+    write_all(fd, h.p, h.n);
     write_all(fd, body, n);
+    free(h.p);
+}
+
+static void respond_sb(int fd, int status, const char *ctype, sb *b) {
+    respond(fd, status, status == 200 ? "OK" : status == 201 ? "Created" : status == 204 ? "No Content" : "Bad Request", ctype,
+            NULL, b->p ? b->p : "", b->n);
+    free(b->p);
 }
 
 static void s3_error(int fd, int status, const char *reason, const char *code, const char *message) {
-    char b[512];
-    int n = snprintf(b, sizeof b,
-                     "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Error><Code>%s</Code><Message>%s</Message>"
-                     "<RequestId>FAKE0000</RequestId></Error>",
-                     code, message);
-    respond(fd, status, reason, "application/xml", NULL, b, (size_t)n);
+    sb b = { 0 };
+    sb_add(&b, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Error><Code>%s</Code><Message>%s</Message>"
+               "<RequestId>FAKE0000</RequestId></Error>",
+           code, message);
+    respond(fd, status, reason, "application/xml", NULL, b.p, b.n);
+    free(b.p);
 }
 
-static object *find(const char *path) {
-    for (int i = 0; i < g_nobj; i++)
-        if (strcmp(g_obj[i].path, path) == 0) return &g_obj[i];
+// %XX and (in a form) '+' decoded, from s[0..n), into a new string.
+static char *urldec(const char *s, size_t n, bool form) {
+    char *o = malloc(n + 1);
+    if (!o) die("out of memory");
+    size_t k = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (s[i] == '%' && i + 2 < n) {
+            char h[3] = { s[i + 1], s[i + 2], 0 };
+            o[k++] = (char)strtol(h, NULL, 16);
+            i += 2;
+        } else if (s[i] == '+' && form) o[k++] = ' ';
+        else o[k++] = s[i];
+    }
+    o[k] = 0;
+    return o;
+}
+
+// The value of NAME in a form (a=1&b=2), decoded, or NULL. The caller frees it.
+static char *form_get(const char *form, const char *name) {
+    size_t nl = strlen(name);
+    for (const char *p = form; p && *p;) {
+        const char *amp = strchr(p, '&');
+        size_t len = amp ? (size_t)(amp - p) : strlen(p);
+        if (len > nl && memcmp(p, name, nl) == 0 && p[nl] == '=') return urldec(p + nl + 1, len - nl - 1, true);
+        p = amp ? amp + 1 : NULL;
+    }
     return NULL;
 }
 
-static bool bucket_known(const char *path) {
+// A JSON string member "name": "value" of a request body (the recorded fake's plain reading), or "".
+static void json_str(const char *body, const char *name, char *out, size_t cap) {
+    out[0] = 0;
+    sb key = { 0 };
+    sb_add(&key, "\"%s\"", name);
+    const char *p = strstr(body, key.p);
+    if (p) p += key.n;
+    while (p && (*p == ' ' || *p == ':')) p++;
+    if (p && *p == '"') {
+        p++;
+        const char *e = strchr(p, '"');
+        if (e && (size_t)(e - p) < cap) {
+            memcpy(out, p, (size_t)(e - p));
+            out[e - p] = 0;
+        }
+    }
+    free(key.p);
+}
+
+// ---- S3 ------------------------------------------------------------------------------------------
+
+static object *find(const char *path) {
+    for (int i = 0; i < g_nobj; i++)
+        if (g_obj[i].path[0] && strcmp(g_obj[i].path, path) == 0) return &g_obj[i];
+    return NULL;
+}
+
+// The bucket of a path, or -1.
+static int bucket_of(const char *path) {
     const char *b = path + 1, *slash = strchr(b, '/');
     size_t n = slash ? (size_t)(slash - b) : strlen(b);
     for (int i = 0; i < g_nbuckets; i++)
-        if (strlen(g_buckets[i]) == n && memcmp(g_buckets[i], b, n) == 0) return true;
-    return false;
+        if (strlen(g_buckets[i]) == n && memcmp(g_buckets[i], b, n) == 0) return i;
+    return -1;
 }
+static bool bucket_known(const char *path) { return bucket_of(path) >= 0; }
 
 static void etag_of(const object *o, char *out, size_t cap) { snprintf(out, cap, "\"v%u-%zu\"", o->version, o->len); }
 
-static void s3_get(int fd, const request *r) {
+static void s3_get(int fd, const request *r, bool head) {
     pthread_mutex_lock(&g_mu);
     int status;
-    char etag[64] = "", *body = NULL;
+    char etag[64] = "", *body = NULL, ctype[128] = "text/plain", cache[128] = "";
     size_t n = 0;
     object *o = find(r->path);
     if (!bucket_known(r->path)) status = 4041;
@@ -316,9 +468,11 @@ static void s3_get(int fd, const request *r) {
         if (!body) die("out of memory");
         memcpy(body, o->body, o->len);
         n = o->len;
+        if (o->ctype[0]) copy(ctype, sizeof ctype, o->ctype);
+        copy(cache, sizeof cache, o->cache);
     }
     // The gather: the answer is fixed now, and written once every gathered reader has its own.
-    if (g_gather_want > 0) {
+    if (g_gather_want > 0 && !head) {
         unsigned round = g_gather_round;
         g_gather_seen++;
         if (g_gather_seen >= g_gather_want) {
@@ -331,7 +485,7 @@ static void s3_get(int fd, const request *r) {
             until.tv_sec += 20;
             while (g_gather_round == round)
                 if (pthread_cond_timedwait(&g_cv, &g_mu, &until) == ETIMEDOUT) {
-                    fprintf(g_log, "GATHER timed out\n");
+                    logf_("GATHER timed out");
                     g_gather_want = g_gather_seen = 0;
                     g_gather_round++;
                     break;
@@ -339,17 +493,26 @@ static void s3_get(int fd, const request *r) {
         }
     }
     pthread_mutex_unlock(&g_mu);
+    const char *m = head ? "HEAD" : "GET";
     if (status == 4041) {
-        logf_("GET %s 404 NoSuchBucket", r->path);
+        logf_("%s %s 404 NoSuchBucket", m, r->path);
         s3_error(fd, 404, "Not Found", "NoSuchBucket", "The specified bucket does not exist");
     } else if (status == 404) {
-        logf_("GET %s 404", r->path);
+        logf_("%s %s 404", m, r->path);
         s3_error(fd, 404, "Not Found", "NoSuchKey", "The specified key does not exist.");
     } else {
-        logf_("GET %s 200", r->path);
-        char extra[256];
-        snprintf(extra, sizeof extra, "ETag: %s\r\nLast-Modified: Mon, 09 Nov 2026 12:00:00 GMT\r\nAccept-Ranges: bytes\r\n", etag);
-        respond(fd, 200, "OK", "text/plain", extra, body, n);
+        logf_("%s %s 200", m, r->path);
+        sb extra = { 0 };
+        sb_add(&extra, "ETag: %s\r\nLast-Modified: Mon, 09 Nov 2026 12:00:00 GMT\r\nAccept-Ranges: bytes\r\n", etag);
+        if (cache[0]) sb_add(&extra, "Cache-Control: %s\r\n", cache);
+        if (head) {
+            sb h = { 0 };
+            sb_add(&h, "HTTP/1.1 200 OK\r\nx-amz-request-id: FAKE0000\r\nContent-Type: %s\r\nContent-Length: %zu\r\n%s\r\n", ctype, n,
+                   extra.p);
+            write_all(fd, h.p, h.n);
+            free(h.p);
+        } else respond(fd, 200, "OK", ctype, extra.p, body, n);
+        free(extra.p);
     }
     free(body);
 }
@@ -357,6 +520,7 @@ static void s3_get(int fd, const request *r) {
 static void s3_put(int fd, const request *r) {
     const char *im = header(r, "If-Match"), *inm = header(r, "If-None-Match");
     const char *cond = im ? "if-match" : inm ? "if-none-match" : "unconditional";
+    const char *ct = header(r, "Content-Type"), *cc = header(r, "Cache-Control");
     pthread_mutex_lock(&g_mu);
     object *o = find(r->path);
     int status = 200;
@@ -367,8 +531,12 @@ static void s3_put(int fd, const request *r) {
     else if (inm && strcmp(inm, "*") == 0 && o) status = 412;
     else {
         if (!o) {
-            if (g_nobj == MAX_OBJ) die("too many objects");
-            o = &g_obj[g_nobj++];
+            for (int i = 0; i < g_nobj && !o; i++)
+                if (!g_obj[i].path[0]) o = &g_obj[i];   // a deleted object's slot
+            if (!o) {
+                if (g_nobj == MAX_OBJ) die("too many objects");
+                o = &g_obj[g_nobj++];
+            }
             if (!copy(o->path, sizeof o->path, r->path)) die("a key too long for the recording");
         }
         free(o->body);
@@ -377,21 +545,87 @@ static void s3_put(int fd, const request *r) {
         memcpy(o->body, r->body, r->len);
         o->len = r->len;
         o->version = ++g_version;
+        if (!copy(o->ctype, sizeof o->ctype, ct ? ct : "")) o->ctype[0] = 0;
+        if (!copy(o->cache, sizeof o->cache, cc ? cc : "")) o->cache[0] = 0;
         etag_of(o, etag, sizeof etag);
     }
     pthread_mutex_unlock(&g_mu);
-    logf_("PUT %s %d %s", r->path, status == 4041 ? 404 : status, cond);
+    logf_("PUT %s %d %s ct=%s cc=%s", r->path, status == 4041 ? 404 : status, cond, ct ? ct : "-", cc ? cc : "-");
     if (status == 4041) s3_error(fd, 404, "Not Found", "NoSuchBucket", "The specified bucket does not exist");
     else if (status == 404) s3_error(fd, 404, "Not Found", "NoSuchKey", "The specified key does not exist.");
     else if (status == 412)
         s3_error(fd, 412, "Precondition Failed", "PreconditionFailed",
                  "At least one of the pre-conditions you specified did not hold");
     else {
-        char extra[128];
-        snprintf(extra, sizeof extra, "ETag: %s\r\n", etag);
-        respond(fd, 200, "OK", "text/plain", extra, "", 0);
+        sb extra = { 0 };
+        sb_add(&extra, "ETag: %s\r\n", etag);
+        respond(fd, 200, "OK", "text/plain", extra.p, "", 0);
+        free(extra.p);
     }
 }
+
+static void s3_delete(int fd, const request *r) {
+    pthread_mutex_lock(&g_mu);
+    object *o = find(r->path);
+    if (o) {
+        free(o->body);
+        o->body = NULL;
+        o->path[0] = 0;
+    }
+    pthread_mutex_unlock(&g_mu);
+    logf_("DELETE %s 204", r->path);
+    respond(fd, 204, "No Content", "text/plain", NULL, "", 0);
+}
+
+// GET /bucket?location and GET /bucket?list-type=2&prefix=P (one page: no recording holds more).
+static void s3_bucket(int fd, const request *r) {
+    int bi = bucket_of(r->path);
+    if (bi < 0) {
+        logf_("GET %s?%s 404 NoSuchBucket", r->path, r->query);
+        s3_error(fd, 404, "Not Found", "NoSuchBucket", "The specified bucket does not exist");
+        return;
+    }
+    sb b = { 0 };
+    sb_add(&b, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+    if (strstr(r->query, "location")) {
+        const char *region = g_bucket_region[bi];
+        sb_add(&b, "<LocationConstraint xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">%s</LocationConstraint>",
+               strcmp(region, "us-east-1") == 0 ? "" : region);
+        logf_("GET %s?location 200", r->path);
+        respond_sb(fd, 200, "application/xml", &b);
+        return;
+    }
+    char *prefix = form_get(r->query, "prefix");
+    sb_add(&b, "<ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><Name>%s</Name><Prefix>",
+           g_buckets[bi]);
+    sb_xml(&b, prefix ? prefix : "");
+    sb_add(&b, "</Prefix><MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated>");
+    int count = 0;
+    pthread_mutex_lock(&g_mu);
+    size_t bl = strlen(g_buckets[bi]);
+    for (int i = 0; i < g_nobj; i++) {
+        const char *p = g_obj[i].path;
+        if (!p[0] || strncmp(p + 1, g_buckets[bi], bl) != 0 || p[1 + bl] != '/') continue;
+        const char *key = p + 2 + bl;
+        // --list-ignores-prefix: a listing that answers every key, so the tool's own guard is tested.
+        if (!g_list_ignores_prefix && prefix && strncmp(key, prefix, strlen(prefix)) != 0) continue;
+        char etag[64];
+        etag_of(&g_obj[i], etag, sizeof etag);
+        sb_add(&b, "<Contents><Key>");
+        sb_xml(&b, key);
+        sb_add(&b, "</Key><LastModified>2026-11-09T12:00:00.000Z</LastModified><ETag>&quot;%.*s&quot;</ETag><Size>%zu</Size>"
+                   "<StorageClass>STANDARD</StorageClass></Contents>",
+               (int)strlen(etag) - 2, etag + 1, g_obj[i].len);
+        count++;
+    }
+    pthread_mutex_unlock(&g_mu);
+    sb_add(&b, "<KeyCount>%d</KeyCount></ListBucketResult>", count);
+    logf_("GET %s LIST prefix=%s 200 %d", r->path, prefix ? prefix : "", count);
+    free(prefix);
+    respond_sb(fd, 200, "application/xml", &b);
+}
+
+// ---- STS, Tagging --------------------------------------------------------------------------------
 
 static void sts(int fd, const request *r) {
     if (!strstr(r->body, "Action=GetCallerIdentity")) {
@@ -399,20 +633,20 @@ static void sts(int fd, const request *r) {
         respond(fd, 400, "Bad Request", "text/xml", NULL, "", 0);
         return;
     }
-    char b[1024];
-    int n = snprintf(b, sizeof b,
-                     "<GetCallerIdentityResponse xmlns=\"https://sts.amazonaws.com/doc/2011-06-15/\">\n"
-                     "  <GetCallerIdentityResult>\n"
-                     "    <Arn>arn:aws:iam::%s:user/cbase-test</Arn>\n"
-                     "    <UserId>AIDACBASETESTUSER</UserId>\n"
-                     "    <Account>%s</Account>\n"
-                     "  </GetCallerIdentityResult>\n"
-                     "  <ResponseMetadata>\n    <RequestId>01234567-89ab-cdef-0123-456789abcdef</RequestId>\n"
-                     "  </ResponseMetadata>\n"
-                     "</GetCallerIdentityResponse>\n",
-                     g_account, g_account);
+    sb b = { 0 };
+    sb_add(&b,
+           "<GetCallerIdentityResponse xmlns=\"https://sts.amazonaws.com/doc/2011-06-15/\">\n"
+           "  <GetCallerIdentityResult>\n"
+           "    <Arn>arn:aws:iam::%s:user/cbase-test</Arn>\n"
+           "    <UserId>AIDACBASETESTUSER</UserId>\n"
+           "    <Account>%s</Account>\n"
+           "  </GetCallerIdentityResult>\n"
+           "  <ResponseMetadata>\n    <RequestId>01234567-89ab-cdef-0123-456789abcdef</RequestId>\n"
+           "  </ResponseMetadata>\n"
+           "</GetCallerIdentityResponse>\n",
+           g_account, g_account);
     logf_("POST STS GetCallerIdentity 200");
-    respond(fd, 200, "OK", "text/xml", NULL, b, (size_t)n);
+    respond_sb(fd, 200, "text/xml", &b);
 }
 
 // The request's filters, read the plain way a recorded fake may: the body with its blanks dropped
@@ -423,8 +657,8 @@ static void tagging(int fd, const request *r) {
     for (size_t i = 0; i < r->len && k + 1 < sizeof flat; i++)
         if (r->body[i] != ' ' && r->body[i] != '\n') flat[k++] = r->body[i];
     flat[k] = 0;
-    char out[8192];
-    size_t n = (size_t)snprintf(out, sizeof out, "{\"PaginationToken\":\"\",\"ResourceTagMappingList\":[");
+    sb out = { 0 };
+    sb_add(&out, "{\"PaginationToken\":\"\",\"ResourceTagMappingList\":[");
     int hits = 0;
     for (int i = 0; i < g_nres; i++) {
         char want_tag[1024], want_type[1024];
@@ -432,17 +666,558 @@ static void tagging(int fd, const request *r) {
         const char *type[] = { "\"ResourceTypeFilters\":[\"", g_res[i].type, "\"]" };
         if (!join(want_tag, sizeof want_tag, tag, 5) || !join(want_type, sizeof want_type, type, 3)) continue;
         if (!strstr(flat, want_tag) || !strstr(flat, want_type)) continue;
-        const char *item[] = { hits++ ? "," : "", "{\"ResourceARN\":\"", g_res[i].arn, "\",\"Tags\":[{\"Key\":\"",
-                               g_res[i].key, "\",\"Value\":\"", g_res[i].value, "\"}]}" };
-        if (!join(out + n, sizeof out - n, item, 8)) die("the answer outgrew its buffer");
-        n += strlen(out + n);
+        sb_add(&out, "%s{\"ResourceARN\":\"%s\",\"Tags\":[{\"Key\":\"%s\",\"Value\":\"%s\"}]}", hits++ ? "," : "", g_res[i].arn,
+               g_res[i].key, g_res[i].value);
     }
-    n += (size_t)snprintf(out + n, sizeof out - n, "]}");
+    sb_add(&out, "]}");
     logf_("POST Tagging GetResources 200 %d", hits);
-    respond(fd, 200, "OK", "application/x-amz-json-1.1", NULL, out, n);
+    respond_sb(fd, 200, "application/x-amz-json-1.1", &out);
 }
 
+// ---- CloudFormation (the Query protocol: a form in, XML out) -------------------------------------
+
+#define CFN_NS "http://cloudformation.amazonaws.com/doc/2010-05-15/"
+
+static stack *stack_find(const char *name) {
+    for (int i = 0; i < g_nstacks; i++)
+        if (g_stacks[i].name[0] && strcmp(g_stacks[i].name, name) == 0) return &g_stacks[i];
+    return NULL;
+}
+
+static void cfn_error(int fd, int status, const char *code, const char *msg) {
+    sb b = { 0 };
+    sb_add(&b, "<ErrorResponse xmlns=\"" CFN_NS "\"><Error><Type>Sender</Type><Code>%s</Code><Message>", code);
+    sb_xml(&b, msg);
+    sb_add(&b, "</Message></Error><RequestId>FAKE0000</RequestId></ErrorResponse>");
+    respond_sb(fd, status, "text/xml", &b);
+}
+
+static void cfn_open(sb *b, const char *action) {
+    sb_add(b, "<%sResponse xmlns=\"" CFN_NS "\"><%sResult>", action, action);
+}
+static void cfn_close(sb *b, const char *action) {
+    sb_add(b, "</%sResult><ResponseMetadata><RequestId>FAKE0000</RequestId></ResponseMetadata></%sResponse>", action, action);
+}
+
+// One ResourceChange member.
+static void cfn_change(sb *b, const char *action, const char *lid, const char *type, const char *repl, const char *details) {
+    sb_add(b, "<member><Type>Resource</Type><ResourceChange><Action>%s</Action><LogicalResourceId>%s</LogicalResourceId>"
+              "<ResourceType>%s</ResourceType>",
+           action, lid, type);
+    if (repl) sb_add(b, "<Replacement>%s</Replacement><Scope><member>Properties</member></Scope>", repl);
+    sb_add(b, "<Details>%s</Details></ResourceChange></member>", details ? details : "");
+}
+
+// A change set's Details member: a Target with its path and values.
+static void cfn_detail(sb *b, const char *path, const char *before, const char *after, const char *source, const char *cause) {
+    sb_add(b, "<member><Target><Attribute>Properties</Attribute><Name>DistributionConfig</Name>"
+              "<RequiresRecreation>Never</RequiresRecreation><Path>");
+    sb_xml(b, path);
+    sb_add(b, "</Path><BeforeValue>");
+    sb_xml(b, before);
+    sb_add(b, "</BeforeValue><AfterValue>");
+    sb_xml(b, after);
+    sb_add(b, "</AfterValue><AttributeChangeType>Modify</AttributeChangeType></Target><Evaluation>Static</Evaluation>"
+              "<ChangeSource>%s</ChangeSource>",
+           source);
+    if (cause) sb_add(b, "<CausingEntity>%s</CausingEntity>", cause);
+    sb_add(b, "</member>");
+}
+
+// The changes of a stack's pending change set, as CloudFormation would compute them here: a create
+// adds every resource of the template; an update is what --changes scripts, or, unscripted, a
+// Modify of the distribution when the template changed and nothing when it did not.
+static int cfn_changes(const stack *st, sb *b) {
+    int n = 0;
+    if (strcmp(st->cs_type, "CREATE") == 0) {
+        const char *t = st->cs_template, *res = strstr(t, "\nResources:\n");
+        for (const char *p = res; p && *p;) {
+            const char *nl = strchr(p + 1, '\n');
+            if (!nl) break;
+            p = nl;
+            // "  Name:\n    Type: X"
+            if (p[1] == ' ' && p[2] == ' ' && p[3] != ' ' && p[3] != '#') {
+                const char *colon = strchr(p + 3, ':'), *eol = strchr(p + 3, '\n');
+                if (!colon || !eol || colon > eol || colon[1] != '\n') continue;
+                const char *ty = strstr(eol, "\n    Type: ");
+                if (!ty) continue;
+                const char *te = strchr(ty + 11, '\n');
+                char lid[128], type[128];
+                snprintf(lid, sizeof lid, "%.*s", (int)(colon - p - 3), p + 3);
+                snprintf(type, sizeof type, "%.*s", te ? (int)(te - ty - 11) : 0, ty + 11);
+                cfn_change(b, "Add", lid, type, NULL, NULL);
+                n++;
+            } else if (p[1] && p[1] != ' ' && p[1] != '\n' && p[1] != '#' && p != res) break;   // the next section
+        }
+        return n;
+    }
+    sb d = { 0 };
+    cfn_detail(&d, "/Properties/DistributionConfig/Comment", "cbase app before", "cbase app after", "DirectModification", NULL);
+    if (g_secret[0]) {
+        // The planted secret: where a real change set would carry an origin header's value, and
+        // a parameter's.
+        cfn_detail(&d, "/Properties/DistributionConfig/Origins/1/OriginCustomHeaders/0/HeaderValue", g_secret, g_secret2,
+                   "DirectModification", NULL);
+        cfn_detail(&d, "/Properties/DistributionConfig/Origins/1", "{\"OriginCustomHeaders\":[]}", g_secret,
+                   "ParameterReference", "OriginSecret");
+    }
+    if (strcmp(g_changes, "replace-bucket") == 0) {
+        cfn_change(b, "Modify", "Bucket", "AWS::S3::Bucket", "True", NULL);
+        cfn_change(b, "Modify", "Distribution", "AWS::CloudFront::Distribution", "False", d.p);
+        n = 2;
+    } else if (strcmp(g_changes, "remove-bucket") == 0) {
+        cfn_change(b, "Remove", "Bucket", "AWS::S3::Bucket", NULL, NULL);
+        n = 1;
+    } else if (strcmp(g_changes, "replace-distribution") == 0) {
+        cfn_change(b, "Modify", "Distribution", "AWS::CloudFront::Distribution", "True", d.p);
+        n = 1;
+    } else if (strcmp(g_changes, "none") != 0 && (g_secret[0] || !st->template || strcmp(st->template, st->cs_template) != 0)) {
+        cfn_change(b, "Modify", "Distribution", "AWS::CloudFront::Distribution", "False", d.p);
+        n = 1;
+    }
+    free(d.p);
+    return n;
+}
+
+static void cfn_stack_drifts(sb *b, const stack *st) {
+    sb_add(b, "<StackResourceDrifts>");
+    if (g_drift) {
+        sb_add(b, "<member><StackId>%s</StackId><LogicalResourceId>Distribution</LogicalResourceId>"
+                  "<PhysicalResourceId>%s</PhysicalResourceId><ResourceType>AWS::CloudFront::Distribution</ResourceType>"
+                  "<ExpectedProperties>",
+               st->id, st->dist_id);
+        sb_xml(b, "{\"DistributionConfig\":{\"Comment\":\"cbase app\",\"Origins\":[{\"OriginCustomHeaders\":[{\"HeaderName\":\"X-Origin-Secret\",\"HeaderValue\":\"");
+        sb_xml(b, g_secret);
+        sb_xml(b, "\"}]}]}}");
+        sb_add(b, "</ExpectedProperties><ActualProperties>");
+        sb_xml(b, "{\"DistributionConfig\":{\"Comment\":\"edited by hand\"}}");
+        sb_add(b, "</ActualProperties><PropertyDifferences>"
+                  "<member><PropertyPath>/DistributionConfig/Comment</PropertyPath><ExpectedValue>cbase app</ExpectedValue>"
+                  "<ActualValue>edited by hand</ActualValue><DifferenceType>NOT_EQUAL</DifferenceType></member>");
+        if (g_secret[0]) {
+            sb_add(b, "<member><PropertyPath>/DistributionConfig/Origins/0/OriginCustomHeaders/0/HeaderValue</PropertyPath>"
+                      "<ExpectedValue>");
+            sb_xml(b, g_secret);
+            sb_add(b, "</ExpectedValue><ActualValue>");
+            sb_xml(b, g_secret2);
+            sb_add(b, "</ActualValue><DifferenceType>NOT_EQUAL</DifferenceType></member>"
+                      "<member><PropertyPath>/DistributionConfig/Origins/0</PropertyPath><ExpectedValue>");
+            sb_xml(b, "{\"OriginCustomHeaders\":[{\"HeaderName\":\"X-Origin-Secret\",\"HeaderValue\":\"");
+            sb_xml(b, g_secret);
+            sb_xml(b, "\"}]}");
+            sb_add(b, "</ExpectedValue><ActualValue>{}</ActualValue><DifferenceType>NOT_EQUAL</DifferenceType></member>");
+        }
+        sb_add(b, "</PropertyDifferences><StackResourceDriftStatus>MODIFIED</StackResourceDriftStatus>"
+                  "<Timestamp>2026-11-09T12:00:00Z</Timestamp></member>");
+    }
+    sb_add(b, "</StackResourceDrifts>");
+}
+
+static void cloudformation(int fd, const request *r) {
+    char *action = form_get(r->body, "Action"), *name = form_get(r->body, "StackName"),
+         *csname = form_get(r->body, "ChangeSetName");
+    const char *a = action ? action : "";
+    sb b = { 0 };
+    pthread_mutex_lock(&g_mu);
+    stack *st = name ? stack_find(name) : NULL;
+    int status = 200;
+    const char *ecode = NULL;
+    char emsg[1024] = "";
+    if (strcmp(a, "DescribeStacks") == 0) {
+        if (!st) {
+            status = 400, ecode = "ValidationError";
+            snprintf(emsg, sizeof emsg, "Stack with id %.200s does not exist", name ? name : "");
+        } else {
+            cfn_open(&b, a);
+            sb_add(&b, "<Stacks><member><StackName>%s</StackName><StackId>%s</StackId><CreationTime>2026-11-09T12:00:00Z</CreationTime>"
+                       "<StackStatus>%s</StackStatus><Parameters/>",
+                   st->name, st->id, st->status);
+            if (st->template)
+                sb_add(&b, "<Outputs><member><OutputKey>DistributionId</OutputKey><OutputValue>%s</OutputValue></member>"
+                           "<member><OutputKey>DistributionDomain</OutputKey><OutputValue>%s</OutputValue></member></Outputs>",
+                       st->dist_id, st->dist_domain);
+            sb_add(&b, "</member></Stacks>");
+            cfn_close(&b, a);
+        }
+        logf_("CFN DescribeStacks %s %s", name ? name : "-", st ? st->status : "none");
+    } else if (strcmp(a, "CreateChangeSet") == 0) {
+        char *type = form_get(r->body, "ChangeSetType"), *tpl = form_get(r->body, "TemplateBody");
+        if (!st && type && strcmp(type, "CREATE") == 0) {
+            if (g_nstacks == MAX_STACKS) die("too many stacks");
+            st = &g_stacks[g_nstacks++];
+            memset(st, 0, sizeof *st);
+            copy(st->name, sizeof st->name, name ? name : "");
+            snprintf(st->id, sizeof st->id, "arn:aws:cloudformation:us-east-1:%s:stack/%.100s/%d", g_account, name ? name : "", g_nstacks);
+            snprintf(st->dist_id, sizeof st->dist_id, "E%dFAKEDIST", g_nstacks);
+            snprintf(st->dist_domain, sizeof st->dist_domain, "d%dfake.cloudfront.net", g_nstacks);
+            copy(st->status, sizeof st->status, "REVIEW_IN_PROGRESS");
+        }
+        if (!st) {
+            status = 400, ecode = "ValidationError";
+            snprintf(emsg, sizeof emsg, "Stack [%.200s] does not exist", name ? name : "");
+        } else if (st->has_cs) {
+            status = 400, ecode = "AlreadyExistsException";
+            snprintf(emsg, sizeof emsg, "ChangeSet %.200s already exists", csname ? csname : "");
+        } else {
+            st->has_cs = true;
+            copy(st->cs_name, sizeof st->cs_name, csname ? csname : "");
+            copy(st->cs_type, sizeof st->cs_type, type ? type : "");
+            free(st->cs_template);
+            st->cs_template = tpl ? tpl : calloc(1, 1);
+            tpl = NULL;
+            cfn_open(&b, a);
+            sb_add(&b, "<Id>arn:aws:cloudformation:us-east-1:%s:changeSet/%s/1</Id><StackId>%s</StackId>", g_account, st->cs_name, st->id);
+            cfn_close(&b, a);
+        }
+        logf_("CFN CreateChangeSet %s %s %s", name ? name : "-", type ? type : "-", ecode ? ecode : "ok");
+        free(type);
+        free(tpl);
+    } else if (strcmp(a, "DescribeChangeSet") == 0) {
+        if (!st || !st->has_cs) {
+            status = 404, ecode = "ChangeSetNotFound";
+            snprintf(emsg, sizeof emsg, "ChangeSet [%.200s] does not exist", csname ? csname : "");
+        } else {
+            sb ch = { 0 };
+            int n = cfn_changes(st, &ch);
+            cfn_open(&b, a);
+            sb_add(&b, "<ChangeSetName>%s</ChangeSetName><ChangeSetId>arn:aws:cloudformation:us-east-1:%s:changeSet/%s/1</ChangeSetId>"
+                       "<StackId>%s</StackId><StackName>%s</StackName>",
+                   st->cs_name, g_account, st->cs_name, st->id, st->name);
+            if (g_secret[0])
+                sb_add(&b, "<Parameters><member><ParameterKey>OriginSecret</ParameterKey><ParameterValue>%s</ParameterValue></member></Parameters>",
+                       g_secret);
+            if (n == 0)
+                sb_add(&b, "<Status>FAILED</Status><ExecutionStatus>UNAVAILABLE</ExecutionStatus><StatusReason>The submitted "
+                           "information didn't contain changes. Submit different information to create a change set.</StatusReason>");
+            else sb_add(&b, "<Status>CREATE_COMPLETE</Status><ExecutionStatus>AVAILABLE</ExecutionStatus>");
+            sb_add(&b, "<Changes>%s</Changes>", ch.p ? ch.p : "");
+            cfn_close(&b, a);
+            free(ch.p);
+        }
+        logf_("CFN DescribeChangeSet %s %s", name ? name : "-", ecode ? ecode : "ok");
+    } else if (strcmp(a, "DeleteChangeSet") == 0) {
+        if (!st || !st->has_cs) status = 404, ecode = "ChangeSetNotFound", copy(emsg, sizeof emsg, "ChangeSet does not exist");
+        else {
+            st->has_cs = false;
+            cfn_open(&b, a);
+            cfn_close(&b, a);
+        }
+        logf_("CFN DeleteChangeSet %s %s", name ? name : "-", ecode ? ecode : "ok");
+    } else if (strcmp(a, "ExecuteChangeSet") == 0) {
+        if (!st || !st->has_cs) status = 404, ecode = "ChangeSetNotFound", copy(emsg, sizeof emsg, "ChangeSet does not exist");
+        else if (g_fail_execute) {
+            status = 400, ecode = "ValidationError";
+            snprintf(emsg, sizeof emsg, "Invalid request: OriginCustomHeaders HeaderValue=%.200s is not valid", g_secret);
+        } else {
+            copy(st->status, sizeof st->status, strcmp(st->cs_type, "CREATE") == 0 ? "CREATE_COMPLETE" : "UPDATE_COMPLETE");
+            free(st->template);
+            st->template = st->cs_template;
+            st->cs_template = NULL;
+            st->has_cs = false;
+            cfn_open(&b, a);
+            cfn_close(&b, a);
+        }
+        logf_("CFN ExecuteChangeSet %s %s", name ? name : "-", ecode ? ecode : "ok");
+    } else if (strcmp(a, "DeleteStack") == 0) {
+        if (st) {
+            free(st->template);
+            free(st->cs_template);
+            memset(st, 0, sizeof *st);
+        }
+        cfn_open(&b, a);
+        cfn_close(&b, a);
+        logf_("CFN DeleteStack %s", name ? name : "-");
+    } else if (strcmp(a, "DetectStackDrift") == 0) {
+        cfn_open(&b, a);
+        sb_add(&b, "<StackDriftDetectionId>drift-%s</StackDriftDetectionId>", st ? st->dist_id : "none");
+        cfn_close(&b, a);
+        logf_("CFN DetectStackDrift %s", name ? name : "-");
+    } else if (strcmp(a, "DescribeStackDriftDetectionStatus") == 0) {
+        cfn_open(&b, a);
+        sb_add(&b, "<StackId>arn:stack</StackId><StackDriftDetectionId>drift</StackDriftDetectionId><StackDriftStatus>%s</StackDriftStatus>"
+                   "<DetectionStatus>DETECTION_COMPLETE</DetectionStatus><DriftedStackResourceCount>%d</DriftedStackResourceCount>"
+                   "<Timestamp>2026-11-09T12:00:00Z</Timestamp>",
+               g_drift ? "DRIFTED" : "IN_SYNC", g_drift ? 1 : 0);
+        cfn_close(&b, a);
+        logf_("CFN DescribeStackDriftDetectionStatus %s", g_drift ? "DRIFTED" : "IN_SYNC");
+    } else if (strcmp(a, "DescribeStackResourceDrifts") == 0) {
+        if (!st) status = 400, ecode = "ValidationError", copy(emsg, sizeof emsg, "Stack does not exist");
+        else {
+            cfn_open(&b, a);
+            cfn_stack_drifts(&b, st);
+            cfn_close(&b, a);
+        }
+        logf_("CFN DescribeStackResourceDrifts %s", name ? name : "-");
+    } else if (strcmp(a, "DescribeStackEvents") == 0) {
+        cfn_open(&b, a);
+        sb_add(&b, "<StackEvents/>");
+        cfn_close(&b, a);
+    } else {
+        status = 400, ecode = "InvalidAction";
+        snprintf(emsg, sizeof emsg, "not in the recording: %.100s", a);
+        logf_("CFN %s 400", a);
+    }
+    pthread_mutex_unlock(&g_mu);
+    if (ecode) {
+        free(b.p);
+        cfn_error(fd, status, ecode, emsg);
+    } else respond_sb(fd, 200, "text/xml", &b);
+    free(action);
+    free(name);
+    free(csname);
+}
+
+// ---- ACM (JSON 1.1) ------------------------------------------------------------------------------
+
+static cert *cert_find(const char *arn) {
+    for (int i = 0; i < g_ncerts; i++)
+        if (strcmp(g_certs[i].arn, arn) == 0) return &g_certs[i];
+    return NULL;
+}
+
+// A certificate is issued once every one of its validation records is in a zone.
+static void cert_check_issued(cert *c) {
+    if (strcmp(c->status, "PENDING_VALIDATION") != 0) return;
+    for (int i = 0; i < c->nnames; i++)
+        if (!c->written[i]) return;
+    copy(c->status, sizeof c->status, "ISSUED");
+    logf_("ACM issued %s", c->arn);
+}
+
+static void cert_add(const char *arn, const char *status, const char *names) {
+    if (g_ncerts == MAX_CERTS) die("too many certificates");
+    cert *c = &g_certs[g_ncerts++];
+    memset(c, 0, sizeof *c);
+    if (!copy(c->arn, sizeof c->arn, arn) || !copy(c->status, sizeof c->status, status)) die("a certificate too long");
+    char tmp[1024];
+    if (!copy(tmp, sizeof tmp, names)) die("names too long");
+    for (char *save = NULL, *t = strtok_r(tmp, ",", &save); t && c->nnames < 8; t = strtok_r(NULL, ",", &save))
+        if (!copy(c->names[c->nnames++], sizeof c->names[0], t)) die("a name too long");
+}
+
+static void acm(int fd, const request *r, const char *op) {
+    sb b = { 0 };
+    int status = 200;
+    char arn[256];
+    pthread_mutex_lock(&g_mu);
+    if (strcmp(op, "ListCertificates") == 0) {
+        sb_add(&b, "{\"CertificateSummaryList\":[");
+        int k = 0;
+        for (int i = 0; i < g_ncerts; i++) {
+            sb q = { 0 };
+            sb_add(&q, "\"%s\"", g_certs[i].status);
+            if (strstr(r->body, q.p))
+                sb_add(&b, "%s{\"CertificateArn\":\"%s\",\"DomainName\":\"%s\",\"Status\":\"%s\"}", k++ ? "," : "", g_certs[i].arn,
+                       g_certs[i].names[0], g_certs[i].status);
+            free(q.p);
+        }
+        sb_add(&b, "]}");
+        logf_("ACM ListCertificates %d", k);
+    } else if (strcmp(op, "DescribeCertificate") == 0) {
+        json_str(r->body, "CertificateArn", arn, sizeof arn);
+        cert *c = cert_find(arn);
+        if (g_acm_deny) {
+            status = 400;
+            sb_add(&b, "{\"__type\":\"AccessDeniedException\",\"message\":\"User is not authorized to perform: acm:DescribeCertificate\"}");
+        } else if (!c) {
+            status = 400;
+            sb_add(&b, "{\"__type\":\"ResourceNotFoundException\",\"message\":\"Could not find certificate %s.\"}", arn);
+        } else {
+            sb_add(&b, "{\"Certificate\":{\"CertificateArn\":\"%s\",\"DomainName\":\"%s\",\"Status\":\"%s\",\"Type\":\"AMAZON_ISSUED\","
+                       "\"SubjectAlternativeNames\":[",
+                   c->arn, c->names[0], c->status);
+            for (int i = 0; i < c->nnames; i++) sb_add(&b, "%s\"%s\"", i ? "," : "", c->names[i]);
+            sb_add(&b, "],\"DomainValidationOptions\":[");
+            for (int i = 0; i < c->nnames; i++)
+                sb_add(&b, "%s{\"DomainName\":\"%s\",\"ValidationDomain\":\"%s\",\"ValidationStatus\":\"%s\",\"ValidationMethod\":\"DNS\","
+                           "\"ResourceRecord\":{\"Name\":\"_v%d%d.%s.\",\"Type\":\"CNAME\",\"Value\":\"_a%d%d.acm-validations.aws.\"}}",
+                       i ? "," : "", c->names[i], c->names[i], strcmp(c->status, "ISSUED") == 0 ? "SUCCESS" : "PENDING_VALIDATION",
+                       (int)(c - g_certs), i, c->names[i], (int)(c - g_certs), i);
+            sb_add(&b, "]}}");
+        }
+        logf_("ACM DescribeCertificate %s %d", arn, status);
+    } else if (strcmp(op, "RequestCertificate") == 0) {
+        char domain[256], names[1024];
+        json_str(r->body, "DomainName", domain, sizeof domain);
+        copy(names, sizeof names, domain);
+        const char *sans = strstr(r->body, "\"SubjectAlternativeNames\"");
+        if (sans) {
+            const char *p = strchr(sans + 25, '['), *end = p ? strchr(p, ']') : NULL;
+            while (end && (p = strchr(p, '"')) && p < end) {
+                const char *e = strchr(p + 1, '"');
+                if (!e) break;
+                char one[256];
+                snprintf(one, sizeof one, "%.*s", (int)(e - p - 1), p + 1);
+                if (strcmp(one, domain) != 0 && strlen(names) + strlen(one) + 2 < sizeof names) {
+                    strcat(names, ",");
+                    strcat(names, one);
+                }
+                p = e + 1;
+            }
+        }
+        snprintf(arn, sizeof arn, "arn:aws:acm:us-east-1:%s:certificate/00000000-0000-0000-0000-%012d", g_account, g_ncerts + 1);
+        cert_add(arn, "PENDING_VALIDATION", names);
+        sb_add(&b, "{\"CertificateArn\":\"%s\"}", arn);
+        logf_("ACM RequestCertificate %s", names);
+    } else {
+        status = 400;
+        sb_add(&b, "{\"__type\":\"InvalidAction\",\"message\":\"not in the recording\"}");
+        logf_("ACM %s 400", op);
+    }
+    pthread_mutex_unlock(&g_mu);
+    respond_sb(fd, status, "application/x-amz-json-1.1", &b);
+}
+
+// ---- Route 53, CloudFront (REST, XML) ------------------------------------------------------------
+
+#define R53_NS "https://route53.amazonaws.com/doc/2013-04-01/"
+
+// The text of the first <tag>...</tag> at or after p, into out; the position after it, or NULL.
+static const char *xml_text(const char *p, const char *tag, char *out, size_t cap) {
+    sb open = { 0 }, close = { 0 };
+    sb_add(&open, "<%s>", tag);
+    sb_add(&close, "</%s>", tag);
+    const char *s = p ? strstr(p, open.p) : NULL, *e = s ? strstr(s, close.p) : NULL, *after = NULL;
+    out[0] = 0;
+    if (s && e) {
+        s += open.n;
+        snprintf(out, cap, "%.*s", (int)(e - s), s);
+        after = e + close.n;
+    }
+    free(open.p);
+    free(close.p);
+    return after;
+}
+
+static void route53(int fd, const request *r) {
+    sb b = { 0 };
+    sb_add(&b, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+    if (strcmp(r->method, "GET") == 0 && strcmp(r->path, "/2013-04-01/hostedzonesbyname") == 0) {
+        char *dns = form_get(r->query, "dnsname");
+        char want[300];
+        snprintf(want, sizeof want, "%s.", dns ? dns : "");
+        sb_add(&b, "<ListHostedZonesByNameResponse xmlns=\"" R53_NS "\"><HostedZones>");
+        int k = 0;
+        // The zones from the name on: the exact ones first (the order AWS's answer starts with).
+        for (int pass = 0; pass < 2; pass++)
+            for (int i = 0; i < g_nzones; i++) {
+                bool exact = strcmp(g_zones[i].name, want) == 0;
+                if (exact != (pass == 0)) continue;
+                sb_add(&b, "<HostedZone><Id>/hostedzone/%s</Id><Name>%s</Name><CallerReference>fake</CallerReference>"
+                           "<Config><PrivateZone>%s</PrivateZone></Config><ResourceRecordSetCount>2</ResourceRecordSetCount></HostedZone>",
+                       g_zones[i].id, g_zones[i].name, g_zones[i].private_ ? "true" : "false");
+                k++;
+            }
+        sb_add(&b, "</HostedZones><DNSName>%s</DNSName><IsTruncated>false</IsTruncated><MaxItems>10</MaxItems>"
+                   "</ListHostedZonesByNameResponse>",
+               dns ? dns : "");
+        logf_("R53 ListHostedZonesByName %s %d", dns ? dns : "", k);
+        free(dns);
+        respond_sb(fd, 200, "text/xml", &b);
+    } else if (strcmp(r->method, "POST") == 0 && strncmp(r->path, "/2013-04-01/hostedzone/", 23) == 0 && strstr(r->path, "/rrset")) {
+        char zone[64];
+        snprintf(zone, sizeof zone, "%.*s", (int)(strstr(r->path, "/rrset") - r->path - 23), r->path + 23);
+        const char *p = r->body;
+        pthread_mutex_lock(&g_mu);
+        while (p && (p = strstr(p, "<Change>"))) {
+            char action[32], name[300], type[16], value[300], alias[300];
+            xml_text(p, "Action", action, sizeof action);
+            xml_text(p, "Name", name, sizeof name);
+            xml_text(p, "Type", type, sizeof type);
+            const char *end = strstr(p, "</Change>");
+            const char *v = xml_text(p, "Value", value, sizeof value);
+            if (!v || (end && v > end)) value[0] = 0;
+            const char *al = xml_text(p, "DNSName", alias, sizeof alias);
+            if (!al || (end && al > end)) alias[0] = 0;
+            logf_("R53 %s %s %s %s %s%s", action, zone, name, type, alias[0] ? "alias=" : "", alias[0] ? alias : value);
+            // A validation record written: the certificate it proves is issued once all are.
+            for (int c = 0; c < g_ncerts; c++)
+                for (int i = 0; i < g_certs[c].nnames; i++) {
+                    char rec[300];
+                    snprintf(rec, sizeof rec, "_v%d%d.%s.", c, i, g_certs[c].names[i]);
+                    if (strcmp(rec, name) == 0 || (strlen(name) + 1 == strlen(rec) && strncmp(rec, name, strlen(name)) == 0)) {
+                        g_certs[c].written[i] = true;
+                        cert_check_issued(&g_certs[c]);
+                    }
+                }
+            p = end;
+        }
+        pthread_mutex_unlock(&g_mu);
+        sb_add(&b, "<ChangeResourceRecordSetsResponse xmlns=\"" R53_NS "\"><ChangeInfo><Id>/change/C1FAKE</Id><Status>PENDING</Status>"
+                   "<SubmittedAt>2026-11-09T12:00:00Z</SubmittedAt></ChangeInfo></ChangeResourceRecordSetsResponse>");
+        respond_sb(fd, 200, "text/xml", &b);
+    } else if (strcmp(r->method, "GET") == 0 && strncmp(r->path, "/2013-04-01/change/", 19) == 0) {
+        sb_add(&b, "<GetChangeResponse xmlns=\"" R53_NS "\"><ChangeInfo><Id>/change/%s</Id><Status>INSYNC</Status>"
+                   "<SubmittedAt>2026-11-09T12:00:00Z</SubmittedAt></ChangeInfo></GetChangeResponse>",
+               r->path + 19);
+        logf_("R53 GetChange %s INSYNC", r->path + 19);
+        respond_sb(fd, 200, "text/xml", &b);
+    } else {
+        logf_("R53 %s %s 400", r->method, r->path);
+        free(b.p);
+        respond(fd, 400, "Bad Request", "text/xml", NULL, "", 0);
+    }
+}
+
+static void cloudfront(int fd, const request *r) {
+    sb b = { 0 };
+    sb_add(&b, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+    const char *inv = strstr(r->path, "/invalidation");
+    if (strncmp(r->path, "/2020-05-31/distribution/", 25) == 0 && inv) {
+        char dist[64], paths[512];
+        snprintf(dist, sizeof dist, "%.*s", (int)(inv - r->path - 25), r->path + 25);
+        if (strcmp(r->method, "POST") == 0) {
+            xml_text(r->body, "Items", paths, sizeof paths);
+            logf_("CF CreateInvalidation %s %s", dist, paths);
+            sb_add(&b, "<Invalidation xmlns=\"http://cloudfront.amazonaws.com/doc/2020-05-31/\"><Id>I1FAKE</Id><Status>InProgress</Status>"
+                       "<CreateTime>2026-11-09T12:00:00Z</CreateTime><InvalidationBatch><Paths><Quantity>1</Quantity><Items>%s</Items>"
+                       "</Paths><CallerReference>fake</CallerReference></InvalidationBatch></Invalidation>",
+                   paths);
+            respond_sb(fd, 201, "text/xml", &b);
+        } else {
+            logf_("CF GetInvalidation %s Completed", dist);
+            sb_add(&b, "<Invalidation xmlns=\"http://cloudfront.amazonaws.com/doc/2020-05-31/\"><Id>I1FAKE</Id><Status>Completed</Status>"
+                       "<CreateTime>2026-11-09T12:00:00Z</CreateTime><InvalidationBatch><Paths><Quantity>1</Quantity><Items><Path>/*</Path>"
+                       "</Items></Paths><CallerReference>fake</CallerReference></InvalidationBatch></Invalidation>");
+            respond_sb(fd, 200, "text/xml", &b);
+        }
+        return;
+    }
+    logf_("CF %s %s 400", r->method, r->path);
+    free(b.p);
+    respond(fd, 400, "Bad Request", "text/xml", NULL, "", 0);
+}
+
+// ---- control, and the dispatch -------------------------------------------------------------------
+
+// POST /_fake/gather?n=N, and POST /_fake/set?<knob>=<value> for the CloudFormation scripts.
 static void control(int fd, const request *r) {
+    if (strcmp(r->path, "/_fake/template") == 0) {   // GET /_fake/template?stack=NAME: the template it holds
+        char *name = form_get(r->query, "stack");
+        sb b = { 0 };
+        pthread_mutex_lock(&g_mu);
+        stack *st = name ? stack_find(name) : NULL;
+        sb_add(&b, "%s", st && st->template ? st->template : "(none)\n");
+        pthread_mutex_unlock(&g_mu);
+        free(name);
+        respond_sb(fd, 200, "text/plain", &b);
+        return;
+    }
+    if (strcmp(r->path, "/_fake/set") == 0) {
+        pthread_mutex_lock(&g_mu);
+        char *v;
+        if ((v = form_get(r->query, "changes"))) copy(g_changes, sizeof g_changes, v), free(v);
+        if ((v = form_get(r->query, "drift"))) g_drift = atoi(v), free(v);
+        if ((v = form_get(r->query, "secret"))) copy(g_secret, sizeof g_secret, v), free(v);
+        if ((v = form_get(r->query, "secret2"))) copy(g_secret2, sizeof g_secret2, v), free(v);
+        if ((v = form_get(r->query, "fail-execute"))) g_fail_execute = atoi(v), free(v);
+        if ((v = form_get(r->query, "list-ignores-prefix"))) g_list_ignores_prefix = atoi(v), free(v);
+        if ((v = form_get(r->query, "acm-deny"))) g_acm_deny = atoi(v), free(v);
+        pthread_mutex_unlock(&g_mu);
+        logf_("SET %s", r->query);
+        respond(fd, 200, "OK", "text/plain", NULL, "ok\n", 3);
+        return;
+    }
     int want = 0;
     if (sscanf(r->query, "n=%d", &want) != 1 || want < 1) {
         respond(fd, 400, "Bad Request", "text/plain", NULL, "n=", 2);
@@ -455,27 +1230,64 @@ static void control(int fd, const request *r) {
     respond(fd, 200, "OK", "text/plain", NULL, "ok\n", 3);
 }
 
-static void handle(int fd, const request *r) {
+// The service a request was signed for: the credential scope's fourth part
+// ("Credential=<key>/<date>/<region>/<service>/aws4_request").
+static void service_of(const char *auth, char *out, size_t cap) {
+    out[0] = 0;
+    const char *c = strstr(auth, "Credential=");
+    if (!c) return;
+    const char *p = c;
+    for (int i = 0; i < 3 && p; i++) p = strchr(p + 1, '/');
+    const char *e = p ? strchr(p + 1, '/') : NULL;
+    if (p && e && (size_t)(e - p - 1) < cap) snprintf(out, cap, "%.*s", (int)(e - p - 1), p + 1);
+}
+
+static void handle(int fd, request *r) {
     const char *target = header(r, "X-Amz-Target");
     const char *auth = header(r, "Authorization");
     if (strncmp(r->path, "/_fake/", 7) == 0) {
         control(fd, r);
-    } else if (!auth || !strstr(auth, "AWS4-HMAC-SHA256 Credential=AKIACBASEFAKE0000000/")) {
+        return;
+    }
+    if (!auth || !strstr(auth, "AWS4-HMAC-SHA256 Credential=AKIACBASEFAKE0000000/")) {
         // Signed with the test's dummy credentials, or refused: a call that found other credentials
         // (a developer's real ones) must never get an answer.
         logf_("%s %s 403 unsigned", r->method, r->path);
         s3_error(fd, 403, "Forbidden", "InvalidAccessKeyId", "The AWS Access Key Id you provided does not exist in our records.");
-    } else if (target && strcmp(target, "ResourceGroupsTaggingAPI_20170126.GetResources") == 0) {
+        return;
+    }
+    char service[32];
+    service_of(auth, service, sizeof service);
+    if (strcmp(service, "tagging") == 0 && target && strcmp(target, "ResourceGroupsTaggingAPI_20170126.GetResources") == 0) {
         tagging(fd, r);
-    } else if (strcmp(r->method, "POST") == 0 && strcmp(r->path, "/") == 0) {
+    } else if (strcmp(service, "sts") == 0) {
         sts(fd, r);
-    } else if (strcmp(r->method, "GET") == 0) {
-        s3_get(fd, r);
-    } else if (strcmp(r->method, "PUT") == 0) {
-        s3_put(fd, r);
+    } else if (strcmp(service, "cloudformation") == 0) {
+        cloudformation(fd, r);
+    } else if (strcmp(service, "acm") == 0 && target && strncmp(target, "CertificateManager.", 19) == 0) {
+        acm(fd, r, target + 19);
+    } else if (strcmp(service, "route53") == 0) {
+        route53(fd, r);
+    } else if (strcmp(service, "cloudfront") == 0) {
+        cloudfront(fd, r);
+    } else if (strcmp(service, "s3") == 0) {
+        // The key as stored: the path decoded.
+        char *dec = urldec(r->path, strlen(r->path), false);
+        copy(r->path, sizeof r->path, dec);
+        free(dec);
+        bool bucket_only = !strchr(r->path + 1, '/');
+        if (strcmp(r->method, "GET") == 0 && bucket_only) s3_bucket(fd, r);
+        else if (strcmp(r->method, "GET") == 0) s3_get(fd, r, false);
+        else if (strcmp(r->method, "HEAD") == 0) s3_get(fd, r, true);
+        else if (strcmp(r->method, "PUT") == 0) s3_put(fd, r);
+        else if (strcmp(r->method, "DELETE") == 0) s3_delete(fd, r);
+        else {
+            logf_("%s %s 405", r->method, r->path);
+            s3_error(fd, 405, "Method Not Allowed", "MethodNotAllowed", "not in the recording");
+        }
     } else {
-        logf_("%s %s 405", r->method, r->path);
-        s3_error(fd, 405, "Method Not Allowed", "MethodNotAllowed", "not in the recording");
+        logf_("%s %s 400 service=%s", r->method, r->path, service);
+        s3_error(fd, 400, "Bad Request", "UnknownService", "not in the recording");
     }
 }
 
@@ -502,7 +1314,22 @@ int main(int argc, char **argv) {
         else if (strcmp(a, "--account") == 0) snprintf(g_account, sizeof g_account, "%s", v);
         else if (strcmp(a, "--bucket") == 0) {
             if (g_nbuckets == MAX_BUCKETS) die("too many buckets");
-            snprintf(g_buckets[g_nbuckets++], sizeof g_buckets[0], "%s", v);
+            char name[64] = "", region[32] = "us-east-1";
+            if (sscanf(v, "%63[^:]:%31s", name, region) < 1) die("--bucket is NAME or NAME:REGION");
+            copy(g_buckets[g_nbuckets], sizeof g_buckets[0], name);
+            copy(g_bucket_region[g_nbuckets++], sizeof g_bucket_region[0], region);
+        } else if (strcmp(a, "--cert") == 0) {
+            char arn[256], status[32], names[1024];
+            if (sscanf(v, "%255s %31s %1023s", arn, status, names) != 3) die("--cert is 'ARN STATUS NAME,NAME...'");
+            cert_add(arn, status, names);
+        } else if (strcmp(a, "--zone") == 0) {
+            if (g_nzones == MAX_ZONES) die("too many zones");
+            zone *z = &g_zones[g_nzones++];
+            char id[64], name[250], priv[16] = "";
+            if (sscanf(v, "%63s %249s %15s", id, name, priv) < 2) die("--zone is 'ID NAME [private]'");
+            copy(z->id, sizeof z->id, id);
+            snprintf(z->name, sizeof z->name, "%s.", name);
+            z->private_ = strcmp(priv, "private") == 0;
         } else if (strcmp(a, "--resource") == 0) {
             if (g_nres == MAX_RES) die("too many resources");
             resource *x = &g_res[g_nres++];
@@ -510,7 +1337,7 @@ int main(int argc, char **argv) {
                 die("--resource is 'KEY VALUE TYPE ARN'");
         } else die("unknown argument %s", a);
     }
-    if (!port_file || !log_path) die("usage: fake_aws --port-file F --log L [--account A] [--bucket B]... [--resource 'K V T ARN']...");
+    if (!port_file || !log_path) die("usage: fake_aws --port-file F --log L [--account A] [--bucket B[:R]]... [--resource 'K V T ARN']... [--cert 'A S N,N']... [--zone 'ID NAME']...");
     g_log = fopen(log_path, "a");
     if (!g_log) die("cannot open %s: %s", log_path, strerror(errno));
     signal(SIGPIPE, SIG_IGN);

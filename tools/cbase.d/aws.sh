@@ -49,9 +49,18 @@ aws_fail() {
     echo "cbase: $what: AWS refused it (AccessDenied) for $(aws_whoami_hint). The deploy role needs the permission." >&2
   else
     echo "cbase: $what failed:" >&2
-    sed 's/^/  /' "$AWS_ERR" | head -5 >&2
+    aws_mask < "$AWS_ERR" | sed 's/^/  /' | head -5 >&2
   fi
   exit 1
+}
+
+# aws_mask: AWS's text (an error, a stack event's reason) on stdin, with every line that could carry
+# a secret's value replaced: one that names an origin's custom headers (OriginCustomHeaders,
+# HeaderValue), or a parameter's value (ParameterValue). The CLI never prints a credential, and
+# this is the second guard of stack.sh's: its --query filters keep a change set's and a drift's
+# secret values out of what the CLI answers; an error's message is free text, so it is masked here.
+aws_mask() {
+  sed -E '/OriginCustomHeaders|HeaderValue|ParameterValue/I s/.*/(a line naming an origin header or a parameter value, not shown)/'
 }
 
 aws_whoami_hint() {

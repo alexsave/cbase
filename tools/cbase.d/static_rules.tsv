@@ -1,0 +1,48 @@
+# static_rules.tsv - the one per-file table of `./cbase deploy`'s uploads (static.sh).
+#
+# One rule per line, two fields separated by a TAB: a glob and the Content-Type. The glob is matched
+# against the file's path in the static dir, lower-cased (no leading slash; * crosses /), and the
+# first rule that matches wins; the last, "*", is the fallback.
+#
+# Cache-Control is not a column, because it is one rule for every file (static.sh):
+#   html (text/html)                     no-cache: a browser and CloudFront revalidate it every time,
+#                                        so a deploy's new page is seen at once
+#   a content-hashed file (CBASE_HASHED) public, max-age=31536000, immutable: a year, never asked for
+#                                        again (its name changes when its bytes do); html never is
+#   anything else                        no-cache
+#
+# CloudFront compresses only the types on its list ("Serve compressed files" in the CloudFront
+# developer guide), objects of 1,000 to 10,000,000 bytes. application/wasm is on it, so a separate
+# .wasm is compressed at the edge.
+*.html	text/html; charset=utf-8
+*.htm	text/html; charset=utf-8
+*.css	text/css; charset=utf-8
+*.js	text/javascript; charset=utf-8
+*.mjs	text/javascript; charset=utf-8
+*.map	application/json
+*.json	application/json
+*.webmanifest	application/manifest+json
+*.txt	text/plain; charset=utf-8
+*.csv	text/csv; charset=utf-8
+*.xml	application/xml
+*.wasm	application/wasm
+*.svg	image/svg+xml
+*.png	image/png
+*.jpg	image/jpeg
+*.jpeg	image/jpeg
+*.gif	image/gif
+*.webp	image/webp
+*.avif	image/avif
+*.ico	image/x-icon
+*.woff2	font/woff2
+*.woff	font/woff
+*.ttf	font/ttf
+*.otf	font/otf
+*.pdf	application/pdf
+*.mp4	video/mp4
+*.webm	video/webm
+*.mp3	audio/mpeg
+*.ogg	audio/ogg
+*.wav	audio/wav
+*.gz	application/gzip
+*	application/octet-stream
