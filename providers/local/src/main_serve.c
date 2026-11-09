@@ -3,7 +3,7 @@
 // (provider_local.c).
 //
 // Once listening it says so on stdout, one line (ingress_process.h THE STARTUP LINE):
-//   cbase: listening 127.0.0.1:<port>
+//   cbase: listening 127.0.0.1:<port> http://127.0.0.1:<port>/
 #include "cbase/app.h"
 #include "cbase/provider.h"
 #include "ingress_process.h"

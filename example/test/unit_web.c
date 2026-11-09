@@ -154,10 +154,16 @@ static int start(const char *variant, const char *extra) {
         if (line[n++] == '\n') break;
     }
     line[n] = 0;
-    const char *colon = strrchr(line, ':');
+    // "cbase: listening <host>:<port> <url>": the port is the address word's, after its last ':'.
+    const char *addr = strstr(line, "cbase: listening ");
+    if (!addr) return -1;
+    addr += strlen("cbase: listening ");
+    size_t alen = strcspn(addr, " \r\n");
+    const char *colon = NULL;
+    for (size_t i = 0; i < alen; i++)
+        if (addr[i] == ':') colon = addr + i;
     int64_t port = 0;
-    if (!strstr(line, "cbase: listening") || !colon || !num_parse_i64(colon + 1, strcspn(colon + 1, "\r\n"), 1, 65535, &port))
-        return -1;
+    if (!colon || !num_parse_i64(colon + 1, (size_t)(addr + alen - colon - 1), 1, 65535, &port)) return -1;
     g_port = (int)port;
     return 0;
 }

@@ -62,7 +62,8 @@
 #                    Makefile (APP_SERVE_LISTEN := 127.0.0.1:4100), or a run sets one: `PORT=4100
 #                    make serve`, or `CBASE_LISTEN=127.0.0.1:0 make serve` for a port the OS picks.
 #                    serve prints the address it bound on stdout once it listens,
-#                    "cbase: listening 127.0.0.1:<port>" (core/src/ingress_process.h)
+#                    "cbase: listening 127.0.0.1:<port> http://127.0.0.1:<port>/"
+#                    (core/src/ingress_process.h)
 #   APP_LAMBDA_SCHEDULE, APP_LAMBDA_JOB   one of the app's schedules and one of its jobs, which the
 #                    Lambda smoke (smoke_lambda) sends as the scheduler and the self-invoke do
 #   APP_GATE_HEADER  one of the product's headers, which a core source must not reach (the compiler

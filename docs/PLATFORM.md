@@ -207,6 +207,9 @@ A product from before the platform routes became opt-in makes the fifth and sixt
    `CBC_C_IDEMPOTENT` is the old flag's meaning, and its bit: the call is sent again after a loss and after a 503 busy, so a C call renames `CBC_C_READ` to `CBC_C_IDEMPOTENT` and behaves as before.
    `CBC_C_FAIL_FAST` is new: a lost call is finished at once with `CBC_WHY_LOST`, idempotent or not, so a page can say "the server is down" at once instead of after about 3.5 s of resends.
    The TypeScript layer exports both under the same names, and its `get` defaults to `CBC_C_IDEMPOTENT`.
+11. **The startup line ends with a URL to click**: `cbase: listening 127.0.0.1:8642 http://127.0.0.1:8642/` (`core/src/ingress_process.h`; a wildcard host's URL names the loopback).
+   A parser that reads the address as the word after `cbase: listening ` (up to the first blank) keeps working, as amgi's `ui/tools/e2e.sh` and `test/parity/servers.mjs` do.
+   One that took the port as everything after the line's last `:` reads `8642/` now, and takes it from the third word instead.
 
 ### 2.10 Serve's settings an app ships, and CBASE_ENV_FILE
 
@@ -230,7 +233,7 @@ Zero or NULL in the field leaves cbase's default, so an app that sets nothing is
   amgi answers its own wire format's `notStarted` here.
 - `log_level`: the least level the log keeps, `"debug"`, `"info"`, `"warn"` or `"error"` (cbase's default `"info"`; `CBASE_LOG_LEVEL`).
   amgi ships `"warn"`.
-  The startup line on stdout, `cbase: listening <host>:<port>`, is not the log's and is printed at every level, so a parent that waits for it works whatever the app ships.
+  The startup line on stdout, `cbase: listening <host>:<port> <url>`, is not the log's and is printed at every level, so a parent that waits for it works whatever the app ships.
 
 Ctrl-C is SIGTERM: serve drains on SIGINT as on SIGTERM (requests in flight finish, WebSockets get 1001), then calls the app's `serve_close` and exits 0 (`core/test/unit_serve_knobs.c` sends it to a real `cbase serve` with a request in flight).
 

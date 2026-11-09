@@ -68,7 +68,7 @@ start() {
 # children <pid>: the pids whose parent is <pid>.
 children() { ps -A -o pid= -o ppid= | awk -v p="$1" '$2 == p { print $1 }'; }
 
-# listening <label>: waits up to 30 s for serve's "cbase: listening <host>:<port>" line and sets
+# listening <label>: waits up to 30 s for serve's "cbase: listening <host>:<port> <url>" line and sets
 # GOT to the port, or to nothing when make ended first or the time ran out. Records every process
 # under make, so the cleanup stops a server even when it is not make's child.
 listening() {
@@ -82,7 +82,8 @@ listening() {
     for g in $(children "$c"); do PIDS+=("$g"); done
   done
   GOT=""
-  [ -z "$line" ] || GOT="${line##*:}"
+  # "cbase: listening <host>:<port> <url>": the port ends the third word.
+  [ -z "$line" ] || { line="${line#cbase: listening }"; line="${line%% *}"; GOT="${line##*:}"; }
 }
 
 # ended <pid> <seconds>: true once <pid> has exited, within the time.

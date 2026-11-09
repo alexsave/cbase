@@ -61,16 +61,21 @@ static char **store_env(char **env) {
 // THE ONE WAY A CHILD STARTS: `env` and CBASE_LOG_LEVEL=info after it, whatever log_level the app
 // ships (an app's "warn" would keep every line this smoke waits for unwritten), with its stdout a
 // pipe (c->out_fd) when `out`. Every cbase and bootstrap this smoke runs starts here.
-static int spawn(tp_child *c, char *const argv[], char *const env[], bool out) {
+// spawn_at is the same at another level ("CBASE_LOG_LEVEL=debug"), for a line said only there.
+static int spawn_at(tp_child *c, char *const argv[], char *const env[], bool out, char *level) {
     char *e[32];
     int k = 0;
     for (int i = 0; env[i]; i++) {
         if (k == 30) return -1;
         e[k++] = env[i];
     }
-    e[k++] = "CBASE_LOG_LEVEL=info";
+    e[k++] = level;
     e[k] = NULL;
     return out ? tp_start_out(c, argv, e) : tp_start(c, argv, e);
+}
+
+static int spawn(tp_child *c, char *const argv[], char *const env[], bool out) {
+    return spawn_at(c, argv, env, out, "CBASE_LOG_LEVEL=info");
 }
 
 // Runs `bin` with `args` and `env` to its exit; true when it exits `status`
@@ -267,15 +272,29 @@ static void the_cpu_knob_boots_or_refuses(void) {
     char *pinned[] = { "CBASE_LISTEN=127.0.0.1:0", "CBASE_STORE=sqlite", "CBASE_DB=:memory:", "CBASE_DEV=1",
                        "CBASE_LOOP_CPU=0", NULL };
     T_CHECK(exits(g_cbase, "serve", store_env(pinned), 2, "needs Linux"));
-    // Auto and off cost no start here: auto says once why nothing is pinned, and both serve.
+    // Auto and off cost no start here, and both serve. Auto has nothing to do where no thread can be
+    // pinned, which is no news: at info (a newcomer's first start) no line says so, and at debug one
+    // says why nothing is pinned.
     char *argv[] = { (char *)g_cbase, "serve", NULL };
     char *autov[] = { "CBASE_LISTEN=127.0.0.1:0", "CBASE_STORE=sqlite", "CBASE_DB=:memory:", "CBASE_DEV=1", NULL };
+    char *autod[] = { "CBASE_LISTEN=127.0.0.1:0", "CBASE_STORE=sqlite", "CBASE_DB=:memory:", "CBASE_DEV=1", NULL };
     char *off[] = { "CBASE_LISTEN=127.0.0.1:0", "CBASE_STORE=sqlite", "CBASE_DB=:memory:", "CBASE_DEV=1",
                     "CBASE_LOOP_CPU=off", "CBASE_BG_CPU=off", NULL };
     store_env(autov);
+    store_env(autod);
     store_env(off);
     tp_child c;
     T_EQ_INT(spawn(&c, argv, autov, false), 0);
+    char line[512];
+    int knob_lines = 0, up_seen = 0;
+    while (tp_wait_line(&c, "", 15000, line, sizeof line) == 0) {   // every line, to the listening one
+        if (strstr(line, "CPU knob")) knob_lines++;
+        if (strstr(line, "listening on")) { up_seen = 1; break; }
+    }
+    T_CHECK(up_seen);
+    T_EQ_INT(knob_lines, 0);
+    T_EQ_INT(tp_stop(&c, SIGTERM, 15000), 0);
+    T_EQ_INT(spawn_at(&c, argv, autod, false, "CBASE_LOG_LEVEL=debug"), 0);   // debug: said, and it serves
     T_EQ_INT(tp_wait_line(&c, "CPU knob auto: picking CPUs needs Linux, so nothing is pinned", 15000, NULL, 0), 0);
     T_EQ_INT(tp_wait_line(&c, "listening on", 15000, NULL, 0), 0);
     T_EQ_INT(tp_stop(&c, SIGTERM, 15000), 0);
@@ -372,7 +391,7 @@ static void the_port_answers(int port) {
 }
 
 // THE STARTUP LINE (ingress_process.h): with port 0, serve binds a free port and says which on
-// stdout, in one line, once, after the bind: the port it names answers, and nothing else is ever
+// stdout, with the URL to open, in one line, once, after the bind: the port it names answers, and nothing else is ever
 // written there, through a drain to the exit.
 static void the_startup_line_names_the_port(void) {
     char *env[] = { "CBASE_LISTEN=127.0.0.1:0", "CBASE_STORE=sqlite", "CBASE_DB=:memory:", "CBASE_DEV=1", NULL };
@@ -384,9 +403,10 @@ static void the_startup_line_names_the_port(void) {
         char line[256];
         size_t n = read_out_line(c.out_fd, line, sizeof line, 15000);
         int port = 0;
-        char tail[8] = "";
-        T_EQ_INT(sscanf(line, "cbase: listening 127.0.0.1:%d%7[^x]", &port, tail), 2);
-        T_EQ_STR(tail, "\n");                  // the line ends at the port: nothing after it
+        T_EQ_INT(sscanf(line, "cbase: listening 127.0.0.1:%d ", &port), 1);
+        char want_line[128];                   // the address, then its URL, and nothing after it
+        snprintf(want_line, sizeof want_line, "cbase: listening 127.0.0.1:%d http://127.0.0.1:%d/\n", port, port);
+        T_EQ_STR(line, want_line);
         T_CHECK(n > 0 && strchr(line, '\n') == line + n - 1);   // one line, and only one
         T_CHECK(port > 0 && port < 65536);
         if (port <= 0) { tp_stop(&c, SIGKILL, 5000); close(c.out_fd); continue; }
