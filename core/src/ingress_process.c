@@ -16,7 +16,7 @@
 // the loop thread. An app's schedule is how it catches a job a start lost.
 //
 // THE STARTUP LINE (ingress_process.h), on stdout, once, when the socket is bound and listening:
-//   cbase: listening 127.0.0.1:<port>
+//   cbase: listening 127.0.0.1:<port> http://127.0.0.1:<port>/
 // and the log's own, on stderr:
 //   ... INFO  serve: listening on 127.0.0.1:<port>
 //
@@ -31,6 +31,7 @@
 #include "cbase/provider.h"
 #include "config.h"
 #include "ctx.h"
+#include "ingress_process.h"
 #include "net/loop.h"
 #include "net/server.h"
 #include "spawn.h"
@@ -122,12 +123,19 @@ static int usage(void) {
     return 2;
 }
 
-// The startup line (ingress_process.h): the bound address, an IPv6 host in brackets, flushed at
-// once, since a parent reading a pipe would otherwise see it only when the buffer fills or the
-// process exits.
+int cb_startup_line(char *out, size_t cap, const char *host, int port) {
+    const bool v6 = strchr(host, ':') != NULL;
+    const char *url_host = strcmp(host, "0.0.0.0") == 0 ? "127.0.0.1" : strcmp(host, "::") == 0 ? "::1" : host;
+    const char *l = v6 ? "[" : "", *r = v6 ? "]" : "";
+    int n = snprintf(out, cap, "cbase: listening %s%s%s:%d http://%s%s%s:%d/\n", l, host, r, port, l, url_host, r, port);
+    return n < 0 || (size_t)n >= cap ? -1 : n;
+}
+
+// The startup line, flushed at once, since a parent reading a pipe would otherwise see it only
+// when the buffer fills or the process exits.
 static void say_listening(const char *host, int port) {
-    if (strchr(host, ':')) printf("cbase: listening [%s]:%d\n", host, port);
-    else printf("cbase: listening %s:%d\n", host, port);
+    char line[CB_STARTUP_LINE_MAX];
+    if (cb_startup_line(line, sizeof line, host, port) > 0) fputs(line, stdout);
     fflush(stdout);
 }
 
@@ -154,8 +162,13 @@ int cb_process_main(const cb_provider *prov, const cb_app *app, int argc, char *
     // pin, it says so once and nothing is pinned. A CPU given by number that cannot be had exits 2.
     const bool cpu_auto = cfg.loop_cpu == CB_CPU_AUTO;   // config.c: both auto or neither
     int loop_cpu = cfg.loop_cpu, bg_cpu = cfg.bg_cpu;
-    if (cpu_auto && cb_affinity_pick(&loop_cpu, &bg_cpu, err, sizeof err) != CB_OK)
-        CB_INFO("serve", "CPU knob auto: %s, so nothing is pinned", err);
+    // Where no thread can be pinned at all (macOS) auto has nothing to do, which is no news: that is
+    // said at debug only, so a newcomer's first start shows no line that reads like a warning. Where
+    // it could pin and cannot (Linux, one CPU), it is said at info.
+    if (cpu_auto && cb_affinity_pick(&loop_cpu, &bg_cpu, err, sizeof err) != CB_OK) {
+        if (cb_affinity_supported()) CB_INFO("serve", "CPU knob auto: %s, so nothing is pinned", err);
+        else CB_DEBUG("serve", "CPU knob auto: %s, so nothing is pinned", err);
+    }
     if (bg_cpu >= 0 && cb_affinity_pin(bg_cpu, err, sizeof err) != CB_OK) {
         if (!cpu_auto) {
             fprintf(stderr, "cbase: CBASE_BG_CPU: %s\n", err);

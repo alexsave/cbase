@@ -1282,3 +1282,16 @@ Each mutation was made in client/src/client.c a second after a copy, its object 
 - app_call masks `CBC_C_FAIL_FAST` out of the call's flags -> the same two lines red.
 - call_lost never resends (`if (0)`) -> `a_socket_loss` lines 390 to 396 red (the idempotent call is not sent at the next READY).
 - the HTTP busy resend skipped for a fail-fast call -> lines 461 to 463 red (the 503 is the DONE, nothing goes again).
+
+## The startup line's URL, and the CPU knob's line on macOS (round3-friction)
+
+The startup line is `cbase: listening <host>:<port> <url>`, written by `cb_startup_line` (core/src/ingress_process.c), with a wildcard host's URL on the loopback.
+core/test/unit_startup_line.c holds every host's form, core/test/smoke_boot.c `the_startup_line_names_the_port` the line a real serve prints, and tools/serve_test.sh, example/test/unit_web.c and smoke_boot read the port from the address word.
+Where no thread can be pinned (macOS), the CPU knob's auto line is at debug: smoke_boot `the_cpu_knob_boots_or_refuses` reads every line of an info start up to "listening on" and finds none, then finds it in a debug start.
+Each mutation was made a second after a copy, ingress_process.o deleted, build/cbase, smoke_boot and unit_startup_line rebuilt and run, and the file restored.
+
+- the URL without its scheme and slash (`%d %s%s%s:%d\n`) -> unit_startup_line lines 13 and 14 (every case) and smoke_boot line 409 `line == want_line` red.
+- the wildcard not mapped (`url_host` is `host`) -> unit_startup_line lines 13 and 14 in `a_wildcard_host_is_opened_on_the_loopback` red.
+- the CPU line at info on macOS too -> smoke_boot line 295 `knob_lines == 0` red.
+- the CPU line never said on macOS -> smoke_boot line 298, the wait for it in the debug start, red.
+- tools/serve_test.sh: the port taken after the line's last `:` (the old parse, which now reads `<port>/`) -> `GET /health answered 404`, `did not boot on a .env.local` and the rest of the cases red.

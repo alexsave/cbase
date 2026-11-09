@@ -43,7 +43,7 @@ CBASE_DEV=1 make serve
 
 `make serve` builds `build/cbase` and runs it as `cbase serve` from the repository root, on `127.0.0.1:8642` (`PORT=4100` for another port, `CBASE_LISTEN=127.0.0.1:0` for one the OS picks), with its database in `./cbase.sqlite`.
 8642 is the default because the common dev servers' ports (3000 for React, Next and Rails, 5173 for Vite, 8000, 8080 and the rest) are taken, and `/etc/services` assigns it nothing.
-Once the socket is bound, serve prints exactly one line to stdout, such as `cbase: listening 127.0.0.1:8642`, for a person or a parent process to read; the log goes to stderr.
+Once the socket is bound, serve prints exactly one line to stdout, such as `cbase: listening 127.0.0.1:8642 http://127.0.0.1:8642/`, for a person to click or a parent process to read (the address is its third word); the log goes to stderr.
 Then:
 
 ```
@@ -95,7 +95,7 @@ It needs the local provider in `CBASE_PROVIDERS`, and `tools/serve.sh` is the on
   The script never reads the file: serve reads it strictly, so a bad line refuses the boot with serve's own sentence naming the line.
 - `CBASE_LISTEN` is `APP_SERVE_LISTEN` unless the environment sets it; the default is `127.0.0.1` on `PORT`, and without one serve's own default, `127.0.0.1:8642` (`CB_LISTEN_DEFAULT` in `core/src/config.h`, the one place it is written).
   A product that wants another sets its own in its Makefile (`APP_SERVE_LISTEN := 127.0.0.1:4100`), or a run sets one: `PORT=4100 make serve`, or `CBASE_LISTEN=127.0.0.1:0 make serve` for a free port the OS picks.
-  Once the socket is bound, serve prints where on stdout, one line: `cbase: listening 127.0.0.1:<port>` (`core/src/ingress_process.h`).
+  Once the socket is bound, serve prints where on stdout, one line: `cbase: listening 127.0.0.1:<port> http://127.0.0.1:<port>/` (`core/src/ingress_process.h`).
 - The binary is exec'd, so make's child is the server itself: Ctrl-C or a SIGTERM sent to it reaches serve, which drains and exits.
 
 ```make
