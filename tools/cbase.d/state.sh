@@ -9,7 +9,9 @@
 #   cbase-state 1 vm <group>
 #   app=<name> port=<port> service=cbase-<name>.service mem=<MiB>
 # where mem is the declared MiB (CBASE_MEMORY), or ~<MiB> for an app that declares none, counted
-# at that estimate (conf.sh CONF_MEMORY_ESTIMATE): "mem=~128". And for a static group
+# at that estimate (conf.sh CONF_MEMORY_ESTIMATE): "mem=~128". A grandfathered member (conf.sh
+# CBASE_VM_PORT, CBASE_VM_DATA) adds " data=<dir> legacy=1": its own port, outside the claimed
+# range, and its own data directory, both as they were. And for a static group
 #   cbase-state 1 static <group>
 #   app=<name> folder=<name>/
 # The first line names the format's version, the kind and the group, and must match the file's
@@ -53,6 +55,8 @@ STATE_FIT_WHAT=""    # how the limit came about, for the report ("t4g.nano: 512 
 STATE_FIT_REPORT=""  # the last fit check's report
 STATE_JOINED_NEW=""  # 1 when the last join added the app (it was not a member)
 STATE_PORT=""        # the port the last vm join holds
+STATE_LEGACY_PORT="" # a grandfathered member's join: its own port and data dir (conf.sh), or ""
+STATE_LEGACY_DATA=""
 
 state_bucket() { printf 'cbase-state-%s' "$AWS_ACCOUNT"; }
 state_key() { printf '%s/%s.txt' "$1" "$2"; }
@@ -71,13 +75,18 @@ state_parse() {
       continue
     fi
     if [ "$kind" = vm ]; then
-      [[ "$line" =~ ^app=([a-z]([a-z0-9-]{0,30}[a-z0-9])?)\ port=([0-9]{4,5})\ service=([a-z0-9-]+)\.service\ mem=~?([0-9]{1,6})$ ]] \
-        || state_die "$where" "$no" "is not \"app=<name> port=<port> service=cbase-<name>.service mem=<MiB>\" (mem=~<MiB> when estimated)"
+      [[ "$line" =~ ^app=([a-z]([a-z0-9-]{0,30}[a-z0-9])?)\ port=([0-9]{4,5})\ service=([a-z0-9-]+)\.service\ mem=~?([0-9]{1,6})(\ data=(/[A-Za-z0-9._/-]+)\ legacy=1)?$ ]] \
+        || state_die "$where" "$no" "is not \"app=<name> port=<port> service=cbase-<name>.service mem=<MiB>\" (mem=~<MiB> when estimated; \" data=<dir> legacy=1\" after it for a grandfathered member)"
       app="${BASH_REMATCH[1]}"
       port="$((10#${BASH_REMATCH[3]}))"
       [ "${BASH_REMATCH[4]}" = "cbase-$app" ] || state_die "$where" "$no" "names service ${BASH_REMATCH[4]}.service for app $app (it is cbase-$app.service)"
-      { [ "$port" -ge "$STATE_PORT_MIN" ] && [ "$port" -le "$STATE_PORT_MAX" ]; } \
-        || state_die "$where" "$no" "holds port $port, outside $STATE_PORT_MIN-$STATE_PORT_MAX"
+      if [ -n "${BASH_REMATCH[6]}" ]; then
+        { [ "$port" -ge 1024 ] && [ "$port" -le 65535 ] && { [ "$port" -lt "$STATE_PORT_MIN" ] || [ "$port" -gt "$STATE_PORT_MAX" ]; }; } \
+          || state_die "$where" "$no" "holds the grandfathered port $port, which is not 1024-65535 outside $STATE_PORT_MIN-$STATE_PORT_MAX"
+      else
+        { [ "$port" -ge "$STATE_PORT_MIN" ] && [ "$port" -le "$STATE_PORT_MAX" ]; } \
+          || state_die "$where" "$no" "holds port $port, outside $STATE_PORT_MIN-$STATE_PORT_MAX"
+      fi
       for i in "${!ST_PORTS[@]}"; do
         [ "${ST_PORTS[$i]}" != "$port" ] || state_die "$where" "$no" "gives port $port to $app, and ${ST_APPS[$i]} holds it"
       done
@@ -218,9 +227,17 @@ state_change() {
       ST_PORTS=("${keep_ports[@]+"${keep_ports[@]}"}")
     else
       if [ "$kind" = vm ]; then
-        if [ -n "$at" ]; then port="${ST_PORTS[$at]}"; else port="$(state_free_port)"; fi
+        if [ -n "$STATE_LEGACY_PORT" ]; then
+          # A grandfathered member: its own port, which no other member may hold.
+          port="$STATE_LEGACY_PORT"
+          for i in "${!ST_PORTS[@]}"; do
+            [ "$i" = "$at" ] || [ "${ST_PORTS[$i]}" != "$port" ] || { echo "cbase: $app's port $port (CBASE_VM_PORT) is ${ST_APPS[$i]}'s in vm group $group: nothing was changed" >&2; exit 1; }
+          done
+        elif [ -n "$at" ] && [[ "${ST_LINES[$at]}" != *" legacy=1" ]]; then port="${ST_PORTS[$at]}"
+        else port="$(state_free_port)"; fi
         [ -n "$port" ] || { echo "cbase: vm group $group has no free port: all of $STATE_PORT_MIN-$STATE_PORT_MAX are held" >&2; exit 1; }
         line="app=$app port=$port service=cbase-$app.service mem=$mem"
+        [ -z "$STATE_LEGACY_PORT" ] || line="$line data=$STATE_LEGACY_DATA legacy=1"
         # shellcheck disable=SC2034 # vm.sh reads it
         STATE_PORT="$port"
         # THE MEMORY FIT, on the file this write is conditional on.

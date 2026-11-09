@@ -51,20 +51,49 @@ VM_POLLS="${CBASE_VM_POLLS:-180}"   # get-command-invocation reads before the wa
 VM_ID=""; VM_DNS=""; VM_TYPE=""; VM_MIB=""
 VM_BIN=""; VM_SHA=""; VM_KEY=""
 VM_PORT=""; VM_NEW=""
+VM_IPV6=""   # 1: the origin is an IPv6-only hostname (CBASE_VM_ORIGIN, or the group's)
 
-# vm_find GROUP: VM_ID, VM_DNS, VM_TYPE and VM_MIB, the group's running arm64 instance.
+# vm_stack_instance STACK: the running instance an adopted stack holds: its AWS::EC2::Instance, or
+# the in-service instance of its auto-scaling group of one.
+vm_stack_instance() {
+  local stack="$1" text type id ids=()
+  text="$(aws_call cloudformation describe-stack-resources --stack-name "$stack" \
+            --query "StackResources[?ResourceType=='AWS::EC2::Instance' || ResourceType=='AWS::AutoScaling::AutoScalingGroup'].[ResourceType,PhysicalResourceId]" \
+            --output text)" || aws_fail "reading the stack $stack (CBASE_VM_STACK)"
+  read -r type id <<< "$(printf '%s\n' "$text" | head -1)"
+  case "$type" in
+    AWS::EC2::Instance) printf '%s' "$id" ;;
+    AWS::AutoScaling::AutoScalingGroup)
+      text="$(aws_call autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$id" \
+                --query "AutoScalingGroups[0].Instances[?LifecycleState=='InService'].InstanceId" --output text)" \
+        || aws_fail "reading the auto-scaling group $id of $stack"
+      read -r -a ids <<< "$text"
+      { [ "${#ids[@]}" -eq 1 ] && [ "${ids[0]}" != None ]; } \
+        || { echo "cbase: the auto-scaling group $id of $stack (CBASE_VM_STACK) has ${#ids[@]} instances in service, not one: a group is one VM" >&2; exit 1; }
+      printf '%s' "${ids[0]}" ;;
+    *) echo "cbase: the stack $stack (CBASE_VM_STACK) holds no EC2 instance or auto-scaling group" >&2; exit 1 ;;
+  esac
+}
+
+# vm_find GROUP: VM_ID, VM_DNS (the origin's hostname), VM_IPV6, VM_TYPE and VM_MIB, the group's
+# running arm64 instance: found by CBASE_VM_STACK (adopted), or by its group tag.
 vm_find() {
-  local group="$1" text state arch
-  VM_ID="$(aws_group_find vm "$group")"
+  local group="$1" text state arch origin
+  if [ -n "$CONF_VM_STACK" ]; then VM_ID="$(vm_stack_instance "$CONF_VM_STACK")"
+  else VM_ID="$(aws_group_find vm "$group")"; fi
   text="$(aws_call ec2 describe-instances --instance-ids "$VM_ID" \
-            --query 'Reservations[0].Instances[0].[State.Name,PublicDnsName,InstanceType,Architecture]' --output text)" \
+            --query "Reservations[0].Instances[0].[State.Name,PublicDnsName,InstanceType,Architecture,Tags[?Key=='cbase:vm-origin'].Value | [0]]" --output text)" \
     || aws_fail "reading instance $VM_ID"
-  IFS=$'\t' read -r state VM_DNS VM_TYPE arch <<< "$text"
+  IFS=$'\t' read -r state VM_DNS VM_TYPE arch origin <<< "$text"
   [ "$state" = running ] || { echo "cbase: vm group $group's instance $VM_ID is $state, not running: start it (aws ec2 start-instances --instance-ids $VM_ID) and run this again" >&2; exit 1; }
   [ "$arch" = arm64 ] || { echo "cbase: vm group $group's instance $VM_ID is $arch, and cbase builds the server for linux arm64 alone (make serve-binary)" >&2; exit 1; }
-  { [ -n "$VM_DNS" ] && [ "$VM_DNS" != None ]; } || { echo "cbase: vm group $group's instance $VM_ID has no public DNS name, which CloudFront needs as its origin" >&2; exit 1; }
+  [ "$origin" != None ] || origin=""
+  VM_IPV6=""
+  if [ -n "$CONF_VM_ORIGIN" ]; then VM_DNS="$CONF_VM_ORIGIN"; VM_IPV6=1
+  elif [ -n "$origin" ]; then VM_DNS="$origin"; VM_IPV6=1; fi
+  { [ -n "$VM_DNS" ] && [ "$VM_DNS" != None ]; } || { echo "cbase: vm group $group's instance $VM_ID has no public DNS name, which CloudFront needs as its origin: an IPv6-only VM's is an AAAA record of its address, named by CBASE_VM_ORIGIN" >&2; exit 1; }
   VM_MIB="$(vm_type_mib "$VM_TYPE")"
-  echo "vm group $group: $VM_ID ($VM_TYPE, $VM_MIB MiB), $VM_DNS"
+  echo "vm group $group: $VM_ID ($VM_TYPE, $VM_MIB MiB), $VM_DNS${VM_IPV6:+ (IPv6)}${CONF_VM_STACK:+, adopted from the stack $CONF_VM_STACK}"
 }
 
 # vm_origin_secret: VM_ORIGIN_SECRET, the app's origin secret, SSM /cbase/<app>/CBASE_ORIGIN_SECRET
@@ -84,9 +113,9 @@ vm_origin_secret() {
     fi
     aws_fail "reading the SSM parameter $name"
   fi
-  if ! [[ "$VM_ORIGIN_SECRET" =~ ^[A-Za-z0-9_-]{16,256}$ ]]; then
+  if ! [[ "$VM_ORIGIN_SECRET" =~ ^[A-Za-z0-9_-]{16,128}$ ]]; then
     VM_ORIGIN_SECRET=""
-    echo "cbase: the SSM parameter $name is not 16 to 256 letters, digits, _ and - (its value is not shown): openssl rand -hex 32 makes one" >&2
+    echo "cbase: the SSM parameter $name is not 16 to 128 letters, digits, _ and - (its value is not shown): openssl rand -hex 32 makes one" >&2
     exit 1
   fi
   AWS_MASK_VALUES+=("$VM_ORIGIN_SECRET")
@@ -181,10 +210,19 @@ vm_join() {
   VM_NEW="$STATE_JOINED_NEW"
 }
 
+# vm_data_dir: the app's data directory on the VM: a grandfathered member's own (CBASE_VM_DATA), or
+# /srv/cbase/<app>/data.
+vm_data_dir() { printf '%s' "${CONF_VM_DATA:-/srv/cbase/$CONF_APP/data}"; }
+# vm_backup_bucket: where serve puts the app's backups (CBASE_BACKUP_BUCKET, or the state bucket).
+vm_backup_bucket() { printf '%s' "${CONF_BACKUP_BUCKET:-$(state_bucket)}"; }
+# vm_region: the group's region (the CLI's), which the instance's calls and its backups use.
+vm_region() { aws_region_required; }
+
 # vm_unit PORT: the app's systemd unit. MemoryMax only for a declared CBASE_MEMORY: an undeclared
 # app has no cap (it is only counted at 128M).
 vm_unit() {
-  local port="$1" app="$CONF_APP" home="/srv/cbase/$CONF_APP"
+  local port="$1" app="$CONF_APP" home="/srv/cbase/$CONF_APP" data
+  data="$(vm_data_dir)"
   cat << EOF
 # cbase-$app.service: the app $app, installed by ./cbase deploy (tools/cbase.d/vm.sh). Edits by hand
 # are undone by the next deploy.
@@ -199,9 +237,13 @@ User=cbase-$app
 Group=cbase-$app
 WorkingDirectory=$home
 ExecStart=$home/serve serve
-Environment=CBASE_LISTEN=0.0.0.0:$port
-Environment=CBASE_DB=$home/data/cbase.sqlite
+Environment=CBASE_LISTEN=:::$port
+Environment=CBASE_DB=$data/cbase.sqlite
 Environment=CBASE_ENV_FILE=$home/env
+Environment=CBASE_BACKUP_BUCKET=$(vm_backup_bucket)
+Environment=CBASE_BACKUP_REGION=$(vm_region)
+Environment=CBASE_BACKUP_KEY=backups/$app/cbase.sqlite
+Environment=CBASE_BACKUP_URL=s3://$(vm_backup_bucket)/backups/$app/
 EOF
   [ -n "$CONF_MEMORY_ESTIMATED" ] || printf 'MemoryMax=%sM\n' "$CONF_MEMORY"
   cat << EOF
@@ -211,7 +253,7 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectHome=yes
 ProtectSystem=strict
-ReadWritePaths=$home/data
+ReadWritePaths=$data
 
 [Install]
 WantedBy=multi-user.target
@@ -242,10 +284,11 @@ trap 'rm -rf "\$tmp"' EXIT
 
 # 1. Its user and its folders: the data folder is the service's alone.
 id -u "\$user" > /dev/null 2>&1 || useradd --system --user-group --no-create-home --home-dir "/srv/cbase/\$app" --shell /sbin/nologin "\$user"
-mkdir -p "\$home/data"
+data="\$R$(vm_data_dir)"
+mkdir -p "\$data"
 chmod 0755 "\$R/srv/cbase" "\$home"
-chown "\$user:\$user" "\$home/data"
-chmod 0700 "\$home/data"
+chown -R "\$user:\$user" "\$data"
+chmod 0700 "\$data"
 
 # 2. The port, free before a first start: with the unit not running, nothing may listen on it.
 if ! systemctl is-active --quiet "\$unit"; then
@@ -299,7 +342,7 @@ for i in \$(seq 1 60); do
     exit 0
   fi
   if journalctl -u "\$unit" --since "@\$since" -o cat --no-pager 2> /dev/null | grep -q '^cbase: listening '; then
-    say "\$unit is up: it is listening on 0.0.0.0:\$port (no /health route)"
+    say "\$unit is up: it is listening on port \$port (no /health route)"
     exit 0
   fi
   if ! systemctl is-active --quiet "\$unit"; then

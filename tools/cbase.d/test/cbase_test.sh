@@ -410,7 +410,7 @@ site_fake=(--bucket "$BUCKET" --bucket "$SITE_BUCKET:us-west-2" --resource "$ST_
            --cert "$CERT_OTHER ISSUED other.org" --cert "$CERT_DEEP ISSUED *.www.example.com"
            --cert "$CERT_WILD ISSUED example.com,*.example.com" --zone "Z0EXAMPLE example.com"
            --zone "Z0PRIVATE corp.example.com private" --zone "Z0SHOPORG shop.org"
-           --cert "$CERT_NOZONE ISSUED a.nozone.net,b.nozone.net" --cert "$CERT_NAMED ISSUED www.example.com")
+           --cert "$CERT_NOZONE ISSUED a.nozone.net,b.nozone.net" --cert "$CERT_NAMED ISSUED named.example.com")
 head_of() {   # head_of KEY: "<Content-Type>|<Cache-Control>" of s3://site-bucket/KEY
   aws s3api head-object --bucket "$SITE_BUCKET" --key "$1" --query '[ContentType,CacheControl]' --output text | tr '\t' '|'
 }
@@ -555,14 +555,23 @@ for how in replace-bucket remove-bucket; do
   [ "$(puts_since "$m")" = 0 ] || fail "$how: files were uploaded"
   ok
 done
-# A distribution replaced: allowed, and said.
+# A distribution replaced on a redeploy: downtime, so refused and the change set deleted; then
+# allowed with --allow-downtime.
 fake_set changes=replace-distribution
 m="$(mark)"
 run "$site" deploy
-expect_rc 0 "a distribution replacement"
+expect_rc 1 "a distribution replacement on a redeploy"
 out_has "Modify  Distribution     AWS::CloudFront::Distribution (replacement: True)" "a distribution replacement is printed"
-out_has "note: the distribution Distribution is replaced: a new one with a new cloudfront.net name" "a distribution replacement is explained"
-since "$m" | grep -q "CFN ExecuteChangeSet cbase-app-site ok" || fail "a distribution replacement was not executed"
+err_has "downtime: the distribution Distribution is replaced: a new one, with a new cloudfront.net name" "a distribution replacement is explained"
+err_has "after an app's first deploy no deploy may: refused, and the change set deleted" "a distribution replacement is refused"
+since "$m" | grep -q "CFN DeleteChangeSet cbase-app-site ok" || fail "a refused replacement left its change set"
+since "$m" | grep -qE "CFN ExecuteChangeSet|^PUT " && fail "a refused replacement changed something"
+ok
+m="$(mark)"
+run "$site" deploy --allow-downtime
+expect_rc 0 "a distribution replacement with --allow-downtime"
+err_has "downtime: allowed (--allow-downtime)" "an allowed replacement"
+since "$m" | grep -q "CFN ExecuteChangeSet cbase-app-site ok" || fail "an allowed replacement was not executed"
 fake_set changes=auto
 ok
 # Drift: printed and refused, then allowed with --accept-drift (and CBASE_ACCEPT_DRIFT=1).
@@ -708,7 +717,7 @@ ok
 
 # ---- a named certificate: used as it is, never looked for or replaced ---------------------------
 # CERT_WILD would be found first (by ARN); CBASE_CERT_ARN names CERT_NAMED, which is served.
-named="$(app named "CBASE_APP = named" "CBASE_VM = none" "CBASE_STATIC = site" "CBASE_DOMAIN = www.example.com" "CBASE_CERT_ARN = $CERT_NAMED")"
+named="$(app named "CBASE_APP = named" "CBASE_VM = none" "CBASE_STATIC = site" "CBASE_DOMAIN = named.example.com" "CBASE_CERT_ARN = $CERT_NAMED")"
 mkdir -p "$named/build" && printf 'x\n' > "$named/build/index.html"
 m="$(mark)"
 run "$named" deploy
@@ -729,19 +738,19 @@ conf_error "cbase.conf line 4: CBASE_API_CERT_ARN is for CBASE_API_HOST, and the
   "CBASE_API_CERT_ARN = arn:aws:acm:us-east-1:$ACCOUNT:certificate/12345678-abcd-ef01-2345-6789abcdef01"
 
 # ---- several hostnames: one distribution, one certificate, a record each -------------------------
-# example.com and www.example.com: the issued example.com,*.example.com covers both, and each is an
+# example.com and app.example.com: the issued example.com,*.example.com covers both, and each is an
 # alias of the one distribution.
-two="$(app two "CBASE_APP = two" "CBASE_VM = none" "CBASE_STATIC = site" "CBASE_DOMAIN = example.com www.example.com")"
+two="$(app two "CBASE_APP = two" "CBASE_VM = none" "CBASE_STATIC = site" "CBASE_DOMAIN = example.com app.example.com")"
 mkdir -p "$two/build" && printf 'x\n' > "$two/build/index.html"
 m="$(mark)"
 run "$two" deploy
 expect_rc 0 "two hostnames with an issued certificate"
-out_has "certificate: $CERT_WILD, issued, covers example.com www.example.com" "one certificate covers both hostnames"
+out_has "certificate: $CERT_WILD, issued, covers example.com app.example.com" "one certificate covers both hostnames"
 since "$m" | grep -q "ACM RequestCertificate" && fail "a certificate was requested when one covered both hostnames"
 template_of cbase-app-two > "$t/tpl"
-grep -Fq "Aliases: [example.com, www.example.com]" "$t/tpl" || { cat "$t/tpl" >&2; fail "the template lacks both aliases"; }
+grep -Fq "Aliases: [example.com, app.example.com]" "$t/tpl" || { cat "$t/tpl" >&2; fail "the template lacks both aliases"; }
 [ "$(grep -c "Aliases:" "$t/tpl")" = 1 ] || fail "two hostnames made more than one distribution's aliases"
-for h in example.com www.example.com; do
+for h in example.com app.example.com; do
   for ty in A AAAA; do
     since "$m" | grep -q "R53 UPSERT Z0EXAMPLE $h $ty alias=d" || fail "the $ty alias of $h was not written"
   done
@@ -750,17 +759,28 @@ out_has "deployed two: https://example.com/" "the first hostname is the URL"
 ok
 # A hostname no certificate covers (shop.org, in its own zone): a new request naming every
 # hostname, its records written in each one's zone, and an alias in each.
-printf 'CBASE_APP = two\nCBASE_VM = none\nCBASE_STATIC = site\nCBASE_DOMAIN = example.com www.example.com shop.org\n' > "$two/cbase.conf"
+printf 'CBASE_APP = two\nCBASE_VM = none\nCBASE_STATIC = site\nCBASE_DOMAIN = example.com app.example.com shop.org\n' > "$two/cbase.conf"
 m="$(mark)"
 run "$two" deploy
 expect_rc 0 "three hostnames, one of them uncovered"
-since "$m" | grep -q "ACM RequestCertificate example.com,www.example.com,shop.org" || { since "$m" | grep ACM >&2; fail "the request did not name every hostname"; }
+since "$m" | grep -q "ACM RequestCertificate example.com,app.example.com,shop.org" || { since "$m" | grep ACM >&2; fail "the request did not name every hostname"; }
 since "$m" | grep -qE "R53 UPSERT Z0SHOPORG _v[0-9]+\.shop\.org\. CNAME" || fail "shop.org's validation record was not written in its zone"
-since "$m" | grep -qE "R53 UPSERT Z0EXAMPLE _v[0-9]+\.www\.example\.com\. CNAME" || fail "www.example.com's validation record was not written"
+since "$m" | grep -qE "R53 UPSERT Z0EXAMPLE _v[0-9]+\.app\.example\.com\. CNAME" || fail "app.example.com's validation record was not written"
 since "$m" | grep -q "ACM issued" || fail "the certificate for three hostnames was not issued"
 since "$m" | grep -q "R53 UPSERT Z0SHOPORG shop.org A alias=d" || fail "shop.org's alias was not written in its zone"
-since "$m" | grep -q "R53 UPSERT Z0EXAMPLE www.example.com AAAA alias=d" || fail "www.example.com's alias was not written"
-template_of cbase-app-two | grep -Fq "Aliases: [example.com, www.example.com, shop.org]" || fail "the template lacks the three aliases"
+since "$m" | grep -q "R53 UPSERT Z0EXAMPLE app.example.com AAAA alias=d" || fail "app.example.com's alias was not written"
+template_of cbase-app-two | grep -Fq "Aliases: [example.com, app.example.com, shop.org]" || fail "the template lacks the three aliases"
+ok
+# A hostname taken off the distribution on a redeploy: downtime for it, refused; then allowed.
+printf 'CBASE_APP = two\nCBASE_VM = none\nCBASE_STATIC = site\nCBASE_DOMAIN = example.com app.example.com\n' > "$two/cbase.conf"
+m="$(mark)"
+run "$two" deploy
+expect_rc 1 "a hostname taken off the distribution"
+err_has "downtime: the hostname shop.org is taken off the distribution Distribution" "the hostname taken off"
+since "$m" | grep -qE "CFN ExecuteChangeSet|^PUT " && fail "a refused alias removal changed something"
+run "$two" deploy --allow-downtime
+expect_rc 0 "a hostname taken off, with --allow-downtime"
+template_of cbase-app-two | grep -Fq "Aliases: [example.com, app.example.com]" || fail "the allowed alias removal did not reach the stack"
 ok
 # No zone for either hostname: the record to add is printed for each.
 nz="$(app nz "CBASE_APP = nz" "CBASE_VM = none" "CBASE_STATIC = site" "CBASE_DOMAIN = a.nozone.net b.nozone.net")"
@@ -772,16 +792,38 @@ for h in a.nozone.net b.nozone.net; do
   grep -Eq "^dns: point $h at d[0-9]+fake\.cloudfront\.net where its DNS is served" "$t/out" || { cat "$t/out" >&2; fail "no record printed for $h"; }
 done
 ok
-conf_error "cbase.conf line 2: CBASE_DOMAIN names www.example.com twice" "CBASE_APP = a" "CBASE_DOMAIN = www.example.com www.example.com"
+conf_error "cbase.conf line 2: CBASE_DOMAIN names app.example.com twice" "CBASE_APP = a" "CBASE_DOMAIN = app.example.com app.example.com"
 conf_error "cbase.conf line 2: CBASE_DOMAIN is lower-case hostnames, blank-separated" "CBASE_APP = a" "CBASE_DOMAIN = example.com WWW.example.com"
 conf_error "cbase.conf line 3: CBASE_API_HOST api.example.com is one of CBASE_DOMAIN's hostnames" "CBASE_APP = a" "CBASE_DOMAIN = example.com api.example.com" "CBASE_API_HOST = api.example.com"
 shape domains "app        site
 vm         none
 static     site
 files      build/ (the default)
-domain     example.com www.example.com
+domain     example.com app.example.com
 cert       (found or requested by deploy)
-route      * static cache GET,HEAD" "CBASE_APP = site" "CBASE_VM = none" "CBASE_DOMAIN =  example.com   www.example.com"
+route      * static cache GET,HEAD" "CBASE_APP = site" "CBASE_VM = none" "CBASE_DOMAIN =  example.com   app.example.com"
+
+# ---- a hostname another distribution holds: named with the step that frees it ------------------
+fake_set "foreign-dist=EOLDDIST:dold.cloudfront.net:taken.example.com+other.example.com"
+taken="$(app taken "CBASE_APP = taken" "CBASE_VM = none" "CBASE_STATIC = site" "CBASE_DOMAIN = taken.example.com")"
+mkdir -p "$taken/build" && printf 'x\n' > "$taken/build/index.html"
+m="$(mark)"
+run "$taken" deploy --dry-run
+expect_rc 0 "a dry run with a hostname another distribution holds"
+err_has "taken.example.com is an alternate domain name of the distribution EOLDDIST (dold.cloudfront.net), which is not this app's" "the dry run names the holder"
+out_has "dry run: a deploy would stop here" "the dry run goes on"
+m="$(mark)"
+run "$taken" deploy
+expect_rc 1 "a hostname another distribution holds"
+err_has "free it: remove taken.example.com from EOLDDIST's alternate domain names" "the step that frees it"
+since "$m" | grep -qE "CFN CreateChangeSet|^PUT |R53 UPSERT" && fail "a deploy onto a held hostname changed something"
+fake_set foreign-dist=
+run "$taken" deploy
+expect_rc 0 "the hostname freed"
+# Its own distribution holding the hostname is no conflict (a redeploy).
+run "$taken" deploy
+expect_rc 0 "a redeploy of a hostname the app's own distribution holds"
+ok
 
 # ---- what deploy refuses -----------------------------------------------------------------------
 # A static group that does not exist: the group-init command, nothing made.
@@ -834,7 +876,8 @@ out_has "  VmOrigin:" "a full app's template has the VM origin parameter"
 ok
 # CBASE_API_HOST's distribution: everything to the VM, and a ws route on the ws origin there too.
 apiws="$(app apiws "CBASE_APP = shop" "CBASE_ROUTE = /mqtt* ws" "CBASE_ROUTE = /ws* ws" "CBASE_ROUTE = /api/* vm" \
-           "CBASE_DOMAIN = shop.example.com" "CBASE_API_HOST = api.example.com")"
+           "CBASE_DOMAIN = shop.example.com" "CBASE_API_HOST = api.example.com" \
+           "CBASE_API_ROUTE = /v1/leaderboard vm origin GET,HEAD,OPTIONS" "CBASE_API_ROUTE = /v1/bots vm origin GET,HEAD,OPTIONS")"
 run "$apiws" template
 expect_rc 0 "a template with CBASE_API_HOST and ws routes"
 awk '/^  ApiDistribution:$/{f=1} f' "$t/out" > "$t/api"
@@ -849,7 +892,24 @@ done
 awk '/- Id: ws/{f=1} f' "$t/api" | grep -q "OriginReadTimeout: 60" || fail "the API host's ws origin's read timeout"
 awk '/- Id: ws/{f=1} f' "$t/api" | grep -q "OriginKeepaliveTimeout: 60" || fail "the API host's ws origin's keep-alive"
 [ -z "$(api_behaviour /api/*)" ] || fail "a vm route is a behaviour of its own on the API host (its default is the VM)"
+# CBASE_API_ROUTE: the cached reads keep the origin's Cache-Control, first, in the file's order.
+for p in /v1/leaderboard /v1/bots; do
+  api_behaviour "$p" | grep -q "TargetOriginId: vm" || { cat "$t/api" >&2; fail "$p is not on the API host's VM origin"; }
+  api_behaviour "$p" | grep -q "CachePolicyId: 4cc15a8a-d715-48a4-82b8-cc0b614638fe" || fail "$p does not keep the origin's Cache-Control"
+  api_behaviour "$p" | grep -q "AllowedMethods: \[GET, HEAD, OPTIONS\]" || fail "$p's methods"
+done
+[ "$(grep -o 'PathPattern: "[^"]*"' "$t/api" | tr '\n' ' ')" = 'PathPattern: "/v1/leaderboard" PathPattern: "/v1/bots" PathPattern: "/mqtt*" PathPattern: "/ws*" ' ] \
+  || fail "the API host's behaviours are not its routes, then the ws routes"
+# Server-Timing on every answer of the API host, and the VM at 60 s.
+[ "$(grep -c "ResponseHeadersPolicyId: !Ref ServerTimingPolicy" "$t/api")" = 5 ] || fail "an API behaviour lacks the Server-Timing policy"
+grep -A6 "^  ServerTimingPolicy:" "$t/api" | grep -q "Enabled: true" || fail "the Server-Timing policy is not on"
+awk '/- Id: vm/{f=1} f' "$t/api" | grep -m1 "OriginReadTimeout" | grep -q 60 || fail "the API host's VM origin's read timeout"
+awk '/- Id: vm/{f=1} f' "$t/api" | grep -m1 "OriginKeepaliveTimeout" | grep -q 60 || fail "the API host's VM origin's keep-alive"
+awk '/^  Distribution:$/{f=1} /^  ApiDistribution:$/{f=0} f' "$t/out" | grep -q "ResponseHeadersPolicyId" && fail "the main distribution got the API host's Server-Timing policy"
 ok
+conf_error "cbase.conf line 4: CBASE_API_ROUTE is a route of CBASE_API_HOST's, and there is none" "CBASE_APP = a" "CBASE_MEMORY = 1G" "CBASE_DOMAIN = a.example.com" "CBASE_API_ROUTE = /v1/x vm origin"
+conf_error "cbase.conf line 3: CBASE_API_ROUTE's origin is vm or ws" "CBASE_APP = a" "CBASE_MEMORY = 1G" "CBASE_API_ROUTE = /f static"
+conf_error "cbase.conf line 3: the cache mode origin (the origin's Cache-Control) is for a vm route" "CBASE_APP = a" "CBASE_MEMORY = 1G" "CBASE_ROUTE = /f/* static origin"
 run "$site" template
 expect_rc 0 "a static site's template"
 grep -Eq "VmOrigin|TargetOriginId: (vm|ws)" "$t/out" && fail "a static site's template names the VM"

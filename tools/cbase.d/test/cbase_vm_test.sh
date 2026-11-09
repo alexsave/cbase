@@ -147,6 +147,17 @@ fake_set changes=auto
 # ================================================================================================
 # shop: the VM and the bucket of the groups g9, its memory undeclared (counted at 128M).
 shop="$(vm_app shop "CBASE_APP = shop" "CBASE_VM = g9" "CBASE_STATIC = g9")"
+# Its origin secret missing from SSM: refused, with the one command that makes it.
+fake_set origin-secret=
+m="$(mark)"
+run "$shop" deploy
+expect_rc 1 "a VM app with no origin secret"
+err_has "there is no SSM parameter /cbase/shop/CBASE_ORIGIN_SECRET" "a VM app with no origin secret"
+err_has "aws ssm put-parameter --type SecureString --name /cbase/shop/CBASE_ORIGIN_SECRET" "the command that makes the origin secret"
+since "$m" | grep -qE "^PUT |^CFN CreateChangeSet|^SSM SendCommand" && fail "a deploy with no origin secret changed something"
+ok
+ORIGIN_SECRET=hunter4-origin-header-value
+fake_set "origin-secret=$ORIGIN_SECRET"
 m="$(mark)"
 run "$shop" deploy
 expect_rc 0 "a full app's deploy"
@@ -158,10 +169,16 @@ out_has "vm: done (the fake's answer)" "the command's own lines are printed"
 sha="$(shasum -a 256 "$t/elf-arm64" | cut -d' ' -f1)"
 since "$m" | grep -q "^PUT /$BUCKET/artifacts/shop/$sha 200" || fail "the artifact was not uploaded to artifacts/shop/<sha256>"
 since "$m" | grep -q "SSM GetCommandInvocation c0ffee00-[0-9a-f-]* InProgress" || fail "the command was not waited for"
-since "$m" | grep -q "CFN CreateChangeSet cbase-app-shop CREATE ok params=VmOrigin=ec2-i-0g9.compute-1.amazonaws.com,VmPort=8700" \
+since "$m" | grep -q "CFN CreateChangeSet cbase-app-shop CREATE ok params=VmOrigin=ec2-i-0g9.compute-1.amazonaws.com,VmPort=8700,OriginSecret=(the ssm value) " \
   || { since "$m" | grep CreateChangeSet >&2; fail "the app's stack lacks VmOrigin and VmPort"; }
 out_has "shop joined static group g9: app=shop folder=shop/" "the app joins its static group"
 out_has "deployed shop: https://" "the URL is printed"
+out_has "origin secret: /cbase/shop/CBASE_ORIGIN_SECRET (X-Cbase-Origin; its value is not shown)" "the origin secret is read"
+grep -Fq -- "$ORIGIN_SECRET" "$t/out" "$t/err" && fail "the origin secret's value was printed"
+template_of cbase-app-shop > "$t/tpl"
+[ "$(grep -c "HeaderName: X-Cbase-Origin" "$t/tpl")" = "$(grep -c "DomainName: !Ref VmOrigin" "$t/tpl")" ] || fail "a VM origin lacks X-Cbase-Origin"
+grep -A1 "HeaderName: X-Cbase-Origin" "$t/tpl" | grep -q "HeaderValue: !Ref OriginSecret" || fail "X-Cbase-Origin is not the OriginSecret parameter"
+grep -A2 "^  OriginSecret:" "$t/tpl" | grep -q "NoEcho: true" || fail "OriginSecret is not NoEcho"
 aws s3api head-object --bucket g9-group-bucket --key shop/index.html > /dev/null 2>&1 || fail "the files were not uploaded"
 ok
 # The order: the service before the files, the files before the distribution.
@@ -184,6 +201,14 @@ if [ "$(grep -c 'systemctl restart' "$t/script")" != 1 ] || ! grep -Fq 'systemct
 fi
 grep -Fq 'unit=cbase-shop.service' "$t/script" || fail "the script's unit is not cbase-shop.service"
 ok
+# An AWS error that holds the origin secret's bare value (no keyword on its line): masked by value.
+fake_set "changes=replace-distribution&fail-execute=2"
+run "$shop" deploy --allow-downtime
+expect_rc 1 "an execute whose error holds the origin secret"
+err_has "(a line naming an origin header or a parameter value, not shown)" "the masked error"
+grep -Fq -- "$ORIGIN_SECRET" "$t/out" "$t/err" && fail "an AWS error printed the origin secret's value"
+fake_set "changes=auto&fail-execute=0"
+ok
 # blog: VM-only, its memory declared: the next port, and a real cap.
 blog="$(vm_app blog "CBASE_APP = blog" "CBASE_VM = g9" "CBASE_STATIC = none" "CBASE_MEMORY = 64M")"
 m="$(mark)"
@@ -192,7 +217,7 @@ expect_rc 0 "a VM-only app's deploy"
 out_has "blog joined vm group g9: app=blog port=8701 service=cbase-blog.service mem=64" "the next port"
 out_has "  shop: memory not declared, counted as 128M" "a member's undeclared memory is said"
 out_has "  memory: blog 64, shop ~128 = 192 MiB of the 320 MiB for apps" "two members fit"
-since "$m" | grep -q "params=VmOrigin=ec2-i-0g9.compute-1.amazonaws.com,VmPort=8701" || fail "blog's stack lacks its port"
+since "$m" | grep -q "params=VmOrigin=ec2-i-0g9.compute-1.amazonaws.com,VmPort=8701,OriginSecret=(the ssm value) " || fail "blog's stack lacks its port"
 since "$m" | grep -q "^PUT /g9-group-bucket/" && fail "a VM-only app uploaded files"
 script_of | awk "/<< 'CBASE_UNIT'\$/{f=1; next} /^CBASE_UNIT\$/{f=0} f" > "$t/unit"
 grep -Fxq "MemoryMax=64M" "$t/unit" || { cat "$t/unit" >&2; fail "a declared app's unit lacks MemoryMax=64M"; }
@@ -235,12 +260,17 @@ ok
 # A bigger instance has room: the same app fits on a t4g.small (2048 MiB).
 fake_set instance-type=t4g.small
 rm -rf "$big/dist"
+m="$(mark)"
 run "$big" deploy --dry-run
 expect_rc 0 "an app that fits a bigger instance (dry run)"
 out_has "  memory: big 256, blog 64, shop ~128 = 448 MiB of the 1856 MiB for apps (t4g.small: 2048 MiB less 192 for the OS)" "the fit on a t4g.small"
 out_has "vm: would join vm group g9 as app=big port=8702 service=cbase-big.service mem=256" "a dry run says the port it would claim"
 [ ! -e "$big/dist" ] || fail "a dry run built the server"
 state_of vm g9 | grep -q "app=big" && fail "a dry run joined"
+# Strictly read-only but for its own change set: no S3 write (no state file, no artifact), no SSM
+# command, no executed change set; the change set it made is deleted.
+since "$m" | grep -E "^PUT /|^DELETE /|^SSM SendCommand|^CFN ExecuteChangeSet|^CF CreateInvalidation" && fail "a VM dry run changed something"
+since "$m" | grep -q "^CFN DeleteChangeSet cbase-app-big ok" || fail "a VM dry run left its change set"
 fake_set instance-type=t4g.nano
 ok
 
