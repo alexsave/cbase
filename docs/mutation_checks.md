@@ -1113,3 +1113,10 @@ The shell now writes `pid $!` and then `ready` on fd 3, and the rig's kill follo
 
 - unit_spawn.c (the race made certain): `sleep 0.5;` before the background job -> the old test red, `grandchild_dies_with_group` gc > 0 and gone(gc); the new test with the same delay green.
 - spawn.c: the group kill made a kill of the leader alone (kill_start's SIGTERM and reap's SIGKILL to c->pid) -> `grandchild_dies_with_group` gone(gc), both the killed and the exited halves.
+
+## A deleted object is rebuilt (small-debts)
+
+tools/c_rules.mk declared a bare `.SECONDARY:`, which makes every target secondary: make 3.81 then rebuilt a missing object only when its source was newer than the program, so a deleted object left a stale program in place (found when a restored util/json.c, in the same second as the last link, left build/test/unit_event linked with the mutant).
+Every object is an explicit prerequisite of its program, so none is intermediate and the line is not needed; it is gone.
+
+- c_rules.mk: `.SECONDARY:` put back -> tools/c_rules_test.sh `a deleted object is rebuilt and its program relinked` compiled nothing, expected build/obj/host/src/lone.o.
