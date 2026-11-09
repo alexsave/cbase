@@ -115,11 +115,13 @@ jobs:
   # test needs its platform's headers, fetched by a pinned commit into client/build. Each runs the
   # shared host suite on its host (every case with socket ids from 1 and from 0), natively and under
   # ASan + UBSan, then compiles the host for wasm32 with the pinned clang, libc-gates and links it.
+  # A host's own check may build and run a whole app on it (the server too, so the server's libraries).
   client_hosts:
     name: client hosts on their platforms (host suite, wasm32, libc gate)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
+      - run: sudo apt-get update -q && sudo apt-get install -y -q build-essential libssl-dev libsqlite3-dev
       # tools/ci_llvm.sh's pinned downloads (binaryen's release tarball, llvm.sh), so a run does not
       # need github.com's release host once one has filled it. ci_llvm.sh owns the cache: it hashes
       # every entry against its pin before use, and the pins live in it, hence the key.
@@ -240,7 +242,7 @@ jobs:
           /tmp/cfn/bin/cfn-lint --regions us-east-1 -- providers/aws/ops/cbase.yaml providers/local/ops/vm.yaml
       - name: the shell scripts
         run: |
-          s="$(git ls-files 'ops/*.sh' 'providers/*/ops/*.sh' 'providers/*/ops/test/*.sh' 'fuzz/test/*.sh' tools/repo_gate_test.sh tools/c_rules_test.sh tools/changed_files.sh tools/changed_files_test.sh tools/libc_gate.sh tools/symbol_gate.sh tools/offline_build_test.sh tools/serve.sh tools/serve_test.sh client/test/requires_gate.sh)"
+          s="$(git ls-files 'ops/*.sh' 'providers/*/ops/*.sh' 'providers/*/ops/test/*.sh' 'fuzz/test/*.sh' tools/repo_gate_test.sh tools/c_rules_test.sh tools/changed_files.sh tools/changed_files_test.sh tools/libc_gate.sh tools/symbol_gate.sh tools/offline_build_test.sh tools/serve.sh tools/serve_test.sh client/test/requires_gate.sh example/minimal/check.sh)"
           # shellcheck disable=SC2086
           bash -n $s
           # shellcheck disable=SC2086

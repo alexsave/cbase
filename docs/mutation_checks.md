@@ -1303,3 +1303,18 @@ Each mutation was made a second after a copy, `bash tools/serve_test.sh` run, an
 
 - cbase.mk: `serve::` (a double-colon rule, which a product's `serve:` line cannot join) -> `the product's export did not reach serve` and `the product's serve: <prerequisite> was not built before serve ran` red.
 - tools/serve.sh: `exec env -u CBASE_DEV "$bin" serve` -> `the product's export did not reach serve` red (and the cases whose CBASE_DEV comes from the environment).
+
+## The minimal app: one Makefile, a server and a page (round3-friction)
+
+example/minimal/check.sh, run by client/hosts/cdom/host.mk's check-minimal-example (part of check-host-cdom), runs `make serve` in example/minimal with a clean environment and only `CBASE_LISTEN=127.0.0.1:0`, so the server and the page are built by the one Makefile and the server runs outside dev mode; then it reads the URL from the startup line and curls the route, the page and the module.
+tools/repo_gate_test.sh allows the framework's name under `example/minimal/` alone, held by planted files beside it (`example/minimalx/`, `example/p.c`, a nested `x/example/minimal/`).
+Each mutation was made a second after a copy, the example's outputs removed, the check (or the gate) run, and the file restored.
+
+- server/minimal.c: the route answers `hello` -> `GET /api/hello answered 'hello ... 200', not 200 'hello from cbase'` red.
+- Makefile: `APP_MODULES := net store` (the adapter's random module dropped) -> the module does not link (`wasm-ld: undefined symbol: cd_random_bytes`), so `make serve did not come up listening` red.
+- Makefile: `serve:` with no prerequisites (the page not built first) -> `GET / answered 404` and `GET /page.wasm answered 404` red.
+- server/minimal.c: `.storeless = false` -> outside dev mode serve refuses the start with no JWT secret, so `make serve did not come up listening` red.
+- Makefile: adapter.mk included before client.mk -> adapter.mk's `$(error)` stops the make, `make serve did not come up listening` red.
+- Makefile: cdom.mk included before cbase.mk -> the check stays green: both orders build today, and the Makefile's comment says so rather than claiming the other order breaks.
+- tools/repo_gate_test.sh: the `^example/minimal/` exception dropped -> the planted files' line and the repository's own example/minimal lines red.
+- tools/repo_gate_test.sh: the exception unanchored (`example/minimal/`) -> the planted `x/example/minimal/p.c` is let through, red.

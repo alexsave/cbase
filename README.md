@@ -175,6 +175,37 @@ A storeless app opens no platform store, and opens its own in the `serve_open` h
 A C or wasm client includes `client/client.mk` and adds `$(CBC_SRC)` and `$(CBC_INC)` to its build.
 Which client mode: an app with no accounts sets `cbc_cfg.anonymous`, and its calls go over plain HTTP, with a socket only while it holds a room; an app with accounts leaves it 0 and signs in (`cbc_sign_in`), and its calls ride the socket once a user is signed in (`client/include/cbase/client.h`, `cbc_cfg`).
 
+### The smallest app: a server and a page that calls it
+
+[example/minimal/](example/minimal/) is the smallest whole app, server and browser page, and the skeleton to copy for one: one Makefile that includes `cbase.mk`, cdom's `cdom.mk`, `client/client.mk` and the cdom adapter's `adapter.mk`, in that order (its comment says why), a server with one route, and a page in C on [cdom](https://github.com/alexsave/cdom).
+The server is one `cb_app` with `GET /api/hello` answering `hello from cbase` (`example/minimal/server/minimal.c`).
+`make -C example/minimal serve` builds both and runs the server, outside dev mode with no setting at all (it is storeless); open the URL its startup line prints.
+cbase's CI builds it against the cdom pin and checks it as a person runs it (`example/minimal/check.sh`).
+
+The client call, in C (`example/minimal/page/page.c`, on the cdom adapter, `client/hosts/cdom/cbc_cdom.h`):
+
+```c
+static cbc_cdom client;   // static and zeroed: the handle lives for the page
+
+static void on_event(void *ctx, cbc *c, const cbc_event *e, const uint8_t *bytes) {
+    if (e->kind == CBC_EV_DONE && e->status == 200 && bytes)
+        show((const char *)bytes + e->off, e->len);   // the page's own: "hello from cbase\n"
+}
+
+// once, at start:
+cbc_cfg cfg;
+cbc_cfg_default(&cfg);
+cfg.anonymous = 1;   // no accounts: every call is plain HTTP on the page's origin
+cbc_cdom_start(&client, &cfg, NULL, on_event, NULL, NULL);
+cbc_call(cbc_cdom_client(&client), CBC_GET, CBC_C_IDEMPOTENT | CBC_C_FAIL_FAST, "/api/hello", 10, NULL, 0, cbc_cdom_now());
+cbc_cdom_pump(&client);   // after every call into the client
+```
+
+`CBC_C_IDEMPOTENT` says the call is safe to send again, and `CBC_C_FAIL_FAST` that a server that is down is reported at once (`client/include/cbase/client.h`).
+
+- TypeScript: coming soon.
+- Swift: coming soon.
+
 ## Rules the code keeps
 
 Each line names the tool, test or record that holds the rule; the tools run in `make check` or in CI.

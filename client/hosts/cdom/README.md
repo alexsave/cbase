@@ -4,10 +4,36 @@
 It is an adapter: the shared host (`client/hosts/common/cbc_host.h`) with cdom's socket, fetch, timers, clock, store and entropy as its environment, one cdom call each.
 `cbc_cdom.h` holds the contract; this file says how to build and test it.
 
+## The smallest app
+
+[example/minimal](../../../example/minimal) is a whole app on this adapter, server and page, to copy: one Makefile that includes `cbase.mk`, `cdom.mk`, `client/client.mk` and `adapter.mk` (its comment says why in that order), a server with one route (`server/minimal.c`), and a page whose C is the call itself (`page/page.c`):
+
+```c
+static cbc_cdom client;   /* static and zeroed: the handle lives for the page */
+static cd_id answer;      /* a text node, named with cd_name_text */
+
+static void on_event(void *ctx, cbc *c, const cbc_event *e, const uint8_t *bytes) {
+  if (e->kind != CBC_EV_DONE) return;
+  if (e->status == 200 && bytes) cd_set_text(answer, cd_tmp((const char *)bytes + e->off, e->len));
+  else cd_set_text(answer, CD_LIT("the server did not answer"));
+}
+
+/* in cd_main, after building the page */
+cbc_cfg cfg;
+cbc_cfg_default(&cfg);
+cfg.anonymous = 1;   /* no accounts: every call is plain HTTP on the page's origin */
+if (cbc_cdom_start(&client, &cfg, NULL, on_event, NULL, NULL) != 0) return;
+cbc_call(cbc_cdom_client(&client), CBC_GET, CBC_C_IDEMPOTENT | CBC_C_FAIL_FAST, "/api/hello", 10, NULL, 0, cbc_cdom_now());
+cbc_cdom_pump(&client);   /* after every call into the client */
+```
+
+`make -C example/minimal serve` builds both and runs the server; open the URL its startup line prints.
+`check-host-cdom` builds it against the pin and checks it as a person runs it (`example/minimal/check.sh`).
+
 ## The dependency
 
 cbase depends on cdom here and nowhere else, and cdom never depends on cbase.
-The repository gate (`tools/repo_gate_test.sh`) allows cdom's name only in this directory and in `client/test/unit_host_cdom.c`.
+The repository gate (`tools/repo_gate_test.sh`) allows cdom's name only in this directory, in `client/test/unit_host_cdom.c`, and in the minimal app built on it, `example/minimal/`.
 `client/Makefile` includes this directory's `host.mk`, CI runs it through `make check-hosts`, and the mutation check reads `mutants.py` here, all without naming cdom.
 
 ## The cdom pin
@@ -25,6 +51,7 @@ A new pin is that one line, moved once the adapter passes against the newer cdom
 - the shared host suite on this adapter (`client/test/unit_host_cdom.c` is cdom, as far as the adapter reaches it), natively and under ASan + UBSan, every case with socket ids from 1 and from 0 and on an http: and an https: page;
 - the adapter's own cases: a stop and a new start, a stop from inside a callback, late answers dropped, the key, a page that is not http: or https:, a host past 256 bytes, a socket the browser refuses to make, the early call that waits for the load;
 - the adapter, the shared host, the core and `lib/b64` compiled for wasm32 with `cdom.mk`'s flags (`CDOM_CFLAGS`: cdom's own `string.h`), the libc gate over them, and a module linked from them and `link_app.c` by `cdom.mk`'s `APP_WASM` rule, with the modules `CBC_CDOM_MODULES` names;
+- the minimal app (`example/minimal/check.sh`, also `make -C client check-minimal-example`): its one Makefile builds the server and the page against this cdom, and `make serve`, run outside dev mode with no setting but a free port, answers the route over curl and serves the page and its linked module;
 - `adapter_mk_check.sh` (also in `make -C client check`, nothing fetched): `adapter.mk` read without `cdom.mk` stops and names the fix, and no file is in two of the lists an app adds (`lib/b64/b64.c` once).
 
 `client/test/mutate.sh` runs this adapter's mutants (`mutants.py`) with the rest of the client's.
