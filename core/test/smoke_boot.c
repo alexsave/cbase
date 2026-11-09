@@ -207,10 +207,11 @@ static void own_cpus(char *out, size_t cap) {
 
 // Starts serve with `env`, waits for `says` and then for it to listen, and checks every thread:
 // the loop on `loop_want`, the two or more others on `bg_want`. Stops it with SIGTERM, cleanly.
-static void boots_with(char *const env[], const char *says, const char *loop_want, const char *bg_want) {
+// boots_with_at is the same at another level ("CBASE_LOG_LEVEL=debug"), for a line said only there.
+static void boots_with_at(char *const env[], char *level, const char *says, const char *loop_want, const char *bg_want) {
     tp_child c;
     char *argv[] = { (char *)g_cbase, "serve", NULL };
-    T_EQ_INT(spawn(&c, argv, env, false), 0);
+    T_EQ_INT(spawn_at(&c, argv, env, false, level), 0);
     T_EQ_INT(tp_wait_line(&c, says, 15000, NULL, 0), 0);
     T_EQ_INT(tp_wait_line(&c, "listening on", 15000, NULL, 0), 0);
     int loop_ok, bg_ok, bg_all;
@@ -220,6 +221,10 @@ static void boots_with(char *const env[], const char *says, const char *loop_wan
     T_CHECK(loop_ok);                          // the loop (the main thread) on its CPU
     T_CHECK(bg_all >= 2 && bg_ok == bg_all);   // the pools' workers and the rest on theirs
     T_EQ_INT(tp_stop(&c, SIGTERM, 15000), 0);
+}
+
+static void boots_with(char *const env[], const char *says, const char *loop_want, const char *bg_want) {
+    boots_with_at(env, "CBASE_LOG_LEVEL=info", says, loop_want, bg_want);
 }
 #endif
 
@@ -267,7 +272,7 @@ static void the_cpu_knob_boots_or_refuses(void) {
     // Off: nothing pinned, every thread on every CPU this test may use.
     char *off[] = { "CBASE_LISTEN=127.0.0.1:0", "CBASE_STORE=sqlite", "CBASE_DB=:memory:", "CBASE_DEV=1",
                     "CBASE_LOOP_CPU=off", "CBASE_BG_CPU=off", NULL };
-    boots_with(store_env(off), "CBASE_BG_CPU=off (not pinned)", mine, mine);
+    boots_with_at(store_env(off), "CBASE_LOG_LEVEL=debug", "CBASE_BG_CPU=off (not pinned)", mine, mine);   // a setting: debug
 #else
     char *pinned[] = { "CBASE_LISTEN=127.0.0.1:0", "CBASE_STORE=sqlite", "CBASE_DB=:memory:", "CBASE_DEV=1",
                        "CBASE_LOOP_CPU=0", NULL };
@@ -298,11 +303,52 @@ static void the_cpu_knob_boots_or_refuses(void) {
     T_EQ_INT(tp_wait_line(&c, "CPU knob auto: picking CPUs needs Linux, so nothing is pinned", 15000, NULL, 0), 0);
     T_EQ_INT(tp_wait_line(&c, "listening on", 15000, NULL, 0), 0);
     T_EQ_INT(tp_stop(&c, SIGTERM, 15000), 0);
-    T_EQ_INT(spawn(&c, argv, off, false), 0);
+    T_EQ_INT(spawn_at(&c, argv, off, false, "CBASE_LOG_LEVEL=debug"), 0);   // a setting is said at debug
     T_EQ_INT(tp_wait_line(&c, "CBASE_LOOP_CPU=off (not pinned)", 15000, NULL, 0), 0);
     T_EQ_INT(tp_wait_line(&c, "listening on", 15000, NULL, 0), 0);
     T_EQ_INT(tp_stop(&c, SIGTERM, 15000), 0);
 #endif
+}
+
+// THE DEFAULT START IS QUIET (ingress_process.c THE START'S CONFIG LOG): at info, the default, a
+// start says no setting on a line of its own and exactly one config line, the summary, before it
+// listens, and still warns at info (a stored app's dev start with no JWT secret); at debug every
+// setting is said again (CBASE_LISTEN's line among them).
+// A setting's own line ("... config: CBASE_LISTEN=..."), not a warning that names one ("... config:
+// CBASE_JWT_SECRET is unset ..."): the name runs to its '='.
+static bool a_setting_line(const char *line) {
+    const char *p = strstr(line, " config: CBASE_");
+    if (!p) return false;
+    for (p += 9; *p && *p != ' '; p++)
+        if (*p == '=') return true;
+    return false;
+}
+
+static void the_default_start_is_quiet(void) {
+    char *argv[] = { (char *)g_cbase, "serve", NULL };
+    char *env[] = { "CBASE_LISTEN=127.0.0.1:0", "CBASE_STORE=sqlite", "CBASE_DB=:memory:", "CBASE_DEV=1", NULL };
+    store_env(env);
+    tp_child c;
+    T_EQ_INT(spawn(&c, argv, env, false), 0);
+    char line[1024];
+    int settings = 0, summaries = 0, warned = 0, up_seen = 0;
+    while (tp_wait_line(&c, "", 15000, line, sizeof line) == 0) {   // every line, to the listening one
+        if (a_setting_line(line)) {
+            if (settings++ == 0) fprintf(stderr, "     a setting at info: %s\n", line);
+        }
+        if (strstr(line, "WARN  config: CBASE_JWT_SECRET is unset")) warned++;
+        if (strstr(line, " config: app ") && strstr(line, "CBASE_LOG_LEVEL=debug lists every setting")) summaries++;
+        if (strstr(line, "listening on")) { up_seen = 1; break; }
+    }
+    T_CHECK(up_seen);
+    T_EQ_INT(settings, 0);
+    T_EQ_INT(summaries, 1);
+    T_EQ_INT(warned, g_storeless ? 0 : 1);   // a warning is as loud as ever: a dev start's random secret
+    T_EQ_INT(tp_stop(&c, SIGTERM, 15000), 0);
+    T_EQ_INT(spawn_at(&c, argv, env, false, "CBASE_LOG_LEVEL=debug"), 0);
+    T_EQ_INT(tp_wait_line(&c, " config: CBASE_LISTEN=127.0.0.1:0", 15000, NULL, 0), 0);
+    T_EQ_INT(tp_wait_line(&c, "listening on", 15000, NULL, 0), 0);
+    T_EQ_INT(tp_stop(&c, SIGTERM, 15000), 0);
 }
 
 // Reads the child's stdout into buf until a newline or `ms` pass: the bytes read (buf NUL-ended).
@@ -513,6 +559,7 @@ int main(int argc, char **argv) {
            g_storeless ? "is storeless" : "keeps a store");
     if (g_cbase) T_RUN(cbase_refuses);
     if (g_cbase) T_RUN(the_cpu_knob_boots_or_refuses);
+    if (g_cbase) T_RUN(the_default_start_is_quiet);
     if (g_cbase) T_RUN(the_startup_line_names_the_port);
     if (g_bootstrap) T_RUN(bootstrap_refuses);
     return T_DONE();

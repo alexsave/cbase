@@ -39,7 +39,7 @@ Against a live stack a fresh `CBASE_JWT_SECRET` would sign every user out and a 
 ## 2. The local provider on your machine
 
 `cbase serve` is one process over one SQLite file; the README's quick start runs it.
-Settings are `CBASE_*` variables (`core/src/config.h`, logged at start with secrets redacted), or a file named by `CBASE_ENV_FILE` (docs/PLATFORM.md 2.10).
+Settings are `CBASE_*` variables (`core/src/config.h`; a start logs one summary line, and every setting with secrets redacted under `CBASE_LOG_LEVEL=debug`), or a file named by `CBASE_ENV_FILE` (docs/PLATFORM.md 2.10).
 Outside `CBASE_DEV=1` it needs `CBASE_JWT_SECRET` (at least 32 characters) and `CBASE_PUBLIC_URL`, unless the app is storeless (docs/PLATFORM.md 2.7).
 `CBASE_DB` is the database file (default `./cbase.sqlite`); a second `cbase serve` on the same file refuses to start.
 `GET /health` is liveness and `GET /ready` readiness, when the app declares them (docs/PLATFORM.md 2.9).

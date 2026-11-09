@@ -114,8 +114,20 @@ static void on_sched_timer(cb_loop *l, void *ud) {
     cb_loop_timer(l, cb_config_scaled_ms(t->ctx->cfg, t->s->every_ms), on_sched_timer, t);
 }
 
+// THE START'S CONFIG LOG. Every setting, one line each with secrets redacted (cb_config_each), at
+// debug: CBASE_LOG_LEVEL=debug lists them. At info a start says one line of what it runs as, so an
+// error or a warning is not buried under forty settings; errors and warnings are as loud as ever.
+// smoke_boot's the_default_start_is_quiet holds both.
 static void log_config(const char *name, const char *value, bool secret, void *ud) {
-    CB_INFO("config", "%s=%s", name, value);
+    CB_DEBUG("config", "%s=%s", name, value);
+}
+
+static void log_config_summary(const cb_config *cfg, const cb_provider *prov, const cb_app *app) {
+    const bool storeless = app && app->storeless;
+    const char *store = storeless ? "none (storeless app)" : cfg->store[0] ? cfg->store : prov->store ? prov->store : "(none)";
+    CB_INFO("config", "app %s, provider %s, store %s, listen %s:%d%s, log %s (CBASE_LOG_LEVEL=debug lists every setting)",
+            app && app->name ? app->name : "(unnamed)", prov->name, store, cfg->listen_host, cfg->listen_port,
+            cfg->dev ? ", dev mode" : "", cb_log_level_name(cfg->log_level));
 }
 
 static int usage(void) {
@@ -148,6 +160,7 @@ int cb_process_main(const cb_provider *prov, const cb_app *app, int argc, char *
     if (cb_config_check_serve(&cfg, storeless, err, sizeof err) != CB_OK) { fprintf(stderr, "cbase: %s\n", err); return 2; }
     cb_log_init(cfg.log_level, 0);
     cb_config_each(&cfg, log_config, NULL);
+    log_config_summary(&cfg, prov, app);
     if (cfg.jwt_secret_generated && !storeless) CB_WARN("config", "CBASE_JWT_SECRET is unset (CBASE_DEV=1): sessions die when this process does");
 
     static cb_ctx ctx;
