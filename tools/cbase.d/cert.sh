@@ -2,11 +2,14 @@
 # cert.sh - the certificate and the DNS records for an app's hostnames (CBASE_DOMAIN, and
 # CBASE_API_HOST), automatic (README.md "./cbase deploy tool"). Sourced by tools/cbase.
 #
+# THE HOSTNAMES are CBASE_DOMAIN's (one or more, the first the app's URL) and CBASE_API_HOST; each
+# is found its own zone, so they may sit in different zones, and one certificate covers them all.
+#
 # THE CERTIFICATE, an ACM one in us-east-1 (the one region CloudFront reads), found in this order:
 #   1. CBASE_CERT_ARN, an override: it must be ISSUED and cover every hostname;
 #   2. an ISSUED certificate that covers every hostname, the first by ARN;
 #   3. one still PENDING_VALIDATION that covers them (an earlier deploy's request);
-#   4. a new request, DNS validation, for the domain with the API hostname as its second name.
+#   4. a new request, DNS validation, for the first hostname with every other one as a SAN.
 # A certificate covers a hostname when one of its names (the domain and its SANs, from
 # describe-certificate) is the hostname, or is "*." and the hostname's parent: a wildcard covers one
 # label, so *.example.com covers www.example.com and neither example.com nor a.b.example.com.
@@ -162,7 +165,8 @@ cert_resolve() {
   CERT_HOSTS=()
   CERT_ZONES=()
   [ -n "$CONF_DOMAIN" ] || return 0
-  CERT_HOSTS=("$CONF_DOMAIN")
+  # shellcheck disable=SC2153 # conf.sh sets CONF_DOMAINS
+  CERT_HOSTS=("${CONF_DOMAINS[@]}")
   [ -z "$CONF_API_HOST" ] || CERT_HOSTS+=("$CONF_API_HOST")
   local h z a st
   for h in "${CERT_HOSTS[@]}"; do
@@ -192,10 +196,11 @@ cert_resolve() {
     echo "certificate: none covers ${CERT_HOSTS[*]}; a deploy would request one (DNS validation). This dry run goes on without the hostnames."
     return 0
   else
-    local args=(--domain-name "$CONF_DOMAIN" --validation-method DNS)
-    [ -z "$CONF_API_HOST" ] || args+=(--subject-alternative-names "$CONF_API_HOST")
-    # The same app's requests within the hour are one request (ACM's idempotency token).
-    a="$(acm request-certificate "${args[@]}" --idempotency-token "cbase$(printf '%s' "$CONF_APP" | cksum | cut -d' ' -f1)" \
+    local args=(--domain-name "${CERT_HOSTS[0]}" --validation-method DNS)
+    [ "${#CERT_HOSTS[@]}" -eq 1 ] || args+=(--subject-alternative-names "${CERT_HOSTS[@]:1}")
+    # The same app's requests for the same hostnames within the hour are one request (ACM's
+    # idempotency token); other hostnames are another request.
+    a="$(acm request-certificate "${args[@]}" --idempotency-token "cbase$(printf '%s %s' "$CONF_APP" "${CERT_HOSTS[*]}" | cksum | cut -d' ' -f1)" \
            --query CertificateArn --output text)" || aws_fail "requesting a certificate for ${CERT_HOSTS[*]}"
     echo "certificate: requested $a for ${CERT_HOSTS[*]} (DNS validation)"
   fi

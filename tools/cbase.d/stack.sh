@@ -255,7 +255,7 @@ EOF
         Comment: cbase app $CONF_APP
         Enabled: true
 EOF
-    if [ -n "$CONF_DOMAIN" ]; then stack_viewer_cert "$CONF_DOMAIN"; else stack_viewer_cert; fi
+    stack_viewer_cert ${CONF_DOMAINS[@]+"${CONF_DOMAINS[@]}"}
     cat << EOF
         HttpVersion: http2and3
         IPV6Enabled: true

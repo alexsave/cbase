@@ -942,10 +942,16 @@ static void cloudformation(int fd, const request *r) {
             sb_add(&b, "<Stacks><member><StackName>%s</StackName><StackId>%s</StackId><CreationTime>2026-11-09T12:00:00Z</CreationTime>"
                        "<StackStatus>%s</StackStatus><Parameters/>",
                    st->name, st->id, st->status);
-            if (st->template)
+            if (st->template) {
                 sb_add(&b, "<Outputs><member><OutputKey>DistributionId</OutputKey><OutputValue>%s</OutputValue></member>"
-                           "<member><OutputKey>DistributionDomain</OutputKey><OutputValue>%s</OutputValue></member></Outputs>",
+                           "<member><OutputKey>DistributionDomain</OutputKey><OutputValue>%s</OutputValue></member>",
                        st->dist_id, st->dist_domain);
+                // A template with CBASE_API_HOST's distribution: its own cloudfront.net name.
+                if (strstr(st->template, "\n  ApiDistribution:\n"))
+                    sb_add(&b, "<member><OutputKey>ApiDistributionDomain</OutputKey><OutputValue>api-%s</OutputValue></member>",
+                           st->dist_domain);
+                sb_add(&b, "</Outputs>");
+            }
             sb_add(&b, "</member></Stacks>");
             cfn_close(&b, a);
         }

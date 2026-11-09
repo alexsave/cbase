@@ -485,8 +485,8 @@ Optional, each with its default:
 - `CBASE_ROUTE = <pattern> vm|static|ws [cache|nocache] [ALL|GET,HEAD,...]`, repeated, matched in order; default `/api/* vm` and `* static` for an app with both, `* static` for a static site, `* vm` for a VM-only app.
   Routes are written only to differ from the default, and any `CBASE_ROUTE` line replaces the defaults rather than adding to them; written routes with no `*` route get `* static` (or `* vm`) last, since CloudFront needs a default behaviour.
   `ws` is the VM uncached, every method, long timeouts; a route's cache defaults to `cache` for static and `nocache` for vm, its methods to `GET,HEAD` for static and `ALL` for vm.
-- `CBASE_DOMAIN = <host>`: the app's hostname; default none, and the app is at its `cloudfront.net` address.
-- `CBASE_API_HOST = <host>`: a second hostname whose every request goes to the VM; default none.
+- `CBASE_DOMAIN = <host> [<host> ...]`: the app's hostnames, blank-separated (`example.com www.example.com`), each an alias of the one distribution on one certificate with its own DNS record, the first the app's URL; default none, and the app is at its `cloudfront.net` address.
+- `CBASE_API_HOST = <host>`: one more hostname, on a distribution of its own, whose every request goes to the VM; default none.
 - `CBASE_CERT_ARN = arn:aws:acm:us-east-1:...`: an override; default, deploy finds an issued us-east-1 certificate covering the hostnames (wildcards and SANs included) or requests one with DNS validation.
 - `CBASE_ZONE = Z...`: an override; default, deploy finds the account's Route 53 hosted zone that covers the domain and writes the records there, or with none prints the records to add.
 - `CBASE_STATIC_DIR = <dir>`: the directory deploy uploads; default `build` for a static site, `ui/out` for an app with a VM.
@@ -619,7 +619,8 @@ A static group's bucket is kept with its files and its group tag removed, so the
 ### Certificates
 
 With no `CBASE_DOMAIN` there is no certificate: the app is at its distribution's `cloudfront.net` name, which deploy prints.
-With one, deploy looks in ACM in us-east-1 (the one region CloudFront reads) for an ISSUED certificate that covers every hostname, the domain and `CBASE_API_HOST`.
+With one, deploy looks in ACM in us-east-1 (the one region CloudFront reads) for an ISSUED certificate that covers every hostname, each of `CBASE_DOMAIN`'s and `CBASE_API_HOST`.
+A request names the first hostname and every other one as a SAN, and each hostname finds its own zone, so they may sit in different zones.
 A certificate's names are its domain and SANs, and a wildcard covers one label: `*.example.com` covers `www.example.com` and neither `example.com` nor `a.b.example.com`.
 Without one, it reuses a certificate it requested before that is still pending, or requests one with DNS validation.
 It then looks for the account's public Route 53 hosted zone whose name is the longest suffix of each hostname.
