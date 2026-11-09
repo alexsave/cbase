@@ -308,8 +308,9 @@ conf_load() {
       CBASE_HASHED)
         read -r -a CONF_HASHED <<< "$value"
         for g in "${CONF_HASHED[@]}"; do
-          [[ "$g" =~ ^[A-Za-z0-9._/*?-]+$ ]] && [[ "$g" != /* ]] \
-            || conf_die "$no" "CBASE_HASHED is blank-separated globs of letters, digits and . _ - / * ? (assets/*), each a path in the static dir with no leading '/'"
+          if ! [[ "$g" =~ ^[A-Za-z0-9._/*?-]+$ ]] || [[ "$g" == /* ]]; then
+            conf_die "$no" "CBASE_HASHED is blank-separated globs of letters, digits and . _ - / * ? (assets/*), each a path in the static dir with no leading '/'"
+          fi
         done
         hashed_no="$no" ;;
     esac
