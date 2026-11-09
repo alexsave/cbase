@@ -33,7 +33,7 @@ INC     := $(CBC_INC)
 # The native library has every part; the wasm module's base build leaves out the provider sign-in
 # (cbase/client.h CBC_OIDC) and its digests, which its oidc variant adds back.
 OIDC_DEF := $(CBC_OIDC_CFLAGS)
-OIDC_SRC := $(CBC_OIDC_SRC)
+OIDC_SRC := $(CBC_OIDC_SRC) $(CBC_B64_SRC)
 CFLAGS  := -std=gnu11 -O2 -g $(WARN) $(INC) $(OIDC_DEF)
 SAN     := -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer
 ASAN_CFLAGS := -std=gnu11 -O1 -g $(WARN) $(INC) $(OIDC_DEF) $(SAN)

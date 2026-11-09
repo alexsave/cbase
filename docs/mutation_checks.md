@@ -1249,3 +1249,16 @@ An earlier draft also compared the pin line's sha on its own; the link loop belo
 - README.md: the short form 4 characters (`[00c7]`) -> the same check red.
 - README.md: a second link to another cdom commit -> `links cdom commit aaaa..., host.mk's CDOM_PIN is 00c74ee8...` red.
 - README.md: the "The pin is" line reworded -> `no line 'The pin is [<short>](...)'` red.
+
+## The cdom adapter on cdom.mk, and lib/b64 in one list (adapter-on-cdom-mk)
+
+client/hosts/cdom/adapter.mk used to list cdom's own files and flags (CBC_CDOM_LINK_SRC, `-isystem <cdom>/src/libc`, `-I<cdom>/src`), so cdom's file list lived in two repositories.
+It now takes them from cdom's cdom.mk, stops with an `$(error)` when CDOM_CFLAGS is undefined, and names the modules it calls (CBC_CDOM_MODULES).
+lib/b64/b64.c is client.mk's CBC_B64_SRC alone, out of CBC_OIDC_SRC and CBC_CDOM_SRC, so no app takes `$(sort ...)` of them.
+client/hosts/cdom/adapter_mk_check.sh, run by `make -C client check` and check-host-cdom as check-cdom-adapter-mk, reads adapter.mk with make itself.
+Each mutation was made in a copy-restored file and `make check-cdom-adapter-mk` (or `make host-cdom-wasm`) run.
+
+- adapter.mk: the CDOM_CFLAGS `$(error)` made an `$(info)` -> `read without cdom.mk (CDOM_CFLAGS unset), and should stop` red.
+- adapter.mk: lib/b64/b64.c added back to CBC_CDOM_SRC -> `in two of CBC_SRC, CBC_OIDC_SRC, CBC_B64_SRC and CBC_CDOM_SRC: ../lib/b64/b64.c` red.
+- client.mk: lib/b64/b64.c added back to CBC_OIDC_SRC -> the same line red.
+- adapter.mk: `random` dropped from CBC_CDOM_MODULES -> host-cdom-wasm's link through cdom.mk's APP_WASM rule red (`wasm-ld: undefined symbol: cd_random_bytes`), so the module list host.mk links is adapter.mk's.

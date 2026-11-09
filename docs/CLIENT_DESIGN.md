@@ -60,7 +60,8 @@ The app's, in its own layer over the client:
 ### 3.3 How an app plugs in its bodies
 
 The app's code is a thin layer over `cbc`, and it is where the app's knowledge lives (section 2).
-A C app links the core into its own program through `client/client.mk` (`CBC_SRC`, `CBC_INC`, and `CBC_OIDC_SRC` with `CBC_OIDC_CFLAGS` for the provider sign-in), so a digest it already links is shared, never doubled.
+A C app links the core into its own program through `client/client.mk` (`CBC_SRC`, `CBC_INC`, and `CBC_OIDC_SRC` with `CBC_B64_SRC` and `CBC_OIDC_CFLAGS` for the provider sign-in), so a digest it already links is shared, never doubled.
+Each of lib/'s files is in one of those lists only: `lib/b64/b64.c` is `CBC_B64_SRC`, which the provider sign-in and the cdom host both need, so an app with both has nothing to dedupe.
 An app with no C of its own on the client loads the prebuilt module (3.5) and reads its events through the TypeScript shim.
 
 ### 3.4 The hosts and the generated surfaces, per language

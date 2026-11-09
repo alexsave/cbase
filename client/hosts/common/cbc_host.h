@@ -51,8 +51,8 @@
 // a host lives in the app's or the framework's own tree, with cbase as a submodule.
 // client/hosts/posix (cbc_posix.c, 80 lines) is the model; this is everything it does:
 //
-//   build    include client/client.mk with CBASE set; compile CBC_SRC (and CBC_OIDC_SRC with
-//            CBC_OIDC_CFLAGS for a provider's sign-in) and CBC_HOST_SRC with CBC_INC and
+//   build    include client/client.mk with CBASE set; compile CBC_SRC (and CBC_OIDC_SRC and
+//            CBC_B64_SRC with CBC_OIDC_CFLAGS for a provider's sign-in) and CBC_HOST_SRC with CBC_INC and
 //            CBC_HOST_INC, natively or for wasm32 (the core and this file need only CBC_REQUIRES)
 //   struct   the host's own struct embeds a cbc_host (cbc_posix: the cbc_host and the app's io);
 //            the env's ud is that struct, and one static const cbc_host_env serves every host

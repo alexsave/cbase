@@ -14,7 +14,7 @@ The repository gate (`tools/repo_gate_test.sh`) allows cdom's name only in this 
 
 The adapter is built and tested against one cdom, pinned by commit in `host.mk` (`CDOM_PIN`), and fetched into `client/build/cdom` by the target itself.
 That cdom is the one this cbase pairs with: an app on both takes cdom at the pin below, with cbase at the same commit as this file.
-The pin is [00c74ee8](https://github.com/alexsave/cdom/commit/00c74ee8ae65ae1f400011ea692e6d6fa611ba61), a cdom whose stable I/O contract (the rule at the top of `src/cdom.h`, held by `tests/link/contract.c`) declares every call the adapter makes, `cd_page_origin`, `cd_random_bytes` and `CD_WS_REFUSED` among them.
+The pin is [ac45e624](https://github.com/alexsave/cdom/commit/ac45e624dc7bced2d6f2ef15fcbdb69ab79045a4), a cdom with `cdom.mk` at its root (its sources and flags, which `adapter.mk` and `host.mk` take from it), and whose stable I/O contract (the rule at the top of `src/cdom.h`, held by `tests/link/contract.c`) declares every call the adapter makes, `cd_page_origin`, `cd_random_bytes` and `CD_WS_REFUSED` among them.
 A new pin is that one line, moved once the adapter passes against the newer cdom, and the line above with it: `pin_doc_check.sh` (run by `make -C client check` and `check-host-cdom`) fails when this file's commit is not `CDOM_PIN`.
 `CDOM=<a cdom checkout>` runs everything against that checkout instead.
 
@@ -24,29 +24,54 @@ A new pin is that one line, moved once the adapter passes against the newer cdom
 
 - the shared host suite on this adapter (`client/test/unit_host_cdom.c` is cdom, as far as the adapter reaches it), natively and under ASan + UBSan, every case with socket ids from 1 and from 0 and on an http: and an https: page;
 - the adapter's own cases: a stop and a new start, a stop from inside a callback, late answers dropped, the key, a page that is not http: or https:, a host past 256 bytes, a socket the browser refuses to make, the early call that waits for the load;
-- the adapter, the shared host, the core and `lib/b64` compiled for wasm32 against cdom's `src/libc/string.h`, the libc gate over them, and a link with cdom's sources (`link_app.c`).
+- the adapter, the shared host, the core and `lib/b64` compiled for wasm32 with `cdom.mk`'s flags (`CDOM_CFLAGS`: cdom's own `string.h`), the libc gate over them, and a module linked from them and `link_app.c` by `cdom.mk`'s `APP_WASM` rule, with the modules `CBC_CDOM_MODULES` names;
+- `adapter_mk_check.sh` (also in `make -C client check`, nothing fetched): `adapter.mk` read without `cdom.mk` stops and names the fix, and no file is in two of the lists an app adds (`lib/b64/b64.c` once).
 
 `client/test/mutate.sh` runs this adapter's mutants (`mutants.py`) with the rest of the client's.
 
 ## In an app's Makefile
 
-An app takes the adapter from `adapter.mk` here, a make fragment it includes after `client/client.mk`, with `CBASE` and `CDOM` set to the two checkouts as its Makefile reaches them:
+cdom's sources and flags are cdom's own `cdom.mk` (at the cdom root), and this directory names only cbase's, so a file cdom renames is one edit, in cdom.
+An app includes `cdom.mk`, `client/client.mk` and then `adapter.mk` here, with `CBASE` and `CDOM` set to the two checkouts as its Makefile reaches them.
+`adapter.mk` stops, naming the fix, when `cdom.mk` has not been included before it.
+
+With `cdom.mk`'s `APP_WASM` rule, the app names the adapter's cdom modules in `APP_MODULES`.
+`cdom.mk` reads `APP_SRC` and `APP_MODULES` where it is included, so it is included a second time, after them, for its rule:
 
 ```make
 CBASE := cbase
 CDOM  := cdom
+include $(CDOM)/cdom.mk
 include $(CBASE)/client/client.mk
 include $(CBASE)/client/hosts/cdom/adapter.mk
-UI_SRC    := ui/src/app.c $(CBC_SRC) $(CBC_CDOM_SRC) $(CBC_CDOM_LINK_SRC)
-UI_CFLAGS := --target=wasm32 -Oz -nostdlib -ffreestanding -mbulk-memory $(CBC_INC) $(CBC_CDOM_CFLAGS)
+APP_WASM    := ui/out/app.wasm
+APP_SRC     := ui/src/app.c $(CBC_SRC) $(CBC_B64_SRC) $(CBC_CDOM_SRC)
+APP_MODULES := $(CBC_CDOM_MODULES)
+APP_CFLAGS  := $(CBC_INC) $(CBC_CDOM_CFLAGS)
+include $(CDOM)/cdom.mk
 ```
 
-`CBC_CDOM_SRC` is the adapter, the shared host (`CBC_HOST_SRC`) and `lib/b64/b64.c`.
-`CBC_CDOM_CFLAGS` is the include flags (`CBC_CDOM_INC`: the shared host's, this directory's and `-I<cdom>/src`) and `-isystem <cdom>/src/libc`, cdom's C library.
-`CBC_CDOM_LINK_SRC` is cdom's `cdom.c`, `cdom_net.c`, `cdom_store.c`, `cdom_random.c` and `mini.c`.
-An app that also builds the provider sign-in (`CBC_OIDC_SRC`) takes `$(sort ...)` of the lists, since both carry `lib/b64/b64.c`.
-`host.mk` builds and links the adapter from these same variables, so the list an app compiles is the one cbase tests.
-The page's origin comes from `cd_page_origin` (`cdom_net.c`).
+With a rule of its own, the app takes cdom's sources and flags from `cdom.mk` by name:
+
+```make
+CBASE := cbase
+CDOM  := cdom
+include $(CDOM)/cdom.mk
+include $(CBASE)/client/client.mk
+include $(CBASE)/client/hosts/cdom/adapter.mk
+UI_SRC    := ui/src/app.c $(CBC_SRC) $(CBC_B64_SRC) $(CBC_CDOM_SRC) \
+             $(CDOM_SRC) $(CDOM_NET_SRC) $(CDOM_STORE_SRC) $(CDOM_RANDOM_SRC)
+UI_CFLAGS := -Oz $(CDOM_CFLAGS) $(CBC_INC) $(CBC_CDOM_CFLAGS)
+ui/out/app.wasm: $(UI_SRC)
+	$(WASM_CC) $(UI_CFLAGS) $(CDOM_LDFLAGS) -o $@ $(UI_SRC)
+```
+
+`CBC_CDOM_SRC` is the adapter and the shared host (`CBC_HOST_SRC`).
+`CBC_CDOM_CFLAGS` is cbase's include flags for it, the shared host's and this directory's; cdom's are in `CDOM_CFLAGS`.
+`CBC_CDOM_MODULES` is the cdom modules the adapter calls, `net store random`, as `APP_MODULES` names them.
+`lib/b64/b64.c`, which the adapter needs for the session, is `client.mk`'s `CBC_B64_SRC` and in no other list, so an app that also builds the provider sign-in adds `CBC_OIDC_SRC` and has nothing to dedupe.
+`host.mk` builds and links the adapter from these same variables, through `cdom.mk`'s `APP_WASM` rule, so the list an app compiles is the one cbase tests.
+The page's origin comes from `cd_page_origin` (cdom's net module).
 
 ## The session
 
