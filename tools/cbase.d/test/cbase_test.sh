@@ -8,7 +8,7 @@
 #
 # The cases: cbase.conf's errors, each with its line number; the secret refusal (and no secret
 # echoed); the values that look random but are not secrets; no credentials; a group found and not
-# found; join, rejoin, leave and the port claim; two racing joins on a new file and on an
+# found; README.md's example; join, rejoin, leave and the port claim; two racing joins on a new file and on an
 # existing one (distinct ports, one 412 and its retry); apps; a corrupt state file; a missing
 # state bucket; doctor; the commands not built yet. docs/mutation_checks.md records the
 # mutations each was checked against.
@@ -143,6 +143,14 @@ route      /img/* static nocache GET,HEAD
 route      * static cache GET,HEAD
 EOF
 diff -u "$t/want" "$t/out" || fail "config check printed another config"
+ok
+# README.md's example cbase.conf is one the tool takes.
+mkdir -p "$t/apps/readme"
+awk '/^# required: \[a-z\]/{f=1} f&&/^```/{exit} f' "$root/README.md" > "$t/apps/readme/cbase.conf"
+[ -s "$t/apps/readme/cbase.conf" ] || fail "README.md has no example cbase.conf"
+run "$t/apps/readme" config check
+expect_rc 0 "README.md's example cbase.conf"
+out_has "route      /live ws nocache ALL" "README.md's example cbase.conf"
 ok
 run "$d" -f missing.conf config check
 expect_rc 1 "a missing config"
