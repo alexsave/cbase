@@ -74,6 +74,7 @@ The hand-written host is the one part per language that cannot be C, and it hold
 - C: `client/hosts/common/cbc_host.h` is the shared host, everything `client.h` asks of a host that does not depend on the platform; `client/hosts/posix` puts it on a native event loop.
   Every host passes one suite against a scripted server (`client/test/host/host_suite.h`).
 - TypeScript: `client/ts/socket.ts` holds one WebSocket, `fetch`, one timer, and `localStorage` for a signed-in client's session; `client/ts/react/SignInWithApple.tsx` is the Apple button.
+  `queryAdd` there builds a path's query with the core's `cbc_query_add`, through the module.
   `make -C client ts` copies them, the generated files and the module into an app's generated directory.
 - Swift: `client/swift/CBaseClient/CbClient.swift` is the HTTP half (URLSession, one timer, the randomness the core asks for), with `AppleSignIn.swift` and `SignInWithAppleView.swift`; the socket half, `CbSocket`, is not written yet.
 - Kotlin: structgen emits Kotlin, so the generated surface comes free when an Android host is written.
