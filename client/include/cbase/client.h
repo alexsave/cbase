@@ -143,8 +143,16 @@ typedef struct {
 // is not written: its body_len bytes are the caller's, at cbc_req_body (cbc_call_ref). wait_ms is
 // its deadline, which the host hands its HTTP client as is (fetch's abort, a curl timeout): no
 // answer this long after it was sent is status 0. 0: none (cbc_cfg http_wait_ms).
-#define CBC_RQ_BODY 0x1   // hand the answer's body to cbc_on_response (else only its length is needed,
-                          // and its body only when the status is not 2xx: a refusal)
+// CBC_RQ_BODY is about what the CORE reads, never about what the app gets. The core reads a 2xx
+// body only for its own requests (a sign-in's session, the refresh), so only those set it; an app
+// call's 2xx body is the app's, and the core needs only its length: its CBC_EV_DONE is the span
+// (0, len) into the bytes the host holds. A host still hands the app the whole body (THE SPAN
+// above): the shared host passes cbc_host_http_answered's body to the app with the DONE whatever
+// this flag says (client/test/host/host_suite.c holds it), and the TypeScript and Swift layers
+// resolve the call with it. What the flag saves is a copy into the core's buffer (the wasm
+// module's io), so a large answer is never limited by it.
+#define CBC_RQ_BODY 0x1   // the core reads the answer's body: pass it to cbc_on_response (else it needs
+                          // a 2xx body's length only, and a non-2xx body, a refusal, as always)
 #define CBC_RQ_REF  0x2   // the body is borrowed: send cbc_req_body(id)'s body_len bytes after the head
 typedef struct {
     uint32_t id;        // cbc_on_response's
@@ -352,8 +360,9 @@ int  cbc_next_request(cbc *c, uint8_t *out, size_t cap, int64_t now);
 // The borrowed body of HTTP request id while it is out (cbc_req_hdr.flags CBC_RQ_REF): the pointer
 // cbc_call_ref was given. NULL for a request that is not out or whose body is in its own bytes.
 const uint8_t *cbc_req_body(const cbc *c, uint32_t id);
-// The answer to request id. body may be NULL when the request did not ask for it (CBC_RQ_BODY)
-// and the status is 2xx; len is the body's length either way. Answers the events raised.
+// The answer to request id. body may be NULL when the request did not set CBC_RQ_BODY and the
+// status is 2xx (the core does not read it; the host keeps it for the app, THE SPAN); len is the
+// body's length either way. Answers the events raised.
 int  cbc_on_response(cbc *c, uint32_t id, int status, const uint8_t *body, size_t len, int64_t now);
 
 // ---- the socket --------------------------------------------------------------------------------
