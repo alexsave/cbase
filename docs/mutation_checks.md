@@ -1329,3 +1329,40 @@ Each mutation was made in tools/new.sh (the template the server is written from)
 - new.sh: `.n_route_lists = 0` (the route dropped from the app) -> `GET / answered 404 with 'not found', not 200 "cbase\n"` red.
 - new.sh: `.health_route = true` dropped -> `GET /health answered 404, not 200` red.
 - new.sh: the non-empty refusal (`[ -z "$(ls -A "$dir")" ] || die ...`) dropped -> `make new over the non-empty .../build/new_test/hello succeeded` red.
+
+## cbc_query_add: a query parameter encoded once, in the client core (round4-friction)
+
+client/test/unit_client.c holds cbc_query_add's own cases ('?' then '&', an empty value, every reserved byte and UTF-8 as %XX, a full buffer left as it was, bad arguments), and client/test/unit_query_wire.c reads its paths back with core's cb_http_parse and cb_http_query_find.
+Each mutant is in client/test/mutants.py, so client/test/mutate.sh runs it with the rest; each was also run alone, with client.o deleted, and the source restored from a copy.
+
+- client.c: `+` kept as it is (`|| b == '+'` in unreserved) -> `reserved_bytes_and_utf8_are_encoded` b == want red, and unit_query_wire's `every_reserved_byte_comes_back` got == vals[i] red.
+- client.c: no `&` between parameters (`buf[at++] = '?'`) -> `a_query_opens_then_joins` b == "/api/hello?name=Ada&n=2" red, and 26 checks of unit_query_wire.
+- client.c: cut short instead of CBC_E_FULL (`val_len = 0` when the value does not fit) -> `a_full_query_buffer_is_left_as_it_was` cbc_query_add(b, 9, ...) == CBC_E_FULL red.
+
+## One include order in every doc (round4-friction)
+
+client/hosts/cdom/adapter_mk_check.sh (make -C client check) reads every run of includes in README.md, client/hosts/cdom/README.md, adapter.mk's header and example/minimal/Makefile.
+Each mutant swapped cbase.mk and cdom.mk in one file, and the file was restored from a copy.
+
+- README.md -> `../README.md shows no run of the four includes` red.
+- client/hosts/cdom/README.md -> `includes in the order 'cdom.mk cbase.mk client.mk adapter.mk'` red.
+- adapter.mk's header -> `hosts/cdom/adapter.mk shows no run of the four includes` red.
+- example/minimal/Makefile -> `../example/minimal/Makefile shows no run of the four includes` red.
+
+## The README's product, built and asked (round4-friction)
+
+tools/new_test.sh's fifth case puts the README's src/myapp.c in a starter, serves it and asks GET /v1/hello.
+Each mutant was made in README.md's snippet and the file restored from a copy.
+
+- `n > 0 ? name : "world"` made `n != CB_E_NOT_FOUND ? name : "world"` (the old example's behaviour) -> `README product: ?name= (empty): 200 'hello, ', not 200 'hello, world\n'` red.
+- the 400 for CB_E_FULL dropped -> `README product: a name of 64 bytes: 200 'hello, world', not 400 'bad name\n'` red.
+
+## A quiet start: one config line at info (round4-friction)
+
+core/test/smoke_boot.c's the_default_start_is_quiet starts serve at info and reads every line to the listening one, then at debug.
+Each mutant was made in core/src/ingress_process.c, its object deleted, and the file restored from a copy.
+
+- log_config at CB_INFO again -> `settings == 0` red.
+- the summary line skipped (`if (0) log_config_summary(...)`) -> `summaries == 1` red.
+- log_config says nothing at any level -> the debug wait for ` config: CBASE_LISTEN=127.0.0.1:0` red (and the CPU knob's `CBASE_LOOP_CPU=off (not pinned)`).
+- the dev start's JWT secret warning demoted to CB_DEBUG -> `warned == g_storeless ? 0 : 1` red.
