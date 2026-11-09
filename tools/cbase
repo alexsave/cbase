@@ -171,7 +171,7 @@ case "$cmd" in
     kind="${1:-}"
     group="${2:-}"
     case "$kind" in vm|static) ;; *) echo "cbase: group-template vm GROUP or group-template static GROUP" >&2; exit 2 ;; esac
-    conf_name_ok "$group" && [ $# -eq 2 ] || { echo "cbase: group-template $kind wants one group name" >&2; exit 2; }
+    if ! conf_name_ok "$group" || [ $# -ne 2 ]; then echo "cbase: group-template $kind wants one group name" >&2; exit 2; fi
     "group_render_$kind" "$group" "$CB_TMP/group.yaml"
     cat "$CB_TMP/group.yaml"
     ;;

@@ -34,9 +34,9 @@ no_secret() {   # no_secret WHAT: neither planted secret in the last run's outpu
     fail "$1: a secret was printed"
   fi
 }
-# script_of N: the Nth-from-last SSM command's script (1 the last), decoded from the fake's log.
+# script_of: the last SSM command's script, decoded from the fake's log.
 script_of() {
-  grep '^SSM SendCommand ' "$t/log" | tail -n "${1:-1}" | head -1 \
+  grep '^SSM SendCommand ' "$t/log" | tail -n 1 \
     | sed -n 's/.*echo \([A-Za-z0-9+/=]*\) | base64 -d.*/\1/p' | base64 -d
 }
 puts_to() { since "$1" | grep -c "^PUT /$2" || true; }
