@@ -74,7 +74,8 @@ make -C <cbase> new DIR=<path>
 It gets a `Makefile` (`CBASE`, `APP_SRC_ROOTS` and `APP_SERVE`, then `include $(CBASE)/cbase.mk`), `src/server.c` (a storeless app whose one route, `GET /`, answers `cbase`, beside the platform's `GET /health`) and a `.gitignore` (`build/`).
 The server is named for `DIR`: its base name, with every byte but `A-Z a-z 0-9 _ . -` made `_`, is the `cb_app`'s `.name` and `APP_SERVE`, so `make` builds `build/<name>`.
 A name `cbase.mk` keeps for `build/`'s own directories and tools (`CB_BUILD_OWN`, such as `obj` and `test`) gets `-server` after it, and `cbase.mk` stops a product that names its program one of them.
-`CBASE` is this checkout's path from `DIR`.
+`CBASE` is the path to this checkout as `tools/new.sh` writes it: relative to `DIR` (`../cbase`) when the two share a directory other than `/`, and absolute when they share only `/` (a `DIR` under `/tmp`, which is `/private/tmp` on macOS, with cbase under `/Users`).
+It is a plain `CBASE := <path>` line: edit it to move cbase, or override it for one run on the command line, `make CBASE=<path> serve`.
 With `GIT=1`, `DIR` is also a git repository with cbase as its submodule at this commit, and `CBASE` is `cbase`.
 Then `make serve` there builds the server and prints the URL it listens at.
 The server ships no test: `tools/new_test.sh`, part of cbase's `make check`, builds it, serves it and asks it.
