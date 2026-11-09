@@ -1139,3 +1139,12 @@ hpack.c now answers CB_E_NOMEM there, which h2_session.c ends the connection on.
 - router.c: cb_router_free not freeing the table -> `router_fails_whole` live == 0.
 - str.c: cb_buf_take handing over a buffer that ran out -> `the_seam_reaches_cbase` taken == NULL and the live count.
 - oom.h: no allocation ever failed -> `the_seam_reaches_cbase` (four checks) and both sweeps' failed_runs >= 3.
+
+## The spawner's slot release waits out a running handler (small-debts)
+
+cb_spawner_free cleared its SIGCHLD slot and then closed the pipe's write end, so a handler on another thread that had already loaded the fd could write its byte into whatever reused that number.
+The handler now counts itself in g_in_handler for its whole run, and release_slot (cb_spawner_free and cb_spawner_new's failure path) clears the slot, waits until no handler runs, and only then is the pipe closed.
+unit_spawn `free_waits_for_a_running_handler` holds a handler on a thread of its own (the test's own SIGCHLD handler, which the spawner's chains to) and starts a free beside it.
+
+- spawn.c: release_slot's wait dropped (the code before the fix) -> `free_waits_for_a_running_handler` !g_freed, the free returned while the handler ran.
+- spawn.c: the handler not counting itself in -> the same assertion.

@@ -19,6 +19,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <sched.h>
 #include <signal.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -41,14 +42,23 @@ extern char **environ;
 // ---- the SIGCHLD self-pipes ---------------------------------------------------------------------
 // One handler for the process; it writes a byte to every live spawner's pipe (async-signal-safe:
 // atomic loads and write(2)), and calls the handler that was there before it.
+//
+// THE SLOT'S RELEASE: a handler on another thread may have loaded a slot's fd just before the
+// slot was cleared, and would write its byte into whatever reused that fd number once it was
+// closed. So the handler counts itself in g_in_handler for its whole run, and release_slot clears
+// the slot, then waits until no handler runs, and only then may the pipe be closed. Both sides are
+// sequentially consistent: a handler that the wait did not see started after the clear, and so
+// sees the slot free.
 
 #define WAKE_SLOTS 16
 static atomic_int g_wake[WAKE_SLOTS];   // a pipe's write end + 1; 0: free
+static atomic_int g_in_handler;         // on_sigchld runs now, on this many threads
 static struct sigaction g_old_chld;
 static pthread_once_t g_once = PTHREAD_ONCE_INIT;
 
 static void on_sigchld(int sig, siginfo_t *si, void *uc) {
     int saved = errno;
+    atomic_fetch_add(&g_in_handler, 1);
     for (int i = 0; i < WAKE_SLOTS; i++) {
         int f = atomic_load(&g_wake[i]);
         if (f > 0) {
@@ -62,7 +72,15 @@ static void on_sigchld(int sig, siginfo_t *si, void *uc) {
     } else if (g_old_chld.sa_handler != SIG_DFL && g_old_chld.sa_handler != SIG_IGN) {
         g_old_chld.sa_handler(sig);
     }
+    atomic_fetch_sub(&g_in_handler, 1);
     errno = saved;
+}
+
+// Frees slot i; its pipe may be closed once this returns (THE SLOT'S RELEASE). A handler that
+// interrupts this thread runs to its end before the wait goes on, so the wait cannot hold itself.
+static void release_slot(int i) {
+    atomic_store(&g_wake[i], 0);
+    while (atomic_load(&g_in_handler) > 0) sched_yield();
 }
 
 static void install_handlers(void) {
@@ -785,7 +803,7 @@ cb_spawner *cb_spawner_new(cb_loop *l) {
     }
     if (sp->slot < 0 || cb_loop_add(l, sp->wake[0], CB_EV_READ, on_sigchld_fd, sp) != CB_OK) {
         CB_ERROR(MOD, "no room for another spawner (%d at most)", WAKE_SLOTS);
-        if (sp->slot >= 0) atomic_store(&g_wake[sp->slot], 0);
+        if (sp->slot >= 0) release_slot(sp->slot);
         close_fd(&sp->wake[0]);
         close_fd(&sp->wake[1]);
         pthread_mutex_destroy(&sp->mu);
@@ -862,7 +880,7 @@ void cb_spawner_stop(cb_spawner *sp) {
 void cb_spawner_free(cb_spawner *sp) {
     if (!sp) return;
     cb_spawner_stop(sp);
-    if (sp->slot >= 0) atomic_store(&g_wake[sp->slot], 0);
+    if (sp->slot >= 0) release_slot(sp->slot);
     cb_loop_remove(sp->loop, sp->wake[0]);
     close_fd(&sp->wake[0]);
     close_fd(&sp->wake[1]);
