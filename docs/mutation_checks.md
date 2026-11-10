@@ -1561,3 +1561,13 @@ The two breaks got a test each (the lean-testing ruling); the adopted group's st
 - tools/cbase: the dry run's end exiting 0 with problems listed -> `an adopted group's dry run with no origin secret: status 0, not 1` red.
 - group.sh: the dry run's `STATE_NO_BUCKET=1` dropped -> `the fit is still checked` red.
 - state.sh: state_read reading the missing bucket anyway -> `the fit is still checked` red.
+
+## ./cbase: IPv6-only VM groups by default, --ipv4 to opt in (group-ipv6)
+
+Two new tests in cbase_vm_test.sh (the lean-testing ruling): the default group's template, and --ipv4's public IPv4 and its cost.
+
+- group.sh: the Elastic IP rendered for every group (its `[ -z "$v4" ]` guard dropped) -> `the IPv6-only group's template has a public IPv4 or an IPv4 subnet` red.
+- vm_boot.sh: the boot's `AssignIpv6Addresses` call dropped -> `the IPv6-only group's template lacks [Action=AssignIpv6Addresses...]` red.
+- group.sh: the default prefix list back to CloudFront's IPv4 one -> `group-init vm's change set parameters` red (CloudFrontPrefixList=pl-3b927c52).
+- group.sh: --ipv4's cost line dropped -> `--ipv4 prints its cost: stdout lacks [address: dual-stack (--ipv4): a public IPv4 is about $3.60 a month]` red.
+- group.sh: the Elastic IP rendered for IPv6-only groups alone (the guard inverted) -> `the vm group's template lacks [Type: AWS::EC2::EIP]` red.
