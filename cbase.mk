@@ -146,9 +146,13 @@ APP_SERVE_LISTEN ?= $(if $(PORT),127.0.0.1:$(PORT))
 # page cache, purgeableCacheFetch) that changes between macOS releases, so a test of this program's
 # allocations (unit_oom) measured the OS. On macOS the build links Homebrew's sqlite and refuses to
 # fall back to Apple's.
+# The prefixes are RESOLVED (realpath): brew --prefix is the stable opt/ symlink, and an upgrade
+# repoints it at a new Cellar version whose headers keep the bottle's older mtimes, so neither the
+# command line nor a header's time changed and stale objects survived (sqlite 3.54.1, 2026-11-10).
+# The versioned path puts the version on the command line, so the flag stamp rebuilds them.
 ifeq ($(UNAME),Darwin)
-  OPENSSL_PREFIX ?= $(shell brew --prefix openssl@3 2>/dev/null)
-  SQLITE_PREFIX ?= $(shell brew --prefix sqlite 2>/dev/null)
+  OPENSSL_PREFIX ?= $(realpath $(shell brew --prefix openssl@3 2>/dev/null))
+  SQLITE_PREFIX ?= $(realpath $(shell brew --prefix sqlite 2>/dev/null))
   ifeq ($(wildcard $(SQLITE_PREFIX)/include/sqlite3.h),)
     $(error no Homebrew sqlite (SQLITE_PREFIX='$(SQLITE_PREFIX)'): brew install sqlite)
   endif
