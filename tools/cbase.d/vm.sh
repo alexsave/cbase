@@ -2,31 +2,16 @@
 # vm.sh - the VM side of a deploy and an undeploy (README.md "./cbase deploy tool"). Sourced by
 # tools/cbase.
 #
-# DEPLOY (vm_find, vm_build, vm_join, vm_ship), for an app with CBASE_VM not none:
-#   1. the group's instance, found by its tag (aws.sh aws_group_find vm; a missing group stops with
-#      its group-init command), running, arm64, with its public DNS name (the group's Elastic IP);
-#   2. the server built for the instance: `make serve-binary` in the app's server directory (the
-#      first of . and server/ that holds a Makefile), which is cbase's own static build
-#      (ops/build_static.sh serve: musl, in a pinned arm64 Alpine container, so it needs Docker),
-#      into dist/cbase-serve-linux-arm64. CBASE_SERVE_BIN names a binary built elsewhere instead (CI).
-#      Either way it must be a 64-bit little-endian ELF for aarch64, or the deploy stops;
-#   3. THE MEMORY FIT and the port, in one conditional write of the group's state file (state.sh):
-#      every member's mem, an undeclared one counted at 128M and said so, plus the app's, must fit
-#      in the instance's memory (describe-instance-types' MemoryInfo) less VM_OS_RESERVE, or the
-#      deploy is refused, naming the members and their numbers;
-#   4. the artifact to s3://cbase-state-<account>/artifacts/<app>/<sha256> (the instance's role
-#      reads artifacts/* and nothing else of the bucket);
-#   5. one SSM send-command (AWS-RunShellScript, no SSH) runs vm_remote_deploy's script as root:
-#      the app's user cbase-<app> and /srv/cbase/<app>/data (the service's alone, 0700); the port
-#      checked FREE before a first start (`ss`), refused with exit 3 when another process holds it,
-#      and deploy then releases the claim it just made; the artifact fetched and its sha256 checked;
-#      the app's settings from SSM Parameter Store /cbase/<app>/ into /srv/cbase/<app>/env (0640,
-#      root:cbase-<app>), which serve reads as CBASE_ENV_FILE; the units cbase-<app>.socket
-#      (vm_socket) and cbase-<app>.service (vm_unit) installed and ONLY the service restarted
-#      (ZERO DOWNTIME, below); then its GET /health answering 200 on 127.0.0.1:<port>, or its
-#      startup line ("cbase: listening ...") in its journal, within 60 s;
-#   6. the stack's VmOrigin and VmPort parameters (stack.sh): the instance's public DNS name and the
-#      claimed port, which every vm and ws route's behaviour points at.
+# DEPLOY (README.md "Deploying a full app"): vm_find the group's running arm64 instance; vm_build
+# the linux-arm64 server (make serve-binary, or CBASE_SERVE_BIN), checked to be an aarch64 ELF;
+# vm_join the port and THE MEMORY FIT in one conditional write of the group's state file
+# (state.sh): every member's mem plus the app's within the instance's memory less VM_OS_RESERVE;
+# vm_ship the artifact to its sha256's key (vm_artifacts) and one SSM send-command (no SSH) that
+# runs vm_remote.sh as root: the app's user and data folder, the port checked free before a first
+# start (exit 3, and deploy releases the claim it just made), the artifact fetched and checked, the
+# settings from SSM (vm_settings) into its env file, the units installed and ONLY the service
+# restarted, then its GET /health or its startup line waited for. The stack's VmOrigin and VmPort
+# are the origin's hostname and that port.
 #
 # THE PORT IS THE ORIGIN. The service listens on 0.0.0.0:<port> and CloudFront reaches it there
 # directly: the group's security group (group.sh) opens 8700-8799 to CloudFront's origin-facing
@@ -46,14 +31,12 @@
 # an edit of vm_unit.socket reaches a running app at its VM's next boot, not at a deploy.
 #
 # SECRETS. A setting's value lives in SSM Parameter Store and goes from there to the env file on the
-# instance; it never reaches this script. The command's output is never printed whole: only the
-# remote script's own "CBASE: " lines, which name no value, pass (masked again by aws_mask), and a
-# failure points at journalctl on the instance rather than printing the journal.
+# instance; it never reaches this script but the origin secret, which is masked. The command's
+# output is never printed whole: only the remote script's own "CBASE: " lines, which name no value,
+# pass (masked again by aws_mask), and a failure points at journalctl on the instance.
 #
 # UNDEPLOY (vm_undeploy): the socket and the unit stopped, disabled and removed, its binary and env
-# file deleted; /srv/cbase/<app>/data and the user stay unless --delete-data.
-#
-# Every wait is a counter loop over CBASE_POLL_SECONDS (macOS has no `timeout`).
+# file deleted; the data folder and the user stay unless --delete-data.
 
 VM_OS_RESERVE=192   # MiB an instance keeps for itself: the kernel, systemd, journald and the SSM
                     # agent (Amazon Linux 2023 idles near 150 on a t4g.nano). Never the apps'.
@@ -129,8 +112,7 @@ vm_origin() {
     return 0
   fi
   local what="vm group $group has no origin recorded and $CONF_APP names none: set CBASE_VM_ORIGIN (the VM's AAAA hostname) once"
-  [ "${DRY_RUN:-}" = 1 ] || { echo "cbase: $what, in this app's cbase.conf. Nothing was changed." >&2; exit 1; }
-  dry_problem "$what"
+  dry_stop "$what" "cbase: $what, in this app's cbase.conf. Nothing was changed."
   VM_DNS="${VM_DNS:-unrecorded-origin.invalid}"   # the change set's placeholder, deleted unexecuted
   VM_ORIGIN_ADDR=""
 }
@@ -150,8 +132,7 @@ vm_origin_secret() {
     if [ "$(aws_code)" = ParameterNotFound ]; then
       echo "cbase: there is no SSM parameter $name, the origin secret CloudFront sends the app as X-Cbase-Origin (and serve checks). Make it once, then deploy again; nothing was changed:" >&2
       echo "  aws ssm put-parameter --type SecureString --name $name --value \"\$(openssl rand -hex 32)\"" >&2
-      [ "${DRY_RUN:-}" = 1 ] || exit 1
-      dry_problem "no SSM parameter $name (the origin secret)"
+      dry_stop "no SSM parameter $name (the origin secret)"
       VM_ORIGIN_SECRET="$VM_DRY_SECRET"
       return 0
     fi
@@ -160,8 +141,7 @@ vm_origin_secret() {
   if ! [[ "$VM_ORIGIN_SECRET" =~ ^[A-Za-z0-9_-]{32,128}$ ]]; then
     VM_ORIGIN_SECRET=""
     echo "cbase: the SSM parameter $name is not 32 to 128 letters, digits, _ and - (its value is not shown): openssl rand -hex 32 makes one" >&2
-    [ "${DRY_RUN:-}" = 1 ] || exit 1
-    dry_problem "the SSM parameter $name is not an origin secret"
+    dry_stop "the SSM parameter $name is not an origin secret"
     VM_ORIGIN_SECRET="$VM_DRY_SECRET"
     return 0
   fi
@@ -184,12 +164,6 @@ vm_fit_set() {
   STATE_FIT_LIMIT=$((VM_MIB - VM_OS_RESERVE))
   [ "$STATE_FIT_LIMIT" -ge 0 ] || STATE_FIT_LIMIT=0
   STATE_FIT_WHAT="$VM_TYPE: $VM_MIB MiB less $VM_OS_RESERVE for the OS"
-}
-
-# vm_mem: the app's mem field: the declared MiB, or ~128, the estimate it is counted at.
-vm_mem() {
-  # shellcheck disable=SC2153 # conf.sh sets CONF_MEMORY_ESTIMATE
-  if [ -n "$CONF_MEMORY_ESTIMATED" ]; then printf '~%s' "$CONF_MEMORY_ESTIMATE"; else printf '%s' "$CONF_MEMORY"; fi
 }
 
 # vm_sha256 FILE
@@ -231,16 +205,12 @@ vm_build() {
 
 # vm_plan_dry GROUP: what a deploy would claim, from the state file, writing nothing.
 vm_plan_dry() {
-  local group="$1" at="" i line port
+  local group="$1" line
   vm_fit_set
   state_read vm "$group"
-  for i in "${!ST_APPS[@]}"; do [ "${ST_APPS[$i]}" != "$CONF_APP" ] || at="$i"; done
-  if [ -n "$CONF_VM_PORT" ]; then port="$CONF_VM_PORT"
-  elif [ -n "$at" ] && [[ "${ST_LINES[$at]}" != *" legacy=1" ]]; then port="${ST_PORTS[$at]}"
-  else port="$(state_free_port)"; fi
-  [ -n "$port" ] || { echo "cbase: vm group $group has no free port: all of $STATE_PORT_MIN-$STATE_PORT_MAX are held" >&2; exit 1; }
-  line="app=$CONF_APP port=$port service=cbase-$CONF_APP.service mem=$(vm_mem)"
-  [ -z "$CONF_VM_PORT" ] || line="$line data=$CONF_VM_DATA legacy=1"
+  state_at "$CONF_APP"
+  state_port "$group" "$CONF_VM_PORT"
+  line="$(state_vm_line "$CONF_APP" "$STATE_PORT" "$(conf_mem)" "$CONF_VM_DATA")"
   if ! state_fit "$CONF_APP" "$line"; then
     printf '%s\n' "$STATE_FIT_REPORT" >&2
     echo "cbase: $CONF_APP would not fit on vm group $group ($STATE_FIT_WHAT)" >&2
@@ -248,7 +218,7 @@ vm_plan_dry() {
   fi
   echo "vm: would join vm group $group as $line"
   printf '%s\n' "$STATE_FIT_REPORT"
-  VM_PORT="$port"
+  VM_PORT="$STATE_PORT"
 }
 
 # vm_join GROUP: the app joins the group's state file, the port claimed and the memory fit checked
@@ -263,7 +233,7 @@ vm_join() {
   STATE_ORIGIN="$CONF_VM_ORIGIN"
   # shellcheck disable=SC2034
   STATE_ORIGIN_NEED=1
-  state_change vm "$1" "$CONF_APP" "$(vm_mem)" join
+  state_change vm "$1" "$CONF_APP" "$(conf_mem)" join
   VM_PORT="$STATE_PORT"
   VM_NEW="$STATE_JOINED_NEW"
 }
@@ -387,13 +357,40 @@ EOF
   fi
 }
 
+# vm_remote_data: the script that names each app whose data is on the instance (group-destroy's).
+vm_remote_data() {
+  cat << 'EOF'
+#!/bin/bash
+set -euo pipefail
+R="${CBASE_VM_ROOT:-}"
+for d in "$R"/srv/cbase/*/data; do
+  [ -d "$d" ] || continue
+  a="${d%/data}"
+  echo "CBASE: data ${a##*/}"
+done
+EOF
+}
+
 # vm_ssm_run SCRIPT WHAT: the script run as root on VM_ID through SSM's AWS-RunShellScript, waited
 # for with a bounded counter loop. Prints its "CBASE: " lines; sets VM_SSM_STATUS (Success, Failed,
 # ...) and VM_SSM_CODE (its exit status); the lines are in $CB_TMP/ssm-lines too.
 VM_SSM_STATUS=""
 VM_SSM_CODE=""
+VM_SSM_ID=""
+vm_ssm_read() {   # one read of command VM_SSM_ID; true once it has ended
+  local text
+  if text="$(aws_call ssm get-command-invocation --command-id "$VM_SSM_ID" --instance-id "$VM_ID" \
+                --query '[Status,ResponseCode]' --output text)"; then
+    IFS=$'\t' read -r VM_SSM_STATUS VM_SSM_CODE <<< "$text"
+    case "$VM_SSM_STATUS" in Pending|InProgress|Delayed) ;; *) return 0 ;; esac
+  elif [ "$(aws_code)" != InvocationDoesNotExist ]; then
+    aws_fail "reading SSM command $VM_SSM_ID"
+  fi
+  VM_SSM_STATUS=""
+  return 1
+}
 vm_ssm_run() {
-  local script="$1" what="$2" b64 cmd id n text out
+  local script="$1" what="$2" b64 cmd id out
   # The script travels base64, one command line with no comma in it (the CLI's shorthand splits a
   # list on commas), decoded to a file on the instance and run: its text needs no quoting.
   b64="$(base64 < "$script" | tr -d '\n')"
@@ -407,19 +404,8 @@ vm_ssm_run() {
     aws_fail "sending the $what to $VM_ID (ssm send-command)"
   }
   echo "vm: the $what runs on $VM_ID (SSM command $id)"
-  VM_SSM_STATUS=""
-  for ((n = 0; n <= VM_POLLS; n++)); do
-    if text="$(aws_call ssm get-command-invocation --command-id "$id" --instance-id "$VM_ID" \
-                  --query '[Status,ResponseCode]' --output text)"; then
-      IFS=$'\t' read -r VM_SSM_STATUS VM_SSM_CODE <<< "$text"
-      case "$VM_SSM_STATUS" in Pending|InProgress|Delayed) ;; *) break ;; esac
-    elif [ "$(aws_code)" != InvocationDoesNotExist ]; then
-      aws_fail "reading SSM command $id"
-    fi
-    VM_SSM_STATUS=""
-    [ "$n" = "$VM_POLLS" ] || sleep "$POLL_SECONDS"
-  done
-  if [ -z "$VM_SSM_STATUS" ]; then
+  VM_SSM_ID="$id"
+  if ! aws_poll $((VM_POLLS + 1)) vm_ssm_read; then
     echo "cbase: the $what on $VM_ID (SSM command $id) did not finish in time; its output may name the app's settings, so cbase does not print it (aws ssm get-command-invocation --command-id $id --instance-id $VM_ID)" >&2
     exit 1
   fi

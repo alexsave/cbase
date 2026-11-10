@@ -25,8 +25,6 @@
 # static_bucket_find: STACK_BUCKET and STACK_BUCKET_REGION, the app's bucket: CBASE_STATIC_BUCKET
 # (adopted, by its name: no group, no tag, no state file), or the static group's, by its tag; and
 # STACK_PREFIX, the app's folder in it (CBASE_STATIC_PREFIX, or the app's name).
-# shellcheck disable=SC2034 # stack.sh and tools/cbase read it
-STACK_PREFIX=""
 static_bucket_find() {
   if [ -n "$CONF_STATIC_BUCKET" ]; then STACK_BUCKET="$CONF_STATIC_BUCKET"
   else STACK_BUCKET="$(aws_group_find static "$CONF_STATIC")"; fi
@@ -59,9 +57,7 @@ cbase: s3://$b's policy does not let this account's distributions read it, so th
      "Condition": {"StringEquals": {"aws:SourceAccount": "$AWS_ACCOUNT"}}}
   It lets any CloudFront distribution of account $AWS_ACCOUNT read the bucket (a cbase static group's own statement), and removes nothing.
 EOF
-  if [ "${DRY_RUN:-}" = 1 ]; then dry_problem "s3://$b's policy (above)"; return 0; fi
-  echo "cbase: then deploy again; nothing was changed" >&2
-  exit 1
+  dry_stop "s3://$b's policy (above)" "cbase: then deploy again; nothing was changed"
 }
 
 ST_RULE_GLOB=()

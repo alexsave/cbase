@@ -1,6 +1,7 @@
 # shellcheck shell=bash
 # aws.sh - every AWS call the deploy tool makes, each one AWS CLI call (README.md "./cbase deploy
-# tool"). Sourced by tools/cbase.
+# tool"), and what every call shares: its error, the mask on what AWS says, and the bounded wait.
+# Sourced by tools/cbase.
 #
 # CREDENTIALS are the AWS CLI's own chain and nothing of ours: AWS_PROFILE and ~/.aws (an SSO or
 # `aws login` session), or the environment's keys (CI's OIDC role sets AWS_ACCESS_KEY_ID,
@@ -9,21 +10,26 @@
 #
 # OUTPUT is always `--query ... --output text`: this code never parses JSON or XML. A failed call's
 # stderr is kept in a file and classified by the error code the CLI prints ("(NoSuchKey)"); it is
-# shown to the person only for a failure the tool does not know, and the CLI's errors carry no
-# credential or header value. Never run this with `set -x`.
+# shown to the person only for a failure the tool does not know, masked (aws_show). Never run this
+# with `set -x`.
 #
 # ENDPOINTS: AWS_ENDPOINT_URL (or the CLI's per-service AWS_ENDPOINT_URL_S3, _STS,
 # _RESOURCE_GROUPS_TAGGING_API) points every call elsewhere, as the CLI reads it; the tests point
 # them at a local fake (tools/cbase.d/test/fake_aws.c).
 
-AWS_ERR=""   # the last failed call's stderr file
+AWS_ERR=""       # the last failed call's stderr file
+AWS_ACCOUNT=""   # the twelve-digit account the credentials are in
+POLL_SECONDS="${CBASE_POLL_SECONDS:-5}"   # between two reads of a bounded wait (aws_poll)
 
+# aws_init: the CLI found, and AWS_ACCOUNT asked of STS.
 aws_init() {
   command -v aws > /dev/null 2>&1 \
     || { echo "cbase: the AWS CLI (aws) is not on PATH: install AWS CLI v2 (https://docs.aws.amazon.com/cli/)" >&2; exit 1; }
   AWS_ERR="$(mktemp "${TMPDIR:-/tmp}/cbase-aws.XXXXXX")"
   CB_CLEANUP+=("$AWS_ERR")
   export AWS_PAGER=""
+  AWS_ACCOUNT="$(aws_call sts get-caller-identity --query Account --output text)" || aws_fail "sts get-caller-identity"
+  [[ "$AWS_ACCOUNT" =~ ^[0-9]{12}$ ]] || { echo "cbase: STS named the account \"${AWS_ACCOUNT:0:40}\", which is not twelve digits" >&2; exit 1; }
 }
 
 # aws_call ARGS...: the CLI's stdout on success; on failure its status, with its stderr in $AWS_ERR.
@@ -73,21 +79,21 @@ aws_fail() {
   elif grep -q 'Unknown options: --if-' "$AWS_ERR"; then
     echo "cbase: $what: this AWS CLI is too old for S3 conditional writes (put-object --if-match): update AWS CLI v2." >&2
   elif [ "$code" = AccessDenied ] || [ "$code" = AccessDeniedException ] || [ "$code" = UnauthorizedOperation ]; then
-    echo "cbase: $what: AWS refused it (AccessDenied) for $(aws_whoami_hint). The deploy role needs the permission." >&2
+    echo "cbase: $what: AWS refused it (AccessDenied) for ${AWS_PROFILE:+profile }${AWS_PROFILE:-these credentials}. The deploy role needs the permission." >&2
   else
     echo "cbase: $what failed:" >&2
-    aws_mask < "$AWS_ERR" | sed 's/^/  /' | head -5 >&2
+    aws_show 5
   fi
   exit 1
 }
 
-# aws_mask: AWS's text (an error, a stack event's reason) on stdin, with every line that could carry
-# a secret's value replaced: one that names an origin's custom headers (OriginCustomHeaders,
-# HeaderValue), or a parameter's value (ParameterValue). The CLI never prints a credential, and
-# this is the second guard of stack.sh's: its --query filters keep a change set's and a drift's
-# secret values out of what the CLI answers; an error's message is free text, so it is masked here.
-# AWS_MASK_VALUES: secret values this run holds (the origin secret), each of letters, digits, _
-# and - alone (vm.sh checks), so each is a literal sed pattern. A line holding one is masked too.
+# THE MASK, the one owner of what of AWS's text reaches the person. The CLI never prints a
+# credential; what could carry a secret's value is a line that names an origin's custom headers
+# (OriginCustomHeaders, HeaderValue) or a parameter's value (ParameterValue), or one that holds a
+# secret this run holds (AWS_MASK_VALUES: the origin secret, of letters, digits, _ and - alone, as
+# vm.sh checks, so each is a literal sed pattern). aws_mask replaces each such line. A change set's
+# and a drift's values are the other way out, and aws_secret_filter keeps those out of what the CLI
+# answers at all.
 AWS_MASK_VALUES=()
 aws_mask() {
   local v e=(-e '/OriginCustomHeaders|HeaderValue|ParameterValue/I s/.*/(a line naming an origin header or a parameter value, not shown)/')
@@ -97,32 +103,65 @@ aws_mask() {
   sed -E "${e[@]}"
 }
 
-aws_whoami_hint() {
-  if [ -n "${AWS_PROFILE:-}" ]; then printf 'profile %s' "$AWS_PROFILE"; else printf 'these credentials'; fi
+# aws_show LINES: the first LINES of $AWS_ERR, masked and indented, on stderr.
+aws_show() {
+  aws_mask < "$AWS_ERR" | head -"$1" | sed 's/^/  /' >&2
 }
 
-aws_region() {
-  local r="${AWS_REGION:-${AWS_DEFAULT_REGION:-}}"
-  [ -n "$r" ] || r="$(aws configure get region 2> /dev/null || true)"
-  printf '%s' "${r:-the configured region}"
+# AWS_PLAIN_PARAMS: the stack parameters whose values may be printed; any other one's are not.
+AWS_PLAIN_PARAMS="VmOrigin VmPort InstanceType ImageId CloudFrontPrefixList ArtifactBucket"
+
+# aws_secret_filter PATH BEFORE AFTER [CAUSE]: the JMESPath filter that holds a detail (a change
+# set's Target, a drift's property difference) secret: its path or either value names an origin's
+# custom headers, or (with CAUSE, a change set) a parameter caused it that is not plain. stack.sh's
+# queries take their one resource with a pipe ("Changes[?...] | [0].Details[?filter]"): a filter
+# inside a projection's projection reads the wrong node in the CLI's JMESPath, every field null, and
+# "not secret" would hold for everything. The plain query also asks for a path that is there, so a
+# filter reading the wrong node prints nothing rather than everything.
+aws_secret_filter() {
+  local p="$1" b="$2" a="$3" f="" w q
+  for w in OriginCustomHeaders HeaderValue; do
+    f="$f${f:+ || }contains($p || '', '$w') || contains($b || '', '$w') || contains($a || '', '$w')"
+  done
+  if [ -n "${4:-}" ]; then
+    f="$f || (ChangeSource == 'ParameterReference'"
+    for q in $AWS_PLAIN_PARAMS; do f="$f && CausingEntity != '$q'"; done
+    f="$f)"
+  fi
+  printf '%s' "$f"
 }
 
-# aws_region_required: the region the CLI calls (AWS_REGION, AWS_DEFAULT_REGION, the profile's), or
-# the tool stops: a group's stack, its instance and its buckets are made there.
-aws_region_required() {
+# aws_poll TRIES FN: THE BOUNDED WAIT, the one loop each of the tool's own waits is (macOS has no
+# `timeout`). FN reads once and is true when the wait is over; it runs at most TRIES times,
+# POLL_SECONDS apart, and aws_poll is false when it never was. FN stops the tool itself on a failed
+# call: errexit does not hold inside it.
+aws_poll() {
+  local n
+  for ((n = 1; ; n++)); do
+    "$2" && return 0
+    [ "$n" -lt "$1" ] || return 1
+    sleep "$POLL_SECONDS"
+  done
+}
+
+# aws_region: the region the CLI calls (AWS_REGION, AWS_DEFAULT_REGION, the profile's), for a
+# message. aws_region_required: the same, or the tool stops: a group's stack, its instance and its
+# buckets are made there.
+aws_region_get() {
   local r="${AWS_REGION:-${AWS_DEFAULT_REGION:-}}"
   [ -n "$r" ] || r="$(aws configure get region 2> /dev/null || true)"
-  [[ "$r" =~ ^[a-z]{2}(-[a-z]+)+-[0-9]$ ]] || { echo "cbase: no AWS region is set: set AWS_REGION (us-east-1), or the profile's region (aws configure set region us-east-1)" >&2; exit 1; }
   printf '%s' "$r"
 }
-
-# aws_account_load: AWS_ACCOUNT, the twelve-digit account the credentials are in (STS
-# GetCallerIdentity), asked once.
-AWS_ACCOUNT=""
-aws_account_load() {
-  [ -z "$AWS_ACCOUNT" ] || return 0
-  AWS_ACCOUNT="$(aws_call sts get-caller-identity --query Account --output text)" || aws_fail "sts get-caller-identity"
-  [[ "$AWS_ACCOUNT" =~ ^[0-9]{12}$ ]] || { echo "cbase: STS named the account \"${AWS_ACCOUNT:0:40}\", which is not twelve digits" >&2; exit 1; }
+aws_region() {
+  local r
+  r="$(aws_region_get)"
+  printf '%s' "${r:-the configured region}"
+}
+aws_region_required() {
+  local r
+  r="$(aws_region_get)"
+  [[ "$r" =~ ^[a-z]{2}(-[a-z]+)+-[0-9]$ ]] || { echo "cbase: no AWS region is set: set AWS_REGION (us-east-1), or the profile's region (aws configure set region us-east-1)" >&2; exit 1; }
+  printf '%s' "$r"
 }
 
 # aws_group_find KIND NAME: the group's resource, found by its tag (the Resource Groups Tagging
@@ -152,6 +191,11 @@ aws_group_find() {
   esac
 }
 
+aws_no_state_bucket() {
+  echo "cbase: there is no state bucket s3://$1 in this account: ./cbase group-init makes it with the first group" >&2
+  exit 1
+}
+
 # aws_s3_get BUCKET KEY FILE: the object into FILE and its ETag on stdout (status 0), or status 3
 # when there is no such key. A missing bucket stops the tool.
 aws_s3_get() {
@@ -162,17 +206,16 @@ aws_s3_get() {
   fi
   case "$(aws_code)" in
     NoSuchKey) return 3 ;;
-    NoSuchBucket)
-      echo "cbase: there is no state bucket s3://$bucket in this account: ./cbase group-init makes it with the first group" >&2
-      exit 1 ;;
+    NoSuchBucket) aws_no_state_bucket "$bucket" ;;
   esac
   aws_fail "reading s3://$bucket/$key"
 }
 
 # aws_s3_put BUCKET KEY FILE IF: writes FILE under KEY only if IF holds, IF being the ETag the
 # object must still have, or "*" for "only if there is none yet". Status 0 when written, 3 when the
-# precondition failed (412 PreconditionFailed, or 409 ConditionalRequestConflict when another
-# conditional write to the key was in flight): someone else wrote first, so re-read and retry.
+# precondition failed (412 PreconditionFailed, 409 ConditionalRequestConflict when another
+# conditional write to the key was in flight, or NoSuchKey for an If-Match on a key deleted since
+# it was read): someone else wrote first, so re-read and retry.
 aws_s3_put() {
   local bucket="$1" key="$2" file="$3" cond="$4" pre
   if [ "$cond" = "*" ]; then pre=(--if-none-match "*"); else pre=(--if-match "$cond"); fi
@@ -181,11 +224,8 @@ aws_s3_put() {
     return 0
   fi
   case "$(aws_code)" in
-    PreconditionFailed|ConditionalRequestConflict) return 3 ;;
-    NoSuchKey) return 3 ;;   # If-Match on a key deleted since it was read: re-read
-    NoSuchBucket)
-      echo "cbase: there is no state bucket s3://$bucket in this account: ./cbase group-init makes it with the first group" >&2
-      exit 1 ;;
+    PreconditionFailed|ConditionalRequestConflict|NoSuchKey) return 3 ;;
+    NoSuchBucket) aws_no_state_bucket "$bucket" ;;
   esac
   aws_fail "writing s3://$bucket/$key"
 }
