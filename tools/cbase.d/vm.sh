@@ -130,6 +130,7 @@ vm_origin() {
   local what="vm group $group has no origin recorded and $CONF_APP names none: set CBASE_VM_ORIGIN (the VM's AAAA hostname) once"
   [ "${DRY_RUN:-}" = 1 ] || { echo "cbase: $what, in this app's cbase.conf. Nothing was changed." >&2; exit 1; }
   dry_problem "$what"
+  VM_DNS="${VM_DNS:-unrecorded-origin.invalid}"   # the change set's placeholder, deleted unexecuted
   VM_ORIGIN_ADDR=""
 }
 

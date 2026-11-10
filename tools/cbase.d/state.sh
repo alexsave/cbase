@@ -18,8 +18,9 @@
 # key. A vm group's adds its VM's origin, the one hostname CloudFront reaches every member at, and
 # its address type (the distribution's IpAddressType): group-init records the instance's own,
 # dualstack; an adopted group's first deploy with CBASE_VM_ORIGIN records that host, ipv6. A
-# header without it (written before it was recorded) is read as a group with no origin yet. Every field is present, in this order, separated by one blank. A line that is not so, a
-# second line for an app, and (vm) a port two apps hold or one outside the range stop the tool,
+# header without it (written before it was recorded) is read as a group with no origin yet.
+# Every field is present, in this order, separated by one blank. A line that is not so, a second
+# line for an app, and (vm) a port two apps hold or one outside the range stop the tool,
 # naming the file and the line.
 #
 # THE WRITE is S3's conditional PUT: If-Match with the ETag the read returned, or If-None-Match: *
