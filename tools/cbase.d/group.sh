@@ -508,7 +508,7 @@ group_args() {
         [[ "$2" =~ ^[a-z][a-z0-9-]*\.[a-z0-9]+$ ]] || { echo "cbase: $2 is not an instance type (t4g.small)" >&2; exit 2; }
         GROUP_TYPE="$2"; shift ;;
       --ipv4)
-        [ "$cmd" = group-init ] && [ "$kind" = vm ] || { echo "cbase: --ipv4 is group-init vm's alone" >&2; exit 2; }
+        if [ "$cmd" != group-init ] || [ "$kind" != vm ]; then echo "cbase: --ipv4 is group-init vm's alone" >&2; exit 2; fi
         GROUP_IPV4=1 ;;
       --delete-data)
         [ "$cmd" = group-destroy ] || { echo "cbase: $cmd takes no --delete-data" >&2; exit 2; }
@@ -563,7 +563,7 @@ group_init() {
       zone="$(aws_call ec2 describe-instance-type-offerings --location-type availability-zone \
                 --filters "Name=instance-type,Values=$GROUP_TYPE" --query 'sort(InstanceTypeOfferings[].Location)[0]' --output text)" \
         || aws_fail "finding a zone that offers $GROUP_TYPE"
-      [[ "$zone" =~ ^[a-z0-9-]+[a-z]$ ]] && [ "$zone" != None ] || { echo "cbase: no zone of $region offers $GROUP_TYPE" >&2; exit 1; }
+      [[ "$zone" =~ ^[a-z0-9-]+[a-z]$ ]] || { echo "cbase: no zone of $region offers $GROUP_TYPE" >&2; exit 1; }
       echo "zone: $zone (offers $GROUP_TYPE; kept for the group's life)"
       STACK_PARAMS+=("ParameterKey=AvailabilityZone,ParameterValue=$zone")
     else
