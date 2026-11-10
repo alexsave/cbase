@@ -7,10 +7,12 @@
 #   cbase/tools/cbase doctor            the config, the AWS account, each group and its members
 #   cbase/tools/cbase apps [GROUP]      the apps in a group, with each one's port, service and memory
 #                                       (default: cbase.conf's groups)
-#   cbase/tools/cbase deploy [--dry-run] [--accept-drift] [--prune]
+#   cbase/tools/cbase deploy [--dry-run] [--accept-drift] [--prune] [--allow-downtime]
+#                            [--no-aliases|--attach]
 #                                       the app: its service on the group's VM, its static files,
 #                                       its distribution. DRY_RUN=1, CBASE_ACCEPT_DRIFT=1 and
-#                                       CBASE_PRUNE=1 are the same as the flags
+#                                       CBASE_PRUNE=1 are the same as the flags; --no-aliases and
+#                                       --attach are CBASE_ALIASES off and on (a staged attach)
 #   cbase/tools/cbase undeploy [--delete-files] [--delete-data]
 #                                       the app's service stopped and removed, its memberships left,
 #                                       its stack deleted; its files and its data kept unless asked
@@ -69,7 +71,7 @@ dry_problem() {
 }
 
 usage() {
-  sed -n '6,29p' "$here/cbase" | sed 's/^# \{0,1\}//'
+  sed -n '6,31p' "$here/cbase" | sed 's/^# \{0,1\}//'
 }
 
 conf="cbase.conf"
@@ -197,11 +199,17 @@ case "$cmd" in
         --accept-drift) CBASE_ACCEPT_DRIFT=1 ;;
         --prune) CBASE_PRUNE=1 ;;
         --allow-downtime) CBASE_ALLOW_DOWNTIME=1 ;;
-        *) echo "cbase: deploy takes --dry-run, --accept-drift, --prune and --allow-downtime, not $a" >&2; exit 2 ;;
+        --no-aliases) aliases_flag=off ;;
+        --attach) aliases_flag=on ;;
+        *) echo "cbase: deploy takes --dry-run, --accept-drift, --prune, --allow-downtime, --no-aliases and --attach, not $a" >&2; exit 2 ;;
       esac
     done
     DRY_RUN="${DRY_RUN:-}"
     conf_load "$conf"
+    if [ -n "${aliases_flag:-}" ]; then
+      [ -n "$CONF_DOMAIN" ] || { echo "cbase: --no-aliases and --attach are for CBASE_DOMAIN's hostnames, and there is none" >&2; exit 2; }
+      CONF_ALIASES="$aliases_flag"
+    fi
     aws_init
     aws_account_load
     echo "deploy: $CONF_APP to account $AWS_ACCOUNT${DRY_RUN:+ (dry run: nothing is changed)}"
@@ -230,7 +238,8 @@ case "$cmd" in
     [ "$CONF_VM" = none ] || [ "$DRY_RUN" = 1 ] || vm_build
     # 4. The certificate (it may stop, status 3, for DNS records added by hand).
     cert_resolve
-    # The hostnames free: none an alternate domain name of another distribution.
+    # The hostnames free: none an alternate domain name of another distribution, or moved onto
+    # this app's (a staged attach's second step).
     if [ "${#CERT_HOSTS[@]}" -gt 0 ]; then
       STACK_NAME="$(stack_name)"
       STACK_REGION=us-east-1
@@ -277,7 +286,12 @@ case "$cmd" in
       static_upload "$STACK_BUCKET" "$STACK_BUCKET_REGION" "$STACK_PREFIX"
       [ "${CBASE_PRUNE:-}" != 1 ] || static_prune "$STACK_BUCKET" "$STACK_BUCKET_REGION" "$STACK_PREFIX"
     fi
-    # 9. The distribution.
+    # 9. The distribution: the hostnames moved onto it first (a staged attach), then the stack
+    #    update that names them, which a failure leaves unrolled-back (stack_execute).
+    if [ "${#CERT_MOVES[@]}" -gt 0 ]; then
+      cert_attach
+      STACK_NO_ROLLBACK=1
+    fi
     [ -z "$STACK_CHANGES" ] || stack_execute
     dist_id="$(stack_output DistributionId)"
     dist_domain="$(stack_output DistributionDomain)"
@@ -297,7 +311,7 @@ case "$cmd" in
         [ -n "$api_domain" ] || { echo "cbase: the $STACK_NAME stack has no ApiDistributionDomain output" >&2; exit 1; }
         cert_point "$CONF_API_HOST" "$api_domain"
       fi
-      url="https://$CONF_DOMAIN/"
+      [ "$CONF_ALIASES" = off ] || url="https://$CONF_DOMAIN/"
     fi
     echo "deployed $CONF_APP: $url"
     [ "${#CERT_NOTES[@]}" -eq 0 ] || printf '%s\n' "${CERT_NOTES[@]}"

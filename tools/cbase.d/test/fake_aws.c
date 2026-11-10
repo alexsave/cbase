@@ -1400,6 +1400,28 @@ static void cloudfront(int fd, const request *r) {
         respond_sb(fd, 200, "text/xml", &b);
         return;
     }
+    // AssociateAlias: the alias taken off the foreign distribution (the target's own template
+    // names it once the stack update after the move runs).
+    const char *aa = strstr(r->path, "/associate-alias");
+    if (strcmp(r->method, "PUT") == 0 && strncmp(r->path, "/2020-05-31/distribution/", 25) == 0 && aa) {
+        char *alias = form_get(r->query, "Alias");
+        char id[64] = "", dom[128] = "", hosts[300] = "", kept[300] = "";
+        pthread_mutex_lock(&g_mu);
+        if (alias && g_foreign_dist[0]) {
+            sscanf(g_foreign_dist, "%63[^:]:%127[^:]:%299s", id, dom, hosts);
+            for (char *save = NULL, *t = strtok_r(hosts, "+", &save); t; t = strtok_r(NULL, "+", &save))
+                if (strcmp(t, alias) != 0)
+                    snprintf(kept + strlen(kept), sizeof kept - strlen(kept), "%s%s", kept[0] ? "+" : "", t);
+            if (kept[0]) snprintf(g_foreign_dist, sizeof g_foreign_dist, "%s:%s:%s", id, dom, kept);
+            else g_foreign_dist[0] = 0;
+        }
+        pthread_mutex_unlock(&g_mu);
+        logf_("CF AssociateAlias %.*s %s", (int)(aa - r->path - 25), r->path + 25, alias ? alias : "-");
+        free(alias);
+        free(b.p);
+        respond(fd, 200, "OK", "text/xml", NULL, "", 0);
+        return;
+    }
     const char *inv = strstr(r->path, "/invalidation");
     if (strncmp(r->path, "/2020-05-31/distribution/", 25) == 0 && inv) {
         char dist[64], paths[512];

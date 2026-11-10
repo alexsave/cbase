@@ -136,10 +136,12 @@ EOF
   if [ -n "${VM_ORIGIN_ADDR:-}" ]; then printf '              IpAddressType: %s\n' "$VM_ORIGIN_ADDR"; fi
 }
 
-# stack_viewer_cert ALIAS...: the Aliases and ViewerCertificate lines.
+# stack_viewer_cert ALIAS...: the Aliases and ViewerCertificate lines. With CBASE_ALIASES off (a
+# staged attach's first step) the certificate is on and no alias: CloudFront moves an alias only
+# onto a distribution whose certificate already covers it (associate-alias, cert.sh cert_attach).
 stack_viewer_cert() {
   if [ -n "$STACK_CERT" ] && [ $# -gt 0 ]; then
-    printf '        Aliases: [%s]\n' "$(printf '%s, ' "$@" | sed 's/, $//')"
+    [ "${CONF_ALIASES:-on}" = off ] || printf '        Aliases: [%s]\n' "$(printf '%s, ' "$@" | sed 's/, $//')"
     cat << EOF
         ViewerCertificate:
           AcmCertificateArn: $STACK_CERT
@@ -700,9 +702,12 @@ stack_delete() {
   echo "stack: $STACK_NAME is deleted"
 }
 
-# stack_execute: runs the change set and waits.
+# stack_execute: runs the change set and waits. With STACK_NO_ROLLBACK=1 (an attach's update, the
+# aliases already moved onto the distribution) a failed update is not rolled back: a rollback would
+# take the moved hostnames off it, served nowhere. The next deploy updates the UPDATE_FAILED stack.
 stack_execute() {
-  cfn execute-change-set --stack-name "$STACK_NAME" --change-set-name "$STACK_CS" > /dev/null \
+  cfn execute-change-set --stack-name "$STACK_NAME" --change-set-name "$STACK_CS" \
+      ${STACK_NO_ROLLBACK:+--disable-rollback} > /dev/null \
     || aws_fail "executing change set $STACK_CS on $STACK_NAME"
   echo "stack: executing $STACK_CS (a new distribution takes some minutes)"
   local w=stack-update-complete

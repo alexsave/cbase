@@ -272,15 +272,23 @@ cert_auto() {
   echo "certificate: $CERT_ARN, issued"
 }
 
-# cert_alias_check OWN_ID...: every hostname (CERT_HOSTS) is free for this app's distributions.
-# CloudFront serves a hostname from one distribution alone, and a stack that names one another
-# distribution holds fails late, mid-execute (CNAMEAlreadyExists). So each hostname another
-# distribution holds (not one of OWN_ID, this app's) is named with that distribution and the one
-# step that frees it, and the deploy stops before anything changes; a dry run says so and goes on.
-# Moving it is the person's step, never automatic.
+# cert_alias_check DIST_ID API_DIST_ID: every hostname (CERT_HOSTS) is free for this app's
+# distributions (the stack's, "" before its first deploy), or moved onto them. CloudFront serves a
+# hostname from one distribution alone, and a stack that names one another distribution holds fails
+# late, mid-execute (CNAMEAlreadyExists). A hostname another distribution of the account holds:
+#   - when this app's distribution for it exists (a staged attach: deploy --no-aliases made it, with
+#     the certificate), its move is planned in CERT_MOVES, "<host> <from> <to>", and cert_attach
+#     makes it just before the stack update that names it: associate-alias, one atomic step, so the
+#     hostname is served throughout. Same-account moves need no TXT record (README.md);
+#   - else it is named with its holder and the steps that free it, and the deploy stops before
+#     anything changes; a dry run says so and goes on.
+# With CBASE_ALIASES off no hostname is added, so none is checked.
+CERT_MOVES=()
 cert_alias_check() {
-  local text id dom aliases h a found=0 own=" $* "
+  local text id dom aliases h a found=0 own=" $* " to
+  CERT_MOVES=()
   [ "${#CERT_HOSTS[@]}" -gt 0 ] || return 0
+  [ "$CONF_ALIASES" != off ] || return 0
   # shellcheck disable=SC2016 # the backticks are a JMESPath literal
   text="$(aws_call cloudfront list-distributions \
             --query 'DistributionList.Items[?Aliases.Quantity > `0`].[Id,DomainName,join(`,`,Aliases.Items)]' --output text)" \
@@ -291,9 +299,17 @@ cert_alias_check() {
     for h in "${CERT_HOSTS[@]}"; do
       for a in ${aliases//,/ }; do
         [ "$a" = "$h" ] || continue
+        to="${1:-}"
+        [ "$h" != "$CONF_API_HOST" ] || to="${2:-}"
+        if [ -n "$to" ]; then
+          CERT_MOVES+=("$h $id $to")
+          echo "attach: $h moves from the distribution $id ($dom) to this app's $to (associate-alias: atomic, no downtime)${DRY_RUN:+; a dry run makes no move}"
+          continue
+        fi
         found=1
         echo "cbase: $h is an alternate domain name of the distribution $id ($dom), which is not this app's, and CloudFront serves a hostname from one distribution alone (CNAMEAlreadyExists)." >&2
         echo "  free it: remove $h from $id's alternate domain names (in the stack that made $id, or in the CloudFront console), then deploy again" >&2
+        echo "  or move it with no downtime (a staged attach): ./cbase deploy --no-aliases, set the DNS records it prints, then ./cbase deploy --attach" >&2
       done
     done
   done <<< "$text"
@@ -303,10 +319,33 @@ cert_alias_check() {
   exit 1
 }
 
+# cert_attach: each move CERT_MOVES plans, made. AssociateAlias "removes the alternate domain name
+# from the source standard distribution and moves it to the target" in one call; the target's
+# certificate covers it (deploy --no-aliases put it there). The stack update that follows names
+# the hostname the distribution already holds, which CloudFront takes as no change of holder.
+cert_attach() {
+  local m h from to
+  for m in "${CERT_MOVES[@]+"${CERT_MOVES[@]}"}"; do
+    read -r h from to <<< "$m"
+    aws_call cloudfront associate-alias --target-distribution-id "$to" --alias "$h" > /dev/null \
+      || aws_fail "moving $h from the distribution $from to $to (associate-alias)"
+    echo "attach: $h moved from $from to $to"
+  done
+}
+
 # cert_point DOMAIN HOST: each hostname at its distribution: an alias in its zone, or a note
 # (CERT_NOTES) naming the record for DNS served elsewhere, which never stops a deploy.
+# With CBASE_ALIASES off the hostname is not on the distribution yet, so no record is written (an
+# alias written now would send it where it is not served): the records to set are printed instead.
 cert_point() {
   local host="$1" target="$2" z="" i
+  if [ "$CONF_ALIASES" = off ]; then
+    local txt="_$host"
+    [[ "$host" == *.*.* ]] || txt="_.$host"   # an apex's (example.com): "_." before it
+    echo "point $host at $target (a CNAME; an ALIAS or flattened record at a domain's apex)"
+    echo "  only when $host's current distribution is in another AWS account, also: $txt TXT $target (CloudFront's proof of ownership for a cross-account move; a same-account move needs none)"
+    return 0
+  fi
   for i in "${!CERT_HOSTS[@]}"; do
     [ "${CERT_HOSTS[$i]}" != "$host" ] || z="${CERT_ZONES[$i]}"
   done

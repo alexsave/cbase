@@ -681,6 +681,18 @@ A hostname's own record is never a stop: with an issued certificate the deploy c
 `CBASE_CERT_ARN` and `CBASE_ZONE` are overrides, for a certificate or a zone deploy would not pick.
 Deploy never registers a domain or makes a hosted zone.
 
+### Moving a hostname from another distribution: a staged attach
+
+A hostname another distribution of the account serves moves to the app's own with no downtime, and its DNS changes once:
+
+1. `./cbase deploy --no-aliases` (or `CBASE_ALIASES = off`) makes the distributions with the certificate and every route, but no hostname, and prints `point <host> at <dXXXX.cloudfront.net>` for each.
+2. Set those DNS records where the domain is served (an apex at a registrar outside Route 53 needs an ALIAS or a flattened CNAME).
+3. Wait for DNS to answer with the new names (`dig +short <host>`).
+4. `./cbase deploy --attach` (or a normal deploy, with `CBASE_ALIASES` on) moves each hostname onto the app's distribution with `associate-alias`, then the stack update names them, so later deploys own them; `--dry-run` prints the moves and makes none.
+5. Verify: `curl -sI https://<host>/` answers from the new distribution.
+
+A same-account move needs no TXT record; for a hostname whose current distribution is in another AWS account, CloudFront also wants `_<host> TXT <dXXXX.cloudfront.net>` (`_.<apex>` for an apex), which step 1 prints too.
+
 ### The safety rules
 
 Every stack change is a change set, made and printed before anything runs.
@@ -698,7 +710,7 @@ Every stack change is a change set, made and printed before anything runs.
   Its WebSockets are closed with 1001 (going away) and reconnect to the new serve, which starts from what the store holds: anything an app keeps only in memory is gone after a deploy, so the app keeps in its store what must outlive one.
   The first deploy onto the socket (an app deployed before it, or a `CBASE_VM_REPLACES` unit) stops the old service before the socket can take its port; that one switch is the last gap.
 - **A hostname is on one distribution.**
-  A hostname another distribution already serves stops the deploy before anything changes, naming that distribution and the one step that frees it (CloudFront refuses it with `CNAMEAlreadyExists`); moving it is the person's step.
+  A hostname another distribution already serves stops the deploy before anything changes, naming that distribution and the steps that free it (CloudFront refuses it with `CNAMEAlreadyExists`), unless the app's own distribution exists to take it: then deploy moves it there with CloudFront's `associate-alias`, one atomic step, just before the stack update that names it (a staged attach, below).
 - **Drift stops a deploy.**
   On a stack that exists, CloudFormation's drift detection runs first, and a resource changed by hand is printed and the deploy stops, since the update would undo the change; `--accept-drift` (or `CBASE_ACCEPT_DRIFT=1`) overwrites it.
 - **A dry run changes nothing.**
