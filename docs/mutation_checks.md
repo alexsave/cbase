@@ -1575,3 +1575,4 @@ Two new tests in cbase_vm_test.sh (the lean-testing ruling): the default group's
 ## ./cbase: the origin line, a flaky pipe, throttling retried (small-fixes2)
 
 - vm.sh: vm_origin's line back to `${held:+ (its state file)}${held:-...}` (the host printed twice) -> cbase_vm_test.sh's `the origin's line is not the state file's` red.
+- aws.sh: aws_call's retry dropped (a throttled call returns at once) -> cbase_test.sh's `apps g1 through two 429s: status 1, not 0` red.

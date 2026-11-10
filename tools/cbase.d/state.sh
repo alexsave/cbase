@@ -201,7 +201,7 @@ state_free_port() {
 state_backoff() {   # state_backoff ATTEMPT APP
   local ms=$((100 * (1 << ($1 - 1)))) stagger
   [ "$ms" -le 2000 ] || ms=2000
-  stagger=$(( $(printf '%s' "$2" | cksum | cut -d' ' -f1) % 100 ))
+  stagger="$(aws_stagger_ms "$2")"
   ms=$((ms + stagger))
   sleep "$(printf '%d.%03d' $((ms / 1000)) $((ms % 1000)))"
 }
