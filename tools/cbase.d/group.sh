@@ -397,11 +397,17 @@ group_init() {
   # The state bucket first: the instance's role names it, and the state file goes in it.
   group_state_bucket "$region"
   [ -z "$STACK_CHANGES" ] || stack_execute
-  # The group's state file, empty, so apps and doctor see the group; one that exists is kept.
-  local bucket key
+  # The group's state file, empty, so apps and doctor see the group; one that exists is kept. A vm
+  # group's records its origin: the instance's public DNS name (its Elastic IP's), dualstack.
+  local bucket key origin=""
   bucket="$(state_bucket)"
   key="$(state_key "$kind" "$group")"
-  printf 'cbase-state %s %s %s\n' "$STATE_VERSION" "$kind" "$group" > "$CB_TMP/state-new"
+  if [ "$kind" = vm ]; then
+    origin="$(aws_call ec2 describe-instances --instance-ids "$(aws_group_find vm "$group")" \
+                --query "Reservations[0].Instances[0].PublicDnsName" --output text)" || aws_fail "reading vm group $group's instance"
+    [ "$origin" != None ] || origin=""
+  fi
+  printf 'cbase-state %s %s %s%s\n' "$STATE_VERSION" "$kind" "$group" "${origin:+ origin=$origin addr=dualstack}" > "$CB_TMP/state-new"
   local rc=0
   aws_s3_put "$bucket" "$key" "$CB_TMP/state-new" "*" || rc=$?
   case "$rc" in

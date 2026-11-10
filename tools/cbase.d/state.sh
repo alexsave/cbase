@@ -6,7 +6,7 @@
 # Tags find a group (aws.sh aws_group_find); its state file alone says who is in it.
 #
 # THE FORMAT, plain text, one line per member, sorted by app, written whole by this file alone:
-#   cbase-state 1 vm <group>
+#   cbase-state 1 vm <group> origin=<host> addr=<ipv6|dualstack>
 #   app=<name> port=<port> service=cbase-<name>.service mem=<MiB>
 # where mem is the declared MiB (CBASE_MEMORY), or ~<MiB> for an app that declares none, counted
 # at that estimate (conf.sh CONF_MEMORY_ESTIMATE): "mem=~128". A grandfathered member (conf.sh
@@ -15,7 +15,10 @@
 #   cbase-state 1 static <group>
 #   app=<name> folder=<name>/
 # The first line names the format's version, the kind and the group, and must match the file's
-# key. Every field is present, in this order, separated by one blank. A line that is not so, a
+# key. A vm group's adds its VM's origin, the one hostname CloudFront reaches every member at, and
+# its address type (the distribution's IpAddressType): group-init records the instance's own,
+# dualstack; an adopted group's first deploy with CBASE_VM_ORIGIN records that host, ipv6. A
+# header without it (written before it was recorded) is read as a group with no origin yet. Every field is present, in this order, separated by one blank. A line that is not so, a
 # second line for an app, and (vm) a port two apps hold or one outside the range stop the tool,
 # naming the file and the line.
 #
@@ -49,6 +52,10 @@ STATE_ATTEMPTS=8
 ST_LINES=()
 ST_APPS=()
 ST_PORTS=()   # vm groups: each member's port
+ST_ORIGIN=""       # vm groups: the header's origin host, or "" when none is recorded
+ST_ORIGIN_ADDR=""  # and its address type, ipv6 or dualstack
+STATE_ORIGIN=""    # the joining app's CBASE_VM_ORIGIN, or ""
+STATE_ORIGIN_NEED=""  # 1: a join with no origin recorded or named is refused (deploy's, vm.sh)
 
 STATE_FIT_LIMIT=""   # MiB the vm group's instance leaves for apps; "" for no fit check
 STATE_FIT_WHAT=""    # how the limit came about, for the report ("t4g.nano: 512 MiB less 192 for the OS")
@@ -67,11 +74,18 @@ state_parse() {
   ST_LINES=()
   ST_APPS=()
   ST_PORTS=()
+  ST_ORIGIN=""
+  ST_ORIGIN_ADDR=""
   while IFS= read -r line || [ -n "$line" ]; do
     no=$((no + 1))
     if [ "$no" -eq 1 ]; then
+      if [ "$kind" = vm ] && [[ "$line" =~ ^cbase-state\ $STATE_VERSION\ vm\ $group\ origin=([a-z0-9.-]+)\ addr=(ipv6|dualstack)$ ]]; then
+        ST_ORIGIN="${BASH_REMATCH[1]}"
+        ST_ORIGIN_ADDR="${BASH_REMATCH[2]}"
+        continue
+      fi
       [ "$line" = "cbase-state $STATE_VERSION $kind $group" ] \
-        || state_die "$where" "$no" "is not \"cbase-state $STATE_VERSION $kind $group\" (the format's version, the kind and the group)"
+        || state_die "$where" "$no" "is not \"cbase-state $STATE_VERSION $kind $group\" (the format's version, the kind and the group; a vm group's may add \" origin=<host> addr=<ipv6|dualstack>\")"
       continue
     fi
     if [ "$kind" = vm ]; then
@@ -143,6 +157,20 @@ state_fit() {
   [ "$total" -le "$STATE_FIT_LIMIT" ]
 }
 
+# state_origin GROUP: the vm group's origin, ST_ORIGIN and ST_ORIGIN_ADDR, as the file read holds
+# it, or taken from STATE_ORIGIN (the app's CBASE_VM_ORIGIN, ipv6) when it holds none. One VM has
+# one origin: an app naming another is refused. Status 1 when neither names one.
+state_origin() {
+  if [ -n "$STATE_ORIGIN" ]; then
+    if [ -z "$ST_ORIGIN" ]; then ST_ORIGIN="$STATE_ORIGIN"; ST_ORIGIN_ADDR=ipv6
+    elif [ "$ST_ORIGIN" != "$STATE_ORIGIN" ]; then
+      echo "cbase: $CONF_APP's CBASE_VM_ORIGIN is $STATE_ORIGIN, and vm group $1's VM is reached at $ST_ORIGIN (its state file): one VM can't have two origins. Drop CBASE_VM_ORIGIN, or set it to $ST_ORIGIN. Nothing was changed." >&2
+      exit 1
+    fi
+  fi
+  [ -n "$ST_ORIGIN" ]
+}
+
 state_die() {
   echo "cbase: state file $1 line $2 $3. It is written by ./cbase alone; fix or restore it by hand only with care." >&2
   exit 1
@@ -151,7 +179,7 @@ state_die() {
 # state_render KIND GROUP FILE: the header and ST_LINES sorted by app, into FILE.
 state_render() {
   {
-    printf 'cbase-state %s %s %s\n' "$STATE_VERSION" "$1" "$2"
+    printf 'cbase-state %s %s %s%s\n' "$STATE_VERSION" "$1" "$2" "${ST_ORIGIN:+ origin=$ST_ORIGIN addr=$ST_ORIGIN_ADDR}"
     if [ "${#ST_LINES[@]}" -gt 0 ]; then printf '%s\n' "${ST_LINES[@]}" | LC_ALL=C sort; fi
   } > "$3"
 }
@@ -195,6 +223,8 @@ state_read() {
     ST_LINES=()
     ST_APPS=()
     ST_PORTS=()
+    ST_ORIGIN=""
+    ST_ORIGIN_ADDR=""
     return 0
   fi
   [ "$rc" -eq 0 ] || exit "$rc"
@@ -204,7 +234,7 @@ state_read() {
 # state_change KIND GROUP APP MEM OP: one join or leave, read-modify-conditional-write, retried.
 # OP is join or leave. Prints what it did.
 state_change() {
-  local kind="$1" group="$2" app="$3" mem="$4" op="$5" attempt line i at port bucket key rc
+  local kind="$1" group="$2" app="$3" mem="$4" op="$5" attempt line i at port bucket key rc old_origin=
   bucket="$(state_bucket)"
   key="$(state_key "$kind" "$group")"
   for ((attempt = 1; attempt <= STATE_ATTEMPTS; attempt++)); do
@@ -231,6 +261,8 @@ state_change() {
       ST_PORTS=("${keep_ports[@]+"${keep_ports[@]}"}")
     else
       if [ "$kind" = vm ]; then
+        old_origin="$ST_ORIGIN"
+        state_origin "$group" || [ -z "$STATE_ORIGIN_NEED" ] || { echo "cbase: vm group $group has no origin recorded and $app names none: set CBASE_VM_ORIGIN (the VM's AAAA hostname) once, in this app's cbase.conf. Nothing was changed." >&2; exit 1; }
         if [ -n "$STATE_LEGACY_PORT" ]; then
           # A grandfathered member: its own port, which no other member may hold.
           port="$STATE_LEGACY_PORT"
@@ -255,7 +287,7 @@ state_change() {
       fi
       # shellcheck disable=SC2034 # vm.sh reads it
       if [ -z "$at" ]; then STATE_JOINED_NEW=1; else STATE_JOINED_NEW=""; fi
-      if [ -n "$at" ] && [ "${ST_LINES[$at]}" = "$line" ]; then
+      if [ -n "$at" ] && [ "${ST_LINES[$at]}" = "$line" ] && [ "${old_origin:-}" = "$ST_ORIGIN" ]; then
         echo "$app is in $kind group $group: $line"
         [ -z "$STATE_FIT_LIMIT" ] || [ "$kind" != vm ] || printf '%s\n' "$STATE_FIT_REPORT"
         return 0

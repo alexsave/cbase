@@ -89,7 +89,7 @@ since "$m" | grep -q "CFN CreateChangeSet cbase-group-vm-g9 CREATE ok params=Ins
   || { since "$m" | grep CreateChangeSet >&2; fail "group-init vm's change set parameters"; }
 since "$m" | grep -q "CFN ExecuteChangeSet cbase-group-vm-g9 ok" || fail "group-init vm did not execute"
 out_has "vm group g9: i-0g9" "group-init vm finds its group"
-printf 'cbase-state 1 vm g9\n' > "$t/want"
+printf 'cbase-state 1 vm g9 origin=ec2-i-0g9.compute-1.amazonaws.com addr=dualstack\n' > "$t/want"
 state_of vm g9 | diff -u "$t/want" - || fail "group-init vm's state file"
 ok
 template_of cbase-group-vm-g9 > "$t/tpl"
@@ -548,14 +548,16 @@ for want in "Environment=CBASE_BACKUP_KEY=cbase/latest.sqlite" "Environment=CBAS
 done
 ok
 # CBASE_VM_REPLACES: the port the replaced unit holds is no refusal; that one unit alone is
-# stopped and disabled, before the app's own starts.
+# stopped, disabled and masked (its unit file moved aside first), before the app's own starts.
 vm="$t/vm4"
+mkdir -p "$vm/etc/systemd/system"; echo "[Unit]" > "$vm/etc/systemd/system/old.service"
 STUB_PORT=8080 STUB_TAKEN=1 STUB_ACTIVE_UNIT=old.service on_vm "$vm" "$t/game-deploy.sh"
 [ "$rc" = 0 ] || { cat "$t/vm-out" >&2; fail "the deploy that replaces old.service: status $rc"; }
 grep -E '^systemctl (stop|disable|kill|mask)' "$vm/calls" > "$t/stops" || true
-printf 'systemctl disable --now --quiet old.service\n' | diff -u - "$t/stops" || fail "the deploy stopped other than old.service alone"
-[ "$(grep -nE '^systemctl (disable --now --quiet old.service|start cbase-game.socket|restart cbase-game.service)' "$vm/calls" | cut -d: -f2- | tr '\n' '|')" \
-  = "systemctl disable --now --quiet old.service|systemctl start cbase-game.socket|systemctl restart cbase-game.service|" ] || { cat "$vm/calls" >&2; fail "old.service was not stopped before cbase-game.service started"; }
+printf 'systemctl disable --now --quiet old.service\nsystemctl mask --quiet old.service\n' | diff -u - "$t/stops" || fail "the deploy stopped and masked other than old.service alone"
+{ [ -f "$vm/etc/systemd/system/old.service.cbase-replaced" ] && [ ! -f "$vm/etc/systemd/system/old.service" ]; } || fail "old.service's unit file was not moved aside before the mask"
+[ "$(grep -nE '^systemctl (disable --now --quiet old.service|mask --quiet old.service|start cbase-game.socket|restart cbase-game.service)' "$vm/calls" | cut -d: -f2- | tr '\n' '|')" \
+  = "systemctl disable --now --quiet old.service|systemctl mask --quiet old.service|systemctl start cbase-game.socket|systemctl restart cbase-game.service|" ] || { cat "$vm/calls" >&2; fail "old.service was not stopped before cbase-game.service started"; }
 ok
 run "$game" undeploy
 expect_rc 0 "the grandfathered member's undeploy"
@@ -619,19 +621,40 @@ out_has "dry run: a deploy would stop here, on no SSM parameter /cbase-vm/amgi/C
 out_has "  memory: amgi ~128 = 128 MiB of the 320 MiB for apps (t4g.nano: 512 MiB less 192 for the OS)" "the fit is still checked"
 out_has "vm: would join vm group veteran as app=amgi port=8700 service=cbase-amgi.service mem=~128" "the port it would claim"
 out_has "dry run: change set cbase-deploy deleted unexecuted" "the dry run reaches the change set"
-err_has "cbase: dry run: a deploy would stop on 1 problem:" "the problems listed at the end"
+err_has "cbase: dry run: a deploy would stop on 2 problems:" "the problems listed at the end"
+err_has "  vm group veteran has no origin recorded and amgi names none: set CBASE_VM_ORIGIN (the VM's AAAA hostname) once" "no origin recorded or named"
 err_has "  no SSM parameter /cbase-vm/amgi/CBASE_ORIGIN_SECRET (the origin secret)" "the problem listed"
 since "$m" | grep -E "^PUT /|^DELETE /|CreateBucket|^SSM SendCommand|^CFN ExecuteChangeSet" && fail "an adopted group's dry run changed something"
 ok
 # A grandfathered member: seeded with its own port and data, as they are.
 veteran="$(vm_app veteran "CBASE_APP = veteran" "CBASE_VM = veteran" "CBASE_VM_STACK = cbase-vm" "CBASE_STATIC = none" \
-             "CBASE_VM_PORT = 8080" "CBASE_VM_DATA = /var/lib/cbase" "CBASE_VM_SETTINGS = /cbase-vm/env/")"
+             "CBASE_VM_PORT = 8080" "CBASE_VM_DATA = /var/lib/cbase" "CBASE_VM_SETTINGS = /cbase-vm/env/" \
+             "CBASE_VM_ORIGIN = vm-origin.example.net")"
 fake_set "origin-secret=$ORIGIN_SECRET"
 run "$veteran" deploy --dry-run
 expect_rc 0 "a grandfathered member's dry run"
 out_has "vm paths: settings SSM /cbase-vm/env/, servers s3://cbase-code-$ACCOUNT-us-east-1/vm/veteran/" "CBASE_VM_SETTINGS overrides the derived path"
 out_has "and seed vm/veteran.txt with veteran (grandfathered: port 8080, data /var/lib/cbase)" "the seed's grandfathered member"
 out_has "vm: would join vm group veteran as app=veteran port=8080 service=cbase-veteran.service mem=~128 data=/var/lib/cbase legacy=1" "the grandfathered claim"
+ok
+# THE GROUP'S ORIGIN: the first member's CBASE_VM_ORIGIN is recorded in the group's state file; a
+# second app naming none gets that host, IpAddressType ipv6 (never the instance's own DNS name);
+# an app naming another is refused, one VM having one origin.
+aws s3api create-bucket --bucket "cbase-code-$ACCOUNT-us-east-1" > /dev/null || fail "the adopted group's code bucket"
+run "$veteran" deploy
+expect_rc 0 "the first member's deploy into the adopted group"
+state_of vm veteran | head -1 | grep -Fxq "cbase-state 1 vm veteran origin=vm-origin.example.net addr=ipv6" || { state_of vm veteran >&2; fail "the first member's origin was not recorded"; }
+m="$(mark)"
+run "$amgi" deploy
+expect_rc 0 "a second app joining the group with an origin recorded"
+since "$m" | grep -q "CFN CreateChangeSet cbase-app-amgi CREATE ok params=VmOrigin=vm-origin.example.net," || { since "$m" | grep CreateChangeSet >&2; fail "the second app did not get the group's origin"; }
+template_of cbase-app-amgi | grep -A1 "OriginKeepaliveTimeout" | grep -q "IpAddressType: ipv6" || fail "the second app's origin is not IpAddressType ipv6"
+other="$(vm_app other "CBASE_APP = other" "CBASE_VM = veteran" "CBASE_VM_STACK = cbase-vm" "CBASE_STATIC = none" "CBASE_VM_ORIGIN = vm2.example.net")"
+m="$(mark)"
+run "$other" deploy
+expect_rc 1 "an app naming another origin"
+err_has "one VM can't have two origins" "an app naming another origin"
+since "$m" | grep -qE "^PUT /|^SSM SendCommand|^CFN CreateChangeSet" && fail "an app naming another origin changed something"
 ok
 
 [ "$(log_count unsigned)" = 0 ] || fail "a call reached the fake without the test's credentials"

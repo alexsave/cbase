@@ -132,8 +132,8 @@ stack_vm_origin() {
               OriginReadTimeout: $2
               OriginKeepaliveTimeout: $3
 EOF
-  # An IPv6-only VM: its origin name has an AAAA record alone (CBASE_VM_ORIGIN, or the group's).
-  if [ -n "${VM_IPV6:-}" ] || [ -n "$CONF_VM_ORIGIN" ]; then printf '              IpAddressType: ipv6\n'; fi
+  # The group's origin address type (state.sh): ipv6 for an IPv6-only VM, whose name has an AAAA alone.
+  if [ -n "${VM_ORIGIN_ADDR:-}" ]; then printf '              IpAddressType: %s\n' "$VM_ORIGIN_ADDR"; fi
 }
 
 # stack_viewer_cert ALIAS...: the Aliases and ViewerCertificate lines.
