@@ -1576,3 +1576,4 @@ Two new tests in cbase_vm_test.sh (the lean-testing ruling): the default group's
 
 - vm.sh: vm_origin's line back to `${held:+ (its state file)}${held:-...}` (the host printed twice) -> cbase_vm_test.sh's `the origin's line is not the state file's` red.
 - aws.sh: aws_call's retry dropped (a throttled call returns at once) -> cbase_test.sh's `apps g1 through two 429s: status 1, not 0` red.
+- test/lib.sh: since's `|| [ $? -eq 141 ]` dropped -> the exact pipeline of cbase_vm_test.sh's `blog's stack lacks its port` (`since "$m" | grep -q ...` on a saved log) fails 26 of 3000 runs, sed=141 grep=0; with it, 0 of 3000.
