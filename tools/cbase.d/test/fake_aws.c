@@ -17,7 +17,7 @@
 //   * STS GetCallerIdentity (the Query protocol, an XML answer naming --account).
 //   * Tagging GetResources (JSON 1.1): the --resource lines whose tag key, value and resource type
 //     the request's filters name.
-//   * CloudFormation (Query): DescribeStacks, DescribeStackResources (an adopted stack's instance: a
+//   * CloudFormation (Query): DescribeStacks (a vm group's with its OriginIpv6 output), DescribeStackResources (an adopted stack's instance: a
 //     --resource line tagged aws:cloudformation:stack-name), Create/Describe/Delete/ExecuteChangeSet, DeleteStack,
 //     DetectStackDrift, DescribeStackDriftDetectionStatus, DescribeStackResourceDrifts,
 //     DescribeStackEvents. Every wait ends at once (the change set and the stack are done when
@@ -35,7 +35,8 @@
 //   * EC2 (Query, XML): DescribeInstances (an instance a --resource line or a group stack names:
 //     running, its type the instance-type knob, a public DNS name), DescribeInstanceTypes (a small
 //     recorded table: t4g.nano 512 MiB arm64 up to t4g.small, t3.nano x86_64),
-//     DescribeManagedPrefixLists (CloudFront's origin-facing list).
+//     DescribeManagedPrefixLists (CloudFront's IPv4 and IPv6 origin-facing lists, by name),
+//     DescribeInstanceTypeOfferings (any type, in us-east-1b and us-east-1a).
 //   * SSM (JSON 1.1): GetParameter (the Amazon Linux image), SendCommand (logged with its
 //     commands, which the test decodes), GetCommandInvocation (InProgress at the first read, then
 //     what the ssm-* knobs said when the command was sent).
@@ -949,6 +950,9 @@ static void cloudformation(int fd, const request *r) {
                 sb_add(&b, "<Outputs><member><OutputKey>DistributionId</OutputKey><OutputValue>%s</OutputValue></member>"
                            "<member><OutputKey>DistributionDomain</OutputKey><OutputValue>%s</OutputValue></member>",
                        st->dist_id, st->dist_domain);
+                // A vm group's: the subnet's ::10.
+                if (strstr(st->template, "\n  OriginIpv6:\n"))
+                    sb_add(&b, "<member><OutputKey>OriginIpv6</OutputKey><OutputValue>2600:1f18:4a3:6f00::10</OutputValue></member>");
                 // A template with CBASE_API_HOST's distribution: its own cloudfront.net name.
                 if (strstr(st->template, "\n  ApiDistribution:\n"))
                     sb_add(&b, "<member><OutputKey>ApiDistributionDomain</OutputKey><OutputValue>api-%s</OutputValue></member>"
@@ -1519,9 +1523,33 @@ static void ec2(int fd, const request *r) {
                    "<processorInfo><supportedArchitectures><item>%s</item></supportedArchitectures></processorInfo></item></instanceTypeSet>",
                TYPES[k].name, TYPES[k].mib, TYPES[k].arch);
     } else if (strcmp(a, "DescribeManagedPrefixLists") == 0) {
-        logf_("EC2 DescribeManagedPrefixLists");
-        sb_add(&b, "<prefixListSet><item><prefixListId>pl-3b927c52</prefixListId>"
-                   "<prefixListName>com.amazonaws.global.cloudfront.origin-facing</prefixListName></item></prefixListSet>");
+        // CloudFront's two origin-facing lists, by the name the filter asks for.
+        char *n = form_get(r->body, "Filter.1.Value.1");
+        const char *id = !n ? NULL
+                         : strcmp(n, "com.amazonaws.global.cloudfront.origin-facing") == 0      ? "pl-3b927c52"
+                         : strcmp(n, "com.amazonaws.global.ipv6.cloudfront.origin-facing") == 0 ? "pl-0a6b6e1c"
+                                                                                                : NULL;
+        logf_("EC2 DescribeManagedPrefixLists %s %s", n ? n : "-", id ? id : "none");
+        sb_add(&b, "<prefixListSet>");
+        if (id) {
+            sb_add(&b, "<item><prefixListId>%s</prefixListId><prefixListName>", id);
+            sb_xml(&b, n);
+            sb_add(&b, "</prefixListName></item>");
+        }
+        sb_add(&b, "</prefixListSet>");
+        free(n);
+    } else if (strcmp(a, "DescribeInstanceTypeOfferings") == 0) {
+        // Every type in two zones, listed out of order (the tool sorts).
+        char *t = form_get(r->body, "Filter.1.Value.1");
+        logf_("EC2 DescribeInstanceTypeOfferings %s", t ? t : "-");
+        sb_add(&b, "<instanceTypeOfferingSet>");
+        for (int i = 0; t && i < 2; i++) {
+            sb_add(&b, "<item><instanceType>");
+            sb_xml(&b, t);
+            sb_add(&b, "</instanceType><locationType>availability-zone</locationType><location>us-east-1%c</location></item>", i ? 'a' : 'b');
+        }
+        sb_add(&b, "</instanceTypeOfferingSet>");
+        free(t);
     } else {
         logf_("EC2 %s 400", a);
         free(b.p);

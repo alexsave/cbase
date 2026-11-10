@@ -6,7 +6,9 @@
 #   bash tools/cbase.d/test/cbase_vm_test.sh      (cbase's make check runs it: cbase-vm-test)
 #
 # The cases: group-init vm refused without --yes (nothing made, not even the state bucket), an
-# x86 type refused, then made with the state bucket and its state file; group-init static, with
+# x86 type refused; IPv6-only by default (no Elastic IP, no public IPv4, CloudFront's IPv6 list, the
+# boot's claim of ::10), --ipv4's public IPv4 and its cost; made with the state bucket and its
+# state file; group-init static, with
 # the bucket policy on aws:SourceAccount; a re-run up to date, keeping the image and the type;
 # re-runs whose change set would replace the bucket or the instance, refused. A full app's
 # deploy: the port claimed, the memory fit with an undeclared app counted at 128M and said so, the
@@ -79,13 +81,14 @@ ok
 run "$t" group-init vm Bad_Name --yes
 expect_rc 2 "group-init of a bad name"
 ok
-# With --yes: the state bucket made, the stack's change set run, the state file written.
+# With --yes (and --ipv4, the group the deploys below share): the state bucket made, the stack's
+# change set run, the state file written with the instance's public DNS name as its origin.
 m="$(mark)"
-run "$t" group-init vm g9 --yes
+run "$t" group-init vm g9 --ipv4 --yes
 expect_rc 0 "group-init vm"
 since "$m" | grep -q "S3 CreateBucket $BUCKET 200" || fail "group-init did not make the state bucket"
 since "$m" | grep -q "S3 PutPublicAccessBlock $BUCKET 200" || fail "group-init did not block public access to the state bucket"
-since "$m" | grep -q "CFN CreateChangeSet cbase-group-vm-g9 CREATE ok params=InstanceType=t4g.nano,ImageId=ami-0f4ce1234567890ab,CloudFrontPrefixList=pl-3b927c52,ArtifactBucket=$BUCKET caps=CAPABILITY_IAM" \
+since "$m" | grep -q "CFN CreateChangeSet cbase-group-vm-g9 CREATE ok params=InstanceType=t4g.nano,ImageId=ami-0f4ce1234567890ab,AvailabilityZone=us-east-1a,CloudFrontPrefixList=pl-0a6b6e1c,CloudFrontPrefixListIpv4=pl-3b927c52,ArtifactBucket=$BUCKET caps=CAPABILITY_IAM" \
   || { since "$m" | grep CreateChangeSet >&2; fail "group-init vm's change set parameters"; }
 since "$m" | grep -q "CFN ExecuteChangeSet cbase-group-vm-g9 ok" || fail "group-init vm did not execute"
 out_has "vm group g9: i-0g9" "group-init vm finds its group"
@@ -98,8 +101,45 @@ for want in "Type: AWS::EC2::Instance" "Key: cbase:vm-group" "Value: g9" "Source
             'Resource: !Sub "arn:${AWS::Partition}:s3:::${ArtifactBucket}/artifacts/*"' "Encrypted: true" "Type: AWS::EC2::EIP"; do
   grep -Fq -- "$want" "$t/tpl" || { cat "$t/tpl" >&2; fail "the vm group's template lacks [$want]"; }
 done
-[ "$(grep -c 'IpProtocol:' "$t/tpl")" = 1 ] || fail "the vm group's security group opens more than the apps' ports"
-grep -Eq 'CidrIp|FromPort: (22|80|443)$' "$t/tpl" && fail "the vm group's security group opens SSH, the web ports or a CIDR"
+awk '/SecurityGroupIngress:/{f=1; next} /SecurityGroupEgress:|^  [A-Za-z]/{f=0} f' "$t/tpl" > "$t/ingress"
+[ "$(grep -c 'FromPort:' "$t/ingress")" = "$(grep -c 'FromPort: 8700$' "$t/ingress")" ] || fail "the vm group's security groups open more than the apps' ports"
+grep -Eq 'CidrIp|FromPort: (22|80|443)$' "$t/ingress" && fail "the vm group's security groups open SSH, the web ports or a CIDR"
+ok
+# IPv6-only by default: the group's own VPC and IPv6-only subnet, no Elastic IP and no public IPv4,
+# the app ports open to CloudFront's IPv6 list, the boot claiming the fixed ::10 and putting the
+# SSM agent on the dual-stack endpoints; no origin recorded yet (the first app's CBASE_VM_ORIGIN).
+m="$(mark)"
+run "$t" group-init vm g6 --yes
+expect_rc 0 "group-init vm, IPv6-only"
+since "$m" | grep -q "CFN CreateChangeSet cbase-group-vm-g6 CREATE ok params=InstanceType=t4g.nano,ImageId=ami-0f4ce1234567890ab,AvailabilityZone=us-east-1a,CloudFrontPrefixList=pl-0a6b6e1c,ArtifactBucket=$BUCKET caps=CAPABILITY_IAM" \
+  || { since "$m" | grep CreateChangeSet >&2; fail "the IPv6-only group's change set parameters"; }
+out_has "address: IPv6-only, no public IPv4" "the IPv6-only group says so"
+out_has "origin: the instance claims 2600:1f18:4a3:6f00::10 at boot" "the IPv6-only group prints its fixed address"
+grep -Fq 'a public IPv4 is about' "$t/out" && fail "an IPv6-only group was billed a public IPv4"
+template_of cbase-group-vm-g6 > "$t/tpl"
+for want in "Ipv6Native: true" "AmazonProvidedIpv6CidrBlock: true" "DestinationIpv6CidrBlock: ::/0" "SourcePrefixListId: !Ref CloudFrontPrefixList" \
+            "AssociatePublicIpAddress: false" "HttpProtocolIpv6: enabled" "Action: ec2:AssignIpv6Addresses" \
+            "Action=AssignIpv6Addresses&Version=2016-11-15&NetworkInterfaceId=\$eni&Ipv6Addresses.1=\$want" "want='\${OriginIpv6}'" \
+            '"Ssm":{"Endpoint":"ssm.%s.api.aws"}' "Value: !Select [0, !Split [\"/\", !Select [1, !Cidr [!Select [0, !GetAtt Subnet.Ipv6CidrBlocks], 2, 4]]]]"; do
+  grep -Fq -- "$want" "$t/tpl" || { cat "$t/tpl" >&2; fail "the IPv6-only group's template lacks [$want]"; }
+done
+grep -Eq 'AWS::EC2::EIP|CidrBlock: 10\.0\.0\.0/24$|MapPublicIpOnLaunch|DestinationCidrBlock|CloudFrontPrefixListIpv4|AssociatePublicIpAddress: true' "$t/tpl" \
+  && fail "the IPv6-only group's template has a public IPv4 or an IPv4 subnet"
+printf 'cbase-state 1 vm g6\n' > "$t/want"
+state_of vm g6 | diff -u "$t/want" - || fail "the IPv6-only group's state file"
+ok
+# --ipv4: dual-stack with an Elastic IP, its cost said before the --yes refusal; the IPv4 list in a
+# second security group.
+run "$t" group-init vm g4 --ipv4
+expect_rc 2 "group-init vm --ipv4 without --yes"
+out_has 'address: dual-stack (--ipv4): a public IPv4 is about $3.60 a month' "--ipv4 prints its cost"
+err_has "group-init vm runs its change set only with --yes" "--ipv4 asks first"
+run "$t" group-template vm g4 --ipv4
+expect_rc 0 "group-template vm --ipv4"
+for want in "Type: AWS::EC2::EIP" "CidrBlock: 10.0.0.0/24" "DestinationCidrBlock: 0.0.0.0/0" "SourcePrefixListId: !Ref CloudFrontPrefixListIpv4" \
+            "GroupSet: [!GetAtt SecurityGroup.GroupId, !GetAtt SecurityGroupIpv4.GroupId]"; do
+  grep -Fq -- "$want" "$t/out" || { cat "$t/out" >&2; fail "the --ipv4 group's template lacks [$want]"; }
+done
 ok
 # group-init static: the state bucket is there now (no second create), the bucket's one policy.
 m="$(mark)"
@@ -117,10 +157,10 @@ done
 ok
 # A re-run: up to date, the image and the type kept as they are.
 m="$(mark)"
-run "$t" group-init vm g9
+run "$t" group-init vm g9 --ipv4
 expect_rc 0 "group-init vm again"
 out_has "stack: cbase-group-vm-g9 is up to date (no changes)" "a re-run changes nothing"
-since "$m" | grep -q "params=InstanceType=(previous),ImageId=(previous)," || fail "a re-run did not keep the type and the image"
+since "$m" | grep -q "params=InstanceType=(previous),ImageId=(previous),AvailabilityZone=(previous)," || fail "a re-run did not keep the type, the image and the zone"
 since "$m" | grep -q "SSM GetParameter" && fail "a re-run read the newest image (it would replace the instance)"
 ok
 # THE ONE HARD STOP, for a group: a change set replacing the bucket or the instance is refused.
