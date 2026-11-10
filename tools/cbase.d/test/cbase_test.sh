@@ -9,7 +9,7 @@
 # The cases: cbase.conf's errors, each with its line number; the secret refusal (and no secret
 # echoed); the values that look random but are not secrets; no credentials; a group found and not
 # found; README.md's example; join, rejoin, leave and the port claim; two racing joins on a new file and on an
-# existing one (distinct ports, one 412 and its retry); apps; a corrupt state file; a missing
+# existing one (distinct ports, one 412 and its retry); apps, and apps through two 429s; a corrupt state file; a missing
 # state bucket; doctor; an unknown command. Then deploy: a static site end to
 # end (the stack's create, each file's headers, the hashed rule, the upload order, nothing outside
 # the app's folder), a redeploy (drift checked, no changes, the invalidation), prune scoped to the
@@ -310,6 +310,19 @@ ok
 run "$t" apps g1
 expect_rc 0 "apps g1 with no cbase.conf"
 diff -u "$t/want" "$t/out" || fail "apps g1 listed another membership"
+ok
+# Throttling: AWS answers 429 twice (the `aws login` token refresh's, as three runs at once met it),
+# then the call goes through: aws_call tries again, after 1 s and 2 s.
+mkdir -p "$t/shim"
+# shellcheck disable=SC2016 # the shim's own $n and $@
+printf '#!/bin/bash\nn=$(($(cat "%s" 2> /dev/null || echo 0) + 1)); echo "$n" > "%s"\n[ "$n" -gt 2 ] || { echo "An error occurred (TooManyRequestsException) when calling the CreateOAuth2Token operation: HTTP 429" >&2; exit 255; }\nexec "%s" "$@"\n' \
+  "$t/shim/n" "$t/shim/n" "$(command -v aws)" > "$t/shim/aws"
+chmod +x "$t/shim/aws"
+path="$PATH"; PATH="$t/shim:$PATH"
+run "$t" apps g1
+PATH="$path"
+expect_rc 0 "apps g1 through two 429s"
+diff -u "$t/want" "$t/out" || fail "apps g1 through two 429s listed another membership"
 ok
 run "$t" apps g9
 expect_rc 1 "apps of a group with no state"

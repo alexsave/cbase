@@ -27,8 +27,35 @@ aws_init() {
 }
 
 # aws_call ARGS...: the CLI's stdout on success; on failure its status, with its stderr in $AWS_ERR.
+# A call AWS throttled (aws_throttled) is tried again, AWS_ATTEMPTS times in all, attempt k waiting
+# 2^(k-1) s (1, 2, 4, 8) plus the app's stagger (aws_stagger_ms): several ./cbase runs started at
+# once share one account's limits, and the `aws login` token refresh (CreateOAuth2Token) answers
+# 429 to them. Any other failure returns at once, as the last attempt's does.
+AWS_ATTEMPTS=5
 aws_call() {
-  aws --no-cli-pager "$@" 2> "$AWS_ERR"
+  local k=1 rc ms
+  while :; do
+    rc=0
+    aws --no-cli-pager "$@" 2> "$AWS_ERR" || rc=$?
+    [ "$rc" -ne 0 ] || return 0
+    { [ "$k" -lt "$AWS_ATTEMPTS" ] && aws_throttled; } || return "$rc"
+    ms=$(( (1000 << (k - 1)) + $(aws_stagger_ms "${CONF_APP:-}") ))
+    sleep "$(printf '%d.%03d' $((ms / 1000)) $((ms % 1000)))"
+    k=$((k + 1))
+  done
+}
+
+# aws_throttled: the last failure was AWS's throttling: a throttling error code (Throttling,
+# ThrottlingException, TooManyRequestsException, RequestLimitExceeded), or HTTP 429 named as a
+# status (a bare 429 could be part of a request ID).
+aws_throttled() {
+  grep -qiE 'Throttling|TooManyRequests|Too Many Requests|RequestLimitExceeded|(HTTP|status|code)[^0-9A-Za-z]{0,8}429([^0-9]|$)|\(429\)' "$AWS_ERR"
+}
+
+# aws_stagger_ms NAME: 0-99, NAME's cksum mod 100. Deterministic, not random (state.sh says why):
+# two apps retrying at once do not retry in step, and the same run always waits the same.
+aws_stagger_ms() {
+  printf '%d' $(( $(printf '%s' "$1" | cksum | cut -d' ' -f1) % 100 ))
 }
 
 # aws_code: the error code of the last failure ("NoSuchKey"), or "".
