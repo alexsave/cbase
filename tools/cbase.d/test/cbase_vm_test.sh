@@ -687,6 +687,7 @@ state_of vm veteran | head -1 | grep -Fxq "cbase-state 1 vm veteran origin=vm-or
 m="$(mark)"
 run "$amgi" deploy
 expect_rc 0 "a second app joining the group with an origin recorded"
+grep -Fxq "vm origin: vm-origin.example.net (ipv6), the group's (its state file)" "$t/out" || { cat "$t/out" >&2; fail "the origin's line is not the state file's"; }
 since "$m" | grep -q "CFN CreateChangeSet cbase-app-amgi CREATE ok params=VmOrigin=vm-origin.example.net," || { since "$m" | grep CreateChangeSet >&2; fail "the second app did not get the group's origin"; }
 template_of cbase-app-amgi | grep -A1 "OriginKeepaliveTimeout" | grep -q "IpAddressType: ipv6" || fail "the second app's origin is not IpAddressType ipv6"
 other="$(vm_app other "CBASE_APP = other" "CBASE_VM = veteran" "CBASE_VM_STACK = cbase-vm" "CBASE_STATIC = none" "CBASE_VM_ORIGIN = vm2.example.net")"
