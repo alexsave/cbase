@@ -279,7 +279,7 @@ cert_auto() {
 #   - when this app's distribution for it exists (a staged attach: deploy --no-aliases made it, with
 #     the certificate), its move is planned in CERT_MOVES, "<host> <from> <to>", and cert_attach
 #     makes it just before the stack update that names it: associate-alias, one atomic step, so the
-#     hostname is served throughout. Same-account moves need no TXT record (README.md);
+#     hostname is served throughout. It needs the TXT record --no-aliases prints (README.md);
 #   - else it is named with its holder and the steps that free it, and the deploy stops before
 #     anything changes; a dry run says so and goes on.
 # With CBASE_ALIASES off no hostname is added, so none is checked.
@@ -324,11 +324,16 @@ cert_alias_check() {
 # certificate covers it (deploy --no-aliases put it there). The stack update that follows names
 # the hostname the distribution already holds, which CloudFront takes as no change of holder.
 cert_attach() {
-  local m h from to
+  local m h from to txt dom
   for m in "${CERT_MOVES[@]+"${CERT_MOVES[@]}"}"; do
     read -r h from to <<< "$m"
-    aws_call cloudfront associate-alias --target-distribution-id "$to" --alias "$h" > /dev/null \
-      || aws_fail "moving $h from the distribution $from to $to (associate-alias)"
+    if ! aws_call cloudfront associate-alias --target-distribution-id "$to" --alias "$h" > /dev/null; then
+      txt="_$h"
+      [[ "$h" == *.*.* ]] || txt="_.$h"   # an apex's (example.com): "_." before it
+      dom="$(aws_call cloudfront get-distribution --id "$to" --query 'Distribution.DomainName' --output text 2> /dev/null || echo "<$to's cloudfront.net name>")"
+      echo "cbase: add TXT $txt = $dom, then run ./cbase deploy --attach again" >&2
+      aws_fail "moving $h from the distribution $from to $to (associate-alias)"
+    fi
     echo "attach: $h moved from $from to $to"
   done
 }
@@ -343,7 +348,9 @@ cert_point() {
     local txt="_$host"
     [[ "$host" == *.*.* ]] || txt="_.$host"   # an apex's (example.com): "_." before it
     echo "point $host at $target (a CNAME; an ALIAS or flattened record at a domain's apex)"
-    echo "  only when $host's current distribution is in another AWS account, also: $txt TXT $target (CloudFront's proof of ownership for a cross-account move; a same-account move needs none)"
+    # The guide says a same-account move may skip the TXT record, but AssociateAlias refuses one
+    # without it ("Invalid or missing alias DNS TXT records", foolish's attach, 2026-11-10).
+    echo "  and add: $txt TXT $target (CloudFront's proof of ownership, which deploy --attach needs)"
     return 0
   fi
   for i in "${!CERT_HOSTS[@]}"; do
