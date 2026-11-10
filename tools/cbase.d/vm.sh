@@ -113,11 +113,17 @@ vm_origin() {
   STATE_ORIGIN="$CONF_VM_ORIGIN"
   # An adopted group's first deploy makes the state bucket (group.sh), after this check.
   if [ -n "$CONF_VM_STACK" ] && ! group_state_bucket_found; then
-    STATE_NO_BUCKET=1; state_read vm "$group"; STATE_NO_BUCKET=""
+    # shellcheck disable=SC2034 # state.sh reads it
+    STATE_NO_BUCKET=1
+    state_read vm "$group"
+    # shellcheck disable=SC2034
+    STATE_NO_BUCKET=""
   else state_read vm "$group"; fi
   held="$ST_ORIGIN"
   if state_origin "$group"; then
-    VM_DNS="$ST_ORIGIN"; VM_ORIGIN_ADDR="$ST_ORIGIN_ADDR"
+    VM_DNS="$ST_ORIGIN"
+    # shellcheck disable=SC2153 # state.sh sets ST_ORIGIN_ADDR
+    VM_ORIGIN_ADDR="$ST_ORIGIN_ADDR"
     echo "vm origin: $VM_DNS ($VM_ORIGIN_ADDR), the group's${held:+ (its state file)}${held:-: CBASE_VM_ORIGIN, recorded in its state file by this deploy}"
     return 0
   fi
@@ -251,11 +257,13 @@ vm_join() {
   STATE_LEGACY_PORT="$CONF_VM_PORT"
   # shellcheck disable=SC2034
   STATE_LEGACY_DATA="$CONF_VM_DATA"
-  STATE_ORIGIN="$CONF_VM_ORIGIN"; STATE_ORIGIN_NEED=1
+  # shellcheck disable=SC2034 # state.sh reads them
+  STATE_ORIGIN="$CONF_VM_ORIGIN"
+  # shellcheck disable=SC2034
+  STATE_ORIGIN_NEED=1
   state_change vm "$1" "$CONF_APP" "$(vm_mem)" join
   VM_PORT="$STATE_PORT"
   VM_NEW="$STATE_JOINED_NEW"
-  VM_DNS="$ST_ORIGIN"; VM_ORIGIN_ADDR="$ST_ORIGIN_ADDR"
 }
 
 # vm_settings: the SSM path of the app's settings, ending in /: CBASE_VM_SETTINGS, else, in an
