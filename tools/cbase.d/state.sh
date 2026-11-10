@@ -138,10 +138,10 @@ state_mem() {
 # state_fit APP LINE: whether ST_LINES, with APP's line made LINE, fit in STATE_FIT_LIMIT MiB.
 # Fills STATE_FIT_REPORT, the members by name; status 1 when they do not fit.
 state_fit() {
-  local app="$1" new="$2" i a line total=0 notes="" members="" sorted
-  local lines=("${ST_LINES[@]+"${ST_LINES[@]}"}") apps=("${ST_APPS[@]+"${ST_APPS[@]}"}") at=""
-  for i in "${!apps[@]}"; do [ "${apps[$i]}" != "$app" ] || at="$i"; done
-  if [ -n "$at" ]; then lines[at]="$new"; else lines+=("$new"); fi
+  local app="$1" new="$2" a line total=0 notes="" members="" sorted
+  local lines=("${ST_LINES[@]+"${ST_LINES[@]}"}")
+  state_at "$app"
+  if [ -n "$ST_AT" ]; then lines[ST_AT]="$new"; else lines+=("$new"); fi
   sorted="$(printf '%s\n' "${lines[@]}" | LC_ALL=C sort)"
   while IFS= read -r line; do
     a="${line#app=}"
@@ -186,16 +186,37 @@ state_render() {
   } > "$3"
 }
 
-# state_free_port: the lowest port in the range no member holds, or nothing when all are taken.
-state_free_port() {
-  local p held
+# state_at APP: ST_AT, APP's index in ST_*, or "" when it is not a member.
+ST_AT=""
+state_at() {
+  local i
+  ST_AT=""
+  for i in "${!ST_APPS[@]}"; do [ "${ST_APPS[$i]}" != "$1" ] || ST_AT="$i"; done
+}
+
+# state_port GROUP LEGACY_PORT: STATE_PORT, the port the member at ST_AT joins with: a grandfathered
+# member's own (LEGACY_PORT), the one a member holds, or the lowest one in the range no member
+# holds. The tool stops when every one is held.
+state_port() {
+  local p q held
+  STATE_PORT="$2"
+  [ -z "$STATE_PORT" ] || return 0
+  if [ -n "$ST_AT" ] && [[ "${ST_LINES[$ST_AT]}" != *" legacy=1" ]]; then STATE_PORT="${ST_PORTS[$ST_AT]}"; return 0; fi
   for ((p = STATE_PORT_MIN; p <= STATE_PORT_MAX; p++)); do
     held=""
     for q in "${ST_PORTS[@]+"${ST_PORTS[@]}"}"; do
       [ "$q" != "$p" ] || { held=1; break; }
     done
-    [ -n "$held" ] || { printf '%s\n' "$p"; return 0; }
+    [ -n "$held" ] || { STATE_PORT="$p"; return 0; }
   done
+  echo "cbase: vm group $1 has no free port: all of $STATE_PORT_MIN-$STATE_PORT_MAX are held" >&2
+  exit 1
+}
+
+# state_vm_line APP PORT MEM LEGACY_DATA: a vm member's line.
+state_vm_line() {
+  printf 'app=%s port=%s service=cbase-%s.service mem=%s' "$1" "$2" "$1" "$3"
+  [ -z "$4" ] || printf ' data=%s legacy=1' "$4"
 }
 
 state_backoff() {   # state_backoff ATTEMPT APP
@@ -241,43 +262,30 @@ state_change() {
   key="$(state_key "$kind" "$group")"
   for ((attempt = 1; attempt <= STATE_ATTEMPTS; attempt++)); do
     state_read "$kind" "$group"
-    at=""
-    for i in "${!ST_APPS[@]}"; do
-      [ "${ST_APPS[$i]}" != "$app" ] || at="$i"
-    done
+    state_at "$app"
+    at="$ST_AT"
     if [ "$op" = leave ]; then
       if [ -z "$at" ]; then
         echo "$app is not in $kind group $group: nothing to leave"
         return 0
       fi
       line="${ST_LINES[$at]}"
-      local keep=() keep_apps=() keep_ports=()
-      for i in "${!ST_APPS[@]}"; do
-        [ "$i" = "$at" ] && continue
-        keep+=("${ST_LINES[$i]}")
-        keep_apps+=("${ST_APPS[$i]}")
-        keep_ports+=("${ST_PORTS[$i]}")
-      done
-      ST_LINES=("${keep[@]+"${keep[@]}"}")
-      ST_APPS=("${keep_apps[@]+"${keep_apps[@]}"}")
-      ST_PORTS=("${keep_ports[@]+"${keep_ports[@]}"}")
+      unset 'ST_LINES[at]' 'ST_APPS[at]' 'ST_PORTS[at]'
+      ST_LINES=("${ST_LINES[@]+"${ST_LINES[@]}"}")
+      ST_APPS=("${ST_APPS[@]+"${ST_APPS[@]}"}")
+      ST_PORTS=("${ST_PORTS[@]+"${ST_PORTS[@]}"}")
     else
+      port=""
       if [ "$kind" = vm ]; then
         old_origin="$ST_ORIGIN"
         state_origin "$group" || [ -z "$STATE_ORIGIN_NEED" ] || { echo "cbase: vm group $group has no origin recorded and $app names none: set CBASE_VM_ORIGIN (the VM's AAAA hostname) once, in this app's cbase.conf. Nothing was changed." >&2; exit 1; }
-        if [ -n "$STATE_LEGACY_PORT" ]; then
-          # A grandfathered member: its own port, which no other member may hold.
-          port="$STATE_LEGACY_PORT"
-          for i in "${!ST_PORTS[@]}"; do
-            [ "$i" = "$at" ] || [ "${ST_PORTS[$i]}" != "$port" ] || { echo "cbase: $app's port $port (CBASE_VM_PORT) is ${ST_APPS[$i]}'s in vm group $group: nothing was changed" >&2; exit 1; }
-          done
-        elif [ -n "$at" ] && [[ "${ST_LINES[$at]}" != *" legacy=1" ]]; then port="${ST_PORTS[$at]}"
-        else port="$(state_free_port)"; fi
-        [ -n "$port" ] || { echo "cbase: vm group $group has no free port: all of $STATE_PORT_MIN-$STATE_PORT_MAX are held" >&2; exit 1; }
-        line="app=$app port=$port service=cbase-$app.service mem=$mem"
-        [ -z "$STATE_LEGACY_PORT" ] || line="$line data=$STATE_LEGACY_DATA legacy=1"
-        # shellcheck disable=SC2034 # vm.sh reads it
-        STATE_PORT="$port"
+        state_port "$group" "$STATE_LEGACY_PORT"
+        port="$STATE_PORT"
+        # A grandfathered member: its own port, which no other member may hold.
+        for i in "${!ST_PORTS[@]}"; do
+          [ -z "$STATE_LEGACY_PORT" ] || [ "$i" = "$at" ] || [ "${ST_PORTS[$i]}" != "$port" ] || { echo "cbase: $app's port $port (CBASE_VM_PORT) is ${ST_APPS[$i]}'s in vm group $group: nothing was changed" >&2; exit 1; }
+        done
+        line="$(state_vm_line "$app" "$port" "$mem" "$STATE_LEGACY_DATA")"
         # THE MEMORY FIT, on the file this write is conditional on.
         if [ -n "$STATE_FIT_LIMIT" ] && ! state_fit "$app" "$line"; then
           printf '%s\n' "$STATE_FIT_REPORT" >&2
@@ -294,7 +302,7 @@ state_change() {
         [ -z "$STATE_FIT_LIMIT" ] || [ "$kind" != vm ] || printf '%s\n' "$STATE_FIT_REPORT"
         return 0
       fi
-      if [ -n "$at" ]; then ST_LINES[at]="$line"; else ST_LINES+=("$line"); ST_APPS+=("$app"); ST_PORTS+=("${port:-}"); fi
+      if [ -n "$at" ]; then ST_LINES[at]="$line"; else ST_LINES+=("$line"); ST_APPS+=("$app"); ST_PORTS+=("$port"); fi
     fi
     state_render "$kind" "$group" "$STATE_TMP/new"
     rc=0

@@ -1,36 +1,33 @@
 #!/bin/bash
-# cbase - the deploy tool: an app's VM service, static files and CloudFront distribution, from
-# the app's cbase.conf (README.md "./cbase deploy tool"). It runs straight from the app's cbase
-# submodule, with no build step and no provider linked:
+# cbase - the deploy tool (README.md "./cbase deploy tool"). Its --help is the block below, from
+# "usage:" to "state join|leave", and README.md holds the same text.
 #
-#   cbase/tools/cbase config check      read cbase.conf and print it, defaults filled in (no AWS)
-#   cbase/tools/cbase doctor            the config, the AWS account, each group and its members
-#   cbase/tools/cbase apps [GROUP]      the apps in a group, with each one's port, service and memory
-#                                       (default: cbase.conf's groups)
-#   cbase/tools/cbase deploy [--dry-run] [--accept-drift] [--prune] [--allow-downtime]
-#                            [--no-aliases|--attach]
-#                                       the app: its service on the group's VM, its static files,
-#                                       its distribution. DRY_RUN=1, CBASE_ACCEPT_DRIFT=1 and
-#                                       CBASE_PRUNE=1 are the same as the flags; --no-aliases and
-#                                       --attach are CBASE_ALIASES off and on (a staged attach)
-#   cbase/tools/cbase undeploy [--delete-files] [--delete-data]
-#                                       the app's service stopped and removed, its memberships left,
-#                                       its stack deleted; its files and its data kept unless asked
-#   cbase/tools/cbase group-init vm|static GROUP [--type TYPE] [--ipv4] [--yes]
-#                                       makes the group (an IPv6-only instance, dual-stack with a
-#                                       public IPv4 with --ipv4; or a bucket), the one command
-#                                       that does; a VM's needs --yes or a typed yes (it costs money)
-#   cbase/tools/cbase group-destroy vm|static GROUP [--delete-data] [--yes]
-#                                       deletes an empty group's stack (refused while it has members)
-#   cbase/tools/cbase template          the distribution's stack template deploy renders (no AWS;
-#                                       the bucket and certificate as placeholders)
-#   cbase/tools/cbase group-template vm|static GROUP [--ipv4]   the group's stack template (no AWS)
-#   cbase/tools/cbase state join|leave  the membership step deploy and undeploy run: the app
-#                                       joins (or leaves) its groups' state files, a VM app
-#                                       claiming its port. For repair, and for the tests.
+# usage: cbase/tools/cbase [-f FILE] COMMAND    (FILE: the app's settings, default ./cbase.conf)
 #
-# Options, before the command: -f FILE reads FILE instead of ./cbase.conf.
+#   config check       cbase.conf read and printed, defaults filled in (no AWS)
+#   doctor             the config, the AWS account, each group and its members
+#   apps [GROUP]       a group's apps, with each one's port, service and memory
+#                      (default: cbase.conf's groups)
+#   deploy [--dry-run] [--accept-drift] [--allow-downtime] [--prune] [--no-aliases|--attach]
+#                      the app: its service on its group's VM, its static files, its
+#                      distribution; DRY_RUN=1, CBASE_ACCEPT_DRIFT=1, CBASE_ALLOW_DOWNTIME=1
+#                      and CBASE_PRUNE=1 are the same as the flags; --no-aliases and --attach
+#                      are CBASE_ALIASES off and on, a staged attach
+#   undeploy [--delete-files] [--delete-data]
+#                      the app's distribution and service gone, its groups left; its files
+#                      and its data kept unless a flag says otherwise
+#   group-init vm|static GROUP [--type TYPE] [--ipv4] [--yes]
+#                      makes a group (an IPv6-only instance, dual-stack with a public IPv4
+#                      with --ipv4; or a bucket), the one command that does; a VM's needs
+#                      --yes or a typed yes (it costs money)
+#   group-destroy vm|static GROUP [--delete-data] [--yes]
+#                      deletes an empty group's stack (refused while it has members)
+#   template           the app's stack template, as deploy renders it (no AWS)
+#   group-template vm|static GROUP [--ipv4]
+#                      a group's stack template (no AWS)
+#   state join|leave   the membership step deploy and undeploy run, for repair
 #
+# It runs straight from the app's cbase submodule, with no build step and no provider linked.
 # AWS: every call is one AWS CLI call with its own credential chain (AWS_PROFILE, ~/.aws, SSO,
 # the environment's keys from CI's OIDC role); the tool holds no credential and prints none.
 # Never run it under `set -x` or `bash -x`.
@@ -62,17 +59,23 @@ trap cb_cleanup EXIT
 CB_TMP="$(mktemp -d "${TMPDIR:-/tmp}/cbase.XXXXXX")"
 CB_CLEANUP+=("$CB_TMP")
 
-# dry_problem WHAT: in a dry run, a problem a deploy stops on, said where it is found and kept, so
-# the dry run goes on to the memory fit, the port and the change set; deploy lists every one at
-# the dry run's end and exits 1. A deploy stops at the first, before changing anything.
+# THE DRY RUN'S PROBLEMS. dry_stop WHAT [LINE]: a problem a deploy stops on, said (above it) where
+# it is found. A deploy prints LINE, if any, and exits 1 there, before changing anything. A dry run
+# keeps WHAT and goes on to the memory fit, the port and the change set; deploy lists every one at
+# its end and exits 1.
 DRY_PROBLEMS=()
-dry_problem() {
-  DRY_PROBLEMS+=("$1")
-  echo "dry run: a deploy would stop here, on $1; this dry run goes on"
+dry_stop() {
+  if [ "${DRY_RUN:-}" = 1 ]; then
+    DRY_PROBLEMS+=("$1")
+    echo "dry run: a deploy would stop here, on $1; this dry run goes on"
+    return 0
+  fi
+  [ -z "${2:-}" ] || echo "$2" >&2
+  exit 1
 }
 
 usage() {
-  sed -n '6,31p' "$here/cbase" | sed 's/^# \{0,1\}//'
+  sed -n '/^# usage:/,/^#   state join|leave/p' "$here/cbase" | sed 's/^# \{0,1\}//'
 }
 
 conf="cbase.conf"
@@ -88,7 +91,7 @@ done
 cmd="$1"
 shift
 
-# GROUPS: the groups cbase.conf names, "<kind> <group>" each. An array, never a loop over a pipe:
+# GROUPS_: the groups cbase.conf names, "<kind> <group>" each. An array, never a loop over a pipe:
 # a command in the loop (aws) would share the loop's stdin.
 GROUPS_=()
 conf_groups() {
@@ -110,7 +113,6 @@ case "$cmd" in
     echo "$conf: ok"
     conf_print
     aws_init
-    aws_account_load
     echo "account   $AWS_ACCOUNT ($(aws_region))"
     rc=0
     conf_groups
@@ -139,7 +141,6 @@ case "$cmd" in
       conf_groups
     fi
     aws_init
-    aws_account_load
     found=""
     for g in "${GROUPS_[@]}"; do
       rc=0
@@ -157,15 +158,11 @@ case "$cmd" in
     [ $# -eq 1 ] || { echo "cbase: state $op takes no more arguments" >&2; exit 2; }
     conf_load "$conf"
     aws_init
-    aws_account_load
     conf_groups
     for g in "${GROUPS_[@]}"; do
       aws_group_find "${g%% *}" "${g#* }" > /dev/null
-      # The state file records an undeclared app's memory as the estimate it is counted at: ~128.
-      mem="$CONF_MEMORY"
-      [ -z "$CONF_MEMORY_ESTIMATED" ] || mem="~$CONF_MEMORY_ESTIMATE"
       STATE_ORIGIN="$CONF_VM_ORIGIN"
-      state_change "${g%% *}" "${g#* }" "$CONF_APP" "$mem" "$op"
+      state_change "${g%% *}" "${g#* }" "$CONF_APP" "$(conf_mem)" "$op"
     done
     ;;
   template)
@@ -183,7 +180,7 @@ case "$cmd" in
     STACK_API_CERT="${CONF_API_CERT_ARN:-$STACK_CERT}"
     stack_render "$CB_TMP/stack.yaml"
     echo "# PLACEHOLDERS: the bucket ($STACK_BUCKET) is static group $CONF_STATIC's${CONF_DOMAIN:+, the certificate is the one deploy finds or requests}."
-    stack_print_template "$CB_TMP/stack.yaml"
+    cat "$CB_TMP/stack.yaml"
     ;;
   group-template)
     kind="${1:-}"
@@ -192,7 +189,7 @@ case "$cmd" in
     v4=""
     if [ "$kind" = vm ] && [ "${3:-}" = --ipv4 ] && [ $# -eq 3 ]; then v4=ipv4; set -- "$1" "$2"; fi
     if ! conf_name_ok "$group" || [ $# -ne 2 ]; then echo "cbase: group-template $kind wants one group name$([ "$kind" = vm ] && echo ", and --ipv4 or nothing")" >&2; exit 2; fi
-    "group_render_$kind" "$group" "$CB_TMP/group.yaml" ${v4:+"$v4"}
+    group_render "$kind" "$group" "$CB_TMP/group.yaml" "$v4"
     cat "$CB_TMP/group.yaml"
     ;;
   deploy)
@@ -214,7 +211,7 @@ case "$cmd" in
       CONF_ALIASES="$aliases_flag"
     fi
     aws_init
-    aws_account_load
+    stack_app_use
     echo "deploy: $CONF_APP to account $AWS_ACCOUNT${DRY_RUN:+ (dry run: nothing is changed)}"
     # 1. The groups, found by their tags (a missing one stops with its group-init command).
     if [ "$CONF_VM" != none ]; then
@@ -239,13 +236,11 @@ case "$cmd" in
     fi
     # 3. The server, built before anything is changed (a dry run builds nothing).
     [ "$CONF_VM" = none ] || [ "$DRY_RUN" = 1 ] || vm_build
-    # 4. The certificate (it may stop, status 3, for DNS records added by hand).
+    # 4. The certificate (it may stop, status 3, for DNS records added by hand), and the hostnames
+    #    free: none an alternate domain name of another distribution, or moved onto this app's (a
+    #    staged attach's second step).
     cert_resolve
-    # The hostnames free: none an alternate domain name of another distribution, or moved onto
-    # this app's (a staged attach's second step).
     if [ "${#CERT_HOSTS[@]}" -gt 0 ]; then
-      STACK_NAME="$(stack_name)"
-      STACK_REGION=us-east-1
       stack_status
       own=()
       [ "$STACK_STATUS" = NONE ] || own=("$(stack_output DistributionId)" "$(stack_output ApiDistributionId)")
@@ -260,10 +255,10 @@ case "$cmd" in
       STACK_PARAMS=("ParameterKey=VmOrigin,ParameterValue=$VM_DNS" "ParameterKey=VmPort,ParameterValue=$VM_PORT"
                     "ParameterKey=OriginSecret,ParameterValue=$VM_ORIGIN_SECRET")
     fi
-    # 6. The stack's change set, through its gates (drift, the bucket).
+    # 6. The stack's change set, through its gates (drift, the bucket, downtime); a dry run's is
+    #    deleted there.
     stack_plan
     if [ "$DRY_RUN" = 1 ]; then
-      [ -z "$STACK_CHANGES" ] || stack_discard
       if [ "$CONF_STATIC" != none ]; then
         echo "the upload ($CONF_STATIC_DIR/ to s3://$STACK_BUCKET/$STACK_PREFIX/), in order:"
         static_print_plan
@@ -330,11 +325,9 @@ case "$cmd" in
     done
     conf_load "$conf"
     aws_init
-    aws_account_load
     echo "undeploy: $CONF_APP from account $AWS_ACCOUNT"
     # 1. The distribution first, so nothing routes to what goes next.
-    STACK_NAME="$(stack_name)"
-    STACK_REGION=us-east-1
+    stack_app_use
     stack_delete
     # 2. The service, then its membership (its port released); its data kept unless --delete-data.
     if [ "$CONF_VM" != none ]; then
@@ -365,7 +358,6 @@ case "$cmd" in
     shift 2
     group_args "$cmd" "$kind" "$@"
     aws_init
-    aws_account_load
     if [ "$cmd" = group-init ]; then group_init "$kind" "$group"; else group_destroy "$kind" "$group"; fi
     ;;
   *) echo "cbase: unknown command $cmd" >&2; usage >&2; exit 2 ;;

@@ -132,29 +132,30 @@ zone_for_host() {
 
 # cert_records ARN: the validation records, "<name> CNAME <value>" a line, once each; waits (a
 # while) for ACM to have made them, which it does seconds after a request.
+CERT_POLL_ARN=""
+CERT_POLL_TEXT=""
+cert_records_read() {   # one read; true once every record is there
+  local name value missing=""
+  CERT_POLL_TEXT="$(acm describe-certificate --certificate-arn "$CERT_POLL_ARN" \
+                      --query 'Certificate.DomainValidationOptions[].[DomainName,ResourceRecord.Name,ResourceRecord.Type,ResourceRecord.Value]' \
+                      --output text)" || aws_fail "reading certificate $CERT_POLL_ARN's validation records"
+  [ "$CERT_POLL_TEXT" != None ] || missing=1
+  while IFS=$'\t' read -r _ name _ value; do
+    [ -n "$name" ] || continue
+    if [ "$name" = None ] || [ "$value" = None ]; then missing=1; fi
+  done <<< "$CERT_POLL_TEXT"
+  [ -z "$missing" ] && [ -n "$CERT_POLL_TEXT" ]
+}
 cert_records() {
-  local arn="$1" n=0 text line name type value missing seen=" "
-  while :; do
-    text="$(acm describe-certificate --certificate-arn "$arn" \
-              --query 'Certificate.DomainValidationOptions[].[DomainName,ResourceRecord.Name,ResourceRecord.Type,ResourceRecord.Value]' \
-              --output text)" || aws_fail "reading certificate $arn's validation records"
-    missing=""
-    [ "$text" != None ] || missing=1
-    while IFS=$'\t' read -r _ name type value; do
-      [ -n "$name" ] || continue
-      if [ "$name" = None ] || [ "$value" = None ]; then missing=1; fi
-    done <<< "$text"
-    [ -n "$missing" ] || [ -z "$text" ] || break
-    n=$((n + 1))
-    [ "$n" -le 60 ] || { echo "cbase: ACM has not made certificate $arn's validation records yet: deploy again in a minute" >&2; exit 1; }
-    sleep "$POLL_SECONDS"
-  done
+  local line name type value seen=" "
+  CERT_POLL_ARN="$1"
+  aws_poll 61 cert_records_read || { echo "cbase: ACM has not made certificate $1's validation records yet: deploy again in a minute" >&2; exit 1; }
   while IFS=$'\t' read -r line name type value; do
     [ -n "$name" ] || continue
     [[ "$seen" != *" $name "* ]] || continue
     seen="$seen$name "
     printf '%s %s %s %s\n' "$line" "$name" "$type" "$value"
-  done <<< "$text"
+  done <<< "$CERT_POLL_TEXT"
 }
 
 # r53_change ZONE BATCH WHAT: one change batch (the CLI's shorthand), waited for.
@@ -163,6 +164,14 @@ r53_change() {
   id="$(aws_call route53 change-resource-record-sets --hosted-zone-id "$1" --change-batch "$2" \
           --query ChangeInfo.Id --output text)" || aws_fail "writing $3 in Route 53 zone $1"
   aws_call route53 wait resource-record-sets-changed --id "$id" || aws_fail "waiting for Route 53 change $id"
+}
+
+# cert_zone HOST: the zone cert_resolve found for one of CERT_HOSTS, or "".
+cert_zone() {
+  local i
+  for i in "${!CERT_HOSTS[@]}"; do
+    [ "${CERT_HOSTS[$i]}" != "$1" ] || printf '%s' "${CERT_ZONES[$i]}"
+  done
 }
 
 # cert_named ARN KEY: the certificate a key names, used as it is: ISSUED, and covering CERT_NEED.
@@ -237,14 +246,11 @@ cert_auto() {
     echo "certificate: requested $a for ${CERT_NEED[*]} (DNS validation)"
   fi
   # Pending: its records, written where there is a zone, printed where there is not.
-  local records host name type value i hand=()
+  local records host name type value hand=()
   records="$(cert_records "$a")"
   while read -r host name type value; do
     [ -n "$name" ] || continue
-    z=""
-    for i in "${!CERT_HOSTS[@]}"; do
-      [ "${CERT_HOSTS[$i]}" != "$host" ] || z="${CERT_ZONES[$i]}"
-    done
+    z="$(cert_zone "$host")"
     if [ -n "$z" ] && [ "${DRY_RUN:-}" != 1 ]; then
       r53_change "$z" "Changes=[{Action=UPSERT,ResourceRecordSet={Name=$name,Type=$type,TTL=300,ResourceRecords=[{Value=$value}]}}]" \
         "the validation record for $host"
@@ -314,9 +320,13 @@ cert_alias_check() {
     done
   done <<< "$text"
   [ "$found" = 1 ] || return 0
-  if [ "${DRY_RUN:-}" = 1 ]; then dry_problem "a hostname another distribution holds (above)"; return 0; fi
-  echo "cbase: nothing was changed" >&2
-  exit 1
+  dry_stop "a hostname another distribution holds (above)" "cbase: nothing was changed"
+}
+
+# cert_txt HOST: the name of HOST's TXT record, CloudFront's proof of ownership for associate-alias:
+# "_" before it, "_." before an apex's (example.com).
+cert_txt() {
+  if [[ "$1" == *.*.* ]]; then printf '_%s' "$1"; else printf '_.%s' "$1"; fi
 }
 
 # cert_attach: each move CERT_MOVES plans, made. AssociateAlias "removes the alternate domain name
@@ -328,8 +338,7 @@ cert_attach() {
   for m in "${CERT_MOVES[@]+"${CERT_MOVES[@]}"}"; do
     read -r h from to <<< "$m"
     if ! aws_call cloudfront associate-alias --target-distribution-id "$to" --alias "$h" > /dev/null; then
-      txt="_$h"
-      [[ "$h" == *.*.* ]] || txt="_.$h"   # an apex's (example.com): "_." before it
+      txt="$(cert_txt "$h")"
       dom="$(aws_call cloudfront get-distribution --id "$to" --query 'Distribution.DomainName' --output text 2> /dev/null || echo "<$to's cloudfront.net name>")"
       echo "cbase: add TXT $txt = $dom, then run ./cbase deploy --attach again" >&2
       aws_fail "moving $h from the distribution $from to $to (associate-alias)"
@@ -343,19 +352,17 @@ cert_attach() {
 # With CBASE_ALIASES off the hostname is not on the distribution yet, so no record is written (an
 # alias written now would send it where it is not served): the records to set are printed instead.
 cert_point() {
-  local host="$1" target="$2" z="" i
+  local host="$1" target="$2" z
   if [ "$CONF_ALIASES" = off ]; then
-    local txt="_$host"
-    [[ "$host" == *.*.* ]] || txt="_.$host"   # an apex's (example.com): "_." before it
+    local txt
+    txt="$(cert_txt "$host")"
     echo "point $host at $target (a CNAME; an ALIAS or flattened record at a domain's apex)"
     # The guide says a same-account move may skip the TXT record, but AssociateAlias refuses one
     # without it ("Invalid or missing alias DNS TXT records", foolish's attach, 2026-11-10).
     echo "  and add: $txt TXT $target (CloudFront's proof of ownership, which deploy --attach needs)"
     return 0
   fi
-  for i in "${!CERT_HOSTS[@]}"; do
-    [ "${CERT_HOSTS[$i]}" != "$host" ] || z="${CERT_ZONES[$i]}"
-  done
+  z="$(cert_zone "$host")"
   if [ -n "$z" ]; then
     local alias="AliasTarget={HostedZoneId=$CF_ZONE_ID,DNSName=$target,EvaluateTargetHealth=false}"
     r53_change "$z" "Changes=[{Action=UPSERT,ResourceRecordSet={Name=$host,Type=A,$alias}},{Action=UPSERT,ResourceRecordSet={Name=$host,Type=AAAA,$alias}}]" \

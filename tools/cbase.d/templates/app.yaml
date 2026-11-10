@@ -1,0 +1,205 @@
+AWSTemplateFormatVersion: "2010-09-09"
+# The app __APP__'s distribution, rendered by ./cbase deploy (tools/cbase.d/stack.sh) from its
+# cbase.conf. Edits by hand are drift: the next deploy stops on them.
+Description: "cbase app __APP__: its CloudFront distribution and routes"
+#if vm
+
+Parameters:
+  VmOrigin:
+    Type: String
+    Description: the VM group's instance public DNS name (set by ./cbase deploy)
+    AllowedPattern: "[a-z0-9.-]+"
+  VmPort:
+    Type: Number
+    Description: the app's port in its VM group's state file, claimed or grandfathered (set by ./cbase deploy)
+    MinValue: 1024
+    MaxValue: 65535
+  OriginSecret:
+    Type: String
+    NoEcho: true
+    Description: the X-Cbase-Origin header's value, the app's SSM setting CBASE_ORIGIN_SECRET (set by ./cbase deploy; never printed)
+#end
+
+Resources:
+#if static
+  Oac:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: cbase-__APP__
+        Description: the app __APP__'s reads of its folder in the static group's bucket
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  Router:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: cbase-__APP__-router
+      AutoPublish: true
+      FunctionConfig:
+        Comment: clean URLs for the app __APP__
+        Runtime: cloudfront-js-2.0
+      FunctionCode: |
+        // cbase app router (tools/cbase.d/stack.sh): the distribution's OriginPath is the app's folder.
+        var SHELL = '__SHELL__';
+        var PAGES = ' __PAGES__ ';
+        function handler(event) {
+          var request = event.request;
+          var uri = request.uri;
+          if (uri.indexOf('/.well-known/') === 0 || uri.substring(uri.lastIndexOf('/')).indexOf('.') >= 0) {
+            return request;
+          }
+          var page = uri.substring(1);
+          if (page === '' || page.charAt(page.length - 1) === '/') {
+            if (page === '' || PAGES.indexOf(' ' + page + 'index ') >= 0) page = page + 'index';
+            else page = page.substring(0, page.length - 1);
+          }
+          request.uri = PAGES.indexOf(' ' + page + ' ') >= 0 ? '/' + page + '.html' : SHELL;
+          return request;
+        }
+
+#end
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Comment: cbase app __APP__
+        Enabled: true
+#if cert
+#if aliases
+        Aliases: [__ALIASES__]
+#end
+        ViewerCertificate:
+          AcmCertificateArn: __CERT__
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1.2_2021
+#end
+#if !cert
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: true
+#end
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        PriceClass: PriceClass_100
+        Origins:
+#if static
+          - Id: static
+            DomainName: __BUCKET__.s3.__BUCKETREGION__.amazonaws.com
+            OriginPath: /__PREFIX__
+            OriginAccessControlId: !GetAtt Oac.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+#end
+#if vmroute
+          - Id: vm
+            DomainName: !Ref VmOrigin
+            OriginCustomHeaders:
+              - HeaderName: X-Cbase-Origin
+                HeaderValue: !Ref OriginSecret
+            CustomOriginConfig:
+              HTTPPort: !Ref VmPort
+              OriginProtocolPolicy: http-only
+              OriginReadTimeout: 30
+              OriginKeepaliveTimeout: 5
+#if addr
+              IpAddressType: __ADDR__
+#end
+#end
+#if ws
+          - Id: ws
+            DomainName: !Ref VmOrigin
+            OriginCustomHeaders:
+              - HeaderName: X-Cbase-Origin
+                HeaderValue: !Ref OriginSecret
+            CustomOriginConfig:
+              HTTPPort: !Ref VmPort
+              OriginProtocolPolicy: http-only
+              OriginReadTimeout: 60
+              OriginKeepaliveTimeout: 60
+#if addr
+              IpAddressType: __ADDR__
+#end
+#end
+__ROUTES__
+#if api
+
+  ApiDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Comment: cbase app __APP__, __APIHOST__ to the VM
+        Enabled: true
+#if apicert
+#if aliases
+        Aliases: [__APIHOST__]
+#end
+        ViewerCertificate:
+          AcmCertificateArn: __APICERT__
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1.2_2021
+#end
+#if !apicert
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: true
+#end
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        PriceClass: PriceClass_100
+        Origins:
+          - Id: vm
+            DomainName: !Ref VmOrigin
+            OriginCustomHeaders:
+              - HeaderName: X-Cbase-Origin
+                HeaderValue: !Ref OriginSecret
+            CustomOriginConfig:
+              HTTPPort: !Ref VmPort
+              OriginProtocolPolicy: http-only
+              OriginReadTimeout: 60
+              OriginKeepaliveTimeout: 60
+#if addr
+              IpAddressType: __ADDR__
+#end
+#if apiws
+          - Id: ws
+            DomainName: !Ref VmOrigin
+            OriginCustomHeaders:
+              - HeaderName: X-Cbase-Origin
+                HeaderValue: !Ref OriginSecret
+            CustomOriginConfig:
+              HTTPPort: !Ref VmPort
+              OriginProtocolPolicy: http-only
+              OriginReadTimeout: 60
+              OriginKeepaliveTimeout: 60
+#if addr
+              IpAddressType: __ADDR__
+#end
+#end
+__APIROUTES__
+
+  # CloudFront's own timing of each API answer, in a Server-Timing header (an origin's own
+  # Server-Timing passes through as it is).
+  ServerTimingPolicy:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: cbase-__APP__-server-timing
+        Comment: CloudFront's timing of each answer of the app __APP__'s API host
+        ServerTimingHeadersConfig:
+          Enabled: true
+          SamplingRate: 100
+#end
+
+Outputs:
+  DistributionId:
+    Value: !Ref Distribution
+  DistributionDomain:
+    Description: the app's cloudfront.net name, where its hostname points
+    Value: !GetAtt Distribution.DomainName
+#if api
+  ApiDistributionId:
+    Value: !Ref ApiDistribution
+  ApiDistributionDomain:
+    Description: where CBASE_API_HOST points
+    Value: !GetAtt ApiDistribution.DomainName
+#end

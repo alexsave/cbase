@@ -10,112 +10,17 @@
 #     sourced.
 #   - A line whose first non-blank character is '#' is a comment; a blank line is skipped. A '#'
 #     anywhere else is refused (a comment goes on a line of its own). A "\r\n" line end is "\n".
-#   - KEY is one of the keys below. Every key but CBASE_ROUTE may appear once.
+#   - KEY is one of CONF_KEYS. Every key but CBASE_ROUTE and CBASE_API_ROUTE may appear once.
 #
-# THE KEYS:
-#   CBASE_APP      the one required key: the app's name, [a-z][a-z0-9-]*, at most 32 characters, not "none".
-#                  It names the app's systemd service, its port claim and its bucket folder.
-#   CBASE_VM       the VM group the app runs in, or none (a static-only app); default CBASE_APP.
-#   CBASE_STATIC   the static group (a bucket) its files go to, or none (a VM-only app); default
-#                  CBASE_APP. Not both none.
-#   CBASE_MEMORY   optional, for an app with a VM: the memory it declares, <n>M or <n>G (16M to
-#                  64G). Declared, it is the service's hard cap (MemoryMax) and the app's exact
-#                  count in its group's fit check. Unset, the service has no hard cap and the fit
-#                  check (vm.sh) counts it at CONF_MEMORY_ESTIMATE (128M), saying so:
-#                  "shop: memory not declared, counted as 128M". conf_load resolves both:
-#                  CONF_MEMORY (declared MiB, or "") and CONF_MEMORY_ESTIMATED (1 when unset).
-#   CBASE_VM_STACK optional, adoption: the CloudFormation stack (in the CLI's region) that already
-#                  holds the group's VM (an AWS::EC2::Instance, or an auto-scaling group of one). The
-#                  group (CBASE_VM still names it, and its state file) is found by that stack rather
-#                  than by its tag, and needs no group-init; deploy never changes that stack.
-#   CBASE_VM_ORIGIN optional: the hostname CloudFront reaches the VM at, an AAAA record of its
-#                  fixed IPv6 address (an IPv6-only VM has no public DNS name of AWS's); the origin
-#                  is then IPv6 (IpAddressType ipv6). The origin is the group's (one VM): the first
-#                  app to name it records it in the group's state file, another is refused, and an
-#                  app that names none uses the recorded one (state.sh).
-#   CBASE_VM_PORT, CBASE_VM_DATA optional, both or neither: a grandfathered member, an app that ran
-#                  on the VM before cbase. Its port (any of 1024-65535, kept outside the 8700-8799
-#                  claims) and its data directory (an absolute path, CBASE_DB is <dir>/cbase.sqlite)
-#                  are recorded in the state file as they are ("data=<dir> legacy=1"), and the
-#                  service runs there; only a change to these keys moves them.
-#   CBASE_VM_SETTINGS optional: the SSM path of the app's settings, which the instance reads into
-#                  its env file (the origin secret is its CBASE_ORIGIN_SECRET); default /cbase/<app>/,
-#                  or /<CBASE_VM_STACK>/<app>/ in an adopted group (vm.sh vm_settings), under the
-#                  namespace an adopted VM's role reads. A grandfathered member names its own.
-#   CBASE_VM_ARTIFACTS optional: s3://<bucket>/<prefix>/ the app's servers go to, one object per
-#                  sha256, and the instance fetches from; default s3://cbase-state-<account>/artifacts/<app>/,
-#                  or s3://cbase-code-<account>-<region>/vm/<app>/ in an adopted group (vm.sh
-#                  vm_artifacts), the code bucket's vm/* an adopted VM's role reads.
-#   CBASE_VM_REPLACES optional, with CBASE_VM_PORT: the systemd unit (name.service) that served the
-#                  grandfathered app before cbase. The deploy stops and disables it right before
-#                  the app's own unit starts, in the same command; never a unit it is not named.
-#   CBASE_BACKUP_KEY optional: the backup's object key; default backups/<app>/cbase.sqlite. An
-#                  adopted VM whose boot restores another key names that one, so the two never part.
-#   CBASE_BACKUP_BUCKET optional, for an app with a VM: the bucket its backups go to, as
-#                  s3://<bucket>/backups/<app>/cbase.sqlite (serve's CBASE_BACKUP_*). Default the
-#                  state bucket, which a cbase group's instance role may write under backups/ alone.
-#                  An adopted VM's own bucket is named here, so no backup moves.
-#   CBASE_ROUTE    repeated, one route a line, matched in order. Written only to differ from the
-#                  defaults: an app with a VM and static files gets "/api/* vm" and "* static", a
-#                  static-only app "* static", a VM-only app "* vm". ANY CBASE_ROUTE line REPLACES
-#                  the defaults (they are not merged in), except that CloudFront must have a
-#                  default behaviour: written routes with no "*" get "* static" (or "* vm" for a
-#                  VM-only app) added last. Each line is
-#                    CBASE_ROUTE = <pattern> <origin> [cache|nocache] [<methods>]
-#                  pattern: CloudFront's, "*" or a path starting with '/' ("/api/*").
-#                  origin: vm, static, or ws (the VM, no caching, every method, long timeouts:
-#                  a WebSocket route; it takes no more fields).
-#                  cache: default cache for static, nocache for vm.
-#                  methods: ALL or a comma list of GET,HEAD,OPTIONS,PUT,POST,PATCH,DELETE;
-#                  default GET,HEAD for static (which takes only GET, HEAD and OPTIONS), ALL for
-#                  vm. CloudFront allows the smallest of its three method sets that covers the
-#                  list (GET,HEAD; GET,HEAD,OPTIONS; all), and the origin refuses the rest.
-#                  A "*" route goes last, wherever it was written.
-#   CBASE_DOMAIN   optional: the app's hostnames, blank-separated (example.com www.example.com),
-#                  each an alias of the one distribution, all on one certificate, each with its own
-#                  DNS record (in its own zone). The first is the app's URL. Without it the app is
-#                  reached at its distribution's cloudfront.net address.
-#   CBASE_CERT_ARN optional, an override: the ACM certificate (us-east-1, CloudFront's region)
-#                  for the domain and the API hostname, arn:aws:acm:us-east-1:<account>:certificate/<uuid>.
-#                  Without it deploy finds or makes one (cert.sh): an ISSUED us-east-1 certificate
-#                  covering every hostname (its SANs and wildcards counted), else one it requested
-#                  before and is still pending, else a new request with DNS validation.
-#   CBASE_API_CERT_ARN optional, an override like CBASE_CERT_ARN: the certificate CBASE_API_HOST's
-#                  distribution serves, used as it is. Without it that distribution serves
-#                  CBASE_CERT_ARN's (or the found one), which must then cover the API host too.
-#   CBASE_ALIASES  optional, on (the default) or off: off deploys the distributions with the
-#                  certificate and no hostname on them, and prints each hostname's DNS records,
-#                  the first step of a staged attach (README.md); ./cbase deploy --no-aliases and
-#                  --attach are off and on for one deploy.
-#   CBASE_ZONE     optional, an override: the Route 53 hosted zone id (Z...) the domain's records
-#                  go in. Without it deploy looks for the account's public hosted zone that covers
-#                  each hostname (the longest suffix) and writes the records there; with none it
-#                  prints the DNS records to add by hand and stops (cert.sh).
-#   CBASE_API_HOST optional: a second hostname whose every request goes to the VM (api.example.com);
-#                  needs CBASE_DOMAIN. Its distribution: 60 s read and keep-alive to the VM, CloudFront's
-#                  Server-Timing on every answer, the ws routes on the ws origin, and its own routes:
-#   CBASE_API_ROUTE repeated, the API host's behaviours before its default "* vm nocache ALL", as
-#                  CBASE_ROUTE's lines with origin vm or ws alone. The cache mode origin (vm routes,
-#                  here or in CBASE_ROUTE) keeps what the origin's Cache-Control says
-#                  (Managed-UseOriginCacheControlHeaders-QueryStrings: a query string is its own
-#                  entry): CBASE_API_ROUTE = /v1/leaderboard vm origin GET,HEAD,OPTIONS.
-#   CBASE_STATIC_BUCKET optional, adoption: an existing bucket the app's files are in, found by its
-#                  name (no static group, no group-init, no state file). Deploy never replaces,
-#                  removes or rewrites it, nor its policy: one that does not let the account's
-#                  distributions read it gets the statement to add printed (static.sh).
-#   CBASE_STATIC_PREFIX optional: the app's folder in its bucket, its distribution's OriginPath;
-#                  default the app's name. An adopted bucket's existing folder is named here.
-#   CBASE_STATIC_DIR optional, for an app with static files: the directory deploy uploads, relative
-#                  to the repository's root, holding index.html. Default "build" for a static site
-#                  (a page's `make new` writes build/index.html) and "ui/out" for an app with a VM
-#                  (the starter's page; its server builds elsewhere, so no binary is published).
-#   CBASE_SHELL    optional, for an app with static files: the app shell, the page of the build
-#                  the router answers every path with that is neither a file nor a page (an SPA's
-#                  client-side routes: /abc123, /game/7); default /index.html. stack.sh's
-#                  stack_router holds the rule.
-#   CBASE_HASHED   optional: the content-hashed files, blank-separated globs matched against a file's
-#                  path in the static dir (* crosses /), say "assets/*". They are cached for a year,
-#                  immutable; html never is. Default none: every file is revalidated (no-cache).
+# THE KEYS are README.md's ("cbase.conf"), each with its default; conf_load below holds each to its
+# rule and the keys to each other (CBASE_API_HOST needs CBASE_DOMAIN, CBASE_VM_PORT and
+# CBASE_VM_DATA go together, a VM key needs a VM, a static key static files). It resolves the
+# defaults: CONF_VM and CONF_STATIC (default CBASE_APP), CONF_MEMORY (the declared MiB, or "") and
+# CONF_MEMORY_ESTIMATED (1 for a VM app with none, counted at CONF_MEMORY_ESTIMATE, 128M, by the
+# fit check), CONF_STATIC_DIR, and CONF_ROUTES: the defaults for the app's shape when no
+# CBASE_ROUTE is written ("/api/* vm" and "* static" for an app with both, "* static" for a static
+# site, "* vm" for a VM-only app), a written set with no "*" route given "* static" (or "* vm" for a
+# VM-only app), and the "*" route last, CloudFront's default behaviour, wherever it was written.
 #
 # NO SECRETS. cbase.conf is committed and public. Before the syntax is read, every line is held
 # to conf_secret_scan below, and one that looks like a secret stops the tool, naming the line and
@@ -218,6 +123,33 @@ conf_secret_scan() {
   conf_die "$no" "this line looks like a secret: $what. cbase.conf is committed and public, so a secret never goes in it"
 }
 
+# conf_mem: the app's mem field in a state file: the declared MiB, or ~128, the estimate it is
+# counted at; "" for an app with no VM.
+conf_mem() {
+  if [ -n "$CONF_MEMORY_ESTIMATED" ]; then printf '~%s' "$CONF_MEMORY_ESTIMATE"; else printf '%s' "$CONF_MEMORY"; fi
+}
+
+# conf_at KEY...: the line the last of KEYs is on (conf_load's), or "" when none is set.
+CONF_SEEN=" "   # "KEY:LINE " for each setting read
+conf_at() {
+  local k at=""
+  for k in $CONF_SEEN; do
+    [[ " $* " != *" ${k%%:*} "* ]] || at="${k#*:}"
+  done
+  printf '%s' "$at"
+}
+
+# conf_refuses KEYS SENTENCE: one of KEYS set stops the tool at the last one's line.
+conf_refuses() {
+  local at
+  at="$(conf_at "$1")"
+  [ -z "$at" ] || conf_die "$at" "$2"
+}
+# conf_requires KEY OTHER SENTENCE: KEY set without OTHER stops the tool at KEY's line.
+conf_requires() {
+  [ -z "$(conf_at "$1")" ] || [ -n "$(conf_at "$2")" ] || conf_die "$(conf_at "$1")" "$3"
+}
+
 conf_name_ok() { [[ "$1" =~ ^[a-z]([a-z0-9-]{0,30}[a-z0-9])?$ ]]; }
 
 conf_host_ok() {
@@ -279,18 +211,13 @@ conf_route() {
     cache="${cache:-nocache}"
     methods="${methods:-ALL}"
   fi
-  local r
-  if [ -n "$api" ]; then
-    for r in "${CONF_API_ROUTES[@]+"${CONF_API_ROUTES[@]}"}"; do
-      [ "${r%% *}" != "$pattern" ] || conf_die "$no" "CBASE_API_ROUTE $pattern is routed twice"
-    done
-    CONF_API_ROUTES+=("$pattern $origin $cache $methods")
-    return 0
-  fi
-  for r in "${CONF_ROUTES[@]+"${CONF_ROUTES[@]}"}"; do
-    [ "${r%% *}" != "$pattern" ] || conf_die "$no" "CBASE_ROUTE $pattern is routed twice"
+  local r taken=("${CONF_ROUTES[@]+"${CONF_ROUTES[@]}"}")
+  [ -z "$api" ] || taken=("${CONF_API_ROUTES[@]+"${CONF_API_ROUTES[@]}"}")
+  for r in "${taken[@]+"${taken[@]}"}"; do
+    [ "${r%% *}" != "$pattern" ] || conf_die "$no" "$key $pattern is routed twice"
   done
-  CONF_ROUTES+=("$pattern $origin $cache $methods")
+  if [ -n "$api" ]; then CONF_API_ROUTES+=("$pattern $origin $cache $methods")
+  else CONF_ROUTES+=("$pattern $origin $cache $methods"); fi
 }
 
 # conf_methods LINE_NO LIST: ALL, or the list's methods once each in a fixed order.
@@ -310,7 +237,8 @@ conf_methods() {
   echo "$out"
 }
 
-# conf_load FILE: reads and checks cbase.conf, filling the CONF_ variables. Stops on any error.
+# conf_load FILE: reads and checks cbase.conf, filling the CONF_ variables (once a run). Stops on
+# any error.
 conf_load() {
   CONF_FILE="$1"
   [ -f "$CONF_FILE" ] || conf_die_file "does not exist (an app's settings are cbase.conf at its repository's root, or -f FILE)"
@@ -326,18 +254,7 @@ conf_load() {
     no=$((no + 1))
     conf_secret_scan "$no" "$line"
   done
-  local key value seen=" " seen_at=" " k
-  local app_no="" vm_no="" static_no="" mem_no="" domain_no="" cert_no="" zone_no="" aliases_no="" api_no="" api_cert_no=""
-  local dir_no="" hashed_no="" shell_no="" dir_set="" g
-  local vm_set="" static_set="" memory="" route_nos=() api_route_no="" vmkey_no=""
-  CONF_VM_STACK=""; CONF_VM_ORIGIN=""; CONF_VM_PORT=""; CONF_VM_DATA=""; CONF_BACKUP_BUCKET=""
-  CONF_VM_SETTINGS=""; CONF_VM_ARTIFACTS=""; CONF_STATIC_BUCKET=""; CONF_STATIC_PREFIX=""
-  CONF_VM_REPLACES=""; CONF_BACKUP_KEY=""
-  local stkey_no=""
-  CONF_API_ROUTES=()
-  CONF_HASHED=()
-  CONF_SHELL=""
-  CONF_DOMAINS=()
+  local key value k g at vm_set="" static_set="" memory="" dir_set="" route_nos=()
   no=0
   for line in "${lines[@]+"${lines[@]}"}"; do
     no=$((no + 1))
@@ -355,72 +272,65 @@ conf_load() {
     [[ "$value" != *'#'* ]] || conf_die "$no" "has a '#' in its value: a comment goes on a line of its own"
     [[ "$value" != *[\"\']* ]] || conf_die "$no" "has a quote in its value: values are never quoted (everything after the '=' is the value)"
     [ -n "$value" ] || conf_die "$no" "$key has no value (leave the line out for the default)"
-    if [ "$key" != CBASE_ROUTE ] && [ "$key" != CBASE_API_ROUTE ] && [[ "$seen" == *" $key "* ]]; then
-      for k in $seen_at; do
-        [ "${k%%:*}" != "$key" ] || conf_die "$no" "sets $key again (line ${k#*:} set it)"
-      done
+    if [ "$key" != CBASE_ROUTE ] && [ "$key" != CBASE_API_ROUTE ]; then
+      at="$(conf_at "$key")"
+      [ -z "$at" ] || conf_die "$no" "sets $key again (line $at set it)"
     fi
-    seen="$seen$key "
-    seen_at="$seen_at$key:$no "
+    CONF_SEEN="$CONF_SEEN$key:$no "
     case "$key" in
       CBASE_APP)
         { conf_name_ok "$value" && [ "$value" != none ]; } \
           || conf_die "$no" "CBASE_APP is a name: a lower-case letter, then lower-case letters, digits and '-', at most 32 characters, not ending in '-' (and not none)"
-        CONF_APP="$value"; app_no="$no" ;;
+        CONF_APP="$value" ;;
       CBASE_VM|CBASE_STATIC)
         { [ "$value" = none ] || conf_name_ok "$value"; } \
           || conf_die "$no" "$key is a group name (a lower-case letter, then lower-case letters, digits and '-', at most 32 characters) or none"
-        if [ "$key" = CBASE_VM ]; then vm_set="$value"; vm_no="$no"; else static_set="$value"; static_no="$no"; fi ;;
+        if [ "$key" = CBASE_VM ]; then vm_set="$value"; else static_set="$value"; fi ;;
       CBASE_VM_STACK)
         [[ "$value" =~ ^[A-Za-z][A-Za-z0-9-]{0,127}$ ]] || conf_die "$no" "CBASE_VM_STACK is a CloudFormation stack's name (a letter, then letters, digits and -)"
-        CONF_VM_STACK="$value"; vmkey_no="$no" ;;
+        CONF_VM_STACK="$value" ;;
       CBASE_VM_ORIGIN)
         conf_host_ok "$value" || conf_die "$no" "CBASE_VM_ORIGIN is a lower-case hostname (vm-origin.example.com)"
-        CONF_VM_ORIGIN="$value"; vmkey_no="$no" ;;
+        CONF_VM_ORIGIN="$value" ;;
       CBASE_VM_PORT)
         { [[ "$value" =~ ^[0-9]{4,5}$ ]] && [ "$((10#$value))" -ge 1024 ] && [ "$((10#$value))" -le 65535 ]; } \
           || conf_die "$no" "CBASE_VM_PORT is a port, 1024 to 65535"
         { [ "$((10#$value))" -lt 8700 ] || [ "$((10#$value))" -gt 8799 ]; } \
           || conf_die "$no" "CBASE_VM_PORT is a grandfathered member's own port, outside the 8700-8799 cbase claims"
-        CONF_VM_PORT="$((10#$value))"; vmkey_no="$no" ;;
+        CONF_VM_PORT="$((10#$value))" ;;
       CBASE_VM_DATA)
         { [[ "$value" =~ ^(/[A-Za-z0-9_][A-Za-z0-9._-]*)+$ ]] && [[ "$value/" != */../* ]] && [[ "$value/" != /srv/cbase/* ]]; } \
           || conf_die "$no" "CBASE_VM_DATA is an absolute directory on the VM (/var/lib/app), not under /srv/cbase/"
-        CONF_VM_DATA="$value"; vmkey_no="$no" ;;
+        CONF_VM_DATA="$value" ;;
       CBASE_VM_REPLACES)
         [[ "$value" =~ ^[A-Za-z0-9_.@-]+\.service$ ]] || conf_die "$no" "CBASE_VM_REPLACES is a systemd unit's name (name.service)"
-        CONF_VM_REPLACES="$value"; vmkey_no="$no" ;;
+        CONF_VM_REPLACES="$value" ;;
       CBASE_BACKUP_KEY)
         [[ "$value" =~ ^[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9_-][A-Za-z0-9._-]*)*$ ]] || conf_die "$no" "CBASE_BACKUP_KEY is an object key (cbase/latest.sqlite): letters, digits and . _ - /, no leading /"
-        CONF_BACKUP_KEY="$value"; vmkey_no="$no" ;;
+        CONF_BACKUP_KEY="$value" ;;
       CBASE_STATIC_BUCKET)
         [[ "$value" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]] || conf_die "$no" "CBASE_STATIC_BUCKET is an S3 bucket's name"
-        CONF_STATIC_BUCKET="$value"; stkey_no="$no" ;;
+        CONF_STATIC_BUCKET="$value" ;;
       CBASE_STATIC_PREFIX)
         [[ "$value" =~ ^[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9_-][A-Za-z0-9._-]*)*$ ]] \
           || conf_die "$no" "CBASE_STATIC_PREFIX is a folder in the bucket (site, sites/one): letters, digits and . _ - /, no leading or trailing /"
-        CONF_STATIC_PREFIX="$value"; stkey_no="$no" ;;
+        CONF_STATIC_PREFIX="$value" ;;
       CBASE_VM_SETTINGS)
         [[ "$value" =~ ^(/[A-Za-z0-9_.-]+)+/$ ]] || conf_die "$no" "CBASE_VM_SETTINGS is an SSM path, starting and ending with / (/app/env/)"
-        CONF_VM_SETTINGS="$value"; vmkey_no="$no" ;;
+        CONF_VM_SETTINGS="$value" ;;
       CBASE_VM_ARTIFACTS)
         [[ "$value" =~ ^s3://[a-z0-9][a-z0-9.-]{1,61}[a-z0-9](/[A-Za-z0-9_.-]+)*/$ ]] || conf_die "$no" "CBASE_VM_ARTIFACTS is s3://<bucket>/<prefix>/, ending with /"
-        CONF_VM_ARTIFACTS="$value"; vmkey_no="$no" ;;
+        CONF_VM_ARTIFACTS="$value" ;;
       CBASE_BACKUP_BUCKET)
         [[ "$value" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]] || conf_die "$no" "CBASE_BACKUP_BUCKET is an S3 bucket's name"
-        CONF_BACKUP_BUCKET="$value"; vmkey_no="$no" ;;
+        CONF_BACKUP_BUCKET="$value" ;;
       CBASE_MEMORY)
         [[ "$value" =~ ^([0-9]{1,6})([MG])$ ]] || conf_die "$no" "CBASE_MEMORY is <n>M or <n>G (256M, 1G)"
         memory=$((10#${BASH_REMATCH[1]}))
         [ "${BASH_REMATCH[2]}" = M ] || memory=$((memory * 1024))
-        { [ "$memory" -ge 16 ] && [ "$memory" -le 65536 ]; } || conf_die "$no" "CBASE_MEMORY is from 16M to 64G"
-        mem_no="$no" ;;
-      CBASE_ROUTE)
-        route_nos+=("$no")
-        conf_route "$no" "$value" ;;
-      CBASE_API_ROUTE)
-        api_route_no="$no"
-        conf_route "$no" "$value" api ;;
+        { [ "$memory" -ge 16 ] && [ "$memory" -le 65536 ]; } || conf_die "$no" "CBASE_MEMORY is from 16M to 64G" ;;
+      CBASE_ROUTE) route_nos+=("$no"); conf_route "$no" "$value" ;;
+      CBASE_API_ROUTE) conf_route "$no" "$value" api ;;
       CBASE_DOMAIN)
         read -r -a CONF_DOMAINS <<< "$value"
         for g in "${!CONF_DOMAINS[@]}"; do
@@ -429,62 +339,62 @@ conf_load() {
             [ "$k" != "${CONF_DOMAINS[$g]}" ] || conf_die "$no" "CBASE_DOMAIN names ${CONF_DOMAINS[$g]} twice"
           done
         done
-        CONF_DOMAIN="${CONF_DOMAINS[0]}"; domain_no="$no" ;;
+        CONF_DOMAIN="${CONF_DOMAINS[0]}" ;;
       CBASE_API_HOST)
         conf_host_ok "$value" || conf_die "$no" "CBASE_API_HOST is one lower-case hostname (api.example.com)"
-        CONF_API_HOST="$value"; api_no="$no" ;;
+        CONF_API_HOST="$value" ;;
       CBASE_CERT_ARN|CBASE_API_CERT_ARN)
         if [[ "$value" =~ ^arn:aws:acm:([a-z0-9-]+):[0-9]{12}:certificate/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
           [ "${BASH_REMATCH[1]}" = us-east-1 ] || conf_die "$no" "$key is in ${BASH_REMATCH[1]}, and CloudFront takes a certificate from us-east-1 alone"
         else
           conf_die "$no" "$key is an ACM certificate's ARN: arn:aws:acm:us-east-1:<account>:certificate/<uuid>"
         fi
-        if [ "$key" = CBASE_CERT_ARN ]; then CONF_CERT_ARN="$value"; cert_no="$no"; else CONF_API_CERT_ARN="$value"; api_cert_no="$no"; fi ;;
+        if [ "$key" = CBASE_CERT_ARN ]; then CONF_CERT_ARN="$value"; else CONF_API_CERT_ARN="$value"; fi ;;
       CBASE_ALIASES)
         case "$value" in on|off) ;; *) conf_die "$no" "CBASE_ALIASES is on or off" ;; esac
-        CONF_ALIASES="$value"; aliases_no="$no" ;;
+        CONF_ALIASES="$value" ;;
       CBASE_ZONE)
         [[ "$value" =~ ^Z[A-Z0-9]{1,31}$ ]] || conf_die "$no" "CBASE_ZONE is a Route 53 hosted zone id (Z and upper-case letters and digits)"
-        CONF_ZONE="$value"; zone_no="$no" ;;
+        CONF_ZONE="$value" ;;
       CBASE_STATIC_DIR)
         value="${value%/}"
         { [[ "$value" =~ ^[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9_-][A-Za-z0-9._-]*)*$ ]] && [[ "/$value/" != */../* ]]; } \
           || conf_die "$no" "CBASE_STATIC_DIR is a directory inside the repository, relative to its root (build, ui/out): letters, digits and . _ - /, no leading '/', no '..'"
-        dir_set="$value"; dir_no="$no" ;;
+        dir_set="$value" ;;
       CBASE_HASHED)
         read -r -a CONF_HASHED <<< "$value"
         for g in "${CONF_HASHED[@]}"; do
           if ! [[ "$g" =~ ^[A-Za-z0-9._/*?-]+$ ]] || [[ "$g" == /* ]]; then
             conf_die "$no" "CBASE_HASHED is blank-separated globs of letters, digits and . _ - / * ? (assets/*), each a path in the static dir with no leading '/'"
           fi
-        done
-        hashed_no="$no" ;;
+        done ;;
       CBASE_SHELL)
         # Each part starts with a letter, a digit, '_' or '-', so no part is '.' or '..'.
         [[ "$value" =~ ^/[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9_-][A-Za-z0-9._-]*)*\.html$ ]] \
           || conf_die "$no" "CBASE_SHELL is a page of the build, an absolute path ending in .html (/_shell.html): letters, digits and . _ - /, each part starting with a letter, a digit, _ or -"
-        CONF_SHELL="$value"; shell_no="$no" ;;
+        CONF_SHELL="$value" ;;
     esac
   done
-  [ -n "$app_no" ] || conf_die_file "has no CBASE_APP line (the app's name: CBASE_APP = myapp)"
+  [ -n "$(conf_at CBASE_APP)" ] || conf_die_file "has no CBASE_APP line (the app's name: CBASE_APP = myapp)"
   CONF_VM="${vm_set:-$CONF_APP}"
   CONF_STATIC="${static_set:-$CONF_APP}"
   if [ "$CONF_VM" = none ] && [ "$CONF_STATIC" = none ]; then
-    conf_die "$(( ${vm_no:-0} > ${static_no:-0} ? ${vm_no:-0} : ${static_no:-0} ))" "CBASE_VM and CBASE_STATIC are both none: an app has a VM, static files, or both"
+    conf_die "$(conf_at CBASE_VM CBASE_STATIC)" "CBASE_VM and CBASE_STATIC are both none: an app has a VM, static files, or both"
   fi
+  local vmkeys="CBASE_VM_STACK CBASE_VM_ORIGIN CBASE_VM_PORT CBASE_VM_DATA CBASE_VM_REPLACES CBASE_BACKUP_KEY CBASE_VM_SETTINGS CBASE_VM_ARTIFACTS CBASE_BACKUP_BUCKET"
   if [ -n "$CONF_VM_PORT$CONF_VM_DATA" ] && { [ -z "$CONF_VM_PORT" ] || [ -z "$CONF_VM_DATA" ]; }; then
-    conf_die "$vmkey_no" "CBASE_VM_PORT and CBASE_VM_DATA go together: a grandfathered member's port and its data directory"
+    conf_die "$(conf_at "$vmkeys")" "CBASE_VM_PORT and CBASE_VM_DATA go together: a grandfathered member's port and its data directory"
   fi
   if [ -n "$CONF_VM_REPLACES" ] && [ -z "$CONF_VM_PORT" ]; then
-    conf_die "$vmkey_no" "CBASE_VM_REPLACES is for a grandfathered member (CBASE_VM_PORT and CBASE_VM_DATA): the unit that served it before"
+    conf_die "$(conf_at "$vmkeys")" "CBASE_VM_REPLACES is for a grandfathered member (CBASE_VM_PORT and CBASE_VM_DATA): the unit that served it before"
   fi
   if [ "$CONF_VM" = none ]; then
-    [ -z "$vmkey_no" ] || conf_die "$vmkey_no" "the CBASE_VM_* and CBASE_BACKUP_BUCKET keys are for an app with a VM, and CBASE_VM is none"
-    [ -z "$mem_no" ] || conf_die "$mem_no" "CBASE_MEMORY is for an app with a VM, and CBASE_VM is none"
-    [ -z "$api_no" ] || conf_die "$api_no" "CBASE_API_HOST sends every request to the VM, and CBASE_VM is none"
+    conf_refuses "$vmkeys" "the CBASE_VM_* and CBASE_BACKUP_BUCKET keys are for an app with a VM, and CBASE_VM is none"
+    conf_refuses CBASE_MEMORY "CBASE_MEMORY is for an app with a VM, and CBASE_VM is none"
+    conf_refuses CBASE_API_HOST "CBASE_API_HOST sends every request to the VM, and CBASE_VM is none"
   else
     CONF_MEMORY="$memory"
-    if [ -z "$mem_no" ]; then CONF_MEMORY_ESTIMATED=1; else CONF_MEMORY_ESTIMATED=""; fi
+    if [ -z "$(conf_at CBASE_MEMORY)" ]; then CONF_MEMORY_ESTIMATED=1; else CONF_MEMORY_ESTIMATED=""; fi
   fi
   local i r origin
   for i in "${!CONF_ROUTES[@]}"; do
@@ -497,22 +407,22 @@ conf_load() {
       conf_die "${route_nos[$i]}" "routes to the VM ($origin), and CBASE_VM is none"
     fi
   done
-  [ -z "$api_no" ] || [ -n "$domain_no" ] || conf_die "$api_no" "CBASE_API_HOST is a second hostname, and there is no CBASE_DOMAIN (the first)"
-  [ -z "$api_route_no" ] || [ -n "$api_no" ] || conf_die "$api_route_no" "CBASE_API_ROUTE is a route of CBASE_API_HOST's, and there is none"
-  if [ -n "$api_no" ]; then
+  conf_requires CBASE_API_HOST CBASE_DOMAIN "CBASE_API_HOST is a second hostname, and there is no CBASE_DOMAIN (the first)"
+  conf_requires CBASE_API_ROUTE CBASE_API_HOST "CBASE_API_ROUTE is a route of CBASE_API_HOST's, and there is none"
+  if [ -n "$CONF_API_HOST" ]; then
     for k in "${CONF_DOMAINS[@]}"; do
-      [ "$k" != "$CONF_API_HOST" ] || conf_die "$api_no" "CBASE_API_HOST $k is one of CBASE_DOMAIN's hostnames: a hostname is on one distribution"
+      [ "$k" != "$CONF_API_HOST" ] || conf_die "$(conf_at CBASE_API_HOST)" "CBASE_API_HOST $k is one of CBASE_DOMAIN's hostnames: a hostname is on one distribution"
     done
   fi
-  [ -z "$cert_no" ] || [ -n "$domain_no" ] || conf_die "$cert_no" "CBASE_CERT_ARN is for CBASE_DOMAIN, and there is none (without a domain the app is at its cloudfront.net address)"
-  [ -z "$api_cert_no" ] || [ -n "$api_no" ] || conf_die "$api_cert_no" "CBASE_API_CERT_ARN is for CBASE_API_HOST, and there is none"
-  [ -z "$aliases_no" ] || [ -n "$domain_no" ] || conf_die "$aliases_no" "CBASE_ALIASES is for CBASE_DOMAIN's hostnames, and there is none"
-  [ -z "$zone_no" ] || [ -n "$domain_no" ] || conf_die "$zone_no" "CBASE_ZONE is where CBASE_DOMAIN's record goes, and there is no CBASE_DOMAIN"
+  conf_requires CBASE_CERT_ARN CBASE_DOMAIN "CBASE_CERT_ARN is for CBASE_DOMAIN, and there is none (without a domain the app is at its cloudfront.net address)"
+  conf_requires CBASE_API_CERT_ARN CBASE_API_HOST "CBASE_API_CERT_ARN is for CBASE_API_HOST, and there is none"
+  conf_requires CBASE_ALIASES CBASE_DOMAIN "CBASE_ALIASES is for CBASE_DOMAIN's hostnames, and there is none"
+  conf_requires CBASE_ZONE CBASE_DOMAIN "CBASE_ZONE is where CBASE_DOMAIN's record goes, and there is no CBASE_DOMAIN"
   if [ "$CONF_STATIC" = none ]; then
-    [ -z "$dir_no" ] || conf_die "$dir_no" "CBASE_STATIC_DIR is the static files' directory, and CBASE_STATIC is none"
-    [ -z "$hashed_no" ] || conf_die "$hashed_no" "CBASE_HASHED names static files, and CBASE_STATIC is none"
-    [ -z "$shell_no" ] || conf_die "$shell_no" "CBASE_SHELL is a page of the static files, and CBASE_STATIC is none"
-    [ -z "$stkey_no" ] || conf_die "$stkey_no" "CBASE_STATIC_BUCKET and CBASE_STATIC_PREFIX are for static files, and CBASE_STATIC is none"
+    conf_refuses CBASE_STATIC_DIR "CBASE_STATIC_DIR is the static files' directory, and CBASE_STATIC is none"
+    conf_refuses CBASE_HASHED "CBASE_HASHED names static files, and CBASE_STATIC is none"
+    conf_refuses CBASE_SHELL "CBASE_SHELL is a page of the static files, and CBASE_STATIC is none"
+    conf_refuses "CBASE_STATIC_BUCKET CBASE_STATIC_PREFIX" "CBASE_STATIC_BUCKET and CBASE_STATIC_PREFIX are for static files, and CBASE_STATIC is none"
     CONF_STATIC_DIR=""; CONF_STATIC_DIR_DEFAULT=""
   elif [ -n "$dir_set" ]; then
     CONF_STATIC_DIR="$dir_set"; CONF_STATIC_DIR_DEFAULT=""

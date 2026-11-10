@@ -37,7 +37,6 @@ curl http://127.0.0.1:8642/v1/hello
 
 `/health` answers `ok cbase <version> mode=serve ...`, and `/v1/hello` is the example app's route.
 To put an app on AWS, see the [./cbase deploy tool](#cbase-deploy-tool).
-Its VM is IPv6-only by default (`group-init vm GROUP`), and `group-init vm GROUP --ipv4` opts in to a public IPv4, about $3.60 a month more.
 
 ## Why cbase
 
@@ -468,20 +467,35 @@ exec "$(dirname "$0")/cbase/tools/cbase" "$@"
 ```
 
 It needs bash (macOS's own 3.2 is enough) and AWS CLI v2, and every AWS call it makes is one AWS CLI call read with `--query ... --output text`, so the tool parses no JSON.
+The stacks it makes are the CloudFormation templates in `tools/cbase.d/templates/`, filled in from `cbase.conf`.
+`cbase/tools/cbase --help`:
 
-The commands:
+```
+usage: cbase/tools/cbase [-f FILE] COMMAND    (FILE: the app's settings, default ./cbase.conf)
 
-- `cbase/tools/cbase group-init vm|static GROUP [--type TYPE] [--ipv4] [--yes]`: makes a group, the one command that makes an instance or a group's bucket.
-  A VM is IPv6-only by default; `--ipv4` makes it dual-stack with a public IPv4 (about $3.60 a month).
-- `cbase/tools/cbase deploy [--dry-run] [--accept-drift] [--prune]`: the app's service on its group's VM, its static files, and its distribution.
-- `cbase/tools/cbase undeploy [--delete-files] [--delete-data]`: the app's service and distribution gone, its files and data kept unless a flag says otherwise.
-- `cbase/tools/cbase group-destroy vm|static GROUP [--delete-data] [--yes]`: an empty group's stack deleted.
-- `cbase/tools/cbase apps [GROUP]`: a group's members, with each one's port, service and memory.
-- `cbase/tools/cbase doctor` and `config check`: the config, the account, the groups.
-- `cbase/tools/cbase template` and `group-template vm|static GROUP [--ipv4]`: the stacks deploy and group-init make, printed with no AWS call.
-- `cbase/tools/cbase state join` and `state leave`: the membership step deploy and undeploy run, for repair.
-
-The tool is complete; what remains is phase 4's polish of these docs.
+  config check       cbase.conf read and printed, defaults filled in (no AWS)
+  doctor             the config, the AWS account, each group and its members
+  apps [GROUP]       a group's apps, with each one's port, service and memory
+                     (default: cbase.conf's groups)
+  deploy [--dry-run] [--accept-drift] [--allow-downtime] [--prune] [--no-aliases|--attach]
+                     the app: its service on its group's VM, its static files, its
+                     distribution; DRY_RUN=1, CBASE_ACCEPT_DRIFT=1, CBASE_ALLOW_DOWNTIME=1
+                     and CBASE_PRUNE=1 are the same as the flags; --no-aliases and --attach
+                     are CBASE_ALIASES off and on, a staged attach
+  undeploy [--delete-files] [--delete-data]
+                     the app's distribution and service gone, its groups left; its files
+                     and its data kept unless a flag says otherwise
+  group-init vm|static GROUP [--type TYPE] [--ipv4] [--yes]
+                     makes a group (an IPv6-only instance, dual-stack with a public IPv4
+                     with --ipv4; or a bucket), the one command that does; a VM's needs
+                     --yes or a typed yes (it costs money)
+  group-destroy vm|static GROUP [--delete-data] [--yes]
+                     deletes an empty group's stack (refused while it has members)
+  template           the app's stack template, as deploy renders it (no AWS)
+  group-template vm|static GROUP [--ipv4]
+                     a group's stack template (no AWS)
+  state join|leave   the membership step deploy and undeploy run, for repair
+```
 
 ### cbase.conf
 
@@ -506,7 +520,7 @@ CBASE_DOMAIN = shop.example.com
 ```
 
 The file is one `KEY = value` per line, committed with the app, and a line starting with `#` is a comment.
-An unknown key or a bad value stops the tool with the line's number and a sentence; `tools/cbase.d/conf.sh` documents every rule.
+An unknown key or a bad value stops the tool with the line's number and a sentence; `tools/cbase.d/conf.sh` holds the format's rules and each key's check.
 
 `CBASE_APP` is the one required key: the app's name, `[a-z][a-z0-9-]*`, at most 32 characters.
 It names the app's service (`cbase-<app>.service`), its port claim and its bucket folder (`<app>/`).
@@ -523,8 +537,8 @@ Optional, each with its default:
 - `CBASE_API_HOST = <host>`: one more hostname, on a distribution of its own, whose every request goes to the VM; default none.
 - `CBASE_CERT_ARN = arn:aws:acm:us-east-1:...`: an override; default, deploy finds an issued us-east-1 certificate covering the hostnames (wildcards and SANs included) or requests one with DNS validation.
 - `CBASE_ZONE = Z...`: an override; default, deploy finds the account's Route 53 hosted zone that covers the domain and writes the records there, or with none prints the records to add.
-- `CBASE_STATIC_DIR = <dir>`: the directory deploy uploads; default `build` for a static site, `ui/out` for an app with a VM.
-- `CBASE_HASHED = <glob> ...`: the content-hashed files, cached for a year; default none.
+- `CBASE_STATIC_DIR = <dir>`: the directory deploy uploads, relative to the repository's root; default `build` for a static site (what cdom's `make new` builds), `ui/out` for an app with a VM (the starter's page, so a server binary under `build/` is never published).
+- `CBASE_HASHED = <glob> ...`: the content-hashed files (`assets/*`; `*` crosses `/`), cached for a year, immutable; default none.
 - `CBASE_API_CERT_ARN = arn:aws:acm:us-east-1:...`: the API host's own certificate, used as it is; `CBASE_CERT_ARN` is used as it is too, and neither is ever replaced.
 - `CBASE_API_ROUTE = <pattern> vm|ws [cache|nocache|origin] [<methods>]`, repeated: the API host's own behaviours; `origin` keeps what the origin's `Cache-Control` says. The API host's VM origin waits 60 s, and every answer carries CloudFront's `Server-Timing`.
 - `CBASE_VM_STACK = <stack>`: adopts an existing VM; the group's instance is the stack's (an instance, or an auto-scaling group of one), with no group-init.
@@ -532,7 +546,7 @@ Optional, each with its default:
   `CBASE_VM_SETTINGS` and `CBASE_VM_ARTIFACTS` override both, as a grandfathered member names its own.
   The first deploy into an adopted group makes the state bucket when the account has none (private, versioned, public access blocked, as group-init makes it), and its join writes the group's state file; it never makes a VM.
 - `CBASE_VM_ORIGIN = <host>`: the AAAA hostname CloudFront reaches an IPv6-only VM at (`IpAddressType: ipv6`).
-  The origin is the group's, one per VM: the first app to name it records it in the group's state file header (`origin=<host> addr=ipv6`; a `--ipv4` group-init records its instance's, `addr=dualstack`), later apps use it without naming it, and a different one is refused; with none recorded or named, deploy stops and asks for it once.
+  The origin is the group's, one per VM: the first app to name it records it in the group's state file header (`origin=<host> addr=ipv6`; group-init records its instance's, `addr=dualstack`), later apps use it without naming it, and a different one is refused; with none recorded or named, deploy stops and asks for it once.
 - `CBASE_VM_PORT = <port>` and `CBASE_VM_DATA = <dir>`: a grandfathered member, an app that ran on the VM before cbase; its port and data directory are recorded as they are (`legacy=1`).
 - `CBASE_VM_SETTINGS = /<path>/`: the SSM path of the app's settings, which the instance writes into its env file; default `/cbase/<app>/` (`/<stack>/<app>/` in an adopted group).
 - `CBASE_VM_ARTIFACTS = s3://<bucket>/<prefix>/`: where the app's servers go and the instance fetches them; default the state bucket's `artifacts/<app>/` (the code bucket's `vm/<app>/` in an adopted group).
@@ -569,20 +583,13 @@ A VM app claims the lowest free port in 8700-8799 in the same write, so two raci
 A group is one CloudFormation stack in the CLI's region, and `group-init` is the only command that makes one; deploy never makes a VM or a bucket.
 
 ```
-cbase/tools/cbase group-init vm shop --yes          # IPv6-only
-cbase/tools/cbase group-init vm shop --ipv4 --yes   # or dual-stack, with a public IPv4
+cbase/tools/cbase group-init vm shop --yes
 cbase/tools/cbase group-init static shop
 ```
 
 `group-init vm GROUP` makes `cbase-group-vm-<group>`: one EC2 instance tagged `cbase:vm-group=<group>`, a t4g.nano (arm64) by default on the newest Amazon Linux 2023, or the arm64 type `--type` names.
-It has IMDSv2, an encrypted 8 GB disk, and an instance profile with SSM's managed-instance policy, read of the state bucket's `artifacts/` and of the SSM parameters under `/cbase/`.
-It is in the group's own VPC, which has an Amazon-provided IPv6 block, in one subnet in a zone that offers its type.
-By default the subnet is IPv6-only: no public IPv4 and no Elastic IP.
-The boot (`tools/cbase.d/vm_boot.sh`, the user-data) claims the subnet's `::10`, a fixed address that survives a replacement, and points the SSM agent at the dual-stack SSM and S3 endpoints.
-CloudFront reaches it over IPv6 (`IpAddressType: ipv6`) at an AAAA record of that address: group-init prints the address, and the group's first app names the record once in `CBASE_VM_ORIGIN`, which records it in the state file (`addr=ipv6`).
-With `--ipv4` the subnet is dual-stack and the instance has an Elastic IP, so its public DNS name survives a stop; that name is the origin (`addr=dualstack`), and group-init prints the extra cost, "a public IPv4 is about $3.60 a month", before it asks.
-The choice is the group's for life: a re-run with the other one would replace the instance, which is refused.
-Its security group opens the apps' ports, 8700-8799, to CloudFront's IPv6 origin-facing managed prefix list (with `--ipv4`, a second group to the IPv4 one) and nothing else: there is no SSH and no reverse proxy, and each app's port is its own CloudFront origin.
+It has an Elastic IP, so its public DNS name survives a stop, IMDSv2, an encrypted 8 GB disk, and an instance profile with SSM's managed-instance policy, read of the state bucket's `artifacts/` and of the SSM parameters under `/cbase/`.
+Its security group opens the apps' ports, 8700-8799, to CloudFront's origin-facing managed prefix list and nothing else: there is no SSH and no reverse proxy, and each app's port is its own CloudFront origin.
 A VM costs money, so the change set is printed with its cost class ("a t4g.nano runs about $3/month") and runs only with `--yes` or `yes` typed at the terminal.
 
 `group-init static GROUP` makes `cbase-group-static-<group>`: the bucket, tagged `cbase:static-group=<group>`, versioned, with public access blocked, and kept if its stack is deleted.
@@ -590,7 +597,7 @@ Its one bucket policy is set there and nowhere else: `s3:GetObject` and `s3:List
 
 The first `group-init` also makes the state bucket `cbase-state-<account>`, and each writes its group's empty state file.
 A re-run is an update through the same change set and guards as a deploy: drift stops it, and a change set that would replace or remove the bucket, or the instance with every app's data on its disk, is refused.
-A re-run keeps the instance's image and zone, and its type unless `--type` names another.
+A re-run keeps the instance's image, and its type unless `--type` names another.
 
 ### Deploying a static site
 
@@ -612,9 +619,7 @@ CBASE_VM = none
 7. with `--prune` (or `CBASE_PRUNE=1`), deletes what the folder holds and this build does not, and never a key outside `<app>/`, whatever the bucket's listing says;
 8. executes the change set and waits, invalidates `/*` on a stack that existed, writes the hostname's Route 53 alias, and prints the URL.
 
-`CBASE_STATIC_DIR = <dir>` is the directory deploy uploads, relative to the repository's root; its default is `build` for a static site (what cdom's `make new` builds) and `ui/out` for an app with a VM (the starter's page, so a server binary under `build/` is never published).
 A path with a part that starts with `.` is not uploaded (`.git`, `.DS_Store`), but `.well-known/`.
-`CBASE_HASHED = <glob> ...` names the content-hashed files (`CBASE_HASHED = assets/*`; `*` crosses `/`), which are cached for a year, immutable; its default is none.
 Each file's Content-Type comes from one table, `tools/cbase.d/static_rules.tsv`, by a glob on its path: by extension (`.wasm` is `application/wasm`), or by the whole path for an extensionless file (`.well-known/apple-app-site-association` is `application/json`).
 Its Cache-Control is `no-cache` for html (a browser and CloudFront revalidate it, so a deploy is seen at once), `public, max-age=31536000, immutable` for a hashed file (never html), and `no-cache` for the rest.
 
@@ -634,20 +639,20 @@ A route's methods map to the smallest of CloudFront's three method sets that cov
 A `ws` route is its own origin for its long timeouts (CloudFront sets them per origin): 60 s to read and to keep alive, uncached, every method.
 `CBASE_API_HOST` is a second distribution whose every request goes to the VM, and a `ws` route keeps its `ws` behaviour there too.
 A VM app's settings come from SSM at each deploy, its `CBASE_ORIGIN_SECRET` among them: CloudFront sends that value as `X-Cbase-Origin` on every VM origin (a NoEcho parameter, never printed), and serve refuses a request without it.
-`cbase/tools/cbase template` prints the stack an app's `cbase.conf` makes, to read before a first deploy.
+`cbase/tools/cbase template` prints the stack an app's `cbase.conf` makes (`tools/cbase.d/templates/app.yaml`, filled in), to read before a first deploy.
 
 The VM side of a deploy, in order:
 
 1. finds the VM group's instance by its tag, and stops with the `group-init` command when there is none;
 2. builds the server for the instance: `make serve-binary` in the app's server directory (`.` or `server/`, the first with a Makefile), cbase's static linux-arm64 build, which needs Docker; `CBASE_SERVE_BIN` names a binary built elsewhere instead;
 3. joins the group's state file, claiming the lowest free port and checking the memory fit in the same conditional write (below);
-4. uploads the binary to `s3://cbase-state-<account>/artifacts/<app>/<sha256>`;
+4. uploads the binary to its sha256's key under `CBASE_VM_ARTIFACTS` (default `s3://cbase-state-<account>/artifacts/<app>/`);
 5. runs one SSM command on the instance, with no SSH: the user `cbase-<app>`, `/srv/cbase/<app>/data` owned by the service, the port checked free before a first start, the binary fetched and its sha256 checked, the unit `cbase-<app>.service` installed and only it restarted, then its `/health` (or its startup line) waited for;
 6. sets the stack's `VmOrigin` and `VmPort`, so `/api/*` and any `ws` route reach the app's port.
 
 The service's unit grew out of the production unit of the VM cbase came from (`tools/cbase.d/vm_unit.service`): `CBASE_LISTEN=:::<port>` (a dual-stack socket), `CBASE_DB` in its data folder, the backup settings, `Restart=always`, its hardening, and `MemoryMax` only when `CBASE_MEMORY` is declared.
 The instance fetches the server and reads its settings with curl signed by the instance role (`tools/cbase.d/vm_remote.sh`), so it needs no aws CLI.
-Its settings are SSM Parameter Store parameters under `/cbase/<app>/`, which the instance writes into the unit's 0600 `EnvironmentFile`; no value passes through the tool but the origin secret, which is masked.
+Its settings are SSM Parameter Store parameters under `CBASE_VM_SETTINGS` (default `/cbase/<app>/`), which the instance writes into the unit's 0600 `EnvironmentFile`; no value passes through the tool but the origin secret, which is masked.
 Only the remote script's own status lines are printed, never the rest of the command's output, and a failure points at `journalctl -u cbase-<app>` on the instance.
 A port another process holds on the VM refuses the deploy and releases the claim it made.
 

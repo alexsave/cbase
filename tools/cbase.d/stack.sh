@@ -1,72 +1,71 @@
 # shellcheck shell=bash
-# stack.sh - an app's own CloudFormation stack, cbase-app-<app> in us-east-1 (CloudFront's region):
-# its distribution and the routes (README.md "./cbase deploy tool"). Sourced by tools/cbase.
+# stack.sh - the tool's CloudFormation stacks, and the one change-set flow every one of them goes
+# through (README.md "./cbase deploy tool"). Sourced by tools/cbase.
 #
-# THE TEMPLATE (stack_render), plain CloudFormation with no transform, rendered from cbase.conf:
+# THE TEMPLATES are the files in templates/, plain CloudFormation with no transform: app.yaml (an
+# app's own stack, cbase-app-<app> in us-east-1, CloudFront's region), group-vm.yaml and
+# group-static.yaml (group.sh's, in the CLI's region). template_render fills in a file's __NAME__
+# values and keeps its "#if FLAG" blocks for the shape at hand: an app's static origin, its VM
+# parameters and its API distribution exist only for an app that has them, so a static site's
+# template names no VM at all (a CloudFormation Condition cannot do that: a conditional resource's
+# parameters are still declared and must still be given). stack_routes writes the one list that
+# varies in length, the route behaviours. In app.yaml:
 #   Oac           the Origin Access Control the distribution signs its bucket reads with. The
 #                 bucket's policy, which lets it, is the static group's and is set once per bucket,
 #                 on aws:SourceAccount, by group-init (group.sh): deploy never edits a bucket policy.
-#   Router        a viewer-request CloudFront Function on every static behaviour, an SPA's routing
-#                 (stack_router): a file passes as it is, a page's clean URL is its .html ("/about"
-#                 /about.html, "/docs/" /docs/index.html), and any other path is the app shell.
+#   Router        a viewer-request CloudFront Function on every static behaviour, an SPA's routing:
+#                 (a) a file, a path whose last part has a dot or one under /.well-known/, passes as
+#                 it is (one the bucket lacks is S3's 404, never the shell, so a broken asset link
+#                 fails loudly); (b) a page, "/x" /x.html and "/x/" /x/index.html ("/" /index.html),
+#                 when the build has it (PAGES, its html files: stack_pages), a "/x/" that is no
+#                 directory's index tried as "/x"; (c) anything else is the app shell, CBASE_SHELL
+#                 (default /index.html), with S3's 200. cbase_test.sh runs it under node.
 #   Distribution  the default behaviour is the "*" route; every other route is a behaviour, in
-#                 cbase.conf's order. The static origin is the group's bucket with OriginPath
-#                 /<app>, so the app reads its own folder and nothing else. A VM route (only when
-#                 CBASE_VM is not none) goes to the VmOrigin and VmPort parameters: the group VM's
-#                 public DNS name and the app's claimed port, which the VM deploy (vm.sh) supplies.
-#                 A ws route is its own origin, for its long timeouts (CloudFront sets them per
-#                 origin): read 60 s, keep-alive 60 s, uncached, every method. Each VM origin
-#                 sends X-Cbase-Origin, the NoEcho parameter OriginSecret (stack_vm_origin).
-#   ApiDistribution  with CBASE_API_HOST: that hostname's every request to the VM, a ws route's
-#                 on the ws origin as on the Distribution.
+#                 cbase.conf's order. The static origin is the bucket with OriginPath /<folder>, so
+#                 the app reads its own folder and nothing else. A vm route goes to the VmOrigin and
+#                 VmPort parameters, the VM's origin hostname and the app's port (vm.sh); a ws
+#                 route is its own origin, for its long timeouts (CloudFront sets them per origin):
+#                 read 60 s, keep-alive 60 s, uncached, every method. Each VM origin sends
+#                 X-Cbase-Origin, the NoEcho parameter OriginSecret, which serve checks.
+#   ApiDistribution  with CBASE_API_HOST: that hostname's every request to the VM, its own routes
+#                 and the ws routes on the ws origin, and CloudFront's Server-Timing.
 # Caching uses AWS-managed policies alone (CachingOptimized, CachingDisabled; the VM's requests
-# AllViewerExceptHostHeader), so a flat-rate CloudFront plan can hold the distribution.
-# A route's methods are the smallest of CloudFront's three sets that covers them: GET,HEAD;
-# GET,HEAD,OPTIONS; or all seven.
+# AllViewerExceptHostHeader), so a flat-rate CloudFront plan can hold the distribution. A route's
+# methods are the smallest of CloudFront's three sets that covers them: GET,HEAD; GET,HEAD,OPTIONS;
+# or all seven.
 #
-# THE SAFETY RULES (stack_plan), in order:
-#   1. an existing stack's drift is detected first; drifted resources are printed and the deploy
-#      stops, unless CBASE_ACCEPT_DRIFT=1 (--accept-drift): the update would undo a change made by hand;
-#   2. a change set is made and described, always;
-#   3. a change that would replace or remove a BUCKET (AWS::S3::Bucket) is REFUSED, the change set
-#      deleted, nothing executed: a bucket replaced is every app's files lost. The one hard stop.
-#      The same guard (stack_keep_guard) holds a VM group's INSTANCE (AWS::EC2::Instance), whose
-#      disk holds every member's /srv/cbase/<app>/data: group-init's stacks (group.sh) run through
-#      stack_changeset too, and an app's own stack holds neither;
+# THE CHANGE-SET FLOW (stack_changeset), deploy's and group-init's alike, in order:
+#   1. an existing stack's drift is detected first; drifted resources are printed and the run stops,
+#      unless CBASE_ACCEPT_DRIFT=1 (--accept-drift): the update would undo a change made by hand;
+#   2. a change set is made and printed, always, a secret's value never shown (aws.sh THE MASK:
+#      the values are left out by the CLI's own --query filter, aws_secret_filter);
+#   3. THE ONE HARD STOP (stack_keep_guard): a change that would replace or remove a BUCKET (every
+#      app's files) or a VM group's INSTANCE (every member's /srv/cbase/<app>/data on its disk) is
+#      refused, the change set deleted, nothing executed;
 #   4. NO DOWNTIME after an app's first deploy (stack_downtime_guard): on an app's stack that
 #      exists, a change set that replaces or removes a distribution, or takes a hostname off one
 #      (an alias removed, or moved to the other distribution), is refused and deleted unless
 #      CBASE_ALLOW_DOWNTIME=1 (--allow-downtime). A first deploy (the stack's create) is not held;
-#   5. with DRY_RUN=1 (--dry-run) the change set is deleted unexecuted (and the empty stack a first
-#      change set leaves).
-#
-# MASKING. A change set's or a drift's values are printed (before and after, expected and actual),
-# but never one that could be a secret: a property under an origin's custom headers (where an origin
-# secret lives), or one a parameter set that is not known to be plain. Those print as "origin header
-# <where> changed" or "parameter <name> changed". The values are left out by the CLI's own --query
-# filter, so they never reach this script, let alone its output; aws.sh aws_mask masks any line of
-# an AWS error that names one, the other way a value could be printed. Never run under set -x.
+#   5. with DRY_RUN=1 (--dry-run) an app's change set is deleted unexecuted (and the empty stack a
+#      first change set leaves); otherwise the caller executes it (stack_execute) or deletes it
+#      (stack_discard): a refused confirmation, a service that did not start.
 
-STACK_REGION=us-east-1   # an app's stack; group.sh sets a group stack's (the CLI's region)
-STACK_NAME=""
-STACK_STATUS=""     # before this deploy: NONE, or the stack's status
-STACK_TYPE=""       # CREATE or UPDATE
-STACK_CS=""         # the change set's name
-STACK_CHANGES=""    # 1 when the change set holds changes
+STACK_NAME=""       # the stack, its region, tags and capabilities (stack_use)
+STACK_REGION=""
+STACK_TAGS=()       # "Key=K,Value=V" each
+STACK_CAPS=()       # --capabilities, for a template that makes an IAM role (a VM group's)
+STACK_APP=""        # 1: an app's stack, whose redeploys the downtime guard holds
+STACK_PARAMS=()     # "ParameterKey=K,ParameterValue=V" each (vm.sh's VmOrigin, VmPort, OriginSecret)
 STACK_TEMPLATE=""   # the rendered template's file
+STACK_STATUS=""     # before this run: NONE, or the stack's status
+STACK_TYPE=""       # CREATE or UPDATE
+STACK_CS=cbase-deploy   # the change set's name
+STACK_CHANGES=""    # 1 when the change set holds changes
 STACK_CERT=""       # the certificate the distribution serves the hostnames with, or ""
 STACK_API_CERT=""   # the certificate CBASE_API_HOST's distribution serves, or ""
-STACK_BUCKET=""     # the static group's bucket and its region
+STACK_BUCKET=""     # the app's bucket, its region and its folder (static.sh static_bucket_find)
 STACK_BUCKET_REGION=""
-POLL_SECONDS="${CBASE_POLL_SECONDS:-5}"
-# The template's parameters that are plain (their values may be printed); any other one's are not.
-STACK_PLAIN_PARAMS="VmOrigin VmPort InstanceType ImageId CloudFrontPrefixList ArtifactBucket"
-STACK_TAGS=()   # the stack's tags, "Key=K,Value=V" each
-STACK_CAPS=()   # --capabilities, for a template that makes an IAM role (a VM group's)
-STACK_APP=""    # 1: STACK_NAME is an app's stack, whose redeploys the downtime guard holds
-# The stack's parameters, "ParameterKey=K,ParameterValue=V" each: the VM deploy (vm.sh) sets VmOrigin
-# and VmPort. Empty for a static site, whose template has none.
-STACK_PARAMS=()
+STACK_PREFIX=""
 
 # The AWS-managed policies, by id.
 CF_CACHING_OPTIMIZED=658327ea-f89d-4fab-a63d-7e88639e58f6
@@ -75,8 +74,56 @@ CF_ALL_VIEWER_EXCEPT_HOST=b689b0a8-53d0-40ab-baf2-68738e2966ac
 CF_USE_ORIGIN_CC_QS=4cc15a8a-d715-48a4-82b8-cc0b614638fe   # the cache mode origin
 # shellcheck disable=SC2034 # cert.sh's alias records read it
 CF_ZONE_ID=Z2FDTNDATAQYW2   # every CloudFront distribution's hosted zone, for a Route 53 alias
+STACK_FUNCTION_MAX=10240    # CloudFront's limit on a function's code, in bytes
 
-stack_name() { printf 'cbase-app-%s' "$CONF_APP"; }
+# stack_use NAME REGION TAG: the stack the next change set or delete is on, with no parameters yet.
+stack_use() {
+  STACK_NAME="$1"
+  STACK_REGION="$2"
+  STACK_TAGS=("$3")
+  STACK_CAPS=()
+  STACK_PARAMS=()
+  STACK_APP=""
+  STACK_TEMPLATE="$CB_TMP/stack.yaml"
+}
+
+# stack_app_use: the app's own stack.
+stack_app_use() {
+  stack_use "cbase-app-$CONF_APP" us-east-1 "Key=cbase:app,Value=$CONF_APP"
+  STACK_APP=1
+}
+
+# template_render FILE FLAGS: templates/FILE with each "#if FLAG" ... "#end" block (they nest; "#if
+# !FLAG" is its opposite) kept only when FLAG is one of the blank-separated FLAGS, the marker lines
+# dropped, and each __NAME__ replaced by the value of T_NAME, as text (a value is never read again).
+template_render() {
+  # shellcheck disable=SC2154 # here is tools/cbase's directory
+  local file="$here/cbase.d/templates/$1" line out skip=0 depth=0 f name
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      '#if '*)
+        depth=$((depth + 1))
+        f="${line#\#if }"
+        if [ "$skip" -eq 0 ]; then
+          if [ "${f#!}" != "$f" ]; then [[ " $2 " != *" ${f#!} "* ]] || skip="$depth"
+          else [[ " $2 " == *" $f "* ]] || skip="$depth"; fi
+        fi
+        continue ;;
+      '#end')
+        [ "$skip" -ne "$depth" ] || skip=0
+        depth=$((depth - 1))
+        continue ;;
+    esac
+    [ "$skip" -eq 0 ] || continue
+    out=""
+    while [[ "$line" =~ __([A-Z0-9]+)__ ]]; do
+      name="T_${BASH_REMATCH[1]}"
+      out="$out${line%%"${BASH_REMATCH[0]}"*}${!name}"
+      line="${line#*"${BASH_REMATCH[0]}"}"
+    done
+    printf '%s\n' "$out$line"
+  done < "$file"
+}
 
 # stack_methods METHODS: CloudFront's allowed-method set covering METHODS (ALL or a comma list).
 stack_methods() {
@@ -87,10 +134,12 @@ stack_methods() {
   esac
 }
 
-# stack_behaviour PATTERN ORIGIN CACHE METHODS: one behaviour's lines: DefaultCacheBehavior's
-# fields for the "*" route, else an item of CacheBehaviors.
+# stack_behaviour ROUTE: one route's behaviour (ROUTE is conf.sh's "<pattern> <origin> <cache>
+# <methods>"): DefaultCacheBehavior's fields for the "*" route, else an item of CacheBehaviors.
+# STACK_RHP names the response headers policy of a VM behaviour, if any.
 stack_behaviour() {
-  local pattern="$1" origin="$2" cache="$3" methods="$4" pad="          " policy
+  local pattern origin cache methods pad="          " policy
+  read -r pattern origin cache methods <<< "$1"
   if [ "$pattern" != "*" ]; then
     printf '%s- PathPattern: "%s"\n' "$pad" "$pattern"
     pad="$pad  "
@@ -116,44 +165,14 @@ stack_behaviour() {
   fi
 }
 
-# stack_vm_origin ID READ KEEPALIVE: a custom origin on the VM. Every request CloudFront sends it
-# carries X-Cbase-Origin, the app's origin secret, which serve checks (CBASE_ORIGIN_SECRET, the same
-# SSM parameter in its env file): a request to the port that did not come through the edge is 403.
-stack_vm_origin() {
-  cat << EOF
-          - Id: $1
-            DomainName: !Ref VmOrigin
-            OriginCustomHeaders:
-              - HeaderName: X-Cbase-Origin
-                HeaderValue: !Ref OriginSecret
-            CustomOriginConfig:
-              HTTPPort: !Ref VmPort
-              OriginProtocolPolicy: http-only
-              OriginReadTimeout: $2
-              OriginKeepaliveTimeout: $3
-EOF
-  # The group's origin address type (state.sh): ipv6 for an IPv6-only VM, whose name has an AAAA alone.
-  if [ -n "${VM_ORIGIN_ADDR:-}" ]; then printf '              IpAddressType: %s\n' "$VM_ORIGIN_ADDR"; fi
-}
-
-# stack_viewer_cert ALIAS...: the Aliases and ViewerCertificate lines. With CBASE_ALIASES off (a
-# staged attach's first step) the certificate is on and no alias: CloudFront moves an alias only
-# onto a distribution whose certificate already covers it (associate-alias, cert.sh cert_attach).
-stack_viewer_cert() {
-  if [ -n "$STACK_CERT" ] && [ $# -gt 0 ]; then
-    [ "${CONF_ALIASES:-on}" = off ] || printf '        Aliases: [%s]\n' "$(printf '%s, ' "$@" | sed 's/, $//')"
-    cat << EOF
-        ViewerCertificate:
-          AcmCertificateArn: $STACK_CERT
-          SslSupportMethod: sni-only
-          MinimumProtocolVersion: TLSv1.2_2021
-EOF
-  else
-    cat << EOF
-        ViewerCertificate:
-          CloudFrontDefaultCertificate: true
-EOF
-  fi
+# stack_routes DEFAULT [ROUTE...]: a distribution's behaviours, DEFAULT its default.
+stack_routes() {
+  local r
+  printf '        DefaultCacheBehavior:\n'
+  stack_behaviour "$1"
+  shift
+  [ $# -eq 0 ] || printf '        CacheBehaviors:\n'
+  for r in "$@"; do stack_behaviour "$r"; done
 }
 
 # stack_pages: the build's pages, as the router's PAGES names them: each html file of ST_FILES (the
@@ -166,245 +185,62 @@ stack_pages() {
     | sed 's/\.html$//' | tr '\n' ' ' | sed 's/ $//'
 }
 
-# CloudFront's limit on a function's code, in bytes.
-STACK_FUNCTION_MAX=10240
-
-# stack_router: the Router resource. Its code is the one rule a static path is mapped by, an SPA's:
-#   (a) a file: a path whose last part has a dot, or under /.well-known/, passes as it is. One the
-#       bucket lacks is S3's 404 (the group's policy grants s3:ListBucket), never the shell, so a
-#       broken asset link fails loudly;
-#   (b) a page: "/x" is /x.html, and "/x/" /x/index.html ("/" /index.html), when the build has
-#       that page (PAGES, the build's html files, rendered in by deploy); a "/x/" that is no
-#       directory's index is tried as "/x", so /privacy/ is /privacy.html, as the live router had it;
-#   (c) anything else is the app shell, CBASE_SHELL (default /index.html), with S3's 200: the app
-#       routes it client-side and shows its own 404.
-# cbase_test.sh runs this code under node.
-stack_router() {
-  local pages code shell="${CONF_SHELL:-/index.html}"
-  pages="$(stack_pages)"
-  if [ -n "$ST_FILES" ] && [ -f "$ST_FILES" ] && ! grep -Fxq -- "${shell#/}" "$ST_FILES"; then
-    echo "cbase: the app shell is $shell (CBASE_SHELL), and the static dir has no ${shell#/}: nothing was changed" >&2
-    exit 1
-  fi
-  code="$(cat << EOF
-// cbase app router (tools/cbase.d/stack.sh): the distribution's OriginPath is the app's folder.
-var SHELL = '$shell';
-var PAGES = ' $pages ';
-function handler(event) {
-  var request = event.request;
-  var uri = request.uri;
-  if (uri.indexOf('/.well-known/') === 0 || uri.substring(uri.lastIndexOf('/')).indexOf('.') >= 0) {
-    return request;
-  }
-  var page = uri.substring(1);
-  if (page === '' || page.charAt(page.length - 1) === '/') {
-    if (page === '' || PAGES.indexOf(' ' + page + 'index ') >= 0) page = page + 'index';
-    else page = page.substring(0, page.length - 1);
-  }
-  request.uri = PAGES.indexOf(' ' + page + ' ') >= 0 ? '/' + page + '.html' : SHELL;
-  return request;
-}
-EOF
-)"
-  if [ "${#code}" -gt "$STACK_FUNCTION_MAX" ]; then
-    echo "cbase: the router's code is ${#code} bytes with the build's page list, over CloudFront's $STACK_FUNCTION_MAX: the build has too many pages; nothing was changed" >&2
-    exit 1
-  fi
-  cat << EOF
-  Router:
-    Type: AWS::CloudFront::Function
-    Properties:
-      Name: cbase-$CONF_APP-router
-      AutoPublish: true
-      FunctionConfig:
-        Comment: clean URLs for the app $CONF_APP
-        Runtime: cloudfront-js-2.0
-      FunctionCode: |
-EOF
-  printf '%s\n' "$code" | sed 's/^/        /'
-}
-
-# stack_render FILE: the template, from CONF_* and STACK_BUCKET, STACK_BUCKET_REGION, STACK_CERT.
+# stack_render FILE: the app's template, from CONF_* and STACK_BUCKET, STACK_BUCKET_REGION,
+# STACK_PREFIX, STACK_CERT and STACK_API_CERT.
 stack_render() {
-  local out="$1" r pattern origin cache methods has_static="" has_vm="" has_ws="" def="" i
+  local r origin flags="" static="" vm="" ws="" apiws="" last=$((${#CONF_ROUTES[@]} - 1)) api_rs=() seen=" " n
   for r in "${CONF_ROUTES[@]}"; do
-    origin="$(echo "$r" | cut -d' ' -f2)"
-    case "$origin" in static) has_static=1 ;; vm) has_vm=1 ;; ws) has_ws=1 ;; esac
+    read -r _ origin _ <<< "$r"
+    case "$origin" in static) static=1 ;; vm) vm=1 ;; ws) ws=1 ;; esac
   done
-  [ "$CONF_VM" != none ] || { has_vm=""; has_ws=""; }
-  [ -z "$CONF_API_HOST" ] || has_vm=1
-  {
-    cat << EOF
-AWSTemplateFormatVersion: "2010-09-09"
-# The app $CONF_APP's distribution, rendered by ./cbase deploy (tools/cbase.d/stack.sh) from its
-# cbase.conf. Edits by hand are drift: the next deploy stops on them.
-Description: "cbase app $CONF_APP: its CloudFront distribution and routes"
-EOF
-    if [ -n "$has_vm$has_ws" ]; then
-      cat << EOF
-
-Parameters:
-  VmOrigin:
-    Type: String
-    Description: the VM group's instance public DNS name (set by ./cbase deploy)
-    AllowedPattern: "[a-z0-9.-]+"
-  VmPort:
-    Type: Number
-    Description: the app's port in its VM group's state file, claimed or grandfathered (set by ./cbase deploy)
-    MinValue: 1024
-    MaxValue: 65535
-  OriginSecret:
-    Type: String
-    NoEcho: true
-    Description: the X-Cbase-Origin header's value, the app's SSM setting CBASE_ORIGIN_SECRET (set by ./cbase deploy; never printed)
-EOF
+  [ -z "$CONF_API_HOST" ] || vm=1
+  apiws="$ws"
+  for r in ${CONF_API_ROUTES[@]+"${CONF_API_ROUTES[@]}"}; do [ "$(echo "$r" | cut -d' ' -f2)" != ws ] || apiws=1; done
+  [ -z "$static" ] || flags="$flags static"
+  [ -z "$vm$ws" ] || flags="$flags vm"
+  [ -z "$vm" ] || flags="$flags vmroute"
+  [ -z "$ws" ] || flags="$flags ws"
+  [ -z "${VM_ORIGIN_ADDR:-}" ] || flags="$flags addr"
+  [ -z "$STACK_CERT" ] || [ -z "$CONF_DOMAIN" ] || flags="$flags cert"
+  [ -z "$CONF_API_HOST" ] || flags="$flags api"
+  [ -z "$apiws" ] || flags="$flags apiws"
+  [ -z "$STACK_API_CERT" ] || flags="$flags apicert"
+  # CBASE_ALIASES off (a staged attach's first step): the certificate and no alias, since
+  # CloudFront moves an alias only onto a distribution whose certificate covers it (cert_attach).
+  [ "${CONF_ALIASES:-on}" = off ] || flags="$flags aliases"
+  local shell="${CONF_SHELL:-/index.html}" pages="" aliases routes apiroutes
+  if [ -n "$static" ]; then
+    if [ -n "$ST_FILES" ] && [ -f "$ST_FILES" ] && ! grep -Fxq -- "${shell#/}" "$ST_FILES"; then
+      echo "cbase: the app shell is $shell (CBASE_SHELL), and the static dir has no ${shell#/}: nothing was changed" >&2
+      exit 1
     fi
-    printf '\nResources:\n'
-    if [ -n "$has_static" ]; then
-      cat << EOF
-  Oac:
-    Type: AWS::CloudFront::OriginAccessControl
-    Properties:
-      OriginAccessControlConfig:
-        Name: cbase-$CONF_APP
-        Description: the app $CONF_APP's reads of its folder in the static group's bucket
-        OriginAccessControlOriginType: s3
-        SigningBehavior: always
-        SigningProtocol: sigv4
-
-EOF
-      stack_router
-      echo
-    fi
-    cat << EOF
-  Distribution:
-    Type: AWS::CloudFront::Distribution
-    Properties:
-      DistributionConfig:
-        Comment: cbase app $CONF_APP
-        Enabled: true
-EOF
-    stack_viewer_cert ${CONF_DOMAINS[@]+"${CONF_DOMAINS[@]}"}
-    cat << EOF
-        HttpVersion: http2and3
-        IPV6Enabled: true
-        PriceClass: PriceClass_100
-        Origins:
-EOF
-    if [ -n "$has_static" ]; then
-      cat << EOF
-          - Id: static
-            DomainName: $STACK_BUCKET.s3.$STACK_BUCKET_REGION.amazonaws.com
-            OriginPath: /$STACK_PREFIX
-            OriginAccessControlId: !GetAtt Oac.Id
-            S3OriginConfig:
-              OriginAccessIdentity: ""
-EOF
-    fi
-    [ -z "$has_vm" ] || stack_vm_origin vm 30 5
-    [ -z "$has_ws" ] || stack_vm_origin ws 60 60
-    for r in "${CONF_ROUTES[@]}"; do
-      read -r pattern origin cache methods <<< "$r"
-      [ "$pattern" = "*" ] || continue
-      def="$r"
-      printf '        DefaultCacheBehavior:\n'
-      stack_behaviour "$pattern" "$origin" "$cache" "$methods"
-    done
-    i=0
-    for r in "${CONF_ROUTES[@]}"; do
-      read -r pattern origin cache methods <<< "$r"
-      [ "$pattern" != "*" ] || continue
-      if [ "$origin" != static ] && [ "$CONF_VM" = none ]; then continue; fi
-      [ "$i" -gt 0 ] || printf '        CacheBehaviors:\n'
-      i=$((i + 1))
-      stack_behaviour "$pattern" "$origin" "$cache" "$methods"
-    done
-    [ -n "$def" ] || { echo "cbase: no default route (conf.sh always adds one)" >&2; exit 1; }
-    if [ -n "$CONF_API_HOST" ]; then
-      cat << EOF
-
-  ApiDistribution:
-    Type: AWS::CloudFront::Distribution
-    Properties:
-      DistributionConfig:
-        Comment: cbase app $CONF_APP, $CONF_API_HOST to the VM
-        Enabled: true
-EOF
-      STACK_CERT="$STACK_API_CERT" stack_viewer_cert "$CONF_API_HOST"
-      cat << EOF
-        HttpVersion: http2and3
-        IPV6Enabled: true
-        PriceClass: PriceClass_100
-        Origins:
-EOF
-      # The VM at 60 s to read and to keep alive: an idle connection kept is a handshake saved.
-      stack_vm_origin vm 60 60
-      local api_ws="$has_ws"
-      for r in "${CONF_API_ROUTES[@]+"${CONF_API_ROUTES[@]}"}"; do [ "$(echo "$r" | cut -d' ' -f2)" != ws ] || api_ws=1; done
-      [ -z "$api_ws" ] || stack_vm_origin ws 60 60
-      STACK_RHP=ServerTimingPolicy
-      printf '        DefaultCacheBehavior:\n'
-      stack_behaviour "*" vm nocache ALL
-      # CBASE_API_ROUTE's lines, then the ws routes (CBASE_ROUTE's) it does not name.
-      i=0
-      local api_rs=() seen=" "
-      for r in "${CONF_API_ROUTES[@]+"${CONF_API_ROUTES[@]}"}"; do api_rs+=("$r"); seen="$seen${r%% *} "; done
-      for r in "${CONF_ROUTES[@]}"; do
-        read -r pattern origin cache methods <<< "$r"
-        [ "$origin" = ws ] && [[ "$seen" != *" $pattern "* ]] && api_rs+=("$r")
-      done
-      for r in "${api_rs[@]+"${api_rs[@]}"}"; do
-        read -r pattern origin cache methods <<< "$r"
-        [ "$i" -gt 0 ] || printf '        CacheBehaviors:\n'
-        i=$((i + 1))
-        stack_behaviour "$pattern" "$origin" "$cache" "$methods"
-      done
-      STACK_RHP=""
-      cat << EOF
-
-  # CloudFront's own timing of each API answer, in a Server-Timing header (an origin's own
-  # Server-Timing passes through as it is).
-  ServerTimingPolicy:
-    Type: AWS::CloudFront::ResponseHeadersPolicy
-    Properties:
-      ResponseHeadersPolicyConfig:
-        Name: cbase-$CONF_APP-server-timing
-        Comment: CloudFront's timing of each answer of the app $CONF_APP's API host
-        ServerTimingHeadersConfig:
-          Enabled: true
-          SamplingRate: 100
-EOF
-    fi
-    cat << EOF
-
-Outputs:
-  DistributionId:
-    Value: !Ref Distribution
-  DistributionDomain:
-    Description: the app's cloudfront.net name, where its hostname points
-    Value: !GetAtt Distribution.DomainName
-EOF
-    if [ -n "$CONF_API_HOST" ]; then
-      cat << EOF
-  ApiDistributionId:
-    Value: !Ref ApiDistribution
-  ApiDistributionDomain:
-    Description: where CBASE_API_HOST points
-    Value: !GetAtt ApiDistribution.DomainName
-EOF
-    fi
-  } > "$out"
+    pages="$(stack_pages)"
+  fi
+  # shellcheck disable=SC2153 # conf.sh sets CONF_DOMAINS
+  aliases="$(printf '%s, ' ${CONF_DOMAINS[@]+"${CONF_DOMAINS[@]}"} | sed 's/, $//')"
+  routes="$(stack_routes "${CONF_ROUTES[last]}" "${CONF_ROUTES[@]:0:last}")"
+  # The API host's: CBASE_API_ROUTE's lines, then the ws routes (CBASE_ROUTE's) it does not name.
+  for r in ${CONF_API_ROUTES[@]+"${CONF_API_ROUTES[@]}"}; do api_rs+=("$r"); seen="$seen${r%% *} "; done
+  for r in "${CONF_ROUTES[@]}"; do
+    [ "$(echo "$r" | cut -d' ' -f2)" != ws ] || [[ "$seen" == *" ${r%% *} "* ]] || api_rs+=("$r")
+  done
+  apiroutes="$(STACK_RHP=ServerTimingPolicy; stack_routes "* vm nocache ALL" ${api_rs[@]+"${api_rs[@]}"})"
+  # shellcheck disable=SC2034 # template_render reads the T_ values
+  local T_APP="$CONF_APP" T_APIHOST="$CONF_API_HOST" T_CERT="$STACK_CERT" T_APICERT="$STACK_API_CERT" T_ALIASES="$aliases" \
+    T_BUCKET="$STACK_BUCKET" T_BUCKETREGION="$STACK_BUCKET_REGION" T_PREFIX="$STACK_PREFIX" T_SHELL="$shell" T_PAGES="$pages" \
+    T_ROUTES="$routes" T_APIROUTES="$apiroutes" T_ADDR="${VM_ORIGIN_ADDR:-}"
+  template_render app.yaml "$flags" > "$1"
+  # The router's code, as CloudFront counts it: its lines, less the template's indent.
+  n="$(awk '/^      FunctionCode: \|$/ { f = 1; next } f && /^$/ { exit } f { n += length($0) - 8 + (c++ ? 1 : 0) } END { print n + 0 }' "$1")"
+  if [ "$n" -gt "$STACK_FUNCTION_MAX" ]; then
+    echo "cbase: the router's code is $n bytes with the build's page list, over CloudFront's $STACK_FUNCTION_MAX: the build has too many pages; nothing was changed" >&2
+    exit 1
+  fi
 }
 
-# stack_print_template FILE: the template, any origin header's value masked (there is none in a
-# template deploy renders: a secret would come in a NoEcho parameter, never a literal).
-stack_print_template() {
-  # A reference (!Ref OriginSecret) names a NoEcho parameter, not a value, and stays.
-  sed -E '/^[[:blank:]]*(- )?HeaderValue: !Ref [A-Za-z0-9]+$/!s/^([[:blank:]]*(- )?HeaderValue:).*/\1 (masked)/' "$1"
-}
-
-# cfn ARGS...: one CloudFormation call in the stack's region.
+# cfn ARGS...: one CloudFormation call in the stack's region; cs ARGS...: the change set described.
 cfn() { aws_call cloudformation --region "$STACK_REGION" "$@"; }
+cs() { cfn describe-change-set --stack-name "$STACK_NAME" --change-set-name "$STACK_CS" "$@"; }
 
 # stack_status: STACK_STATUS, NONE when there is no stack.
 stack_status() {
@@ -415,26 +251,6 @@ stack_status() {
   fi
   if [ "$(aws_code)" = ValidationError ] && grep -q 'does not exist' "$AWS_ERR"; then STACK_STATUS=NONE; return 0; fi
   aws_fail "reading the $STACK_NAME stack"
-}
-
-# The JMESPath filters that keep a secret's value out of the CLI's answer. A detail (a change set's
-# Target, a drift's property difference) is secret when its path or either value names an origin's
-# custom headers, or (a change set) a parameter caused it that is not one of STACK_PLAIN_PARAMS.
-# Each query takes its one resource with a pipe ("Changes[?...] | [0].Details[?filter]"): a filter
-# inside a projection's projection reads the wrong node in the CLI's JMESPath, every field null, and
-# "not secret" would hold for everything. The plain query also asks for a path that is there, so a
-# filter reading the wrong node prints nothing rather than everything.
-stack_secret_filter() {   # stack_secret_filter PATH BEFORE AFTER [CAUSE]
-  local p="$1" b="$2" a="$3" f="" w
-  for w in OriginCustomHeaders HeaderValue; do
-    f="$f${f:+ || }contains($p || '', '$w') || contains($b || '', '$w') || contains($a || '', '$w')"
-  done
-  if [ -n "${4:-}" ]; then
-    local plain="" q
-    for q in $STACK_PLAIN_PARAMS; do plain="$plain && CausingEntity != '$q'"; done
-    f="$f || (ChangeSource == 'ParameterReference'$plain)"
-  fi
-  printf '%s' "$f"
 }
 
 # stack_where PATH: a property path's place, as "origin header" lines name it.
@@ -453,47 +269,53 @@ stack_value() {
   printf '%s' "$v"
 }
 
+# stack_drift_read: one read of drift detection STACK_DRIFT_ID; true once it is no longer running.
+STACK_DRIFT_ID=""
+STACK_DRIFT_DS=""
+STACK_DRIFT_SDS=""
+stack_drift_read() {
+  local st
+  st="$(cfn describe-stack-drift-detection-status --stack-drift-detection-id "$STACK_DRIFT_ID" \
+          --query '[DetectionStatus,StackDriftStatus]' --output text)" || aws_fail "reading drift detection $STACK_DRIFT_ID"
+  IFS=$'\t' read -r STACK_DRIFT_DS STACK_DRIFT_SDS <<< "$st"
+  [ "$STACK_DRIFT_DS" != DETECTION_IN_PROGRESS ]
+}
+
+# stack_drifts LID QUERY: the property differences of the drifted resource LID that QUERY selects.
+stack_drifts() {
+  cfn describe-stack-resource-drifts --stack-name "$STACK_NAME" --stack-resource-drift-status-filters MODIFIED \
+    --query "StackResourceDrifts[?LogicalResourceId=='$1'] | [0].PropertyDifferences[$2" --output text
+}
+
 # stack_drift_guard: stops on a drifted stack unless CBASE_ACCEPT_DRIFT=1.
 stack_drift_guard() {
-  local id st ds sds n=0 drifted lid type status filter p b a kind text paths=()
+  local drifted lid type status filter p b a kind text paths=()
   echo "drift: detecting on $STACK_NAME"
-  id="$(cfn detect-stack-drift --stack-name "$STACK_NAME" --query StackDriftDetectionId --output text)" \
+  STACK_DRIFT_ID="$(cfn detect-stack-drift --stack-name "$STACK_NAME" --query StackDriftDetectionId --output text)" \
     || aws_fail "detecting drift on $STACK_NAME"
-  while :; do
-    st="$(cfn describe-stack-drift-detection-status --stack-drift-detection-id "$id" \
-            --query '[DetectionStatus,StackDriftStatus]' --output text)" || aws_fail "reading drift detection $id"
-    IFS=$'\t' read -r ds sds <<< "$st"
-    [ "$ds" = DETECTION_IN_PROGRESS ] || break
-    n=$((n + 1))
-    [ "$n" -le 120 ] || { echo "cbase: drift detection $id on $STACK_NAME did not finish" >&2; exit 1; }
-    sleep "$POLL_SECONDS"
-  done
+  aws_poll 121 stack_drift_read || { echo "cbase: drift detection $STACK_DRIFT_ID on $STACK_NAME did not finish" >&2; exit 1; }
   drifted="$(cfn describe-stack-resource-drifts --stack-name "$STACK_NAME" \
                --stack-resource-drift-status-filters MODIFIED DELETED \
                --query 'StackResourceDrifts[].[LogicalResourceId,ResourceType,StackResourceDriftStatus]' --output text)" \
     || aws_fail "reading $STACK_NAME's drift"
   [ "$drifted" != None ] || drifted=""
-  if [ "$ds" = DETECTION_COMPLETE ] && [ "$sds" = IN_SYNC ] && [ -z "$drifted" ]; then
+  if [ "$STACK_DRIFT_DS" = DETECTION_COMPLETE ] && [ "$STACK_DRIFT_SDS" = IN_SYNC ] && [ -z "$drifted" ]; then
     echo "drift: none"
     return 0
   fi
-  [ "$ds" = DETECTION_COMPLETE ] || echo "drift: detection ended $ds, so the stack could not be shown to be in sync" >&2
-  filter="$(stack_secret_filter PropertyPath ExpectedValue ActualValue)"
+  [ "$STACK_DRIFT_DS" = DETECTION_COMPLETE ] || echo "drift: detection ended $STACK_DRIFT_DS, so the stack could not be shown to be in sync" >&2
+  filter="$(aws_secret_filter PropertyPath ExpectedValue ActualValue)"
   while IFS=$'\t' read -r lid type status; do
     [ -n "$lid" ] || continue
     echo "drift: $lid ($type) $status" >&2
     [ "$status" = MODIFIED ] || continue
     # The plain differences, with their values; then the secret ones, by their path alone.
-    text="$(cfn describe-stack-resource-drifts --stack-name "$STACK_NAME" --stack-resource-drift-status-filters MODIFIED \
-              --query "StackResourceDrifts[?LogicalResourceId=='$lid'] | [0].PropertyDifferences[?PropertyPath && !($filter)].[PropertyPath,DifferenceType,ExpectedValue || '',ActualValue || '']" \
-              --output text)" || aws_fail "reading $lid's drift"
+    text="$(stack_drifts "$lid" "?PropertyPath && !($filter)].[PropertyPath,DifferenceType,ExpectedValue || '',ActualValue || '']")" || aws_fail "reading $lid's drift"
     while IFS=$'\t' read -r p kind b a; do
       [ -n "$p" ] || continue
       echo "drift:   $(stack_where "$p") $kind: expected $(stack_value "$b"), actual $(stack_value "$a")" >&2
     done <<< "$text"
-    text="$(cfn describe-stack-resource-drifts --stack-name "$STACK_NAME" --stack-resource-drift-status-filters MODIFIED \
-              --query "StackResourceDrifts[?LogicalResourceId=='$lid'] | [0].PropertyDifferences[?$filter].PropertyPath" \
-              --output text)" || aws_fail "reading $lid's drift"
+    text="$(stack_drifts "$lid" "?$filter].PropertyPath")" || aws_fail "reading $lid's drift"
     read -r -a paths <<< "$text"
     for p in ${paths[@]+"${paths[@]}"}; do
       [ "$p" != None ] || continue
@@ -517,33 +339,33 @@ stack_discard() {
   fi
 }
 
+# stack_details LID QUERY: the change set's details of the resource LID that QUERY selects.
+stack_details() {
+  cs --include-property-values \
+    --query "Changes[?ResourceChange.LogicalResourceId=='$1'] | [0].ResourceChange.Details[$2" --output text
+}
+
 # stack_print_changes: the change set, resource by resource, a secret's value never shown.
 stack_print_changes() {
   local lines action lid type repl filter p b a cause text
-  lines="$(cfn describe-change-set --stack-name "$STACK_NAME" --change-set-name "$STACK_CS" \
-             --query 'Changes[].ResourceChange.[Action,LogicalResourceId,ResourceType,Replacement]' --output text)" \
+  lines="$(cs --query 'Changes[].ResourceChange.[Action,LogicalResourceId,ResourceType,Replacement]' --output text)" \
     || aws_fail "describing change set $STACK_CS"
   echo "change set $STACK_CS on $STACK_NAME ($STACK_TYPE):"
-  filter="$(stack_secret_filter Target.Path Target.BeforeValue Target.AfterValue cause)"
+  filter="$(aws_secret_filter Target.Path Target.BeforeValue Target.AfterValue cause)"
   while IFS=$'\t' read -r action lid type repl; do
     [ -n "$action" ] || continue
-    if [ "$action" = Modify ]; then
-      printf '  %-7s %-16s %s (replacement: %s)\n' "$action" "$lid" "$type" "$repl"
-    else
+    if [ "$action" != Modify ]; then
       printf '  %-7s %-16s %s\n' "$action" "$lid" "$type"
+      continue
     fi
-    [ "$action" = Modify ] || continue
-    text="$(cfn describe-change-set --stack-name "$STACK_NAME" --change-set-name "$STACK_CS" --include-property-values \
-              --query "Changes[?ResourceChange.LogicalResourceId=='$lid'] | [0].ResourceChange.Details[?Target.Name && !($filter)].[Target.Path || Target.Name,Target.BeforeValue || '',Target.AfterValue || '']" \
-              --output text)" || aws_fail "describing change set $STACK_CS"
+    printf '  %-7s %-16s %s (replacement: %s)\n' "$action" "$lid" "$type" "$repl"
+    text="$(stack_details "$lid" "?Target.Name && !($filter)].[Target.Path || Target.Name,Target.BeforeValue || '',Target.AfterValue || '']")" || aws_fail "describing change set $STACK_CS"
     while IFS=$'\t' read -r p b a; do
       [ -n "$p" ] || continue
       if [ -z "$b$a" ]; then echo "      $(stack_where "$p") changes"
       else echo "      $(stack_where "$p"): $(stack_value "$b") -> $(stack_value "$a")"; fi
     done <<< "$text"
-    text="$(cfn describe-change-set --stack-name "$STACK_NAME" --change-set-name "$STACK_CS" --include-property-values \
-              --query "Changes[?ResourceChange.LogicalResourceId=='$lid'] | [0].ResourceChange.Details[?$filter].[Target.Path || Target.Name || '',CausingEntity || '']" \
-              --output text)" || aws_fail "describing change set $STACK_CS"
+    text="$(stack_details "$lid" "?$filter].[Target.Path || Target.Name || '',CausingEntity || '']")" || aws_fail "describing change set $STACK_CS"
     while IFS=$'\t' read -r p cause; do
       [ -n "$p" ] || continue
       if [ "$cause" != None ] && [ -n "$cause" ] && [[ "$p" != *OriginCustomHeaders* && "$p" != *HeaderValue* ]]; then
@@ -555,23 +377,15 @@ stack_print_changes() {
   done <<< "$lines"
 }
 
-# stack_plan: the app's template, then stack_changeset. Sets STACK_CHANGES.
+# stack_plan: the app's template, then its change set (stack_changeset).
 stack_plan() {
-  STACK_NAME="$(stack_name)"
-  STACK_TEMPLATE="$CB_TMP/stack.yaml"
-  STACK_REGION=us-east-1
-  STACK_TAGS=("Key=cbase:app,Value=$CONF_APP")
-  STACK_CAPS=()
-  STACK_APP=1
   stack_render "$STACK_TEMPLATE"
   stack_changeset
 }
 
-# stack_changeset: STACK_NAME's change set from STACK_TEMPLATE (with STACK_PARAMS, STACK_TAGS,
-# STACK_CAPS, in STACK_REGION): the drift guard, the change set printed, its gates. Sets
-# STACK_CHANGES.
+# stack_changeset: THE CHANGE-SET FLOW (above) for STACK_NAME, from STACK_TEMPLATE. Sets
+# STACK_CHANGES; a dry run's change set is deleted here.
 stack_changeset() {
-  STACK_CS="cbase-deploy"
   stack_status
   case "$STACK_STATUS" in
     NONE|REVIEW_IN_PROGRESS) STACK_TYPE=CREATE; echo "stack: $STACK_NAME is new" ;;
@@ -584,10 +398,8 @@ stack_changeset() {
     *) STACK_TYPE=UPDATE; echo "stack: $STACK_NAME is $STACK_STATUS"; stack_drift_guard ;;
   esac
   # A change set of this name left by a run that stopped: gone before the new one.
-  if [ "$STACK_STATUS" != NONE ]; then
-    if ! cfn delete-change-set --stack-name "$STACK_NAME" --change-set-name "$STACK_CS" > /dev/null; then
-      [ "$(aws_code)" = ChangeSetNotFound ] || aws_fail "clearing change set $STACK_CS"
-    fi
+  if [ "$STACK_STATUS" != NONE ] && ! cfn delete-change-set --stack-name "$STACK_NAME" --change-set-name "$STACK_CS" > /dev/null; then
+    [ "$(aws_code)" = ChangeSetNotFound ] || aws_fail "clearing change set $STACK_CS"
   fi
   local why
   cfn create-change-set --stack-name "$STACK_NAME" --change-set-name "$STACK_CS" --change-set-type "$STACK_TYPE" \
@@ -595,8 +407,7 @@ stack_changeset() {
     ${STACK_PARAMS[@]+--parameters "${STACK_PARAMS[@]}"} --query Id --output text > /dev/null \
     || aws_fail "creating a change set on $STACK_NAME"
   if ! cfn wait change-set-create-complete --stack-name "$STACK_NAME" --change-set-name "$STACK_CS"; then
-    why="$(cfn describe-change-set --stack-name "$STACK_NAME" --change-set-name "$STACK_CS" --query StatusReason --output text)" \
-      || aws_fail "describing change set $STACK_CS"
+    why="$(cs --query StatusReason --output text)" || aws_fail "describing change set $STACK_CS"
     case "$why" in
       *"didn't contain changes"*|*"No updates are to be performed"*)
         echo "stack: $STACK_NAME is up to date (no changes)"
@@ -606,16 +417,26 @@ stack_changeset() {
     esac
     printf '%s\n' "$why" > "$AWS_ERR"
     echo "cbase: change set $STACK_CS on $STACK_NAME failed:" >&2
-    aws_mask < "$AWS_ERR" | sed 's/^/  /' | head -5 >&2
+    aws_show 5
     stack_discard
     exit 1
   fi
   # shellcheck disable=SC2034 # tools/cbase reads it
   STACK_CHANGES=1
   stack_print_changes
-
   stack_keep_guard
   [ "$STACK_APP" != 1 ] || [ "$STACK_TYPE" != UPDATE ] || stack_downtime_guard
+  [ "$STACK_APP" != 1 ] || [ "${DRY_RUN:-}" != 1 ] || stack_discard
+}
+
+# stack_refusals TYPES: the change set's removals and replacements of the resources whose type is
+# one of TYPES (a JMESPath condition) in STACK_REFUSED, "<logical id> <type> <action>
+# <replacement>" a line.
+STACK_REFUSED=""
+stack_refusals() {
+  STACK_REFUSED="$(cs --query "Changes[?($1) && (ResourceChange.Action=='Remove' || ResourceChange.Replacement=='True' || ResourceChange.Replacement=='Conditional')].ResourceChange.[LogicalResourceId,ResourceType,Action,Replacement]" \
+                     --output text)" || aws_fail "describing change set $STACK_CS"
+  [ "$STACK_REFUSED" != None ] || STACK_REFUSED=""
 }
 
 # stack_aliases FILE: each distribution's hostnames in a template, "<logical id> <host>" a line.
@@ -631,18 +452,13 @@ stack_aliases() {
 # refused and deleted, unless CBASE_ALLOW_DOWNTIME=1 (--allow-downtime). The stack's current
 # template is the "before" of the aliases.
 stack_downtime_guard() {
-  local replaced lid why=() old
-  replaced="$(cfn describe-change-set --stack-name "$STACK_NAME" --change-set-name "$STACK_CS" \
-      --query "Changes[?ResourceChange.ResourceType=='AWS::CloudFront::Distribution' && (ResourceChange.Action=='Remove' || ResourceChange.Replacement=='True' || ResourceChange.Replacement=='Conditional')].[ResourceChange.LogicalResourceId,ResourceChange.Action]" \
-      --output text)" || aws_fail "describing change set $STACK_CS"
-  [ "$replaced" != None ] || replaced=""
-  local a
-  while IFS=$'\t' read -r lid a; do
+  local lid a w why=() old="$CB_TMP/stack-old.yaml"
+  stack_refusals "ResourceChange.ResourceType=='AWS::CloudFront::Distribution'"
+  while IFS=$'\t' read -r lid _ a _; do
     [ -n "$lid" ] || continue
     if [ "$a" = Remove ]; then why+=("the distribution $lid is removed")
     else why+=("the distribution $lid is replaced: a new one, with a new cloudfront.net name, and the old one deleted"); fi
-  done <<< "$replaced"
-  old="$CB_TMP/stack-old.yaml"
+  done <<< "$STACK_REFUSED"
   cfn get-template --stack-name "$STACK_NAME" --query TemplateBody --output text > "$old" || aws_fail "reading $STACK_NAME's template"
   stack_aliases "$old" | LC_ALL=C sort > "$old.aliases"
   stack_aliases "$STACK_TEMPLATE" | LC_ALL=C sort > "$CB_TMP/stack-new.aliases"
@@ -651,7 +467,6 @@ stack_downtime_guard() {
     why+=("the hostname $a is taken off the distribution $lid")
   done < <(LC_ALL=C comm -23 "$old.aliases" "$CB_TMP/stack-new.aliases")
   [ "${#why[@]}" -gt 0 ] || return 0
-  local w
   for w in "${why[@]}"; do echo "downtime: $w" >&2; done
   if [ "${CBASE_ALLOW_DOWNTIME:-}" = 1 ]; then
     echo "downtime: allowed (--allow-downtime): the app is unreachable at those hostnames until the change is done and DNS follows" >&2
@@ -664,21 +479,30 @@ stack_downtime_guard() {
 
 # stack_keep_guard: THE ONE HARD STOP. A change set that would replace or remove a bucket (every
 # file in it lost) or a VM group's instance (every member's data on its disk lost) is refused,
-# deleted, and nothing runs. Deploy's and group-init's change sets both pass through it.
+# deleted, and nothing runs.
 stack_keep_guard() {
-  local refused lid type a r what
-  refused="$(cfn describe-change-set --stack-name "$STACK_NAME" --change-set-name "$STACK_CS" \
-      --query "Changes[?(ResourceChange.ResourceType=='AWS::S3::Bucket' || ResourceChange.ResourceType=='AWS::EC2::Instance') && (ResourceChange.Action=='Remove' || ResourceChange.Replacement=='True' || ResourceChange.Replacement=='Conditional')].ResourceChange.[LogicalResourceId,ResourceType,Action,Replacement]" \
-      --output text)" || aws_fail "describing change set $STACK_CS"
-  [ "$refused" != None ] || refused=""
-  [ -n "$refused" ] || return 0
+  local lid type a r what
+  stack_refusals "ResourceChange.ResourceType=='AWS::S3::Bucket' || ResourceChange.ResourceType=='AWS::EC2::Instance'"
+  [ -n "$STACK_REFUSED" ] || return 0
   while IFS=$'\t' read -r lid type a r; do
     [ -n "$lid" ] || continue
     if [ "$type" = AWS::S3::Bucket ]; then what=bucket; else what=instance; fi
     echo "refused: the $what $lid would be $([ "$a" = Remove ] && echo removed || echo "replaced (Replacement: $r)")" >&2
-  done <<< "$refused"
+  done <<< "$STACK_REFUSED"
   stack_discard
   echo "cbase: the change set would replace or remove a bucket (and every file in it) or a VM group's instance (and every app's data on its disk): refused, and the change set deleted; nothing was executed" >&2
+  exit 1
+}
+
+# stack_wait WAITER: CloudFormation's wait on STACK_NAME, or the stack's failed resources (masked)
+# and the tool stops; WHAT names the step for the message.
+stack_wait() {
+  cfn wait "$1" --stack-name "$STACK_NAME" && return 0
+  echo "cbase: the $STACK_NAME stack $2 ($1). Its failed resources:" >&2
+  cfn describe-stack-events --stack-name "$STACK_NAME" \
+    --query "StackEvents[?ends_with(ResourceStatus, 'FAILED')].[LogicalResourceId,ResourceStatusReason]" --output text \
+    > "$AWS_ERR" 2> /dev/null || true
+  aws_show 10
   exit 1
 }
 
@@ -691,14 +515,7 @@ stack_delete() {
   fi
   cfn delete-stack --stack-name "$STACK_NAME" > /dev/null || aws_fail "deleting the $STACK_NAME stack"
   echo "stack: deleting $STACK_NAME (a distribution takes some minutes to go)"
-  if ! cfn wait stack-delete-complete --stack-name "$STACK_NAME"; then
-    echo "cbase: the $STACK_NAME stack was not deleted (stack-delete-complete). Its failed resources:" >&2
-    cfn describe-stack-events --stack-name "$STACK_NAME" \
-      --query "StackEvents[?ends_with(ResourceStatus, 'FAILED')].[LogicalResourceId,ResourceStatusReason]" --output text \
-      > "$AWS_ERR" 2> /dev/null || true
-    aws_mask < "$AWS_ERR" | head -10 | sed 's/^/  /' >&2
-    exit 1
-  fi
+  stack_wait stack-delete-complete "was not deleted"
   echo "stack: $STACK_NAME is deleted"
 }
 
@@ -712,14 +529,7 @@ stack_execute() {
   echo "stack: executing $STACK_CS (a new distribution takes some minutes)"
   local w=stack-update-complete
   [ "$STACK_TYPE" = UPDATE ] || w=stack-create-complete
-  if ! cfn wait "$w" --stack-name "$STACK_NAME"; then
-    echo "cbase: the $STACK_NAME stack did not finish ($w). Its failed resources:" >&2
-    cfn describe-stack-events --stack-name "$STACK_NAME" \
-      --query "StackEvents[?ends_with(ResourceStatus, 'FAILED')].[LogicalResourceId,ResourceStatusReason]" --output text \
-      > "$AWS_ERR" 2> /dev/null || true
-    aws_mask < "$AWS_ERR" | head -10 | sed 's/^/  /' >&2
-    exit 1
-  fi
+  stack_wait "$w" "did not finish"
   echo "stack: $STACK_NAME is ${w%-complete} complete"
 }
 

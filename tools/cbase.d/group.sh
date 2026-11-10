@@ -2,42 +2,34 @@
 # group.sh - a group's own CloudFormation stack: group-init and group-destroy (README.md "./cbase
 # deploy tool"). Sourced by tools/cbase.
 #
-# GROUP-INIT KIND GROUP is the ONE command that makes a VM or a group's bucket; deploy never does.
-# One stack per group, in the CLI's region (AWS_REGION, or the profile's):
-#   cbase-group-vm-<group>      an EC2 instance (default t4g.nano, arm64, on the newest Amazon Linux
-#                               2023 the SSM public parameter names when the group is first made;
-#                               --type picks another arm64 type), tagged cbase:vm-group=<group>, in
-#                               the group's own VPC (an Amazon IPv6 /56, one subnet in a zone that
-#                               offers the type, an internet gateway). IPv6-only by default: no
-#                               public IPv4 and no Elastic IP; the boot (vm_boot.sh, the user-data)
-#                               claims the subnet's ::10, a fixed address that survives a
-#                               replacement (the AAAA record of the origin names it), and points
-#                               the SSM agent at the dual-stack endpoints. --ipv4 makes the subnet
-#                               dual-stack with an Elastic IP (a public DNS name that survives a
-#                               stop, the origin, addr=dualstack), about $3.60 a month more. An
-#                               instance profile with SSM's managed-instance policy, s3:GetObject on
-#                               s3://cbase-state-<account>/artifacts/*, ssm:GetParametersByPath on
-#                               /cbase/* and ec2:AssignIpv6Addresses in its subnet; IMDSv2 required
-#                               (over IPv6 as well); an encrypted 8 GB gp3 disk; and a security
-#                               group open on 8700-8799, the apps' ports, to CloudFront's IPv6
-#                               origin-facing managed prefix list alone (with --ipv4, a second to
-#                               its IPv4 one; no SSH, no reverse proxy: vm.sh says why);
-#   cbase-group-static-<group>  the bucket (versioned, noncurrent versions kept 30 days, public
-#                               access blocked, owner-enforced, SSE-S3), tagged
-#                               cbase:static-group=<group>, kept when its stack goes (Retain), and
-#                               its one bucket policy: s3:GetObject and s3:ListBucket (so a missing
-#                               file is a 404, not a 403) for cloudfront.amazonaws.com on
-#                               aws:SourceAccount, the account's own distributions. Deploy never
-#                               edits it, and a shared bucket holds public content only.
-# Once the change set is accepted, it makes the state bucket cbase-state-<account> when there is none (versioned, public
-# access blocked; an existing one of the account's is used as it is), and the group's empty state
-# file (If-None-Match: *, so one that exists is left alone).
+# GROUP-INIT KIND GROUP is the ONE command that makes a VM or a group's bucket; deploy never does
+# (README.md "Making a group"). One stack per group, in the CLI's region:
+#   cbase-group-vm-<group>      templates/group-vm.yaml: the instance tagged cbase:vm-group=<group>
+#                               (default t4g.nano, arm64, on the newest Amazon Linux 2023 the SSM
+#                               public parameter names when the group is first made), in the
+#                               group's own VPC (an Amazon IPv6 /56, one subnet in a zone that offers
+#                               the type, an internet gateway). IPv6-only by default: no public IPv4
+#                               and no Elastic IP; the boot (vm_boot.sh, the user-data) claims the
+#                               subnet's ::10, a fixed address that survives a replacement (the AAAA
+#                               record of the origin names it), and points the SSM agent at the
+#                               dual-stack endpoints. --ipv4 makes the subnet dual-stack with an
+#                               Elastic IP (a public DNS name that survives a stop, the origin,
+#                               addr=dualstack), about $3.60 a month more. Its role, IMDSv2, the
+#                               encrypted disk, and a security group open on 8700-8799 to
+#                               CloudFront's IPv6 origin-facing list alone (with --ipv4, a second
+#                               to its IPv4 one; no SSH, no reverse proxy: vm.sh says why);
+#   cbase-group-static-<group>  templates/group-static.yaml: the bucket tagged
+#                               cbase:static-group=<group>, kept when its stack goes, and its one
+#                               bucket policy, which deploy never edits.
+# Once the change set is accepted, it makes the state bucket cbase-state-<account> when there is
+# none (an existing one of the account's is used as it is), and the group's empty state file
+# (If-None-Match: *, so one that exists is left alone).
 #
 # A VM costs money, so a VM group's change set is printed with its cost class and runs only with
-# --yes or a "yes" typed at the terminal. A re-run is an update through the same change set and
-# the same guards as deploy's (stack.sh): drift stops it, and a change set that would replace or
-# remove the bucket, or the instance (every member's data is on its disk), is refused. A re-run
-# keeps the instance's image and, without --type, its type.
+# --yes or a "yes" typed at the terminal. A re-run is an update through stack.sh's change-set flow,
+# deploy's: drift stops it, and a change set that would replace or remove the bucket, or the
+# instance (every member's data is on its disk), is refused. A re-run keeps the instance's image
+# and zone and, without --type, its type.
 #
 # GROUP-DESTROY KIND GROUP refuses while the group's state file names a member; for a VM group, also
 # while the instance holds any app's /srv/cbase/<app>/data (undeploy keeps it) unless --delete-data.
@@ -143,353 +135,19 @@ group_state_bucket_make() {
   echo "state bucket: s3://$bucket made ($region; versioned, public access blocked)"
 }
 
-# group_render_vm GROUP FILE [ipv4] / group_render_static GROUP FILE: the group's template. A vm
-# group's is IPv6-only, or, with ipv4 (group-init --ipv4), dual-stack with a public IPv4.
-group_render_vm() {
-  local g="$1" v4="${3:-}"
-  {
-    cat << EOF
-AWSTemplateFormatVersion: "2010-09-09"
-# The vm group $g, made by ./cbase group-init (tools/cbase.d/group.sh). Edits by hand are drift.
-Description: "cbase vm group $g: the instance its apps run on$([ -n "$v4" ] && echo ", dual-stack" || echo ", IPv6-only")"
-
-Parameters:
-  InstanceType:
-    Type: String
-    Description: an arm64 (Graviton) instance type; cbase builds its servers for linux arm64
-  ImageId:
-    Type: AWS::EC2::Image::Id
-    Description: the Amazon Linux 2023 arm64 image the group was first made with ($GROUP_AMI_PARAM)
-  AvailabilityZone:
-    Type: AWS::EC2::AvailabilityZone::Name
-    Description: the subnet's zone, one that offers the instance type (group-init picks it)
-  CloudFrontPrefixList:
-    Type: String
-    Description: CloudFront's IPv6 origin-facing managed prefix list ($GROUP_PREFIX_LIST) in this region
-    AllowedPattern: "pl-[0-9a-f]+"
-EOF
-    [ -z "$v4" ] || cat << EOF
-  CloudFrontPrefixListIpv4:
-    Type: String
-    Description: CloudFront's IPv4 origin-facing managed prefix list ($GROUP_PREFIX_LIST_IPV4) in this region
-    AllowedPattern: "pl-[0-9a-f]+"
-EOF
-    cat << EOF
-  ArtifactBucket:
-    Type: String
-    Description: the state bucket, whose artifacts/ the instance reads its apps' servers from
-
-Resources:
-  # The group's own network: a VPC with an Amazon-provided IPv6 /56 and one subnet, an internet
-  # gateway and a ::/0 route. $([ -n "$v4" ] && echo "The subnet is dual-stack (--ipv4), its IPv4 the Elastic IP's." || echo "The subnet is IPv6-only: no IPv4 address and no NAT, as SSM, S3, IMDS and
-  # CloudFront all speak IPv6 (vm_boot.sh points the SSM agent at their dual-stack endpoints).")
-  Vpc:
-    Type: AWS::EC2::VPC
-    Properties:
-      CidrBlock: 10.0.0.0/24   # EC2 requires one; $([ -n "$v4" ] && echo "the subnet's" || echo "no subnet uses it")
-      EnableDnsSupport: true
-      EnableDnsHostnames: true
-      Tags:
-        - Key: Name
-          Value: cbase-vm-$g
-  VpcIpv6:
-    Type: AWS::EC2::VPCCidrBlock
-    Properties:
-      VpcId: !Ref Vpc
-      AmazonProvidedIpv6CidrBlock: true
-  Igw:
-    Type: AWS::EC2::InternetGateway
-    Properties:
-      Tags:
-        - Key: Name
-          Value: cbase-vm-$g
-  IgwAttach:
-    Type: AWS::EC2::VPCGatewayAttachment
-    Properties:
-      VpcId: !Ref Vpc
-      InternetGatewayId: !Ref Igw
-  Subnet:
-    Type: AWS::EC2::Subnet
-    DependsOn: VpcIpv6
-    Properties:
-      VpcId: !Ref Vpc
-      AvailabilityZone: !Ref AvailabilityZone
-EOF
-    if [ -n "$v4" ]; then
-      cat << EOF
-      CidrBlock: 10.0.0.0/24
-      MapPublicIpOnLaunch: false   # the Elastic IP is its public IPv4
-EOF
-    else
-      cat << EOF
-      Ipv6Native: true
-      EnableDns64: false
-EOF
-    fi
-    cat << EOF
-      Ipv6CidrBlock: !Select [0, !Cidr [!Select [0, !GetAtt Vpc.Ipv6CidrBlocks], 1, 64]]
-      AssignIpv6AddressOnCreation: true
-      PrivateDnsNameOptionsOnLaunch:
-        HostnameType: resource-name
-        EnableResourceNameDnsAAAARecord: true
-      Tags:
-        - Key: Name
-          Value: cbase-vm-$g
-  RouteTable:
-    Type: AWS::EC2::RouteTable
-    Properties:
-      VpcId: !Ref Vpc
-      Tags:
-        - Key: Name
-          Value: cbase-vm-$g
-  DefaultRoute6:
-    Type: AWS::EC2::Route
-    DependsOn: IgwAttach
-    Properties:
-      RouteTableId: !Ref RouteTable
-      DestinationIpv6CidrBlock: ::/0
-      GatewayId: !Ref Igw
-EOF
-    [ -z "$v4" ] || cat << EOF
-  DefaultRoute4:
-    Type: AWS::EC2::Route
-    DependsOn: IgwAttach
-    Properties:
-      RouteTableId: !Ref RouteTable
-      DestinationCidrBlock: 0.0.0.0/0
-      GatewayId: !Ref Igw
-EOF
-    cat << EOF
-  SubnetRoutes:
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties:
-      SubnetId: !Ref Subnet
-      RouteTableId: !Ref RouteTable
-
-  Role:
-    Type: AWS::IAM::Role
-    Properties:
-      Description: cbase vm group $g's instance
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: ec2.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - !Sub "arn:\${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore"
-      Policies:
-        - PolicyName: cbase-apps
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Sid: TheAppsServers
-                Effect: Allow
-                Action: s3:GetObject
-                Resource: !Sub "arn:\${AWS::Partition}:s3:::\${ArtifactBucket}/artifacts/*"
-              # The apps' backups (serve's CBASE_BACKUP_*): s3://<state bucket>/backups/, and no
-              # other key of the bucket. One role serves every app of the group, and any process on
-              # the instance can read its credentials from IMDS, so a per-app prefix in IAM would
-              # not hold one app from another: the boundary between apps is their Unix users.
-              - Sid: TheAppsBackups
-                Effect: Allow
-                Action: [s3:GetObject, s3:PutObject]
-                Resource: !Sub "arn:\${AWS::Partition}:s3:::\${ArtifactBucket}/backups/*"
-              - Sid: TheAppsBackupsList
-                Effect: Allow
-                Action: s3:ListBucket
-                Resource: !Sub "arn:\${AWS::Partition}:s3:::\${ArtifactBucket}"
-                Condition:
-                  StringLike:
-                    s3:prefix: "backups/*"
-              - Sid: TheAppsSettings
-                Effect: Allow
-                Action: ssm:GetParametersByPath
-                Resource: !Sub "arn:\${AWS::Partition}:ssm:\${AWS::Region}:\${AWS::AccountId}:parameter/cbase/*"
-              # The boot's claim of the fixed address (vm_boot.sh), on an interface of this subnet alone.
-              - Sid: TheFixedAddress
-                Effect: Allow
-                Action: ec2:AssignIpv6Addresses
-                Resource: !Sub "arn:\${AWS::Partition}:ec2:\${AWS::Region}:\${AWS::AccountId}:network-interface/*"
-                Condition:
-                  ArnEquals:
-                    ec2:Subnet: !Sub "arn:\${AWS::Partition}:ec2:\${AWS::Region}:\${AWS::AccountId}:subnet/\${Subnet}"
-
-  Profile:
-    Type: AWS::IAM::InstanceProfile
-    Properties:
-      Roles: [!Ref Role]
-
-  SecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: cbase vm group $g - the app ports 8700-8799 from CloudFront (IPv6) alone
-      VpcId: !Ref Vpc
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 8700
-          ToPort: 8799
-          SourcePrefixListId: !Ref CloudFrontPrefixList
-          Description: CloudFront IPv6 origin-facing addresses to the app ports
-      SecurityGroupEgress:
-        - IpProtocol: "-1"
-          CidrIpv6: ::/0
-          Description: all egress (IPv6)
-EOF
-    # The IPv4 list in a group of its own: a prefix list counts its maximum entries against the
-    # group's rule quota (60), and CloudFront's two lists together pass it.
-    [ -z "$v4" ] || cat << EOF
-        - IpProtocol: "-1"
-          CidrIp: 0.0.0.0/0
-          Description: all egress (IPv4)
-  SecurityGroupIpv4:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: cbase vm group $g - the app ports 8700-8799 from CloudFront (IPv4) alone
-      VpcId: !Ref Vpc
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 8700
-          ToPort: 8799
-          SourcePrefixListId: !Ref CloudFrontPrefixListIpv4
-          Description: CloudFront IPv4 origin-facing addresses to the app ports
-EOF
-    cat << EOF
-
-  LaunchTemplate:
-    Type: AWS::EC2::LaunchTemplate
-    Properties:
-      LaunchTemplateData:
-        MetadataOptions:
-          HttpTokens: required
-          HttpEndpoint: enabled
-          HttpProtocolIpv6: enabled
-          HttpPutResponseHopLimit: 1
-        BlockDeviceMappings:
-          - DeviceName: /dev/xvda
-            Ebs:
-              VolumeSize: 8
-              VolumeType: gp3
-              Encrypted: true
-              DeleteOnTermination: true
-
-  Instance:
-    Type: AWS::EC2::Instance
-    DependsOn: [DefaultRoute6, $([ -n "$v4" ] && echo "DefaultRoute4, ")SubnetRoutes]
-    Properties:
-      ImageId: !Ref ImageId
-      InstanceType: !Ref InstanceType
-      IamInstanceProfile: !Ref Profile
-      NetworkInterfaces:
-        - DeviceIndex: "0"
-          SubnetId: !Ref Subnet
-          GroupSet: [!GetAtt SecurityGroup.GroupId$([ -n "$v4" ] && echo ", !GetAtt SecurityGroupIpv4.GroupId")]
-          # A random address of the subnet: the boot claims the fixed one (OriginIpv6) itself.
-          Ipv6AddressCount: 1
-          AssociatePublicIpAddress: false
-          DeleteOnTermination: true
-      LaunchTemplate:
-        LaunchTemplateId: !Ref LaunchTemplate
-        Version: !GetAtt LaunchTemplate.LatestVersionNumber
-      UserData:
-        Fn::Base64: !Sub
-          - |
-EOF
-    # vm_boot.sh without its comments and blank lines (the shebang stays), its ${ written ${!
-    # (Fn::Sub's literal), its address the one Fn::Sub names.
-    # shellcheck disable=SC2016,SC2154 # the ${ are literal; tools/cbase sets here
-    awk 'NR == 1 || (!/^[[:space:]]*#/ && !/^$/)' "$here/cbase.d/vm_boot.sh" \
-      | sed -e 's/\${/${!/g' -e "s/^want='@ORIGIN_IPV6@'\$/want='\${OriginIpv6}'/" -e 's/^/            /'
-    cat << EOF
-          - OriginIpv6: !Select [0, !Split ["/", !Select [1, !Cidr [!Select [0, !GetAtt Subnet.Ipv6CidrBlocks], 2, 4]]]]
-      Tags:
-        - Key: cbase:vm-group
-          Value: $g
-        - Key: Name
-          Value: cbase-vm-$g
-EOF
-    [ -z "$v4" ] || cat << EOF
-
-  Address:
-    Type: AWS::EC2::EIP
-    DependsOn: IgwAttach
-    Properties:
-      Domain: vpc
-      InstanceId: !Ref Instance
-EOF
-    cat << EOF
-
-Outputs:
-  InstanceId:
-    Value: !Ref Instance
-  OriginIpv6:
-    Description: the fixed IPv6 address the instance claims at boot, the subnet's ::10 (its AAAA record's)
-    Value: !Select [0, !Split ["/", !Select [1, !Cidr [!Select [0, !GetAtt Subnet.Ipv6CidrBlocks], 2, 4]]]]
-EOF
-  } > "$2"
-}
-
-group_render_static() {
-  local g="$1"
-  cat > "$2" << EOF
-AWSTemplateFormatVersion: "2010-09-09"
-# The static group $g, made by ./cbase group-init (tools/cbase.d/group.sh). Edits by hand are drift.
-Description: "cbase static group $g: the bucket its apps' files are in, a folder each"
-
-Resources:
-  Bucket:
-    Type: AWS::S3::Bucket
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
-    Properties:
-      VersioningConfiguration:
-        Status: Enabled
-      LifecycleConfiguration:
-        Rules:
-          - Id: noncurrent-versions-30-days
-            Status: Enabled
-            NoncurrentVersionExpiration:
-              NoncurrentDays: 30
-      PublicAccessBlockConfiguration:
-        BlockPublicAcls: true
-        IgnorePublicAcls: true
-        BlockPublicPolicy: true
-        RestrictPublicBuckets: true
-      OwnershipControls:
-        Rules:
-          - ObjectOwnership: BucketOwnerEnforced
-      BucketEncryption:
-        ServerSideEncryptionConfiguration:
-          - ServerSideEncryptionByDefault:
-              SSEAlgorithm: AES256
-      Tags:
-        - Key: cbase:static-group
-          Value: $g
-
-  BucketPolicy:
-    Type: AWS::S3::BucketPolicy
-    Properties:
-      Bucket: !Ref Bucket
-      PolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Sid: TheAccountsDistributionsRead
-            Effect: Allow
-            Principal:
-              Service: cloudfront.amazonaws.com
-            Action: [s3:GetObject, s3:ListBucket]
-            Resource:
-              - !GetAtt Bucket.Arn
-              - !Sub "\${Bucket.Arn}/*"
-            Condition:
-              StringEquals:
-                aws:SourceAccount: !Ref AWS::AccountId
-
-Outputs:
-  BucketName:
-    Value: !Ref Bucket
-EOF
+# group_render KIND GROUP FILE [ipv4]: the group's template, templates/group-KIND.yaml. A vm
+# group's is IPv6-only, or, with ipv4 (group-init --ipv4), dual-stack with a public IPv4. Its
+# user-data is vm_boot.sh without its comments and blank lines (the shebang stays), its ${ written
+# ${! (Fn::Sub's literal), its address the one Fn::Sub names.
+group_render() {
+  # shellcheck disable=SC2034 # template_render reads the T_ values
+  local T_GROUP="$2" T_AMIPARAM="$GROUP_AMI_PARAM" T_PREFIXLIST="$GROUP_PREFIX_LIST" T_PREFIXLISTIPV4="$GROUP_PREFIX_LIST_IPV4" T_BOOT=""
+  if [ "$1" = vm ]; then
+    # shellcheck disable=SC2016,SC2154,SC2034 # the ${ are literal; tools/cbase sets here; template_render reads it
+    T_BOOT="$(awk 'NR == 1 || (!/^[[:space:]]*#/ && !/^$/)' "$here/cbase.d/vm_boot.sh" \
+                | sed -e 's/\${/${!/g' -e "s/^want='@ORIGIN_IPV6@'\$/want='\${OriginIpv6}'/" -e 's/^/            /')"
+  fi
+  template_render "group-$1.yaml" "${4:-}" > "$3"
 }
 
 # group_args KIND ARGS...: the flags group-init and group-destroy take. GROUP_YES, GROUP_TYPE,
@@ -523,14 +181,7 @@ group_args() {
 group_init() {
   local kind="$1" group="$2" region text archs mib image="" prefix zone
   region="$(aws_region_required)"
-  # shellcheck disable=SC2034 # stack.sh reads STACK_REGION, STACK_TAGS and STACK_CAPS
-  STACK_REGION="$region"
-  STACK_NAME="$(group_stack "$kind" "$group")"
-  STACK_TEMPLATE="$CB_TMP/group.yaml"
-  # shellcheck disable=SC2034 # stack.sh reads it
-  STACK_TAGS=("Key=cbase:group,Value=$kind/$group")
-  STACK_CAPS=()
-  STACK_PARAMS=()
+  stack_use "$(group_stack "$kind" "$group")" "$region" "Key=cbase:group,Value=$kind/$group"
   echo "group-init: $kind group $group in account $AWS_ACCOUNT ($region), stack $STACK_NAME"
   stack_status
   if [ "$kind" = vm ]; then
@@ -581,11 +232,10 @@ group_init() {
     STACK_PARAMS+=("ParameterKey=ArtifactBucket,ParameterValue=$(state_bucket)")
     # shellcheck disable=SC2034 # stack.sh reads it
     STACK_CAPS=(CAPABILITY_IAM)
-    group_render_vm "$group" "$STACK_TEMPLATE" ${GROUP_IPV4:+ipv4}
   else
     echo "bucket: S3 bills what it stores and serves (cents a month for a site)"
-    group_render_static "$group" "$STACK_TEMPLATE"
   fi
+  group_render "$kind" "$group" "$STACK_TEMPLATE" ${GROUP_IPV4:+ipv4}
   stack_changeset
   if [ -n "$STACK_CHANGES" ] && [ "$kind" = vm ]; then
     if ! group_confirm "Run this change set on $STACK_NAME"; then
@@ -628,9 +278,7 @@ group_init() {
 group_destroy() {
   local kind="$1" group="$2" region bucket key line data=() id=""
   region="$(aws_region_required)"
-  # shellcheck disable=SC2034 # stack.sh reads it
-  STACK_REGION="$region"
-  STACK_NAME="$(group_stack "$kind" "$group")"
+  stack_use "$(group_stack "$kind" "$group")" "$region" ""
   echo "group-destroy: $kind group $group in account $AWS_ACCOUNT ($region), stack $STACK_NAME"
   state_read "$kind" "$group"
   if [ "${#ST_APPS[@]}" -gt 0 ]; then
@@ -643,16 +291,7 @@ group_destroy() {
     if [ "$kind" = vm ]; then
       VM_ID="$id"
       # The data undeploy keeps: the instance's disk goes with it.
-      cat > "$CB_TMP/vm-data.sh" << 'EOF'
-#!/bin/bash
-set -euo pipefail
-R="${CBASE_VM_ROOT:-}"
-for d in "$R"/srv/cbase/*/data; do
-  [ -d "$d" ] || continue
-  a="${d%/data}"
-  echo "CBASE: data ${a##*/}"
-done
-EOF
+      vm_remote_data > "$CB_TMP/vm-data.sh"
       vm_ssm_run "$CB_TMP/vm-data.sh" "data check of vm group $group"
       [ "$VM_SSM_STATUS" = Success ] || { echo "cbase: the data check on $VM_ID ended $VM_SSM_STATUS, so whether the instance holds data is not known: nothing was changed (--delete-data destroys it anyway)" >&2; [ "$GROUP_DELETE_DATA" = 1 ] || exit 1; }
       while IFS= read -r line; do data+=("${line#CBASE: data }"); done < <(grep '^CBASE: data ' "$CB_TMP/ssm-lines" || true)
