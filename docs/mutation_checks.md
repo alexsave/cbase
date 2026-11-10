@@ -1571,3 +1571,7 @@ Two new tests in cbase_vm_test.sh (the lean-testing ruling): the default group's
 - group.sh: the default prefix list back to CloudFront's IPv4 one -> `group-init vm's change set parameters` red (CloudFrontPrefixList=pl-3b927c52).
 - group.sh: --ipv4's cost line dropped -> `--ipv4 prints its cost: stdout lacks [address: dual-stack (--ipv4): a public IPv4 is about $3.60 a month]` red.
 - group.sh: the Elastic IP rendered for IPv6-only groups alone (the guard inverted) -> `the vm group's template lacks [Type: AWS::EC2::EIP]` red.
+
+## ./cbase: the origin line, a flaky pipe, throttling retried (small-fixes2)
+
+- vm.sh: vm_origin's line back to `${held:+ (its state file)}${held:-...}` (the host printed twice) -> cbase_vm_test.sh's `the origin's line is not the state file's` red.

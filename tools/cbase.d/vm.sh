@@ -124,7 +124,8 @@ vm_origin() {
     VM_DNS="$ST_ORIGIN"
     # shellcheck disable=SC2153 # state.sh sets ST_ORIGIN_ADDR
     VM_ORIGIN_ADDR="$ST_ORIGIN_ADDR"
-    echo "vm origin: $VM_DNS ($VM_ORIGIN_ADDR), the group's${held:+ (its state file)}${held:-: CBASE_VM_ORIGIN, recorded in its state file by this deploy}"
+    if [ -n "$held" ]; then echo "vm origin: $VM_DNS ($VM_ORIGIN_ADDR), the group's (its state file)"
+    else echo "vm origin: $VM_DNS ($VM_ORIGIN_ADDR), the group's: CBASE_VM_ORIGIN, recorded in its state file by this deploy"; fi
     return 0
   fi
   local what="vm group $group has no origin recorded and $CONF_APP names none: set CBASE_VM_ORIGIN (the VM's AAAA hostname) once"
