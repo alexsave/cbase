@@ -371,7 +371,9 @@ static void times_out_on_a_pooled_connection(void) {
     int64_t t0 = cb_mono_ms();
     T_EQ_INT(cb_https_request("localhost", s.port, "GET", "/hang", NULL, NULL, 0, 300, &r), CB_E_IO);
     int64_t took = cb_mono_ms() - t0;
-    T_CHECK(took >= 190 && took < 600);
+    // The bug this catches keeps the pooled connection's 5000 ms timeout, so the upper bound only
+    // has to sit well under 5000; a 600 ms bound failed on a loaded CI runner (ubuntu, 2026-11-10).
+    T_CHECK(took >= 190 && took < 2500);
     cb_https_response_free(&r);
     // Part of an answer after 200 ms, then nothing: the read after it is
     // bounded by the 100 ms left, not by the 300 the request started with.
