@@ -1,203 +1,72 @@
 # cbase
 
-cbase is a backend platform written in C that an app links into its own server binary.
-It has a core (HTTP/1.1 ingress, the router and handlers, auth, realtime over WebSocket, jobs and schedules, an admin console), providers chosen at link time, client SDKs over one C protocol core, and an outbound HTTP/2 and gRPC client.
-It is taken a la carte: a product links only the parts it needs, and build gates prove that nothing else got in.
+cbase is a backend platform in C: `cbase serve` is one process with HTTP, WebSockets, its own MQTT hub, auth, jobs and a SQLite store, an app links in as its own server binary, and a C client SDK talks to it over a binary wire.
+`cbase/tools/cbase deploy`, a bash script, puts that binary on an AWS VM behind CloudFront, with the app's static files in S3.
+It exists so that a small product runs on almost nothing: foolish's whole production runs as one `cbase serve` process on one t4g.nano.
+
+What is in the box, taken a la carte (a product links only the parts it needs, and build gates prove that nothing else got in):
 
 - **Core** (`core/`): the server, the app API (`core/include/cbase/app.h`), auth, realtime, jobs, schedules, the admin console, and child processes run from the server's loop (`core/src/spawn.h`).
 - **Providers** (`providers/`): `local` is one process on SQLite (`cbase serve`), which can also run storeless, with the app keeping its own data; `aws` is Lambda, DynamoDB and IoT Core.
 - **Client** (`client/`): a sans-IO C core (`client/include/cbase/client.h`) with a POSIX host, a wasm build with TypeScript over it, and Swift over it.
 - **HTTP/2 and gRPC** (`core/src/net/h2.h`, `core/src/net/grpc.h`): unary gRPC calls from C with no protobuf library, usable on their own ([docs/H2.md](docs/H2.md)).
-
-## Status
-
-The current release is the one the `VERSION` file names, and its tag is `v<VERSION>`.
-Its first consumer is amgi, a local flashcard app that runs `cbase serve` on the user's own machine.
-The API is pre-1.0 and will change.
-Breaking changes, and how to upgrade a product across them, are recorded in [docs/PLATFORM.md](docs/PLATFORM.md) section 2.9.
-The cdom a browser app pairs with this cbase is the commit [client/hosts/cdom/README.md](client/hosts/cdom/README.md) names under "The cdom pin", at the same cbase commit.
-
-## Architecture
-
-Five pictures of how the parts fit, each drawn from the files its caption names.
-
-### A request becomes a handler call
-
-```
-  client              LOOP THREAD (one; owns every socket)
-    |
-    | connect     on_accept: accept(), non-blocking, TCP_NODELAY,
-    +-----------> cb_loop_add(fd, READ)
-                         |
-                  wait: kqueue on macOS and the BSDs, epoll on Linux
-                  (io_uring with CBASE_IO_URING=1); each watch carries
-                  the loop's generation, and a ready event whose tag
-                  is stale (its fd removed and reused) is skipped
-                         |
-                  conn_io -> conn_try_parse: cb_http_parse
-                         |
-                  dispatch: cb_router_match picks the route
-        +----------------+-------------------+
-        |                |                   |
-  CB_ROUTE_LOOP,    default:            CB_ROUTE_SLOW:
-  OPTIONS or no     socket paused,      socket paused,
-  route: runs       REQUEST POOL        SLOW POOL (bounded;
-  right here,       worker runs it      full: 503 at once)
-  must not block         |                   |
-        |                +--cb_loop_post-----+
-        |                |   back to the loop thread
-        +----------------+
-                         |
-                  finish: cb_res_serialize into the socket's out
-                  buffer; at the end of the loop pass flush_dirty
-                  makes one send() per socket, pushes included
-                         |
-                  a file body (cb_send_file): the fd is kept and
-                  pread() 256 KiB at a time as the socket drains
-```
-
-The loop is `core/src/net/loop.c` over `core/src/net/poller.c`, the connection and dispatch code is `core/src/net/server.c`, where a handler runs is `core/src/net/router.h` and `core/src/handler.c` (which also answers CORS, 404 and 405), the pools are `core/src/util/pool.c` (started in `core/src/ingress_process.c`), and file bodies are `core/src/net/files.c`.
-A `CB_ROUTE_INLINE` route is a pool route that may run on the loop thread instead while the server's time budget allows (`cb_server_inline_ok` in `core/src/net/server.c`).
-
-### The WebSocket and its pushes
-
-```
-  GET /ws (CB_ROUTE_LOOP) -> cb_ws_upgrade -> 101 written -> the
-                                              socket is a cb_ws
-  frames in (one message is one lib/stream_frame.h frame):
-    SF_SUB, SF_UNSUB, SF_PING -> answered on the loop thread
-    SF_HELLO, SF_REQ          -> request pool (slow pool for a
-                                 CB_ROUTE_SLOW path), the reply
-                                 posted back with cb_loop_post
-  a push, from any thread:
-    cb_rt_publish -> queue -> cb_loop_post -> on the loop thread,
-    cb_ws_send to each socket that hears it -> flushed with the
-    pass's other writes, one send() per socket
-```
-
-The socket hub is `providers/local/src/realtime/rt_local.c`, the frame codec `core/src/net/ws.c`, and the upgrade and the write path `core/src/net/server.c`.
-An `SF_REQ` runs the route its HTTP path would, and a `CB_ROUTE_INLINE` one may run on the loop thread as its HTTP request may.
-
-### One wire, shared by the server and every client
-
-```
-  C headers both ends compile (little-endian binary, never JSON)
-  +--------------------------------------------------------------+
-  | client/include/cbase/auth_wire.h  /v1/auth/* bodies, refusal |
-  | lib/stream_frame.h                socket frames SF_*         |
-  +--------------------------------------------------------------+
-        |                                      |
-        v                                      v
-  SERVER                               CLIENT CORE, sans-IO
-  core/src/auth/auth_http.c            client/src/client.c
-  providers/local/src/realtime/        (cbase/client.h: bytes and
-    rt_local.c                          time in, bytes out; no
-                                        socket, clock or malloc)
-                                               |
-          +---------------------+--------------+------+
-          |                     |                     |
-  SHARED HOST (C)          wasm build            linked as C
-  client/hosts/common      client/wasm           into an iOS app
-     |          |               |                     |
-  posix host  cdom host    TypeScript host       Swift host
-  (a native   (a cdom page (client/ts/           (client/swift;
-   C loop)     in wasm)     socket.ts)            HTTP half so far)
-
-  tools/structgen reads cbase/client.h through libclang and writes
-  the accessors TypeScript (client_layout.ts) and Swift
-  (ClientLayout.swift) read the core's structs with: no host
-  spells a byte offset
-```
-
-The headers are `client/include/cbase/client.h`, `client/include/cbase/auth_wire.h` and `lib/stream_frame.h`; the hosts are `client/hosts/common/cbc_host.h`, `client/hosts/posix/cbc_posix.h`, `client/hosts/cdom/cbc_cdom.h`, `client/ts/socket.ts` and `client/swift/CBaseClient/CbClient.swift`.
-The structgen runs are in `client/Makefile` (`build/layout.hash` and `swift`); the TypeScript and Swift hosts drive the core directly, not through the shared host.
-
-### The store
-
-```
-  handler (on a request pool thread)
-     |
-     | store.h wrappers over cb_store_ops, safe from any thread
-     v
-  providers/local: store_sqlite.c
-     one connection (SQLITE_OPEN_FULLMUTEX), each operation
-     under `mu`; PRAGMA journal_mode = WAL, synchronous = NORMAL,
-     a 5 s busy timeout
-     |
-     +-- reads: rows collected under `mu`, handed out after
-     |
-     +-- writes: cb_sql_write, a GROUP COMMIT: the first writer
-     |   to find no group running leads it: BEGIN, a SAVEPOINT
-     |   per queued write, COMMIT; every caller returns after
-     |   that COMMIT (no thread of its own)
-     |
-     +-- WAL hook --wakes--> CHECKPOINTER THREAD (its own
-                             connection; PASSIVE checkpoints
-                             while the writers keep committing)
-
-  storeless app (cb_app.storeless): no store is opened, no
-  accounts, no auth routes; the app keeps its own data
-```
-
-The store interface is `core/src/store/store.h`, the SQLite backend `providers/local/src/store/store_sqlite.c` (its WAL, group commit and checkpointer comments), and storeless boot `core/src/boot.c` and `core/src/ingress_process.c`.
-`cb_store_side_start` (`core/src/store/store.c`) gives a handler a thread of its own for a second independent read; DynamoDB (`providers/aws`) is the other backend behind `store.h`, parked for now.
-
-### The deployment shape
-
-```
-  browser --> CloudFront: one distribution per app; by default
-              /api/* goes to the VM and * to the static files
-              (CBASE_ROUTE lines replace the defaults)
-                  |                                |
-                  | /api/*                         | *
-                  v                                v
-  VM GROUP: one EC2 instance,        STATIC GROUP: one S3 bucket,
-  tag cbase:vm-group=<g>             tag cbase:static-group=<g>
-  +------------------------------+   +-------------------------+
-  | cbase-shop.service    :8700  |   | shop/   blog/   site/   |
-  | cbase-blog.service    :8701  |   | (a folder per app)      |
-  | one systemd service and one  |   +-------------------------+
-  | port (8700-8799) per app     |
-  +------------------------------+
-  members: s3://cbase-state-<account>/vm/<g>.txt and static/<g>.txt
-```
-
-The tool is `tools/cbase` with its parts in `tools/cbase.d/`; the "./cbase deploy tool" section below has the whole flow.
+- **The deploy tool** (`tools/cbase`): groups, deploys and undeploys on AWS from a `cbase.conf` ([below](#cbase-deploy-tool)).
 
 ## Quick start
 
-Requirements:
+Prerequisites:
 
 - macOS: Xcode's clang and `brew install openssl@3 sqlite` (Homebrew's SQLite, not Apple's system one).
 - Ubuntu 24.04: `sudo apt-get install build-essential libssl-dev libsqlite3-dev`.
 
-Nothing else is needed, and the build fetches nothing.
-An app with a page on cdom (`example/minimal/`) also needs a clang that targets wasm32, which Xcode's does not: on macOS `brew install llvm`, which cdom's `cdom.mk` finds at `/opt/homebrew/opt/llvm/bin/clang` (`WASM_CC=<clang>` names another).
+Build it and run it locally:
 
 ```
 git clone https://github.com/alexsave/cbase.git
 cd cbase
-make -j2 check
-```
-
-`make check` builds everything, runs every unit test and smoke, the client's tests and the repository's gates, then builds the example app again as a local-only product in a stripped tree with the network denied and runs its checks there.
-`make` alone builds `build/cbase`, which is `cbase serve` with the example app (`example/`) linked in.
-
-Run it in development mode:
-
-```
+make -j4
 CBASE_DEV=1 make serve
 ```
 
-`make serve` builds `build/cbase` and runs it as `cbase serve` from the repository root, on `127.0.0.1:8642` (`PORT=4100` for another port, `CBASE_LISTEN=127.0.0.1:0` for one the OS picks), with its database in `./cbase.sqlite`.
-8642 is the default because the common dev servers' ports (3000 for React, Next and Rails, 5173 for Vite, 8000, 8080 and the rest) are taken, and `/etc/services` assigns it nothing.
-Once the socket is bound, serve prints exactly one line to stdout, such as `cbase: listening 127.0.0.1:8642 http://127.0.0.1:8642/`, for a person to click or a parent process to read (the address is its third word); the log goes to stderr.
-Then:
+In another terminal:
 
 ```
 curl http://127.0.0.1:8642/health
 curl http://127.0.0.1:8642/v1/hello
 ```
+
+`/health` answers `ok cbase <version> mode=serve ...`, and `/v1/hello` is the example app's route, `hello from the example app`.
+
+Deploy an app: put cbase in the app's repository as a submodule at `cbase/` (see [By hand](#by-hand)), and commit a `cbase.conf` at its root:
+
+```conf
+# cbase.conf: the app's own VM and bucket, at its own domain
+CBASE_APP = shop
+CBASE_DOMAIN = shop.example.com
+```
+
+```
+cbase/tools/cbase group-init vm shop --yes   # once: the VM, a t4g.nano
+cbase/tools/cbase group-init static shop     # once: the bucket
+cbase/tools/cbase deploy --dry-run           # prints the change set, changes nothing
+cbase/tools/cbase deploy
+```
+
+Deploy needs bash, AWS CLI v2 and the CLI's own credentials, and the VM side builds the server in Docker; the [./cbase deploy tool](#cbase-deploy-tool) section has the whole flow and its safety rules.
+
+### What the commands do
+
+Nothing else is needed, and the build fetches nothing.
+An app with a page on cdom (`example/minimal/`) also needs a clang that targets wasm32, which Xcode's does not: on macOS `brew install llvm`, which cdom's `cdom.mk` finds at `/opt/homebrew/opt/llvm/bin/clang` (`WASM_CC=<clang>` names another).
+
+`make` alone builds `build/cbase`, which is `cbase serve` with the example app (`example/`) linked in.
+`make -j2 check` builds everything, runs every unit test and smoke, the client's tests and the repository's gates, then builds the example app again as a local-only product in a stripped tree with the network denied and runs its checks there.
+
+`make serve` builds `build/cbase` and runs it as `cbase serve` from the repository root, on `127.0.0.1:8642` (`PORT=4100` for another port, `CBASE_LISTEN=127.0.0.1:0` for one the OS picks), with its database in `./cbase.sqlite`.
+8642 is the default because the common dev servers' ports (3000 for React, Next and Rails, 5173 for Vite, 8000, 8080 and the rest) are taken, and `/etc/services` assigns it nothing.
+Once the socket is bound, serve prints exactly one line to stdout, such as `cbase: listening 127.0.0.1:8642 http://127.0.0.1:8642/`, for a person to click or a parent process to read (the address is its third word); the log goes to stderr.
+
+### Settings
 
 Settings are `CBASE_*` environment variables, listed in `core/src/config.h`.
 A start logs one `config:` line at info (the app, the provider, the store, the listen address), and with `CBASE_LOG_LEVEL=debug` every setting on a line of its own, secrets redacted; warnings and errors are logged at every level.
@@ -209,9 +78,227 @@ A storeless app (`.storeless = true`) has no accounts, so nothing signs or check
 One that is set is still checked: a secret shorter than 32 characters, or a public URL naming `0.0.0.0`, refuses the start.
 `CBASE_ADMIN_TOKEN` (at least 32 characters) opens the console at `/admin`.
 
+## Why cbase
+
+Every number below was measured before this README was written, and each chart says what was measured, on what, and where the number comes from.
+Files outside this repository are quoted with their date and not linked.
+
+### Idle memory: a hello-world app, against Next.js + Node
+
+```mermaid
+xychart-beta
+    title "Idle RSS of the same hello-world app (MB, lower is better)"
+    x-axis ["Next.js + Node (3 processes)", "cdom + cbase (1 process)"]
+    y-axis "MB" 0 --> 220
+    bar [204, 4.7]
+```
+
+The same app (a page with a name form that calls one server route, `GET /api/hello?name=...`, answered in plain text) built to the same specs by fresh agents, on Alex's Mac, 2026-11-09.
+Next.js + Node is create-next-app's defaults plus a plain `node:http` backend: next-server 114,336 KB (about 112 MB), the backend 53,392 KB (about 52 MB) and the launcher 40,976 KB (about 40 MB), 204 MB together (`hello-world-next/TIMING.md`, "Measurements").
+cdom + cbase is one `cbase serve` process at 4.7 MB (cdom's post "Hello world on Next.js + Node" in the agents' thread, 2026-11-09, measured on the `hello-world-3` build).
+
+### Page weight: the same hello-world page
+
+```mermaid
+xychart-beta
+    title "Bytes over the wire for the page (KB, lower is better)"
+    x-axis ["Next.js + Node", "cdom + cbase"]
+    y-axis "KB" 0 --> 200
+    bar [195, 18]
+```
+
+Next.js: 194,834 bytes over 10 requests, of which 136,291 bytes of gzipped JS (`hello-world-next/TIMING.md`, 2026-11-09).
+cdom + cbase: about 18 KB gzipped, the html with its shim inlined (7.4 KB) plus the wasm module (10.5 KB) (cdom's post, 2026-11-09).
+The dependencies, from the same two sources: Next.js installed 363 packages, 491 MB of `node_modules` (plus 205 MB of Chromium for its tests); cdom + cbase installs 0 packages, and its two submodules are 42 MB of source.
+
+### Server CPU per move: a SQLite VM against the earlier Lambda + DynamoDB store
+
+```mermaid
+xychart-beta
+    title "Server CPU per game move (microseconds, lower is better)"
+    x-axis ["DynamoDB store (DynamoDB Local)", "SQLite store (cbase serve)"]
+    y-axis "us per move" 0 --> 500
+    bar [430, 105]
+```
+
+foolish's game server on cbase, two clients playing 40 two-human games at full speed against one server, on Alex's M1, 2026-10-18: 410 to 447 us per move on the DynamoDB store and 104 to 106 us on SQLite, about 4x less ([docs/history/BENCH_VM_VS_DYNAMO.md](docs/history/BENCH_VM_VS_DYNAMO.md), "Summary" and section 1).
+DynamoDB Local's own JVM is not counted in its bar; it burned another 1.85 to 1.92 ms per move.
+
+### Memory under load on the t4g.nano
+
+```mermaid
+xychart-beta
+    title "foolish's game server on a t4g.nano at saturation: RSS p50 (MiB)"
+    x-axis ["A: before", "B: #480", "C: #481", "D: #483"]
+    y-axis "MiB" 0 --> 45
+    bar [40.8, 30.7, 24.4, 21.3]
+```
+
+foolish's game server on cbase, on a fresh t4g.nano (2 vCPU, 412 MiB, AL2023 arm64), driven from a c7g.2xlarge in the same subnet with 8 pairs of players at 0 to 1 ms think time for 25 s; each bar is the median of three runs of one build, across foolish's memory series (`cdom-memtest/GRAVITON.md`, 2026-11-09, "sat2, three runs per build").
+The last build serves 24,112 to 24,234 moves/s with a move p50 of 0.19 ms and a p99 of 0.48 to 0.49 ms, no worse than the first build, from a static binary of 8,431,976 bytes (the same file, "Setup").
+Idle, the same server is 6.8 to 6.9 MiB of RSS (the same file, G5).
+
+### Cost a month
+
+```mermaid
+xychart-beta
+    title "Always-on hosting a month (USD, lower is better)"
+    x-axis ["Supabase Pro", "t4g.micro + IPv4 + gp3", "t4g.nano + IPv4", "cbase: IPv6-only t4g.nano"]
+    y-axis "USD a month" 0 --> 26
+    bar [25, 11, 8, 3.23]
+```
+
+cbase's VM: about $3.07 a month for the t4g.nano on demand plus $0.16 for its 2 GB gp3 volume, with no public IPv4, no NAT gateway and no load balancer ([providers/local/ops/VM_RUNBOOK.md](providers/local/ops/VM_RUNBOOK.md), "Cost").
+The other three are the prices of 2026-10-13 in [docs/history/REPORT_2026-10-13.md](docs/history/REPORT_2026-10-13.md), section 3.
+That table also has two $0 options, Supabase Free and Lambda + DynamoDB inside the free tier, which keep no process running; foolish ran on Lambda + DynamoDB before this VM, at about 4x the server CPU per move (the chart above).
+
+## Architecture
+
+Five pictures of how the parts fit, each drawn from the files its caption names.
+
+### A request becomes a handler call
+
+```mermaid
+flowchart TD
+    client(["client"])
+    subgraph LOOP["LOOP THREAD (one; owns every socket)"]
+        accept["on_accept: accept(), non-blocking, TCP_NODELAY,<br/>cb_loop_add(fd, READ)"]
+        wait["wait: kqueue on macOS and the BSDs, epoll on Linux<br/>(io_uring with CBASE_IO_URING=1); each watch carries<br/>the loop's generation, and a ready event whose tag<br/>is stale (its fd removed and reused) is skipped"]
+        parse["conn_io -> conn_try_parse: cb_http_parse"]
+        dispatch{"dispatch: cb_router_match<br/>picks the route"}
+        here["CB_ROUTE_LOOP, OPTIONS or no route:<br/>runs right here, must not block"]
+        finish["finish: cb_res_serialize into the socket's out<br/>buffer; at the end of the loop pass flush_dirty<br/>makes one send() per socket, pushes included"]
+        file["a file body (cb_send_file): the fd is kept and<br/>pread() 256 KiB at a time as the socket drains"]
+    end
+    reqpool["REQUEST POOL worker runs it"]
+    slowpool["SLOW POOL (bounded;<br/>full: 503 at once)"]
+
+    client -- connect --> accept --> wait --> parse --> dispatch
+    dispatch --> here --> finish
+    dispatch -- "default: socket paused" --> reqpool
+    dispatch -- "CB_ROUTE_SLOW: socket paused" --> slowpool
+    reqpool -- "cb_loop_post, back to the loop thread" --> finish
+    slowpool -- "cb_loop_post, back to the loop thread" --> finish
+    finish -.-> file
+```
+
+The loop is `core/src/net/loop.c` over `core/src/net/poller.c`, the connection and dispatch code is `core/src/net/server.c`, where a handler runs is `core/src/net/router.h` and `core/src/handler.c` (which also answers CORS, 404 and 405), the pools are `core/src/util/pool.c` (started in `core/src/ingress_process.c`), and file bodies are `core/src/net/files.c`.
+A `CB_ROUTE_INLINE` route is a pool route that may run on the loop thread instead while the server's time budget allows (`cb_server_inline_ok` in `core/src/net/server.c`).
+
+### The WebSocket and its pushes
+
+```mermaid
+flowchart TD
+    upgrade["GET /ws (CB_ROUTE_LOOP) -> cb_ws_upgrade -> 101 written:<br/>the socket is a cb_ws"]
+    frames{"frames in (one message is one<br/>lib/stream_frame.h frame)"}
+    loopans["answered on the loop thread"]
+    pool["request pool (slow pool for a<br/>CB_ROUTE_SLOW path)"]
+    flush["flushed with the pass's other writes,<br/>one send() per socket"]
+    subgraph PUSH["a push, from any thread"]
+        publish["cb_rt_publish"] --> queue["queue"] --> post["cb_loop_post"]
+    end
+    send["on the loop thread, cb_ws_send to<br/>each socket that hears it"]
+
+    upgrade --> frames
+    frames -- "SF_SUB, SF_UNSUB, SF_PING" --> loopans
+    frames -- "SF_HELLO, SF_REQ" --> pool
+    pool -- "the reply posted back with cb_loop_post" --> loopans
+    post --> send --> flush
+```
+
+The socket hub is `providers/local/src/realtime/rt_local.c`, the frame codec `core/src/net/ws.c`, and the upgrade and the write path `core/src/net/server.c`.
+An `SF_REQ` runs the route its HTTP path would, and a `CB_ROUTE_INLINE` one may run on the loop thread as its HTTP request may.
+
+### One wire, shared by the server and every client
+
+```mermaid
+flowchart TD
+    subgraph WIRE["C headers both ends compile (little-endian binary, never JSON)"]
+        authwire["client/include/cbase/auth_wire.h<br/>/v1/auth/* bodies, refusal"]
+        sframe["lib/stream_frame.h<br/>socket frames SF_*"]
+    end
+    server["SERVER<br/>core/src/auth/auth_http.c<br/>providers/local/src/realtime/rt_local.c"]
+    core["CLIENT CORE, sans-IO<br/>client/src/client.c<br/>(cbase/client.h: bytes and time in, bytes out;<br/>no socket, clock or malloc)"]
+    shared["SHARED HOST (C)<br/>client/hosts/common"]
+    wasm["wasm build<br/>client/wasm"]
+    ios["linked as C<br/>into an iOS app"]
+    posix["posix host<br/>(a native C loop)"]
+    cdom["cdom host<br/>(a cdom page in wasm)"]
+    ts["TypeScript host<br/>(client/ts/socket.ts)"]
+    swift["Swift host<br/>(client/swift; HTTP half so far)"]
+    structgen["tools/structgen reads cbase/client.h through libclang<br/>and writes the accessors the TypeScript and Swift hosts<br/>read the core's structs with: no host spells a byte offset"]
+
+    WIRE --> server
+    WIRE --> core
+    core --> shared
+    core --> wasm
+    core --> ios
+    shared --> posix
+    shared --> cdom
+    wasm --> ts
+    ios --> swift
+    structgen -. "client_layout.ts" .-> ts
+    structgen -. "ClientLayout.swift" .-> swift
+```
+
+The headers are `client/include/cbase/client.h`, `client/include/cbase/auth_wire.h` and `lib/stream_frame.h`; the hosts are `client/hosts/common/cbc_host.h`, `client/hosts/posix/cbc_posix.h`, `client/hosts/cdom/cbc_cdom.h`, `client/ts/socket.ts` and `client/swift/CBaseClient/CbClient.swift`.
+The structgen runs are in `client/Makefile` (`build/layout.hash` and `swift`); the TypeScript and Swift hosts drive the core directly, not through the shared host.
+
+### The store
+
+```mermaid
+flowchart TD
+    handler["handler (on a request pool thread)"]
+    sqlite["providers/local: store_sqlite.c<br/>one connection (SQLITE_OPEN_FULLMUTEX), each operation<br/>under mu; PRAGMA journal_mode = WAL, synchronous = NORMAL,<br/>a 5 s busy timeout"]
+    reads["reads: rows collected under mu, handed out after"]
+    writes["writes: cb_sql_write, a GROUP COMMIT: the first writer<br/>to find no group running leads it: BEGIN, a SAVEPOINT<br/>per queued write, COMMIT; every caller returns after<br/>that COMMIT (no thread of its own)"]
+    ckpt["CHECKPOINTER THREAD (its own connection;<br/>PASSIVE checkpoints while the writers keep committing)"]
+    storeless["storeless app (cb_app.storeless): no store is opened,<br/>no accounts, no auth routes; the app keeps its own data"]
+
+    handler -- "store.h wrappers over cb_store_ops, safe from any thread" --> sqlite
+    sqlite --> reads
+    sqlite --> writes
+    sqlite -- "WAL hook wakes" --> ckpt
+```
+
+The store interface is `core/src/store/store.h`, the SQLite backend `providers/local/src/store/store_sqlite.c` (its WAL, group commit and checkpointer comments), and storeless boot `core/src/boot.c` and `core/src/ingress_process.c`.
+`cb_store_side_start` (`core/src/store/store.c`) gives a handler a thread of its own for a second independent read; DynamoDB (`providers/aws`) is the other backend behind `store.h`, parked for now.
+
+### The deployment shape
+
+```mermaid
+flowchart TD
+    browser(["browser"])
+    cf["CloudFront: one distribution per app; by default<br/>/api/* goes to the VM and * to the static files<br/>(CBASE_ROUTE lines replace the defaults)"]
+    subgraph VM["VM GROUP: one EC2 instance, tag cbase:vm-group=#lt;g#gt;"]
+        shop["cbase-shop.service :8700"]
+        blog["cbase-blog.service :8701"]
+        perapp["one systemd service and one<br/>port (8700-8799) per app"]
+    end
+    subgraph STATIC["STATIC GROUP: one S3 bucket, tag cbase:static-group=#lt;g#gt;"]
+        folders["shop/ blog/ site/<br/>(a folder per app)"]
+    end
+    members[("members: s3://cbase-state-#lt;account#gt;/vm/#lt;g#gt;.txt<br/>and static/#lt;g#gt;.txt")]
+
+    browser --> cf
+    cf -- "/api/*" --> VM
+    cf -- "*" --> STATIC
+    VM -.- members
+    STATIC -.- members
+```
+
+The tool is `tools/cbase` with its parts in `tools/cbase.d/`; the "./cbase deploy tool" section below has the whole flow.
+
+## Status
+
+The current release is the one the `VERSION` file names, and its tag is `v<VERSION>`.
+Its first consumer is amgi, a local flashcard app that runs `cbase serve` on the user's own machine, and foolish's production runs on it.
+The API is pre-1.0 and will change.
+Breaking changes, and how to upgrade a product across them, are recorded in [docs/PLATFORM.md](docs/PLATFORM.md) section 2.9.
+The cdom a browser app pairs with this cbase is the commit [client/hosts/cdom/README.md](client/hosts/cdom/README.md) names under "The cdom pin", at the same cbase commit.
+
 ## Using it in a product
 
-A product with a browser page on cdom starts from the two starters and follows [A cdom page on a cbase server, from the two starters](client/hosts/cdom/README.md#a-cdom-page-on-a-cbase-server-from-the-two-starters): one Makefile, the page served at `/`, the client call, a query, the make targets and a test in Chrome, worked through `example/minimal`.
 
 ### Start a new server
 
