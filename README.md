@@ -35,48 +35,8 @@ curl http://127.0.0.1:8642/health
 curl http://127.0.0.1:8642/v1/hello
 ```
 
-`/health` answers `ok cbase <version> mode=serve ...`, and `/v1/hello` is the example app's route, `hello from the example app`.
-
-Deploy an app: put cbase in the app's repository as a submodule at `cbase/` (see [By hand](#by-hand)), and commit a `cbase.conf` at its root:
-
-```conf
-# cbase.conf: the app's own VM and bucket, at its own domain
-CBASE_APP = shop
-CBASE_DOMAIN = shop.example.com
-```
-
-```
-cbase/tools/cbase group-init vm shop --yes   # once: the VM, a t4g.nano
-cbase/tools/cbase group-init static shop     # once: the bucket
-cbase/tools/cbase deploy --dry-run           # prints the change set, changes nothing
-cbase/tools/cbase deploy
-```
-
-Deploy needs bash, AWS CLI v2 and the CLI's own credentials, and the VM side builds the server in Docker; the [./cbase deploy tool](#cbase-deploy-tool) section has the whole flow and its safety rules.
-
-### What the commands do
-
-Nothing else is needed, and the build fetches nothing.
-An app with a page on cdom (`example/minimal/`) also needs a clang that targets wasm32, which Xcode's does not: on macOS `brew install llvm`, which cdom's `cdom.mk` finds at `/opt/homebrew/opt/llvm/bin/clang` (`WASM_CC=<clang>` names another).
-
-`make` alone builds `build/cbase`, which is `cbase serve` with the example app (`example/`) linked in.
-`make -j2 check` builds everything, runs every unit test and smoke, the client's tests and the repository's gates, then builds the example app again as a local-only product in a stripped tree with the network denied and runs its checks there.
-
-`make serve` builds `build/cbase` and runs it as `cbase serve` from the repository root, on `127.0.0.1:8642` (`PORT=4100` for another port, `CBASE_LISTEN=127.0.0.1:0` for one the OS picks), with its database in `./cbase.sqlite`.
-8642 is the default because the common dev servers' ports (3000 for React, Next and Rails, 5173 for Vite, 8000, 8080 and the rest) are taken, and `/etc/services` assigns it nothing.
-Once the socket is bound, serve prints exactly one line to stdout, such as `cbase: listening 127.0.0.1:8642 http://127.0.0.1:8642/`, for a person to click or a parent process to read (the address is its third word); the log goes to stderr.
-
-### Settings
-
-Settings are `CBASE_*` environment variables, listed in `core/src/config.h`.
-A start logs one `config:` line at info (the app, the provider, the store, the listen address), and with `CBASE_LOG_LEVEL=debug` every setting on a line of its own, secrets redacted; warnings and errors are logged at every level.
-`CBASE_ENV_FILE=.env.local` reads `KEY=VALUE` lines from that file first, for the app's secrets as well as `CBASE_*` settings; a variable already in the environment wins, an unquoted value's ` # comment` is dropped as Node drops it (`KEY=abc # note` is `abc`, `a#b` stays `a#b`, a quoted `"a # b"` keeps it), and a bad line refuses the start, naming its number (the format is in docs/PLATFORM.md 2.10).
-An app may ship its own defaults for a few settings (`cb_app.req_workers`, `cb_app.log_level`); the variable still overrides them.
-`CBASE_DEV=1` allows a random JWT secret per process and a public URL derived from the listen address.
-Outside it, an app that keeps the platform's store needs `CBASE_JWT_SECRET` (at least 32 characters), which signs its users' tokens, and `CBASE_PUBLIC_URL`, the tokens' issuer.
-A storeless app (`.storeless = true`) has no accounts, so nothing signs or checks a token, and it needs neither: it runs outside dev mode with no setting at all (`core/src/config.h`, `cb_config_check_serve`; `core/test/smoke_boot.c` boots one so).
-One that is set is still checked: a secret shorter than 32 characters, or a public URL naming `0.0.0.0`, refuses the start.
-`CBASE_ADMIN_TOKEN` (at least 32 characters) opens the console at `/admin`.
+`/health` answers `ok cbase <version> mode=serve ...`, and `/v1/hello` is the example app's route.
+To put an app on AWS, see the [./cbase deploy tool](#cbase-deploy-tool).
 
 ## Why cbase
 
@@ -110,47 +70,6 @@ xychart-beta
 Next.js: 194,834 bytes over 10 requests, of which 136,291 bytes of gzipped JS (`hello-world-next/TIMING.md`, 2026-11-09).
 cdom + cbase: about 18 KB gzipped, the html with its shim inlined (7.4 KB) plus the wasm module (10.5 KB) (cdom's post, 2026-11-09).
 The dependencies, from the same two sources: Next.js installed 363 packages, 491 MB of `node_modules` (plus 205 MB of Chromium for its tests); cdom + cbase installs 0 packages, and its two submodules are 42 MB of source.
-
-### Server CPU per move: a SQLite VM against the earlier Lambda + DynamoDB store
-
-```mermaid
-xychart-beta
-    title "Server CPU per game move (microseconds, lower is better)"
-    x-axis ["DynamoDB store (DynamoDB Local)", "SQLite store (cbase serve)"]
-    y-axis "us per move" 0 --> 500
-    bar [430, 105]
-```
-
-foolish's game server on cbase, two clients playing 40 two-human games at full speed against one server, on Alex's M1, 2026-10-18: 410 to 447 us per move on the DynamoDB store and 104 to 106 us on SQLite, about 4x less ([docs/history/BENCH_VM_VS_DYNAMO.md](docs/history/BENCH_VM_VS_DYNAMO.md), "Summary" and section 1).
-DynamoDB Local's own JVM is not counted in its bar; it burned another 1.85 to 1.92 ms per move.
-
-### Memory under load on the t4g.nano
-
-```mermaid
-xychart-beta
-    title "foolish's game server on a t4g.nano at saturation: RSS p50 (MiB)"
-    x-axis ["A: before", "B: #480", "C: #481", "D: #483"]
-    y-axis "MiB" 0 --> 45
-    bar [40.8, 30.7, 24.4, 21.3]
-```
-
-foolish's game server on cbase, on a fresh t4g.nano (2 vCPU, 412 MiB, AL2023 arm64), driven from a c7g.2xlarge in the same subnet with 8 pairs of players at 0 to 1 ms think time for 25 s; each bar is the median of three runs of one build, across foolish's memory series (`cdom-memtest/GRAVITON.md`, 2026-11-09, "sat2, three runs per build").
-The last build serves 24,112 to 24,234 moves/s with a move p50 of 0.19 ms and a p99 of 0.48 to 0.49 ms, no worse than the first build, from a static binary of 8,431,976 bytes (the same file, "Setup").
-Idle, the same server is 6.8 to 6.9 MiB of RSS (the same file, G5).
-
-### Cost a month
-
-```mermaid
-xychart-beta
-    title "Always-on hosting a month (USD, lower is better)"
-    x-axis ["Supabase Pro", "t4g.micro + IPv4 + gp3", "t4g.nano + IPv4", "cbase: IPv6-only t4g.nano"]
-    y-axis "USD a month" 0 --> 26
-    bar [25, 11, 8, 3.23]
-```
-
-cbase's VM: about $3.07 a month for the t4g.nano on demand plus $0.16 for its 2 GB gp3 volume, with no public IPv4, no NAT gateway and no load balancer ([providers/local/ops/VM_RUNBOOK.md](providers/local/ops/VM_RUNBOOK.md), "Cost").
-The other three are the prices of 2026-10-13 in [docs/history/REPORT_2026-10-13.md](docs/history/REPORT_2026-10-13.md), section 3.
-That table also has two $0 options, Supabase Free and Lambda + DynamoDB inside the free tier, which keep no process running; foolish ran on Lambda + DynamoDB before this VM, at about 4x the server CPU per move (the chart above).
 
 ## Architecture
 
@@ -296,6 +215,32 @@ Its first consumer is amgi, a local flashcard app that runs `cbase serve` on the
 The API is pre-1.0 and will change.
 Breaking changes, and how to upgrade a product across them, are recorded in [docs/PLATFORM.md](docs/PLATFORM.md) section 2.9.
 The cdom a browser app pairs with this cbase is the commit [client/hosts/cdom/README.md](client/hosts/cdom/README.md) names under "The cdom pin", at the same cbase commit.
+
+## Building and running
+
+### What the commands do
+
+The build needs nothing beyond the quick start's prerequisites, and fetches nothing.
+An app with a page on cdom (`example/minimal/`) also needs a clang that targets wasm32, which Xcode's does not: on macOS `brew install llvm`, which cdom's `cdom.mk` finds at `/opt/homebrew/opt/llvm/bin/clang` (`WASM_CC=<clang>` names another).
+
+`make` alone builds `build/cbase`, which is `cbase serve` with the example app (`example/`) linked in.
+`make -j2 check` builds everything, runs every unit test and smoke, the client's tests and the repository's gates, then builds the example app again as a local-only product in a stripped tree with the network denied and runs its checks there.
+
+`make serve` builds `build/cbase` and runs it as `cbase serve` from the repository root, on `127.0.0.1:8642` (`PORT=4100` for another port, `CBASE_LISTEN=127.0.0.1:0` for one the OS picks), with its database in `./cbase.sqlite`.
+8642 is the default because the common dev servers' ports (3000 for React, Next and Rails, 5173 for Vite, 8000, 8080 and the rest) are taken, and `/etc/services` assigns it nothing.
+Once the socket is bound, serve prints exactly one line to stdout, such as `cbase: listening 127.0.0.1:8642 http://127.0.0.1:8642/`, for a person to click or a parent process to read (the address is its third word); the log goes to stderr.
+
+### Settings
+
+Settings are `CBASE_*` environment variables, listed in `core/src/config.h`.
+A start logs one `config:` line at info (the app, the provider, the store, the listen address), and with `CBASE_LOG_LEVEL=debug` every setting on a line of its own, secrets redacted; warnings and errors are logged at every level.
+`CBASE_ENV_FILE=.env.local` reads `KEY=VALUE` lines from that file first, for the app's secrets as well as `CBASE_*` settings; a variable already in the environment wins, an unquoted value's ` # comment` is dropped as Node drops it (`KEY=abc # note` is `abc`, `a#b` stays `a#b`, a quoted `"a # b"` keeps it), and a bad line refuses the start, naming its number (the format is in docs/PLATFORM.md 2.10).
+An app may ship its own defaults for a few settings (`cb_app.req_workers`, `cb_app.log_level`); the variable still overrides them.
+`CBASE_DEV=1` allows a random JWT secret per process and a public URL derived from the listen address.
+Outside it, an app that keeps the platform's store needs `CBASE_JWT_SECRET` (at least 32 characters), which signs its users' tokens, and `CBASE_PUBLIC_URL`, the tokens' issuer.
+A storeless app (`.storeless = true`) has no accounts, so nothing signs or checks a token, and it needs neither: it runs outside dev mode with no setting at all (`core/src/config.h`, `cb_config_check_serve`; `core/test/smoke_boot.c` boots one so).
+One that is set is still checked: a secret shorter than 32 characters, or a public URL naming `0.0.0.0`, refuses the start.
+`CBASE_ADMIN_TOKEN` (at least 32 characters) opens the console at `/admin`.
 
 ## Using it in a product
 
