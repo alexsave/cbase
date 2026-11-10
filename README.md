@@ -691,7 +691,8 @@ A hostname another distribution of the account serves moves to the app's own wit
 4. `./cbase deploy --attach` (or a normal deploy, with `CBASE_ALIASES` on) moves each hostname onto the app's distribution with `associate-alias`, then the stack update names them, so later deploys own them; `--dry-run` prints the moves and makes none.
 5. Verify: `curl -sI https://<host>/` answers from the new distribution.
 
-A same-account move needs no TXT record; for a hostname whose current distribution is in another AWS account, CloudFront also wants `_<host> TXT <dXXXX.cloudfront.net>` (`_.<apex>` for an apex), which step 1 prints too.
+Each hostname also needs a TXT record, `_<host> TXT <dXXXX.cloudfront.net>` (`_.<apex>` for an apex), which step 1 prints too.
+CloudFront's guide says a move within one account may skip it, but `associate-alias` refuses one without it, so set both records in step 2.
 
 ### The safety rules
 
