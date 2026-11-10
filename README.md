@@ -37,6 +37,7 @@ curl http://127.0.0.1:8642/v1/hello
 
 `/health` answers `ok cbase <version> mode=serve ...`, and `/v1/hello` is the example app's route.
 To put an app on AWS, see the [./cbase deploy tool](#cbase-deploy-tool).
+Its VM is IPv6-only by default (`group-init vm GROUP`), and `group-init vm GROUP --ipv4` opts in to a public IPv4, about $3.60 a month more.
 
 ## Why cbase
 
@@ -470,13 +471,14 @@ It needs bash (macOS's own 3.2 is enough) and AWS CLI v2, and every AWS call it 
 
 The commands:
 
-- `cbase/tools/cbase group-init vm|static GROUP [--type TYPE] [--yes]`: makes a group, the one command that makes an instance or a group's bucket.
+- `cbase/tools/cbase group-init vm|static GROUP [--type TYPE] [--ipv4] [--yes]`: makes a group, the one command that makes an instance or a group's bucket.
+  A VM is IPv6-only by default; `--ipv4` makes it dual-stack with a public IPv4 (about $3.60 a month).
 - `cbase/tools/cbase deploy [--dry-run] [--accept-drift] [--prune]`: the app's service on its group's VM, its static files, and its distribution.
 - `cbase/tools/cbase undeploy [--delete-files] [--delete-data]`: the app's service and distribution gone, its files and data kept unless a flag says otherwise.
 - `cbase/tools/cbase group-destroy vm|static GROUP [--delete-data] [--yes]`: an empty group's stack deleted.
 - `cbase/tools/cbase apps [GROUP]`: a group's members, with each one's port, service and memory.
 - `cbase/tools/cbase doctor` and `config check`: the config, the account, the groups.
-- `cbase/tools/cbase template` and `group-template vm|static GROUP`: the stacks deploy and group-init make, printed with no AWS call.
+- `cbase/tools/cbase template` and `group-template vm|static GROUP [--ipv4]`: the stacks deploy and group-init make, printed with no AWS call.
 - `cbase/tools/cbase state join` and `state leave`: the membership step deploy and undeploy run, for repair.
 
 The tool is complete; what remains is phase 4's polish of these docs.
@@ -530,7 +532,7 @@ Optional, each with its default:
   `CBASE_VM_SETTINGS` and `CBASE_VM_ARTIFACTS` override both, as a grandfathered member names its own.
   The first deploy into an adopted group makes the state bucket when the account has none (private, versioned, public access blocked, as group-init makes it), and its join writes the group's state file; it never makes a VM.
 - `CBASE_VM_ORIGIN = <host>`: the AAAA hostname CloudFront reaches an IPv6-only VM at (`IpAddressType: ipv6`).
-  The origin is the group's, one per VM: the first app to name it records it in the group's state file header (`origin=<host> addr=ipv6`; group-init records its instance's, `addr=dualstack`), later apps use it without naming it, and a different one is refused; with none recorded or named, deploy stops and asks for it once.
+  The origin is the group's, one per VM: the first app to name it records it in the group's state file header (`origin=<host> addr=ipv6`; a `--ipv4` group-init records its instance's, `addr=dualstack`), later apps use it without naming it, and a different one is refused; with none recorded or named, deploy stops and asks for it once.
 - `CBASE_VM_PORT = <port>` and `CBASE_VM_DATA = <dir>`: a grandfathered member, an app that ran on the VM before cbase; its port and data directory are recorded as they are (`legacy=1`).
 - `CBASE_VM_SETTINGS = /<path>/`: the SSM path of the app's settings, which the instance writes into its env file; default `/cbase/<app>/` (`/<stack>/<app>/` in an adopted group).
 - `CBASE_VM_ARTIFACTS = s3://<bucket>/<prefix>/`: where the app's servers go and the instance fetches them; default the state bucket's `artifacts/<app>/` (the code bucket's `vm/<app>/` in an adopted group).
@@ -567,13 +569,20 @@ A VM app claims the lowest free port in 8700-8799 in the same write, so two raci
 A group is one CloudFormation stack in the CLI's region, and `group-init` is the only command that makes one; deploy never makes a VM or a bucket.
 
 ```
-cbase/tools/cbase group-init vm shop --yes
+cbase/tools/cbase group-init vm shop --yes          # IPv6-only
+cbase/tools/cbase group-init vm shop --ipv4 --yes   # or dual-stack, with a public IPv4
 cbase/tools/cbase group-init static shop
 ```
 
 `group-init vm GROUP` makes `cbase-group-vm-<group>`: one EC2 instance tagged `cbase:vm-group=<group>`, a t4g.nano (arm64) by default on the newest Amazon Linux 2023, or the arm64 type `--type` names.
-It has an Elastic IP, so its public DNS name survives a stop, IMDSv2, an encrypted 8 GB disk, and an instance profile with SSM's managed-instance policy, read of the state bucket's `artifacts/` and of the SSM parameters under `/cbase/`.
-Its security group opens the apps' ports, 8700-8799, to CloudFront's origin-facing managed prefix list and nothing else: there is no SSH and no reverse proxy, and each app's port is its own CloudFront origin.
+It has IMDSv2, an encrypted 8 GB disk, and an instance profile with SSM's managed-instance policy, read of the state bucket's `artifacts/` and of the SSM parameters under `/cbase/`.
+It is in the group's own VPC, which has an Amazon-provided IPv6 block, in one subnet in a zone that offers its type.
+By default the subnet is IPv6-only: no public IPv4 and no Elastic IP.
+The boot (`tools/cbase.d/vm_boot.sh`, the user-data) claims the subnet's `::10`, a fixed address that survives a replacement, and points the SSM agent at the dual-stack SSM and S3 endpoints.
+CloudFront reaches it over IPv6 (`IpAddressType: ipv6`) at an AAAA record of that address: group-init prints the address, and the group's first app names the record once in `CBASE_VM_ORIGIN`, which records it in the state file (`addr=ipv6`).
+With `--ipv4` the subnet is dual-stack and the instance has an Elastic IP, so its public DNS name survives a stop; that name is the origin (`addr=dualstack`), and group-init prints the extra cost, "a public IPv4 is about $3.60 a month", before it asks.
+The choice is the group's for life: a re-run with the other one would replace the instance, which is refused.
+Its security group opens the apps' ports, 8700-8799, to CloudFront's IPv6 origin-facing managed prefix list (with `--ipv4`, a second group to the IPv4 one) and nothing else: there is no SSH and no reverse proxy, and each app's port is its own CloudFront origin.
 A VM costs money, so the change set is printed with its cost class ("a t4g.nano runs about $3/month") and runs only with `--yes` or `yes` typed at the terminal.
 
 `group-init static GROUP` makes `cbase-group-static-<group>`: the bucket, tagged `cbase:static-group=<group>`, versioned, with public access blocked, and kept if its stack is deleted.
@@ -581,7 +590,7 @@ Its one bucket policy is set there and nowhere else: `s3:GetObject` and `s3:List
 
 The first `group-init` also makes the state bucket `cbase-state-<account>`, and each writes its group's empty state file.
 A re-run is an update through the same change set and guards as a deploy: drift stops it, and a change set that would replace or remove the bucket, or the instance with every app's data on its disk, is refused.
-A re-run keeps the instance's image, and its type unless `--type` names another.
+A re-run keeps the instance's image and zone, and its type unless `--type` names another.
 
 ### Deploying a static site
 

@@ -17,8 +17,8 @@
 #   6. writes the socket unit and the service unit, starts the socket when it is not listening yet
 #      (the one switch onto it), and restarts the service, and only it (vm.sh ZERO DOWNTIME);
 #   7. waits for GET /health (200) on the port, or its startup line (exit 4 when it does not come).
-# A new VM's own setup (its fixed address, the SSM agent's dual-stack configuration, the journal in
-# RAM) is the group's boot, not an app's deploy, and is not here.
+# A new VM's own setup (its fixed address, the SSM agent's dual-stack configuration) is the group's
+# boot (vm_boot.sh), not an app's deploy, and is not here.
 # It prints "CBASE: " lines alone (vm.sh prints those), and never a parameter value.
 # CBASE_VM_ROOT is unset on the instance; cbase_vm_test.sh runs it under a scratch root with
 # stand-ins for systemctl, ss, curl and the rest.
