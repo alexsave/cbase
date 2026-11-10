@@ -83,6 +83,10 @@
 #   CBASE_API_CERT_ARN optional, an override like CBASE_CERT_ARN: the certificate CBASE_API_HOST's
 #                  distribution serves, used as it is. Without it that distribution serves
 #                  CBASE_CERT_ARN's (or the found one), which must then cover the API host too.
+#   CBASE_ALIASES  optional, on (the default) or off: off deploys the distributions with the
+#                  certificate and no hostname on them, and prints each hostname's DNS records,
+#                  the first step of a staged attach (README.md); ./cbase deploy --no-aliases and
+#                  --attach are off and on for one deploy.
 #   CBASE_ZONE     optional, an override: the Route 53 hosted zone id (Z...) the domain's records
 #                  go in. Without it deploy looks for the account's public hosted zone that covers
 #                  each hostname (the longest suffix) and writes the records there; with none it
@@ -117,7 +121,7 @@
 # to conf_secret_scan below, and one that looks like a secret stops the tool, naming the line and
 # never echoing it.
 
-CONF_KEYS="CBASE_APP CBASE_VM CBASE_VM_STACK CBASE_VM_ORIGIN CBASE_VM_PORT CBASE_VM_DATA CBASE_VM_SETTINGS CBASE_VM_ARTIFACTS CBASE_VM_REPLACES CBASE_BACKUP_KEY CBASE_BACKUP_BUCKET CBASE_STATIC CBASE_STATIC_BUCKET CBASE_STATIC_PREFIX CBASE_MEMORY CBASE_ROUTE CBASE_DOMAIN CBASE_CERT_ARN CBASE_API_CERT_ARN CBASE_ZONE CBASE_API_HOST CBASE_API_ROUTE CBASE_STATIC_DIR CBASE_HASHED CBASE_SHELL"
+CONF_KEYS="CBASE_APP CBASE_VM CBASE_VM_STACK CBASE_VM_ORIGIN CBASE_VM_PORT CBASE_VM_DATA CBASE_VM_SETTINGS CBASE_VM_ARTIFACTS CBASE_VM_REPLACES CBASE_BACKUP_KEY CBASE_BACKUP_BUCKET CBASE_STATIC CBASE_STATIC_BUCKET CBASE_STATIC_PREFIX CBASE_MEMORY CBASE_ROUTE CBASE_DOMAIN CBASE_CERT_ARN CBASE_API_CERT_ARN CBASE_ALIASES CBASE_ZONE CBASE_API_HOST CBASE_API_ROUTE CBASE_STATIC_DIR CBASE_HASHED CBASE_SHELL"
 
 # The parsed settings (conf_load fills them).
 CONF_FILE=""
@@ -143,6 +147,7 @@ CONF_DOMAINS=()      # every CBASE_DOMAIN hostname, in the file's order
 CONF_CERT_ARN=""
 CONF_API_CERT_ARN=""
 CONF_ZONE=""
+CONF_ALIASES=on    # off: the distributions carry no hostname (CBASE_ALIASES, --no-aliases)
 CONF_API_HOST=""
 CONF_STATIC_DIR=""  # the static dir, no trailing '/'; "" for a VM-only app
 CONF_STATIC_DIR_DEFAULT=""   # 1: CONF_STATIC_DIR is the default, not written
@@ -322,7 +327,7 @@ conf_load() {
     conf_secret_scan "$no" "$line"
   done
   local key value seen=" " seen_at=" " k
-  local app_no="" vm_no="" static_no="" mem_no="" domain_no="" cert_no="" zone_no="" api_no="" api_cert_no=""
+  local app_no="" vm_no="" static_no="" mem_no="" domain_no="" cert_no="" zone_no="" aliases_no="" api_no="" api_cert_no=""
   local dir_no="" hashed_no="" shell_no="" dir_set="" g
   local vm_set="" static_set="" memory="" route_nos=() api_route_no="" vmkey_no=""
   CONF_VM_STACK=""; CONF_VM_ORIGIN=""; CONF_VM_PORT=""; CONF_VM_DATA=""; CONF_BACKUP_BUCKET=""
@@ -435,6 +440,9 @@ conf_load() {
           conf_die "$no" "$key is an ACM certificate's ARN: arn:aws:acm:us-east-1:<account>:certificate/<uuid>"
         fi
         if [ "$key" = CBASE_CERT_ARN ]; then CONF_CERT_ARN="$value"; cert_no="$no"; else CONF_API_CERT_ARN="$value"; api_cert_no="$no"; fi ;;
+      CBASE_ALIASES)
+        case "$value" in on|off) ;; *) conf_die "$no" "CBASE_ALIASES is on or off" ;; esac
+        CONF_ALIASES="$value"; aliases_no="$no" ;;
       CBASE_ZONE)
         [[ "$value" =~ ^Z[A-Z0-9]{1,31}$ ]] || conf_die "$no" "CBASE_ZONE is a Route 53 hosted zone id (Z and upper-case letters and digits)"
         CONF_ZONE="$value"; zone_no="$no" ;;
@@ -498,6 +506,7 @@ conf_load() {
   fi
   [ -z "$cert_no" ] || [ -n "$domain_no" ] || conf_die "$cert_no" "CBASE_CERT_ARN is for CBASE_DOMAIN, and there is none (without a domain the app is at its cloudfront.net address)"
   [ -z "$api_cert_no" ] || [ -n "$api_no" ] || conf_die "$api_cert_no" "CBASE_API_CERT_ARN is for CBASE_API_HOST, and there is none"
+  [ -z "$aliases_no" ] || [ -n "$domain_no" ] || conf_die "$aliases_no" "CBASE_ALIASES is for CBASE_DOMAIN's hostnames, and there is none"
   [ -z "$zone_no" ] || [ -n "$domain_no" ] || conf_die "$zone_no" "CBASE_ZONE is where CBASE_DOMAIN's record goes, and there is no CBASE_DOMAIN"
   if [ "$CONF_STATIC" = none ]; then
     [ -z "$dir_no" ] || conf_die "$dir_no" "CBASE_STATIC_DIR is the static files' directory, and CBASE_STATIC is none"
@@ -564,6 +573,7 @@ conf_print() {
   else printf '%-10s %s\n' address "(the distribution's cloudfront.net name)"; fi
   [ -z "$CONF_API_CERT_ARN" ] || printf '%-10s %s\n' api-cert "$CONF_API_CERT_ARN"
   [ -z "$CONF_ZONE" ] || printf '%-10s %s\n' zone "$CONF_ZONE"
+  [ "$CONF_ALIASES" = on ] || printf '%-10s %s\n' aliases "off (the distributions carry no hostname: a staged attach)"
   for r in "${CONF_ROUTES[@]}"; do printf '%-10s %s\n' route "$r"; done
   for r in "${CONF_API_ROUTES[@]+"${CONF_API_ROUTES[@]}"}"; do printf '%-10s %s\n' api-route "$r"; done
 }
