@@ -1577,3 +1577,8 @@ Two new tests in cbase_vm_test.sh (the lean-testing ruling): the default group's
 - vm.sh: vm_origin's line back to `${held:+ (its state file)}${held:-...}` (the host printed twice) -> cbase_vm_test.sh's `the origin's line is not the state file's` red.
 - aws.sh: aws_call's retry dropped (a throttled call returns at once) -> cbase_test.sh's `apps g1 through two 429s: status 1, not 0` red.
 - test/lib.sh: since's `|| [ $? -eq 141 ]` dropped -> the exact pipeline of cbase_vm_test.sh's `blog's stack lacks its port` (`since "$m" | grep -q ...` on a saved log) fails 26 of 3000 runs, sed=141 grep=0; with it, 0 of 3000.
+
+## unit_https: a pooled connection's timeout bound (2026-11-10)
+
+The upper bound of times_out_on_a_pooled_connection went from 600 to 2500 ms, because 600 failed once on a loaded CI runner (ubuntu).
+- https.c bound(): the socket timeout never lowered (only raised) -> `times_out_on_a_pooled_connection took >= 190 && took < 2500` red (the pooled 5000 ms kept), and `timeouts_follow_the_deadline` red at 348 and 352.
