@@ -782,14 +782,14 @@ run "$two" deploy --allow-downtime
 expect_rc 0 "a hostname taken off, with --allow-downtime"
 template_of cbase-app-two | grep -Fq "Aliases: [example.com, app.example.com]" || fail "the allowed alias removal did not reach the stack"
 ok
-# No zone for either hostname: the record to add is printed for each.
+# No zone for either hostname, the certificate issued: no stop; a note at the end names each record.
 nz="$(app nz "CBASE_APP = nz" "CBASE_VM = none" "CBASE_STATIC = site" "CBASE_DOMAIN = a.nozone.net b.nozone.net")"
 mkdir -p "$nz/build" && printf 'x\n' > "$nz/build/index.html"
 run "$nz" deploy
 expect_rc 0 "two hostnames with no zone"
 out_has "certificate: $CERT_NOZONE, issued, covers a.nozone.net b.nozone.net" "the no-zone certificate"
 for h in a.nozone.net b.nozone.net; do
-  grep -Eq "^dns: point $h at d[0-9]+fake\.cloudfront\.net where its DNS is served" "$t/out" || { cat "$t/out" >&2; fail "no record printed for $h"; }
+  sed -n '/^deployed nz: /,$p' "$t/out" | grep -Eq "^note: point $h at d[0-9]+fake\.cloudfront\.net where its DNS is served, if it isn't already" || { cat "$t/out" >&2; fail "no note at the end for $h"; }
 done
 ok
 conf_error "cbase.conf line 2: CBASE_DOMAIN names app.example.com twice" "CBASE_APP = a" "CBASE_DOMAIN = app.example.com app.example.com"

@@ -63,7 +63,7 @@ VM_POLLS="${CBASE_VM_POLLS:-180}"   # get-command-invocation reads before the wa
 VM_ID=""; VM_DNS=""; VM_TYPE=""; VM_MIB=""
 VM_BIN=""; VM_SHA=""; VM_KEY=""
 VM_PORT=""; VM_NEW=""
-VM_IPV6=""   # 1: the origin is an IPv6-only hostname (CBASE_VM_ORIGIN, or the group's)
+VM_ORIGIN_ADDR=""   # the origin's IpAddressType, ipv6 or dualstack: the group's (state.sh ST_ORIGIN_ADDR)
 
 # vm_stack_instance STACK: the running instance an adopted stack holds: its AWS::EC2::Instance, or
 # the in-service instance of its auto-scaling group of one.
@@ -87,25 +87,44 @@ vm_stack_instance() {
   esac
 }
 
-# vm_find GROUP: VM_ID, VM_DNS (the origin's hostname), VM_IPV6, VM_TYPE and VM_MIB, the group's
-# running arm64 instance: found by CBASE_VM_STACK (adopted), or by its group tag.
+# vm_find GROUP: VM_ID, VM_DNS (the instance's public DNS name, until vm_origin), VM_TYPE and
+# VM_MIB, the group's running arm64 instance: found by CBASE_VM_STACK (adopted), or by its group tag.
 vm_find() {
-  local group="$1" text state arch origin
+  local group="$1" text state arch
   if [ -n "$CONF_VM_STACK" ]; then VM_ID="$(vm_stack_instance "$CONF_VM_STACK")"
   else VM_ID="$(aws_group_find vm "$group")"; fi
   text="$(aws_call ec2 describe-instances --instance-ids "$VM_ID" \
-            --query "Reservations[0].Instances[0].[State.Name,PublicDnsName,InstanceType,Architecture,Tags[?Key=='cbase:vm-origin'].Value | [0]]" --output text)" \
+            --query "Reservations[0].Instances[0].[State.Name,PublicDnsName,InstanceType,Architecture]" --output text)" \
     || aws_fail "reading instance $VM_ID"
-  IFS=$'\t' read -r state VM_DNS VM_TYPE arch origin <<< "$text"
+  IFS=$'\t' read -r state VM_DNS VM_TYPE arch <<< "$text"
   [ "$state" = running ] || { echo "cbase: vm group $group's instance $VM_ID is $state, not running: start it (aws ec2 start-instances --instance-ids $VM_ID) and run this again" >&2; exit 1; }
   [ "$arch" = arm64 ] || { echo "cbase: vm group $group's instance $VM_ID is $arch, and cbase builds the server for linux arm64 alone (make serve-binary)" >&2; exit 1; }
-  [ "$origin" != None ] || origin=""
-  VM_IPV6=""
-  if [ -n "$CONF_VM_ORIGIN" ]; then VM_DNS="$CONF_VM_ORIGIN"; VM_IPV6=1
-  elif [ -n "$origin" ]; then VM_DNS="$origin"; VM_IPV6=1; fi
-  { [ -n "$VM_DNS" ] && [ "$VM_DNS" != None ]; } || { echo "cbase: vm group $group's instance $VM_ID has no public DNS name, which CloudFront needs as its origin: an IPv6-only VM's is an AAAA record of its address, named by CBASE_VM_ORIGIN" >&2; exit 1; }
+  [ "$VM_DNS" != None ] || VM_DNS=""
   VM_MIB="$(vm_type_mib "$VM_TYPE")"
-  echo "vm group $group: $VM_ID ($VM_TYPE, $VM_MIB MiB), $VM_DNS${VM_IPV6:+ (IPv6)}${CONF_VM_STACK:+, adopted from the stack $CONF_VM_STACK}"
+  echo "vm group $group: $VM_ID ($VM_TYPE, $VM_MIB MiB), ${VM_DNS:-no public DNS name}${CONF_VM_STACK:+, adopted from the stack $CONF_VM_STACK}"
+}
+
+# vm_origin GROUP: VM_DNS and VM_ORIGIN_ADDR, the group's origin (state.sh state_origin), read
+# before anything is changed: every app in a group shares one VM, so the origin is the group's.
+# None recorded and none named stops a deploy; a dry run lists it and goes on with the instance's
+# public DNS name.
+vm_origin() {
+  local group="$1" held
+  STATE_ORIGIN="$CONF_VM_ORIGIN"
+  # An adopted group's first deploy makes the state bucket (group.sh), after this check.
+  if [ -n "$CONF_VM_STACK" ] && ! group_state_bucket_found; then
+    STATE_NO_BUCKET=1; state_read vm "$group"; STATE_NO_BUCKET=""
+  else state_read vm "$group"; fi
+  held="$ST_ORIGIN"
+  if state_origin "$group"; then
+    VM_DNS="$ST_ORIGIN"; VM_ORIGIN_ADDR="$ST_ORIGIN_ADDR"
+    echo "vm origin: $VM_DNS ($VM_ORIGIN_ADDR), the group's${held:+ (its state file)}${held:-: CBASE_VM_ORIGIN, recorded in its state file by this deploy}"
+    return 0
+  fi
+  local what="vm group $group has no origin recorded and $CONF_APP names none: set CBASE_VM_ORIGIN (the VM's AAAA hostname) once"
+  [ "${DRY_RUN:-}" = 1 ] || { echo "cbase: $what, in this app's cbase.conf. Nothing was changed." >&2; exit 1; }
+  dry_problem "$what"
+  VM_ORIGIN_ADDR=""
 }
 
 # vm_origin_secret: VM_ORIGIN_SECRET, the app's origin secret, SSM /cbase/<app>/CBASE_ORIGIN_SECRET
@@ -232,9 +251,11 @@ vm_join() {
   STATE_LEGACY_PORT="$CONF_VM_PORT"
   # shellcheck disable=SC2034
   STATE_LEGACY_DATA="$CONF_VM_DATA"
+  STATE_ORIGIN="$CONF_VM_ORIGIN"; STATE_ORIGIN_NEED=1
   state_change vm "$1" "$CONF_APP" "$(vm_mem)" join
   VM_PORT="$STATE_PORT"
   VM_NEW="$STATE_JOINED_NEW"
+  VM_DNS="$ST_ORIGIN"; VM_ORIGIN_ADDR="$ST_ORIGIN_ADDR"
 }
 
 # vm_settings: the SSM path of the app's settings, ending in /: CBASE_VM_SETTINGS, else, in an

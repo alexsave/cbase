@@ -24,7 +24,7 @@
 # stand-ins for systemctl, ss, curl and the rest.
 # replaces (CBASE_VM_REPLACES, a grandfathered member's alone) names the unit that served the app
 # before cbase: the port it holds is no refusal, its data is chowned only once it is stopped, and
-# it is stopped and disabled right before the app's unit starts, in this one command.
+# it is stopped, disabled and masked right before the app's unit starts, in this one command.
 # shellcheck disable=SC2154 # app, port, user, unit, sock, home, data, bucket, key, sha, region, settings, replaces: vm.sh sets them
 set -eEuo pipefail
 trap 'echo "CBASE: the deploy of $app failed at line $LINENO"' ERR
@@ -129,10 +129,17 @@ mv -f "$R/etc/systemd/system/$unit.new" "$R/etc/systemd/system/$unit"
 systemctl daemon-reload
 systemctl enable --quiet "$sock" "$unit"
 if [ -n "$replaces" ]; then
-  # The unit the app ran as before cbase: stopped and disabled (its file stays), seconds before
-  # the app's own starts on its port and its data.
+  # The unit the app ran as before cbase: stopped, disabled and masked, so nothing (a script, a
+  # boot, a human) starts it again onto the socket's port, seconds before the app's own starts on
+  # its port and its data. mask refuses over a real unit file, so the file is moved aside first,
+  # kept as <unit>.cbase-replaced (README.md: the rollback).
   systemctl disable --now --quiet "$replaces" 2> /dev/null || true
-  say "$replaces stopped and disabled: $unit takes port $port and $data"
+  if [ -f "$R/etc/systemd/system/$replaces" ] && [ ! -L "$R/etc/systemd/system/$replaces" ]; then
+    mv -f "$R/etc/systemd/system/$replaces" "$R/etc/systemd/system/$replaces.cbase-replaced"
+  fi
+  systemctl mask --quiet "$replaces"
+  systemctl daemon-reload
+  say "$replaces stopped, disabled and masked (its unit file kept as /etc/systemd/system/$replaces.cbase-replaced): $unit takes port $port and $data"
   own_data
 fi
 if ! systemctl is-active --quiet "$sock"; then

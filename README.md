@@ -497,12 +497,14 @@ Optional, each with its default:
   The adopted VM's role reads its own namespaces, not cbase's, so an app's settings and servers default to paths under them: settings `/<stack>/<app>/` (the stack's SSM `/<stack>/*`, as `/cbase-vm/amgi/`) and servers `s3://cbase-code-<account>-<region>/vm/<app>/` (the code bucket's `vm/*`).
   `CBASE_VM_SETTINGS` and `CBASE_VM_ARTIFACTS` override both, as a grandfathered member names its own.
   The first deploy into an adopted group makes the state bucket when the account has none (private, versioned, public access blocked, as group-init makes it), and its join writes the group's state file; it never makes a VM.
-- `CBASE_VM_ORIGIN = <host>`: the AAAA hostname CloudFront reaches an IPv6-only VM at.
+- `CBASE_VM_ORIGIN = <host>`: the AAAA hostname CloudFront reaches an IPv6-only VM at (`IpAddressType: ipv6`).
+  The origin is the group's, one per VM: the first app to name it records it in the group's state file header (`origin=<host> addr=ipv6`; group-init records its instance's, `addr=dualstack`), later apps use it without naming it, and a different one is refused; with none recorded or named, deploy stops and asks for it once.
 - `CBASE_VM_PORT = <port>` and `CBASE_VM_DATA = <dir>`: a grandfathered member, an app that ran on the VM before cbase; its port and data directory are recorded as they are (`legacy=1`).
 - `CBASE_VM_SETTINGS = /<path>/`: the SSM path of the app's settings, which the instance writes into its env file; default `/cbase/<app>/` (`/<stack>/<app>/` in an adopted group).
 - `CBASE_VM_ARTIFACTS = s3://<bucket>/<prefix>/`: where the app's servers go and the instance fetches them; default the state bucket's `artifacts/<app>/` (the code bucket's `vm/<app>/` in an adopted group).
 - `CBASE_BACKUP_BUCKET = <bucket>` and `CBASE_BACKUP_KEY = <key>`: where serve backs up the database; default the state bucket and `backups/<app>/cbase.sqlite`. An adopted VM names the key its own boot restores.
-- `CBASE_VM_REPLACES = <unit>.service`: for a grandfathered member, the unit that served it before; the deploy stops and disables that one unit right before the app's own starts.
+- `CBASE_VM_REPLACES = <unit>.service`: for a grandfathered member, the unit that served it before; the deploy stops, disables and masks that one unit right before the app's own starts, its unit file moved aside to `/etc/systemd/system/<unit>.cbase-replaced`.
+  The rollback: `systemctl unmask <unit>`, move the `.cbase-replaced` file back, `systemctl daemon-reload`, and start it.
   On an adopted VM whose own boot installs its old unit, run `./cbase deploy` again after an instance replacement.
 - `CBASE_STATIC_BUCKET = <bucket>` and `CBASE_STATIC_PREFIX = <folder>`: adopts an existing bucket and the app's folder in it; deploy never replaces it or writes its policy, and prints the one statement to add when the policy does not let the account's distributions read it.
 - `CBASE_SHELL = <path>`: the app shell, the page of the build served with a 200 for every path that is neither a file nor a page; default `/index.html`.
@@ -642,7 +644,8 @@ A certificate's names are its domain and SANs, and a wildcard covers one label: 
 Without one, it reuses a certificate it requested before that is still pending, or requests one with DNS validation.
 It then looks for the account's public Route 53 hosted zone whose name is the longest suffix of each hostname.
 With a zone, deploy writes the validation CNAME there, waits for ACM to issue the certificate, and after the stack writes the hostname's alias (A and AAAA) to the distribution.
-With none, it prints the exact records to add where the domain's DNS is served and stops with status 3, having changed nothing else; the next deploy goes on once ACM has issued the certificate, and prints the record that points the hostname at the distribution.
+With none, a certificate still pending validation is the one DNS stop: it prints the validation records to add where the domain's DNS is served and stops with status 3, having changed nothing else; the next deploy goes on once ACM has issued the certificate.
+A hostname's own record is never a stop: with an issued certificate the deploy completes and ends with a note to point each hostname at its distribution if it isn't already, and cbase changes no DNS outside a Route 53 zone.
 `CBASE_CERT_ARN` and `CBASE_ZONE` are overrides, for a certificate or a zone deploy would not pick.
 Deploy never registers a domain or makes a hosted zone.
 

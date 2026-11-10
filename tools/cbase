@@ -161,6 +161,7 @@ case "$cmd" in
       # The state file records an undeclared app's memory as the estimate it is counted at: ~128.
       mem="$CONF_MEMORY"
       [ -z "$CONF_MEMORY_ESTIMATED" ] || mem="~$CONF_MEMORY_ESTIMATE"
+      STATE_ORIGIN="$CONF_VM_ORIGIN"
       state_change "${g%% *}" "${g#* }" "$CONF_APP" "$mem" "$op"
     done
     ;;
@@ -209,6 +210,7 @@ case "$cmd" in
       vm_find "$CONF_VM"
       read -r vm_bucket vm_prefix <<< "$(vm_artifacts)"
       echo "vm paths: settings SSM $(vm_settings), servers s3://$vm_bucket/$vm_prefix"
+      vm_origin "$CONF_VM"
       [ -z "$CONF_VM_STACK" ] || group_state_bucket_adopted "$(vm_region)" "$CONF_VM"
       vm_origin_secret
     fi
@@ -298,6 +300,7 @@ case "$cmd" in
       url="https://$CONF_DOMAIN/"
     fi
     echo "deployed $CONF_APP: $url"
+    [ "${#CERT_NOTES[@]}" -eq 0 ] || printf '%s\n' "${CERT_NOTES[@]}"
     ;;
   undeploy)
     del_files=""; del_data=""

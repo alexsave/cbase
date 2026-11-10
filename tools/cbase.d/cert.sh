@@ -22,10 +22,12 @@
 #   With a zone for every hostname, deploy writes a pending certificate's validation CNAMEs there,
 #   waits for Route 53 and then for ACM to issue it, and after the stack writes each hostname's alias
 #   (A and AAAA) to its distribution.
-#   Without one, deploy prints the exact records to add where the domain's DNS is and stops, status 3,
-#   having changed nothing else; the next deploy finds the certificate pending, prints them again
-#   until ACM has issued it, then goes on, and prints the record that points each hostname at its
-#   distribution. Nothing registers a domain or makes a hosted zone.
+#   Without one, a certificate still pending validation is the one DNS stop: deploy prints its
+#   validation records to add where the domain's DNS is and stops, status 3, having changed nothing
+#   else; the next deploy finds it pending, prints them again until ACM has issued it, then goes on.
+#   A hostname's own record (at its distribution) is never a stop: deploy completes and ends with a
+#   note naming the record, for DNS that does not point there already (CERT_NOTES). Nothing
+#   registers a domain, makes a hosted zone or changes DNS outside one.
 #
 # With no CBASE_DOMAIN there is no certificate: the app is at its distribution's cloudfront.net name.
 
@@ -35,6 +37,7 @@ CERT_API_ARN=""    # the one CBASE_API_HOST's distribution serves (CBASE_API_CER
 CERT_NEED=()       # the hostnames the found or requested certificate must cover
 CERT_HOSTS=()      # the hostnames
 CERT_ZONES=()      # each hostname's zone id, or "" for none
+CERT_NOTES=()      # cert_point's notes, the records for DNS outside Route 53, printed at the end
 
 acm() { aws_call acm --region "$CERT_REGION" "$@"; }
 
@@ -300,8 +303,8 @@ cert_alias_check() {
   exit 1
 }
 
-# cert_point DOMAIN HOST: each hostname at its distribution: an alias in its zone, or the record to
-# add by hand.
+# cert_point DOMAIN HOST: each hostname at its distribution: an alias in its zone, or a note
+# (CERT_NOTES) naming the record for DNS served elsewhere, which never stops a deploy.
 cert_point() {
   local host="$1" target="$2" z="" i
   for i in "${!CERT_HOSTS[@]}"; do
@@ -313,6 +316,6 @@ cert_point() {
       "the alias for $host"
     echo "dns: $host is an alias (A and AAAA) of $target in zone $z"
   else
-    echo "dns: point $host at $target where its DNS is served: a CNAME (an ALIAS or ANAME record at a domain's apex)"
+    CERT_NOTES+=("note: point $host at $target where its DNS is served, if it isn't already: a CNAME (an ALIAS or ANAME record at a domain's apex)")
   fi
 }

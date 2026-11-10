@@ -30,8 +30,9 @@
 #                  than by its tag, and needs no group-init; deploy never changes that stack.
 #   CBASE_VM_ORIGIN optional: the hostname CloudFront reaches the VM at, an AAAA record of its
 #                  fixed IPv6 address (an IPv6-only VM has no public DNS name of AWS's); the origin
-#                  is then IPv6 (IpAddressType ipv6). Default: the group's own (group-init's
-#                  --origin-host, an instance tag), else the instance's public DNS name.
+#                  is then IPv6 (IpAddressType ipv6). The origin is the group's (one VM): the first
+#                  app to name it records it in the group's state file, another is refused, and an
+#                  app that names none uses the recorded one (state.sh).
 #   CBASE_VM_PORT, CBASE_VM_DATA optional, both or neither: a grandfathered member, an app that ran
 #                  on the VM before cbase. Its port (any of 1024-65535, kept outside the 8700-8799
 #                  claims) and its data directory (an absolute path, CBASE_DB is <dir>/cbase.sqlite)
