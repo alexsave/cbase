@@ -312,6 +312,7 @@ case "$cmd" in
       [ "$CONF_ALIASES" = off ] || url="https://$CONF_DOMAIN/"
     fi
     echo "deployed $CONF_APP: $url"
+    [ "$CONF_VM" = none ] || echo "service: $VM_SERVICE"
     [ "${#CERT_NOTES[@]}" -eq 0 ] || printf '%s\n' "${CERT_NOTES[@]}"
     ;;
   undeploy)

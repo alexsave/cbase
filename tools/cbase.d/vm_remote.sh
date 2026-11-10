@@ -11,12 +11,21 @@
 #   1. the app's user and its data directory (the service's alone);
 #   2. the port, free before a first start (exit 3 when another process holds it);
 #   3. the instance role's credentials;
-#   4. fetches the static `serve` binary, checks its sha256, swaps it in;
+#   4. fetches the static `serve` binary and checks its sha256;
 #   5. reads every parameter under the app's settings path (GetParametersByPath, page by page)
-#      into the 0600 EnvironmentFile;
-#   6. writes the socket unit and the service unit, starts the socket when it is not listening yet
-#      (the one switch onto it), and restarts the service, and only it (vm.sh ZERO DOWNTIME);
-#   7. waits for GET /health (200) on the port, or its startup line (exit 4 when it does not come).
+#      for the 0600 EnvironmentFile;
+#   6. RESTART ONLY FOR A CHANGE: compares the binary, the socket unit, the service unit and the env
+#      file with what is installed and with the stamp /etc/cbase/<app>.loaded, and prints
+#      "server|units|settings changed|unchanged" (never a value). Nothing changed, the socket and
+#      the service active and a replaced unit already masked: "<unit> unchanged: not restarted",
+#      and nothing is written, reloaded or restarted. Otherwise: swaps the binary in, writes the
+#      env file and the units, daemon-reloads when a unit changed, starts the socket when it is
+#      not listening yet (the one switch onto it), restarts the service and only it (vm.sh ZERO
+#      DOWNTIME), and prints "<unit> restarted (<what> changed)", or "started (it was not
+#      active)", or "restarted (replacing <unit>)";
+#   7. waits for GET /health (200) on the port, or its startup line (exit 4 when it does not come),
+#      in every case; once a restarted serve is up the stamp records what it runs on, and a serve
+#      that does not come up loses its stamp, so the next deploy restarts it.
 # A new VM's own setup (its fixed address, the SSM agent's dual-stack configuration) is the group's
 # boot (vm_boot.sh), not an app's deploy, and is not here.
 # It prints "CBASE: " lines alone (vm.sh prints those), and never a parameter value.
@@ -73,12 +82,10 @@ aws_curl() {   # aws_curl SERVICE URL [curl args...]
     -H "x-amz-security-token: $st" "$@" "$url"
 }
 
-# 4. The server: fetched, its sha256 checked, then swapped in.
+# 4. The server: fetched and its sha256 checked (swapped in at step 6, when the service restarts).
 aws_curl s3 "https://$bucket.s3.dualstack.$region.amazonaws.com/$key" -o "$tmp/serve" \
   || { say "the artifact s3://$bucket/$key could not be fetched: refused"; exit 1; }
 echo "$sha  $tmp/serve" | sha256sum -c --quiet - || { say "the artifact's sha256 is not $sha: refused"; exit 1; }
-install -m 0755 "$tmp/serve" "$home/serve.new"
-mv -f "$home/serve.new" "$home/serve"
 
 # 5. The settings, into a private file: one NAME=value line per parameter (never echoed).
 # GetParametersByPath answers at most 10 per page: follow NextToken until there is none.
@@ -113,62 +120,116 @@ done
 [ -z "$next" ] || { say "more than 50 pages of parameters under $settings: refused"; exit 1; }
 n="$(wc -l < "$tmp/env" | tr -d ' ')"
 chmod 0600 "$tmp/env"
-mv -f "$tmp/env" "$envfile"
 say "settings: $n from SSM $settings (values not shown)"
 
-# 6. The units, and only the service restarted: the socket holds the port across the restart, so
-# the connections that arrive meanwhile wait for the new serve (vm.sh ZERO DOWNTIME).
-cat > "$R/etc/systemd/system/$sock.new" << 'SOCKET'
+# 6. RESTART ONLY FOR A CHANGE. The service restarts when something the running serve has loaded
+# differs from what this deploy installs: the server, the socket unit, the service unit or the env
+# file. Each is unchanged only when BOTH the installed file's sha256 is the new one's (a hand edit
+# on the VM is a change) AND the stamp ($loaded) holds that sha256: the stamp names what the last
+# deploy restarted serve onto and saw up, so a deploy that wrote a file and then stopped before
+# serve came up (the stamp is deleted before anything is written) is a change too. A missing file,
+# a missing stamp or a hash that can not be computed is a change. The units are changed as well
+# when systemd says its loaded copy is not the file's (NeedDaemonReload not "no"). With nothing
+# changed, the socket and the service active, and a CBASE_VM_REPLACES unit already masked and
+# stopped, nothing is written, reloaded or restarted; anything else is the restart below, as
+# every deploy before this rule. Only the words changed and unchanged are printed, never a value.
+loaded="$R/etc/cbase/$app.loaded"
+sum() { local s; s="$(sha256sum < "$1" 2> /dev/null)" || return 0; printf '%s' "${s%% *}"; }
+changed=()
+: > "$tmp/loaded"
+same() {   # same NAME NEW INSTALLED: NEW's sha256 into the new stamp; true when it is unchanged
+  local h; h="$(sum "$2")"
+  echo "$1 $h" >> "$tmp/loaded"
+  [ -n "$h" ] && [ "$h" = "$(sum "$3")" ] && grep -Fxq "$1 $h" "$loaded" 2> /dev/null
+}
+cat > "$tmp/socket" << 'SOCKET'
 @CBASE_SOCKET@
 SOCKET
-cat > "$R/etc/systemd/system/$unit.new" << 'EOF'
+cat > "$tmp/service" << 'EOF'
 @CBASE_SERVICE@
 EOF
-mv -f "$R/etc/systemd/system/$sock.new" "$R/etc/systemd/system/$sock"
-mv -f "$R/etc/systemd/system/$unit.new" "$R/etc/systemd/system/$unit"
-systemctl daemon-reload
-systemctl enable --quiet "$sock" "$unit"
-if [ -n "$replaces" ]; then
-  # The unit the app ran as before cbase: stopped, disabled and masked, so nothing (a script, a
-  # boot, a human) starts it again onto the socket's port, seconds before the app's own starts on
-  # its port and its data. mask refuses over a real unit file, so the file is moved aside first,
-  # kept as <unit>.cbase-replaced (README.md: the rollback).
-  systemctl disable --now --quiet "$replaces" 2> /dev/null || true
-  if [ -f "$R/etc/systemd/system/$replaces" ] && [ ! -L "$R/etc/systemd/system/$replaces" ]; then
-    mv -f "$R/etc/systemd/system/$replaces" "$R/etc/systemd/system/$replaces.cbase-replaced"
+if same server "$tmp/serve" "$home/serve"; then bin=unchanged; else bin=changed; changed+=(server); fi
+units=unchanged
+same socket "$tmp/socket" "$R/etc/systemd/system/$sock" || units=changed
+same service "$tmp/service" "$R/etc/systemd/system/$unit" || units=changed
+for u in "$sock" "$unit"; do
+  [ "$(systemctl show -p NeedDaemonReload --value "$u" 2> /dev/null || true)" = no ] || units=changed
+done
+[ "$units" = unchanged ] || changed+=(units)
+if same settings "$tmp/env" "$envfile"; then env=unchanged; else env=changed; changed+=(settings); fi
+say "server $bin, units $units, settings $env"
+replaced() {   # true when there is no CBASE_VM_REPLACES unit, or an earlier deploy replaced it
+  [ -z "$replaces" ] ||
+    { [ "$(systemctl is-enabled "$replaces" 2> /dev/null || true)" = masked ] && ! systemctl is-active --quiet "$replaces"; }
+}
+if [ "${#changed[@]}" = 0 ] && systemctl is-active --quiet "$sock" && systemctl is-active --quiet "$unit" && replaced; then
+  restarted=""
+  say "$unit unchanged: not restarted"
+else
+  if [ "${#changed[@]}" -gt 0 ]; then restarted="$(printf '%s, ' "${changed[@]}")"; restarted="restarted (${restarted%, } changed)"
+  elif ! replaced; then restarted="restarted (replacing $replaces)"
+  else restarted="started (it was not active)"; fi
+  rm -f "$loaded"
+  # The server swapped in, the settings into their private file.
+  install -m 0755 "$tmp/serve" "$home/serve.new"
+  mv -f "$home/serve.new" "$home/serve"
+  mv -f "$tmp/env" "$envfile"
+  # The units, and only the service restarted: the socket holds the port across the restart, so
+  # the connections that arrive meanwhile wait for the new serve (vm.sh ZERO DOWNTIME).
+  cp "$tmp/socket" "$R/etc/systemd/system/$sock.new"
+  cp "$tmp/service" "$R/etc/systemd/system/$unit.new"
+  mv -f "$R/etc/systemd/system/$sock.new" "$R/etc/systemd/system/$sock"
+  mv -f "$R/etc/systemd/system/$unit.new" "$R/etc/systemd/system/$unit"
+  [ "$units" = unchanged ] || systemctl daemon-reload
+  systemctl enable --quiet "$sock" "$unit"
+  if [ -n "$replaces" ]; then
+    # The unit the app ran as before cbase: stopped, disabled and masked, so nothing (a script, a
+    # boot, a human) starts it again onto the socket's port, seconds before the app's own starts on
+    # its port and its data. mask refuses over a real unit file, so the file is moved aside first,
+    # kept as <unit>.cbase-replaced (README.md: the rollback).
+    systemctl disable --now --quiet "$replaces" 2> /dev/null || true
+    if [ -f "$R/etc/systemd/system/$replaces" ] && [ ! -L "$R/etc/systemd/system/$replaces" ]; then
+      mv -f "$R/etc/systemd/system/$replaces" "$R/etc/systemd/system/$replaces.cbase-replaced"
+    fi
+    systemctl mask --quiet "$replaces"
+    systemctl daemon-reload
+    say "$replaces stopped, disabled and masked (its unit file kept as /etc/systemd/system/$replaces.cbase-replaced): $unit takes port $port and $data"
+    own_data
   fi
-  systemctl mask --quiet "$replaces"
-  systemctl daemon-reload
-  say "$replaces stopped, disabled and masked (its unit file kept as /etc/systemd/system/$replaces.cbase-replaced): $unit takes port $port and $data"
-  own_data
-fi
-if ! systemctl is-active --quiet "$sock"; then
-  # THE ONE SWITCH onto the socket: the app's service from before socket activation binds the port
-  # itself, so it stops before the socket can listen. This deploy's gap is the last.
-  if systemctl is-active --quiet "$unit"; then
-    systemctl stop "$unit"
-    say "$unit stopped to hand port $port to $sock (the switch to socket activation: later deploys queue connections, not refuse them)"
+  if ! systemctl is-active --quiet "$sock"; then
+    # THE ONE SWITCH onto the socket: the app's service from before socket activation binds the port
+    # itself, so it stops before the socket can listen. This deploy's gap is the last.
+    if systemctl is-active --quiet "$unit"; then
+      systemctl stop "$unit"
+      say "$unit stopped to hand port $port to $sock (the switch to socket activation: later deploys queue connections, not refuse them)"
+    fi
+    systemctl start "$sock"
   fi
-  systemctl start "$sock"
+  systemctl restart "$unit"
+  say "$unit $restarted"
 fi
-since="$(date +%s)"
-systemctl restart "$unit"
 
-# 7. Up: GET /health answers 200 on the port, or the startup line is in its journal.
+# 7. Up: GET /health answers 200 on the port, or the startup line is in the journal of the
+# service's current run (its InvocationID: the run this deploy started, or the one it left alone).
+# Once up after a restart, the stamp records what serve now runs on; a service that does not come
+# up loses its stamp, so the next deploy restarts it.
+up() {
+  if [ -n "$restarted" ]; then cp "$tmp/loaded" "$loaded.new"; mv -f "$loaded.new" "$loaded"; fi
+  say "$unit is up: $1"
+  exit 0
+}
+down() { rm -f "$loaded"; say "$1"; exit 4; }
 for i in $(seq 1 60); do
   if [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "http://127.0.0.1:$port/health" || true)" = 200 ]; then
-    say "$unit is up: GET /health answered 200 on 127.0.0.1:$port"
-    exit 0
+    up "GET /health answered 200 on 127.0.0.1:$port"
   fi
-  if journalctl -u "$unit" --since "@$since" -o cat --no-pager 2> /dev/null | grep -q '^cbase: listening '; then
-    say "$unit is up: it is listening on port $port (no /health route)"
-    exit 0
+  run="$(systemctl show -p InvocationID --value "$unit" 2> /dev/null || true)"
+  if [ -n "$run" ] && journalctl -u "$unit" "_SYSTEMD_INVOCATION_ID=$run" -o cat --no-pager 2> /dev/null | grep -q '^cbase: listening '; then
+    up "it is listening on port $port (no /health route)"
   fi
   if ! systemctl is-active --quiet "$unit"; then
-    say "$unit stopped after its start: see journalctl -u $unit on the instance"
-    exit 4
+    down "$unit stopped after its start: see journalctl -u $unit on the instance"
   fi
   [ "$i" = 60 ] || sleep 1
 done
-say "$unit did not answer on 127.0.0.1:$port in 60 s: see journalctl -u $unit on the instance"
-exit 4
+down "$unit did not answer on 127.0.0.1:$port in 60 s: see journalctl -u $unit on the instance"

@@ -647,7 +647,7 @@ The VM side of a deploy, in order:
 2. builds the server for the instance: `make serve-binary` in the app's server directory (`.` or `server/`, the first with a Makefile), cbase's static linux-arm64 build, which needs Docker; `CBASE_SERVE_BIN` names a binary built elsewhere instead;
 3. joins the group's state file, claiming the lowest free port and checking the memory fit in the same conditional write (below);
 4. uploads the binary to its sha256's key under `CBASE_VM_ARTIFACTS` (default `s3://cbase-state-<account>/artifacts/<app>/`);
-5. runs one SSM command on the instance, with no SSH: the user `cbase-<app>`, `/srv/cbase/<app>/data` owned by the service, the port checked free before a first start, the binary fetched and its sha256 checked, the unit `cbase-<app>.service` installed and only it restarted, then its `/health` (or its startup line) waited for;
+5. runs one SSM command on the instance, with no SSH: the user `cbase-<app>`, `/srv/cbase/<app>/data` owned by the service, the port checked free before a first start, the binary fetched and its sha256 checked, the unit `cbase-<app>.service` installed and only it restarted when something it runs on changed (below), then its `/health` (or its startup line) waited for;
 6. sets the stack's `VmOrigin` and `VmPort`, so `/api/*` and any `ws` route reach the app's port.
 
 The service's unit grew out of the production unit of the VM cbase came from (`tools/cbase.d/vm_unit.service`): `CBASE_LISTEN=:::<port>` (a dual-stack socket), `CBASE_DB` in its data folder, the backup settings, `Restart=always`, its hardening, and `MemoryMax` only when `CBASE_MEMORY` is declared.
@@ -655,6 +655,21 @@ The instance fetches the server and reads its settings with curl signed by the i
 Its settings are SSM Parameter Store parameters under `CBASE_VM_SETTINGS` (default `/cbase/<app>/`), which the instance writes into the unit's 0600 `EnvironmentFile`; no value passes through the tool but the origin secret, which is masked.
 Only the remote script's own status lines are printed, never the rest of the command's output, and a failure points at `journalctl -u cbase-<app>` on the instance.
 A port another process holds on the VM refuses the deploy and releases the claim it made.
+
+A deploy restarts the service only when something the running serve has loaded changed, so a site-only deploy leaves the server, its WebSockets and its in-memory games alone.
+What serve has loaded is four files: the `serve` binary, the socket unit, the service unit and the env file of SSM settings.
+Each is unchanged only when the installed file's sha256 is the one this deploy would install AND `/etc/cbase/<app>.loaded` records that sha256.
+That stamp is deleted before a restart writes anything and written again only once the restarted serve answers, so a deploy that stopped halfway, or a service that did not come up, is restarted by the next deploy.
+A unit is also changed when systemd says its loaded copy is not the file's (`NeedDaemonReload`).
+A missing file, a missing stamp or a hash that can not be computed counts as a change, so the first deploy after this rule restarts once.
+The script prints `CBASE: server <changed|unchanged>, units <changed|unchanged>, settings <changed|unchanged>`, never a value, and then one of:
+
+- `cbase-<app>.service unchanged: not restarted`: nothing changed, the socket and the service are active, and a `CBASE_VM_REPLACES` unit is already masked and stopped; nothing is written, reloaded or restarted;
+- `cbase-<app>.service restarted (<what> changed)`: the files are written, systemd reloaded when a unit changed, and the service alone restarted, as every deploy did before this rule;
+- `cbase-<app>.service started (it was not active)`: nothing changed, but the service was failed, stopped or never started;
+- `cbase-<app>.service restarted (replacing <unit>)`: nothing changed, but the `CBASE_VM_REPLACES` unit is not yet masked and stopped, so the replacement runs.
+
+The wait for `/health` or the startup line runs in every case, and the deploy's summary ends with that line as `service: ...`.
 
 ### Many apps on one VM
 
