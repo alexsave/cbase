@@ -78,6 +78,13 @@ state_of() {   # state_of KIND GROUP: the state file as the fake holds it
   cat "$t/state"
 }
 fake_set() { curl -fsS -X POST "$AWS_ENDPOINT_URL/_fake/set?${1// /%20}" > /dev/null; }
-template_of() { curl -fsS "$AWS_ENDPOINT_URL/_fake/template?stack=$1"; }
+# A reader that stops at its first match (`since "$m" | grep -q X || fail`) closes the pipe while the
+# writer may still be writing: the writer dies of SIGPIPE (141), and under pipefail the pipeline
+# failed though grep matched. template_of and since are the writers whose output runs past one
+# write (a log with SSM's base64 scripts, a template), so a closed reader is not their failure.
+template_of() {
+  curl -fsS "$AWS_ENDPOINT_URL/_fake/template?stack=$1" -o "$t/template_of" || return
+  cat "$t/template_of" || [ $? -eq 141 ]
+}
 mark() { wc -l < "$t/log" | tr -d ' '; }    # the log's length now: what a run adds is after it
-since() { sed -n "$(( $1 + 1 )),\$p" "$t/log"; }   # since MARK: the log lines after MARK
+since() { sed -n "$(( $1 + 1 )),\$p" "$t/log" || [ $? -eq 141 ]; }   # since MARK: the log lines after MARK
