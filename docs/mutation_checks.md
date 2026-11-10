@@ -1582,3 +1582,9 @@ Two new tests in cbase_vm_test.sh (the lean-testing ruling): the default group's
 
 The upper bound of times_out_on_a_pooled_connection went from 600 to 2500 ms, because 600 failed once on a loaded CI runner (ubuntu).
 - https.c bound(): the socket timeout never lowered (only raised) -> `times_out_on_a_pooled_connection took >= 190 && took < 2500` red (the pooled 5000 ms kept), and `timeouts_follow_the_deadline` red at 348 and 352.
+
+## ./cbase deploy: no restart when nothing serve has loaded changed (norestart)
+
+Five cases in cbase_vm_test.sh: nothing changed and active (not restarted), a new server, a changed setting, a changed unit, an inactive service.
+
+- vm_remote.sh: the settings' `changed+=(settings)` dropped (the env file's hash ignored by the skip) -> cbase_vm_test.sh's `a changed setting did not restart the service` red.
