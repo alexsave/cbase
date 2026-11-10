@@ -607,31 +607,31 @@ ok
 # ================================================================================================
 start_fake --resource "aws:cloudformation:stack-name cbase-vm ec2:instance arn:aws:ec2:us-east-1:$ACCOUNT:instance/i-0adopted"
 fake_set origin-secret=
-amgi="$(vm_app amgi "CBASE_APP = amgi" "CBASE_VM = foolish" "CBASE_VM_STACK = cbase-vm" "CBASE_STATIC = none")"
+amgi="$(vm_app amgi "CBASE_APP = amgi" "CBASE_VM = veteran" "CBASE_VM_STACK = cbase-vm" "CBASE_STATIC = none")"
 m="$(mark)"
 run "$amgi" deploy --dry-run
 expect_rc 1 "an adopted group's dry run with no origin secret"
-out_has "vm group foolish: i-0adopted (t4g.nano, 512 MiB), ec2-i-0adopted.compute-1.amazonaws.com, adopted from the stack cbase-vm" "the adopted stack's instance"
+out_has "vm group veteran: i-0adopted (t4g.nano, 512 MiB), ec2-i-0adopted.compute-1.amazonaws.com, adopted from the stack cbase-vm" "the adopted stack's instance"
 out_has "vm paths: settings SSM /cbase-vm/amgi/, servers s3://cbase-code-$ACCOUNT-us-east-1/vm/amgi/" "the paths derived from the adopted group"
-out_has "dry run: would create state bucket s3://$BUCKET (us-east-1; versioned, public access blocked) and seed vm/foolish.txt with amgi" "the state bucket a deploy would make"
+out_has "dry run: would create state bucket s3://$BUCKET (us-east-1; versioned, public access blocked) and seed vm/veteran.txt with amgi" "the state bucket a deploy would make"
 err_has "there is no SSM parameter /cbase-vm/amgi/CBASE_ORIGIN_SECRET" "the missing secret, under the derived path"
 out_has "dry run: a deploy would stop here, on no SSM parameter /cbase-vm/amgi/CBASE_ORIGIN_SECRET (the origin secret); this dry run goes on" "the dry run goes on"
 out_has "  memory: amgi ~128 = 128 MiB of the 320 MiB for apps (t4g.nano: 512 MiB less 192 for the OS)" "the fit is still checked"
-out_has "vm: would join vm group foolish as app=amgi port=8700 service=cbase-amgi.service mem=~128" "the port it would claim"
+out_has "vm: would join vm group veteran as app=amgi port=8700 service=cbase-amgi.service mem=~128" "the port it would claim"
 out_has "dry run: change set cbase-deploy deleted unexecuted" "the dry run reaches the change set"
 err_has "cbase: dry run: a deploy would stop on 1 problem:" "the problems listed at the end"
 err_has "  no SSM parameter /cbase-vm/amgi/CBASE_ORIGIN_SECRET (the origin secret)" "the problem listed"
 since "$m" | grep -E "^PUT /|^DELETE /|CreateBucket|^SSM SendCommand|^CFN ExecuteChangeSet" && fail "an adopted group's dry run changed something"
 ok
 # A grandfathered member: seeded with its own port and data, as they are.
-foolish="$(vm_app foolish "CBASE_APP = foolish" "CBASE_VM = foolish" "CBASE_VM_STACK = cbase-vm" "CBASE_STATIC = none" \
+veteran="$(vm_app veteran "CBASE_APP = veteran" "CBASE_VM = veteran" "CBASE_VM_STACK = cbase-vm" "CBASE_STATIC = none" \
              "CBASE_VM_PORT = 8080" "CBASE_VM_DATA = /var/lib/cbase" "CBASE_VM_SETTINGS = /cbase-vm/env/")"
 fake_set "origin-secret=$ORIGIN_SECRET"
-run "$foolish" deploy --dry-run
+run "$veteran" deploy --dry-run
 expect_rc 0 "a grandfathered member's dry run"
-out_has "vm paths: settings SSM /cbase-vm/env/, servers s3://cbase-code-$ACCOUNT-us-east-1/vm/foolish/" "CBASE_VM_SETTINGS overrides the derived path"
-out_has "and seed vm/foolish.txt with foolish (grandfathered: port 8080, data /var/lib/cbase)" "the seed's grandfathered member"
-out_has "vm: would join vm group foolish as app=foolish port=8080 service=cbase-foolish.service mem=~128 data=/var/lib/cbase legacy=1" "the grandfathered claim"
+out_has "vm paths: settings SSM /cbase-vm/env/, servers s3://cbase-code-$ACCOUNT-us-east-1/vm/veteran/" "CBASE_VM_SETTINGS overrides the derived path"
+out_has "and seed vm/veteran.txt with veteran (grandfathered: port 8080, data /var/lib/cbase)" "the seed's grandfathered member"
+out_has "vm: would join vm group veteran as app=veteran port=8080 service=cbase-veteran.service mem=~128 data=/var/lib/cbase legacy=1" "the grandfathered claim"
 ok
 
 [ "$(log_count unsigned)" = 0 ] || fail "a call reached the fake without the test's credentials"
