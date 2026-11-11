@@ -361,7 +361,7 @@ if wanted service; then
 # ---- the summary's service line: the script's last line about the app's own unit ---------------
 svc="$(vm_app svcsay "CBASE_APP = svcsay" "CBASE_VM = g9" "CBASE_STATIC = none" "CBASE_MEMORY = 16M")"
 for case_ in "restarted (server changed)" "started (it was not active)" "unchanged: not restarted"; do
-  fake_set "ssm-out=CBASE: cbase-svcsay.service restarted (units changed)%0ACBASE: cbase-svcsay.service $case_%0ACBASE: cbase-other.service restarted (settings changed)%0ACBASE: cbase-svcsay.service is up: GET /health answered 200 on 127.0.0.1:8703%0A"
+  fake_set "ssm-out=CBASE: cbase-svcsay.service restarted (units changed)%0ACBASE: cbase-svcsay.service $case_%0ACBASE: cbase-svcsaz.service restarted (settings changed)%0ACBASE: cbase-svcsay.service is up: GET /health answered 200 on 127.0.0.1:8703%0A"
   run "$svc" deploy
   expect_rc 0 "a deploy whose script says [$case_]"
   out_has "service: cbase-svcsay.service $case_" "the summary's service line is the script's last line about the unit [$case_]"
