@@ -42,6 +42,7 @@ conf_error "cbase.conf line 3: CBASE_FOO is not a cbase.conf key" "CBASE_APP = a
 conf_error "cbase.conf line 3: sets CBASE_APP again (line 1 set it)" "CBASE_APP = a" "CBASE_VM = none" "CBASE_APP = b"
 conf_error "cbase.conf line 1: CBASE_APP is a name" "CBASE_APP = My_App"
 conf_error "cbase.conf line 1: CBASE_APP is a name" "CBASE_APP = none"
+conf_error "cbase.conf line 2: CBASE_MEMORY is <n>M or <n>G (256M, 1G)" "CBASE_APP = a" "CBASE_MEMORY = 256"
 conf_error "cbase.conf line 2: CBASE_MEMORY is <n>M or <n>G" "CBASE_APP = a" "CBASE_MEMORY = lots"
 conf_error "cbase.conf line 2: CBASE_MEMORY is from 16M to 64G" "CBASE_APP = a" "CBASE_MEMORY = 8M"
 conf_error "cbase.conf line 2: CBASE_MEMORY is for an app with a VM" "CBASE_APP = a" "CBASE_MEMORY = 64M" "CBASE_VM = none"
@@ -68,6 +69,22 @@ conf_error "cbase.conf line 2: is not KEY = value (a key is upper-case" "CBASE_A
 conf_error "cbase.conf line 2: CBASE_SHELL is a page of the build, an absolute path ending in .html" "CBASE_APP = a" "CBASE_SHELL = _shell.html"
 conf_error "cbase.conf line 2: CBASE_SHELL is a page of the build, an absolute path ending in .html" "CBASE_APP = a" "CBASE_SHELL = /../x.html"
 conf_error "cbase.conf line 3: CBASE_SHELL is a page of the static files, and CBASE_STATIC is none" "CBASE_APP = a" "CBASE_STATIC = none" "CBASE_SHELL = /_shell.html"
+conf_error "cbase.conf line 2: CBASE_VM_PORT is a grandfathered member's own port, outside the 8700-8799 cbase claims" "CBASE_APP = a" "CBASE_VM_PORT = 8750"
+conf_error "cbase.conf line 2: CBASE_VM_DATA is an absolute directory on the VM (/var/lib/app), not under /srv/cbase/" "CBASE_APP = a" "CBASE_VM_DATA = /srv/cbase/x"
+conf_error "cbase.conf line 3: CBASE_DOMAIN is lower-case hostnames, blank-separated (example.com www.example.com)" "CBASE_APP = a" "CBASE_VM = none" "CBASE_DOMAIN = ex..ample.com"
+# A final dot is taken as written: the shell splits the name on its dots and drops a final empty
+# field, so "example.com." passes (a quirk the port keeps; a fix would be a deliberate change).
+d="$(app dotdomain "CBASE_APP = a" "CBASE_VM = none" "CBASE_DOMAIN = example.com.")"
+run "$d" config check
+expect_rc 0 "a domain with a final dot"
+out_has "domain     example.com." "a domain with a final dot, as written"
+ok
+# A NUL byte anywhere in the file stops the read before anything is parsed.
+printf 'CBASE_APP = a\0x\n' > "$t/nul.conf"
+run "$t" -f "$t/nul.conf" config check
+expect_rc 1 "a cbase.conf with a NUL byte"
+err_has "$t/nul.conf holds a NUL byte" "a cbase.conf with a NUL byte"
+ok
 
 # A good one, defaults filled in, routes normalized, the "*" route last.
 d="$(app good "# the app" "CBASE_APP = shop" "CBASE_MEMORY=512M" "CBASE_ROUTE = * static" \
@@ -198,6 +215,49 @@ secret "CBASE_SECRET is named like a secret" "x" "CBASE_SECRET = x"
 secret "STRIPE_PRIVATE_KEY is named like a secret" "sk" "STRIPE_PRIVATE_KEY = sk"
 # Even a line that is not KEY = value is refused as a secret first, and not echoed.
 secret "this line looks like a secret: an AWS access key id" AKIAIOSFODNN7EXAMPLE "export AKIAIOSFODNN7EXAMPLE"
+
+# The thresholds of the secret scan, each at its edge: a random-looking run just under a threshold is
+# a value, and one at it is a secret. The line is a comment, which is scanned too.
+secret_line() {   # secret_line LINE: a cbase.conf whose line 2 is LINE, checked
+  local d
+  d="$(app thresh "CBASE_APP = a" "$1")"
+  run "$d" config check
+}
+s23="Ab3$(printf 'd%.0s' $(seq 1 20))"
+s24="${s23}d"
+h31="$(printf 'a%.0s' $(seq 1 31))"
+h32="${h31}a"
+s39="$(printf 'x%.0s' $(seq 1 39))"
+s40="${s39}x"
+secret_line "# $s23"
+expect_rc 0 "a 23-character mixed run is a value"
+ok
+secret_line "# $s24"
+expect_rc 1 "a 24-character mixed run"
+err_has "cbase.conf line 2: this line looks like a secret: a long random-looking string" "a 24-character mixed run"
+ok
+secret_line "# $h31"
+expect_rc 0 "a 31-digit hex run is a value"
+ok
+secret_line "# $h32"
+expect_rc 1 "a 32-digit hex run"
+err_has "cbase.conf line 2: this line looks like a secret: a long hex string" "a 32-digit hex run"
+ok
+secret_line "# $s39"
+expect_rc 0 "a 39-character lower-case run is a value"
+ok
+secret_line "# $s40"
+expect_rc 1 "a 40-character lower-case run"
+err_has "cbase.conf line 2: this line looks like a secret: a long random-looking string" "a 40-character lower-case run"
+ok
+secret_line "ASIAABCDEFGHIJKLMNOP"
+expect_rc 1 "an ASIA key id"
+err_has "cbase.conf line 2: this line looks like a secret: an AWS access key id" "an ASIA key id"
+ok
+secret_line "-----END CERTIFICATE-----"
+expect_rc 1 "a PEM end marker"
+err_has "cbase.conf line 2: this line looks like a secret: a PEM block" "a PEM end marker"
+ok
 
 fi
 # ---- no credentials: the CLI's own chain finds none --------------------------------------------
@@ -430,6 +490,86 @@ run "$b" frobnicate
 expect_rc 2 "an unknown command"
 ok
 
+fi
+
+# ---- dispatch: the usage, the options, the argument errors: all before a setting is read ----------
+if wanted dispatch; then
+# The usage is README.md's "cbase/tools/cbase --help" block, byte for byte.
+readme_usage="$t/readme-usage"
+awk 'f==0 && /^`cbase\/tools\/cbase --help`:$/ {f=1; next} f==1 && /^```$/ {f=2; next} f==2 && /^```$/ {exit} f==2 {print}' \
+  "$root/README.md" > "$readme_usage"
+[ -s "$readme_usage" ] || fail "README.md has no cbase/tools/cbase --help block"
+expect_rc_out_usage() {   # expect_rc_out_usage ARGS...: --help (or -h, help) prints the usage and exits 0
+  run "$t" "$@"
+  expect_rc 0 "$*"
+  diff -u "$readme_usage" "$t/out" >&2 || fail "$*: stdout is not the README usage"
+  [ ! -s "$t/err" ] || { cat "$t/err" >&2; fail "$*: printed on stderr"; }
+  ok
+}
+expect_rc_out_usage --help
+expect_rc_out_usage -h
+expect_rc_out_usage help
+expect_rc_out_usage -h frobnicate
+# An error with the usage after it: a missing command, an unknown option, an unknown command.
+expect_usage_error() {   # expect_usage_error FIRST_LINE WHAT ARGS...: stderr is FIRST_LINE then the usage
+  local first="$1" what="$2"; shift 2
+  run "$t" "$@"
+  expect_rc 2 "$what"
+  { printf '%s\n' "$first"; cat "$readme_usage"; } > "$t/want"
+  [ ! -s "$t/out" ] || { cat "$t/out" >&2; fail "$what: printed on stdout"; }
+  diff -u "$t/want" "$t/err" >&2 || fail "$what: stderr is not the shell's"
+  ok
+}
+expect_usage_error "cbase: unknown option -x" "an unknown option" -x config check
+expect_usage_error "cbase: unknown option --help=1" "an unknown option with a value" --help=1
+expect_usage_error "cbase: unknown command frobnicate" "an unknown command" frobnicate
+expect_usage_error "cbase: unknown option -" "a lone dash is an option" -
+# With no command at all: the usage alone, on stderr.
+run "$t"
+expect_rc 2 "no command"
+diff -u "$readme_usage" "$t/err" >&2 || fail "no command: stderr is not the usage"
+[ ! -s "$t/out" ] || fail "no command: printed on stdout"
+ok
+run "$t" -f
+expect_rc 2 "-f with no file"
+printf 'cbase: -f wants a file\n' > "$t/want"
+diff -u "$t/want" "$t/err" > /dev/null || { cat "$t/err" >&2; fail "-f with no file: stderr"; }
+ok
+# Each command's own argument errors: exit 2, one line, nothing on stdout, and no setting read (the
+# cbase.conf that is not in $t would stop a read with another message).
+expect_err() {   # expect_err LINE WHAT ARGS...: exit 2 with exactly LINE on stderr
+  local line="$1" what="$2"; shift 2
+  run "$t" "$@"
+  expect_rc 2 "$what"
+  printf '%s\n' "$line" > "$t/want"
+  [ ! -s "$t/out" ] || { cat "$t/out" >&2; fail "$what: printed on stdout"; }
+  diff -u "$t/want" "$t/err" >&2 || fail "$what: stderr is not the shell's"
+  ok
+}
+expect_err "cbase: doctor takes no arguments" "doctor with an argument" doctor extra
+expect_err "cbase: apps takes one group name at most" "apps with two" apps a b
+expect_err "cbase: Bad_Name is not a group name" "apps with a bad group" apps Bad_Name
+expect_err "cbase: state join or state leave" "state with no operation" state
+expect_err "cbase: state join or state leave" "state with an unknown operation" state frob
+expect_err "cbase: state join takes no more arguments" "state join with an argument" state join extra
+expect_err "cbase: state leave takes no more arguments" "state leave with an argument" state leave extra
+expect_err "cbase: template takes no arguments" "template with an argument" template x
+expect_err "cbase: group-template vm GROUP or group-template static GROUP" "group-template with no kind" group-template
+expect_err "cbase: group-template vm GROUP or group-template static GROUP" "group-template of an unknown kind" group-template lambda g
+expect_err "cbase: group-template vm wants one group name, and --ipv4 or nothing" "group-template vm with no group" group-template vm
+expect_err "cbase: group-template vm wants one group name, and --ipv4 or nothing" "group-template vm with a bad third word" group-template vm g --bogus
+expect_err "cbase: group-template static wants one group name" "group-template static with a third word" group-template static g x
+expect_err "cbase: deploy takes --dry-run, --accept-drift, --prune, --allow-downtime, --no-aliases and --attach, not --bogus" "deploy with an unknown flag" deploy --bogus
+expect_err "cbase: deploy takes --dry-run, --accept-drift, --prune, --allow-downtime, --no-aliases and --attach, not --bogus" "deploy checks every flag, each one accepted" deploy --dry-run --accept-drift --prune --allow-downtime --no-aliases --attach --bogus
+expect_err "cbase: undeploy takes --delete-files and --delete-data, not --x" "undeploy with an unknown flag" undeploy --x
+expect_err "cbase: config check is the one config command" "config with no check" config
+expect_err "cbase: config check is the one config command" "config with another word" config show
+expect_err "cbase: group-init vm GROUP or group-init static GROUP" "group-init of an unknown kind" group-init lambda g
+expect_err "cbase: group-destroy vm GROUP or group-destroy static GROUP" "group-destroy of an unknown kind" group-destroy
+expect_err "cbase: group-init vm wants a group name (a lower-case letter, then lower-case letters, digits and '-', at most 32 characters), not \"Bad\"" "group-init with a bad name" group-init vm Bad
+long="$(printf 'x%.0s' $(seq 1 45))"
+expect_err "cbase: group-destroy static wants a group name (a lower-case letter, then lower-case letters, digits and '-', at most 32 characters), not \"$(printf 'x%.0s' $(seq 1 40))\"" \
+  "a group name is shown to 40 characters" group-destroy static "$long"
 fi
 
 # ================================================================================================
