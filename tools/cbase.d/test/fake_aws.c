@@ -46,11 +46,13 @@
 //   * Control, for the test alone: POST /_fake/gather?n=N holds the next N GetObject answers until
 //     all N have been asked (so N clients read the same ETag before any of them writes: a race
 //     made deterministic), or 20 s pass. POST /_fake/set?KNOB=VALUE scripts the next answers:
-//     changes=auto|none|replace-bucket|remove-bucket|replace-distribution, drift=0|1,
+//     changes=auto|none|replace-bucket|conditional-bucket|remove-bucket|replace-distribution, drift=0|1,
 //     secret=S and secret2=S (planted where a change set, a drift and an error would carry an
 //     origin header's or a parameter's value), fail-execute=0|1, list-ignores-prefix=0|1 (a
 //     listing that answers every key, whatever its prefix), acm-deny=0|1 (DescribeCertificate
-//     refused, AccessDenied), changes=replace-instance (a group's instance replaced),
+//     refused, AccessDenied), changes=replace-instance (a group's instance replaced), stack-fail=0|1 (an
+//     executed update fails and rolls back, its events naming the failed resources), cs-fail=REASON
+//     (a change set ends FAILED for REASON), stack-status=NAME:STATUS (a stack's status set),
 //     instance-type=T (every instance's type), ssm-status=S, ssm-code=N, ssm-out=TEXT (what the next
 //     commands end with). GET /_fake/template?stack=NAME answers the template the stack holds.
 //
@@ -134,6 +136,11 @@ static int g_nzones;
 // The scripts (/_fake/set).
 static char g_changes[32] = "auto";
 static int g_drift, g_fail_execute, g_list_ignores_prefix, g_acm_deny;
+// stack-fail=1: an executed change set's update fails and rolls back (the stack ends ROLLBACK_COMPLETE
+// for a create, UPDATE_ROLLBACK_COMPLETE for an update) and DescribeStackEvents answers a failed
+// resource whose reason holds secret=; cs-fail=REASON: a change set ends FAILED with that reason.
+static int g_stack_fail;
+static char g_cs_fail[256];
 static char g_secret[256], g_secret2[256];
 // The SSM SecureString /cbase/<app>/CBASE_ORIGIN_SECRET (origin-secret=V; empty: ParameterNotFound).
 static char g_origin_secret[256] = "fake-origin-secret-0123456789abcdef";
@@ -713,7 +720,10 @@ static void s3_bucket_call(int fd, const request *r) {
         }
     }
     pthread_mutex_unlock(&g_mu);
-    logf_("S3 %s %s %d", what, name, status == 4041 ? 404 : status);
+    // A PutBucketVersioning is logged with the status its body sets (Enabled, Suspended).
+    char vstatus[32] = "";
+    if (strcmp(what, "PutBucketVersioning") == 0) xml_text(r->body, "Status", vstatus, sizeof vstatus);
+    logf_("S3 %s %s %d%s%s", what, name, status == 4041 ? 404 : status, vstatus[0] ? " status=" : "", vstatus);
     if (strcmp(r->method, "HEAD") == 0) respond(fd, status, status == 200 ? "OK" : "Not Found", "application/xml", NULL, "", 0);
     else if (status == 409) s3_error(fd, 409, "Conflict", "BucketAlreadyOwnedByYou", "Your previous request to create the named bucket succeeded and you already own it.");
     else if (status == 4041) s3_error(fd, 404, "Not Found", "NoSuchBucket", "The specified bucket does not exist");
@@ -861,6 +871,9 @@ static int cfn_changes(const stack *st, sb *b) {
         cfn_change(b, "Modify", "Bucket", "AWS::S3::Bucket", "True", NULL);
         cfn_change(b, "Modify", "Distribution", "AWS::CloudFront::Distribution", "False", d.p);
         n = 2;
+    } else if (strcmp(g_changes, "conditional-bucket") == 0) {   // a replacement CloudFormation decides at run time
+        cfn_change(b, "Modify", "Bucket", "AWS::S3::Bucket", "Conditional", NULL);
+        n = 1;
     } else if (strcmp(g_changes, "remove-bucket") == 0) {
         cfn_change(b, "Remove", "Bucket", "AWS::S3::Bucket", NULL, NULL);
         n = 1;
@@ -1031,7 +1044,9 @@ static void cloudformation(int fd, const request *r) {
             if (g_secret[0])
                 sb_add(&b, "<Parameters><member><ParameterKey>OriginSecret</ParameterKey><ParameterValue>%s</ParameterValue></member></Parameters>",
                        g_secret);
-            if (n == 0)
+            if (g_cs_fail[0])
+                sb_add(&b, "<Status>FAILED</Status><ExecutionStatus>UNAVAILABLE</ExecutionStatus><StatusReason>%s</StatusReason>", g_cs_fail);
+            else if (n == 0)
                 sb_add(&b, "<Status>FAILED</Status><ExecutionStatus>UNAVAILABLE</ExecutionStatus><StatusReason>The submitted "
                            "information didn't contain changes. Submit different information to create a change set.</StatusReason>");
             else sb_add(&b, "<Status>CREATE_COMPLETE</Status><ExecutionStatus>AVAILABLE</ExecutionStatus>");
@@ -1057,6 +1072,12 @@ static void cloudformation(int fd, const request *r) {
         } else if (g_fail_execute) {
             status = 400, ecode = "ValidationError";
             snprintf(emsg, sizeof emsg, "Invalid request: OriginCustomHeaders HeaderValue=%.200s is not valid", g_secret);
+        } else if (g_stack_fail) {
+            // The update fails and rolls back: the template is the one before, the change set used.
+            copy(st->status, sizeof st->status, strcmp(st->cs_type, "CREATE") == 0 ? "ROLLBACK_COMPLETE" : "UPDATE_ROLLBACK_COMPLETE");
+            st->has_cs = false;
+            cfn_open(&b, a);
+            cfn_close(&b, a);
         } else {
             if (strcmp(st->cs_type, "CREATE") == 0) group_made(st->name);
             copy(st->status, sizeof st->status, strcmp(st->cs_type, "CREATE") == 0 ? "CREATE_COMPLETE" : "UPDATE_COMPLETE");
@@ -1067,7 +1088,10 @@ static void cloudformation(int fd, const request *r) {
             cfn_open(&b, a);
             cfn_close(&b, a);
         }
-        logf_("CFN ExecuteChangeSet %s %s", name ? name : "-", ecode ? ecode : "ok");
+        // --disable-rollback (a staged attach's update) is logged: rollback=off.
+        char *dr = form_get(r->body, "DisableRollback");
+        logf_("CFN ExecuteChangeSet %s %s%s", name ? name : "-", ecode ? ecode : "ok", dr && strcmp(dr, "true") == 0 ? " rollback=off" : "");
+        free(dr);
     } else if (strcmp(a, "GetTemplate") == 0) {
         if (!st || !st->template) {
             status = 400, ecode = "ValidationError";
@@ -1137,7 +1161,17 @@ static void cloudformation(int fd, const request *r) {
         logf_("CFN DescribeStackResources %s %s", name ? name : "-", inst ? inst : "none");
     } else if (strcmp(a, "DescribeStackEvents") == 0) {
         cfn_open(&b, a);
-        sb_add(&b, "<StackEvents/>");
+        if (g_stack_fail)
+            sb_add(&b, "<StackEvents><member><StackId>arn:stack</StackId><EventId>e1</EventId><StackName>%s</StackName>"
+                       "<LogicalResourceId>Distribution</LogicalResourceId><ResourceType>AWS::CloudFront::Distribution</ResourceType>"
+                       "<Timestamp>2026-11-09T12:00:00Z</Timestamp><ResourceStatus>UPDATE_FAILED</ResourceStatus>"
+                       "<ResourceStatusReason>Invalid request: OriginCustomHeaders HeaderValue=%s is not valid</ResourceStatusReason></member>"
+                       "<member><StackId>arn:stack</StackId><EventId>e2</EventId><StackName>%s</StackName>"
+                       "<LogicalResourceId>Router</LogicalResourceId><ResourceType>AWS::CloudFront::Function</ResourceType>"
+                       "<Timestamp>2026-11-09T12:00:00Z</Timestamp><ResourceStatus>CREATE_FAILED</ResourceStatus>"
+                       "<ResourceStatusReason>The function code is too large</ResourceStatusReason></member></StackEvents>",
+                   name ? name : "-", g_secret, name ? name : "-");
+        else sb_add(&b, "<StackEvents/>");
         cfn_close(&b, a);
     } else {
         status = 400, ecode = "InvalidAction";
@@ -1245,7 +1279,9 @@ static void acm(int fd, const request *r, const char *op) {
         snprintf(arn, sizeof arn, "arn:aws:acm:us-east-1:%s:certificate/00000000-0000-0000-0000-%012d", g_account, g_ncerts + 1);
         cert_add(arn, "PENDING_VALIDATION", names);
         sb_add(&b, "{\"CertificateArn\":\"%s\"}", arn);
-        logf_("ACM RequestCertificate %s", names);
+        char token[64];
+        json_str(r->body, "IdempotencyToken", token, sizeof token);
+        logf_("ACM RequestCertificate %s token=%s", names, token[0] ? token : "-");
     } else {
         status = 400;
         sb_add(&b, "{\"__type\":\"InvalidAction\",\"message\":\"not in the recording\"}");
@@ -1680,6 +1716,14 @@ static void control(int fd, const request *r) {
         char *v;
         if ((v = form_get(r->query, "changes"))) copy(g_changes, sizeof g_changes, v), free(v);
         if ((v = form_get(r->query, "drift"))) g_drift = atoi(v), free(v);
+        if ((v = form_get(r->query, "stack-fail"))) g_stack_fail = atoi(v), free(v);
+        if ((v = form_get(r->query, "cs-fail"))) copy(g_cs_fail, sizeof g_cs_fail, v), free(v);
+        if ((v = form_get(r->query, "stack-status"))) {   // NAME:STATUS, that stack's status set as it is
+            char *c = strchr(v, ':');
+            stack *st = c ? (*c = 0, stack_find(v)) : NULL;
+            if (st) copy(st->status, sizeof st->status, c + 1);
+            free(v);
+        }
         if ((v = form_get(r->query, "secret"))) copy(g_secret, sizeof g_secret, v), free(v);
         if ((v = form_get(r->query, "secret2"))) copy(g_secret2, sizeof g_secret2, v), free(v);
         if ((v = form_get(r->query, "origin-secret"))) copy(g_origin_secret, sizeof g_origin_secret, v), free(v);

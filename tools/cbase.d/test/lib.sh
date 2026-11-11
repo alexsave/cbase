@@ -16,7 +16,12 @@ stop_fake() {
   if [ -n "$FAKE_PID" ]; then kill "$FAKE_PID" 2> /dev/null || true; wait "$FAKE_PID" 2> /dev/null || true; fi
   FAKE_PID=""
 }
-trap 'stop_fake; rm -rf "$t"' EXIT
+# THE END MARK: each test script sets CBASE_TEST_END=1 as its last step, and a run that exits without
+# it failed, whatever its status. macOS's bash 3.2 exits 0 when set -u stops a script that has an EXIT
+# trap on an unbound variable (the trap's status replaces it), so a case that read a variable another
+# section sets would end the run early and still pass: a CBASE_TEST_ONLY subset did exactly that.
+CBASE_TEST_END=""
+trap 'stop_fake; rm -rf "$t"; [ "$CBASE_TEST_END" = 1 ] || { echo "cbase_test: FAIL: the run stopped before its end (above)" >&2; exit 1; }' EXIT
 fail() { echo "cbase_test: FAIL: $*" >&2; exit 1; }
 pass=0
 ok() { pass=$((pass + 1)); }

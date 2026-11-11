@@ -338,6 +338,12 @@ since "$m" | grep -E "^PUT /|^DELETE /|^SSM SendCommand|^CFN ExecuteChangeSet|^C
 since "$m" | grep -q "^CFN DeleteChangeSet cbase-app-big ok" || fail "a VM dry run left its change set"
 fake_set instance-type=t4g.nano
 ok
+# Exactly the room left fits: shop (~128) and blog (64) leave 128 of the 320 MiB.
+exact="$(vm_app exact "CBASE_APP = exact" "CBASE_VM = g9" "CBASE_STATIC = none" "CBASE_MEMORY = 128M")"
+run "$exact" deploy --dry-run
+expect_rc 0 "an app that fills the instance exactly (dry run)"
+out_has "  memory: blog 64, exact 128, shop ~128 = 320 MiB of the 320 MiB for apps" "an exact fit fits"
+ok
 
 fi
 if wanted taken; then
@@ -354,6 +360,21 @@ state_of vm g9 | grep -q "app=taken" && fail "a refused port is still claimed"
 since "$m" | grep -q "CFN DeleteStack cbase-app-taken" || fail "the refused deploy left its change set's empty stack"
 since "$m" | grep -q "CFN ExecuteChangeSet" && fail "a refused deploy executed its change set"
 fake_set "ssm-status=Success&ssm-code=0&ssm-out=CBASE: done (the fake's answer)%0A"
+ok
+# The port taken on the VM for an app that was a member before this deploy: refused, its claim kept.
+fake_set "ssm-status=Failed&ssm-code=3&ssm-out=CBASE: port 8701 is in use on the VM%0A"
+run "$blog" deploy
+expect_rc 1 "a member's port taken on the VM"
+err_has "port 8701 is taken on i-0g9 by another process, so blog was not started; it keeps its port (it was a member before this deploy)" "a member keeps its port"
+state_of vm g9 | grep -q "^app=blog port=8701 " || fail "a member's port was released"
+ok
+# An undeploy whose command fails: it says so and keeps the app's membership (its port).
+fake_set "ssm-status=Failed&ssm-code=1&ssm-out=CBASE: done (the fake's answer)%0A"
+run "$blog" undeploy
+expect_rc 1 "an undeploy whose command fails"
+err_has "the undeploy of blog on i-0g9 ended Failed (exit 1); it still holds its port, and nothing else was changed" "a failed undeploy"
+state_of vm g9 | grep -q "^app=blog port=8701 " || fail "a failed undeploy left the group"
+fake_set "ssm-status=Success&ssm-code=0"
 ok
 
 fi
@@ -398,6 +419,15 @@ ok
 rc=0
 (cd "$broken" && CBASE_SERVE_BIN="$t/elf-arm64" "$tool" deploy --dry-run) < /dev/null > "$t/out" 2> "$t/err" || rc=$?
 expect_rc 0 "CBASE_SERVE_BIN names the server"
+ok
+# An instance that is not arm64 (the fake's t3.nano is x86_64): refused before anything is built.
+fake_set instance-type=t3.nano
+m="$(mark)"
+run "$blog" deploy
+expect_rc 1 "an x86 instance"
+err_has "vm group g9's instance i-0g9 is x86_64, and cbase builds the server for linux arm64 alone" "an x86 instance"
+since "$m" | grep -qE "^PUT |^SSM SendCommand|^CFN CreateChangeSet" && fail "a deploy to an x86 instance changed something"
+fake_set instance-type=t4g.nano
 ok
 
 fi
@@ -637,6 +667,12 @@ mkdir -p "$t/vm3/srv/cbase/gone/data" && printf 'x\n' > "$t/vm3/srv/cbase/gone/d
 on_vm "$t/vm3" "$t/gone-undeploy.sh"
 { [ "$rc" = 0 ] && [ ! -e "$t/vm3/srv/cbase/gone" ]; } || fail "the --delete-data script left /srv/cbase/gone"
 ok
+# --delete-data for an app with no VM: nothing to delete, and it says so.
+stonly="$(app stonly "CBASE_APP = stonly" "CBASE_VM = none" "CBASE_STATIC = g9")"
+run "$stonly" undeploy --delete-data
+expect_rc 0 "--delete-data of a static-only app"
+out_has "undeploy: --delete-data: stonly has no VM, so it has no data folder" "--delete-data of a static-only app"
+ok
 
 fi
 if wanted apih; then
@@ -714,6 +750,15 @@ run "$t" group-destroy vm g9 --yes
 expect_rc 1 "group-destroy of an instance holding data"
 err_has "vm group g9's instance i-0g9 holds the data of shop (/srv/cbase/<app>/data, kept by undeploy), which goes with the instance: refused" "group-destroy keeps data"
 since "$m" | grep -q "CFN DeleteStack" && fail "group-destroy deleted an instance holding data"
+ok
+# A data check that does not end Success: whether the instance holds data is not known, so refused.
+fake_set "ssm-status=Failed&ssm-code=1&ssm-out="
+m="$(mark)"
+run "$t" group-destroy vm g9 --yes
+expect_rc 1 "group-destroy whose data check fails"
+err_has "the data check on i-0g9 ended Failed, so whether the instance holds data is not known: nothing was changed (--delete-data destroys it anyway)" "a failed data check"
+since "$m" | grep -q "CFN DeleteStack" && fail "group-destroy went on past a failed data check"
+fake_set "ssm-status=Success&ssm-code=0&ssm-out=CBASE: data shop%0A"
 ok
 run "$t" group-destroy vm g9 --delete-data
 expect_rc 2 "group-destroy without --yes"
@@ -796,4 +841,5 @@ ok
 
 fi
 [ "$(log_count unsigned)" = 0 ] || fail "a call reached the fake without the test's credentials"
+CBASE_TEST_END=1
 echo "cbase_vm_test: ok ($pass checks)"

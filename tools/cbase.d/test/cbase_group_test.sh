@@ -58,6 +58,9 @@ out_has "vm group g9: i-0g9" "group-init vm finds its group"
 printf 'cbase-state 1 vm g9 origin=ec2-i-0g9.compute-1.amazonaws.com addr=dualstack\n' > "$t/want"
 state_of vm g9 | diff -u "$t/want" - || fail "group-init vm's state file"
 ok
+# The state bucket is versioned (a state file overwritten by mistake can be read back).
+since "$m" | grep -q "S3 PutBucketVersioning $BUCKET 200 status=Enabled" || { since "$m" | grep "^S3 " >&2; fail "group-init did not turn on the state bucket's versioning"; }
+ok
 template_of cbase-group-vm-g9 > "$t/tpl"
 for want in "Type: AWS::EC2::Instance" "Key: cbase:vm-group" "Value: g9" "SourcePrefixListId: !Ref CloudFrontPrefixList" \
             "FromPort: 8700" "ToPort: 8799" "HttpTokens: required" "policy/AmazonSSMManagedInstanceCore" \
@@ -232,4 +235,5 @@ out_has "bucket: s3://g9-group-bucket is kept with its files" "group-destroy sta
 ok
 fi
 
+CBASE_TEST_END=1
 echo "cbase_group_test: ok ($pass checks)"

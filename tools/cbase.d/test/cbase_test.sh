@@ -411,6 +411,29 @@ PATH="$path"
 expect_rc 0 "apps g1 through two 429s"
 diff -u "$t/want" "$t/out" || fail "apps g1 through two 429s listed another membership"
 ok
+# Each form of AWS's throttling aws_throttled names is tried again (one failure each, then the call
+# goes through), and a failure that is not throttling is not tried again: one call, refused.
+# shellcheck disable=SC2016 # the shim's own $n and $@
+printf '#!/bin/bash\nn=$(($(cat "%s" 2> /dev/null || echo 0) + 1)); echo "$n" > "%s"\n[ "$n" -gt "$(cat "%s")" ] || { cat "%s" >&2; exit 255; }\nexec "%s" "$@"\n' \
+  "$t/shim/n" "$t/shim/n" "$t/shim/limit" "$t/shim/msg" "$(command -v aws)" > "$t/shim/aws"
+for msg in "An error occurred (ThrottlingException) when calling the GetObject operation: Rate exceeded" \
+           "An error occurred (TooManyRequestsException) when calling the GetObject operation: Rate exceeded" \
+           "Too Many Requests" \
+           "An error occurred (RequestLimitExceeded) when calling the GetObject operation: Request limit exceeded." \
+           "An error occurred (SlowDown) when calling the GetObject operation: status code: 429" \
+           "An error occurred (429) when calling the GetObject operation: slow down"; do
+  printf '%s\n' "$msg" > "$t/shim/msg"; echo 1 > "$t/shim/limit"; rm -f "$t/shim/n"
+  PATH="$t/shim:$path" run "$t" apps g1
+  expect_rc 0 "apps g1 through one [$msg]"
+  diff -u "$t/want" "$t/out" || fail "apps g1 through one [$msg] listed another membership"
+done
+echo "An error occurred (AccessDenied) when calling the GetCallerIdentity operation: Access Denied" > "$t/shim/msg"
+echo 99 > "$t/shim/limit"; rm -f "$t/shim/n"
+PATH="$t/shim:$path" run "$t" apps g1
+expect_rc 1 "apps g1 refused"
+err_has "AWS refused it (AccessDenied)" "apps g1 refused"
+[ "$(cat "$t/shim/n")" = 1 ] || fail "a refusal that is not throttling was tried again ($(cat "$t/shim/n") calls)"
+ok
 run "$t" apps g9
 expect_rc 1 "apps of a group with no state"
 err_has "no state file for vm g9 group, static g9 group: no app has joined it yet" "apps of a group with no state"
@@ -453,6 +476,13 @@ bad_state "line 3 gives port 8701 to c, and b holds it" 'cbase-state 1 vm g1\nap
 bad_state "line 3 lists b again" 'cbase-state 1 vm g1\napp=b port=8701 service=cbase-b.service mem=1\napp=b port=8702 service=cbase-b.service mem=1\n'
 bad_state "line 2 holds port 9000, outside 8700-8799" 'cbase-state 1 vm g1\napp=b port=9000 service=cbase-b.service mem=1\n'
 bad_state "line 2 names service cbase-x.service for app b" 'cbase-state 1 vm g1\napp=b port=8701 service=cbase-x.service mem=1\n'
+# The range's last port is a member's like any other, and with all of 8700-8799 held a join is refused.
+{ echo "cbase-state 1 vm g1"; for i in $(seq 0 99); do echo "app=p$i port=$((8700 + i)) service=cbase-p$i.service mem=1"; done; } > "$t/full"
+aws s3api put-object --bucket "$BUCKET" --key vm/g1.txt --body "$t/full" > /dev/null
+run "$c" state join
+expect_rc 1 "a join to a group whose every port is held"
+err_has "vm group g1 has no free port: all of 8700-8799 are held" "every port held"
+ok
 start_fake --resource "$VM_G1"
 run "$b" apps
 expect_rc 1 "no state bucket"
@@ -735,6 +765,23 @@ for k in other/index.html site-admin/app.js siteish.txt index.html; do
 done
 fake_set list-ignores-prefix=0
 ok
+# The folder's own key (site/ itself, the object a console's "create folder" makes) is no file of the
+# folder: left alone. CBASE_PRUNE=yes is not CBASE_PRUNE=1: no prune.
+seed site/
+m="$(mark)"
+run "$site" deploy --prune
+expect_rc 0 "a prune with the folder's own key"
+err_has "prune: s3://$SITE_BUCKET/site/ is outside site/, and is left alone" "the folder's own key"
+aws s3api head-object --bucket "$SITE_BUCKET" --key site/ > /dev/null 2>&1 || fail "the prune deleted the folder's own key"
+seed site/stale3.js
+m="$(mark)"
+rc=0
+(cd "$site" && CBASE_PRUNE=yes "$tool" deploy) > "$t/out" 2> "$t/err" || rc=$?
+expect_rc 0 "a deploy with CBASE_PRUNE=yes"
+since "$m" | grep -q '^DELETE ' && fail "CBASE_PRUNE=yes pruned"
+aws s3api delete-object --bucket "$SITE_BUCKET" --key site/ > /dev/null
+aws s3api delete-object --bucket "$SITE_BUCKET" --key site/stale3.js > /dev/null
+ok
 
 fi
 # ---- the safety rules --------------------------------------------------------------------------
@@ -756,6 +803,14 @@ for how in replace-bucket remove-bucket; do
 done
 # A distribution replaced on a redeploy: downtime, so refused and the change set deleted; then
 # allowed with --allow-downtime.
+# A replacement CloudFormation decides as it runs (Conditional) is a replacement: refused the same.
+fake_set changes=conditional-bucket
+m="$(mark)"
+run "$site" deploy
+expect_rc 1 "a change set that may replace the bucket"
+err_has "refused: the bucket Bucket would be replaced (Replacement: Conditional)" "a Conditional replacement"
+since "$m" | grep -qE "CFN ExecuteChangeSet|^PUT " && fail "a Conditional replacement changed something"
+ok
 fake_set changes=replace-distribution
 m="$(mark)"
 run "$site" deploy
@@ -771,6 +826,15 @@ run "$site" deploy --allow-downtime
 expect_rc 0 "a distribution replacement with --allow-downtime"
 err_has "downtime: allowed (--allow-downtime)" "an allowed replacement"
 since "$m" | grep -q "CFN ExecuteChangeSet cbase-app-site ok" || fail "an allowed replacement was not executed"
+# CBASE_ALLOW_DOWNTIME=1 is the flag's spelling in the environment, and no other value is.
+rc=0
+(cd "$site" && CBASE_ALLOW_DOWNTIME=yes "$tool" deploy) > "$t/out" 2> "$t/err" || rc=$?
+expect_rc 1 "a distribution replacement with CBASE_ALLOW_DOWNTIME=yes"
+err_has "after an app's first deploy no deploy may: refused, and the change set deleted" "CBASE_ALLOW_DOWNTIME=yes is not 1"
+rc=0
+(cd "$site" && CBASE_ALLOW_DOWNTIME=1 "$tool" deploy) > "$t/out" 2> "$t/err" || rc=$?
+expect_rc 0 "a distribution replacement with CBASE_ALLOW_DOWNTIME=1"
+err_has "downtime: allowed (--allow-downtime)" "CBASE_ALLOW_DOWNTIME=1"
 fake_set changes=auto
 ok
 # Drift: printed and refused, then allowed with --accept-drift (and CBASE_ACCEPT_DRIFT=1).
@@ -791,6 +855,10 @@ ok
 rc=0
 (cd "$site" && CBASE_ACCEPT_DRIFT=1 "$tool" deploy) > "$t/out" 2> "$t/err" || rc=$?
 expect_rc 0 "a drifted stack, accepted by CBASE_ACCEPT_DRIFT=1"
+rc=0
+(cd "$site" && CBASE_ACCEPT_DRIFT=yes "$tool" deploy) > "$t/out" 2> "$t/err" || rc=$?
+expect_rc 1 "a drifted stack with CBASE_ACCEPT_DRIFT=yes (not 1)"
+err_has "the cbase-app-site stack drifted from its template (above)" "CBASE_ACCEPT_DRIFT=yes is not 1"
 fake_set drift=0
 ok
 # DRY_RUN: the change set made, printed and deleted; nothing executed, uploaded or joined.
@@ -814,6 +882,16 @@ expect_rc 0 "a new app's dry run"
 since "$m" | grep -q "CFN DeleteStack cbase-app-dry" || fail "a new app's dry run left its empty stack"
 [ "$(template_of cbase-app-dry)" = "(none)" ] || fail "a new app's dry run left a stack"
 since "$m" | grep -qE "^PUT |CFN ExecuteChangeSet" && fail "a new app's dry run changed something"
+ok
+out_has "deploy: dry to account $ACCOUNT (dry run: nothing is changed)" "--dry-run says so first"
+ok
+# DRY_RUN is a dry run when it is 1 (what --dry-run sets), and no other value is one: DRY_RUN=0 deploys.
+m="$(mark)"
+rc=0
+(cd "$dry" && DRY_RUN=0 "$tool" deploy) > "$t/out" 2> "$t/err" || rc=$?
+expect_rc 0 "a deploy with DRY_RUN=0"
+since "$m" | grep -q "CFN ExecuteChangeSet cbase-app-dry ok" || fail "DRY_RUN=0 was taken for a dry run"
+out_has "deployed dry: https://" "DRY_RUN=0 deploys"
 ok
 
 fi
@@ -850,6 +928,82 @@ no_secret "the failed execute"
 err_has "executing change set cbase-deploy on cbase-app-site failed:" "the failed execute"
 err_has "(a line naming an origin header or a parameter value, not shown)" "the failed execute's message"
 fake_set "fail-execute=0&secret=&secret2="
+ok
+# The failed execute left its change set (CloudFormation keeps it): the next deploy deletes it first,
+# then makes its own (a second of the same name would be refused as existing).
+m="$(mark)"
+run "$site" deploy
+expect_rc 0 "a deploy after a failed execute"
+since "$m" | grep -m1 "CFN .*ChangeSet cbase-app-site" | grep -q "CFN DeleteChangeSet cbase-app-site ok" || fail "the failed execute's change set was not cleared first"
+ok
+# A first deploy whose execute failed leaves a stack in REVIEW_IN_PROGRESS with its change set: the
+# next deploy is a create again, its change set cleared first.
+fresh="$(app fresh "CBASE_APP = fresh" "CBASE_VM = none" "CBASE_STATIC = site")"
+mkdir -p "$fresh/build" && printf 'x\n' > "$fresh/build/index.html"
+fake_set fail-execute=1
+run "$fresh" deploy
+expect_rc 1 "a first deploy whose execute fails"
+fake_set fail-execute=0
+m="$(mark)"
+run "$fresh" deploy
+expect_rc 0 "a deploy after a failed first execute"
+out_has "stack: cbase-app-fresh is new" "a stack in REVIEW_IN_PROGRESS is new"
+since "$m" | grep -q "CFN DeleteChangeSet cbase-app-fresh ok" || fail "the first execute's change set was not cleared"
+since "$m" | grep -q "CFN CreateChangeSet cbase-app-fresh CREATE ok" || fail "the stack in REVIEW_IN_PROGRESS was not created"
+ok
+# A change set that fails for a reason other than "no changes": the reason printed, the change set
+# deleted, nothing executed.
+fake_set "cs-fail=Template format error: Unresolved resource dependencies Nope in the Resources block of the template"
+m="$(mark)"
+run "$site" deploy
+expect_rc 1 "a change set that fails"
+err_has "cbase: change set cbase-deploy on cbase-app-site failed:" "a change set that fails"
+err_has "  Template format error: Unresolved resource dependencies Nope" "the change set's reason"
+since "$m" | sed -n '/CFN CreateChangeSet cbase-app-site/,$p' | grep -q "CFN DeleteChangeSet cbase-app-site ok" || fail "a failed change set was not deleted"
+since "$m" | grep -q "CFN ExecuteChangeSet" && fail "a failed change set was executed"
+fake_set cs-fail=
+ok
+# CloudFormation's other wording of "no changes": up to date, as the first.
+fake_set "cs-fail=No updates are to be performed."
+run "$site" deploy
+expect_rc 0 "a change set that ends No updates are to be performed"
+out_has "stack: cbase-app-site is up to date (no changes)" "No updates are to be performed"
+fake_set cs-fail=
+ok
+# An update that fails and rolls back: the stack's failed resources, masked, and status 1.
+fake_set "stack-fail=1&secret=$SECRET&changes=replace-distribution"
+run "$site" deploy --allow-downtime
+expect_rc 1 "an update that fails"
+err_has "cbase: the cbase-app-site stack did not finish (stack-update-complete). Its failed resources:" "an update that fails"
+err_has "  Router	The function code is too large" "the failed resource's reason"
+err_has "  (a line naming an origin header or a parameter value, not shown)" "a failed resource's reason that names a header"
+no_secret "the failed resources"
+fake_set "stack-fail=0&secret=&changes=auto&stack-status=cbase-app-site:UPDATE_COMPLETE"
+ok
+# A stack another deploy (or CloudFormation) is still working on: refused before any change set.
+fake_set "stack-status=cbase-app-site:UPDATE_IN_PROGRESS"
+m="$(mark)"
+run "$site" deploy
+expect_rc 1 "a stack in UPDATE_IN_PROGRESS"
+err_has "the cbase-app-site stack is UPDATE_IN_PROGRESS: another deploy is running, or CloudFormation is still working" "a stack in progress"
+since "$m" | grep -q "CFN CreateChangeSet" && fail "a stack in progress got a change set"
+fake_set "stack-status=cbase-app-site:UPDATE_COMPLETE"
+ok
+# A first create that fails rolls back to ROLLBACK_COMPLETE, which CloudFormation updates never: the
+# next deploy says to delete the stack.
+doomed="$(app doomed "CBASE_APP = doomed" "CBASE_VM = none" "CBASE_STATIC = site")"
+mkdir -p "$doomed/build" && printf 'x\n' > "$doomed/build/index.html"
+fake_set stack-fail=1
+run "$doomed" deploy
+expect_rc 1 "a first create that fails"
+err_has "cbase: the cbase-app-doomed stack did not finish (stack-create-complete). Its failed resources:" "a first create that fails"
+fake_set stack-fail=0
+m="$(mark)"
+run "$doomed" deploy
+expect_rc 1 "a deploy onto ROLLBACK_COMPLETE"
+err_has "the cbase-app-doomed stack's first create failed and rolled back (ROLLBACK_COMPLETE)" "ROLLBACK_COMPLETE"
+err_has "aws cloudformation delete-stack --region us-east-1 --stack-name cbase-app-doomed" "ROLLBACK_COMPLETE names the delete"
+since "$m" | grep -q "CFN CreateChangeSet" && fail "a stack in ROLLBACK_COMPLETE got a change set"
 ok
 
 fi
@@ -891,6 +1045,9 @@ m="$(mark)"
 run "$deep" deploy
 expect_rc 0 "a domain whose certificate is requested, with a zone"
 since "$m" | grep -q "ACM RequestCertificate a.corp.example.com" || fail "no certificate was requested for a.corp.example.com"
+# The token: the app and its hostnames, cksum'd, so a re-run within the hour is the same request.
+token="cbase$(printf '%s %s' deep a.corp.example.com | cksum | cut -d' ' -f1)"
+since "$m" | grep -q "ACM RequestCertificate a.corp.example.com token=$token" || { since "$m" | grep ACM >&2; fail "the request's idempotency token is not cbase<cksum of the app and its hostnames>"; }
 since "$m" | grep -qE "R53 UPSERT Z0EXAMPLE _v[0-9]+\.a\.corp\.example\.com\. CNAME _a[0-9]+\.acm-validations\.aws\." \
   || { since "$m" >&2; fail "the validation record was not written"; }
 since "$m" | grep -q "ACM issued" || fail "the requested certificate was not issued"
@@ -971,6 +1128,8 @@ m="$(mark)"
 run "$two" deploy
 expect_rc 0 "three hostnames, one of them uncovered"
 since "$m" | grep -q "ACM RequestCertificate example.com,app.example.com,shop.org" || { since "$m" | grep ACM >&2; fail "the request did not name every hostname"; }
+token="cbase$(printf '%s %s' two "example.com app.example.com shop.org" | cksum | cut -d' ' -f1)"
+since "$m" | grep -q "ACM RequestCertificate example.com,app.example.com,shop.org token=$token" || fail "the three hostnames' idempotency token"
 since "$m" | grep -qE "R53 UPSERT Z0SHOPORG _v[0-9]+\.shop\.org\. CNAME" || fail "shop.org's validation record was not written in its zone"
 since "$m" | grep -qE "R53 UPSERT Z0EXAMPLE _v[0-9]+\.app\.example\.com\. CNAME" || fail "app.example.com's validation record was not written"
 since "$m" | grep -q "ACM issued" || fail "the certificate for three hostnames was not issued"
@@ -1034,6 +1193,28 @@ expect_rc 0 "the hostname freed"
 # Its own distribution holding the hostname is no conflict (a redeploy).
 run "$taken" deploy
 expect_rc 0 "a redeploy of a hostname the app's own distribution holds"
+ok
+# A staged attach: deploy --no-aliases makes the distribution without the hostname another one holds,
+# and prints the CNAME and the TXT record to set; deploy --attach then moves the hostname onto it
+# (associate-alias) and runs the update that names it with rollback off.
+fake_set "foreign-dist=EOLDDIST:dold.cloudfront.net:move.example.com"
+moving="$(app moving "CBASE_APP = moving" "CBASE_VM = none" "CBASE_STATIC = site" "CBASE_DOMAIN = move.example.com")"
+mkdir -p "$moving/build" && printf 'x\n' > "$moving/build/index.html"
+m="$(mark)"
+run "$moving" deploy --no-aliases
+expect_rc 0 "a staged attach's first step"
+grep -Eq "^point move\.example\.com at d[0-9]+fake\.cloudfront\.net \(a CNAME" "$t/out" || { cat "$t/out" >&2; fail "--no-aliases does not say where to point the hostname"; }
+grep -Eq "^  and add: _move\.example\.com TXT d[0-9]+fake\.cloudfront\.net " "$t/out" || fail "--no-aliases does not name the TXT record"
+since "$m" | grep -qE "R53 UPSERT|CF AssociateAlias" && fail "--no-aliases wrote a record or moved a hostname"
+ok
+m="$(mark)"
+run "$moving" deploy --attach
+expect_rc 0 "a staged attach's second step"
+grep -Eq "^attach: move\.example\.com moved from EOLDDIST to E[0-9]+FAKEDIST$" "$t/out" || { cat "$t/out" >&2; fail "--attach did not move the hostname"; }
+since "$m" | grep -q "CF AssociateAlias .* move.example.com" || fail "--attach made no associate-alias"
+since "$m" | grep -q "CFN ExecuteChangeSet cbase-app-moving ok rollback=off" || { since "$m" | grep ExecuteChangeSet >&2; fail "the attach's update was not run with rollback off"; }
+since "$m" | grep -q "R53 UPSERT Z0EXAMPLE move.example.com A alias=d" || fail "--attach did not point the hostname"
+fake_set foreign-dist=
 ok
 
 fi
@@ -1305,4 +1486,5 @@ ok
 
 fi
 [ "$(log_count unsigned)" = 0 ] || fail "a call reached the fake without the test's credentials"
+CBASE_TEST_END=1
 echo "cbase_test: ok ($pass checks)"
