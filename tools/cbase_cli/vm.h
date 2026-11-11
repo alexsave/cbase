@@ -87,6 +87,7 @@ void cbc_vm_build(cbc_vm_artifact *out);
 typedef struct {
   char *id;             /* VM_ID: the instance */
   char *dns;            /* VM_DNS: its public DNS name, or the group's origin */
+  char *origin_addr;    /* VM_ORIGIN_ADDR: ipv6 or dualstack, "" for none */
   char *type;           /* VM_TYPE */
   long long mib;        /* VM_MIB */
   char *bin;            /* VM_BIN: the server file */
@@ -124,5 +125,28 @@ bool cbc_vm_ship(const char *group);
 
 /* cbc_vm_undeploy: the service stopped and removed, then the membership left (vm_undeploy). */
 void cbc_vm_undeploy(const char *group, bool delete_data);
+
+/* cbc_vm_origin: the group's origin, read before anything is changed (vm_origin): sets dns and
+ * origin_addr. */
+void cbc_vm_origin(const char *group);
+
+/* cbc_vm_plan_dry: what a deploy would claim on the group, from the state file, writing nothing
+ * (vm_plan_dry). Sets cbc_vm.port. Exits 1 when the app would not fit. */
+void cbc_vm_plan_dry(const char *group);
+
+/* ENTRY POINTS for deploy, undeploy and group-destroy (see the comment above them in vm.c for the
+ * order). cbc_vm_deploy_find: deploy step 1 for a VM group (vm_find, the paths line, vm_origin, the
+ * adopted group's state bucket, vm_origin_secret). */
+void cbc_vm_deploy_find(const char *group);
+
+/* cbc_vm_deploy_build: deploy step 3 (vm_build): sets cbc_vm.bin and cbc_vm.sha. Not on a dry run. */
+void cbc_vm_deploy_build(void);
+
+/* cbc_vm_deploy_join: deploy step 5 (vm_join, or vm_plan_dry when DRY is true). */
+void cbc_vm_deploy_join(const char *group, bool dry);
+
+/* cbc_vm_data_check: group-destroy's check of which apps' data is on INSTANCE: fills APPS and returns
+ * whether the SSM command ended Success (cbc_vm.ssm_status). */
+bool cbc_vm_data_check(const char *instance, const char *group, cbc_strs *apps);
 
 #endif

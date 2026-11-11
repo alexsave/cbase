@@ -513,6 +513,8 @@ static long vm_polls(void) {
 
 static char *ssm_command_id = "";
 
+static cbc_sbuf last_lines;   /* the masked CBASE lines of the last ssm_run (ssm-lines) */
+
 /* vm_ssm_read: one read of the command; true once it has ended. */
 static bool ssm_read(void) {
   cbc_buf out = { 0 };
@@ -572,6 +574,7 @@ static void ssm_run(const char *script, const char *what) {
   }
   if (!lines.d) cbc_sb_str(&lines, "");
   write_text(cbc_tmp_path("ssm-lines"), lines.d);
+  last_lines = lines;
   p = lines.d;
   while (*p) {
     char *nl = strchr(p, '\n');
@@ -580,7 +583,6 @@ static void ssm_run(const char *script, const char *what) {
     else printf("%.*s\n", (int)len, p);
     p = nl ? nl + 1 : p + len;
   }
-  cbc_vm.ssm_status = cbc_vm.ssm_status ? cbc_vm.ssm_status : "";
 }
 
 /* The exit status shown in the messages: the command's, or "?" when it has none. */
@@ -635,4 +637,119 @@ void cbc_vm_undeploy(const char *group, bool delete_data) {
     cbc_fail(CBC_EXIT_FAIL, "the undeploy of %s on %s ended %s (exit %s); it still holds its port, and nothing else was changed",
              cbc_conf.app, cbc_vm.id, cbc_vm.ssm_status, ssm_code_shown());
   state_change("vm", group, cbc_conf.app, "", "leave");
+}
+
+/* ---- vm_origin, vm_plan_dry and the entry points deploy, undeploy and group-destroy call ---- */
+
+/* STAND-INS, until agent A exports these from state.c (and the group agent exports its helpers in
+ * group.h). Each is weak, so the real definition replaces it at link, and each stand-in is deleted
+ * when its real one lands. Until then, the vm_origin and vm_plan_dry paths that read them are NOT
+ * faithful: state_read does not honour state_no_bucket, state_held_origin is "" and state_origin_addr
+ * is "", and state_fit_report_text is "". The group stand-ins stop the tool rather than guess. */
+char *state_held_origin __attribute__((weak)) = "";      /* ST_ORIGIN after state_read */
+char *state_origin_addr __attribute__((weak)) = "";      /* ST_ORIGIN_ADDR after state_origin */
+char *state_fit_report_text __attribute__((weak)) = "";  /* STATE_FIT_REPORT (state.c's state_fit_report) */
+bool state_no_bucket __attribute__((weak)) = false;      /* STATE_NO_BUCKET (state.sh): read no file */
+
+__attribute__((weak)) int group_state_bucket_found(void) {
+  cbc_fail(CBC_EXIT_FAIL, "internal: group_state_bucket_found is not linked (group.h, not yet in this tree)");
+}
+__attribute__((weak)) void group_state_bucket_adopted(const char *region, const char *group) {
+  (void)region;
+  (void)group;
+  cbc_fail(CBC_EXIT_FAIL, "internal: group_state_bucket_adopted is not linked (group.h, not yet in this tree)");
+}
+
+/* vm_origin GROUP: the group's origin (the state file's, or this app's CBASE_VM_ORIGIN recorded now),
+ * read before anything is changed. A dry run with neither lists the problem and goes on with the
+ * placeholder. */
+void cbc_vm_origin(const char *group) {
+  state_origin_in = cbc_conf.vm_origin;
+  if (*cbc_conf.vm_stack && group_state_bucket_found() != 0) {
+    state_no_bucket = true;
+    state_read("vm", group);
+    state_no_bucket = false;
+  } else {
+    state_read("vm", group);
+  }
+  char *held = state_held_origin;
+  if (state_origin(group)) {
+    cbc_vm.dns = state_held_origin;
+    cbc_vm.origin_addr = state_origin_addr;
+    if (*held)
+      printf("vm origin: %s (%s), the group's (its state file)\n", cbc_vm.dns, cbc_vm.origin_addr);
+    else
+      printf("vm origin: %s (%s), the group's: CBASE_VM_ORIGIN, recorded in its state file by this deploy\n",
+             cbc_vm.dns, cbc_vm.origin_addr);
+    return;
+  }
+  char *what = fmt_dup("vm group %s has no origin recorded and %s names none: set CBASE_VM_ORIGIN (the VM's AAAA hostname) once",
+                       group, cbc_conf.app);
+  dry_stop(what, fmt_dup("cbase: %s, in this app's cbase.conf. Nothing was changed.", what));
+  cbc_vm.dns = *cbc_vm.dns ? cbc_vm.dns : "unrecorded-origin.invalid";
+  cbc_vm.origin_addr = "";
+}
+
+/* vm_plan_dry GROUP: what a deploy would claim, from the state file, writing nothing. */
+void cbc_vm_plan_dry(const char *group) {
+  cbc_vm_fit_set();
+  state_read("vm", group);
+  long at = state_at(cbc_conf.app);
+  state_port = (char *)state_port_of(group, cbc_conf.vm_port, at);
+  char *line = state_vm_line(cbc_conf.app, state_port, cbc_conf_mem(), cbc_conf.vm_data);
+  if (!state_fit(cbc_conf.app, line)) {
+    fprintf(stderr, "%s\n", state_fit_report_text);
+    fprintf(stderr, "cbase: %s would not fit on vm group %s (%s)\n", cbc_conf.app, group, state_fit_what);
+    exit(CBC_EXIT_FAIL);
+  }
+  printf("vm: would join vm group %s as %s\n", group, line);
+  printf("%s\n", state_fit_report_text);
+  cbc_vm.port = state_port;
+}
+
+/* ---- the entry points ----
+ * tools/cbase's deploy calls, in this order: cbc_vm_deploy_find (step 1), cbc_vm_deploy_build (step
+ * 3, not on a dry run), cbc_vm_deploy_join (step 5, with the stack's VmOrigin = cbc_vm.dns, VmPort =
+ * cbc_vm.port and OriginSecret = cbc_vm.origin_secret), then after the stack executes cbc_vm_ship
+ * (step 7; on false it calls stack_discard and exits 1). undeploy calls cbc_vm_undeploy. group-destroy
+ * calls cbc_vm_data_check on the instance it found. */
+
+void cbc_vm_deploy_find(const char *group) {
+  cbc_vm_find(group);
+  char *bucket = NULL, *prefix = NULL;
+  cbc_vm_artifacts(aws_account, aws_region_required(), state_bucket(), &bucket, &prefix);
+  printf("vm paths: settings SSM %s, servers s3://%s/%s\n", cbc_vm_settings(), bucket, prefix);
+  cbc_vm_origin(group);
+  if (*cbc_conf.vm_stack) group_state_bucket_adopted(aws_region_required(), group);
+  cbc_vm_origin_secret();
+}
+
+void cbc_vm_deploy_build(void) {
+  cbc_vm_artifact a = { 0 };
+  cbc_vm_build(&a);
+  cbc_vm.bin = a.bin;
+  cbc_vm.sha = a.sha;
+}
+
+void cbc_vm_deploy_join(const char *group, bool dry) {
+  if (dry) cbc_vm_plan_dry(group);
+  else cbc_vm_join(group);
+}
+
+/* group-destroy's data check: the instance INSTANCE is checked for the apps whose data is on it.
+ * Fills APPS with each name and returns whether the command ended Success. The caller prints the
+ * refusal and decides (its status is cbc_vm.ssm_status). */
+bool cbc_vm_data_check(const char *instance, const char *group, cbc_strs *apps) {
+  cbc_vm.id = cbc_dup(instance);
+  char *script = cbc_vm_remote_data();
+  write_text(cbc_tmp_path("vm-data.sh"), script);
+  ssm_run(script, fmt_dup("data check of vm group %s", group));
+  char *p = last_lines.d ? last_lines.d : "";
+  while (*p) {
+    char *nl = strchr(p, '\n');
+    size_t len = nl ? (size_t)(nl - p) : strlen(p);
+    if (len >= 13 && strncmp(p, "CBASE: data ", 12) == 0) cbc_strs_push(apps, cbc_dupn(p + 12, len - 12));
+    p = nl ? nl + 1 : p + len;
+  }
+  return strcmp(cbc_vm.ssm_status, "Success") == 0;
 }
