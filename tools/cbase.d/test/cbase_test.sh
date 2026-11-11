@@ -278,6 +278,19 @@ rc=0
 expect_rc 0 "credentials from a profile"
 out_has "a joined vm group g1: app=a port=8700 service=cbase-a.service mem=128" "credentials from a profile"
 ok
+# Calls that write far more than a pipe holds to stderr before they answer (a reader of stdout alone would
+# stall the child): the tool still gets every answer. The shim is loud on stderr, then the real CLI runs.
+mkdir -p "$t/loud"
+# shellcheck disable=SC2016 # the shim's own text
+printf '#!/bin/bash\nhead -c 300000 /dev/zero | tr "\\0" x >&2\necho >&2\nexec "%s" "$@"\n' "$(command -v aws)" > "$t/loud/aws"
+chmod +x "$t/loud/aws"
+path="$PATH"; PATH="$t/loud:$PATH"
+rc=0
+(cd "$d" && AWS_PROFILE=deploy AWS_SHARED_CREDENTIALS_FILE="$t/creds" "$tool" state join) > "$t/out" 2> "$t/err" || rc=$?
+PATH="$path"
+expect_rc 0 "calls with a loud stderr"
+out_has "a is in vm group g1: app=a port=8700 service=cbase-a.service mem=128" "calls with a loud stderr"
+ok
 
 fi
 # ---- groups: found by tag, and not found -------------------------------------------------------

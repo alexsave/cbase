@@ -5,6 +5,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <regex.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -160,16 +161,63 @@ char *cbc_replace_all(const char *s, const char *from, const char *to) {
   return b.data ? b.data : cbc_dup("");
 }
 
-int cbc_run_err(char *const argv[], cbc_buf *out, const char *err_path) {
-  int pfd[2] = { -1, -1 };
-  if (out && pipe(pfd) != 0) return -1;
+/* drain: reads the pipe ends in FDS (-1 for a closed one) into their buffers BUFS until each is at its end,
+ * with poll, so neither can fill and block the child. */
+static void drain(int fds[2], cbc_buf *bufs[2]) {
+  char chunk[4096];
+  for (;;) {
+    struct pollfd pf[2];
+    int map[2], n = 0;
+    for (int i = 0; i < 2; i++) {
+      if (fds[i] < 0) continue;
+      pf[n].fd = fds[i];
+      pf[n].events = POLLIN;
+      pf[n].revents = 0;
+      map[n++] = i;
+    }
+    if (n == 0) return;
+    if (poll(pf, (nfds_t)n, -1) < 0) {
+      if (errno == EINTR) continue;
+      return;
+    }
+    for (int k = 0; k < n; k++) {
+      if (!(pf[k].revents & (POLLIN | POLLHUP | POLLERR))) continue;
+      int i = map[k];
+      ssize_t r = read(fds[i], chunk, sizeof chunk);
+      if (r < 0 && errno == EINTR) continue;
+      if (r <= 0) {
+        close(fds[i]);
+        fds[i] = -1;
+      } else {
+        cbc_buf_add(bufs[i], chunk, (size_t)r);
+      }
+    }
+  }
+}
+
+int cbc_run_capture(char *const argv[], cbc_buf *out, cbc_buf *err) {
+  int pfd[2][2] = { { -1, -1 }, { -1, -1 } };   /* [0] stdout, [1] stderr */
+  cbc_buf *bufs[2] = { out, err };
+  for (int i = 0; i < 2; i++) {
+    if (bufs[i] && pipe(pfd[i]) != 0) {
+      for (int j = 0; j < i; j++) {
+        if (bufs[j]) {
+          close(pfd[j][0]);
+          close(pfd[j][1]);
+        }
+      }
+      return -1;
+    }
+  }
   fflush(stdout);
   fflush(stderr);
   pid_t pid = fork();
   if (pid < 0) {
-    if (out) {
-      close(pfd[0]);
-      close(pfd[1]);
+    for (int i = 0; i < 2; i++) {
+      if (bufs[i]) {
+        close(pfd[i][0]);
+        close(pfd[i][1]);
+      }
     }
     return -1;
   }
@@ -179,34 +227,22 @@ int cbc_run_err(char *const argv[], cbc_buf *out, const char *err_path) {
       dup2(nul, STDIN_FILENO);
       close(nul);
     }
-    if (out) {
-      dup2(pfd[1], STDOUT_FILENO);
-      close(pfd[0]);
-      close(pfd[1]);
-    }
-    if (err_path) {
-      int efd = open(err_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
-      if (efd >= 0) {
-        dup2(efd, STDERR_FILENO);
-        close(efd);
-      }
+    for (int i = 0; i < 2; i++) {
+      if (!bufs[i]) continue;
+      dup2(pfd[i][1], i == 0 ? STDOUT_FILENO : STDERR_FILENO);
+      close(pfd[i][0]);
+      close(pfd[i][1]);
     }
     execvp(argv[0], argv);
     _exit(127);
   }
-  if (out) {
-    close(pfd[1]);
-    char chunk[4096];
-    ssize_t r;
-    while ((r = read(pfd[0], chunk, sizeof chunk)) != 0) {
-      if (r < 0) {
-        if (errno == EINTR) continue;
-        break;
-      }
-      cbc_buf_add(out, chunk, (size_t)r);
-    }
-    close(pfd[0]);
+  int rfd[2] = { -1, -1 };
+  for (int i = 0; i < 2; i++) {
+    if (!bufs[i]) continue;
+    close(pfd[i][1]);
+    rfd[i] = pfd[i][0];
   }
+  drain(rfd, bufs);
   int st = 0;
   while (waitpid(pid, &st, 0) < 0) {
     if (errno != EINTR) return -1;
@@ -215,6 +251,8 @@ int cbc_run_err(char *const argv[], cbc_buf *out, const char *err_path) {
   if (WIFSIGNALED(st)) return 128 + WTERMSIG(st);
   return -1;
 }
+
+int cbc_run(char *const argv[], cbc_buf *out) { return cbc_run_capture(argv, out, NULL); }
 
 void cbc_strip_newlines(cbc_buf *b) {
   while (b->len > 0 && b->data[b->len - 1] == '\n') b->data[--b->len] = '\0';
@@ -398,21 +436,6 @@ static bool re_flags(const char *re, const char *s, int flags) {
 
 bool cbc_re(const char *re, const char *s) { return re_flags(re, s, 0); }
 bool cbc_re_icase(const char *re, const char *s) { return re_flags(re, s, REG_ICASE); }
-
-bool cbc_file_matches(const char *file, const char *re, bool icase) {
-  char *data;
-  size_t len;
-  if (!cbc_read_file(file, &data, &len)) return false;
-  char *p = data;
-  for (;;) {
-    char *nl = strchr(p, '\n');
-    if (nl) *nl = '\0';
-    if (icase ? cbc_re_icase(re, p) : cbc_re(re, p)) return true;
-    if (!nl) break;
-    p = nl + 1;
-  }
-  return false;
-}
 
 static bool is_blank(char c) { return c == ' ' || c == '\t'; }
 

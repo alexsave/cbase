@@ -14,7 +14,7 @@
 
 char *aws_account = "";
 
-static char *err_path = "";   /* AWS_ERR: the last failed call's stderr */
+static cbc_buf aws_err;   /* AWS_ERR: the stderr of the last call, emptied as each attempt starts (a success leaves it empty) */
 static cbc_strs mask_values;   /* aws_mask_add's values */
 
 void aws_mask_add(const char *value) { cbc_strs_push(&mask_values, cbc_dup(value)); }
@@ -24,7 +24,6 @@ static const int AWS_ATTEMPTS = 5;
 void aws_init(void) {
   if (!cbc_on_path("aws"))
     cbc_fail(CBC_EXIT_FAIL, "the AWS CLI (aws) is not on PATH: install AWS CLI v2 (https://docs.aws.amazon.com/cli/)");
-  err_path = cbc_tmp_path("aws.err");
   setenv("AWS_PAGER", "", 1);
   cbc_buf out = { 0 };
   if (aws_call(&out, "sts", "get-caller-identity", "--query", "Account", "--output", "text", NULL) != 0) {
@@ -40,12 +39,26 @@ void aws_init(void) {
 /* aws_stagger_ms: 0-99, the name's cksum mod 100. Deterministic (state.sh says why). */
 static long aws_stagger_ms(const char *name) { return (long)(cbc_cksum(name) % 100); }
 
+/* err_text: the last call's stderr, "" when it wrote none. */
+static const char *err_text(void) { return aws_err.data ? aws_err.data : ""; }
+
+/* err_matches: whether any line of the last call's stderr matches RE (grep -q, line by line); ICASE as grep -i. */
+static bool err_matches(const char *re, bool icase) {
+  char *copy = cbc_dup(err_text());
+  for (char *p = copy;;) {
+    char *nl = strchr(p, '\n');
+    if (nl) *nl = '\0';
+    if (icase ? cbc_re_icase(re, p) : cbc_re(re, p)) return true;
+    if (!nl) return false;
+    p = nl + 1;
+  }
+}
+
 /* aws_throttled: the last failure was AWS's throttling (aws.sh's pattern, case-insensitively). */
 static bool aws_throttled(void) {
-  return cbc_file_matches(err_path,
-                          "Throttling|TooManyRequests|Too Many Requests|RequestLimitExceeded|"
-                          "(HTTP|status|code)[^0-9A-Za-z]{0,8}429([^0-9]|$)|\\(429\\)",
-                          true);
+  return err_matches("Throttling|TooManyRequests|Too Many Requests|RequestLimitExceeded|"
+                     "(HTTP|status|code)[^0-9A-Za-z]{0,8}429([^0-9]|$)|\\(429\\)",
+                     true);
 }
 
 int aws_exec(cbc_buf *out, const char *const *head, const char *const *tail) {
@@ -63,7 +76,9 @@ int aws_exec(cbc_buf *out, const char *const *head, const char *const *tail) {
   cbc_buf *sink = out ? out : &discard;
   int rc;
   for (int k = 1;; k++) {
-    rc = cbc_run_err((char *const *)av, sink, err_path);
+    aws_err.len = 0;
+    if (aws_err.data) aws_err.data[0] = '\0';
+    rc = cbc_run_capture((char *const *)av, sink, &aws_err);
     if (rc == 0 || !(k < AWS_ATTEMPTS && aws_throttled())) break;
     long ms = (1000L << (k - 1)) + aws_stagger_ms(cbc_conf.app ? cbc_conf.app : "");
     cbc_sleep_ms(ms);
@@ -95,22 +110,15 @@ int aws_call(cbc_buf *out, ...) {
   return rc;
 }
 
-bool aws_err_contains(const char *text) {
-  char *data;
-  size_t len;
-  if (!cbc_read_file(err_path, &data, &len)) return false;
-  return strstr(data, text) != NULL;
-}
+bool aws_err_contains(const char *text) { return strstr(err_text(), text) != NULL; }
 
 char *aws_code(void) {
-  char *data;
-  size_t len;
   static char code[256];
   code[0] = '\0';
-  if (!cbc_read_file(err_path, &data, &len)) return code;
   regex_t re;
   regcomp(&re, ".*An error occurred \\(([A-Za-z0-9.]*)\\).*", REG_EXTENDED);
-  char *p = data;
+  char *copy = cbc_dup(err_text());
+  char *p = copy;
   for (;;) {
     char *nl = strchr(p, '\n');
     if (nl) *nl = '\0';
@@ -126,6 +134,7 @@ char *aws_code(void) {
     p = nl + 1;
   }
   regfree(&re);
+  free(copy);
   return code;
 }
 
@@ -141,10 +150,8 @@ const char *aws_mask(const char *line) {
 }
 
 void aws_show(int lines) {
-  char *data;
-  size_t len;
-  if (!cbc_read_file(err_path, &data, &len)) return;
-  char *p = data;
+  char *copy = cbc_dup(err_text());
+  char *p = copy;
   int shown = 0;
   while (*p && shown < lines) {
     char *nl = strchr(p, '\n');
@@ -154,13 +161,14 @@ void aws_show(int lines) {
     if (!nl) break;
     p = nl + 1;
   }
+  free(copy);
 }
 
 static void aws_print_failure(const char *what) {
   char *code = aws_code();
-  if (cbc_file_matches(err_path, "Unable to locate credentials|Token has expired|token.*expired|expired.*token|ExpiredToken|The SSO session|InvalidClientTokenId|refresh failed|no valid credential", false)) {
+  if (err_matches("Unable to locate credentials|Token has expired|token.*expired|expired.*token|ExpiredToken|The SSO session|InvalidClientTokenId|refresh failed|no valid credential", false)) {
     fprintf(stderr, "cbase: %s: no usable AWS credentials. Run aws login (or aws sso login), or set AWS_PROFILE.\n", what);
-  } else if (cbc_file_matches(err_path, "Unknown options: --if-", false)) {
+  } else if (err_matches("Unknown options: --if-", false)) {
     fprintf(stderr, "cbase: %s: this AWS CLI is too old for S3 conditional writes (put-object --if-match): update AWS CLI v2.\n", what);
   } else if (!strcmp(code, "AccessDenied") || !strcmp(code, "AccessDeniedException") || !strcmp(code, "UnauthorizedOperation")) {
     const char *profile = getenv("AWS_PROFILE");
@@ -180,8 +188,8 @@ char *aws_region_get(void) {
   r = getenv("AWS_DEFAULT_REGION");
   if (r && *r) return cbc_dup(r);
   char *argv[] = { "aws", "configure", "get", "region", NULL };
-  cbc_buf out = { 0 };
-  cbc_run_err(argv, &out, "/dev/null");
+  cbc_buf out = { 0 }, ignored = { 0 };   /* stderr is not shown */
+  cbc_run_capture(argv, &out, &ignored);
   if (!out.data) return cbc_dup("");
   cbc_strip_newlines(&out);
   return out.data;
@@ -303,10 +311,9 @@ bool aws_poll(int tries, bool (*fn)(void)) {
 }
 
 void aws_set_err_text(const char *text) {
-  FILE *f = fopen(err_path, "w");
-  if (!f) cbc_fail(CBC_EXIT_FAIL, "cannot write %s", err_path);
-  fputs(text, f);
-  fclose(f);
+  aws_err.len = 0;
+  if (aws_err.data) aws_err.data[0] = '\0';
+  cbc_buf_str(&aws_err, text);
 }
 
 /* The plain parameters, whose values may be printed (aws.sh's AWS_PLAIN_PARAMS). */

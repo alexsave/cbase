@@ -1,6 +1,6 @@
 /* aws.h - every AWS call the deploy tool makes (aws.sh; README.md "./cbase deploy tool"). Each is one
  * AWS CLI call read with --query and --output text: the CLI keeps the credentials, and the tool never
- * reads or prints one. A failed call's stderr is kept in a file and classified by the error code the
+ * reads or prints one. The last call's stderr is kept in memory and classified by the error code the
  * CLI prints; what is shown of it is masked (aws_mask). Shell function names are kept where C allows.
  */
 #ifndef CBC_AWS_H
@@ -23,7 +23,7 @@ void aws_init(void);
 
 /* aws_call: runs `aws --no-cli-pager` with the NULL-terminated ARGS, its stdout appended to OUT (may be
  * NULL to discard it). A throttled call is tried again, up to five times in all. Returns the status of
- * the last attempt; its stderr is in the error file, read by aws_code and aws_fail. */
+ * the last attempt; its stderr is held, read by aws_code and aws_fail. */
 int aws_call(cbc_buf *out, ...);
 
 /* aws_exec: the one core every call goes through: `aws --no-cli-pager`, then the words of HEAD, then the
@@ -83,7 +83,7 @@ void aws_no_state_bucket(const char *bucket) __attribute__((noreturn));
  * stderr (aws.sh's aws_show). */
 void aws_show(int lines);
 
-/* aws_set_err_text: replaces the last failed call's stderr file with TEXT, exactly (the shell writes the
+/* aws_set_err_text: replaces the held stderr of the last call with TEXT, exactly (the shell writes the
  * change set's status reason or the events there before aws_show). */
 void aws_set_err_text(const char *text);
 

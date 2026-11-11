@@ -71,12 +71,13 @@ char *cbc_buf_first_line(const cbc_buf *b);
 /* cbc_replace_all: a new string, S with every FROM replaced by TO. FROM must not be empty. */
 char *cbc_replace_all(const char *s, const char *from, const char *to);
 
-/* cbc_run_err: runs ARGV (ARGV[0] searched on PATH) with stdin from /dev/null. Its stdout goes to OUT
- * when OUT is not NULL (appended to it, NUL-terminated), and to this process's stdout when it is NULL.
- * Its stderr goes to the file ERR_PATH, created or truncated, when ERR_PATH is not NULL, and is
- * inherited when it is. Returns the child's exit status, 128 + signal if it was killed, or -1 when it
- * could not start. */
-int cbc_run_err(char *const argv[], cbc_buf *out, const char *err_path);
+/* cbc_run_capture: runs ARGV (ARGV[0] searched on PATH) with stdin from /dev/null. Its stdout is appended
+ * to OUT (NUL-terminated) and its stderr to ERR, each over a pipe read together (poll) so neither can
+ * fill and block the child; a NULL buffer leaves that stream inherited. Returns the child's exit status,
+ * 128 + signal if it was killed, or -1 when it could not start. cbc_run is the form for a caller
+ * that lets stderr through. */
+int cbc_run_capture(char *const argv[], cbc_buf *out, cbc_buf *err);
+int cbc_run(char *const argv[], cbc_buf *out);
 
 /* cbc_strip_newlines: removes the newlines at the end of S, as $(...) does. */
 void cbc_strip_newlines(cbc_buf *b);
@@ -122,9 +123,6 @@ char *cbc_dupn(const char *s, size_t n);
  * and $ as the shell's [[ =~ ]] did). A bad RE stops the tool. cbc_re_icase is grep -i. */
 bool cbc_re(const char *re, const char *s);
 bool cbc_re_icase(const char *re, const char *s);
-
-/* cbc_file_matches: whether any line of FILE matches RE (grep -q, line by line); ICASE as grep -i. */
-bool cbc_file_matches(const char *file, const char *re, bool icase);
 
 /* cbc_trim: removes the blanks (space and tab) at either end of S, in place; returns S. */
 char *cbc_trim(char *s);

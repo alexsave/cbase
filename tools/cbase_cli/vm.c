@@ -188,12 +188,12 @@ long long cbc_vm_mib_text(const char *type, const char *text) {
 char *cbc_vm_sha256(const char *path) {
   char *argv1[] = { "sha256sum", (char *)path, NULL };
   cbc_buf out = { 0 };
-  int rc = cbc_run_err(argv1, &out, NULL);
+  int rc = cbc_run(argv1, &out);
   if (rc == 127 || rc == -1) {
     free(out.data);
     out = (cbc_buf){ 0 };
     char *argv2[] = { "shasum", "-a", "256", (char *)path, NULL };
-    rc = cbc_run_err(argv2, &out, NULL);
+    rc = cbc_run(argv2, &out);
   }
   if (rc != 0 || !out.data) {
     free(out.data);
@@ -239,7 +239,7 @@ void cbc_vm_build(cbc_vm_artifact *out) {
     printf("server: make -C %s serve-binary (linux arm64, static, in cbase's Alpine container)\n", dir);
     fflush(stdout);
     char *argv[] = { "make", "-C", (char *)dir, "serve-binary", NULL };
-    if (cbc_run_err(argv, NULL, NULL) != 0)
+    if (cbc_run(argv, NULL) != 0)
       cbc_fail(CBC_EXIT_FAIL, "make -C %s serve-binary failed, so there is no linux-arm64 server to ship. It is cbase.mk's target for this build (ops/build_static.sh serve), and it needs Docker; run it until it passes, or set CBASE_SERVE_BIN to a linux-arm64 serve binary, then deploy again. Nothing was changed.", dir);
     cbc_asprintf(&out->bin, "%s/dist/%s", dir, CBC_VM_ARTIFACT_NAME);
     if (!cbc_is_file(out->bin))
