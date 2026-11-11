@@ -45,12 +45,13 @@ void cbc_deploy(const char *conf_file, int argc, char **argv) {
     const char *a = argv[k];
     if (strcmp(a, "--dry-run") == 0) cbc_flags.dry_run = cbc_flags.dry_banner = true;
     else if (strcmp(a, "--accept-drift") == 0) cbc_flags.accept_drift = true;
-    else if (strcmp(a, "--prune") == 0) cbc_flags.prune = true;
+    else if (strcmp(a, "--prune") == 0) cbc_flags.prune = true;   /* what the default is: still accepted */
+    else if (strcmp(a, "--no-prune") == 0) cbc_flags.prune = false;
     else if (strcmp(a, "--allow-downtime") == 0) cbc_flags.allow_downtime = true;
     else if (strcmp(a, "--no-aliases") == 0) aliases_flag = "off";
     else if (strcmp(a, "--attach") == 0) aliases_flag = "on";
     else
-      cbc_fail(CBC_EXIT_USAGE, "deploy takes --dry-run, --accept-drift, --prune, --allow-downtime, --no-aliases and --attach, not %s", a);
+      cbc_fail(CBC_EXIT_USAGE, "deploy takes --dry-run, --accept-drift, --no-prune, --allow-downtime, --no-aliases and --attach, not %s", a);
   }
   const bool dry = cbc_flags.dry_run;
   const bool prune = cbc_flags.prune;
@@ -130,6 +131,8 @@ void cbc_deploy(const char *conf_file, int argc, char **argv) {
       printf("the upload (%s/ to s3://%s/%s/), in order:\n", cbc_conf.static_dir, stk_bucket, stk_prefix);
       cbc_static_print_plan(&plan);
     }
+    if (prune && has_static) cbc_static_prune(stk_bucket, stk_bucket_region, stk_prefix, &files, true);
+    if (prune && has_vm) cbc_vm_prune_artifacts(true);
     printf("dry run: change set %s deleted unexecuted; nothing was uploaded, deleted or changed\n", stk_cs);
     if (cbc_dry_problems.n == 0) exit(0);
     fprintf(stderr, "cbase: dry run: a deploy would stop on %zu problem%s:\n", cbc_dry_problems.n, cbc_dry_problems.n == 1 ? "" : "s");
@@ -142,12 +145,11 @@ void cbc_deploy(const char *conf_file, int argc, char **argv) {
     if (*stk_changes) stack_discard();
     exit(CBC_EXIT_FAIL);
   }
-  /* 8. The files: the app joins the static group's state file; then hashed, the rest, html last; then the prune. */
+  /* 8. The files: the app joins the static group's state file; then hashed, the rest, html last; and the prune after the stack executes (step 9). */
   if (has_static) {
     if (!*cbc_conf.static_bucket) state_change("static", cbc_conf.stat, cbc_conf.app, "", "join");
     cbc_static_print_plan(&plan);
     cbc_static_upload(&plan, stk_bucket, stk_bucket_region, stk_prefix);
-    if (prune) cbc_static_prune(stk_bucket, stk_bucket_region, stk_prefix, &files);
   }
   /* 9. The distribution: the hostnames moved onto it first (a staged attach), then the stack update. */
   if (cert.moves.n > 0) {
@@ -155,6 +157,11 @@ void cbc_deploy(const char *conf_file, int argc, char **argv) {
     stk_no_rollback = true;
   }
   if (*stk_changes) stack_execute();
+  /* THE PRUNE, on by default, goes only now, the stack executed (or up to date), the service shipped and the files
+   * uploaded: a deploy that stopped earlier never deletes what a rollback or the live site still needs. The static
+   * folder's leftovers and the old server binaries are two prunes with their own guards (static.c, vm.c). */
+  if (prune && has_static) cbc_static_prune(stk_bucket, stk_bucket_region, stk_prefix, &files, false);
+  if (prune && has_vm) cbc_vm_prune_artifacts(false);
   char *dist_id = stack_output("DistributionId");
   char *dist_domain = stack_output("DistributionDomain");
   if (!*dist_id || !*dist_domain)
@@ -220,7 +227,7 @@ void cbc_undeploy(const char *conf_file, int argc, char **argv) {
     stk_prefix = *cbc_conf.static_prefix ? cbc_conf.static_prefix : cbc_conf.app;
     if (del_files) {
       cbc_strs none = { 0, 0, 0 };
-      cbc_static_prune(stk_bucket, stk_bucket_region, stk_prefix, &none);
+      cbc_static_prune(stk_bucket, stk_bucket_region, stk_prefix, &none, false);
     } else {
       printf("undeploy: kept s3://%s/%s/ (./cbase undeploy --delete-files deletes it)\n", stk_bucket, stk_prefix);
     }

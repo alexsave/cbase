@@ -479,10 +479,10 @@ usage: cbase/tools/cbase [-f FILE] COMMAND    (FILE: the app's settings, default
   doctor             the config, the AWS account, each group and its members
   apps [GROUP]       a group's apps, with each one's port, service and memory
                      (default: cbase.conf's groups)
-  deploy [--dry-run] [--accept-drift] [--allow-downtime] [--prune] [--no-aliases|--attach]
+  deploy [--dry-run] [--accept-drift] [--allow-downtime] [--no-prune] [--no-aliases|--attach]
                      the app: its service on its group's VM, its static files, its
                      distribution; DRY_RUN=1, CBASE_ACCEPT_DRIFT=1, CBASE_ALLOW_DOWNTIME=1
-                     and CBASE_PRUNE=1 are the same as the flags; --no-aliases and --attach
+                     and CBASE_PRUNE=0 are the same as the flags; --no-aliases and --attach
                      are CBASE_ALIASES off and on, a staged attach
   undeploy [--delete-files] [--delete-data]
                      the app's distribution and service gone, its groups left; its files
@@ -618,8 +618,10 @@ CBASE_VM = none
 4. makes a change set of the app's own stack, `cbase-app-<app>` in us-east-1, prints it, and holds it to the safety rules (below);
 5. joins the static group's state file, which records the app's folder, `<app>/`;
 6. uploads the files into `s3://<bucket>/<app>/`: the content-hashed files first, then the rest, the html last, so no page names a file that has not landed;
-7. with `--prune` (or `CBASE_PRUNE=1`), deletes what the folder holds and this build does not, and never a key outside `<app>/`, whatever the bucket's listing says;
-8. executes the change set and waits, invalidates `/*` on a stack that existed, writes the hostname's Route 53 alias, and prints the URL.
+7. executes the change set and waits;
+8. now that the deploy has gone through, prunes (unless `--no-prune`, or `CBASE_PRUNE=0`; `--prune` and `CBASE_PRUNE=1` are accepted and mean the default): it deletes what the app's folder holds and this build does not, and never a key outside `<app>/`, whatever the bucket's listing says, and, for an app with a VM, the app's old server binaries in the artifacts folder (`s3://<bucket>/<prefix><sha256>`): every key there that is exactly a sha256 (64 lowercase hex) except the binary this deploy shipped and the most recently modified other one (the rollback target), and nothing else (not a `.sha256` file, not another prefix or app);
+   a deploy that stopped earlier (a failed change set, a service that did not start, a failed execute) prunes nothing, so the previous binary is still there to roll back to, and `--dry-run` prints what would be pruned and deletes nothing (it makes no build, so it cannot know the binary this deploy would ship: it keeps the newest one as the previous and says so);
+9. invalidates `/*` on a stack that existed, writes the hostname's Route 53 alias, and prints the URL.
 
 A path with a part that starts with `.` is not uploaded (`.git`, `.DS_Store`), but `.well-known/`.
 Each file's Content-Type comes from one table, `tools/cbase.d/static_rules.tsv`, by a glob on its path: by extension (`.wasm` is `application/wasm`), or by the whole path for an extensionless file (`.well-known/apple-app-site-association` is `application/json`).

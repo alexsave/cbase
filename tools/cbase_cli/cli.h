@@ -130,17 +130,17 @@ bool cbc_re_icase(const char *re, const char *s);
 
 /* The deploy flags, read once: tools/cbase takes each as an environment variable too (DRY_RUN=1 is
  * --dry-run), and the command line sets the same fields. A flag is on only when its variable is exactly
- * "1" (the shell's [ "${X:-}" = 1 ]); DRY_BANNER is the one other rule, the shell's ${DRY_RUN:+...}: any
+ * "1" (the shell's [ "${X:-}" = 1 ]), except prune, which is on unless CBASE_PRUNE is exactly "0"; DRY_BANNER is the one other rule, the shell's ${DRY_RUN:+...}: any
  * non-empty DRY_RUN names the dry run in the deploy banner, whether or not it is "1". */
 typedef struct {
   bool dry_run;
   bool dry_banner;
   bool accept_drift;
-  bool prune;
+  bool prune;   /* ON by default: a successful deploy deletes the leftovers; --no-prune or CBASE_PRUNE=0 turns it off */
   bool allow_downtime;
 } cbc_flags_t;
 extern cbc_flags_t cbc_flags;
-/* cbc_flags_from_env: fills cbc_flags from DRY_RUN, CBASE_ACCEPT_DRIFT, CBASE_PRUNE and
+/* cbc_flags_from_env: fills cbc_flags from DRY_RUN, CBASE_ACCEPT_DRIFT, CBASE_PRUNE (on unless "0") and
  * CBASE_ALLOW_DOWNTIME. Called once, first thing in main. */
 void cbc_flags_from_env(void);
 

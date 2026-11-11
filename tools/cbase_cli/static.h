@@ -44,7 +44,7 @@ void cbc_static_upload(const cbc_static_plan *p, const char *bucket, const char 
 
 /* cbc_static_prune: deletes the keys under APP/ that FILES does not name. A key outside APP/ is never
  * deleted, whatever the listing says. */
-void cbc_static_prune(const char *bucket, const char *region, const char *app, const cbc_strs *files);
+void cbc_static_prune(const char *bucket, const char *region, const char *app, const cbc_strs *files, bool dry);
 
 /* cbc_static_bucket: the static group's bucket for CONF_STATIC (or CBASE_STATIC_BUCKET, when set), and
  * its region; the caller takes the app's folder from CBASE_STATIC_PREFIX or the app's name. Stops the

@@ -217,9 +217,9 @@ int main(int argc, char **argv) {
   if (strcmp(cmd, "deploy") == 0) {
     for (int k = 0; k < nargs; k++) {
       const char *a = args[k];
-      if (!is_one_of(a, "--dry-run", "--accept-drift") && strcmp(a, "--prune") != 0 &&
+      if (!is_one_of(a, "--dry-run", "--accept-drift") && strcmp(a, "--prune") != 0 && strcmp(a, "--no-prune") != 0 &&
           strcmp(a, "--allow-downtime") != 0 && strcmp(a, "--no-aliases") != 0 && strcmp(a, "--attach") != 0)
-        cbc_fail(CBC_EXIT_USAGE, "deploy takes --dry-run, --accept-drift, --prune, --allow-downtime, --no-aliases and --attach, not %s", a);
+        cbc_fail(CBC_EXIT_USAGE, "deploy takes --dry-run, --accept-drift, --no-prune, --allow-downtime, --no-aliases and --attach, not %s", a);
     }
     cbc_deploy(conf_file, nargs, args);
     return 0;
