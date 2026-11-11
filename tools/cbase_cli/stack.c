@@ -89,22 +89,14 @@ void stack_param_previous(const char *key) {
   cbc_strs_push(&stack_params, p);
 }
 
-/* cfn_call: one CloudFormation call in the stack's region with the words ARGS (NULL-terminated). */
-static int cfn_call(cbc_buf *out, const char *const *args) {
-  cbc_strs words = { 0 };
-  cbc_strs_push(&words, cbc_dup("cloudformation"));
-  cbc_strs_push(&words, cbc_dup("--region"));
-  cbc_strs_push(&words, cbc_dup(stk_region));
-  for (const char *const *a = args; *a; a++) cbc_strs_push(&words, cbc_dup(*a));
-  cbc_strs_push(&words, NULL);
-  return aws_call_list(out, (const char *const *)words.v);
-}
+/* cfn_run: one CloudFormation call in the stack's region, with the words as a NULL-terminated list
+ * (defined with the change-set flow below). */
+static int cfn_run(cbc_buf *out, ...);
 
 void stack_status(void) {
   cbc_buf out = { 0 };
-  const char *args[] = { "describe-stacks", "--stack-name", stk_name, "--query", "Stacks[0].StackStatus",
-                         "--output", "text", NULL };
-  if (cfn_call(&out, args) == 0) {
+  if (cfn_run(&out, "describe-stacks", "--stack-name", stk_name, "--query", "Stacks[0].StackStatus",
+              "--output", "text", NULL) == 0) {
     cbc_strip_newlines(&out);
     stk_status = out.data ? out.data : "";
     return;
@@ -122,8 +114,7 @@ char *stack_output(const char *key) {
   cbc_buf out = { 0 };
   char query[256];
   snprintf(query, sizeof query, "Stacks[0].Outputs[?OutputKey=='%s'].OutputValue", key);
-  const char *args[] = { "describe-stacks", "--stack-name", stk_name, "--query", query, "--output", "text", NULL };
-  if (cfn_call(&out, args) != 0) {
+  if (cfn_run(&out, "describe-stacks", "--stack-name", stk_name, "--query", query, "--output", "text", NULL) != 0) {
     char what[256];
     snprintf(what, sizeof what, "reading %s's outputs", stk_name);
     aws_fail(what);

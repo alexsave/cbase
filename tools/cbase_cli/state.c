@@ -471,10 +471,10 @@ int state_list(const char *kind, const char *group) {
   char **sorted = sorted_copy(st.lines.v, st.n);
   for (size_t i = 0; i < st.n; i++) {
     const char *line = sorted[i];
+    cbc_strs words = { 0 };
+    cbc_split_on(line, " ", &words);
     char *f[8] = { 0 };
-    size_t nf = 0;
-    char *copy = cbc_dup(line);
-    for (char *w = strtok(copy, " "); w && nf < 8; w = strtok(NULL, " ")) f[nf++] = w;
+    for (size_t k = 0; k < words.n && k < 8; k++) f[k] = words.v[k];
     if (strcmp(kind, "vm") == 0) {
       long mib;
       bool est;
