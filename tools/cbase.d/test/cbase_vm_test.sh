@@ -437,6 +437,8 @@ mkdir -p "$stubs"
 cat > "$stubs/systemctl" << 'EOF'
 #!/bin/bash
 echo "systemctl $*" >> "$STUB_LOG"
+# show: systemd's loaded units are the files (NeedDaemonReload no), and no InvocationID.
+if [ "$1" = show ]; then case "$*" in *NeedDaemonReload*) echo no ;; esac; exit 0; fi
 [ "$1" != is-active ] || [ "${STUB_ACTIVE:-0}" = 1 ] || { [ -n "${STUB_ACTIVE_UNIT:-}" ] && [ "${!#}" = "$STUB_ACTIVE_UNIT" ]; }
 EOF
 cat > "$stubs/ss" << 'EOF'
@@ -477,6 +479,7 @@ esac
 EOF
 cat > "$stubs/sha256sum" << 'EOF'
 #!/bin/bash
+[ "${1:-}" = -c ] || exec shasum -a 256 "$@"
 read -r want file
 [ "$(shasum -a 256 "$file" | cut -d' ' -f1)" = "$want" ]
 EOF
@@ -492,7 +495,7 @@ on_vm() {
   : > "$1/calls"
   rc=0
   env PATH="$stubs:$PATH" CBASE_VM_ROOT="$1" STUB_LOG="$1/calls" STUB_USERS="$1/users" STUB_ELF="$t/elf-arm64" \
-      STUB_APP=shop STUB_PORT="${STUB_PORT:-8700}" STUB_SETTINGS="${STUB_SETTINGS:-/cbase/shop/}" STUB_SECRET="$SECRET" bash "$2" > "$t/vm-out" 2>&1 < /dev/null || rc=$?
+      STUB_APP=shop STUB_PORT="${STUB_PORT:-8700}" STUB_SETTINGS="${STUB_SETTINGS:-/cbase/shop/}" STUB_SECRET="${STUB_SECRET:-$SECRET}" bash "$2" > "$t/vm-out" 2>&1 < /dev/null || rc=$?
 }
 grep '^SSM SendCommand .*\[cbase deploy of shop\]' "$t/log" | tail -1 | sed -n 's/.*echo \([A-Za-z0-9+/=]*\) | base64 -d.*/\1/p' | base64 -d > "$t/shop-deploy.sh"
 [ -s "$t/shop-deploy.sh" ] || fail "no deploy script of shop's in the fake's log"
@@ -527,11 +530,51 @@ grep -Fq "CBASE: port 8700 is in use on the VM, and not by cbase-shop.service: r
 grep -q "^systemctl restart" "$vm/calls" && fail "the deploy script started a service on a taken port"
 [ ! -e "$vm/etc/systemd/system/cbase-shop.service" ] || fail "the deploy script installed a unit on a taken port"
 ok
-# A redeploy: the unit running holds the port, which is no refusal.
-STUB_ACTIVE=1 STUB_TAKEN=1 on_vm "$t/vm1" "$t/shop-deploy.sh"
-[ "$rc" = 0 ] || { cat "$t/vm-out" >&2; fail "the deploy script on a redeploy: status $rc"; }
-grep -E '^systemctl (start|stop|restart)' "$t/vm1/calls" | diff -u <(echo "systemctl restart cbase-shop.service") - \
-  || fail "a redeploy did other than restart the service alone (the socket holds the port)"
+# RESTART ONLY FOR A CHANGE. A redeploy with nothing changed, the service active (the unit running
+# holds the port, which is no refusal): nothing restarted, reloaded or rewritten, the wait still run.
+vm="$t/vm1"
+files() { ls -i "$vm/srv/cbase/shop/serve" "$vm/etc/cbase/shop.env" "$vm/etc/systemd/system/cbase-shop.service" "$vm/etc/systemd/system/cbase-shop.socket"; }
+files > "$t/inodes"
+STUB_ACTIVE=1 STUB_TAKEN=1 on_vm "$vm" "$t/shop-deploy.sh"
+[ "$rc" = 0 ] || { cat "$t/vm-out" >&2; fail "the deploy script on an unchanged redeploy: status $rc"; }
+grep -Eq '^systemctl (start|stop|restart|daemon-reload)' "$vm/calls" && { cat "$vm/calls" >&2; fail "an unchanged redeploy started, stopped, restarted or reloaded"; }
+for want in "CBASE: server unchanged, units unchanged, settings unchanged" "CBASE: cbase-shop.service unchanged: not restarted" \
+            "CBASE: cbase-shop.service is up: GET /health answered 200 on 127.0.0.1:8700"; do
+  grep -Fxq "$want" "$t/vm-out" || { cat "$t/vm-out" >&2; fail "an unchanged redeploy lacks [$want]"; }
+done
+files | diff -u "$t/inodes" - || fail "an unchanged redeploy rewrote a file"
+ok
+# Each of what serve has loaded, changed alone, restarts the service. The installed server is not
+# the artifact:
+printf 'old\n' >> "$vm/srv/cbase/shop/serve"
+STUB_ACTIVE=1 STUB_TAKEN=1 on_vm "$vm" "$t/shop-deploy.sh"
+[ "$rc" = 0 ] || { cat "$t/vm-out" >&2; fail "a redeploy of a new server: status $rc"; }
+grep -E '^systemctl (start|stop|restart)' "$vm/calls" | diff -u <(echo "systemctl restart cbase-shop.service") - \
+  || fail "a new server did other than restart the service alone (the socket holds the port)"
+grep -Fxq "CBASE: cbase-shop.service restarted (server changed)" "$t/vm-out" || { cat "$t/vm-out" >&2; fail "a new server's restart line"; }
+cmp -s "$vm/srv/cbase/shop/serve" "$t/elf-arm64" || fail "a new server was not installed"
+ok
+# A setting's value changed in SSM: restarted, and neither value printed.
+STUB_SECRET="$SECRET-rotated" STUB_ACTIVE=1 STUB_TAKEN=1 on_vm "$vm" "$t/shop-deploy.sh"
+[ "$rc" = 0 ] || { cat "$t/vm-out" >&2; fail "a redeploy of a changed setting: status $rc"; }
+grep -Fxq "systemctl restart cbase-shop.service" "$vm/calls" || fail "a changed setting did not restart the service"
+grep -Fxq "CBASE: cbase-shop.service restarted (settings changed)" "$t/vm-out" || { cat "$t/vm-out" >&2; fail "a changed setting's restart line"; }
+grep -Fq "$SECRET" "$t/vm-out" && fail "a changed setting's redeploy printed a value"
+[ "$(cat "$vm/etc/cbase/shop.env")" = "DB_PASSWORD=$SECRET-rotated" ] || fail "a changed setting was not written"
+ok
+# The installed unit is not the one this deploy renders: reloaded, then restarted.
+printf '# edited\n' >> "$vm/etc/systemd/system/cbase-shop.service"
+STUB_SECRET="$SECRET-rotated" STUB_ACTIVE=1 STUB_TAKEN=1 on_vm "$vm" "$t/shop-deploy.sh"
+[ "$rc" = 0 ] || { cat "$t/vm-out" >&2; fail "a redeploy of a changed unit: status $rc"; }
+[ "$(grep -E '^systemctl (daemon-reload|restart)' "$vm/calls" | tr '\n' '|')" = "systemctl daemon-reload|systemctl restart cbase-shop.service|" ] \
+  || { cat "$vm/calls" >&2; fail "a changed unit was not reloaded, then restarted"; }
+grep -Fxq "CBASE: cbase-shop.service restarted (units changed)" "$t/vm-out" || { cat "$t/vm-out" >&2; fail "a changed unit's restart line"; }
+ok
+# Nothing changed, the service not active (failed or stopped): started.
+STUB_SECRET="$SECRET-rotated" on_vm "$vm" "$t/shop-deploy.sh"
+[ "$rc" = 0 ] || { cat "$t/vm-out" >&2; fail "a redeploy of an inactive service: status $rc"; }
+grep -Fxq "systemctl restart cbase-shop.service" "$vm/calls" || fail "an inactive service was not started"
+grep -Fxq "CBASE: cbase-shop.service started (it was not active)" "$t/vm-out" || { cat "$t/vm-out" >&2; fail "an inactive service's start line"; }
 ok
 fi
 if wanted undeploy; then
