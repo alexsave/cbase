@@ -673,8 +673,13 @@ void cbc_vm_prune_artifacts(bool dry) {
   const char *current = cbc_vm.key && *cbc_vm.key ? cbc_vm.key : NULL;   /* NULL in a dry run: nothing is built, so the sha is not known */
   cbc_buf text = { 0, 0, 0 };
   if (aws_call(&text, "s3api", "list-objects-v2", "--bucket", bucket, "--prefix", prefix, "--region", region,
-               "--query", "Contents[].[Key,LastModified]", "--output", "text", NULL) != 0)
+               "--query", "Contents[].[Key,LastModified]", "--output", "text", NULL) != 0) {
+    if (dry) {   /* a first deploy: the bucket may not exist yet (the real deploy makes or finds it), so nothing is old */
+      printf("would prune 0 old server binaries: s3://%s/%s cannot be listed yet\n", bucket, prefix);
+      return;
+    }
     aws_fail(cbc_fmt("listing s3://%s/%s", bucket, prefix));
+  }
   char *body = cbc_buf_text(&text);
   vm_binary *v = NULL;
   size_t n = 0, cap = 0, pl = strlen(prefix);
