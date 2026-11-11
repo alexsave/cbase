@@ -46,7 +46,7 @@
 //   * Control, for the test alone: POST /_fake/gather?n=N holds the next N GetObject answers until
 //     all N have been asked (so N clients read the same ETag before any of them writes: a race
 //     made deterministic), or 20 s pass. POST /_fake/set?KNOB=VALUE scripts the next answers:
-//     changes=auto|none|replace-bucket|remove-bucket|replace-distribution, drift=0|1,
+//     changes=auto|none|replace-bucket|conditional-bucket|remove-bucket|replace-distribution, drift=0|1,
 //     secret=S and secret2=S (planted where a change set, a drift and an error would carry an
 //     origin header's or a parameter's value), fail-execute=0|1, list-ignores-prefix=0|1 (a
 //     listing that answers every key, whatever its prefix), acm-deny=0|1 (DescribeCertificate
@@ -871,6 +871,9 @@ static int cfn_changes(const stack *st, sb *b) {
         cfn_change(b, "Modify", "Bucket", "AWS::S3::Bucket", "True", NULL);
         cfn_change(b, "Modify", "Distribution", "AWS::CloudFront::Distribution", "False", d.p);
         n = 2;
+    } else if (strcmp(g_changes, "conditional-bucket") == 0) {   // a replacement CloudFormation decides at run time
+        cfn_change(b, "Modify", "Bucket", "AWS::S3::Bucket", "Conditional", NULL);
+        n = 1;
     } else if (strcmp(g_changes, "remove-bucket") == 0) {
         cfn_change(b, "Remove", "Bucket", "AWS::S3::Bucket", NULL, NULL);
         n = 1;

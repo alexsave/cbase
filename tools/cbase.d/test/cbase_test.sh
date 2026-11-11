@@ -801,6 +801,14 @@ for how in replace-bucket remove-bucket; do
 done
 # A distribution replaced on a redeploy: downtime, so refused and the change set deleted; then
 # allowed with --allow-downtime.
+# A replacement CloudFormation decides as it runs (Conditional) is a replacement: refused the same.
+fake_set changes=conditional-bucket
+m="$(mark)"
+run "$site" deploy
+expect_rc 1 "a change set that may replace the bucket"
+err_has "refused: the bucket Bucket would be replaced (Replacement: Conditional)" "a Conditional replacement"
+since "$m" | grep -qE "CFN ExecuteChangeSet|^PUT " && fail "a Conditional replacement changed something"
+ok
 fake_set changes=replace-distribution
 m="$(mark)"
 run "$site" deploy
@@ -951,6 +959,13 @@ err_has "cbase: change set cbase-deploy on cbase-app-site failed:" "a change set
 err_has "  Template format error: Unresolved resource dependencies Nope" "the change set's reason"
 since "$m" | sed -n '/CFN CreateChangeSet cbase-app-site/,$p' | grep -q "CFN DeleteChangeSet cbase-app-site ok" || fail "a failed change set was not deleted"
 since "$m" | grep -q "CFN ExecuteChangeSet" && fail "a failed change set was executed"
+fake_set cs-fail=
+ok
+# CloudFormation's other wording of "no changes": up to date, as the first.
+fake_set "cs-fail=No updates are to be performed."
+run "$site" deploy
+expect_rc 0 "a change set that ends No updates are to be performed"
+out_has "stack: cbase-app-site is up to date (no changes)" "No updates are to be performed"
 fake_set cs-fail=
 ok
 # An update that fails and rolls back: the stack's failed resources, masked, and status 1.
