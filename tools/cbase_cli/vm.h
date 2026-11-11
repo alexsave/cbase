@@ -5,6 +5,8 @@
 #ifndef CBC_VM_H
 #define CBC_VM_H
 
+#include "conf.h"
+
 #include <stdbool.h>
 #include <stddef.h>
 
@@ -79,5 +81,48 @@ typedef struct {
 /* cbc_vm_build: the linux-arm64 server, built by `make serve-binary` in . or server/, or named by
  * CBASE_SERVE_BIN (vm_build). Stops the tool on any failure, as the shell does. */
 void cbc_vm_build(cbc_vm_artifact *out);
+
+
+/* The VM this run deploys to or undeploys from (vm.sh's VM_* variables). */
+typedef struct {
+  char *id;             /* VM_ID: the instance */
+  char *dns;            /* VM_DNS: its public DNS name, or the group's origin */
+  char *type;           /* VM_TYPE */
+  long long mib;        /* VM_MIB */
+  char *bin;            /* VM_BIN: the server file */
+  char *sha;            /* VM_SHA */
+  char *key;            /* VM_KEY: the artifact's key in its bucket */
+  char *port;           /* VM_PORT: the port the app holds */
+  bool new_member;      /* VM_NEW: the join added the app */
+  char *origin_secret;  /* VM_ORIGIN_SECRET: never printed */
+  char *ssm_status;     /* VM_SSM_STATUS: Success, Failed, ... */
+  char *ssm_code;       /* VM_SSM_CODE */
+} cbc_vm_t;
+extern cbc_vm_t cbc_vm;
+
+/* The dry run's state: the flag, and the problems a dry run lists at its end (tools/cbase's
+ * DRY_PROBLEMS). dry_stop is tools/cbase's; it lives in vm.c until the deploy module owns it. */
+extern bool cbc_dry_run;
+extern cbc_strs cbc_dry_problems;
+void dry_stop(const char *what, const char *line);
+
+/* cbc_vm_find: VM_ID, VM_DNS, VM_TYPE and VM_MIB for the group's running arm64 instance (vm_find). */
+void cbc_vm_find(const char *group);
+
+/* cbc_vm_origin_secret: VM_ORIGIN_SECRET from SSM, masked (vm_origin_secret). */
+void cbc_vm_origin_secret(void);
+
+/* cbc_vm_fit_set: the fit check's limit for the join (vm_fit_set). */
+void cbc_vm_fit_set(void);
+
+/* cbc_vm_join: the app joins the group's state file (vm_join). */
+void cbc_vm_join(const char *group);
+
+/* cbc_vm_ship: the artifact uploaded and the service started or restarted (vm_ship). False when the
+ * service was not started. */
+bool cbc_vm_ship(const char *group);
+
+/* cbc_vm_undeploy: the service stopped and removed, then the membership left (vm_undeploy). */
+void cbc_vm_undeploy(const char *group, bool delete_data);
 
 #endif

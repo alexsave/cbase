@@ -21,7 +21,7 @@ pass=0
 
 ${CC:-cc} -std=gnu11 -D_GNU_SOURCE -O2 -Wall -Wextra -Werror -Wshadow -Wvla -Wformat=2 \
   -DCBC_TOOLS_DIR="\"$tools\"" \
-  "$cli/cli.c" "$cli/conf.c" "$cli/vm.c" "$cli/vm_remote.c" "$cli/vm_boot.c" "$cli/test/vm_render.c" \
+  "$cli/cli.c" "$cli/conf.c" "$cli/aws.c" "$cli/state.c" "$cli/vm.c" "$cli/vm_remote.c" "$cli/vm_boot.c" "$cli/test/vm_render.c" \
   -o "$t/vm_render"
 
 # shell_render CONF MODE ARGS...: the shell's render, in a subshell with the tool's functions.

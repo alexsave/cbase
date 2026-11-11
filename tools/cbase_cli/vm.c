@@ -12,11 +12,15 @@
  */
 #include "vm.h"
 
+#include "aws.h"
 #include "cli.h"
 #include "conf.h"
+#include "state.h"
+#include "vm_remote.h"
 #include "../../lib/num_parse.h"
 
 #include <errno.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -277,4 +281,358 @@ void cbc_vm_build(cbc_vm_artifact *out) {
   out->sha = cbc_vm_sha256(out->bin);
   if (!out->sha) cbc_fail(CBC_EXIT_FAIL, "cannot read %s to hash it", out->bin);
   printf("server: %s, sha256 %s\n", out->bin, out->sha);
+}
+
+
+/* ---- the AWS and SSM steps: aws.h's calls, state.h's join and leave ----------------------------- */
+
+cbc_vm_t cbc_vm = { .id = "", .dns = "", .type = "", .bin = "", .sha = "", .key = "", .port = "",
+                    .origin_secret = "", .ssm_status = "", .ssm_code = "" };
+bool cbc_dry_run = false;
+cbc_strs cbc_dry_problems;
+
+/* dry_stop: a problem a deploy stops on, said where it is found (vm.sh's, which tools/cbase owns).
+ * A dry run keeps WHAT and goes on; a deploy prints LINE, if any, and exits 1 there. */
+void dry_stop(const char *what, const char *line) {
+  if (cbc_dry_run) {
+    cbc_strs_push(&cbc_dry_problems, cbc_dup(what));
+    printf("dry run: a deploy would stop here, on %s; this dry run goes on\n", what);
+    return;
+  }
+  if (line && *line) fprintf(stderr, "%s\n", line);
+  exit(CBC_EXIT_FAIL);
+}
+
+static char *fmt_dup(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static char *fmt_dup(const char *fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  char *p = NULL;
+  if (vasprintf(&p, fmt, ap) < 0) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+  va_end(ap);
+  return p;
+}
+
+/* Splits TEXT at its first tab; the rest is what follows it ("" when there is no tab). */
+static char *tab_split(char *text, char **rest) {
+  char *tab = strchr(text, '\t');
+  if (!tab) {
+    *rest = "";
+    return text;
+  }
+  *tab = '\0';
+  *rest = tab + 1;
+  return text;
+}
+
+/* The first line of TEXT, with its trailing newlines gone (a line of CLI text output). */
+static char *first_line(cbc_buf *out) {
+  cbc_strip_newlines(out);
+  char *s = out->data ? cbc_dup(out->data) : cbc_dup("");
+  char *nl = strchr(s, '\n');
+  if (nl) *nl = '\0';
+  return s;
+}
+
+/* The whitespace-separated words of TEXT (read -r -a). */
+static cbc_strs words_of(cbc_buf *out) {
+  cbc_strs w = { 0 };
+  cbc_strip_newlines(out);
+  char *p = out->data ? out->data : "";
+  while (*p) {
+    while (*p == ' ' || *p == '\t' || *p == '\n') p++;
+    if (!*p) break;
+    char *e = p;
+    while (*e && *e != ' ' && *e != '\t' && *e != '\n') e++;
+    cbc_strs_push(&w, cbc_dupn(p, (size_t)(e - p)));
+    p = e;
+  }
+  return w;
+}
+
+/* vm_stack_instance: the running instance an adopted stack holds: its AWS::EC2::Instance, or the
+ * in-service instance of its auto-scaling group of one. */
+static char *vm_stack_instance(const char *stack) {
+  cbc_buf out = { 0 };
+  if (aws_call(&out, "cloudformation", "describe-stack-resources", "--stack-name", stack,
+               "--query", "StackResources[?ResourceType=='AWS::EC2::Instance' || ResourceType=='AWS::AutoScaling::AutoScalingGroup'].[ResourceType,PhysicalResourceId]",
+               "--output", "text", NULL) != 0)
+    aws_fail(fmt_dup("reading the stack %s (CBASE_VM_STACK)", stack));
+  char *rest = NULL;
+  char *first = first_line(&out);
+  char *type = tab_split(first, &rest);
+  /* read -r type id: the first line's two words; a tab or a space between them. */
+  while (*rest == ' ') rest++;
+  char *id = cbc_dup(rest);
+  if (strcmp(type, "AWS::EC2::Instance") == 0) return id;
+  if (strcmp(type, "AWS::AutoScaling::AutoScalingGroup") == 0) {
+    cbc_buf ag = { 0 };
+    if (aws_call(&ag, "autoscaling", "describe-auto-scaling-groups", "--auto-scaling-group-names", id,
+                 "--query", "AutoScalingGroups[0].Instances[?LifecycleState=='InService'].InstanceId",
+                 "--output", "text", NULL) != 0)
+      aws_fail(fmt_dup("reading the auto-scaling group %s of %s", id, stack));
+    cbc_strs in = words_of(&ag);
+    if (in.n != 1 || strcmp(in.v[0], "None") == 0)
+      cbc_fail(CBC_EXIT_FAIL, "the auto-scaling group %s of %s (CBASE_VM_STACK) has %zu instances in service, not one: a group is one VM",
+               id, stack, in.n);
+    return in.v[0];
+  }
+  cbc_fail(CBC_EXIT_FAIL, "the stack %s (CBASE_VM_STACK) holds no EC2 instance or auto-scaling group", stack);
+}
+
+/* vm_type_mib: the instance type's memory in MiB (describe-instance-types). */
+static long long vm_type_mib(const char *type) {
+  cbc_buf out = { 0 };
+  if (aws_call(&out, "ec2", "describe-instance-types", "--instance-types", type,
+               "--query", "InstanceTypes[0].MemoryInfo.SizeInMiB", "--output", "text", NULL) != 0)
+    aws_fail(fmt_dup("reading instance type %s", type));
+  cbc_strip_newlines(&out);
+  return cbc_vm_mib_text(type, out.data ? out.data : "");
+}
+
+void cbc_vm_find(const char *group) {
+  if (*cbc_conf.vm_stack) {
+    cbc_vm.id = vm_stack_instance(cbc_conf.vm_stack);
+  } else {
+    char *id = NULL;
+    /* aws_group_find prints its own message; the shell's exit inside its $(...) stops here. */
+    if (aws_group_find("vm", group, &id) != 0) exit(CBC_EXIT_FAIL);
+    cbc_vm.id = id;
+  }
+  cbc_buf out = { 0 };
+  if (aws_call(&out, "ec2", "describe-instances", "--instance-ids", cbc_vm.id,
+               "--query", "Reservations[0].Instances[0].[State.Name,PublicDnsName,InstanceType,Architecture]",
+               "--output", "text", NULL) != 0)
+    aws_fail(fmt_dup("reading instance %s", cbc_vm.id));
+  char *text = first_line(&out);
+  /* IFS=$'\t' read -r state VM_DNS VM_TYPE arch */
+  char *state = tab_split(text, &text);
+  char *dns = tab_split(text, &text);
+  char *type = tab_split(text, &text);
+  char *arch = text;
+  cbc_vm.dns = strcmp(dns, "None") == 0 ? "" : dns;
+  cbc_vm.type = type;
+  if (strcmp(state, "running") != 0)
+    cbc_fail(CBC_EXIT_FAIL, "vm group %s's instance %s is %s, not running: start it (aws ec2 start-instances --instance-ids %s) and run this again",
+             group, cbc_vm.id, state, cbc_vm.id);
+  if (strcmp(arch, "arm64") != 0)
+    cbc_fail(CBC_EXIT_FAIL, "vm group %s's instance %s is %s, and cbase builds the server for linux arm64 alone (make serve-binary)",
+             group, cbc_vm.id, arch);
+  cbc_vm.mib = vm_type_mib(cbc_vm.type);
+  printf("vm group %s: %s (%s, %lld MiB), %s", group, cbc_vm.id, cbc_vm.type, cbc_vm.mib,
+         *cbc_vm.dns ? cbc_vm.dns : "no public DNS name");
+  if (*cbc_conf.vm_stack) printf(", adopted from the stack %s", cbc_conf.vm_stack);
+  printf("\n");
+}
+
+/* vm_fit_set: the fit check's limit for the join (state.h's state_fit_limit) and its sentence. */
+void cbc_vm_fit_set(void) {
+  long long limit = 0;
+  char *what = NULL;
+  cbc_vm_fit(cbc_vm.type, cbc_vm.mib, &limit, &what);
+  state_fit_limit = (long)limit;
+  state_fit_what = what;
+}
+
+/* vm_origin_secret: the app's origin secret, SSM /<settings>CBASE_ORIGIN_SECRET (a SecureString).
+ * Its value is never printed: it is masked wherever it appears, and a bad one is refused without it. */
+#define CBC_VM_DRY_SECRET "cbase-dry-run-stand-in-for-the-missing-origin-secret"
+
+void cbc_vm_origin_secret(void) {
+  char *settings = cbc_vm_settings();
+  char *name = fmt_dup("%sCBASE_ORIGIN_SECRET", settings);
+  cbc_buf out = { 0 };
+  if (aws_call(&out, "ssm", "get-parameter", "--name", name, "--with-decryption",
+               "--query", "Parameter.Value", "--output", "text", NULL) != 0) {
+    cbc_vm.origin_secret = "";
+    if (strcmp(aws_code(), "ParameterNotFound") == 0) {
+      fprintf(stderr, "cbase: there is no SSM parameter %s, the origin secret CloudFront sends the app as X-Cbase-Origin (and serve checks). Make it once, then deploy again; nothing was changed:\n", name);
+      fprintf(stderr, "  aws ssm put-parameter --type SecureString --name %s --value \"$(openssl rand -hex 32)\"\n", name);
+      dry_stop(fmt_dup("no SSM parameter %s (the origin secret)", name), NULL);
+      cbc_vm.origin_secret = CBC_VM_DRY_SECRET;
+      return;
+    }
+    aws_fail(fmt_dup("reading the SSM parameter %s", name));
+  }
+  cbc_strip_newlines(&out);
+  char *value = out.data ? out.data : "";
+  if (!cbc_re("^[A-Za-z0-9_-]{32,128}$", value)) {
+    cbc_vm.origin_secret = "";
+    fprintf(stderr, "cbase: the SSM parameter %s is not 32 to 128 letters, digits, _ and - (its value is not shown): openssl rand -hex 32 makes one\n", name);
+    dry_stop(fmt_dup("the SSM parameter %s is not an origin secret", name), NULL);
+    cbc_vm.origin_secret = CBC_VM_DRY_SECRET;
+    return;
+  }
+  cbc_vm.origin_secret = value;
+  aws_mask_add(value);
+  printf("origin secret: %s (X-Cbase-Origin; its value is not shown)\n", name);
+}
+
+/* vm_join: the app joins the group's state file, the port claimed and the memory fit checked in the
+ * one conditional write (state_change). */
+void cbc_vm_join(const char *group) {
+  cbc_vm_fit_set();
+  state_legacy_port = cbc_conf.vm_port;
+  state_legacy_data = cbc_conf.vm_data;
+  state_origin_in = cbc_conf.vm_origin;
+  state_origin_need = true;
+  state_change("vm", group, cbc_conf.app, cbc_conf_mem(), "join");
+  cbc_vm.port = state_port;
+  cbc_vm.new_member = state_joined_new;
+}
+
+/* base64 of N bytes, one line with no newline (the shell's base64 | tr -d '\n'). */
+static char *base64_one_line(const char *in, size_t n) {
+  static const char tbl[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  char *o = malloc(((n + 2) / 3) * 4 + 1);
+  if (!o) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+  size_t k = 0;
+  for (size_t i = 0; i < n; i += 3) {
+    unsigned v = (unsigned char)in[i] << 16;
+    if (i + 1 < n) v |= (unsigned char)in[i + 1] << 8;
+    if (i + 2 < n) v |= (unsigned char)in[i + 2];
+    o[k++] = tbl[(v >> 18) & 63];
+    o[k++] = tbl[(v >> 12) & 63];
+    o[k++] = i + 1 < n ? tbl[(v >> 6) & 63] : '=';
+    o[k++] = i + 2 < n ? tbl[v & 63] : '=';
+  }
+  o[k] = '\0';
+  return o;
+}
+
+/* Writes TEXT to PATH (the run's temporary files). */
+static void write_text(const char *path, const char *text) {
+  FILE *f = fopen(path, "wb");
+  if (!f || fputs(text, f) == EOF || fclose(f) != 0) cbc_fail(CBC_EXIT_FAIL, "cannot write %s", path);
+}
+
+static long vm_polls(void) {
+  const char *env = getenv("CBASE_VM_POLLS");
+  return env && *env ? atol(env) : 180;   /* get-command-invocation reads before the wait gives up */
+}
+
+static char *ssm_command_id = "";
+
+/* vm_ssm_read: one read of the command; true once it has ended. */
+static bool ssm_read(void) {
+  cbc_buf out = { 0 };
+  if (aws_call(&out, "ssm", "get-command-invocation", "--command-id", ssm_command_id, "--instance-id", cbc_vm.id,
+               "--query", "[Status,ResponseCode]", "--output", "text", NULL) == 0) {
+    char *rest = "";
+    cbc_vm.ssm_status = tab_split(first_line(&out), &rest);
+    cbc_vm.ssm_code = rest;
+    if (strcmp(cbc_vm.ssm_status, "Pending") != 0 && strcmp(cbc_vm.ssm_status, "InProgress") != 0 &&
+        strcmp(cbc_vm.ssm_status, "Delayed") != 0)
+      return true;
+  } else if (strcmp(aws_code(), "InvocationDoesNotExist") != 0) {
+    aws_fail(fmt_dup("reading SSM command %s", ssm_command_id));
+  }
+  cbc_vm.ssm_status = "";
+  return false;
+}
+
+/* vm_ssm_run: SCRIPT (the text) run as root on VM through SSM's AWS-RunShellScript, waited for with a
+ * bounded poll. Prints only its "CBASE: " lines (masked), as "vm: " lines. Sets ssm_status and
+ * ssm_code. The script travels base64, decoded to a file on the instance and run. */
+static void ssm_run(const char *script, const char *what) {
+  char *b64 = base64_one_line(script, strlen(script));
+  char *cmd = fmt_dup("f=$(mktemp) && echo %s | base64 -d > $f && bash $f; rc=$?; rm -f $f; exit $rc", b64);
+  char *param = fmt_dup("commands=%s", cmd);
+  cbc_buf out = { 0 };
+  if (aws_call(&out, "ssm", "send-command", "--instance-ids", cbc_vm.id, "--document-name", "AWS-RunShellScript",
+               "--comment", fmt_dup("cbase %s", what), "--timeout-seconds", "600", "--parameters", param,
+               "--query", "Command.CommandId", "--output", "text", NULL) != 0) {
+    if (strcmp(aws_code(), "InvalidInstanceId") == 0)
+      cbc_fail(CBC_EXIT_FAIL, "%s is not an SSM managed instance yet (a new instance takes a few minutes; its role must hold AmazonSSMManagedInstanceCore, as group-init's does)", cbc_vm.id);
+    aws_fail(fmt_dup("sending the %s to %s (ssm send-command)", what, cbc_vm.id));
+  }
+  char *id = first_line(&out);
+  printf("vm: the %s runs on %s (SSM command %s)\n", what, cbc_vm.id, id);
+  fflush(stdout);
+  ssm_command_id = id;
+  if (!aws_poll((int)vm_polls() + 1, ssm_read))
+    cbc_fail(CBC_EXIT_FAIL, "the %s on %s (SSM command %s) did not finish in time; its output may name the app's settings, so cbase does not print it (aws ssm get-command-invocation --command-id %s --instance-id %s)",
+             what, cbc_vm.id, id, id, cbc_vm.id);
+  cbc_buf res = { 0 };
+  if (aws_call(&res, "ssm", "get-command-invocation", "--command-id", id, "--instance-id", cbc_vm.id,
+               "--query", "StandardOutputContent", "--output", "text", NULL) != 0)
+    aws_fail(fmt_dup("reading SSM command %s's output", id));
+  /* grep '^CBASE: ', then aws_mask, then the sed that makes them "vm: " lines. */
+  cbc_sbuf lines = { 0 };
+  char *p = res.data ? res.data : "";
+  while (*p) {
+    char *nl = strchr(p, '\n');
+    size_t len = nl ? (size_t)(nl - p) : strlen(p);
+    if (len >= 8 && strncmp(p, "CBASE: ", 7) == 0) {
+      char *line = cbc_dupn(p, len);
+      cbc_sb_str(&lines, aws_mask(line));
+      cbc_sb_str(&lines, "\n");
+    }
+    p = nl ? nl + 1 : p + len;
+  }
+  if (!lines.d) cbc_sb_str(&lines, "");
+  write_text(cbc_tmp_path("ssm-lines"), lines.d);
+  p = lines.d;
+  while (*p) {
+    char *nl = strchr(p, '\n');
+    size_t len = nl ? (size_t)(nl - p) : strlen(p);
+    if (len >= 7 && strncmp(p, "CBASE: ", 7) == 0) printf("vm: %.*s\n", (int)(len - 7), p + 7);
+    else printf("%.*s\n", (int)len, p);
+    p = nl ? nl + 1 : p + len;
+  }
+  cbc_vm.ssm_status = cbc_vm.ssm_status ? cbc_vm.ssm_status : "";
+}
+
+/* The exit status shown in the messages: the command's, or "?" when it has none. */
+static const char *ssm_code_shown(void) { return *cbc_vm.ssm_code ? cbc_vm.ssm_code : "?"; }
+
+/* vm_ship: the artifact uploaded (its sha256's key) and the service (re)started on VM. False when the
+ * service was not started (said why): a port taken on the VM releases the claim this deploy made. */
+bool cbc_vm_ship(const char *group) {
+  char *bucket = NULL, *prefix = NULL;
+  cbc_vm_artifacts(aws_account, aws_region_required(), state_bucket(), &bucket, &prefix);
+  cbc_vm.key = fmt_dup("%s%s", prefix, cbc_vm.sha);
+  char *region = aws_region_required();
+  if (aws_call(NULL, "s3api", "head-object", "--bucket", bucket, "--key", cbc_vm.key,
+               "--query", "ETag", "--output", "text", NULL) == 0) {
+    printf("artifact: s3://%s/%s is already this server\n", bucket, cbc_vm.key);
+  } else {
+    const char *code = aws_code();
+    if (strcmp(code, "404") != 0 && strcmp(code, "NoSuchKey") != 0 && strcmp(code, "NotFound") != 0)
+      aws_fail(fmt_dup("reading s3://%s/%s", bucket, cbc_vm.key));
+    if (aws_call(NULL, "s3api", "put-object", "--bucket", bucket, "--key", cbc_vm.key, "--body", cbc_vm.bin,
+                 "--content-type", "application/octet-stream", "--query", "ETag", "--output", "text", NULL) != 0)
+      aws_fail(fmt_dup("uploading s3://%s/%s", bucket, cbc_vm.key));
+    printf("artifact: s3://%s/%s\n", bucket, cbc_vm.key);
+  }
+  char *script = cbc_vm_remote_deploy(cbc_vm.port, bucket, cbc_vm.key, cbc_vm.sha, region, state_bucket());
+  write_text(cbc_tmp_path("vm-deploy.sh"), script);
+  ssm_run(script, fmt_dup("deploy of %s", cbc_conf.app));
+  if (strcmp(cbc_vm.ssm_status, "Success") == 0) return true;
+  if (strcmp(cbc_vm.ssm_code, "3") == 0) {
+    if (cbc_vm.new_member) {
+      state_change("vm", group, cbc_conf.app, "", "leave");
+      fprintf(stderr, "cbase: port %s is taken on %s by another process, so %s was not started, and its claim on the port is released. Free the port (or stop what holds it), then deploy again.\n",
+              cbc_vm.port, cbc_vm.id, cbc_conf.app);
+    } else {
+      fprintf(stderr, "cbase: port %s is taken on %s by another process, so %s was not started; it keeps its port (it was a member before this deploy). Free the port, then deploy again.\n",
+              cbc_vm.port, cbc_vm.id, cbc_conf.app);
+    }
+    return false;
+  }
+  fprintf(stderr, "cbase: the deploy of %s on %s ended %s (exit %s), above; the service's own log is on the instance: journalctl -u cbase-%s (aws ssm start-session --target %s)\n",
+          cbc_conf.app, cbc_vm.id, cbc_vm.ssm_status, ssm_code_shown(), cbc_conf.app, cbc_vm.id);
+  return false;
+}
+
+/* vm_undeploy: the app's service stopped and removed, then its membership left. */
+void cbc_vm_undeploy(const char *group, bool delete_data) {
+  cbc_vm_find(group);
+  char *script = cbc_vm_remote_undeploy(delete_data);
+  write_text(cbc_tmp_path("vm-undeploy.sh"), script);
+  ssm_run(script, fmt_dup("undeploy of %s", cbc_conf.app));
+  if (strcmp(cbc_vm.ssm_status, "Success") != 0)
+    cbc_fail(CBC_EXIT_FAIL, "the undeploy of %s on %s ended %s (exit %s); it still holds its port, and nothing else was changed",
+             cbc_conf.app, cbc_vm.id, cbc_vm.ssm_status, ssm_code_shown());
+  state_change("vm", group, cbc_conf.app, "", "leave");
 }
