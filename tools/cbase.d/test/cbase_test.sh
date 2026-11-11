@@ -602,8 +602,8 @@ expect_err "cbase: group-template vm GROUP or group-template static GROUP" "grou
 expect_err "cbase: group-template vm wants one group name, and --ipv4 or nothing" "group-template vm with no group" group-template vm
 expect_err "cbase: group-template vm wants one group name, and --ipv4 or nothing" "group-template vm with a bad third word" group-template vm g --bogus
 expect_err "cbase: group-template static wants one group name" "group-template static with a third word" group-template static g x
-expect_err "cbase: deploy takes --dry-run, --accept-drift, --prune, --allow-downtime, --no-aliases and --attach, not --bogus" "deploy with an unknown flag" deploy --bogus
-expect_err "cbase: deploy takes --dry-run, --accept-drift, --prune, --allow-downtime, --no-aliases and --attach, not --bogus" "deploy checks every flag, each one accepted" deploy --dry-run --accept-drift --prune --allow-downtime --no-aliases --attach --bogus
+expect_err "cbase: deploy takes --dry-run, --accept-drift, --no-prune, --allow-downtime, --no-aliases and --attach, not --bogus" "deploy with an unknown flag" deploy --bogus
+expect_err "cbase: deploy takes --dry-run, --accept-drift, --no-prune, --allow-downtime, --no-aliases and --attach, not --bogus" "deploy checks every flag, each one accepted" deploy --dry-run --accept-drift --prune --allow-downtime --no-aliases --attach --bogus
 expect_err "cbase: undeploy takes --delete-files and --delete-data, not --x" "undeploy with an unknown flag" undeploy --x
 expect_err "cbase: config check is the one config command" "config with no check" config
 expect_err "cbase: config check is the one config command" "config with another word" config show
@@ -729,7 +729,7 @@ out_has "stack: cbase-app-site is up to date (no changes)" "an unchanged redeplo
 out_has "invalidation I1FAKE of /* on E1FAKEDIST" "a redeploy invalidates"
 since "$m" | grep -q "CF CreateInvalidation E1FAKEDIST <Path>/\*</Path>" || fail "the invalidation was not /*"
 since "$m" | grep -q "CFN ExecuteChangeSet" && fail "a change set with no changes was executed"
-since "$m" | grep -q "^DELETE " && fail "a deploy without --prune deleted"
+since "$m" | grep -q "^DELETE " && fail "a redeploy with nothing stale deleted"
 ok
 
 fi
@@ -737,8 +737,37 @@ fi
 if wanted prune; then
 seed site/stale.js; seed site/old/page.html
 rm "$site/build/data.json"
+# The prune is on by default; --no-prune, and CBASE_PRUNE=0 (exactly "0"), turn it off.
 m="$(mark)"
-run "$site" deploy --prune
+run "$site" deploy --no-prune
+expect_rc 0 "a deploy with --no-prune"
+since "$m" | grep -q '^DELETE ' && fail "--no-prune deleted"
+grep -q "pruned" "$t/out" && fail "--no-prune printed a prune"
+ok
+m="$(mark)"
+rc=0
+(cd "$site" && CBASE_PRUNE=0 "$tool" deploy) > "$t/out" 2> "$t/err" || rc=$?
+expect_rc 0 "a deploy with CBASE_PRUNE=0"
+since "$m" | grep -q '^DELETE ' && fail "CBASE_PRUNE=0 deleted"
+for k in site/stale.js site/old/page.html site/data.json; do
+  aws s3api head-object --bucket "$SITE_BUCKET" --key "$k" > /dev/null 2>&1 || fail "s3://$SITE_BUCKET/$k is gone without a prune"
+done
+ok
+# A dry run says what it would prune, and deletes nothing.
+m="$(mark)"
+run "$site" deploy --dry-run
+expect_rc 0 "a dry run with the default prune"
+out_has "would prune s3://$SITE_BUCKET/site/stale.js" "a dry run's prune plan"
+out_has "would prune 3 files the build no longer has, under s3://$SITE_BUCKET/site/ alone" "a dry run's prune count"
+since "$m" | grep -q '^DELETE ' && fail "a dry run deleted"
+ok
+m="$(mark)"
+run "$site" deploy --dry-run --no-prune
+expect_rc 0 "a dry run with --no-prune"
+grep -q "would prune" "$t/out" && fail "a dry run with --no-prune printed a prune plan"
+ok
+m="$(mark)"
+run "$site" deploy
 expect_rc 0 "a prune"
 since "$m" | grep '^DELETE ' | sort > "$t/deleted"
 printf 'DELETE /%s/site/data.json 204\nDELETE /%s/site/old/page.html 204\nDELETE /%s/site/stale.js 204\n' \
@@ -749,7 +778,7 @@ out_has "pruned 3 files the build no longer has, under s3://$SITE_BUCKET/site/ a
 grep -q "is outside site/" "$t/err" && { cat "$t/err" >&2; fail "the prune listed keys outside the app's folder"; }
 ok
 # A listing that answers keys outside the folder (as a wrong one might): still nothing outside is
-# deleted, and each is named. CBASE_PRUNE=1 is the flag's spelling in the environment.
+# deleted, and each is named. CBASE_PRUNE=1 is accepted: it is the default.
 fake_set list-ignores-prefix=1
 seed site/stale2.js
 m="$(mark)"
@@ -766,7 +795,7 @@ done
 fake_set list-ignores-prefix=0
 ok
 # The folder's own key (site/ itself, the object a console's "create folder" makes) is no file of the
-# folder: left alone. CBASE_PRUNE=yes is not CBASE_PRUNE=1: no prune.
+# folder: left alone. --prune is still accepted, and means the default.
 seed site/
 m="$(mark)"
 run "$site" deploy --prune
@@ -778,9 +807,13 @@ m="$(mark)"
 rc=0
 (cd "$site" && CBASE_PRUNE=yes "$tool" deploy) > "$t/out" 2> "$t/err" || rc=$?
 expect_rc 0 "a deploy with CBASE_PRUNE=yes"
-since "$m" | grep -q '^DELETE ' && fail "CBASE_PRUNE=yes pruned"
+# Only "0" turns the prune off: "yes" (or anything else) leaves the default, on.
+since "$m" | grep -q '^DELETE /.*/site/stale3.js' || fail "CBASE_PRUNE=yes turned the prune off"
 aws s3api delete-object --bucket "$SITE_BUCKET" --key site/ > /dev/null
-aws s3api delete-object --bucket "$SITE_BUCKET" --key site/stale3.js > /dev/null
+ok
+# (6) A static-only app with no VM: no server binary is listed or named by the prune.
+since "$m" | grep -q 'LIST prefix=artifacts/' && fail "an app with no VM listed the artifacts folder"
+grep -q "server binar" "$t/out" && fail "an app with no VM printed a server prune"
 ok
 
 fi

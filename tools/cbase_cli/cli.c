@@ -35,10 +35,10 @@ void cbc_usage(FILE *to) {
         "  doctor             the config, the AWS account, each group and its members\n"
         "  apps [GROUP]       a group's apps, with each one's port, service and memory\n"
         "                     (default: cbase.conf's groups)\n"
-        "  deploy [--dry-run] [--accept-drift] [--allow-downtime] [--prune] [--no-aliases|--attach]\n"
+        "  deploy [--dry-run] [--accept-drift] [--allow-downtime] [--no-prune] [--no-aliases|--attach]\n"
         "                     the app: its service on its group's VM, its static files, its\n"
         "                     distribution; DRY_RUN=1, CBASE_ACCEPT_DRIFT=1, CBASE_ALLOW_DOWNTIME=1\n"
-        "                     and CBASE_PRUNE=1 are the same as the flags; --no-aliases and --attach\n"
+        "                     and CBASE_PRUNE=0 are the same as the flags; --no-aliases and --attach\n"
         "                     are CBASE_ALIASES off and on, a staged attach\n"
         "  undeploy [--delete-files] [--delete-data]\n"
         "                     the app's distribution and service gone, its groups left; its files\n"
@@ -504,6 +504,11 @@ static bool re_flags(const char *re, const char *s, int flags) {
 
 cbc_flags_t cbc_flags;
 
+static bool env_is_zero(const char *name) {
+  const char *v = getenv(name);
+  return v && strcmp(v, "0") == 0;
+}
+
 static bool env_is_one(const char *name) {
   const char *v = getenv(name);
   return v && strcmp(v, "1") == 0;
@@ -514,7 +519,7 @@ void cbc_flags_from_env(void) {
   cbc_flags.dry_run = dry && strcmp(dry, "1") == 0;
   cbc_flags.dry_banner = dry && *dry;
   cbc_flags.accept_drift = env_is_one("CBASE_ACCEPT_DRIFT");
-  cbc_flags.prune = env_is_one("CBASE_PRUNE");
+  cbc_flags.prune = !env_is_zero("CBASE_PRUNE");   /* on by default: only "0" turns it off */
   cbc_flags.allow_downtime = env_is_one("CBASE_ALLOW_DOWNTIME");
 }
 

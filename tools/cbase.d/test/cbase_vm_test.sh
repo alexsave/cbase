@@ -295,6 +295,140 @@ out_has "artifact: s3://$BUCKET/artifacts/blog/$sha is already this server" "an 
 ok
 
 fi
+if wanted prune-binaries; then
+# ================================================================================================
+# prune-binaries: the old server binaries of a VM app (on by default), after the deploy has succeeded
+# ================================================================================================
+# blog's artifacts folder holds sha256-named binaries. The fake dates an object by its put, so the order
+# of the puts below is the order of LastModified, and it is NOT the order of the names.
+sha="$(shasum -a 256 "$t/elf-arm64" | cut -d' ' -f1)"
+A=artifacts/blog
+cur="$A/$sha"
+hexs() { printf '%064d' 0 | tr 0 "$1"; }   # hexs C: 64 times the hex digit C
+put_obj() { printf 'theirs\n' > "$t/seed"; aws s3api put-object --bucket "$BUCKET" --key "$1" --body "$t/seed" > /dev/null; }
+has_obj() { aws s3api head-object --bucket "$BUCKET" --key "$1" > /dev/null 2>&1; }
+deleted() { since "$1" | grep '^DELETE ' | sed 's/ 204$//; s|^DELETE /[^/]*/||' | sort; }   # the keys deleted since MARK
+aws s3api head-object --bucket "$BUCKET" --key "$cur" > /dev/null || fail "blog's current binary is not in its folder"
+put_obj "$A/$(hexs c)"; put_obj "$A/$(hexs a)"; put_obj "$A/$(hexs d)"; put_obj "$A/$(hexs b)"   # oldest to newest: c a d b
+# --no-prune and CBASE_PRUNE=0: nothing is deleted.
+m="$(mark)"
+run "$blog" deploy --no-prune
+expect_rc 0 "a VM deploy with --no-prune"
+[ -z "$(deleted "$m")" ] || fail "--no-prune deleted a binary"
+grep -q "server binar" "$t/out" && fail "--no-prune printed a server prune"
+since "$m" | grep -q "LIST prefix=$A/" && fail "--no-prune listed the artifacts folder"
+m="$(mark)"
+rc=0
+(cd "$blog" && CBASE_PRUNE=0 "$tool" deploy) > "$t/out" 2> "$t/err" || rc=$?
+expect_rc 0 "a VM deploy with CBASE_PRUNE=0"
+[ -z "$(deleted "$m")" ] || fail "CBASE_PRUNE=0 deleted a binary"
+for k in a b c d; do has_obj "$A/$(hexs $k)" || fail "a binary is gone without a prune"; done
+ok
+# --dry-run: the plan, no deletion, no put. A dry run makes no build, so the binary it would ship is unknown:
+# the newest one is the previous, and the current one is listed as prunable too (the summary says why).
+m="$(mark)"
+run "$blog" deploy --dry-run
+expect_rc 0 "a dry run with the default prune"
+for k in "$cur" "$A/$(hexs c)" "$A/$(hexs a)" "$A/$(hexs d)"; do out_has "would prune s3://$BUCKET/$k" "a dry run's plan"; done
+out_has "would prune 4 old server binaries under s3://$BUCKET/$A/ (keeping the build's own binary, not made in a dry run, and $A/$(hexs b))" "a dry run's summary"
+grep -q "would prune s3://$BUCKET/$A/$(hexs b)" "$t/out" && fail "a dry run would prune the newest binary"
+since "$m" | grep -qE '^DELETE |^PUT ' && fail "a dry run deleted or put"
+for k in a b c d; do has_obj "$A/$(hexs $k)" || fail "a dry run deleted a binary"; done
+m="$(mark)"
+run "$blog" deploy --dry-run --no-prune
+expect_rc 0 "a dry run with --no-prune"
+grep -q "would prune" "$t/out" && fail "a dry run with --no-prune printed a plan"
+ok
+# The default deploy: the current binary (older than all of these) and the newest other (b) stay, the three
+# oldest others (c, a, d) go: not the largest names, not the smallest.
+m="$(mark)"
+run "$blog" deploy
+expect_rc 0 "a VM deploy that prunes"
+printf '%s\n%s\n%s\n' "$A/$(hexs a)" "$A/$(hexs c)" "$A/$(hexs d)" > "$t/want"
+deleted "$m" | diff -u "$t/want" - || fail "the prune deleted other than the three oldest others"
+for k in c a d; do out_has "pruned s3://$BUCKET/$A/$(hexs $k)" "a pruned binary is named"; done
+out_has "pruned 3 old server binaries under s3://$BUCKET/$A/ (kept $cur and $A/$(hexs b))" "the prune's summary"
+has_obj "$cur" || fail "the prune deleted the current binary"
+has_obj "$A/$(hexs b)" || fail "the prune deleted the newest other binary (the rollback target)"
+ok
+# A rerun has nothing to delete: the summary says 0.
+m="$(mark)"
+run "$blog" deploy
+expect_rc 0 "a VM deploy with nothing to prune"
+out_has "pruned 0 old server binaries under s3://$BUCKET/$A/ (kept $cur and $A/$(hexs b))" "a prune of nothing"
+[ -z "$(deleted "$m")" ] || fail "a prune of nothing deleted"
+ok
+# --prune is still accepted (it is the default), and CBASE_PRUNE=yes is not "0": still on.
+put_obj "$A/$(hexs e)"
+m="$(mark)"
+run "$blog" deploy --prune
+expect_rc 0 "a VM deploy with --prune"
+printf '%s\n' "$A/$(hexs b)" | diff -u - <(deleted "$m") || fail "--prune did not prune (the newest other is e now, b goes)"
+put_obj "$A/$(hexs f)"
+m="$(mark)"
+rc=0
+(cd "$blog" && CBASE_PRUNE=yes "$tool" deploy) > "$t/out" 2> "$t/err" || rc=$?
+expect_rc 0 "a VM deploy with CBASE_PRUNE=yes"
+printf '%s\n' "$A/$(hexs e)" | diff -u - <(deleted "$m") || fail "CBASE_PRUNE=yes turned the prune off"
+ok
+# Nothing that is not a binary of the app's folder is ever deleted: not a sidecar, not a name of another length or
+# case, not a nested key, not another prefix or app, even when they are the newest objects there (a filter dropped
+# would make one the kept "previous" and delete a real binary). A listing that answers the whole bucket is named.
+put_obj "$A/$(hexs 9)"
+put_obj "$A/$(hexs f).sha256"; put_obj "$A/notes.txt"; put_obj "$A/$(hexs 1 | cut -c2-)"; put_obj "$A/$(hexs 1)0"
+put_obj "$A/$(hexs F)"; put_obj "$A/sub/$(hexs 2)"; put_obj "artifacts/blogger/$(hexs 3)"; put_obj "artifacts/shop/$(hexs 4)"
+put_obj "other/$(hexs 5)"
+fake_set list-ignores-prefix=1
+m="$(mark)"
+run "$blog" deploy
+expect_rc 0 "a prune over a listing of the whole bucket"
+fake_set list-ignores-prefix=0
+printf '%s\n' "$A/$(hexs f)" | diff -u - <(deleted "$m") || fail "the prune deleted other than the one old binary"
+for k in "artifacts/blogger/$(hexs 3)" "artifacts/shop/$(hexs 4)" "other/$(hexs 5)"; do
+  err_has "prune: s3://$BUCKET/$k is outside $A/, and is left alone" "the folder guard"
+done
+for k in "$A/$(hexs f).sha256" "$A/notes.txt" "$A/$(hexs 1 | cut -c2-)" "$A/$(hexs 1)0" "$A/$(hexs F)" "$A/sub/$(hexs 2)" \
+         "artifacts/blogger/$(hexs 3)" "artifacts/shop/$(hexs 4)" "other/$(hexs 5)" "$A/$(hexs 9)" "$cur"; do
+  has_obj "$k" || fail "the prune deleted s3://$BUCKET/$k"
+done
+ok
+# A deploy that does not get to the end deletes nothing, with the prune on: the binary it leaves is the one a
+# rollback needs. A change set that fails; a service that does not start; an execute that fails.
+put_obj "$A/$(hexs 6)"; put_obj "$A/$(hexs 7)"
+gone_check() { [ -z "$(deleted "$m")" ] || fail "$1 deleted a binary"; has_obj "$A/$(hexs 9)" && has_obj "$A/$(hexs 6)" || fail "$1 left a binary gone"; }
+fake_set "cs-fail=Template format error: Unresolved resource dependencies Nope in the Resources block of the template"
+m="$(mark)"
+run "$blog" deploy
+expect_rc 1 "a change set that fails, with the prune on"
+gone_check "a failed change set"
+fake_set cs-fail=
+fake_set "ssm-status=Failed&ssm-code=1&ssm-out=CBASE: done (the fake's answer)%0A"
+m="$(mark)"
+run "$blog" deploy
+expect_rc 1 "a service that does not start, with the prune on"
+gone_check "a service that did not start"
+fake_set "ssm-status=Success&ssm-code=0&ssm-out=CBASE: done (the fake's answer)%0A"
+fake_set "changes=replace-distribution&fail-execute=1"
+m="$(mark)"
+run "$blog" deploy --allow-downtime
+expect_rc 1 "an execute that fails, with the prune on"
+since "$m" | grep -q "CFN ExecuteChangeSet cbase-app-blog" || fail "the failing deploy never reached the execute"
+gone_check "a failed execute"
+fake_set "changes=auto&fail-execute=0"
+ok
+# A deploy that executes the stack prunes only after it: the first delete follows the execute in the log.
+m="$(mark)"
+fake_set "changes=replace-distribution"
+run "$blog" deploy --allow-downtime
+expect_rc 0 "a deploy that executes the stack and prunes"
+fake_set "changes=auto"
+since "$m" | grep -nE "^CFN ExecuteChangeSet cbase-app-blog|^DELETE " | cut -c1-40 > "$t/order"
+[ "$(grep -c 'ExecuteChangeSet' "$t/order")" = 1 ] && [ "$(grep -c DELETE "$t/order")" -ge 1 ] || { cat "$t/order" >&2; fail "the executing deploy lacks the execute or the prune"; }
+head -n 1 "$t/order" | grep -q ExecuteChangeSet || { cat "$t/order" >&2; fail "the prune deleted before the stack was executed"; }
+printf '%s\n' "$A/$(hexs 6)" "$A/$(hexs 9)" | sort | diff -u - <(deleted "$m") || fail "the executing deploy pruned other than the old binaries (7 is the newest other)"
+ok
+
+fi
 if wanted apps; then
 # ---- apps: the port, the service and the memory ------------------------------------------------
 run "$t" apps g9

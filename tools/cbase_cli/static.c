@@ -305,7 +305,7 @@ void cbc_static_upload(const cbc_static_plan *p, const char *bucket, const char 
   free(dest);
 }
 
-void cbc_static_prune(const char *bucket, const char *region, const char *app, const cbc_strs *files) {
+void cbc_static_prune(const char *bucket, const char *region, const char *app, const cbc_strs *files, bool dry) {
   cbc_buf text = { 0, 0, 0 };
   char *prefix = cbc_fmt("%s%s%s", app, "/", "");
   char *what_listing = NULL, *what_deleting = NULL;
@@ -329,11 +329,15 @@ void cbc_static_prune(const char *bucket, const char *region, const char *app, c
         if (strncmp(k, prefix, pl) != 0 || k[pl] == '\0') {
           fprintf(stderr, "cbase: prune: s3://%s/%s is outside %s/, and is left alone\n", bucket, k, app);
         } else if (!strs_has(files, k + pl)) {
-          cbc_asprintf(&what_deleting, "deleting s3://%s/%s", bucket, k);
-          if (aws_call(NULL, "s3api", "delete-object", "--bucket", bucket, "--key", k, "--region", region, NULL) != 0) {
-            aws_fail(what_deleting);
+          if (dry) {
+            printf("would prune s3://%s/%s\n", bucket, k);
+          } else {
+            cbc_asprintf(&what_deleting, "deleting s3://%s/%s", bucket, k);
+            if (aws_call(NULL, "s3api", "delete-object", "--bucket", bucket, "--key", k, "--region", region, NULL) != 0) {
+              aws_fail(what_deleting);
+            }
+            printf("pruned s3://%s/%s\n", bucket, k);
           }
-          printf("pruned s3://%s/%s\n", bucket, k);
           n++;
         }
       }
@@ -341,7 +345,7 @@ void cbc_static_prune(const char *bucket, const char *region, const char *app, c
     }
     line = eol ? eol + 1 : line + strlen(line);
   }
-  printf("pruned %zu file%s the build no longer has, under s3://%s/%s/ alone\n", n, n == 1 ? "" : "s", bucket, app);
+  printf("%s %zu file%s the build no longer has, under s3://%s/%s/ alone\n", dry ? "would prune" : "pruned", n, n == 1 ? "" : "s", bucket, app);
   free(body);
   free(prefix);
   free(text.data);

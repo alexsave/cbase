@@ -111,6 +111,13 @@ void cbc_vm_join(const char *group);
  * service was not started. */
 bool cbc_vm_ship(const char *group);
 
+/* cbc_vm_prune_artifacts: deploy --prune's second half, after the stack is executed: deletes the app's
+ * old server binaries, the keys under its artifacts prefix that are exactly a sha256 (64 lowercase hex),
+ * and keeps the one this deploy shipped (cbc_vm.key) and the most recently modified other (the rollback
+ * target). Nothing else is a candidate; a listed key outside the prefix is named and left alone. A DRY
+ * run (no build, so no current key) only prints what it would delete, keeping the newest as the previous. */
+void cbc_vm_prune_artifacts(bool dry);
+
 /* cbc_vm_service: VM_SERVICE, what the deploy's summary says of the service, from the remote script's
  * own line (vm_service_said): restarted, started, or unchanged and not restarted. Set by cbc_vm_ship
  * once the deploy script succeeded. */

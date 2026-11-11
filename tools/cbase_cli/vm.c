@@ -644,3 +644,90 @@ bool cbc_vm_data_check(const char *instance, const char *group, cbc_strs *apps) 
   }
   return strcmp(cbc_vm.ssm_status, "Success") == 0;
 }
+
+/* ---- the prune of the app's old server binaries ---- */
+
+typedef struct {
+  char *key, *when;   /* the object's key, and its LastModified (ISO 8601: its text sorts chronologically) */
+} vm_binary;
+
+/* vm_is_sha256: exactly 64 lowercase hex characters, and nothing else. */
+static bool vm_is_sha256(const char *s) {
+  size_t n = 0;
+  for (; s[n]; n++) {
+    if (!((s[n] >= '0' && s[n] <= '9') || (s[n] >= 'a' && s[n] <= 'f'))) return false;
+  }
+  return n == 64;
+}
+
+/* vm_newer: whether A is newer than B (LastModified, then the key, so a tie is still one answer). */
+static bool vm_newer(const vm_binary *a, const vm_binary *b) {
+  int c = strcmp(a->when, b->when);
+  return c != 0 ? c > 0 : strcmp(a->key, b->key) > 0;
+}
+
+void cbc_vm_prune_artifacts(bool dry) {
+  char *bucket = NULL, *prefix = NULL;
+  cbc_vm_artifacts(aws_account, aws_region_required(), state_bucket(), &bucket, &prefix);
+  const char *region = aws_region_required();
+  const char *current = cbc_vm.key && *cbc_vm.key ? cbc_vm.key : NULL;   /* NULL in a dry run: nothing is built, so the sha is not known */
+  cbc_buf text = { 0, 0, 0 };
+  if (aws_call(&text, "s3api", "list-objects-v2", "--bucket", bucket, "--prefix", prefix, "--region", region,
+               "--query", "Contents[].[Key,LastModified]", "--output", "text", NULL) != 0)
+    aws_fail(cbc_fmt("listing s3://%s/%s", bucket, prefix));
+  char *body = cbc_buf_text(&text);
+  vm_binary *v = NULL;
+  size_t n = 0, cap = 0, pl = strlen(prefix);
+  /* The listing: a line a key, the key and its time tab-separated (no key holds a tab). */
+  for (char *line = body; *line;) {
+    char *eol = strchr(line, '\n');
+    if (eol) *eol = '\0';
+    char *tab = strchr(line, '\t');
+    if (tab && *line) {
+      *tab = '\0';
+      const char *k = line, *when = tab + 1;
+      /* THE FOLDER GUARD: whatever the listing holds, only a key under the prefix is ever a candidate. */
+      if (strncmp(k, prefix, pl) != 0) {
+        fprintf(stderr, "cbase: prune: s3://%s/%s is outside %s, and is left alone\n", bucket, k, prefix);
+      } else if (vm_is_sha256(k + pl)) {   /* a binary: nothing else (a sidecar, a script, a folder) is */
+        if (n == cap) {
+          cap = cap ? cap * 2 : 16;
+          v = cbc_xrealloc(v, cap * sizeof *v);
+        }
+        v[n].key = cbc_dup(k);
+        v[n].when = cbc_dup(when);
+        n++;
+      }
+    }
+    line = eol ? eol + 1 : line + strlen(line);
+  }
+  /* Kept: the binary this deploy ships, and the newest other one (the rollback target). */
+  const vm_binary *prev = NULL;
+  for (size_t i = 0; i < n; i++) {
+    if (current && strcmp(v[i].key, current) == 0) continue;
+    if (!prev || vm_newer(&v[i], prev)) prev = &v[i];
+  }
+  size_t gone = 0;
+  for (size_t i = 0; i < n; i++) {
+    if (&v[i] == prev || (current && strcmp(v[i].key, current) == 0)) continue;
+    if (dry) {
+      printf("would prune s3://%s/%s\n", bucket, v[i].key);
+    } else {
+      if (aws_call(NULL, "s3api", "delete-object", "--bucket", bucket, "--key", v[i].key, "--region", region, NULL) != 0)
+        aws_fail(cbc_fmt("deleting s3://%s/%s", bucket, v[i].key));
+      printf("pruned s3://%s/%s\n", bucket, v[i].key);
+    }
+    gone++;
+  }
+  const char *cur = current ? current : "the build's own binary, not made in a dry run,";
+  char *kept = prev ? cbc_fmt("%s and %s", cur, prev->key) : cbc_dup(cur);
+  printf("%s %zu old server binar%s under s3://%s/%s (%s %s)\n", dry ? "would prune" : "pruned", gone,
+         gone == 1 ? "y" : "ies", bucket, prefix, dry ? "keeping" : "kept", kept);
+  for (size_t i = 0; i < n; i++) {
+    free(v[i].key);
+    free(v[i].when);
+  }
+  free(v);
+  free(body);
+  free(text.data);
+}
