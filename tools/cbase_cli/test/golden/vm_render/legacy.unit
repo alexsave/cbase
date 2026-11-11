@@ -1,0 +1,67 @@
+[Unit]
+Description=cbase app game (vm_unit.service, installed by ./cbase deploy: edits by hand are undone)
+# The port is cbase-game.socket's (vm_unit.socket), which systemd holds across this unit's
+# restarts: a restart queues connections, it never refuses one.
+Requires=cbase-game.socket
+After=network-online.target cbase-game.socket
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=cbase-game
+Group=cbase-game
+# The secrets and settings (vm_remote.sh writes it from SSM, root-owned 0600;
+# systemd reads it before dropping to the app's user).
+EnvironmentFile=/etc/cbase/game.env
+Environment=CBASE_STORE=sqlite
+Environment=CBASE_DB=/var/lib/game/cbase.sqlite
+# serve listens on the socket unit's socket (fd 3); CBASE_LISTEN names the same port for its
+# startup line, and is what it would bind without the socket. "::" (no brackets: config.c splits
+# host:port at the last colon) is dual-stack.
+Environment=CBASE_LISTEN=:::8700
+Environment=SSL_CERT_FILE=/etc/pki/tls/certs/ca-bundle.crt
+# Backups: the database to s3://state-bucket-1/cbase/latest.sqlite (serve's CBASE_BACKUP_*).
+Environment=CBASE_BACKUP_BUCKET=state-bucket-1
+Environment=CBASE_BACKUP_REGION=us-east-1
+Environment=CBASE_BACKUP_KEY=cbase/latest.sqlite
+Environment=CBASE_BACKUP_URL=s3://state-bucket-1/cbase/latest.sqlite
+ExecStart=/srv/cbase/game/serve serve
+MemoryMax=16M
+Restart=always
+RestartSec=1
+# SIGTERM drains (ingress_process.c): the listener closed (systemd's copy keeps queueing), the
+# requests in flight or arriving answered, every WebSocket closed with 1001 to reconnect to the
+# next serve; give open games time to settle.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+LimitNOFILE=65536
+WorkingDirectory=/var/lib/game
+UMask=0077
+
+# Hardening. Writable: only the data directory.
+ReadWritePaths=/var/lib/game
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

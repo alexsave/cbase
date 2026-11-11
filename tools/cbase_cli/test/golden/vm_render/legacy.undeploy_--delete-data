@@ -1,0 +1,24 @@
+#!/bin/bash
+# The undeploy of cbase app game on its VM, rendered by ./cbase undeploy (tools/cbase.d/vm.sh).
+set -euo pipefail
+R="${CBASE_VM_ROOT:-}"
+app=game
+unit=cbase-game.service
+sock=cbase-game.socket
+home="$R/srv/cbase/game"
+say() { echo "CBASE: $*"; }
+if [ -f "$R/etc/systemd/system/$unit" ]; then
+  # The socket first: with it listening, a connection would start the service again.
+  systemctl disable --now --quiet "$sock" 2> /dev/null || true
+  systemctl disable --now --quiet "$unit" || true
+  rm -f "$R/etc/systemd/system/$unit" "$R/etc/systemd/system/$sock"
+  systemctl daemon-reload
+  say "$unit and $sock stopped, disabled and removed"
+else
+  say "$unit is not installed"
+fi
+rm -f "$home/serve" "$home/serve.new" "$R/etc/cbase/$app.env" "$R/etc/cbase/$app.loaded"
+rm -rf "$home"
+user="cbase-$app"
+if id -u "$user" > /dev/null 2>&1; then userdel "$user" || true; fi
+say "deleted /srv/cbase/$app and its data (--delete-data)"
