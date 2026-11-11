@@ -308,13 +308,14 @@ void cbc_static_upload(const cbc_static_plan *p, const char *bucket, const char 
 void cbc_static_prune(const char *bucket, const char *region, const char *app, const cbc_strs *files, bool dry) {
   cbc_buf text = { 0, 0, 0 };
   char *prefix = cbc_fmt("%s%s%s", app, "/", "");
-  char *what_listing = NULL, *what_deleting = NULL;
+  char *what_listing = NULL;
   cbc_asprintf(&what_listing, "listing s3://%s/%s", bucket, prefix);
   if (aws_call(&text, "s3api", "list-objects-v2", "--bucket", bucket, "--prefix", prefix, "--region", region,
                "--query", "Contents[].Key", "--output", "text", NULL) != 0) {
     aws_fail(what_listing);
   }
-  size_t n = 0;
+  size_t n = 0, cap = 0;
+  char **gone = NULL;   /* the keys to delete: each held to the folder BEFORE it joins (and a batch) */
   char *body = cbc_buf_text(&text);
   /* The listing: a page of keys a line, tab-separated (the CLI's text output; no key holds a tab). */
   for (char *line = body; *line;) {
@@ -332,11 +333,11 @@ void cbc_static_prune(const char *bucket, const char *region, const char *app, c
           if (dry) {
             printf("would prune s3://%s/%s\n", bucket, k);
           } else {
-            cbc_asprintf(&what_deleting, "deleting s3://%s/%s", bucket, k);
-            if (aws_call(NULL, "s3api", "delete-object", "--bucket", bucket, "--key", k, "--region", region, NULL) != 0) {
-              aws_fail(what_deleting);
+            if (n == cap) {
+              cap = cap ? cap * 2 : 64;
+              gone = cbc_xrealloc(gone, cap * sizeof *gone);
             }
-            printf("pruned s3://%s/%s\n", bucket, k);
+            gone[n] = cbc_dup(k);
           }
           n++;
         }
@@ -344,6 +345,11 @@ void cbc_static_prune(const char *bucket, const char *region, const char *app, c
       k = tab ? tab + 1 : NULL;
     }
     line = eol ? eol + 1 : line + strlen(line);
+  }
+  if (!dry) {
+    aws_s3_delete_keys(bucket, region, gone, n);   /* batched; prints one "pruned" line a key */
+    for (size_t i = 0; i < n; i++) free(gone[i]);
+    free(gone);
   }
   printf("%s %zu file%s the build no longer has, under s3://%s/%s/ alone\n", dry ? "would prune" : "pruned", n, n == 1 ? "" : "s", bucket, app);
   free(body);

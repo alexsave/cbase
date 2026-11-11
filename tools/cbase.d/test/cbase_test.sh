@@ -817,6 +817,85 @@ grep -q "server binar" "$t/out" && fail "an app with no VM printed a server prun
 ok
 
 fi
+# ---- prune-batch: the stale keys deleted in batches of at most 1000, nothing outside the folder ---
+if wanted prune-batch; then
+many="$t/many"
+seed_many() {   # seed_many N: N stale files, site/m/0001.txt ..., put in one CLI run
+  rm -rf "$many"; mkdir -p "$many/m"
+  seq -f "$many/m/%04g.txt" 1 "$1" | xargs touch
+  aws s3 cp "$many" "s3://$SITE_BUCKET/site/" --recursive --only-show-errors
+}
+batches() { since "$1" | grep '^DELETEOBJECTS ' | awk '{printf "%s ", $3}'; }   # the key counts of the delete-objects calls since MARK
+singles() {   # the delete-object calls since MARK: every DELETE line the batches did not make
+  local total inb
+  total="$(since "$1" | grep -c '^DELETE /' || true)"
+  inb="$(since "$1" | grep '^DELETEOBJECTS ' | awk '{n += $3} END {print n + 0}')"
+  echo $((total - inb))
+}
+# 2,500 stale keys: three DeleteObjects calls (1000, 1000, 500), no single delete, every key named.
+seed_many 2500
+m="$(mark)"
+run "$site" deploy
+expect_rc 0 "a prune of 2,500 stale files"
+[ "$(batches "$m")" = "1000 1000 500 " ] || fail "2,500 keys were not deleted in calls of 1000, 1000 and 500: [$(batches "$m")]"
+[ "$(singles "$m")" = 0 ] || fail "a batched prune made single deletes"
+[ "$(grep -c '^pruned s3://' "$t/out")" = 2500 ] || fail "the prune did not name its 2,500 keys"
+out_has "pruned 2500 files the build no longer has, under s3://$SITE_BUCKET/site/ alone" "the 2,500-key summary"
+[ "$(aws s3api list-objects-v2 --bucket "$SITE_BUCKET" --prefix site/m/ --query 'length(Contents || `[]`)' --output text)" = 0 ] || fail "stale keys are left"
+ok
+# Fewer than 1000 keys: one call. Nothing stale: no delete call at all.
+seed_many 3
+m="$(mark)"
+run "$site" deploy
+expect_rc 0 "a prune of 3 stale files"
+[ "$(batches "$m")" = "3 " ] || fail "3 keys were not one call: [$(batches "$m")]"
+m="$(mark)"
+run "$site" deploy
+expect_rc 0 "a prune of nothing"
+since "$m" | grep -q '^DELETE' && fail "nothing stale, and a delete call was made"
+out_has "pruned 0 files the build no longer has, under s3://$SITE_BUCKET/site/ alone" "a prune of nothing"
+ok
+# A key shorthand cannot carry (a space, comma, equals sign, non-ASCII) goes by a single DeleteObject, the safe ones batch.
+seed_many 3
+rm -rf "$many"; mkdir -p "$many/odd"
+for f in "a b.txt" "a,b.txt" "a=b.txt" "a[b].txt" "caf$(printf '\303\251').txt"; do : > "$many/odd/$f"; done
+aws s3 cp "$many" "s3://$SITE_BUCKET/site/" --recursive --only-show-errors
+m="$(mark)"
+run "$site" deploy
+expect_rc 0 "a prune with keys shorthand cannot carry"
+[ "$(batches "$m")" = "3 " ] || fail "the safe keys were not one batch: [$(batches "$m")]"
+[ "$(singles "$m")" = 5 ] || fail "the 5 odd keys were not 5 single deletes: $(singles "$m")"
+out_has "pruned s3://$SITE_BUCKET/site/odd/a b.txt" "a key with a space is named"
+out_has "pruned s3://$SITE_BUCKET/site/odd/a,b.txt" "a key with a comma is named"
+out_has "pruned 8 files the build no longer has" "the odd and the safe keys are counted"
+[ "$(aws s3api list-objects-v2 --bucket "$SITE_BUCKET" --prefix site/odd/ --query 'length(Contents || `[]`)' --output text)" = 0 ] || fail "an odd key is left"
+ok
+# An error entry in a batch's answer fails the deploy, naming the key, the code and the count.
+seed_many 3
+fake_set "delete-fail=site/m/0002.txt"
+run "$site" deploy
+expect_rc 1 "a batch whose answer holds an error entry"
+err_has "deleting s3://$SITE_BUCKET/site/m/0002.txt failed: AccessDenied: Access Denied (1 of the 3 keys in the batch were not deleted)" "the batch's error"
+fake_set "delete-fail="
+run "$site" deploy
+expect_rc 0 "the prune that follows"
+ok
+# The folder guard holds in a batch: a listing that answers keys outside the folder puts none of them in a call.
+seed_many 3
+fake_set list-ignores-prefix=1
+m="$(mark)"
+run "$site" deploy
+fake_set list-ignores-prefix=0
+expect_rc 0 "a batched prune over a listing of the whole bucket"
+since "$m" | grep '^DELETE /' | grep -v "^DELETE /$SITE_BUCKET/site/m/" && fail "a batch held a key outside the folder"
+[ "$(batches "$m")" = "3 " ] || fail "the folder's 3 keys were not one call: [$(batches "$m")]"
+for k in other/index.html site-admin/app.js siteish.txt index.html; do
+  err_has "prune: s3://$SITE_BUCKET/$k is outside site/, and is left alone" "the folder guard"
+  aws s3api head-object --bucket "$SITE_BUCKET" --key "$k" > /dev/null 2>&1 || fail "s3://$SITE_BUCKET/$k is gone"
+done
+ok
+
+fi
 # ---- the safety rules --------------------------------------------------------------------------
 if wanted safety; then
 puts_since() { since "$1" | grep -c "^PUT /$SITE_BUCKET/" || true; }
