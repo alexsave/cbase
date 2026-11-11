@@ -39,10 +39,12 @@ typedef struct {
   size_t cap;
 } members_t;
 static members_t st;
-static char *st_origin = "";        /* ST_ORIGIN: the header's origin, "" when none */
-static char *st_origin_addr = "";   /* ST_ORIGIN_ADDR: ipv6 or dualstack */
-static char *state_fit_report = "";
+char *state_member_origin = "";        /* ST_ORIGIN: the header's origin, "" when none */
+char *state_member_origin_addr = "";   /* ST_ORIGIN_ADDR: ipv6 or dualstack */
+char *state_fit_report = "";
 static char *state_etag = "";
+/* state_no_bucket: STATE_NO_BUCKET, a dry run's read with no state bucket yet: no file is read (rc 3). */
+bool state_no_bucket = false;
 
 static void members_clear(void) {
   st.n = 0;
@@ -99,8 +101,8 @@ static void state_parse(const char *kind, const char *group, const char *file, c
   char *data;
   size_t dlen;
   members_clear();
-  st_origin = "";
-  st_origin_addr = "";
+  state_member_origin = "";
+  state_member_origin_addr = "";
   if (!cbc_read_file(file, &data, &dlen)) cbc_fail(CBC_EXIT_FAIL, "cannot read %s", file);
   int no = 0;
   size_t start = 0;
@@ -117,8 +119,8 @@ static void state_parse(const char *kind, const char *group, const char *file, c
         snprintf(hdr, sizeof hdr, "^cbase-state %s vm %s origin=([a-z0-9.-]+) addr=(ipv6|dualstack)$", STATE_VERSION, group);
         regmatch_t m[3];
         if (match(hdr, line, m, 3)) {
-          st_origin = group_text(line, &m[1]);
-          st_origin_addr = group_text(line, &m[2]);
+          state_member_origin = group_text(line, &m[1]);
+          state_member_origin_addr = group_text(line, &m[2]);
           continue;
         }
       }
@@ -284,22 +286,22 @@ bool state_fit(const char *app, const char *new_line) {
  * when it holds none. One VM has one origin. False when neither names one. */
 bool state_origin(const char *group) {
   if (*state_origin_in) {
-    if (!*st_origin) {
-      st_origin = cbc_dup(state_origin_in);
-      st_origin_addr = "ipv6";
-    } else if (strcmp(st_origin, state_origin_in) != 0) {
+    if (!*state_member_origin) {
+      state_member_origin = cbc_dup(state_origin_in);
+      state_member_origin_addr = "ipv6";
+    } else if (strcmp(state_member_origin, state_origin_in) != 0) {
       cbc_fail(CBC_EXIT_FAIL, "%s's CBASE_VM_ORIGIN is %s, and vm group %s's VM is reached at %s (its state file): one VM can't have two origins. Drop CBASE_VM_ORIGIN, or set it to %s. Nothing was changed.",
-               cbc_conf.app, state_origin_in, group, st_origin, st_origin);
+               cbc_conf.app, state_origin_in, group, state_member_origin, state_member_origin);
     }
   }
-  return *st_origin != '\0';
+  return *state_member_origin != '\0';
 }
 
 /* state_render: the header and the members sorted by app, written to FILE. */
 static void state_render(const char *kind, const char *group, const char *file) {
   FILE *f = fopen(file, "w");
   if (!f) cbc_fail(CBC_EXIT_FAIL, "cannot write %s", file);
-  if (*st_origin) fprintf(f, "cbase-state %s %s %s origin=%s addr=%s\n", STATE_VERSION, kind, group, st_origin, st_origin_addr);
+  if (*state_member_origin) fprintf(f, "cbase-state %s %s %s origin=%s addr=%s\n", STATE_VERSION, kind, group, state_member_origin, state_member_origin_addr);
   else fprintf(f, "cbase-state %s %s %s\n", STATE_VERSION, kind, group);
   char **sorted = sorted_copy(st.lines.v, st.n);
   for (size_t i = 0; i < st.n; i++) fprintf(f, "%s\n", sorted[i]);
@@ -343,12 +345,13 @@ void state_read(const char *kind, const char *group) {
   char *cur = cbc_tmp_path("cur");
   unlink(cur);
   char *etag = NULL;
-  int rc = aws_s3_get(bucket_s, key, cur, &etag);
+  /* STATE_NO_BUCKET=1 reads no file at all: the same as a missing one (shell state_read). */
+  int rc = state_no_bucket ? 3 : aws_s3_get(bucket_s, key, cur, &etag);
   if (rc == 3) {
     state_etag = "*";
     members_clear();
-    st_origin = "";
-    st_origin_addr = "";
+    state_member_origin = "";
+    state_member_origin_addr = "";
     return;
   }
   state_etag = etag;
@@ -384,7 +387,7 @@ void state_change(const char *kind, const char *group, const char *app, const ch
     } else {
       const char *port = "";
       if (strcmp(kind, "vm") == 0) {
-        old_origin = st_origin;
+        old_origin = state_member_origin;
         if (!state_origin(group) && state_origin_need) {
           cbc_fail(CBC_EXIT_FAIL, "vm group %s has no origin recorded and %s names none: set CBASE_VM_ORIGIN (the VM's AAAA hostname) once, in this app's cbase.conf. Nothing was changed.", group, app);
         }
@@ -426,7 +429,7 @@ void state_change(const char *kind, const char *group, const char *app, const ch
         snprintf(line, need, "app=%s folder=%s/", app, app);
       }
       state_joined_new = at < 0;
-      if (at >= 0 && strcmp(st.lines.v[at], line) == 0 && strcmp(old_origin, st_origin) == 0) {
+      if (at >= 0 && strcmp(st.lines.v[at], line) == 0 && strcmp(old_origin, state_member_origin) == 0) {
         printf("%s is in %s group %s: %s\n", app, kind, group, line);
         if (state_fit_limit >= 0 && strcmp(kind, "vm") == 0) printf("%s\n", state_fit_report);
         return;

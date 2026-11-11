@@ -72,4 +72,18 @@ int aws_s3_put(const char *bucket, const char *key, const char *file, const char
 /* aws_no_state_bucket: stops the tool: the account has no state bucket BUCKET yet. */
 void aws_no_state_bucket(const char *bucket) __attribute__((noreturn));
 
+
+/* aws_show: the first LINES lines of the last failed call's stderr, masked and indented by two spaces, on
+ * stderr (aws.sh's aws_show). */
+void aws_show(int lines);
+
+/* aws_set_err_text: replaces the last failed call's stderr file with TEXT, exactly (the shell writes the
+ * change set's status reason or the events there before aws_show). */
+void aws_set_err_text(const char *text);
+
+/* aws_secret_filter: the JMESPath filter that holds a detail (a change set's Target, a drift's property
+ * difference) secret: its path or either value names an origin's custom headers, or, with CAUSE (a change
+ * set), a parameter caused it that is not plain (aws.sh's aws_secret_filter). Returns a new string. */
+char *aws_secret_filter(const char *path, const char *before, const char *after, const char *cause);
+
 #endif

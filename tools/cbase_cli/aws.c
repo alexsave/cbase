@@ -120,7 +120,7 @@ const char *aws_mask(const char *line) {
   return line;
 }
 
-static void aws_show(int lines) {
+void aws_show(int lines) {
   char *data;
   size_t len;
   if (!cbc_read_file(err_path, &data, &len)) return;
@@ -290,4 +290,47 @@ bool aws_poll(int tries, bool (*fn)(void)) {
     if (n >= tries) return false;
     cbc_sleep_ms(secs * 1000L);
   }
+}
+
+void aws_set_err_text(const char *text) {
+  FILE *f = fopen(err_path, "w");
+  if (!f) cbc_fail(CBC_EXIT_FAIL, "cannot write %s", err_path);
+  fputs(text, f);
+  fclose(f);
+}
+
+/* The plain parameters, whose values may be printed (aws.sh's AWS_PLAIN_PARAMS). */
+static const char *AWS_PLAIN_PARAMS[] = { "VmOrigin", "VmPort", "InstanceType", "ImageId", "CloudFrontPrefixList", "ArtifactBucket", NULL };
+
+char *aws_secret_filter(const char *path, const char *before, const char *after, const char *cause) {
+  cbc_strs parts = { 0 };
+  static const char *const ws[] = { "OriginCustomHeaders", "HeaderValue", NULL };
+  size_t total = 0;
+  char *f;
+  for (const char *const *w = ws; *w; w++) {
+    size_t need = strlen(path) + strlen(before) + strlen(after) + strlen(*w) * 3 + 160;
+    char *t = malloc(need);
+    if (!t) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+    snprintf(t, need, "contains(%s || '', '%s') || contains(%s || '', '%s') || contains(%s || '', '%s')",
+             path, *w, before, *w, after, *w);
+    cbc_strs_push(&parts, t);
+    total += strlen(t) + 4;
+  }
+  size_t cap = total + 512;
+  f = malloc(cap);
+  if (!f) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+  f[0] = '\0';
+  for (size_t i = 0; i < parts.n; i++) {
+    if (i) strcat(f, " || ");
+    strcat(f, parts.v[i]);
+  }
+  if (cause && *cause) {
+    strcat(f, " || (ChangeSource == 'ParameterReference'");
+    for (const char *const *q = AWS_PLAIN_PARAMS; *q; q++) {
+      size_t n = strlen(f);
+      snprintf(f + n, cap - n, " && CausingEntity != '%s'", *q);
+    }
+    strcat(f, ")");
+  }
+  return f;
 }

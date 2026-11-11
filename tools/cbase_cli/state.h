@@ -22,6 +22,17 @@ extern char *state_port;
 /* true when the last join added the app (it was not a member). */
 extern bool state_joined_new;
 
+
+/* state_member_origin, state_member_origin_addr: the vm group's header origin and its address type (ipv6 or
+ * dualstack) as the last state_read left them ("" when none): the shell's ST_ORIGIN and ST_ORIGIN_ADDR. */
+extern char *state_member_origin;
+extern char *state_member_origin_addr;
+/* state_fit_report: the last memory fit's report, what the join prints (the shell's STATE_FIT_REPORT). */
+extern char *state_fit_report;
+/* state_no_bucket: the shell's STATE_NO_BUCKET: a read with it set is taken as no file (a dry run's, when
+ * the account has no state bucket yet). */
+extern bool state_no_bucket;
+
 /* state_bucket: the state bucket's name, cbase-state-<account>. */
 char *state_bucket(void);
 

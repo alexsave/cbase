@@ -123,10 +123,6 @@ char *stack_output(const char *key) {
   return out.data;
 }
 
-void stack_changeset(void) { cbc_fail(CBC_EXIT_FAIL, "stack_changeset is not implemented in the C tool yet"); }
-void stack_execute(void) { cbc_fail(CBC_EXIT_FAIL, "stack_execute is not implemented in the C tool yet"); }
-void stack_discard(void) { cbc_fail(CBC_EXIT_FAIL, "stack_discard is not implemented in the C tool yet"); }
-void stack_delete(void) { cbc_fail(CBC_EXIT_FAIL, "stack_delete is not implemented in the C tool yet"); }
 
 /* ---- memory files ------------------------------------------------------------------------------ */
 
@@ -484,4 +480,640 @@ void stack_render(const char *file) {
   long n = router_size(text);
   if (n > STACK_FUNCTION_MAX)
     cbc_fail(CBC_EXIT_FAIL, "the router's code is %ld bytes with the build's page list, over CloudFront's %d: the build has too many pages; nothing was changed", n, STACK_FUNCTION_MAX);
+}
+
+
+/* aws_fail_describe: a failed read of the change set (the shell's aws_fail "describing change set ..."). */
+static void aws_fail_describe(void) {
+  char what[256];
+  snprintf(what, sizeof what, "describing change set %s", stk_cs);
+  aws_fail(what);
+}
+
+static int cmp_strp(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
+
+static char *stack_details(const char *lid, const char *query);
+static void stack_discard_impl(void);
+
+/* ---- the change-set flow (stack.sh) ------------------------------------------------------------ */
+
+/* cfn_words: one CloudFormation call in the stack's region with the words in W (no NULL). */
+static int cfn_words(cbc_buf *out, cbc_strs *w) {
+  cbc_strs words = { 0 };
+  cbc_strs_push(&words, cbc_dup("cloudformation"));
+  cbc_strs_push(&words, cbc_dup("--region"));
+  cbc_strs_push(&words, cbc_dup(stk_region));
+  for (size_t i = 0; i < w->n; i++) cbc_strs_push(&words, w->v[i]);
+  cbc_strs_push(&words, NULL);
+  return aws_call_list(out, (const char *const *)words.v);
+}
+
+/* cfn_run: cfn_words with the words as a NULL-terminated varargs list. */
+static int cfn_run(cbc_buf *out, ...) {
+  cbc_strs w = { 0 };
+  va_list ap;
+  va_start(ap, out);
+  for (const char *a = va_arg(ap, const char *); a; a = va_arg(ap, const char *)) cbc_strs_push(&w, cbc_dup(a));
+  va_end(ap);
+  return cfn_words(out, &w);
+}
+
+/* cs_run: a change set's call on STACK_NAME with STACK_CS (the shell's cs()), the words as varargs. */
+static int cs_run(cbc_buf *out, ...) {
+  cbc_strs w = { 0 };
+  cbc_strs_push(&w, cbc_dup("describe-change-set"));
+  cbc_strs_push(&w, cbc_dup("--stack-name"));
+  cbc_strs_push(&w, cbc_dup(stk_name));
+  cbc_strs_push(&w, cbc_dup("--change-set-name"));
+  cbc_strs_push(&w, cbc_dup(stk_cs));
+  va_list ap;
+  va_start(ap, out);
+  for (const char *a = va_arg(ap, const char *); a; a = va_arg(ap, const char *)) cbc_strs_push(&w, cbc_dup(a));
+  va_end(ap);
+  return cfn_words(out, &w);
+}
+
+/* env_is: an environment variable is exactly VALUE (the shell's [ "${X:-}" = VALUE ]). */
+static bool env_is(const char *name, const char *value) {
+  const char *v = getenv(name);
+  return v && strcmp(v, value) == 0;
+}
+
+/* Output text: the shell's $(...) strips trailing newlines, and "None" is the CLI's empty answer. */
+static char *text_or_empty(cbc_buf *b) {
+  if (!b->data) return cbc_dup("");
+  cbc_strip_newlines(b);
+  return b->data;
+}
+
+/* line_next: the next line of S in *cursor (NUL-terminated copy of it), or NULL at the end. */
+static char *line_next(char **cursor) {
+  char *p = *cursor;
+  if (!p || !*p) return NULL;
+  char *nl = strchr(p, '\n');
+  if (nl) {
+    *nl = '\0';
+    *cursor = nl + 1;
+  } else {
+    *cursor = p + strlen(p);
+  }
+  return p;
+}
+
+/* tab_fields: a line read as bash's `IFS=$'\\t' read -r F1 ... FN`: tab is IFS whitespace, so runs of
+ * tabs separate fields and leading tabs are skipped; the last field takes the rest of the line, its trailing
+ * tabs removed. A field that is not there is "". The shell's behaviour with empty values is kept on purpose:
+ * an empty CLI value collapses into the next field, as it does in bash. */
+static void tab_fields(char *line, char **f, int n) {
+  char *p = line;
+  for (int i = 0; i < n; i++) f[i] = "";
+  for (int i = 0; i < n; i++) {
+    while (*p == '\t') p++;
+    if (!*p) break;
+    if (i == n - 1) {
+      size_t len = strlen(p);
+      while (len > 0 && p[len - 1] == '\t') p[--len] = '\0';
+      f[i] = p;
+      break;
+    }
+    char *b = p;
+    while (*p && *p != '\t') p++;
+    if (*p) *p++ = '\0';
+    f[i] = b;
+  }
+}
+
+/* stack_where: a property path's place, as the origin header and parameter lines name it. */
+static char *stack_where(const char *p) {
+  const char *q = p;
+  if (!strncmp(q, "/Properties", 11)) q += 11;
+  if (!strncmp(q, "/DistributionConfig/", 20)) q += 20;
+  return cbc_dup(*q ? q : "the property");
+}
+
+/* stack_value: a value on one line, at most 160 bytes (a longer one cut to 157 and "..."). */
+static char *stack_value(const char *v) {
+  char *s = cbc_dup(v);
+  for (char *p = s; *p; p++) {
+    if (*p == '\n' || *p == '\t') *p = ' ';
+  }
+  if (strlen(s) > 160) {
+    s[157] = '\0';
+    size_t n = strlen(s);
+    char *t = malloc(n + 4);
+    if (!t) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+    snprintf(t, n + 4, "%s...", s);
+    return t;
+  }
+  return s;
+}
+
+/* stack_drifts: the property differences of the drifted resource LID that QUERY selects (the shell's
+ * stack_drifts): the query's tail is QUERY, the list's end included in it. */
+static char *stack_drifts(const char *lid, const char *query) {
+  char q[1024];
+  snprintf(q, sizeof q, "StackResourceDrifts[?LogicalResourceId=='%s'] | [0].PropertyDifferences[%s", lid, query);
+  cbc_buf out = { 0 };
+  if (cfn_run(&out, "describe-stack-resource-drifts", "--stack-name", stk_name, "--stack-resource-drift-status-filters",
+              "MODIFIED", "--query", q, "--output", "text", NULL) != 0) {
+    char what[256];
+    snprintf(what, sizeof what, "reading %s's drift", lid);
+    aws_fail(what);
+  }
+  return text_or_empty(&out);
+}
+
+/* ---- drift ------------------------------------------------------------------------------------- */
+
+static char *drift_id = "";
+static char *drift_ds = "";
+static char *drift_sds = "";
+
+/* drift_read: one read of drift detection drift_id; true once it is no longer running. */
+static bool drift_read(void) {
+  cbc_buf out = { 0 };
+  if (cfn_run(&out, "describe-stack-drift-detection-status", "--stack-drift-detection-id", drift_id, "--query",
+              "[DetectionStatus,StackDriftStatus]", "--output", "text", NULL) != 0) {
+    char what[256];
+    snprintf(what, sizeof what, "reading drift detection %s", drift_id);
+    aws_fail(what);
+  }
+  char *s = text_or_empty(&out);
+  char *tab = strchr(s, '\t');
+  if (tab) {
+    *tab = '\0';
+    drift_ds = s;
+    drift_sds = tab + 1;
+  } else {
+    drift_ds = s;
+    drift_sds = "";
+  }
+  return strcmp(drift_ds, "DETECTION_IN_PROGRESS") != 0;
+}
+
+/* stack_drift_guard: stops on a drifted stack unless CBASE_ACCEPT_DRIFT=1 (--accept-drift). */
+static void stack_drift_guard(void) {
+  printf("drift: detecting on %s\n", stk_name);
+  cbc_buf id = { 0 };
+  if (cfn_run(&id, "detect-stack-drift", "--stack-name", stk_name, "--query", "StackDriftDetectionId", "--output", "text", NULL) != 0) {
+    char what[256];
+    snprintf(what, sizeof what, "detecting drift on %s", stk_name);
+    aws_fail(what);
+  }
+  drift_id = text_or_empty(&id);
+  if (!aws_poll(121, drift_read)) {
+    fprintf(stderr, "cbase: drift detection %s on %s did not finish\n", drift_id, stk_name);
+    exit(CBC_EXIT_FAIL);
+  }
+  cbc_buf dr = { 0 };
+  if (cfn_run(&dr, "describe-stack-resource-drifts", "--stack-name", stk_name, "--stack-resource-drift-status-filters",
+              "MODIFIED", "DELETED", "--query", "StackResourceDrifts[].[LogicalResourceId,ResourceType,StackResourceDriftStatus]",
+              "--output", "text", NULL) != 0) {
+    char what[256];
+    snprintf(what, sizeof what, "reading %s's drift", stk_name);
+    aws_fail(what);
+  }
+  char *drifted = text_or_empty(&dr);
+  if (!strcmp(drifted, "None")) drifted = "";
+  if (!strcmp(drift_ds, "DETECTION_COMPLETE") && !strcmp(drift_sds, "IN_SYNC") && !*drifted) {
+    printf("drift: none\n");
+    return;
+  }
+  if (strcmp(drift_ds, "DETECTION_COMPLETE") != 0)
+    fprintf(stderr, "drift: detection ended %s, so the stack could not be shown to be in sync\n", drift_ds);
+  char *filter = aws_secret_filter("PropertyPath", "ExpectedValue", "ActualValue", NULL);
+  char *cursor = drifted;
+  char *line;
+  while ((line = line_next(&cursor)) != NULL) {
+    char *f[3];
+    tab_fields(line, f, 3);
+    const char *lid = f[0], *type = f[1], *status = f[2];
+    if (!*lid) continue;
+    fprintf(stderr, "drift: %s (%s) %s\n", lid, type, status);
+    if (strcmp(status, "MODIFIED") != 0) continue;
+    char q1[2048];
+    snprintf(q1, sizeof q1, "?PropertyPath && !(%s)].[PropertyPath,DifferenceType,ExpectedValue || '',ActualValue || '']", filter);
+    char *text = stack_drifts(lid, q1);
+    char *tc = text;
+    while ((line = line_next(&tc)) != NULL) {
+      char *g[4];
+      tab_fields(line, g, 4);
+      if (!*g[0]) continue;
+      char *w = stack_where(g[0]);
+      char *vb = stack_value(g[2]);
+      char *va = stack_value(g[3]);
+      fprintf(stderr, "drift:   %s %s: expected %s, actual %s\n", w, g[1], vb, va);
+    }
+    char q2[2048];
+    snprintf(q2, sizeof q2, "?%s].PropertyPath", filter);
+    char *paths = stack_drifts(lid, q2);
+    char *pc = paths;
+    while ((line = line_next(&pc)) != NULL) {
+      /* read -r -a: the words of the line */
+      char *p = line;
+      for (;;) {
+        while (*p == ' ' || *p == '\t') p++;
+        if (!*p) break;
+        char *b = p;
+        while (*p && *p != ' ' && *p != '\t') p++;
+        char saved = *p;
+        *p = '\0';
+        if (strcmp(b, "None") != 0) {
+          char *w = stack_where(b);
+          fprintf(stderr, "drift:   origin header %s changed (its value is not shown)\n", w);
+        }
+        if (!saved) break;
+        p++;
+      }
+    }
+  }
+  if (env_is("CBASE_ACCEPT_DRIFT", "1")) {
+    fprintf(stderr, "drift: accepted (--accept-drift): this deploy makes the stack's resources match the template again\n");
+    return;
+  }
+  fprintf(stderr, "cbase: the %s stack drifted from its template (above): a deploy would undo those changes. Put the change in cbase.conf, or run ./cbase deploy --accept-drift (CBASE_ACCEPT_DRIFT=1) to overwrite it. Nothing was changed.\n", stk_name);
+  exit(CBC_EXIT_FAIL);
+}
+
+/* ---- the change set ---------------------------------------------------------------------------- */
+
+static void stack_discard_impl(void);
+
+/* stack_print_changes: the change set, resource by resource, a secret's value never shown. */
+static void stack_print_changes(void) {
+  cbc_buf out = { 0 };
+  if (cs_run(&out, "--query", "Changes[].ResourceChange.[Action,LogicalResourceId,ResourceType,Replacement]", "--output", "text", NULL) != 0)
+    aws_fail_describe();
+  char *lines = text_or_empty(&out);
+  printf("change set %s on %s (%s):\n", stk_cs, stk_name, stk_type);
+  char *filter = aws_secret_filter("Target.Path", "Target.BeforeValue", "Target.AfterValue", "cause");
+  char *cursor = lines, *line;
+  while ((line = line_next(&cursor)) != NULL) {
+    char *f[4];
+    tab_fields(line, f, 4);
+    const char *action = f[0], *lid = f[1], *type = f[2], *repl = f[3];
+    if (!*action) continue;
+    if (strcmp(action, "Modify") != 0) {
+      printf("  %-7s %-16s %s\n", action, lid, type);
+      continue;
+    }
+    printf("  %-7s %-16s %s (replacement: %s)\n", action, lid, type, repl);
+    char q1[2048];
+    snprintf(q1, sizeof q1, "?Target.Name && !(%s)].[Target.Path || Target.Name,Target.BeforeValue || '',Target.AfterValue || '']", filter);
+    char *text = stack_details(lid, q1);
+    char *tc = text, *l2;
+    while ((l2 = line_next(&tc)) != NULL) {
+      char *g[3];
+      tab_fields(l2, g, 3);
+      if (!*g[0]) continue;
+      char *w = stack_where(g[0]);
+      if (!*g[1] && !*g[2]) printf("      %s changes\n", w);
+      else printf("      %s: %s -> %s\n", w, stack_value(g[1]), stack_value(g[2]));
+    }
+    char q2[2048];
+    snprintf(q2, sizeof q2, "?%s].[Target.Path || Target.Name || '',CausingEntity || '']", filter);
+    char *text2 = stack_details(lid, q2);
+    char *t2 = text2;
+    while ((l2 = line_next(&t2)) != NULL) {
+      char *g[2];
+      tab_fields(l2, g, 2);
+      if (!*g[0]) continue;
+      char *w = stack_where(g[0]);
+      if (strcmp(g[1], "None") != 0 && *g[1] && !strstr(g[0], "OriginCustomHeaders") && !strstr(g[0], "HeaderValue"))
+        printf("      parameter %s changed %s (its value is not shown)\n", g[1], w);
+      else
+        printf("      origin header %s changed (its value is not shown)\n", w);
+    }
+  }
+}
+
+/* stack_details: the change set's details of the resource LID that QUERY selects. */
+static char *stack_details(const char *lid, const char *query) {
+  char q[2048];
+  snprintf(q, sizeof q, "Changes[?ResourceChange.LogicalResourceId=='%s'] | [0].ResourceChange.Details[%s", lid, query);
+  cbc_buf out = { 0 };
+  if (cs_run(&out, "--include-property-values", "--query", q, "--output", "text", NULL) != 0) aws_fail_describe();
+  return text_or_empty(&out);
+}
+
+/* stack_refusals: the change set's removals and replacements of the resources whose type is one of
+ * TYPES (a JMESPath condition), "<logical id>\t<type>\t<action>\t<replacement>" a line; "" when none. */
+static char *stack_refusals(const char *types) {
+  char q[1024];
+  snprintf(q, sizeof q,
+           "Changes[?(%s) && (ResourceChange.Action=='Remove' || ResourceChange.Replacement=='True' || "
+           "ResourceChange.Replacement=='Conditional')].ResourceChange.[LogicalResourceId,ResourceType,Action,Replacement]",
+           types);
+  cbc_buf out = { 0 };
+  if (cs_run(&out, "--query", q, "--output", "text", NULL) != 0) aws_fail_describe();
+  return text_or_empty(&out);
+}
+
+/* stack_aliases: each distribution's hostnames in a template, "<logical id> <host>" a line (stack.sh's awk). */
+static char *stack_aliases(const char *text) {
+  memfile_t m = memfile_open();
+  char *copy = cbc_dup(text);
+  char *cursor = copy, *line;
+  char lid[256] = "";
+  while ((line = line_next(&cursor)) != NULL) {
+    size_t n = strlen(line);
+    /* /^  [A-Za-z]+:$/ */
+    if (n >= 4 && line[0] == ' ' && line[1] == ' ' && line[n - 1] == ':') {
+      bool letters = true;
+      for (size_t i = 2; i + 1 < n; i++) {
+        char c = line[i];
+        if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'))) letters = false;
+      }
+      if (letters && n > 3) {
+        size_t k = 0;
+        for (size_t i = 2; i + 1 < n && k < sizeof lid - 1; i++) lid[k++] = line[i];
+        lid[k] = '\0';
+      }
+    }
+    /* /^        Aliases: \[/ */
+    if (!strncmp(line, "        Aliases: [", 18)) {
+      char *s = line + 18;
+      size_t sl = strlen(s);
+      if (sl && s[sl - 1] == ']') s[sl - 1] = '\0';
+      if (*s) {
+        char *p = s;
+        for (;;) {
+          char *sep = strstr(p, ", ");
+          if (sep) *sep = '\0';
+          fprintf(m.f, "%s %s\n", lid, p);
+          if (!sep) break;
+          p = sep + 2;
+        }
+      }
+    }
+  }
+  return memfile_close(&m);
+}
+
+/* sorted_lines: the lines of TEXT, sorted in byte order (sort with LC_ALL=C), a NULL-terminated array. */
+static char **sorted_lines(const char *text, size_t *count) {
+  char *copy = cbc_dup(text);
+  cbc_strs v = { 0 };
+  char *cursor = copy, *line;
+  while ((line = line_next(&cursor)) != NULL) {
+    if (*line) cbc_strs_push(&v, cbc_dup(line));
+  }
+  qsort(v.v, v.n, sizeof *v.v, cmp_strp);
+  *count = v.n;
+  return v.v;
+}
+
+/* comm_only_left: the lines of A not in B, both sorted (comm -23), with multiplicity. */
+static void comm_only_left(char **a, size_t na, char **b, size_t nb, cbc_strs *out) {
+  size_t i = 0, j = 0;
+  while (i < na) {
+    if (j >= nb) {
+      cbc_strs_push(out, cbc_dup(a[i++]));
+      continue;
+    }
+    int c = strcmp(a[i], b[j]);
+    if (c == 0) {
+      i++;
+      j++;
+    } else if (c < 0) {
+      cbc_strs_push(out, cbc_dup(a[i++]));
+    } else {
+      j++;
+    }
+  }
+}
+
+/* stack_downtime_guard: NO DOWNTIME after the first deploy (stack.sh's stack_downtime_guard). */
+static void stack_downtime_guard(void) {
+  cbc_strs why = { 0 };
+  char *refused = stack_refusals("ResourceChange.ResourceType=='AWS::CloudFront::Distribution'");
+  char *cursor = refused, *line;
+  while ((line = line_next(&cursor)) != NULL) {
+    char *f[4];
+    tab_fields(line, f, 4);
+    if (!*f[0]) continue;
+    char buf[512];
+    if (!strcmp(f[2], "Remove")) snprintf(buf, sizeof buf, "the distribution %s is removed", f[0]);
+    else snprintf(buf, sizeof buf, "the distribution %s is replaced: a new one, with a new cloudfront.net name, and the old one deleted", f[0]);
+    cbc_strs_push(&why, cbc_dup(buf));
+  }
+  cbc_buf old = { 0 };
+  if (cfn_run(&old, "get-template", "--stack-name", stk_name, "--query", "TemplateBody", "--output", "text", NULL) != 0) {
+    char what[256];
+    snprintf(what, sizeof what, "reading %s's template", stk_name);
+    aws_fail(what);
+  }
+  char *old_text = old.data ? old.data : cbc_dup("");
+  char *new_text;
+  size_t nlen;
+  if (!cbc_read_file(stk_template, &new_text, &nlen)) cbc_fail(CBC_EXIT_FAIL, "cannot read %s", stk_template);
+  char *old_aliases = stack_aliases(old_text);
+  char *new_aliases = stack_aliases(new_text);
+  size_t na, nb;
+  char **a = sorted_lines(old_aliases, &na);
+  char **b = sorted_lines(new_aliases, &nb);
+  cbc_strs gone = { 0 };
+  comm_only_left(a, na, b, nb, &gone);
+  for (size_t i = 0; i < gone.n; i++) {
+    char *g = gone.v[i];
+    char *sp = strchr(g, ' ');
+    if (!sp || !sp[1]) continue;
+    *sp = '\0';
+    char buf[512];
+    snprintf(buf, sizeof buf, "the hostname %s is taken off the distribution %s", sp + 1, g);
+    cbc_strs_push(&why, cbc_dup(buf));
+  }
+  if (why.n == 0) return;
+  for (size_t i = 0; i < why.n; i++) fprintf(stderr, "downtime: %s\n", why.v[i]);
+  if (env_is("CBASE_ALLOW_DOWNTIME", "1")) {
+    fprintf(stderr, "downtime: allowed (--allow-downtime): the app is unreachable at those hostnames until the change is done and DNS follows\n");
+    return;
+  }
+  stack_discard_impl();
+  fprintf(stderr, "cbase: this change set would make %s unreachable for a while (above), and after an app's first deploy no deploy may: refused, and the change set deleted; nothing was executed. Run ./cbase deploy --allow-downtime (CBASE_ALLOW_DOWNTIME=1) to accept it.\n", cbc_conf.app);
+  exit(CBC_EXIT_FAIL);
+}
+
+/* stack_keep_guard: THE ONE HARD STOP. A bucket or a VM group's instance replaced or removed is refused. */
+static void stack_keep_guard(void) {
+  char *refused = stack_refusals("ResourceChange.ResourceType=='AWS::S3::Bucket' || ResourceChange.ResourceType=='AWS::EC2::Instance'");
+  if (!*refused) return;
+  char *cursor = refused, *line;
+  while ((line = line_next(&cursor)) != NULL) {
+    char *f[4];
+    tab_fields(line, f, 4);
+    if (!*f[0]) continue;
+    const char *what = !strcmp(f[1], "AWS::S3::Bucket") ? "bucket" : "instance";
+    if (!strcmp(f[2], "Remove")) fprintf(stderr, "refused: the %s %s would be removed\n", what, f[0]);
+    else fprintf(stderr, "refused: the %s %s would be replaced (Replacement: %s)\n", what, f[0], f[3]);
+  }
+  stack_discard_impl();
+  fprintf(stderr, "cbase: the change set would replace or remove a bucket (and every file in it) or a VM group's instance (and every app's data on its disk): refused, and the change set deleted; nothing was executed\n");
+  exit(CBC_EXIT_FAIL);
+}
+
+/* stack_wait: CloudFormation's wait on STACK_NAME, or the stack's failed resources (masked) and the tool
+ * stops. WHAT names the step for the message. */
+static void stack_wait(const char *waiter, const char *what) {
+  if (cfn_run(NULL, "wait", waiter, "--stack-name", stk_name, NULL) == 0) return;
+  fprintf(stderr, "cbase: the %s stack %s (%s). Its failed resources:\n", stk_name, what, waiter);
+  cbc_buf ev = { 0 };
+  (void)cfn_run(&ev, "describe-stack-events", "--stack-name", stk_name, "--query",
+                "StackEvents[?ends_with(ResourceStatus, 'FAILED')].[LogicalResourceId,ResourceStatusReason]", "--output", "text", NULL);
+  aws_set_err_text(ev.data ? ev.data : "");
+  aws_show(10);
+  exit(CBC_EXIT_FAIL);
+}
+
+/* stack_discard_impl: deletes the change set, and the empty stack a first change set made. */
+static void stack_discard_impl(void) {
+  if (cfn_run(NULL, "delete-change-set", "--stack-name", stk_name, "--change-set-name", stk_cs, NULL) != 0) {
+    char what[256];
+    snprintf(what, sizeof what, "deleting change set %s", stk_cs);
+    aws_fail(what);
+  }
+  if (!strcmp(stk_type, "CREATE") && !strcmp(stk_status, "NONE")) {
+    if (cfn_run(NULL, "delete-stack", "--stack-name", stk_name, NULL) != 0) {
+      char what[256];
+      snprintf(what, sizeof what, "deleting the empty %s stack", stk_name);
+      aws_fail(what);
+    }
+  }
+}
+
+void stack_discard(void) { stack_discard_impl(); }
+
+/* stack_changeset: THE CHANGE-SET FLOW (stack.sh's stack_changeset) for STACK_NAME from STACK_TEMPLATE. */
+void stack_changeset(void) {
+  stack_status();
+  if (!strcmp(stk_status, "NONE") || !strcmp(stk_status, "REVIEW_IN_PROGRESS")) {
+    stk_type = "CREATE";
+    printf("stack: %s is new\n", stk_name);
+  } else if (!strcmp(stk_status, "ROLLBACK_COMPLETE")) {
+    fprintf(stderr, "cbase: the %s stack's first create failed and rolled back (ROLLBACK_COMPLETE), and CloudFormation updates no such stack: delete it (aws cloudformation delete-stack --region %s --stack-name %s; it holds nothing), then deploy again\n",
+            stk_name, stk_region, stk_name);
+    exit(CBC_EXIT_FAIL);
+  } else if (strlen(stk_status) >= 12 && !strcmp(stk_status + strlen(stk_status) - 12, "_IN_PROGRESS")) {
+    fprintf(stderr, "cbase: the %s stack is %s: another deploy is running, or CloudFormation is still working; wait for it, then deploy again\n",
+            stk_name, stk_status);
+    exit(CBC_EXIT_FAIL);
+  } else {
+    stk_type = "UPDATE";
+    printf("stack: %s is %s\n", stk_name, stk_status);
+    stack_drift_guard();
+  }
+  /* A change set of this name left by a run that stopped: gone before the new one. */
+  if (strcmp(stk_status, "NONE") != 0 &&
+      cfn_run(NULL, "delete-change-set", "--stack-name", stk_name, "--change-set-name", stk_cs, NULL) != 0) {
+    if (strcmp(aws_code(), "ChangeSetNotFound") != 0) {
+      char what[256];
+      snprintf(what, sizeof what, "clearing change set %s", stk_cs);
+      aws_fail(what);
+    }
+  }
+  cbc_strs cw = { 0 };
+  cbc_strs_push(&cw, cbc_dup("create-change-set"));
+  cbc_strs_push(&cw, cbc_dup("--stack-name"));
+  cbc_strs_push(&cw, cbc_dup(stk_name));
+  cbc_strs_push(&cw, cbc_dup("--change-set-name"));
+  cbc_strs_push(&cw, cbc_dup(stk_cs));
+  cbc_strs_push(&cw, cbc_dup("--change-set-type"));
+  cbc_strs_push(&cw, cbc_dup(stk_type));
+  size_t tn = strlen(stk_template) + 8;
+  char *tbody = malloc(tn);
+  if (!tbody) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+  snprintf(tbody, tn, "file://%s", stk_template);
+  cbc_strs_push(&cw, cbc_dup("--template-body"));
+  cbc_strs_push(&cw, tbody);
+  cbc_strs_push(&cw, cbc_dup("--tags"));
+  cbc_strs_push(&cw, cbc_dup(stk_tag));
+  if (*stk_caps) {
+    cbc_strs_push(&cw, cbc_dup("--capabilities"));
+    cbc_strs_push(&cw, cbc_dup(stk_caps));
+  }
+  for (size_t i = 0; i < stack_params.n; i++) {
+    if (i == 0) cbc_strs_push(&cw, cbc_dup("--parameters"));
+    cbc_strs_push(&cw, cbc_dup(stack_params.v[i]));
+  }
+  cbc_strs_push(&cw, cbc_dup("--query"));
+  cbc_strs_push(&cw, cbc_dup("Id"));
+  cbc_strs_push(&cw, cbc_dup("--output"));
+  cbc_strs_push(&cw, cbc_dup("text"));
+  cbc_buf discard = { 0 };
+  if (cfn_words(&discard, &cw) != 0) {
+    char what[256];
+    snprintf(what, sizeof what, "creating a change set on %s", stk_name);
+    aws_fail(what);
+  }
+  if (cfn_run(NULL, "wait", "change-set-create-complete", "--stack-name", stk_name, "--change-set-name", stk_cs, NULL) != 0) {
+    cbc_buf why_b = { 0 };
+    if (cs_run(&why_b, "--query", "StatusReason", "--output", "text", NULL) != 0) aws_fail_describe();
+    char *why = text_or_empty(&why_b);
+    if (strstr(why, "didn't contain changes") || strstr(why, "No updates are to be performed")) {
+      printf("stack: %s is up to date (no changes)\n", stk_name);
+      stk_changes = "";
+      if (cfn_run(NULL, "delete-change-set", "--stack-name", stk_name, "--change-set-name", stk_cs, NULL) != 0) {
+        char what[256];
+        snprintf(what, sizeof what, "deleting change set %s", stk_cs);
+        aws_fail(what);
+      }
+      return;
+    }
+    size_t wl = strlen(why);
+    char *withnl = malloc(wl + 2);
+    if (!withnl) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+    snprintf(withnl, wl + 2, "%s\n", why);
+    aws_set_err_text(withnl);
+    fprintf(stderr, "cbase: change set %s on %s failed:\n", stk_cs, stk_name);
+    aws_show(5);
+    stack_discard_impl();
+    exit(CBC_EXIT_FAIL);
+  }
+  stk_changes = "1";
+  stack_print_changes();
+  stack_keep_guard();
+  if (stk_app && !strcmp(stk_type, "UPDATE")) stack_downtime_guard();
+  if (stk_app && env_is("DRY_RUN", "1")) stack_discard_impl();
+}
+
+void stack_execute(void) {
+  cbc_strs w = { 0 };
+  cbc_strs_push(&w, cbc_dup("execute-change-set"));
+  cbc_strs_push(&w, cbc_dup("--stack-name"));
+  cbc_strs_push(&w, cbc_dup(stk_name));
+  cbc_strs_push(&w, cbc_dup("--change-set-name"));
+  cbc_strs_push(&w, cbc_dup(stk_cs));
+  if (stk_no_rollback) cbc_strs_push(&w, cbc_dup("--disable-rollback"));
+  cbc_buf discard = { 0 };
+  if (cfn_words(&discard, &w) != 0) {
+    char what[256];
+    snprintf(what, sizeof what, "executing change set %s on %s", stk_cs, stk_name);
+    aws_fail(what);
+  }
+  printf("stack: executing %s (a new distribution takes some minutes)\n", stk_cs);
+  const char *wname = "stack-update-complete";
+  if (strcmp(stk_type, "UPDATE") != 0) wname = "stack-create-complete";
+  stack_wait(wname, "did not finish");
+  /* ${w%-complete}: the waiter's name without its "-complete" */
+  char done[64];
+  snprintf(done, sizeof done, "%s", wname);
+  size_t dl = strlen(done);
+  if (dl > 9 && !strcmp(done + dl - 9, "-complete")) done[dl - 9] = '\0';
+  printf("stack: %s is %s complete\n", stk_name, done);
+}
+
+void stack_delete(void) {
+  stack_status();
+  if (!strcmp(stk_status, "NONE")) {
+    printf("stack: there is no %s stack: nothing to delete\n", stk_name);
+    return;
+  }
+  if (cfn_run(NULL, "delete-stack", "--stack-name", stk_name, NULL) != 0) {
+    char what[256];
+    snprintf(what, sizeof what, "deleting the %s stack", stk_name);
+    aws_fail(what);
+  }
+  printf("stack: deleting %s (a distribution takes some minutes to go)\n", stk_name);
+  stack_wait("stack-delete-complete", "was not deleted");
+  printf("stack: %s is deleted\n", stk_name);
 }
