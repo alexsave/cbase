@@ -225,6 +225,7 @@ since "$m" | grep -q "CFN CreateChangeSet cbase-app-shop CREATE ok params=VmOrig
   || { since "$m" | grep CreateChangeSet >&2; fail "the app's stack lacks VmOrigin and VmPort"; }
 out_has "shop joined static group g9: app=shop folder=shop/" "the app joins its static group"
 out_has "deployed shop: https://" "the URL is printed"
+out_has "service: cbase-shop.service: the deploy did not say whether it restarted" "a VM app's summary says the service line is missing when the script printed none"
 out_has "origin secret: /cbase/shop/CBASE_ORIGIN_SECRET (X-Cbase-Origin; its value is not shown)" "the origin secret is read"
 grep -Fq -- "$ORIGIN_SECRET" "$t/out" "$t/err" && fail "the origin secret's value was printed"
 template_of cbase-app-shop > "$t/tpl"
@@ -355,6 +356,20 @@ since "$m" | grep -q "CFN ExecuteChangeSet" && fail "a refused deploy executed i
 fake_set "ssm-status=Success&ssm-code=0&ssm-out=CBASE: done (the fake's answer)%0A"
 ok
 
+fi
+if wanted service; then
+# ---- the summary's service line: the script's last line about the app's own unit ---------------
+svc="$(vm_app svcsay "CBASE_APP = svcsay" "CBASE_VM = g9" "CBASE_STATIC = none" "CBASE_MEMORY = 16M")"
+for case_ in "restarted (server changed)" "started (it was not active)" "unchanged: not restarted"; do
+  fake_set "ssm-out=CBASE: cbase-svcsay.service restarted (units changed)%0ACBASE: cbase-svcsay.service $case_%0ACBASE: cbase-other.service restarted (settings changed)%0ACBASE: cbase-svcsay.service is up: GET /health answered 200 on 127.0.0.1:8703%0A"
+  run "$svc" deploy
+  expect_rc 0 "a deploy whose script says [$case_]"
+  out_has "service: cbase-svcsay.service $case_" "the summary's service line is the script's last line about the unit [$case_]"
+done
+run "$svc" undeploy
+expect_rc 0 "svcsay's undeploy"
+fake_set "ssm-status=Success&ssm-code=0&ssm-out=CBASE: done (the fake's answer)%0A"
+ok
 fi
 if wanted refused; then
 # ---- refused before anything changes: no group, a failed build, a binary for another machine ---
@@ -584,8 +599,10 @@ m="$(mark)"
 run "$shop" undeploy
 expect_rc 0 "an undeploy"
 script_of > "$t/shop-undeploy.sh"
+mkdir -p "$t/vm1/etc/cbase" && printf 'server abc\n' > "$t/vm1/etc/cbase/shop.loaded"
 on_vm "$t/vm1" "$t/shop-undeploy.sh"
 [ "$rc" = 0 ] || { cat "$t/vm-out" >&2; fail "the undeploy script: status $rc"; }
+[ ! -e "$t/vm1/etc/cbase/shop.loaded" ] || fail "the undeploy script left the stamp of what serve loaded"
 grep -Fxq "systemctl disable --now --quiet cbase-shop.service" "$t/vm1/calls" || fail "the undeploy script did not stop and disable the unit"
 grep -Fxq "systemctl disable --now --quiet cbase-shop.socket" "$t/vm1/calls" || fail "the undeploy script did not stop and disable the socket"
 [ ! -e "$t/vm1/etc/systemd/system/cbase-shop.service" ] || fail "the undeploy script left the unit"
