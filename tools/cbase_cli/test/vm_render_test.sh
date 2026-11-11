@@ -15,7 +15,9 @@ export LC_ALL=C
 cli="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tools="$(cd "$cli/.." && pwd)"
 t="$(mktemp -d "${TMPDIR:-/tmp}/cbase-render.XXXXXX")"
-trap 'rm -rf "$t"' EXIT
+end=""
+# The end mark (lib.sh says why): macOS bash 3.2 exits 0 when set -u stops a script with an EXIT trap.
+trap 'rm -rf "$t"; [ "$end" = 1 ] || { echo "vm_render_test: FAIL: the run stopped before its end (above)" >&2; exit 1; }' EXIT
 fail() { echo "vm_render_test: FAIL: $*" >&2; exit 1; }
 pass=0
 
@@ -101,4 +103,5 @@ echo hi'; do
   check "base64 of ${#text} bytes" "$conf_plain" b64 "$text"
 done
 
+end=1
 echo "vm_render_test: ok ($pass renders equal the shell's)"
