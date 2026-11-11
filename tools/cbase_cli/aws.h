@@ -45,6 +45,14 @@ char *aws_code(void);
  * the call for the message. Never returns. */
 void aws_fail(const char *what) __attribute__((noreturn));
 
+/* aws_s3_delete_keys: deletes the N KEYS of BUCKET (REGION) for a prune, and prints one "pruned s3://BUCKET/KEY"
+ * line per key after the call that deleted it succeeded. A key made only of letters, digits and "/ . _ - ~" goes in
+ * one `s3api delete-objects` call with up to 1000 keys (S3's limit), in the CLI's shorthand syntax (no JSON); any
+ * other key (a space, comma, bracket, quote, equals, non-ASCII: shorthand cannot carry it unmangled) goes alone
+ * through `s3api delete-object`. An error entry in a batch's answer, or a failed call, stops the tool (exit 1). The
+ * caller has already held every key to its folder: nothing is checked here. */
+void aws_s3_delete_keys(const char *bucket, const char *region, char *const *keys, size_t n);
+
 /* aws_mask: LINE as the person may see it: a line naming an origin's headers or a parameter's value, or
  * holding one of aws_mask_values, is replaced by a sentence saying so. Returns a static buffer or LINE. */
 const char *aws_mask(const char *line);

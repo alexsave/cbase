@@ -292,6 +292,79 @@ int aws_s3_put(const char *bucket, const char *key, const char *file, const char
   aws_fail(what);
 }
 
+#define AWS_DELETE_BATCH 1000
+
+/* delete_key_safe: whether KEY can sit in the shorthand `Objects=[{Key=KEY},...]` as it is: only these characters,
+ * none of which the shorthand parser, the shell-free argv or the XML body can change. */
+static bool delete_key_safe(const char *key) {
+  if (!*key) return false;
+  for (const char *c = key; *c; c++) {
+    bool ok = (*c >= 'a' && *c <= 'z') || (*c >= 'A' && *c <= 'Z') || (*c >= '0' && *c <= '9') || strchr("/._-~", *c);
+    if (!ok) return false;
+  }
+  return true;
+}
+
+/* delete_batch: one delete-objects call for KEYS[0..N), Quiet, so a clean answer holds no Errors. */
+static void delete_batch(const char *bucket, const char *region, char *const *keys, size_t n) {
+  size_t len = 32;
+  for (size_t i = 0; i < n; i++) len += strlen(keys[i]) + 8;
+  char *arg = cbc_xmalloc(len);
+  char *p = arg + sprintf(arg, "Objects=[");
+  for (size_t i = 0; i < n; i++) p += sprintf(p, "%s{Key=%s}", i ? "," : "", keys[i]);
+  strcpy(p, "],Quiet=true");
+  cbc_buf out = { 0, 0, 0 };
+  if (aws_call(&out, "s3api", "delete-objects", "--bucket", bucket, "--delete", arg, "--region", region,
+               "--query", "Errors[].[Key,Code,Message]", "--output", "text", NULL) != 0) {
+    char *what = NULL;
+    cbc_asprintf(&what, "deleting %zu keys of s3://%s", n, bucket);
+    aws_fail(what);
+  }
+  char *text = cbc_buf_text(&out);
+  /* A clean batch prints nothing ("None" is the CLI's text for an absent list); a line is an error: key, code, message. */
+  if (*text && strcmp(text, "None") != 0 && strcmp(text, "None\n") != 0) {
+    size_t errors = 1;   /* the lines: one more than the newlines */
+    for (const char *c = text; *c; c++) errors += *c == '\n';
+    char *eol = strchr(text, '\n');
+    if (eol) *eol = '\0';
+    char *key = text, *code = strchr(key, '\t'), *msg = NULL;
+    if (code) { *code++ = '\0'; msg = strchr(code, '\t'); }
+    if (msg) *msg++ = '\0';
+    cbc_fail(CBC_EXIT_FAIL, "deleting s3://%s/%s failed: %s: %s (%zu of the %zu keys in the batch were not deleted)", bucket, key,
+             code ? code : "?", msg ? msg : "", errors, n);
+  }
+  free(text);
+  free(out.data);
+  free(arg);
+}
+
+void aws_s3_delete_keys(const char *bucket, const char *region, char *const *keys, size_t n) {
+  char **batch = cbc_xmalloc((n ? n : 1) * sizeof *batch);
+  size_t nb = 0;
+  for (size_t i = 0; i < n; i++) {
+    if (!delete_key_safe(keys[i])) {
+      if (aws_call(NULL, "s3api", "delete-object", "--bucket", bucket, "--key", keys[i], "--region", region, NULL) != 0) {
+        char *what = NULL;
+        cbc_asprintf(&what, "deleting s3://%s/%s", bucket, keys[i]);
+        aws_fail(what);
+      }
+      printf("pruned s3://%s/%s\n", bucket, keys[i]);
+      continue;
+    }
+    batch[nb++] = keys[i];
+    if (nb == AWS_DELETE_BATCH) {
+      delete_batch(bucket, region, batch, nb);
+      for (size_t j = 0; j < nb; j++) printf("pruned s3://%s/%s\n", bucket, batch[j]);
+      nb = 0;
+    }
+  }
+  if (nb > 0) {   /* the last, partial batch */
+    delete_batch(bucket, region, batch, nb);
+    for (size_t j = 0; j < nb; j++) printf("pruned s3://%s/%s\n", bucket, batch[j]);
+  }
+  free(batch);
+}
+
 void aws_fail(const char *what) {
   aws_print_failure(what);
   exit(CBC_EXIT_FAIL);

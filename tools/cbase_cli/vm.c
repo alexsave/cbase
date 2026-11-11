@@ -708,17 +708,15 @@ void cbc_vm_prune_artifacts(bool dry) {
     if (!prev || vm_newer(&v[i], prev)) prev = &v[i];
   }
   size_t gone = 0;
+  char **del = cbc_xmalloc((n ? n : 1) * sizeof *del);
   for (size_t i = 0; i < n; i++) {
     if (&v[i] == prev || (current && strcmp(v[i].key, current) == 0)) continue;
-    if (dry) {
-      printf("would prune s3://%s/%s\n", bucket, v[i].key);
-    } else {
-      if (aws_call(NULL, "s3api", "delete-object", "--bucket", bucket, "--key", v[i].key, "--region", region, NULL) != 0)
-        aws_fail(cbc_fmt("deleting s3://%s/%s", bucket, v[i].key));
-      printf("pruned s3://%s/%s\n", bucket, v[i].key);
-    }
+    if (dry) printf("would prune s3://%s/%s\n", bucket, v[i].key);
+    else del[gone] = v[i].key;
     gone++;
   }
+  if (!dry) aws_s3_delete_keys(bucket, region, del, gone);   /* batched; prints one "pruned" line a key */
+  free(del);
   const char *cur = current ? current : "the build's own binary, not made in a dry run,";
   char *kept = prev ? cbc_fmt("%s and %s", cur, prev->key) : cbc_dup(cur);
   printf("%s %zu old server binar%s under s3://%s/%s (%s %s)\n", dry ? "would prune" : "pruned", gone,

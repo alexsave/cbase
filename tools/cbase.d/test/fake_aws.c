@@ -77,7 +77,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define MAX_OBJ 512
+#define MAX_OBJ 4096
 #define MAX_RES 64
 #define MAX_BUCKETS 16
 #define BODY_MAX (1 << 20)
