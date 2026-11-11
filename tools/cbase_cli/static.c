@@ -372,7 +372,7 @@ void cbc_static_prune(const char *bucket, const char *region, const char *app, c
     }
     line = eol ? eol + 1 : line + strlen(line);
   }
-  printf("pruned %zu file%s the build no longer has, under s3://%s/%s alone\n", n, n == 1 ? "" : "s", bucket, app);
+  printf("pruned %zu file%s the build no longer has, under s3://%s/%s/ alone\n", n, n == 1 ? "" : "s", bucket, app);
   free(body);
   free(prefix);
   free(text.data);
