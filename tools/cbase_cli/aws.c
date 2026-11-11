@@ -210,10 +210,7 @@ char *aws_region_required(void) {
 int aws_group_find(const char *kind, const char *name, char **id) {
   const char *tag = strcmp(kind, "vm") == 0 ? "cbase:vm-group" : "cbase:static-group";
   const char *type = strcmp(kind, "vm") == 0 ? "ec2:instance" : "s3";
-  char *filter = NULL;
-  size_t need = strlen(tag) + strlen(name) + 16;
-  filter = cbc_xmalloc(need);
-  snprintf(filter, need, "Key=%s,Values=%s", tag, name);
+  char *filter = cbc_fmt("Key=%s,Values=%s", tag, name);
   cbc_buf out = { 0 };
   char what[256];
   snprintf(what, sizeof what, "finding %s group %s (tag:GetResources)", kind, name);
@@ -320,32 +317,23 @@ void aws_set_err_text(const char *text) {
 static const char *AWS_PLAIN_PARAMS[] = { "VmOrigin", "VmPort", "InstanceType", "ImageId", "CloudFrontPrefixList", "ArtifactBucket", NULL };
 
 char *aws_secret_filter(const char *path, const char *before, const char *after, const char *cause) {
-  cbc_strs parts = { 0 };
   static const char *const ws[] = { "OriginCustomHeaders", "HeaderValue", NULL };
-  size_t total = 0;
-  char *f;
+  cbc_buf f = { 0 };
   for (const char *const *w = ws; *w; w++) {
-    size_t need = strlen(path) + strlen(before) + strlen(after) + strlen(*w) * 3 + 160;
-    char *t = cbc_xmalloc(need);
-    snprintf(t, need, "contains(%s || '', '%s') || contains(%s || '', '%s') || contains(%s || '', '%s')",
-             path, *w, before, *w, after, *w);
-    cbc_strs_push(&parts, t);
-    total += strlen(t) + 4;
-  }
-  size_t cap = total + 512;
-  f = cbc_xmalloc(cap);
-  f[0] = '\0';
-  for (size_t i = 0; i < parts.n; i++) {
-    if (i) strcat(f, " || ");
-    strcat(f, parts.v[i]);
+    char *t = cbc_fmt("contains(%s || '', '%s') || contains(%s || '', '%s') || contains(%s || '', '%s')",
+                      path, *w, before, *w, after, *w);
+    if (f.len) cbc_buf_str(&f, " || ");
+    cbc_buf_str(&f, t);
+    free(t);
   }
   if (cause && *cause) {
-    strcat(f, " || (ChangeSource == 'ParameterReference'");
+    cbc_buf_str(&f, " || (ChangeSource == 'ParameterReference'");
     for (const char *const *q = AWS_PLAIN_PARAMS; *q; q++) {
-      size_t n = strlen(f);
-      snprintf(f + n, cap - n, " && CausingEntity != '%s'", *q);
+      char *t = cbc_fmt(" && CausingEntity != '%s'", *q);
+      cbc_buf_str(&f, t);
+      free(t);
     }
-    strcat(f, ")");
+    cbc_buf_str(&f, ")");
   }
-  return f;
+  return f.data;
 }

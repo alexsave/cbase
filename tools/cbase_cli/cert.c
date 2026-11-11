@@ -253,13 +253,12 @@ static void named(const char *arn, const char *key, const cbc_strs *need) {
  * records are written where a zone holds them, printed where none does, and ACM is waited for). A dry
  * run requests nothing. Stops the tool (status 3) for records to add by hand. */
 static void auto_cert(cbc_cert_t *c, bool dry) {
+  char *need = cbc_strs_join(&c->need, " ");   /* NEED is final here: its text, for every message below */
   char *issued = cert_find("ISSUED", &c->need);
   if (*issued) {
     free(c->arn);
     c->arn = issued;
-    char *need = cbc_strs_join(&c->need, " ");
     printf("certificate: %s, issued, covers %s\n", c->arn, need);
-    free(need);
     return;
   }
   free(issued);
@@ -267,9 +266,7 @@ static void auto_cert(cbc_cert_t *c, bool dry) {
   if (*a) {
     printf("certificate: %s, requested before, still pending validation\n", a);
   } else if (dry) {
-    char *need = cbc_strs_join(&c->need, " ");
     printf("certificate: none covers %s; a deploy would request one (DNS validation). This dry run goes on without the hostnames.\n", need);
-    free(need);
     free(a);
     return;
   } else {
@@ -288,7 +285,7 @@ static void auto_cert(cbc_cert_t *c, bool dry) {
       cbc_strs_push(&args, (char *)"--subject-alternative-names");
       for (size_t i = 1; i < c->need.n; i++) cbc_strs_push(&args, (char *)c->need.v[i]);
     }
-    char *seed = cbc_fmt("%s %s", cbc_conf.app, cbc_strs_join(&c->need, " "));
+    char *seed = cbc_fmt("%s %s", cbc_conf.app, need);
     cbc_strs_push(&args, (char *)"--idempotency-token");
     cbc_strs_push(&args, cbc_fmt("cbase%lu", cbc_cksum(seed)));
     free(seed);
@@ -298,16 +295,11 @@ static void auto_cert(cbc_cert_t *c, bool dry) {
     cbc_strs_push(&args, (char *)"text");
     cbc_strs_push(&args, NULL);
     cbc_buf out = { 0, 0, 0 };
-    if (aws_exec(&out, NULL, (const char *const *)args.v) != 0) {
-      char *need = cbc_strs_join(&c->need, " ");
-      aws_fail(cbc_fmt("requesting a certificate for %s", need));
-    }
+    if (aws_exec(&out, NULL, (const char *const *)args.v) != 0) aws_fail(cbc_fmt("requesting a certificate for %s", need));
     char *arn = cbc_buf_text(&out);
     free(out.data);
     free(args.v);   /* the words are borrowed or live for the run */
-    char *need = cbc_strs_join(&c->need, " ");
     printf("certificate: requested %s for %s (DNS validation)\n", arn, need);
-    free(need);
     free(a);
     a = arn;
   }
