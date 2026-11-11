@@ -1248,5 +1248,59 @@ else
 fi
 
 fi
+# It runs last: it starts a fake of its own, and the sections above seed and read the one they share.
+# ---- a signalled deploy: its temporary directory goes, and the process ends by the signal ------
+if wanted signals; then
+# The deploy's first describe-stacks comes after its temporary files are made (the file list, the static
+# tree). The throttle shim answers that call with a 429 every time, so the tool waits in its retry sleep
+# (a foreground sleep of the shell tool's, a nanosleep of the C tool's) and the signal lands there: the
+# state where each tool dies by the signal (the shell's Ctrl-C does not kill a shell that waits on a call
+# made in $(...); it ends with its own error, status 1, so the call is not what is held).
+mkdir -p "$t/hold"
+# shellcheck disable=SC2016 # the shim's own $*
+printf '#!/bin/bash\ncase "$*" in *describe-stacks*) echo x >> "%s"; echo "An error occurred (TooManyRequestsException) when calling the DescribeStacks operation: HTTP 429" >&2; exit 255 ;; esac\nexec "%s" "$@"\n' \
+  "$t/hold/calls" "$(command -v aws)" > "$t/hold/aws"
+chmod +x "$t/hold/aws"
+# sig_deploy SIG NUMBER: a deploy of the site, held in its retry sleep, sent SIG: INT to the process group
+# (a terminal's Ctrl-C reaches the tool and its sleep), TERM and HUP to the tool alone (kill). It ends by
+# signal NUMBER (status 128 + NUMBER) and leaves no cbase.* in its own TMPDIR.
+sig_deploy() {
+  local sig="$1" num="$2" tmpd="$t/tmp-$1" pid n=0 st=0 left
+  rm -rf "$tmpd"; mkdir -p "$tmpd"; rm -f "$t/hold/calls"
+  start_fake "${site_fake[@]}"
+  set -m
+  # The subshell execs the tool, so $! is the tool itself (a signal to it reaches no wrapper). Perl sets the
+  # three signals to their default first: a background job of a non-interactive shell, or a run under nohup,
+  # inherits them ignored, and an ignored signal is kept by the shell tool and by the C tool alike.
+  (cd "$site"; export PATH="$t/hold:$PATH" TMPDIR="$tmpd"; exec perl -e '$SIG{$_} = "DEFAULT" for qw(INT TERM HUP); exec @ARGV' "$tool" deploy) < /dev/null > "$t/out" 2> "$t/err" &
+  pid=$!
+  set +m
+  until [ -s "$t/hold/calls" ] || [ $n -gt 200 ]; do sleep 0.05; n=$((n + 1)); done
+  [ -s "$t/hold/calls" ] || { kill "$pid" 2> /dev/null || true; cat "$t/out" "$t/err" >&2; fail "$sig: the deploy never reached its retry"; }
+  sleep 0.3
+  case "$(ps -o command= -p "$pid" 2> /dev/null || true)" in *deploy*) ;; *) fail "$sig: pid $pid is not the tool" ;; esac
+  left="$(find "$tmpd" -mindepth 2 -print -quit)"
+  [ -n "$left" ] || fail "$sig: the deploy held before it made any temporary file (the test would prove nothing)"
+  if [ "$sig" = INT ]; then kill -INT -- "-$pid"; else kill "-$sig" "$pid"; fi
+  wait "$pid" 2> /dev/null || st=$?
+  [ "$st" = $((128 + num)) ] || { cat "$t/out" "$t/err" >&2; fail "$sig: the deploy ended with status $st, not $((128 + num)) (signal $num)"; }
+  left="$(find "$tmpd" -mindepth 1 -maxdepth 1 -name 'cbase.*' -print)"
+  [ -z "$left" ] || fail "$sig: a deploy stopped by $sig left its temporary directory: $left"
+  ok
+}
+sig_deploy INT 2
+sig_deploy TERM 15
+sig_deploy HUP 1
+# A deploy that is not signalled ends as it did, and leaves no cbase.* either.
+start_fake "${site_fake[@]}"
+normal="$t/tmp-normal"; rm -rf "$normal"; mkdir -p "$normal"
+TMPDIR="$normal" run "$site" deploy
+expect_rc 0 "a deploy with no signal"
+out_has "deployed site: https://d1fake.cloudfront.net/" "a deploy with no signal"
+left="$(find "$normal" -mindepth 1 -maxdepth 1 -name 'cbase.*' -print)"
+[ -z "$left" ] || fail "a deploy that ended normally left its temporary directory: $left"
+ok
+
+fi
 [ "$(log_count unsigned)" = 0 ] || fail "a call reached the fake without the test's credentials"
 echo "cbase_test: ok ($pass checks)"
