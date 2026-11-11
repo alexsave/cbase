@@ -48,14 +48,11 @@ static bool aws_throttled(void) {
                           true);
 }
 
-int aws_call(cbc_buf *out, ...) {
+int aws_call_list(cbc_buf *out, const char *const *args) {
   cbc_strs av = { 0 };
   cbc_strs_push(&av, cbc_dup("aws"));
   cbc_strs_push(&av, cbc_dup("--no-cli-pager"));
-  va_list ap;
-  va_start(ap, out);
-  for (const char *a = va_arg(ap, const char *); a; a = va_arg(ap, const char *)) cbc_strs_push(&av, cbc_dup(a));
-  va_end(ap);
+  for (const char *const *a = args; *a; a++) cbc_strs_push(&av, cbc_dup(*a));
   cbc_strs_push(&av, NULL);
   cbc_buf discard = { 0 };
   cbc_buf *sink = out ? out : &discard;
@@ -66,6 +63,23 @@ int aws_call(cbc_buf *out, ...) {
     long ms = (1000L << (k - 1)) + aws_stagger_ms(cbc_conf.app ? cbc_conf.app : "");
     cbc_sleep_ms(ms);
   }
+}
+
+int aws_call(cbc_buf *out, ...) {
+  cbc_strs words = { 0 };
+  va_list ap;
+  va_start(ap, out);
+  for (const char *a = va_arg(ap, const char *); a; a = va_arg(ap, const char *)) cbc_strs_push(&words, cbc_dup(a));
+  va_end(ap);
+  cbc_strs_push(&words, NULL);
+  return aws_call_list(out, (const char *const *)words.v);
+}
+
+bool aws_err_contains(const char *text) {
+  char *data;
+  size_t len;
+  if (!cbc_read_file(err_path, &data, &len)) return false;
+  return strstr(data, text) != NULL;
 }
 
 char *aws_code(void) {

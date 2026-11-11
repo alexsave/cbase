@@ -1125,6 +1125,53 @@ grep -Fq "run \`./cbase deploy\` again after an instance replacement" "$root/REA
 ok
 
 fi
+# ---- template-shapes: the flag combinations the templates above do not cover: each route's cache
+# policy, a ws route's compress, aliases off, and an API host's own alias and certificate. Their
+# strings are the shell's (template output, checked against it on each shape).
+if wanted template-shapes; then
+ACM_A="arn:aws:acm:us-east-1:$ACCOUNT:certificate/12345678-abcd-ef01-2345-6789abcdef01"
+CACHING_DISABLED="4135ea2d-6df8-44a3-9df3-4b5a84be39ad   # Managed-CachingDisabled"
+CACHING_OPTIMIZED="658327ea-f89d-4fab-a63d-7e88639e58f6   # Managed-CachingOptimized"
+ORIGIN_CC="4cc15a8a-d715-48a4-82b8-cc0b614638fe   # Managed-UseOriginCacheControlHeaders-QueryStrings"
+shapes="$(app shapes "CBASE_APP = a" "CBASE_MEMORY = 1G" "CBASE_ROUTE = /ws ws" "CBASE_ROUTE = /x vm origin" \
+          "CBASE_ROUTE = /f/* static nocache" "CBASE_ROUTE = /y vm GET,POST cache")"
+run "$shapes" template
+expect_rc 0 "a template with every cache mode"
+out_has "CachePolicyId: $CACHING_DISABLED" "a ws route and a nocache static route are uncached"
+out_has "CachePolicyId: $ORIGIN_CC" "the origin cache mode uses the origin's Cache-Control"
+out_has "CachePolicyId: $CACHING_OPTIMIZED" "a cache route is cached"
+[ "$(grep -c 'Compress: false' "$t/out")" = 1 ] || { cat "$t/out" >&2; fail "only the ws route is uncompressed"; }
+ok
+out_has "AllowedMethods: [GET, HEAD]" "a static route allows GET and HEAD"
+out_has "AllowedMethods: [GET, HEAD, OPTIONS, PUT, PATCH, POST, DELETE]" "a route with every method allows them all"
+out_has "PathPattern: \"/f/*\"" "a static route's pattern"
+ok
+# A static route that allows OPTIONS: the methods set that names it, and no more.
+opts="$(app optsh "CBASE_APP = a" "CBASE_MEMORY = 1G" "CBASE_ROUTE = /o/* static GET,OPTIONS")"
+run "$opts" template
+expect_rc 0 "a static route with OPTIONS"
+out_has "AllowedMethods: [GET, HEAD, OPTIONS]" "a static route allows GET, HEAD and OPTIONS"
+[ "$(grep -c 'PUT' "$t/out")" = 0 ] || { cat "$t/out" >&2; fail "a static route with OPTIONS allows PUT"; }
+ok
+# Aliases off (a staged attach's first step): the certificate, and no alias line.
+off="$(app offal "CBASE_APP = a" "CBASE_MEMORY = 1G" "CBASE_DOMAIN = a.example.com" \
+       "CBASE_CERT_ARN = $ACM_A" "CBASE_ALIASES = off")"
+run "$off" template
+expect_rc 0 "a template with aliases off"
+out_has "AcmCertificateArn: $ACM_A" "aliases off keeps the certificate"
+[ "$(grep -c 'Aliases:' "$t/out")" = 0 ] || { cat "$t/out" >&2; fail "aliases off still names an alias"; }
+ok
+# An API host: its own alias and its own certificate, on its own distribution.
+api="$(app apishape "CBASE_APP = a" "CBASE_MEMORY = 1G" "CBASE_DOMAIN = a.example.com" \
+       "CBASE_API_HOST = api.example.com" "CBASE_API_ROUTE = /v1/* vm" "CBASE_API_CERT_ARN = $ACM_A")"
+run "$api" template
+expect_rc 0 "a template with an API host"
+out_has "Aliases: [api.example.com]" "the API host's alias"
+out_has "AcmCertificateArn: $ACM_A" "the API host's certificate"
+out_has "ResponseHeadersPolicyId: !Ref ServerTimingPolicy" "the API host's routes carry the server timing policy"
+ok
+fi
+
 # ---- the router, run: its code from the template, driven under node ---------------------------
 if wanted router; then
 # router_of: the Router's code in the template $t/out, into $t/router.js.

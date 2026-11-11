@@ -12,6 +12,26 @@ $(eval $(call C_VARIANT,build/obj,CC,CLI_CFLAGS))
 
 CLI_SRC := cli.c conf.c main.c aws.c state.c stack.c
 
+# THE TEMPLATES, embedded (tools/embed.c, as cbase.mk embeds its own): the CloudFormation templates the
+# stacks are rendered from are read from tools/cbase.d/templates at build time, so the binary needs no
+# file beside it. The shell tool still reads the same files until milestone 7.
+EMBED := build/embed
+TEMPLATES := ../cbase.d/templates
+$(EMBED): ../embed.c
+	@mkdir -p $(@D)
+	$(CC) -std=gnu11 -O2 -Wall -Wextra -Werror $< -o $@
+build/gen/tpl_app.c: $(TEMPLATES)/app.yaml $(EMBED)
+	@mkdir -p $(@D)
+	$(EMBED) $< tpl_app_yaml > $@.new && mv $@.new $@
+build/gen/tpl_group_vm.c: $(TEMPLATES)/group-vm.yaml $(EMBED)
+	@mkdir -p $(@D)
+	$(EMBED) $< tpl_group_vm_yaml > $@.new && mv $@.new $@
+build/gen/tpl_group_static.c: $(TEMPLATES)/group-static.yaml $(EMBED)
+	@mkdir -p $(@D)
+	$(EMBED) $< tpl_group_static_yaml > $@.new && mv $@.new $@
+CLI_SRC += build/gen/tpl_app.c build/gen/tpl_group_vm.c build/gen/tpl_group_static.c
+.DEFAULT_GOAL := build/cbase
+
 build/cbase: $(call c_objs,build/obj,$(CLI_SRC))
 	@mkdir -p $(@D)
 	@echo "  LINK $@"

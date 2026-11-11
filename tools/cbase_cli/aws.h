@@ -25,6 +25,12 @@ void aws_init(void);
  * the last attempt; its stderr is in the error file, read by aws_code and aws_fail. */
 int aws_call(cbc_buf *out, ...);
 
+/* aws_call_list: aws_call with the arguments as a NULL-terminated array (the same words, no varargs). */
+int aws_call_list(cbc_buf *out, const char *const *args);
+
+/* aws_err_contains: whether the last failed call's stderr holds TEXT (a plain substring). */
+bool aws_err_contains(const char *text);
+
 /* aws_code: the error code of the last failed call ("NoSuchKey"), or "". Valid until the next call. */
 char *aws_code(void);
 

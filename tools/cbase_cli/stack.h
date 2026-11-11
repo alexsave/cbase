@@ -63,6 +63,15 @@ void stack_discard(void);
 /* stack_delete: deletes the stack and waits; nothing when there is none. */
 void stack_delete(void);
 
+/* template_clear / template_set: the values template_render replaces each __NAME__ with (the shell's
+ * T_NAME variables, named without the T_). A name not set is replaced by "". */
+void template_clear(void);
+void template_set(const char *name, const char *value);
+
+/* stk_addr: the VM origin's IP address type, ipv6 or dualstack, or "" (the shell's VM_ORIGIN_ADDR, set by
+ * vm.sh); it adds the template's "addr" block. */
+extern char *stk_addr;
+
 /* template_render: templates/FILE with each "#if FLAG" block kept only when FLAG is one of the blank-
  * separated FLAGS (a "#if !FLAG" is the opposite) and each __NAME__ replaced by the value of that name,
  * written to OUT. The template's bytes are the shell's. */

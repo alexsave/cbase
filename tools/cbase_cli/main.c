@@ -9,11 +9,13 @@
 #include "aws.h"
 #include "cli.h"
 #include "conf.h"
+#include "stack.h"
 #include "state.h"
 
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/stat.h>
 #include <string.h>
 
 /* conf_groups (conf.sh's, tools/cbase): the groups cbase.conf names, the VM first. */
@@ -33,6 +35,14 @@ static int conf_groups(const char *kinds[2], const char *names[2]) {
 }
 
 static const char *conf_file = "cbase.conf";
+
+/* file_exists_in: whether DIR/NAME is a regular file (the shell's [ -f ]). */
+static bool file_exists_in(const char *dir, const char *name) {
+  char path[4096];
+  snprintf(path, sizeof path, "%s/%s", dir, name);
+  struct stat st;
+  return stat(path, &st) == 0 && S_ISREG(st.st_mode);
+}
 
 /* not_ported: the command is not in the C tool yet. Status 3 is the C tool's own, never the shell's. */
 static void not_ported(const char *cmd) __attribute__((noreturn));
@@ -163,7 +173,34 @@ int main(int argc, char **argv) {
   }
   if (strcmp(cmd, "template") == 0) {
     if (nargs != 0) arg_error("template takes no arguments");
-    not_ported(cmd);
+    cbc_conf_load(conf_file);
+    /* Placeholders where deploy puts what it finds: the static group's bucket and region, and the
+     * certificate (found or requested). */
+    char bucket[256], prefix[256];
+    snprintf(bucket, sizeof bucket, "%s", *cbc_conf.static_bucket ? cbc_conf.static_bucket : "");
+    if (!*cbc_conf.static_bucket) snprintf(bucket, sizeof bucket, "%s-bucket", cbc_conf.stat);
+    snprintf(prefix, sizeof prefix, "%s", *cbc_conf.static_prefix ? cbc_conf.static_prefix : cbc_conf.app);
+    stk_bucket = cbc_dup(bucket);
+    stk_prefix = cbc_dup(prefix);
+    stk_bucket_region = "us-east-1";
+    if (strcmp(cbc_conf.stat, "none") != 0 && file_exists_in(cbc_conf.static_dir, "index.html")) {
+      /* The router's page list is the build's (static.sh's static_scan), which is not in the C tool yet. */
+      cbc_fail(3, "template of an app with a build in %s (index.html) needs static_scan, not in the C tool yet", cbc_conf.static_dir);
+    }
+    if (*cbc_conf.domain) {
+      stk_cert = *cbc_conf.cert_arn ? cbc_conf.cert_arn
+                                   : "arn:aws:acm:us-east-1:111122223333:certificate/00000000-0000-0000-0000-000000000000";
+      stk_api_cert = *cbc_conf.api_cert_arn ? cbc_conf.api_cert_arn : stk_cert;
+    }
+    char *file = cbc_tmp_path("stack.yaml");
+    stack_render(file);
+    printf("# PLACEHOLDERS: the bucket (%s) is static group %s's%s.\n", bucket, cbc_conf.stat,
+           *cbc_conf.domain ? ", the certificate is the one deploy finds or requests" : "");
+    char *text;
+    size_t len;
+    if (!cbc_read_file(file, &text, &len)) cbc_fail(CBC_EXIT_FAIL, "cannot read %s", file);
+    fwrite(text, 1, len, stdout);
+    return 0;
   }
   if (strcmp(cmd, "group-template") == 0) {
     const char *kind = nargs > 0 ? args[0] : "";
