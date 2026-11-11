@@ -36,15 +36,22 @@ static size_t rules_n;
 
 /* ---- small helpers ---------------------------------------------------------------------------- */
 
+/* make_dir: DIR made (and noted, for the run's removal: the static tree is inside the temporary directory),
+ * or already there. */
+static void make_dir(const char *dir) {
+  if (mkdir(dir, 0777) == 0) cbc_tmp_note(dir);
+  else if (errno != EEXIST) cbc_fail(CBC_EXIT_FAIL, "cannot make %s", dir);
+}
+
 static void mkdir_p(const char *path) {
   char *p = cbc_dup(path);
   for (char *s = p + 1; *s; s++) {
     if (*s != '/') continue;
     *s = '\0';
-    if (mkdir(p, 0777) != 0 && errno != EEXIST) cbc_fail(CBC_EXIT_FAIL, "cannot make %s", p);
+    make_dir(p);
     *s = '/';
   }
-  if (mkdir(p, 0777) != 0 && errno != EEXIST) cbc_fail(CBC_EXIT_FAIL, "cannot make %s", p);
+  make_dir(p);
   free(p);
 }
 
@@ -260,6 +267,7 @@ void cbc_static_plan_make(cbc_static_plan *p, const char *dir, const cbc_strs *f
     mkdir_p(dst);
     *slash = '/';
     if (link(src, dst) != 0) copy_file(src, dst);
+    cbc_tmp_note(dst);
     free(src);
     free(dst);
   }

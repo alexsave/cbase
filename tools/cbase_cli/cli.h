@@ -106,8 +106,12 @@ char *cbc_split_tab(char *text, char **rest);
 void cbc_split_tabs(char *line, char **f, int n);
 void cbc_read_tab_fields(char *line, char **f, int n);
 
-/* cbc_tmp_path: a path in the run's temporary directory, named NAME; removed when the tool exits. */
+/* cbc_tmp_path: a path in the run's temporary directory, named NAME; removed when the tool exits, or
+ * when it is stopped by SIGINT, SIGTERM or SIGHUP (the signal ends the process, as it does in the shell
+ * tool). cbc_tmp_note: records PATH, a path under the temporary directory that the tool made itself (a
+ * directory or a file in the static tree), so that the same removal takes it too. */
 char *cbc_tmp_path(const char *name);
+void cbc_tmp_note(const char *path);
 
 /* cbc_sleep_ms: waits MS milliseconds. */
 void cbc_sleep_ms(long ms);

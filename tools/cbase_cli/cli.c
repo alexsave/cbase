@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <regex.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
@@ -365,29 +366,96 @@ void cbc_read_tab_fields(char *line, char **f, int n) {
   }
 }
 
+/* THE RUN'S TEMPORARY DIRECTORY. cbc_tmp_path makes one directory, cbase.XXXXXX under TMPDIR, the first
+ * time a path is asked for, and keeps a list of every path the run makes in it: the directory first, then
+ * each file and directory in the order it was made (cbc_tmp_note records the static tree's own). The list
+ * is removed in reverse, so a file goes before its directory. That runs at a normal exit (atexit) and at
+ * SIGINT, SIGTERM or SIGHUP (tmp_on_signal), as the shell tool's EXIT trap runs for those three.
+ *
+ * The signal handler does not wait for anything and does not return. It unlinks or removes each listed
+ * path (unlink, rmdir: async-signal-safe, and the list is read without allocating), restores the default
+ * action and raises the signal again, so the process ends by that signal. It does not wait for a child: a
+ * child left running is the terminal's process group's business, as the shell tool leaves it. A child that
+ * is between fork and exec runs the handler's copy too; the owner check (getpid against tmp_owner) keeps it
+ * from removing its parent's files. The list is changed only with these signals blocked (tmp_list_add), so
+ * the handler never sees the pointer and the count of a list that is half changed. A signal that was ignored
+ * when the run started (SIG_IGN, a background job's SIGINT) stays ignored, as it does in the shell.
+ */
 static char *tmp_dir;
-static cbc_strs tmp_files;
+static cbc_strs tmp_paths;
+static pid_t tmp_owner;
+static const int tmp_sigs[] = { SIGINT, SIGTERM, SIGHUP };
+#define TMP_NSIGS (sizeof tmp_sigs / sizeof tmp_sigs[0])
 
-static void tmp_cleanup(void) {
-  for (size_t i = 0; i < tmp_files.n; i++) unlink(tmp_files.v[i]);
-  if (tmp_dir) rmdir(tmp_dir);
+static void tmp_remove_all(void) {
+  for (size_t i = tmp_paths.n; i-- > 0;) {
+    if (unlink(tmp_paths.v[i]) != 0) rmdir(tmp_paths.v[i]);
+  }
+}
+
+static void tmp_on_signal(int sig) {
+  if (getpid() == tmp_owner) tmp_remove_all();
+  signal(sig, SIG_DFL);
+  sigset_t only;
+  sigemptyset(&only);
+  sigaddset(&only, sig);
+  sigprocmask(SIG_UNBLOCK, &only, NULL);
+  raise(sig);
+  _exit(128 + sig);
+}
+
+static void tmp_block_sigs(sigset_t *old) {
+  sigset_t block;
+  sigemptyset(&block);
+  for (size_t k = 0; k < TMP_NSIGS; k++) sigaddset(&block, tmp_sigs[k]);
+  sigprocmask(SIG_BLOCK, &block, old);
+}
+
+/* tmp_list_add: appends P (the list keeps the pointer) with the signals blocked. */
+static void tmp_list_add(char *p) {
+  sigset_t old;
+  tmp_block_sigs(&old);
+  cbc_strs_push(&tmp_paths, p);
+  sigprocmask(SIG_SETMASK, &old, NULL);
+}
+
+void cbc_tmp_note(const char *path) { tmp_list_add(cbc_dup(path)); }
+
+/* tmp_make: the directory, its removal at exit, and the three handlers (not for a signal that is ignored
+ * at the start). All of it with the signals blocked, so a signal lands either before the directory exists
+ * (nothing to remove) or after the handlers are in place. */
+static void tmp_make(void) {
+  const char *base = getenv("TMPDIR");
+  if (!base || !*base) base = "/tmp";
+  size_t need = strlen(base) + 32;
+  char *tmpl = cbc_xmalloc(need);
+  snprintf(tmpl, need, "%s/cbase.XXXXXX", base);
+  sigset_t old;
+  tmp_block_sigs(&old);
+  tmp_dir = mkdtemp(tmpl);
+  if (tmp_dir) {
+    tmp_owner = getpid();
+    cbc_strs_push(&tmp_paths, tmp_dir);
+    atexit(tmp_remove_all);
+    for (size_t k = 0; k < TMP_NSIGS; k++) {
+      struct sigaction cur, sa;
+      if (sigaction(tmp_sigs[k], NULL, &cur) == 0 && cur.sa_handler == SIG_IGN) continue;
+      memset(&sa, 0, sizeof sa);
+      sa.sa_handler = tmp_on_signal;
+      sigemptyset(&sa.sa_mask);
+      sigaction(tmp_sigs[k], &sa, NULL);
+    }
+  }
+  sigprocmask(SIG_SETMASK, &old, NULL);
+  if (!tmp_dir) cbc_fail(CBC_EXIT_FAIL, "cannot make a temporary directory in %s", base);
 }
 
 char *cbc_tmp_path(const char *name) {
-  if (!tmp_dir) {
-    const char *base = getenv("TMPDIR");
-    if (!base || !*base) base = "/tmp";
-    size_t need = strlen(base) + 32;
-    char *tmpl = cbc_xmalloc(need);
-    snprintf(tmpl, need, "%s/cbase.XXXXXX", base);
-    tmp_dir = mkdtemp(tmpl);
-    if (!tmp_dir) cbc_fail(CBC_EXIT_FAIL, "cannot make a temporary directory in %s", base);
-    atexit(tmp_cleanup);
-  }
+  if (!tmp_dir) tmp_make();
   size_t need = strlen(tmp_dir) + strlen(name) + 2;
   char *p = cbc_xmalloc(need);
   snprintf(p, need, "%s/%s", tmp_dir, name);
-  cbc_strs_push(&tmp_files, p);
+  tmp_list_add(p);
   return p;
 }
 
