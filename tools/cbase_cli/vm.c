@@ -408,7 +408,7 @@ static long vm_polls(void) {
 
 static char *ssm_command_id = "";
 
-static cbc_buf last_lines;   /* the masked CBASE lines of the last ssm_run (ssm-lines) */
+static cbc_strs last_lines;   /* the masked CBASE lines of the last ssm_run */
 
 /* vm_ssm_read: one read of the command; true once it has ended. */
 static bool ssm_read(void) {
@@ -454,29 +454,23 @@ static void ssm_run(const char *script, const char *what) {
   if (aws_call(&res, "ssm", "get-command-invocation", "--command-id", id, "--instance-id", cbc_vm.id,
                "--query", "StandardOutputContent", "--output", "text", NULL) != 0)
     aws_fail(cbc_fmt("reading SSM command %s's output", id));
-  /* grep '^CBASE: ', then aws_mask, then the sed that makes them "vm: " lines. */
-  cbc_buf lines = { 0 };
-  char *p = res.data ? res.data : "";
+  /* grep '^CBASE: ', then aws_mask: the lines kept, parsed once; the sed that makes them "vm: " lines. */
+  last_lines = (cbc_strs){ 0 };
+  const char *p = res.data ? res.data : "";
   while (*p) {
-    char *nl = strchr(p, '\n');
+    const char *nl = strchr(p, '\n');
     size_t len = nl ? (size_t)(nl - p) : strlen(p);
     if (len >= 8 && strncmp(p, "CBASE: ", 7) == 0) {
       char *line = cbc_dupn(p, len);
-      cbc_buf_str(&lines, aws_mask(line));
-      cbc_buf_str(&lines, "\n");
+      const char *shown = aws_mask(line);   /* the line, or the sentence that stands for it */
+      cbc_strs_push(&last_lines, shown == line ? line : cbc_dup(shown));
     }
     p = nl ? nl + 1 : p + len;
   }
-  if (!lines.data) cbc_buf_str(&lines, "");
-  cbc_write_file(cbc_tmp_path("ssm-lines"), lines.data);
-  last_lines = lines;
-  p = lines.data;
-  while (*p) {
-    char *nl = strchr(p, '\n');
-    size_t len = nl ? (size_t)(nl - p) : strlen(p);
-    if (len >= 7 && strncmp(p, "CBASE: ", 7) == 0) printf("vm: %.*s\n", (int)(len - 7), p + 7);
-    else printf("%.*s\n", (int)len, p);
-    p = nl ? nl + 1 : p + len;
+  for (size_t i = 0; i < last_lines.n; i++) {
+    const char *line = last_lines.v[i];
+    if (strncmp(line, "CBASE: ", 7) == 0) printf("vm: %s\n", line + 7);
+    else printf("%s\n", line);
   }
 }
 
@@ -622,12 +616,9 @@ bool cbc_vm_data_check(const char *instance, const char *group, cbc_strs *apps) 
   char *script = cbc_vm_remote_data();
   cbc_write_file(cbc_tmp_path("vm-data.sh"), script);
   ssm_run(script, cbc_fmt("data check of vm group %s", group));
-  char *p = last_lines.data ? last_lines.data : "";
-  while (*p) {
-    char *nl = strchr(p, '\n');
-    size_t len = nl ? (size_t)(nl - p) : strlen(p);
-    if (len >= 13 && strncmp(p, "CBASE: data ", 12) == 0) cbc_strs_push(apps, cbc_dupn(p + 12, len - 12));
-    p = nl ? nl + 1 : p + len;
+  for (size_t i = 0; i < last_lines.n; i++) {
+    const char *line = last_lines.v[i];
+    if (strlen(line) >= 13 && strncmp(line, "CBASE: data ", 12) == 0) cbc_strs_push(apps, cbc_dup(line + 12));
   }
   return strcmp(cbc_vm.ssm_status, "Success") == 0;
 }
