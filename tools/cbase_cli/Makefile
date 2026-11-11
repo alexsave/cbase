@@ -10,7 +10,7 @@ include $(C_ROOT)/tools/c_rules.mk
 CLI_CFLAGS = -std=gnu11 -D_GNU_SOURCE -O2 -g -Wall -Wextra -Werror -Wshadow -Wvla -Wformat=2
 $(eval $(call C_VARIANT,build/obj,CC,CLI_CFLAGS))
 
-CLI_SRC := cli.c conf.c main.c
+CLI_SRC := cli.c conf.c main.c stack.c
 
 build/cbase: $(call c_objs,build/obj,$(CLI_SRC))
 	@mkdir -p $(@D)
