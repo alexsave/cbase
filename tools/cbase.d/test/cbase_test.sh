@@ -27,6 +27,7 @@ set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 # ---- cbase.conf: errors, each with its line number -------------------------------------------
+if wanted conf; then
 conf_error() {   # conf_error "EXPECTED" LINES...
   local want="$1"; shift
   local d
@@ -64,6 +65,9 @@ conf_error "cbase.conf line 3: CBASE_CERT_ARN is for CBASE_DOMAIN, and there is 
   "CBASE_CERT_ARN = arn:aws:acm:us-east-1:$ACCOUNT:certificate/12345678-abcd-ef01-2345-6789abcdef01"
 conf_error "cbase.conf line 2: CBASE_DOMAIN is lower-case hostnames" "CBASE_APP = a" "CBASE_DOMAIN = *.example.com"
 conf_error "cbase.conf line 2: is not KEY = value (a key is upper-case" "CBASE_APP = a" "cbase_vm = none"
+conf_error "cbase.conf line 2: CBASE_SHELL is a page of the build, an absolute path ending in .html" "CBASE_APP = a" "CBASE_SHELL = _shell.html"
+conf_error "cbase.conf line 2: CBASE_SHELL is a page of the build, an absolute path ending in .html" "CBASE_APP = a" "CBASE_SHELL = /../x.html"
+conf_error "cbase.conf line 3: CBASE_SHELL is a page of the static files, and CBASE_STATIC is none" "CBASE_APP = a" "CBASE_STATIC = none" "CBASE_SHELL = /_shell.html"
 
 # A good one, defaults filled in, routes normalized, the "*" route last.
 d="$(app good "# the app" "CBASE_APP = shop" "CBASE_MEMORY=512M" "CBASE_ROUTE = * static" \
@@ -169,7 +173,9 @@ expect_rc 1 "a missing config"
 err_has "missing.conf does not exist" "a missing config"
 ok
 
+fi
 # ---- secrets: refused by line, never echoed ----------------------------------------------------
+if wanted secrets; then
 secret() {   # secret "EXPECTED" "SECRET TEXT" LINE: the LINE (holding the text) is refused at line 2
   local want="$1" text="$2" line="$3" d
   d="$(app secret "CBASE_APP = a" "$line" "CBASE_VM = none")"
@@ -193,7 +199,9 @@ secret "STRIPE_PRIVATE_KEY is named like a secret" "sk" "STRIPE_PRIVATE_KEY = sk
 # Even a line that is not KEY = value is refused as a secret first, and not echoed.
 secret "this line looks like a secret: an AWS access key id" AKIAIOSFODNN7EXAMPLE "export AKIAIOSFODNN7EXAMPLE"
 
+fi
 # ---- no credentials: the CLI's own chain finds none --------------------------------------------
+if wanted creds; then
 start_fake "${everything[@]}"
 d="$(app a "CBASE_APP = a" "CBASE_VM = g1" "CBASE_STATIC = g1" "CBASE_MEMORY = 128M")"
 rc=0
@@ -211,7 +219,9 @@ expect_rc 0 "credentials from a profile"
 out_has "a joined vm group g1: app=a port=8700 service=cbase-a.service mem=128" "credentials from a profile"
 ok
 
+fi
 # ---- groups: found by tag, and not found -------------------------------------------------------
+if wanted groups; then
 start_fake "${everything[@]}"
 d="$(app nope "CBASE_APP = nope" "CBASE_VM = ghost" "CBASE_MEMORY = 64M" "CBASE_STATIC = none")"
 run "$d" state join
@@ -238,7 +248,9 @@ expect_rc 1 "two instances in one group"
 err_has "2 resources are tagged cbase:vm-group=g1, and a vm group is one instance" "two instances in one group"
 ok
 
+fi
 # ---- join, rejoin, leave, the port claim -------------------------------------------------------
+if wanted join; then
 start_fake "${everything[@]}"
 a="$(app a "CBASE_APP = a" "CBASE_VM = g1" "CBASE_STATIC = g1" "CBASE_MEMORY = 128M")"
 b="$(app b "CBASE_APP = b" "CBASE_VM = g1" "CBASE_STATIC = g1" "CBASE_MEMORY = 1G")"
@@ -296,7 +308,9 @@ run "$e" state leave
 expect_rc 0 "e's leave"
 ok
 
+fi
 # ---- apps --------------------------------------------------------------------------------------
+if wanted apps; then
 run "$b" apps
 expect_rc 0 "apps from cbase.conf"
 {
@@ -332,7 +346,9 @@ run "$t" apps Not_A_Group
 expect_rc 2 "apps of a bad name"
 ok
 
+fi
 # ---- doctor ------------------------------------------------------------------------------------
+if wanted doctor; then
 run "$b" doctor
 expect_rc 0 "doctor"
 out_has "account   $ACCOUNT (us-east-1)" "doctor names the account"
@@ -346,7 +362,9 @@ err_has "./cbase group-init vm ghost" "doctor with a missing group"
 out_has "static group g1: g1-site-bucket" "doctor goes on past a missing group"
 ok
 
+fi
 # ---- a corrupt state file, a missing state bucket ----------------------------------------------
+if wanted corrupt-state; then
 bad_state() {   # bad_state "EXPECTED" CONTENT
   printf '%b' "$2" > "$t/bad"
   aws s3api put-object --bucket "$BUCKET" --key vm/g1.txt --body "$t/bad" > /dev/null
@@ -368,7 +386,9 @@ expect_rc 1 "no state bucket"
 err_has "there is no state bucket s3://$BUCKET in this account" "no state bucket"
 ok
 
+fi
 # ---- two racing joins --------------------------------------------------------------------------
+if wanted race; then
 # The fake holds the first two reads until both are in, so both runs read the same file (none, then
 # one with two members) before either writes: exactly one write wins, and the other gets 412, reads
 # again and claims the next port.
@@ -403,10 +423,14 @@ state_of vm g2 > "$t/g2"
 [ "$(grep -o 'port=[0-9]*' "$t/g2" | sort -u | wc -l | tr -d ' ')" = 4 ] || fail "four apps, four ports"
 ok
 
+fi
 # ---- an unknown command ------------------------------------------------------------------------
+if wanted unknown; then
 run "$b" frobnicate
 expect_rc 2 "an unknown command"
 ok
+
+fi
 
 # ================================================================================================
 # deploy: the static part
@@ -440,6 +464,7 @@ for f in index.html about.html docs/index.html app.wasm style.css data.json font
 done
 
 # ---- static-only end to end: the create path, the headers, the hashed rule, the order ---------
+if wanted static; then
 start_fake "${site_fake[@]}"
 seed other/index.html; seed site-admin/app.js; seed siteish.txt; seed index.html
 m="$(mark)"
@@ -508,7 +533,9 @@ for k in other/index.html site-admin/app.js siteish.txt index.html; do
 done
 ok
 
+fi
 # ---- a redeploy: drift checked, no changes, the edge invalidated --------------------------------
+if wanted redeploy; then
 m="$(mark)"
 run "$site" deploy
 expect_rc 0 "a redeploy"
@@ -520,7 +547,9 @@ since "$m" | grep -q "CFN ExecuteChangeSet" && fail "a change set with no change
 since "$m" | grep -q "^DELETE " && fail "a deploy without --prune deleted"
 ok
 
+fi
 # ---- prune: the build's leftovers in the app's folder, and nothing else -------------------------
+if wanted prune; then
 seed site/stale.js; seed site/old/page.html
 rm "$site/build/data.json"
 m="$(mark)"
@@ -552,7 +581,9 @@ done
 fake_set list-ignores-prefix=0
 ok
 
+fi
 # ---- the safety rules --------------------------------------------------------------------------
+if wanted safety; then
 puts_since() { since "$1" | grep -c "^PUT /$SITE_BUCKET/" || true; }
 # A bucket replaced, or removed: refused, the change set deleted, nothing executed or uploaded.
 for how in replace-bucket remove-bucket; do
@@ -630,7 +661,9 @@ since "$m" | grep -q "CFN DeleteStack cbase-app-dry" || fail "a new app's dry ru
 since "$m" | grep -qE "^PUT |CFN ExecuteChangeSet" && fail "a new app's dry run changed something"
 ok
 
+fi
 # ---- secrets in a change set, a drift and an error: never printed -------------------------------
+if wanted secret-change; then
 # A value that looks like nothing (no long random run) so only the masking can keep it out.
 SECRET=hunter2-origin-value
 SECRET2=hunter3-origin-value
@@ -664,7 +697,9 @@ err_has "(a line naming an origin header or a parameter value, not shown)" "the 
 fake_set "fail-execute=0&secret=&secret2="
 ok
 
+fi
 # ---- certificates ------------------------------------------------------------------------------
+if wanted certs; then
 # Found: an issued wildcard covers www.example.com (one of three, the deeper wildcard does not), and
 # the zone gets the alias.
 www="$(app www "CBASE_APP = www" "CBASE_VM = none" "CBASE_STATIC = site" "CBASE_DOMAIN = www.example.com")"
@@ -728,7 +763,9 @@ out_has "requested before, still pending validation" "the pending certificate is
 since "$m" | grep -q "ACM RequestCertificate" && fail "a second certificate was requested"
 ok
 
+fi
 # ---- a named certificate: used as it is, never looked for or replaced ---------------------------
+if wanted named-cert; then
 # CERT_WILD would be found first (by ARN); CBASE_CERT_ARN names CERT_NAMED, which is served.
 named="$(app named "CBASE_APP = named" "CBASE_VM = none" "CBASE_STATIC = site" "CBASE_DOMAIN = named.example.com" "CBASE_CERT_ARN = $CERT_NAMED")"
 mkdir -p "$named/build" && printf 'x\n' > "$named/build/index.html"
@@ -750,7 +787,9 @@ ok
 conf_error "cbase.conf line 4: CBASE_API_CERT_ARN is for CBASE_API_HOST, and there is none" "CBASE_APP = a" "CBASE_MEMORY = 1G" "CBASE_DOMAIN = a.example.com" \
   "CBASE_API_CERT_ARN = arn:aws:acm:us-east-1:$ACCOUNT:certificate/12345678-abcd-ef01-2345-6789abcdef01"
 
+fi
 # ---- several hostnames: one distribution, one certificate, a record each -------------------------
+if wanted hostnames; then
 # example.com and app.example.com: the issued example.com,*.example.com covers both, and each is an
 # alias of the one distribution.
 two="$(app two "CBASE_APP = two" "CBASE_VM = none" "CBASE_STATIC = site" "CBASE_DOMAIN = example.com app.example.com")"
@@ -816,7 +855,9 @@ domain     example.com app.example.com
 cert       (found or requested by deploy)
 route      * static cache GET,HEAD" "CBASE_APP = site" "CBASE_VM = none" "CBASE_DOMAIN =  example.com   app.example.com"
 
+fi
 # ---- a hostname another distribution holds: named with the step that frees it ------------------
+if wanted taken-hostname; then
 fake_set "foreign-dist=EOLDDIST:dold.cloudfront.net:taken.example.com+other.example.com"
 taken="$(app taken "CBASE_APP = taken" "CBASE_VM = none" "CBASE_STATIC = site" "CBASE_DOMAIN = taken.example.com")"
 mkdir -p "$taken/build" && printf 'x\n' > "$taken/build/index.html"
@@ -840,7 +881,9 @@ run "$taken" deploy
 expect_rc 0 "a redeploy of a hostname the app's own distribution holds"
 ok
 
+fi
 # ---- what deploy refuses -----------------------------------------------------------------------
+if wanted refused; then
 # A static group that does not exist: the group-init command, nothing made.
 ghost="$(app ghost "CBASE_APP = ghost" "CBASE_VM = none" "CBASE_STATIC = nosuch")"
 m="$(mark)"
@@ -867,7 +910,9 @@ conf_error "cbase.conf line 2: CBASE_STATIC_DIR is a directory inside the reposi
 conf_error "cbase.conf line 3: CBASE_STATIC_DIR is the static files' directory, and CBASE_STATIC is none" "CBASE_APP = a" "CBASE_STATIC = none" "CBASE_STATIC_DIR = dist"
 conf_error "cbase.conf line 2: CBASE_HASHED is blank-separated globs" "CBASE_APP = a" "CBASE_HASHED = /assets/*"
 
+fi
 # ---- the template: routes on the VM only for an app with one -----------------------------------
+if wanted template; then
 full="$(app full "CBASE_APP = shop" "CBASE_ROUTE = /api/* vm" "CBASE_ROUTE = /live ws" "CBASE_ROUTE = /img/* static nocache GET,OPTIONS" \
           "CBASE_ROUTE = /form vm POST" "CBASE_ROUTE = /read vm cache GET")"
 run "$full" template
@@ -939,7 +984,9 @@ ok
 grep -Fq "run \`./cbase deploy\` again after an instance replacement" "$root/README.md" || fail "README.md lacks the instance replacement line"
 ok
 
+fi
 # ---- the router, run: its code from the template, driven under node ---------------------------
+if wanted router; then
 # router_of: the Router's code in the template $t/out, into $t/router.js.
 router_of() {
   awk '/^      FunctionCode: \|$/ {f=1; next} f && /^        / {sub(/^        /, ""); print; next} f {exit}' "$t/out" > "$t/router.js"
@@ -999,9 +1046,7 @@ else
   err_has "the app shell is /app.html (CBASE_SHELL), and the static dir has no app.html" "a shell the build lacks"
   ok
 fi
-conf_error "cbase.conf line 2: CBASE_SHELL is a page of the build, an absolute path ending in .html" "CBASE_APP = a" "CBASE_SHELL = _shell.html"
-conf_error "cbase.conf line 2: CBASE_SHELL is a page of the build, an absolute path ending in .html" "CBASE_APP = a" "CBASE_SHELL = /../x.html"
-conf_error "cbase.conf line 3: CBASE_SHELL is a page of the static files, and CBASE_STATIC is none" "CBASE_APP = a" "CBASE_STATIC = none" "CBASE_SHELL = /_shell.html"
 
+fi
 [ "$(log_count unsigned)" = 0 ] || fail "a call reached the fake without the test's credentials"
 echo "cbase_test: ok ($pass checks)"

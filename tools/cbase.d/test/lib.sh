@@ -20,6 +20,16 @@ trap 'stop_fake; rm -rf "$t"' EXIT
 fail() { echo "cbase_test: FAIL: $*" >&2; exit 1; }
 pass=0
 ok() { pass=$((pass + 1)); }
+# wanted SECTION: CBASE_TEST_ONLY (names separated by spaces or commas) picks the sections a run
+# covers, and unset runs them all. The names are cbase_test.sh's "# ----" header names, one
+# `if wanted NAME; then` block each, so a subset takes seconds and not the whole run. A section that
+# uses a variable or a fake another section sets needs that section in the subset too (the deploy
+# preamble between the sections is outside every block, so a subset never skips it).
+wanted() {
+  [ -z "${CBASE_TEST_ONLY:-}" ] && return 0
+  case " ${CBASE_TEST_ONLY//,/ } " in *" $1 "*) return 0 ;; esac
+  return 1
+}
 
 command -v aws > /dev/null 2>&1 || fail "the AWS CLI (aws) is not on PATH: the tests drive the real CLI against a local fake"
 ${CC:-cc} -std=gnu11 -D_GNU_SOURCE -O2 -Wall -Wextra -Werror -pthread "$root/tools/cbase.d/test/fake_aws.c" -o "$t/fake_aws"
@@ -69,7 +79,8 @@ run() {
 expect_rc() { [ "$rc" = "$1" ] || { cat "$t/out" "$t/err" >&2; fail "$2: status $rc, not $1"; }; }
 err_has() { grep -Fq -- "$1" "$t/err" || { cat "$t/err" >&2; fail "$2: stderr lacks [$1]"; }; }
 out_has() { grep -Fq -- "$1" "$t/out" || { cat "$t/out" >&2; fail "$2: stdout lacks [$1]"; }; }
-log_count() { grep -cF -- "$1" "$t/log" || true; }
+# A run that never started the fake (a CBASE_TEST_ONLY subset) has no log: zero calls.
+log_count() { [ -f "$t/log" ] || { echo 0; return; }; grep -cF -- "$1" "$t/log" || true; }
 app() {   # app NAME LINES...: an app repository with cbase.conf of LINES
   local d="$t/apps/$1"; shift
   mkdir -p "$d"
