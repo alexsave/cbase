@@ -129,7 +129,7 @@ static void state_parse(const char *kind, const char *group, const char *file, c
       snprintf(want, sizeof want, "cbase-state %s %s %s", STATE_VERSION_TEXT, kind, group);
       if (strcmp(line, want) != 0)
       {
-        char sentence[600];
+        char sentence[700];   /* want (up to 511 bytes) and the 109 of fixed text below: GCC checks that they fit */
         snprintf(sentence, sizeof sentence, "is not \"%s\" (the format's version, the kind and the group; a vm group's may add \" origin=<host> addr=<ipv6|dualstack>\")", want);
         state_die(where, no, sentence);
       }
