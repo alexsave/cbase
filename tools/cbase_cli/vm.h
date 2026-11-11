@@ -111,6 +111,11 @@ void cbc_vm_join(const char *group);
  * service was not started. */
 bool cbc_vm_ship(const char *group);
 
+/* cbc_vm_service: VM_SERVICE, what the deploy's summary says of the service, from the remote script's
+ * own line (vm_service_said): restarted, started, or unchanged and not restarted. Set by cbc_vm_ship
+ * once the deploy script succeeded. */
+const char *cbc_vm_service(void);
+
 /* cbc_vm_undeploy: the service stopped and removed, then the membership left (vm_undeploy). */
 void cbc_vm_undeploy(const char *group, bool delete_data);
 
