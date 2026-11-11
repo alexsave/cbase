@@ -186,6 +186,7 @@ start_fake
 for want in "vm g4" "vm g4 --ipv4" "static g4"; do
   cp "$root/tools/cbase.d/test/golden/group-template/$(printf '%s' "$want" | tr ' ' '_')" "$t/want"
   m="$(mark)"
+  # shellcheck disable=SC2086 # the arguments are words: "vm g4 --ipv4" is three of them
   run "$t" group-template $want
   expect_rc 0 "group-template $want"
   diff -u "$t/want" "$t/out" > /dev/null || { diff -u "$t/want" "$t/out" >&2; fail "group-template $want differs from its golden text"; }

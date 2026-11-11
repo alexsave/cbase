@@ -39,7 +39,8 @@ gold_name() { printf '%s' "$1" | sed -e 's/: /./' -e 's/ /_/g'; }
 # check NAME CONF MODE ARGS...: the C render is the golden file, byte for byte.
 check() {
   local name="$1" conf="$2"; shift 2
-  local gold="$golden/$(gold_name "$name")"
+  local gold
+  gold="$golden/$(gold_name "$name")"
   [ -f "$gold" ] || fail "$name: no golden file $gold"
   "$t/vm_render" "$conf" "$@" > "$t/c.out" 2> "$t/c.err" || { cat "$t/c.err" >&2; fail "$name: the C render failed"; }
   if ! cmp -s "$gold" "$t/c.out"; then
