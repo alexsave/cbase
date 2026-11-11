@@ -257,6 +257,76 @@ bool cbc_read_file(const char *file, char **data, size_t *len) {
   return ok;
 }
 
+void cbc_write_file(const char *path, const char *text) {
+  FILE *f = fopen(path, "wb");
+  if (!f || fputs(text, f) == EOF || fclose(f) != 0) cbc_fail(CBC_EXIT_FAIL, "cannot write %s", path);
+}
+
+bool cbc_is_file(const char *path) {
+  struct stat st;
+  return stat(path, &st) == 0 && S_ISREG(st.st_mode);
+}
+
+bool cbc_is_dir(const char *path) {
+  struct stat st;
+  return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+void cbc_split_on(const char *text, const char *seps, cbc_strs *out) {
+  const char *p = text;
+  while (*p) {
+    while (*p && strchr(seps, *p)) p++;
+    if (!*p) break;
+    const char *b = p;
+    while (*p && !strchr(seps, *p)) p++;
+    cbc_strs_push(out, cbc_dupn(b, (size_t)(p - b)));
+  }
+}
+
+/* Splits TEXT at its first tab; the rest is what follows it ("" when there is no tab). */
+char *cbc_split_tab(char *text, char **rest) {
+  char *tab = strchr(text, '\t');
+  if (!tab) {
+    *rest = "";
+    return text;
+  }
+  *tab = '\0';
+  *rest = tab + 1;
+  return text;
+}
+
+void cbc_split_tabs(char *line, char **f, int n) {
+  for (int k = 0; k < n; k++) {
+    f[k] = line;
+    char *tab = strchr(line, '\t');
+    if (!tab) {
+      for (int j = k + 1; j < n; j++) f[j] = NULL;
+      return;
+    }
+    *tab = '\0';
+    line = tab + 1;
+  }
+}
+
+void cbc_read_tab_fields(char *line, char **f, int n) {
+  char *p = line;
+  for (int i = 0; i < n; i++) f[i] = "";
+  for (int i = 0; i < n; i++) {
+    while (*p == '\t') p++;
+    if (!*p) break;
+    if (i == n - 1) {
+      size_t len = strlen(p);
+      while (len > 0 && p[len - 1] == '\t') p[--len] = '\0';
+      f[i] = p;
+      break;
+    }
+    char *b = p;
+    while (*p && *p != '\t') p++;
+    if (*p) *p++ = '\0';
+    f[i] = b;
+  }
+}
+
 static char *tmp_dir;
 static cbc_strs tmp_files;
 

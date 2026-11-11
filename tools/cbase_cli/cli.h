@@ -88,6 +88,23 @@ bool cbc_on_path(const char *name);
  * opened or read. */
 bool cbc_read_file(const char *file, char **data, size_t *len);
 
+/* cbc_write_file: writes TEXT to PATH, created or truncated; stops the tool when that fails. */
+void cbc_write_file(const char *path, const char *text);
+
+/* cbc_is_file, cbc_is_dir: PATH exists and is a regular file (a directory), following symbolic links. */
+bool cbc_is_file(const char *path);
+bool cbc_is_dir(const char *path);
+
+/* Splitting. Each split takes a text and makes new strings of its pieces; they differ where the
+ * shell's read does: cbc_split_on is read -a with the separators SEPS (runs of them make one break, and
+ * empty pieces are dropped); cbc_split_tab cuts at the first tab only; cbc_split_tabs gives N fields at
+ * each tab and leaves a missing one NULL; cbc_read_tab_fields is IFS=$'\t' read -r, where runs of tabs
+ * separate and the last field keeps the rest of the line. The last three edit LINE in place. */
+void cbc_split_on(const char *text, const char *seps, cbc_strs *out);
+char *cbc_split_tab(char *text, char **rest);
+void cbc_split_tabs(char *line, char **f, int n);
+void cbc_read_tab_fields(char *line, char **f, int n);
+
 /* cbc_tmp_path: a path in the run's temporary directory, named NAME; removed when the tool exits. */
 char *cbc_tmp_path(const char *name);
 

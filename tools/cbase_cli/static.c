@@ -60,12 +60,6 @@ static bool strs_has(const cbc_strs *s, const char *v) {
   return false;
 }
 
-static bool is_kind(const char *path, bool dir) {
-  struct stat st;
-  if (stat(path, &st) != 0) return false;
-  return dir ? S_ISDIR(st.st_mode) : S_ISREG(st.st_mode);
-}
-
 /* copy_file: SRC's bytes and mode into DST (cp -p's content, for a file a link cannot reach). */
 static void copy_file(const char *src, const char *dst) {
   int in = open(src, O_RDONLY);
@@ -124,10 +118,10 @@ static bool hidden(const char *f) {
 
 void cbc_static_scan(const char *dir, cbc_strs *files) {
   files->n = 0;
-  if (!is_kind(dir, true))
+  if (!cbc_is_dir(dir))
     cbc_fail(CBC_EXIT_FAIL, "the static dir %s does not exist: build the app first, or set CBASE_STATIC_DIR in cbase.conf (the directory with index.html)", dir);
   char *index = cbc_fmt("%s%s%s", dir, "/", "index.html");
-  if (!is_kind(index, false))
+  if (!cbc_is_file(index))
     cbc_fail(CBC_EXIT_FAIL, "%s has no index.html, so it is not a built site: nothing was uploaded or deleted (CBASE_STATIC_DIR names the directory with index.html)", dir);
   free(index);
   cbc_strs all = { 0, 0, 0 };

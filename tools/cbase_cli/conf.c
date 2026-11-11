@@ -39,18 +39,6 @@ static void routes_push(cbc_routes *r, cbc_route v) {
   r->v[r->n++] = v;
 }
 
-/* split_ws: the words of S, as read -a splits them (runs of blanks and newlines separate). */
-static void split_ws(const char *s, cbc_strs *out) {
-  const char *p = s;
-  while (*p) {
-    while (*p == ' ' || *p == '\t') p++;
-    if (!*p) break;
-    const char *b = p;
-    while (*p && *p != ' ' && *p != '\t') p++;
-    cbc_strs_push(out, cbc_dupn(b, (size_t)(p - b)));
-  }
-}
-
 /* ---- errors ----------------------------------------------------------------------------------- */
 
 /* die_line: the file's line and why, and the tool stops (conf_die). */
@@ -175,7 +163,7 @@ static const char *conf_methods(int no, const char *list) {
 static void conf_route(int no, const char *value, bool api) {
   const char *key = api ? "CBASE_API_ROUTE" : "CBASE_ROUTE";
   cbc_strs rest = { 0 };
-  split_ws(value, &rest);
+  cbc_split_on(value, " \t", &rest);
   const char *pattern = rest.n > 0 ? rest.v[0] : "";
   const char *origin = rest.n > 1 ? rest.v[1] : "";
   if (!*origin)
@@ -297,28 +285,6 @@ static void secret_scan(int no, const char *text) {
   die_line(no, "this line looks like a secret: %s. cbase.conf is committed and public, so a secret never goes in it", what);
 }
 
-/* read_file: FILE's bytes, whole. Returns false when it cannot be opened or read. */
-static bool read_file(const char *file, char **data, size_t *len) {
-  FILE *f = fopen(file, "rb");
-  if (!f) return false;
-  size_t cap = 65536, n = 0;
-  char *buf = cbc_xmalloc(cap);
-  size_t r;
-  while ((r = fread(buf + n, 1, cap - n, f)) > 0) {
-    n += r;
-    if (n == cap) {
-      cap *= 2;
-      char *nb = cbc_xrealloc(buf, cap);
-      buf = nb;
-    }
-  }
-  bool ok = !ferror(f);
-  fclose(f);
-  *data = buf;
-  *len = n;
-  return ok;
-}
-
 /* ---- the load --------------------------------------------------------------------------------- */
 
 void cbc_conf_load(const char *file) {
@@ -338,7 +304,7 @@ void cbc_conf_load(const char *file) {
   if (access(file, R_OK) != 0) die_file("cannot be read");
   char *data = NULL;
   size_t dlen = 0;
-  if (!read_file(file, &data, &dlen)) die_file("cannot be read");
+  if (!cbc_read_file(file, &data, &dlen)) die_file("cannot be read");
   if (memchr(data, '\0', dlen)) die_file("holds a NUL byte");
 
   /* The lines: split on '\n'; a last piece with no newline counts if it is not empty; one '\r' at
@@ -472,7 +438,7 @@ void cbc_conf_load(const char *file) {
       conf_route(no, value, true);
     } else if (strcmp(key, "CBASE_DOMAIN") == 0) {
       cbc_strs names = { 0 };
-      split_ws(value, &names);
+      cbc_split_on(value, " \t", &names);
       for (size_t g = 0; g < names.n; g++) {
         if (!host_ok(names.v[g]))
           die_line(no, "CBASE_DOMAIN is lower-case hostnames, blank-separated (example.com www.example.com)");
@@ -514,7 +480,7 @@ void cbc_conf_load(const char *file) {
       dir_set = cbc_dup(value);
     } else if (strcmp(key, "CBASE_HASHED") == 0) {
       cbc_strs globs = { 0 };
-      split_ws(value, &globs);
+      cbc_split_on(value, " \t", &globs);
       for (size_t g = 0; g < globs.n; g++) {
         if (!cbc_re("^[A-Za-z0-9._/*?-]+$", globs.v[g]) || globs.v[g][0] == '/')
           die_line(no, "CBASE_HASHED is blank-separated globs of letters, digits and . _ - / * ? (assets/*), each a path in the static dir with no leading '/'");

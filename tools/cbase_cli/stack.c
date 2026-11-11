@@ -558,29 +558,6 @@ static char *line_next(char **cursor) {
   return p;
 }
 
-/* tab_fields: a line read as bash's `IFS=$'\\t' read -r F1 ... FN`: tab is IFS whitespace, so runs of
- * tabs separate fields and leading tabs are skipped; the last field takes the rest of the line, its trailing
- * tabs removed. A field that is not there is "". The shell's behaviour with empty values is kept on purpose:
- * an empty CLI value collapses into the next field, as it does in bash. */
-static void tab_fields(char *line, char **f, int n) {
-  char *p = line;
-  for (int i = 0; i < n; i++) f[i] = "";
-  for (int i = 0; i < n; i++) {
-    while (*p == '\t') p++;
-    if (!*p) break;
-    if (i == n - 1) {
-      size_t len = strlen(p);
-      while (len > 0 && p[len - 1] == '\t') p[--len] = '\0';
-      f[i] = p;
-      break;
-    }
-    char *b = p;
-    while (*p && *p != '\t') p++;
-    if (*p) *p++ = '\0';
-    f[i] = b;
-  }
-}
-
 /* stack_where: a property path's place, as the origin header and parameter lines name it. */
 static char *stack_where(const char *p) {
   const char *q = p;
@@ -683,7 +660,7 @@ static void stack_drift_guard(void) {
   char *line;
   while ((line = line_next(&cursor)) != NULL) {
     char *f[3];
-    tab_fields(line, f, 3);
+    cbc_read_tab_fields(line, f, 3);
     const char *lid = f[0], *type = f[1], *status = f[2];
     if (!*lid) continue;
     fprintf(stderr, "drift: %s (%s) %s\n", lid, type, status);
@@ -694,7 +671,7 @@ static void stack_drift_guard(void) {
     char *tc = text;
     while ((line = line_next(&tc)) != NULL) {
       char *g[4];
-      tab_fields(line, g, 4);
+      cbc_read_tab_fields(line, g, 4);
       if (!*g[0]) continue;
       char *w = stack_where(g[0]);
       char *vb = stack_value(g[2]);
@@ -747,7 +724,7 @@ static void stack_print_changes(void) {
   char *cursor = lines, *line;
   while ((line = line_next(&cursor)) != NULL) {
     char *f[4];
-    tab_fields(line, f, 4);
+    cbc_read_tab_fields(line, f, 4);
     const char *action = f[0], *lid = f[1], *type = f[2], *repl = f[3];
     if (!*action) continue;
     if (strcmp(action, "Modify") != 0) {
@@ -761,7 +738,7 @@ static void stack_print_changes(void) {
     char *tc = text, *l2;
     while ((l2 = line_next(&tc)) != NULL) {
       char *g[3];
-      tab_fields(l2, g, 3);
+      cbc_read_tab_fields(l2, g, 3);
       if (!*g[0]) continue;
       char *w = stack_where(g[0]);
       if (!*g[1] && !*g[2]) printf("      %s changes\n", w);
@@ -773,7 +750,7 @@ static void stack_print_changes(void) {
     char *t2 = text2;
     while ((l2 = line_next(&t2)) != NULL) {
       char *g[2];
-      tab_fields(l2, g, 2);
+      cbc_read_tab_fields(l2, g, 2);
       if (!*g[0]) continue;
       char *w = stack_where(g[0]);
       if (strcmp(g[1], "None") != 0 && *g[1] && !strstr(g[0], "OriginCustomHeaders") && !strstr(g[0], "HeaderValue"))
@@ -887,7 +864,7 @@ static void stack_downtime_guard(void) {
   char *cursor = refused, *line;
   while ((line = line_next(&cursor)) != NULL) {
     char *f[4];
-    tab_fields(line, f, 4);
+    cbc_read_tab_fields(line, f, 4);
     if (!*f[0]) continue;
     char buf[512];
     if (!strcmp(f[2], "Remove")) snprintf(buf, sizeof buf, "the distribution %s is removed", f[0]);
@@ -938,7 +915,7 @@ static void stack_keep_guard(void) {
   char *cursor = refused, *line;
   while ((line = line_next(&cursor)) != NULL) {
     char *f[4];
-    tab_fields(line, f, 4);
+    cbc_read_tab_fields(line, f, 4);
     if (!*f[0]) continue;
     const char *what = !strcmp(f[1], "AWS::S3::Bucket") ? "bucket" : "instance";
     if (!strcmp(f[2], "Remove")) fprintf(stderr, "refused: the %s %s would be removed\n", what, f[0]);

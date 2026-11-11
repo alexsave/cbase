@@ -204,11 +204,6 @@ char *cbc_vm_sha256(const char *path) {
   return cbc_dupn(out.data, n);
 }
 
-static bool is_regular(const char *path) {
-  struct stat st;
-  return stat(path, &st) == 0 && S_ISREG(st.st_mode);
-}
-
 void cbc_vm_check_elf(const char *path) {
   /* The ELF header: \177ELF, class 2 (64-bit), data 1 (little-endian), e_machine 0xb7 (aarch64). */
   unsigned char head[20];
@@ -233,12 +228,12 @@ void cbc_vm_build(cbc_vm_artifact *out) {
   const char *env = getenv("CBASE_SERVE_BIN");
   if (env && *env) {
     out->bin = cbc_dup(env);
-    if (!is_regular(out->bin)) cbc_fail(CBC_EXIT_FAIL, "CBASE_SERVE_BIN names %s, which is not a file", out->bin);
+    if (!cbc_is_file(out->bin)) cbc_fail(CBC_EXIT_FAIL, "CBASE_SERVE_BIN names %s, which is not a file", out->bin);
     printf("server: %s (CBASE_SERVE_BIN)\n", out->bin);
   } else {
     const char *dir = NULL;
-    if (is_regular("./Makefile")) dir = ".";
-    else if (is_regular("server/Makefile")) dir = "server";
+    if (cbc_is_file("./Makefile")) dir = ".";
+    else if (cbc_is_file("server/Makefile")) dir = "server";
     if (!dir)
       cbc_fail(CBC_EXIT_FAIL, "no Makefile at . or server/, so there is no server to build: the server's Makefile includes cbase.mk, whose make serve-binary builds it (or set CBASE_SERVE_BIN to a linux-arm64 binary). Nothing was changed.");
     printf("server: make -C %s serve-binary (linux arm64, static, in cbase's Alpine container)\n", dir);
@@ -247,7 +242,7 @@ void cbc_vm_build(cbc_vm_artifact *out) {
     if (cbc_run_err(argv, NULL, NULL) != 0)
       cbc_fail(CBC_EXIT_FAIL, "make -C %s serve-binary failed, so there is no linux-arm64 server to ship. It is cbase.mk's target for this build (ops/build_static.sh serve), and it needs Docker; run it until it passes, or set CBASE_SERVE_BIN to a linux-arm64 serve binary, then deploy again. Nothing was changed.", dir);
     cbc_asprintf(&out->bin, "%s/dist/%s", dir, CBC_VM_ARTIFACT_NAME);
-    if (!is_regular(out->bin))
+    if (!cbc_is_file(out->bin))
       cbc_fail(CBC_EXIT_FAIL, "make -C %s serve-binary made no %s (cbase.mk's serve-binary writes dist/%s)", dir, out->bin, CBC_VM_ARTIFACT_NAME);
   }
   cbc_vm_check_elf(out->bin);
@@ -261,31 +256,10 @@ void cbc_vm_build(cbc_vm_artifact *out) {
 
 cbc_vm_t cbc_vm = { .id = "", .dns = "", .type = "", .bin = "", .sha = "", .key = "", .port = "",
                     .origin_secret = "", .ssm_status = "", .ssm_code = "" };
-/* Splits TEXT at its first tab; the rest is what follows it ("" when there is no tab). */
-static char *tab_split(char *text, char **rest) {
-  char *tab = strchr(text, '\t');
-  if (!tab) {
-    *rest = "";
-    return text;
-  }
-  *tab = '\0';
-  *rest = tab + 1;
-  return text;
-}
-
 /* The whitespace-separated words of TEXT (read -r -a). */
 static cbc_strs words_of(cbc_buf *out) {
   cbc_strs w = { 0 };
-  cbc_strip_newlines(out);
-  char *p = out->data ? out->data : "";
-  while (*p) {
-    while (*p == ' ' || *p == '\t' || *p == '\n') p++;
-    if (!*p) break;
-    char *e = p;
-    while (*e && *e != ' ' && *e != '\t' && *e != '\n') e++;
-    cbc_strs_push(&w, cbc_dupn(p, (size_t)(e - p)));
-    p = e;
-  }
+  cbc_split_on(out->data ? out->data : "", " \t\n", &w);
   return w;
 }
 
@@ -299,7 +273,7 @@ static char *vm_stack_instance(const char *stack) {
     aws_fail(cbc_fmt("reading the stack %s (CBASE_VM_STACK)", stack));
   char *rest = NULL;
   char *first = cbc_buf_first_line(&out);
-  char *type = tab_split(first, &rest);
+  char *type = cbc_split_tab(first, &rest);
   /* read -r type id: the first line's two words; a tab or a space between them. */
   while (*rest == ' ') rest++;
   char *id = cbc_dup(rest);
@@ -345,9 +319,9 @@ void cbc_vm_find(const char *group) {
     aws_fail(cbc_fmt("reading instance %s", cbc_vm.id));
   char *text = cbc_buf_first_line(&out);
   /* IFS=$'\t' read -r state VM_DNS VM_TYPE arch */
-  char *state = tab_split(text, &text);
-  char *dns = tab_split(text, &text);
-  char *type = tab_split(text, &text);
+  char *state = cbc_split_tab(text, &text);
+  char *dns = cbc_split_tab(text, &text);
+  char *type = cbc_split_tab(text, &text);
   char *arch = text;
   cbc_vm.dns = strcmp(dns, "None") == 0 ? "" : dns;
   cbc_vm.type = type;
@@ -427,12 +401,6 @@ char *cbc_vm_b64(const char *text) {
   return o;
 }
 
-/* Writes TEXT to PATH (the run's temporary files). */
-static void write_text(const char *path, const char *text) {
-  FILE *f = fopen(path, "wb");
-  if (!f || fputs(text, f) == EOF || fclose(f) != 0) cbc_fail(CBC_EXIT_FAIL, "cannot write %s", path);
-}
-
 static long vm_polls(void) {
   const char *env = getenv("CBASE_VM_POLLS");
   return env && *env ? atol(env) : 180;   /* get-command-invocation reads before the wait gives up */
@@ -448,7 +416,7 @@ static bool ssm_read(void) {
   if (aws_call(&out, "ssm", "get-command-invocation", "--command-id", ssm_command_id, "--instance-id", cbc_vm.id,
                "--query", "[Status,ResponseCode]", "--output", "text", NULL) == 0) {
     char *rest = "";
-    cbc_vm.ssm_status = tab_split(cbc_buf_first_line(&out), &rest);
+    cbc_vm.ssm_status = cbc_split_tab(cbc_buf_first_line(&out), &rest);
     cbc_vm.ssm_code = rest;
     if (strcmp(cbc_vm.ssm_status, "Pending") != 0 && strcmp(cbc_vm.ssm_status, "InProgress") != 0 &&
         strcmp(cbc_vm.ssm_status, "Delayed") != 0)
@@ -500,7 +468,7 @@ static void ssm_run(const char *script, const char *what) {
     p = nl ? nl + 1 : p + len;
   }
   if (!lines.data) cbc_buf_str(&lines, "");
-  write_text(cbc_tmp_path("ssm-lines"), lines.data);
+  cbc_write_file(cbc_tmp_path("ssm-lines"), lines.data);
   last_lines = lines;
   p = lines.data;
   while (*p) {
@@ -535,7 +503,7 @@ bool cbc_vm_ship(const char *group) {
     printf("artifact: s3://%s/%s\n", bucket, cbc_vm.key);
   }
   char *script = cbc_vm_remote_deploy(cbc_vm.port, bucket, cbc_vm.key, cbc_vm.sha, region, state_bucket());
-  write_text(cbc_tmp_path("vm-deploy.sh"), script);
+  cbc_write_file(cbc_tmp_path("vm-deploy.sh"), script);
   ssm_run(script, cbc_fmt("deploy of %s", cbc_conf.app));
   if (strcmp(cbc_vm.ssm_status, "Success") == 0) return true;
   if (strcmp(cbc_vm.ssm_code, "3") == 0) {
@@ -558,7 +526,7 @@ bool cbc_vm_ship(const char *group) {
 void cbc_vm_undeploy(const char *group, bool delete_data) {
   cbc_vm_find(group);
   char *script = cbc_vm_remote_undeploy(delete_data);
-  write_text(cbc_tmp_path("vm-undeploy.sh"), script);
+  cbc_write_file(cbc_tmp_path("vm-undeploy.sh"), script);
   ssm_run(script, cbc_fmt("undeploy of %s", cbc_conf.app));
   if (strcmp(cbc_vm.ssm_status, "Success") != 0)
     cbc_fail(CBC_EXIT_FAIL, "the undeploy of %s on %s ended %s (exit %s); it still holds its port, and nothing else was changed",
@@ -652,7 +620,7 @@ void cbc_vm_deploy_join(const char *group, bool dry) {
 bool cbc_vm_data_check(const char *instance, const char *group, cbc_strs *apps) {
   cbc_vm.id = cbc_dup(instance);
   char *script = cbc_vm_remote_data();
-  write_text(cbc_tmp_path("vm-data.sh"), script);
+  cbc_write_file(cbc_tmp_path("vm-data.sh"), script);
   ssm_run(script, cbc_fmt("data check of vm group %s", group));
   char *p = last_lines.data ? last_lines.data : "";
   while (*p) {

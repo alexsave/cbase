@@ -17,18 +17,6 @@
 
 /* ---- small helpers ---------------------------------------------------------------------------- */
 
-/* words: the blank-separated words of TEXT (read -a splits them so). */
-static void words(const char *text, cbc_strs *out) {
-  const char *p = text;
-  for (;;) {
-    while (*p == ' ' || *p == '\t' || *p == '\n') p++;
-    if (!*p) break;
-    const char *b = p;
-    while (*p && *p != ' ' && *p != '\t' && *p != '\n') p++;
-    cbc_strs_push(out, cbc_dupn(b, (size_t)(p - b)));
-  }
-}
-
 /* ---- the certificate -------------------------------------------------------------------------- */
 
 /* cert_names: the certificate's names (its domain among them), in NAMES. */
@@ -38,7 +26,7 @@ static void cert_names(const char *arn, cbc_strs *names) {
                "--query", "Certificate.SubjectAlternativeNames", "--output", "text", NULL) != 0)
     aws_fail(cbc_fmt("reading certificate %s", arn));
   char *t = cbc_buf_text(&out);
-  words(t, names);
+  cbc_split_on(t, " \t\n", names);
   free(t);
   free(out.data);
 }
@@ -75,7 +63,7 @@ static char *cert_find(const char *status, const cbc_strs *need) {
   char *t = cbc_buf_text(&out);
   free(out.data);
   cbc_strs arns = { 0, 0, 0 };
-  words(t, &arns);
+  cbc_split_on(t, " \t\n", &arns);
   free(t);
   size_t kept = 0;
   for (size_t i = 0; i < arns.n; i++) {
@@ -122,7 +110,7 @@ static char *zone_for_host(const char *host) {
     free(out.data);
     free(query);
     cbc_strs ids = { 0, 0, 0 };
-    words(t, &ids);
+    cbc_split_on(t, " \t\n", &ids);
     free(t);
     if (ids.n > 0 && strcmp(ids.v[0], "None") != 0) {
       if (ids.n > 1) {
@@ -152,20 +140,6 @@ typedef struct {
 static char *poll_arn;   /* the certificate the poll reads */
 static char *poll_text;  /* its last read */
 
-/* split_tabs: LINE's tab-separated fields in F (up to N); a missing one is NULL. Edits LINE in place. */
-static void split_tabs(char *line, char **f, int n) {
-  for (int k = 0; k < n; k++) {
-    f[k] = line;
-    char *tab = strchr(line, '\t');
-    if (!tab) {
-      for (int j = k + 1; j < n; j++) f[j] = NULL;
-      return;
-    }
-    *tab = '\0';
-    line = tab + 1;
-  }
-}
-
 /* records_read: one read of the validation records; true once every record is there. */
 static bool records_read(void) {
   cbc_buf out = { 0, 0, 0 };
@@ -182,7 +156,7 @@ static bool records_read(void) {
     char *eol = strchr(line, '\n');
     if (eol) *eol = '\0';
     char *f[4];
-    split_tabs(line, f, 4);
+    cbc_split_tabs(line, f, 4);
     /* read -r _ name _ value: a line with no name is skipped; a None name or value is not there yet */
     if (f[1] && *f[1] && (strcmp(f[1], "None") == 0 || (f[3] && strcmp(f[3], "None") == 0))) missing = true;
     if (!eol) break;
@@ -204,7 +178,7 @@ static void records(const char *arn, vrecord **out_v, size_t *out_n) {
     char *eol = strchr(line, '\n');
     if (eol) *eol = '\0';
     char *f[4];
-    split_tabs(line, f, 4);
+    cbc_split_tabs(line, f, 4);
     if (f[1] && *f[1]) {
       bool seen = false;
       for (size_t i = 0; i < n; i++)
@@ -469,7 +443,7 @@ bool cbc_cert_alias_check(cbc_cert_t *c, const char *to_main, const char *to_api
     char *eol = strchr(line, '\n');
     if (eol) *eol = '\0';
     char *f[3];
-    split_tabs(line, f, 3);
+    cbc_split_tabs(line, f, 3);
     const char *id = f[0] ? f[0] : "", *dom = f[1] ? f[1] : "", *aliases = f[2] ? f[2] : "";
     if (*id && strcmp(id, "None") != 0 && !cbc_strs_contains(own, id)) {
       char *names = cbc_dup(aliases);

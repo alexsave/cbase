@@ -40,10 +40,10 @@ static const char *conf_file = "cbase.conf";
 
 /* file_exists_in: whether DIR/NAME is a regular file (the shell's [ -f ]). */
 static bool file_exists_in(const char *dir, const char *name) {
-  char path[4096];
-  snprintf(path, sizeof path, "%s/%s", dir, name);
-  struct stat st;
-  return stat(path, &st) == 0 && S_ISREG(st.st_mode);
+  char *path = cbc_fmt("%s/%s", dir, name);
+  bool file = cbc_is_file(path);
+  free(path);
+  return file;
 }
 
 /* arg_error: an argument the shell refuses (its "echo ... >&2; exit 2"): the message, no usage. */

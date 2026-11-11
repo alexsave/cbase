@@ -196,16 +196,7 @@ int aws_group_find(const char *kind, const char *name, char **id) {
     return 1;
   }
   cbc_strs arns = { 0 };
-  if (out.data) {
-    char *p = out.data;
-    while (*p) {
-      while (*p == ' ' || *p == '\t' || *p == '\n') p++;
-      if (!*p) break;
-      char *b = p;
-      while (*p && *p != ' ' && *p != '\t' && *p != '\n') p++;
-      cbc_strs_push(&arns, cbc_dupn(b, (size_t)(p - b)));
-    }
-  }
+  cbc_split_on(out.data ? out.data : "", " \t\n", &arns);
   if (arns.n == 0) {
     fprintf(stderr, "cbase: there is no %s group named %s (nothing tagged %s=%s in %s). Create it with: ./cbase group-init %s %s\n",
             kind, name, tag, name, aws_region(), kind, name);
