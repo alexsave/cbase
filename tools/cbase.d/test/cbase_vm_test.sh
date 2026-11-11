@@ -26,6 +26,15 @@
 set -euo pipefail
 # shellcheck source=tools/cbase.d/test/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# wanted SECTION, for this file: CBASE_VM_TEST_ONLY (names separated by spaces or commas) picks the
+# sections a run covers, unset runs them all. lib.sh's wanted reads cbase_test.sh's CBASE_TEST_ONLY,
+# which cbase-cli-test sets for that file alone. The names are the `if wanted` blocks below, and a
+# section that uses state an earlier one made needs that section in the subset too.
+wanted() {
+  [ -z "${CBASE_VM_TEST_ONLY:-}" ] && return 0
+  case " ${CBASE_VM_TEST_ONLY//,/ } " in *" $1 "*) return 0 ;; esac
+  return 1
+}
 export CBASE_POLL_SECONDS=0
 SECRET=hunter2-db-value
 SECRET2=hunter3-origin-value
@@ -55,6 +64,7 @@ vm_app() {
   printf '%s' "$d"
 }
 
+if wanted group-init; then
 # ================================================================================================
 # group-init
 # ================================================================================================
@@ -182,6 +192,8 @@ for how in replace-bucket remove-bucket replace-instance; do
 done
 fake_set changes=auto
 
+fi
+if wanted deploy; then
 # ================================================================================================
 # deploy: a full app's VM side
 # ================================================================================================
@@ -281,6 +293,8 @@ out_has "artifact: s3://$BUCKET/artifacts/blog/$sha is already this server" "an 
 [ "$(puts_to "$m" "$BUCKET/artifacts/")" = 0 ] || fail "a redeploy uploaded the same artifact again"
 ok
 
+fi
+if wanted apps; then
 # ---- apps: the port, the service and the memory ------------------------------------------------
 run "$t" apps g9
 expect_rc 0 "apps g9"
@@ -293,6 +307,8 @@ expect_rc 0 "apps g9"
 diff -u "$t/want" "$t/out" || fail "apps g9 printed another table"
 ok
 
+fi
+if wanted memory; then
 # ---- the memory fit, refused -----------------------------------------------------------------
 # t4g.nano leaves 320 MiB for apps; shop (~128) and blog (64) hold 192, so 256 more does not fit.
 big="$(vm_app big "CBASE_APP = big" "CBASE_VM = g9" "CBASE_STATIC = none" "CBASE_MEMORY = 256M")"
@@ -322,6 +338,8 @@ since "$m" | grep -q "^CFN DeleteChangeSet cbase-app-big ok" || fail "a VM dry r
 fake_set instance-type=t4g.nano
 ok
 
+fi
+if wanted taken; then
 # ---- the port taken on the VM: refused, the claim released ------------------------------------
 taken="$(vm_app taken "CBASE_APP = taken" "CBASE_VM = g9" "CBASE_STATIC = none" "CBASE_MEMORY = 16M")"
 fake_set "ssm-status=Failed&ssm-code=3&ssm-out=CBASE: port 8702 is in use on the VM%2C and not by cbase-taken.service: refused%2C nothing was started%0A"
@@ -337,6 +355,8 @@ since "$m" | grep -q "CFN ExecuteChangeSet" && fail "a refused deploy executed i
 fake_set "ssm-status=Success&ssm-code=0&ssm-out=CBASE: done (the fake's answer)%0A"
 ok
 
+fi
+if wanted refused; then
 # ---- refused before anything changes: no group, a failed build, a binary for another machine ---
 ghost="$(vm_app ghost "CBASE_APP = ghost" "CBASE_VM = nosuch" "CBASE_STATIC = none")"
 run "$ghost" deploy
@@ -365,6 +385,8 @@ rc=0
 expect_rc 0 "CBASE_SERVE_BIN names the server"
 ok
 
+fi
+if wanted race; then
 # ---- two racing VM deploys: distinct ports -----------------------------------------------------
 r1="$(vm_app r1 "CBASE_APP = r1" "CBASE_VM = g9" "CBASE_STATIC = none" "CBASE_MEMORY = 16M")"
 r2="$(vm_app r2 "CBASE_APP = r2" "CBASE_VM = g9" "CBASE_STATIC = none" "CBASE_MEMORY = 16M")"
@@ -385,6 +407,8 @@ p_2="$(sed -n 's/^r2 joined vm group g9: app=r2 port=\([0-9]*\) .*/\1/p' "$t/out
 { grep -q "VmPort=$p_1" "$t/log" && grep -q "VmPort=$p_2" "$t/log"; } || fail "the racing deploys' stacks lack their ports"
 ok
 
+fi
+if wanted secrets; then
 # ---- no secret in any output -------------------------------------------------------------------
 # The command's output and its stderr carry a setting's value (as an app's own output could): only
 # the script's CBASE lines are printed.
@@ -400,6 +424,8 @@ no_secret "a failed deploy's command output"
 fake_set "ssm-status=Success&ssm-code=0&secret=&secret2="
 ok
 
+fi
+if wanted scripts; then
 # ================================================================================================
 # the scripts SSM runs, run here under a scratch root
 # ================================================================================================
@@ -507,6 +533,8 @@ STUB_ACTIVE=1 STUB_TAKEN=1 on_vm "$t/vm1" "$t/shop-deploy.sh"
 grep -E '^systemctl (start|stop|restart)' "$t/vm1/calls" | diff -u <(echo "systemctl restart cbase-shop.service") - \
   || fail "a redeploy did other than restart the service alone (the socket holds the port)"
 ok
+fi
+if wanted undeploy; then
 # Undeploy, by default: the unit gone, the data kept. With --delete-data: the app's folder gone.
 printf 'precious\n' > "$t/vm1/srv/cbase/shop/data/cbase.sqlite"
 m="$(mark)"
@@ -550,6 +578,8 @@ on_vm "$t/vm3" "$t/gone-undeploy.sh"
 { [ "$rc" = 0 ] && [ ! -e "$t/vm3/srv/cbase/gone" ]; } || fail "the --delete-data script left /srv/cbase/gone"
 ok
 
+fi
+if wanted apih; then
 # ---- CBASE_API_HOST: its own distribution, and its own alias -----------------------------------
 apih="$(vm_app apih "CBASE_APP = apih" "CBASE_VM = g9" "CBASE_STATIC = none" "CBASE_MEMORY = 16M" \
           "CBASE_DOMAIN = apih.example.com" "CBASE_API_HOST = api.example.com")"
@@ -575,6 +605,8 @@ expect_rc 0 "the API host app's undeploy"
 out_has "undeploy: the DNS records of apih.example.com api.example.com still point at the deleted distribution" "undeploy names every hostname"
 ok
 
+fi
+if wanted game; then
 # ---- a grandfathered member: its backup key, and the unit it replaces --------------------------
 game="$(vm_app game "CBASE_APP = game" "CBASE_VM = g9" "CBASE_STATIC = none" "CBASE_MEMORY = 16M" \
           "CBASE_VM_PORT = 8080" "CBASE_VM_DATA = /var/lib/game" "CBASE_VM_REPLACES = old.service" \
@@ -603,6 +635,8 @@ run "$game" undeploy
 expect_rc 0 "the grandfathered member's undeploy"
 ok
 
+fi
+if wanted group-destroy; then
 # ================================================================================================
 # group-destroy
 # ================================================================================================
@@ -643,6 +677,8 @@ aws s3api head-object --bucket g9-group-bucket --key shop/index.html > /dev/null
 out_has "bucket: s3://g9-group-bucket is kept with its files" "group-destroy static says the bucket is kept"
 ok
 
+fi
+if wanted adopted; then
 # ================================================================================================
 # an adopted group (CBASE_VM_STACK): its derived paths; a dry run with no state bucket yet and no
 # origin secret still reaches the memory fit, the port and the change set, then lists the problem
@@ -698,5 +734,6 @@ err_has "one VM can't have two origins" "an app naming another origin"
 since "$m" | grep -qE "^PUT /|^SSM SendCommand|^CFN CreateChangeSet" && fail "an app naming another origin changed something"
 ok
 
+fi
 [ "$(log_count unsigned)" = 0 ] || fail "a call reached the fake without the test's credentials"
 echo "cbase_vm_test: ok ($pass checks)"

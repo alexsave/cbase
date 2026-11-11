@@ -7,10 +7,10 @@
 C_ROOT := ../..
 include $(C_ROOT)/tools/c_rules.mk
 
-CLI_CFLAGS = -std=gnu11 -D_GNU_SOURCE -O2 -g -Wall -Wextra -Werror -Wshadow -Wvla -Wformat=2
+CLI_CFLAGS = -std=gnu11 -D_GNU_SOURCE -DCBC_TOOLS_DIR=\"$(CURDIR)/$(C_ROOT)/tools\" -O2 -g -Wall -Wextra -Werror -Wshadow -Wvla -Wformat=2
 $(eval $(call C_VARIANT,build/obj,CC,CLI_CFLAGS))
 
-CLI_SRC := cli.c conf.c main.c aws.c state.c stack.c
+CLI_SRC := cli.c conf.c main.c aws.c state.c stack.c vm.c vm_remote.c vm_boot.c
 
 # THE TEMPLATES, embedded (tools/embed.c, as cbase.mk embeds its own): the CloudFormation templates the
 # stacks are rendered from are read from tools/cbase.d/templates at build time, so the binary needs no
