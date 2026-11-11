@@ -133,11 +133,15 @@ typedef struct {
   size_t len;
 } memfile_t;
 
-static memfile_t memfile_open(void) {
-  memfile_t m = { 0 };
-  m.f = open_memstream(&m.data, &m.len);
-  if (!m.f) cbc_fail(CBC_EXIT_FAIL, "out of memory");
-  return m;
+/* memfile_open: M is set up IN PLACE. open_memstream keeps the addresses of m->data and m->len and
+ * writes the buffer through them when the stream is flushed or closed, so M must be the caller's own
+ * variable, never a local that is copied out: returned by value, the stream wrote into a dead stack
+ * slot, the caller's copy kept a NULL buffer, and a GCC build (no named return value optimisation in
+ * C, unlike clang) rendered every memfile as empty text (the app template lost its routes). */
+static void memfile_open(memfile_t *m) {
+  *m = (memfile_t){ 0 };
+  m->f = open_memstream(&m->data, &m->len);
+  if (!m->f) cbc_fail(CBC_EXIT_FAIL, "out of memory");
 }
 
 /* memfile_close: the text written, with its trailing newlines removed (as $(...) removes them). */
@@ -304,7 +308,8 @@ static void stack_routes(FILE *f, const cbc_route *def, const cbc_routes *routes
 }
 
 static char *routes_text(const cbc_route *def, const cbc_routes *routes, const char *rhp) {
-  memfile_t m = memfile_open();
+  memfile_t m;
+  memfile_open(&m);
   stack_routes(m.f, def, routes, rhp);
   return memfile_close(&m);
 }
@@ -316,7 +321,8 @@ static char *stack_pages(void) {
   char *data;
   size_t len;
   if (!cbc_read_file(stk_files, &data, &len)) return cbc_dup("");
-  memfile_t m = memfile_open();
+  memfile_t m;
+  memfile_open(&m);
   bool first = true;
   char *p = data;
   for (;;) {
@@ -365,7 +371,8 @@ void stack_render(const char *file) {
   for (size_t i = 0; i < cbc_conf.api_routes.n; i++) {
     if (!strcmp(cbc_conf.api_routes.v[i].origin, "ws")) apiws = true;
   }
-  memfile_t fm = memfile_open();
+  memfile_t fm;
+  memfile_open(&fm);
   if (has_static) fprintf(fm.f, " static");
   if (has_vm || has_ws) fprintf(fm.f, " vm");
   if (has_vm) fprintf(fm.f, " vmroute");
@@ -401,7 +408,9 @@ void stack_render(const char *file) {
     pages = stack_pages();
   }
 
-  memfile_t am = memfile_open();
+  memfile_t am;
+
+  memfile_open(&am);
   for (size_t i = 0; i < cbc_conf.domains.n; i++) fprintf(am.f, "%s%s", i ? ", " : "", cbc_conf.domains.v[i]);
   char *aliases = memfile_close(&am);
 
@@ -770,7 +779,8 @@ static char *stack_refusals(const char *types) {
 
 /* stack_aliases: each distribution's hostnames in a template, "<logical id> <host>" a line (stack.sh's awk). */
 static char *stack_aliases(const char *text) {
-  memfile_t m = memfile_open();
+  memfile_t m;
+  memfile_open(&m);
   char *copy = cbc_dup(text);
   char *cursor = copy, *line;
   char lid[256] = "";
