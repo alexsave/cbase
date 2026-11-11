@@ -16,7 +16,7 @@ static bool dropped(const char *line) {
 }
 
 char *cbc_vm_boot_userdata(void) {
-  char *text = cbc_read_file(cbc_vm_file("vm_boot.sh"));
+  char *text = cbc_vm_read(cbc_vm_file("vm_boot.sh"));
   cbc_sbuf out = { 0 };
   const char *p = text;
   int nr = 0;

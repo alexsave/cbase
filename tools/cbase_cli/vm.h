@@ -23,8 +23,8 @@ typedef struct {
 void cbc_sb_add(cbc_sbuf *b, const char *p, size_t n);
 void cbc_sb_str(cbc_sbuf *b, const char *s);
 
-/* cbc_read_file: the whole of PATH, or the tool stops ("cbase: cannot read PATH"). */
-char *cbc_read_file(const char *path);
+/* cbc_vm_read: the whole of PATH (cli.h's cbc_read_file), or the tool stops ("cbase: cannot read PATH"). */
+char *cbc_vm_read(const char *path);
 
 /* cbc_tools_dir: the directory that holds cbase.d/ (tools/), fixed when the tool is built
  * (the Makefile's CBC_TOOLS_DIR). */

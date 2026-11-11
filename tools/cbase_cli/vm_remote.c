@@ -27,7 +27,7 @@ static void add_lines(cbc_sbuf *out, const char *text) {
 }
 
 static char *splice_units(const char *unit, const char *socket) {
-  char *text = cbc_read_file(cbc_vm_file("vm_remote.sh"));
+  char *text = cbc_vm_read(cbc_vm_file("vm_remote.sh"));
   cbc_sbuf out = { 0 };
   const char *p = strchr(text, '\n');   /* NR == 1 is the shebang, dropped */
   p = p ? p + 1 : text + strlen(text);

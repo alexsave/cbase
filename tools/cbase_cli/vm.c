@@ -35,25 +35,11 @@ char *cbc_vm_file(const char *name) {
   return p;
 }
 
-char *cbc_read_file(const char *path) {
-  FILE *f = fopen(path, "rb");
-  if (!f) cbc_fail(CBC_EXIT_FAIL, "cannot read %s: %s", path, strerror(errno));
-  size_t cap = 4096, len = 0;
-  char *buf = malloc(cap + 1);
-  if (!buf) cbc_fail(CBC_EXIT_FAIL, "out of memory");
-  size_t r;
-  while ((r = fread(buf + len, 1, cap - len, f)) > 0) {
-    len += r;
-    if (len == cap) {
-      cap *= 2;
-      char *nb = realloc(buf, cap + 1);
-      if (!nb) cbc_fail(CBC_EXIT_FAIL, "out of memory");
-      buf = nb;
-    }
-  }
-  fclose(f);
-  buf[len] = '\0';
-  return buf;
+char *cbc_vm_read(const char *path) {
+  char *data = NULL;
+  size_t len = 0;
+  if (!cbc_read_file(path, &data, &len)) cbc_fail(CBC_EXIT_FAIL, "cannot read %s", path);
+  return data;
 }
 
 /* A growing string: the shell's sed-style text transforms are built in one of these. */
@@ -177,7 +163,7 @@ char *cbc_vm_backup_bucket(const char *state_bucket) {
 }
 
 char *cbc_vm_unit(const char *port, const char *region, const char *backup_bucket) {
-  char *text = cbc_read_file(cbc_vm_file("vm_unit.service"));
+  char *text = cbc_vm_read(cbc_vm_file("vm_unit.service"));
   unit_ctx c = { 0 };
   c.port = port;
   c.region = region;
@@ -200,7 +186,7 @@ static char *socket_line(char *line, void *vctx) {
 }
 
 char *cbc_vm_socket(const char *port) {
-  char *text = cbc_read_file(cbc_vm_file("vm_unit.socket"));
+  char *text = cbc_vm_read(cbc_vm_file("vm_unit.socket"));
   const char *v[2] = { cbc_conf.app, port };
   return transform_lines(text, socket_line, v);
 }
@@ -225,12 +211,12 @@ long long cbc_vm_mib_text(const char *type, const char *text) {
 char *cbc_vm_sha256(const char *path) {
   char *argv1[] = { "sha256sum", (char *)path, NULL };
   cbc_buf out = { 0 };
-  int rc = cbc_run(argv1, &out);
+  int rc = cbc_run_err(argv1, &out, NULL);
   if (rc == 127 || rc == -1) {
     free(out.data);
     out = (cbc_buf){ 0 };
     char *argv2[] = { "shasum", "-a", "256", (char *)path, NULL };
-    rc = cbc_run(argv2, &out);
+    rc = cbc_run_err(argv2, &out, NULL);
   }
   if (rc != 0 || !out.data) {
     free(out.data);
@@ -281,7 +267,7 @@ void cbc_vm_build(cbc_vm_artifact *out) {
     printf("server: make -C %s serve-binary (linux arm64, static, in cbase's Alpine container)\n", dir);
     fflush(stdout);
     char *argv[] = { "make", "-C", (char *)dir, "serve-binary", NULL };
-    if (cbc_run(argv, NULL) != 0)
+    if (cbc_run_err(argv, NULL, NULL) != 0)
       cbc_fail(CBC_EXIT_FAIL, "make -C %s serve-binary failed, so there is no linux-arm64 server to ship. It is cbase.mk's target for this build (ops/build_static.sh serve), and it needs Docker; run it until it passes, or set CBASE_SERVE_BIN to a linux-arm64 serve binary, then deploy again. Nothing was changed.", dir);
     if (asprintf(&out->bin, "%s/dist/%s", dir, CBC_VM_ARTIFACT_NAME) < 0) cbc_fail(CBC_EXIT_FAIL, "out of memory");
     if (!is_regular(out->bin))
