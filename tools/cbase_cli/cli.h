@@ -20,12 +20,23 @@ void cbc_fail(int status, const char *fmt, ...) __attribute__((noreturn, format(
 /* cbc_usage: the usage block, the shell's --help text, to FILE. */
 void cbc_usage(FILE *to);
 
+/* Memory: every allocation the tool makes goes through these, so "out of memory" stops it in one place.
+ * cbc_xmalloc and cbc_xrealloc are malloc and realloc that never return NULL. */
+void *cbc_xmalloc(size_t n);
+void *cbc_xrealloc(void *p, size_t n);
+
+/* cbc_fmt: printf into a new string (the caller may free it). cbc_asprintf: the same, into *OUT. Both
+ * stop the tool when out of memory. */
+char *cbc_fmt(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+void cbc_asprintf(char **out, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+
 /* A list of strings, grown as it is filled. */
 typedef struct {
   char **v;
   size_t n;
   size_t cap;
 } cbc_strs;
+/* cbc_strs_push: appends V (the string itself, not a copy). */
 void cbc_strs_push(cbc_strs *s, char *v);
 
 /* A growing byte buffer for a captured command's output. */

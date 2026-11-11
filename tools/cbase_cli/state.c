@@ -57,8 +57,7 @@ static void members_clear(void) {
 static void member_push(const char *line, const char *app, long port) {
   if (st.n == st.cap) {
     size_t cap = st.cap ? st.cap * 2 : 8;
-    long *np = realloc(st.ports, cap * sizeof *np);
-    if (!np) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+    long *np = cbc_xrealloc(st.ports, cap * sizeof *np);
     st.ports = np;
     st.cap = cap;
   }
@@ -234,8 +233,7 @@ static int cmp_str(const void *a, const void *b) { return strcmp(*(char *const *
 
 /* sorted_copy: the lines (N of them) sorted in byte order, as LC_ALL=C sort does. */
 static char **sorted_copy(char **lines, size_t n) {
-  char **c = malloc((n ? n : 1) * sizeof *c);
-  if (!c) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+  char **c = cbc_xmalloc((n ? n : 1) * sizeof *c);
   for (size_t i = 0; i < n; i++) c[i] = lines[i];
   qsort(c, n, sizeof *c, cmp_str);
   return c;
@@ -245,8 +243,7 @@ static char **sorted_copy(char **lines, size_t n) {
  * report, the members by name; false when they do not fit. */
 bool state_fit(const char *app, const char *new_line) {
   size_t n = st.n;
-  char **lines = malloc((n + 1) * sizeof *lines);
-  if (!lines) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+  char **lines = cbc_xmalloc((n + 1) * sizeof *lines);
   for (size_t i = 0; i < n; i++) lines[i] = st.lines.v[i];
   long at = state_at(app);
   if (at >= 0) lines[at] = (char *)new_line;
@@ -409,8 +406,7 @@ void state_change(const char *kind, const char *group, const char *app, const ch
         char *vmline;
         {
           size_t need = strlen(app) + strlen(port) + strlen(mem) + strlen(state_legacy_data) + 96;
-          vmline = malloc(need);
-          if (!vmline) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+          vmline = cbc_xmalloc(need);
           snprintf(vmline, need, "app=%s port=%s service=cbase-%s.service mem=%s", app, port, app, mem);
           if (*state_legacy_data) {
             strncat(vmline, " data=", need - strlen(vmline) - 1);
@@ -426,8 +422,7 @@ void state_change(const char *kind, const char *group, const char *app, const ch
         }
       } else {
         size_t need = strlen(app) * 2 + 16;
-        line = malloc(need);
-        if (!line) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+        line = cbc_xmalloc(need);
         snprintf(line, need, "app=%s folder=%s/", app, app);
       }
       state_joined_new = at < 0;
@@ -499,24 +494,21 @@ int state_list(const char *kind, const char *group) {
 }
 
 char *state_bucket(void) {
-  char *b = malloc(64);
-  if (!b) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+  char *b = cbc_xmalloc(64);
   snprintf(b, 64, "cbase-state-%s", aws_account);
   return b;
 }
 
 char *state_key(const char *kind, const char *group) {
   size_t need = strlen(kind) + strlen(group) + 8;
-  char *k = malloc(need);
-  if (!k) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+  char *k = cbc_xmalloc(need);
   snprintf(k, need, "%s/%s.txt", kind, group);
   return k;
 }
 
 char *state_vm_line(const char *app, const char *port, const char *mem, const char *legacy_data) {
   size_t need = strlen(app) + strlen(port) + strlen(mem) + strlen(legacy_data) + 96;
-  char *line = malloc(need);
-  if (!line) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+  char *line = cbc_xmalloc(need);
   snprintf(line, need, "app=%s port=%s service=cbase-%s.service mem=%s", app, port, app, mem);
   if (*legacy_data) {
     strncat(line, " data=", need - strlen(line) - 1);

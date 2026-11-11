@@ -32,8 +32,7 @@ static size_t seen_n, seen_cap;
 static void strs_push(cbc_strs *s, char *v) {
   if (s->n == s->cap) {
     size_t cap = s->cap ? s->cap * 2 : 8;
-    char **nv = realloc(s->v, cap * sizeof *nv);
-    if (!nv) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+    char **nv = cbc_xrealloc(s->v, cap * sizeof *nv);
     s->v = nv;
     s->cap = cap;
   }
@@ -43,8 +42,7 @@ static void strs_push(cbc_strs *s, char *v) {
 static void routes_push(cbc_routes *r, cbc_route v) {
   if (r->n == r->cap) {
     size_t cap = r->cap ? r->cap * 2 : 8;
-    cbc_route *nv = realloc(r->v, cap * sizeof *nv);
-    if (!nv) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+    cbc_route *nv = cbc_xrealloc(r->v, cap * sizeof *nv);
     r->v = nv;
     r->cap = cap;
   }
@@ -85,8 +83,7 @@ static void die_file(const char *what) { cbc_fail(CBC_EXIT_FAIL, "%s %s", cbc_co
 static void seen_add(const char *key, int line) {
   if (seen_n == seen_cap) {
     size_t cap = seen_cap ? seen_cap * 2 : 32;
-    seen_t *nv = realloc(seen, cap * sizeof *nv);
-    if (!nv) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+    seen_t *nv = cbc_xrealloc(seen, cap * sizeof *nv);
     seen = nv;
     seen_cap = cap;
   }
@@ -315,15 +312,13 @@ static bool read_file(const char *file, char **data, size_t *len) {
   FILE *f = fopen(file, "rb");
   if (!f) return false;
   size_t cap = 65536, n = 0;
-  char *buf = malloc(cap);
-  if (!buf) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+  char *buf = cbc_xmalloc(cap);
   size_t r;
   while ((r = fread(buf + n, 1, cap - n, f)) > 0) {
     n += r;
     if (n == cap) {
       cap *= 2;
-      char *nb = realloc(buf, cap);
-      if (!nb) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+      char *nb = cbc_xrealloc(buf, cap);
       buf = nb;
     }
   }

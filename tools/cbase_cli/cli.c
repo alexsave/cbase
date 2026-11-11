@@ -54,13 +54,40 @@ void cbc_usage(FILE *to) {
         to);
 }
 
+void *cbc_xmalloc(size_t n) {
+  void *p = malloc(n ? n : 1);
+  if (!p) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+  return p;
+}
+
+void *cbc_xrealloc(void *p, size_t n) {
+  void *q = realloc(p, n ? n : 1);
+  if (!q) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+  return q;
+}
+
+char *cbc_fmt(const char *fmt, ...) {
+  char *s = NULL;
+  va_list ap;
+  va_start(ap, fmt);
+  int n = vasprintf(&s, fmt, ap);
+  va_end(ap);
+  if (n < 0) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+  return s;
+}
+
+void cbc_asprintf(char **out, const char *fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  int n = vasprintf(out, fmt, ap);
+  va_end(ap);
+  if (n < 0) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+}
+
 void cbc_strs_push(cbc_strs *s, char *v) {
   if (s->n == s->cap) {
-    size_t cap = s->cap ? s->cap * 2 : 8;
-    char **nv = realloc(s->v, cap * sizeof *nv);
-    if (!nv) cbc_fail(CBC_EXIT_FAIL, "out of memory");
-    s->v = nv;
-    s->cap = cap;
+    s->cap = s->cap ? s->cap * 2 : 8;
+    s->v = cbc_xrealloc(s->v, s->cap * sizeof *s->v);
   }
   s->v[s->n++] = v;
 }
@@ -146,8 +173,7 @@ bool cbc_on_path(const char *name) {
   char *copy = cbc_dup(path);
   for (char *dir = strtok(copy, ":"); dir; dir = strtok(NULL, ":")) {
     size_t need = strlen(dir) + strlen(name) + 2;
-    char *full = malloc(need);
-    if (!full) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+    char *full = cbc_xmalloc(need);
     snprintf(full, need, "%s/%s", dir, name);
     bool ok = access(full, X_OK) == 0;
     free(full);
@@ -160,16 +186,13 @@ bool cbc_read_file(const char *file, char **data, size_t *len) {
   FILE *f = fopen(file, "rb");
   if (!f) return false;
   size_t cap = 65536, n = 0;
-  char *buf = malloc(cap + 1);
-  if (!buf) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+  char *buf = cbc_xmalloc(cap + 1);
   size_t r;
   while ((r = fread(buf + n, 1, cap - n, f)) > 0) {
     n += r;
     if (n == cap) {
       cap *= 2;
-      char *nb = realloc(buf, cap + 1);
-      if (!nb) cbc_fail(CBC_EXIT_FAIL, "out of memory");
-      buf = nb;
+      buf = cbc_xrealloc(buf, cap + 1);
     }
   }
   bool ok = !ferror(f);
@@ -193,16 +216,14 @@ char *cbc_tmp_path(const char *name) {
     const char *base = getenv("TMPDIR");
     if (!base || !*base) base = "/tmp";
     size_t need = strlen(base) + 32;
-    char *tmpl = malloc(need);
-    if (!tmpl) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+    char *tmpl = cbc_xmalloc(need);
     snprintf(tmpl, need, "%s/cbase.XXXXXX", base);
     tmp_dir = mkdtemp(tmpl);
     if (!tmp_dir) cbc_fail(CBC_EXIT_FAIL, "cannot make a temporary directory in %s", base);
     atexit(tmp_cleanup);
   }
   size_t need = strlen(tmp_dir) + strlen(name) + 2;
-  char *p = malloc(need);
-  if (!p) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+  char *p = cbc_xmalloc(need);
   snprintf(p, need, "%s/%s", tmp_dir, name);
   cbc_strs_push(&tmp_files, p);
   return p;
@@ -235,8 +256,7 @@ unsigned long cbc_cksum(const char *s) {
 }
 
 char *cbc_dupn(const char *s, size_t n) {
-  char *d = malloc(n + 1);
-  if (!d) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+  char *d = cbc_xmalloc(n + 1);
   memcpy(d, s, n);
   d[n] = '\0';
   return d;

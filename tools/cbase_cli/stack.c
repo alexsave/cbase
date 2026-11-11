@@ -73,8 +73,7 @@ void stack_params_clear(void) { stack_params.n = 0; }
 
 void stack_param_add(const char *key, const char *value) {
   size_t need = strlen(key) + strlen(value) + 40;
-  char *p = malloc(need);
-  if (!p) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+  char *p = cbc_xmalloc(need);
   snprintf(p, need, "ParameterKey=%s,ParameterValue=%s", key, value);
   cbc_strs_push(&stack_params, p);
 }
@@ -85,8 +84,7 @@ void stack_plan(void) {
 }
 
 void stack_param_previous(const char *key) {
-  char *p = malloc(strlen(key) + 40);
-  if (!p) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+  char *p = cbc_xmalloc(strlen(key) + 40);
   sprintf(p, "ParameterKey=%s,UsePreviousValue=true", key);
   cbc_strs_push(&stack_params, p);
 }
@@ -180,8 +178,7 @@ void template_set(const char *name, const char *value) {
   }
   if (tvars_n == tvars_cap) {
     size_t cap = tvars_cap ? tvars_cap * 2 : 16;
-    tvar_t *nv = realloc(tvars, cap * sizeof *nv);
-    if (!nv) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+    tvar_t *nv = cbc_xrealloc(tvars, cap * sizeof *nv);
     tvars = nv;
     tvars_cap = cap;
   }
@@ -423,8 +420,7 @@ void stack_render(const char *file) {
   for (size_t i = 0; i + 1 < nroutes; i++) {
     if (others.n == others.cap) {
       size_t cap = others.cap ? others.cap * 2 : 8;
-      cbc_route *nv = realloc(others.v, cap * sizeof *nv);
-      if (!nv) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+      cbc_route *nv = cbc_xrealloc(others.v, cap * sizeof *nv);
       others.v = nv;
       others.cap = cap;
     }
@@ -439,8 +435,7 @@ void stack_render(const char *file) {
     cbc_route r = cbc_conf.api_routes.v[i];
     if (api.n == api.cap) {
       size_t cap = api.cap ? api.cap * 2 : 8;
-      cbc_route *nv = realloc(api.v, cap * sizeof *nv);
-      if (!nv) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+      cbc_route *nv = cbc_xrealloc(api.v, cap * sizeof *nv);
       api.v = nv;
       api.cap = cap;
     }
@@ -455,8 +450,7 @@ void stack_render(const char *file) {
     if (strcmp(r.origin, "ws") != 0 || strstr(seen, needle)) continue;
     if (api.n == api.cap) {
       size_t cap = api.cap ? api.cap * 2 : 8;
-      cbc_route *nv = realloc(api.v, cap * sizeof *nv);
-      if (!nv) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+      cbc_route *nv = cbc_xrealloc(api.v, cap * sizeof *nv);
       api.v = nv;
       api.cap = cap;
     }
@@ -612,8 +606,7 @@ static char *stack_value(const char *v) {
   if (strlen(s) > 160) {
     s[157] = '\0';
     size_t n = strlen(s);
-    char *t = malloc(n + 4);
-    if (!t) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+    char *t = cbc_xmalloc(n + 4);
     snprintf(t, n + 4, "%s...", s);
     return t;
   }
@@ -1032,8 +1025,7 @@ void stack_changeset(void) {
   cbc_strs_push(&cw, cbc_dup("--change-set-type"));
   cbc_strs_push(&cw, cbc_dup(stk_type));
   size_t tn = strlen(stk_template) + 8;
-  char *tbody = malloc(tn);
-  if (!tbody) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+  char *tbody = cbc_xmalloc(tn);
   snprintf(tbody, tn, "file://%s", stk_template);
   cbc_strs_push(&cw, cbc_dup("--template-body"));
   cbc_strs_push(&cw, tbody);
@@ -1072,8 +1064,7 @@ void stack_changeset(void) {
       return;
     }
     size_t wl = strlen(why);
-    char *withnl = malloc(wl + 2);
-    if (!withnl) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+    char *withnl = cbc_xmalloc(wl + 2);
     snprintf(withnl, wl + 2, "%s\n", why);
     aws_set_err_text(withnl);
     fprintf(stderr, "cbase: change set %s on %s failed:\n", stk_cs, stk_name);

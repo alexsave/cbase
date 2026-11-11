@@ -24,22 +24,10 @@ static char *text_of(const cbc_buf *b) {
   return cbc_dupn(b->data, n);
 }
 
-static char *fmt(const char *f, ...) __attribute__((format(printf, 1, 2)));
-static char *fmt(const char *f, ...) {
-  char *s = NULL;
-  va_list ap;
-  va_start(ap, f);
-  int n = vasprintf(&s, f, ap);
-  va_end(ap);
-  if (n < 0) cbc_fail(CBC_EXIT_FAIL, "out of memory");
-  return s;
-}
-
 static void push(cbc_strs *s, char *v) {
   if (s->n == s->cap) {
     size_t cap = s->cap ? s->cap * 2 : 8;
-    char **nv = realloc(s->v, cap * sizeof *nv);
-    if (!nv) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+    char **nv = cbc_xrealloc(s->v, cap * sizeof *nv);
     s->v = nv;
     s->cap = cap;
   }
@@ -62,7 +50,7 @@ static void words(const char *text, cbc_strs *out) {
 static char *joined(const cbc_strs *s, const char *sep) {
   char *out = cbc_dup("");
   for (size_t i = 0; i < s->n; i++) {
-    char *g = fmt("%s%s%s", out, i ? sep : "", s->v[i]);
+    char *g = cbc_fmt("%s%s%s", out, i ? sep : "", s->v[i]);
     free(out);
     out = g;
   }
@@ -91,7 +79,7 @@ static void cert_names(const char *arn, cbc_strs *names) {
   cbc_buf out = { 0, 0, 0 };
   if (aws_call(&out, "acm", "--region", CERT_REGION, "describe-certificate", "--certificate-arn", arn,
                "--query", "Certificate.SubjectAlternativeNames", "--output", "text", NULL) != 0)
-    aws_fail(fmt("reading certificate %s", arn));
+    aws_fail(cbc_fmt("reading certificate %s", arn));
   char *t = text_of(&out);
   words(t, names);
   free(t);
@@ -155,7 +143,7 @@ static char *cert_status_of(const char *arn) {
   cbc_buf out = { 0, 0, 0 };
   if (aws_call(&out, "acm", "--region", CERT_REGION, "describe-certificate", "--certificate-arn", arn,
                "--query", "Certificate.Status", "--output", "text", NULL) != 0)
-    aws_fail(fmt("reading certificate %s", arn));
+    aws_fail(cbc_fmt("reading certificate %s", arn));
   char *s = text_of(&out);
   free(out.data);
   return s;
@@ -168,11 +156,11 @@ static char *zone_for_host(const char *host) {
   if (conf->zone && *conf->zone) return cbc_dup(conf->zone);
   char *s = cbc_dup(host);
   while (strchr(s, '.')) {
-    char *query = fmt("HostedZones[?Name=='%s.' && Config.PrivateZone==`false`].Id", s);
+    char *query = cbc_fmt("HostedZones[?Name=='%s.' && Config.PrivateZone==`false`].Id", s);
     cbc_buf out = { 0, 0, 0 };
     if (aws_call(&out, "route53", "list-hosted-zones-by-name", "--dns-name", s, "--max-items", "10",
                  "--query", query, "--output", "text", NULL) != 0)
-      aws_fail(fmt("looking for a Route 53 hosted zone for %s", s));
+      aws_fail(cbc_fmt("looking for a Route 53 hosted zone for %s", s));
     char *t = text_of(&out);
     free(out.data);
     free(query);
@@ -227,7 +215,7 @@ static bool records_read(void) {
   if (aws_call(&out, "acm", "--region", CERT_REGION, "describe-certificate", "--certificate-arn", poll_arn,
                "--query", "Certificate.DomainValidationOptions[].[DomainName,ResourceRecord.Name,ResourceRecord.Type,ResourceRecord.Value]",
                "--output", "text", NULL) != 0)
-    aws_fail(fmt("reading certificate %s's validation records", poll_arn));
+    aws_fail(cbc_fmt("reading certificate %s's validation records", poll_arn));
   free(poll_text);
   poll_text = text_of(&out);
   free(out.data);
@@ -267,8 +255,7 @@ static void records(const char *arn, vrecord **out_v, size_t *out_n) {
       if (!seen) {
         if (n == cap) {
           cap = cap ? cap * 2 : 8;
-          v = realloc(v, cap * sizeof *v);
-          if (!v) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+          v = cbc_xrealloc(v, cap * sizeof *v);
         }
         v[n].host = cbc_dup(f[0]);
         v[n].name = cbc_dup(f[1]);
@@ -290,11 +277,11 @@ static void r53_change(const char *zone, const char *batch, const char *what) {
   cbc_buf out = { 0, 0, 0 };
   if (aws_call(&out, "route53", "change-resource-record-sets", "--hosted-zone-id", zone, "--change-batch", batch,
                "--query", "ChangeInfo.Id", "--output", "text", NULL) != 0)
-    aws_fail(fmt("writing %s in Route 53 zone %s", what, zone));
+    aws_fail(cbc_fmt("writing %s in Route 53 zone %s", what, zone));
   char *id = text_of(&out);
   free(out.data);
   if (aws_call(NULL, "route53", "wait", "resource-record-sets-changed", "--id", id, NULL) != 0)
-    aws_fail(fmt("waiting for Route 53 change %s", id));
+    aws_fail(cbc_fmt("waiting for Route 53 change %s", id));
   free(id);
 }
 
@@ -320,7 +307,7 @@ static void named(const char *arn, const char *key, const cbc_strs *need) {
     cert_names(arn, &names);
     char *all = cbc_dup("");
     for (size_t i = 0; i < names.n; i++) {
-      char *g = fmt("%s%s ", all, names.v[i]);
+      char *g = cbc_fmt("%s%s ", all, names.v[i]);
       free(all);
       all = g;
     }
@@ -370,9 +357,9 @@ static void auto_cert(cbc_cert_t *c, bool dry) {
       push(&args, cbc_dup("--subject-alternative-names"));
       for (size_t i = 1; i < c->need.n; i++) push(&args, cbc_dup(c->need.v[i]));
     }
-    char *seed = fmt("%s %s", cbc_conf.app, joined(&c->need, " "));
+    char *seed = cbc_fmt("%s %s", cbc_conf.app, joined(&c->need, " "));
     push(&args, cbc_dup("--idempotency-token"));
-    push(&args, fmt("cbase%lu", cbc_cksum(seed)));
+    push(&args, cbc_fmt("cbase%lu", cbc_cksum(seed)));
     free(seed);
     push(&args, cbc_dup("--query"));
     push(&args, cbc_dup("CertificateArn"));
@@ -382,7 +369,7 @@ static void auto_cert(cbc_cert_t *c, bool dry) {
     cbc_buf out = { 0, 0, 0 };
     if (aws_call_list(&out, (const char *const *)args.v) != 0) {
       char *need = joined(&c->need, " ");
-      aws_fail(fmt("requesting a certificate for %s", need));
+      aws_fail(cbc_fmt("requesting a certificate for %s", need));
     }
     char *arn = text_of(&out);
     free(out.data);
@@ -400,15 +387,15 @@ static void auto_cert(cbc_cert_t *c, bool dry) {
   for (size_t i = 0; i < nrec; i++) {
     const char *z = zone_of(c, rec[i].host);
     if (*z && !dry) {
-      char *batch = fmt("Changes=[{Action=UPSERT,ResourceRecordSet={Name=%s,Type=%s,TTL=300,ResourceRecords=[{Value=%s}]}}]",
+      char *batch = cbc_fmt("Changes=[{Action=UPSERT,ResourceRecordSet={Name=%s,Type=%s,TTL=300,ResourceRecords=[{Value=%s}]}}]",
                         rec[i].name, rec[i].type, rec[i].value);
-      char *what = fmt("the validation record for %s", rec[i].host);
+      char *what = cbc_fmt("the validation record for %s", rec[i].host);
       r53_change(z, batch, what);
       printf("dns: wrote %s %s %s in zone %s (validates the certificate for %s)\n", rec[i].name, rec[i].type, rec[i].value, z, rec[i].host);
       free(batch);
       free(what);
     } else {
-      push(&hand, fmt("%s %s %s %s", rec[i].name, rec[i].type, rec[i].value, rec[i].host));
+      push(&hand, cbc_fmt("%s %s %s %s", rec[i].name, rec[i].type, rec[i].value, rec[i].host));
     }
   }
   if (hand.n > 0) {
@@ -444,7 +431,7 @@ static void auto_cert(cbc_cert_t *c, bool dry) {
   }
   printf("certificate: waiting for ACM to validate %s\n", a);
   if (aws_call(NULL, "acm", "--region", CERT_REGION, "wait", "certificate-validated", "--certificate-arn", a, NULL) != 0)
-    aws_fail(fmt("waiting for certificate %s to be issued", a));
+    aws_fail(cbc_fmt("waiting for certificate %s to be issued", a));
   free(c->arn);
   c->arn = a;
   printf("certificate: %s, issued\n", c->arn);
@@ -506,7 +493,7 @@ static char *cert_txt(const char *host) {
   size_t dots = 0;
   for (const char *p = host; *p; p++)
     if (*p == '.') dots++;
-  return dots >= 2 ? fmt("_%s", host) : fmt("_.%s", host);
+  return dots >= 2 ? cbc_fmt("_%s", host) : cbc_fmt("_.%s", host);
 }
 
 bool cbc_cert_alias_check(cbc_cert_t *c, const char *to_main, const char *to_api, const cbc_strs *own, bool dry) {
@@ -538,7 +525,7 @@ bool cbc_cert_alias_check(cbc_cert_t *c, const char *to_main, const char *to_api
           if (strcmp(a, h) == 0) {
             const char *to = api ? to_api : to_main;
             if (*to) {
-              push(&c->moves, fmt("%s %s %s", h, id, to));
+              push(&c->moves, cbc_fmt("%s %s %s", h, id, to));
               printf("attach: %s moves from the distribution %s (%s) to this app's %s (associate-alias: atomic, no downtime)%s\n",
                      h, id, dom, to, dry ? "; a dry run makes no move" : "");
             } else {
@@ -571,13 +558,13 @@ void cbc_cert_attach(const cbc_cert_t *c) {
       if (aws_call(&dn, "cloudfront", "get-distribution", "--id", to, "--query", "Distribution.DomainName", "--output", "text", NULL) == 0) {
         dom = text_of(&dn);
       } else {
-        dom = fmt("<%s's cloudfront.net name>", to);
+        dom = cbc_fmt("<%s's cloudfront.net name>", to);
       }
       free(dn.data);
       fprintf(stderr, "cbase: add TXT %s = %s, then run ./cbase deploy --attach again\n", txt, dom);
       free(dom);
       free(txt);
-      aws_fail(fmt("moving %s from the distribution %s to %s (associate-alias)", h, from, to));
+      aws_fail(cbc_fmt("moving %s from the distribution %s to %s (associate-alias)", h, from, to));
     }
     printf("attach: %s moved from %s to %s\n", h, from, to);
   }
@@ -593,16 +580,16 @@ void cbc_cert_point(cbc_cert_t *c, const char *host, const char *target, const c
   }
   const char *z = zone_of(c, host);
   if (*z) {
-    char *alias = fmt("AliasTarget={HostedZoneId=%s,DNSName=%s,EvaluateTargetHealth=false}", cf_zone_id, target);
-    char *batch = fmt("Changes=[{Action=UPSERT,ResourceRecordSet={Name=%s,Type=A,%s}},{Action=UPSERT,ResourceRecordSet={Name=%s,Type=AAAA,%s}}]",
+    char *alias = cbc_fmt("AliasTarget={HostedZoneId=%s,DNSName=%s,EvaluateTargetHealth=false}", cf_zone_id, target);
+    char *batch = cbc_fmt("Changes=[{Action=UPSERT,ResourceRecordSet={Name=%s,Type=A,%s}},{Action=UPSERT,ResourceRecordSet={Name=%s,Type=AAAA,%s}}]",
                       host, alias, host, alias);
-    char *what = fmt("the alias for %s", host);
+    char *what = cbc_fmt("the alias for %s", host);
     r53_change(z, batch, what);
     printf("dns: %s is an alias (A and AAAA) of %s in zone %s\n", host, target, z);
     free(alias);
     free(batch);
     free(what);
   } else {
-    push(&c->notes, fmt("note: point %s at %s where its DNS is served, if it isn't already: a CNAME (an ALIAS or ANAME record at a domain's apex)", host, target));
+    push(&c->notes, cbc_fmt("note: point %s at %s where its DNS is served, if it isn't already: a CNAME (an ALIAS or ANAME record at a domain's apex)", host, target));
   }
 }

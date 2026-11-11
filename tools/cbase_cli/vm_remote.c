@@ -55,7 +55,7 @@ char *cbc_vm_remote_deploy(const char *port, const char *bucket, const char *key
   char *line;
   /* The header: the heredoc of vm.sh's vm_remote_deploy, with its values in as they are (every one
    * is a name, digits, hex, a path or a bucket and region name this tool checked). */
-  if (asprintf(&line,
+  cbc_asprintf(&line,
                "#!/bin/bash\n"
                "# The deploy of cbase app %s on its VM, rendered by ./cbase deploy (tools/cbase.d/vm.sh) from\n"
                "# vm_remote.sh, and run as root by SSM.\n"
@@ -72,8 +72,7 @@ char *cbc_vm_remote_deploy(const char *port, const char *bucket, const char *key
                "region=%s\n"
                "settings=%s\n"
                "replaces=%s\n",
-               app, app, port, app, app, app, app, data, bucket, key, sha, region, settings, cbc_conf.vm_replaces) < 0)
-    cbc_fail(CBC_EXIT_FAIL, "out of memory");
+               app, app, port, app, app, app, app, data, bucket, key, sha, region, settings, cbc_conf.vm_replaces);
   cbc_sb_str(&h, line);
   char *unit = cbc_vm_unit(port, region, cbc_vm_backup_bucket(state_bucket));
   char *socket = cbc_vm_socket(port);
@@ -87,7 +86,7 @@ char *cbc_vm_remote_undeploy(bool delete_data) {
   cbc_sbuf s = { 0 };
   char *head;
   /* The first heredoc is vm.sh's unquoted one: $app is its value, and \$ is a literal $. */
-  if (asprintf(&head,
+  cbc_asprintf(&head,
                "#!/bin/bash\n"
                "# The undeploy of cbase app %s on its VM, rendered by ./cbase undeploy (tools/cbase.d/vm.sh).\n"
                "set -euo pipefail\n"
@@ -108,8 +107,7 @@ char *cbc_vm_remote_undeploy(bool delete_data) {
                "  say \"$unit is not installed\"\n"
                "fi\n"
                "rm -f \"$home/serve\" \"$home/serve.new\" \"$R/etc/cbase/$app.env\"\n",
-               app, app, app, app, app) < 0)
-    cbc_fail(CBC_EXIT_FAIL, "out of memory");
+               app, app, app, app, app);
   cbc_sb_str(&s, head);
   if (delete_data) {
     cbc_sb_str(&s,

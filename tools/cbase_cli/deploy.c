@@ -89,7 +89,7 @@ void cbc_deploy(const char *conf_file, int argc, char **argv) {
       printf("static bucket s3://%s (%s, adopted: CBASE_STATIC_BUCKET), the app's folder %s/\n", stk_bucket, stk_bucket_region, stk_prefix);
       if (!cbc_static_policy_ok(stk_bucket, aws_account)) {
         char *what = cbc_dup("");
-        if (asprintf(&what, "s3://%s's policy (above)", stk_bucket) < 0) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+        cbc_asprintf(&what, "s3://%s's policy (above)", stk_bucket);
         dry_stop(what, "cbase: then deploy again; nothing was changed");
       }
     } else {
@@ -175,7 +175,7 @@ void cbc_deploy(const char *conf_file, int argc, char **argv) {
     if (aws_call(&out, "cloudfront", "create-invalidation", "--distribution-id", dist_id, "--paths", "/*", "--query",
                  "Invalidation.Id", "--output", "text", NULL) != 0) {
       char *what = NULL;
-      if (asprintf(&what, "invalidating %s", dist_id) < 0) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+      cbc_asprintf(&what, "invalidating %s", dist_id);
       aws_fail(what);
     }
     char *inv = first_text_line(&out);
@@ -183,12 +183,12 @@ void cbc_deploy(const char *conf_file, int argc, char **argv) {
     fflush(stdout);
     if (aws_call(NULL, "cloudfront", "wait", "invalidation-completed", "--distribution-id", dist_id, "--id", inv, NULL) != 0) {
       char *what = NULL;
-      if (asprintf(&what, "waiting for invalidation %s", inv) < 0) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+      cbc_asprintf(&what, "waiting for invalidation %s", inv);
       aws_fail(what);
     }
   }
   char *url = NULL;
-  if (asprintf(&url, "https://%s/", dist_domain) < 0) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+  cbc_asprintf(&url, "https://%s/", dist_domain);
   if (*cert.arn) {
     for (size_t i = 0; i < cbc_conf.domains.n; i++) cbc_cert_point(&cert, cbc_conf.domains.v[i], dist_domain, CF_ZONE_ID);
     if (*cbc_conf.api_host) {
@@ -197,7 +197,7 @@ void cbc_deploy(const char *conf_file, int argc, char **argv) {
       cbc_cert_point(&cert, cbc_conf.api_host, api_domain, CF_ZONE_ID);
     }
     if (strcmp(cbc_conf.aliases, "off") != 0) {
-      if (asprintf(&url, "https://%s/", cbc_conf.domain) < 0) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+      cbc_asprintf(&url, "https://%s/", cbc_conf.domain);
     }
   }
   printf("deployed %s: %s\n", cbc_conf.app, url);

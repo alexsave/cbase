@@ -184,8 +184,7 @@ int aws_group_find(const char *kind, const char *name, char **id) {
   const char *type = strcmp(kind, "vm") == 0 ? "ec2:instance" : "s3";
   char *filter = NULL;
   size_t need = strlen(tag) + strlen(name) + 16;
-  filter = malloc(need);
-  if (!filter) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+  filter = cbc_xmalloc(need);
   snprintf(filter, need, "Key=%s,Values=%s", tag, name);
   cbc_buf out = { 0 };
   char what[256];
@@ -309,16 +308,14 @@ char *aws_secret_filter(const char *path, const char *before, const char *after,
   char *f;
   for (const char *const *w = ws; *w; w++) {
     size_t need = strlen(path) + strlen(before) + strlen(after) + strlen(*w) * 3 + 160;
-    char *t = malloc(need);
-    if (!t) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+    char *t = cbc_xmalloc(need);
     snprintf(t, need, "contains(%s || '', '%s') || contains(%s || '', '%s') || contains(%s || '', '%s')",
              path, *w, before, *w, after, *w);
     cbc_strs_push(&parts, t);
     total += strlen(t) + 4;
   }
   size_t cap = total + 512;
-  f = malloc(cap);
-  if (!f) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+  f = cbc_xmalloc(cap);
   f[0] = '\0';
   for (size_t i = 0; i < parts.n; i++) {
     if (i) strcat(f, " || ");

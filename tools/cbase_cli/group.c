@@ -25,17 +25,6 @@
 
 /* ---- small helpers ---------------------------------------------------------------------------- */
 
-static char *fmt(const char *f, ...) __attribute__((format(printf, 1, 2)));
-static char *fmt(const char *f, ...) {
-  char *s = NULL;
-  va_list ap;
-  va_start(ap, f);
-  int n = vasprintf(&s, f, ap);
-  va_end(ap);
-  if (n < 0) cbc_fail(CBC_EXIT_FAIL, "out of memory");
-  return s;
-}
-
 /* text_of: a captured output with its trailing newlines taken off, as $(...) does. */
 static char *text_of(const cbc_buf *b) {
   if (!b->data) return cbc_dup("");
@@ -49,14 +38,12 @@ static char *text_of(const cbc_buf *b) {
 static char *replace_all(const char *s, const char *from, const char *to) {
   size_t fl = strlen(from), tl = strlen(to);
   size_t cap = strlen(s) + 1, len = 0;
-  char *out = malloc(cap);
-  if (!out) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+  char *out = cbc_xmalloc(cap);
   for (const char *p = s; *p;) {
     if (strncmp(p, from, fl) == 0 && fl > 0) {
       if (len + tl + 1 > cap) {
         cap = (len + tl + 1) * 2;
-        out = realloc(out, cap);
-        if (!out) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+        out = cbc_xrealloc(out, cap);
       }
       memcpy(out + len, to, tl);
       len += tl;
@@ -64,8 +51,7 @@ static char *replace_all(const char *s, const char *from, const char *to) {
     } else {
       if (len + 2 > cap) {
         cap *= 2;
-        out = realloc(out, cap);
-        if (!out) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+        out = cbc_xrealloc(out, cap);
       }
       out[len++] = *p++;
     }
@@ -75,7 +61,7 @@ static char *replace_all(const char *s, const char *from, const char *to) {
 }
 
 /* group_stack: the stack's name, cbase-group-<kind>-<group>. */
-static char *group_stack(const char *kind, const char *group) { return fmt("cbase-group-%s-%s", kind, group); }
+static char *group_stack(const char *kind, const char *group) { return cbc_fmt("cbase-group-%s-%s", kind, group); }
 
 /* group_cost: a sentence of what the instance type costs a month (us-east-1 on-demand Linux, 730 h). */
 static char *group_cost(const char *type) {
@@ -88,22 +74,20 @@ static char *group_cost(const char *type) {
   };
   for (size_t i = 0; i < sizeof table / sizeof table[0]; i++) {
     if (strcmp(table[i].type, type) == 0)
-      return fmt("a %s runs about $%d/month (us-east-1 on-demand), plus about $0.64/month for its 8 GB disk", type, table[i].month);
+      return cbc_fmt("a %s runs about $%d/month (us-east-1 on-demand), plus about $0.64/month for its 8 GB disk", type, table[i].month);
   }
-  return fmt("a %s: see https://aws.amazon.com/ec2/pricing/on-demand/ for its price", type);
+  return cbc_fmt("a %s: see https://aws.amazon.com/ec2/pricing/on-demand/ for its price", type);
 }
 
 /* read_answer: one line from stdin without its newline, or NULL at the end of the input. */
 static char *read_answer(void) {
   size_t cap = 64, len = 0;
-  char *s = malloc(cap);
-  if (!s) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+  char *s = cbc_xmalloc(cap);
   int c = EOF;
   while ((c = getchar()) != EOF && c != '\n') {
     if (len + 1 >= cap) {
       cap *= 2;
-      s = realloc(s, cap);
-      if (!s) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+      s = cbc_xrealloc(s, cap);
     }
     s[len++] = (char)c;
   }
@@ -161,7 +145,7 @@ bool cbc_group_state_bucket_found(void) {
   if (aws_call(NULL, "s3api", "head-bucket", "--bucket", bucket, NULL) == 0) return true;
   const char *code = aws_code();
   if (strcmp(code, "404") == 0 || strcmp(code, "NoSuchBucket") == 0 || strcmp(code, "NotFound") == 0) return false;
-  aws_fail(fmt("reading the state bucket s3://%s", bucket));
+  aws_fail(cbc_fmt("reading the state bucket s3://%s", bucket));
 }
 
 /* state_bucket_make: the state bucket, made in REGION (a name this account holds already is it). */
@@ -171,7 +155,7 @@ static void state_bucket_make(const char *region) {
   if (strcmp(region, "us-east-1") == 0) {
     rc = aws_call(NULL, "s3api", "create-bucket", "--bucket", bucket, "--region", region, NULL);
   } else {
-    char *loc = fmt("LocationConstraint=%s", region);
+    char *loc = cbc_fmt("LocationConstraint=%s", region);
     rc = aws_call(NULL, "s3api", "create-bucket", "--bucket", bucket, "--region", region, "--create-bucket-configuration", loc, NULL);
     free(loc);
   }
@@ -183,15 +167,15 @@ static void state_bucket_make(const char *region) {
       fprintf(stderr, "cbase: the state bucket's name s3://%s is another account's\n", bucket);
       exit(CBC_EXIT_FAIL);
     } else {
-      aws_fail(fmt("making the state bucket s3://%s", bucket));
+      aws_fail(cbc_fmt("making the state bucket s3://%s", bucket));
     }
   }
   if (aws_call(NULL, "s3api", "put-public-access-block", "--bucket", bucket, "--region", region,
                "--public-access-block-configuration", "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true", NULL) != 0)
-    aws_fail(fmt("blocking public access to s3://%s", bucket));
+    aws_fail(cbc_fmt("blocking public access to s3://%s", bucket));
   if (aws_call(NULL, "s3api", "put-bucket-versioning", "--bucket", bucket, "--region", region,
                "--versioning-configuration", "Status=Enabled", NULL) != 0)
-    aws_fail(fmt("turning on versioning of s3://%s", bucket));
+    aws_fail(cbc_fmt("turning on versioning of s3://%s", bucket));
   printf("state bucket: s3://%s made (%s; versioned, public access blocked)\n", bucket, region);
 }
 
@@ -209,7 +193,7 @@ bool cbc_group_state_bucket_adopted(const char *region, const char *group, bool 
   char *bucket = state_bucket();
   if (cbc_group_state_bucket_found()) return false;
   if (dry) {
-    char *grand = *vm_port ? fmt(" (grandfathered: port %s, data %s)", vm_port, vm_data) : cbc_dup("");
+    char *grand = *vm_port ? cbc_fmt(" (grandfathered: port %s, data %s)", vm_port, vm_data) : cbc_dup("");
     printf("dry run: would create state bucket s3://%s (%s; versioned, public access blocked) and seed %s with %s%s\n", bucket, region,
            state_key("vm", group), app, grand);
     free(grand);
@@ -241,7 +225,7 @@ static char *boot_text(const char *src) {
         free(t);
         t = cbc_dup("want='${OriginIpv6}'");
       }
-      char *ind = fmt("            %s\n", t);
+      char *ind = cbc_fmt("            %s\n", t);
       free(t);
       size_t need = out.len + strlen(ind) + 1;
       if (need > out.cap) {
@@ -270,7 +254,7 @@ void cbc_group_render(const char *kind, const char *group, FILE *f, bool ipv4) {
   template_set("PREFIXLISTIPV4", GROUP_PREFIX_LIST_IPV4);
   char *boot = cbc_dup("");
   if (strcmp(kind, "vm") == 0) {
-    char *path = fmt("%s/cbase.d/vm_boot.sh", cbc_tools_dir());
+    char *path = cbc_fmt("%s/cbase.d/vm_boot.sh", cbc_tools_dir());
     char *src = NULL;
     size_t srclen = 0;
     if (!cbc_read_file(path, &src, &srclen)) cbc_fail(CBC_EXIT_FAIL, "cannot read %s", path);
@@ -281,7 +265,7 @@ void cbc_group_render(const char *kind, const char *group, FILE *f, bool ipv4) {
   }
   template_set("BOOT", boot);
   free(boot);
-  template_render(fmt("group-%s.yaml", kind), ipv4 ? "ipv4" : "", f);
+  template_render(cbc_fmt("group-%s.yaml", kind), ipv4 ? "ipv4" : "", f);
 }
 
 void cbc_group_template(const char *kind, const char *group, bool ipv4) { cbc_group_render(kind, group, stdout, ipv4); }
@@ -289,10 +273,10 @@ void cbc_group_template(const char *kind, const char *group, bool ipv4) { cbc_gr
 /* prefix_list: the id of the managed prefix list NAME (CloudFront's origin-facing lists). */
 static char *prefix_list(const char *name) {
   cbc_buf out = { 0, 0, 0 };
-  char *filter = fmt("Name=prefix-list-name,Values=%s", name);
+  char *filter = cbc_fmt("Name=prefix-list-name,Values=%s", name);
   if (aws_call(&out, "ec2", "describe-managed-prefix-lists", "--filters", filter, "--query", "PrefixLists[0].PrefixListId",
                "--output", "text", NULL) != 0)
-    aws_fail(fmt("finding %s", name));
+    aws_fail(cbc_fmt("finding %s", name));
   free(filter);
   char *id = text_of(&out);
   free(out.data);
@@ -318,14 +302,14 @@ static void vm_instance(const cbc_group_opts *o, const char *region) {
         fprintf(stderr, "cbase: %s is not an EC2 instance type in %s\n", type, region);
         exit(CBC_EXIT_FAIL);
       }
-      aws_fail(fmt("reading instance type %s", type));
+      aws_fail(cbc_fmt("reading instance type %s", type));
     }
     char *text = text_of(&out);
     free(out.data);
     /* the architectures are the text's tab-separated second field */
     char *tab = strchr(text, '\t');
     char *archs = tab ? tab + 1 : "";
-    char *archs_c = fmt(",%s,", archs);
+    char *archs_c = cbc_fmt(",%s,", archs);
     if (!strstr(archs_c, ",arm64,")) {
       fprintf(stderr, "cbase: %s is %s, and cbase builds the server for linux arm64 alone (make serve-binary): pick an arm64 (Graviton) type, t4g.nano to t4g.2xlarge\n", type, archs);
       exit(CBC_EXIT_FAIL);
@@ -341,7 +325,7 @@ static void vm_instance(const cbc_group_opts *o, const char *region) {
   if (strcmp(stk_status, "NONE") == 0) {
     cbc_buf out = { 0, 0, 0 };
     if (aws_call(&out, "ssm", "get-parameter", "--name", GROUP_AMI_PARAM, "--query", "Parameter.Value", "--output", "text", NULL) != 0)
-      aws_fail(fmt("reading the Amazon Linux 2023 image (%s)", GROUP_AMI_PARAM));
+      aws_fail(cbc_fmt("reading the Amazon Linux 2023 image (%s)", GROUP_AMI_PARAM));
     char *image = text_of(&out);
     free(out.data);
     if (!cbc_re("^ami-[0-9a-f]+$", image)) {
@@ -356,11 +340,11 @@ static void vm_instance(const cbc_group_opts *o, const char *region) {
   }
   if (strcmp(stk_status, "NONE") == 0) {
     /* the subnet's zone, one that offers the type, picked once: a new zone is a new subnet and instance */
-    char *filter = fmt("Name=instance-type,Values=%s", type);
+    char *filter = cbc_fmt("Name=instance-type,Values=%s", type);
     cbc_buf out = { 0, 0, 0 };
     if (aws_call(&out, "ec2", "describe-instance-type-offerings", "--location-type", "availability-zone", "--filters", filter,
                  "--query", "sort(InstanceTypeOfferings[].Location)[0]", "--output", "text", NULL) != 0)
-      aws_fail(fmt("finding a zone that offers %s", type));
+      aws_fail(cbc_fmt("finding a zone that offers %s", type));
     free(filter);
     char *zone = text_of(&out);
     free(out.data);
@@ -383,7 +367,7 @@ static char *public_dns_of(const char *group) {
   cbc_buf out = { 0, 0, 0 };
   if (aws_call(&out, "ec2", "describe-instances", "--instance-ids", id, "--query", "Reservations[0].Instances[0].PublicDnsName",
                "--output", "text", NULL) != 0)
-    aws_fail(fmt("reading vm group %s's instance", group));
+    aws_fail(cbc_fmt("reading vm group %s's instance", group));
   char *dns = text_of(&out);
   free(out.data);
   if (strcmp(dns, "None") == 0) {
@@ -396,7 +380,7 @@ static char *public_dns_of(const char *group) {
 void cbc_group_init(const char *kind, const char *group, const cbc_group_opts *o) {
   char *region = aws_region_required();
   char *stack = group_stack(kind, group);
-  stack_use(stack, region, fmt("Key=cbase:group,Value=%s/%s", kind, group));
+  stack_use(stack, region, cbc_fmt("Key=cbase:group,Value=%s/%s", kind, group));
   bool vm = strcmp(kind, "vm") == 0;
   printf("group-init: %s group %s in account %s (%s), stack %s\n", kind, group, aws_account, region, stk_name);
   stack_status();
@@ -425,7 +409,7 @@ void cbc_group_init(const char *kind, const char *group, const cbc_group_opts *o
   fclose(f);
   stack_changeset();
   if (*stk_changes && vm) {
-    if (!group_confirm(o->yes, fmt("Run this change set on %s", stk_name))) {
+    if (!group_confirm(o->yes, cbc_fmt("Run this change set on %s", stk_name))) {
       stack_discard();
       fprintf(stderr, "cbase: a VM costs money, so group-init vm runs its change set only with --yes (or yes typed at a terminal): the change set is deleted, and nothing was made or changed\n");
       exit(2);
@@ -452,7 +436,7 @@ void cbc_group_init(const char *kind, const char *group, const cbc_group_opts *o
   char *state_file = cbc_tmp_path("state-new");
   FILE *sf = fopen(state_file, "w");
   if (!sf) cbc_fail(CBC_EXIT_FAIL, "cannot write %s", state_file);
-  fprintf(sf, "cbase-state %s %s %s%s\n", STATE_VERSION_TEXT, kind, group, *origin ? fmt(" origin=%s addr=dualstack", origin) : "");
+  fprintf(sf, "cbase-state %s %s %s%s\n", STATE_VERSION_TEXT, kind, group, *origin ? cbc_fmt(" origin=%s addr=dualstack", origin) : "");
   fclose(sf);
   int rc = aws_s3_put(bucket, key, state_file, "*");
   if (rc == 0) printf("state file: s3://%s/%s (no members yet)\n", bucket, key);
@@ -474,7 +458,7 @@ void cbc_group_destroy(const char *kind, const char *group, const cbc_group_opts
   if (state_apps()->n > 0) {
     char *names = cbc_dup("");
     for (size_t i = 0; i < state_apps()->n; i++) {
-      char *g = fmt("%s%s%s", names, i ? " " : "", state_apps()->v[i]);
+      char *g = cbc_fmt("%s%s%s", names, i ? " " : "", state_apps()->v[i]);
       free(names);
       names = g;
     }
@@ -498,7 +482,7 @@ void cbc_group_destroy(const char *kind, const char *group, const cbc_group_opts
   if (data.n > 0 && !o->delete_data) {
     char *names = cbc_dup("");
     for (size_t i = 0; i < data.n; i++) {
-      char *g = fmt("%s%s%s", names, i ? " " : "", data.v[i]);
+      char *g = cbc_fmt("%s%s%s", names, i ? " " : "", data.v[i]);
       free(names);
       names = g;
     }
@@ -507,21 +491,21 @@ void cbc_group_destroy(const char *kind, const char *group, const cbc_group_opts
     exit(CBC_EXIT_FAIL);
   }
   bool vm = strcmp(kind, "vm") == 0;
-  if (!group_confirm(o->yes, fmt("Delete %s%s", stk_name, vm ? ", and the instance with its disk" : ""))) {
+  if (!group_confirm(o->yes, cbc_fmt("Delete %s%s", stk_name, vm ? ", and the instance with its disk" : ""))) {
     fprintf(stderr, "cbase: group-destroy deletes the group's stack only with --yes (or yes typed at a terminal): nothing was changed\n");
     exit(2);
   }
   stack_delete();
   if (strcmp(kind, "static") == 0 && *id) {
     /* Retain kept the bucket and its files; with its tag gone, a group-init of the name makes a new one. */
-    if (aws_call(NULL, "s3api", "delete-bucket-tagging", "--bucket", id, NULL) != 0) aws_fail(fmt("taking the group tag off s3://%s", id));
+    if (aws_call(NULL, "s3api", "delete-bucket-tagging", "--bucket", id, NULL) != 0) aws_fail(cbc_fmt("taking the group tag off s3://%s", id));
     printf("bucket: s3://%s is kept with its files, its cbase:static-group tag taken off (delete it with aws s3 rb s3://%s --force)\n", id, id);
   }
   char *bucket = state_bucket();
   char *key = state_key(kind, group);
   if (strcmp(state_etag(), "*") != 0) {
     if (aws_call(NULL, "s3api", "delete-object", "--bucket", bucket, "--key", key, NULL) != 0)
-      aws_fail(fmt("deleting s3://%s/%s", bucket, key));
+      aws_fail(cbc_fmt("deleting s3://%s/%s", bucket, key));
     printf("state file: s3://%s/%s deleted\n", bucket, key);
   }
   printf("%s group %s is destroyed\n", kind, group);

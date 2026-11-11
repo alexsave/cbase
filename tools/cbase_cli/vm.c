@@ -39,7 +39,7 @@ const char *cbc_tools_dir(void) { return CBC_TOOLS_DIR; }
 
 char *cbc_vm_file(const char *name) {
   char *p;
-  if (asprintf(&p, "%s/cbase.d/%s", cbc_tools_dir(), name) < 0) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+  cbc_asprintf(&p, "%s/cbase.d/%s", cbc_tools_dir(), name);
   return p;
 }
 
@@ -55,8 +55,7 @@ void cbc_sb_add(cbc_sbuf *b, const char *p, size_t n) {
   if (b->n + n + 1 > b->cap) {
     size_t cap = b->cap ? b->cap : 256;
     while (cap < b->n + n + 1) cap *= 2;
-    char *nd = realloc(b->d, cap);
-    if (!nd) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+    char *nd = cbc_xrealloc(b->d, cap);
     b->d = nd;
     b->cap = cap;
   }
@@ -132,9 +131,9 @@ char *cbc_vm_settings(void) {
   char *p;
   if (*cbc_conf.vm_settings) return cbc_dup(cbc_conf.vm_settings);
   if (*cbc_conf.vm_stack) {
-    if (asprintf(&p, "/%s/%s/", cbc_conf.vm_stack, cbc_conf.app) < 0) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+    cbc_asprintf(&p, "/%s/%s/", cbc_conf.vm_stack, cbc_conf.app);
   } else {
-    if (asprintf(&p, "/cbase/%s/", cbc_conf.app) < 0) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+    cbc_asprintf(&p, "/cbase/%s/", cbc_conf.app);
   }
   return p;
 }
@@ -142,7 +141,7 @@ char *cbc_vm_settings(void) {
 char *cbc_vm_data_dir(void) {
   char *p;
   if (*cbc_conf.vm_data) return cbc_dup(cbc_conf.vm_data);
-  if (asprintf(&p, "/srv/cbase/%s/data", cbc_conf.app) < 0) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+  cbc_asprintf(&p, "/srv/cbase/%s/data", cbc_conf.app);
   return p;
 }
 
@@ -151,9 +150,9 @@ void cbc_vm_artifacts(const char *account, const char *region, const char *state
   if (*cbc_conf.vm_artifacts) {
     a = cbc_dup(cbc_conf.vm_artifacts);
   } else if (*cbc_conf.vm_stack) {
-    if (asprintf(&a, "s3://cbase-code-%s-%s/vm/%s/", account, region, cbc_conf.app) < 0) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+    cbc_asprintf(&a, "s3://cbase-code-%s-%s/vm/%s/", account, region, cbc_conf.app);
   } else {
-    if (asprintf(&a, "s3://%s/artifacts/%s/", state_bucket, cbc_conf.app) < 0) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+    cbc_asprintf(&a, "s3://%s/artifacts/%s/", state_bucket, cbc_conf.app);
   }
   if (strncmp(a, "s3://", 5) == 0) a += 5;
   const char *slash = strchr(a, '/');
@@ -177,13 +176,13 @@ char *cbc_vm_unit(const char *port, const char *region, const char *backup_bucke
   c.region = region;
   c.backup_bucket = backup_bucket;
   c.app = cbc_conf.app;
-  if (asprintf(&c.user, "cbase-%s", cbc_conf.app) < 0) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+  cbc_asprintf(&c.user, "cbase-%s", cbc_conf.app);
   c.data = cbc_vm_data_dir();
-  if (asprintf(&c.home, "/srv/cbase/%s", cbc_conf.app) < 0) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+  cbc_asprintf(&c.home, "/srv/cbase/%s", cbc_conf.app);
   if (*cbc_conf.backup_key) c.backup_key = cbc_conf.backup_key;
-  else if (asprintf(&c.backup_key, "backups/%s/cbase.sqlite", cbc_conf.app) < 0) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+  else cbc_asprintf(&c.backup_key, "backups/%s/cbase.sqlite", cbc_conf.app);
   if (!cbc_conf.memory_estimated) {
-    if (asprintf(&c.mem_placeholder_value, "MemoryMax=%sM", cbc_conf.memory) < 0) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+    cbc_asprintf(&c.mem_placeholder_value, "MemoryMax=%sM", cbc_conf.memory);
   }
   return transform_lines(text, unit_line, &c);
 }
@@ -202,7 +201,7 @@ char *cbc_vm_socket(const char *port) {
 void cbc_vm_fit(const char *type, long long mib, long long *limit, char **what) {
   *limit = mib - CBC_VM_OS_RESERVE;
   if (*limit < 0) *limit = 0;
-  if (asprintf(what, "%s: %lld MiB less %d for the OS", type, mib, CBC_VM_OS_RESERVE) < 0) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+  cbc_asprintf(what, "%s: %lld MiB less %d for the OS", type, mib, CBC_VM_OS_RESERVE);
 }
 
 long long cbc_vm_mib_text(const char *type, const char *text) {
@@ -277,7 +276,7 @@ void cbc_vm_build(cbc_vm_artifact *out) {
     char *argv[] = { "make", "-C", (char *)dir, "serve-binary", NULL };
     if (cbc_run_err(argv, NULL, NULL) != 0)
       cbc_fail(CBC_EXIT_FAIL, "make -C %s serve-binary failed, so there is no linux-arm64 server to ship. It is cbase.mk's target for this build (ops/build_static.sh serve), and it needs Docker; run it until it passes, or set CBASE_SERVE_BIN to a linux-arm64 serve binary, then deploy again. Nothing was changed.", dir);
-    if (asprintf(&out->bin, "%s/dist/%s", dir, CBC_VM_ARTIFACT_NAME) < 0) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+    cbc_asprintf(&out->bin, "%s/dist/%s", dir, CBC_VM_ARTIFACT_NAME);
     if (!is_regular(out->bin))
       cbc_fail(CBC_EXIT_FAIL, "make -C %s serve-binary made no %s (cbase.mk's serve-binary writes dist/%s)", dir, out->bin, CBC_VM_ARTIFACT_NAME);
   }
@@ -292,16 +291,6 @@ void cbc_vm_build(cbc_vm_artifact *out) {
 
 cbc_vm_t cbc_vm = { .id = "", .dns = "", .type = "", .bin = "", .sha = "", .key = "", .port = "",
                     .origin_secret = "", .ssm_status = "", .ssm_code = "" };
-static char *fmt_dup(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
-static char *fmt_dup(const char *fmt, ...) {
-  va_list ap;
-  va_start(ap, fmt);
-  char *p = NULL;
-  if (vasprintf(&p, fmt, ap) < 0) cbc_fail(CBC_EXIT_FAIL, "out of memory");
-  va_end(ap);
-  return p;
-}
-
 /* Splits TEXT at its first tab; the rest is what follows it ("" when there is no tab). */
 static char *tab_split(char *text, char **rest) {
   char *tab = strchr(text, '\t');
@@ -346,7 +335,7 @@ static char *vm_stack_instance(const char *stack) {
   if (aws_call(&out, "cloudformation", "describe-stack-resources", "--stack-name", stack,
                "--query", "StackResources[?ResourceType=='AWS::EC2::Instance' || ResourceType=='AWS::AutoScaling::AutoScalingGroup'].[ResourceType,PhysicalResourceId]",
                "--output", "text", NULL) != 0)
-    aws_fail(fmt_dup("reading the stack %s (CBASE_VM_STACK)", stack));
+    aws_fail(cbc_fmt("reading the stack %s (CBASE_VM_STACK)", stack));
   char *rest = NULL;
   char *first = first_line(&out);
   char *type = tab_split(first, &rest);
@@ -359,7 +348,7 @@ static char *vm_stack_instance(const char *stack) {
     if (aws_call(&ag, "autoscaling", "describe-auto-scaling-groups", "--auto-scaling-group-names", id,
                  "--query", "AutoScalingGroups[0].Instances[?LifecycleState=='InService'].InstanceId",
                  "--output", "text", NULL) != 0)
-      aws_fail(fmt_dup("reading the auto-scaling group %s of %s", id, stack));
+      aws_fail(cbc_fmt("reading the auto-scaling group %s of %s", id, stack));
     cbc_strs in = words_of(&ag);
     if (in.n != 1 || strcmp(in.v[0], "None") == 0)
       cbc_fail(CBC_EXIT_FAIL, "the auto-scaling group %s of %s (CBASE_VM_STACK) has %zu instances in service, not one: a group is one VM",
@@ -374,7 +363,7 @@ static long long vm_type_mib(const char *type) {
   cbc_buf out = { 0 };
   if (aws_call(&out, "ec2", "describe-instance-types", "--instance-types", type,
                "--query", "InstanceTypes[0].MemoryInfo.SizeInMiB", "--output", "text", NULL) != 0)
-    aws_fail(fmt_dup("reading instance type %s", type));
+    aws_fail(cbc_fmt("reading instance type %s", type));
   cbc_strip_newlines(&out);
   return cbc_vm_mib_text(type, out.data ? out.data : "");
 }
@@ -392,7 +381,7 @@ void cbc_vm_find(const char *group) {
   if (aws_call(&out, "ec2", "describe-instances", "--instance-ids", cbc_vm.id,
                "--query", "Reservations[0].Instances[0].[State.Name,PublicDnsName,InstanceType,Architecture]",
                "--output", "text", NULL) != 0)
-    aws_fail(fmt_dup("reading instance %s", cbc_vm.id));
+    aws_fail(cbc_fmt("reading instance %s", cbc_vm.id));
   char *text = first_line(&out);
   /* IFS=$'\t' read -r state VM_DNS VM_TYPE arch */
   char *state = tab_split(text, &text);
@@ -429,7 +418,7 @@ void cbc_vm_fit_set(void) {
 
 void cbc_vm_origin_secret(void) {
   char *settings = cbc_vm_settings();
-  char *name = fmt_dup("%sCBASE_ORIGIN_SECRET", settings);
+  char *name = cbc_fmt("%sCBASE_ORIGIN_SECRET", settings);
   cbc_buf out = { 0 };
   if (aws_call(&out, "ssm", "get-parameter", "--name", name, "--with-decryption",
                "--query", "Parameter.Value", "--output", "text", NULL) != 0) {
@@ -437,18 +426,18 @@ void cbc_vm_origin_secret(void) {
     if (strcmp(aws_code(), "ParameterNotFound") == 0) {
       fprintf(stderr, "cbase: there is no SSM parameter %s, the origin secret CloudFront sends the app as X-Cbase-Origin (and serve checks). Make it once, then deploy again; nothing was changed:\n", name);
       fprintf(stderr, "  aws ssm put-parameter --type SecureString --name %s --value \"$(openssl rand -hex 32)\"\n", name);
-      dry_stop(fmt_dup("no SSM parameter %s (the origin secret)", name), NULL);
+      dry_stop(cbc_fmt("no SSM parameter %s (the origin secret)", name), NULL);
       cbc_vm.origin_secret = CBC_VM_DRY_SECRET;
       return;
     }
-    aws_fail(fmt_dup("reading the SSM parameter %s", name));
+    aws_fail(cbc_fmt("reading the SSM parameter %s", name));
   }
   cbc_strip_newlines(&out);
   char *value = out.data ? out.data : "";
   if (!cbc_re("^[A-Za-z0-9_-]{32,128}$", value)) {
     cbc_vm.origin_secret = "";
     fprintf(stderr, "cbase: the SSM parameter %s is not 32 to 128 letters, digits, _ and - (its value is not shown): openssl rand -hex 32 makes one\n", name);
-    dry_stop(fmt_dup("the SSM parameter %s is not an origin secret", name), NULL);
+    dry_stop(cbc_fmt("the SSM parameter %s is not an origin secret", name), NULL);
     cbc_vm.origin_secret = CBC_VM_DRY_SECRET;
     return;
   }
@@ -504,7 +493,7 @@ static bool ssm_read(void) {
         strcmp(cbc_vm.ssm_status, "Delayed") != 0)
       return true;
   } else if (strcmp(aws_code(), "InvocationDoesNotExist") != 0) {
-    aws_fail(fmt_dup("reading SSM command %s", ssm_command_id));
+    aws_fail(cbc_fmt("reading SSM command %s", ssm_command_id));
   }
   cbc_vm.ssm_status = "";
   return false;
@@ -515,15 +504,15 @@ static bool ssm_read(void) {
  * ssm_code. The script travels base64, decoded to a file on the instance and run. */
 static void ssm_run(const char *script, const char *what) {
   char *b64 = cbc_vm_b64(script);
-  char *cmd = fmt_dup("f=$(mktemp) && echo %s | base64 -d > $f && bash $f; rc=$?; rm -f $f; exit $rc", b64);
-  char *param = fmt_dup("commands=%s", cmd);
+  char *cmd = cbc_fmt("f=$(mktemp) && echo %s | base64 -d > $f && bash $f; rc=$?; rm -f $f; exit $rc", b64);
+  char *param = cbc_fmt("commands=%s", cmd);
   cbc_buf out = { 0 };
   if (aws_call(&out, "ssm", "send-command", "--instance-ids", cbc_vm.id, "--document-name", "AWS-RunShellScript",
-               "--comment", fmt_dup("cbase %s", what), "--timeout-seconds", "600", "--parameters", param,
+               "--comment", cbc_fmt("cbase %s", what), "--timeout-seconds", "600", "--parameters", param,
                "--query", "Command.CommandId", "--output", "text", NULL) != 0) {
     if (strcmp(aws_code(), "InvalidInstanceId") == 0)
       cbc_fail(CBC_EXIT_FAIL, "%s is not an SSM managed instance yet (a new instance takes a few minutes; its role must hold AmazonSSMManagedInstanceCore, as group-init's does)", cbc_vm.id);
-    aws_fail(fmt_dup("sending the %s to %s (ssm send-command)", what, cbc_vm.id));
+    aws_fail(cbc_fmt("sending the %s to %s (ssm send-command)", what, cbc_vm.id));
   }
   char *id = first_line(&out);
   printf("vm: the %s runs on %s (SSM command %s)\n", what, cbc_vm.id, id);
@@ -535,7 +524,7 @@ static void ssm_run(const char *script, const char *what) {
   cbc_buf res = { 0 };
   if (aws_call(&res, "ssm", "get-command-invocation", "--command-id", id, "--instance-id", cbc_vm.id,
                "--query", "StandardOutputContent", "--output", "text", NULL) != 0)
-    aws_fail(fmt_dup("reading SSM command %s's output", id));
+    aws_fail(cbc_fmt("reading SSM command %s's output", id));
   /* grep '^CBASE: ', then aws_mask, then the sed that makes them "vm: " lines. */
   cbc_sbuf lines = { 0 };
   char *p = res.data ? res.data : "";
@@ -570,7 +559,7 @@ static const char *ssm_code_shown(void) { return *cbc_vm.ssm_code ? cbc_vm.ssm_c
 bool cbc_vm_ship(const char *group) {
   char *bucket = NULL, *prefix = NULL;
   cbc_vm_artifacts(aws_account, aws_region_required(), state_bucket(), &bucket, &prefix);
-  cbc_vm.key = fmt_dup("%s%s", prefix, cbc_vm.sha);
+  cbc_vm.key = cbc_fmt("%s%s", prefix, cbc_vm.sha);
   char *region = aws_region_required();
   if (aws_call(NULL, "s3api", "head-object", "--bucket", bucket, "--key", cbc_vm.key,
                "--query", "ETag", "--output", "text", NULL) == 0) {
@@ -578,15 +567,15 @@ bool cbc_vm_ship(const char *group) {
   } else {
     const char *code = aws_code();
     if (strcmp(code, "404") != 0 && strcmp(code, "NoSuchKey") != 0 && strcmp(code, "NotFound") != 0)
-      aws_fail(fmt_dup("reading s3://%s/%s", bucket, cbc_vm.key));
+      aws_fail(cbc_fmt("reading s3://%s/%s", bucket, cbc_vm.key));
     if (aws_call(NULL, "s3api", "put-object", "--bucket", bucket, "--key", cbc_vm.key, "--body", cbc_vm.bin,
                  "--content-type", "application/octet-stream", "--query", "ETag", "--output", "text", NULL) != 0)
-      aws_fail(fmt_dup("uploading s3://%s/%s", bucket, cbc_vm.key));
+      aws_fail(cbc_fmt("uploading s3://%s/%s", bucket, cbc_vm.key));
     printf("artifact: s3://%s/%s\n", bucket, cbc_vm.key);
   }
   char *script = cbc_vm_remote_deploy(cbc_vm.port, bucket, cbc_vm.key, cbc_vm.sha, region, state_bucket());
   write_text(cbc_tmp_path("vm-deploy.sh"), script);
-  ssm_run(script, fmt_dup("deploy of %s", cbc_conf.app));
+  ssm_run(script, cbc_fmt("deploy of %s", cbc_conf.app));
   if (strcmp(cbc_vm.ssm_status, "Success") == 0) return true;
   if (strcmp(cbc_vm.ssm_code, "3") == 0) {
     if (cbc_vm.new_member) {
@@ -609,7 +598,7 @@ void cbc_vm_undeploy(const char *group, bool delete_data) {
   cbc_vm_find(group);
   char *script = cbc_vm_remote_undeploy(delete_data);
   write_text(cbc_tmp_path("vm-undeploy.sh"), script);
-  ssm_run(script, fmt_dup("undeploy of %s", cbc_conf.app));
+  ssm_run(script, cbc_fmt("undeploy of %s", cbc_conf.app));
   if (strcmp(cbc_vm.ssm_status, "Success") != 0)
     cbc_fail(CBC_EXIT_FAIL, "the undeploy of %s on %s ended %s (exit %s); it still holds its port, and nothing else was changed",
              cbc_conf.app, cbc_vm.id, cbc_vm.ssm_status, ssm_code_shown());
@@ -641,9 +630,9 @@ void cbc_vm_origin(const char *group) {
              cbc_vm.dns, cbc_vm.origin_addr);
     return;
   }
-  char *what = fmt_dup("vm group %s has no origin recorded and %s names none: set CBASE_VM_ORIGIN (the VM's AAAA hostname) once",
+  char *what = cbc_fmt("vm group %s has no origin recorded and %s names none: set CBASE_VM_ORIGIN (the VM's AAAA hostname) once",
                        group, cbc_conf.app);
-  dry_stop(what, fmt_dup("cbase: %s, in this app's cbase.conf. Nothing was changed.", what));
+  dry_stop(what, cbc_fmt("cbase: %s, in this app's cbase.conf. Nothing was changed.", what));
   cbc_vm.dns = *cbc_vm.dns ? cbc_vm.dns : "unrecorded-origin.invalid";
   cbc_vm.origin_addr = "";
 }
@@ -703,7 +692,7 @@ bool cbc_vm_data_check(const char *instance, const char *group, cbc_strs *apps) 
   cbc_vm.id = cbc_dup(instance);
   char *script = cbc_vm_remote_data();
   write_text(cbc_tmp_path("vm-data.sh"), script);
-  ssm_run(script, fmt_dup("data check of vm group %s", group));
+  ssm_run(script, cbc_fmt("data check of vm group %s", group));
   char *p = last_lines.d ? last_lines.d : "";
   while (*p) {
     char *nl = strchr(p, '\n');

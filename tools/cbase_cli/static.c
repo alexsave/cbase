@@ -46,8 +46,7 @@ static char *text_of(const cbc_buf *b) {
 
 static char *joined(const char *a, const char *sep, const char *b) {
   size_t n = strlen(a) + strlen(sep) + strlen(b) + 1;
-  char *s = malloc(n);
-  if (!s) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+  char *s = cbc_xmalloc(n);
   snprintf(s, n, "%s%s%s", a, sep, b);
   return s;
 }
@@ -67,8 +66,7 @@ static void mkdir_p(const char *path) {
 static void strs_add(cbc_strs *s, char *v) {
   if (s->n == s->cap) {
     size_t cap = s->cap ? s->cap * 2 : 64;
-    char **nv = realloc(s->v, cap * sizeof *nv);
-    if (!nv) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+    char **nv = cbc_xrealloc(s->v, cap * sizeof *nv);
     s->v = nv;
     s->cap = cap;
   }
@@ -216,8 +214,7 @@ static void rules_load(void) {
       }
       if (rules_n == cap) {
         cap = cap ? cap * 2 : 32;
-        rules = realloc(rules, cap * sizeof *rules);
-        if (!rules) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+        rules = cbc_xrealloc(rules, cap * sizeof *rules);
       }
       rules[rules_n].glob = cbc_dup(g);
       rules[rules_n].type = cbc_dup(t);
@@ -253,8 +250,7 @@ static void classify(const char *path, const char **type, const char **cache) {
 static void group_push(cbc_static_plan *p, int phase, const char *type, const char *cache) {
   if (p->n == p->cap) {
     size_t cap = p->cap ? p->cap * 2 : 8;
-    cbc_static_group *nv = realloc(p->v, cap * sizeof *nv);
-    if (!nv) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+    cbc_static_group *nv = cbc_xrealloc(p->v, cap * sizeof *nv);
     p->v = nv;
     p->cap = cap;
   }
@@ -263,8 +259,7 @@ static void group_push(cbc_static_plan *p, int phase, const char *type, const ch
   g->type = cbc_dup(type);
   g->cache = cbc_dup(cache);
   g->count = 0;
-  char *num = malloc(32);
-  if (!num) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+  char *num = cbc_xmalloc(32);
   snprintf(num, 32, "g%zu", p->n);
   g->tree = joined(p->root, "/", num);
   free(num);
@@ -315,11 +310,10 @@ void cbc_static_print_plan(const cbc_static_plan *p) {
 
 void cbc_static_upload(const cbc_static_plan *p, const char *bucket, const char *region, const char *app) {
   size_t n = 0;
-  char *dest = malloc(strlen(bucket) + strlen(app) + 16);
-  if (!dest) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+  char *dest = cbc_xmalloc(strlen(bucket) + strlen(app) + 16);
   sprintf(dest, "s3://%s/%s/", bucket, app);
   char *what_uploading = NULL;
-  if (asprintf(&what_uploading, "uploading to %s", dest) < 0) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+  cbc_asprintf(&what_uploading, "uploading to %s", dest);
   for (int phase = 1; phase <= 3; phase++) {
     for (size_t i = 0; i < p->n; i++) {
       const cbc_static_group *g = &p->v[i];
@@ -340,7 +334,7 @@ void cbc_static_prune(const char *bucket, const char *region, const char *app, c
   cbc_buf text = { 0, 0, 0 };
   char *prefix = joined(app, "/", "");
   char *what_listing = NULL, *what_deleting = NULL;
-  if (asprintf(&what_listing, "listing s3://%s/%s", bucket, prefix) < 0) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+  cbc_asprintf(&what_listing, "listing s3://%s/%s", bucket, prefix);
   if (aws_call(&text, "s3api", "list-objects-v2", "--bucket", bucket, "--prefix", prefix, "--region", region,
                "--query", "Contents[].Key", "--output", "text", NULL) != 0) {
     aws_fail(what_listing);
@@ -360,7 +354,7 @@ void cbc_static_prune(const char *bucket, const char *region, const char *app, c
         if (strncmp(k, prefix, pl) != 0 || k[pl] == '\0') {
           fprintf(stderr, "cbase: prune: s3://%s/%s is outside %s/, and is left alone\n", bucket, k, app);
         } else if (!strs_has(files, k + pl)) {
-          if (asprintf(&what_deleting, "deleting s3://%s/%s", bucket, k) < 0) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+          cbc_asprintf(&what_deleting, "deleting s3://%s/%s", bucket, k);
           if (aws_call(NULL, "s3api", "delete-object", "--bucket", bucket, "--key", k, "--region", region, NULL) != 0) {
             aws_fail(what_deleting);
           }
@@ -387,7 +381,7 @@ void cbc_static_bucket(const char *static_bucket, const char *group, char **buck
     *bucket = id;
   }
   char *what_region = NULL;
-  if (asprintf(&what_region, "reading s3://%s's region", *bucket) < 0) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+  cbc_asprintf(&what_region, "reading s3://%s's region", *bucket);
   cbc_buf out = { 0, 0, 0 };
   if (aws_call(&out, "s3api", "get-bucket-location", "--bucket", *bucket, "--query", "LocationConstraint", "--output", "text", NULL) != 0) {
     aws_fail(what_region);
@@ -401,7 +395,7 @@ void cbc_static_bucket(const char *static_bucket, const char *group, char **buck
 
 bool cbc_static_policy_ok(const char *bucket, const char *account) {
   char *what_policy = NULL;
-  if (asprintf(&what_policy, "reading s3://%s's policy", bucket) < 0) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+  cbc_asprintf(&what_policy, "reading s3://%s's policy", bucket);
   cbc_buf out = { 0, 0, 0 };
   if (aws_call(&out, "s3api", "get-bucket-policy", "--bucket", bucket, "--query", "Policy", "--output", "text", NULL) == 0) {
     char *pol = text_of(&out);
