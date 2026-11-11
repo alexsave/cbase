@@ -1,13 +1,5 @@
 /* group.c - a group's own stack: group-init, group-destroy and group-template (group.h; group.sh's header
  * says what each command makes and why its refusals are where they are). The messages are group.sh's words.
- *
- * NEEDED FROM THE OTHER MODULES (not in the interface commits yet; see the report):
- *   state.h: state_apps (the members read by state_read), state_etag (its ETag, "*" for no file),
- *            state_no_bucket (STATE_NO_BUCKET, a dry run's), state_version_text (STATE_VERSION).
- *   stack.h: stack_param_previous(key) (a parameter's UsePreviousValue=true), template_set(name, value)
- *            (the T_<NAME> values template_render reads), cbc_tmp_dir() via cli.h (the run's scratch directory).
- *   vm.h:    vm_ssm_run(vm_id, script, what, lines) returning the SSM status (VM_SSM_STATUS) and the
- *            CBASE: lines the script printed (ssm-lines).
  */
 #include "group.h"
 
@@ -25,14 +17,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-
-/* The names the other modules owe group.c (the header comment above lists them): declared here until
- * they are in their headers. */
-extern cbc_strs state_apps;
-extern char *state_etag;
-extern const char *state_version_text;
-extern void stack_param_previous(const char *key);
-extern char *vm_ssm_run(const char *vm_id, const char *script, const char *what, cbc_strs *lines);
 
 #define GROUP_AMI_PARAM "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
 #define GROUP_PREFIX_LIST "com.amazonaws.global.ipv6.cloudfront.origin-facing"
@@ -60,16 +44,6 @@ static char *text_of(const cbc_buf *b) {
   return cbc_dupn(b->data, n);
 }
 
-static void push_str(cbc_strs *s, char *v) {
-  if (s->n == s->cap) {
-    size_t cap = s->cap ? s->cap * 2 : 8;
-    char **nv = realloc(s->v, cap * sizeof *nv);
-    if (!nv) cbc_fail(CBC_EXIT_FAIL, "out of memory");
-    s->v = nv;
-    s->cap = cap;
-  }
-  s->v[s->n++] = v;
-}
 
 /* replace_all: S with every FROM replaced by TO, as a new string. */
 static char *replace_all(const char *s, const char *from, const char *to) {
@@ -477,7 +451,7 @@ void cbc_group_init(const char *kind, const char *group, const cbc_group_opts *o
   char *state_file = cbc_tmp_path("state-new");
   FILE *sf = fopen(state_file, "w");
   if (!sf) cbc_fail(CBC_EXIT_FAIL, "cannot write %s", state_file);
-  fprintf(sf, "cbase-state %s %s %s%s\n", state_version_text, kind, group, *origin ? fmt(" origin=%s addr=dualstack", origin) : "");
+  fprintf(sf, "cbase-state %s %s %s%s\n", STATE_VERSION_TEXT, kind, group, *origin ? fmt(" origin=%s addr=dualstack", origin) : "");
   fclose(sf);
   int rc = aws_s3_put(bucket, key, state_file, "*");
   if (rc == 0) printf("state file: s3://%s/%s (no members yet)\n", bucket, key);
@@ -496,15 +470,15 @@ void cbc_group_destroy(const char *kind, const char *group, const cbc_group_opts
   stack_use(stack, region, "");
   printf("group-destroy: %s group %s in account %s (%s), stack %s\n", kind, group, aws_account, region, stk_name);
   state_read(kind, group);
-  if (state_apps.n > 0) {
+  if (state_apps()->n > 0) {
     char *names = cbc_dup("");
-    for (size_t i = 0; i < state_apps.n; i++) {
-      char *g = fmt("%s%s%s", names, i ? " " : "", state_apps.v[i]);
+    for (size_t i = 0; i < state_apps()->n; i++) {
+      char *g = fmt("%s%s%s", names, i ? " " : "", state_apps()->v[i]);
       free(names);
       names = g;
     }
     fprintf(stderr, "cbase: %s group %s still has %zu member%s: %s. Undeploy each first (./cbase undeploy in its repository); nothing was changed.\n",
-            kind, group, state_apps.n, state_apps.n == 1 ? "" : "s", names);
+            kind, group, state_apps()->n, state_apps()->n == 1 ? "" : "s", names);
     exit(CBC_EXIT_FAIL);
   }
   stack_status();
@@ -514,20 +488,9 @@ void cbc_group_destroy(const char *kind, const char *group, const cbc_group_opts
     if (aws_group_find(kind, group, &id) != 0) exit(CBC_EXIT_FAIL);
     if (strcmp(kind, "vm") == 0) {
       /* the data undeploy keeps: the instance's disk goes with it */
-      char *script = cbc_vm_remote_data();
-      char *path = cbc_tmp_path("vm-data.sh");
-      FILE *f = fopen(path, "w");
-      if (!f) cbc_fail(CBC_EXIT_FAIL, "cannot write %s", path);
-      fputs(script, f);
-      fclose(f);
-      cbc_strs lines = { 0, 0, 0 };
-      char *status = vm_ssm_run(id, path, fmt("data check of vm group %s", group), &lines);
-      if (strcmp(status, "Success") != 0) {
-        fprintf(stderr, "cbase: the data check on %s ended %s, so whether the instance holds data is not known: nothing was changed (--delete-data destroys it anyway)\n", id, status);
+      if (!cbc_vm_data_check(id, group, &data)) {
+        fprintf(stderr, "cbase: the data check on %s ended %s, so whether the instance holds data is not known: nothing was changed (--delete-data destroys it anyway)\n", id, cbc_vm.ssm_status);
         if (!o->delete_data) exit(CBC_EXIT_FAIL);
-      }
-      for (size_t i = 0; i < lines.n; i++) {
-        if (strncmp(lines.v[i], "CBASE: data ", 12) == 0) push_str(&data, cbc_dup(lines.v[i] + 12));
       }
     }
   }
@@ -555,7 +518,7 @@ void cbc_group_destroy(const char *kind, const char *group, const cbc_group_opts
   }
   char *bucket = state_bucket();
   char *key = state_key(kind, group);
-  if (strcmp(state_etag, "*") != 0) {
+  if (strcmp(state_etag(), "*") != 0) {
     if (aws_call(NULL, "s3api", "delete-object", "--bucket", bucket, "--key", key, NULL) != 0)
       aws_fail(fmt("deleting s3://%s/%s", bucket, key));
     printf("state file: s3://%s/%s deleted\n", bucket, key);

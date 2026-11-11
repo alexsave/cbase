@@ -19,10 +19,14 @@ trap 'rm -rf "$t"' EXIT
 fail() { echo "vm_render_test: FAIL: $*" >&2; exit 1; }
 pass=0
 
+# The C side links the tool's own objects (the Makefile's build, which vm.c's neighbours need to link),
+# less main.o, with test/vm_render.c in main's place.
+make -C "$cli" build/cbase > /dev/null
+objs=()
+while IFS= read -r o; do objs+=("$o"); done < <(find "$cli/build/obj" -name '*.o' ! -name main.o | sort)
 ${CC:-cc} -std=gnu11 -D_GNU_SOURCE -O2 -Wall -Wextra -Werror -Wshadow -Wvla -Wformat=2 \
   -DCBC_TOOLS_DIR="\"$tools\"" \
-  "$cli/cli.c" "$cli/conf.c" "$cli/aws.c" "$cli/state.c" "$cli/vm.c" "$cli/vm_remote.c" "$cli/vm_boot.c" "$cli/test/vm_render.c" \
-  -o "$t/vm_render"
+  "$cli/test/vm_render.c" "${objs[@]}" -o "$t/vm_render"
 
 # shell_render CONF MODE ARGS...: the shell's render, in a subshell with the tool's functions.
 shell_render() {

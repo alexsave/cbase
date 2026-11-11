@@ -15,7 +15,10 @@
 #include "aws.h"
 #include "cli.h"
 #include "conf.h"
+#include "deploy.h"
+#include "group.h"
 #include "state.h"
+#include "stack.h"
 #include "vm_remote.h"
 #include "../../lib/num_parse.h"
 
@@ -288,21 +291,6 @@ void cbc_vm_build(cbc_vm_artifact *out) {
 
 cbc_vm_t cbc_vm = { .id = "", .dns = "", .type = "", .bin = "", .sha = "", .key = "", .port = "",
                     .origin_secret = "", .ssm_status = "", .ssm_code = "" };
-bool cbc_dry_run = false;
-cbc_strs cbc_dry_problems;
-
-/* dry_stop: a problem a deploy stops on, said where it is found (vm.sh's, which tools/cbase owns).
- * A dry run keeps WHAT and goes on; a deploy prints LINE, if any, and exits 1 there. */
-void dry_stop(const char *what, const char *line) {
-  if (cbc_dry_run) {
-    cbc_strs_push(&cbc_dry_problems, cbc_dup(what));
-    printf("dry run: a deploy would stop here, on %s; this dry run goes on\n", what);
-    return;
-  }
-  if (line && *line) fprintf(stderr, "%s\n", line);
-  exit(CBC_EXIT_FAIL);
-}
-
 static char *fmt_dup(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 static char *fmt_dup(const char *fmt, ...) {
   va_list ap;
@@ -641,41 +629,22 @@ void cbc_vm_undeploy(const char *group, bool delete_data) {
 
 /* ---- vm_origin, vm_plan_dry and the entry points deploy, undeploy and group-destroy call ---- */
 
-/* STAND-INS, until agent A exports these from state.c (and the group agent exports its helpers in
- * group.h). Each is weak, so the real definition replaces it at link, and each stand-in is deleted
- * when its real one lands. Until then, the vm_origin and vm_plan_dry paths that read them are NOT
- * faithful: state_read does not honour state_no_bucket, state_held_origin is "" and state_origin_addr
- * is "", and state_fit_report_text is "". The group stand-ins stop the tool rather than guess. */
-char *state_held_origin __attribute__((weak)) = "";      /* ST_ORIGIN after state_read */
-char *state_origin_addr __attribute__((weak)) = "";      /* ST_ORIGIN_ADDR after state_origin */
-char *state_fit_report_text __attribute__((weak)) = "";  /* STATE_FIT_REPORT (state.c's state_fit_report) */
-bool state_no_bucket __attribute__((weak)) = false;      /* STATE_NO_BUCKET (state.sh): read no file */
-
-__attribute__((weak)) int group_state_bucket_found(void) {
-  cbc_fail(CBC_EXIT_FAIL, "internal: group_state_bucket_found is not linked (group.h, not yet in this tree)");
-}
-__attribute__((weak)) void group_state_bucket_adopted(const char *region, const char *group) {
-  (void)region;
-  (void)group;
-  cbc_fail(CBC_EXIT_FAIL, "internal: group_state_bucket_adopted is not linked (group.h, not yet in this tree)");
-}
-
 /* vm_origin GROUP: the group's origin (the state file's, or this app's CBASE_VM_ORIGIN recorded now),
  * read before anything is changed. A dry run with neither lists the problem and goes on with the
  * placeholder. */
 void cbc_vm_origin(const char *group) {
   state_origin_in = cbc_conf.vm_origin;
-  if (*cbc_conf.vm_stack && group_state_bucket_found() != 0) {
+  if (*cbc_conf.vm_stack && !cbc_group_state_bucket_found()) {
     state_no_bucket = true;
     state_read("vm", group);
     state_no_bucket = false;
   } else {
     state_read("vm", group);
   }
-  char *held = state_held_origin;
+  char *held = state_member_origin;
   if (state_origin(group)) {
-    cbc_vm.dns = state_held_origin;
-    cbc_vm.origin_addr = state_origin_addr;
+    cbc_vm.dns = state_member_origin;
+    cbc_vm.origin_addr = state_member_origin_addr;
     if (*held)
       printf("vm origin: %s (%s), the group's (its state file)\n", cbc_vm.dns, cbc_vm.origin_addr);
     else
@@ -698,12 +667,12 @@ void cbc_vm_plan_dry(const char *group) {
   state_port = (char *)state_port_of(group, cbc_conf.vm_port, at);
   char *line = state_vm_line(cbc_conf.app, state_port, cbc_conf_mem(), cbc_conf.vm_data);
   if (!state_fit(cbc_conf.app, line)) {
-    fprintf(stderr, "%s\n", state_fit_report_text);
+    fprintf(stderr, "%s\n", state_fit_report);
     fprintf(stderr, "cbase: %s would not fit on vm group %s (%s)\n", cbc_conf.app, group, state_fit_what);
     exit(CBC_EXIT_FAIL);
   }
   printf("vm: would join vm group %s as %s\n", group, line);
-  printf("%s\n", state_fit_report_text);
+  printf("%s\n", state_fit_report);
   cbc_vm.port = state_port;
 }
 
@@ -720,7 +689,9 @@ void cbc_vm_deploy_find(const char *group) {
   cbc_vm_artifacts(aws_account, aws_region_required(), state_bucket(), &bucket, &prefix);
   printf("vm paths: settings SSM %s, servers s3://%s/%s\n", cbc_vm_settings(), bucket, prefix);
   cbc_vm_origin(group);
-  if (*cbc_conf.vm_stack) group_state_bucket_adopted(aws_region_required(), group);
+  if (*cbc_conf.vm_stack &&
+      cbc_group_state_bucket_adopted(aws_region_required(), group, cbc_dry_run, cbc_conf.app, cbc_conf.vm_port, cbc_conf.vm_data))
+    state_no_bucket = true;   /* a dry run: the account has no state bucket, so no file is read (STATE_NO_BUCKET=1) */
   cbc_vm_origin_secret();
 }
 

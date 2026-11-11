@@ -79,6 +79,18 @@ void stack_param_add(const char *key, const char *value) {
   cbc_strs_push(&stack_params, p);
 }
 
+void stack_plan(void) {
+  stack_render(stk_template);
+  stack_changeset();
+}
+
+void stack_param_previous(const char *key) {
+  char *p = malloc(strlen(key) + 40);
+  if (!p) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+  sprintf(p, "ParameterKey=%s,UsePreviousValue=true", key);
+  cbc_strs_push(&stack_params, p);
+}
+
 /* cfn_call: one CloudFormation call in the stack's region with the words ARGS (NULL-terminated). */
 static int cfn_call(cbc_buf *out, const char *const *args) {
   cbc_strs words = { 0 };

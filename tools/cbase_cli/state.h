@@ -6,6 +6,11 @@
 
 #include <stdbool.h>
 
+#include "cli.h"
+
+/* The state file's format version, the second field of its header line (STATE_VERSION). */
+#define STATE_VERSION_TEXT "1"
+
 /* The joining app's CBASE_VM_ORIGIN, or "" (the state command sets it from cbase.conf). */
 extern char *state_origin_in;
 /* true when a join with no origin recorded or named is refused (deploy's vm step sets it). */
@@ -32,6 +37,11 @@ extern char *state_fit_report;
 /* state_no_bucket: the shell's STATE_NO_BUCKET: a read with it set is taken as no file (a dry run's, when
  * the account has no state bucket yet). */
 extern bool state_no_bucket;
+
+/* state_apps: the app names of the members the last state_read left (the shell's ST_APPS), and state_etag:
+ * that file's ETag, "*" when there was none (the shell's STATE_ETAG). */
+const cbc_strs *state_apps(void);
+const char *state_etag(void);
 
 /* state_bucket: the state bucket's name, cbase-state-<account>. */
 char *state_bucket(void);

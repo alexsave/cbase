@@ -101,12 +101,6 @@ typedef struct {
 } cbc_vm_t;
 extern cbc_vm_t cbc_vm;
 
-/* The dry run's state: the flag, and the problems a dry run lists at its end (tools/cbase's
- * DRY_PROBLEMS). dry_stop is tools/cbase's; it lives in vm.c until the deploy module owns it. */
-extern bool cbc_dry_run;
-extern cbc_strs cbc_dry_problems;
-void dry_stop(const char *what, const char *line);
-
 /* cbc_vm_find: VM_ID, VM_DNS, VM_TYPE and VM_MIB for the group's running arm64 instance (vm_find). */
 void cbc_vm_find(const char *group);
 

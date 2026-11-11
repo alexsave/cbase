@@ -42,6 +42,12 @@ void stack_app_use(void);
 void stack_params_clear(void);
 void stack_param_add(const char *key, const char *value);
 
+/* stack_param_previous: the parameter KEY keeps the value the stack holds (UsePreviousValue=true). */
+void stack_param_previous(const char *key);
+
+/* stack_plan: the app's template rendered into stk_template, then its change set (stack_changeset). */
+void stack_plan(void);
+
 /* stack_status: reads the stack's status into stk_status (NONE when there is no stack). Stops on a
  * failed read other than a missing stack. */
 void stack_status(void);

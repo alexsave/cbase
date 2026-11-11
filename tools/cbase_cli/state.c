@@ -15,7 +15,6 @@
 #include <string.h>
 #include <unistd.h>
 
-#define STATE_VERSION "1"
 #define STATE_PORT_MIN 8700
 #define STATE_PORT_MAX 8799
 #define STATE_ATTEMPTS 8
@@ -42,9 +41,12 @@ static members_t st;
 char *state_member_origin = "";        /* ST_ORIGIN: the header's origin, "" when none */
 char *state_member_origin_addr = "";   /* ST_ORIGIN_ADDR: ipv6 or dualstack */
 char *state_fit_report = "";
-static char *state_etag = "";
+static char *etag_cur = "";
 /* state_no_bucket: STATE_NO_BUCKET, a dry run's read with no state bucket yet: no file is read (rc 3). */
 bool state_no_bucket = false;
+
+const cbc_strs *state_apps(void) { return &st.apps; }
+const char *state_etag(void) { return etag_cur; }
 
 static void members_clear(void) {
   st.n = 0;
@@ -116,7 +118,7 @@ static void state_parse(const char *kind, const char *group, const char *file, c
     if (no == 1) {
       char hdr[512];
       if (strcmp(kind, "vm") == 0) {
-        snprintf(hdr, sizeof hdr, "^cbase-state %s vm %s origin=([a-z0-9.-]+) addr=(ipv6|dualstack)$", STATE_VERSION, group);
+        snprintf(hdr, sizeof hdr, "^cbase-state %s vm %s origin=([a-z0-9.-]+) addr=(ipv6|dualstack)$", STATE_VERSION_TEXT, group);
         regmatch_t m[3];
         if (match(hdr, line, m, 3)) {
           state_member_origin = group_text(line, &m[1]);
@@ -125,7 +127,7 @@ static void state_parse(const char *kind, const char *group, const char *file, c
         }
       }
       char want[512];
-      snprintf(want, sizeof want, "cbase-state %s %s %s", STATE_VERSION, kind, group);
+      snprintf(want, sizeof want, "cbase-state %s %s %s", STATE_VERSION_TEXT, kind, group);
       if (strcmp(line, want) != 0)
       {
         char sentence[600];
@@ -192,7 +194,7 @@ static void state_parse(const char *kind, const char *group, const char *file, c
   }
   if (no < 1) {
     char msg[256];
-    snprintf(msg, sizeof msg, "is empty (it starts \"cbase-state %s %s %s\")", STATE_VERSION, kind, group);
+    snprintf(msg, sizeof msg, "is empty (it starts \"cbase-state %s %s %s\")", STATE_VERSION_TEXT, kind, group);
     state_die(where, 1, msg);
   }
 }
@@ -301,8 +303,8 @@ bool state_origin(const char *group) {
 static void state_render(const char *kind, const char *group, const char *file) {
   FILE *f = fopen(file, "w");
   if (!f) cbc_fail(CBC_EXIT_FAIL, "cannot write %s", file);
-  if (*state_member_origin) fprintf(f, "cbase-state %s %s %s origin=%s addr=%s\n", STATE_VERSION, kind, group, state_member_origin, state_member_origin_addr);
-  else fprintf(f, "cbase-state %s %s %s\n", STATE_VERSION, kind, group);
+  if (*state_member_origin) fprintf(f, "cbase-state %s %s %s origin=%s addr=%s\n", STATE_VERSION_TEXT, kind, group, state_member_origin, state_member_origin_addr);
+  else fprintf(f, "cbase-state %s %s %s\n", STATE_VERSION_TEXT, kind, group);
   char **sorted = sorted_copy(st.lines.v, st.n);
   for (size_t i = 0; i < st.n; i++) fprintf(f, "%s\n", sorted[i]);
   free(sorted);
@@ -348,13 +350,13 @@ void state_read(const char *kind, const char *group) {
   /* STATE_NO_BUCKET=1 reads no file at all: the same as a missing one (shell state_read). */
   int rc = state_no_bucket ? 3 : aws_s3_get(bucket_s, key, cur, &etag);
   if (rc == 3) {
-    state_etag = "*";
+    etag_cur = "*";
     members_clear();
     state_member_origin = "";
     state_member_origin_addr = "";
     return;
   }
-  state_etag = etag;
+  etag_cur = etag;
   char where[512];
   snprintf(where, sizeof where, "s3://%s/%s", bucket_s, key);
   state_parse(kind, group, cur, where);
@@ -446,7 +448,7 @@ void state_change(const char *kind, const char *group, const char *app, const ch
     char new_path[512];
     snprintf(new_path, sizeof new_path, "%s", cbc_tmp_path("new"));
     state_render(kind, group, new_path);
-    int rc = aws_s3_put(bucket, key, new_path, state_etag);
+    int rc = aws_s3_put(bucket, key, new_path, etag_cur);
     if (rc == 0) {
       if (leaving) {
         printf("%s left %s group %s (it held: %s)\n", app, kind, group, line);
@@ -465,7 +467,7 @@ void state_change(const char *kind, const char *group, const char *app, const ch
 
 int state_list(const char *kind, const char *group) {
   state_read(kind, group);
-  if (strcmp(state_etag, "*") == 0) return 3;
+  if (strcmp(etag_cur, "*") == 0) return 3;
   char bucket[64], key[256];
   snprintf(bucket, sizeof bucket, "cbase-state-%s", aws_account);
   snprintf(key, sizeof key, "%s/%s.txt", kind, group);

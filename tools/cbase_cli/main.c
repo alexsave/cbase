@@ -9,6 +9,8 @@
 #include "aws.h"
 #include "cli.h"
 #include "conf.h"
+#include "deploy.h"
+#include "group.h"
 #include "stack.h"
 #include "state.h"
 
@@ -42,12 +44,6 @@ static bool file_exists_in(const char *dir, const char *name) {
   snprintf(path, sizeof path, "%s/%s", dir, name);
   struct stat st;
   return stat(path, &st) == 0 && S_ISREG(st.st_mode);
-}
-
-/* not_ported: the command is not in the C tool yet. Status 3 is the C tool's own, never the shell's. */
-static void not_ported(const char *cmd) __attribute__((noreturn));
-static void not_ported(const char *cmd) {
-  cbc_fail(3, "%s is not in the C tool yet: run it with the shell tool (tools/cbase %s)", cmd, cmd);
 }
 
 /* arg_error: an argument the shell refuses (its "echo ... >&2; exit 2"): the message, no usage. */
@@ -184,8 +180,9 @@ int main(int argc, char **argv) {
     stk_prefix = cbc_dup(prefix);
     stk_bucket_region = "us-east-1";
     if (strcmp(cbc_conf.stat, "none") != 0 && file_exists_in(cbc_conf.static_dir, "index.html")) {
-      /* The router's page list is the build's (static.sh's static_scan), which is not in the C tool yet. */
-      cbc_fail(3, "template of an app with a build in %s (index.html) needs static_scan, not in the C tool yet", cbc_conf.static_dir);
+      /* The router's page list is the build's, when there is one to read. */
+      cbc_strs files = { 0, 0, 0 };
+      cbc_deploy_scan(cbc_conf.static_dir, &files);
     }
     if (*cbc_conf.domain) {
       stk_cert = *cbc_conf.cert_arn ? cbc_conf.cert_arn
@@ -213,7 +210,8 @@ int main(int argc, char **argv) {
       cbc_fail(CBC_EXIT_USAGE, "group-template %s wants one group name%s", kind,
                strcmp(kind, "vm") == 0 ? ", and --ipv4 or nothing" : "");
     }
-    not_ported(cmd);
+    cbc_group_template(kind, group, nargs == 3);
+    return 0;
   }
   if (strcmp(cmd, "deploy") == 0) {
     for (int k = 0; k < nargs; k++) {
@@ -222,7 +220,8 @@ int main(int argc, char **argv) {
           strcmp(a, "--allow-downtime") != 0 && strcmp(a, "--no-aliases") != 0 && strcmp(a, "--attach") != 0)
         cbc_fail(CBC_EXIT_USAGE, "deploy takes --dry-run, --accept-drift, --prune, --allow-downtime, --no-aliases and --attach, not %s", a);
     }
-    not_ported(cmd);
+    cbc_deploy(conf_file, nargs, args);
+    return 0;
   }
   if (strcmp(cmd, "undeploy") == 0) {
     for (int k = 0; k < nargs; k++) {
@@ -230,7 +229,8 @@ int main(int argc, char **argv) {
       if (!is_one_of(a, "--delete-files", "--delete-data"))
         cbc_fail(CBC_EXIT_USAGE, "undeploy takes --delete-files and --delete-data, not %s", a);
     }
-    not_ported(cmd);
+    cbc_undeploy(conf_file, nargs, args);
+    return 0;
   }
   if (strcmp(cmd, "group-init") == 0 || strcmp(cmd, "group-destroy") == 0) {
     const char *kind = nargs > 0 ? args[0] : "";
@@ -242,7 +242,12 @@ int main(int argc, char **argv) {
       cbc_fail(CBC_EXIT_USAGE, "%s %s wants a group name (a lower-case letter, then lower-case letters, digits and '-', at most 32 characters), not \"%s\"",
                cmd, kind, shown);
     }
-    not_ported(cmd);
+    cbc_group_opts o = { 0 };
+    cbc_group_args(cmd, kind, nargs - 2, args + 2, &o);
+    aws_init();
+    if (strcmp(cmd, "group-init") == 0) cbc_group_init(kind, group, &o);
+    else cbc_group_destroy(kind, group, &o);
+    return 0;
   }
   fprintf(stderr, "cbase: unknown command %s\n", cmd);
   usage_block_then_exit();
