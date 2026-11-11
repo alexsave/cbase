@@ -139,6 +139,16 @@ cbase-vm-test:
 	bash tools/cbase.d/test/cbase_vm_test.sh
 check: cbase-tool-test cbase-vm-test
 
+# THE C DEPLOY TOOL (tools/cbase_cli, built to tools/cbase_cli/build/cbase): the port of tools/cbase, run
+# through the same oracle with CBASE_TOOL. CBASE_CLI_SECTIONS names the oracle sections the C tool has
+# ported so far; a section joins it when the C tool passes it. Not part of check until the switch-over.
+CBASE_CLI_SECTIONS ?= conf secrets dispatch
+.PHONY: cbase-cli cbase-cli-test
+cbase-cli:
+	$(MAKE) -C tools/cbase_cli build/cbase
+cbase-cli-test: cbase-cli
+	CBASE_TOOL=$(CURDIR)/tools/cbase_cli/build/cbase CBASE_TEST_ONLY='$(CBASE_CLI_SECTIONS)' bash tools/cbase.d/test/cbase_test.sh
+
 # The deploy tooling's own tests (ops/test, providers/*/ops/test): no AWS, no network, a stub `aws`
 # and scratch git trees. CI's ops job runs them; they are not part of check.
 OPS_TESTS := $(sort $(wildcard ops/test/*.sh providers/*/ops/test/*.sh)) tools/changed_files_test.sh
