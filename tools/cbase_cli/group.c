@@ -330,7 +330,8 @@ static void vm_instance(const cbc_group_opts *o, const char *region) {
       fprintf(stderr, "cbase: %s is %s, and cbase builds the server for linux arm64 alone (make serve-binary): pick an arm64 (Graviton) type, t4g.nano to t4g.2xlarge\n", type, archs);
       exit(CBC_EXIT_FAIL);
     }
-    long long mib = cbc_vm_mib_text(type, text);
+    char *mib_text = tab ? cbc_dupn(text, (size_t)(tab - text)) : text;
+    long long mib = cbc_vm_mib_text(type, mib_text);
     printf("instance: %s; %lld MiB, of which %lld for apps (%d kept for the OS)\n", group_cost(type), mib, mib - CBC_VM_OS_RESERVE,
            CBC_VM_OS_RESERVE);
     stack_param_add("InstanceType", type);
