@@ -610,9 +610,9 @@ seed() {   # seed KEY: an object of someone else's, put straight into the site b
 }
 # The site: a static app (CBASE_VM = none) with every kind of file.
 site="$(app site "CBASE_APP = site" "CBASE_VM = none" "CBASE_HASHED = assets/*")"
-mkdir -p "$site/build/assets" "$site/build/docs" "$site/build/.well-known" "$site/build/.git"
+mkdir -p "$site/build/assets" "$site/build/docs" "$site/build/.well-known" "$site/build/.git" "$site/build/sounds"
 for f in index.html about.html docs/index.html app.wasm style.css data.json font.WOFF2 LICENSE assets/app.1a2b3c4d.js \
-         assets/logo.9f8e7d.png assets/page.html .well-known/security.txt .well-known/apple-app-site-association .DS_Store .git/config; do
+         assets/logo.9f8e7d.png assets/page.html .well-known/security.txt .well-known/apple-app-site-association sounds/click.m4a sounds/take.opus .DS_Store .git/config; do
   printf '%s\n' "$f" > "$site/build/$f"
 done
 
@@ -660,6 +660,8 @@ check_head font.WOFF2 "font/woff2|$NC"
 check_head LICENSE "application/octet-stream|$NC"
 check_head .well-known/security.txt "text/plain; charset=utf-8|$NC"
 check_head .well-known/apple-app-site-association "application/json|$NC"
+check_head sounds/click.m4a "audio/mp4|$NC"
+check_head sounds/take.opus "audio/ogg|$NC"
 ok
 # The hashed rule: a file under CBASE_HASHED is immutable for a year, html never.
 check_head assets/app.1a2b3c4d.js "text/javascript; charset=utf-8|$IM"
@@ -669,7 +671,7 @@ ok
 # Dot files are not uploaded (but .well-known/); nothing lands outside the app's folder.
 since "$m" | grep -E '^PUT /'"$SITE_BUCKET"'/' > "$t/puts"
 grep -Eq '/\.(DS_Store|git/)' "$t/puts" && fail "a dot file was uploaded"
-[ "$(wc -l < "$t/puts" | tr -d ' ')" = 13 ] || { cat "$t/puts" >&2; fail "the deploy uploaded other than its 13 files"; }
+[ "$(wc -l < "$t/puts" | tr -d ' ')" = 15 ] || { cat "$t/puts" >&2; fail "the deploy uploaded other than its 15 files"; }
 grep -v "^PUT /$SITE_BUCKET/site/" "$t/puts" && fail "a deploy wrote outside its folder"
 ok
 # The order: the hashed files first, then the rest, the html last.
