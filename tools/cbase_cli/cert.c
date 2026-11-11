@@ -17,13 +17,6 @@
 
 /* ---- small helpers ---------------------------------------------------------------------------- */
 
-static char *text_of(const cbc_buf *b) {
-  if (!b->data) return cbc_dup("");
-  size_t n = b->len;
-  while (n > 0 && b->data[n - 1] == '\n') n--;
-  return cbc_dupn(b->data, n);
-}
-
 /* words: the blank-separated words of TEXT (read -a splits them so). */
 static void words(const char *text, cbc_strs *out) {
   const char *p = text;
@@ -44,7 +37,7 @@ static void cert_names(const char *arn, cbc_strs *names) {
   if (aws_call(&out, "acm", "--region", CERT_REGION, "describe-certificate", "--certificate-arn", arn,
                "--query", "Certificate.SubjectAlternativeNames", "--output", "text", NULL) != 0)
     aws_fail(cbc_fmt("reading certificate %s", arn));
-  char *t = text_of(&out);
+  char *t = cbc_buf_text(&out);
   words(t, names);
   free(t);
   free(out.data);
@@ -79,7 +72,7 @@ static char *cert_find(const char *status, const cbc_strs *need) {
                "--includes", "keyTypes=RSA_2048,EC_prime256v1", "--query", "CertificateSummaryList[].CertificateArn",
                "--output", "text", NULL) != 0)
     aws_fail("listing ACM certificates");
-  char *t = text_of(&out);
+  char *t = cbc_buf_text(&out);
   free(out.data);
   cbc_strs arns = { 0, 0, 0 };
   words(t, &arns);
@@ -108,7 +101,7 @@ static char *cert_status_of(const char *arn) {
   if (aws_call(&out, "acm", "--region", CERT_REGION, "describe-certificate", "--certificate-arn", arn,
                "--query", "Certificate.Status", "--output", "text", NULL) != 0)
     aws_fail(cbc_fmt("reading certificate %s", arn));
-  char *s = text_of(&out);
+  char *s = cbc_buf_text(&out);
   free(out.data);
   return s;
 }
@@ -125,7 +118,7 @@ static char *zone_for_host(const char *host) {
     if (aws_call(&out, "route53", "list-hosted-zones-by-name", "--dns-name", s, "--max-items", "10",
                  "--query", query, "--output", "text", NULL) != 0)
       aws_fail(cbc_fmt("looking for a Route 53 hosted zone for %s", s));
-    char *t = text_of(&out);
+    char *t = cbc_buf_text(&out);
     free(out.data);
     free(query);
     cbc_strs ids = { 0, 0, 0 };
@@ -181,7 +174,7 @@ static bool records_read(void) {
                "--output", "text", NULL) != 0)
     aws_fail(cbc_fmt("reading certificate %s's validation records", poll_arn));
   free(poll_text);
-  poll_text = text_of(&out);
+  poll_text = cbc_buf_text(&out);
   free(out.data);
   bool missing = strcmp(poll_text, "None") == 0;
   char *copy = cbc_dup(poll_text);
@@ -242,7 +235,7 @@ static void r53_change(const char *zone, const char *batch, const char *what) {
   if (aws_call(&out, "route53", "change-resource-record-sets", "--hosted-zone-id", zone, "--change-batch", batch,
                "--query", "ChangeInfo.Id", "--output", "text", NULL) != 0)
     aws_fail(cbc_fmt("writing %s in Route 53 zone %s", what, zone));
-  char *id = text_of(&out);
+  char *id = cbc_buf_text(&out);
   free(out.data);
   if (aws_call(NULL, "route53", "wait", "resource-record-sets-changed", "--id", id, NULL) != 0)
     aws_fail(cbc_fmt("waiting for Route 53 change %s", id));
@@ -335,7 +328,7 @@ static void auto_cert(cbc_cert_t *c, bool dry) {
       char *need = cbc_strs_join(&c->need, " ");
       aws_fail(cbc_fmt("requesting a certificate for %s", need));
     }
-    char *arn = text_of(&out);
+    char *arn = cbc_buf_text(&out);
     free(out.data);
     cbc_strs_free(&args);
     char *need = cbc_strs_join(&c->need, " ");
@@ -469,7 +462,7 @@ bool cbc_cert_alias_check(cbc_cert_t *c, const char *to_main, const char *to_api
                "--query", "DistributionList.Items[?Aliases.Quantity > `0`].[Id,DomainName,join(`,`,Aliases.Items)]",
                "--output", "text", NULL) != 0)
     aws_fail("listing the account's CloudFront distributions");
-  char *text = text_of(&out);
+  char *text = cbc_buf_text(&out);
   free(out.data);
   bool found = false;
   for (char *line = text; *line;) {
@@ -520,7 +513,7 @@ void cbc_cert_attach(const cbc_cert_t *c) {
       cbc_buf dn = { 0, 0, 0 };
       char *dom;
       if (aws_call(&dn, "cloudfront", "get-distribution", "--id", to, "--query", "Distribution.DomainName", "--output", "text", NULL) == 0) {
-        dom = text_of(&dn);
+        dom = cbc_buf_text(&dn);
       } else {
         dom = cbc_fmt("<%s's cloudfront.net name>", to);
       }

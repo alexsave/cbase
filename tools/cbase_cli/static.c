@@ -36,14 +36,6 @@ static size_t rules_n;
 
 /* ---- small helpers ---------------------------------------------------------------------------- */
 
-/* text_of: a captured command's output with its trailing newlines taken off, as $(...) does. */
-static char *text_of(const cbc_buf *b) {
-  if (!b->data) return cbc_dup("");
-  size_t n = b->len;
-  while (n > 0 && b->data[n - 1] == '\n') n--;
-  return cbc_dupn(b->data, n);
-}
-
 static void mkdir_p(const char *path) {
   char *p = cbc_dup(path);
   for (char *s = p + 1; *s; s++) {
@@ -321,7 +313,7 @@ void cbc_static_prune(const char *bucket, const char *region, const char *app, c
     aws_fail(what_listing);
   }
   size_t n = 0;
-  char *body = text_of(&text);
+  char *body = cbc_buf_text(&text);
   /* The listing: a page of keys a line, tab-separated (the CLI's text output; no key holds a tab). */
   for (char *line = body; *line;) {
     char *eol = strchr(line, '\n');
@@ -367,7 +359,7 @@ void cbc_static_bucket(const char *static_bucket, const char *group, char **buck
   if (aws_call(&out, "s3api", "get-bucket-location", "--bucket", *bucket, "--query", "LocationConstraint", "--output", "text", NULL) != 0) {
     aws_fail(what_region);
   }
-  char *loc = text_of(&out);
+  char *loc = cbc_buf_text(&out);
   if (strcmp(loc, "None") == 0 || *loc == '\0') *region = cbc_dup("us-east-1");
   else if (strcmp(loc, "EU") == 0) *region = cbc_dup("eu-west-1");
   else *region = loc;
@@ -379,7 +371,7 @@ bool cbc_static_policy_ok(const char *bucket, const char *account) {
   cbc_asprintf(&what_policy, "reading s3://%s's policy", bucket);
   cbc_buf out = { 0, 0, 0 };
   if (aws_call(&out, "s3api", "get-bucket-policy", "--bucket", bucket, "--query", "Policy", "--output", "text", NULL) == 0) {
-    char *pol = text_of(&out);
+    char *pol = cbc_buf_text(&out);
     bool ok = strstr(pol, "cloudfront.amazonaws.com") && strstr(pol, "aws:SourceAccount") && strstr(pol, account);
     free(pol);
     free(out.data);

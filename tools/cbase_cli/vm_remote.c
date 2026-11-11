@@ -15,20 +15,20 @@
 
 /* splice_units: vm_remote.sh from its second line on, with @CBASE_SERVICE@ and @CBASE_SOCKET@
  * replaced by the lines of the unit and the socket (awk's splice in vm.sh's vm_remote_deploy). */
-static void add_lines(cbc_sbuf *out, const char *text) {
+static void add_lines(cbc_buf *out, const char *text) {
   const char *p = text;
   while (*p) {
     const char *nl = strchr(p, '\n');
     size_t len = nl ? (size_t)(nl - p) : strlen(p);
-    cbc_sb_add(out, p, len);
-    cbc_sb_str(out, "\n");
+    cbc_buf_add(out, p, len);
+    cbc_buf_str(out, "\n");
     p = nl ? nl + 1 : p + len;
   }
 }
 
 static char *splice_units(const char *unit, const char *socket) {
   char *text = cbc_vm_read(cbc_vm_file("vm_remote.sh"));
-  cbc_sbuf out = { 0 };
+  cbc_buf out = { 0 };
   const char *p = strchr(text, '\n');   /* NR == 1 is the shebang, dropped */
   p = p ? p + 1 : text + strlen(text);
   while (*p) {
@@ -37,13 +37,13 @@ static char *splice_units(const char *unit, const char *socket) {
     if (len == 15 && memcmp(p, "@CBASE_SERVICE@", 15) == 0) add_lines(&out, unit);
     else if (len == 14 && memcmp(p, "@CBASE_SOCKET@", 14) == 0) add_lines(&out, socket);
     else {
-      cbc_sb_add(&out, p, len);
-      cbc_sb_str(&out, "\n");
+      cbc_buf_add(&out, p, len);
+      cbc_buf_str(&out, "\n");
     }
     p = nl ? nl + 1 : p + len;
   }
-  if (!out.d) cbc_sb_str(&out, "");
-  return out.d;
+  if (!out.data) cbc_buf_str(&out, "");
+  return out.data;
 }
 
 char *cbc_vm_remote_deploy(const char *port, const char *bucket, const char *key, const char *sha, const char *region,
@@ -51,7 +51,7 @@ char *cbc_vm_remote_deploy(const char *port, const char *bucket, const char *key
   const char *app = cbc_conf.app;
   char *data = cbc_vm_data_dir();
   char *settings = cbc_vm_settings();
-  cbc_sbuf h = { 0 };
+  cbc_buf h = { 0 };
   char *line;
   /* The header: the heredoc of vm.sh's vm_remote_deploy, with its values in as they are (every one
    * is a name, digits, hex, a path or a bucket and region name this tool checked). */
@@ -73,17 +73,17 @@ char *cbc_vm_remote_deploy(const char *port, const char *bucket, const char *key
                "settings=%s\n"
                "replaces=%s\n",
                app, app, port, app, app, app, app, data, bucket, key, sha, region, settings, cbc_conf.vm_replaces);
-  cbc_sb_str(&h, line);
+  cbc_buf_str(&h, line);
   char *unit = cbc_vm_unit(port, region, cbc_vm_backup_bucket(state_bucket));
   char *socket = cbc_vm_socket(port);
   char *body = splice_units(unit, socket);
-  cbc_sb_str(&h, body);
-  return h.d;
+  cbc_buf_str(&h, body);
+  return h.data;
 }
 
 char *cbc_vm_remote_undeploy(bool delete_data) {
   const char *app = cbc_conf.app;
-  cbc_sbuf s = { 0 };
+  cbc_buf s = { 0 };
   char *head;
   /* The first heredoc is vm.sh's unquoted one: $app is its value, and \$ is a literal $. */
   cbc_asprintf(&head,
@@ -108,18 +108,18 @@ char *cbc_vm_remote_undeploy(bool delete_data) {
                "fi\n"
                "rm -f \"$home/serve\" \"$home/serve.new\" \"$R/etc/cbase/$app.env\"\n",
                app, app, app, app, app);
-  cbc_sb_str(&s, head);
+  cbc_buf_str(&s, head);
   if (delete_data) {
-    cbc_sb_str(&s,
+    cbc_buf_str(&s,
                "rm -rf \"$home\"\n"
                "user=\"cbase-$app\"\n"
                "if id -u \"$user\" > /dev/null 2>&1; then userdel \"$user\" || true; fi\n"
                "say \"deleted /srv/cbase/$app and its data (--delete-data)\"\n");
   } else {
-    cbc_sb_str(&s,
+    cbc_buf_str(&s,
                "if [ -d \"$home/data\" ]; then say \"kept /srv/cbase/$app/data (./cbase undeploy --delete-data deletes it)\"; fi\n");
   }
-  return s.d;
+  return s.data;
 }
 
 char *cbc_vm_remote_data(void) {

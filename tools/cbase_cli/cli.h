@@ -48,12 +48,28 @@ char *cbc_strs_join(const cbc_strs *s, const char *sep);
 /* cbc_cmp_str: a qsort comparator for an array of char pointers, in byte order (LC_ALL=C sort). */
 int cbc_cmp_str(const void *a, const void *b);
 
-/* A growing byte buffer for a captured command's output. */
+/* A growing byte buffer, NUL-terminated after its len bytes (data is NULL until something is added): a
+ * captured command's output, or a text the tool builds. */
 typedef struct {
   char *data;
   size_t len;
   size_t cap;
 } cbc_buf;
+
+/* cbc_buf_add: appends the N bytes at P to B. cbc_buf_str: appends the string S to B. */
+void cbc_buf_add(cbc_buf *b, const char *p, size_t n);
+void cbc_buf_str(cbc_buf *b, const char *s);
+
+/* cbc_buf_text: a new string of B's text with its trailing newlines removed, as $(...) keeps it ("" when
+ * B holds none). B itself is not changed. */
+char *cbc_buf_text(const cbc_buf *b);
+
+/* cbc_buf_first_line: a new string of B's text up to its first newline (the whole text when it has none;
+ * "" when B holds none). B itself is not changed. */
+char *cbc_buf_first_line(const cbc_buf *b);
+
+/* cbc_replace_all: a new string, S with every FROM replaced by TO. FROM must not be empty. */
+char *cbc_replace_all(const char *s, const char *from, const char *to);
 
 /* cbc_run_err: runs ARGV (ARGV[0] searched on PATH) with stdin from /dev/null. Its stdout goes to OUT
  * when OUT is not NULL (appended to it, NUL-terminated), and to this process's stdout when it is NULL.

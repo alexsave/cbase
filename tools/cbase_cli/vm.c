@@ -50,42 +50,12 @@ char *cbc_vm_read(const char *path) {
   return data;
 }
 
-/* A growing string: the shell's sed-style text transforms are built in one of these. */
-void cbc_sb_add(cbc_sbuf *b, const char *p, size_t n) {
-  if (b->n + n + 1 > b->cap) {
-    size_t cap = b->cap ? b->cap : 256;
-    while (cap < b->n + n + 1) cap *= 2;
-    char *nd = cbc_xrealloc(b->d, cap);
-    b->d = nd;
-    b->cap = cap;
-  }
-  memcpy(b->d + b->n, p, n);
-  b->n += n;
-  b->d[b->n] = '\0';
-}
-void cbc_sb_str(cbc_sbuf *b, const char *s) { cbc_sb_add(b, s, strlen(s)); }
-
-/* replace_all: S with every FROM replaced by TO (a new string). */
-static char *replace_all(const char *s, const char *from, const char *to) {
-  cbc_sbuf b = { 0 };
-  size_t fl = strlen(from);
-  const char *p = s;
-  const char *hit;
-  while ((hit = strstr(p, from)) != NULL) {
-    cbc_sb_add(&b, p, (size_t)(hit - p));
-    cbc_sb_str(&b, to);
-    p = hit + fl;
-  }
-  cbc_sb_str(&b, p);
-  if (!b.d) cbc_sb_str(&b, "");
-  return b.d;
-}
 
 /* transform_lines: TEXT run line by line through FN (which may edit the line in place, or return
  * NULL to drop it). A line keeps its newline when the input's did (sed's behaviour). */
 typedef char *(*line_fn)(char *line, void *ctx);
 static char *transform_lines(const char *text, line_fn fn, void *ctx) {
-  cbc_sbuf out = { 0 };
+  cbc_buf out = { 0 };
   const char *p = text;
   while (*p) {
     const char *nl = strchr(p, '\n');
@@ -93,13 +63,13 @@ static char *transform_lines(const char *text, line_fn fn, void *ctx) {
     char *line = cbc_dupn(p, len);
     char *res = fn(line, ctx);
     if (res) {
-      cbc_sb_str(&out, res);
-      if (nl) cbc_sb_str(&out, "\n");
+      cbc_buf_str(&out, res);
+      if (nl) cbc_buf_str(&out, "\n");
     }
     p = nl ? nl + 1 : p + len;
   }
-  if (!out.d) cbc_sb_str(&out, "");
-  return out.d;
+  if (!out.data) cbc_buf_str(&out, "");
+  return out.data;
 }
 
 /* The app's unit values, as vm_unit's sed script takes them. */
@@ -112,14 +82,14 @@ typedef struct {
 static char *unit_line(char *line, void *vctx) {
   unit_ctx *c = vctx;
   char *s = line;
-  s = replace_all(s, "@APP@", c->app);
-  s = replace_all(s, "@USER@", c->user);
-  s = replace_all(s, "@PORT@", c->port);
-  s = replace_all(s, "@DATA@", c->data);
-  s = replace_all(s, "@HOME@", c->home);
-  s = replace_all(s, "@REGION@", c->region);
-  s = replace_all(s, "@BACKUP_BUCKET@", c->backup_bucket);
-  s = replace_all(s, "@BACKUP_KEY@", c->backup_key);
+  s = cbc_replace_all(s, "@APP@", c->app);
+  s = cbc_replace_all(s, "@USER@", c->user);
+  s = cbc_replace_all(s, "@PORT@", c->port);
+  s = cbc_replace_all(s, "@DATA@", c->data);
+  s = cbc_replace_all(s, "@HOME@", c->home);
+  s = cbc_replace_all(s, "@REGION@", c->region);
+  s = cbc_replace_all(s, "@BACKUP_BUCKET@", c->backup_bucket);
+  s = cbc_replace_all(s, "@BACKUP_KEY@", c->backup_key);
   if (strcmp(s, "@MEMORY_MAX@") == 0) {
     if (!c->mem_placeholder_value) return NULL;
     return c->mem_placeholder_value;
@@ -189,7 +159,7 @@ char *cbc_vm_unit(const char *port, const char *region, const char *backup_bucke
 
 static char *socket_line(char *line, void *vctx) {
   const char *const *v = vctx;
-  return replace_all(replace_all(line, "@APP@", v[0]), "@PORT@", v[1]);
+  return cbc_replace_all(cbc_replace_all(line, "@APP@", v[0]), "@PORT@", v[1]);
 }
 
 char *cbc_vm_socket(const char *port) {
@@ -303,15 +273,6 @@ static char *tab_split(char *text, char **rest) {
   return text;
 }
 
-/* The first line of TEXT, with its trailing newlines gone (a line of CLI text output). */
-static char *first_line(cbc_buf *out) {
-  cbc_strip_newlines(out);
-  char *s = out->data ? cbc_dup(out->data) : cbc_dup("");
-  char *nl = strchr(s, '\n');
-  if (nl) *nl = '\0';
-  return s;
-}
-
 /* The whitespace-separated words of TEXT (read -r -a). */
 static cbc_strs words_of(cbc_buf *out) {
   cbc_strs w = { 0 };
@@ -337,7 +298,7 @@ static char *vm_stack_instance(const char *stack) {
                "--output", "text", NULL) != 0)
     aws_fail(cbc_fmt("reading the stack %s (CBASE_VM_STACK)", stack));
   char *rest = NULL;
-  char *first = first_line(&out);
+  char *first = cbc_buf_first_line(&out);
   char *type = tab_split(first, &rest);
   /* read -r type id: the first line's two words; a tab or a space between them. */
   while (*rest == ' ') rest++;
@@ -382,7 +343,7 @@ void cbc_vm_find(const char *group) {
                "--query", "Reservations[0].Instances[0].[State.Name,PublicDnsName,InstanceType,Architecture]",
                "--output", "text", NULL) != 0)
     aws_fail(cbc_fmt("reading instance %s", cbc_vm.id));
-  char *text = first_line(&out);
+  char *text = cbc_buf_first_line(&out);
   /* IFS=$'\t' read -r state VM_DNS VM_TYPE arch */
   char *state = tab_split(text, &text);
   char *dns = tab_split(text, &text);
@@ -479,7 +440,7 @@ static long vm_polls(void) {
 
 static char *ssm_command_id = "";
 
-static cbc_sbuf last_lines;   /* the masked CBASE lines of the last ssm_run (ssm-lines) */
+static cbc_buf last_lines;   /* the masked CBASE lines of the last ssm_run (ssm-lines) */
 
 /* vm_ssm_read: one read of the command; true once it has ended. */
 static bool ssm_read(void) {
@@ -487,7 +448,7 @@ static bool ssm_read(void) {
   if (aws_call(&out, "ssm", "get-command-invocation", "--command-id", ssm_command_id, "--instance-id", cbc_vm.id,
                "--query", "[Status,ResponseCode]", "--output", "text", NULL) == 0) {
     char *rest = "";
-    cbc_vm.ssm_status = tab_split(first_line(&out), &rest);
+    cbc_vm.ssm_status = tab_split(cbc_buf_first_line(&out), &rest);
     cbc_vm.ssm_code = rest;
     if (strcmp(cbc_vm.ssm_status, "Pending") != 0 && strcmp(cbc_vm.ssm_status, "InProgress") != 0 &&
         strcmp(cbc_vm.ssm_status, "Delayed") != 0)
@@ -514,7 +475,7 @@ static void ssm_run(const char *script, const char *what) {
       cbc_fail(CBC_EXIT_FAIL, "%s is not an SSM managed instance yet (a new instance takes a few minutes; its role must hold AmazonSSMManagedInstanceCore, as group-init's does)", cbc_vm.id);
     aws_fail(cbc_fmt("sending the %s to %s (ssm send-command)", what, cbc_vm.id));
   }
-  char *id = first_line(&out);
+  char *id = cbc_buf_first_line(&out);
   printf("vm: the %s runs on %s (SSM command %s)\n", what, cbc_vm.id, id);
   fflush(stdout);
   ssm_command_id = id;
@@ -526,22 +487,22 @@ static void ssm_run(const char *script, const char *what) {
                "--query", "StandardOutputContent", "--output", "text", NULL) != 0)
     aws_fail(cbc_fmt("reading SSM command %s's output", id));
   /* grep '^CBASE: ', then aws_mask, then the sed that makes them "vm: " lines. */
-  cbc_sbuf lines = { 0 };
+  cbc_buf lines = { 0 };
   char *p = res.data ? res.data : "";
   while (*p) {
     char *nl = strchr(p, '\n');
     size_t len = nl ? (size_t)(nl - p) : strlen(p);
     if (len >= 8 && strncmp(p, "CBASE: ", 7) == 0) {
       char *line = cbc_dupn(p, len);
-      cbc_sb_str(&lines, aws_mask(line));
-      cbc_sb_str(&lines, "\n");
+      cbc_buf_str(&lines, aws_mask(line));
+      cbc_buf_str(&lines, "\n");
     }
     p = nl ? nl + 1 : p + len;
   }
-  if (!lines.d) cbc_sb_str(&lines, "");
-  write_text(cbc_tmp_path("ssm-lines"), lines.d);
+  if (!lines.data) cbc_buf_str(&lines, "");
+  write_text(cbc_tmp_path("ssm-lines"), lines.data);
   last_lines = lines;
-  p = lines.d;
+  p = lines.data;
   while (*p) {
     char *nl = strchr(p, '\n');
     size_t len = nl ? (size_t)(nl - p) : strlen(p);
@@ -693,7 +654,7 @@ bool cbc_vm_data_check(const char *instance, const char *group, cbc_strs *apps) 
   char *script = cbc_vm_remote_data();
   write_text(cbc_tmp_path("vm-data.sh"), script);
   ssm_run(script, cbc_fmt("data check of vm group %s", group));
-  char *p = last_lines.d ? last_lines.d : "";
+  char *p = last_lines.data ? last_lines.data : "";
   while (*p) {
     char *nl = strchr(p, '\n');
     size_t len = nl ? (size_t)(nl - p) : strlen(p);

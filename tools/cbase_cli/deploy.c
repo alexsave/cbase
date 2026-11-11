@@ -40,11 +40,6 @@ void cbc_deploy_scan(const char *dir, cbc_strs *files) {
 /* CF_ZONE_ID: every CloudFront distribution's hosted zone, for a Route 53 alias. */
 #define CF_ZONE_ID "Z2FDTNDATAQYW2"
 
-static char *first_text_line(cbc_buf *b) {
-  cbc_strip_newlines(b);
-  return cbc_dup(b->data ? b->data : "");
-}
-
 void cbc_deploy(const char *conf_file, int argc, char **argv) {
   const char *aliases_flag = "";
   for (int k = 0; k < argc; k++) {
@@ -178,7 +173,7 @@ void cbc_deploy(const char *conf_file, int argc, char **argv) {
       cbc_asprintf(&what, "invalidating %s", dist_id);
       aws_fail(what);
     }
-    char *inv = first_text_line(&out);
+    char *inv = cbc_buf_text(&out);
     printf("invalidation %s of /* on %s\n", inv, dist_id);
     fflush(stdout);
     if (aws_call(NULL, "cloudfront", "wait", "invalidation-completed", "--distribution-id", dist_id, "--id", inv, NULL) != 0) {

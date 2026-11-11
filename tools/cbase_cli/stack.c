@@ -544,12 +544,6 @@ static bool env_is(const char *name, const char *value) {
 }
 
 /* Output text: the shell's $(...) strips trailing newlines, and "None" is the CLI's empty answer. */
-static char *text_or_empty(cbc_buf *b) {
-  if (!b->data) return cbc_dup("");
-  cbc_strip_newlines(b);
-  return b->data;
-}
-
 /* line_next: the next line of S in *cursor (NUL-terminated copy of it), or NULL at the end. */
 static char *line_next(char **cursor) {
   char *p = *cursor;
@@ -623,7 +617,7 @@ static char *stack_drifts(const char *lid, const char *query) {
     snprintf(what, sizeof what, "reading %s's drift", lid);
     aws_fail(what);
   }
-  return text_or_empty(&out);
+  return cbc_buf_text(&out);
 }
 
 /* ---- drift ------------------------------------------------------------------------------------- */
@@ -641,7 +635,7 @@ static bool drift_read(void) {
     snprintf(what, sizeof what, "reading drift detection %s", drift_id);
     aws_fail(what);
   }
-  char *s = text_or_empty(&out);
+  char *s = cbc_buf_text(&out);
   char *tab = strchr(s, '\t');
   if (tab) {
     *tab = '\0';
@@ -663,7 +657,7 @@ static void stack_drift_guard(void) {
     snprintf(what, sizeof what, "detecting drift on %s", stk_name);
     aws_fail(what);
   }
-  drift_id = text_or_empty(&id);
+  drift_id = cbc_buf_text(&id);
   if (!aws_poll(121, drift_read)) {
     fprintf(stderr, "cbase: drift detection %s on %s did not finish\n", drift_id, stk_name);
     exit(CBC_EXIT_FAIL);
@@ -676,7 +670,7 @@ static void stack_drift_guard(void) {
     snprintf(what, sizeof what, "reading %s's drift", stk_name);
     aws_fail(what);
   }
-  char *drifted = text_or_empty(&dr);
+  char *drifted = cbc_buf_text(&dr);
   if (!strcmp(drifted, "None")) drifted = "";
   if (!strcmp(drift_ds, "DETECTION_COMPLETE") && !strcmp(drift_sds, "IN_SYNC") && !*drifted) {
     printf("drift: none\n");
@@ -747,7 +741,7 @@ static void stack_print_changes(void) {
   cbc_buf out = { 0 };
   if (cs_run(&out, "--query", "Changes[].ResourceChange.[Action,LogicalResourceId,ResourceType,Replacement]", "--output", "text", NULL) != 0)
     aws_fail_describe();
-  char *lines = text_or_empty(&out);
+  char *lines = cbc_buf_text(&out);
   printf("change set %s on %s (%s):\n", stk_cs, stk_name, stk_type);
   char *filter = aws_secret_filter("Target.Path", "Target.BeforeValue", "Target.AfterValue", "cause");
   char *cursor = lines, *line;
@@ -796,7 +790,7 @@ static char *stack_details(const char *lid, const char *query) {
   snprintf(q, sizeof q, "Changes[?ResourceChange.LogicalResourceId=='%s'] | [0].ResourceChange.Details[%s", lid, query);
   cbc_buf out = { 0 };
   if (cs_run(&out, "--include-property-values", "--query", q, "--output", "text", NULL) != 0) aws_fail_describe();
-  return text_or_empty(&out);
+  return cbc_buf_text(&out);
 }
 
 /* stack_refusals: the change set's removals and replacements of the resources whose type is one of
@@ -809,7 +803,7 @@ static char *stack_refusals(const char *types) {
            types);
   cbc_buf out = { 0 };
   if (cs_run(&out, "--query", q, "--output", "text", NULL) != 0) aws_fail_describe();
-  return text_or_empty(&out);
+  return cbc_buf_text(&out);
 }
 
 /* stack_aliases: each distribution's hostnames in a template, "<logical id> <host>" a line (stack.sh's awk). */
@@ -1050,7 +1044,7 @@ void stack_changeset(void) {
   if (cfn_run(NULL, "wait", "change-set-create-complete", "--stack-name", stk_name, "--change-set-name", stk_cs, NULL) != 0) {
     cbc_buf why_b = { 0 };
     if (cs_run(&why_b, "--query", "StatusReason", "--output", "text", NULL) != 0) aws_fail_describe();
-    char *why = text_or_empty(&why_b);
+    char *why = cbc_buf_text(&why_b);
     if (strstr(why, "didn't contain changes") || strstr(why, "No updates are to be performed")) {
       printf("stack: %s is up to date (no changes)\n", stk_name);
       stk_changes = "";

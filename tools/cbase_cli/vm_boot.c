@@ -17,7 +17,7 @@ static bool dropped(const char *line) {
 
 char *cbc_vm_boot_userdata(void) {
   char *text = cbc_vm_read(cbc_vm_file("vm_boot.sh"));
-  cbc_sbuf out = { 0 };
+  cbc_buf out = { 0 };
   const char *p = text;
   int nr = 0;
   while (*p) {
@@ -26,11 +26,11 @@ char *cbc_vm_boot_userdata(void) {
     nr++;
     char *line = cbc_dupn(p, len);
     if (nr == 1 || !dropped(line)) {
-      cbc_sb_str(&out, line);
-      cbc_sb_str(&out, "\n");
+      cbc_buf_str(&out, line);
+      cbc_buf_str(&out, "\n");
     }
     p = nl ? nl + 1 : p + len;
   }
-  if (!out.d) cbc_sb_str(&out, "");
-  return out.d;
+  if (!out.data) cbc_buf_str(&out, "");
+  return out.data;
 }

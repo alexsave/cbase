@@ -15,16 +15,6 @@
 /* The server's name in the build's dist/ directory (cbase.mk's serve-binary). */
 #define CBC_VM_ARTIFACT_NAME "cbase-serve-linux-arm64"
 
-/* cbc_sbuf: a growing NUL-terminated string (d is NULL until something is added). */
-typedef struct {
-  char *d;
-  size_t n, cap;
-} cbc_sbuf;
-
-/* cbc_sb_add, cbc_sb_str: append N bytes, or a string, to B. */
-void cbc_sb_add(cbc_sbuf *b, const char *p, size_t n);
-void cbc_sb_str(cbc_sbuf *b, const char *s);
-
 /* cbc_vm_read: the whole of PATH (cli.h's cbc_read_file), or the tool stops ("cbase: cannot read PATH"). */
 char *cbc_vm_read(const char *path);
 

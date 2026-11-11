@@ -25,40 +25,6 @@
 
 /* ---- small helpers ---------------------------------------------------------------------------- */
 
-/* text_of: a captured output with its trailing newlines taken off, as $(...) does. */
-static char *text_of(const cbc_buf *b) {
-  if (!b->data) return cbc_dup("");
-  size_t n = b->len;
-  while (n > 0 && b->data[n - 1] == '\n') n--;
-  return cbc_dupn(b->data, n);
-}
-
-
-/* replace_all: S with every FROM replaced by TO, as a new string. */
-static char *replace_all(const char *s, const char *from, const char *to) {
-  size_t fl = strlen(from), tl = strlen(to);
-  size_t cap = strlen(s) + 1, len = 0;
-  char *out = cbc_xmalloc(cap);
-  for (const char *p = s; *p;) {
-    if (strncmp(p, from, fl) == 0 && fl > 0) {
-      if (len + tl + 1 > cap) {
-        cap = (len + tl + 1) * 2;
-        out = cbc_xrealloc(out, cap);
-      }
-      memcpy(out + len, to, tl);
-      len += tl;
-      p += fl;
-    } else {
-      if (len + 2 > cap) {
-        cap *= 2;
-        out = cbc_xrealloc(out, cap);
-      }
-      out[len++] = *p++;
-    }
-  }
-  out[len] = '\0';
-  return out;
-}
 
 /* group_stack: the stack's name, cbase-group-<kind>-<group>. */
 static char *group_stack(const char *kind, const char *group) { return cbc_fmt("cbase-group-%s-%s", kind, group); }
@@ -220,28 +186,21 @@ static char *boot_text(const char *src) {
     while (*q == ' ' || *q == '\t') q++;
     bool keep = no == 1 || (*q != '#' && len > 0);
     if (keep) {
-      char *t = replace_all(line, "${", "${!");
+      char *t = cbc_replace_all(line, "${", "${!");
       if (strcmp(t, "want='@ORIGIN_IPV6@'") == 0) {
         free(t);
         t = cbc_dup("want='${OriginIpv6}'");
       }
       char *ind = cbc_fmt("            %s\n", t);
       free(t);
-      size_t need = out.len + strlen(ind) + 1;
-      if (need > out.cap) {
-        out.cap = need * 2;
-        out.data = realloc(out.data, out.cap);
-        if (!out.data) cbc_fail(CBC_EXIT_FAIL, "out of memory");
-      }
-      memcpy(out.data + out.len, ind, strlen(ind) + 1);
-      out.len += strlen(ind);
+      cbc_buf_str(&out, ind);
       free(ind);
     }
     free(line);
     if (!eol) break;
     p = eol + 1;
   }
-  char *text = text_of(&out);
+  char *text = cbc_buf_text(&out);
   free(out.data);
   return text;
 }
@@ -278,7 +237,7 @@ static char *prefix_list(const char *name) {
                "--output", "text", NULL) != 0)
     aws_fail(cbc_fmt("finding %s", name));
   free(filter);
-  char *id = text_of(&out);
+  char *id = cbc_buf_text(&out);
   free(out.data);
   if (!cbc_re("^pl-[0-9a-f]+$", id)) {
     fprintf(stderr, "cbase: there is no %s prefix list in %s\n", name, stk_region);
@@ -304,7 +263,7 @@ static void vm_instance(const cbc_group_opts *o, const char *region) {
       }
       aws_fail(cbc_fmt("reading instance type %s", type));
     }
-    char *text = text_of(&out);
+    char *text = cbc_buf_text(&out);
     free(out.data);
     /* the architectures are the text's tab-separated second field */
     char *tab = strchr(text, '\t');
@@ -326,7 +285,7 @@ static void vm_instance(const cbc_group_opts *o, const char *region) {
     cbc_buf out = { 0, 0, 0 };
     if (aws_call(&out, "ssm", "get-parameter", "--name", GROUP_AMI_PARAM, "--query", "Parameter.Value", "--output", "text", NULL) != 0)
       aws_fail(cbc_fmt("reading the Amazon Linux 2023 image (%s)", GROUP_AMI_PARAM));
-    char *image = text_of(&out);
+    char *image = cbc_buf_text(&out);
     free(out.data);
     if (!cbc_re("^ami-[0-9a-f]+$", image)) {
       fprintf(stderr, "cbase: %s names \"%.40s\", not an image\n", GROUP_AMI_PARAM, image);
@@ -346,7 +305,7 @@ static void vm_instance(const cbc_group_opts *o, const char *region) {
                  "--query", "sort(InstanceTypeOfferings[].Location)[0]", "--output", "text", NULL) != 0)
       aws_fail(cbc_fmt("finding a zone that offers %s", type));
     free(filter);
-    char *zone = text_of(&out);
+    char *zone = cbc_buf_text(&out);
     free(out.data);
     if (!cbc_re("^[a-z0-9-]+[a-z]$", zone)) {
       fprintf(stderr, "cbase: no zone of %s offers %s\n", region, type);
@@ -368,7 +327,7 @@ static char *public_dns_of(const char *group) {
   if (aws_call(&out, "ec2", "describe-instances", "--instance-ids", id, "--query", "Reservations[0].Instances[0].PublicDnsName",
                "--output", "text", NULL) != 0)
     aws_fail(cbc_fmt("reading vm group %s's instance", group));
-  char *dns = text_of(&out);
+  char *dns = cbc_buf_text(&out);
   free(out.data);
   if (strcmp(dns, "None") == 0) {
     free(dns);

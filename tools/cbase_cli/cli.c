@@ -119,18 +119,45 @@ char *cbc_strs_join(const cbc_strs *s, const char *sep) {
 
 int cbc_cmp_str(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
 
-static void buf_add(cbc_buf *b, const char *p, size_t n) {
+void cbc_buf_add(cbc_buf *b, const char *p, size_t n) {
   if (b->len + n + 1 > b->cap) {
-    size_t cap = b->cap ? b->cap : 4096;
+    size_t cap = b->cap ? b->cap : 256;
     while (cap < b->len + n + 1) cap *= 2;
-    char *d = realloc(b->data, cap);
-    if (!d) cbc_fail(CBC_EXIT_FAIL, "out of memory");
-    b->data = d;
+    b->data = cbc_xrealloc(b->data, cap);
     b->cap = cap;
   }
   memcpy(b->data + b->len, p, n);
   b->len += n;
   b->data[b->len] = '\0';
+}
+
+void cbc_buf_str(cbc_buf *b, const char *s) { cbc_buf_add(b, s, strlen(s)); }
+
+char *cbc_buf_text(const cbc_buf *b) {
+  if (!b->data) return cbc_dup("");
+  size_t n = b->len;
+  while (n > 0 && b->data[n - 1] == '\n') n--;
+  return cbc_dupn(b->data, n);
+}
+
+char *cbc_buf_first_line(const cbc_buf *b) {
+  if (!b->data) return cbc_dup("");
+  const char *nl = memchr(b->data, '\n', b->len);
+  return cbc_dupn(b->data, nl ? (size_t)(nl - b->data) : b->len);
+}
+
+char *cbc_replace_all(const char *s, const char *from, const char *to) {
+  cbc_buf b = { 0 };
+  size_t fl = strlen(from);
+  const char *p = s;
+  const char *hit;
+  while ((hit = strstr(p, from)) != NULL) {
+    cbc_buf_add(&b, p, (size_t)(hit - p));
+    cbc_buf_str(&b, to);
+    p = hit + fl;
+  }
+  cbc_buf_str(&b, p);
+  return b.data ? b.data : cbc_dup("");
 }
 
 int cbc_run_err(char *const argv[], cbc_buf *out, const char *err_path) {
@@ -176,7 +203,7 @@ int cbc_run_err(char *const argv[], cbc_buf *out, const char *err_path) {
         if (errno == EINTR) continue;
         break;
       }
-      buf_add(out, chunk, (size_t)r);
+      cbc_buf_add(out, chunk, (size_t)r);
     }
     close(pfd[0]);
   }
