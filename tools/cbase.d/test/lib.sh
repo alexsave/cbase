@@ -6,7 +6,10 @@
 set -euo pipefail
 export LC_ALL=C
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-tool="$root/tools/cbase"
+# CBASE_TOOL names the tool under test (the shell tools/cbase by default): a relative path is made
+# absolute here, because each run changes into the app's directory first.
+tool="${CBASE_TOOL:-$root/tools/cbase}"
+case "$tool" in /*) ;; *) tool="$PWD/$tool" ;; esac
 t="$(mktemp -d "${TMPDIR:-/tmp}/cbase-test.XXXXXX")"
 FAKE_PID=""
 stop_fake() {
