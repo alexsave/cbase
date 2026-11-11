@@ -24,16 +24,6 @@ static char *text_of(const cbc_buf *b) {
   return cbc_dupn(b->data, n);
 }
 
-static void push(cbc_strs *s, char *v) {
-  if (s->n == s->cap) {
-    size_t cap = s->cap ? s->cap * 2 : 8;
-    char **nv = cbc_xrealloc(s->v, cap * sizeof *nv);
-    s->v = nv;
-    s->cap = cap;
-  }
-  s->v[s->n++] = v;
-}
-
 /* words: the blank-separated words of TEXT (read -a splits them so). */
 static void words(const char *text, cbc_strs *out) {
   const char *p = text;
@@ -42,35 +32,9 @@ static void words(const char *text, cbc_strs *out) {
     if (!*p) break;
     const char *b = p;
     while (*p && *p != ' ' && *p != '\t' && *p != '\n') p++;
-    push(out, cbc_dupn(b, (size_t)(p - b)));
+    cbc_strs_push(out, cbc_dupn(b, (size_t)(p - b)));
   }
 }
-
-/* joined: the strings of S with SEP between them. */
-static char *joined(const cbc_strs *s, const char *sep) {
-  char *out = cbc_dup("");
-  for (size_t i = 0; i < s->n; i++) {
-    char *g = cbc_fmt("%s%s%s", out, i ? sep : "", s->v[i]);
-    free(out);
-    out = g;
-  }
-  return out;
-}
-
-static bool contains(const cbc_strs *s, const char *v) {
-  for (size_t i = 0; i < s->n; i++)
-    if (strcmp(s->v[i], v) == 0) return true;
-  return false;
-}
-
-static void free_strs(cbc_strs *s) {
-  for (size_t i = 0; i < s->n; i++) free(s->v[i]);
-  free(s->v);
-  s->v = NULL;
-  s->n = s->cap = 0;
-}
-
-static int by_bytes(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
 
 /* ---- the certificate -------------------------------------------------------------------------- */
 
@@ -103,7 +67,7 @@ static bool covers_all(const char *arn, const cbc_strs *need) {
   cert_names(arn, &names);
   bool ok = names.n > 0;
   for (size_t i = 0; ok && i < need->n; i++) ok = cbc_cert_covers(need->v[i], &names);
-  free_strs(&names);
+  cbc_strs_free(&names);
   return ok;
 }
 
@@ -126,7 +90,7 @@ static char *cert_find(const char *status, const cbc_strs *need) {
     else arns.v[kept++] = arns.v[i];
   }
   arns.n = kept;
-  qsort(arns.v, arns.n, sizeof *arns.v, by_bytes);
+  qsort(arns.v, arns.n, sizeof *arns.v, cbc_cmp_str);
   char *found = cbc_dup("");
   for (size_t i = 0; i < arns.n; i++) {
     if (covers_all(arns.v[i], need)) {
@@ -135,7 +99,7 @@ static char *cert_find(const char *status, const cbc_strs *need) {
       break;
     }
   }
-  free_strs(&arns);
+  cbc_strs_free(&arns);
   return found;
 }
 
@@ -174,11 +138,11 @@ static char *zone_for_host(const char *host) {
       }
       const char *slash = strrchr(ids.v[0], '/');
       char *zone = cbc_dup(slash ? slash + 1 : ids.v[0]);
-      free_strs(&ids);
+      cbc_strs_free(&ids);
       free(s);
       return zone;
     }
-    free_strs(&ids);
+    cbc_strs_free(&ids);
     memmove(s, strchr(s, '.') + 1, strlen(strchr(s, '.') + 1) + 1);
   }
   free(s);
@@ -311,7 +275,7 @@ static void named(const char *arn, const char *key, const cbc_strs *need) {
       free(all);
       all = g;
     }
-    char *want = joined(need, " ");
+    char *want = cbc_strs_join(need, " ");
     fprintf(stderr, "cbase: %s %s does not cover %s (its names: %s)\n", key, arn, want, all);
     exit(CBC_EXIT_FAIL);
   }
@@ -326,7 +290,7 @@ static void auto_cert(cbc_cert_t *c, bool dry) {
   if (*issued) {
     free(c->arn);
     c->arn = issued;
-    char *need = joined(&c->need, " ");
+    char *need = cbc_strs_join(&c->need, " ");
     printf("certificate: %s, issued, covers %s\n", c->arn, need);
     free(need);
     return;
@@ -336,7 +300,7 @@ static void auto_cert(cbc_cert_t *c, bool dry) {
   if (*a) {
     printf("certificate: %s, requested before, still pending validation\n", a);
   } else if (dry) {
-    char *need = joined(&c->need, " ");
+    char *need = cbc_strs_join(&c->need, " ");
     printf("certificate: none covers %s; a deploy would request one (DNS validation). This dry run goes on without the hostnames.\n", need);
     free(need);
     free(a);
@@ -345,36 +309,36 @@ static void auto_cert(cbc_cert_t *c, bool dry) {
     /* The request: DNS validation for the first hostname, the others as SANs. ACM's idempotency token
      * makes the same app's request for the same hostnames within the hour one request. */
     cbc_strs args = { 0, 0, 0 };
-    push(&args, cbc_dup("acm"));
-    push(&args, cbc_dup("--region"));
-    push(&args, cbc_dup(CERT_REGION));
-    push(&args, cbc_dup("request-certificate"));
-    push(&args, cbc_dup("--domain-name"));
-    push(&args, cbc_dup(c->need.v[0]));
-    push(&args, cbc_dup("--validation-method"));
-    push(&args, cbc_dup("DNS"));
+    cbc_strs_push(&args, cbc_dup("acm"));
+    cbc_strs_push(&args, cbc_dup("--region"));
+    cbc_strs_push(&args, cbc_dup(CERT_REGION));
+    cbc_strs_push(&args, cbc_dup("request-certificate"));
+    cbc_strs_push(&args, cbc_dup("--domain-name"));
+    cbc_strs_push(&args, cbc_dup(c->need.v[0]));
+    cbc_strs_push(&args, cbc_dup("--validation-method"));
+    cbc_strs_push(&args, cbc_dup("DNS"));
     if (c->need.n != 1) {
-      push(&args, cbc_dup("--subject-alternative-names"));
-      for (size_t i = 1; i < c->need.n; i++) push(&args, cbc_dup(c->need.v[i]));
+      cbc_strs_push(&args, cbc_dup("--subject-alternative-names"));
+      for (size_t i = 1; i < c->need.n; i++) cbc_strs_push(&args, cbc_dup(c->need.v[i]));
     }
-    char *seed = cbc_fmt("%s %s", cbc_conf.app, joined(&c->need, " "));
-    push(&args, cbc_dup("--idempotency-token"));
-    push(&args, cbc_fmt("cbase%lu", cbc_cksum(seed)));
+    char *seed = cbc_fmt("%s %s", cbc_conf.app, cbc_strs_join(&c->need, " "));
+    cbc_strs_push(&args, cbc_dup("--idempotency-token"));
+    cbc_strs_push(&args, cbc_fmt("cbase%lu", cbc_cksum(seed)));
     free(seed);
-    push(&args, cbc_dup("--query"));
-    push(&args, cbc_dup("CertificateArn"));
-    push(&args, cbc_dup("--output"));
-    push(&args, cbc_dup("text"));
-    push(&args, NULL);
+    cbc_strs_push(&args, cbc_dup("--query"));
+    cbc_strs_push(&args, cbc_dup("CertificateArn"));
+    cbc_strs_push(&args, cbc_dup("--output"));
+    cbc_strs_push(&args, cbc_dup("text"));
+    cbc_strs_push(&args, NULL);
     cbc_buf out = { 0, 0, 0 };
     if (aws_call_list(&out, (const char *const *)args.v) != 0) {
-      char *need = joined(&c->need, " ");
+      char *need = cbc_strs_join(&c->need, " ");
       aws_fail(cbc_fmt("requesting a certificate for %s", need));
     }
     char *arn = text_of(&out);
     free(out.data);
-    free_strs(&args);
-    char *need = joined(&c->need, " ");
+    cbc_strs_free(&args);
+    char *need = cbc_strs_join(&c->need, " ");
     printf("certificate: requested %s for %s (DNS validation)\n", arn, need);
     free(need);
     free(a);
@@ -395,7 +359,7 @@ static void auto_cert(cbc_cert_t *c, bool dry) {
       free(batch);
       free(what);
     } else {
-      push(&hand, cbc_fmt("%s %s %s %s", rec[i].name, rec[i].type, rec[i].value, rec[i].host));
+      cbc_strs_push(&hand, cbc_fmt("%s %s %s %s", rec[i].name, rec[i].type, rec[i].value, rec[i].host));
     }
   }
   if (hand.n > 0) {
@@ -414,7 +378,7 @@ static void auto_cert(cbc_cert_t *c, bool dry) {
       printf("  %s  %s  %s   (proves the certificate for %s)\n", name, type, value, host);
       free(line);
     }
-    free_strs(&hand);
+    cbc_strs_free(&hand);
     if (dry) {
       printf("dns: this dry run goes on without the hostnames\n");
       free(a);
@@ -423,7 +387,7 @@ static void auto_cert(cbc_cert_t *c, bool dry) {
     printf("then run ./cbase deploy again: once ACM has issued the certificate (minutes after the records are visible) it goes on, and prints the record that points each hostname at the app. Nothing else was changed.\n");
     exit(3);
   }
-  free_strs(&hand);
+  cbc_strs_free(&hand);
   if (dry) {
     printf("dns: this dry run goes on without the hostnames (the certificate is pending)\n");
     free(a);
@@ -443,28 +407,28 @@ void cbc_cert_resolve(cbc_cert_t *c, bool dry) {
   free(c->api_arn);
   c->arn = cbc_dup("");
   c->api_arn = cbc_dup("");
-  free_strs(&c->need);
-  free_strs(&c->hosts);
-  free_strs(&c->zones);
+  cbc_strs_free(&c->need);
+  cbc_strs_free(&c->hosts);
+  cbc_strs_free(&c->zones);
   if (!*conf->domain) return;
-  for (size_t i = 0; i < conf->domains.n; i++) push(&c->hosts, cbc_dup(conf->domains.v[i]));
-  if (*conf->api_host) push(&c->hosts, cbc_dup(conf->api_host));
+  for (size_t i = 0; i < conf->domains.n; i++) cbc_strs_push(&c->hosts, cbc_dup(conf->domains.v[i]));
+  if (*conf->api_host) cbc_strs_push(&c->hosts, cbc_dup(conf->api_host));
   for (size_t i = 0; i < c->hosts.n; i++) {
     char *z = zone_for_host(c->hosts.v[i]);
-    push(&c->zones, z);
+    cbc_strs_push(&c->zones, z);
     if (*z) printf("dns: %s is in Route 53 zone %s\n", c->hosts.v[i], z);
     else printf("dns: no Route 53 hosted zone in this account covers %s\n", c->hosts.v[i]);
   }
   if (*conf->api_cert_arn) {
     cbc_strs need = { 0, 0, 0 };
-    push(&need, cbc_dup(conf->api_host));
+    cbc_strs_push(&need, cbc_dup(conf->api_host));
     named(conf->api_cert_arn, "CBASE_API_CERT_ARN", &need);
-    free_strs(&need);
+    cbc_strs_free(&need);
     free(c->api_arn);
     c->api_arn = cbc_dup(conf->api_cert_arn);
   }
-  for (size_t i = 0; i < conf->domains.n; i++) push(&c->need, cbc_dup(conf->domains.v[i]));
-  if (*conf->api_host && !*conf->api_cert_arn) push(&c->need, cbc_dup(conf->api_host));
+  for (size_t i = 0; i < conf->domains.n; i++) cbc_strs_push(&c->need, cbc_dup(conf->domains.v[i]));
+  if (*conf->api_host && !*conf->api_cert_arn) cbc_strs_push(&c->need, cbc_dup(conf->api_host));
   if (*conf->cert_arn) {
     named(conf->cert_arn, "CBASE_CERT_ARN", &c->need);
     free(c->arn);
@@ -497,7 +461,7 @@ static char *cert_txt(const char *host) {
 }
 
 bool cbc_cert_alias_check(cbc_cert_t *c, const char *to_main, const char *to_api, const cbc_strs *own, bool dry) {
-  free_strs(&c->moves);
+  cbc_strs_free(&c->moves);
   if (c->hosts.n == 0 || strcmp(cbc_conf.aliases, "off") == 0) return false;
   cbc_buf out = { 0, 0, 0 };
   /* shell's JMESPath: the distributions that have alternate names, as id, domain and names joined by ','. */
@@ -514,7 +478,7 @@ bool cbc_cert_alias_check(cbc_cert_t *c, const char *to_main, const char *to_api
     char *f[3];
     split_tabs(line, f, 3);
     const char *id = f[0] ? f[0] : "", *dom = f[1] ? f[1] : "", *aliases = f[2] ? f[2] : "";
-    if (*id && strcmp(id, "None") != 0 && !contains(own, id)) {
+    if (*id && strcmp(id, "None") != 0 && !cbc_strs_contains(own, id)) {
       char *names = cbc_dup(aliases);
       for (size_t hi = 0; hi < c->hosts.n; hi++) {
         const char *h = c->hosts.v[hi];
@@ -525,7 +489,7 @@ bool cbc_cert_alias_check(cbc_cert_t *c, const char *to_main, const char *to_api
           if (strcmp(a, h) == 0) {
             const char *to = api ? to_api : to_main;
             if (*to) {
-              push(&c->moves, cbc_fmt("%s %s %s", h, id, to));
+              cbc_strs_push(&c->moves, cbc_fmt("%s %s %s", h, id, to));
               printf("attach: %s moves from the distribution %s (%s) to this app's %s (associate-alias: atomic, no downtime)%s\n",
                      h, id, dom, to, dry ? "; a dry run makes no move" : "");
             } else {
@@ -590,6 +554,6 @@ void cbc_cert_point(cbc_cert_t *c, const char *host, const char *target, const c
     free(batch);
     free(what);
   } else {
-    push(&c->notes, cbc_fmt("note: point %s at %s where its DNS is served, if it isn't already: a CNAME (an ALIAS or ANAME record at a domain's apex)", host, target));
+    cbc_strs_push(&c->notes, cbc_fmt("note: point %s at %s where its DNS is served, if it isn't already: a CNAME (an ALIAS or ANAME record at a domain's apex)", host, target));
   }
 }

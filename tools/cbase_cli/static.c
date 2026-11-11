@@ -44,13 +44,6 @@ static char *text_of(const cbc_buf *b) {
   return cbc_dupn(b->data, n);
 }
 
-static char *joined(const char *a, const char *sep, const char *b) {
-  size_t n = strlen(a) + strlen(sep) + strlen(b) + 1;
-  char *s = cbc_xmalloc(n);
-  snprintf(s, n, "%s%s%s", a, sep, b);
-  return s;
-}
-
 static void mkdir_p(const char *path) {
   char *p = cbc_dup(path);
   for (char *s = p + 1; *s; s++) {
@@ -62,18 +55,6 @@ static void mkdir_p(const char *path) {
   if (mkdir(p, 0777) != 0 && errno != EEXIST) cbc_fail(CBC_EXIT_FAIL, "cannot make %s", p);
   free(p);
 }
-
-static void strs_add(cbc_strs *s, char *v) {
-  if (s->n == s->cap) {
-    size_t cap = s->cap ? s->cap * 2 : 64;
-    char **nv = cbc_xrealloc(s->v, cap * sizeof *nv);
-    s->v = nv;
-    s->cap = cap;
-  }
-  s->v[s->n++] = v;
-}
-
-static int by_bytes(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
 
 static bool strs_has(const cbc_strs *s, const char *v) {
   size_t lo = 0, hi = s->n;
@@ -116,21 +97,21 @@ static void copy_file(const char *src, const char *dst) {
  * link is neither followed nor named). A directory that cannot be read stops the tool, as find's
  * failure did. */
 static void walk(const char *root, const char *rel, cbc_strs *out) {
-  char *dirpath = rel[0] ? joined(root, "/", rel) : cbc_dup(root);
+  char *dirpath = rel[0] ? cbc_fmt("%s%s%s", root, "/", rel) : cbc_dup(root);
   DIR *d = opendir(dirpath);
   if (!d) cbc_fail(CBC_EXIT_FAIL, "could not list every file under %s; nothing was uploaded", root);
   struct dirent *e;
   while ((e = readdir(d)) != NULL) {
     if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
-    char *child = rel[0] ? joined(rel, "/", e->d_name) : cbc_dup(e->d_name);
-    char *full = joined(dirpath, "/", e->d_name);
+    char *child = rel[0] ? cbc_fmt("%s%s%s", rel, "/", e->d_name) : cbc_dup(e->d_name);
+    char *full = cbc_fmt("%s%s%s", dirpath, "/", e->d_name);
     struct stat st;
     if (lstat(full, &st) != 0) cbc_fail(CBC_EXIT_FAIL, "could not list every file under %s; nothing was uploaded", root);
     if (S_ISDIR(st.st_mode)) {
       walk(root, child, out);
       free(child);
     } else if (S_ISREG(st.st_mode)) {
-      strs_add(out, child);
+      cbc_strs_push(out, child);
     } else {
       free(child);
     }
@@ -143,7 +124,7 @@ static void walk(const char *root, const char *rel, cbc_strs *out) {
 /* hidden: find's dot rule as the shell wrote it, on "/" + the path: a part that starts with '.' is
  * left out, .well-known/ excepted (static.sh, WHAT IS UPLOADED). */
 static bool hidden(const char *f) {
-  char *p = joined("/", "", f);
+  char *p = cbc_fmt("%s%s%s", "/", "", f);
   bool skip = !strstr(p, "/.well-known/") && strstr(p, "/.") != NULL;
   free(p);
   return skip;
@@ -153,7 +134,7 @@ void cbc_static_scan(const char *dir, cbc_strs *files) {
   files->n = 0;
   if (!is_kind(dir, true))
     cbc_fail(CBC_EXIT_FAIL, "the static dir %s does not exist: build the app first, or set CBASE_STATIC_DIR in cbase.conf (the directory with index.html)", dir);
-  char *index = joined(dir, "/", "index.html");
+  char *index = cbc_fmt("%s%s%s", dir, "/", "index.html");
   if (!is_kind(index, false))
     cbc_fail(CBC_EXIT_FAIL, "%s has no index.html, so it is not a built site: nothing was uploaded or deleted (CBASE_STATIC_DIR names the directory with index.html)", dir);
   free(index);
@@ -169,10 +150,10 @@ void cbc_static_scan(const char *dir, cbc_strs *files) {
       if (iscntrl(*c))
         cbc_fail(CBC_EXIT_FAIL, "%s holds a file whose name has a control character (a tab, a newline): rename it; nothing was uploaded", dir);
     }
-    strs_add(files, f);
+    cbc_strs_push(files, f);
   }
   free(all.v);
-  if (files->n > 1) qsort(files->v, files->n, sizeof *files->v, by_bytes);
+  if (files->n > 1) qsort(files->v, files->n, sizeof *files->v, cbc_cmp_str);
 }
 
 /* ---- the headers ------------------------------------------------------------------------------ */
@@ -261,7 +242,7 @@ static void group_push(cbc_static_plan *p, int phase, const char *type, const ch
   g->count = 0;
   char *num = cbc_xmalloc(32);
   snprintf(num, 32, "g%zu", p->n);
-  g->tree = joined(p->root, "/", num);
+  g->tree = cbc_fmt("%s%s%s", p->root, "/", num);
   free(num);
   p->n++;
 }
@@ -269,7 +250,7 @@ static void group_push(cbc_static_plan *p, int phase, const char *type, const ch
 void cbc_static_plan_make(cbc_static_plan *p, const char *dir, const cbc_strs *files, const char *tmp) {
   p->n = p->cap = 0;
   p->v = NULL;
-  p->root = joined(tmp, "/", "static-tree");
+  p->root = cbc_fmt("%s%s%s", tmp, "/", "static-tree");
   mkdir_p(p->root);
   for (size_t i = 0; i < files->n; i++) {
     const char *f = files->v[i];
@@ -286,8 +267,8 @@ void cbc_static_plan_make(cbc_static_plan *p, const char *dir, const cbc_strs *f
     if (g == p->n) group_push(p, phase, type, cache);
     p->v[g].count++;
     /* A link (ln) in the group's tree, its directories made first; a copy where no link can be made. */
-    char *src = joined(dir, "/", f);
-    char *dst = joined(p->v[g].tree, "/", f);
+    char *src = cbc_fmt("%s%s%s", dir, "/", f);
+    char *dst = cbc_fmt("%s%s%s", p->v[g].tree, "/", f);
     char *slash = strrchr(dst, '/');
     *slash = '\0';
     mkdir_p(dst);
@@ -332,7 +313,7 @@ void cbc_static_upload(const cbc_static_plan *p, const char *bucket, const char 
 
 void cbc_static_prune(const char *bucket, const char *region, const char *app, const cbc_strs *files) {
   cbc_buf text = { 0, 0, 0 };
-  char *prefix = joined(app, "/", "");
+  char *prefix = cbc_fmt("%s%s%s", app, "/", "");
   char *what_listing = NULL, *what_deleting = NULL;
   cbc_asprintf(&what_listing, "listing s3://%s/%s", bucket, prefix);
   if (aws_call(&text, "s3api", "list-objects-v2", "--bucket", bucket, "--prefix", prefix, "--region", region,

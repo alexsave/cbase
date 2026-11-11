@@ -92,6 +92,33 @@ void cbc_strs_push(cbc_strs *s, char *v) {
   s->v[s->n++] = v;
 }
 
+void cbc_strs_free(cbc_strs *s) {
+  for (size_t i = 0; i < s->n; i++) free(s->v[i]);
+  free(s->v);
+  s->v = NULL;
+  s->n = s->cap = 0;
+}
+
+bool cbc_strs_contains(const cbc_strs *s, const char *v) {
+  for (size_t i = 0; i < s->n; i++)
+    if (strcmp(s->v[i], v) == 0) return true;
+  return false;
+}
+
+char *cbc_strs_join(const cbc_strs *s, const char *sep) {
+  size_t total = 1;
+  for (size_t i = 0; i < s->n; i++) total += strlen(s->v[i]) + (i ? strlen(sep) : 0);
+  char *out = cbc_xmalloc(total);
+  out[0] = '\0';
+  for (size_t i = 0; i < s->n; i++) {
+    if (i) strcat(out, sep);
+    strcat(out, s->v[i]);
+  }
+  return out;
+}
+
+int cbc_cmp_str(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
+
 static void buf_add(cbc_buf *b, const char *p, size_t n) {
   if (b->len + n + 1 > b->cap) {
     size_t cap = b->cap ? b->cap : 4096;

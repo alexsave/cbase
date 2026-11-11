@@ -496,8 +496,6 @@ static void aws_fail_describe(void) {
   aws_fail(what);
 }
 
-static int cmp_strp(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
-
 static char *stack_details(const char *lid, const char *query);
 static void stack_discard_impl(void);
 
@@ -863,7 +861,7 @@ static char **sorted_lines(const char *text, size_t *count) {
   while ((line = line_next(&cursor)) != NULL) {
     if (*line) cbc_strs_push(&v, cbc_dup(line));
   }
-  qsort(v.v, v.n, sizeof *v.v, cmp_strp);
+  qsort(v.v, v.n, sizeof *v.v, cbc_cmp_str);
   *count = v.n;
   return v.v;
 }

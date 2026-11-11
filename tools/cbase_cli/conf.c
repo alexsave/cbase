@@ -29,16 +29,6 @@ static size_t seen_n, seen_cap;
 
 /* ---- lists ------------------------------------------------------------------------------------ */
 
-static void strs_push(cbc_strs *s, char *v) {
-  if (s->n == s->cap) {
-    size_t cap = s->cap ? s->cap * 2 : 8;
-    char **nv = cbc_xrealloc(s->v, cap * sizeof *nv);
-    s->v = nv;
-    s->cap = cap;
-  }
-  s->v[s->n++] = v;
-}
-
 static void routes_push(cbc_routes *r, cbc_route v) {
   if (r->n == r->cap) {
     size_t cap = r->cap ? r->cap * 2 : 8;
@@ -57,7 +47,7 @@ static void split_ws(const char *s, cbc_strs *out) {
     if (!*p) break;
     const char *b = p;
     while (*p && *p != ' ' && *p != '\t') p++;
-    strs_push(out, cbc_dupn(b, (size_t)(p - b)));
+    cbc_strs_push(out, cbc_dupn(b, (size_t)(p - b)));
   }
 }
 
@@ -360,7 +350,7 @@ void cbc_conf_load(const char *file) {
     if (i == start && i == dlen) break;
     size_t end = i;
     if (end > start && data[end - 1] == '\r') end--;
-    strs_push(&lines, cbc_dupn(data + start, end - start));
+    cbc_strs_push(&lines, cbc_dupn(data + start, end - start));
     start = i + 1;
   }
 

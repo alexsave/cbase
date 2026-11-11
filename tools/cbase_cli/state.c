@@ -229,13 +229,11 @@ long state_at(const char *app) {
   return -1;
 }
 
-static int cmp_str(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
-
 /* sorted_copy: the lines (N of them) sorted in byte order, as LC_ALL=C sort does. */
 static char **sorted_copy(char **lines, size_t n) {
   char **c = cbc_xmalloc((n ? n : 1) * sizeof *c);
   for (size_t i = 0; i < n; i++) c[i] = lines[i];
-  qsort(c, n, sizeof *c, cmp_str);
+  qsort(c, n, sizeof *c, cbc_cmp_str);
   return c;
 }
 

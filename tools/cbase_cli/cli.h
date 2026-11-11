@@ -38,6 +38,15 @@ typedef struct {
 } cbc_strs;
 /* cbc_strs_push: appends V (the string itself, not a copy). */
 void cbc_strs_push(cbc_strs *s, char *v);
+/* cbc_strs_free: frees each string and the list; S is empty again. */
+void cbc_strs_free(cbc_strs *s);
+/* cbc_strs_contains: whether one of S is exactly V (a linear scan). */
+bool cbc_strs_contains(const cbc_strs *s, const char *v);
+/* cbc_strs_join: the strings of S with SEP between them, as a new string ("" for an empty list). */
+char *cbc_strs_join(const cbc_strs *s, const char *sep);
+
+/* cbc_cmp_str: a qsort comparator for an array of char pointers, in byte order (LC_ALL=C sort). */
+int cbc_cmp_str(const void *a, const void *b);
 
 /* A growing byte buffer for a captured command's output. */
 typedef struct {
