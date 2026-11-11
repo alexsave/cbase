@@ -6,13 +6,31 @@
  * shell's. The commands whose work is not ported yet stop with status 3 and a message that says so;
  * the shell tools/cbase is still the default and still does them all.
  */
+#include "aws.h"
 #include "cli.h"
 #include "conf.h"
+#include "state.h"
 
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* conf_groups (conf.sh's, tools/cbase): the groups cbase.conf names, the VM first. */
+static int conf_groups(const char *kinds[2], const char *names[2]) {
+  int n = 0;
+  if (strcmp(cbc_conf.vm, "none") != 0) {
+    kinds[n] = "vm";
+    names[n] = cbc_conf.vm;
+    n++;
+  }
+  if (strcmp(cbc_conf.stat, "none") != 0) {
+    kinds[n] = "static";
+    names[n] = cbc_conf.stat;
+    n++;
+  }
+  return n;
+}
 
 static const char *conf_file = "cbase.conf";
 
@@ -68,7 +86,25 @@ int main(int argc, char **argv) {
   }
   if (strcmp(cmd, "doctor") == 0) {
     if (nargs != 0) arg_error("doctor takes no arguments");
-    not_ported(cmd);
+    cbc_conf_load(conf_file);
+    printf("%s: ok\n", conf_file);
+    cbc_conf_print();
+    aws_init();
+    printf("account   %s (%s)\n", aws_account, aws_region());
+    int rc = 0;
+    const char *kinds[2], *names[2];
+    int n = conf_groups(kinds, names);
+    for (int g = 0; g < n; g++) {
+      char *id = NULL;
+      if (aws_group_find(kinds[g], names[g], &id) != 0) {
+        rc = 1;
+        continue;
+      }
+      printf("%s group %s: %s\n", kinds[g], names[g], id);
+      int lrc = state_list(kinds[g], names[g]);
+      if (lrc == 3) printf("%s group %s: no state file yet (no app has joined)\n", kinds[g], names[g]);
+    }
+    return rc;
   }
   if (strcmp(cmd, "apps") == 0) {
     if (nargs > 1) arg_error("apps takes one group name at most");
@@ -76,7 +112,35 @@ int main(int argc, char **argv) {
       fprintf(stderr, "cbase: %s is not a group name\n", args[0]);
       exit(CBC_EXIT_USAGE);
     }
-    not_ported(cmd);
+    const char *kinds[2], *names[2];
+    int n;
+    if (nargs == 1) {
+      kinds[0] = "vm";
+      names[0] = args[0];
+      kinds[1] = "static";
+      names[1] = args[0];
+      n = 2;
+    } else {
+      cbc_conf_load(conf_file);
+      n = conf_groups(kinds, names);
+    }
+    aws_init();
+    bool found = false;
+    for (int g = 0; g < n; g++) {
+      int rc = state_list(kinds[g], names[g]);
+      if (rc == 0) found = true;
+      else if (rc != 3) exit(rc);
+    }
+    if (!found) {
+      char who[512] = "";
+      for (int g = 0; g < n; g++) {
+        char piece[256];
+        snprintf(piece, sizeof piece, "%s%s %s group", g ? ", " : "", kinds[g], names[g]);
+        strncat(who, piece, sizeof who - strlen(who) - 1);
+      }
+      cbc_fail(CBC_EXIT_FAIL, "no state file for %s: no app has joined it yet", who);
+    }
+    return 0;
   }
   if (strcmp(cmd, "state") == 0) {
     const char *op = nargs > 0 ? args[0] : "";
@@ -85,7 +149,17 @@ int main(int argc, char **argv) {
       fprintf(stderr, "cbase: state %s takes no more arguments\n", op);
       exit(CBC_EXIT_USAGE);
     }
-    not_ported(cmd);
+    cbc_conf_load(conf_file);
+    aws_init();
+    const char *kinds[2], *names[2];
+    int n = conf_groups(kinds, names);
+    for (int g = 0; g < n; g++) {
+      char *id = NULL;
+      if (aws_group_find(kinds[g], names[g], &id) != 0) exit(CBC_EXIT_FAIL);
+      state_origin_in = cbc_conf.vm_origin;
+      state_change(kinds[g], names[g], cbc_conf.app, cbc_conf_mem(), op);
+    }
+    return 0;
   }
   if (strcmp(cmd, "template") == 0) {
     if (nargs != 0) arg_error("template takes no arguments");

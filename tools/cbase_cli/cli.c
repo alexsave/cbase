@@ -1,5 +1,5 @@
 /* cli.c - the shared parts of the deploy tool (cli.h): the error exit, the usage text, the process
- * helper and the string helpers.
+ * helpers, the per-run temporary files, the regular expressions and the string helpers.
  */
 #include "cli.h"
 
@@ -9,7 +9,9 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 void cbc_fail(int status, const char *fmt, ...) {
@@ -52,6 +54,17 @@ void cbc_usage(FILE *to) {
         to);
 }
 
+void cbc_strs_push(cbc_strs *s, char *v) {
+  if (s->n == s->cap) {
+    size_t cap = s->cap ? s->cap * 2 : 8;
+    char **nv = realloc(s->v, cap * sizeof *nv);
+    if (!nv) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+    s->v = nv;
+    s->cap = cap;
+  }
+  s->v[s->n++] = v;
+}
+
 static void buf_add(cbc_buf *b, const char *p, size_t n) {
   if (b->len + n + 1 > b->cap) {
     size_t cap = b->cap ? b->cap : 4096;
@@ -66,20 +79,37 @@ static void buf_add(cbc_buf *b, const char *p, size_t n) {
   b->data[b->len] = '\0';
 }
 
-int cbc_run(char *const argv[], cbc_buf *out) {
+int cbc_run_err(char *const argv[], cbc_buf *out, const char *err_path) {
   int pfd[2] = { -1, -1 };
   if (out && pipe(pfd) != 0) return -1;
   fflush(stdout);
   fflush(stderr);
   pid_t pid = fork();
   if (pid < 0) {
-    if (out) { close(pfd[0]); close(pfd[1]); }
+    if (out) {
+      close(pfd[0]);
+      close(pfd[1]);
+    }
     return -1;
   }
   if (pid == 0) {
     int nul = open("/dev/null", O_RDONLY);
-    if (nul >= 0) { dup2(nul, STDIN_FILENO); close(nul); }
-    if (out) { dup2(pfd[1], STDOUT_FILENO); close(pfd[0]); close(pfd[1]); }
+    if (nul >= 0) {
+      dup2(nul, STDIN_FILENO);
+      close(nul);
+    }
+    if (out) {
+      dup2(pfd[1], STDOUT_FILENO);
+      close(pfd[0]);
+      close(pfd[1]);
+    }
+    if (err_path) {
+      int efd = open(err_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+      if (efd >= 0) {
+        dup2(efd, STDERR_FILENO);
+        close(efd);
+      }
+    }
     execvp(argv[0], argv);
     _exit(127);
   }
@@ -105,6 +135,105 @@ int cbc_run(char *const argv[], cbc_buf *out) {
   return -1;
 }
 
+void cbc_strip_newlines(cbc_buf *b) {
+  while (b->len > 0 && b->data[b->len - 1] == '\n') b->data[--b->len] = '\0';
+}
+
+bool cbc_on_path(const char *name) {
+  if (strchr(name, '/')) return access(name, X_OK) == 0;
+  const char *path = getenv("PATH");
+  if (!path) return false;
+  char *copy = cbc_dup(path);
+  for (char *dir = strtok(copy, ":"); dir; dir = strtok(NULL, ":")) {
+    size_t need = strlen(dir) + strlen(name) + 2;
+    char *full = malloc(need);
+    if (!full) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+    snprintf(full, need, "%s/%s", dir, name);
+    bool ok = access(full, X_OK) == 0;
+    free(full);
+    if (ok) return true;
+  }
+  return false;
+}
+
+bool cbc_read_file(const char *file, char **data, size_t *len) {
+  FILE *f = fopen(file, "rb");
+  if (!f) return false;
+  size_t cap = 65536, n = 0;
+  char *buf = malloc(cap + 1);
+  if (!buf) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+  size_t r;
+  while ((r = fread(buf + n, 1, cap - n, f)) > 0) {
+    n += r;
+    if (n == cap) {
+      cap *= 2;
+      char *nb = realloc(buf, cap + 1);
+      if (!nb) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+      buf = nb;
+    }
+  }
+  bool ok = !ferror(f);
+  fclose(f);
+  buf[n] = '\0';
+  *data = buf;
+  *len = n;
+  return ok;
+}
+
+static char *tmp_dir;
+static cbc_strs tmp_files;
+
+static void tmp_cleanup(void) {
+  for (size_t i = 0; i < tmp_files.n; i++) unlink(tmp_files.v[i]);
+  if (tmp_dir) rmdir(tmp_dir);
+}
+
+char *cbc_tmp_path(const char *name) {
+  if (!tmp_dir) {
+    const char *base = getenv("TMPDIR");
+    if (!base || !*base) base = "/tmp";
+    size_t need = strlen(base) + 32;
+    char *tmpl = malloc(need);
+    if (!tmpl) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+    snprintf(tmpl, need, "%s/cbase.XXXXXX", base);
+    tmp_dir = mkdtemp(tmpl);
+    if (!tmp_dir) cbc_fail(CBC_EXIT_FAIL, "cannot make a temporary directory in %s", base);
+    atexit(tmp_cleanup);
+  }
+  size_t need = strlen(tmp_dir) + strlen(name) + 2;
+  char *p = malloc(need);
+  if (!p) cbc_fail(CBC_EXIT_FAIL, "out of memory");
+  snprintf(p, need, "%s/%s", tmp_dir, name);
+  cbc_strs_push(&tmp_files, p);
+  return p;
+}
+
+void cbc_sleep_ms(long ms) {
+  struct timespec ts = { ms / 1000, (ms % 1000) * 1000000L };
+  while (nanosleep(&ts, &ts) != 0 && errno == EINTR) {
+  }
+}
+
+/* POSIX cksum: the CRC-32 of the bytes, then of the length (least significant byte first, as the
+ * standard has it), complemented. */
+unsigned long cbc_cksum(const char *s) {
+  static unsigned long table[256];
+  static bool made;
+  if (!made) {
+    for (unsigned long i = 0; i < 256; i++) {
+      unsigned long r = i << 24;
+      for (int k = 0; k < 8; k++) r = (r & 0x80000000UL) ? (((r << 1) ^ 0x04c11db7UL) & 0xffffffffUL) : ((r << 1) & 0xffffffffUL);
+      table[i] = r;
+    }
+    made = true;
+  }
+  unsigned long crc = 0;
+  size_t n = strlen(s);
+  for (size_t i = 0; i < n; i++) crc = ((crc << 8) ^ table[((crc >> 24) ^ (unsigned char)s[i]) & 0xff]) & 0xffffffffUL;
+  for (unsigned long len = n; len; len >>= 8) crc = ((crc << 8) ^ table[((crc >> 24) ^ (len & 0xff)) & 0xff]) & 0xffffffffUL;
+  return ~crc & 0xffffffffUL;
+}
+
 char *cbc_dupn(const char *s, size_t n) {
   char *d = malloc(n + 1);
   if (!d) cbc_fail(CBC_EXIT_FAIL, "out of memory");
@@ -115,15 +244,33 @@ char *cbc_dupn(const char *s, size_t n) {
 
 char *cbc_dup(const char *s) { return cbc_dupn(s, strlen(s)); }
 
-int cbc_re(const char *re, const char *s) {
+static bool re_flags(const char *re, const char *s, int flags) {
   regex_t r;
-  if (regcomp(&r, re, REG_EXTENDED | REG_NOSUB) != 0) cbc_fail(CBC_EXIT_FAIL, "internal: bad pattern %s", re);
-  int hit = regexec(&r, s, 0, NULL, 0) == 0;
+  if (regcomp(&r, re, REG_EXTENDED | REG_NOSUB | flags) != 0) cbc_fail(CBC_EXIT_FAIL, "internal: bad pattern %s", re);
+  bool hit = regexec(&r, s, 0, NULL, 0) == 0;
   regfree(&r);
   return hit;
 }
 
-static int is_blank(char c) { return c == ' ' || c == '\t'; }
+bool cbc_re(const char *re, const char *s) { return re_flags(re, s, 0); }
+bool cbc_re_icase(const char *re, const char *s) { return re_flags(re, s, REG_ICASE); }
+
+bool cbc_file_matches(const char *file, const char *re, bool icase) {
+  char *data;
+  size_t len;
+  if (!cbc_read_file(file, &data, &len)) return false;
+  char *p = data;
+  for (;;) {
+    char *nl = strchr(p, '\n');
+    if (nl) *nl = '\0';
+    if (icase ? cbc_re_icase(re, p) : cbc_re(re, p)) return true;
+    if (!nl) break;
+    p = nl + 1;
+  }
+  return false;
+}
+
+static bool is_blank(char c) { return c == ' ' || c == '\t'; }
 
 char *cbc_trim(char *s) {
   char *a = s;

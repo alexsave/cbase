@@ -696,3 +696,12 @@ void cbc_conf_print(void) {
     row("api-route", "%s %s %s %s", r->pattern, r->origin, r->cache, r->methods);
   }
 }
+
+/* cbc_conf_mem (conf.sh's conf_mem): the app's mem field in a state file, the declared MiB or "~128"
+ * when it is the estimate; "" for an app with no VM. */
+const char *cbc_conf_mem(void) {
+  static char buf[32];
+  if (cbc_conf.memory_estimated) snprintf(buf, sizeof buf, "~%d", CBC_MEMORY_ESTIMATE);
+  else snprintf(buf, sizeof buf, "%s", cbc_conf.memory ? cbc_conf.memory : "");
+  return buf;
+}

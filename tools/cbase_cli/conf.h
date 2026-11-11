@@ -5,15 +5,10 @@
 #ifndef CBC_CONF_H
 #define CBC_CONF_H
 
+#include "cli.h"
+
 #include <stdbool.h>
 #include <stddef.h>
-
-/* A list of strings, grown as it is filled. */
-typedef struct {
-  char **v;
-  size_t n;
-  size_t cap;
-} cbc_strs;
 
 /* One normalized route: "<pattern> <origin> <cache> <methods>", and the line it is on. */
 typedef struct {
@@ -74,6 +69,10 @@ bool cbc_conf_name_ok(const char *s);
 
 /* cbc_conf_load: reads FILE, checks it, and resolves the defaults into cbc_conf. Exits on error. */
 void cbc_conf_load(const char *file);
+
+/* cbc_conf_mem: the app's mem field in a state file: the declared MiB, or "~128" when undeclared; "" for an app
+ * with no VM. */
+const char *cbc_conf_mem(void);
 
 /* cbc_conf_print: the settings as read, defaults filled in, to stdout (config check, doctor). */
 void cbc_conf_print(void);
