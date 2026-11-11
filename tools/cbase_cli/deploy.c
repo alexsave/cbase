@@ -127,6 +127,7 @@ void cbc_deploy(const char *conf_file, int argc, char **argv) {
    *    origin is the instance and that port. */
   if (has_vm) {
     cbc_vm_deploy_join(cbc_conf.vm, dry);
+    stk_addr = cbc_vm.origin_addr;   /* the template's "addr" block: the origin's IP address type */
     stack_params_clear();
     stack_param_add("VmOrigin", cbc_vm.dns);
     stack_param_add("VmPort", cbc_vm.port);
