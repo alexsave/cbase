@@ -10,6 +10,7 @@
  *   vm_render CONF boot
  *   vm_render CONF artifacts ACCOUNT REGION STATE_BUCKET
  *   vm_render CONF fit TYPE MIB
+ *   vm_render CONF b64 TEXT
  */
 #include "../cli.h"
 #include "../conf.h"
@@ -51,6 +52,10 @@ int main(int argc, char **argv) {
     char *bucket = NULL, *prefix = NULL;
     cbc_vm_artifacts(argv[3], argv[4], argv[5], &bucket, &prefix);
     printf("%s %s", bucket, prefix);
+    return 0;
+  } else if (strcmp(mode, "b64") == 0) {
+    need(argc, 4, mode);
+    fputs(cbc_vm_b64(argv[3]), stdout);
     return 0;
   } else if (strcmp(mode, "fit") == 0) {
     need(argc, 5, mode);

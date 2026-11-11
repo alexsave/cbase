@@ -64,6 +64,10 @@ void cbc_vm_fit(const char *type, long long mib, long long *limit, char **what);
  * TYPE (vm_type_mib). Stops the tool when AWS named no size. */
 long long cbc_vm_mib_text(const char *type, const char *text);
 
+/* cbc_vm_b64: TEXT as one line of standard base64 with '=' padding and no newline, the shell's
+ * `base64 | tr -d '\n'` (how a script travels to the instance in an SSM command). */
+char *cbc_vm_b64(const char *text);
+
 /* cbc_vm_sha256: the lower-case hex sha256 of the file at PATH (vm_sha256), or NULL when it
  * could not be read. */
 char *cbc_vm_sha256(const char *path);

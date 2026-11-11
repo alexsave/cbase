@@ -20,6 +20,7 @@
 #include "state.h"
 #include "stack.h"
 #include "vm_remote.h"
+#include "../../lib/b64/b64.h"
 #include "../../lib/num_parse.h"
 
 #include <errno.h>
@@ -469,22 +470,10 @@ void cbc_vm_join(const char *group) {
   cbc_vm.new_member = state_joined_new;
 }
 
-/* base64 of N bytes, one line with no newline (the shell's base64 | tr -d '\n'). */
-static char *base64_one_line(const char *in, size_t n) {
-  static const char tbl[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-  char *o = malloc(((n + 2) / 3) * 4 + 1);
-  if (!o) cbc_fail(CBC_EXIT_FAIL, "out of memory");
-  size_t k = 0;
-  for (size_t i = 0; i < n; i += 3) {
-    unsigned v = (unsigned char)in[i] << 16;
-    if (i + 1 < n) v |= (unsigned char)in[i + 1] << 8;
-    if (i + 2 < n) v |= (unsigned char)in[i + 2];
-    o[k++] = tbl[(v >> 18) & 63];
-    o[k++] = tbl[(v >> 12) & 63];
-    o[k++] = i + 1 < n ? tbl[(v >> 6) & 63] : '=';
-    o[k++] = i + 2 < n ? tbl[v & 63] : '=';
-  }
-  o[k] = '\0';
+char *cbc_vm_b64(const char *text) {
+  size_t n = strlen(text);
+  char *o = malloc(b64_len(n) + 1);
+  if (!o || b64_encode((const uint8_t *)text, n, o, b64_len(n) + 1) < 0) cbc_fail(CBC_EXIT_FAIL, "out of memory");
   return o;
 }
 
@@ -525,7 +514,7 @@ static bool ssm_read(void) {
  * bounded poll. Prints only its "CBASE: " lines (masked), as "vm: " lines. Sets ssm_status and
  * ssm_code. The script travels base64, decoded to a file on the instance and run. */
 static void ssm_run(const char *script, const char *what) {
-  char *b64 = base64_one_line(script, strlen(script));
+  char *b64 = cbc_vm_b64(script);
   char *cmd = fmt_dup("f=$(mktemp) && echo %s | base64 -d > $f && bash $f; rc=$?; rm -f $f; exit $rc", b64);
   char *param = fmt_dup("commands=%s", cmd);
   cbc_buf out = { 0 };

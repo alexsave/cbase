@@ -51,6 +51,7 @@ shell_render() {
       data) vm_remote_data ;;
       boot) awk 'NR == 1 || (!/^[[:space:]]*#/ && !/^$/)' "$tools/cbase.d/vm_boot.sh" ;;
       artifacts) AWS_ACCOUNT="$1"; VR_REGION="$2"; VR_STATE="$3"; vm_artifacts ;;
+      b64) printf '%s' "$1" | base64 | tr -d '\n' ;;
       fit) VM_TYPE="$1"; VM_MIB="$2"; vm_fit_set; printf '%s\n%s\n' "$STATE_FIT_LIMIT" "$STATE_FIT_WHAT" ;;
     esac
   )
@@ -92,5 +93,12 @@ for conf in "$conf_plain" "$conf_undeclared" "$conf_adopted" "$conf_legacy" "$co
   check "$name: fit" "$conf" fit t4g.nano 512
 done
 check "boot user-data" "$conf_plain" boot
+# The encoding a script travels in: every padding case (n % 3 = 1, 2, 0) and a multi-line script.
+for text in a ab abc abcd abcde abcdef 'set -e
+echo "x y" > /tmp/f
+exit 0' '#!/bin/bash
+echo hi'; do
+  check "base64 of ${#text} bytes" "$conf_plain" b64 "$text"
+done
 
 echo "vm_render_test: ok ($pass renders equal the shell's)"
