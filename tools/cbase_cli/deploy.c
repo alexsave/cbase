@@ -15,11 +15,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-bool cbc_dry_run = false;
 cbc_strs cbc_dry_problems;
 
 void dry_stop(const char *what, const char *line) {
-  if (cbc_dry_run) {
+  if (cbc_flags.dry_run) {
     cbc_strs_push(&cbc_dry_problems, cbc_dup(what));
     printf("dry run: a deploy would stop here, on %s; this dry run goes on\n", what);
     return;
@@ -44,21 +43,17 @@ void cbc_deploy(const char *conf_file, int argc, char **argv) {
   const char *aliases_flag = "";
   for (int k = 0; k < argc; k++) {
     const char *a = argv[k];
-    if (strcmp(a, "--dry-run") == 0) setenv("DRY_RUN", "1", 1);
-    else if (strcmp(a, "--accept-drift") == 0) setenv("CBASE_ACCEPT_DRIFT", "1", 1);
-    else if (strcmp(a, "--prune") == 0) setenv("CBASE_PRUNE", "1", 1);
-    else if (strcmp(a, "--allow-downtime") == 0) setenv("CBASE_ALLOW_DOWNTIME", "1", 1);
+    if (strcmp(a, "--dry-run") == 0) cbc_flags.dry_run = cbc_flags.dry_banner = true;
+    else if (strcmp(a, "--accept-drift") == 0) cbc_flags.accept_drift = true;
+    else if (strcmp(a, "--prune") == 0) cbc_flags.prune = true;
+    else if (strcmp(a, "--allow-downtime") == 0) cbc_flags.allow_downtime = true;
     else if (strcmp(a, "--no-aliases") == 0) aliases_flag = "off";
     else if (strcmp(a, "--attach") == 0) aliases_flag = "on";
     else
       cbc_fail(CBC_EXIT_USAGE, "deploy takes --dry-run, --accept-drift, --prune, --allow-downtime, --no-aliases and --attach, not %s", a);
   }
-  const char *dry_env = getenv("DRY_RUN");
-  if (!dry_env) dry_env = "";
-  cbc_dry_run = strcmp(dry_env, "1") == 0;
-  const bool dry = cbc_dry_run;
-  const char *prune_env = getenv("CBASE_PRUNE");
-  const bool prune = prune_env && strcmp(prune_env, "1") == 0;
+  const bool dry = cbc_flags.dry_run;
+  const bool prune = cbc_flags.prune;
 
   cbc_conf_load(conf_file);
   if (*aliases_flag) {
@@ -67,7 +62,7 @@ void cbc_deploy(const char *conf_file, int argc, char **argv) {
   }
   aws_init();
   stack_app_use();
-  printf("deploy: %s to account %s%s\n", cbc_conf.app, aws_account, *dry_env ? " (dry run: nothing is changed)" : "");
+  printf("deploy: %s to account %s%s\n", cbc_conf.app, aws_account, cbc_flags.dry_banner ? " (dry run: nothing is changed)" : "");
 
   const bool has_vm = strcmp(cbc_conf.vm, "none") != 0;
   const bool has_static = strcmp(cbc_conf.stat, "none") != 0;

@@ -434,6 +434,22 @@ static bool re_flags(const char *re, const char *s, int flags) {
   return hit;
 }
 
+cbc_flags_t cbc_flags;
+
+static bool env_is_one(const char *name) {
+  const char *v = getenv(name);
+  return v && strcmp(v, "1") == 0;
+}
+
+void cbc_flags_from_env(void) {
+  const char *dry = getenv("DRY_RUN");
+  cbc_flags.dry_run = dry && strcmp(dry, "1") == 0;
+  cbc_flags.dry_banner = dry && *dry;
+  cbc_flags.accept_drift = env_is_one("CBASE_ACCEPT_DRIFT");
+  cbc_flags.prune = env_is_one("CBASE_PRUNE");
+  cbc_flags.allow_downtime = env_is_one("CBASE_ALLOW_DOWNTIME");
+}
+
 bool cbc_re(const char *re, const char *s) { return re_flags(re, s, 0); }
 bool cbc_re_icase(const char *re, const char *s) { return re_flags(re, s, REG_ICASE); }
 

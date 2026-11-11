@@ -591,7 +591,7 @@ void cbc_vm_deploy_find(const char *group) {
   printf("vm paths: settings SSM %s, servers s3://%s/%s\n", cbc_vm_settings(), bucket, prefix);
   cbc_vm_origin(group);
   if (*cbc_conf.vm_stack &&
-      cbc_group_state_bucket_adopted(aws_region_required(), group, cbc_dry_run, cbc_conf.app, cbc_conf.vm_port, cbc_conf.vm_data))
+      cbc_group_state_bucket_adopted(aws_region_required(), group, cbc_flags.dry_run, cbc_conf.app, cbc_conf.vm_port, cbc_conf.vm_data))
     state_no_bucket = true;   /* a dry run: the account has no state bucket, so no file is read (STATE_NO_BUCKET=1) */
   cbc_vm_origin_secret();
 }

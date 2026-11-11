@@ -8,9 +8,8 @@
 
 #include <stdbool.h>
 
-/* The dry run's state: the flag (DRY_RUN=1), and the problems a dry run lists at its end (tools/cbase's
+/* The dry run's state: the problems a dry run lists at its end (tools/cbase's
  * DRY_PROBLEMS). */
-extern bool cbc_dry_run;
 extern cbc_strs cbc_dry_problems;
 
 /* dry_stop: a problem a deploy stops on, said where it is found. A dry run keeps WHAT and goes on; a deploy

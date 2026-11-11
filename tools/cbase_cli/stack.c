@@ -528,12 +528,6 @@ static int cs_run(cbc_buf *out, ...) {
   return rc;
 }
 
-/* env_is: an environment variable is exactly VALUE (the shell's [ "${X:-}" = VALUE ]). */
-static bool env_is(const char *name, const char *value) {
-  const char *v = getenv(name);
-  return v && strcmp(v, value) == 0;
-}
-
 /* Output text: the shell's $(...) strips trailing newlines, and "None" is the CLI's empty answer. */
 /* line_next: the next line of S in *cursor (NUL-terminated copy of it), or NULL at the end. */
 static char *line_next(char **cursor) {
@@ -692,7 +686,7 @@ static void stack_drift_guard(void) {
       }
     }
   }
-  if (env_is("CBASE_ACCEPT_DRIFT", "1")) {
+  if (cbc_flags.accept_drift) {
     fprintf(stderr, "drift: accepted (--accept-drift): this deploy makes the stack's resources match the template again\n");
     return;
   }
@@ -890,7 +884,7 @@ static void stack_downtime_guard(void) {
   }
   if (why.n == 0) return;
   for (size_t i = 0; i < why.n; i++) fprintf(stderr, "downtime: %s\n", why.v[i]);
-  if (env_is("CBASE_ALLOW_DOWNTIME", "1")) {
+  if (cbc_flags.allow_downtime) {
     fprintf(stderr, "downtime: allowed (--allow-downtime): the app is unreachable at those hostnames until the change is done and DNS follows\n");
     return;
   }
@@ -1037,7 +1031,7 @@ void stack_changeset(void) {
   stack_print_changes();
   stack_keep_guard();
   if (stk_app && !strcmp(stk_type, "UPDATE")) stack_downtime_guard();
-  if (stk_app && env_is("DRY_RUN", "1")) stack_discard_impl();
+  if (stk_app && cbc_flags.dry_run) stack_discard_impl();
 }
 
 void stack_execute(void) {

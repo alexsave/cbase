@@ -59,6 +59,7 @@ static void usage_block_then_exit(void) {
 static bool is_one_of(const char *s, const char *a, const char *b) { return strcmp(s, a) == 0 || strcmp(s, b) == 0; }
 
 int main(int argc, char **argv) {
+  cbc_flags_from_env();
   int i = 1;
   while (i < argc) {
     const char *a = argv[i];
