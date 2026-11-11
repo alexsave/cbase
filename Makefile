@@ -148,6 +148,10 @@ cbase-cli:
 	$(MAKE) -C tools/cbase_cli build/cbase
 cbase-cli-test: cbase-cli
 	CBASE_TOOL=$(CURDIR)/tools/cbase_cli/build/cbase CBASE_TEST_ONLY='$(CBASE_CLI_SECTIONS)' bash tools/cbase.d/test/cbase_test.sh
+# The C renders of the VM side (vm.c, vm_remote.c, vm_boot.c) against the shell's, byte for byte.
+.PHONY: cbase-cli-vm-render-test
+cbase-cli-vm-render-test:
+	bash tools/cbase_cli/test/vm_render_test.sh
 
 # The deploy tooling's own tests (ops/test, providers/*/ops/test): no AWS, no network, a stub `aws`
 # and scratch git trees. CI's ops job runs them; they are not part of check.
