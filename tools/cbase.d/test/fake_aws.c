@@ -655,9 +655,12 @@ static void s3_bucket(int fd, const request *r) {
         etag_of(&g_obj[i], etag, sizeof etag);
         sb_add(&b, "<Contents><Key>");
         sb_xml(&b, key);
-        sb_add(&b, "</Key><LastModified>2026-11-09T12:00:00.000Z</LastModified><ETag>&quot;%.*s&quot;</ETag><Size>%zu</Size>"
+        // LastModified is the object's own put: one second a PUT after 2026-11-09T12:00:00, so a listing orders
+        // objects by when they were last written (the version is the fake-wide PUT counter).
+        unsigned sec = g_obj[i].version % 36000;
+        sb_add(&b, "</Key><LastModified>2026-11-09T%02u:%02u:%02u.000Z</LastModified><ETag>&quot;%.*s&quot;</ETag><Size>%zu</Size>"
                    "<StorageClass>STANDARD</StorageClass></Contents>",
-               (int)strlen(etag) - 2, etag + 1, g_obj[i].len);
+               12 + sec / 3600, sec / 60 % 60, sec % 60, (int)strlen(etag) - 2, etag + 1, g_obj[i].len);
         count++;
     }
     pthread_mutex_unlock(&g_mu);
