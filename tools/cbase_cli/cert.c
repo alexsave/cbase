@@ -15,11 +15,6 @@
 #define CERT_REGION "us-east-1"
 #define CERT_POLL_TRIES 61
 
-/* aws_call_argv: aws_call with an argument vector, for a call whose arguments are a list (the SANs of a
- * request). Same retries, output and error file as aws_call. NEEDED FROM aws.h (the interface commit has
- * the variadic form only). */
-int aws_call_argv(cbc_buf *out, char *const *argv);
-
 /* ---- small helpers ---------------------------------------------------------------------------- */
 
 static char *text_of(const cbc_buf *b) {
@@ -88,20 +83,6 @@ static void free_strs(cbc_strs *s) {
 }
 
 static int by_bytes(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
-
-/* cksum_of: POSIX cksum's CRC of the N bytes of S, the number cksum prints (the idempotency token takes it). */
-static unsigned long cksum_of(const char *s, size_t n) {
-  unsigned long table[256];
-  for (unsigned long i = 0; i < 256; i++) {
-    unsigned long c = i << 24;
-    for (int k = 0; k < 8; k++) c = (c & 0x80000000UL) ? (((c << 1) ^ 0x04C11DB7UL) & 0xFFFFFFFFUL) : ((c << 1) & 0xFFFFFFFFUL);
-    table[i] = c;
-  }
-  unsigned long crc = 0;
-  for (size_t i = 0; i < n; i++) crc = ((crc << 8) & 0xFFFFFFFFUL) ^ table[((crc >> 24) ^ (unsigned char)s[i]) & 0xFF];
-  for (size_t len = n; len; len >>= 8) crc = ((crc << 8) & 0xFFFFFFFFUL) ^ table[((crc >> 24) ^ (len & 0xFF)) & 0xFF];
-  return ~crc & 0xFFFFFFFFUL;
-}
 
 /* ---- the certificate -------------------------------------------------------------------------- */
 
@@ -391,7 +372,7 @@ static void auto_cert(cbc_cert_t *c, bool dry) {
     }
     char *seed = fmt("%s %s", cbc_conf.app, joined(&c->need, " "));
     push(&args, cbc_dup("--idempotency-token"));
-    push(&args, fmt("cbase%lu", cksum_of(seed, strlen(seed))));
+    push(&args, fmt("cbase%lu", cbc_cksum(seed)));
     free(seed);
     push(&args, cbc_dup("--query"));
     push(&args, cbc_dup("CertificateArn"));
@@ -399,7 +380,7 @@ static void auto_cert(cbc_cert_t *c, bool dry) {
     push(&args, cbc_dup("text"));
     push(&args, NULL);
     cbc_buf out = { 0, 0, 0 };
-    if (aws_call_argv(&out, args.v) != 0) {
+    if (aws_call_list(&out, (const char *const *)args.v) != 0) {
       char *need = joined(&c->need, " ");
       aws_fail(fmt("requesting a certificate for %s", need));
     }
