@@ -1,7 +1,7 @@
 # cbase
 
 cbase is a backend platform in C: `cbase serve` is one process with HTTP, WebSockets, its own MQTT hub, auth, jobs and a SQLite store, an app links in as its own server binary, and a C client SDK talks to it over a binary wire.
-`cbase/tools/cbase deploy`, a bash script, puts that binary on an AWS VM behind CloudFront, with the app's static files in S3.
+`cbase/tools/cbase deploy`, a C program that `tools/cbase` builds on first use, puts that binary on an AWS VM behind CloudFront, with the app's static files in S3.
 It exists so that a small product runs on almost nothing: foolish's whole production runs as one `cbase serve` process on one t4g.nano.
 
 What is in the box, taken a la carte (a product links only the parts it needs, and build gates prove that nothing else got in):
@@ -206,7 +206,7 @@ flowchart TD
     STATIC -.- members
 ```
 
-The tool is `tools/cbase` with its parts in `tools/cbase.d/`; the "./cbase deploy tool" section below has the whole flow.
+The tool is `tools/cbase`, a launcher for the C program in `tools/cbase_cli/`, with its templates and VM scripts in `tools/cbase.d/`; the "./cbase deploy tool" section below has the whole flow.
 
 ## Status
 
@@ -458,7 +458,8 @@ A raw value would break on its first `&`, `=`, `+` or `#`, which the browser's `
 ## ./cbase deploy tool
 
 `tools/cbase` deploys an app: its service on a VM, its static files in a bucket folder, and a CloudFront distribution with its routes, all from a `cbase.conf` in the app's repository.
-It is a bash script that runs straight from the app's cbase submodule, with no build step and no provider linked: `cbase/tools/cbase <command>`.
+The tool is a C program in `tools/cbase_cli/`, and `tools/cbase` is its launcher: the first run builds it with make (quietly, and again only when its sources change), and every run then runs the C program.
+It runs straight from the app's cbase submodule, with no provider linked: `cbase/tools/cbase <command>`, as before the switch to C.
 An app that wants the short spelling keeps a one-line wrapper at its root, `./cbase`:
 
 ```
@@ -466,7 +467,8 @@ An app that wants the short spelling keeps a one-line wrapper at its root, `./cb
 exec "$(dirname "$0")/cbase/tools/cbase" "$@"
 ```
 
-It needs bash (macOS's own 3.2 is enough) and AWS CLI v2, and every AWS call it makes is one AWS CLI call read with `--query ... --output text`, so the tool parses no JSON.
+It needs make and a C compiler (`cc`), which `./cbase deploy` already needs for the serve binary, and AWS CLI v2.
+Every AWS call it makes is one AWS CLI call read with `--query ... --output text`, so the tool parses no JSON.
 The stacks it makes are the CloudFormation templates in `tools/cbase.d/templates/`, filled in from `cbase.conf`.
 `cbase/tools/cbase --help`:
 
@@ -520,7 +522,7 @@ CBASE_DOMAIN = shop.example.com
 ```
 
 The file is one `KEY = value` per line, committed with the app, and a line starting with `#` is a comment.
-An unknown key or a bad value stops the tool with the line's number and a sentence; `tools/cbase.d/conf.sh` holds the format's rules and each key's check.
+An unknown key or a bad value stops the tool with the line's number and a sentence; `tools/cbase_cli/conf.c` holds the format's rules and each key's check.
 
 `CBASE_APP` is the one required key: the app's name, `[a-z][a-z0-9-]*`, at most 32 characters.
 It names the app's service (`cbase-<app>.service`), its port claim and its bucket folder (`<app>/`).
@@ -575,7 +577,7 @@ app=shop folder=shop/
 
 `mem` is the declared MiB, or `~128` for an app that declares none (the estimate it is counted at).
 A join or leave reads the file with its ETag and writes it back with S3's `If-Match` (`If-None-Match: *` for a new file).
-A 412 or 409 means another run wrote first: the file is read again and the change made again, up to 8 times, with a fixed backoff (no randomness: `tools/cbase.d/state.sh` says why).
+A 412 or 409 means another run wrote first: the file is read again and the change made again, up to 8 times, with a fixed backoff (no randomness: the backoff is a fixed doubling, `state_backoff` in `tools/cbase_cli/state.c`).
 A VM app claims the lowest free port in 8700-8799 in the same write, so two racing deploys never hold one port.
 
 ### Making a group: group-init
@@ -756,7 +758,7 @@ Every stack change is a change set, made and printed before anything runs.
 
 The AWS CLI's own chain: `AWS_PROFILE` and `~/.aws` (an `aws login` or SSO session) on a laptop, the OIDC role's environment in CI.
 The tool reads, prints and passes no credential, and with none it says to run `aws login` or set `AWS_PROFILE`.
-`make check` runs `tools/cbase.d/test/cbase_test.sh`, which drives the tool through the real AWS CLI against a local fake of S3, STS, the Tagging API, CloudFormation, ACM, Route 53, CloudFront, EC2 and SSM (`tools/cbase.d/test/fake_aws.c`), with dummy keys; no test calls AWS.
+`make check` runs `tools/cbase.d/test/cbase_test.sh`, which drives the deploy tool (the C program, built first) through the real AWS CLI against a local fake of S3, STS, the Tagging API, CloudFormation, ACM, Route 53, CloudFront, EC2 and SSM (`tools/cbase.d/test/fake_aws.c`), with dummy keys; no test calls AWS.
 `tools/cbase.d/test/cbase_vm_test.sh` covers the VM side, and runs the scripts SSM would run under a scratch root with stand-ins for `systemctl`, `ss` and `aws`.
 
 ## Rules the code keeps

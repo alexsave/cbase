@@ -1,5 +1,5 @@
 #!/bin/bash
-# vm_boot.sh: a vm group's boot, the instance's user-data (group.sh renders it into the group's
+# vm_boot.sh: a vm group's boot, the instance's user-data (group.c renders it into the group's
 # template, with the group's fixed address at @ORIGIN_IPV6@). It is steps 1b and 2 of the boot
 # script of the IPv6-only VM cbase was carved out of, as they ran there in production, for the
 # standard Amazon Linux 2023 image (which ships the SSM agent) and any group:
