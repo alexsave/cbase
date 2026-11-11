@@ -1,15 +1,16 @@
 #!/bin/bash
-# cbase_group_test.sh - group-init, group-destroy and group-template, the commands group.sh makes, end to
-# end through the real AWS CLI against the recorded local fake (fake_aws.c) with dummy credentials
-# (lib.sh). No call reaches AWS. CBASE_TOOL names the tool under test (the shell tools/cbase by default),
-# so the same cases are the oracle for the C port: the counts of the two runs must agree.
+# cbase_group_test.sh - group-init, group-destroy and group-template, the commands of the deploy tool's
+# group side, end to end through the real AWS CLI against the recorded local fake (fake_aws.c) with
+# dummy credentials (lib.sh). No call reaches AWS. CBASE_TOOL names the tool under test (the C deploy
+# tool, tools/cbase_cli/build/cbase, by default; lib.sh builds it).
 #
-#   bash tools/cbase.d/test/cbase_group_test.sh                  (the shell tool)
-#   CBASE_TOOL=$PWD/tools/cbase_cli/build/cbase bash tools/cbase.d/test/cbase_group_test.sh
+#   bash tools/cbase.d/test/cbase_group_test.sh
+#   CBASE_TOOL=/path/to/other/cbase bash tools/cbase.d/test/cbase_group_test.sh
 #
 # The VM group's cases are cbase_vm_test.sh's group-init block, copied (that file runs the deploy
-# after them, which the C tool does not do yet); the rest are the argument errors, a group-template
-# compared with the shell's output, and group-destroy's refusals and deletions that need no deploy.
+# after them, which this file does not); the rest are the argument errors, a group-template compared
+# with its golden text under golden/group-template/, and group-destroy's refusals and deletions that
+# need no deploy.
 # CBASE_TEST_ONLY=group-init|group-template|group-destroy runs one part (lib.sh's wanted).
 # shellcheck disable=SC2016 # the expected text holds a literal $
 set -euo pipefail
@@ -177,16 +178,17 @@ expect_err "cbase: group-init vm GROUP or group-init static GROUP" "group-init: 
 fi
 
 # ----
-# group-template: no AWS; the output is the shell's, byte for byte (the shell is the oracle)
+# group-template: no AWS; the output is byte for byte its golden text, recorded from the shell tool
+# before that tool was retired (golden/group-template/, named by the arguments with spaces as _)
 # ----
 if wanted group-template; then
 start_fake
 for want in "vm g4" "vm g4 --ipv4" "static g4"; do
-  (cd "$t" && "$root/tools/cbase" group-template $want) > "$t/want" 2> /dev/null
+  cp "$root/tools/cbase.d/test/golden/group-template/$(printf '%s' "$want" | tr ' ' '_')" "$t/want"
   m="$(mark)"
   run "$t" group-template $want
   expect_rc 0 "group-template $want"
-  diff -u "$t/want" "$t/out" > /dev/null || { diff -u "$t/want" "$t/out" >&2; fail "group-template $want differs from the shell's"; }
+  diff -u "$t/want" "$t/out" > /dev/null || { diff -u "$t/want" "$t/out" >&2; fail "group-template $want differs from its golden text"; }
   [ "$(since "$m" | wc -l | tr -d ' ')" = 0 ] || fail "group-template $want made an AWS call"
   ok
 done

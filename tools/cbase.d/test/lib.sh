@@ -1,14 +1,18 @@
 # shellcheck shell=bash
-# lib.sh - what cbase_test.sh and cbase_vm_test.sh share: the fake AWS (fake_aws.c, built here) the
-# real AWS CLI is pointed at, the dummy credentials, and the helpers that run the tool as an app
-# does. No call reaches AWS: the endpoint is the fake for every service, and the credentials are a
-# key AWS has never issued. Sourced, with set -euo pipefail.
+# lib.sh - what cbase_test.sh, cbase_vm_test.sh and cbase_group_test.sh share: the fake AWS
+# (fake_aws.c, built here) the real AWS CLI is pointed at, the dummy credentials, and the helpers
+# that run the tool as an app does. No call reaches AWS: the endpoint is the fake for every service,
+# and the credentials are a key AWS has never issued. Sourced, with set -euo pipefail.
 set -euo pipefail
 export LC_ALL=C
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-# CBASE_TOOL names the tool under test (the shell tools/cbase by default): a relative path is made
-# absolute here, because each run changes into the app's directory first.
-tool="${CBASE_TOOL:-$root/tools/cbase}"
+# The tool under test is the C deploy tool, tools/cbase_cli/build/cbase, built here first (make is
+# quiet on success and its errors are shown). CBASE_TOOL overrides it with another binary: a
+# relative path is made absolute here, because each run changes into the app's directory first.
+if [ -z "${CBASE_TOOL:-}" ]; then
+  make -s -C "$root/tools/cbase_cli" > /dev/null || { echo "cbase tests: FAIL: make -C tools/cbase_cli failed" >&2; exit 1; }
+fi
+tool="${CBASE_TOOL:-$root/tools/cbase_cli/build/cbase}"
 case "$tool" in /*) ;; *) tool="$PWD/$tool" ;; esac
 t="$(mktemp -d "${TMPDIR:-/tmp}/cbase-test.XXXXXX")"
 FAKE_PID=""

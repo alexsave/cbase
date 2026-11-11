@@ -1,5 +1,5 @@
 #!/bin/bash
-# cbase_test.sh - the deploy tool (tools/cbase) end to end, as an app runs it, against a recorded
+# cbase_test.sh - the deploy tool (the C tool, tools/cbase_cli/build/cbase) end to end, as an app runs it, against a recorded
 # local fake of AWS (fake_aws.c, built here) reached by the real AWS CLI through
 # AWS_ENDPOINT_URL, with dummy credentials the CLI signs with locally. No call reaches AWS: the
 # endpoint is the fake for every service, and the credentials are a key AWS has never issued.
@@ -560,7 +560,7 @@ expect_usage_error() {   # expect_usage_error FIRST_LINE WHAT ARGS...: stderr is
   expect_rc 2 "$what"
   { printf '%s\n' "$first"; cat "$readme_usage"; } > "$t/want"
   [ ! -s "$t/out" ] || { cat "$t/out" >&2; fail "$what: printed on stdout"; }
-  diff -u "$t/want" "$t/err" >&2 || fail "$what: stderr is not the shell's"
+  diff -u "$t/want" "$t/err" >&2 || fail "$what: stderr is not the expected text"
   ok
 }
 expect_usage_error "cbase: unknown option -x" "an unknown option" -x config check
@@ -586,7 +586,7 @@ expect_err() {   # expect_err LINE WHAT ARGS...: exit 2 with exactly LINE on std
   expect_rc 2 "$what"
   printf '%s\n' "$line" > "$t/want"
   [ ! -s "$t/out" ] || { cat "$t/out" >&2; fail "$what: printed on stdout"; }
-  diff -u "$t/want" "$t/err" >&2 || fail "$what: stderr is not the shell's"
+  diff -u "$t/want" "$t/err" >&2 || fail "$what: stderr is not the expected text"
   ok
 }
 expect_err "cbase: doctor takes no arguments" "doctor with an argument" doctor extra
@@ -1323,7 +1323,7 @@ ok
 fi
 # ---- template-shapes: the flag combinations the templates above do not cover: each route's cache
 # policy, a ws route's compress, aliases off, and an API host's own alias and certificate. Their
-# strings are the shell's (template output, checked against it on each shape).
+# strings are the template output as the tool renders it, checked literally on each shape.
 if wanted template-shapes; then
 ACM_A="arn:aws:acm:us-east-1:$ACCOUNT:certificate/12345678-abcd-ef01-2345-6789abcdef01"
 CACHING_DISABLED="4135ea2d-6df8-44a3-9df3-4b5a84be39ad   # Managed-CachingDisabled"
@@ -1436,9 +1436,9 @@ fi
 if wanted signals; then
 # The deploy's first describe-stacks comes after its temporary files are made (the file list, the static
 # tree). The throttle shim answers that call with a 429 every time, so the tool waits in its retry sleep
-# (a foreground sleep of the shell tool's, a nanosleep of the C tool's) and the signal lands there: the
-# state where each tool dies by the signal (the shell's Ctrl-C does not kill a shell that waits on a call
-# made in $(...); it ends with its own error, status 1, so the call is not what is held).
+# (a nanosleep) and the signal lands there: the state where the tool dies by the signal. A shell that
+# waits on a call made in $(...) does not die by the signal (it ends with its own error, status 1), so
+# the call is not what is held.
 mkdir -p "$t/hold"
 # shellcheck disable=SC2016 # the shim's own $*
 printf '#!/bin/bash\ncase "$*" in *describe-stacks*) echo x >> "%s"; echo "An error occurred (TooManyRequestsException) when calling the DescribeStacks operation: HTTP 429" >&2; exit 255 ;; esac\nexec "%s" "$@"\n' \
@@ -1454,7 +1454,7 @@ sig_deploy() {
   set -m
   # The subshell execs the tool, so $! is the tool itself (a signal to it reaches no wrapper). Perl sets the
   # three signals to their default first: a background job of a non-interactive shell, or a run under nohup,
-  # inherits them ignored, and an ignored signal is kept by the shell tool and by the C tool alike.
+  # inherits them ignored, and an ignored signal is kept by the tool, so the test sets them to default.
   (cd "$site"; export PATH="$t/hold:$PATH" TMPDIR="$tmpd"; exec perl -e '$SIG{$_} = "DEFAULT" for qw(INT TERM HUP); exec @ARGV' "$tool" deploy) < /dev/null > "$t/out" 2> "$t/err" &
   pid=$!
   set +m
