@@ -48,31 +48,51 @@ static bool aws_throttled(void) {
                           true);
 }
 
-int aws_call_list(cbc_buf *out, const char *const *args) {
-  cbc_strs av = { 0 };
-  cbc_strs_push(&av, cbc_dup("aws"));
-  cbc_strs_push(&av, cbc_dup("--no-cli-pager"));
-  for (const char *const *a = args; *a; a++) cbc_strs_push(&av, cbc_dup(*a));
-  cbc_strs_push(&av, NULL);
+int aws_exec(cbc_buf *out, const char *const *head, const char *const *tail) {
+  size_t n = 3;   /* "aws", "--no-cli-pager", the NULL */
+  for (const char *const *p = head; p && *p; p++) n++;
+  for (const char *const *p = tail; p && *p; p++) n++;
+  const char **av = cbc_xmalloc(n * sizeof *av);
+  size_t i = 0;
+  av[i++] = "aws";
+  av[i++] = "--no-cli-pager";
+  for (const char *const *p = head; p && *p; p++) av[i++] = *p;
+  for (const char *const *p = tail; p && *p; p++) av[i++] = *p;
+  av[i] = NULL;
   cbc_buf discard = { 0 };
   cbc_buf *sink = out ? out : &discard;
+  int rc;
   for (int k = 1;; k++) {
-    int rc = cbc_run_err((char *const *)av.v, sink, err_path);
-    if (rc == 0) return 0;
-    if (!(k < AWS_ATTEMPTS && aws_throttled())) return rc;
+    rc = cbc_run_err((char *const *)av, sink, err_path);
+    if (rc == 0 || !(k < AWS_ATTEMPTS && aws_throttled())) break;
     long ms = (1000L << (k - 1)) + aws_stagger_ms(cbc_conf.app ? cbc_conf.app : "");
     cbc_sleep_ms(ms);
   }
+  free(av);
+  return rc;
+}
+
+int aws_callv(cbc_buf *out, const char *const *head, va_list ap) {
+  size_t n = 1;
+  va_list count;
+  va_copy(count, ap);
+  while (va_arg(count, const char *)) n++;
+  va_end(count);
+  const char **tail = cbc_xmalloc(n * sizeof *tail);
+  size_t i = 0;
+  for (const char *a = va_arg(ap, const char *); a; a = va_arg(ap, const char *)) tail[i++] = a;
+  tail[i] = NULL;
+  int rc = aws_exec(out, head, tail);
+  free(tail);
+  return rc;
 }
 
 int aws_call(cbc_buf *out, ...) {
-  cbc_strs words = { 0 };
   va_list ap;
   va_start(ap, out);
-  for (const char *a = va_arg(ap, const char *); a; a = va_arg(ap, const char *)) cbc_strs_push(&words, cbc_dup(a));
+  int rc = aws_callv(out, NULL, ap);
   va_end(ap);
-  cbc_strs_push(&words, NULL);
-  return aws_call_list(out, (const char *const *)words.v);
+  return rc;
 }
 
 bool aws_err_contains(const char *text) {

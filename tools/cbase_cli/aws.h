@@ -8,6 +8,7 @@
 
 #include "cli.h"
 
+#include <stdarg.h>
 #include <stdbool.h>
 
 /* aws_account: the twelve-digit account the credentials are in, set by aws_init. */
@@ -25,8 +26,13 @@ void aws_init(void);
  * the last attempt; its stderr is in the error file, read by aws_code and aws_fail. */
 int aws_call(cbc_buf *out, ...);
 
-/* aws_call_list: aws_call with the arguments as a NULL-terminated array (the same words, no varargs). */
-int aws_call_list(cbc_buf *out, const char *const *args);
+/* aws_exec: the one core every call goes through: `aws --no-cli-pager`, then the words of HEAD, then the
+ * words of TAIL (each NULL-terminated, either may be NULL), run once per attempt with the retry on
+ * throttling. The child's argv holds pointers to the callers' strings, which must outlive the call:
+ * nothing is copied. aws_call and aws_callv are the varargs forms (aws_callv with a HEAD, for the
+ * `cloudformation --region R` prefix). */
+int aws_exec(cbc_buf *out, const char *const *head, const char *const *tail);
+int aws_callv(cbc_buf *out, const char *const *head, va_list ap);
 
 /* aws_err_contains: whether the last failed call's stderr holds TEXT (a plain substring). */
 bool aws_err_contains(const char *text);

@@ -276,35 +276,35 @@ static void auto_cert(cbc_cert_t *c, bool dry) {
     /* The request: DNS validation for the first hostname, the others as SANs. ACM's idempotency token
      * makes the same app's request for the same hostnames within the hour one request. */
     cbc_strs args = { 0, 0, 0 };
-    cbc_strs_push(&args, cbc_dup("acm"));
-    cbc_strs_push(&args, cbc_dup("--region"));
-    cbc_strs_push(&args, cbc_dup(CERT_REGION));
-    cbc_strs_push(&args, cbc_dup("request-certificate"));
-    cbc_strs_push(&args, cbc_dup("--domain-name"));
-    cbc_strs_push(&args, cbc_dup(c->need.v[0]));
-    cbc_strs_push(&args, cbc_dup("--validation-method"));
-    cbc_strs_push(&args, cbc_dup("DNS"));
+    cbc_strs_push(&args, (char *)"acm");
+    cbc_strs_push(&args, (char *)"--region");
+    cbc_strs_push(&args, (char *)CERT_REGION);
+    cbc_strs_push(&args, (char *)"request-certificate");
+    cbc_strs_push(&args, (char *)"--domain-name");
+    cbc_strs_push(&args, (char *)c->need.v[0]);
+    cbc_strs_push(&args, (char *)"--validation-method");
+    cbc_strs_push(&args, (char *)"DNS");
     if (c->need.n != 1) {
-      cbc_strs_push(&args, cbc_dup("--subject-alternative-names"));
-      for (size_t i = 1; i < c->need.n; i++) cbc_strs_push(&args, cbc_dup(c->need.v[i]));
+      cbc_strs_push(&args, (char *)"--subject-alternative-names");
+      for (size_t i = 1; i < c->need.n; i++) cbc_strs_push(&args, (char *)c->need.v[i]);
     }
     char *seed = cbc_fmt("%s %s", cbc_conf.app, cbc_strs_join(&c->need, " "));
-    cbc_strs_push(&args, cbc_dup("--idempotency-token"));
+    cbc_strs_push(&args, (char *)"--idempotency-token");
     cbc_strs_push(&args, cbc_fmt("cbase%lu", cbc_cksum(seed)));
     free(seed);
-    cbc_strs_push(&args, cbc_dup("--query"));
-    cbc_strs_push(&args, cbc_dup("CertificateArn"));
-    cbc_strs_push(&args, cbc_dup("--output"));
-    cbc_strs_push(&args, cbc_dup("text"));
+    cbc_strs_push(&args, (char *)"--query");
+    cbc_strs_push(&args, (char *)"CertificateArn");
+    cbc_strs_push(&args, (char *)"--output");
+    cbc_strs_push(&args, (char *)"text");
     cbc_strs_push(&args, NULL);
     cbc_buf out = { 0, 0, 0 };
-    if (aws_call_list(&out, (const char *const *)args.v) != 0) {
+    if (aws_exec(&out, NULL, (const char *const *)args.v) != 0) {
       char *need = cbc_strs_join(&c->need, " ");
       aws_fail(cbc_fmt("requesting a certificate for %s", need));
     }
     char *arn = cbc_buf_text(&out);
     free(out.data);
-    cbc_strs_free(&args);
+    free(args.v);   /* the words are borrowed or live for the run */
     char *need = cbc_strs_join(&c->need, " ");
     printf("certificate: requested %s for %s (DNS validation)\n", arn, need);
     free(need);

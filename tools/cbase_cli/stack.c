@@ -492,40 +492,40 @@ static void stack_discard_impl(void);
 
 /* ---- the change-set flow (stack.sh) ------------------------------------------------------------ */
 
-/* cfn_words: one CloudFormation call in the stack's region with the words in W (no NULL). */
-static int cfn_words(cbc_buf *out, cbc_strs *w) {
-  cbc_strs words = { 0 };
-  cbc_strs_push(&words, cbc_dup("cloudformation"));
-  cbc_strs_push(&words, cbc_dup("--region"));
-  cbc_strs_push(&words, cbc_dup(stk_region));
-  for (size_t i = 0; i < w->n; i++) cbc_strs_push(&words, w->v[i]);
-  cbc_strs_push(&words, NULL);
-  return aws_call_list(out, (const char *const *)words.v);
+/* cfn_head: the words every CloudFormation call starts with, in the stack's region. */
+static const char *const *cfn_head(void) {
+  static const char *head[4];
+  head[0] = "cloudformation";
+  head[1] = "--region";
+  head[2] = stk_region;
+  head[3] = NULL;
+  return head;
 }
 
-/* cfn_run: cfn_words with the words as a NULL-terminated varargs list. */
+/* cfn_run: one CloudFormation call in the stack's region, the words as a NULL-terminated varargs list. */
 static int cfn_run(cbc_buf *out, ...) {
-  cbc_strs w = { 0 };
   va_list ap;
   va_start(ap, out);
-  for (const char *a = va_arg(ap, const char *); a; a = va_arg(ap, const char *)) cbc_strs_push(&w, cbc_dup(a));
+  int rc = aws_callv(out, cfn_head(), ap);
   va_end(ap);
-  return cfn_words(out, &w);
+  return rc;
+}
+
+/* cfn_list: the same with the words in W (borrowed, NULL-terminated by this call). */
+static int cfn_list(cbc_buf *out, cbc_strs *w) {
+  cbc_strs_push(w, NULL);
+  return aws_exec(out, cfn_head(), (const char *const *)w->v);
 }
 
 /* cs_run: a change set's call on STACK_NAME with STACK_CS (the shell's cs()), the words as varargs. */
 static int cs_run(cbc_buf *out, ...) {
-  cbc_strs w = { 0 };
-  cbc_strs_push(&w, cbc_dup("describe-change-set"));
-  cbc_strs_push(&w, cbc_dup("--stack-name"));
-  cbc_strs_push(&w, cbc_dup(stk_name));
-  cbc_strs_push(&w, cbc_dup("--change-set-name"));
-  cbc_strs_push(&w, cbc_dup(stk_cs));
+  const char *head[] = { "cloudformation", "--region", stk_region, "describe-change-set", "--stack-name", stk_name,
+                         "--change-set-name", stk_cs, NULL };
   va_list ap;
   va_start(ap, out);
-  for (const char *a = va_arg(ap, const char *); a; a = va_arg(ap, const char *)) cbc_strs_push(&w, cbc_dup(a));
+  int rc = aws_callv(out, head, ap);
   va_end(ap);
-  return cfn_words(out, &w);
+  return rc;
 }
 
 /* env_is: an environment variable is exactly VALUE (the shell's [ "${X:-}" = VALUE ]). */
@@ -976,35 +976,36 @@ void stack_changeset(void) {
       aws_fail(what);
     }
   }
+  /* the words are borrowed: the list is never freed, and holds nothing that does not outlive the call */
   cbc_strs cw = { 0 };
-  cbc_strs_push(&cw, cbc_dup("create-change-set"));
-  cbc_strs_push(&cw, cbc_dup("--stack-name"));
-  cbc_strs_push(&cw, cbc_dup(stk_name));
-  cbc_strs_push(&cw, cbc_dup("--change-set-name"));
-  cbc_strs_push(&cw, cbc_dup(stk_cs));
-  cbc_strs_push(&cw, cbc_dup("--change-set-type"));
-  cbc_strs_push(&cw, cbc_dup(stk_type));
+  cbc_strs_push(&cw, (char *)"create-change-set");
+  cbc_strs_push(&cw, (char *)"--stack-name");
+  cbc_strs_push(&cw, (char *)stk_name);
+  cbc_strs_push(&cw, (char *)"--change-set-name");
+  cbc_strs_push(&cw, (char *)stk_cs);
+  cbc_strs_push(&cw, (char *)"--change-set-type");
+  cbc_strs_push(&cw, (char *)stk_type);
   size_t tn = strlen(stk_template) + 8;
   char *tbody = cbc_xmalloc(tn);
   snprintf(tbody, tn, "file://%s", stk_template);
-  cbc_strs_push(&cw, cbc_dup("--template-body"));
+  cbc_strs_push(&cw, (char *)"--template-body");
   cbc_strs_push(&cw, tbody);
-  cbc_strs_push(&cw, cbc_dup("--tags"));
-  cbc_strs_push(&cw, cbc_dup(stk_tag));
+  cbc_strs_push(&cw, (char *)"--tags");
+  cbc_strs_push(&cw, (char *)stk_tag);
   if (*stk_caps) {
-    cbc_strs_push(&cw, cbc_dup("--capabilities"));
-    cbc_strs_push(&cw, cbc_dup(stk_caps));
+    cbc_strs_push(&cw, (char *)"--capabilities");
+    cbc_strs_push(&cw, (char *)stk_caps);
   }
   for (size_t i = 0; i < stack_params.n; i++) {
-    if (i == 0) cbc_strs_push(&cw, cbc_dup("--parameters"));
-    cbc_strs_push(&cw, cbc_dup(stack_params.v[i]));
+    if (i == 0) cbc_strs_push(&cw, (char *)"--parameters");
+    cbc_strs_push(&cw, (char *)stack_params.v[i]);
   }
-  cbc_strs_push(&cw, cbc_dup("--query"));
-  cbc_strs_push(&cw, cbc_dup("Id"));
-  cbc_strs_push(&cw, cbc_dup("--output"));
-  cbc_strs_push(&cw, cbc_dup("text"));
+  cbc_strs_push(&cw, (char *)"--query");
+  cbc_strs_push(&cw, (char *)"Id");
+  cbc_strs_push(&cw, (char *)"--output");
+  cbc_strs_push(&cw, (char *)"text");
   cbc_buf discard = { 0 };
-  if (cfn_words(&discard, &cw) != 0) {
+  if (cfn_list(&discard, &cw) != 0) {
     char what[256];
     snprintf(what, sizeof what, "creating a change set on %s", stk_name);
     aws_fail(what);
@@ -1041,14 +1042,14 @@ void stack_changeset(void) {
 
 void stack_execute(void) {
   cbc_strs w = { 0 };
-  cbc_strs_push(&w, cbc_dup("execute-change-set"));
-  cbc_strs_push(&w, cbc_dup("--stack-name"));
-  cbc_strs_push(&w, cbc_dup(stk_name));
-  cbc_strs_push(&w, cbc_dup("--change-set-name"));
-  cbc_strs_push(&w, cbc_dup(stk_cs));
-  if (stk_no_rollback) cbc_strs_push(&w, cbc_dup("--disable-rollback"));
+  cbc_strs_push(&w, (char *)"execute-change-set");
+  cbc_strs_push(&w, (char *)"--stack-name");
+  cbc_strs_push(&w, (char *)stk_name);
+  cbc_strs_push(&w, (char *)"--change-set-name");
+  cbc_strs_push(&w, (char *)stk_cs);
+  if (stk_no_rollback) cbc_strs_push(&w, (char *)"--disable-rollback");
   cbc_buf discard = { 0 };
-  if (cfn_words(&discard, &w) != 0) {
+  if (cfn_list(&discard, &w) != 0) {
     char what[256];
     snprintf(what, sizeof what, "executing change set %s on %s", stk_cs, stk_name);
     aws_fail(what);
