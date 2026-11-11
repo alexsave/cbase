@@ -49,7 +49,8 @@
 //     changes=auto|none|replace-bucket|conditional-bucket|remove-bucket|replace-distribution, drift=0|1,
 //     secret=S and secret2=S (planted where a change set, a drift and an error would carry an
 //     origin header's or a parameter's value), fail-execute=0|1, list-ignores-prefix=0|1 (a
-//     listing that answers every key, whatever its prefix), acm-deny=0|1 (DescribeCertificate
+//     listing that answers every key, whatever its prefix), delete-fail=KEY (a DeleteObjects answers an Error entry
+//     for that key and keeps it), acm-deny=0|1 (DescribeCertificate
 //     refused, AccessDenied), changes=replace-instance (a group's instance replaced), stack-fail=0|1 (an
 //     executed update fails and rolls back, its events naming the failed resources), cs-fail=REASON
 //     (a change set ends FAILED for REASON), stack-status=NAME:STATUS (a stack's status set),
@@ -136,6 +137,7 @@ static int g_nzones;
 // The scripts (/_fake/set).
 static char g_changes[32] = "auto";
 static int g_drift, g_fail_execute, g_list_ignores_prefix, g_acm_deny;
+static char g_delete_fail[512];   // the key a DeleteObjects answers with an Error entry ("" = none)
 // stack-fail=1: an executed change set's update fails and rolls back (the stack ends ROLLBACK_COMPLETE
 // for a create, UPDATE_ROLLBACK_COMPLETE for an update) and DescribeStackEvents answers a failed
 // resource whose reason holds secret=; cs-fail=REASON: a change set ends FAILED with that reason.
@@ -617,6 +619,75 @@ static void s3_delete(int fd, const request *r) {
     pthread_mutex_unlock(&g_mu);
     logf_("DELETE %s 204", r->path);
     respond(fd, 204, "No Content", "text/plain", NULL, "", 0);
+}
+
+// POST /bucket?delete (DeleteObjects): the XML body lists up to 1000 <Key>s. Each key is deleted as DELETE /bucket/key
+// is (and logs the same "DELETE /bucket/key 204" line), and the call logs one "DELETEOBJECTS /bucket N" line before
+// them, so a test counts the calls and their sizes. With <Quiet>true</Quiet> the answer holds only the errors; the key
+// the delete-fail knob names is answered with an <Error> (AccessDenied) and is not deleted.
+static void s3_delete_objects(int fd, const request *r) {
+    int bi = bucket_of(r->path);
+    if (bi < 0) {
+        logf_("DELETEOBJECTS %s 404 NoSuchBucket", r->path);
+        s3_error(fd, 404, "Not Found", "NoSuchBucket", "The specified bucket does not exist");
+        return;
+    }
+    const char *body = r->body ? r->body : "";
+    bool quiet = strstr(body, "<Quiet>true</Quiet>") != NULL;
+    int n = 0;
+    for (const char *k = body; (k = strstr(k, "<Key>")); k += 5) n++;
+    if (n > 1000) {
+        logf_("DELETEOBJECTS %s %d MalformedXML", r->path, n);
+        s3_error(fd, 400, "Bad Request", "MalformedXML", "The XML you provided was not well-formed or did not validate");
+        return;
+    }
+    logf_("DELETEOBJECTS %s %d", r->path, n);
+    sb b = { 0 };
+    sb_add(&b, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<DeleteResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">");
+    for (const char *k = body; (k = strstr(k, "<Key>")); ) {
+        k += 5;
+        const char *e = strstr(k, "</Key>");
+        if (!e) break;
+        sb key = { 0 };
+        for (const char *c = k; c < e;) {   // the key, its XML entities undone
+            if (*c == '&') {
+                if (strncmp(c, "&amp;", 5) == 0) sb_add(&key, "&"), c += 5;
+                else if (strncmp(c, "&lt;", 4) == 0) sb_add(&key, "<"), c += 4;
+                else if (strncmp(c, "&gt;", 4) == 0) sb_add(&key, ">"), c += 4;
+                else if (strncmp(c, "&quot;", 6) == 0) sb_add(&key, "\""), c += 6;
+                else if (strncmp(c, "&apos;", 6) == 0) sb_add(&key, "'"), c += 6;
+                else sb_add(&key, "%c", *c++);
+            } else sb_add(&key, "%c", *c++);
+        }
+        char path[1100];
+        snprintf(path, sizeof path, "/%s/%s", g_buckets[bi], key.p ? key.p : "");
+        pthread_mutex_lock(&g_mu);
+        bool failed = g_delete_fail[0] && strcmp(key.p ? key.p : "", g_delete_fail) == 0;
+        object *o = failed ? NULL : find(path);
+        if (o) {
+            free(o->body);
+            o->body = NULL;
+            o->path[0] = 0;
+        }
+        pthread_mutex_unlock(&g_mu);
+        if (failed) {
+            logf_("DELETE %s 403", path);
+            sb_add(&b, "<Error><Key>");
+            sb_xml(&b, key.p);
+            sb_add(&b, "</Key><Code>AccessDenied</Code><Message>Access Denied</Message></Error>");
+        } else {
+            logf_("DELETE %s 204", path);
+            if (!quiet) {
+                sb_add(&b, "<Deleted><Key>");
+                sb_xml(&b, key.p);
+                sb_add(&b, "</Key></Deleted>");
+            }
+        }
+        free(key.p);
+        k = e + 6;
+    }
+    sb_add(&b, "</DeleteResult>");
+    respond_sb(fd, 200, "application/xml", &b);
 }
 
 // GET /bucket?location and GET /bucket?list-type=2&prefix=P (one page: no recording holds more).
@@ -1733,6 +1804,7 @@ static void control(int fd, const request *r) {
         if ((v = form_get(r->query, "foreign-dist"))) copy(g_foreign_dist, sizeof g_foreign_dist, v), free(v);
         if ((v = form_get(r->query, "fail-execute"))) g_fail_execute = atoi(v), free(v);
         if ((v = form_get(r->query, "list-ignores-prefix"))) g_list_ignores_prefix = atoi(v), free(v);
+        if ((v = form_get(r->query, "delete-fail"))) copy(g_delete_fail, sizeof g_delete_fail, v), free(v);
         if ((v = form_get(r->query, "acm-deny"))) g_acm_deny = atoi(v), free(v);
         if ((v = form_get(r->query, "instance-type"))) copy(g_instance_type, sizeof g_instance_type, v), free(v);
         if ((v = form_get(r->query, "ssm-status"))) copy(g_ssm_status, sizeof g_ssm_status, v), free(v);
@@ -1805,7 +1877,8 @@ static void handle(int fd, request *r) {
         copy(r->path, sizeof r->path, dec);
         free(dec);
         bool bucket_only = !strchr(r->path + 1, '/');
-        if (bucket_only && strcmp(r->method, "GET") != 0) s3_bucket_call(fd, r);
+        if (bucket_only && strcmp(r->method, "POST") == 0 && strstr(r->query, "delete")) s3_delete_objects(fd, r);
+        else if (bucket_only && strcmp(r->method, "GET") != 0) s3_bucket_call(fd, r);
         else if (strcmp(r->method, "GET") == 0 && bucket_only) s3_bucket(fd, r);
         else if (strcmp(r->method, "GET") == 0) s3_get(fd, r, false);
         else if (strcmp(r->method, "HEAD") == 0) s3_get(fd, r, true);
