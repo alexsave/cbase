@@ -1,10 +1,10 @@
-# static_rules.tsv - the one per-file table of `./cbase deploy`'s uploads (static.sh).
+# static_rules.tsv - the one per-file table of `./cbase deploy`'s uploads (static.c).
 #
 # One rule per line, two fields separated by a TAB: a glob and the Content-Type. The glob is matched
 # against the file's path in the static dir, lower-cased (no leading slash; * crosses /), and the
 # first rule that matches wins; the last, "*", is the fallback.
 #
-# Cache-Control is not a column, because it is one rule for every file (static.sh):
+# Cache-Control is not a column, because it is one rule for every file (static.c):
 #   html (text/html)                     no-cache: a browser and CloudFront revalidate it every time,
 #                                        so a deploy's new page is seen at once
 #   a content-hashed file (CBASE_HASHED) public, max-age=31536000, immutable: a year, never asked for

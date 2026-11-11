@@ -1,22 +1,44 @@
 # shellcheck shell=bash
-# lib.sh - what cbase_test.sh and cbase_vm_test.sh share: the fake AWS (fake_aws.c, built here) the
-# real AWS CLI is pointed at, the dummy credentials, and the helpers that run the tool as an app
-# does. No call reaches AWS: the endpoint is the fake for every service, and the credentials are a
-# key AWS has never issued. Sourced, with set -euo pipefail.
+# lib.sh - what cbase_test.sh, cbase_vm_test.sh and cbase_group_test.sh share: the fake AWS
+# (fake_aws.c, built here) the real AWS CLI is pointed at, the dummy credentials, and the helpers
+# that run the tool as an app does. No call reaches AWS: the endpoint is the fake for every service,
+# and the credentials are a key AWS has never issued. Sourced, with set -euo pipefail.
 set -euo pipefail
 export LC_ALL=C
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-tool="$root/tools/cbase"
+# The tool under test is the C deploy tool, tools/cbase_cli/build/cbase, built here first (make is
+# quiet on success and its errors are shown). CBASE_TOOL overrides it with another binary: a
+# relative path is made absolute here, because each run changes into the app's directory first.
+if [ -z "${CBASE_TOOL:-}" ]; then
+  make -s -C "$root/tools/cbase_cli" > /dev/null || { echo "cbase tests: FAIL: make -C tools/cbase_cli failed" >&2; exit 1; }
+fi
+tool="${CBASE_TOOL:-$root/tools/cbase_cli/build/cbase}"
+case "$tool" in /*) ;; *) tool="$PWD/$tool" ;; esac
 t="$(mktemp -d "${TMPDIR:-/tmp}/cbase-test.XXXXXX")"
 FAKE_PID=""
 stop_fake() {
   if [ -n "$FAKE_PID" ]; then kill "$FAKE_PID" 2> /dev/null || true; wait "$FAKE_PID" 2> /dev/null || true; fi
   FAKE_PID=""
 }
-trap 'stop_fake; rm -rf "$t"' EXIT
+# THE END MARK: each test script sets CBASE_TEST_END=1 as its last step, and a run that exits without
+# it failed, whatever its status. macOS's bash 3.2 exits 0 when set -u stops a script that has an EXIT
+# trap on an unbound variable (the trap's status replaces it), so a case that read a variable another
+# section sets would end the run early and still pass: a CBASE_TEST_ONLY subset did exactly that.
+CBASE_TEST_END=""
+trap 'stop_fake; rm -rf "$t"; [ "$CBASE_TEST_END" = 1 ] || { echo "cbase_test: FAIL: the run stopped before its end (above)" >&2; exit 1; }' EXIT
 fail() { echo "cbase_test: FAIL: $*" >&2; exit 1; }
 pass=0
 ok() { pass=$((pass + 1)); }
+# wanted SECTION: CBASE_TEST_ONLY (names separated by spaces or commas) picks the sections a run
+# covers, and unset runs them all. The names are cbase_test.sh's "# ----" header names, one
+# `if wanted NAME; then` block each, so a subset takes seconds and not the whole run. A section that
+# uses a variable or a fake another section sets needs that section in the subset too (the deploy
+# preamble between the sections is outside every block, so a subset never skips it).
+wanted() {
+  [ -z "${CBASE_TEST_ONLY:-}" ] && return 0
+  case " ${CBASE_TEST_ONLY//,/ } " in *" $1 "*) return 0 ;; esac
+  return 1
+}
 
 command -v aws > /dev/null 2>&1 || fail "the AWS CLI (aws) is not on PATH: the tests drive the real CLI against a local fake"
 ${CC:-cc} -std=gnu11 -D_GNU_SOURCE -O2 -Wall -Wextra -Werror -pthread "$root/tools/cbase.d/test/fake_aws.c" -o "$t/fake_aws"
@@ -66,7 +88,8 @@ run() {
 expect_rc() { [ "$rc" = "$1" ] || { cat "$t/out" "$t/err" >&2; fail "$2: status $rc, not $1"; }; }
 err_has() { grep -Fq -- "$1" "$t/err" || { cat "$t/err" >&2; fail "$2: stderr lacks [$1]"; }; }
 out_has() { grep -Fq -- "$1" "$t/out" || { cat "$t/out" >&2; fail "$2: stdout lacks [$1]"; }; }
-log_count() { grep -cF -- "$1" "$t/log" || true; }
+# A run that never started the fake (a CBASE_TEST_ONLY subset) has no log: zero calls.
+log_count() { [ -f "$t/log" ] || { echo 0; return; }; grep -cF -- "$1" "$t/log" || true; }
 app() {   # app NAME LINES...: an app repository with cbase.conf of LINES
   local d="$t/apps/$1"; shift
   mkdir -p "$d"

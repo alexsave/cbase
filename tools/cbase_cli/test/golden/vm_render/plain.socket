@@ -1,0 +1,17 @@
+[Unit]
+Description=cbase app shop's port (vm_unit.socket, installed by ./cbase deploy: edits by hand are undone)
+
+[Socket]
+# THE LISTENER IS SYSTEMD'S. cbase serve takes this socket as fd 3 (LISTEN_FDS, net/server.c THE
+# INHERITED LISTENER) and systemd keeps its own copy, so while the service restarts (a deploy
+# restarts the service alone, never this socket) a connection waits in the queue below for the
+# next serve instead of being refused. "[::]" with BindIPv6Only=both is one dual-stack socket, so
+# a local probe from 127.0.0.1 or ::1 both reach it.
+ListenStream=[::]:8700
+BindIPv6Only=both
+# The queue a restart's connections wait in: the kernel's cap (net.core.somaxconn, 4096 on Amazon
+# Linux 2023). Past it a SYN is dropped and the client sends it again: a delay, still no refusal.
+Backlog=4096
+
+[Install]
+WantedBy=sockets.target

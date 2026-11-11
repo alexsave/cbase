@@ -1,0 +1,56 @@
+AWSTemplateFormatVersion: "2010-09-09"
+# The static group g4, made by ./cbase group-init (tools/cbase.d/group.sh). Edits by hand are drift.
+Description: "cbase static group g4: the bucket its apps' files are in, a folder each"
+
+Resources:
+  Bucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: noncurrent-versions-30-days
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      Tags:
+        - Key: cbase:static-group
+          Value: g4
+
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref Bucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: TheAccountsDistributionsRead
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: [s3:GetObject, s3:ListBucket]
+            Resource:
+              - !GetAtt Bucket.Arn
+              - !Sub "${Bucket.Arn}/*"
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+
+Outputs:
+  BucketName:
+    Value: !Ref Bucket

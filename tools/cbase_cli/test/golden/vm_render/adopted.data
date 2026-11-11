@@ -1,0 +1,8 @@
+#!/bin/bash
+set -euo pipefail
+R="${CBASE_VM_ROOT:-}"
+for d in "$R"/srv/cbase/*/data; do
+  [ -d "$d" ] || continue
+  a="${d%/data}"
+  echo "CBASE: data ${a##*/}"
+done

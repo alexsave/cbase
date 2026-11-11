@@ -1,5 +1,5 @@
 #!/bin/bash
-# cbase_test.sh - the deploy tool (tools/cbase) end to end, as an app runs it, against a recorded
+# cbase_test.sh - the deploy tool (the C tool, tools/cbase_cli/build/cbase) end to end, as an app runs it, against a recorded
 # local fake of AWS (fake_aws.c, built here) reached by the real AWS CLI through
 # AWS_ENDPOINT_URL, with dummy credentials the CLI signs with locally. No call reaches AWS: the
 # endpoint is the fake for every service, and the credentials are a key AWS has never issued.
@@ -27,6 +27,7 @@ set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 # ---- cbase.conf: errors, each with its line number -------------------------------------------
+if wanted conf; then
 conf_error() {   # conf_error "EXPECTED" LINES...
   local want="$1"; shift
   local d
@@ -41,6 +42,7 @@ conf_error "cbase.conf line 3: CBASE_FOO is not a cbase.conf key" "CBASE_APP = a
 conf_error "cbase.conf line 3: sets CBASE_APP again (line 1 set it)" "CBASE_APP = a" "CBASE_VM = none" "CBASE_APP = b"
 conf_error "cbase.conf line 1: CBASE_APP is a name" "CBASE_APP = My_App"
 conf_error "cbase.conf line 1: CBASE_APP is a name" "CBASE_APP = none"
+conf_error "cbase.conf line 2: CBASE_MEMORY is <n>M or <n>G (256M, 1G)" "CBASE_APP = a" "CBASE_MEMORY = 256"
 conf_error "cbase.conf line 2: CBASE_MEMORY is <n>M or <n>G" "CBASE_APP = a" "CBASE_MEMORY = lots"
 conf_error "cbase.conf line 2: CBASE_MEMORY is from 16M to 64G" "CBASE_APP = a" "CBASE_MEMORY = 8M"
 conf_error "cbase.conf line 2: CBASE_MEMORY is for an app with a VM" "CBASE_APP = a" "CBASE_MEMORY = 64M" "CBASE_VM = none"
@@ -64,6 +66,25 @@ conf_error "cbase.conf line 3: CBASE_CERT_ARN is for CBASE_DOMAIN, and there is 
   "CBASE_CERT_ARN = arn:aws:acm:us-east-1:$ACCOUNT:certificate/12345678-abcd-ef01-2345-6789abcdef01"
 conf_error "cbase.conf line 2: CBASE_DOMAIN is lower-case hostnames" "CBASE_APP = a" "CBASE_DOMAIN = *.example.com"
 conf_error "cbase.conf line 2: is not KEY = value (a key is upper-case" "CBASE_APP = a" "cbase_vm = none"
+conf_error "cbase.conf line 2: CBASE_SHELL is a page of the build, an absolute path ending in .html" "CBASE_APP = a" "CBASE_SHELL = _shell.html"
+conf_error "cbase.conf line 2: CBASE_SHELL is a page of the build, an absolute path ending in .html" "CBASE_APP = a" "CBASE_SHELL = /../x.html"
+conf_error "cbase.conf line 3: CBASE_SHELL is a page of the static files, and CBASE_STATIC is none" "CBASE_APP = a" "CBASE_STATIC = none" "CBASE_SHELL = /_shell.html"
+conf_error "cbase.conf line 2: CBASE_VM_PORT is a grandfathered member's own port, outside the 8700-8799 cbase claims" "CBASE_APP = a" "CBASE_VM_PORT = 8750"
+conf_error "cbase.conf line 2: CBASE_VM_DATA is an absolute directory on the VM (/var/lib/app), not under /srv/cbase/" "CBASE_APP = a" "CBASE_VM_DATA = /srv/cbase/x"
+conf_error "cbase.conf line 3: CBASE_DOMAIN is lower-case hostnames, blank-separated (example.com www.example.com)" "CBASE_APP = a" "CBASE_VM = none" "CBASE_DOMAIN = ex..ample.com"
+# A final dot is taken as written: the shell splits the name on its dots and drops a final empty
+# field, so "example.com." passes (a quirk the port keeps; a fix would be a deliberate change).
+d="$(app dotdomain "CBASE_APP = a" "CBASE_VM = none" "CBASE_DOMAIN = example.com.")"
+run "$d" config check
+expect_rc 0 "a domain with a final dot"
+out_has "domain     example.com." "a domain with a final dot, as written"
+ok
+# A NUL byte anywhere in the file stops the read before anything is parsed.
+printf 'CBASE_APP = a\0x\n' > "$t/nul.conf"
+run "$t" -f "$t/nul.conf" config check
+expect_rc 1 "a cbase.conf with a NUL byte"
+err_has "$t/nul.conf holds a NUL byte" "a cbase.conf with a NUL byte"
+ok
 
 # A good one, defaults filled in, routes normalized, the "*" route last.
 d="$(app good "# the app" "CBASE_APP = shop" "CBASE_MEMORY=512M" "CBASE_ROUTE = * static" \
@@ -169,7 +190,9 @@ expect_rc 1 "a missing config"
 err_has "missing.conf does not exist" "a missing config"
 ok
 
+fi
 # ---- secrets: refused by line, never echoed ----------------------------------------------------
+if wanted secrets; then
 secret() {   # secret "EXPECTED" "SECRET TEXT" LINE: the LINE (holding the text) is refused at line 2
   local want="$1" text="$2" line="$3" d
   d="$(app secret "CBASE_APP = a" "$line" "CBASE_VM = none")"
@@ -193,7 +216,52 @@ secret "STRIPE_PRIVATE_KEY is named like a secret" "sk" "STRIPE_PRIVATE_KEY = sk
 # Even a line that is not KEY = value is refused as a secret first, and not echoed.
 secret "this line looks like a secret: an AWS access key id" AKIAIOSFODNN7EXAMPLE "export AKIAIOSFODNN7EXAMPLE"
 
+# The thresholds of the secret scan, each at its edge: a random-looking run just under a threshold is
+# a value, and one at it is a secret. The line is a comment, which is scanned too.
+secret_line() {   # secret_line LINE: a cbase.conf whose line 2 is LINE, checked
+  local d
+  d="$(app thresh "CBASE_APP = a" "$1")"
+  run "$d" config check
+}
+s23="Ab3$(printf 'd%.0s' $(seq 1 20))"
+s24="${s23}d"
+h31="$(printf 'a%.0s' $(seq 1 31))"
+h32="${h31}a"
+s39="$(printf 'x%.0s' $(seq 1 39))"
+s40="${s39}x"
+secret_line "# $s23"
+expect_rc 0 "a 23-character mixed run is a value"
+ok
+secret_line "# $s24"
+expect_rc 1 "a 24-character mixed run"
+err_has "cbase.conf line 2: this line looks like a secret: a long random-looking string" "a 24-character mixed run"
+ok
+secret_line "# $h31"
+expect_rc 0 "a 31-digit hex run is a value"
+ok
+secret_line "# $h32"
+expect_rc 1 "a 32-digit hex run"
+err_has "cbase.conf line 2: this line looks like a secret: a long hex string" "a 32-digit hex run"
+ok
+secret_line "# $s39"
+expect_rc 0 "a 39-character lower-case run is a value"
+ok
+secret_line "# $s40"
+expect_rc 1 "a 40-character lower-case run"
+err_has "cbase.conf line 2: this line looks like a secret: a long random-looking string" "a 40-character lower-case run"
+ok
+secret_line "ASIAABCDEFGHIJKLMNOP"
+expect_rc 1 "an ASIA key id"
+err_has "cbase.conf line 2: this line looks like a secret: an AWS access key id" "an ASIA key id"
+ok
+secret_line "-----END CERTIFICATE-----"
+expect_rc 1 "a PEM end marker"
+err_has "cbase.conf line 2: this line looks like a secret: a PEM block" "a PEM end marker"
+ok
+
+fi
 # ---- no credentials: the CLI's own chain finds none --------------------------------------------
+if wanted creds; then
 start_fake "${everything[@]}"
 d="$(app a "CBASE_APP = a" "CBASE_VM = g1" "CBASE_STATIC = g1" "CBASE_MEMORY = 128M")"
 rc=0
@@ -210,8 +278,23 @@ rc=0
 expect_rc 0 "credentials from a profile"
 out_has "a joined vm group g1: app=a port=8700 service=cbase-a.service mem=128" "credentials from a profile"
 ok
+# Calls that write far more than a pipe holds to stderr before they answer (a reader of stdout alone would
+# stall the child): the tool still gets every answer. The shim is loud on stderr, then the real CLI runs.
+mkdir -p "$t/loud"
+# shellcheck disable=SC2016 # the shim's own text
+printf '#!/bin/bash\nhead -c 300000 /dev/zero | tr "\\0" x >&2\necho >&2\nexec "%s" "$@"\n' "$(command -v aws)" > "$t/loud/aws"
+chmod +x "$t/loud/aws"
+path="$PATH"; PATH="$t/loud:$PATH"
+rc=0
+(cd "$d" && AWS_PROFILE=deploy AWS_SHARED_CREDENTIALS_FILE="$t/creds" "$tool" state join) > "$t/out" 2> "$t/err" || rc=$?
+PATH="$path"
+expect_rc 0 "calls with a loud stderr"
+out_has "a is in vm group g1: app=a port=8700 service=cbase-a.service mem=128" "calls with a loud stderr"
+ok
 
+fi
 # ---- groups: found by tag, and not found -------------------------------------------------------
+if wanted groups; then
 start_fake "${everything[@]}"
 d="$(app nope "CBASE_APP = nope" "CBASE_VM = ghost" "CBASE_MEMORY = 64M" "CBASE_STATIC = none")"
 run "$d" state join
@@ -238,7 +321,9 @@ expect_rc 1 "two instances in one group"
 err_has "2 resources are tagged cbase:vm-group=g1, and a vm group is one instance" "two instances in one group"
 ok
 
+fi
 # ---- join, rejoin, leave, the port claim -------------------------------------------------------
+if wanted join; then
 start_fake "${everything[@]}"
 a="$(app a "CBASE_APP = a" "CBASE_VM = g1" "CBASE_STATIC = g1" "CBASE_MEMORY = 128M")"
 b="$(app b "CBASE_APP = b" "CBASE_VM = g1" "CBASE_STATIC = g1" "CBASE_MEMORY = 1G")"
@@ -296,7 +381,9 @@ run "$e" state leave
 expect_rc 0 "e's leave"
 ok
 
+fi
 # ---- apps --------------------------------------------------------------------------------------
+if wanted apps; then
 run "$b" apps
 expect_rc 0 "apps from cbase.conf"
 {
@@ -324,6 +411,29 @@ PATH="$path"
 expect_rc 0 "apps g1 through two 429s"
 diff -u "$t/want" "$t/out" || fail "apps g1 through two 429s listed another membership"
 ok
+# Each form of AWS's throttling aws_throttled names is tried again (one failure each, then the call
+# goes through), and a failure that is not throttling is not tried again: one call, refused.
+# shellcheck disable=SC2016 # the shim's own $n and $@
+printf '#!/bin/bash\nn=$(($(cat "%s" 2> /dev/null || echo 0) + 1)); echo "$n" > "%s"\n[ "$n" -gt "$(cat "%s")" ] || { cat "%s" >&2; exit 255; }\nexec "%s" "$@"\n' \
+  "$t/shim/n" "$t/shim/n" "$t/shim/limit" "$t/shim/msg" "$(command -v aws)" > "$t/shim/aws"
+for msg in "An error occurred (ThrottlingException) when calling the GetObject operation: Rate exceeded" \
+           "An error occurred (TooManyRequestsException) when calling the GetObject operation: Rate exceeded" \
+           "Too Many Requests" \
+           "An error occurred (RequestLimitExceeded) when calling the GetObject operation: Request limit exceeded." \
+           "An error occurred (SlowDown) when calling the GetObject operation: status code: 429" \
+           "An error occurred (429) when calling the GetObject operation: slow down"; do
+  printf '%s\n' "$msg" > "$t/shim/msg"; echo 1 > "$t/shim/limit"; rm -f "$t/shim/n"
+  PATH="$t/shim:$path" run "$t" apps g1
+  expect_rc 0 "apps g1 through one [$msg]"
+  diff -u "$t/want" "$t/out" || fail "apps g1 through one [$msg] listed another membership"
+done
+echo "An error occurred (AccessDenied) when calling the GetCallerIdentity operation: Access Denied" > "$t/shim/msg"
+echo 99 > "$t/shim/limit"; rm -f "$t/shim/n"
+PATH="$t/shim:$path" run "$t" apps g1
+expect_rc 1 "apps g1 refused"
+err_has "AWS refused it (AccessDenied)" "apps g1 refused"
+[ "$(cat "$t/shim/n")" = 1 ] || fail "a refusal that is not throttling was tried again ($(cat "$t/shim/n") calls)"
+ok
 run "$t" apps g9
 expect_rc 1 "apps of a group with no state"
 err_has "no state file for vm g9 group, static g9 group: no app has joined it yet" "apps of a group with no state"
@@ -332,7 +442,9 @@ run "$t" apps Not_A_Group
 expect_rc 2 "apps of a bad name"
 ok
 
+fi
 # ---- doctor ------------------------------------------------------------------------------------
+if wanted doctor; then
 run "$b" doctor
 expect_rc 0 "doctor"
 out_has "account   $ACCOUNT (us-east-1)" "doctor names the account"
@@ -346,7 +458,9 @@ err_has "./cbase group-init vm ghost" "doctor with a missing group"
 out_has "static group g1: g1-site-bucket" "doctor goes on past a missing group"
 ok
 
+fi
 # ---- a corrupt state file, a missing state bucket ----------------------------------------------
+if wanted corrupt-state; then
 bad_state() {   # bad_state "EXPECTED" CONTENT
   printf '%b' "$2" > "$t/bad"
   aws s3api put-object --bucket "$BUCKET" --key vm/g1.txt --body "$t/bad" > /dev/null
@@ -362,13 +476,22 @@ bad_state "line 3 gives port 8701 to c, and b holds it" 'cbase-state 1 vm g1\nap
 bad_state "line 3 lists b again" 'cbase-state 1 vm g1\napp=b port=8701 service=cbase-b.service mem=1\napp=b port=8702 service=cbase-b.service mem=1\n'
 bad_state "line 2 holds port 9000, outside 8700-8799" 'cbase-state 1 vm g1\napp=b port=9000 service=cbase-b.service mem=1\n'
 bad_state "line 2 names service cbase-x.service for app b" 'cbase-state 1 vm g1\napp=b port=8701 service=cbase-x.service mem=1\n'
+# The range's last port is a member's like any other, and with all of 8700-8799 held a join is refused.
+{ echo "cbase-state 1 vm g1"; for i in $(seq 0 99); do echo "app=p$i port=$((8700 + i)) service=cbase-p$i.service mem=1"; done; } > "$t/full"
+aws s3api put-object --bucket "$BUCKET" --key vm/g1.txt --body "$t/full" > /dev/null
+run "$c" state join
+expect_rc 1 "a join to a group whose every port is held"
+err_has "vm group g1 has no free port: all of 8700-8799 are held" "every port held"
+ok
 start_fake --resource "$VM_G1"
 run "$b" apps
 expect_rc 1 "no state bucket"
 err_has "there is no state bucket s3://$BUCKET in this account" "no state bucket"
 ok
 
+fi
 # ---- two racing joins --------------------------------------------------------------------------
+if wanted race; then
 # The fake holds the first two reads until both are in, so both runs read the same file (none, then
 # one with two members) before either writes: exactly one write wins, and the other gets 412, reads
 # again and claims the next port.
@@ -403,10 +526,94 @@ state_of vm g2 > "$t/g2"
 [ "$(grep -o 'port=[0-9]*' "$t/g2" | sort -u | wc -l | tr -d ' ')" = 4 ] || fail "four apps, four ports"
 ok
 
+fi
 # ---- an unknown command ------------------------------------------------------------------------
+if wanted unknown; then
 run "$b" frobnicate
 expect_rc 2 "an unknown command"
 ok
+
+fi
+
+# ---- dispatch: the usage, the options, the argument errors: all before a setting is read ----------
+if wanted dispatch; then
+# The usage is README.md's "cbase/tools/cbase --help" block, byte for byte.
+readme_usage="$t/readme-usage"
+awk 'f==0 && /^`cbase\/tools\/cbase --help`:$/ {f=1; next} f==1 && /^```$/ {f=2; next} f==2 && /^```$/ {exit} f==2 {print}' \
+  "$root/README.md" > "$readme_usage"
+[ -s "$readme_usage" ] || fail "README.md has no cbase/tools/cbase --help block"
+expect_rc_out_usage() {   # expect_rc_out_usage ARGS...: --help (or -h, help) prints the usage and exits 0
+  run "$t" "$@"
+  expect_rc 0 "$*"
+  diff -u "$readme_usage" "$t/out" >&2 || fail "$*: stdout is not the README usage"
+  [ ! -s "$t/err" ] || { cat "$t/err" >&2; fail "$*: printed on stderr"; }
+  ok
+}
+expect_rc_out_usage --help
+expect_rc_out_usage -h
+expect_rc_out_usage help
+expect_rc_out_usage -h frobnicate
+# An error with the usage after it: a missing command, an unknown option, an unknown command.
+expect_usage_error() {   # expect_usage_error FIRST_LINE WHAT ARGS...: stderr is FIRST_LINE then the usage
+  local first="$1" what="$2"; shift 2
+  run "$t" "$@"
+  expect_rc 2 "$what"
+  { printf '%s\n' "$first"; cat "$readme_usage"; } > "$t/want"
+  [ ! -s "$t/out" ] || { cat "$t/out" >&2; fail "$what: printed on stdout"; }
+  diff -u "$t/want" "$t/err" >&2 || fail "$what: stderr is not the expected text"
+  ok
+}
+expect_usage_error "cbase: unknown option -x" "an unknown option" -x config check
+expect_usage_error "cbase: unknown option --help=1" "an unknown option with a value" --help=1
+expect_usage_error "cbase: unknown command frobnicate" "an unknown command" frobnicate
+expect_usage_error "cbase: unknown option -" "a lone dash is an option" -
+# With no command at all: the usage alone, on stderr.
+run "$t"
+expect_rc 2 "no command"
+diff -u "$readme_usage" "$t/err" >&2 || fail "no command: stderr is not the usage"
+[ ! -s "$t/out" ] || fail "no command: printed on stdout"
+ok
+run "$t" -f
+expect_rc 2 "-f with no file"
+printf 'cbase: -f wants a file\n' > "$t/want"
+diff -u "$t/want" "$t/err" > /dev/null || { cat "$t/err" >&2; fail "-f with no file: stderr"; }
+ok
+# Each command's own argument errors: exit 2, one line, nothing on stdout, and no setting read (the
+# cbase.conf that is not in $t would stop a read with another message).
+expect_err() {   # expect_err LINE WHAT ARGS...: exit 2 with exactly LINE on stderr
+  local line="$1" what="$2"; shift 2
+  run "$t" "$@"
+  expect_rc 2 "$what"
+  printf '%s\n' "$line" > "$t/want"
+  [ ! -s "$t/out" ] || { cat "$t/out" >&2; fail "$what: printed on stdout"; }
+  diff -u "$t/want" "$t/err" >&2 || fail "$what: stderr is not the expected text"
+  ok
+}
+expect_err "cbase: doctor takes no arguments" "doctor with an argument" doctor extra
+expect_err "cbase: apps takes one group name at most" "apps with two" apps a b
+expect_err "cbase: Bad_Name is not a group name" "apps with a bad group" apps Bad_Name
+expect_err "cbase: state join or state leave" "state with no operation" state
+expect_err "cbase: state join or state leave" "state with an unknown operation" state frob
+expect_err "cbase: state join takes no more arguments" "state join with an argument" state join extra
+expect_err "cbase: state leave takes no more arguments" "state leave with an argument" state leave extra
+expect_err "cbase: template takes no arguments" "template with an argument" template x
+expect_err "cbase: group-template vm GROUP or group-template static GROUP" "group-template with no kind" group-template
+expect_err "cbase: group-template vm GROUP or group-template static GROUP" "group-template of an unknown kind" group-template lambda g
+expect_err "cbase: group-template vm wants one group name, and --ipv4 or nothing" "group-template vm with no group" group-template vm
+expect_err "cbase: group-template vm wants one group name, and --ipv4 or nothing" "group-template vm with a bad third word" group-template vm g --bogus
+expect_err "cbase: group-template static wants one group name" "group-template static with a third word" group-template static g x
+expect_err "cbase: deploy takes --dry-run, --accept-drift, --prune, --allow-downtime, --no-aliases and --attach, not --bogus" "deploy with an unknown flag" deploy --bogus
+expect_err "cbase: deploy takes --dry-run, --accept-drift, --prune, --allow-downtime, --no-aliases and --attach, not --bogus" "deploy checks every flag, each one accepted" deploy --dry-run --accept-drift --prune --allow-downtime --no-aliases --attach --bogus
+expect_err "cbase: undeploy takes --delete-files and --delete-data, not --x" "undeploy with an unknown flag" undeploy --x
+expect_err "cbase: config check is the one config command" "config with no check" config
+expect_err "cbase: config check is the one config command" "config with another word" config show
+expect_err "cbase: group-init vm GROUP or group-init static GROUP" "group-init of an unknown kind" group-init lambda g
+expect_err "cbase: group-destroy vm GROUP or group-destroy static GROUP" "group-destroy of an unknown kind" group-destroy
+expect_err "cbase: group-init vm wants a group name (a lower-case letter, then lower-case letters, digits and '-', at most 32 characters), not \"Bad\"" "group-init with a bad name" group-init vm Bad
+long="$(printf 'x%.0s' $(seq 1 45))"
+expect_err "cbase: group-destroy static wants a group name (a lower-case letter, then lower-case letters, digits and '-', at most 32 characters), not \"$(printf 'x%.0s' $(seq 1 40))\"" \
+  "a group name is shown to 40 characters" group-destroy static "$long"
+fi
 
 # ================================================================================================
 # deploy: the static part
@@ -440,6 +647,7 @@ for f in index.html about.html docs/index.html app.wasm style.css data.json font
 done
 
 # ---- static-only end to end: the create path, the headers, the hashed rule, the order ---------
+if wanted static; then
 start_fake "${site_fake[@]}"
 seed other/index.html; seed site-admin/app.js; seed siteish.txt; seed index.html
 m="$(mark)"
@@ -510,7 +718,9 @@ for k in other/index.html site-admin/app.js siteish.txt index.html; do
 done
 ok
 
+fi
 # ---- a redeploy: drift checked, no changes, the edge invalidated --------------------------------
+if wanted redeploy; then
 m="$(mark)"
 run "$site" deploy
 expect_rc 0 "a redeploy"
@@ -522,7 +732,9 @@ since "$m" | grep -q "CFN ExecuteChangeSet" && fail "a change set with no change
 since "$m" | grep -q "^DELETE " && fail "a deploy without --prune deleted"
 ok
 
+fi
 # ---- prune: the build's leftovers in the app's folder, and nothing else -------------------------
+if wanted prune; then
 seed site/stale.js; seed site/old/page.html
 rm "$site/build/data.json"
 m="$(mark)"
@@ -553,8 +765,27 @@ for k in other/index.html site-admin/app.js siteish.txt index.html; do
 done
 fake_set list-ignores-prefix=0
 ok
+# The folder's own key (site/ itself, the object a console's "create folder" makes) is no file of the
+# folder: left alone. CBASE_PRUNE=yes is not CBASE_PRUNE=1: no prune.
+seed site/
+m="$(mark)"
+run "$site" deploy --prune
+expect_rc 0 "a prune with the folder's own key"
+err_has "prune: s3://$SITE_BUCKET/site/ is outside site/, and is left alone" "the folder's own key"
+aws s3api head-object --bucket "$SITE_BUCKET" --key site/ > /dev/null 2>&1 || fail "the prune deleted the folder's own key"
+seed site/stale3.js
+m="$(mark)"
+rc=0
+(cd "$site" && CBASE_PRUNE=yes "$tool" deploy) > "$t/out" 2> "$t/err" || rc=$?
+expect_rc 0 "a deploy with CBASE_PRUNE=yes"
+since "$m" | grep -q '^DELETE ' && fail "CBASE_PRUNE=yes pruned"
+aws s3api delete-object --bucket "$SITE_BUCKET" --key site/ > /dev/null
+aws s3api delete-object --bucket "$SITE_BUCKET" --key site/stale3.js > /dev/null
+ok
 
+fi
 # ---- the safety rules --------------------------------------------------------------------------
+if wanted safety; then
 puts_since() { since "$1" | grep -c "^PUT /$SITE_BUCKET/" || true; }
 # A bucket replaced, or removed: refused, the change set deleted, nothing executed or uploaded.
 for how in replace-bucket remove-bucket; do
@@ -572,6 +803,14 @@ for how in replace-bucket remove-bucket; do
 done
 # A distribution replaced on a redeploy: downtime, so refused and the change set deleted; then
 # allowed with --allow-downtime.
+# A replacement CloudFormation decides as it runs (Conditional) is a replacement: refused the same.
+fake_set changes=conditional-bucket
+m="$(mark)"
+run "$site" deploy
+expect_rc 1 "a change set that may replace the bucket"
+err_has "refused: the bucket Bucket would be replaced (Replacement: Conditional)" "a Conditional replacement"
+since "$m" | grep -qE "CFN ExecuteChangeSet|^PUT " && fail "a Conditional replacement changed something"
+ok
 fake_set changes=replace-distribution
 m="$(mark)"
 run "$site" deploy
@@ -587,6 +826,15 @@ run "$site" deploy --allow-downtime
 expect_rc 0 "a distribution replacement with --allow-downtime"
 err_has "downtime: allowed (--allow-downtime)" "an allowed replacement"
 since "$m" | grep -q "CFN ExecuteChangeSet cbase-app-site ok" || fail "an allowed replacement was not executed"
+# CBASE_ALLOW_DOWNTIME=1 is the flag's spelling in the environment, and no other value is.
+rc=0
+(cd "$site" && CBASE_ALLOW_DOWNTIME=yes "$tool" deploy) > "$t/out" 2> "$t/err" || rc=$?
+expect_rc 1 "a distribution replacement with CBASE_ALLOW_DOWNTIME=yes"
+err_has "after an app's first deploy no deploy may: refused, and the change set deleted" "CBASE_ALLOW_DOWNTIME=yes is not 1"
+rc=0
+(cd "$site" && CBASE_ALLOW_DOWNTIME=1 "$tool" deploy) > "$t/out" 2> "$t/err" || rc=$?
+expect_rc 0 "a distribution replacement with CBASE_ALLOW_DOWNTIME=1"
+err_has "downtime: allowed (--allow-downtime)" "CBASE_ALLOW_DOWNTIME=1"
 fake_set changes=auto
 ok
 # Drift: printed and refused, then allowed with --accept-drift (and CBASE_ACCEPT_DRIFT=1).
@@ -607,6 +855,10 @@ ok
 rc=0
 (cd "$site" && CBASE_ACCEPT_DRIFT=1 "$tool" deploy) > "$t/out" 2> "$t/err" || rc=$?
 expect_rc 0 "a drifted stack, accepted by CBASE_ACCEPT_DRIFT=1"
+rc=0
+(cd "$site" && CBASE_ACCEPT_DRIFT=yes "$tool" deploy) > "$t/out" 2> "$t/err" || rc=$?
+expect_rc 1 "a drifted stack with CBASE_ACCEPT_DRIFT=yes (not 1)"
+err_has "the cbase-app-site stack drifted from its template (above)" "CBASE_ACCEPT_DRIFT=yes is not 1"
 fake_set drift=0
 ok
 # DRY_RUN: the change set made, printed and deleted; nothing executed, uploaded or joined.
@@ -631,8 +883,20 @@ since "$m" | grep -q "CFN DeleteStack cbase-app-dry" || fail "a new app's dry ru
 [ "$(template_of cbase-app-dry)" = "(none)" ] || fail "a new app's dry run left a stack"
 since "$m" | grep -qE "^PUT |CFN ExecuteChangeSet" && fail "a new app's dry run changed something"
 ok
+out_has "deploy: dry to account $ACCOUNT (dry run: nothing is changed)" "--dry-run says so first"
+ok
+# DRY_RUN is a dry run when it is 1 (what --dry-run sets), and no other value is one: DRY_RUN=0 deploys.
+m="$(mark)"
+rc=0
+(cd "$dry" && DRY_RUN=0 "$tool" deploy) > "$t/out" 2> "$t/err" || rc=$?
+expect_rc 0 "a deploy with DRY_RUN=0"
+since "$m" | grep -q "CFN ExecuteChangeSet cbase-app-dry ok" || fail "DRY_RUN=0 was taken for a dry run"
+out_has "deployed dry: https://" "DRY_RUN=0 deploys"
+ok
 
+fi
 # ---- secrets in a change set, a drift and an error: never printed -------------------------------
+if wanted secret-change; then
 # A value that looks like nothing (no long random run) so only the masking can keep it out.
 SECRET=hunter2-origin-value
 SECRET2=hunter3-origin-value
@@ -665,8 +929,86 @@ err_has "executing change set cbase-deploy on cbase-app-site failed:" "the faile
 err_has "(a line naming an origin header or a parameter value, not shown)" "the failed execute's message"
 fake_set "fail-execute=0&secret=&secret2="
 ok
+# The failed execute left its change set (CloudFormation keeps it): the next deploy deletes it first,
+# then makes its own (a second of the same name would be refused as existing).
+m="$(mark)"
+run "$site" deploy
+expect_rc 0 "a deploy after a failed execute"
+since "$m" | grep -m1 "CFN .*ChangeSet cbase-app-site" | grep -q "CFN DeleteChangeSet cbase-app-site ok" || fail "the failed execute's change set was not cleared first"
+ok
+# A first deploy whose execute failed leaves a stack in REVIEW_IN_PROGRESS with its change set: the
+# next deploy is a create again, its change set cleared first.
+fresh="$(app fresh "CBASE_APP = fresh" "CBASE_VM = none" "CBASE_STATIC = site")"
+mkdir -p "$fresh/build" && printf 'x\n' > "$fresh/build/index.html"
+fake_set fail-execute=1
+run "$fresh" deploy
+expect_rc 1 "a first deploy whose execute fails"
+fake_set fail-execute=0
+m="$(mark)"
+run "$fresh" deploy
+expect_rc 0 "a deploy after a failed first execute"
+out_has "stack: cbase-app-fresh is new" "a stack in REVIEW_IN_PROGRESS is new"
+since "$m" | grep -q "CFN DeleteChangeSet cbase-app-fresh ok" || fail "the first execute's change set was not cleared"
+since "$m" | grep -q "CFN CreateChangeSet cbase-app-fresh CREATE ok" || fail "the stack in REVIEW_IN_PROGRESS was not created"
+ok
+# A change set that fails for a reason other than "no changes": the reason printed, the change set
+# deleted, nothing executed.
+fake_set "cs-fail=Template format error: Unresolved resource dependencies Nope in the Resources block of the template"
+m="$(mark)"
+run "$site" deploy
+expect_rc 1 "a change set that fails"
+err_has "cbase: change set cbase-deploy on cbase-app-site failed:" "a change set that fails"
+err_has "  Template format error: Unresolved resource dependencies Nope" "the change set's reason"
+since "$m" | sed -n '/CFN CreateChangeSet cbase-app-site/,$p' | grep -q "CFN DeleteChangeSet cbase-app-site ok" || fail "a failed change set was not deleted"
+since "$m" | grep -q "CFN ExecuteChangeSet" && fail "a failed change set was executed"
+fake_set cs-fail=
+ok
+# CloudFormation's other wording of "no changes": up to date, as the first.
+fake_set "cs-fail=No updates are to be performed."
+run "$site" deploy
+expect_rc 0 "a change set that ends No updates are to be performed"
+out_has "stack: cbase-app-site is up to date (no changes)" "No updates are to be performed"
+fake_set cs-fail=
+ok
+# An update that fails and rolls back: the stack's failed resources, masked, and status 1.
+fake_set "stack-fail=1&secret=$SECRET&changes=replace-distribution"
+run "$site" deploy --allow-downtime
+expect_rc 1 "an update that fails"
+err_has "cbase: the cbase-app-site stack did not finish (stack-update-complete). Its failed resources:" "an update that fails"
+err_has "  Router	The function code is too large" "the failed resource's reason"
+err_has "  (a line naming an origin header or a parameter value, not shown)" "a failed resource's reason that names a header"
+no_secret "the failed resources"
+fake_set "stack-fail=0&secret=&changes=auto&stack-status=cbase-app-site:UPDATE_COMPLETE"
+ok
+# A stack another deploy (or CloudFormation) is still working on: refused before any change set.
+fake_set "stack-status=cbase-app-site:UPDATE_IN_PROGRESS"
+m="$(mark)"
+run "$site" deploy
+expect_rc 1 "a stack in UPDATE_IN_PROGRESS"
+err_has "the cbase-app-site stack is UPDATE_IN_PROGRESS: another deploy is running, or CloudFormation is still working" "a stack in progress"
+since "$m" | grep -q "CFN CreateChangeSet" && fail "a stack in progress got a change set"
+fake_set "stack-status=cbase-app-site:UPDATE_COMPLETE"
+ok
+# A first create that fails rolls back to ROLLBACK_COMPLETE, which CloudFormation updates never: the
+# next deploy says to delete the stack.
+doomed="$(app doomed "CBASE_APP = doomed" "CBASE_VM = none" "CBASE_STATIC = site")"
+mkdir -p "$doomed/build" && printf 'x\n' > "$doomed/build/index.html"
+fake_set stack-fail=1
+run "$doomed" deploy
+expect_rc 1 "a first create that fails"
+err_has "cbase: the cbase-app-doomed stack did not finish (stack-create-complete). Its failed resources:" "a first create that fails"
+fake_set stack-fail=0
+m="$(mark)"
+run "$doomed" deploy
+expect_rc 1 "a deploy onto ROLLBACK_COMPLETE"
+err_has "the cbase-app-doomed stack's first create failed and rolled back (ROLLBACK_COMPLETE)" "ROLLBACK_COMPLETE"
+err_has "aws cloudformation delete-stack --region us-east-1 --stack-name cbase-app-doomed" "ROLLBACK_COMPLETE names the delete"
+since "$m" | grep -q "CFN CreateChangeSet" && fail "a stack in ROLLBACK_COMPLETE got a change set"
+ok
 
+fi
 # ---- certificates ------------------------------------------------------------------------------
+if wanted certs; then
 # Found: an issued wildcard covers www.example.com (one of three, the deeper wildcard does not), and
 # the zone gets the alias.
 www="$(app www "CBASE_APP = www" "CBASE_VM = none" "CBASE_STATIC = site" "CBASE_DOMAIN = www.example.com")"
@@ -703,6 +1045,9 @@ m="$(mark)"
 run "$deep" deploy
 expect_rc 0 "a domain whose certificate is requested, with a zone"
 since "$m" | grep -q "ACM RequestCertificate a.corp.example.com" || fail "no certificate was requested for a.corp.example.com"
+# The token: the app and its hostnames, cksum'd, so a re-run within the hour is the same request.
+token="cbase$(printf '%s %s' deep a.corp.example.com | cksum | cut -d' ' -f1)"
+since "$m" | grep -q "ACM RequestCertificate a.corp.example.com token=$token" || { since "$m" | grep ACM >&2; fail "the request's idempotency token is not cbase<cksum of the app and its hostnames>"; }
 since "$m" | grep -qE "R53 UPSERT Z0EXAMPLE _v[0-9]+\.a\.corp\.example\.com\. CNAME _a[0-9]+\.acm-validations\.aws\." \
   || { since "$m" >&2; fail "the validation record was not written"; }
 since "$m" | grep -q "ACM issued" || fail "the requested certificate was not issued"
@@ -730,7 +1075,9 @@ out_has "requested before, still pending validation" "the pending certificate is
 since "$m" | grep -q "ACM RequestCertificate" && fail "a second certificate was requested"
 ok
 
+fi
 # ---- a named certificate: used as it is, never looked for or replaced ---------------------------
+if wanted named-cert; then
 # CERT_WILD would be found first (by ARN); CBASE_CERT_ARN names CERT_NAMED, which is served.
 named="$(app named "CBASE_APP = named" "CBASE_VM = none" "CBASE_STATIC = site" "CBASE_DOMAIN = named.example.com" "CBASE_CERT_ARN = $CERT_NAMED")"
 mkdir -p "$named/build" && printf 'x\n' > "$named/build/index.html"
@@ -752,7 +1099,9 @@ ok
 conf_error "cbase.conf line 4: CBASE_API_CERT_ARN is for CBASE_API_HOST, and there is none" "CBASE_APP = a" "CBASE_MEMORY = 1G" "CBASE_DOMAIN = a.example.com" \
   "CBASE_API_CERT_ARN = arn:aws:acm:us-east-1:$ACCOUNT:certificate/12345678-abcd-ef01-2345-6789abcdef01"
 
+fi
 # ---- several hostnames: one distribution, one certificate, a record each -------------------------
+if wanted hostnames; then
 # example.com and app.example.com: the issued example.com,*.example.com covers both, and each is an
 # alias of the one distribution.
 two="$(app two "CBASE_APP = two" "CBASE_VM = none" "CBASE_STATIC = site" "CBASE_DOMAIN = example.com app.example.com")"
@@ -779,6 +1128,8 @@ m="$(mark)"
 run "$two" deploy
 expect_rc 0 "three hostnames, one of them uncovered"
 since "$m" | grep -q "ACM RequestCertificate example.com,app.example.com,shop.org" || { since "$m" | grep ACM >&2; fail "the request did not name every hostname"; }
+token="cbase$(printf '%s %s' two "example.com app.example.com shop.org" | cksum | cut -d' ' -f1)"
+since "$m" | grep -q "ACM RequestCertificate example.com,app.example.com,shop.org token=$token" || fail "the three hostnames' idempotency token"
 since "$m" | grep -qE "R53 UPSERT Z0SHOPORG _v[0-9]+\.shop\.org\. CNAME" || fail "shop.org's validation record was not written in its zone"
 since "$m" | grep -qE "R53 UPSERT Z0EXAMPLE _v[0-9]+\.app\.example\.com\. CNAME" || fail "app.example.com's validation record was not written"
 since "$m" | grep -q "ACM issued" || fail "the certificate for three hostnames was not issued"
@@ -818,7 +1169,9 @@ domain     example.com app.example.com
 cert       (found or requested by deploy)
 route      * static cache GET,HEAD" "CBASE_APP = site" "CBASE_VM = none" "CBASE_DOMAIN =  example.com   app.example.com"
 
+fi
 # ---- a hostname another distribution holds: named with the step that frees it ------------------
+if wanted taken-hostname; then
 fake_set "foreign-dist=EOLDDIST:dold.cloudfront.net:taken.example.com+other.example.com"
 taken="$(app taken "CBASE_APP = taken" "CBASE_VM = none" "CBASE_STATIC = site" "CBASE_DOMAIN = taken.example.com")"
 mkdir -p "$taken/build" && printf 'x\n' > "$taken/build/index.html"
@@ -841,8 +1194,32 @@ expect_rc 0 "the hostname freed"
 run "$taken" deploy
 expect_rc 0 "a redeploy of a hostname the app's own distribution holds"
 ok
+# A staged attach: deploy --no-aliases makes the distribution without the hostname another one holds,
+# and prints the CNAME and the TXT record to set; deploy --attach then moves the hostname onto it
+# (associate-alias) and runs the update that names it with rollback off.
+fake_set "foreign-dist=EOLDDIST:dold.cloudfront.net:move.example.com"
+moving="$(app moving "CBASE_APP = moving" "CBASE_VM = none" "CBASE_STATIC = site" "CBASE_DOMAIN = move.example.com")"
+mkdir -p "$moving/build" && printf 'x\n' > "$moving/build/index.html"
+m="$(mark)"
+run "$moving" deploy --no-aliases
+expect_rc 0 "a staged attach's first step"
+grep -Eq "^point move\.example\.com at d[0-9]+fake\.cloudfront\.net \(a CNAME" "$t/out" || { cat "$t/out" >&2; fail "--no-aliases does not say where to point the hostname"; }
+grep -Eq "^  and add: _move\.example\.com TXT d[0-9]+fake\.cloudfront\.net " "$t/out" || fail "--no-aliases does not name the TXT record"
+since "$m" | grep -qE "R53 UPSERT|CF AssociateAlias" && fail "--no-aliases wrote a record or moved a hostname"
+ok
+m="$(mark)"
+run "$moving" deploy --attach
+expect_rc 0 "a staged attach's second step"
+grep -Eq "^attach: move\.example\.com moved from EOLDDIST to E[0-9]+FAKEDIST$" "$t/out" || { cat "$t/out" >&2; fail "--attach did not move the hostname"; }
+since "$m" | grep -q "CF AssociateAlias .* move.example.com" || fail "--attach made no associate-alias"
+since "$m" | grep -q "CFN ExecuteChangeSet cbase-app-moving ok rollback=off" || { since "$m" | grep ExecuteChangeSet >&2; fail "the attach's update was not run with rollback off"; }
+since "$m" | grep -q "R53 UPSERT Z0EXAMPLE move.example.com A alias=d" || fail "--attach did not point the hostname"
+fake_set foreign-dist=
+ok
 
+fi
 # ---- what deploy refuses -----------------------------------------------------------------------
+if wanted refused; then
 # A static group that does not exist: the group-init command, nothing made.
 ghost="$(app ghost "CBASE_APP = ghost" "CBASE_VM = none" "CBASE_STATIC = nosuch")"
 m="$(mark)"
@@ -869,7 +1246,9 @@ conf_error "cbase.conf line 2: CBASE_STATIC_DIR is a directory inside the reposi
 conf_error "cbase.conf line 3: CBASE_STATIC_DIR is the static files' directory, and CBASE_STATIC is none" "CBASE_APP = a" "CBASE_STATIC = none" "CBASE_STATIC_DIR = dist"
 conf_error "cbase.conf line 2: CBASE_HASHED is blank-separated globs" "CBASE_APP = a" "CBASE_HASHED = /assets/*"
 
+fi
 # ---- the template: routes on the VM only for an app with one -----------------------------------
+if wanted template; then
 full="$(app full "CBASE_APP = shop" "CBASE_ROUTE = /api/* vm" "CBASE_ROUTE = /live ws" "CBASE_ROUTE = /img/* static nocache GET,OPTIONS" \
           "CBASE_ROUTE = /form vm POST" "CBASE_ROUTE = /read vm cache GET")"
 run "$full" template
@@ -941,7 +1320,56 @@ ok
 grep -Fq "run \`./cbase deploy\` again after an instance replacement" "$root/README.md" || fail "README.md lacks the instance replacement line"
 ok
 
+fi
+# ---- template-shapes: the flag combinations the templates above do not cover: each route's cache
+# policy, a ws route's compress, aliases off, and an API host's own alias and certificate. Their
+# strings are the template output as the tool renders it, checked literally on each shape.
+if wanted template-shapes; then
+ACM_A="arn:aws:acm:us-east-1:$ACCOUNT:certificate/12345678-abcd-ef01-2345-6789abcdef01"
+CACHING_DISABLED="4135ea2d-6df8-44a3-9df3-4b5a84be39ad   # Managed-CachingDisabled"
+CACHING_OPTIMIZED="658327ea-f89d-4fab-a63d-7e88639e58f6   # Managed-CachingOptimized"
+ORIGIN_CC="4cc15a8a-d715-48a4-82b8-cc0b614638fe   # Managed-UseOriginCacheControlHeaders-QueryStrings"
+shapes="$(app shapes "CBASE_APP = a" "CBASE_MEMORY = 1G" "CBASE_ROUTE = /ws ws" "CBASE_ROUTE = /x vm origin" \
+          "CBASE_ROUTE = /f/* static nocache" "CBASE_ROUTE = /y vm GET,POST cache")"
+run "$shapes" template
+expect_rc 0 "a template with every cache mode"
+out_has "CachePolicyId: $CACHING_DISABLED" "a ws route and a nocache static route are uncached"
+out_has "CachePolicyId: $ORIGIN_CC" "the origin cache mode uses the origin's Cache-Control"
+out_has "CachePolicyId: $CACHING_OPTIMIZED" "a cache route is cached"
+[ "$(grep -c 'Compress: false' "$t/out")" = 1 ] || { cat "$t/out" >&2; fail "only the ws route is uncompressed"; }
+ok
+out_has "AllowedMethods: [GET, HEAD]" "a static route allows GET and HEAD"
+out_has "AllowedMethods: [GET, HEAD, OPTIONS, PUT, PATCH, POST, DELETE]" "a route with every method allows them all"
+out_has "PathPattern: \"/f/*\"" "a static route's pattern"
+ok
+# A static route that allows OPTIONS: the methods set that names it, and no more.
+opts="$(app optsh "CBASE_APP = a" "CBASE_MEMORY = 1G" "CBASE_ROUTE = /o/* static GET,OPTIONS")"
+run "$opts" template
+expect_rc 0 "a static route with OPTIONS"
+out_has "AllowedMethods: [GET, HEAD, OPTIONS]" "a static route allows GET, HEAD and OPTIONS"
+[ "$(grep -c 'PUT' "$t/out")" = 0 ] || { cat "$t/out" >&2; fail "a static route with OPTIONS allows PUT"; }
+ok
+# Aliases off (a staged attach's first step): the certificate, and no alias line.
+off="$(app offal "CBASE_APP = a" "CBASE_MEMORY = 1G" "CBASE_DOMAIN = a.example.com" \
+       "CBASE_CERT_ARN = $ACM_A" "CBASE_ALIASES = off")"
+run "$off" template
+expect_rc 0 "a template with aliases off"
+out_has "AcmCertificateArn: $ACM_A" "aliases off keeps the certificate"
+[ "$(grep -c 'Aliases:' "$t/out")" = 0 ] || { cat "$t/out" >&2; fail "aliases off still names an alias"; }
+ok
+# An API host: its own alias and its own certificate, on its own distribution.
+api="$(app apishape "CBASE_APP = a" "CBASE_MEMORY = 1G" "CBASE_DOMAIN = a.example.com" \
+       "CBASE_API_HOST = api.example.com" "CBASE_API_ROUTE = /v1/* vm" "CBASE_API_CERT_ARN = $ACM_A")"
+run "$api" template
+expect_rc 0 "a template with an API host"
+out_has "Aliases: [api.example.com]" "the API host's alias"
+out_has "AcmCertificateArn: $ACM_A" "the API host's certificate"
+out_has "ResponseHeadersPolicyId: !Ref ServerTimingPolicy" "the API host's routes carry the server timing policy"
+ok
+fi
+
 # ---- the router, run: its code from the template, driven under node ---------------------------
+if wanted router; then
 # router_of: the Router's code in the template $t/out, into $t/router.js.
 router_of() {
   awk '/^      FunctionCode: \|$/ {f=1; next} f && /^        / {sub(/^        /, ""); print; next} f {exit}' "$t/out" > "$t/router.js"
@@ -1001,9 +1429,62 @@ else
   err_has "the app shell is /app.html (CBASE_SHELL), and the static dir has no app.html" "a shell the build lacks"
   ok
 fi
-conf_error "cbase.conf line 2: CBASE_SHELL is a page of the build, an absolute path ending in .html" "CBASE_APP = a" "CBASE_SHELL = _shell.html"
-conf_error "cbase.conf line 2: CBASE_SHELL is a page of the build, an absolute path ending in .html" "CBASE_APP = a" "CBASE_SHELL = /../x.html"
-conf_error "cbase.conf line 3: CBASE_SHELL is a page of the static files, and CBASE_STATIC is none" "CBASE_APP = a" "CBASE_STATIC = none" "CBASE_SHELL = /_shell.html"
 
+fi
+# It runs last: it starts a fake of its own, and the sections above seed and read the one they share.
+# ---- a signalled deploy: its temporary directory goes, and the process ends by the signal ------
+if wanted signals; then
+# The deploy's first describe-stacks comes after its temporary files are made (the file list, the static
+# tree). The throttle shim answers that call with a 429 every time, so the tool waits in its retry sleep
+# (a nanosleep) and the signal lands there: the state where the tool dies by the signal. A shell that
+# waits on a call made in $(...) does not die by the signal (it ends with its own error, status 1), so
+# the call is not what is held.
+mkdir -p "$t/hold"
+# shellcheck disable=SC2016 # the shim's own $*
+printf '#!/bin/bash\ncase "$*" in *describe-stacks*) echo x >> "%s"; echo "An error occurred (TooManyRequestsException) when calling the DescribeStacks operation: HTTP 429" >&2; exit 255 ;; esac\nexec "%s" "$@"\n' \
+  "$t/hold/calls" "$(command -v aws)" > "$t/hold/aws"
+chmod +x "$t/hold/aws"
+# sig_deploy SIG NUMBER: a deploy of the site, held in its retry sleep, sent SIG: INT to the process group
+# (a terminal's Ctrl-C reaches the tool and its sleep), TERM and HUP to the tool alone (kill). It ends by
+# signal NUMBER (status 128 + NUMBER) and leaves no cbase.* in its own TMPDIR.
+sig_deploy() {
+  local sig="$1" num="$2" tmpd="$t/tmp-$1" pid n=0 st=0 left
+  rm -rf "$tmpd"; mkdir -p "$tmpd"; rm -f "$t/hold/calls"
+  start_fake "${site_fake[@]}"
+  set -m
+  # The subshell execs the tool, so $! is the tool itself (a signal to it reaches no wrapper). Perl sets the
+  # three signals to their default first: a background job of a non-interactive shell, or a run under nohup,
+  # inherits them ignored, and an ignored signal is kept by the tool, so the test sets them to default.
+  (cd "$site"; export PATH="$t/hold:$PATH" TMPDIR="$tmpd"; exec perl -e '$SIG{$_} = "DEFAULT" for qw(INT TERM HUP); exec @ARGV' "$tool" deploy) < /dev/null > "$t/out" 2> "$t/err" &
+  pid=$!
+  set +m
+  until [ -s "$t/hold/calls" ] || [ $n -gt 200 ]; do sleep 0.05; n=$((n + 1)); done
+  [ -s "$t/hold/calls" ] || { kill "$pid" 2> /dev/null || true; cat "$t/out" "$t/err" >&2; fail "$sig: the deploy never reached its retry"; }
+  sleep 0.3
+  case "$(ps -o command= -p "$pid" 2> /dev/null || true)" in *deploy*) ;; *) fail "$sig: pid $pid is not the tool" ;; esac
+  left="$(find "$tmpd" -mindepth 2 -print -quit)"
+  [ -n "$left" ] || fail "$sig: the deploy held before it made any temporary file (the test would prove nothing)"
+  if [ "$sig" = INT ]; then kill -INT -- "-$pid"; else kill "-$sig" "$pid"; fi
+  wait "$pid" 2> /dev/null || st=$?
+  [ "$st" = $((128 + num)) ] || { cat "$t/out" "$t/err" >&2; fail "$sig: the deploy ended with status $st, not $((128 + num)) (signal $num)"; }
+  left="$(find "$tmpd" -mindepth 1 -maxdepth 1 -name 'cbase.*' -print)"
+  [ -z "$left" ] || fail "$sig: a deploy stopped by $sig left its temporary directory: $left"
+  ok
+}
+sig_deploy INT 2
+sig_deploy TERM 15
+sig_deploy HUP 1
+# A deploy that is not signalled ends as it did, and leaves no cbase.* either.
+start_fake "${site_fake[@]}"
+normal="$t/tmp-normal"; rm -rf "$normal"; mkdir -p "$normal"
+TMPDIR="$normal" run "$site" deploy
+expect_rc 0 "a deploy with no signal"
+out_has "deployed site: https://d1fake.cloudfront.net/" "a deploy with no signal"
+left="$(find "$normal" -mindepth 1 -maxdepth 1 -name 'cbase.*' -print)"
+[ -z "$left" ] || fail "a deploy that ended normally left its temporary directory: $left"
+ok
+
+fi
 [ "$(log_count unsigned)" = 0 ] || fail "a call reached the fake without the test's credentials"
+CBASE_TEST_END=1
 echo "cbase_test: ok ($pass checks)"
