@@ -106,7 +106,7 @@ char *cbc_vm_remote_undeploy(bool delete_data) {
                "else\n"
                "  say \"$unit is not installed\"\n"
                "fi\n"
-               "rm -f \"$home/serve\" \"$home/serve.new\" \"$R/etc/cbase/$app.env\"\n",
+               "rm -f \"$home/serve\" \"$home/serve.new\" \"$R/etc/cbase/$app.env\" \"$R/etc/cbase/$app.loaded\"\n",
                app, app, app, app, app);
   cbc_buf_str(&s, head);
   if (delete_data) {

@@ -10,7 +10,7 @@
 # runs vm_remote.sh as root: the app's user and data folder, the port checked free before a first
 # start (exit 3, and deploy releases the claim it just made), the artifact fetched and checked, the
 # settings from SSM (vm_settings) into its env file, the units installed and ONLY the service
-# restarted, then its GET /health or its startup line waited for. The stack's VmOrigin and VmPort
+# restarted, and only when the binary, a unit or the env file changed (vm_remote.sh step 6), then its GET /health or its startup line waited for. The stack's VmOrigin and VmPort
 # are the origin's hostname and that port.
 #
 # THE PORT IS THE ORIGIN. The service listens on 0.0.0.0:<port> and CloudFront reaches it there
@@ -341,7 +341,7 @@ if [ -f "\$R/etc/systemd/system/\$unit" ]; then
 else
   say "\$unit is not installed"
 fi
-rm -f "\$home/serve" "\$home/serve.new" "\$R/etc/cbase/\$app.env"
+rm -f "\$home/serve" "\$home/serve.new" "\$R/etc/cbase/\$app.env" "\$R/etc/cbase/\$app.loaded"
 EOF
   if [ "$1" = 1 ]; then
     cat << 'EOF'
@@ -416,6 +416,16 @@ vm_ssm_run() {
   sed 's/^CBASE: /vm: /' "$CB_TMP/ssm-lines"
 }
 
+# vm_service_said: VM_SERVICE, what the deploy's summary says of the service, from the remote
+# script's own line (vm_remote.sh step 6): restarted, started, or unchanged and not restarted.
+VM_SERVICE=""
+vm_service_said() {
+  local u="cbase-$CONF_APP.service" line
+  line="$(grep -E "^CBASE: $u (unchanged: not restarted|restarted |started )" "$CB_TMP/ssm-lines" | tail -1 || true)"
+  VM_SERVICE="${line#CBASE: }"
+  [ -n "$VM_SERVICE" ] || VM_SERVICE="$u: the deploy did not say whether it restarted"
+}
+
 # vm_ship GROUP: the artifact uploaded and the service (re)started on VM_ID. Status 1 when the
 # service was not started (said why): a port taken on the VM releases the claim this deploy made.
 vm_ship() {
@@ -433,7 +443,10 @@ vm_ship() {
   fi
   vm_remote_deploy "$VM_PORT" "$bucket" "$VM_KEY" "$VM_SHA" "$region" > "$CB_TMP/vm-deploy.sh"
   vm_ssm_run "$CB_TMP/vm-deploy.sh" "deploy of $CONF_APP"
-  [ "$VM_SSM_STATUS" != Success ] || return 0
+  if [ "$VM_SSM_STATUS" = Success ]; then
+    vm_service_said
+    return 0
+  fi
   if [ "$VM_SSM_CODE" = 3 ]; then
     if [ -n "$VM_NEW" ]; then
       state_change vm "$group" "$CONF_APP" "" leave

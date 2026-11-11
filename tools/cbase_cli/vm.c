@@ -477,6 +477,25 @@ static void ssm_run(const char *script, const char *what) {
 /* The exit status shown in the messages: the command's, or "?" when it has none. */
 static const char *ssm_code_shown(void) { return *cbc_vm.ssm_code ? cbc_vm.ssm_code : "?"; }
 
+/* vm_service_said: VM_SERVICE, from the last "CBASE: cbase-<app>.service ..." line (the last one that
+ * says unchanged: not restarted, restarted or started) of the remote script's masked lines. */
+static char *vm_service_text = "";
+const char *cbc_vm_service(void) { return vm_service_text; }
+static void vm_service_said(void) {
+  char *u = cbc_fmt("cbase-%s.service", cbc_conf.app);
+  size_t ul = strlen(u);
+  const char *found = NULL;
+  for (size_t i = 0; i < last_lines.n; i++) {
+    const char *l = last_lines.v[i];
+    if (strncmp(l, "CBASE: ", 7) != 0 || strncmp(l + 7, u, ul) != 0) continue;
+    const char *r = l + 7 + ul;
+    if (strncmp(r, " unchanged: not restarted", 25) == 0 || strncmp(r, " restarted ", 11) == 0 ||
+        strncmp(r, " started ", 9) == 0)
+      found = l;
+  }
+  vm_service_text = found ? cbc_dup(found + 7) : cbc_fmt("%s: the deploy did not say whether it restarted", u);
+}
+
 /* vm_ship: the artifact uploaded (its sha256's key) and the service (re)started on VM. False when the
  * service was not started (said why): a port taken on the VM releases the claim this deploy made. */
 bool cbc_vm_ship(const char *group) {
@@ -499,7 +518,10 @@ bool cbc_vm_ship(const char *group) {
   char *script = cbc_vm_remote_deploy(cbc_vm.port, bucket, cbc_vm.key, cbc_vm.sha, region, state_bucket());
   cbc_write_file(cbc_tmp_path("vm-deploy.sh"), script);
   ssm_run(script, cbc_fmt("deploy of %s", cbc_conf.app));
-  if (strcmp(cbc_vm.ssm_status, "Success") == 0) return true;
+  if (strcmp(cbc_vm.ssm_status, "Success") == 0) {
+    vm_service_said();
+    return true;
+  }
   if (strcmp(cbc_vm.ssm_code, "3") == 0) {
     if (cbc_vm.new_member) {
       state_change("vm", group, cbc_conf.app, "", "leave");

@@ -191,6 +191,7 @@ void cbc_deploy(const char *conf_file, int argc, char **argv) {
     }
   }
   printf("deployed %s: %s\n", cbc_conf.app, url);
+  if (strcmp(cbc_conf.vm, "none") != 0) printf("service: %s\n", cbc_vm_service());
   for (size_t i = 0; i < cert.notes.n; i++) printf("%s\n", cert.notes.v[i]);
 }
 
