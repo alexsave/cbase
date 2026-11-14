@@ -1,10 +1,11 @@
 # vm_remote.py - the scripts SSM runs on a VM (the port of vm_remote.c). The deploy is tools/cbase.d/vm_remote.sh
-# with the app's values in a header and its two units spliced in; the undeploy and the data list are literal
+# with the app's values in a header and its two units spliced in; the NIC interrupts' setup is vm_irq_setup.sh
+# with its program and unit spliced in, its check a file as it is; the undeploy and the data list are literal
 # scripts. The text is the shell's, byte for byte: a port must not change what runs on the instance, and
 # vm_remote.sh itself stays bash, read from its file at run time.
 from __future__ import annotations
 
-from typing import List
+from typing import Dict, List
 
 import conf as confmod
 import vm
@@ -19,18 +20,16 @@ def _add_lines(out: List[str], text: str) -> None:
         out.append("\n")
 
 
-def _splice_units(unit: str, socket: str) -> str:
-    """vm_remote.sh from its second line on, with @CBASE_SERVICE@ and @CBASE_SOCKET@ replaced by the lines of
-    the unit and the socket (awk's splice in vm.sh's vm_remote_deploy)."""
-    text = vm.read(vm.file("vm_remote.sh"))
+def _splice(script: str, parts: Dict[str, str]) -> str:
+    """The file SCRIPT (under cbase.d/) from its second line on (the shebang is dropped), each line that is
+    a marker of PARTS replaced by the lines of its text (awk's splice in vm.sh's vm_remote_deploy)."""
+    text = vm.read(vm.file(script))
     nl = text.find("\n")
     rest = text[nl + 1:] if nl >= 0 else ""   # NR == 1 is the shebang, dropped
     out: List[str] = []
     for line in vm.lines_of(rest):
-        if line == "@CBASE_SERVICE@":
-            _add_lines(out, unit)
-        elif line == "@CBASE_SOCKET@":
-            _add_lines(out, socket)
+        if line in parts:
+            _add_lines(out, parts[line])
         else:
             out.append(line)
             out.append("\n")
@@ -65,7 +64,7 @@ def deploy(port: str, bucket: str, key: str, sha: str, region: str, state_bucket
             % (app, app, port, app, app, app, app, data, bucket, key, sha, region, settings, conf.vm_replaces))
     unit = vm.unit(port, region, vm.backup_bucket(state_bucket))
     socket = vm.socket(port)
-    return head + _splice_units(unit, socket)
+    return head + _splice("vm_remote.sh", {"@CBASE_SERVICE@": unit, "@CBASE_SOCKET@": socket})
 
 
 def undeploy(delete_data: bool) -> str:
@@ -113,3 +112,20 @@ def data() -> str:
             "  a=\"${d%/data}\"\n"
             "  echo \"CBASE: data ${a##*/}\"\n"
             "done\n")
+
+
+def irq_setup(mode: str) -> str:
+    """The script that sets the VM's NIC interrupts for CBASE_VM_IRQ = MODE (split or irqbalance): the mode in
+    its header, then tools/cbase.d/vm_irq_setup.sh with the program (vm_irq.sh, whole) and its unit
+    (vm_irq.service) spliced in."""
+    head = ("#!/bin/bash\n"
+            "# The NIC interrupts' setup of cbase app %s's VM (CBASE_VM_IRQ = %s), rendered by ./cbase deploy\n"
+            "# (tools/cbase_cli/vm_remote.py) from vm_irq_setup.sh, and run as root by SSM.\n"
+            "irq=%s\n" % (conf.app, mode, mode))
+    return head + _splice("vm_irq_setup.sh", {"@CBASE_IRQ_SH@": vm.read(vm.file("vm_irq.sh")),
+                                              "@CBASE_IRQ_UNIT@": vm.read(vm.file("vm_irq.service"))})
+
+
+def irq_check() -> str:
+    """The read-only check of the VM's NIC interrupts, tools/cbase.d/vm_irq_check.sh as it is."""
+    return vm.read(vm.file("vm_irq_check.sh"))

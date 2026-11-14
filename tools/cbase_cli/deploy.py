@@ -152,6 +152,8 @@ def deploy(conf_file: str, args: List[str]) -> None:
         if stack.stk_changes:
             stack.discard()
         sys.exit(cli.EXIT_FAIL)
+    if has_vm and conf.vm_irq:
+        vm.irq(conf.vm)   # the VM's NIC interrupts: a warning on trouble, never a stop
     # 8. The files: the app joins the static group's state file; then hashed, the rest, html last; and the
     #    prune after the stack executes (step 9).
     if has_static:

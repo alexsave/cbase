@@ -1,7 +1,7 @@
 #!/bin/bash
 # vm_render_test.sh - the tool's VM renders, byte for byte against their golden files: the unit,
 # the socket, the deploy script (vm_remote.sh spliced), the undeploy and data scripts, the boot
-# user-data, the artifact path, the memory fit. The golden files are under test/golden/vm_render/,
+# user-data, the NIC interrupts' setup (both modes) and check, the artifact path, the memory fit. The golden files are under test/golden/vm_render/,
 # one per render, named by the case: they are the bytes the shell tool's vm.sh functions rendered
 # when the shell tool was retired, and vm.sh is gone, so they are the record now. The harness is
 # test/vm_render.py, which imports the tool's own modules (vm, vm_remote, vm_boot, conf).
@@ -64,6 +64,9 @@ for conf in "$conf_plain" "$conf_undeclared" "$conf_adopted" "$conf_legacy" "$co
   check "$name: fit" "$conf" fit t4g.nano 512
 done
 check "boot user-data" "$conf_plain" boot
+check "plain: irq-setup split" "$conf_plain" irq-setup split
+check "plain: irq-setup irqbalance" "$conf_plain" irq-setup irqbalance
+check "irq-check" "$conf_plain" irq-check
 # The encoding a script travels in: every padding case (n % 3 = 1, 2, 0) and a multi-line script.
 for text in a ab abc abcd abcde abcdef 'set -e
 echo "x y" > /tmp/f

@@ -523,6 +523,36 @@ def ship(group_: str) -> bool:
     return False
 
 
+def _ssm_run_kept(script: str, what: str) -> bool:
+    """_ssm_run, for a step that never stops the deploy: False when the tool would have stopped (a command
+    that was not sent or did not finish, said above), with ssm_status "" then."""
+    global ssm_status, ssm_code
+    try:
+        _ssm_run(script, what)
+    except SystemExit:
+        ssm_status = ssm_code = ""
+        return False
+    return True
+
+
+def irq(group_: str) -> None:
+    """The VM's NIC interrupts set for CBASE_VM_IRQ (conf.vm_irq: split or irqbalance), after a successful
+    ship: the setup script, then for split the read-only check. Neither ever changes the deploy's exit status
+    or stops it: a step that did not end well is a warning on stderr, and the app is deployed and not affected
+    (cbase-irq.service is a dependency of nothing an app has)."""
+    mode = conf.vm_irq
+    if not _ssm_run_kept(vm_remote.irq_setup(mode), "irq setup of %s" % conf.app) or ssm_status != "Success":
+        cli.err("cbase: warning: the NIC interrupts' setup on %s ended %s (exit %s), above; %s is deployed and not affected (journalctl -u cbase-irq on the instance)\n"
+                % (id_, ssm_status if ssm_status else "unfinished", _ssm_code_shown(), conf.app))
+        return
+    if mode != "split":
+        return
+    ok = _ssm_run_kept(vm_remote.irq_check(), "irq check of %s" % conf.app) and ssm_status == "Success"
+    if not ok or not any(ln.startswith("CBASE: irq: one queue per vCPU") for ln in _last_lines):
+        cli.err("cbase: warning: the NIC interrupts on %s are not one queue per vCPU (above); %s is deployed and not affected\n"
+                % (id_, conf.app))
+
+
 def undeploy(group_: str, delete_data: bool) -> None:
     """The app's service stopped and removed, then its membership left (vm_undeploy)."""
     find(group_)
@@ -580,6 +610,9 @@ def plan_dry(group_: str) -> None:
         sys.exit(cli.EXIT_FAIL)
     cli.out("vm: would join vm group %s as %s\n" % (group_, line))
     cli.out("%s\n" % state.fit_report)
+    if conf.vm_irq:
+        cli.out("vm: would set the NIC interrupts after the deploy (CBASE_VM_IRQ = %s: cbase-irq.service%s)\n"
+                % (conf.vm_irq, " and its check" if conf.vm_irq == "split" else " removed, irqbalance enabled"))
     port = state.port
 
 

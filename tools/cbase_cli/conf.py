@@ -17,7 +17,7 @@ CONF_KEYS = ("CBASE_APP CBASE_VM CBASE_VM_STACK CBASE_VM_ORIGIN CBASE_VM_PORT CB
              "CBASE_VM_ARTIFACTS CBASE_VM_REPLACES CBASE_BACKUP_KEY CBASE_BACKUP_BUCKET CBASE_STATIC "
              "CBASE_STATIC_BUCKET CBASE_STATIC_PREFIX CBASE_MEMORY CBASE_ROUTE CBASE_DOMAIN CBASE_CERT_ARN "
              "CBASE_API_CERT_ARN CBASE_ALIASES CBASE_ZONE CBASE_API_HOST CBASE_API_ROUTE CBASE_STATIC_DIR "
-             "CBASE_HASHED CBASE_SHELL")
+             "CBASE_HASHED CBASE_SHELL CBASE_VM_IRQ")
 
 
 class Route:
@@ -50,6 +50,7 @@ class Conf:
         self.backup_bucket = ""
         self.static_bucket = ""
         self.static_prefix = ""
+        self.vm_irq = ""         # CBASE_VM_IRQ: "split", "irqbalance", or "" (unset: the VM's interrupts untouched)
         self.memory = ""         # the declared MiB in decimal, or ""
         self.memory_estimated = False
         self.domain = ""         # the first CBASE_DOMAIN hostname
@@ -434,6 +435,10 @@ def load(file: str) -> None:
             if memory < 16 or memory > 65536:
                 _die_line(no, "CBASE_MEMORY is from 16M to 64G")
             memory_set = True
+        elif key == "CBASE_VM_IRQ":
+            if value != "split" and value != "irqbalance":
+                _die_line(no, "CBASE_VM_IRQ is split (one NIC queue interrupt per vCPU, irqbalance stopped) or irqbalance (the way back)")
+            conf.vm_irq = value
         elif key == "CBASE_ROUTE":
             _conf_route(no, value, False)
         elif key == "CBASE_API_ROUTE":
@@ -505,6 +510,7 @@ def load(file: str) -> None:
     if conf.vm == "none":
         _conf_refuses(vmkeys, "the CBASE_VM_* and CBASE_BACKUP_BUCKET keys are for an app with a VM, and CBASE_VM is none")
         _conf_refuses("CBASE_MEMORY", "CBASE_MEMORY is for an app with a VM, and CBASE_VM is none")
+        _conf_refuses("CBASE_VM_IRQ", "CBASE_VM_IRQ is for an app with a VM, and CBASE_VM is none")
         _conf_refuses("CBASE_API_HOST", "CBASE_API_HOST sends every request to the VM, and CBASE_VM is none")
     else:
         conf.memory = str(memory) if memory_set else ""
@@ -571,6 +577,8 @@ def print_conf() -> None:
         _row("vm", "%s (%s: memory not declared, counted as %dM)" % (c.vm, c.app, MEMORY_ESTIMATE))
     else:
         _row("vm", "%s (memory %s MiB)" % (c.vm, c.memory))
+    if c.vm_irq:
+        _row("irq", "%s (the VM's NIC interrupts%s)" % (c.vm_irq, ": one queue per vCPU, irqbalance stopped" if c.vm_irq == "split" else ": irqbalance's again"))
     if c.vm_stack:
         _row("vm-stack", "%s (adopted: found by its stack, no group-init)" % c.vm_stack)
     if c.vm_origin:

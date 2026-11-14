@@ -55,7 +55,9 @@
 //     executed update fails and rolls back, its events naming the failed resources), cs-fail=REASON
 //     (a change set ends FAILED for REASON), stack-status=NAME:STATUS (a stack's status set),
 //     instance-type=T (every instance's type), ssm-status=S, ssm-code=N, ssm-out=TEXT (what the next
-//     commands end with). GET /_fake/template?stack=NAME answers the template the stack holds.
+//     commands end with), ssm-match=SUBSTR with ssm-match-status=S, ssm-match-code=N and
+//     ssm-match-out=TEXT (a command whose comment contains SUBSTR ends with those instead; ssm-match=
+//     with nothing clears it). GET /_fake/template?stack=NAME answers the template the stack holds.
 //
 // Every request is one line of the log: "<METHOD> <path> <status>" for S3 (a PutObject with its
 // precondition and its headers), "CFN <Action> ...", "ACM ...", "R53 ...", "CF ...". One thread per
@@ -158,6 +160,9 @@ static int g_ncmds;
 static char g_ssm_status[32] = "Success";
 static int g_ssm_code;
 static char g_ssm_out[2048] = "CBASE: done (the fake's answer)\n";
+// A command whose comment contains g_ssm_match ends with the match's answer instead.
+static char g_ssm_match[128], g_ssm_match_status[32] = "Success", g_ssm_match_out[2048];
+static int g_ssm_match_code;
 static FILE *g_log;
 // The gather: the next g_gather_want GetObject answers wait until that many have been computed.
 static int g_gather_want, g_gather_seen;
@@ -1732,10 +1737,11 @@ static void ssm(int fd, const request *r, const char *op) {
             memset(cm, 0, sizeof *cm);
             snprintf(cm->id, sizeof cm->id, "c0ffee00-0000-4000-8000-%012d", g_ncmds);
             copy(cm->instance, sizeof cm->instance, instance);
-            copy(cm->status, sizeof cm->status, g_ssm_status);
-            cm->code = g_ssm_code;
+            bool matched = g_ssm_match[0] && strstr(comment, g_ssm_match);
+            copy(cm->status, sizeof cm->status, matched ? g_ssm_match_status : g_ssm_status);
+            cm->code = matched ? g_ssm_match_code : g_ssm_code;
             sb out = { 0 };
-            sb_add(&out, "%s", g_ssm_out);
+            sb_add(&out, "%s", matched ? g_ssm_match_out : g_ssm_out);
             if (g_secret[0]) sb_add(&out, "DB_PASSWORD=%s\nCBASE_ORIGIN_SECRET='%s'\n", g_secret, g_secret2);
             cm->out = out.p ? out.p : calloc(1, 1);
             sb_add(&b, "{\"Command\":{\"CommandId\":\"%s\",\"DocumentName\":\"AWS-RunShellScript\",\"Status\":\"Pending\"}}", cm->id);
@@ -1810,6 +1816,10 @@ static void control(int fd, const request *r) {
         if ((v = form_get(r->query, "ssm-status"))) copy(g_ssm_status, sizeof g_ssm_status, v), free(v);
         if ((v = form_get(r->query, "ssm-code"))) g_ssm_code = atoi(v), free(v);
         if ((v = form_get(r->query, "ssm-out"))) copy(g_ssm_out, sizeof g_ssm_out, v), free(v);
+        if ((v = form_get(r->query, "ssm-match"))) copy(g_ssm_match, sizeof g_ssm_match, v), free(v);
+        if ((v = form_get(r->query, "ssm-match-status"))) copy(g_ssm_match_status, sizeof g_ssm_match_status, v), free(v);
+        if ((v = form_get(r->query, "ssm-match-code"))) g_ssm_match_code = atoi(v), free(v);
+        if ((v = form_get(r->query, "ssm-match-out"))) copy(g_ssm_match_out, sizeof g_ssm_match_out, v), free(v);
         pthread_mutex_unlock(&g_mu);
         logf_("SET %s", r->query);
         respond(fd, 200, "OK", "text/plain", NULL, "ok\n", 3);
