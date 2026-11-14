@@ -1609,3 +1609,6 @@ The new tests, each mutation red on the assertion named:
 - cbase_cli/cli.py's usage "read" made "Read" -> cbase_test.sh's dispatch red on --help, and the recorded comparison shows the line.
 - cbase_cli/main.py's `-f wants a file` exit 2 made 1 -> cbase_test.sh's `-f with no file: status 1, not 2` red, and the comparison shows `rc: 2` against `rc: 1`.
 - cbase_cli/vm.py's OS_RESERVE 192 made 191, and one word of the undeploy script changed -> vm_render_test.sh red on the fit and the undeploy renders.
+- cbase_cli/cli.py's signal handler not removing the temporary directory -> cbase_test.sh's `INT: a deploy stopped by INT left its temporary directory` red.
+- cbase_cli/cli.py's signal handler ending with `os._exit(1)` instead of raising the signal again -> cbase_test.sh's `INT: the deploy ended with status 1, not 130 (signal 2)` red.
+- cbase_cli/cli.py installing no handler when it makes the temporary directory -> cbase_test.sh's `INT: a deploy stopped by INT left its temporary directory` red.
