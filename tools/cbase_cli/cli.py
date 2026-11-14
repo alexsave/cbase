@@ -282,18 +282,24 @@ def _tmp_make() -> None:
     base = os.environ.get("TMPDIR")
     if not base:
         base = "/tmp"
+    # The directory and its handlers are made with the three signals blocked, so a signal lands either
+    # before the directory exists (nothing to remove) or after the handlers are in place.
+    old = signal.pthread_sigmask(signal.SIG_BLOCK, _TMP_SIGS)
     try:
-        d = tempfile.mkdtemp(prefix="cbase.", dir=base)
-    except OSError:
-        fail(EXIT_FAIL, "cannot make a temporary directory in " + base)
-        return
-    _tmp_dir = d
-    _tmp_owner = os.getpid()
-    atexit.register(_tmp_remove_all)
-    for sig in _TMP_SIGS:
-        if signal.getsignal(sig) == signal.SIG_IGN:
-            continue
-        signal.signal(sig, _tmp_on_signal)
+        try:
+            d = tempfile.mkdtemp(prefix="cbase.", dir=base)
+        except OSError:
+            fail(EXIT_FAIL, "cannot make a temporary directory in " + base)
+            return
+        _tmp_dir = d
+        _tmp_owner = os.getpid()
+        atexit.register(_tmp_remove_all)
+        for sig in _TMP_SIGS:
+            if signal.getsignal(sig) == signal.SIG_IGN:
+                continue
+            signal.signal(sig, _tmp_on_signal)
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, old)
 
 
 def tmp_path(name: str) -> str:
