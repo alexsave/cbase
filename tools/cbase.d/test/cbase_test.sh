@@ -1,6 +1,6 @@
 #!/bin/bash
-# cbase_test.sh - the deploy tool (the C tool, tools/cbase_cli/build/cbase) end to end, as an app runs it, against a recorded
-# local fake of AWS (fake_aws.c, built here) reached by the real AWS CLI through
+# cbase_test.sh - the deploy tool (tools/cbase, the launcher of the Python tool; nothing is built) end to end, as an app runs it,
+# against a recorded local fake of AWS (fake_aws.c, built here) reached by the real AWS CLI through
 # AWS_ENDPOINT_URL, with dummy credentials the CLI signs with locally. No call reaches AWS: the
 # endpoint is the fake for every service, and the credentials are a key AWS has never issued.
 #

@@ -1588,3 +1588,24 @@ The upper bound of times_out_on_a_pooled_connection went from 600 to 2500 ms, be
 Five cases in cbase_vm_test.sh: nothing changed and active (not restarted), a new server, a changed setting, a changed unit, an inactive service.
 
 - vm_remote.sh: the settings' `changed+=(settings)` dropped (the env file's hash ignored by the skip) -> cbase_vm_test.sh's `a changed setting did not restart the service` red.
+
+## The deploy tool in Python (cli-in-python)
+
+The C tool in tools/cbase_cli was ported to Python module by module, and the oracles ran unchanged against it: cbase_test.sh, cbase_vm_test.sh, cbase_group_test.sh, and vm_render_test.sh with its 49 golden files (its harness is now tools/cbase_cli/test/vm_render.py).
+Every run of the oracles was also recorded for the C tool and for the Python one (arguments, status, stdout, stderr and the fake's log of the AWS calls of that run) and compared stream by stream, so output the tests check only by substring was held byte for byte too.
+The order of the PUTs inside one `s3 cp --recursive`, and with it the order of a prune's deletions, is the AWS CLI's (it uploads with threads) and differed between two runs of the C tool alike, so that comparison sorts those runs of lines; a dropped PUT, a renamed key and a changed "pruned" line in a copy of a recording were each still reported.
+
+The new tests, each mutation red on the assertion named:
+
+- cbase_cli/stack.py given `import json` -> py_check.sh's `a module names json` red.
+- cbase_cli/deploy.py without `from __future__ import annotations` -> py_check.sh's `a module lacks the annotations import` red.
+- cbase_cli/group.py given a `match` statement -> py_check.sh's `a module is not Python 3.9` red.
+- cbase_cli/state.py warning (DeprecationWarning) at import -> py_check.sh's `a module does not import with warnings as errors` red.
+- tools/cbase without its Command Line Tools check -> launcher_test.sh's `the Command Line Tools stub: status 0, not 1` red.
+- cbase_cli/cbase.py's floor (3, 9) made (3, 8) -> launcher_test.sh's `Python 3.8: stderr lacks [cbase: the deploy tool needs Python 3.9 or newer, and]` red.
+- tools/cbase's "needs python3 (3.9 or newer) on PATH" sentence shortened -> launcher_test.sh's `no python3: stderr lacks [...]` red.
+- tools/cbase passing `--help` instead of its arguments -> launcher_test.sh's `-f missing: status 0, not 1` red.
+- tools/cbase without `-B` -> launcher_test.sh's `a __pycache__ under tools/cbase_cli` red under a Python that writes bytecode (Homebrew's, Linux's); Apple's /usr/bin/python3 writes none, so it survives there.
+- cbase_cli/cli.py's usage "read" made "Read" -> cbase_test.sh's dispatch red on --help, and the recorded comparison shows the line.
+- cbase_cli/main.py's `-f wants a file` exit 2 made 1 -> cbase_test.sh's `-f with no file: status 1, not 2` red, and the comparison shows `rc: 2` against `rc: 1`.
+- cbase_cli/vm.py's OS_RESERVE 192 made 191, and one word of the undeploy script changed -> vm_render_test.sh red on the fit and the undeploy renders.

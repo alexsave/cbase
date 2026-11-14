@@ -1,8 +1,8 @@
 #!/bin/bash
 # cbase_group_test.sh - group-init, group-destroy and group-template, the commands of the deploy tool's
 # group side, end to end through the real AWS CLI against the recorded local fake (fake_aws.c) with
-# dummy credentials (lib.sh). No call reaches AWS. CBASE_TOOL names the tool under test (the C deploy
-# tool, tools/cbase_cli/build/cbase, by default; lib.sh builds it).
+# dummy credentials (lib.sh). No call reaches AWS. CBASE_TOOL names the tool under test (tools/cbase, the
+# launcher of the Python deploy tool, by default; nothing is built).
 #
 #   bash tools/cbase.d/test/cbase_group_test.sh
 #   CBASE_TOOL=/path/to/other/cbase bash tools/cbase.d/test/cbase_group_test.sh
