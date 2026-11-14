@@ -1612,3 +1612,16 @@ The new tests, each mutation red on the assertion named:
 - cbase_cli/cli.py's signal handler not removing the temporary directory -> cbase_test.sh's `INT: a deploy stopped by INT left its temporary directory` red.
 - cbase_cli/cli.py's signal handler ending with `os._exit(1)` instead of raising the signal again -> cbase_test.sh's `INT: the deploy ended with status 1, not 130 (signal 2)` red.
 - cbase_cli/cli.py installing no handler when it makes the temporary directory -> cbase_test.sh's `INT: a deploy stopped by INT left its temporary directory` red.
+
+## CBASE_VM_IRQ (vm-irq-split)
+
+Each was run with the irq golden files re-rendered from the mutated text, so the named case is the first to fail and not the golden comparison.
+
+- tools/cbase.d/vm_irq.sh's queue-count refusal (`[ "$nq" = "$ncpu" ] || leave ...`) removed -> cbase_vm_test.sh's irq case `the fewer-queues line` red.
+- tools/cbase.d/vm_irq.sh's mapping `($3 + 1) % n` made `$3 % n` -> `Tx-Rx-0 is not on vCPU 1` red.
+- tools/cbase.d/vm_irq_setup.sh's cmp skipped (`if false`) -> the idempotence case `the second setup does not say unchanged` red (and a daemon-reload on the second run).
+- cbase_cli/deploy.py calling vm.irq for an app without the key (narrowed to the OFF case's app, since for every app the deploy section fails first) -> `a deploy without CBASE_VM_IRQ sent other than one SSM command` red.
+- cbase_cli/vm.py's irq setup warning ending the deploy (`sys.exit(cli.EXIT_FAIL)`) -> `a deploy whose irq setup fails: status 1, not 0` red.
+- tools/cbase.d/vm_irq.service with `Before=cbase-x.service` -> `vm_irq.service orders, requires or binds something` red.
+- tools/cbase.d/vm_irq_check.sh's irqbalance-active rule dropped -> the STUB_ACTIVE=1 check case `the check does not refuse an active irqbalance` red.
+- tools/cbase.d/vm_irq.sh's wait loop disabled (`while false && ...`) -> `the program did not say it waited` red.
