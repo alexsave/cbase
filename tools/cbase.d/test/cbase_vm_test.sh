@@ -18,8 +18,12 @@
 # released and the change set deleted; a failed build and a binary for another machine, refused
 # before any change; a dry run; two racing deploys getting distinct ports; apps' table. The scripts
 # SSM would run, run here under a scratch root with stand-ins for systemctl, ss and aws: the port
-# check, the env file from SSM, data kept and deleted. Undeploy keeping files and data, and
-# --delete-files and --delete-data doing what they say; group-destroy refused while members remain
+# check, the env file from SSM, data kept and deleted. CBASE_VM_IRQ (section irq): off by default;
+# the setup and the check sent after the deploy, the setup's text the golden file's, the program and
+# unit installed and run under a scratch /proc (one queue per vCPU, idempotent, nothing changed with
+# fewer queues or an unknown layout, queues that appear late waited for), a failed setup or a check
+# that says no only a warning, the unit a dependency of nothing, irqbalance mode the way back. Undeploy
+# keeping files and data, and --delete-files and --delete-data doing what they say; group-destroy refused while members remain
 # and while the instance holds data, then destroying. No secret in any output.
 # docs/mutation_checks.md records the mutations each was checked against.
 # shellcheck disable=SC2016 # the expected text and the stand-in scripts hold a literal $
@@ -618,7 +622,17 @@ cat > "$stubs/systemctl" << 'EOF'
 echo "systemctl $*" >> "$STUB_LOG"
 # show: systemd's loaded units are the files (NeedDaemonReload no), and no InvocationID.
 if [ "$1" = show ]; then case "$*" in *NeedDaemonReload*) echo no ;; esac; exit 0; fi
-[ "$1" != is-active ] || [ "${STUB_ACTIVE:-0}" = 1 ] || { [ -n "${STUB_ACTIVE_UNIT:-}" ] && [ "${!#}" = "$STUB_ACTIVE_UNIT" ]; }
+# is-active and is-enabled: the exit status, and the state's name unless --quiet (as systemd's do).
+if [ "$1" = is-active ]; then
+  if [ "${STUB_ACTIVE:-0}" = 1 ] || { [ -n "${STUB_ACTIVE_UNIT:-}" ] && [ "${!#}" = "$STUB_ACTIVE_UNIT" ]; }; then
+    [ "${2:-}" = --quiet ] || echo active
+    exit 0
+  fi
+  [ "${2:-}" = --quiet ] || echo inactive
+  exit 1
+fi
+[ "$1" != is-enabled ] || [ "${2:-}" = --quiet ] || echo enabled
+exit 0
 EOF
 cat > "$stubs/ss" << 'EOF'
 #!/bin/bash
@@ -754,6 +768,231 @@ STUB_SECRET="$SECRET-rotated" on_vm "$vm" "$t/shop-deploy.sh"
 [ "$rc" = 0 ] || { cat "$t/vm-out" >&2; fail "a redeploy of an inactive service: status $rc"; }
 grep -Fxq "systemctl restart cbase-shop.service" "$vm/calls" || fail "an inactive service was not started"
 grep -Fxq "CBASE: cbase-shop.service started (it was not active)" "$t/vm-out" || { cat "$t/vm-out" >&2; fail "an inactive service's start line"; }
+ok
+fi
+if wanted irq; then
+# ================================================================================================
+# irq: CBASE_VM_IRQ, the VM's NIC interrupts one queue per vCPU (needs the deploy and scripts sections)
+# ================================================================================================
+# comments_since MARK: the comments of the SSM commands sent since MARK, one per line, in order.
+comments_since() { since "$1" | sed -n 's/^SSM SendCommand [^ ]* [^ ]* \[\([^]]*\)\].*/\1/p'; }
+# script_since MARK N: the Nth SSM command sent since MARK, decoded.
+script_since() {
+  since "$1" | grep '^SSM SendCommand ' | sed -n "$2p" | sed -n 's/.*echo \([A-Za-z0-9+/=]*\) | base64 -d.*/\1/p' | base64 -d
+}
+# irq_proc ROOT NQ NCPU: a fake /proc under ROOT: NCPU vCPUs, ena-mgmnt (irq 27) and NQ queues
+# ens5-Tx-Rx-<k> (irq 28 + k), every smp_affinity_list holding 0-<NCPU - 1> and writable.
+irq_proc() {
+  local r="$1" nq="$2" ncpu="$3" i k cols="" hdr=""
+  for ((i = 0; i < ncpu; i++)); do cols="$cols          0"; hdr="$hdr       CPU$i"; done
+  mkdir -p "$r/proc"
+  {
+    echo "          $hdr"
+    echo " 27:$cols  ITS-MSI 8388608-edge  ena-mgmnt@pci:0000:00:05.0"
+    for ((k = 0; k < nq; k++)); do echo " $((28 + k)):$cols  ITS-MSI $((8388609 + k))-edge  ens5-Tx-Rx-$k"; done
+  } > "$r/proc/interrupts"
+  for ((i = 27; i < 28 + nq; i++)); do
+    mkdir -p "$r/proc/irq/$i"
+    echo "0-$((ncpu - 1))" > "$r/proc/irq/$i/smp_affinity_list"
+  done
+}
+aff() { cat "$1/proc/irq/$2/smp_affinity_list"; }
+# irq_prog ROOT FILE: the program FILE as the unit runs it, under ROOT; output in $t/vm-out, status in $rc, systemctl calls in ROOT/calls.
+irq_prog() {
+  mkdir -p "$1/etc/systemd/system"
+  : > "$1/calls"
+  rc=0
+  env PATH="$stubs:$PATH" CBASE_VM_ROOT="$1" STUB_LOG="$1/calls" CBASE_IRQ_WAIT_S="${CBASE_IRQ_WAIT_S:-0}" bash "$2" > "$t/vm-out" 2>&1 < /dev/null || rc=$?
+}
+# irq_check ROOT: vm_irq_check.sh under ROOT; output in $t/vm-out.
+irq_check() {
+  : > "$1/calls"
+  rc=0
+  env PATH="$stubs:$PATH" CBASE_VM_ROOT="$1" STUB_LOG="$1/calls" bash "$root/tools/cbase.d/vm_irq_check.sh" > "$t/vm-out" 2>&1 < /dev/null || rc=$?
+}
+IRQ_OUT="CBASE: irq: one queue per vCPU (2 queues on 2 vCPUs), irqbalance not active"
+fake_set "ssm-status=Success&ssm-code=0&ssm-match="
+
+# OFF BY DEFAULT: an app without CBASE_VM_IRQ sends no SSM command but its deploy, and config check has no irq row.
+irqoff="$(vm_app irqoff "CBASE_APP = irqoff" "CBASE_VM = g9" "CBASE_STATIC = none" "CBASE_MEMORY = 16M")"
+m="$(mark)"
+run "$irqoff" deploy
+expect_rc 0 "a deploy without CBASE_VM_IRQ"
+since "$m" | grep -c '^SSM SendCommand ' | grep -qx 1 || fail "a deploy without CBASE_VM_IRQ sent other than one SSM command"
+comments_since "$m" > "$t/comments"
+grep -q 'cbase irq' "$t/comments" && fail "a deploy without CBASE_VM_IRQ sent an irq command"
+since "$m" | grep '^SSM SendCommand ' | sed -n 's/.*echo \([A-Za-z0-9+/=]*\) | base64 -d.*/\1/p' | base64 -d > "$t/decoded"
+grep -Eq 'cbase-irq\.service|cbase-irq-split' "$t/decoded" && fail "a deploy without CBASE_VM_IRQ sent a script naming cbase-irq"
+grep -Eq 'NIC interrupts|irq (setup|check)' "$t/err" && fail "a deploy without CBASE_VM_IRQ said something of irq on stderr"
+run "$irqoff" config check
+expect_rc 0 "config check without CBASE_VM_IRQ"
+grep -q '^irq ' "$t/out" && fail "config check printed an irq row for an app without the key"
+ok
+
+# ON: setup after the deploy, then the check; the setup is the golden file's text; the lines are printed.
+irqon="$(vm_app irqon "CBASE_APP = irqon" "CBASE_VM = g9" "CBASE_STATIC = none" "CBASE_MEMORY = 16M" "CBASE_VM_IRQ = split")"
+fake_set "ssm-match=irq check&ssm-match-status=Success&ssm-match-code=0&ssm-match-out=$IRQ_OUT%0A"
+m="$(mark)"
+run "$irqon" deploy
+expect_rc 0 "a deploy with CBASE_VM_IRQ = split"
+comments_since "$m" > "$t/comments"
+printf 'cbase deploy of irqon\ncbase irq setup of irqon\ncbase irq check of irqon\n' | diff -u - "$t/comments" || fail "the deploy's SSM commands are not deploy, irq setup, irq check"
+script_since "$m" 1 > "$t/irqon-deploy.sh"
+script_since "$m" 2 > "$t/irq-setup.sh"
+script_since "$m" 3 > "$t/irq-check.sh"
+sed "2s/app shop's/app irqon's/" "$root/tools/cbase_cli/test/golden/vm_render/plain.irq-setup_split" | cmp - "$t/irq-setup.sh" || fail "the setup sent is not the golden file's render"
+cmp "$root/tools/cbase_cli/test/golden/vm_render/irq-check" "$t/irq-check.sh" || fail "the check sent is not the golden file's render"
+cmp "$root/tools/cbase.d/vm_irq_check.sh" "$t/irq-check.sh" || fail "the check sent is not vm_irq_check.sh"
+[ "$(grep -c 'vm: done (the fake' "$t/out")" = 2 ] || { cat "$t/out" >&2; fail "the deploy did not print the setup's vm: line"; }
+out_has "vm: ${IRQ_OUT#CBASE: }" "the deploy prints the check's vm: line"
+out_has "vm: the irq setup of irqon runs on i-0g9" "the setup's run line"
+out_has "vm: the irq check of irqon runs on i-0g9" "the check's run line"
+grep -q warning "$t/err" && { cat "$t/err" >&2; fail "a good deploy with CBASE_VM_IRQ warned"; }
+run "$irqon" config check
+out_has "irq        split (the VM's NIC interrupts: one queue per vCPU, irqbalance stopped)" "config check's irq row"
+ok
+
+# The setup on the VM, then the program and the check, under a scratch root with a 2-vCPU /proc.
+irqroot="$t/irqvm"
+irq_proc "$irqroot" 2 2
+on_vm "$irqroot" "$t/irq-setup.sh"
+[ "$rc" = 0 ] || { cat "$t/vm-out" >&2; fail "the irq setup on the VM: status $rc"; }
+cmp "$root/tools/cbase.d/vm_irq.sh" "$irqroot/usr/local/sbin/cbase-irq-split" || fail "the installed program is not vm_irq.sh"
+cmp "$root/tools/cbase.d/vm_irq.service" "$irqroot/etc/systemd/system/cbase-irq.service" || fail "the installed unit is not vm_irq.service"
+[ -n "$(find "$irqroot/usr/local/sbin/cbase-irq-split" -perm 0755 -type f)" ] || fail "the installed program is not mode 0755"
+printf 'systemctl daemon-reload\nsystemctl enable --quiet cbase-irq.service\nsystemctl restart cbase-irq.service\n' | diff -u - "$irqroot/calls" \
+  || fail "the setup's systemctl calls are not daemon-reload, enable and restart of cbase-irq.service alone"
+grep -Fxq "CBASE: irq: cbase-irq.service and /usr/local/sbin/cbase-irq-split installed" "$t/vm-out" || { cat "$t/vm-out" >&2; fail "the setup's installed line"; }
+ok
+irq_prog "$irqroot" "$irqroot/usr/local/sbin/cbase-irq-split"
+[ "$rc" = 0 ] || { cat "$t/vm-out" >&2; fail "the installed program: status $rc"; }
+[ "$(aff "$irqroot" 28)" = 1 ] || fail "Tx-Rx-0 is not on vCPU 1"
+[ "$(aff "$irqroot" 29)" = 0 ] || fail "Tx-Rx-1 is not on vCPU 0"
+[ "$(aff "$irqroot" 27)" = 1 ] || fail "ena-mgmnt is not on vCPU 1"
+grep -Fxq "systemctl stop irqbalance.service" "$irqroot/calls" || fail "irqbalance was not stopped"
+grep -Fxq "systemctl disable --quiet irqbalance.service" "$irqroot/calls" || fail "irqbalance was not disabled"
+tail -n 1 "$t/vm-out" | grep -Fxq "cbase-irq: one queue interrupt per vCPU (2 queues on 2 vCPUs), irqbalance stopped and disabled" || { cat "$t/vm-out" >&2; fail "the program's last line"; }
+cp "$t/vm-out" "$t/irq-prog-1"
+ok
+irq_check "$irqroot"
+grep -Fxq "$IRQ_OUT" "$t/vm-out" || { cat "$t/vm-out" >&2; fail "the check's verdict on a split root"; }
+grep -Fq "CBASE: irq: ens5-Tx-Rx-0 (irq 28): affinity 1, effective unreadable" "$t/vm-out" || { cat "$t/vm-out" >&2; fail "the check's queue line"; }
+ok
+# The check's irqbalance-active rule.
+STUB_ACTIVE=1 irq_check "$irqroot"
+grep -Fxq "CBASE: irq: NOT one queue per vCPU: irqbalance is active" "$t/vm-out" || { cat "$t/vm-out" >&2; fail "the check does not refuse an active irqbalance"; }
+ok
+
+# IDEMPOTENCE: the setup again says unchanged and reloads nothing; the program writes the same values; a second deploy sends it all again.
+on_vm "$irqroot" "$t/irq-setup.sh"
+[ "$rc" = 0 ] || { cat "$t/vm-out" >&2; fail "the second irq setup: status $rc"; }
+grep -Fxq "CBASE: irq: cbase-irq.service and /usr/local/sbin/cbase-irq-split unchanged" "$t/vm-out" || { cat "$t/vm-out" >&2; fail "the second setup does not say unchanged"; }
+grep -q daemon-reload "$irqroot/calls" && fail "the second setup reloaded systemd"
+ok
+irq_prog "$irqroot" "$irqroot/usr/local/sbin/cbase-irq-split"
+[ "$rc" = 0 ] || fail "the second program run: status $rc"
+cmp "$t/irq-prog-1" "$t/vm-out" || fail "the second program run ended otherwise"
+{ [ "$(aff "$irqroot" 28)" = 1 ] && [ "$(aff "$irqroot" 29)" = 0 ] && [ "$(aff "$irqroot" 27)" = 1 ]; } || fail "the second program run changed the layout"
+m="$(mark)"
+run "$irqon" deploy
+expect_rc 0 "a second deploy with CBASE_VM_IRQ"
+comments_since "$m" > "$t/comments"
+printf 'cbase deploy of irqon\ncbase irq setup of irqon\ncbase irq check of irqon\n' | diff -u - "$t/comments" || fail "the second deploy's SSM commands"
+ok
+
+# FEWER QUEUES than vCPUs, and a layout it does not know: nothing changed, no systemctl call, exit 0.
+fewer="$t/irqfew"
+irq_proc "$fewer" 1 2
+irq_prog "$fewer" "$root/tools/cbase.d/vm_irq.sh"
+[ "$rc" = 0 ] || { cat "$t/vm-out" >&2; fail "the program with one queue on 2 vCPUs: status $rc"; }
+grep -Fxq "cbase-irq: 1 queue(s) on 2 vCPUs, not one per vCPU: nothing changed" "$t/vm-out" || { cat "$t/vm-out" >&2; fail "the fewer-queues line"; }
+[ ! -s "$fewer/calls" ] || { cat "$fewer/calls" >&2; fail "the fewer-queues run called systemctl"; }
+{ [ "$(aff "$fewer" 27)" = 0-1 ] && [ "$(aff "$fewer" 28)" = 0-1 ]; } || fail "the fewer-queues run changed an affinity"
+irq_check "$fewer"
+grep -F "CBASE: irq: NOT one queue per vCPU: " "$t/vm-out" | grep -Fq "1 queue(s) on 2 vCPUs" || { cat "$t/vm-out" >&2; fail "the check on fewer queues"; }
+ok
+virtio="$t/irqvirtio"
+mkdir -p "$virtio/proc/irq/30"
+printf '           CPU0       CPU1\n 30:          0          0  PCI-MSI 1-edge  virtio0-input.0\n' > "$virtio/proc/interrupts"
+echo 0-1 > "$virtio/proc/irq/30/smp_affinity_list"
+irq_prog "$virtio" "$root/tools/cbase.d/vm_irq.sh"
+[ "$rc" = 0 ] || { cat "$t/vm-out" >&2; fail "the program on virtio's layout: status $rc"; }
+grep -Fxq "cbase-irq: no <if>-Tx-Rx-<k> queue interrupts in /proc/interrupts: nothing changed" "$t/vm-out" || { cat "$t/vm-out" >&2; fail "the unexpected-layout line"; }
+[ ! -s "$virtio/calls" ] || fail "the unexpected layout called systemctl"
+[ "$(aff "$virtio" 30)" = 0-1 ] || fail "the unexpected layout changed an affinity"
+ok
+
+# QUEUES APPEAR LATE: the NIC's driver is slower than the unit; the program waits, then pins as usual.
+late="$t/irqlate"
+irq_proc "$late" 2 2
+cp "$late/proc/interrupts" "$late/full-interrupts"
+head -n 1 "$late/full-interrupts" > "$late/proc/interrupts"
+( sleep 1.5; mv "$late/full-interrupts" "$late/proc/interrupts" ) &
+late_pid=$!
+CBASE_IRQ_WAIT_S=5 irq_prog "$late" "$root/tools/cbase.d/vm_irq.sh"
+wait "$late_pid"
+[ "$rc" = 0 ] || { cat "$t/vm-out" >&2; fail "the program with late queues: status $rc"; }
+grep -Eq '^cbase-irq: waited [1-5]s for the queue interrupts$' "$t/vm-out" || { cat "$t/vm-out" >&2; fail "the program did not say it waited"; }
+{ [ "$(aff "$late" 28)" = 1 ] && [ "$(aff "$late" 29)" = 0 ] && [ "$(aff "$late" 27)" = 1 ]; } || { cat "$t/vm-out" >&2; fail "late queues were not pinned as usual"; }
+tail -n 1 "$t/vm-out" | grep -Fq "one queue interrupt per vCPU (2 queues on 2 vCPUs)" || fail "the late run's last line"
+ok
+
+# NON-FATAL: a setup that fails ends the deploy 0 with a warning and no check; a check without the verdict warns.
+irqfail="$(vm_app irqfail "CBASE_APP = irqfail" "CBASE_VM = g9" "CBASE_STATIC = none" "CBASE_MEMORY = 16M" "CBASE_VM_IRQ = split")"
+fake_set "ssm-match=irq setup&ssm-match-status=Failed&ssm-match-code=1&ssm-match-out=CBASE: irq: the stand-in failed%0A"
+m="$(mark)"
+run "$irqfail" deploy
+expect_rc 0 "a deploy whose irq setup fails"
+err_has "cbase: warning: the NIC interrupts' setup on i-0g9 ended Failed (exit 1), above; irqfail is deployed and not affected (journalctl -u cbase-irq on the instance)" "the setup's warning"
+out_has "vm: irq: the stand-in failed" "the failed setup's line"
+comments_since "$m" > "$t/comments"
+printf 'cbase deploy of irqfail\ncbase irq setup of irqfail\n' | diff -u - "$t/comments" || fail "a failed setup was followed by a check"
+since "$m" | grep -q "CFN ExecuteChangeSet cbase-app-irqfail ok" || fail "a failed irq setup stopped the deploy before its stack"
+grep -Eq '^deployed irqfail: https://' "$t/out" || fail "a failed irq setup stopped the deploy before its summary"
+grep -E '^(deployed|service|artifact|origin secret)' "$t/out" | sed -e 's/irqfail/X/g' -e 's#https://[^ ]*#URL#' > "$t/sum-fail"
+fake_set "ssm-match="
+run "$irqoff" deploy
+expect_rc 0 "the deploy without the key, again"
+grep -E '^(deployed|service|origin secret)' "$t/out" | sed -e 's/irqoff/X/g' -e 's#https://[^ ]*#URL#' > "$t/sum-off"
+grep -E '^(deployed|service|origin secret)' "$t/sum-fail" | diff -u "$t/sum-off" - || fail "the summary of a deploy with a failed irq setup differs from one without the key"
+ok
+fake_set "ssm-match=irq check&ssm-match-status=Success&ssm-match-code=0&ssm-match-out=CBASE: irq: NOT one queue per vCPU: 1 queue(s) on 2 vCPUs%0A"
+run "$irqfail" deploy
+expect_rc 0 "a deploy whose irq check says no"
+err_has "cbase: warning: the NIC interrupts on i-0g9 are not one queue per vCPU (above); irqfail is deployed and not affected" "the layout warning"
+out_has "vm: irq: NOT one queue per vCPU: 1 queue(s) on 2 vCPUs" "the check's no line"
+fake_set "ssm-match=irq check&ssm-match-status=Failed&ssm-match-code=1&ssm-match-out="
+run "$irqfail" deploy
+expect_rc 0 "a deploy whose irq check fails"
+err_has "are not one queue per vCPU (above); irqfail is deployed and not affected" "a failed check's warning"
+fake_set "ssm-match="
+ok
+
+# THE UNIT IS NEVER A DEPENDENCY: nothing orders, requires or binds anything to it, and no app unit names it.
+if grep -Eq '^(Before|Requires|Requisite|BindsTo|PartOf|Upholds|RequiredBy)' "$root/tools/cbase.d/vm_irq.service"; then fail "vm_irq.service orders, requires or binds something"; fi
+grep '^Wants=' "$root/tools/cbase.d/vm_irq.service" | grep -vx 'Wants=network-online.target' && fail "vm_irq.service wants something but the network"
+grep -Eq 'cbase-irq\.service|cbase-irq-split' "$t/irqon-deploy.sh" "$t/shop-deploy.sh" && fail "an app's deploy script (its units) names cbase-irq"
+grep -Eq 'cbase-irq\.service|cbase-irq-split' "$root"/tools/cbase_cli/test/golden/vm_render/*.deploy "$root"/tools/cbase_cli/test/golden/vm_render/*.unit "$root/tools/cbase.d/vm_unit.service" "$root/tools/cbase.d/vm_unit.socket" "$root/tools/cbase.d/vm_remote.sh" && fail "an app's unit renders name cbase-irq"
+ok
+
+# irqbalance, THE WAY BACK: the split removed and irqbalance enabled; on a root without it, only irqbalance enabled.
+irqback="$(vm_app irqback "CBASE_APP = irqback" "CBASE_VM = g9" "CBASE_STATIC = none" "CBASE_MEMORY = 16M" "CBASE_VM_IRQ = irqbalance")"
+m="$(mark)"
+run "$irqback" deploy
+expect_rc 0 "a deploy with CBASE_VM_IRQ = irqbalance"
+comments_since "$m" > "$t/comments"
+printf 'cbase deploy of irqback\ncbase irq setup of irqback\n' | diff -u - "$t/comments" || fail "irqbalance mode sent other than the setup (no check)"
+script_since "$m" 2 > "$t/irq-back.sh"
+sed "2s/app shop's/app irqback's/" "$root/tools/cbase_cli/test/golden/vm_render/plain.irq-setup_irqbalance" | cmp - "$t/irq-back.sh" || fail "the irqbalance setup sent is not the golden file's render"
+on_vm "$irqroot" "$t/irq-back.sh"
+[ "$rc" = 0 ] || { cat "$t/vm-out" >&2; fail "the irqbalance setup on a split root: status $rc"; }
+[ ! -e "$irqroot/usr/local/sbin/cbase-irq-split" ] && [ ! -e "$irqroot/etc/systemd/system/cbase-irq.service" ] || fail "the way back left the unit or the program"
+printf 'systemctl disable --now --quiet cbase-irq.service\nsystemctl daemon-reload\nsystemctl enable --now --quiet irqbalance.service\n' | diff -u - "$irqroot/calls" \
+  || fail "the way back's systemctl calls"
+fresh="$t/irqfresh"
+on_vm "$fresh" "$t/irq-back.sh"
+[ "$rc" = 0 ] || { cat "$t/vm-out" >&2; fail "the irqbalance setup on a fresh root: status $rc"; }
+printf 'systemctl enable --now --quiet irqbalance.service\n' | diff -u - "$fresh/calls" || fail "the way back on a root without the split called more than irqbalance's enable"
 ok
 fi
 if wanted undeploy; then

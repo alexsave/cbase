@@ -46,6 +46,18 @@ conf_error "cbase.conf line 2: CBASE_MEMORY is <n>M or <n>G (256M, 1G)" "CBASE_A
 conf_error "cbase.conf line 2: CBASE_MEMORY is <n>M or <n>G" "CBASE_APP = a" "CBASE_MEMORY = lots"
 conf_error "cbase.conf line 2: CBASE_MEMORY is from 16M to 64G" "CBASE_APP = a" "CBASE_MEMORY = 8M"
 conf_error "cbase.conf line 2: CBASE_MEMORY is for an app with a VM" "CBASE_APP = a" "CBASE_MEMORY = 64M" "CBASE_VM = none"
+conf_error "cbase.conf line 2: CBASE_VM_IRQ is split (one NIC queue interrupt per vCPU, irqbalance stopped) or irqbalance (the way back)" "CBASE_APP = a" "CBASE_VM_IRQ = bogus"
+conf_error "cbase.conf line 2: CBASE_VM_IRQ is for an app with a VM" "CBASE_APP = a" "CBASE_VM_IRQ = split" "CBASE_VM = none" "CBASE_STATIC = g"
+# CBASE_VM_IRQ set: config check has its irq row; unset: no row (every other output is unchanged).
+d="$(app irqrow "CBASE_APP = a" "CBASE_VM_IRQ = split")"
+run "$d" config check
+expect_rc 0 "config check of CBASE_VM_IRQ = split"
+out_has "irq        split (the VM's NIC interrupts: one queue per vCPU, irqbalance stopped)" "config check's irq row"
+d="$(app irqrow "CBASE_APP = a")"
+run "$d" config check
+expect_rc 0 "config check without CBASE_VM_IRQ"
+grep -q '^irq ' "$t/out" && fail "config check printed an irq row for an app without the key"
+ok
 conf_error "cbase.conf has no CBASE_APP line" "CBASE_VM = none"
 conf_error "cbase.conf line 3: CBASE_VM and CBASE_STATIC are both none" "CBASE_APP = a" "CBASE_VM = none" "CBASE_STATIC = none"
 conf_error "cbase.conf line 3: CBASE_ROUTE's origin is vm, static or ws" "CBASE_APP = a" "CBASE_MEMORY = 1G" "CBASE_ROUTE = /x lambda"
