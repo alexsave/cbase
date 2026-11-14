@@ -1,0 +1,16 @@
+# cbase-irq.service: one NIC queue interrupt per vCPU, irqbalance stopped (cbase.conf CBASE_VM_IRQ = split;
+# tools/cbase.d/vm_irq.service, installed by ./cbase deploy). It runs /usr/local/sbin/cbase-irq-split
+# (tools/cbase.d/vm_irq.sh) once at every boot, after irqbalance would have started.
+# Nothing depends on it, and it is ordered before nothing: an app's service starts whether this ran,
+# failed or was never installed.
+[Unit]
+Description=cbase: one NIC queue interrupt per vCPU, irqbalance stopped (CBASE_VM_IRQ = split)
+After=irqbalance.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash /usr/local/sbin/cbase-irq-split
+
+[Install]
+WantedBy=multi-user.target
