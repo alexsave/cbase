@@ -1005,6 +1005,12 @@ on_vm "$fresh" "$t/irq-back.sh"
 [ "$rc" = 0 ] || { cat "$t/vm-out" >&2; fail "the irqbalance setup on a fresh root: status $rc"; }
 printf 'systemctl enable --now --quiet irqbalance.service\n' | diff -u - "$fresh/calls" || fail "the way back on a root without the split called more than irqbalance's enable"
 ok
+# The apps leave the group as they came, for the sections after.
+for d in "$irqoff" "$irqon" "$irqfail" "$irqback"; do
+  run "$d" undeploy
+  expect_rc 0 "an irq app's undeploy"
+done
+ok
 fi
 if wanted undeploy; then
 # Undeploy, by default: the unit gone, the data kept. With --delete-data: the app's folder gone.
