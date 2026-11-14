@@ -145,6 +145,13 @@ def on_path(name: str) -> bool:
 # ---- files ---------------------------------------------------------------------------------------
 
 
+def tools_dir() -> str:
+    """The repository's tools/ directory (the C's cbc_tools_dir): the templates, static_rules.tsv and the VM
+    scripts are read at run time from its cbase.d/, found from this module's own path."""
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+
 def read_file(path: str) -> Optional[str]:
     """FILE's bytes, whole, as text; None when it cannot be opened or read."""
     try:
