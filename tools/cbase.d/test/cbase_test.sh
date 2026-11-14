@@ -841,6 +841,7 @@ expect_rc 0 "a prune of 2,500 stale files"
 [ "$(singles "$m")" = 0 ] || fail "a batched prune made single deletes"
 [ "$(grep -c '^pruned s3://' "$t/out")" = 2500 ] || fail "the prune did not name its 2,500 keys"
 out_has "pruned 2500 files the build no longer has, under s3://$SITE_BUCKET/site/ alone" "the 2,500-key summary"
+# shellcheck disable=SC2016 # the backticks are JMESPath's literal, for the CLI
 [ "$(aws s3api list-objects-v2 --bucket "$SITE_BUCKET" --prefix site/m/ --query 'length(Contents || `[]`)' --output text)" = 0 ] || fail "stale keys are left"
 ok
 # Fewer than 1000 keys: one call. Nothing stale: no delete call at all.
@@ -868,6 +869,7 @@ expect_rc 0 "a prune with keys shorthand cannot carry"
 out_has "pruned s3://$SITE_BUCKET/site/odd/a b.txt" "a key with a space is named"
 out_has "pruned s3://$SITE_BUCKET/site/odd/a,b.txt" "a key with a comma is named"
 out_has "pruned 8 files the build no longer has" "the odd and the safe keys are counted"
+# shellcheck disable=SC2016 # the backticks are JMESPath's literal, for the CLI
 [ "$(aws s3api list-objects-v2 --bucket "$SITE_BUCKET" --prefix site/odd/ --query 'length(Contents || `[]`)' --output text)" = 0 ] || fail "an odd key is left"
 ok
 # An error entry in a batch's answer fails the deploy, naming the key, the code and the count.

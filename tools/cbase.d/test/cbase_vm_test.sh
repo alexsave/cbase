@@ -395,7 +395,7 @@ ok
 # A deploy that does not get to the end deletes nothing, with the prune on: the binary it leaves is the one a
 # rollback needs. A change set that fails; a service that does not start; an execute that fails.
 put_obj "$A/$(hexs 6)"; put_obj "$A/$(hexs 7)"
-gone_check() { [ -z "$(deleted "$m")" ] || fail "$1 deleted a binary"; has_obj "$A/$(hexs 9)" && has_obj "$A/$(hexs 6)" || fail "$1 left a binary gone"; }
+gone_check() { [ -z "$(deleted "$m")" ] || fail "$1 deleted a binary"; { has_obj "$A/$(hexs 9)" && has_obj "$A/$(hexs 6)"; } || fail "$1 left a binary gone"; }
 fake_set "cs-fail=Template format error: Unresolved resource dependencies Nope in the Resources block of the template"
 m="$(mark)"
 run "$blog" deploy
@@ -423,7 +423,7 @@ run "$blog" deploy --allow-downtime
 expect_rc 0 "a deploy that executes the stack and prunes"
 fake_set "changes=auto"
 since "$m" | grep -nE "^CFN ExecuteChangeSet cbase-app-blog|^DELETE " | cut -c1-40 > "$t/order"
-[ "$(grep -c 'ExecuteChangeSet' "$t/order")" = 1 ] && [ "$(grep -c DELETE "$t/order")" -ge 1 ] || { cat "$t/order" >&2; fail "the executing deploy lacks the execute or the prune"; }
+{ [ "$(grep -c 'ExecuteChangeSet' "$t/order")" = 1 ] && [ "$(grep -c DELETE "$t/order")" -ge 1 ]; } || { cat "$t/order" >&2; fail "the executing deploy lacks the execute or the prune"; }
 head -n 1 "$t/order" | grep -q ExecuteChangeSet || { cat "$t/order" >&2; fail "the prune deleted before the stack was executed"; }
 printf '%s\n' "$A/$(hexs 6)" "$A/$(hexs 9)" | sort | diff -u - <(deleted "$m") || fail "the executing deploy pruned other than the old binaries (7 is the newest other)"
 ok
