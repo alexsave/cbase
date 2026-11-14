@@ -1625,3 +1625,4 @@ Each was run with the irq golden files re-rendered from the mutated text, so the
 - tools/cbase.d/vm_irq.service with `Before=cbase-x.service` -> `vm_irq.service orders, requires or binds something` red.
 - tools/cbase.d/vm_irq_check.sh's irqbalance-active rule dropped -> the STUB_ACTIVE=1 check case `the check does not refuse an active irqbalance` red.
 - tools/cbase.d/vm_irq.sh's wait loop disabled (`while false && ...`) -> `the program did not say it waited` red.
+- cbase_cli/vm.py's dry-run line for CBASE_VM_IRQ disabled (`if False:`) -> the irq case `the dry run's irq line` red.
