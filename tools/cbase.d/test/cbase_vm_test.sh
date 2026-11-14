@@ -852,6 +852,17 @@ run "$irqon" config check
 out_has "irq        split (the VM's NIC interrupts: one queue per vCPU, irqbalance stopped)" "config check's irq row"
 ok
 
+# The dry run names the interrupt setup (only with the key) and sends nothing.
+m="$(mark)"
+run "$irqon" deploy --dry-run
+expect_rc 0 "a dry run with CBASE_VM_IRQ"
+out_has "vm: would set the NIC interrupts after the deploy (CBASE_VM_IRQ = split: cbase-irq.service and its check)" "the dry run's irq line"
+since "$m" | grep -q '^SSM SendCommand ' && fail "a dry run sent an SSM command"
+run "$irqoff" deploy --dry-run
+expect_rc 0 "a dry run without CBASE_VM_IRQ"
+grep -q 'NIC interrupts' "$t/out" && fail "a dry run without the key named the NIC interrupts"
+ok
+
 # The setup on the VM, then the program and the check, under a scratch root with a 2-vCPU /proc.
 irqroot="$t/irqvm"
 irq_proc "$irqroot" 2 2
