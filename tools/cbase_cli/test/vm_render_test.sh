@@ -1,21 +1,20 @@
 #!/bin/bash
-# vm_render_test.sh - the C tool's VM renders, byte for byte against their golden files: the unit,
+# vm_render_test.sh - the tool's VM renders, byte for byte against their golden files: the unit,
 # the socket, the deploy script (vm_remote.sh spliced), the undeploy and data scripts, the boot
 # user-data, the artifact path, the memory fit. The golden files are under test/golden/vm_render/,
 # one per render, named by the case: they are the bytes the shell tool's vm.sh functions rendered
-# when the shell tool was retired, and vm.sh is gone, so they are the record now. The C side is
-# test/vm_render.c, built here from the same sources as build/cbase, and the shell is not sourced.
+# when the shell tool was retired, and vm.sh is gone, so they are the record now. The harness is
+# test/vm_render.py, which imports the tool's own modules (vm, vm_remote, vm_boot, conf).
 # No AWS is called: the region and the state bucket are given, as the AWS-reading steps would have
 # read them.
 #
 #   bash tools/cbase_cli/test/vm_render_test.sh      (make cbase-cli-vm-render-test runs it)
 #
-# CC names the compiler (cc by default). A case whose render differs from its golden file prints
-# the diff and fails; the golden directory must hold exactly one file per case, no more, no less.
+# A case whose render differs from its golden file prints the diff and fails; the golden directory
+# must hold exactly one file per case, no more, no less.
 set -euo pipefail
 export LC_ALL=C
 cli="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-tools="$(cd "$cli/.." && pwd)"
 golden="$cli/test/golden/vm_render"
 t="$(mktemp -d "${TMPDIR:-/tmp}/cbase-render.XXXXXX")"
 end=""
@@ -24,29 +23,20 @@ trap 'rm -rf "$t"; [ "$end" = 1 ] || { echo "vm_render_test: FAIL: the run stopp
 fail() { echo "vm_render_test: FAIL: $*" >&2; exit 1; }
 pass=0
 
-# The C side links the tool's own objects (the Makefile's build, which vm.c's neighbours need to link),
-# less main.o, with test/vm_render.c in main's place.
-make -C "$cli" build/cbase > /dev/null
-objs=()
-while IFS= read -r o; do objs+=("$o"); done < <(find "$cli/build/obj" -name '*.o' ! -name main.o | sort)
-${CC:-cc} -std=gnu11 -D_GNU_SOURCE -O2 -Wall -Wextra -Werror -Wshadow -Wvla -Wformat=2 \
-  -DCBC_TOOLS_DIR="\"$tools\"" \
-  "$cli/test/vm_render.c" "${objs[@]}" -o "$t/vm_render"
-
 # gold_name NAME: the golden file of a case, the case's name with ": " as "." and each space as "_".
 gold_name() { printf '%s' "$1" | sed -e 's/: /./' -e 's/ /_/g'; }
 
-# check NAME CONF MODE ARGS...: the C render is the golden file, byte for byte.
+# check NAME CONF MODE ARGS...: the render is the golden file, byte for byte.
 check() {
   local name="$1" conf="$2"; shift 2
   local gold
   gold="$golden/$(gold_name "$name")"
   [ -f "$gold" ] || fail "$name: no golden file $gold"
-  "$t/vm_render" "$conf" "$@" > "$t/c.out" 2> "$t/c.err" || { cat "$t/c.err" >&2; fail "$name: the C render failed"; }
+  python3 -I -B "$cli/test/vm_render.py" "$conf" "$@" > "$t/c.out" 2> "$t/c.err" || { cat "$t/c.err" >&2; fail "$name: the render failed"; }
   if ! cmp -s "$gold" "$t/c.out"; then
     { diff -u "$gold" "$t/c.out" || true; } > "$t/diff"
     head -40 "$t/diff" >&2
-    fail "$name: the C render differs from its golden file"
+    fail "$name: the render differs from its golden file"
   fi
   [ -s "$t/c.out" ] || fail "$name: the render is empty"
   pass=$((pass + 1))
