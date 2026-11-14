@@ -25,8 +25,18 @@ ints="$R/proc/interrupts"
 # The vCPUs: the CPU<n> columns of the header line.
 ncpu="$(awk 'NR == 1 { n = 0; for (i = 1; i <= NF; i++) if ($i ~ /^CPU[0-9]+$/) n++; print n; exit }' "$ints")"
 # The queues, "<irq> <name> <k>", one per line whose last field is <if>-Tx-Rx-<k>; and the management
-# interrupt, ena-mgmnt (its last field is ena-mgmnt@pci:...).
-queues="$(awk '$NF ~ /^[A-Za-z0-9_.]+-Tx-Rx-[0-9]+$/ { irq = $1; sub(/:$/, "", irq); k = $NF; sub(/.*-Tx-Rx-/, "", k); print irq, $NF, k }' "$ints")"
+# interrupt, ena-mgmnt (its last field is ena-mgmnt@pci:...). At boot the NIC's driver may not have
+# made its queues yet: they are read again each second until they are as many as the vCPUs, for at
+# most CBASE_IRQ_WAIT_S seconds (30; the tests set fewer), and then judged as they are.
+queues_now() { awk '$NF ~ /^[A-Za-z0-9_.]+-Tx-Rx-[0-9]+$/ { irq = $1; sub(/:$/, "", irq); k = $NF; sub(/.*-Tx-Rx-/, "", k); print irq, $NF, k }' "$ints"; }
+queues="$(queues_now)"
+waited=0
+while [ "$(grep -c . <<< "$queues")" -lt "${ncpu:-0}" ] && [ "$waited" -lt "${CBASE_IRQ_WAIT_S:-30}" ]; do
+  sleep 1
+  waited=$((waited + 1))
+  queues="$(queues_now)"
+done
+[ "$waited" = 0 ] || say "waited ${waited}s for the queue interrupts"
 mgmt="$(awk '$NF ~ /^ena-mgmnt/ { irq = $1; sub(/:$/, "", irq); print irq; exit }' "$ints")"
 [ "${ncpu:-0}" -ge 2 ] || leave "${ncpu:-0} vCPU(s), not 2 or more"
 [ -n "$queues" ] || leave "no <if>-Tx-Rx-<k> queue interrupts in /proc/interrupts"
