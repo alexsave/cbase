@@ -27,11 +27,16 @@
 #                   the libFuzzer targets (<side>/fuzz/fz_*.c; fuzz/fuzz.mk says what each does)
 #   make coverage   the coverage build and gate (docs/COVERAGE.md)
 #   make ops-test   the deploy tooling's tests (no AWS)
-#   make cbase-tool-test   the deploy tool (tools/cbase_cli, built first by cbase-cli) end to end through
-#                   the real AWS CLI against a local fake of AWS (tools/cbase.d/test/cbase_test.sh;
-#                   no AWS): part of check
+#   make cbase-tool-test   the deploy tool (tools/cbase, a launcher for the Python program in tools/cbase_cli)
+#                   end to end through the real AWS CLI against a local fake of AWS
+#                   (tools/cbase.d/test/cbase_test.sh; no AWS): part of check
 #   make cbase-vm-test     the same for its VM side: group-init, the VM deploy, undeploy, group-destroy
 #                   (tools/cbase.d/test/cbase_vm_test.sh; no AWS): part of check
+#   make cbase-group-test  the same for the group commands (tools/cbase.d/test/cbase_group_test.sh): part of check
+#   make cbase-render-test the VM renders against their golden files (tools/cbase_cli/test/vm_render_test.sh):
+#                   part of check
+#   make cbase-py-check    the Python's own checks and the launcher's (tools/cbase_cli/test/py_check.sh,
+#                   launcher_test.sh): part of check
 #   make serve      build/cbase, then run it as `cbase serve` from here (cbase.mk's APP_SERVE_DIR,
 #                   APP_ENV_FILE, APP_SERVE_LISTEN; tools/serve.sh): 127.0.0.1:8642, or PORT
 #   make serve-binary, make bootstrap   the static Linux arm64 binaries (ops/build_static.sh, Docker)
@@ -129,31 +134,28 @@ $(eval $(call H2_ALONE,h2_interop,core/test/h2_interop/h2_interop.c))
 h2-interop: build/h2_interop
 	NODE='$(NODE)' core/test/h2_interop/run.sh build/h2_interop
 
-# THE DEPLOY TOOL (tools/cbase, README.md "./cbase deploy tool"): tools/cbase is a launcher for the C
-# program in tools/cbase_cli, built by cbase-cli (make there, quiet when up to date). The oracle runs
-# that binary as an app does, through the real AWS CLI, against tools/cbase.d/test/fake_aws.c on
-# loopback (built by the test itself). Part of check.
-.PHONY: cbase-tool-test
-cbase-tool-test: cbase-cli
+# THE DEPLOY TOOL (tools/cbase, README.md "./cbase deploy tool"): tools/cbase is a launcher for the Python
+# program in tools/cbase_cli (its README.md). The oracles run it as an app does, through the real AWS CLI,
+# against tools/cbase.d/test/fake_aws.c on loopback (built by each test itself); vm_render_test.sh holds the
+# VM renders to their golden files, and py_check.sh and launcher_test.sh check the Python and its launcher.
+# All of them are part of check. cbase-cli-test is cbase_test.sh narrowed to CBASE_CLI_SECTIONS, for a
+# quick run.
+.PHONY: cbase-tool-test cbase-vm-test cbase-group-test cbase-render-test cbase-py-check cbase-cli-test
+cbase-tool-test:
 	bash tools/cbase.d/test/cbase_test.sh
-.PHONY: cbase-vm-test
-cbase-vm-test: cbase-cli
+cbase-vm-test:
 	bash tools/cbase.d/test/cbase_vm_test.sh
-check: cbase-tool-test cbase-vm-test
-
-# THE C DEPLOY TOOL (tools/cbase_cli, built to tools/cbase_cli/build/cbase): the deploy tool itself. The
-# oracle's default is this binary; CBASE_TOOL names another one, and CBASE_CLI_SECTIONS narrows the run
-# to the sections named here (cbase-cli-test is that narrowed run, for a quick check of the C tool).
-CBASE_CLI_SECTIONS ?= conf secrets dispatch
-.PHONY: cbase-cli cbase-cli-test
-cbase-cli:
-	$(MAKE) -C tools/cbase_cli build/cbase
-cbase-cli-test: cbase-cli
-	CBASE_TOOL=$(CURDIR)/tools/cbase_cli/build/cbase CBASE_TEST_ONLY='$(CBASE_CLI_SECTIONS)' bash tools/cbase.d/test/cbase_test.sh
-# The C renders of the VM side (vm.c, vm_remote.c, vm_boot.c) against their golden files, byte for byte.
-.PHONY: cbase-cli-vm-render-test
-cbase-cli-vm-render-test:
+cbase-group-test:
+	bash tools/cbase.d/test/cbase_group_test.sh
+cbase-render-test:
 	bash tools/cbase_cli/test/vm_render_test.sh
+cbase-py-check:
+	bash tools/cbase_cli/test/py_check.sh
+	bash tools/cbase_cli/test/launcher_test.sh
+check: cbase-tool-test cbase-vm-test cbase-group-test cbase-render-test cbase-py-check
+CBASE_CLI_SECTIONS ?= conf secrets dispatch
+cbase-cli-test:
+	CBASE_TEST_ONLY='$(CBASE_CLI_SECTIONS)' bash tools/cbase.d/test/cbase_test.sh
 
 # The deploy tooling's own tests (ops/test, providers/*/ops/test): no AWS, no network, a stub `aws`
 # and scratch git trees. CI's ops job runs them; they are not part of check.
