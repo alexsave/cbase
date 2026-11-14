@@ -1,12 +1,20 @@
 #!/bin/sh
-# cbase - the launcher of the deploy tool (README.md "./cbase deploy tool"). The tool is a C
-# program in tools/cbase_cli/, built on first use by make (which rebuilds only what changed,
-# quietly) and run with the same arguments. It has no logic of its own: its usage, commands and
-# errors are the C tool's.
+# cbase - the launcher of the deploy tool (README.md "./cbase deploy tool"). The tool is a Python
+# program in tools/cbase_cli/ (its README.md says why Python and how it is laid out), run with the
+# same arguments by the python3 on PATH, 3.9 or newer (cbase.py checks the version). It has no
+# logic of its own: its usage, commands and errors are the Python tool's.
 dir="$(cd "$(dirname "$0")" && pwd)"
-if ! command -v make > /dev/null 2>&1 || ! command -v "${CC:-cc}" > /dev/null 2>&1; then
-  echo "cbase: the deploy tool is C: it needs make and a C compiler (cc), as ./cbase deploy does" >&2
+py="$(command -v python3 2> /dev/null)" || py=""
+if [ -z "$py" ]; then
+  echo "cbase: the deploy tool is Python: it needs python3 (3.9 or newer) on PATH" >&2
   exit 1
 fi
-make -s --no-print-directory -C "$dir/cbase_cli" > /dev/null || exit 1
-exec "$dir/cbase_cli/build/cbase" "$@"
+# On a Mac without the Command Line Tools, /usr/bin/python3 is a stub that offers to install them
+# (a dialog) and runs nothing: stop with a sentence instead.
+if [ "$py" = /usr/bin/python3 ] && [ "$(uname)" = Darwin ] && ! xcode-select -p > /dev/null 2>&1; then
+  echo "cbase: /usr/bin/python3 is macOS's stub until the Command Line Tools are installed (xcode-select --install); install them, or put another python3 (3.9 or newer) first on PATH" >&2
+  exit 1
+fi
+# -I: no PYTHONPATH, no user site packages, not the current directory on the import path.
+# -B: no __pycache__ written into the app's cbase checkout.
+exec "$py" -I -B "$dir/cbase_cli/cbase.py" "$@"
