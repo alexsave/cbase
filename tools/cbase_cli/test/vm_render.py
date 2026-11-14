@@ -6,6 +6,8 @@
 #   vm_render.py CONF deploy PORT BUCKET KEY SHA REGION STATE_BUCKET
 #   vm_render.py CONF undeploy 0|1
 #   vm_render.py CONF data
+#   vm_render.py CONF irq-setup MODE
+#   vm_render.py CONF irq-check
 #   vm_render.py CONF boot
 #   vm_render.py CONF artifacts ACCOUNT REGION STATE_BUCKET
 #   vm_render.py CONF fit TYPE MIB
@@ -56,6 +58,11 @@ def main(argv: List[str]) -> int:
         out = vm_remote.undeploy(argv[3] == "1")
     elif mode == "data":
         out = vm_remote.data()
+    elif mode == "irq-setup":
+        _need(argv, 4, mode)
+        out = vm_remote.irq_setup(argv[3])
+    elif mode == "irq-check":
+        out = vm_remote.irq_check()
     elif mode == "boot":
         out = vm_boot.userdata()
     elif mode == "artifacts":
