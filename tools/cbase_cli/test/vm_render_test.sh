@@ -8,7 +8,7 @@
 # No AWS is called: the region and the state bucket are given, as the AWS-reading steps would have
 # read them.
 #
-#   bash tools/cbase_cli/test/vm_render_test.sh      (make cbase-cli-vm-render-test runs it)
+#   bash tools/cbase_cli/test/vm_render_test.sh      (make cbase-render-test runs it)
 #
 # A case whose render differs from its golden file prints the diff and fails; the golden directory
 # must hold exactly one file per case, no more, no less.
