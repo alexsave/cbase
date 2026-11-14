@@ -533,6 +533,14 @@ Optional, each with its default:
 - `CBASE_VM = <group> | none`: the VM group the app runs in; default `CBASE_APP`, its own; `none` makes a static site.
 - `CBASE_STATIC = <group> | none`: the static group (a bucket) its files go to; default `CBASE_APP`; `none` makes a VM-only app (not both `none`).
 - `CBASE_MEMORY = <n>M | <n>G`: the memory a VM app declares, 16M to 64G; default undeclared, so the service has no hard cap and the group's fit check counts it at a conservative 128M and says so ("shop: memory not declared, counted as 128M"); declared, it is a real cap and an exact count.
+- `CBASE_VM_IRQ = split | irqbalance`: the VM's NIC interrupts, set after the deploy's service step; default unset, and the VM's interrupts are left as they are.
+  `split` pins the NIC's queue k to vCPU (k + 1) mod N and its management interrupt to vCPU 1 mod N, and stops and disables irqbalance: one queue per vCPU, the layout measured on a t4g.nano, where irqbalance's own choices made throughput vary by about 10 percent from boot to boot.
+  `irqbalance` is the way back: it removes what `split` installed and enables and starts irqbalance again.
+  The interrupts are the VM's, not one app's, so the last deploy that names the key sets them.
+  `split` installs `/usr/local/sbin/cbase-irq-split` and `cbase-irq.service`, a oneshot that runs it at every boot; nothing orders, requires or binds to that unit, so an app starts whether it ran, failed or was never installed.
+  The program changes nothing, and exits 0, when the layout is not the expected one (fewer or more queues than vCPUs, one vCPU, a NIC that is not ENA's); it waits up to 30 seconds for the queue interrupts to appear at boot.
+  To see it: the deploy prints the setup's and the check's lines as `vm:` lines (`vm: irq: one queue per vCPU (2 queues on 2 vCPUs), irqbalance not active`), and `journalctl -u cbase-irq` on the instance has the program's.
+  A setup or a check that does not end well is a warning on stderr, never a failed deploy.
 - `CBASE_ROUTE = <pattern> vm|static|ws [cache|nocache] [ALL|GET,HEAD,...]`, repeated, matched in order; default `/api/* vm` and `* static` for an app with both, `* static` for a static site, `* vm` for a VM-only app.
   Routes are written only to differ from the default, and any `CBASE_ROUTE` line replaces the defaults rather than adding to them; written routes with no `*` route get `* static` (or `* vm`) last, since CloudFront needs a default behaviour.
   `ws` is the VM uncached, every method, long timeouts; a route's cache defaults to `cache` for static and `nocache` for vm, its methods to `GET,HEAD` for static and `ALL` for vm.
@@ -655,6 +663,8 @@ The VM side of a deploy, in order:
 5. runs one SSM command on the instance, with no SSH: the user `cbase-<app>`, `/srv/cbase/<app>/data` owned by the service, the port checked free before a first start, the binary fetched and its sha256 checked, the unit `cbase-<app>.service` installed and only it restarted when something it runs on changed (below), then its `/health` (or its startup line) waited for;
 6. sets the stack's `VmOrigin` and `VmPort`, so `/api/*` and any `ws` route reach the app's port.
 
+With `CBASE_VM_IRQ` set, a second SSM command follows the first one (the NIC interrupts' setup), and for `split` a third, read-only one that checks the layout.
+
 The service's unit grew out of the production unit of the VM cbase came from (`tools/cbase.d/vm_unit.service`): `CBASE_LISTEN=:::<port>` (a dual-stack socket), `CBASE_DB` in its data folder, the backup settings, `Restart=always`, its hardening, and `MemoryMax` only when `CBASE_MEMORY` is declared.
 The instance fetches the server and reads its settings with curl signed by the instance role (`tools/cbase.d/vm_remote.sh`), so it needs no aws CLI.
 Its settings are SSM Parameter Store parameters under `CBASE_VM_SETTINGS` (default `/cbase/<app>/`), which the instance writes into the unit's 0600 `EnvironmentFile`; no value passes through the tool but the origin secret, which is masked.
@@ -751,6 +761,7 @@ Every stack change is a change set, made and printed before anything runs.
 - **A dry run changes nothing.**
   `--dry-run` (or `DRY_RUN=1`) makes and prints the change set, deletes it unexecuted (with the empty stack a first change set leaves), and prints the upload it would make.
   A VM app's dry run checks the memory fit and prints the port it would claim, and writes no state file, sends no SSM command and executes nothing.
+  With `CBASE_VM_IRQ` set, it adds one line naming the interrupt setup it would run after the deploy.
   A problem a deploy would stop on (a missing origin secret, a hostname another distribution holds, a bucket policy to add) is said where it is found, and the dry run goes on to the fit, the port and the change set; it then lists every problem and exits 1.
   An adopted group with no state bucket yet is planned as an empty group, and the dry run says which bucket and state file a deploy would make.
 - **No secret is printed.**
