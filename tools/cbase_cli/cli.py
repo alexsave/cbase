@@ -119,6 +119,10 @@ def run(argv: List[str], out: bool = True, err: bool = True) -> Tuple[int, str, 
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE if out else None,
             stderr=subprocess.PIPE if err else None,
+            # The child gets every descriptor the tool was given open, as the C tool's fork and exec gave
+            # it: a parent make's jobserver pipe reaches `make serve-binary` (closed, make warns
+            # "jobserver unavailable" and builds alone). Python's own descriptors are close-on-exec.
+            close_fds=False,
         )
     except (OSError, ValueError):
         return 127, "", ""

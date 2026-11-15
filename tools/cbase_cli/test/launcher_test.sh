@@ -57,4 +57,13 @@ rc=0; "$tools/cbase" -f "$t/none.conf" "config" "check" > "$t/out" 2> "$t/err" |
 grep -Fq "$t/none.conf" "$t/err" || { cat "$t/err" >&2; fail "-f missing: the file's name did not come through"; }
 [ -z "$(find "$tools/cbase_cli" -name __pycache__ -print -quit)" ] || fail "a __pycache__ under tools/cbase_cli"
 pass=$((pass + 2))
+
+# The one process runner hands the child every descriptor the tool was given, as the C tool's fork and
+# exec did: a parent make's jobserver pipe reaches `make serve-binary` (closed, make warns "jobserver
+# unavailable" and builds alone). Descriptor 7, open here, is written by the child cli.run starts.
+rc=0
+python3 -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); import cli; rc, o, e = cli.run(["sh", "-c", "echo through >&7"]); sys.stderr.write(e); sys.exit(rc)' \
+  "$tools/cbase_cli" 7> "$t/fd7" > "$t/out" 2> "$t/err" || rc=$?
+{ [ "$rc" = 0 ] && [ "$(cat "$t/fd7")" = through ]; } || { cat "$t/err" >&2; fail "an inherited descriptor did not reach the child cli.run started (status $rc)"; }
+pass=$((pass + 1))
 echo "launcher_test: ok ($pass checks)"
