@@ -847,7 +847,9 @@ cmp "$root/tools/cbase.d/vm_irq_check.sh" "$t/irq-check.sh" || fail "the check s
 out_has "vm: ${IRQ_OUT#CBASE: }" "the deploy prints the check's vm: line"
 out_has "vm: the irq setup of irqon runs on i-0g9" "the setup's run line"
 out_has "vm: the irq check of irqon runs on i-0g9" "the check's run line"
-grep -q warning "$t/err" && { cat "$t/err" >&2; fail "a good deploy with CBASE_VM_IRQ warned"; }
+# The tool's own warnings, which start their lines: the stderr also holds whatever make serve-binary
+# printed, and a build may say "warning" of itself.
+grep -q "^cbase: warning" "$t/err" && { cat "$t/err" >&2; fail "a good deploy with CBASE_VM_IRQ warned"; }
 run "$irqon" config check
 out_has "irq        split (the VM's NIC interrupts: one queue per vCPU, irqbalance stopped)" "config check's irq row"
 ok
@@ -997,7 +999,7 @@ script_since "$m" 2 > "$t/irq-back.sh"
 sed "2s/app shop's/app irqback's/" "$root/tools/cbase_cli/test/golden/vm_render/plain.irq-setup_irqbalance" | cmp - "$t/irq-back.sh" || fail "the irqbalance setup sent is not the golden file's render"
 on_vm "$irqroot" "$t/irq-back.sh"
 [ "$rc" = 0 ] || { cat "$t/vm-out" >&2; fail "the irqbalance setup on a split root: status $rc"; }
-[ ! -e "$irqroot/usr/local/sbin/cbase-irq-split" ] && [ ! -e "$irqroot/etc/systemd/system/cbase-irq.service" ] || fail "the way back left the unit or the program"
+{ [ ! -e "$irqroot/usr/local/sbin/cbase-irq-split" ] && [ ! -e "$irqroot/etc/systemd/system/cbase-irq.service" ]; } || fail "the way back left the unit or the program"
 printf 'systemctl disable --now --quiet cbase-irq.service\nsystemctl daemon-reload\nsystemctl enable --now --quiet irqbalance.service\n' | diff -u - "$irqroot/calls" \
   || fail "the way back's systemctl calls"
 fresh="$t/irqfresh"
