@@ -4,7 +4,9 @@
 #   * every module imports with warnings as errors (a deprecated call fails here, not on a newer Python);
 #   * every module starts with `from __future__ import annotations` (annotations stay text, so a newer
 #     typing form in one is never evaluated by 3.9), but cbase.py, which any Python 3 must parse;
-#   * no module names json: the tool reads AWS's answers as --output text and writes no JSON.
+#   * no module names json: the tool reads AWS's answers as --output text and writes no JSON;
+#   * no module but cli.py starts a process: cli.run is the one runner (stdin /dev/null, the streams
+#     drained, and the descriptors the tool was given passed on, as the C tool's fork and exec did).
 # The last three are run over planted files first, so a check that stopped seeing fails too.
 #
 #   bash tools/cbase_cli/test/py_check.sh      (make cbase-py-check runs it, part of check)
@@ -56,6 +58,8 @@ futures() {
 }
 # nojson DIR: every line of DIR's modules that names json, in any case.
 nojson() { ! grep -Hni 'json' "$1"/*.py; }
+# runners DIR: every line of DIR's modules but cli.py that starts a process some other way.
+runners() { ! grep -HnE '\bsubprocess\b|\bos\.(system|popen|fork|forkpty|spawn[a-z]*|exec[a-z]*|posix_spawn[a-z]*)\b' "$1"/*.py | grep -v '^[^:]*/cli\.py:'; }
 
 # ---- the checks see each kind, over planted files ----------------------------------------------
 mkdir -p "$t/plant"
@@ -70,11 +74,15 @@ futures "$t/plant" > /dev/null && fail "a module without the annotations import 
 rm "$t/plant/nofuture.py"
 printf 'from __future__ import annotations\nimport JSON as j\n' > "$t/plant/js.py"
 nojson "$t/plant" > /dev/null && fail "a module naming json passed"
+rm "$t/plant/js.py"
+printf 'from __future__ import annotations\nimport os\nos.execvp("aws", ["aws"])\n' > "$t/plant/run.py"
+runners "$t/plant" > /dev/null && fail "a module starting a process with os.execvp passed"
 
 # ---- the tool --------------------------------------------------------------------------------------
 parse39 "$cli" || fail "a module is not Python 3.9 (above)"
 imports "$cli" || fail "a module does not import with warnings as errors (above)"
 futures "$cli" || fail "a module lacks the annotations import (above)"
 nojson "$cli" || fail "a module names json (above): AWS's answers are read as --output text"
+runners "$cli" || fail "a module starts a process outside cli.run (above)"
 [ "$fails" = 0 ] || exit 1
 echo "py_check: ok ($(find "$cli" -maxdepth 1 -name '*.py' | wc -l | tr -d ' ') modules, $("$py" -c 'import sys; print("%d.%d" % sys.version_info[:2])'))"
