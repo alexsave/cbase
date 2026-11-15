@@ -1626,3 +1626,4 @@ Each was run with the irq golden files re-rendered from the mutated text, so the
 - tools/cbase.d/vm_irq_check.sh's irqbalance-active rule dropped -> the STUB_ACTIVE=1 check case `the check does not refuse an active irqbalance` red.
 - tools/cbase.d/vm_irq.sh's wait loop disabled (`while false && ...`) -> `the program did not say it waited` red.
 - cbase_cli/vm.py's dry-run line for CBASE_VM_IRQ disabled (`if False:`) -> the irq case `the dry run's irq line` red.
+- cbase_cli/cli.py's runner back to `close_fds=True` (Python's default, the port's behaviour until here: a parent make's jobserver pipe was closed, so `make serve-binary` under `make -j check` warned "jobserver unavailable", which CI's VM suite caught) -> launcher_test.sh's `an inherited descriptor did not reach the child cli.run started` red.
