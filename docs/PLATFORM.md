@@ -298,6 +298,7 @@ What the form fixes, and so what the client cannot change:
   300 is what the instance role's credentials leave, since `cb_aws_creds_get` keeps them until 5 minutes before they expire.
 - The store checks all of it as it takes the bytes, and refuses a field the policy does not name.
 
+Each form lets its holder store one file in the bucket, so the product hands one out only from a route that checks who is asking (a signed-in user) and limits how often (`core/src/rate_limits.h`), and records the key it gave, since the platform keeps no list of uploads.
 `cb_media_post` answers `CB_E_STATE` when the three settings are not set.
 It needs an object store backend linked, which today is the aws provider: `CBASE_PROVIDERS := local aws` keeps SQLite under `cbase serve` and links the aws provider for the store.
 A deployment that sets `CBASE_MEDIA_BUCKET` without a linked backend that can make a form does not start, and the message names the setting.
