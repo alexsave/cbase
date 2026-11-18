@@ -38,7 +38,7 @@ wanted() {
 }
 
 command -v aws > /dev/null 2>&1 || fail "the AWS CLI (aws) is not on PATH: the tests drive the real CLI against a local fake"
-${CC:-cc} -std=gnu11 -D_GNU_SOURCE -O2 -Wall -Wextra -Werror -pthread "$root/tools/cbase.d/test/fake_aws.c" -o "$t/fake_aws"
+${CC:-cc} -std=gnu11 -D_GNU_SOURCE -O2 -Wall -Wextra -Werror -pthread -I"$root/lib" "$root/tools/cbase.d/test/fake_aws.c" "$root/lib/sha256.c" -o "$t/fake_aws"
 
 ACCOUNT=111122223333
 BUCKET="cbase-state-$ACCOUNT"
