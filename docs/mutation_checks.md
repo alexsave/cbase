@@ -1641,3 +1641,16 @@ Each was run on the section named (`CBASE_TEST_ONLY='conf media'`, group-templat
 - cbase_cli/conf.py's CBASE_STATIC = none refusal for media disabled (`if False:`) -> `a bad cbase.conf (cbase.conf line 3: CBASE_MEDIA keeps the uploads in the static group's bucket, and CBASE_STATIC is none): status 0, not 1` red.
 - cbase_cli/stack.py's `stk_caps = "CAPABILITY_IAM"` for a media app made `""` -> `a media app's change set lacks CAPABILITY_IAM` red (the fake's log shows `caps=`).
 - tools/cbase.d/templates/group-vm.yaml's RoleName Export removed -> cbase_group_test.sh's group-template case red, its diff showing the two removed lines (`Export:` and `Name: cbase-vm-g4-role`) against the golden text.
+
+## The static folder rule (static-prefix-nesting)
+
+Each was run on a copy of tools/ with `CBASE_TEST_ONLY=nesting` (group-template for the last two), under `env -i`, and checked to fail on its own assertion, not on an import error.
+
+- The test against the code before the fix (77452ed6) -> `a join inside another member's folder: status 0, not 1` red.
+- cbase_cli/state.py's `folders_overlap` reduced to `a == b` -> `a join inside another member's folder: status 0, not 1` red.
+- `folders_overlap` without the holding direction (`b.startswith(a + "/")`) -> `a join whose folder holds another member's: status 0, not 1` red.
+- The join's overlap check off (`j = -1`) -> `a join inside another member's folder: status 0, not 1` red.
+- The read's overlap check off (`j = -1`) -> `a state file with overlapping folders: status 0, not 1` red.
+- The join's line naming the app instead of the folder -> `a folder beside another's: stdout lacks [side joined static group g1: app=side folder=sites-admin/]` red.
+- tools/cbase.d/templates/group-static.yaml given a line off its golden text -> cbase_group_test.sh's `group-template static g4 differs from its golden text` printed, red.
+- The same, with the golden case's `|| true` removed -> the run ends without naming the case (`the run stopped before its end`), as before the fix.
