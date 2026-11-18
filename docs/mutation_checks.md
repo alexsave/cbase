@@ -1654,3 +1654,19 @@ Each was run on a copy of tools/ with `CBASE_TEST_ONLY=nesting` (group-template 
 - The join's line naming the app instead of the folder -> `a folder beside another's: stdout lacks [side joined static group g1: app=side folder=sites-admin/]` red.
 - tools/cbase.d/templates/group-static.yaml given a line off its golden text -> cbase_group_test.sh's `group-template static g4 differs from its golden text` printed, red.
 - The same, with the golden case's `|| true` removed -> the run ends without naming the case (`the run stopped before its end`), as before the fix.
+
+## Media uploads (presigned-upload)
+
+Each was run on the program named (rebuilt after the edit, its objects touched a second later since make compares whole seconds), and restored by editing back.
+
+- providers/aws/src/aws_json.c's content-length-range condition dropped from the policy -> smoke_s3_post's `a file over the range` and `an empty file` cases red (`res.status == status`, got 204, want 400), and unit_s3_post's two policy-body checks red.
+- aws_json.c's `{"key":K}` condition turned into `["starts-with","$key","_media/"]` -> smoke_s3_post's `the key changed` case red (`res.status == status`, got 204, want 403; the move out of the folder is still refused), and unit_s3_post's two policy-body checks red.
+- aws/s3_post.c's cb_s3_post_sign over the base64-decoded policy JSON instead of the base64 text -> unit_s3_post's `sig == EX_SIGNATURE` (AWS's example) red, and every upload in smoke_s3_post refused (`res.status == 204` red, then the read-back checks).
+- aws/s3_post.c's expires_s cap (`expires_s > CB_S3_POST_MAX_EXPIRES_S`) removed -> unit_s3_post's `refusals` red on the 301 case and on `f.n == 0`.
+- core/src/media.c's type table given `image/svg+xml` -> unit_media's `types` red (`cb_media_post_with(... bad[i] ...) == CB_E_INVALID`, got 0, and `r.calls == 0`).
+- core/src/media.c's `max_bytes > MEDIA_MAX_BYTES` refusal removed -> unit_media's `sizes` red (10 MiB + 1 taken, and the place reached).
+- core/src/config.c's CBASE_MEDIA_PREFIX `/m/` ending check removed -> unit_media's `settings` red on `_media/app/m` and `_media/app/x/`.
+- tools/cbase.d/test/fake_aws.c's signature comparison skipped (`if (0 && ...)`) -> smoke_s3_post's `a signature made with another secret` case red (got 204), and `one byte of the policy changed` red (got 400, not 403).
+- fake_aws.c's field-coverage rule skipped -> smoke_s3_post's `a field the policy does not cover` case red (got 204).
+- fake_aws.c's Access-Control-Allow-Origin echo dropped (the origin never kept) -> smoke_s3_post's listed-origin checks red on the POST, the GET and the preflight (lines 226, 227, 244, 254 to 256).
+- core/src/media.c calling cb_s3_post_form_make directly -> `make symbol-gate` red: the local-only example does not link (`Undefined symbols ... _cb_s3_post_form_make, referenced from _cb_media_mutant in media.o`); restored, the gate reads 834 symbols and 120 of 32 aws objects and passes.
