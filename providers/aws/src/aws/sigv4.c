@@ -171,6 +171,16 @@ static bool signing_key_for(const char *secret, const char *date, const char *re
     return true;
 }
 
+bool cb_sigv4_signing_key(const char *secret, const char *date8, const char *region, const char *service,
+                          uint8_t out[32]) {
+    if (!secret || !date8 || !region || !service || strlen(date8) < 8) return false;
+    return signing_key_for(secret, date8, region, service, out);
+}
+
+bool cb_sigv4_hmac(const void *key, size_t klen, const void *msg, size_t mlen, uint8_t out[32]) {
+    return hmac(key, klen, msg, mlen, out);
+}
+
 static bool unreserved(unsigned char c) {
     return isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~';
 }
