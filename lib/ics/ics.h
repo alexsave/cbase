@@ -7,16 +7,20 @@
 // error (the buffer holds the empty string).
 //
 // TIME. An event's start and end are UTC instants (ms), and the clock (DTSTAMP) is the caller's.
-//   * A one-off event, or a repeating one with no zone, is written in UTC (DTSTART:...Z). A repeating
-//     event in UTC shows an hour off in a calendar app after each DST change of the zone its people
-//     live in (a weekly 07:00 New York run shows at 06:00 or 08:00), so a repeating event takes a zone.
+//   * A one-off event is written in UTC (DTSTART:...Z).
+//   * A repeating event MUST name a zone: one with none is refused (ICS_EINVAL), by ics_write and gcal_url
+//     alike. Written in UTC it would show an hour off in a calendar app after each DST change of the zone
+//     its people live in (a weekly 07:00 New York run at 06:00 or 08:00), the bug this library replaced.
 //   * A repeating event with a zone (IANA name, lib/tz) is written DTSTART;TZID=<name>:<local> and
 //     DTEND likewise, with a VTIMEZONE made from the zone's POSIX rule (a STANDARD and a DAYLIGHT part,
 //     each with RRULE:FREQ=YEARLY;BYMONTH=m;BYDAY=nSU read from Mm.w.d, w = 5 as -1), so the event keeps
 //     its local time across DST. byday then names the days of the LOCAL week.
 //   * The VTIMEZONE reads the rule straight, so it needs an Mm.w.d date whose time is within 0..24h;
 //     a zone whose rule has other dates (tzdata has four rules with a /-1, /24, /26 time) answers
-//     ICS_EZONE. Past transitions are not represented (tz.h).
+//     ICS_EZONE. THE STATED LIMIT: that is ten zones today (Africa/Cairo, Egypt, Asia/Jerusalem,
+//     Asia/Tel_Aviv, Israel, America/Godthab, America/Nuuk, America/Scoresbysund, America/Santiago,
+//     Chile/Continental), whose repeating events an app writes as one-off events until the VTIMEZONE can
+//     carry them (RDATE or explicit occurrences, a later decision). Past transitions are not represented (tz.h).
 //
 // NO APP IS NAMED HERE: the UID's domain comes from the caller (uid_host), and PRODID names this library.
 #ifndef SHARED_ICS_H
@@ -54,7 +58,7 @@ typedef struct {
 } ics_event;
 
 enum {
-    ICS_EINVAL = -1,   // end before start, a year outside 0..9999, an empty uid_host
+    ICS_EINVAL = -1,   // end before start, a year outside 0..9999, an empty uid_host, a repeating event with no zone
     ICS_EZONE = -2     // an unknown zone, or one whose rule the VTIMEZONE cannot say (see above)
 };
 

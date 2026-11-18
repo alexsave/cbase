@@ -268,7 +268,13 @@ static void write_all(W *w, const ics_event *ev)
         w->err = ICS_EINVAL;
         return;
     }
-    if (ev->weekly && ev->zone.n) {
+    // A repeating event takes a zone: written in UTC it shows an hour off in a calendar app after each DST
+    // change of the zone its people live in (ics.h, TIME), so it is refused rather than written so.
+    if (ev->weekly && !ev->zone.n) {
+        w->err = ICS_EINVAL;
+        return;
+    }
+    if (ev->weekly) {
         if (ev->zone.n >= sizeof zone) {
             w->err = ICS_EZONE;
             return;

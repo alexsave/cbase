@@ -93,7 +93,7 @@ typedef struct {
     ics_event ev;
 } golden_case;
 
-#define NGOLDEN 7
+#define NGOLDEN 6
 
 static void cases(golden_case *g)
 {
@@ -111,7 +111,7 @@ static void cases(golden_case *g)
     ics_event w = base();
     w.id = S("e-seoul-han");
     w.occ_day = S("2026-11-24");
-    w.start_ms = 1795560300000LL;
+    w.start_ms = 1795473900000LL;   /* 2026-11-23 22:45 UTC: Tuesday 07:45 in Seoul */
     w.end_ms = w.start_ms + 5400000LL;
     w.summary = S("\xed\x95\x9c\xea\xb0\x95 \xeb\x9f\xac\xeb\x8b\x9d \xed\x81\xac\xeb\xa3\xa8 Han River Run");
     w.location = S("\xeb\x9a\x9d\xec\x84\xa0\xed\x95\x9c\xea\xb0\x95\xea\xb3\xb5\xec\x9b\x90, \xec\x84\x9c\xec\x9a\xb8");
@@ -121,6 +121,7 @@ static void cases(golden_case *g)
     w.lng_udeg = 126990300;
     w.weekly = 1;
     w.byday = ICS_TU | ICS_TH;
+    w.zone = S("Asia/Seoul");
     g[1] = (golden_case){ "weekly", w };
 
     ics_event n = base();
@@ -135,6 +136,7 @@ static void cases(golden_case *g)
     n.lng_udeg = -71087500;
     n.weekly = 1;
     n.byday = ICS_SU | ICS_MO | ICS_WE;
+    n.zone = S("America/New_York");   /* Sunday 13:00 in Boston */
     g[2] = (golden_case){ "weekly_neg", n };
 
     /* The same weekly runs in a zone: Tuesday 07:00 New York (12:00 UTC in November), Tuesday 07:00 Oslo
@@ -170,12 +172,25 @@ static void cases(golden_case *g)
     se.zone = S("Asia/Seoul");
     g[5] = (golden_case){ "weekly_seoul", se };
 
-    /* The same New York run as weekly_ny with no zone: the UTC form, which a calendar app shows an hour off
-     * after each DST change. Kept as the negative control of the oracle (ics_oracle.py). */
-    ics_event un = ny;
+}
+
+/* The same New York run as weekly_ny with no zone: refused by both writers, since in UTC a calendar app
+ * shows it an hour off after each DST change. lib/ics/test/golden/weekly_ny_utc.* are that old form, kept
+ * by hand as the oracle's negative control (ics_oracle.py); no writer produces them any more. */
+static void test_weekly_needs_zone(void)
+{
+    golden_case g[NGOLDEN];
+    cases(g);
+    ics_event un = g[3].ev;
     un.id = S("e-ny-tue-utc");
     un.zone = (ics_str){ NULL, 0 };
-    g[6] = (golden_case){ "weekly_ny_utc", un };
+    TEST("refusal: a repeating event with no zone is not written in UTC");
+    char out[64] = "x";
+    CHECK(ics_write(out, sizeof out, &un) == ICS_EINVAL && out[0] == 0, "ics_write wrote a weekly event with no zone");
+    out[0] = 'x';
+    CHECK(gcal_url(out, sizeof out, &un) == ICS_EINVAL && out[0] == 0, "gcal_url wrote a weekly event with no zone");
+    un.weekly = 0;
+    CHECK(ics_write(NULL, 0, &un) > 0, "a one-off event with no zone is still written, in UTC");
 }
 
 static char *slurp(const char *path, size_t *n)
@@ -509,6 +524,7 @@ int main(int argc, char **argv)
 {
     int write = argc > 1 && strcmp(argv[1], "--write") == 0;
     test_goldens(write);
+    test_weekly_needs_zone();
     test_fold();
     test_escape();
     test_time();

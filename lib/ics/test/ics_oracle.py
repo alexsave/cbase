@@ -8,7 +8,7 @@ For a repeating event with a zone: the VTIMEZONE in the file is turned into a ti
 (lookup_tzid=False: the file's own rules, not the database's name), the weekly RRULE is expanded two years
 across both DST changes with dateutil, and every occurrence must keep its local time and land on the UTC
 instant zoneinfo gives for that local time in the real zone; the file's zone must also give zoneinfo's
-offset at every half hour of those two years. weekly_ny_utc is the negative control: the same event in UTC
+offset at every half hour of those two years. weekly_ny_utc is the negative control, kept by hand (lib/ics now refuses a repeating event with no zone): the same event in UTC
 shows its local hour drifting, which is the bug the zone fixes, so the oracle is shown able to see it.
 Test only; nothing here ships."""
 import sys
@@ -33,16 +33,18 @@ EXPECT = {
         geo=(59.9275, 10.7006), url="https://calendar.example/e/e-oslo-fredag/2026-11-20", rrule=None, zone=None),
     "weekly": dict(
         uid="e-seoul-han-2026-11-24@" + HOST,
-        start=datetime(2026, 11, 24, 22, 45, tzinfo=U), end=datetime(2026, 11, 25, 0, 15, tzinfo=U),
+        start=datetime(2026, 11, 23, 22, 45, tzinfo=U), end=datetime(2026, 11, 24, 0, 15, tzinfo=U),
         summary="한강 러닝 크루 Han River Run",
         location=bytes.fromhex("eb9a9dec84a0ed959ceab095eab3b5ec9b90").decode() + ", " + bytes.fromhex("ec849cec9ab8").decode(),
         description="화요일과 목요일, 6K 조깅. 모두 환영해요 and everyone is welcome to join the long easy run along the river.",
-        geo=(37.5326, 126.9903), url=None, rrule={"FREQ": ["WEEKLY"], "BYDAY": ["TU", "TH"]}, zone=None),
+        geo=(37.5326, 126.9903), url=None, rrule={"FREQ": ["WEEKLY"], "BYDAY": ["TU", "TH"]}, zone="Asia/Seoul",
+        local=datetime(2026, 11, 24, 7, 45)),
     "weekly_neg": dict(
         uid="e-boston-charles-2026-11-22@" + HOST,
         start=datetime(2026, 11, 22, 18, 0, tzinfo=U), end=datetime(2026, 11, 22, 19, 0, tzinfo=U),
         summary="Charles River loop", location="Boston, MA", description=None,
-        geo=(-0.0005, -71.0875), url=None, rrule={"FREQ": ["WEEKLY"], "BYDAY": ["MO", "WE", "SU"]}, zone=None),
+        geo=(-0.0005, -71.0875), url=None, rrule={"FREQ": ["WEEKLY"], "BYDAY": ["MO", "WE", "SU"]}, zone="America/New_York",
+        local=datetime(2026, 11, 22, 13, 0)),
     "weekly_ny": dict(
         uid="e-ny-tue-2026-11-24@" + HOST,
         start=datetime(2026, 11, 24, 12, 0, tzinfo=U), end=datetime(2026, 11, 24, 13, 0, tzinfo=U),
