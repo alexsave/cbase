@@ -1539,6 +1539,7 @@ run "$(medapp mapp "CBASE_MEDIA = on")" template
 awk '/^  MediaWrites:$/{f=1} /^  Distribution:$/{f=0} f' "$t/out" > "$t/mwrites"
 grep -Fq -- '- !ImportValue cbase-vm-g1-role' "$t/mwrites" || { cat "$t/mwrites" >&2; fail "MediaWrites does not import the VM group's role"; }
 [ "$(grep -c 'Resource:' "$t/mwrites")" = 1 ] || fail "MediaWrites names other than one resource"
+# shellcheck disable=SC2016 # the template's own ${AWS::Partition}, matched as text
 grep -Fq 'Resource: !Sub "arn:${AWS::Partition}:s3:::site-bucket/_media/mapp/m/*"' "$t/mwrites" || { cat "$t/mwrites" >&2; fail "MediaWrites is not the app's m/ alone"; }
 [ "$(grep 'Action:' "$t/mwrites")" = '            Action: s3:PutObject' ] || { cat "$t/mwrites" >&2; fail "MediaWrites allows other than PutObject"; }
 ok
