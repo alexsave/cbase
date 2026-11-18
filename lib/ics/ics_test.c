@@ -373,10 +373,11 @@ static void test_fields(void)
     e.has_geo = 0;
     e.weekly = 1;
     e.byday = ICS_FR | ICS_SA;
+    e.zone = S("Europe/Oslo");   /* a repeating event takes a zone: 18:00 UTC is 19:00 in Oslo in November */
     CHECK(ics_of(&e) > 0, "write");
     CHECK(strstr(buf, "GEO") == NULL, "unexpected GEO");
     CHECK(strstr(buf, "\r\nRRULE:FREQ=WEEKLY;BYDAY=FR,SA\r\n") != NULL, "rrule:\n%s", buf);
-    CHECK(strstr(buf, "VTIMEZONE") == NULL && strstr(buf, "DTSTART:20261120T180000Z") != NULL, "a repeating event with no zone is in UTC");
+    CHECK(strstr(buf, "BEGIN:VTIMEZONE") != NULL && strstr(buf, "\r\nDTSTART;TZID=Europe/Oslo:20261120T190000\r\n") != NULL, "a repeating event in its zone:\n%s", buf);
     e.byday = 0;
     CHECK(ics_of(&e) > 0, "write");
     CHECK(strstr(buf, "\r\nRRULE:FREQ=WEEKLY\r\n") != NULL, "rrule without byday:\n%s", buf);
@@ -511,12 +512,13 @@ static void test_gcal(void)
     e.location = S("Oslo, Norge");
     e.weekly = 1;
     e.byday = ICS_MO | ICS_TH;
+    e.zone = S("Europe/Oslo");
     char url[1024];
     CHECK(gcal_url(url, sizeof url, &e) > 0, "gcal");
     const char *want =
         "https://calendar.google.com/calendar/render?action=TEMPLATE&text=Fredagsl%C3%B8p%20%26%20mer"
-        "&dates=20261120T180000Z/20261120T190000Z&details=a%0Ab&location=Oslo%2C%20Norge"
-        "&recur=RRULE%3AFREQ%3DWEEKLY%3BBYDAY%3DMO%2CTH";
+        "&dates=20261120T190000/20261120T200000&details=a%0Ab&location=Oslo%2C%20Norge"
+        "&ctz=Europe%2FOslo&recur=RRULE%3AFREQ%3DWEEKLY%3BBYDAY%3DMO%2CTH";
     CHECK(strcmp(url, want) == 0, "gcal url:\n%s", url);
 }
 
