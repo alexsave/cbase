@@ -422,7 +422,12 @@ fi
 # Each app's prune deletes every key under its folder that its build does not hold, so a folder inside
 # another's (or the same one) would let one app's deploy delete the other's files.
 if wanted nesting; then
-start_fake "${everything[@]}"
+# The sections after this one read the fake's state as join left it: this one starts the fake only when
+# it runs alone, sets static g1's state file aside, and puts it back at its end.
+[ -n "$FAKE_PID" ] || start_fake "${everything[@]}"
+saved=0
+if aws s3api get-object --bucket "$BUCKET" --key static/g1.txt "$t/nesting-saved" > /dev/null 2>&1; then saved=1; fi
+aws s3api delete-object --bucket "$BUCKET" --key static/g1.txt > /dev/null
 sites="$(app sites "CBASE_APP = sites" "CBASE_VM = none" "CBASE_STATIC = g1")"
 one="$(app one "CBASE_APP = one" "CBASE_VM = none" "CBASE_STATIC = g1" "CBASE_STATIC_PREFIX = sites/one")"
 dup="$(app dup "CBASE_APP = dup" "CBASE_VM = none" "CBASE_STATIC = g1" "CBASE_STATIC_PREFIX = sites")"
@@ -468,6 +473,11 @@ run "$side" state join
 expect_rc 1 "a state file with overlapping folders"
 err_has "line 3 gives app one the folder sites/one/, which overlaps sites's sites/" "the read's folder rule"
 ok
+if [ "$saved" = 1 ]; then
+  aws s3api put-object --bucket "$BUCKET" --key static/g1.txt --body "$t/nesting-saved" > /dev/null
+else
+  aws s3api delete-object --bucket "$BUCKET" --key static/g1.txt > /dev/null
+fi
 fi
 # ---- apps --------------------------------------------------------------------------------------
 if wanted apps; then
