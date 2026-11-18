@@ -1,6 +1,6 @@
 #!/bin/bash
 # Builds example/minimal static on musl (the ops/build_static.sh recipe) into $OUT.
-# Usage: OUT=/abs/dir CDOM=/abs/cdom-checkout bench/mem/build.sh
+# Usage: OUT=/abs/dir CDOM=/abs/cdom-checkout example/minimal/bench_static.sh
 # Needs Docker. $OUT gets minimal (stripped), minimal.unstripped, readelf_l.txt, readelf_S.txt.
 set -e
 cb="$(cd "$(dirname "$0")/../.." && pwd)"
