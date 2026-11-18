@@ -38,24 +38,21 @@ wanted() {
 }
 
 command -v aws > /dev/null 2>&1 || fail "the AWS CLI (aws) is not on PATH: the tests drive the real CLI against a local fake"
-# THE TIMING (opt in): CBASE_TEST_TIMING=FILE appends one line per AWS CLI call ("aws SECONDS") and per
-# run of the tool under test ("tool SECONDS") to FILE, through two wrappers put first on PATH and in
-# $tool. What a run costs is then the CLI's share against the tool's own (tools/cbase.d/test/timing.sh
-# sums them). Off, nothing changes. The clock is perl's Time::HiRes (macOS's bash 3.2 has no
-# EPOCHREALTIME); each reading costs a few milliseconds, which the sums include.
-# A value that ends in / is a directory: each script writes its own <script>.tim there.
+# THE TIMING (opt in): CBASE_TEST_TIMING=FILE appends one line per AWS CLI call to FILE, "aws SECONDS
+# SERVICE OPERATION" (an option's value skipped, a --no-* flag taking none), through a wrapper put first on PATH (tools/cbase.d/test/timing.sh sums them, by
+# operation too). A value that ends in / is a directory: each script writes its own <script>.tim there.
+# Off, nothing changes. Only the CLI is wrapped, never the tool under test: the signals section sends
+# the tool TERM and INT, which a wrapper in between would take instead of it. The clock is perl's
+# Time::HiRes (macOS's bash 3.2 has no EPOCHREALTIME); each reading costs a few milliseconds, which the
+# sums include.
 if [ -n "${CBASE_TEST_TIMING:-}" ]; then
   case "$CBASE_TEST_TIMING" in */) mkdir -p "$CBASE_TEST_TIMING"; CBASE_TEST_TIMING="$CBASE_TEST_TIMING$(basename "$0" .sh).tim" ;; esac
   mkdir -p "$t/timing"
-  # shellcheck disable=SC2016 # the wrapper's own $@ and $?
-  printf '#!/bin/bash\ns=$(perl -MTime::HiRes=time -e "printf q(%%.4f), time")\n"%s" "$@"; rc=$?\nperl -MTime::HiRes=time -e "printf qq(%s %%.4f\\n), time - \\$ARGV[0]" "$s" >> "%s"\nexit $rc\n' \
-    "$(command -v aws)" aws "$CBASE_TEST_TIMING" > "$t/timing/aws"
-  # shellcheck disable=SC2016
-  printf '#!/bin/bash\ns=$(perl -MTime::HiRes=time -e "printf q(%%.4f), time")\n"%s" "$@"; rc=$?\nperl -MTime::HiRes=time -e "printf qq(%s %%.4f\\n), time - \\$ARGV[0]" "$s" >> "%s"\nexit $rc\n' \
-    "$tool" tool "$CBASE_TEST_TIMING" > "$t/timing/cbase"
-  chmod +x "$t/timing/aws" "$t/timing/cbase"
+  # shellcheck disable=SC2016 # the wrapper's own $@, $1, $2 and $?
+  printf '#!/bin/bash\ns=$(perl -MTime::HiRes=time -e "printf q(%%.4f), time")\n"%s" "$@"; rc=$?\nop=""; skip=0; for a in "$@"; do if [ $skip = 1 ]; then skip=0; continue; fi; case "$a" in --no-*) ;; --*) skip=1 ;; *) op="$op $a"; [ "${op#* * }" != "$op" ] && break ;; esac; done\nperl -MTime::HiRes=time -e "printf qq(aws %%.4f%%s\\n), time - \\$ARGV[0], \\$ARGV[1]" "$s" "$op" >> "%s"\nexit $rc\n' \
+    "$(command -v aws)" "$CBASE_TEST_TIMING" > "$t/timing/aws"
+  chmod +x "$t/timing/aws"
   PATH="$t/timing:$PATH"
-  tool="$t/timing/cbase"
 fi
 ${CC:-cc} -std=gnu11 -D_GNU_SOURCE -O2 -Wall -Wextra -Werror -pthread -I"$root/lib" "$root/tools/cbase.d/test/fake_aws.c" "$root/lib/sha256.c" -o "$t/fake_aws"
 
