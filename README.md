@@ -541,6 +541,13 @@ Optional, each with its default:
   The program changes nothing, and exits 0, when the layout is not the expected one (fewer or more queues than vCPUs, one vCPU, a NIC that is not ENA's); it waits up to 30 seconds for the queue interrupts to appear at boot.
   To see it: the deploy prints the setup's and the check's lines as `vm:` lines (`vm: irq: one queue per vCPU (2 queues on 2 vCPUs), irqbalance not active`), and `journalctl -u cbase-irq` on the instance has the program's.
   A setup or a check that does not end well is a warning on stderr, never a failed deploy.
+- `CBASE_MEDIA = on | off`: a folder for the app's user uploads, served at `/m/*`; default `off`.
+  Its keys live in the static group's bucket at `_media/<app>/m/<key>`, beside the app's own folder and never inside it, so a deploy's prune and `undeploy --delete-files` never list or delete them.
+  `/m/*` goes to that folder on its own origin, with no router (a missing key is a plain 404, not the app shell), for GET and HEAD, cached a year at the edge and in the browser (`Cache-Control: public, max-age=31536000, immutable`), with `X-Content-Type-Options: nosniff` and `Content-Security-Policy: default-src 'none'; sandbox`, so an upload is never run as a page.
+  The VM group's instance role gets `s3:PutObject` on `_media/<app>/m/*` and nothing else, from a policy in the app's stack, so that stack's change set carries `CAPABILITY_IAM`.
+  One role serves every app on a VM group, so the boundary between two apps on one VM is their Unix users, not that policy.
+  The uploader must use a fresh key for every upload, because a key is cached for a year and never changes meaning, and must store only `image/jpeg`, `image/png` and `image/webp`.
+  It is refused when `CBASE_STATIC` is `none`, when `CBASE_VM` is `none`, when `CBASE_VM_STACK` adopts a stack (it exports no role), and while a `CBASE_ROUTE` or `CBASE_API_ROUTE` takes `/m/*` or a path under `/m/`.
 - `CBASE_ROUTE = <pattern> vm|static|ws [cache|nocache] [ALL|GET,HEAD,...]`, repeated, matched in order; default `/api/* vm` and `* static` for an app with both, `* static` for a static site, `* vm` for a VM-only app.
   Routes are written only to differ from the default, and any `CBASE_ROUTE` line replaces the defaults rather than adding to them; written routes with no `*` route get `* static` (or `* vm`) last, since CloudFront needs a default behaviour.
   `ws` is the VM uncached, every method, long timeouts; a route's cache defaults to `cache` for static and `nocache` for vm, its methods to `GET,HEAD` for static and `ALL` for vm.
@@ -566,6 +573,7 @@ Optional, each with its default:
   The rollback: `systemctl unmask <unit>`, move the `.cbase-replaced` file back, `systemctl daemon-reload`, and start it.
   On an adopted VM whose own boot installs its old unit, run `./cbase deploy` again after an instance replacement.
 - `CBASE_STATIC_BUCKET = <bucket>` and `CBASE_STATIC_PREFIX = <folder>`: adopts an existing bucket and the app's folder in it; deploy never replaces it or writes its policy, and prints the one statement to add when the policy does not let the account's distributions read it.
+  `_media` is reserved for `CBASE_MEDIA`: a prefix of `_media`, or inside it, is refused (`_mediax` is another folder, and allowed).
 - `CBASE_SHELL = <path>`: the app shell, the page of the build served with a 200 for every path that is neither a file nor a page; default `/index.html`.
 
 The file is public, so the tool refuses any line that looks like a secret, naming the line and never echoing it: a key named with SECRET, TOKEN, PASSWORD, PASSWD, PRIVATE or CREDENTIAL, an AWS access key id, a PEM block, or a long random-looking string.
@@ -609,6 +617,7 @@ Its one bucket policy is set there and nowhere else: `s3:GetObject` and `s3:List
 The first `group-init` also makes the state bucket `cbase-state-<account>`, and each writes its group's empty state file.
 A re-run is an update through the same change set and guards as a deploy: drift stops it, and a change set that would replace or remove the bucket, or the instance with every app's data on its disk, is refused.
 A re-run keeps the instance's image, and its type unless `--type` names another.
+A VM group made before `CBASE_MEDIA` existed does not export its instance role yet: run `group-init vm GROUP` once more (an update, with the usual change set and guards) before the first deploy of an app with `CBASE_MEDIA = on`.
 
 ### Deploying a static site
 
