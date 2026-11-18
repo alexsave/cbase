@@ -101,6 +101,23 @@ Resources:
             ContentSecurityPolicy: "default-src 'none'; sandbox"
             Override: true
 
+  # One role serves every app on the VM group, so this prefix keeps the VM out of the sites' folders but
+  # not one app on the VM from another's media: the boundary between apps is their Unix users, as for
+  # backups in group-vm.yaml.
+  MediaWrites:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: cbase-__APP__-media
+      Roles:
+        - !ImportValue cbase-vm-__VMGROUP__-role
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: TheAppsMediaWrites
+            Effect: Allow
+            Action: s3:PutObject
+            Resource: !Sub "arn:${AWS::Partition}:s3:::__BUCKET__/__MEDIAROOT__/__APP__/m/*"
+
 #end
   Distribution:
     Type: AWS::CloudFront::Distribution
