@@ -1,9 +1,20 @@
-// fake_aws.c - a recorded stand-in for the AWS APIs ./cbase calls, on loopback, for
-// tools/cbase.d/test/cbase_test.sh. Test-only: never part of a product, never reached by anything
-// but a test's AWS CLI through AWS_ENDPOINT_URL=http://127.0.0.1:<port>.
+// fake_aws.c - a test fake and a local stand-in for a dev run: a recorded stand-in for the AWS APIs
+// ./cbase calls, on loopback, for tools/cbase.d/test/cbase_test.sh and the aws provider's smokes,
+// and the S3 a developer's local run posts uploads to (AWS_ENDPOINT_URL_S3=http://127.0.0.1:<port>).
+// It binds INADDR_LOOPBACK only, it is not a security boundary (its keys are dummies, its signature
+// check is a test's oracle), and its /_fake/* knobs are for tests: never run it where anything but
+// this machine reaches it. Never part of a product, never reached by anything but a test's AWS CLI
+// through AWS_ENDPOINT_URL=http://127.0.0.1:<port> or the provider's AWS_ENDPOINT_URL_S3.
 //
 //   fake_aws --port-file F --log L --account 111122223333 [--bucket B[:REGION]]...
 //            [--resource 'KEY VALUE TYPE ARN']... [--cert 'ARN STATUS NAME,NAME...']... [--zone 'ID NAME [private]']...
+//            [--secret S] [--cors-origin ORIGIN]... [--data DIR]
+//
+//   --secret S        the secret access key a browser POST form's signature is verified with (the
+//                     dummy secret lib.sh exports): without it a POST Object is refused
+//   --cors-origin O   an origin S3's CORS answers (exact match; repeatable)
+//   --data DIR        objects are kept in DIR (written on put, loaded at start), so they survive a
+//                     restart; without it they live in memory only
 //
 // A request is routed by the service its signature's credential scope names, as AWS's endpoints
 // are told apart by host. What it answers, each as the real service answers it (the bodies are
@@ -14,6 +25,24 @@
 //     PreconditionFailed; If-None-Match: * on a present key is 412), DeleteObject,
 //     GetBucketLocation and ListObjectsV2 (one page, by prefix). A body in the aws-chunked
 //     encoding (the CLI's trailing checksums) is decoded first. Expect: 100-continue is answered.
+//   * POST Object (a browser's multipart/form-data upload to /<bucket>), checked as S3 checks it: the
+//     fields case-insensitive and the ones after the file part ignored; key, policy, x-amz-algorithm,
+//     x-amz-credential, x-amz-date and x-amz-signature present (400 InvalidArgument); the credential's
+//     day x-amz-date's and its service s3 (403 AccessDenied); the SigV4 signature over the policy
+//     field, keyed from --secret, with SHA-256 and HMAC written here on lib/sha256.c so the oracle
+//     does not share the server's OpenSSL (403 SignatureDoesNotMatch); the policy not expired and
+//     every condition (eq, starts-with, content-length-range) holding, the bucket one against the
+//     request's, and every field but policy, x-amz-signature, file and x-ignore-* covered by a
+//     condition (403 AccessDenied "Invalid according to Policy: ..."); the file's size in the range
+//     (400 EntityTooLarge or EntityTooSmall). Success stores the object with its Content-Type: 204
+//     and the log line "POST /<bucket> UPLOAD <key> 204".
+//   * GET and HEAD of a key under _media/ need no signature (the CDN's /m/* is public) and add the headers the CDN's /m/* behaviour adds (Cache-Control
+//     public, max-age=31536000, immutable; X-Content-Type-Options nosniff; a sandboxing
+//     Content-Security-Policy), so a local page sees what the CDN would send.
+//   * CORS, for the --cors-origin origins: Access-Control-Allow-Origin and Vary: Origin on every
+//     answer to a request from one; OPTIONS from one with Access-Control-Request-Method POST, GET or
+//     HEAD answers 200 with Allow-Methods and the request's Allow-Headers; another origin gets none
+//     of them and its preflight 403 CORSResponse.
 //   * STS GetCallerIdentity (the Query protocol, an XML answer naming --account).
 //   * Tagging GetResources (JSON 1.1): the --resource lines whose tag key, value and resource type
 //     the request's filters name.
@@ -48,7 +77,7 @@
 //     made deterministic), or 20 s pass. POST /_fake/set?KNOB=VALUE scripts the next answers:
 //     changes=auto|none|replace-bucket|conditional-bucket|remove-bucket|replace-distribution, drift=0|1,
 //     secret=S and secret2=S (planted where a change set, a drift and an error would carry an
-//     origin header's or a parameter's value), fail-execute=0|1, list-ignores-prefix=0|1 (a
+//     origin header's or a parameter's value), now=EPOCH_SECONDS (the clock a POST policy's expiry is read against; 0 is the real one), fail-execute=0|1, list-ignores-prefix=0|1 (a
 //     listing that answers every key, whatever its prefix), delete-fail=KEY (a DeleteObjects answers an Error entry
 //     for that key and keeps it), acm-deny=0|1 (DescribeCertificate
 //     refused, AccessDenied), changes=replace-instance (a group's instance replaced), stack-fail=0|1 (an
@@ -63,6 +92,10 @@
 // precondition and its headers), "CFN <Action> ...", "ACM ...", "R53 ...", "CF ...". One thread per
 // connection; the state is under one lock. Plain C and libc only (tools/ stands apart from the
 // platform: tools/repo_gate_test.sh).
+#include "sha256.h"
+
+#include <ctype.h>
+#include <dirent.h>
 #include <errno.h>
 #include <netinet/in.h>
 #include <pthread.h>
@@ -75,6 +108,7 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
@@ -147,6 +181,12 @@ static int g_stack_fail;
 static char g_cs_fail[256];
 static char g_secret[256], g_secret2[256];
 // The SSM SecureString /cbase/<app>/CBASE_ORIGIN_SECRET (origin-secret=V; empty: ParameterNotFound).
+static char g_form_secret[256];   // --secret: what a POST form's signature is verified with
+static char g_cors[8][256];       // --cors-origin
+static int g_ncors;
+static char g_data_dir[512];      // --data
+static long long g_now;           // the now knob: epoch seconds, 0 the real clock
+static _Thread_local char t_origin[256];   // the request's Origin when it is a listed one: its answers carry it
 static char g_origin_secret[256] = "fake-origin-secret-0123456789abcdef";
 static char g_account[16] = "111122223333";
 static char g_instance_type[32] = "t4g.nano";
@@ -409,8 +449,10 @@ static void sb_xml(sb *b, const char *s) {
 static void respond(int fd, int status, const char *reason, const char *ctype, const char *extra, const char *body,
                     size_t n) {
     sb h = { 0 };
-    sb_add(&h, "HTTP/1.1 %d %s\r\nx-amz-request-id: FAKE0000\r\nContent-Type: %s\r\nContent-Length: %zu\r\n%s\r\n", status,
+    sb_add(&h, "HTTP/1.1 %d %s\r\nx-amz-request-id: FAKE0000\r\nContent-Type: %s\r\nContent-Length: %zu\r\n%s", status,
            reason, ctype, n, extra ? extra : "");
+    if (t_origin[0]) sb_add(&h, "Access-Control-Allow-Origin: %s\r\nVary: Origin\r\n", t_origin);
+    sb_add(&h, "\r\n");
     write_all(fd, h.p, h.n);
     write_all(fd, body, n);
     free(h.p);
@@ -499,6 +541,73 @@ static bool bucket_known(const char *path) { return bucket_of(path) >= 0; }
 
 static void etag_of(const object *o, char *out, size_t cap) { snprintf(out, cap, "\"v%u-%zu\"", o->version, o->len); }
 
+// ---- --data: the objects kept on disk ------------------------------------------------------------
+//
+// One file per object, named by the SHA-256 of its path: "<path>\n<Content-Type>\n<Cache-Control>\n" and
+// then the bytes. Written on every put and POST, removed on delete, read at start.
+
+static void obj_file(const object *o, char *out, size_t cap) {
+    uint8_t d[SHA256_DIGEST_LEN];
+    sha256(o->path, strlen(o->path), d);
+    int n = snprintf(out, cap, "%s/", g_data_dir);
+    for (int i = 0; i < SHA256_DIGEST_LEN; i++) n += snprintf(out + n, cap - (size_t)n, "%02x", d[i]);
+    snprintf(out + n, cap - (size_t)n, ".obj");
+}
+
+static void obj_save(const object *o) {
+    if (!g_data_dir[0]) return;
+    char f[700], tmp[720];
+    obj_file(o, f, sizeof f);
+    snprintf(tmp, sizeof tmp, "%s.new", f);
+    FILE *fp = fopen(tmp, "wb");
+    if (!fp) die("cannot write %s: %s", tmp, strerror(errno));
+    fprintf(fp, "%s\n%s\n%s\n", o->path, o->ctype, o->cache);
+    if ((o->len && fwrite(o->body, 1, o->len, fp) != o->len) || fclose(fp) != 0 || rename(tmp, f) != 0)
+        die("cannot write %s: %s", f, strerror(errno));
+}
+
+static void obj_unsave(const object *o) {
+    if (!g_data_dir[0]) return;
+    char f[700];
+    obj_file(o, f, sizeof f);
+    unlink(f);
+}
+
+static void data_load(void) {
+    DIR *d = opendir(g_data_dir);
+    if (!d) die("cannot open --data %s: %s", g_data_dir, strerror(errno));
+    struct dirent *e;
+    while ((e = readdir(d))) {
+        size_t nl = strlen(e->d_name);
+        if (nl < 5 || strcmp(e->d_name + nl - 4, ".obj") != 0) continue;
+        char f[700];
+        snprintf(f, sizeof f, "%s/%s", g_data_dir, e->d_name);
+        FILE *fp = fopen(f, "rb");
+        if (!fp) die("cannot read %s: %s", f, strerror(errno));
+        char path[1024], ctype[128], cache[128];
+        if (!fgets(path, sizeof path, fp) || !fgets(ctype, sizeof ctype, fp) || !fgets(cache, sizeof cache, fp))
+            die("%s is not an object file", f);
+        path[strcspn(path, "\n")] = 0;
+        ctype[strcspn(ctype, "\n")] = 0;
+        cache[strcspn(cache, "\n")] = 0;
+        long at = ftell(fp);
+        fseek(fp, 0, SEEK_END);
+        long end = ftell(fp);
+        fseek(fp, at, SEEK_SET);
+        if (g_nobj == MAX_OBJ) die("too many objects");
+        object *o = &g_obj[g_nobj++];
+        copy(o->path, sizeof o->path, path);
+        copy(o->ctype, sizeof o->ctype, ctype);
+        copy(o->cache, sizeof o->cache, cache);
+        o->len = (size_t)(end - at);
+        o->body = malloc(o->len + 1);
+        if (!o->body || (o->len && fread(o->body, 1, o->len, fp) != o->len)) die("cannot read %s", f);
+        o->version = ++g_version;
+        fclose(fp);
+    }
+    closedir(d);
+}
+
 static void s3_get(int fd, const request *r, bool head) {
     pthread_mutex_lock(&g_mu);
     int status;
@@ -553,11 +662,20 @@ static void s3_get(int fd, const request *r, bool head) {
         logf_("%s %s 200", m, r->path);
         sb extra = { 0 };
         sb_add(&extra, "ETag: %s\r\nLast-Modified: Mon, 09 Nov 2026 12:00:00 GMT\r\nAccept-Ranges: bytes\r\n", etag);
-        if (cache[0]) sb_add(&extra, "Cache-Control: %s\r\n", cache);
+        const char *under = strchr(r->path + 1, '/');
+        bool media = under && strncmp(under, "/_media/", 8) == 0;
+        if (cache[0] && !media) sb_add(&extra, "Cache-Control: %s\r\n", cache);
+        // What the CDN's /m/* behaviour adds (tools/cbase.d/templates/app.yaml MediaHeaders), so a local
+        // page sees what it would send: the uploads are immutable, never sniffed, never run.
+        if (media)
+            sb_add(&extra, "Cache-Control: public, max-age=31536000, immutable\r\nX-Content-Type-Options: nosniff\r\n"
+                           "Content-Security-Policy: default-src 'none'; sandbox\r\n");
         if (head) {
             sb h = { 0 };
-            sb_add(&h, "HTTP/1.1 200 OK\r\nx-amz-request-id: FAKE0000\r\nContent-Type: %s\r\nContent-Length: %zu\r\n%s\r\n", ctype, n,
+            sb_add(&h, "HTTP/1.1 200 OK\r\nx-amz-request-id: FAKE0000\r\nContent-Type: %s\r\nContent-Length: %zu\r\n%s", ctype, n,
                    extra.p);
+            if (t_origin[0]) sb_add(&h, "Access-Control-Allow-Origin: %s\r\nVary: Origin\r\n", t_origin);
+            sb_add(&h, "\r\n");
             write_all(fd, h.p, h.n);
             free(h.p);
         } else respond(fd, 200, "OK", ctype, extra.p, body, n);
@@ -597,6 +715,7 @@ static void s3_put(int fd, const request *r) {
         if (!copy(o->ctype, sizeof o->ctype, ct ? ct : "")) o->ctype[0] = 0;
         if (!copy(o->cache, sizeof o->cache, cc ? cc : "")) o->cache[0] = 0;
         etag_of(o, etag, sizeof etag);
+        obj_save(o);
     }
     pthread_mutex_unlock(&g_mu);
     logf_("PUT %s %d %s ct=%s cc=%s", r->path, status == 4041 ? 404 : status, cond, ct ? ct : "-", cc ? cc : "-");
@@ -617,6 +736,7 @@ static void s3_delete(int fd, const request *r) {
     pthread_mutex_lock(&g_mu);
     object *o = find(r->path);
     if (o) {
+        obj_unsave(o);
         free(o->body);
         o->body = NULL;
         o->path[0] = 0;
@@ -670,6 +790,7 @@ static void s3_delete_objects(int fd, const request *r) {
         bool failed = g_delete_fail[0] && strcmp(key.p ? key.p : "", g_delete_fail) == 0;
         object *o = failed ? NULL : find(path);
         if (o) {
+            obj_unsave(o);
             free(o->body);
             o->body = NULL;
             o->path[0] = 0;
@@ -693,6 +814,545 @@ static void s3_delete_objects(int fd, const request *r) {
     }
     sb_add(&b, "</DeleteResult>");
     respond_sb(fd, 200, "application/xml", &b);
+}
+
+// ---- POST Object: a browser's form upload, checked as S3 checks it ---------------------------------
+//
+// Everything here is written on libc and lib/sha256.c alone: the signature oracle shares nothing with
+// the server's OpenSSL, so an agreement between the two means something.
+
+static void hmac_sha256(const void *key, size_t klen, const void *msg, size_t mlen, uint8_t out[SHA256_DIGEST_LEN]) {
+    uint8_t k[64] = { 0 }, ipad[64], opad[64], inner[SHA256_DIGEST_LEN];
+    if (klen > sizeof k) sha256(key, klen, k);
+    else memcpy(k, key, klen);
+    for (int i = 0; i < 64; i++) {
+        ipad[i] = k[i] ^ 0x36;
+        opad[i] = k[i] ^ 0x5c;
+    }
+    Sha256 c;
+    sha256_init(&c);
+    sha256_update(&c, ipad, sizeof ipad);
+    sha256_update(&c, msg, mlen);
+    sha256_final(&c, inner);
+    sha256_init(&c);
+    sha256_update(&c, opad, sizeof opad);
+    sha256_update(&c, inner, sizeof inner);
+    sha256_final(&c, out);
+}
+
+// Standard base64, padded or not, into a new string and its length; NULL for a character outside it.
+static unsigned char *b64_decode_new(const char *s, size_t *n) {
+    unsigned char *o = malloc(strlen(s) / 4 * 3 + 4);
+    if (!o) die("out of memory");
+    size_t k = 0;
+    unsigned acc = 0;
+    int bits = 0;
+    for (; *s && *s != '='; s++) {
+        const char *a = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        const char *at = strchr(a, *s);
+        if (!at) {
+            free(o);
+            return NULL;
+        }
+        acc = (acc << 6) | (unsigned)(at - a);
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            o[k++] = (unsigned char)(acc >> bits);
+            acc &= (1u << bits) - 1;
+        }
+    }
+    o[k] = 0;
+    *n = k;
+    return o;
+}
+
+#define MAX_FIELDS 32
+#define MAX_CONDS 48
+
+typedef struct {
+    char  name[64];   // lower case
+    char *value;
+    size_t len;
+} form_field;
+
+typedef struct {
+    form_field f[MAX_FIELDS];
+    int        n;
+    char      *file;      // the file part's bytes (NULL: none)
+    size_t     file_len;
+} form;
+
+static void form_free(form *f) {
+    for (int i = 0; i < f->n; i++) free(f->f[i].value);
+    free(f->file);
+}
+
+static const char *form_value(const form *f, const char *lname) {
+    for (int i = 0; i < f->n; i++)
+        if (strcmp(f->f[i].name, lname) == 0) return f->f[i].value;
+    return NULL;
+}
+
+// The name="..." of a part's Content-Disposition (not the one inside filename="...").
+static bool part_name(const char *hdrs, char *out, size_t cap) {
+    const char *p = hdrs;
+    while ((p = strcasestr(p, "name=\""))) {
+        if (p == hdrs || p[-1] == ' ' || p[-1] == ';') {
+            p += 6;
+            const char *e = strchr(p, '"');
+            if (!e || (size_t)(e - p) >= cap) return false;
+            memcpy(out, p, (size_t)(e - p));
+            out[e - p] = 0;
+            return true;
+        }
+        p += 6;
+    }
+    return false;
+}
+
+// multipart/form-data into fields (names lower-cased) up to the file part; what follows the file is
+// ignored, as S3 ignores it. false: not a form this fake can read.
+static bool form_parse(const request *r, form *out) {
+    memset(out, 0, sizeof *out);
+    const char *ct = header(r, "Content-Type");
+    const char *b = ct ? strcasestr(ct, "boundary=") : NULL;
+    if (!b || !strcasestr(ct, "multipart/form-data")) return false;
+    b += 9;
+    char delim[200];
+    size_t bl = strcspn(b, ";");
+    if (*b == '"') { b++; bl = strcspn(b, "\""); }
+    while (bl && (b[bl - 1] == ' ')) bl--;
+    if (bl == 0 || bl + 4 >= sizeof delim) return false;
+    snprintf(delim, sizeof delim, "--%.*s", (int)bl, b);
+    size_t dl = strlen(delim);
+    const char *p = memmem(r->body, r->len, delim, dl), *end = r->body + r->len;
+    while (p) {
+        p += dl;
+        if (p + 2 <= end && p[0] == '-' && p[1] == '-') break;   // the closing delimiter
+        if (p + 2 > end || p[0] != '\r' || p[1] != '\n') return false;
+        p += 2;
+        const char *he = memmem(p, (size_t)(end - p), "\r\n\r\n", 4);
+        if (!he) return false;
+        char hdrs[1024];
+        if ((size_t)(he - p) >= sizeof hdrs) return false;
+        memcpy(hdrs, p, (size_t)(he - p));
+        hdrs[he - p] = 0;
+        const char *data = he + 4;
+        char closing[210];
+        snprintf(closing, sizeof closing, "\r\n%s", delim);
+        const char *de = memmem(data, (size_t)(end - data), closing, strlen(closing));
+        if (!de) return false;
+        char name[64];
+        if (!part_name(hdrs, name, sizeof name)) return false;
+        for (char *c = name; *c; c++) *c = (char)tolower((unsigned char)*c);
+        if (strcmp(name, "file") == 0) {
+            out->file = malloc((size_t)(de - data) + 1);
+            if (!out->file) die("out of memory");
+            memcpy(out->file, data, (size_t)(de - data));
+            out->file_len = (size_t)(de - data);
+            return true;   // the elements after the file are ignored
+        }
+        if (out->n == MAX_FIELDS) return false;
+        form_field *f = &out->f[out->n++];
+        copy(f->name, sizeof f->name, name);
+        f->len = (size_t)(de - data);
+        f->value = malloc(f->len + 1);
+        if (!f->value) die("out of memory");
+        memcpy(f->value, data, f->len);
+        f->value[f->len] = 0;
+        p = de + 2;
+    }
+    return true;
+}
+
+// ---- the policy: a minimal reader of the one JSON shape S3 documents
+
+typedef struct {
+    char      op;           // 'e' eq, 's' starts-with, 'r' content-length-range
+    char      name[64];     // lower case, no '$'
+    char     *value;
+    long long lo, hi;
+} pcond;
+
+typedef struct {
+    time_t expires;
+    pcond  c[MAX_CONDS];
+    int    n;
+} policy;
+
+static void policy_free(policy *p) {
+    for (int i = 0; i < p->n; i++) free(p->c[i].value);
+}
+
+static const char *pws(const char *s) {
+    while (*s == ' ' || *s == '\t' || *s == '\r' || *s == '\n') s++;
+    return s;
+}
+
+// A JSON string at s into a new string; *end after its closing quote. NULL when it is not one.
+static char *pstr(const char *s, const char **end) {
+    s = pws(s);
+    if (*s != '"') return NULL;
+    s++;
+    sb o = { 0 };
+    for (; *s && *s != '"'; s++) {
+        if (*s == '\\' && s[1]) {
+            s++;
+            switch (*s) {
+            case 'n': sb_add(&o, "\n"); break;
+            case 'r': sb_add(&o, "\r"); break;
+            case 't': sb_add(&o, "\t"); break;
+            case 'b': sb_add(&o, "\b"); break;
+            case 'f': sb_add(&o, "\f"); break;
+            case 'u': sb_add(&o, "?"); s += s[1] && s[2] && s[3] && s[4] ? 4 : 0; break;
+            default: sb_add(&o, "%c", *s);
+            }
+        } else sb_add(&o, "%c", *s);
+    }
+    if (*s != '"') {
+        free(o.p);
+        return NULL;
+    }
+    *end = s + 1;
+    if (!o.p) o.p = calloc(1, 1);
+    return o.p;
+}
+
+// Skips one JSON value of any kind; NULL when it is malformed.
+static const char *pskip(const char *s) {
+    s = pws(s);
+    if (*s == '"') {
+        const char *e;
+        char *x = pstr(s, &e);
+        free(x);
+        return x ? e : NULL;
+    }
+    if (*s == '{' || *s == '[') {
+        char open = *s, close = open == '{' ? '}' : ']';
+        s = pws(s + 1);
+        if (*s == close) return s + 1;
+        for (;;) {
+            if (open == '{') {
+                const char *e;
+                char *k = pstr(s, &e);
+                if (!k) return NULL;
+                free(k);
+                s = pws(e);
+                if (*s++ != ':') return NULL;
+            }
+            if (!(s = pskip(s))) return NULL;
+            s = pws(s);
+            if (*s == ',') { s = pws(s + 1); continue; }
+            return *s == close ? s + 1 : NULL;
+        }
+    }
+    const char *e = s;
+    while (*e && !strchr(",]} \t\r\n", *e)) e++;
+    return e > s ? e : NULL;
+}
+
+static void lower(char *s) {
+    for (; *s; s++) *s = (char)tolower((unsigned char)*s);
+}
+
+static bool policy_parse(const char *s, policy *p) {
+    memset(p, 0, sizeof *p);
+    s = pws(s);
+    if (*s++ != '{') return false;
+    for (;;) {
+        const char *e;
+        char *k = pstr(s, &e);
+        if (!k) return false;
+        s = pws(e);
+        if (*s++ != ':') { free(k); return false; }
+        s = pws(s);
+        if (strcmp(k, "expiration") == 0) {
+            char *v = pstr(s, &e);
+            int y, mo, d, h, mi, se;
+            struct tm tm;
+            if (!v || sscanf(v, "%d-%d-%dT%d:%d:%d", &y, &mo, &d, &h, &mi, &se) != 6) { free(v); free(k); return false; }
+            memset(&tm, 0, sizeof tm);
+            tm.tm_year = y - 1900, tm.tm_mon = mo - 1, tm.tm_mday = d, tm.tm_hour = h, tm.tm_min = mi, tm.tm_sec = se;
+            p->expires = timegm(&tm);
+            free(v);
+            s = e;
+        } else if (strcmp(k, "conditions") == 0) {
+            if (*s++ != '[') { free(k); return false; }
+            s = pws(s);
+            while (*s != ']') {
+                if (p->n == MAX_CONDS) { free(k); return false; }
+                pcond *c = &p->c[p->n];
+                if (*s == '{') {   // {"name": "value"} is an eq (more than one pair is several)
+                    s = pws(s + 1);
+                    for (;;) {
+                        pcond *cc = &p->c[p->n];
+                        char *n = pstr(s, &e);
+                        if (!n) { free(k); return false; }
+                        s = pws(e);
+                        if (*s++ != ':') { free(n); free(k); return false; }
+                        char *v = pstr(s, &e);
+                        if (!v) { free(n); free(k); return false; }
+                        s = pws(e);
+                        cc->op = 'e';
+                        copy(cc->name, sizeof cc->name, n);
+                        lower(cc->name);
+                        cc->value = v;
+                        free(n);
+                        p->n++;
+                        if (*s == ',') {
+                            if (p->n == MAX_CONDS) { free(k); return false; }
+                            s = pws(s + 1);
+                            continue;
+                        }
+                        break;
+                    }
+                    if (*s++ != '}') { free(k); return false; }
+                } else if (*s == '[') {
+                    s = pws(s + 1);
+                    char *op = pstr(s, &e);
+                    if (!op) { free(k); return false; }
+                    s = pws(e);
+                    if (strcmp(op, "content-length-range") == 0) {
+                        c->op = 'r';
+                        char *end2;
+                        if (*s++ != ',') { free(op); free(k); return false; }
+                        c->lo = strtoll(s, &end2, 10);
+                        s = pws(end2);
+                        if (*s++ != ',') { free(op); free(k); return false; }
+                        c->hi = strtoll(s, &end2, 10);
+                        s = pws(end2);
+                    } else if (strcasecmp(op, "eq") == 0 || strcasecmp(op, "starts-with") == 0) {
+                        c->op = strcasecmp(op, "eq") == 0 ? 'e' : 's';
+                        if (*s++ != ',') { free(op); free(k); return false; }
+                        char *n = pstr(s, &e);
+                        if (!n) { free(op); free(k); return false; }
+                        s = pws(e);
+                        if (*s++ != ',') { free(n); free(op); free(k); return false; }
+                        char *v = pstr(s, &e);
+                        if (!v) { free(n); free(op); free(k); return false; }
+                        s = pws(e);
+                        copy(c->name, sizeof c->name, n[0] == '$' ? n + 1 : n);
+                        lower(c->name);
+                        c->value = v;
+                        free(n);
+                    } else {
+                        free(op);
+                        free(k);
+                        return false;
+                    }
+                    free(op);
+                    if (*s++ != ']') { free(k); return false; }
+                    p->n++;
+                } else {
+                    free(k);
+                    return false;
+                }
+                s = pws(s);
+                if (*s == ',') s = pws(s + 1);
+            }
+            s++;
+        } else {
+            if (!(s = pskip(s))) { free(k); return false; }
+        }
+        free(k);
+        s = pws(s);
+        if (*s == ',') { s = pws(s + 1); continue; }
+        return *s == '}';
+    }
+}
+
+static bool field_ignored(const char *lname) {
+    return strcmp(lname, "policy") == 0 || strcmp(lname, "x-amz-signature") == 0 || strncmp(lname, "x-ignore-", 9) == 0;
+}
+
+static long long fake_now(void) { return g_now ? g_now : (long long)time(NULL); }
+
+static void post_refuse(int fd, const request *r, int status, const char *reason, const char *code, const char *msg) {
+    logf_("POST %s %d %s", r->path, status, code);
+    s3_error(fd, status, reason, code, msg);
+}
+
+// POST /<bucket> with multipart/form-data.
+static void s3_post_object(int fd, const request *r) {
+    int bi = bucket_of(r->path);
+    form f;
+    if (bi < 0) return post_refuse(fd, r, 404, "Not Found", "NoSuchBucket", "The specified bucket does not exist");
+    if (!form_parse(r, &f)) {
+        form_free(&f);
+        return post_refuse(fd, r, 400, "Bad Request", "MalformedPOSTRequest",
+                           "The body of your POST request is not well-formed multipart/form-data.");
+    }
+    static const char *const need[] = { "key", "policy", "x-amz-algorithm", "x-amz-credential", "x-amz-date", "x-amz-signature" };
+    for (size_t i = 0; i < sizeof need / sizeof need[0]; i++)
+        if (!form_value(&f, need[i])) {
+            char m[160];
+            snprintf(m, sizeof m, "Bucket POST must contain the field named '%s'. If it is specified, please check the order of the fields.", need[i]);
+            form_free(&f);
+            return post_refuse(fd, r, 400, "Bad Request", "InvalidArgument", m);
+        }
+    if (!f.file) {
+        form_free(&f);
+        return post_refuse(fd, r, 400, "Bad Request", "InvalidArgument", "POST requires exactly one file upload per request.");
+    }
+    const char *key = form_value(&f, "key"), *pol = form_value(&f, "policy"), *cred = form_value(&f, "x-amz-credential"),
+               *date = form_value(&f, "x-amz-date"), *sig = form_value(&f, "x-amz-signature");
+    if (strcmp(form_value(&f, "x-amz-algorithm"), "AWS4-HMAC-SHA256") != 0) {
+        form_free(&f);
+        return post_refuse(fd, r, 400, "Bad Request", "InvalidArgument", "Unsupported signing algorithm.");
+    }
+    // The credential: <access key>/<yyyymmdd>/<region>/<service>/aws4_request.
+    char ak[128], cdate[16], region[48], service[32], term[32];
+    char *c1 = strdup(cred), *save = NULL;
+    const char *t[5] = { 0 };
+    int nt = 0;
+    for (char *tok = strtok_r(c1, "/", &save); tok && nt < 5; tok = strtok_r(NULL, "/", &save)) t[nt++] = tok;
+    if (nt != 5 || strlen(t[0]) >= sizeof ak || strlen(t[1]) >= sizeof cdate || strlen(t[2]) >= sizeof region ||
+        strlen(t[3]) >= sizeof service || strlen(t[4]) >= sizeof term) {
+        free(c1);
+        form_free(&f);
+        return post_refuse(fd, r, 400, "Bad Request", "InvalidArgument", "Error parsing the X-Amz-Credential parameter.");
+    }
+    snprintf(ak, sizeof ak, "%s", t[0]);
+    snprintf(cdate, sizeof cdate, "%s", t[1]);
+    snprintf(region, sizeof region, "%s", t[2]);
+    snprintf(service, sizeof service, "%s", t[3]);
+    snprintf(term, sizeof term, "%s", t[4]);
+    free(c1);
+    if (strncmp(date, cdate, 8) != 0 || strlen(cdate) != 8 || strcmp(service, "s3") != 0 || strcmp(term, "aws4_request") != 0) {
+        form_free(&f);
+        return post_refuse(fd, r, 403, "Forbidden", "AccessDenied",
+                           "Invalid according to Policy: the credential's date is not x-amz-date's day, or its service is not s3");
+    }
+    // The signature: HMAC chain from --secret, then over the policy field exactly as sent.
+    if (!g_form_secret[0]) {
+        form_free(&f);
+        return post_refuse(fd, r, 403, "Forbidden", "AccessDenied", "the fake was started without --secret: it cannot verify a form");
+    }
+    char k0[300];
+    snprintf(k0, sizeof k0, "AWS4%s", g_form_secret);
+    uint8_t kd[SHA256_DIGEST_LEN], kr[SHA256_DIGEST_LEN], ks[SHA256_DIGEST_LEN], kk[SHA256_DIGEST_LEN], mac[SHA256_DIGEST_LEN];
+    hmac_sha256(k0, strlen(k0), cdate, 8, kd);
+    hmac_sha256(kd, sizeof kd, region, strlen(region), kr);
+    hmac_sha256(kr, sizeof kr, "s3", 2, ks);
+    hmac_sha256(ks, sizeof ks, "aws4_request", 12, kk);
+    hmac_sha256(kk, sizeof kk, pol, strlen(pol), mac);
+    char want[2 * SHA256_DIGEST_LEN + 1];
+    for (int i = 0; i < SHA256_DIGEST_LEN; i++) snprintf(want + 2 * i, 3, "%02x", mac[i]);
+    if (strcasecmp(want, sig) != 0) {
+        form_free(&f);
+        return post_refuse(fd, r, 403, "Forbidden", "SignatureDoesNotMatch",
+                           "The request signature we calculated does not match the signature you provided. Check your key and signing method.");
+    }
+    // The policy.
+    size_t pn;
+    unsigned char *pj = b64_decode_new(pol, &pn);
+    policy pc;
+    if (!pj || !policy_parse((const char *)pj, &pc)) {
+        free(pj);
+        form_free(&f);
+        return post_refuse(fd, r, 400, "Bad Request", "InvalidPolicyDocument", "Invalid Policy: Invalid JSON.");
+    }
+    free(pj);
+    char msg[600];
+    const char *bucket = g_buckets[bi];
+    int code = 0;
+    if ((long long)pc.expires <= fake_now()) {
+        snprintf(msg, sizeof msg, "Invalid according to Policy: Policy expired.");
+        code = 403;
+    }
+    long long lo = 0, hi = -1;
+    for (int i = 0; i < pc.n && !code; i++) {
+        const pcond *c = &pc.c[i];
+        if (c->op == 'r') {
+            lo = c->lo, hi = c->hi;
+            continue;
+        }
+        const char *v = strcmp(c->name, "bucket") == 0 ? bucket : form_value(&f, c->name);
+        bool ok = c->op == 'e' ? strcmp(v ? v : "", c->value) == 0 : strncmp(v ? v : "", c->value, strlen(c->value)) == 0;
+        if (!ok) {
+            snprintf(msg, sizeof msg, "Invalid according to Policy: Policy Condition failed: [\"%s\", \"$%s\", \"%s\"]",
+                     c->op == 'e' ? "eq" : "starts-with", c->name, c->value);
+            code = 403;
+        }
+    }
+    // Every field but policy, x-amz-signature, file and x-ignore-* needs a condition naming it.
+    for (int i = 0; i < f.n && !code; i++) {
+        if (field_ignored(f.f[i].name)) continue;
+        bool covered = false;
+        for (int j = 0; j < pc.n && !covered; j++) covered = pc.c[j].op != 'r' && strcmp(pc.c[j].name, f.f[i].name) == 0;
+        if (!covered) {
+            snprintf(msg, sizeof msg, "Invalid according to Policy: Extra input fields: %s", f.f[i].name);
+            code = 403;
+        }
+    }
+    if (code) {
+        policy_free(&pc);
+        form_free(&f);
+        return post_refuse(fd, r, 403, "Forbidden", "AccessDenied", msg);
+    }
+    policy_free(&pc);
+    if (hi >= 0 && (long long)f.file_len > hi) {
+        form_free(&f);
+        return post_refuse(fd, r, 400, "Bad Request", "EntityTooLarge", "Your proposed upload exceeds the maximum allowed size");
+    }
+    if ((long long)f.file_len < lo) {
+        form_free(&f);
+        return post_refuse(fd, r, 400, "Bad Request", "EntityTooSmall", "Your proposed upload is smaller than the minimum allowed size");
+    }
+    // Stored under /<bucket>/<key> with the form's Content-Type.
+    char path[1100];
+    snprintf(path, sizeof path, "/%s/%s", bucket, key);
+    const char *ct = form_value(&f, "content-type");
+    char etag[64];
+    pthread_mutex_lock(&g_mu);
+    object *o = find(path);
+    if (!o) {
+        for (int i = 0; i < g_nobj && !o; i++)
+            if (!g_obj[i].path[0]) o = &g_obj[i];
+        if (!o) {
+            if (g_nobj == MAX_OBJ) die("too many objects");
+            o = &g_obj[g_nobj++];
+        }
+        if (!copy(o->path, sizeof o->path, path)) die("a key too long for the recording");
+    }
+    free(o->body);
+    o->body = malloc(f.file_len + 1);
+    if (!o->body) die("out of memory");
+    memcpy(o->body, f.file, f.file_len);
+    o->len = f.file_len;
+    o->version = ++g_version;
+    if (!copy(o->ctype, sizeof o->ctype, ct ? ct : "")) o->ctype[0] = 0;
+    o->cache[0] = 0;
+    etag_of(o, etag, sizeof etag);
+    obj_save(o);
+    pthread_mutex_unlock(&g_mu);
+    logf_("POST %s UPLOAD %s 204", r->path, key);
+    sb extra = { 0 };
+    sb_add(&extra, "ETag: %s\r\n", etag);
+    respond(fd, 204, "No Content", "text/plain", extra.p, "", 0);
+    free(extra.p);
+    form_free(&f);
+}
+
+// OPTIONS: S3's CORS preflight, for the --cors-origin origins.
+static void s3_options(int fd, const request *r) {
+    const char *origin = header(r, "Origin"), *method = header(r, "Access-Control-Request-Method"),
+               *hdrs = header(r, "Access-Control-Request-Headers");
+    bool listed = t_origin[0] != 0;
+    bool known = method && (strcmp(method, "POST") == 0 || strcmp(method, "GET") == 0 || strcmp(method, "HEAD") == 0);
+    if (!origin || !listed || !known) {
+        t_origin[0] = 0;
+        logf_("OPTIONS %s 403 CORSResponse", r->path);
+        s3_error(fd, 403, "Forbidden", "CORSResponse", "This CORS request is not allowed.");
+        return;
+    }
+    sb extra = { 0 };
+    sb_add(&extra, "Access-Control-Allow-Methods: POST, GET, HEAD\r\n");
+    if (hdrs) sb_add(&extra, "Access-Control-Allow-Headers: %s\r\n", hdrs);
+    logf_("OPTIONS %s 200", r->path);
+    respond(fd, 200, "OK", "text/plain", extra.p, "", 0);
+    free(extra.p);
 }
 
 // GET /bucket?location and GET /bucket?list-type=2&prefix=P (one page: no recording holds more).
@@ -1808,6 +2468,7 @@ static void control(int fd, const request *r) {
         if ((v = form_get(r->query, "secret2"))) copy(g_secret2, sizeof g_secret2, v), free(v);
         if ((v = form_get(r->query, "origin-secret"))) copy(g_origin_secret, sizeof g_origin_secret, v), free(v);
         if ((v = form_get(r->query, "foreign-dist"))) copy(g_foreign_dist, sizeof g_foreign_dist, v), free(v);
+        if ((v = form_get(r->query, "now"))) g_now = atoll(v), free(v);
         if ((v = form_get(r->query, "fail-execute"))) g_fail_execute = atoi(v), free(v);
         if ((v = form_get(r->query, "list-ignores-prefix"))) g_list_ignores_prefix = atoi(v), free(v);
         if ((v = form_get(r->query, "delete-fail"))) copy(g_delete_fail, sizeof g_delete_fail, v), free(v);
@@ -1854,6 +2515,37 @@ static void handle(int fd, request *r) {
     const char *auth = header(r, "Authorization");
     if (strncmp(r->path, "/_fake/", 7) == 0) {
         control(fd, r);
+        return;
+    }
+    // CORS: a listed Origin's answers carry it (respond, and a HEAD's own head).
+    t_origin[0] = 0;
+    const char *origin = header(r, "Origin");
+    for (int i = 0; origin && i < g_ncors; i++)
+        if (strcmp(origin, g_cors[i]) == 0) copy(t_origin, sizeof t_origin, origin);
+    // A browser's calls carry no Authorization: a preflight, and a POST Object (its signature is in the form).
+    if (!auth && strcmp(r->method, "OPTIONS") == 0) {
+        s3_options(fd, r);
+        return;
+    }
+    size_t pl = strlen(r->path);
+    // An upload read back with no signature, as the CDN's public /m/* reads it (a page's <img> sends none).
+    if (!auth && (strcmp(r->method, "GET") == 0 || strcmp(r->method, "HEAD") == 0)) {
+        const char *under = strchr(r->path + 1, '/');
+        if (under && strncmp(under, "/_media/", 8) == 0) {
+            char *dec = urldec(r->path, strlen(r->path), false);
+            copy(r->path, sizeof r->path, dec);
+            free(dec);
+            s3_get(fd, r, strcmp(r->method, "HEAD") == 0);
+            return;
+        }
+    }
+    if (!auth && strcmp(r->method, "POST") == 0 && header(r, "Content-Type") && (pl < 2 || !strchr(r->path + 1, '/') || strchr(r->path + 1, '/') == r->path + pl - 1) &&
+        strcasestr(header(r, "Content-Type"), "multipart/form-data")) {
+        if (pl > 1 && r->path[pl - 1] == '/') r->path[pl - 1] = 0;
+        char *dec = urldec(r->path, strlen(r->path), false);
+        copy(r->path, sizeof r->path, dec);
+        free(dec);
+        s3_post_object(fd, r);
         return;
     }
     if (!auth || !strstr(auth, "AWS4-HMAC-SHA256 Credential=AKIACBASEFAKE0000000/")) {
@@ -1925,6 +2617,12 @@ int main(int argc, char **argv) {
         if (strcmp(a, "--port-file") == 0) port_file = v;
         else if (strcmp(a, "--log") == 0) log_path = v;
         else if (strcmp(a, "--account") == 0) snprintf(g_account, sizeof g_account, "%s", v);
+        else if (strcmp(a, "--secret") == 0) snprintf(g_form_secret, sizeof g_form_secret, "%s", v);
+        else if (strcmp(a, "--data") == 0) snprintf(g_data_dir, sizeof g_data_dir, "%s", v);
+        else if (strcmp(a, "--cors-origin") == 0) {
+            if (g_ncors == 8) die("too many --cors-origin");
+            snprintf(g_cors[g_ncors++], sizeof g_cors[0], "%s", v);
+        }
         else if (strcmp(a, "--bucket") == 0) {
             char name[64] = "", region[32] = "us-east-1";
             if (sscanf(v, "%63[^:]:%31s", name, region) < 1) die("--bucket is NAME or NAME:REGION");
@@ -1948,7 +2646,8 @@ int main(int argc, char **argv) {
                 die("--resource is 'KEY VALUE TYPE ARN'");
         } else die("unknown argument %s", a);
     }
-    if (!port_file || !log_path) die("usage: fake_aws --port-file F --log L [--account A] [--bucket B[:R]]... [--resource 'K V T ARN']... [--cert 'A S N,N']... [--zone 'ID NAME']...");
+    if (!port_file || !log_path) die("usage: fake_aws --port-file F --log L [--account A] [--bucket B[:R]]... [--resource 'K V T ARN']... [--cert 'A S N,N']... [--zone 'ID NAME']... [--secret S] [--cors-origin O]... [--data DIR]");
+    if (g_data_dir[0]) data_load();
     g_log = fopen(log_path, "a");
     if (!g_log) die("cannot open %s: %s", log_path, strerror(errno));
     signal(SIGPIPE, SIG_IGN);
