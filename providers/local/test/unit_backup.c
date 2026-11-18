@@ -113,7 +113,7 @@ static void only_a_change_sends_and_a_failed_upload_retries(void) {
     memset(&ctx, 0, sizeof ctx);
     ctx.cfg = &cfg;
     ctx.store = st;
-    cb_blob blob = { fake_put, fake_get, NULL, NULL };
+    cb_blob blob = { fake_put, fake_get, NULL, NULL, NULL };
     cb_backup *b = cb_backup_start(&ctx, &blob, "k", 0);
     T_CHECK(b != NULL);
     T_EQ_INT(cb_backup_once(b), 1);   // the first tick sends a copy whatever it finds
@@ -163,7 +163,7 @@ static void an_admin_write_is_backed_up(void) {
     memset(&ctx, 0, sizeof ctx);
     ctx.cfg = &cfg;
     ctx.store = st;
-    cb_blob blob = { fake_put, fake_get, NULL, NULL };
+    cb_blob blob = { fake_put, fake_get, NULL, NULL, NULL };
     cb_backup *b = cb_backup_start(&ctx, &blob, "k", 0);
     T_CHECK(b != NULL);
     T_EQ_INT(cb_backup_once(b), 1);
@@ -194,7 +194,7 @@ static void restore_puts_a_sound_backup_in_place_and_refuses_the_rest(void) {
     put_item(st, "kept");
     cb_store_close(st);
     T_EQ_INT(cb_backup_copy(src, o), CB_OK);
-    cb_blob blob = { fake_put, fake_get, NULL, NULL };
+    cb_blob blob = { fake_put, fake_get, NULL, NULL, NULL };
     // corrupt download: refused, nothing in place
     g_corrupt_get = 1;
     T_EQ_INT(cb_backup_restore(&blob, "k", db), CB_E_DB);
@@ -227,7 +227,7 @@ static void the_copy_before_an_upgrade_is_sent_once(void) {
     fresh();
     char db[400], copy[1100], obj[600];
     snprintf(db, sizeof db, "%s/live.sqlite", g_dir);
-    cb_blob blob = { fake_put, fake_get, NULL, NULL };
+    cb_blob blob = { fake_put, fake_get, NULL, NULL, NULL };
     T_EQ_INT(cb_backup_push_pre_upgrade(&blob, "k", db), 0);   // no copy: nothing to send
     T_CHECK(cb_store_local_pre_upgrade_path(db, copy, sizeof copy));
     FILE *f = fopen(copy, "wb");

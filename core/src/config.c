@@ -129,6 +129,46 @@ static int apple_from_env(cb_config *c, char *err, size_t cap) {
     return CB_OK;
 }
 
+// CBASE_MEDIA_* (config.h USER UPLOADS): all three or none, and each in the shape the object store
+// and the CDN's /m/* path take.
+static bool media_chars_ok(const char *s, bool upper_ok, bool slash_ok) {
+    for (; *s; s++) {
+        bool ok = (*s >= 'a' && *s <= 'z') || (*s >= '0' && *s <= '9') || *s == '-' || *s == '.' || *s == '_' ||
+                  (upper_ok && *s >= 'A' && *s <= 'Z') || (slash_ok && *s == '/');
+        if (!ok) return false;
+    }
+    return true;
+}
+
+static int media_from_env(cb_config *c, char *err, size_t cap) {
+    if (!copy(c->media_bucket, sizeof c->media_bucket, "CBASE_MEDIA_BUCKET", env("CBASE_MEDIA_BUCKET", ""), err, cap) ||
+        !copy(c->media_region, sizeof c->media_region, "CBASE_MEDIA_REGION", env("CBASE_MEDIA_REGION", ""), err, cap) ||
+        !copy(c->media_prefix, sizeof c->media_prefix, "CBASE_MEDIA_PREFIX", env("CBASE_MEDIA_PREFIX", ""), err, cap))
+        return CB_E_INVALID;
+    int set = (c->media_bucket[0] != 0) + (c->media_region[0] != 0) + (c->media_prefix[0] != 0);
+    if (set == 0) return CB_OK;
+    if (set != 3) {
+        snprintf(err, cap, "CBASE_MEDIA_BUCKET, CBASE_MEDIA_REGION and CBASE_MEDIA_PREFIX go together: all three or none");
+        return CB_E_INVALID;
+    }
+    const char *p = c->media_prefix;
+    size_t n = strlen(p);
+    if (strncmp(p, "_media/", 7) != 0 || n < 7 + 3 + 1 || strcmp(p + n - 3, "/m/") != 0 || !media_chars_ok(p, true, true) ||
+        strstr(p, "//") || strstr(p, "/./") || strstr(p, "/../")) {
+        snprintf(err, cap, "CBASE_MEDIA_PREFIX=%s is not a folder that starts with _media/ and ends with /m/", p);
+        return CB_E_INVALID;
+    }
+    if (!media_chars_ok(c->media_bucket, false, false) || strlen(c->media_bucket) < 3) {
+        snprintf(err, cap, "CBASE_MEDIA_BUCKET=%s is not a bucket name", c->media_bucket);
+        return CB_E_INVALID;
+    }
+    if (!media_chars_ok(c->media_region, false, false) || strchr(c->media_region, '.') || strchr(c->media_region, '_')) {
+        snprintf(err, cap, "CBASE_MEDIA_REGION=%s is not a region name", c->media_region);
+        return CB_E_INVALID;
+    }
+    return CB_OK;
+}
+
 int cb_config_from_env(cb_config *c, char *err, size_t cap) {
     memset(c, 0, sizeof *c);
     const char *listen = env("CBASE_LISTEN", CB_LISTEN_DEFAULT);
@@ -186,6 +226,7 @@ int cb_config_from_env(cb_config *c, char *err, size_t cap) {
     if (!copy(c->allowed_origins, sizeof c->allowed_origins, "CBASE_ALLOWED_ORIGINS", env("CBASE_ALLOWED_ORIGINS", ""), err, cap))
         return CB_E_INVALID;
     if (apple_from_env(c, err, cap) != CB_OK) return CB_E_INVALID;
+    if (media_from_env(c, err, cap) != CB_OK) return CB_E_INVALID;
     {
         const char *dev = getenv("CBASE_DEV");
         if (dev && *dev && strcmp(dev, "1") != 0 && strcmp(dev, "0") != 0) {
@@ -308,6 +349,9 @@ void cb_config_each(const cb_config *c, cb_config_fn fn, void *ud) {
     fn("CBASE_APPLE_PRIVATE_KEY", c->apple_private_key[0] ? "(set)" : "(unset: no code exchange, no revocation)", true, ud);
     fn("CBASE_APPLE_REDIRECT_URI", c->apple_redirect_uri, false, ud);
     fn("CBASE_APPLE_ISSUER", c->apple_issuer, false, ud);
+    fn("CBASE_MEDIA_BUCKET", c->media_bucket[0] ? c->media_bucket : "(unset: no uploads)", false, ud);
+    fn("CBASE_MEDIA_REGION", c->media_region, false, ud);
+    fn("CBASE_MEDIA_PREFIX", c->media_prefix, false, ud);
     for (int i = 0; i < CB_CONFIG_LIMITS; i++) {
         if (c->limit_burst[i]) snprintf(b, sizeof b, "%d", c->limit_burst[i]);
         else snprintf(b, sizeof b, "(default)");
