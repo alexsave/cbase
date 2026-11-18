@@ -48,6 +48,30 @@ conf_error "cbase.conf line 2: CBASE_MEMORY is from 16M to 64G" "CBASE_APP = a" 
 conf_error "cbase.conf line 2: CBASE_MEMORY is for an app with a VM" "CBASE_APP = a" "CBASE_MEMORY = 64M" "CBASE_VM = none"
 conf_error "cbase.conf line 2: CBASE_VM_IRQ is split (one NIC queue interrupt per vCPU, irqbalance stopped) or irqbalance (the way back)" "CBASE_APP = a" "CBASE_VM_IRQ = bogus"
 conf_error "cbase.conf line 2: CBASE_VM_IRQ is for an app with a VM" "CBASE_APP = a" "CBASE_VM_IRQ = split" "CBASE_VM = none" "CBASE_STATIC = g"
+# The reserved media root: no static prefix is _media or inside it (_mediax is another folder).
+conf_error "cbase.conf line 2: CBASE_STATIC_PREFIX cannot be _media or inside it" "CBASE_APP = a" "CBASE_STATIC_PREFIX = _media"
+conf_error "cbase.conf line 3: CBASE_STATIC_PREFIX cannot be _media or inside it" "CBASE_APP = a" "CBASE_VM = none" "CBASE_STATIC_PREFIX = _media/x"
+d="$(app mediax "CBASE_APP = a" "CBASE_STATIC_PREFIX = _mediax")"
+run "$d" config check
+expect_rc 0 "a static prefix of _mediax"
+out_has "folder     _mediax/" "_mediax is a folder like any other"
+ok
+# CBASE_MEDIA: on or off, and what it needs. config check has its media row when on, none when off.
+conf_error "cbase.conf line 2: CBASE_MEDIA is on or off" "CBASE_APP = a" "CBASE_MEDIA = maybe"
+conf_error "cbase.conf line 3: CBASE_MEDIA keeps the uploads in the static group's bucket, and CBASE_STATIC is none" "CBASE_APP = a" "CBASE_STATIC = none" "CBASE_MEDIA = on"
+conf_error "cbase.conf line 3: CBASE_MEDIA is for an app with a VM (the VM writes the uploads), and CBASE_VM is none" "CBASE_APP = a" "CBASE_VM = none" "CBASE_MEDIA = on"
+conf_error "cbase.conf line 3: CBASE_MEDIA needs the VM group's instance role export, and CBASE_VM_STACK is an adopted stack that has none" "CBASE_APP = a" "CBASE_VM_STACK = adopted" "CBASE_MEDIA = on"
+conf_error "cbase.conf line 3: the path /m/* is CBASE_MEDIA's (/m/*), and CBASE_MEDIA is on" "CBASE_APP = a" "CBASE_MEDIA = on" "CBASE_ROUTE = /m/* static"
+conf_error "cbase.conf line 5: the path /m/x is CBASE_MEDIA's (/m/*), and CBASE_MEDIA is on" "CBASE_APP = a" "CBASE_MEDIA = on" "CBASE_DOMAIN = a.example.com" "CBASE_API_HOST = api.example.com" "CBASE_API_ROUTE = /m/x vm"
+d="$(app mediaon "CBASE_APP = a" "CBASE_MEDIA = on" "CBASE_ROUTE = /media/* static")"
+run "$d" config check
+expect_rc 0 "config check of CBASE_MEDIA = on"
+out_has "media      on (/m/* from _media/a/m/ in the static bucket, the VM may write there)" "config check's media row"
+d="$(app mediaoff "CBASE_APP = a" "CBASE_MEDIA = off" "CBASE_ROUTE = /m/* static")"
+run "$d" config check
+expect_rc 0 "config check of CBASE_MEDIA = off with a /m/* route"
+grep -q '^media ' "$t/out" && fail "config check printed a media row with media off"
+ok
 # CBASE_VM_IRQ set: config check has its irq row; unset: no row (every other output is unchanged).
 d="$(app irqrow "CBASE_APP = a" "CBASE_VM_IRQ = split")"
 run "$d" config check

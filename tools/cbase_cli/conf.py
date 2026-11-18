@@ -17,7 +17,12 @@ CONF_KEYS = ("CBASE_APP CBASE_VM CBASE_VM_STACK CBASE_VM_ORIGIN CBASE_VM_PORT CB
              "CBASE_VM_ARTIFACTS CBASE_VM_REPLACES CBASE_BACKUP_KEY CBASE_BACKUP_BUCKET CBASE_STATIC "
              "CBASE_STATIC_BUCKET CBASE_STATIC_PREFIX CBASE_MEMORY CBASE_ROUTE CBASE_DOMAIN CBASE_CERT_ARN "
              "CBASE_API_CERT_ARN CBASE_ALIASES CBASE_ZONE CBASE_API_HOST CBASE_API_ROUTE CBASE_STATIC_DIR "
-             "CBASE_HASHED CBASE_SHELL CBASE_VM_IRQ")
+             "CBASE_HASHED CBASE_SHELL CBASE_VM_IRQ CBASE_MEDIA")
+
+# The reserved root in the static group's bucket where an app's uploads live (_media/<app>/m/<key>), beside
+# the app's folder and never inside it. This constant is its one owner: the template's media origin, the
+# VM role's write policy and the static prefix refusal below all read it.
+MEDIA_ROOT = "_media"
 
 
 class Route:
@@ -64,6 +69,7 @@ class Conf:
         self.static_dir_default = False
         self.hashed: List[str] = []
         self.shell = ""
+        self.media = "off"       # CBASE_MEDIA: "on" or "off"
         self.routes: List[Route] = []
         self.api_routes: List[Route] = []
 
@@ -412,6 +418,8 @@ def load(file: str) -> None:
         elif key == "CBASE_STATIC_PREFIX":
             if not cli.re(_OBJ_KEY_RE, value):
                 _die_line(no, "CBASE_STATIC_PREFIX is a folder in the bucket (site, sites/one): letters, digits and . _ - /, no leading or trailing /")
+            if value == MEDIA_ROOT or value.startswith(MEDIA_ROOT + "/"):
+                _die_line(no, "CBASE_STATIC_PREFIX cannot be %s or inside it: %s/ is where CBASE_MEDIA keeps an app's uploads, beside the app's folder" % (MEDIA_ROOT, MEDIA_ROOT))
             conf.static_prefix = value
         elif key == "CBASE_VM_SETTINGS":
             if not cli.re(r"^(/[A-Za-z0-9_.-]+)+/\Z", value):
@@ -473,6 +481,10 @@ def load(file: str) -> None:
             if value != "on" and value != "off":
                 _die_line(no, "CBASE_ALIASES is on or off")
             conf.aliases = value
+        elif key == "CBASE_MEDIA":
+            if value != "on" and value != "off":
+                _die_line(no, "CBASE_MEDIA is on or off")
+            conf.media = value
         elif key == "CBASE_ZONE":
             if not cli.re(r"^Z[A-Z0-9]{1,31}\Z", value):
                 _die_line(no, "CBASE_ZONE is a Route 53 hosted zone id (Z and upper-case letters and digits)")
@@ -520,6 +532,8 @@ def load(file: str) -> None:
             _die_line(r.line, "routes to static, and CBASE_STATIC is none")
         if r.origin != "static" and conf.vm == "none":
             _die_line(r.line, "routes to the VM (%s), and CBASE_VM is none" % r.origin)
+    if conf.media == "on":
+        _media_checks()
     _conf_requires("CBASE_API_HOST", "CBASE_DOMAIN", "CBASE_API_HOST is a second hostname, and there is no CBASE_DOMAIN (the first)")
     _conf_requires("CBASE_API_ROUTE", "CBASE_API_HOST", "CBASE_API_ROUTE is a route of CBASE_API_HOST's, and there is none")
     if conf.api_host:
@@ -558,6 +572,21 @@ def load(file: str) -> None:
         default = [r for r in conf.routes if r.pattern == "*"][-1]
         ordered.append(default)
         conf.routes = ordered
+
+
+def _media_checks() -> None:
+    """CBASE_MEDIA = on needs a static group (the bucket), a VM group it created (the role that writes) and the
+    /m/* path for itself."""
+    at = _conf_at("CBASE_MEDIA")
+    if conf.stat == "none":
+        _die_line(at, "CBASE_MEDIA keeps the uploads in the static group's bucket, and CBASE_STATIC is none")
+    if conf.vm == "none":
+        _die_line(at, "CBASE_MEDIA is for an app with a VM (the VM writes the uploads), and CBASE_VM is none")
+    if conf.vm_stack:
+        _die_line(at, "CBASE_MEDIA needs the VM group's instance role export, and CBASE_VM_STACK is an adopted stack that has none")
+    for r in conf.routes + conf.api_routes:
+        if r.pattern == "/m/*" or r.pattern.startswith("/m/"):
+            _die_line(r.line, "the path %s is CBASE_MEDIA's (/m/*), and CBASE_MEDIA is on" % r.pattern)
 
 
 # ---- the printed form ----------------------------------------------------------------------------
@@ -606,6 +635,8 @@ def print_conf() -> None:
             _row("files", "%s/ (the default)" % c.static_dir)
         else:
             _row("files", "%s/" % c.static_dir)
+    if c.media == "on":
+        _row("media", "on (/m/* from %s/%s/m/ in the static bucket, the VM may write there)" % (MEDIA_ROOT, c.app))
     if c.hashed:
         _row("hashed", " ".join(c.hashed))
     if c.shell:
