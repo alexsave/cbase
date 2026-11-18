@@ -161,15 +161,18 @@ static int s3_place_of(const s3_ctx *c, s3_place *p) {
         int rc = cb_aws_url_parse(ep, p->name, sizeof p->name, &p->port, &p->tls, p->base, sizeof p->base);
         if (rc != CB_OK) return rc;
         p->path_style = true;
-        if (p->port == (p->tls ? 443 : 80)) snprintf(p->host, sizeof p->host, "%s", p->name);
-        else snprintf(p->host, sizeof p->host, "%s:%d", p->name, p->port);
+        // The Host header: the name, with ":port" when it is not the scheme's own. A name that leaves no room
+        // for its port is refused rather than cut (a cut Host would sign and reach another host).
+        int hn = p->port == (p->tls ? 443 : 80) ? snprintf(p->host, sizeof p->host, "%s", p->name)
+                                                : snprintf(p->host, sizeof p->host, "%s:%d", p->name, p->port);
+        if (hn < 0 || hn >= (int)sizeof p->host) return CB_E_INVALID;
         return CB_OK;
     }
     p->tls = true;
     p->port = 443;
     int n = snprintf(p->name, sizeof p->name, "%s.s3.dualstack.%s.amazonaws.com", c->bucket, c->region);
-    if (n >= (int)sizeof p->name) return CB_E_INVALID;
-    snprintf(p->host, sizeof p->host, "%s", p->name);
+    if (n < 0 || n >= (int)sizeof p->name) return CB_E_INVALID;
+    if (snprintf(p->host, sizeof p->host, "%s", p->name) >= (int)sizeof p->host) return CB_E_INVALID;
     return CB_OK;
 }
 
@@ -181,8 +184,9 @@ static int s3_call(s3_ctx *c, const char *method, const char *key, const void *b
     s3_place pl;
     if ((rc = s3_place_of(c, &pl)) != CB_OK) return rc;
     char path[480], sum[65], h1[100];
-    if (pl.path_style) snprintf(path, sizeof path, "%s/%s/%s", pl.base, c->bucket, key);
-    else snprintf(path, sizeof path, "/%s", key);
+    int pn = pl.path_style ? snprintf(path, sizeof path, "%s/%s/%s", pl.base, c->bucket, key)
+                           : snprintf(path, sizeof path, "/%s", key);
+    if (pn < 0 || pn >= (int)sizeof path) return CB_E_INVALID;   // a key too long for the path: refused, never cut
     uint8_t d[SHA256_DIGEST_LEN];
     sha256(body, n, d);
     hex_encode(d, sizeof d, sum, sizeof sum);
