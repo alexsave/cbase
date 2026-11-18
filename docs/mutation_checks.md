@@ -1628,3 +1628,16 @@ Each was run with the irq golden files re-rendered from the mutated text, so the
 - cbase_cli/vm.py's dry-run line for CBASE_VM_IRQ disabled (`if False:`) -> the irq case `the dry run's irq line` red.
 - cbase_cli/cli.py's runner back to `close_fds=True` (Python's default, the port's behaviour until here: a parent make's jobserver pipe was closed, so `make serve-binary` under `make -j check` warned "jobserver unavailable", which CI's VM suite caught) -> launcher_test.sh's `an inherited descriptor did not reach the child cli.run started` red.
 - cbase_cli/vm.py given `import subprocess` -> py_check.sh's `a module starts a process outside cli.run` red (a planted `os.execvp` is refused first, so the check cannot go blind).
+
+## CBASE_MEDIA (media-folder)
+
+Each was run on the section named (`CBASE_TEST_ONLY='conf media'`, group-template for the last), and restored by editing back.
+
+- cbase_cli/static.py's prune listing with `--prefix ""` and the folder guard disabled (`if False and (...)`) -> cbase_test.sh's media section `the prune deleted other than the folder's stale file` red, the comparison showing `DELETE /site-bucket/_media/mgone/m/a.webp 204` as the extra line.
+- cbase_cli/conf.py's `_media` prefix refusal disabled (`if False:`) -> `a bad cbase.conf (cbase.conf line 2: CBASE_STATIC_PREFIX cannot be _media or inside it): status 0, not 1` red.
+- cbase_cli/stack.py's media behaviour given a `FunctionAssociations:` line (the Router's key) -> `/m/* has the Router on it` red.
+- tools/cbase.d/templates/app.yaml's MediaWrites Resource widened to `__BUCKET__/*` -> `MediaWrites is not the app's m/ alone` red.
+- cbase_cli/stack.py emitting the media behaviour after the other routes -> `the first behaviour is [          - PathPattern: "/api/*"], not /m/*` red.
+- cbase_cli/conf.py's CBASE_STATIC = none refusal for media disabled (`if False:`) -> `a bad cbase.conf (cbase.conf line 3: CBASE_MEDIA keeps the uploads in the static group's bucket, and CBASE_STATIC is none): status 0, not 1` red.
+- cbase_cli/stack.py's `stk_caps = "CAPABILITY_IAM"` for a media app made `""` -> `a media app's change set lacks CAPABILITY_IAM` red (the fake's log shows `caps=`).
+- tools/cbase.d/templates/group-vm.yaml's RoleName Export removed -> cbase_group_test.sh's group-template case red, its diff showing the two removed lines (`Export:` and `Name: cbase-vm-g4-role`) against the golden text.
