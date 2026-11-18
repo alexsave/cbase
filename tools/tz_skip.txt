@@ -1,0 +1,6 @@
+# Zones left out of lib/tz/tzdb.tsv: tools/tz_gen.py stops on a zone whose file holds an explicit transition its footer rule
+# does not reproduce, unless the zone is listed here (zone<TAB>reason). A line is a decision, and is refused once it is stale.
+Asia/Gaza	explicit transitions 2036-10-17 to 2086 (DST suspended for Ramadan) that the footer does not hold
+Asia/Hebron	the same as Asia/Gaza
+America/Havana	the file holds no DST end for 2026-11-01: it stays on CDT until 2027-11-07, which the footer (CST5CDT,M3.2.0/0,M11.1.0/1) does not say
+Cuba	the same as America/Havana

@@ -1,0 +1,17 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//cbase//calendar//EN
+CALSCALE:GREGORIAN
+BEGIN:VEVENT
+UID:e-oslo-fredag-2026-11-20@calendar.example
+DTSTAMP:20261118T093015Z
+DTSTART:20261120T180000Z
+DTEND:20261120T190000Z
+SUMMARY:Fredagsløp på Frognerparken
+LOCATION:Frognerparken\, Oslo\, Norge
+DESCRIPTION:Rolig 5K\, alle tempoer.\nMøte ved fontenen\; ta med vann\, \\
+  ikke hund.
+GEO:59.927500;10.700600
+URL:https://calendar.example/e/e-oslo-fredag/2026-11-20
+END:VEVENT
+END:VCALENDAR
