@@ -51,6 +51,9 @@ struct cb_config;
 // a form, or the backend will not open.
 int cb_media_configure(const struct cb_config *cfg, char *err, size_t cap);
 
+// Frees the place cb_media_configure opened; media is then off. cb_unboot calls it.
+void cb_media_close(void);
+
 // cb_media_post_with over the configured place and folder. CB_E_STATE when media is not configured.
 int cb_media_post(const char *content_type, uint64_t max_bytes, int64_t now_ms, cb_media_form *out);
 

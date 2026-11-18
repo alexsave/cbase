@@ -45,10 +45,15 @@ int cb_media_post_with(const cb_blob *blob, const char *prefix, const char *cont
     return blob->post_form(blob->ud, key, content_type, max_bytes, now_ms, MEDIA_EXPIRES_S, out);
 }
 
-int cb_media_configure(const cb_config *cfg, char *err, size_t cap) {
+void cb_media_close(void) {
+    if (g_blob.close) g_blob.close(g_blob.ud);
     memset(&g_blob, 0, sizeof g_blob);
     g_on = false;
     g_prefix[0] = 0;
+}
+
+int cb_media_configure(const cb_config *cfg, char *err, size_t cap) {
+    cb_media_close();   // a second configure (a test, a reboot in one process) frees the place the first opened
     if (!cfg->media_bucket[0]) return CB_OK;
     const cb_blob_backend *b = cb_blob_backends[0];
     if (!b) {
@@ -61,7 +66,7 @@ int cb_media_configure(const cb_config *cfg, char *err, size_t cap) {
         return CB_E_INVALID;
     }
     if (!g_blob.post_form) {
-        memset(&g_blob, 0, sizeof g_blob);
+        cb_media_close();
         snprintf(err, cap, "CBASE_MEDIA_BUCKET is set and the %s backend cannot make an upload form", b->name);
         return CB_E_INVALID;
     }
