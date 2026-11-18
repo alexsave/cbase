@@ -21,17 +21,19 @@ Parameters:
 #end
 
 Resources:
-#if static
+#if oac
   Oac:
     Type: AWS::CloudFront::OriginAccessControl
     Properties:
       OriginAccessControlConfig:
         Name: cbase-__APP__
-        Description: the app __APP__'s reads of its folder in the static group's bucket
+        Description: the app __APP__'s reads of its folder (and its media) in the static group's bucket
         OriginAccessControlOriginType: s3
         SigningBehavior: always
         SigningProtocol: sigv4
 
+#end
+#if static
   Router:
     Type: AWS::CloudFront::Function
     Properties:
@@ -58,6 +60,46 @@ Resources:
           request.uri = PAGES.indexOf(' ' + page + ' ') >= 0 ? '/' + page + '.html' : SHELL;
           return request;
         }
+
+#end
+#if media
+  # The app's uploads, served at /m/*: a key is never rewritten, so a year in the edge and the browser.
+  MediaCache:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+        Name: cbase-__APP__-media
+        Comment: the app __APP__'s uploads, kept a year (a key never changes meaning)
+        MinTTL: 31536000
+        DefaultTTL: 31536000
+        MaxTTL: 31536000
+        ParametersInCacheKeyAndForwardedToOrigin:
+          EnableAcceptEncodingGzip: false
+          EnableAcceptEncodingBrotli: false
+          CookiesConfig:
+            CookieBehavior: none
+          HeadersConfig:
+            HeaderBehavior: none
+          QueryStringsConfig:
+            QueryStringBehavior: none
+
+  MediaHeaders:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: cbase-__APP__-media
+        Comment: the app __APP__'s uploads - a year in the browser, never run as a page
+        CustomHeadersConfig:
+          Items:
+            - Header: Cache-Control
+              Value: "public, max-age=31536000, immutable"
+              Override: true
+        SecurityHeadersConfig:
+          ContentTypeOptions:
+            Override: true
+          ContentSecurityPolicy:
+            ContentSecurityPolicy: "default-src 'none'; sandbox"
+            Override: true
 
 #end
   Distribution:
@@ -87,6 +129,14 @@ Resources:
           - Id: static
             DomainName: __BUCKET__.s3.__BUCKETREGION__.amazonaws.com
             OriginPath: /__PREFIX__
+            OriginAccessControlId: !GetAtt Oac.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+#end
+#if media
+          - Id: media
+            DomainName: __BUCKET__.s3.__BUCKETREGION__.amazonaws.com
+            OriginPath: /__MEDIAROOT__/__APP__
             OriginAccessControlId: !GetAtt Oac.Id
             S3OriginConfig:
               OriginAccessIdentity: ""
