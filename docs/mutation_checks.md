@@ -1721,3 +1721,4 @@ Oracle data: `lib/tz/test/transitions.tsv`, from Python's zoneinfo (tools/tz_gen
 - lib/tz/tz.h given `foolish` and lib/ics/ics.h given `AWS` in their first lines -> core/test/unit_name_gate.c's `each_side_names_only_its_own` red, naming the file and the pattern.
 
 tools/tz_gen.py is a generator, not a test, and its refusals were run rather than mutated: with no tools/tz_skip.txt it stops naming America/Havana, Asia/Gaza, Asia/Hebron and Cuba; with a stale line in the list it stops naming the zone; `Rule("EST5EDT")` stops with the no-dates refusal; and a second run writes both files byte for byte the same.
+- lib/ics/ics.c's and gcal.c's refusal of a repeating event with no zone removed (the event written in UTC again, the drift bug) -> ics_test's `refusal: a repeating event with no zone is not written in UTC` red twice (`ics_write wrote a weekly event with no zone`, `gcal_url wrote a weekly event with no zone`).
