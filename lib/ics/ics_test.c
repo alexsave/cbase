@@ -93,7 +93,7 @@ typedef struct {
     ics_event ev;
 } golden_case;
 
-#define NGOLDEN 6
+#define NGOLDEN 7
 
 static void cases(golden_case *g)
 {
@@ -169,6 +169,13 @@ static void cases(golden_case *g)
     se.byday = ICS_TU | ICS_TH;
     se.zone = S("Asia/Seoul");
     g[5] = (golden_case){ "weekly_seoul", se };
+
+    /* The same New York run as weekly_ny with no zone: the UTC form, which a calendar app shows an hour off
+     * after each DST change. Kept as the negative control of the oracle (ics_oracle.py). */
+    ics_event un = ny;
+    un.id = S("e-ny-tue-utc");
+    un.zone = (ics_str){ NULL, 0 };
+    g[6] = (golden_case){ "weekly_ny_utc", un };
 }
 
 static char *slurp(const char *path, size_t *n)
@@ -268,7 +275,7 @@ static void test_fold(void)
     CHECK(strstr(buf, want) != NULL, "75-octet line folded:\n%s", buf);
     e.summary = (ics_str){ t, 68 };
     CHECK(ics_of(&e) > 0, "write");
-    memcpy(want + 75, "\r\n x\r\nEND:VEVENT", 18);
+    memcpy(want + 75, "\r\n x\r\nEND:VEVENT", 17);
     CHECK(strstr(buf, want) != NULL, "76-octet line not folded after 75:\n%s", buf);
     char long_t[200];
     memset(long_t, 'z', 67 + 74 + 5);
@@ -475,7 +482,7 @@ static void test_zone(void)
     CHECK(gcal_url(url, sizeof url, &e) > 0 && strstr(url, "&dates=20261124T120000Z/20261124T130000Z") != NULL && strstr(url, "ctz") == NULL, "a one-off link is UTC: %s", url);
 }
 
-/* ---- Google Calendar link ---- */
+/* ---- the web calendar link ---- */
 
 static void test_gcal(void)
 {

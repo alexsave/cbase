@@ -46,6 +46,11 @@
 #   APP_LIB_SRC      single sources outside its roots linked into every program in CB_CFLAGS (a
 #                    helper of its own repository's)
 #   APP_EMBED        files embedded as C strings: <file>=<symbol> (build/gen/<symbol>.c)
+#   APP_TZ_ZONES     the IANA names of the time zones the product uses (lib/tz/tz.h), in an order it
+#                    may rely on (a zone's handle is its position): America/New_York Europe/Oslo.
+#                    build/gen/tz_zones.c holds exactly those zones, from lib/tz/tzdb.tsv, with an awk
+#                    script (no Python, no tzdata, nothing fetched), and lib/tz and lib/ics are linked
+#                    only when it is set. A name that is not in the tsv stops the build.
 #   APP_PROGS        more programs `make` builds: <name>=<main source>, each build/<name>
 #   APP_TOOLS        the same, built only when named (hand-run generators)
 #   APP_SMOKES       the product's smoke programs (<test root>/<name>.c), each run by smoke and
@@ -285,6 +290,19 @@ CB_GEN += build/gen/cbase_links.c
 # this build runs (LIB_TESTS below).
 CB_LIB_SRC := $(CB)lib/b64/b64.c $(CB)lib/hex/hex.c $(CB)lib/sha256.c $(CB)lib/mqtt/mqtt.c \
               $(CB)lib/stats/hist.c $(CB)lib/proc.c
+# THE PRODUCT'S TIME ZONES (APP_TZ_ZONES, lib/tz): the zone table written from the committed tsv and
+# only when it changes, and lib/tz and lib/ics linked beside it, in a product that names a zone.
+APP_TZ_ZONES ?=
+ifneq ($(strip $(APP_TZ_ZONES)),)
+build/gen/tz_zones.c: CB_FORCE_TZ $(CB)lib/tz/tzdb.tsv $(CB)tools/tz_zones.awk
+	@mkdir -p $(@D)
+	@awk -v zones='$(strip $(APP_TZ_ZONES))' -f $(CB)tools/tz_zones.awk $(CB)lib/tz/tzdb.tsv > $@.new \
+	  && { cmp -s $@.new $@ && rm -f $@.new || mv $@.new $@; } || { rm -f $@.new; exit 1; }
+.PHONY: CB_FORCE_TZ
+CB_FORCE_TZ:
+CB_GEN += build/gen/tz_zones.c
+CB_LIB_SRC += $(CB)lib/tz/tz.c $(CB)lib/ics/ics.c $(CB)lib/ics/gcal.c
+endif
 LIB_SRC  := $(sort $(filter-out $(MAIN_SERVE) $(MAIN_LAMBDA),$(foreach r,$(SRC_ROOTS),$(wildcard $(r)/*.c $(r)/*/*.c)))) $(CB_LIB_SRC) \
             $(APP_LIB_SRC) $(CB_GEN) $(APP_GEN)
 # THE CONFORMANCE SUITES (docs/history/PLATFORM_SPLIT.md 8.7 decision 2): core/test/conformance/ holds one library
@@ -414,7 +432,7 @@ SMOKE_PROGS = $(call CB_BINS,$(1)) $(addprefix $(1)/test/,$(SMOKES))
 
 # lib/'s tests of what the platform links (tools/lib_tests.mk), in the platform's own flags and its
 # sanitized variant.
-LIB_TESTS := b64_test hex_test hist_test proc_test stream_frame_test
+LIB_TESTS := b64_test hex_test hist_test proc_test stream_frame_test tz_test ics_test
 include $(CB)tools/lib_tests.mk
 $(call LIB_TESTS_IN,,build/obj/cbase,CC,CB_CFLAGS)
 $(call LIB_TESTS_IN,asan_,build/obj/asan,CC,ASAN_CB_CFLAGS)
