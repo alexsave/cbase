@@ -788,6 +788,10 @@ The tool reads, prints and passes no credential, and with none it says to run `a
 `make check` runs `tools/cbase.d/test/cbase_test.sh`, which drives the deploy tool (the Python program) through the real AWS CLI against a local fake of S3, STS, the Tagging API, CloudFormation, ACM, Route 53, CloudFront, EC2 and SSM (`tools/cbase.d/test/fake_aws.c`), with dummy keys; no test calls AWS.
 `fake_aws` is a test fake and a local stand-in for a dev run: it binds loopback only, it is not a security boundary, the `/_fake/*` knobs are for tests, and it must never run where anything but this machine reaches it.
 It also takes a browser's POST Object upload, checked as S3 checks it, for the media uploads in [docs/PLATFORM.md](docs/PLATFORM.md) 2.12.
+The macOS deploy tool job runs the same real CLI resident (`CBASE_TEST_AWS=resident`): `tools/cbase.d/test/aws_resident.py` loads the Python AWS CLI once and forks a child per call with the caller's environment, working directory and stdio, and `aws_client.c`, the `aws` first on `PATH`, hands each call to it and ends by the child's exit code or signal.
+Starting the CLI was about nine tenths of that job's time (3,621 calls at 0.6 to 0.7 s each on the runner), and a call in a loaded CLI costs about a quarter of that.
+Ubuntu's `make check` and the templates job keep one CLI process per call, so both paths run; resident mode needs a Python `awscli` (it fails, and never falls back, when `aws` is a frozen build).
+`tools/cbase.d/test/aws_resident_test.sh` (`make cbase-aws-resident-test`) diffs a fixed list of calls through both byte for byte, and checks that signals reach the child and that a dead server is reported, not waited for.
 `tools/cbase.d/test/cbase_vm_test.sh` covers the VM side, and runs the scripts SSM would run under a scratch root with stand-ins for `systemctl`, `ss` and `aws`.
 
 ## Rules the code keeps
