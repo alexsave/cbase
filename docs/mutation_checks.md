@@ -1689,3 +1689,16 @@ Oracle data: `lib/tz/test/transitions.tsv`, from Python's zoneinfo (tools/tz_gen
 - lib/tz/tz.h given `foolish` and lib/ics/ics.h given `AWS` in their first lines -> core/test/unit_name_gate.c's `each_side_names_only_its_own` red, naming the file and the pattern.
 
 tools/tz_gen.py is a generator, not a test, and its refusals were run rather than mutated: with no tools/tz_skip.txt it stops naming America/Havana, Asia/Gaza, Asia/Hebron and Cuba; with a stale line in the list it stops naming the zone; `Rule("EST5EDT")` stops with the no-dates refusal; and a second run writes both files byte for byte the same.
+
+## The static folder rule (static-prefix-nesting)
+
+Each was run on a copy of tools/ with `CBASE_TEST_ONLY=nesting` (group-template for the last two), under `env -i`, and checked to fail on its own assertion, not on an import error.
+
+- The test against the code before the fix (77452ed6) -> `a join inside another member's folder: status 0, not 1` red.
+- cbase_cli/state.py's `folders_overlap` reduced to `a == b` -> `a join inside another member's folder: status 0, not 1` red.
+- `folders_overlap` without the holding direction (`b.startswith(a + "/")`) -> `a join whose folder holds another member's: status 0, not 1` red.
+- The join's overlap check off (`j = -1`) -> `a join inside another member's folder: status 0, not 1` red.
+- The read's overlap check off (`j = -1`) -> `a state file with overlapping folders: status 0, not 1` red.
+- The join's line naming the app instead of the folder -> `a folder beside another's: stdout lacks [side joined static group g1: app=side folder=sites-admin/]` red.
+- tools/cbase.d/templates/group-static.yaml given a line off its golden text -> cbase_group_test.sh's `group-template static g4 differs from its golden text` printed, red.
+- The same, with the golden case's `|| true` removed -> the run ends without naming the case (`the run stopped before its end`), as before the fix.

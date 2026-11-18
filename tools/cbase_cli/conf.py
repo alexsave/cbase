@@ -304,7 +304,8 @@ def _secret_scan(no: int, text: str) -> None:
 
 _ACM_RE = (r"^arn:aws:acm:([a-z0-9-]+):[0-9]{12}:certificate/"
            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
-_OBJ_KEY_RE = r"^[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9_-][A-Za-z0-9._-]*)*\Z"
+# A folder or key in a bucket: CBASE_STATIC_PREFIX and the rest here, and a static state line's folder (state.py).
+OBJ_KEY_RE = r"^[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9_-][A-Za-z0-9._-]*)*\Z"
 _BUCKET_RE = r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]\Z"
 
 
@@ -408,7 +409,7 @@ def load(file: str) -> None:
                 _die_line(no, "CBASE_VM_REPLACES is a systemd unit's name (name.service)")
             conf.vm_replaces = value
         elif key == "CBASE_BACKUP_KEY":
-            if not cli.re(_OBJ_KEY_RE, value):
+            if not cli.re(OBJ_KEY_RE, value):
                 _die_line(no, "CBASE_BACKUP_KEY is an object key (cbase/latest.sqlite): letters, digits and . _ - /, no leading /")
             conf.backup_key = value
         elif key == "CBASE_STATIC_BUCKET":
@@ -416,7 +417,7 @@ def load(file: str) -> None:
                 _die_line(no, "CBASE_STATIC_BUCKET is an S3 bucket's name")
             conf.static_bucket = value
         elif key == "CBASE_STATIC_PREFIX":
-            if not cli.re(_OBJ_KEY_RE, value):
+            if not cli.re(OBJ_KEY_RE, value):
                 _die_line(no, "CBASE_STATIC_PREFIX is a folder in the bucket (site, sites/one): letters, digits and . _ - /, no leading or trailing /")
             if value == MEDIA_ROOT or value.startswith(MEDIA_ROOT + "/"):
                 _die_line(no, "CBASE_STATIC_PREFIX cannot be %s or inside it: %s/ is where CBASE_MEDIA keeps an app's uploads, beside the app's folder" % (MEDIA_ROOT, MEDIA_ROOT))
@@ -493,7 +494,7 @@ def load(file: str) -> None:
             if value.endswith("/"):
                 value = value[:-1]
             slashed = "/" + value + "/"
-            if not cli.re(_OBJ_KEY_RE, value) or "/../" in slashed:
+            if not cli.re(OBJ_KEY_RE, value) or "/../" in slashed:
                 _die_line(no, "CBASE_STATIC_DIR is a directory inside the repository, relative to its root (build, ui/out): letters, digits and . _ - /, no leading '/', no '..'")
             dir_set = value
         elif key == "CBASE_HASHED":

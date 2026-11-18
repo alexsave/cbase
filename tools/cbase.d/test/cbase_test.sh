@@ -418,6 +418,67 @@ expect_rc 0 "e's leave"
 ok
 
 fi
+# ---- nesting: no two members of a static group have overlapping folders ------------------------
+# Each app's prune deletes every key under its folder that its build does not hold, so a folder inside
+# another's (or the same one) would let one app's deploy delete the other's files.
+if wanted nesting; then
+# The sections after this one read the fake's state as join left it: this one starts the fake only when
+# it runs alone, sets static g1's state file aside, and puts it back at its end.
+[ -n "$FAKE_PID" ] || start_fake "${everything[@]}"
+saved=0
+if aws s3api get-object --bucket "$BUCKET" --key static/g1.txt "$t/nesting-saved" > /dev/null 2>&1; then saved=1; fi
+aws s3api delete-object --bucket "$BUCKET" --key static/g1.txt > /dev/null
+sites="$(app sites "CBASE_APP = sites" "CBASE_VM = none" "CBASE_STATIC = g1")"
+one="$(app one "CBASE_APP = one" "CBASE_VM = none" "CBASE_STATIC = g1" "CBASE_STATIC_PREFIX = sites/one")"
+dup="$(app dup "CBASE_APP = dup" "CBASE_VM = none" "CBASE_STATIC = g1" "CBASE_STATIC_PREFIX = sites")"
+side="$(app side "CBASE_APP = side" "CBASE_VM = none" "CBASE_STATIC = g1" "CBASE_STATIC_PREFIX = sites-admin")"
+deep="$(app deep "CBASE_APP = deep" "CBASE_VM = none" "CBASE_STATIC = g1" "CBASE_STATIC_PREFIX = x/y")"
+x="$(app x "CBASE_APP = x" "CBASE_VM = none" "CBASE_STATIC = g1")"
+run "$sites" state join
+expect_rc 0 "sites' join"
+out_has "sites joined static group g1: app=sites folder=sites/" "sites' join"
+ok
+# Inside a member's folder: refused, and nothing is written.
+puts="$(log_count 'PUT ')"
+run "$one" state join
+expect_rc 1 "a join inside another member's folder"
+err_has "one's folder sites/one/ overlaps sites's sites/ in static group g1: each one's prune would delete the other's files" "a folder inside another's"
+[ "$(log_count 'PUT ')" = "$puts" ] || fail "a refused join wrote the state file"
+ok
+# The same folder: refused.
+run "$dup" state join
+expect_rc 1 "a join on another member's folder"
+err_has "dup's folder sites/ overlaps sites's sites/ in static group g1" "the same folder"
+ok
+# A name that only starts the same is another folder: it joins, its prefix recorded as its folder.
+run "$side" state join
+expect_rc 0 "a join beside another member's folder"
+out_has "side joined static group g1: app=side folder=sites-admin/" "a folder beside another's"
+ok
+# Above a member's folder: refused, the other way round.
+run "$deep" state join
+expect_rc 0 "deep's join"
+run "$x" state join
+expect_rc 1 "a join whose folder holds another member's"
+err_has "x's folder x/ overlaps deep's x/y/ in static group g1" "a folder holding another's"
+# The file lists its members sorted by name (state.py _render).
+printf 'cbase-state 1 static g1\napp=deep folder=x/y/\napp=side folder=sites-admin/\napp=sites folder=sites/\n' > "$t/want"
+state_of static g1 | diff -u "$t/want" - || fail "the static state file after the refused joins"
+ok
+# A state file that holds two overlapping folders (written by an older tool, or by hand) is refused at
+# its read, naming the line.
+printf 'cbase-state 1 static g1\napp=sites folder=sites/\napp=one folder=sites/one/\n' > "$t/bad"
+aws s3api put-object --bucket "$BUCKET" --key static/g1.txt --body "$t/bad" > /dev/null
+run "$side" state join
+expect_rc 1 "a state file with overlapping folders"
+err_has "line 3 gives app one the folder sites/one/, which overlaps sites's sites/" "the read's folder rule"
+ok
+if [ "$saved" = 1 ]; then
+  aws s3api put-object --bucket "$BUCKET" --key static/g1.txt --body "$t/nesting-saved" > /dev/null
+else
+  aws s3api delete-object --bucket "$BUCKET" --key static/g1.txt > /dev/null
+fi
+fi
 # ---- apps --------------------------------------------------------------------------------------
 if wanted apps; then
 run "$b" apps

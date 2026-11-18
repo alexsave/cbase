@@ -596,6 +596,10 @@ app=shop folder=shop/
 A join or leave reads the file with its ETag and writes it back with S3's `If-Match` (`If-None-Match: *` for a new file).
 A 412 or 409 means another run wrote first: the file is read again and the change made again, up to 8 times, with a fixed backoff (no randomness: the backoff is a fixed doubling, `_backoff` in `tools/cbase_cli/state.py`).
 A VM app claims the lowest free port in 8700-8799 in the same write, so two racing deploys never hold one port.
+A static app's `folder` is its `CBASE_STATIC_PREFIX`, or its name, and no two members' folders may overlap: a join whose folder is another member's, inside it (`site/admin` under `site`) or holds it is refused before anything is written, since each app's prune deletes whatever under its folder its build lacks.
+`site` and `site-admin` do not overlap.
+A state file that holds two overlapping folders is refused at its read, naming the line.
+An older tool reads a member whose folder is not its name as a malformed line and stops, changing nothing.
 
 ### Making a group: group-init
 
