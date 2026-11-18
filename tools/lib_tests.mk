@@ -37,9 +37,11 @@ LIB_TEST_SRC_hex_test          := hex/hex.c hex/hex_test.c
 LIB_TEST_SRC_hist_test         := stats/hist.c stats/hist_test.c
 LIB_TEST_SRC_proc_test         := proc.c proc_test.c
 LIB_TEST_SRC_stream_frame_test := stream_frame_test.c
+LIB_TEST_SRC_tz_test           := tz/tz.c tz/tz_test.c
+LIB_TEST_SRC_ics_test          := tz/tz.c ics/ics.c ics/gcal.c ics/ics_test.c
 
 LIB_TEST_NAMES := le_bytes_test rng_test fnv_test clock_test percentile_test sha256_test \
-                  b64_test hex_test hist_test proc_test stream_frame_test
+                  b64_test hex_test hist_test proc_test stream_frame_test tz_test ics_test
 
 define LIB_TEST_RULE
 build/$(1)$(5): $$(call c_objs,$(2),$$(addprefix $$(LIB_DIR)/,$$(LIB_TEST_SRC_$(5))))

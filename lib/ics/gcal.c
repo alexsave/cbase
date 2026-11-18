@@ -1,4 +1,4 @@
-// gcal.c - a Google Calendar "template" link (gcal.h).
+// gcal.c - a web calendar "template" link (gcal.h).
 #include "gcal.h"
 #include "../tz/tz.h"
 

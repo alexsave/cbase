@@ -212,6 +212,9 @@ static void scan_tree(void) {
     scan_dir("client/src", L_PRODUCTS | L_PROVIDERS | L_DOMAIN);
     scan_dir("client/wasm", L_PRODUCTS | L_PROVIDERS | L_DOMAIN);
     scan_dir("client/ts", L_PRODUCTS | L_PROVIDERS | L_DOMAIN);
+    // lib/'s time zones and calendar: shared code that names no provider, no product and no domain word.
+    scan_dir("lib/tz", L_PRODUCTS | L_PROVIDERS | L_DOMAIN);
+    scan_dir("lib/ics", L_PRODUCTS | L_PROVIDERS | L_DOMAIN);
     char prov[TT_PATH_MAX];
     DIR *d = opendir(tt_path(prov, sizeof prov, "providers"));
     struct dirent *e;

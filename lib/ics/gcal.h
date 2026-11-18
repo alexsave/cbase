@@ -1,4 +1,4 @@
-// gcal.h - a Google Calendar "template" link for an event (ics.h's ics_event), into the caller's buffer.
+// gcal.h - a web calendar "template" link for an event (ics.h's ics_event), into the caller's buffer.
 #ifndef SHARED_GCAL_H
 #define SHARED_GCAL_H
 
