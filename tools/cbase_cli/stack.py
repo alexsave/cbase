@@ -242,11 +242,29 @@ def _behaviour(r: confmod.Route, rhp: Optional[str]) -> str:
     return "".join(f)
 
 
-def _routes_text(default: confmod.Route, routes: List[confmod.Route], rhp: Optional[str]) -> str:
-    """A distribution's behaviours: DEFAULT, then ROUTES in order; trailing newlines removed ($(...))."""
+def _media_behaviour() -> str:
+    """The /m/* behaviour of CBASE_MEDIA = on: the media origin, a year of cache, the media headers. No
+    FunctionAssociations on purpose: the Router sends a path it does not know (a media key has no extension
+    to spare it) to the app shell, and a missing key must be the 404 S3 gives."""
+    pad = "          "
+    return ('%s- PathPattern: "/m/*"\n'
+            "%s  TargetOriginId: media\n"
+            "%s  ViewerProtocolPolicy: redirect-to-https\n"
+            "%s  AllowedMethods: [GET, HEAD]\n"
+            "%s  CachedMethods: [GET, HEAD]\n"
+            "%s  Compress: false\n"
+            "%s  CachePolicyId: !Ref MediaCache\n"
+            "%s  ResponseHeadersPolicyId: !Ref MediaHeaders\n") % ((pad,) * 8)
+
+
+def _routes_text(default: confmod.Route, routes: List[confmod.Route], rhp: Optional[str], media: bool = False) -> str:
+    """A distribution's behaviours: DEFAULT, then (the media behaviour, when MEDIA, first of them all) ROUTES in
+    order; trailing newlines removed ($(...))."""
     f = ["        DefaultCacheBehavior:\n", _behaviour(default, rhp)]
-    if routes:
+    if routes or media:
         f.append("        CacheBehaviors:\n")
+    if media:
+        f.append(_media_behaviour())
     for r in routes:
         f.append(_behaviour(r, rhp))
     return "".join(f).rstrip("\n")
@@ -329,6 +347,11 @@ def render(file: str) -> None:
         flags += " apiws"
     if stk_api_cert:
         flags += " apicert"
+    media = conf.media == "on"
+    if media:
+        flags += " media"
+    if has_static or media:
+        flags += " oac"
     if conf.aliases != "off":
         flags += " aliases"
 
@@ -350,7 +373,7 @@ def render(file: str) -> None:
 
     # The distribution's routes: every route but the last, the default being the last (conf.sh).
     nroutes = len(conf.routes)
-    routes = _routes_text(conf.routes[nroutes - 1], conf.routes[:nroutes - 1], None)
+    routes = _routes_text(conf.routes[nroutes - 1], conf.routes[:nroutes - 1], None, media)
 
     # The API host's: CBASE_API_ROUTE's, then the ws routes (CBASE_ROUTE's) it does not name.
     api: List[confmod.Route] = []
@@ -374,6 +397,8 @@ def render(file: str) -> None:
     template_set("BUCKET", stk_bucket)
     template_set("BUCKETREGION", stk_bucket_region)
     template_set("PREFIX", stk_prefix)
+    template_set("MEDIAROOT", confmod.MEDIA_ROOT)
+    template_set("VMGROUP", conf.vm)
     template_set("SHELL", shell)
     template_set("PAGES", pages)
     template_set("ROUTES", routes)

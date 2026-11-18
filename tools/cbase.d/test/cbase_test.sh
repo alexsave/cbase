@@ -1471,6 +1471,49 @@ grep -Fq "run \`./cbase deploy\` again after an instance replacement" "$root/REA
 ok
 
 fi
+# ---- media: CBASE_MEDIA = on, the /m/* origin, behaviour, cache and headers in the template ----
+if wanted media; then
+med="$(app med "CBASE_APP = shop" "CBASE_MEDIA = on" "CBASE_ROUTE = /api/* vm")"
+run "$med" template
+expect_rc 0 "a media app's template"
+cp "$t/out" "$t/media_on"
+out_has "          - Id: media" "the media origin"
+out_has "OriginPath: /_media/shop" "the media origin is the app's folder beside its site folder"
+[ "$(grep -c 'OriginPath:' "$t/out")" = 2 ] || { cat "$t/out" >&2; fail "the static and the media origins are the two OriginPaths"; }
+awk '/- Id: media/{f=1} f' "$t/out" | grep -q "OriginAccessControlId: !GetAtt Oac.Id" || fail "the media origin is not read through the OAC"
+# /m/* is the first behaviour of CacheBehaviors, on the media origin, with no function on it.
+first="$(awk '/^        CacheBehaviors:$/{f=1; next} f{print; exit}' "$t/out")"
+[ "$first" = '          - PathPattern: "/m/*"' ] || fail "the first behaviour is [$first], not /m/*"
+mbehaviour() {   # mbehaviour PATTERN: that route's behaviour in the media app's template
+  awk -v p="          - PathPattern: \"$1\"" '$0 == p {f=1; print; next} f && /^          - / {f=0} f && /^[^ ]/ {f=0} f' "$t/media_on"
+}
+mbehaviour "/m/*" | grep -q "TargetOriginId: media" || fail "/m/* is not on the media origin"
+mbehaviour "/m/*" | grep -q "FunctionAssociations" && { mbehaviour "/m/*" >&2; fail "/m/* has the Router on it"; }
+mbehaviour "/m/*" | grep -q "CachePolicyId: !Ref MediaCache" || fail "/m/* has not the media cache policy"
+mbehaviour "/m/*" | grep -q "ResponseHeadersPolicyId: !Ref MediaHeaders" || fail "/m/* has not the media headers"
+mbehaviour "/m/*" | grep -q "AllowedMethods: \[GET, HEAD\]" || fail "/m/* is not GET and HEAD"
+mbehaviour "/api/*" | grep -q "TargetOriginId: vm" || fail "/api/* is lost beside /m/*"
+ok
+# The cache policy: a year, no cookies, headers or query in the key. The headers: a year, immutable, nosniff, a CSP that runs nothing.
+awk '/^  MediaCache:$/{f=1} /^  MediaHeaders:$/{f=0} f' "$t/media_on" > "$t/mcache"
+[ "$(grep -c '^        [MD][a-zA-Z]*TTL: 31536000$' "$t/mcache")" = 3 ] || { cat "$t/mcache" >&2; fail "the media cache policy's three TTLs are not a year"; }
+awk '/^  MediaHeaders:$/{f=1} /^  Distribution:$/{f=0} f' "$t/media_on" > "$t/mheaders"
+grep -Fq 'Value: "public, max-age=31536000, immutable"' "$t/mheaders" || fail "the media Cache-Control"
+grep -Fq "ContentSecurityPolicy: \"default-src 'none'; sandbox\"" "$t/mheaders" || fail "the media CSP"
+grep -q "ContentTypeOptions:" "$t/mheaders" || fail "the media nosniff"
+ok
+# An app whose every route is the VM's still has the OAC the media origin reads through, and no Router.
+run "$(app medvm "CBASE_APP = shop" "CBASE_MEDIA = on" "CBASE_ROUTE = * vm")" template
+expect_rc 0 "a media app with no static route"
+out_has "  Oac:" "the media origin's OAC without a static route"
+grep -q "Router" "$t/out" && fail "a media app with no static route has the Router"
+ok
+# Media off (the default) leaves no trace of it, and a media-off render is the app's as it was.
+run "$(app nomed "CBASE_APP = shop" "CBASE_ROUTE = /api/* vm")" template
+expect_rc 0 "a template without media"
+grep -Eq 'Media|/m/\*|_media' "$t/out" && { grep -En 'Media|/m/\*|_media' "$t/out" >&2; fail "a template without media names it"; }
+ok
+fi
 # ---- template-shapes: the flag combinations the templates above do not cover: each route's cache
 # policy, a ws route's compress, aliases off, and an API host's own alias and certificate. Their
 # strings are the template output as the tool renders it, checked literally on each shape.
