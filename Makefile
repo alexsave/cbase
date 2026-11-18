@@ -152,7 +152,12 @@ cbase-render-test:
 cbase-py-check:
 	bash tools/cbase_cli/test/py_check.sh
 	bash tools/cbase_cli/test/launcher_test.sh
+# CBASE_TOOL_TESTS=0 leaves them out of check, for a CI job that runs them as their own job (the macOS
+# runner, where the five together take about 25 minutes, mostly the AWS CLI's start per call).
+CBASE_TOOL_TESTS ?= 1
+ifneq ($(CBASE_TOOL_TESTS),0)
 check: cbase-tool-test cbase-vm-test cbase-group-test cbase-render-test cbase-py-check
+endif
 CBASE_CLI_SECTIONS ?= conf secrets dispatch
 cbase-cli-test:
 	CBASE_TEST_ONLY='$(CBASE_CLI_SECTIONS)' bash tools/cbase.d/test/cbase_test.sh
