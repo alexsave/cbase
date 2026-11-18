@@ -132,7 +132,7 @@ def _run(argv: List[str]) -> int:
             if gid is None:
                 sys.exit(cli.EXIT_FAIL)
             state.origin_in = conf.vm_origin
-            state.change(kind, name, conf.app, confmod.mem(), op)
+            state.change(kind, name, conf.app, confmod.mem(), op, conf.static_prefix if kind == "static" else "")
         return 0
     if cmd == "template":
         if nargs != 0:

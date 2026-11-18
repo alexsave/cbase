@@ -26,10 +26,12 @@ legacy_data = ""      # a grandfathered member's own data directory, or ""
 port = ""             # the port the last vm join holds
 joined_new = False    # true when the last join added the app (it was not a member)
 
-# The file as read. Member i is _lines[i], app _apps[i], port _ports[i] (-1 for a static member).
+# The file as read. Member i is _lines[i], app _apps[i], port _ports[i] (-1 for a static member), and
+# folder _folders[i] (a static member's folder in the bucket, without its last /; "" for a vm member).
 _lines: List[str] = []
 _apps: List[str] = []
 _ports: List[int] = []
+_folders: List[str] = []
 member_origin = ""        # the header's origin, "" when none
 member_origin_addr = ""   # ipv6 or dualstack
 fit_report = ""           # the last memory fit's report, what the join prints
@@ -51,18 +53,36 @@ def _members_clear() -> None:
     del _lines[:]
     del _apps[:]
     del _ports[:]
+    del _folders[:]
 
 
-def _member_push(line: str, app: str, port_: int) -> None:
+def _member_push(line: str, app: str, port_: int, folder: str) -> None:
     _lines.append(line)
     _apps.append(app)
     _ports.append(port_)
+    _folders.append(folder)
 
 
 def _member_remove(at_: int) -> None:
     del _lines[at_]
     del _apps[at_]
     del _ports[at_]
+    del _folders[at_]
+
+
+def folders_overlap(a: str, b: str) -> bool:
+    """Do the folders A and B (no last /) share a key: the same folder, or one inside the other? Then each
+    app's prune (static.py), which deletes every key under its folder that its build does not hold, would
+    delete the other's files. "site" and "site-admin" do not overlap; "site" and "site/admin" do."""
+    return a == b or a.startswith(b + "/") or b.startswith(a + "/")
+
+
+def _overlap_at(folder: str, skip: int) -> int:
+    """The first member but SKIP whose folder overlaps FOLDER, or -1."""
+    for i in range(len(_folders)):
+        if i != skip and _folders[i] and folders_overlap(folder, _folders[i]):
+            return i
+    return -1
 
 
 def _die(where: str, no: int, sentence: str) -> None:
@@ -80,7 +100,9 @@ def _match(pattern: str, s: str) -> Optional["re.Match[str]"]:
 
 
 _VM_LINE = "^app=([a-z]([a-z0-9-]{0,30}[a-z0-9])?) port=([0-9]{4,5}) service=([a-z0-9-]+)\\.service mem=~?([0-9]{1,6})( data=(/[A-Za-z0-9._/-]+) legacy=1)?\\Z"
-_STATIC_LINE = "^app=([a-z]([a-z0-9-]{0,30}[a-z0-9])?) folder=([a-z0-9-]+)/\\Z"
+# A static member's folder is the app's name, or its CBASE_STATIC_PREFIX (conf.OBJ_KEY_RE, the one pattern
+# of a folder, whose anchors are taken off here).
+_STATIC_LINE = "^app=([a-z]([a-z0-9-]{0,30}[a-z0-9])?) folder=(%s)/\\Z" % conf.OBJ_KEY_RE[1:-2]
 
 
 def _parse(kind: str, group: str, file: str, where: str) -> None:
@@ -110,6 +132,7 @@ def _parse(kind: str, group: str, file: str, where: str) -> None:
             if line != want:
                 _die(where, no, "is not \"%s\" (the format's version, the kind and the group; a vm group's may add \" origin=<host> addr=<ipv6|dualstack>\")" % want)
             continue
+        folder = ""   # a vm member's; a static member's is read below
         if kind == "vm":
             m = _match(_VM_LINE, line)
             if not m:
@@ -136,12 +159,14 @@ def _parse(kind: str, group: str, file: str, where: str) -> None:
                 return
             app = m.group(1)
             folder = m.group(3)
-            if folder != app:
-                _die(where, no, "gives app %s the folder %s/ (it is %s/)" % (app, folder, app))
+            j = _overlap_at(folder, -1)
+            if j >= 0:
+                _die(where, no, "gives app %s the folder %s/, which overlaps %s's %s/ (each one's prune would delete the other's files)"
+                     % (app, folder, _apps[j], _folders[j]))
             port_ = -1
         if app in _apps:
             _die(where, no, "lists %s again" % app)
-        _member_push(line, app, port_)
+        _member_push(line, app, port_, folder)
     if no < 1:
         _die(where, 1, "is empty (it starts \"cbase-state %s %s %s\")" % (STATE_VERSION_TEXT, kind, group))
 
@@ -291,10 +316,11 @@ def vm_line(app: str, port_: str, mem: str, legacy_data_: str) -> str:
     return line
 
 
-def change(kind: str, group: str, app: str, mem: str, op: str) -> None:
-    """One join or leave (OP "join" or "leave") of APP with MEM as its declared memory, read, changed and
-    conditionally written, retried on a lost race. Prints what it did. Stops the tool on a refusal, having
-    changed nothing."""
+def change(kind: str, group: str, app: str, mem: str, op: str, folder: str = "") -> None:
+    """One join or leave (OP "join" or "leave") of APP with MEM as its declared memory (a vm group's) or
+    FOLDER as its folder in the bucket (a static group's join: its CBASE_STATIC_PREFIX, or "" for the app's
+    name), read, changed and conditionally written, retried on a lost race. Prints what it did. Stops the
+    tool on a refusal, having changed nothing."""
     global port, joined_new
     bucket_s = bucket()
     key_s = key(kind, group)
@@ -330,7 +356,14 @@ def change(kind: str, group: str, app: str, mem: str, op: str) -> None:
                     cli.fail(cli.EXIT_FAIL, "%s does not fit on vm group %s: its members would need more than the %d MiB its instance leaves for apps (%s). Declare less memory (CBASE_MEMORY), put the app in another group, or give the group a bigger instance (./cbase group-init vm %s --type <type>). Nothing was changed."
                              % (app, group, fit_limit, fit_what, group))
             else:
-                line = "app=%s folder=%s/" % (app, app)
+                if not folder:
+                    folder = app
+                # THE FOLDER RULE: no two members' folders overlap, so no app's prune reaches another's files.
+                j = _overlap_at(folder, pos)
+                if j >= 0:
+                    cli.fail(cli.EXIT_FAIL, "%s's folder %s/ overlaps %s's %s/ in static group %s: each one's prune would delete the other's files. Give %s another CBASE_STATIC_PREFIX. Nothing was changed."
+                             % (app, folder, _apps[j], _folders[j], group, app))
+                line = "app=%s folder=%s/" % (app, folder)
             joined_new = pos < 0
             if pos >= 0 and _lines[pos] == line and old_origin == member_origin:
                 cli.out("%s is in %s group %s: %s\n" % (app, kind, group, line))
@@ -344,7 +377,7 @@ def change(kind: str, group: str, app: str, mem: str, op: str) -> None:
                 if kind == "vm":
                     pv = cli.parse_int(port_s, 0, 99999)
                     port_n = pv if pv is not None else 0
-                _member_push(line, app, port_n)
+                _member_push(line, app, port_n, folder if kind == "static" else "")
         new_path = cli.tmp_path("new")
         _render(kind, group, new_path)
         rc = aws.s3_put(bucket_s, key_s, new_path, _etag_cur)
