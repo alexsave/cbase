@@ -292,3 +292,8 @@ Outputs:
   OriginIpv6:
     Description: the fixed IPv6 address the instance claims at boot, the subnet's ::10 (its AAAA record's)
     Value: !Select [0, !Split ["/", !Select [1, !Cidr [!Select [0, !GetAtt Subnet.Ipv6CidrBlocks], 2, 4]]]]
+  RoleName:
+    Description: the instance role, which an app's media policy (app.yaml MediaWrites) attaches to
+    Value: !Ref Role
+    Export:
+      Name: cbase-vm-g4-role
