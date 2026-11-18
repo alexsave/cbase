@@ -159,7 +159,7 @@ def deploy(conf_file: str, args: List[str]) -> None:
     if has_static:
         assert plan is not None
         if not conf.static_bucket:
-            state.change("static", conf.stat, conf.app, "", "join")
+            state.change("static", conf.stat, conf.app, "", "join", stack.stk_prefix)
         static.print_plan(plan)
         static.upload(plan, stack.stk_bucket, stack.stk_bucket_region, stack.stk_prefix)
     # 9. The distribution: the hostnames moved onto it first (a staged attach), then the stack update.
