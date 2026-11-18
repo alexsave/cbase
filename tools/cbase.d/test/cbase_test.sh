@@ -26,8 +26,8 @@ set -euo pipefail
 # shellcheck source=tools/cbase.d/test/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-# ---- cbase.conf: errors, each with its line number -------------------------------------------
-if wanted conf; then
+# THE HELPERS THE SECTIONS SHARE sit here, outside every `if wanted` block, so a section run alone
+# (CBASE_TEST_ONLY=NAME) reaches them: a section that borrowed one from another died on "command not found".
 conf_error() {   # conf_error "EXPECTED" LINES...
   local want="$1"; shift
   local d
@@ -37,6 +37,9 @@ conf_error() {   # conf_error "EXPECTED" LINES...
   err_has "$want" "a bad cbase.conf"
   ok
 }
+
+# ---- cbase.conf: errors, each with its line number -------------------------------------------
+if wanted conf; then
 conf_error "cbase.conf line 2: is not KEY = value (no '=')" "CBASE_APP = a" "CBASE_STATIC none"
 conf_error "cbase.conf line 3: CBASE_FOO is not a cbase.conf key" "CBASE_APP = a" "# c" "CBASE_FOO = 1"
 conf_error "cbase.conf line 3: sets CBASE_APP again (line 1 set it)" "CBASE_APP = a" "CBASE_VM = none" "CBASE_APP = b"
@@ -682,6 +685,19 @@ for f in index.html about.html docs/index.html app.wasm style.css data.json font
   printf '%s\n' "$f" > "$site/build/$f"
 done
 
+# THE SITE, DEPLOYED ONCE: the state the sections after the first deploy start from (prune reads the
+# site's folder as the deploy left it). The static section is the first deploy and leaves the mark;
+# a section run alone calls site_up and gets the same state from a fresh fake.
+site_up() {
+  [ -e "$t/site_up" ] && return 0
+  start_fake "${site_fake[@]}"
+  seed other/index.html; seed site-admin/app.js; seed siteish.txt; seed index.html
+  run "$site" deploy
+  expect_rc 0 "the site's first deploy (the state this section starts from)"
+  ok
+  touch "$t/site_up"
+}
+
 # ---- static-only end to end: the create path, the headers, the hashed rule, the order ---------
 if wanted static; then
 start_fake "${site_fake[@]}"
@@ -753,6 +769,7 @@ for k in other/index.html site-admin/app.js siteish.txt index.html; do
   aws s3api head-object --bucket "$SITE_BUCKET" --key "$k" > /dev/null 2>&1 || fail "s3://$SITE_BUCKET/$k is gone"
 done
 ok
+touch "$t/site_up"   # the site is deployed: site_up has nothing to do
 
 fi
 # ---- a redeploy: drift checked, no changes, the edge invalidated --------------------------------
@@ -771,6 +788,7 @@ ok
 fi
 # ---- prune: the build's leftovers in the app's folder, and nothing else -------------------------
 if wanted prune; then
+site_up
 seed site/stale.js; seed site/old/page.html
 rm "$site/build/data.json"
 # The prune is on by default; --no-prune, and CBASE_PRUNE=0 (exactly "0"), turn it off.
