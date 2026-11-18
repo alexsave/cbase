@@ -1,0 +1,17 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//cbase//calendar//EN
+CALSCALE:GREGORIAN
+BEGIN:VEVENT
+UID:e-seoul-han-2026-11-24@calendar.example
+DTSTAMP:20261118T093015Z
+DTSTART:20261124T224500Z
+DTEND:20261125T001500Z
+RRULE:FREQ=WEEKLY;BYDAY=TU,TH
+SUMMARY:한강 러닝 크루 Han River Run
+LOCATION:뚝선한강공원\, 서울
+DESCRIPTION:화요일과 목요일\, 6K 조깅. 모두 환영해요 and eve
+ ryone is welcome to join the long easy run along the river.
+GEO:37.532600;126.990300
+END:VEVENT
+END:VCALENDAR
