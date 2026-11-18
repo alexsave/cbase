@@ -309,6 +309,28 @@ void cb_runtime_error_body(cb_buf *b, const char *type, const char *message);
 bool cf_invalidation_xml(cb_buf *out, const char *const *paths, int n, const char *caller_ref);
 
 // =====================================================================================
+// S3's browser POST policy (s3p_): the one JSON document a presigned upload form carries
+// (aws/s3_post.h), base64 in the form's `policy` field and signed there.
+
+// What the policy fixes. Every string is the exact value the form's field carries.
+typedef struct {
+    const char *bucket;
+    const char *key;               // exact, never a prefix
+    const char *content_type;      // exact
+    uint64_t    max_bytes;         // the file's size is in 1..max_bytes
+    const char *credential;        // <AK>/<yyyymmdd>/<region>/s3/aws4_request
+    const char *amz_date;          // yyyymmddThhmmssZ
+    const char *security_token;    // "" or NULL: none
+    int64_t     expires_unix_s;    // the policy's expiration, whole seconds since the epoch (UTC)
+} s3p_policy;
+
+// The policy document into out, the conditions in this order: bucket, key, Content-Type, the size
+// range, x-amz-algorithm (AWS4-HMAC-SHA256), x-amz-credential, x-amz-date, and x-amz-security-token
+// when there is one. "expiration" is yyyy-mm-ddThh:mm:ss.000Z. false when out ran out of memory or
+// the expiration is not a time gmtime can write.
+bool s3p_policy_json(cb_buf *out, const s3p_policy *p);
+
+// =====================================================================================
 // SSM Parameter Store (ssm_): where the function's secrets live (aws/ssm.h).
 
 // The body of GetParameters for these names, decrypted (WithDecryption).
