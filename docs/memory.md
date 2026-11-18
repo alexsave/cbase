@@ -59,11 +59,11 @@ Which text pages are executed was not measured, only which are mapped.
 
 ## Reproduce
 
-The scripts are in `bench/mem/`.
+The scripts are in `bench/mem/`, but the build, which needs a cdom checkout, is `example/minimal/bench_static.sh`, since only the app built on cdom may name it (`tools/repo_gate_test.sh`).
 They need Docker on an arm64 host (an Apple-silicon Mac runs the container natively).
 
 ```sh
-OUT=/abs/path/out CDOM=/abs/path/to/cdom bench/mem/build.sh   # builds out/minimal, readelf output
+OUT=/abs/path/out CDOM=/abs/path/to/cdom example/minimal/bench_static.sh   # builds out/minimal, readelf output
 OUT=/abs/path/out bench/mem/run.sh                            # idle, 1000 requests, floors
 ```
 
