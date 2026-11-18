@@ -1641,3 +1641,51 @@ Each was run on the section named (`CBASE_TEST_ONLY='conf media'`, group-templat
 - cbase_cli/conf.py's CBASE_STATIC = none refusal for media disabled (`if False:`) -> `a bad cbase.conf (cbase.conf line 3: CBASE_MEDIA keeps the uploads in the static group's bucket, and CBASE_STATIC is none): status 0, not 1` red.
 - cbase_cli/stack.py's `stk_caps = "CAPABILITY_IAM"` for a media app made `""` -> `a media app's change set lacks CAPABILITY_IAM` red (the fake's log shows `caps=`).
 - tools/cbase.d/templates/group-vm.yaml's RoleName Export removed -> cbase_group_test.sh's group-template case red, its diff showing the two removed lines (`Export:` and `Name: cbase-vm-g4-role`) against the golden text.
+
+## lib/tz and lib/ics, the zone table, the time gate (zones-calendar)
+
+Each was run on the test named, restored by editing back, and the objects deleted.
+A mutation of the ics writer was run with the goldens already written from the unbroken code, so the named assertion is not hidden behind a golden that moved with it; where the golden comparison fails first, the named test's own assertion is red as well.
+The oracle's checks (`lib/ics/test/ics_oracle.py`) were run with the goldens re-rendered from the mutated writer.
+Oracle data: `lib/tz/test/transitions.tsv`, from Python's zoneinfo (tools/tz_gen.py).
+
+- lib/tz/tz.c: the last week (w = 5) taken as week 4 -> tz_test's `oracle: tz_rule_transitions gives each transition zoneinfo has` red (Antarctica/Troll's M3.5.0 first), and `parser: J and n dates, and the last week` (the last Sunday of October 2027 is the 31st).
+- lib/tz/tz.c: the /time default of 02:00 dropped (0) -> `oracle: tz_rule_transitions gives each transition zoneinfo has` and `parser: fields of a few rules` red.
+- lib/tz/tz.c: an overlap taking the second instant -> `overlap: a time that happens twice takes the first` red, and `oracle: local times around a transition convert back` (`back <= u`).
+- lib/tz/tz.c: a gap read in the later offset -> `gap: a time that never happens moves forward by the gap` red (New York 02:30 is not 07:30 UTC).
+- lib/tz/tz.c: DST decided from the instant's own year only -> `gap: a southern zone's gap and overlap, and a zone whose DST is the lesser offset` and the oracle's one-minute-either-side check red (Australia/Lord_Howe).
+- lib/tz/tz.c: the transition instant read as before the change (`<` for `<=`) -> `oracle: one minute either side of a transition has the offset before and after` red (the instant itself).
+- lib/tz/tz.c: Jn counting February 29 -> `parser: J and n dates, and the last week` red (J60 is March 1 in 2028).
+- lib/tz/tz.c: an hour of 168 accepted, a bare M13 accepted, a missing end date defaulted, text after the rule accepted -> `parser: refusals` red on `EST5EDT,M3.2.0/168,M11.1.0`, `EST5EDT,M13.1.0,M11.1.0`, `EST5EDT,M3.2.0` and `EST5EDT,M3.2.0,M11.1.0,M1.1.1` each.
+- lib/tz/tz.c: the POSIX offset sign not inverted -> `parser: fields of a few rules` and the oracle's offsets red.
+- lib/tz/tz.c: tz_find matching a prefix -> `gap: bad arguments write nothing` red (`America/New_Yorkx`).
+- lib/tz/tz.c: the minute range not checked -> `gap: bad arguments write nothing` red (minute 1440).
+- lib/tz/tz.c: an instant before 1970 truncated instead of floored -> `fixed: KST-9 and <+08>-8 at the year boundaries` red (the 1969-12-31 23:59:59.999 UTC reading).
+- lib/tz/tz.c: a summer time read as standard (the DST-only branch of tz_rule_utc_ms removed) -> `weekly: a 07:00 run stays at 07:00 local across both changes, and the cities' gap moves between 6 and 5 hours` red.
+- lib/tz/tz.c: a fixed rule counted as DST -> `fixed: KST-9 and <+08>-8 at the year boundaries` red (the abbreviation).
+- lib/tz/test/transitions.tsv: one abbreviation changed (`EDT` to `EDX`) -> `oracle: one minute either side of a transition has the offset before and after` red, and a transition line deleted -> the count line (`the oracle holds 49 transitions, the rule gives 50`) red.
+- lib/tz/tzdb.tsv: New York's rule changed to M3.3.0 -> `parser: every rule of lib/tz/tzdb.tsv parses, and the five of this test are the committed ones` red, and Seoul's rule made `KST-9,M1` -> the same test red on the parse.
+- lib/ics/ics.c: the fold limit 75 made 76 -> ics_test's `fold: the 75th octet stays, the 76th goes to a continuation line of 74` and the golden shape check red.
+- lib/ics/ics.c: a UTF-8 sequence not kept whole -> `fold: Hangul and Norwegian text folds only between characters` red (`fold inside UTF-8`).
+- lib/ics/ics.c: `;` not escaped, and CRLF written as two newlines -> `escape: backslash, semicolon, comma and newlines in text` red.
+- lib/ics/ics.c: control bytes not replaced in a UID host -> `escape: a control byte in id, host or url cannot inject a line` red.
+- lib/ics/ics.c: the writer counting only what fits -> `length: the length needed, snprintf-style, whatever the capacity` red (length with no buffer is 0), and no NUL on a full buffer -> the same test red (`cut to fit`).
+- lib/ics/ics.c: the zone ignored (UTC written) -> `zone: a repeating event is written in the zone's local time with a VTIMEZONE from its rule` red, and the golden for New York.
+- lib/ics/ics.c: the last week written `5` instead of `-1` -> `zone: the last week is -1, a time other than 02:00 is the part's DTSTART` red.
+- lib/ics/ics.c: DAYLIGHT's offsets swapped -> `zone: a repeating event is written in the zone's local time with a VTIMEZONE from its rule` red.
+- lib/ics/ics.c: STANDARD's onset read on the standard wall clock instead of the DST one -> `zone: the last week is -1, a time other than 02:00 is the part's DTSTART` red (Oslo's 03:00).
+- lib/ics/ics.c: a rule with a /24 end accepted by the VTIMEZONE -> `errors: an unknown zone, or a rule the VTIMEZONE cannot say` red (Cairo).
+- lib/ics/ics.c: an unknown zone written in UTC -> the same test red.
+- lib/ics/gcal.c: the link without `ctz` -> `zone: the link carries ctz and local times for a repeating event, UTC otherwise` red.
+- lib/ics/ics.c: no UID host required -> `errors: refusals leave the empty string` red (`no UID host accepted`); end before start accepted -> the same test red; the upper year bound removed -> `time: UTC stamps, floored to the second, either side of the epoch` red.
+- lib/ics/ics.c: a three-digit degree cut to two digits -> the golden comparison red (`golden: the .ics and the link of each case, byte for byte`, weekly.ics).
+- lib/ics/gcal.c: `~` percent-encoded -> `gcal: percent-encoding and the link's parts` red.
+- lib/ics/test/golden/weekly_oslo.ics: `CEST` made `CEXT` -> `golden: the .ics and the link of each case, byte for byte` red.
+- lib/ics/ics.c: the last week written `1` (a wrong VTIMEZONE) -> ics_oracle.py red on weekly_oslo (`the file's zone has offset 2:00:00, zoneinfo 1:00:00`).
+- lib/ics/ics.c: STANDARD's onset on the wrong wall clock -> ics_oracle.py red on weekly_ny (`the file's zone has offset -1 day, 19:00:00, zoneinfo -1 day, 20:00:00`).
+- lib/ics/test/golden/weekly_ny_utc.ics: the UTC control replaced by a zoned event -> ics_oracle.py's `the control is in UTC` red, the negative control that shows the oracle sees the old bug.
+- tools/tz_zones.awk: zones written in reverse order -> tools/tz_zones_test.sh `the order named is not kept` red; an unknown name ignored, a duplicate accepted, an empty list accepted -> the refusal cases (`status 0, not 1`) red; every zone of the tsv written -> `three zones asked, 596 written` red; the tsv's rule replaced by the name -> `Oslo's rule is not the tsv's` red.
+- core/src/util/clock.c given `tzset()`, and lib/tz/tz.c given `localtime` -> core/test/unit_time_gate.c's `no_zone_lookup_goes_through_libc` red, naming the file and line each; `mktime` dropped from the gate's list -> `the_scanner_sees_each_name` red.
+- lib/tz/tz.h given `foolish` and lib/ics/ics.h given `AWS` in their first lines -> core/test/unit_name_gate.c's `each_side_names_only_its_own` red, naming the file and the pattern.
+
+tools/tz_gen.py is a generator, not a test, and its refusals were run rather than mutated: with no tools/tz_skip.txt it stops naming America/Havana, Asia/Gaza, Asia/Hebron and Cuba; with a stale line in the list it stops naming the zone; `Rule("EST5EDT")` stops with the no-dates refusal; and a second run writes both files byte for byte the same.

@@ -159,11 +159,12 @@ def zone_case(name, want, cal, ev):
         check(len(hours) == 1, f"{name}: a fixed zone keeps one UTC hour")
 
 
-def control(name, want, ev):
+def control(name, want, ev, raw):
     """The same event in UTC, seen in the real zone: its local hour drifts, which is the bug the zone fixes."""
+    check(b"TZID" not in raw and ev["DTSTART"].dt.tzinfo is not None and ev["DTSTART"].dt.utcoffset() == timedelta(0), f"{name}: the control is in UTC")
     zi = ZoneInfo("America/New_York")
-    rule = rrulestr(ev["RRULE"].to_ical().decode(), dtstart=want["start"])
-    local_hours = {occ.astimezone(zi).hour for occ in rule.between(want["start"], datetime(2028, 11, 30, tzinfo=U), inc=True)}
+    rule = rrulestr(ev["RRULE"].to_ical().decode(), dtstart=ev["DTSTART"].dt)
+    local_hours = {occ.astimezone(zi).hour for occ in rule.between(ev["DTSTART"].dt, datetime(2028, 11, 30, tzinfo=U), inc=True)}
     check(local_hours == {7, 8}, f"{name}: the UTC event should show at 07:00 and 08:00 New York time, got {sorted(local_hours)}")
 
 
@@ -178,7 +179,7 @@ def main(d):
         else:
             check(not [c for c in cal.walk() if c.name == "VTIMEZONE"], f"{name}: a VTIMEZONE in a UTC event")
         if name == "weekly_ny_utc":
-            control(name, want, ev)
+            control(name, want, ev, raw)
     if check.bad:
         sys.exit(1)
     print("ics oracle passed for", ", ".join(EXPECT))
