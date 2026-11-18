@@ -165,6 +165,13 @@ static void configured_place(void) {
     T_EQ_INT(cb_config_from_env(&c, err, sizeof err), CB_OK);
     T_EQ_INT(cb_media_configure(&c, err, sizeof err), CB_OK);
     T_EQ_INT(cb_media_post("image/png", 0, 1, &f), CB_E_STATE);
+    // On, then closed: off, with the place freed (the ASan build's leak check holds the free).
+    T_EQ_INT(conf("bkt", "us-west-1", "_media/app/m/", err, sizeof err), CB_OK);
+    T_EQ_INT(cb_config_from_env(&c, err, sizeof err), CB_OK);
+    T_EQ_INT(cb_media_configure(&c, err, sizeof err), CB_OK);
+    cb_media_close();
+    T_EQ_INT(cb_media_post("image/png", 0, 1, &f), CB_E_STATE);
+    clear();
     unsetenv("AWS_ENDPOINT_URL_S3");
 }
 

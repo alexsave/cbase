@@ -25,7 +25,9 @@ static int del_at(const char *endpoint, const char *key) {
     cb_blob b;
     memset(&b, 0, sizeof b);
     T_EQ_INT(cb_blob_open_s3("b", "us-east-1", &b), CB_OK);
-    return b.del(b.ud, key);
+    int rc = b.del(b.ud, key);
+    b.close(b.ud);
+    return rc;
 }
 
 static void a_host_and_port_that_do_not_fit_are_refused_not_cut(void) {

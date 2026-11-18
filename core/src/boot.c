@@ -161,5 +161,6 @@ void cb_unboot(cb_ctx *ctx) {
     ctx->auth = NULL;
     cb_store_close(ctx->store);
     ctx->store = NULL;
+    cb_media_close();
     release_instance();
 }

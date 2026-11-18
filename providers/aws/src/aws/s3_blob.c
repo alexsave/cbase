@@ -283,6 +283,8 @@ static int s3_post_form(void *ud, const char *key, const char *content_type, uin
     return cb_s3_post_form_make(&creds, url, c->bucket, key, content_type, max_bytes, now_ms, expires_s, out);
 }
 
+static void s3_close(void *ud) { free(ud); }
+
 int cb_blob_open_s3(const char *bucket, const char *region, cb_blob *out) {
     s3_ctx *c = calloc(1, sizeof *c);
     if (!c) return CB_E_NOMEM;
@@ -291,7 +293,8 @@ int cb_blob_open_s3(const char *bucket, const char *region, cb_blob *out) {
         free(c);
         return CB_E_INVALID;
     }
-    *out = (cb_blob){ .put = s3_put, .get = s3_get, .ud = c, .del = s3_del, .post_form = s3_post_form };
+    *out = (cb_blob){ .put = s3_put, .get = s3_get, .ud = c, .del = s3_del, .post_form = s3_post_form,
+                      .close = s3_close };
     return CB_OK;
 }
 

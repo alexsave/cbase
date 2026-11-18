@@ -25,6 +25,8 @@ typedef struct cb_blob {
     // Pure of the clock (now_ms is passed). CB_OK with *out, or a CB_E_*. NULL: the place cannot.
     int (*post_form)(void *ud, const char *key, const char *content_type, uint64_t max_bytes, int64_t now_ms,
                      int expires_s, cb_media_form *out);
+    // Frees what the backend's open made (ud). NULL: there is nothing to free.
+    void (*close)(void *ud);
 } cb_blob;
 
 // AN OBJECT STORE BACKEND: a bucket in `region`, reached with the credentials this process has (the
