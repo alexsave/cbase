@@ -61,6 +61,16 @@ void cb_sigv4_uri_encode(cb_buf *b, const char *s, size_t n, bool keep_slash);
 // the tests.
 uint64_t cb_sigv4_keys_derived(void);
 
+// The signing key for (secret, the first 8 characters of date8 as yyyymmdd, region, service): the
+// one HMAC chain cb_sigv4_sign signs with (kept per thread, reused until an input changes), exposed
+// for the signatures that are not a request's, such as a browser POST's policy (aws/s3_post.h).
+// false: a NULL or too short date, or no memory or SHA-256 in libcrypto.
+bool cb_sigv4_signing_key(const char *secret, const char *date8, const char *region, const char *service,
+                          uint8_t out[32]);
+// HMAC-SHA256 (RFC 2104) over the same digest the chain uses; the one HMAC, for the caller that
+// signs with a key from cb_sigv4_signing_key. false: no memory or SHA-256 in libcrypto.
+bool cb_sigv4_hmac(const void *key, size_t klen, const void *msg, size_t mlen, uint8_t out[32]);
+
 // The pieces cb_sigv4_sign computes, exposed for the test suite vectors:
 // the canonical request, the string to sign and the hex signature.
 int cb_sigv4_debug(const cb_aws_creds *c, const cb_sigv4_req *r, cb_buf *canonical, cb_buf *string_to_sign,
