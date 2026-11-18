@@ -3,6 +3,7 @@
 #include "metrics.h"
 
 #include "edge.h"
+#include "media.h"
 #include "rate_limits.h"
 #include "auth/auth.h"
 #include "cbase/app.h"
@@ -102,6 +103,7 @@ int cb_boot(cb_ctx *ctx, char *err, size_t cap) {
     if (rc != CB_OK) return rc;
     if ((rc = cb_router_cors_check(ctx->app, cfg, err, cap)) != CB_OK) return rc;
     if ((rc = cb_router_host_check(ctx->app, err, cap)) != CB_OK) return rc;
+    if ((rc = cb_media_configure(cfg, err, cap)) != CB_OK) return rc;   // before anything is opened: a refusal leaves nothing to close
     if (ctx->app && (rc = cb_rt_families_check(ctx->app->topics, ctx->app->n_topics, err, cap)) != CB_OK) return rc;
     if (ctx->app && ctx->app->n_metrics > 0 && (rc = cb_metrics_new(ctx->app->metrics, ctx->app->n_metrics, &ctx->metrics)) != CB_OK) {
         snprintf(err, cap, "the app's metrics table: %s", cb_strerror(rc));

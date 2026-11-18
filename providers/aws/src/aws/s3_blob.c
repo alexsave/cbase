@@ -1,6 +1,8 @@
 // s3_blob.c - see s3_blob.h and util/blob.h.
 #include "aws/s3_blob.h"
 
+#include "aws/aws_call.h"
+#include "aws/s3_post.h"
 #include "net/https.h"
 #include "sigv4.h"
 #include "util/blob.h"
@@ -139,27 +141,64 @@ typedef struct {
     char bucket[64], region[32];
 } s3_ctx;
 
+// WHERE THE BUCKET IS: <bucket>.s3.dualstack.<region>.amazonaws.com over TLS, or, when
+// AWS_ENDPOINT_URL_S3 is set, that endpoint path-style (<endpoint>/<bucket>/<key>): a local stand-in
+// for S3 (tools/cbase.d/test/fake_aws.c). An http:// endpoint is refused for any amazonaws.com host,
+// as for DynamoDB (aws_call.c cb_aws_url_parse).
+typedef struct {
+    char host[160];       // as the Host header spells it: with ":port" when not the scheme's own
+    char name[160];       // the host alone
+    int  port;
+    bool tls;
+    char base[160];       // the endpoint's own path, "" for none
+    bool path_style;
+} s3_place;
+
+static int s3_place_of(const s3_ctx *c, s3_place *p) {
+    memset(p, 0, sizeof *p);
+    const char *ep = getenv("AWS_ENDPOINT_URL_S3");
+    if (ep && *ep) {
+        int rc = cb_aws_url_parse(ep, p->name, sizeof p->name, &p->port, &p->tls, p->base, sizeof p->base);
+        if (rc != CB_OK) return rc;
+        p->path_style = true;
+        if (p->port == (p->tls ? 443 : 80)) snprintf(p->host, sizeof p->host, "%s", p->name);
+        else snprintf(p->host, sizeof p->host, "%s:%d", p->name, p->port);
+        return CB_OK;
+    }
+    p->tls = true;
+    p->port = 443;
+    int n = snprintf(p->name, sizeof p->name, "%s.s3.dualstack.%s.amazonaws.com", c->bucket, c->region);
+    if (n >= (int)sizeof p->name) return CB_E_INVALID;
+    snprintf(p->host, sizeof p->host, "%s", p->name);
+    return CB_OK;
+}
+
 static int s3_call(s3_ctx *c, const char *method, const char *key, const void *body, size_t n, cb_https_response *res) {
     cb_aws_creds creds;
     int rc = cb_aws_creds_get(&creds);
     if (rc != CB_OK) return CB_E_IO;
     snprintf(creds.region, sizeof creds.region, "%s", c->region);
-    char host[160], path[300], sum[65], h1[100];
-    snprintf(host, sizeof host, "%s.s3.dualstack.%s.amazonaws.com", c->bucket, c->region);
-    snprintf(path, sizeof path, "/%s", key);
+    s3_place pl;
+    if ((rc = s3_place_of(c, &pl)) != CB_OK) return rc;
+    char path[480], sum[65], h1[100];
+    if (pl.path_style) snprintf(path, sizeof path, "%s/%s/%s", pl.base, c->bucket, key);
+    else snprintf(path, sizeof path, "/%s", key);
     uint8_t d[SHA256_DIGEST_LEN];
     sha256(body, n, d);
     hex_encode(d, sizeof d, sum, sizeof sum);
     snprintf(h1, sizeof h1, "x-amz-content-sha256:%s", sum);
     const char *hdrs[] = { h1 };
-    cb_sigv4_req r = { .method = method, .host = host, .path = path, .query = "", .service = "s3", .headers = hdrs,
+    cb_sigv4_req r = { .method = method, .host = pl.host, .path = path, .query = "", .service = "s3", .headers = hdrs,
                        .n_headers = 1, .payload = body, .payload_len = n, .now_ms = cb_now_ms() };
     cb_buf h;
     cb_buf_init(&h);
     cb_buf_puts(&h, h1);
     cb_buf_puts(&h, "\r\n");
     rc = cb_sigv4_sign(&creds, &r, &h);
-    if (rc == CB_OK) rc = cb_https_request(host, 443, method, path, cb_buf_cstr(&h), body, n, 120000, res);
+    if (rc == CB_OK) {
+        if (pl.tls) rc = cb_https_request(pl.name, pl.port, method, path, cb_buf_cstr(&h), body, n, 120000, res);
+        else rc = cb_http_plain_request(CB_HTTPS_OTHER, pl.name, pl.port, method, path, cb_buf_cstr(&h), body, n, 120000, res);
+    }
     cb_buf_free(&h);
     return rc;
 }
@@ -215,6 +254,31 @@ static int s3_del(void *ud, const char *key) {
     return rc;
 }
 
+// A form for one upload (util/blob.h post_form). The credentials are the process's own, and the form
+// lives at most 5 minutes, which cb_aws_creds_get's instance-role refresh leaves them.
+static int s3_post_form(void *ud, const char *key, const char *content_type, uint64_t max_bytes, int64_t now_ms,
+                        int expires_s, cb_media_form *out) {
+    s3_ctx *c = ud;
+    cb_aws_creds creds;
+    if (cb_aws_creds_get(&creds) != CB_OK) return CB_E_IO;
+    snprintf(creds.region, sizeof creds.region, "%s", c->region);
+    char url[320];
+    const char *ep = getenv("AWS_ENDPOINT_URL_S3");
+    if (ep && *ep) {
+        char host[160], base[160];
+        int port;
+        bool tls;
+        int rc = cb_aws_url_parse(ep, host, sizeof host, &port, &tls, base, sizeof base);
+        if (rc != CB_OK) return rc;
+        size_t el = strlen(ep);
+        while (el > 0 && ep[el - 1] == '/') el--;
+        if (snprintf(url, sizeof url, "%.*s/%s", (int)el, ep, c->bucket) >= (int)sizeof url) return CB_E_INVALID;
+    } else if (snprintf(url, sizeof url, "https://%s.s3.%s.amazonaws.com/", c->bucket, c->region) >= (int)sizeof url) {
+        return CB_E_INVALID;
+    }
+    return cb_s3_post_form_make(&creds, url, c->bucket, key, content_type, max_bytes, now_ms, expires_s, out);
+}
+
 int cb_blob_open_s3(const char *bucket, const char *region, cb_blob *out) {
     s3_ctx *c = calloc(1, sizeof *c);
     if (!c) return CB_E_NOMEM;
@@ -223,7 +287,7 @@ int cb_blob_open_s3(const char *bucket, const char *region, cb_blob *out) {
         free(c);
         return CB_E_INVALID;
     }
-    *out = (cb_blob){ .put = s3_put, .get = s3_get, .ud = c, .del = s3_del };
+    *out = (cb_blob){ .put = s3_put, .get = s3_get, .ud = c, .del = s3_del, .post_form = s3_post_form };
     return CB_OK;
 }
 

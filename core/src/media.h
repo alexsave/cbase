@@ -6,8 +6,11 @@
 #ifndef CB_MEDIA_H
 #define CB_MEDIA_H
 
+#include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
+
+struct cb_blob;
 
 #define CB_MEDIA_FORM_FIELDS 10
 
@@ -28,5 +31,27 @@ static inline void cb_media_form_free(cb_media_form *f) {
     }
     f->n = 0;
 }
+
+// The form for one upload of an image the client picked: a key the platform names (the client never
+// does), the exact type, a size in 1..max_bytes (0: 5 MiB), valid for 5 minutes from now_ms.
+// `blob` is the place the file goes (util/blob.h) and `prefix` the folder its key is in.
+//   CB_OK, with *out (free it with cb_media_form_free)
+//   CB_E_INVALID   a type other than image/jpeg, image/png or image/webp (compared exactly: SVG is a
+//                  document that runs script, and a case or parameter variant is not accepted), or a
+//                  size over 10 MiB, or a prefix that is not a folder
+//   CB_E_STATE     no blob, or one that cannot make a form
+//   another CB_E_* the place's own
+int cb_media_post_with(const struct cb_blob *blob, const char *prefix, const char *content_type, uint64_t max_bytes,
+                       int64_t now_ms, cb_media_form *out);
+
+struct cb_config;
+// Reads CBASE_MEDIA_* (config.h) and opens the first linked object store backend for the bucket, once,
+// at boot (single-threaded; request threads only read what it keeps). CB_OK with media off (no bucket
+// set) or on; CB_E_INVALID with a sentence in err when a bucket is set and no linked backend can make
+// a form, or the backend will not open.
+int cb_media_configure(const struct cb_config *cfg, char *err, size_t cap);
+
+// cb_media_post_with over the configured place and folder. CB_E_STATE when media is not configured.
+int cb_media_post(const char *content_type, uint64_t max_bytes, int64_t now_ms, cb_media_form *out);
 
 #endif
