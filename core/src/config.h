@@ -154,6 +154,16 @@ typedef struct cb_config {
     char apple_private_key[2048];
     char apple_redirect_uri[512];
     char apple_issuer[256];
+    // USER UPLOADS (media.h cb_media_post): the object store folder a client may post one file into
+    // with a form the server signs. All three or none (none: no uploads, cb_media_post answers
+    // CB_E_STATE); a bucket also needs a linked backend that can sign a form, or boot refuses.
+    //   CBASE_MEDIA_BUCKET  the bucket
+    //   CBASE_MEDIA_REGION  the bucket's region
+    //   CBASE_MEDIA_PREFIX  the keys' folder: starts with "_media/" and ends with "/m/"
+    //                       (the deploy tool's CBASE_MEDIA serves "/m/*" from <_media/app>/m/)
+    char media_bucket[64];
+    char media_region[32];
+    char media_prefix[128];
 } cb_config;
 
 // Reads the environment into cfg. CB_OK, or CB_E_INVALID with a sentence in err.

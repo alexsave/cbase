@@ -7,7 +7,11 @@
 #ifndef CB_BLOB_H
 #define CB_BLOB_H
 
-typedef struct {
+#include "media.h"
+
+#include <stdint.h>
+
+typedef struct cb_blob {
     // CB_OK, or a CB_E_* (the object is not stored: nothing changed under `key`).
     int (*put)(void *ud, const char *key, const char *path);
     // CB_OK with the object written to `path`, CB_E_NOT_FOUND when there is none, else a CB_E_*.
@@ -16,6 +20,11 @@ typedef struct {
     // CB_OK when no object is under `key` any more (also when there was none), else a CB_E_*.
     // NULL: the place cannot delete (what is left over stays).
     int (*del)(void *ud, const char *key);
+    // A form a client posts ONE file to `key` with, straight to the place (media.h): exactly this key
+    // and content type, a size in 1..max_bytes, valid for expires_s seconds (1..300) from now_ms.
+    // Pure of the clock (now_ms is passed). CB_OK with *out, or a CB_E_*. NULL: the place cannot.
+    int (*post_form)(void *ud, const char *key, const char *content_type, uint64_t max_bytes, int64_t now_ms,
+                     int expires_s, cb_media_form *out);
 } cb_blob;
 
 // AN OBJECT STORE BACKEND: a bucket in `region`, reached with the credentials this process has (the
