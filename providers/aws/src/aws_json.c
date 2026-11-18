@@ -23,6 +23,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <time.h>
 
 // =====================================================================================
 // DynamoDB. Every DynamoDB string in cbase is in this section: the targets, the
@@ -2030,6 +2031,43 @@ bool cf_invalidation_xml(cb_buf *out, const char *const *paths, int n, const cha
     xml_text(out, caller_ref);
     cb_buf_puts(out, "</CallerReference></InvalidationBatch>");
     return !out->oom;
+}
+
+// ---- S3's browser POST policy (aws_json.h "S3's browser POST policy") ------------------------
+
+static void s3p_cond(cb_jw *w, const char *name, const char *value) {
+    cb_jw_obj(w);
+    cb_jw_kstr(w, name, value);
+    cb_jw_end(w);
+}
+
+bool s3p_policy_json(cb_buf *out, const s3p_policy *p) {
+    time_t t = (time_t)p->expires_unix_s;
+    struct tm tm;
+    if (!gmtime_r(&t, &tm)) return false;
+    char exp[40];
+    if (strftime(exp, sizeof exp, "%Y-%m-%dT%H:%M:%S.000Z", &tm) == 0) return false;
+    cb_jw w;
+    cb_jw_init(&w, out);
+    cb_jw_obj(&w);
+    cb_jw_kstr(&w, "expiration", exp);
+    cb_jw_key(&w, "conditions");
+    cb_jw_arr(&w);
+    s3p_cond(&w, "bucket", p->bucket);
+    s3p_cond(&w, "key", p->key);
+    s3p_cond(&w, "Content-Type", p->content_type);
+    cb_jw_arr(&w);
+    cb_jw_str(&w, "content-length-range");
+    cb_jw_int(&w, 1);
+    cb_jw_int(&w, (int64_t)p->max_bytes);
+    cb_jw_end(&w);
+    s3p_cond(&w, "x-amz-algorithm", "AWS4-HMAC-SHA256");
+    s3p_cond(&w, "x-amz-credential", p->credential);
+    s3p_cond(&w, "x-amz-date", p->amz_date);
+    if (p->security_token && p->security_token[0]) s3p_cond(&w, "x-amz-security-token", p->security_token);
+    cb_jw_end(&w);
+    cb_jw_end(&w);
+    return cb_jw_ok(&w) && !out->oom;
 }
 
 // ---- SSM Parameter Store -------------------------------------------------------------------
