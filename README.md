@@ -786,6 +786,8 @@ Every stack change is a change set, made and printed before anything runs.
 The AWS CLI's own chain: `AWS_PROFILE` and `~/.aws` (an `aws login` or SSO session) on a laptop, the OIDC role's environment in CI.
 The tool reads, prints and passes no credential, and with none it says to run `aws login` or set `AWS_PROFILE`.
 `make check` runs `tools/cbase.d/test/cbase_test.sh`, which drives the deploy tool (the Python program) through the real AWS CLI against a local fake of S3, STS, the Tagging API, CloudFormation, ACM, Route 53, CloudFront, EC2 and SSM (`tools/cbase.d/test/fake_aws.c`), with dummy keys; no test calls AWS.
+`fake_aws` is a test fake and a local stand-in for a dev run: it binds loopback only, it is not a security boundary, the `/_fake/*` knobs are for tests, and it must never run where anything but this machine reaches it.
+It also takes a browser's POST Object upload, checked as S3 checks it, for the media uploads in [docs/PLATFORM.md](docs/PLATFORM.md) 2.12.
 `tools/cbase.d/test/cbase_vm_test.sh` covers the VM side, and runs the scripts SSM would run under a scratch root with stand-ins for `systemctl`, `ss` and `aws`.
 
 ## Rules the code keeps
