@@ -74,7 +74,8 @@ int gcal_url(char *out, size_t cap, const ics_event *ev)
     int local = 0;
     int rc = 0;
     if (ev->end_ms < ev->start_ms) rc = ICS_EINVAL;
-    if (!rc && ev->weekly && ev->zone.n) {
+    if (!rc && ev->weekly && !ev->zone.n) rc = ICS_EINVAL;   // a repeating event takes a zone (ics.h, TIME)
+    if (!rc && ev->weekly) {
         if (ev->zone.n >= sizeof zone) rc = ICS_EZONE;
         else {
             for (size_t i = 0; i < ev->zone.n; i++) zone[i] = ev->zone.p[i];

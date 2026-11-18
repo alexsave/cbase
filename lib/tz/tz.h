@@ -28,7 +28,12 @@
 //   * In a fall-back overlap (a local time that happens twice) the first one is taken, the earlier
 //     UTC instant: 01:30 on the day New York falls back is 01:30 EDT, 05:30 UTC.
 //
-// THE STATED LIMIT. Past transitions are not represented. A time before a zone adopted its current
+// THE STATED LIMITS.
+//   * Four zones of tzdata 2026f are not in lib/tz/tzdb.tsv (tools/tz_skip.txt): Asia/Gaza and Asia/Hebron
+//     (DST suspended for Ramadan in explicit transitions to 2086) and America/Havana and Cuba (no DST end
+//     in 2026), whose files hold transitions their footer rule cannot say. An app that names one is
+//     stopped at build time. Supporting them (keeping their explicit future transitions) is a later decision.
+//   * Past transitions are not represented. A time before a zone adopted its current
 // rule is computed with today's rule, which can be wrong (New York before 2007, for example). That
 // is fine for upcoming events and wrong for history.
 #ifndef SHARED_TZ_H
