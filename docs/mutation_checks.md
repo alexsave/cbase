@@ -1670,3 +1670,5 @@ Each was run on the program named (rebuilt after the edit, its objects touched a
 - fake_aws.c's field-coverage rule skipped -> smoke_s3_post's `a field the policy does not cover` case red (got 204).
 - fake_aws.c's Access-Control-Allow-Origin echo dropped (the origin never kept) -> smoke_s3_post's listed-origin checks red on the POST, the GET and the preflight (lines 226, 227, 244, 254 to 256).
 - core/src/media.c calling cb_s3_post_form_make directly -> `make symbol-gate` red: the local-only example does not link (`Undefined symbols ... _cb_s3_post_form_make, referenced from _cb_media_mutant in media.o`); restored, the gate reads 834 symbols and 120 of 32 aws objects and passes.
+- aws/s3_blob.c's Host length check removed (the `name:port` Host cut, unchecked, as before gcc's -Wformat-truncation caught it) -> unit_s3_blob's `del_at(ep, "k") == CB_E_INVALID` red (got CB_E_IO: the cut host was sent for).
+- aws/s3_blob.c's request path length check removed -> unit_s3_blob's `del_at("http://127.0.0.1:1", key) == CB_E_INVALID` red (got CB_E_IO: the cut path was sent).
