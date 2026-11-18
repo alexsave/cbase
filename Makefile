@@ -150,16 +150,18 @@ h2-interop: build/h2_interop
 # THE DEPLOY TOOL (tools/cbase, README.md "./cbase deploy tool"): tools/cbase is a launcher for the Python
 # program in tools/cbase_cli (its README.md). The oracles run it as an app does, through the real AWS CLI,
 # against tools/cbase.d/test/fake_aws.c on loopback (built by each test itself); vm_render_test.sh holds the
-# VM renders to their golden files, and py_check.sh and launcher_test.sh check the Python and its launcher.
+# VM renders to their golden files, aws_resident_test.sh holds the resident AWS CLI (CBASE_TEST_AWS=resident) to the per-process one, and py_check.sh and launcher_test.sh check the Python and its launcher.
 # All of them are part of check. cbase-cli-test is cbase_test.sh narrowed to CBASE_CLI_SECTIONS, for a
 # quick run.
-.PHONY: cbase-tool-test cbase-vm-test cbase-group-test cbase-render-test cbase-py-check cbase-cli-test
+.PHONY: cbase-tool-test cbase-vm-test cbase-group-test cbase-render-test cbase-py-check cbase-cli-test cbase-aws-resident-test
 cbase-tool-test:
 	bash tools/cbase.d/test/cbase_test.sh
 cbase-vm-test:
 	bash tools/cbase.d/test/cbase_vm_test.sh
 cbase-group-test:
 	bash tools/cbase.d/test/cbase_group_test.sh
+cbase-aws-resident-test:
+	bash tools/cbase.d/test/aws_resident_test.sh
 cbase-render-test:
 	bash tools/cbase_cli/test/vm_render_test.sh
 cbase-py-check:
@@ -169,7 +171,7 @@ cbase-py-check:
 # runner, where the five together take about 25 minutes, mostly the AWS CLI's start per call).
 CBASE_TOOL_TESTS ?= 1
 ifneq ($(CBASE_TOOL_TESTS),0)
-check: cbase-tool-test cbase-vm-test cbase-group-test cbase-render-test cbase-py-check
+check: cbase-tool-test cbase-vm-test cbase-group-test cbase-aws-resident-test cbase-render-test cbase-py-check
 endif
 CBASE_CLI_SECTIONS ?= conf secrets dispatch
 cbase-cli-test:

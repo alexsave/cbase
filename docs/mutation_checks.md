@@ -1722,3 +1722,13 @@ Oracle data: `lib/tz/test/transitions.tsv`, from Python's zoneinfo (tools/tz_gen
 
 tools/tz_gen.py is a generator, not a test, and its refusals were run rather than mutated: with no tools/tz_skip.txt it stops naming America/Havana, Asia/Gaza, Asia/Hebron and Cuba; with a stale line in the list it stops naming the zone; `Rule("EST5EDT")` stops with the no-dates refusal; and a second run writes both files byte for byte the same.
 - lib/ics/ics.c's and gcal.c's refusal of a repeating event with no zone removed (the event written in UTC again, the drift bug) -> ics_test's `refusal: a repeating event with no zone is not written in UTC` red twice (`ics_write wrote a weekly event with no zone`, `gcal_url wrote a weekly event with no zone`).
+
+## The resident AWS CLI (tools/cbase.d/test/aws_resident.py, aws_client.c, aws_resident_test.sh)
+
+- aws_resident.py's child not replacing os.environ (it keeps the server's) -> aws_resident_test.sh `an environment change: a dead endpoint: exit status 255 through aws, 0 resident` red.
+- aws_resident.py's child not changing directory -> `s3 cp up, a relative path: exit status 0 through aws, 255 resident` red.
+- aws_client.c sending {0, 1, 0} as its descriptors (stderr lost) -> `a missing key: exit status 254 through aws, 255 resident` red (and its stderr diff behind it).
+- aws_client.c's read treating EOF as "read again" (it ignores EOF) -> `the client did not end within 5 s of the server's death in the middle of a call (it hangs)` red, the bound a counter loop.
+- aws_client.c not installing its TERM handler -> `TERM: the CLI's child is still running 3 s after its client got the signal (not forwarded)` red; the same for INT.
+- cbase_test.sh's signals section with the TERM handler removed stays green: its shim answers describe-stacks with a 429 itself and the tool sleeps in its retry, so no signal ever arrives while a client call is running, and the signal goes to the tool, not to the client. What holds the forwarding is aws_resident_test.sh's `held_signal` (a call held in the fake, the signal sent to the client, the server's child gone).
+- lib.sh's resident_python given a frozen aws (a stub script) -> `CBASE_TEST_AWS=resident: ... is not a Python awscli (a frozen build?)` fails the run, and aws_resident_test.sh without CBASE_TEST_AWS=resident prints SKIPPED and exits 0.
