@@ -92,7 +92,7 @@
 // precondition and its headers), "CFN <Action> ...", "ACM ...", "R53 ...", "CF ...". One thread per
 // connection; the state is under one lock. Plain C and libc only (tools/ stands apart from the
 // platform: tools/repo_gate_test.sh).
-#include "sha256.h"
+#include "../../../lib/sha256.h"
 
 #include <ctype.h>
 #include <dirent.h>
