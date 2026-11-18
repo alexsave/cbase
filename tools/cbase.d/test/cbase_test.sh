@@ -1513,6 +1513,73 @@ run "$(app nomed "CBASE_APP = shop" "CBASE_ROUTE = /api/* vm")" template
 expect_rc 0 "a template without media"
 grep -Eq 'Media|/m/\*|_media' "$t/out" && { grep -En 'Media|/m/\*|_media' "$t/out" >&2; fail "a template without media names it"; }
 ok
+# The stack's change set carries CAPABILITY_IAM when the app has MediaWrites (an IAM policy), and not otherwise.
+start_fake "${site_fake[@]}"
+medapp() {   # medapp NAME MEDIA...: a VM app on group g1 with the site group's bucket, its build, and its origin recorded
+  local d
+  d="$(app "$1" "CBASE_APP = $1" "CBASE_VM = g1" "CBASE_STATIC = site" "CBASE_VM_ORIGIN = origin.example.com" "${@:2}")"
+  mkdir -p "$d/ui/out"
+  echo hi > "$d/ui/out/index.html"
+  printf '%s' "$d"
+}
+m="$(mark)"
+run "$(medapp mapp "CBASE_MEDIA = on")" deploy --dry-run
+expect_rc 0 "a media app's dry run"
+out_has "Add     MediaWrites      AWS::IAM::Policy" "the change set adds the VM role's media policy"
+since "$m" | grep -q "CFN CreateChangeSet cbase-app-mapp CREATE ok .* caps=CAPABILITY_IAM$" || { since "$m" | grep CreateChangeSet >&2; fail "a media app's change set lacks CAPABILITY_IAM"; }
+ok
+m="$(mark)"
+run "$(medapp plain)" deploy --dry-run
+expect_rc 0 "a dry run without media"
+since "$m" | grep -q "CFN CreateChangeSet cbase-app-plain CREATE ok .* caps=$" || { since "$m" | grep CreateChangeSet >&2; fail "an app without media asks for a capability"; }
+grep -q "MediaWrites" "$t/out" && fail "an app without media adds the media policy"
+ok
+# MediaWrites: the role is the VM group's export, and the one write allowed is the app's m/ under the media root.
+run "$(medapp mapp "CBASE_MEDIA = on")" template
+awk '/^  MediaWrites:$/{f=1} /^  Distribution:$/{f=0} f' "$t/out" > "$t/mwrites"
+grep -Fq -- '- !ImportValue cbase-vm-g1-role' "$t/mwrites" || { cat "$t/mwrites" >&2; fail "MediaWrites does not import the VM group's role"; }
+[ "$(grep -c 'Resource:' "$t/mwrites")" = 1 ] || fail "MediaWrites names other than one resource"
+grep -Fq 'Resource: !Sub "arn:${AWS::Partition}:s3:::site-bucket/_media/mapp/m/*"' "$t/mwrites" || { cat "$t/mwrites" >&2; fail "MediaWrites is not the app's m/ alone"; }
+[ "$(grep 'Action:' "$t/mwrites")" = '            Action: s3:PutObject' ] || { cat "$t/mwrites" >&2; fail "MediaWrites allows other than PutObject"; }
+ok
+# Prune and undeploy never touch the media root: it is beside the app's folder, not in it. A static app
+# (the prune is the same code for every app) with a media key seeded next to its stale file.
+gone="$(app mgone "CBASE_APP = mgone" "CBASE_VM = none" "CBASE_STATIC = site")"
+mkdir -p "$gone/build"
+echo hi > "$gone/build/index.html"
+run "$gone" deploy
+expect_rc 0 "the first deploy of a static app for the media prune"
+seed mgone/stale.js
+seed _media/mgone/m/a.webp
+m="$(mark)"
+run "$gone" deploy
+expect_rc 0 "a prune beside a media folder"
+since "$m" | grep '^DELETE ' > "$t/deleted" || true
+printf 'DELETE /%s/mgone/stale.js 204\n' "$SITE_BUCKET" > "$t/want"
+diff -u "$t/want" "$t/deleted" || fail "the prune deleted other than the folder's stale file"
+aws s3api head-object --bucket "$SITE_BUCKET" --key _media/mgone/m/a.webp > /dev/null 2>&1 || fail "the prune deleted the media key"
+ok
+# A listing of the whole bucket (as a wrong one might answer): the media key is named and left alone.
+fake_set list-ignores-prefix=1
+seed mgone/stale2.js
+m="$(mark)"
+run "$gone" deploy
+expect_rc 0 "a prune over a listing of the whole bucket, with media in it"
+since "$m" | grep '^DELETE ' > "$t/deleted" || true
+printf 'DELETE /%s/mgone/stale2.js 204\n' "$SITE_BUCKET" > "$t/want"
+diff -u "$t/want" "$t/deleted" || fail "a prune over the whole bucket deleted other than the folder's stale file"
+err_has "prune: s3://$SITE_BUCKET/_media/mgone/m/a.webp is outside mgone/, and is left alone" "the folder guard names the media key"
+aws s3api head-object --bucket "$SITE_BUCKET" --key _media/mgone/m/a.webp > /dev/null 2>&1 || fail "the prune over the whole bucket deleted the media key"
+fake_set list-ignores-prefix=0
+ok
+m="$(mark)"
+run "$gone" undeploy --delete-files
+expect_rc 0 "an undeploy --delete-files beside a media folder"
+since "$m" | grep '^DELETE /' | grep -v 'cbase-app' > "$t/deleted" || true
+printf 'DELETE /%s/mgone/index.html 204\n' "$SITE_BUCKET" | diff -u - "$t/deleted" || fail "--delete-files deleted other than the app's folder"
+aws s3api head-object --bucket "$SITE_BUCKET" --key _media/mgone/m/a.webp > /dev/null 2>&1 || fail "--delete-files deleted the media key"
+ok
+
 fi
 # ---- template-shapes: the flag combinations the templates above do not cover: each route's cache
 # policy, a ws route's compress, aliases off, and an API host's own alias and certificate. Their

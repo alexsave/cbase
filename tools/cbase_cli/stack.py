@@ -63,9 +63,12 @@ def use(name: str, region: str, tag: str) -> None:
 
 def app_use() -> None:
     """The app's own stack, cbase-app-<CONF_APP> in us-east-1."""
-    global stk_app
+    global stk_app, stk_caps
     use("cbase-app-%s" % conf.app, "us-east-1", "Key=cbase:app,Value=%s" % conf.app)
     stk_app = True
+    if conf.media == "on":
+        # the app's MediaWrites is an IAM policy: its change set needs the capability (as a VM group's does)
+        stk_caps = "CAPABILITY_IAM"
 
 
 def params_clear() -> None:
