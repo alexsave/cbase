@@ -278,6 +278,36 @@ On any other transport (a one-shot platform's event, a socket's REQ), which `cb_
 Not done, on purpose: Range and Accept-Ranges (Safari's audio wants them later; the place is `cb_send_file`, answering 206 from the same descriptor), ETag, compression and listings.
 `example/test/unit_web.c` serves amgi's shape over a real serve: every type, the single-page routes, every traversal shape, HEAD, a 6 MB and a 40 MB file streamed whole (the servers' resident peak stays a few MB), and a pipelined request.
 
+### 2.12 Media uploads
+
+A product lets a client upload an image straight to the object store: the server hands out a signed form, and the browser posts the file to the store, so the file never passes through cbase.
+The settings are `CBASE_MEDIA_BUCKET`, `CBASE_MEDIA_REGION` and `CBASE_MEDIA_PREFIX`, all three or none.
+The prefix starts with `_media/` and ends with `/m/` (the deploy tool's `CBASE_MEDIA = on` serves `/m/*` from the app's `_media/<app>/m/`), and a malformed one refuses the boot.
+The call is `int cb_media_post(const char *content_type, uint64_t max_bytes, int64_t now_ms, cb_media_form *out)` (`core/src/media.h`).
+It fills `out` with a URL and the form's fields in the order they are posted, and the client sends them with the file as the last part of a `multipart/form-data` POST.
+Free the form with `cb_media_form_free`.
+
+What the form fixes, and so what the client cannot change:
+
+- The key is the platform's: the prefix, 32 lowercase hex characters from 16 random bytes, and the type's extension (`.jpg`, `.png` or `.webp`).
+  The client never names a key, and the policy holds that exact key, never a prefix of it.
+- The type is `image/jpeg`, `image/png` or `image/webp`, compared exactly.
+  SVG is a document that can run script, and `IMAGE/PNG`, a parameter or a blank is refused with `CB_E_INVALID`.
+- The size is 1 byte up to `max_bytes`: at most 10 MiB, and 5 MiB when `max_bytes` is 0.
+- The form is good for 300 seconds from `now_ms`, which the caller passes (the time is read from the host's clock, never inside the form's code).
+  300 is what the instance role's credentials leave, since `cb_aws_creds_get` keeps them until 5 minutes before they expire.
+- The store checks all of it as it takes the bytes, and refuses a field the policy does not name.
+
+`cb_media_post` answers `CB_E_STATE` when the three settings are not set.
+It needs an object store backend linked, which today is the aws provider: `CBASE_PROVIDERS := local aws` keeps SQLite under `cbase serve` and links the aws provider for the store.
+A deployment that sets `CBASE_MEDIA_BUCKET` without a linked backend that can make a form does not start, and the message names the setting.
+`cb_media_post_with(blob, prefix, ...)` is the same call over a given place, which the tests use with a fake.
+
+A local run points the store at `tools/cbase.d/test/fake_aws.c` with `AWS_ENDPOINT_URL_S3=http://127.0.0.1:<port>`, dummy keys, and the fake's `--secret` the same as `AWS_SECRET_ACCESS_KEY`.
+The URL is then `<endpoint>/<bucket>` (path style), and an `http://` endpoint is refused for any `amazonaws.com` host.
+Start the fake with `--cors-origin` for the page's origin and `--data DIR` to keep the objects across a restart.
+`providers/aws/test/smoke_s3_post.c` is the worked example: a form made, posted, read back, and refused in eight ways.
+
 ## Appendix: how cbase came to be
 
 cbase began on 2026-10-13 as the backend of foolish, a card game, written in C to replace Supabase, and ran it in production on AWS Lambda and DynamoDB from 2026-10-14, then on one small VM under `cbase serve` from 2026-10-19.
