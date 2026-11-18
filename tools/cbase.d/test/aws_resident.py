@@ -24,11 +24,32 @@ import io
 import locale
 import os
 import select
+import signal
 import socket
 import struct
 import sys
+import warnings
 
+_before = dict(os.environ)
 import awscli.clidriver
+
+# What importing awscli does to os.environ: awscli/__init__.py adds its own data directory to
+# AWS_DATA_PATH (after the caller's entries, expanded), and the CLI cannot find its data without it.
+# A fresh `aws` has done that to the caller's environment by the time it runs, so each child redoes
+# it on the environment it was sent. Any other change the import makes is not known here: refuse.
+_import_changes = {k for k in os.environ if _before.get(k) != os.environ[k]} | {k for k in _before if k not in os.environ}
+if _import_changes != {"AWS_DATA_PATH"}:
+    sys.exit("aws_resident: importing awscli changed %s of os.environ, not only AWS_DATA_PATH" % sorted(_import_changes))
+_AWSCLI_DATA = os.path.join(os.path.dirname(os.path.abspath(awscli.__file__)), "data")
+
+
+def awscli_import_environ():
+    paths = []
+    if "AWS_DATA_PATH" in os.environ:
+        for path in os.environ["AWS_DATA_PATH"].split(os.pathsep):
+            paths.append(os.path.expanduser(os.path.expandvars(path)))
+    paths.append(_AWSCLI_DATA)
+    os.environ["AWS_DATA_PATH"] = os.pathsep.join(paths)
 
 
 def read_exact(conn, buf, n):
@@ -97,11 +118,17 @@ def child(argv, env, cwd, fds):
             if fd > 2:
                 os.close(fd)
         os.chdir(cwd)
+        # A fresh interpreter starts with the dispositions its parent gave it, and the client has
+        # forwarded what it got: the server's own (a background job's ignored INT) are not the call's.
+        signal.signal(signal.SIGINT, signal.default_int_handler)
+        for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT):
+            signal.signal(sig, signal.SIG_DFL)
         environ = dict(e.split("=", 1) for e in env)
         os.environ.clear()
         os.environ.update(environ)
         if os.environ.get("LC_CTYPE", "") == "UTF-8":
             os.environ["LC_CTYPE"] = "en_US.UTF-8"
+        awscli_import_environ()
         rebuild_stdio(environ)
         sys.argv = argv
         try:
@@ -134,7 +161,9 @@ def serve_one(conn):
         if body is None:
             return
         argv, env, cwd = parse(bytes(body[:n]))
-        pid = os.fork()
+        with warnings.catch_warnings():   # 3.12+ warns that a process with threads forks
+            warnings.simplefilter("ignore", DeprecationWarning)
+            pid = os.fork()
         if pid == 0:
             conn.close()
             listener.close()

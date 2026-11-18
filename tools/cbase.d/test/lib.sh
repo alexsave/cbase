@@ -13,6 +13,11 @@ tool="${CBASE_TOOL:-$root/tools/cbase}"
 case "$tool" in /*) ;; *) tool="$PWD/$tool" ;; esac
 t="$(mktemp -d "${TMPDIR:-/tmp}/cbase-test.XXXXXX")"
 FAKE_PID=""
+RESIDENT_PID=""
+stop_resident() {
+  if [ -n "$RESIDENT_PID" ]; then kill "$RESIDENT_PID" 2> /dev/null || true; wait "$RESIDENT_PID" 2> /dev/null || true; fi
+  RESIDENT_PID=""
+}
 stop_fake() {
   if [ -n "$FAKE_PID" ]; then kill "$FAKE_PID" 2> /dev/null || true; wait "$FAKE_PID" 2> /dev/null || true; fi
   FAKE_PID=""
@@ -22,7 +27,7 @@ stop_fake() {
 # trap on an unbound variable (the trap's status replaces it), so a case that read a variable another
 # section sets would end the run early and still pass: a CBASE_TEST_ONLY subset did exactly that.
 CBASE_TEST_END=""
-trap 'stop_fake; rm -rf "$t"; [ "$CBASE_TEST_END" = 1 ] || { echo "cbase_test: FAIL: the run stopped before its end (above)" >&2; exit 1; }' EXIT
+trap 'stop_fake; stop_resident; rm -rf "$t"; [ "$CBASE_TEST_END" = 1 ] || { echo "cbase_test: FAIL: the run stopped before its end (above)" >&2; exit 1; }' EXIT
 fail() { echo "cbase_test: FAIL: $*" >&2; exit 1; }
 pass=0
 ok() { pass=$((pass + 1)); }
@@ -38,6 +43,50 @@ wanted() {
 }
 
 command -v aws > /dev/null 2>&1 || fail "the AWS CLI (aws) is not on PATH: the tests drive the real CLI against a local fake"
+# THE RESIDENT AWS CLI (opt in): CBASE_TEST_AWS=resident runs the real AWS CLI loaded once instead of
+# once per call (starting it is about nine tenths of the deploy tool tests' time). tools/cbase.d/test/
+# aws_resident.py runs on the CLI's own Python and forks a child per call with the caller's environment,
+# working directory and stdio; aws_client.c, installed as $t/awsbin/aws and put first on PATH, hands each
+# call to it (the macOS deploy tool job, CI). Unset or `process` runs `aws` per call. When resident mode
+# cannot run it fails here and never falls back. resident_start builds the client and starts the
+# server (aws_resident_test.sh calls it itself, beside the per-process aws, to diff the two).
+case "${CBASE_TEST_AWS:-process}" in process | resident) ;; *) fail "CBASE_TEST_AWS=${CBASE_TEST_AWS}: process or resident" ;; esac
+RESIDENT_BIN="$t/awsbin"
+# resident_python: the interpreter of the per-process aws (its #! line) when that is a Python with awscli
+# importable, else status 1 (a frozen build, a wrapper).
+resident_python() {
+  local real py d
+  real="$(command -v aws)"
+  while [ -L "$real" ]; do   # follow the links (macOS has no readlink -f)
+    d="$(readlink "$real")"
+    case "$d" in /*) real="$d" ;; *) real="$(dirname "$real")/$d" ;; esac
+  done
+  py="$(head -n 1 "$real" | sed -n 's/^#![[:space:]]*//p')"
+  [ -n "$py" ] && $py -I -c 'import awscli.clidriver' > /dev/null 2>&1 || return 1
+  echo "$py"
+}
+resident_start() {
+  local py n=0
+  py="$(resident_python)" || fail "CBASE_TEST_AWS=resident: $(command -v aws) is not a Python awscli (a frozen build?); unset CBASE_TEST_AWS"
+  # sun_path is 104 bytes on macOS.
+  [ "${#t}" -le 90 ] || fail "CBASE_TEST_AWS=resident: $t is too long for a socket path"
+  mkdir -p "$RESIDENT_BIN"
+  ${CC:-cc} -std=gnu11 -O2 -Wall -Wextra -Werror "$root/tools/cbase.d/test/aws_client.c" -o "$RESIDENT_BIN/aws"
+  CBASE_TEST_AWS_SOCKET="$t/aws.sock"
+  export CBASE_TEST_AWS_SOCKET
+  rm -f "$CBASE_TEST_AWS_SOCKET"
+  # shellcheck disable=SC2086 # $py is the #! line: the interpreter and any arguments (env python3)
+  # macOS: a forked child that reaches the system proxy lookup (_scproxy, Objective-C) is killed by the
+  # runtime unless the server was started with the fork check off. The child's own environment is the caller's.
+  OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES $py -I "$root/tools/cbase.d/test/aws_resident.py" --socket "$CBASE_TEST_AWS_SOCKET" < /dev/null > "$t/aws_resident.log" 2>&1 &
+  RESIDENT_PID=$!
+  until [ -S "$CBASE_TEST_AWS_SOCKET" ] || [ $n -gt 200 ] || ! kill -0 "$RESIDENT_PID" 2> /dev/null; do sleep 0.05; n=$((n + 1)); done
+  [ -S "$CBASE_TEST_AWS_SOCKET" ] || { cat "$t/aws_resident.log" >&2; fail "CBASE_TEST_AWS=resident: the resident AWS CLI did not start"; }
+}
+if [ "${CBASE_TEST_AWS:-process}" = resident ]; then
+  resident_start
+  PATH="$RESIDENT_BIN:$PATH"
+fi
 # THE TIMING (opt in): CBASE_TEST_TIMING=FILE appends one line per AWS CLI call to FILE, "aws SECONDS
 # SERVICE OPERATION" (an option's value skipped, a --no-* flag taking none), through a wrapper put first on PATH (tools/cbase.d/test/timing.sh sums them, by
 # operation too). A value that ends in / is a directory: each script writes its own <script>.tim there.

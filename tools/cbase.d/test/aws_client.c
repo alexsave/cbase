@@ -64,8 +64,10 @@ int main(int argc, char **argv) {
     memset(&sa, 0, sizeof sa);
     sa.sa_handler = forward;
     sigemptyset(&sa.sa_mask);
-    sigaction(SIGTERM, &sa, NULL);
-    sigaction(SIGINT, &sa, NULL);
+    // A signal ignored at start (a background job's INT) stays ignored, as in a fresh aws.
+    struct sigaction old;
+    if (sigaction(SIGTERM, NULL, &old) == 0 && old.sa_handler != SIG_IGN) sigaction(SIGTERM, &sa, NULL);
+    if (sigaction(SIGINT, NULL, &old) == 0 && old.sa_handler != SIG_IGN) sigaction(SIGINT, &sa, NULL);
 
     char cwd[4096];
     if (!getcwd(cwd, sizeof cwd)) { perror("aws (cbase test client): getcwd"); return 255; }
