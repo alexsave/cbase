@@ -11,6 +11,7 @@
 #include <string.h>
 #include "../test/check.h"
 #include "tz.h"
+#include "../num_parse.h"
 
 /* The zones this test links, as an app names its own (Makefile: APP_TZ_ZONES). */
 const tz_zone tz_zones[] = {
@@ -34,6 +35,18 @@ static FILE *open_data(const char *rel)
 
 static int64_t utc_ms(int y, int mo, int d, int h, int mi) { return ((int64_t)tz_days_from_civil(y, mo, d) * 86400 + h * 3600 + mi * 60) * 1000; }
 
+/* The next tab-separated field of *p (NUL-ended in place), or NULL at the end of the line. */
+static char *next_field(char **p)
+{
+    if (!*p) return NULL;
+    char *f = *p, *tab = strchr(f, '\t');
+    *p = tab ? tab + 1 : NULL;
+    if (tab) *tab = 0;
+    return f;
+}
+
+static int num(char *f, int64_t lo, int64_t hi, int64_t *out) { return f && num_parse_i64(f, strlen(f), lo, hi, out); }
+
 static void oracle(void)
 {
     FILE *f = open_data("lib/tz/test/transitions.tsv");
@@ -48,32 +61,36 @@ static void oracle(void)
     while (fgets(line, sizeof line, f)) {
         line[strcspn(line, "\n")] = 0;
         if (line[0] == '#' || !line[0]) continue;
-        if (line[0] == 'Z') {
+        char *cur = line;
+        char *kind = next_field(&cur);
+        if (kind[0] == 'Z') {
             if (have) CHECK(seen_in_rule == expect, "%s: the oracle holds %d transitions, the rule gives %d", zone, seen_in_rule, expect);
-            char *a = strchr(line + 2, '\t'), *b = a ? strchr(a + 1, '\t') : NULL;
-            CHECK(a && b, "a Z line: %s", line);
-            if (!a || !b) break;
-            *a = *b = 0;
-            snprintf(zone, sizeof zone, "%s", line + 2);
-            snprintf(rule, sizeof rule, "%s", a + 1);
-            from_year = atoi(b + 1);
+            char *z = next_field(&cur), *ru = next_field(&cur);
+            int64_t y0 = 0;
+            CHECK(z && ru && num(next_field(&cur), 2026, 2050, &y0), "a Z line: %s", line);
+            if (!z || !ru) break;
+            snprintf(zone, sizeof zone, "%s", z);
+            snprintf(rule, sizeof rule, "%s", ru);
+            from_year = (int)y0;
             TEST("oracle: every rule of the oracle parses");
             CHECK(tz_rule_parse(rule, &r) == 0, "%s: %s", zone, rule);
             rules++;
             have = 1;
             seen_in_rule = 0;
-            /* how many transitions the rule gives from from_year to 2050 */
+            /* two transitions a year from from_year to 2050 */
             expect = r.has_dst ? 2 * (2050 - from_year + 1) : 0;
             last_t = 0;
             continue;
         }
-        long long t;
-        int before, after;
-        char abbr[16];
-        if (sscanf(line, "T\t%lld\t%d\t%d\t%15s", &t, &before, &after, abbr) != 4) {
+        int64_t t64, b64, a64;
+        char *abbr;
+        if (!(num(next_field(&cur), 0, INT64_MAX, &t64) && num(next_field(&cur), -1440, 1440, &b64) && num(next_field(&cur), -1440, 1440, &a64) &&
+              (abbr = next_field(&cur)) != NULL)) {
             CHECK(0, "a T line: %s", line);
             continue;
         }
+        long long t = (long long)t64;
+        int before = (int)b64, after = (int)a64;
         seen_in_rule++;
         transitions++;
         int64_t ms = t * 1000, y;
@@ -232,7 +249,6 @@ static void parser(void)
     if (f) {
         char line[512];
         int zones = 0, headed = 0, five = 0;
-        long rule_bytes = 0;
         while (fgets(line, sizeof line, f)) {
             line[strcspn(line, "\n")] = 0;
             if (!zones && !headed) {
@@ -249,7 +265,6 @@ static void parser(void)
             CHECK(tz_rule_parse(tab + 1, &pr) == 0, "%s: %s", line, tab + 1);
             CHECK(pr.std_off % 60 == 0 && pr.dst_off % 60 == 0, "%s: whole-minute offsets", line);
             zones++;
-            rule_bytes += (long)strlen(tab + 1);
             int z = tz_find(line);
             if (z >= 0) {
                 five++;
@@ -258,7 +273,6 @@ static void parser(void)
         }
         fclose(f);
         CHECK(zones >= 590 && five == 5, "%d zones, %d of the test's five", zones, five);
-        printf("tzdb.tsv: %d zones, %ld rule bytes\n", zones, rule_bytes);
     }
 
     TEST("parser: refusals");

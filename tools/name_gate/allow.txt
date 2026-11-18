@@ -101,3 +101,12 @@
 1 core/src/util/json.h /lambda/i
 1 core/src/util/json.h /dynamo/i
 1 core/src/util/pool.h /sqlite/i
+1 lib/ics/gcal.c /google/i
+1 lib/ics/ics_test.c /google/i
+1 lib/ics/test/golden/oneoff.url /google/i
+1 lib/ics/test/golden/weekly.url /google/i
+1 lib/ics/test/golden/weekly_neg.url /google/i
+1 lib/ics/test/golden/weekly_ny.url /google/i
+1 lib/ics/test/golden/weekly_ny_utc.url /google/i
+1 lib/ics/test/golden/weekly_oslo.url /google/i
+1 lib/ics/test/golden/weekly_seoul.url /google/i

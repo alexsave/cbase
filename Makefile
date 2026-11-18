@@ -72,6 +72,19 @@ example-check:
 	$(MAKE) -C example check CBASE_CLIENT_CHECK=0
 example-serve:
 	$(MAKE) -C example build/$(APP_SERVE)
+# THE TIME ZONE DATA (lib/tz): `make tz-update TZDATA=<a compiled tzdata release's zoneinfo directory>` runs
+# tools/tz_gen.py, which rewrites lib/tz/tzdb.tsv (every zone's POSIX rule, from the TZif footers) and the
+# test oracle lib/tz/test/transitions.tsv (from Python's zoneinfo), and stops on a zone the footer cannot say.
+# Then `make lib-tests` runs the oracle tests. Python and the tzdata files are this target's alone; no build needs them.
+.PHONY: tz-update ics-oracle
+tz-update:
+	@test -n "$(TZDATA)" || { echo "make tz-update TZDATA=<a compiled tzdata release's zoneinfo directory>" >&2; exit 2; }
+	python3 tools/tz_gen.py --zoneinfo "$(TZDATA)"
+# The calendar writer's goldens read back by Python's icalendar (lib/ics/test/ics_oracle.py): a weekly event
+# keeps its local time across DST when the library expands it. Needs `pip install icalendar tzdata`; not part of check.
+PYTHON ?= python3
+ics-oracle: build/ics_test
+	$(PYTHON) -I lib/ics/test/ics_oracle.py lib/ics/test/golden
 # The repository's own rules over its files (tools/repo_gate_test.sh): nothing reaches outside it.
 repo-gate:
 	bash tools/repo_gate_test.sh
@@ -164,7 +177,7 @@ cbase-cli-test:
 
 # The deploy tooling's own tests (ops/test, providers/*/ops/test): no AWS, no network, a stub `aws`
 # and scratch git trees. CI's ops job runs them; they are not part of check.
-OPS_TESTS := $(sort $(wildcard ops/test/*.sh providers/*/ops/test/*.sh)) tools/changed_files_test.sh
+OPS_TESTS := $(sort $(wildcard ops/test/*.sh providers/*/ops/test/*.sh)) tools/changed_files_test.sh tools/tz_zones_test.sh
 .PHONY: ops-test
 ops-test:
 	@for t in $(OPS_TESTS); do echo "== $$t"; bash $$t || exit 1; done
