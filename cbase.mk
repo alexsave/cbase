@@ -327,10 +327,23 @@ prog_src  = $(lastword $(subst =, ,$(1)))
 # THE SMOKES: the platform's (smoke_boot: both binaries refusing to start; under aws the bootstrap
 # driven through a fake Lambda Runtime API), and the product's (APP_SMOKES). Each runs as
 # `<dir>/test/<smoke> $(call SMOKE_ARGS_<smoke>,<dir>)`, by default the serve binary.
-CB_SMOKES := smoke_boot $(if $(and $(CB_AWS),$(CB_LOCAL)),smoke_lambda)
+CB_SMOKES := smoke_boot $(if $(and $(CB_AWS),$(CB_LOCAL)),smoke_lambda) $(if $(CB_AWS),smoke_s3_post)
 SMOKES    := $(APP_SMOKES) $(CB_SMOKES)
 SMOKE_ARGS_smoke_boot = $(if $(CB_LOCAL),$(1)/$(APP_SERVE),-) $(if $(CB_AWS),$(1)/$(APP_LAMBDA))
 SMOKE_ARGS_smoke_lambda = $(1)/$(APP_LAMBDA) $(APP_LAMBDA_SCHEDULE) $(APP_LAMBDA_JOB)
+SMOKE_ARGS_smoke_s3_post = $(1)/test/fake_aws
+# THE FAKE S3 (tools/cbase.d/test/fake_aws.c): a stand-in for the object store the aws provider's
+# smoke_s3_post posts an upload to. Its own program in plain flags (libc and lib/sha256.c: a test
+# oracle that shares nothing with the platform's libcrypto), built once for each test tree, and a
+# prerequisite of the smokes (SMOKE_PROGS), since the smoke builds nothing itself.
+FAKE_AWS_SRC := $(CB)tools/cbase.d/test/fake_aws.c $(CB)lib/sha256.c
+define FAKE_AWS_RULE
+$(1)/test/fake_aws: $(FAKE_AWS_SRC) $(CB)lib/sha256.h
+	@mkdir -p $$(@D)
+	@echo "  CC   $$@"
+	@$$(CC) -std=gnu11 -D_GNU_SOURCE -O2 -Wall -Wextra -Werror -pthread -I$(CB)lib $(FAKE_AWS_SRC) -o $$@
+endef
+$(foreach d,build build/asan build/cov,$(eval $(call FAKE_AWS_RULE,$(d))))
 smoke_args = $(if $(value SMOKE_ARGS_$(1)),$(call SMOKE_ARGS_$(1),$(2)),$(2)/$(APP_SERVE))
 # The binaries a smoke run needs.
 CB_BINS = $(if $(CB_LOCAL),$(1)/$(APP_SERVE)) $(if $(CB_AWS),$(1)/$(APP_LAMBDA))
@@ -410,7 +423,7 @@ endef
 UNIT_RUNS = $(addprefix $(1)/,$(UNITS)) $(1)/unit_bench
 # $(call SMOKE_RUNS,<build dir>), $(call SMOKE_PROGS,<build dir>)
 SMOKE_RUNS = $(foreach s,$(SMOKES),'$(1)/test/$(s) $(strip $(call smoke_args,$(s),$(1)))')
-SMOKE_PROGS = $(call CB_BINS,$(1)) $(addprefix $(1)/test/,$(SMOKES))
+SMOKE_PROGS = $(call CB_BINS,$(1)) $(addprefix $(1)/test/,$(SMOKES)) $(if $(CB_AWS),$(1)/test/fake_aws)
 
 # lib/'s tests of what the platform links (tools/lib_tests.mk), in the platform's own flags and its
 # sanitized variant.
