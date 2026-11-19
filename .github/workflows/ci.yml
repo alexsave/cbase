@@ -60,19 +60,30 @@ jobs:
 
   # The deploy tool's tests on Linux, beside make check, which leaves them out (CBASE_TOOL_TESTS=0): in
   # Docker (2026-11-19) they were 766 of check's 829 s, 96 to 99% of it the AWS CLI's start per call.
-  # Here they run AWS's own frozen CLI, one process a call, as make check ran them, so that build stays
-  # covered through the whole suite (the macOS job runs Homebrew's resident; aws_resident_test.sh says
-  # SKIPPED here, as it did inside check, since a frozen CLI cannot be loaded).
+  # They run the real AWS CLI resident (CBASE_TEST_AWS=resident, tools/cbase.d/test/aws_resident.py), as
+  # the macOS job does: Ubuntu's own awscli package is a Python one the resident mode can load (the
+  # runner's /usr/local/bin/aws is AWS's frozen build, which cannot be). aws_resident_test.sh holds the
+  # resident CLI to the same CLI run per call. AWS's frozen build is trusted to work as AWS ships it
+  # (Alex, 2026-11-19), so no job runs it through the whole suite any more.
   tool_ubuntu:
     name: deploy tool tests (ubuntu-24.04)
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v5
-      - name: the AWS CLI on the runner (AWS's frozen build, one process a call)
-        run: aws --version
+      # Ubuntu's awscli package, unpinned as the macOS job's Homebrew one is (the reasons are the same: the
+      # distribution keeps one version, the runner's own CLI was never pinned, and the fidelity test holds
+      # the two modes to each other on whatever version this is). Its /usr/bin/aws is put first on PATH,
+      # ahead of the runner's frozen /usr/local/bin/aws; both versions are printed.
+      - name: the AWS CLI from Ubuntu (a Python one the resident mode can load)
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q awscli
+          mkdir -p "$RUNNER_TEMP/awsbin" && ln -s /usr/bin/aws "$RUNNER_TEMP/awsbin/aws"
+          echo "$RUNNER_TEMP/awsbin" >> "$GITHUB_PATH"
+          echo "Ubuntu's: $(/usr/bin/aws --version)"
+          if [ -x /usr/local/bin/aws ]; then echo "the runner's own: $(/usr/local/bin/aws --version)"; fi
       - name: cbase_test, cbase_vm_test, cbase_group_test, the resident CLI's fidelity, the VM renders, the Python and its launcher
-        run: CBASE_TEST_TIMING="$RUNNER_TEMP/timing/" make -j"$(getconf _NPROCESSORS_ONLN)" cbase-tool-test cbase-vm-test cbase-group-test cbase-aws-resident-test cbase-render-test cbase-py-check
+        run: CBASE_TEST_AWS=resident CBASE_TEST_TIMING="$RUNNER_TEMP/timing/" make -j"$(getconf _NPROCESSORS_ONLN)" cbase-tool-test cbase-vm-test cbase-group-test cbase-aws-resident-test cbase-render-test cbase-py-check
       # Where the time goes: each script's AWS CLI calls (lib.sh CBASE_TEST_TIMING).
       - name: the deploy tool tests' time, by AWS CLI call
         if: always()
@@ -130,7 +141,7 @@ jobs:
           "$RUNNER_TEMP/py39/python3" -c 'import sys; print(sys.version); assert sys.version_info[:2] == (3, 9), sys.version'
       # The real AWS CLI, loaded once (CBASE_TEST_AWS=resident, tools/cbase.d/test/aws_resident.py): starting it
       # per call was about nine tenths of this job's time. aws_resident_test.sh holds it to the per-process CLI.
-      # Ubuntu's make check and the templates job keep the per-process CLI, so both paths run.
+      # Ubuntu's deploy tool job runs it resident too, on Ubuntu's own awscli; aws_resident_test.sh diffs each mode against the other.
       - name: cbase_test, cbase_vm_test, cbase_group_test, the resident CLI's fidelity, the VM renders, the Python and its launcher
         run: CBASE_TEST_AWS=resident CBASE_TEST_TIMING="$RUNNER_TEMP/timing/" make -j"$(getconf _NPROCESSORS_ONLN)" cbase-tool-test cbase-vm-test cbase-group-test cbase-aws-resident-test cbase-render-test cbase-py-check
       # Where the time goes: each script's AWS CLI calls and tool runs (lib.sh CBASE_TEST_TIMING).
