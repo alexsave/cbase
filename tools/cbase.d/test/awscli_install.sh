@@ -11,7 +11,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=tools/cbase.d/test/awscli.pin
 . "$here/awscli.pin"
 want="aws-cli/$AWSCLI_VERSION "
-if [ -x "$prefix/bin/aws" ] && "$prefix/bin/aws" --version 2>&1 | grep -q "^$want"; then
+if [ -x "$prefix/bin/aws" ] && { "$prefix/bin/aws" --version 2>&1 || true; } | grep -q "^$want"; then
   echo "awscli: $AWSCLI_VERSION already in $prefix"
 else
   src="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/awscli-src.XXXXXX")"
@@ -23,6 +23,7 @@ else
      && make > "$src.make.log" && make install > "$src.install.log") || { tail -40 "$src".*.log >&2; exit 1; }
   rm -rf "$src"
 fi
-v="$("$prefix/bin/aws" --version 2>&1)"
+rc=0; v="$("$prefix/bin/aws" --version 2>&1)" || rc=$?
 echo "awscli: $v"
+[ "$rc" = 0 ] || { echo "awscli: $prefix/bin/aws --version ended with status $rc" >&2; exit 1; }
 case "$v" in "$want"*) ;; *) echo "awscli: $prefix/bin/aws is not the pinned $AWSCLI_VERSION" >&2; exit 1 ;; esac
