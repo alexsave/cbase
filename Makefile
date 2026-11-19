@@ -147,6 +147,35 @@ $(eval $(call H2_ALONE,h2_interop,core/test/h2_interop/h2_interop.c))
 h2-interop: build/h2_interop
 	NODE='$(NODE)' core/test/h2_interop/run.sh build/h2_interop
 
+# THE FAKE STRIPE'S TESTS (tools/fake_stripe/test, tools/fake_stripe/README.md): the fake (build/fake_stripe,
+# from cbase.mk) driven over loopback by three programs: every call it imitates, its signed webhooks held to a
+# verifier that shares no code with it (an RFC 2104 HMAC over lib/sha256.c), and its limits (a request that
+# would overflow its buffer, a Content-Length or number that is not a plain one, a data file it cannot trust).
+# Seconds, no network beyond loopback, no Stripe account; part of check. `make fake-stripe-asan` runs the same
+# against the fake built with AddressSanitizer and UBSan.
+FS_DIR := tools/fake_stripe/test
+FS_OUT := build/fake_stripe_test
+FS_TESTS := test_client test_webhook test_limits
+FS_CFLAGS := -std=c11 -O1 -g -Wall -Wextra -Werror -pthread -Ilib
+$(FS_OUT)/test_client $(FS_OUT)/test_limits: $(FS_OUT)/%: $(FS_DIR)/%.c $(FS_DIR)/harness.h lib/num_parse.h
+	@mkdir -p $(@D)
+	@echo "  CC   $@"
+	@$(CC) $(FS_CFLAGS) -o $@ $<
+$(FS_OUT)/test_webhook: $(FS_DIR)/test_webhook.c $(FS_DIR)/harness.h lib/num_parse.h lib/sha256.c lib/sha256.h
+	@mkdir -p $(@D)
+	@echo "  CC   $@"
+	@$(CC) $(FS_CFLAGS) -o $@ $(FS_DIR)/test_webhook.c lib/sha256.c
+.PHONY: fake-stripe-test fake-stripe-asan
+fake-stripe-test: build/fake_stripe $(addprefix $(FS_OUT)/,$(FS_TESTS))
+	@for t in $(FS_TESTS); do echo "== fake_stripe $$t"; $(FS_OUT)/$$t build/fake_stripe || exit 1; done
+build/fake_stripe_asan: $(FAKE_STRIPE_SRC) $(CB)lib/rng.h $(CB)lib/fnv.h $(CB)lib/num_parse.h
+	@mkdir -p $(@D)
+	@echo "  CC   $@"
+	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=undefined -Wall -Wextra -Werror -Ilib $(OPENSSL_CFLAGS) $(FAKE_STRIPE_SRC) -o $@ $(OPENSSL_LDFLAGS) -lcrypto
+fake-stripe-asan: build/fake_stripe_asan $(addprefix $(FS_OUT)/,$(FS_TESTS))
+	@for t in $(FS_TESTS); do echo "== fake_stripe (asan) $$t"; $(FS_OUT)/$$t build/fake_stripe_asan || exit 1; done
+check: fake-stripe-test
+
 # THE DEPLOY TOOL (tools/cbase, README.md "./cbase deploy tool"): tools/cbase is a launcher for the Python
 # program in tools/cbase_cli (its README.md). The oracles run it as an app does, through the real AWS CLI,
 # against tools/cbase.d/test/fake_aws.c on loopback (built by each test itself); vm_render_test.sh holds the

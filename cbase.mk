@@ -51,6 +51,9 @@
 #                    build/gen/tz_zones.c holds exactly those zones, from lib/tz/tzdb.tsv, with an awk
 #                    script (no Python, no tzdata, nothing fetched), and lib/tz and lib/ics are linked
 #                    only when it is set. A name that is not in the tsv stops the build.
+#   build/fake_stripe   (a target, not a variable) a local fake of the Stripe API for the product's `make serve`
+#                    and tests: `make build/fake_stripe`, then `build/fake_stripe --webhook-url http://127.0.0.1:PORT/PATH`
+#                    (tools/fake_stripe/README.md: what it imitates, its options). Built only when named.
 #   APP_PROGS        more programs `make` builds: <name>=<main source>, each build/<name>
 #   APP_TOOLS        the same, built only when named (hand-run generators)
 #   APP_SMOKES       the product's smoke programs (<test root>/<name>.c), each run by smoke and
@@ -362,6 +365,18 @@ $(1)/test/fake_aws: $(FAKE_AWS_SRC) $(CB)lib/sha256.h
 	@$$(CC) -std=gnu11 -D_GNU_SOURCE -O2 -Wall -Wextra -Werror -pthread -I$(CB)lib $(FAKE_AWS_SRC) -o $$@
 endef
 $(foreach d,build build/asan build/cov,$(eval $(call FAKE_AWS_RULE,$(d))))
+# THE FAKE STRIPE (tools/fake_stripe/README.md): `make build/fake_stripe` builds a local imitation of the Stripe
+# API an app calls (Connect Express accounts, direct-charge Checkout, refunds, signed webhooks), for the app's
+# own `make serve` beside its server and for its tests. Its own program in plain flags (libc, lib/rng.h,
+# lib/fnv.h, lib/num_parse.h, and the platform's libcrypto for the HMAC it signs webhooks with); built only
+# when named, a prerequisite of nothing in cbase.mk, so a product that does not take payments never builds it.
+# It names no product, listens on loopback only, and never reaches stripe.com.
+FAKE_STRIPE_SRC := $(CB)tools/fake_stripe/fake_stripe.c
+build/fake_stripe: $(FAKE_STRIPE_SRC) $(CB)lib/rng.h $(CB)lib/fnv.h $(CB)lib/num_parse.h
+	@mkdir -p $(@D)
+	@echo "  CC   $@"
+	@$(CC) -std=c11 -O2 -Wall -Wextra -Werror -Wshadow -I$(CB)lib $(OPENSSL_CFLAGS) $(FAKE_STRIPE_SRC) -o $@ $(OPENSSL_LDFLAGS) -lcrypto
+
 smoke_args = $(if $(value SMOKE_ARGS_$(1)),$(call SMOKE_ARGS_$(1),$(2)),$(2)/$(APP_SERVE))
 # The binaries a smoke run needs.
 CB_BINS = $(if $(CB_LOCAL),$(1)/$(APP_SERVE)) $(if $(CB_AWS),$(1)/$(APP_LAMBDA))
