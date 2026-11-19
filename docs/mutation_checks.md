@@ -1749,7 +1749,7 @@ tools/tz_gen.py is a generator, not a test, and its refusals were run rather tha
 `make fake-stripe-test` on macOS (clang), each mutant one edit of tools/fake_stripe/fake_stripe.c, restored from a saved copy and the suite green again after each:
 
 - the `hlen + blen > sizeof reqbuf - 1` refusal removed -> test_limits.c's `9 KB of headers and Content-Length 1048576 is refused with 400` red (the fake answered 200 and wrote past reqbuf), and every later case in that program red behind it (`a body that fills the room left exactly is accepted`, `one byte more than fits is refused with 400`: the fake was gone).
-- the same mutant under `make fake-stripe-asan` -> `ERROR: AddressSanitizer: global-buffer-overflow ... WRITE of size 10449 ... 0 bytes after global variable 'reqbuf' ... read_request fake_stripe.c:1058`, and the same assertions red.
+- the same mutant under `make fake-stripe-asan` -> `ERROR: AddressSanitizer: global-buffer-overflow ... WRITE of size 10449 ... 0 bytes after global variable 'reqbuf' ... read_request`, and the same assertions red.
 - the Content-Length parse back to `strtoull` -> `Content-Length '12abc' is refused with 400` red (answered 200), and `'-1'`, `'+12'`, `'0x10'`, `'1 2'`, `'1e3'`, the empty value each red behind it.
 - the second Content-Length not compared with the first -> `two different Content-Length headers are refused` red.
 - the signature over the body without the `T.` prefix -> test_webhook.c's `passes with the configured secret` red for every event (and the tolerance cases behind it).
