@@ -3,7 +3,7 @@
  * with the configured secret, fail with another, fail with one body byte changed, and fail when its t is
  * far from now (300 s, the tolerance Stripe's own libraries default to). */
 #include "harness.h"
-#include "sha256.h"
+#include "../../../lib/sha256.h"
 
 #define NOW 1700000000LL
 #define TOLERANCE 300

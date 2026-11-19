@@ -24,7 +24,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "num_parse.h"
+#include "../../../lib/num_parse.h"
 
 static int fails = 0;
 static void msleep(int ms) { struct timespec ts = {ms / 1000, (ms % 1000) * 1000000L}; nanosleep(&ts, NULL); }

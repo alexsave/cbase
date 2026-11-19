@@ -31,9 +31,9 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "fnv.h"
-#include "num_parse.h"
-#include "rng.h"
+#include "../../lib/fnv.h"
+#include "../../lib/num_parse.h"
+#include "../../lib/rng.h"
 
 /* ---------- growable buffer ---------- */
 typedef struct { char *p; size_t n, cap; } sbuf;
