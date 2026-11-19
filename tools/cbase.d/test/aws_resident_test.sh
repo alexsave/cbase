@@ -19,11 +19,11 @@ unset CBASE_TEST_AWS   # this test starts its own server, and keeps the per-proc
 # job) that is a failure, and resident_start says so; elsewhere (make check) the test is skipped, loudly.
 if [ "$wanted_resident" != resident ] && ! resident_python > /dev/null; then
   CBASE_TEST_END=1
-  echo "aws_resident_test: SKIPPED: $(command -v aws) is not a Python awscli (set CBASE_TEST_AWS=resident to require it)"
+  echo "aws_resident_test: SKIPPED: $AWS_REAL is not a Python awscli (set CBASE_TEST_AWS=resident to require it)"
   exit 0
 fi
 
-REAL_AWS="$(command -v aws)"
+REAL_AWS="$AWS_REAL"
 start_fake --bucket "$BUCKET"
 resident_start
 RES_AWS="$RESIDENT_BIN/aws"
@@ -109,6 +109,24 @@ held_signal() {
 }
 held_signal TERM 15
 held_signal INT 2
+
+# ---- calls are served at once ------------------------------------------------------------------
+# The race sections hold N clients at the fake's gather knob: each GetObject waits until N have been asked
+# (20 s at most). A server that serves one call at a time never lets the second reach the fake, so both
+# would wait out the 20 s. Two held calls must both end, within 10 s, with their bodies.
+curl -fsS -X POST "$AWS_ENDPOINT_URL/_fake/gather?n=2" > /dev/null
+rm -f "$t/c1.body" "$t/c2.body"
+"$RES_AWS" s3api get-object --bucket "$BUCKET" --key dir/one.txt "$t/c1.body" < /dev/null > "$t/c1.out" 2> "$t/c1.err" &
+c1=$!
+"$RES_AWS" s3api get-object --bucket "$BUCKET" --key dir/two.txt "$t/c2.body" < /dev/null > "$t/c2.out" 2> "$t/c2.err" &
+c2=$!
+n=0
+until { ! kill -0 "$c1" 2> /dev/null && ! kill -0 "$c2" 2> /dev/null; } || [ $n -ge 100 ]; do sleep 0.1; n=$((n + 1)); done
+if [ $n -ge 100 ]; then kill -9 "$c1" "$c2" 2> /dev/null || true; fail "two calls held at the fake's gather did not both end within 10 s (the server serves one at a time)"; fi
+st1=0; st2=0; wait "$c1" || st1=$?; wait "$c2" || st2=$?
+{ [ "$st1" = 0 ] && [ "$st2" = 0 ]; } || { cat "$t/c1.err" "$t/c2.err" >&2; fail "two held calls: status $st1 and $st2"; }
+{ cmp -s "$t/c1.body" "$t/cwd-real/rel.txt" && cmp -s "$t/c2.body" "$t/cwd-real/rel.txt"; } || fail "two held calls: a body is not the object's"
+ok
 
 # ---- the server is gone ----------------------------------------------------------------------
 # bounded_client TENTHS OUT ERR ARGS...: the resident client in the background, waited for at most
