@@ -48,7 +48,7 @@ jobs:
       - name: build
         run: make -j"$(getconf _NPROCESSORS_ONLN)"
       - name: unit tests, smokes, the client, the repository gate, the symbol gate, the local-only example offline and stripped of aws and ops, its check
-        run: make -j"$(getconf _NPROCESSORS_ONLN)" check
+        run: make -j"$(getconf _NPROCESSORS_ONLN)" check CBASE_TOOL_TESTS=0
       # CBASE_IO_URING (net/loop.h): the suite again with every loop on io_uring; unit_uring's first
       # line says whether the runner allowed it (else the loops fall back to epoll, as serve's would).
       - name: unit tests and smokes with every loop on io_uring
@@ -57,6 +57,26 @@ jobs:
         run: bash tools/c_rules_test.sh
       - name: fuzz.mk's bookkeeping
         run: bash fuzz/test/fuzz_mk_test.sh
+
+  # The deploy tool's tests on Linux, beside make check, which leaves them out (CBASE_TOOL_TESTS=0): in
+  # Docker (2026-11-19) they were 766 of check's 829 s, 96 to 99% of it the AWS CLI's start per call.
+  # Here they run AWS's own frozen CLI, one process a call, as make check ran them, so that build stays
+  # covered through the whole suite (the macOS job runs Homebrew's resident; aws_resident_test.sh says
+  # SKIPPED here, as it did inside check, since a frozen CLI cannot be loaded).
+  tool_ubuntu:
+    name: deploy tool tests (ubuntu-24.04)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+      - name: the AWS CLI on the runner (AWS's frozen build, one process a call)
+        run: aws --version
+      - name: cbase_test, cbase_vm_test, cbase_group_test, the resident CLI's fidelity, the VM renders, the Python and its launcher
+        run: CBASE_TEST_TIMING="$RUNNER_TEMP/timing/" make -j"$(getconf _NPROCESSORS_ONLN)" cbase-tool-test cbase-vm-test cbase-group-test cbase-aws-resident-test cbase-render-test cbase-py-check
+      # Where the time goes: each script's AWS CLI calls (lib.sh CBASE_TEST_TIMING).
+      - name: the deploy tool tests' time, by AWS CLI call
+        if: always()
+        run: bash tools/cbase.d/test/timing.sh "$RUNNER_TEMP"/timing/*.tim; nproc
 
   # macOS: the same suite on the development platform, linked against Homebrew's SQLite (upstream's,
   # as on Linux and in production; Apple's system one has its own page cache, cbase.mk).
