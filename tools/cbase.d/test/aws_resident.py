@@ -18,7 +18,11 @@
 # u32 argc, u32 envc, argc NUL-ended arguments, envc NUL-ended KEY=VALUE strings, the NUL-ended
 # working directory; the first bytes carry the three descriptors. Server to client: u32 pid of the
 # child, then u32 kind (0 exit code, 1 killed by a signal) and u32 the code or the signal number.
-# One request is served at a time: another client waits in the socket's backlog.
+# Calls are served concurrently (the race sections hold several at the fake at once): the server forks
+# a HANDLER per accepted connection, which receives the request, forks the CLI child, sends its pid,
+# waits for it and sends the status. The server never waits on a call; it reaps handlers on SIGCHLD.
+# A "lifeline" pipe, whose write end only the server holds, tells a handler the server is gone (the
+# pipe reads EOF): it kills its child and closes the connection, so a client never waits on a dead server.
 import argparse
 import io
 import locale
@@ -118,6 +122,8 @@ def child(argv, env, cwd, fds):
             if fd > 2:
                 os.close(fd)
         os.chdir(cwd)
+        signal.set_wakeup_fd(-1)
+        signal.signal(signal.SIGCHLD, signal.SIG_DFL)   # the CLI may run and wait for its own children
         # A fresh interpreter starts with the dispositions its parent gave it, and the client has
         # forwarded what it got: the server's own (a background job's ignored INT) are not the call's.
         signal.signal(signal.SIGINT, signal.default_int_handler)
@@ -147,40 +153,69 @@ def child(argv, env, cwd, fds):
 
 
 def serve_one(conn):
+    """Runs in a handler process: one request, from the descriptors to the status."""
     head, fds, _, _ = socket.recv_fds(conn, 65536, 3)
     if len(fds) != 3:
         for fd in fds:
             os.close(fd)
         return
-    try:
-        head = read_exact(conn, bytearray(head), 4)
-        if head is None:
+    head = read_exact(conn, bytearray(head), 4)
+    if head is None:
+        return
+    n = struct.unpack_from("<I", head, 0)[0]
+    body = read_exact(conn, bytearray(head[4:]), n)
+    if body is None:
+        return
+    argv, env, cwd = parse(bytes(body[:n]))
+    # SIGCHLD wakes the select below through a pipe (a flag set in a handler could be missed between the
+    # check and the wait); the pipe stays readable until drained, so no wakeup is lost.
+    wake_r, wake_w = os.pipe()
+    os.set_blocking(wake_w, False)
+    signal.signal(signal.SIGCHLD, lambda *a: None)
+    signal.set_wakeup_fd(wake_w, warn_on_full_buffer=False)
+    pid = fork_quietly()
+    if pid == 0:
+        conn.close()
+        os.close(life_r)
+        os.close(wake_r)
+        os.close(wake_w)
+        child(argv, env, cwd, fds)
+    for fd in fds:
+        os.close(fd)
+    conn.sendall(struct.pack("<I", pid))
+    while True:
+        done, status = os.waitpid(pid, os.WNOHANG)
+        if done:
+            break
+        ready, _, _ = select.select([life_r, wake_r], [], [])
+        if life_r in ready:   # EOF: the server is gone
+            os.kill(pid, signal.SIGKILL)
+            os.waitpid(pid, 0)
             return
-        n = struct.unpack_from("<I", head, 0)[0]
-        body = read_exact(conn, bytearray(head[4:]), n)
-        if body is None:
+        os.read(wake_r, 4096)
+    if os.WIFSIGNALED(status):
+        conn.sendall(struct.pack("<II", 1, os.WTERMSIG(status)))
+    else:
+        conn.sendall(struct.pack("<II", 0, os.WEXITSTATUS(status)))
+
+
+def fork_quietly():
+    with warnings.catch_warnings():   # 3.12+ warns that a process with threads forks
+        warnings.simplefilter("ignore", DeprecationWarning)
+        return os.fork()
+
+
+def reap(*_):
+    while True:
+        try:
+            if os.waitpid(-1, os.WNOHANG)[0] == 0:
+                return
+        except ChildProcessError:
             return
-        argv, env, cwd = parse(bytes(body[:n]))
-        with warnings.catch_warnings():   # 3.12+ warns that a process with threads forks
-            warnings.simplefilter("ignore", DeprecationWarning)
-            pid = os.fork()
-        if pid == 0:
-            conn.close()
-            listener.close()
-            child(argv, env, cwd, fds)
-        conn.sendall(struct.pack("<I", pid))
-        _, status = os.waitpid(pid, 0)
-        if os.WIFSIGNALED(status):
-            conn.sendall(struct.pack("<II", 1, os.WTERMSIG(status)))
-        else:
-            conn.sendall(struct.pack("<II", 0, os.WEXITSTATUS(status)))
-    finally:
-        for fd in fds:
-            os.close(fd)
 
 
 def main():
-    global listener
+    global listener, life_r
     ap = argparse.ArgumentParser()
     ap.add_argument("--socket", required=True)
     path = ap.parse_args().socket
@@ -188,6 +223,8 @@ def main():
     listener.bind(path)
     listener.listen(64)
     ino = os.stat(path).st_ino
+    life_r, life_w = os.pipe()
+    signal.signal(signal.SIGCHLD, reap)
     while True:
         # It ends when its socket is removed (the script's directory went), checked once a second.
         ready, _, _ = select.select([listener], [], [], 1.0)
@@ -199,12 +236,15 @@ def main():
                 return
             continue
         conn, _ = listener.accept()
-        try:
-            serve_one(conn)
-        except (OSError, ValueError, struct.error):
-            pass
-        finally:
-            conn.close()
+        if fork_quietly() == 0:
+            listener.close()
+            os.close(life_w)
+            try:
+                serve_one(conn)
+            except BaseException:
+                pass
+            os._exit(0)
+        conn.close()
 
 
 if __name__ == "__main__":
