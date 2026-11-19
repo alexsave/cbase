@@ -43,6 +43,9 @@ wanted() {
 }
 
 command -v aws > /dev/null 2>&1 || fail "the AWS CLI (aws) is not on PATH: the tests drive the real CLI against a local fake"
+# AWS_REAL: the person's own aws, recorded once, before the resident client or the timing wrapper is put
+# in front of it on PATH (resident_python reads this one's #! line, whenever it is called).
+AWS_REAL="$(command -v aws)"
 # THE RESIDENT AWS CLI (opt in): CBASE_TEST_AWS=resident runs the real AWS CLI loaded once instead of
 # once per call (starting it is about nine tenths of the deploy tool tests' time). tools/cbase.d/test/
 # aws_resident.py runs on the CLI's own Python and forks a child per call with the caller's environment,
@@ -56,7 +59,7 @@ RESIDENT_BIN="$t/awsbin"
 # importable, else status 1 (a frozen build, a wrapper).
 resident_python() {
   local real py d
-  real="$(command -v aws)"
+  real="$AWS_REAL"
   while [ -L "$real" ]; do   # follow the links (macOS has no readlink -f)
     d="$(readlink "$real")"
     case "$d" in /*) real="$d" ;; *) real="$(dirname "$real")/$d" ;; esac
@@ -67,7 +70,7 @@ resident_python() {
 }
 resident_start() {
   local py n=0
-  py="$(resident_python)" || fail "CBASE_TEST_AWS=resident: $(command -v aws) is not a Python awscli (a frozen build?); unset CBASE_TEST_AWS"
+  py="$(resident_python)" || fail "CBASE_TEST_AWS=resident: $AWS_REAL is not a Python awscli (a frozen build?); unset CBASE_TEST_AWS"
   # sun_path is 104 bytes on macOS.
   [ "${#t}" -le 90 ] || fail "CBASE_TEST_AWS=resident: $t is too long for a socket path"
   mkdir -p "$RESIDENT_BIN"
