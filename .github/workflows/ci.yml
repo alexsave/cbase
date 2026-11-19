@@ -61,8 +61,8 @@ jobs:
   # The deploy tool's tests on Linux, beside make check, which leaves them out (CBASE_TOOL_TESTS=0): in
   # Docker (2026-11-19) they were 766 of check's 829 s, 96 to 99% of it the AWS CLI's start per call.
   # They run the real AWS CLI resident (CBASE_TEST_AWS=resident, tools/cbase.d/test/aws_resident.py), as
-  # the macOS job does: Ubuntu's own awscli package is a Python one the resident mode can load (the
-  # runner's /usr/local/bin/aws is AWS's frozen build, which cannot be). aws_resident_test.sh holds the
+  # the macOS job does, on AWS's own CLI built from source at a pinned release (the runner's
+  # /usr/local/bin/aws is AWS's frozen build, which cannot be loaded). aws_resident_test.sh holds the
   # resident CLI to the same CLI run per call. AWS's frozen build is trusted to work as AWS ships it
   # (Alex, 2026-11-19), so no job runs it through the whole suite any more.
   tool_ubuntu:
@@ -71,17 +71,23 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v5
-      # Ubuntu's awscli package, unpinned as the macOS job's Homebrew one is (the reasons are the same: the
-      # distribution keeps one version, the runner's own CLI was never pinned, and the fidelity test holds
-      # the two modes to each other on whatever version this is). Its /usr/bin/aws is put first on PATH,
-      # ahead of the runner's frozen /usr/local/bin/aws; both versions are printed.
-      - name: the AWS CLI from Ubuntu (a Python one the resident mode can load)
+      # AWS's own AWS CLI v2, built from its source at the tag and commit tools/cbase.d/test/awscli.pin names
+      # (AWS's documented ./configure, make, make install; the system-sandbox install, a Python virtual
+      # environment the resident mode can load), on the runner's own /usr/bin/python3. The build is cached
+      # by version, commit, OS and Python; the install script fails the job unless `aws --version` is the pin.
+      - name: the pinned AWS CLI (its version and commit)
         run: |
-          sudo apt-get update -q && sudo apt-get install -y -q awscli
-          mkdir -p "$RUNNER_TEMP/awsbin" && ln -s /usr/bin/aws "$RUNNER_TEMP/awsbin/aws"
-          echo "$RUNNER_TEMP/awsbin" >> "$GITHUB_PATH"
-          echo "Ubuntu's: $(/usr/bin/aws --version)"
-          if [ -x /usr/local/bin/aws ]; then echo "the runner's own: $(/usr/local/bin/aws --version)"; fi
+          . tools/cbase.d/test/awscli.pin
+          { echo "AWSCLI_VERSION=$AWSCLI_VERSION"; echo "AWSCLI_SHA=$AWSCLI_SHA"; echo "AWSCLI_PY=$(/usr/bin/python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')"; } >> "$GITHUB_ENV"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/cbase-awscli
+          key: awscli-${{ runner.os }}-${{ runner.arch }}-${{ env.AWSCLI_VERSION }}-${{ env.AWSCLI_SHA }}-py${{ env.AWSCLI_PY }}
+      - name: AWS's AWS CLI from source, first on PATH
+        run: |
+          bash tools/cbase.d/test/awscli_install.sh "$HOME/.cache/cbase-awscli" /usr/bin/python3
+          echo "$HOME/.cache/cbase-awscli/bin" >> "$GITHUB_PATH"
+          if [ -x /usr/local/bin/aws ]; then echo "the runner's own (not used): $(/usr/local/bin/aws --version)"; fi
       - name: cbase_test, cbase_vm_test, cbase_group_test, the resident CLI's fidelity, the VM renders, the Python and its launcher
         run: CBASE_TEST_AWS=resident CBASE_TEST_TIMING="$RUNNER_TEMP/timing/" make -j"$(getconf _NPROCESSORS_ONLN)" cbase-tool-test cbase-vm-test cbase-group-test cbase-aws-resident-test cbase-render-test cbase-py-check
       # Where the time goes: each script's AWS CLI calls (lib.sh CBASE_TEST_TIMING).
@@ -119,21 +125,23 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
-      # The runner's own AWS CLI (/usr/local/bin/aws) is AWS's frozen build, which no Python can load as a
-      # module: Homebrew's awscli is the same CLI from source on a plain Python, put first on PATH for this
-      # job, before the Python 3.9 step so that one's python3 still comes first.
-      # Ubuntu keeps the frozen build per call, so both builds run.
-      - name: the AWS CLI from Homebrew (a Python one the resident mode can load)
+      # AWS's own AWS CLI v2, built from its source at the tag and commit tools/cbase.d/test/awscli.pin names
+      # (AWS's documented ./configure, make, make install; the system-sandbox install, a Python virtual
+      # environment the resident mode can load), on the runner's own /usr/bin/python3. The build is cached
+      # by version, commit, OS and Python; the install script fails the job unless `aws --version` is the pin.
+      - name: the pinned AWS CLI (its version and commit)
         run: |
-          brew list awscli > /dev/null 2>&1 || brew install awscli
-          echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
-          # Both versions, unpinned: Homebrew's (the one the tests use) and the runner's own, if it has one.
-          echo "Homebrew's: $("$(brew --prefix)/bin/aws" --version 2>&1)"
-          if [ -x /usr/local/bin/aws ] && [ "/usr/local/bin/aws" != "$(brew --prefix)/bin/aws" ]; then
-            echo "the runner's own: $(/usr/local/bin/aws --version 2>&1)"
-          else
-            echo "the runner's own: none (or the same path)"
-          fi
+          . tools/cbase.d/test/awscli.pin
+          { echo "AWSCLI_VERSION=$AWSCLI_VERSION"; echo "AWSCLI_SHA=$AWSCLI_SHA"; echo "AWSCLI_PY=$(/usr/bin/python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')"; } >> "$GITHUB_ENV"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/cbase-awscli
+          key: awscli-${{ runner.os }}-${{ runner.arch }}-${{ env.AWSCLI_VERSION }}-${{ env.AWSCLI_SHA }}-py${{ env.AWSCLI_PY }}
+      - name: AWS's AWS CLI from source, first on PATH
+        run: |
+          bash tools/cbase.d/test/awscli_install.sh "$HOME/.cache/cbase-awscli" /usr/bin/python3
+          echo "$HOME/.cache/cbase-awscli/bin" >> "$GITHUB_PATH"
+          if [ -x /usr/local/bin/aws ]; then echo "the runner's own (not used): $(/usr/local/bin/aws --version)"; fi
       - name: python3 is macOS's own (3.9, the deploy tool's floor)
         run: |
           mkdir -p "$RUNNER_TEMP/py39" && ln -s /usr/bin/python3 "$RUNNER_TEMP/py39/python3"
@@ -141,7 +149,7 @@ jobs:
           "$RUNNER_TEMP/py39/python3" -c 'import sys; print(sys.version); assert sys.version_info[:2] == (3, 9), sys.version'
       # The real AWS CLI, loaded once (CBASE_TEST_AWS=resident, tools/cbase.d/test/aws_resident.py): starting it
       # per call was about nine tenths of this job's time. aws_resident_test.sh holds it to the per-process CLI.
-      # Ubuntu's deploy tool job runs it resident too, on Ubuntu's own awscli; aws_resident_test.sh diffs each mode against the other.
+      # Ubuntu's deploy tool job runs the same pinned CLI resident; aws_resident_test.sh diffs each mode against the other.
       - name: cbase_test, cbase_vm_test, cbase_group_test, the resident CLI's fidelity, the VM renders, the Python and its launcher
         run: CBASE_TEST_AWS=resident CBASE_TEST_TIMING="$RUNNER_TEMP/timing/" make -j"$(getconf _NPROCESSORS_ONLN)" cbase-tool-test cbase-vm-test cbase-group-test cbase-aws-resident-test cbase-render-test cbase-py-check
       # Where the time goes: each script's AWS CLI calls and tool runs (lib.sh CBASE_TEST_TIMING).
