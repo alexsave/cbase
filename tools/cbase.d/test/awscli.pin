@@ -1,0 +1,5 @@
+# The AWS CLI the deploy tool tests run in CI (tools/cbase.d/test/awscli_install.sh): AWS's own v2 source at a
+# release tag and the commit that tag names, the version AWS's installer ships. To move it, set both to
+# AWS's current release (https://github.com/aws/aws-cli/tags).
+AWSCLI_VERSION=2.41.1
+AWSCLI_SHA=ac125194ab55c4699e70677deef525631c4116ec
