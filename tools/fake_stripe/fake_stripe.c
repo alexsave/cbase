@@ -1066,6 +1066,20 @@ static int read_request(int fd, req_t *rq) {
     return 0;
 }
 
+/* A refused request may still be sending its body. End our side, then read and drop what arrives (up to
+ * 2 MiB, until the client closes or the 5 s receive timeout) so the close is a FIN: closing with unread
+ * data is an RST, which can take the answer away from a client that is still writing. */
+static void drain(int fd) {
+    char buf[4096];
+    size_t total = 0;
+    shutdown(fd, SHUT_WR);
+    while (total < 2 * (size_t)REQ_MAX) {
+        ssize_t n = recv(fd, buf, sizeof buf, 0);
+        if (n <= 0) break;
+        total += (size_t)n;
+    }
+}
+
 static void usage(void) {
     fprintf(stderr,
             "usage: fake_stripe [--port N] [--seed NAME] [--now UNIX] [--api-key KEY] [--webhook-url URL]\n"
@@ -1132,9 +1146,11 @@ int main(int argc, char **argv) {
         } else if (rc == -413) {
             err(&r, 413, "invalid_request_error", NULL, NULL, "Request too large.");
             write_resp(fd, &r);
+            drain(fd);
         } else if (rc == -400) {
             err(&r, 400, "invalid_request_error", NULL, NULL, "Invalid request: %s.", req_problem);
             write_resp(fd, &r);
+            drain(fd);
         }
         close(fd);
         sb_free(&r.body);
