@@ -93,6 +93,14 @@ jobs:
           mkdir -p "$RUNNER_TEMP/py39" && ln -s /usr/bin/python3 "$RUNNER_TEMP/py39/python3"
           echo "$RUNNER_TEMP/py39" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/py39/python3" -c 'import sys; print(sys.version); assert sys.version_info[:2] == (3, 9), sys.version'
+      # The runner's own AWS CLI (/usr/local/bin/aws) is AWS's frozen build, which no Python can load as a
+      # module: Homebrew's awscli is the same CLI from source on a plain Python, put first on PATH for this
+      # job. Ubuntu keeps the frozen build per call, so both builds run.
+      - name: the AWS CLI from Homebrew (a Python one the resident mode can load)
+        run: |
+          brew list awscli > /dev/null 2>&1 || brew install awscli
+          echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
+          "$(brew --prefix)/bin/aws" --version
       # The real AWS CLI, loaded once (CBASE_TEST_AWS=resident, tools/cbase.d/test/aws_resident.py): starting it
       # per call was about nine tenths of this job's time. aws_resident_test.sh holds it to the per-process CLI.
       # Ubuntu's make check and the templates job keep the per-process CLI, so both paths run.
