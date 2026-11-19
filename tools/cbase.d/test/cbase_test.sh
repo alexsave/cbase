@@ -635,6 +635,23 @@ ok
 
 fi
 
+# ---- helpers: lib.sh's writers survive a reader that stops early, with SIGPIPE ignored --------------
+if wanted helpers; then
+# since (emit_file) feeding a `grep -q` that matches the first line of a long log, in a subshell that
+# ignores SIGPIPE, as a CI run's did: the writer then gets a write error instead of the signal, and the
+# pipeline must still stand on grep's match.
+saved_log=""; [ -f "$t/log" ] && { saved_log="$t/log.saved"; mv "$t/log" "$saved_log"; }
+awk 'BEGIN { for (i = 1; i <= 200000; i++) print "line " i }' > "$t/log"
+( trap '' PIPE; set -o pipefail; since 0 | grep -q '^line 1$' ) || fail "since, read by an early-closing grep with SIGPIPE ignored, failed the pipeline"
+( set -o pipefail; since 0 | grep -q '^line 1$' ) || fail "since, read by an early-closing grep, failed the pipeline"
+[ "$(since 199998)" = "$(printf 'line 199999\nline 200000')" ] || fail "since MARK is not the lines after MARK"
+# What can really go wrong is still said, since the write's own failure is not: a line that is not a
+# number, and a file that is not there.
+( emit_file "$t/log" x > /dev/null 2>&1 ) && fail "emit_file took a line that is not a number"
+( emit_file "$t/no-such-log" 1 > /dev/null 2>&1 ) && fail "emit_file read a file that is not there"
+rm -f "$t/log"; [ -n "$saved_log" ] && mv "$saved_log" "$t/log"
+ok
+fi
 # ---- dispatch: the usage, the options, the argument errors: all before a setting is read ----------
 if wanted dispatch; then
 # The usage is README.md's "cbase/tools/cbase --help" block, byte for byte.

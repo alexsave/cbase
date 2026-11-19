@@ -167,12 +167,20 @@ state_of() {   # state_of KIND GROUP: the state file as the fake holds it
 }
 fake_set() { curl -fsS -X POST "$AWS_ENDPOINT_URL/_fake/set?${1// /%20}" > /dev/null; }
 # A reader that stops at its first match (`since "$m" | grep -q X || fail`) closes the pipe while the
-# writer may still be writing: the writer dies of SIGPIPE (141), and under pipefail the pipeline
-# failed though grep matched. template_of and since are the writers whose output runs past one
-# write (a log with SSM's base64 scripts, a template), so a closed reader is not their failure.
+# writer may still be writing, and under pipefail the pipeline failed though grep matched. How the
+# writer ends then depends on SIGPIPE: killed by it (141) where it is default, or, where it is ignored
+# (it was in a CI run, 2026-11-19), a write error: GNU sed exits 4 ("couldn't flush stdout"), BSD sed
+# and cat exit 1. So emit_file, the one writer of a file's lines to a reader that may close early,
+# checks what can really go wrong (an unreadable file, a bad line number) before it writes, and then
+# never fails for the write. template_of and since write through it.
+emit_file() {   # emit_file FILE FIRST: FILE's lines from line FIRST on
+  [ -r "$1" ] || { echo "emit_file: cannot read $1" >&2; return 1; }
+  case "$2" in '' | *[!0-9]*) echo "emit_file: line $2 is not a number" >&2; return 1 ;; esac
+  sed -n "$2,\$p" "$1" 2> /dev/null || true
+}
 template_of() {
   curl -fsS "$AWS_ENDPOINT_URL/_fake/template?stack=$1" -o "$t/template_of" || return
-  cat "$t/template_of" || [ $? -eq 141 ]
+  emit_file "$t/template_of" 1
 }
 mark() { wc -l < "$t/log" | tr -d ' '; }    # the log's length now: what a run adds is after it
-since() { sed -n "$(( $1 + 1 )),\$p" "$t/log" || [ $? -eq 141 ]; }   # since MARK: the log lines after MARK
+since() { emit_file "$t/log" "$(( $1 + 1 ))"; }   # since MARK: the log lines after MARK

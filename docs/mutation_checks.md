@@ -1734,3 +1734,12 @@ tools/tz_gen.py is a generator, not a test, and its refusals were run rather tha
 - lib.sh's resident_python given a frozen aws (a stub script) -> `CBASE_TEST_AWS=resident: ... is not a Python awscli (a frozen build?)` fails the run, and aws_resident_test.sh without CBASE_TEST_AWS=resident prints SKIPPED and exits 0.
 - aws_resident.py's server waiting for each handler before it accepts the next (a serializing server) -> aws_resident_test.sh `two calls held at the fake's gather did not both end within 10 s (the server serves one at a time)` red, the bound a counter loop.
 - aws_resident.py's handler ignoring its lifeline (EOF: the server is gone) -> `the client did not end within 5 s of the server's death in the middle of a call (it hangs)` red.
+
+## lib.sh's writers and an early-closing reader (test-since-epipe)
+
+`CBASE_TEST_ONLY=helpers bash tools/cbase.d/test/cbase_test.sh` on macOS, each mutant restored by copying the saved fixed file back and touching it:
+
+- lib.sh's since() back to `sed ... || [ $? -eq 141 ]` (main before this fix) -> `since, read by an early-closing grep with SIGPIPE ignored, failed the pipeline` red (BSD sed printed `sed: stdout: Broken pipe` and exited 1; GNU sed exits 4 the same way, the CI failure on #57).
+- emit_file's write no longer tolerated (`|| true` removed) -> the same assertion red.
+- emit_file's number check removed -> `emit_file took a line that is not a number` red.
+- emit_file's readable-file check removed -> `emit_file read a file that is not there` red.
