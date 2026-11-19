@@ -5,6 +5,17 @@ It is a test and `make serve` tool and is never shipped.
 JSON appears here because it is Stripe's wire format, the one thing a Stripe client can read; tools/ is outside the JSON gate, as tools/cbase.d/test/fake_aws.c is.
 It never reaches stripe.com: it listens on loopback and talks to nothing but the webhook URL it is given.
 
+## Build and test
+
+- From a product that includes cbase.mk: `make build/fake_stripe` (it needs OpenSSL's headers and libcrypto for the webhook HMAC, and nothing else; cbase.mk's header lists the target).
+  An app's own targets run it: `build/fake_stripe --webhook-url http://127.0.0.1:PORT/hooks/stripe &` beside its server for `make serve`, or from a test.
+- In cbase itself: `make fake-stripe-test` (part of `make check`, a few seconds, no network beyond loopback) and `make fake-stripe-asan` (the same against the fake built with AddressSanitizer and UBSan).
+- tools/fake_stripe/test holds three programs, each taking the fake's path:
+  - test_client.c drives every call the fake imitates, over loopback, with a webhook receiver of its own;
+  - test_webhook.c checks each signed webhook with an independent verifier (an RFC 2104 HMAC written in the test over lib/sha256.c, so it shares nothing with the fake's OpenSSL call): `Stripe-Signature: t=T,v1=HEX` passes with the configured secret, fails with another, fails with one body byte changed, and fails when T is more than 300 s from now;
+  - test_limits.c holds the request reader (about 9 KB of headers behind a Content-Length that fits REQ_MAX alone, the exact room left, one byte over; a Content-Length that is not a plain number), the amount and URL limits, a data file it cannot trust, and its option parsing.
+- Every case is mutation-checked (docs/mutation_checks.md, "The fake Stripe").
+
 ## Running it
 
 `fake_stripe [--port N] [--seed NAME] [--now UNIX] [--api-key KEY] [--webhook-url URL] [--webhook-secret SECRET] [--base-url URL] [--data FILE]`
