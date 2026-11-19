@@ -186,17 +186,16 @@ static void save_state(void) {
     snprintf(tmp, sizeof tmp, "%s.tmp", g_data);
     FILE *f = fopen(tmp, "wb");
     if (!f) { fprintf(stderr, "fake_stripe: cannot write %s\n", tmp); return; }
-    fwrite(MAGIC, 1, MAGIC_LEN, f);
-    fwrite(&G.rng, sizeof G.rng, 1, f);
     int c[5] = {G.n_acc, G.n_sess, G.n_chg, G.n_ref, G.n_idem};
-    fwrite(c, sizeof c, 1, f);
-    fwrite(G.acc, sizeof G.acc[0], (size_t)G.n_acc, f);
-    fwrite(G.sess, sizeof G.sess[0], (size_t)G.n_sess, f);
-    fwrite(G.chg, sizeof G.chg[0], (size_t)G.n_chg, f);
-    fwrite(G.ref, sizeof G.ref[0], (size_t)G.n_ref, f);
-    fwrite(G.idem, sizeof G.idem[0], (size_t)G.n_idem, f);
-    int ok = fclose(f) == 0;
-    if (ok) rename(tmp, g_data);
+    int ok = fwrite(MAGIC, 1, MAGIC_LEN, f) == MAGIC_LEN && fwrite(&G.rng, sizeof G.rng, 1, f) == 1 && fwrite(c, sizeof c, 1, f) == 1 &&
+             fwrite(G.acc, sizeof G.acc[0], (size_t)G.n_acc, f) == (size_t)G.n_acc &&
+             fwrite(G.sess, sizeof G.sess[0], (size_t)G.n_sess, f) == (size_t)G.n_sess &&
+             fwrite(G.chg, sizeof G.chg[0], (size_t)G.n_chg, f) == (size_t)G.n_chg &&
+             fwrite(G.ref, sizeof G.ref[0], (size_t)G.n_ref, f) == (size_t)G.n_ref &&
+             fwrite(G.idem, sizeof G.idem[0], (size_t)G.n_idem, f) == (size_t)G.n_idem;
+    if (fclose(f) != 0) ok = 0;
+    if (!ok) { fprintf(stderr, "fake_stripe: cannot write %s\n", tmp); remove(tmp); return; }
+    if (rename(tmp, g_data) != 0) fprintf(stderr, "fake_stripe: cannot rename %s\n", tmp);
 }
 /* A data file is trusted for its format, not its bytes: every string is ended and every index and count
  * is in range before a handler can follow it (G.acc[s->acct], st[s->status], G.chg[rf->charge]). */

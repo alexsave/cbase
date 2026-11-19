@@ -204,7 +204,7 @@ static size_t slurp(const char *path, char *buf, size_t cap) {
 static void spit(const char *path, const char *buf, size_t n) {
     FILE *f = fopen(path, "wb");
     if (!f) { printf("FAIL: cannot write %s\n", path); exit(1); }
-    fwrite(buf, 1, n, f);
+    if (fwrite(buf, 1, n, f) != n) { printf("FAIL: cannot write %s\n", path); exit(1); }
     fclose(f);
 }
 static void put_int(char *p, int v) { memcpy(p, &v, sizeof v); }
@@ -218,7 +218,7 @@ static char *find(char *hay, size_t n, const char *needle) {
 
 static void test_data_file(void) {
     static char file[1 << 20], bad[1 << 20];
-    char data[96], badpath[96], acct[64], sid[80], body[1024];
+    char data[96], badpath[128], acct[64], sid[80], body[1024];
     reply r;
     snprintf(data, sizeof data, "/tmp/fake_stripe_limits_%d.dat", (int)getpid());
     snprintf(badpath, sizeof badpath, "%s.bad", data);
