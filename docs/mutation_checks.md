@@ -1743,3 +1743,23 @@ tools/tz_gen.py is a generator, not a test, and its refusals were run rather tha
 - emit_file's write no longer tolerated (`|| true` removed) -> the same assertion red.
 - emit_file's number check removed -> `emit_file took a line that is not a number` red.
 - emit_file's readable-file check removed -> `emit_file read a file that is not there` red.
+
+## The fake Stripe (tools/fake_stripe, tools/fake_stripe/test)
+
+`make fake-stripe-test` on macOS (clang), each mutant one edit of tools/fake_stripe/fake_stripe.c, restored from a saved copy and the suite green again after each:
+
+- the `hlen + blen > sizeof reqbuf - 1` refusal removed -> test_limits.c's `9 KB of headers and Content-Length 1048576 is refused with 400` red (the fake answered 200 and wrote past reqbuf), and every later case in that program red behind it (`a body that fills the room left exactly is accepted`, `one byte more than fits is refused with 400`: the fake was gone).
+- the same mutant under `make fake-stripe-asan` -> `ERROR: AddressSanitizer: global-buffer-overflow ... WRITE of size 10449 ... 0 bytes after global variable 'reqbuf' ... read_request fake_stripe.c:1058`, and the same assertions red.
+- the Content-Length parse back to `strtoull` -> `Content-Length '12abc' is refused with 400` red (answered 200), and `'-1'`, `'+12'`, `'0x10'`, `'1 2'`, `'1e3'`, the empty value each red behind it.
+- the second Content-Length not compared with the first -> `two different Content-Length headers are refused` red.
+- the signature over the body without the `T.` prefix -> test_webhook.c's `passes with the configured secret` red for every event (and the tolerance cases behind it).
+- the id generator not seeded from `--seed` (a fixed state) -> test_client.c's `a different seed gives a different id` and `default seed is a fixed name` red.
+- the id generator's state xored with the wall clock -> `ids do not depend on the wall clock` red (the same-seed pair a second apart differs).
+- `AMOUNT_MAX` and `QTY_MAX` made INT64_MAX -> `a unit_amount past 99999999 is refused` and `a quantity past 999999 is refused` red.
+- `url_ok` always true -> `a success_url with CR LF is refused`, `a cancel_url with CR LF is refused` and `a success_url with a space is refused` red.
+- the event queue back to 64 events -> `70 checkout.session.expired webhooks arrive (got 64)` red.
+- `sane_state` always true -> `a session whose account index is out of range is refused at start` red, and the status, line item and charge index cases behind it.
+- `sane_state`'s status range check alone removed -> `a session whose status is out of range is refused at start` red, and no other.
+- `--port` read with `atoi` -> `--port 12abc is refused`, `--port 70000 is refused`, `--port -1 is refused` red.
+
+NOT HELD: the fake's `drain` (it reads and drops what a refused request still sends, so the close is a FIN and not an RST that can take the 400 from the client). With `drain` made a no-op the suite stays green on macOS, where loopback delivers the 400 either way; it is there for Linux's stack and CI is where it would show.
