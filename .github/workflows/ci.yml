@@ -127,8 +127,10 @@ jobs:
       - uses: actions/checkout@v5
       # AWS's own AWS CLI v2, built from its source at the tag and commit tools/cbase.d/test/awscli.pin names
       # (AWS's documented ./configure, make, make install; the system-sandbox install, a Python virtual
-      # environment the resident mode can load), on the runner's Homebrew python3 (Apple's /usr/bin/python3, a
-      # 3.9 behind the Command Line Tools, built a CLI that aborted at `aws --version`). The build is cached
+      # environment the resident mode can load), on the runner's Homebrew python3. Not Apple's /usr/bin/python3:
+      # the sandbox copies the interpreter into its virtual environment, and Apple's loads its framework from
+      # @executable_path/../Python3, which is not beside the copy, so dyld aborts it (status 134) before any
+      # Python runs (probe run 44570973366, 2026-11-19). The build is cached
       # by version, commit, OS and Python; the install script fails the job unless `aws --version` is the pin.
       - name: the pinned AWS CLI (its version and commit)
         run: |
