@@ -148,11 +148,12 @@ h2-interop: build/h2_interop
 	NODE='$(NODE)' core/test/h2_interop/run.sh build/h2_interop
 
 # THE FAKE STRIPE'S TESTS (tools/fake_stripe/test, tools/fake_stripe/README.md): the fake (build/fake_stripe,
-# from cbase.mk) driven over loopback by three programs: every call it imitates, its signed webhooks held to a
-# verifier that shares no code with it (an RFC 2104 HMAC over lib/sha256.c), and its limits (a request that
-# would overflow its buffer, a Content-Length or number that is not a plain one, a data file it cannot trust).
-# Seconds, no network beyond loopback, no Stripe account; part of check. `make fake-stripe-asan` runs the same
-# against the fake built with AddressSanitizer and UBSan.
+# from cbase.mk, served by cbase's own HTTP server) driven over loopback by three programs: every call it
+# imitates and four clients at once, its signed webhooks held to a verifier that shares no code with it (an
+# RFC 2104 HMAC over lib/sha256.c), and its limits (the server's head and body caps, a Content-Length or
+# number that is not a plain one, a form that does not decode, a data file it cannot trust). Seconds, no
+# network beyond loopback, no Stripe account; part of check. `make fake-stripe-asan` runs the same against
+# the fake built from the sanitized objects (AddressSanitizer and UBSan; cbase.mk build/fake_stripe_asan).
 FS_DIR := tools/fake_stripe/test
 FS_OUT := build/fake_stripe_test
 FS_TESTS := test_client test_webhook test_limits
