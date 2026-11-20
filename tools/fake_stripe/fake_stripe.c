@@ -5,6 +5,10 @@
  * tools/cbase.d/test/fake_aws.c is for the same reason). See README.md for exactly what is and
  * is not imitated.
  *
+ * It answers over cbase's own HTTP server: core/test/fake_stripe_host.c is the program, whose cb_route
+ * handlers call fs_handle (fake_stripe.h, which says why the two halves are apart). Nothing here reads
+ * a socket; the one socket of its own is the webhook POST it sends (deliver).
+ *
  * Randomness: ids only, from lib/rng.h's splitmix64 over one state (G.rng) that --seed names
  * through lib/fnv.h, so the same seed and the same call order give the same ids. No other
  * random draw exists here. The clock is --now or POST /test/now; the real clock stamps
@@ -19,24 +23,25 @@
 #include <netinet/in.h>
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
-#include <signal.h>
+#include <pthread.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
+
+#include "fake_stripe.h"
 
 #include "../../lib/fnv.h"
 #include "../../lib/num_parse.h"
 #include "../../lib/rng.h"
 
 /* ---------- growable buffer ---------- */
-typedef struct { char *p; size_t n, cap; } sbuf;
+typedef fs_buf sbuf;
 
 static void sb_reserve(sbuf *b, size_t extra) {
     if (b->n + extra + 1 > b->cap) {
@@ -253,26 +258,19 @@ static int load_state(void) {
 }
 
 /* ---------- request, response, events ---------- */
-typedef struct { char *k, *v; } kv;
-#define MAXKV 128
-typedef struct {
-    char method[8], path[300], auth[300], stripe_account[80], idem_key[256];
-    char *body; size_t body_len;   /* the raw body, untouched: the idempotency fingerprint reads it */
-    char *formbuf;                 /* a copy the form is split and decoded in place in (parse_form) */
-    kv form[MAXKV]; int nform;
-} req_t;
+typedef fs_req req_t;
+typedef fs_res resp_t;
 
-typedef struct {
-    int status;
-    char ctype[48], location[600], extra[200];
-    sbuf body;
-} resp_t;
+/* THE ONE LOCK. Every request runs fs_handle whole under it: the state (G and the clock), the --data save
+ * and the events it queues. The options are set before the server starts and only read after. */
+static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 
-typedef struct { char type[48]; sbuf json; } event_t;
-/* The events one request queued, delivered after its response. Grows as needed: one POST /test/now can
- * expire every open session at once, and an event lost to a fixed bound would be a silent test pass. */
-static event_t *evq;
-static size_t n_ev, cap_ev;
+/* An event: its type, the signature's timestamp (the clock when it was queued, as the request left it),
+ * and its JSON. The events one request queues are a list (under g_mu) with no bound: one POST /test/now
+ * can expire every open session at once, and an event lost to a fixed bound would be a silent test pass.
+ * When the request is done they join the sender's list, which one thread delivers in order (fs_listening). */
+typedef struct event_s { char type[48]; int64_t t; sbuf json; struct event_s *next; } event_t;
+static event_t *ev_head, **ev_tail = &ev_head;
 
 static const char *form_get(const req_t *r, const char *key) {
     for (int i = 0; i < r->nform; i++) if (strcmp(r->form[i].k, key) == 0) return r->form[i].v;
@@ -283,39 +281,6 @@ static int form_has_prefix(const req_t *r, const char *pre) {
     for (int i = 0; i < r->nform; i++) if (strncmp(r->form[i].k, pre, n) == 0) return 1;
     return 0;
 }
-static int hexv(int c) { return isdigit(c) ? c - '0' : (c | 32) - 'a' + 10; }
-static void url_decode(char *s) {
-    char *o = s;
-    for (; *s; s++) {
-        if (*s == '+') *o++ = ' ';
-        else if (*s == '%' && isxdigit((unsigned char)s[1]) && isxdigit((unsigned char)s[2])) {
-            *o++ = (char)(hexv(s[1]) * 16 + hexv(s[2]));
-            s += 2;
-        } else *o++ = *s;
-    }
-    *o = 0;
-}
-static void parse_form(req_t *r) {
-    r->nform = 0;
-    r->formbuf = malloc(r->body_len + 1);
-    if (!r->formbuf) { perror("malloc"); exit(1); }
-    memcpy(r->formbuf, r->body, r->body_len);
-    r->formbuf[r->body_len] = 0;
-    char *p = r->formbuf;
-    while (p && *p && r->nform < MAXKV) {
-        char *amp = strchr(p, '&');
-        if (amp) *amp = 0;
-        char *eq = strchr(p, '=');
-        if (eq) *eq++ = 0;
-        url_decode(p);
-        if (eq) url_decode(eq);
-        r->form[r->nform].k = p;
-        r->form[r->nform].v = eq ? eq : p + strlen(p);
-        r->nform++;
-        p = amp ? amp + 1 : NULL;
-    }
-}
-
 static void err(resp_t *r, int status, const char *type, const char *code, const char *param, const char *fmt, ...) {
     char msg[600];
     va_list ap;
@@ -392,14 +357,12 @@ static void j_refund(sbuf *b, const refund_t *rf) {
 
 /* ---------- events ---------- */
 static void queue_event(const char *type, int acct, const sbuf *object) {
-    if (n_ev == cap_ev) {
-        cap_ev = cap_ev ? cap_ev * 2 : 16;
-        evq = realloc(evq, cap_ev * sizeof *evq);
-        if (!evq) { perror("realloc"); exit(1); }
-    }
-    event_t *e = &evq[n_ev++];
-    memset(e, 0, sizeof *e);
+    event_t *e = calloc(1, sizeof *e);
+    if (!e) { perror("calloc"); exit(1); }
+    *ev_tail = e;
+    ev_tail = &e->next;
     CPY(e->type, type);
+    e->t = now_s();
     char id[40];
     new_id(id, sizeof id, "evt_");
     sb_addf(&e->json, "{\"id\":\"%s\",\"object\":\"event\",\"api_version\":\"2025-01-27.acacia\",\"created\":%lld,"
@@ -462,7 +425,7 @@ static void deliver(const event_t *e) {
         return;
     }
     /* the signed payload is "<t>.<raw body>", exactly as Stripe signs it */
-    int64_t t = now_s();
+    int64_t t = e->t;
     sbuf signed_payload = {0};
     sb_addf(&signed_payload, "%lld.", (long long)t);
     sb_add(&signed_payload, e->json.p);
@@ -486,9 +449,39 @@ static void deliver(const event_t *e) {
     sb_free(&out);
     close(fd);
 }
-static void flush_events(void) {
-    for (size_t i = 0; i < n_ev; i++) { deliver(&evq[i]); sb_free(&evq[i].json); }
-    n_ev = 0;
+
+/* THE SENDER: one thread, delivering the events in the order the requests queued them, each request's
+ * once it is done (send_events). A webhook that waits for its receiver (3 s at most) holds this thread
+ * and no request worker, so an app that calls the fake from the handler that will receive the webhook
+ * gets its answer first, as it did when the fake answered and then delivered. */
+static pthread_mutex_t g_send_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_send_cv = PTHREAD_COND_INITIALIZER;
+static event_t *send_head, **send_tail = &send_head;
+
+static void send_events(void) {   /* under g_mu: this request's events join the sender's list */
+    if (!ev_head) return;
+    pthread_mutex_lock(&g_send_mu);
+    *send_tail = ev_head;
+    send_tail = ev_tail;
+    pthread_cond_signal(&g_send_cv);
+    pthread_mutex_unlock(&g_send_mu);
+    ev_head = NULL;
+    ev_tail = &ev_head;
+}
+static void *sender(void *arg) {
+    (void)arg;
+    for (;;) {
+        pthread_mutex_lock(&g_send_mu);
+        while (!send_head) pthread_cond_wait(&g_send_cv, &g_send_mu);
+        event_t *e = send_head;
+        send_head = e->next;
+        if (!send_head) send_tail = &send_head;
+        pthread_mutex_unlock(&g_send_mu);
+        deliver(e);
+        sb_free(&e->json);
+        free(e);
+    }
+    return NULL;
 }
 
 /* ---------- lookups ---------- */
@@ -873,51 +866,49 @@ static void h_page_action(const char *id, int pay, resp_t *r) {
 }
 
 /* ---------- dispatcher ---------- */
-/* Match PREFIX<id>SUFFIX exactly (id non-empty, no '/'); suffix may be "". sscanf cannot do this: it
- * reports success even when a trailing literal fails to match. */
-static int route_id(const char *p, const char *pre, const char *suf, char *id, size_t cap) {
-    size_t pl = strlen(pre), sl = strlen(suf), n = strlen(p);
-    if (n < pl + sl + 1 || strncmp(p, pre, pl) != 0 || strcmp(p + n - sl, suf) != 0) return 0;
-    size_t il = n - pl - sl;
-    if (il >= cap || memchr(p + pl, '/', il)) return 0;
-    memcpy(id, p + pl, il);
-    id[il] = 0;
+/* The calls that read the form body: a body that does not decode is refused before any of them runs. */
+static int reads_form(fs_call c) {
+    return c == FS_TEST_NOW || c == FS_ACCOUNT_CREATE || c == FS_ACCOUNT_LINK || c == FS_SESSION_CREATE || c == FS_REFUND;
+}
+static int form_refused(fs_call call, const req_t *rq, resp_t *r) {
+    if (!reads_form(call) || !rq->form_bad) return 0;
+    err(r, 400, "invalid_request_error", NULL, NULL,
+        "Invalid request: the form body does not decode (a bad percent escape, or a key or value over 1023 bytes).");
     return 1;
 }
 
-static int mutating;
-
-static void route(req_t *rq, resp_t *r) {
-    const char *p = rq->path;
-    char id[96];
-    int is_post = strcmp(rq->method, "POST") == 0, is_get = strcmp(rq->method, "GET") == 0;
+/* One call, under g_mu. Returns whether it changed the state (the caller saves it). */
+static int route(fs_call call, const req_t *rq, resp_t *r) {
+    const char *p = rq->path, *id = rq->id;
+    int is_post = strcmp(rq->method, "POST") == 0;
 
     /* test-only and page routes: no API key */
-    if (strcmp(p, "/test/now") == 0 && is_post) { mutating = 1; h_test_now(rq, r); return; }
-    if (route_id(p, "/test/accounts/", "/complete_onboarding", id, sizeof id) && is_post) { mutating = 1; h_test_onboard(id, r); return; }
-    if (route_id(p, "/test/sessions/", "/pay", id, sizeof id) && is_post) { mutating = 1; h_test_pay(id, r); return; }
-    if (route_id(p, "/onboard/", "", id, sizeof id) && is_get) {
-        page(r, "Fake Stripe onboarding", "<p>No real onboarding happens here; a test calls complete_onboarding.</p>");
-        return;
+    switch (call) {
+    case FS_TEST_NOW: if (!form_refused(call, rq, r)) h_test_now(rq, r); return 1;
+    case FS_TEST_ONBOARD: h_test_onboard(id, r); return 1;
+    case FS_TEST_PAY: h_test_pay(id, r); return 1;
+    case FS_PAGE_ONBOARD: page(r, "Fake Stripe onboarding", "<p>No real onboarding happens here; a test calls complete_onboarding.</p>"); return 0;
+    case FS_PAGE_DO_PAY: h_page_action(id, 1, r); return 1;
+    case FS_PAGE_DO_CANCEL: h_page_action(id, 0, r); return 0;
+    case FS_PAGE_PAY: h_page_pay(id, r); return 0;
+    default: break;
     }
-    if (route_id(p, "/c/pay/", "/pay", id, sizeof id) && is_post) { mutating = 1; h_page_action(id, 1, r); return; }
-    if (route_id(p, "/c/pay/", "/cancel", id, sizeof id) && is_post) { h_page_action(id, 0, r); return; }
-    if (route_id(p, "/c/pay/", "", id, sizeof id) && is_get) { h_page_pay(id, r); return; }
 
-    if (strncmp(p, "/v1/", 4) != 0) { err(r, 404, "invalid_request_error", NULL, NULL, "Unrecognized request URL (%s %s).", rq->method, p); return; }
+    if (strncmp(p, "/v1/", 4) != 0) { err(r, 404, "invalid_request_error", NULL, NULL, "Unrecognized request URL (%s %s).", rq->method, p); return 0; }
 
     /* API key: Authorization: Bearer <key> */
     if (!rq->auth[0]) {
         err(r, 401, "invalid_request_error", NULL, NULL,
             "You did not provide an API key. You need to provide your API key in the Authorization header, using Bearer auth (e.g. 'Authorization: Bearer YOUR_SECRET_KEY').");
-        return;
+        return 0;
     }
     if (strncmp(rq->auth, "Bearer ", 7) != 0 || strcmp(rq->auth + 7, g_api_key) != 0) {
         const char *k = strncmp(rq->auth, "Bearer ", 7) == 0 ? rq->auth + 7 : rq->auth;
         size_t kl = strlen(k);
         err(r, 401, "invalid_request_error", NULL, NULL, "Invalid API Key provided: %.8s%s%s", k, kl > 12 ? "********" : "", kl > 12 ? k + kl - 4 : "");
-        return;
+        return 0;
     }
+    if (form_refused(call, rq, r)) return 0;
 
     /* Idempotency-Key on POST: same key + same request replays; same key + different request is a 400 */
     int use_idem = is_post && rq->idem_key[0];
@@ -926,7 +917,7 @@ static void route(req_t *rq, resp_t *r) {
         sbuf mat = {0};
         sb_addf(&mat, "%s\n%s\n", rq->path, rq->stripe_account);
         sb_reserve(&mat, rq->body_len);
-        memcpy(mat.p + mat.n, rq->body, rq->body_len);
+        if (rq->body_len) memcpy(mat.p + mat.n, rq->body, rq->body_len);
         mat.n += rq->body_len;
         unsigned fl = 0;
         EVP_Digest(mat.p, mat.n, fp, &fl, EVP_sha256(), NULL);
@@ -937,23 +928,26 @@ static void route(req_t *rq, resp_t *r) {
                 err(r, 400, "idempotency_error", NULL, NULL,
                     "Keys for idempotent requests can only be used with the same parameters they were first used with. "
                     "Try using a key other than '%s' if you meant to execute a different request.", rq->idem_key);
-                return;
+                return 0;
             }
             r->status = G.idem[i].status;
             sb_add(&r->body, G.idem[i].resp);
-            CPY(r->extra, "Idempotent-Replayed: true\r\n");
-            return;
+            r->replayed = 1;
+            return 0;
         }
     }
 
-    if (is_post && strcmp(p, "/v1/accounts") == 0) { mutating = 1; h_account_create(rq, r); }
-    else if (is_get && route_id(p, "/v1/accounts/", "", id, sizeof id)) h_account_get(id, r);
-    else if (is_post && strcmp(p, "/v1/account_links") == 0) { mutating = 1; h_account_link(rq, r); }
-    else if (is_post && strcmp(p, "/v1/checkout/sessions") == 0) { mutating = 1; h_session_create(rq, r); }
-    else if (is_post && route_id(p, "/v1/checkout/sessions/", "/expire", id, sizeof id)) { mutating = 1; h_session_expire(rq, id, r); }
-    else if (is_get && route_id(p, "/v1/checkout/sessions/", "", id, sizeof id)) h_session_get(rq, id, r);
-    else if (is_post && strcmp(p, "/v1/refunds") == 0) { mutating = 1; h_refund(rq, r); }
-    else { err(r, 404, "invalid_request_error", NULL, NULL, "Unrecognized request URL (%s %s). This fake imitates only the calls its README lists.", rq->method, p); return; }
+    int mutating = 0;
+    switch (call) {
+    case FS_ACCOUNT_CREATE: mutating = 1; h_account_create(rq, r); break;
+    case FS_ACCOUNT_GET: h_account_get(id, r); break;
+    case FS_ACCOUNT_LINK: mutating = 1; h_account_link(rq, r); break;
+    case FS_SESSION_CREATE: mutating = 1; h_session_create(rq, r); break;
+    case FS_SESSION_EXPIRE: mutating = 1; h_session_expire(rq, id, r); break;
+    case FS_SESSION_GET: h_session_get(rq, id, r); break;
+    case FS_REFUND: mutating = 1; h_refund(rq, r); break;
+    default: err(r, 404, "invalid_request_error", NULL, NULL, "Unrecognized request URL (%s %s). This fake imitates only the calls its README lists.", rq->method, p); return 0;
+    }
 
     if (use_idem && r->body.n < IDEM_RESP && G.n_idem < MAXIDEM) {
         idem_t *e = &G.idem[G.n_idem++];
@@ -964,129 +958,27 @@ static void route(req_t *rq, resp_t *r) {
         memcpy(e->resp, r->body.p, r->body.n + 1);
         mutating = 1;
     }
+    return mutating;
 }
 
-/* ---------- http ---------- */
-#define REQ_MAX (1 << 20)
-static char reqbuf[REQ_MAX + 8192];
-
-static void send_all(int fd, const char *p, size_t n) {
-    while (n) {
-        ssize_t w = send(fd, p, n, MSG_NOSIGNAL);
-        if (w <= 0) return;
-        p += w;
-        n -= (size_t)w;
-    }
-}
-static const char *reason(int s) {
-    switch (s) { case 200: return "OK"; case 303: return "See Other"; case 400: return "Bad Request"; case 401: return "Unauthorized";
-                 case 403: return "Forbidden"; case 500: return "Internal Server Error"; case 404: return "Not Found"; case 413: return "Payload Too Large"; default: return "Error"; }
-}
-static void write_resp(int fd, resp_t *r) {
+void fs_handle(fs_call call, const fs_req *rq, fs_res *r) {
+    pthread_mutex_lock(&g_mu);
+    if (route(call, rq, r)) save_state();
+    send_events();
+    pthread_mutex_unlock(&g_mu);
     if (r->status == 0) r->status = 500;   /* a handler that answered nothing is a bug, never a status 0 */
-    sbuf o = {0};
-    sb_addf(&o, "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %zu\r\nConnection: close\r\n", r->status, reason(r->status),
-            r->ctype[0] ? r->ctype : "application/json", r->body.n);
-    if (r->location[0]) sb_addf(&o, "Location: %s\r\n", r->location);
-    if (r->extra[0]) sb_add(&o, r->extra);
-    sb_add(&o, "\r\n");
-    if (r->body.n) sb_add(&o, r->body.p);
-    send_all(fd, o.p, o.n);
-    sb_free(&o);
 }
 
-/* Why read_request answered -400, for the error message. */
-static const char *req_problem = "bad request";
+void fs_res_free(fs_res *r) { sb_free(&r->body); }
 
-/* 0: rq is filled. -1: nothing to answer (a dead or half connection). -413: too large. -400: a header
- * that cannot be trusted (req_problem says which): a Content-Length that is not a plain decimal
- * number, two of them that differ, or one that does not fit in reqbuf behind the headers. */
-static int read_request(int fd, req_t *rq) {
-    size_t have = 0;
-    char *hend = NULL;
-    while (!hend) {
-        if (have >= sizeof reqbuf - 1) return -413;
-        ssize_t n = recv(fd, reqbuf + have, sizeof reqbuf - 1 - have, 0);
-        if (n <= 0) return -1;
-        have += (size_t)n;
-        reqbuf[have] = 0;
-        hend = strstr(reqbuf, "\r\n\r\n");
-    }
-    *hend = 0;
-    size_t hlen = (size_t)(hend - reqbuf) + 4;
-    memset(rq, 0, sizeof *rq);
-    char *line = reqbuf;
-    char *eol = strstr(line, "\r\n");
-    if (eol) *eol = 0;
-    char target[400] = "";
-    if (sscanf(line, "%7s %399s", rq->method, target) != 2) return -1;
-    char *q = strchr(target, '?');
-    if (q) *q = 0;
-    CPY(rq->path, target);
-    int64_t clen = 0;
-    int have_cl = 0;
-    while (eol) {
-        line = eol + 2;
-        if (!*line) break;
-        eol = strstr(line, "\r\n");
-        if (eol) *eol = 0;
-        char *colon = strchr(line, ':');
-        if (!colon) continue;
-        *colon = 0;
-        char *v = colon + 1;
-        while (*v == ' ') v++;
-        if (!strcasecmp(line, "Content-Length")) {
-            while (*v == ' ' || *v == '\t') v++;
-            size_t vl = strlen(v);
-            while (vl && (v[vl - 1] == ' ' || v[vl - 1] == '\t')) vl--;
-            int64_t c;
-            if (!num_parse_i64(v, vl, 0, INT64_MAX, &c)) { req_problem = "Content-Length is not a plain decimal number"; return -400; }
-            if (have_cl && c != clen) { req_problem = "two different Content-Length headers"; return -400; }
-            clen = c;
-            have_cl = 1;
-        }
-        else if (!strcasecmp(line, "Authorization")) CPY(rq->auth, v);
-        else if (!strcasecmp(line, "Stripe-Account")) CPY(rq->stripe_account, v);
-        else if (!strcasecmp(line, "Idempotency-Key")) CPY(rq->idem_key, v);
-    }
-    if (clen > REQ_MAX) return -413;
-    size_t blen = (size_t)clen;
-    /* THE HEADERS AND THE BODY SHARE reqbuf: the header block may be as long as the buffer allows, so
-     * REQ_MAX on the body alone is not a bound. The body and its NUL must fit behind the headers. */
-    if (hlen + blen > sizeof reqbuf - 1) { req_problem = "the headers and the body do not fit together"; return -400; }
-    while (have < hlen + blen) {
-        ssize_t n = recv(fd, reqbuf + have, hlen + blen - have, 0);
-        if (n <= 0) return -1;
-        have += (size_t)n;
-    }
-    reqbuf[hlen + blen] = 0;
-    rq->body = reqbuf + hlen;
-    rq->body_len = blen;
-    return 0;
-}
-
-/* A refused request may still be sending its body. End our side, then read and drop what arrives (up to
- * 2 MiB, until the client closes or the 5 s receive timeout) so the close is a FIN: closing with unread
- * data is an RST, which can take the answer away from a client that is still writing. */
-static void drain(int fd) {
-    char buf[4096];
-    size_t total = 0;
-    shutdown(fd, SHUT_WR);
-    while (total < 2 * (size_t)REQ_MAX) {
-        ssize_t n = recv(fd, buf, sizeof buf, 0);
-        if (n <= 0) break;
-        total += (size_t)n;
-    }
-}
-
+/* ---------- options and start ---------- */
 static void usage(void) {
     fprintf(stderr,
             "usage: fake_stripe [--port N] [--seed NAME] [--now UNIX] [--api-key KEY] [--webhook-url URL]\n"
             "                   [--webhook-secret SECRET] [--base-url URL] [--data FILE]\n");
 }
 
-int main(int argc, char **argv) {
-    signal(SIGPIPE, SIG_IGN);
+int fs_options(int argc, char **argv) {
     /* every option takes one value: the index moves two at a time, in the header and nowhere else */
     for (int i = 1; i < argc; i += 2) {
         const char *a = argv[i], *v = i + 1 < argc ? argv[i + 1] : NULL;
@@ -1109,51 +1001,17 @@ int main(int argc, char **argv) {
     }
     G.rng = seed_state(g_seed);
     if (g_data[0] && load_state() < 0) return 1;
+    return -1;
+}
 
-    int ls = socket(AF_INET, SOCK_STREAM, 0);
-    if (ls < 0) { perror("fake_stripe: socket"); return 1; }
-    int one = 1;
-    setsockopt(ls, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
-    struct sockaddr_in sa = {0};
-    sa.sin_family = AF_INET;
-    sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    sa.sin_port = htons((uint16_t)g_port);
-    if (bind(ls, (struct sockaddr *)&sa, sizeof sa) < 0 || listen(ls, 16) < 0) { perror("fake_stripe: bind"); return 1; }
-    socklen_t sl = sizeof sa;
-    getsockname(ls, (struct sockaddr *)&sa, &sl);
-    g_port = ntohs(sa.sin_port);
+int fs_port(void) { return g_port; }
+
+void fs_listening(int port) {
+    g_port = port;
     if (!g_base_url[0]) snprintf(g_base_url, sizeof g_base_url, "http://127.0.0.1:%d", g_port);
+    pthread_t th;
+    if (pthread_create(&th, NULL, sender, NULL) != 0) { perror("fake_stripe: the webhook sender"); exit(1); }
+    pthread_detach(th);
     printf("listening 127.0.0.1:%d\n", g_port);
     fflush(stdout);
-
-    for (;;) {
-        int fd = accept(ls, NULL, NULL);
-        if (fd < 0) { if (errno == EINTR || errno == ECONNABORTED) continue; perror("fake_stripe: accept"); break; }
-        struct timeval tv = {5, 0};
-        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
-        req_t rq;
-        resp_t r;
-        memset(&r, 0, sizeof r);
-        mutating = 0;
-        int rc = read_request(fd, &rq);
-        if (rc == 0) {
-            if (rq.body_len) parse_form(&rq);
-            route(&rq, &r);
-            if (mutating) save_state();
-            write_resp(fd, &r);
-            free(rq.formbuf);
-        } else if (rc == -413) {
-            err(&r, 413, "invalid_request_error", NULL, NULL, "Request too large.");
-            write_resp(fd, &r);
-            drain(fd);
-        } else if (rc == -400) {
-            err(&r, 400, "invalid_request_error", NULL, NULL, "Invalid request: %s.", req_problem);
-            write_resp(fd, &r);
-            drain(fd);
-        }
-        close(fd);
-        sb_free(&r.body);
-        flush_events();
-    }
-    return 1;   /* the accept loop only ends on an error, which is not a clean exit */
 }

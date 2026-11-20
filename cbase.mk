@@ -52,8 +52,9 @@
 #                    script (no Python, no tzdata, nothing fetched), and lib/tz and lib/ics are linked
 #                    only when it is set. A name that is not in the tsv stops the build.
 #   build/fake_stripe   (a target, not a variable) a local fake of the Stripe API for the product's `make serve`
-#                    and tests: `make build/fake_stripe`, then `build/fake_stripe --webhook-url http://127.0.0.1:PORT/PATH`
-#                    (tools/fake_stripe/README.md: what it imitates, its options). Built only when named.
+#                    and tests, served by cbase's own HTTP server: `make build/fake_stripe`, then
+#                    `build/fake_stripe --webhook-url http://127.0.0.1:PORT/PATH` (tools/fake_stripe/README.md:
+#                    what it imitates, its options). Built only when named.
 #   APP_PROGS        more programs `make` builds: <name>=<main source>, each build/<name>
 #   APP_TOOLS        the same, built only when named (hand-run generators)
 #   APP_SMOKES       the product's smoke programs (<test root>/<name>.c), each run by smoke and
@@ -367,15 +368,28 @@ endef
 $(foreach d,build build/asan build/cov,$(eval $(call FAKE_AWS_RULE,$(d))))
 # THE FAKE STRIPE (tools/fake_stripe/README.md): `make build/fake_stripe` builds a local imitation of the Stripe
 # API an app calls (Connect Express accounts, direct-charge Checkout, refunds, signed webhooks), for the app's
-# own `make serve` beside its server and for its tests. Its own program in plain flags (libc, lib/rng.h,
-# lib/fnv.h, lib/num_parse.h, and the platform's libcrypto for the HMAC it signs webhooks with); built only
-# when named, a prerequisite of nothing in cbase.mk, so a product that does not take payments never builds it.
-# It names no product, listens on loopback only, and never reaches stripe.com.
-FAKE_STRIPE_SRC := $(CB)tools/fake_stripe/fake_stripe.c
-build/fake_stripe: $(FAKE_STRIPE_SRC) $(CB)lib/rng.h $(CB)lib/fnv.h $(CB)lib/num_parse.h
+# own `make serve` beside its server and for its tests. It answers over cbase's own HTTP server: its handler
+# code (tools/fake_stripe/fake_stripe.c, JSON and all, which core never takes) under a host
+# (core/test/fake_stripe_host.c) that serves it with core's loop, server, router and request pool, and with
+# nothing else of the platform. FAKE_STRIPE_CORE is that closure, linked from the same objects every program
+# here is built from, with libcrypto (the webhook HMAC, and the server's WebSocket hash) and no SQLite: a
+# change that made the dispatch reach the store would fail this link. Built only when named, a prerequisite
+# of nothing in cbase.mk, so a product that does not take payments never builds it. It names no product,
+# listens on loopback only, and never reaches stripe.com.
+FAKE_STRIPE_SRC := $(CB)tools/fake_stripe/fake_stripe.c $(CB)core/test/fake_stripe_host.c
+FAKE_STRIPE_CORE := $(addprefix $(CB)core/src/net/,server.c loop.c poller.c uring.c http.c router.c ws.c viewer_addr.c) \
+                    $(addprefix $(CB)core/src/,handler.c config.c env_file.c rate_limits.c) \
+                    $(addprefix $(CB)core/src/util/,str.c err.c log.c clock.c pool.c random.c affinity.c) $(CB)lib/b64/b64.c
+FAKE_STRIPE_LIBS = $(OPENSSL_LDFLAGS) -lcrypto -lpthread $(LTO_LDFLAGS)
+build/fake_stripe: $(call c_objs,build/obj/cbase,$(FAKE_STRIPE_SRC) $(FAKE_STRIPE_CORE))
 	@mkdir -p $(@D)
-	@echo "  CC   $@"
-	@$(CC) -std=c11 -O2 -Wall -Wextra -Werror -Wshadow -I$(CB)lib $(OPENSSL_CFLAGS) $(FAKE_STRIPE_SRC) -o $@ $(OPENSSL_LDFLAGS) -lcrypto
+	@echo "  LINK $@"
+	@$(CC) $(CB_CFLAGS) $^ -o $@ $(FAKE_STRIPE_LIBS)
+# The same under AddressSanitizer and UBSan (cbase's `make fake-stripe-asan`), from the sanitized objects.
+build/fake_stripe_asan: $(call c_objs,build/obj/asan,$(FAKE_STRIPE_SRC) $(FAKE_STRIPE_CORE))
+	@mkdir -p $(@D)
+	@echo "  LINK $@"
+	@$(CC) $(ASAN_CB_CFLAGS) $^ -o $@ $(FAKE_STRIPE_LIBS)
 
 smoke_args = $(if $(value SMOKE_ARGS_$(1)),$(call SMOKE_ARGS_$(1),$(2)),$(2)/$(APP_SERVE))
 # The binaries a smoke run needs.

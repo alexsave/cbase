@@ -168,10 +168,6 @@ $(FS_OUT)/test_webhook: $(FS_DIR)/test_webhook.c $(FS_DIR)/harness.h lib/num_par
 .PHONY: fake-stripe-test fake-stripe-asan
 fake-stripe-test: build/fake_stripe $(addprefix $(FS_OUT)/,$(FS_TESTS))
 	@for t in $(FS_TESTS); do echo "== fake_stripe $$t"; $(FS_OUT)/$$t build/fake_stripe || exit 1; done
-build/fake_stripe_asan: $(FAKE_STRIPE_SRC) $(CB)lib/rng.h $(CB)lib/fnv.h $(CB)lib/num_parse.h
-	@mkdir -p $(@D)
-	@echo "  CC   $@"
-	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=undefined -Wall -Wextra -Werror -Ilib $(OPENSSL_CFLAGS) $(FAKE_STRIPE_SRC) -o $@ $(OPENSSL_LDFLAGS) -lcrypto
 fake-stripe-asan: build/fake_stripe_asan $(addprefix $(FS_OUT)/,$(FS_TESTS))
 	@for t in $(FS_TESTS); do echo "== fake_stripe (asan) $$t"; $(FS_OUT)/$$t build/fake_stripe_asan || exit 1; done
 check: fake-stripe-test
