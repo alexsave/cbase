@@ -136,6 +136,7 @@ static fs_server fs_start(const char *bin, int with_hook, ...) {
     int p[2];
     if (pipe(p) < 0) { perror("pipe"); exit(1); }
     fs_server s = {0, 0};
+    fflush(stdout);   /* the child must not carry a copy of what is still buffered here */
     s.pid = fork();
     if (s.pid == 0) {
         close(p[0]);
@@ -178,6 +179,7 @@ static fs_server fs_start(const char *bin, int with_hook, ...) {
 /* A server that must refuse to start: its exit status (the NULL-ended options are the fake's own), -1 if it
  * does not end within 5 s (it is killed then) or ends by a signal. Its stdout and stderr are discarded. */
 static inline int fs_start_fails(const char *bin, ...) {
+    fflush(stdout);   /* the child's freopen would write a copy of what is still buffered here */
     pid_t pid = fork();
     if (pid == 0) {
         char *argv[24];
