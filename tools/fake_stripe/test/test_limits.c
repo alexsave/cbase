@@ -1,22 +1,24 @@
 /* What the fake does with a request that is too large, malformed or out of range, and with a state file or
- * option it cannot trust. The fake reads a request into ONE buffer that holds the headers and the body
- * together (REQ_MAX of body behind up to 8 KiB more), so a Content-Length that fits REQ_MAX alone can still
- * overflow it when the headers are long: that was a write past the end of reqbuf, and it is held here by
- * three sizes of body behind about 9 KB of headers (too big by a lot, exactly the room left, one byte over).
+ * option it cannot trust. The fake is served by cbase's own HTTP server (core/src/net), which reads a
+ * request's head (at most CB_HTTP_MAX_HEAD, 16 KiB) and its body (at most the fake's FS_REQ_MAX, 1 MiB) under
+ * caps of their own, into a buffer that grows: there is no shared fixed buffer for a long head to push a
+ * body past (the old reader's reqbuf overflow), so the sizes held here are the two caps, at and one past each.
+ * cbase answers a request it refuses before the fake runs with its own status and plain-text body.
  * Run it under AddressSanitizer too (the fake built with -fsanitize=address,undefined): an out-of-bounds
  * write is then a report, not only a wrong answer. */
 #include "harness.h"
 
-#define REQ_MAX (1 << 20)               /* fake_stripe.c: the largest Content-Length it accepts */
-#define REQBUF (REQ_MAX + 8192)         /* fake_stripe.c: sizeof reqbuf, headers and body together */
+#define REQ_MAX (1 << 20)               /* fake_stripe.h FS_REQ_MAX: the largest Content-Length it accepts */
+#define HEAD_MAX 16384                  /* core/src/net/http.h CB_HTTP_MAX_HEAD: the request line and headers */
 #define NOW "1700000000"
 
 static const char *BIN;
-static char wire[REQBUF + 4096];        /* the request as sent */
+static char wire[REQ_MAX + HEAD_MAX + 4096];   /* the request as sent */
 
 /* POST /test/now: a pad header of padlen bytes, `extra` header lines, then Content-Length: clen_text, and a
- * body of body_len bytes ("t=NOW" then "&x=aaaa..."). Returns the length of the whole request; *hlen is
- * that of the headers (up to and with the blank line). */
+ * body of body_len bytes ("t=NOW" then "&x=aaaa...", a '&' every 1000 bytes so no key or value passes the
+ * 1023 bytes a form pair may have). Returns the length of the whole request; *hlen is that of the headers
+ * (up to and with the blank line). */
 static size_t build(size_t padlen, const char *extra, const char *clen_text, size_t body_len, size_t *hlen) {
     size_t n = (size_t)snprintf(wire, sizeof wire, "POST /test/now HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Pad: ");
     memset(wire + n, 'p', padlen);
@@ -24,7 +26,8 @@ static size_t build(size_t padlen, const char *extra, const char *clen_text, siz
     n += (size_t)snprintf(wire + n, sizeof wire - n, "\r\n%sContent-Length: %s\r\nConnection: close\r\n\r\n", extra, clen_text);
     *hlen = n;
     static const char HEAD[] = "t=" NOW "&x=";
-    for (size_t i = 0; i < body_len; i++) wire[n + i] = i < sizeof HEAD - 1 ? HEAD[i] : 'a';
+    for (size_t i = 0; i < body_len; i++)
+        wire[n + i] = i < sizeof HEAD - 1 ? HEAD[i] : (i - (sizeof HEAD - 1)) % 1000 == 999 ? '&' : 'a';
     return n + body_len;
 }
 
@@ -39,59 +42,52 @@ static void test_overflow(int port) {
     char cl[32];
     size_t hlen;
 
-    /* about 9 KB of headers and a body at the whole of REQ_MAX: it passes REQ_MAX alone and not reqbuf */
+    /* about 9 KB of headers and a body at the whole of REQ_MAX: the head and the body each fit their cap,
+     * so it is served (the old reader refused it, and before that wrote it past the end of its buffer) */
     snprintf(cl, sizeof cl, "%d", REQ_MAX);
     size_t len = build(9000, "", cl, REQ_MAX, &hlen);
-    CHECK(hlen > 8192 && hlen + REQ_MAX > REQBUF - 1, "the case is built as meant (headers %zu)", hlen);
+    CHECK(hlen > 8192 && hlen < HEAD_MAX, "the case is built as meant (headers %zu)", hlen);
     exchange(port, wire, len, &r);
-    CHECK(r.status == 400 && has(r.body, "do not fit"), "9 KB of headers and Content-Length 1048576 is refused with 400: %d %s", r.status, r.body);
-    CHECK(has(r.body, "\"type\":\"invalid_request_error\""), "the refusal is in Stripe's error shape: %s", r.body);
-    CHECK(serving(port), "the fake serves the request after the oversized one");
+    CHECK(r.status == 200 && has(r.body, "\"now\":" NOW), "9 KB of headers and a 1048576-byte body are served: %d %.200s", r.status, r.body);
+    CHECK(serving(port), "the fake serves the request after the largest one");
 
-    /* the Content-Length that fills exactly the room left (hlen + clen == sizeof reqbuf - 1), with the real body */
-    build(9000, "", "1000000", 0, &hlen);   /* the digits of the real one are the same count */
-    size_t room = (size_t)REQBUF - 1 - hlen;
-    snprintf(cl, sizeof cl, "%zu", room);
-    CHECK(strlen(cl) == 7, "the exact-fit Content-Length keeps its digit count (%s)", cl);
-    len = build(9000, "", cl, room, &hlen);
-    CHECK(hlen + room == (size_t)REQBUF - 1, "the exact-fit case is exact: %zu + %zu", hlen, room);
+    /* one byte past the body cap, sent whole behind the same headers: 413 */
+    snprintf(cl, sizeof cl, "%d", REQ_MAX + 1);
+    len = build(9000, "", cl, REQ_MAX + 1, &hlen);
     exchange(port, wire, len, &r);
-    CHECK(r.status == 200 && has(r.body, "\"now\":" NOW), "a body that fills the room left exactly is accepted: %d %.200s", r.status, r.body);
-    CHECK(serving(port), "the fake serves the request after the exact-fit one");
-
-    /* one byte over: refused, body or not */
-    snprintf(cl, sizeof cl, "%zu", room + 1);
-    len = build(9000, "", cl, room + 1, &hlen);
-    exchange(port, wire, len, &r);
-    CHECK(r.status == 400 && has(r.body, "do not fit"), "one byte more than fits is refused with 400: %d %.200s", r.status, r.body);
+    CHECK(r.status == 413, "a body one byte past 1 MiB is 413: %d %.200s", r.status, r.body);
     CHECK(serving(port), "the fake serves the request after the one-byte-over one");
 
-    /* the same refusal when the client sends no body at all (it only declares one) */
-    len = build(9000, "", cl, 0, &hlen);
-    exchange(port, wire, len, &r);
-    CHECK(r.status == 400, "a declared body that does not fit is refused before it is read: %d", r.status);
-    CHECK(serving(port), "the fake serves the request after a declared-only one");
-
-    /* one past the size limit itself: 413, as before */
-    snprintf(cl, sizeof cl, "%d", REQ_MAX + 1);
+    /* the same when the client only declares it: refused before any body is read */
     len = build(0, "", cl, 0, &hlen);
     exchange(port, wire, len, &r);
     CHECK(r.status == 413, "Content-Length one past the limit is 413: %d", r.status);
     CHECK(serving(port), "the fake serves the request after the 413 one");
+
+    /* a head past cbase's 16 KiB: 431, with the body it declares never read */
+    len = build(HEAD_MAX, "", "12", 12, &hlen);
+    exchange(port, wire, len, &r);
+    CHECK(r.status == 431, "a head past 16 KiB is 431: %d", r.status);
+    CHECK(serving(port), "the fake serves the request after the 431 one");
 }
 
 static void test_content_length(int port) {
-    static const char *const BAD[] = {"12abc", "-1", "+12", "0x10", "1 2", "1e3", "", "99999999999999999999", "12.0"};
+    static const char *const BAD[] = {"12abc", "-1", "+12", "0x10", "1 2", "1e3", "", "12.0"};
     reply r;
     size_t hlen;
     for (size_t i = 0; i < sizeof BAD / sizeof BAD[0]; i++) {
         size_t len = build(0, "", BAD[i], 12, &hlen);
         exchange(port, wire, len, &r);
-        CHECK(r.status == 400 && has(r.body, "plain decimal number"), "Content-Length '%s' is refused with 400: %d %.120s", BAD[i], r.status, r.body);
+        CHECK(r.status == 400, "Content-Length '%s' is refused with 400: %d %.120s", BAD[i], r.status, r.body);
         CHECK(serving(port), "the fake serves the request after Content-Length '%s'", BAD[i]);
     }
+    /* a number past 64 bits is past the 1 MiB cap long before it could wrap */
+    size_t len = build(0, "", "99999999999999999999", 12, &hlen);
+    exchange(port, wire, len, &r);
+    CHECK(r.status == 413, "Content-Length '99999999999999999999' is refused with 413: %d %.120s", r.status, r.body);
+    CHECK(serving(port), "the fake serves the request after Content-Length '99999999999999999999'");
     /* what is accepted: a plain number, with blanks around it */
-    size_t len = build(0, "", "12", 12, &hlen);
+    len = build(0, "", "12", 12, &hlen);
     exchange(port, wire, len, &r);
     CHECK(r.status == 200 && has(r.body, "\"now\":" NOW), "a plain Content-Length is accepted: %d %s", r.status, r.body);
     len = build(0, "", "  12 \t", 12, &hlen);
@@ -103,8 +99,33 @@ static void test_content_length(int port) {
     CHECK(r.status == 200, "two equal Content-Length headers are accepted: %d %s", r.status, r.body);
     len = build(0, "Content-Length: 5\r\n", "12", 12, &hlen);
     exchange(port, wire, len, &r);
-    CHECK(r.status == 400 && has(r.body, "two different"), "two different Content-Length headers are refused: %d %.120s", r.status, r.body);
+    CHECK(r.status == 400, "two different Content-Length headers are refused: %d %.120s", r.status, r.body);
     CHECK(serving(port), "the fake serves the request after the two-header one");
+}
+
+/* the form body, decoded by cbase (cb_http_query_each): a pair that does not decode is Stripe's 400 */
+static void test_form(int port) {
+    reply r;
+    http(port, "POST", "/test/now", NULL, "t=17000%zz00000", &r);
+    CHECK(r.status == 400 && has(r.body, "does not decode") && has(r.body, "\"type\":\"invalid_request_error\""),
+          "a bad percent escape is refused in Stripe's shape: %d %.200s", r.status, r.body);
+    http(port, "POST", "/test/now", NULL, "t=%31700000000", &r);
+    CHECK(r.status == 200 && has(r.body, "\"now\":" NOW), "an escape decodes: %d %.200s", r.status, r.body);
+    http(port, "POST", "/test/now", NULL, "x=1&&t=" NOW, &r);
+    CHECK(r.status == 200 && has(r.body, "\"now\":" NOW), "an empty pair is skipped, not the end: %d %.200s", r.status, r.body);
+    static char big[1100 + 64];
+    int n = snprintf(big, sizeof big, "t=" NOW "&x=");
+    memset(big + n, 'a', 1024);
+    big[n + 1024] = 0;
+    http(port, "POST", "/test/now", NULL, big, &r);
+    CHECK(r.status == 400 && has(r.body, "does not decode"), "a value past 1023 bytes is refused: %d %.200s", r.status, r.body);
+    /* a call that reads no form is not refused for it */
+    api(port, "GET", "/v1/accounts/acct_nope", NULL, NULL, "%zz", &r);
+    CHECK(r.status == 404 && has(r.body, "No such account"), "a call that reads no form ignores it: %d %.200s", r.status, r.body);
+    /* every answer closes its connection, asked or not */
+    static const char KEEP[] = "GET /v1/nothing HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
+    exchange(port, KEEP, sizeof KEEP - 1, &r);
+    CHECK(r.status == 401 && has(r.hdr, "Connection: close"), "an answer to a keep-alive request still closes: %d %s", r.status, r.hdr);
 }
 
 static void onboard_account(int port, char *acct, size_t cap) {
@@ -286,6 +307,7 @@ int main(int argc, char **argv) {
     fs_server s = fs_start(BIN, 0, "--seed", "limits", "--now", NOW, (char *)NULL);
     test_overflow(s.port);
     test_content_length(s.port);
+    test_form(s.port);
     test_session_fields(s.port);
     fs_stop(&s);
     test_many_events();

@@ -225,7 +225,7 @@ static void exchange(int port, const char *req, size_t len, reply *out) {
         if (w <= 0) break;
         off += (size_t)w;
     }
-    static char raw[BODY_MAX + 4096];
+    static _Thread_local char raw[BODY_MAX + 4096];   /* one a thread: test_client.c's clients at once */
     size_t have = 0;
     for (;;) {
         ssize_t n = recv(fd, raw + have, sizeof raw - 1 - have, 0);
