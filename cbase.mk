@@ -380,7 +380,7 @@ FAKE_STRIPE_SRC := $(CB)tools/fake_stripe/fake_stripe.c $(CB)core/test/fake_stri
 FAKE_STRIPE_CORE := $(addprefix $(CB)core/src/net/,server.c loop.c poller.c uring.c http.c router.c ws.c viewer_addr.c) \
                     $(addprefix $(CB)core/src/,handler.c config.c env_file.c rate_limits.c) \
                     $(addprefix $(CB)core/src/util/,str.c err.c log.c clock.c pool.c random.c affinity.c) $(CB)lib/b64/b64.c
-FAKE_STRIPE_LIBS = $(OPENSSL_LDFLAGS) -lcrypto -lpthread $(LTO_LDFLAGS)
+FAKE_STRIPE_LIBS = $(OPENSSL_LDFLAGS) -lcrypto -lpthread $(SERVER_LDFLAGS) $(LTO_LDFLAGS)
 build/fake_stripe: $(call c_objs,build/obj/cbase,$(FAKE_STRIPE_SRC) $(FAKE_STRIPE_CORE))
 	@mkdir -p $(@D)
 	@echo "  LINK $@"

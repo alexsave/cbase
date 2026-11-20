@@ -1784,7 +1784,7 @@ New with the move:
 - the host ignores cb_http_query_each's refusal -> `a bad percent escape is refused in Stripe's shape` red (the fake read no t) and `a value past 1023 bytes is refused` red (answered 200).
 - reads_form true for every call -> `a call that reads no form ignores it` red (a GET refused for its body).
 - cb_url_decode's percent branch never taken (core/src/util/str.c) -> `an escape decodes` and `a bad percent escape is refused in Stripe's shape` red.
-- cb_http_query_each stopping at an empty pair (the old parser's rule) -> `an empty pair is skipped, not the end` red.
+- cb_http_query_each stopping at an empty pair (the old parser instead kept it as a pair with an empty key and went on) -> `an empty pair is skipped, not the end` red.
 - the host's `s->close = true` removed -> `an answer to a keep-alive request still closes` red.
 
 ### Before the move (macOS, clang)
