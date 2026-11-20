@@ -1746,6 +1746,49 @@ tools/tz_gen.py is a generator, not a test, and its refusals were run rather tha
 
 ## The fake Stripe (tools/fake_stripe, tools/fake_stripe/test)
 
+### On cbase's server (branch fake-stripe-on-core)
+
+The fake is served by cbase's loop, server and router (core/test/fake_stripe_host.c), so its request reader, reqbuf and drain are gone.
+Every mutant below was re-run on Linux x86-64 (gcc 13) with `make fake-stripe-test`'s programs, each one edit, built, run, and the file restored from a saved copy with the suite green again after each.
+A mutant in core (core/src/net/http.c, core/src/util/str.c) is one of the objects the fake links (cbase.mk FAKE_STRIPE_CORE), rebuilt for the run.
+
+The old reader's mutants, moved to what now enforces each limit:
+
+- the reqbuf refusal (`hlen + blen > sizeof reqbuf - 1`) has no equivalent: cbase keeps the head (16 KiB) and the body (1 MiB) under caps of their own in a buffer that grows, so no long head can push a body past an end.
+  Its nearest is the body cap: http.c scan_head's last `if (x > max_body) return -413;` removed -> test_limits.c `a body one byte past 1 MiB is 413` red (answered 200) and `Content-Length one past the limit is 413` red (408: the server waited for a body it should have refused).
+- the same mutant under `make fake-stripe-asan` -> the same two assertions red, and no AddressSanitizer report: there is no fixed buffer left to write past, which is the point of the move.
+- the Content-Length parse back to `strtoull` -> its equivalent, scan_head's digit check (`if (v[k] < '0' || v[k] > '9') return -400;`) removed -> `Content-Length '12abc' is refused with 400` red (408), and `'-1'`, `'+12'`, `'0x10'`, `'1 2'`, `'1e3'`, `'12.0'` each red (408 or 413).
+- the second Content-Length not compared with the first -> scan_head's `have_cl && x != cl` refusal made false -> `two different Content-Length headers are refused` red (answered 200).
+- both of scan_head's body-cap checks removed (the one in the digit loop and the one after it) -> `Content-Length '99999999999999999999' is refused with 413` red (408), with the two 413 cases above; either check alone holds it, so each alone survives that case.
+- NOT HELD, and gone: the fake's `drain`. cbase's server answers a refusal and closes; the refusal cases pass on Linux, where the old note said an RST would show.
+
+The fake's own mutants, re-run against the new code:
+
+- the signature over the body without the `T.` prefix -> test_webhook.c's `passes with the configured secret` red for every event (and the tolerance cases behind it).
+- the id generator not seeded from `--seed` (a fixed name) -> test_client.c's `a different seed gives a different id` and `default seed is a fixed name` red.
+- the id generator's state xored with the wall clock -> `ids do not depend on the wall clock` red.
+- `AMOUNT_MAX` and `QTY_MAX` made INT64_MAX -> `a unit_amount past 99999999 is refused`, `int64 amounts that would overflow the total are refused` and `a quantity past 999999 is refused` red.
+- `url_ok` always true -> `a success_url with CR LF is refused`, `a cancel_url with CR LF is refused` and `a success_url with a space is refused` red.
+- the event queue back to 64 events (queue_event drops past 64 a call) -> `70 checkout.session.expired webhooks arrive (got 64)` red.
+- `sane_state` always true -> `a session whose account index is out of range is refused at start` red, and the status, line item and charge index cases behind it.
+- `sane_state`'s status range check alone removed -> `a session whose status is out of range is refused at start` red, and no other.
+- `--port` read with `atoi` -> `--port 12abc is refused`, `--port 70000 is refused`, `--port -1 is refused` red.
+
+New with the move:
+
+- the state's lock taken out of fs_handle -> test_client.c `4 clients at once make every session` red (152 of 400 made), `every session made at once has an id of its own` red (2 shared) and `reads back as it was made` red; red in each of four runs.
+  Under `make fake-stripe-asan` the same three red, and UBSan's `index 14197 out of bounds for type 'account_t [256]'` in j_session.
+- the harness's per-thread answer buffer made one static buffer again (`_Thread_local` dropped) -> `4 clients at once make every session` red (340 of 400) and `reads back as it was made` red (47 with another's amount): the case cannot pass on a client that is not safe at once.
+- the host's body cap one byte short (`o.max_body = FS_REQ_MAX - 1`) -> `9 KB of headers and a 1048576-byte body are served` red (413).
+- http.c scan_head's 431 for a head past CB_HTTP_MAX_HEAD removed -> `a head past 16 KiB is 431` red (408).
+- the host ignores cb_http_query_each's refusal -> `a bad percent escape is refused in Stripe's shape` red (the fake read no t) and `a value past 1023 bytes is refused` red (answered 200).
+- reads_form true for every call -> `a call that reads no form ignores it` red (a GET refused for its body).
+- cb_url_decode's percent branch never taken (core/src/util/str.c) -> `an escape decodes` and `a bad percent escape is refused in Stripe's shape` red.
+- cb_http_query_each stopping at an empty pair (the old parser's rule) -> `an empty pair is skipped, not the end` red.
+- the host's `s->close = true` removed -> `an answer to a keep-alive request still closes` red.
+
+### Before the move (macOS, clang)
+
 `make fake-stripe-test` on macOS (clang), each mutant one edit of tools/fake_stripe/fake_stripe.c, restored from a saved copy and the suite green again after each:
 
 - the `hlen + blen > sizeof reqbuf - 1` refusal removed -> test_limits.c's `9 KB of headers and Content-Length 1048576 is refused with 400` red (the fake answered 200 and wrote past reqbuf), and every later case in that program red behind it (`a body that fills the room left exactly is accepted`, `one byte more than fits is refused with 400`: the fake was gone).
