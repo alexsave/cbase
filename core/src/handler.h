@@ -36,7 +36,7 @@ void cb_handle_slow_full(cb_ctx *ctx, const struct cb_route_s *route, cb_http_re
 // cbase's own answer to a slow request refused: 503 "server busy", Retry-After: 5.
 void cb_res_slow_full(cb_http_res *res);
 
-// Builds ctx->router: GET /health here, then every module's routes
+// Builds ctx->router (routes.c, apart so cb_handle links alone): GET /health, then every module's routes
 // (v1_http.h, functions_http.h, admin.h, unfurl_http.h, and under serve
 // rt_local.h's WebSocket upgrade). CB_OK, or the first registration error.
 int cb_routes_register(cb_ctx *ctx);
