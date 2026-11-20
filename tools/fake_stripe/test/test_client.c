@@ -307,6 +307,64 @@ static void test_pages(fs_server *s) {
     CHECK(has(r.body, "no longer open"), "page of a paid session");
 }
 
+/* Clients at once. The fake answers on several request workers (cbase's request pool), and one lock keeps
+ * its state whole: CONC_T clients each make CONC_N sessions as fast as they can, and every session must come
+ * back with an id of its own and, read back, the amount its client asked for. Without the lock two sessions
+ * made together take the same slot (one is lost, or one reads back the other's amount), or draw the same id. */
+#define CONC_T 4
+#define CONC_N 100
+typedef struct { int port, t; const char *acct; char ids[CONC_N][80]; int status[CONC_N]; } conc_arg;
+static long long conc_price(int t, int i) { return 10000 + t * 1000 + i; }
+static void *conc_client(void *ud) {
+    conc_arg *a = ud;
+    for (int i = 0; i < CONC_N; i++) {
+        char body[2048];
+        reply r;
+        session_body(body, sizeof body, conc_price(a->t, i), 1,
+                     "&metadata[a]=1&metadata[b]=2&metadata[c]=3&metadata[d]=4&metadata[e]=5&metadata[f]=6&metadata[g]=7&metadata[h]=8");
+        api(a->port, "POST", "/v1/checkout/sessions", a->acct, NULL, body, &r);
+        a->status[i] = r.status;
+        if (!jstr(r.body, "id", a->ids[i], sizeof a->ids[i])) a->ids[i][0] = 0;
+    }
+    return NULL;
+}
+static void test_concurrent(void) {
+    static conc_arg a[CONC_T];
+    char acct[64];
+    fs_server s = start_std("conc");
+    new_account(s.port, acct, sizeof acct);
+    onboard(s.port, acct);
+    pthread_t th[CONC_T];
+    for (int t = 0; t < CONC_T; t++) {
+        memset(&a[t], 0, sizeof a[t]);
+        a[t].port = s.port;
+        a[t].t = t;
+        a[t].acct = acct;
+        pthread_create(&th[t], NULL, conc_client, &a[t]);
+    }
+    for (int t = 0; t < CONC_T; t++) pthread_join(th[t], NULL);
+    int made = 0, dup = 0, lost = 0, wrong = 0;
+    for (int t = 0; t < CONC_T; t++)
+        for (int i = 0; i < CONC_N; i++) {
+            if (a[t].status[i] != 200 || !a[t].ids[i][0]) continue;
+            made++;
+            for (int u = 0; u <= t; u++)
+                for (int j = 0; j < (u == t ? i : CONC_N); j++)
+                    if (strcmp(a[t].ids[i], a[u].ids[j]) == 0) dup++;
+            reply r;
+            char path[160], want[64];
+            snprintf(path, sizeof path, "/v1/checkout/sessions/%s", a[t].ids[i]);
+            api(s.port, "GET", path, acct, NULL, NULL, &r);
+            snprintf(want, sizeof want, "\"amount_total\":%lld,", conc_price(t, i) + 1);
+            if (r.status != 200) lost++;
+            else if (!has(r.body, want)) wrong++;
+        }
+    CHECK(made == CONC_T * CONC_N, "%d clients at once make every session: %d of %d", CONC_T, made, CONC_T * CONC_N);
+    CHECK(dup == 0, "every session made at once has an id of its own (%d shared)", dup);
+    CHECK(lost == 0 && wrong == 0, "every session made at once reads back as it was made (%d lost, %d with another's amount)", lost, wrong);
+    fs_stop(&s);
+}
+
 static void first_account_id(int seed_variant, const char *seed, const char *now, char *id, size_t cap) {
     (void)seed_variant;
     fs_server s = fs_start(BIN, 0, "--seed", seed, "--now", now, (char *)NULL);
@@ -403,6 +461,7 @@ int main(int argc, char **argv) {
     test_clock(&s);
     test_pages(&s);
     fs_stop(&s);
+    test_concurrent();
     test_ids();
     test_data_file();
     hook_stop();
