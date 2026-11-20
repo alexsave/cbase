@@ -330,7 +330,10 @@ endif
 # longer linked) would leave yesterday's binary in place with yesterday's code in it. The stamp holds
 # the link line and is rewritten only when it differs, a second after anything built before it
 # (tools/c_rules.mk A CHANGED STAMP WAITS OUT THE SECOND), so a changed list relinks and an
-# unchanged one costs nothing.
+# unchanged one costs nothing. CB_LINK_STAMP_WRITE is that rewrite, the recipe of every stamp (each
+# program here, and the fake Stripe's two links below); the line is the stamp rule's CB_LINK_STAMP.
+CB_LINK_STAMP_WRITE = mkdir -p $(@D) && printf '%s\n' "$$CB_LINK_STAMP" > $@.new && \
+                      { cmp -s $@.new $@ && rm -f $@.new || { [ ! -f $@ ] || sleep 1; mv $@.new $@; touch $@; }; }
 define PROG
 $(1)/$(4): $$(call c_objs,$(2),$(5) $$(LIB_SRC)) $$(call c_objs,$(3),$$(APP_EXTRA_SRC)) $(1)/.link/$(4)
 	@mkdir -p $$(@D)
@@ -338,9 +341,7 @@ $(1)/$(4): $$(call c_objs,$(2),$(5) $$(LIB_SRC)) $$(call c_objs,$(3),$$(APP_EXTR
 	@$$(CC) $$($(6)) $$(filter %.o,$$^) -o $$@ $$(LDLIBS)
 $(1)/.link/$(4): export CB_LINK_STAMP = $$(CC) $$($(6)) $$(call c_objs,$(2),$(5) $$(LIB_SRC)) $$(call c_objs,$(3),$$(APP_EXTRA_SRC)) $$(LDLIBS)
 $(1)/.link/$(4): C_FORCE
-	@mkdir -p $$(@D)
-	@printf '%s\n' "$$$$CB_LINK_STAMP" > $$@.new
-	@cmp -s $$@.new $$@ && rm -f $$@.new || { [ ! -f $$@ ] || sleep 1; mv $$@.new $$@; touch $$@; }
+	@$$(CB_LINK_STAMP_WRITE)
 endef
 prog = $(eval $(call PROG,$(1),$(2),$(3),$(4),$(5),$(6)))
 prog_name = $(firstword $(subst =, ,$(1)))
@@ -381,15 +382,23 @@ FAKE_STRIPE_CORE := $(addprefix $(CB)core/src/net/,server.c loop.c poller.c urin
                     $(addprefix $(CB)core/src/,handler.c config.c env_file.c rate_limits.c) \
                     $(addprefix $(CB)core/src/util/,str.c err.c log.c clock.c pool.c random.c affinity.c) $(CB)lib/b64/b64.c
 FAKE_STRIPE_LIBS = $(OPENSSL_LDFLAGS) -lcrypto -lpthread $(SERVER_LDFLAGS) $(LTO_LDFLAGS)
-build/fake_stripe: $(call c_objs,build/obj/cbase,$(FAKE_STRIPE_SRC) $(FAKE_STRIPE_CORE))
+# Each of its two links has a link stamp (THE LINK STAMP above), so an object taken out of the list relinks.
+FAKE_STRIPE_OBJS = $(call c_objs,$(1),$(FAKE_STRIPE_SRC) $(FAKE_STRIPE_CORE))
+build/fake_stripe: $(call FAKE_STRIPE_OBJS,build/obj/cbase) build/.link/fake_stripe
 	@mkdir -p $(@D)
 	@echo "  LINK $@"
-	@$(CC) $(CB_CFLAGS) $^ -o $@ $(FAKE_STRIPE_LIBS)
+	@$(CC) $(CB_CFLAGS) $(filter %.o,$^) -o $@ $(FAKE_STRIPE_LIBS)
+build/.link/fake_stripe: export CB_LINK_STAMP = $(CC) $(CB_CFLAGS) $(call FAKE_STRIPE_OBJS,build/obj/cbase) $(FAKE_STRIPE_LIBS)
+build/.link/fake_stripe: C_FORCE
+	@$(CB_LINK_STAMP_WRITE)
 # The same under AddressSanitizer and UBSan (cbase's `make fake-stripe-asan`), from the sanitized objects.
-build/fake_stripe_asan: $(call c_objs,build/obj/asan,$(FAKE_STRIPE_SRC) $(FAKE_STRIPE_CORE))
+build/fake_stripe_asan: $(call FAKE_STRIPE_OBJS,build/obj/asan) build/.link/fake_stripe_asan
 	@mkdir -p $(@D)
 	@echo "  LINK $@"
-	@$(CC) $(ASAN_CB_CFLAGS) $^ -o $@ $(FAKE_STRIPE_LIBS)
+	@$(CC) $(ASAN_CB_CFLAGS) $(filter %.o,$^) -o $@ $(FAKE_STRIPE_LIBS)
+build/.link/fake_stripe_asan: export CB_LINK_STAMP = $(CC) $(ASAN_CB_CFLAGS) $(call FAKE_STRIPE_OBJS,build/obj/asan) $(FAKE_STRIPE_LIBS)
+build/.link/fake_stripe_asan: C_FORCE
+	@$(CB_LINK_STAMP_WRITE)
 
 smoke_args = $(if $(value SMOKE_ARGS_$(1)),$(call SMOKE_ARGS_$(1),$(2)),$(2)/$(APP_SERVE))
 # The binaries a smoke run needs.
