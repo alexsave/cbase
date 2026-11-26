@@ -22,7 +22,8 @@
 # ".*sec = " (which matches usec) -> "no reboot in the first hour of uptime"; the anchor load line deleted ->
 # "an empty anchor is loaded"; the pfctl -e deleted -> "a disabled pf is enabled"; the expire line deleted ->
 # "the abuse table is expired"; /secured/ dropped from ipv6_address -> "the status line names ..."; the last_report write deleted ->
-# "the status line is kept for mac_setup.sh".
+# "the status line is kept for mac_setup.sh"; last_report written before the issues are added -> "the kept
+# status line carries the issues".
 # The stub bodies are written to files and expand when the stub runs, so they are single-quoted.
 # shellcheck disable=SC2016
 set -u
@@ -184,7 +185,7 @@ check "back online resets the count" "$(state offline_runs)" "0"
 
 # ---- Tailscale ----------------------------------------------------------------
 fresh; FAKE_TS=0; run
-check "tailscale down is kickstarted" "$(grep -c 'launchctl kickstart -k system/homebrew.mxcl.tailscale' "$FAKE_LOG")" "1"
+check "tailscale down is kickstarted" "$(grep -c 'launchctl kickstart -k system/sh.brew.tailscale' "$FAKE_LOG")" "1"
 check "tailscale still down checks in to /fail" "$(checkin_url)" "https://hc.example/abc/fail"
 check "the /fail line names tailscale" "$(checkin_data | grep -c 'tailscale down after restart')" "1"
 
@@ -195,6 +196,7 @@ check "tailscale that recovers checks in to the plain URL" "$(checkin_url)" "htt
 fresh; FAKE_DISK=95; run
 check "a full disk checks in to /fail" "$(checkin_url)" "https://hc.example/abc/fail"
 check "the /fail line names the disk" "$(checkin_data | grep -c 'disk 95% full')" "1"
+check "the kept status line carries the issues" "$(state last_report | grep -c 'issues: disk 95% full')" "1"
 
 # ---- no URL -------------------------------------------------------------------
 fresh; rm "$tmp/conf/healthcheck-url"; run

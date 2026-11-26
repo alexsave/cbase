@@ -119,6 +119,9 @@ SSHD_CONF=/etc/ssh/sshd_config.d/050-cbase-mac.conf
     fi
 } > "$SSHD_CONF"
 [ -s "$AK" ] || warn "authorized_keys is empty, so SSH still takes a password; re-run after adding keys to turn that off"
+# macOS makes the host keys on the first connection, so a Mac that never had Remote Login on has none,
+# and sshd -t refuses without them ("no hostkeys available"). Make any that are missing.
+ssh-keygen -A
 if /usr/sbin/sshd -t; then
     launchctl enable system/com.openssh.sshd
     launchctl bootstrap system /System/Library/LaunchDaemons/ssh.plist 2>/dev/null
@@ -165,6 +168,7 @@ check "sleep is off" "pmset -g | grep -qE '^ sleep +0'"
 check "lid-close sleep is off" "pmset -g | grep -q 'SleepDisabled.*1'"
 check "watchdog loaded" "launchctl print system/$LABEL"
 check "tailscale logged in" "$TAILSCALE status"
+check "the watchdog can restart tailscale (its job is loaded)" "launchctl print system/sh.brew.tailscale"
 check "batt daemon answers" "$BATT status"
 check "SSH listening on 22" "nc -z -G 2 127.0.0.1 22"
 check "SSH password login is off (port 22 may face the internet)" "/usr/sbin/sshd -T | grep -qx 'passwordauthentication no'"

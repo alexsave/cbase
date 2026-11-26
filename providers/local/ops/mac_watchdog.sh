@@ -22,7 +22,8 @@ PATH="${MAC_WATCHDOG_PATH:-/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin}"
 STATE_DIR="${MAC_WATCHDOG_STATE_DIR:-/var/db/cbase-mac}"
 CONF_DIR="${MAC_WATCHDOG_CONF_DIR:-/etc/cbase-mac}"
 HC_URL_FILE="$CONF_DIR/healthcheck-url"
-TAILSCALE_JOB=system/homebrew.mxcl.tailscale
+# Homebrew's label for `sudo brew services start tailscale` (Homebrew 5; mac_setup.sh's Verify checks it is loaded).
+TAILSCALE_JOB=system/sh.brew.tailscale
 PF_ANCHOR=com.apple/250.cbase-mac
 PF_RULES="$CONF_DIR/pf.conf"
 PF_ABUSE_EXPIRE_S=86400
@@ -161,13 +162,13 @@ fi
 
 report="host=$(scutil --get LocalHostName) uptime=$(( $(uptime_seconds) / 3600 ))h power=$power_source battery=${battery_pct}% disk=${disk_pct}% tailscale=${tailscale_ip:-none} ipv6=$(ipv6_address)"
 
+if [ -n "$issues" ]; then
+    report="$report issues: $issues"
+    log "unhealthy: $issues"
+fi
 write_state last_report "$report"
 if [ -s "$HC_URL_FILE" ]; then
     hc_url=$(cat "$HC_URL_FILE")
-    if [ -n "$issues" ]; then
-        hc_url="$hc_url/fail"
-        report="$report issues: $issues"
-        log "unhealthy: $issues"
-    fi
+    [ -z "$issues" ] || hc_url="$hc_url/fail"
     curl -fsS -m 10 --retry 3 -o /dev/null --data-raw "$report" "$hc_url" || log "check-in failed"
 fi
