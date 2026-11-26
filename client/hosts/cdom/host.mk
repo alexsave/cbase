@@ -27,7 +27,7 @@
 # and adapter.mk take from it) and whose I/O contract (src/cdom.h, its rule at the top) holds
 # cd_page_origin, cd_random_bytes and CD_WS_REFUSED.
 CDOM_REPO := https://github.com/alexsave/cdom.git
-CDOM_PIN  := f00157c082cb24c752b3138059cf4e52bf731b4d
+CDOM_PIN  := 8ba2f734e769423bffd285d8375f204ec65dad63
 CDOM      ?= build/cdom
 CDOM_GOT  := $(if $(filter build/cdom,$(CDOM)),build/cdom/.pin-$(CDOM_PIN))
 build/cdom/.pin-$(CDOM_PIN):
@@ -77,8 +77,9 @@ include hosts/cdom/adapter.mk
 HOST_CDOM_SRC  := $(CBC_CDOM_SRC)
 HOST_CDOM_INC  := $(CBC_CDOM_CFLAGS) $(filter -I%,$(CDOM_CFLAGS))
 HOST_CDOM_TEST := $(HOST_CDOM_SRC) $(CBC_SUITE_SRC) test/unit_host_cdom.c
-HOST_CDOM_TEST_FLAGS = $(CFLAGS) $(CBC_SUITE_INC) $(HOST_CDOM_INC)
-ASAN_CDOM_TEST_FLAGS = $(ASAN_CFLAGS) $(CBC_SUITE_INC) $(HOST_CDOM_INC)
+# cdom.h is C23; c2x is its spelling for gcc 13 and clang 17 too, as cdom.mk's HOST_STD.
+HOST_CDOM_TEST_FLAGS = $(CFLAGS) -std=gnu2x $(CBC_SUITE_INC) $(HOST_CDOM_INC)
+ASAN_CDOM_TEST_FLAGS = $(ASAN_CFLAGS) -std=gnu2x $(CBC_SUITE_INC) $(HOST_CDOM_INC)
 $(eval $(call C_VARIANT,build/obj/host-cdom,CC,HOST_CDOM_TEST_FLAGS))
 $(eval $(call C_VARIANT,build/obj/asan-cdom,CC,ASAN_CDOM_TEST_FLAGS))
 $(call c_objs,build/obj/host-cdom,$(HOST_CDOM_TEST)) $(call c_objs,build/obj/asan-cdom,$(HOST_CDOM_TEST)): | $(CDOM_GOT)
@@ -91,9 +92,10 @@ build/asan/test/unit_host_cdom: $(call c_objs,build/obj/asan,$(SRC)) $(call c_ob
 
 # FOR wasm32, as a cdom app compiles it: the adapter, the shared host, the core and lib/b64 with
 # cdom.mk's flags (CDOM_OPT, CDOM_CFLAGS: wasm32 on cdom's own string.h) and cbase's own on top
-# (freestanding, as every cbase wasm32 object; C11; the warnings; CBC_INC and CBC_CDOM_CFLAGS),
+# (freestanding, as every cbase wasm32 object; the warnings; CBC_INC and CBC_CDOM_CFLAGS; the C standard is
+# CDOM_CFLAGS' own, C23, which cdom.h is written in),
 # objects the libc gate reads.
-HOST_CDOM_WASM_OWN    := -ffreestanding -mno-nontrapping-fptoint -std=c11 $(WARN) $(INC) $(CBC_CDOM_CFLAGS)
+HOST_CDOM_WASM_OWN    := -ffreestanding -mno-nontrapping-fptoint $(WARN) $(INC) $(CBC_CDOM_CFLAGS)
 HOST_CDOM_WASM_CFLAGS := $(CDOM_OPT) $(CDOM_CFLAGS) $(HOST_CDOM_WASM_OWN)
 $(eval $(call C_VARIANT,build/obj/wasm-cdom,WASM_CC,HOST_CDOM_WASM_CFLAGS))
 HOST_CDOM_WASM_OBJS := $(call c_objs,build/obj/wasm-cdom,$(CBC_SRC) $(CBC_B64_SRC) $(CBC_CDOM_SRC))
