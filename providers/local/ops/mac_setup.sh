@@ -3,7 +3,10 @@
 # itself after any reboot, and is reached and watched from anywhere for months without anyone at the keyboard.
 # Idempotent: re-run it after any change. It asks questions, so run it in a Terminal window:
 #
-#   sudo providers/local/ops/mac_setup.sh [hostname]     (hostname defaults to us-east-3)
+#   sudo providers/local/ops/mac_setup.sh [hostname] [public name]
+#
+# The hostname defaults to us-east-3. The public name (for example us-east-3.example.com, an A record to the
+# house's address, with the router forwarding 80 and 443 to the Mac) turns on Caddy; without it Caddy is left off.
 #
 # Needs Homebrew's tailscale and batt installed first: brew install tailscale batt
 
@@ -13,6 +16,7 @@
     set -u
 
     NAME="${1:-us-east-3}"
+    DOMAIN="${2:-}"
     HERE="$(cd "$(dirname "$0")" && pwd)"
     BREW=/opt/homebrew/bin/brew
     TAILSCALE=/opt/homebrew/bin/tailscale
@@ -177,6 +181,19 @@
         warn "$USER_HOME/.local/bin/claude is missing; install Claude Code and re-run"
     fi
 
+    step "Caddy on 80 and 443 (HTTPS for ${DOMAIN:-no public name}, its certificates by itself)"
+    if [ -n "$DOMAIN" ] && [ -x /opt/homebrew/bin/caddy ]; then
+        install -m 644 "$HERE/mac_Caddyfile" "$CONF_DIR/Caddyfile"
+        sed -e "s|__USER__|$SUDO_USER|g" -e "s|__HOME__|$USER_HOME|g" -e "s|__DOMAIN__|$DOMAIN|g" \
+            "$HERE/mac_caddy.plist" > /Library/LaunchDaemons/com.cbase.mac-caddy.plist
+        chown root:wheel /Library/LaunchDaemons/com.cbase.mac-caddy.plist
+        chmod 644 /Library/LaunchDaemons/com.cbase.mac-caddy.plist
+        launchctl bootout system/com.cbase.mac-caddy 2>/dev/null
+        launchctl bootstrap system /Library/LaunchDaemons/com.cbase.mac-caddy.plist
+    else
+        echo "left off: pass the public name as the second argument, and brew install caddy"
+    fi
+
     step "Dead-man's switch: the check-in URL"
     HC="$CONF_DIR/healthcheck-url"
     if [ -s "$HC" ]; then
@@ -221,6 +238,10 @@
     check "Screen Sharing listening on 5900" "nc -z -G 2 127.0.0.1 5900"
     check "Low Power Mode on battery only" "pmset -g custom | awk '/Battery Power/ { b = 1 } /AC Power/ { b = 0 } b && /lowpowermode/ { print \$2 }' | grep -qx 1"
     check "Claude Remote Control running" "launchctl print gui/\$(id -u $SUDO_USER)/com.cbase.mac-claude | grep -q 'state = running'"
+    if [ -n "$DOMAIN" ]; then
+        check "Caddy running" "launchctl print system/com.cbase.mac-caddy | grep -q 'state = running'"
+        check "https://$DOMAIN answers (a minute or so after the A record exists)" "curl -fsS -m 20 https://$DOMAIN/"
+    fi
     check "check-in URL set" "[ -s $HC ]"
     check "automatic login is on (unlocks the login keychain: claude, gh)" "defaults read /Library/Preferences/com.apple.loginwindow autoLoginUser"
     check "FileVault off or decrypting" "! fdesetup status | grep -qx 'FileVault is On.'"

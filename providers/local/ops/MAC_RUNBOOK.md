@@ -61,6 +61,13 @@ Heavy load heats a closed laptop: leave the lid open.
 Root for routine fixes: `/etc/sudoers.d/cbase-mac` (from `mac_sudoers`) lets the user run a short list without a password, so a session opened from the phone can restart Tailscale, batt or the watchdog (`sudo launchctl kickstart -k system/<label>`), list and install macOS updates, reboot, and read the pf rules and sshd's settings.
 Anything else as root still takes the password, over SSH.
 
+## The front door
+
+Caddy (`com.cbase.mac-caddy`, from `mac_caddy.plist` and `mac_Caddyfile`) listens on 80 and 443 for the public name passed to `mac_setup.sh`, gets and renews its HTTPS certificate from Let's Encrypt by itself, and hands each name to its local service.
+It runs as the user, not root: it faces the internet, and its binary is under `/opt/homebrew`, which the user can change; macOS lets any user listen on 80 and 443.
+It needs the public name's A record to point at the house's IPv4 address and the router to forward TCP 80 and 443 to the Mac.
+Its log is `~/Library/Logs/cbase-mac-caddy.log`; its certificates are in `~/Library/Application Support/Caddy`.
+
 ## Getting in
 
 - `ssh vlad@us-east-3` through Tailscale SSH, with your tailnet login.

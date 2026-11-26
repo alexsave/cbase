@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+    Caddy on the Mac server (mac_Caddyfile), a LaunchDaemon: up at boot, before anyone logs in, and restarted
+    when it exits. It runs as the user, not root: it faces the internet, its binary is under /opt/homebrew (which
+    the user can change), and macOS lets any user listen on 80 and 443. Its certificates live in the user's
+    ~/Library/Application Support/Caddy. mac_setup.sh fills in __USER__, __HOME__ and __DOMAIN__.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.cbase.mac-caddy</string>
+    <key>UserName</key>
+    <string>__USER__</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/caddy</string>
+        <string>run</string>
+        <string>--config</string>
+        <string>/etc/cbase-mac/Caddyfile</string>
+        <string>--adapter</string>
+        <string>caddyfile</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>__HOME__</string>
+        <key>CBASE_MAC_DOMAIN</key>
+        <string>__DOMAIN__</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>StandardOutPath</key>
+    <string>__HOME__/Library/Logs/cbase-mac-caddy.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/Library/Logs/cbase-mac-caddy.log</string>
+</dict>
+</plist>

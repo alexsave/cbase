@@ -1,0 +1,11 @@
+# The Mac server's front door (MAC_RUNBOOK.md): Caddy on 80 and 443, which gets and renews the HTTPS certificate
+# for the public name by itself and hands each request to the local service it names. mac_setup.sh installs it as
+# /etc/cbase-mac/Caddyfile; CBASE_MAC_DOMAIN comes from mac_caddy.plist.
+#
+# The services join by name as they are built, each as one more block:
+#     tv.{$CBASE_MAC_DOMAIN}  { reverse_proxy 127.0.0.1:8096 }   (Jellyfin)
+#     api.{$CBASE_MAC_DOMAIN} { reverse_proxy 127.0.0.1:8080 }   (cbase serve)
+
+{$CBASE_MAC_DOMAIN} {
+    respond "{$CBASE_MAC_DOMAIN} is up" 200
+}
