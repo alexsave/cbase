@@ -11,6 +11,7 @@
 #include "cbase/client.h"
 
 #include <stdint.h>
+#include <string.h>
 
 #ifndef CBC_LAYOUT_HASH
 #error "build with -DCBC_LAYOUT_HASH=<structgen --print-hash of cbase/client.h>"
@@ -78,13 +79,13 @@ uint32_t cbcw_call(int method, int flags, int path_len, int body_len, double now
 // cbc_call bounds it: its new length, or CBC_E_FULL (the path as it was) or CBC_E_ARG
 // (cbc_query_add's, and a key that holds a NUL).
 int cbcw_query_add(int path_len, int key_len, int val_len) {
-    if (path_len < 0 || path_len > CBC_PATH_MAX || key_len < 0 || key_len >= CBCW_IO - CBC_PATH_MAX || val_len < 0 ||
-        val_len > CBCW_IO - CBC_PATH_MAX - 1 - key_len)
-        return CBC_E_ARG;
+    const uint32_t room = CBCW_IO - CBC_PATH_MAX;   // the key, its ending byte and the value
+    // The key and value stay inside io (unsigned: a negative length is a huge one). path_len is cbc_query_add's to
+    // refuse, as a *len past cap.
+    if ((uint32_t)key_len >= room || (uint32_t)val_len >= room - (uint32_t)key_len) return CBC_E_ARG;
     char *key = (char *)g_io + CBC_PATH_MAX;
-    for (int i = 0; i < key_len; i++)
-        if (!key[i]) return CBC_E_ARG;   // a NUL would end it early
     key[key_len] = 0;
+    if (strlen(key) != (size_t)key_len) return CBC_E_ARG;   // a NUL would end it early
     size_t n = (size_t)path_len;
     int rc = cbc_query_add((char *)g_io, CBC_PATH_MAX, &n, key, key + key_len + 1, (size_t)val_len);
     return rc ? rc : (int)n;

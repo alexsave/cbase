@@ -7,7 +7,7 @@
  * to those instructions directly). Mapping the calls themselves to the builtins in string.h was
  * measured and refused: every call site becomes an inline instruction with its operands, which
  * cost cbase_client.wasm 306 B raw under clang 23 and 347 B under clang 21, where it went past
- * the 10240 B budget, to save 37 B of gzip under 23 and lose 2 B under 21. */
+ * the size budget, to save 37 B of gzip under 23 and lose 2 B under 21. */
 #include <string.h>
 
 void *memcpy(void *dst, const void *src, size_t n)

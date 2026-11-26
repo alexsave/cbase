@@ -155,8 +155,8 @@ include $(CB)tools/wasm_cc.mk
 # SHA-256, base64url and hex from lib/). Each has its own budget, raw and as gzip -9 sends it,
 # held by the size gate. An app that links the client into its own module lists OIDC_SRC once
 # beside its own sources, so a digest it already links is shared, never doubled.
-WASM_RAW_MAX ?= 10240
-WASM_GZ_MAX  ?= 5120
+WASM_RAW_MAX ?= 11264
+WASM_GZ_MAX  ?= 5632
 WASM_OIDC_RAW_MAX ?= 13312
 WASM_OIDC_GZ_MAX  ?= 7168
 

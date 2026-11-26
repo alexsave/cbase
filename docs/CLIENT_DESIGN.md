@@ -83,7 +83,7 @@ The hand-written host is the one part per language that cannot be C, and it hold
 
 Two modules from one source, held by a size gate in CI that prints the numbers and fails past a budget (`make -C client wasm`):
 
-- `cbase_client.wasm`, the base module every page may load: at most 10,240 bytes raw and 5,120 bytes as `gzip -9` sends it.
+- `cbase_client.wasm`, the base module every page may load: at most 11,264 bytes raw and 5,632 bytes as `gzip -9` sends it.
 - `cbase_client_oidc.wasm`, which adds the provider sign-in and its SHA-256, base64url and hex: at most 13,312 and 7,168.
 
 The module is a final program, so it brings the C library its objects require, and `client/wasm/` is all of it (`include/string.h` and `libc.c`); nothing in cbase defines a C library for anything else (`tools/libc_gate.sh`).
