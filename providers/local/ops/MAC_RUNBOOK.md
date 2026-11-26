@@ -10,7 +10,8 @@ The first one is `us-east-3`.
 3. In a Terminal window: `sudo providers/local/ops/mac_setup.sh us-east-3`
 4. In the Tailscale admin console, open the machine and choose Disable key expiry.
 5. System Settings > Users & Groups > Automatically log in as: your account (offered once FileVault has finished decrypting).
-6. Once the setup's Verify block shows SSH password login off: in the xFi app, open TCP 22 (and 8080 for staging) over IPv6 to this Mac.
+6. Once the setup's Verify block shows SSH password login off: in the Xfinity app (WiFi > View WiFi equipment > Advanced settings > Port forwarding), forward TCP 22 to this Mac.
+   The gateway holds 3 rules, so the plan is 22, 80 and 443; staging reaches cbase through Caddy on 443, not its own 8080.
 7. Plug in power (and Ethernet, when there is a port for it), leave the lid open, and reboot once to prove it comes back: `sudo reboot`, then `ssh us-east-3` from another tailnet machine.
 
 ## State (2026-11-26)
@@ -61,7 +62,10 @@ Heavy load heats a closed laptop: leave the lid open.
 
 - `ssh vlad@us-east-3` through Tailscale SSH, with your tailnet login.
 - OpenSSH on port 22 with the keys in `~/.ssh/authorized_keys`; once that file has a key, password login is off (`/etc/ssh/sshd_config.d/050-cbase-mac.conf`).
-- When Tailscale is down: `ssh vlad@<ipv6>`, with the address from the last check-in on the healthchecks.io dashboard. It needs a network with IPv6 (most phones on cellular have it).
+- When Tailscale is down: `ssh vlad@<ipv4>`, with the house's address from the last check-in on the healthchecks.io dashboard (`ipv4=`); the router forwards TCP 22 to the Mac.
+  Checked from outside on 2026-11-26: it works.
+- Over IPv6 (`ipv6=` in the check-in) it does not work yet: from a phone hotspot both of the Mac's global addresses answered "No route to host".
+  Either the Xfinity rule covers IPv4 only, or that laptop's IPv6 went through a translating VPN; test again from a network with native IPv6.
 - Screen Sharing: `vnc://us-east-3` from Finder (Go, Connect to Server).
 
 ## Where things are
