@@ -39,6 +39,9 @@ APP_LDFLAGS  := -Wl,--strip-all
 # cdom's default page (cdom.mk's header), with the module bundled into it: one file, build/page/index.html.
 APP_PAGE     := build/page/index.html
 APP_TITLE    := cbase minimal
+# The page is built with make and clang alone: cdom's picture for browsers with script off would add Node,
+# Chrome and Python with Pillow to the build.
+CDOM_NOSCRIPT := 0
 
 # make serve builds the page first (cbase.mk's header: a product's own serve lines).
 serve: $(APP_WASM) $(APP_PAGE)

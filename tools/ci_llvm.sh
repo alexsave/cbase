@@ -22,7 +22,7 @@
 # committed, whatever clang this script installed only ever built the throwaway
 # TEST module, so its version was free. Now a lane builds the bytes a visitor
 # DOWNLOADS, and the version is a kilobyte and a half. Measured on one tree
-# while the pin was clang 22 (cdom's wasm-ld floor, LLVM 23, raised it since),
+# while the pin was clang 22 (a newer wasm-ld, LLVM 23, was needed since),
 # c/build/bots.wasm and sdk/ts/wasm/bots.wasm.gz:
 #
 #   clang 22.1.8 + binaryen 130   191,485 B raw   the pin
