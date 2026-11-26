@@ -314,7 +314,7 @@ check: e2e          # make check runs it too
 ```
 
 `test: e2e` joins it to `make test` the same way, and `serve: <file>` builds something before `make serve` (below).
-A unit test or a smoke needs no line at all: a `unit_*.c` under `APP_TEST_ROOTS` is one, and `APP_SMOKES` names the smokes.
+A `unit_*.c` under `APP_TEST_ROOTS` is a unit test, and `APP_SMOKES` names the smokes.
 cbase's own `Makefile` and `example/Makefile` add their checks with `check:` lines.
 
 ### Running it: `make serve`
@@ -339,7 +339,7 @@ include $(CBASE)/cbase.mk
 
 `make -C server serve`, `PORT=4100 make -C server serve` and `CBASE_LISTEN=0.0.0.0:8080 make -C server serve` then all work, and `tools/serve_test.sh` (part of `make check`) holds each rule against the example.
 
-A product extends `make serve` with lines of its own, and needs no knob for it:
+A product extends `make serve` with lines of its own:
 
 ```make
 serve: ui/out/app.wasm ui/out/index.html   # built before serve runs (a page the server reads)
@@ -393,7 +393,7 @@ A handler is `void h(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res)` (`c
 `CB_ROUTE_LOOP` runs the handler on the server's one loop thread, which serves every socket, so it must never block (no store, no lock another thread holds, nothing that waits); a route without it (`CB_ROUTE_POOL`, 0) runs on the request pool, where it may block.
 Every `CB_ROUTE_LOOP` handler runs on that one thread, one at a time, so a counter only they touch needs no lock; pool routes run on several workers at once (a `CB_ROUTE_INLINE` one on the loop thread too), so state one shares needs a lock or an `_Atomic` (`core/src/net/router.h`, "WHERE A HANDLER RUNS").
 The `CB_E_*` codes are in `core/src/util/err.h`.
-Serving a page: `core/src/net/files.h` answers with a file (`cb_send_file`) or a directory under a prefix route (`cb_serve_dir`), read when asked for, so a rebuilt page needs no restart.
+Serving a page: `core/src/net/files.h` answers with a file (`cb_send_file`) or a directory under a prefix route (`cb_serve_dir`), read when asked for, so a rebuilt page is served on the next request.
 A route pattern is exact, a prefix (`/v1/items/*`) or has path parameters (`/decks/:id`).
 Jobs, schedules, admin panels, metrics and the store's rows are further fields of the same struct.
 A storeless app opens no platform store, and opens its own in the `serve_open` hook ([docs/PLATFORM.md](docs/PLATFORM.md) 2.7).
@@ -469,7 +469,7 @@ exec "$(dirname "$0")/cbase/tools/cbase" "$@"
 
 It needs python3 3.9 or newer (macOS's `/usr/bin/python3` is enough) and AWS CLI v2.
 A VM deploy's `make serve-binary` needs what that target needs (Docker).
-Every AWS call it makes is one AWS CLI call read with `--query ... --output text`, so the tool parses no JSON.
+Every AWS call it makes is one AWS CLI call read with `--query ... --output text`, so the tool reads plain text.
 The stacks it makes are the CloudFormation templates in `tools/cbase.d/templates/`, filled in from `cbase.conf`.
 `cbase/tools/cbase --help`:
 
@@ -679,7 +679,7 @@ The VM side of a deploy, in order:
 With `CBASE_VM_IRQ` set, a second SSM command follows the first one (the NIC interrupts' setup), and for `split` a third, read-only one that checks the layout.
 
 The service's unit grew out of the production unit of the VM cbase came from (`tools/cbase.d/vm_unit.service`): `CBASE_LISTEN=:::<port>` (a dual-stack socket), `CBASE_DB` in its data folder, the backup settings, `Restart=always`, its hardening, and `MemoryMax` only when `CBASE_MEMORY` is declared.
-The instance fetches the server and reads its settings with curl signed by the instance role (`tools/cbase.d/vm_remote.sh`), so it needs no aws CLI.
+The instance fetches the server and reads its settings with curl signed by the instance role (`tools/cbase.d/vm_remote.sh`).
 Its settings are SSM Parameter Store parameters under `CBASE_VM_SETTINGS` (default `/cbase/<app>/`), which the instance writes into the unit's 0600 `EnvironmentFile`; no value passes through the tool but the origin secret, which is masked.
 Only the remote script's own status lines are printed, never the rest of the command's output, and a failure points at `journalctl -u cbase-<app>` on the instance.
 A port another process holds on the VM refuses the deploy and releases the claim it made.
@@ -798,7 +798,7 @@ No CI job runs the whole suite on one CLI process per call any more (`make check
 
 Each line names the tool, test or record that holds the rule; the tools run in `make check` or in CI.
 
-- **No JSON on shipped paths.** Clients speak a binary wire format; JSON exists only where a foreign API or the browser console needs it, contained in `core/src/core_json.c` and `providers/aws/src/aws_json.c` over `core/src/util/json.c` (`core/test/unit_json_gate.c`).
+- **Binary on shipped paths.** Clients speak a binary wire format; JSON exists only where a foreign API or the browser console needs it, contained in `core/src/core_json.c` and `providers/aws/src/aws_json.c` over `core/src/util/json.c` (`core/test/unit_json_gate.c`).
 - **cbase defines no C library.** No cbase object may define `memcpy`, `malloc` or any other libc name, so it never fights the program's own libc (`tools/libc_gate.sh`).
 - **One random source per kind.** Secret bytes come only from `cb_random_bytes` (`core/src/util/random.c`), the client core's seed from its host, and seeded streams from `lib/rng.h` (splitmix64, pinned by `lib/rng_test.c`); the client hosts' entropy from the platform's one source, `crypto.getRandomValues` in `client/ts/socket.ts` and `SecRandomCopyBytes` in `client/swift/CBaseClient/CbClient.swift`, and the two Swift UI tests' throwaway account names from `UInt32.random`, each the only one in its module; any other `rand`, `random`, `arc4random`, `RAND_bytes`, `getentropy` or `/dev/urandom` fails `core/test/unit_random_gate.c`, and so does a stream seeded from the clock (a time call inside `rng_seed64(...)`).
 - **One zone lookup.** A time zone is a name and one POSIX rule string (`lib/tz/tz.h`), looked up from the app's own list of zones (`APP_TZ_ZONES` in its Makefile, `lib/tz/tzdb.tsv` for the rules) on a time the caller passes in, never through the C library: `localtime`, `localtime_r`, `gmtime`, `mktime` or `tzset` anywhere fails `core/test/unit_time_gate.c`.

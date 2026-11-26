@@ -285,7 +285,7 @@ A time zone is its IANA name and one POSIX TZ rule string, the footer of the zon
 `lib/tz/tz.h` parses the rule on each call and computes the two transitions of a year from the calendar; there is no transition table, and no libc time function, clock or allocation, so the same file compiles into a wasm module.
 A local time is a day and a minute: one in a spring-forward gap moves forward by the gap, and one in a fall-back overlap takes the first instant.
 Past transitions are not represented, so a time before a zone adopted its current rule is computed with today's rule; that is fine for upcoming events and wrong for history, and `tz.h` says so.
-An app names its zones (`APP_TZ_ZONES`), `cbase.mk` writes `build/gen/tz_zones.c` from the committed `lib/tz/tzdb.tsv` with an awk script (no Python, no tzdata, nothing fetched), and the app links only those zones.
+An app names its zones (`APP_TZ_ZONES`), `cbase.mk` writes `build/gen/tz_zones.c` from the committed `lib/tz/tzdb.tsv` with an awk script, and the app links only those zones.
 The zone's name is its key; the handle `tz_find` answers is a position in that list, valid for one build.
 `make tz-update TZDATA=<zoneinfo dir>` is the one place Python and the tzdata files are used: `tools/tz_gen.py` reads each file's footer into `tzdb.tsv`, checks that the footer reproduces the file's own transitions after the day it runs, and writes the test oracle `lib/tz/test/transitions.tsv` from Python's zoneinfo.
 A zone whose file disagrees with its footer after that day (a rule change tzdata has already scheduled, or a DST it has suspended) stops the generator unless `tools/tz_skip.txt` lists it, which leaves it out of the tsv: a decision, and one that is refused once it is stale.

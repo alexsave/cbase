@@ -24,7 +24,7 @@ void sha256_init(Sha256 *c);
 void sha256_update(Sha256 *c, const void *data, size_t len);
 void sha256_final(Sha256 *c, uint8_t out[SHA256_DIGEST_LEN]);
 
-// One-shot convenience — the only form msg_wire.c needs.
+// One-shot convenience - the only form msg_wire.c needs.
 void sha256(const void *data, size_t len, uint8_t out[SHA256_DIGEST_LEN]);
 
 #endif

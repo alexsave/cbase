@@ -49,7 +49,7 @@ static void h_page(cb_ctx *ctx, const cb_http_req *req, cb_http_res *res) {
 ```
 
 Its route is `{ .method = "GET", .pattern = "/", .fn = h_page }`, beside `GET /api/hello`, the route the page calls.
-`cb_send_file` (`core/src/net/files.h`) reads the file when asked, so a rebuilt page needs no restart.
+`cb_send_file` (`core/src/net/files.h`) reads the file when asked, so a rebuilt page is served on the next request.
 A separate module is the better choice for a large app, for a host that caches a hashed `.wasm` for long, and for cdom's no-WebAssembly fallback: `APP_WASM_SEPARATE := 1` (`cdom.mk`'s header) keeps it a file beside the page, and the server answers it with a second `cb_send_file` route (its content type is `wasm`).
 
 ### 4. The call
@@ -78,7 +78,7 @@ Every ticket ends in exactly one `CBC_EV_DONE`, whose body is `e->len` bytes at 
 Status 0 is an answer that never arrived: no server is listening, or the deadline passed; with `CBC_C_FAIL_FAST` it is told at once instead of tried again.
 A non-2xx answer's body is the server's error body, read the same way: `cb_res_text(res, 400, "bad name\n")` reaches the page as status 400 and those 9 bytes, with `e->why` read from the status (`client.h`, "WHAT A DONE'S SPAN HOLDS").
 
-A multi-field answer needs no JSON: newline-separated `key=value` lines, written with `cb_res_text` and read in the page with plain C (a value never holds a newline, so one from user text is refused or encoded first):
+A multi-field answer is newline-separated `key=value` lines, written with `cb_res_text` and read in the page with plain C (a value never holds a newline, so one from user text is refused or encoded first):
 
 <!-- compiled: server -->
 ```c
