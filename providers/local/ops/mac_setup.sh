@@ -145,6 +145,16 @@
         rm -f "$SSHD_CONF"
     fi
 
+    step "Passwordless sudo for routine fixes (mac_sudoers: exact Apple commands only)"
+    SUDOERS_NEW=$(mktemp)
+    sed "s/__USER__/$SUDO_USER/g" "$HERE/mac_sudoers" > "$SUDOERS_NEW"
+    if visudo -cf "$SUDOERS_NEW" > /dev/null; then
+        install -m 440 -o root -g wheel "$SUDOERS_NEW" /etc/sudoers.d/cbase-mac
+    else
+        warn "visudo rejected mac_sudoers; /etc/sudoers.d/cbase-mac left as it was"
+    fi
+    rm -f "$SUDOERS_NEW"
+
     step "Screen Sharing (for the rare prompt that only the GUI can answer)"
     launchctl enable system/com.apple.screensharing
     launchctl bootstrap system /System/Library/LaunchDaemons/com.apple.screensharing.plist 2>/dev/null
@@ -207,6 +217,7 @@
     check "SSH listening on 22" "nc -z -G 2 127.0.0.1 22"
     check "SSH password login is off (port 22 may face the internet)" "/usr/sbin/sshd -T | grep -qx 'passwordauthentication no'"
     check "pf on, SSH rate limit loaded" "pfctl -a com.apple/250.cbase-mac -s rules | grep -q 'port = 22'"
+    check "passwordless sudo for routine fixes" "sudo -n -l -U $SUDO_USER | grep -q 'NOPASSWD: /sbin/shutdown -r now'"
     check "Screen Sharing listening on 5900" "nc -z -G 2 127.0.0.1 5900"
     check "Low Power Mode on battery only" "pmset -g custom | awk '/Battery Power/ { b = 1 } /AC Power/ { b = 0 } b && /lowpowermode/ { print \$2 }' | grep -qx 1"
     check "Claude Remote Control running" "launchctl print gui/\$(id -u $SUDO_USER)/com.cbase.mac-claude | grep -q 'state = running'"

@@ -1,0 +1,20 @@
+# The Mac server's passwordless sudo (MAC_RUNBOOK.md), installed by mac_setup.sh as /etc/sudoers.d/cbase-mac
+# with __USER__ filled in. A Claude Code session opened from the phone cannot type a password, so these are the
+# routine fixes it may run as root. Each is an Apple binary, which the user cannot change, on an exact argument
+# list. Kept off: anything under /opt/homebrew (brew services and friends) and the setup script, because the
+# user owns those files, and running them as root would make every edit to them root too.
+
+# Restart a daemon that wedged.
+__USER__ ALL = (root) NOPASSWD: /bin/launchctl kickstart -k system/sh.brew.tailscale
+__USER__ ALL = (root) NOPASSWD: /bin/launchctl kickstart -k system/sh.brew.batt
+__USER__ ALL = (root) NOPASSWD: /bin/launchctl kickstart -k system/com.cbase.mac-watchdog
+
+# macOS updates: list them, install one by its label, and restart.
+__USER__ ALL = (root) NOPASSWD: /usr/sbin/softwareupdate -l
+__USER__ ALL = (root) NOPASSWD: /usr/sbin/softwareupdate -i *
+__USER__ ALL = (root) NOPASSWD: /sbin/shutdown -r now
+
+# Read what the firewall and sshd are actually doing.
+__USER__ ALL = (root) NOPASSWD: /sbin/pfctl -a com.apple/250.cbase-mac -s rules
+__USER__ ALL = (root) NOPASSWD: /sbin/pfctl -a com.apple/250.cbase-mac -t cbase_ssh_abuse -T show
+__USER__ ALL = (root) NOPASSWD: /usr/sbin/sshd -T

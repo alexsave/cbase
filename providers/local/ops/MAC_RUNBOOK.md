@@ -58,6 +58,9 @@ Long jobs (a Claude Code session, a build) run inside tmux, so a dropped connect
 Claude Code's login is in the login keychain, so it works over SSH once automatic login has unlocked it at boot.
 Heavy load heats a closed laptop: leave the lid open.
 
+Root for routine fixes: `/etc/sudoers.d/cbase-mac` (from `mac_sudoers`) lets the user run a short list without a password, so a session opened from the phone can restart Tailscale, batt or the watchdog (`sudo launchctl kickstart -k system/<label>`), list and install macOS updates, reboot, and read the pf rules and sshd's settings.
+Anything else as root still takes the password, over SSH.
+
 ## Getting in
 
 - `ssh vlad@us-east-3` through Tailscale SSH, with your tailnet login.
