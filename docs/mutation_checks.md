@@ -1825,3 +1825,5 @@ Each turns the queryAdd case red:
 - cbc_wasm.c: the key left without its ending NUL -> an `assert.equal` of an encoded path red.
 - cbc_wasm.c: the bound one byte past CBC_PATH_MAX -> `Missing expected exception (RangeError)` red.
 - cbc_wasm.c: the value read from the byte that ends the key -> an `assert.equal` of an encoded path red.
+- cbc_wasm.c: the value bound of the door one byte wider -> the door's `-2 !== -1` red.
+- client.c: cbc_query_add without its `*len > cap` check, the owner of the door's path_len -> the door's `261 !== -1` red.

@@ -153,6 +153,15 @@ test('queryAdd encodes a key and value as cbc_query_add does, and the call sends
   assert.throws(() => c.queryAdd('/a', 'v', 'x'.repeat(65536 - 256 - 1)), RangeError);
   assert.equal(c.queryAdd('/a', 'v', ''), '/a?v=');
   assert.equal(c.queryAdd('/a', 'v', '\0'), '/a?v=%00');         // a value is bytes: its NUL is one
+  // the door itself, past queryAdd's checks: a one-byte key at 256, and room for 65278 bytes of value
+  const raw = c as any, door = (path: number, key: number, val: number): number => raw.x.cbcw_query_add(path, key, val);
+  raw.mem().u8[raw.io + 256] = 'k'.charCodeAt(0);
+  assert.equal(door(0, 1, 65278), -2);    // inside the buffer: too long for a path (CBC_E_FULL)
+  assert.equal(door(0, 1, 65279), -1);    // one byte past it (CBC_E_ARG), as are negative lengths
+  assert.equal(door(0, 1, -1), -1);
+  assert.equal(door(0, -1, 0), -1);
+  assert.equal(door(257, 1, 1), -1);      // a path past CBC_PATH_MAX is cbc_query_add's refusal
+  assert.equal(door(-1, 1, 1), -1);
   c.close();
 });
 
