@@ -4,7 +4,9 @@
     Claude Code's Remote Control server on the Mac server (MAC_RUNBOOK.md), a LaunchAgent: it starts when
     automatic login opens the user's session (which unlocks the keychain that holds Claude Code's login) and
     restarts when it exits. mac_setup.sh fills in __HOME__ and installs it in ~/Library/LaunchAgents.
-    script(1) gives it the terminal it expects; its output goes to the log.
+    script(1) gives it the terminal it expects. Its stdin is a pipe that never ends: launchd's own is /dev/null,
+    whose end of file script passes on as ^D, which quits Claude Code every 30 seconds. The feeding loop is in
+    the job's process group, so launchd ends it with the job. The output goes to the log.
 -->
 <plist version="1.0">
 <dict>
@@ -12,15 +14,11 @@
     <string>com.cbase.mac-claude</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/bin/script</string>
-        <string>-q</string>
-        <string>/dev/null</string>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>exec /usr/bin/script -q /dev/null "$0" remote-control --name "$1" --permission-mode auto &lt; &lt;(while :; do sleep 86400; done)</string>
         <string>__HOME__/.local/bin/claude</string>
-        <string>remote-control</string>
-        <string>--name</string>
         <string>__NAME__</string>
-        <string>--permission-mode</string>
-        <string>auto</string>
     </array>
     <key>WorkingDirectory</key>
     <string>__HOME__/Dev</string>
