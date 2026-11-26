@@ -44,7 +44,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
-      - run: sudo apt-get update -q && sudo apt-get install -y -q build-essential libssl-dev libsqlite3-dev
+      - run: bash tools/ci_apt.sh build-essential libssl-dev libsqlite3-dev
       - name: build
         run: make -j"$(getconf _NPROCESSORS_ONLN)"
       - name: unit tests, smokes, the client, the repository gate, the symbol gate, the local-only example offline and stripped of aws and ops, its check
@@ -166,7 +166,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
-      - run: sudo apt-get update -q && sudo apt-get install -y -q build-essential libssl-dev libsqlite3-dev
+      - run: bash tools/ci_apt.sh build-essential libssl-dev libsqlite3-dev
       # The unit tests and smokes, and every checked-in fuzz input (each target's
       # <side>/fuzz/corpus, the reproducers of every bug the fuzzers found among them) through its
       # target once (fuzz-replay), all under the same sanitizers, with gcc and no libFuzzer.
@@ -215,7 +215,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
-      - run: sudo apt-get update -q && sudo apt-get install -y -q build-essential libssl-dev libsqlite3-dev
+      - run: bash tools/ci_apt.sh build-essential libssl-dev libsqlite3-dev
       # tools/ci_llvm.sh's pinned downloads (binaryen's release tarball, llvm.sh), so a run does not
       # need github.com's release host once one has filled it. ci_llvm.sh owns the cache: it hashes
       # every entry against its pin before use, and the pins live in it, hence the key.
@@ -265,7 +265,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
-      - run: sudo apt-get update -q && sudo apt-get install -y -q build-essential clang libssl-dev libsqlite3-dev
+      - run: bash tools/ci_apt.sh build-essential clang libssl-dev libsqlite3-dev
       # The name's prefix says the build: its directory, its binary, its smoke goal and where a
       # crash lands.
       - id: where
@@ -302,7 +302,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
-      - run: sudo apt-get update -q && sudo apt-get install -y -q build-essential libssl-dev libsqlite3-dev
+      - run: bash tools/ci_apt.sh build-essential libssl-dev libsqlite3-dev
       - name: gcovr
         run: pipx install gcovr==8.6 || pip install --break-system-packages gcovr==8.6
       - name: the coverage build, every test, the gate
@@ -323,7 +323,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
-      - run: sudo apt-get update -q && sudo apt-get install -y -q build-essential libssl-dev libsqlite3-dev
+      - run: bash tools/ci_apt.sh build-essential libssl-dev libsqlite3-dev
       # The runner image has Docker and the AWS CLI; dynamo_local.sh starts amazon/dynamodb-local
       # (pinned by digest) and makes the table from providers/aws/ops/cbase.yaml.
       - name: DynamoDB Local
