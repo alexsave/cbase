@@ -60,7 +60,7 @@ static void on_event(void *ctx, cbc *c, const cbc_event *e, const uint8_t *bytes
   (void)ctx; (void)c;
   if (e->kind != CBC_EV_DONE) return;
   if (e->status == 200 && bytes) cd_set_text_node(answer, cd_tmp((const char *)bytes + e->off, e->len));
-  else cd_set_text_node(answer, CD_LIT("the server did not answer"));
+  else cd_set_text_node(answer, "the server did not answer");
 }
 ```
 
@@ -150,7 +150,7 @@ The repository gate (`tools/repo_gate_test.sh`) allows cdom's name only in this 
 
 The adapter is built and tested against one cdom, pinned by commit in `host.mk` (`CDOM_PIN`), and fetched into `client/build/cdom` by the target itself.
 That cdom is the one this cbase pairs with: an app on both takes cdom at the pin below, with cbase at the same commit as this file.
-The pin is [f00157c0](https://github.com/alexsave/cdom/commit/f00157c082cb24c752b3138059cf4e52bf731b4d), a cdom with `cdom.mk` at its root, included once (its sources and flags, which `adapter.mk` and `host.mk` take from it), and whose stable I/O contract (the rule at the top of `src/cdom.h`, held by `tests/link/contract.c`) declares every call the adapter makes, `cd_page_origin`, `cd_random_bytes` and `CD_WS_REFUSED` among them.
+The pin is [8ba2f734](https://github.com/alexsave/cdom/commit/8ba2f734e769423bffd285d8375f204ec65dad63), a cdom with `cdom.mk` at its root, included once (its sources and flags, which `adapter.mk` and `host.mk` take from it), and whose stable I/O contract (the rule at the top of `src/cdom.h`, held by `tests/link/contract.c`) declares every call the adapter makes, `cd_page_origin`, `cd_random_bytes` and `CD_WS_REFUSED` among them.
 A new pin is that one line, moved once the adapter passes against the newer cdom, and the line above with it: `pin_doc_check.sh` (run by `make -C client check` and `check-host-cdom`) fails when this file's commit is not `CDOM_PIN`.
 `CDOM=<a cdom checkout>` runs everything against that checkout instead.
 
