@@ -132,6 +132,12 @@ bool cb_js_oidc_header(const char *json, size_t n, char *alg, size_t alg_cap, ch
 #define CB_OIDC_AUD_MAX   4     // audiences read from an "aud" array
 #define CB_OIDC_SUB_MAX   255   // a subject's bytes
 #define CB_OIDC_STR_MAX   255   // a client id, an issuer, a hashed nonce
+// The latest exp or iat a token may state, in seconds since the epoch: 9999-12-31T23:59:59Z, the
+// last second with a four-digit year. A token lives minutes, so no real one comes near it, and
+// it leaves room for the arithmetic every reader does on these claims: the skew added or taken
+// away, and the change to milliseconds ((CB_OIDC_TIME_MAX + skew) * 1000 + 1000 is about 2.5e14,
+// far inside int64). The earliest is 0, the epoch.
+#define CB_OIDC_TIME_MAX  253402300799LL
 typedef struct {
     char    iss[CB_OIDC_STR_MAX + 1];
     char    sub[CB_OIDC_SUB_MAX + 1];
@@ -144,8 +150,8 @@ typedef struct {
     bool    private_email;                             // "is_private_email": true or "true"
 } cb_oidc_claims;
 // An ID token's claims. iss, sub, aud, exp and iat must be there and of their
-// type (exp and iat integers); nonce and email are optional strings. false
-// otherwise, or when a field does not fit.
+// type (exp and iat integers from 0 to CB_OIDC_TIME_MAX); nonce and email are
+// optional strings. false otherwise, or when a field does not fit.
 bool cb_js_oidc_claims(const char *json, size_t n, cb_oidc_claims *out);
 
 // A provider's key set ({"keys":[{kty,kid,use,alg,n,e},..]}): fn is called once

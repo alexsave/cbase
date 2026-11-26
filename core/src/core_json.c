@@ -347,12 +347,18 @@ static bool oidc_opt_str(const char *json, size_t n, const char *path, char *out
     return t == CB_JSON_STR && cb_json_get_str(json, n, path, out, cap);
 }
 
+// A time claim (exp, iat): an integer within [0, CB_OIDC_TIME_MAX]. This is the one place the bound
+// is held, so every reader of the claims may add the skew and change to milliseconds unguarded.
+static bool oidc_time(const char *json, size_t n, const char *path, int64_t *out) {
+    return cb_json_get_i64(json, n, path, out) && *out >= 0 && *out <= CB_OIDC_TIME_MAX;
+}
+
 bool cb_js_oidc_claims(const char *json, size_t n, cb_oidc_claims *out) {
     memset(out, 0, sizeof *out);
     if (!json || !cb_json_valid(json, n) || cb_json_find(json, n, "", NULL) != CB_JSON_OBJ) return false;
     bool ok = cb_json_get_str(json, n, "iss", out->iss, sizeof out->iss) &&
               cb_json_get_str(json, n, "sub", out->sub, sizeof out->sub) && out->sub[0] &&
-              cb_json_get_i64(json, n, "exp", &out->exp) && cb_json_get_i64(json, n, "iat", &out->iat) &&
+              oidc_time(json, n, "exp", &out->exp) && oidc_time(json, n, "iat", &out->iat) &&
               oidc_opt_str(json, n, "nonce", out->nonce, sizeof out->nonce) &&
               oidc_opt_str(json, n, "email", out->email, sizeof out->email);
     cb_json_type at = ok ? cb_json_find(json, n, "aud", NULL) : CB_JSON_ERR;
