@@ -101,8 +101,14 @@ done
 
 step "SSH (Remote Login)"
 AK="$USER_HOME/.ssh/authorized_keys"
-echo "Paste the SSH public keys of the machines you will connect from, one per line, then an empty line."
-echo "Press Enter at once to skip: Tailscale SSH works with your tailnet login alone."
+if [ -s "$AK" ]; then
+    echo "$(grep -c . "$AK") key(s) already in $AK:"
+    ssh-keygen -l -f "$AK" | sed 's/^/  /'
+    echo "Press Enter to keep them, or paste more keys, one per line, then an empty line."
+else
+    echo "Paste the SSH public keys of the machines you will connect from, one per line, then an empty line."
+    echo "Press Enter at once to skip: Tailscale SSH works with your tailnet login alone."
+fi
 while IFS= read -r key && [ -n "$key" ]; do
     install -d -m 700 -o "$SUDO_USER" -g staff "$USER_HOME/.ssh"
     touch "$AK"
