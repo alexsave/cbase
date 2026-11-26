@@ -30,7 +30,7 @@ endif
 # and not a refusal: a different point release is a few bytes, a different
 # MAJOR is kilobytes, and both are worth saying out loud without stopping
 # someone who knows why they are doing it.
-WASM_LLVM_MAJOR ?= 22
+WASM_LLVM_MAJOR ?= 23
 
 .PHONY: wasm-cc-check
 wasm-cc-check:
