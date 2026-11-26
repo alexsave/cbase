@@ -167,16 +167,23 @@
     CLAUDE_AGENT="$USER_HOME/Library/LaunchAgents/com.cbase.mac-claude.plist"
     if [ -x "$USER_HOME/.local/bin/claude" ]; then
         install -d -m 755 -o "$SUDO_USER" -g staff "$USER_HOME/Library/LaunchAgents" "$USER_HOME/Library/Logs" "$USER_HOME/Dev"
-        sed -e "s|__HOME__|$USER_HOME|g" -e "s|__NAME__|$NAME|g" "$HERE/mac_claude.plist" > "$CLAUDE_AGENT"
-        chown "$SUDO_USER":staff "$CLAUDE_AGENT"
-        chmod 644 "$CLAUDE_AGENT"
+        CLAUDE_NEW=$(mktemp)
+        sed -e "s|__HOME__|$USER_HOME|g" -e "s|__NAME__|$NAME|g" "$HERE/mac_claude.plist" > "$CLAUDE_NEW"
         USER_ID=$(id -u "$SUDO_USER")
-        if launchctl print "gui/$USER_ID" > /dev/null 2>&1; then
-            launchctl bootout "gui/$USER_ID/com.cbase.mac-claude" 2>/dev/null
-            launchctl bootstrap "gui/$USER_ID" "$CLAUDE_AGENT"
+        # Restart it only for a new plist: stopping Remote Control waits while it winds its sessions down, and a
+        # copy started before the old one has let go exits 69 (EX_UNAVAILABLE) until launchd retries.
+        if cmp -s "$CLAUDE_NEW" "$CLAUDE_AGENT" && launchctl print "gui/$USER_ID/com.cbase.mac-claude" > /dev/null 2>&1; then
+            echo "unchanged and loaded: left running"
         else
-            echo "no one is logged in; it starts at the next login"
+            install -m 644 -o "$SUDO_USER" -g staff "$CLAUDE_NEW" "$CLAUDE_AGENT"
+            if launchctl print "gui/$USER_ID" > /dev/null 2>&1; then
+                launchctl bootout "gui/$USER_ID/com.cbase.mac-claude" 2>/dev/null
+                launchctl bootstrap "gui/$USER_ID" "$CLAUDE_AGENT"
+            else
+                echo "no one is logged in; it starts at the next login"
+            fi
         fi
+        rm -f "$CLAUDE_NEW"
     else
         warn "$USER_HOME/.local/bin/claude is missing; install Claude Code and re-run"
     fi
@@ -238,7 +245,7 @@
     check "passwordless sudo for routine fixes" "sudo -n -l -U $SUDO_USER | grep -q 'NOPASSWD: /sbin/shutdown -r now'"
     check "Screen Sharing listening on 5900" "nc -z -G 2 127.0.0.1 5900"
     check "Low Power Mode on battery only" "pmset -g custom | awk '/Battery Power/ { b = 1 } /AC Power/ { b = 0 } b && /lowpowermode/ { print \$2 }' | grep -qx 1"
-    check "Claude Remote Control running" "launchctl print gui/\$(id -u $SUDO_USER)/com.cbase.mac-claude | grep -q 'state = running'"
+    check "Claude Remote Control loaded (just restarted, it can show spawn scheduled for 30 s)" "launchctl print gui/\$(id -u $SUDO_USER)/com.cbase.mac-claude | grep -qE 'state = (running|spawn scheduled)'"
     if [ -n "$DOMAIN" ]; then
         check "Caddy running" "launchctl print system/com.cbase.mac-caddy | grep -q 'state = running'"
         check "https://$DOMAIN answers (a minute or so after the A record exists)" "curl -fsS -m 20 https://$DOMAIN/"
