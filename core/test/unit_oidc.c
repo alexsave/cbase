@@ -238,6 +238,61 @@ static void every_refusal(void) {
     cb_oidc_free(o);
 }
 
+// exp and iat are each within [0, CB_OIDC_TIME_MAX] (core_json.h), refused where the claims are
+// read: every edge of the range, and a refusal leaves nothing behind.
+static void claim_times_bounded_where_read(void) {
+    char j[512];
+    cb_oidc_claims c;
+    static const cb_oidc_claims zero;
+    static const struct { long long exp, iat; bool ok; } CASES[] = {
+        { 1790000600, 1790000000, true },
+        { CB_OIDC_TIME_MAX, CB_OIDC_TIME_MAX, true },
+        { 0, 0, true },
+        { CB_OIDC_TIME_MAX + 1, 1790000000, false },
+        { 1790000600, CB_OIDC_TIME_MAX + 1, false },
+        { -1, 1790000000, false },
+        { 1790000600, -1, false },
+        { INT64_MAX, 1790000000, false },
+        { 1790000600, INT64_MIN, false },
+        { 179000000000000600LL, 17000000, false },   // the fuzzer's first find
+        { 1111111111790000600LL, 17000000, false },  // and its second
+    };
+    for (size_t i = 0; i < sizeof CASES / sizeof CASES[0]; i++) {
+        snprintf(j, sizeof j, "{\"iss\":\"i\",\"sub\":\"s\",\"aud\":\"a\",\"exp\":%lld,\"iat\":%lld}", CASES[i].exp, CASES[i].iat);
+        bool got = cb_js_oidc_claims(j, strlen(j), &c);
+        if (got != CASES[i].ok) fprintf(stderr, "     exp %lld, iat %lld\n", CASES[i].exp, CASES[i].iat);
+        T_EQ_INT(got, CASES[i].ok);
+        if (got && CASES[i].ok) {
+            T_EQ_INT(c.exp, CASES[i].exp);
+            T_EQ_INT(c.iat, CASES[i].iat);
+        } else if (!got) {
+            T_CHECK(memcmp(&c, &zero, sizeof c) == 0);
+        }
+    }
+}
+
+// The verifier reads the times before the signature: an unsigned token with the issuer and a
+// client reaches them, so a time near either end of int64 is refused there, not added to.
+static void claim_times_bounded_before_the_signature(void) {
+    cb_oidc *o = new_oidc(false);
+    cb_oidc_identity id;
+    fi_claims c;
+#define REFUSED(expr) do { const char *t_ = (expr); T_CHECK(t_ != NULL); T_EQ_INT(verify(o, t_, &id), CB_E_AUTH); T_EQ_STR(id.sub, ""); } while (0)
+    // Signed by a key k0's kid does not name.
+    c = good("s"); c.exp = INT64_MAX; REFUSED(fi_mint(&g_f, 1, NULL, "k0", &c));
+    c = good("s"); c.iat = INT64_MIN; REFUSED(fi_mint(&g_f, 1, NULL, "k0", &c));
+    // Signed: the bound is good and the identity keeps it; one past it is not.
+    c = good("s"); c.exp = CB_OIDC_TIME_MAX;
+    T_EQ_INT(verify(o, fi_mint(&g_f, 0, NULL, NULL, &c), &id), CB_OK);
+    T_EQ_INT(id.exp, CB_OIDC_TIME_MAX);
+    c = good("s"); c.exp = CB_OIDC_TIME_MAX + 1; REFUSED(fi_mint(&g_f, 0, NULL, NULL, &c));
+    c = good("s"); c.exp = 179000000000000600LL; REFUSED(fi_mint(&g_f, 0, NULL, NULL, &c));
+    c = good("s"); c.iat = 0; T_EQ_INT(verify(o, fi_mint(&g_f, 0, NULL, NULL, &c), &id), CB_OK);
+    c = good("s"); c.iat = -1; REFUSED(fi_mint(&g_f, 0, NULL, NULL, &c));
+#undef REFUSED
+    cb_oidc_free(o);
+}
+
 // The key set: fetched once, kept; a kid it does not hold fetched again at once, but not more than
 // once a minute; a weak key never used; a provider that is down.
 static void keys_rotate_and_refetch(void) {
@@ -725,6 +780,26 @@ static void new_identity_asks_a_name_then_signs_in(void) {
     teardown();
 }
 
+// A signed token's exp sets how long its one use is remembered, in milliseconds (auth.c
+// oidc_claim): past CB_OIDC_TIME_MAX the sign-in is a bad identity before that sum is made; at the
+// bound it signs in, and the token is remembered as used.
+static void a_far_exp_signs_in_at_the_bound_only(void) {
+    setup(true);
+    fi_claims c = good("apple.sub.far");
+    g_now += 1000;
+    c.iat = now_s();
+    c.exp = 179000000000000600LL;   // the fuzzer's first find, signed
+    T_EQ_INT(oidc(NULL, CBW_IDP_APPLE, 0, fi_mint(&g_f, 0, NULL, NULL, &c), NONCE, NULL, "Far"), 400);
+    T_CHECK(refused(CBW_WHY_ACCOUNT, CBW_ACCOUNT_E_BAD_IDENTITY));
+    c.exp = CB_OIDC_TIME_MAX;
+    char tok[16384];
+    cb_strlcpy(tok, fi_mint(&g_f, 0, NULL, NULL, &c), sizeof tok);
+    T_EQ_INT(oidc(NULL, CBW_IDP_APPLE, 0, tok, NONCE, NULL, "Far"), 200);
+    T_EQ_INT(oidc(NULL, CBW_IDP_APPLE, 0, tok, NONCE, NULL, "Far"), 400);
+    T_CHECK(refused(CBW_WHY_ACCOUNT, CBW_ACCOUNT_E_BAD_IDENTITY));
+    teardown();
+}
+
 static void a_failed_exchange_does_not_fail_the_sign_in(void) {
     setup(true);
     T_EQ_INT(oidc(NULL, CBW_IDP_APPLE, 0, tok_for("apple.sub.2"), NONCE, "code-500", "Bea"), 200);
@@ -927,6 +1002,8 @@ int main(void) {
     T_EQ_INT(cb_https_set_ca_file(g_f.srv.ca_file), CB_OK);
     T_RUN(a_good_token);
     T_RUN(every_refusal);
+    T_RUN(claim_times_bounded_where_read);
+    T_RUN(claim_times_bounded_before_the_signature);
     T_RUN(keys_rotate_and_refetch);
     T_RUN(key_sets);
     T_RUN(configuration);
@@ -935,6 +1012,7 @@ int main(void) {
     T_RUN(seal);
     T_RUN(new_identity_asks_a_name_then_signs_in);
     T_RUN(a_failed_exchange_does_not_fail_the_sign_in);
+    T_RUN(a_far_exp_signs_in_at_the_bound_only);
     T_RUN(link_rules);
     T_RUN(races);
     T_RUN(delete_revokes_at_apple);

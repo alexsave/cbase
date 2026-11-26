@@ -32,6 +32,7 @@ An identity token is accepted only when all of these hold (`oidc.h` has the full
 - it is RS256, signed by a key Apple publishes at `https://appleid.apple.com/auth/keys`;
 - `iss` is `https://appleid.apple.com`, and `aud` is one of `CBASE_APPLE_CLIENT_IDS`;
 - `exp` and `iat` are within a minute of now;
+- `exp` and `iat` are whole seconds from 0 to 253402300799 (`CB_OIDC_TIME_MAX`, the last second of the year 9999), checked where the claims are read;
 - `nonce` is the SHA-256 (lowercase hex) of the raw nonce the client sends beside the token;
 - it has never been used before (its hash is claimed in the store until it expires).
 
