@@ -9,7 +9,8 @@ The first one is `us-east-3`.
 2. Make a check in healthchecks.io: period 5 minutes, grace 10 minutes, and copy its ping URL.
 3. In a Terminal window: `sudo providers/local/ops/mac_setup.sh us-east-3`
 4. In the Tailscale admin console, open the machine and choose Disable key expiry.
-5. Plug in power (and Ethernet, when there is a port for it), leave the lid open, and reboot once to prove it comes back: `sudo reboot`, then `ssh us-east-3` from another tailnet machine.
+5. System Settings > Users & Groups > Automatically log in as: your account (offered once FileVault has finished decrypting).
+6. Plug in power (and Ethernet, when there is a port for it), leave the lid open, and reboot once to prove it comes back: `sudo reboot`, then `ssh us-east-3` from another tailnet machine.
 
 ## State (2026-11-26)
 
@@ -33,9 +34,17 @@ Each step answers one way an unattended laptop goes dark.
 | `tailscaled` dies or wedges | the watchdog kickstarts it |
 | Nobody learns that it is down | the watchdog checks in to healthchecks.io every 5 minutes, which emails when check-ins stop; on battery, with the disk over 90% or with Tailscale down, it checks in to `/fail` instead |
 | A prompt that only the GUI can answer | Screen Sharing, over Tailscale |
+| A reboot locks the login keychain, so Claude Code and gh lose their logins | automatic login (quick start step 5) |
 | A security fix waits for someone to click | security and minor macOS updates install by themselves; with FileVault off, their restart comes back on its own |
 
 Every service is a LaunchDaemon, so the server works at the login window with nobody logged in.
+Automatic login is what keeps the login keychain unlocked after a reboot, and with it every tool that keeps its login there (Claude Code, gh).
+
+## Remote work
+
+Long jobs (a Claude Code session, a build) run inside tmux, so a dropped connection leaves them running: `ssh us-east-3`, then `tmux new -A -s work`.
+Claude Code's login is in the login keychain, so it works over SSH once automatic login has unlocked it at boot.
+Heavy load heats a closed laptop: leave the lid open.
 
 ## Getting in
 
