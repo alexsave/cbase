@@ -8,7 +8,9 @@
 # from the second, reboots at the sixth, and resets the count; the reboot waits out the first hour of uptime
 # and the 6 hours since the last one; back online the count resets; Tailscale that does not answer is
 # kickstarted, and /fail is used only when it stays down; a full disk checks in to /fail; with no URL set
-# nothing is sent.
+# nothing is sent; pf is enabled and the anchor loaded when it is empty (macOS's main ruleset first when that is
+# missing), left alone when loaded, a failed load checks in to /fail, the abuse table is expired every run, and
+# with no rules file pf is not touched; the status line carries the stable IPv6 address, never the temporary one.
 #
 # Mutation checks (each change made to mac_watchdog.sh in turn, the test red on the assertion named, then
 # restored): the shutdown -h line deleted -> "battery at 8% shuts down"; "-le" in the battery test made
@@ -17,7 +19,10 @@
 # deleted -> "no second reboot within 6 hours"; write_state offline_runs 0 on the online branch deleted ->
 # "back online resets the count"; the kickstart line deleted -> "tailscale down is kickstarted"; the
 # add_issue for a full disk deleted -> "a full disk checks in to /fail"; the boot time read with a greedy
-# ".*sec = " (which matches usec) -> "no reboot in the first hour of uptime".
+# ".*sec = " (which matches usec) -> "no reboot in the first hour of uptime"; the anchor load line deleted ->
+# "an empty anchor is loaded"; the pfctl -e deleted -> "a disabled pf is enabled"; the expire line deleted ->
+# "the abuse table is expired"; /secured/ dropped from ipv6_address -> "the status line names ..."; the last_report write deleted ->
+# "the status line is kept for mac_setup.sh".
 # The stub bodies are written to files and expand when the stub runs, so they are single-quoted.
 # shellcheck disable=SC2016
 set -u
@@ -67,6 +72,17 @@ stub sysctl 'echo "{ sec = $FAKE_BOOT, usec = 0 } Thu Jan  1 00:00:00 2026"'
 stub scutil 'echo us-east-3'
 stub shutdown 'echo "shutdown $*" >> "$FAKE_LOG"'
 stub sleep ':'
+stub pfctl '
+echo "pfctl $*" >> "$FAKE_LOG"
+case "$*" in
+    "-s Anchors") [ "$FAKE_PF_MAIN" = 1 ] && echo "  com.apple" ;;
+    *"-s rules") [ "$FAKE_PF_LOADED" = 1 ] && echo "pass in proto tcp from any to any port = 22" ;;
+    "-s info") [ "$FAKE_PF_ENABLED" = 1 ] && echo "Status: Enabled for 0 days" || echo "Status: Disabled" ;;
+    *"-f "*/pf.conf) [ "$FAKE_PF_LOAD_FAILS" = 1 ] && exit 1 ;;
+esac
+exit 0'
+stub route 'printf "   route to: default\ninterface: en0\n"'
+stub ifconfig 'printf "\tinet6 fe80::1%%en0 prefixlen 64 secured scopeid 0xb\n\tinet6 2601:db8::5ec prefixlen 64 autoconf temporary\n\tinet6 2601:db8::abc prefixlen 64 autoconf secured\n"'
 
 export MAC_WATCHDOG_PATH="$tmp/bin:/usr/bin:/bin"
 export MAC_WATCHDOG_STATE_DIR="$tmp/state" MAC_WATCHDOG_CONF_DIR="$tmp/conf"
@@ -77,6 +93,8 @@ fresh() {
     rm -rf "$tmp/state" "$tmp/conf" "$tmp/kicked" "$tmp/checkins" "$FAKE_LOG"
     mkdir -p "$tmp/conf"
     echo "https://hc.example/abc" > "$tmp/conf/healthcheck-url"
+    echo "pass" > "$tmp/conf/pf.conf"
+    export FAKE_PF_MAIN=1 FAKE_PF_LOADED=1 FAKE_PF_ENABLED=1 FAKE_PF_LOAD_FAILS=0
     export FAKE_POWER="AC Power" FAKE_BATT=80 FAKE_ONLINE=1 FAKE_TS=1 FAKE_TS_RECOVERS=0 FAKE_DISK=40
     export FAKE_BOOT=$((now - 7200))
     touch "$FAKE_LOG"
@@ -91,9 +109,34 @@ state() { cat "$tmp/state/$1" 2>/dev/null; }
 fresh; run
 check "a healthy run checks in to the plain URL" "$(checkin_url)" "https://hc.example/abc"
 check "the status line names host, uptime, power, battery, disk and tailscale" \
-    "$(checkin_data)" "host=us-east-3 uptime=2h power=AC Power battery=80% disk=40% tailscale=100.64.0.7"
+    "$(checkin_data)" "host=us-east-3 uptime=2h power=AC Power battery=80% disk=40% tailscale=100.64.0.7 ipv6=2601:db8::abc"
+check "the status line is kept for mac_setup.sh" "$(state last_report)" "$(checkin_data)"
 check "a healthy run does not shut down" "$(calls shutdown)" "0"
 check "a healthy run does not touch launchctl" "$(calls launchctl)" "0"
+
+# ---- firewall -----------------------------------------------------------------
+fresh; run
+check "a loaded anchor is left alone" "$(calls 'pfctl -q -a com.apple/250.cbase-mac -f')" "0"
+check "a loaded main ruleset is left alone" "$(calls 'pfctl -q -f /etc/pf.conf')" "0"
+check "an enabled pf is left alone" "$(calls 'pfctl -q -e')" "0"
+check "the abuse table is expired" "$(calls 'pfctl -q -a com.apple/250.cbase-mac -t cbase_ssh_abuse -T expire 86400')" "1"
+
+fresh; FAKE_PF_LOADED=0; run
+check "an empty anchor is loaded" "$(calls "pfctl -q -a com.apple/250.cbase-mac -f $tmp/conf/pf.conf")" "1"
+check "a loaded anchor checks in to the plain URL" "$(checkin_url)" "https://hc.example/abc"
+
+fresh; FAKE_PF_LOADED=0 FAKE_PF_MAIN=0; run
+check "a missing main ruleset is loaded from macOS's" "$(calls 'pfctl -q -f /etc/pf.conf')" "1"
+
+fresh; FAKE_PF_ENABLED=0; run
+check "a disabled pf is enabled" "$(calls 'pfctl -q -e')" "1"
+
+fresh; FAKE_PF_LOADED=0 FAKE_PF_LOAD_FAILS=1; run
+check "rules that do not load check in to /fail" "$(checkin_url)" "https://hc.example/abc/fail"
+check "the /fail line names pf" "$(checkin_data | grep -c 'pf rules did not load')" "1"
+
+fresh; rm "$tmp/conf/pf.conf"; run
+check "with no rules file pf is not touched" "$(calls pfctl)" "0"
 
 # ---- power --------------------------------------------------------------------
 fresh; FAKE_POWER="Battery Power" FAKE_BATT=50; run

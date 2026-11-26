@@ -7,10 +7,13 @@
 #   * offline (Apple's captive check and a ping both fail): count the run; from WIFI_CYCLE_AFTER runs on,
 #     turn Wi-Fi off and on; from REBOOT_AFTER runs on, still offline, reboot, at most once per
 #     MIN_SECONDS_BETWEEN_REBOOTS and never in the first hour of uptime, so a long ISP outage is not a loop;
+#   * pf enabled and the anchor $PF_ANCHOR loaded from $CONF_DIR/pf.conf (mac_pf.conf), reloaded when
+#     something else (Internet Sharing, an update) flushed it, and its SSH abuse table's day-old entries expired;
 #   * online: Tailscale that does not answer is restarted (launchctl kickstart);
 #   * then a check-in to the dead-man's switch: a POST of one status line to the URL in
 #     $CONF_DIR/healthcheck-url, or to that URL + "/fail" with the issues (on battery, disk full,
-#     Tailscale down). The switch alerts when check-ins stop or fail.
+#     Tailscale down, pf rules that do not load). The switch alerts when check-ins stop or fail. The line
+#     carries the Mac's stable IPv6 address, so the switch's dashboard shows where to SSH when Tailscale is down.
 #
 # The test (test/mac_watchdog_test.sh) runs it against stub commands through MAC_WATCHDOG_PATH and a
 # scratch MAC_WATCHDOG_STATE_DIR and MAC_WATCHDOG_CONF_DIR.
@@ -20,6 +23,9 @@ STATE_DIR="${MAC_WATCHDOG_STATE_DIR:-/var/db/cbase-mac}"
 CONF_DIR="${MAC_WATCHDOG_CONF_DIR:-/etc/cbase-mac}"
 HC_URL_FILE="$CONF_DIR/healthcheck-url"
 TAILSCALE_JOB=system/homebrew.mxcl.tailscale
+PF_ANCHOR=com.apple/250.cbase-mac
+PF_RULES="$CONF_DIR/pf.conf"
+PF_ABUSE_EXPIRE_S=86400
 
 WIFI_CYCLE_AFTER=2
 REBOOT_AFTER=6
@@ -50,6 +56,15 @@ is_online() {
     ping -c 2 -t 5 1.1.1.1 > /dev/null 2>&1
 }
 
+# The stable global IPv6 address on the default route's interface: macOS marks it "secured" (RFC 7217);
+# the rotating privacy addresses are "temporary" and never "secured".
+ipv6_address() {
+    local dev
+    dev=$(route -n get -inet6 default 2>/dev/null | awk '/interface:/ { print $2 }')
+    [ -n "$dev" ] || return 0
+    ifconfig "$dev" | awk '$1 == "inet6" && /secured/ && $2 !~ /^(fe80|fd)/ { print $2; exit }'
+}
+
 uptime_seconds() {
     local boot
     # "{ sec = 1764100000, usec = 123 } ...": the first number (a greedy ".*sec =" would match usec).
@@ -73,6 +88,19 @@ if [ "$power_source" != "AC Power" ]; then
         shutdown -h now "mac_watchdog: battery at ${battery_pct}%"
         exit 0
     fi
+fi
+
+# ---- firewall (before the network: it holds while offline too) ----------------
+
+if [ -s "$PF_RULES" ]; then
+    # The main ruleset holds the anchor "com.apple/*" that ours hangs under; with none loaded, load macOS's.
+    pfctl -s Anchors 2>/dev/null | grep -q 'com.apple' || pfctl -q -f /etc/pf.conf
+    if ! pfctl -a "$PF_ANCHOR" -s rules 2>/dev/null | grep -q .; then
+        log "loading pf anchor $PF_ANCHOR"
+        pfctl -q -a "$PF_ANCHOR" -f "$PF_RULES" || add_issue "pf rules did not load"
+    fi
+    pfctl -s info 2>/dev/null | grep -q 'Status: Enabled' || pfctl -q -e
+    pfctl -q -a "$PF_ANCHOR" -t cbase_ssh_abuse -T expire "$PF_ABUSE_EXPIRE_S"
 fi
 
 # ---- network ------------------------------------------------------------------
@@ -131,8 +159,9 @@ fi
 
 # ---- check-in -----------------------------------------------------------------
 
-report="host=$(scutil --get LocalHostName) uptime=$(( $(uptime_seconds) / 3600 ))h power=$power_source battery=${battery_pct}% disk=${disk_pct}% tailscale=${tailscale_ip:-none}"
+report="host=$(scutil --get LocalHostName) uptime=$(( $(uptime_seconds) / 3600 ))h power=$power_source battery=${battery_pct}% disk=${disk_pct}% tailscale=${tailscale_ip:-none} ipv6=$(ipv6_address)"
 
+write_state last_report "$report"
 if [ -s "$HC_URL_FILE" ]; then
     hc_url=$(cat "$HC_URL_FILE")
     if [ -n "$issues" ]; then

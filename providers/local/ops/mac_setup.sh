@@ -60,6 +60,11 @@ install -d -m 755 /usr/local/libexec/cbase-mac "$CONF_DIR"
 install -m 755 "$HERE/mac_watchdog.sh" /usr/local/libexec/cbase-mac/mac_watchdog.sh
 install -m 644 -o root -g wheel "$HERE/mac_watchdog.plist" /Library/LaunchDaemons/$LABEL.plist
 install -m 644 "$HERE/mac_newsyslog.conf" /etc/newsyslog.d/cbase-mac.conf
+if pfctl -n -a com.apple/250.cbase-mac -f "$HERE/mac_pf.conf" 2>/dev/null; then
+    install -m 644 "$HERE/mac_pf.conf" "$CONF_DIR/pf.conf"
+else
+    warn "pf rejected mac_pf.conf; the watchdog runs without the SSH rate limit"
+fi
 launchctl bootout system/$LABEL 2>/dev/null
 launchctl bootstrap system /Library/LaunchDaemons/$LABEL.plist
 
@@ -106,6 +111,8 @@ SSHD_CONF=/etc/ssh/sshd_config.d/050-cbase-mac.conf
     echo "# mac_setup.sh. 050- sorts before macOS's 100-macos.conf, and sshd keeps the first value it reads."
     echo "PermitRootLogin no"
     echo "ClientAliveInterval 60"
+    echo "MaxAuthTries 3"
+    echo "LoginGraceTime 20"
     if [ -s "$AK" ]; then
         echo "PasswordAuthentication no"
         echo "KbdInteractiveAuthentication no"
@@ -160,13 +167,18 @@ check "watchdog loaded" "launchctl print system/$LABEL"
 check "tailscale logged in" "$TAILSCALE status"
 check "batt daemon answers" "$BATT status"
 check "SSH listening on 22" "nc -z -G 2 127.0.0.1 22"
+check "SSH password login is off (port 22 may face the internet)" "/usr/sbin/sshd -T | grep -qx 'passwordauthentication no'"
+check "pf on, SSH rate limit loaded" "pfctl -a com.apple/250.cbase-mac -s rules | grep -q 'port = 22'"
 check "Screen Sharing listening on 5900" "nc -z -G 2 127.0.0.1 5900"
 check "check-in URL set" "[ -s $HC ]"
 check "automatic login is on (unlocks the login keychain: claude, gh)" "defaults read /Library/Preferences/com.apple.loginwindow autoLoginUser"
 check "FileVault off or decrypting" "! fdesetup status | grep -qx 'FileVault is On.'"
 echo
 echo "Tailscale IP: $("$TAILSCALE" ip -4 2>/dev/null)"
+echo "The watchdog's last status line (ipv6= is where to SSH when Tailscale is down):"
+echo "  $(cat /var/db/cbase-mac/last_report 2>/dev/null)"
 echo "Watchdog log: /var/log/cbase-mac.log"
 echo "Next, by hand:"
 echo "  - Tailscale admin console: Disable key expiry for $NAME (the login otherwise expires in 180 days)."
 echo "  - System Settings > Users & Groups > Automatically log in as: $SUDO_USER (after FileVault finishes decrypting)."
+echo "  - Once SSH password login shows OK above: xFi app, open TCP 22 (and 8080 for staging) over IPv6 to this Mac."

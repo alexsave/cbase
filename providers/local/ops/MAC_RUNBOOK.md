@@ -10,7 +10,8 @@ The first one is `us-east-3`.
 3. In a Terminal window: `sudo providers/local/ops/mac_setup.sh us-east-3`
 4. In the Tailscale admin console, open the machine and choose Disable key expiry.
 5. System Settings > Users & Groups > Automatically log in as: your account (offered once FileVault has finished decrypting).
-6. Plug in power (and Ethernet, when there is a port for it), leave the lid open, and reboot once to prove it comes back: `sudo reboot`, then `ssh us-east-3` from another tailnet machine.
+6. Once the setup's Verify block shows SSH password login off: in the xFi app, open TCP 22 (and 8080 for staging) over IPv6 to this Mac.
+7. Plug in power (and Ethernet, when there is a port for it), leave the lid open, and reboot once to prove it comes back: `sudo reboot`, then `ssh us-east-3` from another tailnet machine.
 
 ## State (2026-11-26)
 
@@ -33,6 +34,9 @@ Each step answers one way an unattended laptop goes dark.
 | Wi-Fi drops, or the router hangs | the watchdog cycles Wi-Fi after 10 minutes offline and reboots after 30, at most once every 6 hours and never in the first hour of uptime |
 | `tailscaled` dies or wedges | the watchdog kickstarts it |
 | Nobody learns that it is down | the watchdog checks in to healthchecks.io every 5 minutes, which emails when check-ins stop; on battery, with the disk over 90% or with Tailscale down, it checks in to `/fail` instead |
+| Tailscale itself breaks (its login, its account, a wedged tailscaled) | a second, unrelated way in: OpenSSH straight to the Mac's public IPv6 address, keys only, `MaxAuthTries 3`, and pf blocking for a day any source that opens connections faster than 5 a minute |
+| The second way in needs the address, and Comcast can change it | every check-in carries `ipv6=<the stable address>`, so the healthchecks.io dashboard shows the current one |
+| Something else (Internet Sharing, an update) reloads pf and drops our rules | the watchdog owns pf: every run it enables pf, reloads the anchor when it is empty, and expires day-old blocks |
 | A prompt that only the GUI can answer | Screen Sharing, over Tailscale |
 | A reboot locks the login keychain, so Claude Code and gh lose their logins | automatic login (quick start step 5) |
 | A security fix waits for someone to click | security and minor macOS updates install by themselves; with FileVault off, their restart comes back on its own |
@@ -50,6 +54,7 @@ Heavy load heats a closed laptop: leave the lid open.
 
 - `ssh vlad@us-east-3` through Tailscale SSH, with your tailnet login.
 - OpenSSH on port 22 with the keys in `~/.ssh/authorized_keys`; once that file has a key, password login is off (`/etc/ssh/sshd_config.d/050-cbase-mac.conf`).
+- When Tailscale is down: `ssh vlad@<ipv6>`, with the address from the last check-in on the healthchecks.io dashboard. It needs a network with IPv6 (most phones on cellular have it).
 - Screen Sharing: `vnc://us-east-3` from Finder (Go, Connect to Server).
 
 ## Where things are
@@ -58,7 +63,8 @@ Heavy load heats a closed laptop: leave the lid open.
 |---|---|
 | watchdog | `/usr/local/libexec/cbase-mac/mac_watchdog.sh`, run by `/Library/LaunchDaemons/com.cbase.mac-watchdog.plist` |
 | its log | `/var/log/cbase-mac.log`, rotated by `/etc/newsyslog.d/cbase-mac.conf` |
-| its state | `/var/db/cbase-mac/` (`offline_runs`, `last_watchdog_reboot`) |
+| its state | `/var/db/cbase-mac/` (`offline_runs`, `last_watchdog_reboot`, `last_report`: the last status line) |
+| pf rules | `/etc/cbase-mac/pf.conf` (from `mac_pf.conf`) in the anchor `com.apple/250.cbase-mac`: `sudo pfctl -a com.apple/250.cbase-mac -s rules`, blocked sources `sudo pfctl -a com.apple/250.cbase-mac -t cbase_ssh_abuse -T show` |
 | the check-in URL | `/etc/cbase-mac/healthcheck-url` (mode 0600) |
 | Tailscale | `sudo brew services info tailscale`, `tailscale status` |
 | battery limit | `batt status` |
