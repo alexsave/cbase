@@ -41,6 +41,9 @@ pmset -a sleep 0 disksleep 0 standby 0 powernap 0 tcpkeepalive 1 womp 1 ttyskeep
 pmset -a displaysleep 5
 pmset -a autorestart 1 2>/dev/null || warn "this model has no restart-after-power-loss setting; the battery covers outages"
 pmset -a disablesleep 1
+# A Mac that never sleeps never hibernates: no sleep image (it is the size of RAM), and none written again.
+pmset -a hibernatemode 0
+rm -f /private/var/vm/sleepimage
 # On battery (an outage) the CPU runs slower and the battery lasts longer; on AC it runs at full speed.
 pmset -b lowpowermode 1
 pmset -c lowpowermode 0
@@ -186,6 +189,7 @@ check() {
 }
 check "hostname is $NAME" "[ \"\$(scutil --get LocalHostName)\" = \"$NAME\" ]"
 check "sleep is off" "pmset -g | grep -qE '^ sleep +0'"
+check "no hibernation image" "pmset -g | grep -qE '^ hibernatemode +0' && [ ! -e /private/var/vm/sleepimage ]"
 check "lid-close sleep is off" "pmset -g | grep -q 'SleepDisabled.*1'"
 check "watchdog loaded" "launchctl print system/$LABEL"
 check "tailscale logged in" "$TAILSCALE status"

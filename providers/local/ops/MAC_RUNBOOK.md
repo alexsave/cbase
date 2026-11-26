@@ -25,6 +25,7 @@ Each step answers one way an unattended laptop goes dark.
 |---|---|
 | A reboot stops at the FileVault unlock screen, before the network is up | FileVault off (`fdesetup disable`); the disk is then readable by whoever holds the laptop |
 | The Mac sleeps (idle, lid closed, standby, Power Nap) | `pmset -a sleep 0 standby 0 powernap 0 disablesleep 1` |
+| A hibernation image the size of RAM (8 GB here) for a sleep that never comes | `pmset -a hibernatemode 0`, and the image deleted |
 | A kernel freeze | `systemsetup -setrestartfreeze on` |
 | A power cut | the battery carries it; at 8% the watchdog shuts down cleanly, and the Mac boots again when power returns (`nvram auto-boot=true`, no `BootPreference`) |
 | Months at 100% charge swell the battery | `batt limit 80`, a root daemon |
