@@ -13,7 +13,7 @@
 # So a lane that type-checks, tests, builds the web or deploys the functions
 # needs this, not only a lane that builds a module.
 #
-# ONE TOOLCHAIN, AND IT IS PINNED - clang 22 from apt.llvm.org plus binaryen 130
+# ONE TOOLCHAIN, AND IT IS PINNED - clang 23 from apt.llvm.org plus binaryen 130
 # from its GitHub release. It used to be Ubuntu's own clang 18 with apt's
 # binaryen, and raising it is the price of the wasm modules becoming build
 # outputs instead of committed files.
@@ -21,7 +21,8 @@
 # WHY THE PIN MATTERS NOW, when it did not before. While the three .wasm.gz were
 # committed, whatever clang this script installed only ever built the throwaway
 # TEST module, so its version was free. Now a lane builds the bytes a visitor
-# DOWNLOADS, and the version is a kilobyte and a half. Measured on one tree,
+# DOWNLOADS, and the version is a kilobyte and a half. Measured on one tree
+# while the pin was clang 22 (cdom's wasm-ld floor, LLVM 23, raised it since),
 # c/build/bots.wasm and sdk/ts/wasm/bots.wasm.gz:
 #
 #   clang 22.1.8 + binaryen 130   191,485 B raw   the pin
@@ -72,7 +73,7 @@
 #                                   nothing (runs on a Mac too)
 set -euo pipefail
 
-LLVM_VERSION="${LLVM_VERSION:-22}"
+LLVM_VERSION="${LLVM_VERSION:-23}"
 BINARYEN_VERSION="${BINARYEN_VERSION:-130}"
 LLVM="/usr/lib/llvm-$LLVM_VERSION"
 BINARYEN="/opt/binaryen-version_$BINARYEN_VERSION"
