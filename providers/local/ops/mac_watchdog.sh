@@ -12,7 +12,7 @@
 #   * online: Tailscale that does not answer is restarted (launchctl kickstart);
 #   * then a check-in to the dead-man's switch: a POST of one status line to the URL in
 #     $CONF_DIR/healthcheck-url, or to that URL + "/fail" with the issues (on battery, disk full,
-#     Tailscale down, pf rules that do not load). The switch alerts when check-ins stop or fail. The line
+#     Tailscale down, pf rules that do not load, the public name's A record not pointing at the house). The switch alerts when check-ins stop or fail. The line
 #     carries the house's public IPv4 address (the router forwards 22 to the Mac) and the Mac's stable IPv6
 #     address, so the switch's dashboard shows where to SSH when Tailscale is down.
 #
@@ -23,6 +23,8 @@ PATH="${MAC_WATCHDOG_PATH:-/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin}"
 STATE_DIR="${MAC_WATCHDOG_STATE_DIR:-/var/db/cbase-mac}"
 CONF_DIR="${MAC_WATCHDOG_CONF_DIR:-/etc/cbase-mac}"
 HC_URL_FILE="$CONF_DIR/healthcheck-url"
+# The public name (mac_setup.sh's second argument), whose A record must follow the house's IPv4 address.
+DOMAIN_FILE="$CONF_DIR/domain"
 # Homebrew's label for `sudo brew services start tailscale` (Homebrew 5; mac_setup.sh's Verify checks it is loaded).
 TAILSCALE_JOB=system/sh.brew.tailscale
 PF_ANCHOR=com.apple/250.cbase-mac
@@ -157,6 +159,18 @@ if ! tailscale status > /dev/null 2>&1; then
 fi
 tailscale_ip=$(tailscale ip -4 2>/dev/null | head -1)
 
+# ---- the public name's A record ----------------------------------------------
+
+ipv4=$(public_ipv4)
+if [ -s "$DOMAIN_FILE" ] && [ -n "$ipv4" ]; then
+    domain=$(cat "$DOMAIN_FILE")
+    # Asked of a public resolver, so the answer is what visitors get. No answer is not an alarm.
+    dns_ipv4=$(dig +short +time=5 +tries=2 A "$domain" @1.1.1.1 2>/dev/null | grep -E '^[0-9]+(\.[0-9]+){3}$' | head -1)
+    if [ -n "$dns_ipv4" ] && [ "$dns_ipv4" != "$ipv4" ]; then
+        add_issue "the A record for $domain is $dns_ipv4 but the house is at $ipv4: point it at $ipv4"
+    fi
+fi
+
 # ---- disk ---------------------------------------------------------------------
 
 disk_pct=$(df -P /System/Volumes/Data | awk 'NR == 2 { gsub("%", "", $5); print $5 }')
@@ -166,7 +180,7 @@ fi
 
 # ---- check-in -----------------------------------------------------------------
 
-report="host=$(scutil --get LocalHostName) uptime=$(( $(uptime_seconds) / 3600 ))h power=$power_source battery=${battery_pct}% disk=${disk_pct}% tailscale=${tailscale_ip:-none} ipv4=$(public_ipv4) ipv6=$(ipv6_address)"
+report="host=$(scutil --get LocalHostName) uptime=$(( $(uptime_seconds) / 3600 ))h power=$power_source battery=${battery_pct}% disk=${disk_pct}% tailscale=${tailscale_ip:-none} ipv4=$ipv4 ipv6=$(ipv6_address)"
 
 if [ -n "$issues" ]; then
     report="$report issues: $issues"

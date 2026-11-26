@@ -24,7 +24,8 @@
 # "the abuse table is expired"; /secured/ dropped from ipv6_address -> "the status line names ..."; the last_report write deleted ->
 # "the status line is kept for mac_setup.sh"; last_report written before the issues are added -> "the kept
 # status line carries the issues"; the address check dropped from public_ipv4 -> "an answer that is not an
-# address is left out".
+# address is left out"; the "!=" made "=" -> "a record that points elsewhere checks in to /fail"; the
+# [ -n "$dns_ipv4" ] guard dropped -> "no answer from DNS is not an alarm".
 # The stub bodies are written to files and expand when the stub runs, so they are single-quoted.
 # shellcheck disable=SC2016
 set -u
@@ -84,6 +85,7 @@ case "$*" in
     *"-f "*/pf.conf) [ "$FAKE_PF_LOAD_FAILS" = 1 ] && exit 1 ;;
 esac
 exit 0'
+stub dig 'echo "dig $*" >> "$FAKE_LOG"; [ -n "$FAKE_DNS" ] && echo "$FAKE_DNS"; exit 0'
 stub route 'printf "   route to: default\ninterface: en0\n"'
 stub ifconfig 'printf "\tinet6 fe80::1%%en0 prefixlen 64 secured scopeid 0xb\n\tinet6 2601:db8::5ec prefixlen 64 autoconf temporary\n\tinet6 2601:db8::abc prefixlen 64 autoconf secured\n"'
 
@@ -97,7 +99,7 @@ fresh() {
     mkdir -p "$tmp/conf"
     echo "https://hc.example/abc" > "$tmp/conf/healthcheck-url"
     echo "pass" > "$tmp/conf/pf.conf"
-    export FAKE_IPV4=203.0.113.7
+    export FAKE_IPV4=203.0.113.7 FAKE_DNS=203.0.113.7
     export FAKE_PF_MAIN=1 FAKE_PF_LOADED=1 FAKE_PF_ENABLED=1 FAKE_PF_LOAD_FAILS=0
     export FAKE_POWER="AC Power" FAKE_BATT=80 FAKE_ONLINE=1 FAKE_TS=1 FAKE_TS_RECOVERS=0 FAKE_DISK=40
     export FAKE_BOOT=$((now - 7200))
@@ -120,6 +122,25 @@ check "a healthy run does not touch launchctl" "$(calls launchctl)" "0"
 
 fresh; FAKE_IPV4="<html>captive portal</html>"; run
 check "an answer that is not an address is left out" "$(checkin_data | grep -o 'ipv4=[^ ]*')" "ipv4="
+
+# ---- the public name's A record ----------------------------------------------
+fresh; echo "home.example.com" > "$tmp/conf/domain"; run
+check "a record that matches checks in to the plain URL" "$(checkin_url)" "https://hc.example/abc"
+check "the record is asked of a public resolver" "$(calls 'dig +short +time=5 +tries=2 A home.example.com @1.1.1.1')" "1"
+
+fresh; echo "home.example.com" > "$tmp/conf/domain"; FAKE_DNS=198.51.100.9; run
+check "a record that points elsewhere checks in to /fail" "$(checkin_url)" "https://hc.example/abc/fail"
+check "the /fail line says what to point it at" \
+    "$(checkin_data | grep -c 'the A record for home.example.com is 198.51.100.9 but the house is at 203.0.113.7: point it at 203.0.113.7')" "1"
+
+fresh; echo "home.example.com" > "$tmp/conf/domain"; FAKE_DNS=""; run
+check "no answer from DNS is not an alarm" "$(checkin_url)" "https://hc.example/abc"
+
+fresh; echo "home.example.com" > "$tmp/conf/domain"; FAKE_DNS=198.51.100.9 FAKE_IPV4=""; run
+check "no house address is not an alarm" "$(checkin_url)" "https://hc.example/abc"
+
+fresh; FAKE_DNS=198.51.100.9; run
+check "with no public name DNS is not asked" "$(calls dig)" "0"
 
 # ---- firewall -----------------------------------------------------------------
 fresh; run

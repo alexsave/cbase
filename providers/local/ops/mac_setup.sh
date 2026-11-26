@@ -184,6 +184,7 @@
     step "Caddy on 80 and 443 (HTTPS for ${DOMAIN:-no public name}, its certificates by itself)"
     if [ -n "$DOMAIN" ] && [ -x /opt/homebrew/bin/caddy ]; then
         install -m 644 "$HERE/mac_Caddyfile" "$CONF_DIR/Caddyfile"
+        echo "$DOMAIN" > "$CONF_DIR/domain"
         sed -e "s|__USER__|$SUDO_USER|g" -e "s|__HOME__|$USER_HOME|g" -e "s|__DOMAIN__|$DOMAIN|g" \
             "$HERE/mac_caddy.plist" > /Library/LaunchDaemons/com.cbase.mac-caddy.plist
         chown root:wheel /Library/LaunchDaemons/com.cbase.mac-caddy.plist
