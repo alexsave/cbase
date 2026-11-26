@@ -39,12 +39,18 @@ Each step answers one way an unattended laptop goes dark.
 | Something else (Internet Sharing, an update) reloads pf and drops our rules | the watchdog owns pf: every run it enables pf, reloads the anchor when it is empty, and expires day-old blocks |
 | A prompt that only the GUI can answer | Screen Sharing, over Tailscale |
 | A reboot locks the login keychain, so Claude Code and gh lose their logins | automatic login (quick start step 5) |
+| An outage drains the battery | Low Power Mode on battery only (`pmset -b lowpowermode 1`); plugged in it runs at full speed |
 | A security fix waits for someone to click | security and minor macOS updates install by themselves; with FileVault off, their restart comes back on its own |
 
 Every service is a LaunchDaemon, so the server works at the login window with nobody logged in.
 Automatic login is what keeps the login keychain unlocked after a reboot, and with it every tool that keeps its login there (Claude Code, gh).
 
 ## Remote work
+
+Claude Code's Remote Control server starts at login (`com.cbase.mac-claude`, a LaunchAgent made from `mac_claude.plist`), in `~/Dev`, named after the host: open the Claude app or claude.ai/code and pick it to start a session there.
+It runs in auto permission mode; whatever needs approval asks in the app.
+Its log is `~/Library/Logs/cbase-mac-claude.log`, and `launchctl kickstart -k gui/$(id -u)/com.cbase.mac-claude` restarts it.
+The first time, trust `~/Dev` once: `cd ~/Dev && claude`, accept, and exit.
 
 Long jobs (a Claude Code session, a build) run inside tmux, so a dropped connection leaves them running: `ssh us-east-3`, then `tmux new -A -s work`.
 Claude Code's login is in the login keychain, so it works over SSH once automatic login has unlocked it at boot.

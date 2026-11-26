@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+    Claude Code's Remote Control server on the Mac server (MAC_RUNBOOK.md), a LaunchAgent: it starts when
+    automatic login opens the user's session (which unlocks the keychain that holds Claude Code's login) and
+    restarts when it exits. mac_setup.sh fills in __HOME__ and installs it in ~/Library/LaunchAgents.
+    script(1) gives it the terminal it expects; its output goes to the log.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.cbase.mac-claude</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/script</string>
+        <string>-q</string>
+        <string>/dev/null</string>
+        <string>__HOME__/.local/bin/claude</string>
+        <string>remote-control</string>
+        <string>--name</string>
+        <string>__NAME__</string>
+        <string>--permission-mode</string>
+        <string>auto</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>__HOME__/Dev</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>__HOME__/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+    <key>StandardOutPath</key>
+    <string>__HOME__/Library/Logs/cbase-mac-claude.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/Library/Logs/cbase-mac-claude.log</string>
+</dict>
+</plist>

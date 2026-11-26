@@ -41,6 +41,9 @@ pmset -a sleep 0 disksleep 0 standby 0 powernap 0 tcpkeepalive 1 womp 1 ttyskeep
 pmset -a displaysleep 5
 pmset -a autorestart 1 2>/dev/null || warn "this model has no restart-after-power-loss setting; the battery covers outages"
 pmset -a disablesleep 1
+# On battery (an outage) the CPU runs slower and the battery lasts longer; on AC it runs at full speed.
+pmset -b lowpowermode 1
+pmset -c lowpowermode 0
 systemsetup -setrestartfreeze on > /dev/null 2>&1 || warn "could not turn on restart after a freeze"
 # Apple silicon laptops boot when power is connected unless BootPreference says otherwise.
 nvram -d BootPreference 2>/dev/null
@@ -134,6 +137,24 @@ step "Screen Sharing (for the rare prompt that only the GUI can answer)"
 launchctl enable system/com.apple.screensharing
 launchctl bootstrap system /System/Library/LaunchDaemons/com.apple.screensharing.plist 2>/dev/null
 
+step "Claude Code Remote Control (a LaunchAgent: up when automatic login opens the session)"
+CLAUDE_AGENT="$USER_HOME/Library/LaunchAgents/com.cbase.mac-claude.plist"
+if [ -x "$USER_HOME/.local/bin/claude" ]; then
+    install -d -m 755 -o "$SUDO_USER" -g staff "$USER_HOME/Library/LaunchAgents" "$USER_HOME/Library/Logs" "$USER_HOME/Dev"
+    sed -e "s|__HOME__|$USER_HOME|g" -e "s|__NAME__|$NAME|g" "$HERE/mac_claude.plist" > "$CLAUDE_AGENT"
+    chown "$SUDO_USER":staff "$CLAUDE_AGENT"
+    chmod 644 "$CLAUDE_AGENT"
+    USER_ID=$(id -u "$SUDO_USER")
+    if launchctl print "gui/$USER_ID" > /dev/null 2>&1; then
+        launchctl bootout "gui/$USER_ID/com.cbase.mac-claude" 2>/dev/null
+        launchctl bootstrap "gui/$USER_ID" "$CLAUDE_AGENT"
+    else
+        echo "no one is logged in; it starts at the next login"
+    fi
+else
+    warn "$USER_HOME/.local/bin/claude is missing; install Claude Code and re-run"
+fi
+
 step "Dead-man's switch: the check-in URL"
 HC="$CONF_DIR/healthcheck-url"
 if [ -s "$HC" ]; then
@@ -174,6 +195,8 @@ check "SSH listening on 22" "nc -z -G 2 127.0.0.1 22"
 check "SSH password login is off (port 22 may face the internet)" "/usr/sbin/sshd -T | grep -qx 'passwordauthentication no'"
 check "pf on, SSH rate limit loaded" "pfctl -a com.apple/250.cbase-mac -s rules | grep -q 'port = 22'"
 check "Screen Sharing listening on 5900" "nc -z -G 2 127.0.0.1 5900"
+check "Low Power Mode on battery only" "pmset -g custom | awk '/Battery Power/ { b = 1 } /AC Power/ { b = 0 } b && /lowpowermode/ { print \$2 }' | grep -qx 1"
+check "Claude Remote Control running" "launchctl print gui/\$(id -u $SUDO_USER)/com.cbase.mac-claude | grep -q 'state = running'"
 check "check-in URL set" "[ -s $HC ]"
 check "automatic login is on (unlocks the login keychain: claude, gh)" "defaults read /Library/Preferences/com.apple.loginwindow autoLoginUser"
 check "FileVault off or decrypting" "! fdesetup status | grep -qx 'FileVault is On.'"
