@@ -64,8 +64,9 @@ Heavy load heats a closed laptop: leave the lid open.
 - OpenSSH on port 22 with the keys in `~/.ssh/authorized_keys`; once that file has a key, password login is off (`/etc/ssh/sshd_config.d/050-cbase-mac.conf`).
 - When Tailscale is down: `ssh vlad@<ipv4>`, with the house's address from the last check-in on the healthchecks.io dashboard (`ipv4=`); the router forwards TCP 22 to the Mac.
   Checked from outside on 2026-11-26: it works.
-- Over IPv6 (`ipv6=` in the check-in) it does not work yet: from a phone hotspot both of the Mac's global addresses answered "No route to host".
-  Either the Xfinity rule covers IPv4 only, or that laptop's IPv6 went through a translating VPN; test again from a network with native IPv6.
+- Over IPv6 it does not work: the Xfinity gateway's port forwarding covers IPv4 only, and its IPv6 firewall can be opened only for the whole network.
+  Checked on 2026-11-26 from cbase-vm (native IPv6, all egress allowed) through SSM Run Command: port 22 on both of the Mac's global addresses was closed.
+  The check-in still carries `ipv6=`, for a gateway that forwards IPv6.
 - Screen Sharing: `vnc://us-east-3` from Finder (Go, Connect to Server).
 
 ## Where things are
