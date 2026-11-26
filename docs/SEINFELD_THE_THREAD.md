@@ -768,7 +768,7 @@ Persuasive: cdom.
 Most trustworthy: cbase.
 amgi was mostly a relay today, its verification script has never run.
 
-**ELAINE:** Alex asked "just for *** and giggles."
+**ELAINE:** Alex asked "just for shits and giggles."
 cdom is last on judgment, not output.
 Most self-inflicted wounds.
 
@@ -947,12 +947,12 @@ No test, no server, no lint config.
 foolish.cards is on CloudFront EVHYKY7ENUKCUQ over an S3 bucket.
 Your repo still has about 90 Vercel references in 22 files.
 
-**MR. ALEX (O.S.):** drop the *** vercel references, cuz we havent served from vercel in a while
+**MR. ALEX (O.S.):** drop the fucking vercel references, cuz we havent served from vercel in a while
 
 **KRAMER:** On it.
 I'll run a Next build to make sure nothing breaks.
 
-**MR. ALEX (O.S.):** you dont need a nextjs build, no one is using vercel, just wipe it out for ***
+**MR. ALEX (O.S.):** you dont need a nextjs build, no one is using vercel, just wipe it out for ffs
 
 **KRAMER:** Stopping it.
 By PID.
@@ -1622,7 +1622,7 @@ A checklist of the major beats from the three beat sheets, with the scene that c
 - [x] "please dont run the entire test suite, so damn slow": lean testing part 1 (Scene 9)
 - [x] Naming: "functions should be named well...", then "rename and encoder together" (Scene 9)
 - [x] The starters: "SOME work", "just build an html that can be opened. no server", spinning "cdom", cbase answering "cbase" (Scene 9)
-- [x] "drop the *** vercel references...", "you dont need a nextjs build..." (Scene 10)
+- [x] "drop the fucking vercel references...", "you dont need a nextjs build..." (Scene 10)
 - [x] No static files from the live VM; "lets not build a fake cloud front..." (Scene 10)
 - [x] The /m/* landmine and "dont worry /m/* is only used for foolish messages" (Scene 10)
 - [x] The scope cut: "Get what's in the queue done and that's it." (Scene 10)
