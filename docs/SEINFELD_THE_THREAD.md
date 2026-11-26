@@ -887,7 +887,7 @@ Not used by React, Vite, Django, Angular, AirPlay, Astro, Jupyter or Storybook.
 
 **GEORGE:** I'm thorough when it doesn't matter.
 
-**MR. ALEX (O.S.):** please dont run the entire test suite, so *** slow
+**MR. ALEX (O.S.):** please dont run the entire test suite, so damn slow
 
 **JERRY:** That's the first lean testing rule.
 Write it down.
@@ -1619,7 +1619,7 @@ A checklist of the major beats from the three beat sheets, with the scene that c
 - [x] The post-mortem, "manager of the week", 19:16 posted as 19:33, six ETA revisions, three new rules (Scene 8)
 - [x] The hello-world timings: 18:26, 11:33, 10:58, 12:03, 11:05 helped; Next.js 6:33 (Scene 9)
 - [x] Alex's naive-good questions; the port 3000 ruling then 8642 (Scene 9)
-- [x] "please dont run the entire test suite, so *** slow": lean testing part 1 (Scene 9)
+- [x] "please dont run the entire test suite, so damn slow": lean testing part 1 (Scene 9)
 - [x] Naming: "functions should be named well...", then "rename and encoder together" (Scene 9)
 - [x] The starters: "SOME work", "just build an html that can be opened. no server", spinning "cdom", cbase answering "cbase" (Scene 9)
 - [x] "drop the *** vercel references...", "you dont need a nextjs build..." (Scene 10)
