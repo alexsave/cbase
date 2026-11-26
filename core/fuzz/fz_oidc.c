@@ -68,6 +68,8 @@ static void setup(void) {
 static void holds(const char *tok, size_t n, const cb_oidc_identity *id) {
     FZ_CHECK(id->sub[0] && nul_in(id->sub, sizeof id->sub) && nul_in(id->email, sizeof id->email));
     FZ_CHECK(strcmp(id->client_id, CLIENT) == 0 || strcmp(id->client_id, "com.example.web") == 0);
+    // The bound first (core_json.h), which is what makes the change to milliseconds fit.
+    FZ_CHECK(id->exp >= 0 && id->exp <= CB_OIDC_TIME_MAX);
     FZ_CHECK(id->exp * 1000 + CB_OIDC_SKEW_S * 1000 > NOW_MS);
     unsigned char d[32];
     char hex[65];
@@ -94,6 +96,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         if (cb_js_oidc_claims(copy, n, &c)) {
             FZ_CHECK(c.sub[0] && c.n_aud >= 1 && c.n_aud <= CB_OIDC_AUD_MAX);
             FZ_CHECK(nul_in(c.iss, sizeof c.iss) && nul_in(c.nonce, sizeof c.nonce) && nul_in(c.email, sizeof c.email));
+            FZ_CHECK(c.exp >= 0 && c.exp <= CB_OIDC_TIME_MAX && c.iat >= 0 && c.iat <= CB_OIDC_TIME_MAX);
         } else {
             static const cb_oidc_claims zero;
             FZ_CHECK(memcmp(&c, &zero, sizeof c) == 0);

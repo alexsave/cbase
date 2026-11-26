@@ -14,7 +14,8 @@
 //     minute). A key is RSA of 2048 bits or more;
 //   * the signature verifies (RSASSA-PKCS1-v1_5 over SHA-256);
 //   * iss is the issuer exactly, aud names one of the configured clients, exp is after now and iat
-//     not after now, each within CB_OIDC_SKEW_S, and sub is not empty;
+//     not after now, each within CB_OIDC_SKEW_S, and sub is not empty; exp and iat are read as
+//     integers from 0 to CB_OIDC_TIME_MAX (core_json.h), so the sums on them fit;
 //   * nonce is the lowercase hex SHA-256 of the raw nonce the client kept (CB_OIDC_NONCE_MIN to
 //     CB_OIDC_NONCE_MAX bytes), so a token is good for the one sign-in that asked for it.
 // What is not checked here: that the token is used once. The caller claims its key (out->key) in

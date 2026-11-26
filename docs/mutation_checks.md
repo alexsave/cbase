@@ -1827,3 +1827,16 @@ Each turns the queryAdd case red:
 - cbc_wasm.c: the value read from the byte that ends the key -> an `assert.equal` of an encoded path red.
 - cbc_wasm.c: the value bound of the door one byte wider -> the door's `-2 !== -1` red.
 - client.c: cbc_query_add without its `*len > cap` check, the owner of the door's path_len -> the door's `261 !== -1` red.
+
+## OIDC exp and iat bounded where they are read (2026-11-26: core_json.c, unit_oidc, fz_oidc)
+
+`cb_js_oidc_claims` refuses an `exp` or `iat` outside 0 to `CB_OIDC_TIME_MAX` (`oidc_time`), so the skew sums in oidc.c `verify` and the milliseconds in auth.c `oidc_claim` fit.
+Each mutant was one edit, the file restored by rewriting it with its objects deleted, run on Linux (gcc, the asan build: ASan and UBSan, no recovery) as `build/asan/test/unit_oidc` and `build/asan/fuzz/oidc` on each `repro-*` of `core/fuzz/corpus/oidc`.
+- core_json.c: the upper bound dropped (`*out >= 0` alone) -> `claim_times_bounded_where_read` `got == CASES[i].ok` red (five cases), then UBSan `oidc.c:364:32: signed integer overflow: 9223372036854775807 + 59` in `claim_times_bounded_before_the_signature`; replay of `repro-exp-ms-overflow` and `repro-exp-ms-overflow-large` FZ_CHECK `id->exp >= 0 && id->exp <= CB_OIDC_TIME_MAX`, of `repro-exp-skew-overflow` the same UBSan line; a mode 1 input with exp 253402300800 FZ_CHECK `c.exp >= 0 && c.exp <= CB_OIDC_TIME_MAX && c.iat >= 0 && c.iat <= CB_OIDC_TIME_MAX`.
+- the same mutant with the two verifier-level tests left out of the run -> `a_far_exp_signs_in_at_the_bound_only` UBSan `auth.c:627:13: signed integer overflow: 179000000000000661 * 1000`.
+- core_json.c: the lower bound dropped (`*out <= CB_OIDC_TIME_MAX` alone) -> `claim_times_bounded_where_read` `got == CASES[i].ok` red (three cases), then UBSan `oidc.c:364:50: signed integer overflow: -9223372036854775808 - 60`; replay of `repro-iat-skew-overflow` the same UBSan line.
+- core_json.c: the upper bound off by one (`<` for `<=`) -> `claim_times_bounded_where_read` `got == CASES[i].ok`, `claim_times_bounded_before_the_signature` `verify(...) == CB_OK` and `id.exp == CB_OIDC_TIME_MAX`, `a_far_exp_signs_in_at_the_bound_only` `oidc(...) == 200` red.
+- core_json.c: the lower bound off by one (`> 0` for `>= 0`) -> `claim_times_bounded_where_read` `got == CASES[i].ok` and `claim_times_bounded_before_the_signature` `verify(...) == CB_OK` (iat 0) red.
+- core_json.c: `iat` read with `cb_json_get_i64` again -> `claim_times_bounded_where_read` `got == CASES[i].ok` red (three cases), then UBSan `oidc.c:364:50`; replay of `repro-iat-skew-overflow` the same.
+- core_json.c: `exp` read with `cb_json_get_i64` again -> `claim_times_bounded_where_read` `got == CASES[i].ok` red (five cases), then UBSan `oidc.c:364:32`; replay of `repro-exp-ms-overflow` and `repro-exp-ms-overflow-large` FZ_CHECK `id->exp >= 0 && id->exp <= CB_OIDC_TIME_MAX`, of `repro-exp-skew-overflow` UBSan `oidc.c:364:32`; the mode 1 input FZ_CHECK at fz_oidc.c:99.
+- auth.c: `oidc_claim` holds the token until 0 -> `a_far_exp_signs_in_at_the_bound_only` `oidc(...) == 400` and `refused(CBW_WHY_ACCOUNT, CBW_ACCOUNT_E_BAD_IDENTITY)` red, and `new_identity_asks_a_name_then_signs_in` and `link_rules` behind it.
