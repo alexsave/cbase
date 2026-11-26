@@ -13,7 +13,8 @@
 #   * then a check-in to the dead-man's switch: a POST of one status line to the URL in
 #     $CONF_DIR/healthcheck-url, or to that URL + "/fail" with the issues (on battery, disk full,
 #     Tailscale down, pf rules that do not load). The switch alerts when check-ins stop or fail. The line
-#     carries the Mac's stable IPv6 address, so the switch's dashboard shows where to SSH when Tailscale is down.
+#     carries the house's public IPv4 address (the router forwards 22 to the Mac) and the Mac's stable IPv6
+#     address, so the switch's dashboard shows where to SSH when Tailscale is down.
 #
 # The test (test/mac_watchdog_test.sh) runs it against stub commands through MAC_WATCHDOG_PATH and a
 # scratch MAC_WATCHDOG_STATE_DIR and MAC_WATCHDOG_CONF_DIR.
@@ -55,6 +56,11 @@ wifi_device() {
 is_online() {
     curl -s -m 10 http://captive.apple.com/hotspot-detect.html | grep -q Success && return 0
     ping -c 2 -t 5 1.1.1.1 > /dev/null 2>&1
+}
+
+# The house's public IPv4 address, as AWS sees it (the Mac itself only has the router's private one).
+public_ipv4() {
+    curl -4 -s -m 10 https://checkip.amazonaws.com | grep -E '^[0-9]+(\.[0-9]+){3}$'
 }
 
 # The stable global IPv6 address on the default route's interface: macOS marks it "secured" (RFC 7217);
@@ -160,7 +166,7 @@ fi
 
 # ---- check-in -----------------------------------------------------------------
 
-report="host=$(scutil --get LocalHostName) uptime=$(( $(uptime_seconds) / 3600 ))h power=$power_source battery=${battery_pct}% disk=${disk_pct}% tailscale=${tailscale_ip:-none} ipv6=$(ipv6_address)"
+report="host=$(scutil --get LocalHostName) uptime=$(( $(uptime_seconds) / 3600 ))h power=$power_source battery=${battery_pct}% disk=${disk_pct}% tailscale=${tailscale_ip:-none} ipv4=$(public_ipv4) ipv6=$(ipv6_address)"
 
 if [ -n "$issues" ]; then
     report="$report issues: $issues"

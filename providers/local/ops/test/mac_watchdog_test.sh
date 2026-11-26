@@ -23,7 +23,8 @@
 # "an empty anchor is loaded"; the pfctl -e deleted -> "a disabled pf is enabled"; the expire line deleted ->
 # "the abuse table is expired"; /secured/ dropped from ipv6_address -> "the status line names ..."; the last_report write deleted ->
 # "the status line is kept for mac_setup.sh"; last_report written before the issues are added -> "the kept
-# status line carries the issues".
+# status line carries the issues"; the address check dropped from public_ipv4 -> "an answer that is not an
+# address is left out".
 # The stub bodies are written to files and expand when the stub runs, so they are single-quoted.
 # shellcheck disable=SC2016
 set -u
@@ -48,6 +49,7 @@ stub curl '
 echo "curl $*" >> "$FAKE_LOG"
 case "$*" in
     *captive.apple.com*) [ "$FAKE_ONLINE" = 1 ] && echo "<HTML>Success</HTML>"; exit 0 ;;
+    *checkip.amazonaws.com*) echo "$FAKE_IPV4"; exit 0 ;;
 esac
 url=""; data=""; prev=""
 for a in "$@"; do
@@ -95,6 +97,7 @@ fresh() {
     mkdir -p "$tmp/conf"
     echo "https://hc.example/abc" > "$tmp/conf/healthcheck-url"
     echo "pass" > "$tmp/conf/pf.conf"
+    export FAKE_IPV4=203.0.113.7
     export FAKE_PF_MAIN=1 FAKE_PF_LOADED=1 FAKE_PF_ENABLED=1 FAKE_PF_LOAD_FAILS=0
     export FAKE_POWER="AC Power" FAKE_BATT=80 FAKE_ONLINE=1 FAKE_TS=1 FAKE_TS_RECOVERS=0 FAKE_DISK=40
     export FAKE_BOOT=$((now - 7200))
@@ -110,10 +113,13 @@ state() { cat "$tmp/state/$1" 2>/dev/null; }
 fresh; run
 check "a healthy run checks in to the plain URL" "$(checkin_url)" "https://hc.example/abc"
 check "the status line names host, uptime, power, battery, disk and tailscale" \
-    "$(checkin_data)" "host=us-east-3 uptime=2h power=AC Power battery=80% disk=40% tailscale=100.64.0.7 ipv6=2601:db8::abc"
+    "$(checkin_data)" "host=us-east-3 uptime=2h power=AC Power battery=80% disk=40% tailscale=100.64.0.7 ipv4=203.0.113.7 ipv6=2601:db8::abc"
 check "the status line is kept for mac_setup.sh" "$(state last_report)" "$(checkin_data)"
 check "a healthy run does not shut down" "$(calls shutdown)" "0"
 check "a healthy run does not touch launchctl" "$(calls launchctl)" "0"
+
+fresh; FAKE_IPV4="<html>captive portal</html>"; run
+check "an answer that is not an address is left out" "$(checkin_data | grep -o 'ipv4=[^ ]*')" "ipv4="
 
 # ---- firewall -----------------------------------------------------------------
 fresh; run
