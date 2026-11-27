@@ -15,7 +15,8 @@
 #   * online: Tailscale that does not answer is restarted (launchctl kickstart);
 #   * then a check-in to the dead-man's switch: a POST of one status line to the URL in
 #     $CONF_DIR/healthcheck-url, or to that URL + "/fail" with the issues (on battery, disk full,
-#     Tailscale down, pf rules that do not load, the public name's A record not pointing at the house). The switch alerts when check-ins stop or fail. The line
+#     Tailscale down, pf rules that do not load, the public name's A record not pointing at the house, the public
+#     name not answering through the router, Wi-Fi on an address other than its hardware one). The switch alerts when check-ins stop or fail. The line
 #     carries the house's public IPv4 address (the router forwards 22 to the Mac) and the Mac's stable IPv6
 #     address, so the switch's dashboard shows where to SSH when Tailscale is down.
 #
@@ -186,6 +187,29 @@ if [ -s "$DOMAIN_FILE" ] && [ -n "$ipv4" ]; then
     dns_ipv4=$(dig +short +time=5 +tries=2 A "$domain" @1.1.1.1 2>/dev/null | grep -E '^[0-9]+(\.[0-9]+){3}$' | head -1)
     if [ -n "$dns_ipv4" ] && [ "$dns_ipv4" != "$ipv4" ]; then
         add_issue "the A record for $domain is $dns_ipv4 but the house is at $ipv4: point it at $ipv4"
+    fi
+fi
+
+# ---- the front door, through the router -----------------------------------------
+# The whole path a visitor takes: the house's address, the router's port forward, the Mac's firewall, Caddy.
+
+if [ -s "$DOMAIN_FILE" ] && [ -n "$ipv4" ]; then
+    domain=$(cat "$DOMAIN_FILE")
+    if ! curl -fsS -m 10 -o /dev/null --resolve "$domain:443:$ipv4" "https://$domain/" 2>/dev/null; then
+        add_issue "https://$domain does not answer through the router ($ipv4:443)"
+    fi
+fi
+
+# ---- the Wi-Fi address ----------------------------------------------------------
+# The router reserves the Mac's LAN address and points its port forwards at it by hardware address; a private
+# (randomized) Wi-Fi address makes the Mac a stranger to it. macOS 27's upgrade turned one on here.
+
+wdev=$(wifi_device)
+if [ -n "$wdev" ]; then
+    hw_mac=$(networksetup -getmacaddress "$wdev" | awk '{ print $3 }')
+    cur_mac=$(ifconfig "$wdev" | awk '$1 == "ether" { print $2 }')
+    if [ -n "$hw_mac" ] && [ -n "$cur_mac" ] && [ "$hw_mac" != "$cur_mac" ]; then
+        add_issue "Wi-Fi uses $cur_mac, not its hardware address $hw_mac: the router's port forwards miss it (System Settings > Wi-Fi > Details > Private Wi-Fi address: Off, OK, then Wi-Fi off and on)"
     fi
 fi
 

@@ -161,6 +161,21 @@
     fi
     rm -f "$SUDOERS_NEW"
 
+    step "macOS firewall: on, Apple's own services allowed, anything else only by name"
+    # pf limits ports; this limits programs: a server a session starts on every interface stays off the home
+    # network unless it is named here. Caddy and tailscaled are named; the watchdog renames them after a
+    # brew upgrade moves their binaries.
+    FW=/usr/libexec/ApplicationFirewall/socketfilterfw
+    "$FW" --setglobalstate on > /dev/null
+    "$FW" --setallowsigned on > /dev/null
+    "$FW" --setallowsignedapp off > /dev/null
+    "$FW" --setstealthmode on > /dev/null
+    for b in /opt/homebrew/bin/caddy /opt/homebrew/opt/tailscale/bin/tailscaled; do
+        [ -e "$b" ] || continue
+        "$FW" --add "$(realpath "$b")" > /dev/null
+        "$FW" --unblockapp "$(realpath "$b")" > /dev/null
+    done
+
     step "Screen Sharing (for the rare prompt that only the GUI can answer)"
     launchctl enable system/com.apple.screensharing
     launchctl bootstrap system /System/Library/LaunchDaemons/com.apple.screensharing.plist 2>/dev/null
@@ -249,6 +264,8 @@
     check "SSH password login is off (port 22 may face the internet)" "/usr/sbin/sshd -T | grep -qx 'passwordauthentication no'"
     check "pf on, SSH rate limit loaded" "pfctl -a com.apple/250.cbase-mac -s rules | grep -q 'port = 22'"
     check "passwordless sudo for routine fixes" "sudo -n -l -U $SUDO_USER | grep -q 'NOPASSWD: /sbin/shutdown -r now'"
+    check "macOS firewall on" "/usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate | grep -q enabled"
+    check "the firewall lets Caddy in" "/usr/libexec/ApplicationFirewall/socketfilterfw --getappblocked \$(realpath /opt/homebrew/bin/caddy) | grep -q permitted"
     check "Screen Sharing listening on 5900" "nc -z -G 2 127.0.0.1 5900"
     check "Low Power Mode on battery only" "pmset -g custom | awk '/Battery Power/ { b = 1 } /AC Power/ { b = 0 } b && /lowpowermode/ { print \$2 }' | grep -qx 1"
     check "Claude Remote Control loaded (just restarted, it can show spawn scheduled for 30 s)" "launchctl print gui/\$(id -u $SUDO_USER)/com.cbase.mac-claude | grep -qE 'state = (running|spawn scheduled)'"

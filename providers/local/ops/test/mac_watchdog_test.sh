@@ -26,7 +26,9 @@
 # status line carries the issues"; the address check dropped from public_ipv4 -> "an answer that is not an
 # address is left out"; the "!=" made "=" -> "a record that points elsewhere checks in to /fail"; the
 # [ -n "$dns_ipv4" ] guard dropped -> "no answer from DNS is not an alarm"; tail -c made head -c -> "the cut
-# keeps the end"; the size test made -ge 0 -> "a log under the cap is left alone".
+# keeps the end"; the size test made -ge 0 -> "a log under the cap is left alone"; the front door's "!" dropped ->
+# "a front door that does not answer checks in to /fail"; the address comparison made "=" -> "a private Wi-Fi
+# address checks in to /fail".
 # The stub bodies are written to files and expand when the stub runs, so they are single-quoted.
 # shellcheck disable=SC2016
 set -u
@@ -52,6 +54,7 @@ echo "curl $*" >> "$FAKE_LOG"
 case "$*" in
     *captive.apple.com*) [ "$FAKE_ONLINE" = 1 ] && echo "<HTML>Success</HTML>"; exit 0 ;;
     *checkip.amazonaws.com*) echo "$FAKE_IPV4"; exit 0 ;;
+    *--resolve*) [ "$FAKE_FRONT" = 1 ]; exit $? ;;
 esac
 url=""; data=""; prev=""
 for a in "$@"; do
@@ -64,6 +67,7 @@ stub ping 'echo "ping $*" >> "$FAKE_LOG"; [ "$FAKE_ONLINE" = 1 ]'
 stub networksetup '
 echo "networksetup $*" >> "$FAKE_LOG"
 [ "$1" = -listallhardwareports ] && printf "Hardware Port: Ethernet\nDevice: en3\n\nHardware Port: Wi-Fi\nDevice: en0\n"
+[ "$1" = -getmacaddress ] && echo "Ethernet Address: 74:8f:3c:c0:cc:af (Device: en0)"
 exit 0'
 stub tailscale '
 if [ "$FAKE_TS" = 1 ] || { [ -f "$FAKE_DIR/kicked" ] && [ "$FAKE_TS_RECOVERS" = 1 ]; }; then
@@ -88,7 +92,7 @@ esac
 exit 0'
 stub dig 'echo "dig $*" >> "$FAKE_LOG"; [ -n "$FAKE_DNS" ] && echo "$FAKE_DNS"; exit 0'
 stub route 'printf "   route to: default\ninterface: en0\n"'
-stub ifconfig 'printf "\tinet6 fe80::1%%en0 prefixlen 64 secured scopeid 0xb\n\tinet6 2601:db8::5ec prefixlen 64 autoconf temporary\n\tinet6 2601:db8::abc prefixlen 64 autoconf secured\n"'
+stub ifconfig 'printf "\tether $FAKE_MAC\n\tinet6 fe80::1%%en0 prefixlen 64 secured scopeid 0xb\n\tinet6 2601:db8::5ec prefixlen 64 autoconf temporary\n\tinet6 2601:db8::abc prefixlen 64 autoconf secured\n"'
 
 export MAC_WATCHDOG_PATH="$tmp/bin:/usr/bin:/bin"
 export MAC_WATCHDOG_STATE_DIR="$tmp/state" MAC_WATCHDOG_CONF_DIR="$tmp/conf"
@@ -100,7 +104,7 @@ fresh() {
     mkdir -p "$tmp/conf"
     echo "https://hc.example/abc" > "$tmp/conf/healthcheck-url"
     echo "pass" > "$tmp/conf/pf.conf"
-    export FAKE_IPV4=203.0.113.7 FAKE_DNS=203.0.113.7
+    export FAKE_IPV4=203.0.113.7 FAKE_DNS=203.0.113.7 FAKE_FRONT=1 FAKE_MAC=74:8f:3c:c0:cc:af
     export FAKE_PF_MAIN=1 FAKE_PF_LOADED=1 FAKE_PF_ENABLED=1 FAKE_PF_LOAD_FAILS=0
     export FAKE_POWER="AC Power" FAKE_BATT=80 FAKE_ONLINE=1 FAKE_TS=1 FAKE_TS_RECOVERS=0 FAKE_DISK=40
     export FAKE_BOOT=$((now - 7200))
@@ -109,7 +113,7 @@ fresh() {
 run() { bash "$watchdog" > "$tmp/out" 2>&1; }
 checkin_url() { cut -d'|' -f1 "$tmp/checkins" 2>/dev/null; }
 checkin_data() { cut -d'|' -f2 "$tmp/checkins" 2>/dev/null; }
-calls() { grep -c "$1" "$FAKE_LOG"; }
+calls() { grep -c -e "$1" "$FAKE_LOG"; }
 state() { cat "$tmp/state/$1" 2>/dev/null; }
 
 # ---- healthy ------------------------------------------------------------------
@@ -142,6 +146,23 @@ check "no house address is not an alarm" "$(checkin_url)" "https://hc.example/ab
 
 fresh; FAKE_DNS=198.51.100.9; run
 check "with no public name DNS is not asked" "$(calls dig)" "0"
+
+# ---- the front door -----------------------------------------------------------
+fresh; echo "home.example.com" > "$tmp/conf/domain"; run
+check "the front door is asked through the house's address" "$(calls 'curl -fsS -m 10 -o /dev/null --resolve home.example.com:443:203.0.113.7 https://home.example.com/')" "1"
+check "a front door that answers checks in to the plain URL" "$(checkin_url)" "https://hc.example/abc"
+
+fresh; echo "home.example.com" > "$tmp/conf/domain"; FAKE_FRONT=0; run
+check "a front door that does not answer checks in to /fail" "$(checkin_url)" "https://hc.example/abc/fail"
+check "the /fail line names the front door" "$(checkin_data | grep -c 'https://home.example.com does not answer through the router (203.0.113.7:443)')" "1"
+
+fresh; FAKE_FRONT=0; run
+check "with no public name the front door is not asked" "$(calls '--resolve')" "0"
+
+# ---- the Wi-Fi address --------------------------------------------------------
+fresh; FAKE_MAC=de:cb:ad:ac:9b:b3; run
+check "a private Wi-Fi address checks in to /fail" "$(checkin_url)" "https://hc.example/abc/fail"
+check "the /fail line names both addresses" "$(checkin_data | grep -c 'Wi-Fi uses de:cb:ad:ac:9b:b3, not its hardware address 74:8f:3c:c0:cc:af')" "1"
 
 # ---- capped logs --------------------------------------------------------------
 fresh
