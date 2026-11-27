@@ -164,6 +164,13 @@
         warn "sshd rejected $SSHD_CONF, removing it"
         rm -f "$SSHD_CONF"
     fi
+    # sshd reports every login, accepted or refused, at the Info level, which macOS keeps only in memory and then
+    # drops, so the record of who knocked was gone. Keep sshd's Info messages on disk, where logd's own size limit
+    # caps them with the rest of the system log. Read them with:
+    #     log show --last 1d --info --predicate 'process BEGINSWITH "sshd"'
+    for p in sshd sshd-session sshd-auth; do
+        log config --process "$p" --mode "level:info,persist:info" || warn "log config refused $p"
+    done
 
     step "Passwordless sudo for routine fixes (mac_sudoers: exact Apple commands only)"
     SUDOERS_NEW=$(mktemp)
@@ -274,6 +281,8 @@
     check "batt daemon answers" "$BATT status"
     check "SSH listening on 22" "nc -z -G 2 127.0.0.1 22"
     check "SSH password login is off (port 22 may face the internet)" "/usr/sbin/sshd -T | grep -qix 'passwordauthentication no'"
+    # A test login would pass before the setting too: log show also reads the recent messages still in memory.
+    check "sshd's login messages are kept on disk" "( for p in sshd sshd-session sshd-auth; do log config --process \$p --status | grep -q PERSIST_INFO || exit 1; done )"
     check "pf on, SSH rate limit loaded" "pfctl -a com.apple/250.cbase-mac -s rules | grep -q 'port = 22'"
     check "passwordless sudo for routine fixes" "sudo -n -l -U $SUDO_USER | grep -q 'NOPASSWD: /sbin/shutdown -r now'"
     check "macOS firewall on" "/usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate | grep -q enabled"
@@ -284,6 +293,7 @@
     if [ -n "$DOMAIN" ]; then
         check "Caddy running" "launchctl print system/com.cbase.mac-caddy | grep -q 'state = running'"
         check "https://$DOMAIN answers (a minute or so after the A record exists)" "curl -fsS -m 20 https://$DOMAIN/"
+        check "web requests are logged (the one just above, at least)" "[ -s $USER_HOME/Library/Logs/cbase-mac-caddy-access.log ]"
     fi
     check "check-in URL set" "[ -s $HC ]"
     check "automatic login is on (unlocks the login keychain: claude, gh)" "defaults read /Library/Preferences/com.apple.loginwindow autoLoginUser"

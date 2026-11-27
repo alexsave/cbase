@@ -67,6 +67,7 @@ Caddy (`com.cbase.mac-caddy`, from `mac_caddy.plist` and `mac_Caddyfile`) listen
 It runs as the user, not root: it faces the internet, and its binary is under `/opt/homebrew`, which the user can change; macOS lets any user listen on 80 and 443.
 It needs the public name's A record to point at the house's IPv4 address and the router to forward TCP 80 and 443 to the Mac.
 Its log is `~/Library/Logs/cbase-mac-caddy.log`; its certificates are in `~/Library/Application Support/Caddy`.
+Every request, to the public name or to the bare address (scanners), goes on one line of `~/Library/Logs/cbase-mac-caddy-access.log`, which Caddy starts afresh past 5 MiB, keeping the last 2 gzipped.
 
 ## Getting in
 
@@ -86,6 +87,8 @@ Its log is `~/Library/Logs/cbase-mac-caddy.log`; its certificates are in `~/Libr
 | watchdog | `/usr/local/libexec/cbase-mac/mac_watchdog.sh`, run by `/Library/LaunchDaemons/com.cbase.mac-watchdog.plist` |
 | its log | `/var/log/cbase-mac.log`, rotated by `/etc/newsyslog.d/cbase-mac.conf` |
 | its state | `/var/db/cbase-mac/` (`offline_runs`, `last_watchdog_reboot`, `last_report`: the last status line) |
+| SSH logins, accepted and refused | the system log, kept on disk by `log config --process sshd-session` (and `sshd`, `sshd-auth`) and capped by its own size limit: `log show --last 1d --info --predicate 'process BEGINSWITH "sshd"' \| grep -E 'Accepted\|Invalid\|Failed\|closed'` |
+| web requests | `~/Library/Logs/cbase-mac-caddy-access.log` |
 | pf rules | `/etc/cbase-mac/pf.conf` (from `mac_pf.conf`) in the anchor `com.apple/250.cbase-mac`: `sudo pfctl -a com.apple/250.cbase-mac -s rules`, blocked sources `sudo pfctl -a com.apple/250.cbase-mac -t cbase_ssh_abuse -T show` |
 | the check-in URL | `/etc/cbase-mac/healthcheck-url` (mode 0600) |
 | Tailscale | `sudo brew services info tailscale`, `tailscale status` |
