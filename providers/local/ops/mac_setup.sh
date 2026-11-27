@@ -28,6 +28,19 @@
     step() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
     warn() { printf '\033[33mWARN: %s\033[0m\n' "$*"; }
 
+    # (Re)load a launchd job: bootout returns before the job has stopped, and a bootstrap sent then fails
+    # ("Input/output error"), which left Caddy unloaded on us-east-3. So wait until it is gone first.
+    # reload_job <domain> <label> <plist>, for example: reload_job system com.cbase.mac-caddy /Library/...
+    reload_job() {
+        local n=0
+        launchctl bootout "$1/$2" 2>/dev/null
+        while launchctl print "$1/$2" > /dev/null 2>&1 && [ $n -lt 30 ]; do
+            sleep 1
+            n=$((n + 1))
+        done
+        launchctl bootstrap "$1" "$3" || warn "launchctl could not load $2"
+    }
+
     if [ "$(id -u)" -ne 0 ] || [ -z "${SUDO_USER:-}" ]; then
         echo "Run with sudo from your own account: sudo $0"
         exit 1
@@ -80,10 +93,11 @@
     else
         warn "pf rejected mac_pf.conf; the watchdog runs without the SSH rate limit"
     fi
-    launchctl bootout system/$LABEL 2>/dev/null
-    launchctl bootstrap system /Library/LaunchDaemons/$LABEL.plist
+    reload_job system "$LABEL" "/Library/LaunchDaemons/$LABEL.plist"
 
     step "Tailscale (a system daemon: up at boot, before anyone logs in)"
+    # Root may not download Homebrew's package index (a new macOS needs a new one), so fetch it as the user.
+    sudo -u "$SUDO_USER" "$BREW" info tailscale batt > /dev/null
     "$BREW" services start tailscale > /dev/null
     n=0
     until [ -S /var/run/tailscaled.socket ] || [ $n -gt 30 ]; do
@@ -194,8 +208,7 @@
         else
             install -m 644 -o "$SUDO_USER" -g staff "$CLAUDE_NEW" "$CLAUDE_AGENT"
             if launchctl print "gui/$USER_ID" > /dev/null 2>&1; then
-                launchctl bootout "gui/$USER_ID/com.cbase.mac-claude" 2>/dev/null
-                launchctl bootstrap "gui/$USER_ID" "$CLAUDE_AGENT"
+                reload_job "gui/$USER_ID" com.cbase.mac-claude "$CLAUDE_AGENT"
             else
                 echo "no one is logged in; it starts at the next login"
             fi
@@ -213,8 +226,7 @@
             "$HERE/mac_caddy.plist" > /Library/LaunchDaemons/com.cbase.mac-caddy.plist
         chown root:wheel /Library/LaunchDaemons/com.cbase.mac-caddy.plist
         chmod 644 /Library/LaunchDaemons/com.cbase.mac-caddy.plist
-        launchctl bootout system/com.cbase.mac-caddy 2>/dev/null
-        launchctl bootstrap system /Library/LaunchDaemons/com.cbase.mac-caddy.plist
+        reload_job system com.cbase.mac-caddy /Library/LaunchDaemons/com.cbase.mac-caddy.plist
     else
         echo "left off: pass the public name as the second argument, and brew install caddy"
     fi
@@ -261,12 +273,12 @@
     check "the watchdog can restart tailscale (its job is loaded)" "launchctl print system/sh.brew.tailscale"
     check "batt daemon answers" "$BATT status"
     check "SSH listening on 22" "nc -z -G 2 127.0.0.1 22"
-    check "SSH password login is off (port 22 may face the internet)" "/usr/sbin/sshd -T | grep -qx 'passwordauthentication no'"
+    check "SSH password login is off (port 22 may face the internet)" "/usr/sbin/sshd -T | grep -qix 'passwordauthentication no'"
     check "pf on, SSH rate limit loaded" "pfctl -a com.apple/250.cbase-mac -s rules | grep -q 'port = 22'"
     check "passwordless sudo for routine fixes" "sudo -n -l -U $SUDO_USER | grep -q 'NOPASSWD: /sbin/shutdown -r now'"
     check "macOS firewall on" "/usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate | grep -q enabled"
     check "the firewall lets Caddy in" "/usr/libexec/ApplicationFirewall/socketfilterfw --getappblocked \$(realpath /opt/homebrew/bin/caddy) | grep -q permitted"
-    check "Screen Sharing listening on 5900" "nc -z -G 2 127.0.0.1 5900"
+    check "Screen Sharing answers on Tailscale (pf turns the rest away)" "nc -z -G 2 \$($TAILSCALE ip -4) 5900"
     check "Low Power Mode on battery only" "pmset -g custom | awk '/Battery Power/ { b = 1 } /AC Power/ { b = 0 } b && /lowpowermode/ { print \$2 }' | grep -qx 1"
     check "Claude Remote Control loaded (just restarted, it can show spawn scheduled for 30 s)" "launchctl print gui/\$(id -u $SUDO_USER)/com.cbase.mac-claude | grep -qE 'state = (running|spawn scheduled)'"
     if [ -n "$DOMAIN" ]; then
