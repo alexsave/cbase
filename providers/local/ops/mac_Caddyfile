@@ -1,0 +1,37 @@
+# The Mac server's front door (MAC_RUNBOOK.md): Caddy on 80 and 443, which gets and renews the HTTPS certificate
+# for the public name by itself and hands each request to the local service it names. mac_setup.sh installs it as
+# /etc/cbase-mac/Caddyfile; CBASE_MAC_DOMAIN and HOME come from mac_caddy.plist.
+#
+# The services join by name as they are built, each as one more block that imports the access log:
+#     tv.{$CBASE_MAC_DOMAIN}  { import access_log; reverse_proxy 127.0.0.1:8096 }   (Jellyfin)
+#     api.{$CBASE_MAC_DOMAIN} { import access_log; reverse_proxy 127.0.0.1:8080 }   (cbase serve)
+
+# One line per request, in its own file. Caddy caps it itself: past 5 MiB it starts a new file and keeps the
+# last 2 old ones, gzipped. (The watchdog caps cbase-mac-caddy.log, Caddy's own messages, which launchd writes.)
+(access_log) {
+    log {
+        output file {$HOME}/Library/Logs/cbase-mac-caddy-access.log {
+            roll_size 5MiB
+            roll_keep 2
+        }
+        format console
+    }
+}
+
+{$CBASE_MAC_DOMAIN} {
+    import access_log
+    respond "{$CBASE_MAC_DOMAIN} is up" 200
+}
+
+# Plain HTTP. The public name moves to HTTPS (Caddy's own redirect would do it, but the catch-all below takes
+# its place, so the name says it here); Caddy still answers Let's Encrypt's challenges ahead of these routes.
+http://{$CBASE_MAC_DOMAIN} {
+    import access_log
+    redir https://{host}{uri} 308
+}
+
+# Any other name, or none: scanners that knock on the bare address. Logged, then turned away.
+http:// {
+    import access_log
+    respond 404
+}

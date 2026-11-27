@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The Mac server's watchdog (mac_watchdog.sh), a LaunchDaemon: it runs as root at boot, before anyone logs in. -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.cbase.mac-watchdog</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/usr/local/libexec/cbase-mac/mac_watchdog.sh</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StartInterval</key>
+    <integer>300</integer>
+    <key>StandardOutPath</key>
+    <string>/var/log/cbase-mac.log</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/cbase-mac.log</string>
+</dict>
+</plist>
