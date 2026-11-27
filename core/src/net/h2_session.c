@@ -35,6 +35,9 @@ struct cb_h2_sess {
     cb_buf          in;    // the peer's bytes not yet a whole frame
     cb_buf          ctl;   // frames queued by recv and the preface: flushed first
     bool            dead, got_settings, goaway_recv, goaway_sent, ids_out;
+    bool            ping_out;       // our PING sent, its ACK not yet back
+    uint64_t        pings;          // PINGs sent: the next one's payload
+    uint8_t         ping_data[8];   // the payload of the one out
     uint32_t        next_id;
     uint32_t        peer[7];   // the peer's settings, by id
     int64_t         conn_send_window, conn_recv_window;
@@ -282,6 +285,16 @@ int cb_h2_sess_streams(const cb_h2_sess *s) { return s->n_open + s->n_wait; }
 uint32_t cb_h2_sess_peer_setting(const cb_h2_sess *s, int id) { return id >= 1 && id <= 6 ? s->peer[id] : 0; }
 
 void cb_h2_sess_fail(cb_h2_sess *s, uint32_t code, const char *why) { fail(s, CB_H2_END_FAILED, code, false, why); }
+
+void cb_h2_sess_ping(cb_h2_sess *s) {
+    if (s->dead || s->ping_out) return;
+    uint64_t n = ++s->pings;
+    for (int i = 0; i < 8; i++) s->ping_data[i] = (uint8_t)(n >> (56 - 8 * i));
+    cb_h2_frame_ping(&s->ctl, s->ping_data, false);
+    s->ping_out = true;
+}
+
+bool cb_h2_sess_ping_out(const cb_h2_sess *s) { return s->ping_out; }
 
 void cb_h2_sess_goaway(cb_h2_sess *s) {
     if (s->dead || s->goaway_sent) return;
@@ -596,6 +609,7 @@ static int on_frame(cb_h2_sess *s, const cb_h2_frame *f, const uint8_t *payload)
         if (f->stream != 0) return conn_error(s, CB_H2_PROTOCOL_ERROR, "PING on a stream");
         if (f->len != 8) return conn_error(s, CB_H2_FRAME_SIZE_ERROR, "a PING not 8 bytes");
         if (!(f->flags & CB_H2_F_ACK)) cb_h2_frame_ping(&s->ctl, payload, true);
+        else if (s->ping_out && memcmp(payload, s->ping_data, 8) == 0) s->ping_out = false;
         return CB_OK;
     case CB_H2_RST_STREAM: {
         if (f->stream == 0 || idle_id(s, f->stream))

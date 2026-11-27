@@ -60,6 +60,7 @@ struct sconn {
     pthread_mutex_t wmu;     // writes, the windows, the streams
     pthread_cond_t  wcv;     // a window opened, or the connection died
     bool            dead;
+    bool            silent;   // /blackhole: frames are read and dropped
     int64_t         conn_window;
     uint32_t        peer_initial;
     sstream         st[MAX_STREAMS];
@@ -235,6 +236,8 @@ static void *respond(void *arg) {
         field(&block, "content-type", "text/plain");
         headers(c, j->id, &block, false);
         data(c, j->id, (const uint8_t *)"status", 6, true);
+    } else if (strcmp(path, "/blackhole") == 0) {
+        c->silent = true;
     } else if (strcmp(path, "/reset") == 0) {
         cb_h2_frame_u32(&block, CB_H2_RST_STREAM, j->id, CB_H2_INTERNAL_ERROR);
         send_buf(c, &block);
@@ -439,6 +442,7 @@ static void *reader(void *arg) {
             if (k <= 0) break;
             const uint8_t *p = in.p + at + CB_H2_FRAME_HEAD;
             at += (size_t)k;
+            if (c->silent) continue;
             if (f.type == CB_H2_SETTINGS && !(f.flags & CB_H2_F_ACK)) {
                 for (uint32_t i = 0; i + 6 <= f.len; i += 6) {
                     uint16_t id = (uint16_t)(p[i] << 8 | p[i + 1]);

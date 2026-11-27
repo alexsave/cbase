@@ -42,6 +42,9 @@
 #define OUT_HIGH_WATER     (256u << 10)
 // How long a dead connection may take to write its GOAWAY before it is closed anyway.
 #define GOAWAY_LINGER_MS   1000
+// How long a connection whose call timed out has to answer its PING before new
+// calls go elsewhere.
+#define PROBE_MS           3000
 
 typedef struct conn conn;
 
@@ -66,6 +69,7 @@ struct conn {
     int            refs;
     bool           exited;
     int64_t        idle_since;   // when its streams fell to 0 (cb_mono_ms), 0 while busy
+    int64_t        probe_until;  // a call timed out and a PING went: its ACK is due by then (cb_mono_ms), 0: none
     cb_h2_why      fail_why;     // set before the I/O thread fails the session itself
     char           fail_err[120];
     conn          *next;         // the channel's list
@@ -314,6 +318,10 @@ static void *io_main(void *arg) {
                 if (r < 0) { failed = true; fail_err = "the server closed the connection"; break; }
                 pthread_mutex_lock(&ch->mu);
                 cb_h2_sess_recv(c->sess, buf, (size_t)r);
+                if (c->probe_until && !cb_h2_sess_ping_out(c->sess)) {
+                    c->probe_until = 0;   // answered: get_conn takes it again
+                    pthread_cond_broadcast(&ch->cv);
+                }
                 pthread_mutex_unlock(&ch->mu);
             }
         }
@@ -546,9 +554,30 @@ static void set_why(cb_h2_response *out, cb_h2_why why, uint32_t code, const cha
 static int get_conn(cb_h2_channel *ch, int64_t deadline, conn **outc, cb_h2_response *out) {
     for (;;) {
         if (ch->closing) { set_why(out, CB_H2_WHY_CLOSED, 0, "%s", "the channel was closed"); return CB_E_IO; }
-        if (ch->cur && cb_h2_sess_accepting(ch->cur->sess)) {
-            ch->cur->refs++;
-            *outc = ch->cur;
+        conn *p = ch->cur;
+        if (p && p->probe_until && cb_h2_sess_accepting(p->sess)) {
+            // A call timed out on it and its PING is unanswered: wait for the ACK
+            // (the I/O thread clears probe_until and wakes us), up to PROBE_MS.
+            if (cb_mono_ms() >= p->probe_until) {
+                // No answer: the peer is gone. No new call goes there; its calls in
+                // hand end at their own deadlines, and then it closes.
+                cb_h2_sess_goaway(p->sess);
+                wake(p);
+                ch->cur = NULL;
+                continue;
+            }
+            if (!left_ms(deadline)) {
+                set_why(out, CB_H2_WHY_TIMEOUT, 0, "%s", "no connection within the deadline");
+                return CB_E_IO;
+            }
+            p->refs++;   // held across the wait, which lets go of the lock
+            wait_until(&ch->cv, &ch->mu, p->probe_until < deadline ? p->probe_until : deadline);
+            conn_unref(p);
+            continue;
+        }
+        if (p && cb_h2_sess_accepting(p->sess)) {
+            p->refs++;
+            *outc = p;
             return CB_OK;
         }
         if (ch->cur) ch->cur = NULL;   // going away: it drains by itself
@@ -649,6 +678,11 @@ int cb_h2_request(cb_h2_channel *ch, const char *method, const char *path, const
             // A false wait_until never let go of the lock, so k.done is still false.
             if (!wait_until(&k.cv, &ch->mu, deadline)) {
                 cb_h2_sess_cancel(c->sess, k.st);
+                // Slow, or gone? A PING tells, before the next call trusts it.
+                if (!c->probe_until && cb_h2_sess_accepting(c->sess)) {
+                    cb_h2_sess_ping(c->sess);
+                    c->probe_until = cb_mono_ms() + PROBE_MS;
+                }
                 wake(c);
                 timed_out = true;
                 break;

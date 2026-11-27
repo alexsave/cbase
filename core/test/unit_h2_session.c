@@ -601,6 +601,41 @@ static void resets_goaway_ping(void) {
     peer_free(&p);
 }
 
+// Our own PING: one out at a time, cleared only by an ACK carrying its payload.
+static void own_ping(void) {
+    peer p;
+    peer_init(&p, NULL);
+    s_preface(&p, NULL, NULL, 0);
+    T_CHECK(!cb_h2_sess_ping_out(p.c));
+    cb_h2_sess_ping(p.c);
+    cb_h2_sess_ping(p.c);   // one is out: no second
+    T_CHECK(cb_h2_sess_ping_out(p.c));
+    pump(&p);
+    T_EQ_INT(count(&p, CB_H2_PING), 1);
+    const sframe *ping = last_of(&p, CB_H2_PING);
+    T_CHECK(ping && !(ping->flags & CB_H2_F_ACK));
+    uint8_t mine[8];
+    memcpy(mine, ping->payload, 8);
+    cb_buf b;
+    cb_buf_init(&b);
+    uint8_t other[8] = { 9, 9, 9, 9, 9, 9, 9, 9 };
+    cb_h2_frame_ping(&b, other, true);   // an ACK of something else
+    cb_h2_frame_ping(&b, mine, false);   // the peer's own PING, with our payload
+    T_EQ_INT(deliver(&p, &b, false), CB_OK);
+    T_CHECK(cb_h2_sess_ping_out(p.c));
+    cb_buf_reset(&b);
+    cb_h2_frame_ping(&b, mine, true);
+    T_EQ_INT(deliver(&p, &b, false), CB_OK);
+    T_CHECK(!cb_h2_sess_ping_out(p.c));
+    // The next one carries a payload of its own.
+    cb_h2_sess_ping(p.c);
+    pump(&p);
+    ping = last_of(&p, CB_H2_PING);
+    T_CHECK(ping && !(ping->flags & CB_H2_F_ACK) && memcmp(ping->payload, mine, 8) != 0);
+    cb_buf_free(&b);
+    peer_free(&p);
+}
+
 // Cancel: a RST_STREAM goes out, later frames for the stream are dropped, the
 // connection window still counts them, and the HPACK table stays in step.
 static void cancel(void) {
@@ -864,6 +899,7 @@ int main(void) {
     T_RUN(recv_flow_control);
     T_RUN(concurrency);
     T_RUN(resets_goaway_ping);
+    T_RUN(own_ping);
     T_RUN(cancel);
     T_RUN(stream_errors);
     T_RUN(early_response);

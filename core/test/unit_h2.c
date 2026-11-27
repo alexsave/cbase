@@ -2,7 +2,7 @@
 // lib_h2_srv: cleartext and TLS (ALPN h2, the certificate verified), one
 // connection shared by many threads, both flow-control directions at size,
 // deadlines, resets, the one retry for an unprocessed request, a dropped
-// connection, the body cap, idle close, and freeing a channel under a call.
+// connection, a peer gone silent, the body cap, idle close, and freeing a channel under a call.
 #include "t.h"
 
 #include "lib_h2_srv.h"
@@ -293,6 +293,30 @@ static void failures(void) {
     h2srv_stop(s);
 }
 
+// A peer gone silent, as one is after the client slept and the far end dropped the
+// connection without a word: the call times out, and the next goes to a fresh
+// connection instead of the silent one. (failures() has the other side: a slow
+// peer that still answers keeps its connection.)
+static void silent_peer(void) {
+    h2srv_opts so = { 0 };
+    h2srv *s = h2srv_start(&so);
+    cb_h2_channel *ch = channel(s, NULL);
+    cb_h2_response r;
+    cb_h2_response_init(&r);
+    T_EQ_INT(get(ch, "/status/200", 5000, 0, &r), CB_OK);
+    T_EQ_INT(get(ch, "/blackhole", 300, 0, &r), CB_E_IO);
+    T_EQ_INT(r.why, CB_H2_WHY_TIMEOUT);
+    int64_t t0 = cb_mono_ms();
+    T_EQ_INT(get(ch, "/status/200", 10000, 0, &r), CB_OK);
+    T_EQ_INT(r.status, 200);
+    T_EQ_INT(cb_h2_channel_dials(ch), 2);
+    T_EQ_INT(h2srv_accepts(s), 2);
+    T_CHECK(cb_mono_ms() - t0 < 6000);
+    cb_h2_response_free(&r);
+    cb_h2_channel_free(ch);
+    h2srv_stop(s);
+}
+
 static void idle_close(void) {
     h2srv_opts so = { 0 };
     h2srv *s = h2srv_start(&so);
@@ -386,6 +410,7 @@ int main(void) {
     T_RUN(concurrency);
     T_RUN(big_bodies);
     T_RUN(failures);
+    T_RUN(silent_peer);
     T_RUN(idle_close);
     T_RUN(free_under_call);
     return T_DONE();
