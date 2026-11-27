@@ -12,6 +12,8 @@
 #   * each log listed in $CONF_DIR/capped-logs (the user's LaunchAgent and Caddy logs, which newsyslog cannot
 #     rotate because their writers keep the file open) cut to its last LOG_KEEP_BYTES once past LOG_CAP_BYTES,
 #     in place: launchd opens them for appending, so the writer carries on at the new end;
+#   * with the macOS firewall on, each Homebrew daemon in FW_APPS allowed through it by its real path, again
+#     after a brew upgrade moves the binary to a new Cellar directory, which the firewall sees as a new program;
 #   * online: Tailscale that does not answer is restarted (launchctl kickstart);
 #   * then a check-in to the dead-man's switch: a POST of one status line to the URL in
 #     $CONF_DIR/healthcheck-url, or to that URL + "/fail" with the issues (on battery, disk full,
@@ -23,7 +25,7 @@
 # The test (test/mac_watchdog_test.sh) runs it against stub commands through MAC_WATCHDOG_PATH and a
 # scratch MAC_WATCHDOG_STATE_DIR and MAC_WATCHDOG_CONF_DIR.
 
-PATH="${MAC_WATCHDOG_PATH:-/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin}"
+PATH="${MAC_WATCHDOG_PATH:-/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/libexec/ApplicationFirewall}"
 STATE_DIR="${MAC_WATCHDOG_STATE_DIR:-/var/db/cbase-mac}"
 CONF_DIR="${MAC_WATCHDOG_CONF_DIR:-/etc/cbase-mac}"
 HC_URL_FILE="$CONF_DIR/healthcheck-url"
@@ -34,6 +36,7 @@ TAILSCALE_JOB=system/sh.brew.tailscale
 PF_ANCHOR=com.apple/250.cbase-mac
 PF_RULES="$CONF_DIR/pf.conf"
 PF_ABUSE_EXPIRE_S=86400
+FW_APPS="${MAC_WATCHDOG_FW_APPS:-/opt/homebrew/bin/caddy /opt/homebrew/opt/tailscale/bin/tailscaled}"
 
 WIFI_CYCLE_AFTER=2
 REBOOT_AFTER=6
@@ -116,6 +119,20 @@ if [ -s "$PF_RULES" ]; then
     fi
     pfctl -s info 2>/dev/null | grep -q 'Status: Enabled' || pfctl -q -e
     pfctl -q -a "$PF_ANCHOR" -t cbase_ssh_abuse -T expire "$PF_ABUSE_EXPIRE_S"
+fi
+
+# ---- macOS firewall: the Homebrew daemons stay allowed ---------------------------
+
+if socketfilterfw --getglobalstate 2>/dev/null | grep -q enabled; then
+    for b in $FW_APPS; do
+        [ -e "$b" ] || continue
+        real=$(realpath "$b")
+        if ! socketfilterfw --getappblocked "$real" 2>/dev/null | grep -q permitted; then
+            log "allowing $real through the macOS firewall"
+            socketfilterfw --add "$real" > /dev/null
+            socketfilterfw --unblockapp "$real" > /dev/null
+        fi
+    done
 fi
 
 # ---- capped logs (before the network: they grow while offline too) ------------

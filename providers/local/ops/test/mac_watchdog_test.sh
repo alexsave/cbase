@@ -28,7 +28,8 @@
 # [ -n "$dns_ipv4" ] guard dropped -> "no answer from DNS is not an alarm"; tail -c made head -c -> "the cut
 # keeps the end"; the size test made -ge 0 -> "a log under the cap is left alone"; the front door's "!" dropped ->
 # "a front door that does not answer checks in to /fail"; the address comparison made "=" -> "a private Wi-Fi
-# address checks in to /fail".
+# address checks in to /fail"; the unblockapp line deleted -> "a daemon the firewall blocks is allowed by its real
+# path"; realpath dropped (the link allowed, not the binary) -> the same.
 # The stub bodies are written to files and expand when the stub runs, so they are single-quoted.
 # shellcheck disable=SC2016
 set -u
@@ -91,6 +92,14 @@ case "$*" in
 esac
 exit 0'
 stub dig 'echo "dig $*" >> "$FAKE_LOG"; [ -n "$FAKE_DNS" ] && echo "$FAKE_DNS"; exit 0'
+stub socketfilterfw '
+echo "socketfilterfw $*" >> "$FAKE_LOG"
+case "$1" in
+    --getglobalstate) [ "$FAKE_FW_ON" = 1 ] && echo "Firewall is enabled. (State = 1)" || echo "Firewall is disabled. (State = 0)" ;;
+    --getappblocked) grep -qxF "$2" "$FAKE_DIR/fw_allowed" 2>/dev/null && echo "Incoming connection to $2 is permitted." || echo "Incoming connection to $2 is blocked." ;;
+    --unblockapp) echo "$2" >> "$FAKE_DIR/fw_allowed" ;;
+esac
+exit 0'
 stub route 'printf "   route to: default\ninterface: en0\n"'
 stub ifconfig 'printf "\tether $FAKE_MAC\n\tinet6 fe80::1%%en0 prefixlen 64 secured scopeid 0xb\n\tinet6 2601:db8::5ec prefixlen 64 autoconf temporary\n\tinet6 2601:db8::abc prefixlen 64 autoconf secured\n"'
 
@@ -104,6 +113,11 @@ fresh() {
     mkdir -p "$tmp/conf"
     echo "https://hc.example/abc" > "$tmp/conf/healthcheck-url"
     echo "pass" > "$tmp/conf/pf.conf"
+    rm -f "$tmp/fw_allowed"
+    mkdir -p "$tmp/cellar/caddy/2.12.0/bin" "$tmp/bin-links"
+    touch "$tmp/cellar/caddy/2.12.0/bin/caddy"
+    ln -sf "$tmp/cellar/caddy/2.12.0/bin/caddy" "$tmp/bin-links/caddy"
+    export MAC_WATCHDOG_FW_APPS="$tmp/bin-links/caddy $tmp/bin-links/missing" FAKE_FW_ON=1
     export FAKE_IPV4=203.0.113.7 FAKE_DNS=203.0.113.7 FAKE_FRONT=1 FAKE_MAC=74:8f:3c:c0:cc:af
     export FAKE_PF_MAIN=1 FAKE_PF_LOADED=1 FAKE_PF_ENABLED=1 FAKE_PF_LOAD_FAILS=0
     export FAKE_POWER="AC Power" FAKE_BATT=80 FAKE_ONLINE=1 FAKE_TS=1 FAKE_TS_RECOVERS=0 FAKE_DISK=40
@@ -163,6 +177,18 @@ check "with no public name the front door is not asked" "$(calls '--resolve')" "
 fresh; FAKE_MAC=de:cb:ad:ac:9b:b3; run
 check "a private Wi-Fi address checks in to /fail" "$(checkin_url)" "https://hc.example/abc/fail"
 check "the /fail line names both addresses" "$(checkin_data | grep -c 'Wi-Fi uses de:cb:ad:ac:9b:b3, not its hardware address 74:8f:3c:c0:cc:af')" "1"
+
+# ---- macOS firewall -----------------------------------------------------------
+real_caddy=$(cd "$tmp/cellar/caddy/2.12.0/bin" && pwd -P)/caddy
+fresh; run
+check "a daemon the firewall blocks is allowed by its real path" "$(calls "socketfilterfw --unblockapp $real_caddy")" "1"
+check "a daemon that is not installed is skipped" "$(calls 'missing')" "0"
+
+fresh; echo "$real_caddy" > "$tmp/fw_allowed"; run
+check "a daemon already allowed is left alone" "$(calls 'socketfilterfw --unblockapp')" "0"
+
+fresh; FAKE_FW_ON=0; run
+check "with the firewall off nothing is allowed" "$(calls 'socketfilterfw --unblockapp')" "0"
 
 # ---- capped logs --------------------------------------------------------------
 fresh
