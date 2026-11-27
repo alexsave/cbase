@@ -202,6 +202,10 @@
         echo "left off: pass the public name as the second argument, and brew install caddy"
     fi
 
+    # The watchdog caps these (they outgrow newsyslog: their writers keep them open).
+    printf '%s\n' "$USER_HOME/Library/Logs/cbase-mac-claude.log" "$USER_HOME/Library/Logs/cbase-mac-caddy.log" \
+        > "$CONF_DIR/capped-logs"
+
     step "Dead-man's switch: the check-in URL"
     HC="$CONF_DIR/healthcheck-url"
     if [ -s "$HC" ]; then

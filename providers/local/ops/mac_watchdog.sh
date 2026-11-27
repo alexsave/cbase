@@ -9,6 +9,9 @@
 #     MIN_SECONDS_BETWEEN_REBOOTS and never in the first hour of uptime, so a long ISP outage is not a loop;
 #   * pf enabled and the anchor $PF_ANCHOR loaded from $CONF_DIR/pf.conf (mac_pf.conf), reloaded when
 #     something else (Internet Sharing, an update) flushed it, and its SSH abuse table's day-old entries expired;
+#   * each log listed in $CONF_DIR/capped-logs (the user's LaunchAgent and Caddy logs, which newsyslog cannot
+#     rotate because their writers keep the file open) cut to its last LOG_KEEP_BYTES once past LOG_CAP_BYTES,
+#     in place: launchd opens them for appending, so the writer carries on at the new end;
 #   * online: Tailscale that does not answer is restarted (launchctl kickstart);
 #   * then a check-in to the dead-man's switch: a POST of one status line to the URL in
 #     $CONF_DIR/healthcheck-url, or to that URL + "/fail" with the issues (on battery, disk full,
@@ -36,6 +39,8 @@ REBOOT_AFTER=6
 MIN_SECONDS_BETWEEN_REBOOTS=21600
 SHUTDOWN_BATTERY_PCT=8
 DISK_ALERT_PCT=90
+LOG_CAP_BYTES=5242880
+LOG_KEEP_BYTES=1048576
 
 mkdir -p "$STATE_DIR"
 
@@ -110,6 +115,19 @@ if [ -s "$PF_RULES" ]; then
     fi
     pfctl -s info 2>/dev/null | grep -q 'Status: Enabled' || pfctl -q -e
     pfctl -q -a "$PF_ANCHOR" -t cbase_ssh_abuse -T expire "$PF_ABUSE_EXPIRE_S"
+fi
+
+# ---- capped logs (before the network: they grow while offline too) ------------
+
+if [ -s "$CONF_DIR/capped-logs" ]; then
+    while IFS= read -r f; do
+        [ -f "$f" ] || continue
+        if [ "$(wc -c < "$f")" -gt "$LOG_CAP_BYTES" ]; then
+            tail -c "$LOG_KEEP_BYTES" "$f" > "$f.cap" && cat "$f.cap" > "$f"
+            rm -f "$f.cap"
+            log "capped $f to its last $LOG_KEEP_BYTES bytes"
+        fi
+    done < "$CONF_DIR/capped-logs"
 fi
 
 # ---- network ------------------------------------------------------------------

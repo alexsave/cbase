@@ -25,7 +25,8 @@
 # "the status line is kept for mac_setup.sh"; last_report written before the issues are added -> "the kept
 # status line carries the issues"; the address check dropped from public_ipv4 -> "an answer that is not an
 # address is left out"; the "!=" made "=" -> "a record that points elsewhere checks in to /fail"; the
-# [ -n "$dns_ipv4" ] guard dropped -> "no answer from DNS is not an alarm".
+# [ -n "$dns_ipv4" ] guard dropped -> "no answer from DNS is not an alarm"; tail -c made head -c -> "the cut
+# keeps the end"; the size test made -ge 0 -> "a log under the cap is left alone".
 # The stub bodies are written to files and expand when the stub runs, so they are single-quoted.
 # shellcheck disable=SC2016
 set -u
@@ -141,6 +142,18 @@ check "no house address is not an alarm" "$(checkin_url)" "https://hc.example/ab
 
 fresh; FAKE_DNS=198.51.100.9; run
 check "with no public name DNS is not asked" "$(calls dig)" "0"
+
+# ---- capped logs --------------------------------------------------------------
+fresh
+{ head -c 6000000 /dev/zero | tr '\0' 'a'; printf 'THE-END'; } > "$tmp/big.log"
+printf 'small\n' > "$tmp/small.log"
+printf '%s\n' "$tmp/big.log" "$tmp/small.log" "$tmp/missing.log" > "$tmp/conf/capped-logs"
+run
+check "a log past the cap is cut to the keep size" "$(wc -c < "$tmp/big.log" | tr -d ' ')" "1048576"
+check "the cut keeps the end" "$(tail -c 7 "$tmp/big.log")" "THE-END"
+check "a log under the cap is left alone" "$(cat "$tmp/small.log")" "small"
+check "no .cap file is left behind" "$(find "$tmp" -name '*.cap' | wc -l | tr -d ' ')" "0"
+check "a missing log is not an issue" "$(checkin_url)" "https://hc.example/abc"
 
 # ---- firewall -----------------------------------------------------------------
 fresh; run
