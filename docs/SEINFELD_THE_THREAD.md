@@ -826,7 +826,7 @@ The owner presses the button himself.
 *(Off-stage, a click.)*
 
 **ELAINE:** Alex merged #35.
-amgi main aa67fb5.
+amgi main e03a36e.
 A C server, no Node server, the incident fix.
 
 **JERRY:** I wrote the post-mortem.
