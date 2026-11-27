@@ -146,12 +146,12 @@ check "with no public name DNS is not asked" "$(calls dig)" "0"
 # ---- capped logs --------------------------------------------------------------
 fresh
 { head -c 6000000 /dev/zero | tr '\0' 'a'; printf 'THE-END'; } > "$tmp/big.log"
-printf 'small\n' > "$tmp/small.log"
+head -c 2000000 /dev/zero | tr '\0' 'b' > "$tmp/small.log"   # past the keep size, under the cap
 printf '%s\n' "$tmp/big.log" "$tmp/small.log" "$tmp/missing.log" > "$tmp/conf/capped-logs"
 run
 check "a log past the cap is cut to the keep size" "$(wc -c < "$tmp/big.log" | tr -d ' ')" "1048576"
 check "the cut keeps the end" "$(tail -c 7 "$tmp/big.log")" "THE-END"
-check "a log under the cap is left alone" "$(cat "$tmp/small.log")" "small"
+check "a log under the cap is left alone" "$(wc -c < "$tmp/small.log" | tr -d ' ')" "2000000"
 check "no .cap file is left behind" "$(find "$tmp" -name '*.cap' | wc -l | tr -d ' ')" "0"
 check "a missing log is not an issue" "$(checkin_url)" "https://hc.example/abc"
 
