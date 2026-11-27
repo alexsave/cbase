@@ -39,7 +39,7 @@ Each step answers one way an unattended laptop goes dark.
 | Tailscale itself breaks (its login, its account, a wedged tailscaled) | a second, unrelated way in: OpenSSH straight to the Mac's public IPv6 address, keys only, `MaxAuthTries 3`, and pf blocking for a day any source that opens connections faster than 5 a minute |
 | The second way in needs the address, and Comcast can change it | every check-in carries `ipv6=<the stable address>`, so the healthchecks.io dashboard shows the current one |
 | Something else (Internet Sharing, an update) reloads pf and drops our rules | the watchdog owns pf: every run it enables pf, reloads the anchor when it is empty, and expires day-old blocks |
-| A prompt that only the GUI can answer | Screen Sharing, over Tailscale |
+| A prompt that only the GUI can answer | Screen Sharing, which pf answers only from Tailscale |
 | A reboot locks the login keychain, so Claude Code and gh lose their logins | automatic login (quick start step 5) |
 | An outage drains the battery | Low Power Mode on battery only (`pmset -b lowpowermode 1`); plugged in it runs at full speed |
 | A security fix waits for someone to click | security and minor macOS updates install by themselves; with FileVault off, their restart comes back on its own |

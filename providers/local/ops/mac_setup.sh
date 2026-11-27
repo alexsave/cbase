@@ -75,6 +75,8 @@
     install -m 644 "$HERE/mac_newsyslog.conf" /etc/newsyslog.d/cbase-mac.conf
     if pfctl -n -a com.apple/250.cbase-mac -f "$HERE/mac_pf.conf" 2>/dev/null; then
         install -m 644 "$HERE/mac_pf.conf" "$CONF_DIR/pf.conf"
+        # Load it now: the watchdog loads the anchor only when it is empty, so a changed rule waits otherwise.
+        pfctl -q -a com.apple/250.cbase-mac -f "$CONF_DIR/pf.conf" 2>/dev/null
     else
         warn "pf rejected mac_pf.conf; the watchdog runs without the SSH rate limit"
     fi

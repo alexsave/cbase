@@ -7,6 +7,8 @@
     script(1) gives it the terminal it expects. Its stdin is a pipe that never ends: launchd's own is /dev/null,
     whose end of file script passes on as ^D, which quits Claude Code every 30 seconds. The feeding loop is in
     the job's process group, so launchd ends it with the job. The output goes to the log.
+    No session is made in advance (no-create-session-in-dir): every start, each reboot, left one more empty
+    session in the app's list; a session exists once someone starts one from the app.
 -->
 <plist version="1.0">
 <dict>
@@ -16,7 +18,7 @@
     <array>
         <string>/bin/bash</string>
         <string>-c</string>
-        <string>exec /usr/bin/script -q /dev/null "$0" remote-control --name "$1" --permission-mode auto &lt; &lt;(while :; do sleep 86400; done)</string>
+        <string>exec /usr/bin/script -q /dev/null "$0" remote-control --name "$1" --permission-mode auto --no-create-session-in-dir &lt; &lt;(while :; do sleep 86400; done)</string>
         <string>__HOME__/.local/bin/claude</string>
         <string>__NAME__</string>
     </array>
