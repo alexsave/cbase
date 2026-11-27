@@ -10,7 +10,8 @@
 // windows (connection and stream) and its frame size; response bodies taken
 // within ours, with WINDOW_UPDATEs as they are consumed; the peer's
 // MAX_CONCURRENT_STREAMS (streams past it wait their turn, in order); SETTINGS
-// and PING acknowledged; RST_STREAM and GOAWAY in both directions; trailers.
+// and PING acknowledged, and a PING of its own sent on request with its ACK
+// seen; RST_STREAM and GOAWAY in both directions; trailers.
 //
 // WHAT IT REFUSES: server push (ENABLE_PUSH is 0, so a PUSH_PROMISE is a
 // connection error), and priority, which it ignores as RFC 9113 allows.
@@ -155,6 +156,10 @@ bool   cb_h2_sess_want_flush(const cb_h2_sess *s);
 void cb_h2_sess_fail(cb_h2_sess *s, uint32_t code, const char *why);
 // A graceful close: a GOAWAY (NO_ERROR) queued, no new streams accepted.
 void cb_h2_sess_goaway(cb_h2_sess *s);
+// A PING queued for flush, unless one is already out: a test that the peer is
+// still there. ping_out is true from then until its ACK comes back.
+void cb_h2_sess_ping(cb_h2_sess *s);
+bool cb_h2_sess_ping_out(const cb_h2_sess *s);
 
 bool cb_h2_sess_dead(const cb_h2_sess *s);        // a connection error, or failed: close the socket
 bool cb_h2_sess_accepting(const cb_h2_sess *s);   // submit would take a stream

@@ -6,6 +6,10 @@
 // "http://host:port" (cleartext with prior knowledge, for local stand-ins and
 // tests). It opens a connection on first use, keeps it for the calls after,
 // and replaces it after an error, a GOAWAY, or idle_close_ms without a call.
+// A call that times out sends a PING on its connection: the next call waits up
+// to 3 s for the ACK before taking it, and without one the connection takes no
+// more calls and the next goes to a fresh one (a peer gone silent, as one is
+// after this machine slept, never closes the socket by itself).
 //
 // A CALL blocks its thread until the response is whole, the deadline passes,
 // or the connection fails. Each connection has one I/O thread, which alone
